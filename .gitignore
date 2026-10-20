@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.onnx
+*.air
+*.omc
+*.safetensors
+*.so
+*.a
+*.o
+CMakeCache.txt
+CMakeFiles/
+resources.local.json
+*.pth
+*.pt
+*.bin

@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "project_id": "qwen3.5-35b-moe",
+  "display_name": "Qwen3.5-35B-A3B DFlash / CPro",
+  "default_target": "cpro",
+  "contexts": {
+    "understand": [
+      "project.yaml",
+      "docs",
+      "specs"
+    ],
+    "model": [
+      "model",
+      "docs",
+      "specs"
+    ],
+    "reference": [
+      "model",
+      "reference",
+      "specs",
+      "tests"
+    ],
+    "operator": [
+      "targets/cpro/operators",
+      "targets/cpro/abi",
+      "specs"
+    ],
+    "runtime": [
+      "model",
+      "targets/cpro",
+      "specs"
+    ],
+    "validate": [
+      "model",
+      "reference",
+      "tests",
+      "targets/cpro",
+      "specs"
+    ],
+    "release": [
+      "docs",
+      "specs",
+      "targets/cpro"
+    ]
+  },
+  "targets": {
+    "cpro": {
+      "path": "targets/cpro",
+      "profile": "cpro-blue-pending",
+      "skills": {},
+      "knowledge": [
+        "cpro",
+        "dflash"
+      ]
+    }
+  },
+  "specs": [
+    "specs/model-workflow.json",
+    "specs/dflash-contract.json",
+    "specs/resources.json",
+    "specs/upstream.lock.json"
+  ],
+  "skills": {
+    "common": [
+      "deliver-model-end-to-end"
+    ],
+    "tasks": {
+      "operator": [
+        "develop-custom-operators"
+      ]
+    }
+  },
+  "dependencies": {
+    "target_profiles": [
+      "cpro-blue-pending"
+    ],
+    "environments": {
+      "model": "qwen3.5-py310"
+    },
+    "data": []
+  },
+  "artifact_namespace": "qwen3.5-35B-moe",
+  "release_namespace": "qwen3.5-35B-moe",
+  "resource_manifest": "specs/resources.json"
+}

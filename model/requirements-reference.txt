@@ -1,0 +1,7 @@
+# Keep the user's existing torch 2.11.0+cu130. Validated locally with 2.12.1+cpu.
+# Install in a declared model environment; do not replace shared environments.
+transformers==5.13.0
+safetensors>=0.6
+pytest>=8
+# Optional cross-check only: onnx, onnxruntime.
+# AIR export separately requires a compatible torch_npu/TorchAir/CANN stack.

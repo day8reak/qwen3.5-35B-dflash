@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "active_phase": "contract",
+  "delivery_status": "SOURCE_HANDOFF_DEVICE_PENDING",
+  "run_id": "20261020T092412Z-4528-622cba",
+  "phases": [
+    {
+      "name": "contract",
+      "status": "blocked",
+      "owner": "model-workflow",
+      "evidence": "docs/validation.md",
+      "working_directory": "$AI_RUN_DIR",
+      "next_command": "python -m qwen35_moe_dflash.cli quant-plan --available-gib 18 --output \"$AI_RUN_DIR/quant-plan.json\"",
+      "blocker": "Await matching quantized AIR stack, full-weight quality gates, sufficient device memory and user-run X90 evidence",
+      "experience_audit": "docs/experience.md"
+    },
+    {
+      "name": "reference",
+      "status": "pending",
+      "owner": "model-workflow",
+      "evidence": "docs/validation.md",
+      "working_directory": "$AI_RUN_DIR",
+      "next_command": "python -m qwen35_moe_dflash.cli reference --quantized-checkpoint \"$AI_RUN_DIR/calibrated\" --device cpu --sequence-length 128 --prompt-token-ids \"$PROMPT_IDS\" --max-new-tokens 32 --output \"$AI_RUN_DIR/reference.json\"",
+      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
+      "experience_audit": "docs/experience.md"
+    },
+    {
+      "name": "target_plan",
+      "status": "pending",
+      "owner": "model-workflow",
+      "evidence": "docs/validation.md",
+      "working_directory": "$AI_RUN_DIR",
+      "next_command": "python -m qwen35_moe_dflash.cli export-tiny-air --sequence-length 8 --output \"$AI_RUN_DIR/tiny-air\"",
+      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
+      "experience_audit": "docs/experience.md"
+    },
+    {
+      "name": "adaptation",
+      "status": "pending",
+      "owner": "model-workflow",
+      "evidence": "docs/validation.md",
+      "working_directory": "$AI_RUN_DIR",
+      "next_command": "python -m pytest \"$REPO_DIR/tests\" -p no:cacheprovider --basetemp \"$AI_RUN_DIR/pytest\"",
+      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
+      "experience_audit": "docs/experience.md"
+    },
+    {
+      "name": "integration",
+      "status": "pending",
+      "owner": "model-workflow",
+      "evidence": "docs/validation.md",
+      "working_directory": "$AI_RUN_DIR",
+      "next_command": "python -m qwen35_moe_dflash.cli compile-omc --air \"$AI_RUN_DIR/air-s128\" --output \"$AI_RUN_DIR/omc-s128\"",
+      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
+      "experience_audit": "docs/experience.md"
+    },
+    {
+      "name": "accuracy",
+      "status": "pending",
+      "owner": "model-workflow",
+      "evidence": "docs/validation.md",
+      "working_directory": "$AI_RUN_DIR",
+      "next_command": "python -m qwen35_moe_dflash.cli compare --report \"$AI_RUN_DIR/board-report.json\" --reference \"$AI_RUN_DIR/reference.json\" --omc \"$AI_RUN_DIR/omc-s128\" --output \"$AI_RUN_DIR/comparison.json\"",
+      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
+      "experience_audit": "docs/experience.md"
+    },
+    {
+      "name": "performance",
+      "status": "pending",
+      "owner": "model-workflow",
+      "evidence": "docs/validation.md",
+      "working_directory": "$AI_RUN_DIR",
+      "next_command": "execute board-command.json shell on CPro with --mode benchmark; retain all 10 paired invocations",
+      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
+      "experience_audit": "docs/experience.md"
+    },
+    {
+      "name": "release",
+      "status": "pending",
+      "owner": "model-workflow",
+      "evidence": "docs/validation.md",
+      "working_directory": "$AI_RUN_DIR",
+      "next_command": "review source-bound comparison, 10-run measurements, exact internal DDK/firmware and capacity evidence",
+      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
+      "experience_audit": "docs/experience.md"
+    }
+  ],
+  "hardware_reference_policy": "use",
+  "hardware_profile": null,
+  "device_probe": {
+    "status": "UNAVAILABLE_BY_USER_ACCESS_CONSTRAINT",
+    "source": "user states board inaccessible; user will pull/run",
+    "board_command": "./qwen35_dflash_hiai --probe"
+  },
+  "capability_hash": null,
+  "physical_workload_hash": null,
+  "dependency_aware_latency": null,
+  "preliminary_work": "FP16 graph lowering, HIAI ABI v2, complete expert exposure, real blue DOPT tiny calibration/reference and source delivery; no full-model or device gates advanced"
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "enable_thinking": false,
+  "sequence_length": 128,
+  "max_new_tokens": 32,
+  "cases": [
+    {
+      "id": "zh-definition",
+      "text": "请用两句话解释推测解码。"
+    },
+    {
+      "id": "en-short",
+      "text": "Name three prime numbers greater than 20."
+    },
+    {
+      "id": "zh-reasoning",
+      "text": "有12个苹果，送出5个后又买入8个，现在有几个？"
+    },
+    {
+      "id": "code",
+      "text": "Write a Python function that returns the square of an integer."
+    }
+  ]
+}

@@ -1,0 +1,122 @@
+{
+  "schema_version": 2,
+  "model": "Qwen3.5-35B-A3B-DFlash",
+  "target": "cpro-x90",
+  "os": "HarmonyOS",
+  "runtime": "HIAI",
+  "source_lock": "specs/upstream.lock.json",
+  "pipeline": [
+    "pytorch",
+    "air",
+    "omg",
+    "omc",
+    "hiai"
+  ],
+  "scope": {
+    "batch": 1,
+    "input": "text-only",
+    "mode": "strict-greedy",
+    "state": "prefix-recompute",
+    "excluded": [
+      "multimodal input",
+      "sampling",
+      "incremental KV/GDN cache",
+      "production performance claim"
+    ]
+  },
+  "source_precision": "original BF16 checkpoints; unmodified upstream reference retained",
+  "gdn_recurrence_precision": "FP16 in deployment graph; numerical comparison against upstream FP32 recurrence pending",
+  "block_size": 16,
+  "draft_width": 15,
+  "target_layer_ids": [
+    1,
+    6,
+    11,
+    16,
+    22,
+    27,
+    32,
+    37
+  ],
+  "feature_width": 16384,
+  "vocab_size": 248320,
+  "pad_token_id": 248044,
+  "eos_token_ids": [
+    248044,
+    248046
+  ],
+  "shape": {
+    "S": "fixed per exported bundle; positive > 1",
+    "prefix": "right-padded 0/1 mask",
+    "capacity": "len(prompt) + max_new_tokens - 1 <= S"
+  },
+  "abi": {
+    "target_inputs": [
+      "int32[1,S]",
+      "int32[1,S]"
+    ],
+    "target_outputs": [
+      "int32[1,S]",
+      "float16[1,S,16384]"
+    ],
+    "draft_inputs": [
+      "float16[1,S,16384]",
+      "int32[1,S]",
+      "int32[1,S]"
+    ],
+    "draft_outputs": [
+      "int32[1,15]"
+    ],
+    "format": "ND"
+  },
+  "gates": {
+    "token_mismatches": 0,
+    "stop_reason_mismatches": 0,
+    "device_measurements_per_mode": 10,
+    "warmups_per_mode": 3,
+    "full_model_reference": "quantized target ordinary vs DFlash zero token/stop mismatches; same calibration/source/precision required",
+    "performance_target": "not specified",
+    "local_feature_probe": {
+      "fp32_atol": 1e-05,
+      "fp32_rtol": 0.0001,
+      "bf16_atol": 0.001,
+      "bf16_rtol": 0.01,
+      "scope": "tiny export-wrapper regression, not a full-model relaxation"
+    },
+    "source_quality": "separate BF16 vs FP16/quantized held-out task/feature evaluation pending; not covered by scheduler equality"
+  },
+  "hardware_reference_policy": "use",
+  "user_directives": [
+    "CPro X90 inaccessible to assistant",
+    "internal libraries cannot leave user environment",
+    "runtime corrected from NNRT to HIAI",
+    "OMC must be converted from AIR by OMG",
+    "user reference PyTorch 2.11.0+cu130; no TorchAir yet",
+    "user resumed: 继续吧",
+    "quantization之外计算 FP16",
+    "weights and activations may both be quantized; other computation FP16"
+  ],
+  "deployment_precision": "DOPT INT4 weights / 16-bit activation quantization candidate; non-quantization float computation FP16",
+  "quantization": {
+    "status": "HOST_CALIBRATION_CANDIDATE",
+    "user_authorized_requirement": true,
+    "bit_width": 4,
+    "group_size": 128,
+    "algorithm": "DOPT Quant_act_weight_eco, group_min_max weights, EMA activations",
+    "device_memory_bytes": null,
+    "quality_gates": "PENDING full-weight held-out quality evaluation; candidate not promoted",
+    "memory_report": "specs/device-memory-report.json",
+    "activation_bits": 16,
+    "activation_quantization": true,
+    "full_precision_exceptions": [
+      "embedding",
+      "LM head",
+      "draft",
+      "routers",
+      "GDN gate projections and non-matrix parameters"
+    ],
+    "input_quantizer_compute_dtype": "torch.float32",
+    "non_quant_compute_dtype": "torch.float16"
+  },
+  "abi_version": 2
+}

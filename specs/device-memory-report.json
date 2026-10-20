@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "source": "user-reported; not independently measured",
+  "raw": "ram 32GB左右用了13G还有18G free，Hugepagesize=2048KB，Hugetlb=4096KB",
+  "ram_total_approx_g": 32,
+  "ram_used_approx_g": 13,
+  "ram_free_approx_g": 18,
+  "ram_g_unit": "not confirmed: GB versus GiB",
+  "mem_available_bytes": null,
+  "hugepagesize_reported_kb": 2048,
+  "hugetlb_reported_kb": 4096,
+  "interpretation_if_linux_meminfo": {
+    "default_hugepage_bytes": 2097152,
+    "hugetlb_pool_total_bytes": 4194304
+  },
+  "planning": {
+    "nominal_35_billion_parameters_packed_int4_bytes": 17500000000,
+    "packed_int4_gib": 16.298145055770874,
+    "excluded_from_weight_estimate": [
+      "scales and zero-points",
+      "higher-precision retained tensors",
+      "draft weights",
+      "duplicated embedding/head across OMCs",
+      "IO, activations, cache and runtime workspace"
+    ],
+    "conclusion": "18G free is insufficient evidence that W4A16 target+draft can reside together; peak memory and MemAvailable must be checked",
+    "quantization_scheme": "pending supported internal DDK format and capacity analysis"
+  },
+  "sources": [
+    "https://docs.kernel.org/admin-guide/mm/hugetlbpage.html",
+    "https://docs.kernel.org/filesystems/proc.html"
+  ],
+  "task_state_at_report": "USER_PAUSED; resource update only"
+}

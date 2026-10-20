@@ -1,0 +1,29 @@
+{
+  "files": [
+    {
+      "path": "models/qwen3.5-4b/model/qwen35_dflash/config.py",
+      "sha256": "c2aa18c34217f0b41c1f940a678c404e5970da0ac39892329a6fa7d7a1e1a808"
+    },
+    {
+      "path": "models/qwen3.5-4b/model/qwen35_dflash/model.py",
+      "sha256": "d9ceac5c4c37e5efeac35243ac13e72e5d732a39c1e98227264827e395e4007c"
+    },
+    {
+      "path": "models/qwen3.5-4b/model/qwen35_dflash/ops.py",
+      "sha256": "595a73d68565a009cc7bd9f8523f94e846accff41a9926a9fe3d8e24400fcb94"
+    },
+    {
+      "path": "models/qwen3.5-4b/model/qwen35_dflash/target_features.py",
+      "sha256": "72fc01d88d710fc691d9b00b9f20a2aaf32316ce3c743d1eea38a0d1737335ba"
+    },
+    {
+      "path": "models/qwen3.5-4b/model/qwen35_dflash/weights.py",
+      "sha256": "083c02c0523604678e2230170eb3bd7c7cce627fc0a27386465d17d365920cf6"
+    },
+    {
+      "path": "models/qwen3.5-4b/model/qwen35_dflash/__init__.py",
+      "sha256": "a98ba44be589750b3a5757a09f2f36c8a9793002e6769fae628ac8d607da17af"
+    }
+  ],
+  "policy": "source-level reuse only; no 4B target-device claims inherited"
+}

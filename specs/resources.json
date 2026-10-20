@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "target_weights": "${QWEN35_TARGET_WEIGHTS}",
+  "draft_weights": "${QWEN35_DRAFT_WEIGHTS}",
+  "ddk_root": "${CPRO_DDK_ROOT}",
+  "ddk_id": "${CPRO_DDK_ID}",
+  "ohos_native_sdk": "${OHOS_NATIVE_SDK}",
+  "hiai_include_dir": "${HIAI_INCLUDE_DIR}",
+  "hiai_libraries": [],
+  "notes": "Set QWEN35_RESOURCES to an internal JSON copy, or resolve the environment variables. Do not commit private paths/libraries/weights."
+}
