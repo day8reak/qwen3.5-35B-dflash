@@ -9,6 +9,12 @@ from .artifacts import checked_file, files_under, output_path, save_json
 from .weights import sha256_file
 
 
+def _prepend_paths(paths, inherited):
+    # Keep vendor environment extensions while preferring this conversion's DDK.
+    entries = [str(path) for path in paths] + inherited.split(os.pathsep)
+    return os.pathsep.join(dict.fromkeys(entry for entry in entries if entry))
+
+
 def omg_environment(ddk_root, inherited=None):
     """Use the actual binary, avoiding the vendor wrapper's shared-tree writes."""
     ddk_root = Path(ddk_root).resolve()
@@ -20,10 +26,10 @@ def omg_environment(ddk_root, inherited=None):
     libs = [master / "lib64", plugin / "lib64"]
     for candidate in [ddk_root / "ddk/tbe/lib64", ddk_root / "ddk/ascendcpp/lib64"]:
         if candidate.is_dir(): libs.append(candidate)
-    env["LD_LIBRARY_PATH"] = ":".join(map(str, libs))
+    env["LD_LIBRARY_PATH"] = _prepend_paths(libs, env.get("LD_LIBRARY_PATH", ""))
     env["CCE_LIB_DIR"] = str(master / "lib64")
     env["SOC_VERSION"] = "kirinx90"
-    env["PYTHONPATH"] = str(plugin / "ops/impl")
+    env["PYTHONPATH"] = _prepend_paths([plugin / "ops/impl"], env.get("PYTHONPATH", ""))
     env["KIRIN_CONF_JSON_PATH"] = str(ddk_root / "ddk/ascendcpp/conf")
     for candidate in [ddk_root / "ddk/ccec_compiler/bin", ddk_root / "tools/tools_ascendc/bisheng/bin"]:
         if candidate.is_dir(): env["PATH"] = str(candidate) + os.pathsep + env.get("PATH", "")

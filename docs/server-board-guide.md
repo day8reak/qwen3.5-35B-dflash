@@ -27,6 +27,15 @@
 
 以下为独立 clone 场景。`/your/...` 均须替换为内部真实路径；所有输出放在仓库外。若在 AI model workspace 中操作，使用 `ws context`、`ws session start`、`ws env` 分配路径和解释器，不覆盖已分配的 `AI_RUN_DIR`。
 
+**已有 AscendC 环境时直接复用。** 在已激活的 `custom_pypto` 环境中，首次进入或新开 shell 时执行一次下列脚本；当前 shell 已执行成功则跳过：
+
+```bash
+source /your/internal/ddk/tools/tools_ascendc/set_ascendc_env.sh
+```
+
+脚本已设置的 `TOOLCHAIN_HOME`、`DDK_PATH`、`HIAI_VERSION`、`PATH`、`LD_LIBRARY_PATH`、`PYTHONPATH` 无需再手工列一遍。下面仅补工程所需变量：`CPRO_DDK_ROOT` 复用 `DDK_PATH`，项目 Python 路径追加到已有路径前面。先 source DDK，再补项目路径，避免后续 source 将项目路径覆盖。未使用该脚本的环境才需要显式填写 `CPRO_DDK_ROOT`。
+
+
 ```bash
 git clone git@github.com:day8reak/qwen3.5-35B-dflash.git
 cd qwen3.5-35B-dflash
@@ -34,22 +43,18 @@ cd qwen3.5-35B-dflash
 export REPO_DIR="$PWD"
 export MODEL_PYTHON="$(command -v python3)"
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH="$REPO_DIR/model:$REPO_DIR"
+export PYTHONPATH="$REPO_DIR/model:$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export AI_RUN_DIR=/your/run/storage/qwen35-cpro-001
 mkdir -p "$AI_RUN_DIR"
 cd "$AI_RUN_DIR"
 
 export QWEN35_TARGET_WEIGHTS=/your/checkpoints/Qwen3.5-35B-A3B
 export QWEN35_DRAFT_WEIGHTS=/your/checkpoints/Qwen3.5-35B-A3B-DFlash
-export CPRO_DDK_ROOT=/your/internal/ddk
+export CPRO_DDK_ROOT="$(realpath "${DDK_PATH:?先加载 DDK 环境脚本}")"
 export CPRO_DDK_ID=your-exact-ddk-version
-export OHOS_NATIVE_SDK=/your/ohos/native
-export HIAI_INCLUDE_DIR=/your/internal/hiai/include
-# 按实际链接要求填写 HarmonyOS ARM64 库的绝对路径，以冒号分隔。
-export HIAI_LIBRARIES=/your/internal/lib/actual-library.so
 ```
 
-这些变量由仓库的 `specs/resources.json` 模板读取。需要自定义 `dopt_root` 或库列表时，复制该模板到本次输出目录，编辑后设置 `QWEN35_RESOURCES` 指向它。不要把内部路径或库提交 Git。服务器需安装项目使用的 PyTorch、Transformers、safetensors，以及构建所需的 CMake 和 OHOS SDK；匹配的 AIR/量化组件由内部 DDK 环境提供，不直接覆盖现有 CUDA 环境。
+这些变量由仓库的 `specs/resources.json` 模板读取。需要自定义 `dopt_root` 或库列表时，复制该模板到本次输出目录，编辑后设置 `QWEN35_RESOURCES` 指向它。不要把内部路径或库提交 Git。复用当前 Python 环境和已安装组件；仅缺失时再补项目依赖。OHOS SDK 与 HIAI 头文件/链接库到第 5 节交叉编译时配置，前期无需填写。未填写时 `preflight` 对这些资源显示缺失，不影响先检查模型导出相关依赖。
 
 ```bash
 "$MODEL_PYTHON" -m qwen35_moe_dflash.cli preflight \
@@ -143,7 +148,13 @@ omc-s128/                        # 整个目录传板端
 
 ## 5. 服务器：交叉编译板端 HIAI 程序
 
+到这一步再补板端编译资源；若这些工程变量已经设置，也可跳过重复赋值。AscendC 脚本中的服务器工具库路径不等于 HarmonyOS ARM64 链接库路径。
+
 ```bash
+export OHOS_NATIVE_SDK=/your/ohos/native
+export HIAI_INCLUDE_DIR=/your/internal/hiai/include
+# 按实际链接要求填写 HarmonyOS ARM64 库的绝对路径，以冒号分隔。
+export HIAI_LIBRARIES=/your/internal/lib/actual-library.so
 "$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
   --output "$AI_RUN_DIR/hiai-build"
 ```

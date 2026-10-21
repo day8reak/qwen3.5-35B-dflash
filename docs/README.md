@@ -20,13 +20,13 @@ FP16 部署会显式改写上游主动升为 FP32 的 GDN、归一化、路由�
 
 ## 主机入口
 
-独立 clone 后从仓库根目录设置；输出始终放在仓库外的当前任务目录。保留现有 Torch，不自动替换用户的 `2.11.0+cu130`。本机验证解释器是 Torch `2.12.1+cpu` / Transformers `5.13.0`，AIR 需要另外匹配 TorchAir、torch_npu、CANN/DDK。
+独立 clone 后从仓库根目录设置；输出始终放在仓库外的当前任务目录。已有内部 DDK 时，先在当前 Python 环境 source 其 AscendC 脚本，再设置以下项目变量；后续追加项目 Python 路径时保留脚本已有路径。保留现有 Torch，不自动替换用户的 `2.11.0+cu130`。本机验证解释器是 Torch `2.12.1+cpu` / Transformers `5.13.0`，AIR 需要另外匹配 TorchAir、torch_npu、CANN/DDK。
 
 ```bash
 export REPO_DIR="$PWD"
 export MODEL_PYTHON="$(command -v python3)"
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH="$REPO_DIR/model:$REPO_DIR"
+export PYTHONPATH="$REPO_DIR/model:$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export AI_RUN_DIR=/your/run/storage/qwen35-cpro-001
 mkdir -p "$AI_RUN_DIR"
 cd "$AI_RUN_DIR"
@@ -43,17 +43,13 @@ cd "$AI_RUN_DIR"
 
 ## 资源与量化
 
-入口通过 `project.yaml` 的资源声明或 `QWEN35_RESOURCES` 读取本地 JSON；私有路径、库和权重不提交。模板可使用这些变量：
+入口通过 `project.yaml` 的资源声明或 `QWEN35_RESOURCES` 读取本地 JSON；私有路径、库和权重不提交。已有 `set_ascendc_env.sh` 环境时，先 source 一次并保留它设置的路径，无需重复配置 AscendC。下例从已有 `DDK_PATH` 取得根目录；未使用该脚本时才显式填写根目录。OHOS SDK 和 HIAI 资源可留到交叉编译时配置。模板可使用这些变量：
 
 ```bash
 export QWEN35_TARGET_WEIGHTS=/your/checkpoints/Qwen3.5-35B-A3B
 export QWEN35_DRAFT_WEIGHTS=/your/checkpoints/Qwen3.5-35B-A3B-DFlash
-export CPRO_DDK_ROOT=/your/internal/ddk
+export CPRO_DDK_ROOT="$(realpath "${DDK_PATH:?先加载 DDK 环境脚本}")"
 export CPRO_DDK_ID=your-exact-ddk-version
-export OHOS_NATIVE_SDK=/your/ohos/native
-export HIAI_INCLUDE_DIR=/your/internal/hiai/include
-# 填写实际 HarmonyOS ARM64 库，以冒号分隔；以下仅为路径占位。
-export HIAI_LIBRARIES=/your/internal/lib/libhiai.so:/your/internal/lib/libhiai_ir.so
 
 "$MODEL_PYTHON" -m qwen35_moe_dflash.cli preflight --output "$AI_RUN_DIR/preflight.json"
 "$MODEL_PYTHON" -m qwen35_moe_dflash.cli audit --output "$AI_RUN_DIR/checkpoint-audit.json"
@@ -105,7 +101,13 @@ OMG 参数为 `--framework=1 --model=input.air --output=target --target=omc --pl
 
 ## HIAI 构建、执行和对比
 
+此时再配置 OHOS SDK 和内部链接资源；已配置过则复用现有值。
+
 ```bash
+export OHOS_NATIVE_SDK=/your/ohos/native
+export HIAI_INCLUDE_DIR=/your/internal/hiai/include
+# 填写实际 HarmonyOS ARM64 库，以冒号分隔；以下仅为路径占位。
+export HIAI_LIBRARIES=/your/internal/lib/libhiai.so:/your/internal/lib/libhiai_ir.so
 "$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/build_hiai.py" --output "$AI_RUN_DIR/hiai-build"
 # 只有公开头文件时可加 --headers-only；不会生成可运行程序。
 ```

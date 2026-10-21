@@ -51,6 +51,9 @@ assert args['--use_origin_format']=='true' and args['--weight_data_type']=='FP16
 assert args['--model']=='input.air' and '/' not in args['--output']
 assert Path('weight_0').read_bytes()==b'external weight fixture'
 assert os.environ['SOC_VERSION']=='kirinx90'
+if os.environ.get('FAKE_OMG_REQUIRE_INTERNAL_ENV')=='yes':
+    import internal_ddk_extension
+    internal_ddk_extension.check()
 Path('kernel_meta').mkdir()
 if os.environ.get('FAKE_OMG_FAIL')=='yes': sys.exit(9)
 Path(args['--output']+'.omc').write_bytes(b'FAKE OMC')
@@ -65,6 +68,33 @@ def test_air_omg_success_retains_external_hashes_and_cleans_scratch(air_case, tm
     assert result["status"] == "COMPILED" and result["device_validation"] == "PENDING"
     assert [g["name"] for g in result["graphs"]] == ["target", "draft"]
     assert not list((tmp_path/"omc").glob("omg-*"))
+
+
+def test_omg_child_keeps_sourced_ddk_extensions(air_case, tmp_path, monkeypatch):
+    import os
+    root, ddk = air_case
+    extension = tmp_path / "internal-python"
+    extension.mkdir()
+    plugin_ops = ddk / "tools/platform/kirinx90/ops/impl"
+    plugin_ops.mkdir(parents=True)
+    (plugin_ops / "platform_marker.py").write_text("IDENTITY = 'selected-x90'\n")
+    (extension / "platform_marker.py").write_text("IDENTITY = 'inherited-other'\n")
+    simulator = str(ddk / "ddk/npu_simulator")
+    simulator_config = str(ddk / "ddk/npu_simulator/model/model_v300/etc")
+    (extension / "internal_ddk_extension.py").write_text(
+        "import os, platform_marker\n"
+        "def check():\n"
+        "    assert platform_marker.IDENTITY == 'selected-x90'\n"
+        "    paths = os.environ['LD_LIBRARY_PATH'].split(os.pathsep)\n"
+        f"    assert paths[0] == {str(ddk / 'tools/tools_omg/master/lib64')!r}\n"
+        f"    assert {simulator!r} in paths and {simulator_config!r} in paths\n")
+    monkeypatch.setenv("PYTHONPATH", str(extension))
+    monkeypatch.setenv("LD_LIBRARY_PATH", os.pathsep.join([simulator, simulator_config]))
+    monkeypatch.setenv("FAKE_OMG_REQUIRE_INTERNAL_ENV", "yes")
+    before = dict(os.environ)
+    result = compile_air(root, tmp_path / "internal-omc", ddk, ddk_id="fake-internal")
+    assert result["status"] == "COMPILED"
+    assert dict(os.environ) == before
 
 
 def test_air_external_weight_tamper_fails_before_compiler(air_case, tmp_path):
