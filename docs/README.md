@@ -17,6 +17,38 @@ DFlash 官方代码：[z-lab/dflash（GitHub）](https://github.com/z-lab/dflash
 
 完整 revision 和已核对配置/索引的哈希见 [upstream.lock.json](../specs/upstream.lock.json)。完整权重需另行下载，本仓库不包含权重或量化成品；当前开发环境仅下载并核对了配置/索引，完整 35B 权重验证仍待完成。
 
+### 在服务器下载
+
+在能访问 Hugging Face 及模型文件下载服务的服务器执行。已有 `hf` 命令时跳过安装；缺少时在当前 Python 环境安装下载工具：
+
+```bash
+python3 -m pip install huggingface_hub
+```
+
+沿用本次任务的 `AI_RUN_DIR`。未设置时，把下面的 `/your/run/storage/qwen35-cpro-001` 换成实际的仓库外目录；工作区用户直接使用 `ws session start` 分配的目录。
+
+```bash
+export AI_RUN_DIR="${AI_RUN_DIR:-/your/run/storage/qwen35-cpro-001}"
+mkdir -p "$AI_RUN_DIR/weights"
+
+export QWEN35_TARGET_WEIGHTS="$AI_RUN_DIR/weights/Qwen3.5-35B-A3B"
+export QWEN35_DRAFT_WEIGHTS="$AI_RUN_DIR/weights/Qwen3.5-35B-A3B-DFlash"
+
+# 目标模型：权重、配置和 tokenizer
+hf download Qwen/Qwen3.5-35B-A3B \
+  --revision 59d61f3ce65a6d9863b86d2e96597125219dc754 \
+  --local-dir "$QWEN35_TARGET_WEIGHTS"
+
+# 配套 DFlash 草稿模型
+hf download z-lab/Qwen3.5-35B-A3B-DFlash \
+  --revision 52cb554b4995dede3e2e1bdb129cdb1f3529332b \
+  --local-dir "$QWEN35_DRAFT_WEIGHTS"
+```
+
+这里下载的是原始权重，后续在服务器量化。目标权重约 72 GB，下载目录建议至少留 100 GB 磁盘空间；校准、AIR、OMC 还需额外空间。下载中断后可重跑同一条命令，已完成且未变化的文件会复用，保留下载目录中的 `.cache/huggingface/` 元数据。参数与下载机制见 [Hugging Face CLI 文档](https://huggingface.co/docs/huggingface_hub/guides/cli#hf-download)。
+
+下载完成后，当前 shell 已设置好后续流程需要的两个权重路径。新开终端时重新设置它们，指向实际下载目录。
+
 ## 模型与精度
 
 目标为锁定版本的 `Qwen/Qwen3.5-35B-A3B`，草稿为 `z-lab/Qwen3.5-35B-A3B-DFlash`。复用了 4B 工程的草稿代码和调度，不能直接使用 4B 草稿权重：隐藏维度分别为 2048/2560，拼接特征宽度分别为 16384/20480。35B 配套草稿约 3.86 亿参数。
@@ -38,7 +70,7 @@ export REPO_DIR="$PWD"
 export MODEL_PYTHON="$(command -v python3)"
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH="$REPO_DIR/model:$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
-export AI_RUN_DIR=/your/run/storage/qwen35-cpro-001
+export AI_RUN_DIR="${AI_RUN_DIR:-/your/run/storage/qwen35-cpro-001}"
 mkdir -p "$AI_RUN_DIR"
 cd "$AI_RUN_DIR"
 
@@ -57,8 +89,8 @@ cd "$AI_RUN_DIR"
 入口通过 `project.yaml` 的资源声明或 `QWEN35_RESOURCES` 读取本地 JSON；私有路径、库和权重不提交。已有 `set_ascendc_env.sh` 环境时，先 source 一次并保留它设置的路径，无需重复配置 AscendC。下例从已有 `DDK_PATH` 取得根目录；未使用该脚本时才显式填写根目录。OHOS SDK 和 HIAI 资源可留到交叉编译时配置。模板可使用这些变量：
 
 ```bash
-export QWEN35_TARGET_WEIGHTS=/your/checkpoints/Qwen3.5-35B-A3B
-export QWEN35_DRAFT_WEIGHTS=/your/checkpoints/Qwen3.5-35B-A3B-DFlash
+export QWEN35_TARGET_WEIGHTS="${QWEN35_TARGET_WEIGHTS:-/your/checkpoints/Qwen3.5-35B-A3B}"
+export QWEN35_DRAFT_WEIGHTS="${QWEN35_DRAFT_WEIGHTS:-/your/checkpoints/Qwen3.5-35B-A3B-DFlash}"
 export CPRO_DDK_ROOT="$(realpath "${DDK_PATH:?先加载 DDK 环境脚本}")"
 export CPRO_DDK_ID=your-exact-ddk-version
 
