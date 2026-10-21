@@ -6,6 +6,17 @@
 
 这是待板端联调的源码版本。已有目标/草稿模型、贪心 DFlash、HIAI ABI v2、FP16 图检查、DOPT 校准和转换编排。**没有完整 35B AIR/OMC、内部 HIAI 链接或 X90 执行结果。** 主机验证范围与当前阻塞见 [validation.md](validation.md)。
 
+## 权重来源
+
+DFlash 官方代码：[z-lab/dflash（GitHub）](https://github.com/z-lab/dflash)。目标模型和配套草稿权重托管在 Hugging Face，以下下载链接固定到本工程锁定的版本：
+
+| 用途 | 权重下载 | 锁定版本 |
+|---|---|---|
+| 目标模型 | [Qwen/Qwen3.5-35B-A3B](https://huggingface.co/Qwen/Qwen3.5-35B-A3B/tree/59d61f3ce65a6d9863b86d2e96597125219dc754) | `59d61f3` |
+| DFlash 草稿模型 | [z-lab/Qwen3.5-35B-A3B-DFlash](https://huggingface.co/z-lab/Qwen3.5-35B-A3B-DFlash/tree/52cb554b4995dede3e2e1bdb129cdb1f3529332b) | `52cb554` |
+
+完整 revision 和已核对配置/索引的哈希见 [upstream.lock.json](../specs/upstream.lock.json)。完整权重需另行下载，本仓库不包含权重或量化成品；当前开发环境仅下载并核对了配置/索引，完整 35B 权重验证仍待完成。
+
 ## 模型与精度
 
 目标为锁定版本的 `Qwen/Qwen3.5-35B-A3B`，草稿为 `z-lab/Qwen3.5-35B-A3B-DFlash`。复用了 4B 工程的草稿代码和调度，不能直接使用 4B 草稿权重：隐藏维度分别为 2048/2560，拼接特征宽度分别为 16384/20480。35B 配套草稿约 3.86 亿参数。
