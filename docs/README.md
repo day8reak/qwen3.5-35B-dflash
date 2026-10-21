@@ -2,6 +2,8 @@
 
 正式链路为 **PyTorch → AIR → OMG → OMC → HarmonyOS HIAI**。板端 C++ 使用 `hiai::AiModelMngerClient` 同步接口。用户已恢复工作，精度要求是 **权重和激活可以量化，其余浮点计算 FP16**。
 
+**部署操作入口：[服务器生成与板端运行指南](server-board-guide.md)。** 按服务器校准/导出/交叉编译、文件传输、板端探测/推理、服务器对比/解码分别列出命令和产物路径。
+
 这是待板端联调的源码版本。已有目标/草稿模型、贪心 DFlash、HIAI ABI v2、FP16 图检查、DOPT 校准和转换编排。**没有完整 35B AIR/OMC、内部 HIAI 链接或 X90 执行结果。** 主机验证范围与当前阻塞见 [validation.md](validation.md)。
 
 ## 模型与精度
