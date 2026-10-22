@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT/"model"))
 from qwen35_moe_dflash.artifacts import output_path, save_json
 from qwen35_moe_dflash.resources import load_resources, resource_path
-from qwen35_moe_dflash.weights import sha256_file
+from qwen35_moe_dflash.hashing import sha256_file
 
 
 def main():

@@ -47,3 +47,14 @@ AIR 编排与 CLI 共 **17 项测试通过**；新增回归用假 OMG 子进程�
 本次 AIR 编排与 CLI 共 **18 项测试通过**，证据为 run 内 `pytest.xml`。重新执行真实 FP16 tiny CPU demo（S=8、prompt=1,2,3、生成4个 token），普通/DFlash token 与停止原因一致，`tiny-reference.json` 为 `PASS`。Python 环境仍为声明的主机环境；未安装 TorchAir/CANN。
 
 以上没有真实 AIR/OMC、内部库链接或 X90 执行证据。`cpro-blue-pending` profile 仍未登记，目标环境激活失败；测试仅使用资源清单中已声明的模型解释器。当前 NVIDIA/CPU 服务器无昇腾卡的 AIR 导出依赖尚未验证，tiny 路径也不能绕过此缺口。
+
+
+## 2026-10-22：服务器缺库诊断与内部 DDK 布局
+
+补丁 run：`20261022T030203Z-32536-b061e3`。根据用户共享日志，服务器已安装 TorchNPU `2.11.0.post2`，导入失败原因是缺少 `libhccl.so`；内部 DDK 版本已确认 `100.520.020.010`。这是用户反馈，未登录该服务器或安装其 CANN。
+
+CLI 与包初始化改为按需加载模型依赖；缺库时 `preflight` 能输出版本和完整异常原因，OMG 转换、命令生成和 HIAI 构建入口不再为哈希工具强制加载 Torch。AIR 检查显式导入 TorchNPU 后访问其 TorchAir，避免关闭自动加载后误报未找到捆绑的 TorchAir。内部 OMG 不再硬性要求公开插件目录，保留内部环境脚本提供的路径。芯片支持仍须由真实转换确认。
+
+隔离源码副本的 Python 全套回归 **129 passed、2 skipped**，跳过的是未配置真实 DOPT 路径的可选集成测试；没有重用历史 DOPT 结果冒充本次执行。证据：run 内 `lazy-import-check/full-results.xml`、`full-tests.log`。新增测试用失败的 Torch 导入模拟 `libhccl.so` 错误，检查报告、帮助命令和内部无 `tools/platform` 的 OMG 编排。随后确定性资源夹具更新的 3 项 preflight 测试重新通过，最终 12 个 Python 文件与测试树哈希一致。真实主机 `preflight-host.json` 成功生成，并如实报告本机没有 TorchNPU/TorchAir。文档 38 个 shell 代码块和 7 个 Python heredoc 语法通过。
+
+真实 AIR/OMC、内部 HIAI 链接和 X90 执行仍为 **PENDING**。公开 CANN 9.1.X 仅是该 TorchNPU 的版本对应关系，不能证明无昇腾卡导出或与内部 OMG 的兼容性。`cpro-blue-pending` profile 仍未登记，本次目标环境激活失败，验证使用已声明的模型解释器。

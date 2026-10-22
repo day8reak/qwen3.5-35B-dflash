@@ -6,6 +6,8 @@
 
 **先跑小模型：[tiny AIR → OMC → HIAI 上板验证](tiny-validation.md)。** 无需下载完整权重；提供参考生成、转换、板端执行和回传比对命令，真实转换及板端结果仍待验证。
 
+**导出环境报错：[AIR 环境排障](air-troubleshooting.md)。** 说明 `libhccl.so` 缺失、CANN 版本、内部 DDK 布局及依赖冲突。
+
 这是待板端联调的源码版本。已有目标/草稿模型、贪心 DFlash、HIAI ABI v2、FP16 图检查、DOPT 校准和转换编排。**没有完整 35B AIR/OMC、内部 HIAI 链接或 X90 执行结果。** 主机验证范围与当前阻塞见 [validation.md](validation.md)。
 
 ## 权重来源
@@ -24,7 +26,7 @@ DFlash 官方代码：[z-lab/dflash（GitHub）](https://github.com/z-lab/dflash
 在能访问 Hugging Face 及模型文件下载服务的服务器执行。没有 `hf` 命令时，使用下面的 Python 方式即可。两种方式都使用 `huggingface_hub`；当前 Python 环境已安装该包时跳过安装：
 
 ```bash
-python3 -m pip install huggingface_hub
+python3 -m pip install 'huggingface_hub>=1.5,<2'
 ```
 
 沿用本次任务的 `AI_RUN_DIR`。未设置时，把下面的 `/your/run/storage/qwen35-cpro-001` 换成实际的仓库外目录；工作区用户直接使用 `ws session start` 分配的目录。
@@ -92,7 +94,7 @@ FP16 部署会显式改写上游主动升为 FP32 的 GDN、归一化、路由�
 
 ## 主机入口
 
-独立 clone 后从仓库根目录设置；输出始终放在仓库外的当前任务目录。已有内部 DDK 时，先在当前 Python 环境 source 其 AscendC 脚本，再设置以下项目变量；后续追加项目 Python 路径时保留脚本已有路径。保留现有 Torch，不自动替换用户的 `2.11.0+cu130`。本机验证解释器是 Torch `2.12.1+cpu` / Transformers `5.13.0`，AIR 需要另外匹配 TorchAir、torch_npu、CANN/DDK。
+独立 clone 后从仓库根目录设置；输出始终放在仓库外的当前任务目录。已有内部 DDK 时，先在当前 Python 环境 source 其 AscendC 脚本，再设置以下项目变量；后续追加项目 Python 路径时保留脚本已有路径。保留现有 Torch，不自动替换用户的 `2.11.0+cu130`。本机验证解释器是 Torch `2.12.1+cpu` / Transformers `5.13.0`，AIR 需要另外匹配 TorchAir、torch_npu 和服务器 CANN 用户态库；内部 DDK 负责后续 OMG 转换，不能仅凭其环境脚本成功就视为满足 AIR 依赖。
 
 ```bash
 export REPO_DIR="$PWD"

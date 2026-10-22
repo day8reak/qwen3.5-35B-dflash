@@ -12,14 +12,14 @@
 | DOPT 量化校准 | 服务器 | 原始权重、校准 token | `calibrated/` 仿真检查点 | 否 |
 | prompt 编码、参考推理 | 服务器 | tokenizer、文本、校准结果 | `prompt.json`、`reference.json` | token IDs 进入运行脚本；JSON 留服务器 |
 | PyTorch → AIR | 服务器导出环境 | 原始权重、校准结果 | `air-s128/`，含外部权重 | 否 |
-| AIR → OMG → OMC | 服务器 | AIR、DDK、kirinx90 插件 | 完整 `omc-s128/` | **是，整个目录** |
+| AIR → OMG → OMC | 服务器 | AIR、支持 kirinx90 的内部 DDK 或配套公开插件 | 完整 `omc-s128/` | **是，整个目录** |
 | C++ 交叉编译和链接 | 服务器 | 源码、OHOS SDK、内部 HIAI 头文件/库 | `qwen35_dflash_hiai` | **是** |
 | HIAI 版本探测 | 板端 | 可执行文件、配套运行库 | `runtime-probe.json` | 取回服务器生成命令 |
 | 生成运行命令 | 服务器 | OMC manifest、prompt、板端版本/路径 | `run-generate.sh`、`run-benchmark.sh` | **是** |
 | 模型推理、普通/DFlash 测量 | 板端 | OMC、可执行文件、运行脚本 | 生成报告、benchmark 报告、日志 | 取回服务器 |
 | token 对比、解码为文本 | 服务器 | 板端报告、参考、tokenizer | `comparison.json`、`decoded.json` | 否 |
 
-服务器的 CUDA 校准环境和 AIR 导出环境可以分开；后者必须具备匹配的 TorchAir、torch_npu、CANN/DDK 及 DOPT 量化扩展。已有 `torch 2.11.0+cu130` 本身不能证明 AIR 可导出。**AIR 导出和 OMG 转换应在同一导出路径完成**，外部权重可能记录绝对路径；当前脚本会拒绝移动后的 AIR bundle。
+服务器的 CUDA 校准环境和 AIR 导出环境可以分开；后者必须具备匹配的 TorchAir、torch_npu、服务器 CANN 用户态库及 DOPT 量化扩展。内部 DDK 提供 OMG，不自动等同于完整的公开 CANN 导出环境。已有 `torch 2.11.0+cu130` 本身不能证明 AIR 可导出。**AIR 导出和 OMG 转换应在同一导出路径完成**，外部权重可能记录绝对路径；当前脚本会拒绝移动后的 AIR bundle。
 
 原始权重必须能在内部服务器读取。如果现在只有板机上有权重，需要先在内网复制或挂载给服务器；不需要传给开发者。完整校准/参考仍会加载浮点模型，不能按 INT4 成品大小估算服务器内存或显存。
 
@@ -64,7 +64,7 @@ export CPRO_DDK_ID=your-exact-ddk-version
   --output "$AI_RUN_DIR/quant-plan.json"
 ```
 
-`preflight` 是清单检查，成功写 JSON 不代表环境已齐备；检查其中 `air_export_ready`、`dopt_air_ready` 和各资源的缺失信息。`--available-gib 18` 只是当前规划输入，需按实际可用预算更新。当前候选的权重估算 **21.19 GiB**，还未计工作区，超过用户报告的约 18G free；因此尚不能按此候选安排完整模型上板常驻。
+`preflight` 是清单检查，成功写 JSON 不代表环境已齐备；检查其中 `torch_import_ready`、`torch_error`、`air_export_ready`、`dopt_air_ready` 和各资源的缺失信息。`air_export_ready` 仅表示依赖可导入，真实导出仍需 tiny 验证；`air_export_validation` 保持 `PENDING`。当前报错与版本对应关系见 [AIR 环境排障](air-troubleshooting.md)。`--available-gib 18` 只是当前规划输入，需按实际可用预算更新。当前候选的权重估算 **21.19 GiB**，还未计工作区，超过用户报告的约 18G free；因此尚不能按此候选安排完整模型上板常驻。
 
 所有 CLI 输出路径均拒绝覆盖。失败重试时换新输出目录/文件名，保留原日志。
 
@@ -108,7 +108,7 @@ PROMPT_IDS=$("$MODEL_PYTHON" -c \
   --output "$AI_RUN_DIR/reference.json"
 ```
 
-`cuda:0` 适用于有足够显存的校准服务器；CPU 可用 `--device cpu`，仍需足够主存。`calibrated/target-simulation.pth` 是 DOPT 仿真检查点，不能作为压缩模型交给 HIAI。候选允许权重和激活量化，其余浮点计算为 FP16；量化后的普通/DFlash token 必须一致，量化相对原模型的质量另行评估。
+`cuda:0` 需先确认当前进程的 `torch.cuda.is_available()` 为 True，且显存充足；用户已提供的日志为 False，应先恢复容器 GPU 访问或另选可用环境。CPU 可用 `--device cpu`，仍需足够主存。`calibrated/target-simulation.pth` 是 DOPT 仿真检查点，不能作为压缩模型交给 HIAI。候选允许权重和激活量化，其余浮点计算为 FP16；量化后的普通/DFlash token 必须一致，量化相对原模型的质量另行评估。
 
 ## 4. 服务器：生成 AIR，再生成 OMC
 
@@ -123,7 +123,7 @@ export MODEL_PYTHON="$(command -v python3)"
   --air "$AI_RUN_DIR/air-s128" --output "$AI_RUN_DIR/omc-s128"
 ```
 
-`compile-omc` 内部调用 DDK 的 OMG，核心参数为 `--framework=1 --target=omc --platform=kirinx90`。不需要在板端运行 OMG。成功产物结构如下，实际附属文件以转换结果为准：
+`compile-omc` 内部调用 DDK 的 OMG，核心参数为 `--framework=1 --target=omc --platform=kirinx90`。内部 DDK 不强制具有公开包的 `tools/platform/kirinx90` 目录；已有路径和扩展由其环境脚本保留，芯片支持以真实 OMG 转换结果为准。不需要在板端运行 OMG。成功产物结构如下，实际附属文件以转换结果为准：
 
 ```text
 air-s128/                        # 留在服务器，并保留原导出路径

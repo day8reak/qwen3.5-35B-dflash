@@ -9,7 +9,8 @@ import subprocess
 import sys
 from .artifacts import checked_file, output_path, save_json
 from .resources import load_resources, resource_path
-from .weights import sha256_file
+from .hashing import sha256_file
+from .diagnostics import format_error
 
 
 def parser():
@@ -63,8 +64,6 @@ def parser():
 
 
 def execute(args):
-    from .runtime import TorchExecutor, generate
-    import torch
     output = output_path(args.output)
     if output.exists(): raise FileExistsError(output)
     if args.command == "quant-plan":
@@ -81,30 +80,48 @@ def execute(args):
         for name in ["torch", "transformers", "torchair", "torch_npu", "safetensors"]:
             try: packages[name] = importlib.metadata.version(name)
             except importlib.metadata.PackageNotFoundError: packages[name] = None
-        try:
-            from .export import require_torchair
-            require_torchair()
-            air_ready, air_error = True, None
-        except (Exception,) as error:
-            air_ready, air_error = False, str(error)
         result = {"status": "INVENTORY", "resources": str(path), "packages": packages,
-                  "air_export_ready": air_ready, "air_dependency_error": air_error,
-                  "cuda_available": torch.cuda.is_available(), "device_validation": "PENDING"}
+                  "torch_import_ready": False, "cuda_available": None,
+                  "air_export_ready": False, "dopt_calibration_ready": False,
+                  "dopt_air_ready": False, "device_validation": "PENDING",
+                  "air_export_validation": "PENDING"}
         try:
-            from .quantization import load_dopt, require_dopt_air
-            from .resources import dopt_resource
-            dopt_root = dopt_resource(resources)
-            _, result["dopt_identity"] = load_dopt(dopt_root)
-            result["dopt_calibration_ready"] = True
-            require_dopt_air(dopt_root)
-            result["dopt_air_ready"] = True
+            import torch
+            result["torch_import_ready"] = True
         except Exception as error:
-            result["dopt_air_ready"] = False
-            result["dopt_error"] = f"{type(error).__name__}: {error}"
+            result["torch_error"] = format_error(error)
+        if result["torch_import_ready"]:
+            try:
+                result["cuda_available"] = torch.cuda.is_available()
+            except Exception as error:
+                result["cuda_error"] = format_error(error)
+            try:
+                from .export import require_torchair
+                require_torchair()
+                # Dependency import only; no GE graph or device was validated.
+                result["air_export_ready"] = True
+                result["air_dependency_error"] = None
+            except Exception as error:
+                result["air_dependency_error"] = format_error(error)
+            try:
+                from .quantization import load_dopt, require_dopt_air
+                from .resources import dopt_resource
+                dopt_root = dopt_resource(resources)
+                _, result["dopt_identity"] = load_dopt(dopt_root)
+                result["dopt_calibration_ready"] = True
+                require_dopt_air(dopt_root)
+                result["dopt_air_ready"] = True
+            except Exception as error:
+                result["dopt_error"] = format_error(error)
+        else:
+            result["air_dependency_error"] = "Skipped: PyTorch import failed; see torch_error"
+            result["dopt_error"] = "Skipped: PyTorch import failed; see torch_error"
         for key in ["target_weights", "draft_weights", "ddk_root", "ohos_native_sdk", "hiai_include_dir"]:
             try: result[key] = str(resource_path(resources, key, directory=True))
             except (ValueError, FileNotFoundError) as error: result[key] = {"missing": str(error)}
         save_json(output, result); return
+    if args.command in ("demo", "reference", "export-tiny-air", "export-air", "quantize"):
+        import torch
     if args.command in ("demo", "export-tiny-air"):
         if args.command == "export-tiny-air":
             from .export import require_torchair, export_air
@@ -260,6 +277,7 @@ def execute(args):
     else:
         target.to(torch.bfloat16); draft.to(torch.bfloat16)
         precision_audit = None
+    from .runtime import TorchExecutor, generate
     executor = TorchExecutor(target, draft, args.sequence_length, pad)
     ordinary = generate(executor, prompt, ordinary=True, max_new_tokens=args.max_new_tokens, eos_token_ids=eos)
     dflash = generate(executor, prompt, max_new_tokens=args.max_new_tokens, eos_token_ids=eos)
@@ -278,7 +296,7 @@ def main():
     try:
         execute(args)
     except Exception as error:
-        print(f"qwen35: {type(error).__name__}: {error}", file=sys.stderr)
+        print(f"qwen35: {format_error(error)}", file=sys.stderr)
         return 1
     print(f"wrote {args.output}")
     return 0

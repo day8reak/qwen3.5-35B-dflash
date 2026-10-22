@@ -6,7 +6,7 @@ import subprocess
 import shutil
 import tempfile
 from .artifacts import checked_file, files_under, output_path, save_json
-from .weights import sha256_file
+from .hashing import sha256_file
 
 
 def _prepend_paths(paths, inherited):
@@ -20,17 +20,22 @@ def omg_environment(ddk_root, inherited=None):
     ddk_root = Path(ddk_root).resolve()
     master = ddk_root / "tools/tools_omg/master"
     plugin = ddk_root / "tools/platform/kirinx90"
-    if not (master / "omg").is_file() or not plugin.is_dir():
-        raise FileNotFoundError("DDK needs tools/tools_omg/master/omg and tools/platform/kirinx90")
+    if not (master / "omg").is_file():
+        raise FileNotFoundError("DDK needs tools/tools_omg/master/omg")
     env = dict(os.environ if inherited is None else inherited)
-    libs = [master / "lib64", plugin / "lib64"]
-    for candidate in [ddk_root / "ddk/tbe/lib64", ddk_root / "ddk/ascendcpp/lib64"]:
+    libs = [master / "lib64"]
+    # Public packages use a separate platform plugin. Internal DDKs may bundle
+    # platform support elsewhere and supply its paths through their env script.
+    # The real OMG invocation determines whether kirinx90 is supported.
+    for candidate in [plugin / "lib64", ddk_root / "ddk/tbe/lib64", ddk_root / "ddk/ascendcpp/lib64"]:
         if candidate.is_dir(): libs.append(candidate)
     env["LD_LIBRARY_PATH"] = _prepend_paths(libs, env.get("LD_LIBRARY_PATH", ""))
     env["CCE_LIB_DIR"] = str(master / "lib64")
     env["SOC_VERSION"] = "kirinx90"
-    env["PYTHONPATH"] = _prepend_paths([plugin / "ops/impl"], env.get("PYTHONPATH", ""))
-    env["KIRIN_CONF_JSON_PATH"] = str(ddk_root / "ddk/ascendcpp/conf")
+    if (plugin / "ops/impl").is_dir():
+        env["PYTHONPATH"] = _prepend_paths([plugin / "ops/impl"], env.get("PYTHONPATH", ""))
+    config = ddk_root / "ddk/ascendcpp/conf"
+    if config.is_dir(): env["KIRIN_CONF_JSON_PATH"] = str(config)
     for candidate in [ddk_root / "ddk/ccec_compiler/bin", ddk_root / "tools/tools_ascendc/bisheng/bin"]:
         if candidate.is_dir(): env["PATH"] = str(candidate) + os.pathsep + env.get("PATH", "")
     return master / "omg", env

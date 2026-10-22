@@ -3,7 +3,7 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
-from .weights import sha256_file
+from .hashing import sha256_file
 
 
 def output_path(path):

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from reference.tiny import create
 from qwen35_moe_dflash.export import export_air, require_torchair
-from qwen35_moe_dflash.compile import compile_air
+from qwen35_moe_dflash.compile import compile_air, omg_environment
 
 
 @pytest.fixture(autouse=True)
@@ -95,6 +95,59 @@ def test_omg_child_keeps_sourced_ddk_extensions(air_case, tmp_path, monkeypatch)
     result = compile_air(root, tmp_path / "internal-omc", ddk, ddk_id="fake-internal")
     assert result["status"] == "COMPILED"
     assert dict(os.environ) == before
+
+
+def test_omg_internal_layout_without_public_plugin(air_case, tmp_path, monkeypatch):
+    """Run a converter subprocess using only the internal DDK's sourced paths."""
+    import os
+    root, ddk = air_case
+    plugin = ddk / "tools/platform/kirinx90"
+    plugin.rmdir()
+    plugin.parent.rmdir()
+    extension = tmp_path / "internal-python"
+    extension.mkdir()
+    simulator = str(ddk / "ddk/npu_simulator")
+    simulator_config = str(ddk / "ddk/npu_simulator/model/model_v300/etc")
+    kirin_config = str(tmp_path / "internal-platform-config")
+    (extension / "internal_ddk_extension.py").write_text(
+        "import os\n"
+        "def check():\n"
+        "    paths = os.environ['LD_LIBRARY_PATH'].split(os.pathsep)\n"
+        f"    assert paths == {[str(ddk / 'tools/tools_omg/master/lib64'), simulator, simulator_config]!r}\n"
+        f"    assert os.environ['PYTHONPATH'] == {str(extension)!r}\n"
+        f"    assert os.environ['KIRIN_CONF_JSON_PATH'] == {kirin_config!r}\n")
+    monkeypatch.setenv("PYTHONPATH", str(extension))
+    monkeypatch.setenv("LD_LIBRARY_PATH", os.pathsep.join([simulator, simulator_config]))
+    monkeypatch.setenv("KIRIN_CONF_JSON_PATH", kirin_config)
+    monkeypatch.setenv("FAKE_OMG_REQUIRE_INTERNAL_ENV", "yes")
+    before = dict(os.environ)
+    result = compile_air(root, tmp_path / "internal-omc", ddk, ddk_id="fake-internal")
+    assert result["status"] == "COMPILED"
+    assert result["device_validation"] == "PENDING"
+    assert dict(os.environ) == before
+    assert not (ddk / "tools/platform").exists()
+
+
+def test_omg_optional_platform_paths_prefer_existing_selected_ddk(air_case):
+    import os
+    _, ddk = air_case
+    inherited = {"PATH": "/existing/bin", "LD_LIBRARY_PATH": "/existing/lib"}
+    _, env = omg_environment(ddk, inherited)
+    assert env["LD_LIBRARY_PATH"].split(os.pathsep) == [str(ddk / "tools/tools_omg/master/lib64"), "/existing/lib"]
+    assert "PYTHONPATH" not in env
+    assert "KIRIN_CONF_JSON_PATH" not in env
+
+    plugin_lib = ddk / "tools/platform/kirinx90/lib64"
+    plugin_ops = ddk / "tools/platform/kirinx90/ops/impl"
+    config = ddk / "ddk/ascendcpp/conf"
+    for path in (plugin_lib, plugin_ops, config): path.mkdir(parents=True)
+    inherited.update(PYTHONPATH="/existing/python", KIRIN_CONF_JSON_PATH="/existing/conf")
+    _, env = omg_environment(ddk, inherited)
+    assert env["LD_LIBRARY_PATH"].split(os.pathsep) == [str(ddk / "tools/tools_omg/master/lib64"), str(plugin_lib), "/existing/lib"]
+    assert env["PYTHONPATH"].split(os.pathsep) == [str(plugin_ops), "/existing/python"]
+    assert env["KIRIN_CONF_JSON_PATH"] == str(config)
+    assert inherited == {"PATH": "/existing/bin", "LD_LIBRARY_PATH": "/existing/lib",
+                         "PYTHONPATH": "/existing/python", "KIRIN_CONF_JSON_PATH": "/existing/conf"}
 
 
 def test_air_external_weight_tamper_fails_before_compiler(air_case, tmp_path):

@@ -6,15 +6,18 @@ from pathlib import Path
 import torch
 from .artifacts import output_path, files_under, save_json, working_directory
 from .precision import prepare_fp16_pair
+from .diagnostics import format_error
 
 
 def require_torchair():
     # Fail before opening/allocating the 35B checkpoint.
     try:
+        # Also loads the bundled TorchAir when PyTorch backend autoload is off.
+        importlib.import_module("torch_npu")
         module = importlib.import_module("torchair")
-    except ImportError as error:
+    except Exception as error:
         raise RuntimeError("AIR export requires a matching TorchAir/torch_npu/CANN environment; "
-                           "CPU PyTorch and ONNX cannot produce the production AIR") from error
+                           f"dependency import failed: {format_error(error)}") from error
     if not callable(getattr(module, "dynamo_export", None)):
         raise RuntimeError("installed TorchAir has no dynamo_export API")
     return module

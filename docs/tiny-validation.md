@@ -4,9 +4,11 @@
 
 **目前主机参考已验证，但真实 tiny AIR、OMC、正式 HIAI 链接及 X90 执行尚未验证。** 以下是待执行的联调流程。tiny 仍需要匹配的 TorchAir / torch_npu / CANN 导出环境；已有 CUDA PyTorch 或成功加载 AscendC 脚本，并不代表可以导 AIR。CPU 输入也不能保证所选 TorchAir 版本无需 Ascend 设备初始化。
 
+环境缺库或 Python 依赖冲突时，先看 [AIR 环境排障](air-troubleshooting.md)。
+
 ## 1. 服务器：生成参考、AIR 和 OMC
 
-先进入匹配的导出环境并加载内部 DDK 环境。下面路径需要替换，输出目录必须在仓库外且本次未使用；若已分配 `AI_RUN_DIR`，保留它。每次切换环境后重新设置 `MODEL_PYTHON`，参考和导出使用同一套解释器及依赖。
+参考与 AIR 使用匹配的导出环境；OMG 使用已加载内部 DDK 的环境，两套库不兼容时分开终端执行。下面路径需要替换，输出目录必须在仓库外且本次未使用；若已分配 `AI_RUN_DIR`，保留它。每次切换环境后重新设置 `MODEL_PYTHON`，参考和导出使用同一套解释器及依赖。
 
 ```bash
 cd /your/repos/qwen3.5-35B-dflash
