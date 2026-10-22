@@ -98,3 +98,16 @@ run：`20261022T084136Z-11227-7c2c63`。用户的 tiny 两个 Data 输入均报�
 run：`20261022T092815Z-12515-a03008`。Data 工厂注册修复正确，但新增预检查误将 `TryGetInputDesc` 当作端口存在性查询，给有效原型引入了新的阻断。固定 GE 9.1 源码证实该接口委托 `InputIsSet`，后者要求形状维度数大于零；失败并不意味着 Data 工厂不存在。修复移除该预检查，实际模型的描述和连接验证仍完整保留。
 
 此前的头文件编译只能验证 API 签名，无法验证 API 对工厂原型的运行语义。此次审查沿调用链核对返回条件，并复核剩余前置条件；已有真实 GE Save/Load 回归保留，缺库时如实跳过。经验留在本模型，不推广为通用技能规则，不将主机源码审查或编译解释为实际 AIR 成功。下一验证为用户服务器重跑 export。
+
+
+## AIR 成功后暴露的内部 OMG 广播约束（2026-10-22）
+
+run：`20261022T093951Z-12973-586101`。用户报告 tiny target/draft AIR 已生成；失败阶段推进到内部 OMG。最初的退出码没有算子信息，补充日志后定位到 `v7/Select` 的维度验证与 `v23/Add` 的 CPUCL 类型检查。前面的 W/I 级插件加载失败不应凭字面 `failed` 当成根因。
+
+`v7` 在源码为四维条件选择两个 FP16 标量。公开 SelectV2 的构图成功并不能证明内部 OMG 转成 Select 后支持相同广播；因此在生成 AIR 时显式广播条件和两个分支，所有输入与输出同形。范围覆盖 target 掩码、GDN、MoE 及 draft 注意力，保留 BOOL 条件和原有 INT32 布尔分支载体。使用真正 Select，避免乘法掩码污染 `-inf`/NaN；独立解码序列化 recipe 检查实际描述与载荷，再对边界数值逐位比较。接口类型仍依据[固定版本的官方 GE 定义](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py)。
+
+`v23` 是 RMSNorm 的 `1 + weight`。生成图和 AIR 回读检查均声明 FP16，不能由该错误猜测某个 OMG pass 改成了 FP32。局部兼容改写将该运算表示为 Power 的 shift 属性，避开报告中失败的二元常量 Add；全部 63,488 个有限 FP16 位模式对原 Add 的主机比较一致。这不证明内部 Power kernel 的数值或转换已经通过。
+
+OMG 包装器现在保留完整日志，并直接输出 graph、阶段、路径、首错与尾部；failure.json 记录退出码/超时及已完成图，失败不会生成成功的双图 manifest。摘要支持内部 `E/AI_FMK` 与 CPUCL 格式，并排除 W/I 级插件提示。GE/OMG 共用仅标准库的日志模块，避免将 NumPy/Torch 依赖带回 compile 路径。故障回归覆盖 target/draft 非零退出、超时、启动错误、空输出与缺输出及临时目录清理。
+
+修复改变 AIR 内容，用户必须重做 export；旧 prepared 中的权重与配置仍可复用。未改 DDK、OMG 参数、模型 ABI 或通用技能，没有新增自定义 NPU 算子。未将用户 AIR 成功报告晋升为 OMC 或板端通过；full 35B/量化/性能状态仍待验证。证据见 `specs/direct-ge-omg-select-verification.json`，下一步在同一内网环境执行更新后的重试命令并检查实际 OMG 结果。

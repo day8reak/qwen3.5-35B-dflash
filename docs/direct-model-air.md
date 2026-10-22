@@ -2,7 +2,7 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功。这只确认该小图链路；本页的 Qwen/DFlash 双图仍需在相同服务器实际转换和上板验证。源码数值检查不代表内部 OMG 已支持全部算子。
+用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。tiny target 的 OMG 转换随后报 Select 维度检查失败，并出现 RMSNorm 常量 Add 的 CPUCL 类型检查错误；对应源码修正见第 3 节，真实 OMG 重试及上板仍待验证。源码数值检查不代表内部 OMG 已支持全部算子。
 
 ## 实现范围
 
@@ -68,14 +68,47 @@ python3 "$GE_MODEL_TOOL" export \
 ```bash
 export CPRO_DDK_ROOT="$(realpath "${DDK_PATH:?先加载内部 DDK 环境}")"
 export CPRO_DDK_ID=100.520.020.010
+export GE_OMC_DIR="$GE_PAIR_RUN/omc"
 
 python3 "$GE_MODEL_TOOL" compile \
   --air "$GE_AIR_DIR" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$GE_PAIR_RUN/omc"
+  --output "$GE_OMC_DIR"
 ```
 
 沿用现有 `compile_air`：`--framework=1 --target=omc --platform=kirinx90 --weight_data_type=FP16`，两个 OMG 子进程各有独立的 run 内临时目录和日志。成功为 `COMPILED`，设备状态仍是 `PENDING`。这一步可能暴露内部 DDK 的算子、属性或布局差异，应按具体 `omg.log` 修图。
+
+### 已知 Select / RMSNorm Add 报错的重试
+
+2026-10-22 用户的 tiny target 日志中，`v7/Select` 报 `x1Shape.GetDimNum() != x2Shape.GetDimNum()`；源码对应四维条件和两个标量分支。现已在 target/draft 的每个 Select 前显式广播三个输入到相同形状，保留真正的选择操作及 `-inf`/NaN 语义。
+
+同一日志的 `v23/Add` 对应 RMSNorm 的 `1 + weight`，CPUCL 报输入类型不一致。保存并回读的 AIR 描述中二者均为 FP16，现有日志不能确定 OMG 内部发生了什么类型变化；源码将此处改为单输入 Power 的 `shift=1`。全部有限 FP16 输入的本地检查与原加法逐位一致，真实转换仍须重试。节点编号会随重新构图变化，应以新日志为准。
+
+这次改动影响 AIR 内容，不能只重跑旧 AIR 的 `compile`。可复用旧 `prepared`，不用重新下载或生成权重；保留原目录并运行：
+
+```bash
+cd "$REPO_DIR"
+git pull --ff-only
+export GE_AIR_DIR="$GE_PAIR_RUN/air-shapefix-$(date +%Y%m%d-%H%M%S)"
+export GE_OMC_DIR="$GE_PAIR_RUN/omc-shapefix-$(date +%Y%m%d-%H%M%S)"
+
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --output "$GE_AIR_DIR"
+
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_AIR_DIR" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_OMC_DIR"
+```
+
+只有 export 输出 `EXPORTED` 后再执行 compile。新版本的转换失败会直接显示 graph、阶段、日志路径、首错和尾部，并在 `failure.json` 保留退出码或超时值；draft 失败时不会发布成功的双图 manifest。摘要识别内部 OMG 的 `E/AI_FMK` 等格式，不将 W/I 级别的 `failed to load` 插件提示列作首错。
+
+若仍失败，提供终端摘要，或提取完整日志的尾部；target 通过而 draft 失败时将下列路径中的 target 改为 draft：
+
+```bash
+tail -n 100 "$GE_OMC_DIR/target/omg.log"
+```
 
 ## 4. 服务器参考与板端运行
 
@@ -101,11 +134,11 @@ PY
 
 | 旧指南路径 | 本次路径 |
 |---|---|
-| `$AI_RUN_DIR/tiny-omc` | `$GE_PAIR_RUN/omc` |
+| `$AI_RUN_DIR/tiny-omc` | `$GE_OMC_DIR` |
 | `$AI_RUN_DIR/tiny-reference.json` | `$GE_PAIR_RUN/tiny-reference.json` |
 | `$AI_RUN_DIR/tiny-prompt.json` | `$GE_PAIR_RUN/tiny-prompt.json` |
 
-传板端的是整个 `omc/` bundle、交叉编译的 `qwen35_dflash_hiai` 和板端缺少的匹配运行库。复用旧指南时，把服务器 `$GE_PAIR_RUN/omc/` 的内容放到板端 `$BOARD_ROOT/models/tiny-omc/`，保持板端命令中的目录名一致。AIR、prepared 权重、图描述、C++ 生成器、原始 safetensors 和 Python 环境都留在服务器。参考与 OMC 的 `source` 包含所有 FP16 权重内容的聚合哈希，可拒绝混用不同随机权重的报告。
+传板端的是整个 OMC bundle、交叉编译的 `qwen35_dflash_hiai` 和板端缺少的匹配运行库。复用旧指南时，把服务器 `$GE_OMC_DIR/` 的内容放到板端 `$BOARD_ROOT/models/tiny-omc/`，保持板端命令中的目录名一致。AIR、prepared 权重、图描述、C++ 生成器、原始 safetensors 和 Python 环境都留在服务器。参考与 OMC 的 `source` 包含所有 FP16 权重内容的聚合哈希，可拒绝混用不同随机权重的报告。
 
 ## 5. 完整 35B：先查结构，再做服务器诊断
 

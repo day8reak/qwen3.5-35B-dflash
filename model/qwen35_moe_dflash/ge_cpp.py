@@ -245,6 +245,18 @@ class _Emitter:
     def helper(self, value, data, dtype="int64", suffix="parameter"):
         return self.constant(data, dtype, f"__ge/{value.name}/{suffix}")
 
+    def broadcast(self, source, output, index):
+        """Give Select concrete equal-shaped inputs before OMG lowers its IR."""
+        if source.shape == output.shape:
+            return source
+        if np.broadcast_shapes(source.shape, output.shape) != output.shape:
+            raise ValueError(f"{output.name}: cannot broadcast {source.shape} to {output.shape}")
+        value = Value(f"__ge/{output.name}/broadcast_{index}", output.shape, source.dtype)
+        shape = self.helper(value, value.shape, suffix="shape")
+        var = self.op(value.name, "BroadcastTo", [("x", source), ("shape", shape)], [("y", value)])
+        self.refs[value.name] = (var, "y")
+        return value
+
 
 def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=None):
     """Return a self-contained C++ AIR serializer.
@@ -302,6 +314,9 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
         kind, v, a, ins = node.kind, node.output, node.attrs, list(node.inputs)
         if v.name not in live:
             continue
+        if kind == "where" and (len(ins) != 3 or ins[0].dtype != "bool" or
+                                 any(x.dtype != v.dtype for x in ins[1:])):
+            raise ValueError(f"{v.name}: Select needs BOOL condition and matching branch dtypes")
         # Public GE BasicType excludes BOOL. These operations preserve boolean
         # values exactly through an integer carrier, with no floating casts.
         boolean_output = None
@@ -398,6 +413,11 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
             outputs = [("values", values), ("indices", indices)]
             attrs = {"sorted": "true", "dim": "int64_t{-1}", "largest": "true"}
         elif kind == "where":
+            # X90 OMG lowers SelectV2 to Select, whose verifier does not accept
+            # the implicit scalar/rank broadcasting used by NumPy/PyTorch.
+            # Broadcast condition and both branches, including boolean carriers,
+            # without arithmetic masking (0 * -inf/NaN would change semantics).
+            ins = [e.broadcast(x, v, i) for i, x in enumerate(ins)]
             typ, ports = "SelectV2", ["condition", "then", "else"]
             outputs, outport = [("result", v)], "result"
         elif kind == "cast":

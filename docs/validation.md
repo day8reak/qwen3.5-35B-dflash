@@ -136,3 +136,12 @@ GE 的 40 种算子及 Cast 接口依据固定版本的官方原型核对。已�
 run：`20261022T092815Z-12515-a03008`，基线 `6590f77`。用户日志已显示 Data 工厂注册成功，但上次新增的 `TryGetInputDesc("x")` 检查返回失败。GE 9.1 源码的调用链为 `Operator::TryGetInputDesc` → `OperatorImpl::InputIsSet` → `OpDescImpl::InputIsSet`；最后一项要求形状维度数大于零。工厂原型默认 rank 0，因此该接口不能用于端口是否存在的检查。这是上一补丁引入的误判，发生在实际模型构图前。
 
 两种生成器均移除这项原型描述查询，保留工厂注册/实际创建、类型与端口数量检查。实际模型 Data 的名称、描述、边及 AIR 保存/回读检查不变。定向回归 **48 passed、2 skipped**，包括两种生成器的真实 GE 9.1 头文件编译；两项真实 GE Save/Load 仍因本机缺少匹配主机库而跳过。模型数学、权重、配方和 HIAI ABI 未变化，旧 prepared 可复用。源码与证据见 `specs/direct-ge-prototype-check-verification.json`。修复版服务器 AIR/OMG 和板端结果仍待验证，目标 profile 和硬件参考策略不变。
+
+
+## 内部 OMG Select / 常量 Add 修正（2026-10-22）
+
+run：`20261022T093951Z-12973-586101`，基线 `0097330`。用户报告 tiny target/draft AIR 成功，但 target OMG 转换失败；用户日志指向 Select 广播维度检查及 RMSNorm 常量 Add 的 CPUCL 类型检查。生成器已显式广播 Select 三输入，并将 norm 的 `1 + weight` 表达为单输入 Power shift。源码保存的输入均为 FP16，尚不推断 OMG 的类型变化来源。
+
+本地相关 9 个测试文件共 **83 passed**：AIR/OMG 成功与故障编排、轻量导入、生成图及双图参考、Select 序列化描述与数值、RMSNorm 全部 63,488 个有限 FP16 位模式逐位等价、日志摘要。测试验证的是主机代码、CPU 参考和模拟工具边界，没有执行真实内部 OMG。独立审查未发现阻塞问题。
+
+状态：旧修复的 AIR 成功为用户报告，未取得产物哈希；本次生成器修改后的 AIR/OMC 需要重试。HIAI 板端、全权重、原生量化和性能门槛仍为 PENDING。不能将 83 项本地测试解释为 OMC 已通过。证据及源文件哈希见 `specs/direct-ge-omg-select-verification.json`；服务器复用 prepared 的重试命令见 `docs/direct-model-air.md` 第 3 节。

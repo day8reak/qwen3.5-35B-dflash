@@ -14,6 +14,33 @@ from qwen35_moe_dflash.ge_eval import evaluate
 from qwen35_moe_dflash.ge_target import build_target, _Builder, _chunk_gdn
 
 
+def test_rms_offset_scalar_lowering_matches_every_finite_fp16_bit_pattern():
+    # This validates the chosen scalar expression against the prior tensor Add,
+    # including signed zero, independently of the compiler's Power kernel.
+    bits = np.arange(1 << 16, dtype=np.uint16)
+    values = bits.view(np.float16)
+    values = values[np.isfinite(values)].copy()
+    assert values.size == 63488
+    assert {0x0000, 0x8000}.issubset(set(values.view(np.uint16)))
+    graph = Graph("rms_offset_exhaustive")
+    x = graph.input("x", values.shape)
+    _Builder(graph).rms(x, "target.norm.weight", 1e-6)
+    offset = next(node for node in graph.nodes
+                  if len(node.inputs) == 1 and node.inputs[0].name == "target.norm.weight")
+    assert offset.kind == "scalar_add" and offset.attrs == {"value": 1.0}
+    graph.outputs = [offset.output]
+    inputs = {"x": np.ones(values.shape, dtype=np.float16)}
+    weights = {"target.norm.weight": values}
+    actual_numpy = evaluate(graph, inputs, weights)[0]
+    actual_torch = evaluate_torch(graph, inputs, weights)[0].numpy()
+    expected_numpy = np.add(np.array(1, dtype=np.float16), values)
+    expected_torch = (torch.tensor(1, dtype=torch.float16) + torch.from_numpy(values)).numpy()
+    for actual, expected in ((actual_numpy, expected_numpy), (actual_torch, expected_torch)):
+        np.testing.assert_array_equal(actual.view(np.uint16), expected.view(np.uint16))
+        # -1 + 1 must produce positive zero; numerical equality alone misses it.
+        assert actual[values == np.float16(-1)].view(np.uint16).tolist() == [0]
+
+
 @pytest.fixture(scope="module")
 def target_case():
     torch.set_num_threads(1)

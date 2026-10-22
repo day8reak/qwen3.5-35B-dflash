@@ -70,7 +70,11 @@ class _Builder:
         result = self.op("mul", x, scale)
         weight = self.g.weight(key, (x.shape[-1],))
         if offset:
-            weight = self.op("add", self.constant(1), weight, shape=weight.shape)
+            # The internal OMG CPUCL constant Add rejected this scalar/weight
+            # pair despite both serialized descriptors being FP16. Express the
+            # exact +1 offset through the existing Power scalar lowering, which
+            # avoids that binary constant-fold path without changing dtype.
+            weight = self.op("scalar_add", weight, value=1.0)
         return self.op("mul", result, weight)
 
     def l2(self, x):

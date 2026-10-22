@@ -21,6 +21,7 @@ from .artifacts import checked_file, files_under, output_path, save_json
 from .config import Qwen35DFlashConfig
 from .hashing import sha256_file
 from .resources import repository_root
+from .tool_logs import log_excerpt as _log_excerpt
 
 
 def configurations(*, tiny=False):
@@ -188,35 +189,6 @@ def prepare_pair(output_dir, sequence_length=8, *, tiny=True, target_path=None, 
         save_json(root / "failure.json", {"status": "FAILED", "stage": stage,
                                           "error": f"{type(error).__name__}: {error}"})
         raise
-
-
-def _log_excerpt(log):
-    """Keep the first failures visible even when GE initialization fills the tail."""
-    if not log.is_file():
-        return ""
-    first = []
-    budget = 4096
-    markers = (b"[ERROR]", b"[FATAL]", b"GE recipe failed:", b"AIR export failed:", b"error:")
-    with log.open("rb") as stream:
-        line_number = 0
-        while budget > 0 and len(first) < 6:
-            # Bound memory even for a malformed tool log with a huge line.
-            chunk = stream.readline(8192)
-            if not chunk:
-                break
-            line_number += 1
-            matched = any(marker in chunk for marker in markers)
-            if matched:
-                excerpt = chunk[:min(2048, budget)]
-                suffix = " [truncated]" if len(chunk) > len(excerpt) or not chunk.endswith(b"\n") else ""
-                first.append(f"L{line_number}: " + excerpt.decode("utf-8", errors="replace").rstrip() + suffix)
-                budget -= len(excerpt)
-            while chunk and not chunk.endswith(b"\n"):
-                chunk = stream.readline(8192)
-        stream.seek(max(0, log.stat().st_size - 8192))
-        tail = stream.read(8192).decode("utf-8", errors="replace")
-    initial = "First error messages:\n" + "\n".join(first) + "\n" if first else ""
-    return initial + "Log tail:\n" + tail
 
 
 def _logged(command, *, folder, env, log, timeout):

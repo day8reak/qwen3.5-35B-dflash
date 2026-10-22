@@ -1,6 +1,7 @@
 """AIR orchestration fault tests; the dummy payload is not AIR device evidence."""
 import json
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 import pytest
 from reference.tiny import create
@@ -55,7 +56,12 @@ if os.environ.get('FAKE_OMG_REQUIRE_INTERNAL_ENV')=='yes':
     import internal_ddk_extension
     internal_ddk_extension.check()
 Path('kernel_meta').mkdir()
-if os.environ.get('FAKE_OMG_FAIL')=='yes': sys.exit(9)
+if (os.environ.get('FAKE_OMG_FAIL')=='yes'
+        and args['--output']==os.environ.get('FAKE_OMG_FAIL_GRAPH', 'target')):
+    print('[ERROR] mock converter first cause')
+    for _ in range(300):
+        print('[DEBUG] ParseJsonFormatString:add error_code E68059 success')
+    sys.exit(9)
 Path(args['--output']+'.omc').write_bytes(b'FAKE OMC')
 ''')
     binary.chmod(0o700)
@@ -158,15 +164,83 @@ def test_air_external_weight_tamper_fails_before_compiler(air_case, tmp_path):
     assert not (tmp_path/"omc").exists()
 
 
-def test_omg_failure_leaves_no_success_manifest_and_cleans_scratch(air_case, tmp_path, monkeypatch):
+@pytest.mark.parametrize("failed_graph", ["target", "draft"])
+def test_omg_failure_leaves_no_success_manifest_and_cleans_scratch(
+        air_case, tmp_path, monkeypatch, failed_graph):
     root, ddk = air_case
     monkeypatch.setenv("FAKE_OMG_FAIL", "yes")
-    import subprocess
-    with pytest.raises(subprocess.CalledProcessError):
+    monkeypatch.setenv("FAKE_OMG_FAIL_GRAPH", failed_graph)
+    with pytest.raises(RuntimeError, match="mock converter first cause") as caught:
         compile_air(root, tmp_path/"omc", ddk, ddk_id="fake")
-    assert not (tmp_path/"omc/manifest.json").exists()
-    assert json.loads((tmp_path/"omc/failure.json").read_text())["status"] == "FAILED"
-    assert not list((tmp_path/"omc").glob("omg-*"))
+    assert isinstance(caught.value.__cause__, subprocess.CalledProcessError)
+    output = tmp_path / "omc"
+    log = output / failed_graph / "omg.log"
+    assert not (output / "manifest.json").exists()
+    failure = json.loads((output / "failure.json").read_text())
+    assert failure["status"] == "FAILED" and failure["failed_graph"] == failed_graph
+    assert failure["stage"] == f"{failed_graph}-omg"
+    assert failure["log_path"] == str(log) and failure["returncode"] == 9
+    assert "mock converter first cause" in log.read_text()
+    assert f"Full log: {log}" in str(caught.value)
+    assert "First error messages:\nL1: [ERROR] mock converter first cause" in str(caught.value)
+    assert len(str(caught.value)) < 16000
+    assert not list(output.glob("omg-*"))
+    assert [item["name"] for item in failure["graphs"]] == (["target"] if failed_graph == "draft" else [])
+    if failed_graph == "draft":
+        assert (output / "target/target.omc").read_bytes() == b"FAKE OMC"
+    else:
+        assert not (output / "draft").exists()
+
+
+@pytest.mark.parametrize("failure_kind", ["timeout", "launch", "missing", "empty"])
+@pytest.mark.parametrize("failed_graph", ["target", "draft"])
+def test_omg_diagnostics_cover_timeout_launch_and_incomplete_output(
+        air_case, tmp_path, monkeypatch, failure_kind, failed_graph):
+    root, ddk = air_case
+    timeout = 19
+    expected_exception = {"timeout": subprocess.TimeoutExpired, "launch": OSError,
+                          "missing": RuntimeError, "empty": RuntimeError}[failure_kind]
+
+    def tool(command, **kwargs):
+        name = next(arg.split("=", 1)[1] for arg in command if arg.startswith("--output="))
+        scratch = Path(kwargs["cwd"])
+        (scratch / "kernel_meta").mkdir()
+        if name != failed_graph:
+            (scratch / f"{name}.omc").write_bytes(b"FAKE OMC")
+            return subprocess.CompletedProcess(command, 0)
+        kwargs["stdout"].write("[ERROR] mock converter diagnostic before failure\n")
+        kwargs["stdout"].write("[DEBUG] add error_code E68059 success\n" * 300)
+        if failure_kind == "timeout":
+            raise subprocess.TimeoutExpired(command, timeout)
+        if failure_kind == "launch":
+            raise OSError("mock executable could not start")
+        if failure_kind == "empty":
+            (scratch / f"{name}.omc").write_bytes(b"")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", tool)
+    output = tmp_path / "omc-diagnostic"
+    with pytest.raises(RuntimeError, match="mock converter diagnostic before failure") as caught:
+        compile_air(root, output, ddk, ddk_id="fake", timeout_seconds=timeout)
+    assert isinstance(caught.value.__cause__, expected_exception)
+    report = json.loads((output / "failure.json").read_text())
+    log = output / failed_graph / "omg.log"
+    assert report["status"] == "FAILED" and report["failed_graph"] == failed_graph
+    assert report["stage"] == f"{failed_graph}-" + (
+        "output-check" if failure_kind in ("missing", "empty") else "omg")
+    assert report["log_path"] == str(log) and report["returncode"] is None
+    if failure_kind == "timeout":
+        assert report["timeout_seconds"] == timeout
+    assert "mock converter diagnostic before failure" in log.read_text()
+    assert f"Full log: {log}" in str(caught.value)
+    assert "First error messages:\nL1: [ERROR] mock converter diagnostic before failure" in str(caught.value)
+    assert not (output / "manifest.json").exists()
+    assert not list(output.glob("omg-*"))
+    assert [item["name"] for item in report["graphs"]] == (["target"] if failed_graph == "draft" else [])
+    if failed_graph == "draft":
+        assert (output / "target/target.omc").read_bytes() == b"FAKE OMC"
+    else:
+        assert not (output / "draft").exists()
 
 
 def test_air_missing_dependency_is_explicit(monkeypatch):

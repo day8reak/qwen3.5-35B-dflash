@@ -7,6 +7,7 @@ import shutil
 import tempfile
 from .artifacts import checked_file, files_under, output_path, save_json
 from .hashing import sha256_file
+from .tool_logs import log_excerpt
 
 
 def _prepend_paths(paths, inherited):
@@ -72,9 +73,15 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600):
     result.update(schema_version=2, artifact_kind="qwen35-cpro-omc-pair", status="COMPILING",
                   platform="kirinx90", runtime="hiai", device_validation="PENDING", graphs=records,
                   ddk_id=ddk_id, omg_sha256=sha256_file(omg), air_manifest_sha256=sha256_file(manifest_path))
+    stage = "prepare"
+    name = None
+    log_path = None
     try:
         for graph in graphs:
-            name = graph["name"]; folder = output / name; folder.mkdir()
+            name = graph["name"]; folder = output / name
+            stage = f"{name}-setup"
+            log_path = folder / "omg.log"
+            folder.mkdir()
             prefix = folder / name
             air = root / graph["air"]
             # Short relative names bypass OMG's restrictive output-path check.
@@ -91,12 +98,21 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600):
                     (scratch / item.name).symlink_to(item, target_is_directory=item.is_dir())
                 if not (scratch / "input.air").exists(): (scratch / "input.air").symlink_to(air)
                 local_env = dict(env, TMPDIR=str(scratch))
-                with (folder / "omg.log").open("w") as log:
-                    subprocess.run(command, cwd=scratch, env=local_env, stdout=log, stderr=subprocess.STDOUT,
-                                   check=True, timeout=timeout_seconds)
-                generated = scratch / f"{name}.omc"
-                if not generated.is_file() or not generated.stat().st_size:
-                    raise RuntimeError(f"OMG succeeded without a nonempty {name}.omc")
+                stage = f"{name}-omg"
+                try:
+                    with log_path.open("x") as log:
+                        subprocess.run(command, cwd=scratch, env=local_env, stdout=log, stderr=subprocess.STDOUT,
+                                       check=True, timeout=timeout_seconds)
+                    stage = f"{name}-output-check"
+                    generated = scratch / f"{name}.omc"
+                    if not generated.is_file() or not generated.stat().st_size:
+                        raise RuntimeError(f"OMG succeeded without a nonempty {name}.omc")
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, RuntimeError) as error:
+                    # Read after closing/flushing the log, while the retained
+                    # path remains outside the automatically cleaned scratch.
+                    raise RuntimeError(f"OMG graph={name} stage={stage}: {error}\n"
+                                       f"Full log: {log_path}\n{log_excerpt(log_path)}") from error
+                stage = f"{name}-collect"
                 # Preserve compiled outputs/sidecars, but never archive input
                 # symlinks or compiler scratch as model payloads.
                 for item in scratch.iterdir():
@@ -115,6 +131,11 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600):
         save_json(output / "manifest.json", result)
     except Exception as error:
         result["status"] = "FAILED"; result["error"] = f"{type(error).__name__}: {error}"
+        cause = error.__cause__ or error
+        result.update(failed_graph=name, stage=stage, log_path=str(log_path) if log_path else None,
+                      returncode=cause.returncode if isinstance(cause, subprocess.CalledProcessError) else None)
+        if isinstance(cause, subprocess.TimeoutExpired):
+            result["timeout_seconds"] = cause.timeout
         save_json(output / "failure.json", result)
         raise
     return result
