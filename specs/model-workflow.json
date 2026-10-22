@@ -146,9 +146,17 @@
       "baseline_commit": "aa8c6e135065bb40ae2d1fdebd7ed11397d8c161",
       "observed_result": "USER_REPORTED_TARGET_SETINPUTS_FAILURE_BEFORE_AIR_SAVE",
       "root_cause": "Data input prototype factory not registered",
-      "status": "SOURCE_CHECKS_PASS_USER_RETEST_PENDING",
+      "status": "USER_CONFIRMED_FACTORY_REGISTRATION_PRECHECK_FIXED_RETEST_PENDING",
       "evidence": "specs/direct-ge-data-factory-verification.json",
-      "next_command": "python3 \"$GE_MODEL_TOOL\" export --prepared \"$GE_PAIR_RUN/prepared\" --ge-root \"$CANN_ROOT\" --output \"$GE_AIR_DIR\""
+      "next_command": "python3 \"$GE_MODEL_TOOL\" export --prepared \"$GE_PAIR_RUN/prepared\" --ge-root \"$CANN_ROOT\" --output \"$GE_AIR_DIR\"",
+      "prototype_check_fix": {
+        "run_id": "20261022T092815Z-12515-a03008",
+        "baseline_commit": "6590f77a3fb3054121f34f0e0f123ea053c6663c",
+        "observed": "Data creator v2 registered; TryGetInputDesc precheck failed before model graph construction",
+        "fix": "Remove rank-dependent prototype description query; retain factory and real graph verification",
+        "status": "SOURCE_CHECKS_PASS_USER_RETEST_PENDING",
+        "evidence": "specs/direct-ge-prototype-check-verification.json"
+      }
     }
   }
 }

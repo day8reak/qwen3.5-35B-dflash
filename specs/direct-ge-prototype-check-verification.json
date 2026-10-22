@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "run_id": "20261022T092815Z-12515-a03008",
+  "status": "SOURCE_CHECKS_PASS_USER_RETEST_PENDING",
+  "baseline_commit": "6590f77a3fb3054121f34f0e0f123ea053c6663c",
+  "observed_user_log": [
+    "Register creator v2 for Data.",
+    "Checking GE Data factory...",
+    "GE recipe failed: Data factory input x status=4294967295"
+  ],
+  "root_cause": "Precheck confused TryGetInputDesc/InputIsSet with IR port existence; GE9.1 requires positive rank while a factory prototype has default rank0 shape",
+  "fix": "Remove only TryGetInputDesc precheck in recipe and unrolled emitters; preserve factory lookup/type/count and real graph verification",
+  "source_review": "data-desc-independent-review.json",
+  "tests": {
+    "tests": 50,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 2,
+    "passed": 48,
+    "real_header_compile_cases": 2,
+    "skipped_reason": "Two actual GE Save/Load tests require matched real libgraph.so unavailable locally"
+  },
+  "headers": {
+    "ge": "0ef703178896cbeb2a66e7c751ac9626df7f7439",
+    "metadef": "01966fe61d57fa7ae85b1c9e3350cecfe3a125a6",
+    "flags": [
+      "C++17",
+      "ABI0",
+      "-Wall",
+      "-Wextra",
+      "-Werror"
+    ],
+    "scope": "compile only"
+  },
+  "unchanged": [
+    "model math",
+    "weights",
+    "recipe format",
+    "HIAI ABI",
+    "PyTorch/TorchAir implementation"
+  ],
+  "prepared_reusable": true,
+  "hardware_reference_policy": "use",
+  "environment_activation": "FAILED_UNREGISTERED_CPRO_BLUE_PENDING_PROFILE",
+  "device_access": "UNAVAILABLE_BY_USER_ACCESS_CONSTRAINT",
+  "real_model_air": "USER_RETEST_PENDING",
+  "real_model_omg": "PENDING",
+  "device_validation": "PENDING",
+  "experience_audit": "docs/experience.md",
+  "source_hashes": [
+    {
+      "path": "docs/direct-model-air.md",
+      "sha256": "544c8245ceba55cf86ca6e0d78ad39065e89e7db864a90085adcf13235f0af43"
+    },
+    {
+      "path": "docs/experience.md",
+      "sha256": "e84e324d9ff56205941ef7caaa1e396e3eda595a4218cf46491b916a7e09a31b"
+    },
+    {
+      "path": "docs/validation.md",
+      "sha256": "d5096ad0f1df4bc0d1baa6b8c272be3fade231eb3d731ccf55f4637c8f779e29"
+    },
+    {
+      "path": "model/qwen35_moe_dflash/ge_cpp.py",
+      "sha256": "ffb154fe0f321d845114081ca2c7d9a6720fabc67b65da9e0f824a4bda997edb"
+    },
+    {
+      "path": "model/qwen35_moe_dflash/ge_recipe.py",
+      "sha256": "79bc499266e9ad480b2dedbdb67cc246c34915df1976c0bb437865df2d53467b"
+    },
+    {
+      "path": "specs/model-workflow.json",
+      "sha256": "d9095a9ad5957007f464fd21635b0e8c7cc412ceb6774005f368a38f41b32959"
+    }
+  ],
+  "evidence_files": [
+    {
+      "path": "source-hashes.json",
+      "sha256": "16928aba97746d92ef33b4f5c05738c8aa2b32e7f4ea22306bc527144eedbda2",
+      "bytes": 284
+    },
+    {
+      "path": "tests.xml",
+      "sha256": "b7e236a65eef9cc3de4b011b51616c3434062aa2ae8176b884fad90b3778b69c",
+      "bytes": 7271
+    },
+    {
+      "path": "tests.log",
+      "sha256": "9c6c49410584b7f56d365c1f807e1cb653ba76a9fd93f1ed216204cec1300255",
+      "bytes": 110
+    },
+    {
+      "path": "data-desc-independent-review.json",
+      "sha256": "66cd8c032f8dbb44b944c6b84d048d0ee77b1a1fd9ceb6b88db0c91c6f033411",
+      "bytes": 4149
+    },
+    {
+      "path": "data-desc-audit/sources.json",
+      "sha256": "71c26909f11b3c52b8076255dc9f64ee4d3cdde73d482fd23bb78bf6ef1546a9",
+      "bytes": 796
+    },
+    {
+      "path": "docs-syntax.json",
+      "sha256": "9ccea5b4a51b46731c07b4dd482158864417ccc20383b41dc9c321b58bea8ec1",
+      "bytes": 782
+    }
+  ]
+}

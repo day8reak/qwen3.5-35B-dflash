@@ -129,3 +129,10 @@ GE 的 40 种算子及 Cast 接口依据固定版本的官方原型核对。已�
 日志包装器同时展示前几个错误和有界尾部，保留完整文件；回归复现了首个错误被数百行 GE 错误码初始化日志挤出尾部的情况。源码与证据摘要见 `specs/direct-ge-data-factory-verification.json`。目标 profile 仍未登记，硬件参考策略为 `use`，没有板机访问权限。修复版真实 target/draft AIR、OMG 和 HIAI 结果仍待用户重试，未推进完整模型或性能门槛。
 
 重试命令见 [直接 AIR 指南第 2 节](direct-model-air.md#2-服务器生成两张-air)：复用原 prepared，在新目录导出，并将该目录用于后续 OMG。
+
+
+## 2026-10-22：修正 Data 原型的输入描述检查
+
+run：`20261022T092815Z-12515-a03008`，基线 `6590f77`。用户日志已显示 Data 工厂注册成功，但上次新增的 `TryGetInputDesc("x")` 检查返回失败。GE 9.1 源码的调用链为 `Operator::TryGetInputDesc` → `OperatorImpl::InputIsSet` → `OpDescImpl::InputIsSet`；最后一项要求形状维度数大于零。工厂原型默认 rank 0，因此该接口不能用于端口是否存在的检查。这是上一补丁引入的误判，发生在实际模型构图前。
+
+两种生成器均移除这项原型描述查询，保留工厂注册/实际创建、类型与端口数量检查。实际模型 Data 的名称、描述、边及 AIR 保存/回读检查不变。定向回归 **48 passed、2 skipped**，包括两种生成器的真实 GE 9.1 头文件编译；两项真实 GE Save/Load 仍因本机缺少匹配主机库而跳过。模型数学、权重、配方和 HIAI ABI 未变化，旧 prepared 可复用。源码与证据见 `specs/direct-ge-prototype-check-verification.json`。修复版服务器 AIR/OMG 和板端结果仍待验证，目标 profile 和硬件参考策略不变。

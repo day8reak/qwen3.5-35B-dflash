@@ -72,7 +72,9 @@ void VerifyDataFactory() {
   ge::AscendString type; Check(prototype.GetOpType(type), "Data factory GetOpType");
   Require(type.GetString() != nullptr && std::string(type.GetString()) == "Data", "GE Data factory returned the wrong type");
   Require(prototype.GetInputsSize() == 1 && prototype.GetOutputsSize() == 1, "GE Data factory prototype must have one input and one output");
-  ge::TensorDesc input; Check(prototype.TryGetInputDesc("x", input), "Data factory input x");
+  // TryGetInputDesc checks InputIsSet, not whether an IR port is registered.
+  // Factory prototypes have unset descriptors. Actual Data descriptors are
+  // assigned during graph construction and checked by Verify afterward.
   prototype.BreakConnect();
 }
 ge::TensorDesc Desc(const std::vector<int64_t>& shape, ge::DataType dtype) {
