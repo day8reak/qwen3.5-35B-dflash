@@ -198,6 +198,8 @@ _CPP = r'''// Host GE construction recipe reader. No device or GE session initia
 #ifndef Q35_RECIPE_PARSE_ONLY
 #include <graph/graph.h>
 #include <graph/operator.h>
+#include <graph/operator_factory.h>
+#include <graph/operator_reg.h>
 #include <graph/tensor.h>
 #endif
 #include <algorithm>
@@ -216,6 +218,20 @@ _CPP = r'''// Host GE construction recipe reader. No device or GE session initia
 #include <vector>
 #include <fcntl.h>
 #include <unistd.h>
+
+#ifndef Q35_RECIPE_PARSE_ONLY
+// GE Graph::SetInputs looks up a fresh prototype for every input type through
+// OperatorFactory before accepting Data nodes. Registering ports on the recipe
+// instances alone does not register that factory. This is a host IR definition
+// of the existing Data operation; it does not install or implement a kernel.
+namespace ge {
+REG_OP(Data)
+    .INPUT(x, TensorType({DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL}))
+    .OUTPUT(y, TensorType({DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL}))
+    .ATTR(index, Int, 0)
+    .OP_END_FACTORY_REG(Data)
+}  // namespace ge
+#endif
 
 namespace {
 namespace fs = std::filesystem;
@@ -355,6 +371,17 @@ Recipe Load(const char* path) {
 void Check(ge::graphStatus status, const char* why) {
   if (status != ge::GRAPH_SUCCESS) throw std::runtime_error(std::string(why) + " status=" + std::to_string(status));
 }
+void VerifyDataFactory() {
+  std::cout << "Checking GE Data factory..." << std::endl;
+  Require(ge::OperatorFactory::IsExistOp("Data"), "GE Data factory is not registered");
+  auto prototype = ge::OperatorFactory::CreateOperator("q35_data_factory_probe", "Data");
+  Require(!prototype.IsEmpty(), "GE Data factory returned an empty operator");
+  ge::AscendString type; Check(prototype.GetOpType(type), "Data factory GetOpType");
+  Require(type.GetString() != nullptr && std::string(type.GetString()) == "Data", "GE Data factory returned the wrong type");
+  Require(prototype.GetInputsSize() == 1 && prototype.GetOutputsSize() == 1, "GE Data factory prototype must have one input and one output");
+  ge::TensorDesc input; Check(prototype.TryGetInputDesc("x", input), "Data factory input x");
+  prototype.BreakConnect();
+}
 ge::DataType DType(uint8_t code) {
   switch (code) { case 1: return ge::DT_FLOAT16; case 2: return ge::DT_INT32; case 3: return ge::DT_INT64; case 4: return ge::DT_BOOL; }
   throw std::runtime_error("unknown dtype");
@@ -456,6 +483,7 @@ void Absent(const fs::path& path) {
 int Export(const char* recipe_path, const char* filename) {
   fs::path output(filename), temporary(std::string(filename) + ".partial");
   Require(output.extension() == ".air", "output must end in .air"); Absent(output); Absent(temporary);
+  VerifyDataFactory();
   auto recipe = Load(recipe_path); std::vector<Op> ops; ops.reserve(recipe.records.size());
   for (auto& r : recipe.records) {
     ops.emplace_back(r); auto& op = ops.back();
@@ -467,7 +495,9 @@ int Export(const char* recipe_path, const char* filename) {
   }
   ge::Graph graph(recipe.name.c_str()); std::vector<ge::Operator> inputs;
   for (auto i : recipe.inputs) inputs.push_back(ops[i]);
+  std::cout << "Constructing GE graph with SetInputs..." << std::endl;
   graph.SetInputs(inputs);
+  Require(graph.IsValid(), "GE Graph::SetInputs failed; inspect earlier GE errors in export.log");
   std::vector<std::pair<ge::Operator, std::vector<size_t>>> outputs;
   for (auto p : recipe.outputs) outputs.push_back({ops[p.first], {p.second}});
   graph.SetOutputs(outputs);

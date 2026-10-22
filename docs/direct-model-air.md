@@ -35,26 +35,40 @@ tiny 为 target 4 层、draft 2 层、hidden 16、词表 64、block 4；它保�
 ## 2. 服务器：生成两张 AIR
 
 ```bash
+export GE_AIR_DIR="$GE_PAIR_RUN/air"
 python3 "$GE_MODEL_TOOL" export \
   --prepared "$GE_PAIR_RUN/prepared" \
   --ge-root "$CANN_ROOT" \
-  --output "$GE_PAIR_RUN/air"
+  --output "$GE_AIR_DIR"
 ```
 
 使用与你已跑通的小图相同的 CANN GE 头文件和真实库。脚本编译并运行两个主机生成器；每张图保存前和加载后都检查实际计算图节点。成功时 `air/manifest.json` 为 `EXPORTED`，包含 `target/target.air` 和 `draft/draft.air`。失败保留阶段、`build.log` / `export.log` 和 `failure.json`，重试 `export` 只需换新输出目录，可复用 `prepared`。
+
+如果旧版报 `BuildGraph: tensor_desc is null`、随后报输入不包含 Data，原因是生成器缺少 Data 算子工厂注册。修复版补齐该注册，并在构图前检查工厂原型。已有 `prepared` 的权重和图配置可直接复用；导出时会重新生成当前版本的 C++ 与图描述。保留旧失败目录，执行：
+
+```bash
+cd "$REPO_DIR"
+git pull --ff-only
+export GE_AIR_DIR="$GE_PAIR_RUN/air-datafix-$(date +%Y%m%d-%H%M%S)"
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --output "$GE_AIR_DIR"
+```
+
+新日志先显示 `Checking GE Data factory...`，随后进入 `SetInputs` 和计算图检查；只有两张图均保存、回读成功，最终才输出 `EXPORTED`。失败报告同时保留前几个错误和日志尾部，完整日志仍在 `export.log`。实际修复效果以服务器重试结果为准。
 
 默认 tiny 内嵌权重。需要单独测试内部 OMG 对外部权重的支持时，在新的准备目录加 `--external-weights`，再导出、转换。完整模型自动使用 `FileConstant`；该方案依据 [TorchAir 官方外部权重实现](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_utils/export_utils.py)，但本入口不依赖其 Python 包。AIR 中含绝对权重路径，转换完成前不要移动或清理 AIR bundle。
 
 ## 3. 服务器：使用内部 OMG 转 OMC
 
-切回已经 source 内部 AscendC 配置脚本的终端，恢复同一 `REPO_DIR`、`GE_MODEL_TOOL`、`GE_PAIR_RUN` 和 `AI_RUN_DIR`。不重复拼接脚本已有环境变量。下面的 DDK 版本是你此前反馈的版本，若安装包已更新，请填写实际版本；脚本不会自动检测该版本号。
+切回已经 source 内部 AscendC 配置脚本的终端，恢复同一 `REPO_DIR`、`GE_MODEL_TOOL`、`GE_PAIR_RUN`、`GE_AIR_DIR` 和 `AI_RUN_DIR`。`GE_AIR_DIR` 必须指向刚刚成功导出的目录。不重复拼接脚本已有环境变量。下面的 DDK 版本是你此前反馈的版本，若安装包已更新，请填写实际版本；脚本不会自动检测该版本号。
 
 ```bash
 export CPRO_DDK_ROOT="$(realpath "${DDK_PATH:?先加载内部 DDK 环境}")"
 export CPRO_DDK_ID=100.520.020.010
 
 python3 "$GE_MODEL_TOOL" compile \
-  --air "$GE_PAIR_RUN/air" \
+  --air "$GE_AIR_DIR" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --output "$GE_PAIR_RUN/omc"
 ```

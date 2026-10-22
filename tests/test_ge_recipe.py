@@ -4,6 +4,7 @@ The parser-only build contains no GE implementation or fake AIR exporter.
 Real GE header compilation is recorded separately in run evidence.
 """
 import copy
+import os
 from pathlib import Path
 import shutil
 import struct
@@ -169,3 +170,87 @@ def test_cpp_size_is_independent_of_graph_operator_count(tmp_path):
     assert abs(len(small_code) - len(large_code)) < 10
     assert len(large_code) < 25000
     assert (tmp_path / "large/graph.recipe").stat().st_size > 1_000_000
+
+
+@pytest.fixture(params=["recipe", "unrolled"])
+def factory_regression_cpp(request, tmp_path):
+    """Exercise all boundary dtypes, input fan-out and repeated source ports."""
+    from qwen35_moe_dflash.ge_cpp import emit_cpp
+    from qwen35_moe_dflash.ge_ir import Graph
+
+    graph = Graph("data_factory_regression")
+    ids = graph.input("input_ids", (1, 4), "int32")
+    mask = graph.input("attention_mask", (1, 4), "int32")
+    features = graph.input("target_features", (1, 4), "float16")
+    positions = graph.input("positions", (1, 4), "int64")
+    visible = graph.input("visible", (1, 4), "bool")
+    positions32 = graph.op("cast", positions, shape=(1, 4), dtype="int32")
+    visible32 = graph.op("cast", visible, shape=(1, 4), dtype="int32")
+    tokens = graph.op("add", ids, mask, shape=(1, 4), dtype="int32")
+    tokens = graph.op("add", tokens, positions32, shape=(1, 4), dtype="int32")
+    tokens = graph.op("add", tokens, visible32, shape=(1, 4), dtype="int32")
+    doubled = graph.op("add", features, features, shape=(1, 4))
+    graph.outputs = [tokens, doubled]
+    options = {"recipe_dir": tmp_path / "recipe"} if request.param == "recipe" else {}
+    source = tmp_path / (request.param + ".cpp")
+    source.write_text(emit_cpp(graph, **options))
+    return source
+
+
+def _real_ge_compiler():
+    compiler = shutil.which(os.environ.get("CXX", "g++"))
+    if compiler is None:
+        pytest.skip("C++ compiler unavailable")
+    abi = os.environ.get("Q35_GE_TEST_CXX11_ABI", "0")
+    assert abi in ("0", "1"), "Q35_GE_TEST_CXX11_ABI must be 0 or 1"
+    return [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+            "-D_GLIBCXX_USE_CXX11_ABI=" + abi]
+
+
+def test_data_factory_real_ge_header_compilation(factory_regression_cpp, tmp_path):
+    """Compile actual registered Data schemas in both emitters; no GE run claim.
+
+    Opt in with Q35_GE_TEST_INCLUDE pointing at the matching public GE headers.
+    This catches errors in registration macro expansion and public API usage.
+    """
+    declared = os.environ.get("Q35_GE_TEST_INCLUDE")
+    if not declared:
+        pytest.skip("Q35_GE_TEST_INCLUDE not configured; real GE header test requires explicit headers")
+    include = Path(declared)
+    assert (include / "graph/operator_reg.h").is_file()
+    command = _real_ge_compiler() + ["-I", str(include), "-c", str(factory_regression_cpp),
+                                    "-o", str(tmp_path / "factory.o")]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "factory.o").stat().st_size > 0
+
+
+def test_data_factory_real_ge_save_load(factory_regression_cpp, tmp_path):
+    """Actual GE SetInputs/SaveToFile/LoadFromFile regression, without an NPU.
+
+    Opt in with Q35_GE_TEST_ROOT (include/ and lib64/ from the same GE toolkit).
+    Without real libraries this is skipped, never replaced with a fake GE API.
+    """
+    declared = os.environ.get("Q35_GE_TEST_ROOT")
+    if not declared:
+        pytest.skip("Q35_GE_TEST_ROOT not configured; actual GE serialization remains unverified")
+    root = Path(declared).resolve()
+    include, lib = root / "include", root / "lib64"
+    assert (include / "graph/operator_reg.h").is_file()
+    assert (lib / "libgraph.so").is_file()
+    binary, output = tmp_path / "factory-exporter", tmp_path / "fixture.air"
+    command = _real_ge_compiler() + ["-I", str(include), str(factory_regression_cpp),
+                                    "-L", str(lib), "-Wl,-rpath," + str(lib), "-lgraph"]
+    if (lib / "libgraph_base.so").is_file():
+        command.append("-lgraph_base")
+    command.extend(["-o", str(binary)])
+    result = subprocess.run(command, capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stdout + result.stderr
+    env = dict(os.environ)
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(filter(None, (str(lib), env.get("LD_LIBRARY_PATH", ""))))
+    result = subprocess.run([str(binary), str(output)], env=env,
+                            capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "AIR_EXPORTED" in result.stdout
+    assert output.is_file() and output.stat().st_size > 0
+    assert not output.with_suffix(".air.partial").exists()

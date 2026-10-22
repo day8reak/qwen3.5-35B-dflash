@@ -190,18 +190,42 @@ def prepare_pair(output_dir, sequence_length=8, *, tiny=True, target_path=None, 
         raise
 
 
+def _log_excerpt(log):
+    """Keep the first failures visible even when GE initialization fills the tail."""
+    if not log.is_file():
+        return ""
+    first = []
+    budget = 4096
+    markers = (b"[ERROR]", b"[FATAL]", b"GE recipe failed:", b"AIR export failed:", b"error:")
+    with log.open("rb") as stream:
+        line_number = 0
+        while budget > 0 and len(first) < 6:
+            # Bound memory even for a malformed tool log with a huge line.
+            chunk = stream.readline(8192)
+            if not chunk:
+                break
+            line_number += 1
+            matched = any(marker in chunk for marker in markers)
+            if matched:
+                excerpt = chunk[:min(2048, budget)]
+                suffix = " [truncated]" if len(chunk) > len(excerpt) or not chunk.endswith(b"\n") else ""
+                first.append(f"L{line_number}: " + excerpt.decode("utf-8", errors="replace").rstrip() + suffix)
+                budget -= len(excerpt)
+            while chunk and not chunk.endswith(b"\n"):
+                chunk = stream.readline(8192)
+        stream.seek(max(0, log.stat().st_size - 8192))
+        tail = stream.read(8192).decode("utf-8", errors="replace")
+    initial = "First error messages:\n" + "\n".join(first) + "\n" if first else ""
+    return initial + "Log tail:\n" + tail
+
+
 def _logged(command, *, folder, env, log, timeout):
     try:
         with log.open("x") as stream:
             subprocess.run(command, cwd=folder, env=env, stdout=stream, stderr=subprocess.STDOUT,
                            timeout=timeout, check=True)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
-        tail = ""
-        if log.is_file():
-            with log.open("rb") as stream:
-                stream.seek(max(0, log.stat().st_size - 8192))
-                tail = stream.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"{error}\nFull log: {log}\nLog tail:\n{tail}") from error
+        raise RuntimeError(f"{error}\nFull log: {log}\n{_log_excerpt(log)}") from error
 
 
 def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, timeout_seconds=3600):

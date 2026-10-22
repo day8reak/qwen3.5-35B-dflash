@@ -34,6 +34,8 @@ def _desc(value):
 _HEADER = r'''// Generated host-only GE graph construction. Not an NPU implementation.
 #include <graph/graph.h>
 #include <graph/operator.h>
+#include <graph/operator_factory.h>
+#include <graph/operator_reg.h>
 #include <graph/tensor.h>
 #include <cstdint>
 #include <cstring>
@@ -45,9 +47,33 @@ _HEADER = r'''// Generated host-only GE graph construction. Not an NPU implement
 #include <string>
 #include <vector>
 
+// GE Graph::SetInputs looks up a fresh prototype for every input type through
+// OperatorFactory before accepting Data nodes. Registering ports on the recipe
+// instances alone does not register that factory. This is a host IR definition
+// of the existing Data operation; it does not install or implement a kernel.
+namespace ge {
+REG_OP(Data)
+    .INPUT(x, TensorType({DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL}))
+    .OUTPUT(y, TensorType({DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL}))
+    .ATTR(index, Int, 0)
+    .OP_END_FACTORY_REG(Data)
+}  // namespace ge
+
 namespace {
+void Require(bool ok, const std::string& why) { if (!ok) throw std::runtime_error(why); }
 void Check(ge::graphStatus s, const char* action) {
   if (s != ge::GRAPH_SUCCESS) throw std::runtime_error(std::string(action) + " status=" + std::to_string(s));
+}
+void VerifyDataFactory() {
+  std::cout << "Checking GE Data factory..." << std::endl;
+  Require(ge::OperatorFactory::IsExistOp("Data"), "GE Data factory is not registered");
+  auto prototype = ge::OperatorFactory::CreateOperator("q35_data_factory_probe", "Data");
+  Require(!prototype.IsEmpty(), "GE Data factory returned an empty operator");
+  ge::AscendString type; Check(prototype.GetOpType(type), "Data factory GetOpType");
+  Require(type.GetString() != nullptr && std::string(type.GetString()) == "Data", "GE Data factory returned the wrong type");
+  Require(prototype.GetInputsSize() == 1 && prototype.GetOutputsSize() == 1, "GE Data factory prototype must have one input and one output");
+  ge::TensorDesc input; Check(prototype.TryGetInputDesc("x", input), "Data factory input x");
+  prototype.BreakConnect();
 }
 ge::TensorDesc Desc(const std::vector<int64_t>& shape, ge::DataType dtype) {
   return ge::TensorDesc(ge::Shape(shape), ge::FORMAT_ND, dtype);
@@ -110,6 +136,7 @@ int Export(const char* filename) {
   if (st.type() != fs::file_type::not_found) throw std::runtime_error("refusing to overwrite output");
   const uint16_t endian = 1;
   if (*reinterpret_cast<const uint8_t*>(&endian) != 1) throw std::runtime_error("little-endian host required");
+  VerifyDataFactory();
   std::vector<Expected> expected;
   std::vector<Op> ops;
 '''
@@ -424,7 +451,9 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
                                 for v in graph.outputs], recipe_dir)
     # Explicit output indices preserve the ABI even for TopK's second output.
     e.lines.append(f"  ge::Graph graph({_q(graph.name)});")
+    e.lines.append('  std::cout << "Constructing GE graph with SetInputs..." << std::endl;')
     e.lines.append("  graph.SetInputs(std::vector<ge::Operator>{" + ",".join(e.refs[v.name][0] for v in graph.inputs) + "});")
+    e.lines.append('  Require(graph.IsValid(), "GE Graph::SetInputs failed; inspect earlier GE errors in export.log");')
     output_ops = []
     for v in graph.outputs:
         var, port = e.refs[v.name]

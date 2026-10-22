@@ -116,3 +116,16 @@ GE 的 40 种算子及 Cast 接口依据固定版本的官方原型核对。已�
 完整模型 AIR/OMG、内部 FileConstant/算子支持、HIAI 上板及真实数值结果仍为 **PENDING**；新直接 GE 的原生压缩整数权重映射 **NOT_IMPLEMENTED**。全模型量化、质量、内存和性能门槛不推进。硬件参考策略仍为 `use`，没有可访问的 X90；target profile 仍未登记，环境激活未成功。
 
 源码与可复核证据摘要见 `specs/direct-ge-model-verification.json`；下一步按 [直接双图指南](direct-model-air.md) 在用户服务器 prepare tiny → export AIR → 内部 OMG，然后执行相同 ABI 的 HIAI 验证。
+
+
+## 2026-10-22：修复直接 GE 的 Data 工厂注册
+
+修复 run：`20261022T084136Z-11227-7c2c63`，代码基线 `aa8c6e1`。用户服务器完成 tiny `PREPARED` 和生成器编译，首次 target 构图失败；首条日志为 `BuildGraph: tensor_desc is null`，出现两次，随后报告输入缺少 Data。失败发生在 AIR 保存之前。
+
+固定版本 GE 9.1 源码表明，`BuildGraph` 会先从 `OperatorFactory` 创建输入类型原型，再判断是否为 Data；仅在实例上注册端口不能满足此要求。之前成功的 Add 样例已使用 Data 工厂注册，而双图生成器遗漏了它。修复同时覆盖配方与小图展开生成器，补充四种 IR 输入 dtype 的 Data 工厂定义、实际工厂原型检查和 `SetInputs` 后即时失败检查。模型计算、配方格式、权重与 ABI 均不变。
+
+隔离源码副本的定向回归 **48 passed、2 skipped**，包含真实 C++ 配方解析、两种生成模式的真实 GE 头文件编译、旧 prepared 复用、损坏产物拒绝及错误日志提取。两项跳过的是需要真实 GE 主机库的 Save/Load 测试；本机未链接或执行 GE。编译使用固定 GE/metadef v9.1 头文件、C++17、ABI0、`-Wall -Wextra -Werror`。未改动模型数学，因此未重复此前全套数值测试。
+
+日志包装器同时展示前几个错误和有界尾部，保留完整文件；回归复现了首个错误被数百行 GE 错误码初始化日志挤出尾部的情况。源码与证据摘要见 `specs/direct-ge-data-factory-verification.json`。目标 profile 仍未登记，硬件参考策略为 `use`，没有板机访问权限。修复版真实 target/draft AIR、OMG 和 HIAI 结果仍待用户重试，未推进完整模型或性能门槛。
+
+重试命令见 [直接 AIR 指南第 2 节](direct-model-air.md#2-服务器生成两张-air)：复用原 prepared，在新目录导出，并将该目录用于后续 OMG。

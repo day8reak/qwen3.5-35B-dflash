@@ -87,9 +87,14 @@ def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, extern
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
     prepared = tmp_path / "prepared"
     plan = ge_export.prepare_pair(prepared, tiny=True, external_weights=external)
+    # Existing prepared payloads remain usable after a generator-only fix.
+    # Export must regenerate construction files, never compile this stale copy.
+    (prepared / "target/target.cpp").write_text("STALE_PREPARED_GENERATOR\n")
     ge = fake_ge(tmp_path)
     def tool(command, **kwargs):
         if "-o" in command:
+            source = next(Path(arg) for arg in command if arg.endswith(".cpp"))
+            assert "STALE_PREPARED_GENERATOR" not in source.read_text()
             Path(command[command.index("-o") + 1]).write_bytes(b"mock exporter")
         elif "--framework=1" in command:
             name = next(s.split("=", 1)[1] for s in command if s.startswith("--output="))
@@ -134,14 +139,34 @@ def test_export_failure_does_not_promote_partial_air(tmp_path, monkeypatch):
             Path(command[command.index("-o") + 1]).write_bytes(b"mock exporter")
         else:
             Path(command[1]).write_bytes(b"partial air")
-            kwargs["stdout"].write("GE real failure detail\n")
+            kwargs["stdout"].write("[ERROR] BuildGraph: tensor_desc is null.\n")
+            kwargs["stdout"].write("[DEBUG] ParseJsonFormatString:add error_code E68059 success\n" * 300)
+            kwargs["stdout"].write("GE recipe failed: invalid GE graph\n")
             raise subprocess.CalledProcessError(1, command)
     monkeypatch.setattr(subprocess, "run", tool)
-    with pytest.raises(RuntimeError, match="GE real failure detail"):
+    with pytest.raises(RuntimeError, match="tensor_desc is null") as caught:
         ge_export.export_pair(tmp_path / "prepared", tmp_path / "air", fake_ge(tmp_path))
     assert not (tmp_path / "air/manifest.json").exists()
     failure = json.loads((tmp_path / "air/failure.json").read_text())
     assert failure["status"] == "FAILED" and failure["stage"] == "target-serialize"
+    assert "First error messages:\nL1: [ERROR] BuildGraph: tensor_desc is null." in str(caught.value)
+    assert "GE recipe failed: invalid GE graph" in str(caught.value)
+    assert "tensor_desc is null" in failure["error"]
+    assert len(str(caught.value)) < 14000
+
+
+def test_log_excerpt_bounds_oversized_lines_and_ignores_error_catalog(tmp_path):
+    log = tmp_path / "tool.log"
+    log.write_bytes(b"[DEBUG] add error_code E68059 success\n"
+                    + b"[ERROR] root cause " + b"x" * 30000 + b"\n"
+                    + b"[FATAL] second cause\n" + b"tail padding\n" * 1000)
+    result = ge_export._log_excerpt(log)
+    first = result.split("Log tail:", 1)[0]
+    assert "L2: [ERROR] root cause" in first and "[truncated]" in first
+    assert "L3: [FATAL] second cause" in first
+    assert "add error_code" not in first
+    assert len(result) < 13000
+    assert ge_export._log_excerpt(tmp_path / "missing") == ""
 
 
 def test_export_detects_recipe_mutation_during_tool_run(tmp_path, monkeypatch):

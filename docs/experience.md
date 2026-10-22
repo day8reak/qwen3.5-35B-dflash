@@ -82,3 +82,12 @@ run：`20261022T074906Z-6507-ca8b2b`。Add AIR/OMC 通过来自用户报告，�
 独立审查关闭 BOOL 算子类型限制、TopK 输出对应关系、实际 prepared 随机权重与参考不一致风险、权重内容身份及 recipe/blob 来源哈希缺口。tiny 使用 NumPy RNG，与旧 Torch tiny 不同，参考必须加载实际文件。完整权重通过 safetensors 的边界受检分块读取，FileConstant 按官方 schema 构建；没有把 FP16 `.bin` 标为整数压缩权重。
 
 新增可执行检查位于 `test_ge_ir.py`、`test_ge_recipe.py`、`test_direct_ge_target.py`、`test_ge_draft.py`、`test_ge_export.py`、`test_ge_reference.py` 和 `test_ge_pair.py`。经验留在本模型，未修改通用技能，也未委派自定义 NPU 算子。拒绝将编译、配方解析、mock OMG 或 CPU 参考晋升为模型 AIR/设备成功。剩余假设是内部 OMG 对全部公开 GE 算子及 FileConstant 的支持、实际 kernel 数值、全量量化布局、内存峰值、完整权重质量及速度。
+
+
+## GE 输入工厂与首错诊断（2026-10-22）
+
+run：`20261022T084136Z-11227-7c2c63`。用户的 tiny 两个 Data 输入均报空原型，随后 SetInputs 构图失败；固定 GE 9.1 的 `BuildGraph` 查询顺序和工厂空返回路径解释了整条错误链。实例上的 InputRegister/OutputRegister 与算子工厂注册是不同机制。修复复用成功 Add 样例的现有 Data IR 工厂注册，没有新增 NPU 算子内核、改动计算或替换共享库。
+
+只保留日志末尾会丢失最早的具体错误，GE 后续的错误码初始化日志尤其容易触发。现在同时收集有界首错和尾部，真实日志结构作为回归；完整日志始终保留。独立审查同时覆盖两种生成模式及无 GE 的配方解析模式，新增真实头文件编译和可启用的 GE Save/Load 检查。
+
+经验保留在本模型及可执行检查中，未修改通用技能。拒绝将头文件编译、配方解析或 mock 转换晋升为真实 AIR 成功；当前主机缺少匹配 GE 库，运行测试明确跳过。下一步为用户服务器重试双图保存/回读与内部 OMG，后续算子或布局问题按新日志继续定位。
