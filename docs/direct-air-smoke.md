@@ -45,6 +45,26 @@ python3 "$REPO_DIR/targets/cpro/scripts/direct_air_smoke.py" export \
 
 成功后检查 `ge-air/manifest.json` 的状态应为 `AIR_EXPORTED`。AIR、二进制测试输入和参考输出、生成器程序、命令、日志及哈希都保留在该目录；输出拒绝覆盖，失败重试换新目录。
 
+### 已遇到的 `x failed, graph status=4294967295`
+
+`94c053e` 的样例在保存前执行 `VerifyGraph`，其中 `FindOpByName("x")` 查询失败。这发生在查找节点阶段，不是 NPU 执行失败，也不能据此判断缺少 HCCL 或需要 GE/ACL 设备初始化。
+
+GE 的 [`AddOp`](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/ascendgraphapi/atlasgeapi_07_0014.html) 注册表与 `SetInputs` 创建的计算图不同；`FindOpByName` 查询前者。保存后 `LoadFromFile` 恢复计算图，也不自动恢复这个注册表。修复后的保存前和回读后验证统一使用 [`GetAllNodes`](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/ascendgraphapi/atlasgeapi_07_0027.html) 与 GNode 接口，保留节点类型、FP16 描述、输入索引和常量内容检查。
+
+更新代码后使用新输出目录重试，保留已有失败日志：
+
+```bash
+cd "$REPO_DIR"
+git pull --ff-only
+export GE_AIR_RETRY="$AI_RUN_DIR/ge-air-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/direct_air_smoke.py" export \
+  --ge-root "$CANN_ROOT" --output "$GE_AIR_RETRY"
+```
+
+沿用上文自己的 CANN 环境。构建或导出子进程失败时，新脚本会显示阶段、日志路径和受限长度的日志尾部；完整日志与 `failure.json` 仍留在本次目录。`FileExistsError` 表示输出路径已被使用，另选目录即可，不需要删除旧产物。
+
+只有新目录的 manifest 为 `AIR_EXPORTED` 时再转换；下面 `compile` 的 `--air-bundle` 要改成实际成功的目录（上述重试为 `$GE_AIR_RETRY`）。
+
 ## 2. 服务器：内部 OMG 转 OMC
 
 切回已经加载内部 DDK AscendC 环境脚本的终端，恢复相同的 `REPO_DIR` 和 `AI_RUN_DIR`。无需重复拼接其工具路径，也不需要把 CANN 根目录赋给 `CPRO_DDK_ROOT`。

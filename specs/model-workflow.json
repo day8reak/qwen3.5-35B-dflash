@@ -103,6 +103,15 @@
     "evidence": "docs/direct-air-smoke.md",
     "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/direct_air_smoke.py\" export --ge-root \"$CANN_ROOT\" --output \"$AI_RUN_DIR/ge-air\"",
     "full_model_migration": "PENDING",
-    "device_execution": "PENDING"
+    "device_execution": "PENDING",
+    "lookup_fix": {
+      "run_id": "20261022T072928Z-5968-3afd6d",
+      "observed_user_revision": "94c053e",
+      "observed_user_result": "BUILD_AND_START_SUCCEEDED_VERIFYGRAPH_FINDOPBYNAME_FAILED",
+      "fix": "Use compute-graph GNode API before SaveToFile and after LoadFromFile",
+      "status": "SOURCE_CHECKS_PASS_USER_RUNTIME_RETEST_PENDING",
+      "evidence": "specs/direct-air-lookup-verification.json",
+      "next_action": "Use new output directory per docs/direct-air-smoke.md and rerun export before compile"
+    }
   }
 }

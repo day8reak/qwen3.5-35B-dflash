@@ -50,16 +50,38 @@ void CheckDesc(const ge::TensorDesc& desc, const char* name) {
   }
 }
 
-ge::Operator Find(ge::Graph& graph, const char* name, const char* expected_type) {
-  ge::Operator op;
-  Check(graph.FindOpByName(name, op), name);
-  ge::AscendString actual_type;
-  Check(op.GetOpType(actual_type), "GetOpType");
-  if (actual_type.GetString() == nullptr ||
-      std::strcmp(actual_type.GetString(), expected_type) != 0) {
-    throw std::runtime_error(std::string(name) + " has an unexpected op type");
+ge::GNode Find(ge::Graph& graph, const char* name, const char* expected_type) {
+  // FindOpByName searches the separate AddOp registry. SetInputs constructs
+  // the compute graph without filling that registry, and LoadFromFile does
+  // not restore it. Inspect the actual compute nodes at both checkpoints.
+  for (const auto& node : graph.GetAllNodes()) {
+    ge::AscendString actual_name;
+    Check(node.GetName(actual_name), "compute node GetName");
+    if (actual_name.GetString() == nullptr ||
+        std::strcmp(actual_name.GetString(), name) != 0) {
+      continue;
+    }
+    ge::AscendString actual_type;
+    Check(node.GetType(actual_type), "compute node GetType");
+    if (actual_type.GetString() == nullptr ||
+        std::strcmp(actual_type.GetString(), expected_type) != 0) {
+      throw std::runtime_error(std::string(name) + " has an unexpected node type");
+    }
+    return node;
   }
-  return op;
+  throw std::runtime_error(std::string("compute graph is missing node '") + name + "'");
+}
+
+void CheckInput(const ge::GNode& node, std::int32_t index, const char* name) {
+  ge::TensorDesc desc;
+  Check(node.GetInputDesc(index, desc), name);
+  CheckDesc(desc, name);
+}
+
+void CheckOutput(const ge::GNode& node, const char* name) {
+  ge::TensorDesc desc;
+  Check(node.GetOutputDesc(0, desc), name);
+  CheckDesc(desc, name);
 }
 
 void VerifyGraph(ge::Graph& graph) {
@@ -69,18 +91,18 @@ void VerifyGraph(ge::Graph& graph) {
   auto x = Find(graph, "x", "Data");
   auto bias = Find(graph, "bias", "Const");
   auto y = Find(graph, "y", "Add");
-  CheckDesc(x.GetOutputDesc(0), "x output");
-  CheckDesc(bias.GetOutputDesc(0), "bias output");
-  CheckDesc(y.GetInputDesc(0), "y first input");
-  CheckDesc(y.GetInputDesc(1), "y second input");
-  CheckDesc(y.GetOutputDesc(0), "y output");
+  CheckOutput(x, "x output");
+  CheckOutput(bias, "bias output");
+  CheckInput(y, 0, "y first input");
+  CheckInput(y, 1, "y second input");
+  CheckOutput(y, "y output");
   std::int64_t input_index = -1;
-  Check(x.GetAttr("index", input_index), "Data index");
+  Check(x.GetAttr(ge::AscendString("index"), input_index), "Data index");
   if (input_index != 0) {
     throw std::runtime_error("Data input index must be zero");
   }
   ge::Tensor value;
-  Check(bias.GetAttr("value", value), "Const value");
+  Check(bias.GetAttr(ge::AscendString("value"), value), "Const value");
   CheckDesc(value.GetTensorDesc(), "bias value");
   if (value.GetSize() != sizeof(kBiasBits) || value.GetData() == nullptr ||
       std::memcmp(value.GetData(), kBiasBits.data(), sizeof(kBiasBits)) != 0) {
@@ -131,6 +153,7 @@ int Export(const char* filename) {
   ge::Graph graph("qwen35_fp16_add_smoke");
   graph.SetInputs(std::vector<ge::Operator>{x});
   graph.SetOutputs(std::vector<ge::Operator>{y});
+  std::cout << "Checking constructed compute graph before SaveToFile..." << std::endl;
   VerifyGraph(graph);
   Check(graph.SaveToFile(filename), "SaveToFile");
   if (!fs::is_regular_file(path) || fs::file_size(path) == 0) {
@@ -138,6 +161,7 @@ int Export(const char* filename) {
   }
   ge::Graph loaded("roundtrip");
   Check(loaded.LoadFromFile(filename), "LoadFromFile");
+  std::cout << "Checking reloaded compute graph after LoadFromFile..." << std::endl;
   VerifyGraph(loaded);
   std::cout << "AIR serialized and reloaded: " << filename << '\n'
             << "Data x + Const [1,2,3,4] -> Add y; FP16 ND [1,4].\n"

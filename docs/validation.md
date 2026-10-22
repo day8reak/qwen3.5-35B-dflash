@@ -82,3 +82,16 @@ C++ 已使用官方 `v9.1.0` 的 GE 与 metadef 头文件执行真实编译检�
 真实 GE 链接、AIR 保存/读取、内部 OMG 接受该 AIR、OMC 和板端执行均 **PENDING**；不能将头文件编译或测试替身的状态作为实际 AIR 成功证据。`cpro-blue-pending` 仍未登记，目标环境激活未成功，板机仍由用户访问。全模型质量、量化和内存门槛未推进，`hardware_reference_policy=use` 未改变。
 
 下一步按 [直接 AIR 样例](direct-air-smoke.md) 在用户服务器加载自己的 CANN 环境运行 `direct_air_smoke.py export`，成功后切回内部 DDK 环境运行 `compile`。失败时保留对应日志和 `failure.json`，不要先执行不兼容的双模型板端命令。
+
+
+## 2026-10-22：修复 GE 节点查找与失败日志
+
+修复 run：`20261022T072928Z-5968-3afd6d`。用户更新至 `94c053e` 后，自己的 CANN 9.1 环境已能构建并启动 `ge_add_air`；失败发生于保存前的 `VerifyGraph`，具体为 `FindOpByName("x")` 返回 `4294967295`。这是用户执行证据，不是本地已链接 GE 的结果；尚未生成成功 AIR。
+
+已核对官方 GE `v9.1.0` 提交 `0ef703178896cbeb2a66e7c751ac9626df7f7439`：`SetInputs` 构造 `compute_graph_`，`FindOpByName` 只查询 `op_list_`，而 AIR 回读不恢复后者。原样例使用了错误的查找入口。修复后两个验证点统一使用 `GetAllNodes`/`GNode`，保留类型、形状、FP16、Data index 和 Const 原始字节检查；不增加设备初始化，不修改计算或阈值。
+
+修复后的 C++ 通过真实官方 9.1 头文件编译检查（GCC 11.4.0、C++17、ABI0、`-Wall -Wextra -Werror`）。17 项脚本测试通过，覆盖用户错误在终端和失败报告中的可见性、日志截尾但完整文件保留、部分 AIR 不得成功、超时/异常链、OMG 失败与已有输出保护。工具边界仍使用测试替身，不代表实际 GE/AIR/OMG 通过。
+
+证据及最终源码哈希见 `specs/direct-air-lookup-verification.json`。共享对话原文只保留在本 run，不进入仓库。两次独立源码审查确认 GNode 属性读取不依赖 `AddOp` 表；没有把日志中内部 DDK 的 `libstdc++` 路径当作本次根因，也没有自动替换或修改库。
+
+用户需按 [重试说明](direct-air-smoke.md) 使用新输出目录，确认保存前与读回后检查都通过，再运行 OMG。修复版真实 GE 执行、AIR、OMC 和板端验证仍 **PENDING**；目标 profile 未登记，环境激活未成功，完整模型阶段与硬件参考策略未改变。

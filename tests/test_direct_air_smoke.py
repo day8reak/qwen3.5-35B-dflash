@@ -75,6 +75,56 @@ def test_export_rejects_success_without_air(smoke, tmp_path, monkeypatch):
     assert json.loads((tmp_path / "air/failure.json").read_text())["stage"] == "ge-serialize"
 
 
+def test_export_cli_exposes_real_graph_failure_and_preserves_complete_log(smoke, tmp_path, monkeypatch, capsys):
+    module, ge, _ = smoke
+    root_cause = "AIR smoke failed: x failed, graph status=4294967295"
+    full_log = "first-log-line\n" + "diagnostic padding\n" * 1200 + root_cause + "\n"
+    def run(command, **kwargs):
+        if "-o" in command:
+            Path(command[command.index("-o") + 1]).write_bytes(b"mock exporter")
+        else:
+            kwargs["stdout"].write(full_log)
+            Path(command[1]).write_bytes(b"incomplete AIR must not become success")
+            raise subprocess.CalledProcessError(2, command)
+    monkeypatch.setattr(module.subprocess, "run", run)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "export", "--ge-root", str(ge),
+                                     "--output", str(tmp_path / "air")])
+    assert module.main() == 1
+    terminal = capsys.readouterr()
+    assert not terminal.out
+    assert root_cause in terminal.err
+    assert "ge-serialize" in terminal.err and "CalledProcessError" in terminal.err
+    assert str(tmp_path / "air/export.log") in terminal.err
+    assert "first-log-line" not in terminal.err
+    tail = terminal.err.split("Log tail (at most 8192 bytes):\n", 1)[1].rstrip()
+    assert len(tail.encode("utf-8")) <= 8192
+    assert (tmp_path / "air/export.log").read_text() == full_log
+    failure = json.loads((tmp_path / "air/failure.json").read_text())
+    assert failure["status"] == "FAILED" and failure["stage"] == "ge-serialize"
+    assert failure["log_path"] == str(tmp_path / "air/export.log")
+    assert failure["returncode"] == 2
+    assert root_cause in failure["error"]
+    assert not (tmp_path / "air/manifest.json").exists()
+
+
+def test_logged_timeout_keeps_original_exception_and_flushed_tail(smoke, tmp_path, monkeypatch):
+    module, _, _ = smoke
+    timeout = subprocess.TimeoutExpired(["mock-exporter"], 1)
+    def run(*args, **kwargs):
+        kwargs["stdout"].write("last exporter progress before timeout\n")
+        raise timeout
+    monkeypatch.setattr(module.subprocess, "run", run)
+    log = tmp_path / "timeout.log"
+    with pytest.raises(module.LoggedCommandError) as caught:
+        module._logged(["mock-exporter"], stage="ge-serialize", cwd=tmp_path,
+                       env={}, log=log, timeout=1)
+    assert caught.value.__cause__ is timeout
+    assert caught.value.returncode is None
+    assert caught.value.log_path == str(log)
+    assert "last exporter progress before timeout" in str(caught.value)
+    assert log.read_text() == "last exporter progress before timeout\n"
+
+
 def test_explicit_ge_resources_take_priority_over_inherited_cann_root(smoke, tmp_path, monkeypatch):
     module, ge, _ = smoke
     resources = tmp_path / "selected-resources.json"
@@ -158,7 +208,12 @@ def test_compile_rejects_tool_failure_or_invalid_omc(smoke, tmp_path, monkeypatc
     with pytest.raises((RuntimeError, subprocess.CalledProcessError)):
         module.compile_smoke(tmp_path / "air", tmp_path / "omc", _ddk(tmp_path), ddk_id="mock")
     assert not (tmp_path / "omc/manifest.json").exists()
-    assert json.loads((tmp_path / "omc/failure.json").read_text())["status"] == "FAILED"
+    report = json.loads((tmp_path / "omc/failure.json").read_text())
+    assert report["status"] == "FAILED"
+    assert report["log_path"] == str(tmp_path / "omc/omg.log")
+    assert report["returncode"] == (1 if failure == "nonzero" else None)
+    if failure == "nonzero":
+        assert "mock OMG diagnostic" in report["error"]
     assert "mock OMG diagnostic" in (tmp_path / "omc/omg.log").read_text()
     assert not list((tmp_path / "omc").glob("omg-add-*"))
 
@@ -175,6 +230,21 @@ def test_export_requires_owned_new_output_and_real_ge_paths(smoke, tmp_path, mis
     with pytest.raises(FileNotFoundError, match=Path(missing).name):
         module.export_smoke(ge, tmp_path / "missing-ge")
     assert not (tmp_path / "missing-ge/manifest.json").exists()
+
+
+@pytest.mark.parametrize("command", ["export", "compile"])
+def test_existing_output_requests_new_path_and_keeps_old_evidence(smoke, tmp_path, command):
+    module, ge, _ = smoke
+    output = tmp_path / "previous-failure"; output.mkdir()
+    old_log = output / "export.log"
+    old_log.write_text("original failure evidence\n")
+    with pytest.raises(FileExistsError, match="choose a new --output path"):
+        if command == "export":
+            module.export_smoke(ge, output)
+        else:
+            module.compile_smoke(tmp_path / "unused-air", output, tmp_path / "unused-ddk", ddk_id="mock")
+    assert old_log.read_text() == "original failure evidence\n"
+    assert not (output / "failure.json").exists()
 
 
 def test_smoke_cli_does_not_import_python_model_frameworks(tmp_path):

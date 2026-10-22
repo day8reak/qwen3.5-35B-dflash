@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "run_id": "20261022T072928Z-5968-3afd6d",
+  "scope": "direct-ge-air-smoke-lookup-fix",
+  "status": "SOURCE_CHECKS_PASS_USER_RUNTIME_RETEST_PENDING",
+  "observed_user_revision": "94c053e",
+  "observed_user_result": "BUILD_AND_START_SUCCEEDED_VERIFYGRAPH_FINDOPBYNAME_FAILED",
+  "root_cause": "FindOpByName searches AddOp op_list_ instead of the compute_graph_ created by SetInputs and restored by LoadFromFile.",
+  "fix": "Use GetAllNodes/GNode at both pre-save and post-load checks; preserve all descriptor and constant byte checks.",
+  "cpp_check": {
+    "status": "PASS_COMPILE_ONLY",
+    "standard": "c++17",
+    "cxx11_abi": 0,
+    "compiler": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0",
+    "source_refs": {
+      "ge": "0ef703178896cbeb2a66e7c751ac9626df7f7439",
+      "metadef": "01966fe61d57fa7ae85b1c9e3350cecfe3a125a6"
+    },
+    "source_tags": {
+      "ge": "v9.1.0",
+      "metadef": "v9.1.0"
+    }
+  },
+  "python_tests": {
+    "tests": 17,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0,
+    "scope": "mocked compiler/exporter/OMG tool boundaries, no real AIR or OMC"
+  },
+  "docs_syntax": {
+    "status": "PASS",
+    "scope": "changed documentation files",
+    "files": [
+      "docs/direct-air-smoke.md",
+      "docs/experience.md",
+      "docs/validation.md"
+    ],
+    "shell_blocks": 3,
+    "python_blocks": 0,
+    "python_heredocs": 0
+  },
+  "real_ge_link_fixed_source": "PENDING",
+  "real_air_serialization": "PENDING",
+  "internal_omg": "PENDING",
+  "device_validation": "PENDING",
+  "full_model_direct_ge_export": "NOT_IMPLEMENTED",
+  "single_graph_hiai_runner": "NOT_IMPLEMENTED",
+  "target_environment_activation": "FAILED_PROFILE_NOT_REGISTERED",
+  "device_access": "UNAVAILABLE_BY_USER_ACCESS_CONSTRAINT",
+  "hardware_reference_policy": "use",
+  "source_files": [
+    {
+      "path": "docs/direct-air-smoke.md",
+      "sha256": "ad8df9d5f29780f15b88064acaae970650d3455554bc68927931b9b6ccbf2a5c"
+    },
+    {
+      "path": "docs/experience.md",
+      "sha256": "b2fd871f0520e60c95936b88ff54d4dcff4017eef6595bdf14e7c43dcb2321b2"
+    },
+    {
+      "path": "docs/validation.md",
+      "sha256": "5b5c7b96fe31cf8be068df8f006fac1a3e65b7a60af9eb92c741c31cc569ed2f"
+    },
+    {
+      "path": "specs/model-workflow.json",
+      "sha256": "b83507c97af5f024fc1b21bf3aa4ccca66697712d77222cbc2572c821a53fa70"
+    },
+    {
+      "path": "targets/cpro/air/ge_add_air.cpp",
+      "sha256": "10882c6406b30d5e5ed6835f36187fcc0768bcc88fbb2718a0f567bbaf1f8551"
+    },
+    {
+      "path": "targets/cpro/scripts/direct_air_smoke.py",
+      "sha256": "5c054615d55117644adcb49972c4ec189b77df8727f64503736d1dc6512c495f"
+    },
+    {
+      "path": "tests/test_direct_air_smoke.py",
+      "sha256": "791f051f332414bca938768a2e81b18d03b16001a4c8f93855fccc4facabe272"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "smoke-log-tests.xml",
+      "sha256": "796d3a4f39f6313ed8cc38df2ffaba6be9bf897926a7914df477f03b05be8917"
+    },
+    {
+      "path": "smoke-log-source-hashes.json",
+      "sha256": "5999209fa3d3c9aa0dce2f681dd58045c5b228df79d269f8f5a7242b55db6b3b"
+    },
+    {
+      "path": "ge-lookup-audit/compile-result.json",
+      "sha256": "6f05119b9fa07102a0e8859aaab2838120151bd45fd920d8527aae40f0e8e867"
+    },
+    {
+      "path": "ge-lookup-audit/source.json",
+      "sha256": "28814a7fe587bfd5d5fc413d616a27bc12424a48beb624a0b8a0b153c3683488"
+    },
+    {
+      "path": "docs-syntax.json",
+      "sha256": "42e8065d5fe0d177cf50cf37f7bb82b4d75d2db7ab8af569bcec6a063a3da470"
+    }
+  ],
+  "official_source": {
+    "url": "https://raw.githubusercontent.com/hicann/ge/0ef703178896cbeb2a66e7c751ac9626df7f7439/graph_metadef/graph/normal_graph/graph.cc",
+    "sha256": "fea27f6e9bd6fe8dcfd949ae37462981918415c16eb9c956ce515ea0d3174d75"
+  },
+  "experience_audit": "docs/experience.md"
+}

@@ -26,21 +26,68 @@ def _record(path):
     return {"path": str(path), "bytes": path.stat().st_size, "sha256": sha256_file(path)}
 
 
-def _logged(command, *, cwd, env, log, timeout):
-    with log.open("x") as stream:
-        subprocess.run(command, cwd=cwd, env=env, stdout=stream, stderr=subprocess.STDOUT,
-                       check=True, timeout=timeout)
+_LOG_TAIL_BYTES = 8192
+
+
+def _log_tail(path):
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - _LOG_TAIL_BYTES))
+            return stream.read(_LOG_TAIL_BYTES).decode("utf-8", errors="replace").rstrip()
+    except OSError as error:
+        return f"Could not read preserved log: {error}"
+
+
+class LoggedCommandError(RuntimeError):
+    def __init__(self, stage, log, error):
+        self.stage = stage
+        self.log_path = str(log)
+        self.returncode = getattr(error, "returncode", None)
+        self.log_tail = _log_tail(log)
+        message = f"{stage} failed: {type(error).__name__}: {error}\nFull log: {log}"
+        if self.log_tail:
+            message += f"\nLog tail (at most {_LOG_TAIL_BYTES} bytes):\n{self.log_tail}"
+        super().__init__(message)
+
+
+def _logged(command, *, stage, cwd, env, log, timeout):
+    try:
+        with log.open("x") as stream:
+            subprocess.run(command, cwd=cwd, env=env, stdout=stream, stderr=subprocess.STDOUT,
+                           check=True, timeout=timeout)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
+        # The file is closed/flushed before reading its tail. Keep the original
+        # exception as the cause and leave the complete tool output on disk.
+        raise LoggedCommandError(stage, log, error) from error
+
+
+def _existing_output_error(output):
+    return FileExistsError(f"output already exists: {output}; choose a new --output path. "
+                           "Existing files and logs are preserved.")
+
+
+def _make_output(output):
+    try:
+        output.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as error:
+        raise _existing_output_error(output) from error
 
 
 def _failure(output, stage, error):
+    log_name = {"ge-build": "build.log", "ge-serialize": "export.log", "omg-compile": "omg.log"}.get(stage)
+    log = output / log_name if log_name else None
     save_json(output / "failure.json", {"status": "FAILED", "stage": stage,
-              "device_validation": "PENDING", "error": f"{type(error).__name__}: {error}"})
+              "device_validation": "PENDING", "error": f"{type(error).__name__}: {error}",
+              "log_path": getattr(error, "log_path", str(log) if log and log.is_file() else None),
+              "returncode": getattr(error, "returncode", None)})
 
 
 def export_smoke(ge_root, output_dir, *, cxx="c++", cxx11_abi=0, timeout_seconds=120):
     """Serialize a real GE graph; this neither compiles OMC nor runs a device."""
     output = output_path(output_dir)
-    output.mkdir(parents=True, exist_ok=False)
+    _make_output(output)
     stage = "ge-toolchain"
     try:
         if cxx11_abi not in (0, 1) or timeout_seconds <= 0:
@@ -75,13 +122,13 @@ def export_smoke(ge_root, output_dir, *, cxx="c++", cxx11_abi=0, timeout_seconds
         command.extend(["-o", str(binary)])
         save_json(output / "build-command.json", {"argv": command, "cwd": str(build)})
         stage = "ge-build"
-        _logged(command, cwd=build, env=env, log=output / "build.log", timeout=timeout_seconds)
+        _logged(command, stage=stage, cwd=build, env=env, log=output / "build.log", timeout=timeout_seconds)
         if not binary.is_file() or not binary.stat().st_size:
             raise RuntimeError("compiler succeeded without a nonempty GE exporter")
         command = [str(binary), str(air)]
         save_json(output / "export-command.json", {"argv": command, "cwd": str(payload)})
         stage = "ge-serialize"
-        _logged(command, cwd=payload, env=env, log=output / "export.log", timeout=timeout_seconds)
+        _logged(command, stage=stage, cwd=payload, env=env, log=output / "export.log", timeout=timeout_seconds)
         if not air.is_file() or not air.stat().st_size:
             raise RuntimeError("GE exporter succeeded without a nonempty add.air")
         (payload / "input.bin").write_bytes(struct.pack("<4e", 0, 1, 2, 3))
@@ -137,14 +184,14 @@ def compile_smoke(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600)
     """Compile only this independent smoke ABI, using the selected mobile DDK."""
     output = output_path(output_dir)
     if output.exists():
-        raise FileExistsError(output)
+        raise _existing_output_error(output)
     root, manifest, paths, manifest_hash = _air_bundle(bundle)
     if not ddk_id or "$" in ddk_id or timeout_seconds <= 0:
         raise ValueError("resolved DDK identity and positive timeout required")
     omg, env = omg_environment(ddk_root)
     if not os.access(omg, os.X_OK):
         raise PermissionError(f"OMG is not executable: {omg}")
-    output.mkdir(parents=True, exist_ok=False)
+    _make_output(output)
     try:
         payload = output / "payload"; payload.mkdir()
         command = [str(omg), "--framework=1", "--model=input.air", "--output=add",
@@ -155,7 +202,7 @@ def compile_smoke(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600)
         with tempfile.TemporaryDirectory(prefix="omg-add-", dir=output) as temp:
             scratch = Path(temp)
             shutil.copyfile(paths[manifest["graph"]["air"]], scratch / "input.air")
-            _logged(command, cwd=scratch, env=dict(env, TMPDIR=str(scratch)),
+            _logged(command, stage="omg-compile", cwd=scratch, env=dict(env, TMPDIR=str(scratch)),
                     log=output / "omg.log", timeout=timeout_seconds)
             omc = scratch / "add.omc"
             if not omc.is_file() or omc.is_symlink() or not omc.stat().st_size:
