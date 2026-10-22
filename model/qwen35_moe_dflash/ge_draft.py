@@ -168,7 +168,15 @@ class _DraftBuilder:
         context_int = g.op("cast", context_valid, shape=(1, s), dtype="int32", attrs={"dtype": "int32"})
         context_positions = g.op("cumsum", context_int, shape=(1, s), dtype="int32", attrs={"axis": 1})
         context_positions = g.op("sub", context_positions, one, shape=(1, s), dtype="int32")
-        context_positions = g.op("maximum", context_positions, g.const(0, dtype="int32"), shape=(1, s), dtype="int32")
+        # Internal OMG rejects INT32 Maximum. Here the count is in [0,S-1],
+        # so x=count-1 is in [-1,S-2]. Even a CPUCL Less implementation that
+        # compares via the signed difference 0-x cannot overflow in this
+        # bounded domain. Do not generalize this to arbitrary INT32 extrema.
+        zero = g.const(0, dtype="int32")
+        negative = g.op("lt", context_positions, zero, shape=(1, s), dtype="bool",
+                        name="context_position_negative")
+        context_positions = g.op("where", negative, zero, context_positions,
+                                 shape=(1, s), dtype="int32")
         block_positions = g.op("add", anchor, g.const([list(range(b))], dtype="int32"), shape=(1, b), dtype="int32")
         positions = g.op("concat", context_positions, block_positions, shape=(1, k), dtype="int32",
                          attrs={"axis": 1}, name="positions")
@@ -230,6 +238,8 @@ def build_draft(config: Qwen35DFlashConfig, sequence_length: int) -> Graph:
     config.validate()
     if isinstance(sequence_length, bool) or not isinstance(sequence_length, int) or sequence_length < 1:
         raise ValueError("sequence_length must be a positive integer")
+    if sequence_length > (1 << 31) - 1:
+        raise ValueError("sequence_length must fit the INT32 position counter")
     if config.block_size < 2:
         raise ValueError("DFlash requires an anchor and at least one draft token")
     if config.head_dim % 2:

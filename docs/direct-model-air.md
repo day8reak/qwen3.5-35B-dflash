@@ -2,7 +2,7 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。最新日志显示编译已推进到 draft；按脚本顺序，tiny target 已生成非空 OMC 并通过输入哈希复核，尚未取得产物独立核验。draft 当前因 GatherElements 拒绝 INT32 数据失败，本轮改用保持整数精度的 GatherV2，需重导 AIR 后验证。对应源码修正及重试命令见第 3 节；真实双图 OMG 转换和上板仍待验证。已逐类核查 39 种实际生成的 GE 算子，范围和剩余风险见 [算子兼容性核查](ge-operator-compatibility.md)。
+用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。最新日志显示编译已推进到 draft；按脚本顺序，tiny target 已生成非空 OMC 并通过输入哈希复核，尚未取得产物独立核验。draft 已越过整数 Gather 的验证，当前失败为 v12 的 INT32 Maximum 不支持。本轮改为整数 Less + Select，需重导 AIR 后验证。对应源码修正及重试命令见第 3 节；真实双图 OMG 转换和上板仍待验证。已逐类核查 39 种实际生成的 GE 算子，范围和剩余风险见 [算子兼容性核查](ge-operator-compatibility.md)。
 
 ## 实现范围
 
@@ -80,19 +80,19 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 内部 OMG 兼容性修正与重试
 
-最新日志（draft 进程 158166）明确报 `v4/GatherElements` 的 `Input[0] DataType INT32 is wrong`。这是本次失败的直接原因，前面的输入描述回显和 ImportWarning 不能代替该错误。编译已经进入 draft 阶段，按现有脚本执行顺序，target 已完成非空 OMC 输出检查与原输入哈希复核；这仍属于用户日志证据，尚无独立产物哈希及板端结果。
+最新日志（draft 进程 158383）已越过整数 Gather 的验证，最终在兼容性检查拒绝 `v12/Maximum`。它执行上下文位置的 `max(cumsum(context_valid)-1, 0)`，输入/输出是 INT32。前面的描述回显、ImportWarning 和缺少内置 kernel 库提示不是这条日志明确报告的最终失败原因。
 
-`v4` 用于取得最后一个有效 token。现在将 INT32 `input_ids[1,S]` reshape 成 `[S]`，用同样的 INT32 `anchor_position[1,1]` 在轴0执行 GatherV2，输出仍是 INT32 `[1,1]`，节点名仍是 `v4`。HIAI 输入合同要求 batch1、非空右填充前缀，保证 anchor 位于 `[0,S-1]`。全程不把 token ID 转成 FP16 或 FP32；其余模型浮点计算仍为 FP16。
+这次只改 draft 的位置截断：对 `x=cumsum(context_valid)-1` 判断 `x<0`，再用同形 Select 选择零或原整数。`x` 的范围是 `[-1,S-2]`，图中没有浮点转换、权重修改或近似，输出节点仍叫 `v12`。模型构图限制 `S<=INT32_MAX`；原 PyTorch 路径、HIAI ABI 和 FP16 算子保持不变。
 
-已检查 tiny/full 的 target/draft：原先只有 draft 的这一处整数 GatherElements。蓝区实际 GatherElements 验证只接受浮点数据，而 GatherV2D 前端与 CPUCL 的 Gather 支持 INT32 数据和 INT32 索引，CPUCL 有直接 `DoGather<int>` 路径。这不证明内部 X90 会将该节点放到 NPU；最终后端分配与精度仍以内部编译和板端验证为准。导出器现在提前拒绝其他非 FP16 数据的 GatherElements，避免把已知不兼容的节点继续写进 AIR。
+蓝区 CPUCL Maximum 只允许浮点数据，Less 和 Select 支持 INT32。但进一步审查发现 CPUCL Less 的整数实现先计算差值再比较，任意 INT32 极值可能溢出。因此没有推广成通用整数 max/min 替代：本模型的 `0-x` 范围是 `[2-S,1]`，不会溢出，转换成 FP32 后符号也保持不变。当前 target 没有 Maximum/Minimum，draft 仅这一处。蓝区 INT32 Select 支持来自 CPUCL，不能据此承诺 NPU 放置。target 进展仍依据用户日志和脚本顺序推断，未收到独立产物哈希。
 
 **这次修改 draft 的 AIR 图，旧 prepared 可复用，但必须重新 export：**
 
 ```bash
 cd "$REPO_DIR"
 git pull --ff-only
-export GE_AIR_DIR="$GE_PAIR_RUN/air-gather-$(date +%Y%m%d-%H%M%S)"
-export GE_OMC_DIR="$GE_PAIR_RUN/omc-gather-$(date +%Y%m%d-%H%M%S)"
+export GE_AIR_DIR="$GE_PAIR_RUN/air-clamp-$(date +%Y%m%d-%H%M%S)"
+export GE_OMC_DIR="$GE_PAIR_RUN/omc-clamp-$(date +%Y%m%d-%H%M%S)"
 
 python3 "$GE_MODEL_TOOL" export \
   --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
@@ -110,6 +110,14 @@ python3 "$GE_MODEL_TOOL" compile \
 tail -n 100 "$GE_OMC_DIR/draft/omg.log"
 ```
 
+### 此前整数 Gather 兼容处理
+
+此前日志（draft 进程 158166）明确报 `v4/GatherElements` 的 `Input[0] DataType INT32 is wrong`。这是本次失败的直接原因，前面的输入描述回显和 ImportWarning 不能代替该错误。编译已经进入 draft 阶段，按现有脚本执行顺序，target 已完成非空 OMC 输出检查与原输入哈希复核；这仍属于用户日志证据，尚无独立产物哈希及板端结果。
+
+`v4` 用于取得最后一个有效 token。现在将 INT32 `input_ids[1,S]` reshape 成 `[S]`，用同样的 INT32 `anchor_position[1,1]` 在轴0执行 GatherV2，输出仍是 INT32 `[1,1]`，节点名仍是 `v4`。HIAI 输入合同要求 batch1、非空右填充前缀，保证 anchor 位于 `[0,S-1]`。全程不把 token ID 转成 FP16 或 FP32；其余模型浮点计算仍为 FP16。
+
+已检查 tiny/full 的 target/draft：原先只有 draft 的这一处整数 GatherElements。蓝区实际 GatherElements 验证只接受浮点数据，而 GatherV2D 前端与 CPUCL 的 Gather 支持 INT32 数据和 INT32 索引，CPUCL 有直接 `DoGather<int>` 路径。这不证明内部 X90 会将该节点放到 NPU；最终后端分配与精度仍以内部编译和板端验证为准。导出器现在提前拒绝其他非 FP16 数据的 GatherElements，避免把已知不兼容的节点继续写进 AIR。
+
 ### 此前 BatchMatMul 兼容处理
 
 此前日志（进程 157847）明确显示 `Tbe inner init successfully` 和 `Parallel compilation init success`，此前 socket 路径问题已通过用户复验。失败仍停在 `v1115/BatchMatMul` 支持检查；这次不能继续将它归因于 TE 初始化失败。缺少 `libai_npucore_ascendc_kernel.so` 的提示之后，DDK 明确继续使用 JIT；现有证据不足以判定该库必须补齐。
@@ -120,7 +128,7 @@ tail -n 100 "$GE_OMC_DIR/draft/omg.log"
 
 日志中的 `Ascend310B1` 也不足以判断目标配错：蓝区 Kirin 工具链存在平台名映射、Ascend310B kernel magic 和 ESL 标识。内部 X90 的具体映射不可直接检查，继续使用原来的 `--platform=kirinx90`，不手工改成其他芯片。
 
-以下为此前 BatchMatMul 更新的命令；本轮请使用上方 `air-gather` / `omc-gather` 命令。
+以下为此前 BatchMatMul 更新的命令；本轮请使用上方 `air-clamp` / `omc-clamp` 命令。
 
 ```bash
 cd "$REPO_DIR"

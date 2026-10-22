@@ -123,7 +123,7 @@
   },
   "direct_ge_model": {
     "run_id": "20261022T074906Z-6507-ca8b2b",
-    "status": "SOURCE_DRAFT_INTEGER_GATHER_FIX_USER_RETEST_PENDING",
+    "status": "SOURCE_DRAFT_POSITION_CLAMP_FIX_USER_RETEST_PENDING",
     "pipeline": [
       "ge-cpp",
       "air",
@@ -166,13 +166,13 @@
       "scope": "tiny target/draft AIR; fixed version requires new export"
     },
     "tiny_omg": {
-      "status": "TARGET_COMPILE_USER_LOG_PASS_DRAFT_INTEGER_GATHER_FIX_RETEST_PENDING",
-      "run_id": "20261022T112725Z-20655-b96dab",
+      "status": "TARGET_COMPILE_USER_LOG_PASS_DRAFT_POSITION_CLAMP_FIX_RETEST_PENDING",
+      "run_id": "20261022T114012Z-21463-7a8f45",
       "observed": [
-        "PID158166 fails in draft-omg; compile wrapper reaches draft only after target nonempty OMC and input hash checks",
-        "draft v4 GatherElements rejects Input0 INT32 in RunVerify"
+        "PID158383 reaches draft backend compatibility check; previous GatherElements verification failure no longer reported",
+        "draft v12 Maximum (INT32 context position clamp) is unsupported"
       ],
-      "evidence": "specs/direct-ge-integer-gather-verification.json",
+      "evidence": "specs/direct-ge-position-clamp-verification.json",
       "previous_failure": {
         "run_id": "20261022T093951Z-12973-586101",
         "observed": [
@@ -235,6 +235,15 @@
         "artifact_hashes": "NOT_PROVIDED",
         "source_revision": "UNCONFIRMED_FROM_USER_LOG",
         "device_execution": "PENDING"
+      },
+      "previous_integer_gather_failure": {
+        "status": "TARGET_COMPILE_USER_LOG_PASS_DRAFT_INTEGER_GATHER_FIX_RETEST_PENDING",
+        "run_id": "20261022T112725Z-20655-b96dab",
+        "observed": [
+          "PID158166 fails in draft-omg; compile wrapper reaches draft only after target nonempty OMC and input hash checks",
+          "draft v4 GatherElements rejects Input0 INT32 in RunVerify"
+        ],
+        "evidence": "specs/direct-ge-integer-gather-verification.json"
       }
     },
     "operator_audit": "specs/ge-operator-audit.json"

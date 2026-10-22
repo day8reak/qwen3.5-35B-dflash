@@ -175,3 +175,14 @@ run：`20261022T112725Z-20655-b96dab`，基线 `bbcc505`。用户 PID158166 的�
 蓝区 AIR 的 GatherV2→GatherV2D 转换、INT32 验证及 CPUCL 注册/DoGather<int> 路径均已核查。NPU 算子表未声明 INT32，因此该证据不能证明内部 X90 的设备分配。模型局部回归覆盖完整词表的大 ID、全部73种 S8/S65有效前缀长度、独立的 INT32 边界复制、两种序列化方式及原 tiny draft 全输出等价。最终235通过、4跳过，无未解决失败；跳过项需要实际 GE 资源。
 
 六张 tiny/full 实际发射描述图均无 GatherElements，三个 target 图的全部发射记录哈希与基线一致。修改只影响 draft 的整数选择，旧 prepared 可复用，AIR 必须重导。内部 OMG、HIAI 设备和全模型量化/内存/性能仍待验证。证据见 `specs/direct-ge-integer-gather-verification.json`。经验保留本模型及可执行测试，不修改共享 DDK 或通用技能。
+
+
+## INT32 Maximum 后端与有界位置截断（2026-10-22）
+
+run：`20261022T114012Z-21463-7a8f45`，基线 `be88c95`。用户 PID158383 的 draft 编译已越过 Gather 验证，最终拒绝 `v12/Maximum`。该算子计算 INT32 上下文位置 `max(count-1,0)`。蓝区 IR 允许该数据类型，但 CPUCL 与 elementary NPU 的 Maximum 支持表不接受 INT32，说明仅检查前端注册和推导仍不足以保证后端支持。
+
+审计进一步发现蓝区 CPUCL Less<int> 以 INT32 差值再转浮点判断，极值输入可能溢出。因此撤销初步的通用整数 max/min 改写，只在模型内用 `Less(x,0)` 和同形 Select 替换有界位置截断：`x∈[-1,S-2]`，`S<=INT32_MAX`，差值 `0-x∈[2-S,1]` 不溢出且转浮点保持符号。原生 FP16 极值、通用整数极值发射器与 PyTorch 路径均未改。蓝区 Minimum 本身允许 INT32，不能把它和 Maximum 的限制混为一谈；INT32 Select 只确认 CPUCL 支持，不承诺纯 NPU 放置。
+
+新增10项位置测试覆盖74种前缀、S上界证明、构图前超限拒绝及完整tiny草稿输出/ABI/权重不变；最终既有回归235通过、4跳过，总计245通过。通用极值实验与一次中断的旧源码测试明确作废并保留在run，未作为最终验证。tiny/full共六张发射描述图的审计显示target全部记录与基线一致，draft只增加两个节点。没有实际内部OMG或设备执行。证据见 `specs/direct-ge-position-clamp-verification.json`。
+
+经验保留在本模型和范围限定的可执行回归，未修改共享DDK或通用技能。旧prepared可复用，必须重导AIR；内部双图转换、上板、完整35B压缩量化、质量、内存与性能仍待验证。

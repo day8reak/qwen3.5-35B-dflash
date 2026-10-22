@@ -9,6 +9,7 @@
 | Cumsum | 内部日志明确缺少形状推导；名称与公开定义一致。本次将 FP16 GDN 衰减与整数位置前缀分别分解，见下文。 |
 | BroadcastTo | 有推导注册；小型静态 FP16 广播存在 CPUCL 风险。本次提前展开为共享 Const，动态广播保留。 |
 | ArgMaxV2 | **内部转换未验证**。蓝区只有 ArgMaxExt2，未找到 ArgMaxV2 转换表入口；但同一蓝区表也没有内部已能转换的 SelectV2，不能据此断言不支持。保留现实现，避免用 TopK 替换时改变并列最大值或 NaN 的选择语义。 |
+| Maximum / Minimum | 内部日志拒绝 draft v12 的 INT32 Maximum；蓝区 CPUCL Maximum 也只允许浮点数据。仅 draft 的有界位置截断改为同形 Less + Select，未推广通用整数极值；蓝区 Minimum 实际支持 INT32。 |
 | GatherElements | 先前只核对 schema、注册及端口，未覆盖旧 IR 的数据类型限制。最新内部日志明确拒绝 INT32；draft 的整数 anchor 选择改用 GatherV2，导出端拒绝非 FP16 GatherElements。 |
 | TopKV2、GatherV2、SoftmaxV2、Cast、Sigmoid、Softplus | AIR 转换表有实际入口，对应旧 IR 推导存在。保留当前映射；此前 SoftplusV2 已改为受参数约束的 Softplus。 |
 | SelectV2 | 用户内部日志已显示转换成 Select；保留三个输入显式同形及 BOOL 分支整数载体。 |
@@ -55,3 +56,14 @@ Kirin 蓝区存在 `get_tuling_soc_version` 平台映射和 Ascend310B 内部标
 batch1 的 anchor 选择改为 INT32 vector `[S]` 加 INT32 indices `[1,1]` 的 axis0 GatherV2，得到 `[1,1]`，无浮点载体。蓝区实际 AIR 映射到 GatherV2D，前端允许 INT32数据、要求INT32索引；CPUCL支持表与 Run 分支均支持 INT32并调用DoGather<int>。NPU算子表未列出INT32数据，所以这里不承诺NPU执行。所有当前model的 GatherElements 已消除，普通 FP16嵌入/TopK Gather 保留。
 
 target 已编译推进到 draft 属于用户日志及脚本顺序推断，完整产物与设备验证仍未取得。证据见 [整数 Gather 验证记录](../specs/direct-ge-integer-gather-verification.json)。
+
+
+## PID158383：INT32 Maximum 后端拒绝
+
+用户最新日志已经到兼容性检查，最终拒绝 draft `v12/Maximum`。该节点对位置计数执行 `max(count-1,0)`；Gather 的前端失败已不再是当前阻塞，但不能据此宣称 draft 已生成 OMC 或已执行。
+
+蓝区实际 CPUCL Maximum 的输入类型表只有 FP32/FP16；Less 的算术实现和 Select 的 IR/CPUCL 检查允许 INT32。但 CPUCL Less<int> 实际先计算 INT32 差值再转浮点比较，任意极端整数可能溢出，所以拒绝通用 INT32 max/min 替换。蓝区 Minimum 本身允许 INT32，当前模型没有该节点。
+
+最终修改只针对模型的 `x=cumsum(context_valid)-1`，其范围是 `[-1,S-2]`。用 `Less(x,0)` 加同形 Select 选择0或x，保持原输出名和INT32类型；构图限制S不超过INT32_MAX。即使使用上述差值比较，`0-x` 也在 `[2-S,1]` 内，不溢出且转FP32不会改变符号。Select Run 的INT32分支为整数复制；蓝区NPU Select数据表不含INT32，因此仍需验证内部后端分配。
+
+这里只使用现有算子，没有新增自定义内核；浮点极值、权重、ABI和PyTorch路径未变。内部X90实际编译和板端结果仍需复验。证据见 [位置截断验证记录](../specs/direct-ge-position-clamp-verification.json)。

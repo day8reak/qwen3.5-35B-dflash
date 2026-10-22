@@ -1,0 +1,355 @@
+{
+  "status": "HOST_SOURCE_VALIDATION_PASS_INTERNAL_DRAFT_RETEST_PENDING",
+  "run_id": "20261022T114012Z-21463-7a8f45",
+  "baseline_commit": "be88c95a1a2e6bdbf5c3f1b647806efa416b1461",
+  "user_observation": {
+    "pid": 158383,
+    "graph": "draft",
+    "node": "v12",
+    "operator": "Maximum",
+    "failure": "Node v12 type Maximum don't support!",
+    "gather_progress": "Draft reached backend compatibility checks beyond previous GatherElements verification failure; no OMC/device pass claimed",
+    "target_progress": "Compile reached draft after target output/input-hash checks according to wrapper order; user log evidence only",
+    "target_artifact_hashes": "NOT_PROVIDED",
+    "device_execution": "PENDING"
+  },
+  "change": {
+    "old": "max(cumsum(context_valid)-1,0)",
+    "new": "x=cumsum(context_valid)-1; Less(x,0); Select(condition,0,x)",
+    "domain": "1 <= S <= INT32_MAX; count in [0,S-1], x in [-1,S-2]",
+    "comparison_proof": "Less(x,0) CPU implementation forms 0-x in [2-S,1]. With 1 <= S <= INT32_MAX, every difference fits INT32, and integer-to-float conversion preserves its sign. The >1e-8 test has same truth as >0 for all these integer differences.",
+    "scope": "Model position clamp only; generic emitter unchanged",
+    "graph_float_cast_added": false,
+    "abi_weights_unchanged": true,
+    "output_name": "v12"
+  },
+  "blue_evidence": {
+    "scope": "Actual local blue Kirin9030 next-6.0.1.0 IR, host CPUCL and NPU elementary binary inspection. This is not the internal X90 DDK and not device execution. No production changes or weight payload reads.",
+    "sources": {
+      "manifest": {
+        "file": "manifest.json",
+        "sha256": "a1c58a308516a1fd7c2dbcb3f97e3b64ce0c5c46a4bc61f7983680722584e81d"
+      },
+      "graph": {
+        "file": "libgraph_host.so",
+        "sha256": "e16e8b4c482fafd8a55ff343042a16e6c295b1b61302decba7c65f964f4bc20b"
+      },
+      "cpucl": {
+        "file": "libcpucl_host.so",
+        "sha256": "c2185258b41cdb61f8d3c79252e5d7fc3be91aea86983232bb4129d65d090bda"
+      },
+      "elementary": {
+        "file": "libai_npucore_elementary.so",
+        "sha256": "08a496cc0bcfea745ecdcd1874fbb21ac001f92863856fa94ff03ac303f4a7d3"
+      },
+      "npu_opinfo": {
+        "file": "npu_ascendc_opinfo.json",
+        "sha256": "ea9a2d5554e9a37fb06f623af2849906776a00ed82bf5b7f74bf6f683eb00c70"
+      },
+      "types": {
+        "file": "types.h",
+        "sha256": "87fe2abfdd5bb122f16ac312189794f74c2480c0cd7d0d39ec1208fbe91d9c4c"
+      }
+    },
+    "maximum": "INT32 accepted by IR but not CPUCL or elementary NPU type lists",
+    "less": "INT32 CPUCL comparison uses difference; full-range overflow possible",
+    "select": "INT32 CPUCL data copy supported; inspected NPU elementary variants exclude INT32",
+    "minimum": "Blue IR and CPUCL support INT32; no Minimum in current model",
+    "rejected_generic_rewrite": "Less<int> computes wrapping INT32 rhs-lhs; comparing lhs=INT32_MIN,rhs=0 yields wrapped INT32_MIN and the wrong false result. Generic max/min rewrite cannot claim full-range target exactness."
+  },
+  "tests": {
+    "passed": 245,
+    "skipped": 4,
+    "unresolved_failures": 0,
+    "reports": [
+      {
+        "file": "pytest-final.xml",
+        "sha256": "c6e651b043f945b60c310d0dd105445a5ca1560ddb146aa1ff4d4f46988dcd90",
+        "tests": 239,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 4
+      },
+      {
+        "file": "position-tests.xml",
+        "sha256": "058b87b0aa7c6e34c01e76dbff43f0a50c095ebc1b0c664691eff77380957341",
+        "tests": 10,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    ],
+    "position_cases": [
+      "Both serializers independently decoded; actual draft integer producer through v12 tested across every valid prefix at S1,S8,S65:74cases.",
+      "Original three-input ABI retained; integer-only position producer has no Maximum/Minimum or float Cast; empty context at prefixlength1 yields allzero positions.",
+      "At every actual INT32 Less execution, both mathematical signed differences fit INT32; modeled difference-to-FP32 sign comparison agrees with integer ordering.",
+      "Algebraic endpoint range check for S1,65,262128,INT32max without large model allocation; oversized S fails before graph construction.",
+      "Real serialized clamp substituted into complete tiny draft, compared with prior Maximum IR semantics for all8prefixlengths; outputtokens identical, preparedweights/manifest hashes and ABI unchanged."
+    ],
+    "skips": "Four optional GE headers or matching Save/Load host-library checks",
+    "scope": "Host numerical reference and decoded serialized artifacts, not internal OMG or device execution"
+  },
+  "structural_audit": {
+    "source_sha256": {
+      "model/qwen35_moe_dflash/ge_cpp.py": "457d018525aec690bc49fc335c19303c1aa1861ae86dc51c076f4412e696223a",
+      "model/qwen35_moe_dflash/ge_draft.py": "15328c5db8c8ac3421c0d25561e29e6a8eeeae1f4c9499d266896d773ebbdb7a"
+    },
+    "baseline": "be88c95",
+    "baseline_binding": "Previous run actual-emission hashes; verified all listed baseline source/config files byte-identical to current repository before comparison.",
+    "baseline_files_verified": [
+      "model/qwen35_moe_dflash/ge_cpp.py",
+      "model/qwen35_moe_dflash/ge_draft.py",
+      "model/qwen35_moe_dflash/ge_target.py",
+      "model/qwen35_moe_dflash/ge_matmul.py",
+      "model/qwen35_moe_dflash/ge_constants.py",
+      "model/qwen35_moe_dflash/ge_scan.py",
+      "model/qwen35_moe_dflash/ge_recipe.py",
+      "model/qwen35_moe_dflash/ge_ir.py",
+      "model/qwen35_moe_dflash/ge_export.py",
+      "model/qwen35_moe_dflash/config.py",
+      "specs/target-config.json",
+      "specs/draft-config.json"
+    ],
+    "mode": "Actual emitted records captured before recipe writing, external descriptors and arithmetic folding disabled; no checkpoint reads.",
+    "cases": [
+      {
+        "tiny": true,
+        "sequence_length": 8,
+        "graph": "target",
+        "emitted_record_count": 9276,
+        "records_sha256": "5305cae77e36055e808fed4adaf901a305966d0a923fbcd0dfd00411831cfc1b",
+        "int32_output_operation_counts": {
+          "Data": 2,
+          "Const": 850,
+          "TopKV2": 4,
+          "Cast": 16,
+          "ReduceSum": 16,
+          "ArgMaxV2": 1
+        },
+        "integer_first_input_operation_counts": {
+          "Cast": 1,
+          "Equal": 16,
+          "ReduceSum": 16,
+          "Greater": 16
+        },
+        "native_integer_extrema_count": 0,
+        "all_records_identical_to_be88c95_baseline": true
+      },
+      {
+        "tiny": true,
+        "sequence_length": 8,
+        "graph": "draft",
+        "emitted_record_count": 452,
+        "records_sha256": "c7d8bcdce9c6e161dd301762e5e9479388a4711960804966c375b04ebfe7b9c0",
+        "int32_output_operation_counts": {
+          "Data": 2,
+          "Cast": 3,
+          "ReduceSum": 1,
+          "Const": 91,
+          "Sub": 3,
+          "Reshape": 3,
+          "GatherV2": 1,
+          "ConcatD": 6,
+          "Slice": 4,
+          "Add": 4,
+          "SelectV2": 1,
+          "ArgMaxV2": 1
+        },
+        "integer_first_input_operation_counts": {
+          "Cast": 3,
+          "ReduceSum": 1,
+          "Sub": 3,
+          "Reshape": 3,
+          "GatherV2": 1,
+          "ConcatD": 6,
+          "Less": 3,
+          "Slice": 4,
+          "Add": 4,
+          "LessEqual": 1
+        },
+        "native_integer_extrema_count": 0,
+        "v12_contract": "Less(INT32 x[1,S], INT32 scalar zero) -> BOOL[1,S]; SelectV2(condition, expanded zero, x), every Select port [1,S], output INT32",
+        "record_delta": 2
+      },
+      {
+        "tiny": false,
+        "sequence_length": 8,
+        "graph": "target",
+        "emitted_record_count": 445281,
+        "records_sha256": "689af24a5a75cee9b55620040f0dedbbe6955f26c74107bec6e4eec463079574",
+        "int32_output_operation_counts": {
+          "Data": 2,
+          "Const": 48877,
+          "TopKV2": 40,
+          "Cast": 10240,
+          "ReduceSum": 10240,
+          "ArgMaxV2": 1
+        },
+        "integer_first_input_operation_counts": {
+          "Cast": 1,
+          "Equal": 10240,
+          "ReduceSum": 10240,
+          "Greater": 10240
+        },
+        "native_integer_extrema_count": 0,
+        "all_records_identical_to_be88c95_baseline": true
+      },
+      {
+        "tiny": false,
+        "sequence_length": 8,
+        "graph": "draft",
+        "emitted_record_count": 1180,
+        "records_sha256": "2db3b8bf91a317d92bda5f6977f304b93f0b9af1f2ff5efc69c2e1d1063ff8cb",
+        "int32_output_operation_counts": {
+          "Data": 2,
+          "Cast": 3,
+          "ReduceSum": 1,
+          "Const": 235,
+          "Sub": 7,
+          "Reshape": 11,
+          "GatherV2": 1,
+          "ConcatD": 6,
+          "Slice": 8,
+          "Add": 4,
+          "SelectV2": 1,
+          "ArgMaxV2": 1
+        },
+        "integer_first_input_operation_counts": {
+          "Cast": 3,
+          "ReduceSum": 1,
+          "Sub": 7,
+          "Reshape": 11,
+          "GatherV2": 1,
+          "ConcatD": 6,
+          "Less": 7,
+          "Slice": 8,
+          "Add": 4,
+          "LessEqual": 5
+        },
+        "native_integer_extrema_count": 0,
+        "v12_contract": "Less(INT32 x[1,S], INT32 scalar zero) -> BOOL[1,S]; SelectV2(condition, expanded zero, x), every Select port [1,S], output INT32",
+        "record_delta": 2
+      },
+      {
+        "tiny": false,
+        "sequence_length": 128,
+        "graph": "target",
+        "emitted_record_count": 447602,
+        "records_sha256": "4d6a785a20dbce5dae6571ff3eea810dc62c714dd398c3aedc1b985f09f6d290",
+        "int32_output_operation_counts": {
+          "Data": 2,
+          "Const": 49618,
+          "TopKV2": 40,
+          "Cast": 10240,
+          "ReduceSum": 10240,
+          "ArgMaxV2": 8,
+          "ConcatD": 1
+        },
+        "integer_first_input_operation_counts": {
+          "Cast": 1,
+          "Equal": 10240,
+          "ReduceSum": 10240,
+          "Greater": 10240,
+          "ConcatD": 1
+        },
+        "native_integer_extrema_count": 0,
+        "all_records_identical_to_be88c95_baseline": true
+      },
+      {
+        "tiny": false,
+        "sequence_length": 128,
+        "graph": "draft",
+        "emitted_record_count": 1204,
+        "records_sha256": "cabdc693ceefbe82c781577264e370db78f85255559f507ae7f4e5e6aadd28e3",
+        "int32_output_operation_counts": {
+          "Data": 2,
+          "Cast": 3,
+          "ReduceSum": 1,
+          "Const": 239,
+          "Sub": 7,
+          "Reshape": 11,
+          "GatherV2": 1,
+          "ConcatD": 10,
+          "Slice": 12,
+          "Add": 8,
+          "SelectV2": 1,
+          "ArgMaxV2": 1
+        },
+        "integer_first_input_operation_counts": {
+          "Cast": 3,
+          "ReduceSum": 1,
+          "Sub": 7,
+          "Reshape": 11,
+          "GatherV2": 1,
+          "ConcatD": 10,
+          "Less": 7,
+          "Slice": 12,
+          "Add": 8,
+          "LessEqual": 5
+        },
+        "native_integer_extrema_count": 0,
+        "v12_contract": "Less(INT32 x[1,S], INT32 scalar zero) -> BOOL[1,S]; SelectV2(condition, expanded zero, x), every Select port [1,S], output INT32",
+        "record_delta": 2
+      }
+    ],
+    "domain": {
+      "x": "[-1,S-2]",
+      "S": "[1,INT32_MAX]",
+      "signed_difference_0_minus_x": "[2-S,1], always fits INT32",
+      "scope": "Only the existing draft context-position clamp; generic extrema unchanged."
+    },
+    "limitations": [
+      "No private OMG or device execution; INT32 Less/Select mapping must be retried there."
+    ]
+  },
+  "rejected_work": {
+    "generic_extrema": "Withdrawn before promotion after actual blue Less<int> overflow discovery; obsolete files retained in run",
+    "initial_regression": "Interrupted after 160 passed/4 skipped on obsolete generic-emitter source; not counted. Final frozen production rerun passed235/skipped4",
+    "obsolete_unit_attempt": "Generic CPU-only tests and one test harness failure retained in obsolete-extrema-tests.xml; not delivery evidence"
+  },
+  "retry": {
+    "prepared": "REUSABLE_UNCHANGED",
+    "air": "REEXPORT_REQUIRED",
+    "guide": "docs/direct-model-air.md"
+  },
+  "remaining": [
+    "Internal X90 draft compilation and backend placement",
+    "HIAI target/draft numerical validation",
+    "Full checkpoint conversion/quality",
+    "Native compressed integer GE weight mapping NOT_IMPLEMENTED",
+    "Quantization quality, board memory and performance"
+  ],
+  "source_sha256": {
+    "model/qwen35_moe_dflash/ge_draft.py": "15328c5db8c8ac3421c0d25561e29e6a8eeeae1f4c9499d266896d773ebbdb7a",
+    "tests/test_ge_position_clamp.py": "15325ccc62ed34a5dc71d3717ce7d7543db207c5c8852f17c2497849f0817a34",
+    "docs/README.md": "f84a17a6eb13c8a94e9fe74346d2a991a69449ab6b8be3d7f8e0014179836bce",
+    "docs/direct-model-air.md": "ff19abd61e3050c5d763d30b8f3703738d336c7387b7707b20678fadcf33f7a0",
+    "docs/ge-operator-compatibility.md": "7a6d654d2d16ffb8a7f50d79232b1b58050432ee25ceb0c9804881d4851aabbd",
+    "docs/experience.md": "4fa093db8016092360226288fbb19fc9f14716714e3306a95b41de8f7aa88632",
+    "docs/validation.md": "3f716cc81c3c3ca45aad21264d6edf1103934ef70a00ca8c3afabe830522ac63",
+    "specs/model-workflow.json": "fe63e8e6b06f8d39da5598f25c3d300e685192c747ce34f20e2cc5fb7bf00a3f"
+  },
+  "unchanged_emitter_sha256": "457d018525aec690bc49fc335c19303c1aa1861ae86dc51c076f4412e696223a",
+  "run_evidence": [
+    {
+      "file": "blue-integer-extrema-audit.json",
+      "sha256": "a265d9d6413bc9d32c67e03dcded4b3c3b67d892bc02aed4ba284df0795cc366"
+    },
+    {
+      "file": "maximum-shape-audit.json",
+      "sha256": "6ddb2a5831382a1604a847aab27137c8866da6b67dd2d3f9e93115c52ed43818"
+    },
+    {
+      "file": "context-clamp-full-emission-audit.json",
+      "sha256": "d02a7ac86555ca9ac454f01da25b1062ee1af66e600f0772edcd0bf2d9560cde"
+    },
+    {
+      "file": "position-clamp-verification.json",
+      "sha256": "11468979cd0ee7261d3d3b6c83bfc9b06a30e169946d61cb1411abace80a736f"
+    },
+    {
+      "file": "obsolete-generic-extrema-audit.json",
+      "sha256": "662776fdb1d9059f067adbc1f1655447e96f5245d51f3173087b65160a0e326c"
+    }
+  ]
+}

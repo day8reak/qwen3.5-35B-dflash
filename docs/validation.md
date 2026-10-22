@@ -207,3 +207,16 @@ run：`20261022T112725Z-20655-b96dab`，基线 `bbcc505`。用户 PID158166 日�
 额外核查 tiny S8、full S8、full S128 共六张实际发射描述图：无 GatherElements，draft 各有一处精确 INT32 GatherV2；三个 target 图的全部发射记录哈希与 `bbcc505` 基线相同。结构检查仅使用外置权重路径，未读取完整checkpoint。蓝区实际验证器、AIR转换和CPUCL整数模板支持该选择路径；内部X90编译/后端放置仍须用户验证。
 
 四项可选真实GE头文件/SaveLoad检查因资源缺失跳过；没有运行内部OMG或板端。证据、报告与冻结源码哈希见 `specs/direct-ge-integer-gather-verification.json`，报告保留在本run。服务器按直接GE指南第3节复用prepared，在新目录重新export后compile。完整35B、原生压缩整数权重映射、量化质量及设备内存/性能门槛不变。
+
+
+## Draft 有界 INT32 位置截断（2026-10-22）
+
+run：`20261022T114012Z-21463-7a8f45`，基线 `be88c95`。用户 PID158383 的 draft 已进入后端兼容性检查，最终拒绝 `v12/Maximum`。最新源码仅将模型内 `max(cumsum(context_valid)-1,0)` 改为有界整数 Less 加同形 Select，原节点名和INT32输出保持；显式拒绝超过INT32计数范围的序列长度。通用发射器、target、权重、PyTorch路径和HIAI ABI未变。
+
+最终冻结源码的15文件既有回归为 **235 passed、4 skipped**；新位置clamp文件 **10 passed**，唯一覆盖合计 **245 passed、4 skipped、0未解决失败**。新增检查独立解码两种序列化，运行实际draft位置前缀子图，覆盖S1/S8/S65全部74种有效前缀（含单token的全零上下文）；每次整数Less都验证数学差值在INT32内，并模拟已审查蓝区比较算法。单独端点证明覆盖S=INT32_MAX，不分配巨大模型。完整tiny草稿以旧Maximum语义作基线，替换为真实序列化clamp后全部8种前缀输出相同，prepared及权重哈希、ABI不变。
+
+结构审计覆盖tiny S8、full S8、full S128，共六张实际发射描述图。三个target的完整记录哈希与基线相同；三个draft分别452/1180/1204条记录，仅各增加2条，均无Maximum/Minimum/GatherElements，v12为全端口同形的INT32 SelectV2。完整权重未读取，仅使用外置权重描述。
+
+蓝区CPUCL Maximum拒绝INT32，Less/Select可接受；但实际Less<int>使用差值比较，不能据此认证通用全范围INT32极值替换。本模型有界差值不会溢出，Select整数分支保留整数数据；内部X90放置和执行仍未验证。4项可选真实GE头文件/SaveLoad检查因资源缺失跳过。此前通用替换实验的测试结果与中断回归没有计入最终通过数。
+
+证据及源码哈希见 `specs/direct-ge-position-clamp-verification.json`，原始报告保留本run。target OMC进展仍仅来自用户日志和编排顺序，无独立产物哈希或设备结果。下一步按直接GE指南第3节在新目录export，再compile；全模型量化、质量、内存与性能门槛不变。
