@@ -123,7 +123,7 @@
   },
   "direct_ge_model": {
     "run_id": "20261022T074906Z-6507-ca8b2b",
-    "status": "SOURCE_OMG_IPC_FIX_USER_RETEST_PENDING",
+    "status": "SOURCE_BATCHMATMUL_NORMALIZATION_USER_RETEST_PENDING",
     "pipeline": [
       "ge-cpp",
       "air",
@@ -139,7 +139,7 @@
     "real_model_omg": "PENDING",
     "device_execution": "PENDING",
     "native_quantized_ge_mapping": "NOT_IMPLEMENTED",
-    "next_command": "python3 \"$GE_MODEL_TOOL\" compile --air \"$GE_AIR_DIR\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --output \"$GE_OMC_DIR\"",
+    "next_command": "python3 \"$GE_MODEL_TOOL\" export --prepared \"$GE_PAIR_RUN/prepared\" --ge-root \"$CANN_ROOT\" --output \"$GE_AIR_DIR\"",
     "guide": "docs/direct-model-air.md",
     "data_factory_fix": {
       "run_id": "20261022T084136Z-11227-7c2c63",
@@ -166,14 +166,15 @@
       "scope": "tiny target/draft AIR; fixed version requires new export"
     },
     "tiny_omg": {
-      "status": "USER_REPORTED_IPC_TE_BATCHMATMUL_FAILURE_FIX_RETEST_PENDING",
-      "run_id": "20261022T104957Z-18903-e12366",
+      "status": "USER_REPORTED_BATCHMATMUL_FAILURE_RANK3_FIX_RETEST_PENDING",
+      "run_id": "20261022T110926Z-19546-f28296",
       "observed": [
-        "PID157707 OSError AF_UNIX path too long before TE multi_process_check initialization failure",
-        "ImportError cannot load module more than once per process after first initialization failure",
-        "Final compatibility check reports v1115 BatchMatMul unsupported; causal link to failed TE remains inference"
+        "PID157847 Tbe inner init successfully and Parallel compilation init success (8 workers)",
+        "Final v1115 BatchMatMul support check still fails; original shape rank5, NN FP16",
+        "Absent builtin kernel library reports JIT-only continuation; no proof this library must be installed",
+        "Ascend310B1 name alone does not establish wrong kirinx90 mapping"
       ],
-      "evidence": "specs/direct-ge-ipc-verification.json",
+      "evidence": "specs/direct-ge-bmm-verification.json",
       "previous_failure": {
         "run_id": "20261022T093951Z-12973-586101",
         "observed": [
@@ -209,6 +210,16 @@
           "ConvertReshape v974 and v975 changes55 0 to-1 0; v974 then infers2147483647"
         ],
         "evidence": "specs/direct-ge-reshape-env-verification.json"
+      },
+      "previous_ipc_failure": {
+        "status": "USER_REPORTED_IPC_TE_BATCHMATMUL_FAILURE_FIX_RETEST_PENDING",
+        "run_id": "20261022T104957Z-18903-e12366",
+        "observed": [
+          "PID157707 OSError AF_UNIX path too long before TE multi_process_check initialization failure",
+          "ImportError cannot load module more than once per process after first initialization failure",
+          "Final compatibility check reports v1115 BatchMatMul unsupported; causal link to failed TE remains inference"
+        ],
+        "evidence": "specs/direct-ge-ipc-verification.json"
       }
     },
     "operator_audit": "specs/ge-operator-audit.json"

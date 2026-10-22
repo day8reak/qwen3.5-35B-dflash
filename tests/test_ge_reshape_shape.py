@@ -166,7 +166,9 @@ def test_every_tiny_model_reshape_uses_int32_and_other_controls_keep_width(tmp_p
         r'ops\.push_back\(Op\(("[^"\n]+"), ("[^"\n]+"),', cpp)]
     assert declarations == [(record["name"], record["type"]) for record in records]
     reshapes = [item for item in records if item["type"] == "Reshape"]
-    assert len(reshapes) == [739, 64][graph_index]
+    normalized_batches = sum(node.kind == "matmul" and min(len(x.shape) for x in node.inputs) > 2
+                             and max(len(x.shape) for x in node.inputs) > 3 for node in graph.nodes)
+    assert len(reshapes) == [739, 64][graph_index] + 3 * normalized_batches
     for record in reshapes:
         _check_reshape(records, record)
     if graph_index == 0:

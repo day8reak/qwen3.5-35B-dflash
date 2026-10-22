@@ -558,6 +558,11 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
                            {"axis": "int64_t{0}", "num_axes": "int64_t{-1}"})
                 e.refs[v.name] = (var, "y")
                 continue
+            if (max(len(x.shape) for x in ins) > 3
+                    or (min(len(x.shape) for x in ins) > 2 and a.get("transpose_a", False))):
+                from .ge_matmul import emit_rank3_matmul
+                emit_rank3_matmul(e, v, ins[0], ins[1], a)
+                continue
             batched = max(len(x.shape) for x in ins) > 2
             typ, ports = ("BatchMatMulV2" if batched else "MatMul"), ["x1", "x2"]
             attrs = {"adj_x1" if batched else "transpose_x1": str(bool(a.get("transpose_a", False))).lower(),

@@ -2,7 +2,7 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。最新 tiny target OMG 日志在 TE 多进程初始化时报 `AF_UNIX path too long`，随后在兼容性检查时报 BatchMatMul 不支持。对应源码修正及重试命令见第 3 节；真实双图 OMG 转换和上板仍待验证。已逐类核查 39 种实际生成的 GE 算子，范围和剩余风险见 [算子兼容性核查](ge-operator-compatibility.md)。
+用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。最新 tiny target OMG 日志确认 TE 多进程初始化成功，仍在兼容性检查时报五维 BatchMatMul 不支持。本轮增加批次维规范化及左矩阵显式转置，需重导 AIR 后验证内部转换。对应源码修正及重试命令见第 3 节；真实双图 OMG 转换和上板仍待验证。已逐类核查 39 种实际生成的 GE 算子，范围和剩余风险见 [算子兼容性核查](ge-operator-compatibility.md)。
 
 ## 实现范围
 
@@ -80,13 +80,43 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 内部 OMG 兼容性修正与重试
 
-最新日志（进程 157707）首错是 `OSError: AF_UNIX path too long`，随后 `multi_process_check`、TE 初始化失败，最后才报 `v1115/BatchMatMul` 不支持。旧脚本将 OMG 的 `TMPDIR` 设为完整 run 路径；[CPython 的 multiprocessing](https://github.com/python/cpython/blob/3.10/Lib/multiprocessing/connection.py) 还会在它下面追加 `pymp-*`、`listener-*`，长路径可复现同样的 socket 错误。
+最新日志（进程 157847）明确显示 `Tbe inner init successfully` 和 `Parallel compilation init success`，此前 socket 路径问题已通过用户复验。失败仍停在 `v1115/BatchMatMul` 支持检查；这次不能继续将它归因于 TE 初始化失败。缺少 `libai_npucore_ascendc_kernel.so` 的提示之后，DDK 明确继续使用 JIT；现有证据不足以判定该库必须补齐。
+
+本轮把 target/draft 中批次前缀相同的四维、五维矩阵乘统一成三维 BatchMatMul，再恢复输出形状。例如 `v1115` 的 `[1,2,1,64,64] × [1,2,1,64,8]` 变为 `[2,64,64] × [2,64,8]`，结果恢复成 `[1,2,1,64,8]`；新原生节点名为 `__ge/v1115/batch_output`。只合并 batch 维，M/K/N 和每个矩阵的对应关系不变，使用受检查的 INT32 shape。前缀不一致会明确拒绝，不能将交叉广播误写成一对一批次。现有三维卷积 BMM 和二维投影保留，不逐批展开：完整模型卷积分支每层最多8192个批次，逐批拆分会造成大量节点增长。
+
+蓝区库的实际支持检查还拒绝 `adj_x1=true`。完整模型 S128 有30个这样的 GDN 状态更新节点；现在在三维左输入上显式执行 `Transpose(0,2,1)`，再设置 `adj_x1=false`，右侧转置语义保留。没有增加浮点计算或 FP32 张量。**蓝区检查器没有给出五维不支持的直接证据，所以批次规范化仍是待内部 OMG 验证的兼容处理，不能宣称已确定 v1115 的唯一根因。**
+
+日志中的 `Ascend310B1` 也不足以判断目标配错：蓝区 Kirin 工具链存在平台名映射、Ascend310B kernel magic 和 ESL 标识。内部 X90 的具体映射不可直接检查，继续使用原来的 `--platform=kirinx90`，不手工改成其他芯片。
+
+**本轮改变 AIR 内容，必须重新 export。旧 prepared 和权重可以复用：**
+
+```bash
+cd "$REPO_DIR"
+git pull --ff-only
+export GE_AIR_DIR="$GE_PAIR_RUN/air-bmm-$(date +%Y%m%d-%H%M%S)"
+export GE_OMC_DIR="$GE_PAIR_RUN/omc-bmm-$(date +%Y%m%d-%H%M%S)"
+
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --output "$GE_AIR_DIR"
+
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_AIR_DIR" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_OMC_DIR"
+```
+
+只有 export 输出 `EXPORTED` 才继续 compile，原目录与日志保留。真实 X90 内核支持、HIAI 输出和耗时仍需服务器与板端验证。
+
+### 此前 IPC 与图兼容性修正
+
+此前日志（进程 157707）首错是 `OSError: AF_UNIX path too long`，随后 `multi_process_check`、TE 初始化失败，最后才报 `v1115/BatchMatMul` 不支持。旧脚本将 OMG 的 `TMPDIR` 设为完整 run 路径；[CPython 的 multiprocessing](https://github.com/python/cpython/blob/3.10/Lib/multiprocessing/connection.py) 还会在它下面追加 `pymp-*`、`listener-*`，长路径可复现同样的 socket 错误。
 
 现在 OMG 子进程的 `TMPDIR/TMP/TEMP` 使用短的 `/proc/<父进程PID>/fd/<FD>/.ipc-<随机后缀>` 别名。实际文件仍位于本次 run 的独立临时目录，父进程在编译期间保持目录描述符有效；每次调用使用不同后缀，防止旧进程因描述符复用而误访问新调用的目录。父 shell 不变。每图 `omg-environment.json` 记录短路径、物理目录和有效期。此方案依赖 Linux procfs 访问；厂商若自行将别名解析成真实长路径，仍须进一步适配，不能据主机测试宣称内部 TE 已通过。
 
 源码核对 `v1115` 为 FP16 `[1,2,1,64,64] × [1,2,1,64,8] → [1,2,1,64,8]`，发射 `BatchMatMulV2`，无转置或 batch 广播不匹配。TE 初始化失败可能导致后续算子注册不可用，因此先修复 IPC 再判定 X90 内核支持；此修改不改变模型算子或精度。
 
-**已使用上一版图修正重新导出 AIR、遇到本次 AF_UNIX 错误时，只需更新并重跑 compile：**
+下面保留的是此前仅修复 IPC 时的 compile 重试方式；**本轮 BatchMatMul 更新请使用上方 export + compile 命令**。
 
 ```bash
 cd "$REPO_DIR"

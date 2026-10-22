@@ -10,7 +10,7 @@
 | BroadcastTo | 有推导注册；小型静态 FP16 广播存在 CPUCL 风险。本次提前展开为共享 Const，动态广播保留。 |
 | ArgMaxV2 | **内部转换未验证**。蓝区只有 ArgMaxExt2，未找到 ArgMaxV2 转换表入口；但同一蓝区表也没有内部已能转换的 SelectV2，不能据此断言不支持。保留现实现，避免用 TopK 替换时改变并列最大值或 NaN 的选择语义。 |
 | GatherElements | 找到实际 Infer、Verify 和注册对象；dim 属性、输出索引形状和输入数据类型匹配，无证据需要替换。 |
-| TopKV2、GatherV2、BatchMatMulV2、SoftmaxV2、Cast、Sigmoid、Softplus | AIR 转换表有实际入口，对应旧 IR 推导存在。保留当前映射；此前 SoftplusV2 已改为受参数约束的 Softplus。 |
+| TopKV2、GatherV2、SoftmaxV2、Cast、Sigmoid、Softplus | AIR 转换表有实际入口，对应旧 IR 推导存在。保留当前映射；此前 SoftplusV2 已改为受参数约束的 Softplus。 |
 | SelectV2 | 用户内部日志已显示转换成 Select；保留三个输入显式同形及 BOOL 分支整数载体。 |
 | ReduceSum、ReduceMean | 有推导注册；本次 FP16 前缀分解复用 ReduceSum。实际累加精度须在板端验证。 |
 | Power、Swish | 有推导注册；日志中 Swish 已推导成功。保留 RMSNorm 的 Power 和静态小常量预计算。 |
@@ -37,3 +37,12 @@ GDN 的 FP16 前缀输入为 `-exp(A_log) * softplus(a + dt_bias)` 及其零填�
 `v974` 和 `v975` 的 ConvertReshape 日志新增了正维度改为 `-1 0` 的证据；这比此前单纯的 `1 0` 回显更具体。INT64 中这两个32位字对应4294967295，不能表示有符号-1。修正将全部 Reshape 构造点的 shape Const 显式存为 INT32，包括普通 view、矩阵投影展平/恢复和 argmax keepdims 恢复；官方 schema 允许两种宽度。未修改计算张量 dtype，也未推断所有 INT64 参数都不兼容。
 
 Slice 类型错误紧接 ConstantFolding begin，确认是常量折叠阶段；具体失败节点仍未报告。新增小型 FP16 Slice/Reshape 离线复制移除 tiny 已知的32个静态专家切片。完整权重的巨大源张量依旧跳过，动态 FP16 Slice 保留原实现。TE 接口错配另通过 OMG 子进程 DDK 路径优先和 CANN 路径隔离处理，内部实际转换仍需重试。详细运行方式见直接 GE 指南第3节。
+
+
+## PID157847：TE 初始化成功后的 BatchMatMul 拒绝
+
+用户补充日志确认并行编译与 TE 内部初始化成功；最终拒绝 v1115 五维 BatchMatMul。该节点的 M/K/N、FP16类型和批次对应关系正确，前面的某个 custom_ascendc_lib 子库拒绝不等于所有后端均拒绝；已见 v10 的三维 BMM 常量子图完成 CPUCL 编译，但不能据此宣称动态三维 FP16 BMM 在 NPU 通过。
+
+蓝区 `libai_npucore_ascendc.so` 的实际 BatchMatMul builder 继承 MatMul 支持检查，读取 `adj_x1` 后在为真时返回失败（嵌入源码位置 ascendc_matmul_op_builder.cpp:575，消息 `Not Support Matrix A Transpose`）。它未显示 rank>3/4 禁止条件，Python 后续检查源码在本地包缺失。新发射器对相同批次前缀合并成 rank3，保留每个矩阵，并显式执行左转置以避免该蓝区属性限制；内部 X90 的行为仍待复验。未采用逐批展开以避免完整模型数十万矩阵产生大量图节点，也不使用改变舍入边界的乘法加归约替代。
+
+Kirin 蓝区存在 `get_tuling_soc_version` 平台映射和 Ascend310B 内部标识；不能只看 soc_version 日志就改变 kirinx90 目标。所有修改只在本项目导出端完成，未修改共享 DDK。证据见 [批量矩阵乘验证记录](../specs/direct-ge-bmm-verification.json)。

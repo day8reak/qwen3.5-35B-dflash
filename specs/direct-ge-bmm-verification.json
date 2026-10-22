@@ -1,0 +1,327 @@
+{
+  "schema_version": 1,
+  "run_id": "20261022T110926Z-19546-f28296",
+  "baseline_commit": "2ad3cbd28f208294b3b8eaf4f630f9b58ec3878a",
+  "status": "SOURCE_HOST_TESTS_PASS_INTERNAL_BATCHMATMUL_RETEST_PENDING",
+  "observation": {
+    "pid": 157847,
+    "te_status": "USER_REPORTED_INITIALIZATION_SUCCESS",
+    "parallel_workers": 8,
+    "failure": "v1115 BatchMatMul unsupported at final compatibility check",
+    "preceding_const_graph": "v10 rank3 BatchMatMul inferred and CPUCL subgraph compiled; not dynamic NPU evidence",
+    "builtin_kernel": "Missing library explicitly continued JIT-only; mandatory installation not established"
+  },
+  "v1115": {
+    "original_inputs": [
+      [
+        1,
+        2,
+        1,
+        64,
+        64
+      ],
+      [
+        1,
+        2,
+        1,
+        64,
+        8
+      ]
+    ],
+    "native_inputs": [
+      [
+        2,
+        64,
+        64
+      ],
+      [
+        2,
+        64,
+        8
+      ]
+    ],
+    "native_output": [
+      2,
+      64,
+      8
+    ],
+    "restored_output": [
+      1,
+      2,
+      1,
+      64,
+      8
+    ],
+    "native_node": "__ge/v1115/batch_output",
+    "dtype": "float16"
+  },
+  "change": {
+    "batch_layout": "Matching batch prefixes only; physical batch axes flattened, no per-batch graph unroll",
+    "left_transpose": "Explicit rank3 Transpose(0,2,1), then adj_x1=false; right transpose semantics retained",
+    "shape_parameters": "Checked INT32; K/output/dtype and batch correspondence validated",
+    "precision": "No new floating arithmetic, casts or changed matrix product boundaries",
+    "target_platform": "kirinx90 unchanged"
+  },
+  "blue_evidence": {
+    "profile": "kirin9030-next-6.0.1.0",
+    "internal_equivalence": false,
+    "library_sha256": "65cd1e953c6e8d563ed2f5a84fd94b7aa450db5e0bd1e7bcfffa876ce1512d28",
+    "checker": {
+      "constructor_calls": "ascendc::AscendCMatMulOpBuilder::AscendCMatMulOpBuilder",
+      "vtable_base": "0x5ff4d0",
+      "check_supported_entry": {
+        "offset": "0x38",
+        "entry": "0x26d9f4",
+        "jump_to": "0x27e37e"
+      },
+      "get_transpose_a_entry": {
+        "offset": "0x68",
+        "entry": "0x26db2a"
+      },
+      "restrictions_observed": [
+        "reject transpose_a=true",
+        "require lhs rank>=2; no observed upper rank bound in this function",
+        "M,K in [1,65536], N in [1,655350]",
+        "reject lhs direct node type Const or Constant"
+      ],
+      "scope": "static inspection of actual blue host C++ checker, not calling internal OMG and not full downstream support chain",
+      "source_artifacts": {
+        "ascendc_batchmatmul_constructor": "ascendc_batchmatmul_constructor.asm.txt",
+        "ascendc_matmul_check": "ascendc_matmul_check.asm.txt",
+        "getter": "ascendc_batchmatmul_get_transpose_a.asm.txt"
+      },
+      "get_transpose_a_attribute": "adj_x1",
+      "embedded_source_file": "ascendc_matmul_op_builder.cpp",
+      "embedded_source_line_transpose_reject": 575,
+      "transA_branch": "0x27e3a7 calls vtable+0x68; false jumps onward, true logs Not Support Matrix A Transpose and returns -1."
+    },
+    "rank_restriction": "No upper rank3/4 limit found in available checker; downstream Python check unavailable",
+    "soc_name": "Kirin toolchain has Ascend mapping/magic identifiers; exact private X90 mapping unverified"
+  },
+  "full_structure_audit": [
+    {
+      "tiny": true,
+      "sequence_length": 8,
+      "graph": "target",
+      "emitted_record_count": 9276,
+      "batch_matmul_count": 27,
+      "reshape_count": 808,
+      "materialized_left_transposes": 0,
+      "all_native_bmm_rank3_matching_batches": true,
+      "all_native_bmm_adj_x1_false": true,
+      "all_reshape_controls_int32_and_exact": true,
+      "matrix_operation_count_preserved": true
+    },
+    {
+      "tiny": true,
+      "sequence_length": 8,
+      "graph": "draft",
+      "emitted_record_count": 447,
+      "batch_matmul_count": 4,
+      "reshape_count": 76,
+      "materialized_left_transposes": 0,
+      "all_native_bmm_rank3_matching_batches": true,
+      "all_native_bmm_adj_x1_false": true,
+      "all_reshape_controls_int32_and_exact": true,
+      "matrix_operation_count_preserved": true
+    },
+    {
+      "tiny": false,
+      "sequence_length": 8,
+      "graph": "target",
+      "emitted_record_count": 445281,
+      "batch_matmul_count": 261,
+      "reshape_count": 28195,
+      "materialized_left_transposes": 0,
+      "all_native_bmm_rank3_matching_batches": true,
+      "all_native_bmm_adj_x1_false": true,
+      "all_reshape_controls_int32_and_exact": true,
+      "matrix_operation_count_preserved": true
+    },
+    {
+      "tiny": false,
+      "sequence_length": 8,
+      "graph": "draft",
+      "emitted_record_count": 1175,
+      "batch_matmul_count": 12,
+      "reshape_count": 216,
+      "materialized_left_transposes": 0,
+      "all_native_bmm_rank3_matching_batches": true,
+      "all_native_bmm_adj_x1_false": true,
+      "all_reshape_controls_int32_and_exact": true,
+      "matrix_operation_count_preserved": true
+    },
+    {
+      "tiny": false,
+      "sequence_length": 128,
+      "graph": "target",
+      "emitted_record_count": 447602,
+      "batch_matmul_count": 411,
+      "reshape_count": 28929,
+      "materialized_left_transposes": 30,
+      "all_native_bmm_rank3_matching_batches": true,
+      "all_native_bmm_adj_x1_false": true,
+      "all_reshape_controls_int32_and_exact": true,
+      "matrix_operation_count_preserved": true
+    },
+    {
+      "tiny": false,
+      "sequence_length": 128,
+      "graph": "draft",
+      "emitted_record_count": 1199,
+      "batch_matmul_count": 12,
+      "reshape_count": 216,
+      "materialized_left_transposes": 0,
+      "all_native_bmm_rank3_matching_batches": true,
+      "all_native_bmm_adj_x1_false": true,
+      "all_reshape_controls_int32_and_exact": true,
+      "matrix_operation_count_preserved": true
+    }
+  ],
+  "tests": {
+    "unique_passed": 223,
+    "unique_skipped": 4,
+    "unresolved_failures": 0,
+    "reports": [
+      {
+        "report": "pytest-ge.xml",
+        "tests": 197,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 4
+      },
+      {
+        "report": "bmm-tests-final.xml",
+        "tests": 30,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    ],
+    "new_tests": 30,
+    "existing_tests_passed": 193,
+    "tiny_pair_reference": "81 serialized BMM subgraphs substituted over3 prompt lengths; target features bit-equal, target/draft tokens unchanged",
+    "initial_test_note": "12 new-test assertion failures comparing decoded0/1 using bool identity; tests corrected, final30 passed. Production source unchanged by this correction.",
+    "skips": "Actual GE header/SaveLoad resources unavailable",
+    "real_internal_omg": false
+  },
+  "limitations": [
+    "Rank3 normalization is an exact-layout compatibility experiment, not a proven explanation of private v1115 rejection",
+    "Explicit left transpose avoids a confirmed blue checker gate; internal X90 still requires validation",
+    "General broadcast batch lowering is not provided; current model uses equal prefixes",
+    "No real checkpoint, internal compiler or board execution; device numerical/performance gates pending"
+  ],
+  "fresh_air_required": true,
+  "prepared_reusable": true,
+  "full_weights_loaded": false,
+  "native_quantized_ge_mapping": "NOT_IMPLEMENTED",
+  "device_validation": "PENDING",
+  "environment_activation": "FAILED_UNREGISTERED_CPRO_BLUE_PENDING_PROFILE",
+  "hardware_reference_policy": "use",
+  "guide": "docs/direct-model-air.md",
+  "experience_audit": "docs/experience.md",
+  "source_hashes": [
+    {
+      "path": "model/qwen35_moe_dflash/ge_cpp.py",
+      "sha256": "8b6e1f1635da487255f3ba29da2a76f060643f33cd0e373dbc1540967fc64a07",
+      "bytes": 32121
+    },
+    {
+      "path": "model/qwen35_moe_dflash/ge_matmul.py",
+      "sha256": "eb869454238071cabed76f5fdb46ee7327b14b009c180fbdd8658099a81d6598",
+      "bytes": 3646
+    },
+    {
+      "path": "tests/test_ge_batched_matmul.py",
+      "sha256": "f5358cb8dcc89aaee9311195fc97e2f2888d270137fcd8f93051d5548596a008",
+      "bytes": 15013
+    },
+    {
+      "path": "tests/test_ge_reshape_shape.py",
+      "sha256": "cb5dcf3484d4dc893ef5b4a698cd9d7529dca5cf8ea5bd69537d1a3d960a900d",
+      "bytes": 9327
+    },
+    {
+      "path": "docs/README.md",
+      "sha256": "c9e48ec84bcb7db2a924c244054edb0c3fe10683acc65f604bc121793a6e768c",
+      "bytes": 16580
+    },
+    {
+      "path": "docs/direct-model-air.md",
+      "sha256": "7c01134a09b116dcc81eeb0080dfd9d2313ce5f04a3ff7ce6fe73bebc4533f6c",
+      "bytes": 21082
+    },
+    {
+      "path": "docs/ge-operator-compatibility.md",
+      "sha256": "554e87478d897289b25f0ac2e30524d23f99e44f3c7f1426ac5f01176150cb1c",
+      "bytes": 7089
+    },
+    {
+      "path": "docs/experience.md",
+      "sha256": "ba232fb02803de141fc47222aa4891636e71c57cdac7ba33bda3a675acc46ad5",
+      "bytes": 26900
+    },
+    {
+      "path": "docs/validation.md",
+      "sha256": "2438efcab176de22ce315c913a808f5ae42c047597a70fe5d83fab2ad74fc118",
+      "bytes": 30539
+    },
+    {
+      "path": "specs/model-workflow.json",
+      "sha256": "ab890599e2249312085b73f47bc98cd2b438785954b679cdc110cc90dbb046e8",
+      "bytes": 11028
+    }
+  ],
+  "evidence_files": [
+    {
+      "path": "pytest-ge.xml",
+      "sha256": "0ef89dcf202ab9c5a0d2a03765cf98081279fd6307ab53ec3e25e2006a7e923a",
+      "bytes": 27513
+    },
+    {
+      "path": "pytest-reshape.xml",
+      "sha256": "0e4db61857cf1955ba80412e8585381f0356f75c4dc7434e1c5c00e74212e148",
+      "bytes": 4943
+    },
+    {
+      "path": "bmm-tests-final.xml",
+      "sha256": "c6bb0fe00188ac12c2cdf2aa017d406221bcaaa62f74c95285f0df9fe33e66bd",
+      "bytes": 4473
+    },
+    {
+      "path": "bmm-numerical-verification.json",
+      "sha256": "0ca6ac2d09ab10921092a533a512dbfd02d5eeb2b1ff5859918bdb676c1ee8b2",
+      "bytes": 2045
+    },
+    {
+      "path": "rank3-full-emission-audit.json",
+      "sha256": "6f3dcdb7afb81cf9ca21fbaf83bb77a3ec386cc8e47028f5207e78bad73376d7",
+      "bytes": 3272
+    },
+    {
+      "path": "batched-shape-audit.json",
+      "sha256": "a3523d7ecda0e5c06510522427ac40c756a1818fdc3c88d469dc9b2b878bec6b",
+      "bytes": 20217
+    },
+    {
+      "path": "blue-bmm-support-audit.json",
+      "sha256": "3f3e485cf979c12e988b8de6c70373ab2925561eace9538b29ec94358e0827c7",
+      "bytes": 7081
+    },
+    {
+      "path": "ascendc_batchmatmul_constructor.asm.txt",
+      "sha256": "1ad4344d49f5695e276f336a871dcf23045716b9c8574d5e09c8a43fdb1a8617",
+      "bytes": 819
+    },
+    {
+      "path": "ascendc_matmul_check.asm.txt",
+      "sha256": "d60278413368232efc5ef8e5bc3da28f3e6ce342e8828afaf840f299690b6b8e",
+      "bytes": 28817
+    },
+    {
+      "path": "ascendc_batchmatmul_get_transpose_a.asm.txt",
+      "sha256": "17672d3e79f002b0017e368edc61236607ac8c9113c0b63c31a1663048eb8a16",
+      "bytes": 3883
+    }
+  ]
+}

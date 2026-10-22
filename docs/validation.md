@@ -185,3 +185,14 @@ run：`20261022T104957Z-18903-e12366`，基线 `b04237c`。用户 PID157707 日�
 修复仅修改 OMG 子进程 TMPDIR/TMP/TEMP；短 procfs 别名包含唯一目录后缀，物理存储位于当前 run。最终四个定向测试文件 **45 passed**，包含真实三种启动方式的多进程 IPC，以及模拟 OMG 的成功/非零退出/超时/启动故障/缺输出与环境记录。首次检查42通过、1失败是源码快照漏复制 targets/cpro，补齐快照后复验通过；最终生产代码还包含审查发现的旧 FD 别名复用防护。
 
 独立测试用真实进程复现长路径失败，并验证短别名和旧 worker 无法访问后续调用目录。证据及哈希见 `specs/direct-ge-ipc-verification.json`。没有执行真实内部 OMG 或板端；现有 AIR 可复用，完整35B、量化、设备质量/内存/性能门槛仍保持待验证。
+
+
+## BatchMatMul 批次规范化与左转置（2026-10-22）
+
+run：`20261022T110926Z-19546-f28296`，基线 `2ad3cbd`。用户日志确认上次 IPC 修复后 TE 内部初始化和8 worker并行初始化成功；最终仍拒绝 v1115 五维 BatchMatMul。本轮源代码将相同前缀的高维批次合并为三维，显式执行左转置后关闭 adj_x1，继续使用 FP16 与相同 M/K/N。蓝区库证实左转置属性限制，但没有证明私有X90存在五维限制，真实转换仍须重试。
+
+最终唯一覆盖 **223 passed、4 skipped**：13项既有测试文件193通过/4跳过，新 BMM 文件30通过；此前36项定向检查是同一既有集合的子集，不重复计数。新增检查独立解码 C++/recipe 的控制张量，覆盖四种转置组合、批次隔离、INT32溢出、非法广播和dtype、v1115实际形状及三组prompt长度的tiny双图输出。81次真正序列化的BMM子图被放回参考执行，target特征逐位一致，target与draft token不变。这是CPU证据，不证明设备kernel的累加精度。
+
+额外核查 tiny S8、full S8、full S128 共六张实际发射描述图：全部原生BMM为rank3、批次匹配、adj_x1=false；全部Reshape shape为正确INT32。完整S128 target有411个BMM和30个显式左转置，记录总数447602，没有按数十万物理batch展开。没有读取完整checkpoint；4项GE头文件/SaveLoad检查因本机缺少所需资源跳过。
+
+证据与冻结源码哈希见 `specs/direct-ge-bmm-verification.json`。内部OMG、HIAI设备、完整权重质量、原生量化及内存/性能门槛仍待验证。服务器须按直接GE指南第3节重新export，旧prepared可复用。
