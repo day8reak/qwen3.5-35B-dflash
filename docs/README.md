@@ -1,10 +1,12 @@
 # Qwen3.5-35B-A3B DFlash / CPro X90
 
-正式链路为 **PyTorch → AIR → OMG → OMC → HarmonyOS HIAI**。板端 C++ 使用 `hiai::AiModelMngerClient` 同步接口。用户已恢复工作，精度要求是 **权重和激活可以量化，其余浮点计算 FP16**。
+部署链路为 **AIR → OMG → OMC → HarmonyOS HIAI**。当前优先验证直接用 GE C++ 构图生成 AIR；完整 Qwen/DFlash 现有导出入口仍为 PyTorch/TorchAir，尚未完成直接 GE 构图迁移。板端 C++ 使用 `hiai::AiModelMngerClient` 同步接口。精度要求是 **权重和激活可以量化，其余浮点计算 FP16**。
+
+**当前第一步：[直接构图生成 AIR 的服务器最小验证](direct-air-smoke.md)。** FP16 加法图通过 `Graph::SaveToFile` 保存 AIR，再交给内部 OMG；不加载 Python 的 TorchNPU/TorchAir。它是独立单图探针，不能当作完整 Qwen/DFlash，也不能直接使用现有双模型 HIAI runner。
 
 **部署操作入口：[服务器生成与板端运行指南](server-board-guide.md)。** 按服务器校准/导出/交叉编译、文件传输、板端探测/推理、服务器对比/解码分别列出命令和产物路径。
 
-**先跑小模型：[tiny AIR → OMC → HIAI 上板验证](tiny-validation.md)。** 无需下载完整权重；提供参考生成、转换、板端执行和回传比对命令，真实转换及板端结果仍待验证。
+**结构小模型：[tiny AIR → OMC → HIAI 上板验证](tiny-validation.md)。** 无需下载完整权重；现有入口仍需要 TorchAir。提供参考生成、转换、板端执行和回传比对命令，真实转换及板端结果仍待验证。
 
 **导出环境报错：[AIR 环境排障](air-troubleshooting.md)。** 说明 `libhccl.so` 缺失、Transformers 的显式 NPU 探测、CPU/CUDA 参考隔离及内部 DDK 布局。
 
@@ -94,7 +96,7 @@ FP16 部署会显式改写上游主动升为 FP32 的 GDN、归一化、路由�
 
 ## 主机入口
 
-独立 clone 后从仓库根目录设置；输出始终放在仓库外的当前任务目录。已有内部 DDK 时，先在当前 Python 环境 source 其 AscendC 脚本，再设置以下项目变量；后续追加项目 Python 路径时保留脚本已有路径。保留现有 Torch，不自动替换用户的 `2.11.0+cu130`。本机验证解释器是 Torch `2.12.1+cpu` / Transformers `5.13.0`，AIR 需要另外匹配 TorchAir、torch_npu 和服务器 CANN 用户态库；内部 DDK 负责后续 OMG 转换，不能仅凭其环境脚本成功就视为满足 AIR 依赖。
+独立 clone 后从仓库根目录设置；输出始终放在仓库外的当前任务目录。已有内部 DDK 时，先在当前 Python 环境 source 其 AscendC 脚本，再设置以下项目变量；后续追加项目 Python 路径时保留脚本已有路径。保留现有 Torch，不自动替换用户的 `2.11.0+cu130`。本机验证解释器是 Torch `2.12.1+cpu` / Transformers `5.13.0`，现有 PyTorch 导出入口需要另外匹配 TorchAir、torch_npu 和服务器 CANN 用户态库；直接 GE 样例使用独立的主机 GE 依赖。内部 DDK 负责后续 OMG 转换，不能仅凭其环境脚本成功就视为满足任一种 AIR 生成入口的依赖。
 
 ```bash
 export REPO_DIR="$PWD"

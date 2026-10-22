@@ -69,3 +69,16 @@ CLI 的 `demo/reference --device cpu` 或 `cuda:*` 现在于模型导入前应�
 隔离源码副本的完整 Python 测试 **141 passed、2 skipped**；跳过真实 DOPT 可选集成。环境为声明的 Torch 2.12.1+cpu / Transformers 5.13.0。新增测试以可发现的 TorchNPU 分发信息和 `torch.backends` 入口模拟缺失 HCCL，确认未经修正的 Torch/Transformers 导入真实失败；修正后的 tiny CPU 普通/DFlash token 与干净环境完全一致，停止原因一致。AIR CLI 仍拒绝缺库环境，CPU/CUDA 策略后的同进程 AIR 也明确拒绝。CUDA 仅验证后端选择，未进行 GPU 执行。
 
 证据：run 内 `audit-preflight-full.xml`、`audit-preflight-validation.json`、`audit-preflight-source-hashes.json`。最终 6 个 Python 文件与测试副本哈希一致；40 个 shell 代码块、7 个 Python heredoc 语法通过。目标环境 profile 仍未登记，激活未成功；没有对用户内部 CANN、HIAI 或 X90 执行验证。真实 AIR/OMC 和板端门槛仍为 **PENDING**。
+
+
+## 2026-10-22：直接 GE 构图保存 AIR 的独立样例
+
+补丁 run：`20261022T064712Z-4550-c5859a`。用户选择继续 AIR 路线；新增 `direct_air_smoke.py export/compile` 与 `ge_add_air.cpp`，只构建 FP16 ND `[1,4]` 的 Data/Const/Add 小图，保存后重新加载检查描述与常量。该入口不加载 Python 的 Torch/TorchNPU/TorchAir，不调用 ACL/GE Session；与 Qwen target/draft 双图分别标识。完整模型的直接 GE 导出和单图 HIAI runner 尚未实现。
+
+C++ 已使用官方 `v9.1.0` 的 GE 与 metadef 头文件执行真实编译检查：GCC 11.4.0、C++17、ABI0、`-Wall -Wextra -Werror`，无警告。GE 提交为 `0ef703178896cbeb2a66e7c751ac9626df7f7439`，metadef 为 `01966fe61d57fa7ae85b1c9e3350cecfe3a125a6`。ABI0 有同版本 GE 主机构建配置依据。这里只生成对象文件；本机没有匹配的服务器 `libgraph.so`，没有链接或执行生成器。
+
+新增入口、既有 AIR 编排和轻量导入的定向测试共 **29 passed**；最后调整显式资源清单优先级后，新入口 **13 项重新通过**。这些测试覆盖编排、FP16 fixture、资源选择、哈希/ABI 拒绝、无 Torch 导入、OMG 非零退出/缺失或空输出、日志与临时目录清理，工具边界使用测试替身。42 个 shell 代码块、7 个 Python heredoc 语法通过。证据及最终文件哈希见 `specs/direct-air-verification.json`，原始证据保存在本 run。
+
+真实 GE 链接、AIR 保存/读取、内部 OMG 接受该 AIR、OMC 和板端执行均 **PENDING**；不能将头文件编译或测试替身的状态作为实际 AIR 成功证据。`cpro-blue-pending` 仍未登记，目标环境激活未成功，板机仍由用户访问。全模型质量、量化和内存门槛未推进，`hardware_reference_policy=use` 未改变。
+
+下一步按 [直接 AIR 样例](direct-air-smoke.md) 在用户服务器加载自己的 CANN 环境运行 `direct_air_smoke.py export`，成功后切回内部 DDK 环境运行 `compile`。失败时保留对应日志和 `failure.json`，不要先执行不兼容的双模型板端命令。

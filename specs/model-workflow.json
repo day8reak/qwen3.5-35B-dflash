@@ -95,5 +95,14 @@
   "capability_hash": null,
   "physical_workload_hash": null,
   "dependency_aware_latency": null,
-  "preliminary_work": "FP16 graph lowering, HIAI ABI v2, complete expert exposure, real blue DOPT tiny calibration/reference and source delivery; no full-model or device gates advanced"
+  "preliminary_work": "FP16 graph lowering, HIAI ABI v2, complete expert exposure, real blue DOPT tiny calibration/reference and source delivery; no full-model or device gates advanced",
+  "direct_air_probe": {
+    "run_id": "20261022T064712Z-4550-c5859a",
+    "scope": "GE C++ FP16 Add -> AIR -> internal OMG smoke; not Qwen/DFlash",
+    "status": "SOURCE_HANDOFF_RUNTIME_PENDING",
+    "evidence": "docs/direct-air-smoke.md",
+    "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/direct_air_smoke.py\" export --ge-root \"$CANN_ROOT\" --output \"$AI_RUN_DIR/ge-air\"",
+    "full_model_migration": "PENDING",
+    "device_execution": "PENDING"
+  }
 }

@@ -1,5 +1,7 @@
 # AIR 导出环境排障
 
+**当前优先入口已增加 [GE 直接构图保存 AIR](direct-air-smoke.md)。** AIR 不要求必须从 PyTorch 导出。该最小加法图不加载 TorchNPU/TorchAir；需要 CANN 的主机 `graph/graph.h`、`libgraph.so` 及匹配依赖，后续仍由内部 OMG 转 OMC。下面的 TorchNPU/HCCL 排障针对现有 PyTorch/TorchAir 模型导出入口，不是直接 GE 样例的前置步骤。完整 Qwen/DFlash 尚未迁移到直接构图。
+
 截至 2026-10-22 的最新用户日志：服务器曾安装 `torch-npu==2.11.0.post2`，因缺少 `libhccl.so` 无法导入；安装自己的 CANN 9.1.0 后仍缺该库。随后用户卸载 TorchNPU，CPU FP16 tiny demo 成功，生成 `tiny-reference.json`。日志未展示具体 token，也没有真实 AIR、OMC 或板端执行成功证据。
 
 用户仍需保留 TorchNPU 以准备 AIR，因此项目现已为 CLI 的 CPU/CUDA 参考命令增加进程内后端隔离，不再把卸载 TorchNPU 作为参考流程的解决方法。

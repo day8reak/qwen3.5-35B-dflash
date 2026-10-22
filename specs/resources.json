@@ -7,5 +7,6 @@
   "ohos_native_sdk": "${OHOS_NATIVE_SDK}",
   "hiai_include_dir": "${HIAI_INCLUDE_DIR}",
   "hiai_libraries": [],
-  "notes": "Set QWEN35_RESOURCES to an internal JSON copy, or resolve the environment variables. Do not commit private paths/libraries/weights."
+  "notes": "Set QWEN35_RESOURCES to an internal JSON copy, or resolve the environment variables. Do not commit private paths/libraries/weights.",
+  "ge_root": "${CANN_ROOT}"
 }

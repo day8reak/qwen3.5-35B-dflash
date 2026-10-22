@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "run_id": "20261022T064712Z-4550-c5859a",
+  "scope": "direct-ge-air-smoke-source-handoff",
+  "status": "SOURCE_CHECKS_PASS_RUNTIME_PENDING",
+  "cpp_check": {
+    "status": "PASS_COMPILE_ONLY",
+    "standard": "c++17",
+    "cxx11_abi": 0,
+    "compiler": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0",
+    "source_refs": {
+      "ge": "0ef703178896cbeb2a66e7c751ac9626df7f7439",
+      "metadef": "01966fe61d57fa7ae85b1c9e3350cecfe3a125a6"
+    },
+    "source_tags": {
+      "ge": "v9.1.0",
+      "metadef": "v9.1.0"
+    }
+  },
+  "python_tests": {
+    "regression_before_resource_priority_fix": 29,
+    "final_smoke_tests": 13,
+    "scope": "mocked compiler/exporter/OMG tool boundaries, no real AIR or OMC"
+  },
+  "docs_syntax": {
+    "status": "PASS",
+    "shell_blocks": 42,
+    "python_blocks": 0,
+    "python_heredocs": 7
+  },
+  "real_ge_link": "PENDING",
+  "real_air_serialization": "PENDING",
+  "internal_omg": "PENDING",
+  "device_validation": "PENDING",
+  "full_model_direct_ge_export": "NOT_IMPLEMENTED",
+  "single_graph_hiai_runner": "NOT_IMPLEMENTED",
+  "target_environment_activation": "FAILED_PROFILE_NOT_REGISTERED",
+  "device_access": "UNAVAILABLE_BY_USER_ACCESS_CONSTRAINT",
+  "hardware_reference_policy": "use",
+  "source_files": [
+    {
+      "path": "docs/README.md",
+      "sha256": "8b8fcfb97fe66a3294b698abb945be4a5d963f8a7a3cb5f81af49c87742bd1d7"
+    },
+    {
+      "path": "docs/air-troubleshooting.md",
+      "sha256": "1fca5120e9f23c1b852a41801fb12f75ce633f2addd4f46ac077a893127f552a"
+    },
+    {
+      "path": "docs/direct-air-smoke.md",
+      "sha256": "b390c59c746b849795ccd953285a7c63513c883726ed45f82b3d8dfd978564ea"
+    },
+    {
+      "path": "docs/experience.md",
+      "sha256": "1a3f39aa88ab554ae58b60bcf40f9360ea018b0b425f7145483b296d6ff8359b"
+    },
+    {
+      "path": "docs/server-board-guide.md",
+      "sha256": "e8b71337e6be8818eee33c4f830d9efaf8d86076828d85d0faf11dedf34180dc"
+    },
+    {
+      "path": "docs/tiny-validation.md",
+      "sha256": "c445ce8523e630d30a4f6a1f62ee394db4927ec4a0b27698e253cd4602272d04"
+    },
+    {
+      "path": "docs/validation.md",
+      "sha256": "bdad2d2305d8e1223b1be66ae329405fe2f4493eaa2263c8230cbb2b037daef0"
+    },
+    {
+      "path": "specs/model-workflow.json",
+      "sha256": "9b8b2756e193902685d92a8c9b9d481322e69c2b3c5319ce3ae696f11063931f"
+    },
+    {
+      "path": "specs/resources.json",
+      "sha256": "a1192c864d4cbf79f9a5f157822bfaf7233df7bf46484b3d3cb74639b86a5abc"
+    },
+    {
+      "path": "targets/cpro/air/ge_add_air.cpp",
+      "sha256": "7beead61645a20f8a13ba6861af703a736d775cca0e77f2b70576fb906d01d44"
+    },
+    {
+      "path": "targets/cpro/scripts/direct_air_smoke.py",
+      "sha256": "a52e6480077c3c06ac567f6c02827bae11da54012fc557689cec7f7b094fb1d3"
+    },
+    {
+      "path": "tests/test_direct_air_smoke.py",
+      "sha256": "1ef4b853e178e9840edf6e8e2e67b456a023edd8aff76ad93440c1460259f6d3"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "pytest-root.xml",
+      "sha256": "1f73ef9895fb3198c91caf7ec6caeb39f590cfe658e571a7734225931fd4970d"
+    },
+    {
+      "path": "direct-air-smoke-tests-final.xml",
+      "sha256": "07eb84259e20207258497e8c4feafb21f6f684d6bb6f97887f74a07da44ee105"
+    },
+    {
+      "path": "direct-air-smoke-source-hashes-final.json",
+      "sha256": "c287dfb1ec2ebf84619cdea34c8bca8367156d0e33cf876bed9691539fe31b2c"
+    },
+    {
+      "path": "ge-header-check/compile-result.json",
+      "sha256": "db8ac9fb55eb7523e49d3dfedb3f1abf4d1e2964d6a4815b4d00684378822ad2"
+    },
+    {
+      "path": "ge-header-check/sources.json",
+      "sha256": "af47bdabbb000917eba69c91792b63e19c6ec7c660079a96898926feaeb06de7"
+    },
+    {
+      "path": "docs-syntax.json",
+      "sha256": "5501e74aeb88265a23f3f9f89a31d95492bb8bbda183eafd039a01ed9c7f5a30"
+    }
+  ],
+  "official_api": "https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/ascendgraphapi/atlasgeapi_07_0017.html",
+  "experience_audit": "docs/experience.md"
+}
