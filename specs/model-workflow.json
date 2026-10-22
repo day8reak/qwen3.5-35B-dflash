@@ -123,7 +123,7 @@
   },
   "direct_ge_model": {
     "run_id": "20261022T074906Z-6507-ca8b2b",
-    "status": "SOURCE_DRAFT_POSITION_CLAMP_FIX_USER_RETEST_PENDING",
+    "status": "TINY_AIR_OMC_USER_REPORTED_PASS_HIAI_PENDING",
     "pipeline": [
       "ge-cpp",
       "air",
@@ -139,7 +139,7 @@
     "real_model_omg": "PENDING",
     "device_execution": "PENDING",
     "native_quantized_ge_mapping": "NOT_IMPLEMENTED",
-    "next_command": "python3 \"$GE_MODEL_TOOL\" export --prepared \"$GE_PAIR_RUN/prepared\" --ge-root \"$CANN_ROOT\" --output \"$GE_AIR_DIR\"",
+    "next_command": "python3 \"$GE_MODEL_TOOL\" reference-tiny --prepared \"$GE_PAIR_RUN/prepared\" --prompt-token-ids 1,2,3 --max-new-tokens 4 --output \"$GE_BOARD_RUN/reference.json\"",
     "guide": "docs/direct-model-air.md",
     "data_factory_fix": {
       "run_id": "20261022T084136Z-11227-7c2c63",
@@ -163,16 +163,15 @@
       "date": "2026-10-22",
       "baseline_commit": "0097330037312e4274aaaec3a84d9810d64aefbd",
       "artifact_hashes": "NOT_PROVIDED",
-      "scope": "tiny target/draft AIR; fixed version requires new export"
+      "scope": "tiny target/draft AIR; latest user reports subsequent OMG success"
     },
     "tiny_omg": {
-      "status": "TARGET_COMPILE_USER_LOG_PASS_DRAFT_POSITION_CLAMP_FIX_RETEST_PENDING",
-      "run_id": "20261022T114012Z-21463-7a8f45",
+      "status": "USER_REPORTED_PASS",
+      "run_id": "20261022T115225Z-22316-828ee6",
       "observed": [
-        "PID158383 reaches draft backend compatibility check; previous GatherElements verification failure no longer reported",
-        "draft v12 Maximum (INT32 context position clamp) is unsupported"
+        "User replied 成功了 to the latest tiny target/draft AIR->OMC retry after b83774a"
       ],
-      "evidence": "specs/direct-ge-position-clamp-verification.json",
+      "evidence": "specs/direct-ge-tiny-omc-user-report.json",
       "previous_failure": {
         "run_id": "20261022T093951Z-12973-586101",
         "observed": [
@@ -231,7 +230,7 @@
         "evidence": "specs/direct-ge-bmm-verification.json"
       },
       "target_compile": {
-        "status": "USER_LOG_PIPELINE_PROGRESS_IMPLIES_TARGET_CHECKS_PASS",
+        "status": "USER_REPORTED_PASS",
         "artifact_hashes": "NOT_PROVIDED",
         "source_revision": "UNCONFIRMED_FROM_USER_LOG",
         "device_execution": "PENDING"
@@ -244,8 +243,32 @@
           "draft v4 GatherElements rejects Input0 INT32 in RunVerify"
         ],
         "evidence": "specs/direct-ge-integer-gather-verification.json"
+      },
+      "previous_position_clamp_failure": {
+        "status": "TARGET_COMPILE_USER_LOG_PASS_DRAFT_POSITION_CLAMP_FIX_RETEST_PENDING",
+        "run_id": "20261022T114012Z-21463-7a8f45",
+        "observed": [
+          "PID158383 reaches draft backend compatibility check; previous GatherElements verification failure no longer reported",
+          "draft v12 Maximum (INT32 context position clamp) is unsupported"
+        ],
+        "evidence": "specs/direct-ge-position-clamp-verification.json"
+      },
+      "user_report": {
+        "date": "2026-10-22",
+        "statement": "成功了",
+        "scope": "Tiny target/draft AIR->OMC compile, inferred from immediate retry context",
+        "suggested_revision": "b83774a",
+        "actual_revision": "NOT_INDEPENDENTLY_VERIFIED",
+        "artifact_hashes": "NOT_PROVIDED",
+        "device_execution": "PENDING"
+      },
+      "draft_compile": {
+        "status": "USER_REPORTED_PASS",
+        "artifact_hashes": "NOT_PROVIDED",
+        "device_execution": "PENDING"
       }
     },
-    "operator_audit": "specs/ge-operator-audit.json"
+    "operator_audit": "specs/ge-operator-audit.json",
+    "board_guide": "docs/direct-ge-board.md"
   }
 }

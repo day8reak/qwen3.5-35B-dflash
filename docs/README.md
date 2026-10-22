@@ -2,7 +2,9 @@
 
 部署链路为 **AIR → OMG → OMC → HarmonyOS HIAI**。新增直接 GE 构图的 target/draft 双图路径，保留原有 PyTorch/TorchAir 模型与导出入口。板端 C++ 使用 `hiai::AiModelMngerClient` 同步接口。精度要求是 **权重和激活可以量化，其余浮点计算 FP16**。
 
-**当前操作入口：[Target / Draft 直接 GE 构图 → AIR](direct-model-air.md)。** 用户已反馈 Add 小图 AIR→OMC 及双图 tiny AIR 成功；最新转换已推进到 draft，按脚本顺序 tiny target OMC 已通过生成检查，draft 和上板仍待验证。已补充 [39种 GE 算子兼容性核查](ge-operator-compatibility.md)，并修正 Cumsum、小型静态广播、Reshape 形状参数及 OMG Python 路径；这些图修正需要重新导出 AIR；`AF_UNIX path too long` 已由用户日志确认恢复，整数 Gather 修复后，最新失败点为 draft 的 INT32 Maximum；已改为整数 Less + Select，需按操作入口重新 export，再 compile。新导出端只需 NumPy 与主机 GE，不加载 PyTorch/TorchNPU/TorchAir。完整结构定义已实现；新路径暂为 FP16 基线，压缩整数权重 GE 映射尚未实现。
+**当前进度：用户已反馈 tiny target/draft 双图 AIR→OMC 编译成功。下一步：[直接 GE tiny OMC 上板指南](direct-ge-board.md)。** 按服务器参考、HIAI交叉编译、文件传输、板端运行、服务器对比分步执行。已成功的OMC和prepared无需重建。该进度是用户报告，尚未取得独立产物哈希或X90执行结果。
+
+[直接 GE 构图与导出](direct-model-air.md)保留全部生成命令及兼容性修复记录。生成端只需NumPy与主机GE，不加载PyTorch/TorchNPU/TorchAir。当前tiny使用FP16随机权重；完整35B的压缩整数权重GE映射尚未实现。
 
 [Add 最小探针](direct-air-smoke.md)继续保留，可用于区分基础环境和模型算子转换问题。
 

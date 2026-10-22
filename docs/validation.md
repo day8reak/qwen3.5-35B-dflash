@@ -220,3 +220,12 @@ run：`20261022T114012Z-21463-7a8f45`，基线 `be88c95`。用户 PID158383 的 
 蓝区CPUCL Maximum拒绝INT32，Less/Select可接受；但实际Less<int>使用差值比较，不能据此认证通用全范围INT32极值替换。本模型有界差值不会溢出，Select整数分支保留整数数据；内部X90放置和执行仍未验证。4项可选真实GE头文件/SaveLoad检查因资源缺失跳过。此前通用替换实验的测试结果与中断回归没有计入最终通过数。
 
 证据及源码哈希见 `specs/direct-ge-position-clamp-verification.json`，原始报告保留本run。target OMC进展仍仅来自用户日志和编排顺序，无独立产物哈希或设备结果。下一步按直接GE指南第3节在新目录export，再compile；全模型量化、质量、内存与性能门槛不变。
+
+
+## Tiny 双图 AIR→OMC 用户反馈成功（2026-10-22）
+
+交接run：`20261022T115225Z-22316-828ee6`。用户在 `b83774a` 位置截断修复和重导/转换命令后回复“成功了”，本次上下文指向tiny target/draft双图compile，记录为 **USER_REPORTED_PASS**。实际源提交和产物哈希尚未独立核验；不将该回复扩大为正式HIAI链接、板端执行、纯NPU放置或完整35B成功。
+
+源码实现本轮未变；新增专用直接GE上板指南，明确成功OMC目录、同prepared参考、正式OHOS ARM64链接、传输清单、probe、benchmark和compare。6个shell块与3个Python heredoc语法检查通过；参数和文件字段按现有CLI、构建脚本核对，没有重跑模型测试或厂商工具。服务器已有成功产物可以保留并继续，不必重新prepare/export/compile。
+
+下一步生成匹配的reference，再以内部HIAI库构建正式runner。板端probe与执行仍由用户完成；token/停止原因和模型身份检查之后才能记录该tiny设备结果。完整35B原生压缩量化、全权重质量、内存及性能门槛不变。状态见 `specs/direct-ge-tiny-omc-user-report.json`，操作见 `docs/direct-ge-board.md`。

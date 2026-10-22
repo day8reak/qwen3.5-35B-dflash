@@ -4,7 +4,7 @@
 
 仓库已有 FP16 tiny 链路：使用真实 Qwen MoE / Gated DeltaNet 和 DFlash 结构，固定随机种子 17；目标 4 层、草稿 2 层、hidden 16、词表 64。它不需要下载完整权重、tokenizer 或做 DOPT 校准，适合先检查转换与板端接口；随机 token 不代表正常文本回答，也不能验证 35B 的质量、量化或性能。
 
-**目前主机参考已验证，但真实 tiny AIR、OMC、正式 HIAI 链接及 X90 执行尚未验证。** 以下是待执行的联调流程。tiny 仍需要匹配的 TorchAir / torch_npu / CANN 导出环境；已有 CUDA PyTorch 或成功加载 AscendC 脚本，并不代表可以导 AIR。CPU 输入也不能保证所选 TorchAir 版本无需 Ascend 设备初始化。
+**直接GE路线的tiny双图AIR→OMC已由用户反馈成功，正式HIAI链接和X90执行仍待验证。** 已生成直接GE产物请使用[专用上板指南](direct-ge-board.md)，无需重做本页第1节。以下第1节的旧PyTorch导出路线仍需要匹配的TorchAir/torch_npu/CANN；不能把直接GE成功视作旧导出路线已验证。
 
 环境缺库或 Python 依赖冲突时，先看 [AIR 环境排障](air-troubleshooting.md)。CLI 的 CPU/CUDA `demo` 和 `reference` 会在当前进程禁用 NPU 可选探测，可以保留已安装的 TorchNPU；导出命令在新进程中仍检查真实 NPU/CANN 依赖。该处理不修改厂商包或模型计算。
 

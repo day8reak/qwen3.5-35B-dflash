@@ -2,7 +2,9 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。最新日志显示编译已推进到 draft；按脚本顺序，tiny target 已生成非空 OMC 并通过输入哈希复核，尚未取得产物独立核验。draft 已越过整数 Gather 的验证，当前失败为 v12 的 INT32 Maximum 不支持。本轮改为整数 Less + Select，需重导 AIR 后验证。对应源码修正及重试命令见第 3 节；真实双图 OMG 转换和上板仍待验证。已逐类核查 39 种实际生成的 GE 算子，范围和剩余风险见 [算子兼容性核查](ge-operator-compatibility.md)。
+2026-10-22 用户在位置截断修复后反馈 **tiny target/draft 双图 AIR→OMC 编译成功**，记录为USER_REPORTED_PASS；尚未取得独立产物哈希和HIAI板端结果。下一步按 [直接 GE tiny OMC 上板指南](direct-ge-board.md) 生成匹配参考、交叉编译HIAI程序并上板。成功的OMC和prepared直接复用，不必重导。
+
+下文保留首次生成流程和历史失败修复；算子核查见 [兼容性记录](ge-operator-compatibility.md)。tiny编译成功不表示完整35B权重、量化、内存或性能已经通过。
 
 ## 实现范围
 
@@ -80,7 +82,9 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 内部 OMG 兼容性修正与重试
 
-最新日志（draft 进程 158383）已越过整数 Gather 的验证，最终在兼容性检查拒绝 `v12/Maximum`。它执行上下文位置的 `max(cumsum(context_valid)-1, 0)`，输入/输出是 INT32。前面的描述回显、ImportWarning 和缺少内置 kernel 库提示不是这条日志明确报告的最终失败原因。
+**以下为历史失败及重建说明。用户已反馈tiny双图编译成功；已有成功产物请直接进入[上板步骤](direct-ge-board.md)。**
+
+此前失败日志（draft 进程 158383）已越过整数 Gather 的验证，最终在兼容性检查拒绝 `v12/Maximum`。它执行上下文位置的 `max(cumsum(context_valid)-1, 0)`，输入/输出是 INT32。前面的描述回显、ImportWarning 和缺少内置 kernel 库提示不是这条日志明确报告的最终失败原因。
 
 这次只改 draft 的位置截断：对 `x=cumsum(context_valid)-1` 判断 `x<0`，再用同形 Select 选择零或原整数。`x` 的范围是 `[-1,S-2]`，图中没有浮点转换、权重修改或近似，输出节点仍叫 `v12`。模型构图限制 `S<=INT32_MAX`；原 PyTorch 路径、HIAI ABI 和 FP16 算子保持不变。
 
@@ -220,6 +224,8 @@ tail -n 100 "$GE_OMC_DIR/target/omg.log"
 ```
 
 ## 4. 服务器参考与板端运行
+
+完整、无需替换旧指南变量的命令见 [直接 GE tiny OMC 上板指南](direct-ge-board.md)。下方保留原路径映射供已有操作续接。
 
 在已有 PyTorch/Transformers 的 CPU 参考环境执行。此命令才需要 PyTorch，会沿用项目的 CPU 后端隔离；它读取本次 prepared 的实际权重，而非重新生成另一份随机模型。切换环境后再设置下面的解释器与项目路径；后续复用板端指南时保持这些变量。
 
