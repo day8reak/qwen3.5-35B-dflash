@@ -489,6 +489,10 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
             ins.append(e.helper(v, a.get("axis", 0), dtype="int32", suffix="axis"))
             attrs = {"batch_dims": "int64_t{0}", "negative_index_support": "false", "is_preprocessed": "false"}
         elif kind == "gather_elements":
+            # The X90 verifier rejects INT32 data; token IDs must never be
+            # rounded through a floating carrier to satisfy that restriction.
+            if ins[0].dtype != "float16" or v.dtype != ins[0].dtype:
+                raise NotImplementedError("GE GatherElements requires FP16 data; use an exact integer Gather path")
             typ, ports = "GatherElements", ["x", "index"]
             attrs = {"dim": f"int64_t{{{a['axis']}}}"}
         elif kind == "softmax":

@@ -196,3 +196,14 @@ run：`20261022T110926Z-19546-f28296`，基线 `2ad3cbd`。用户日志确认上
 额外核查 tiny S8、full S8、full S128 共六张实际发射描述图：全部原生BMM为rank3、批次匹配、adj_x1=false；全部Reshape shape为正确INT32。完整S128 target有411个BMM和30个显式左转置，记录总数447602，没有按数十万物理batch展开。没有读取完整checkpoint；4项GE头文件/SaveLoad检查因本机缺少所需资源跳过。
 
 证据与冻结源码哈希见 `specs/direct-ge-bmm-verification.json`。内部OMG、HIAI设备、完整权重质量、原生量化及内存/性能门槛仍待验证。服务器须按直接GE指南第3节重新export，旧prepared可复用。
+
+
+## Draft INT32 GatherElements 修正（2026-10-22）
+
+run：`20261022T112725Z-20655-b96dab`，基线 `bbcc505`。用户 PID158166 日志表明 compile 已进入 draft，随后 `v4/GatherElements` 拒绝 INT32 数据。target OMC 的进展是依据编排检查顺序推断，尚无独立产物或板端验证。此次将 draft 的最后有效 token 选择改成 INT32 vector 加 GatherV2，保持输入/输出 ABI、权重、节点名和整数值；其余非 FP16 GatherElements 在导出时明确拒绝。
+
+冻结生产源码的既有14文件回归为223通过、4跳过；新增整数 Gather 测试为12通过，合计 **235 passed、4 skipped、0未解决失败**。新增测试独立读取展开 C++ 和 recipe 序列化，覆盖 S8/S65 全部73种非空有效前缀、ID2049/65535/248077/248319等合法完整词表值、无浮点载体、原输入字节不变。INT32 极值作为独立复制原语测试，不视为合法模型 token。native FP16 GatherElements 的 NaN payload/有符号零保持及整数类型拒绝也有覆盖。tiny draft 在1至8个有效 token 的全部输出与原选择语义一致，ABI和prepared权重哈希不变。
+
+额外核查 tiny S8、full S8、full S128 共六张实际发射描述图：无 GatherElements，draft 各有一处精确 INT32 GatherV2；三个 target 图的全部发射记录哈希与 `bbcc505` 基线相同。结构检查仅使用外置权重路径，未读取完整checkpoint。蓝区实际验证器、AIR转换和CPUCL整数模板支持该选择路径；内部X90编译/后端放置仍须用户验证。
+
+四项可选真实GE头文件/SaveLoad检查因资源缺失跳过；没有运行内部OMG或板端。证据、报告与冻结源码哈希见 `specs/direct-ge-integer-gather-verification.json`，报告保留在本run。服务器按直接GE指南第3节复用prepared，在新目录重新export后compile。完整35B、原生压缩整数权重映射、量化质量及设备内存/性能门槛不变。

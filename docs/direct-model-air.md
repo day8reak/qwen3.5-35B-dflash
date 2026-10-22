@@ -2,7 +2,7 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。最新 tiny target OMG 日志确认 TE 多进程初始化成功，仍在兼容性检查时报五维 BatchMatMul 不支持。本轮增加批次维规范化及左矩阵显式转置，需重导 AIR 后验证内部转换。对应源码修正及重试命令见第 3 节；真实双图 OMG 转换和上板仍待验证。已逐类核查 39 种实际生成的 GE 算子，范围和剩余风险见 [算子兼容性核查](ge-operator-compatibility.md)。
+用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。最新日志显示编译已推进到 draft；按脚本顺序，tiny target 已生成非空 OMC 并通过输入哈希复核，尚未取得产物独立核验。draft 当前因 GatherElements 拒绝 INT32 数据失败，本轮改用保持整数精度的 GatherV2，需重导 AIR 后验证。对应源码修正及重试命令见第 3 节；真实双图 OMG 转换和上板仍待验证。已逐类核查 39 种实际生成的 GE 算子，范围和剩余风险见 [算子兼容性核查](ge-operator-compatibility.md)。
 
 ## 实现范围
 
@@ -80,7 +80,39 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 内部 OMG 兼容性修正与重试
 
-最新日志（进程 157847）明确显示 `Tbe inner init successfully` 和 `Parallel compilation init success`，此前 socket 路径问题已通过用户复验。失败仍停在 `v1115/BatchMatMul` 支持检查；这次不能继续将它归因于 TE 初始化失败。缺少 `libai_npucore_ascendc_kernel.so` 的提示之后，DDK 明确继续使用 JIT；现有证据不足以判定该库必须补齐。
+最新日志（draft 进程 158166）明确报 `v4/GatherElements` 的 `Input[0] DataType INT32 is wrong`。这是本次失败的直接原因，前面的输入描述回显和 ImportWarning 不能代替该错误。编译已经进入 draft 阶段，按现有脚本执行顺序，target 已完成非空 OMC 输出检查与原输入哈希复核；这仍属于用户日志证据，尚无独立产物哈希及板端结果。
+
+`v4` 用于取得最后一个有效 token。现在将 INT32 `input_ids[1,S]` reshape 成 `[S]`，用同样的 INT32 `anchor_position[1,1]` 在轴0执行 GatherV2，输出仍是 INT32 `[1,1]`，节点名仍是 `v4`。HIAI 输入合同要求 batch1、非空右填充前缀，保证 anchor 位于 `[0,S-1]`。全程不把 token ID 转成 FP16 或 FP32；其余模型浮点计算仍为 FP16。
+
+已检查 tiny/full 的 target/draft：原先只有 draft 的这一处整数 GatherElements。蓝区实际 GatherElements 验证只接受浮点数据，而 GatherV2D 前端与 CPUCL 的 Gather 支持 INT32 数据和 INT32 索引，CPUCL 有直接 `DoGather<int>` 路径。这不证明内部 X90 会将该节点放到 NPU；最终后端分配与精度仍以内部编译和板端验证为准。导出器现在提前拒绝其他非 FP16 数据的 GatherElements，避免把已知不兼容的节点继续写进 AIR。
+
+**这次修改 draft 的 AIR 图，旧 prepared 可复用，但必须重新 export：**
+
+```bash
+cd "$REPO_DIR"
+git pull --ff-only
+export GE_AIR_DIR="$GE_PAIR_RUN/air-gather-$(date +%Y%m%d-%H%M%S)"
+export GE_OMC_DIR="$GE_PAIR_RUN/omc-gather-$(date +%Y%m%d-%H%M%S)"
+
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --output "$GE_AIR_DIR"
+
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_AIR_DIR" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_OMC_DIR"
+```
+
+只有 export 输出 `EXPORTED` 后才继续 compile。双图命令会重新生成配套产物，原先成功的 target OMC 与失败日志保留在旧目录。若仍是 draft 失败，提取本次日志：
+
+```bash
+tail -n 100 "$GE_OMC_DIR/draft/omg.log"
+```
+
+### 此前 BatchMatMul 兼容处理
+
+此前日志（进程 157847）明确显示 `Tbe inner init successfully` 和 `Parallel compilation init success`，此前 socket 路径问题已通过用户复验。失败仍停在 `v1115/BatchMatMul` 支持检查；这次不能继续将它归因于 TE 初始化失败。缺少 `libai_npucore_ascendc_kernel.so` 的提示之后，DDK 明确继续使用 JIT；现有证据不足以判定该库必须补齐。
 
 本轮把 target/draft 中批次前缀相同的四维、五维矩阵乘统一成三维 BatchMatMul，再恢复输出形状。例如 `v1115` 的 `[1,2,1,64,64] × [1,2,1,64,8]` 变为 `[2,64,64] × [2,64,8]`，结果恢复成 `[1,2,1,64,8]`；新原生节点名为 `__ge/v1115/batch_output`。只合并 batch 维，M/K/N 和每个矩阵的对应关系不变，使用受检查的 INT32 shape。前缀不一致会明确拒绝，不能将交叉广播误写成一对一批次。现有三维卷积 BMM 和二维投影保留，不逐批展开：完整模型卷积分支每层最多8192个批次，逐批拆分会造成大量节点增长。
 
@@ -88,7 +120,7 @@ python3 "$GE_MODEL_TOOL" compile \
 
 日志中的 `Ascend310B1` 也不足以判断目标配错：蓝区 Kirin 工具链存在平台名映射、Ascend310B kernel magic 和 ESL 标识。内部 X90 的具体映射不可直接检查，继续使用原来的 `--platform=kirinx90`，不手工改成其他芯片。
 
-**本轮改变 AIR 内容，必须重新 export。旧 prepared 和权重可以复用：**
+以下为此前 BatchMatMul 更新的命令；本轮请使用上方 `air-gather` / `omc-gather` 命令。
 
 ```bash
 cd "$REPO_DIR"

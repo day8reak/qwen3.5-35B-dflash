@@ -153,7 +153,12 @@ class _DraftBuilder:
                       attrs={"axes": [1], "keepdims": True})
         one = g.const(1, dtype="int32")
         anchor = g.op("sub", length, one, shape=(1, 1), dtype="int32", name="anchor_position")
-        anchor_ids = g.op("gather_elements", ids, anchor, shape=(1, 1), dtype="int32", attrs={"axis": 1})
+        # Internal OMG GatherElements accepts floating data only. The HIAI
+        # contract is batch1 with a nonempty valid prefix, so anchor is in
+        # [0,S-1]. Gather from a 1D INT32 token vector without any float casts;
+        # the [1,1] index shape is also the Gather output shape.
+        token_vector = self.reshape(ids, (s,), name="input_ids_vector")
+        anchor_ids = g.op("gather", token_vector, anchor, shape=(1, 1), dtype="int32", attrs={"axis": 0})
         block_ids = g.op("concat", anchor_ids,
                          g.const([[c.mask_token_id] * (b - 1)], dtype="int32"),
                          shape=(1, b), dtype="int32", attrs={"axis": 1}, name="block_ids")

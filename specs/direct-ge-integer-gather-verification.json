@@ -1,0 +1,223 @@
+{
+  "status": "HOST_SOURCE_VALIDATION_PASS_INTERNAL_DRAFT_RETEST_PENDING",
+  "run_id": "20261022T112725Z-20655-b96dab",
+  "baseline_commit": "bbcc5052aa838a19e5e4715a356b492fd7e891f8",
+  "user_observation": {
+    "pid": 158166,
+    "graph": "draft",
+    "node": "v4",
+    "operator": "GatherElements",
+    "failure": "Input[0] DataType INT32 is wrong",
+    "target_progress": "Compile reached draft after target nonempty OMC and AIR payload hash checks; inferred from wrapper order and user log only",
+    "target_artifact_hashes": "NOT_PROVIDED",
+    "user_source_revision": "UNCONFIRMED",
+    "device_execution": "PENDING"
+  },
+  "change": {
+    "old": "INT32 GatherElements(ids[1,S], anchor[1,1], axis=1)",
+    "new": "INT32 ids[1,S] -> Reshape[S] -> GatherV2(axis=0, INT32 anchor[1,1]) -> INT32[1,1]",
+    "domain": "Batch1; contiguous nonempty valid prefix; 0 <= anchor < S",
+    "float_carrier": false,
+    "data_abi_weights_unchanged": true,
+    "gather_node_name_preserved": "v4",
+    "guard": "Both serializers reject non-FP16 GatherElements data"
+  },
+  "blue_evidence": {
+    "scope": "Read-only binary audit of blue Kirin9030 next-6.0.1.0 libraries. These are not the user private X90 DDK; all conclusions about X90 remain qualified by user logs or future compile/run.",
+    "sources": {
+      "profile_manifest": {
+        "file": "manifest.json",
+        "sha256": "a1c58a308516a1fd7c2dbcb3f97e3b64ce0c5c46a4bc61f7983680722584e81d"
+      },
+      "graph": {
+        "file": "libgraph_host.so",
+        "sha256": "e16e8b4c482fafd8a55ff343042a16e6c295b1b61302decba7c65f964f4bc20b"
+      },
+      "cpucl": {
+        "file": "libcpucl_host.so",
+        "sha256": "c2185258b41cdb61f8d3c79252e5d7fc3be91aea86983232bb4129d65d090bda"
+      },
+      "air_parser": {
+        "file": "libai_fmk_air_parser.so",
+        "sha256": "09fc6bc72a2fb3555ec364cb1b81b9012028cedead829c0aeccba68f2576fbc4"
+      },
+      "types": {
+        "file": "types.h",
+        "sha256": "87fe2abfdd5bb122f16ac312189794f74c2480c0cd7d0d39ec1208fbe91d9c4c"
+      },
+      "npu_opinfo": {
+        "file": "npu_ascendc_opinfo.json",
+        "sha256": "ea9a2d5554e9a37fb06f623af2849906776a00ed82bf5b7f74bf6f683eb00c70"
+      }
+    },
+    "gather_elements_data_types": [
+      "FP16",
+      "FP32"
+    ],
+    "air_gather_mapping": "GatherV2 -> GatherV2D; INT32 axis Const -> axis attr",
+    "integer_support": "GatherV2D verifier accepts INT32 data and INT32 indices; CPUCL registration supports both and executes DoGather<int>",
+    "npu_limit": "Blue NPU GatherV2 registry data allowlist is FP16/INT16/INT8, excluding INT32; frontend/CPU support therefore must not be stated as confirmed NPU support."
+  },
+  "tests": {
+    "passed": 235,
+    "skipped": 4,
+    "unresolved_failures": 0,
+    "reports": [
+      {
+        "file": "pytest-ge.xml",
+        "tests": 227,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 4,
+        "sha256": "178e31fb8197f124bbde8a060f594e9dab37fc52a1732dc9ec12bd793310d57e"
+      },
+      {
+        "file": "gather-tests.xml",
+        "tests": 12,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "sha256": "5bb41d011659ece3da6df4fdf21c6cd29ce1b296fc317417159b420aade0ff18"
+      }
+    ],
+    "new_integer_cases": [
+      "Full draft configuration clipped actual integer producer through context_valid; both serializers independently decoded; original three input ABI preserved.",
+      "Every nonempty valid right-padded prefix length for S8 andS65 (73cases), including IDs2049,65535,248077,248319 and other IDs within248320 vocabulary.",
+      "Exact integer anchor, block IDs, anchor position and context mask; input bytes unchanged and no floating carrier.",
+      "Separate generic INT32GatherV2-copy cases2^24+1, INT32max/min, 2049 and65535, without claiming out-of-vocabulary values are model inputs.",
+      "Both serializer paths reject INT32/INT64/BOOL GatherElements data; native FP16 GatherElements still preserves selected NaN payloads and signedzero with INT32 orINT64 indices.",
+      "Whole tiny draft output equivalent to previous torch-gather-style semantics at every prefix length1..8; ABI and all prepared weight/manifest hashes unchanged."
+    ],
+    "skips": "Four optional checks require GE headers or matching Save/Load host libraries",
+    "scope": "CPU numerical reference, independently decoded serialization, real recipe parser and tool boundary checks; not internal OMG or device execution"
+  },
+  "structural_audit": {
+    "mode": "Captured actual emitted descriptor records before recipe writing; external weight paths and folding disabled. Payloads never read.",
+    "target_source_unchanged": true,
+    "cases": [
+      {
+        "tiny": true,
+        "sequence_length": 8,
+        "graph": "target",
+        "emitted_record_count": 9276,
+        "records_sha256": "5305cae77e36055e808fed4adaf901a305966d0a923fbcd0dfd00411831cfc1b",
+        "gather_v2_count": 3,
+        "integer_data_gather_count": 0,
+        "gather_elements_count": 0,
+        "records_identical_to_baseline": true
+      },
+      {
+        "tiny": true,
+        "sequence_length": 8,
+        "graph": "draft",
+        "emitted_record_count": 450,
+        "records_sha256": "7280744f88744f5034495ab18a0ab5e5406def4694ea9b65e2f1638ef88be22a",
+        "gather_v2_count": 2,
+        "integer_data_gather_count": 1,
+        "gather_elements_count": 0,
+        "anchor_token_path": "INT32 Data -> INT32 Reshape vector -> INT32 GatherV2(axis=0)",
+        "anchor_indices_shape": [
+          1,
+          1
+        ],
+        "anchor_gather_original_name_preserved": true
+      },
+      {
+        "tiny": false,
+        "sequence_length": 8,
+        "graph": "target",
+        "emitted_record_count": 445281,
+        "records_sha256": "689af24a5a75cee9b55620040f0dedbbe6955f26c74107bec6e4eec463079574",
+        "gather_v2_count": 81,
+        "integer_data_gather_count": 0,
+        "gather_elements_count": 0,
+        "records_identical_to_baseline": true
+      },
+      {
+        "tiny": false,
+        "sequence_length": 8,
+        "graph": "draft",
+        "emitted_record_count": 1178,
+        "records_sha256": "de29f6b671b23d98fa50a48fe4f6356af473dca14e427742f5b5c439922126f4",
+        "gather_v2_count": 2,
+        "integer_data_gather_count": 1,
+        "gather_elements_count": 0,
+        "anchor_token_path": "INT32 Data -> INT32 Reshape vector -> INT32 GatherV2(axis=0)",
+        "anchor_indices_shape": [
+          1,
+          1
+        ],
+        "anchor_gather_original_name_preserved": true
+      },
+      {
+        "tiny": false,
+        "sequence_length": 128,
+        "graph": "target",
+        "emitted_record_count": 447602,
+        "records_sha256": "4d6a785a20dbce5dae6571ff3eea810dc62c714dd398c3aedc1b985f09f6d290",
+        "gather_v2_count": 81,
+        "integer_data_gather_count": 0,
+        "gather_elements_count": 0,
+        "records_identical_to_baseline": true
+      },
+      {
+        "tiny": false,
+        "sequence_length": 128,
+        "graph": "draft",
+        "emitted_record_count": 1202,
+        "records_sha256": "141ce9d982ab07d9cc9aab92877cfde37ba815fc055b0ef06c6d7a58db5b1aee",
+        "gather_v2_count": 2,
+        "integer_data_gather_count": 1,
+        "gather_elements_count": 0,
+        "anchor_token_path": "INT32 Data -> INT32 Reshape vector -> INT32 GatherV2(axis=0)",
+        "anchor_indices_shape": [
+          1,
+          1
+        ],
+        "anchor_gather_original_name_preserved": true
+      }
+    ]
+  },
+  "retry": {
+    "prepared": "REUSABLE_UNCHANGED",
+    "air": "REEXPORT_REQUIRED",
+    "command_guide": "docs/direct-model-air.md"
+  },
+  "remaining": [
+    "Internal X90 draft AIR->OMC verification and actual backend placement",
+    "HIAI target/draft output validation",
+    "Full checkpoint conversion and quality",
+    "Native compressed integer GE weight mapping NOT_IMPLEMENTED",
+    "Board memory, quantization quality and performance"
+  ],
+  "source_sha256": {
+    "model/qwen35_moe_dflash/ge_cpp.py": "457d018525aec690bc49fc335c19303c1aa1861ae86dc51c076f4412e696223a",
+    "model/qwen35_moe_dflash/ge_draft.py": "68896e10e527fbe45f91c2d9d52b15f48a077fbf5ff212080b3b8842696d8310",
+    "tests/test_ge_integer_gather.py": "53da404cd66674d6d759919c945ee2c6adf0a074d6e22d7315e26b9b737cf648",
+    "tests/test_ge_reshape_shape.py": "05d6f11dd0e563eb6306f26881cd06bf41d60ff69c6e3ec24b2bbc048ac01906",
+    "docs/README.md": "dcb1837002bc0dc888dae3ee8379d620f04024a17b181e0d770bade5ca2b0e64",
+    "docs/direct-model-air.md": "2a393b3f30084a8d6b09a6213f3d3d9aa4cf86512750ac22b2eb888af4568102",
+    "docs/ge-operator-compatibility.md": "ba030862f314349c6060e68cce9d188f743e923d7039786301c3eb43fac14a4d",
+    "docs/experience.md": "d9cc07ce86d7be4362913802f318648cc7735d3f3a14a8eeac96614a978ecce3",
+    "docs/validation.md": "bb9d9fa28ab271aa7da97e44edd15f97f1b5a9fe2b674c5fbb93699c95fb03bc",
+    "specs/model-workflow.json": "f68799d9a53f9cb719c55d7bbe84e500676aeec9ff59fd86aa0a5cb5885d7c48"
+  },
+  "run_evidence": [
+    {
+      "file": "integer-gather-verification.json",
+      "sha256": "65de7b33b9ca5a60a46332839fab01da11c79d9f4400d74b52e6e38dc75f3ba3"
+    },
+    {
+      "file": "blue-gather-dtype-audit.json",
+      "sha256": "e6beaaafd292c51d1ed2b66cb1b4417727f45e74654ffd39b985ee3dcba36516"
+    },
+    {
+      "file": "gather-shape-audit.json",
+      "sha256": "f9ab6a45c2ca5df313eac1e736c34ac62f5fbebd0226a62753daf230ef4f7f0f"
+    },
+    {
+      "file": "gather-full-emission-audit.json",
+      "sha256": "cfb01788b9ee089d235cfbf34535c1f402e68755491b89fb2b3db1a1aa1fad50"
+    }
+  ]
+}

@@ -9,7 +9,7 @@
 | Cumsum | 内部日志明确缺少形状推导；名称与公开定义一致。本次将 FP16 GDN 衰减与整数位置前缀分别分解，见下文。 |
 | BroadcastTo | 有推导注册；小型静态 FP16 广播存在 CPUCL 风险。本次提前展开为共享 Const，动态广播保留。 |
 | ArgMaxV2 | **内部转换未验证**。蓝区只有 ArgMaxExt2，未找到 ArgMaxV2 转换表入口；但同一蓝区表也没有内部已能转换的 SelectV2，不能据此断言不支持。保留现实现，避免用 TopK 替换时改变并列最大值或 NaN 的选择语义。 |
-| GatherElements | 找到实际 Infer、Verify 和注册对象；dim 属性、输出索引形状和输入数据类型匹配，无证据需要替换。 |
+| GatherElements | 先前只核对 schema、注册及端口，未覆盖旧 IR 的数据类型限制。最新内部日志明确拒绝 INT32；draft 的整数 anchor 选择改用 GatherV2，导出端拒绝非 FP16 GatherElements。 |
 | TopKV2、GatherV2、SoftmaxV2、Cast、Sigmoid、Softplus | AIR 转换表有实际入口，对应旧 IR 推导存在。保留当前映射；此前 SoftplusV2 已改为受参数约束的 Softplus。 |
 | SelectV2 | 用户内部日志已显示转换成 Select；保留三个输入显式同形及 BOOL 分支整数载体。 |
 | ReduceSum、ReduceMean | 有推导注册；本次 FP16 前缀分解复用 ReduceSum。实际累加精度须在板端验证。 |
@@ -46,3 +46,12 @@ Slice 类型错误紧接 ConstantFolding begin，确认是常量折叠阶段；�
 蓝区 `libai_npucore_ascendc.so` 的实际 BatchMatMul builder 继承 MatMul 支持检查，读取 `adj_x1` 后在为真时返回失败（嵌入源码位置 ascendc_matmul_op_builder.cpp:575，消息 `Not Support Matrix A Transpose`）。它未显示 rank>3/4 禁止条件，Python 后续检查源码在本地包缺失。新发射器对相同批次前缀合并成 rank3，保留每个矩阵，并显式执行左转置以避免该蓝区属性限制；内部 X90 的行为仍待复验。未采用逐批展开以避免完整模型数十万矩阵产生大量图节点，也不使用改变舍入边界的乘法加归约替代。
 
 Kirin 蓝区存在 `get_tuling_soc_version` 平台映射和 Ascend310B 内部标识；不能只看 soc_version 日志就改变 kirinx90 目标。所有修改只在本项目导出端完成，未修改共享 DDK。证据见 [批量矩阵乘验证记录](../specs/direct-ge-bmm-verification.json)。
+
+
+## PID158166：GatherElements 的整数类型限制
+
+实际注册和公开 schema 的存在不能替代内部 IR dtype 验证。draftv4 的原始数据是 INT32 token IDs，用户日志明确拒绝。蓝区 GatherElementsVerify 的数据类型集合只有 FP16/FP32，索引允许 INT32/INT64；因此先前兼容性表对输入类型的判断不充分，本节更正该结论。
+
+batch1 的 anchor 选择改为 INT32 vector `[S]` 加 INT32 indices `[1,1]` 的 axis0 GatherV2，得到 `[1,1]`，无浮点载体。蓝区实际 AIR 映射到 GatherV2D，前端允许 INT32数据、要求INT32索引；CPUCL支持表与 Run 分支均支持 INT32并调用DoGather<int>。NPU算子表未列出INT32数据，所以这里不承诺NPU执行。所有当前model的 GatherElements 已消除，普通 FP16嵌入/TopK Gather 保留。
+
+target 已编译推进到 draft 属于用户日志及脚本顺序推断，完整产物与设备验证仍未取得。证据见 [整数 Gather 验证记录](../specs/direct-ge-integer-gather-verification.json)。
