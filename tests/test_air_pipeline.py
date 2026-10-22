@@ -45,6 +45,7 @@ def air_case(tmp_path, monkeypatch):
     binary.write_text('''#!/usr/bin/env python3
 import os, sys
 from pathlib import Path
+from multiprocessing.connection import Listener
 args=dict(a.split('=',1) for a in sys.argv[1:])
 assert args['--framework']=='1'
 assert args['--target']=='omc' and args['--platform']=='kirinx90'
@@ -52,6 +53,8 @@ assert args['--use_origin_format']=='true' and args['--weight_data_type']=='FP16
 assert args['--model']=='input.air' and '/' not in args['--output']
 assert Path('weight_0').read_bytes()==b'external weight fixture'
 assert os.environ['SOC_VERSION']=='kirinx90'
+with Listener(family='AF_UNIX') as listener:
+    assert Path(listener.address).resolve().is_relative_to(Path.cwd())
 if os.environ.get('FAKE_OMG_REQUIRE_INTERNAL_ENV')=='yes':
     import internal_ddk_extension
     internal_ddk_extension.check()
@@ -74,6 +77,12 @@ def test_air_omg_success_retains_external_hashes_and_cleans_scratch(air_case, tm
     assert result["status"] == "COMPILED" and result["device_validation"] == "PENDING"
     assert [g["name"] for g in result["graphs"]] == ["target", "draft"]
     assert not list((tmp_path/"omc").glob("omg-*"))
+    for name in ("target", "draft"):
+        record = json.loads((tmp_path / "omc" / name / "omg-environment.json").read_text())
+        ipc = record["ipc_temporary_directory"]
+        assert record["environment"]["TMPDIR"] == ipc["path"]
+        assert Path(ipc["physical_path"]).is_relative_to(tmp_path / "omc")
+        assert not Path(ipc["physical_path"]).exists()
 
 
 def test_omg_child_keeps_sourced_ddk_extensions(air_case, tmp_path, monkeypatch):

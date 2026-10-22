@@ -2,7 +2,7 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。最新 tiny target OMG 日志进入常量折叠和 TE 初始化，报静态 Slice 类型限制、`te_fusion` 接口不匹配，以及 Reshape 形状改写错误。对应源码修正及重试命令见第 3 节；真实双图 OMG 转换和上板仍待验证。已逐类核查 39 种实际生成的 GE 算子，范围和剩余风险见 [算子兼容性核查](ge-operator-compatibility.md)。
+用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。最新 tiny target OMG 日志在 TE 多进程初始化时报 `AF_UNIX path too long`，随后在兼容性检查时报 BatchMatMul 不支持。对应源码修正及重试命令见第 3 节；真实双图 OMG 转换和上板仍待验证。已逐类核查 39 种实际生成的 GE 算子，范围和剩余风险见 [算子兼容性核查](ge-operator-compatibility.md)。
 
 ## 实现范围
 
@@ -80,7 +80,28 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 内部 OMG 兼容性修正与重试
 
-最新日志（进程 157562）显示 `v974` 的形状常量从 `1 0 2 0 1 0 55 0` 被 OMG 改成 `1 0 2 0 1 0 -1 0`，随后推导为 `[1,2,1,2147483647]`；相邻 `v975` 也有相同改写。源图实际形状为 `[1,2,1,55]`，每个维度存储为 INT64，没有大整数。该字节模式符合只改低32位、未作64位符号扩展的情况，内部实现仍不可访问。现在只将 **Reshape 的 shape 辅助张量**改为官方支持的 INT32；维度写入前必须在非负 INT32 范围内。数据、权重和浮点计算精度不变，其他轴/切片参数仍使用原类型，不新增 Squeeze/ExpandDims。
+最新日志（进程 157707）首错是 `OSError: AF_UNIX path too long`，随后 `multi_process_check`、TE 初始化失败，最后才报 `v1115/BatchMatMul` 不支持。旧脚本将 OMG 的 `TMPDIR` 设为完整 run 路径；[CPython 的 multiprocessing](https://github.com/python/cpython/blob/3.10/Lib/multiprocessing/connection.py) 还会在它下面追加 `pymp-*`、`listener-*`，长路径可复现同样的 socket 错误。
+
+现在 OMG 子进程的 `TMPDIR/TMP/TEMP` 使用短的 `/proc/<父进程PID>/fd/<FD>/.ipc-<随机后缀>` 别名。实际文件仍位于本次 run 的独立临时目录，父进程在编译期间保持目录描述符有效；每次调用使用不同后缀，防止旧进程因描述符复用而误访问新调用的目录。父 shell 不变。每图 `omg-environment.json` 记录短路径、物理目录和有效期。此方案依赖 Linux procfs 访问；厂商若自行将别名解析成真实长路径，仍须进一步适配，不能据主机测试宣称内部 TE 已通过。
+
+源码核对 `v1115` 为 FP16 `[1,2,1,64,64] × [1,2,1,64,8] → [1,2,1,64,8]`，发射 `BatchMatMulV2`，无转置或 batch 广播不匹配。TE 初始化失败可能导致后续算子注册不可用，因此先修复 IPC 再判定 X90 内核支持；此修改不改变模型算子或精度。
+
+**已使用上一版图修正重新导出 AIR、遇到本次 AF_UNIX 错误时，只需更新并重跑 compile：**
+
+```bash
+cd "$REPO_DIR"
+git pull --ff-only
+export GE_OMC_DIR="$GE_PAIR_RUN/omc-ipc-$(date +%Y%m%d-%H%M%S)"
+
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_AIR_DIR" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_OMC_DIR"
+```
+
+原 AIR 和输出日志保留。若 TE 初始化正常后仍报 BatchMatMul 不支持，再使用新目录的日志确定内部 X90 对该 FP16 五维形状的限制；不要将两次进程的日志混在一起判断。
+
+此前日志（进程 157562）显示 `v974` 的形状常量从 `1 0 2 0 1 0 55 0` 被 OMG 改成 `1 0 2 0 1 0 -1 0`，随后推导为 `[1,2,1,2147483647]`；相邻 `v975` 也有相同改写。源图实际形状为 `[1,2,1,55]`，每个维度存储为 INT64，没有大整数。该字节模式符合只改低32位、未作64位符号扩展的情况，内部实现仍不可访问。现在只将 **Reshape 的 shape 辅助张量**改为官方支持的 INT32；维度写入前必须在非负 INT32 范围内。数据、权重和浮点计算精度不变，其他轴/切片参数仍使用原类型，不新增 Squeeze/ExpandDims。
 
 同一日志将 Slice 类型限制明确定位在 `TCH ConstantFolding` 阶段。导出端新增有界静态 FP16 Slice/Reshape 预计算，直接复制原字节，tiny 的32个专家静态切片全部提前完成；每个源和输出≤64KiB，累计读取及结果≤8MiB。大型专家权重仍跳过，不能据 tiny 结果宣称完整35B的常量折叠已兼容。现有动态 Slice 不转成 FP32；原 prepared 权重文件和哈希保持不变。
 
@@ -102,7 +123,7 @@ python3 "$GE_MODEL_TOOL" compile \
 
 同一日志的 `v23/Add` 对应 RMSNorm 的 `1 + weight`，CPUCL 报输入类型不一致。保存并回读的 AIR 描述中二者均为 FP16，现有日志不能确定 OMG 内部发生了什么类型变化；源码将此处改为单输入 Power 的 `shift=1`。全部有限 FP16 输入的本地检查与原加法逐位一致，真实转换仍须重试。节点编号会随重新构图变化，应以新日志为准。
 
-这次改动影响 AIR 内容，不能只重跑旧 AIR 的 `compile`。可复用旧 `prepared`，不用重新下载或生成权重；保留原目录并运行：
+若尚未重新导出过上述 Reshape、静态常量和 Cumsum 修正，须先更新 AIR，不能只重跑旧 AIR 的 `compile`。可复用旧 `prepared`，不用重新下载或生成权重；保留原目录并运行：
 
 ```bash
 cd "$REPO_DIR"

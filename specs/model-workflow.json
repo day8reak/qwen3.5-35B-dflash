@@ -115,7 +115,7 @@
     },
     "user_report": {
       "date": "2026-10-22",
-      "statement": "\u6210\u529f\u751f\u6210air\u548comc\u4e86",
+      "statement": "成功生成air和omc了",
       "scope": "FP16 Add smoke only",
       "artifact_hashes": "NOT_PROVIDED",
       "device_execution": "PENDING"
@@ -123,7 +123,7 @@
   },
   "direct_ge_model": {
     "run_id": "20261022T074906Z-6507-ca8b2b",
-    "status": "SOURCE_RESHAPE_CONSTANT_ENV_FIX_USER_RETEST_PENDING",
+    "status": "SOURCE_OMG_IPC_FIX_USER_RETEST_PENDING",
     "pipeline": [
       "ge-cpp",
       "air",
@@ -139,7 +139,7 @@
     "real_model_omg": "PENDING",
     "device_execution": "PENDING",
     "native_quantized_ge_mapping": "NOT_IMPLEMENTED",
-    "next_command": "python3 \"$GE_MODEL_TOOL\" export --prepared \"$GE_PAIR_RUN/prepared\" --ge-root \"$CANN_ROOT\" --output \"$GE_AIR_DIR\"",
+    "next_command": "python3 \"$GE_MODEL_TOOL\" compile --air \"$GE_AIR_DIR\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --output \"$GE_OMC_DIR\"",
     "guide": "docs/direct-model-air.md",
     "data_factory_fix": {
       "run_id": "20261022T084136Z-11227-7c2c63",
@@ -166,14 +166,14 @@
       "scope": "tiny target/draft AIR; fixed version requires new export"
     },
     "tiny_omg": {
-      "status": "USER_REPORTED_RESHAPE_SLICE_TE_FAILURE_FIX_RETEST_PENDING",
-      "run_id": "20261022T103232Z-17196-b89598",
+      "status": "USER_REPORTED_IPC_TE_BATCHMATMUL_FAILURE_FIX_RETEST_PENDING",
+      "run_id": "20261022T104957Z-18903-e12366",
       "observed": [
-        "PID157562 ConstantFolding Slice dtype restriction",
-        "te_fusion.log_util lacks get_py_exception_dict; loaded package path unknown",
-        "ConvertReshape v974 and v975 changes55 0 to-1 0; v974 then infers2147483647"
+        "PID157707 OSError AF_UNIX path too long before TE multi_process_check initialization failure",
+        "ImportError cannot load module more than once per process after first initialization failure",
+        "Final compatibility check reports v1115 BatchMatMul unsupported; causal link to failed TE remains inference"
       ],
-      "evidence": "specs/direct-ge-reshape-env-verification.json",
+      "evidence": "specs/direct-ge-ipc-verification.json",
       "previous_failure": {
         "run_id": "20261022T093951Z-12973-586101",
         "observed": [
@@ -199,6 +199,16 @@
           "CPUCL input2B expected4B; failed node not identified; nearby static zero BroadcastTo identified in source"
         ],
         "evidence": "specs/direct-ge-compatibility-verification.json"
+      },
+      "previous_reshape_slice_te_failure": {
+        "status": "USER_REPORTED_RESHAPE_SLICE_TE_FAILURE_FIX_RETEST_PENDING",
+        "run_id": "20261022T103232Z-17196-b89598",
+        "observed": [
+          "PID157562 ConstantFolding Slice dtype restriction",
+          "te_fusion.log_util lacks get_py_exception_dict; loaded package path unknown",
+          "ConvertReshape v974 and v975 changes55 0 to-1 0; v974 then infers2147483647"
+        ],
+        "evidence": "specs/direct-ge-reshape-env-verification.json"
       }
     },
     "operator_audit": "specs/ge-operator-audit.json"
