@@ -4,6 +4,8 @@
 
 **当前进度：用户已反馈 tiny target/draft 双图 AIR→OMC 编译成功。下一步：[直接 GE tiny OMC 上板指南](direct-ge-board.md)。** 按服务器参考、HIAI交叉编译、文件传输、板端运行、服务器对比分步执行。已成功的OMC和prepared无需重建。该进度是用户报告，尚未取得独立产物哈希或X90执行结果。
 
+**服务器没有 OHOS SDK：[获取 Native SDK 与配置编译路径](ohos-native-sdk.md)。** 已找到的 HIAI `.so` 是链接/运行库，还需匹配的交叉编译器与 sysroot；SDK 留在服务器。
+
 [直接 GE 构图与导出](direct-model-air.md)保留全部生成命令及兼容性修复记录。生成端只需NumPy与主机GE，不加载PyTorch/TorchNPU/TorchAir。当前tiny使用FP16随机权重；完整35B的压缩整数权重GE映射尚未实现。
 
 [Add 最小探针](direct-air-smoke.md)继续保留，可用于区分基础环境和模型算子转换问题。

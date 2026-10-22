@@ -57,6 +57,8 @@ PY
 
 ## 2. 服务器：交叉编译正式程序
 
+没有 `ohos.toolchain.cmake` 时，先按[缺少 OHOS Native SDK 的处理步骤](ohos-native-sdk.md)获取 Linux 工具包或复用内部工具链。`libs/ohos` 下的 `.so` 文件不能替代 SDK。
+
 已有变量可直接复用。若未配置，按实际内部路径填写：
 
 ```bash
