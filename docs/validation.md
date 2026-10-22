@@ -154,3 +154,15 @@ run：`20261022T095753Z-14065-91325c`，基线 `9ff66b2`。用户 PID157178 的 
 本地 11 个相关测试文件结果为 **136 passed、4 skipped**。通过范围包含全部有限 FP16 的 Softplus 阈值舍入等价、生成 recipe 的真实写入及 C++ 读取器、完整 tiny target/draft 的 Select/Softplus 描述、有限常量预算与逐节点舍入、1/3/8 有效 token 的 tiny target 输出逐字节一致、旧 prepared 导出流程及日志/编译故障处理。4 项跳过需要实际 GE 头文件/运行库，未执行真实 GE/OMG 或板端。
 
 独立审查检查了常量来源、liveness 与引用、参数限制、未触碰大专家权重、shape 回显过滤范围。原生 Softplus kernel 的目标精度以及 CPUCL 缓冲区失败是否消失仍需服务器重试；不把数学 oracle、主机参考或 mock 工具通过解释为实际 OMC 成功。完整35B、原生压缩量化和设备性能门槛不变。证据见 `specs/direct-ge-softplus-verification.json`；重试命令见直接 GE 指南第3节。
+
+## Cumsum、静态广播及全算子核查（2026-10-22）
+
+run：`20261022T101117Z-15205-4ffded`，基线 `e496b5f`。用户 PID157297 日志明确报 `v92/Cumsum` 缺少推导函数，另有 CPUCL 2B/4B 输入缓冲区错误。核查 tiny/full target/draft 共39种原生 GE 类型，36种自动生成 schema 的端口/属性名匹配；Data/Const/Cast 属于手写基础接口。蓝区推导注册与实际 AIR 转换表的逐类结果见 [算子兼容性核查](ge-operator-compatibility.md)。ArgMaxV2 的内部映射仍未验证；蓝区证据不能代替内部 X90 转换。
+
+GDN 非正 FP16 衰减扫描用独立前缀 Slice/ReduceSum/ConcatD，整数扫描用分阶段移位相加；不增加 FP32 图张量。FP16 限定模型域和长度≤256，保持默认 FP16 容差，拒绝有符号抵消的通用替换。小型静态广播字节复制并全图复用，常量按需发射；预算为单扩展1MiB、累计扩展8MiB，超限保留 BroadcastTo。原始 prepared 权重不变，必须重新导出 AIR。
+
+冻结源码的15个相关测试文件 **193 passed、4 skipped**。覆盖独立读取序列化 scan 的数值比较、非正大动态范围和 NaN/Inf、整数溢出和单元素、静态广播位保留/预算/别名/可达性、两种生成方式、C++ 配方解析、导出与转换编排。tiny target/draft 整图中实际替换序列化 scan，分别验证有效 token 长度1/3/8：target top1 与 draft tokens 精确一致，target 特征通过默认 Torch FP16 容差。4项真实 GE 头文件/Save-Load 可选检查因缺少匹配资源跳过；没有真实内部 OMG 或板端执行。
+
+修正后还检查 tiny S8、full S8、full S128 共六张描述图，全部没有 Cumsum/SoftplusV2，Const→BroadcastTo 残留为0；非 Data 节点均从输出可达，引用顺序、端口形状和类型一致。full S128 target 静态广播载荷复用后为1,640,448字节（7种），draft 为147,456字节（1种）。这是关闭常量算术折叠、仅外置权重描述的构图检查，没有读取完整35B权重，不是部署内存估算。
+
+独立源码审查通过；证据与哈希见 `specs/direct-ge-compatibility-verification.json`。更新后的真实 AIR/OMC、ReduceSum 板端精度、FileConstant 完整载荷、量化映射及全模型质量/内存/性能仍待验证；硬件参考策略 `use` 不变。用户服务器按直接 GE 指南第3节复用 prepared 重导，再用内部 OMG 转换。

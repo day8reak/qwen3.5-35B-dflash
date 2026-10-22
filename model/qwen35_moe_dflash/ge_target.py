@@ -146,7 +146,10 @@ def _chunk_gdn(b, query, key, value, decay, beta):
     v_beta = b.op("mul", value, b.view(beta, (1, heads, padded, 1)))
     k_beta = b.op("mul", key, b.view(beta, (1, heads, padded, 1)))
     query, key, value, k_beta, v_beta = [b.view(x, (1, heads, count, chunk, x.shape[-1])) for x in (query, key, value, k_beta, v_beta)]
-    decay = b.op("cumsum", b.view(decay, (1, heads, count, chunk)), axis=-1)
+    # This scan sums -exp(A_log) * softplus(a + dt_bias), hence nonpositive
+    # values. Mark the domain for the bounded FP16 prefix-reduction lowering.
+    decay = b.op("cumsum", b.view(decay, (1, heads, count, chunk)), axis=-1,
+                 scope="gdn_nonpositive")
     lower = b.constant(np.tril(np.ones((chunk, chunk), dtype=bool)), "bool")
     strict_lower = b.constant(np.tril(np.ones((chunk, chunk), dtype=bool), -1), "bool")
     diff = b.op("sub", b.view(decay, (1, heads, count, chunk, 1)),

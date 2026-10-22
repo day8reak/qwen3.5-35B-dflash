@@ -2,7 +2,7 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。修正 Select 广播后，最新 tiny target OMG 日志推进到 `SoftplusV2` 缺少形状推导函数，并出现 CPUCL 常量输入缓冲区大小不匹配。对应源码修正及重试命令见第 3 节；真实 OMG 转换和上板仍待验证。源码数值检查不代表内部 OMG 已支持全部算子。
+用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。最新 tiny target OMG 日志推进到 `Cumsum` 缺少形状推导函数，并出现 CPUCL 常量输入缓冲区大小不匹配。对应源码修正及重试命令见第 3 节；真实双图 OMG 转换和上板仍待验证。已逐类核查 39 种实际生成的 GE 算子，范围和剩余风险见 [算子兼容性核查](ge-operator-compatibility.md)。
 
 ## 实现范围
 
@@ -80,7 +80,11 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 内部 OMG 兼容性修正与重试
 
-最新日志（进程 157178）明确报 `v52/SoftplusV2` 缺少 infershape 函数。当前模型固定使用 FP16、`beta=1`、`threshold=20`，因此生成器改发原生 `Softplus`（x/y，无额外属性）；[官方 GE 文档](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/programug/graphdevg/atlasag_25_0009.html)有该算子的构图用法。穷举全部 63,488 个有限 FP16 输入，理想函数的阈值版本与非阈值版本舍入到 FP16 后逐位一致。其他 beta/threshold 设置会明确拒绝，不擅自改变公式；真实内部 kernel 数值仍需上板比较。
+最新日志（进程 157297）明确报 `v92/Cumsum` 缺少 infershape 函数。名称符合官方 GE schema，并非大小写错误。生成器现在分开处理两种用途：GDN 的非正 FP16 衰减前缀使用 `Slice → ReduceSum → ConcatD`，每个前缀仅输出一次 FP16；draft 的整数位置前缀使用整数移位相加。FP16 路径只允许模型标记的非正衰减域和长度 ≤256，当前 GDN 长度为64；不使用逐步 FP16 Add，也不承诺对任意正负混合输入的前缀和等价。主机比较保持原有 FP16 容差，真实 ReduceSum 内核数值仍需板端验证。
+
+日志同时报 CPUCL 输入2字节、预期4字节。附近 `__ge/v3735/broadcast_2` 对应 FP16 标量零扩展到 `(8,16)`；日志没有给出失败节点，不能断言全部缓冲区错误都源于它。已将小型静态广播直接存为 Const，按源字节和目标形状复用，保留正负零、Inf 和 NaN 载荷。每个扩展 ≤1MiB，累计扩展载荷 ≤8MiB，超限保留原 BroadcastTo；只处理内联常量，不读取完整 checkpoint。常量按实际使用生成，避免留下不连通节点。
+
+此前日志（进程 157178）报 `v52/SoftplusV2` 缺少 infershape 函数的修正仍保留。当前模型固定使用 FP16、`beta=1`、`threshold=20`，生成器改发原生 `Softplus`（x/y，无额外属性）；[官方 GE 文档](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/programug/graphdevg/atlasag_25_0009.html)有该算子的构图用法。穷举全部 63,488 个有限 FP16 输入，理想函数的阈值版本与非阈值版本舍入到 FP16 后逐位一致。其他 beta/threshold 设置会明确拒绝，不擅自改变公式；真实内部 kernel 数值仍需上板比较。
 
 同一日志还报 CPUCL 输入 32 字节、预期 64 字节，且 `fp16Flag:0`。这与小型 FP16 常量算术进入 FP32 执行路径相符，但日志未给出该失败节点，暂不把具体归属当作定论。生成器现在只提前计算小常量的 `scalar_add/scalar_mul/exp/neg`，保留每个原始节点的 FP16 输出舍入，避免把归一化偏移和 A_log 衰减参数计算交给这条 CPUCL 路径。原始 prepared 权重及其哈希不变；不展开专家矩阵、切片或 reshape，不加载完整 35B。单张量上限 64 KiB、累计缓存/读取预算 8 MiB。
 

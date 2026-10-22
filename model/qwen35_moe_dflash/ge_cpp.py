@@ -203,8 +203,17 @@ class _Emitter:
         self.counter = 0
         self.records = []
         self.recipe = recipe
+        self.inline_constants = {}
+        self.pending_constants = {}
+        self.constant_aliases = {}
+        self.broadcast_cache = {}
+        self.broadcast_bytes = 0
+        self.max_broadcast_tensor_bytes = 1 << 20
+        self.max_broadcast_total_bytes = 8 << 20
 
     def op(self, name, typ, inputs, outputs, attrs=None):
+        for _, value in inputs:
+            self.ensure_constant(value)
         def desc(value):
             return {"shape": list(value.shape), "dtype": value.dtype}
         self.records.append({
@@ -231,16 +240,38 @@ class _Emitter:
         self.lines.append(f"  expected.push_back({{{_q(name)},{_q(typ)},{{{descs}}}}});")
         return var
 
+    def ensure_constant(self, value):
+        if value.name in self.refs:
+            return
+        if value.name in self.constant_aliases:
+            canonical = self.constant_aliases[value.name]
+            self.ensure_constant(canonical)
+            self.refs[value.name] = self.refs[canonical.name]
+        elif value.name in self.pending_constants:
+            array = self.pending_constants.pop(value.name)
+            self.materialize_constant(array, value)
+
+    def alias_constant(self, value, canonical):
+        if value.name != canonical.name:
+            self.constant_aliases[value.name] = canonical
+            if canonical.name in self.inline_constants:
+                self.inline_constants[value.name] = self.inline_constants[canonical.name]
+
     def constant(self, data, dtype, name):
         array = np.asarray(data, dtype=DTYPES[dtype])
         value = Value(name, array.shape, dtype)
-        var = self.op(name, "Const", [], [("y", value)])
+        self.pending_constants[name] = array
+        if array.nbytes <= self.max_broadcast_tensor_bytes:
+            self.inline_constants[name] = array
+        return value
+
+    def materialize_constant(self, array, value):
+        var = self.op(value.name, "Const", [], [("y", value)])
         self.records[-1]["constant"] = {"data": array.tobytes()}
         if not self.recipe:
             literal = ",".join(str(x) for x in array.tobytes())
             self.lines.append(f"  SetConst({var}, {_desc(value)}, std::vector<uint8_t>{{{literal}}});")
-        self.refs[name] = (var, "y")
-        return value
+        self.refs[value.name] = (var, "y")
 
     def helper(self, value, data, dtype="int64", suffix="parameter"):
         return self.constant(data, dtype, f"__ge/{value.name}/{suffix}")
@@ -252,9 +283,31 @@ class _Emitter:
         if np.broadcast_shapes(source.shape, output.shape) != output.shape:
             raise ValueError(f"{output.name}: cannot broadcast {source.shape} to {output.shape}")
         value = Value(f"__ge/{output.name}/broadcast_{index}", output.shape, source.dtype)
+        constant = self.static_broadcast(source, value)
+        if constant is not None:
+            return constant
         shape = self.helper(value, value.shape, suffix="shape")
         var = self.op(value.name, "BroadcastTo", [("x", source), ("shape", shape)], [("y", value)])
         self.refs[value.name] = (var, "y")
+        return value
+
+    def static_broadcast(self, source, output):
+        """Reuse small byte-exact Const expansions, avoiding CPUCL FP16 folding."""
+        array = self.inline_constants.get(source.name)
+        size = math.prod(output.shape) * DTYPES[source.dtype].itemsize
+        if array is None or size > self.max_broadcast_tensor_bytes:
+            return None
+        key = (source.dtype, source.shape, array.tobytes(), output.shape)
+        if key in self.broadcast_cache:
+            return self.broadcast_cache[key]
+        if self.broadcast_bytes + size > self.max_broadcast_total_bytes:
+            return None
+        # Copying elements preserves signed zeros and NaN payloads; no mask
+        # arithmetic and no reading checkpoint/FileConstant tensors here.
+        expanded = np.broadcast_to(array, output.shape).copy(order="C")
+        value = self.constant(expanded, source.dtype, output.name)
+        self.broadcast_cache[key] = value
+        self.broadcast_bytes += size
         return value
 
 
@@ -300,7 +353,11 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
         e.refs[value.name] = (var, "y")
     for name, array in graph.constants.items():
         if name in live:
-            e.constant(array, graph._values[name].dtype, name)
+            # A static broadcast may replace this source entirely. Materialize
+            # only on first live use so Verify never expects disconnected nodes.
+            e.pending_constants[name] = array
+            if array.nbytes <= e.max_broadcast_tensor_bytes:
+                e.inline_constants[name] = array
     for key, value in graph.weights.items():
         if value.name not in live:
             continue
@@ -343,9 +400,13 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
                 if source.dtype != "bool" or (kind == "where" and i == 0):
                     continue
                 carrier = Value(f"__ge/{v.name}/integer_input_{i}", source.shape, "int32")
-                var = e.op(carrier.name, "Cast", [("x", source)], [("y", carrier)],
-                           {"dst_type": "int64_t{ge::DT_INT32}"})
-                e.refs[carrier.name] = (var, "y")
+                if source.name in e.inline_constants:
+                    carrier = e.constant(e.inline_constants[source.name].astype(DTYPES["int32"]),
+                                         "int32", carrier.name)
+                else:
+                    var = e.op(carrier.name, "Cast", [("x", source)], [("y", carrier)],
+                               {"dst_type": "int64_t{ge::DT_INT32}"})
+                    e.refs[carrier.name] = (var, "y")
                 ins[i] = carrier
             v = Value(f"__ge/{v.name}/integer_output", v.shape, "int32")
         attrs, outport = {}, "y"
@@ -376,6 +437,15 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
                 raise NotImplementedError("native Softplus lowering requires FP16 beta=1 threshold=20")
             typ, ports = "Softplus", ["x"]
         elif kind in {"reshape", "broadcast_to", "transpose"}:
+            if kind == "broadcast_to":
+                if ins[0].dtype != v.dtype or tuple(a["shape"]) != v.shape:
+                    raise ValueError("BroadcastTo descriptor differs from its source/shape")
+                if np.broadcast_shapes(ins[0].shape, v.shape) != v.shape:
+                    raise ValueError("BroadcastTo input cannot expand to output shape")
+                constant = e.static_broadcast(ins[0], v)
+                if constant is not None:
+                    e.alias_constant(v, constant)
+                    continue
             typ = {"reshape": "Reshape", "broadcast_to": "BroadcastTo", "transpose": "Transpose"}[kind]
             key = "perm" if kind == "transpose" else "shape"
             ins.append(e.helper(v, a[key], suffix=key))
@@ -446,9 +516,9 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
             typ, ports = "Cast", ["x"]
             attrs = {"dst_type": f"int64_t{{{_DT[v.dtype]}}}"}
         elif kind == "cumsum":
-            typ, ports = "Cumsum", ["x", "axis"]
-            ins.append(e.helper(v, a["axis"], dtype="int32", suffix="axis"))
-            attrs = {"exclusive": "false", "reverse": "false"}
+            from .ge_scan import emit_cumsum
+            emit_cumsum(e, v, ins[0], a["axis"], scope=a.get("scope"))
+            continue
         elif kind == "matmul":
             if len(ins[0].shape) > 2 and len(ins[1].shape) == 2 and not a.get("transpose_a", False):
                 # Dense projections need no mixed-rank broadcast matmul. Preserve
@@ -486,6 +556,8 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
             var = e.op(boolean_output.name, "Cast", [("x", v)], [("y", boolean_output)],
                        {"dst_type": "int64_t{ge::DT_BOOL}"})
             e.refs[boolean_output.name] = (var, "y")
+    for output in graph.outputs:
+        e.ensure_constant(output)
     # A compact recipe keeps full-model compiler memory independent of node count.
     if recipe_dir is not None:
         from .ge_recipe import emit_recipe_cpp

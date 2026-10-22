@@ -6,8 +6,8 @@ import re
 _OMG_TRACE_PATTERNS = tuple(re.compile(pattern) for pattern in (
     # Some internal OMG builds emit these ordinary graph traces at E severity.
     # Match complete, observed messages rather than dropping all [lsy] lines.
-    rb'air_op_convert_funcs\.cpp ConvertReshape\(\d+\)::"\[lsy\] node-[^"\r\n]+ input has Const Node:[^"\r\n]+"\s*$',
-    rb'air_op_convert_funcs\.cpp ConvertReshape\(\d+\)::"\+{4} \[lsy\] change const, origin = [-\d\s]+, newDim = [-\d\s]+"\s*$',
+    rb'air_op_convert_funcs\.cpp ConvertReshape\(\d+\)::"\[lsy\] node-[^"\r\n]+ input has (?:Const|Reshape) Node:[^"\r\n]+"\s*$',
+    rb'air_op_convert_funcs\.cpp ConvertReshape\(\d+\)::"\+{4} \[lsy\] change (?:const|reshape), origin = [-\d\s]+, newDim = [-\d\s]+"\s*$',
     rb'shape\.cpp GetTotalDimNum\(\d+\)::"\[lsy\] get shape from scrShape:[-\d\s]*"\s*$',
     rb'ir_infer_shape_optimizer\.cpp operator\(\)\(\d+\)::"\[lsy\] node\[[^"\r\n]+\] input shape:[-\d\s]*"\s*$',
     # An absent optional config is explicitly successful in these messages.

@@ -156,7 +156,9 @@ def test_serialized_select_preserves_exact_mask_values(tmp_path, name, condition
     # Bit comparison covers signed zero, -inf, and NaNs excluded by the mask.
     np.testing.assert_array_equal(actual.view(np.uint8), expected.view(np.uint8))
     broadcast_count = sum(record["type"] == "BroadcastTo" for record in records)
-    assert broadcast_count == sum(value.shape != expected.shape for value in (condition, then, other))
+    # Only dynamic inputs require runtime expansion; literal branches are
+    # serialized already expanded to avoid CPUCL FP16 constant execution.
+    assert broadcast_count == sum(value.shape != expected.shape for value in (condition, then))
     unrolled = emit_cpp(graph)
     assert unrolled.count(', "BroadcastTo",') == broadcast_count
     assert unrolled.count(', "SelectV2",') == 1

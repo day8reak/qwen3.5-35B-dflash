@@ -1,0 +1,508 @@
+{
+  "schema_version": 1,
+  "run_id": "20261022T101117Z-15205-4ffded",
+  "baseline_commit": "e496b5f",
+  "scope": "tiny/full target/draft sequence8; external-weight descriptors, constant arithmetic folding off; no full weight load or real OMG execution",
+  "type_count": 39,
+  "official_schema": "https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py",
+  "blue_profile": "kirin9030-next-6.0.1.0",
+  "blue_is_internal_x90": false,
+  "blue_library_sha256": {
+    "libgraph_host.so": {
+      "sha256": "e16e8b4c482fafd8a55ff343042a16e6c295b1b61302decba7c65f964f4bc20b"
+    },
+    "libai_fmk_air_parser.so": {
+      "sha256": "09fc6bc72a2fb3555ec364cb1b81b9012028cedead829c0aeccba68f2576fbc4"
+    },
+    "libomg.so": {
+      "sha256": "83957988db0bb9837595b7c095771172951e7f7c7e58eab414e643111d6a465f"
+    }
+  },
+  "operators": [
+    {
+      "type": "Add",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 229,
+        "tiny_draft": 9,
+        "full_target": 12370,
+        "full_draft": 25
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "ArgMaxV2",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 1,
+        "tiny_draft": 1,
+        "full_target": 1,
+        "full_draft": 1
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "BatchMatMulV2",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 27,
+        "tiny_draft": 4,
+        "full_target": 261,
+        "full_draft": 12
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "BroadcastTo",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 68,
+        "tiny_draft": 10,
+        "full_target": 30902,
+        "full_draft": 30
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Cast",
+      "official_schema": false,
+      "counts": {
+        "tiny_target": 17,
+        "tiny_draft": 7,
+        "full_target": 10241,
+        "full_draft": 7
+      },
+      "schema_status": "HANDWRITTEN_PRIMITIVE_NOT_IN_AUTO_GENERATED_FILE",
+      "fields_not_checked_by_auto_schema": [
+        "attr dst_type",
+        "input x",
+        "output y"
+      ]
+    },
+    {
+      "type": "ConcatD",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 405,
+        "tiny_draft": 12,
+        "full_target": 4032,
+        "full_draft": 28
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Const",
+      "official_schema": false,
+      "counts": {
+        "tiny_target": 4524,
+        "tiny_draft": 161,
+        "full_target": 235998,
+        "full_draft": 366
+      },
+      "schema_status": "HANDWRITTEN_PRIMITIVE_NOT_IN_AUTO_GENERATED_FILE",
+      "fields_not_checked_by_auto_schema": [
+        "output y"
+      ]
+    },
+    {
+      "type": "Cos",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 1,
+        "tiny_draft": 1,
+        "full_target": 1,
+        "full_draft": 1
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Cumsum",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 3,
+        "tiny_draft": 1,
+        "full_target": 30,
+        "full_draft": 1
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Data",
+      "official_schema": false,
+      "counts": {
+        "tiny_target": 2,
+        "tiny_draft": 3,
+        "full_target": 2,
+        "full_draft": 3
+      },
+      "schema_status": "HANDWRITTEN_PRIMITIVE_NOT_IN_AUTO_GENERATED_FILE",
+      "fields_not_checked_by_auto_schema": [
+        "attr index",
+        "output y"
+      ]
+    },
+    {
+      "type": "Equal",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 16,
+        "tiny_draft": 0,
+        "full_target": 10240,
+        "full_draft": 0
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Exp",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 12,
+        "tiny_draft": 0,
+        "full_target": 120,
+        "full_draft": 0
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "FileConstant",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 0,
+        "tiny_draft": 0,
+        "full_target": 693,
+        "full_draft": 71
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "GatherElements",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 0,
+        "tiny_draft": 1,
+        "full_target": 0,
+        "full_draft": 1
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "GatherV2",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 3,
+        "tiny_draft": 1,
+        "full_target": 81,
+        "full_draft": 1
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Greater",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 16,
+        "tiny_draft": 0,
+        "full_target": 10240,
+        "full_draft": 0
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Less",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 0,
+        "tiny_draft": 2,
+        "full_target": 0,
+        "full_draft": 6
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "LessEqual",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 0,
+        "tiny_draft": 1,
+        "full_target": 0,
+        "full_draft": 5
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "LogicalAnd",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 1,
+        "tiny_draft": 3,
+        "full_target": 1,
+        "full_draft": 11
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "MatMul",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 72,
+        "tiny_draft": 20,
+        "full_target": 20871,
+        "full_draft": 56
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Maximum",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 0,
+        "tiny_draft": 1,
+        "full_target": 0,
+        "full_draft": 1
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Mul",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 312,
+        "tiny_draft": 41,
+        "full_target": 23253,
+        "full_draft": 109
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Neg",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 8,
+        "tiny_draft": 4,
+        "full_target": 80,
+        "full_draft": 12
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Power",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 35,
+        "tiny_draft": 13,
+        "full_target": 332,
+        "full_draft": 33
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "RealDiv",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 4,
+        "tiny_draft": 0,
+        "full_target": 40,
+        "full_draft": 0
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "ReduceMean",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 14,
+        "tiny_draft": 10,
+        "full_target": 131,
+        "full_draft": 26
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "ReduceSum",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 231,
+        "tiny_draft": 1,
+        "full_target": 22470,
+        "full_draft": 1
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Reshape",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 739,
+        "tiny_draft": 64,
+        "full_target": 27505,
+        "full_draft": 180
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Rsqrt",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 20,
+        "tiny_draft": 10,
+        "full_target": 191,
+        "full_draft": 26
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "SelectV2",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 42,
+        "tiny_draft": 2,
+        "full_target": 20571,
+        "full_draft": 6
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Sigmoid",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 8,
+        "tiny_draft": 0,
+        "full_target": 80,
+        "full_draft": 0
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Sin",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 1,
+        "tiny_draft": 1,
+        "full_target": 1,
+        "full_draft": 1
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Slice",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 1626,
+        "tiny_draft": 14,
+        "full_target": 56571,
+        "full_draft": 42
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "SoftmaxV2",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 5,
+        "tiny_draft": 2,
+        "full_target": 50,
+        "full_draft": 6
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Softplus",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 3,
+        "tiny_draft": 0,
+        "full_target": 30,
+        "full_draft": 0
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Sub",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 6,
+        "tiny_draft": 3,
+        "full_target": 60,
+        "full_draft": 7
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Swish",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 26,
+        "tiny_draft": 2,
+        "full_target": 10340,
+        "full_draft": 6
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "TopKV2",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 4,
+        "tiny_draft": 0,
+        "full_target": 40,
+        "full_draft": 0
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    },
+    {
+      "type": "Transpose",
+      "official_schema": true,
+      "schema_errors": [],
+      "counts": {
+        "tiny_target": 29,
+        "tiny_draft": 8,
+        "full_target": 281,
+        "full_draft": 24
+      },
+      "schema_status": "PORT_AND_ATTRIBUTE_NAMES_MATCH"
+    }
+  ],
+  "confirmed_internal_missing_infer": [
+    "Cumsum"
+  ],
+  "unverified_internal_mapping": [
+    "ArgMaxV2"
+  ],
+  "full_weight_FileConstant": "PENDING",
+  "interpretation": "See docs/ge-operator-compatibility.md. Registry/schema evidence does not certify device support. Cumsum removed by current lowering; counts above record baseline audit."
+}

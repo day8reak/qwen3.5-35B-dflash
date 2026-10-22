@@ -2,7 +2,7 @@
 
 部署链路为 **AIR → OMG → OMC → HarmonyOS HIAI**。新增直接 GE 构图的 target/draft 双图路径，保留原有 PyTorch/TorchAir 模型与导出入口。板端 C++ 使用 `hiai::AiModelMngerClient` 同步接口。精度要求是 **权重和激活可以量化，其余浮点计算 FP16**。
 
-**当前操作入口：[Target / Draft 直接 GE 构图 → AIR](direct-model-air.md)。** 用户已反馈 Add 小图 AIR→OMC 成功；下一步在相同环境转换含 GDN/MoE/注意力的双图 tiny。新导出端只需 NumPy 与主机 GE，不加载 PyTorch/TorchNPU/TorchAir。完整结构定义已实现，实际模型 AIR/OMC 和上板仍待验证。新路径暂为 FP16 基线，压缩整数权重 GE 映射尚未实现。
+**当前操作入口：[Target / Draft 直接 GE 构图 → AIR](direct-model-air.md)。** 用户已反馈 Add 小图 AIR→OMC 及双图 tiny AIR 成功，双图 OMG 转换和上板仍待验证。已补充 [39种 GE 算子兼容性核查](ge-operator-compatibility.md)，并修正缺少推导的 Cumsum 和小型静态广播；更新后需重新导出 AIR。新导出端只需 NumPy 与主机 GE，不加载 PyTorch/TorchNPU/TorchAir。完整结构定义已实现；新路径暂为 FP16 基线，压缩整数权重 GE 映射尚未实现。
 
 [Add 最小探针](direct-air-smoke.md)继续保留，可用于区分基础环境和模型算子转换问题。
 

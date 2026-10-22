@@ -77,3 +77,18 @@ def test_omg_trace_filters_do_not_remove_lines_from_tail(tmp_path):
     excerpt = log_excerpt(log)
     assert 'First error messages:' not in excerpt
     assert excerpt == 'Log tail:\n' + trace
+
+
+def test_reshape_chain_trace_does_not_hide_cumsum_or_cpucl_error(tmp_path):
+    log = tmp_path / "omg.log"
+    trace = (
+        'E/AI_FMK (1): air_op_convert_funcs.cpp ConvertReshape(1713)::"[lsy] node-__ge/v1156/flat_input input has Reshape Node:v1155"\n'
+        'E/AI_FMK (1): air_op_convert_funcs.cpp ConvertReshape(1733)::"++++ [lsy] change reshape, origin = 8 0 16 0 , newDim = -1 0 16 0 "\n'
+    )
+    log.write_text(trace * 20
+                   + '[CPUCL]op_execute.cpp:UpdateInput(52):"input ix[0] size[2] must >= tensor size[4]"\n'
+                   + 'E/AI_FMK (1): op_ir_func_factory.cpp GetInferFunc(31)::"get [op:v92 type:Cumsum] infershape func failed."\n'
+                   + '[DEBUG] filler\n' * 800)
+    early = log_excerpt(log).split("Log tail:")[0]
+    assert 'L41: [CPUCL]' in early and 'size[2] must >= tensor size[4]' in early
+    assert 'Cumsum' in early and 'change reshape' not in early
