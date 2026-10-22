@@ -111,3 +111,16 @@ run：`20261022T093951Z-12973-586101`。用户报告 tiny target/draft AIR 已�
 OMG 包装器现在保留完整日志，并直接输出 graph、阶段、路径、首错与尾部；failure.json 记录退出码/超时及已完成图，失败不会生成成功的双图 manifest。摘要支持内部 `E/AI_FMK` 与 CPUCL 格式，并排除 W/I 级插件提示。GE/OMG 共用仅标准库的日志模块，避免将 NumPy/Torch 依赖带回 compile 路径。故障回归覆盖 target/draft 非零退出、超时、启动错误、空输出与缺输出及临时目录清理。
 
 修复改变 AIR 内容，用户必须重做 export；旧 prepared 中的权重与配置仍可复用。未改 DDK、OMG 参数、模型 ABI 或通用技能，没有新增自定义 NPU 算子。未将用户 AIR 成功报告晋升为 OMC 或板端通过；full 35B/量化/性能状态仍待验证。证据见 `specs/direct-ge-omg-select-verification.json`，下一步在同一内网环境执行更新后的重试命令并检查实际 OMG 结果。
+
+
+## Softplus 方言与 CPUCL 常量路径（2026-10-22）
+
+run：`20261022T095753Z-14065-91325c`。用户的新进程 157178 日志明确显示内部 OMG 缺少 `SoftplusV2` 的推导函数；前一条 `v51/Add` 推导成功，不应再归咎于先前的 Select 或猜测环境缺库。官方 GE 文档提供原生 Softplus，蓝区 parser 包含其兼容映射相关字符串；后者仅支持选择候选，不能证明内部 X90 已支持整个图。
+
+对于当前固定 FP16、beta1、threshold20，用单个原生 Softplus 避免手动 Exp/Add/Log 分解引入额外半精度舍入。全部有限 FP16 输入的理想函数阈值/非阈值版本舍入逐位一致；其他参数直接拒绝。该检查只证明阈值替换，不证明内核精度：审计确实发现当前 CPU Torch Softplus 与高精度数学 oracle 在一个接近舍入中点的输入上差一个 FP16 ULP，所以没有宣称不同内核全域 bitwise 一致。
+
+同一日志的 CPUCL 报 32B 输入却要 64B，且 fp16Flag0；这符合半精度小常量进入单精度执行路径，但具体节点归属仍是推断。修正提前计算归一化偏移和 A_log 的小型静态一元算术，每个原节点仍转回 FP16；原始权重文件与来源哈希不动。转换只读单张量不超过 64KiB 的 FP16 文件，并限制累计缓存/读取到 8MiB。
+
+不能无界地预计算所有常量子图：完整结构含大量 expert 切片和 reshape，按输出复制会膨胀到约 129GB。当前只允许 scalar_add/scalar_mul/exp/neg；完整结构候选 161 节点、约 346KB 为结构统计，未加载实际全模型权重。测试验证同一源文件不被改写、大张量路径根本不读取、预算和逐节点舍入，以及 tiny target 多种有效长度的输出不变。
+
+日志摘要改为识别具体已观察到的 E 级 shape 回显和明确返回 SUCCESS 的空配置消息，而非忽略所有 E/[lsy]；原日志及尾部保留。未知 E 级错误、真正 shape 失败及 CPUCL 缓冲区错误继续报告。经验固化为模型局部实现和回归，未改通用 skill、DDK、OMG 参数或 PyTorch 路径；没有把主机回归晋升为 AIR/OMC/设备通过。下一验证是用户服务器复用 prepared 重导 AIR、重新 OMG，随后再做板端数值检查。

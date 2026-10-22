@@ -145,3 +145,12 @@ run：`20261022T093951Z-12973-586101`，基线 `0097330`。用户报告 tiny tar
 本地相关 9 个测试文件共 **83 passed**：AIR/OMG 成功与故障编排、轻量导入、生成图及双图参考、Select 序列化描述与数值、RMSNorm 全部 63,488 个有限 FP16 位模式逐位等价、日志摘要。测试验证的是主机代码、CPU 参考和模拟工具边界，没有执行真实内部 OMG。独立审查未发现阻塞问题。
 
 状态：旧修复的 AIR 成功为用户报告，未取得产物哈希；本次生成器修改后的 AIR/OMC 需要重试。HIAI 板端、全权重、原生量化和性能门槛仍为 PENDING。不能将 83 项本地测试解释为 OMC 已通过。证据及源文件哈希见 `specs/direct-ge-omg-select-verification.json`；服务器复用 prepared 的重试命令见 `docs/direct-model-air.md` 第 3 节。
+
+
+## 原生 Softplus 与有限常量预计算（2026-10-22）
+
+run：`20261022T095753Z-14065-91325c`，基线 `9ff66b2`。用户 PID157178 的 target OMG 日志明确报 SoftplusV2 缺少推导函数，同时 CPUCL 报 32B/64B 输入长度不匹配。更新的生成器使用受参数约束的原生 Softplus；只对小型静态一元算术预计算 FP16 结果，重新分析依赖并删除已替代的静态链，不改变原始 prepared 权重。
+
+本地 11 个相关测试文件结果为 **136 passed、4 skipped**。通过范围包含全部有限 FP16 的 Softplus 阈值舍入等价、生成 recipe 的真实写入及 C++ 读取器、完整 tiny target/draft 的 Select/Softplus 描述、有限常量预算与逐节点舍入、1/3/8 有效 token 的 tiny target 输出逐字节一致、旧 prepared 导出流程及日志/编译故障处理。4 项跳过需要实际 GE 头文件/运行库，未执行真实 GE/OMG 或板端。
+
+独立审查检查了常量来源、liveness 与引用、参数限制、未触碰大专家权重、shape 回显过滤范围。原生 Softplus kernel 的目标精度以及 CPUCL 缓冲区失败是否消失仍需服务器重试；不把数学 oracle、主机参考或 mock 工具通过解释为实际 OMC 成功。完整35B、原生压缩量化和设备性能门槛不变。证据见 `specs/direct-ge-softplus-verification.json`；重试命令见直接 GE 指南第3节。

@@ -258,12 +258,16 @@ class _Emitter:
         return value
 
 
-def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=None):
+def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=None,
+             fold_constant_arithmetic=True):
     """Return a self-contained C++ AIR serializer.
 
     ``weight_paths`` maps canonical graph weight keys to existing raw contiguous
     little-endian files. External mode emits official FileConstant nodes; files
     must remain at the same absolute paths until OMG conversion has completed.
+    Small constant arithmetic is evaluated with the original FP16 boundaries
+    before serialization. Descriptor-only tooling can disable that step when
+    real weight payloads are not available; model export always enables it.
     """
     graph.validate()
     if recipe_dir is None and len(graph.nodes) > 10_000:
@@ -280,6 +284,16 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     for node in reversed(graph.nodes):
         if node.output.name in live:
             live.update(value.name for value in node.inputs)
+    folded = {}
+    if fold_constant_arithmetic:
+        from .ge_constants import fold_constants
+        folded = fold_constants(graph, weight_paths, live)
+        # Recompute liveness: derived constants replace their entire static
+        # producer chain, so do not keep unused raw parameter nodes in AIR.
+        live = {v.name for v in graph.outputs}
+        for node in reversed(graph.nodes):
+            if node.output.name in live and node.output.name not in folded:
+                live.update(value.name for value in node.inputs)
     for index, value in enumerate(graph.inputs):
         var = e.op(value.name, "Data", [], [("y", value)], {"index": f"int64_t{{{index}}}"})
         e.lines.append(f"  Check({var}.UpdateInputDesc(\"x\", {_desc(value)}), \"Data input descriptor\");")
@@ -313,6 +327,9 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     for node in graph.nodes:
         kind, v, a, ins = node.kind, node.output, node.attrs, list(node.inputs)
         if v.name not in live:
+            continue
+        if v.name in folded:
+            e.constant(folded[v.name], v.dtype, v.name)
             continue
         if kind == "where" and (len(ins) != 3 or ins[0].dtype != "bool" or
                                  any(x.dtype != v.dtype for x in ins[1:])):
@@ -350,9 +367,14 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
         elif kind == "silu":
             typ, ports, attrs = "Swish", ["x"], {"scale": "float{1.0}"}
         elif kind == "softplus":
-            typ, ports = "SoftplusV2", ["x"]
-            attrs = {"beta": f"float{{{float(a.get('beta', 1))}}}",
-                     "threshold": f"float{{{float(a.get('threshold', 20))}}}"}
+            # Internal OMG lacks SoftplusV2 shape inference. Native Softplus
+            # expresses this model's beta=1 case without intermediate rounding.
+            # Above threshold 20, log1p(exp(x)) and x round to the same FP16
+            # value. Do not silently generalize this mapping to other settings.
+            if (float(a.get("beta", 1)) != 1.0 or float(a.get("threshold", 20)) != 20.0
+                    or v.dtype != "float16" or ins[0].dtype != "float16"):
+                raise NotImplementedError("native Softplus lowering requires FP16 beta=1 threshold=20")
+            typ, ports = "Softplus", ["x"]
         elif kind in {"reshape", "broadcast_to", "transpose"}:
             typ = {"reshape": "Reshape", "broadcast_to": "BroadcastTo", "transpose": "Transpose"}[kind]
             key = "perm" if kind == "transpose" else "shape"

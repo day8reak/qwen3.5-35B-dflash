@@ -123,7 +123,7 @@
   },
   "direct_ge_model": {
     "run_id": "20261022T074906Z-6507-ca8b2b",
-    "status": "SOURCE_COMPATIBILITY_FIXES_USER_RETEST_PENDING",
+    "status": "SOURCE_SOFTPLUS_CONSTANT_FIX_USER_RETEST_PENDING",
     "pipeline": [
       "ge-cpp",
       "air",
@@ -166,13 +166,21 @@
       "scope": "tiny target/draft AIR; fixed version requires new export"
     },
     "tiny_omg": {
-      "status": "USER_REPORTED_TARGET_FAILURE_FIX_RETEST_PENDING",
-      "run_id": "20261022T093951Z-12973-586101",
+      "status": "USER_REPORTED_SOFTPLUSV2_FAILURE_FIX_RETEST_PENDING",
+      "run_id": "20261022T095753Z-14065-91325c",
       "observed": [
-        "CPUCL v23 Add input0Type_ differs from input1Type_",
-        "v7 Select x1Shape.GetDimNum differs from x2Shape.GetDimNum; infer shape failed"
+        "PID157178: v52 SoftplusV2 has no infer shape function",
+        "CPUCL input32B expected64B; fp16Flag0; failed node not identified"
       ],
-      "evidence": "specs/direct-ge-omg-select-verification.json"
+      "evidence": "specs/direct-ge-softplus-verification.json",
+      "previous_failure": {
+        "run_id": "20261022T093951Z-12973-586101",
+        "observed": [
+          "CPUCL v23 Add input0Type_ differs from input1Type_",
+          "v7 Select x1Shape.GetDimNum differs from x2Shape.GetDimNum; infer shape failed"
+        ],
+        "evidence": "specs/direct-ge-omg-select-verification.json"
+      }
     }
   }
 }

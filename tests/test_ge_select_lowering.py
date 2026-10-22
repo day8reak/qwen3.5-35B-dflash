@@ -171,7 +171,8 @@ def test_entire_tiny_pair_serializes_equal_shaped_select_inputs(tmp_path, graph_
     graph = build_pair(*configurations(tiny=True), 8)[graph_index]
     paths = {key: tmp_path / f"weight-{index}.bin" for index, key in enumerate(graph.weights)}
     # External references keep this descriptor audit independent of payload generation.
-    emit_cpp(graph, paths, external_weights=True, recipe_dir=tmp_path / "recipe")
+    emit_cpp(graph, paths, external_weights=True, recipe_dir=tmp_path / "recipe",
+             fold_constant_arithmetic=False)
     records, _, _ = RecipeReader(tmp_path / "recipe/graph.recipe").read()
     selected = _assert_select_contract(records)
     assert len(selected) == sum(node.kind == "where" for node in graph.nodes)

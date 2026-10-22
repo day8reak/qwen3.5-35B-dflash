@@ -154,7 +154,8 @@ def emit_recipe_cpp(records, graph_name, input_indices, output_pairs, recipe_dir
 
     ``recipe_dir`` must be a new caller-owned output directory. A failed write
     leaves diagnostic partial inputs there and never overwrites earlier files.
-    All checkpoint contents are read by the generated executable, not Python.
+    Large checkpoint tensors are read by the generated executable. Small
+    derived FP16 parameter constants may already be evaluated by the emitter.
     """
     _validate(records, graph_name, input_indices, output_pairs)
     folder = Path(recipe_dir).resolve()

@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "run_id": "20261022T095753Z-14065-91325c",
+  "baseline_commit": "9ff66b289d75738436efb62dd2ddef2e7198483a",
+  "status": "SOURCE_CHECKS_PASS_INTERNAL_OMG_RETEST_PENDING",
+  "observed": {
+    "user_pid": 157178,
+    "failure": "SoftplusV2 missing infer shape function",
+    "additional_cpucl_error": "input32B expected64B; fp16Flag0",
+    "failed_cpucl_node": "NOT_IDENTIFIED",
+    "draft_omg": "NOT_REACHED"
+  },
+  "fixes": {
+    "softplus": "Native Softplus x/y without attrs; guarded FP16 beta1 threshold20",
+    "static_arithmetic": "Bounded scalar_add/scalar_mul/exp/neg preprocessing; FP32 host intermediate then FP16 per original node boundary; immutable canonical weights",
+    "memory_budget": {
+      "per_tensor_bytes": 65536,
+      "read_and_cached_total_bytes": 8388608
+    },
+    "liveness": "Stop at folded outputs and emit derived FP16 Const; no large expert slice/reshape expansion",
+    "diagnostics": "Filter exact observed trace/no-op lines only in first-error summary, include CPUCL buffer mismatch"
+  },
+  "tests": {
+    "tests": 140,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 4,
+    "passed": 136,
+    "time_seconds": 73.685,
+    "scope": "host numerical/serialized recipe/C++ parser and mocked tool orchestration",
+    "skip_reason": "Four optional real GE header compilation/Save-Load tests lack matching GE resources",
+    "finite_fp16_threshold_equivalence_cases": 63488,
+    "tiny_target_folded_vs_original": "byte-identical for1/3/8 valid input tokens"
+  },
+  "structural_full_model_fold_candidates": {
+    "nodes": 161,
+    "output_bytes": 345856,
+    "full_weights_loaded": false
+  },
+  "prepared_reusable": true,
+  "fresh_air_required": true,
+  "unchanged": [
+    "canonical prepared raw weight files and source identity",
+    "neutral IR and CPU reference semantics",
+    "recipe binary format and HIAI ABI",
+    "OMG argv and DDK environment",
+    "PyTorch route"
+  ],
+  "environment_activation": "FAILED_UNREGISTERED_CPRO_BLUE_PENDING_PROFILE",
+  "device_access": "UNAVAILABLE_BY_USER_ACCESS_CONSTRAINT",
+  "hardware_reference_policy": "use",
+  "real_updated_air": "PENDING",
+  "real_updated_omg": "PENDING",
+  "device_validation": "PENDING",
+  "native_quantized_ge_mapping": "NOT_IMPLEMENTED",
+  "experience_audit": "docs/experience.md",
+  "sources": [
+    "https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/programug/graphdevg/atlasag_25_0009.html"
+  ],
+  "source_hashes": [
+    {
+      "path": "docs/direct-model-air.md",
+      "sha256": "d8169ad89bf0676977bc7615cfc903b9c65eda383f8fdb72cc60cbd64b00ebbe"
+    },
+    {
+      "path": "docs/experience.md",
+      "sha256": "6cdef0e225aa55761f24598d473ee9e411d4f8aa81cde8ddf57172b1ea14367e"
+    },
+    {
+      "path": "docs/validation.md",
+      "sha256": "bf6829be1e3be6028650a906e5628995b782ca02fb2c09ab670494c09e0b7fe7"
+    },
+    {
+      "path": "model/qwen35_moe_dflash/ge_constants.py",
+      "sha256": "e14463c2a87d18b6918cb5a8650881f25ddc84915419295e77f466a3a2ae3f9c"
+    },
+    {
+      "path": "model/qwen35_moe_dflash/ge_cpp.py",
+      "sha256": "15e2f1fb8b9a5759dee91b0770e4f9c01f14450f329aaa7fab0e90dc5ae61117"
+    },
+    {
+      "path": "model/qwen35_moe_dflash/ge_recipe.py",
+      "sha256": "c5e196d458e4595fe0712e1b761ad44b2079d7b6d3e9f310d21f1745baf7b08b"
+    },
+    {
+      "path": "model/qwen35_moe_dflash/tool_logs.py",
+      "sha256": "be8380b6ffeef42f89c1ebba36039f391543dfc4c2aca4caab152a82376b3890"
+    },
+    {
+      "path": "specs/model-workflow.json",
+      "sha256": "9394ea3bbdbd4221accde9c501a2518708d5d516fa9ea5efbd0a1b744ca33723"
+    },
+    {
+      "path": "tests/test_ge_constants.py",
+      "sha256": "3def1bd040efe872afb024c494ba6213d0131b312f63b74ed37791264e2406ca"
+    },
+    {
+      "path": "tests/test_ge_select_lowering.py",
+      "sha256": "4cc0484f5d98e92c74667a30d6c9bd95b7d6e379fdf429d12e60d4ba24e8609d"
+    },
+    {
+      "path": "tests/test_ge_softplus.py",
+      "sha256": "5ca6acd472593c8d39fc71355be83fbb5175770dce28c76ef66e6de350aca95f"
+    },
+    {
+      "path": "tests/test_tool_logs.py",
+      "sha256": "1b7e5840daeba09d241336c415a5b8d577c82129b9b3106ab72dfbdb45dace73"
+    }
+  ],
+  "evidence_files": [
+    {
+      "path": "source-test-hashes.json",
+      "sha256": "2e099f2abdcb4f984b324f34373cd4aeee9d0c60c26953b7595f88a96f4c403d",
+      "bytes": 1101
+    },
+    {
+      "path": "tests.xml",
+      "sha256": "702a59ca5d6c6bab64254d067336827565fd5ef8612ac2070a38c7c75b87687b",
+      "bytes": 20703
+    },
+    {
+      "path": "tests.log",
+      "sha256": "eca5e38396b78357cf6638fa9a077604fa263504811f413823fb06f18f7f03b0",
+      "bytes": 739
+    },
+    {
+      "path": "independent-review.json",
+      "sha256": "d785a11a849fa684e0d2dfdccf954ff95a473a523db655bf0c1518fa1acb873f",
+      "bytes": 1110
+    },
+    {
+      "path": "softplus-audit.json",
+      "sha256": "8db0d04c22b101d59d07042a117686a65b62f29e49727badbadcdc1793f2f43d",
+      "bytes": 1455
+    },
+    {
+      "path": "user-omg-observation.json",
+      "sha256": "b0f108aab41c8468ba35d290f01e563430246719a579c0f01f93fd24419e17de",
+      "bytes": 611
+    }
+  ]
+}
