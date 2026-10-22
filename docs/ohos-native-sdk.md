@@ -10,6 +10,8 @@ SDK 只放在服务器；板端使用编译后的程序、OMC 和匹配的运行
 
 复用时仍通过本项目的 `OHOS_NATIVE_SDK`、`HIAI_INCLUDE_DIR`、`HIAI_LIBRARIES` 指定资源，不修改共享 DDK。
 
+用户随后提供的 `scripts/build_ohos.sh` 实际将 `CMAKE_TOOLCHAIN_FILE` 指向示例内的 `toolchain/openharmony-toolchain.cmake`，并设置 `INC_PATH=<示例>/inc`、`LIB_PATH=<示例>/libs/ohos`。因此，仅搜索名为 `ohos.toolchain.cmake` 的文件不能排除已有自定义工具链；还需读取这份 `openharmony-toolchain.cmake` 和 `src/CMakeLists.txt`，确认编译器、sysroot、C++ ABI 与链接库。脚本未给出 SDK 版本/API，也不能证明其引用的工具已安装。当前本项目的构建脚本使用 Native SDK 自带的 toolchain，尚不能直接把这个自定义 `.cmake` 文件填入 `OHOS_NATIVE_SDK`。
+
 ## 方式一：内部示例所用的 public tar.gz 包
 
 2026-10-22 用户提供的 `model_run_tool` README 要求：先解压 `*-ohos-sdk-public.tar.gz`，再进入其中 `linux` 目录解压组件 zip，最后执行 `scripts/build_ohos.sh`。这确认了包的安装流程，但 README 未指定 SDK 版本/API；需继续核对构建脚本与固件。
