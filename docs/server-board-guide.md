@@ -80,7 +80,7 @@ export MODEL_PYTHON="$(command -v python3)"
   --air "$AI_RUN_DIR/tiny-air" --output "$AI_RUN_DIR/tiny-omc"
 ```
 
-这里的 tiny 是随机小模型，只检查转换链路，不是 35B 成品，也不覆盖完整量化图。完整量化还需要 `NpuQLinear` / `torch_npu.npu_quant_matmul_v4` 等匹配组件；当前公开环境尚不具备。
+tiny 的参考生成、上板和回传比对完整命令见 [小模型验证路径](tiny-validation.md)。这里的 tiny 是随机小模型，不是 35B 成品，也不覆盖完整量化图。完整量化还需要 `NpuQLinear` / `torch_npu.npu_quant_matmul_v4` 等匹配组件；当前公开环境尚不具备。
 
 完整权重就绪后，激活校准环境并执行：
 

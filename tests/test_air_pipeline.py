@@ -152,3 +152,53 @@ def test_old_abi_rejected_before_omg(air_case, tmp_path):
     (root/"manifest.json").write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="ABI v2"):
         compile_air(root, tmp_path/"omc", ddk, ddk_id="fake")
+
+
+def test_tiny_board_command_keeps_token_62_and_matches_demo(air_case, tmp_path, monkeypatch):
+    """Exercise the stop policy through demo -> AIR/OMC metadata -> board argv.
+
+    Constant predictions isolate the EOS regression; this is host evidence only.
+    """
+    from qwen35_moe_dflash.cli import execute, parser
+    from qwen35_moe_dflash.runtime import generate
+
+    class Constant62:
+        sequence_length, draft_width, vocab_size, device = 8, 3, 64, "cpu"
+
+        def __init__(self, *args):
+            pass
+
+        def target(self, prefix):
+            return [62] * self.sequence_length
+
+        def draft(self):
+            return [62] * self.draft_width
+
+    monkeypatch.setattr("qwen35_moe_dflash.runtime.TorchExecutor", Constant62)
+    monkeypatch.setattr("qwen35_moe_dflash.precision.prepare_fp16_pair",
+                        lambda t, d, *args, **kwargs: (t, d, {"kind": "TEST_DOUBLE"}))
+    reference_path = tmp_path / "tiny-reference.json"
+    execute(parser().parse_args(["demo", "--sequence-length", "8", "--max-new-tokens", "4",
+                                "--output", str(reference_path)]))
+    reference = json.loads(reference_path.read_text())
+    root, ddk = air_case
+    compiled = tmp_path / "omc"
+    compile_air(root, compiled, ddk, ddk_id="fake")
+    prompt_path = tmp_path / "tiny-prompt.json"
+    prompt_path.write_text(json.dumps({"prompt_token_ids": reference["prompt_token_ids"]}))
+    command_path = tmp_path / "board-command.json"
+    execute(parser().parse_args([
+        "board-command", "--omc", str(compiled), "--prompt", str(prompt_path),
+        "--board-model-dir", "/board/tiny", "--board-output", "/board/report.json",
+        "--runtime-version", "fake", "--firmware-id", "fake", "--mode", "benchmark",
+        "--max-new-tokens", "4", "--output", str(command_path)]))
+    import shlex
+    command = json.loads(command_path.read_text())
+    argv = shlex.split(command["shell"])
+    assert argv == command["argv"]  # Empty EOS must survive shell quoting.
+    eos = [int(t) for t in argv[argv.index("--eos-token-ids") + 1].split(",") if t]
+    for ordinary in (True, False):
+        result = generate(Constant62(), reference["prompt_token_ids"], max_new_tokens=4,
+                          eos_token_ids=eos, ordinary=ordinary)
+        assert result.token_ids == reference["ordinary"]["token_ids"] == [62] * 4
+        assert result.stop_reason == reference["ordinary"]["stop_reason"] == "length"

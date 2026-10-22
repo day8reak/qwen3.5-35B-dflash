@@ -74,7 +74,8 @@ def export_air(target, draft, output_dir, sequence_length, *, torchair_module=No
         "precision_audit": precision_audit, "quantization": quantization, "state_policy": "recompute",
         "expert_dispatch": dispatch, "source": source_identity,
         "pad_token_id": 248044 if target.config.vocab_size == 248320 else 0,
-        "eos_token_ids": [248044, 248046] if target.config.vocab_size == 248320 else [62],
+        # Random tiny fixtures have no EOS, matching the CPU demo.
+        "eos_token_ids": [248044, 248046] if target.config.vocab_size == 248320 else [],
         "export_root": str(root), "graphs": records,
         "environment": {"torch": torch.__version__, "torchair": getattr(torchair, "__version__", "unknown"),
                         "transformers": importlib.metadata.version("transformers")},

@@ -36,3 +36,14 @@ Python 3.10.12 / Torch 2.12.1+cpu / Transformers 5.13.0 / safetensors 0.8.0。�
 AIR 编排与 CLI 共 **17 项测试通过**；新增回归用假 OMG 子进程实际导入继承路径中的扩展，检查所选 X90 插件优先和 simulator 库路径保留，父进程环境不变。README 与操作指南的 shell 代码块均通过语法检查。证据及修改文件哈希见 `specs/environment-verification.json`；原 `specs/verification.json` 保留上一完整主机验证基线，未将其 118 项结果冒充本次重跑。
 
 用户提供的日志仅记录内部 AscendC 环境脚本成功；未访问或运行内部 DDK，也未完成真实 AIR/OMC、HIAI 链接或板端执行。
+
+
+## 2026-10-22：tiny 上板路径与停止规则
+
+补丁 run：`20261022T025303Z-32164-0cf8ab`。新增 [tiny 完整操作指南](tiny-validation.md)，覆盖随机小模型的 CPU 参考、AIR、OMG、正式 HIAI 构建、传输、probe、benchmark 与回传 token/stop 比较，不需要完整权重或 tokenizer。
+
+修正 tiny AIR manifest 的 EOS：原先 `[62]` 与 `demo` 的空 EOS 不一致，可能让板端提前停止；现在两端都使用空 EOS。新增回归从 CLI demo，经 AIR/OMC 测试替身和板端命令生成，强制预测 token 62，验证普通与 DFlash 都生成四个 token 并以 `length` 停止，空 EOS 参数可经 shell 引号完整传递。
+
+本次 AIR 编排与 CLI 共 **18 项测试通过**，证据为 run 内 `pytest.xml`。重新执行真实 FP16 tiny CPU demo（S=8、prompt=1,2,3、生成4个 token），普通/DFlash token 与停止原因一致，`tiny-reference.json` 为 `PASS`。Python 环境仍为声明的主机环境；未安装 TorchAir/CANN。
+
+以上没有真实 AIR/OMC、内部库链接或 X90 执行证据。`cpro-blue-pending` profile 仍未登记，目标环境激活失败；测试仅使用资源清单中已声明的模型解释器。当前 NVIDIA/CPU 服务器无昇腾卡的 AIR 导出依赖尚未验证，tiny 路径也不能绕过此缺口。
