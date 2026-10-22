@@ -10,7 +10,43 @@ SDK 只放在服务器；板端使用编译后的程序、OMC 和匹配的运行
 
 复用时仍通过本项目的 `OHOS_NATIVE_SDK`、`HIAI_INCLUDE_DIR`、`HIAI_LIBRARIES` 指定资源，不修改共享 DDK。
 
-## 获取 Linux SDK
+## 方式一：内部示例所用的 public tar.gz 包
+
+2026-10-22 用户提供的 `model_run_tool` README 要求：先解压 `*-ohos-sdk-public.tar.gz`，再进入其中 `linux` 目录解压组件 zip，最后执行 `scripts/build_ohos.sh`。这确认了包的安装流程，但 README 未指定 SDK 版本/API；需继续核对构建脚本与固件。
+
+如果已经取得与内部示例匹配的 SDK 包，使用这条路径，无需再下载下一节的 Command Line Tools。将 `OHOS_SDK_ARCHIVE` 换成实际文件名，使用新的仓库外目录，避免覆盖已有工具链：
+
+```bash
+export OHOS_SDK_ARCHIVE='/your/downloads/matching-ohos-sdk-public.tar.gz'
+export OHOS_SDK_INSTALL="${AI_RUN_DIR:?先设置本次输出目录}/ohos-public-$(date +%Y%m%d-%H%M%S)"
+mkdir "$OHOS_SDK_INSTALL"
+tar -xzf "$OHOS_SDK_ARCHIVE" -C "$OHOS_SDK_INSTALL"
+(
+  set -eu
+  cd "$OHOS_SDK_INSTALL/linux"
+  for component in *.zip; do
+    test -f "$component"
+    unzip -n "$component"
+  done
+)
+find "$OHOS_SDK_INSTALL/linux" -type f -name ohos.toolchain.cmake
+```
+
+如果输出路径为 `linux/native/build/cmake/ohos.toolchain.cmake`，配置：
+
+```bash
+export OHOS_NATIVE_SDK="$OHOS_SDK_INSTALL/linux/native"
+test -f "$OHOS_NATIVE_SDK/build/cmake/ohos.toolchain.cmake"
+test -x "$OHOS_NATIVE_SDK/llvm/bin/clang++"
+test -d "$OHOS_NATIVE_SDK/sysroot"
+"$OHOS_NATIVE_SDK/llvm/bin/clang++" --version
+```
+
+若实际路径不同，`OHOS_NATIVE_SDK` 应取 `build/cmake/ohos.toolchain.cmake` 之前的目录。如果已按示例解压到 `$HOME/ohos_sdk` 且检查通过，可直接使用 `$HOME/ohos_sdk/linux/native`，无需再次解压。
+
+然后跳至下文“公共检查：CMake”和“指定兼容 API 并构建”。内部示例的 `out/ohos` 是它的产物目录，不是 SDK 根目录；`scripts/build_ohos.sh` 编译的是 `model_run_tool`，本项目正式 DFlash 程序仍通过 `targets/cpro/scripts/build_hiai.py` 构建。
+
+## 方式二：Command Line Tools 的 Linux zip 包
 
 没有可复用工具链时，从[华为官方下载中心](https://developer.huawei.com/consumer/cn/download/command-line-tools-for-hmos)获取 **Command Line Tools 的 Linux x64 包**。可在能联网的电脑下载后传到服务器；本工程使用其中 Native SDK，无需启动完整 IDE。官方获取与解压说明见 [Obtaining Command Line Tools](https://developer.huawei.com/consumer/en/doc/harmonyos-guides/ide-commandline-get)。版本应与内部 CPro 固件、HIAI 库和已验证示例匹配，不能将“最新版本”视为已验证兼容。
 
@@ -54,7 +90,9 @@ test -d "$OHOS_NATIVE_SDK/sysroot"
 
 检查失败先纠正目录或补齐完整 Native 组件。不要只复制 `ohos.toolchain.cmake`，它依赖同包的编译器、系统头文件和库。
 
-本项目还需主机 CMake 3.16 或更新版本；服务器已有时直接复用。若没有，且 SDK 提供下列可执行文件，可只在当前 shell 使用它：
+## 公共检查：CMake
+
+两种安装方式都需主机 CMake 3.16 或更新版本；服务器已有时直接复用。若没有，且 SDK 提供下列可执行文件，可只在当前 shell 使用它：
 
 ```bash
 if ! command -v cmake >/dev/null 2>&1; then
