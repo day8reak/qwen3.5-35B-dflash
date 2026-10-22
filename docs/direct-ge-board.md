@@ -71,7 +71,7 @@ export HIAI_LIBRARIES=/your/internal/ohos-arm64/libhiai.so
 cat "$GE_BOARD_RUN/hiai-build/result.json"
 ```
 
-`HIAI_INCLUDE_DIR` 中须有 `HiAiModelManagerService.h`；多个链接库用冒号分隔，具体库名以内部DDK为准。若设置了 `QWEN35_RESOURCES`，其中非空的 `hiai_libraries` 优先于环境变量；应同步更新该资源文件。使用 HarmonyOS ARM64 库，AscendC 脚本中的服务器 x86_64 工具库不适用。需要指定系统兼容版本时使用脚本的 `--compatible-sdk-version`（默认21）。结果应为 `LINKED`，程序为 `hiai-build/build/qwen35_dflash_hiai`；`--headers-only` 和主机fake程序不能替代正式链接。
+`HIAI_INCLUDE_DIR` 中须有 `HiAiModelManagerService.h`；多个链接库用冒号分隔，具体库名以内部DDK为准。若设置了 `QWEN35_RESOURCES`，其中非空的 `hiai_libraries` 优先于环境变量；应同步更新该资源文件。使用 HarmonyOS ARM64 库，AscendC 脚本中的服务器 x86_64 工具库不适用。需要指定系统兼容版本时使用脚本的 `--compatible-sdk-version`（不指定时由所选SDK工具链处理，不自动检测板端API）。结果应为 `LINKED`，程序为 `hiai-build/build/qwen35_dflash_hiai`；`--headers-only` 和主机fake程序不能替代正式链接。
 
 ## 3. 传到板端的文件
 

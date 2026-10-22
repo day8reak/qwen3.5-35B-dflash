@@ -10,7 +10,25 @@ SDK 只放在服务器；板端使用编译后的程序、OMC 和匹配的运行
 
 复用时仍通过本项目的 `OHOS_NATIVE_SDK`、`HIAI_INCLUDE_DIR`、`HIAI_LIBRARIES` 指定资源，不修改共享 DDK。
 
-用户随后提供的 `scripts/build_ohos.sh` 实际将 `CMAKE_TOOLCHAIN_FILE` 指向示例内的 `toolchain/openharmony-toolchain.cmake`，并设置 `INC_PATH=<示例>/inc`、`LIB_PATH=<示例>/libs/ohos`。因此，仅搜索名为 `ohos.toolchain.cmake` 的文件不能排除已有自定义工具链；还需读取这份 `openharmony-toolchain.cmake` 和 `src/CMakeLists.txt`，确认编译器、sysroot、C++ ABI 与链接库。脚本未给出 SDK 版本/API，也不能证明其引用的工具已安装。当前本项目的构建脚本使用 Native SDK 自带的 toolchain，尚不能直接把这个自定义 `.cmake` 文件填入 `OHOS_NATIVE_SDK`。
+用户提供的内部示例配置现已确认：`scripts/build_ohos.sh` 使用 `toolchain/openharmony-toolchain.cmake`，其中 target 为 `aarch64-linux-ohos`，SDK 写死在 `$HOME/hmos_sdk/openharmony/native`，链接 `c++_shared`；`src/CMakeLists.txt` 取示例的 `inc`、`libs/ohos` 并链接 `hiai`。该配置未指定兼容 API，也不能证明其引用的工具已安装。root shell 的 `$HOME` 往往是 `/root`，不能用它推断其他用户目录下 SDK 的位置。
+
+已有解压后的 Command Line Tools 时，可直接配置本项目。将下面两个根目录换成实际目录，随后执行检查和构建；本项目使用 SDK 自带的 toolchain，无需复制内部示例中写死路径的文件：
+
+```bash
+export COMMAND_LINE_TOOLS_ROOT='/your/command-line-tools'
+export HIAI_EXAMPLE_ROOT='/your/model_run_tool'
+export OHOS_NATIVE_SDK="$COMMAND_LINE_TOOLS_ROOT/sdk/default/openharmony/native"
+export HIAI_INCLUDE_DIR="$HIAI_EXAMPLE_ROOT/inc"
+export HIAI_LIBRARIES="$HIAI_EXAMPLE_ROOT/libs/ohos/libhiai.so"
+
+test -f "$OHOS_NATIVE_SDK/build/cmake/ohos.toolchain.cmake"
+test -x "$OHOS_NATIVE_SDK/llvm/bin/clang++"
+test -d "$OHOS_NATIVE_SDK/sysroot"
+test -f "$HIAI_INCLUDE_DIR/HiAiModelManagerService.h"
+test -f "$HIAI_LIBRARIES"
+```
+
+全部通过后，按下文“公共检查：CMake”和“指定兼容 API 并构建”继续。若头文件缺失，应使用与这套库匹配的 HIAI 头文件目录。构建脚本也会在启动 CMake 前检查 Native SDK；仅存在 `command-line-tools` 顶层目录不代表 Native 组件齐全。示例库是已知的链接候选，仍需本项目实际链接和板端运行验证。
 
 ## 方式一：内部示例所用的 public tar.gz 包
 
@@ -106,7 +124,11 @@ cmake --version
 
 ## 指定兼容 API 并构建
 
-`build_hiai.py` 当前默认 `--compatible-sdk-version 21`，**这不是已确认的 CPro API 版本**。应按内部示例/板端固件确认最低兼容 API，并确认所选 SDK 支持它；旧 SDK 不一定支持 21。不要通过任意降低此参数掩盖 HIAI 库或系统 ABI 不匹配。
+`build_hiai.py` 已取消硬编码 API 21。未指定 `--compatible-sdk-version` 时，不传 `OHOS_COMPATIBLE_SDK_VERSION`，采用所选 SDK 自带工具链的行为，**不会自动检测板端 API**。若内部环境要求明确版本，可追加 `--compatible-sdk-version <正整数>`；应同时确认所选 SDK 支持它且板端满足要求。不要通过任意降低此参数掩盖 HIAI 库或系统 ABI 不匹配。
+
+可核对的[官方 toolchain 源码](https://github.com/openharmony/build/blob/961ba684a2c9a1feaa063cbe597ebf04642f297d/ohos/ndk/cmake/ohos.toolchain.cmake#L110-L154)仅在指定兼容版本时向编译 target 追加版本；未指定不等于自动选择板端版本。本机实际安装包的 toolchain 仍是最终依据。
+
+`command.json` 记录请求的 API（未指定为 null）、API 参数策略和 toolchain 文件哈希，实际编译器参数保存在构建目录；这些信息不表示板端兼容性已通过。
 
 Native 包带有 `oh-uni-package.json` 时，可查看其版本/API 元数据；这说明已装 SDK 的版本，不能代替板端固件信息：
 
@@ -116,19 +138,14 @@ if test -f "$OHOS_NATIVE_SDK/oh-uni-package.json"; then
 fi
 ```
 
-沿用[上板指南](direct-ge-board.md)中的 `MODEL_PYTHON`、`REPO_DIR`、`GE_BOARD_RUN`。填写实际确认的 API 和库路径：
+沿用[上板指南](direct-ge-board.md)中的 `MODEL_PYTHON`、`REPO_DIR`、`GE_BOARD_RUN`。已有上述示例资源配置时保留它们；否则先设置实际匹配的 `HIAI_INCLUDE_DIR` 与 `HIAI_LIBRARIES`，再构建：
 
 ```bash
-export OHOS_COMPATIBLE_API='填写确认的 API 整数'
-export HIAI_INCLUDE_DIR="$CPRO_DDK_ROOT/ddk/ai_ddk_lib/include"
-export HIAI_LIBRARIES='/your/matching/ohos-arm64/libhiai.so'
-
 "$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --compatible-sdk-version "$OHOS_COMPATIBLE_API" \
   --output "$GE_BOARD_RUN/hiai-build"
 cat "$GE_BOARD_RUN/hiai-build/result.json"
 ```
 
-头文件路径适用于已确认含 `HiAiModelManagerService.h` 的内部布局；其他布局按实际调整。多个 HIAI 库用冒号分隔。`HIAI_LIBRARIES` 应选同一套 HarmonyOS ARM64 库；不要仅因目录名为 `lib64` 就选用。若资源 JSON 的 `hiai_libraries` 非空，它优先于环境变量。
+多个 HIAI 库用冒号分隔。用户提供的示例只显式链接 `hiai`，无需据此额外添加 `hiai_ir` 或 `hiai_ir_build`；C++ 运行库由工具链的 `c++_shared` 配置处理。`HIAI_LIBRARIES` 应选同一套 HarmonyOS ARM64 库；不要仅因目录名为 `lib64` 就选用。若资源 JSON 的 `hiai_libraries` 非空，它优先于环境变量。
 
 结果为 `LINKED` 后按[上板指南第3节](direct-ge-board.md#3-传到板端的文件)传输正式程序和 OMC。`--headers-only` 只能证明头文件编译成功；链接成功仍需板端 `--probe` 和 tiny 数值/生成验证。缺少匹配 SDK 时，可以继续服务器参考验证，但不能把主机或 fake runner 当成板端二进制。
