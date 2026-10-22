@@ -4,7 +4,7 @@
 
 **目前主机参考已验证，但真实 tiny AIR、OMC、正式 HIAI 链接及 X90 执行尚未验证。** 以下是待执行的联调流程。tiny 仍需要匹配的 TorchAir / torch_npu / CANN 导出环境；已有 CUDA PyTorch 或成功加载 AscendC 脚本，并不代表可以导 AIR。CPU 输入也不能保证所选 TorchAir 版本无需 Ascend 设备初始化。
 
-环境缺库或 Python 依赖冲突时，先看 [AIR 环境排障](air-troubleshooting.md)。
+环境缺库或 Python 依赖冲突时，先看 [AIR 环境排障](air-troubleshooting.md)。CLI 的 CPU/CUDA `demo` 和 `reference` 会在当前进程禁用 NPU 可选探测，可以保留已安装的 TorchNPU；导出命令在新进程中仍检查真实 NPU/CANN 依赖。该处理不修改厂商包或模型计算。
 
 ## 1. 服务器：生成参考、AIR 和 OMC
 

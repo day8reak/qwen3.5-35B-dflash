@@ -10,7 +10,7 @@ import sys
 from .artifacts import checked_file, output_path, save_json
 from .resources import load_resources, resource_path
 from .hashing import sha256_file
-from .diagnostics import format_error
+from .diagnostics import format_error, probe_reference_import
 
 
 def parser():
@@ -82,6 +82,8 @@ def execute(args):
             except importlib.metadata.PackageNotFoundError: packages[name] = None
         result = {"status": "INVENTORY", "resources": str(path), "packages": packages,
                   "torch_import_ready": False, "cuda_available": None,
+                  "reference_backend": "cpu", "reference_import_ready": False,
+                  "reference_import_error": None,
                   "air_export_ready": False, "dopt_calibration_ready": False,
                   "dopt_air_ready": False, "device_validation": "PENDING",
                   "air_export_validation": "PENDING"}
@@ -90,6 +92,7 @@ def execute(args):
             result["torch_import_ready"] = True
         except Exception as error:
             result["torch_error"] = format_error(error)
+        result.update(probe_reference_import())
         if result["torch_import_ready"]:
             try:
                 result["cuda_available"] = torch.cuda.is_available()
@@ -294,6 +297,9 @@ def execute(args):
 def main():
     args = parser().parse_args()
     try:
+        if args.command in ("demo", "reference"):
+            from .backends import configure_reference_backend
+            configure_reference_backend(args.device)
         execute(args)
     except Exception as error:
         print(f"qwen35: {format_error(error)}", file=sys.stderr)

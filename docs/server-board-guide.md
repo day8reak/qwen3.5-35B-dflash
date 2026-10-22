@@ -64,7 +64,7 @@ export CPRO_DDK_ID=your-exact-ddk-version
   --output "$AI_RUN_DIR/quant-plan.json"
 ```
 
-`preflight` 是清单检查，成功写 JSON 不代表环境已齐备；检查其中 `torch_import_ready`、`torch_error`、`air_export_ready`、`dopt_air_ready` 和各资源的缺失信息。`air_export_ready` 仅表示依赖可导入，真实导出仍需 tiny 验证；`air_export_validation` 保持 `PENDING`。当前报错与版本对应关系见 [AIR 环境排障](air-troubleshooting.md)。`--available-gib 18` 只是当前规划输入，需按实际可用预算更新。当前候选的权重估算 **21.19 GiB**，还未计工作区，超过用户报告的约 18G free；因此尚不能按此候选安排完整模型上板常驻。
+`preflight` 是清单检查，成功写 JSON 不代表环境已齐备；检查其中 `torch_import_ready`、`torch_error`、`reference_import_ready`、`reference_import_error`、`air_export_ready`、`dopt_air_ready` 和各资源的缺失信息。`air_export_ready` 仅表示依赖可导入，真实导出仍需 tiny 验证；`air_export_validation` 保持 `PENDING`。当前报错与版本对应关系见 [AIR 环境排障](air-troubleshooting.md)。`--available-gib 18` 只是当前规划输入，需按实际可用预算更新。当前候选的权重估算 **21.19 GiB**，还未计工作区，超过用户报告的约 18G free；因此尚不能按此候选安排完整模型上板常驻。
 
 所有 CLI 输出路径均拒绝覆盖。失败重试时换新输出目录/文件名，保留原日志。
 

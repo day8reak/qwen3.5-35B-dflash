@@ -7,10 +7,12 @@ import torch
 from .artifacts import output_path, files_under, save_json, working_directory
 from .precision import prepare_fp16_pair
 from .diagnostics import format_error
+from .backends import require_unmodified_air_backend
 
 
 def require_torchair():
     # Fail before opening/allocating the 35B checkpoint.
+    require_unmodified_air_backend()
     try:
         # Also loads the bundled TorchAir when PyTorch backend autoload is off.
         importlib.import_module("torch_npu")
@@ -30,6 +32,7 @@ def export_air(target, draft, output_dir, sequence_length, *, torchair_module=No
     static dispatch avoids data-dependent NonZero lengths. It computes all
     experts and is a correctness baseline, not a sparse-performance claim.
     """
+    require_unmodified_air_backend()
     torchair = torchair_module if torchair_module is not None else require_torchair()
     if sequence_length < 2:
         raise ValueError("sequence_length must exceed one")

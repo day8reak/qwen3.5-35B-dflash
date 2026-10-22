@@ -58,3 +58,14 @@ CLI 与包初始化改为按需加载模型依赖；缺库时 `preflight` 能输
 隔离源码副本的 Python 全套回归 **129 passed、2 skipped**，跳过的是未配置真实 DOPT 路径的可选集成测试；没有重用历史 DOPT 结果冒充本次执行。证据：run 内 `lazy-import-check/full-results.xml`、`full-tests.log`。新增测试用失败的 Torch 导入模拟 `libhccl.so` 错误，检查报告、帮助命令和内部无 `tools/platform` 的 OMG 编排。随后确定性资源夹具更新的 3 项 preflight 测试重新通过，最终 12 个 Python 文件与测试树哈希一致。真实主机 `preflight-host.json` 成功生成，并如实报告本机没有 TorchNPU/TorchAir。文档 38 个 shell 代码块和 7 个 Python heredoc 语法通过。
 
 真实 AIR/OMC、内部 HIAI 链接和 X90 执行仍为 **PENDING**。公开 CANN 9.1.X 仅是该 TorchNPU 的版本对应关系，不能证明无昇腾卡导出或与内部 OMG 的兼容性。`cpro-blue-pending` profile 仍未登记，本次目标环境激活失败，验证使用已声明的模型解释器。
+
+
+## 2026-10-22：保留 TorchNPU 的 CPU 参考路径
+
+补丁 run：`20261022T034854Z-1269-95b99d`。用户最新日志确认：安装自己的 CANN 9.1.0 后仍缺 `libhccl.so`，Transformers 的显式 NPU 探测使 CPU demo 在关闭 Torch 自动加载后仍失败；卸载 TorchNPU 后，CPU tiny demo 成功写出参考报告。用户随后要求改脚本，以保留 TorchNPU 供 AIR 使用。
+
+CLI 的 `demo/reference --device cpu` 或 `cuda:*` 现在于模型导入前应用当前进程内的参考后端策略：关闭 Torch 自动加载并替换 Transformers 的 NPU 可用性探测，不修改厂商包文件。AIR 入口保持真实依赖检查，并拒绝在同一进程继承已经应用的参考策略。`preflight` 独立子进程检查 CPU Qwen/DFlash 类导入，父进程保留自然 Torch/AIR 错误，因此原始 Torch 导入失败也不会掩盖可用的 CPU 参考路径。
+
+隔离源码副本的完整 Python 测试 **141 passed、2 skipped**；跳过真实 DOPT 可选集成。环境为声明的 Torch 2.12.1+cpu / Transformers 5.13.0。新增测试以可发现的 TorchNPU 分发信息和 `torch.backends` 入口模拟缺失 HCCL，确认未经修正的 Torch/Transformers 导入真实失败；修正后的 tiny CPU 普通/DFlash token 与干净环境完全一致，停止原因一致。AIR CLI 仍拒绝缺库环境，CPU/CUDA 策略后的同进程 AIR 也明确拒绝。CUDA 仅验证后端选择，未进行 GPU 执行。
+
+证据：run 内 `audit-preflight-full.xml`、`audit-preflight-validation.json`、`audit-preflight-source-hashes.json`。最终 6 个 Python 文件与测试副本哈希一致；40 个 shell 代码块、7 个 Python heredoc 语法通过。目标环境 profile 仍未登记，激活未成功；没有对用户内部 CANN、HIAI 或 X90 执行验证。真实 AIR/OMC 和板端门槛仍为 **PENDING**。

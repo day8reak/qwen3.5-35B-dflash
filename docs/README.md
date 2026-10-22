@@ -6,7 +6,7 @@
 
 **先跑小模型：[tiny AIR → OMC → HIAI 上板验证](tiny-validation.md)。** 无需下载完整权重；提供参考生成、转换、板端执行和回传比对命令，真实转换及板端结果仍待验证。
 
-**导出环境报错：[AIR 环境排障](air-troubleshooting.md)。** 说明 `libhccl.so` 缺失、CANN 版本、内部 DDK 布局及依赖冲突。
+**导出环境报错：[AIR 环境排障](air-troubleshooting.md)。** 说明 `libhccl.so` 缺失、Transformers 的显式 NPU 探测、CPU/CUDA 参考隔离及内部 DDK 布局。
 
 这是待板端联调的源码版本。已有目标/草稿模型、贪心 DFlash、HIAI ABI v2、FP16 图检查、DOPT 校准和转换编排。**没有完整 35B AIR/OMC、内部 HIAI 链接或 X90 执行结果。** 主机验证范围与当前阻塞见 [validation.md](validation.md)。
 
