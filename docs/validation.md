@@ -166,3 +166,13 @@ GDN 非正 FP16 衰减扫描用独立前缀 Slice/ReduceSum/ConcatD，整数扫�
 修正后还检查 tiny S8、full S8、full S128 共六张描述图，全部没有 Cumsum/SoftplusV2，Const→BroadcastTo 残留为0；非 Data 节点均从输出可达，引用顺序、端口形状和类型一致。full S128 target 静态广播载荷复用后为1,640,448字节（7种），draft 为147,456字节（1种）。这是关闭常量算术折叠、仅外置权重描述的构图检查，没有读取完整35B权重，不是部署内存估算。
 
 独立源码审查通过；证据与哈希见 `specs/direct-ge-compatibility-verification.json`。更新后的真实 AIR/OMC、ReduceSum 板端精度、FileConstant 完整载荷、量化映射及全模型质量/内存/性能仍待验证；硬件参考策略 `use` 不变。用户服务器按直接 GE 指南第3节复用 prepared 重导，再用内部 OMG 转换。
+
+## Reshape 形状改写、静态 Slice 与 OMG 环境（2026-10-22）
+
+run：`20261022T103232Z-17196-b89598`，基线 `5db0ef1`。用户 PID157562 补充日志明确显示 v974/v975 的形状字从 `55 0` 改为 `-1 0`，随后 v974 推导得到2147483647。生成器本来的 `[1,2,1,55]` 与32字节 INT64 payload 都正确；该改写模式符合32位写入未扩展符号的问题，内部实现不可检查。修正仅将全部 Reshape 的 shape 控制张量改为带范围检查的 INT32，符合官方 schema；没有新增 Squeeze/ExpandDims 或改变浮点数据。
+
+同一日志的 Slice 错误紧接 ConstantFolding begin。新增小型 FP16 Slice/Reshape 字节复制，tiny 的32个静态专家切片全部消除；完整大权重源仍跳过。OMG 子进程优先所选 DDK 的 Python/TBE，移除明确声明的外部 CANN 路径，保持父环境和内部扩展。输出包路径候选记录，失败图转储最多保留16MiB；这不能证明内部包自身版本匹配或嵌入式 Python 实际加载结果。
+
+最终唯一测试覆盖为 **255通过、4跳过、0未解决失败**。首次18文件综合回归253通过、2失败、4跳过；两项失败是新静态折叠使 Reshape 变成 Const，以及形状错误被更早检出导致测试断言过时。仅调整测试，生产代码未变；对受影响三套测试复验73项全部通过，保留折叠前后字节和 INT32 路径检查。4项真实 GE 头文件/Save-Load 检查因缺少资源跳过。全部报告与两轮源文件哈希保留，不将模拟工具或主机检查视为 OMG 通过。
+
+完整S8结构额外检查：target 的27,505个、draft 的180个实际发射 Reshape 均使用 INT32 shape，值与输出描述完全一致；未读取完整权重。静态切片的边界/预算/NaN及符号位、原权重不可变、tiny三组有效长度输出、环境串包复现、诊断复制故障与清理均有测试。源码审查未发现阻断问题。证据见 `specs/direct-ge-reshape-env-verification.json`；真实内部 AIR/OMG、板端精度和完整模型门槛仍待验证。

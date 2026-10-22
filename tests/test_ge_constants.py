@@ -52,7 +52,7 @@ def test_skips_dynamic_nonlive_and_unsupported_nodes_without_weight_access():
     unary(g, "exp", dynamic)
     weight = g.weight("weight", (4,))
     unary(g, "neg", weight)  # deliberately not live
-    unsupported = g.op("reshape", weight, shape=(2, 2), attrs={"shape": [2, 2]})
+    unsupported = g.op("transpose", weight, shape=weight.shape, attrs={"perm": [0]})
     after = unary(g, "neg", unsupported)
     assert fold_constants(g, {}, {dynamic.name, after.name, unsupported.name}) == {}
 
@@ -140,8 +140,11 @@ def tiny_folded_case(tmp_path_factory):
         paths[key] = folder / f"{index}.bin"
         paths[key].write_bytes(array.tobytes())
     folded = fold_constants(target, paths, set(target._values))
-    assert len(folded) == 17
-    assert sum(value.nbytes for value in folded.values()) == 344
+    arithmetic = {node.output.name for node in target.nodes
+                  if node.kind in {"scalar_add", "scalar_mul", "exp", "neg"}}
+    arithmetic_folded = {key: value for key, value in folded.items() if key in arithmetic}
+    assert len(arithmetic_folded) == 17
+    assert sum(value.nbytes for value in arithmetic_folded.values()) == 344
     assert fold_constants(draft, paths, set(draft._values)) == {}
     lowered = deepcopy(target)
     lowered.constants.update(folded)

@@ -2,7 +2,7 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。最新 tiny target OMG 日志推进到 `Cumsum` 缺少形状推导函数，并出现 CPUCL 常量输入缓冲区大小不匹配。对应源码修正及重试命令见第 3 节；真实双图 OMG 转换和上板仍待验证。已逐类核查 39 种实际生成的 GE 算子，范围和剩余风险见 [算子兼容性核查](ge-operator-compatibility.md)。
+用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功，以及本页 tiny target/draft 的 AIR 生成成功。最新 tiny target OMG 日志进入常量折叠和 TE 初始化，报静态 Slice 类型限制、`te_fusion` 接口不匹配，以及 Reshape 形状改写错误。对应源码修正及重试命令见第 3 节；真实双图 OMG 转换和上板仍待验证。已逐类核查 39 种实际生成的 GE 算子，范围和剩余风险见 [算子兼容性核查](ge-operator-compatibility.md)。
 
 ## 实现范围
 
@@ -80,7 +80,15 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 内部 OMG 兼容性修正与重试
 
-最新日志（进程 157297）明确报 `v92/Cumsum` 缺少 infershape 函数。名称符合官方 GE schema，并非大小写错误。生成器现在分开处理两种用途：GDN 的非正 FP16 衰减前缀使用 `Slice → ReduceSum → ConcatD`，每个前缀仅输出一次 FP16；draft 的整数位置前缀使用整数移位相加。FP16 路径只允许模型标记的非正衰减域和长度 ≤256，当前 GDN 长度为64；不使用逐步 FP16 Add，也不承诺对任意正负混合输入的前缀和等价。主机比较保持原有 FP16 容差，真实 ReduceSum 内核数值仍需板端验证。
+最新日志（进程 157562）显示 `v974` 的形状常量从 `1 0 2 0 1 0 55 0` 被 OMG 改成 `1 0 2 0 1 0 -1 0`，随后推导为 `[1,2,1,2147483647]`；相邻 `v975` 也有相同改写。源图实际形状为 `[1,2,1,55]`，每个维度存储为 INT64，没有大整数。该字节模式符合只改低32位、未作64位符号扩展的情况，内部实现仍不可访问。现在只将 **Reshape 的 shape 辅助张量**改为官方支持的 INT32；维度写入前必须在非负 INT32 范围内。数据、权重和浮点计算精度不变，其他轴/切片参数仍使用原类型，不新增 Squeeze/ExpandDims。
+
+同一日志将 Slice 类型限制明确定位在 `TCH ConstantFolding` 阶段。导出端新增有界静态 FP16 Slice/Reshape 预计算，直接复制原字节，tiny 的32个专家静态切片全部提前完成；每个源和输出≤64KiB，累计读取及结果≤8MiB。大型专家权重仍跳过，不能据 tiny 结果宣称完整35B的常量折叠已兼容。现有动态 Slice 不转成 FP32；原 prepared 权重文件和哈希保持不变。
+
+`te_fusion.log_util` 缺少 `get_py_exception_dict` 指向加载包与本地库的接口不匹配。OMG 子进程现在优先使用所选 DDK 的 `tools/tools_ascendc/package/python` 和 `ddk/tbe/ops`，清除已明确声明的外部 CANN 根目录所贡献的 Python/库/可执行路径，保留内部扩展和模拟器路径。父 shell 及 AIR 生成环境不变；不修改厂商包中的 Python 函数。每图输出 `omg-environment.json` 供本地核对包来源；它记录候选路径，不代表已经验证嵌入式 Python 实际加载结果。如果内部 DDK 自身存在版本错配，仍需要同版本包。
+
+转换失败会优先保留 `dump_graph/*fail*.irpb` 等图转储至 `target/diagnostics/` 或 `draft/diagnostics/`，总载荷上限16MiB，超限记录在该目录的 manifest 中；临时运行目录仍清理。完整 `omg.log` 始终保留。
+
+此前日志（进程 157297）明确报 `v92/Cumsum` 缺少 infershape 函数。名称符合官方 GE schema，并非大小写错误。生成器现在分开处理两种用途：GDN 的非正 FP16 衰减前缀使用 `Slice → ReduceSum → ConcatD`，每个前缀仅输出一次 FP16；draft 的整数位置前缀使用整数移位相加。FP16 路径只允许模型标记的非正衰减域和长度 ≤256，当前 GDN 长度为64；不使用逐步 FP16 Add，也不承诺对任意正负混合输入的前缀和等价。主机比较保持原有 FP16 容差，真实 ReduceSum 内核数值仍需板端验证。
 
 日志同时报 CPUCL 输入2字节、预期4字节。附近 `__ge/v3735/broadcast_2` 对应 FP16 标量零扩展到 `(8,16)`；日志没有给出失败节点，不能断言全部缓冲区错误都源于它。已将小型静态广播直接存为 Const，按源字节和目标形状复用，保留正负零、Inf 和 NaN 载荷。每个扩展 ≤1MiB，累计扩展载荷 ≤8MiB，超限保留原 BroadcastTo；只处理内联常量，不读取完整 checkpoint。常量按实际使用生成，避免留下不连通节点。
 

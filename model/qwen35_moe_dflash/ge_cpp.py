@@ -276,6 +276,23 @@ class _Emitter:
     def helper(self, value, data, dtype="int64", suffix="parameter"):
         return self.constant(data, dtype, f"__ge/{value.name}/{suffix}")
 
+    def reshape_shape(self, output, dimensions=None):
+        """Use checked INT32 dimensions for OMG's Reshape shape rewrites.
+
+        Public GE Reshape accepts INT32 and INT64. Internal X90 converter
+        traces changed the words "55 0" to "-1 0" for an INT64 dimension.
+        INT32 makes -1 a signed sentinel without depending on a 64-bit rewrite.
+        Tensor data and INT64 graph descriptor dimensions remain unchanged;
+        the private converter implementation has not been inspected.
+        """
+        dimensions = tuple(output.shape if dimensions is None else dimensions)
+        if dimensions != output.shape:
+            raise ValueError(f"{output.name}: Reshape shape differs from output descriptor")
+        if any(isinstance(d, (bool, np.bool_)) or not isinstance(d, (int, np.integer))
+               or not 0 <= d <= (1 << 31) - 1 for d in dimensions):
+            raise ValueError(f"{output.name}: Reshape dimensions must fit nonnegative INT32")
+        return self.helper(output, dimensions, dtype="int32", suffix="shape")
+
     def broadcast(self, source, output, index):
         """Give Select concrete equal-shaped inputs before OMG lowers its IR."""
         if source.shape == output.shape:
@@ -318,9 +335,11 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     ``weight_paths`` maps canonical graph weight keys to existing raw contiguous
     little-endian files. External mode emits official FileConstant nodes; files
     must remain at the same absolute paths until OMG conversion has completed.
-    Small constant arithmetic is evaluated with the original FP16 boundaries
-    before serialization. Descriptor-only tooling can disable that step when
-    real weight payloads are not available; model export always enables it.
+    Small constant arithmetic is evaluated with the original FP16 boundaries;
+    bounded static Slice/Reshape operations copy their bytes before serialization.
+    The legacy fold_constant_arithmetic flag controls both kinds of folding.
+    Descriptor-only tooling can disable folding when real weight payloads are
+    unavailable; model export always enables it.
     """
     graph.validate()
     if recipe_dir is None and len(graph.nodes) > 10_000:
@@ -448,7 +467,8 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
                     continue
             typ = {"reshape": "Reshape", "broadcast_to": "BroadcastTo", "transpose": "Transpose"}[kind]
             key = "perm" if kind == "transpose" else "shape"
-            ins.append(e.helper(v, a[key], suffix=key))
+            ins.append(e.reshape_shape(v, a[key]) if kind == "reshape"
+                       else e.helper(v, a[key], suffix=key))
             ports = ["x", key]
             if kind == "reshape":
                 attrs = {"axis": "int64_t{0}", "num_axes": "int64_t{-1}"}
@@ -484,7 +504,7 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
                                  ins[0].shape[:axis] + ins[0].shape[axis + 1:], v.dtype)
                 var = e.op(squeezed.name, typ, list(zip(ports, ins)), [("y", squeezed)], attrs)
                 e.refs[squeezed.name] = (var, "y")
-                shape = e.helper(v, v.shape, suffix="shape")
+                shape = e.reshape_shape(v)
                 typ, ports, ins = "Reshape", ["x", "shape"], [squeezed, shape]
                 attrs = {"axis": "int64_t{0}", "num_axes": "int64_t{-1}"}
         elif kind in {"topk_values", "topk_indices"}:
@@ -525,7 +545,7 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
                 # the exact FP16 matmul boundary by flattening only batch axes.
                 flat = Value(f"__ge/{v.name}/flat_input",
                              (math.prod(ins[0].shape[:-1]), ins[0].shape[-1]), ins[0].dtype)
-                shape = e.helper(flat, flat.shape, suffix="shape")
+                shape = e.reshape_shape(flat)
                 var = e.op(flat.name, "Reshape", [("x", ins[0]), ("shape", shape)], [("y", flat)],
                            {"axis": "int64_t{0}", "num_axes": "int64_t{-1}"})
                 e.refs[flat.name] = (var, "y")
@@ -533,7 +553,7 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
                 var = e.op(projected.name, "MatMul", [("x1", flat), ("x2", ins[1])], [("y", projected)],
                            {"transpose_x1": "false", "transpose_x2": str(bool(a.get("transpose_b", False))).lower()})
                 e.refs[projected.name] = (var, "y")
-                shape = e.helper(v, v.shape, suffix="shape")
+                shape = e.reshape_shape(v)
                 var = e.op(v.name, "Reshape", [("x", projected), ("shape", shape)], [("y", v)],
                            {"axis": "int64_t{0}", "num_axes": "int64_t{-1}"})
                 e.refs[v.name] = (var, "y")

@@ -14,7 +14,7 @@
 | SelectV2 | 用户内部日志已显示转换成 Select；保留三个输入显式同形及 BOOL 分支整数载体。 |
 | ReduceSum、ReduceMean | 有推导注册；本次 FP16 前缀分解复用 ReduceSum。实际累加精度须在板端验证。 |
 | Power、Swish | 有推导注册；日志中 Swish 已推导成功。保留 RMSNorm 的 Power 和静态小常量预计算。 |
-| Reshape、Transpose、Slice、ConcatD | 有推导注册；用户 Reshape/Permute 日志已显示推导成功。形状/轴的 INT64 常量符合公开 schema，不因调试输出 `1 0 ...` 擅自改宽度。 |
+| Reshape、Transpose、Slice、ConcatD | 有推导注册；旧日志曾显示部分 Reshape/Permute 推导成功；最新 PID157562 明确显示 Reshape 将 `55 0` 改成 `-1 0` 后推导失败，现将该算子的 shape 参数改为受范围检查的 INT32。其他形状/轴参数保持原类型。 |
 | Add、Sub、Mul、RealDiv、Maximum、Neg、Exp、Rsqrt、Cos、Sin | 有对应推导注册；未发现同类缺少推导函数的证据。 |
 | Equal、Greater、Less、LessEqual、LogicalAnd | 有对应推导注册，保留 dtype 与布尔语义。 |
 | MatMul、Data、Const | 有对应推导注册；Data 工厂前置修正已有用户 AIR 成功报告。 |
@@ -31,3 +31,9 @@ GDN 的 FP16 前缀输入为 `-exp(A_log) * softplus(a + dt_bias)` 及其零填�
 静态广播通过复制元素字节直接生成 Const，保留正负零、Inf 和 NaN 载荷。同内容和目标形状的常量全图复用；每个扩展载荷≤1MiB，累计≤8MiB。只查看已存在的内联常量，不读取 FileConstant/大型权重；超预算保留 BroadcastTo。常量在真正被输入或输出使用时才写入图，避免广播替换后留下不连通的原标量节点。
 
 这些改动不修改 prepared 的权重、PyTorch 路径、OMG 参数或 HIAI ABI，不新增自定义 NPU 内核。需要[重新导出 AIR 后再转换 OMC](direct-model-air.md#内部-omg-兼容性修正与重试)；旧 prepared 可复用。原生压缩整数权重映射、完整35B质量与内存、速度仍是独立的未完成项。
+
+## PID157562 补充证据与修正
+
+`v974` 和 `v975` 的 ConvertReshape 日志新增了正维度改为 `-1 0` 的证据；这比此前单纯的 `1 0` 回显更具体。INT64 中这两个32位字对应4294967295，不能表示有符号-1。修正将全部 Reshape 构造点的 shape Const 显式存为 INT32，包括普通 view、矩阵投影展平/恢复和 argmax keepdims 恢复；官方 schema 允许两种宽度。未修改计算张量 dtype，也未推断所有 INT64 参数都不兼容。
+
+Slice 类型错误紧接 ConstantFolding begin，确认是常量折叠阶段；具体失败节点仍未报告。新增小型 FP16 Slice/Reshape 离线复制移除 tiny 已知的32个静态专家切片。完整权重的巨大源张量依旧跳过，动态 FP16 Slice 保留原实现。TE 接口错配另通过 OMG 子进程 DDK 路径优先和 CANN 路径隔离处理，内部实际转换仍需重试。详细运行方式见直接 GE 指南第3节。

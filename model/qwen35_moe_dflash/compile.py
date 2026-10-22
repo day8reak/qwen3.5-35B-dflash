@@ -16,6 +16,32 @@ def _prepend_paths(paths, inherited):
     return os.pathsep.join(dict.fromkeys(entry for entry in entries if entry))
 
 
+def _foreign_cann_paths(env, ddk_root):
+    """Remove only explicitly identified server CANN paths from the OMG child.
+
+    AIR's server GE libraries and Python packages must not supply an older/newer
+    half of the DDK's TE runtime. Unknown vendor extensions remain available.
+    Canonical paths also catch CANN's ``latest`` symlink aliases.
+    """
+    roots = [Path(env[key]).resolve() for key in
+             ("CANN_ROOT", "ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME") if env.get(key)]
+
+    def foreign(entry):
+        path = Path(entry).resolve()
+        return (not path.is_relative_to(ddk_root)
+                and any(path.is_relative_to(root) for root in roots))
+
+    for key in ("PYTHONPATH", "LD_LIBRARY_PATH", "PATH"):
+        if key in env:
+            env[key] = os.pathsep.join(entry for entry in env[key].split(os.pathsep)
+                                      if entry and not foreign(entry))
+    # These selectors can bypass path ordering. Preserve selected-DDK values,
+    # including internal layouts; remove only declared foreign CANN values.
+    for key in ("CANN_ROOT", "ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME", "ASCEND_OPP_PATH", "ASCEND_AICPU_PATH"):
+        if env.get(key) and foreign(env[key]):
+            env.pop(key)
+
+
 def omg_environment(ddk_root, inherited=None):
     """Use the actual binary, avoiding the vendor wrapper's shared-tree writes."""
     ddk_root = Path(ddk_root).resolve()
@@ -24,6 +50,7 @@ def omg_environment(ddk_root, inherited=None):
     if not (master / "omg").is_file():
         raise FileNotFoundError("DDK needs tools/tools_omg/master/omg")
     env = dict(os.environ if inherited is None else inherited)
+    _foreign_cann_paths(env, ddk_root)
     libs = [master / "lib64"]
     # Public packages use a separate platform plugin. Internal DDKs may bundle
     # platform support elsewhere and supply its paths through their env script.
@@ -33,13 +60,64 @@ def omg_environment(ddk_root, inherited=None):
     env["LD_LIBRARY_PATH"] = _prepend_paths(libs, env.get("LD_LIBRARY_PATH", ""))
     env["CCE_LIB_DIR"] = str(master / "lib64")
     env["SOC_VERSION"] = "kirinx90"
-    if (plugin / "ops/impl").is_dir():
-        env["PYTHONPATH"] = _prepend_paths([plugin / "ops/impl"], env.get("PYTHONPATH", ""))
+    env["DDK_PATH"] = str(ddk_root)
+    env["TOOLCHAIN_HOME"] = str(ddk_root)
+    env["HIAI_VERSION"] = str(master)
+    python_paths = [path for path in (ddk_root / "tools/tools_ascendc/package/python",
+                                     ddk_root / "ddk/tbe/ops", plugin / "ops/impl") if path.is_dir()]
+    if python_paths:
+        env["PYTHONPATH"] = _prepend_paths(python_paths, env.get("PYTHONPATH", ""))
+    # Do not populate shared DDK trees with interpreter caches.
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     config = ddk_root / "ddk/ascendcpp/conf"
     if config.is_dir(): env["KIRIN_CONF_JSON_PATH"] = str(config)
     for candidate in [ddk_root / "ddk/ccec_compiler/bin", ddk_root / "tools/tools_ascendc/bisheng/bin"]:
         if candidate.is_dir(): env["PATH"] = str(candidate) + os.pathsep + env.get("PATH", "")
     return master / "omg", env
+
+
+def _environment_record(ddk_root, env):
+    """Report candidate package locations without importing vendor Python."""
+    candidates = []
+    for entry in env.get("PYTHONPATH", "").split(os.pathsep):
+        if entry:
+            path = Path(entry) / "te_fusion/log_util.py"
+            if path.is_file():
+                candidates.append(str(path.resolve()))
+    keys = ("PYTHONPATH", "LD_LIBRARY_PATH", "PATH", "DDK_PATH", "TOOLCHAIN_HOME", "HIAI_VERSION",
+            "CCE_LIB_DIR", "SOC_VERSION", "KIRIN_CONF_JSON_PATH", "ASCEND_OPP_PATH")
+    return {"ddk_root": str(Path(ddk_root).resolve()),
+            "environment": {key: env[key] for key in keys if key in env},
+            "te_fusion_log_util_candidates": candidates,
+            "candidate_note": "PYTHONPATH order only; embedded Python and site-packages may differ."}
+
+
+def _retain_failure_diagnostics(scratch, folder, *, max_bytes=16 << 20):
+    """Keep bounded OMG graph dumps before deleting scratch; never input links."""
+    source = scratch / "dump_graph"
+    if source.is_symlink() or not source.is_dir():
+        return
+    records = []
+    used = 0
+    # Prefer the failure graphs if successful intermediate dumps fill the budget.
+    files = sorted(source.glob("*.irpb"), key=lambda path: ("fail" not in path.name, path.name))
+    destination = folder / "diagnostics"
+    destination.mkdir(exist_ok=True)
+    for path in files:
+        if path.is_symlink() or not path.is_file():
+            continue
+        size = path.stat().st_size
+        record = {"name": path.name, "bytes": size}
+        if used + size > max_bytes:
+            record["status"] = "SKIPPED_SIZE_BUDGET"
+        else:
+            target = destination / path.name
+            shutil.copyfile(path, target)
+            used += size
+            record.update(status="RETAINED", sha256=sha256_file(target))
+        records.append(record)
+    save_json(destination / "manifest.json", {"max_bytes": max_bytes, "retained_bytes": used,
+                                              "files": records})
 
 
 def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600):
@@ -82,6 +160,7 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600):
             stage = f"{name}-setup"
             log_path = folder / "omg.log"
             folder.mkdir()
+            save_json(folder / "omg-environment.json", _environment_record(ddk_root, env))
             prefix = folder / name
             air = root / graph["air"]
             # Short relative names bypass OMG's restrictive output-path check.
@@ -108,10 +187,16 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600):
                     if not generated.is_file() or not generated.stat().st_size:
                         raise RuntimeError(f"OMG succeeded without a nonempty {name}.omc")
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, RuntimeError) as error:
+                    diagnostic_note = ""
+                    try:
+                        _retain_failure_diagnostics(scratch, folder)
+                    except OSError as diagnostic_error:
+                        # Retaining diagnostics must never hide the OMG failure.
+                        diagnostic_note = f"\nCould not retain graph diagnostics: {diagnostic_error}"
                     # Read after closing/flushing the log, while the retained
                     # path remains outside the automatically cleaned scratch.
                     raise RuntimeError(f"OMG graph={name} stage={stage}: {error}\n"
-                                       f"Full log: {log_path}\n{log_excerpt(log_path)}") from error
+                                       f"Full log: {log_path}\n{log_excerpt(log_path)}{diagnostic_note}") from error
                 stage = f"{name}-collect"
                 # Preserve compiled outputs/sidecars, but never archive input
                 # symlinks or compiler scratch as model payloads.
