@@ -1,10 +1,10 @@
 # 直接构图生成 AIR：服务器最小验证
 
-当前优先验证 **GE C++ 构图 → AIR → 内部 OMG → OMC**。这条入口不加载 PyTorch、TorchNPU 或 TorchAir；先用一个 FP16 加法图确认主机保存与内部转换接口，再推进 Qwen/DFlash 的算子映射。完整模型现有的 `export-tiny-air` / `export-air` 仍使用 TorchAir，尚未迁移到直接 GE 构图。
+当前优先验证 **GE C++ 构图 → AIR → 内部 OMG → OMC**。这条入口不加载 PyTorch、TorchNPU 或 TorchAir；先用一个 FP16 加法图确认主机保存与内部转换接口，再推进 Qwen/DFlash 的算子映射。`export-tiny-air` / `export-air` 的 TorchAir 路径继续保留；新的双图结构实现见 [target/draft 直接 AIR 指南](direct-model-air.md)。
 
 CANN 9.1 的 [`Graph::SaveToFile`](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/ascendgraphapi/atlasgeapi_07_0017.html) 明确保存 AIR，头文件为 `graph/graph.h`，库为 `libgraph.so`。[官方构图教程](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/devaids/aoe/aoeep_16_065.html) 将保存操作放在 `aclgrphBuildInitialize` 之前。本样例只构图和保存，不调用 GE 会话、ACL 初始化或 NPU 执行接口。
 
-**当前验证范围见 [validation.md](validation.md)：服务器真实 `libgraph.so` 链接与 AIR 保存、内部 OMG 转换和 X90 执行需要在用户环境验证。** Python 编排测试不能证明这些步骤通过。
+**用户已反馈此 Add 样例成功生成 AIR 和 OMC；记录为用户报告的通过，尚无板端执行证据。** 该结果不能覆盖新的 target/draft 模型图。当前验证范围见 [validation.md](validation.md)，Python 编排测试不能替代真实转换。
 
 ## 图与产物
 
@@ -90,4 +90,4 @@ AIR 解析失败、算子不支持或形状错误时，应根据内部 OMG 日�
 
 本次先验证服务器生成与转换。当前 `qwen35_dflash_hiai` 要求 target 和 draft 两个模型的固定 ABI，不能加载上述单图；单图的板端加载/执行尚未接入。AIR 留在服务器，后续应传 OMC、对应单图 HIAI 程序及测试输入，再回传结果与参考比较。现有双图小模型的完整板端步骤仍见 [tiny-validation.md](tiny-validation.md)，但其 AIR 导出环境要求与本样例不同。
 
-先保留本次 manifest、编译日志、运行日志和 OMG 日志。小图通过后仍需实现完整 Qwen/DFlash 的注意力、GDN、MoE、权重加载、量化算子与双图 ABI，重新做数值比较。直接保存 AIR 不会自动完成离线量化，也不会解决 35B 的内存预算。
+先保留本次 manifest、编译日志、运行日志和 OMG 日志。小图通过后的下一步见 [target/draft 直接 AIR 指南](direct-model-air.md)：模型结构和双图 ABI 已新增，模型图真实转换、量化映射及全权重数值比较仍待完成。直接保存 AIR 不会自动完成离线量化，也不会解决 35B 的内存预算。

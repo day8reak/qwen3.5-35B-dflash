@@ -95,3 +95,24 @@ C++ 已使用官方 `v9.1.0` 的 GE 与 metadef 头文件执行真实编译检�
 证据及最终源码哈希见 `specs/direct-air-lookup-verification.json`。共享对话原文只保留在本 run，不进入仓库。两次独立源码审查确认 GNode 属性读取不依赖 `AddOp` 表；没有把日志中内部 DDK 的 `libstdc++` 路径当作本次根因，也没有自动替换或修改库。
 
 用户需按 [重试说明](direct-air-smoke.md) 使用新输出目录，确认保存前与读回后检查都通过，再运行 OMG。修复版真实 GE 执行、AIR、OMC 和板端验证仍 **PENDING**；目标 profile 未登记，环境激活未成功，完整模型阶段与硬件参考策略未改变。
+
+
+## 2026-10-22：直接 GE target / draft 双图实现
+
+run：`20261022T074906Z-6507-ca8b2b`。用户报告 Add 样例已生成 AIR 和 OMC，记录为 **USER_REPORTED_PASS（仅 Add）**；未收到该产物哈希或板端结果。新增 target/draft 直接 GE 路径，原 PyTorch、TorchAir、DOPT 和 HIAI 代码保留。
+
+完整 target 结构 S=8 有 230,203 个 IR 节点、693 个权重定义，全部形状与 Transformers meta 模型匹配，权重键完整覆盖锁定的文本模型检查点索引。draft 包含原六层和目标共享 embedding/head。没有下载或加载完整权重。目标 FP16 权重约 69.32 GB，target/draft 唯一 FP16 权重约 70.09 GB；不是可部署到 32GB 板机的量化成品。
+
+参考比较包含三个不同有效前缀、完整目标特征与 Top1、最后一层归一化语义、65-token 跨 GDN chunk 状态传递，以及 draft 的因果/双向掩码。PyTorch 原语执行器用于隔离图定义与 NumPy 内核舍入差异；严格 FP16 特征检查和 Top1 一致性通过，没有放宽门槛。实际 prepared 权重还通过普通/DFlash 调度比较，所有 target/draft 调用的 Top1 与保留的 FP16 PyTorch 路径一致。NumPy 结果只作语义诊断，不代表 GE 或设备浮点实现。
+
+GE 的 40 种算子及 Cast 接口依据固定版本的官方原型核对。已处理 BOOL 不在部分 BasicType 算子类型集合内、TopK values/indices 共享同一节点、混合维数 MatMul 以及 Python 浮点标量过早转 FP16 的问题。实际 C++ 配方解析器已读取两张 tiny 图的内嵌和 FileConstant 模式，分别为 8,385 / 405 个降低后节点；解析模式没有 GE 执行，也不产生 AIR。
+
+完整结构的图描述约 81 MB、常量约 80 MB；通用 C++ 生成器仅 18,513 字节。最终生成器使用真实 GE v9.1 头文件、C++17、ABI0、`-Wall -Wextra -Werror` 编译通过，最终检查用时约 1.27 秒。这里完整权重路径是明确的不可用占位路径，仅为编译检查；没有链接 GE 或生成模型 AIR。先前展开全部代码的 tiny 编译在约 143 秒、3.2 GB 编译器 RSS 时停止，未被记录为成功，已改为配方模式。
+
+图描述不是 AIR。真正导出必须执行 GE SaveToFile，并在保存前、回读后检查节点、边、端口、属性、描述和常量内容；全部通过后才发布 AIR。外部权重及构图源码/recipe/blob 都有哈希记录，失败不产生成功 manifest。权重聚合内容哈希沿用现有 AIR→OMC→参考比较的 source 身份。
+
+隔离源码副本的完整回归为 **222 passed、2 skipped**；跳过的是未配置真实 DOPT 路径的两项可选集成测试。前两轮回归发现两处新增参考测试的进程后端设置泄漏到旧 TorchAir 测试；修复仅限新增测试的状态恢复，原生产保护逻辑不变。修复后全套重新通过。修改文档的 43 个 shell 代码块和 5 个 Python 代码块/heredoc 语法通过。证据为本 run 的 `final-closed.xml`、`final-closed-source-hashes.json` 和 `docs-syntax.json`。
+
+完整模型 AIR/OMG、内部 FileConstant/算子支持、HIAI 上板及真实数值结果仍为 **PENDING**；新直接 GE 的原生压缩整数权重映射 **NOT_IMPLEMENTED**。全模型量化、质量、内存和性能门槛不推进。硬件参考策略仍为 `use`，没有可访问的 X90；target profile 仍未登记，环境激活未成功。
+
+源码与可复核证据摘要见 `specs/direct-ge-model-verification.json`；下一步按 [直接双图指南](direct-model-air.md) 在用户服务器 prepare tiny → export AIR → 内部 OMG，然后执行相同 ABI 的 HIAI 验证。

@@ -1,0 +1,117 @@
+# Target / Draft 直接 GE 构图 → AIR
+
+新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
+
+用户已反馈 FP16 Add 小图的 AIR 和内部 OMG 转 OMC 成功。这只确认该小图链路；本页的 Qwen/DFlash 双图仍需在相同服务器实际转换和上板验证。源码数值检查不代表内部 OMG 已支持全部算子。
+
+## 实现范围
+
+target 覆盖 40 层完整结构定义：门控全注意力、部分 RoPE、chunk-64 GDN 和卷积、动态 TopK 路由、全部专家与共享专家、最终归一化、八层特征拼接及完整词表 Top1。draft 覆盖六层结构：目标特征投影、共享 embedding/head、动态 anchor、滑窗因果注意力与最后一层双向块注意力、RMSNorm、RoPE、SwiGLU 和 15-token 输出。
+
+保持现有固定 S、batch 1、纯文本、前缀重算、HIAI ABI v2。静态图计算所有专家，不是稀疏 MoE 性能实现。Python 浮点标量采用 GE 属性保留原值，避免提前转 FP16 常量造成额外舍入；所有浮点张量仍为 FP16。原始 BF16/FP32 模型的质量对比是另一道未完成门槛。
+
+**本次直接 GE 路径先提供 FP16 正确性基线，尚未映射 DOPT 的压缩整数权重算子。** `prepare` 生成的 `.bin` 是 FP16，不是 INT4。完整 35B 只能显式使用 `--float-baseline` 做服务器转换诊断，不能作为 32GB 板机部署包。原有量化代码保留；后续需要补充直接 GE 的原生量化算子映射，再验证压缩存储、质量和峰值内存。
+
+## 1. 服务器：先准备结构小模型
+
+在之前成功生成 Add AIR 的环境执行。保留已有 `CANN_ROOT`、`AI_RUN_DIR`；输出目录使用新的名称。这里的 NumPy 随机权重与旧 `cli demo` 即使种子相同也不同，后续参考必须使用本页的 `reference-tiny`。
+
+```bash
+cd "$REPO_DIR"
+git pull --ff-only
+export PYTHONDONTWRITEBYTECODE=1
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
+export GE_PAIR_RUN="$AI_RUN_DIR/ge-pair-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$GE_PAIR_RUN"
+
+python3 "$GE_MODEL_TOOL" prepare --tiny --sequence-length 8 \
+  --output "$GE_PAIR_RUN/prepared"
+```
+
+准备只需要 Python 和 NumPy。成功状态为 `PREPARED`，产生 target/draft 的 GE 图描述、常量、C++ 生成器源码和按哈希锁定的 FP16 权重，不会把图描述文件冒充 AIR。生成器使用紧凑的二进制图描述，完整 target 的数十万节点不会展开成巨型 C++ 源文件。
+
+tiny 为 target 4 层、draft 2 层、hidden 16、词表 64、block 4；它保留 GDN/MoE/两类注意力结构，没有可读文本质量意义。
+
+## 2. 服务器：生成两张 AIR
+
+```bash
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/prepared" \
+  --ge-root "$CANN_ROOT" \
+  --output "$GE_PAIR_RUN/air"
+```
+
+使用与你已跑通的小图相同的 CANN GE 头文件和真实库。脚本编译并运行两个主机生成器；每张图保存前和加载后都检查实际计算图节点。成功时 `air/manifest.json` 为 `EXPORTED`，包含 `target/target.air` 和 `draft/draft.air`。失败保留阶段、`build.log` / `export.log` 和 `failure.json`，重试 `export` 只需换新输出目录，可复用 `prepared`。
+
+默认 tiny 内嵌权重。需要单独测试内部 OMG 对外部权重的支持时，在新的准备目录加 `--external-weights`，再导出、转换。完整模型自动使用 `FileConstant`；该方案依据 [TorchAir 官方外部权重实现](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_utils/export_utils.py)，但本入口不依赖其 Python 包。AIR 中含绝对权重路径，转换完成前不要移动或清理 AIR bundle。
+
+## 3. 服务器：使用内部 OMG 转 OMC
+
+切回已经 source 内部 AscendC 配置脚本的终端，恢复同一 `REPO_DIR`、`GE_MODEL_TOOL`、`GE_PAIR_RUN` 和 `AI_RUN_DIR`。不重复拼接脚本已有环境变量。下面的 DDK 版本是你此前反馈的版本，若安装包已更新，请填写实际版本；脚本不会自动检测该版本号。
+
+```bash
+export CPRO_DDK_ROOT="$(realpath "${DDK_PATH:?先加载内部 DDK 环境}")"
+export CPRO_DDK_ID=100.520.020.010
+
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_PAIR_RUN/air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_PAIR_RUN/omc"
+```
+
+沿用现有 `compile_air`：`--framework=1 --target=omc --platform=kirinx90 --weight_data_type=FP16`，两个 OMG 子进程各有独立的 run 内临时目录和日志。成功为 `COMPILED`，设备状态仍是 `PENDING`。这一步可能暴露内部 DDK 的算子、属性或布局差异，应按具体 `omg.log` 修图。
+
+## 4. 服务器参考与板端运行
+
+在已有 PyTorch/Transformers 的 CPU 参考环境执行。此命令才需要 PyTorch，会沿用项目的 CPU 后端隔离；它读取本次 prepared 的实际权重，而非重新生成另一份随机模型。切换环境后再设置下面的解释器与项目路径；后续复用板端指南时保持这些变量。
+
+```bash
+export MODEL_PYTHON="$(command -v python3)"
+export PYTHONPATH="$REPO_DIR/model:$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
+python3 "$GE_MODEL_TOOL" reference-tiny \
+  --prepared "$GE_PAIR_RUN/prepared" \
+  --prompt-token-ids 1,2,3 --max-new-tokens 4 \
+  --output "$GE_PAIR_RUN/tiny-reference.json"
+python3 - <<'PY'
+import json, os
+from pathlib import Path
+run = Path(os.environ["GE_PAIR_RUN"])
+with (run / "tiny-prompt.json").open("x") as out:
+    json.dump({"prompt_token_ids": [1, 2, 3]}, out)
+PY
+```
+
+参考应为 `PASS`。双图输出与现有 HIAI runner 一致：target 为 INT32 `[1,8]` 和 FP16 `[1,8,32]`，draft 为 INT32 `[1,3]`。板端编译、传输、运行及回传比较沿用 [tiny 验证指南第 2–5 节](tiny-validation.md#2-服务器编译程序并传文件)，将路径对应如下；不要使用那个页面第 1 节重新生成旧随机权重。
+
+| 旧指南路径 | 本次路径 |
+|---|---|
+| `$AI_RUN_DIR/tiny-omc` | `$GE_PAIR_RUN/omc` |
+| `$AI_RUN_DIR/tiny-reference.json` | `$GE_PAIR_RUN/tiny-reference.json` |
+| `$AI_RUN_DIR/tiny-prompt.json` | `$GE_PAIR_RUN/tiny-prompt.json` |
+
+传板端的是整个 `omc/` bundle、交叉编译的 `qwen35_dflash_hiai` 和板端缺少的匹配运行库。复用旧指南时，把服务器 `$GE_PAIR_RUN/omc/` 的内容放到板端 `$BOARD_ROOT/models/tiny-omc/`，保持板端命令中的目录名一致。AIR、prepared 权重、图描述、C++ 生成器、原始 safetensors 和 Python 环境都留在服务器。参考与 OMC 的 `source` 包含所有 FP16 权重内容的聚合哈希，可拒绝混用不同随机权重的报告。
+
+## 5. 完整 35B：先查结构，再做服务器诊断
+
+无需加载权重即可核对完整结构和空间估算：
+
+```bash
+python3 "$GE_MODEL_TOOL" plan --full --sequence-length 8 \
+  --output "$GE_PAIR_RUN/full-plan"
+```
+
+完整 target 的 693 个参数定义已经与锁定模型结构/检查点索引核对。此项不代表实际权重加载或量化完成。完整 target/draft 的唯一 FP16 权重约 70.09 GB；原始下载之外还要为准备权重、AIR 和 OMC 留出空间。准备阶段按块读取 [safetensors 格式](https://github.com/safetensors/safetensors#format)，转换 BF16→FP16，无需把整个模型载入主机内存；转换/编译工具自身仍可能需要大量 RAM。
+
+只在需要排查完整模型转换且服务器资源充足时执行：
+
+```bash
+python3 "$GE_MODEL_TOOL" prepare --full --float-baseline --sequence-length 8 \
+  --target-weights "$QWEN35_TARGET_WEIGHTS" \
+  --draft-weights "$QWEN35_DRAFT_WEIGHTS" \
+  --output "$GE_PAIR_RUN/full-prepared"
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/full-prepared" --ge-root "$CANN_ROOT" \
+  --output "$GE_PAIR_RUN/full-air"
+```
+
+不要将这份未量化 FP16 全模型传到 32GB 板机。完成 tiny 双图 AIR/OMC/HIAI 验证后，下一步是原生量化映射、全权重数值验证和内存实测；原 PyTorch/TorchAir 路径随时可继续联调。

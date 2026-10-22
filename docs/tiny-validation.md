@@ -1,6 +1,6 @@
 # 小模型 AIR → OMC → HIAI 板端验证
 
-当前先执行 [GE 直接构图 AIR 最小验证](direct-air-smoke.md)，检查绕开 TorchAir 的服务器生成/转换入口。本文仍是包含 Qwen/DFlash 结构的双图小模型路径，`export-tiny-air` 仍依赖 TorchAir；两者不能交换 manifest 或板端命令。
+当前优先执行 [target/draft 直接 GE AIR 路径](direct-model-air.md)，生成不依赖 TorchAir 的双图 tiny。本文第 1 节保留原 PyTorch/TorchAir 方式；第 2–5 节的 HIAI 编译、传输、运行和比较可共用，按新指南替换产物路径。两条路径的随机权重不同，参考报告不可混用。独立 [Add 探针](direct-air-smoke.md)不能交给双图 runner。
 
 仓库已有 FP16 tiny 链路：使用真实 Qwen MoE / Gated DeltaNet 和 DFlash 结构，固定随机种子 17；目标 4 层、草稿 2 层、hidden 16、词表 64。它不需要下载完整权重、tokenizer 或做 DOPT 校准，适合先检查转换与板端接口；随机 token 不代表正常文本回答，也不能验证 35B 的质量、量化或性能。
 

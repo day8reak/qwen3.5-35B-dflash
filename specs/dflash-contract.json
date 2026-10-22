@@ -94,7 +94,9 @@
     "user reference PyTorch 2.11.0+cu130; no TorchAir yet",
     "user resumed: 继续吧",
     "quantization之外计算 FP16",
-    "weights and activations may both be quantized; other computation FP16"
+    "weights and activations may both be quantized; other computation FP16",
+    "user reports Add smoke AIR and OMC success",
+    "implement direct GE target/draft alongside retained PyTorch conversion path"
   ],
   "deployment_precision": "DOPT INT4 weights / 16-bit activation quantization candidate; non-quantization float computation FP16",
   "quantization": {
@@ -118,5 +120,13 @@
     "input_quantizer_compute_dtype": "torch.float32",
     "non_quant_compute_dtype": "torch.float16"
   },
-  "abi_version": 2
+  "abi_version": 2,
+  "alternative_pipeline": [
+    "ge-cpp",
+    "air",
+    "omg",
+    "omc",
+    "hiai"
+  ],
+  "direct_ge_precision": "FP16 correctness/conversion baseline; native compressed integer weight mapping pending"
 }

@@ -99,19 +99,47 @@
   "direct_air_probe": {
     "run_id": "20261022T064712Z-4550-c5859a",
     "scope": "GE C++ FP16 Add -> AIR -> internal OMG smoke; not Qwen/DFlash",
-    "status": "SOURCE_HANDOFF_RUNTIME_PENDING",
+    "status": "USER_REPORTED_AIR_AND_OMC_PASS",
     "evidence": "docs/direct-air-smoke.md",
-    "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/direct_air_smoke.py\" export --ge-root \"$CANN_ROOT\" --output \"$AI_RUN_DIR/ge-air\"",
-    "full_model_migration": "PENDING",
+    "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/direct_model_air.py\" prepare --tiny --sequence-length 8 --output \"$AI_RUN_DIR/ge-pair/prepared\"",
+    "full_model_migration": "SOURCE_IMPLEMENTED_RUNTIME_PENDING",
     "device_execution": "PENDING",
     "lookup_fix": {
       "run_id": "20261022T072928Z-5968-3afd6d",
       "observed_user_revision": "94c053e",
       "observed_user_result": "BUILD_AND_START_SUCCEEDED_VERIFYGRAPH_FINDOPBYNAME_FAILED",
       "fix": "Use compute-graph GNode API before SaveToFile and after LoadFromFile",
-      "status": "SOURCE_CHECKS_PASS_USER_RUNTIME_RETEST_PENDING",
+      "status": "USER_REPORTED_AIR_AND_OMC_PASS",
       "evidence": "specs/direct-air-lookup-verification.json",
-      "next_action": "Use new output directory per docs/direct-air-smoke.md and rerun export before compile"
+      "next_action": "Add AIR/OMC success reported; validate target/draft via docs/direct-model-air.md"
+    },
+    "user_report": {
+      "date": "2026-10-22",
+      "statement": "成功生成air和omc了",
+      "scope": "FP16 Add smoke only",
+      "artifact_hashes": "NOT_PROVIDED",
+      "device_execution": "PENDING"
     }
+  },
+  "direct_ge_model": {
+    "run_id": "20261022T074906Z-6507-ca8b2b",
+    "status": "SOURCE_CHECKS_PASS_RUNTIME_PENDING",
+    "pipeline": [
+      "ge-cpp",
+      "air",
+      "omg",
+      "omc",
+      "hiai"
+    ],
+    "pytorch_route": "RETAINED",
+    "scope": "FP16 target/draft static recompute baseline; full architecture plus tiny weights",
+    "evidence": "specs/direct-ge-model-verification.json",
+    "full_weights_loaded": false,
+    "real_model_air": "PENDING",
+    "real_model_omg": "PENDING",
+    "device_execution": "PENDING",
+    "native_quantized_ge_mapping": "NOT_IMPLEMENTED",
+    "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/direct_model_air.py\" prepare --tiny --sequence-length 8 --output \"$AI_RUN_DIR/ge-pair/prepared\"",
+    "guide": "docs/direct-model-air.md"
   }
 }

@@ -1,12 +1,14 @@
 # Qwen3.5-35B-A3B DFlash / CPro X90
 
-部署链路为 **AIR → OMG → OMC → HarmonyOS HIAI**。当前优先验证直接用 GE C++ 构图生成 AIR；完整 Qwen/DFlash 现有导出入口仍为 PyTorch/TorchAir，尚未完成直接 GE 构图迁移。板端 C++ 使用 `hiai::AiModelMngerClient` 同步接口。精度要求是 **权重和激活可以量化，其余浮点计算 FP16**。
+部署链路为 **AIR → OMG → OMC → HarmonyOS HIAI**。新增直接 GE 构图的 target/draft 双图路径，保留原有 PyTorch/TorchAir 模型与导出入口。板端 C++ 使用 `hiai::AiModelMngerClient` 同步接口。精度要求是 **权重和激活可以量化，其余浮点计算 FP16**。
 
-**当前第一步：[直接构图生成 AIR 的服务器最小验证](direct-air-smoke.md)。** FP16 加法图通过 `Graph::SaveToFile` 保存 AIR，再交给内部 OMG；不加载 Python 的 TorchNPU/TorchAir。它是独立单图探针，不能当作完整 Qwen/DFlash，也不能直接使用现有双模型 HIAI runner。
+**当前操作入口：[Target / Draft 直接 GE 构图 → AIR](direct-model-air.md)。** 用户已反馈 Add 小图 AIR→OMC 成功；下一步在相同环境转换含 GDN/MoE/注意力的双图 tiny。新导出端只需 NumPy 与主机 GE，不加载 PyTorch/TorchNPU/TorchAir。完整结构定义已实现，实际模型 AIR/OMC 和上板仍待验证。新路径暂为 FP16 基线，压缩整数权重 GE 映射尚未实现。
+
+[Add 最小探针](direct-air-smoke.md)继续保留，可用于区分基础环境和模型算子转换问题。
 
 **部署操作入口：[服务器生成与板端运行指南](server-board-guide.md)。** 按服务器校准/导出/交叉编译、文件传输、板端探测/推理、服务器对比/解码分别列出命令和产物路径。
 
-**结构小模型：[tiny AIR → OMC → HIAI 上板验证](tiny-validation.md)。** 无需下载完整权重；现有入口仍需要 TorchAir。提供参考生成、转换、板端执行和回传比对命令，真实转换及板端结果仍待验证。
+**板端联调：[tiny AIR → OMC → HIAI 上板验证](tiny-validation.md)。** 第 2–5 节可用于新的直接 GE 双图；该页第 1 节保留旧 TorchAir 导出方式。两条 tiny 路径的随机权重不同，必须分别生成匹配参考，不混用报告。
 
 **导出环境报错：[AIR 环境排障](air-troubleshooting.md)。** 说明 `libhccl.so` 缺失、Transformers 的显式 NPU 探测、CPU/CUDA 参考隔离及内部 DDK 布局。
 

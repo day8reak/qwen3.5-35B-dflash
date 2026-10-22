@@ -69,3 +69,16 @@
 包装器曾只显示 CalledProcessError 命令，导致实际错误被留在日志中而用户反复排查依赖。现已直接展示阶段、日志路径和有界尾部，保留完整日志及异常链；17 项本地编排测试通过，包括具体用户报错与非空部分 AIR 仍须失败。新增输出冲突提示引导使用新目录，避免删除旧证据。
 
 未修改通用技能：这是当前模型样例及特定 GE 接口的经验。没有自定义算子、近似计算或库替换。拒绝将程序启动、头文件编译或 mock 测试解释为 AIR/设备通过；没有把通用 GE 错误码猜成 NPU 执行失败或运行库 ABI 故障。剩余验证为修复版在用户真实 GE 环境的保存与回读、内部 OMG 和后续设备链路。
+
+
+## 直接 GE 模型图与可扩展保存器（2026-10-22）
+
+run：`20261022T074906Z-6507-ca8b2b`。Add AIR/OMC 通过来自用户报告，范围只到该单图。选择新增独立 GE 模型图、保留 PyTorch 路径，不把小图成功推广为完整模型转换通过。
+
+数值审查发现 Python 浮点标量提前写入 FP16 Const 会增加一次舍入。使用 Power 的 scale/shift 属性保留原标量语义，浮点张量继续 FP16；目标 tiny 的严格比较恢复通过。GDN 保留原 chunk64 计算顺序，没有用递推式替换浮点累加顺序。NumPy 与 PyTorch 的内核差异由独立 PyTorch 原语执行器分离，未通过放宽阈值关闭问题。draft 的隐藏状态/logits 对原语参考使用默认 FP16 严格比较，Top1 对保留的 lowered SDPA 路径一致。
+
+完整静态专家图会产生 23 万个 IR 节点；将每个常量和节点展开为 C++ 会使 tiny 编译已消耗数 GB RAM。改为有界 C++ 读取器加二进制构图描述与常量文件，完整 target 的读取器通过真实头文件编译。该文件格式只用于主机构图，不能改名或当作 AIR。检查覆盖损坏长度、类型、引用、端口、属性、常量，以及保存/回读的实际 GE 节点连接。
+
+独立审查关闭 BOOL 算子类型限制、TopK 输出对应关系、实际 prepared 随机权重与参考不一致风险、权重内容身份及 recipe/blob 来源哈希缺口。tiny 使用 NumPy RNG，与旧 Torch tiny 不同，参考必须加载实际文件。完整权重通过 safetensors 的边界受检分块读取，FileConstant 按官方 schema 构建；没有把 FP16 `.bin` 标为整数压缩权重。
+
+新增可执行检查位于 `test_ge_ir.py`、`test_ge_recipe.py`、`test_direct_ge_target.py`、`test_ge_draft.py`、`test_ge_export.py`、`test_ge_reference.py` 和 `test_ge_pair.py`。经验留在本模型，未修改通用技能，也未委派自定义 NPU 算子。拒绝将编译、配方解析、mock OMG 或 CPU 参考晋升为模型 AIR/设备成功。剩余假设是内部 OMG 对全部公开 GE 算子及 FileConstant 的支持、实际 kernel 数值、全量量化布局、内存峰值、完整权重质量及速度。

@@ -1,6 +1,8 @@
 # 服务器生成与 CPro/X90 板端运行指南
 
-当前先走 [直接 GE 构图 → AIR → OMG 的最小样例](direct-air-smoke.md)，它无需加载 TorchNPU/TorchAir，但还不是本文的 Qwen/DFlash 双图模型。本文描述的完整模型导出仍使用现有 TorchAir 入口；直接 GE 导出完整模型尚未实现。
+新的 [target/draft 直接 GE AIR 路径](direct-model-air.md)保留同一 HIAI ABI v2，优先按该指南完成双图 tiny 转换。本文原有 PyTorch/TorchAir 与量化流程继续保留；新 GE 路径当前尚未提供压缩整数权重映射。
+
+[直接 GE 的 Add 最小样例](direct-air-smoke.md)继续保留，用于基础环境排障。本文后续的完整量化模型导出仍使用原有 TorchAir 入口；新增直接 GE 入口已覆盖 target/draft 结构，当前提供 FP16 转换基线，实际双图转换和上板仍待验证。
 
 **量化、AIR 导出、OMG 转 OMC、HIAI 程序交叉编译，全部在服务器完成。板端只执行编译好的 HarmonyOS ARM64 程序，通过 HIAI 加载两个 OMC。** 当前文本编码和结果解码也在服务器完成，板端程序接收 token IDs、输出结果 JSON。
 
