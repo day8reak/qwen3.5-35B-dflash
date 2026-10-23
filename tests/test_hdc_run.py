@@ -91,18 +91,28 @@ elif args[:1] == ["shell"]:
     if command[:2] != ["sh", "-c"] or len(command) != 3:
         raise RuntimeError("expected sh -c wrapper")
     payload = command[2].replace(remote, local)
-    if "hilog -x -z 2000" in payload:
+    if "hilog -x" in payload:
         # Substitute only the diagnostic executable, preserving actual shell
         # redirection, remote status marker, transfer, and checksum operations.
         # No host hilog or board access is involved in this protocol test.
-        unavailable = os.environ.get("FAKE_HILOG_FAILURE") == "unavailable"
-        statements = [shlex.join(["printf", "%s\n", "SIMULATED hilog unavailable"])
-                      + " >&2"] if unavailable else [
-            shlex.join(["printf", "%s\n", "SIMULATED unrelated network telemetry"]),
-            shlex.join(["printf", "%s\n", "SIMULATED HIAI Load model failure"]),
-            shlex.join(["printf", "%s\n", "SIMULATED hilog reader diagnostic"]) + " >&2"]
-        statements.append("return " + ("127" if unavailable else "0"))
-        payload = "hilog() {\n" + ";\n".join(statements) + ";\n};\n" + payload
+        mode = os.environ.get("FAKE_HILOG_FAILURE", "")
+        argument_error = "Mutlti commands can't be used in combination [CODE: -31]"
+        # Match the board CLI rather than accepting every requested argument.
+        # It rejects combined actions even when the process reports success.
+        guard = ('if [ "$#" -ne 1 ] || [ "$1" != "-x" ]; then '
+                 + shlex.join(["printf", "%s\n", argument_error]) + '; return 0; fi')
+        if mode == "argument-error-zero":
+            statements = [shlex.join(["printf", "%s\n", argument_error]), "return 0"]
+        elif mode == "unavailable":
+            statements = [shlex.join(["printf", "%s\n", "SIMULATED hilog unavailable"])
+                          + " >&2", "return 127"]
+        else:
+            statements = [
+                shlex.join(["printf", "%s\n", "SIMULATED unrelated network telemetry"]),
+                shlex.join(["printf", "%s\n", "SIMULATED HIAI Load model failure"]),
+                shlex.join(["printf", "%s\n", "SIMULATED hilog reader diagnostic"]) + " >&2",
+                "return 0"]
+        payload = "hilog() {\n" + guard + ";\n" + ";\n".join(statements) + ";\n};\n" + payload
     if os.environ.get("FAKE_HDC_FAILURE") == "cleanup-rm":
         # Preserve the real shell, ownership guards, and remote exit marker;
         # only the deletion operation fails. The directory remains untouched.
@@ -751,8 +761,9 @@ def test_failed_runtime_captures_verified_hilog_without_extra_cli_arguments(case
         assert evidence["retrieved_sha256"][name] == hashlib.sha256(local.read_bytes()).hexdigest()
     assert (case["output"] / "hiai-hilog.stderr").read_text() == "SIMULATED hilog reader diagnostic\n"
     assert (case["output"] / "hiai-hilog.exitcode").read_text().strip() == "0"
-    hilog_calls = [args for args in _calls(case) if "hilog -x -z 2000" in " ".join(args)]
+    hilog_calls = [args for args in _calls(case) if "hilog -x" in " ".join(args)]
     assert len(hilog_calls) == 1
+    assert evidence["hilog"]["command"] == ["hilog", "-x"]
     assert "--lib-dir" not in case["argv"] and "--hiai-build-dir" not in case["argv"]
     assert case["board"].is_dir() and _cleanup(case) == "RETAINED"
     assert len(_calls(case, runner=True)) == (1 if stage == "probe" else 2)
@@ -792,4 +803,23 @@ def test_corrupt_hilog_transfer_is_not_printed_or_claimed_captured(case):
     retained = list((case["output"] / "received").glob("*hiai-hilog.txt"))
     assert retained and all(path.read_bytes() != (case["board"] / "hiai-hilog.txt").read_bytes()
                             for path in retained)
+    assert case["board"].is_dir() and _cleanup(case) == "RETAINED"
+
+
+def test_hilog_cli_argument_error_is_unavailable_despite_zero_exit(case):
+    _automatic_build(case)
+    case["env"]["FAKE_HILOG_FAILURE"] = "argument-error-zero"
+    result = _run(case, "remote-exit")
+    assert result.returncode != 0
+    assert "remote benchmark failed with exit code 17" in result.stderr
+    evidence = json.loads((case["output"] / "result.json").read_text())
+    assert evidence["hilog"]["status"] == "UNAVAILABLE"
+    assert evidence["hilog"]["returncode"] == 0
+    assert evidence["hilog"].get("reason")
+    assert "remote benchmark failed with exit code 17" in evidence["error"]
+    assert (case["output"] / "benchmark.exitcode").read_text().strip() == "17"
+    assert (case["output"] / "hiai-hilog.exitcode").read_text().strip() == "0"
+    text = (case["output"] / "hiai-hilog.txt").read_text()
+    assert text == "Mutlti commands can't be used in combination [CODE: -31]\n"
+    assert evidence["retrieved_sha256"]["hiai-hilog.txt"] == hashlib.sha256(text.encode()).hexdigest()
     assert case["board"].is_dir() and _cleanup(case) == "RETAINED"

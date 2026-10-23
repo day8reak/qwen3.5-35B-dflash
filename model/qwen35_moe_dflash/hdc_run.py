@@ -418,13 +418,13 @@ def execute(args):
             return
         names = ("hiai-hilog.txt", "hiai-hilog.stderr", "hiai-hilog.exitcode")
         diagnostic = {"status": "FAILED", "returncode": None, "retrieved_files": [],
-                      "command": ["hilog", "-x", "-z", "2000"],
+                      "command": ["hilog", "-x"],
                       "scope": "Recent shared system-log snapshot; may include other processes and runs. Not proof of this run's cause."}
         result["hilog"] = diagnostic
         timeout = min(10, args.timeout_seconds)
         board = context["board"]
         diagnostic["paths"] = {name: {"local": str(out / name), "remote": str(board / name)} for name in names}
-        command = ("hilog -x -z 2000 > " + shlex.quote(str(board / names[0]))
+        command = ("hilog -x > " + shlex.quote(str(board / names[0]))
                    + " 2> " + shlex.quote(str(board / names[1]))
                    + "\nrc=$?\nprintf '%s\\n' \"$rc\" > " + shlex.quote(str(board / names[2]))
                    + '\nexit "$rc"')
@@ -447,6 +447,16 @@ def execute(args):
             if diagnostic["returncode"] != int(saved_status):
                 raise RuntimeError("hilog completion marker and exitcode file do not agree")
             diagnostic["status"] = "CAPTURED" if int(saved_status) == 0 else "UNAVAILABLE"
+            # Some hilog versions report argument errors on stdout with exit 0.
+            # This exact CLI response is not a HIAI runtime log or a valid snapshot.
+            for name in names[:2]:
+                with (out / name).open("rb") as stream:
+                    header = stream.read(8192).decode("utf-8", errors="replace")
+                if any(re.fullmatch(r"(?:Mutlti|Multi) commands can't be used in combination\s*\[CODE:\s*-31\]",
+                                    line.strip()) for line in header.splitlines()):
+                    diagnostic["status"] = "UNAVAILABLE"
+                    diagnostic["reason"] = "hilog rejected the command combination (CODE -31)"
+                    break
             print(f"run-hdc: hilog snapshot: {out / names[0]} (shared system logs; may include other runs)", file=sys.stderr)
             if diagnostic["status"] == "CAPTURED":
                 with (out / names[0]).open("rb") as stream:
@@ -457,7 +467,8 @@ def execute(args):
                 if related:
                     print("\n".join(line[:1000] for line in related[-60:]), file=sys.stderr)
             else:
-                print(f"run-hdc: hilog unavailable (exit {saved_status}); details: {out / names[1]}", file=sys.stderr)
+                reason = diagnostic.get("reason", f"exit {saved_status}")
+                print(f"run-hdc: hilog unavailable ({reason}); details: {out / names[0]}, {out / names[1]}", file=sys.stderr)
         except Exception as capture_error:
             diagnostic["status"] = "FAILED"
             diagnostic.setdefault("errors", []).append(f"{type(capture_error).__name__}: {capture_error}")

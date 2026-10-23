@@ -152,16 +152,18 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 用户在上述修正后报告：`HIAI Load failed: 1 [model=qwen35_target, ... runtime=800.631.120.010]`。这次已进入 HIAI 的模型加载接口；尚未加载 draft、查询张量或执行 `Process`。当前记录不能判定是模型格式、DDK/运行库/固件兼容性、依赖还是客户端环境问题，不应仅凭返回码改名 OMC、改模型类型或判定某个算子不支持。
 
-脚本在 probe / benchmark 失败时自动尝试 `hilog -x -z 2000`，使用短超时，将快照及命令自身的 stderr/退出码保存到本次板端目录，然后按已有 SHA256 流程回传；命令参数含义见 [OpenHarmony HiLog 文档](https://github.com/openharmony/docs/blob/master/zh-cn/application-dev/dfx/hilog.md#命令行说明)。不会清空系统日志、修改日志级别或启动持续抓取任务。HiLog 不可用、无权限、超时或回传失败只记录诊断失败，不覆盖原始模型错误，不将推理失败变成成功。
+脚本在 probe / benchmark 失败时自动尝试 `hilog -x`，使用短超时，将快照及命令自身的 stderr/退出码保存到本次板端目录，然后按已有 SHA256 流程回传；命令参数含义见 [OpenHarmony HiLog 文档](https://github.com/openharmony/docs/blob/master/zh-cn/application-dev/dfx/hilog.md#命令行说明)。不会清空系统日志、修改日志级别或启动持续抓取任务。HiLog 不可用、无权限、超时或回传失败只记录诊断失败，不覆盖原始模型错误，不将推理失败变成成功。
 
-`hiai-hilog.txt` 是共享日志缓冲区的最近快照，可能包含其他进程或较早的日志；需要按时间、进程和模型名关联，不能把所有匹配行都当成本次错误。程序仅打印已成功校验的相关日志摘要；完整快照留在服务器输出目录。
+本板端拒绝组合 `-x` 与 `-z`，返回 `Mutlti commands can't be used in combination [CODE: -31]`。此前组合命令有误，现已改为单独的 `hilog -x`：读完当前缓冲区后退出，完整输出保存在文件中，终端只显示有限摘要。如果抓取程序把该参数错误写到 stdout 且返回 0，也会标记为不可用，不能当成成功取得 HIAI 日志。
+
+`hiai-hilog.txt` 是共享日志缓冲区快照，可能包含其他进程或较早的日志；需要按时间、进程和模型名关联，不能把所有匹配行都当成本次错误。程序仅打印已成功校验的相关日志摘要；完整快照留在服务器输出目录。
 
 本次诊断增强只改服务器脚本，已有二进制与 OMC 可以沿用。更新后使用上面的一条四参数命令，换新的 `HDC_RUN_DIR` 即可；不再传旧命令中的 `--lib-dir`，自动按构建记录准备库。
 
 已有失败现场也可以立即手动取日志：
 
 ```bash
-hdc -t "$SN" -s "$BIP" shell "hilog -x -z 2000" > "$HDC_RUN_DIR/hiai-hilog-manual.txt"
+hdc -t "$SN" -s "$BIP" shell "hilog -x" > "$HDC_RUN_DIR/hiai-hilog-manual.txt"
 grep -ni -B 3 -A 5 -E 'hiai|npu|omc|load.*model|model.*load|dlopen' \
   "$HDC_RUN_DIR/hiai-hilog-manual.txt" | tail -n 160
 ```
