@@ -1,6 +1,11 @@
 #include "qwen35_dflash/hiai_executor.hpp"
 #include <HiAiModelManagerService.h>
 #include <algorithm>
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -25,7 +30,46 @@ struct Tensor {
     return value->GetBuffer();
   }
 };
+// The HCL runtime uses the descriptor's bytes even when a model path is set.
+// File-backed read-only storage avoids an additional whole-model heap copy.
+class ModelBuffer {
+ public:
+  ModelBuffer() = default;
+  ModelBuffer(const ModelBuffer&) = delete;
+  ModelBuffer& operator=(const ModelBuffer&) = delete;
+  ~ModelBuffer() {
+    if (data_ != MAP_FAILED) static_cast<void>(munmap(data_, bytes_));
+    if (fd_ >= 0) static_cast<void>(close(fd_));
+  }
+  void Open(const std::filesystem::path& path) {
+    if (fd_ >= 0) throw std::logic_error("model buffer already open");
+    fd_ = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd_ < 0) throw std::runtime_error(std::string("open OMC: ") + std::strerror(errno));
+    struct stat info {};
+    if (fstat(fd_, &info) != 0)
+      throw std::runtime_error(std::string("stat OMC: ") + std::strerror(errno));
+    if (!S_ISREG(info.st_mode) || info.st_size <= 0)
+      throw std::runtime_error("OMC model buffer requires a nonempty regular file");
+    if (static_cast<std::uint64_t>(info.st_size) > UINT32_MAX)
+      throw std::runtime_error("OMC exceeds SetModelBuffer uint32 size limit (UINT32_MAX bytes); "
+                               "a validated large-model loading route is required");
+    bytes_ = static_cast<std::uint32_t>(info.st_size);
+    data_ = mmap(nullptr, bytes_, PROT_READ, MAP_PRIVATE, fd_, 0);
+    if (data_ == MAP_FAILED)
+      throw std::runtime_error(std::string("mmap OMC: ") + std::strerror(errno));
+  }
+  const void* Data() const { return data_ == MAP_FAILED ? nullptr : data_; }
+  std::uint32_t Size() const { return bytes_; }
+ private:
+  int fd_ = -1;
+  void* data_ = MAP_FAILED;
+  std::uint32_t bytes_ = 0;
+};
 struct Model {
+  // Reverse destruction order keeps mapped bytes and descriptor alive through
+  // UnLoadModel AND the client destructor, including partial-load failures.
+  ModelBuffer model_buffer;
+  std::shared_ptr<hiai::AiModelDescription> description;
   hiai::AiModelMngerClient client;
   bool initialized = false;
   std::string name, version;
@@ -49,7 +93,7 @@ struct Model {
     if (version != expected_version)
       throw std::runtime_error("HIAI version differs from --expected-runtime-version");
     if (!client.CheckNPUSupport()) throw std::runtime_error("HIAI NPU unavailable");
-    auto description = std::make_shared<hiai::AiModelDescription>(
+    description = std::make_shared<hiai::AiModelDescription>(
         name, hiai::AiModelDescription_Frequency_HIGH, hiai::HIAI_FRAMEWORK_NONE,
         hiai::HIAI_MODELTYPE_OFFLINE, hiai::AiModelDescription_DeviceType_NPU);
     auto check_load = [&](hiai::AIStatus status, const char* operation) {
@@ -58,10 +102,18 @@ struct Model {
             std::to_string(status) + " [model=" + name + ", path=" + path.string() +
             ", runtime=" + version + "]");
     };
-    // Do not use SetModelBuffer: its uint32 size cannot represent a 35B model.
     check_load(description->SetModelPath(path.string()), "SetModelPath");
-    // Match the internal OMC sample: SetModelPath followed directly by Load.
-    // Load must succeed before querying tensors or executing the model.
+    try {
+      model_buffer.Open(path);
+    } catch (const std::exception& error) {
+      throw std::runtime_error(std::string(error.what()) + " [model=" + name +
+                               ", path=" + path.string() + ", runtime=" + version + "]");
+    }
+    check_load(description->SetModelBuffer(model_buffer.Data(), model_buffer.Size()), "SetModelBuffer");
+    if (!description->GetModelBuffer() || description->GetModelNetSize() != model_buffer.Size())
+      throw std::runtime_error("HIAI model buffer descriptor is empty or truncated [model=" + name +
+                               ", path=" + path.string() + ", runtime=" + version + "]");
+    // Load still decides compatibility; no bypass or model type change.
     std::vector<std::shared_ptr<hiai::AiModelDescription>> descriptions{description};
     check_load(client.Load(descriptions), "Load");
     check_load(client.GetModelIOTensorDim(name, input_dims, output_dims), "GetModelIOTensorDim");

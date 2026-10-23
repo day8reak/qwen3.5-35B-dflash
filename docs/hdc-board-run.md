@@ -123,9 +123,9 @@ cat "$HDC_RUN_DIR/benchmark.stderr"
 tail -n 60 "$HDC_RUN_DIR/benchmark.stdout"
 ```
 
-用户补充的错误为 `HIAI CheckModelCompatibility failed: 1`，发生在 target 的独立兼容性检查阶段，尚未执行张量推理。随后提供的内部 `model_run_tool` 示例以相同的 `(HIGH, 0, 1, 0)` 参数创建描述，调用 `SetModelPath` 后直接 `Load`，没有独立调用 `CheckModelCompatibility`。框架已对齐该文件加载流程，以 `Load` 返回状态判断能否加载；模型哈希、运行库版本、NPU 查询及后续张量数量/形状/格式检查继续执行。API 检查返回错误不能直接推断 OMC 本身无效，也不能据此次源码修正认定上板成功。
+用户补充的错误为 `HIAI CheckModelCompatibility failed: 1`，发生在 target 的独立兼容性检查阶段，尚未执行张量推理。随后提供的内部 `model_run_tool` 示例以相同的 `(HIGH, 0, 1, 0)` 参数创建描述，调用 `SetModelPath` 后直接 `Load`，没有独立调用 `CheckModelCompatibility`。先前框架据此改用文件加载；后续 HCL 日志显示还必须显式传入模型缓冲区（见下节），现以 `Load` 返回状态判断能否加载；模型哈希、运行库版本、NPU 查询及后续张量数量/形状/格式检查继续执行。API 检查返回错误不能直接推断 OMC 本身无效，也不能据此次源码修正认定上板成功。
 
-这项修正需要重新交叉编译推理程序一次；无需重新生成 AIR、OMC 或参考。沿用原来的编译环境变量与资源配置，在服务器执行：
+文件加载及下述 HCL 缓冲区修正都需要重新交叉编译推理程序；无需重新生成 AIR、OMC 或参考。沿用原来的编译环境变量与资源配置，在服务器执行：
 
 ```bash
 cd "$REPO_DIR"
@@ -150,7 +150,19 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 ### 实际 Load 仍返回 1
 
-用户在上述修正后报告：`HIAI Load failed: 1 [model=qwen35_target, ... runtime=800.631.120.010]`。这次已进入 HIAI 的模型加载接口；尚未加载 draft、查询张量或执行 `Process`。当前记录不能判定是模型格式、DDK/运行库/固件兼容性、依赖还是客户端环境问题，不应仅凭返回码改名 OMC、改模型类型或判定某个算子不支持。
+用户在上述修正后报告：`HIAI Load failed: 1 [model=qwen35_target, ... runtime=800.631.120.010]`。重新过滤完整 HiLog 后，多次出现同一组加载错误：
+
+```text
+CreateModelManager: DDK pipe is HCL.
+CreateLocalBuffer: data != nullptr && size > 0 false, return nullptr.
+AiModelManagerClientImpl::Load: CreateLocalBuffer return null, load failed
+```
+
+这将当前故障定位到模型缓冲区为空或长度为零。只设置 `SetModelPath` 未给此 HCL 加载分支提供有效数据；尚不能据此判断 OMC 内容、算子或固件兼容性。代码现保留路径，并将 OMC 只读映射后显式 `SetModelBuffer(data, size)`，检查设置状态和描述中的地址/长度，再调用 `Load`。映射和描述均保留到 `UnLoadModel` 及客户端销毁之后；不修改模型类型、设备类型或计算精度，也不跳过加载结果与张量验证。
+
+蓝区头文件及[华为公开接口声明](https://github.com/huaweicodelabs/HiAI-Foundation/blob/master/IRBuild/ddk/ai_ddk_lib/include/HiAiModelManagerType.h)的 `SetModelBuffer` 长度是 `uint32_t`。空文件、非普通文件、超过 `UINT32_MAX` 字节的单个 OMC 会提前明确失败，禁止长度截断。这是当前 tiny OMC 的加载修正，尚不提供已验证的完整 35B 大文件加载路线；只读映射也不代表 HIAI 内部不会再分配或复制数据。
+
+此修正要按上节命令重新构建 HIAI 二进制；AIR、OMC、参考文件可以沿用。主机测试要求实际提供正确的模型字节，并在推理、卸载和客户端析构时继续检查原始缓冲区，覆盖 target/draft 部分加载失败、空文件及超过 4 GiB 的稀疏文件拒绝。主机测试及新增缓冲区接口的蓝区 OHOS 编译检查均不能代替内部 DDK 链接和真实板端复测。本地蓝区头文件缺少项目原先使用的 `CheckNPUSupport`，完整适配器未在该蓝区版本编译通过；此限制不通过删除内部 DDK 的 NPU 探测检查来绕过。
 
 脚本在 probe / benchmark 失败时自动尝试 `hilog -x`，使用短超时，将快照及命令自身的 stderr/退出码保存到本次板端目录，然后按已有 SHA256 流程回传；命令参数含义见 [OpenHarmony HiLog 文档](https://github.com/openharmony/docs/blob/master/zh-cn/application-dev/dfx/hilog.md#命令行说明)。不会清空系统日志、修改日志级别或启动持续抓取任务。HiLog 不可用、无权限、超时或回传失败只记录诊断失败，不覆盖原始模型错误，不将推理失败变成成功。
 
@@ -158,7 +170,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 `hiai-hilog.txt` 是共享日志缓冲区快照，可能包含其他进程或较早的日志；需要按时间、进程和模型名关联，不能把所有匹配行都当成本次错误。程序逐行扫描整个已校验快照，最多显示最后 60 条候选相关日志及原始行号；完整快照留在服务器输出目录。不会仅检查文件最后 64 KiB，避免后续系统流量掩盖之前的模型错误。摘要排除 `HDC_LOG` 传输日志，`NPU` 按完整单词匹配，并单独匹配 `NPUCL` 等组件，避免误匹配 `input`。候选条数为 0 表示本次筛选没有找到相关内容，不表示模型运行成功或没有底层错误。
 
-本次诊断增强只改服务器脚本，已有二进制与 OMC 可以沿用。更新后使用上面的一条四参数命令，换新的 `HDC_RUN_DIR` 即可；不再传旧命令中的 `--lib-dir`，自动按构建记录准备库。
+仅日志抓取和筛选修改无需重编译；上述 HCL 模型缓冲区修正需要重编译二进制，OMC 可以沿用。更新后使用上面的一条四参数命令，换新的 `HDC_RUN_DIR` 即可；不再传旧命令中的 `--lib-dir`，自动按构建记录准备库。
 
 已有失败现场也可以立即手动取日志：
 
@@ -169,7 +181,7 @@ grep -n -v 'HDC_LOG' "$HDC_RUN_DIR/hiai-hilog-manual.txt" | \
   'hiai|ai_fmk|cpucl|npucl|(^|[^[:alnum:]_])npu([^[:alnum:]_]|$)|qwen35_dflash_hiai|CheckModelCompatibility' | tail -n 160
 ```
 
-用户后续贴出的片段只显示新目录的创建和文件传输，还包含另一个模型的传输日志，不能作为本次 `Load` 的内部错误。板端日志时间为 `03-06`，而主机目录包含 `20261023`；两端时钟未对齐，不能直接用主机时间排除板端日志。核对现场时以本次 `upload-plan.json` / `result.json` 的 `board_root` 为准，避免重跑先前目录后查看另一次运行的日志。
+最初宽泛筛选只显示新目录创建和文件传输，还混入另一个模型的传输日志；收紧筛选后才发现前面的 HCL 空缓冲区错误。板端日志时间为 `03-06`，而主机目录包含 `20261023`；两端时钟未对齐，不能直接用主机时间排除板端日志。核对现场时以本次 `upload-plan.json` / `result.json` 的 `board_root` 为准，避免重跑先前目录后查看另一次运行的日志。
 
 如果系统日志仍不能定位，再用内部 `model_run_tool` 加载同一份 `target.omc`，保持相同的 HIAI 库集合做对照。内部示例也加载失败时优先核对 OMC/DDK/运行库/固件；示例能加载时再比较客户端初始化。当前尚无这项对照结果。
 

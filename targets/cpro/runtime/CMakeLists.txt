@@ -41,6 +41,12 @@ if(BUILD_HOST_TESTS)
   target_include_directories(hiai_runner_fake PRIVATE tests/fake_hiai)
   target_compile_definitions(hiai_runner_fake PRIVATE QWEN35_FAKE_HIAI=1)
   target_link_libraries(hiai_runner_fake PRIVATE dflash_core)
+  add_executable(hiai_model_buffer_tests tests/test_hiai_model_buffer.cpp
+    src/hiai_executor.cpp tests/fake_hiai/fake_hiai.cpp)
+  target_include_directories(hiai_model_buffer_tests PRIVATE tests/fake_hiai)
+  target_link_libraries(hiai_model_buffer_tests PRIVATE dflash_core)
+  add_test(NAME hiai_model_buffer
+    COMMAND hiai_model_buffer_tests ${CMAKE_CURRENT_BINARY_DIR}/buffer-cases)
   add_test(NAME hiai_lifecycle_faults
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_runner.py
       $<TARGET_FILE:hiai_runner_fake> ${CMAKE_CURRENT_BINARY_DIR}/fake-cases)

@@ -23,7 +23,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 脚本会执行 probe、benchmark、结果回传与参考比较。全部成功后删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。probe 或 benchmark 失败时会直接显示已回传的错误日志末尾，并自动抓取板端 HiLog 缓冲区快照作为排障材料。日志摘要会扫描整个快照、排除 HDC 传输记录，并避免将 `input` 误匹配为 `NPU`；完整日志始终保留。
 
-遇到 `HIAI CheckModelCompatibility failed: 1` 的旧程序需要重新编译一次：加载流程已按内部示例调整为 `SetModelPath → Load`，由 `Load` 返回状态判断加载结果，并保留后续张量验证。OMC 和参考文件无需重建，命令见[板端排障与重试](hdc-board-run.md#结果与失败排查)。
+遇到 `HIAI Load failed: 1`，且 HiLog 显示 HCL `CreateLocalBuffer` 的 `data != nullptr && size > 0` 检查失败，需要更新并重新编译推理程序：现将 OMC 只读映射后通过 `SetModelBuffer` 提供数据，保留路径，并检查加载状态及后续张量。映射保持到模型卸载和客户端销毁之后。该缓冲区接口仅接受不超过 `UINT32_MAX` 字节的单个 OMC，完整 35B 大文件加载仍待验证。OMC 和参考文件无需重建，命令见[板端排障与重试](hdc-board-run.md#结果与失败排查)。
 
 最新用户反馈已进入实际 `Load`，target 返回 `1`（运行库 `800.631.120.010`），尚未进入推理。该通用返回码不足以确定原因；新脚本会自动回传 `hiai-hilog.txt`，先根据底层日志定位。此次诊断增强无需重建已有二进制和 OMC。
 

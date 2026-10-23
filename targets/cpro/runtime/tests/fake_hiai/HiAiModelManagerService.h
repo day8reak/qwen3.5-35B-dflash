@@ -36,7 +36,13 @@ class AiModelDescription {
  public:
   AiModelDescription(const std::string&, int, int, int, int);
   AIStatus SetModelPath(const std::string& path);
+  AIStatus SetModelBuffer(const void*, std::uint32_t);
+  void* GetModelBuffer() const;
+  std::uint32_t GetModelNetSize() const;
   std::string name, path;
+ private:
+  const void* model_buffer_=nullptr;
+  std::uint32_t model_bytes_=0;
 };
 class AiContext {
  public:
@@ -60,5 +66,7 @@ class AiModelMngerClient {
  private:
   bool loaded_=false;
   std::string name_;
+  const void* model_buffer_=nullptr;
+  std::uint32_t model_bytes_=0;
 };
 }

@@ -1,6 +1,7 @@
 #include "HiAiModelManagerService.h"
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -9,6 +10,20 @@ int tensors=0, clients=0;
 std::string Failure() { const auto* p=std::getenv("FAKE_HIAI_FAILURE"); return p?p:""; }
 void Trace(const char* event) {
   if (const auto* path=std::getenv("FAKE_HIAI_TRACE")) std::ofstream(path, std::ios::app) << event << '\n';
+}
+bool ModelBytesValid(const void* buffer, std::uint32_t bytes, const std::string& name) {
+  const char* expected=name=="qwen35_target"?"target-fixture":
+                       name=="qwen35_draft"?"draft-fixture":nullptr;
+  return expected && buffer && bytes==std::strlen(expected) &&
+         std::memcmp(buffer, expected, bytes)==0;
+}
+void RequireModelBytes(const void* buffer, std::uint32_t bytes, const std::string& name) {
+  // Keep only the original pointer: late reads expose premature unmap/free,
+  // including release after Load, before UnLoadModel or before client teardown.
+  if (buffer && !ModelBytesValid(buffer, bytes, name)) {
+    std::cerr << "invalid or prematurely released model buffer\n";
+    std::abort();
+  }
 }
 struct CheckLeaks {
   ~CheckLeaks() { if (tensors || clients) { std::cerr << "LEAK\n"; std::abort(); } }
@@ -31,11 +46,25 @@ AiModelDescription::AiModelDescription(const std::string& n,int freq,int framewo
   if(freq!=3 || framework!=0 || model!=1 || device!=0) throw std::runtime_error("wrong HIAI model mode");
 }
 AIStatus AiModelDescription::SetModelPath(const std::string& p) { path=p; return Failure()=="path"?1:0; }
+AIStatus AiModelDescription::SetModelBuffer(const void* data, std::uint32_t bytes) {
+  if(Failure()=="model-buffer") return AI_FAILED;
+  if(!ModelBytesValid(data, bytes, name)) return AI_FAILED;
+  model_buffer_=data; model_bytes_=bytes; return AI_SUCCESS;
+}
+void* AiModelDescription::GetModelBuffer() const {
+  return Failure()=="model-buffer-null"?nullptr:const_cast<void*>(model_buffer_);
+}
+std::uint32_t AiModelDescription::GetModelNetSize() const {
+  return Failure()=="model-buffer-size"?model_bytes_+1:model_bytes_;
+}
 void AiContext::AddPara(const std::string& key,const std::string& value) {
   if(key!="model_name") throw std::runtime_error("context missing model_name"); model=value;
 }
 AiModelMngerClient::AiModelMngerClient(){ ++clients; }
-AiModelMngerClient::~AiModelMngerClient(){ if(loaded_) { std::cerr<<"LEAK loaded model\n"; std::abort(); } --clients; }
+AiModelMngerClient::~AiModelMngerClient(){
+  RequireModelBytes(model_buffer_, model_bytes_, name_);
+  if(loaded_) { std::cerr<<"LEAK loaded model\n"; std::abort(); } --clients;
+}
 AIStatus AiModelMngerClient::Init(std::shared_ptr<AiModelManagerClientListener> listener) {
   if(listener) throw std::runtime_error("must initialize synchronously"); return Failure()=="init"?1:0;
 }
@@ -47,11 +76,18 @@ AIStatus AiModelMngerClient::CheckModelCompatibility(AiModelDescription&,bool&){
 }
 AIStatus AiModelMngerClient::Load(std::vector<std::shared_ptr<AiModelDescription>>& d){
   Trace("load");
-  if(d.size()!=1 || d[0]->path.empty()) return 1;
-  name_=d[0]->name; loaded_=true; // partial load failure must still unload.
-  return Failure()=="load" || Failure()=="incompatible"?1:0;
+  if(d.size()!=1 || d[0]->path.empty() ||
+     !ModelBytesValid(d[0]->GetModelBuffer(), d[0]->GetModelNetSize(), d[0]->name)) return AI_FAILED;
+  name_=d[0]->name;
+  model_buffer_=d[0]->GetModelBuffer(); model_bytes_=d[0]->GetModelNetSize();
+  loaded_=true; // partial target or draft load failure must still unload.
+  return Failure()=="load" || Failure()=="incompatible" ||
+         (Failure()=="draft-load" && name_=="qwen35_draft")?1:0;
 }
-AIStatus AiModelMngerClient::UnLoadModel(){ Trace("unload"); loaded_=false; return 0; }
+AIStatus AiModelMngerClient::UnLoadModel(){
+  RequireModelBytes(model_buffer_, model_bytes_, name_);
+  Trace("unload"); loaded_=false; return 0;
+}
 AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vector<TensorDimension>& in,std::vector<TensorDimension>& out){
   if(n!=name_ || !loaded_ || Failure()=="io-dims") return 1;
   TensorDimension ids({1,32}), features({1,32,32});
@@ -64,6 +100,7 @@ AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vecto
 }
 AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<AiTensor>>& in,std::vector<std::shared_ptr<AiTensor>>& out,std::uint32_t timeout,std::int32_t& stamp){
   Trace("process");
+  RequireModelBytes(model_buffer_, model_bytes_, name_);
   if(c.model!=name_ || !timeout || !loaded_ || Failure()=="run") return 1;
   const bool target=name_=="qwen35_target";
   auto* ids=static_cast<std::int32_t*>(in[target?0:1]->GetBuffer());

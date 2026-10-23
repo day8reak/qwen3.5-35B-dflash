@@ -20,7 +20,7 @@ base = [str(runner), "--mode", "benchmark", "--target", str(target), "--target-s
 probe = subprocess.run([str(runner), "--probe"], capture_output=True, text=True, check=True)
 assert json.loads(probe.stdout) == {"runtime_version": "FAKE-HIAI-X90", "npu_supported": True}
 for failure in ["", "corrupt-draft", "init", "version", "no-npu", "incompatible", "compat-query-error", "load",
-                "path", "io-dims", "shape", "format", "count", "allocation", "short-buffer", "run", "token"]:
+                "path", "model-buffer", "model-buffer-null", "model-buffer-size", "draft-load", "io-dims", "shape", "format", "count", "allocation", "short-buffer", "run", "token"]:
     report = root / (failure or "success")
     trace_path = root / ((failure or "success") + ".trace")
     result = subprocess.run(base + ["--output", str(report)],
@@ -28,8 +28,9 @@ for failure in ["", "corrupt-draft", "init", "version", "no-npu", "incompatible"
         capture_output=True, text=True)
     assert "LEAK" not in result.stderr, result.stderr
     trace = trace_path.read_text().splitlines() if trace_path.exists() else []
-    # The fixture's standalone query always throws. Path-based loading must
-    # work without querying it; Load remains the authoritative failure gate.
+    # The fixture requires exact OMC bytes and checks the raw pointer through
+    # Process, UnLoadModel and client teardown. The standalone query throws;
+    # explicit buffer loading must proceed without querying it.
     assert "compatibility-query" not in trace, (failure, trace, result.stderr)
     if failure in ("", "corrupt-draft", "compat-query-error"):
         assert result.returncode == 0, result.stderr
@@ -50,7 +51,16 @@ for failure in ["", "corrupt-draft", "init", "version", "no-npu", "incompatible"
         if failure == "path":
             assert "SetModelPath" in result.stderr
             assert trace == ["unload"], (failure, trace)
-        if failure in ("path", "load", "incompatible", "io-dims"):
+        if failure in ("model-buffer", "model-buffer-null", "model-buffer-size"):
+            expected = "SetModelBuffer" if failure == "model-buffer" else "model buffer descriptor"
+            assert expected in result.stderr, (failure, result.stderr)
+            assert trace == ["unload"], (failure, trace)
+        if failure == "draft-load":
+            assert "Load" in result.stderr and "qwen35_draft" in result.stderr
+            assert str(draft) in result.stderr
+            assert trace == ["load", "load", "unload", "unload"], trace
+        if failure in ("path", "load", "incompatible", "io-dims", "model-buffer",
+                       "model-buffer-null", "model-buffer-size"):
             for context in ("qwen35_target", str(target), "FAKE-HIAI-X90"):
                 assert context in result.stderr, (failure, context, result.stderr)
 for flag, value, message in [("--target-sha256", "0"*64, "SHA256"),
@@ -58,6 +68,19 @@ for flag, value, message in [("--target-sha256", "0"*64, "SHA256"),
     bad = base[:]; bad[bad.index(flag)+1] = value
     result = subprocess.run(bad + ["--output", str(root / "bad")], capture_output=True, text=True)
     assert result.returncode == 1 and message in result.stderr
+empty = root / "empty.omc"
+empty.write_bytes(b"")
+empty_case = base[:]
+empty_case[empty_case.index("--target")+1] = str(empty)
+empty_case[empty_case.index("--target-sha256")+1] = sha(empty)
+empty_trace = root / "empty.trace"
+empty_result = subprocess.run(empty_case + ["--output", str(root / "empty-report")],
+    env=dict(os.environ, FAKE_HIAI_FAILURE="", FAKE_HIAI_TRACE=str(empty_trace)),
+    capture_output=True, text=True)
+assert empty_result.returncode == 1 and "empty" in empty_result.stderr.lower(), empty_result.stderr
+assert str(empty) in empty_result.stderr
+assert not (root / "empty-report").exists()
+assert "load" not in (empty_trace.read_text().splitlines() if empty_trace.exists() else [])
 print("HIAI production executor: parity, rejection, hashes and lifecycle fault checks passed")
 
 for mode in ["ordinary", "dflash"]:
