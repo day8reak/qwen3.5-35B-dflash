@@ -98,6 +98,7 @@ cat "$HDC_RUN_DIR/comparison.json"
 | `comparison.json` | 与参考的 token、停止原因和产物身份比较 |
 | `probe.stderr`、`benchmark.stderr` | 板端错误日志 |
 | `probe.exitcode`、`benchmark.exitcode` | 板端程序实际退出码 |
+| `hiai-hilog.txt`、`hiai-hilog.stderr`、`hiai-hilog.exitcode` | probe / benchmark 失败后尝试抓取的板端系统日志与抓取状态，独立于推理状态 |
 | `calls/` | 每次 HDC 的 argv、输出和返回码 |
 | `failure.json` | 失败阶段与原因，仅失败时生成 |
 
@@ -146,6 +147,26 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 ```
 
 新脚本会在失败时直接打印已回传日志的末尾；完整内容仍保留在结果目录。模型加载错误还会注明模型名称、路径和运行库版本。当前只完成主机流程与 HIAI 测试替身验证，修正后的真实板端加载与推理等待实测。
+
+### 实际 Load 仍返回 1
+
+用户在上述修正后报告：`HIAI Load failed: 1 [model=qwen35_target, ... runtime=800.631.120.010]`。这次已进入 HIAI 的模型加载接口；尚未加载 draft、查询张量或执行 `Process`。当前记录不能判定是模型格式、DDK/运行库/固件兼容性、依赖还是客户端环境问题，不应仅凭返回码改名 OMC、改模型类型或判定某个算子不支持。
+
+脚本在 probe / benchmark 失败时自动尝试 `hilog -x -z 2000`，使用短超时，将快照及命令自身的 stderr/退出码保存到本次板端目录，然后按已有 SHA256 流程回传；命令参数含义见 [OpenHarmony HiLog 文档](https://github.com/openharmony/docs/blob/master/zh-cn/application-dev/dfx/hilog.md#命令行说明)。不会清空系统日志、修改日志级别或启动持续抓取任务。HiLog 不可用、无权限、超时或回传失败只记录诊断失败，不覆盖原始模型错误，不将推理失败变成成功。
+
+`hiai-hilog.txt` 是共享日志缓冲区的最近快照，可能包含其他进程或较早的日志；需要按时间、进程和模型名关联，不能把所有匹配行都当成本次错误。程序仅打印已成功校验的相关日志摘要；完整快照留在服务器输出目录。
+
+本次诊断增强只改服务器脚本，已有二进制与 OMC 可以沿用。更新后使用上面的一条四参数命令，换新的 `HDC_RUN_DIR` 即可；不再传旧命令中的 `--lib-dir`，自动按构建记录准备库。
+
+已有失败现场也可以立即手动取日志：
+
+```bash
+hdc -t "$SN" -s "$BIP" shell "hilog -x -z 2000" > "$HDC_RUN_DIR/hiai-hilog-manual.txt"
+grep -ni -B 3 -A 5 -E 'hiai|npu|omc|load.*model|model.*load|dlopen' \
+  "$HDC_RUN_DIR/hiai-hilog-manual.txt" | tail -n 160
+```
+
+如果系统日志仍不能定位，再用内部 `model_run_tool` 加载同一份 `target.omc`，保持相同的 HIAI 库集合做对照。内部示例也加载失败时优先核对 OMC/DDK/运行库/固件；示例能加载时再比较客户端初始化。当前尚无这项对照结果。
 
 清理前若发现归属标记不匹配、目录被替换成符号链接，脚本会拒绝删除。清理命令失败或无法确认删除结果时也返回非零，`board_cleanup.status` 为 `FAILED`；已回传的服务器文件仍保留，板端目录可能完整保留、部分清理或已删除，需按日志确认。只有运行与比较已通过而清理失败时，`device_validation` 可为 `PASS`，整体 `status` 仍为 `FAILED`。
 

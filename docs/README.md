@@ -21,9 +21,11 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 无需设置库目录或增加库参数。脚本从 `--runner` 对应的构建目录读取 `command.json` / `result.json`，验证程序及链接库 SHA256，自动上传同套 HIAI 库，并从构建时的 OHOS SDK 补充可找到的 ARM64 C++ 运行库。保留构建目录、DDK 与 SDK 路径即可。
 
-脚本会执行 probe、benchmark、结果回传与参考比较。全部成功后删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。probe 或 benchmark 失败时会直接显示已回传的错误日志末尾。
+脚本会执行 probe、benchmark、结果回传与参考比较。全部成功后删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。probe 或 benchmark 失败时会直接显示已回传的错误日志末尾，并自动抓取板端 HiLog 最近 2000 行作为排障材料。
 
 遇到 `HIAI CheckModelCompatibility failed: 1` 的旧程序需要重新编译一次：加载流程已按内部示例调整为 `SetModelPath → Load`，由 `Load` 返回状态判断加载结果，并保留后续张量验证。OMC 和参考文件无需重建，命令见[板端排障与重试](hdc-board-run.md#结果与失败排查)。
+
+最新用户反馈已进入实际 `Load`，target 返回 `1`（运行库 `800.631.120.010`），尚未进入推理。该通用返回码不足以确定原因；新脚本会自动回传 `hiai-hilog.txt`，先根据底层日志定位。此次诊断增强无需重建已有二进制和 OMC。
 
 以后要保留大体积独立权重时，加 `--board-cleanup omc`，只删除清单中的 OMC 文件，保留目录、独立权重、程序、库和日志；加 `--board-cleanup none` 则全部保留。默认是 `--board-cleanup all`。嵌入 OMC 内部的权重随 OMC 一起删除。
 

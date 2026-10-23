@@ -63,6 +63,9 @@ elif args[:2] == ["file", "recv"]:
         # Semantically identical JSON still MUST fail the transport hash gate.
         with open(args[3], "ab") as stream:
             stream.write(b" ")
+    if os.environ.get("FAKE_HILOG_FAILURE") == "receive-corruption" and args[2].endswith("/hiai-hilog.txt"):
+        with open(args[3], "ab") as stream:
+            stream.write(b"SIMULATED HIAI corrupt transfer must not print\n")
     if os.environ.get("FAKE_HDC_FAILURE") == "owner-mismatch" and args[2].endswith("/benchmark.exitcode"):
         owner = Path(local) / ".qwen35-hdc-owner"
         if not owner.is_file():
@@ -88,6 +91,18 @@ elif args[:1] == ["shell"]:
     if command[:2] != ["sh", "-c"] or len(command) != 3:
         raise RuntimeError("expected sh -c wrapper")
     payload = command[2].replace(remote, local)
+    if "hilog -x -z 2000" in payload:
+        # Substitute only the diagnostic executable, preserving actual shell
+        # redirection, remote status marker, transfer, and checksum operations.
+        # No host hilog or board access is involved in this protocol test.
+        unavailable = os.environ.get("FAKE_HILOG_FAILURE") == "unavailable"
+        statements = [shlex.join(["printf", "%s\n", "SIMULATED hilog unavailable"])
+                      + " >&2"] if unavailable else [
+            shlex.join(["printf", "%s\n", "SIMULATED unrelated network telemetry"]),
+            shlex.join(["printf", "%s\n", "SIMULATED HIAI Load model failure"]),
+            shlex.join(["printf", "%s\n", "SIMULATED hilog reader diagnostic"]) + " >&2"]
+        statements.append("return " + ("127" if unavailable else "0"))
+        payload = "hilog() {\n" + ";\n".join(statements) + ";\n};\n" + payload
     if os.environ.get("FAKE_HDC_FAILURE") == "cleanup-rm":
         # Preserve the real shell, ownership guards, and remote exit marker;
         # only the deletion operation fails. The directory remains untouched.
@@ -134,6 +149,9 @@ with open(os.environ["FAKE_RUNNER_CALLS"], "a", encoding="utf-8") as stream:
                              "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", "")}) + "\n")
 failure = os.environ.get("FAKE_HDC_FAILURE", "")
 if args == ["--probe"]:
+    if failure == "probe-exit":
+        print("SIMULATED probe failure retained on stderr", file=sys.stderr)
+        sys.exit(19)
     print(json.dumps({"runtime_version": "SIMULATED-HIAI-PROTOCOL-ONLY",
                       "npu_supported": failure != "no-npu"}))
     # npu_supported=false must be rejected independently of return code.
@@ -234,7 +252,7 @@ def case(tmp_path):
                FAKE_HDC_CALLS=str(tmp_path / "hdc-calls.jsonl"),
                FAKE_HDC_UPLOADS=str(tmp_path / "hdc-uploads.jsonl"),
                FAKE_RUNNER_CALLS=str(tmp_path / "runner-calls.jsonl"),
-               FAKE_EXPECTED_REPORT=str(report), FAKE_HDC_FAILURE="",
+               FAKE_EXPECTED_REPORT=str(report), FAKE_HDC_FAILURE="", FAKE_HILOG_FAILURE="",
                FAKE_BOARD_ROOT=board_root, FAKE_BOARD_SANDBOX=str(board),
                FAKE_RUNNER=str(fake_runner))
     argv = [sys.executable, str(SCRIPT), "--omc", str(bundle), "--runner", str(runner),
@@ -301,6 +319,8 @@ def test_hdc_protocol_upload_environment_and_strict_comparison(case):
     calls = _calls(case)
     assert calls and all(args[:4] == ["-t", case["env"]["SN"], "-s", case["env"]["BIP"]]
                          for args in calls)
+    assert not any("hilog -x" in " ".join(args) for args in calls)
+    assert not (case["output"] / "hiai-hilog.txt").exists()
     assert any("sha256sum" in " ".join(args) for args in calls)
     cleanup_calls = [index for index, args in enumerate(calls)
                      if args[4] == "shell" and "rm " in args[5]]
@@ -708,3 +728,68 @@ def test_automatic_runtime_discovery_rejects_inconsistent_inputs_before_hdc(case
     assert not case["board"].exists()
     assert _cleanup(case) == "NOT_CREATED"
     assert (case["output"] / "failure.json").is_file()
+
+
+@pytest.mark.parametrize("failure,stage,exitcode", [("remote-exit", "benchmark", 17),
+                                                    ("probe-exit", "probe", 19)])
+def test_failed_runtime_captures_verified_hilog_without_extra_cli_arguments(case, failure, stage, exitcode):
+    _automatic_build(case)
+    result = _run(case, failure)
+    assert result.returncode != 0
+    assert f"remote {stage} failed with exit code {exitcode}" in result.stderr
+    assert "SIMULATED HIAI Load model failure" in result.stderr
+    evidence = json.loads((case["output"] / "result.json").read_text())
+    assert evidence["hilog"]["status"] == "CAPTURED"
+    assert evidence["hilog"]["returncode"] == 0
+    assert evidence["stage"] == stage
+    assert f"remote {stage} failed with exit code {exitcode}" in evidence["error"]
+    names = {"hiai-hilog.txt", "hiai-hilog.stderr", "hiai-hilog.exitcode"}
+    assert names <= set(evidence["retrieved_files"])
+    for name in names:
+        local = case["output"] / name
+        assert local.read_bytes() == (case["board"] / name).read_bytes()
+        assert evidence["retrieved_sha256"][name] == hashlib.sha256(local.read_bytes()).hexdigest()
+    assert (case["output"] / "hiai-hilog.stderr").read_text() == "SIMULATED hilog reader diagnostic\n"
+    assert (case["output"] / "hiai-hilog.exitcode").read_text().strip() == "0"
+    hilog_calls = [args for args in _calls(case) if "hilog -x -z 2000" in " ".join(args)]
+    assert len(hilog_calls) == 1
+    assert "--lib-dir" not in case["argv"] and "--hiai-build-dir" not in case["argv"]
+    assert case["board"].is_dir() and _cleanup(case) == "RETAINED"
+    assert len(_calls(case, runner=True)) == (1 if stage == "probe" else 2)
+
+
+def test_unavailable_hilog_preserves_original_benchmark_failure(case):
+    _automatic_build(case)
+    case["env"]["FAKE_HILOG_FAILURE"] = "unavailable"
+    result = _run(case, "remote-exit")
+    assert result.returncode != 0
+    assert "remote benchmark failed with exit code 17" in result.stderr
+    evidence = json.loads((case["output"] / "result.json").read_text())
+    assert evidence["hilog"]["status"] == "UNAVAILABLE"
+    assert evidence["hilog"]["returncode"] == 127
+    assert "remote benchmark failed with exit code 17" in evidence["error"]
+    assert (case["output"] / "benchmark.exitcode").read_text().strip() == "17"
+    assert (case["output"] / "hiai-hilog.exitcode").read_text().strip() == "127"
+    assert (case["output"] / "hiai-hilog.stderr").read_text() == "SIMULATED hilog unavailable\n"
+    assert case["board"].is_dir() and _cleanup(case) == "RETAINED"
+
+
+def test_corrupt_hilog_transfer_is_not_printed_or_claimed_captured(case):
+    _automatic_build(case)
+    case["env"]["FAKE_HILOG_FAILURE"] = "receive-corruption"
+    result = _run(case, "remote-exit")
+    assert result.returncode != 0
+    assert "remote benchmark failed with exit code 17" in result.stderr
+    assert "SIMULATED HIAI Load model failure" not in result.stderr
+    assert "SIMULATED HIAI corrupt transfer must not print" not in result.stderr
+    evidence = json.loads((case["output"] / "result.json").read_text())
+    assert evidence["hilog"]["status"] == "FAILED"
+    assert "remote benchmark failed with exit code 17" in evidence["error"]
+    assert "hiai-hilog.txt" not in evidence["retrieved_files"]
+    assert "hiai-hilog.txt" not in evidence["retrieved_sha256"]
+    assert not (case["output"] / "hiai-hilog.txt").exists()
+    assert (case["board"] / "hiai-hilog.txt").is_file()
+    retained = list((case["output"] / "received").glob("*hiai-hilog.txt"))
+    assert retained and all(path.read_bytes() != (case["board"] / "hiai-hilog.txt").read_bytes()
+                            for path in retained)
+    assert case["board"].is_dir() and _cleanup(case) == "RETAINED"

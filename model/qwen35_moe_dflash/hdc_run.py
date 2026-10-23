@@ -383,24 +383,24 @@ def execute(args):
               "limitations": ["Probe and runner evidence do not independently prove per-operator NPU placement.",
                               "A host timeout does not prove the remote process stopped; the remote directory is retained."]}
 
-    def collect(names, *, recovery=False):
+    def collect(names, *, recovery=False, timeout=None):
         for name in names:
             if name in collected:
                 continue
             try:
-                timeout = min(30, args.timeout_seconds) if recovery else None
-                status, _ = hdc.shell("test -f " + shlex.quote(str(context["board"] / name)), "check-result", allow_failure=True, timeout=timeout)
+                call_timeout = timeout if timeout is not None else (min(30, args.timeout_seconds) if recovery else None)
+                status, _ = hdc.shell("test -f " + shlex.quote(str(context["board"] / name)), "check-result", allow_failure=True, timeout=call_timeout)
                 if status:
                     continue
                 _, checksum = hdc.shell("sha256sum " + shlex.quote(str(context["board"] / name)),
-                                        "hash-result", timeout=timeout)
+                                        "hash-result", timeout=call_timeout)
                 checksum_lines = checksum.splitlines()
                 if len(checksum_lines) != 1 or not re.match(r"^[0-9a-f]{64} [ *]", checksum_lines[0]):
                     raise RuntimeError(f"remote SHA256 response is invalid for {name}")
                 expected_hash = checksum_lines[0][:64]
                 temporary = out / "received" / f"{hdc.count + 1:04d}-{name}"
                 temporary.parent.mkdir(exist_ok=True)
-                hdc.receive(context["board"] / name, temporary, timeout=timeout)
+                hdc.receive(context["board"] / name, temporary, timeout=call_timeout)
                 if sha256_file(temporary) != expected_hash:
                     raise RuntimeError(f"retrieved SHA256 differs from remote file: {name}")
                 if (out / name).exists():
@@ -410,6 +410,57 @@ def execute(args):
                 collected.add(name)
             except Exception as error:
                 recovery_errors.append({"file": name, "error": f"{type(error).__name__}: {error}"})
+
+    def capture_hilog():
+        # Diagnostic-only: do not clear logs, change log settings, or start a
+        # persistent reader. A snapshot can include unrelated processes/runs.
+        if "hilog" in result:
+            return
+        names = ("hiai-hilog.txt", "hiai-hilog.stderr", "hiai-hilog.exitcode")
+        diagnostic = {"status": "FAILED", "returncode": None, "retrieved_files": [],
+                      "command": ["hilog", "-x", "-z", "2000"],
+                      "scope": "Recent shared system-log snapshot; may include other processes and runs. Not proof of this run's cause."}
+        result["hilog"] = diagnostic
+        timeout = min(10, args.timeout_seconds)
+        board = context["board"]
+        diagnostic["paths"] = {name: {"local": str(out / name), "remote": str(board / name)} for name in names}
+        command = ("hilog -x -z 2000 > " + shlex.quote(str(board / names[0]))
+                   + " 2> " + shlex.quote(str(board / names[1]))
+                   + "\nrc=$?\nprintf '%s\\n' \"$rc\" > " + shlex.quote(str(board / names[2]))
+                   + '\nexit "$rc"')
+        try:
+            status, _ = hdc.shell(command, "capture-hilog", allow_failure=True, timeout=timeout)
+            diagnostic["returncode"] = status
+        except Exception as capture_error:
+            diagnostic["error"] = f"{type(capture_error).__name__}: {capture_error}"
+        # All reads, including their remote checksum queries, use the short
+        # diagnostic timeout. Partial or hash-mismatched content is never shown.
+        try:
+            collect(names, recovery=True, timeout=timeout)
+            diagnostic["retrieved_files"] = [name for name in names if name in collected]
+            if not set(names) <= collected:
+                raise RuntimeError("could not retrieve and hash-verify all hilog outputs; see retrieval_errors")
+            saved_status = (out / names[2]).read_text().strip()
+            if not re.fullmatch(r"[0-9]+", saved_status):
+                raise RuntimeError("invalid hiai-hilog.exitcode")
+            diagnostic["recorded_exitcode"] = int(saved_status)
+            if diagnostic["returncode"] != int(saved_status):
+                raise RuntimeError("hilog completion marker and exitcode file do not agree")
+            diagnostic["status"] = "CAPTURED" if int(saved_status) == 0 else "UNAVAILABLE"
+            print(f"run-hdc: hilog snapshot: {out / names[0]} (shared system logs; may include other runs)", file=sys.stderr)
+            if diagnostic["status"] == "CAPTURED":
+                with (out / names[0]).open("rb") as stream:
+                    stream.seek(max(0, (out / names[0]).stat().st_size - 65536))
+                    tail = stream.read().decode("utf-8", errors="replace")
+                related = [line for line in tail.splitlines()
+                           if re.search(r"hiai|npu|\bomc\b|\berror\b|\bfatal\b|(?:^|\s)E/", line, re.IGNORECASE)]
+                if related:
+                    print("\n".join(line[:1000] for line in related[-60:]), file=sys.stderr)
+            else:
+                print(f"run-hdc: hilog unavailable (exit {saved_status}); details: {out / names[1]}", file=sys.stderr)
+        except Exception as capture_error:
+            diagnostic["status"] = "FAILED"
+            diagnostic.setdefault("errors", []).append(f"{type(capture_error).__name__}: {capture_error}")
 
     try:
         context = _preflight(args)
@@ -510,6 +561,15 @@ def execute(args):
                 result["board_cleanup"]["removed_files"] = omc_files
         result.update(status="PASS", stage="complete")
     except Exception as error:
+        result.update(stage=stage, error=f"{type(error).__name__}: {error}")
+        if remote_created and stage in ("probe", "benchmark"):
+            # Never replace the failed operation with an optional log-capture
+            # failure (including local output errors).
+            try:
+                capture_hilog()
+            except Exception as capture_error:
+                result.setdefault("hilog", {})["status"] = "FAILED"
+                result["hilog"].setdefault("errors", []).append(f"{type(capture_error).__name__}: {capture_error}")
         if stage == "cleanup":
             # The command may have partly completed or the connection may have
             # failed after removal. Preserve local evidence; do not claim removal.
@@ -517,7 +577,6 @@ def execute(args):
         if remote_created:
             collect(("runtime-probe.json", "probe.stderr", "probe.exitcode", "benchmark.json",
                      "benchmark.stdout", "benchmark.stderr", "benchmark.exitcode"), recovery=True)
-        result.update(stage=stage, error=f"{type(error).__name__}: {error}")
         if stage in ("probe", "benchmark", "compare"):
             result["device_validation"] = "FAILED"
         save_json(out / "failure.json", {**result, "retrieval_errors": recovery_errors})
@@ -527,12 +586,16 @@ def execute(args):
                 if name not in collected:
                     continue
                 log_path = out / name
-                with log_path.open("rb") as stream:
-                    stream.seek(max(0, log_path.stat().st_size - 6000))
-                    tail = stream.read().decode("utf-8", errors="replace").strip()
-                print(f"run-hdc: {stage} log: {log_path}", file=sys.stderr)
-                if tail:
-                    print("\n".join(tail.splitlines()[-60:]), file=sys.stderr)
+                try:
+                    with log_path.open("rb") as stream:
+                        stream.seek(max(0, log_path.stat().st_size - 6000))
+                        tail = stream.read().decode("utf-8", errors="replace").strip()
+                    print(f"run-hdc: {stage} log: {log_path}", file=sys.stderr)
+                    if tail:
+                        print("\n".join(tail.splitlines()[-60:]), file=sys.stderr)
+                except Exception as display_error:
+                    result.setdefault("diagnostic_display_errors", []).append(
+                        {"file": name, "error": f"{type(display_error).__name__}: {display_error}"})
         raise
     finally:
         result.update(hdc_invocations=hdc.count if hdc else 0, retrieved_files=sorted(collected),
