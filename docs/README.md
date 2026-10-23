@@ -276,3 +276,32 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
 - `--keep-board`：取回结果后仍保留本次创建的板端目录。
 
 默认在结果成功取回并校验后删除本次脚本创建的板端目录；传输、校验等基础设施错误时保留现场。已有板端目录及其他任务文件不清理。
+
+### NPU 小图编译成功但全部加载失败
+
+若案例的 `hilog.txt` 出现 `Model exist graph op with NPUCL, but this cl not existed.`，表示模型需要 NPUCL，而当前 HIAI 进程未注册该计算后端。新版报告会在原生 Load 失败且对应 PID 日志含此消息时标记 `NPUCL_NOT_REGISTERED`。这时优先核对配套的板端运行库、插件及注册配置；不能据此认定 MatMul 不支持 NPU，也不能通过降低精度解决后端缺失。
+
+2026-10-23 用户回传的 47 项结果中，45 项编译成功：35 项含 NPU 分区的案例全部 Load 失败，10 项 CPU-only 案例全部 Load 成功，其中 7 项通过数值检查。另 3 项 Gather/TopK/Cumsum 在 IO 描述检查时停止，需要核对实际 shape/format。新版 runner 会输出全部输入输出的描述和具体不匹配项，不会按元素数量相同而跳过布局校验。完整观察及限制见 [用户探测记录](../specs/operator-support-probe-user-report.json)。
+
+无需重新编译即可先看已回传的日志：
+
+```bash
+cat "$OP_PROBE_RUN/board/matmul_m8_b_dynamic/hilog.txt"
+cat "$OP_PROBE_RUN/board/add_rank4/hilog.txt"
+```
+
+若确认 NPUCL 未注册，可用以下只读命令核对 DDK 与板端候选库。库名和 ELF 架构仅用于定位，不能证明该库与当前固件兼容；此前缺失 `libai_fmk_dnnacl.so` 的日志也不证明只补这一个文件就足够。
+
+```bash
+find "$CPRO_DDK_ROOT/ddk" -maxdepth 6 \
+  \( -name 'libai*.so*' -o -name 'libhiai*.so*' -o -name '*npu*.so*' -o -name '*dnnacl*.so*' \) \
+  -exec file {} +
+
+hdc -t "$SN" -s "$BIP" shell 'for d in /system/lib64 /vendor/lib64 /system/vendor/lib64 /chip_prod/lib64 /sys_prod/lib64; do
+  if [ -d "$d" ]; then
+    find "$d" -maxdepth 4 \( -name "libai*.so*" -o -name "libhiai*.so*" -o -name "*npu*.so*" -o -name "*dnnacl*.so*" \)
+  fi
+done'
+```
+
+配套后端恢复后，先在新输出目录只复验 `--case matmul_m8_b_dynamic --case add_rank4`，通过 Load、Process 和数值检查后再扩大测试。编译分区与实际执行位置仍分别记录。

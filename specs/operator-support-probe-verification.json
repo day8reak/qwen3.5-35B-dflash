@@ -76,5 +76,6 @@
   },
   "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py\" --output \"$AI_RUN_DIR/op-probe-$(date +%Y%m%d-%H%M%S)\"",
   "return_artifact": "results.tar.gz",
-  "model_gates": "No complete-model contract/reference/device/accuracy/performance/release gate advanced"
+  "model_gates": "No complete-model contract/reference/device/accuracy/performance/release gate advanced",
+  "followup_user_board_report": "specs/operator-support-probe-user-report.json"
 }

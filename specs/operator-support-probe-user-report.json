@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-23",
+  "run_id": "20261023T090425Z-28419-2bbca1",
+  "baseline_commit": "6330fc0be4dce216145bd8cf00b205dd1affe7e0",
+  "status": "USER_REPORTED_NPUCL_NOT_REGISTERED",
+  "provenance": "User pasted report.txt and two per-case HiLog files; original archive and artifact hashes not received or independently verified",
+  "user_run_basename": "op-probe-20261023-165317",
+  "reported_runtime_version": "800.631.120.010",
+  "reported_runtime_route": "HCL",
+  "counts": {
+    "cases": 47,
+    "compiled": 45,
+    "compile_failed": 2,
+    "compiled_with_npu_partition": 35,
+    "with_npu_partition_load_failed": 35,
+    "compiled_cpu_only": 10,
+    "cpu_only_load_passed": 10,
+    "numerical_passed": 7,
+    "load_passed_io_validation_failed": 3
+  },
+  "numerical_passed_cases": [
+    "neg_rank5",
+    "add_rank5",
+    "mul_rank5",
+    "select_rank5",
+    "slice_rank5",
+    "reduce_mean",
+    "reduce_sum"
+  ],
+  "io_validation_failed_cases": [
+    "gather_int32",
+    "topk",
+    "cumsum_int32"
+  ],
+  "confirmed_failure": {
+    "scope": "Two supplied per-PID logs; same load-failure pattern across all 35 reported NPU-containing cases",
+    "code": "NPUCL_NOT_REGISTERED",
+    "cases": [
+      {
+        "name": "matmul_m8_b_dynamic",
+        "pid": 16394,
+        "board_log_time": "03-06 08:11:35"
+      },
+      {
+        "name": "add_rank4",
+        "pid": 18339,
+        "board_log_time": "03-06 08:18:00"
+      }
+    ],
+    "evidence": [
+      "Model exist graph op with NPUCL, but this cl not existed.",
+      "CompiledModelUtils::CheckCLSupported(mainGraph_) false, return FAIL.",
+      "RestoreFromBuffer return 1, load failed"
+    ],
+    "interpretation": "NPUCL is unavailable in the registered compute libraries of the current process. The failure precedes operator execution; it does not establish a dtype or shape limitation of the NPU operator."
+  },
+  "related_observations": [
+    "Both logs register FMK_CL and FAKEDNNACL before failing to load libai_fmk_dnnacl.so",
+    "The exact matching backend library/configuration and reason for its absence remain unverified",
+    "Compile-time NPU partition counts do not establish board NPU execution",
+    "CPU-only success does not establish full-model CPU compatibility"
+  ],
+  "independent_compile_failures": {
+    "select_rank4": {
+      "observed": "condition CastT: kernelId not registered: 786435; CastT SelectKernel failed",
+      "scope": "The probe converts its INT32 mask to BOOL; this failure does not isolate Select support"
+    },
+    "gather_elements_float16": {
+      "observed": "Node result type GatherElements don't support!",
+      "scope": "Tested graph/dtype/shape under this internal OMG package"
+    }
+  },
+  "decisions": [
+    "Prioritize the shared NPUCL registration/runtime problem before graph reshaping or precision changes",
+    "Keep automatic library discovery and existing CLI; add no lib arguments",
+    "Do not copy host compiler libraries to the board, replace system libraries, or infer compatible providers from a filename alone",
+    "Preserve strict IO validation and improve actual/expected descriptor diagnostics",
+    "Surface explicit PID-bound NPUCL failure evidence without promoting runtime placement"
+  ],
+  "next_action": "Inspect bounded DDK and board runtime-library inventories using docs/README.md; identify a matching NPU backend and registration path, then rerun only matmul_m8_b_dynamic and add_rank4",
+  "runtime_placement": "UNVERIFIED",
+  "model_gates": "No complete-model accuracy, performance or release gate advanced",
+  "experience_audit": "docs/experience.md",
+  "diagnostic_code_validation": {
+    "status": "HOST_TESTS_PASSED",
+    "python_transport_report": {
+      "passed": 47,
+      "evidence": "transport-report.xml"
+    },
+    "native_io_fault_cases": {
+      "passed": 28,
+      "backend": "fake HIAI",
+      "evidence": "native-io-diagnostics/Testing/Temporary/LastTest.log"
+    },
+    "readme_commands": "bash -n passed; inventory commands not executed on the inaccessible user host/board",
+    "board_fix_status": "NOT_FIXED_BY_THIS_DIAGNOSTICS_CHANGE",
+    "source_sha256": {
+      "model/qwen35_moe_dflash/op_probe_report.py": "92f59a72c2e5c32f74db9833ab6a49d5c6e4404b888812a14b814e05c80976af",
+      "targets/cpro/runtime/src/hiai_op_probe.cpp": "18028f903171ce44539d10056a39a50e1a503b42b9acdffd54dc2fa3ae7e0281"
+    },
+    "evidence_root_policy": "Relative to the recorded workspace run; generated artifacts stay outside the repository"
+  }
+}

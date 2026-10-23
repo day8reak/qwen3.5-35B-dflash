@@ -53,6 +53,21 @@ def test_specific_rejections_survive_generic_store_flood():
     assert result['diagnostic_matching_lines'] == 96
 
 
+def test_kernel_registration_failure_precedes_environment_and_store_noise(tmp_path):
+    noise = [f'load lib_optional_{i}.so failed: No such file' for i in range(60)]
+    signals = ['E/AI_NPUCL cast_strategy.cc SelectKernel(51)::kernelId not registered: 786435',
+               'E/AI_NPUCL op_strategy.cc GetCompileInfo(35)::CastT SelectKernel failed!']
+    evidence = compile_evidence('\n'.join(noise + signals))
+    assert [item['text'] for item in evidence['diagnostics'][:2]] == signals
+    assert all(item['category'] == 'missing_kernel' for item in evidence['diagnostics'][:2])
+    case, _, _ = _fixture(tmp_path)
+    case['compile'] = {'status': 'FAILED', 'evidence': evidence}
+    write_report(tmp_path, {'cases': [case]})
+    text = (tmp_path / 'report.txt').read_text()
+    assert all(signal in text for signal in signals)
+    assert text.count('  compiler diagnostic (') == 6
+
+
 def _fixture(tmp_path, dtype='float16'):
     case_dir = tmp_path / 'case'
     board_dir = tmp_path / 'board' / 'case'
@@ -181,6 +196,96 @@ def test_loader_exit_without_native_json_has_no_execution_claim(tmp_path):
     assert row['load'] == row['run'] == row['placement'] == 'UNVERIFIED'
     assert row['numerical']['status'] == 'NOT_RUN'
     assert 'exited 127' in row['runtime']['error']
+
+
+_NPUCL_MISSING = 'Model exist graph op with NPUCL, but this cl not existed.'
+_CL_CHECK_FAILED = 'general_compiled_model.cpp CheckCLSupported(751)::"false, return FAIL."'
+_DLOPEN_WARNING = 'dlopen so failed: Error loading shared library libai_fmk_dnnacl.so: No such file or directory'
+
+
+def _hilog_line(message, pid=123):
+    return f'03-06 12:30:00.123 {pid} 124 E A0FFFF/probe/HIAI: {message}\n'
+
+
+def test_runtime_backend_diagnosis_requires_failed_load_and_exact_pid_evidence(tmp_path):
+    case, board, _ = _fixture(tmp_path)
+    (board / 'stdout').write_text(json.dumps({'status': 'FAILED', 'stage': 'load', 'error': 'Load failed: 1'}))
+    (board / 'exitcode').write_text('1')
+    (board / 'pid').write_text('123')
+    (board / 'hilog.txt').write_text(
+        _hilog_line('unrelated secret', pid=999)
+        + _hilog_line(_DLOPEN_WARNING) + _hilog_line(_NPUCL_MISSING) + _hilog_line(_CL_CHECK_FAILED)
+    )
+    report = write_report(tmp_path, {'cases': [case]})
+    row = report['cases'][0]
+    assert row['load'] == 'FAILED'
+    assert row['run'] == row['numerical']['status'] == 'NOT_RUN'
+    assert row['placement'] == row['runtime']['placement'] == 'UNVERIFIED'
+    diagnostic, = row['runtime']['diagnostics']
+    assert diagnostic['code'] == 'NPUCL_NOT_REGISTERED'
+    assert diagnostic['pid'] == 123
+    assert diagnostic['source'] == 'board/case/hilog.pid.txt'
+    assert [item['line'] for item in diagnostic['evidence']] == [2, 3]
+    assert _NPUCL_MISSING in diagnostic['evidence'][0]['text']
+    assert _CL_CHECK_FAILED in diagnostic['evidence'][1]['text']
+    assert diagnostic['context'] == [{'line': 1, 'text': _hilog_line(_DLOPEN_WARNING).rstrip()}]
+    assert 'complete board NPU runtime backend' in diagnostic['guidance']
+    assert 'does not establish an unsupported dtype' in diagnostic['guidance']
+    text = (tmp_path / 'report.txt').read_text()
+    assert 'runtime diagnosis [NPUCL_NOT_REGISTERED]' in text
+    assert 'context (board/case/hilog.pid.txt:1)' in text
+    assert 'unrelated secret' not in text
+    with tarfile.open(tmp_path / 'results.tar.gz') as archive:
+        persisted = json.loads(archive.extractfile('report.json').read())
+        assert persisted['cases'][0]['runtime']['diagnostics'] == [diagnostic]
+
+
+@pytest.mark.parametrize('fault', [
+    'no-hilog', 'warning-only', 'check-failure-only', 'unrelated-pid', 'missing-pid', 'invalid-pid',
+    'successful-load', 'io-failure', 'no-native-json', 'zero-exit', 'missing-exit',
+])
+def test_backend_missing_is_never_inferred_without_corroboration(tmp_path, fault):
+    case, board, _ = _fixture(tmp_path)
+    native = {'status': 'FAILED', 'stage': 'load', 'error': 'Load failed: 1'}
+    if fault == 'successful-load':
+        native = {'status': 'EXECUTED'}
+    elif fault == 'io-failure':
+        native['stage'] = 'io'
+    if fault != 'no-native-json':
+        (board / 'stdout').write_text(json.dumps(native))
+    if fault != 'missing-exit':
+        (board / 'exitcode').write_text('0' if fault in {'successful-load', 'zero-exit'} else '1')
+    if fault != 'missing-pid':
+        (board / 'pid').write_text('0' if fault == 'invalid-pid' else '123')
+    if fault != 'no-hilog':
+        messages = ([_DLOPEN_WARNING] if fault == 'warning-only' else
+                    [_CL_CHECK_FAILED] if fault == 'check-failure-only' else
+                    [_DLOPEN_WARNING, _NPUCL_MISSING, _CL_CHECK_FAILED])
+        (board / 'hilog.txt').write_text(''.join(
+            _hilog_line(message, pid=999 if fault == 'unrelated-pid' else 123) for message in messages
+        ))
+    report = write_report(tmp_path, {'cases': [case]})
+    row = report['cases'][0]
+    assert row['runtime']['diagnostics'] == []
+    assert row['placement'] == 'UNVERIFIED'
+    assert 'NPUCL_NOT_REGISTERED' not in (tmp_path / 'report.txt').read_text()
+
+
+def test_runtime_diagnostic_evidence_is_bounded(tmp_path):
+    case, board, _ = _fixture(tmp_path)
+    (board / 'stdout').write_text('{"status":"FAILED","stage":"load","error":"Load failed: 1"}')
+    (board / 'exitcode').write_text('1')
+    (board / 'pid').write_text('123')
+    (board / 'hilog.txt').write_text(''.join(
+        _hilog_line(message + ' ' + 'x' * 1800)
+        for message in [_DLOPEN_WARNING, _NPUCL_MISSING, _CL_CHECK_FAILED] * 10
+    ))
+    report = write_report(tmp_path, {'cases': [case]})
+    diagnostic, = report['cases'][0]['runtime']['diagnostics']
+    assert len(diagnostic['evidence']) == len(diagnostic['context']) == 4
+    assert diagnostic['evidence_omitted'] == 16
+    assert diagnostic['context_omitted'] == 6
+    assert all(len(item['text']) <= 1600 for item in diagnostic['evidence'] + diagnostic['context'])
 
 
 @pytest.mark.parametrize('saved_name,status', [('failure.json', 'FAILED'), ('result.json', 'TRANSPORT_COMPLETE')])

@@ -24,6 +24,8 @@ def _diagnostic_priority(line):
     low = line.lower()
     if "return hiai::success" in low or "infershape success" in low:
         return None
+    if re.search(r"kernelid\s+not\s+registered|castt\s+selectkernel\s+failed", low):
+        return -1, "missing_kernel"
     if re.search(r"modulenotfounderror|importerror|attributeerror|cannot open shared|no such file|tbeinitialize failed|failed to initialize tbe", low):
         return 0, "environment"
     if re.search(r"does(?:n't| not) exist.*tbe.*ops.*store|(?:not found|missing).*tbe.*ops.*store", low):
@@ -251,6 +253,41 @@ def _runtime_status(directory):
     return result
 
 
+def _runtime_diagnostics(runtime, pid, lines, source):
+    """Interpret only affirmative, PID-bound evidence of a failed model load."""
+    native = runtime.get("native") or {}
+    if (not isinstance(pid, int) or pid <= 0 or runtime.get("load") != "FAILED"
+            or native.get("status") != "FAILED" or native.get("stage") != "load"
+            or runtime.get("exitcode") in (None, 0)):
+        return []
+    missing, failures, context = [], [], []
+    for number, line in enumerate(lines, 1):
+        match = _HILOG.match(line)
+        if not match or int(match.group(1)) != pid:
+            continue
+        low = line.lower()
+        item = {"line": number, "text": line.rstrip()[:1600]}
+        if re.search(r"\bmodel\s+exist\s+graph\s+op\s+with\s+npucl,\s+but\s+this\s+cl\s+not\s+existed\b", low):
+            missing.append(item)
+        elif "checkclsupported" in low and re.search(r"fail|false", low):
+            failures.append(item)
+        elif (re.search(r"lib\S+\.so", low)
+              and re.search(r"dlopen|load|shared library", low)
+              and re.search(r"failed|no such file|cannot open", low)):
+            context.append(item)
+    if not missing:
+        return []
+    # A missing library may explain registration failure, but cannot establish
+    # that copying a single library supplies the complete matching backend.
+    evidence = missing[:2] + failures[:2]
+    return [{"code": "NPUCL_NOT_REGISTERED", "pid": pid, "source": source,
+             "summary": "The model requires NPUCL, but the loaded runtime reports that this compute library is absent.",
+             "guidance": "Check the complete board NPU runtime backend and its registration against the compiler/DDK and board firmware. This evidence does not establish an unsupported dtype.",
+             "evidence": evidence, "context": context[:4],
+             "evidence_omitted": len(missing) + len(failures) - len(evidence),
+             "context_omitted": max(0, len(context) - 4)}]
+
+
 def _case_records(manifest):
     records = manifest.get("cases", [])
     return list(records.values()) if isinstance(records, dict) else list(records)
@@ -345,6 +382,7 @@ def write_report(root: Path, manifest, boardresult=None):
                 logs.append((target, f"board/{name}/{basename}"))
         hilog = directory / "hilog.txt"
         pid = _integer_file(directory / "pid")
+        runtime["diagnostics"] = []
         if hilog.is_file() and pid is not None and pid > 0:
             filtered, filtered_bytes, omitted = [], 0, 0
             with hilog.open(errors="replace") as source:
@@ -362,7 +400,9 @@ def write_report(root: Path, manifest, boardresult=None):
                 archive_notes.append(f"{name}: archived PID-filtered HiLog excerpt; omitted {omitted} matching lines")
             target = evidence / "hilog.pid.txt"
             _exclusive_text(target, "".join(filtered))
-            logs.append((target, f"board/{name}/hilog.pid.txt"))
+            relative = f"board/{name}/hilog.pid.txt"
+            logs.append((target, relative))
+            runtime["diagnostics"] = _runtime_diagnostics(runtime, pid, filtered, relative)
         elif hilog.is_file():
             archive_notes.append(f"{name}: omitted HiLog because no valid PID was recorded")
     report = {"schema_version": 1, "cases": rows,
@@ -393,9 +433,17 @@ def write_report(root: Path, manifest, boardresult=None):
                                  row["numerical"]["status"], row["placement"])))
         if row["runtime"].get("error"):
             lines.append("  runtime: " + str(row["runtime"]["error"]))
+        for diagnostic in row["runtime"].get("diagnostics", []):
+            lines.append(f"  runtime diagnosis [{diagnostic['code']}]: {diagnostic['summary']}")
+            lines.append("  next: " + diagnostic["guidance"])
+            for kind in ("evidence", "context"):
+                for item in diagnostic[kind]:
+                    lines.append(f"    {kind} ({diagnostic['source']}:{item['line']}): {item['text']}")
         if row["compile"].get("error"):
             lines.append("  compile: " + str(row["compile"]["error"]))
         compile_info = row["compile"].get("evidence", {})
+        for diagnostic in compile_info.get("diagnostics", [])[:6]:
+            lines.append(f"  compiler diagnostic ({diagnostic['category']}, log line {diagnostic['line']}): {diagnostic['text']}")
         events = compile_info.get("main_partition_events") or [event for event in compile_info.get("partition_events", []) if event.get("scope") == "unknown"]
         if events:
             event = events[-1]

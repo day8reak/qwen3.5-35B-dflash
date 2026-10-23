@@ -68,6 +68,43 @@ struct Spec {
   std::uint64_t bytes;
   fs::path file;
 };
+std::string Shape(const std::vector<std::uint32_t>& dims) {
+  std::ostringstream out;
+  out << '[';
+  for (std::size_t i = 0; i < dims.size(); ++i) {
+    if (i) out << ',';
+    out << dims[i];
+  }
+  return out.str() + ']';
+}
+const char* DtypeName(hiai::HIAI_DataType dtype) {
+  switch (dtype) {
+    case hiai::HIAI_DATATYPE_FLOAT16: return "float16";
+    case hiai::HIAI_DATATYPE_FLOAT32: return "float32";
+    case hiai::HIAI_DATATYPE_INT32: return "int32";
+    default: return "unknown";
+  }
+}
+void DumpDimensions(const char* direction, const std::vector<hiai::TensorDimension>& dims) {
+  for (std::size_t i = 0; i < dims.size(); ++i)
+    std::cerr << "qwen35_hiai_op_probe: model IO " << direction << '[' << i
+              << "]: shape=" << Shape(dims[i].GetDims())
+              << ", format=" << static_cast<int>(dims[i].GetFormat())
+              << ", dtype=unavailable\n";
+}
+std::string DimensionMismatch(const Spec& spec, std::size_t index,
+                              const hiai::TensorDimension& dim) {
+  std::ostringstream out;
+  out << "OMC tensor shape/format differs from IO TSV: "
+      << (spec.input ? "input" : "output") << '[' << index << ']'
+      << "; declared_dtype=" << DtypeName(spec.dtype) << '(' << static_cast<int>(spec.dtype) << ')'
+      << ", declared_shape=" << Shape(spec.shape)
+      << ", declared_format=ND(" << static_cast<int>(hiai::Format::ND) << ')'
+      << "; actual_shape=" << Shape(dim.GetDims())
+      << ", actual_format=" << static_cast<int>(dim.GetFormat())
+      << ", actual_dtype=unavailable";
+  return out.str();
+}
 std::vector<Spec> ReadSpecs(const fs::path& path) {
   const auto text = Read(path, 64 << 10);
   std::istringstream lines(std::string(text.begin(), text.end()));
@@ -161,14 +198,21 @@ struct Probe {
     stage = "io";
     std::vector<hiai::TensorDimension> input_dims, output_dims;
     Check(client.GetModelIOTensorDim(name, input_dims, output_dims), "GetModelIOTensorDim");
+    // Keep all actual descriptors even when the first TSV comparison fails.
+    // This legacy API does not expose the model's IO dtypes.
+    std::cerr << "qwen35_hiai_op_probe: model IO: inputs=" << input_dims.size()
+              << ", outputs=" << output_dims.size() << '\n';
+    DumpDimensions("input", input_dims);
+    DumpDimensions("output", output_dims);
     std::size_t input_index = 0, output_index = 0;
     for (const auto& spec : specs) {
       const auto& dims = spec.input ? input_dims : output_dims;
       auto& index = spec.input ? input_index : output_index;
       Require(index < dims.size(), "IO TSV has more tensors than OMC");
-      const auto& dim = dims[index++];
+      const auto& dim = dims[index];
       Require(dim.GetFormat() == hiai::Format::ND && dim.GetDims() == spec.shape,
-              "OMC tensor shape/format differs from IO TSV");
+              DimensionMismatch(spec, index, dim));
+      ++index;
       auto tensor = std::make_shared<hiai::AiTensor>();
       // The legacy API exposes shape/format, not dtype introspection. The
       // host manifest binds dtype declarations to the model and input hashes.

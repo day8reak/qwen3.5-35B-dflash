@@ -204,3 +204,13 @@ run：`20261022T114012Z-21463-7a8f45`，基线 `be88c95`。用户 PID158383 的 
 编译器的成功分区转储与失败转储均按预算保留，并排除在模型上板 payload 之外。报告优先展示 dtype、维数和算子注册问题，保留常量折叠图与主图的分区范围，设备执行位置没有独立证据时保持 UNVERIFIED。完整 HiLog 仅保留本地，分享包只含对应 PID 的日志；环形缓冲区可能遗漏早期案例，PID 也可能复用。
 
 主机验证包含确定性数据、发射、模拟工具失败、HDC 退出标记/文件哈希/目录所有权、报告阶段判定，以及 C++ fake HIAI 生命周期检查。OHOS 编译仅证明公开头文件下的编译契约，不代表内部配套库链接或真机成功。蓝区 FP16 MatMul 的独立编译对照可形成 NPU 分区，但没有用于断言用户内部 X90 工具链支持。证据见 `specs/operator-support-probe-verification.json`。未改共享 DDK、生产图的算子放置或数值阈值；下一步收取用户 `results.tar.gz` 后按真实支持差异选择改写。
+
+## 含 NPU 分区的统一加载失败与 NPUCL 注册（2026-10-23）
+
+run：`20261023T090425Z-28419-2bbca1`，基线 `6330fc0`。用户回传 `op-probe-20261023-165317` 报告：47 项中 45 项编译成功，35 项含 NPU 分区的案例全部 Load 失败，10 项 CPU-only 案例全部加载成功，其中 7 项数值通过，3 项停在 IO 描述检查。这一分组先指向共同的 NPU 加载路径，不能把每个 Load 错误都归为单算子不支持，也没有据此降精度的理由。
+
+随后用户提供 MatMul PID16394 与 Add PID18339 的 HiLog，两者明确报 `Model exist graph op with NPUCL, but this cl not existed.`，并在 CheckCLSupported 阶段失败。当前进程未注册所需 NPUCL 是直接失败原因。前序 `libai_fmk_dnnacl.so` 加载失败是相关事实；其是否为本版本唯一所需插件、是否有其他依赖/配置/固件匹配问题仍未证明。现有自动部署只验证构建记录及同目录库哈希、ELF 架构，不能据此宣称动态后端依赖完整。未盲目改库搜索顺序、替换系统库或更换平台参数。
+
+新增报告检查仅在原生 Load 失败、退出码非零且对应 PID 日志明确给出 NPUCL 缺失时输出 `NPUCL_NOT_REGISTERED`；缺日志、其他 PID 或单条 dlopen 警告不作此判定。IO 诊断输出全部实际输入输出形状/格式，并给出具体声明与实际不匹配项，保留拒绝执行的门槛。三个 IO 失败尚不能确认是单例维度、格式或导出描述的哪一种问题。Select 的编译失败定位到 condition CastT 未注册 kernelId，不能直接推广为 Select 全面不支持；GatherElements 的最终兼容拒绝只适用于此次小图配置。
+
+47 项 Python 报告/传输回归与 28 个原生 fake HIAI 用例通过，README 命令通过 bash 语法检查；这只验证诊断改动，不代表板端后端恢复。经验固化在本模型的报告及原生回归，不改通用技能或共享 DDK。用户粘贴内容与独立产物验证分别记录于 `specs/operator-support-probe-user-report.json`。下一步只读核对 DDK/板端候选运行库及注册路径，恢复后先复验一个 MatMul 和一个 Add；完整模型与真实 NPU 执行、精度、性能门槛保持未通过。

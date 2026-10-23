@@ -13,7 +13,8 @@ counter = 0
 
 
 def case(*, dtype="float16", failure="", spec=None, data=None, model=b"probe-fixture",
-         expected="EXECUTED", expected_stage=None, existing=False, oversized=False):
+         expected="EXECUTED", expected_stage=None, expected_error=None,
+         existing=False, oversized=False):
     global counter
     counter += 1
     directory = root / str(counter)
@@ -40,6 +41,12 @@ def case(*, dtype="float16", failure="", spec=None, data=None, model=b"probe-fix
     if expected_stage:
         assert parsed["stage"] == expected_stage, parsed
         assert f"stage={expected_stage}:" in result.stderr, result.stderr
+    if expected_error:
+        assert parsed["error"] == expected_error, parsed
+        assert expected_error in result.stderr, result.stderr
+    if expected_stage == "io":
+        # Descriptor checks must fail before submitting any inference work.
+        assert trace.read_text().splitlines() == ["load", "unload", "destroy"]
     if expected == "EXECUTED":
         assert parsed["placement"] == "UNVERIFIED"
         assert (output / "output.bin").read_bytes() == data
@@ -52,12 +59,40 @@ def case(*, dtype="float16", failure="", spec=None, data=None, model=b"probe-fix
 
 
 for dtype in ("float16", "float32", "int32"):
-    case(dtype=dtype)
+    result = case(dtype=dtype)
+    assert "model IO: inputs=1, outputs=1\n" in result.stderr, result.stderr
+    for direction in ("input", "output"):
+        assert f"model IO {direction}[0]: shape=[1,4], format=2, dtype=unavailable\n" in result.stderr
 for failure, stage in (("init", "init"), ("model-buffer", "load"), ("load", "load"),
-                       ("process", "process"), ("shape", "io"), ("format", "io"),
+                       ("process", "process"),
                        ("count", "io"), ("allocation", "io"), ("short-buffer", "io"),
                        ("unload", "unload")):
     case(failure=failure, expected="FAILED", expected_stage=stage)
+# Fake enum values are deliberate: diagnostics must show the actual header values,
+# and must not infer a model dtype from the TSV's declared dtype.
+for dtype, dtype_value in (("float16", 2), ("float32", 1), ("int32", 3)):
+    for failure, actual_shape, actual_format in (("shape", "[4]", 2), ("format", "[1,4]", 0)):
+        result = case(
+            dtype=dtype, failure=failure, expected="FAILED", expected_stage="io",
+            expected_error=(
+                "OMC tensor shape/format differs from IO TSV: input[0]"
+                f"; declared_dtype={dtype}({dtype_value}), declared_shape=[1,4], declared_format=ND(2)"
+                f"; actual_shape={actual_shape}, actual_format={actual_format}, actual_dtype=unavailable"
+            ),
+        )
+        assert (f"model IO input[0]: shape={actual_shape}, format={actual_format}, dtype=unavailable\n"
+                in result.stderr), result.stderr
+        # Even an input[0] mismatch must preserve the output ABI for diagnosis.
+        assert "model IO output[0]: shape=[1,4], format=2, dtype=unavailable\n" in result.stderr
+result = case(
+    spec="input\tfloat16\t1,4\tinput.bin\noutput\tfloat16\t4\toutput.bin\n",
+    expected="FAILED", expected_stage="io",
+    expected_error=(
+        "OMC tensor shape/format differs from IO TSV: output[0]"
+        "; declared_dtype=float16(2), declared_shape=[4], declared_format=ND(2)"
+        "; actual_shape=[1,4], actual_format=2, actual_dtype=unavailable"
+    ),
+)
 case(model=b"", expected="FAILED", expected_stage="model-buffer")
 case(oversized=True, expected="FAILED", expected_stage="model-buffer")
 case(data=b"short", expected="FAILED", expected_stage="io")
