@@ -156,7 +156,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 本板端拒绝组合 `-x` 与 `-z`，返回 `Mutlti commands can't be used in combination [CODE: -31]`。此前组合命令有误，现已改为单独的 `hilog -x`：读完当前缓冲区后退出，完整输出保存在文件中，终端只显示有限摘要。如果抓取程序把该参数错误写到 stdout 且返回 0，也会标记为不可用，不能当成成功取得 HIAI 日志。
 
-`hiai-hilog.txt` 是共享日志缓冲区快照，可能包含其他进程或较早的日志；需要按时间、进程和模型名关联，不能把所有匹配行都当成本次错误。程序仅打印已成功校验的相关日志摘要；完整快照留在服务器输出目录。
+`hiai-hilog.txt` 是共享日志缓冲区快照，可能包含其他进程或较早的日志；需要按时间、进程和模型名关联，不能把所有匹配行都当成本次错误。程序逐行扫描整个已校验快照，最多显示最后 60 条候选相关日志及原始行号；完整快照留在服务器输出目录。不会仅检查文件最后 64 KiB，避免后续系统流量掩盖之前的模型错误。摘要排除 `HDC_LOG` 传输日志，`NPU` 按完整单词匹配，并单独匹配 `NPUCL` 等组件，避免误匹配 `input`。候选条数为 0 表示本次筛选没有找到相关内容，不表示模型运行成功或没有底层错误。
 
 本次诊断增强只改服务器脚本，已有二进制与 OMC 可以沿用。更新后使用上面的一条四参数命令，换新的 `HDC_RUN_DIR` 即可；不再传旧命令中的 `--lib-dir`，自动按构建记录准备库。
 
@@ -164,9 +164,12 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 ```bash
 hdc -t "$SN" -s "$BIP" shell "hilog -x" > "$HDC_RUN_DIR/hiai-hilog-manual.txt"
-grep -ni -B 3 -A 5 -E 'hiai|npu|omc|load.*model|model.*load|dlopen' \
-  "$HDC_RUN_DIR/hiai-hilog-manual.txt" | tail -n 160
+grep -n -v 'HDC_LOG' "$HDC_RUN_DIR/hiai-hilog-manual.txt" | \
+  grep -i -B 3 -A 8 -E \
+  'hiai|ai_fmk|cpucl|npucl|(^|[^[:alnum:]_])npu([^[:alnum:]_]|$)|qwen35_dflash_hiai|CheckModelCompatibility' | tail -n 160
 ```
+
+用户后续贴出的片段只显示新目录的创建和文件传输，还包含另一个模型的传输日志，不能作为本次 `Load` 的内部错误。板端日志时间为 `03-06`，而主机目录包含 `20261023`；两端时钟未对齐，不能直接用主机时间排除板端日志。核对现场时以本次 `upload-plan.json` / `result.json` 的 `board_root` 为准，避免重跑先前目录后查看另一次运行的日志。
 
 如果系统日志仍不能定位，再用内部 `model_run_tool` 加载同一份 `target.omc`，保持相同的 HIAI 库集合做对照。内部示例也加载失败时优先核对 OMC/DDK/运行库/固件；示例能加载时再比较客户端初始化。当前尚无这项对照结果。
 

@@ -6,6 +6,7 @@ project helpers. It neither builds a runner nor changes board system settings.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -20,6 +21,29 @@ import uuid
 
 from .artifacts import checked_file, output_path, save_json
 from .hashing import sha256_file
+
+
+
+def _hilog_summary(path):
+    """Select candidate runtime lines, not a proven cause, from a verified snapshot.
+
+    Scan the whole file so unrelated traffic after a failure cannot hide it.
+    Retain only bounded display text; the original log remains the evidence.
+    """
+    related = re.compile(
+        r"hiai|ai_fmk|ai_infra|cpucl|npucl|te_fusion|\bomc\b|"
+        r"(?<![A-Za-z0-9_])npu(?![A-Za-z0-9_])|"
+        r"qwen35_dflash_hiai|CheckModelCompatibility", re.IGNORECASE)
+    transport = re.compile(r"(?:^|[/\s])HDC_LOG(?::|\s)", re.IGNORECASE)
+    selected = deque(maxlen=60)
+    matches = 0
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        for number, line in enumerate(stream, 1):
+            if transport.search(line) or not related.search(line):
+                continue
+            matches += 1
+            selected.append(f"L{number}: {line.rstrip()[:1000]}")
+    return list(selected), matches
 
 
 def _positive(value):
@@ -459,13 +483,14 @@ def execute(args):
                     break
             print(f"run-hdc: hilog snapshot: {out / names[0]} (shared system logs; may include other runs)", file=sys.stderr)
             if diagnostic["status"] == "CAPTURED":
-                with (out / names[0]).open("rb") as stream:
-                    stream.seek(max(0, (out / names[0]).stat().st_size - 65536))
-                    tail = stream.read().decode("utf-8", errors="replace")
-                related = [line for line in tail.splitlines()
-                           if re.search(r"hiai|npu|\bomc\b|\berror\b|\bfatal\b|(?:^|\s)E/", line, re.IGNORECASE)]
+                related, matches = _hilog_summary(out / names[0])
+                diagnostic["summary"] = {"matching_lines": matches, "shown_lines": len(related),
+                                         "scope": "Entire verified snapshot; keyword candidates, not attributed to this run."}
                 if related:
-                    print("\n".join(line[:1000] for line in related[-60:]), file=sys.stderr)
+                    print("\n".join(related), file=sys.stderr)
+                else:
+                    print("run-hdc: no matching HIAI/NPU diagnostic lines in the snapshot; "
+                          "the original runtime failure remains unresolved", file=sys.stderr)
             else:
                 reason = diagnostic.get("reason", f"exit {saved_status}")
                 print(f"run-hdc: hilog unavailable ({reason}); details: {out / names[0]}, {out / names[1]}", file=sys.stderr)

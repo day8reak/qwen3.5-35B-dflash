@@ -103,6 +103,11 @@ elif args[:1] == ["shell"]:
                  + shlex.join(["printf", "%s\n", argument_error]) + '; return 0; fi')
         if mode == "argument-error-zero":
             statements = [shlex.join(["printf", "%s\n", argument_error]), "return 0"]
+        elif mode == "noise-only":
+            statements = [
+                shlex.join(["printf", "%s\n", "SIMULATED multimodalinput/MMIService input failure"]),
+                shlex.join(["printf", "%s\n", "03-06 06:32:41 I hdcd/HDC_LOG: send libhiai.so"]),
+                "return 0"]
         elif mode == "unavailable":
             statements = [shlex.join(["printf", "%s\n", "SIMULATED hilog unavailable"])
                           + " >&2", "return 127"]
@@ -823,3 +828,57 @@ def test_hilog_cli_argument_error_is_unavailable_despite_zero_exit(case):
     assert text == "Mutlti commands can't be used in combination [CODE: -31]\n"
     assert evidence["retrieved_sha256"]["hiai-hilog.txt"] == hashlib.sha256(text.encode()).hexdigest()
     assert case["board"].is_dir() and _cleanup(case) == "RETAINED"
+
+
+def test_hilog_summary_finds_earlier_runtime_lines_amid_input_and_transfer_noise(tmp_path):
+    from qwen35_moe_dflash.hdc_run import _hilog_summary
+
+    path = tmp_path / "snapshot.txt"
+    original = (
+        "03-06 06:31:00 E app/HIAI: Load failed: 1\n"
+        + "03-06 06:32:00 E multimodalinput/MMIService: input error\n" * 4000
+        + "03-06 06:32:41 I hdcd/HDC_LOG: send libhiai.so target.omc\n"
+        + "03-06 06:32:41 W hdcd/HDC_LOG: channelIDInput:96154198\n"
+        + "03-06 06:32:41 E service/Power: unrelated fatal error\n"
+        + "03-06 06:32:42 E app/CPUCL: model failure\n"
+        + "03-06 06:32:42 E app/NPU: unavailable\n"
+    )
+    path.write_text(original)
+    selected, count = _hilog_summary(path)
+    assert count == 3
+    assert selected == ["L1: 03-06 06:31:00 E app/HIAI: Load failed: 1",
+                        "L4005: 03-06 06:32:42 E app/CPUCL: model failure",
+                        "L4006: 03-06 06:32:42 E app/NPU: unavailable"]
+    assert path.read_text() == original
+
+
+def test_hilog_without_related_lines_is_captured_but_does_not_resolve_failure(case):
+    _automatic_build(case)
+    case["env"]["FAKE_HILOG_FAILURE"] = "noise-only"
+    execution = _run(case, "remote-exit")
+    assert execution.returncode != 0
+    assert "remote benchmark failed with exit code 17" in execution.stderr
+    assert "no matching HIAI/NPU diagnostic lines" in execution.stderr
+    assert "MMIService" not in execution.stderr
+    assert "send libhiai.so" not in execution.stderr
+    evidence = json.loads((case["output"] / "result.json").read_text())
+    assert evidence["hilog"]["status"] == "CAPTURED"
+    assert evidence["hilog"]["summary"]["matching_lines"] == 0
+    assert evidence["hilog"]["summary"]["shown_lines"] == 0
+    assert "MMIService" in (case["output"] / "hiai-hilog.txt").read_text()
+    assert "remote benchmark failed with exit code 17" in evidence["error"]
+
+
+def test_hilog_summary_bounds_display_and_keeps_full_snapshot(tmp_path):
+    from qwen35_moe_dflash.hdc_run import _hilog_summary
+
+    path = tmp_path / "snapshot.txt"
+    original = "".join(f"NPU error {i}: " + "detail" * 1000 + "\n" for i in range(80))
+    path.write_text(original)
+    selected, count = _hilog_summary(path)
+    assert count == 80
+    assert len(selected) == 60
+    assert selected[0].startswith("L21: NPU error 20:")
+    assert selected[-1].startswith("L80: NPU error 79:")
+    assert max(map(len, selected)) <= 1010
+    assert path.read_text() == original

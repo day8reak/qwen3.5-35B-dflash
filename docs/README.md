@@ -21,7 +21,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 无需设置库目录或增加库参数。脚本从 `--runner` 对应的构建目录读取 `command.json` / `result.json`，验证程序及链接库 SHA256，自动上传同套 HIAI 库，并从构建时的 OHOS SDK 补充可找到的 ARM64 C++ 运行库。保留构建目录、DDK 与 SDK 路径即可。
 
-脚本会执行 probe、benchmark、结果回传与参考比较。全部成功后删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。probe 或 benchmark 失败时会直接显示已回传的错误日志末尾，并自动抓取板端 HiLog 缓冲区快照作为排障材料。
+脚本会执行 probe、benchmark、结果回传与参考比较。全部成功后删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。probe 或 benchmark 失败时会直接显示已回传的错误日志末尾，并自动抓取板端 HiLog 缓冲区快照作为排障材料。日志摘要会扫描整个快照、排除 HDC 传输记录，并避免将 `input` 误匹配为 `NPU`；完整日志始终保留。
 
 遇到 `HIAI CheckModelCompatibility failed: 1` 的旧程序需要重新编译一次：加载流程已按内部示例调整为 `SetModelPath → Load`，由 `Load` 返回状态判断加载结果，并保留后续张量验证。OMC 和参考文件无需重建，命令见[板端排障与重试](hdc-board-run.md#结果与失败排查)。
 
