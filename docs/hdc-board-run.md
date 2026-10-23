@@ -21,13 +21,11 @@ hdc -t "$SN" -s "$BIP" ...
 | `HDC` | 可选，主机 HDC 可执行文件路径；默认从 PATH 查找 `hdc` |
 | `--omc` | 含成功 `manifest.json` 的 OMC bundle 目录 |
 | `--runner` | 正式 HarmonyOS ARM64 程序；不接受主机 fake runner |
-| `--hiai-build-dir` | 可选，推荐提供该程序的构建目录；关联 `command.json` / `result.json` 并检查上传库身份 |
 | `--reference` | 与这批 OMC 权重匹配、状态为 PASS 的参考 JSON |
-| `--lib-dir` | 可选，可重复；上传其中的 `.so` / `.so.*` 库，保留库文件名 |
 | `--board-cleanup` | 成功后的清理方式：`all`（默认）、`omc`、`none`，见下表 |
 | `--output` | 本次服务器结果目录，必须在 `AI_RUN_DIR` 下且尚不存在 |
 
-板端须能通过 shell 执行 `sh`、`mkdir`、`chmod`、`sha256sum` 等基础命令，且部署位置允许执行程序与访问 HIAI。`--lib-dir` 应包含匹配的 HarmonyOS ARM64 HIAI/C++ 运行库及所需依赖，不要传服务器的 x86_64 CANN 库。
+板端须能通过 shell 执行 `sh`、`mkdir`、`chmod`、`sha256sum` 等基础命令，且部署位置允许执行程序与访问 HIAI。脚本自动定位构建记录中的 HIAI 库和 OHOS SDK 的 ARM64 C++ 运行库。
 
 ## 一条命令完成上板步骤
 
@@ -40,21 +38,22 @@ export PYTHONDONTWRITEBYTECODE=1
 
 export SN='填写设备ID'
 export BIP='填写远程HDC服务端IP:端口'
-export HIAI_RUNTIME_LIB_DIR='/your/matching-hiai-runtime-libs'
 export HDC_RUN_DIR="$AI_RUN_DIR/hdc-$(date +%Y%m%d-%H%M%S)"
 
 python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
   --omc "$GE_OMC_DIR" \
   --runner "$HIAI_BUILD_DIR/build/qwen35_dflash_hiai" \
-  --hiai-build-dir "$HIAI_BUILD_DIR" \
   --reference "$GE_BOARD_RUN/reference.json" \
-  --lib-dir "$HIAI_RUNTIME_LIB_DIR" \
   --output "$HDC_RUN_DIR"
 ```
 
-若 `hdc` 不在 PATH，先设置 `export HDC=/your/host/toolchains/hdc`。板端已提供全部匹配运行库时可省略 `--lib-dir`；需要补充其他库目录时再加一个 `--lib-dir`。脚本不自动搜集或上传整个 DDK。
+若 `hdc` 不在 PATH，先设置 `export HDC=/your/host/toolchains/hdc`。无需设置 `HIAI_RUNTIME_LIB_DIR`，无需手动拷贝 C++ 库，也无需传库目录或构建目录参数。
 
-`--hiai-build-dir` 验证构建结果为 `LINKED`、程序 SHA256 与构建记录一致，以及上传的同名库是否与链接时的 SHA256 一致。新构建记录还绑定 `command.json` 的 SHA256；旧记录没有该字段时标记为旧版记录，仍检查程序和库的身份。该参数不会自动上传链接库。链接记录中的库若未列入上传集，会单独提示并记录，须核对板端是否提供；链接参数不等于最终 ELF 的全部动态依赖，也不能由此判断板端缺少某个系统库。
+脚本在 `--runner` 相邻的标准构建目录查找 `command.json` / `result.json`（例如 `hiai-build/build/qwen35_dflash_hiai` 对应 `hiai-build/`）。确认构建为 `LINKED`、程序 SHA256 匹配后，检查记录中的链接库 SHA256，并收集这些库所在目录第一层的 `.so` / `.so.*`。不会扫描整个 DDK，也不会从示例目录混入另一份 HIAI 库。
+
+如果同套库目录没有 `libc++_shared.so`，脚本从构建命令记录的 OHOS Native SDK 中定位 ARM64 版本；找不到时会记录未补充，后续由板端 probe 判断装载是否成功。自动收集的库须为 ARM64 ELF；同名库内容冲突时在上传前停止。最终来源、哈希和查找结果记录在 `preflight.json` / `result.json` 中。保留原构建目录、DDK 和 SDK 路径即可；如果这些文件搬迁或变化，会显示具体缺失路径或哈希不匹配，不会悄悄替换为另一套库。
+
+新构建记录绑定 `command.json` 的 SHA256；旧记录缺少该字段时仍可使用，标记为 `legacy-unbound`，并检查现有程序及库的身份。该检查不保证全部传递依赖与板端 ABI 兼容，最终以 probe 和实际运行结果为准。旧版显式库目录参数仍兼容已有脚本，推荐直接使用上面的四个参数。
 
 默认板端目录为 `/data/local/tmp/qwen35-dflash-<唯一标识>`，实际路径记录在结果中。需要自选位置时加 `--board-root /data/local/tmp/你的新目录`，该目录必须尚不存在。每次重跑都换新的 `--output`。成功完成运行、结果与日志回传及参考比较后，脚本自动删除本次创建的板端目录；失败时保留供排查。服务器结果与已有目录均保留。
 
@@ -73,7 +72,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 ## 自动执行的内容
 
 1. 检查 OMC 清单与文件哈希、参考权重身份、prompt 和序列长度，检查程序是 ARM64 ELF。
-2. 创建新的板端目录，按文件精确上传程序、manifest、清单中的 OMC/附属文件及指定运行库，保留相对目录结构。清单中包含的编译诊断文件也可能随 bundle 一并传输。
+2. 创建新的板端目录，按文件精确上传程序、manifest、清单中的 OMC/附属文件及自动定位的运行库，保留相对目录结构。清单中包含的编译诊断文件也可能随 bundle 一并传输。
 3. 在板端用 `sha256sum` 核对上传内容。
 4. 设置本次运行的 `LD_LIBRARY_PATH=<部署目录>/lib:<板端原值>`，执行 `--probe` 并回传 JSON；要求 `npu_supported=true`。
 5. 根据 manifest 和 probe 自动生成 benchmark 命令，执行普通生成与 DFlash 一致性检查，并各进行3次预热、10次测量。prompt 与生成长度直接取参考 JSON。
@@ -102,7 +101,7 @@ cat "$HDC_RUN_DIR/comparison.json"
 | `calls/` | 每次 HDC 的 argv、输出和返回码 |
 | `failure.json` | 失败阶段与原因，仅失败时生成 |
 
-脚本以非零退出码报告失败，并尽可能拉回已生成日志；断连时部分文件可能无法取回，保留 `calls/` 和板端目录供后续排查。它还检查远端 shell 的独立退出状态，避免把 HDC 客户端返回0误当作板端程序成功。
+脚本以非零退出码报告失败，并尽可能拉回已生成日志；probe / benchmark 失败时会直接打印已回传且校验成功的 stderr/stdout 末尾及文件路径。断连时部分文件可能无法取回，保留 `calls/` 和板端目录供后续排查。它还检查远端 shell 的独立退出状态，避免把 HDC 客户端返回0误当作板端程序成功。
 
 若第一步 `create-root` 提示 `missing unique remote exit marker`，先看同屏 HDC stdout/stderr 或 `calls/0001-create-root.json`。例如 `[Fail]Device not founded or connected` 表示所选设备未找到或未连接，shell 未执行；当前尚未上传模型或运行推理。用下列只读命令检查连接：
 
@@ -114,39 +113,39 @@ cat "$HDC_RUN_DIR/comparison.json"
 
 如果列表为空或设备状态异常，先确认设备是否连接到 `BIP` 指定的 HDC 服务端、板端调试及授权是否就绪。若列表中的连接标识不同，用该标识更新 `SN`；网络连接的标识可能是 `IP:端口`，并非 USB 序列号，见[官方设备选择说明](https://github.com/openharmony/docs/blob/master/en/application-dev/dfx/hdc.md#connecting-to-the-specified-target-device)。确认 shell 输出 `HDC_OK` 后，换一个新的 `HDC_RUN_DIR` 再运行；不需要重新生成 OMC。
 
-若 `probe` 返回127，先读 `$HDC_RUN_DIR/probe.stderr`。例如 `libhiai_ir_build.so` 找不到且 `CheckNPUSupport` 无法解析时，需核对构建记录与运行库集合：
+若 `probe` 返回127，先读 `$HDC_RUN_DIR/probe.stderr`。曾出现程序链接 DDK 库，却上传示例中的另一份 `libhiai.so`，导致缺少 `libhiai_ir_build.so` 和 `CheckNPUSupport` 符号。现在自动按构建记录选择库，已有 OMC 无需重建。
+
+用户随后反馈 `probe.exitcode=0`、`probe.stderr` 为空，但 `benchmark.exitcode=1`；这表示程序探测通过，推理尚未通过。此时应看 benchmark 自己的日志，不再用 probe 日志解释推理失败：
 
 ```bash
-cat "$HIAI_BUILD_DIR/command.json"
-ls -l "$HIAI_RUNTIME_LIB_DIR"
+cat "$HDC_RUN_DIR/benchmark.stderr"
+tail -n 60 "$HDC_RUN_DIR/benchmark.stdout"
 ```
 
-曾出现程序链接内部 DDK 的 `libhiai.so`、`libhiai_ir.so`、`libhiai_ir_build.so`，但上传目录只含另一来源的 `libhiai.so` 和 `libc++_shared.so`。缺失依赖和符号问题可能相关，不能直接断言某个符号属于哪一个库。应使用匹配的 HarmonyOS ARM64 头文件与运行库构建、部署，或核实后补齐原构建所需的同套库；仅凭 `lib64` 目录名无法判断平台兼容性。OMC 无需因运行库装载失败而重新生成。
+用户补充的错误为 `HIAI CheckModelCompatibility failed: 1`，发生在 target 的独立兼容性检查阶段，尚未执行张量推理。随后提供的内部 `model_run_tool` 示例以相同的 `(HIGH, 0, 1, 0)` 参数创建描述，调用 `SetModelPath` 后直接 `Load`，没有独立调用 `CheckModelCompatibility`。框架已对齐该文件加载流程，以 `Load` 返回状态判断能否加载；模型哈希、运行库版本、NPU 查询及后续张量数量/形状/格式检查继续执行。API 检查返回错误不能直接推断 OMC 本身无效，也不能据此次源码修正认定上板成功。
 
-对于已经使用 `$CPRO_DDK_ROOT/ddk/ai_ddk_lib/lib64` 链接的当前程序，切换到该套库后重跑。若该目录不含 `libc++_shared.so`，从已有示例目录仅补充这个 C++ 运行库，避免再次带入示例的另一份 `libhiai.so`。下面在子 shell 中执行，任何准备步骤失败即停止；服务器结果保留在新的 `HDC_RUN_DIR`：
+这项修正需要重新交叉编译推理程序一次；无需重新生成 AIR、OMC 或参考。沿用原来的编译环境变量与资源配置，在服务器执行：
 
 ```bash
-export HIAI_EXAMPLE_ROOT=/your/model_run_tool
-export HIAI_RUNTIME_LIB_DIR="$CPRO_DDK_ROOT/ddk/ai_ddk_lib/lib64"
-export HDC_RUN_DIR="$AI_RUN_DIR/hdc-ddk-$(date +%Y%m%d-%H%M%S)"
-(
-  set -eu
-  mkdir "$HDC_RUN_DIR-cxx"
-  if [ ! -f "$HIAI_RUNTIME_LIB_DIR/libc++_shared.so" ]; then
-    cp "$HIAI_EXAMPLE_ROOT/libs/ohos/libc++_shared.so" "$HDC_RUN_DIR-cxx/"
-  fi
-  python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
-    --omc "$GE_OMC_DIR" \
-    --runner "$HIAI_BUILD_DIR/build/qwen35_dflash_hiai" \
-    --hiai-build-dir "$HIAI_BUILD_DIR" \
-    --reference "$GE_BOARD_RUN/reference.json" \
-    --lib-dir "$HIAI_RUNTIME_LIB_DIR" \
-    --lib-dir "$HDC_RUN_DIR-cxx" \
-    --output "$HDC_RUN_DIR"
-)
+cd "$REPO_DIR"
+git pull --ff-only
+export HIAI_BUILD_DIR="$AI_RUN_DIR/hiai-load-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$HIAI_BUILD_DIR"
 ```
 
-这一步用于恢复与原构建一致的 HIAI 库集合，并不预先保证板端 ABI 与全部传递依赖兼容。若仍有缺库或缺符号，继续以新一轮 `probe.stderr` 为依据；旧构建的 `legacy-unbound` 提示是构建记录缺少命令哈希说明，不是本身导致运行失败的错误。
+编译成功后执行下面的四参数命令：
+
+```bash
+export HDC_RUN_DIR="$AI_RUN_DIR/hdc-load-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+  --omc "$GE_OMC_DIR" \
+  --runner "$HIAI_BUILD_DIR/build/qwen35_dflash_hiai" \
+  --reference "$GE_BOARD_RUN/reference.json" \
+  --output "$HDC_RUN_DIR"
+```
+
+新脚本会在失败时直接打印已回传日志的末尾；完整内容仍保留在结果目录。模型加载错误还会注明模型名称、路径和运行库版本。当前只完成主机流程与 HIAI 测试替身验证，修正后的真实板端加载与推理等待实测。
 
 清理前若发现归属标记不匹配、目录被替换成符号链接，脚本会拒绝删除。清理命令失败或无法确认删除结果时也返回非零，`board_cleanup.status` 为 `FAILED`；已回传的服务器文件仍保留，板端目录可能完整保留、部分清理或已删除，需按日志确认。只有运行与比较已通过而清理失败时，`device_validation` 可为 `PASS`，整体 `status` 仍为 `FAILED`。
 

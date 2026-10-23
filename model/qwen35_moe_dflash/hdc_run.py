@@ -36,9 +36,9 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--omc", required=True, help="compiled OMC pair directory")
     p.add_argument("--runner", required=True, help="linked HarmonyOS ARM64 HIAI ELF executable")
-    p.add_argument("--hiai-build-dir", help="optional build_hiai.py output; verify runner identity and uploaded link-input libraries")
+    p.add_argument("--hiai-build-dir", help="optional override for build records; otherwise inferred beside --runner")
     p.add_argument("--reference", required=True, help="matching successful reference.json")
-    p.add_argument("--lib-dir", action="append", default=[], help="directory of required *.so* libraries; repeatable")
+    p.add_argument("--lib-dir", action="append", default=[], help="legacy manual library override; omit to use matching build libraries automatically")
     p.add_argument("--output", required=True, help="new output directory below AI_RUN_DIR")
     p.add_argument("--board-root", help="new remote directory; existing directories are never reused")
     p.add_argument("--board-cleanup", choices=("all", "omc", "none"), default="all",
@@ -214,7 +214,15 @@ def _preflight(args):
             or struct.unpack_from("<H", header, 16)[0] not in (2, 3)):
         raise ValueError("runner must be a linked ELF64 little-endian AArch64 executable (machine 183)")
     uploads = list(files.values()) + [_file_record(runner, "bin/qwen35_dflash_hiai")]
-    library_names = set()
+    build_dir = getattr(args, "hiai_build_dir", None)
+    discovery = None
+    library_paths = []
+    if not args.lib_dir:
+        from .hiai_deployment import discover_libraries
+        automatic = discover_libraries(runner, build_dir)
+        build_dir = automatic["build_dir"]
+        library_paths = automatic["libraries"]
+        discovery = automatic["metadata"]
     for directory in args.lib_dir:
         folder = Path(directory).expanduser().resolve()
         if not folder.is_dir():
@@ -223,14 +231,18 @@ def _preflight(args):
             _relative(library.name)
             if not library.is_file():
                 raise ValueError(f"library is not a file (or has a broken link): {library}")
-            if library.name in library_names:
-                raise ValueError(f"conflicting library name: {library.name}")
-            library_names.add(library.name)
-            uploads.append(_file_record(library.resolve(), PurePosixPath("lib") / library.name))
+            library_paths.append(library)
+    library_names = set()
+    for library in library_paths:
+        _relative(library.name)
+        if library.name in library_names:
+            raise ValueError(f"conflicting library name: {library.name}")
+        library_names.add(library.name)
+        uploads.append(_file_record(library.resolve(), PurePosixPath("lib") / library.name))
     build = None
-    if getattr(args, "hiai_build_dir", None):
+    if build_dir:
         runner_record = next(entry for entry in uploads if entry["remote"] == "bin/qwen35_dflash_hiai")
-        build = _build_association(args.hiai_build_dir, runner_record, uploads)
+        build = _build_association(build_dir, runner_record, uploads)
     board = args.board_root or ("/data/local/tmp/qwen35-dflash-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex)
     _text(board, "board root")
     bp = PurePosixPath(board)
@@ -240,7 +252,7 @@ def _preflight(args):
         _text(args.firmware_id, "firmware identity")
     return {"sn": sn, "bip": bip, "root": root, "board": bp, "manifest": manifest,
             "reference": reference, "reference_path": reference_path, "uploads": uploads,
-            "hiai_build": build,
+            "hiai_build": build, "runtime_libraries": discovery,
             "manifest_sha256": sha256_file(manifest_path), "reference_sha256": sha256_file(reference_path)}
 
 
@@ -408,6 +420,8 @@ def execute(args):
                       precision=manifest["precision"], quantization=manifest.get("quantization"))
         if context["hiai_build"] is not None:
             result["hiai_build"] = context["hiai_build"]
+        if context["runtime_libraries"] is not None:
+            result["runtime_libraries"] = context["runtime_libraries"]
         uploads = context["uploads"]
         result["runner_sha256"] = next(r["sha256"] for r in uploads if r["remote"] == "bin/qwen35_dflash_hiai")
         save_json(out / "preflight.json", {**result, "status": "PASS", "uploads": uploads})
@@ -507,6 +521,18 @@ def execute(args):
         if stage in ("probe", "benchmark", "compare"):
             result["device_validation"] = "FAILED"
         save_json(out / "failure.json", {**result, "retrieval_errors": recovery_errors})
+        if stage in ("probe", "benchmark"):
+            names = ("probe.stderr", "runtime-probe.json") if stage == "probe" else ("benchmark.stderr", "benchmark.stdout")
+            for name in names:
+                if name not in collected:
+                    continue
+                log_path = out / name
+                with log_path.open("rb") as stream:
+                    stream.seek(max(0, log_path.stat().st_size - 6000))
+                    tail = stream.read().decode("utf-8", errors="replace").strip()
+                print(f"run-hdc: {stage} log: {log_path}", file=sys.stderr)
+                if tail:
+                    print("\n".join(tail.splitlines()[-60:]), file=sys.stderr)
         raise
     finally:
         result.update(hdc_invocations=hdc.count if hdc else 0, retrieved_files=sorted(collected),

@@ -52,14 +52,19 @@ struct Model {
     auto description = std::make_shared<hiai::AiModelDescription>(
         name, hiai::AiModelDescription_Frequency_HIGH, hiai::HIAI_FRAMEWORK_NONE,
         hiai::HIAI_MODELTYPE_OFFLINE, hiai::AiModelDescription_DeviceType_NPU);
+    auto check_load = [&](hiai::AIStatus status, const char* operation) {
+      if (status != hiai::AI_SUCCESS)
+        throw std::runtime_error(std::string("HIAI ") + operation + " failed: " +
+            std::to_string(status) + " [model=" + name + ", path=" + path.string() +
+            ", runtime=" + version + "]");
+    };
     // Do not use SetModelBuffer: its uint32 size cannot represent a 35B model.
-    Check(description->SetModelPath(path.string()), "SetModelPath");
-    bool compatible = false;
-    Check(client.CheckModelCompatibility(*description, compatible), "CheckModelCompatibility");
-    if (!compatible) throw std::runtime_error("HIAI rejected OMC compatibility");
+    check_load(description->SetModelPath(path.string()), "SetModelPath");
+    // Match the internal OMC sample: SetModelPath followed directly by Load.
+    // Load must succeed before querying tensors or executing the model.
     std::vector<std::shared_ptr<hiai::AiModelDescription>> descriptions{description};
-    Check(client.Load(descriptions), "Load");
-    Check(client.GetModelIOTensorDim(name, input_dims, output_dims), "GetModelIOTensorDim");
+    check_load(client.Load(descriptions), "Load");
+    check_load(client.GetModelIOTensorDim(name, input_dims, output_dims), "GetModelIOTensorDim");
     if (input_dims.size() != input_count || output_dims.size() != output_count)
       throw std::runtime_error("HIAI OMC tensor count differs from ABI v2");
   }

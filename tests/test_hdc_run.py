@@ -325,6 +325,10 @@ def test_hdc_protocol_upload_environment_and_strict_comparison(case):
 def test_hdc_zero_transport_status_does_not_hide_remote_failure(case):
     result = _run(case, "remote-exit")
     assert result.returncode != 0
+    assert "SIMULATED benchmark failure retained on stderr" in result.stderr
+    assert "SIMULATED benchmark partial stdout" in result.stderr
+    assert str(case["output"] / "benchmark.stderr") in result.stderr
+    assert str(case["output"] / "benchmark.stdout") in result.stderr
     assert "SIMULATED benchmark failure" in (case["output"] / "benchmark.stderr").read_text()
     assert "partial stdout" in (case["output"] / "benchmark.stdout").read_text()
     assert (case["output"] / "benchmark.exitcode").read_text().strip() == "17"
@@ -600,3 +604,107 @@ def test_legacy_build_and_unuploaded_link_input_are_explicit_without_board_assum
         assert {entry["name"]: entry["status"] for entry in audit["link_libraries"]} == {
             "libhiai-fixture.so": "matched", "libhiai-not-uploaded.so": "not_uploaded"}
     assert json.loads((case["output"] / "comparison.json").read_text())["status"] == "PASS"
+
+
+def _shared_elf(path, marker, *, machine=183):
+    """Minimal ELF header for selection tests, never a loadable runtime library."""
+    elf = bytearray(64)
+    elf[:7] = b"\x7fELF\x02\x01\x01"
+    struct.pack_into("<HHI", elf, 16, 3, machine, 1)
+    struct.pack_into("<H", elf, 52, 64)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(elf + marker.encode())
+    return path
+
+
+def _automatic_build(case):
+    """Reproduce the user's original build layout without extra CLI/env inputs."""
+    build = case["root"] / "original hiai build"
+    runner = build / "build/qwen35_dflash_hiai"
+    runner.parent.mkdir(parents=True)
+    runner.write_bytes(case["runner"].read_bytes())
+    case["runner"] = runner
+    case["argv"][case["argv"].index("--runner") + 1] = str(runner)
+    index = case["argv"].index("--lib-dir")
+    del case["argv"][index:index + 2]
+    for name in ("HIAI_RUNTIME_LIB_DIR", "HIAI_BUILD_DIR", "OHOS_NATIVE_SDK",
+                 "CPRO_DDK_ROOT", "OHOS_SDK_ROOT", "HIAI_LIB_DIR"):
+        case["env"].pop(name, None)
+    ddk = case["root"] / "internal ddk/ddk/ai_ddk_lib/lib64"
+    linked = _shared_elf(ddk / "libhiai.so", "SIMULATED-LINK-LIBRARY")
+    adjacent = _shared_elf(ddk / "libhiai_ir.so", "SIMULATED-ADJACENT-LIBRARY")
+    native = case["root"] / "ohos native sdk"
+    toolchain = native / "build/cmake/ohos.toolchain.cmake"
+    toolchain.parent.mkdir(parents=True)
+    toolchain.write_text("# SIMULATED SDK toolchain marker; no compilation\n")
+    cxx = _shared_elf(native / "llvm/lib/aarch64-linux-ohos/libc++_shared.so",
+                      "SIMULATED-SDK-CXX-LIBRARY")
+    command = {"argv": ["cmake", "-S", "SIMULATED-SOURCE", "-B", str(build / "build"),
+                        "-DCMAKE_TOOLCHAIN_FILE=" + str(toolchain),
+                        "-DOHOS_ARCH=arm64-v8a", "-DOHOS_STL=c++_shared"],
+               "headers_only": False,
+               "libraries": [{"path": str(linked),
+                              "sha256": hashlib.sha256(linked.read_bytes()).hexdigest()}]}
+    result = {"status": "LINKED", "device_validation": "PENDING",
+              "binary_sha256": hashlib.sha256(runner.read_bytes()).hexdigest()}
+    _json(build / "command.json", command)
+    _json(build / "result.json", result)
+    return {"build": build, "command": command, "result": result,
+            "linked": linked, "adjacent": adjacent, "cxx": cxx}
+
+
+def test_automatic_runtime_discovery_uses_recorded_ddk_and_sdk_without_library_flags(case):
+    automatic = _automatic_build(case)
+    assert "--lib-dir" not in case["argv"] and "--hiai-build-dir" not in case["argv"]
+    result = _run(case)
+    assert result.returncode == 0, result.stdout + result.stderr
+    uploads = {entry["remote"]: entry for entry in (
+        json.loads(line) for line in Path(case["env"]["FAKE_HDC_UPLOADS"]).read_text().splitlines())}
+    board_root = case["env"]["FAKE_BOARD_ROOT"]
+    for key in ("linked", "adjacent", "cxx"):
+        local = automatic[key]
+        record = uploads[board_root + "/lib/" + local.name]
+        assert record["sha256"] == hashlib.sha256(local.read_bytes()).hexdigest()
+    assert board_root + "/lib/libhiai-fixture.so" not in uploads
+    for name in ("preflight.json", "result.json"):
+        association = json.loads((case["output"] / name).read_text())["hiai_build"]
+        assert association["build_dir"] == str(automatic["build"])
+        assert association["command_binding"] == "legacy-unbound"
+        assert association["binary_sha256"] == automatic["result"]["binary_sha256"]
+        assert association["missing_from_uploads"] == []
+        assert association["link_libraries"][0]["status"] == "matched"
+    assert json.loads((case["output"] / "comparison.json").read_text())["status"] == "PASS"
+
+
+@pytest.mark.parametrize("bad", ["changed-link-library", "wrong-binary-record",
+                                  "wrong-library-architecture", "conflicting-library-names",
+                                  "missing-command", "missing-result"])
+def test_automatic_runtime_discovery_rejects_inconsistent_inputs_before_hdc(case, bad):
+    automatic = _automatic_build(case)
+    build, command, result = automatic["build"], automatic["command"], automatic["result"]
+    if bad == "changed-link-library":
+        with automatic["linked"].open("ab") as stream:
+            stream.write(b"CHANGED-AFTER-BUILD")
+    elif bad == "wrong-binary-record":
+        result["binary_sha256"] = hashlib.sha256(b"OTHER-BINARY").hexdigest()
+        _json(build / "result.json", result)
+    elif bad == "wrong-library-architecture":
+        _shared_elf(automatic["linked"], "SIMULATED-WRONG-X86-LIBRARY", machine=62)
+        command["libraries"][0]["sha256"] = hashlib.sha256(automatic["linked"].read_bytes()).hexdigest()
+        _json(build / "command.json", command)
+    elif bad == "conflicting-library-names":
+        duplicate = _shared_elf(case["root"] / "other library family/libhiai.so",
+                                "SIMULATED-INCOMPATIBLE-LIBRARY")
+        command["libraries"].append({"path": str(duplicate),
+                                     "sha256": hashlib.sha256(duplicate.read_bytes()).hexdigest()})
+        _json(build / "command.json", command)
+    elif bad == "missing-command":
+        (build / "command.json").unlink()
+    else:
+        (build / "result.json").unlink()
+    execution = _run(case)
+    assert execution.returncode != 0
+    assert not _calls(case) and not _calls(case, runner=True)
+    assert not case["board"].exists()
+    assert _cleanup(case) == "NOT_CREATED"
+    assert (case["output"] / "failure.json").is_file()

@@ -11,20 +11,19 @@
 ```bash
 export SN='填写设备ID'
 export BIP='填写远程HDC服务端IP:端口'
-export HIAI_RUNTIME_LIB_DIR='/your/matching-hiai-runtime-libs'
 export HDC_RUN_DIR="$AI_RUN_DIR/hdc-$(date +%Y%m%d-%H%M%S)"
 python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
   --omc "$GE_OMC_DIR" \
   --runner "$HIAI_BUILD_DIR/build/qwen35_dflash_hiai" \
-  --hiai-build-dir "$HIAI_BUILD_DIR" \
   --reference "$GE_BOARD_RUN/reference.json" \
-  --lib-dir "$HIAI_RUNTIME_LIB_DIR" \
   --output "$HDC_RUN_DIR"
 ```
 
-`HIAI_RUNTIME_LIB_DIR` 必须与 `$HIAI_BUILD_DIR/command.json` 中的 HIAI 链接库匹配；使用 DDK 的库构建时，应部署该套 DDK 运行库。使用 `model_run_tool/libs/ohos` 中的库构建时，才部署示例配套库。完整变量说明和当前 DDK 库切换命令见上面的指南。脚本会执行probe、benchmark并回传日志和报告，然后自动与服务器参考比较。全部成功后自动删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。成功的OMC无需重新生成。
+无需设置库目录或增加库参数。脚本从 `--runner` 对应的构建目录读取 `command.json` / `result.json`，验证程序及链接库 SHA256，自动上传同套 HIAI 库，并从构建时的 OHOS SDK 补充可找到的 ARM64 C++ 运行库。保留构建目录、DDK 与 SDK 路径即可。
 
-`--hiai-build-dir` 会核对程序与构建记录，以及同名上传库的 SHA256，提前拒绝混用不同版本的库；未上传的链接库会列出供核对，不会自动复制。编译时选用的 HIAI 头文件、库与板端部署库须匹配。
+脚本会执行 probe、benchmark、结果回传与参考比较。全部成功后删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。probe 或 benchmark 失败时会直接显示已回传的错误日志末尾。
+
+遇到 `HIAI CheckModelCompatibility failed: 1` 的旧程序需要重新编译一次：加载流程已按内部示例调整为 `SetModelPath → Load`，由 `Load` 返回状态判断加载结果，并保留后续张量验证。OMC 和参考文件无需重建，命令见[板端排障与重试](hdc-board-run.md#结果与失败排查)。
 
 以后要保留大体积独立权重时，加 `--board-cleanup omc`，只删除清单中的 OMC 文件，保留目录、独立权重、程序、库和日志；加 `--board-cleanup none` 则全部保留。默认是 `--board-cleanup all`。嵌入 OMC 内部的权重随 OMC 一起删除。
 

@@ -1,11 +1,15 @@
 #include "HiAiModelManagerService.h"
 #include <algorithm>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 namespace {
 int tensors=0, clients=0;
 std::string Failure() { const auto* p=std::getenv("FAKE_HIAI_FAILURE"); return p?p:""; }
+void Trace(const char* event) {
+  if (const auto* path=std::getenv("FAKE_HIAI_TRACE")) std::ofstream(path, std::ios::app) << event << '\n';
+}
 struct CheckLeaks {
   ~CheckLeaks() { if (tensors || clients) { std::cerr << "LEAK\n"; std::abort(); } }
 } check_leaks;
@@ -37,15 +41,19 @@ AIStatus AiModelMngerClient::Init(std::shared_ptr<AiModelManagerClientListener> 
 }
 char* AiModelMngerClient::GetVersion(){ static char s[]="FAKE-HIAI-X90"; return Failure()=="version"?nullptr:s; }
 bool AiModelMngerClient::CheckNPUSupport(){ return Failure()!="no-npu"; }
-AIStatus AiModelMngerClient::CheckModelCompatibility(AiModelDescription&,bool& yes){ yes=Failure()!="incompatible"; return Failure()=="compat-error"?1:0; }
+AIStatus AiModelMngerClient::CheckModelCompatibility(AiModelDescription&,bool&){
+  Trace("compatibility-query");
+  throw std::runtime_error("standalone compatibility query unavailable for path-based OMC fixture");
+}
 AIStatus AiModelMngerClient::Load(std::vector<std::shared_ptr<AiModelDescription>>& d){
+  Trace("load");
   if(d.size()!=1 || d[0]->path.empty()) return 1;
   name_=d[0]->name; loaded_=true; // partial load failure must still unload.
-  return Failure()=="load"?1:0;
+  return Failure()=="load" || Failure()=="incompatible"?1:0;
 }
-AIStatus AiModelMngerClient::UnLoadModel(){ loaded_=false; return 0; }
+AIStatus AiModelMngerClient::UnLoadModel(){ Trace("unload"); loaded_=false; return 0; }
 AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vector<TensorDimension>& in,std::vector<TensorDimension>& out){
-  if(n!=name_ || !loaded_) return 1;
+  if(n!=name_ || !loaded_ || Failure()=="io-dims") return 1;
   TensorDimension ids({1,32}), features({1,32,32});
   if(n=="qwen35_target") { in={ids,ids}; out={ids,features}; }
   else { in={features,ids,ids}; out={TensorDimension({1,3})}; }
@@ -55,6 +63,7 @@ AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vecto
   return 0;
 }
 AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<AiTensor>>& in,std::vector<std::shared_ptr<AiTensor>>& out,std::uint32_t timeout,std::int32_t& stamp){
+  Trace("process");
   if(c.model!=name_ || !timeout || !loaded_ || Failure()=="run") return 1;
   const bool target=name_=="qwen35_target";
   auto* ids=static_cast<std::int32_t*>(in[target?0:1]->GetBuffer());
