@@ -21,7 +21,9 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
   --output "$HDC_RUN_DIR"
 ```
 
-`HIAI_RUNTIME_LIB_DIR` 设置为匹配的运行库目录，例如内部示例的 `libs/ohos`；完整变量说明见上面的指南。脚本会执行probe、benchmark并回传日志和报告，然后自动与服务器参考比较。成功的OMC无需重新生成。
+`HIAI_RUNTIME_LIB_DIR` 设置为匹配的运行库目录，例如内部示例的 `libs/ohos`；完整变量说明见上面的指南。脚本会执行probe、benchmark并回传日志和报告，然后自动与服务器参考比较。全部成功后自动删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。成功的OMC无需重新生成。
+
+以后要保留大体积独立权重时，加 `--board-cleanup omc`，只删除清单中的 OMC 文件，保留目录、独立权重、程序、库和日志；加 `--board-cleanup none` 则全部保留。默认是 `--board-cleanup all`。嵌入 OMC 内部的权重随 OMC 一起删除。
 
 [直接 GE 构图与导出](direct-model-air.md)保留全部生成命令及兼容性修复记录。生成端只需NumPy与主机GE，不加载PyTorch/TorchNPU/TorchAir。当前tiny使用FP16随机权重；完整35B的压缩整数权重GE映射尚未实现。
 

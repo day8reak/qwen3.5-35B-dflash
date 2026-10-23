@@ -22,6 +22,7 @@ SCRIPT = REPO / "targets/cpro/scripts/run_hdc.py"
 
 
 FAKE_HDC = r'''
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -50,6 +51,10 @@ if args[:2] == ["file", "send"]:
         raise RuntimeError("unsupported file send arguments")
     # A missing destination parent is a real transfer failure.
     shutil.copyfile(args[2], translated(args[3]))
+    transferred = translated(args[3]).read_bytes()
+    with open(os.environ["FAKE_HDC_UPLOADS"], "a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"remote": args[3], "bytes": len(transferred),
+                                 "sha256": hashlib.sha256(transferred).hexdigest()}) + "\n")
 elif args[:2] == ["file", "recv"]:
     if len(args) != 4:
         raise RuntimeError("unsupported file recv arguments")
@@ -58,6 +63,16 @@ elif args[:2] == ["file", "recv"]:
         # Semantically identical JSON still MUST fail the transport hash gate.
         with open(args[3], "ab") as stream:
             stream.write(b" ")
+    if os.environ.get("FAKE_HDC_FAILURE") == "owner-mismatch" and args[2].endswith("/benchmark.exitcode"):
+        owner = Path(local) / ".qwen35-hdc-owner"
+        if not owner.is_file():
+            raise RuntimeError("test requires an existing uploaded ownership marker")
+        owner.write_text("SIMULATED-FOREIGN-OWNER\n")
+    if os.environ.get("FAKE_HDC_FAILURE") == "root-symlink" and args[2].endswith("/benchmark.exitcode"):
+        board = Path(local)
+        replaced = Path(local + "-replaced")
+        board.rename(replaced)
+        board.symlink_to(replaced, target_is_directory=True)
 elif args[:1] == ["shell"]:
     if len(args) != 2:
         raise RuntimeError("shell must be one argument")
@@ -65,6 +80,10 @@ elif args[:1] == ["shell"]:
     if command[:2] != ["sh", "-c"] or len(command) != 3:
         raise RuntimeError("expected sh -c wrapper")
     payload = command[2].replace(remote, local)
+    if os.environ.get("FAKE_HDC_FAILURE") == "cleanup-rm":
+        # Preserve the real shell, ownership guards, and remote exit marker;
+        # only the deletion operation fails. The directory remains untouched.
+        payload = "rm() { printf '%s\\n' 'SIMULATED rm failure' >&2; return 13; };\n" + payload
     if "param get const.ohos.fullname" in payload:
         firmware = ("Get parameter const.ohos.fullname fail! errNum is: 100"
                     if os.environ.get("FAKE_HDC_FAILURE") == "firmware-error"
@@ -205,6 +224,7 @@ def case(tmp_path):
     env = dict(os.environ, AI_RUN_DIR=str(tmp_path), PYTHONDONTWRITEBYTECODE="1",
                PYTHONPATH=str(REPO / "model"), SN="SIMULATED-SERIAL-001", BIP="127.0.0.1:8710",
                FAKE_HDC_CALLS=str(tmp_path / "hdc-calls.jsonl"),
+               FAKE_HDC_UPLOADS=str(tmp_path / "hdc-uploads.jsonl"),
                FAKE_RUNNER_CALLS=str(tmp_path / "runner-calls.jsonl"),
                FAKE_EXPECTED_REPORT=str(report), FAKE_HDC_FAILURE="",
                FAKE_BOARD_ROOT=board_root, FAKE_BOARD_SANDBOX=str(board),
@@ -227,25 +247,36 @@ def _calls(case, runner=False):
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
+def _cleanup(case):
+    return json.loads((case["output"] / "result.json").read_text())["board_cleanup"]["status"]
+
+
 def test_hdc_protocol_upload_environment_and_strict_comparison(case):
     result = _run(case)
     assert result.returncode == 0, result.stdout + result.stderr
     comparison = json.loads((case["output"] / "comparison.json").read_text())
     assert comparison["status"] == "PASS" and all(comparison["checks"].values())
     assert comparison["checks"]["ten_stable_runs"] and comparison["checks"]["real_hiai"]
+    uploads = {entry["remote"]: entry for entry in (
+        json.loads(line) for line in Path(case["env"]["FAKE_HDC_UPLOADS"]).read_text().splitlines())}
+    board_root = case["env"]["FAKE_BOARD_ROOT"]
     for graph in case["manifest"]["graphs"]:
         for record in graph["payloads"]:
-            assert (case["board"] / "models" / record["path"]).read_bytes() == (
-                case["bundle"] / record["path"]).read_bytes()
-    assert (case["board"] / "models/manifest.json").read_bytes() == (
-        case["bundle"] / "manifest.json").read_bytes()
-    assert (case["board"] / "bin/qwen35_dflash_hiai").read_bytes() == case["runner"].read_bytes()
-    assert (case["board"] / "lib/libhiai-fixture.so").read_bytes() == b"SIMULATED-LIBRARY"
+            uploaded = uploads[board_root + "/models/" + record["path"]]
+            assert (uploaded["bytes"], uploaded["sha256"]) == (record["bytes"], record["sha256"])
+    for relative, local in (("models/manifest.json", case["bundle"] / "manifest.json"),
+                            ("bin/qwen35_dflash_hiai", case["runner"]),
+                            ("lib/libhiai-fixture.so", case["libs"] / "libhiai-fixture.so")):
+        assert uploads[board_root + "/" + relative]["sha256"] == hashlib.sha256(local.read_bytes()).hexdigest()
     calls = _calls(case)
     assert calls and all(args[:4] == ["-t", case["env"]["SN"], "-s", case["env"]["BIP"]]
                          for args in calls)
     assert any("sha256sum" in " ".join(args) for args in calls)
-    assert not any("rm " in " ".join(args) for args in calls)
+    cleanup_calls = [index for index, args in enumerate(calls)
+                     if args[4] == "shell" and "rm " in args[5]]
+    receive_calls = [index for index, args in enumerate(calls) if args[4:6] == ["file", "recv"]]
+    assert cleanup_calls and receive_calls and min(cleanup_calls) > max(receive_calls)
+    assert cleanup_calls[-1] == len(calls) - 1, "cleanup must be the final HDC operation"
     executions = _calls(case, runner=True)
     assert len(executions) == 2 and executions[0]["argv"] == ["--probe"]
     for execution in executions:
@@ -257,6 +288,8 @@ def test_hdc_protocol_upload_environment_and_strict_comparison(case):
     assert (case["output"] / "runtime-probe.json").is_file()
     assert (case["output"] / "benchmark.json").is_file()
     assert (case["output"] / "benchmark.exitcode").read_text().strip() == "0"
+    assert not case["board"].exists()
+    assert _cleanup(case) == "REMOVED"
 
 
 def test_hdc_zero_transport_status_does_not_hide_remote_failure(case):
@@ -269,6 +302,7 @@ def test_hdc_zero_transport_status_does_not_hide_remote_failure(case):
     assert (case["output"] / "result.json").is_file()
     assert (case["board"] / "models/target/target.omc").is_file()
     assert not (case["output"] / "comparison.json").exists()
+    assert _cleanup(case) == "RETAINED"
 
 
 def test_probe_must_report_npu_even_with_successful_remote_exit(case):
@@ -279,6 +313,7 @@ def test_probe_must_report_npu_even_with_successful_remote_exit(case):
     assert len(_calls(case, runner=True)) == 1
     assert (case["output"] / "probe.exitcode").read_text().strip() == "0"
     assert (case["output"] / "failure.json").is_file()
+    assert case["board"].is_dir() and _cleanup(case) == "RETAINED"
 
 
 def test_automatic_firmware_identity_runs_full_protocol(case):
@@ -290,6 +325,7 @@ def test_automatic_firmware_identity_runs_full_protocol(case):
     flags = dict(zip(calls[1]["argv"][::2], calls[1]["argv"][1::2]))
     assert flags["--firmware-id"] == "OpenHarmony-6.0.fake"
     assert json.loads((case["output"] / "comparison.json").read_text())["status"] == "PASS"
+    assert not case["board"].exists() and _cleanup(case) == "REMOVED"
 
 
 def test_firmware_query_error_text_is_rejected_despite_zero_exit(case):
@@ -300,6 +336,7 @@ def test_firmware_query_error_text_is_rejected_despite_zero_exit(case):
     assert "--firmware-id" in result.stderr + (case["output"] / "failure.json").read_text()
     assert len(_calls(case, runner=True)) == 1
     assert not (case["output"] / "benchmark.json").exists()
+    assert case["board"].is_dir() and _cleanup(case) == "RETAINED"
 
 
 def test_hdc_server_requires_explicit_port_before_connecting(case):
@@ -308,6 +345,7 @@ def test_hdc_server_requires_explicit_port_before_connecting(case):
     assert result.returncode != 0
     assert not _calls(case)
     assert not case["board"].exists()
+    assert _cleanup(case) == "NOT_CREATED"
 
 
 def test_received_report_hash_is_required_even_when_json_is_equivalent(case):
@@ -322,6 +360,7 @@ def test_received_report_hash_is_required_even_when_json_is_equivalent(case):
     assert all(json.loads(path.read_bytes()) == json.loads(original) for path in retained)
     assert (case["output"] / "failure.json").is_file()
     assert not (case["output"] / "comparison.json").exists()
+    assert _cleanup(case) == "RETAINED"
 
 
 @pytest.mark.parametrize("failure,gate", [("measurement-mismatch", "ten_stable_runs"),
@@ -334,6 +373,7 @@ def test_existing_comparison_rejects_bad_measurements_and_fake_device_evidence(c
     assert (case["output"] / "benchmark.json").is_file()
     assert (case["output"] / "failure.json").is_file()
     assert (case["board"] / "benchmark.json").is_file()
+    assert _cleanup(case) == "RETAINED"
 
 
 @pytest.mark.parametrize("bad", ["graph-hash", "sidecar-hash", "reference", "runner-architecture"])
@@ -354,6 +394,7 @@ def test_invalid_local_inputs_are_rejected_before_connecting(case, bad):
     assert result.returncode != 0
     assert not _calls(case)
     assert not case["board"].exists()
+    assert _cleanup(case) == "NOT_CREATED"
 
 
 def test_existing_remote_directory_is_preserved_and_not_reused(case):
@@ -366,3 +407,70 @@ def test_existing_remote_directory_is_preserved_and_not_reused(case):
     assert list(case["board"].iterdir()) == [sentinel]
     assert not _calls(case, runner=True)
     assert (case["output"] / "failure.json").is_file()
+    assert _cleanup(case) == "NOT_CREATED"
+
+
+@pytest.mark.parametrize("failure", ["owner-mismatch", "cleanup-rm", "root-symlink"])
+def test_cleanup_failure_retains_remote_data_and_successful_device_evidence(case, failure):
+    result = _run(case, failure)
+    assert result.returncode != 0
+    assert case["board"].is_dir()
+    assert (case["board"] / "models/target/target.omc").is_file()
+    assert (case["board"] / "benchmark.json").is_file()
+    assert (case["output"] / "benchmark.json").is_file()
+    assert json.loads((case["output"] / "comparison.json").read_text())["status"] == "PASS"
+    status = json.loads((case["output"] / "result.json").read_text())
+    assert status["device_validation"] == "PASS"
+    assert status["status"] != "PASS" and status["board_cleanup"]["status"] == "FAILED"
+    assert (case["output"] / "failure.json").is_file()
+    if failure == "owner-mismatch":
+        assert (case["board"] / ".qwen35-hdc-owner").read_text() == "SIMULATED-FOREIGN-OWNER\n"
+    if failure == "root-symlink":
+        protected = Path(str(case["board"]) + "-replaced")
+        assert case["board"].is_symlink()
+        assert (protected / "models/target/target.omc").read_bytes() == (
+            case["bundle"] / "target/target.omc").read_bytes()
+
+
+def test_omc_cleanup_removes_only_omcs_and_preserves_weight_sidecars(case):
+    case["argv"].extend(["--board-cleanup", "omc"])
+    result = _run(case)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _cleanup(case) == "OMC_FILES_REMOVED"
+    assert case["board"].is_dir()
+    for graph in case["manifest"]["graphs"]:
+        for record in graph["payloads"]:
+            remote = case["board"] / "models" / record["path"]
+            if record["path"] == graph["omc"]:
+                assert not remote.exists()
+            else:
+                assert remote.is_file()
+                assert hashlib.sha256(remote.read_bytes()).hexdigest() == record["sha256"]
+                assert remote.read_bytes() == (case["bundle"] / record["path"]).read_bytes()
+            assert remote.parent.is_dir(), "model directories must be retained"
+    assert (case["board"] / "models/manifest.json").read_bytes() == (
+        case["bundle"] / "manifest.json").read_bytes()
+    assert (case["board"] / "bin/qwen35_dflash_hiai").read_bytes() == case["runner"].read_bytes()
+    assert (case["board"] / "lib/libhiai-fixture.so").read_bytes() == b"SIMULATED-LIBRARY"
+    assert (case["board"] / ".qwen35-hdc-owner").is_file()
+    assert (case["board"] / "benchmark.json").is_file()
+    assert (case["board"] / "benchmark.stderr").is_file()
+    assert json.loads((case["output"] / "comparison.json").read_text())["status"] == "PASS"
+
+
+def test_none_cleanup_preserves_complete_remote_run(case):
+    case["argv"].extend(["--board-cleanup", "none"])
+    result = _run(case)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _cleanup(case) == "RETAINED"
+    for graph in case["manifest"]["graphs"]:
+        for record in graph["payloads"]:
+            assert (case["board"] / "models" / record["path"]).read_bytes() == (
+                case["bundle"] / record["path"]).read_bytes()
+    assert (case["board"] / "bin/qwen35_dflash_hiai").is_file()
+    assert (case["board"] / "lib/libhiai-fixture.so").is_file()
+    assert (case["board"] / "models/manifest.json").is_file()
+    assert (case["board"] / ".qwen35-hdc-owner").is_file()
+    assert (case["board"] / "benchmark.json").is_file()
+    assert not any(args[4] == "shell" and "rm " in args[5] for args in _calls(case))
+    assert json.loads((case["output"] / "comparison.json").read_text())["status"] == "PASS"

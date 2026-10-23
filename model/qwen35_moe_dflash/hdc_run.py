@@ -39,6 +39,8 @@ def parser():
     p.add_argument("--lib-dir", action="append", default=[], help="directory of required *.so* libraries; repeatable")
     p.add_argument("--output", required=True, help="new output directory below AI_RUN_DIR")
     p.add_argument("--board-root", help="new remote directory; existing directories are never reused")
+    p.add_argument("--board-cleanup", choices=("all", "omc", "none"), default="all",
+                   help="after successful retrieval/comparison: remove the run directory (all, default), only OMC files (omc), or retain everything (none)")
     p.add_argument("--firmware-id", help="otherwise query param get const.ohos.fullname")
     p.add_argument("--hdc", default=os.environ.get("HDC", "hdc"))
     p.add_argument("--timeout-seconds", type=_positive, default=3600, help="timeout of each HDC invocation")
@@ -236,12 +238,41 @@ def _upload(hdc, board, entries, checksum):
     hdc.shell("cd " + shlex.quote(str(board)) + " && sha256sum -c " + shlex.quote(checksum.name), "verify-checksums")
 
 
+def _cleanup_remote(hdc, board, owner_token, *, mode="all", omc_files=()):
+    # Delete only the freshly created directory whose run marker still matches.
+    # Never follow a substituted root/marker symlink or retry after a failure.
+    root = shlex.quote(str(board))
+    marker = shlex.quote(str(board / ".qwen35-hdc-owner"))
+    guard = (f"test -d {root} && test ! -L {root} && "
+             f"test -f {marker} && test ! -L {marker} && "
+             f'test "$(cat {marker})" = {shlex.quote(owner_token)}')
+    if mode == "all":
+        hdc.shell(guard + f" && rm -rf -- {root} && test ! -e {root} && test ! -L {root}", "cleanup-board")
+    elif mode == "omc":
+        # Enumerate only graph OMC entries, not every payload: external weights,
+        # manifests, logs, libraries and directory structure must remain intact.
+        paths = [board / _relative(path) for path in omc_files]
+        parents = {parent for path in paths for parent in path.parents if parent != board and board in parent.parents}
+        checks = [guard]
+        checks += [f"test -d {shlex.quote(str(p))} && test ! -L {shlex.quote(str(p))}" for p in sorted(parents)]
+        checks += [f"test ! -L {shlex.quote(str(p))}" for p in paths]
+        if not paths:
+            raise ValueError("OMC cleanup requires manifest graph files")
+        checks.append("rm -f -- " + " ".join(shlex.quote(str(p)) for p in paths))
+        checks += [f"test ! -e {shlex.quote(str(p))} && test ! -L {shlex.quote(str(p))}" for p in paths]
+        hdc.shell(" && ".join(checks), "cleanup-omc")
+    else:
+        raise ValueError(f"unsupported cleanup mode: {mode}")
+
+
 def execute(args):
     out = output_path(args.output)
     out.mkdir(parents=True, exist_ok=False)
     stage, context, hdc, remote_created = "preflight", None, None, False
     collected, recovered_hashes, recovery_errors = set(), {}, []
     result = {"status": "FAILED", "device_validation": "PENDING",
+              "board_cleanup": {"mode": args.board_cleanup,
+                                "policy": "after-successful-retrieval-and-comparison", "status": "NOT_CREATED"},
               "scope": "HIAI paired benchmark with token-and-stop reference comparison",
               "limitations": ["Probe and runner evidence do not independently prove per-operator NPU placement.",
                               "A host timeout does not prove the remote process stopped; the remote directory is retained."]}
@@ -285,6 +316,10 @@ def execute(args):
         result["runner_sha256"] = next(r["sha256"] for r in uploads if r["remote"] == "bin/qwen35_dflash_hiai")
         save_json(out / "preflight.json", {**result, "status": "PASS", "uploads": uploads})
         save_json(out / "prompt.json", {"prompt_token_ids": reference["prompt_token_ids"]})
+        owner_token = uuid.uuid4().hex
+        owner_file = out / ".qwen35-hdc-owner"
+        owner_file.write_text(owner_token + "\n")
+        uploads.append(_file_record(owner_file, owner_file.name))
         probe_script = out / "probe.sh"
         probe_script.write_text(_script(board, [str(board / "bin/qwen35_dflash_hiai"), "--probe"],
                                         "runtime-probe.json", "probe.stderr", "probe.exitcode"))
@@ -294,6 +329,7 @@ def execute(args):
         stage = "create-remote-directory"
         hdc.shell("mkdir " + shlex.quote(str(board)), "create-root")
         remote_created = True
+        result["board_cleanup"]["status"] = "RETAINED"
         directories = {board / "models", board / "bin", board / "lib"}
         directories.update((board / e["remote"]).parent for e in uploads)
         hdc.shell("mkdir -p " + " ".join(shlex.quote(str(p)) for p in sorted(directories)), "create-subdirs")
@@ -351,11 +387,23 @@ def execute(args):
         cli_execute(cli_parser().parse_args(["compare", "--omc", str(context["root"]),
             "--reference", str(context["reference_path"]), "--report", str(out / "benchmark.json"),
             "--output", str(out / "comparison.json")]))
-        result.update(status="PASS", device_validation="PASS", comparison_sha256=sha256_file(out / "comparison.json"),
+        result.update(device_validation="PASS", comparison_sha256=sha256_file(out / "comparison.json"),
                       benchmark_sha256=sha256_file(out / "benchmark.json"),
                       probe_sha256=sha256_file(out / "runtime-probe.json"),
-                      upload_plan_sha256=sha256_file(out / "upload-plan.json"), stage="complete")
+                      upload_plan_sha256=sha256_file(out / "upload-plan.json"))
+        stage = "cleanup"
+        if args.board_cleanup != "none":
+            omc_files = [str(PurePosixPath("models") / graph["omc"]) for graph in manifest["graphs"]]
+            _cleanup_remote(hdc, board, owner_token, mode=args.board_cleanup, omc_files=omc_files)
+            result["board_cleanup"]["status"] = "REMOVED" if args.board_cleanup == "all" else "OMC_FILES_REMOVED"
+            if args.board_cleanup == "omc":
+                result["board_cleanup"]["removed_files"] = omc_files
+        result.update(status="PASS", stage="complete")
     except Exception as error:
+        if stage == "cleanup":
+            # The command may have partly completed or the connection may have
+            # failed after removal. Preserve local evidence; do not claim removal.
+            result["board_cleanup"]["status"] = "FAILED"
         if remote_created:
             collect(("runtime-probe.json", "probe.stderr", "probe.exitcode", "benchmark.json",
                      "benchmark.stdout", "benchmark.stderr", "benchmark.exitcode"), recovery=True)
