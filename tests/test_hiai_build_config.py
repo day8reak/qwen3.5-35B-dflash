@@ -44,13 +44,15 @@ def build_case(tmp_path, monkeypatch):
 
     monkeypatch.setattr(module.subprocess, "run", no_compile)
 
-    def run(*arguments):
+    def run(*arguments, linked=False):
         monkeypatch.setattr(sys, "argv", [str(script), "--resources", str(resources),
-                                          "--output", str(output), "--headers-only", *arguments])
+                                          "--output", str(output),
+                                          *([] if linked else ["--headers-only"]), *arguments])
         return module.main()
 
     return {"run": run, "sdk": sdk, "toolchain": toolchain, "compiler": compiler,
-            "resources": resources, "config": config, "output": output, "calls": calls}
+            "resources": resources, "config": config, "output": output, "calls": calls,
+            "module": module}
 
 
 @pytest.mark.parametrize("api", [None, "21", "24"])
@@ -114,3 +116,34 @@ def test_incomplete_sdk_fails_clearly_before_creating_output(build_case, problem
     assert resource_name in str(caught.value)
     assert not case["output"].exists()
     assert not case["calls"]
+
+
+def test_linked_result_binds_binary_to_exact_command_record(build_case, tmp_path, monkeypatch):
+    """Simulate a linker output; this verifies metadata, not native linking."""
+    case = build_case
+    library = tmp_path / "libhiai-build-fixture.so"
+    library.write_bytes(b"SIMULATED-LINK-LIBRARY")
+    config = dict(case["config"], hiai_libraries=[str(library)])
+    case["resources"].write_text(json.dumps(config))
+    no_compile = case["module"].subprocess.run
+    linked_payload = b"SIMULATED-LINKER-OUTPUT-NOT-EXECUTABLE"
+
+    def simulate_link(argv, **kwargs):
+        result = no_compile(argv, **kwargs)
+        if argv[:2] == ["cmake", "--build"]:
+            binary = case["output"] / "build/qwen35_dflash_hiai"
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            binary.write_bytes(linked_payload)
+        return result
+
+    monkeypatch.setattr(case["module"].subprocess, "run", simulate_link)
+    case["run"](linked=True)
+    result = json.loads((case["output"] / "result.json").read_text())
+    assert result["status"] == "LINKED" and result["device_validation"] == "PENDING"
+    assert result["binary_sha256"] == hashlib.sha256(linked_payload).hexdigest()
+    command_path = case["output"] / "command.json"
+    assert result["command_sha256"] == hashlib.sha256(command_path.read_bytes()).hexdigest()
+    command = json.loads(command_path.read_text())
+    assert command["headers_only"] is False
+    assert command["libraries"] == [{"path": str(library),
+                                     "sha256": hashlib.sha256(library.read_bytes()).hexdigest()}]

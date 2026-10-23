@@ -259,6 +259,28 @@ def _cleanup(case):
     return json.loads((case["output"] / "result.json").read_text())["board_cleanup"]["status"]
 
 
+def _build_record(case, *, legacy=False, missing_library=False):
+    """Make build metadata with intentionally unavailable historical SDK paths."""
+    folder = case["root"] / "recorded-hiai-build"
+    folder.mkdir()
+    library = case["libs"] / "libhiai-fixture.so"
+    libraries = [{"path": "/simulated-historical-sdk/lib/libhiai-fixture.so",
+                  "sha256": hashlib.sha256(library.read_bytes()).hexdigest()}]
+    if missing_library:
+        libraries.append({"path": "/simulated-historical-sdk/lib/libhiai-not-uploaded.so",
+                          "sha256": hashlib.sha256(b"SIMULATED-OTHER-LINK-INPUT").hexdigest()})
+    command = {"headers_only": False, "argv": ["cmake", "SIMULATED-CONFIGURE"],
+               "libraries": libraries}
+    _json(folder / "command.json", command)
+    result = {"status": "LINKED", "device_validation": "PENDING",
+              "binary_sha256": hashlib.sha256(case["runner"].read_bytes()).hexdigest()}
+    if not legacy:
+        result["command_sha256"] = hashlib.sha256((folder / "command.json").read_bytes()).hexdigest()
+    _json(folder / "result.json", result)
+    case["argv"].extend(["--hiai-build-dir", str(folder)])
+    return folder, command, result
+
+
 def test_hdc_protocol_upload_environment_and_strict_comparison(case):
     result = _run(case)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -510,4 +532,71 @@ def test_none_cleanup_preserves_complete_remote_run(case):
     assert (case["board"] / ".qwen35-hdc-owner").is_file()
     assert (case["board"] / "benchmark.json").is_file()
     assert not any(args[4] == "shell" and "rm " in args[5] for args in _calls(case))
+    assert json.loads((case["output"] / "comparison.json").read_text())["status"] == "PASS"
+
+
+def test_matching_hiai_build_and_uploaded_libraries_are_bound_in_evidence(case):
+    folder, command, build_result = _build_record(case)
+    result = _run(case)
+    assert result.returncode == 0, result.stdout + result.stderr
+    records = [json.loads((case["output"] / name).read_text())["hiai_build"]
+               for name in ("preflight.json", "result.json")]
+    assert records[0] == records[1]
+    audit = records[0]
+    assert audit["command_binding"] == "sha256-verified"
+    assert audit["command_sha256"] == build_result["command_sha256"]
+    assert audit["result_sha256"] == hashlib.sha256((folder / "result.json").read_bytes()).hexdigest()
+    assert audit["binary_sha256"] == hashlib.sha256(case["runner"].read_bytes()).hexdigest()
+    assert audit["missing_from_uploads"] == []
+    assert len(audit["link_libraries"]) == 1
+    library = audit["link_libraries"][0]
+    assert library["name"] == "libhiai-fixture.so" and library["status"] == "matched"
+    assert library["path"] == command["libraries"][0]["path"]
+    assert library["sha256"] == library["upload_sha256"] == command["libraries"][0]["sha256"]
+    assert json.loads((case["output"] / "comparison.json").read_text())["status"] == "PASS"
+
+
+@pytest.mark.parametrize("mismatch", ["same-name-library", "runner-binary", "command-record"])
+def test_build_identity_mismatches_are_rejected_before_hdc(case, mismatch):
+    folder, command, build_result = _build_record(case)
+    if mismatch == "same-name-library":
+        command["libraries"][0]["sha256"] = hashlib.sha256(b"DIFFERENT-LINK-LIBRARY").hexdigest()
+        _json(folder / "command.json", command)
+        build_result["command_sha256"] = hashlib.sha256((folder / "command.json").read_bytes()).hexdigest()
+        _json(folder / "result.json", build_result)
+    elif mismatch == "runner-binary":
+        build_result["binary_sha256"] = hashlib.sha256(b"DIFFERENT-RUNNER").hexdigest()
+        _json(folder / "result.json", build_result)
+    else:
+        command["argv"].append("SIMULATED-UNRECORDED-CHANGE")
+        _json(folder / "command.json", command)
+    result = _run(case)
+    assert result.returncode != 0
+    assert not _calls(case) and not _calls(case, runner=True)
+    assert not case["board"].exists() and _cleanup(case) == "NOT_CREATED"
+    assert (case["output"] / "failure.json").is_file()
+    if mismatch == "same-name-library":
+        assert command["libraries"][0]["path"] in result.stderr
+        assert command["libraries"][0]["sha256"] in result.stderr
+        uploaded = case["libs"] / "libhiai-fixture.so"
+        assert str(uploaded) in result.stderr
+        assert hashlib.sha256(uploaded.read_bytes()).hexdigest() in result.stderr
+
+
+def test_legacy_build_and_unuploaded_link_input_are_explicit_without_board_assumptions(case):
+    folder, command, _ = _build_record(case, legacy=True, missing_library=True)
+    result = _run(case)
+    assert result.returncode == 0, result.stdout + result.stderr
+    for name in ("preflight.json", "result.json"):
+        audit = json.loads((case["output"] / name).read_text())["hiai_build"]
+        assert audit["command_binding"] == "legacy-unbound"
+        assert audit["legacy_note"]
+        assert audit["command_sha256"] == hashlib.sha256((folder / "command.json").read_bytes()).hexdigest()
+        assert len(audit["missing_from_uploads"]) == 1
+        absent = audit["missing_from_uploads"][0]
+        assert absent["name"] == "libhiai-not-uploaded.so"
+        assert absent["path"] == command["libraries"][1]["path"]
+        assert absent["sha256"] == command["libraries"][1]["sha256"]
+        assert {entry["name"]: entry["status"] for entry in audit["link_libraries"]} == {
+            "libhiai-fixture.so": "matched", "libhiai-not-uploaded.so": "not_uploaded"}
     assert json.loads((case["output"] / "comparison.json").read_text())["status"] == "PASS"

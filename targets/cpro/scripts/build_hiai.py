@@ -67,7 +67,8 @@ def main():
         subprocess.run(["cmake", "--build", str(out/"build"), "-j", "4"], cwd=out, stdout=log, stderr=subprocess.STDOUT, check=True)
     binary = out/"build/qwen35_dflash_hiai"
     save_json(out/"result.json", {"status": "HEADERS_COMPILED" if args.headers_only else "LINKED",
-        "device_validation": "PENDING", "binary_sha256": sha256_file(binary) if binary.is_file() else None})
+        "device_validation": "PENDING", "binary_sha256": sha256_file(binary) if binary.is_file() else None,
+        "command_sha256": sha256_file(out/"command.json")})
     print(out)
 
 

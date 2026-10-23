@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -35,6 +36,7 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--omc", required=True, help="compiled OMC pair directory")
     p.add_argument("--runner", required=True, help="linked HarmonyOS ARM64 HIAI ELF executable")
+    p.add_argument("--hiai-build-dir", help="optional build_hiai.py output; verify runner identity and uploaded link-input libraries")
     p.add_argument("--reference", required=True, help="matching successful reference.json")
     p.add_argument("--lib-dir", action="append", default=[], help="directory of required *.so* libraries; repeatable")
     p.add_argument("--output", required=True, help="new output directory below AI_RUN_DIR")
@@ -73,6 +75,74 @@ def _record(root, record):
 def _file_record(path, remote):
     return {"local": str(path), "remote": str(remote), "bytes": path.stat().st_size,
             "sha256": sha256_file(path)}
+
+
+def _build_association(build_dir, runner, uploads):
+    """Compare recorded link inputs without assuming they are DT_NEEDED entries.
+
+    Original linker input files may have been moved or removed. Their recorded
+    digests remain the comparison source; this never resolves or opens them.
+    """
+    folder = Path(build_dir).expanduser().resolve()
+    result_bytes = (folder / "result.json").read_bytes()
+    command_bytes = (folder / "command.json").read_bytes()
+    result, command = json.loads(result_bytes), json.loads(command_bytes)
+    if not isinstance(result, dict) or not isinstance(command, dict):
+        raise ValueError("HIAI build result.json and command.json must be JSON objects")
+    command_hash = hashlib.sha256(command_bytes).hexdigest()
+    if result.get("status") != "LINKED":
+        raise ValueError("--hiai-build-dir must contain a LINKED build result")
+    if result.get("binary_sha256") != runner["sha256"]:
+        raise ValueError(f"HIAI build runner SHA256 mismatch: {folder / 'result.json'} "
+                         f"records {result.get('binary_sha256')!r}; runner {runner['local']} "
+                         f"has {runner['sha256']}")
+    bound = "command_sha256" in result
+    if bound and result["command_sha256"] != command_hash:
+        raise ValueError(f"HIAI build command SHA256 mismatch: {folder / 'result.json'} "
+                         f"records {result['command_sha256']!r}; {folder / 'command.json'} "
+                         f"has {command_hash}")
+    libraries = command.get("libraries")
+    if not isinstance(libraries, list):
+        raise ValueError("HIAI build command.json must contain a libraries list")
+    deployment = {PurePosixPath(entry["remote"]).name: entry for entry in uploads
+                  if PurePosixPath(entry["remote"]).parent == PurePosixPath("lib")}
+    association = {"build_dir": str(folder), "result_sha256": hashlib.sha256(result_bytes).hexdigest(),
+                   "command_sha256": command_hash,
+                   "command_binding": "sha256-verified" if bound else "legacy-unbound",
+                   "binary_sha256": runner["sha256"], "runner_path": runner["local"],
+                   "link_libraries": [], "missing_from_uploads": [],
+                   "scope": "Recorded link-input comparison only; DT_NEEDED and board library availability are not verified."}
+    for library in libraries:
+        if not isinstance(library, dict):
+            raise ValueError("HIAI build library records must be JSON objects")
+        path = _text(library.get("path"), "recorded link-input path")
+        name = Path(path).name
+        _relative(name)
+        digest = library.get("sha256")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"invalid recorded link-input SHA256: {path}")
+        item = {"name": name, "path": path, "sha256": digest}
+        upload = deployment.get(name)
+        if upload is None:
+            association["missing_from_uploads"].append(dict(item))
+            item["status"] = "not_uploaded"
+        else:
+            if digest != upload["sha256"]:
+                raise ValueError(f"HIAI library SHA256 mismatch for {name}: link input {path} "
+                                 f"has recorded SHA256 {digest}; upload source {upload['local']} "
+                                 f"has SHA256 {upload['sha256']}")
+            item.update(status="matched", upload_path=upload["local"], upload_sha256=upload["sha256"])
+        association["link_libraries"].append(item)
+    if not bound:
+        association["legacy_note"] = ("Legacy build result has no command_sha256: runner digest matches, "
+                                      "but the build result does not hash-bind command.json.")
+        print("run-hdc: " + association["legacy_note"], file=sys.stderr)
+    if association["missing_from_uploads"]:
+        names = ", ".join(item["name"] for item in association["missing_from_uploads"])
+        print(f"run-hdc: recorded link inputs not packaged in --lib-dir uploads: {names}. "
+              "Their DT_NEEDED status and availability on the board have not been verified; "
+              "no libraries are added automatically.", file=sys.stderr)
+    return association
 
 
 def _preflight(args):
@@ -157,6 +227,10 @@ def _preflight(args):
                 raise ValueError(f"conflicting library name: {library.name}")
             library_names.add(library.name)
             uploads.append(_file_record(library.resolve(), PurePosixPath("lib") / library.name))
+    build = None
+    if getattr(args, "hiai_build_dir", None):
+        runner_record = next(entry for entry in uploads if entry["remote"] == "bin/qwen35_dflash_hiai")
+        build = _build_association(args.hiai_build_dir, runner_record, uploads)
     board = args.board_root or ("/data/local/tmp/qwen35-dflash-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex)
     _text(board, "board root")
     bp = PurePosixPath(board)
@@ -166,6 +240,7 @@ def _preflight(args):
         _text(args.firmware_id, "firmware identity")
     return {"sn": sn, "bip": bip, "root": root, "board": bp, "manifest": manifest,
             "reference": reference, "reference_path": reference_path, "uploads": uploads,
+            "hiai_build": build,
             "manifest_sha256": sha256_file(manifest_path), "reference_sha256": sha256_file(reference_path)}
 
 
@@ -331,6 +406,8 @@ def execute(args):
                       manifest_sha256=context["manifest_sha256"], reference_sha256=context["reference_sha256"],
                       source=manifest["source"], ddk_id=manifest["ddk_id"],
                       precision=manifest["precision"], quantization=manifest.get("quantization"))
+        if context["hiai_build"] is not None:
+            result["hiai_build"] = context["hiai_build"]
         uploads = context["uploads"]
         result["runner_sha256"] = next(r["sha256"] for r in uploads if r["remote"] == "bin/qwen35_dflash_hiai")
         save_json(out / "preflight.json", {**result, "status": "PASS", "uploads": uploads})

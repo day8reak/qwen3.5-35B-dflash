@@ -11,17 +11,20 @@
 ```bash
 export SN='填写设备ID'
 export BIP='填写远程HDC服务端IP:端口'
-export HIAI_RUNTIME_LIB_DIR='/your/model_run_tool/libs/ohos'
+export HIAI_RUNTIME_LIB_DIR='/your/matching-hiai-runtime-libs'
 export HDC_RUN_DIR="$AI_RUN_DIR/hdc-$(date +%Y%m%d-%H%M%S)"
 python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
   --omc "$GE_OMC_DIR" \
   --runner "$HIAI_BUILD_DIR/build/qwen35_dflash_hiai" \
+  --hiai-build-dir "$HIAI_BUILD_DIR" \
   --reference "$GE_BOARD_RUN/reference.json" \
   --lib-dir "$HIAI_RUNTIME_LIB_DIR" \
   --output "$HDC_RUN_DIR"
 ```
 
-`HIAI_RUNTIME_LIB_DIR` 设置为匹配的运行库目录，例如内部示例的 `libs/ohos`；完整变量说明见上面的指南。脚本会执行probe、benchmark并回传日志和报告，然后自动与服务器参考比较。全部成功后自动删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。成功的OMC无需重新生成。
+`HIAI_RUNTIME_LIB_DIR` 必须与 `$HIAI_BUILD_DIR/command.json` 中的 HIAI 链接库匹配；使用 DDK 的库构建时，应部署该套 DDK 运行库。使用 `model_run_tool/libs/ohos` 中的库构建时，才部署示例配套库。完整变量说明和当前 DDK 库切换命令见上面的指南。脚本会执行probe、benchmark并回传日志和报告，然后自动与服务器参考比较。全部成功后自动删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。成功的OMC无需重新生成。
+
+`--hiai-build-dir` 会核对程序与构建记录，以及同名上传库的 SHA256，提前拒绝混用不同版本的库；未上传的链接库会列出供核对，不会自动复制。编译时选用的 HIAI 头文件、库与板端部署库须匹配。
 
 以后要保留大体积独立权重时，加 `--board-cleanup omc`，只删除清单中的 OMC 文件，保留目录、独立权重、程序、库和日志；加 `--board-cleanup none` 则全部保留。默认是 `--board-cleanup all`。嵌入 OMC 内部的权重随 OMC 一起删除。
 
