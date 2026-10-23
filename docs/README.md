@@ -253,3 +253,26 @@ ctest --test-dir "$AI_RUN_DIR/native-tests" --output-on-failure
 ```
 
 反馈 `preflight.json`、失败阶段的错误/日志和板端 probe/报告即可；权重、内部头文件和库保持在用户环境。
+
+## 板端算子探测
+
+模型 OMC 能编译但在板端加载失败时，可先逐项检查小图的编译、加载、执行和数值结果。复用已配置的 `CANN_ROOT`、`CPRO_DDK_ROOT`、`HIAI_BUILD_DIR`、`SN` 和 `BIP`；其中 `HIAI_BUILD_DIR` 是此前成功运行 `build_hiai.py` 的输出目录，内含 `command.json` 及原链接库记录。主机 Python 需要 NumPy，GE 导出和 OMG 使用现有工具链。脚本从构建记录复用 OHOS SDK、头文件及匹配的 HIAI 库，自动构建独立的 `qwen35_hiai_op_probe`，无需额外的 lib 参数。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
+  --output "$AI_RUN_DIR/op-probe-$(date +%Y%m%d-%H%M%S)"
+```
+
+默认套件包含 47 个小图，覆盖当前模型中的重点算子和变体，包括 MatMul、BatchMatMul、激活、类型转换、索引、广播，以及四维/五维输入差异。MatMul 包含输出宽度为 1、2、8 的常量/动态右输入，BatchMatMul 包含卷积降解所用的 `[48,8,4] × [48,4,1]`。每个案例生成独立 AIR/OMC 和输入，按 `hdc -t "$SN" -s "$BIP"` 上传后实际调用 HIAI Load 与 Process，并取回输出和日志。单个案例编译或执行失败会记录后继续测试其他案例；全部案例编译失败时返回非零退出码。
+
+输出目录包含 `report.json`、`report.txt` 和 `results.tar.gz`。报告分别记录各阶段结果；浮点数学案例使用 FP16 参考对比，默认 `rtol=0.01`、`atol=0.002`，纯复制/重排和整数结果要求精确一致。小图成功只能证明该输入形状、类型和工具链下的案例通过，不能据此宣称整个算子支持所有形状，或完整模型全部由 NPU 执行。算子执行成功与设备分区证据分别记录。
+
+可按需要添加以下选项：
+
+- `--prepare-only`：仅生成案例和参考输入输出，不需要编译器或板机。
+- `--compile-only`：生成并编译 AIR/OMC，跳过板端执行和原生 runner 构建。
+- `--list-cases`：打印全部案例名称，不需要编译器或板机。
+- `--case NAME`：仅运行指定案例，可重复传入；名称可先通过 `--list-cases` 查看。
+- `--keep-board`：取回结果后仍保留本次创建的板端目录。
+
+默认在结果成功取回并校验后删除本次脚本创建的板端目录；传输、校验等基础设施错误时保留现场。已有板端目录及其他任务文件不清理。

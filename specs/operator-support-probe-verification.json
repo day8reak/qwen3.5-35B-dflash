@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "run_id": "20261023T074801Z-18626-ef76cc",
+  "baseline_commit": "bf545c2",
+  "status": "SOURCE_AND_HOST_TESTS_PASSED_BOARD_DIAGNOSTIC_NOT_RUN",
+  "request": "User-run board operator probing to guide NPU placement of Qwen3.5/DFlash graphs",
+  "case_count": 47,
+  "precision": "FP16 arithmetic and INT32 external indices; no production model precision change",
+  "hardware_reference_policy": "use",
+  "scope": "Support diagnostics only, no latency, complete-model accuracy or NPU execution claim",
+  "observations": [
+    "User HCL restore reached CPUCL compatibility checking; FP16 MatMul rejected by CPUCL",
+    "User OMG log reports rank5 Vector/Slice rejection and missing BatchMatMulV2 in one TBE store",
+    "A single store rejection is not global unsupported status or final placement",
+    "Blue-package FP16 MatMul ONNX diagnostic compiled as NPU:1 CPU:0 under both tested LD path orders; distinct package/route, not proof for internal CPro AIR"
+  ],
+  "changes": [
+    "47 deterministic small GE AIR probes with ordered hashes and FP16/reference comparisons",
+    "Independent bounded HIAI Load/Process runner using model buffer and ND tensor checks",
+    "Automatic SDK/ARM64 library selection from hash-associated HIAI_BUILD_DIR records",
+    "HDC marker/transfer-hash checks, native PID logs, continued case failures and ownership-guarded cleanup",
+    "Compiler success/failure diagnostic retention excluded from board payloads",
+    "Separate compile/load/execute/numerical/placement reports and compact share archive"
+  ],
+  "validation": {
+    "python_regression": {
+      "status": "PASSED",
+      "count": 143,
+      "evidence": "integration-tests-v2.xml"
+    },
+    "cross_module_hdc_report": {
+      "status": "PASSED",
+      "count": 10,
+      "evidence": "op-probe-hdc-integration-tests.xml",
+      "backend": "host fake HDC and fake native runner"
+    },
+    "native_ctest": {
+      "status": "PASSED",
+      "suites": 4,
+      "evidence": "native-integration/Testing/Temporary/LastTest.log"
+    },
+    "native_probe_fault_cases": {
+      "status": "PASSED",
+      "count": 23,
+      "backend": "fake HIAI, ASan/UBSan also checked"
+    },
+    "ohos_arm64_header_compile": {
+      "status": "PASSED",
+      "scope": "blue public HIAI headers only; internal link not verified"
+    },
+    "cli_prepare_all": {
+      "status": "PASSED",
+      "case_count": 47,
+      "evidence": "cli-prepare-smoke/manifest.json"
+    },
+    "user_internal_air_omg": {
+      "status": "NOT_RUN_LOCALLY"
+    },
+    "board": {
+      "status": "NOT_RUN_LOCALLY_USER_EXECUTION_REQUIRED",
+      "reason": "internal CPro profile, HIAI ARM64 link libraries and remote board are user-side resources"
+    },
+    "final_transport_report_regression": {
+      "status": "PASSED",
+      "count": 33,
+      "evidence": "probe-final-tests.xml"
+    }
+  },
+  "evidence_root_policy": "Evidence paths relative to the recorded workspace run; generated artifacts are not in the model repository",
+  "experience_audit": {
+    "captured": "docs/experience.md",
+    "executable_checks": "tests/test_op_probe*.py and native probe tests",
+    "shared_ddk_changed": false,
+    "generic_skills_changed": false,
+    "unproven": "NPU placement of each internal compiled case and complete-model runtime support"
+  },
+  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py\" --output \"$AI_RUN_DIR/op-probe-$(date +%Y%m%d-%H%M%S)\"",
+  "return_artifact": "results.tar.gz",
+  "model_gates": "No complete-model contract/reference/device/accuracy/performance/release gate advanced"
+}

@@ -193,3 +193,14 @@ run：`20261022T114012Z-21463-7a8f45`，基线 `be88c95`。用户 PID158383 的 
 用户反馈最新tiny双图转换成功。保留用户报告与独立产物/设备验证的边界，未要求重做已通过的转换。实际成功的compile输出可能是用户持续使用的 `$GE_PAIR_RUN/omc`，不能仅依据上一条示例变量假定为 `omc-clamp-*`；新指南要求绑定实际 `--output` 并检查manifest及两张OMC哈希。
 
 匹配参考必须读取同一prepared，不能重新运行另一随机权重路线的demo。将此前跨页路径映射整理为直接GE专用的服务器/板端命令；INT32辅助算子可能走CPUCL，编译成功不代表全图NPU执行。正式构建需要OHOS ARM64库，服务器AscendC库与头文件编译结果不能替代。文档命令语法和接口核对通过，未改通用技能；经验仅记录当前模型。后续HIAI链接、probe、真实推理与比较结果仍待用户执行。
+
+
+## 用小图区分算子能力、编译分区和板端执行（2026-10-23）
+
+用户的板端日志已从空 model buffer 失败推进到 HCL RestoreFromBuffer：CPUCL 兼容检查拒绝 FP16 MatMul，并报告某个 activation mode 与 Cast dtype 不匹配。另一份 OMG 日志明确出现 `input dimCnt 5 > 4`、Slice `not support realDimCnt 5`，以及 BatchMatMulV2 不在某个 TBE store 中。单个 `custom_ascendc_lib` 的拒绝不是整个 NPU 的拒绝；CPUCL 的候选检查错误也不自动证明最终 CPU 放置。
+
+为此新增 `probe_hdc_ops.py`：47 个固定输入小图沿现有 GE C++ → AIR → OMG → HIAI 路线，比较窄 M/N MatMul、常量和动态右输入、卷积形态 BMM，以及 Neg/Add/Mul/Select/Slice 的 5D/4D 对照。每个案例独立进程、显式 model buffer、哈希校验上传和回传，按实际阶段记录编译/加载/执行/数值结果。默认只删除本次创建且所有权标记匹配的目录；基础设施失败保留现场。SDK/库复用现有构建记录，不增加 lib 参数。
+
+编译器的成功分区转储与失败转储均按预算保留，并排除在模型上板 payload 之外。报告优先展示 dtype、维数和算子注册问题，保留常量折叠图与主图的分区范围，设备执行位置没有独立证据时保持 UNVERIFIED。完整 HiLog 仅保留本地，分享包只含对应 PID 的日志；环形缓冲区可能遗漏早期案例，PID 也可能复用。
+
+主机验证包含确定性数据、发射、模拟工具失败、HDC 退出标记/文件哈希/目录所有权、报告阶段判定，以及 C++ fake HIAI 生命周期检查。OHOS 编译仅证明公开头文件下的编译契约，不代表内部配套库链接或真机成功。蓝区 FP16 MatMul 的独立编译对照可形成 NPU 分区，但没有用于断言用户内部 X90 工具链支持。证据见 `specs/operator-support-probe-verification.json`。未改共享 DDK、生产图的算子放置或数值阈值；下一步收取用户 `results.tar.gz` 后按真实支持差异选择改写。

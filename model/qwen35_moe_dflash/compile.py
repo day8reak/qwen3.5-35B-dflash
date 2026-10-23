@@ -131,32 +131,91 @@ def _omg_ipc_environment(scratch, env):
             os.close(fd)
 
 
-def _retain_failure_diagnostics(scratch, folder, *, max_bytes=16 << 20):
-    """Keep bounded OMG graph dumps before deleting scratch; never input links."""
+def _retain_compiler_diagnostics(scratch, folder, *, failure=False, max_bytes=16 << 20):
+    """Retain bounded compiler evidence on success or failure, never input links.
+
+    Reports and graph dumps are host diagnostics, not board model payloads.
+    A pre-check report describes candidate support, not final device placement;
+    retained dumps still need graph-aware interpretation, excluding const folding.
+    """
+    if max_bytes < 0:
+        raise ValueError("diagnostic byte budget must be nonnegative")
+    candidates = []
+    report = scratch / "check_result.json"
+    if not report.is_symlink() and report.is_file():
+        candidates.append(report)
     source = scratch / "dump_graph"
-    if source.is_symlink() or not source.is_dir():
-        return
-    records = []
-    used = 0
-    # Prefer the failure graphs if successful intermediate dumps fill the budget.
-    files = sorted(source.glob("*.irpb"), key=lambda path: ("fail" not in path.name, path.name))
+    if not source.is_symlink() and source.is_dir():
+        candidates.extend(path for path in source.glob("*.irpb")
+                          if not path.is_symlink() and path.is_file())
+    scope = ("Host compiler diagnostics only. Pre-check support is not final placement; "
+             "constant-folding graphs are not board execution evidence.")
+    if not candidates:
+        return {"status": "NOT_EMITTED", "scope": scope}
+
+    def priority(path):
+        name = path.name.lower()
+        if failure and "fail" in name:
+            rank = 0
+        elif path == report:
+            rank = 1
+        elif "after_partition" in name:
+            rank = 2
+        elif "after_connectionpointoptimize" in name:
+            rank = 3
+        elif "subgraph" in name:
+            rank = 4
+        else:
+            rank = 5
+        return rank, path.name
+
     destination = folder / "diagnostics"
-    destination.mkdir(exist_ok=True)
-    for path in files:
-        if path.is_symlink() or not path.is_file():
-            continue
+    if destination.is_symlink():
+        raise OSError("compiler diagnostics destination must not be a symlink")
+    destination.mkdir(parents=True, exist_ok=True)
+    records, used = [], 0
+    for path in sorted(candidates, key=priority):
         size = path.stat().st_size
-        record = {"name": path.name, "bytes": size}
+        record = {"name": path.name, "source": str(path.relative_to(scratch)), "bytes": size,
+                  "role": "pre-check-report" if path == report else "graph-dump"}
         if used + size > max_bytes:
             record["status"] = "SKIPPED_SIZE_BUDGET"
         else:
             target = destination / path.name
+            if target.exists() or target.is_symlink():
+                raise FileExistsError(target)
             shutil.copyfile(path, target)
+            if target.stat().st_size != size:
+                raise OSError(f"compiler diagnostic changed size during retention: {path.name}")
             used += size
             record.update(status="RETAINED", sha256=sha256_file(target))
         records.append(record)
-    save_json(destination / "manifest.json", {"max_bytes": max_bytes, "retained_bytes": used,
-                                              "files": records})
+    status = "PARTIAL" if any(row["status"] != "RETAINED" for row in records) else "RETAINED"
+    save_json(destination / "manifest.json", {"status": status, "scope": scope,
+        "compile_outcome": "failure" if failure else "success", "max_bytes": max_bytes,
+        "retained_bytes": used, "files": records})
+    return {"status": status, "manifest": "diagnostics/manifest.json", "scope": scope}
+
+
+def _retain_failure_diagnostics(scratch, folder, *, max_bytes=16 << 20):
+    """Compatibility entry point retaining the failure-first ordering."""
+    return _retain_compiler_diagnostics(scratch, folder, failure=True, max_bytes=max_bytes)
+
+
+def _compiled_payloads(folder, root):
+    """Preserve existing payload collection while excluding host diagnostics."""
+    records = []
+    for path in sorted(folder.iterdir()):
+        if path.name == "diagnostics":
+            continue
+        if path.is_symlink():
+            raise ValueError(f"artifact payload must not be a symlink: {path}")
+        if path.is_dir():
+            records.extend(files_under(path, root))
+        elif path.is_file():
+            records.append({"path": str(path.relative_to(root)), "bytes": path.stat().st_size,
+                            "sha256": sha256_file(path)})
+    return records
 
 
 def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600):
@@ -237,6 +296,12 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600):
                     # path remains outside the automatically cleaned scratch.
                     raise RuntimeError(f"OMG graph={name} stage={stage}: {error}\n"
                                        f"Full log: {log_path}\n{log_excerpt(log_path)}{diagnostic_note}") from error
+                try:
+                    compiler_diagnostics = _retain_compiler_diagnostics(scratch, folder)
+                except OSError as diagnostic_error:
+                    # A diagnostics storage error does not invalidate an OMC
+                    # already produced successfully; never claim full evidence.
+                    compiler_diagnostics = {"status": "FAILED", "error": str(diagnostic_error)}
                 stage = f"{name}-collect"
                 # Preserve compiled outputs/sidecars, but never archive input
                 # symlinks or compiler scratch as model payloads.
@@ -251,7 +316,8 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600):
                             "inputs": graph["inputs"], "outputs": graph["outputs"],
                             "input_shapes": graph["input_shapes"], "input_dtypes": graph["input_dtypes"],
                             "output_shapes": graph["output_shapes"], "output_dtypes": graph["output_dtypes"],
-                            "payloads": files_under(folder, output)})
+                            "compiler_diagnostics": compiler_diagnostics,
+                            "payloads": _compiled_payloads(folder, output)})
         result["status"] = "COMPILED"
         save_json(output / "manifest.json", result)
     except Exception as error:
