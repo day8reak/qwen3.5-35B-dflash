@@ -173,6 +173,19 @@ class Hdc:
     def __init__(self, executable, sn, bip, output, timeout):
         self.prefix = [executable, "-t", sn, "-s", bip]
         self.output, self.timeout, self.count = output, timeout, 0
+        self.last_call = None
+
+    def _diagnostics(self):
+        record = self.last_call
+        details = []
+        for channel in ("stdout", "stderr"):
+            value = record[channel].strip()
+            if len(value) > 2000:
+                value = value[:2000] + " ... [truncated; see full log]"
+            details.append(f"HDC {channel}: {value!r}")
+        log_path = self.output / "calls" / f"{self.count:04d}-{record['label']}.json"
+        details.append(f"Full log: {log_path}")
+        return "\n" + "\n".join(details)
 
     def call(self, arguments, label, *, timeout=None):
         self.count += 1
@@ -191,8 +204,9 @@ class Hdc:
             raise
         finally:
             save_json(self.output / "calls" / f"{self.count:04d}-{label}.json", record)
+            self.last_call = record
         if result.returncode != 0:
-            raise RuntimeError(f"HDC {label} failed with exit code {result.returncode}; see calls/{self.count:04d}-{label}.json")
+            raise RuntimeError(f"HDC {label} failed with exit code {result.returncode}" + self._diagnostics())
         return result.stdout
 
     def shell(self, command, label, *, allow_failure=False, timeout=None):
@@ -201,7 +215,12 @@ class Hdc:
         stdout = self.call(["shell", "sh -c " + shlex.quote(payload)], label, timeout=timeout)
         matches = list(re.finditer(r"^" + re.escape(marker) + r"=([0-9]+)\r?$", stdout, re.MULTILINE))
         if len(matches) != 1:
-            raise RuntimeError(f"HDC {label} missing unique remote exit marker; remote success is unverified")
+            # Some HDC versions return zero for connection errors. Keep the
+            # completion marker as the gate, but show the actual HDC response;
+            # do not classify success/failure by version-dependent error text.
+            query = shlex.join([self.prefix[0], "-s", self.prefix[4], "list", "targets", "-v"])
+            raise RuntimeError(f"HDC {label} missing unique remote exit marker; remote success is unverified"
+                               + self._diagnostics() + f"\nInspect devices on the selected HDC server: {query}")
         status = int(matches[0].group(1))
         if status and not allow_failure:
             raise RuntimeError(f"remote {label} failed with exit code {status}; HDC process exit was zero")

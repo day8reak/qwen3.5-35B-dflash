@@ -100,6 +100,16 @@ cat "$HDC_RUN_DIR/comparison.json"
 
 脚本以非零退出码报告失败，并尽可能拉回已生成日志；断连时部分文件可能无法取回，保留 `calls/` 和板端目录供后续排查。它还检查远端 shell 的独立退出状态，避免把 HDC 客户端返回0误当作板端程序成功。
 
+若第一步 `create-root` 提示 `missing unique remote exit marker`，先看同屏 HDC stdout/stderr 或 `calls/0001-create-root.json`。例如 `[Fail]Device not founded or connected` 表示所选设备未找到或未连接，shell 未执行；当前尚未上传模型或运行推理。用下列只读命令检查连接：
+
+```bash
+"${HDC:-hdc}" -s "$BIP" list targets -v
+# SN 应与上述列表中的连接标识完全一致，并且设备已连接。
+"${HDC:-hdc}" -t "$SN" -s "$BIP" shell echo HDC_OK
+```
+
+如果列表为空或设备状态异常，先确认设备是否连接到 `BIP` 指定的 HDC 服务端、板端调试及授权是否就绪。若列表中的连接标识不同，用该标识更新 `SN`；网络连接的标识可能是 `IP:端口`，并非 USB 序列号，见[官方设备选择说明](https://github.com/openharmony/docs/blob/master/en/application-dev/dfx/hdc.md#connecting-to-the-specified-target-device)。确认 shell 输出 `HDC_OK` 后，换一个新的 `HDC_RUN_DIR` 再运行；不需要重新生成 OMC。
+
 清理前若发现归属标记不匹配、目录被替换成符号链接，脚本会拒绝删除。清理命令失败或无法确认删除结果时也返回非零，`board_cleanup.status` 为 `FAILED`；已回传的服务器文件仍保留，板端目录可能完整保留、部分清理或已删除，需按日志确认。只有运行与比较已通过而清理失败时，`device_validation` 可为 `PASS`，整体 `status` 仍为 `FAILED`。
 
 `comparison.json` 为 PASS 表示这次普通/DFlash token 与停止原因匹配参考，并通过既有产物身份检查。当前 tiny 测试不证明完整35B量化、内存、质量或性能，也不能仅由 OMC 成功运行推断所有节点都在 NPU 上执行。脚本开发使用模拟 HDC 验证流程；真实 CPro 运行结果由你执行后提供。

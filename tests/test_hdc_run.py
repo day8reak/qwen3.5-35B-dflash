@@ -74,6 +74,14 @@ elif args[:2] == ["file", "recv"]:
         board.rename(replaced)
         board.symlink_to(replaced, target_is_directory=True)
 elif args[:1] == ["shell"]:
+    failure = os.environ.get("FAKE_HDC_FAILURE", "")
+    if failure in ("missing-marker-stdout", "missing-marker-stderr", "missing-marker-empty"):
+        # Match the real disconnected-device response: transport reports zero
+        # but executes no remote command and supplies no remote exit marker.
+        if failure != "missing-marker-empty":
+            print("[Fail]Device not founded or connected",
+                  file=sys.stderr if failure == "missing-marker-stderr" else sys.stdout)
+        sys.exit(0)
     if len(args) != 2:
         raise RuntimeError("shell must be one argument")
     command = shlex.split(args[1])
@@ -303,6 +311,35 @@ def test_hdc_zero_transport_status_does_not_hide_remote_failure(case):
     assert (case["board"] / "models/target/target.omc").is_file()
     assert not (case["output"] / "comparison.json").exists()
     assert _cleanup(case) == "RETAINED"
+
+
+@pytest.mark.parametrize("channel", ["stdout", "stderr", "empty"])
+def test_missing_remote_marker_shows_hdc_response_and_preserves_local_only_state(case, channel):
+    result = _run(case, "missing-marker-" + channel)
+    assert result.returncode != 0
+    assert "marker" in result.stderr.lower()
+    records = list((case["output"] / "calls").glob("*.json"))
+    assert len(records) == 1
+    assert str(records[0]) in result.stderr
+    record = json.loads(records[0].read_text())
+    assert record["returncode"] == 0
+    original = "[Fail]Device not founded or connected\n"
+    if channel == "empty":
+        assert record["stdout"] == record["stderr"] == ""
+    else:
+        assert record[channel] == original
+        assert record["stderr" if channel == "stdout" else "stdout"] == ""
+        assert original.strip() in result.stderr
+    assert "stdout" in result.stderr and "stderr" in result.stderr
+    assert "list targets -v" in result.stderr and case["env"]["BIP"] in result.stderr
+    calls = _calls(case)
+    assert len(calls) == 1 and calls[0][4] == "shell"
+    assert not any("rm " in " ".join(args) for args in calls)
+    assert not Path(case["env"]["FAKE_HDC_UPLOADS"]).exists()
+    assert not _calls(case, runner=True)
+    assert not case["board"].exists()
+    assert _cleanup(case) == "NOT_CREATED"
+    assert (case["output"] / "failure.json").is_file()
 
 
 def test_probe_must_report_npu_even_with_successful_remote_exit(case):
