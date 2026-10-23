@@ -6,6 +6,23 @@
 
 **服务器没有 OHOS SDK：[获取 Native SDK 与配置编译路径](ohos-native-sdk.md)。** 已找到的 HIAI `.so` 是链接/运行库，还需匹配的交叉编译器与 sysroot；SDK 留在服务器。
 
+**HDC 自动上板：[传文件、设置环境、运行与结果回传](hdc-board-run.md)。** 设置 `SN`（设备ID）和 `BIP`（远程HDC服务端地址），统一使用 `hdc -t "$SN" -s "$BIP"`。准备好正式程序、OMC和匹配参考后，在服务器执行：
+
+```bash
+export SN='填写设备ID'
+export BIP='填写远程HDC服务端IP:端口'
+export HIAI_RUNTIME_LIB_DIR='/your/model_run_tool/libs/ohos'
+export HDC_RUN_DIR="$AI_RUN_DIR/hdc-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+  --omc "$GE_OMC_DIR" \
+  --runner "$HIAI_BUILD_DIR/build/qwen35_dflash_hiai" \
+  --reference "$GE_BOARD_RUN/reference.json" \
+  --lib-dir "$HIAI_RUNTIME_LIB_DIR" \
+  --output "$HDC_RUN_DIR"
+```
+
+`HIAI_RUNTIME_LIB_DIR` 设置为匹配的运行库目录，例如内部示例的 `libs/ohos`；完整变量说明见上面的指南。脚本会执行probe、benchmark并回传日志和报告，然后自动与服务器参考比较。成功的OMC无需重新生成。
+
 [直接 GE 构图与导出](direct-model-air.md)保留全部生成命令及兼容性修复记录。生成端只需NumPy与主机GE，不加载PyTorch/TorchNPU/TorchAir。当前tiny使用FP16随机权重；完整35B的压缩整数权重GE映射尚未实现。
 
 [Add 最小探针](direct-air-smoke.md)继续保留，可用于区分基础环境和模型算子转换问题。

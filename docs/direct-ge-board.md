@@ -75,6 +75,8 @@ cat "$GE_BOARD_RUN/hiai-build/result.json"
 
 ## 3. 传到板端的文件
 
+**自动方式：** 第1、2节完成后，可直接使用 [HDC 自动上板脚本](hdc-board-run.md)，以 `SN`、`BIP` 选择设备，自动完成本页第3–6节。下面保留手动步骤供逐项排查。
+
 使用你们现有传输通道。选一个新的、允许执行并访问HIAI的部署目录，下文以 `/data/local/tmp/qwen35-tiny-001` 为例。
 
 | 服务器来源 | 板端相对部署目录 |

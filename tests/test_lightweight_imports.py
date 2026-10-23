@@ -73,13 +73,16 @@ def test_cli_help_with_broken_torch(args, broken_model_environment, tmp_path):
     assert "usage:" in result.stdout
 
 
-def test_hiai_build_help_without_torch(broken_model_environment, tmp_path):
+@pytest.mark.parametrize("script, option", [
+    ("build_hiai.py", "--headers-only"), ("run_hdc.py", "--reference"),
+])
+def test_hiai_tools_help_without_torch(script, option, broken_model_environment, tmp_path):
     repo = Path(package.__file__).resolve().parents[2]
-    result = subprocess.run([sys.executable, str(repo / "targets/cpro/scripts/build_hiai.py"), "--help"],
+    result = subprocess.run([sys.executable, str(repo / "targets/cpro/scripts" / script), "--help"],
                             cwd=tmp_path, env=broken_model_environment,
                             text=True, capture_output=True, timeout=30)
     assert result.returncode == 0, result.stderr
-    assert "--headers-only" in result.stdout
+    assert option in result.stdout
 
 
 def test_lazy_exports_preserve_public_objects_and_hash_alias():
