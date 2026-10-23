@@ -272,16 +272,17 @@
     "board_guide": "docs/direct-ge-board.md"
   },
   "operator_support_probe": {
-    "run_id": "20261023T090425Z-28419-2bbca1",
+    "run_id": "20261023T091800Z-29927-3b58ce",
     "status": "USER_REPORTED_NPUCL_LOAD_FAILURE",
     "scope": "47 independent small operator contracts; no full-model gate advanced",
     "evidence": "specs/operator-support-probe-verification.json",
     "guide": "docs/README.md#板端算子探测",
     "current_model_device_status": "USER_REPORTED_HCL_CPUCL_MATMUL_COMPATIBILITY_FAILURE",
     "new_probe_device_execution": "USER_REPORTED_7_NUMERICAL_PASSES_35_NPU_PARTITION_LOAD_FAILURES",
-    "next_command": "find \"$CPRO_DDK_ROOT/ddk\" -maxdepth 6 \\( -name \"libai*.so*\" -o -name \"libhiai*.so*\" -o -name \"*npu*.so*\" -o -name \"*dnnacl*.so*\" \\) -exec file {} +",
+    "next_command": "readelf -d \"$OP_PROBE_RUN/native/build/qwen35_hiai_op_probe\" \"$CPRO_DDK_ROOT/ddk/ai_ddk_lib/lib64/\"*.so* | grep -E \"^File:|NEEDED|SONAME|RPATH|RUNPATH\"",
     "experience_audit": "docs/experience.md",
     "user_evidence": "specs/operator-support-probe-user-report.json",
-    "confirmed_probe_blocker": "NPUCL not registered in the MatMul and Add probe processes; backend package/configuration cause still unverified"
+    "confirmed_probe_blocker": "NPUCL not registered in the MatMul and Add probe processes; backend package/configuration cause still unverified",
+    "runtime_inventory_status": "USER_REPORTED_BOARD_NPU_BACKEND_FILES_PRESENT_SELECTION_UNVERIFIED"
   }
 }

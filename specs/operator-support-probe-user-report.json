@@ -100,5 +100,33 @@
       "targets/cpro/runtime/src/hiai_op_probe.cpp": "18028f903171ce44539d10056a39a50e1a503b42b9acdffd54dc2fa3ae7e0281"
     },
     "evidence_root_policy": "Relative to the recorded workspace run; generated artifacts stay outside the repository"
+  },
+  "runtime_inventory_followup": {
+    "run_id": "20261023T091800Z-29927-3b58ce",
+    "status": "USER_REPORTED_BOARD_BACKENDS_PRESENT_SELECTION_UNVERIFIED",
+    "provenance": "User pasted bounded host file inventory and board find output; runtime process mappings and actual DT_NEEDED not yet supplied",
+    "ddk_observations": [
+      "ai_ddk_lib/lib64 supplies AArch64 libhiai_hcl_model_runtime.so and libhiai_hcl_model_runtime_impl.so alongside the linked HIAI libraries",
+      "No libai_fmk_dnnacl.so or matching NPU backend filename appears in the supplied bounded ddk inventory",
+      "Common libraries in hiai_pipe_lib/lib64 have the same reported BuildIDs as ai_ddk_lib/lib64; a directory-name change alone does not establish a different backend",
+      "The listed npu_simulator and tbe libraries are x86-64 host objects, not AArch64 board candidates"
+    ],
+    "board_candidates": [
+      "/system/lib64/ndk/libhiai_foundation.so",
+      "/system/lib64/platformsdk/libhiai.so",
+      "/system/lib64/platformsdk/libhiai_ir.so",
+      "/vendor/lib64/chipsetsdk/libai_fmk_hcl_model_runtime.so",
+      "/vendor/lib64/chipsetsdk/libai_fmk_hcl_model_runtime_impl.so",
+      "/vendor/lib64/chipsetsdk/libai_npucl_executor_client_base.so",
+      "/vendor/lib64/chipsetsdk/libai_npucore_graph_executor_client.so",
+      "/vendor/lib64/libai_client.so",
+      "/vendor/lib64/libai_register.so",
+      "/vendor/lib64/libai_npucore_graph_executor.so"
+    ],
+    "source_observation": "discover_libraries uploads the recorded link inputs and all immediate shared-library siblings, and the probe prepends that directory to its LD_LIBRARY_PATH",
+    "hypothesis": "The packaged DDK HCL implementation may be selected ahead of the board runtime and fail to supply NPUCL. Presence of a candidate file alone does not prove its selection, loadability, compatibility or registration.",
+    "next_action": "Read DT_NEEDED/SONAME/search paths from the actual probe and DDK libraries plus backend-selection strings from libhiai.so before constructing an isolated library-selection comparison",
+    "production_runtime_policy_changed": false,
+    "hardware_support_claim": "No negative claim about hardware NPU capability from an unregistered process backend"
   }
 }

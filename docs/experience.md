@@ -214,3 +214,10 @@ run：`20261023T090425Z-28419-2bbca1`，基线 `6330fc0`。用户回传 `op-prob
 新增报告检查仅在原生 Load 失败、退出码非零且对应 PID 日志明确给出 NPUCL 缺失时输出 `NPUCL_NOT_REGISTERED`；缺日志、其他 PID 或单条 dlopen 警告不作此判定。IO 诊断输出全部实际输入输出形状/格式，并给出具体声明与实际不匹配项，保留拒绝执行的门槛。三个 IO 失败尚不能确认是单例维度、格式或导出描述的哪一种问题。Select 的编译失败定位到 condition CastT 未注册 kernelId，不能直接推广为 Select 全面不支持；GatherElements 的最终兼容拒绝只适用于此次小图配置。
 
 47 项 Python 报告/传输回归与 28 个原生 fake HIAI 用例通过，README 命令通过 bash 语法检查；这只验证诊断改动，不代表板端后端恢复。经验固化在本模型的报告及原生回归，不改通用技能或共享 DDK。用户粘贴内容与独立产物验证分别记录于 `specs/operator-support-probe-user-report.json`。下一步只读核对 DDK/板端候选运行库及注册路径，恢复后先复验一个 MatMul 和一个 Add；完整模型与真实 NPU 执行、精度、性能门槛保持未通过。
+
+
+## 板端后端存在与自动部署的选择边界（2026-10-23）
+
+run：`20261023T091800Z-29927-3b58ce`。用户清单显示板端 `/vendor/lib64/chipsetsdk` 有 HCL runtime、NPUCL executor client 及 NPU graph executor 等库；因此此前进程的 NPUCL 未注册不能扩大为板端没有 NPU 运行库。DDK 的 `ai_ddk_lib/lib64` 则带有 `libhiai_hcl_model_runtime.so` 和实现库，现有自动部署会一并上传并将该目录置于局部搜索路径前面。它们是否抢先选中了不含 NPUCL 的 DDK 后端仍是待证假设。两个后端入口的 basename 不同，单纯追加 vendor 目录并不能证明发生了切换。
+
+`hiai_pipe_lib/lib64` 中多个公共库的用户报告 BuildID 与 `ai_ddk_lib/lib64` 相同，不以目录名不同作为替换依据。主机清单中的 x86-64 simulator/TBE 库不用于 ARM64 板端。下一步核对实际 runner、libhiai、ir_build 与 HCL 两库的 DT_NEEDED/搜索路径和选择入口，再决定隔离对照应排除的准确文件；未更改自动部署默认策略、系统库或生产精度。记录见 `specs/operator-support-probe-user-report.json`。
