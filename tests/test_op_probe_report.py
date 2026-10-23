@@ -295,6 +295,7 @@ def test_saved_transport_evidence_preserves_partial_results_and_identity(tmp_pat
     (board / 'exitcode').write_text('0')
     record = {'status': status, 'stage': 'hilog', 'error': 'transport example',
               'serial': 'test-device', 'hdc_server': 'example:1234', 'firmware': {'value': 'test'},
+              'library_search_paths': ['/vendor/lib64/chipsetsdk'],
               'cases': {'case': {'directory': str(board)}}}
     (tmp_path / 'board' / saved_name).write_text(json.dumps(record))
     report = write_report(tmp_path, {'cases': [case], 'status': 'INFRASTRUCTURE_FAILED', 'error': 'workflow example'})
@@ -302,6 +303,7 @@ def test_saved_transport_evidence_preserves_partial_results_and_identity(tmp_pat
     assert report['board_transport']['status'] == status
     assert report['board_transport']['serial'] == 'test-device'
     assert report['board_transport']['error'] == 'transport example'
+    assert report['board_transport']['library_search_paths'] == ['/vendor/lib64/chipsetsdk']
     assert report['manifest_error'] == 'workflow example'
     assert 'Transport error: transport example' in (tmp_path / 'report.txt').read_text()
 

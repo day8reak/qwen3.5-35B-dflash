@@ -1,12 +1,12 @@
 """Host-only HDC transport tests; fake shell/runner provide no NPU evidence."""
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 
 import pytest
 
-from qwen35_moe_dflash.op_probe_hdc import run_board
+from qwen35_moe_dflash.op_probe_hdc import _run_script, run_board
 
 
 HDC = r'''
@@ -120,6 +120,8 @@ def test_native_failures_continue_and_owned_board_is_cleaned(case, tmp_path, cap
     assert result['status']=='TRANSPORT_COMPLETE' and result['native_failures']==1
     assert result['board_cleanup']=='REMOVED' and not (tmp_path/'fake-board').exists()
     assert result['firmware']=={'value':'FAKE-HARMONYOS', 'returncode':0}
+    assert result['library_search_paths'] == []
+    assert json.loads((case['output']/'board/deployment.json').read_text())['library_search_paths'] == []
     progress = capsys.readouterr().err
     assert '[1/3] good: running' in progress and '[2/3] bad: native exit 1' in progress
     assert '[3/3] later: native exit 0' in progress
@@ -142,6 +144,94 @@ def test_native_failures_continue_and_owned_board_is_cleaned(case, tmp_path, cap
     assert sum('hilog -x' in ' '.join(row) for row in calls)==1
     assert 'ring buffer' in result['hilog']['scope']
     assert all('hilog -r' not in ' '.join(row) for row in calls)
+    assert not any('&& test -r' in ' '.join(row) for row in calls)
+
+
+def test_default_library_environment_is_unchanged():
+    board = PurePosixPath('/data/local/tmp/probe')
+    remote_case = board/'cases/good'
+    default = _run_script(board, remote_case)
+    assert default == _run_script(board, remote_case, library_search_paths=())
+    assert default.splitlines()[2] == (
+        'export LD_LIBRARY_PATH=/data/local/tmp/probe/lib"${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'
+    )
+    candidate = _run_script(board, remote_case, library_search_paths=('/vendor/lib64/chipsetsdk',))
+    assert candidate.splitlines()[2] == (
+        'export LD_LIBRARY_PATH=/data/local/tmp/probe/lib:/vendor/lib64/chipsetsdk'
+        '"${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'
+    )
+    assert candidate.splitlines()[:2] + candidate.splitlines()[3:] == default.splitlines()[:2] + default.splitlines()[3:]
+
+
+def test_existing_library_search_paths_preserve_order_and_are_read_only(case, tmp_path, monkeypatch):
+    paths = [tmp_path/'vendor/lib64/chipsetsdk', tmp_path/'vendor/lib64/extra']
+    for directory in paths:
+        directory.mkdir(parents=True)
+        (directory/'sentinel.so').write_bytes(b'board-owned library')
+    supplied = tuple(map(str, paths))
+    monkeypatch.setenv('LD_LIBRARY_PATH', '/inherited/first:/inherited/second')
+    result = run_board(**case, library_search_paths=supplied)
+    assert result['library_search_paths'] == list(supplied)
+    for basename in ('deployment.json', 'result.json'):
+        saved = json.loads((case['output']/'board'/basename).read_text())
+        assert saved['library_search_paths'] == list(supplied)
+    for row in map(json.loads, (tmp_path/'native.jsonl').read_text().splitlines()):
+        assert row['ld'].split(':') == [str(tmp_path/'fake-board/lib'), *supplied,
+                                       '/inherited/first', '/inherited/second']
+    calls = list(map(json.loads, (tmp_path/'calls.jsonl').read_text().splitlines()))
+    checks = [row for row in calls if '&& test -r' in ' '.join(row)]
+    assert len(checks) == 2
+    for directory, row in zip(paths, checks):
+        text = ' '.join(row)
+        assert f'test -d {directory} && test -r {directory} && test -x {directory}' in text
+    first_mutation = next(i for i, row in enumerate(calls) if 'mkdir ' in ' '.join(row))
+    assert all(calls.index(row) < first_mutation for row in checks)
+    # No send, mkdir, removal or runner output targets these existing paths.
+    for row in calls:
+        if any(path in ' '.join(row) for path in supplied):
+            assert row in checks
+    assert result['board_cleanup'] == 'REMOVED'
+    for directory in paths:
+        assert list(directory.iterdir()) == [directory/'sentinel.so']
+        assert (directory/'sentinel.so').read_bytes() == b'board-owned library'
+
+
+@pytest.mark.parametrize('kind', ['missing', 'file'])
+def test_unavailable_library_directory_fails_before_remote_creation(case, tmp_path, kind):
+    path = tmp_path/'candidate-backend'
+    if kind == 'file':
+        path.write_bytes(b'not a directory')
+    with pytest.raises(RuntimeError, match='library-search-path-1'):
+        run_board(**case, library_search_paths=(str(path),))
+    failure = json.loads((case['output']/'board/failure.json').read_text())
+    assert failure['stage'] == 'library-search-paths'
+    assert failure['board_cleanup'] == 'NOT_CREATED'
+    assert failure['library_search_paths'] == [str(path)]
+    assert not (tmp_path/'fake-board').exists()
+    assert not (tmp_path/'native.jsonl').exists()
+    calls = list(map(json.loads, (tmp_path/'calls.jsonl').read_text().splitlines()))
+    assert len(calls) == 2  # firmware query, then the read-only directory check
+    assert not any('mkdir ' in ' '.join(row) or row[4:6] == ['file', 'send'] for row in calls)
+    if kind == 'file':
+        assert path.read_bytes() == b'not a directory'
+
+
+@pytest.mark.parametrize('paths', [
+    '/vendor/lib64', None, {'/vendor/lib64'}, (1,), ('relative/path',),
+    ('/vendor/../system',), ('/vendor/lib64:/other',), ('/vendor/with space',),
+    ('/vendor/\nlib64',), ('/vendor/\x00lib64',), ('/vendor/\x7flib64',),
+    ('/vendor/$(id)',), ('/vendor/`id`',), ('/vendor/a;id',), ("/vendor/a'b",),
+    ('//vendor/lib64',), ('/vendor//lib64',), ('/vendor/./lib64',),
+    ('/vendor/lib64', '/vendor/lib64'),
+])
+def test_library_search_path_injection_is_rejected_before_hdc(case, tmp_path, paths):
+    with pytest.raises(ValueError, match='library'):
+        run_board(**case, library_search_paths=paths)
+    with pytest.raises(ValueError, match='library'):
+        _run_script(PurePosixPath('/data/local/tmp/probe'), PurePosixPath('/case'),
+                    library_search_paths=paths)
+    assert not (tmp_path/'calls.jsonl').exists()
+    assert not (case['output']/'board').exists()
 
 
 def test_keep_board_preserves_inputs_outputs_and_scripts(case, tmp_path, monkeypatch):

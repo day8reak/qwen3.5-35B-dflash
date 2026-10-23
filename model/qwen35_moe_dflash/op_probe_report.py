@@ -412,7 +412,7 @@ def write_report(root: Path, manifest, boardresult=None):
                           "run_passed": sum(r["run"] == "PASSED" for r in rows),
                           "numerical_passed": sum(r["numerical"]["status"] == "PASSED" for r in rows)},
               "board_transport_status": (boardresult or {}).get("status", "NOT_RUN"),
-              "board_transport": {key: boardresult[key] for key in ("status", "stage", "error", "serial", "hdc_server", "firmware", "board_root", "board_cleanup") if key in boardresult},
+              "board_transport": {key: boardresult[key] for key in ("status", "stage", "error", "serial", "hdc_server", "firmware", "board_root", "board_cleanup", "library_search_paths") if key in boardresult},
               "manifest_status": manifest.get("status"), "manifest_error": manifest.get("error"),
               "limitations": ["Each result applies only to the tested shape, dtype, attributes and runtime.",
                               "Compile, load, execution, numerical agreement and NPU placement are separate checks.",

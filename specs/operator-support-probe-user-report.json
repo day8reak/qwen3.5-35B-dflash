@@ -78,7 +78,7 @@
     "Preserve strict IO validation and improve actual/expected descriptor diagnostics",
     "Surface explicit PID-bound NPUCL failure evidence without promoting runtime placement"
   ],
-  "next_action": "Inspect bounded DDK and board runtime-library inventories using docs/README.md; identify a matching NPU backend and registration path, then rerun only matmul_m8_b_dynamic and add_rank4",
+  "next_action": "Run the isolated three-case deployment comparison without rebuilding the original operator probe artifacts",
   "runtime_placement": "UNVERIFIED",
   "model_gates": "No complete-model accuracy, performance or release gate advanced",
   "experience_audit": "docs/experience.md",
@@ -104,7 +104,7 @@
   "runtime_inventory_followup": {
     "run_id": "20261023T091800Z-29927-3b58ce",
     "status": "USER_REPORTED_BOARD_BACKENDS_PRESENT_SELECTION_UNVERIFIED",
-    "provenance": "User pasted bounded host file inventory and board find output; runtime process mappings and actual DT_NEEDED not yet supplied",
+    "provenance": "User pasted bounded host and board library inventories, then actual DT_NEEDED and backend-name strings; runtime process mappings not supplied",
     "ddk_observations": [
       "ai_ddk_lib/lib64 supplies AArch64 libhiai_hcl_model_runtime.so and libhiai_hcl_model_runtime_impl.so alongside the linked HIAI libraries",
       "No libai_fmk_dnnacl.so or matching NPU backend filename appears in the supplied bounded ddk inventory",
@@ -125,8 +125,35 @@
     ],
     "source_observation": "discover_libraries uploads the recorded link inputs and all immediate shared-library siblings, and the probe prepends that directory to its LD_LIBRARY_PATH",
     "hypothesis": "The packaged DDK HCL implementation may be selected ahead of the board runtime and fail to supply NPUCL. Presence of a candidate file alone does not prove its selection, loadability, compatibility or registration.",
-    "next_action": "Read DT_NEEDED/SONAME/search paths from the actual probe and DDK libraries plus backend-selection strings from libhiai.so before constructing an isolated library-selection comparison",
+    "next_action": "Execute the implemented isolated comparison; no additional dependency listing or new lib arguments required",
     "production_runtime_policy_changed": false,
-    "hardware_support_claim": "No negative claim about hardware NPU capability from an unregistered process backend"
+    "hardware_support_claim": "No negative claim about hardware NPU capability from an unregistered process backend",
+    "dependency_followup": {
+      "run_id": "20261023T092155Z-30133-a88918",
+      "status": "USER_REPORTED_DYNAMIC_DEPENDENCIES_COMPARISON_IMPLEMENTED",
+      "provenance": "User pasted readelf -d output from five actual ELF files and strings output from the linked libhiai.so; original files not independently received",
+      "checked_files": [
+        "qwen35_hiai_op_probe",
+        "libhiai.so",
+        "libhiai_ir_build.so",
+        "libhiai_hcl_model_runtime.so",
+        "libhiai_hcl_model_runtime_impl.so"
+      ],
+      "runner_needed": [
+        "libhiai.so",
+        "libhiai_ir.so",
+        "libhiai_ir_build.so",
+        "libc++_shared.so",
+        "libc.so"
+      ],
+      "observations": [
+        "The checked retained files show no direct DT_NEEDED on the DDK HCL pair; the comparison validates all recorded retained libraries before the candidate arm",
+        "libhiai.so contains both libhiai_hcl_model_runtime.so and libai_fmk_hcl_model_runtime.so names; this does not prove fallback order",
+        "Reported build-machine RUNPATHs and readelf DWARF warnings do not establish the cause of NPUCL registration failure"
+      ],
+      "comparison_evidence": "specs/hiai-runtime-comparison-verification.json",
+      "board_result": "PENDING_USER_RUN",
+      "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$RUNTIME_AB_RUN\""
+    }
   }
 }

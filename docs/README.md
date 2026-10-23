@@ -305,3 +305,23 @@ done'
 ```
 
 配套后端恢复后，先在新输出目录只复验 `--case matmul_m8_b_dynamic --case add_rank4`，通过 Load、Process 和数值检查后再扩大测试。编译分区与实际执行位置仍分别记录。
+
+### 复用原产物对照 DDK 与板端 HCL 后端
+
+若板端已有 `/vendor/lib64/chipsetsdk/libai_fmk_hcl_model_runtime.so` 等 NPU 运行库，但探针进程仍报 NPUCL 未注册，可检查自动上传的 DDK HCL 库是否影响了后端选择。已有 `OP_PROBE_RUN` 无需重编译：
+
+```bash
+export RUNTIME_AB_RUN="${OP_PROBE_RUN}-runtime-ab-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
+  --probe-run "$OP_PROBE_RUN" \
+  --output "$RUNTIME_AB_RUN"
+```
+
+脚本仍使用 `SN`、`BIP`、`AI_RUN_DIR`，从原探测记录读取 runner 和库，不需要 lib 参数或编译环境。复用同一 runner、OMC、输入和参考，校验原哈希；选取 `matmul_m8_b_dynamic`、`add_rank4` 及 CPU 对照 `add_rank5`。两个独立部署分别是：
+
+- `ddk_baseline`：原探针的完整上传库集合及搜索顺序。
+- `candidate_without_ddk_hcl`：仅不上传 `libhiai_hcl_model_runtime.so` 与 `libhiai_hcl_model_runtime_impl.so`，在进程局部搜索路径中加入已存在的 `/vendor/lib64/chipsetsdk`。它是待验证的后端选择实验。
+
+执行前直接解析 ELF 动态依赖表；若保留库直接依赖被排除库或存在相关 SONAME 冲突，候选测试会标记阻塞。脚本不执行目标二进制来分析依赖，也不依赖主机 `readelf` 的 DWARF 支持。检查只能覆盖 ELF 显式依赖，动态加载及 namespace 限制要由本次运行日志确认。
+
+输出 `runtime-comparison.txt`、`runtime-comparison.json` 和可反馈的 `results.tar.gz`，各组保留独立报告、PID 日志及数值对比。默认取回校验后清理本次创建的目录，`--keep-board` 可保留；原探测目录、原库文件和板端系统库均不修改。即使候选组成功，也需确认后端选择和实际执行位置，再决定是否调整正式部署策略。

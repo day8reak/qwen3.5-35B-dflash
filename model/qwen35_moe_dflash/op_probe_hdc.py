@@ -1,5 +1,6 @@
 """Hash-checked HDC transport for independently compiled HIAI operator cases."""
 from contextlib import ExitStack
+from collections.abc import Sequence
 from datetime import datetime, timezone
 import os
 from pathlib import Path, PurePosixPath
@@ -85,12 +86,30 @@ def _integer(path, label, maximum=None):
     return int(text)
 
 
-def _run_script(board, remote_case):
+def _library_search_paths(values):
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise ValueError("library_search_paths must be a sequence of absolute POSIX paths")
+    paths = []
+    for value in values:
+        if (not isinstance(value, str) or not re.fullmatch(r"/[A-Za-z0-9_+./-]*", value)
+                or value.startswith("//") or ".." in PurePosixPath(value).parts
+                or str(PurePosixPath(value)) != value):
+            raise ValueError("library search path must be an absolute canonical POSIX path "
+                             "without whitespace, shell metacharacters, colon or parent traversal")
+        if value in paths:
+            raise ValueError("duplicate library search path")
+        paths.append(value)
+    return tuple(paths)
+
+
+def _run_script(board, remote_case, *, library_search_paths=()):
+    library_search_paths = _library_search_paths(library_search_paths)
     # The inner shell is replaced by exec, so $$ is the native process PID.
     native = 'printf \'%s\\n\' "$$" > pid; exec ' + shlex.join([
         str(board / "bin/op_probe"), "--model", "model.omc", "--io", "io.tsv", "--output", "results"])
     return ("#!/system/bin/sh\ncd " + shlex.quote(str(remote_case)) + " || exit 1\n"
-        "export LD_LIBRARY_PATH=" + shlex.quote(str(board / "lib")) + '"${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n'
+        "export LD_LIBRARY_PATH=" + shlex.quote(":".join((str(board / "lib"), *library_search_paths)))
+        + '"${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n'
         "sh -c " + shlex.quote(native) + " > stdout 2> stderr\n"
         'rc=$?\nprintf \'%s\\n\' "$rc" > exitcode\nexit "$rc"\n')
 
@@ -141,13 +160,16 @@ def _hilog(hdc, board, local, cases, timeout):
 
 
 def run_board(output: Path, runner: Path, libraries: list[Path], records: list[dict],
-              hdc_executable="hdc", timeout=120, keep_board=False) -> dict:
+              hdc_executable="hdc", timeout=120, keep_board=False, *, library_search_paths=()) -> dict:
     """Run independent cases; native failures are results, transport failures raise.
 
     Files live in output/board/<name>/{stdout,stderr,exitcode,pid,output_N.bin,hilog.txt}.
     Returned cases map contains exitcode/PID integers, paths, and hash records.
     The full shared snapshot and HDC calls are local evidence, not deliverables.
+    Additional library search paths must already exist on the board and are
+    inspected read-only; they follow uploaded libraries and precede inherited paths.
     """
+    library_search_paths = _library_search_paths(library_search_paths)
     if not records or not isinstance(timeout, (int, float)) or timeout <= 0:
         raise ValueError("nonempty cases and a positive timeout are required")
     sn, bip = _text(os.environ.get("SN"), "SN"), _text(os.environ.get("BIP"), "BIP")
@@ -182,11 +204,12 @@ def run_board(output: Path, runner: Path, libraries: list[Path], records: list[d
         case.mkdir()
         remote_case = board / "cases" / name
         script = case / "run.sh"
-        script.write_text(_run_script(board, remote_case))
+        script.write_text(_run_script(board, remote_case, library_search_paths=library_search_paths))
         for path, relative in [(model, "model.omc"), (io, "io.tsv"), (script, "run.sh")]:
             uploads.append(_file_record(path, str(PurePosixPath("cases") / name / relative)))
         uploads.extend(_file_record(path, str(PurePosixPath("cases") / name / path.name)) for path in inputs)
     result = {"status": "FAILED", "board_root": str(board), "serial": sn, "hdc_server": bip,
+              "library_search_paths": list(library_search_paths),
               "board_cleanup": "NOT_CREATED", "cases": {}, "scope": "HIAI operator diagnostic execution; no placement or numerical verdict."}
     save_json(local / "deployment.json", {**result, "uploads": uploads, "keep_board": keep_board})
     hdc = Hdc(hdc_executable, sn, bip, local, timeout)
@@ -194,6 +217,12 @@ def run_board(output: Path, runner: Path, libraries: list[Path], records: list[d
     try:
         firmware_status, firmware = hdc.shell("param get const.ohos.fullname", "firmware", allow_failure=True)
         result["firmware"] = {"value": firmware.strip(), "returncode": firmware_status}
+        if library_search_paths:
+            stage = "library-search-paths"
+            for index, path in enumerate(library_search_paths, 1):
+                quoted = shlex.quote(path)
+                hdc.shell(f"test -d {quoted} && test -r {quoted} && test -x {quoted}",
+                          f"library-search-path-{index}")
         stage = "create-root"
         result["board_cleanup"] = "UNVERIFIED_CREATION_RETAINED"
         hdc.shell("mkdir " + shlex.quote(str(board)), "create-root")

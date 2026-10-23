@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-23",
+  "run_id": "20261023T092155Z-30133-a88918",
+  "baseline_commit": "ffe0d18ca22d84fc4d1e839a18a435c3e0dbfa4a",
+  "status": "HOST_VALIDATED_SOURCE_HANDOFF_BOARD_PENDING",
+  "scope": "Isolated library-deployment comparison of three already compiled operator probe cases; no model graph, precision or production runtime policy change",
+  "user_evidence": "specs/operator-support-probe-user-report.json#runtime_inventory_followup/dependency_followup",
+  "entrypoint": "targets/cpro/scripts/probe_hdc_runtime.py",
+  "cli": [
+    "--probe-run",
+    "--output",
+    "--keep-board",
+    "--timeout-seconds"
+  ],
+  "cases": [
+    "matmul_m8_b_dynamic",
+    "add_rank4",
+    "add_rank5"
+  ],
+  "arms": [
+    {
+      "name": "ddk_baseline",
+      "library_policy": "Exact original recorded runtime library inventory",
+      "extra_board_search_paths": []
+    },
+    {
+      "name": "candidate_without_ddk_hcl",
+      "excluded_basenames": [
+        "libhiai_hcl_model_runtime.so",
+        "libhiai_hcl_model_runtime_impl.so"
+      ],
+      "extra_board_search_paths": [
+        "/vendor/lib64/chipsetsdk"
+      ],
+      "interpretation": "Joint library-set and search-path experiment; cannot isolate the causal effect of either individual change"
+    }
+  ],
+  "invariants": [
+    "No compilation or runner rebuild; reuse original hashed contracts, binary, OMC, input, reference and library bytes",
+    "Original native manifest/command/result records must agree; missing or changed SHA256 and payload sizes fail preflight",
+    "All recorded ELF objects inspected without executing them; retained dependencies, SONAME collisions and duplicate excluded content block candidate",
+    "Small verified inputs frozen locally; original and frozen artifact hashes checked before and after each arm",
+    "Separate remote root and local report for each arm; verified retrieval precedes default owned-directory cleanup",
+    "Existing source artifacts, board system files, shared toolchains and old board weight directories are not modified",
+    "Report archives use allowlists and omit binaries, models, raw tensors and shared unfiltered HiLog"
+  ],
+  "host_validation": {
+    "pytest": {
+      "tests": 109,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "pytest_evidence": "runtime-final-v2.xml",
+    "test_environment": "PYTHONPATH=model; shared qwen3.5-py310 interpreter; bytecode/cache disabled; isolated basetemp",
+    "initial_final_retry": "runtime-final.xml recorded collection failure after PYTHONPATH was omitted; corrected invocation passed all 109 tests",
+    "elf_sdk_crosscheck": {
+      "matched_objects": 3,
+      "evidence": "elf-sdk-crosscheck.json",
+      "scope": "Parser comparison with SDK llvm-readelf on actual local AArch64 ELF files; not user DDK ABI verification"
+    },
+    "readme_bash_syntax": "PASSED",
+    "git_diff_check": "PASSED",
+    "independent_review": "No blocking findings; retained two-factor comparison and runtime verification limitations"
+  },
+  "source_sha256": {
+    "model/qwen35_moe_dflash/elf_dynamic.py": "224dc06c082dc3c598874afc7aef8cca3c1145277d9d9b2cbb77bd6852b8eb19",
+    "model/qwen35_moe_dflash/hiai_runtime_probe.py": "cf65e682f42ff4f4328803eca2dc2d97b364c31481016921a7f54db4bf1c84a4",
+    "model/qwen35_moe_dflash/op_probe_hdc.py": "b39650806926a2668ee61246fb18bf02aa430c7656183b3edf65cc5d15cbf9ea",
+    "model/qwen35_moe_dflash/op_probe_report.py": "ce6f65bc162bf5aef4af8fe3ab78bfdcb52ca2e0d99bfd1d3b01060f5d5b475f",
+    "targets/cpro/scripts/probe_hdc_runtime.py": "e60515a1cdb30f5449452dbc895cff8f49797651e348b20782714be7dc0a8679",
+    "tests/test_elf_dynamic.py": "17aab08e3846d142563907e1d832cf1361dd2b6be28e55b7b7e884c83c8fea5c",
+    "tests/test_hiai_runtime_probe.py": "1fefefe877b5c45aef5fd096cf5b1d11100b76d4f3f62ac01c1d2d4006737127",
+    "tests/test_op_probe_hdc.py": "d3abf49d50eefe2bed71da38c15e8b8a223a92bf16adc2735f27c0c00ac672f3",
+    "tests/test_op_probe_report.py": "391c0f75c2496b2711f718ee3b5523617e1d560d3510cbe6458bea6d31c115a0"
+  },
+  "board_validation": "NOT_RUN_LOCALLY_USER_BOARD_INACCESSIBLE",
+  "backend_selection": "UNVERIFIED",
+  "runtime_placement": "UNVERIFIED",
+  "limitations": [
+    "User supplied textual readelf/strings evidence only; actual user files not available locally",
+    "DT_NEEDED analysis does not establish dlopen closure, namespace permissions or firmware ABI compatibility",
+    "The runtime comparison does not capture actual platform library mappings or platform-library hashes",
+    "Successful Load/Process/numerical comparison alone does not prove the selected backend or NPU execution",
+    "No full-model quality, performance or release gate advanced"
+  ],
+  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$RUNTIME_AB_RUN\"",
+  "experience_audit": "docs/experience.md",
+  "evidence_root_policy": "Validation evidence is relative to the workspace run directory and remains outside the repository"
+}
