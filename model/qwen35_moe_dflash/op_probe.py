@@ -24,7 +24,7 @@ from .ge_cpp import emit_cpp
 from .ge_export import _logged, graph_summary
 from .hashing import sha256_file
 from .hiai_deployment import _elf, discover_libraries
-from .op_probe_cases import cases
+from .op_probe_cases import PROBE_FAMILIES, PROBE_SUITES, cases
 from .op_probe_report import compile_evidence, write_report
 from .resources import repository_root
 
@@ -32,7 +32,12 @@ from .resources import repository_root
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output", help="new directory below AI_RUN_DIR")
-    p.add_argument("--case", action="append", default=[], help="case name; repeat to select several")
+    selection = p.add_mutually_exclusive_group()
+    selection.add_argument("--case", action="append", default=[], help="case name; repeat to select several")
+    selection.add_argument("--suite", choices=PROBE_SUITES,
+                           help="named batch of related controls/candidates; excludes unrelated historical probes")
+    p.add_argument("--exclude-family", choices=PROBE_FAMILIES, action="append", default=[],
+                   help="with --suite, skip an already tested family; repeat to exclude several")
     p.add_argument("--list-cases", action="store_true")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--prepare-only", action="store_true", help="write recipes and references without vendor tools")
@@ -91,6 +96,10 @@ def prepare_case(case, root):
               "source_sha256": sha256_file(source), "graph": graph_summary(graph),
               "construction_files": files_under(folder, folder),
               "equivalence_group": case.get("equivalence_group"), "compile": {"status": "NOT_RUN"}}
+    if case.get("probe_suite"):
+        record.update(probe_suite=case["probe_suite"], probe_family=case["probe_family"])
+    if case.get("input_domain"):
+        record["input_domain"] = case["input_domain"]
     save_json(folder / "contract.json", record)
     return record
 
@@ -223,12 +232,19 @@ def native_build(root, timeout):
 
 
 def run(args):
+    if args.exclude_family and not args.suite:
+        raise ValueError("--exclude-family requires --suite")
     selected = list(cases())
     names = {case["name"] for case in selected}
     if set(args.case) - names:
         raise ValueError("unknown probe cases: " + ", ".join(sorted(set(args.case) - names)))
     if args.case:
         selected = [c for c in selected if c["name"] in args.case]
+    elif args.suite:
+        selected = [c for c in selected if c.get("probe_suite") == args.suite
+                    and c.get("probe_family") not in args.exclude_family]
+        if not selected:
+            raise ValueError(f"probe suite has no cases: {args.suite}")
     if args.list_cases:
         for case in selected:
             print(f"{case['name']}: {case['description']}")
@@ -249,6 +265,9 @@ def run(args):
                 "created_utc": datetime.now(timezone.utc).isoformat(), "cases": [],
                 "numpy_version": np.__version__, "status": "PREPARING", "board_requested": board_requested,
                 "scope": "These shapes/dtypes/attributes through current GE lowering only; not universal support or full-model validation."}
+    manifest["selection"] = {"suite": args.suite, "requested_cases": list(args.case),
+                             "excluded_families": list(args.exclude_family),
+                             "selected_cases": [c["name"] for c in selected]}
     package = Path(__file__).resolve().parent
     implementation = set(package.glob("ge*.py")) | set(package.glob("op_probe*.py"))
     implementation.update(Path(module.__file__) for name, module in list(sys.modules.items())

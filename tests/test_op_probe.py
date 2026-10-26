@@ -38,8 +38,8 @@ def test_prepare_only_all_cases_serializes_locked_contracts(run_root, monkeypatc
     assert op_probe.run(op_probe.parser().parse_args(["--prepare-only", "--output", str(output)])) == 0
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["status"] == "PREPARED" and not manifest["board_requested"]
-    assert len(manifest["cases"]) == 75
-    assert len({record["name"] for record in manifest["cases"]}) == 75
+    assert len(manifest["cases"]) == 118
+    assert len({record["name"] for record in manifest["cases"]}) == 118
     assert calls[0][0] == output and calls[0][2] is None
     for record in manifest["cases"]:
         folder = Path(record["directory"])
@@ -78,6 +78,66 @@ def test_selected_case_validation_is_before_tools_or_files(run_root, monkeypatch
     assert not missing.exists()
     assert op_probe.run(op_probe.parser().parse_args(["--list-cases", "--case", "silu"])) == 0
     assert "silu:" in capsys.readouterr().out
+
+
+
+def test_remaining_cpu_suite_prepares_only_selected_families(run_root, monkeypatch, capsys):
+    monkeypatch.setattr(op_probe, "compiler_resources", _no_tool)
+    monkeypatch.setattr(op_probe, "native_build", _no_tool)
+    # Exercise the real report writer: category and input-domain provenance
+    # must survive preparation instead of existing only in Python fixtures.
+    output = run_root / "remaining"
+    args = op_probe.parser().parse_args([
+        "--suite", "remaining-cpu", "--prepare-only", "--output", str(output)])
+    assert op_probe.run(args) == 0
+    manifest = json.loads((output / "manifest.json").read_text())
+    records = manifest["cases"]
+    names = [row["name"] for row in records]
+    assert manifest["selection"] == {
+        "suite": "remaining-cpu", "requested_cases": [], "excluded_families": [], "selected_cases": names}
+    assert names[:7] == [
+        "gdn_mask_lower_slice_concat", "gdn_mask_lower_gather",
+        "gdn_mask_strict_slice_concat", "gdn_mask_strict_gather",
+        "gdn_mask_exp_chain_slice_concat", "gdn_mask_exp_chain_gather", "sub_outer_gather"]
+    assert "matmul_m1_b_const" not in names and "reduce_sum_scan_matmul" not in names
+    assert {row["probe_family"] for row in records} == {"gdn", "routing", "selection", "position"}
+    report = json.loads((output / "report.json").read_text())
+    assert report["probe_families"] == {"gdn": 7, "routing": 16, "selection": 15, "position": 12}
+    assert sum(report["probe_families"].values()) == len(names) == 50
+    assert report["selection"] == manifest["selection"]
+    domains = [r for r in report["cases"] if r["name"] == "attention_mask_lut_fp16"]
+    assert domains[0]["input_domain"] == {"attention_mask": {"allowed_values": [0, 1]}}
+    assert op_probe.run(op_probe.parser().parse_args([
+        "--suite", "remaining-cpu", "--list-cases"])) == 0
+    listed = capsys.readouterr().out
+    assert "sub_outer_gather:" in listed and "matmul_m1_b_const:" not in listed
+
+
+def test_suite_excludes_already_reported_gdn_without_touching_tools(run_root, monkeypatch, capsys):
+    monkeypatch.setattr(op_probe, "compiler_resources", _no_tool)
+    assert op_probe.run(op_probe.parser().parse_args([
+        "--suite", "remaining-cpu", "--exclude-family", "gdn", "--list-cases"])) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 43
+    assert all(not line.startswith(("gdn_", "sub_outer_gather:")) for line in lines)
+    assert any(line.startswith("moe_route_gather:") for line in lines)
+    with pytest.raises(ValueError, match="requires --suite"):
+        op_probe.run(op_probe.parser().parse_args(["--exclude-family", "gdn", "--list-cases"]))
+    with pytest.raises(ValueError, match="no cases"):
+        op_probe.run(op_probe.parser().parse_args([
+            "--suite", "remaining-cpu", "--list-cases",
+            *[arg for name in ("gdn", "routing", "selection", "position")
+              for arg in ("--exclude-family", name)]]))
+
+
+@pytest.mark.parametrize("options", [
+    ["--suite", "remaining-cpu", "--case", "silu"],
+    ["--suite", "does-not-exist"],
+])
+def test_suite_selector_rejects_ambiguous_or_unknown_selection(options):
+    with pytest.raises(SystemExit) as exc:
+        op_probe.parser().parse_args(options)
+    assert exc.value.code == 2
 
 
 def _compiler(monkeypatch, root, *, failure=None, missing_omc=False):

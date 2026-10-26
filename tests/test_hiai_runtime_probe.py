@@ -575,6 +575,19 @@ def test_compile_only_replay_uses_explicit_native_donor_and_never_recompiles_mod
     assert "Native build/library donor:" in (root / "runtime-comparison.txt").read_text()
 
 
+def test_replay_keeps_frozen_source_batch_selection(compile_only, monkeypatch):
+    selection = {"suite": "remaining-cpu", "excluded_families": ["gdn"],
+                 "requested_cases": [], "selected_cases": [r["name"] for r in compile_only["manifest"]["cases"]]}
+    compile_only["manifest"]["selection"] = selection
+    _json(compile_only["source"] / "manifest.json", compile_only["manifest"])
+    _refresh(monkeypatch, compile_only)
+    _transport(monkeypatch, compile_only)
+    assert probe.run(_donor_args(compile_only)) == 0
+    arm = compile_only["output"] / "arms/candidate_without_ddk_hcl"
+    for filename in ("manifest.json", "report.json"):
+        assert json.loads((arm / filename).read_text())["selection"] == selection
+
+
 @pytest.mark.parametrize("flags", [[], ["--replay-all"], ["--refresh-runner"]])
 def test_native_donor_requires_both_explicit_flags(compile_only, monkeypatch, flags):
     builds = _refresh(monkeypatch, compile_only)

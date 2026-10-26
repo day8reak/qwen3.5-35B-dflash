@@ -6,33 +6,23 @@
 
 **用户回传 `reduce-mm-replay-20261026-104025`：六个 MatMul 归约候选全部 Load、Process、数值 PASS。** 每项编译主图为 NPU=1、CPU=0，实际运行位置仍为 `UNVERIFIED`；小图通过不等于完整 target/draft 或2倍加速已经通过。
 
-**最新整图已通过 ReshapeFusion，19个row Mul CPU-only候选消失，但仍超过9个NPUCL分区回退。** 已识别CPU-only计算从117降至98，target/draft还未完成上板。当前保留整图，验证GDN三角掩码和outer Sub的Gather复制候选。
+**最新整图已通过 ReshapeFusion，19个row Mul CPU-only候选消失，但仍超过9个NPUCL分区回退。** 已识别CPU-only计算从117降至98，target/draft还未完成上板。当前保留整图，将剩余候选算子集中探测。
 
-**当前入口：[7项GDN Gather对照](direct-model-air.md#gdn-indexed-copy-probes)。** 两种三角mask各有原形/候选，另比较mask→Exp→mask上下文，并复用已有Sub输入/参考验证一次同形减法。生产模型尚未应用这些新候选。
+**当前入口：[一批验证剩余 CPU 候选](cpu-gap-probes.md)。** `--suite remaining-cpu`共50项；用户已回传GDN的7项，所以本轮加`--exclude-family gdn`只跑其余43项MoE路由、TopK/ArgMax、RoPE与注意力掩码。生产模型保持当前版本。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-export GE_GDN_COPY_RUN="$AI_RUN_DIR/gdn-copy-$(date +%Y%m%d-%H%M%S)"
-export GE_GDN_COPY_BOARD_RUN="$AI_RUN_DIR/gdn-copy-board-$(date +%Y%m%d-%H%M%S)"
-
+export GE_CPU_GAPS_RUN="$AI_RUN_DIR/cpu-gaps-$(date +%Y%m%d-%H%M%S)"
+export GE_CPU_GAPS_BOARD_RUN="$AI_RUN_DIR/cpu-gaps-board-$(date +%Y%m%d-%H%M%S)"
 python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
-  --compile-only \
-  --case gdn_mask_lower_slice_concat --case gdn_mask_lower_gather \
-  --case gdn_mask_strict_slice_concat --case gdn_mask_strict_gather \
-  --case gdn_mask_exp_chain_slice_concat --case gdn_mask_exp_chain_gather \
-  --case sub_outer_gather \
-  --output "$GE_GDN_COPY_RUN" &&
+  --suite remaining-cpu --exclude-family gdn --compile-only --output "$GE_CPU_GAPS_RUN" &&
 python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
-  --probe-run "$GE_GDN_COPY_RUN" --native-from "$OP_PROBE_RUN" \
-  --refresh-runner --replay-all --output "$GE_GDN_COPY_BOARD_RUN"
-
-cat "$GE_GDN_COPY_RUN/report.txt"
-if [ -f "$GE_GDN_COPY_BOARD_RUN/runtime-comparison.txt" ]; then
-  cat "$GE_GDN_COPY_BOARD_RUN/runtime-comparison.txt"
-fi
+  --probe-run "$GE_CPU_GAPS_RUN" --native-from "$OP_PROBE_RUN" \
+  --refresh-runner --replay-all --output "$GE_CPU_GAPS_BOARD_RUN"
 ```
 
-回传两个report即可。沿用原resources、SDK和库部署；`OP_PROBE_RUN`仅提供同DDK的native构建身份，本次7项提供各自OMC、输入和参考。完整模型精度、实际NPU运行位置和2倍加速均未验证。
+
+回传两个report即可。沿用原resources、SDK和库部署；`OP_PROBE_RUN`仅提供同DDK的native构建身份，本批次提供各自OMC、输入和参考。完整模型精度、实际NPU运行位置和2倍加速均未验证。
 
 **服务器没有 OHOS SDK：[获取 Native SDK 与配置编译路径](ohos-native-sdk.md)。** SDK 留在服务器；独立probe通过原native记录复用SDK、头文件和链接资源。
 
@@ -40,7 +30,7 @@ fi
 
 上板流程的 `--execution-only` 执行 probe，再强制 target/draft 各执行一次、回传两图的 Top1 输出及日志；现有参考只用于匹配身份、prompt 和配置，不比较输出精度，也不运行 benchmark。成功标记为 `EXECUTION_COMPLETE`，精度和性能为 `NOT_EVALUATED`。以后去掉该参数可恢复原有配对 benchmark 和参考比较。全部成功后删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。probe 或 benchmark 失败时会直接显示已回传的错误日志末尾，并自动抓取板端 HiLog 缓冲区快照作为排障材料。日志摘要会扫描整个快照、排除 HDC 传输记录，并避免将 `input` 误匹配为 `NPU`；完整日志始终保留。
 
-此前 HCL 空缓冲区、库选择和 ND 补维问题及当时的重编 runner 命令保存在[历史排障记录](hdc-board-run.md#历史加载接口与运行库排障)。后续整图编译通过再构建正式runner；当前仅运行上述7项独立probe，旧runner和模型产物继续保留。
+此前 HCL 空缓冲区、库选择和 ND 补维问题及当时的重编 runner 命令保存在[历史排障记录](hdc-board-run.md#历史加载接口与运行库排障)。后续整图编译通过再构建正式runner；当前仅运行上述remaining-cpu批次，旧runner和模型产物继续保留。
 
 以后要保留大体积独立权重时，加 `--board-cleanup omc`，只删除清单中的 OMC 文件，保留目录、独立权重、程序、库和日志；加 `--board-cleanup none` 则全部保留。默认是 `--board-cleanup all`。嵌入 OMC 内部的权重随 OMC 一起删除。
 
@@ -278,7 +268,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
   --output "$AI_RUN_DIR/op-probe-$(date +%Y%m%d-%H%M%S)"
 ```
 
-默认套件包含 75 个小图，覆盖当前模型中的重点算子和变体，包括 MatMul、BatchMatMul、激活、类型转换、索引、广播，以及四维/五维输入差异；其中包括六项已完成的 rank/keep_dims 归约对照、六个已通过的 MatMul 归约候选，以及9个广播/拼接布局对照和7个GDN Gather复制对照；原68项内容保持不变。六项保留为独立小图对照；模型导出默认 native，当前双图流程显式选择 MatMul 归约与row Mul compact。MatMul 包含输出宽度为 1、2、8 的常量/动态右输入，BatchMatMul 包含卷积降解所用的 `[48,8,4] × [48,4,1]`。每个案例生成独立 AIR/OMC 和输入，按 `hdc -t "$SN" -s "$BIP"` 上传后实际调用 HIAI Load 与 Process，并取回输出和日志。单个案例编译或执行失败会记录后继续测试其他案例；全部案例编译失败时返回非零退出码。六项归约候选现已全部执行和数值通过，9项布局对照也已回传，当前按本文开头验证7项GDN Gather复制对照；小图首次编译和复测命令保存在[第7节](direct-model-air.md#首次生成六项-matmul-候选)，无需重跑默认整套。
+默认全量目录包含 118 个小图，覆盖当前模型中的重点算子和变体，包括 MatMul、BatchMatMul、激活、类型转换、索引、广播，以及四维/五维输入差异；其中包括六项已完成的 rank/keep_dims 归约对照、六个已通过的 MatMul 归约候选，以及9个广播/拼接布局对照和50项剩余CPU候选批次（含7项GDN、16项路由、15项选择、12项位置/掩码）；原75项内容保持不变。六项保留为独立小图对照；模型导出默认 native，当前双图流程显式选择 MatMul 归约与row Mul compact。MatMul 包含输出宽度为 1、2、8 的常量/动态右输入，BatchMatMul 包含卷积降解所用的 `[48,8,4] × [48,4,1]`。每个案例生成独立 AIR/OMC 和输入，按 `hdc -t "$SN" -s "$BIP"` 上传后实际调用 HIAI Load 与 Process，并取回输出和日志。单个案例编译或执行失败会记录后继续测试其他案例；全部案例编译失败时返回非零退出码。六项归约候选现已全部执行和数值通过，9项布局对照也已回传，当前按本文开头一次验证remaining-cpu批次；小图首次编译和复测命令保存在[第7节](direct-model-air.md#首次生成六项-matmul-候选)，无需重跑默认整套。
 
 输出目录包含 `report.json`、`report.txt` 和 `results.tar.gz`。报告分别记录各阶段结果；浮点数学案例使用 FP16 参考对比，默认 `rtol=0.01`、`atol=0.002`，纯复制/重排和整数结果要求精确一致。小图成功只能证明该输入形状、类型和工具链下的案例通过，不能据此宣称整个算子支持所有形状，或完整模型全部由 NPU 执行。算子执行成功与设备分区证据分别记录。
 

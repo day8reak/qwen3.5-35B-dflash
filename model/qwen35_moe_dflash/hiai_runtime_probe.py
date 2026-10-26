@@ -500,6 +500,8 @@ def run(args):
             manifest = {"schema_version": 1, "artifact_kind": "qwen35-cpro-op-probe", "status": "RUNNING",
                         "cases": report_records, "comparison_arm": arm["name"], "source_probe_run": str(source),
                         "skipped_cases": comparison["skipped_cases"], "replay_all": args.replay_all}
+            if args.replay_all and validated["manifest"].get("selection") is not None:
+                manifest["selection"] = validated["manifest"]["selection"]
             board = None
             try:
                 print(f"runtime-probe: {arm['name']}: running {len(records)} existing cases", flush=True)

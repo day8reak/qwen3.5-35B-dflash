@@ -33,11 +33,11 @@ GDN_INDEXED_COPY_CASES = (
 
 def test_case_inputs_references_and_serialization_are_complete():
     suite = list(cases())
-    assert len(suite) == 75
+    assert len(suite) == 118
     assert tuple(c["name"] for c in suite[47:53]) == REDUCTION_CASES
     assert tuple(c["name"] for c in suite[53:59]) == MATMUL_REDUCTION_CASES
     assert tuple(c["name"] for c in suite[59:68]) == FP16_LAYOUT_CASES
-    assert tuple(c["name"] for c in suite[68:]) == GDN_INDEXED_COPY_CASES
+    assert tuple(c["name"] for c in suite[68:75]) == GDN_INDEXED_COPY_CASES
     assert len({c["name"] for c in suite}) == len(suite)
     for case in suite:
         graph = case["graph"]

@@ -20,6 +20,8 @@ from .ge_ir import Graph
 # allow ordinary FP16 implementation differences, without changing graph dtype.
 FP16_TOLERANCE = {"rtol": 0.01, "atol": 0.002}
 EXACT_TOLERANCE = {"rtol": 0.0, "atol": 0.0}
+PROBE_SUITES = ("remaining-cpu",)
+PROBE_FAMILIES = ("gdn", "routing", "selection", "position")
 
 
 def _fp(shape, offset=0):
@@ -261,7 +263,28 @@ def cases():
     yield from _reduction_layout_cases()
     yield from _matmul_reduction_cases()
     yield from _fp16_layout_cases()
-    yield from _gdn_indexed_copy_cases()
+    yield from remaining_cpu_cases()
+
+
+def remaining_cpu_cases():
+    """One batch covering the current main-graph CPU candidate families.
+
+    These are shape-bound controls/candidates, not model policy changes or a
+    claim that every candidate runs on the NPU. Keep the original seven GDN
+    cases first so the historical case ordering and contracts remain stable.
+    """
+    from .op_probe_routing_cases import routing_cases
+    from .op_probe_selection_cases import selection_cases
+    from .op_probe_position_cases import position_cases
+
+    for family, factory in (("gdn", _gdn_indexed_copy_cases),
+                            ("routing", routing_cases),
+                            ("selection", selection_cases),
+                            ("position", position_cases)):
+        for case in factory():
+            case["probe_suite"] = "remaining-cpu"
+            case["probe_family"] = family
+            yield case
 
 
 def _matmul_reduction_cases():

@@ -1177,5 +1177,140 @@
     "accuracy": "DEFERRED_NOT_EVALUATED",
     "performance": "NOT_MEASURED",
     "runtime_placement": "UNVERIFIED"
+  },
+  "gdn_copy_probe_replay": {
+    "date": "2026-10-26",
+    "recording_run_id": "20261026T063807Z-1895-16df84",
+    "evidence_kind": "USER_PASTED_REPORTS_NOT_INDEPENDENTLY_RETRIEVED",
+    "compiled_run": "gdn-copy-20261026-150635",
+    "reported_run": "gdn-copy-board-20261026-150641",
+    "suggested_revision": "8c42f01",
+    "actual_revision": "NOT_REPORTED",
+    "artifact_hashes": "NOT_PROVIDED",
+    "deployment": "candidate_without_ddk_hcl",
+    "cases": [
+      {
+        "name": "gdn_mask_lower_slice_concat",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "scope": "main",
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "runtime_error": null,
+        "runtime_placement": "UNVERIFIED"
+      },
+      {
+        "name": "gdn_mask_lower_gather",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "scope": "main",
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "runtime_error": null,
+        "runtime_placement": "UNVERIFIED"
+      },
+      {
+        "name": "gdn_mask_strict_slice_concat",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "scope": "main",
+          "NPU": 1,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "load": "FAILED",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN",
+        "runtime_error": "Load failed: 1",
+        "runtime_placement": "UNVERIFIED"
+      },
+      {
+        "name": "gdn_mask_strict_gather",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "scope": "main",
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "runtime_error": null,
+        "runtime_placement": "UNVERIFIED"
+      },
+      {
+        "name": "gdn_mask_exp_chain_slice_concat",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "scope": "main",
+          "NPU": 1,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "runtime_error": null,
+        "runtime_placement": "UNVERIFIED"
+      },
+      {
+        "name": "gdn_mask_exp_chain_gather",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "scope": "main",
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "runtime_error": null,
+        "runtime_placement": "UNVERIFIED"
+      },
+      {
+        "name": "sub_outer_gather",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "scope": "main",
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "runtime_error": null,
+        "runtime_placement": "UNVERIFIED"
+      }
+    ],
+    "status": "ALL_FOUR_GATHER_CANDIDATES_NUMERICAL_PASS_STRICT_CONTROL_LOAD_FAILED",
+    "limits": [
+      "All runtime placements remain UNVERIFIED.",
+      "Strict Slice/Concat control failed Load before Process; not a numerical failure.",
+      "Mixed NPU/CPU Exp control passed, so mixed partition alone does not prove the strict control failure cause.",
+      "Small graph pass does not establish full-model partition count or device speed."
+    ],
+    "next_action": "Reuse seven results; run43 other remaining-cpu probes with --exclude-family gdn, then choose integrated changes together.",
+    "full_model_accuracy": "DEFERRED_NOT_EVALUATED",
+    "performance": "NOT_MEASURED"
   }
 }

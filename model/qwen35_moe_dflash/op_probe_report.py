@@ -292,6 +292,10 @@ def write_report(root: Path, manifest, boardresult=None):
                "equivalence_group": case.get("equivalence_group"),
                "source_sha256": case.get("source_sha256"),
                "input_tensors": case.get("input_tensors", []), "output_tensors": case.get("outputs", [])}
+        if case.get("probe_suite"):
+            row.update(probe_suite=case["probe_suite"], probe_family=case.get("probe_family"))
+        if case.get("input_domain"):
+            row["input_domain"] = case["input_domain"]
         rows.append(row)
         evidence = evidence_root / name
         evidence.mkdir()
@@ -342,9 +346,15 @@ def write_report(root: Path, manifest, boardresult=None):
                               "The final HiLog snapshot may miss earlier cases after ring-buffer rotation; PID reuse is possible.",
                               "Runtime placement remains UNVERIFIED without independent execution evidence."],
               "archive_notes": archive_notes}
+    report["selection"] = manifest.get("selection")
+    families = sorted({r["probe_family"] for r in rows if r.get("probe_family")})
+    report["probe_families"] = {family: sum(r.get("probe_family") == family for r in rows)
+                                for family in families}
     _exclusive_text(manifest_path, _json_text(manifest))
     _exclusive_text(report_path, _json_text(report))
     lines = ["Operator probe results", "", "Board transport: " + report["board_transport_status"]]
+    if report["probe_families"]:
+        lines.append("Probe families: " + ", ".join(f"{name}={count}" for name, count in report["probe_families"].items()))
     if report["board_transport"].get("error"):
         lines.append("Transport error: " + str(report["board_transport"]["error"]))
     if report["manifest_error"]:

@@ -1,0 +1,1316 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T063807Z-1895-16df84",
+  "baseline_commit": "8c42f01bcf430646811431bf5ccf7134bcfbe460",
+  "status": "HOST_VALIDATED_VENDOR_COMPILE_AND_BOARD_PENDING",
+  "user_request": "Batch more remaining operators to reduce repeated user compile/board runs.",
+  "scope": "Probe-only current tiny CPU-candidate families; no production target/draft graph, model precision, weights, numerical thresholds, or runtime deployment change.",
+  "suite": "remaining-cpu",
+  "total_catalogue_cases": 118,
+  "suite_cases": 50,
+  "family_counts": {
+    "gdn": 7,
+    "routing": 16,
+    "selection": 15,
+    "position": 12
+  },
+  "recommended_selection": {
+    "suite": "remaining-cpu",
+    "requested_cases": [],
+    "excluded_families": [
+      "gdn"
+    ],
+    "selected_cases": [
+      "moe_equal_cast_int32",
+      "moe_cast_bool_roundtrip",
+      "moe_count_reduce_int32",
+      "moe_active_greater_int32",
+      "moe_membership_native",
+      "moe_membership_gather",
+      "moe_count_native",
+      "moe_count_gather",
+      "moe_active_native",
+      "moe_active_gather",
+      "moe_weights_native",
+      "moe_weights_gather",
+      "moe_gate_select",
+      "moe_gate_gather",
+      "moe_route_native",
+      "moe_route_gather",
+      "selection_topk_rank2_unique",
+      "selection_topk_rank3_unique",
+      "selection_topk_rank4_unique",
+      "selection_argmax_rank3_unique",
+      "selection_argmax_rank2_unique",
+      "selection_argmax_rank2_keepdims_unique",
+      "selection_argmax_rank4_unique",
+      "selection_argmax_rank3_ties",
+      "selection_argmax_rank2_ties",
+      "selection_argmax_rank2_keepdims_ties",
+      "selection_argmax_rank4_ties",
+      "selection_argmax_topk1_unique",
+      "selection_router_rank2_unique",
+      "selection_router_rank3_unique",
+      "selection_router_rank4_unique",
+      "rope_frequency_bmm",
+      "rope_frequency_matmul2d",
+      "rope_frequency_outer_mul",
+      "position_cast_tiny_native",
+      "position_cast_tiny_compact",
+      "position_cast_rounding_native",
+      "position_cast_rounding_compact",
+      "attention_mask_and_select",
+      "attention_mask_reshape_before_cast",
+      "attention_mask_sequential_select",
+      "attention_mask_lut_int32",
+      "attention_mask_lut_fp16"
+    ]
+  },
+  "user_batch_count": 43,
+  "reuse_gdn_evidence": "specs/hiai-model-execution-user-report.json#gdn_copy_probe_replay",
+  "coverage": {
+    "gdn": [
+      "ConcatD FP16 masks",
+      "Sub FP16 outer"
+    ],
+    "routing": [
+      "Equal INT32",
+      "Cast BOOL to INT32",
+      "ReduceSum INT32",
+      "Greater INT32",
+      "BroadcastTo BOOL"
+    ],
+    "selection": [
+      "TopKD FP16 router",
+      "ArgMaxExt2 FP16 logits"
+    ],
+    "position": [
+      "Cast INT32 to FP16",
+      "BatchMatMul FP16 K1",
+      "LogicalAnd BOOL",
+      "Reshape BOOL"
+    ]
+  },
+  "contracts": {
+    "routing": "Fixed4 experts,8 tokens,2 slots; INT32 IDs0..3. Original membership and selected-zero behavior, copy-only zero sentinel gating, one FP16 product and ascending expert sum. Fullroute both arms reuse the existing MatMul FP16 reduction implementation; this K=2 contract still awaits device validation. Independent reference retains ReduceSum.",
+    "selection": "TopK k2 with unique FP16 scores at ranks2/3/4. ArgMax rank2/3/4 and keepdims with unique/tied maxima; lowest-index ties retained. TopK1 substitution only tested for unique maxima. Router preserves FP16 Softmax/TopK/sum/div boundaries and original INT32 IDs.",
+    "position": "K1 RoPE dynamic operands; cast tiny and FP16 rounding-boundary fixtures; dynamic mask exact Select equivalence. Lookup masks explicitly limited to binary inputs; nonlookup variants retain original nonzero cast semantics.",
+    "all": "External FP16/INT32 only; booleans remain internal. Original references; copy/integer exact numeric gates and existing FP16 arithmetic tolerances."
+  },
+  "batch_policy": {
+    "selection": "--suite mutually exclusive with --case; --exclude-family requires suite; reject empty results",
+    "failure": "Record individual compile/native failures and continue later cases; infrastructure/transport failures remain errors",
+    "replay": "Compile only43 new cases, refresh one probe runner using frozen original native donor, replay compiled cases only; no silent reuse as a new PASS",
+    "provenance": "Manifest records selected/excluded families and exact case names; replay-all preserves source selection, family and input-domain metadata."
+  },
+  "host_validation": {
+    "pytest": {
+      "batch-tests.xml": {
+        "tests": 175,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "position-cases.xml": {
+        "tests": 31,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "routing-tests.xml": {
+        "tests": 42,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "selection-tests-verified.xml": {
+        "tests": 16,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "prepare_only": "Actual43-case CLI preparation succeeded; family counts16/15/12; no OMG or HDC",
+    "old_contract_audit": "Original75 emitted C++, description, input/reference dtype/shape/bytes, thresholds and equivalence groups identical to8c42f01; new batch tags excluded",
+    "shell_blocks_passed": 62,
+    "total_passed": 264,
+    "resolved_test_harness_errors": [
+      "Selection test syntax fixed",
+      "Recipe output uses a new child of tmp_path as required by exclusive writer",
+      "Dtype attribute asserts recipe tag2 mapped to GE DT_INT32, not raw GE enum3. Production code unchanged by these test fixes."
+    ]
+  },
+  "cases": [
+    {
+      "name": "moe_equal_cast_int32",
+      "family": "routing",
+      "input_domain": {
+        "ids": {
+          "allowed_values": [
+            0,
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          2
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "moe_cast_bool_roundtrip",
+      "family": "routing",
+      "input_domain": {
+        "membership": {
+          "allowed_values": [
+            0,
+            1
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          2
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "moe_count_reduce_int32",
+      "family": "routing",
+      "input_domain": {
+        "membership": {
+          "allowed_values": [
+            0,
+            1
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          2
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          1
+        ]
+      ]
+    },
+    {
+      "name": "moe_active_greater_int32",
+      "family": "routing",
+      "input_domain": {
+        "counts": {
+          "allowed_values": [
+            0,
+            1,
+            2
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          1
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          1
+        ]
+      ]
+    },
+    {
+      "name": "moe_membership_native",
+      "family": "routing",
+      "input_domain": {
+        "ids": {
+          "allowed_values": [
+            0,
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          2
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "moe_membership_gather",
+      "family": "routing",
+      "input_domain": {
+        "ids": {
+          "allowed_values": [
+            0,
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          2
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "moe_count_native",
+      "family": "routing",
+      "input_domain": {
+        "ids": {
+          "allowed_values": [
+            0,
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          2
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          1
+        ]
+      ]
+    },
+    {
+      "name": "moe_count_gather",
+      "family": "routing",
+      "input_domain": {
+        "ids": {
+          "allowed_values": [
+            0,
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          2
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          1
+        ]
+      ]
+    },
+    {
+      "name": "moe_active_native",
+      "family": "routing",
+      "input_domain": {
+        "ids": {
+          "allowed_values": [
+            0,
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          2
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          1
+        ]
+      ]
+    },
+    {
+      "name": "moe_active_gather",
+      "family": "routing",
+      "input_domain": {
+        "ids": {
+          "allowed_values": [
+            0,
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          2
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          1
+        ]
+      ]
+    },
+    {
+      "name": "moe_weights_native",
+      "family": "routing",
+      "input_domain": {
+        "ids": {
+          "allowed_values": [
+            0,
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "moe_weights_gather",
+      "family": "routing",
+      "input_domain": {
+        "ids": {
+          "allowed_values": [
+            0,
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "moe_gate_select",
+      "family": "routing",
+      "input_domain": {
+        "active": {
+          "allowed_values": [
+            0,
+            1
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          16
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          16
+        ]
+      ]
+    },
+    {
+      "name": "moe_gate_gather",
+      "family": "routing",
+      "input_domain": {
+        "active": {
+          "allowed_values": [
+            0,
+            1
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          1
+        ],
+        [
+          8,
+          16
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          16
+        ]
+      ]
+    },
+    {
+      "name": "moe_route_native",
+      "family": "routing",
+      "input_domain": {
+        "ids": {
+          "allowed_values": [
+            0,
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          16
+        ],
+        [
+          8,
+          16
+        ],
+        [
+          8,
+          16
+        ],
+        [
+          8,
+          16
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          16
+        ]
+      ]
+    },
+    {
+      "name": "moe_route_gather",
+      "family": "routing",
+      "input_domain": {
+        "ids": {
+          "allowed_values": [
+            0,
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          16
+        ],
+        [
+          8,
+          16
+        ],
+        [
+          8,
+          16
+        ],
+        [
+          8,
+          16
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          16
+        ]
+      ]
+    },
+    {
+      "name": "selection_topk_rank2_unique",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          8,
+          4
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "selection_topk_rank3_unique",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          8,
+          4
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "selection_topk_rank4_unique",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          8,
+          4
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "selection_argmax_rank3_unique",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          8,
+          64
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "selection_argmax_rank2_unique",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          8,
+          64
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "selection_argmax_rank2_keepdims_unique",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          8,
+          64
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "selection_argmax_rank4_unique",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          8,
+          64
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "selection_argmax_rank3_ties",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          8,
+          64
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "selection_argmax_rank2_ties",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          8,
+          64
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "selection_argmax_rank2_keepdims_ties",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          8,
+          64
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "selection_argmax_rank4_ties",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          8,
+          64
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "selection_argmax_topk1_unique",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          8,
+          64
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "selection_router_rank2_unique",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          8,
+          4
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "selection_router_rank3_unique",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          8,
+          4
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "selection_router_rank4_unique",
+      "family": "selection",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          8,
+          4
+        ]
+      ],
+      "output_shapes": [
+        [
+          8,
+          2
+        ],
+        [
+          8,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "rope_frequency_bmm",
+      "family": "position",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          2,
+          1
+        ],
+        [
+          1,
+          1,
+          8
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          2,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "rope_frequency_matmul2d",
+      "family": "position",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          2,
+          1
+        ],
+        [
+          1,
+          1,
+          8
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          2,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "rope_frequency_outer_mul",
+      "family": "position",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          2,
+          1
+        ],
+        [
+          1,
+          1,
+          8
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          2,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "position_cast_tiny_native",
+      "family": "position",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          8
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "position_cast_tiny_compact",
+      "family": "position",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          8
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "position_cast_rounding_native",
+      "family": "position",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          8
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "position_cast_rounding_compact",
+      "family": "position",
+      "input_domain": null,
+      "input_shapes": [
+        [
+          1,
+          8
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "attention_mask_and_select",
+      "family": "position",
+      "input_domain": {
+        "attention_mask": {
+          "allowed_values": [
+            0,
+            1
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          1,
+          8
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          1,
+          8,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "attention_mask_reshape_before_cast",
+      "family": "position",
+      "input_domain": {
+        "attention_mask": {
+          "allowed_values": [
+            0,
+            1
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          1,
+          8
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          1,
+          8,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "attention_mask_sequential_select",
+      "family": "position",
+      "input_domain": {
+        "attention_mask": {
+          "allowed_values": [
+            0,
+            1
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          1,
+          8
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          1,
+          8,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "attention_mask_lut_int32",
+      "family": "position",
+      "input_domain": {
+        "attention_mask": {
+          "allowed_values": [
+            0,
+            1
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          1,
+          8
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          1,
+          8,
+          8
+        ]
+      ]
+    },
+    {
+      "name": "attention_mask_lut_fp16",
+      "family": "position",
+      "input_domain": {
+        "attention_mask": {
+          "allowed_values": [
+            0,
+            1
+          ]
+        }
+      },
+      "input_shapes": [
+        [
+          1,
+          8
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          1,
+          8,
+          8
+        ]
+      ]
+    }
+  ],
+  "source_sha256": {
+    "model/qwen35_moe_dflash/op_probe_cases.py": "ce17dab11d410c4aa7643d5757490e9c1419185eabd04a10c3e8de2132411f9b",
+    "model/qwen35_moe_dflash/op_probe.py": "194815101ba3ff2b6f5cc9c6afaf845e5a4869c5af6fccfe4c0c1fd26ba8daf0",
+    "model/qwen35_moe_dflash/op_probe_report.py": "bba63cdda1cdc125c5e5d7ab68fed618fb9cd48ea1abfc8b9695a9b38d24801b",
+    "model/qwen35_moe_dflash/hiai_runtime_probe.py": "7e4dcdb5ee09f38607b1bb59d2b65a0d85072e7701b9044202fae79438b14b20",
+    "model/qwen35_moe_dflash/op_probe_routing_cases.py": "ba00df17759d3cba957b46943374a1d43c27a8ace6fb598ffb0d655368a65ad4",
+    "model/qwen35_moe_dflash/op_probe_selection_cases.py": "5ead6bec30346c5973dc26b0ef1036c5f2455e7cdc611f912fbd73af2ff819fa",
+    "model/qwen35_moe_dflash/op_probe_position_cases.py": "bd7300aa1b26c030544755709a8b71afab91900a86dc673ef026ccb60d13b9db",
+    "tests/test_op_probe.py": "478d8b9ae36e0699aaa61b64a925669f2e7ce8c813015dc421d1013bf0feffdc",
+    "tests/test_op_probe_cases.py": "22eaacafd28e8dd171b5b83665a1cbe46733df9cd9491cb21151e908fe29a8f2",
+    "tests/test_hiai_runtime_probe.py": "3e9f825c3941c067bbe16209946fe469a0f224c825019fba33857719bf450e9d",
+    "tests/test_op_probe_routing_cases.py": "b74578aae14c05ff0e3a234d37fddae0bab36c281f8a1852b6fc5dd99b89185b",
+    "tests/test_op_probe_position_cases.py": "b14ee43d98057651f8fac11a5742ed95557cce9a008fee49096633ab68087c71",
+    "tests/test_op_probe_selection_cases.py": "ced6ae64492eaa427cc265b7211cac31069ef6c409fad7572b18181f5bfbd982"
+  },
+  "artifacts": {
+    "batch-tests.xml": "3dd42b08548345390f418814d86675b352a1a55c9e580cf58bab1b17d40d126b",
+    "batch-tests.log": "36dfc5b54718f8774b9a2c3d1e3c2fbb902f13e19cd538fa249651a3c7144387",
+    "position-cases.xml": "79b9255134809523407323a659123e01e899095dd4880e23ac1fe93065b83ff4",
+    "routing-tests.xml": "26dacc19a3f7fd4269b31ec27d7f11d14bc8c51ff65f1cb2ae18f1569570be91",
+    "remaining-prepare.log": "b5c20688de7f043600c6ae24d0eacd3eb45ab57af3f06b842a1ae3a9dda59570",
+    "remaining-prepare/manifest.json": "ddaf98eee1d35a86072cf409facd49ab5b30c3b0bd07fc2e20b3749b36826be7",
+    "remaining-prepare/report.json": "6ecafb121de9402cfe4051c202aadfede846f853bbfcf494e1da961abfa60aeb",
+    "remaining-prepare/results.tar.gz": "142f6074d33348549157dcf838db4a1d02d7a5a0c94a36f3c3dd63f4552140de",
+    "batch-inventory.json": "0bb08e1a892572ca3e1edcaa14b5f95a72e5457806b288fed8825a1809e26c43",
+    "existing-probe-audit.json": "a09c9f9d2201cf5f7abb5ffb3ccae74ebd19d88c6ae18af628fa188ed6c99cb1",
+    "docs-shell-syntax.json": "879a08be71700cbc427ce5395461b493ca360e3cea10bf65bdebcb431f4637f3",
+    "selection-tests-verified.xml": "deb44440937a2c66dff261214efdd2fec201b4e0a42fb79e63c19cfabba62984",
+    "selection-tests-verified.log": "915abf6e3013302ef73970c963eb3c6ab123954f7590724a18abe0f03b651f65"
+  },
+  "independent_review": {
+    "routing": "PASSED by probe_io_diagnostics, no blockers",
+    "selection": "PASSED_MODULE_AND_TEST_REVIEW; root fixed test harness syntax/path/dtype-tag assertions; final16 tests pass. Tests inspect actual recipe structure and independent gold, do not execute serialized recipe/device.",
+    "batch": "PASSED; report selection copy issue resolved and regression tested",
+    "position": "Root reviewed source/recipe coverage;31 focused tests passed"
+  },
+  "limits": [
+    "No new43-case vendor compile or device execution result yet.",
+    "Small probe results do not resolve full-model >9 partition rollback or identify runtime placement.",
+    "Fixed tiny domains do not establish full256-expert shapes or full-vocabulary performance.",
+    "TopK1 unique-max evidence is not a tie-policy proof.",
+    "Host nonfinite payload tests are not board nonfinite validation."
+  ],
+  "device_execution": "PENDING_USER_RUN",
+  "full_model_accuracy": "DEFERRED_NOT_EVALUATED",
+  "performance": "NOT_MEASURED_DFLASH_GOAL_AT_LEAST_2X",
+  "guide": "docs/cpu-gap-probes.md",
+  "experience_audit": {
+    "record": "docs/experience.md",
+    "changed_skills": [],
+    "captured": "Batch all current families and preserve source-bound case/domain/selection metadata; exclude already returned family, keep failure stages distinct; context-specific comparison rather than only generic op names.",
+    "pending": "43case compile/device results, unified graph adaptation, integrated accuracy/speed."
+  }
+}

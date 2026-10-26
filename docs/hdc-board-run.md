@@ -17,11 +17,11 @@ hdc -t "$SN" -s "$BIP" ...
 
 <a id="当前双图采用可选-matmul-归约"></a>
 
-## 当前：先验证7项GDN Gather复制探针
+## 当前：一次运行剩余 CPU 候选批次
 
 最新`ge-row-chain-20261026-144144`已通过ReshapeFusion，19个row Mul CPU-only候选消失；已识别CPU-only计算从117减到98，主图仍因NPUCL分区数超过9回退，尚未执行双图。保留本次产物与诊断，不重新运行旧整图。
 
-当前按[7项GDN Gather对照](direct-model-air.md#gdn-indexed-copy-probes)一次compile-only，再用原`OP_PROBE_RUN`作native donor刷新probe并replay-all。新目录为`GE_GDN_COPY_RUN`和`GE_GDN_COPY_BOARD_RUN`。只测试mask普通/严格、mask→Exp→mask上下文及Sub同形复制候选；FP16、原参考及门槛保持。原HDC配置和candidate库策略继续复用。独立case结果决定下一步整图适配，完整准确率与DFlash至少2倍仍待验证。
+当前按[remaining-cpu批次](cpu-gap-probes.md)一次compile-only，再用原`OP_PROBE_RUN`作native donor刷新probe并replay-all。完整50项包含GDN、MoE路由、TopK/ArgMax、RoPE和布尔掩码对照，覆盖最新报告的全部13类已识别CPU-only计算候选。GDN7项已有用户结果，当前加`--exclude-family gdn`只跑其余43项。只需一次提供编译和板端报告，不必逐组等待反馈。原HDC配置、candidate库策略与数值门槛保持。完整准确率与DFlash至少2倍仍待验证。
 
 ## 历史：MatMul归约与row Mul compact双图复测
 
@@ -105,7 +105,7 @@ cat "$GE_ROW_CHAIN_INSPECT_RUN/report.txt"
 
 此模式沿用文件名 `benchmark.json`，但报告的 `mode` 是 `smoke`：强制 target 和 draft 各调用一次，将 target 特征传给 draft，保存两图 Top1 输出。即使 prompt 的下一 token 是 EOS，也会执行 draft。成功标为 `EXECUTION_COMPLETE`；`accuracy`、`performance` 为 `NOT_EVALUATED`，不产生 `comparison.json`。参考 JSON 仍用于身份和输入配置检查；其历史 PASS 不是本次板端精度结论。
 
-程序保留模型哈希、版本、张量数量、格式、大小和 token 范围检查。ND 描述允许原有尾部补1到四维，例如 `[1,S] → [1,S,1,1]`、`[1,S,F] → [1,S,F,1]`；源码另支持逻辑 rank3 `[a,b,c] → [1,a,b,c]`，使用运行库返回的描述初始化张量。新增规则仅扩展 rank3 特征，rank2 token 合同及宽度推导不变；仍不按元素总数放行任意布局。后续整图编译成功后需在新目录重建正式runner以取得这项兼容；当前7项探针只刷新独立probe。成功和失败都会尝试回传 HiLog，日志缺失单独记录。
+程序保留模型哈希、版本、张量数量、格式、大小和 token 范围检查。ND 描述允许原有尾部补1到四维，例如 `[1,S] → [1,S,1,1]`、`[1,S,F] → [1,S,F,1]`；源码另支持逻辑 rank3 `[a,b,c] → [1,a,b,c]`，使用运行库返回的描述初始化张量。新增规则仅扩展 rank3 特征，rank2 token 合同及宽度推导不变；仍不按元素总数放行任意布局。后续整图编译成功后需在新目录重建正式runner以取得这项兼容；当前remaining-cpu批次只刷新独立probe。成功和失败都会尝试回传 HiLog，日志缺失单独记录。
 
 当前没有完整模型板端通过证据；这个命令用于取得实际加载/执行结果。去掉 `--execution-only` 后仍是下文的严格 benchmark + 参考比较。
 
