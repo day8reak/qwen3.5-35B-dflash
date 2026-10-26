@@ -4,45 +4,41 @@
 
 **最终目标：精度达标后，DFlash 相比同板、同目标权重的普通解码至少提速 2 倍。当前优先打通 target/draft 双图上板执行，精度排查后置，尚无加速结论。** 验收口径保存在 [DFlash 合约](../specs/dflash-contract.json)：完整 decode 循环计入 draft、verify、接受/拒绝处理和数据搬运，另报 prefill + decode 总耗时；前缀重算和全专家计算只作正确性联调基线。
 
-**当前阻塞仍是主图 NPUCL 分区超过9个后回退 CPU。用户基于 `78d94ef` 重新导出后，新 target 日志的主图窗口为 L91094–L127615，末尾再次报告回退。** 本次汇总中437个归约节点只有 CPU 候选，不能归因于 scan 的 INT64 axes 单一问题。`v18/sum_1` 在 `elementary_lib` 的上下文只给出 `check elem support fail`，其他库也拒绝，但尚无具体 format 拒绝原因。候选库部署下三个 MatMul/Add 探针已通过，完整双图尚未通过；下一步先关联现有日志与原始构图记录。
+**当前阻塞仍是主图 NPUCL 分区超过9个后回退 CPU。** 用户基于 `78d94ef` 重导出的 target 仍在主图窗口 L91094–L127615 回退；只读检查已取得13,613项完整支持表，识别538个 CPU-only 计算候选，其中437个归约包括421个 FP16 和16个整数节点。旧 AIR 中192个 INT64 axes 记录属于该旧产物，不能据此判定后续补丁未生效；归约也不是只改 axes 就能解决。六个 FP16 rank/`keep_dims` 对照已完成：前五项均为 NPU=0、CPU=1，第六项为 NPU=1、CPU=1，混合分区不能证明其中 ReduceSum 在 NPU 上。
 
-**服务器没有 OHOS SDK：[获取 Native SDK 与配置编译路径](ohos-native-sdk.md)。** 已找到的 HIAI `.so` 是链接/运行库，还需匹配的交叉编译器与 sysroot；SDK 留在服务器。
-
-**当前入口：[读取现有编译产物，定位 CPU 候选切断点](direct-model-air.md#7-当前现场先读取现有编译产物定位候选切断点)。** 保持 `GE_REEXPORT_RUN` 指向刚刚失败的那次目录，使用其中已有的 `air` 和 `omc`；只为诊断创建新的 `GE_INSPECT_RUN`。服务器执行：
+**当前入口：[六个 MatMul 归约候选的编译与板端验证](direct-model-air.md#7-当前现场验证-matmul-归约候选)。** 已完成的统计和 rank 对照保留作证据，无需重复运行。本轮仅探测独立小图，不改完整 target/draft 图；先编译六个候选，再复用原同 DDK 探测记录构建当前 runner，对这一轮的 OMC 上板验证。沿用现有 NumPy、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID`、`SN`、`BIP`；`OP_PROBE_RUN` 保持指向原来含完整 native 构建记录的算子探测目录：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
-export GE_INSPECT_RUN="$AI_RUN_DIR/ge-inspect-$(date +%Y%m%d-%H%M%S)"
-python3 "$GE_MODEL_TOOL" inspect-compile \
-  --air "$GE_REEXPORT_RUN/air" \
-  --omc "$GE_REEXPORT_RUN/omc" \
-  --graph target --output "$GE_INSPECT_RUN"
-```
-
-命令只使用 Python 标准库，按哈希绑定 AIR manifest、本次编译的 `failure.json` 或成功 manifest、recipe 和 OMG 日志，不重新编译、不读取权重载荷、不访问板端。`report.txt` 给出候选分组，`report.json` 保留节点、构造时 shape/dtype、生产消费关系和日志行号。常量折叠与主图分开，GE 改名后无法精确匹配的节点保持未匹配；候选支持、构造时边和 shape 都不能当作最终分区或实际 NPU 执行。
-
-scan 内部 ReduceSum 的 axes 遗漏现已补为 INT32，数据与 FP16 归约次序不变；这项主机修正不足以说明437个归约节点或分区回退已恢复。先用诊断结果确定下一处改动，明确修复后再按 [重导出、编译检查和双图执行流程](hdc-board-run.md#明确修复后重新导出并执行双图)生成新产物。保留原 prepared、参考及已更新的 runner。
-
-接着只编译六个归约对照小图，比较实际 RMSNorm/GDN 形状的 rank 与 `keep_dims` 变体，缩小通用拒绝的范围。它们均为 FP16 数据、INT32 axes；沿用已配置的 NumPy、主机 GE 和 OMG 环境，不构建 runner、不访问板端，也不重编完整模型：
-
-```bash
-export GE_REDUCE_PROBE_RUN="$AI_RUN_DIR/reduce-probe-$(date +%Y%m%d-%H%M%S)"
+export GE_REDUCE_MM_RUN="$AI_RUN_DIR/reduce-mm-$(date +%Y%m%d-%H%M%S)"
+export GE_REDUCE_MM_BOARD_RUN="$AI_RUN_DIR/reduce-mm-board-$(date +%Y%m%d-%H%M%S)"
 python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
   --compile-only \
-  --case reduce_mean_rms_rank3 --case reduce_mean_rms_rank2 \
-  --case reduce_sum_scan_rank3 --case reduce_sum_scan_rank2 \
-  --case reduce_sum_gdn_dropdims --case reduce_sum_gdn_keepdims \
-  --output "$GE_REDUCE_PROBE_RUN"
+  --case reduce_mean_rms_matmul --case reduce_mean_head_matmul \
+  --case reduce_sum_scan_matmul --case reduce_sum_gdn_matmul_k64 \
+  --case reduce_sum_gdn_matmul_k7 --case reduce_sum_gdn_matmul_k1 \
+  --output "$GE_REDUCE_MM_RUN" &&
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
+  --probe-run "$GE_REDUCE_MM_RUN" --native-from "$OP_PROBE_RUN" \
+  --refresh-runner --replay-all --output "$GE_REDUCE_MM_BOARD_RUN"
+
+cat "$GE_REDUCE_MM_RUN/report.txt"
+cat "$GE_REDUCE_MM_BOARD_RUN/runtime-comparison.txt"
 ```
 
-保留 `$GE_INSPECT_RUN/report.txt` 与这六项的 `report.txt` / `results.tar.gz`。对照看各 case 的主图 `compiler partition` 计数，`COMPILED` 本身不代表 NPU 分区；板端 Load、Process 和数值仍未验证。形状与结果解释见[六项归约编译对照](direct-model-air.md#六项归约编译对照)。现有通用拒绝日志尚不能确定 V0/V1 或 format 原因。
+新批次提供 OMC、输入和参考；旧批次只提供 native 构建身份及已记录库集合。两批的规范化 DDK 路径、DDK ID 和 OMG SHA256 必须一致，原 SDK、头文件、链接库及产物哈希仍须通过校验；不匹配或 native 记录残缺会在 HDC 前停止。脚本只刷新小探针，不重新生成候选 OMC、不修改两批源产物，也无需库参数。保留两批原目录和新结果中的 `results.tar.gz`。
+
+这些候选用常量右权重 `[1,N]` 与 `transpose_b=True` 的 MatMul 表达归约：Sum 使用全1权重，Mean 使用 `1/N` 权重，避免先求和再缩放的 FP16 中间溢出；归约之前已有的 FP16 乘积舍入仍须保留。MatMul 的累加舍入可能与 Reduce 不同，因此保留原数值容差，不直接启用全图替换。报告分别检查编译分区、Load、Process 和数值；即使全部通过，实际运行位置仍需独立证据，完整双图和2倍加速均未验证。
+
+完整模型重导出和上板命令保留在[明确修复后的流程](hdc-board-run.md#明确修复后重新导出并执行双图)，等待小图证据与明确的图修复后再使用。原 prepared、参考、runner、失败 AIR/OMC 及已取得的诊断都保留。
+
+**服务器没有 OHOS SDK：[获取 Native SDK 与配置编译路径](ohos-native-sdk.md)。** SDK 留在服务器；上述刷新使用原 native 记录中的 SDK、头文件和链接资源。
 
 后续使用 `run_hdc.py` 上板时，无需设置库目录或增加库参数。脚本从 `--runner` 对应的构建目录读取 `command.json` / `result.json`，验证程序及链接库 SHA256，自动收集同套 HIAI 库，按已通过三个探针的候选部署策略排除 DDK 的 `libhiai_hcl_model_runtime.so` / `libhiai_hcl_model_runtime_impl.so`，并从构建时的 OHOS SDK 补充可找到的 ARM64 C++ 运行库。板端进程搜索路径加入 `/vendor/lib64/chipsetsdk`，不改系统库。保留构建目录、DDK 与 SDK 路径即可。
 
 上板流程的 `--execution-only` 执行 probe，再强制 target/draft 各执行一次、回传两图的 Top1 输出及日志；现有参考只用于匹配身份、prompt 和配置，不比较输出精度，也不运行 benchmark。成功标记为 `EXECUTION_COMPLETE`，精度和性能为 `NOT_EVALUATED`。以后去掉该参数可恢复原有配对 benchmark 和参考比较。全部成功后删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。probe 或 benchmark 失败时会直接显示已回传的错误日志末尾，并自动抓取板端 HiLog 缓冲区快照作为排障材料。日志摘要会扫描整个快照、排除 HDC 传输记录，并避免将 `input` 误匹配为 `NPU`；完整日志始终保留。
 
-此前 HCL 空缓冲区、库选择和 ND 补维问题及当时的重编 runner 命令保存在[历史排障记录](hdc-board-run.md#历史加载接口与运行库排障)。当前只读诊断无需重新生成模型或 runner；后续上板沿用已验证小图的候选库部署。
+此前 HCL 空缓冲区、库选择和 ND 补维问题及当时的重编 runner 命令保存在[历史排障记录](hdc-board-run.md#历史加载接口与运行库排障)。本轮归约候选只刷新独立小探针，完整模型 runner 和旧模型产物继续保留；候选上板沿用已验证小图的库部署。
 
 以后要保留大体积独立权重时，加 `--board-cleanup omc`，只删除清单中的 OMC 文件，保留目录、独立权重、程序、库和日志；加 `--board-cleanup none` 则全部保留。默认是 `--board-cleanup all`。嵌入 OMC 内部的权重随 OMC 一起删除。
 
@@ -280,7 +276,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
   --output "$AI_RUN_DIR/op-probe-$(date +%Y%m%d-%H%M%S)"
 ```
 
-默认套件包含 53 个小图，覆盖当前模型中的重点算子和变体，包括 MatMul、BatchMatMul、激活、类型转换、索引、广播，以及四维/五维输入差异；其中六项是本轮新增的归约对照。MatMul 包含输出宽度为 1、2、8 的常量/动态右输入，BatchMatMul 包含卷积降解所用的 `[48,8,4] × [48,4,1]`。每个案例生成独立 AIR/OMC 和输入，按 `hdc -t "$SN" -s "$BIP"` 上传后实际调用 HIAI Load 与 Process，并取回输出和日志。单个案例编译或执行失败会记录后继续测试其他案例；全部案例编译失败时返回非零退出码。当前归约排查使用本文开头显式选择的六项 `--compile-only`，无需重跑整套。
+默认套件包含 59 个小图，覆盖当前模型中的重点算子和变体，包括 MatMul、BatchMatMul、激活、类型转换、索引、广播，以及四维/五维输入差异；其中包括六项已完成的 rank/keep_dims 归约对照和本轮六个 MatMul 归约候选；原53项内容保持不变。候选与完整模型隔离，当前命令只选择新增六项。MatMul 包含输出宽度为 1、2、8 的常量/动态右输入，BatchMatMul 包含卷积降解所用的 `[48,8,4] × [48,4,1]`。每个案例生成独立 AIR/OMC 和输入，按 `hdc -t "$SN" -s "$BIP"` 上传后实际调用 HIAI Load 与 Process，并取回输出和日志。单个案例编译或执行失败会记录后继续测试其他案例；全部案例编译失败时返回非零退出码。当前归约排查使用本文开头显式选择的六项 `--compile-only`，随后用 `--native-from` 复用原同 DDK 的 native 记录上板；无需重跑默认整套。
 
 输出目录包含 `report.json`、`report.txt` 和 `results.tar.gz`。报告分别记录各阶段结果；浮点数学案例使用 FP16 参考对比，默认 `rtol=0.01`、`atol=0.002`，纯复制/重排和整数结果要求精确一致。小图成功只能证明该输入形状、类型和工具链下的案例通过，不能据此宣称整个算子支持所有形状，或完整模型全部由 NPU 执行。算子执行成功与设备分区证据分别记录。
 
@@ -357,7 +353,7 @@ cat "$RUNTIME_IO_RUN/arms/candidate_without_ddk_hcl/board/matmul_m8_b_dynamic/st
 
 此模式需要原构建记录中的 OHOS SDK、HIAI 头文件和 CMake 可用，只构建一次当前诊断 runner，两组共用新二进制；原 OMC、输入、参考和库集合继续按原哈希复用。它不会重新导出 AIR 或编译 OMC。新旧 runner、当前源码、SDK/头文件及链接库的身份写入构建记录，报告注明已刷新 runner。新版会在比较前输出全部实际形状和格式，并指出具体不匹配项；dtype 无法由该旧版 HIAI 查询接口直接读取，仍由原产物合约约束。保持严格校验，不能仅凭元素总数相同跳过格式或布局差异。
 
-已针对板端实测的 ND 尾部补维增加兼容：逻辑形状 `[8,16]` 与运行时 `[8,16,1,1]` 可以对应。仅接受原 rank 为 1～3、运行时恰好 rank 4、原维度前缀完全相同且新增尾维全部为 `1` 的情况，格式必须仍为 ND。探针记录该对应关系，用运行时返回的描述创建张量，输入输出字节及数值门槛不变；原样匹配的其他 rank 继续支持。前部或中间补维、非单例尾维、维度置换及非 ND 格式仍会拒绝。更新后用上面的 `--refresh-runner` 命令和新输出目录复测即可；该规则当前仅用于算子探针，完整模型 runner 尚未据此调整。
+已针对板端实测的 ND 尾部补维增加兼容：逻辑形状 `[8,16]` 与运行时 `[8,16,1,1]` 可以对应。仅接受原 rank 为 1～3、运行时恰好 rank 4、原维度前缀完全相同且新增尾维全部为 `1` 的情况，格式必须仍为 ND。探针记录该对应关系，用运行时返回的描述创建张量，输入输出字节及数值门槛不变；原样匹配的其他 rank 继续支持。前部或中间补维、非单例尾维、维度置换及非 ND 格式仍会拒绝。更新后用上面的 `--refresh-runner` 命令和新输出目录复测即可；正式模型 runner 也采用相同的受限 ND 尾部补维规则。
 
 三个对照案例通过后，可复用原探测的全部已编译 OMC，仅在候选部署下复测：
 

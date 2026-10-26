@@ -15,12 +15,17 @@ REDUCTION_CASES = (
     "reduce_sum_scan_rank3", "reduce_sum_scan_rank2",
     "reduce_sum_gdn_dropdims", "reduce_sum_gdn_keepdims",
 )
+MATMUL_REDUCTION_CASES = (
+    "reduce_mean_rms_matmul", "reduce_mean_head_matmul", "reduce_sum_scan_matmul",
+    "reduce_sum_gdn_matmul_k64", "reduce_sum_gdn_matmul_k7", "reduce_sum_gdn_matmul_k1",
+)
 
 
 def test_case_inputs_references_and_serialization_are_complete():
     suite = list(cases())
-    assert len(suite) == 53
-    assert tuple(c["name"] for c in suite[47:]) == REDUCTION_CASES
+    assert len(suite) == 59
+    assert tuple(c["name"] for c in suite[47:53]) == REDUCTION_CASES
+    assert tuple(c["name"] for c in suite[53:]) == MATMUL_REDUCTION_CASES
     assert len({c["name"] for c in suite}) == len(suite)
     for case in suite:
         graph = case["graph"]
@@ -146,3 +151,31 @@ def test_reduction_layout_controls_serialize_fp16_data_and_int32_axes(name, tmp_
         assert final["outputs"][0]["shape"] == (2, 1, 64)
     else:
         assert final is reduction
+
+
+@pytest.mark.parametrize("name", MATMUL_REDUCTION_CASES)
+def test_matmul_reduction_candidates_keep_original_reference_and_fp16_thresholds(name, tmp_path):
+    case = next(case for case in cases() if case["name"] == name)
+    data = case["inputs"]["x"]
+    is_mean, is_gdn = name.startswith("reduce_mean"), "gdn" in name
+    axis, keepdims = (2, False) if is_gdn else (-1, True)
+    reference = (np.mean if is_mean else np.sum)(data.astype(np.float64), axis=axis, keepdims=keepdims).astype(np.float16)
+    np.testing.assert_array_equal(case["expected"][0], reference)
+    assert case["tolerances"] == [{"rtol": 0.01, "atol": 0.002}]
+    if "scan" in name:
+        assert np.all(data <= 0)
+    emit_cpp(case["graph"], recipe_dir=tmp_path / "recipe")
+    records, _, _ = RecipeReader(tmp_path / "recipe/graph.recipe").read()
+    assert not any(r["type"] in {"ReduceSum", "ReduceMean", "Cast", "CastT", "Mul", "Power"} for r in records)
+    matmul, = [r for r in records if r["type"] == "MatMul"]
+    assert all(port["dtype"] == "float16" for port in matmul["inputs"] + matmul["outputs"])
+    length = data.shape[axis]
+    assert matmul["inputs"][0]["shape"] == (data.size // length, length)
+    assert matmul["inputs"][1]["shape"] == (1, length)
+    assert matmul["attrs"]["transpose_x1"] == 0 and matmul["attrs"]["transpose_x2"] == 1
+    constant = records[matmul["inputs"][1]["src"]]
+    path, offset, size = constant["constant"]
+    with Path(path).open("rb") as stream:
+        stream.seek(offset)
+        weights = np.frombuffer(stream.read(size), dtype="<f2")
+    np.testing.assert_array_equal(weights, np.full(length, 1 / length if is_mean else 1, np.float16))

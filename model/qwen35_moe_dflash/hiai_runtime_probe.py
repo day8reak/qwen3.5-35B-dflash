@@ -34,7 +34,8 @@ _DTYPES = {"float16": 2, "float32": 4, "int32": 4}
 
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--probe-run", required=True, help="existing completed operator probe directory")
+    result.add_argument("--probe-run", required=True, help="existing operator probe directory with compiled models")
+    result.add_argument("--native-from", help="existing probe supplying its verified native build and exact libraries for a compile-only batch; requires --replay-all --refresh-runner")
     result.add_argument("--output", required=True, help="new comparison directory below AI_RUN_DIR")
     result.add_argument("--keep-board", action="store_true", help="retain only these comparison deployments")
     result.add_argument("--refresh-runner", action="store_true",
@@ -169,15 +170,10 @@ def _validate_case(record, source, snapshot):
         raise ValueError(f"IO TSV differs from hashed tensor metadata: {name}")
 
 
-def validate_source(source, *, replay_all=False):
-    """Validate the previous run's records without rediscovery or vendor tools."""
-    source = Path(source).expanduser().resolve(strict=True)
-    snapshot = Snapshot()
-    manifest = _json(source / "manifest.json", snapshot)
+def _validate_native(source, manifest, snapshot):
+    """Validate one original native inventory; never merge runtime sources."""
     command = _json(source / "native/command.json", snapshot)
     result = _json(source / "native/result.json", snapshot)
-    if manifest.get("artifact_kind") != "qwen35-cpro-op-probe":
-        raise ValueError("--probe-run is not an operator probe manifest")
     if (result.get("status") != "LINKED"
             or _digest(result.get("command_sha256")) != sha256_file(source / "native/command.json")):
         raise ValueError("native command SHA256 does not match its LINKED result")
@@ -213,6 +209,56 @@ def validate_source(source, *, replay_all=False):
         deployed = inventory.get(path.name)
         if not deployed or deployed["sha256"] != entry["sha256"]:
             raise ValueError("recorded link input is absent from the original runtime deployment")
+    return command, result, runner, libraries
+
+
+def _ddk_identity(manifest):
+    """Require explicit compiler identity when joining independently made runs."""
+    tools = manifest.get("tools")
+    if not isinstance(tools, dict):
+        raise ValueError("native donor reuse requires both probes' recorded DDK identity")
+    root, version = tools.get("ddk_root"), tools.get("ddk_id")
+    if (not isinstance(root, str) or not Path(root).is_absolute()
+            or any(ord(c) < 32 or ord(c) == 127 for c in root)
+            or not isinstance(version, str) or not version.strip()
+            or version.lower() in {"unknown", "none"}):
+        raise ValueError("native donor reuse requires an absolute DDK root and explicit DDK ID")
+    return {"ddk_root": str(Path(root).resolve()), "ddk_id": version,
+            "omg_sha256": _digest(tools.get("omg_sha256"))}
+
+
+def validate_source(source, *, replay_all=False, native_from=None):
+    """Validate original model/native records without rediscovery or vendor tools.
+
+    An explicit donor can supply native records only for a genuine compile-only
+    run. It cannot replace an original native inventory, including broken ones.
+    """
+    source = Path(source).expanduser().resolve(strict=True)
+    snapshot = Snapshot()
+    manifest = _json(source / "manifest.json", snapshot)
+    if manifest.get("artifact_kind") != "qwen35-cpro-op-probe":
+        raise ValueError("--probe-run is not an operator probe manifest")
+    native_source, native_manifest, ddk_identity = source, manifest, None
+    if native_from is not None:
+        if not replay_all:
+            raise ValueError("--native-from requires --replay-all")
+        if ("native" in manifest or (source / "native").exists() or (source / "native").is_symlink()):
+            raise ValueError("--native-from cannot replace existing or incomplete native records")
+        if manifest.get("status") != "COMPILE_COMPLETE" or manifest.get("board_requested") is not False:
+            raise ValueError("--native-from requires an original COMPILE_COMPLETE compile-only probe")
+        native_source = Path(native_from).expanduser().resolve(strict=True)
+        native_manifest = _json(native_source / "manifest.json", snapshot)
+        if native_manifest.get("artifact_kind") != "qwen35-cpro-op-probe":
+            raise ValueError("--native-from is not an operator probe manifest")
+        ddk_identity = _ddk_identity(manifest)
+        if ddk_identity != _ddk_identity(native_manifest):
+            raise ValueError("compile-only probe and native donor have different recorded DDK identities")
+    command, result, runner, libraries = _validate_native(native_source, native_manifest, snapshot)
+    if native_from is not None:
+        ddk_root = Path(ddk_identity["ddk_root"])
+        for entry in command["libraries"]:
+            if ddk_root not in Path(entry["path"]).resolve().parents:
+                raise ValueError("native donor link input is outside the matched compiler DDK: " + entry["path"])
     all_cases = manifest.get("cases")
     if not isinstance(all_cases, list):
         raise ValueError("existing probe must contain a case list")
@@ -250,6 +296,8 @@ def validate_source(source, *, replay_all=False):
                     for path in [runner, *libraries]]
     snapshot.verify()
     return {"source": source, "manifest": manifest, "command": command, "result": result,
+            "native_source": native_source, "native_manifest": native_manifest,
+            "native_from": native_from is not None, "ddk_identity": ddk_identity,
             "runner": runner, "libraries": libraries, "records": records, "skipped": skipped,
             "snapshot": snapshot, "dependencies": dependencies}
 
@@ -279,8 +327,11 @@ def _freeze(validated, root):
         record.update(original_directory=str(original), directory=str(folder),
                       model=str(folder / "model.omc"), io=str(folder / "io.tsv"),
                       inputs=[str(folder / Path(path).name) for path in record["inputs"]])
+    copy_file(validated["source"] / "manifest.json", root / "source-records/manifest.json")
+    native_records = root / ("native-source-records" if validated["native_from"] else "source-records")
     for name in ("manifest.json", "native/command.json", "native/result.json"):
-        copy_file(validated["source"] / name, root / "source-records" / name)
+        if name != "manifest.json" or validated["native_from"]:
+            copy_file(validated["native_source"] / name, native_records / name)
     snapshot.verify()
     return runner, libraries, records, frozen
 
@@ -296,6 +347,9 @@ def _combined_report(root, comparison):
              "Backend selection and NPU execution remain UNVERIFIED.",
              f"Cases: {comparison['counts']['compiled']} compiled, {comparison['counts']['skipped']} skipped without retry.", "",
              "arm | case | compile | compiler partition (not runtime) | load | run | numerical | placement"]
+    if comparison.get("native_from"):
+        lines[4:4] = ["Native build/library donor: " + comparison["native_from"],
+                      "The compiled-model source and native donor are separately hash-bound; recorded DDK identities match."]
     for arm in comparison["arms"]:
         lines.append(f"{arm['name']}: {arm['status']}")
         for reason in arm.get("blocked_reasons", []):
@@ -318,6 +372,9 @@ def _combined_report(root, comparison):
     # Explicit allowlist: nested arm archives are made by write_report, which
     # excludes models, libraries, tensors and the shared raw HiLog snapshot.
     members = [root / name for name in ("runtime-comparison.json", "runtime-comparison.txt", "source-snapshot.json")]
+    if comparison.get("native_from"):
+        for directory in ("source-records", "native-source-records"):
+            members += [root / directory / name for name in ("manifest.json", "native/command.json", "native/result.json")]
     members += [root / "arms" / arm["name"] / "results.tar.gz" for arm in comparison["arms"]]
     if comparison["refresh_runner"]:
         members += [root / "refreshed-native" / name for name in ("command.json", "build-command.json", "result.json")]
@@ -362,13 +419,16 @@ def _case_summary(record, runtime=None, numerical="NOT_RUN"):
 def run(args):
     if args.timeout_seconds <= 0:
         raise ValueError("--timeout-seconds must be positive")
+    if args.native_from is not None and not (args.replay_all and args.refresh_runner):
+        raise ValueError("--native-from requires both --replay-all and --refresh-runner")
     root = output_path(args.output)
     if root.exists() or root.is_symlink():
         raise FileExistsError(f"comparison output already exists: {root}")
-    validated = validate_source(args.probe_run, replay_all=args.replay_all)
+    validated = validate_source(args.probe_run, replay_all=args.replay_all, native_from=args.native_from)
     source = validated["source"]
-    if root == source or source in root.parents or root in source.parents:
-        raise ValueError("comparison output must be separate from the original probe directory")
+    for protected in {source, validated["native_source"]}:
+        if root == protected or protected in root.parents or root in protected.parents:
+            raise ValueError("comparison output must be separate from the original model and native probe directories")
     root.mkdir(parents=True)
     try:
         runner, libraries, records, frozen = _freeze(validated, root)
@@ -388,6 +448,11 @@ def run(args):
         raise
     save_json(root / "source-snapshot.json", {
         "schema_version": 1, "probe_run": str(source), "files": list(validated["snapshot"].files.values()),
+        "source_manifest_sha256": sha256_file(source / "manifest.json"),
+        "native_source_probe_run": str(validated["native_source"]),
+        "native_source_manifest_sha256": sha256_file(validated["native_source"] / "manifest.json"),
+        "native_source_origin": "explicit-donor" if validated["native_from"] else "original-probe",
+        "matched_ddk_identity": validated["ddk_identity"],
         "frozen_files": list(frozen.files.values()), "historical_native_sources": validated["command"].get("sources", []),
         "dependencies": dependencies, "historical_dependencies": validated["dependencies"], "runner": runner_record,
         "scope": "Hashes bind reused artifacts and, when explicitly requested, the refreshed native build; backend selection is unverified."})
@@ -398,6 +463,9 @@ def run(args):
     comparison = {"schema_version": 1, "artifact_kind": "qwen35-hiai-runtime-comparison",
         "created_utc": datetime.now(timezone.utc).isoformat(), "probe_run": str(source),
         "source_manifest_sha256": sha256_file(source / "manifest.json"), "status": "RUNNING",
+        "native_from": str(validated["native_source"]) if validated["native_from"] else None,
+        "native_source_manifest_sha256": sha256_file(validated["native_source"] / "manifest.json"),
+        "matched_ddk_identity": validated["ddk_identity"],
         "refresh_runner": refresh_runner, "replay_all": args.replay_all, "runner": runner_record,
         "counts": {"cases": len(report_records), "compiled": len(records), "skipped": len(validated["skipped"])},
         "selected_cases": [record["name"] for record in records],

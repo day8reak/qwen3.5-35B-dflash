@@ -114,8 +114,10 @@ def _render(report):
              f"CPU candidates with unresolved node role: {len(joined['unresolved_cpu_candidates'])}",
              "", "CPU-only compute candidates (construction shapes, not final placement):"]
     for group in joined["groups"][:16]:
+        input_types = group["declared_input_dtype_rank"]
+        type_suffix = f" (+{len(input_types)-8} inputs)" if len(input_types) > 8 else ""
         lines.append(f"  {group['log_type']} / recipe={group['recipe_type']}: count={group['count']}, "
-                     f"input(dtype,rank)={group['declared_input_dtype_rank']}, "
+                     f"input(dtype,rank)={input_types[:8]}{type_suffix}, "
                      f"NPU-candidate neighbors both sides={group['with_npu_candidate_neighbors_on_both_sides']}")
         for row in group["examples"][:2]:
             shapes = [p["shape"] for p in row.get("inputs", [])]

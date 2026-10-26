@@ -10,31 +10,43 @@ hdc -t "$SN" -s "$BIP" ...
 
 <a id="当前优先重新导出后打通双图执行"></a>
 
-## 当前优先：诊断已有分区回退产物
+<a id="当前优先诊断已有分区回退产物"></a>
 
-最终目标仍是精度达标后 DFlash 至少提速 2 倍，当前优先打通 target/draft 上板执行。用户基于 `78d94ef` 重新导出后，target 主图窗口 L91094–L127615 仍报告 NPUCL 分区数超过9并回退 CPU。437个归约节点只有 CPU 候选，不是 scan 的 INT64 axes 单一原因；`v18/sum_1` 的 `elementary_lib` 上下文仅给出通用 `check elem support fail`，尚无具体 format 原因。当前先关联现有日志与构图记录，确定修复位置。
+## 当前优先：本轮 MatMul 归约候选上板
 
-保持 `GE_REEXPORT_RUN` 指向这次失败的目录；只创建新的诊断目录。此步骤不访问板端，也不重新生成 AIR/OMC：
+最终目标仍是精度达标后 DFlash 至少提速2倍，当前先打通 target/draft 上板执行。完整 target 在 NPUCL 分区超过9个后回退 CPU；已有完整13,613项支持表识别538个 CPU-only 计算候选，其中437个归约为421个 FP16 加16个整数节点。旧 AIR 的192个 INT64 axes 记录不意味着后续补丁未生效，也不足以解释这些 FP16 归约拒绝。
+
+六个 rank/`keep_dims` 小图已完成：前五项 NPU=0、CPU=1，最后一项 NPU=1、CPU=1；混合分区不证明 ReduceSum 进入 NPU。已有统计和 rank 对照无需重跑，当前用六个独立 MatMul 候选验证替代归约的可行性。候选不改完整模型，原 prepared、参考、runner 和失败产物继续保留；详细形状、数值边界和历史命令见[直接 GE 第7节](direct-model-air.md#7-当前现场验证-matmul-归约候选)。
+
+在原 GE/OMG 环境编译本轮六个小图，再使用原同 DDK 的完整 `OP_PROBE_RUN` native 构建记录刷新小探针并上板。沿用 `SN`、`BIP`、`AI_RUN_DIR`，不需要库参数：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
-export GE_INSPECT_RUN="$AI_RUN_DIR/ge-inspect-$(date +%Y%m%d-%H%M%S)"
-python3 "$GE_MODEL_TOOL" inspect-compile \
-  --air "$GE_REEXPORT_RUN/air" \
-  --omc "$GE_REEXPORT_RUN/omc" \
-  --graph target --output "$GE_INSPECT_RUN"
+export GE_REDUCE_MM_RUN="$AI_RUN_DIR/reduce-mm-$(date +%Y%m%d-%H%M%S)"
+export GE_REDUCE_MM_BOARD_RUN="$AI_RUN_DIR/reduce-mm-board-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
+  --compile-only \
+  --case reduce_mean_rms_matmul --case reduce_mean_head_matmul \
+  --case reduce_sum_scan_matmul --case reduce_sum_gdn_matmul_k64 \
+  --case reduce_sum_gdn_matmul_k7 --case reduce_sum_gdn_matmul_k1 \
+  --output "$GE_REDUCE_MM_RUN" &&
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
+  --probe-run "$GE_REDUCE_MM_RUN" --native-from "$OP_PROBE_RUN" \
+  --refresh-runner --replay-all --output "$GE_REDUCE_MM_BOARD_RUN"
+
+cat "$GE_REDUCE_MM_RUN/report.txt"
+cat "$GE_REDUCE_MM_BOARD_RUN/runtime-comparison.txt"
 ```
 
-命令使用 Python 标准库，按哈希绑定 AIR manifest、编译 `failure.json` 或成功 manifest、recipe 和日志，不读取权重载荷。`report.txt` 给出候选分组，`report.json` 保留节点、日志行号和原始构图的生产消费关系。主图与常量折叠分开，未知或不完整支持信息保持未知或部分状态；GE 改名节点不会按前缀猜测匹配。这里的 shape、边和支持集都是编译诊断，不能证明最终分区或实际 NPU 执行。详见[直接 GE 诊断流程](direct-model-air.md#7-当前现场先读取现有编译产物定位候选切断点)。
+`--probe-run` 使用本轮 compile-only 产物中的 OMC、输入、参考与哈希；`--native-from` 只提供旧完整批次的 native 身份和已记录库集合。两批必须具有相同的规范化 DDK 根目录、DDK ID 和 OMG SHA256，原 SDK、头文件、链接输入及冻结库也要通过校验。新来源必须是无 native 的 `COMPILE_COMPLETE`、`board_requested=false` 批次；残缺 native 或不匹配的另一套 DDK 会在 HDC 前被拒绝，不能借此替换已记录的构建来源。
 
-scan 内部归约 axes 的 INT32 遗漏已补齐，数据 FP16 和归约次序不变；主机验证不足以保证板端恢复成功。先依据诊断确定修复，原 prepared、参考、runner 和失败产物均保留。
+刷新只编译一次当前 `qwen35_hiai_op_probe`；不会再次编译这六个 OMC，不修改两批原产物，也不重跑旧47/53项。板端只使用 `candidate_without_ddk_hcl` 部署，保持已验证的 vendor HCL 搜索路径；完整模型尚未因此改变。默认回传校验后清理本次板端目录，需保留排查时加 `--keep-board`。保留原两个目录，以及新输出中的 `runtime-comparison.txt/json`、逐 case 日志和 `results.tar.gz`。
 
-随后按[六项归约编译对照](direct-model-air.md#六项归约编译对照)执行 `probe_hdc_ops.py --compile-only`：对比 RMSNorm 的 rank3/rank2 Mean、64长 scan 的 rank3/rank2 Sum，以及 `[2,1,64,64]` axis=2 Sum 的直接去维/保留维后 Reshape。六项均保持 FP16 数据与 INT32 axes，仅使用现有主机 GE/OMG，不访问板端。保留小图的 `report.txt` / `results.tar.gz`，用主图编译分区和拒绝细节缩小问题；目前的通用错误不能推断 V0/V1 或 format，编译成功也不是板端执行成功。
+候选的常量右权重为 `[1,N]`，设置 `transpose_b=True`；Sum 权重全为1，Mean 权重为 `1/N`，避免先求和再缩放的 FP16 中间溢出；归约之前的 FP16 乘积舍入仍保留。MatMul 的累加舍入可能不同，仍按原容差验证，不把数学等式当作数值通过。编译、Load、Process、数值和实际执行位置分别记录；`COMPILED`、混合分区或 Process 成功都不能单独证明全 NPU、完整双图通过或2倍提速。
 
 ## 明确修复后：重新导出并执行双图
 
-以下是确定并完成修复后的流程。先保存旧 `GE_REEXPORT_RUN` 的实际路径与诊断，再为新图设置新目录；不要因同一回退日志直接重复编译。保留 `$GE_PAIR_RUN/prepared` 的原权重、`$GE_BOARD_RUN/reference.json` 和已经更新的 `$HIAI_BUILD_DIR` runner。沿用原环境及 `SN`、`BIP`，无需重新 prepare、切换 selected 或重编 runner：
+以下是六项小图证据支持并完成明确图修复后的流程，当前先完成候选验证。先保存旧 `GE_REEXPORT_RUN` 的实际路径与诊断，再为新图设置新目录；不要因同一回退日志直接重复编译。保留 `$GE_PAIR_RUN/prepared` 的原权重、`$GE_BOARD_RUN/reference.json` 和已经更新的 `$HIAI_BUILD_DIR` runner。沿用原环境及 `SN`、`BIP`，无需重新 prepare、切换 selected 或重编 runner：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -59,7 +71,7 @@ cat "$HDC_RUN_DIR/result.json"
 cat "$HDC_RUN_DIR/benchmark.stderr"
 ```
 
-`&&` 保证只有 export 和 compile 都成功才上传新 OMC。`export_pair` 使用修复后的 Python 图定义重新构图，并复用原 prepared 的权重与专家模式，浮点精度保持 FP16。若新图再次回退，保留新的失败目录并运行上面的 `inspect-compile`。
+`&&` 保证只有 export 和 compile 都成功才上传新 OMC。`export_pair` 使用修复后的 Python 图定义重新构图，并复用原 prepared 的权重与专家模式，浮点精度保持 FP16。若新图再次回退，保留新的失败目录，并按[历史诊断入口](direct-model-air.md#历史参考只读编译诊断)运行 `inspect-compile`。
 
 `--reject-cpu-fallback` 是本项目 compile 包装器参数，不传给厂商 OMG。它遇到主图或归属未知的 NPUCL 分区超限回退时停止，保留已生成的 OMC、编译日志和诊断，写入 `failure.json`，不发布成功 manifest。常量折叠图的 CPU 执行允许保留；没有发现这类回退也不证明所有算子都在 NPU 上。
 
@@ -71,7 +83,7 @@ cat "$HDC_RUN_DIR/benchmark.stderr"
 
 ## 服务器准备
 
-首次准备参考与 runner 可查[直接 GE tiny 上板指南的第1、2节](direct-ge-board.md)。当前现场已有原 prepared、匹配的 `reference.json` 和更新后的 `qwen35_dflash_hiai`，先诊断现有回退产物，修复后再重导出和编译。
+首次准备参考与 runner 可查[直接 GE tiny 上板指南的第1、2节](direct-ge-board.md)。当前现场已有原 prepared、匹配的 `reference.json` 和更新后的 `qwen35_dflash_hiai`，先验证本文开头的独立归约候选，明确图修复后再重导出和编译。
 
 需要的资源为：
 
@@ -183,7 +195,7 @@ cat "$HDC_RUN_DIR/comparison.json"
 
 ## 历史加载接口与运行库排障
 
-以下保留此前加载接口及运行库问题的排障记录。其中重编 runner、沿用 OMC 的命令仅对应当时的问题；当前新图仍分区超限回退，先使用本文开头的只读诊断，明确修复后再生成新图。
+以下保留此前加载接口及运行库问题的排障记录。其中重编 runner、沿用 OMC 的命令仅对应当时的问题；当前新图仍分区超限回退，已有只读诊断完成，先使用本文开头的归约小图候选验证，明确修复后再生成新图。
 
 若 `probe` 返回127，先读 `$HDC_RUN_DIR/probe.stderr`。曾出现程序链接 DDK 库，却上传示例中的另一份 `libhiai.so`，导致缺少 `libhiai_ir_build.so` 和 `CheckNPUSupport` 符号。现在自动按构建记录选择库，这一历史库问题本身不要求重建 OMC。
 
@@ -273,4 +285,4 @@ grep -n -E 'partition type|run[_ -]*by[_ -]*cl|PreGraphSplit|CompileGraph.*(targ
 cat "$GE_OMC_DIR/target/command.json"
 ```
 
-已有 OMC 不会随代码或 runner 更新获得图改动。用户随后已按 `78d94ef` 重新 export，新的主图窗口 L91094–L127615 再次回退；因此当前操作改为本文开头的 `inspect-compile`，读取新 AIR/recipe/OMG 日志，明确修复后再重导出与 smoke。保持原 prepared、FP16 和已通过小图验证的部署策略；即使后续未触发回退，也要检查最终分区与板端执行，不能宣称已修复或全 NPU。
+已有 OMC 不会随代码或 runner 更新获得图改动。用户随后已按 `78d94ef` 重新 export，新的主图窗口 L91094–L127615 再次回退；随后已完成 `inspect-compile` 与六项 rank/keep_dims 对照，当前操作转为本文开头的 MatMul 归约候选，待小图证据与明确修复后再重导出与 smoke。保持原 prepared、FP16 和已通过小图验证的部署策略；即使后续未触发回退，也要检查最终分区与板端执行，不能宣称已修复或全 NPU。

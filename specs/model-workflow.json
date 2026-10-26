@@ -280,7 +280,7 @@
     },
     "board_execution_bringup": {
       "run_id": "20261026T002510Z-8234-33823c",
-      "status": "USER_REPORTED_NEW_MAIN_PARTITION_ROLLBACK",
+      "status": "USER_REPORTED_REDUCTION_LAYOUT_CONTROLS_CPU_ONLY_OR_MIXED",
       "scope": "Existing compiled target/draft OMC pair; not a newly compiled full-weight model",
       "runtime_deployment": "Private library set excludes DDK HCL pair; process path includes /vendor/lib64/chipsetsdk",
       "runner_changes": [
@@ -290,13 +290,13 @@
       "accuracy": "DEFERRED_NOT_EVALUATED",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "Follow docs/direct-model-air.md section 7: inspect-compile on existing GE_REEXPORT_RUN, then six FP16 reduction compile-only controls",
-      "requires": "Existing failed reexport AIR manifest, recipe, OMC failure.json and OMG log; small controls require existing GE and internal DDK only",
+      "next_command": "Follow docs/direct-model-air.md current probe section: compile six isolated FP16 MatMul reduction cases, then replay using --native-from \"$OP_PROBE_RUN\" --refresh-runner --replay-all",
+      "requires": "Same GE/internal OMG environment plus original successful probe native build records and SDK; production model graph remains unchanged",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "Fresh target OMG main window91094..127615 still rolls NPUCL >9 partitions to CPU; 423ReduceSum+14ReduceMean CPU-only candidates; representative elementary checker generic rejection",
-      "followup_run_id": "20261026T011730Z-23027-2711b0",
-      "followup_evidence": "specs/compiler-support-diagnostic-verification.json"
+      "current_failure": "Fresh full target still exceeds NPU partition limit9; all six rank/keepdims reduction controls retain CPU partitions. Mixed keepdims+Reshape case does not identify Reduce placement.",
+      "followup_run_id": "20261026T013946Z-24443-de03bd",
+      "followup_evidence": "specs/reduction-matmul-probe-verification.json"
     }
   },
   "operator_support_probe": {
@@ -332,6 +332,6 @@
     "accuracy_work": "DEFERRED_NOT_WAIVED",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
     "guide": "docs/hdc-board-run.md",
-    "next_action": "Diagnose repeated CPU-only reductions with source-bound inspection and six small compile controls; retain CPU-fallback guard before later board execution"
+    "next_action": "Validate isolated FP16 MatMul reduction alternatives with current internal compiler and candidate board deployment; preserve ordinary FP16 graph until evidence supports integration"
   }
 }

@@ -19,6 +19,7 @@ def _hash(value, label):
 def build_probe(root, validated, libraries, frozen, timeout):
     """Build one new runner; never discover libraries or compile model graphs."""
     original, snapshot = validated["command"], validated["snapshot"]
+    native_source = validated.get("native_source", validated["source"])
     allowed = {"CMAKE_TOOLCHAIN_FILE", "OHOS_ARCH", "OHOS_PLATFORM", "OHOS_STL",
                "OHOS_COMPATIBLE_SDK_VERSION", "HIAI_INCLUDE_DIR"}
     settings = {}
@@ -70,8 +71,8 @@ def build_probe(root, validated, libraries, frozen, timeout):
     provenance = {"argv": command, "libraries": linked,
         "sources": [snapshot.files[str(path)] for path in sources],
         "header_sha256": sha256_file(header), "sdk_toolchain_sha256": sha256_file(toolchain),
-        "source_command": str(validated["source"] / "native/command.json"),
-        "source_command_sha256": sha256_file(validated["source"] / "native/command.json"),
+        "source_command": str(native_source / "native/command.json"),
+        "source_command_sha256": sha256_file(native_source / "native/command.json"),
         "historical_binary": {"path": str(validated["runner"]), "sha256": sha256_file(validated["runner"])},
         "scope": "Explicit native diagnostic runner refresh only; existing model artifacts and runtime library inventory are reused."}
     save_json(folder / "command.json", provenance)

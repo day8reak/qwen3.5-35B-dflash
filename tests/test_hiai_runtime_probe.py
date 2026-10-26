@@ -257,7 +257,7 @@ def test_missing_case_and_missing_required_hash_are_rejected(previous, monkeypat
 
 def test_no_library_parameters_are_exposed():
     options = {option for action in probe.parser()._actions for option in action.option_strings}
-    assert options == {"-h", "--help", "--probe-run", "--output", "--keep-board", "--timeout-seconds", "--refresh-runner", "--replay-all"}
+    assert options == {"-h", "--help", "--probe-run", "--output", "--keep-board", "--timeout-seconds", "--refresh-runner", "--replay-all", "--native-from"}
 
 
 @pytest.mark.parametrize("field,value", [("sha256", None), ("sha256", "invalid"), ("bytes", None), ("bytes", True)])
@@ -500,3 +500,207 @@ def test_default_keeps_three_case_two_arm_behavior_with_other_cases_present(repl
     assert not report["replay_all"] and not report["refresh_runner"]
     assert report["selected_cases"] == list(probe.CASE_NAMES)
     assert report["counts"] == {"cases": 3, "compiled": 3, "skipped": 0}
+
+
+@pytest.fixture
+def compile_only(previous):
+    donor = previous["source"]
+    identity = {"ddk_root": str(Path(previous["libraries"][0]["path"]).parent),
+                "ddk_id": "fixture-ddk", "omg_sha256": "b" * 64}
+    previous["manifest"]["tools"] = copy.deepcopy(identity)
+    _json(donor / "manifest.json", previous["manifest"])
+    previous["donor_manifest"] = previous["manifest"]
+    previous["donor"] = donor
+    source = donor.parent / "new-compile-only"
+    records = []
+    for case in cases():
+        if case["name"] not in {"reduce_mean", "reduce_sum"}:
+            continue
+        record = op_probe.prepare_case(case, source)
+        Path(record["model"]).write_bytes(b"new existing compiled bytes " + case["name"].encode())
+        record["compile"] = {"status": "COMPILED", "model": op_probe._payload(Path(record["model"]))}
+        records.append(record)
+    manifest = {"artifact_kind": "qwen35-cpro-op-probe", "status": "COMPILE_COMPLETE",
+                "board_requested": False, "tools": identity, "cases": records + [
+                    {"name": "uncompiled_case", "compile": {"status": "FAILED", "error": "original compile failure"}}]}
+    _json(source / "manifest.json", manifest)
+    previous.update(source=source, manifest=manifest, records=records,
+                    transport_cases=[record["name"] for record in records])
+    return previous
+
+
+def _donor_args(state, *extra):
+    return _args(state, "--native-from", str(state["donor"]), "--refresh-runner", "--replay-all", *extra)
+
+
+def test_compile_only_replay_uses_explicit_native_donor_and_never_recompiles_models(compile_only, monkeypatch):
+    before = {str(path): sha256_file(path) for folder in (compile_only["source"], compile_only["donor"])
+              for path in folder.rglob("*") if path.is_file()}
+    builds = _refresh(monkeypatch, compile_only)
+    transport = _transport(monkeypatch, compile_only)
+    assert probe.run(_donor_args(compile_only)) == 0
+    assert len(builds) == len(transport) == 1
+    call, = transport
+    assert call["output"].name == "candidate_without_ddk_hcl"
+    assert call["library_search_paths"] == ("/vendor/lib64/chipsetsdk",)
+    assert not {path.name for path in call["libraries"]} & probe.EXCLUDED
+    for original, replayed in zip(compile_only["records"], call["records"]):
+        assert sha256_file(Path(replayed["model"])) == original["compile"]["model"]["sha256"]
+        for tensor in original["input_tensors"]:
+            assert sha256_file(Path(replayed["directory"]) / tensor["path"]) == tensor["sha256"]
+    assert before == {str(path): sha256_file(Path(path)) for path in before}
+    assert not (compile_only["source"] / "native").exists()
+    root = compile_only["output"]
+    report = json.loads((root / "runtime-comparison.json").read_text())
+    assert report["status"] == "REPLAY_COMPLETE"
+    assert report["native_from"] == str(compile_only["donor"])
+    assert report["source_manifest_sha256"] == sha256_file(compile_only["source"] / "manifest.json")
+    assert report["native_source_manifest_sha256"] == sha256_file(compile_only["donor"] / "manifest.json")
+    assert report["matched_ddk_identity"] == compile_only["manifest"]["tools"]
+    assert report["counts"] == {"cases": 3, "compiled": 2, "skipped": 1}
+    assert report["arms"][0]["cases"][-1]["run"] == "NOT_RUN"
+    assert report["runtime_placement"] == "UNVERIFIED"
+    snapshot = json.loads((root / "source-snapshot.json").read_text())
+    assert snapshot["native_source_origin"] == "explicit-donor"
+    assert snapshot["native_source_probe_run"] == str(compile_only["donor"])
+    assert {str(folder / "manifest.json") for folder in (compile_only["source"], compile_only["donor"])} <= {
+        item["path"] for item in snapshot["files"]}
+    assert json.loads((root / "source-records/manifest.json").read_text()) == compile_only["manifest"]
+    assert json.loads((root / "native-source-records/manifest.json").read_text()) == compile_only["donor_manifest"]
+    with tarfile.open(root / "results.tar.gz") as archive:
+        names = set(archive.getnames())
+        assert {"source-records/manifest.json", "native-source-records/manifest.json",
+                "native-source-records/native/command.json", "native-source-records/native/result.json"} <= names
+        assert not any(name.endswith((".so", ".omc", ".bin")) or "/build/" in name for name in names)
+    assert "Native build/library donor:" in (root / "runtime-comparison.txt").read_text()
+
+
+@pytest.mark.parametrize("flags", [[], ["--replay-all"], ["--refresh-runner"]])
+def test_native_donor_requires_both_explicit_flags(compile_only, monkeypatch, flags):
+    builds = _refresh(monkeypatch, compile_only)
+    transport = _transport(monkeypatch, compile_only)
+    with pytest.raises(ValueError, match="requires both"):
+        probe.run(_args(compile_only, "--native-from", str(compile_only["donor"]), *flags))
+    assert not builds and not transport and not compile_only["output"].exists()
+
+
+def test_compile_only_does_not_implicitly_rediscover_native(compile_only, monkeypatch):
+    monkeypatch.setenv("HIAI_BUILD_DIR", str(compile_only["donor"] / "native"))
+    builds = _refresh(monkeypatch, compile_only)
+    transport = _transport(monkeypatch, compile_only)
+    with pytest.raises(ValueError, match="required source file is missing"):
+        probe.run(_args(compile_only, "--refresh-runner", "--replay-all"))
+    assert not builds and not transport
+
+
+@pytest.mark.parametrize("partial", ["manifest", "empty-directory", "command-only", "broken-symlink"])
+def test_donor_cannot_replace_incomplete_original_native(compile_only, monkeypatch, partial):
+    source = compile_only["source"]
+    if partial == "manifest":
+        compile_only["manifest"]["native"] = None
+        _json(source / "manifest.json", compile_only["manifest"])
+    elif partial == "empty-directory":
+        (source / "native").mkdir()
+    elif partial == "command-only":
+        _json(source / "native/command.json", {})
+    else:
+        (source / "native").symlink_to(source / "missing-native")
+    builds = _refresh(monkeypatch, compile_only)
+    transport = _transport(monkeypatch, compile_only)
+    with pytest.raises(ValueError, match="cannot replace"):
+        probe.run(_donor_args(compile_only))
+    assert not builds and not transport
+
+
+def test_native_donor_cannot_override_a_complete_original_run(previous, monkeypatch):
+    builds = _refresh(monkeypatch, previous)
+    transport = _transport(monkeypatch, previous)
+    with pytest.raises(ValueError, match="cannot replace"):
+        probe.run(_args(previous, "--native-from", str(previous["source"]), "--refresh-runner", "--replay-all"))
+    assert not builds and not transport
+
+
+@pytest.mark.parametrize("field,value", [("status", "COLLECTED"), ("status", "PREPARED"),
+                                         ("board_requested", True), ("board_requested", None)])
+def test_native_donor_only_accepts_declared_compile_only_batches(compile_only, monkeypatch, field, value):
+    compile_only["manifest"][field] = value
+    _json(compile_only["source"] / "manifest.json", compile_only["manifest"])
+    builds = _refresh(monkeypatch, compile_only)
+    transport = _transport(monkeypatch, compile_only)
+    with pytest.raises(ValueError, match="COMPILE_COMPLETE compile-only"):
+        probe.run(_donor_args(compile_only))
+    assert not builds and not transport
+
+
+@pytest.mark.parametrize("field,value", [("ddk_root", "/other/ddk"), ("ddk_id", "other-version"),
+                                         ("omg_sha256", "c" * 64), ("ddk_id", None),
+                                         ("ddk_root", "relative/ddk"), ("omg_sha256", None)])
+def test_native_donor_requires_matching_explicit_ddk_identity(compile_only, monkeypatch, field, value):
+    compile_only["manifest"]["tools"][field] = value
+    _json(compile_only["source"] / "manifest.json", compile_only["manifest"])
+    builds = _refresh(monkeypatch, compile_only)
+    transport = _transport(monkeypatch, compile_only)
+    with pytest.raises(ValueError):
+        probe.run(_donor_args(compile_only))
+    assert not builds and not transport
+
+
+def test_matching_manifest_ddk_cannot_mask_linking_another_ddk(compile_only, monkeypatch):
+    for key in ("manifest", "donor_manifest"):
+        compile_only[key]["tools"]["ddk_root"] = "/unrelated/declared-ddk"
+    _json(compile_only["source"] / "manifest.json", compile_only["manifest"])
+    _json(compile_only["donor"] / "manifest.json", compile_only["donor_manifest"])
+    builds = _refresh(monkeypatch, compile_only)
+    transport = _transport(monkeypatch, compile_only)
+    with pytest.raises(ValueError, match="outside the matched compiler DDK"):
+        probe.run(_donor_args(compile_only))
+    assert not builds and not transport
+
+
+@pytest.mark.parametrize("changed", ["donor-runner", "donor-command", "donor-result", "library", "omc", "input", "reference", "io", "recipe"])
+def test_native_donor_replay_keeps_both_sources_payload_integrity(compile_only, monkeypatch, changed):
+    record = compile_only["records"][0]
+    paths = {"donor-runner": compile_only["runner"], "donor-command": compile_only["donor"] / "native/command.json",
+             "donor-result": compile_only["donor"] / "native/result.json", "library": Path(compile_only["libraries"][0]["path"]),
+             "omc": Path(record["model"]), "input": Path(record["inputs"][0]),
+             "reference": Path(record["directory"]) / record["outputs"][0]["expected"], "io": Path(record["io"]),
+             "recipe": Path(record["directory"]) / record["construction_files"][0]["path"]}
+    path = paths[changed]
+    path.write_bytes(path.read_bytes() + b"tampered")
+    builds = _refresh(monkeypatch, compile_only)
+    transport = _transport(monkeypatch, compile_only)
+    with pytest.raises(ValueError):
+        probe.run(_donor_args(compile_only))
+    assert not builds and not transport and not compile_only["output"].exists()
+
+
+@pytest.mark.parametrize("which", ["source", "donor"])
+def test_native_donor_replay_output_cannot_be_inside_either_source(compile_only, monkeypatch, which):
+    compile_only["output"] = compile_only[which] / "nested-output"
+    builds = _refresh(monkeypatch, compile_only)
+    transport = _transport(monkeypatch, compile_only)
+    with pytest.raises(ValueError, match="separate from"):
+        probe.run(_donor_args(compile_only))
+    assert not builds and not transport and not compile_only["output"].exists()
+
+
+def test_donor_refresh_rechecks_new_binary_dependencies_before_hdc(compile_only, monkeypatch):
+    builds = _refresh(monkeypatch, compile_only, needed=["libhiai_hcl_model_runtime.so"])
+    transport = _transport(monkeypatch, compile_only)
+    assert probe.run(_donor_args(compile_only)) == 1
+    assert len(builds) == 1 and not transport
+    report = json.loads((compile_only["output"] / "runtime-comparison.json").read_text())
+    assert report["status"] == "CANDIDATE_BLOCKED"
+
+
+def test_native_donor_manifest_is_reverified_after_transport(compile_only, monkeypatch):
+    _refresh(monkeypatch, compile_only)
+    def mutate(calls):
+        path = compile_only["donor"] / "manifest.json"
+        path.write_text(path.read_text() + " ")
+    transport = _transport(monkeypatch, compile_only, mutation=mutate)
+    assert probe.run(_donor_args(compile_only)) == 1
+    assert len(transport) == 1
+    report = json.loads((compile_only["output"] / "runtime-comparison.json").read_text())
+    assert report["status"] == "INFRASTRUCTURE_FAILED"
+    assert "snapshotted source changed" in report["arms"][0]["error"]

@@ -58,7 +58,7 @@
     "Exact NPU partition count before rollback (only >9 is reported)",
     "Which CPU-only graph boundaries cause fragmentation in the revised graph"
   ],
-  "next_evidence": "Bound compiler-support inspection of existing failed reexport and six reduction compile-only controls; no unchanged whole-model recompile or HDC retry",
+  "next_evidence": "Six MatMul contraction compiler/board probe results; retain existing full target failure as rollback baseline",
   "experience_audit": "docs/experience.md",
   "failure_cause": "USER_LOG_CONFIRMED_CPUCL_MATMUL_COMPATIBILITY_REJECTION_DURING_TARGET_RESTORE",
   "source_audit": {
@@ -198,5 +198,187 @@
     },
     "source_followup": "Scan lowering helper still emitted INT64 axes; fixed locally with full serialized-recipe coverage. Ordinary INT32 reductions also reject, so this omission is not a complete root-cause explanation.",
     "next_action": "Correlate existing bound AIR recipe and OMG support table; compile six small FP16 INT32-axis rank/keepdims controls before another whole-model compile."
+  },
+  "support_inspection_retest": {
+    "date": "2026-10-26",
+    "evidence_kind": "USER_PASTED_REPORT_NOT_INDEPENDENTLY_RETRIEVED",
+    "reported_run": "ge-inspect-20261026-100417",
+    "status": "DIAGNOSTIC_COMPLETE",
+    "window": [
+      91094,
+      127615
+    ],
+    "scope": "main",
+    "table_status": "complete",
+    "nodes": 13613,
+    "counts": {
+      "cpu_only_candidates": 8161,
+      "npu_candidates": 5452,
+      "exact_recipe_matches": 13606,
+      "unmatched": 7,
+      "excluded_boundaries": 7616,
+      "unresolved_cpu_roles": 7,
+      "cpu_only_compute_candidates": 538
+    },
+    "reductions": [
+      {
+        "kind": "ReduceSum",
+        "data": "float16",
+        "rank": 4,
+        "axes": "int32",
+        "count": 195
+      },
+      {
+        "kind": "ReduceSum",
+        "data": "float16",
+        "rank": 3,
+        "axes": "int64",
+        "count": 192
+      },
+      {
+        "kind": "ReduceSum",
+        "data": "float16",
+        "rank": 2,
+        "axes": "int32",
+        "count": 20
+      },
+      {
+        "kind": "ReduceSum",
+        "data": "int32",
+        "rank": 2,
+        "axes": "int32",
+        "count": 16
+      },
+      {
+        "kind": "ReduceMean",
+        "data": "float16",
+        "rank": 3,
+        "axes": "int32",
+        "count": 9
+      },
+      {
+        "kind": "ReduceMean",
+        "data": "float16",
+        "rank": 4,
+        "axes": "int32",
+        "count": 5
+      }
+    ],
+    "old_scan_axes_interpretation": "The inspected AIR predates 4c1e6c1; 192 INT64 scan axes in that immutable artifact are expected. Inspect does not rewrite AIR.",
+    "additional_candidates": {
+      "broadcast_mul": 19,
+      "concat64_inputs": 6,
+      "bidirectional_broadcast_sub": 3,
+      "topk": 4
+    },
+    "placement": "UNVERIFIED",
+    "exact_npu_partition_count": "NOT_REPORTED"
+  },
+  "reduction_layout_probe_retest": {
+    "date": "2026-10-26",
+    "evidence_kind": "USER_PASTED_REPORT_NOT_INDEPENDENTLY_RETRIEVED",
+    "reported_run": "reduce-probe-20261026-100601",
+    "board_transport": "NOT_RUN",
+    "cases": [
+      {
+        "name": "reduce_mean_rms_rank3",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 0,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "partition_scope": "main",
+        "log_line": 329,
+        "load": "NOT_RUN",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "name": "reduce_mean_rms_rank2",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 0,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "partition_scope": "main",
+        "log_line": 329,
+        "load": "NOT_RUN",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "name": "reduce_sum_scan_rank3",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 0,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "partition_scope": "main",
+        "log_line": 330,
+        "load": "NOT_RUN",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "name": "reduce_sum_scan_rank2",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 0,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "partition_scope": "main",
+        "log_line": 330,
+        "load": "NOT_RUN",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "name": "reduce_sum_gdn_dropdims",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 0,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "partition_scope": "main",
+        "log_line": 330,
+        "load": "NOT_RUN",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "name": "reduce_sum_gdn_keepdims",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 1,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "partition_scope": "main",
+        "log_line": 354,
+        "load": "NOT_RUN",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN",
+        "placement": "UNVERIFIED"
+      }
+    ],
+    "conclusion": "Tested singleton-rank and keepdims changes did not eliminate CPU partitions. Last mixed graph includes Reshape and cannot establish NPU Reduce execution.",
+    "non_conclusion": "These results do not prove every Reduce shape or every DDK/backend is unsupported.",
+    "next_action": "Probe isolated FP16 MatMul contractions and reuse matching prior native deployment for board checks; no production rewrite before scoped evidence"
   }
 }

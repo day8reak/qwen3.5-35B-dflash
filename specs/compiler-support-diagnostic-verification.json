@@ -148,5 +148,10 @@
   ],
   "next_action": "Inspect existing failed reexport and compile six reduction controls before selecting another model rewrite",
   "guide": "docs/direct-model-air.md#7-当前现场先读取现有编译产物定位候选切断点",
-  "experience_audit": "docs/experience.md"
+  "experience_audit": "docs/experience.md",
+  "user_followup": {
+    "status": "USER_REPORTED_INSPECTION_COMPLETE_AND_ALL_REDUCTION_CONTROLS_WITH_CPU_PARTITIONS",
+    "evidence": "specs/hiai-model-execution-user-report.json#reduction_layout_probe_retest",
+    "next_evidence": "specs/reduction-matmul-probe-verification.json"
+  }
 }

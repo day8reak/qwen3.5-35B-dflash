@@ -28,9 +28,9 @@ def _fp(shape, offset=0):
     return (((i * 7 + offset * 3) % 37 - 18) / 16).astype(np.float16).reshape(shape)
 
 
-def _finish(graph, inputs, description, *, exact=False, pair=None):
+def _finish(graph, inputs, description, *, exact=False, pair=None, reference_graph=None):
     graph.validate()
-    expected = [np.ascontiguousarray(a) for a in evaluate(graph, inputs)]
+    expected = [np.ascontiguousarray(a) for a in evaluate(reference_graph or graph, inputs)]
     if any(not np.all(np.isfinite(a)) for a in expected):
         raise ValueError(f"{graph.name}: probe reference must be finite")
     return {"name": graph.name, "graph": graph, "inputs": inputs,
@@ -259,3 +259,33 @@ def cases():
     yield from _rank_cases()
     yield from _other_cases()
     yield from _reduction_layout_cases()
+    yield from _matmul_reduction_cases()
+
+
+def _matmul_reduction_cases():
+    from .ge_reduction_matmul import reduce_via_matmul
+
+    contracts = [
+        ("reduce_mean_rms_matmul", "reduce_mean", (1, 8, 16), -1, True),
+        ("reduce_mean_head_matmul", "reduce_mean", (1, 8, 2, 8), -1, True),
+        ("reduce_sum_scan_matmul", "reduce_sum", (2, 1, 64), -1, True),
+        *[(f"reduce_sum_gdn_matmul_k{k}", "reduce_sum", (2, 1, k, k), 2, False)
+          for k in (64, 7, 1)],
+    ]
+    for name, kind, shape, axis, keepdims in contracts:
+        graph = Graph(name)
+        source = graph.input("x", shape)
+        graph.outputs = [reduce_via_matmul(graph, source, kind=kind, axis=axis, keepdims=keepdims)]
+        data = _fp(shape, 3)
+        if "scan" in name:
+            data = -np.abs(data)
+        reference = Graph(name + "_reference")
+        original = reference.input("x", shape)
+        reference.outputs = [reference.op(kind, original, shape=graph.outputs[0].shape,
+                                          attrs={"axes": [axis], "keepdims": keepdims})]
+        yield _finish(graph, {"x": data},
+                      f"Isolated FP16 {kind} via permute/reshape and constant-weight MatMul; "
+                      f"input {list(shape)}, axis {axis}, keepdims={keepdims}. "
+                      "Reference is the original reduction, not the candidate MatMul. "
+                      "Mean weights are exact 1/N; no intermediate FP16 sum, integer cast, "
+                      "producer fusion, or production lowering change.", reference_graph=reference)

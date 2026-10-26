@@ -318,20 +318,74 @@ python3 "$GE_MODEL_TOOL" compile \
   --output "$GE_STRUCTURE_RUN/omc"
 ```
 
-每一步成功后再执行下一步。plan、prepared、AIR 和 OMC 的 manifest 都记录 `expert_dispatch`，export 按 prepared 的选择重建图；老 prepared 缺少该字段时沿用 static。全量旧算子复测仍可用 `probe_hdc_runtime.py --replay-all`，但它复用旧 OMC，不能代替本节新结构的 OMG/板端验证。正式双图上板入口使用探针已验证的候选部署；当前先按第7节诊断已有回退产物，明确修复后再进入[重导出与只执行模式](hdc-board-run.md#明确修复后重新导出并执行双图)，不切换到 selected。
+每一步成功后再执行下一步。plan、prepared、AIR 和 OMC 的 manifest 都记录 `expert_dispatch`，export 按 prepared 的选择重建图；老 prepared 缺少该字段时沿用 static。全量旧算子复测仍可用 `probe_hdc_runtime.py --replay-all`，但它复用旧 OMC，不能代替本节新结构的 OMG/板端验证。正式双图上板入口使用探针已验证的候选部署；当前先按第7节验证独立归约候选，明确修复后再进入[重导出与只执行模式](hdc-board-run.md#明确修复后重新导出并执行双图)，不切换到 selected。
 
 可选的主机 GDN 诊断入口为 `targets/cpro/scripts/diagnose_gdn_precision.py`，输出逐 chunk FP16/FP32 输出与状态误差。无输入时仅跑小型合成样例，不能确认真实模型的精度根因。当前优先上板执行，此诊断不作为前置步骤，也不改变部署 FP16。
 
 <a id="7-当前现场复用原权重重新导出并检查分区回退"></a>
+<a id="7-当前现场先读取现有编译产物定位候选切断点"></a>
 
-## 7. 当前现场：先读取现有编译产物定位候选切断点
+## 7. 当前现场：验证 MatMul 归约候选
 
-旧 target 在 L110650 的回退已由产物身份核对；用户随后基于 `78d94ef` 重导出的 target，在新的主图窗口 L91094–L127615 又报告 `Partition of type: NPUCL is more than 9` 和 `will rollback to CPU`。本次汇总中437个归约节点只有 CPU 候选，不能把它们全归因于 scan helper 的 INT64 axes。最新 `v18/sum_1` 在 `elementary_lib` 的上下文仅为 `check elem support fail`，其他候选库也拒绝；目前没有具体 format 拒绝原因，不能据此决定布局改写。
+用户基于 `78d94ef` 重导出的 target，在主图窗口 L91094–L127615 再次触发 `Partition of type: NPUCL is more than 9` 后回退 CPU。`inspect-compile` 已成功读取13,613项完整支持表，识别538个 CPU-only 计算候选，其中437个归约包括421个 FP16 和16个整数节点。旧 AIR 中192个 INT64 axes 记录属于原来那批产物，不是后续 axes 补丁未生效的证据。后续 scan axes 补为 INT32，也不足以解决这批 FP16 归约。
 
-先对已有产物运行只读诊断。`GE_REEXPORT_RUN` 必须仍指向这次失败目录，不要把它改成新的空路径；仅 `GE_INSPECT_RUN` 使用新的输出目录：
+六项 rank/`keep_dims` 对照也已完成：前五项均为 NPU=0、CPU=1；`reduce_sum_gdn_keepdims` 为 NPU=1、CPU=1，只能说明整个小图有混合分区，不能把其中的 ReduceSum 判为 NPU。当前不重复运行这两项调查，也不直接重编完整模型；下一步验证六个独立 MatMul 归约候选。
+
+### 六项 MatMul 归约候选
+
+候选将归约轴移到末轴、展平为二维，与常量右权重 `[1,N]` 做 `transpose_b=True` 的 MatMul，再还原输出维度。Sum 使用全1权重；本轮 Mean 长度8/16的 `1/N` 在 FP16 中可精确表示，不先生成 FP16 的总和再缩放，避免额外的求和中间值溢出。普通浮点输入、输出仍为 FP16；模型归约之前已经舍入的平方或其他乘积不可因此被提升精度或重新计算。
+
+MatMul 和 Reduce 的累加顺序、舍入仍可能不同。这一轮不改生产图、不新增全图替换开关、不放宽数值容差，也不能从数学等式推断 FP16 位级等价。
+
+| case | 输入与等价归约 | 覆盖目的 |
+|---|---|---|
+| `reduce_mean_rms_matmul` | `[1,8,16]`，末轴 Mean，保留维度 | RMSNorm 宽度16 |
+| `reduce_mean_head_matmul` | `[1,8,2,8]`，末轴 Mean，保留维度 | head norm 宽度8及 rank4 |
+| `reduce_sum_scan_matmul` | `[2,1,64]`，末轴 Sum，保留维度 | GDN scan 长度64 |
+| `reduce_sum_gdn_matmul_k64` | `[2,1,64,64]`，axis=2 Sum，去掉归约维 | GDN 非末轴归约 |
+| `reduce_sum_gdn_matmul_k7` | `[2,1,7,7]`，axis=2 Sum，去掉归约维 | 非对齐短归约 |
+| `reduce_sum_gdn_matmul_k1` | `[2,1,1,1]`，axis=2 Sum，去掉归约维 | 长度1边界 |
+
+先用原 NumPy、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID` 和主机编译环境生成这六项的新 OMC；`--compile-only` 不构建 runner，也不访问板端：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
+export GE_REDUCE_MM_RUN="$AI_RUN_DIR/reduce-mm-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
+  --compile-only \
+  --case reduce_mean_rms_matmul --case reduce_mean_head_matmul \
+  --case reduce_sum_scan_matmul --case reduce_sum_gdn_matmul_k64 \
+  --case reduce_sum_gdn_matmul_k7 --case reduce_sum_gdn_matmul_k1 \
+  --output "$GE_REDUCE_MM_RUN"
+cat "$GE_REDUCE_MM_RUN/report.txt"
+```
+
+编译步骤完成后，用原来的 `OP_PROBE_RUN` 提供同 DDK 的完整 native 构建记录，对这一轮已编译候选上板。`OP_PROBE_RUN` 必须保留原 `command.json` / `result.json`、runner、库记录及其源文件，不能指向只有编译结果的新目录。沿用 `SN`、`BIP`，无需新增库参数：
+
+```bash
+export GE_REDUCE_MM_BOARD_RUN="$AI_RUN_DIR/reduce-mm-board-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
+  --probe-run "$GE_REDUCE_MM_RUN" --native-from "$OP_PROBE_RUN" \
+  --refresh-runner --replay-all --output "$GE_REDUCE_MM_BOARD_RUN"
+cat "$GE_REDUCE_MM_BOARD_RUN/runtime-comparison.txt"
+```
+
+两类来源用途固定：
+
+- `--probe-run` 提供本轮模型、输入、参考和各自哈希，必须是没有 native 产物的 `COMPILE_COMPLETE` 批次，且 `board_requested=false`。
+- `--native-from` 只提供原完整 native 构建身份、SDK、头文件、链接库和记录过的库集合。两批的规范化 `ddk_root`、`ddk_id`、`omg_sha256` 必须一致；原链接输入也必须来自该 DDK。工具校验两份来源及冻结库，身份不匹配或 native 记录残缺时在 HDC 前拒绝，不把它当作允许换库的入口。
+
+刷新仅构建当前 `qwen35_hiai_op_probe`，不导出 AIR、不调用 OMG，不改两份源目录、旧 OMC 或系统库。上板仅运行 `candidate_without_ddk_hcl`：排除两个 DDK HCL 库并使用已验证的 vendor 搜索路径。旧53项或原47项不会随本轮候选一起重跑。默认回传校验后清理本次板端目录；需要保留现场时加 `--keep-board`。
+
+反馈本轮编译 `report.txt`、板端 `runtime-comparison.txt` 和新结果中的 `results.tar.gz`。编译失败的案例保持失败，不会被 replay 变成成功；每个已编译案例分别记录 Load、Process、数值状态和原编译分区。即使小图通过，运行位置仍为 `UNVERIFIED`，直到有独立执行证据；它也不能证明完整 target/draft 通过或分区数已下降。当前先打通执行，完整模型精度验证后置，最终仍要求精度达标后 DFlash 至少提速2倍。
+
+已声明 blue profile 中另有 `RmsNorm` 的公开 schema、FP16 ND 配置及预编译 kernel 键，属于后续候选线索。本地 `kirin9030/next-6.0.1.0` 不能代替用户 `kirinx90/ddk_0806` 的可用性验证；本轮没有新增该探针，也没有将 GDN scan/三角归约视作可直接替换的 RMSNorm。
+
+### 历史参考：只读编译诊断
+
+本次诊断已完成，以下命令保留用于未来新失败产物，当前无需重跑。`GE_REEXPORT_RUN` 指向对应失败目录，`GE_INSPECT_RUN` 必须是新目录：
+
+```bash
 export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
 export GE_INSPECT_RUN="$AI_RUN_DIR/ge-inspect-$(date +%Y%m%d-%H%M%S)"
 python3 "$GE_MODEL_TOOL" inspect-compile \
@@ -340,23 +394,22 @@ python3 "$GE_MODEL_TOOL" inspect-compile \
   --graph target --output "$GE_INSPECT_RUN"
 ```
 
-此命令只需 Python 标准库，不调用编译器或 HDC，也不打开常量/权重载荷。它验证 AIR manifest 与本次编译 `failure.json`（或成功 `manifest.json`）的哈希绑定，再验证 `target/recipe/graph.recipe` 和 `target/omg.log` 的记录哈希。保留这两个源目录；旧 prepared 里的 recipe 不能替代这次 AIR 的 recipe。输出目录不得已存在，原始产物不修改。
+命令只需 Python 标准库，验证 AIR manifest、编译 `failure.json` 或成功 manifest、recipe 和 OMG 日志的哈希绑定，不读取权重载荷、不访问板端。`report.txt` 给出候选分组，`report.json` 保留明细及原构图生产消费关系；旧 prepared 的 recipe 不能替代该次 AIR 的 recipe。主图、常量折叠、子图及未知范围分开，部分或冲突支持信息保持 `partial`/`unknown`，GE 改名节点不按前缀猜测关联。构造时 shape/dtype 和候选跨设备边都不是最终分区或实际执行证据。
 
-`report.txt` 提供 CPU-only 计算候选分组及示例，`report.json` 保留完整节点明细、候选设备原始编号、日志行号及构造图的生产消费关系。检查最后一个有明确编译边界的主图回退窗口；常量折叠、子图和未知范围不会伪装成主图。支持表不完整或冲突时保留 `partial`/`unknown`；仅按节点全名精确关联，GE 改名节点和未确定计算角色的节点单列。**这些 shape/dtype 和边属于 OMG 优化前的构造图，候选跨设备边不等于最终分区数，报告不证明 NPU 执行。**
+<a id="六项归约编译对照"></a>
 
-scan 内部逐前缀 ReduceSum 的 axes 遗漏已统一使用 INT32 helper；静态轴值、数据 FP16 和归约次序保持不变。主机测试验证的是这一结构修正，不能证明437个归约已获得 NPU 支持或主图已解除回退。当前先提供诊断结果，再据此确定下一项修复；精度分析后置，最终仍要求精度达标后 DFlash 至少提速2倍。
+### 历史参考：六项 rank/keep_dims 归约对照
 
-### 六项归约编译对照
+已取得的结果如下，无需重复提交相同统计。全部为 FP16 数据、INT32 axes：
 
-在现有图的只读诊断后，运行以下三组小图对照，检验 rank、单例维及 `keep_dims` 表达是否影响编译支持。全部使用 FP16 数据和 INT32 axes；scan 与 GDN 使用实际的64长归约，避免用短轴样例替代当前问题。
-
-| 对照 case | 输入与归约 | 对照目的 |
+| case | 输入与归约 | 编译主图分区 |
 |---|---|---|
-| `reduce_mean_rms_rank3` / `reduce_mean_rms_rank2` | `[1,8,16]` / `[8,16]`，末轴 Mean，保留归约维 | RMSNorm 的单例 batch 维 |
-| `reduce_sum_scan_rank3` / `reduce_sum_scan_rank2` | `[2,1,64]` / `[2,64]`，末轴 Sum，保留归约维，输入为非正 FP16 | GDN scan 的单例维 |
-| `reduce_sum_gdn_dropdims` / `reduce_sum_gdn_keepdims` | 均为 `[2,1,64,64]`，axis=2；直接去维 / 保留维后 Reshape 为 `[2,1,64]` | 同一归约的去维表达 |
+| `reduce_mean_rms_rank3` / `reduce_mean_rms_rank2` | `[1,8,16]` / `[8,16]`，末轴 Mean，保留维度 | 两项均 NPU=0、CPU=1 |
+| `reduce_sum_scan_rank3` / `reduce_sum_scan_rank2` | `[2,1,64]` / `[2,64]`，末轴 Sum，保留维度，非正输入 | 两项均 NPU=0、CPU=1 |
+| `reduce_sum_gdn_dropdims` | `[2,1,64,64]`，axis=2 Sum，直接去维 | NPU=0、CPU=1 |
+| `reduce_sum_gdn_keepdims` | 同输入及归约轴，保留维后 Reshape 为 `[2,1,64]` | NPU=1、CPU=1；ReduceSum 位置未确定 |
 
-这一步需要原 NumPy、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID` 和主机编译环境；不需要 OHOS runner 或 HDC 连接。使用新的输出目录：
+以下仅保留当时的复现命令；当前执行上面的 MatMul 候选：
 
 ```bash
 export GE_REDUCE_PROBE_RUN="$AI_RUN_DIR/reduce-probe-$(date +%Y%m%d-%H%M%S)"
@@ -368,13 +421,11 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
   --output "$GE_REDUCE_PROBE_RUN"
 ```
 
-读取这六项的 `report.txt`，并保留 `results.tar.gz` 与前一步 `GE_INSPECT_RUN/report.txt`。重点比较各 case 的主图 `compiler partition` 中 NPU/CPU 数量、明确的失败原因；`COMPILED` 只说明产生了模型，缺少主图分区记录时保持未知。某个变体编译到 NPU 只提供下一步图适配的依据，不证明已在板端执行、数值一致或完整图分区数已下降。当前 `check elem support fail` 还不能定位 V0/V1 或具体 format，六项结果用于缩小问题，而非预先指定布局修复。
-
-`--compile-only` 不构建原生 probe runner，因此这批产物不能直接当作已完成部署的 probe 批次做 runtime replay。后续优先为编译成功且有 NPU 分区证据的案例安排板端验证，再决定是否改写完整图。
+`v18/sum_1` 的 `elementary_lib` 拒绝仍只有 `check elem support fail`，尚无具体 format 原因；这些结果不能反推 V0/V1。`COMPILED` 与 NPU 分区、板端执行和数值检查是不同的检查阶段。
 
 ### 明确修复后的重导出与上板流程
 
-以下保留修复完成后的命令，不作为收到同一回退日志后直接再跑的步骤。届时保留 `$GE_PAIR_RUN/prepared`、`$GE_BOARD_RUN/reference.json` 和已更新的 runner，复用原权重、专家模式及 FP16；无需重新 prepare、切换 selected 或重编 runner。先保留旧 `GE_REEXPORT_RUN` 的实际路径与诊断，再为新图设置新的目录。沿用 `CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID`、`SN`、`BIP`：
+以下保留小图证据支持并完成明确图修复后的命令，当前先完成上面的六项候选，不直接重编完整模型。届时保留 `$GE_PAIR_RUN/prepared`、`$GE_BOARD_RUN/reference.json` 和已更新的 runner，复用原权重、专家模式及 FP16；无需重新 prepare、切换 selected 或重编 runner。先保留旧 `GE_REEXPORT_RUN` 的实际路径与诊断，再为新图设置新的目录。沿用 `CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID`、`SN`、`BIP`：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only

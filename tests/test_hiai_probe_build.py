@@ -253,3 +253,17 @@ def test_refresh_refuses_existing_native_directory_without_overwriting(refresh):
         _run(refresh)
     assert sentinel.read_bytes() == b"preserve previous evidence"
     assert refresh["calls"] == []
+
+
+def test_refresh_records_native_donor_command_separately_from_compile_only_models(refresh):
+    donor = refresh["validated"]["source"]
+    models = donor.parent / "compile-only-models"
+    models.mkdir()
+    refresh["validated"]["source"] = models
+    refresh["validated"]["native_source"] = donor
+    runner, record = _run(refresh)
+    assert runner.is_file()
+    assert record["build_command"]["source_command"] == str(donor / "native/command.json")
+    assert record["build_command"]["source_command_sha256"] == sha256_file(donor / "native/command.json")
+    assert record["historical_binary"]["path"] == str(refresh["old_runner"])
+    assert not (models / "native").exists()

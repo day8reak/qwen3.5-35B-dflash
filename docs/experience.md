@@ -309,3 +309,16 @@ run：`20261026T011730Z-23027-2711b0`。用户沿78d94ef建议重导出后，主
 新增标准库inspect-compile读取现有失败编译记录，校验AIR manifest、recipe、OMG日志哈希，只用精确节点名关联构造形状和边。常量文件内容不打开，优化后改名节点不做模糊映射；类型未知项单列。报告中的跨设备候选边只是定位提示，不是实际分区数。准备六个FP16、INT32轴小图，分别比较RMS/前缀Sum的rank与GDN修正Sum的keepdims，先独立编译判断支持，不触发整图或板端。具体case及验证见compiler-support-diagnostic-verification.json和direct-model-air指南。
 
 当前内部DDK和设备仍由用户执行。主机回归只能验证解析、契约与参考，不能替代NPU编译和执行证据。执行链路优先、精度后置和最终DFlash至少2倍目标不变；通用技能与共享DDK未修改。
+
+
+## 2026-10-26：归约 rank 对照失败后采用隔离 MatMul 候选
+
+run：`20261026T013946Z-24443-de03bd`。用户只读检查成功读取13,613项完整支持表，13,606个节点精确匹配原recipe；排除7,616个边界后有538个CPU-only计算候选，另7个未确定角色项。437个归约中421个数据为FP16、16个为整数。192个scan axes仍为INT64是被检查AIR早于补丁的正常结果，检查器没有修改历史产物。六个rank/keepdims编译对照全部产生OMC，前五个主图NPU0/CPU1，第六个keepdims+Reshape为NPU1/CPU1，不能把后者解释为Reduce已在NPU执行；这些结果终止了本轮仅通过单例维和keepdims寻找解法的路线。
+
+新增探针专用FP16单轴MatMul归约helper：保持已有FP16输入，移动归约轴、展平行，以全1右权重收缩，再恢复形状。Mean仅接受2幂轴长和可精确表示的FP16倒数，直接用1/N权重；不能先求出FP16 sum再缩放，例如16个4096求均值应为4096，而FP16中间总和溢出。GDN修正的原Mul输出舍入必须保留，不能顺手融合乘法与归约。整数归约拒绝，未使用零填充三角矩阵，以免0×Inf改变非有限语义。该候选保持实数公式及一个FP16归约出口，但不同kernel累加次序仍待设备数值验证，不能称逐bit等价。
+
+六项覆盖RMS末轴16、head末轴8、scan末轴64，以及GDN非末轴64/7/1；K1仍保留实际MatMul，不靠恒等折叠冒充kernel通过。原53案例代码和输入/参考字节一致，当前默认总数59。新增候选只供独立探针，生产target/draft没有调用新helper。原Reduce图作为板端比较参考，主机独立double参考覆盖轴顺序、消去维、非有限、抵消、次正规数和Mean溢出边界；所有原容差不变。
+
+为减少编译与上板往返，runtime probe增加显式--native-from，仅接受无native的COMPILE_COMPLETE批次并要求--replay-all和--refresh-runner。新批次提供OMC/输入/参考，旧批次单独提供完整LINKED构建与运行库库存；两DDK root/id/OMG hash必须一致，旧库/SDK/头文件/ELF与源产物均冻结核对。只重建当前小runner，candidate部署继续排除DDK HCL两库，不覆盖系统库或历史native。残缺native不能用donor掩盖，原A/B路径不变。主机110项运行协议测试与78项归约/案例测试通过，实际prepare-only生成六项；未运行内部OMG或HDC。
+
+蓝区现有RmsNorm schema/config及kernel键是后续融合候选线索，但不能跨版本宣称用户internal支持，也未复制共享库或更改融合边界。完整模型仍需解决其他CPU-only MoE、拼接和广播节点；本轮小图成功不会自动解除整图分区上限。执行链路优先，完整精度后置且未豁免，DFlash至少2倍尚未测量。经验固化在模型文档、两来源验证和数值回归；没有修改通用技能或共享工具链。
