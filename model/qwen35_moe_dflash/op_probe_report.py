@@ -37,6 +37,16 @@ def _sha256(path):
     return result.hexdigest()
 
 
+def _signal_stats(values):
+    """Describe finite tensors without changing their acceptance threshold."""
+    return {"min": float(values.min()), "max": float(values.max()),
+            "max_abs": float(np.abs(values).max()),
+            "nonzero": int(np.count_nonzero(values)),
+            "zeros": int(values.size - np.count_nonzero(values)),
+            "rms": float(np.sqrt(np.mean(values * values))),
+            "l2": float(np.linalg.norm(values.ravel()))}
+
+
 def compare_outputs(case_record: dict, output_dir: Path, received_files=None) -> dict:
     """Check exact file sizes and finite values before dtype-aware comparison."""
     records = []
@@ -61,7 +71,8 @@ def compare_outputs(case_record: dict, output_dir: Path, received_files=None) ->
                 rtol = atol = 0.0
             expected_path = _inside(Path(case_record["directory"]), spec["expected"])
             actual_path = _inside(Path(output_dir), spec["path"])
-            row.update({"dtype": spec["dtype"], "shape": list(shape), "expected_bytes": size,
+            row.update({"name": spec.get("name"), "label": spec.get("label", spec.get("name")),
+                        "dtype": spec["dtype"], "shape": list(shape), "expected_bytes": size,
                         "rtol": rtol, "atol": atol})
             for label, path in (("reference", expected_path), ("actual", actual_path)):
                 if not path.is_file():
@@ -107,10 +118,18 @@ def compare_outputs(case_record: dict, output_dir: Path, received_files=None) ->
                 mismatch = np.flatnonzero(~matched.ravel())
                 nonzero = np.abs(b) > 0
                 relative = difference[nonzero] / np.abs(b[nonzero])
+                reference_signal, actual_signal = _signal_stats(b), _signal_stats(a)
+                error_l2 = float(np.linalg.norm(difference.ravel()))
                 row.update(status="PASSED" if mismatch.size == 0 else "FAILED", reason=None if mismatch.size == 0 else "MISMATCH",
                            elements=int(actual.size), mismatches=int(mismatch.size),
                            max_abs_error=float(difference.max()),
                            max_relative_error_on_nonzero_reference=float(relative.max()) if relative.size else 0.0,
+                           signal={"reference": reference_signal, "actual": actual_signal,
+                                   "exact_elements": int(np.count_nonzero(actual == expected)),
+                                   "error_rms": float(np.sqrt(np.mean(difference * difference))),
+                                   "relative_l2_to_reference": error_l2 / reference_signal["l2"]
+                                       if reference_signal["l2"] > 0 else None,
+                                   "relative_l2_defined": reference_signal["l2"] > 0},
                            examples=[{"flat_index": int(i), "actual": actual.ravel()[i].item(),
                                       "expected": expected.ravel()[i].item()} for i in mismatch[:8]])
         except (KeyError, TypeError, ValueError, OSError, OverflowError) as error:
@@ -350,6 +369,10 @@ def write_report(root: Path, manifest, boardresult=None):
                               "Runtime placement remains UNVERIFIED without independent execution evidence."],
               "archive_notes": archive_notes}
     report["selection"] = manifest.get("selection")
+    if any(row.get("probe_suite") == "gdn-accuracy" for row in rows):
+        report["limitations"].append(
+            "GDN signal statistics are diagnostic only; unchanged absolute tolerance may accept a tiny output that is entirely zero. "
+            "New probe graphs may optimize differently from the original OMC; compare final-only and staged block outputs with its captured features.")
     families = sorted({r["probe_family"] for r in rows if r.get("probe_family")})
     report["probe_families"] = {family: sum(r.get("probe_family") == family for r in rows)
                                 for family in families}
@@ -370,6 +393,12 @@ def write_report(root: Path, manifest, boardresult=None):
     for row in rows:
         lines.append(" | ".join((row["name"], row["compile"].get("status", "NOT_RUN"), row["load"], row["run"],
                                  row["numerical"]["status"], row["placement"])))
+        if row.get("probe_suite") == "gdn-accuracy":
+            for output in row["numerical"]["outputs"]:
+                lines.append(f"  output {output['index']} ({output.get('label') or output.get('name')}): "
+                             + json.dumps({key: output[key] for key in
+                                 ("status", "reason", "error", "shape", "elements", "max_abs_error", "signal")
+                                 if key in output}, allow_nan=False))
         if row["runtime"].get("error"):
             lines.append("  runtime: " + str(row["runtime"]["error"]))
         for diagnostic in row["runtime"].get("diagnostics", []):

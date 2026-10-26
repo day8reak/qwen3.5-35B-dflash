@@ -38,6 +38,9 @@ def parser():
                            help="named batch of related controls/candidates; excludes unrelated historical probes")
     p.add_argument("--exclude-family", choices=PROBE_FAMILIES, action="append", default=[],
                    help="with --suite, skip an already tested family; repeat to exclude several")
+    p.add_argument("--prepared", help="required only for --suite gdn-accuracy: prepared tiny model bundle")
+    p.add_argument("--reference", help="required only for --suite gdn-accuracy: matching reference.json")
+    p.add_argument("--omc", help="required only for --suite gdn-accuracy: original compiled model bundle")
     p.add_argument("--list-cases", action="store_true")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--prepare-only", action="store_true", help="write recipes and references without vendor tools")
@@ -63,11 +66,42 @@ def _payload(path):
 
 def prepare_case(case, root):
     """Freeze inputs, oracle outputs and emitted construction before conversion."""
+    graph = case["graph"]
+    if not len(graph.outputs) == len(case["expected"]) == len(case["tolerances"]):
+        raise ValueError(f"output/reference/tolerance count differs: {case['name']}")
+    labels = case.get("output_labels")
+    if labels is not None and (not isinstance(labels, list) or len(labels) != len(graph.outputs)
+                               or any(not isinstance(label, str) or not label for label in labels)
+                               or len(set(labels)) != len(labels)):
+        raise ValueError(f"output labels must uniquely name every graph output: {case['name']}")
+    options = case.get("emit_options", {})
+    allowed = {"fp16_reductions": {"native", "matmul"}, "fp16_row_mul": {"native", "compact"}}
+    if (not isinstance(options, dict) or set(options) - allowed.keys()
+            or any(not isinstance(value, str) or value not in allowed[key] for key, value in options.items())):
+        raise ValueError(f"unsupported probe emit_options: {case['name']}")
+    weights = case.get("weights", {})
+    if not isinstance(weights, dict) or set(weights) != set(graph.weights):
+        raise ValueError(f"probe weight keys differ from graph: {case['name']}")
+    for key, tensor in graph.weights.items():
+        value = weights[key]
+        if (tensor.dtype != "float16" or not isinstance(value, np.ndarray)
+                or value.dtype != np.dtype("float16") or tuple(value.shape) != tuple(tensor.shape)):
+            raise ValueError(f"probe weight requires exact FP16 graph shape/dtype: {case['name']}/{key}")
+        if not np.isfinite(value).all():
+            raise ValueError(f"probe weight must be finite: {case['name']}/{key}")
     folder = root / "cases" / case["name"]
     folder.mkdir(parents=True)
-    graph = case["graph"]
+    weight_paths, weight_records = {}, {}
+    if weights:
+        (folder / "weights").mkdir()
+        for index, (key, tensor) in enumerate(graph.weights.items()):
+            path = folder / "weights" / f"w{index:05d}.bin"
+            weights[key].astype("<f2", copy=False).tofile(path)
+            weight_paths[key] = path
+            weight_records[key] = {**_payload(path), "path": str(path.relative_to(folder)),
+                                   "shape": list(tensor.shape), "dtype": tensor.dtype}
     source = folder / "graph.cpp"
-    source.write_text(emit_cpp(graph, recipe_dir=folder / "recipe"))
+    source.write_text(emit_cpp(graph, weight_paths, recipe_dir=folder / "recipe", **options))
     rows, inputs, outputs = [], [], []
     for i, tensor in enumerate(graph.inputs):
         value = np.asarray(case["inputs"][tensor.name], dtype=tensor.dtype)
@@ -87,6 +121,8 @@ def prepare_case(case, root):
         rows.append("\t".join(("output", tensor.dtype, ",".join(map(str, tensor.shape)), output)))
         outputs.append({"path": output, "name": tensor.name, "shape": list(tensor.shape),
                         "dtype": tensor.dtype, "expected": path.name, "reference": _payload(path), **tolerance})
+        if labels is not None:
+            outputs[-1]["label"] = labels[i]
     io = folder / "io.tsv"
     io.write_text("\n".join(rows) + "\n")
     record = {"name": case["name"], "description": case["description"],
@@ -96,6 +132,12 @@ def prepare_case(case, root):
               "source_sha256": sha256_file(source), "graph": graph_summary(graph),
               "construction_files": files_under(folder, folder),
               "equivalence_group": case.get("equivalence_group"), "compile": {"status": "NOT_RUN"}}
+    if weight_records:
+        record["weights"] = weight_records
+    if options:
+        record["emit_options"] = dict(options)
+    if labels is not None:
+        record["output_labels"] = list(labels)
     if case.get("probe_suite"):
         record.update(probe_suite=case["probe_suite"], probe_family=case["probe_family"])
     if case.get("input_domain"):
@@ -234,17 +276,30 @@ def native_build(root, timeout):
 def run(args):
     if args.exclude_family and not args.suite:
         raise ValueError("--exclude-family requires --suite")
-    selected = list(cases())
+    provenance = None
+    source_options = (args.prepared, args.reference, args.omc)
+    if args.suite == "gdn-accuracy":
+        if not all(source_options):
+            raise ValueError("--suite gdn-accuracy requires --prepared, --reference and --omc")
+        if args.exclude_family:
+            raise ValueError("--suite gdn-accuracy does not accept --exclude-family")
+        from .op_probe_gdn_accuracy import cases_from_prepared
+        selected, provenance = cases_from_prepared(*source_options)
+        selected = list(selected)
+    else:
+        if any(value is not None for value in source_options):
+            raise ValueError("--prepared, --reference and --omc require --suite gdn-accuracy")
+        selected = list(cases())
     names = {case["name"] for case in selected}
     if set(args.case) - names:
         raise ValueError("unknown probe cases: " + ", ".join(sorted(set(args.case) - names)))
     if args.case:
         selected = [c for c in selected if c["name"] in args.case]
-    elif args.suite:
+    elif args.suite and args.suite != "gdn-accuracy":
         selected = [c for c in selected if c.get("probe_suite") == args.suite
                     and c.get("probe_family") not in args.exclude_family]
-        if not selected:
-            raise ValueError(f"probe suite has no cases: {args.suite}")
+    if not selected:
+        raise ValueError(f"probe suite has no cases: {args.suite}")
     if args.list_cases:
         for case in selected:
             print(f"{case['name']}: {case['description']}")
@@ -252,6 +307,12 @@ def run(args):
     if not args.output or args.timeout_seconds <= 0:
         raise ValueError("--output and a positive timeout are required")
     resources = None if args.prepare_only else compiler_resources()
+    if resources is not None and provenance is not None:
+        current_ddk = os.environ.get("CPRO_DDK_ID")
+        if not current_ddk or current_ddk != provenance.get("ddk_id"):
+            raise ValueError("gdn-accuracy compiler DDK identity differs from original OMC")
+        if sha256_file(resources[3]) != provenance.get("omg_sha256"):
+            raise ValueError("gdn-accuracy OMG hash differs from original OMC")
     board_requested = not (args.prepare_only or args.compile_only)
     if board_requested:
         from .hdc_run import _text
@@ -268,6 +329,8 @@ def run(args):
     manifest["selection"] = {"suite": args.suite, "requested_cases": list(args.case),
                              "excluded_families": list(args.exclude_family),
                              "selected_cases": [c["name"] for c in selected]}
+    if provenance is not None:
+        manifest["provenance"] = provenance
     package = Path(__file__).resolve().parent
     implementation = set(package.glob("ge*.py")) | set(package.glob("op_probe*.py"))
     implementation.update(Path(module.__file__) for name, module in list(sys.modules.items())

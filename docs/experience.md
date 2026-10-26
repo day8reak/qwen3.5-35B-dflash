@@ -524,3 +524,16 @@ run：`20261026T113029Z-30107-3feb06`。用户严格比较返回board/reference�
 元数据确认 `tiny=true`、seed17、S8、FP16、`quantization=null`；这里没有INT4量化。主机使用与用户相同的FP16 payload哈希复现PyTorch生成45/42/60/42；直接图和实际归约/compact recipes的主机投影与其prefill特征完全一致，三层GDN core与独立上游FP16 helper一致。S8只涉及从零状态开始的一个chunk；这些结果不能证明OMG/板端GDN正确。主机证据见 `specs/target-prefill-host-verification.json`。
 
 为避免改变中间图再次触发不同分区，新增可选runner特征捕获：复用原OMC的FP16输出，在draft前复制精确字节，通过现有JSON哈希回收流程传回。离线工具按原prepared权重和有效prompt比较layer0/2边界，并记录代码哈希、输入身份和非有限值。各边界包括GDN、MoE及残差，报告不设新精度阈值，也不自动归因GDN。默认runner与严格比较门槛保持；仅诊断时重新构建runner并执行一次smoke，不重导出或编译OMC。验证合计121项Python测试及6项原生CTest通过，44个文档shell片段通过语法检查；证据见 `specs/target-feature-capture-verification.json`。完整质量、性能、实际NPU位置仍未验证；没有修改共享技能或DDK。
+
+
+## 2026-10-26：原始特征显示 GDN 分支贡献消失的数值特征
+
+run：`20261026T120153Z-1084-ceeeeb`。用户完成原OMC的target特征回收，提供了完整512字节hex：有效prompt第0层relative L2约0.129，第2层约0.229，首token仍为55；相同权重主机与参考均为45。数据是未量化FP16 tiny权重。远端文件未独立取得，终端回传与本地主机实验分开记录在 `specs/gdn-accuracy-localization.json`。
+
+对精确回传字节做主机干预，仅把三层GDN输出投影结果置零并重算后续算术，就能复现板端完整序列55/54/49/9；第0/2层有效特征最大差仅3.05e-5/6.10e-5。MoE分支消融没有同样解释力，但跳过归一化也可能使GDN贡献极小，因此该结果不能定位具体算子、编译pass或backend，不能当成修复。GDN门控归一化输入在主机上全部是FP16 subnormal；简单FTZ实验没有复现有限板端特征，故不直接归因下溢或改eps。所有干预只在run内诊断脚本执行，生产图未改。
+
+新增gdn-accuracy三个案例：原第一层完整计算仅输出final；同一图观察input_norm/core/norm_input/norm_gain/gated_core/attention_branch及final；实际主机norm输入的Rsqrt加正常正数对照。读取原prepared实际19个权重，整对权重、PASS参考、OMC ABI/policies和载荷哈希核验；新编译在创建输出前要求DDK ID及OMG哈希匹配。冻结案例权重，保留构造哈希，不重新按seed生成数据。单输出/插桩图可能改变编译，必须与原OMC捕获的有效第0层特征比较，文档提供只读且核验输出哈希的比较命令。
+
+原FP16绝对容差0.002大于本例core最大幅度0.00176144，全零可能仍被判PASS。保持旧门槛，新增每个输出的非零数、幅度、RMS、L2及差异统计，终端阶段报告无论PASS/FAIL都展示；非有限值仍失败，零参考的relative L2明确未定义。全部177项不同主机测试通过，47个文档shell片段语法通过，比较片段以合成回收输出验证零差异和篡改拒绝。独立审查覆盖实际权重、默认图、阶段边缘、真实recipe、原探针数量和native IO上界。证据见 `specs/gdn-accuracy-probes-verification.json`。
+
+经验固化于本模型的诊断、测试及文档，未修改共享技能、DDK、部署库或精度门槛。内部OMG、新探针板端结果仍待用户服务器执行；已有整图不需要重编。完整精度、实际NPU位置、完整35B及DFlash至少2倍目标均未完成。

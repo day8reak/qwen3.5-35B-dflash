@@ -79,5 +79,10 @@
     "No internal DDK cross-build or real board feature retrieval performed locally.",
     "Device first divergence and GDN responsibility remain undetermined.",
     "Complete model accuracy, placement, memory and speedup remain unvalidated."
-  ]
+  ],
+  "device_followup": {
+    "status": "USER_REPORTED_ORIGINAL_OMC_FEATURE_CAPTURE_COMPLETE",
+    "evidence": "specs/gdn-accuracy-localization.json",
+    "accuracy": "NOT_PASSED"
+  }
 }

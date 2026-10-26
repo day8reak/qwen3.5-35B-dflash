@@ -290,11 +290,11 @@
       "accuracy": "USER_REPORTED_REFERENCE_TOKEN_MISMATCH",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "Follow docs/hdc-board-run.md original-OMC feature capture: rebuild runner only, execution-only capture once, offline compare-target-features with existing prepared/reference/OMC.",
-      "requires": "Existing GE_DRAFT_ROPE_RUN OMC, original tiny prepared and PASS reference; unchanged DDK/HDC deployment; new diagnostic runner and output directories.",
+      "next_command": "Follow docs/hdc-board-run.md gdn-accuracy: compile three same-weight first-layer/Rsqrt diagnostics, replay with existing native donor and candidate libraries; no full-model OMC rebuild.",
+      "requires": "Existing prepared/reference/original OMC and OP_PROBE_RUN donor; matching DDK ID/OMG hash and new probe output directories.",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "Stable board ordinary/DFlash both [55,54,49,9] (10 identical each), reference both [45,42,60,42]; first target prefill next-token 45→55 at shared prompt[1,2,3]. FP16 tiny random weights, quantization null. Device GDN cause unproven.",
+      "current_failure": "Original target captured features diverge by layer0. Host zeroing all three GDN branch outputs reproduces board [55,54,49,9] and captured valid layer0/layer2 to maxabs3.05e-5/6.10e-5. Specific device cause remains unproven.",
       "followup_run_id": "20261026T111926Z-29824-5b5c4c",
       "followup_evidence": "specs/draft-rope-execution-user-report.json",
       "source_contract_verification": "specs/ge-dtype-contract-verification.json",
@@ -350,7 +350,9 @@
           "board": 55
         },
         "host_audit": "specs/target-prefill-host-verification.json",
-        "next_capture": "Original target output[1], valid prompt features from layers0 and2; no OMC rebuild"
+        "target_feature_capture": "USER_REPORTED_EXECUTION_COMPLETE_AND_RAW_HEX_RECEIVED",
+        "localization": "specs/gdn-accuracy-localization.json",
+        "next_probe": "Three same-weight layer0 final/stages and actual-input Rsqrt controls; changed compiler context must be checked against original capture."
       }
     }
   },
@@ -432,12 +434,13 @@
     "date": "2026-10-26",
     "user_directive": "先打通上板执行的链路吧，后续再考虑精度问题",
     "milestone": "target/draft load + one execution each + output/log retrieval",
-    "accuracy_work": "LOCALIZE_TINY_REFERENCE_TOKEN_MISMATCH",
+    "accuracy_work": "LOCALIZE_GDN_BRANCH_SUPPRESSION_IN_TINY_MODEL",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
     "guide": "docs/hdc-board-run.md",
-    "next_action": "Read existing GE_DRAFT_ROPE_CHECK_RUN/benchmark.json and GE_BOARD_RUN/reference.json to identify board/reference first divergence, per-mode measured repeatability and ordinary/DFlash agreement. Reuse existing artifacts; no board rerun or model rebuild before localization.",
+    "next_action": "Follow docs/hdc-board-run.md gdn-accuracy: compile three same-weight first-layer/Rsqrt diagnostics, replay with existing native donor and candidate libraries; no full-model OMC rebuild.",
     "milestone_status": "USER_REPORTED_TINY_EXECUTION_COMPLETE",
     "evidence": "specs/draft-rope-execution-user-report.json",
-    "comparison_evidence": "specs/draft-rope-comparison-user-report.json"
+    "comparison_evidence": "specs/draft-rope-comparison-user-report.json",
+    "localization_evidence": "specs/gdn-accuracy-localization.json"
   }
 }

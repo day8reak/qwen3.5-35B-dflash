@@ -40,9 +40,74 @@ PYTHONPATH="$REPO_DIR/model${PYTHONPATH:+:$PYTHONPATH}" python3 -m qwen35_moe_df
 
 存在参考偏差时命令仍返回FAIL，并保留完整诊断JSON；终端会显示每种模式的测量数、重复性及首差异。它只读取已有OMC/报告并核验哈希，不调用OMG/HDC，不改旧报告或参考。首差异的 `generated_index` 从0计数，长度不同还会明确哪一侧已结束。已有smoke的有效三行target Top1为 `[41,41,55]`，同权重主机为 `[41,41,45]`；只比较有效prompt位置，padding输出不计入。
 
+## 当前：检查第一层 GDN 分支为何贡献接近零
+
+用户已完成原OMC特征采集：有效prompt的第0层relative L2约0.129，第2层约0.229；首token仍为55，源图和参考均为45。这里使用未量化FP16 tiny权重。对用户回传的512字节原始特征做主机干预实验，把三层GDN的输出投影结果置零，可以复现板端完整序列 `[55,54,49,9]`；第0、2层有效特征最大差仅约 `3.05e-5`、`6.10e-5`。这强烈指向GDN分支的有效贡献消失，但没有证明是哪一个算子或编译pass出错；跳过部分归一化也会造成类似现象。置零只用于定位，没有应用到生产图。证据见 `specs/gdn-accuracy-localization.json`。
+
+下一步只编译三个诊断案例，使用原prepared实际权重、原prompt和原OMC的lowering选项；核验来源、权重、ABI、DDK/OMG身份，不重新生成随机权重或完整模型：
+
+- `gdn_layer0_final`：原第一层完整计算，仅导出块结束特征。
+- `gdn_layer0_stages`：同一层同时观察输入归一化、GDN core、归一化输入/增益、门控结果、输出投影及块结束特征。
+- `gdn_layer0_rsqrt`：实际主机norm输入与同形状正常正数对照，检查Rsqrt的数值范围。
+
+```bash
+git -C "$REPO_DIR" pull --ff-only &&
+export GE_GDN_ACCURACY_RUN="$AI_RUN_DIR/ge-gdn-accuracy-$(date +%Y%m%d-%H%M%S)" &&
+export GE_GDN_ACCURACY_BOARD_RUN="${GE_GDN_ACCURACY_RUN}-board" &&
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
+  --suite gdn-accuracy --prepared "$GE_PAIR_RUN/prepared" \
+  --reference "$GE_BOARD_RUN/reference.json" --omc "$GE_DRAFT_ROPE_RUN/omc" \
+  --compile-only --output "$GE_GDN_ACCURACY_RUN" &&
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
+  --probe-run "$GE_GDN_ACCURACY_RUN" --native-from "$OP_PROBE_RUN" \
+  --refresh-runner --replay-all --output "$GE_GDN_ACCURACY_BOARD_RUN"
+```
+
+`OP_PROBE_RUN`仍指向此前含native构建的探针批次，复用已验证的candidate库部署。新案例会改变编译上下文，第一层单输出/多输出结果必须先与原OMC捕获的第0层有效特征比较；不能把插桩图内部结果直接认定为原OMC内部结果。Rsqrt输入来自同权重主机求值，不是板端内部采集。源码不调整原数值门槛；原绝对容差0.002可能掩盖很小的GDN core全零，因此新报告对每个输出打印幅度、非零数、RMS和relative L2，PASS也要检查这些指标。全部8行用于探针原比较，归因时原capture只比较前3个有效prompt位置。
+
+回传以下两个报告即可；若有编译失败，同时提供编译批次的 `report.txt`：
+
+```bash
+cat "$GE_GDN_ACCURACY_BOARD_RUN/runtime-comparison.txt"
+cat "$GE_GDN_ACCURACY_BOARD_RUN/arms/candidate_without_ddk_hcl/report.txt"
+```
+
+再用已回收的输出核对两个诊断图是否仍复现原图第0层特征。下面只读取文件、检查回收哈希并打印有效位置误差；不重新运行模型或修改参考：
+
+```bash
+python3 - "$GE_FEATURE_RUN/board/benchmark.json" "$GE_GDN_ACCURACY_RUN/manifest.json" "$GE_GDN_ACCURACY_BOARD_RUN" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+import numpy as np
+capture, probe = [json.loads(Path(p).read_text()) for p in sys.argv[1:3]]
+assert capture['prompt_token_ids'] == probe['provenance']['prompt_token_ids']
+value = capture['execution']['target_features']
+assert (value['dtype'], value['encoding'], value['shape'], value['bytes']) == ('float16', 'hex-le', [1, 8, 32], 512)
+raw = bytes.fromhex(value['data'])
+assert len(raw) == 512
+length = len(capture['prompt_token_ids'])
+original = np.frombuffer(raw, dtype='<f2').reshape(1, 8, 32)[:, :length, :16].astype(np.float64)
+arm = Path(sys.argv[3]) / 'arms/candidate_without_ddk_hcl'
+report = json.loads((arm / 'report.json').read_text())
+for name in ('gdn_layer0_final', 'gdn_layer0_stages'):
+    case = next(c for c in report['cases'] if c['name'] == name)
+    item = case['numerical']['outputs'][0]
+    assert case['run'] == 'PASSED' and item['label'] == 'layer0_final'
+    data = (arm / 'board' / name / item['path']).read_bytes()
+    assert hashlib.sha256(data).hexdigest() == item['actual_sha256']
+    actual = np.frombuffer(data, dtype='<f2').reshape(1, 8, 16)[:, :length].astype(np.float64)
+    assert np.isfinite(actual).all() and np.isfinite(original).all()
+    difference = actual - original
+    norm = float(np.linalg.norm(original))
+    print(name, json.dumps({'vs_original_omc_valid_layer0': {
+        'max_abs': float(np.abs(difference).max()),
+        'relative_l2': float(np.linalg.norm(difference)) / norm if norm else None}}, allow_nan=False))
+PY
+```
+
 ## 采集原始 OMC 的 target 特征
 
-下一步只重建runner，复用已有OMC、prepared及参考。新选项在target Process之后、draft Process之前保存原始FP16字节，随已有 `benchmark.json` 的远端SHA256流程回传；不会改变OMC输出接口。仅允许execution-only，最多65536字节。tiny S8输出为 `[1,8,32]`、512字节；前后16列分别是第0、2层结束后的特征。每层还包含归一化、MoE和残差，所以单个边界的偏差不能独立归因GDN。
+本次已完成，下面保留采集方法供复现，无需重跑。只重建runner，复用已有OMC、prepared及参考。选项在target Process之后、draft Process之前保存原始FP16字节，随已有 `benchmark.json` 的远端SHA256流程回传；不会改变OMC输出接口。仅允许execution-only，最多65536字节。tiny S8输出为 `[1,8,32]`、512字节；前后16列分别是第0、2层结束后的特征。每层还包含归一化、MoE和残差，所以单个边界的偏差不能独立归因GDN。
 
 ```bash
 cd "$REPO_DIR"
@@ -65,7 +130,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" compare-target-feat
 
 离线工具只依赖NumPy，读取并核验原prepared权重、两份OMC、参考及已完成capture报告的哈希。支持已有tiny配置、S=2–16；按有效prompt token及layer0/layer2分别输出finite数、max_abs、RMS、relative L2和数值相等性，同时列出主机末个有效位置的Top5。它使用当前源码中立图，不模拟OMG内部优化，不改变精度门槛或旧参考；输出 `DIAGNOSTIC_COMPLETE` 不代表精度通过。绑定覆盖相同权重identity/config与运行文件，未读取AIR，因此不声称完整prepared→AIR文档哈希链。当前源码哈希也保存在报告中。
 
-分享新的 `comparison/report.txt`；首先核对本次仍复现target的55，再看哪一个特征边界出现偏差。如果两处均一致，只能进一步缩小到尚未观察的后续层/归一化/head等区域，不能直接宣布全部GDN正确。该runner改动已由host fake验证，真实板端捕获仍待执行；源码及测试证据见 `specs/target-feature-capture-verification.json`。
+用户已回传 `comparison/report.txt` 及原始特征hex，确认本次仍复现target的55且两个边界均有偏差。记录为用户提供的终端证据，远端完整文件尚未独立获取；源码及测试证据见 `specs/target-feature-capture-verification.json`。当前使用上面的三个分阶段探针继续定位。
 
 ## 已完成：tiny 双图执行与严格 benchmark
 
@@ -74,7 +139,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" compare-target-feat
 
 这次日志已匹配记录的 PID11937；仍保留PID复用限制。HCL dlopen警告和Binder清理信息与本次执行成功同时出现，无需仅凭这些信息补库或重跑 smoke。`EXECUTION_COMPLETE` 不包括精度、NPU运行位置或性能判定。
 
-以下benchmark命令已经执行并得到上述参考差异，保留供历史复现；当前采集单轮特征，不重复benchmark：
+以下benchmark命令已经执行并得到上述参考差异，保留供历史复现；当前检查第一层中间结果，不重复benchmark：
 
 ```bash
 export GE_DRAFT_ROPE_CHECK_RUN="$AI_RUN_DIR/ge-draft-rope-check-$(date +%Y%m%d-%H%M%S)"

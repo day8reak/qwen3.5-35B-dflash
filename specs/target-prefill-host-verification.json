@@ -206,5 +206,6 @@
     "Emitted reductions and compact row-Mul recipes projected on host are not an OMG or HIAI emulator.",
     "This parity does not prove device GDN kernels correct or determine the first device divergence."
   ],
-  "next_action": "Capture original target feature output from unchanged OMC, compare valid rows at post-layer0 and post-layer2 boundaries including normalization/MoE."
+  "next_action": "Follow docs/hdc-board-run.md gdn-accuracy: compile three same-weight first-layer/Rsqrt diagnostics, replay with existing native donor and candidate libraries; no full-model OMC rebuild.",
+  "followup": "specs/gdn-accuracy-localization.json"
 }
