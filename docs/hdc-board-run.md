@@ -17,9 +17,9 @@ hdc -t "$SN" -s "$BIP" ...
 
 ## 当前：双图采用可选 MatMul 归约
 
-最新现场 `ge-reduce-model-20261026-110851` 已执行下方流程：AIR 导出成功，target 编译在主图日志 L149844 仍因 NPUCL 分区数超过9而回退；draft 编译、正式 runner 构建与板端运行均未执行。当前保留该 `GE_REDUCE_MODEL_RUN`，使用本节的 `inspect-compile` 诊断命令和两图 `reduction-lowering.json` 计数，确认剩余断点。下方导出/编译命令保留作流程参考，本次诊断无需重新执行或重设源目录。
+最新现场已完成整图新支持表：421个target FP16归约替换后，CPU-only计算候选由538降至117，仍超过9个NPUCL分区。当前先运行[广播与拼接的9项布局探针](direct-model-air.md#当前下一步广播与拼接布局探针)，区分19个Mul、3个Sub及6个64路Concat的布局限制。保留`GE_REDUCE_MODEL_RUN`；下方为此前已执行的整图流程，当前不重复。
 
-用户回传 `reduce-mm-replay-20261026-104025`：六个 MatMul 归约小图的 Load、Process、数值检查全部 PASS，编译分区均 NPU=1、CPU=0，实际执行位置仍为 `UNVERIFIED`。此前五项 ND 前补维 IO 拒绝已完成复测。现在用显式 `export --fp16-reductions matmul` 生成新的 target/draft，验证完整链路；默认归约模式仍是 `native`，整数和不符合条件的归约继续保留原实现。
+用户回传 `reduce-mm-replay-20261026-104025`：六个 MatMul 归约小图的 Load、Process、数值检查全部 PASS，编译分区均 NPU=1、CPU=0，实际执行位置仍为 `UNVERIFIED`。此前五项 ND 前补维 IO 拒绝已完成复测。随后已用显式 `export --fp16-reductions matmul` 导出 target/draft，target编译仍回退；默认归约模式仍是 `native`，整数和不符合条件的归约继续保留原实现。
 
 保留 `$GE_PAIR_RUN/prepared`、`$GE_BOARD_RUN/reference.json` 和原专家模式；沿用原 `CANN_ROOT`、DDK、resources/SDK/头文件/链接库配置，以及 `SN`、`BIP`，无需重新 prepare 或增加库参数。新建三个输出目录，四步用 `&&` 串联，失败就不继续后续构建或上板：
 
@@ -89,7 +89,7 @@ cat "$GE_REDUCE_INSPECT_RUN/report.txt"
 
 ## 服务器准备
 
-首次准备参考与 runner 可查[直接 GE tiny 上板指南的第1、2节](direct-ge-board.md)。当前现场已有原 prepared 和匹配的 `reference.json`，按本文开头可选导出 MatMul 归约双图，并在新目录构建当前正式 `qwen35_dflash_hiai`。
+首次准备参考与 runner 可查[直接 GE tiny 上板指南的第1、2节](direct-ge-board.md)。当前保留原 prepared、匹配的 `reference.json` 和已回退的MatMul归约双图；先运行本文开头链接的布局探针，整图编译成功后才构建正式 `qwen35_dflash_hiai`。
 
 需要的资源为：
 
@@ -201,7 +201,7 @@ cat "$HDC_RUN_DIR/comparison.json"
 
 ## 历史加载接口与运行库排障
 
-以下保留此前加载接口及运行库问题的排障记录。其中重编 runner、沿用 OMC 的命令仅对应当时的问题；归约小图现已通过，当前按本文开头可选导出新的双图，并构建当前正式 runner 执行。
+以下保留此前加载接口及运行库问题的排障记录。其中重编 runner、沿用 OMC 的命令仅对应当时的问题；归约小图现已通过，当前先验证本文开头链接的布局探针。
 
 若 `probe` 返回127，先读 `$HDC_RUN_DIR/probe.stderr`。曾出现程序链接 DDK 库，却上传示例中的另一份 `libhiai.so`，导致缺少 `libhiai_ir_build.so` 和 `CheckNPUSupport` 符号。现在自动按构建记录选择库，这一历史库问题本身不要求重建 OMC。
 
@@ -291,4 +291,4 @@ grep -n -E 'partition type|run[_ -]*by[_ -]*cl|PreGraphSplit|CompileGraph.*(targ
 cat "$GE_OMC_DIR/target/command.json"
 ```
 
-已有 OMC 不会随代码或 runner 更新获得图改动。用户随后已按 `78d94ef` 重新 export，新的主图窗口 L91094–L127615 再次回退；随后已完成 `inspect-compile` 与六项 rank/keep_dims 对照，六个 MatMul 候选也已全部通过 Load、Process 和数值检查；当前按本文开头可选导出新的 MatMul 归约双图，重新构建正式 runner 后执行 smoke。保持原 prepared、FP16 和已通过小图验证的部署策略；即使后续未触发回退，也要检查最终分区与板端执行，不能宣称已修复或全 NPU。
+已有 OMC 不会随代码或 runner 更新获得图改动。用户随后已按 `78d94ef` 重新 export，新的主图窗口 L91094–L127615 再次回退；随后已完成 `inspect-compile` 与六项 rank/keep_dims 对照，六个 MatMul 候选也已全部通过 Load、Process 和数值检查；后续MatMul归约双图仍超限，新支持表确认FP16归约已移除，当前先验证本文开头链接的布局探针。保持原 prepared、FP16 和已通过小图验证的部署策略；即使后续未触发回退，也要检查最终分区与板端执行，不能宣称已修复或全 NPU。

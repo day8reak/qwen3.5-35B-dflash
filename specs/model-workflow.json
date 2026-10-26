@@ -280,7 +280,7 @@
     },
     "board_execution_bringup": {
       "run_id": "20261026T002510Z-8234-33823c",
-      "status": "USER_REPORTED_INTEGRATED_MATMUL_REDUCTION_PARTITION_ROLLBACK",
+      "status": "REDUCTIONS_LOWERED_REMAINING_LAYOUT_PROBES_PENDING",
       "scope": "Existing compiled target/draft OMC pair; not a newly compiled full-weight model",
       "runtime_deployment": "Private library set excludes DDK HCL pair; process path includes /vendor/lib64/chipsetsdk",
       "runner_changes": [
@@ -290,13 +290,13 @@
       "accuracy": "DEFERRED_NOT_EVALUATED",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "python3 \"$GE_MODEL_TOOL\" inspect-compile --air \"$GE_REDUCE_MODEL_RUN/air\" --omc \"$GE_REDUCE_MODEL_RUN/omc\" --graph target --output \"$GE_REDUCE_INSPECT_RUN\"",
+      "next_command": "Follow docs/direct-model-air.md#当前下一步广播与拼接布局探针: compile nine selected controls/candidates then replay from OP_PROBE_RUN native donor.",
       "requires": "Existing prepared weights, same GE/internal OMG and SDK/HIAI resources; new AIR/OMC/build/board directories; unchanged FP16 and original reference identity",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "Opt-in MatMul reduction export succeeded; target still exceeds NPU partition limit9 at main omg.log line149844 in ge-reduce-model-20261026-110851. Draft compile, formal build and board commands did not run in the chained invocation.",
-      "followup_run_id": "20261026T024450Z-27808-76eb8b",
-      "followup_evidence": "specs/hiai-model-execution-user-report.json#integrated_matmul_reduction_compile"
+      "current_failure": "Main target still exceeds partition limit9. New complete support snapshot has117 CPU-only compute candidates after421 FP16 reductions were replaced; prioritize19 row Mul,3 outer Sub,6 large-fan-in Concat candidates. No integrated board execution yet.",
+      "followup_run_id": "20261026T024720Z-27959-5f7575",
+      "followup_evidence": "specs/fp16-layout-probe-verification.json"
     }
   },
   "operator_support_probe": {
@@ -332,6 +332,6 @@
     "accuracy_work": "DEFERRED_NOT_WAIVED",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
     "guide": "docs/hdc-board-run.md",
-    "next_action": "Inspect the new rejected MatMul-reduction target support snapshot and actual lowering counts, then choose the next bounded graph adaptation from remaining CPU-only computation."
+    "next_action": "Run nine isolated FP16 broadcast/concat layout controls and candidates. Choose integrated adaptation from compiler, Load/Process and original-reference numerical evidence; preserve current graph and thresholds."
   }
 }

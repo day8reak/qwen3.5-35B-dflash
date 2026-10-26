@@ -260,6 +260,7 @@ def cases():
     yield from _other_cases()
     yield from _reduction_layout_cases()
     yield from _matmul_reduction_cases()
+    yield from _fp16_layout_cases()
 
 
 def _matmul_reduction_cases():
@@ -289,3 +290,53 @@ def _matmul_reduction_cases():
                       "Reference is the original reduction, not the candidate MatMul. "
                       "Mean weights are exact 1/N; no intermediate FP16 sum, integer cast, "
                       "producer fusion, or production lowering change.", reference_graph=reference)
+
+
+def _fp16_layout_cases():
+    """Bounded controls for remaining FP16 broadcast and concat cut points."""
+    from .ge_binary_layout import row_scale_mul, outer_sub_compact
+    from .ge_concat_tree import concat_tree
+
+    for label, left_shape, right_shape, kind in (
+        ("mul_rows16", (1, 8, 2, 8), (1, 8, 2, 1), "mul"),
+        ("mul_rows128", (1, 2, 64, 8), (1, 2, 64, 1), "mul"),
+        ("sub_outer", (2, 1, 64, 1), (2, 1, 1, 64), "sub"),
+    ):
+        shape = np.broadcast_shapes(left_shape, right_shape)
+        reference = Graph(label + "_reference")
+        rx = reference.input("x", left_shape)
+        ry = reference.input("y", right_shape)
+        reference.outputs = [reference.op(kind, rx, ry, shape=shape)]
+        for mode in ("rank4", "compact"):
+            graph = Graph(label + "_" + mode)
+            x, y = graph.input("x", left_shape), graph.input("y", right_shape)
+            if mode == "rank4":
+                result = graph.op(kind, x, y, shape=shape, name="result")
+            else:
+                result = (row_scale_mul if kind == "mul" else outer_sub_compact)(graph, x, y)
+            graph.outputs = [result]
+            yield _finish(graph, {"x": _fp(left_shape, 1), "y": _fp(right_shape, 6)},
+                          f"FP16 {kind}: {list(left_shape)} and {list(right_shape)}, {mode}. "
+                          "Compact uses only exact reshapes around one original arithmetic operation; "
+                          "original rank4 output and reference retained. No production graph change.",
+                          pair=label + "_layout_pair", reference_graph=reference)
+
+    # Independent runtime inputs prevent a complete Slice->Concat identity or
+    # constant-folded graph from masquerading as a 64-way concat support test.
+    reference = Graph("concat64_reference")
+    originals = [reference.input(f"x{i}", (2, 1, 1, 64)) for i in range(64)]
+    reference.outputs = [reference.op("concat", *originals, shape=(2, 1, 64, 64), attrs={"axis": 2})]
+    inputs = {f"x{i}": (np.arange(128, dtype=np.uint16) + np.uint16(0x2000 + i * 128))
+              .view(np.float16).reshape(2, 1, 1, 64) for i in range(64)}
+    for mode, fan_in in (("rank4", None), ("tree8", 8), ("tree2", 2)):
+        graph = Graph("concat64_" + mode)
+        values = [graph.input(v.name, v.shape) for v in originals]
+        result = (graph.op("concat", *values, shape=(2, 1, 64, 64), attrs={"axis": 2}, name="result")
+                  if fan_in is None else concat_tree(graph, values, axis=2, max_fan_in=fan_in))
+        graph.outputs = [result]
+        yield _finish(graph, {name: data.copy() for name, data in inputs.items()},
+                      f"FP16 64-input concat of [2,1,1,64] rows along axis2, {mode}; "
+                      "independent runtime inputs with distinct finite payloads. "
+                      "Ordered adjacent groups only, unchanged output/reference and exact tolerance. "
+                      "OMG may optimize the tree; compiler and device results still require inspection.",
+                      exact=True, pair="concat64_layout_pair", reference_graph=reference)

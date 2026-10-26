@@ -38,8 +38,8 @@ def test_prepare_only_all_cases_serializes_locked_contracts(run_root, monkeypatc
     assert op_probe.run(op_probe.parser().parse_args(["--prepare-only", "--output", str(output)])) == 0
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["status"] == "PREPARED" and not manifest["board_requested"]
-    assert len(manifest["cases"]) == 59
-    assert len({record["name"] for record in manifest["cases"]}) == 59
+    assert len(manifest["cases"]) == 68
+    assert len({record["name"] for record in manifest["cases"]}) == 68
     assert calls[0][0] == output and calls[0][2] is None
     for record in manifest["cases"]:
         folder = Path(record["directory"])

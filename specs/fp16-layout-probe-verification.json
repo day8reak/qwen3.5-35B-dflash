@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T024720Z-27959-5f7575",
+  "baseline_commit": "ab28aa5be7b7c7adbdbe9082ffae9feba8dd1129",
+  "status": "HOST_VALIDATED_VENDOR_COMPILE_AND_BOARD_PENDING",
+  "scope": "Nine isolated FP16 layout controls/candidates; production target/draft emission unchanged",
+  "classification": "Exact shape/copy transformations retaining original per-element arithmetic, operand order and FP16 boundary; runtime behavior requires validation",
+  "user_evidence": "specs/hiai-model-execution-user-report.json#integrated_reduction_support_diagnostic",
+  "cases": [
+    "mul_rows16_rank4",
+    "mul_rows16_compact",
+    "mul_rows128_rank4",
+    "mul_rows128_compact",
+    "sub_outer_rank4",
+    "sub_outer_compact",
+    "concat64_rank4",
+    "concat64_tree8",
+    "concat64_tree2"
+  ],
+  "contracts": {
+    "row_mul": "Identical prefixes (...,N) and (...,1) flattened in original C order to (M,N)*(M,1), then restored; two reported shapes",
+    "outer_sub": "[B,1,M,1]-[B,1,1,N] to [B,M,1]-[B,1,N], then restore original output; no operand reversal or added negation",
+    "concat": "64 independent dynamic FP16 [2,1,1,64] inputs; continuous groups of8 or2 preserve axis2 order and exact bits; 8192 distinct finite reference values",
+    "references": "Original rank4 arithmetic or original64-way concat; same payloads across each control/candidate group",
+    "tolerances": {
+      "binary": {
+        "rtol": 0.01,
+        "atol": 0.002
+      },
+      "concat": {
+        "rtol": 0.0,
+        "atol": 0.0
+      }
+    },
+    "concat_io_bytes": 32768,
+    "concat_io_count": 65,
+    "declared_probe_io_limit": 128
+  },
+  "preserved": [
+    "original59 probe source/input/reference digests and tolerances",
+    "production graph and emitter",
+    "prepared weights",
+    "runtime library policy",
+    "donor provenance checks",
+    "existing numerical thresholds"
+  ],
+  "host_validation": {
+    "pytest": {
+      "binary-layout-tests.xml": {
+        "tests": 60,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "concat-audit/concat-tree-tests.xml": {
+        "tests": 52,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "probe-integration-tests.xml": {
+        "tests": 199,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "total_passed": 311,
+    "shell_blocks_passed": 54,
+    "prepare_only": "Actual CLI generated nine recipes/IO contracts/references without compiler or HDC",
+    "coverage": [
+      "actual emitted recipe shapes/dtypes/ports and arithmetic count",
+      "finite pointwise bit equivalence, signed zero and subnormal behavior, nonfinite classification",
+      "concat uint16 payload preservation including NaN and signed zero",
+      "non-divisible concat tail groups and malformed contracts before mutation",
+      "old59 probe digests unchanged",
+      "prepare, compile mock, HDC mock, native-donor replay protocol regression"
+    ]
+  },
+  "source_sha256": {
+    "model/qwen35_moe_dflash/ge_binary_layout.py": "a764bc7b0118f560c7a333b56ab1cf30902c67ff999306c4ded10950fd728305",
+    "model/qwen35_moe_dflash/ge_concat_tree.py": "60fabe715e8ad2f5f8f69cfb0acb06089de47d5ff54196b9e74b92369f20e0da",
+    "model/qwen35_moe_dflash/op_probe_cases.py": "3620ddacbd2b26c86ebfac1a08e6fea2e1cfc4bc26fd2509e266a2bf22776fff",
+    "tests/test_ge_binary_layout.py": "f6fea55cc5a6adaec95c24f3e7f017dc38d3a2073c424d4a6998ca316c924b58",
+    "tests/test_ge_concat_tree.py": "dddfa89d1cb7423a0ae2c315f9119a50a22c7fe43b64a7141e35b6b6da4377c7",
+    "tests/test_op_probe_cases.py": "4aead8623713b6028265df0a6a8a21d36b7521a3ee4c8c571481ef4f0fece033",
+    "tests/test_op_probe.py": "75332e0d3a557a64c46046261ed36a1d1a6dc0a4855191cd1249ca9774e96dd5"
+  },
+  "artifacts": {
+    "binary-layout-tests.xml": "fc732737aa0490c0a54bbd7b99aa4f9412c553f9456a1b9eac92b2821c1a0aa9",
+    "concat-audit/concat-tree-tests.xml": "3436dcc74063185c1a4a9a9c65e1fa46ef750b4b1c1a85bd89250240d73ce6ca",
+    "probe-integration-tests.xml": "2b72d55ee73df90b797bf15709357b4c1cb56f6a63ce1c0a5181acb33f9a14e8",
+    "probe-integration-tests.log": "9e28d0c266a25bb9e514e4780622bf0ee70a74f3dc4d9c6521e95359e108d550",
+    "old-probe-baseline.json": "6afb3a84c6a4cf3c27d7da8c05b950fe3607d6249e280196b0d3e14d89d317d5",
+    "old-probe-preservation.json": "1466ff329456e5347f1bc8c781c606be222af97a01b66545abd51796b6a5f6a5",
+    "docs-shell-syntax.json": "986f48e5b23902eedadb000d325f901493c5fc5876cf64c33b4031f4671ea967",
+    "layout-prepare.log": "71e592266269a4bdafb993ade4691d91219da33278f013c9ee8b100cbf5dc077",
+    "layout-prepare/manifest.json": "7d2c8d949d359f6d5d46553936a479b25087c165bfba2eb5a4ea26aaa13269f3",
+    "layout-prepare/results.tar.gz": "262109d5e7207025ca01ad6d0ed4d666e173f4782d1888cfdcfb64df332df141",
+    "binary-audit/target-row-scale-19.json": "122d438ac5b1a45d1f2629e847de9dd40cfc8310e81166ecceac7d641c53f959",
+    "concat-audit/concat-host-audit.json": "cc741106b880677539e0ff04b0804c9fdc831624b4758aac77782bf4375f3c5e"
+  },
+  "independent_review": {
+    "status": "PASSED_NO_OPEN_BLOCKING_FINDINGS",
+    "scope": [
+      "binary helper and tests",
+      "concat helper and tests",
+      "case registration, independent references, input diversity and current commands"
+    ],
+    "resolved": "Historical documentation prompts synchronized with nine-case current step and suite total68"
+  },
+  "limits": [
+    "Host matches do not prove compiler support, device numerics or NPU placement",
+    "OMG may recombine the concat tree",
+    "Only two example node names per CPU group were supplied; local shape match is not full per-node correspondence",
+    "MoE integer/boolean candidates and TopK remain; fewer candidate nodes do not imply <=9 partitions",
+    "Board accepts64 input tensors only after current run verifies it; host limits alone are insufficient"
+  ],
+  "next_action": "Compile the nine named cases and replay only this batch using --native-from OP_PROBE_RUN --refresh-runner --replay-all",
+  "guide": "docs/direct-model-air.md#当前下一步广播与拼接布局探针",
+  "device_execution": "PENDING_USER_RUN",
+  "full_model_accuracy": "DEFERRED_NOT_EVALUATED",
+  "performance": "NOT_MEASURED_DFLASH_GOAL_AT_LEAST_2X",
+  "experience_audit": {
+    "record": "docs/experience.md",
+    "changed_skills": [],
+    "captured": "Current support counts versus placement; exact broadcast shape guards; ordered bounded concat; distinct64-input fixtures; keep prior probes immutable",
+    "pending": "Vendor layout support, tree remerge and resulting integrated partition count"
+  }
+}

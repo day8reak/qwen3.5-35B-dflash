@@ -19,13 +19,18 @@ MATMUL_REDUCTION_CASES = (
     "reduce_mean_rms_matmul", "reduce_mean_head_matmul", "reduce_sum_scan_matmul",
     "reduce_sum_gdn_matmul_k64", "reduce_sum_gdn_matmul_k7", "reduce_sum_gdn_matmul_k1",
 )
+FP16_LAYOUT_CASES = (
+    "mul_rows16_rank4", "mul_rows16_compact", "mul_rows128_rank4", "mul_rows128_compact",
+    "sub_outer_rank4", "sub_outer_compact", "concat64_rank4", "concat64_tree8", "concat64_tree2",
+)
 
 
 def test_case_inputs_references_and_serialization_are_complete():
     suite = list(cases())
-    assert len(suite) == 59
+    assert len(suite) == 68
     assert tuple(c["name"] for c in suite[47:53]) == REDUCTION_CASES
-    assert tuple(c["name"] for c in suite[53:]) == MATMUL_REDUCTION_CASES
+    assert tuple(c["name"] for c in suite[53:59]) == MATMUL_REDUCTION_CASES
+    assert tuple(c["name"] for c in suite[59:]) == FP16_LAYOUT_CASES
     assert len({c["name"] for c in suite}) == len(suite)
     for case in suite:
         graph = case["graph"]
@@ -179,3 +184,51 @@ def test_matmul_reduction_candidates_keep_original_reference_and_fp16_thresholds
         stream.seek(offset)
         weights = np.frombuffer(stream.read(size), dtype="<f2")
     np.testing.assert_array_equal(weights, np.full(length, 1 / length if is_mean else 1, np.float16))
+
+
+@pytest.mark.parametrize("prefix,compact_shape,kind", [
+    ("mul_rows16", (16, 8), "Mul"),
+    ("mul_rows128", (128, 8), "Mul"),
+    ("sub_outer", (2, 64, 64), "Sub"),
+])
+def test_binary_layout_probe_pairs_keep_io_and_original_pointwise_reference(prefix, compact_shape, kind, tmp_path):
+    suite = {case["name"]: case for case in cases()}
+    control, candidate = (suite[prefix + "_" + mode] for mode in ("rank4", "compact"))
+    assert control["equivalence_group"] == candidate["equivalence_group"]
+    for name, payload in control["inputs"].items():
+        assert payload.shape == candidate["inputs"][name].shape
+        assert payload.tobytes() == candidate["inputs"][name].tobytes()
+    inputs = control["inputs"]
+    expected = ((inputs["x"].astype(np.float64) * inputs["y"].astype(np.float64)) if kind == "Mul"
+                else (inputs["x"].astype(np.float64) - inputs["y"].astype(np.float64))).astype(np.float16)
+    for case in (control, candidate):
+        assert case["expected"][0].tobytes() == expected.tobytes()
+        assert case["tolerances"] == [{"rtol": 0.01, "atol": 0.002}]
+        emit_cpp(case["graph"], recipe_dir=tmp_path / case["name"])
+        records, _, outputs = RecipeReader(tmp_path / case["name"] / "graph.recipe").read()
+        arithmetic, = [row for row in records if row["type"] == kind]
+        assert all(row["type"] in {"Data", "Const", "Reshape", kind} for row in records)
+        assert all(port["dtype"] == "float16" for port in arithmetic["inputs"] + arithmetic["outputs"])
+        assert arithmetic["outputs"][0]["shape"] == (compact_shape if case is candidate else expected.shape)
+        assert records[outputs[0][0]]["outputs"][0]["shape"] == expected.shape
+
+
+@pytest.mark.parametrize("mode,fan_in,concat_count", [("rank4", 64, 1), ("tree8", 8, 9), ("tree2", 2, 63)])
+def test_concat64_probe_preserves_distinct_dynamic_port_order_and_original_reference(mode, fan_in, concat_count, tmp_path):
+    case = next(c for c in cases() if c["name"] == "concat64_" + mode)
+    assert len(case["graph"].inputs) == 64
+    assert not case["graph"].constants
+    ordered = [case["inputs"][f"x{i}"] for i in range(64)]
+    assert np.unique(np.concatenate([a.ravel().view(np.uint16) for a in ordered])).size == 8192
+    expected = np.concatenate(ordered, axis=2)
+    assert case["expected"][0].tobytes() == expected.tobytes()
+    assert case["tolerances"] == [{"rtol": 0.0, "atol": 0.0}]
+    emit_cpp(case["graph"], recipe_dir=tmp_path / "recipe")
+    records, inputs, outputs = RecipeReader(tmp_path / "recipe/graph.recipe").read()
+    assert [records[i]["name"] for i in inputs] == [f"x{i}" for i in range(64)]
+    assert all(row["type"] in {"Data", "ConcatD"} for row in records)
+    concats = [row for row in records if row["type"] == "ConcatD"]
+    assert len(concats) == concat_count
+    assert all(2 <= len(row["inputs"]) <= fan_in for row in concats)
+    assert all(row["attrs"]["concat_dim"] == 2 for row in concats)
+    assert records[outputs[0][0]]["outputs"][0]["shape"] == (2, 1, 64, 64)
