@@ -172,9 +172,11 @@ def test_every_tiny_model_reshape_uses_int32_and_other_controls_keep_width(tmp_p
     for record in reshapes:
         _check_reshape(records, record)
     if graph_index == 0:
-        by_name = {record["name"]: record for record in records}
-        assert by_name["v974"]["outputs"][0]["shape"] == (1, 2, 1, 55)
-        assert by_name["v975"]["outputs"][0]["shape"] == (1, 2, 1, 55, 1)
+        # Locate the GDN row-55 views by contract, not generated node IDs.
+        # Its redundant outer singleton was removed by the rank4 adaptation;
+        # the old rank5 descriptors are retained in the standalone fixtures.
+        shapes = {record["outputs"][0]["shape"] for record in reshapes}
+        assert (2, 1, 55) in shapes and (2, 1, 55, 1) in shapes
     controls = {"Slice": {"offsets", "size"}, "ReduceSum": {"axes"},
                 "ReduceMean": {"axes"}, "Transpose": {"perm"}, "BroadcastTo": {"shape"}}
     for record in records:

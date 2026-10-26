@@ -47,14 +47,15 @@ def configurations(*, tiny=False):
     return target, draft
 
 
-def build_pair(target_config, draft_config, sequence_length):
+def build_pair(target_config, draft_config, sequence_length, *, expert_dispatch="static"):
     from .ge_target import build_target
     from .ge_draft import build_draft
     config = Qwen35DFlashConfig.from_dict(draft_config)
     if (sequence_length < 2 or sequence_length + config.block_size > config.max_position_embeddings
             or sequence_length * config.feature_size * 2 > 2**32 - 1):
         raise ValueError("sequence length exceeds graph, RoPE or HIAI capacity")
-    graphs = [build_target(target_config, config, sequence_length), build_draft(config, sequence_length)]
+    graphs = [build_target(target_config, config, sequence_length, expert_dispatch=expert_dispatch),
+              build_draft(config, sequence_length)]
     expected = [
         ([(1, sequence_length)] * 2, ["int32", "int32"],
          [(1, sequence_length), (1, sequence_length, config.feature_size)], ["int32", "float16"]),
@@ -98,19 +99,31 @@ def weight_identity(records):
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def plan_pair(output_dir, sequence_length=8, *, tiny=True):
-    root = output_path(output_dir); root.mkdir(parents=True, exist_ok=False)
+def _expert_execution(target, dispatch):
+    return {"experts_per_token": target["num_experts_per_tok"] if dispatch == "selected" else target["num_experts"],
+            "implementation": "per-token Gather + BatchMatMul" if dispatch == "selected" else "all-expert MatMul",
+            "merge_order": "ascending expert ID, sequential FP16 additions",
+            "selected_weight_bytes_per_token": (target["num_experts_per_tok"] * 3 * target["hidden_size"]
+                                                 * target["moe_intermediate_size"] * 2
+                                                 if dispatch == "selected" else 0),
+            "workspace_peak": "NOT_MEASURED"}
+
+
+def plan_pair(output_dir, sequence_length=8, *, tiny=True, expert_dispatch="static"):
     target, draft = configurations(tiny=tiny)
-    graphs = build_pair(target, draft, sequence_length)
+    graphs = build_pair(target, draft, sequence_length, expert_dispatch=expert_dispatch)
+    root = output_path(output_dir); root.mkdir(parents=True, exist_ok=False)
     result = {"schema_version": 1, "artifact_kind": "qwen35-ge-plan", "status": "PLANNED",
               "tiny": tiny, "sequence_length": sequence_length,
               "target_config": target, "draft_config": draft,
               "graphs": [graph_summary(g) for g in graphs],
               "unique_weight_bytes": sum(math.prod(s) * 2 for s in weight_shapes(graphs).values()),
-              "precision": "float16", "quantization": None, "expert_dispatch": "static",
+              "precision": "float16", "quantization": None, "expert_dispatch": expert_dispatch,
+              "expert_execution": _expert_execution(target, expert_dispatch),
               "device_validation": "PENDING", "board_memory_fit": "NOT_ESTABLISHED",
               "limitations": ["Full-size FP16 is not a 32GB deployment.",
-                              "All experts execute; this is not a sparse performance implementation.",
+                              ("Selected weights are gathered per token; this is not native grouped GEMM and may increase memory traffic."
+                               if expert_dispatch == "selected" else "All experts execute; this is not a sparse performance implementation."),
                               "Packed quantized GE operators and full-weight quality are pending."]}
     save_json(root / "plan.json", result)
     return result
@@ -126,7 +139,7 @@ def _locked_checkpoints(target_path, draft_path):
 
 
 def prepare_pair(output_dir, sequence_length=8, *, tiny=True, target_path=None, draft_path=None,
-                 float_baseline=False, external_weights=False):
+                 float_baseline=False, external_weights=False, expert_dispatch="static"):
     from .ge_cpp import emit_cpp
     from .ge_weights import SafeTensorFiles, checkpoint_key, tiny_weights
     if not tiny and not float_baseline:
@@ -139,10 +152,11 @@ def prepare_pair(output_dir, sequence_length=8, *, tiny=True, target_path=None, 
     if not tiny:
         external_weights = True  # >2GB protobuf limit; never embed 35B weights.
     root = output_path(output_dir)
-    plan = plan_pair(root, sequence_length, tiny=tiny)
+    plan = plan_pair(root, sequence_length, tiny=tiny, expert_dispatch=expert_dispatch)
     stage = "prepare-weights"
     try:
-        graphs = build_pair(plan["target_config"], plan["draft_config"], sequence_length)
+        graphs = build_pair(plan["target_config"], plan["draft_config"], sequence_length,
+                            expert_dispatch=plan["expert_dispatch"])
         shapes = weight_shapes(graphs)
         folder = root / "weights"; folder.mkdir()
         records = {}
@@ -207,6 +221,12 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
     plan = json.loads(manifest_path.read_text())
     if plan.get("artifact_kind") != "qwen35-ge-prepared" or plan.get("status") != "PREPARED":
         raise ValueError("expected a successful direct GE preparation")
+    dispatch = plan.get("expert_dispatch", "static")
+    if dispatch not in {"static", "selected"}:
+        raise ValueError("prepared expert_dispatch must be static or selected")
+    execution = _expert_execution(plan["target_config"], dispatch)
+    if "expert_execution" in plan and plan["expert_execution"] != execution:
+        raise ValueError("prepared expert execution metadata differs from expert_dispatch/configuration")
     if cxx11_abi not in (0, 1) or timeout_seconds <= 0:
         raise ValueError("invalid C++ ABI or timeout")
     ge = Path(ge_root).expanduser().resolve()
@@ -217,7 +237,8 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
     compiler = shutil.which(cxx)
     if compiler is None:
         raise FileNotFoundError(f"C++ compiler not found: {cxx}")
-    graphs = build_pair(plan["target_config"], plan["draft_config"], plan["sequence_length"])
+    graphs = build_pair(plan["target_config"], plan["draft_config"], plan["sequence_length"],
+                        expert_dispatch=dispatch)
     shapes = weight_shapes(graphs)
     if set(shapes) != set(plan["weights"]):
         raise ValueError("prepared weight set does not match target/draft graphs")
@@ -302,7 +323,8 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
                     "sequence_length": plan["sequence_length"], "draft_width": config.block_size - 1,
                     "feature_width": config.feature_size, "vocab_size": config.vocab_size,
                     "precision": "torch.float16", "feature_dtype": "torch.float16", "precision_audit": audit,
-                    "quantization": None, "state_policy": "recompute", "expert_dispatch": "static",
+                    "quantization": None, "state_policy": "recompute",
+                    "expert_dispatch": dispatch, "expert_execution": execution,
                     "source": plan["source"], "pad_token_id": 0 if plan["tiny"] else 248044,
                     "eos_token_ids": [] if plan["tiny"] else [248044, 248046],
                     "export_root": str(root), "graphs": records, "external_weights": plan["external_weights"],

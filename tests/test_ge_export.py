@@ -54,7 +54,8 @@ def test_canonical_names_and_full_fp16_opt_in(tmp_path, monkeypatch):
     assert not (tmp_path / "full").exists()
 
 
-def test_preparation_never_imports_torch_or_torchair(tmp_path):
+@pytest.mark.parametrize("dispatch", ["static", "selected"])
+def test_preparation_never_imports_torch_or_torchair(tmp_path, dispatch):
     repo = Path(__file__).resolve().parents[1]
     blocked = tmp_path / "blocked"; blocked.mkdir()
     for module in ("torch", "torch_npu", "torchair", "transformers"):
@@ -62,11 +63,14 @@ def test_preparation_never_imports_torch_or_torchair(tmp_path):
     env = dict(os.environ, AI_RUN_DIR=str(tmp_path), PYTHONDONTWRITEBYTECODE="1",
                PYTHONPATH=os.pathsep.join((str(blocked), str(repo / "model"))))
     result = subprocess.run([sys.executable, str(repo / "targets/cpro/scripts/direct_model_air.py"),
-                             "prepare", "--tiny", "--sequence-length", "8", "--output", str(tmp_path / "prepared")],
+                             "prepare", "--tiny", "--sequence-length", "8", "--expert-dispatch", dispatch,
+                             "--output", str(tmp_path / "prepared")],
                             env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     plan = json.loads((tmp_path / "prepared/prepared.json").read_text())
     assert plan["status"] == "PREPARED" and plan["quantization"] is None
+    assert plan["expert_dispatch"] == dispatch
+    assert plan["expert_execution"]["experts_per_token"] == (2 if dispatch == "selected" else 4)
     assert [g["name"] for g in plan["graphs"]] == ["target", "draft"]
     assert not list((tmp_path / "prepared").rglob("*.air"))
 
@@ -82,11 +86,12 @@ def fake_ge(tmp_path):
 
 
 @pytest.mark.parametrize("external", [False, True])
-def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, external):
+@pytest.mark.parametrize("dispatch", ["static", "selected"])
+def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, external, dispatch):
     from qwen35_moe_dflash.compile import compile_air
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
     prepared = tmp_path / "prepared"
-    plan = ge_export.prepare_pair(prepared, tiny=True, external_weights=external)
+    plan = ge_export.prepare_pair(prepared, tiny=True, external_weights=external, expert_dispatch=dispatch)
     # Existing prepared payloads remain usable after a generator-only fix.
     # Export must regenerate construction files, never compile this stale copy.
     (prepared / "target/target.cpp").write_text("STALE_PREPARED_GENERATOR\n")
@@ -106,6 +111,8 @@ def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, extern
     manifest = ge_export.export_pair(prepared, tmp_path / "air", ge)
     assert manifest["status"] == "EXPORTED" and manifest["abi_version"] == 2
     assert manifest["pipeline"][0] == "ge-cpp" and manifest["quantization"] is None
+    assert manifest["expert_dispatch"] == dispatch
+    assert manifest["expert_execution"] == plan["expert_execution"]
     assert manifest["source"]["fp16_payload_sha256"] == ge_export.weight_identity(plan["weights"])
     for graph in manifest["graphs"]:
         assert bool(len(graph["files"]) > 1) == external
@@ -116,9 +123,33 @@ def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, extern
     (master / "omg").write_bytes(b"mock omg"); (master / "omg").chmod(0o700)
     result = compile_air(tmp_path / "air", tmp_path / "omc", ddk, ddk_id="mock-ddk")
     assert result["status"] == "COMPILED" and result["device_validation"] == "PENDING"
+    assert result["expert_dispatch"] == dispatch
+    assert result["expert_execution"] == plan["expert_execution"]
     assert result["graphs"][0]["output_shapes"] == [[1, 8], [1, 8, 32]]
     assert result["graphs"][1]["output_shapes"] == [[1, 3]]
     assert plan["unique_weight_bytes"] > 0
+
+
+def test_invalid_dispatch_rejected_before_output_or_tools(tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    with pytest.raises(ValueError, match="expert_dispatch"):
+        ge_export.plan_pair(tmp_path / "bad-dispatch", expert_dispatch="grouped_matmul")
+    assert not (tmp_path / "bad-dispatch").exists()
+
+
+@pytest.mark.parametrize("change", ["missing", "different"])
+def test_selected_prepared_cannot_silently_export_a_different_structure(tmp_path, monkeypatch, change):
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    prepared = tmp_path / "prepared"
+    plan = ge_export.prepare_pair(prepared, tiny=True, expert_dispatch="selected")
+    if change == "missing":
+        del plan["expert_dispatch"]
+    else:
+        plan["expert_dispatch"] = "static"
+    (prepared / "prepared.json").write_text(json.dumps(plan))
+    with pytest.raises(ValueError, match="expert execution metadata"):
+        ge_export.export_pair(prepared, tmp_path / "air", tmp_path / "unused-ge")
+    assert not (tmp_path / "air").exists()
 
 
 def test_export_detects_weight_corruption_before_compile(tmp_path, monkeypatch):

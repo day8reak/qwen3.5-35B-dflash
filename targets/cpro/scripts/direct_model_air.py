@@ -20,6 +20,8 @@ def main():
         choice.add_argument("--tiny", action="store_true")
         choice.add_argument("--full", action="store_true")
         p.add_argument("--sequence-length", type=int, default=8)
+        p.add_argument("--expert-dispatch", choices=("static", "selected"), default="static",
+                       help="selected: gather only routed expert weights for per-token BatchMatMul; board validation required")
         p.add_argument("--output", required=True)
         if name == "prepare":
             p.add_argument("--resources")
@@ -54,7 +56,8 @@ def main():
         from qwen35_moe_dflash.resources import load_resources, resource_path
         if args.command == "plan":
             from qwen35_moe_dflash.ge_export import plan_pair
-            result = plan_pair(args.output, args.sequence_length, tiny=args.tiny)
+            result = plan_pair(args.output, args.sequence_length, tiny=args.tiny,
+                               expert_dispatch=args.expert_dispatch)
         elif args.command == "prepare":
             from qwen35_moe_dflash.ge_export import prepare_pair
             target, draft = args.target_weights, args.draft_weights
@@ -67,7 +70,8 @@ def main():
                     draft = draft or resource_path(resources, "draft_weights", directory=True)
             result = prepare_pair(args.output, args.sequence_length, tiny=args.tiny,
                                   target_path=target, draft_path=draft,
-                                  float_baseline=args.float_baseline, external_weights=args.external_weights)
+                                  float_baseline=args.float_baseline, external_weights=args.external_weights,
+                                  expert_dispatch=args.expert_dispatch)
         elif args.command == "export":
             from qwen35_moe_dflash.ge_export import export_pair
             ge = args.ge_root

@@ -59,8 +59,11 @@ def target_case():
 
 
 @pytest.mark.parametrize("tokens", [[1], [1, 2, 3], [7, 3, 26, 8, 16, 42, 29, 31]])
-def test_target_matches_existing_fp16_graph_and_final_norm(target_case, tokens):
-    graph, reference, weights, _, _ = target_case
+@pytest.mark.parametrize("expert_dispatch", ["static", "selected"])
+def test_target_matches_existing_fp16_graph_and_final_norm(target_case, tokens, expert_dispatch):
+    graph, reference, weights, config, draft_config = target_case
+    if expert_dispatch == "selected":
+        graph = build_target(config, draft_config, 8, head_chunk_rows=4, expert_dispatch=expert_dispatch)
     ids = np.zeros((1, 8), dtype=np.int32)
     mask = ids.copy()
     ids[0, :len(tokens)] = tokens

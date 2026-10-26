@@ -279,3 +279,45 @@ python3 "$GE_MODEL_TOOL" export \
 ```
 
 不要将这份未量化 FP16 全模型传到 32GB 板机。完成 tiny 双图 AIR/OMC/HIAI 验证后，下一步是原生量化映射、全权重数值验证和内存实测；原 PyTorch/TorchAir 路径随时可继续联调。
+
+## 6. 按 Cpro 参考结构调整
+
+用户提供了一个已在同一 Kirin/Cpro 板上运行、但精度仍有问题的工程结构摘要。摘要的 40 层、30/10 混合注意力、2048 隐藏维、256 专家和 top-8 与本仓库锁定配置一致。该摘要作为结构参考；数值对照继续使用原始 checkpoint 语义及本仓库已有的 FP16 参考，不能把另一工程“能运行”视为精度通过。
+
+本次调整直接 GE 图中的两部分：
+
+| 部分 | 改动 | 精度与验证边界 |
+|---|---|---|
+| GDN chunk64 | `(1,H,C,64,D)` 去掉 batch=1 单例轴成为 `(H,C,64,D)`；三处常量三角掩码改为 Slice/Concat 补零 | 保留 FP16 边界、64 宽归约和跨 chunk 状态更新次序；移除这部分 rank5 张量及 BOOL Select。静态切片会增加节点，不能据此声称提速 |
+| MoE selected 模式 | 仅收集每个 token 的 top-k 专家，执行 W13 → SiLU×up → W2，再合并共享专家 | 保留原 softmax/top-k/权重归一化；按专家 ID 升序逐路 FP16 累加，不能改成 top-k 分数顺序或一次 ReduceSum。使用现有 Gather/BatchMatMul，不冒充原生 GMM |
+| 归一化 | 保持现有正确语义 | loader 不折叠 gamma；普通 RMSNorm forward 加一次 `1`，GDN gated norm 和 DFlash norm 直接用权重。没有复制摘要中的重复 `+1` |
+
+`selected` 为显式候选，`static` 继续作默认对照。输入输出 ABI、全部词表、目标特征层、DFlash 调度、原始权重及 FP16 精度不变。没有在本轮引入 W4A8、INT4/I4ZN 打包、PagedAttention 或增量缓存；这些改动分别需要实际算子端口/属性/状态合约及独立精度验证。这里的 FP16 结构等价检查也不等于 BF16/FP32 原模型的语言质量验证。
+
+每个 token 收集的两组专家权重合计为 `K × 3 × H × I × 2` 字节，35B 配置下为 48 MiB。这只是逻辑张量大小；整个静态图的调度、活跃期和峰值工作区未测，不能当作内存上界。全量专家权重仍然存在，FP16 完整模型的存储问题也未解决。候选支持最多 2048 个专家，以保证用 FP16 排序专家 ID 时不丢失整数精度。
+
+先在新目录生成 tiny 结构候选及独立参考，再导出编译。沿用已有 `AI_RUN_DIR`、`CANN_ROOT`、`CPRO_DDK_ROOT` 和 `CPRO_DDK_ID`：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
+export GE_STRUCTURE_RUN="$AI_RUN_DIR/ge-structure-$(date +%Y%m%d-%H%M%S)"
+
+python3 "$GE_MODEL_TOOL" prepare --tiny --sequence-length 8 \
+  --expert-dispatch selected --output "$GE_STRUCTURE_RUN/prepared"
+python3 "$GE_MODEL_TOOL" reference-tiny \
+  --prepared "$GE_STRUCTURE_RUN/prepared" \
+  --prompt-token-ids 1,2,3 --max-new-tokens 4 \
+  --output "$GE_STRUCTURE_RUN/reference.json"
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_STRUCTURE_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --output "$GE_STRUCTURE_RUN/air"
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_STRUCTURE_RUN/air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_STRUCTURE_RUN/omc"
+```
+
+每一步成功后再执行下一步。plan、prepared、AIR 和 OMC 的 manifest 都记录 `expert_dispatch`，export 按 prepared 的选择重建图；老 prepared 缺少该字段时沿用 static。全量旧算子复测仍可用 `probe_hdc_runtime.py --replay-all`，但它复用旧 OMC，不能代替本节新结构的 OMG/板端验证。正式双图上板入口现使用探针已验证的候选部署；先按 [只执行模式](hdc-board-run.md#当前优先复用-omc-打通双图执行) 复用旧 OMC 打通链路，再验证本节结构候选。
+
+可选的主机 GDN 诊断入口为 `targets/cpro/scripts/diagnose_gdn_precision.py`，输出逐 chunk FP16/FP32 输出与状态误差。无输入时仅跑小型合成样例，不能确认真实模型的精度根因。当前优先上板执行，此诊断不作为前置步骤，也不改变部署 FP16。

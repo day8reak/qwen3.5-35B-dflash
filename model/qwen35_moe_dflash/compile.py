@@ -246,6 +246,8 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600):
     result = {k: manifest[k] for k in ["sequence_length", "draft_width", "feature_width", "vocab_size",
                                       "precision", "state_policy", "expert_dispatch", "source", "pad_token_id", "eos_token_ids",
                                       "abi_version", "feature_dtype", "precision_audit", "quantization"]}
+    if "expert_execution" in manifest:
+        result["expert_execution"] = manifest["expert_execution"]
     result.update(schema_version=2, artifact_kind="qwen35-cpro-omc-pair", status="COMPILING",
                   platform="kirinx90", runtime="hiai", device_validation="PENDING", graphs=records,
                   ddk_id=ddk_id, omg_sha256=sha256_file(omg), air_manifest_sha256=sha256_file(manifest_path))

@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T002510Z-8234-33823c",
+  "baseline_commit": "5b08d12",
+  "status": "HOST_VALIDATED_NEW_GRAPH_BOARD_PENDING",
+  "scope": "Direct GE GDN rank/mask adaptation, optional selected-expert MoE, optional host GDN arithmetic diagnostic",
+  "provenance": "User supplied structure summary of another implementation that ran on this Kirin/Cpro board but has unresolved accuracy; not an accuracy golden",
+  "changes": [
+    "GDN removes batch=1 singleton carriers and static triangular BOOL Selects without changing chunk64 reduction or FP16 rounding boundaries",
+    "Selected-expert candidate gathers only top-k banks; same router and normalized weights; ascending expert-ID sequential FP16 merge; default static remains",
+    "Prepared/AIR/OMC manifests preserve expert_dispatch and execution metadata",
+    "GDN state observer default off; diagnostic compares same FP16-rounded inputs using host FP16 IR and upstream FP32 chunk reference"
+  ],
+  "unchanged": [
+    "production non-quantization FP16",
+    "ordinary RMSNorm single +1 and direct GDN/DFlash gamma",
+    "model weights, full vocabulary, target feature layers, ABI v2 and prefix-recompute scheduler"
+  ],
+  "host_validation": [
+    {
+      "path": "structure-integration.xml",
+      "sha256": "bf54f94d494bacd3df3c14031b9359f1c23b24c14a0178f2ca74ec4557222a8d",
+      "tests": 60,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "structure-final.xml",
+      "sha256": "c884d4a0d310cc7ccb2f243ca34c09718a9661ff5aafcdfb0a3902419fefcfcb",
+      "tests": 159,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "selected-default-tolerance.xml",
+      "sha256": "0d3d7806a3ac32980aeb9a4b146e034792b96b770c7d282d46465a4dda2e8d53",
+      "tests": 26,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "gdn-observer-final.xml",
+      "sha256": "de46bde07af5e34c4513cd22d316e90bea02f7fb41a090ee66e9aa143a0770a3",
+      "tests": 53,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "independent_review": "No blocking findings for structure, selected merge ordering or manifest propagation",
+  "full_architecture_plan": {
+    "static": {
+      "path": "full-structure-plan-static/plan.json",
+      "sha256": "0a0084409eb2cda1ab76bee4f011c49e048e1680fc768e85cf51d1fb0ac5b7b0"
+    },
+    "selected": {
+      "path": "full-structure-plan-selected/plan.json",
+      "sha256": "2228f311e109e36302718c1d2a665cd011eaa11d2fcd5f5a0d724400b6a8ac99"
+    },
+    "sequence_length": 8,
+    "target_ir_nodes": {
+      "static": 253003,
+      "selected": 73843
+    },
+    "scope": "Graph plans without loading weights; not compiled timing or memory evidence"
+  },
+  "precision_diagnostic": {
+    "status": "OPTIONAL_DEFERRED_BY_USER_PRIORITY",
+    "synthetic_observation": "Default S128/H2/K8/V8 sample finite; output/state relative L2 differences observed, no monotonic error-growth or actual-model root-cause conclusion",
+    "scope": "No device kernels or model-quality gate; host-only diagnostic, not required for board execution"
+  },
+  "source_sha256": {
+    "model/qwen35_moe_dflash/ge_target.py": "b089d7c8af02258aea7f9f25ad68ca3c202ee4aa93efd76954f2886ed9ae6eff",
+    "model/qwen35_moe_dflash/ge_moe.py": "2d9b8b56e240f1a7eee2dabd86daf28d19da7d48421dce918acf2e2b6c5afbe5",
+    "model/qwen35_moe_dflash/ge_export.py": "d0ecc2aafcf1a356a0b45a5d809159b2490b531945489b04c0e22d655592ec60",
+    "model/qwen35_moe_dflash/compile.py": "6bd0499d9d19ff2cb99786d3009bd3e3a92b0ccba11bf748fcd53fe1c27659ed",
+    "targets/cpro/scripts/direct_model_air.py": "d379461186c62e7fbed5c1a9d8ec1994ca26785c7b98443f32c5dd0d9af8000a",
+    "reference/gdn_precision.py": "34cb86d2edbc8ef703b944ae125d34e3f733c6e4766826ce03ac26199d4fe74d",
+    "targets/cpro/scripts/diagnose_gdn_precision.py": "390c92556e10d0c73717afebb5b3f18a934b70d2b494b42d83772110144afc1b"
+  },
+  "limitations": [
+    "New structure has no internal OMG or board results",
+    "Selected Gather/BMM is not native grouped GEMM and retains full expert banks; 48 MiB logical selected weights per token at full config is not a measured peak-memory bound",
+    "Native W4A8/I4ZN, incremental KV/GDN state and fused custom kernels remain unimplemented",
+    "Complete model quality and >=2x speedup remain unvalidated"
+  ],
+  "current_next_action": "Prioritize execution-only deployment of existing OMC; new structure compilation and GDN precision investigation are follow-up",
+  "guide": "docs/direct-model-air.md",
+  "experience_audit": "docs/experience.md"
+}

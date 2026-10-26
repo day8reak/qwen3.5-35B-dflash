@@ -134,18 +134,16 @@ def test_batch_with_nan_cannot_contaminate_another_batch(tmp_path):
 
 
 def test_observed_v1115_uses_flat_batches_and_original_output_shape(tmp_path):
-    target, _ = build_pair(*configurations(tiny=True), 8)
-    node = next(node for node in target.nodes if node.output.name == "v1115")
-    assert node.kind == "matmul"
-    assert [value.shape for value in node.inputs] == [(1, 2, 1, 64, 64), (1, 2, 1, 64, 8)]
-    graph = _graph(*(value.shape for value in node.inputs), name=node.output.name, **node.attrs)
+    # Preserve the historical board-reported shape regression independently of
+    # generated node IDs: the current GDN graph removes this redundant rank5.
+    graph = _graph((1, 2, 1, 64, 64), (1, 2, 1, 64, 8), name="v1115")
     records, _, outputs = _serialize_both(graph, tmp_path)
     bmm, = [record for record in records if record["type"] == "BatchMatMulV2"]
     assert [port["shape"] for port in bmm["inputs"]] == [(2, 64, 64), (2, 64, 8)]
-    assert records[outputs[0][0]]["outputs"][0]["shape"] == node.output.shape
+    assert records[outputs[0][0]]["outputs"][0]["shape"] == graph.outputs[0].shape
     rng = np.random.default_rng(1115)
     feeds = {name: rng.normal(0, .1, value.shape).astype(np.float16)
-             for name, value in zip(("left", "right"), node.inputs)}
+             for name, value in zip(("left", "right"), graph.inputs)}
     actual, = _execute(records, outputs, feeds)
     np.testing.assert_array_equal(actual, _reference(feeds["left"], feeds["right"]))
 

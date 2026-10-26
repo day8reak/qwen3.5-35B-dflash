@@ -1,8 +1,8 @@
 """Direct graph definition of the FP16 Qwen3.5 MoE text target.
 
-This module does not import PyTorch or TorchAir. It deliberately retains the
-existing recompute/static-all-expert deployment baseline, including chunk-64
-Gated DeltaNet evaluation order. It is not a sparse execution optimization.
+This module does not import PyTorch or TorchAir. It retains the recompute ABI
+and chunk-64 Gated DeltaNet evaluation order. The static all-expert baseline
+and an opt-in selected-expert Gather/BatchMatMul path share the same weights.
 Canonical checkpoint names are ``target.layers.*`` etc.; the bundle writer
 maps these to the checkpoint's ``model.language_model.*`` namespace.
 """
@@ -121,13 +121,19 @@ def _full_attention(b, x, prefix, c, mask, rotary):
     return b.linear(b.op("mul", mixed, b.op("sigmoid", gate)), prefix + ".o_proj.weight", h)
 
 
-def _chunk_gdn(b, query, key, value, decay, beta):
+def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None):
     """The installed Transformers torch_chunk_gated_delta_rule, FP16-lowered.
 
     Keep padding and reduction widths of 64 even for tiny sequences: replacing
     this with a token recurrence changes FP16 accumulation and requires a new
     accuracy audit. No nonzero/gather routing or data-dependent Python loops.
+    The target ABI has batch=1: drop only that singleton in chunk carriers so
+    elementwise/slice operations stay at rank four, not just the lowered BMMs.
+    An optional diagnostic list observes each chunk's updated recurrent state,
+    including the otherwise unused final update; the default graph is unchanged.
     """
+    if any(x.shape[0] != 1 for x in (query, key, value, decay, beta)):
+        raise ValueError("direct GDN chunk carriers require batch=1")
     sequence, heads, kdim, vdim = query.shape[1], query.shape[2], query.shape[3], value.shape[3]
     chunk = 64
     count = (sequence + chunk - 1) // chunk
@@ -145,41 +151,56 @@ def _chunk_gdn(b, query, key, value, decay, beta):
     query = b.op("scalar_mul", query, value=kdim**-0.5)
     v_beta = b.op("mul", value, b.view(beta, (1, heads, padded, 1)))
     k_beta = b.op("mul", key, b.view(beta, (1, heads, padded, 1)))
-    query, key, value, k_beta, v_beta = [b.view(x, (1, heads, count, chunk, x.shape[-1])) for x in (query, key, value, k_beta, v_beta)]
+    query, key, value, k_beta, v_beta = [b.view(x, (heads, count, chunk, x.shape[-1])) for x in (query, key, value, k_beta, v_beta)]
     # This scan sums -exp(A_log) * softplus(a + dt_bias), hence nonpositive
     # values. Mark the domain for the bounded FP16 prefix-reduction lowering.
-    decay = b.op("cumsum", b.view(decay, (1, heads, count, chunk)), axis=-1,
+    decay = b.op("cumsum", b.view(decay, (heads, count, chunk)), axis=-1,
                  scope="gdn_nonpositive")
-    lower = b.constant(np.tril(np.ones((chunk, chunk), dtype=bool)), "bool")
-    strict_lower = b.constant(np.tril(np.ones((chunk, chunk), dtype=bool), -1), "bool")
-    diff = b.op("sub", b.view(decay, (1, heads, count, chunk, 1)),
-                b.view(decay, (1, heads, count, 1, chunk)), shape=(1, heads, count, chunk, chunk))
-    zero = b.constant(0)
-    decay_mask = b.op("where", lower, diff, zero, shape=diff.shape)
-    decay_mask = b.op("where", lower, b.op("exp", decay_mask), zero, shape=diff.shape)
+    zero_row = b.constant(np.zeros((heads, count, 1, chunk), dtype=np.float16))
+
+    def triangular_mask(x, *, strict=False):
+        # These masks are compile-time lower triangles. Slice and concatenate
+        # retained values with positive zeros, preserving NaN/Inf and signed
+        # zero semantics without a BOOL Select/CastT path or arithmetic masking.
+        rows = []
+        for row in range(chunk):
+            kept = row if strict else row + 1
+            if kept == 0:
+                rows.append(zero_row)
+                continue
+            parts = [b.slice(b.slice(x, -2, row, 1), -1, 0, kept)]
+            if kept < chunk:
+                parts.append(b.slice(zero_row, -1, 0, chunk - kept))
+            rows.append(b.cat(parts, -1))
+        return b.cat(rows, -2)
+
+    diff = b.op("sub", b.view(decay, (heads, count, chunk, 1)),
+                b.view(decay, (heads, count, 1, chunk)), shape=(heads, count, chunk, chunk))
+    decay_mask = triangular_mask(diff)
+    decay_mask = triangular_mask(b.op("exp", decay_mask))
     attn = b.op("matmul", k_beta, key, shape=diff.shape, transpose_a=False, transpose_b=True)
-    attn = b.op("neg", b.op("where", strict_lower, b.op("mul", attn, decay_mask), zero, shape=diff.shape))
+    attn = b.op("neg", triangular_mask(b.op("mul", attn, decay_mask), strict=True))
     for i in range(1, chunk):
         row = b.slice(b.slice(attn, -2, i, 1), -1, 0, i)
         sub = b.slice(b.slice(attn, -2, 0, i), -1, 0, i)
-        row_flat = b.view(row, (1, heads, count, i))
-        product = b.op("mul", b.view(row_flat, (1, heads, count, i, 1)), sub, shape=sub.shape)
+        row_flat = b.view(row, (heads, count, i))
+        product = b.op("mul", b.view(row_flat, (heads, count, i, 1)), sub, shape=sub.shape)
         fixed = b.op("add", row_flat, b.reduce("reduce_sum", product, -2, False))
-        fixed = b.view(fixed, (1, heads, count, 1, i))
+        fixed = b.view(fixed, (heads, count, 1, i))
         full_row = b.cat([fixed, b.slice(b.slice(attn, -2, i, 1), -1, i, chunk-i)], -1)
         rows = [b.slice(attn, -2, 0, i), full_row]
         if i + 1 < chunk:
             rows.append(b.slice(attn, -2, i+1, chunk-i-1))
         attn = b.cat(rows, -2)
     attn = b.op("add", attn, b.constant(np.eye(chunk, dtype=np.float16)))
-    value = b.op("matmul", attn, v_beta, shape=(1, heads, count, chunk, vdim), transpose_a=False, transpose_b=False)
-    exp_decay = b.view(b.op("exp", decay), (1, heads, count, chunk, 1))
+    value = b.op("matmul", attn, v_beta, shape=(heads, count, chunk, vdim), transpose_a=False, transpose_b=False)
+    exp_decay = b.view(b.op("exp", decay), (heads, count, chunk, 1))
     k_cum = b.op("matmul", attn, b.op("mul", k_beta, exp_decay),
-                 shape=(1, heads, count, chunk, kdim), transpose_a=False, transpose_b=False)
+                 shape=(heads, count, chunk, kdim), transpose_a=False, transpose_b=False)
     state = b.constant(np.zeros((1, heads, kdim, vdim), dtype=np.float16))
     out = []
     for i in range(count):
-        take = lambda x: b.view(b.slice(x, 2, i, 1), (1, heads, *x.shape[3:]))
+        take = lambda x: b.view(b.slice(x, 1, i, 1), (1, heads, *x.shape[2:]))
         q_i, k_i, v_i = [take(x) for x in (query, key, value)]
         dec_i = take(decay_mask)
         scores = b.op("matmul", q_i, k_i, shape=(1, heads, chunk, chunk), transpose_a=False, transpose_b=True)
@@ -192,13 +213,15 @@ def _chunk_gdn(b, query, key, value, decay, beta):
                      shape=(1, heads, chunk, vdim), transpose_a=False, transpose_b=False)
         out.append(b.op("add", inter, b.op("matmul", scores, new_value,
                         shape=(1, heads, chunk, vdim), transpose_a=False, transpose_b=False)))
-        if i + 1 < count:
+        if i + 1 < count or state_outputs is not None:
             final = b.slice(g_i, -1, chunk-1, 1)
             factor = b.view(b.op("exp", b.op("sub", final, g_i, shape=g_i.shape)), (1, heads, chunk, 1))
             carry = b.op("mul", state, b.view(b.op("exp", final), (1, heads, 1, 1)))
             update = b.op("matmul", b.op("mul", k_i, factor), new_value,
                           shape=state.shape, transpose_a=True, transpose_b=False)
             state = b.op("add", carry, update)
+            if state_outputs is not None:
+                state_outputs.append(state)
     result = b.cat(out, 2)
     if padded > sequence:
         result = b.slice(result, 2, 0, sequence)
@@ -238,7 +261,7 @@ def _linear_attention(b, x, prefix, c):
     return b.linear(b.view(core, (1, s, vw)), prefix + ".out_proj.weight", h)
 
 
-def _moe(b, x, prefix, c):
+def _moe(b, x, prefix, c, expert_dispatch="static"):
     s, h, experts, topk = x.shape[1], c["hidden_size"], c["num_experts"], c["num_experts_per_tok"]
     middle, shared = c["moe_intermediate_size"], c["shared_expert_intermediate_size"]
     flat = b.view(x, (s, h))
@@ -249,20 +272,24 @@ def _moe(b, x, prefix, c):
     weights = b.op("div", values, b.reduce("reduce_sum", values, -1))
     gate_up = b.g.weight(prefix + ".experts.gate_up_proj", (experts, middle*2, h))
     down = b.g.weight(prefix + ".experts.down_proj", (experts, h, middle))
-    result = b.constant(np.zeros((s, h), dtype=np.float16))
-    for e in range(experts):
-        selected = b.op("eq", indices, b.constant(e, "int32"), dtype="bool")
-        route = b.op("where", selected, weights, b.constant(0), shape=weights.shape)
-        scale = b.reduce("reduce_sum", route, -1)
-        gate_weight = b.view(b.slice(gate_up, 0, e, 1), (middle*2, h))
-        expert_down = b.view(b.slice(down, 0, e, 1), (h, middle))
-        mixed = b.linear(flat, None, middle*2, weight=gate_weight)
-        gate, up = b.slice(mixed, -1, 0, middle), b.slice(mixed, -1, middle, middle)
-        expert = b.linear(b.op("mul", b.op("silu", gate), up), None, h, weight=expert_down)
-        contribution = b.op("mul", expert, scale)
-        active = b.op("gt", b.reduce("reduce_sum", b.op("cast", selected, dtype="int32"), -1), b.constant(0, "int32"), dtype="bool")
-        contribution = b.op("where", active, contribution, b.constant(0), shape=contribution.shape)
-        result = b.op("add", result, contribution)
+    if expert_dispatch == "selected":
+        from .ge_moe import selected_experts
+        result = selected_experts(b, flat, indices, weights, gate_up, down, middle)
+    else:
+        result = b.constant(np.zeros((s, h), dtype=np.float16))
+        for e in range(experts):
+            selected = b.op("eq", indices, b.constant(e, "int32"), dtype="bool")
+            route = b.op("where", selected, weights, b.constant(0), shape=weights.shape)
+            scale = b.reduce("reduce_sum", route, -1)
+            gate_weight = b.view(b.slice(gate_up, 0, e, 1), (middle*2, h))
+            expert_down = b.view(b.slice(down, 0, e, 1), (h, middle))
+            mixed = b.linear(flat, None, middle*2, weight=gate_weight)
+            gate, up = b.slice(mixed, -1, 0, middle), b.slice(mixed, -1, middle, middle)
+            expert = b.linear(b.op("mul", b.op("silu", gate), up), None, h, weight=expert_down)
+            contribution = b.op("mul", expert, scale)
+            active = b.op("gt", b.reduce("reduce_sum", b.op("cast", selected, dtype="int32"), -1), b.constant(0, "int32"), dtype="bool")
+            contribution = b.op("where", active, contribution, b.constant(0), shape=contribution.shape)
+            result = b.op("add", result, contribution)
     gate = b.linear(flat, prefix + ".shared_expert.gate_proj.weight", shared)
     up = b.linear(flat, prefix + ".shared_expert.up_proj.weight", shared)
     shared_out = b.linear(b.op("mul", b.op("silu", gate), up), prefix + ".shared_expert.down_proj.weight", h)
@@ -311,9 +338,13 @@ def _config(config, draft, sequence_length):
     return c
 
 
-def build_target(config, draft_config, sequence_length, *, head_chunk_rows=16):
+def build_target(config, draft_config, sequence_length, *, head_chunk_rows=16, expert_dispatch="static"):
     """Construct both target ABI outputs without importing a tensor framework."""
     c = _config(config, draft_config, sequence_length)
+    if expert_dispatch not in {"static", "selected"}:
+        raise ValueError("direct GE expert_dispatch must be static or selected")
+    if expert_dispatch == "selected" and c["num_experts"] > 2048:
+        raise ValueError("selected expert dispatch requires at most 2048 experts for exact FP16 ID ordering")
     if isinstance(head_chunk_rows, bool) or not isinstance(head_chunk_rows, int) or head_chunk_rows < 1:
         raise ValueError("head_chunk_rows must be a positive integer")
     s, h = sequence_length, c["hidden_size"]
@@ -343,7 +374,7 @@ def build_target(config, draft_config, sequence_length, *, head_chunk_rows=16):
                  if kind == "full_attention" else _linear_attention(b, normed, prefix + ".linear_attn", c))
         hidden = b.op("add", hidden, mixed)
         normalized = b.rms(hidden, prefix + ".post_attention_layernorm.weight", c["rms_norm_eps"])
-        hidden = b.op("add", hidden, _moe(b, normalized, prefix + ".mlp", c))
+        hidden = b.op("add", hidden, _moe(b, normalized, prefix + ".mlp", c, expert_dispatch))
         if index in draft_config.target_layer_ids:
             captures[index] = hidden
     hidden = b.rms(hidden, "target.norm.weight", c["rms_norm_eps"])
