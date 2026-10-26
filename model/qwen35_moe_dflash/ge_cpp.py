@@ -620,8 +620,10 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     must remain at the same absolute paths until OMG conversion has completed.
     Small constant arithmetic is evaluated with the original FP16 boundaries;
     bounded static Slice/Reshape operations copy their bytes before serialization.
-    Small finite FP16 K=1 MatMuls between direct constants use the oracle's
-    FP32 matmul and original FP16 output boundary. The legacy
+    The complete static target RoPE chain folds atomically through its final
+    cosine/sine views with the oracle's original FP16 boundaries. Standalone
+    direct-constant K=1 MatMuls fold only without live node consumers; no
+    partial constant prefix is introduced on a rejected region. The legacy
     fold_constant_arithmetic flag controls all of these folds.
     Descriptor-only tooling can disable folding when real weight payloads are
     unavailable; model export always enables it.

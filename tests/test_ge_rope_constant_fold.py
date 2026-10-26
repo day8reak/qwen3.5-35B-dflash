@@ -1,10 +1,12 @@
-"""Whole-pair host regressions for the constant target RoPE K=1 MatMul.
+"""Whole-pair regressions for complete, atomic target RoPE constant folding.
 
 These checks cover graph construction and the existing semantic oracle. They
 do not establish compiler partitioning, target Load success or NPU placement.
 """
 from copy import deepcopy
 import pickle
+from pathlib import Path
+import re
 
 import numpy as np
 import pytest
@@ -14,6 +16,7 @@ from qwen35_moe_dflash.ge_cpp import emit_cpp
 from qwen35_moe_dflash.ge_eval import evaluate
 from qwen35_moe_dflash.ge_export import build_pair, configurations, weight_shapes
 from qwen35_moe_dflash.ge_weights import tiny_weights
+from qwen35_moe_dflash.ge_recipe_read import read_recipe
 from qwen35_moe_dflash.hashing import sha256_file
 
 
@@ -57,39 +60,42 @@ def tiny_payloads(tmp_path_factory):
 
 
 @pytest.mark.parametrize("gdn_policy,emission_policy", _POLICIES)
+@pytest.mark.parametrize("storage", ["recipe", "inline"])
 def test_actual_pair_emission_folds_target_rope_and_preserves_abi_and_external_weights(
-        tmp_path, monkeypatch, tiny_payloads, gdn_policy, emission_policy):
+        tmp_path, monkeypatch, tiny_payloads, gdn_policy, emission_policy, storage):
     target_config, draft_config, _, paths = tiny_payloads
     graphs = build_pair(target_config, draft_config, 8, gdn_indexed_copy=gdn_policy)
     originals = [pickle.dumps(graph) for graph in graphs]
     hashes = {key: sha256_file(path) for key, path in paths.items()}
     target_rope = _rope_matmul(graphs[0])
     original_fold = ge_constants.fold_constants
-    original_emit = ge_recipe.emit_recipe_cpp
+    original_validate = ge_recipe._validate
     captured = []
 
-    def record_emit(records, name, inputs, outputs, recipe_dir):
+    def record_validate(records, name, inputs, outputs):
         captured.append((deepcopy(records), list(inputs), list(outputs)))
-        return original_emit(records, name, inputs, outputs, recipe_dir)
+        return original_validate(records, name, inputs, outputs)
 
     def previous_folding(graph, *args, **kwargs):
-        # Retain the pre-existing unary/view folds to isolate the new K=1
-        # change from their already established external-weight pruning.
+        # Retain pre-existing unary/view folds, excluding the complete target
+        # RoPE region rather than recreating the previous unsafe partial fold.
         folded = original_fold(graph, *args, **kwargs)
-        for node in graph.nodes:
-            if node.kind == "matmul":
-                folded.pop(node.output.name, None)
+        if graph.name == "target":
+            for index in range(10, 17):
+                folded.pop(f"v{index}", None)
         return folded
 
-    monkeypatch.setattr(ge_recipe, "emit_recipe_cpp", record_emit)
+    monkeypatch.setattr(ge_recipe, "_validate", record_validate)
     for graph in graphs:
         monkeypatch.setattr(ge_constants, "fold_constants", previous_folding)
-        emit_cpp(graph, paths, external_weights=True,
-                 recipe_dir=tmp_path / f"{graph.name}-before", **emission_policy)
+        before_cpp = emit_cpp(graph, paths, external_weights=True,
+                 recipe_dir=tmp_path / f"{graph.name}-before" if storage == "recipe" else None,
+                 **emission_policy)
         before, before_inputs, before_outputs = captured[-1]
         monkeypatch.setattr(ge_constants, "fold_constants", original_fold)
-        emit_cpp(graph, paths, external_weights=True,
-                 recipe_dir=tmp_path / f"{graph.name}-after", **emission_policy)
+        folder = tmp_path / f"{graph.name}-after"
+        after_cpp = emit_cpp(graph, paths, external_weights=True,
+                 recipe_dir=folder if storage == "recipe" else None, **emission_policy)
         after, after_inputs, after_outputs = captured[-1]
 
         def emitted_abi(records, inputs, outputs):
@@ -107,19 +113,46 @@ def test_actual_pair_emission_folds_target_rope_and_preserves_abi_and_external_w
         assert before_files and after_files == before_files
         if graph.name == "target":
             old = next(row for row in before if row["name"] == target_rope.output.name)
-            new = next(row for row in after if row["name"] == target_rope.output.name)
             assert old["type"] == "BatchMatMulV2"
-            assert new["type"] == "Const"
-            assert new["outputs"] == old["outputs"]
-            left, right = [graph.constants[value.name].astype(np.float32)
-                           for value in target_rope.inputs]
-            expected = np.matmul(left, right).astype("<f2")
-            assert new["constant"]["data"] == expected.tobytes()
-            assert not new["inputs"]
-            assert not {value.name for value in target_rope.inputs} & {row["name"] for row in after}
+            # Independent neutral-IR evaluation of every original table node,
+            # including FP16 rounding before either trigonometric function.
+            table_graph = deepcopy(graph)
+            table_graph.nodes = [node for node in table_graph.nodes
+                                 if node.output.name in {f"v{i}" for i in range(10, 17)}]
+            assert [node.output.name for node in table_graph.nodes] == [f"v{i}" for i in range(10, 17)]
+            table_graph.weights = {}
+            table_graph.outputs = [table_graph._values["v14"], table_graph._values["v16"]]
+            tables = evaluate(table_graph, {value.name: np.zeros(value.shape, dtype=np.int32)
+                                            for value in table_graph.inputs})
+            forbidden = {"v8", "v9", "v10", "v11", "v12", "v13", "v15"}
+            assert not forbidden & {row["name"] for row in after}
+            assert not any(row["name"].startswith(f"__ge/{name}/") for name in forbidden | {"v14", "v16"}
+                           for row in after)
+            for name, expected in zip(("v14", "v16"), tables):
+                new = next(row for row in after if row["name"] == name)
+                assert new["type"] == "Const" and not new["inputs"]
+                assert new["outputs"] == [{"port": "y", "shape": [1, 1, 8, 4], "dtype": "float16"}]
+                assert expected.nbytes == 64
+                assert new["constant"]["data"] == expected.tobytes()
+                if storage == "recipe":
+                    serialized = next(row for row in read_recipe(folder / "graph.recipe")["records"]
+                                      if row["name"] == name)
+                    const = serialized["constant"]
+                    payload = Path(const["path"]).read_bytes()
+                    assert const["size"] == 64
+                    assert payload[const["offset"]:const["offset"] + const["size"]] == expected.tobytes()
+                else:
+                    assert f'Op("{name}", "Const"' in after_cpp
+                    pattern = r'SetConst\(ops\[\d+\], Desc\(std::vector<int64_t>\{1,1,8,4\}, ge::DT_FLOAT16\), std::vector<uint8_t>\{([^}]*)\}\);'
+                    assert expected.tobytes() in [bytes(int(x) for x in payload.split(","))
+                                                  for payload in re.findall(pattern, after_cpp)]
+            if storage == "inline":
+                assert not any(f'Op("{name}",' in after_cpp for name in forbidden)
         else:
             assert original_fold(graph, paths, set(graph._values)) == {}
             assert after == before
+            if storage == "inline":
+                assert after_cpp == before_cpp
             frequency, = [node for node in graph.nodes if node.kind == "mul"
                           and node.output.shape == (1, 12, 4)
                           and any(value.name in graph.constants for value in node.inputs)]

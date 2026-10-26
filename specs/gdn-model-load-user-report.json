@@ -404,9 +404,10 @@
       "board_status": "NEW_GRAPH_NOT_RUN"
     }
   },
-  "next_action": "Pull source and follow fresh GE_ROPE_MODEL_RUN export/compile/build/execution-only chain in docs/hdc-board-run.md; reuse prepared/reference and preserve original OMC/inspection artifacts.",
+  "next_action": "After pulling the fix, export existing prepared/reference into fresh GE_ROPE_CHAIN_RUN, compile with the same internal DDK, build runner and execute --execution-only. No repeat inspection conversion or operator batch.",
   "full_model_execution": "FAILED_AT_TARGET_LOAD",
   "full_model_accuracy": "DEFERRED_NOT_EVALUATED",
   "performance": "NOT_MEASURED",
-  "cpu_inspection_tool_verification": "specs/omc-cpu-inspection-verification.json"
+  "cpu_inspection_tool_verification": "specs/omc-cpu-inspection-verification.json",
+  "followup": "specs/rope-model-compile-user-report.json"
 }

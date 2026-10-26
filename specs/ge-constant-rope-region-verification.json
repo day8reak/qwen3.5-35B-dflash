@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T104356Z-23819-4eead0",
+  "baseline_commit": "ceeee6b",
+  "status": "HOST_COMPLETE_REGION_REGRESSIONS_PASSED_INTERNAL_COMPILE_PENDING",
+  "scope": "Atomic host folding of the exact static target RoPE region through final cosine/sine views; preserves neutral IR FP16 boundaries. No internal OMG or board execution.",
+  "trigger": {
+    "user_report": "specs/rope-model-compile-user-report.json",
+    "finding": "The v10-only fold left static Transpose/Concat/Cos/Sin/Reshape in the emitted graph. User target OMG then reported Permute support failure and terminal v16 Reshape PreBuild failure. Their direct causal relationship remains unresolved.",
+    "prior_verification_gap": "Previous regression asserted only v10=Const and whole-host numerical agreement. It did not require removal of the complete static consumer chain or validate final endpoint serialized payloads."
+  },
+  "implementation": {
+    "region": [
+      "direct-constant finite FP16 K=1 MatMul",
+      "transpose [0,2,1]",
+      "concat the same transposed value twice along last axis",
+      "Cos plus final reshape",
+      "Sin plus final reshape"
+    ],
+    "recognition": "By edges, exact allowed attributes, tensor descriptors and live consumers, not node names. Internal values may not escape as outputs or extra consumers. Terminal consumers must transitively depend on graph.inputs, or the terminals may be graph outputs.",
+    "evaluation": "FP32 MatMul->FP16; transpose/concat byte copies; separate FP32 Cos/Sin of those rounded FP16 angles->FP16; final reshape byte copies. All seven values staged before publication.",
+    "budgets": "Every input/output cap and sum of seven retained outputs checked before any input payload access. Tiny S8 uses384B retained intermediate budget and128B final tables; full configuration S8 uses6144B and2048B respectively.",
+    "fallback": "No partial seed folding if region matching, budget or finite checks fail. Existing malformed-contract checks may raise. Independent K=1 fold now requires no live node consumers.",
+    "preserved": "No new external weight reads; no generic checkpoint-derived trig evaluation; unchanged source IR, weights, runtime ABI, compiler options and library deployment. Dynamic draft RoPE remains runtime."
+  },
+  "validation": {
+    "unique_outcomes": {
+      "passed": 302,
+      "skipped": 4,
+      "failed": 0
+    },
+    "junit": [
+      {
+        "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T104356Z-23819-4eead0/rope-region-focused-tests.xml",
+        "sha256": "155dbe037accefa7e354feafcf6025dbdec305b1d328144bcb136e2dacf3cc26"
+      },
+      {
+        "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T104356Z-23819-4eead0/rope-pair-checked.xml",
+        "sha256": "d4308ca1397211c996592924a33d1dea3ece967fa7254f1398725d9973acf39f"
+      },
+      {
+        "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T104356Z-23819-4eead0/ge-regression.xml",
+        "sha256": "9590dbf48ab065a1945e630dd45016c2d6d0274324d9ad40704a3c74f92a2a61"
+      }
+    ],
+    "tests": "Complete region per-node host bytes for varied widths/sequence and renamed nodes; FP16-before-trig rounding-sensitive .7*7; atomic384/383 and64/63 budgets before payload; malformed contracts and unknown attrs; extra fanout/public internal outputs; static checkpoint consumers; dynamic/external seeds; nonfinite operands/results.",
+    "actual_emission": "Both recipe and inline for default and matmul/compact/gather policies. v14/v16 become FP16 Const [1,1,8,4],64B each. Actual graph.recipe offsets/sizes and constants.bin payloads match the original neutral subgraph oracle. Inline SetConst bytes match. v8/v9, v10/v11/v12/v13/v15 and all seven nodes helper descriptors are absent. ABI and all FileConstant records/payloads remain unchanged; draft emitted records and inline C++ match baseline.",
+    "complete_pair": "Target and downstream draft output bytes agree at valid lengths1/3/8 under native/gather source construction.",
+    "skips": "Two GE header tests require Q35_GE_TEST_INCLUDE; two native GE Save/Load tests require Q35_GE_TEST_ROOT. Actual native GE serialization was not verified.",
+    "docs": {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T104356Z-23819-4eead0/docs-verification.json",
+      "sha256": "963cf5dc1dfef110c331a0d25e11cdadb980d08f45e22851f338044638b009bb"
+    },
+    "independent_review": "Atomic checks and original boundaries reviewed without material production blocker. Integration test fixture ownership issues corrected before final passing run."
+  },
+  "source_configuration_audit": {
+    "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T104356Z-23819-4eead0/actual-configuration-rope-fold.json",
+    "sha256": "dc3767c440e15858d21f0c1048990a79a4bc57d367672f3387c03aa92d2670d6"
+  },
+  "source_shape_audit": {
+    "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T104356Z-23819-4eead0/rope-chain-source-audit.json",
+    "sha256": "26b0f4f643126686058491165afd58fd10034f2222ad6d3fa0ffb33615e7a8e6"
+  },
+  "source_sha256": {
+    "model/qwen35_moe_dflash/ge_constants.py": "bf9de48ecabb58c37630e9c5cb5c90821610a4bd559feb341501423d62863457",
+    "model/qwen35_moe_dflash/ge_cpp.py": "f7691ec2d1fe10c21597af32dfe21367cea86c1c9aa384062d4f2ec333946da9",
+    "model/qwen35_moe_dflash/ge_eval.py": "735faa0a965fa1c3598272392d452b49f86d8c4a80af86b36cb0f2043095a421",
+    "tests/test_ge_constant_matmul.py": "bf454047f97442daba67f34a6dbce813ea4066725af4f93ff9863924f8305dd4",
+    "tests/test_ge_constant_rope_region.py": "2854ce3bc25f4bba74973f8c9b3bdec76ab6b7dae08173d186642ed78c170b24",
+    "tests/test_ge_rope_constant_fold.py": "2fe4f379148d06dc8d375a15f2faf3e8d6fb66e83db2df89b2add5b1c2ccba3f"
+  },
+  "limits": [
+    "User compiler log was pasted, not independently retrieved; actual remote source revision and artifact hashes were not reported.",
+    "The compiler internal transformation causing v16 size mismatch is not established.",
+    "Host oracle consistency does not prove device trig/subnormal/rounding parity.",
+    "No new AIR/OMC was compiled with the private internal DDK and no new Load/Process has run.",
+    "Full-weight accuracy and DFlash>=2x remain unvalidated."
+  ],
+  "experience_audit": {
+    "lesson": "A source-equivalent partial constant rewrite can expose an unsupported compiler constant-evaluation suffix. Validate the complete region and final serialized consumer boundary; make eligibility and budget all-or-none.",
+    "updated_checks": [
+      "tests/test_ge_constant_rope_region.py",
+      "tests/test_ge_rope_constant_fold.py"
+    ],
+    "capture": "docs/experience.md",
+    "shared_skills_changed": false,
+    "rejected_promotions": [
+      "No target compile pass",
+      "No device runtime placement or accuracy pass",
+      "No universal Permute-to-Reshape causal claim"
+    ]
+  },
+  "next_action": "Fresh GE_ROPE_CHAIN_RUN export/compile/build/execution-only chain in docs/hdc-board-run.md, with existing prepared/reference and the same user DDK/HDC environment."
+}

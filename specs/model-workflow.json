@@ -280,7 +280,7 @@
     },
     "board_execution_bringup": {
       "run_id": "20261026T002510Z-8234-33823c",
-      "status": "USER_REPORTED_TARGET_CPUCL_CAST_INIT_FAILED",
+      "status": "USER_REPORTED_TARGET_OMG_COMPILE_FAILED",
       "scope": "New direct-GE candidate export/compile/execution chain reusing existing tiny prepared weights; not a full-weight model",
       "runtime_deployment": "Private library set excludes DDK HCL pair; process path includes /vendor/lib64/chipsetsdk",
       "runner_changes": [
@@ -290,13 +290,13 @@
       "accuracy": "DEFERRED_NOT_EVALUATED",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "Follow docs/hdc-board-run.md constant-RoPE fix chain: export existing prepared pair with matmul/compact/gather to fresh GE_ROPE_MODEL_RUN; compile with same DDK, build runner and run --execution-only.",
-      "requires": "Existing prepared pair and reference, updated source, same active GE/DDK/HDC environment and a fresh GE_ROPE_MODEL_RUN output root.",
+      "next_command": "Follow docs/hdc-board-run.md complete static RoPE chain: export existing prepared pair with matmul/compact/gather to fresh GE_ROPE_CHAIN_RUN; compile with same DDK, build runner and run --execution-only.",
+      "requires": "Existing prepared pair and reference, updated source, same active GE/DDK/HDC environment and a fresh GE_ROPE_CHAIN_RUN output root.",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "User decoded all CPU tasks. target/SubGraph_0/insert_cast_4 has src_dtype=0,dst_dtype=1 but protobuf input/output dtype=2; producer v10/BatchMatMul has two constant FP16 inputs [1,2,1] and [1,1,8]. Same-OMC main Cast controls use attr0/proto1 and attr1/proto2. Source v10 is static RoPE frequency. Bounded K=1 constant folding removes that producer from emitted graph; board recovery remains unverified. Old candidate HiLog PID is still unbound.",
-      "followup_run_id": "20261026T101534Z-22567-a7a57c",
-      "followup_evidence": "specs/gdn-model-load-user-report.json",
+      "current_failure": "User ge-rope-model-20261026-190121 export succeeded, but target OMG failed. Prior v10-only constant fold leaves static RoPE Permute/Concat/Cos/Sin/Reshape; log reports Permute DT_FLOAT-only and terminal v16 Reshape PreBuild constant32/data4 mismatch. Source v15/v16 shapes agree on32elements, so no direct source shape mismatch or first-message causality is asserted. New atomic whole-region fold is pending internal OMG/board verification.",
+      "followup_run_id": "20261026T104356Z-23819-4eead0",
+      "followup_evidence": "specs/rope-model-compile-user-report.json",
       "source_contract_verification": "specs/ge-dtype-contract-verification.json",
       "compiler_main_partitions": {
         "target": {
@@ -320,6 +320,13 @@
         "run_id": "20261026T101534Z-22567-a7a57c",
         "status": "HOST_ORACLE_AND_EXPORT_REGRESSIONS_PASSED_BOARD_PENDING",
         "evidence": "specs/ge-constant-matmul-verification.json",
+        "device_status": "NEW_GRAPH_NOT_RUN",
+        "user_followup": "SOURCE_CANDIDATE_TARGET_COMPILE_FAILED"
+      },
+      "constant_rope_region_fix": {
+        "run_id": "20261026T104356Z-23819-4eead0",
+        "status": "HOST_COMPLETE_REGION_REGRESSIONS_PASSED_INTERNAL_COMPILE_PENDING",
+        "evidence": "specs/ge-constant-rope-region-verification.json",
         "device_status": "NEW_GRAPH_NOT_RUN"
       }
     }
@@ -405,6 +412,6 @@
     "accuracy_work": "DEFERRED_NOT_WAIVED",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
     "guide": "docs/hdc-board-run.md",
-    "next_action": "Follow docs/hdc-board-run.md constant-RoPE fix chain: export existing prepared pair with matmul/compact/gather to fresh GE_ROPE_MODEL_RUN; compile with same DDK, build runner and run --execution-only. Host equivalence does not close internal OMG, target/draft execution, accuracy or DFlash >=2x gates."
+    "next_action": "Follow docs/hdc-board-run.md complete static RoPE chain: export existing prepared pair with matmul/compact/gather to fresh GE_ROPE_CHAIN_RUN; compile with same DDK, build runner and run --execution-only. Host oracle agreement does not close internal compile, execution, model accuracy or DFlash >=2x gates."
   }
 }

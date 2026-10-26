@@ -480,3 +480,14 @@ run：`20261026T101534Z-22567-a7a57c`。用户实际完成CPU切片解码：targ
 698368组有限FP16乘积的FP32/FP64 MatMul再转FP16结果一致，但直接乘法有63497组零符号不同，因此拒绝Mul快捷替换。该证据仅限定主机oracle，不能推断设备FTZ、舍入或加载恢复。新回归检查实际默认及matmul/compact/gather导出，target v10成为32字节Const，draft记录、ABI和外部权重保持一致；有效长度1/3/8的完整target及下游draft输出逐字节相同。
 
 249项不重复主机回归通过，4项跳过；修改文档的42段shell通过bash -n。验证及源码哈希见`specs/ge-constant-matmul-verification.json`。经验固化在本模型及可执行回归，无共享技能或DDK变更。下一步复用prepared/reference，在新目录重新导出、编译和execution-only验证；不重跑原探针/诊断转换。新内部OMG、板端Load/Process、完整精度与DFlash至少2倍均未验证。
+
+
+## 2026-10-26：部分RoPE常量折叠暴露编译器静态链限制，改为区域原子折叠
+
+run：`20261026T104356Z-23819-4eead0`。用户ge-rope-model-20261026-190121导出成功，target OMG失败，后续构建和上板未执行。日志先报FP16 Permute常量处理不支持，终端v16/Reshape PreBuild报constant32/data size4。源码v15与v16均为32元素，不能断言源码形状错误或首条诊断与末条错误的直接因果。上一轮仅折叠v10的host一致性验证未覆盖剩余静态消费者，这是上轮验证范围的缺口。用户原始产物未在本地取得，记录见specs/rope-model-compile-user-report.json。
+
+修复按拓扑识别七节点MatMul→Transpose→重复Concat→Cos/Sin→两个Reshape，完整检查边界、属性、形状、有限值及预算后一次发布。内部节点有额外消费者或成为图输出、末端有静态消费者、预算不足时均不发布部分结果；非法合同仍可由原校验拒绝。末端动态性沿graph.inputs依赖传播，不能把checkpoint权重派生节点当作动态边界。普通K1只在没有存活节点消费者时独立折叠。保留每个FP16边界，不把FP32未舍入乘积直接送三角函数，也不扩展通用的权重三角函数读取。
+
+实际默认与matmul/compact/gather的recipe及inline导出均确认两张最终[1,1,8,4]、各64B的常量表，七节点及其辅助算子全部消失；检查了graph.recipe与constants.bin真实偏移、大小及字节。整图ABI、FileConstant记录/文件、draft动态导出保持，完整target及下游draft在长度1/3/8的oracle输出字节相同。实际full/selected配置S8在不读取checkpoint的情况下也匹配完整区域（6144B预算），但这不是全权重推理。
+
+302项不重复主机测试通过，4项实际GE测试因资源未配置跳过；42段修改文档shell通过bash -n。验证和源码哈希见specs/ge-constant-rope-region-verification.json。经验固化到本模型的原子区域及序列化回归，无共享技能/DDK更改。新内部OMG、板端双图执行、完整精度及DFlash至少2倍仍未验证；下一步复用prepared/reference在全新GE_ROPE_CHAIN_RUN执行一次完整链路。

@@ -19,52 +19,52 @@ hdc -t "$SN" -s "$BIP" ...
 
 <a id="当前读取-gdn-整图加载失败证据"></a>
 
-## 当前：折叠静态 RoPE 频率后重新验证双图
+## 当前：完整静态 RoPE 链折叠后重新验证双图
 
-用户`ge-gdn-model-20261026-171048`已完成导出和编译，target的Load返回1。主图分区为target NPU5/CPU6、draft NPU3/CPU4，均没有rollback。`--reject-cpu-fallback`检查显式分区超限回退，不表示CPU分区为0。Load失败发生在IO描述查询和Process之前，draft尚未加载。
+用户`ge-rope-model-20261026-190121`导出成功，target OMG编译失败，后续draft编译、runner构建和上板未执行。上一版只把`v10/MatMul`折叠为常量，留下的静态RoPE链仍进入编译器：日志先报Permute只支持DT_FLOAT，最终`v16/Reshape`的PreBuild打印`constant:32, data size:4`并失败。两条诊断之间的直接因果关系尚未确定；源码的v15和v16均为32个FP16元素，并没有构造层面的32→4尺寸变更。
 
-用户随后完成`inspect-omc`和`inspect-omc-cpu`，实际解码了target的6个、draft的4个CPU子图。target CPU子图有18个Cast，draft有6个。失败节点现在可直接从序列化CPU图定位：
+本轮修复覆盖完整区域：
 
-| 字段 | target / SubGraph_0 / insert_cast_4 |
-| --- | --- |
-| CPU切片 | offset=5093586，bytes=6090 |
-| Cast属性 | `src_dtype=0`，`dst_dtype=1` |
-| 输入与输出protobuf描述 | 均为dtype=2，shape `[1,2,8]`，32字节 |
-| 生产者 | `v10:0`，`BatchMatMul` |
-| 生产者输入 | 两个常量，`[1,2,1] × [1,1,8]`，均为FP16 |
+| 节点 | 操作 | tiny形状 | 字节 |
+| --- | --- | --- | ---: |
+| v10 | MatMul | `[1,2,8]` | 32 |
+| v11 | Transpose | `[1,8,2]` | 32 |
+| v12 | 同一输入拼接两次 | `[1,8,4]` | 64 |
+| v13 / v15 | Cos / Sin | `[1,8,4]` | 各64 |
+| v14 / v16 | 两个最终Reshape | `[1,1,8,4]` | 各64 |
 
-Cast属性与protobuf描述使用不同枚举，不能直接比较原始数字。这里的对照来自同一OMC：main图的cast5使用属性`1→0`、描述`2→1`，cast6使用属性`0→1`、描述`1→2`；CPU cast4却把属性src=0接在描述dtype=2的生产者上。这与旧HiLog中的`srcType=0/inputDataType=1`检查失败相符。旧候选PID13111/03-09仍未独立绑定到本次运行；内部哪个编译阶段造成该不一致仍未确定。CPU任务内descriptor的`device_type=NPU`也不证明实际NPU执行。
+导出器按拓扑、属性、形状和消费者识别区域，不依赖v节点名。FP32 MatMul后先回到原FP16边界；Transpose、Concat和Reshape只复制元素；Cos/Sin分别对已舍入的FP16角度转FP32计算，再回到FP16。最终recipe及inline C++仅保留v14/v16两张常量表，原静态计算链及其辅助节点被剪除。原双图ABI、权重和动态draft计算保持。
 
-源码映射确认`v10`是`ge_target.py`开头的RoPE频率。导出器现在对**两个输入均为直接常量、有限FP16、K=1且满足预算**的MatMul使用原参考的FP32 `np.matmul`，再保留原FP16舍入边界。当前tiny target只增加32字节折叠结果，`v10`导出为Const；其后的Transpose、Concat、Cos/Sin保持原路径。不能直接换成逐元素乘法，因为负零行为不同。动态输入、外部权重、K>1、非有限值及超预算情况继续原GE路径。
+整段先检查所有输入/输出大小及七个输出的累计预算（tiny为384字节），数值计算完成后才一次发布。预算不足、非有限值、未知属性、额外内部消费者或静态末端分支会保留整段原图；非法形状也不会发布部分折叠结果，并可能由既有合同校验直接拒绝。不会退回“只折叠v10”。普通K=1常量MatMul也仅在没有存活节点消费者时单独折叠。没有扩展到任意权重派生的三角函数计算。超出匹配范围保留原路径并不表示原路径已经能够上板。
 
-源码同类审计发现当前tiny/full target各只有这一个全常量MatMul；draft的RoPE位置依赖运行时输入，保持动态。现有118个算子探针无全常量MatMul。这个源代码审计不等于逐一确认所有24个已编译CPU Cast；用户本次只展开了cast4的详细字段。主机验证见`specs/ge-constant-matmul-verification.json`，新候选的内部OMG编译和板端恢复仍待验证。
+主机验证见`specs/ge-constant-rope-region-verification.json`：检查最终recipe存储的端点形状、64字节载荷及内容，检查inline C++，并比较完整target及下游draft的参考输出。实际GE序列化、内部OMG编译和新图Load/Process仍需现场验证。
 
-保留旧OMC及两个inspection目录。复用已有prepared/reference，在新目录一次验证修复后的完整链路；无需重跑算子探针或诊断转换：
+保留原`GE_ROPE_MODEL_RUN`及更早的OMC/inspection目录，复用prepared/reference，在新目录执行完整链路：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only &&
 export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py" &&
-export GE_ROPE_MODEL_RUN="$AI_RUN_DIR/ge-rope-model-$(date +%Y%m%d-%H%M%S)" &&
+export GE_ROPE_CHAIN_RUN="$AI_RUN_DIR/ge-rope-chain-$(date +%Y%m%d-%H%M%S)" &&
 python3 "$GE_MODEL_TOOL" export \
   --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
   --fp16-reductions matmul --fp16-row-mul compact --gdn-indexed-copy gather \
-  --output "$GE_ROPE_MODEL_RUN/air" &&
+  --output "$GE_ROPE_CHAIN_RUN/air" &&
 python3 "$GE_MODEL_TOOL" compile \
-  --air "$GE_ROPE_MODEL_RUN/air" \
+  --air "$GE_ROPE_CHAIN_RUN/air" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$GE_ROPE_MODEL_RUN/omc" --reject-cpu-fallback &&
+  --output "$GE_ROPE_CHAIN_RUN/omc" --reject-cpu-fallback &&
 python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$GE_ROPE_MODEL_RUN/hiai-build" &&
+  --output "$GE_ROPE_CHAIN_RUN/hiai-build" &&
 python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
-  --omc "$GE_ROPE_MODEL_RUN/omc" \
-  --runner "$GE_ROPE_MODEL_RUN/hiai-build/build/qwen35_dflash_hiai" \
+  --omc "$GE_ROPE_CHAIN_RUN/omc" \
+  --runner "$GE_ROPE_CHAIN_RUN/hiai-build/build/qwen35_dflash_hiai" \
   --reference "$GE_BOARD_RUN/reference.json" \
-  --output "$GE_ROPE_MODEL_RUN/board" --execution-only
+  --output "$GE_ROPE_CHAIN_RUN/board" --execution-only
 ```
 
-本轮改变的是导出图，需要重新导出、编译；直接重放旧OMC仍会保留原节点。新runner会记录probe/benchmark PID并回收退出码、输出及日志；实际运行位置、完整模型精度及性能仍需各自验证。若仍失败，保留新`board/benchmark.stderr`、`board/result.json`及候选HiLog即可继续定位，不提前删除Cast或改写二进制OMC。
+这次必须重新导出AIR并编译新OMC；无需重新prepare、诊断转换或算子探针。若失败，保留新编译日志或板端`benchmark.stderr`、`result.json`及候选HiLog继续定位。完整用户回传见`specs/rope-model-compile-user-report.json`。
 
-原诊断工具仍可用于其他已有产物：`inspect-omc-cpu`复用哈希核验的OMC和mode1 JSON，读取选定DDK schema，验证主图结构后按CPU GraphOp offset/size解码完整切片，不调用OMG或扫描猜偏移。工具验证见`specs/omc-cpu-inspection-verification.json`；用户证据与历史边界见`specs/gdn-model-load-user-report.json`。
+更早的`ge-gdn-model-20261026-171048`已完成双图编译，target Load失败。CPU任务解码确认`SubGraph_0/insert_cast_4`输入来自静态v10/BatchMatMul；Cast源属性与同OMC对照描述不一致。旧HiLog PID仍未独立绑定，内部缺陷所属编译pass未确定。主图NPU5/CPU6与NPU3/CPU4是编译分区记录；`--reject-cpu-fallback`检查显式分区超限回退，不保证CPU分区为0，也不证明实际NPU执行。历史证据保留在`specs/gdn-model-load-user-report.json`。
 
 <a id="当前将已验证的-gdn-gather-复制接入整图"></a>
 

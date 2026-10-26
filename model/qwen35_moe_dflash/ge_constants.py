@@ -1,7 +1,7 @@
 """Bounded host folding of small, static FP16 arithmetic for direct GE.
 
-The primitive unary arithmetic, byte-preserving views, and bounded finite
-K=1 matmuls between direct graph constants below are eligible.
+The primitive unary arithmetic, byte-preserving views, complete static RoPE
+regions, and standalone K=1 constant matmul outputs below are eligible.
 Large checkpoint tensors and their expert slices stay on the external-weight path.
 Host arithmetic uses FP32 intermediates, followed by the original FP16 boundary
 at every node, just like the neutral IR oracle. This does not assert bitwise
@@ -46,14 +46,8 @@ def _view_index(node, source):
     return tuple(slice(int(start), int(start + size)) for start, size in zip(starts, resolved))
 
 
-def _constant_k1_matmul(graph, node, *, max_tensor_bytes, remaining_bytes):
-    """Fold only small, direct constant products, with the IR matmul boundary.
-
-    Neither checkpoint weights nor previously folded weight expressions are
-    eligible. K=1 avoids reassociating a reduction, but multiplying the arrays
-    directly is still unsuitable: matmul and multiply can differ on signed
-    zeros. Use the oracle's FP32 matmul and single FP16 output conversion.
-    """
+def _constant_k1_plan(graph, node, *, max_tensor_bytes, remaining_bytes):
+    """Check a direct constant product without accessing either payload."""
     value = node.output
     if (value.dtype != "float16" or any(source.dtype != "float16"
             or source.name not in graph.constants for source in node.inputs)):
@@ -89,6 +83,22 @@ def _constant_k1_matmul(graph, node, *, max_tensor_bytes, remaining_bytes):
     sizes = tuple(math.prod(tensor.shape) * _FP16.itemsize for tensor in (left, right, value))
     if any(size > max_tensor_bytes for size in sizes) or sizes[2] > remaining_bytes:
         return None
+    return transpose
+
+
+def _constant_k1_matmul(graph, node, *, max_tensor_bytes, remaining_bytes):
+    """Evaluate an approved seed with the oracle's FP32 matmul/FP16 boundary.
+
+    Neither checkpoint weights nor previously folded weight expressions are
+    eligible. K=1 avoids reassociating a reduction, but multiplying the arrays
+    directly is still unsuitable: matmul and multiply can differ on signed
+    zeros. Callers decide whether the whole consumer region is safe to fold.
+    """
+    transpose = _constant_k1_plan(graph, node, max_tensor_bytes=max_tensor_bytes,
+                                  remaining_bytes=remaining_bytes)
+    if transpose is None:
+        return None
+    left, right = node.inputs
     # Only now inspect existing in-memory payloads. This path never resolves,
     # stats, or reads an external weight path, even for a very small weight.
     arrays = [graph.constants[source.name] for source in (left, right)]
@@ -106,6 +116,101 @@ def _constant_k1_matmul(graph, node, *, max_tensor_bytes, remaining_bytes):
     return result
 
 
+def _constant_rope_region(graph, root, consumers, dynamic, *, max_tensor_bytes, remaining_bytes):
+    """Stage the complete seven-node target RoPE region, or return nothing.
+
+    Internal values cannot escape the matched region. Terminal values may be
+    public outputs or feed consumers that transitively depend on graph inputs;
+    static fanout is rejected, even if it depends on checkpoint weights. All
+    metadata and seven-output budgets are checked before either seed payload.
+    """
+    if _constant_k1_plan(graph, root, max_tensor_bytes=max_tensor_bytes,
+                         remaining_bytes=remaining_bytes) is None:
+        return None
+    shape = root.output.shape
+    if len(shape) != 3 or shape[0] != 1:
+        return None
+    _, width, sequence = shape
+    public = {value.name for value in graph.outputs}
+
+    def one_user(node, kind):
+        users = consumers.get(node.output.name, ())
+        if len(users) != 1 or users[0].kind != kind:
+            return None
+        return users[0]
+
+    def exact_unary(node, source, output_shape):
+        return (node is not None and node.inputs == (source.output,)
+                and node.output.dtype == "float16" and node.output.shape == output_shape)
+
+    transposed = one_user(root, "transpose")
+    if not exact_unary(transposed, root, (1, sequence, width)):
+        return None
+    perm = transposed.attrs.get("perm")
+    if (set(transposed.attrs) != {"perm"} or not isinstance(perm, (list, tuple))
+            or any(isinstance(axis, (bool, np.bool_)) or not isinstance(axis, (int, np.integer)) for axis in perm)
+            or tuple(perm) != (0, 2, 1)):
+        return None
+    angles = one_user(transposed, "concat")
+    angles_shape = (1, sequence, 2 * width)
+    if (angles is None or angles.inputs != (transposed.output, transposed.output)
+            or angles.output.dtype != "float16" or angles.output.shape != angles_shape
+            or set(angles.attrs) != {"axis"}):
+        return None
+    axis = angles.attrs["axis"]
+    if isinstance(axis, (bool, np.bool_)) or not isinstance(axis, (int, np.integer)) or axis not in (-1, 2):
+        return None
+    branches = consumers.get(angles.output.name, ())
+    if len(branches) != 2 or {node.kind for node in branches} != {"cos", "sin"}:
+        return None
+    branches = sorted(branches, key=lambda node: node.kind)
+    endpoints, region = [], [root, transposed, angles]
+    for branch in branches:
+        if not exact_unary(branch, angles, angles_shape) or branch.attrs:
+            return None
+        end = one_user(branch, "reshape")
+        end_shape = (1, 1, sequence, 2 * width)
+        if not exact_unary(end, branch, end_shape) or set(end.attrs) != {"shape"}:
+            return None
+        declared_shape = end.attrs["shape"]
+        if (not isinstance(declared_shape, (list, tuple))
+                or any(isinstance(dim, (bool, np.bool_)) or not isinstance(dim, (int, np.integer))
+                       for dim in declared_shape) or tuple(declared_shape) != end_shape):
+            return None
+        if any(user.output.name not in dynamic for user in consumers.get(end.output.name, ())):
+            return None
+        endpoints.append(end)
+        region.extend((branch, end))
+    if any(node.output.name in public for node in region if node not in endpoints):
+        return None
+    # Exact shape equality alone accepts True == 1; validate metadata types too.
+    for node in region:
+        if any(isinstance(dim, (bool, np.bool_)) or not isinstance(dim, (int, np.integer))
+               or dim <= 0 for dim in node.output.shape):
+            return None
+    sizes = [math.prod(node.output.shape) * _FP16.itemsize for node in region]
+    if any(size > max_tensor_bytes for size in sizes) or sum(sizes) > remaining_bytes:
+        return None
+
+    first = _constant_k1_matmul(graph, root, max_tensor_bytes=max_tensor_bytes,
+                                remaining_bytes=remaining_bytes)
+    if first is None:
+        return None
+    staged = {root.output.name: first}
+    staged[transposed.output.name] = np.transpose(first, (0, 2, 1)).copy(order="C")
+    view = staged[transposed.output.name]
+    staged[angles.output.name] = np.concatenate((view, view), axis=2)
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        for branch, end in zip(branches, endpoints):
+            function = np.cos if branch.kind == "cos" else np.sin
+            result = np.asarray(function(staged[angles.output.name].astype(np.float32)), dtype=_FP16)
+            if not np.isfinite(result).all():
+                return None
+            staged[branch.output.name] = result
+            staged[end.output.name] = result.reshape(end.output.shape).copy(order="C")
+    return staged
+
+
 def fold_constants(graph, weight_paths, live, *, max_tensor_bytes=65536,
                    max_total_bytes=8 * 1024 * 1024):
     """Return small static node outputs without changing graph or weight files.
@@ -113,7 +218,9 @@ def fold_constants(graph, weight_paths, live, *, max_tensor_bytes=65536,
     The total budget counts each cached raw weight read once and every returned
     folded output. Existing graph constants require neither a read nor a new
     retained copy. Tensor sizes and budgets are checked before accessing paths;
-    skipped nodes remain available to the ordinary GE lowering.
+    skipped nodes remain available to the ordinary GE lowering. Constant K=1
+    products with live node consumers require a complete atomic RoPE region;
+    only a product with no live node consumers may fold on its own.
     """
     for name, limit in (("max_tensor_bytes", max_tensor_bytes),
                         ("max_total_bytes", max_total_bytes)):
@@ -121,16 +228,31 @@ def fold_constants(graph, weight_paths, live, *, max_tensor_bytes=65536,
             raise ValueError(f"{name} must be a nonnegative integer")
     folded, weights = {}, {}
     retained = 0
+    consumers, dynamic = {}, {value.name for value in graph.inputs}
+    for node in graph.nodes:
+        if any(value.name in dynamic for value in node.inputs):
+            dynamic.add(node.output.name)
+        if node.output.name in live:
+            for name in {value.name for value in node.inputs}:
+                consumers.setdefault(name, []).append(node)
     for node in graph.nodes:
         value = node.output
-        if value.name not in live:
+        if value.name not in live or value.name in folded:
             continue
         if node.kind == "matmul":
-            result = _constant_k1_matmul(graph, node, max_tensor_bytes=max_tensor_bytes,
-                                         remaining_bytes=max_total_bytes - retained)
-            if result is not None:
-                folded[value.name] = result
-                retained += result.nbytes
+            if consumers.get(value.name):
+                region = _constant_rope_region(graph, node, consumers, dynamic,
+                                               max_tensor_bytes=max_tensor_bytes,
+                                               remaining_bytes=max_total_bytes - retained)
+                if region is not None:
+                    folded.update(region)
+                    retained += sum(array.nbytes for array in region.values())
+            else:
+                result = _constant_k1_matmul(graph, node, max_tensor_bytes=max_tensor_bytes,
+                                             remaining_bytes=max_total_bytes - retained)
+                if result is not None:
+                    folded[value.name] = result
+                    retained += result.nbytes
             continue
         if node.kind not in _ALLOWED:
             continue
