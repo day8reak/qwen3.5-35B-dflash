@@ -329,6 +329,8 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ## 7. 当前现场：双图采用可选 MatMul 归约
 
+最新现场 `ge-reduce-model-20261026-110851` 已执行下方流程：AIR 导出成功，target 编译在主图日志 L149844 仍因 NPUCL 分区数超过9而回退；draft 编译、正式 runner 构建与板端运行均未执行。当前保留该 `GE_REDUCE_MODEL_RUN`，使用本节的 `inspect-compile` 诊断命令和两图 `reduction-lowering.json` 计数，确认剩余断点。下方导出/编译命令保留作流程参考，本次诊断无需重新执行或重设源目录。
+
 用户回传 `reduce-mm-replay-20261026-104025` 的六项结果已全部 Load、Process、数值 PASS；每个主图编译分区为 NPU=1、CPU=0，实际执行位置仍为 `UNVERIFIED`。此前五项 IO `NOT_RUN` 已通过受限 ND 前补1适配后的复测，不再要求重复小图。完整双图执行、全图精度和2倍加速仍未验证。
 
 当前 `export --fp16-reductions matmul` 为显式候选，默认 `native` 保留旧归约。候选只替换符合条件的 FP16 单轴归约；整数、非 FP16 及不符合条件的归约仍走 native。保留归约前已经舍入的 FP16 数据，Mean 以可精确表示的 `1/N` 权重收缩，避免先形成 FP16 总和再缩放；MatMul 的内部累加和舍入可能与原 Reduce 不同，小图通过不能替代全模型数值验证。

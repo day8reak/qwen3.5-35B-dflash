@@ -17,6 +17,8 @@ hdc -t "$SN" -s "$BIP" ...
 
 ## 当前：双图采用可选 MatMul 归约
 
+最新现场 `ge-reduce-model-20261026-110851` 已执行下方流程：AIR 导出成功，target 编译在主图日志 L149844 仍因 NPUCL 分区数超过9而回退；draft 编译、正式 runner 构建与板端运行均未执行。当前保留该 `GE_REDUCE_MODEL_RUN`，使用本节的 `inspect-compile` 诊断命令和两图 `reduction-lowering.json` 计数，确认剩余断点。下方导出/编译命令保留作流程参考，本次诊断无需重新执行或重设源目录。
+
 用户回传 `reduce-mm-replay-20261026-104025`：六个 MatMul 归约小图的 Load、Process、数值检查全部 PASS，编译分区均 NPU=1、CPU=0，实际执行位置仍为 `UNVERIFIED`。此前五项 ND 前补维 IO 拒绝已完成复测。现在用显式 `export --fp16-reductions matmul` 生成新的 target/draft，验证完整链路；默认归约模式仍是 `native`，整数和不符合条件的归约继续保留原实现。
 
 保留 `$GE_PAIR_RUN/prepared`、`$GE_BOARD_RUN/reference.json` 和原专家模式；沿用原 `CANN_ROOT`、DDK、resources/SDK/头文件/链接库配置，以及 `SN`、`BIP`，无需重新 prepare 或增加库参数。新建三个输出目录，四步用 `&&` 串联，失败就不继续后续构建或上板：

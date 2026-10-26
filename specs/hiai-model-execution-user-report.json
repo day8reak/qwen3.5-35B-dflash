@@ -682,5 +682,36 @@
     "runtime_placement": "UNVERIFIED",
     "full_model_execution": "NOT_VALIDATED_BY_THIS_REPLAY",
     "next_action": "Export existing prepared weights with opt-in FP16 MatMul reduction lowering including scan prefixes, retain integer reductions; compile with fallback rejection and execute both graphs only after successful compilation."
+  },
+  "integrated_matmul_reduction_compile": {
+    "date": "2026-10-26",
+    "recorded_in_run_id": "20261026T024450Z-27808-76eb8b",
+    "evidence_kind": "USER_PASTED_TERMINAL_NOT_INDEPENDENTLY_RETRIEVED",
+    "reported_run": "ge-reduce-model-20261026-110851",
+    "actual_revision": "NOT_REPORTED",
+    "suggested_revision": "db77c3c",
+    "export_option": "--fp16-reductions matmul",
+    "export": "EXPORTED",
+    "compile_option": "--reject-cpu-fallback",
+    "graph": "target",
+    "status": "REJECTED_MAIN_NPU_PARTITION_LIMIT_ROLLBACK",
+    "rollback_scope": "main",
+    "rollback_log_line": 149844,
+    "partition_limit": 9,
+    "exact_partition_count": "UNKNOWN_GREATER_THAN_9",
+    "retained": [
+      "omc/target/target.omc",
+      "omc/target/omg.log",
+      "omc/target/diagnostics",
+      "omc/failure.json"
+    ],
+    "draft_compile": "NOT_RUN_AFTER_TARGET_REJECTION",
+    "formal_runner_build": "NOT_RUN_IN_THIS_CHAIN",
+    "board_execution": "NOT_RUN_IN_THIS_CHAIN",
+    "artifact_hashes": "NOT_PROVIDED",
+    "lowering_counts": "NOT_YET_REPORTED",
+    "remaining_cpu_compute": "AWAIT_NEW_SUPPORT_SNAPSHOT",
+    "interpretation": "The optional reduction rewrite alone did not clear the full-target partition limit. This message does not establish remaining node types, post-OMG reduction placement, or regression in six successful probes.",
+    "next_action": "Run inspect-compile on this exact AIR/OMC pair and report both reduction-lowering.json mode/counts; do not recompile or run the rejected artifact."
   }
 }

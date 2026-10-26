@@ -6,7 +6,7 @@
 
 **用户回传 `reduce-mm-replay-20261026-104025`：六个 MatMul 归约候选全部 Load、Process、数值 PASS。** 每项编译主图为 NPU=1、CPU=0，实际运行位置仍为 `UNVERIFIED`；小图通过不等于完整 target/draft 或2倍加速已经通过。
 
-**当前入口：[可选 MatMul 归约的双图导出、编译与执行](direct-model-air.md#7-当前现场双图采用可选-matmul-归约)。** 新增 `export --fp16-reductions matmul`，默认仍为 `native`；只改符合条件的 FP16 归约，整数和不符合条件的归约保留原实现。复用 `$GE_PAIR_RUN/prepared`、原参考、专家模式和资源/SDK配置，创建新的模型、正式 runner 和板端结果目录：
+**最新整图结果：`ge-reduce-model-20261026-110851` 导出成功，但 target 在主图日志 L149844 仍超过9个 NPUCL 分区并回退。** 后续 draft 编译、runner 构建和上板未执行。当前入口是[读取本次新图诊断](direct-model-air.md#新图仍发生分区回退时)，保留 `GE_REDUCE_MODEL_RUN`，先提供支持表和两图归约计数。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
