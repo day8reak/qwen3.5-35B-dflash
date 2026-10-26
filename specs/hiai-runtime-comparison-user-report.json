@@ -51,9 +51,9 @@
   ],
   "unverified": [
     "Exact mapped runtime DSO identities and independent per-kernel hardware execution profiling; NPUCL registration/loading and Add device submission now have user-log evidence",
-    "Whether MatMul mismatch is rank, shape or format; no particular padding/layout equivalence assumed",
     "Effect of pair omission separately from added vendor search path",
-    "Full-model and untested operator success"
+    "Full-model and untested operator success",
+    "MatMul execution/numerical results with the trailing-singleton compatibility change"
   ],
   "next_action": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$RUNTIME_IO_RUN\" --refresh-runner",
   "decisions": [
@@ -95,5 +95,75 @@
     "interpretation": "The candidate registers and initializes the NPUCL graph path. Add logs include model execution submission/completion messages, distinct from subsequent stop commands. MatMul has no model Run before the IO guard exits.",
     "excluded_library_warning": "libhiai_hcl_model_runtime.so lookup failure occurs before successful candidate backend initialization; it is not this run's terminal failure and is not a reason to restore the excluded library",
     "limitations": "Exact mapped runtime DSO paths/build IDs and per-kernel hardware profiling are not supplied; retain automated placement UNVERIFIED rather than asserting every op or full model is NPU-verified"
+  },
+  "current_status": "USER_REPORTED_REFRESHED_MATMUL_ND_TRAILING_SINGLETON_PADDING",
+  "refreshed_runner_io_followup": {
+    "date": "2026-10-26",
+    "run_id": "20261026T001240Z-7902-db05a6",
+    "source_revision": "NOT_INDEPENDENTLY_VERIFIED",
+    "reported_run_basename": "op-probe-20261023-165317-runtime-io-20261026-083324",
+    "provenance": "User pasted refreshed runtime-comparison.txt and MatMul stderr; original artifacts not independently received",
+    "comparison": "Same baseline and candidate load/run/numerical outcomes as the original A/B; refreshed runner now gives detailed IO descriptors",
+    "case": "matmul_m8_b_dynamic",
+    "load": "PASSED",
+    "run": "NOT_RUN",
+    "numerical": "NOT_RUN",
+    "declared_dtype": "float16",
+    "declared_format": {
+      "name": "ND",
+      "value": 2
+    },
+    "tensors": [
+      {
+        "direction": "input",
+        "index": 0,
+        "declared_shape": [
+          8,
+          16
+        ],
+        "actual_shape": [
+          8,
+          16,
+          1,
+          1
+        ],
+        "actual_format": 2
+      },
+      {
+        "direction": "input",
+        "index": 1,
+        "declared_shape": [
+          16,
+          16
+        ],
+        "actual_shape": [
+          16,
+          16,
+          1,
+          1
+        ],
+        "actual_format": 2
+      },
+      {
+        "direction": "output",
+        "index": 0,
+        "declared_shape": [
+          8,
+          16
+        ],
+        "actual_shape": [
+          8,
+          16,
+          1,
+          1
+        ],
+        "actual_format": 2
+      }
+    ],
+    "actual_dtype": "unavailable from this legacy query interface",
+    "interpretation": "The observed mismatch is ND trailing singleton padding to rank four. Appending axes of extent one preserves contiguous element order and element count; this does not justify arbitrary equal-element reshapes or format conversion.",
+    "planned_fix": "Accept exact ND shape or rank1..3 ND shape with unchanged prefix and only trailing ones to runtime rank4; keep runtime descriptor for AiTensor::Init and original input/output byte contracts",
+    "scope": "Operator probe only; full-model executor unchanged",
+    "next_validation": "Refresh native runner into a new output and rerun the same three-case A/B; require MatMul Process and numerical pass before considering this closed"
   }
 }

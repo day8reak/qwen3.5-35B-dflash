@@ -105,6 +105,15 @@ std::string DimensionMismatch(const Spec& spec, std::size_t index,
       << ", actual_dtype=unavailable";
   return out.str();
 }
+bool IsTrailingOnePadding(const std::vector<std::uint32_t>& declared,
+                          const std::vector<std::uint32_t>& actual) {
+  // This runtime reports some ND rank1..3 IO as rank4 by appending ones.
+  // Preserve every original axis; equal element counts alone are insufficient.
+  if (declared.empty() || declared.size() > 3 || actual.size() != 4) return false;
+  for (std::size_t i = 0; i < actual.size(); ++i)
+    if (actual[i] != (i < declared.size() ? declared[i] : 1)) return false;
+  return true;
+}
 std::vector<Spec> ReadSpecs(const fs::path& path) {
   const auto text = Read(path, 64 << 10);
   std::istringstream lines(std::string(text.begin(), text.end()));
@@ -210,8 +219,16 @@ struct Probe {
       auto& index = spec.input ? input_index : output_index;
       Require(index < dims.size(), "IO TSV has more tensors than OMC");
       const auto& dim = dims[index];
-      Require(dim.GetFormat() == hiai::Format::ND && dim.GetDims() == spec.shape,
+      const auto actual_shape = dim.GetDims();
+      const bool padded = IsTrailingOnePadding(spec.shape, actual_shape);
+      Require(dim.GetFormat() == hiai::Format::ND && (actual_shape == spec.shape || padded),
               DimensionMismatch(spec, index, dim));
+      if (padded)
+        std::cerr << "qwen35_hiai_op_probe: accepted ND trailing-one padding for "
+                  << (spec.input ? "input" : "output") << '[' << index << ']'
+                  << ": declared_shape=" << Shape(spec.shape)
+                  << ", actual_shape=" << Shape(actual_shape)
+                  << "; using runtime descriptor\n";
       ++index;
       auto tensor = std::make_shared<hiai::AiTensor>();
       // The legacy API exposes shape/format, not dtype introspection. The

@@ -3,8 +3,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 namespace {
+std::vector<const hiai::TensorDimension*> runtime_dimensions;
+std::size_t initialized_dimensions = 0, input_count = 0, output_count = 0;
 std::string Failure() { const auto* p = std::getenv("FAKE_HIAI_FAILURE"); return p ? p : ""; }
 void Trace(const char* event) {
   if (const auto* p = std::getenv("FAKE_HIAI_TRACE")) std::ofstream(p, std::ios::app) << event << '\n';
@@ -12,11 +15,36 @@ void Trace(const char* event) {
 bool Valid(const void* data, std::uint32_t bytes) {
   return data && bytes == 13 && std::memcmp(data, "probe-fixture", 13) == 0;
 }
+std::vector<hiai::TensorDimension> Dimensions(const char* shape_key, const char* format_key) {
+  const auto* value = std::getenv(shape_key);
+  const auto* format_value = std::getenv(format_key);
+  const auto format = format_value && std::string(format_value) == "0" ? hiai::Format::NCHW : hiai::Format::ND;
+  std::istringstream tensors(value && *value ? value : "1,4");
+  std::vector<hiai::TensorDimension> result;
+  std::string tensor;
+  while (std::getline(tensors, tensor, ';')) {
+    std::istringstream dimensions(tensor);
+    std::vector<std::uint32_t> shape;
+    std::string field;
+    while (std::getline(dimensions, field, ',')) shape.push_back(static_cast<std::uint32_t>(std::stoul(field)));
+    result.emplace_back(shape, format);
+  }
+  return result;
+}
 }
 namespace hiai {
 AiTensor::AiTensor() = default;
 AiTensor::~AiTensor() = default;
 AIStatus AiTensor::Init(const TensorDimension* dim, HIAI_DataType type) {
+  if (initialized_dimensions >= runtime_dimensions.size() || runtime_dimensions[initialized_dimensions++] != dim)
+    throw std::runtime_error("AiTensor::Init must receive the actual runtime descriptor");
+  if (const auto* path = std::getenv("FAKE_HIAI_INIT_TRACE")) {
+    std::ofstream trace(path, std::ios::app);
+    trace << "format=" << static_cast<int>(dim->GetFormat()) << ";dtype=" << static_cast<int>(type) << ";shape=";
+    const auto shape = dim->GetDims();
+    for (std::size_t i = 0; i < shape.size(); ++i) trace << (i ? "," : "") << shape[i];
+    trace << '\n';
+  }
   if (Failure() == "allocation") return 1;
   bytes_ = type == HIAI_DATATYPE_FLOAT16 ? 2 : 4;
   for (auto n : dim->GetDims()) bytes_ *= n;
@@ -59,10 +87,15 @@ AIStatus AiModelMngerClient::Load(std::vector<std::shared_ptr<AiModelDescription
 AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& name, std::vector<TensorDimension>& in,
                                               std::vector<TensorDimension>& out) {
   if (name != name_ || !loaded_) return 1;
-  in = {TensorDimension({1, 4})}; out = in;
+  in = Dimensions("FAKE_HIAI_INPUT_DIMS", "FAKE_HIAI_INPUT_FORMAT");
+  out = Dimensions("FAKE_HIAI_OUTPUT_DIMS", "FAKE_HIAI_OUTPUT_FORMAT");
   if (Failure() == "shape") in = {TensorDimension({4})};
   if (Failure() == "format") in = {TensorDimension({1, 4}, Format::NCHW)};
   if (Failure() == "count") out.clear();
+  runtime_dimensions.clear(); initialized_dimensions = 0;
+  input_count = in.size(); output_count = out.size();
+  for (const auto& dim : in) runtime_dimensions.push_back(&dim);
+  for (const auto& dim : out) runtime_dimensions.push_back(&dim);
   return 0;
 }
 AIStatus AiModelMngerClient::Process(AiContext& context, std::vector<std::shared_ptr<AiTensor>>& in,
@@ -71,7 +104,8 @@ AIStatus AiModelMngerClient::Process(AiContext& context, std::vector<std::shared
   Trace("process");
   if (!Valid(model_buffer_, model_bytes_) || context.model != name_ || timeout != 30000 || !loaded_) std::abort();
   if (Failure() == "process") return 1;
-  if (in.size() != 1 || out.size() != 1 || in[0]->GetSize() != out[0]->GetSize()) return 1;
+  if (initialized_dimensions != runtime_dimensions.size() || in.size() != input_count || out.size() != output_count
+      || in.empty() || out.size() != 1 || in[0]->GetSize() != out[0]->GetSize()) return 1;
   std::memcpy(out[0]->GetBuffer(), in[0]->GetBuffer(), in[0]->GetSize()); stamp = 1;
   return 0;
 }

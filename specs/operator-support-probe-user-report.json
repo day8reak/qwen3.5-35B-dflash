@@ -78,7 +78,7 @@
     "Preserve strict IO validation and improve actual/expected descriptor diagnostics",
     "Surface explicit PID-bound NPUCL failure evidence without promoting runtime placement"
   ],
-  "next_action": "Candidate load recovery is user-reported; refresh only the native diagnostic runner to obtain actual MatMul tensor descriptors while reusing original OMC/data/libs",
+  "next_action": "User refreshed-runner logs identify ND trailing singleton padding; rerun the bounded compatibility fix for MatMul Process and numerical validation",
   "runtime_placement": "UNVERIFIED",
   "model_gates": "No complete-model accuracy, performance or release gate advanced",
   "experience_audit": "docs/experience.md",
@@ -154,7 +154,8 @@
       "comparison_evidence": "specs/hiai-runtime-comparison-verification.json",
       "board_result": "USER_REPORTED_CANDIDATE_ADD_NUMERIC_PASS_MATMUL_LOAD_PASS_IO_MISMATCH",
       "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$RUNTIME_IO_RUN\" --refresh-runner",
-      "comparison_user_evidence": "specs/hiai-runtime-comparison-user-report.json"
+      "comparison_user_evidence": "specs/hiai-runtime-comparison-user-report.json",
+      "current_io_evidence": "specs/hiai-probe-nd-padding-verification.json"
     }
   }
 }
