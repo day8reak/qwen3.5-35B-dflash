@@ -19,7 +19,26 @@ hdc -t "$SN" -s "$BIP" ...
 
 <a id="当前读取-gdn-整图加载失败证据"></a>
 
-## 当前：target 已加载，修复 draft 动态 RoPE 频率计算
+## 当前：tiny 双图已完成执行，复用现有 OMC 验证生成结果
+
+用户 `ge-draft-rope-20261026-194345` 已导出、编译并构建成功，板端返回 `EXECUTION_COMPLETE`。当前脚本只有在 target/draft 均 Load、初始化张量、各调用一次 Process，target 特征传给 draft，必要输出回收及哈希校验、smoke 报告身份与输出范围检查都通过后才设置此状态。记录为用户回传通过，原始 `benchmark.json`、`result.json` 和哈希尚未在本工作区独立读取。证据见 `specs/draft-rope-execution-user-report.json`。
+
+这次日志已匹配记录的 PID11937；仍保留PID复用限制。HCL dlopen警告和Binder清理信息与本次执行成功同时出现，无需仅凭这些信息补库或重跑 smoke。`EXECUTION_COMPLETE` 不包括精度、NPU运行位置或性能判定。
+
+下一步复用这批 OMC、runner 和匹配参考，在新结果目录运行生成与参考比较，**无需重新导出、编译或构建**：
+
+```bash
+export GE_DRAFT_ROPE_CHECK_RUN="$AI_RUN_DIR/ge-draft-rope-check-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+  --omc "$GE_DRAFT_ROPE_RUN/omc" \
+  --runner "$GE_DRAFT_ROPE_RUN/hiai-build/build/qwen35_dflash_hiai" \
+  --reference "$GE_BOARD_RUN/reference.json" \
+  --output "$GE_DRAFT_ROPE_CHECK_RUN"
+```
+
+去掉 `--execution-only` 后，脚本要求参考状态为PASS，来源/精度/量化/序列长度匹配，并满足 `len(prompt)+max_new_tokens-1≤S`；不满足时在上传前拒绝，不修改旧参考来绕过。默认每种模式3次预热、10次测量，比较 ordinary/DFlash 生成token与停止原因。结果及比较见新目录的 `benchmark.json`、`comparison.json`、`result.json`；若失败保留该次输出继续定位。tiny计时只用于诊断，不能代表完整35B质量或最终优化后的DFlash至少2倍收益。
+
+## 已完成的修复：draft 动态 RoPE 频率计算
 
 用户 `ge-rope-chain-20261026-192630` 已完成双图导出、编译及 runner 构建。target Load 和输入输出维度查询成功；draft Load 失败，因此两图都尚未调用 Process。完整静态 target RoPE 区域折叠已通过这次编译和 target 加载，但不能据此认定精度、实际 NPU 执行或完整模型通过。
 
@@ -27,11 +46,11 @@ hdc -t "$SN" -s "$BIP" ...
 
 源码的 `v29` 是动态 RoPE 频率外积：tiny 的 FP16 `[1,12,1] × [1,1,4]`。本轮改用 K=1 BatchMatMul，结果仍为 `[1,12,4]`。保留 INT32 位置先转 FP16 的舍入边界，以及后续重复拼接和 Cos/Sin；位置继续依赖运行时 mask，不预计算 draft 表。非空有效前缀使位置落在 `[0,S+B-2]`；只在上界不超过65504且存储的 FP16 inverse 有限、非负（不含负零）时使用 BMM，其他合同保留 Mul。此条件避免把有符号零、非有限值等未经验证的通用 Mul 改成 MatMul。双图 ABI、权重和 target 静态 RoPE 折叠保持。
 
-已有 `rope_frequency_bmm` 小图完成 Load、Process 和数值比较，但它是 `[1,2,1] @ [1,1,8]` 且两端都是运行时输入。它支持选用 BMM 的方向，不能替代实际 draft 形状与常量右端的内部编译及上板检查。本轮主机验证见 `specs/ge-draft-rope-frequency-verification.json`。
+已有 `rope_frequency_bmm` 小图完成 Load、Process 和数值比较，但它是 `[1,2,1] @ [1,1,8]` 且两端都是运行时输入。它支持选用 BMM 的方向；实际 draft 形状与常量右端现已由完整 tiny 图单次执行验证，但数值比较仍待完成。主机验证见 `specs/ge-draft-rope-frequency-verification.json`。
 
 同时修复终端 HiLog 摘要：保留最近一次 Init/GenerateOp/Prepare/Load 等失败及前后文，避免长清理日志挤掉中间的算子错误。完整候选文件继续保存；匹配已记录 PID 与启发式选取的提示分开，PID 复用限制仍保留。
 
-保留原 `GE_ROPE_CHAIN_RUN` 和此前产物，复用 prepared/reference，在新目录执行：
+以下是本次已成功的重导出命令，保留供历史复现；当前使用上面的现有 OMC 比较入口，不重复执行：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only &&
@@ -54,7 +73,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
   --output "$GE_DRAFT_ROPE_RUN/board" --execution-only
 ```
 
-这次需要重新导出并编译；无需重新 prepare、诊断转换或算子探针。若失败，保留新日志、`benchmark.stderr`、`result.json` 及候选 HiLog。主机字节一致性不代替新图 Load/Process 或完整精度检查；最终 DFlash 至少2倍目标尚未验证。
+上述重导出候选已由用户完成双图 Load/Process；无需再重复 prepare、诊断转换或算子探针。完整精度检查和最终 DFlash 至少2倍目标仍未验证。
 
 历史 `ge-gdn-model-20261026-171048` 在 target 静态 RoPE BMM 后的 `insert_cast_4` 初始化失败，主图 NPU5/CPU6 与 NPU3/CPU4 仅属于该旧产物。`ge-rope-model-20261026-190121` 的单节点折叠又暴露编译器静态链问题，随后改为七节点原子折叠，通过上述新一次 target 加载。历史证据见 `specs/gdn-model-load-user-report.json`、`specs/rope-model-compile-user-report.json` 和 `specs/ge-constant-rope-region-verification.json`。`--reject-cpu-fallback` 检查显式分区超限回退，不保证 CPU 分区为0，也不证明 NPU 执行。
 
@@ -62,7 +81,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 ## 已完成：将已验证的 GDN Gather 复制接入整图
 
-以下是较早的 GDN 候选链路，当时完成到 target Load 失败；当前执行上面的 draft RoPE 修复链路。
+以下是较早的 GDN 候选链路，当时完成到 target Load 失败；当前执行页首的现有 OMC 生成比较。
 
 最新`ge-row-chain-20261026-144144`已通过ReshapeFusion，19个row Mul CPU-only候选消失；已识别CPU-only计算从117减到98，主图仍因NPUCL分区数超过9回退，尚未执行双图。保留本次产物与诊断，不重新运行旧整图。
 
@@ -188,11 +207,11 @@ cat "$GE_ROW_CHAIN_INSPECT_RUN/report.txt"
 
 程序保留模型哈希、版本、张量数量、格式、大小和 token 范围检查。ND 描述允许原有尾部补1到四维，例如 `[1,S] → [1,S,1,1]`、`[1,S,F] → [1,S,F,1]`；源码另支持逻辑 rank3 `[a,b,c] → [1,a,b,c]`，使用运行库返回的描述初始化张量。新增规则仅扩展 rank3 特征，rank2 token 合同及宽度推导不变；仍不按元素总数放行任意布局。后续整图编译成功后需在新目录重建正式runner以取得这项兼容；此前remaining-cpu批次只刷新独立probe。成功和失败都会尝试回传 HiLog，日志缺失单独记录。
 
-当前没有完整模型板端通过证据；这个命令用于取得实际加载/执行结果。去掉 `--execution-only` 后仍是下文的严格 benchmark + 参考比较。
+当前 tiny 双图执行已取得用户通过反馈；完整权重模型仍未验证。去掉 `--execution-only` 后进入严格 benchmark + 参考比较，不能用 smoke 的成功替代比较结果。
 
 ## 服务器准备
 
-首次准备参考与 runner 可查[直接 GE tiny 上板指南的第1、2节](direct-ge-board.md)。当前保留原 prepared、匹配的 `reference.json` 和已回退的MatMul归约双图；按本文开头导出新的row Mul候选，整图编译成功后才构建正式 `qwen35_dflash_hiai`。
+首次准备参考与 runner 可查[直接 GE tiny 上板指南的第1、2节](direct-ge-board.md)。当前复用 `GE_DRAFT_ROPE_RUN` 中成功执行的 OMC 和正式 runner，以及匹配的 `reference.json`；无需重复首次准备。
 
 需要的资源为：
 
@@ -212,24 +231,7 @@ cat "$GE_ROW_CHAIN_INSPECT_RUN/report.txt"
 
 ## 后续严格 benchmark 入口
 
-新 OMC 的双图 smoke 通过后，再使用本节严格 benchmark 与参考比较。沿用已有 `REPO_DIR`、`AI_RUN_DIR`、`GE_BOARD_RUN` 和本轮新构建的 runner；`GE_OMC_DIR` 指向本轮编译成功的目录。
-
-```bash
-cd "$REPO_DIR"
-git pull --ff-only
-export PYTHONDONTWRITEBYTECODE=1
-
-export SN='填写设备ID'
-export BIP='填写远程HDC服务端IP:端口'
-export GE_OMC_DIR="$GE_ROW_CHAIN_RUN/omc"
-export HDC_RUN_DIR="$AI_RUN_DIR/hdc-$(date +%Y%m%d-%H%M%S)"
-
-python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
-  --omc "$GE_OMC_DIR" \
-  --runner "$HIAI_ROW_CHAIN_BUILD_DIR/build/qwen35_dflash_hiai" \
-  --reference "$GE_BOARD_RUN/reference.json" \
-  --output "$HDC_RUN_DIR"
-```
+当前 smoke 已通过，直接执行页首 `GE_DRAFT_ROPE_CHECK_RUN` 命令。保留现有 `SN`、`BIP`、`GE_DRAFT_ROPE_RUN` 和 `GE_BOARD_RUN`；不重新设置设备占位符或使用旧的回退 OMC。
 
 若 `hdc` 不在 PATH，先设置 `export HDC=/your/host/toolchains/hdc`。无需设置 `HIAI_RUNTIME_LIB_DIR`，无需手动拷贝 C++ 库，也无需传库目录或构建目录参数。
 

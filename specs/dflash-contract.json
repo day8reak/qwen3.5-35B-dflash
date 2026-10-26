@@ -164,6 +164,8 @@
     ],
     "accuracy_for_final_claim": "Preserve token/stop equality gates and separately validate model quality; execution smoke does not close either accuracy gate",
     "baseline_policy": "Prefix recomputation and all-expert execution are correctness bring-up baselines; a >=2x result against these alone does not establish the final optimized decoding benefit",
-    "measurement_scope_note": "Full decode-loop timing is the current working definition; also report prefill+decode speedup explicitly, and report model loading/cold start separately"
+    "measurement_scope_note": "Full decode-loop timing is the current working definition; also report prefill+decode speedup explicitly, and report model loading/cold start separately",
+    "current_milestone_status": "USER_REPORTED_TINY_EXECUTION_COMPLETE",
+    "current_milestone_evidence": "specs/draft-rope-execution-user-report.json"
   }
 }

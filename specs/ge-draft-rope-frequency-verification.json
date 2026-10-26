@@ -133,5 +133,6 @@
       "No first HCL warning treated as direct failure cause"
     ]
   },
-  "next_action": "Follow docs/hdc-board-run.md GE_DRAFT_ROPE_RUN export/compile/build/execution-only with existing prepared/reference and unchanged DDK/HDC settings."
+  "next_action": "Follow docs/hdc-board-run.md GE_DRAFT_ROPE_RUN export/compile/build/execution-only with existing prepared/reference and unchanged DDK/HDC settings.",
+  "later_user_followup": "specs/draft-rope-execution-user-report.json"
 }

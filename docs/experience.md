@@ -504,3 +504,12 @@ run：`20261026T110115Z-24555-dec793`。用户 `ge-rope-chain-20261026-192630` �
 终端摘要原先仅保留首条E和restore失败窗口，长清理日志会掩盖中间的Init/Prepare/Load失败。新增有界最近失败窗口，并以用户原始 `is not equals to` 文本验证前文保留；全候选日志与原哈希核验继续保存。控制台区分已记录PID和启发式候选，但PID复用限制保留。旧提示无条件写“未确认”，不能据此反推PID采集失败。
 
 经验固化在模型源码、导出/数值回归及HiLog选择回归，没有修改共享技能、DDK或系统库。没有把主机字节一致性提升为设备通过；下一步复用prepared/reference到新 `GE_DRAFT_ROPE_RUN` 执行导出、编译、构建、execution-only完整链路，无需重做旧探针或诊断转换。
+
+
+## 2026-10-26：tiny target/draft 首次完成双图执行
+
+run：`20261026T111926Z-29824-5b5c4c`。用户 `ge-draft-rope-20261026-194345` 在建议修订 `c1dd0aa` 后完成导出、双图编译、runner构建并返回 `EXECUTION_COMPLETE`。按当前源码核对，该状态要求target/draft Load及张量初始化、target.Process与draft.Process各一次、真实target特征传递、native退出0、必要输出回收及哈希校验、执行报告身份与Top1结构/范围检查通过；EOS不会跳过draft。由用户控制台记录为通过，原始report、具体Top1、固件和产物哈希尚未独立读取。证据见 `specs/draft-rope-execution-user-report.json`。
+
+此次HiLog显示记录PID11937匹配，仍保留复用可能；HCL dlopen与Binder清理消息伴随最终执行成功。不能仅因日志含E就否定已核验的必需执行路径，或再次改动库部署。反过来，smoke通过也不证明数值正确、实际NPU位置、性能或完整35B可用。
+
+本轮仅更新模型证据与后续入口，没有修改生产源码或共享技能；不为文档/证据更改新增实现测试。验证JSON结构、源码判定路径及文档shell语法。下一步复用已有OMC/runner，去掉execution-only，在新目录做严格生成/参考比较；旧参考必须PASS、身份匹配且生成长度不超过静态S。每种模式3次预热/10次测量是tiny诊断，完整质量及最终至少2倍目标仍未关闭。

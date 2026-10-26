@@ -136,5 +136,6 @@
   ],
   "accuracy": "DEFERRED_NOT_WAIVED",
   "performance": "NOT_MEASURED",
-  "next_action": "Fresh GE_DRAFT_ROPE_RUN export/compile/build/execution-only chain in docs/hdc-board-run.md; reuse prepared/reference and existing DDK/HDC configuration."
+  "next_action": "Fresh GE_DRAFT_ROPE_RUN export/compile/build/execution-only chain in docs/hdc-board-run.md; reuse prepared/reference and existing DDK/HDC configuration.",
+  "later_user_followup": "specs/draft-rope-execution-user-report.json"
 }
