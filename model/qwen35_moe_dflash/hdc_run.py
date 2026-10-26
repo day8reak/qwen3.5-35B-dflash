@@ -21,6 +21,8 @@ import uuid
 
 from .artifacts import checked_file, output_path, save_json
 from .hashing import sha256_file
+from .elf_dynamic import dynamic_info
+from .hiai_deployment import BOARD_LIBRARY_SEARCH_PATHS, DDK_HCL_EXCLUDED, candidate_blockers
 
 
 
@@ -61,7 +63,9 @@ def parser():
     p.add_argument("--omc", required=True, help="compiled OMC pair directory")
     p.add_argument("--runner", required=True, help="linked HarmonyOS ARM64 HIAI ELF executable")
     p.add_argument("--hiai-build-dir", help="optional override for build records; otherwise inferred beside --runner")
-    p.add_argument("--reference", required=True, help="matching successful reference.json")
+    p.add_argument("--reference", required=True, help="matching reference.json; prompt/config only with --execution-only, otherwise must be successful")
+    p.add_argument("--execution-only", action="store_true",
+                   help="execute target and draft once using reference prompt/config; skip accuracy comparison and performance benchmark")
     p.add_argument("--lib-dir", action="append", default=[], help="legacy manual library override; omit to use matching build libraries automatically")
     p.add_argument("--output", required=True, help="new output directory below AI_RUN_DIR")
     p.add_argument("--board-root", help="new remote directory; existing directories are never reused")
@@ -220,7 +224,7 @@ def _preflight(args):
             files[rel] = entry
     reference_path = Path(args.reference).expanduser().resolve()
     reference = json.loads(reference_path.read_text())
-    if reference.get("status") != "PASS":
+    if not args.execution_only and reference.get("status") != "PASS":
         raise ValueError("reference must have status PASS")
     for key in ("source", "precision", "quantization", "sequence_length"):
         if reference.get(key) != manifest.get(key) or (key == "source" and reference.get(key) is None):
@@ -228,7 +232,8 @@ def _preflight(args):
     prompt, limit = reference.get("prompt_token_ids"), reference.get("max_new_tokens")
     if not isinstance(prompt, list) or not prompt or any(type(v) is not int or not 0 <= v < vocab for v in prompt):
         raise ValueError("reference prompt token IDs are empty or outside the vocabulary")
-    if type(limit) is not int or limit <= 0 or len(prompt) + limit - 1 > manifest["sequence_length"]:
+    if (type(limit) is not int or limit <= 0 or len(prompt) > manifest["sequence_length"]
+            or (not args.execution_only and len(prompt) + limit - 1 > manifest["sequence_length"])):
         raise ValueError("reference generation limit exceeds OMC sequence gear")
     runner = Path(args.runner).expanduser().resolve()
     with runner.open("rb") as stream:
@@ -263,6 +268,25 @@ def _preflight(args):
             raise ValueError(f"conflicting library name: {library.name}")
         library_names.add(library.name)
         uploads.append(_file_record(library.resolve(), PurePosixPath("lib") / library.name))
+    runtime_records = [entry for entry in uploads
+                       if PurePosixPath(entry["remote"]).parent in (PurePosixPath("lib"), PurePosixPath("bin"))]
+    dependencies = [{"name": PurePosixPath(entry["remote"]).name, "path": entry["local"],
+                     "sha256": entry["sha256"], "bytes": entry["bytes"],
+                     "kind": "runner" if entry["remote"].startswith("bin/") else "library",
+                     **dynamic_info(entry["local"])} for entry in runtime_records]
+    for entry in runtime_records:
+        _check_local(entry)
+    blockers = candidate_blockers(dependencies, require_pair=False)
+    if blockers:
+        raise ValueError("cannot select board HCL deployment: " + "; ".join(blockers))
+    excluded = [entry for entry in runtime_records if PurePosixPath(entry["remote"]).parent == PurePosixPath("lib")
+                and PurePosixPath(entry["remote"]).name in DDK_HCL_EXCLUDED]
+    uploads = [entry for entry in uploads if entry not in excluded]
+    deployment = {"mode": "board-hcl", "excluded_library_names": sorted(DDK_HCL_EXCLUDED),
+                  "excluded_libraries": excluded, "elf_dependencies": dependencies,
+                  "library_search_paths": list(BOARD_LIBRARY_SEARCH_PATHS),
+                  "backend_selection": "UNVERIFIED", "runtime_placement": "UNVERIFIED",
+                  "scope": "Private deployment omits the DDK HCL pair and adds the board vendor directory to this process's search path. Explicit ELF dependencies are checked; dlopen selection, board ABI and NPU placement require runtime evidence."}
     build = None
     if build_dir:
         runner_record = next(entry for entry in uploads if entry["remote"] == "bin/qwen35_dflash_hiai")
@@ -276,7 +300,7 @@ def _preflight(args):
         _text(args.firmware_id, "firmware identity")
     return {"sn": sn, "bip": bip, "root": root, "board": bp, "manifest": manifest,
             "reference": reference, "reference_path": reference_path, "uploads": uploads,
-            "hiai_build": build, "runtime_libraries": discovery,
+            "hiai_build": build, "runtime_libraries": discovery, "runtime_deployment": deployment,
             "manifest_sha256": sha256_file(manifest_path), "reference_sha256": sha256_file(reference_path)}
 
 
@@ -348,7 +372,8 @@ class Hdc:
 
 def _script(board, argv, stdout, stderr, exitcode):
     return ("#!/system/bin/sh\ncd " + shlex.quote(str(board)) + " || exit 1\n"
-            "export LD_LIBRARY_PATH=" + shlex.quote(str(board / "lib")) + '"${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n'
+            "export LD_LIBRARY_PATH=" + shlex.quote(":".join((str(board / "lib"), *BOARD_LIBRARY_SEARCH_PATHS)))
+            + '"${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n'
             + shlex.join(argv) + " > " + shlex.quote(stdout) + " 2> " + shlex.quote(stderr) + "\n"
             "rc=$?\nprintf '%s\\n' \"$rc\" > " + shlex.quote(exitcode) + "\nexit \"$rc\"\n")
 
@@ -395,6 +420,35 @@ def _cleanup_remote(hdc, board, owner_token, *, mode="all", omc_files=()):
         raise ValueError(f"unsupported cleanup mode: {mode}")
 
 
+def _smoke_checks(report, manifest, reference, runtime, firmware):
+    """Check completed target/draft execution identity, never numerical accuracy."""
+    if not isinstance(report, dict):
+        raise ValueError("smoke report must be a JSON object")
+    graphs = {graph["name"]: graph for graph in manifest["graphs"]}
+    execution = report.get("execution")
+    if not isinstance(execution, dict):
+        raise ValueError("smoke report must contain execution results")
+    expected = {"schema_version": 2, "abi_version": 2, "feature_dtype": "torch.float16",
+                "status": "EXECUTION_COMPLETE", "mode": "smoke", "scope": "target-draft-execution",
+                "evidence_kind": "device-hiai", "device_execution": "PASS",
+                "accuracy": "NOT_EVALUATED", "performance": "NOT_EVALUATED",
+                "runtime_version": runtime, "ddk_id": manifest["ddk_id"], "firmware_id": firmware,
+                "target_sha256": graphs["target"]["sha256"], "draft_sha256": graphs["draft"]["sha256"],
+                "sequence_length": manifest["sequence_length"], "pad_token_id": manifest["pad_token_id"],
+                "prompt_token_ids": reference["prompt_token_ids"], "eos_token_ids": manifest["eos_token_ids"]}
+    checks = {key: type(report.get(key)) is type(value) and report[key] == value
+              for key, value in expected.items()}
+    for key in ("prompt_token_ids", "eos_token_ids"):
+        checks[key] = checks[key] and all(type(token) is int for token in report[key])
+    for name, length in (("target", manifest["sequence_length"]), ("draft", manifest["draft_width"])):
+        calls, tokens = execution.get(name + "_calls"), execution.get(name + "_top1")
+        checks[name + "_calls"] = type(calls) is int and calls == 1
+        checks[name + "_top1"] = (isinstance(tokens, list) and len(tokens) == length
+                                  and all(type(token) is int and 0 <= token < manifest["vocab_size"] for token in tokens))
+    checks["execution_only"] = not any(key in report for key in ("ordinary", "dflash", "generation", "timing_scope"))
+    return checks
+
+
 def execute(args):
     out = output_path(args.output)
     out.mkdir(parents=True, exist_ok=False)
@@ -406,6 +460,10 @@ def execute(args):
               "scope": "HIAI paired benchmark with token-and-stop reference comparison",
               "limitations": ["Probe and runner evidence do not independently prove per-operator NPU placement.",
                               "A host timeout does not prove the remote process stopped; the remote directory is retained."]}
+    if args.execution_only:
+        result.update(scope="HIAI target-and-draft execution only", device_execution="PENDING",
+                      device_validation="NOT_EVALUATED", accuracy="NOT_EVALUATED", performance="NOT_EVALUATED")
+        result["board_cleanup"]["policy"] = "after-successful-retrieval-and-execution-report-validation"
 
     def collect(names, *, recovery=False, timeout=None):
         for name in names:
@@ -509,6 +567,7 @@ def execute(args):
             result["hiai_build"] = context["hiai_build"]
         if context["runtime_libraries"] is not None:
             result["runtime_libraries"] = context["runtime_libraries"]
+        result["runtime_deployment"] = context["runtime_deployment"]
         uploads = context["uploads"]
         result["runner_sha256"] = next(r["sha256"] for r in uploads if r["remote"] == "bin/qwen35_dflash_hiai")
         save_json(out / "preflight.json", {**result, "status": "PASS", "uploads": uploads})
@@ -523,6 +582,11 @@ def execute(args):
         uploads.append(_file_record(probe_script, "probe.sh"))
         save_json(out / "initial-upload-plan.json", {"board_root": str(board), "files": uploads})
         hdc = Hdc(args.hdc, context["sn"], context["bip"], out, args.timeout_seconds)
+        stage = "library-search-paths"
+        for index, path in enumerate(BOARD_LIBRARY_SEARCH_PATHS, 1):
+            quoted = shlex.quote(path)
+            hdc.shell(f"test -d {quoted} && test -r {quoted} && test -x {quoted}",
+                      f"library-search-path-{index}")
         stage = "create-remote-directory"
         hdc.shell("mkdir " + shlex.quote(str(board)), "create-root")
         remote_created = True
@@ -561,7 +625,8 @@ def execute(args):
             "--prompt", str(out / "prompt.json"), "--output", str(out / "board-command.json"),
             "--board-model-dir", str(board / "models"), "--board-output", str(board / "benchmark.json"),
             "--runner", str(board / "bin/qwen35_dflash_hiai"), "--runtime-version", runtime,
-            "--firmware-id", firmware, "--max-new-tokens", str(reference["max_new_tokens"]), "--mode", "benchmark"]))
+            "--firmware-id", firmware, "--max-new-tokens", str(reference["max_new_tokens"]),
+            "--mode", "smoke" if args.execution_only else "benchmark"]))
         command = json.loads((out / "board-command.json").read_text())
         run_script = out / "run.sh"
         run_script.write_text(_script(board, command["argv"], "benchmark.stdout", "benchmark.stderr", "benchmark.exitcode"))
@@ -577,15 +642,28 @@ def execute(args):
             raise RuntimeError("could not retrieve and hash-verify all benchmark outputs; see retrieval_errors")
         if (out / "benchmark.exitcode").read_text().strip() != "0":
             raise RuntimeError("HIAI benchmark exited nonzero")
-        stage = "compare"
+        stage = "execution-report" if args.execution_only else "compare"
         if (sha256_file(context["root"] / "manifest.json") != context["manifest_sha256"]
                 or sha256_file(context["reference_path"]) != context["reference_sha256"]):
             raise ValueError("manifest or reference changed since preflight")
-        cli_execute(cli_parser().parse_args(["compare", "--omc", str(context["root"]),
-            "--reference", str(context["reference_path"]), "--report", str(out / "benchmark.json"),
-            "--output", str(out / "comparison.json")]))
-        result.update(device_validation="PASS", comparison_sha256=sha256_file(out / "comparison.json"),
-                      benchmark_sha256=sha256_file(out / "benchmark.json"),
+        if args.execution_only:
+            report = json.loads((out / "benchmark.json").read_text())
+            result["execution_checks"] = _smoke_checks(report, manifest, reference, runtime, firmware)
+            if not all(result["execution_checks"].values()):
+                failed = ", ".join(key for key, value in result["execution_checks"].items() if not value)
+                raise ValueError("smoke execution report failed checks: " + failed)
+            result["device_execution"] = "PASS"
+            try:
+                capture_hilog()
+            except Exception as capture_error:
+                result.setdefault("hilog", {})["status"] = "FAILED"
+                result["hilog"].setdefault("errors", []).append(f"{type(capture_error).__name__}: {capture_error}")
+        else:
+            cli_execute(cli_parser().parse_args(["compare", "--omc", str(context["root"]),
+                "--reference", str(context["reference_path"]), "--report", str(out / "benchmark.json"),
+                "--output", str(out / "comparison.json")]))
+            result.update(device_validation="PASS", comparison_sha256=sha256_file(out / "comparison.json"))
+        result.update(benchmark_sha256=sha256_file(out / "benchmark.json"),
                       probe_sha256=sha256_file(out / "runtime-probe.json"),
                       upload_plan_sha256=sha256_file(out / "upload-plan.json"))
         stage = "cleanup"
@@ -595,10 +673,10 @@ def execute(args):
             result["board_cleanup"]["status"] = "REMOVED" if args.board_cleanup == "all" else "OMC_FILES_REMOVED"
             if args.board_cleanup == "omc":
                 result["board_cleanup"]["removed_files"] = omc_files
-        result.update(status="PASS", stage="complete")
+        result.update(status="EXECUTION_COMPLETE" if args.execution_only else "PASS", stage="complete")
     except Exception as error:
         result.update(stage=stage, error=f"{type(error).__name__}: {error}")
-        if remote_created and stage in ("probe", "benchmark"):
+        if remote_created and stage in ("probe", "benchmark", "execution-report"):
             # Never replace the failed operation with an optional log-capture
             # failure (including local output errors).
             try:
@@ -613,7 +691,9 @@ def execute(args):
         if remote_created:
             collect(("runtime-probe.json", "probe.stderr", "probe.exitcode", "benchmark.json",
                      "benchmark.stdout", "benchmark.stderr", "benchmark.exitcode"), recovery=True)
-        if stage in ("probe", "benchmark", "compare"):
+        if args.execution_only and stage in ("probe", "benchmark", "execution-report"):
+            result["device_execution"] = "FAILED"
+        elif not args.execution_only and stage in ("probe", "benchmark", "compare"):
             result["device_validation"] = "FAILED"
         save_json(out / "failure.json", {**result, "retrieval_errors": recovery_errors})
         if stage in ("probe", "benchmark"):

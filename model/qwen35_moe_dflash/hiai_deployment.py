@@ -14,6 +14,41 @@ import struct
 from .hashing import sha256_file
 
 
+DDK_HCL_EXCLUDED = frozenset(("libhiai_hcl_model_runtime.so", "libhiai_hcl_model_runtime_impl.so"))
+BOARD_LIBRARY_SEARCH_PATHS = ("/vendor/lib64/chipsetsdk",)
+
+
+def candidate_blockers(dependencies, *, require_pair=True):
+    """Guard the private-library exclusion shared by probe and model deployment.
+
+    The A/B probe requires both original providers to establish its baseline.
+    Production can start with an already reduced library set, but retained
+    DT_NEEDED entries and aliases must still not refer to the excluded pair.
+    This checks explicit ELF dependencies, not dlopen or board ABI compatibility.
+    """
+    libraries = [item for item in dependencies if item["kind"] == "library"]
+    excluded = [item for item in libraries if item["name"] in DDK_HCL_EXCLUDED]
+    missing = DDK_HCL_EXCLUDED - {item["name"] for item in excluded}
+    if require_pair and missing:
+        return ["original deployment lacks the exact HCL exclusion pair: " + ", ".join(sorted(missing))]
+    aliases = set(DDK_HCL_EXCLUDED) | {item["soname"] for item in excluded if item.get("soname")}
+    aliases.update(Path(name).name for name in tuple(aliases))
+    excluded_hashes = {item["sha256"] for item in excluded}
+    reasons = []
+    for item in dependencies:
+        if item["kind"] == "library" and item["name"] in DDK_HCL_EXCLUDED:
+            continue
+        required = [name for name in item["needed"] if name in aliases or Path(name).name in aliases]
+        if required:
+            reasons.append(f"{item['name']} has DT_NEEDED on excluded provider(s): {', '.join(required)}")
+        soname = item.get("soname")
+        if item["kind"] == "library" and soname and (soname in aliases or Path(soname).name in aliases):
+            reasons.append(f"retained {item['name']} has colliding SONAME {item['soname']}")
+        if item["kind"] == "library" and item["sha256"] in excluded_hashes:
+            reasons.append(f"retained {item['name']} duplicates excluded provider bytes")
+    return reasons
+
+
 def _absolute_path(value, label):
     if (not isinstance(value, str) or not value or not Path(value).is_absolute()
             or any(ord(c) < 32 or ord(c) == 127 for c in value)):

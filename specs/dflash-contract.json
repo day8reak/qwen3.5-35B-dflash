@@ -75,7 +75,7 @@
     "device_measurements_per_mode": 10,
     "warmups_per_mode": 3,
     "full_model_reference": "quantized target ordinary vs DFlash zero token/stop mismatches; same calibration/source/precision required",
-    "performance_target": "not specified",
+    "performance_target": "DFlash speedup >= 2.0x over matched ordinary decoding after accuracy passes; NOT_MEASURED",
     "local_feature_probe": {
       "fp32_atol": 1e-05,
       "fp32_rtol": 0.0001,
@@ -96,7 +96,8 @@
     "quantization之外计算 FP16",
     "weights and activations may both be quantized; other computation FP16",
     "user reports Add smoke AIR and OMC success",
-    "implement direct GE target/draft alongside retained PyTorch conversion path"
+    "implement direct GE target/draft alongside retained PyTorch conversion path",
+    "DFlash >=2x is the final objective; prioritize board execution before further accuracy diagnosis"
   ],
   "deployment_precision": "DOPT INT4 weights / 16-bit activation quantization candidate; non-quantization float computation FP16",
   "quantization": {
@@ -128,5 +129,41 @@
     "omc",
     "hiai"
   ],
-  "direct_ge_precision": "FP16 correctness/conversion baseline; native compressed integer weight mapping pending"
+  "direct_ge_precision": "FP16 correctness/conversion baseline; native compressed integer weight mapping pending",
+  "delivery_objective": {
+    "date": "2026-10-26",
+    "user_requirement": "验证 DFlash 有优化效果，希望至少提速 2 倍",
+    "target_speedup": 2.0,
+    "status": "NOT_MEASURED",
+    "current_priority": "BOARD_EXECUTION_FIRST_ACCURACY_FOLLOWUP",
+    "current_milestone": "Load the existing target/draft OMC pair, execute both graphs, retrieve hash-verified outputs and logs",
+    "primary_working_metric": "median ordinary full decode-loop latency / median DFlash full decode-loop latency",
+    "included_decode_costs": [
+      "target calls",
+      "draft calls",
+      "verification",
+      "accept/reject handling",
+      "state handling",
+      "host/device transfers",
+      "synchronization"
+    ],
+    "required_additional_metrics": [
+      "prefill latency",
+      "prefill+decode latency with models already loaded",
+      "generated tokens per second",
+      "acceptance rate",
+      "accepted tokens per round",
+      "target/draft call counts"
+    ],
+    "paired_conditions": [
+      "same board and firmware",
+      "same target weights, quantization and operator policy",
+      "same prompts and generation lengths/stop policy",
+      "same cache policy and power/thermal conditions",
+      "same warmup and measurement counts"
+    ],
+    "accuracy_for_final_claim": "Preserve token/stop equality gates and separately validate model quality; execution smoke does not close either accuracy gate",
+    "baseline_policy": "Prefix recomputation and all-expert execution are correctness bring-up baselines; a >=2x result against these alone does not establish the final optimized decoding benefit",
+    "measurement_scope_note": "Full decode-loop timing is the current working definition; also report prefill+decode speedup explicitly, and report model loading/cold start separately"
+  }
 }

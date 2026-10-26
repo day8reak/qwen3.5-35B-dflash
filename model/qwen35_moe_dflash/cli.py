@@ -59,7 +59,7 @@ def parser():
             cmd.add_argument("--runtime-version", required=True)
             cmd.add_argument("--firmware-id", required=True)
             cmd.add_argument("--max-new-tokens", type=int, default=32)
-            cmd.add_argument("--mode", choices=["generate", "benchmark"], default="generate")
+            cmd.add_argument("--mode", choices=["generate", "benchmark", "smoke"], default="generate")
     return p
 
 
@@ -215,7 +215,9 @@ def execute(args):
         graphs = {g["name"]: g for g in m["graphs"]}
         for g in graphs.values(): checked_file(root, {**g, "path": g["omc"]})
         prompt = json.loads(Path(args.prompt).read_text())["prompt_token_ids"]
-        if not prompt or len(prompt)+args.max_new_tokens-1 > m["sequence_length"]:
+        if not prompt or len(prompt) > m["sequence_length"]:
+            raise ValueError("prompt exceeds OMC sequence gear or is empty")
+        if args.mode != "smoke" and len(prompt)+args.max_new_tokens-1 > m["sequence_length"]:
             raise ValueError("prompt plus requested generation exceeds OMC sequence gear")
         argv = [args.runner, "--mode", args.mode, "--pad-token-id", str(m["pad_token_id"]),
                 "--eos-token-ids", ",".join(map(str,m["eos_token_ids"])), "--target", str(Path(args.board_model_dir)/graphs["target"]["omc"]),

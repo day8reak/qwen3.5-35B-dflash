@@ -91,6 +91,8 @@ elif args[:1] == ["shell"]:
     if command[:2] != ["sh", "-c"] or len(command) != 3:
         raise RuntimeError("expected sh -c wrapper")
     payload = command[2].replace(remote, local)
+    if "test -d /vendor/lib64/chipsetsdk" in payload:
+        payload = payload.replace("/vendor/lib64/chipsetsdk", os.environ["FAKE_VENDOR_ROOT"])
     if "hilog -x" in payload:
         # Substitute only the diagnostic executable, preserving actual shell
         # redirection, remote status marker, transfer, and checksum operations.
@@ -176,6 +178,26 @@ if failure == "remote-exit":
     print("SIMULATED benchmark partial stdout")
     sys.exit(17)
 flags = dict(zip(args[::2], args[1::2]))
+if flags.get("--mode") == "smoke":
+    source = {"schema_version": 2, "abi_version": 2, "feature_dtype": "torch.float16",
+              "status": "EXECUTION_COMPLETE", "mode": "smoke", "scope": "target-draft-execution",
+              "evidence_kind": "device-hiai", "device_execution": "PASS",
+              "accuracy": "NOT_EVALUATED", "performance": "NOT_EVALUATED",
+              "runtime_version": flags["--expected-runtime-version"], "ddk_id": flags["--ddk-id"],
+              "firmware_id": flags["--firmware-id"], "target_sha256": flags["--target-sha256"],
+              "draft_sha256": flags["--draft-sha256"], "sequence_length": 8,
+              "prompt_token_ids": [int(token) for token in flags["--prompt-token-ids"].split(",")],
+              "pad_token_id": int(flags["--pad-token-id"]),
+              "eos_token_ids": [int(token) for token in flags["--eos-token-ids"].split(",") if token],
+              "execution": {"target_calls": 1, "draft_calls": 1,
+                            "target_top1": [12] * 8, "draft_top1": [13] * 3}}
+    if failure == "smoke-skipped-draft":
+        source["execution"]["draft_calls"] = 0
+    if failure == "fake-evidence":
+        source["evidence_kind"] = "host-fake-hiai"
+    Path(flags["--output"]).write_text(json.dumps(source))
+    print("SIMULATED smoke completed; no device execution")
+    sys.exit(0)
 if flags.get("--mode") != "benchmark":
     raise RuntimeError("expected paired benchmark mode")
 source = json.loads(Path(os.environ["FAKE_EXPECTED_REPORT"]).read_text())
@@ -246,15 +268,12 @@ def case(tmp_path):
                    "source": source, "prompt_token_ids": [1, 2], "max_new_tokens": 2,
                    "sequence_length": 8, "ordinary": mode, "dflash": copy.deepcopy(mode),
                    "abi_version": 2, "feature_dtype": "torch.float16"})
-    runner = tmp_path / "runner.elf"
-    elf = bytearray(64)
-    elf[:7] = b"\x7fELF\x02\x01\x01"
-    struct.pack_into("<HHI", elf, 16, 2, 183, 1)
-    struct.pack_into("<H", elf, 52, 64)
-    runner.write_bytes(elf)
+    runner = _shared_elf(tmp_path / "runner.elf", "SIMULATED-RUNNER")
     libs = tmp_path / "runtime libs"
     libs.mkdir()
-    (libs / "libhiai-fixture.so").write_bytes(b"SIMULATED-LIBRARY")
+    _shared_elf(libs / "libhiai-fixture.so", "SIMULATED-LIBRARY")
+    vendor = tmp_path / "vendor-libraries"
+    vendor.mkdir()
     hdc = tmp_path / "fake-hdc"
     fake_runner = tmp_path / "simulated-runner"
     _executable(hdc, FAKE_HDC)
@@ -269,6 +288,7 @@ def case(tmp_path):
                FAKE_RUNNER_CALLS=str(tmp_path / "runner-calls.jsonl"),
                FAKE_EXPECTED_REPORT=str(report), FAKE_HDC_FAILURE="", FAKE_HILOG_FAILURE="",
                FAKE_BOARD_ROOT=board_root, FAKE_BOARD_SANDBOX=str(board),
+               FAKE_VENDOR_ROOT=str(vendor),
                FAKE_RUNNER=str(fake_runner))
     argv = [sys.executable, str(SCRIPT), "--omc", str(bundle), "--runner", str(runner),
             "--reference", str(reference), "--lib-dir", str(libs), "--output", str(out),
@@ -346,6 +366,7 @@ def test_hdc_protocol_upload_environment_and_strict_comparison(case):
     assert len(executions) == 2 and executions[0]["argv"] == ["--probe"]
     for execution in executions:
         assert str(case["board"] / "lib") in execution["LD_LIBRARY_PATH"].split(":")
+        assert "/vendor/lib64/chipsetsdk" in execution["LD_LIBRARY_PATH"].split(":")
     flags = dict(zip(executions[1]["argv"][::2], executions[1]["argv"][1::2]))
     assert flags["--mode"] == "benchmark"
     assert flags["--expected-runtime-version"] == "SIMULATED-HIAI-PROTOCOL-ONLY"
@@ -549,7 +570,7 @@ def test_omc_cleanup_removes_only_omcs_and_preserves_weight_sidecars(case):
     assert (case["board"] / "models/manifest.json").read_bytes() == (
         case["bundle"] / "manifest.json").read_bytes()
     assert (case["board"] / "bin/qwen35_dflash_hiai").read_bytes() == case["runner"].read_bytes()
-    assert (case["board"] / "lib/libhiai-fixture.so").read_bytes() == b"SIMULATED-LIBRARY"
+    assert (case["board"] / "lib/libhiai-fixture.so").read_bytes() == (case["libs"] / "libhiai-fixture.so").read_bytes()
     assert (case["board"] / ".qwen35-hdc-owner").is_file()
     assert (case["board"] / "benchmark.json").is_file()
     assert (case["board"] / "benchmark.stderr").is_file()
@@ -641,12 +662,24 @@ def test_legacy_build_and_unuploaded_link_input_are_explicit_without_board_assum
     assert json.loads((case["output"] / "comparison.json").read_text())["status"] == "PASS"
 
 
-def _shared_elf(path, marker, *, machine=183):
-    """Minimal ELF header for selection tests, never a loadable runtime library."""
-    elf = bytearray(64)
+def _shared_elf(path, marker, *, machine=183, needed=(), soname=None):
+    """Inspectable ELF segments for selection tests, never an executable library."""
+    elf = bytearray(1024)
     elf[:7] = b"\x7fELF\x02\x01\x01"
     struct.pack_into("<HHI", elf, 16, 3, machine, 1)
-    struct.pack_into("<H", elf, 52, 64)
+    struct.pack_into("<Q", elf, 32, 64)
+    struct.pack_into("<HHH", elf, 52, 64, 56, 2)
+    struct.pack_into("<IIQQQQQQ", elf, 64, 1, 4, 0, 0x10000, 0, len(elf), len(elf), 4096)
+    strings = bytearray(b"\0")
+    tags = []
+    for name, tag in [(name, 1) for name in needed] + ([(soname, 14)] if soname else []):
+        tags.append((tag, len(strings)))
+        strings.extend(name.encode() + b"\0")
+    tags = [(5, 0x10200), (10, len(strings)), *tags, (0, 0)]
+    struct.pack_into("<IIQQQQQQ", elf, 120, 2, 4, 256, 0x10100, 0, len(tags) * 16, len(tags) * 16, 8)
+    for index, pair in enumerate(tags):
+        struct.pack_into("<qQ", elf, 256 + index * 16, *pair)
+    elf[512:512 + len(strings)] = strings
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(elf + marker.encode())
     return path
@@ -668,6 +701,8 @@ def _automatic_build(case):
     ddk = case["root"] / "internal ddk/ddk/ai_ddk_lib/lib64"
     linked = _shared_elf(ddk / "libhiai.so", "SIMULATED-LINK-LIBRARY")
     adjacent = _shared_elf(ddk / "libhiai_ir.so", "SIMULATED-ADJACENT-LIBRARY")
+    hcl = _shared_elf(ddk / "libhiai_hcl_model_runtime.so", "SIMULATED-DDK-HCL")
+    hcl_impl = _shared_elf(ddk / "libhiai_hcl_model_runtime_impl.so", "SIMULATED-DDK-HCL-IMPL")
     native = case["root"] / "ohos native sdk"
     toolchain = native / "build/cmake/ohos.toolchain.cmake"
     toolchain.parent.mkdir(parents=True)
@@ -685,7 +720,7 @@ def _automatic_build(case):
     _json(build / "command.json", command)
     _json(build / "result.json", result)
     return {"build": build, "command": command, "result": result,
-            "linked": linked, "adjacent": adjacent, "cxx": cxx}
+            "linked": linked, "adjacent": adjacent, "cxx": cxx, "hcl": hcl, "hcl_impl": hcl_impl}
 
 
 def test_automatic_runtime_discovery_uses_recorded_ddk_and_sdk_without_library_flags(case):
@@ -701,8 +736,19 @@ def test_automatic_runtime_discovery_uses_recorded_ddk_and_sdk_without_library_f
         record = uploads[board_root + "/lib/" + local.name]
         assert record["sha256"] == hashlib.sha256(local.read_bytes()).hexdigest()
     assert board_root + "/lib/libhiai-fixture.so" not in uploads
+    for key in ("hcl", "hcl_impl"):
+        assert board_root + "/lib/" + automatic[key].name not in uploads
     for name in ("preflight.json", "result.json"):
-        association = json.loads((case["output"] / name).read_text())["hiai_build"]
+        record = json.loads((case["output"] / name).read_text())
+        deployment = record["runtime_deployment"]
+        assert deployment["mode"] == "board-hcl"
+        assert deployment["backend_selection"] == deployment["runtime_placement"] == "UNVERIFIED"
+        assert deployment["library_search_paths"] == ["/vendor/lib64/chipsetsdk"]
+        assert {Path(item["remote"]).name for item in deployment["excluded_libraries"]} == {
+            automatic["hcl"].name, automatic["hcl_impl"].name}
+        assert all(item["sha256"] == hashlib.sha256(Path(item["path"]).read_bytes()).hexdigest()
+                   for item in deployment["elf_dependencies"])
+        association = record["hiai_build"]
         assert association["build_dir"] == str(automatic["build"])
         assert association["command_binding"] == "legacy-unbound"
         assert association["binary_sha256"] == automatic["result"]["binary_sha256"]
@@ -882,3 +928,124 @@ def test_hilog_summary_bounds_display_and_keeps_full_snapshot(tmp_path):
     assert selected[-1].startswith("L80: NPU error 79:")
     assert max(map(len, selected)) <= 1010
     assert path.read_text() == original
+
+
+@pytest.mark.parametrize("fault", ["runner-needed", "library-needed", "absolute-needed", "soname", "same-bytes", "malformed-elf"])
+def test_board_hcl_exclusion_rejects_unsafe_library_sets_before_hdc(case, fault):
+    excluded = _shared_elf(case["libs"] / "libhiai_hcl_model_runtime.so", "SIMULATED-EXCLUDED")
+    _shared_elf(case["libs"] / "libhiai_hcl_model_runtime_impl.so", "SIMULATED-EXCLUDED-IMPL")
+    retained = case["libs"] / "libhiai-fixture.so"
+    if fault == "runner-needed":
+        _shared_elf(case["runner"], "SIMULATED-HARD-DEPENDENCY", needed=(excluded.name,))
+    elif fault in {"library-needed", "absolute-needed"}:
+        name = excluded.name if fault == "library-needed" else "/private/ddk/" + excluded.name
+        _shared_elf(retained, "SIMULATED-HARD-DEPENDENCY", needed=(name,))
+    elif fault == "soname":
+        _shared_elf(retained, "SIMULATED-COLLIDING-PROVIDER", soname=excluded.name)
+    elif fault == "same-bytes":
+        retained.write_bytes(excluded.read_bytes())
+    else:
+        retained.write_bytes(b"not ELF")
+    result = _run(case)
+    assert result.returncode != 0
+    assert not _calls(case) and not _calls(case, runner=True)
+    assert not case["board"].exists() and _cleanup(case) == "NOT_CREATED"
+
+
+def test_unavailable_vendor_directory_is_rejected_before_deployment(case):
+    Path(case["env"]["FAKE_VENDOR_ROOT"]).rmdir()
+    result = _run(case)
+    assert result.returncode != 0
+    assert "library-search-path" in result.stderr
+    assert not case["board"].exists() and _cleanup(case) == "NOT_CREATED"
+    assert not _calls(case, runner=True)
+    assert not Path(case["env"]["FAKE_HDC_UPLOADS"]).exists()
+
+
+def test_execution_only_runs_both_graphs_without_accuracy_or_generation_gate(case):
+    _automatic_build(case)
+    case["argv"].append("--execution-only")
+    reference = json.loads(case["reference"].read_text())
+    reference.update(status="FAIL", max_new_tokens=999)
+    reference.pop("ordinary")
+    _json(case["reference"], reference)
+    result = _run(case)
+    assert result.returncode == 0, result.stdout + result.stderr
+    record = json.loads((case["output"] / "result.json").read_text())
+    assert record["status"] == "EXECUTION_COMPLETE" and record["device_execution"] == "PASS"
+    assert record["device_validation"] == record["accuracy"] == record["performance"] == "NOT_EVALUATED"
+    assert all(record["execution_checks"].values())
+    assert not (case["output"] / "comparison.json").exists()
+    assert "comparison_sha256" not in record
+    calls = _calls(case, runner=True)
+    assert len(calls) == 2
+    assert calls[0]["argv"] == ["--probe"]
+    assert dict(zip(calls[1]["argv"][::2], calls[1]["argv"][1::2]))["--mode"] == "smoke"
+    native = json.loads((case["output"] / "benchmark.json").read_text())
+    assert native["execution"]["target_calls"] == native["execution"]["draft_calls"] == 1
+    assert native["execution"]["target_top1"] == [12] * 8
+    assert record["hilog"]["status"] == "CAPTURED"
+    assert not case["board"].exists() and _cleanup(case) == "REMOVED"
+
+
+@pytest.mark.parametrize("failure,stage", [("smoke-skipped-draft", "execution-report"),
+                                            ("fake-evidence", "execution-report"),
+                                            ("remote-exit", "benchmark")])
+def test_execution_only_rejects_incomplete_or_fake_execution_without_accuracy_claim(case, failure, stage):
+    case["argv"].append("--execution-only")
+    result = _run(case, failure)
+    assert result.returncode != 0
+    record = json.loads((case["output"] / "result.json").read_text())
+    assert record["status"] == "FAILED" and record["device_execution"] == "FAILED"
+    assert record["stage"] == stage
+    assert record["device_validation"] == record["accuracy"] == record["performance"] == "NOT_EVALUATED"
+    assert not (case["output"] / "comparison.json").exists()
+    assert case["board"].is_dir() and _cleanup(case) == "RETAINED"
+    assert record["hilog"]["status"] == "CAPTURED"
+
+
+def test_execution_only_cleanup_failure_preserves_execution_evidence(case):
+    case["argv"].append("--execution-only")
+    result = _run(case, "cleanup-rm")
+    assert result.returncode != 0
+    record = json.loads((case["output"] / "result.json").read_text())
+    assert record["status"] == "FAILED" and record["device_execution"] == "PASS"
+    assert record["device_validation"] == "NOT_EVALUATED"
+    assert record["board_cleanup"]["status"] == "FAILED"
+    assert case["board"].is_dir()
+    assert not (case["output"] / "comparison.json").exists()
+
+
+@pytest.mark.parametrize("key,value", [
+    ("mode", "benchmark"), ("status", "PASS"), ("scope", "paired-greedy-protocol"),
+    ("evidence_kind", "host-fake-hiai"), ("runtime_version", "other-runtime"),
+    ("ddk_id", "other-ddk"), ("firmware_id", "other-firmware"),
+    ("target_sha256", "0" * 64), ("draft_sha256", "1" * 64),
+    ("sequence_length", 7), ("pad_token_id", True), ("prompt_token_ids", [True, 2]),
+    ("eos_token_ids", [True]), ("accuracy", "PASS"), ("performance", "PASS"),
+    ("ordinary", {}), ("execution.target_calls", True), ("execution.draft_calls", 0),
+    ("execution.target_top1", [1] * 7), ("execution.draft_top1", [1] * 4),
+    ("execution.target_top1", [True] * 8), ("execution.draft_top1", [-1, 1, 2]),
+    ("execution.draft_top1", [1, 2, 64]),
+])
+def test_smoke_report_checks_identity_counts_shapes_and_token_ranges(case, key, value):
+    from qwen35_moe_dflash.hdc_run import _smoke_checks
+
+    manifest = case["manifest"]
+    reference = json.loads(case["reference"].read_text())
+    graphs = {graph["name"]: graph for graph in manifest["graphs"]}
+    report = {"schema_version": 2, "abi_version": 2, "feature_dtype": "torch.float16",
+              "status": "EXECUTION_COMPLETE", "mode": "smoke", "scope": "target-draft-execution",
+              "evidence_kind": "device-hiai", "device_execution": "PASS",
+              "accuracy": "NOT_EVALUATED", "performance": "NOT_EVALUATED",
+              "runtime_version": "runtime", "ddk_id": manifest["ddk_id"], "firmware_id": "firmware",
+              "target_sha256": graphs["target"]["sha256"], "draft_sha256": graphs["draft"]["sha256"],
+              "sequence_length": 8, "pad_token_id": 0, "prompt_token_ids": [1, 2], "eos_token_ids": [10],
+              "execution": {"target_calls": 1, "draft_calls": 1,
+                            "target_top1": [12] * 8, "draft_top1": [13] * 3}}
+    assert all(_smoke_checks(report, manifest, reference, "runtime", "firmware").values())
+    if key.startswith("execution."):
+        report["execution"][key.split(".")[1]] = value
+    else:
+        report[key] = value
+    assert not all(_smoke_checks(report, manifest, reference, "runtime", "firmware").values())

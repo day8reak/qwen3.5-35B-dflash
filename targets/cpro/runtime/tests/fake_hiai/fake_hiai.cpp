@@ -8,6 +8,7 @@
 namespace {
 int tensors=0, clients=0;
 std::string Failure() { const auto* p=std::getenv("FAKE_HIAI_FAILURE"); return p?p:""; }
+std::string Layout() { const auto* p=std::getenv("FAKE_HIAI_LAYOUT"); return p?p:""; }
 void Trace(const char* event) {
   if (const auto* path=std::getenv("FAKE_HIAI_TRACE")) std::ofstream(path, std::ios::app) << event << '\n';
 }
@@ -33,6 +34,7 @@ namespace hiai {
 AiTensor::AiTensor() { ++tensors; }
 AiTensor::~AiTensor() { --tensors; }
 AIStatus AiTensor::Init(const TensorDimension* dim, HIAI_DataType type) {
+  if(Layout()=="padded" && dim->GetDims().size()!=4) return AI_FAILED;
   if (Failure()=="allocation" && tensors==5) return AI_FAILED;
   if (type!=HIAI_DATATYPE_INT32 && type!=HIAI_DATATYPE_FLOAT16) return AI_FAILED;
   if (dim->GetDims().size()==3 && type!=HIAI_DATATYPE_FLOAT16) return AI_FAILED;
@@ -93,6 +95,28 @@ AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vecto
   TensorDimension ids({1,32}), features({1,32,32});
   if(n=="qwen35_target") { in={ids,ids}; out={ids,features}; }
   else { in={features,ids,ids}; out={TensorDimension({1,3})}; }
+  if(Layout()=="padded" || Layout()=="padded-mixed") {
+    for(auto* dims : {&in, &out}) {
+      for(auto& dim : *dims) {
+        auto shape=dim.GetDims();
+        if(Layout()=="padded-mixed" && shape.size()==3) continue;
+        shape.resize(4,1); dim=TensorDimension(shape);
+      }
+    }
+  }
+  if(n=="qwen35_target") {
+    if(Layout()=="leading-one") in[0]=TensorDimension({1,1,32,1});
+    if(Layout()=="middle-one") out[1]=TensorDimension({1,32,1,32});
+    if(Layout()=="rank-five") in[1]=TensorDimension({1,32,1,1,1});
+    if(Layout()=="rank-three-token") in[1]=TensorDimension({1,32,1});
+    if(Layout()=="non-one-tail") in[1]=TensorDimension({1,32,1,2});
+    if(Layout()=="zero-tail") in[1]=TensorDimension({1,32,1,0});
+    if(Layout()=="non-nd") in[1]=TensorDimension({1,32,1,1},Format::NCHW);
+    if(Layout()=="permuted") in[1]=TensorDimension({32,1,1,1});
+  } else {
+    if(Layout()=="draft-width-tail") out[0]=TensorDimension({1,3,2,1});
+    if(Layout()=="draft-feature-width") in[0]=TensorDimension({1,32,16,2});
+  }
   if(Failure()=="shape") in[0]=TensorDimension({2,3});
   if(Failure()=="format") in[0]=TensorDimension({1,32},Format::NCHW);
   if(Failure()=="count") out.clear();

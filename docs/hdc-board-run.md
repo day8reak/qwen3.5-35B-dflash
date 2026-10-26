@@ -8,6 +8,34 @@ hdc -t "$SN" -s "$BIP" ...
 
 `-s` 是 HDC 服务端地址，填写你现有连接实际使用的 `IP:端口`，不能只填 IP；`SN` 选择该服务端连接的设备，见[官方远程连接说明](https://github.com/openharmony/docs/blob/master/en/application-dev/dfx/hdc.md#remote-connection)。本脚本使用已有连接，不配置网络转发或启动远端 HDC 服务。
 
+## 当前优先：复用 OMC 打通双图执行
+
+最终目标仍是精度达标后 DFlash 至少提速 2 倍。当前按用户要求先验证上板执行，不将精度诊断作为前置步骤。复用已经编译成功的 target/draft OMC 和现有参考 JSON，无需重导 AIR 或重编 OMC。
+
+沿用原构建环境及 `SN`、`BIP`，重新编译正式 runner 后执行：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+export HIAI_BUILD_DIR="$AI_RUN_DIR/hiai-execution-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" --output "$HIAI_BUILD_DIR"
+
+export HDC_RUN_DIR="$AI_RUN_DIR/hdc-execution-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+  --omc "$GE_OMC_DIR" \
+  --runner "$HIAI_BUILD_DIR/build/qwen35_dflash_hiai" \
+  --reference "$GE_BOARD_RUN/reference.json" \
+  --output "$HDC_RUN_DIR" --execution-only
+
+cat "$HDC_RUN_DIR/result.json"
+cat "$HDC_RUN_DIR/benchmark.stderr"
+```
+
+此模式沿用文件名 `benchmark.json`，但报告的 `mode` 是 `smoke`：强制 target 和 draft 各调用一次，将 target 特征传给 draft，保存两图 Top1 输出。即使 prompt 的下一 token 是 EOS，也会执行 draft。成功标为 `EXECUTION_COMPLETE`；`accuracy`、`performance` 为 `NOT_EVALUATED`，不产生 `comparison.json`。参考 JSON 仍用于身份和输入配置检查；其历史 PASS 不是本次板端精度结论。
+
+程序保留模型哈希、版本、张量数量、格式、大小和 token 范围检查。仅接受 ND 原始维度后补到四维的 `1`，例如 `[1,S] → [1,S,1,1]`、`[1,S,F] → [1,S,F,1]`，并用运行库返回的描述初始化张量；不按元素总数放行任意布局。成功和失败都会尝试回传 HiLog，日志缺失单独记录。
+
+当前没有完整模型板端通过证据；这个命令用于取得实际加载/执行结果。去掉 `--execution-only` 后仍是下文的严格 benchmark + 参考比较。
+
 ## 服务器准备
 
 先完成[直接 GE tiny 上板指南的第1、2节](direct-ge-board.md)：保留成功的 OMC bundle、同一批 prepared 生成的 `reference.json`，以及正式链接的 `qwen35_dflash_hiai`。无需重新生成 AIR/OMC。
@@ -21,9 +49,10 @@ hdc -t "$SN" -s "$BIP" ...
 | `HDC` | 可选，主机 HDC 可执行文件路径；默认从 PATH 查找 `hdc` |
 | `--omc` | 含成功 `manifest.json` 的 OMC bundle 目录 |
 | `--runner` | 正式 HarmonyOS ARM64 程序；不接受主机 fake runner |
-| `--reference` | 与这批 OMC 权重匹配、状态为 PASS 的参考 JSON |
+| `--reference` | 与这批 OMC 身份匹配的参考 JSON；默认要求 PASS，execution-only 不以历史精度状态作门槛 |
 | `--board-cleanup` | 成功后的清理方式：`all`（默认）、`omc`、`none`，见下表 |
 | `--output` | 本次服务器结果目录，必须在 `AI_RUN_DIR` 下且尚不存在 |
+| `--execution-only` | 只跑 target/draft 各一次并回传，精度与性能后续验证 |
 
 板端须能通过 shell 执行 `sh`、`mkdir`、`chmod`、`sha256sum` 等基础命令，且部署位置允许执行程序与访问 HIAI。脚本自动定位构建记录中的 HIAI 库和 OHOS SDK 的 ARM64 C++ 运行库。
 
@@ -53,6 +82,8 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 如果同套库目录没有 `libc++_shared.so`，脚本从构建命令记录的 OHOS Native SDK 中定位 ARM64 版本；找不到时会记录未补充，后续由板端 probe 判断装载是否成功。自动收集的库须为 ARM64 ELF；同名库内容冲突时在上传前停止。最终来源、哈希和查找结果记录在 `preflight.json` / `result.json` 中。保留原构建目录、DDK 和 SDK 路径即可；如果这些文件搬迁或变化，会显示具体缺失路径或哈希不匹配，不会悄悄替换为另一套库。
 
+默认部署复用已在本板探针验证的 vendor HCL 候选：排除 `libhiai_hcl_model_runtime.so` 与 `libhiai_hcl_model_runtime_impl.so` 两个 DDK 库，并在进程的库搜索路径中加入 `/vendor/lib64/chipsetsdk`。上传前检查保留文件的 ELF 依赖及 SONAME；若存在对排除库的硬依赖，明确失败，不上传替代空壳库。此策略只影响本次隔离目录和进程，不修改系统文件；实际后端以日志为准。
+
 新构建记录绑定 `command.json` 的 SHA256；旧记录缺少该字段时仍可使用，标记为 `legacy-unbound`，并检查现有程序及库的身份。该检查不保证全部传递依赖与板端 ABI 兼容，最终以 probe 和实际运行结果为准。旧版显式库目录参数仍兼容已有脚本，推荐直接使用上面的四个参数。
 
 默认板端目录为 `/data/local/tmp/qwen35-dflash-<唯一标识>`，实际路径记录在结果中。需要自选位置时加 `--board-root /data/local/tmp/你的新目录`，该目录必须尚不存在。每次重跑都换新的 `--output`。成功完成运行、结果与日志回传及参考比较后，脚本自动删除本次创建的板端目录；失败时保留供排查。服务器结果与已有目录均保留。
@@ -71,10 +102,12 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 ## 自动执行的内容
 
+以下是默认 benchmark 流程；当前执行联调使用上文 `--execution-only`，第5–6步改为一次双图 smoke 及执行报告校验。
+
 1. 检查 OMC 清单与文件哈希、参考权重身份、prompt 和序列长度，检查程序是 ARM64 ELF。
 2. 创建新的板端目录，按文件精确上传程序、manifest、清单中的 OMC/附属文件及自动定位的运行库，保留相对目录结构。清单中包含的编译诊断文件也可能随 bundle 一并传输。
 3. 在板端用 `sha256sum` 核对上传内容。
-4. 设置本次运行的 `LD_LIBRARY_PATH=<部署目录>/lib:<板端原值>`，执行 `--probe` 并回传 JSON；要求 `npu_supported=true`。
+4. 设置本次运行的 `LD_LIBRARY_PATH=<部署目录>/lib:/vendor/lib64/chipsetsdk:<板端原值>`，执行 `--probe` 并回传 JSON；要求 `npu_supported=true`。
 5. 根据 manifest 和 probe 自动生成 benchmark 命令，执行普通生成与 DFlash 一致性检查，并各进行3次预热、10次测量。prompt 与生成长度直接取参考 JSON。
 6. 回传运行结果、stdout/stderr 和退出码，调用项目现有 `compare` 与服务器参考比较。
 7. 仅在上述步骤全部成功后，按 `--board-cleanup` 执行清理；删除前验证本次运行归属标记，结果记录在 `result.json` 的 `board_cleanup.mode/status`。
@@ -94,8 +127,8 @@ cat "$HDC_RUN_DIR/comparison.json"
 |---|---|
 | `result.json` | 本次自动流程状态与身份信息 |
 | `runtime-probe.json` | 板端 HIAI 版本和 NPU 能力 |
-| `benchmark.json` | 普通/DFlash 生成结果与测量报告 |
-| `comparison.json` | 与参考的 token、停止原因和产物身份比较 |
+| `benchmark.json` | 默认是生成测量；`--execution-only` 时为 mode=smoke 的两图执行输出 |
+| `comparison.json` | 默认模式的参考比较；execution-only 不生成 |
 | `probe.stderr`、`benchmark.stderr` | 板端错误日志 |
 | `probe.exitcode`、`benchmark.exitcode` | 板端程序实际退出码 |
 | `hiai-hilog.txt`、`hiai-hilog.stderr`、`hiai-hilog.exitcode` | probe / benchmark 失败后尝试抓取的板端系统日志与抓取状态，独立于推理状态 |

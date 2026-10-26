@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T002510Z-8234-33823c",
+  "baseline_commit": "5b08d12",
+  "status": "HOST_VALIDATED_USER_BOARD_EXECUTION_PENDING",
+  "user_priority": "先打通上板执行的链路吧，后续再考虑精度问题",
+  "final_objective": "DFlash >=2x speedup after accuracy closure; specs/dflash-contract.json#delivery_objective",
+  "scope": "Reuse existing compiled OMC pair; refresh the production runner and private library deployment; no model compilation",
+  "changes": [
+    "Exclude DDK HCL runtime pair from private uploaded library set with shared ELF dependency/alias/hash guard; add vendor chipsSDK path to process environment",
+    "Accept only ND logical shape or exact trailing-one padding to rank4, initialize from actual runtime descriptor, retain original dtype and byte counts",
+    "Smoke directly executes target then draft with target features, regardless of EOS, and returns complete top1 arrays",
+    "execution-only bypasses generation quality comparisons and benchmarking, retains source/config/ABI/hash/transport/identity/output checks, and reports accuracy/performance NOT_EVALUATED",
+    "Default paired benchmark numerical gate unchanged; collect HiLog on execution-only success/failure without masking result"
+  ],
+  "device_status": "NOT_RUN_LOCALLY_USER_BOARD_ACCESS_REQUIRED",
+  "prior_user_evidence": "Three independent candidate-deployment operator probes passed Load/Process/numerical comparison; not a full-model result",
+  "host_validation": {
+    "native_ctest": {
+      "suites": 5,
+      "failures": 0,
+      "evidence": "execution-native.xml",
+      "sha256": "33209660a9ae5c98bf3df4a504b400b578cd127469a35e97264e2a4b8e243627",
+      "scope": "Real production C++ executor and CLI against fake HIAI; includes scheduler, mapping lifetime, failures, smoke and IO padding"
+    },
+    "independent_review": "PASSED_NO_BLOCKING_FINDINGS",
+    "cli_help": "PASSED",
+    "docs_bash_syntax": "PASSED",
+    "python": {
+      "tests": 181,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "evidence": "execution-host-final.xml",
+      "sha256": "b88205566645e687f647cbce3eee9e005d5ed255d8f12512f6726ac47e907ca3",
+      "scope": "HDC protocol/deployment, runtime A/B, CLI, runner refresh and build configuration"
+    }
+  },
+  "source_sha256": {
+    "model/qwen35_moe_dflash/hdc_run.py": "bcb0935168ae5f81fe42258c8d5fe522905fafe6da8eb2da75dd2178437ec2fe",
+    "model/qwen35_moe_dflash/hiai_deployment.py": "913556e791abe06b1f586caf2ee0f85f14e9eada9bbdb887e5cf303293700045",
+    "model/qwen35_moe_dflash/hiai_runtime_probe.py": "b63fff5fc0edc4840fd180b121427bda60fd0ac3548ce73f92b9c97e7f82a6a1",
+    "model/qwen35_moe_dflash/cli.py": "fa4755721bdb34c73a5aa5bcac54305cab7ee7418e739310dc0db564c83809af",
+    "targets/cpro/runtime/src/hiai_executor.cpp": "6e6c35d421193f41fa3257a462b88f97c8bf8e1060f077e40ad78a7f4ea6ef51",
+    "targets/cpro/runtime/src/main.cpp": "47c0a6852158bcc5a877fd6e8eaca78366db853898feb122bac85e3668b67240",
+    "targets/cpro/runtime/tests/fake_hiai/fake_hiai.cpp": "c4c9deb141355a976adb3931fae85d3966ebd65cd09e2bb2d55037088a4e7a32",
+    "targets/cpro/runtime/tests/test_hiai_io_padding.py": "f22e9d082aa95b2b0d29844358bb30605dd29e884e6e05ad3e65ee8bbf68908e",
+    "targets/cpro/runtime/tests/test_hiai_runner.py": "9e010116a8f041482fb3aeb8cd24ffa979559f9b19740d22817d04dfc53a73e7",
+    "tests/test_hdc_run.py": "5eb4ae3a2e6f6f3743c457dc4afd87d734478e8c0408c1ff31a952b528fae869",
+    "tests/test_cli.py": "1c77eba849c33cb2a0463bef40713724a084006faba9f24bb1ec9610dfa60a0a"
+  },
+  "limitations": [
+    "No OHOS link or real board execution of this revision in the local environment",
+    "Smoke executes both graphs once; it does not validate complete generation, precision, performance or individual NPU operator placement",
+    "Still ABI v2 prefix recomputation; no incremental cache or native compressed full-weight mapping",
+    "Model loading still has the existing SetModelBuffer uint32 per-file limit"
+  ],
+  "guide": "docs/hdc-board-run.md",
+  "experience_audit": "docs/experience.md",
+  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_hdc.py\" --omc \"$GE_OMC_DIR\" --runner \"$HIAI_BUILD_DIR/build/qwen35_dflash_hiai\" --reference \"$GE_BOARD_RUN/reference.json\" --output \"$HDC_RUN_DIR\" --execution-only",
+  "prerequisite": "Build current sources with build_hiai.py into a new HIAI_BUILD_DIR; use existing environment and OMC/reference"
+}

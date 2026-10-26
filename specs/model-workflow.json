@@ -269,7 +269,31 @@
       }
     },
     "operator_audit": "specs/ge-operator-audit.json",
-    "board_guide": "docs/direct-ge-board.md"
+    "board_guide": "docs/direct-ge-board.md",
+    "structure_adaptation": {
+      "run_id": "20261026T002510Z-8234-33823c",
+      "status": "HOST_VALIDATED_NEW_GRAPH_BOARD_PENDING",
+      "evidence": "specs/cpro-structure-adaptation-verification.json",
+      "mode": "static default; selected opt-in",
+      "accuracy_diagnostic": "OPTIONAL_DEFERRED",
+      "device_status": "NEW_GRAPH_NOT_RUN"
+    },
+    "board_execution_bringup": {
+      "run_id": "20261026T002510Z-8234-33823c",
+      "status": "HOST_VALIDATED_USER_BOARD_RUN_PENDING",
+      "scope": "Existing compiled target/draft OMC pair; not a newly compiled full-weight model",
+      "runtime_deployment": "Private library set excludes DDK HCL pair; process path includes /vendor/lib64/chipsetsdk",
+      "runner_changes": [
+        "ND exact or trailing-one-to-rank4 adaptation",
+        "smoke executes both graphs exactly once and returns Top1 arrays"
+      ],
+      "accuracy": "DEFERRED_NOT_EVALUATED",
+      "performance": "NOT_MEASURED",
+      "evidence": "specs/hiai-model-execution-verification.json",
+      "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_hdc.py\" --omc \"$GE_OMC_DIR\" --runner \"$HIAI_BUILD_DIR/build/qwen35_dflash_hiai\" --reference \"$GE_BOARD_RUN/reference.json\" --output \"$HDC_RUN_DIR\" --execution-only",
+      "requires": "Rebuild current runner using build_hiai.py; reuse existing OMC and reference",
+      "guide": "docs/hdc-board-run.md"
+    }
   },
   "operator_support_probe": {
     "run_id": "20261026T002510Z-8234-33823c",
@@ -295,5 +319,14 @@
       "io_fix_evidence": "specs/hiai-probe-nd-padding-verification.json",
       "replay_evidence": "specs/hiai-operator-replay-verification.json"
     }
+  },
+  "delivery_objective": "specs/dflash-contract.json#delivery_objective",
+  "current_priority": {
+    "date": "2026-10-26",
+    "user_directive": "先打通上板执行的链路吧，后续再考虑精度问题",
+    "milestone": "target/draft load + one execution each + output/log retrieval",
+    "accuracy_work": "DEFERRED_NOT_WAIVED",
+    "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
+    "guide": "docs/hdc-board-run.md"
   }
 }

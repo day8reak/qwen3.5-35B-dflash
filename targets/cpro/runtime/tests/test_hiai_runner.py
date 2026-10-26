@@ -90,3 +90,57 @@ for mode in ["ordinary", "dflash"]:
     data = json.loads(report.read_text())
     assert data["scope"] == "single-generation" and "ordinary" not in data
     assert data["generation"]["generated_token_ids"] == list(range(3,11))
+
+# Smoke must invoke both graphs once, even when the first target token is EOS.
+# Valid but wrong draft tokens must not turn this execution test into an
+# accuracy/acceptance gate or an implicit generation benchmark.
+for failure in ("", "corrupt-draft"):
+    smoke = base[:]
+    smoke[smoke.index("--mode") + 1] = "smoke"
+    smoke[smoke.index("--eos-token-ids") + 1] = "3"
+    smoke[smoke.index("--max-new-tokens") + 1] = "999"
+    label = "smoke-" + (failure or "success")
+    report, trace_path = root / label, root / (label + ".trace")
+    result = subprocess.run(smoke + ["--output", str(report)],
+        env=dict(os.environ, FAKE_HIAI_FAILURE=failure, FAKE_HIAI_TRACE=str(trace_path)),
+        capture_output=True, text=True)
+    assert result.returncode == 0 and "LEAK" not in result.stderr, result.stderr
+    assert trace_path.read_text().splitlines() == ["load", "load", "process", "process", "unload", "unload"]
+    data = json.loads(report.read_text())
+    assert data["status"] == "EXECUTION_COMPLETE" and data["mode"] == "smoke"
+    assert data["scope"] == "target-draft-execution"
+    assert data["accuracy"] == data["performance"] == "NOT_EVALUATED"
+    assert data["device_execution"] == "PASS" and data["evidence_kind"] == "host-fake-hiai"
+    assert data["abi_version"] == 2 and data["feature_dtype"] == "torch.float16"
+    assert data["target_sha256"] == sha(target) and data["draft_sha256"] == sha(draft)
+    assert data["runtime_version"] == "FAKE-HIAI-X90"
+    assert data["sequence_length"] == 32 and data["prompt_token_ids"] == [1, 2]
+    assert data["execution"] == {"target_calls": 1, "draft_calls": 1,
+        "target_top1": [2, 3] + [1] * 30,
+        "draft_top1": [3, 63 if failure else 4, 5]}
+    assert not {"generation", "ordinary", "dflash", "timing_scope", "max_new_tokens",
+                "generated_token_ids", "speedup", "acceptance_rate"}.intersection(data)
+    assert result.stdout.startswith("EXECUTION_COMPLETE: smoke;")
+
+for number, (failure, flag, value, message) in enumerate([
+    ("", "--target-sha256", "0" * 64, "SHA256"),
+    ("", "--expected-runtime-version", "wrong", "version"),
+    ("", "--prompt-token-ids", "", "prefix"),
+    ("", "--prompt-token-ids", ",".join(["1"] * 33), "prefix"),
+    ("", "--prompt-token-ids", "64", "vocabulary"),
+    ("", "--pad-token-id", "64", "vocabulary"),
+    ("shape", None, None, "shape"),
+    ("format", None, None, "format"),
+    ("draft-load", None, None, "Load"),
+    ("run", None, None, "Process"),
+    ("token", None, None, "vocabulary"),
+]):
+    smoke = base[:]; smoke[smoke.index("--mode") + 1] = "smoke"
+    if flag is not None:
+        smoke[smoke.index(flag) + 1] = value
+    report = root / ("smoke-rejected-" + str(number))
+    result = subprocess.run(smoke + ["--output", str(report)],
+        env=dict(os.environ, FAKE_HIAI_FAILURE=failure), capture_output=True, text=True)
+    assert result.returncode == 1 and message.lower() in result.stderr.lower(), (failure, result.stderr)
+    assert not report.exists() and "LEAK" not in result.stderr, result.stderr
+print("HIAI smoke: two calls including immediate EOS, identity/ABI faults, and no quality/performance claims passed")

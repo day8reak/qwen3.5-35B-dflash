@@ -199,7 +199,7 @@ void Help() {
             << "--draft DRAFT.omc --draft-sha256 HEX --expected-runtime-version VERSION "
             << "--ddk-id VERSION --firmware-id VERSION "
             << "--prompt-token-ids CSV --output REPORT.json "
-            << "[--mode generate|benchmark --generation-mode dflash|ordinary --max-new-tokens 32 --max-draft-tokens 15 --pad-token-id 248044 "
+            << "[--mode generate|benchmark|smoke --generation-mode dflash|ordinary --max-new-tokens 32 --max-draft-tokens 15 --pad-token-id 248044 "
             << "--eos-token-ids 248044,248046 --feature-width 16384 --vocab-size 248320]\n";
 }
 }  // namespace
@@ -237,7 +237,8 @@ int main(int argc, char** argv) {
     if (ddk.empty() || firmware.empty()) throw std::invalid_argument("DDK and firmware identities required");
     const auto mode = take("--mode", "generate");
     const auto generation_mode = take("--generation-mode", "dflash");
-    if (mode != "generate" && mode != "benchmark") throw std::invalid_argument("unknown --mode");
+    if (mode != "generate" && mode != "benchmark" && mode != "smoke")
+      throw std::invalid_argument("unknown --mode");
     if (generation_mode != "ordinary" && generation_mode != "dflash")
       throw std::invalid_argument("unknown --generation-mode");
     const auto prompt = Tokens(take("--prompt-token-ids"));
@@ -257,28 +258,43 @@ int main(int argc, char** argv) {
                                          static_cast<std::uint32_t>(timeout));
     std::ostringstream report;
     report << std::setprecision(17)
-           << "{\"schema_version\":2,\"abi_version\":2,\"feature_dtype\":\"torch.float16\",\"status\":\"PASS\",\"scope\":\""
-           << (mode == "benchmark" ? "paired-greedy-protocol" : "single-generation") << "\","
+           << "{\"schema_version\":2,\"abi_version\":2,\"feature_dtype\":\"torch.float16\",\"status\":\""
+           << (mode == "smoke" ? "EXECUTION_COMPLETE" : "PASS") << "\",\"scope\":\""
+           << (mode == "smoke" ? "target-draft-execution" :
+               mode == "benchmark" ? "paired-greedy-protocol" : "single-generation") << "\","
            << "\"evidence_kind\":\"" << kEvidenceKind << "\","
            << "\"target\":\"cpro-x90\",\"runtime\":\"HarmonyOS HIAI synchronous Process\","
            << "\"runtime_version\":\"" << JsonEscape(executor.runtime_version()) << "\""
            << ",\"ddk_id\":\"" << JsonEscape(ddk) << "\",\"firmware_id\":\"" << JsonEscape(firmware)
            << "\",\"target_sha256\":\"" << target_hash << "\",\"draft_sha256\":\"" << draft_hash
            << "\",\"cpu_fallback_requested\":false,\"state_policy\":\"recompute\","
-           << "\"timing_scope\":\"synchronous model loop; excludes load/tokenization\","
            << "\"sequence_length\":" << executor.sequence_length()
-           << ",\"max_new_tokens\":" << options.max_new_tokens
            << ",\"pad_token_id\":" << options.pad_token_id
            << ",\"prompt_token_ids\":";
     WriteTokenIds(report, prompt);
     report << ",\"eos_token_ids\":"; WriteTokenIds(report, options.eos_token_ids);
+    if (mode == "smoke") {
+      // Exercise both graphs independently of generation/EOS scheduling. This
+      // validates execution only; these raw top-1 arrays are not generated text.
+      const auto& result = executor.Execute(prompt, options.pad_token_id, true);
+      report << ",\"mode\":\"smoke\",\"accuracy\":\"NOT_EVALUATED\","
+             << "\"performance\":\"NOT_EVALUATED\",\"device_execution\":\"PASS\","
+             << "\"execution\":{\"target_calls\":1,\"draft_calls\":1,\"target_top1\":";
+      WriteTokenIds(report, result.target_top1);
+      report << ",\"draft_top1\":";
+      WriteTokenIds(report, result.draft_top1);
+      report << '}';
+    } else {
+      report << ",\"timing_scope\":\"synchronous model loop; excludes load/tokenization\","
+             << "\"max_new_tokens\":" << options.max_new_tokens;
+    }
     if (mode == "benchmark") {
       const auto result = qwen35::dflash::BenchmarkPair(executor, prompt, options, 3, 10);
       report << ",\"ordinary\":"; WriteBenchmark(report, result.ordinary);
       report << ",\"dflash\":"; WriteBenchmark(report, result.dflash);
       report << ",\"token_id_mismatches\":" << result.token_id_mismatches
              << ",\"eos_mismatches\":" << result.eos_mismatches;
-    } else {
+    } else if (mode == "generate") {
       const auto selected = generation_mode == "ordinary" ? GenerationMode::kOrdinary : GenerationMode::kDFlash;
       const auto result = GenerateOnce(executor, prompt, selected, options);
       report << ",\"generation_mode\":\"" << ModeName(selected) << "\",\"generation\":";
@@ -286,7 +302,8 @@ int main(int argc, char** argv) {
     }
     report << '}';
     AtomicWrite(output, report.str());
-    std::cout << "PASS: " << mode << "; report=" << output << '\n';
+    std::cout << (mode == "smoke" ? "EXECUTION_COMPLETE: " : "PASS: ")
+              << mode << "; report=" << output << '\n';
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "qwen35_dflash_hiai: " << error.what() << '\n'; return 1;

@@ -54,6 +54,9 @@ if(BUILD_HOST_TESTS)
   add_test(NAME hiai_lifecycle_faults
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_runner.py
       $<TARGET_FILE:hiai_runner_fake> ${CMAKE_CURRENT_BINARY_DIR}/fake-cases)
+  add_test(NAME hiai_io_padding
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_io_padding.py
+      $<TARGET_FILE:hiai_runner_fake> ${CMAKE_CURRENT_BINARY_DIR}/padding-cases)
   add_executable(hiai_op_probe_fake src/hiai_op_probe.cpp tests/probe_fake/fake_hiai.cpp)
   target_include_directories(hiai_op_probe_fake PRIVATE tests/fake_hiai)
   add_test(NAME hiai_op_probe

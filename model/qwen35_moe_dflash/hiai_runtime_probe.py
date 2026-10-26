@@ -22,12 +22,12 @@ import tarfile
 from .artifacts import output_path, save_json
 from .elf_dynamic import dynamic_info
 from .hashing import sha256_file
+from .hiai_deployment import DDK_HCL_EXCLUDED as EXCLUDED, candidate_blockers
 from .op_probe_hdc import run_board
 from .op_probe_report import write_report
 
 
 CASE_NAMES = ("matmul_m8_b_dynamic", "add_rank4", "add_rank5")
-EXCLUDED = frozenset(("libhiai_hcl_model_runtime.so", "libhiai_hcl_model_runtime_impl.so"))
 ARMS = ("ddk_baseline", "candidate_without_ddk_hcl")
 _DTYPES = {"float16": 2, "float32": 4, "int32": 4}
 
@@ -252,30 +252,6 @@ def validate_source(source, *, replay_all=False):
     return {"source": source, "manifest": manifest, "command": command, "result": result,
             "runner": runner, "libraries": libraries, "records": records, "skipped": skipped,
             "snapshot": snapshot, "dependencies": dependencies}
-
-
-def candidate_blockers(dependencies):
-    libraries = [item for item in dependencies if item["kind"] == "library"]
-    excluded = [item for item in libraries if item["name"] in EXCLUDED]
-    missing = EXCLUDED - {item["name"] for item in excluded}
-    if missing:
-        return ["original deployment lacks the exact HCL exclusion pair: " + ", ".join(sorted(missing))]
-    aliases = set(EXCLUDED) | {item["soname"] for item in excluded if item.get("soname")}
-    aliases.update(Path(name).name for name in tuple(aliases))
-    excluded_hashes = {item["sha256"] for item in excluded}
-    reasons = []
-    for item in dependencies:
-        if item["kind"] == "library" and item["name"] in EXCLUDED:
-            continue
-        required = [name for name in item["needed"] if name in aliases or Path(name).name in aliases]
-        if required:
-            reasons.append(f"{item['name']} has DT_NEEDED on excluded provider(s): {', '.join(required)}")
-        soname = item.get("soname")
-        if item["kind"] == "library" and soname and (soname in aliases or Path(soname).name in aliases):
-            reasons.append(f"retained {item['name']} has colliding SONAME {item['soname']}")
-        if item["kind"] == "library" and item["sha256"] in excluded_hashes:
-            reasons.append(f"retained {item['name']} duplicates excluded provider bytes")
-    return reasons
 
 
 def _freeze(validated, root):

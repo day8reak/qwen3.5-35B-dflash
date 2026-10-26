@@ -7,7 +7,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cstring>
+#include <iostream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 
 namespace qwen35::dflash {
@@ -20,6 +22,24 @@ std::string Version(hiai::AiModelMngerClient& client) {
   const auto* version = client.GetVersion();
   if (!version || !*version) throw std::runtime_error("HIAI GetVersion returned empty");
   return version;
+}
+std::string Shape(const std::vector<std::uint32_t>& dims) {
+  std::ostringstream out;
+  out << '[';
+  for (std::size_t i = 0; i < dims.size(); ++i) {
+    if (i) out << ',';
+    out << dims[i];
+  }
+  return out.str() + ']';
+}
+bool IsTrailingOnePadding(const std::vector<std::uint32_t>& declared,
+                          const std::vector<std::uint32_t>& actual) {
+  // Same bounded adaptation as the board-validated operator probe. Preserve
+  // every declared axis; equal element counts alone do not establish layout.
+  if (declared.empty() || declared.size() > 3 || actual.size() != 4) return false;
+  for (std::size_t i = 0; i < actual.size(); ++i)
+    if (actual[i] != (i < declared.size() ? declared[i] : 1)) return false;
+  return true;
 }
 struct Tensor {
   std::shared_ptr<hiai::AiTensor> value;
@@ -117,14 +137,31 @@ struct Model {
     std::vector<std::shared_ptr<hiai::AiModelDescription>> descriptions{description};
     check_load(client.Load(descriptions), "Load");
     check_load(client.GetModelIOTensorDim(name, input_dims, output_dims), "GetModelIOTensorDim");
+    for (bool input : {true, false}) {
+      const auto& dims = input ? input_dims : output_dims;
+      for (std::size_t i = 0; i < dims.size(); ++i)
+        std::cerr << "HIAI " << name << ' ' << (input ? "input" : "output")
+                  << '[' << i << "]: shape=" << Shape(dims[i].GetDims())
+                  << ", format=" << static_cast<int>(dims[i].GetFormat())
+                  << ", dtype=unavailable\n";
+    }
     if (input_dims.size() != input_count || output_dims.size() != output_count)
       throw std::runtime_error("HIAI OMC tensor count differs from ABI v2");
   }
   void Add(bool input, std::size_t index, const std::vector<std::uint32_t>& shape,
            hiai::HIAI_DataType dtype) {
     const auto& dim = (input ? input_dims : output_dims).at(index);
-    if (dim.GetFormat() != hiai::Format::ND || dim.GetDims() != shape)
-      throw std::runtime_error("HIAI OMC tensor shape/format differs from ND ABI v2");
+    const auto actual = dim.GetDims();
+    const std::string context = name + ' ' + (input ? "input[" : "output[") +
+        std::to_string(index) + "]: declared_shape=" + Shape(shape) +
+        ", actual_shape=" + Shape(actual) + ", actual_format=" +
+        std::to_string(static_cast<int>(dim.GetFormat()));
+    const bool padded = IsTrailingOnePadding(shape, actual);
+    if (dim.GetFormat() != hiai::Format::ND || (actual != shape && !padded))
+      throw std::runtime_error("HIAI OMC tensor shape/format differs from ND ABI v2: " + context);
+    if (padded)
+      std::cerr << "HIAI accepted ND trailing-one padding for " << context
+                << "; using runtime descriptor\n";
     if (dtype != hiai::HIAI_DATATYPE_FLOAT16 && dtype != hiai::HIAI_DATATYPE_INT32)
       throw std::invalid_argument("ABI v2 allows only FP16 features and INT32 tokens/masks");
     std::uint64_t bytes = dtype == hiai::HIAI_DATATYPE_FLOAT16 ? 2 : 4;
@@ -172,9 +209,10 @@ HiaiExecutor::HiaiExecutor(const std::filesystem::path& target,
   impl_->vocab = vocabulary_size;
   impl_->target.Load(target, "qwen35_target", expected_version, timeout_ms, 2, 2);
   impl_->draft.Load(draft, "qwen35_draft", expected_version, timeout_ms, 3, 1);
-  const auto shape = impl_->target.input_dims[0].GetDims();
-  if (shape.size() != 2 || shape[0] != 1 || shape[1] < 2 || shape[1] > INT32_MAX)
+  const auto actual_shape = impl_->target.input_dims[0].GetDims();
+  if (actual_shape.size() < 2 || actual_shape[0] != 1 || actual_shape[1] < 2 || actual_shape[1] > INT32_MAX)
     throw std::runtime_error("target IDs must have shape [1,S], S>1");
+  const std::vector<std::uint32_t> shape{1, actual_shape[1]};
   impl_->sequence = shape[1];
   const std::vector<std::uint32_t> features{1, shape[1], static_cast<std::uint32_t>(feature_width)};
   impl_->target.Add(true, 0, shape, hiai::HIAI_DATATYPE_INT32);
@@ -184,9 +222,10 @@ HiaiExecutor::HiaiExecutor(const std::filesystem::path& target,
   impl_->draft.Add(true, 0, features, hiai::HIAI_DATATYPE_FLOAT16);
   impl_->draft.Add(true, 1, shape, hiai::HIAI_DATATYPE_INT32);
   impl_->draft.Add(true, 2, shape, hiai::HIAI_DATATYPE_INT32);
-  const auto draft_shape = impl_->draft.output_dims[0].GetDims();
-  if (draft_shape.size() != 2 || draft_shape[0] != 1 || !draft_shape[1] || draft_shape[1] > INT32_MAX)
+  const auto actual_draft_shape = impl_->draft.output_dims[0].GetDims();
+  if (actual_draft_shape.size() < 2 || actual_draft_shape[0] != 1 || !actual_draft_shape[1] || actual_draft_shape[1] > INT32_MAX)
     throw std::runtime_error("draft output must have shape [1,K]");
+  const std::vector<std::uint32_t> draft_shape{1, actual_draft_shape[1]};
   impl_->draft.Add(false, 0, draft_shape, hiai::HIAI_DATATYPE_INT32);
   impl_->width = draft_shape[1];
   impl_->outputs.target_top1.resize(impl_->sequence);

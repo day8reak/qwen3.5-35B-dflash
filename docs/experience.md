@@ -251,3 +251,27 @@ run：`20261026T001240Z-7902-db05a6`。刷新后的用户日志给出 MatMul 两
 run：`20261026T002510Z-8234-33823c`。用户回传候选组 `matmul_m8_b_dynamic`、`add_rank4`、`add_rank5` 均通过 Load、Process 与原参考数值检查；基线仍为前两项 Load 失败、CPU 对照通过。MatMul 的三个张量都记录了 ND 尾部补 1 的接受信息，FP16 和输入输出数据不变。这为该形状的部署和描述适配提供了用户板端数值证据，不能推广为其他形状、算子或完整模型通过。自动 placement 字段仍未提升为已验证，当前回传也没有独立逐 kernel 执行证据。记录见 `specs/hiai-runtime-comparison-user-report.json` 的 `nd_padding_retest`。
 
 下一步用显式 `--replay-all`，从原 manifest 按原顺序校验并复用所有已编译案例，只在候选库集合和搜索路径下运行，并自动构建一次当前探针。旧后端基线无需在全部案例上重复；两个原编译失败案例保留为未重试，而非静默删除或算作成功。原编译分区与新加载/执行/数值结果并列，供后续选择有证据的 CPU→NPU 图改写；不根据单个 NPU 子库的候选拒绝日志判断最终分区。模式不重编模型，不放宽原参考阈值，不改变正式部署默认，仍受原哈希、依赖检查和受限清理约束。主机验证见 `specs/hiai-operator-replay-verification.json`，全量候选板端结果和完整模型门槛保持待验证；未修改通用技能。
+
+
+## 2026-10-26：结构候选、最终目标与执行优先级
+
+run：`20261026T002510Z-8234-33823c`。用户提供同板可运行工程的结构摘要，但随后明确其精度有问题、原因未知；GDN 累积误差只作为假设。当前锁定配置与摘要匹配，普通 RMSNorm 的本仓库 loader 不折叠 gamma，forward 已只加一次1，因此不复制另一工程疑似双重加1。证据与范围记录于 `specs/cpro-structure-adaptation-verification.json`。
+
+GDN 去掉 batch=1 单例维并用静态 Slice/Concat 替代三角 BOOL Select，保留 chunk64 和 FP16 边界。旧/新图在两种主机执行器各自逐 bit 对齐，并覆盖跨 chunk、NaN/Inf/正负零掩码。静态切片增加节点，不能据此推断速度收益。MoE selected 模式保留原路由，只执行选中专家的 Gather/BMM，并按专家编号升序逐路半精度相加；按 top-k 分数顺序累加或一次 ReduceSum 会改变舍入。选中权重仍有搬运成本，全权重存储仍未解决，不能称为原生 grouped GEMM 或实测加速。
+
+可选 GDN 主机诊断固定相同 FP16 输入，对照上游 FP32 chunk 输出和状态，并分别报告输入舍入、非有限和逐 chunk 偏差。默认合成样例只验证诊断路径，不能确认真实模型误差根因；诊断加入 CPU 初始化和规模边界。用户随后要求先打通上板链路，因此精度诊断后置，不作为执行前置门槛。
+
+最终目标已固化到 `specs/dflash-contract.json`：精度达标后 DFlash 至少提速2倍。工作测量口径为完整 decode 循环，计入 target/draft、verify、接受/拒绝、状态和搬运；同时报告 prefill+decode。两种模式须使用同板、同目标权重、同输入和缓存策略，前缀重算/全专家正确性基线不能独自支持最终优化收益结论。当前速度为 NOT_MEASURED。
+
+经验保留在模型级合约、文档与回归检查；未修改通用技能或共享 DDK/SDK。拒绝把摘要“能运行”、小图数值通过、IR节点减少或合成误差数值晋升为完整模型精度、NPU覆盖率或2倍提速证据。后续按用户最新优先级取得双图真实执行结果，再恢复精度与性能闭环。
+
+
+## 2026-10-26：将探针验证路径接入正式双图执行
+
+用户要求先执行后精度。将此前用户 MatMul/Add 探针已通过的部署方式接入 `run_hdc.py`：仅本次上传集合排除 DDK HCL 两库，进程搜索路径增加板端 vendor 目录。排除前解析 runner/DSO 动态依赖，检查硬依赖、SONAME 别名及同字节替名；保留文件和构建记录仍校验哈希。运行前确认 vendor 目录存在且可读可进入，不改系统库。探针 A/B 仍要求原始完整库对，正式入口允许原本已裁减的集合；这种差异明确写入共用 guard 参数。
+
+正式 HIAI executor 复用探针已验证的限定 ND 补维规则：只有原始逻辑维度后补1到四维可以适配，原始shape和非ND仍严格校验，实际descriptor用于AiTensor初始化。target输入S和draft输出K从前两维读取后仍经完整Add检查，任意reshape、前/中插1和rank5不会放行；target→draft传递仍按原逻辑字节数。
+
+新增独立 smoke 运行路径，强制两图各一次，即使生成下一token为EOS也不跳过draft。报告准确标记 EXECUTION_COMPLETE，返回两组Top1数组，精度与性能为NOT_EVALUATED；不运行普通/DFlash token一致性比较、不把输入参考的历史PASS转成板端精度通过。Python收取层拒绝fake证据、不足两次图调用、身份和输出大小/范围不符，并保留退出状态、SHA256和所有权清理保护。旧benchmark仍按原阈值比较；HiLog抓取失败不覆盖真实执行状态。
+
+主机原生调度、生命周期、缓冲区、13种IO布局和probe回归通过；Python传输协议与CLI相关回归见 `specs/hiai-model-execution-verification.json`。这些测试不连接板端。下一步只重编正式runner，沿用旧OMC/参考执行 `--execution-only`，以实际Load/Process及回传输出确认链路。完整35B质量、内存、算子位置和2倍提速均未通过。经验固化在模型文档、共用部署guard及可执行测试，未修改通用技能或共享资源。

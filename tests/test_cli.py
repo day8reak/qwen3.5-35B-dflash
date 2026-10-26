@@ -39,6 +39,47 @@ def test_board_command_uses_locked_paths_and_generate_default(bundle,tmp_path):
     assert shlex.split(data["shell"])==argv
 
 
+def _smoke_args(root, tmp_path, output):
+    return parser().parse_args(["board-command", "--mode", "smoke", "--omc", str(root),
+        "--prompt", str(tmp_path / "prompt.json"), "--board-model-dir", "/data/models",
+        "--board-output", "/data/smoke.json", "--runtime-version", "fake-version",
+        "--firmware-id", "fake-fw", "--output", str(output)])
+
+
+def test_smoke_command_needs_only_prompt_capacity_and_preserves_hashes(bundle, tmp_path):
+    root, manifest = bundle
+    # A full gear is valid for two-graph smoke despite max_new_tokens defaulting
+    # to 32. EOS in this prompt must not introduce generation semantics.
+    prompt = [10] * manifest["sequence_length"]
+    (tmp_path / "prompt.json").write_text(json.dumps({"prompt_token_ids": prompt}))
+    output = tmp_path / "smoke-command.json"
+    execute(_smoke_args(root, tmp_path, output))
+    data = json.loads(output.read_text()); argv = data["argv"]
+    assert argv[argv.index("--mode") + 1] == "smoke"
+    assert argv[argv.index("--prompt-token-ids") + 1] == ",".join(map(str, prompt))
+    for name in ("target", "draft"):
+        graph = next(g for g in manifest["graphs"] if g["name"] == name)
+        assert argv[argv.index("--" + name + "-sha256") + 1] == graph["sha256"]
+    assert data["manifest_sha256"] == hashlib.sha256((root / "manifest.json").read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("mutation", ["empty-prompt", "long-prompt", "corrupt-model", "old-abi"])
+def test_smoke_command_retains_input_artifact_and_abi_gates(bundle, tmp_path, mutation):
+    root, manifest = bundle
+    if mutation in ("empty-prompt", "long-prompt"):
+        tokens = [] if mutation == "empty-prompt" else [1] * (manifest["sequence_length"] + 1)
+        (tmp_path / "prompt.json").write_text(json.dumps({"prompt_token_ids": tokens}))
+    if mutation == "corrupt-model":
+        (root / "target.omc").write_bytes(b"corrupt")
+    if mutation == "old-abi":
+        manifest["abi_version"] = 1
+        (root / "manifest.json").write_text(json.dumps(manifest))
+    output = tmp_path / "smoke-command.json"
+    with pytest.raises(ValueError):
+        execute(_smoke_args(root, tmp_path, output))
+    assert not output.exists()
+
+
 @pytest.mark.parametrize("mutation",["none","fake-runtime","wrong-weights","wrong-limit","wrong-tokens",
                                      "wrong-precision","wrong-quantization","wrong-abi"])
 def test_comparison_gates(bundle,tmp_path,mutation):
