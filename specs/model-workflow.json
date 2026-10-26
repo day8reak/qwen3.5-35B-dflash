@@ -272,27 +272,28 @@
     "board_guide": "docs/direct-ge-board.md"
   },
   "operator_support_probe": {
-    "run_id": "20261026T001240Z-7902-db05a6",
-    "status": "USER_REPORTED_MATMUL_ND_PADDING_FIX_BOARD_PENDING",
+    "run_id": "20261026T002510Z-8234-33823c",
+    "status": "USER_REPORTED_THREE_CANDIDATE_CASES_NUMERICAL_PASS",
     "scope": "47 independent small operator contracts; no full-model gate advanced",
     "evidence": "specs/operator-support-probe-verification.json",
     "guide": "docs/README.md#板端算子探测",
     "current_model_device_status": "USER_REPORTED_HCL_CPUCL_MATMUL_COMPATIBILITY_FAILURE",
     "new_probe_device_execution": "USER_REPORTED_7_NUMERICAL_PASSES_35_NPU_PARTITION_LOAD_FAILURES",
-    "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$RUNTIME_IO_RUN\" --refresh-runner",
+    "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$OP_REPLAY_RUN\" --replay-all",
     "experience_audit": "docs/experience.md",
     "user_evidence": "specs/operator-support-probe-user-report.json",
-    "confirmed_probe_blocker": "Logical ND rank2 tensors are returned with two trailing singleton dimensions; bounded probe compatibility fix awaiting execution/numerical validation",
+    "confirmed_probe_blocker": "Sampled MatMul ND IO issue passed user board numerical retest; remaining compiled operator contracts require candidate replay",
     "runtime_inventory_status": "USER_REPORTED_BOARD_NPU_BACKEND_FILES_PRESENT_SELECTION_UNVERIFIED",
     "runtime_comparison": {
-      "status": "USER_REPORTED_REFRESHED_RUNNER_MATMUL_ND_PADDING",
+      "status": "USER_REPORTED_THREE_CASE_NUMERICAL_PASS",
       "evidence": "specs/hiai-runtime-comparison-verification.json",
       "reuse_original_artifacts": true,
       "production_runtime_policy_changed": false,
       "user_evidence": "specs/hiai-runtime-comparison-user-report.json",
-      "next_runner_mode": "EXPLICIT_DIAGNOSTIC_REFRESH",
+      "next_runner_mode": "REPLAY_ALL_COMPILED_WITH_REFRESH",
       "runtime_evidence": "USER_LOG_NPUCL_REGISTERED_GRAPH_LOAD_PASSED_ADD_DEVICE_SUBMISSION_OBSERVED",
-      "io_fix_evidence": "specs/hiai-probe-nd-padding-verification.json"
+      "io_fix_evidence": "specs/hiai-probe-nd-padding-verification.json",
+      "replay_evidence": "specs/hiai-operator-replay-verification.json"
     }
   }
 }

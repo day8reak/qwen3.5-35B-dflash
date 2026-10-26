@@ -341,3 +341,16 @@ cat "$RUNTIME_IO_RUN/arms/candidate_without_ddk_hcl/board/matmul_m8_b_dynamic/st
 此模式需要原构建记录中的 OHOS SDK、HIAI 头文件和 CMake 可用，只构建一次当前诊断 runner，两组共用新二进制；原 OMC、输入、参考和库集合继续按原哈希复用。它不会重新导出 AIR 或编译 OMC。新旧 runner、当前源码、SDK/头文件及链接库的身份写入构建记录，报告注明已刷新 runner。新版会在比较前输出全部实际形状和格式，并指出具体不匹配项；dtype 无法由该旧版 HIAI 查询接口直接读取，仍由原产物合约约束。保持严格校验，不能仅凭元素总数相同跳过格式或布局差异。
 
 已针对板端实测的 ND 尾部补维增加兼容：逻辑形状 `[8,16]` 与运行时 `[8,16,1,1]` 可以对应。仅接受原 rank 为 1～3、运行时恰好 rank 4、原维度前缀完全相同且新增尾维全部为 `1` 的情况，格式必须仍为 ND。探针记录该对应关系，用运行时返回的描述创建张量，输入输出字节及数值门槛不变；原样匹配的其他 rank 继续支持。前部或中间补维、非单例尾维、维度置换及非 ND 格式仍会拒绝。更新后用上面的 `--refresh-runner` 命令和新输出目录复测即可；该规则当前仅用于算子探针，完整模型 runner 尚未据此调整。
+
+三个对照案例通过后，可复用原探测的全部已编译 OMC，仅在候选部署下复测：
+
+```bash
+export OP_REPLAY_RUN="${OP_PROBE_RUN}-replay-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
+  --probe-run "$OP_PROBE_RUN" \
+  --output "$OP_REPLAY_RUN" \
+  --replay-all
+cat "$OP_REPLAY_RUN/runtime-comparison.txt"
+```
+
+`--replay-all` 自动构建一次当前小探针，不需要再指定 `--refresh-runner`。它逐项校验并复用原模型、输入和参考，仅运行 `candidate_without_ddk_hcl`，不重复旧后端基线，不调用 AIR/OMG 编译。原 47 项探测中的 45 项已编译案例会复测；原先编译失败的两项保留为未重试，不能据此判为成功或失败已解决。汇总继续写入 `runtime-comparison.txt/json`，详细报告及分享包记录各阶段状态和原编译分区信息；编译分区与实际执行位置分别对待。默认完成回传校验后清理本次板端目录，`--keep-board` 可保留。这仍是算子支持复测，不代表完整 target/draft 模型已验证。

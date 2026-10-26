@@ -78,21 +78,21 @@ def _args(previous, *extra):
                                      "--output", str(previous["output"]), *extra])
 
 
-def _transport(monkeypatch, previous, *, mutation=None, fail=False):
+def _transport(monkeypatch, previous, *, mutation=None, fail=False, failed_cases=()):
     calls = []
 
     def run(output, runner, libraries, records, **kwargs):
         call = {"output": output, "runner": runner, "libraries": libraries, "records": records, **kwargs}
         calls.append(call)
         assert Path(runner).read_bytes() == previous.get("transport_runner_bytes", previous["runner"].read_bytes())
-        assert [row["name"] for row in records] == list(probe.CASE_NAMES)
+        assert [row["name"] for row in records] == previous.get("transport_cases", list(probe.CASE_NAMES))
         result = {"status": "TRANSPORT_COMPLETE", "cases": {}, "board_cleanup": "REMOVED",
                   "serial": "fixture-device", "hdc_server": "127.0.0.2:8790"}
         for record in records:
             folder = output / "board" / record["name"]
             folder.mkdir(parents=True)
             baseline = output.name == "ddk_baseline"
-            failed_load = baseline and record["name"] != "add_rank5"
+            failed_load = (baseline and record["name"] != "add_rank5") or record["name"] in failed_cases
             native = ({"status": "FAILED", "stage": "load", "error": "fixture Load failure"}
                       if failed_load else {"status": "EXECUTED", "runtime_version": "fixture-version"})
             _json(folder / "stdout", native)
@@ -257,7 +257,7 @@ def test_missing_case_and_missing_required_hash_are_rejected(previous, monkeypat
 
 def test_no_library_parameters_are_exposed():
     options = {option for action in probe.parser()._actions for option in action.option_strings}
-    assert options == {"-h", "--help", "--probe-run", "--output", "--keep-board", "--timeout-seconds", "--refresh-runner"}
+    assert options == {"-h", "--help", "--probe-run", "--output", "--keep-board", "--timeout-seconds", "--refresh-runner", "--replay-all"}
 
 
 @pytest.mark.parametrize("field,value", [("sha256", None), ("sha256", "invalid"), ("bytes", None), ("bytes", True)])
@@ -356,3 +356,147 @@ def test_refreshed_binary_is_verified_between_arms(previous, monkeypatch):
     assert report["status"] == "INFRASTRUCTURE_FAILED"
     assert "snapshotted source changed" in report["arms"][0]["error"]
     assert report["arms"][1]["status"] == "NOT_RUN"
+
+
+@pytest.fixture
+def replay(previous):
+    extra = next(case for case in cases() if case["name"] == "neg_rank4")
+    record = op_probe.prepare_case(extra, previous["source"])
+    Path(record["model"]).write_bytes(b"fixture additional compiled model")
+    record["compile"] = {"status": "COMPILED", "model": op_probe._payload(Path(record["model"]))}
+    previous["manifest"]["cases"].append(record)
+    for row in previous["manifest"]["cases"]:
+        counts = {"NPU": int(row["name"] != "add_rank5"), "CPU": int(row["name"] == "add_rank5"), "GPU": 0, "ISP": 0}
+        row["compile"]["evidence"] = {"main_partition_events": [{"scope": "main", "line": 12, "counts": counts}]}
+    previous["transport_cases"] = [row["name"] for row in previous["manifest"]["cases"]]
+    previous["manifest"]["cases"] += [
+        {"name": "select_rank4", "compile": {"status": "FAILED", "error": "fixture kernel rejection"}},
+        {"name": "unprepared", "compile": {"status": "NOT_RUN"}},
+    ]
+    _json(previous["source"] / "manifest.json", previous["manifest"])
+    return previous
+
+
+def test_replay_all_refreshes_once_runs_candidate_only_and_preserves_skipped(replay, monkeypatch):
+    original_cases = replay["manifest"]["cases"]
+    original_cases.insert(1, original_cases.pop(-2))
+    _json(replay["source"] / "manifest.json", replay["manifest"])
+    before = {str(path): sha256_file(path) for path in replay["source"].rglob("*") if path.is_file()}
+    build_calls = _refresh(monkeypatch, replay)
+    transport = _transport(monkeypatch, replay, failed_cases={"neg_rank4"})
+    assert probe.run(_args(replay, "--replay-all")) == 0
+    assert len(build_calls) == len(transport) == 1
+    assert transport[0]["output"].name == "candidate_without_ddk_hcl"
+    assert transport[0]["library_search_paths"] == ("/vendor/lib64/chipsetsdk",)
+    assert not ({path.name for path in transport[0]["libraries"]} & probe.EXCLUDED)
+    assert before == {str(path): sha256_file(path) for path in replay["source"].rglob("*") if path.is_file()}
+    report = json.loads((replay["output"] / "runtime-comparison.json").read_text())
+    assert report["status"] == "REPLAY_COMPLETE" and report["replay_all"] and report["refresh_runner"]
+    assert report["counts"] == {"cases": 6, "compiled": 4, "skipped": 2}
+    assert report["selected_cases"] == replay["transport_cases"]
+    assert report["skipped_cases"] == ["select_rank4", "unprepared"]
+    assert len(report["arms"]) == 1
+    assert [row["name"] for row in report["arms"][0]["cases"]] == [row["name"] for row in original_cases]
+    rows = {row["name"]: row for row in report["arms"][0]["cases"]}
+    assert rows["neg_rank4"]["load"] == "FAILED"
+    assert rows["add_rank4"]["numerical"] == "PASSED"
+    for name, status in (("select_rank4", "FAILED"), ("unprepared", "NOT_RUN")):
+        assert rows[name]["compile"] == status and rows[name]["retry"] == "NOT_RETRIED"
+        assert rows[name]["load"] == rows[name]["run"] == rows[name]["numerical"] == "NOT_RUN"
+        assert not (replay["output"] / "reused/cases" / name).exists()
+    assert rows["add_rank5"]["compiler_partition"] == {
+        "scope": "main", "line": 12, "counts": {"NPU": 0, "CPU": 1, "GPU": 0, "ISP": 0}}
+    assert all(row["placement"] == "UNVERIFIED" for row in rows.values())
+    text = (replay["output"] / "runtime-comparison.txt").read_text()
+    assert "candidate deployment only" in text and "4 compiled, 2 skipped" in text
+    assert "NPU=0,CPU=1,GPU=0,ISP=0 [main]" in text
+    assert "both arms" not in text and "ddk_baseline" not in text and "three previous" not in text
+    assert "select_rank4 | FAILED" in text and "not retried" in text
+    with tarfile.open(replay["output"] / "results.tar.gz") as archive:
+        assert "arms/ddk_baseline/results.tar.gz" not in archive.getnames()
+        candidate = archive.extractfile("arms/candidate_without_ddk_hcl/results.tar.gz").read()
+        with tarfile.open(fileobj=io.BytesIO(candidate)) as nested:
+            detailed = json.load(nested.extractfile("report.json"))
+            assert len(detailed["cases"]) == 6
+            skipped = next(row for row in detailed["cases"] if row["name"] == "select_rank4")
+            assert skipped["compile"]["error"] == "fixture kernel rejection" and skipped["load"] == "NOT_RUN"
+
+
+def test_replay_all_new_dependency_blocker_never_runs_baseline_or_hdc(replay, monkeypatch):
+    builds = _refresh(monkeypatch, replay, needed=["libhiai_hcl_model_runtime.so"])
+    transport = _transport(monkeypatch, replay)
+    assert probe.run(_args(replay, "--replay-all")) == 1
+    assert len(builds) == 1 and not transport
+    report = json.loads((replay["output"] / "runtime-comparison.json").read_text())
+    assert report["status"] == "CANDIDATE_BLOCKED" and len(report["arms"]) == 1
+    assert report["arms"][0]["status"] == "BLOCKED"
+    assert len(report["arms"][0]["cases"]) == 6
+    assert all(row["load"] == row["run"] == row["numerical"] == "NOT_RUN" for row in report["arms"][0]["cases"])
+
+
+@pytest.mark.parametrize("fault", ["unsafe-compiled", "unsafe-skipped", "plus-name", "duplicate", "not-object", "invalid-status", "no-compiled", "missing-model", "tampered-extra"])
+def test_replay_all_selection_rejects_bad_original_cases_before_build_or_upload(replay, monkeypatch, fault):
+    records = replay["manifest"]["cases"]
+    if fault == "unsafe-compiled":
+        records[0]["name"] = "../escape"
+    elif fault == "unsafe-skipped":
+        records[-1]["name"] = "../unprepared"
+    elif fault == "plus-name":
+        records[-1]["name"] = "unsupported+report-name"
+    elif fault == "duplicate":
+        records[-1]["name"] = records[0]["name"]
+    elif fault == "not-object":
+        records.append("bad record")
+    elif fault == "invalid-status":
+        records[-1]["compile"]["status"] = None
+    elif fault == "no-compiled":
+        for record in records:
+            record["compile"] = {"status": "FAILED"}
+    elif fault == "missing-model":
+        records[3]["compile"].pop("model")
+    else:
+        path = Path(records[3]["model"])
+        path.write_bytes(path.read_bytes() + b"corrupt")
+    _json(replay["source"] / "manifest.json", replay["manifest"])
+    builds = _refresh(monkeypatch, replay)
+    transport = _transport(monkeypatch, replay)
+    with pytest.raises((ValueError, KeyError)):
+        probe.run(_args(replay, "--replay-all"))
+    assert not builds and not transport and not replay["output"].exists()
+
+
+def test_partition_summary_uses_historical_main_or_unknown_events_only():
+    constant = {"scope": "constant_folding", "line": 1, "counts": {"NPU": 0, "CPU": 9, "GPU": 0, "ISP": 0}}
+    unknown = {"scope": "unknown", "line": 2, "counts": {"NPU": 1, "CPU": 2, "GPU": 0, "ISP": 0}}
+    main = {"scope": "main", "line": 3, "counts": {"NPU": 2, "CPU": 1, "GPU": 0, "ISP": 0}}
+    assert probe._partition_summary({"evidence": {"partition_events": [constant]}}) is None
+    assert probe._partition_summary({"evidence": {"partition_events": [constant, unknown]}}) == unknown
+    assert probe._partition_summary({"evidence": {"partition_events": [constant, unknown], "main_partition_events": [main]}}) == main
+    assert probe._partition_summary({"evidence": {"partition_events": [main, unknown]}}) == main
+    assert probe._partition_summary({"evidence": {"main_partition_events": [constant]}}) is None
+    assert probe._partition_summary({"evidence": {"main_partition_events": [{"scope": "main", "counts": None}]}}) is None
+
+
+def test_replay_all_has_no_dependency_on_the_original_three_case_names(replay, monkeypatch):
+    replay["manifest"]["cases"] = [row for row in replay["manifest"]["cases"] if row["name"] not in probe.CASE_NAMES]
+    replay["transport_cases"] = ["neg_rank4"]
+    _json(replay["source"] / "manifest.json", replay["manifest"])
+    builds = _refresh(monkeypatch, replay)
+    transport = _transport(monkeypatch, replay)
+    assert probe.run(_args(replay, "--replay-all")) == 0
+    assert len(builds) == len(transport) == 1
+    report = json.loads((replay["output"] / "runtime-comparison.json").read_text())
+    assert report["selected_cases"] == ["neg_rank4"]
+    assert report["counts"] == {"cases": 3, "compiled": 1, "skipped": 2}
+
+
+def test_default_keeps_three_case_two_arm_behavior_with_other_cases_present(replay, monkeypatch):
+    from qwen35_moe_dflash import hiai_probe_build
+    monkeypatch.setattr(hiai_probe_build, "build_probe", _no_build)
+    replay.pop("transport_cases")
+    transport = _transport(monkeypatch, replay)
+    assert probe.run(_args(replay)) == 0 and len(transport) == 2
+    report = json.loads((replay["output"] / "runtime-comparison.json").read_text())
+    assert not report["replay_all"] and not report["refresh_runner"]
+    assert report["selected_cases"] == list(probe.CASE_NAMES)
+    assert report["counts"] == {"cases": 3, "compiled": 3, "skipped": 0}

@@ -53,9 +53,9 @@
     "Exact mapped runtime DSO identities and independent per-kernel hardware execution profiling; NPUCL registration/loading and Add device submission now have user-log evidence",
     "Effect of pair omission separately from added vendor search path",
     "Full-model and untested operator success",
-    "MatMul execution/numerical results with the trailing-singleton compatibility change"
+    "Candidate deployment results for the other original compiled operator cases and full-model execution"
   ],
-  "next_action": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$RUNTIME_IO_RUN\" --refresh-runner",
+  "next_action": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$OP_REPLAY_RUN\" --replay-all",
   "decisions": [
     "Add explicit native-runner refresh while preserving original model/input/reference/library contracts and default exact binary reuse",
     "Use the same refreshed runner in both arms with new source/build/dependency records",
@@ -96,7 +96,7 @@
     "excluded_library_warning": "libhiai_hcl_model_runtime.so lookup failure occurs before successful candidate backend initialization; it is not this run's terminal failure and is not a reason to restore the excluded library",
     "limitations": "Exact mapped runtime DSO paths/build IDs and per-kernel hardware profiling are not supplied; retain automated placement UNVERIFIED rather than asserting every op or full model is NPU-verified"
   },
-  "current_status": "USER_REPORTED_REFRESHED_MATMUL_ND_TRAILING_SINGLETON_PADDING",
+  "current_status": "USER_REPORTED_THREE_CANDIDATE_CASES_NUMERICAL_PASS",
   "refreshed_runner_io_followup": {
     "date": "2026-10-26",
     "run_id": "20261026T001240Z-7902-db05a6",
@@ -165,5 +165,47 @@
     "planned_fix": "Accept exact ND shape or rank1..3 ND shape with unchanged prefix and only trailing ones to runtime rank4; keep runtime descriptor for AiTensor::Init and original input/output byte contracts",
     "scope": "Operator probe only; full-model executor unchanged",
     "next_validation": "Refresh native runner into a new output and rerun the same three-case A/B; require MatMul Process and numerical pass before considering this closed"
+  },
+  "nd_padding_retest": {
+    "date": "2026-10-26",
+    "run_id": "20261026T002510Z-8234-33823c",
+    "source_revision": "NOT_INDEPENDENTLY_VERIFIED",
+    "reported_run_basename": "op-probe-20261023-165317-runtime-io-20261026-083324",
+    "provenance": "User pasted runtime-comparison.txt and MatMul stderr showing all three ND padding acceptances; full artifact identities/archives not independently received",
+    "ddk_baseline": {
+      "matmul_m8_b_dynamic": "LOAD_FAILED",
+      "add_rank4": "LOAD_FAILED",
+      "add_rank5": "NUMERICAL_PASSED"
+    },
+    "candidate_without_ddk_hcl": {
+      "matmul_m8_b_dynamic": {
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "placement": "UNVERIFIED"
+      },
+      "add_rank4": {
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "placement": "UNVERIFIED"
+      },
+      "add_rank5": {
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "placement": "UNVERIFIED"
+      }
+    },
+    "interpretation": "The sampled FP16 MatMul now passes Process and comparison with the original reference after accepting ND trailing singleton dimensions; both Add controls still pass in the candidate.",
+    "precision_changed": false,
+    "model_recompiled": false,
+    "limitations": [
+      "Only the three recorded contracts are tested here",
+      "Current MatMul per-PID execution HiLog not supplied; automated placement remains UNVERIFIED",
+      "Two excluded DDK HCL libraries plus vendor search path remain a joint deployment condition",
+      "The reported output basename is reused; historical result hashes cannot be reconstructed from pasted text"
+    ],
+    "next_action": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$OP_REPLAY_RUN\" --replay-all"
   }
 }
