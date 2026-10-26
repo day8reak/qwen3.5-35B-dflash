@@ -460,3 +460,12 @@ run：`20261026T093313Z-19756-5a5a2b`。用户确认当前target主图NPU5/CPU6�
 新增inspect-omc，一次检查已有target/draft：先校验原manifest、OMC和编译OMG身份，保存实际帮助，仅在帮助明确支持时使用--mode=1、--om、--json进行转换。不能带--framework=1，否则参考OMG会选择框架模型转JSON分支。使用新目录，独立记录两图转换状态，失败仍继续另一图。JSON按真实schema的op数组提取Cast及显式src_name邻边，递归覆盖嵌套图；不模糊匹配、不混用protobuf、GE与CPUCL的dtype编号。缺少可识别节点、超出解析预算或不透明载荷不计为完整节点覆盖。终端只输出短摘要，原JSON和哈希留档。
 
 129项主机测试及61段shell语法检查通过，真实参考OMG仅执行--help；新转换链使用fake OMG/合成JSON验证，尚未转换用户实际OMC或运行板端。原模型算术、编译选项和部署库均未改变，当前Load缺陷未关闭。证据见specs/omc-inspection-verification.json。经验固化于模型工具和回归，无共享SDK或通用技能改动；完整精度后置未豁免，DFlash至少2倍目标未测量。
+
+
+## 2026-10-26：普通OMC JSON未覆盖失败Cast，按任务边界读取CPU子图
+
+run：`20261026T094740Z-21011-32f1a9`。用户实际完成两图mode1转换：target OMC字节中insert_cast_4出现4次，JSON只列出cast5..13；draft的同名cast4属于另一张图。字节出现次数不是节点数量，不能据此把target日志绑定到draft节点。已显示Cast属性src/dst与protobuf tensor dtype采用不同枚举，原始整数不同不等于模型类型冲突。当前CPUCL Load缺陷仍未关闭。
+
+读取声明参考SDK的容器、CPU saver和schema实现，确认CPU任务切片由主GraphOp的cl_name/graphop_task_offset/graphop_task_size定位，saver使用HIAI GraphDef。新增inspect-omc-cpu复用用户已有OMC及转换JSON，不调用OMG。工具从实际选定DDK ELF符号取schema，核验容器总长、表和唯一分区、主图与原JSON共同结构，再逐一读取两图CPU切片；重叠、名称不匹配或未知schema保持不支持，不猜偏移。所有CPU子图独立保留，优先展示失败名称和精确端口引用候选。
+
+192项相关主机测试和文档shell语法检查通过。实际参考SDK schema在Python -S下读取成功，原生Data及Data+属性合成容器转换与解析结果一致；独立预期主图视图的合成protobuf CPU切片也被正确解码。两份合成GraphOp原生转换在RemoveAippNode检查失败，原因尚未解释，明确不当作真实编译CPU兼容性验证，不放宽主图匹配门槛。原始用户CPU切片未在本地取得，没有编译模型或上板，详见specs/omc-cpu-inspection-verification.json。经验固化在本模型，无共享SDK或通用技能变更；完整执行、精度和最终DFlash至少2倍仍待验证。

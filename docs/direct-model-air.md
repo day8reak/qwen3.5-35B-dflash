@@ -8,9 +8,11 @@
 
 最新`ge-gdn-model-20261026-171048`已成功编译双图，随后target Load返回1。用户补齐的HiLog显示CPU FP16MatMul初始化成功，CPUCL的`insert_cast_4/CastT`初始化失败，再导致`SubGraph_0` Prepare失败。相邻原始`srcType=0/inputDataType=1`仍需节点和输入边确认；候选PID尚未独立绑定到本次执行。
 
-最新编译记录已确认：target主图L113871为NPU=5、CPU=6；draft主图L5697为NPU=3、CPU=4；GPU/ISP均为0，两图的rollback均为`[]`、`compiler_diagnostics`均为`NOT_EMITTED`。target的`omg.log`没有`insert_cast`名称，当前不再重复文件清单或grep。下一步按[已有OMC检查命令](hdc-board-run.md#当前读取-gdn-整图加载失败证据)运行`inspect-omc`：先检查同一实际DDK的OMG帮助，再用其支持的`--mode=1 --om=... --json=...`将已有两张OMC转换为JSON，读取新目录的`report.txt`。不重新编译或上板，只向OMG提供已有OMC路径。
+编译记录已确认：target主图L113871为NPU=5、CPU=6；draft主图L5697为NPU=3、CPU=4；GPU/ISP均为0，两图的rollback均为`[]`、`compiler_diagnostics`均为`NOT_EMITTED`。target的`omg.log`没有`insert_cast`名称；这项日志检查已经完成。
 
-编译通过仍包含CPU分区，实际运行位置未验证。Cast的创建阶段尚未确定；本地blue CPUCL库的`InsertConvertOpOptimizer`/`insert_cast_`字样不能证明用户DDK在Load时创建了该节点。JSON转换成功也不保证完整节点覆盖。公开GE `Cast`只声明`dst_type`，源类型由输入descriptor提供；当前不猜测添加`src_type`，也不借另一套DDK枚举解读原始类型编号。
+用户现已完成两张已有OMC的JSON转换。target字节中`insert_cast_4`有4次名称匹配，`insert_cast_5..13`各2次，但JSON只暴露后面9个节点；draft字节与JSON均能找到`insert_cast_0..8`。字节匹配次数不是节点数，draft同名节点也不能用于解释target失败。已显示样本中，target cast5的属性dtype为`1→0`、protobuf dtype为`2→1`；target cast6和draft cast4分别为`0→1`与`1→2`。这两类字段属于不同枚举空间，不能用原始编号不相等判定类型冲突。
+
+转换完成仍未取得target `insert_cast_4`的属性、生产者及完整CPU编译子图。当前使用[离线CPU子图检查入口](hdc-board-run.md#当前读取-gdn-整图加载失败证据)`inspect-omc-cpu`，复用原OMC、已生成JSON及同一DDK的schema证据继续定位；入口已实现，主机验证记录待完成。此命令不调用OMG，不再重复mode1转换、编译日志搜索、重新编译或上板。实际运行位置、创建阶段和底层缺陷仍未确定。公开GE `Cast`只声明`dst_type`，源类型由输入descriptor提供；当前不猜测添加`src_type`。
 
 源码审计已修复TopK静默覆盖输出dtype、共享输出未检查shape，以及ArgMax、Cast、native归约缺少类型/形状校验的问题。inline与recipe导出统一验证连接描述和算子类型关系，错误声明在写AIR前失败。118个探针和tiny双图默认/当前组合策略的构图记录与C++对比均保持不变；本轮检查没有改变合法图，不能视为`insert_cast_4`加载问题已解决。验证见`specs/ge-dtype-contract-verification.json`。
 
@@ -340,9 +342,9 @@ python3 "$GE_MODEL_TOOL" compile \
 ## 7. 当前现场：GDN 复制整图候选与探针历史
 
 
-### 当前入口：检查已有 OMC 的 Cast 描述
+### 当前入口：检查已有 OMC 的 CPU 编译子图
 
-用户已回传GDN7项及其余43项：四个GDN Gather候选通过，其余42个已编译案例也完成数值比较。带`--gdn-indexed-copy gather`的新候选已成功编译双图，target的CPUCL Cast初始化失败。两图主图分区、空rollback记录、`NOT_EMITTED`及target日志无`insert_cast`名称均已确认，当前按[已有OMC检查命令](hdc-board-run.md#当前读取-gdn-整图加载失败证据)转换和检查实际OMC；节点创建阶段及根因尚未确定。以下保留候选设计及历史命令。
+用户已回传GDN7项及其余43项：四个GDN Gather候选通过，其余42个已编译案例也完成数值比较。带`--gdn-indexed-copy gather`的新候选已成功编译双图，target的CPUCL Cast初始化失败。两张OMC的JSON转换已完成，但失败target `insert_cast_4`只在OMC字节中匹配到名称，未出现在target JSON节点记录中。当前按[离线CPU子图检查入口](hdc-board-run.md#当前读取-gdn-整图加载失败证据)复用现有OMC和JSON定位；不重复转换，根因尚未确定。以下保留候选设计及历史命令。
 
 <a id="gdn-indexed-copy-probes"></a>
 

@@ -10,7 +10,7 @@
 
 **最新整图：target/draft编译成功，正式runner在target Load返回1。** 新GDN候选已通过`--reject-cpu-fallback`，失败阶段推进到模型加载；尚未查询IO或执行Process，draft也未加载。
 
-**当前入口：[检查已有 OMC 的 Cast 描述](hdc-board-run.md#当前读取-gdn-整图加载失败证据)。** 用户已确认target主图为NPU=5、CPU=6，draft为NPU=3、CPU=4；两图均无回退记录，诊断为`NOT_EMITTED`，target编译日志没有`insert_cast`名称。HiLog中的`insert_cast_4/CastT`初始化失败仍待定位，创建阶段未定。下一步使用同一DDK的`inspect-omc`，先核对OMG帮助，再将已有两张OMC转换为JSON并提取Cast信息；无需重复目录清单、grep、编译或上板。
+**当前入口：[检查已有 OMC 的 CPU 编译子图](hdc-board-run.md#当前读取-gdn-整图加载失败证据)。** 两张OMC已经转换成功。target字节中`insert_cast_4`出现4次，但转换JSON仅列出`insert_cast_5..13`；draft虽有同名Cast，也不能替代target失败节点。已显示Cast的属性和protobuf dtype使用不同枚举，原始编号不同不能直接判错。下一步复用原OMC和现有JSON离线定位CPU子图，失败节点及根因仍待确认，无需重复转换、grep、编译或上板。
 
 完整模型执行、精度和2倍加速仍待验证。
 

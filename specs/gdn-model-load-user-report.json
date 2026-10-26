@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "date": "2026-10-26",
-  "run_id": "20261026T093313Z-19756-5a5a2b",
+  "run_id": "20261026T094740Z-21011-32f1a9",
   "evidence_kind": "USER_PASTED_CONSOLE_NOT_INDEPENDENTLY_RETRIEVED",
   "suggested_revision": "60a9b77",
   "actual_revision": "NOT_REPORTED",
@@ -80,11 +80,11 @@
     "adjacent_cast_check": {
       "raw_srcType": 0,
       "raw_inputDataType": 1,
-      "association": "Strong adjacent-log evidence for the failing Cast, pending exact node attributes and input-edge binding; presence in serialized OMC is unresolved",
+      "association": "Strong adjacent-log evidence for failing target insert_cast_4. Its name occurs in target OMC bytes, but the completed conversion JSON did not expose its node attributes or input edges.",
       "enum_decode": "NOT_VERIFIED_FOR_USER_INTERNAL_DDK"
     },
     "root_cause": "NOT_ESTABLISHED",
-    "underlying_graph_or_runtime_defect": "PENDING_EXISTING_OMC_CONVERSION_AND_NODE_DESCRIPTOR_INSPECTION",
+    "underlying_graph_or_runtime_defect": "PENDING_OFFLINE_CPU_COMPILED_SUBGRAPH_INSPECTION",
     "requested_local_artifacts": {
       "status": "USER_REPORTED_COMPILE_MANIFEST_AND_TARGET_OMG_LOG_INSPECTED",
       "compiler_diagnostics": {
@@ -106,13 +106,142 @@
         "next_action_at_that_point": "Read existing snapshot lines130330..130480 without recompilation or replay; now completed by the user."
       }
     ],
-    "cast_creation_stage": "UNRESOLVED_SERIALIZED_OMC_OR_LOAD_TIME_TRANSFORMATION"
+    "cast_creation_stage": "UNRESOLVED_TARGET_NAME_PRESENT_IN_OMC_BYTES_NODE_NOT_EXPOSED_IN_JSON",
+    "omc_inspection": {
+      "status": "USER_REPORTED_CONVERSION_COMPLETE_NODE_COVERAGE_PARTIAL",
+      "evidence_kind": "USER_PASTED_INSPECTION_RESULTS_NOT_INDEPENDENTLY_RETRIEVED",
+      "target": {
+        "conversion": "COMPLETE",
+        "byte_name_matches": {
+          "insert_cast_4": 4,
+          "insert_cast_5": 2,
+          "insert_cast_6": 2,
+          "insert_cast_7": 2,
+          "insert_cast_8": 2,
+          "insert_cast_9": 2,
+          "insert_cast_10": 2,
+          "insert_cast_11": 2,
+          "insert_cast_12": 2,
+          "insert_cast_13": 2
+        },
+        "json_cast_node_count": 9,
+        "json_cast_names": [
+          "insert_cast_5",
+          "insert_cast_6",
+          "insert_cast_7",
+          "insert_cast_8",
+          "insert_cast_9",
+          "insert_cast_10",
+          "insert_cast_11",
+          "insert_cast_12",
+          "insert_cast_13"
+        ],
+        "failed_node": "insert_cast_4",
+        "failed_node_json_coverage": "NOT_EXPOSED"
+      },
+      "draft": {
+        "conversion": "COMPLETE",
+        "byte_name_matches": {
+          "insert_cast_0": 2,
+          "insert_cast_1": 2,
+          "insert_cast_2": 2,
+          "insert_cast_3": 2,
+          "insert_cast_4": 2,
+          "insert_cast_5": 2,
+          "insert_cast_6": 2,
+          "insert_cast_7": 2,
+          "insert_cast_8": 2
+        },
+        "json_cast_node_count": 9,
+        "json_cast_names": [
+          "insert_cast_0",
+          "insert_cast_1",
+          "insert_cast_2",
+          "insert_cast_3",
+          "insert_cast_4",
+          "insert_cast_5",
+          "insert_cast_6",
+          "insert_cast_7",
+          "insert_cast_8"
+        ],
+        "same_named_node_limit": "draft insert_cast_4 is not the failing target node; draft Load was not reached"
+      },
+      "raw_cast_samples": [
+        {
+          "graph": "target",
+          "node": "insert_cast_5",
+          "attrs": {
+            "src_dtype": 1,
+            "dst_dtype": 0
+          },
+          "input_proto_dtype": 2,
+          "output_proto_dtype": 1,
+          "reported_shape": [
+            8,
+            4
+          ],
+          "input_edge": "SubGraph_1:1"
+        },
+        {
+          "graph": "target",
+          "node": "insert_cast_6",
+          "attrs": {
+            "src_dtype": 0,
+            "dst_dtype": 1
+          },
+          "input_proto_dtype": 1,
+          "output_proto_dtype": 2,
+          "reported_shape": [
+            8,
+            2
+          ],
+          "input_edge": "SubGraph_2:4"
+        },
+        {
+          "graph": "draft",
+          "node": "insert_cast_4",
+          "attrs": {
+            "src_dtype": 0,
+            "dst_dtype": 1
+          },
+          "input_proto_dtype": 1,
+          "output_proto_dtype": 2,
+          "reported_shape": [
+            1,
+            12,
+            4
+          ],
+          "input_edge": "SubGraph_2:0"
+        }
+      ],
+      "interpretation": [
+        "Byte-string match counts are not node counts and do not expose a complete CPU subgraph.",
+        "The failed target name is present in its OMC bytes despite being absent from target omg.log and conversion JSON node records.",
+        "Cast attributes and protobuf descriptor dtype fields use different enum spaces; their raw numeric differences are not direct mismatch evidence.",
+        "Visible target cast5/cast6 and draft cast4 are not a substitute for the missing target cast4 attributes and producer.",
+        "Underlying defect and exact target CPU subgraph remain unresolved; conversion completion alone is not full graph coverage."
+      ]
+    },
+    "cpu_subgraph_inspection": {
+      "tool_status": "IMPLEMENTED_HOST_VERIFICATION_PENDING",
+      "user_execution": "NOT_REPORTED",
+      "command": "python3 \"$GE_MODEL_TOOL\" inspect-omc-cpu --omc \"$GE_GDN_MODEL_RUN/omc\" --inspection \"$GE_GDN_OMC_INSPECT_RUN\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --output \"$GE_GDN_CPU_INSPECT_RUN\"",
+      "inputs": "Existing OMC bundle, hash-checked previous inspect-omc report and model.json, and the active DDK libai_fmk_graph_proto_host.so schema symbols",
+      "method": "Validate the IMOD container and common main ModelDef structure against the existing JSON before following CPUCL GraphOp task offset/size into bounded GraphDef records",
+      "outputs": [
+        "report.txt",
+        "report.json",
+        "schema-evidence.json",
+        "per-graph CPU subgraph JSON"
+      ],
+      "limits": "Name, layout and schema mismatches produce explicit partial coverage. No guessed fallback scan, OMG invocation, compilation or board execution. No failed target cast4 descriptor or full CPU graph result is yet reported."
+    }
   },
   "source_audit": {
     "load_api": "Both formal and probe paths use Init, HIGH/FRAMEWORK_NONE/OFFLINE/NPU, SetModelPath and SetModelBuffer with retained backing storage.",
     "library_policy": "Both exclude exact DDK HCL pair and prepend private lib plus /vendor/lib64/chipsetsdk. Matching policy does not establish matching deployed library hashes.",
     "cast_contract": "The public GE Cast interface declares dst_type; source dtype comes from its input descriptor. Omission of a source-level src_type attribute is not itself a defect, and adding one without inspecting the actual CastT is unsupported.",
-    "compiled_node_inspection": "inspect-compile correlates support logs with the pre-optimization recipe and cannot describe insert_cast_4. The next diagnostic converts the existing target/draft OMC to JSON only after checking that the active user OMG help advertises --mode, --om and --json, then extracts bounded Cast records and their input descriptors/producers where represented.",
+    "compiled_node_inspection": "inspect-omc conversion has completed for the existing target and draft OMC. Target JSON exposes insert_cast_5..13 only, while target OMC bytes also contain insert_cast_4. The next step inspects CPU compiled-subgraph payloads offline using the existing OMC and existing conversion JSON; it does not rerun OMG conversion or use the pre-optimization recipe as a substitute.",
     "topk_contract_bug": "Source audit fixed contradictory requested TopK dtype/shape and added shared dtype/shape checks. Verification: specs/ge-dtype-contract-verification.json. Legal probe and tiny-pair construction is unchanged, so this does not resolve insert_cast_4 or justify replaying the same model.",
     "differences_not_proven_causes": [
       "Fresh formal build library discovery versus frozen old probe donor inventory",
@@ -125,7 +254,10 @@
       "No claim that the preceding FP16MatMul is the direct producer of insert_cast_4 without compiled graph edges",
       "No mapping of raw dtype codes to names using a different DDK enum",
       "No accusation of Gather arithmetic, IO layout, draft coexistence or mmap defect without restoration evidence",
-      "No attribution of insert_cast_4 creation to compilation or runtime from the missing OMG-log match or a different local library"
+      "No attribution of insert_cast_4 creation to compilation or runtime from the missing OMG-log match or a different local library",
+      "No interpretation of raw Cast-attribute versus protobuf-descriptor integer inequality as a dtype defect",
+      "No association of draft insert_cast_4 with the target Load failure merely because their names match",
+      "No claim that a byte-string match decodes the target CPU subgraph or identifies the failing node producer"
     ],
     "local_creation_stage_clue": {
       "artifact": "locally declared blue libcpucl_host",
@@ -133,8 +265,9 @@
       "limit": "This is not the user active internal DDK. It identifies a CPUCL conversion-insertion implementation in that reference SDK, but establishes neither creation stage nor the underlying defect in this run."
     }
   },
-  "next_action": "Run inspect-omc on the existing OMC bundle in a fresh output directory with the same CPRO_DDK_ROOT/CPRO_DDK_ID. The tool records active OMG help, uses only supported --mode=1 --om=existing --json=new conversions for target and draft, and writes report.txt/report.json plus conversion evidence. No model compilation or board execution; only existing OMC paths are supplied to OMG, without AIR or standalone weight-file inputs. Inspect report.txt; unsupported conversion or incomplete JSON coverage remains explicit.",
+  "next_action": "Run inspect-omc-cpu with the existing OMC bundle and completed GE_GDN_OMC_INSPECT_RUN in a fresh GE_GDN_CPU_INSPECT_RUN output directory, using the same active DDK identity. Read report.txt. This offline path reuses hash-checked JSON, validates the container/main graph and follows bounded CPUCL task records; it invokes no OMG and performs no compilation or board execution. Host verification is pending; target insert_cast_4 and its producer remain unresolved until actual inspection evidence is returned.",
   "full_model_execution": "FAILED_AT_TARGET_LOAD",
   "full_model_accuracy": "DEFERRED_NOT_EVALUATED",
-  "performance": "NOT_MEASURED"
+  "performance": "NOT_MEASURED",
+  "cpu_inspection_tool_verification": "specs/omc-cpu-inspection-verification.json"
 }

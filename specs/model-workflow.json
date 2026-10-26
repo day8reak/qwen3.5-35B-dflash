@@ -290,12 +290,12 @@
       "accuracy": "DEFERRED_NOT_EVALUATED",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "python3 \"$GE_MODEL_TOOL\" inspect-omc --omc \"$GE_GDN_MODEL_RUN/omc\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --output \"$GE_GDN_OMC_INSPECT_RUN\"; use a fresh output directory and read its report.txt. Converts existing OMC only after active OMG help confirms support; no compilation or board replay.",
-      "requires": "Existing GE_GDN_MODEL_RUN OMC bundle, same active CPRO_DDK_ROOT/CPRO_DDK_ID, and a fresh GE_GDN_OMC_INSPECT_RUN directory; no external weight files or board access",
+      "next_command": "python3 \"$GE_MODEL_TOOL\" inspect-omc-cpu --omc \"$GE_GDN_MODEL_RUN/omc\" --inspection \"$GE_GDN_OMC_INSPECT_RUN\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --output \"$GE_GDN_CPU_INSPECT_RUN\"; use a fresh GE_GDN_CPU_INSPECT_RUN and read report.txt. No OMG invocation.",
+      "requires": "Existing OMC bundle, completed GE_GDN_OMC_INSPECT_RUN report/model.json, same active CPRO_DDK_ROOT/CPRO_DDK_ID schema library, and a fresh GE_GDN_CPU_INSPECT_RUN directory; no compilation or board access",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "Candidate PID13111/03-09 remains unconfirmed for this invocation. CPU FP16MatMul ComputeInit succeeds; CPUCL insert_cast_4/CastT Init -> SubGraph_0 Prepare -> target Load=1 fails. Adjacent raw srcType0/inputDataType1 needs exact node and producer binding. User confirmed target main NPU5/CPU6 at L113871 and draft NPU3/CPU4 at L5697; both rollback lists are empty and compiler_diagnostics is NOT_EMITTED. Target omg.log has no insert_cast names. Cast creation stage remains unresolved; a local blue CPUCL InsertConvertOpOptimizer literal is not evidence about the active user DDK. Draft/Process were not reached.",
-      "followup_run_id": "20261026T093313Z-19756-5a5a2b",
+      "current_failure": "Target Load=1 follows candidate CPUCL insert_cast_4/CastT Init and SubGraph_0 Prepare failures. User completed both OMC-to-JSON conversions: target bytes contain insert_cast_4 four times, but target JSON exposes only nine nodes insert_cast_5..13. Draft JSON exposes all nine insert_cast_0..8; its insert_cast_4 is unrelated to the failed target Load. Visible attribute dtype numbers and protobuf descriptor dtype numbers use different enum spaces and are not direct mismatch evidence. Exact target cast4 attributes, producer and CPU compiled subgraph remain unresolved. Earlier main partitions and empty rollback lists remain unchanged; no further compile-log search is requested.",
+      "followup_run_id": "20261026T094740Z-21011-32f1a9",
       "followup_evidence": "specs/gdn-model-load-user-report.json",
       "source_contract_verification": "specs/ge-dtype-contract-verification.json",
       "compiler_main_partitions": {
@@ -314,7 +314,8 @@
           "log_line": 5697
         }
       },
-      "existing_omc_inspection": "PENDING_USER_ACTIVE_OMG_HELP_AND_SUPPORTED_JSON_CONVERSION"
+      "existing_omc_inspection": "USER_REPORTED_CONVERSION_COMPLETE_TARGET_CAST4_NODE_COVERAGE_PARTIAL",
+      "offline_cpu_subgraph_inspection": "IMPLEMENTED_HOST_VERIFICATION_PENDING_USER_RUN_NOT_REPORTED"
     }
   },
   "operator_support_probe": {
@@ -398,6 +399,6 @@
     "accuracy_work": "DEFERRED_NOT_WAIVED",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
     "guide": "docs/hdc-board-run.md",
-    "next_action": "Inspect existing target/draft OMC with inspect-omc in a fresh directory after active OMG help confirms --mode=1/--om/--json conversion support. User already confirmed main partitions, empty rollback lists, NOT_EMITTED diagnostics and no insert_cast names in target omg.log; do not repeat inventory or grep. Read report.txt for bounded Cast descriptors and producer edges where available. Creation stage and underlying defect remain unresolved. No recompilation or board replay; full execution, accuracy and DFlash >=2x remain unvalidated."
+    "next_action": "Run inspect-omc-cpu on existing OMC plus hash-checked previous inspection JSON with the same active DDK, then read report.txt. Container/main-graph agreement is checked before reading bounded CPUCL GraphDef tasks; name/layout/schema mismatch remains partial with no guessed fallback. Host verification is pending. No OMG invocation, repeated conversion, grep, compilation or board replay; full execution, accuracy and DFlash >=2x remain unvalidated."
   }
 }

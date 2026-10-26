@@ -19,7 +19,7 @@ hdc -t "$SN" -s "$BIP" ...
 
 <a id="当前读取-gdn-整图加载失败证据"></a>
 
-## 当前：从已有 OMC 检查 Cast 描述
+## 当前：检查已有 OMC 的 CPU 编译子图
 
 用户`ge-gdn-model-20261026-171048`已成功导出、编译target/draft，并通过`--reject-cpu-fallback`检查，随后构建正式runner。板端`qwen35_target`的`Load`返回1，运行库版本`800.631.120.010`。失败发生在查询输入输出描述和Process之前，draft尚未加载。远端退出1而HDC进程退出0已被脚本识别。
 
@@ -34,24 +34,46 @@ hdc -t "$SN" -s "$BIP" ...
 
 target的`omg.log`没有任何`insert_cast`名称。`NOT_EMITTED`说明此次没有保留下来的诊断dump；无需再重复文件清单或日志搜索。编译记录仍含CPU分区，`--reject-cpu-fallback`通过不表示CPU分区为0；这些计数也不证明实际运行位置。前面的HCL库加载报错之后仍有CPUCL/NPUCL注册和初始化，不能据此认定它是此次终止原因。
 
-下一步用同一套实际DDK的OMG，将**已有target/draft OMC转换为JSON**，检查文件是否包含失败Cast及其属性、输入输出描述和生产者。选择一个尚不存在的诊断输出目录后执行一次：
+用户已完成两张OMC的`inspect-omc`转换。转换成功，但target失败节点的JSON覆盖仍不完整：
+
+| 图 | OMC字节中的名称匹配 | 转换JSON中列出的Cast节点 |
+| --- | --- | --- |
+| target | `insert_cast_4`出现4次；`insert_cast_5..13`各2次 | 9个：`insert_cast_5..13`，没有`insert_cast_4` |
+| draft | `insert_cast_0..8`各2次 | 9个：`insert_cast_0..8` |
+
+这些匹配次数是字节串出现次数，不能当作节点数量。target的OMC字节确实含失败名称，旧`omg.log`及本次转换JSON没有列出它；当前无需继续搜索旧编译日志，也无需重复`--mode=1`转换。draft中的同名`insert_cast_4`属于另一张图，不能用于解释target Load失败，draft尚未进入Load。
+
+已暴露节点的原始字段如下，保留两类dtype字段各自的编号：
+
+| 图 / 节点 | `src_dtype → dst_dtype`属性 | protobuf输入 → 输出dtype | shape | 输入边 |
+| --- | --- | --- | --- | --- |
+| target / `insert_cast_5` | `1 → 0` | `2 → 1` | `[8,4]` | `SubGraph_1:1` |
+| target / `insert_cast_6` | `0 → 1` | `1 → 2` | `[8,2]` | `SubGraph_2:4` |
+| draft / `insert_cast_4` | `0 → 1` | `1 → 2` | `[1,12,4]` | `SubGraph_2:0` |
+
+Cast属性和protobuf描述使用不同的dtype枚举空间，必须分别解释；不能因为上表两列原始整数不同就判定类型冲突。这些已显示的节点也不能替代缺失的target `insert_cast_4`描述。当前尚未取得该失败节点的属性、直接生产者及完整CPU编译子图，根因仍未确定。
+
+下一步离线检查**已有OMC中的CPU编译子图数据**，复用本次`GE_GDN_OMC_INSPECT_RUN`里的报告和JSON。入口已实现并通过192项相关主机测试；使用同一套实际DDK及一个尚不存在的输出目录：
 
 ```bash
-export GE_GDN_OMC_INSPECT_RUN="$AI_RUN_DIR/ge-gdn-omc-inspect-$(date +%Y%m%d-%H%M%S)"
-python3 "$GE_MODEL_TOOL" inspect-omc \
+export GE_GDN_CPU_INSPECT_RUN="$AI_RUN_DIR/ge-gdn-cpu-inspect-$(date +%Y%m%d-%H%M%S)"
+python3 "$GE_MODEL_TOOL" inspect-omc-cpu \
   --omc "$GE_GDN_MODEL_RUN/omc" \
+  --inspection "$GE_GDN_OMC_INSPECT_RUN" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$GE_GDN_OMC_INSPECT_RUN"
-cat "$GE_GDN_OMC_INSPECT_RUN/report.txt"
+  --output "$GE_GDN_CPU_INSPECT_RUN"
+cat "$GE_GDN_CPU_INSPECT_RUN/report.txt"
 ```
 
-工具先记录当前OMG的帮助信息，确认支持对应选项后才调用`--mode=1 --om=已有OMC --json=新路径`，分别转换两张图；不附加编译用的framework/platform参数。它不重新编译模型或访问板端，只向OMG提供已有OMC路径，并在检查前后核对原文件哈希。输出包括`report.txt`、`report.json`和`omg-help.log`；每图尝试转换时记录`convert.log`及命令/环境，成功生成JSON时另有`target/model.json`或`draft/model.json`。帮助信息不支持或转换失败也会留下诊断报告。工具验证记录见`specs/omc-inspection-verification.json`。
+此入口不会调用OMG，也不重新编译或访问板端。它先核验已有报告、JSON和OMC的哈希，读取当前DDK `libai_fmk_graph_proto_host.so`的schema符号证据；只有IMOD容器和主ModelDef结构与已有JSON一致后，才按CPUCL GraphOp任务记录的offset/size读取有界GraphDef。名称、布局或schema不匹配会明确记录覆盖不完整，不使用猜测位置的回退扫描。
 
-报告只提取有界的Cast节点信息。JSON转换成功不保证包含完整节点描述；未找到`insert_cast_4`也不能单独证明它由运行时创建。其创建阶段目前未定：本地另一套blue `libcpucl_host`中可见CPUCL `InsertConvertOpOptimizer`及`insert_cast_`字样，只能作为线索，不能代替用户当前DDK的证据。若JSON含对应节点，再按实际属性和输入边定位；信息缺失或格式不支持应保留该结论。
+输出为`report.txt`、`report.json`、`schema-evidence.json`及每图的CPU子图JSON。当前尚无用户实际CPU子图结果，不能据此宣称已经取到完整CPU图或修复失败Cast。保留原OMC和前次转换目录；本次CPU检查工具的验证及边界见`specs/omc-cpu-inspection-verification.json`；此前OMG转换工具记录见`specs/omc-inspection-verification.json`。
+
+本地另一套blue `libcpucl_host`中可见CPUCL `InsertConvertOpOptimizer`及`insert_cast_`字样，只能说明参考SDK存在这类实现；当前仍不能据此确定用户DDK中失败节点的创建阶段。
 
 `inspect-compile`关联优化前recipe，不能代替这里对已有OMC的检查。公开GE `Cast`接口只声明`dst_type`，源类型来自输入descriptor；不应猜测增加`src_type`属性来修复。源码审计已补齐TopK、ArgMax、Cast、归约及公共类型校验，118个探针和tiny双图默认/当前组合策略的构图记录与C++均保持不变；这没有修复当前加载失败，也不构成再次上板的理由。验证见`specs/ge-dtype-contract-verification.json`。
 
-保留现有AIR/OMC、正式runner、板端结果及完整HiLog。此前读取L130330–L130480和确认编译日志的步骤都已完成，当前无需重跑探针、编译或板端模型。完整证据见`specs/gdn-model-load-user-report.json`。
+保留现有AIR/OMC、正式runner、板端结果及完整HiLog。此前HiLog窗口、编译日志确认和OMC到JSON转换都已完成，当前无需重跑探针、转换、编译或板端模型。完整证据见`specs/gdn-model-load-user-report.json`。
 
 后续实际运行时，脚本会分别记录并哈希回收`probe.pid`、`benchmark.pid`；候选日志另存`hiai-hilog-candidate.txt`，在`result.json`中绑定原快照哈希及筛选信息。该改动不要求为补PID重跑本次模型，PID复用及快照覆盖仍需单独判断。
 
