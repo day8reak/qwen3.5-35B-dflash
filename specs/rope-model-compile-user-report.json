@@ -141,5 +141,6 @@
   "next_action": "After pulling the fix, export existing prepared/reference into fresh GE_ROPE_CHAIN_RUN, compile with the same internal DDK, build runner and execute --execution-only. No repeat inspection conversion or operator batch.",
   "device": "NEW_CANDIDATE_NOT_RUN",
   "accuracy": "DEFERRED_NOT_WAIVED",
-  "performance": "NOT_MEASURED"
+  "performance": "NOT_MEASURED",
+  "later_user_followup": "specs/rope-chain-model-load-user-report.json"
 }

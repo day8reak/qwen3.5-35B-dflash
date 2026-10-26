@@ -153,11 +153,11 @@ def test_actual_pair_emission_folds_target_rope_and_preserves_abi_and_external_w
             assert after == before
             if storage == "inline":
                 assert after_cpp == before_cpp
-            frequency, = [node for node in graph.nodes if node.kind == "mul"
+            frequency, = [node for node in graph.nodes if node.kind == "matmul"
                           and node.output.shape == (1, 12, 4)
                           and any(value.name in graph.constants for value in node.inputs)]
             assert any(value.name not in graph.constants for value in frequency.inputs)
-            assert next(row for row in after if row["name"] == frequency.output.name)["type"] == "Mul"
+            assert next(row for row in after if row["name"] == frequency.output.name)["type"] == "BatchMatMulV2"
     assert [pickle.dumps(graph) for graph in graphs] == originals
     assert {key: sha256_file(path) for key, path in paths.items()} == hashes
 

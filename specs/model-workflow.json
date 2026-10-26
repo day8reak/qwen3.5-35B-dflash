@@ -280,7 +280,7 @@
     },
     "board_execution_bringup": {
       "run_id": "20261026T002510Z-8234-33823c",
-      "status": "USER_REPORTED_TARGET_OMG_COMPILE_FAILED",
+      "status": "USER_REPORTED_TARGET_LOAD_PASSED_DRAFT_MUL_INIT_FAILED",
       "scope": "New direct-GE candidate export/compile/execution chain reusing existing tiny prepared weights; not a full-weight model",
       "runtime_deployment": "Private library set excludes DDK HCL pair; process path includes /vendor/lib64/chipsetsdk",
       "runner_changes": [
@@ -290,13 +290,13 @@
       "accuracy": "DEFERRED_NOT_EVALUATED",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "Follow docs/hdc-board-run.md complete static RoPE chain: export existing prepared pair with matmul/compact/gather to fresh GE_ROPE_CHAIN_RUN; compile with same DDK, build runner and run --execution-only.",
-      "requires": "Existing prepared pair and reference, updated source, same active GE/DDK/HDC environment and a fresh GE_ROPE_CHAIN_RUN output root.",
+      "next_command": "Follow docs/hdc-board-run.md draft RoPE chain: export existing prepared pair with matmul/compact/gather to fresh GE_DRAFT_ROPE_RUN; compile with same DDK, build runner and run --execution-only.",
+      "requires": "Existing prepared pair and reference, updated source, same active GE/DDK/HDC environment and a fresh GE_DRAFT_ROPE_RUN output root.",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "User ge-rope-model-20261026-190121 export succeeded, but target OMG failed. Prior v10-only constant fold leaves static RoPE Permute/Concat/Cos/Sin/Reshape; log reports Permute DT_FLOAT-only and terminal v16 Reshape PreBuild constant32/data4 mismatch. Source v15/v16 shapes agree on32elements, so no direct source shape mismatch or first-message causality is asserted. New atomic whole-region fold is pending internal OMG/board verification.",
-      "followup_run_id": "20261026T104356Z-23819-4eead0",
-      "followup_evidence": "specs/rope-model-compile-user-report.json",
+      "current_failure": "User ge-rope-chain-20261026-192630 compiled both graphs and target Load/IO query passed. Draft Load failed at SubGraph_2/v29/Mul: CPUCL input0Type != input1Type. Both Process calls not reached. Exact compiler transformation and current compiled dtypes remain undetermined.",
+      "followup_run_id": "20261026T110115Z-24555-dec793",
+      "followup_evidence": "specs/rope-chain-model-load-user-report.json",
       "source_contract_verification": "specs/ge-dtype-contract-verification.json",
       "compiler_main_partitions": {
         "target": {
@@ -325,9 +325,17 @@
       },
       "constant_rope_region_fix": {
         "run_id": "20261026T104356Z-23819-4eead0",
-        "status": "HOST_COMPLETE_REGION_REGRESSIONS_PASSED_INTERNAL_COMPILE_PENDING",
+        "status": "USER_REPORTED_BOTH_COMPILED_TARGET_LOAD_PASS",
         "evidence": "specs/ge-constant-rope-region-verification.json",
-        "device_status": "NEW_GRAPH_NOT_RUN"
+        "device_status": "TARGET_LOAD_IO_QUERY_PASS_PROCESS_NOT_REACHED",
+        "user_followup": "specs/rope-chain-model-load-user-report.json"
+      },
+      "compiler_main_partitions_scope": "Historical ge-gdn-model-20261026-171048 only; new rope-chain partitions not supplied.",
+      "dynamic_draft_rope_fix": {
+        "run_id": "20261026T110115Z-24555-dec793",
+        "status": "HOST_REGRESSIONS_PASSED_ACTUAL_DRAFT_BMM_BOARD_PENDING",
+        "evidence": "specs/ge-draft-rope-frequency-verification.json",
+        "device_status": "NEW_CANDIDATE_NOT_RUN"
       }
     }
   },
@@ -412,6 +420,6 @@
     "accuracy_work": "DEFERRED_NOT_WAIVED",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
     "guide": "docs/hdc-board-run.md",
-    "next_action": "Follow docs/hdc-board-run.md complete static RoPE chain: export existing prepared pair with matmul/compact/gather to fresh GE_ROPE_CHAIN_RUN; compile with same DDK, build runner and run --execution-only. Host oracle agreement does not close internal compile, execution, model accuracy or DFlash >=2x gates."
+    "next_action": "Follow docs/hdc-board-run.md draft RoPE chain with fresh GE_DRAFT_ROPE_RUN. Previous target Load passed; draft v29/Mul failed before either Process. New BMM actual-shape compilation and dual-graph execution remain unverified; accuracy and DFlash >=2x gates stay open."
   }
 }

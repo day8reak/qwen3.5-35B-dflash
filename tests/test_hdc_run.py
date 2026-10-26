@@ -974,7 +974,9 @@ def test_recorded_pid_keeps_full_middle_error_and_excludes_newer_unrelated_proce
     artifact = diagnostic['candidate_log']
     text = Path(artifact['path']).read_text()
     assert 'ParseModel rejected unique-middle-cause' in text
-    assert 'unique-middle-cause' not in execution.stderr  # Console remains bounded.
+    assert 'unique-middle-cause' in execution.stderr
+    assert diagnostic['summary']['shown_lines'] <= 60
+    assert 'recorded process PID matched; PID reuse remains possible' in execution.stderr
     assert 'UNRELATED LATEST FAILURE' not in text and 'UNRELATED LATEST FAILURE' not in execution.stderr
     assert len(text.splitlines()) == diagnostic['summary']['candidate_lines'] == 103
     assert artifact['sha256'] == hashlib.sha256(Path(artifact['path']).read_bytes()).hexdigest()

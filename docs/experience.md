@@ -491,3 +491,16 @@ run：`20261026T104356Z-23819-4eead0`。用户ge-rope-model-20261026-190121导�
 实际默认与matmul/compact/gather的recipe及inline导出均确认两张最终[1,1,8,4]、各64B的常量表，七节点及其辅助算子全部消失；检查了graph.recipe与constants.bin真实偏移、大小及字节。整图ABI、FileConstant记录/文件、draft动态导出保持，完整target及下游draft在长度1/3/8的oracle输出字节相同。实际full/selected配置S8在不读取checkpoint的情况下也匹配完整区域（6144B预算），但这不是全权重推理。
 
 302项不重复主机测试通过，4项实际GE测试因资源未配置跳过；42段修改文档shell通过bash -n。验证和源码哈希见specs/ge-constant-rope-region-verification.json。经验固化到本模型的原子区域及序列化回归，无共享技能/DDK更改。新内部OMG、板端双图执行、完整精度及DFlash至少2倍仍未验证；下一步复用prepared/reference在全新GE_ROPE_CHAIN_RUN执行一次完整链路。
+
+
+## 2026-10-26：target 加载通过，draft 动态 RoPE 外积在 CPUCL 初始化失败
+
+run：`20261026T110115Z-24555-dec793`。用户 `ge-rope-chain-20261026-192630` 完成双图编译与 runner 构建，target Load 和维度查询成功；draft Load 返回1。候选 HiLog L117797显示 Mul 两输入类型不一致，L117799指向 `v29`，L117802指向 `SubGraph_2`。此前 draft 第一个CPU子图已初始化成功。源码顺序是在两次 Load 后才创建张量并调用 Process，因此不能将 target 的描述打印当作已经执行。用户未回传此次 OMC 内部 dtype 或 result.json PID绑定，不能断言具体编译pass或某个输入的类型变换。证据保存于 `specs/rope-chain-model-load-user-report.json`。
+
+源码映射确认 tiny/full 当前S8的 draft 各有一处动态频率外积：tiny `[1,12,1] × [1,1,4]`，full配置 `[1,24,1] × [1,1,64]`。仅在非空前缀位置上界 `S+B-2≤65504`、存储FP16 inverse有限且非负（排除负零）时替换为K=1 BMM；保留整数位置先转FP16的舍入和后续Cos/Sin。有限FP16单乘积可由FP32精确容纳，再回到同一FP16边界；不把该证明推广到任意符号、NaN或多项归约。超出域保留旧Mul不表示该路径已可上板。target原子常量折叠、ABI与外部权重保持。
+
+已有2×8双动态输入BMM小图的板端通过，只支持选择该候选机制；实际draft形状、常量右端和整图分区仍需现场验证。全部有效前缀长度、2048附近位置舍入、65504门限、非有限/负零回退、正数乘积溢出及实际recipe均有主机回归，具体报告、计数和哈希见 `specs/ge-draft-rope-frequency-verification.json`。全模型精度仍后置未豁免，至少2倍提速未验证。
+
+终端摘要原先仅保留首条E和restore失败窗口，长清理日志会掩盖中间的Init/Prepare/Load失败。新增有界最近失败窗口，并以用户原始 `is not equals to` 文本验证前文保留；全候选日志与原哈希核验继续保存。控制台区分已记录PID和启发式候选，但PID复用限制保留。旧提示无条件写“未确认”，不能据此反推PID采集失败。
+
+经验固化在模型源码、导出/数值回归及HiLog选择回归，没有修改共享技能、DDK或系统库。没有把主机字节一致性提升为设备通过；下一步复用prepared/reference到新 `GE_DRAFT_ROPE_RUN` 执行导出、编译、构建、execution-only完整链路，无需重做旧探针或诊断转换。

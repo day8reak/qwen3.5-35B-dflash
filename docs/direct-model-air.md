@@ -6,11 +6,11 @@
 
 剩余43项探针现已回传：42项编译并完成板端数值比较，1项CastT编译失败；附加HiLog回收失败不需要重跑42项。此前按[整图GDN候选命令](hdc-board-run.md#当前将已验证的-gdn-gather-复制接入整图)复用prepared，显式叠加`--gdn-indexed-copy gather`。该开关仅改写已测FP16形状的三角复制与outer Sub，不改递推算术或权重。每图生成哈希绑定的`gdn-copy-lowering.json`，编译校验其mode/counts与manifest一致。默认`native`保留旧图，未测形状继续原实现。
 
-`ge-gdn-model-20261026-171048`编译成功后，target在CPUCL insert_cast_4初始化时Load失败；用户CPU任务解码已定位其输入来自静态RoPE的v10/BatchMatMul。上一版只预计算v10，用户最新`ge-rope-model-20261026-190121`导出成功，但target OMG因RoPE末端v16/Reshape PreBuild失败；此前还出现FP16常量Permute不支持诊断。源码v15/v16均为32元素，不能仅凭第一条诊断断言最终形状错误的内部成因。
+最新 `ge-rope-chain-20261026-192630` 已完成双图编译和 target Load/维度查询。完整静态 target RoPE 区域折叠解决了此前加载/编译阻塞；draft 的 `SubGraph_2/v29/Mul` 随后因两个输入类型不一致而 Load 失败，两图均未执行 Process。用户证据见 `specs/rope-chain-model-load-user-report.json`，日志候选与本次 PID 的独立绑定尚未回传。
 
-本轮改为完整静态RoPE区域的原子折叠：MatMul→Transpose→重复Concat→Cos/Sin→两个最终Reshape。逐点保留FP16边界，最终导出两张[1,1,8,4]、各64字节的tiny常量表；检查拓扑、形状、消费者、有限值及整段预算，任一检查失败都保留整段原图，不再只折叠前缀。draft位置仍依赖运行时输入；没有引入通用的外部权重三角函数折叠。
+本轮仅将 draft 的动态 RoPE 频率外积改为有界 K=1 BatchMatMul：tiny `[1,12,1] @ [1,1,4] → [1,12,4]`，保留 INT32→FP16 舍入及后续 Cos/Sin。非空前缀产生非负位置；只在最大位置≤65504且 FP16 inverse 有限、非负且无负零时应用，其他合同保留原 Mul。target 的七节点原子常量折叠保持，draft 位置仍依赖运行时 mask。
 
-按[完整静态RoPE验证链路](hdc-board-run.md#当前读取-gdn-整图加载失败证据)在新的`GE_ROPE_CHAIN_RUN`导出、编译并执行双图。复用prepared/reference，不重跑算子批次或诊断转换。主机验证见`specs/ge-constant-rope-region-verification.json`；最新用户编译失败记录见`specs/rope-model-compile-user-report.json`。内部OMG及新图Load/Process、完整精度和性能尚未通过。
+按[draft RoPE 验证链路](hdc-board-run.md#当前读取-gdn-整图加载失败证据)在新的 `GE_DRAFT_ROPE_RUN` 导出、编译并执行双图。复用 prepared/reference，不重跑算子批次或诊断转换。主机验证见 `specs/ge-draft-rope-frequency-verification.json`；实际 draft 形状和常量右端的新图仍需内部 OMG 和上板验证。此前小图 BMM 成功不替代完整图执行、精度与性能检查。
 
 此前TopK、ArgMax、Cast、归约及公共类型校验的修复见`specs/ge-dtype-contract-verification.json`；其合法构图记录保持不变，是独立的合同检查。公开GE `Cast`源类型来自输入descriptor，不猜测增加`src_type`或直接修改OMC中的Cast属性。
 
@@ -342,7 +342,7 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 当前入口：检查已有 OMC 的 CPU 编译子图
 
-用户已回传GDN7项及其余43项：四个GDN Gather候选通过，其余42个已编译案例完成数值比较。整图GDN候选的target Load随后失败；CPU子图解码已定位到静态RoPE BMM之后的insert_cast_4。后续v10单节点折叠候选在OMG失败，当前按[完整静态RoPE验证链路](hdc-board-run.md#当前读取-gdn-整图加载失败证据)重新导出整段折叠候选，内部编译与板端执行待验证。以下保留GDN候选设计及历史命令。
+用户已回传GDN7项及其余43项：四个GDN Gather候选通过，其余42个已编译案例完成数值比较。整图GDN候选的target Load随后失败；CPU子图解码已定位到静态RoPE BMM之后的insert_cast_4。后续完整静态RoPE折叠已通过双图编译和target Load，当前按[draft RoPE验证链路](hdc-board-run.md#当前读取-gdn-整图加载失败证据)修复draft的动态频率Mul；完整双图执行仍待验证。以下保留GDN候选设计及历史命令。
 
 <a id="gdn-indexed-copy-probes"></a>
 

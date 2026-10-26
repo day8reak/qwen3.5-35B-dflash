@@ -19,64 +19,56 @@ hdc -t "$SN" -s "$BIP" ...
 
 <a id="当前读取-gdn-整图加载失败证据"></a>
 
-## 当前：完整静态 RoPE 链折叠后重新验证双图
+## 当前：target 已加载，修复 draft 动态 RoPE 频率计算
 
-用户`ge-rope-model-20261026-190121`导出成功，target OMG编译失败，后续draft编译、runner构建和上板未执行。上一版只把`v10/MatMul`折叠为常量，留下的静态RoPE链仍进入编译器：日志先报Permute只支持DT_FLOAT，最终`v16/Reshape`的PreBuild打印`constant:32, data size:4`并失败。两条诊断之间的直接因果关系尚未确定；源码的v15和v16均为32个FP16元素，并没有构造层面的32→4尺寸变更。
+用户 `ge-rope-chain-20261026-192630` 已完成双图导出、编译及 runner 构建。target Load 和输入输出维度查询成功；draft Load 失败，因此两图都尚未调用 Process。完整静态 target RoPE 区域折叠已通过这次编译和 target 加载，但不能据此认定精度、实际 NPU 执行或完整模型通过。
 
-本轮修复覆盖完整区域：
+候选 HiLog 的直接失败链为：`SubGraph_2` 中 `v29/Mul` 的两个输入类型不一致，随后 GenerateOp、Prepare 和 Load 失败。此前 draft 的第一个 CPU 子图已初始化成功。不能把前面的 HCL 库加载警告当作本次直接失败原因，也不能由这段日志确定是哪一个输入被内部编译器改了类型。原始 `result.json` 的 PID 绑定未回传，日志仍保留候选身份。用户回传记录见 `specs/rope-chain-model-load-user-report.json`。
 
-| 节点 | 操作 | tiny形状 | 字节 |
-| --- | --- | --- | ---: |
-| v10 | MatMul | `[1,2,8]` | 32 |
-| v11 | Transpose | `[1,8,2]` | 32 |
-| v12 | 同一输入拼接两次 | `[1,8,4]` | 64 |
-| v13 / v15 | Cos / Sin | `[1,8,4]` | 各64 |
-| v14 / v16 | 两个最终Reshape | `[1,1,8,4]` | 各64 |
+源码的 `v29` 是动态 RoPE 频率外积：tiny 的 FP16 `[1,12,1] × [1,1,4]`。本轮改用 K=1 BatchMatMul，结果仍为 `[1,12,4]`。保留 INT32 位置先转 FP16 的舍入边界，以及后续重复拼接和 Cos/Sin；位置继续依赖运行时 mask，不预计算 draft 表。非空有效前缀使位置落在 `[0,S+B-2]`；只在上界不超过65504且存储的 FP16 inverse 有限、非负（不含负零）时使用 BMM，其他合同保留 Mul。此条件避免把有符号零、非有限值等未经验证的通用 Mul 改成 MatMul。双图 ABI、权重和 target 静态 RoPE 折叠保持。
 
-导出器按拓扑、属性、形状和消费者识别区域，不依赖v节点名。FP32 MatMul后先回到原FP16边界；Transpose、Concat和Reshape只复制元素；Cos/Sin分别对已舍入的FP16角度转FP32计算，再回到FP16。最终recipe及inline C++仅保留v14/v16两张常量表，原静态计算链及其辅助节点被剪除。原双图ABI、权重和动态draft计算保持。
+已有 `rope_frequency_bmm` 小图完成 Load、Process 和数值比较，但它是 `[1,2,1] @ [1,1,8]` 且两端都是运行时输入。它支持选用 BMM 的方向，不能替代实际 draft 形状与常量右端的内部编译及上板检查。本轮主机验证见 `specs/ge-draft-rope-frequency-verification.json`。
 
-整段先检查所有输入/输出大小及七个输出的累计预算（tiny为384字节），数值计算完成后才一次发布。预算不足、非有限值、未知属性、额外内部消费者或静态末端分支会保留整段原图；非法形状也不会发布部分折叠结果，并可能由既有合同校验直接拒绝。不会退回“只折叠v10”。普通K=1常量MatMul也仅在没有存活节点消费者时单独折叠。没有扩展到任意权重派生的三角函数计算。超出匹配范围保留原路径并不表示原路径已经能够上板。
+同时修复终端 HiLog 摘要：保留最近一次 Init/GenerateOp/Prepare/Load 等失败及前后文，避免长清理日志挤掉中间的算子错误。完整候选文件继续保存；匹配已记录 PID 与启发式选取的提示分开，PID 复用限制仍保留。
 
-主机验证见`specs/ge-constant-rope-region-verification.json`：检查最终recipe存储的端点形状、64字节载荷及内容，检查inline C++，并比较完整target及下游draft的参考输出。实际GE序列化、内部OMG编译和新图Load/Process仍需现场验证。
-
-保留原`GE_ROPE_MODEL_RUN`及更早的OMC/inspection目录，复用prepared/reference，在新目录执行完整链路：
+保留原 `GE_ROPE_CHAIN_RUN` 和此前产物，复用 prepared/reference，在新目录执行：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only &&
 export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py" &&
-export GE_ROPE_CHAIN_RUN="$AI_RUN_DIR/ge-rope-chain-$(date +%Y%m%d-%H%M%S)" &&
+export GE_DRAFT_ROPE_RUN="$AI_RUN_DIR/ge-draft-rope-$(date +%Y%m%d-%H%M%S)" &&
 python3 "$GE_MODEL_TOOL" export \
   --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
   --fp16-reductions matmul --fp16-row-mul compact --gdn-indexed-copy gather \
-  --output "$GE_ROPE_CHAIN_RUN/air" &&
+  --output "$GE_DRAFT_ROPE_RUN/air" &&
 python3 "$GE_MODEL_TOOL" compile \
-  --air "$GE_ROPE_CHAIN_RUN/air" \
+  --air "$GE_DRAFT_ROPE_RUN/air" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$GE_ROPE_CHAIN_RUN/omc" --reject-cpu-fallback &&
+  --output "$GE_DRAFT_ROPE_RUN/omc" --reject-cpu-fallback &&
 python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$GE_ROPE_CHAIN_RUN/hiai-build" &&
+  --output "$GE_DRAFT_ROPE_RUN/hiai-build" &&
 python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
-  --omc "$GE_ROPE_CHAIN_RUN/omc" \
-  --runner "$GE_ROPE_CHAIN_RUN/hiai-build/build/qwen35_dflash_hiai" \
+  --omc "$GE_DRAFT_ROPE_RUN/omc" \
+  --runner "$GE_DRAFT_ROPE_RUN/hiai-build/build/qwen35_dflash_hiai" \
   --reference "$GE_BOARD_RUN/reference.json" \
-  --output "$GE_ROPE_CHAIN_RUN/board" --execution-only
+  --output "$GE_DRAFT_ROPE_RUN/board" --execution-only
 ```
 
-这次必须重新导出AIR并编译新OMC；无需重新prepare、诊断转换或算子探针。若失败，保留新编译日志或板端`benchmark.stderr`、`result.json`及候选HiLog继续定位。完整用户回传见`specs/rope-model-compile-user-report.json`。
+这次需要重新导出并编译；无需重新 prepare、诊断转换或算子探针。若失败，保留新日志、`benchmark.stderr`、`result.json` 及候选 HiLog。主机字节一致性不代替新图 Load/Process 或完整精度检查；最终 DFlash 至少2倍目标尚未验证。
 
-更早的`ge-gdn-model-20261026-171048`已完成双图编译，target Load失败。CPU任务解码确认`SubGraph_0/insert_cast_4`输入来自静态v10/BatchMatMul；Cast源属性与同OMC对照描述不一致。旧HiLog PID仍未独立绑定，内部缺陷所属编译pass未确定。主图NPU5/CPU6与NPU3/CPU4是编译分区记录；`--reject-cpu-fallback`检查显式分区超限回退，不保证CPU分区为0，也不证明实际NPU执行。历史证据保留在`specs/gdn-model-load-user-report.json`。
+历史 `ge-gdn-model-20261026-171048` 在 target 静态 RoPE BMM 后的 `insert_cast_4` 初始化失败，主图 NPU5/CPU6 与 NPU3/CPU4 仅属于该旧产物。`ge-rope-model-20261026-190121` 的单节点折叠又暴露编译器静态链问题，随后改为七节点原子折叠，通过上述新一次 target 加载。历史证据见 `specs/gdn-model-load-user-report.json`、`specs/rope-model-compile-user-report.json` 和 `specs/ge-constant-rope-region-verification.json`。`--reject-cpu-fallback` 检查显式分区超限回退，不保证 CPU 分区为0，也不证明 NPU 执行。
 
 <a id="当前将已验证的-gdn-gather-复制接入整图"></a>
 
 ## 已完成：将已验证的 GDN Gather 复制接入整图
 
-以下链路已由上述用户运行完成到target Load失败，当前不要重复执行。
+以下是较早的 GDN 候选链路，当时完成到 target Load 失败；当前执行上面的 draft RoPE 修复链路。
 
 最新`ge-row-chain-20261026-144144`已通过ReshapeFusion，19个row Mul CPU-only候选消失；已识别CPU-only计算从117减到98，主图仍因NPUCL分区数超过9回退，尚未执行双图。保留本次产物与诊断，不重新运行旧整图。
 
 用户重放[remaining-cpu批次](cpu-gap-probes.md)后，42个已编译案例全部通过Load、Process和原数值比较。唯一未上板的是`moe_cast_bool_roundtrip`，它在编译时失败。最后`hilog.stderr`回收失败导致旧脚本把整批标成`INFRASTRUCTURE_FAILED`，但42项结果已完整回收；无需为此重跑。新脚本将这种附加日志失败标为`INCOMPLETE`和`REPLAY_COMPLETE_WITH_DIAGNOSTIC_WARNINGS`，保留远端目录，不伪造日志或修改旧报告；必需结果/哈希/退出码失败仍中止。
 
-这批路由Gather、TopK/ArgMax布局与attention mask候选均未消除编译CPU分区，暂不替换。RoPE BMM/二维MatMul及原形位置Cast虽通过，但其输入/转换合同与整图相关节点不同，不据此改图。当前只接入此前4个已验证的GDN Gather候选，新增显式`--gdn-indexed-copy gather`，默认仍为`native`。它仅覆盖FP16 `[2,1,64,64]`三角掩码及对应outer Sub；其他形状保留原实现并报告原因。Exp前后两个普通掩码和Neg前的严格掩码均保留，Sub仍只做一次原FP16减法。权重、专家策略、GDN递推顺序与双图ABI不变。
+这批路由Gather、TopK/ArgMax布局与attention mask候选均未消除编译CPU分区，暂不替换。当时 RoPE BMM/二维MatMul及原形位置Cast因合同差异未直接接入整图；上文现已给出 draft 频率的有界适配及待验证范围。GDN接入此前4个已验证的Gather候选，新增显式`--gdn-indexed-copy gather`，默认仍为`native`。它仅覆盖FP16 `[2,1,64,64]`三角掩码及对应outer Sub；其他形状保留原实现并报告原因。Exp前后两个普通掩码和Neg前的严格掩码均保留，Sub仍只做一次原FP16减法。权重、专家策略、GDN递推顺序与双图ABI不变。
 
 复用已有prepared和reference，在新目录一次运行以下链路；无需再跑算子批次：
 

@@ -33,6 +33,10 @@ _HILOG_RECORD = re.compile(
 _HILOG_APP = re.compile(r"(?:^|/)qwen35_dflash_hiai(?:/|$)")
 _HILOG_INIT = re.compile(r"HIAI_Foundation_Init\(\d+\).*init hiai foundation success", re.IGNORECASE)
 _HILOG_RESTORE_FAILURE = re.compile(r"(?:RestoreFromBuffer|restore model).*(?:fail|false|null)", re.IGNORECASE)
+_HILOG_RUNTIME_OPERATION = re.compile(
+    r"\b(?:Init|ComputeInit|GenerateOp|ReshapeUpdate|ParseModel|Prepare\w*|Load\w*|RestoreFromBuffer)\b|restore model",
+    re.IGNORECASE)
+_HILOG_FAILURE = re.compile(r"\b(?:fail\w*|error\w*|false|null|reject\w*)\b|!=", re.IGNORECASE)
 
 
 def _hilog_summary_details(path, *, recorded_pid=None, candidate_output=None):
@@ -43,7 +47,8 @@ def _hilog_summary_details(path, *, recorded_pid=None, candidate_output=None):
     order determines the latest observed app session. PID/date and
     repeated foundation initialization separate candidates; their identity is
     not independently tied to the HDC invocation. The first E can be a handled
-    fallback, so retain a restore-failure window as well as the head and tail.
+    fallback, so also retain the most recent initialization/preparation/loading
+    failure window. These are diagnostic candidates, not a root-cause verdict.
     """
     if recorded_pid is not None and (type(recorded_pid) is not int or recorded_pid <= 0):
         raise ValueError("recorded PID must be a positive integer")
@@ -87,11 +92,12 @@ def _hilog_summary_details(path, *, recorded_pid=None, candidate_output=None):
         return list(fallback), matches, {
             "method": "keyword-tail", "scope": "Entire verified snapshot; keyword candidates, not attributed to this run."}
 
-    head, first_error, restore = [], [], []
+    head, first_error, failure = [], [], []
     before, tail = deque(maxlen=20), deque(maxlen=15)
-    after_error = after_restore = 0
+    after_error = after_failure = 0
     count = 0
-    first_error_line = restore_line = None
+    first_error_line = restore_line = failure_line = None
+    failure_count = 0
     destination = candidate_output.open("x", encoding="utf-8") if candidate_output is not None else nullcontext()
     with destination as complete, path.open(encoding="utf-8", errors="replace") as stream:
         for number, line in enumerate(stream, 1):
@@ -112,21 +118,25 @@ def _hilog_summary_details(path, *, recorded_pid=None, candidate_output=None):
             if after_error:
                 first_error.append(item)
                 after_error -= 1
-            if after_restore:
-                restore.append(item)
-                after_restore -= 1
+            if after_failure:
+                failure.append(item)
+                after_failure -= 1
             if first_error_line is None and parsed["level"] in ("E", "F"):
                 first_error_line = number
                 first_error = list(before)[-4:] + [item]
                 after_error = 8
             if restore_line is None and _HILOG_RESTORE_FAILURE.search(parsed["message"]):
                 restore_line = number
-                restore = list(before) + [item]
-                after_restore = 5
+            if (_HILOG_RUNTIME_OPERATION.search(parsed["message"])
+                    and _HILOG_FAILURE.search(parsed["message"])):
+                failure_line = number
+                failure_count += 1
+                failure = list(before) + [item]
+                after_failure = 5
             before.append(item)
-    # 6 head + 13 first-error + 26 restore-failure + 15 tail <= 60 lines;
+    # 6 head + 13 first-error + 26 latest-runtime-failure + 15 tail <= 60 lines;
     # overlapping windows are deduplicated and displayed in snapshot order.
-    selected = dict(head + first_error + restore + list(tail))
+    selected = dict(head + first_error + failure + list(tail))
     metadata = {"method": "latest-observed-app-session-candidate",
                 "candidate_pid": candidate["pid"], "candidate_date": candidate["date"],
                 "candidate_start_time": candidate["start_time"],
@@ -134,6 +144,8 @@ def _hilog_summary_details(path, *, recorded_pid=None, candidate_output=None):
                 "candidate_foundation_init_line": candidate["init_line"],
                 "candidate_lines": count, "first_error_line": first_error_line,
                 "restore_failure_line": restore_line,
+                "runtime_failure_line": failure_line,
+                "runtime_failure_candidates": failure_count,
                 "scope": "PID/date/init-based session candidate, not confirmed as this run; error windows are not a root-cause verdict."}
     if recorded_pid is not None:
         metadata.update(method="recorded-pid-session-candidate", recorded_pid=recorded_pid,
@@ -682,8 +694,10 @@ def execute(args):
                     print(f"run-hdc: full hilog candidate records: {candidate_path}", file=sys.stderr)
                 if related:
                     if "candidate_pid" in summary_metadata:
+                        identity_scope = ("recorded process PID matched; PID reuse remains possible"
+                                          if recorded_pid is not None else "not confirmed as this run")
                         print(f"run-hdc: hilog diagnostic candidate: PID {summary_metadata['candidate_pid']} "
-                              f"on {summary_metadata['candidate_date']}; not confirmed as this run, "
+                              f"on {summary_metadata['candidate_date']}; {identity_scope}, "
                               "and the first error is not necessarily the cause", file=sys.stderr)
                     print("\n".join(related), file=sys.stderr)
                 else:

@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T110115Z-24555-dec793",
+  "baseline_commit": "c24d030",
+  "status": "HOST_REGRESSIONS_PASSED_ACTUAL_DRAFT_BMM_BOARD_PENDING",
+  "scope": "Bounded direct-GE draft RoPE frequency construction plus HiLog failure-context reporting. No private internal OMG or board execution in this workspace.",
+  "trigger": "specs/rope-chain-model-load-user-report.json",
+  "implementation": {
+    "site": "ge_draft.py runtime RoPE frequency v29",
+    "before": "FP16 Mul [1,S+B,1] * [1,1,head_dim/2]",
+    "after": "K=1 FP16 BatchMatMulV2 with identical operands and output descriptor",
+    "eligibility": "Nonempty valid-prefix contract, S+B-2<=65504, stored FP16 inverse finite with no negative sign bits (including negative zero). Otherwise keep original Mul.",
+    "classification": "Exact single-product FP16 host semantics within the bounded input domain; device kernel equivalence remains unverified.",
+    "rounding": "Retain INT32 positions -> FP16 before product; never delay this rounding until after multiplication.",
+    "preserved": [
+      "Runtime mask-dependent positions",
+      "Node name, node count and FP16 output boundary",
+      "Concat/Cos/Sin and their rounding boundaries",
+      "Target static RoPE folding",
+      "Runtime ABI and external weights",
+      "DDK/compiler flags and library deployment"
+    ],
+    "other_sites": "Tiny and full config at S8 each contain one such rank3 dynamic frequency outer Mul in draft. This is not a generic graph-wide Mul rewrite."
+  },
+  "prior_probe": {
+    "case": "rope_frequency_bmm",
+    "evidence": "specs/remaining-cpu-probes-user-report.json",
+    "status": "USER_REPORTED_LOAD_PROCESS_NUMERICAL_PASS",
+    "shape": "[1,2,1]@[1,1,8], two runtime inputs",
+    "limit": "Does not validate actual draft [1,12,1]@[1,1,4] with constant RHS, complete-model correctness or runtime NPU placement."
+  },
+  "diagnostics": {
+    "summary": "Keep newest Init/ReshapeUpdate/GenerateOp/Prepare/Load/ParseModel/Restore failure and20 preceding/5 following candidate records; combine with head/first error/tail within60lines.",
+    "literal_regression": "User original input0Type is not equals to input1Type string retained as predecessor context, followed by v29 Init and SubGraph_2 Prepare/Load cascade.",
+    "preserved": "Full candidate log, hash verification and PID selection remain intact.",
+    "identity": "Console distinguishes recorded-PID match from heuristic candidate; PID reuse still possible."
+  },
+  "validation": {
+    "unique_outcomes": {
+      "passed": 314,
+      "skipped": 4,
+      "failed": 0
+    },
+    "junit": [
+      {
+        "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T110115Z-24555-dec793/ge-regression.xml",
+        "sha256": "ea633c9f0061b46589f4ad47331a5a0e5b8fb87ea44fc9c30071d5deecfb4d3e",
+        "tests": 203
+      },
+      {
+        "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T110115Z-24555-dec793/hilog-summary-tests.xml",
+        "sha256": "90099b1aa0074f5b1f6eb0cc6efb6bb173cff77400d72b51a3e5d5f558b1003e",
+        "tests": 95
+      },
+      {
+        "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T110115Z-24555-dec793/hilog-summary-literal-tests.xml",
+        "sha256": "51bd7684ad5f4a78917e5837fb28ef252779d73976f51cca005fb81164877085",
+        "tests": 9
+      },
+      {
+        "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T110115Z-24555-dec793/draft-rope-frequency-tests.xml",
+        "sha256": "eda0d4154715098ee8b88931adca3367f02a89bb04b975358608999f0797bc8c",
+        "tests": 19
+      }
+    ],
+    "new_model_tests": 19,
+    "ge_existing_regressions": {
+      "passed": 199,
+      "skipped": 4
+    },
+    "hdc_unique_tests": 96,
+    "hdc_count_note": "Initial broad95 included8 summary cases; final dedicated9 adds latest-load-failure fallback regression, yielding96 distinct HDC cases. Repeated cases counted once.",
+    "skips": "Two real GE header compilation and two GE Save/Load checks need Q35_GE_TEST_INCLUDE or Q35_GE_TEST_ROOT.",
+    "coverage": [
+      "tiny/full configurationS8 all prefix lengths1..8 against old-Mul source slice",
+      "FP16 position rounding around2048, with a late-cast negative control",
+      "S+B-2=65504/65505 gate; infinite/NaN/negative/negative-zero inverse fallback",
+      "Finite operands with positive FP16 result overflow and +0 inverse",
+      "Actual native and matmul/compact recipe records, dynamic LHS, constant RHS, retained Cast, unchanged FileConstant records",
+      "Existing complete target/draft host oracle and target constant-fold regression",
+      "Existing HDC simulations and exact latest failure-cascade regression"
+    ],
+    "independent_review": "No material blocker in bounded arithmetic, model mapping, tests, docs or runner Load/Process interpretation.",
+    "docs": {
+      "shell_blocks_passed": 42,
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T110115Z-24555-dec793/docs-verification.json",
+      "sha256": "38bba31b6b208de87bac0baba9ad2192c6b2307dc6777841d395c1fab6670c33"
+    }
+  },
+  "source_audits": [
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T110115Z-24555-dec793/draft-source-prefix-map.json",
+      "sha256": "1550e3a80e3cef894c5152c457d5c54f4d9f935de877dff77829ed28edc3507e"
+    },
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T110115Z-24555-dec793/draft-cast-and-runner-order-audit.json",
+      "sha256": "c5f55ea25831b4bb38a1a29821ae225341085ee7bd5db90c392185e39d0c3798"
+    },
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T110115Z-24555-dec793/draft-dynamic-rope-mul-bmm-audit.json",
+      "sha256": "0dfa4b7d7a5e14f26cb90f32b3516c132b0f5cb79169bb6316cd4ebbaca64c26"
+    }
+  ],
+  "source_sha256": {
+    "model/qwen35_moe_dflash/ge_draft.py": "1203502bd6f27970b16512655dee78ea3ade832b0a6a101cd1b0e7a365225217",
+    "model/qwen35_moe_dflash/hdc_run.py": "2057a59052a7bf0841591f5657661e0d902e4fb0c33a90934a07084a065a0aa5",
+    "model/qwen35_moe_dflash/ge_eval.py": "735faa0a965fa1c3598272392d452b49f86d8c4a80af86b36cb0f2043095a421",
+    "tests/test_ge_draft_rope_frequency.py": "9950c6087658bfa4d419fc63dfdb49a99f0949cc5056ebc7493c46840d77c4a7",
+    "tests/test_ge_rope_constant_fold.py": "69bbef3d5b7170e979772e2c56d5469b423f07a947d6d7d33f32451136757925",
+    "tests/test_hdc_hilog_summary.py": "8f3a2ac1bbb369a2832cebfb07608840a683ed9f52983bbda541c73d1662f3de",
+    "tests/test_hdc_run.py": "a740f52c38301bbf967ac25157c884d22e4a198ce4c250da56022721a276714d"
+  },
+  "limits": [
+    "User runtime reports pasted, source revision/artifact hashes and process PID binding not independently retrieved.",
+    "Compiled draft dtype mutation origin is undetermined; no new OMC decoding or binary patch.",
+    "Actual new BMM shape and constant RHS have not passed internal OMG/board.",
+    "Host FP16 bit comparisons do not establish device subnormal/rounding behavior or complete model accuracy.",
+    "Latest prior target only passed Load/I/O query; neither graph reached Process.",
+    "Full weights, integrated accuracy, NPU placement and DFlash>=2x remain unvalidated."
+  ],
+  "experience_audit": {
+    "capture": "docs/experience.md",
+    "checks": [
+      "tests/test_ge_draft_rope_frequency.py",
+      "tests/test_hdc_hilog_summary.py"
+    ],
+    "shared_skills_changed": false,
+    "rejected_promotions": [
+      "No arbitrary signed/nonfinite Mul->BMM equivalence claim",
+      "No operator probe pass promoted to actual draft or full-model pass",
+      "No target Load promoted to Process",
+      "No first HCL warning treated as direct failure cause"
+    ]
+  },
+  "next_action": "Follow docs/hdc-board-run.md GE_DRAFT_ROPE_RUN export/compile/build/execution-only with existing prepared/reference and unchanged DDK/HDC settings."
+}

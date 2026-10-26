@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import struct
 
+import numpy as np
+
 from .config import Qwen35DFlashConfig
 from .ge_ir import Graph, Value
 
@@ -202,7 +204,17 @@ class _DraftBuilder:
         inverse = g.const([[inverse]])
         float_positions = g.op("cast", positions, shape=(1, k), attrs={"dtype": "float16"})
         float_positions = self.reshape(float_positions, (1, k, 1))
-        frequency = g.op("mul", float_positions, inverse, shape=(1, k, c.head_dim // 2))
+        # The nonempty prefix contract bounds positions to [0,S+B-2]. For
+        # finite nonnegative FP16 operands, this outer product is also a K=1
+        # BMM, with the same FP16 result and no negative-zero ambiguity. Keep
+        # the position cast BEFORE it, including rounding above 2048. This
+        # avoids the CPUCL Mul input-type mismatch seen in the compiled draft;
+        # it is deliberately not a generic Mul rewrite or a static table.
+        inverse_data = g.constants[inverse.name]
+        use_bmm = (k - 2 <= 65504 and np.isfinite(inverse_data).all()
+                   and not np.signbit(inverse_data).any())
+        frequency = g.op("matmul" if use_bmm else "mul", float_positions, inverse,
+                         shape=(1, k, c.head_dim // 2))
         frequency = g.op("concat", frequency, frequency, shape=(1, k, c.head_dim), attrs={"axis": -1})
         cosine = g.op("cos", frequency, shape=frequency.shape)
         sine = g.op("sin", frequency, shape=frequency.shape)
