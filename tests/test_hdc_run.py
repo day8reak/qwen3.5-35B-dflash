@@ -58,7 +58,12 @@ if args[:2] == ["file", "send"]:
 elif args[:2] == ["file", "recv"]:
     if len(args) != 4:
         raise RuntimeError("unsupported file recv arguments")
+    if args[2].endswith('.pid') and os.environ.get('FAKE_PID_FAILURE') == 'missing':
+        sys.exit(0)
     shutil.copyfile(translated(args[2]), args[3])
+    if args[2].endswith('.pid') and os.environ.get('FAKE_PID_FAILURE') == 'corrupt':
+        with open(args[3], 'ab') as stream:
+            stream.write(b'9')
     if os.environ.get("FAKE_HDC_FAILURE") == "receive-corruption" and args[2].endswith("/benchmark.json"):
         # Semantically identical JSON still MUST fail the transport hash gate.
         with open(args[3], "ab") as stream:
@@ -114,9 +119,22 @@ elif args[:1] == ["shell"]:
             statements = [shlex.join(["printf", "%s\n", "SIMULATED hilog unavailable"])
                           + " >&2", "return 127"]
         else:
+            runs = [json.loads(line) for line in Path(os.environ['FAKE_RUNNER_CALLS']).read_text().splitlines()]
+            pid = runs[-1]['pid']
+            def record(message, process=pid, level='I'):
+                return f'03-09 08:00:00.123 {process} {process} {level} A0FFFF/qwen35_dflash_hiai/HIAI_DDK_MSG: {message}'
+            records = [record('HIAI_Foundation_Init(53)::init hiai foundation success'),
+                       record('SIMULATED HIAI Load model failure', level='E')]
+            if mode == 'pid-absent':
+                records = [record('UNRELATED LATEST FAILURE', process=999999, level='E')]
+            elif mode == 'candidate-middle':
+                records += [record(f'prepare model record {index}') for index in range(50)]
+                records += [record('ParseModel rejected unique-middle-cause', level='E')]
+                records += [record(f'teardown record {index}') for index in range(50)]
+                records += [record('UNRELATED LATEST FAILURE', process=999999, level='E')]
             statements = [
                 shlex.join(["printf", "%s\n", "SIMULATED unrelated network telemetry"]),
-                shlex.join(["printf", "%s\n", "SIMULATED HIAI Load model failure"]),
+                shlex.join(["printf", "%s\n", '\n'.join(records)]),
                 shlex.join(["printf", "%s\n", "SIMULATED hilog reader diagnostic"]) + " >&2",
                 "return 0"]
         payload = "hilog() {\n" + guard + ";\n" + ";\n".join(statements) + ";\n};\n" + payload
@@ -163,7 +181,10 @@ import sys
 args = sys.argv[1:]
 with open(os.environ["FAKE_RUNNER_CALLS"], "a", encoding="utf-8") as stream:
     stream.write(json.dumps({"argv": args, "cwd": os.getcwd(),
+                             "pid": os.getpid(),
                              "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", "")}) + "\n")
+if os.environ.get('FAKE_PID_FAILURE') == 'invalid':
+    Path('probe.pid' if args == ['--probe'] else 'benchmark.pid').write_text('not-a-pid\n')
 failure = os.environ.get("FAKE_HDC_FAILURE", "")
 if args == ["--probe"]:
     if failure == "probe-exit":
@@ -286,7 +307,7 @@ def case(tmp_path):
                FAKE_HDC_CALLS=str(tmp_path / "hdc-calls.jsonl"),
                FAKE_HDC_UPLOADS=str(tmp_path / "hdc-uploads.jsonl"),
                FAKE_RUNNER_CALLS=str(tmp_path / "runner-calls.jsonl"),
-               FAKE_EXPECTED_REPORT=str(report), FAKE_HDC_FAILURE="", FAKE_HILOG_FAILURE="",
+               FAKE_EXPECTED_REPORT=str(report), FAKE_HDC_FAILURE="", FAKE_HILOG_FAILURE="", FAKE_PID_FAILURE="",
                FAKE_BOARD_ROOT=board_root, FAKE_BOARD_SANDBOX=str(board),
                FAKE_VENDOR_ROOT=str(vendor),
                FAKE_RUNNER=str(fake_runner))
@@ -364,6 +385,12 @@ def test_hdc_protocol_upload_environment_and_strict_comparison(case):
     assert cleanup_calls[-1] == len(calls) - 1, "cleanup must be the final HDC operation"
     executions = _calls(case, runner=True)
     assert len(executions) == 2 and executions[0]["argv"] == ["--probe"]
+    evidence = json.loads((case['output'] / 'result.json').read_text())
+    for operation, execution in zip(('probe', 'benchmark'), executions):
+        identity = evidence['process_ids'][operation]
+        assert identity['status'] == 'VERIFIED' and identity['pid'] == execution['pid']
+        assert int((case['output'] / (operation + '.pid')).read_text()) == execution['pid']
+        assert identity['sha256'] == evidence['retrieved_sha256'][operation + '.pid']
     for execution in executions:
         assert str(case["board"] / "lib") in execution["LD_LIBRARY_PATH"].split(":")
         assert "/vendor/lib64/chipsetsdk" in execution["LD_LIBRARY_PATH"].split(":")
@@ -393,6 +420,22 @@ def test_hdc_zero_transport_status_does_not_hide_remote_failure(case):
     assert (case["board"] / "models/target/target.omc").is_file()
     assert not (case["output"] / "comparison.json").exists()
     assert _cleanup(case) == "RETAINED"
+
+
+def test_script_exec_pid_and_quoted_arguments(tmp_path):
+    from qwen35_moe_dflash.hdc_run import _script
+
+    board = tmp_path / 'board with spaces'
+    board.mkdir()
+    value = 'literal $(touch unexpected) `touch unexpected` ; space'
+    code = 'import json,os,sys; print(json.dumps({"pid":os.getpid(),"value":sys.argv[1]}))'
+    script = board / 'run.sh'
+    script.write_text(_script(board, [sys.executable, '-c', code, value], 'stdout', 'stderr', 'exitcode', pidfile='native.pid'))
+    subprocess.run(['sh', str(script)], check=True)
+    actual = json.loads((board / 'stdout').read_text())
+    assert actual == {'pid': int((board / 'native.pid').read_text()), 'value': value}
+    assert (board / 'exitcode').read_text().strip() == '0'
+    assert not (board / 'unexpected').exists()
 
 
 @pytest.mark.parametrize("channel", ["stdout", "stderr", "empty"])
@@ -802,6 +845,8 @@ def test_failed_runtime_captures_verified_hilog_without_extra_cli_arguments(case
     evidence = json.loads((case["output"] / "result.json").read_text())
     assert evidence["hilog"]["status"] == "CAPTURED"
     assert evidence["hilog"]["returncode"] == 0
+    assert evidence['hilog']['process_identity']['operation'] == stage
+    assert evidence['hilog']['summary']['recorded_pid'] == _calls(case, runner=True)[-1]['pid']
     assert evidence["stage"] == stage
     assert f"remote {stage} failed with exit code {exitcode}" in evidence["error"]
     names = {"hiai-hilog.txt", "hiai-hilog.stderr", "hiai-hilog.exitcode"}
@@ -904,7 +949,7 @@ def test_hilog_without_related_lines_is_captured_but_does_not_resolve_failure(ca
     execution = _run(case, "remote-exit")
     assert execution.returncode != 0
     assert "remote benchmark failed with exit code 17" in execution.stderr
-    assert "no matching HIAI/NPU diagnostic lines" in execution.stderr
+    assert "no records for recorded PID" in execution.stderr
     assert "MMIService" not in execution.stderr
     assert "send libhiai.so" not in execution.stderr
     evidence = json.loads((case["output"] / "result.json").read_text())
@@ -913,6 +958,86 @@ def test_hilog_without_related_lines_is_captured_but_does_not_resolve_failure(ca
     assert evidence["hilog"]["summary"]["shown_lines"] == 0
     assert "MMIService" in (case["output"] / "hiai-hilog.txt").read_text()
     assert "remote benchmark failed with exit code 17" in evidence["error"]
+
+
+def test_recorded_pid_keeps_full_middle_error_and_excludes_newer_unrelated_process(case):
+    case['env']['FAKE_HILOG_FAILURE'] = 'candidate-middle'
+    execution = _run(case, 'remote-exit')
+    assert execution.returncode != 0
+    evidence = json.loads((case['output'] / 'result.json').read_text())
+    diagnostic = evidence['hilog']
+    identity = evidence['process_ids']['benchmark']
+    assert diagnostic['process_identity']['pid'] == identity['pid']
+    assert diagnostic['summary']['recorded_pid'] == identity['pid']
+    assert diagnostic['summary']['method'] == 'recorded-pid-session-candidate'
+    assert 'PID reuse' in diagnostic['summary']['scope']
+    artifact = diagnostic['candidate_log']
+    text = Path(artifact['path']).read_text()
+    assert 'ParseModel rejected unique-middle-cause' in text
+    assert 'unique-middle-cause' not in execution.stderr  # Console remains bounded.
+    assert 'UNRELATED LATEST FAILURE' not in text and 'UNRELATED LATEST FAILURE' not in execution.stderr
+    assert len(text.splitlines()) == diagnostic['summary']['candidate_lines'] == 103
+    assert artifact['sha256'] == hashlib.sha256(Path(artifact['path']).read_bytes()).hexdigest()
+    assert artifact['source_sha256'] == evidence['retrieved_sha256']['hiai-hilog.txt']
+    assert artifact['selection'] == {key: value for key, value in diagnostic['summary'].items()
+                                     if key not in ('matching_lines', 'shown_lines')}
+    original = (case['output'] / 'hiai-hilog.txt').read_text().splitlines()
+    for line in text.splitlines():
+        number, record = line.split(': ', 1)
+        assert record == original[int(number[1:]) - 1]
+
+
+def test_recorded_pid_missing_from_snapshot_never_selects_other_process(case):
+    case['env']['FAKE_HILOG_FAILURE'] = 'pid-absent'
+    execution = _run(case, 'remote-exit')
+    evidence = json.loads((case['output'] / 'result.json').read_text())
+    diagnostic = evidence['hilog']
+    assert execution.returncode != 0 and diagnostic['status'] == 'CAPTURED'
+    assert diagnostic['summary']['status'] == 'NO_MATCHING_RECORDS'
+    assert diagnostic['summary']['candidate_lines'] == diagnostic['summary']['shown_lines'] == 0
+    assert 'candidate_pid' not in diagnostic['summary'] and 'candidate_log' not in diagnostic
+    assert 'UNRELATED LATEST FAILURE' not in execution.stderr
+    assert 'no other process substituted' in execution.stderr
+    assert not (case['output'] / 'hiai-hilog-candidate.txt').exists()
+
+
+@pytest.mark.parametrize('pid_failure', ['missing', 'corrupt', 'invalid'])
+@pytest.mark.parametrize('remote_failure', ['', 'remote-exit'])
+def test_auxiliary_pid_unavailable_does_not_change_execution_result(case, pid_failure, remote_failure):
+    case['env']['FAKE_PID_FAILURE'] = pid_failure
+    execution = _run(case, remote_failure)
+    evidence = json.loads((case['output'] / 'result.json').read_text())
+    for identity in evidence['process_ids'].values():
+        assert identity['status'] == 'UNAVAILABLE' and 'pid' not in identity
+    if remote_failure:
+        assert execution.returncode != 0
+        assert 'remote benchmark failed with exit code 17' in evidence['error']
+        assert evidence['hilog']['process_identity']['status'] == 'UNAVAILABLE'
+        summary = evidence['hilog']['summary']
+        assert summary['method'] == 'latest-observed-app-session-candidate'
+        assert 'not confirmed as this run' in summary['scope']
+        assert 'recorded_pid' not in summary
+    else:
+        assert execution.returncode == 0, execution.stderr
+        assert evidence['status'] == 'PASS'
+
+
+def test_full_candidate_log_is_untruncated_and_exclusive(tmp_path):
+    from qwen35_moe_dflash.hdc_run import _hilog_summary_details
+
+    path = tmp_path / 'snapshot.txt'
+    source = '03-09 08:00:00.123 13111 13111 E A0FFFF/qwen35_dflash_hiai/HIAI: ' + 'detail' * 1000 + '  \n'
+    path.write_text(source)
+    destination = tmp_path / 'candidate.txt'
+    selected, _, metadata = _hilog_summary_details(path, recorded_pid=13111, candidate_output=destination)
+    assert len(selected[0]) <= 1000
+    assert destination.read_text() == 'L1: ' + source
+    assert metadata['candidate_lines'] == 1
+    with pytest.raises(FileExistsError):
+        _hilog_summary_details(path, recorded_pid=13111, candidate_output=destination)
+    with pytest.raises(FileExistsError):
+        _hilog_summary_details(path, recorded_pid=13111, candidate_output=path)
+    assert path.read_text() == source
 
 
 def test_hilog_summary_bounds_display_and_keeps_full_snapshot(tmp_path):

@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T084733Z-7577-be91b5",
+  "evidence_kind": "USER_PASTED_CONSOLE_NOT_INDEPENDENTLY_RETRIEVED",
+  "suggested_revision": "60a9b77",
+  "actual_revision": "NOT_REPORTED",
+  "artifact_hashes": "NOT_PROVIDED",
+  "reported_run": "ge-gdn-model-20261026-171048",
+  "status": "USER_REPORTED_PAIR_COMPILED_TARGET_LOAD_FAILED",
+  "export": {
+    "status": "EXPORTED",
+    "options": {
+      "fp16_reductions": "matmul",
+      "fp16_row_mul": "compact",
+      "gdn_indexed_copy": "gather"
+    }
+  },
+  "compile": {
+    "status": "COMPILED",
+    "reject_cpu_fallback": true,
+    "scope": "Both target and draft compiled by pair wrapper. No explicit partition-limit rollback detected by requested guard. Final partition counts/CPU subgraphs not provided."
+  },
+  "native_build": "COMPLETED_BY_COMMAND_CHAIN",
+  "runtime": {
+    "version": "800.631.120.010",
+    "mode": "execution-only",
+    "failed_model": "qwen35_target",
+    "failed_api": "Load",
+    "status_code": 1,
+    "remote_exitcode": 1,
+    "hdc_process_exitcode": 0,
+    "board_root": "/data/local/tmp/qwen35-dflash-20261026T091151Z-d5eaed699a7140b8b5f912a6602eb3f4",
+    "draft_load": "NOT_REACHED_BY_SOURCE_ORDER",
+    "process": "NOT_REACHED",
+    "io_descriptor_checks": "NOT_REACHED_BY_SOURCE_ORDER"
+  },
+  "diagnostics": {
+    "snapshot": "board/hiai-hilog.txt",
+    "candidate_pid": 13111,
+    "candidate_date": "03-09",
+    "attribution": "UNCONFIRMED_SESSION_CANDIDATE",
+    "shown_gap": [
+      130348,
+      130473
+    ],
+    "observed": [
+      "Candidate logs contain missing HCL runtime library then CPUCL and NPUCL interface registration.",
+      "Terminal excerpt jumps from registration to teardown; full middle records not pasted."
+    ],
+    "root_cause": "NOT_ESTABLISHED"
+  },
+  "source_audit": {
+    "load_api": "Both formal and probe paths use Init, HIGH/FRAMEWORK_NONE/OFFLINE/NPU, SetModelPath and SetModelBuffer with retained backing storage.",
+    "library_policy": "Both exclude exact DDK HCL pair and prepend private lib plus /vendor/lib64/chipsetsdk. Matching policy does not establish matching deployed library hashes.",
+    "differences_not_proven_causes": [
+      "Fresh formal build library discovery versus frozen old probe donor inventory",
+      "Formal read-only mmap storage versus probe writable vector",
+      "Full model OMC/sidecars and root working directory versus small standalone probe OMC"
+    ],
+    "not_inferred": [
+      "No claim that the HCL dlopen line caused Load failure",
+      "No claim all model operations are NPU-only",
+      "No accusation of Gather arithmetic, IO layout, draft coexistence or mmap defect without restoration evidence"
+    ]
+  },
+  "next_action": "Read existing hiai-hilog.txt lines130330..130480 (no recompilation or board replay); inspect actual restoration errors before changing graph or deployment.",
+  "full_model_execution": "FAILED_AT_TARGET_LOAD",
+  "full_model_accuracy": "DEFERRED_NOT_EVALUATED",
+  "performance": "NOT_MEASURED"
+}

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T084733Z-7577-be91b5",
+  "baseline_commit": "60a9b779681e9569fa9ce6ea93462fa04ed82d53",
+  "status": "HOST_DIAGNOSTICS_VALIDATED_MODEL_LOAD_FAILURE_UNRESOLVED",
+  "user_evidence": "specs/gdn-model-load-user-report.json",
+  "changes": [
+    "Formal runner scripts record separate probe/benchmark exec PIDs without native rebuild.",
+    "PID retrieval uses existing remote and local SHA256 validation; unavailable/invalid PID is auxiliary diagnostic metadata and cannot mask required execution failure or success.",
+    "Valid recorded PID restricts snapshot selection; absent matching records never fall back to a different PID.",
+    "Full selected candidate records retained with original line numbers and full lines, exclusive creation, snapshot and candidate hashes, and PID/date/init selection metadata.",
+    "Existing no-PID heuristic remains explicitly unconfirmed; bounded terminal summary and original model error are preserved."
+  ],
+  "validation": {
+    "tests_passed": 95,
+    "xml": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T084733Z-7577-be91b5/pid-diagnostics-tests-2.xml",
+    "xml_sha256": "13182c6e0c4d5e12ee9165e20370dea57410558442db6e7f506f99b9c5fe7ff3",
+    "failures": 0,
+    "shell_blocks_bash_n": 62,
+    "coverage": [
+      "Real host exec PID and quoted arguments with spaces, dollar expansion and backticks",
+      "Recorded PID excludes a newer unrelated process and refuses fallback when absent",
+      "Complete selected records include a middle Load error omitted by the bounded summary",
+      "Optional missing/corrupt/invalid PID preserves original failed or successful execution",
+      "Required output hash/exit/comparison gates and ownership-checked cleanup regressions",
+      "Snapshot/source hashing, candidate exclusive creation and untruncated records"
+    ]
+  },
+  "source_sha256": {
+    "model/qwen35_moe_dflash/hdc_run.py": "ae81a9891bf2711d64be98ce9ea6d863aa84a1d519259f64bb0a8e6561dcfc23",
+    "tests/test_hdc_run.py": "7036d17554f1384e29f84144416043e22e2f8ce35e9aa8a86759139cd75b4eab"
+  },
+  "reviews": [
+    "Independent full-model versus probe Load API/library/buffer/payload boundary audit: differences documented as hypotheses, no root cause asserted.",
+    "Independent PID/quoting/required-output/selection/hash/error-preservation review: approved, no blockers."
+  ],
+  "experience_audit": {
+    "captured_in": "docs/experience.md",
+    "shared_skill_changes": "none; narrow existing model-runtime diagnostic checks strengthened",
+    "not_promoted": [
+      "Unconfirmed missing-HCL error as Load root cause",
+      "Speculative mmap/library/graph rewrites",
+      "Compiler completion as all-NPU or model execution proof"
+    ]
+  },
+  "next_action": "User reads existing snapshot lines130330..130480; no export, compilation, native rebuild or board replay required.",
+  "local_vendor_compile": "NOT_RUN",
+  "local_native_build": "NOT_RUN",
+  "local_board_execution": "NOT_RUN",
+  "production_graph_changed": false,
+  "full_model_execution": "USER_REPORTED_FAILED_AT_TARGET_LOAD",
+  "accuracy": "DEFERRED_NOT_EVALUATED",
+  "performance": "NOT_MEASURED"
+}

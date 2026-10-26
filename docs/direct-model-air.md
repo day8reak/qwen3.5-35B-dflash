@@ -4,7 +4,9 @@
 
 2026-10-22 用户反馈 tiny target/draft 双图 AIR→OMC 编译成功。2026-10-26 的后续证据确认：旧 target OMC 在 OMG 主图分区时因 NPUCL 超过9个分区回退 CPU，板端恢复被 CPUCL 的 FP16 MatMul 检查拒绝。用户基于 `78d94ef` 重新导出后，新 target 的主图窗口 L91094–L127615 仍以分区超限回退结束。后续六个 MatMul 归约小图已全部通过 Load、Process 和数值检查；整图采用该归约后仍超限；九项布局探针已回传；row Mul整图修正后ReshapeFusion通过、19个Mul CPU-only候选消失，但主图仍分区超限。[剩余CPU候选批次](cpu-gap-probes.md)的后续完整回传见下。
 
-剩余43项探针现已回传：42项编译并完成板端数值比较，1项CastT编译失败；附加HiLog回收失败不需要重跑42项。当前按[整图GDN候选命令](hdc-board-run.md#当前将已验证的-gdn-gather-复制接入整图)复用prepared，显式叠加`--gdn-indexed-copy gather`。该开关仅改写已测FP16形状的三角复制与outer Sub，不改递推算术或权重。每图生成哈希绑定的`gdn-copy-lowering.json`，编译校验其mode/counts与manifest一致。默认`native`保留旧图，未测形状继续原实现。
+剩余43项探针现已回传：42项编译并完成板端数值比较，1项CastT编译失败；附加HiLog回收失败不需要重跑42项。此前按[整图GDN候选命令](hdc-board-run.md#当前将已验证的-gdn-gather-复制接入整图)复用prepared，显式叠加`--gdn-indexed-copy gather`。该开关仅改写已测FP16形状的三角复制与outer Sub，不改递推算术或权重。每图生成哈希绑定的`gdn-copy-lowering.json`，编译校验其mode/counts与manifest一致。默认`native`保留旧图，未测形状继续原实现。
+
+最新`ge-gdn-model-20261026-171048`已成功编译双图，随后target Load返回1。当前先按[留档诊断](hdc-board-run.md#当前读取-gdn-整图加载失败证据)读取已有HiLog中间段，不重复以下生成或上板命令。
 
 第1–4节保留首次生成流程和历史失败修复；当前现场无需重新 prepare 或生成参考。算子核查见 [兼容性记录](ge-operator-compatibility.md)。tiny 编译成功不表示完整35B权重、量化、内存或性能已经通过。
 
@@ -332,9 +334,9 @@ python3 "$GE_MODEL_TOOL" compile \
 ## 7. 当前现场：GDN 复制整图候选与探针历史
 
 
-### 当前入口：复用完整探针结果导出一次新图
+### 当前入口：新图编译已过，读取已有加载失败日志
 
-用户已回传GDN7项及其余43项：四个GDN Gather候选通过，其余42个已编译案例也完成数值比较。当前按[整图链路](hdc-board-run.md#当前将已验证的-gdn-gather-复制接入整图)导出带`--gdn-indexed-copy gather`的新候选；无需重复探针。以下保留候选设计及历史命令。
+用户已回传GDN7项及其余43项：四个GDN Gather候选通过，其余42个已编译案例也完成数值比较。带`--gdn-indexed-copy gather`的新候选已成功编译双图，target在Load阶段失败；当前先按[留档诊断](hdc-board-run.md#当前读取-gdn-整图加载失败证据)读取已有日志，无需重复探针或导出。以下保留候选设计及历史命令。
 
 <a id="gdn-indexed-copy-probes"></a>
 

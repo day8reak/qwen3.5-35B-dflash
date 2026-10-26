@@ -8,9 +8,11 @@
 
 **最新算子回放：42个已编译案例全部完成Load、Process和数值比较，另1项CastT编译失败。** 最后的`hilog.stderr`回收失败只影响附加诊断，无需重跑42项。新版脚本会显示诊断警告并保留远端证据；旧报告保留原样。
 
-**当前入口：[将已验证的GDN Gather复制接入整图](hdc-board-run.md#当前将已验证的-gdn-gather-复制接入整图)。** 复用原prepared/reference，显式使用`--fp16-reductions matmul --fp16-row-mul compact --gdn-indexed-copy gather`，在新目录导出、带CPU回退拒绝的编译，然后构建正式runner并执行双图。无需重新运行[remaining-cpu批次](cpu-gap-probes.md)。
+**最新整图：target/draft编译成功，正式runner在target Load返回1。** 新GDN候选已通过`--reject-cpu-fallback`，失败阶段推进到模型加载；尚未查询IO或执行Process，draft也未加载。
 
-上一整图已通过ReshapeFusion并移除19个row Mul CPU-only候选，但仍超过9个NPUCL分区回退。新开关只整合此前已验证的GDN复制形状；路由、选择和attention mask方案仍含CPU分区，暂不替换。完整模型执行、精度和2倍加速仍待验证。
+**当前入口：[读取已有加载失败日志](hdc-board-run.md#当前读取-gdn-整图加载失败证据)。** 当前HiLog摘要跳过了中间窗口，候选PID归属未确认。先取现有`board/hiai-hilog.txt`的L130330–L130480，无需重跑42项探针或重新编译整图。HCL排除策略已与通过探针保持一致，不能仅凭缺库行判断此次根因。
+
+完整模型执行、精度和2倍加速仍待验证。
 
 **服务器没有 OHOS SDK：[获取 Native SDK 与配置编译路径](ohos-native-sdk.md)。** SDK 留在服务器；独立probe通过原native记录复用SDK、头文件和链接资源。
 
@@ -18,7 +20,7 @@
 
 上板流程的 `--execution-only` 执行 probe，再强制 target/draft 各执行一次、回传两图的 Top1 输出及日志；现有参考只用于匹配身份、prompt 和配置，不比较输出精度，也不运行 benchmark。成功标记为 `EXECUTION_COMPLETE`，精度和性能为 `NOT_EVALUATED`。以后去掉该参数可恢复原有配对 benchmark 和参考比较。全部成功后删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。probe 或 benchmark 失败时会直接显示已回传的错误日志末尾，并自动抓取板端 HiLog 缓冲区快照作为排障材料。日志摘要会扫描整个快照、排除 HDC 传输记录，并避免将 `input` 误匹配为 `NPU`；完整日志始终保留。
 
-此前 HCL 空缓冲区、库选择和 ND 补维问题及当时的重编 runner 命令保存在[历史排障记录](hdc-board-run.md#历史加载接口与运行库排障)。后续整图编译通过再构建正式runner；当前使用上述GDN候选整图链路，旧runner和模型产物继续保留。
+此前 HCL 空缓冲区、库选择和 ND 补维问题及当时的重编 runner 命令保存在[历史排障记录](hdc-board-run.md#历史加载接口与运行库排障)。后续整图编译通过再构建正式runner；当前先读取已有Load失败日志，旧runner和模型产物继续保留。
 
 以后要保留大体积独立权重时，加 `--board-cleanup omc`，只删除清单中的 OMC 文件，保留目录、独立权重、程序、库和日志；加 `--board-cleanup none` 则全部保留。默认是 `--board-cleanup all`。嵌入 OMC 内部的权重随 OMC 一起删除。
 

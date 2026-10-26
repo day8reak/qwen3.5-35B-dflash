@@ -17,7 +17,32 @@ hdc -t "$SN" -s "$BIP" ...
 
 <a id="当前双图采用可选-matmul-归约"></a>
 
-## 当前：将已验证的 GDN Gather 复制接入整图
+## 当前：读取 GDN 整图加载失败证据
+
+用户`ge-gdn-model-20261026-171048`已成功导出、编译target/draft，并通过`--reject-cpu-fallback`检查，随后构建正式runner。板端`qwen35_target`的`Load`返回1，运行库版本`800.631.120.010`。失败发生在查询输入输出描述和Process之前，draft尚未加载。远端退出1而HDC进程退出0已被脚本识别，这次是模型加载失败。
+
+当前终端HiLog只显示候选PID13111/03-09的部分窗口，L130348–L130473未显示；该PID尚未确认属于本次执行，日期来自板端日志。后续CPUCL/NPUCL接口注册表明摘录中的缺HCL库信息不能单独定为根因。正式runner已经采用通过探针所用的HCL排除策略；先读取现有留档，不换库、不重编、不重新上板：
+
+```bash
+sed -n '130330,130480p' "$GE_GDN_MODEL_RUN/board/hiai-hilog.txt"
+```
+
+如需在本机查看该候选进程的完整记录（仍不是确认归属）：
+
+```bash
+awk '$1=="03-09" && $3==13111 {printf "L%d: %s\n", NR, $0}' \
+  "$GE_GDN_MODEL_RUN/board/hiai-hilog.txt"
+```
+
+更新后的脚本为未来运行分别记录并哈希回收`probe.pid`、`benchmark.pid`。有效PID只筛选对应进程，快照中没有该PID时不会改选其他进程；PID不可用时仍明确标为启发式候选。完整候选记录另存`hiai-hilog-candidate.txt`，在`result.json`中绑定原快照哈希及筛选信息。PID复用仍可能发生，候选日志不能自动作为根因或运行位置证明。此改动无需重建native，也不要求为补PID重跑本次模型。
+
+这些行号和PID仅适用于这次留档。保存现有AIR/OMC、正式runner、`board/result.json`及`board/preflight.json`，之后根据具体恢复错误检查编译分区、库哈希或模型载荷。编译通过只证明未被当前回退检查拒绝，不表示CPU分区为0。完整证据边界见`specs/gdn-model-load-user-report.json`。
+
+<a id="当前将已验证的-gdn-gather-复制接入整图"></a>
+
+## 已完成：将已验证的 GDN Gather 复制接入整图
+
+以下链路已由上述用户运行完成到target Load失败，当前不要重复执行。
 
 最新`ge-row-chain-20261026-144144`已通过ReshapeFusion，19个row Mul CPU-only候选消失；已识别CPU-only计算从117减到98，主图仍因NPUCL分区数超过9回退，尚未执行双图。保留本次产物与诊断，不重新运行旧整图。
 

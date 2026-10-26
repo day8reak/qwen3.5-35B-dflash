@@ -440,3 +440,14 @@ run：`20261026T081958Z-4068-1d4a82`。用户全量回放42个已编译案例，
 每图增加哈希绑定的gdn-copy-lowering报告，AIR/OMC模式与计数前后校验。完整tiny target/draft在1/3/8有效token的输出位级一致；GDN序列8/64输出及最终状态位级一致。组合归约421/10、row Mul19/0的recipe结构不变，补充三个开关组合的双图数值投影，用原FP16门槛。共406个不同主机测试最终通过、64段文档shell语法通过；初始失败仅涉及测试fixture权重路径、scan也包含Concat64的断言范围及manifest顺序预期，已修正并复测。两个独立只读审查无阻塞。证据见`specs/gdn-copy-model-verification.json`。
 
 当前入口改为复用原prepared/reference，在新目录一次导出、拒绝CPU回退的编译、正式runner构建和execution-only；不要求重复探针，也不承诺新的完整图已低于9分区。内部OMG、设备执行及完整模型精度/性能未在本地运行。经验固化于模型代码、测试和报告，无共享技能/DDK/库策略变更；执行优先、精度后置未豁免和最终DFlash至少2倍目标保持。
+
+
+## 2026-10-26：GDN整图编译通过后定位Load阶段，补正式进程日志身份
+
+run：`20261026T084733Z-7577-be91b5`。用户`ge-gdn-model-20261026-171048`成功导出、编译target/draft，并通过显式分区超限回退检查，随后正式runner构建成功。板端target的Load返回1，运行库版本800.631.120.010；按源码顺序，IO描述查询、Process及draft Load均未到达。这是从编译回退推进到模型恢复阶段，不代表CPU分区为0或完整执行通过。用户原始manifest/日志哈希未独立取得，记录在`specs/gdn-model-load-user-report.json`。
+
+终端摘录使用未确认的候选PID13111/03-09，只显示头部、首个E/F、窄Restore失败窗口和尾部；L130347后跳到L130474由摘要筛选产生，不能据此认为原快照缺日志。摘录中的HCL dlopen失败后仍有CPUCL/NPUCL接口注册，不能直接认定缺HCL库就是此次根因。已请求用户只读取现有L130330–L130480，不重跑模型。正式runner已采用与通过探针相同的HCL排除策略；两者Load API主要参数相同，但新build与旧donor库哈希、mmap与vector缓冲、整图sidecar和工作目录仍有区别，这些均只列为后续由日志区分的假设，不擅自改库、改图或归咎Gather。
+
+正式脚本此前未记录实际PID，probe和benchmark又是同名的两个进程。本轮复用已验证的shell记录$$后exec模式，分别保存probe.pid/benchmark.pid并按原哈希规则回收。PID不可用仅作诊断缺口，必需输出与原退出状态不变；有效PID在快照里不存在时拒绝换成其他进程。完整候选记录另存hiai-hilog-candidate.txt，带原行号、快照与候选文件哈希及会话筛选元数据，保留完整行并排他创建；终端仍限长。PID复用仍可能发生，筛选不是完美运行归属，更不是根因结论。无需重建native，也不要求为新PID记录重跑已有失败。
+
+95项主机HDC/HiLog回归通过，62段文档shell通过bash -n；独立只读审查无阻塞。测试包含真实host exec PID、特殊字符引用、无匹配PID拒绝替代、遗漏中间错误的完整记录、辅助PID损坏与原错误并存、以及必需输出哈希与清理保护。验证见`specs/hiai-pid-diagnostics-verification.json`。没有真实HDC或内部OMG调用，未改变模型算术、数值门槛或库部署。经验固化在已有模型工具与测试，无共享技能变更；本次实际Load根因、完整精度和DFlash至少2倍仍未解决。

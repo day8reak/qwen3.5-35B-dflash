@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -34,14 +35,18 @@ _HILOG_INIT = re.compile(r"HIAI_Foundation_Init\(\d+\).*init hiai foundation suc
 _HILOG_RESTORE_FAILURE = re.compile(r"(?:RestoreFromBuffer|restore model).*(?:fail|false|null)", re.IGNORECASE)
 
 
-def _hilog_summary_details(path):
+def _hilog_summary_details(path, *, recorded_pid=None, candidate_output=None):
     """Bounded candidate-session diagnostics, without attributing a PID to this run.
 
-    Snapshot order determines the latest observed app session. PID/date and
+    A recorded PID restricts selection to that process number, without falling
+    back to another process when its records are absent. Otherwise snapshot
+    order determines the latest observed app session. PID/date and
     repeated foundation initialization separate candidates; their identity is
     not independently tied to the HDC invocation. The first E can be a handled
     fallback, so retain a restore-failure window as well as the head and tail.
     """
+    if recorded_pid is not None and (type(recorded_pid) is not int or recorded_pid <= 0):
+        raise ValueError("recorded PID must be a positive integer")
     related = re.compile(
         r"hiai|ai_fmk|ai_infra|cpucl|npucl|te_fusion|\bomc\b|"
         r"(?<![A-Za-z0-9_])npu(?![A-Za-z0-9_])|"
@@ -59,7 +64,11 @@ def _hilog_summary_details(path):
                 matches += 1
                 fallback.append(f"L{number}: {line.rstrip()}"[:1000])
             parsed = _HILOG_RECORD.match(line)
-            if parsed is None or not _HILOG_APP.search(parsed["tag"]):
+            if parsed is None:
+                continue
+            if recorded_pid is not None and int(parsed["pid"]) != recorded_pid:
+                continue
+            if recorded_pid is None and not _HILOG_APP.search(parsed["tag"]):
                 continue
             key = (parsed["date"], int(parsed["pid"]))
             initialized = bool(_HILOG_INIT.search(parsed["message"]))
@@ -71,6 +80,10 @@ def _hilog_summary_details(path):
             elif initialized:
                 previous["init_line"] = number
     if candidate is None:
+        if recorded_pid is not None:
+            return [], matches, {"method": "recorded-pid-session-candidate", "recorded_pid": recorded_pid,
+                "candidate_lines": 0, "status": "NO_MATCHING_RECORDS",
+                "scope": "No records match the recorded PID; no other process was substituted. Snapshot rotation may omit the run."}
         return list(fallback), matches, {
             "method": "keyword-tail", "scope": "Entire verified snapshot; keyword candidates, not attributed to this run."}
 
@@ -79,7 +92,8 @@ def _hilog_summary_details(path):
     after_error = after_restore = 0
     count = 0
     first_error_line = restore_line = None
-    with path.open(encoding="utf-8", errors="replace") as stream:
+    destination = candidate_output.open("x", encoding="utf-8") if candidate_output is not None else nullcontext()
+    with destination as complete, path.open(encoding="utf-8", errors="replace") as stream:
         for number, line in enumerate(stream, 1):
             if number < candidate["start_line"] or transport.search(line):
                 continue
@@ -88,6 +102,8 @@ def _hilog_summary_details(path):
                     or int(parsed["pid"]) != candidate["pid"]):
                 continue
             # Include all tags in this PID, especially MUSL-LDSO loader errors.
+            if complete is not None:
+                complete.write(f"L{number}: " + line.rstrip("\r\n") + "\n")
             item = (number, f"L{number}: {line.rstrip()}"[:1000])
             count += 1
             if len(head) < 6:
@@ -119,6 +135,9 @@ def _hilog_summary_details(path):
                 "candidate_lines": count, "first_error_line": first_error_line,
                 "restore_failure_line": restore_line,
                 "scope": "PID/date/init-based session candidate, not confirmed as this run; error windows are not a root-cause verdict."}
+    if recorded_pid is not None:
+        metadata.update(method="recorded-pid-session-candidate", recorded_pid=recorded_pid,
+                        scope="Recorded process PID matched; PID/date/init session is still a candidate because PID reuse is possible. Error windows are not a root-cause verdict.")
     return [selected[number] for number in sorted(selected)], matches, metadata
 
 
@@ -450,11 +469,17 @@ class Hdc:
             raise RuntimeError(f"HDC reported success without retrieving {remote}")
 
 
-def _script(board, argv, stdout, stderr, exitcode):
+def _script(board, argv, stdout, stderr, exitcode, *, pidfile=None):
+    invocation = shlex.join(argv)
+    if pidfile is not None:
+        # exec replaces this inner shell, so its $$ is the native process PID.
+        # PID capture is auxiliary: a failed write must not prevent execution.
+        native = "printf '%s\\n' \"$$\" > " + shlex.quote(pidfile) + "; exec " + invocation
+        invocation = "sh -c " + shlex.quote(native)
     return ("#!/system/bin/sh\ncd " + shlex.quote(str(board)) + " || exit 1\n"
             "export LD_LIBRARY_PATH=" + shlex.quote(":".join((str(board / "lib"), *BOARD_LIBRARY_SEARCH_PATHS)))
             + '"${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n'
-            + shlex.join(argv) + " > " + shlex.quote(stdout) + " 2> " + shlex.quote(stderr) + "\n"
+            + invocation + " > " + shlex.quote(stdout) + " 2> " + shlex.quote(stderr) + "\n"
             "rc=$?\nprintf '%s\\n' \"$rc\" > " + shlex.quote(exitcode) + "\nexit \"$rc\"\n")
 
 
@@ -573,6 +598,24 @@ def execute(args):
             except Exception as error:
                 recovery_errors.append({"file": name, "error": f"{type(error).__name__}: {error}"})
 
+    def collect_pid(operation):
+        name = operation + ".pid"
+        identity = {"status": "UNAVAILABLE", "file": name,
+                    "scope": "Auxiliary exec PID; PID reuse and shared-log session boundaries remain possible."}
+        result.setdefault("process_ids", {})[operation] = identity
+        collect((name,), recovery=True, timeout=min(10, args.timeout_seconds))
+        if name not in collected:
+            identity["reason"] = "PID file was not retrieved and hash-verified"
+            return
+        try:
+            with (out / name).open(encoding="ascii") as stream:
+                value = stream.read(64).strip()
+                if not re.fullmatch(r"[1-9][0-9]*", value) or stream.read(1):
+                    raise ValueError("invalid recorded process PID")
+            identity.update(status="VERIFIED", pid=int(value), sha256=recovered_hashes[name])
+        except (OSError, ValueError, UnicodeError) as error:
+            identity["reason"] = f"{type(error).__name__}: {error}"
+
     def capture_hilog():
         # Diagnostic-only: do not clear logs, change log settings, or start a
         # persistent reader. A snapshot can include unrelated processes/runs.
@@ -621,8 +664,22 @@ def execute(args):
                     break
             print(f"run-hdc: hilog snapshot: {out / names[0]} (shared system logs; may include other runs)", file=sys.stderr)
             if diagnostic["status"] == "CAPTURED":
-                related, matches, summary_metadata = _hilog_summary_details(out / names[0])
+                operation = "probe" if stage == "probe" else "benchmark"
+                identity = result.get("process_ids", {}).get(operation, {})
+                recorded_pid = identity.get("pid") if identity.get("status") == "VERIFIED" else None
+                diagnostic["process_identity"] = {"operation": operation, **identity}
+                candidate_path = out / "hiai-hilog-candidate.txt"
+                related, matches, summary_metadata = _hilog_summary_details(
+                    out / names[0], recorded_pid=recorded_pid, candidate_output=candidate_path)
+                if sha256_file(out / names[0]) != recovered_hashes[names[0]]:
+                    raise RuntimeError("HiLog snapshot changed during diagnostic selection")
                 diagnostic["summary"] = {"matching_lines": matches, "shown_lines": len(related), **summary_metadata}
+                if candidate_path.is_file():
+                    diagnostic["candidate_log"] = {"path": str(candidate_path), "sha256": sha256_file(candidate_path),
+                        "bytes": candidate_path.stat().st_size, "source_path": str(out / names[0]),
+                        "source_sha256": recovered_hashes[names[0]], "selection": summary_metadata,
+                        "scope": "All selected candidate records with original snapshot line numbers; may include PID reuse."}
+                    print(f"run-hdc: full hilog candidate records: {candidate_path}", file=sys.stderr)
                 if related:
                     if "candidate_pid" in summary_metadata:
                         print(f"run-hdc: hilog diagnostic candidate: PID {summary_metadata['candidate_pid']} "
@@ -630,7 +687,9 @@ def execute(args):
                               "and the first error is not necessarily the cause", file=sys.stderr)
                     print("\n".join(related), file=sys.stderr)
                 else:
-                    print("run-hdc: no matching HIAI/NPU diagnostic lines in the snapshot; "
+                    message = (f"no records for recorded PID {recorded_pid}; no other process substituted"
+                               if recorded_pid is not None else "no matching HIAI/NPU diagnostic lines in the snapshot")
+                    print(f"run-hdc: {message}; "
                           "the original runtime failure remains unresolved", file=sys.stderr)
             else:
                 reason = diagnostic.get("reason", f"exit {saved_status}")
@@ -661,7 +720,7 @@ def execute(args):
         uploads.append(_file_record(owner_file, owner_file.name))
         probe_script = out / "probe.sh"
         probe_script.write_text(_script(board, [str(board / "bin/qwen35_dflash_hiai"), "--probe"],
-                                        "runtime-probe.json", "probe.stderr", "probe.exitcode"))
+                                        "runtime-probe.json", "probe.stderr", "probe.exitcode", pidfile="probe.pid"))
         uploads.append(_file_record(probe_script, "probe.sh"))
         save_json(out / "initial-upload-plan.json", {"board_root": str(board), "files": uploads})
         hdc = Hdc(args.hdc, context["sn"], context["bip"], out, args.timeout_seconds)
@@ -685,6 +744,7 @@ def execute(args):
             hdc.shell("sh " + shlex.quote(str(board / "probe.sh")), "probe")
         finally:
             collect(("runtime-probe.json", "probe.stderr", "probe.exitcode"))
+            collect_pid("probe")
         if not {"runtime-probe.json", "probe.stderr", "probe.exitcode"} <= collected:
             raise RuntimeError("could not retrieve and hash-verify all HIAI probe outputs; see retrieval_errors")
         if (out / "probe.exitcode").read_text().strip() != "0":
@@ -712,7 +772,8 @@ def execute(args):
             "--mode", "smoke" if args.execution_only else "benchmark"]))
         command = json.loads((out / "board-command.json").read_text())
         run_script = out / "run.sh"
-        run_script.write_text(_script(board, command["argv"], "benchmark.stdout", "benchmark.stderr", "benchmark.exitcode"))
+        run_script.write_text(_script(board, command["argv"], "benchmark.stdout", "benchmark.stderr", "benchmark.exitcode",
+                                      pidfile="benchmark.pid"))
         run_record = _file_record(run_script, "run.sh")
         _upload(hdc, board, [run_record], out / "run.sha256")
         save_json(out / "upload-plan.json", {"board_root": str(board), "files": uploads + [run_record]})
@@ -721,6 +782,7 @@ def execute(args):
             hdc.shell("sh " + shlex.quote(str(board / "run.sh")), "benchmark")
         finally:
             collect(("benchmark.json", "benchmark.stdout", "benchmark.stderr", "benchmark.exitcode"))
+            collect_pid("benchmark")
         if not {"benchmark.json", "benchmark.stdout", "benchmark.stderr", "benchmark.exitcode"} <= collected:
             raise RuntimeError("could not retrieve and hash-verify all benchmark outputs; see retrieval_errors")
         if (out / "benchmark.exitcode").read_text().strip() != "0":
