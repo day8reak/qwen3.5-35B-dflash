@@ -48,6 +48,11 @@ def main():
     p.add_argument("--reject-cpu-fallback", action="store_true",
                    help="reject explicit NPU partition-limit rollback to CPU; retain generated OMC/logs for diagnosis")
     p.add_argument("--timeout-seconds", type=int, default=3600)
+    p = sub.add_parser("inspect-compile", help="read existing compiler support and construction metadata; no rebuild or board access")
+    p.add_argument("--air", required=True)
+    p.add_argument("--omc", required=True)
+    p.add_argument("--graph", choices=("target", "draft"), default="target")
+    p.add_argument("--output", required=True)
     p = sub.add_parser("reference-tiny")
     p.add_argument("--prepared", required=True)
     p.add_argument("--prompt-token-ids", default="1,2,3")
@@ -97,6 +102,10 @@ def main():
                 raise ValueError("declare --ddk-id or CPRO_DDK_ID")
             result = compile_air(args.air, args.output, ddk, ddk_id=identity, timeout_seconds=args.timeout_seconds,
                                  reject_cpu_fallback=args.reject_cpu_fallback)
+        elif args.command == "inspect-compile":
+            from qwen35_moe_dflash.compile_inspect import inspect_compile
+            result = inspect_compile(args.air, args.omc, args.output, graph=args.graph)
+            print((Path(args.output) / "report.txt").read_text())
         else:
             from qwen35_moe_dflash.ge_reference import reference_tiny
             result = reference_tiny(args.prepared, args.output,

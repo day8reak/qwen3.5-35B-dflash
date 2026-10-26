@@ -82,7 +82,7 @@
     "Existing old OMC remains known to fail target Load; new AIR/OMC required",
     "Accuracy deferred, not waived; complete 35B quality and >=2x DFlash speedup remain unvalidated"
   ],
-  "next_action": "Fresh export from old prepared weights -> compile --reject-cpu-fallback -> target/draft execution-only only after successful compilation",
+  "next_action": "Inspect existing reexport and run bounded reduction controls; previous fresh export attempt did not resolve main rollback",
   "guide": "docs/direct-model-air.md",
   "experience_audit": "docs/experience.md",
   "docs_bash_syntax": {
@@ -94,5 +94,11 @@
       "docs/direct-model-air.md": 15
     },
     "method": "bash -n on extracted fenced blocks; commands not executed"
+  },
+  "followup_retest": {
+    "status": "USER_REPORTED_NEW_MAIN_ROLLBACK_GUARD_WORKED",
+    "evidence": "specs/hiai-model-execution-user-report.json#reexport_retest",
+    "next_verification": "specs/compiler-support-diagnostic-verification.json",
+    "note": "Historical host results above remain valid but did not establish partition recovery; latest user compile still exceeds limit9."
   }
 }

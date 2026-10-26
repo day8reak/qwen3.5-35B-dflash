@@ -8,11 +8,33 @@ hdc -t "$SN" -s "$BIP" ...
 
 `-s` 是 HDC 服务端地址，填写你现有连接实际使用的 `IP:端口`，不能只填 IP；`SN` 选择该服务端连接的设备，见[官方远程连接说明](https://github.com/openharmony/docs/blob/master/en/application-dev/dfx/hdc.md#remote-connection)。本脚本使用已有连接，不配置网络转发或启动远端 HDC 服务。
 
-## 当前优先：重新导出后打通双图执行
+<a id="当前优先重新导出后打通双图执行"></a>
 
-最终目标仍是精度达标后 DFlash 至少提速 2 倍。当前先验证上板执行。用户已核对失败记录与旧 OMC manifest 的 SHA256 一致；对应 target OMG 第110650行明确报告 NPUCL 分区数超过9，整图回退 CPU。第19509、31879行的 CPU 分区属于 `constNodeGraph`，不能当作主图结论。旧 OMC 已在恢复阶段被 CPUCL 的 FP16 MatMul 兼容性检查拒绝，需要从当前图代码重新导出。
+## 当前优先：诊断已有分区回退产物
 
-保留 `$GE_PAIR_RUN/prepared` 的原权重、`$GE_BOARD_RUN/reference.json` 和已经更新的 `$HIAI_BUILD_DIR` runner。沿用原环境及 `SN`、`BIP`，无需重新 prepare、切换 selected 或重编 runner：
+最终目标仍是精度达标后 DFlash 至少提速 2 倍，当前优先打通 target/draft 上板执行。用户基于 `78d94ef` 重新导出后，target 主图窗口 L91094–L127615 仍报告 NPUCL 分区数超过9并回退 CPU。437个归约节点只有 CPU 候选，不是 scan 的 INT64 axes 单一原因；`v18/sum_1` 的 `elementary_lib` 上下文仅给出通用 `check elem support fail`，尚无具体 format 原因。当前先关联现有日志与构图记录，确定修复位置。
+
+保持 `GE_REEXPORT_RUN` 指向这次失败的目录；只创建新的诊断目录。此步骤不访问板端，也不重新生成 AIR/OMC：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
+export GE_INSPECT_RUN="$AI_RUN_DIR/ge-inspect-$(date +%Y%m%d-%H%M%S)"
+python3 "$GE_MODEL_TOOL" inspect-compile \
+  --air "$GE_REEXPORT_RUN/air" \
+  --omc "$GE_REEXPORT_RUN/omc" \
+  --graph target --output "$GE_INSPECT_RUN"
+```
+
+命令使用 Python 标准库，按哈希绑定 AIR manifest、编译 `failure.json` 或成功 manifest、recipe 和日志，不读取权重载荷。`report.txt` 给出候选分组，`report.json` 保留节点、日志行号和原始构图的生产消费关系。主图与常量折叠分开，未知或不完整支持信息保持未知或部分状态；GE 改名节点不会按前缀猜测匹配。这里的 shape、边和支持集都是编译诊断，不能证明最终分区或实际 NPU 执行。详见[直接 GE 诊断流程](direct-model-air.md#7-当前现场先读取现有编译产物定位候选切断点)。
+
+scan 内部归约 axes 的 INT32 遗漏已补齐，数据 FP16 和归约次序不变；主机验证不足以保证板端恢复成功。先依据诊断确定修复，原 prepared、参考、runner 和失败产物均保留。
+
+随后按[六项归约编译对照](direct-model-air.md#六项归约编译对照)执行 `probe_hdc_ops.py --compile-only`：对比 RMSNorm 的 rank3/rank2 Mean、64长 scan 的 rank3/rank2 Sum，以及 `[2,1,64,64]` axis=2 Sum 的直接去维/保留维后 Reshape。六项均保持 FP16 数据与 INT32 axes，仅使用现有主机 GE/OMG，不访问板端。保留小图的 `report.txt` / `results.tar.gz`，用主图编译分区和拒绝细节缩小问题；目前的通用错误不能推断 V0/V1 或 format，编译成功也不是板端执行成功。
+
+## 明确修复后：重新导出并执行双图
+
+以下是确定并完成修复后的流程。先保存旧 `GE_REEXPORT_RUN` 的实际路径与诊断，再为新图设置新目录；不要因同一回退日志直接重复编译。保留 `$GE_PAIR_RUN/prepared` 的原权重、`$GE_BOARD_RUN/reference.json` 和已经更新的 `$HIAI_BUILD_DIR` runner。沿用原环境及 `SN`、`BIP`，无需重新 prepare、切换 selected 或重编 runner：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -37,7 +59,7 @@ cat "$HDC_RUN_DIR/result.json"
 cat "$HDC_RUN_DIR/benchmark.stderr"
 ```
 
-`&&` 保证只有 export 和 compile 都成功才上传新 OMC。`export_pair` 使用当前 Python 重新构图，并复用原 prepared 的权重与专家模式，浮点精度保持 FP16。GDN 降维、Reduce 的 INT32 axes 和 draft 的 rank4 Gather 都是待 OMG 验证的布局候选，尚未证实能将主图 NPUCL 分区数降到9以内。
+`&&` 保证只有 export 和 compile 都成功才上传新 OMC。`export_pair` 使用修复后的 Python 图定义重新构图，并复用原 prepared 的权重与专家模式，浮点精度保持 FP16。若新图再次回退，保留新的失败目录并运行上面的 `inspect-compile`。
 
 `--reject-cpu-fallback` 是本项目 compile 包装器参数，不传给厂商 OMG。它遇到主图或归属未知的 NPUCL 分区超限回退时停止，保留已生成的 OMC、编译日志和诊断，写入 `failure.json`，不发布成功 manifest。常量折叠图的 CPU 执行允许保留；没有发现这类回退也不证明所有算子都在 NPU 上。
 
@@ -49,7 +71,7 @@ cat "$HDC_RUN_DIR/benchmark.stderr"
 
 ## 服务器准备
 
-首次准备参考与 runner 可查[直接 GE tiny 上板指南的第1、2节](direct-ge-board.md)。当前现场已有原 prepared、匹配的 `reference.json` 和更新后的 `qwen35_dflash_hiai`，直接按上节重新导出和编译。
+首次准备参考与 runner 可查[直接 GE tiny 上板指南的第1、2节](direct-ge-board.md)。当前现场已有原 prepared、匹配的 `reference.json` 和更新后的 `qwen35_dflash_hiai`，先诊断现有回退产物，修复后再重导出和编译。
 
 需要的资源为：
 
@@ -161,7 +183,7 @@ cat "$HDC_RUN_DIR/comparison.json"
 
 ## 历史加载接口与运行库排障
 
-以下保留此前加载接口及运行库问题的排障记录。其中重编 runner、沿用 OMC 的命令仅对应当时的问题；当前已确认分区超限回退，使用本文开头的新导出、编译检查和已有 runner。
+以下保留此前加载接口及运行库问题的排障记录。其中重编 runner、沿用 OMC 的命令仅对应当时的问题；当前新图仍分区超限回退，先使用本文开头的只读诊断，明确修复后再生成新图。
 
 若 `probe` 返回127，先读 `$HDC_RUN_DIR/probe.stderr`。曾出现程序链接 DDK 库，却上传示例中的另一份 `libhiai.so`，导致缺少 `libhiai_ir_build.so` 和 `CheckNPUSupport` 符号。现在自动按构建记录选择库，这一历史库问题本身不要求重建 OMC。
 
@@ -251,4 +273,4 @@ grep -n -E 'partition type|run[_ -]*by[_ -]*cl|PreGraphSplit|CompileGraph.*(targ
 cat "$GE_OMC_DIR/target/command.json"
 ```
 
-已有 OMC 不会随代码或 runner 更新获得图改动。当前操作是本文开头的重新 export、带 `--reject-cpu-fallback` 编译、再执行双图 smoke，继续保持原 prepared、FP16 和已通过小图验证的部署策略。实际新图是否满足分区限制仍待 OMG；即使未触发回退，也要检查最终分区与板端执行，不能宣称已修复或全 NPU。
+已有 OMC 不会随代码或 runner 更新获得图改动。用户随后已按 `78d94ef` 重新 export，新的主图窗口 L91094–L127615 再次回退；因此当前操作改为本文开头的 `inspect-compile`，读取新 AIR/recipe/OMG 日志，明确修复后再重导出与 smoke。保持原 prepared、FP16 和已通过小图验证的部署策略；即使后续未触发回退，也要检查最终分区与板端执行，不能宣称已修复或全 NPU。

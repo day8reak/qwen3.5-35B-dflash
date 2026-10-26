@@ -216,9 +216,46 @@ def _other_cases():
     yield _finish(g, {"x": _fp(x.shape, 3)}, "Two FP16 Power boundaries for scale then shift.")
 
 
+def _reduction_layout_cases():
+    # Bounded controls for the current tiny model's CPU-only reductions. Each
+    # pair keeps FP16 payloads and reduction order, varying only singleton
+    # layout or keepdims followed by an exact reshape.
+    for kind, label, shapes, group in (
+        ("reduce_mean", "rms", ((1, 8, 16), (8, 16)), "reduce_rms_layout_pair"),
+        ("reduce_sum", "scan", ((2, 1, 64), (2, 64)), "reduce_scan_layout_pair"),
+    ):
+        for shape in shapes:
+            g = Graph(f"{kind}_{label}_rank{len(shape)}")
+            x = g.input("x", shape)
+            g.outputs = [g.op(kind, x, shape=shape[:-1] + (1,),
+                              attrs={"axes": [len(shape) - 1], "keepdims": True}, name="result")]
+            data = _fp(shape, 3)
+            if label == "scan":
+                data = -np.abs(data)  # Match the GDN nonpositive decay domain.
+            yield _finish(g, {"x": data},
+                          f"FP16 {label} {kind} over the final axis of {list(shape)}; "
+                          "keepdims, INT32 constant axes; paired singleton-layout control.", pair=group)
+
+    for keepdims, label in ((False, "dropdims"), (True, "keepdims")):
+        g = Graph(f"reduce_sum_gdn_{label}")
+        x = g.input("x", (2, 1, 64, 64))
+        result = g.op("reduce_sum", x, shape=(2, 1, 1, 64) if keepdims else (2, 1, 64),
+                      attrs={"axes": [2], "keepdims": keepdims},
+                      name="reduced" if keepdims else "result")
+        if keepdims:
+            result = g.op("reshape", result, shape=(2, 1, 64),
+                          attrs={"shape": [2, 1, 64]}, name="result")
+        g.outputs = [result]
+        yield _finish(g, {"x": _fp(x.shape, 3)},
+                      "FP16 GDN correction ReduceSum [2,1,64,64] over axis 2; "
+                      + ("keepdims then exact reshape to [2,1,64]." if keepdims
+                         else "drop reduced dimension to [2,1,64]."), pair="reduce_gdn_keepdims_pair")
+
+
 def cases():
     """Yield fresh case dictionaries; callers may filter by stable case name."""
     yield from _dense_cases()
     yield from _bmm_cases()
     yield from _rank_cases()
     yield from _other_cases()
+    yield from _reduction_layout_cases()

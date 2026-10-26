@@ -296,3 +296,16 @@ run：`20261026T010136Z-21603-7ab64d`。用户补齐同一失败 manifest 对应
 图适配只改变精确布局/元数据：ReduceSum/ReduceMean 的 axes 改为蓝区公开 schema 声明的 INT32，保留负轴与顺序、验证范围，数据仍 FP16；draft 的 KV 头复制改为四维 Gather，去掉五维广播，头顺序和非有限 FP16 位模式不变。结合已有 GDN 降维，目的是减少 CPU/NPU 分割；是否足以压到分区上限内仍需内部 OMG 验证，不预报收益。
 
 相关主机参考、序列化、诊断和 CLI 回归通过，独立审查未发现阻塞，见 `specs/npu-partition-recovery-verification.json`。下一步复用旧 prepared 的不可变权重，由当前源码重新 export/compile 到新目录；参考和已更新的 runner 可以复用。当前保持 static 专家策略，不切 selected，也不为了 CPUCL 接受而改成 FP32。用户仍需回传新版编译与 execution-only 结果。精度排查后置，最终 DFlash 至少2倍目标不变，未修改通用技能或共享资源。
+
+
+## 2026-10-26：重导出仍超限，先隔离归约支持限制
+
+run：`20261026T011730Z-23027-2711b0`。用户沿78d94ef建议重导出后，主编译窗口91094–127615仍出现NPUCL分区数大于9回退。wrapper正确保留失败产物并中止，draft编译及上板命令未执行。用户支持表有13613节点，423个ReduceSum与14个ReduceMean均仅列CPU候选；7623个类型未知项包含大量常量和图边界，不能当作CPU计算断点。72个MatMul仅列NPU候选，不能通过整图CPU回退绕过。
+
+发现上次INT32轴修正遗漏了scan展开内部生成的192个ReduceSum。现统一调用归约轴构造器，验证最终序列化tiny target/draft全部437/11个归约轴，而非只检查高级IR节点。数据仍FP16，前缀求和算法、求和顺序、模型权重与阈值不变。但本轮已有普通INT32归约仍为CPU候选，因此不能宣称补齐该遗漏就能解除分区回退。
+
+用户补回v18与__ge/v2109/sum_1上下文：elementary_lib仅报CheckReduceSupport(185)的`check elem support fail`，ascendc_lib查不到对应TBE算子，其他库也拒绝。蓝区只读控制流表明这个消息是选中的V0/V1检查器失败后的公共出口；源行号不能跨内部版本推断分支。蓝区V0具有特殊格式要求，V1具有ND路径，但当前用户日志不足以认定格式或芯片能力为根因。另有64输入Concat与广播形状限制线索，均保留为待证假设，不直接改格式标签或厂商二进制。
+
+新增标准库inspect-compile读取现有失败编译记录，校验AIR manifest、recipe、OMG日志哈希，只用精确节点名关联构造形状和边。常量文件内容不打开，优化后改名节点不做模糊映射；类型未知项单列。报告中的跨设备候选边只是定位提示，不是实际分区数。准备六个FP16、INT32轴小图，分别比较RMS/前缀Sum的rank与GDN修正Sum的keepdims，先独立编译判断支持，不触发整图或板端。具体case及验证见compiler-support-diagnostic-verification.json和direct-model-air指南。
+
+当前内部DDK和设备仍由用户执行。主机回归只能验证解析、契约与参考，不能替代NPU编译和执行证据。执行链路优先、精度后置和最终DFlash至少2倍目标不变；通用技能与共享DDK未修改。

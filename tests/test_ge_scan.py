@@ -56,6 +56,7 @@ def _execute(records, outputs, array):
                 # FP32 accumulation models the existing CPU oracle, not a
                 # claim about the unavailable internal OMG/device kernel.
                 assert dtype == np.float16
+                assert args[1].dtype == np.int32
                 assert record["attrs"]["keep_dims"]
                 value = args[0].astype(np.float32).sum(
                     axis=tuple(int(a) for a in args[1]), keepdims=True)
@@ -250,3 +251,45 @@ def test_serialized_scans_preserve_tiny_pair_outputs(tmp_path, monkeypatch):
         torch.testing.assert_close(torch.from_numpy(actual_features), torch.from_numpy(expected_features))
         np.testing.assert_array_equal(actual_draft, expected_draft)
     assert calls == {"float16": 9, "integer": 3}
+
+
+def test_tiny_pair_serialized_reductions_use_int32_axes_including_scan_helpers(tmp_path, monkeypatch):
+    # Audit the emitted recipe, including operators introduced by lowerings.
+    # IR-only checks miss the 192 prefix ReduceSum nodes in target GDN scans.
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    prepared = tmp_path / "prepared"
+    plan = prepare_pair(prepared, sequence_length=8, tiny=True)
+    paths = {key: prepared / item["path"] for key, item in plan["weights"].items()}
+    graphs = build_pair(plan["target_config"], plan["draft_config"], 8)
+    scan_counts = {}
+    for graph in graphs:
+        folder = tmp_path / graph.name
+        emit_cpp(graph, paths, recipe_dir=folder)
+        records, _, _ = RecipeReader(folder / "graph.recipe").read()
+        reductions = [r for r in records if r["type"] in {"ReduceSum", "ReduceMean"}]
+        assert reductions, graph.name
+        for reduction in reductions:
+            source, axes = reduction["inputs"]
+            assert axes["port"] == "axes"
+            assert axes["dtype"] == "int32", (graph.name, reduction["name"])
+            constant = records[axes["src"]]
+            assert constant["type"] == "Const"
+            output, = constant["outputs"]
+            assert output["dtype"] == "int32" and output["shape"] == axes["shape"]
+            path, offset, size = constant["constant"]
+            assert size == math.prod(axes["shape"]) * 4
+            with Path(path).open("rb") as stream:
+                stream.seek(offset)
+                payload = stream.read(size)
+            assert len(payload) == size
+            values = np.frombuffer(payload, dtype="<i4")
+            assert all(-len(source["shape"]) <= axis < len(source["shape"]) for axis in values)
+            assert source["dtype"] == reduction["outputs"][0]["dtype"]
+        scans = [r for r in reductions if r["name"].startswith("__ge/") and "/sum_" in r["name"]]
+        scan_counts[graph.name] = len(scans)
+        for scan in scans:
+            assert scan["type"] == "ReduceSum" and scan["attrs"]["keep_dims"] == 1
+            assert scan["inputs"][0]["dtype"] == scan["outputs"][0]["dtype"] == "float16"
+            assert scan["outputs"][0]["shape"] == (2, 1, 1)
+        assert not any(r["type"] == "Cumsum" for r in records)
+    assert scan_counts == {"target": 192, "draft": 0}

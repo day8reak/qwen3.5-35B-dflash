@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T011730Z-23027-2711b0",
+  "baseline_commit": "78d94ef",
+  "status": "HOST_VALIDATED_INTERNAL_REDUCTION_PROBES_PENDING",
+  "scope": "Read-only artifact-bound support diagnostics, complete INT32 reduction-axis coverage, six bounded compile controls; not a confirmed partition recovery",
+  "user_evidence": "specs/hiai-model-execution-user-report.json#reexport_retest",
+  "changes": [
+    "Scan prefix reductions now use validated INT32 axes without changing FP16 data, reduction algorithm or order",
+    "Bounded stdlib Q35GE001 reader validates graph metadata and never opens weight/constant payload references",
+    "inspect-compile binds AIR, compilation record, recipe and log hashes; joins exact names, distinguishes boundaries/unresolved roles, reports pre-optimization candidate edges only",
+    "Support parser prioritizes latest CPU-only compute rejection context within32 lines, retaining latest incomplete/conflicting snapshots",
+    "Append six small FP16 reduction cases with INT32 axes; compare singleton rank and keepdims+reshape using identical flattened input/reference payloads",
+    "Preserve current board HCL deployment, CPU rollback guard, precision thresholds, model parameters and DFlash scheduling"
+  ],
+  "host_validation": [
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T011730Z-23027-2711b0/scan-tests-final.xml",
+      "sha256": "e4e93d4d180bf7f2715c13b50c4af0b0507f8c5fdb7ed7f8bf3ba83f6d5e79f3",
+      "tests": 82,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T011730Z-23027-2711b0/recipe-read-regression.xml",
+      "sha256": "146dbf856c0c60f6a97333c9aeca85c3a4afea74e5232c589ea18578a4e0b612",
+      "tests": 74,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 4
+    },
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T011730Z-23027-2711b0/inspect-context-integration.xml",
+      "sha256": "6fd34ddcb4af8afca32220941ec085c80d53b31233ddbe66796cc5759cabbe50",
+      "tests": 42,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T011730Z-23027-2711b0/reduction-probe-final.xml",
+      "sha256": "58675a1206d19a9f277bc373211e194f8d566a23f6835a03f62ef57a13f7115d",
+      "tests": 27,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "source_sha256": {
+    "model/qwen35_moe_dflash/ge_scan.py": "4a38cdb35ba17c4b8005f3b3f2b9a678f33b7faf402ed097f4e269649441b2f1",
+    "model/qwen35_moe_dflash/compile_inspect.py": "ee555acbe1b98bc3e8a986663aee87b4361e73f11f9d20fcb1478029280454ec",
+    "model/qwen35_moe_dflash/compiler_support.py": "5fd0e5e350b5ec7db319f4b1a49888fdee0c9ffbd2ced3cbe7c4619819d173b3",
+    "model/qwen35_moe_dflash/ge_recipe_read.py": "f678cd180259be14e1d88bdd54a433828e3942b77f0d424edc1f298732f1c30b",
+    "model/qwen35_moe_dflash/op_probe_cases.py": "05ad68d29b68a9b7d602f35a5c9b72e8828be93d5abb41096c3cb426b02d51f4",
+    "targets/cpro/scripts/direct_model_air.py": "5f2b4314963a3a63c103a4fcdb3e83d2201dcfe125c84861541ad80676916c4b",
+    "tests/test_ge_scan.py": "ac6153410042a9d2c48c11a2e424d48e8168179b49f514e2533e2e8352a4fdc9",
+    "tests/test_compile_inspect.py": "06cc2daf3e7caff1122777543afcbe0378ada51e4337e83f2123c3588e89b721",
+    "tests/test_compiler_support.py": "2faf4b74416ac902636bb7c04ec41d8da7d403dc73a89cf54764880b725113ad",
+    "tests/test_ge_recipe_read.py": "a02abc8ebfd210bfa9d04ef6f5e8a448156628d3b304b4b2f8c78df4ee6693f8",
+    "tests/test_op_probe_cases.py": "f9cce2eb1d525ed06e787661db0a6148ccbd366919717cb796c37cebfd540acc",
+    "tests/test_op_probe.py": "202ad0d0f6d93913a5a57f8d8c302fa63336bce41426cb81977b076756c83229"
+  },
+  "artifacts": [
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T011730Z-23027-2711b0/recipe-full-model-read-validation.json",
+      "sha256": "e32e381618fbde474e588ef54aa7dbb05bb8f0579a247b82ff7216019c666e6a"
+    },
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T011730Z-23027-2711b0/blue-reduction-checker-audit.json",
+      "sha256": "3e435e7c4ce748368df4d8a88d900bbc788b8f49bd776c01c8b51c8f73bfa015"
+    },
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T011730Z-23027-2711b0/blue-reduce-generic-control-flow.json",
+      "sha256": "fb4977d0186b358828de60f8e0a99dd53ee2c71815fc6c8f6afa79f26ece42b0"
+    },
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T011730Z-23027-2711b0/target-cpu-candidate-shapes.json",
+      "sha256": "0e46a7e4d3158bc0e89bc9aa9af98975258eca28433a6e85467e283bfa470b0c"
+    },
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T011730Z-23027-2711b0/reduction-probe-prepare/manifest.json",
+      "sha256": "31fc327b4c7d316228c7dd5bc213b892616a7bad1da62cc6b49a5581c16726b9"
+    },
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T011730Z-23027-2711b0/reduction-probe-prepare/report.txt",
+      "sha256": "26757e6e4d7f04f0d339038876fb13b7bf5554c13ca42726661ecbb157d3b400"
+    }
+  ],
+  "real_recipe_read": [
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T011730Z-23027-2711b0/scan-tests-final/test_tiny_pair_serialized_redu0/target/graph.recipe",
+      "sha256": "16a9031e77d1af354f0874eac67953a64fd4f26268dacc5245bd41e51766d399",
+      "graph": "target",
+      "records": 13689,
+      "reductions": 437,
+      "axes": "int32",
+      "payload_read": false
+    },
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T011730Z-23027-2711b0/scan-tests-final/test_tiny_pair_serialized_redu0/draft/graph.recipe",
+      "sha256": "f0d9c85a8545f7375fdcdd7ec7b65e882dc7dd8d832e917ba4deb42f335c91d9",
+      "graph": "draft",
+      "records": 440,
+      "reductions": 11,
+      "axes": "int32",
+      "payload_read": false
+    }
+  ],
+  "probe_cases": [
+    "reduce_mean_rms_rank3",
+    "reduce_mean_rms_rank2",
+    "reduce_sum_scan_rank3",
+    "reduce_sum_scan_rank2",
+    "reduce_sum_gdn_dropdims",
+    "reduce_sum_gdn_keepdims"
+  ],
+  "probe_prepare_cli": "PASSED_NO_VENDOR_TOOLS_OR_BOARD",
+  "docs_bash_syntax": {
+    "status": "PASSED",
+    "files": [
+      {
+        "path": "docs/README.md",
+        "blocks": 21
+      },
+      {
+        "path": "docs/direct-model-air.md",
+        "blocks": 17
+      },
+      {
+        "path": "docs/hdc-board-run.md",
+        "blocks": 11
+      }
+    ],
+    "commands_executed": false
+  },
+  "independent_review": "Parser and recipe join reviewed; graph mismatch, manifest snapshot and unresolved-type handling fixed before final42-test integration; root reviewed six probe pairs",
+  "earlier_host_failures": "Preserved scan-tests.xml/inspect-tests.xml include intermediate test failures corrected before the final passing runs; an initial recipe glob also included prepared copies and pytest symlink aliases, then explicit target/draft paths passed",
+  "blue_checker_scope": "Declared local blue DDK only; generic CheckReduceSupport failure can come from either V0/V1. Internal X90 branch and precise failing predicate remain unknown.",
+  "limitations": [
+    "The user internal OMG and board are not accessible from this environment; no new device execution or internal compile claim",
+    "437CPU-only reductions include ordinary INT32-axis nodes, so the scan metadata omission alone cannot explain all failures",
+    "Four real-GE opt-in tests skipped because no declared test integration environment was provided",
+    "Support candidates and recipe edges are not optimized partitions or runtime placement",
+    "Compile-only probe artifacts omit a native build and cannot directly enter existing runtime replay",
+    "Full35B accuracy and DFlash>=2x remain unvalidated; immediate milestone is target/draft execution"
+  ],
+  "next_action": "Inspect existing failed reexport and compile six reduction controls before selecting another model rewrite",
+  "guide": "docs/direct-model-air.md#7-当前现场先读取现有编译产物定位候选切断点",
+  "experience_audit": "docs/experience.md"
+}

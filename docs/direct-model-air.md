@@ -2,7 +2,7 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-2026-10-22 用户反馈 tiny target/draft 双图 AIR→OMC 编译成功。2026-10-26 的后续证据确认：旧 target OMC 在 OMG 主图分区时因 NPUCL 超过9个分区回退 CPU，板端恢复被 CPUCL 的 FP16 MatMul 检查拒绝。当前按[第7节](#7-当前现场复用原权重重新导出并检查分区回退)复用原 prepared 和参考，重新导出、编译并检查回退，再执行双图 smoke；保留已更新的 runner。
+2026-10-22 用户反馈 tiny target/draft 双图 AIR→OMC 编译成功。2026-10-26 的后续证据确认：旧 target OMC 在 OMG 主图分区时因 NPUCL 超过9个分区回退 CPU，板端恢复被 CPUCL 的 FP16 MatMul 检查拒绝。用户基于 `78d94ef` 重新导出后，新 target 的主图窗口 L91094–L127615 仍以分区超限回退结束。当前按[第7节](#7-当前现场先读取现有编译产物定位候选切断点)只读关联这次 AIR、recipe 和 OMG 日志，确定修复位置后再生成新图。
 
 第1–4节保留首次生成流程和历史失败修复；当前现场无需重新 prepare 或生成参考。算子核查见 [兼容性记录](ge-operator-compatibility.md)。tiny 编译成功不表示完整35B权重、量化、内存或性能已经通过。
 
@@ -82,7 +82,7 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 内部 OMG 兼容性修正与重试
 
-**以下为历史失败及重建说明。当时的双图编译成功不代表板端加载成功；当前分区回退问题按第7节重新导出，不再复跑旧 OMC。**
+**以下为历史失败及重建说明。当时的双图编译成功不代表板端加载成功；当前按第7节诊断已有分区回退产物，明确修复后再生成新图。**
 
 此前失败日志（draft 进程 158383）已越过整数 Gather 的验证，最终在兼容性检查拒绝 `v12/Maximum`。它执行上下文位置的 `max(cumsum(context_valid)-1, 0)`，输入/输出是 INT32。前面的描述回显、ImportWarning 和缺少内置 kernel 库提示不是这条日志明确报告的最终失败原因。
 
@@ -318,15 +318,63 @@ python3 "$GE_MODEL_TOOL" compile \
   --output "$GE_STRUCTURE_RUN/omc"
 ```
 
-每一步成功后再执行下一步。plan、prepared、AIR 和 OMC 的 manifest 都记录 `expert_dispatch`，export 按 prepared 的选择重建图；老 prepared 缺少该字段时沿用 static。全量旧算子复测仍可用 `probe_hdc_runtime.py --replay-all`，但它复用旧 OMC，不能代替本节新结构的 OMG/板端验证。正式双图上板入口使用探针已验证的候选部署；当前先按第7节重导出、检查编译回退，再进入[只执行模式](hdc-board-run.md#当前优先重新导出后打通双图执行)，不切换到 selected。
+每一步成功后再执行下一步。plan、prepared、AIR 和 OMC 的 manifest 都记录 `expert_dispatch`，export 按 prepared 的选择重建图；老 prepared 缺少该字段时沿用 static。全量旧算子复测仍可用 `probe_hdc_runtime.py --replay-all`，但它复用旧 OMC，不能代替本节新结构的 OMG/板端验证。正式双图上板入口使用探针已验证的候选部署；当前先按第7节诊断已有回退产物，明确修复后再进入[重导出与只执行模式](hdc-board-run.md#明确修复后重新导出并执行双图)，不切换到 selected。
 
 可选的主机 GDN 诊断入口为 `targets/cpro/scripts/diagnose_gdn_precision.py`，输出逐 chunk FP16/FP32 输出与状态误差。无输入时仅跑小型合成样例，不能确认真实模型的精度根因。当前优先上板执行，此诊断不作为前置步骤，也不改变部署 FP16。
 
-## 7. 当前现场：复用原权重重新导出并检查分区回退
+<a id="7-当前现场复用原权重重新导出并检查分区回退"></a>
 
-用户核对的旧 OMC manifest SHA256 与失败记录一致。target OMG 第110650行明确报告 `Partition of type: NPUCL is more than 9,`，随后 `will rollback to CPU`；第19509、31879行的 CPU 分区则来自 `constNodeGraph`，不能据此判定主图。板端 CPUCL 的 FP16 MatMul 拒绝与这份回退产物对应，当前需更新图产物。
+## 7. 当前现场：先读取现有编译产物定位候选切断点
 
-保留 `$GE_PAIR_RUN/prepared`、`$GE_BOARD_RUN/reference.json` 和已经更新的 `$HIAI_BUILD_DIR/build/qwen35_dflash_hiai`，无需重新 prepare、切换 selected 或重编 runner。沿用 `CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID`、`SN`、`BIP`：
+旧 target 在 L110650 的回退已由产物身份核对；用户随后基于 `78d94ef` 重导出的 target，在新的主图窗口 L91094–L127615 又报告 `Partition of type: NPUCL is more than 9` 和 `will rollback to CPU`。本次汇总中437个归约节点只有 CPU 候选，不能把它们全归因于 scan helper 的 INT64 axes。最新 `v18/sum_1` 在 `elementary_lib` 的上下文仅为 `check elem support fail`，其他候选库也拒绝；目前没有具体 format 拒绝原因，不能据此决定布局改写。
+
+先对已有产物运行只读诊断。`GE_REEXPORT_RUN` 必须仍指向这次失败目录，不要把它改成新的空路径；仅 `GE_INSPECT_RUN` 使用新的输出目录：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
+export GE_INSPECT_RUN="$AI_RUN_DIR/ge-inspect-$(date +%Y%m%d-%H%M%S)"
+python3 "$GE_MODEL_TOOL" inspect-compile \
+  --air "$GE_REEXPORT_RUN/air" \
+  --omc "$GE_REEXPORT_RUN/omc" \
+  --graph target --output "$GE_INSPECT_RUN"
+```
+
+此命令只需 Python 标准库，不调用编译器或 HDC，也不打开常量/权重载荷。它验证 AIR manifest 与本次编译 `failure.json`（或成功 `manifest.json`）的哈希绑定，再验证 `target/recipe/graph.recipe` 和 `target/omg.log` 的记录哈希。保留这两个源目录；旧 prepared 里的 recipe 不能替代这次 AIR 的 recipe。输出目录不得已存在，原始产物不修改。
+
+`report.txt` 提供 CPU-only 计算候选分组及示例，`report.json` 保留完整节点明细、候选设备原始编号、日志行号及构造图的生产消费关系。检查最后一个有明确编译边界的主图回退窗口；常量折叠、子图和未知范围不会伪装成主图。支持表不完整或冲突时保留 `partial`/`unknown`；仅按节点全名精确关联，GE 改名节点和未确定计算角色的节点单列。**这些 shape/dtype 和边属于 OMG 优化前的构造图，候选跨设备边不等于最终分区数，报告不证明 NPU 执行。**
+
+scan 内部逐前缀 ReduceSum 的 axes 遗漏已统一使用 INT32 helper；静态轴值、数据 FP16 和归约次序保持不变。主机测试验证的是这一结构修正，不能证明437个归约已获得 NPU 支持或主图已解除回退。当前先提供诊断结果，再据此确定下一项修复；精度分析后置，最终仍要求精度达标后 DFlash 至少提速2倍。
+
+### 六项归约编译对照
+
+在现有图的只读诊断后，运行以下三组小图对照，检验 rank、单例维及 `keep_dims` 表达是否影响编译支持。全部使用 FP16 数据和 INT32 axes；scan 与 GDN 使用实际的64长归约，避免用短轴样例替代当前问题。
+
+| 对照 case | 输入与归约 | 对照目的 |
+|---|---|---|
+| `reduce_mean_rms_rank3` / `reduce_mean_rms_rank2` | `[1,8,16]` / `[8,16]`，末轴 Mean，保留归约维 | RMSNorm 的单例 batch 维 |
+| `reduce_sum_scan_rank3` / `reduce_sum_scan_rank2` | `[2,1,64]` / `[2,64]`，末轴 Sum，保留归约维，输入为非正 FP16 | GDN scan 的单例维 |
+| `reduce_sum_gdn_dropdims` / `reduce_sum_gdn_keepdims` | 均为 `[2,1,64,64]`，axis=2；直接去维 / 保留维后 Reshape 为 `[2,1,64]` | 同一归约的去维表达 |
+
+这一步需要原 NumPy、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID` 和主机编译环境；不需要 OHOS runner 或 HDC 连接。使用新的输出目录：
+
+```bash
+export GE_REDUCE_PROBE_RUN="$AI_RUN_DIR/reduce-probe-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
+  --compile-only \
+  --case reduce_mean_rms_rank3 --case reduce_mean_rms_rank2 \
+  --case reduce_sum_scan_rank3 --case reduce_sum_scan_rank2 \
+  --case reduce_sum_gdn_dropdims --case reduce_sum_gdn_keepdims \
+  --output "$GE_REDUCE_PROBE_RUN"
+```
+
+读取这六项的 `report.txt`，并保留 `results.tar.gz` 与前一步 `GE_INSPECT_RUN/report.txt`。重点比较各 case 的主图 `compiler partition` 中 NPU/CPU 数量、明确的失败原因；`COMPILED` 只说明产生了模型，缺少主图分区记录时保持未知。某个变体编译到 NPU 只提供下一步图适配的依据，不证明已在板端执行、数值一致或完整图分区数已下降。当前 `check elem support fail` 还不能定位 V0/V1 或具体 format，六项结果用于缩小问题，而非预先指定布局修复。
+
+`--compile-only` 不构建原生 probe runner，因此这批产物不能直接当作已完成部署的 probe 批次做 runtime replay。后续优先为编译成功且有 NPU 分区证据的案例安排板端验证，再决定是否改写完整图。
+
+### 明确修复后的重导出与上板流程
+
+以下保留修复完成后的命令，不作为收到同一回退日志后直接再跑的步骤。届时保留 `$GE_PAIR_RUN/prepared`、`$GE_BOARD_RUN/reference.json` 和已更新的 runner，复用原权重、专家模式及 FP16；无需重新 prepare、切换 selected 或重编 runner。先保留旧 `GE_REEXPORT_RUN` 的实际路径与诊断，再为新图设置新的目录。沿用 `CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID`、`SN`、`BIP`：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -348,8 +396,8 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
   --output "$HDC_RUN_DIR" --execution-only
 ```
 
-`export_pair` 使用当前 Python 重新构图，复用原 prepared 的权重、配置与专家模式；原参考继续提供身份和输入配置，浮点精度保持 FP16。已有 GDN 降维、本轮 Reduce 的 INT32 axes 和 draft 的 rank4 Gather 都是兼容性候选，是否能将主图 NPUCL 分区数降到9以内仍待此次 OMG，不能提前标记为已修复或已在 NPU 上执行。
+`export_pair` 使用修复后的 Python 图定义重新构图，复用原 prepared 的权重、配置与专家模式；原参考继续提供身份和输入配置。必须重新核对新 OMG 的分区结果，不能从主机测试或代码改动提前认定回退已解除。
 
 `--reject-cpu-fallback` 是本项目 compile 包装器参数，不传给厂商 OMG。检测到主图或归属未知的 NPUCL 分区超限回退时，即使 OMG 已生成 OMC，也会保留产物、日志和诊断，写 `failure.json`，不发布成功 manifest。常量折叠图的 CPU 执行允许保留；没有发现该回退也不代表全 NPU 覆盖。
 
-命令用 `&&` 串联，仅两步生成都成功才把新 OMC 传板。`--execution-only` 强制 target/draft 各执行一次并回传输出，不做精度和性能结论；失败日志或成功执行报告继续按 [HDC 指南](hdc-board-run.md#当前优先重新导出后打通双图执行)核对。当前不重复运行旧 OMC，也不通过修改 FP16 为 FP32 绕过 CPUCL 报错。
+命令用 `&&` 串联，仅两步生成都成功才把新 OMC 传板。若再次触发回退，保留新目录并对它运行 `inspect-compile`。`--execution-only` 强制 target/draft 各执行一次并回传输出，不做精度和性能结论；失败日志或成功执行报告继续按 [HDC 指南](hdc-board-run.md#明确修复后重新导出并执行双图)核对。当前不通过修改 FP16 为 FP32 绕过 CPUCL 报错。

@@ -61,7 +61,7 @@ def emit_cumsum(e, output: Value, source: Value, axis: int, *, scope=None):
             raise NotImplementedError(f"GDN FP16 cumsum length exceeds {MAX_FP16_SCAN_LENGTH}")
         shape = list(source.shape)
         shape[axis] = 1
-        axes = e.helper(output, [axis], suffix="scan_axes")
+        axes = e.reduction_axes(output, source, [axis])
         parts = []
         for size in range(1, length + 1):
             prefix = _slice(e, source, output, axis, size, f"prefix_{size}")

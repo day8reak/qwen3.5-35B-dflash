@@ -1,14 +1,26 @@
 """Host contracts for device probes, without pretending to execute a device."""
+from pathlib import Path
+
 import numpy as np
+import pytest
 
 from qwen35_moe_dflash.ge_cpp import emit_cpp
 from qwen35_moe_dflash.ge_eval import evaluate
 from qwen35_moe_dflash.op_probe_cases import cases
+from test_ge_select_lowering import RecipeReader
+
+
+REDUCTION_CASES = (
+    "reduce_mean_rms_rank3", "reduce_mean_rms_rank2",
+    "reduce_sum_scan_rank3", "reduce_sum_scan_rank2",
+    "reduce_sum_gdn_dropdims", "reduce_sum_gdn_keepdims",
+)
 
 
 def test_case_inputs_references_and_serialization_are_complete():
     suite = list(cases())
-    assert len(suite) == 47
+    assert len(suite) == 53
+    assert tuple(c["name"] for c in suite[47:]) == REDUCTION_CASES
     assert len({c["name"] for c in suite}) == len(suite)
     for case in suite:
         graph = case["graph"]
@@ -26,7 +38,7 @@ def test_case_inputs_references_and_serialization_are_complete():
 def test_rank_pairs_have_identical_flattened_inputs_and_results():
     groups = {}
     for case in cases():
-        if case["equivalence_group"]:
+        if (case["equivalence_group"] or "").endswith("_rank_pair"):
             groups.setdefault(case["equivalence_group"], []).append(case)
     assert len(groups) == 5
     for pair in groups.values():
@@ -74,3 +86,63 @@ def test_probe_values_are_deterministic_and_bmm_uses_normalized_native_kind():
     assert conv["inputs"]["b"].shape == (48, 4, 1)
     assert conv["expected"][0].shape == (48, 8, 1)
     np.testing.assert_array_equal(conv["expected"][0], np.matmul(conv["inputs"]["x"], conv["inputs"]["b"]))
+
+
+@pytest.mark.parametrize("names,shapes,axis", [
+    (REDUCTION_CASES[:2], ((1, 8, 16), (8, 16)), -1),
+    (REDUCTION_CASES[2:4], ((2, 1, 64), (2, 64)), -1),
+    (REDUCTION_CASES[4:], ((2, 1, 64, 64), (2, 1, 64, 64)), 2),
+])
+def test_reduction_layout_controls_keep_identical_fp16_payloads_and_results(names, shapes, axis):
+    suite = {case["name"]: case for case in cases()}
+    left, right = (suite[name] for name in names)
+    assert left["equivalence_group"] == right["equivalence_group"]
+    for case, shape in zip((left, right), shapes):
+        x = case["inputs"]["x"]
+        assert x.shape == shape and x.dtype == np.float16
+        assert case["tolerances"] == [{"rtol": 0.01, "atol": 0.002}]
+        expected_shape = list(shape)
+        expected_shape[axis] = 1
+        expected_shape = (2, 1, 64) if "gdn" in case["name"] else tuple(expected_shape)
+        assert case["expected"][0].shape == expected_shape
+        operation = np.mean if case["name"].startswith("reduce_mean") else np.sum
+        expected = operation(x.astype(np.float32), axis=axis, keepdims=True).astype(np.float16)
+        np.testing.assert_array_equal(case["expected"][0].ravel().view(np.uint16),
+                                      expected.ravel().view(np.uint16))
+    np.testing.assert_array_equal(left["inputs"]["x"].ravel().view(np.uint16),
+                                  right["inputs"]["x"].ravel().view(np.uint16))
+    np.testing.assert_array_equal(left["expected"][0].ravel().view(np.uint16),
+                                  right["expected"][0].ravel().view(np.uint16))
+    if "scan" in left["name"]:
+        assert np.all(left["inputs"]["x"] <= 0)
+
+
+@pytest.mark.parametrize("name", REDUCTION_CASES)
+def test_reduction_layout_controls_serialize_fp16_data_and_int32_axes(name, tmp_path):
+    case = next(case for case in cases() if case["name"] == name)
+    emit_cpp(case["graph"], recipe_dir=tmp_path / "recipe")
+    records, _, outputs = RecipeReader(tmp_path / "recipe/graph.recipe").read()
+    reduction, = [r for r in records if r["type"] in {"ReduceSum", "ReduceMean"}]
+    x, axes = reduction["inputs"]
+    assert x["dtype"] == reduction["outputs"][0]["dtype"] == "float16"
+    assert x["shape"] == case["inputs"]["x"].shape
+    assert axes["port"] == "axes" and axes["dtype"] == "int32" and axes["shape"] == (1,)
+    constant = records[axes["src"]]
+    assert constant["type"] == "Const" and constant["outputs"][0]["dtype"] == "int32"
+    path, offset, size = constant["constant"]
+    assert size == 4
+    with Path(path).open("rb") as stream:
+        stream.seek(offset)
+        raw = stream.read(size)
+    expected_axis = 2 if "gdn" in name else len(x["shape"]) - 1
+    assert raw == np.asarray([expected_axis], dtype="<i4").tobytes()
+    assert bool(reduction["attrs"]["keep_dims"]) == (name != "reduce_sum_gdn_dropdims")
+    assert not any(r["type"] in {"Cast", "CastT"} for r in records)
+    final = records[outputs[0][0]]
+    assert final["outputs"][0]["shape"] == case["expected"][0].shape
+    if name == "reduce_sum_gdn_keepdims":
+        assert final["type"] == "Reshape"
+        assert final["inputs"][0]["shape"] == (2, 1, 1, 64)
+        assert final["outputs"][0]["shape"] == (2, 1, 64)
+    else:
+        assert final is reduction
