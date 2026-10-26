@@ -26,26 +26,106 @@ from .hiai_deployment import BOARD_LIBRARY_SEARCH_PATHS, DDK_HCL_EXCLUDED, candi
 
 
 
-def _hilog_summary(path):
-    """Select candidate runtime lines, not a proven cause, from a verified snapshot.
+_HILOG_RECORD = re.compile(
+    r"^(?P<date>\d{2}-\d{2})\s+(?P<time>\d{2}:\d{2}:\d{2}\.\d{3,})\s+"
+    r"(?P<pid>[1-9]\d*)\s+\d+\s+(?P<level>[DIWEF])\s+(?P<tag>[^\s:]+):(?P<message>.*)$")
+_HILOG_APP = re.compile(r"(?:^|/)qwen35_dflash_hiai(?:/|$)")
+_HILOG_INIT = re.compile(r"HIAI_Foundation_Init\(\d+\).*init hiai foundation success", re.IGNORECASE)
+_HILOG_RESTORE_FAILURE = re.compile(r"(?:RestoreFromBuffer|restore model).*(?:fail|false|null)", re.IGNORECASE)
 
-    Scan the whole file so unrelated traffic after a failure cannot hide it.
-    Retain only bounded display text; the original log remains the evidence.
+
+def _hilog_summary_details(path):
+    """Bounded candidate-session diagnostics, without attributing a PID to this run.
+
+    Snapshot order determines the latest observed app session. PID/date and
+    repeated foundation initialization separate candidates; their identity is
+    not independently tied to the HDC invocation. The first E can be a handled
+    fallback, so retain a restore-failure window as well as the head and tail.
     """
     related = re.compile(
         r"hiai|ai_fmk|ai_infra|cpucl|npucl|te_fusion|\bomc\b|"
         r"(?<![A-Za-z0-9_])npu(?![A-Za-z0-9_])|"
         r"qwen35_dflash_hiai|CheckModelCompatibility", re.IGNORECASE)
     transport = re.compile(r"(?:^|[/\s])HDC_LOG(?::|\s)", re.IGNORECASE)
-    selected = deque(maxlen=60)
+    fallback = deque(maxlen=60)
     matches = 0
+    sessions = {}
+    candidate = None
     with path.open(encoding="utf-8", errors="replace") as stream:
         for number, line in enumerate(stream, 1):
-            if transport.search(line) or not related.search(line):
+            if transport.search(line):
                 continue
-            matches += 1
-            selected.append(f"L{number}: {line.rstrip()[:1000]}")
-    return list(selected), matches
+            if related.search(line):
+                matches += 1
+                fallback.append(f"L{number}: {line.rstrip()}"[:1000])
+            parsed = _HILOG_RECORD.match(line)
+            if parsed is None or not _HILOG_APP.search(parsed["tag"]):
+                continue
+            key = (parsed["date"], int(parsed["pid"]))
+            initialized = bool(_HILOG_INIT.search(parsed["message"]))
+            previous = sessions.get(key)
+            if previous is None or (initialized and previous["init_line"] is not None):
+                candidate = {"date": key[0], "pid": key[1], "start_line": number,
+                             "start_time": parsed["time"], "init_line": number if initialized else None}
+                sessions[key] = candidate
+            elif initialized:
+                previous["init_line"] = number
+    if candidate is None:
+        return list(fallback), matches, {
+            "method": "keyword-tail", "scope": "Entire verified snapshot; keyword candidates, not attributed to this run."}
+
+    head, first_error, restore = [], [], []
+    before, tail = deque(maxlen=20), deque(maxlen=15)
+    after_error = after_restore = 0
+    count = 0
+    first_error_line = restore_line = None
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        for number, line in enumerate(stream, 1):
+            if number < candidate["start_line"] or transport.search(line):
+                continue
+            parsed = _HILOG_RECORD.match(line)
+            if (parsed is None or parsed["date"] != candidate["date"]
+                    or int(parsed["pid"]) != candidate["pid"]):
+                continue
+            # Include all tags in this PID, especially MUSL-LDSO loader errors.
+            item = (number, f"L{number}: {line.rstrip()}"[:1000])
+            count += 1
+            if len(head) < 6:
+                head.append(item)
+            tail.append(item)
+            if after_error:
+                first_error.append(item)
+                after_error -= 1
+            if after_restore:
+                restore.append(item)
+                after_restore -= 1
+            if first_error_line is None and parsed["level"] in ("E", "F"):
+                first_error_line = number
+                first_error = list(before)[-4:] + [item]
+                after_error = 8
+            if restore_line is None and _HILOG_RESTORE_FAILURE.search(parsed["message"]):
+                restore_line = number
+                restore = list(before) + [item]
+                after_restore = 5
+            before.append(item)
+    # 6 head + 13 first-error + 26 restore-failure + 15 tail <= 60 lines;
+    # overlapping windows are deduplicated and displayed in snapshot order.
+    selected = dict(head + first_error + restore + list(tail))
+    metadata = {"method": "latest-observed-app-session-candidate",
+                "candidate_pid": candidate["pid"], "candidate_date": candidate["date"],
+                "candidate_start_time": candidate["start_time"],
+                "candidate_start_line": candidate["start_line"],
+                "candidate_foundation_init_line": candidate["init_line"],
+                "candidate_lines": count, "first_error_line": first_error_line,
+                "restore_failure_line": restore_line,
+                "scope": "PID/date/init-based session candidate, not confirmed as this run; error windows are not a root-cause verdict."}
+    return [selected[number] for number in sorted(selected)], matches, metadata
+
+
+def _hilog_summary(path):
+    """Preserve the legacy (display lines, whole-snapshot keyword count) API."""
+    selected, matches, _ = _hilog_summary_details(path)
+    return selected, matches
 
 
 def _positive(value):
@@ -541,10 +621,13 @@ def execute(args):
                     break
             print(f"run-hdc: hilog snapshot: {out / names[0]} (shared system logs; may include other runs)", file=sys.stderr)
             if diagnostic["status"] == "CAPTURED":
-                related, matches = _hilog_summary(out / names[0])
-                diagnostic["summary"] = {"matching_lines": matches, "shown_lines": len(related),
-                                         "scope": "Entire verified snapshot; keyword candidates, not attributed to this run."}
+                related, matches, summary_metadata = _hilog_summary_details(out / names[0])
+                diagnostic["summary"] = {"matching_lines": matches, "shown_lines": len(related), **summary_metadata}
                 if related:
+                    if "candidate_pid" in summary_metadata:
+                        print(f"run-hdc: hilog diagnostic candidate: PID {summary_metadata['candidate_pid']} "
+                              f"on {summary_metadata['candidate_date']}; not confirmed as this run, "
+                              "and the first error is not necessarily the cause", file=sys.stderr)
                     print("\n".join(related), file=sys.stderr)
                 else:
                     print("run-hdc: no matching HIAI/NPU diagnostic lines in the snapshot; "

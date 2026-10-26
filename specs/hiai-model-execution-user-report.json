@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T005353Z-17889-cf9a01",
+  "evidence_kind": "USER_PASTED_LOG_AND_RESULT_NOT_INDEPENDENTLY_RETRIEVED",
+  "reported_run": "hdc-20261026-091819",
+  "suggested_revision": "db38b28",
+  "actual_revision": "NOT_REPORTED",
+  "status": "USER_REPORTED_FAILED_TARGET_LOAD",
+  "scope": "Existing ge-tiny-numpy-random seed17 target/draft OMC pair, execution-only",
+  "device_execution": "FAILED",
+  "accuracy": "NOT_EVALUATED",
+  "performance": "NOT_EVALUATED",
+  "runtime_version": "800.631.120.010",
+  "firmware_id": "OpenHarmony-6.0.0.43",
+  "ddk_label": "100.520.020.010",
+  "manifest_sha256": "3fbe8fc50080ebe7b9036f1b1d7a03475b73669f2becbee39e8dae9d4b3ce8e1",
+  "reference_sha256": "ea452d99cf1d9b1671ed73204473c60135a54c5f354c715749dfd6c3556ea393",
+  "runner_sha256": "3d7a608327d8bdedf624af9f6d8b81a105bc34558aa03abd5439fe95286dc12c",
+  "hilog_sha256": "ad0371c1413c1e664557e5c258a03195a400f9c14ea239e8e82d844d420fb0d7",
+  "individual_omc_hashes": "NOT_PROVIDED_IN_PASTED_RESULT",
+  "reported_deployment": {
+    "mode": "board-hcl",
+    "excluded": [
+      "libhiai_hcl_model_runtime.so",
+      "libhiai_hcl_model_runtime_impl.so"
+    ],
+    "process_library_path_added": "/vendor/lib64/chipsetsdk",
+    "link_input_hashes_matched": true,
+    "actual_backend_mapping": "UNVERIFIED"
+  },
+  "observations": [
+    "Probe exited zero and runtime/firmware identities were obtained",
+    "Target Load returned 1 before IO dimension query or Process; draft load not reached",
+    "PID25399 continued after the expected missing DDK HCL fallback and opened libcpucl_itf.so at 03-09 00:18:29.652 (L193044)",
+    "L193052 onward: CPUCL MatMul input1 requires fp32 but model supplies fp16; activation mode9 unsupported and Cast srcType0/inputDataType1 mismatch also reported",
+    "L193128-193133: op:MatMul not support -> compatibleHelper CheckCompatibility failed by cl CPUCL -> Recompile failed -> BuildModelByHcl failed",
+    "L193139-193150: RestoreFromBuffer failed -> create built model failed -> no runtime support -> Load failed",
+    "Original summary displayed last60 of9803 global keyword matches, omitting the earlier CPUCL rejection",
+    "Remote directory retained; no transport retrieval errors reported"
+  ],
+  "root_cause": "WHY_THIS_MODEL_REQUIRES_CPUCL_MATMUL_PENDING_COMPILER_PARTITION_EVIDENCE",
+  "excluded_as_this_failure_stage": [
+    "ND IO validation",
+    "generation precision comparison",
+    "DFlash scheduling",
+    "draft Process"
+  ],
+  "not_established": [
+    "Exact rejected MatMul node name and compiler partition",
+    "Whether original compile assigned this MatMul to CPU or restore changed placement",
+    "NPU operator coverage",
+    "Library/firmware ABI or model format compatibility",
+    "mmap loading defect",
+    "GDN numerical issue"
+  ],
+  "next_evidence": "Hash of the failed OMC manifest; target/omg.log partition type and explicit run_by_cl records with scope; target/command.json",
+  "experience_audit": "docs/experience.md",
+  "failure_cause": "USER_LOG_CONFIRMED_CPUCL_MATMUL_COMPATIBILITY_REJECTION_DURING_TARGET_RESTORE",
+  "source_audit": {
+    "force_cpu": "NONE_FOUND_IN_DIRECT_GE_EXPORT_OR_COMPILE",
+    "compiler_parameters": "Same framework1/omc/kirinx90/use_origin_format/FP16 as operator probe",
+    "new_model_layout": "Existing OMC does not acquire d5eb468 GDN/MoE changes when only the runner is rebuilt",
+    "precision": "Unchanged; no FP32 fallback introduced"
+  }
+}

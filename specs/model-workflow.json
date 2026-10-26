@@ -137,7 +137,7 @@
     "full_weights_loaded": false,
     "real_model_air": "PENDING",
     "real_model_omg": "PENDING",
-    "device_execution": "PENDING",
+    "device_execution": "USER_REPORTED_FAILED_TARGET_LOAD",
     "native_quantized_ge_mapping": "NOT_IMPLEMENTED",
     "next_command": "python3 \"$GE_MODEL_TOOL\" reference-tiny --prepared \"$GE_PAIR_RUN/prepared\" --prompt-token-ids 1,2,3 --max-new-tokens 4 --output \"$GE_BOARD_RUN/reference.json\"",
     "guide": "docs/direct-model-air.md",
@@ -280,7 +280,7 @@
     },
     "board_execution_bringup": {
       "run_id": "20261026T002510Z-8234-33823c",
-      "status": "HOST_VALIDATED_USER_BOARD_RUN_PENDING",
+      "status": "USER_REPORTED_FAILED_TARGET_LOAD",
       "scope": "Existing compiled target/draft OMC pair; not a newly compiled full-weight model",
       "runtime_deployment": "Private library set excludes DDK HCL pair; process path includes /vendor/lib64/chipsetsdk",
       "runner_changes": [
@@ -290,9 +290,11 @@
       "accuracy": "DEFERRED_NOT_EVALUATED",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_hdc.py\" --omc \"$GE_OMC_DIR\" --runner \"$HIAI_BUILD_DIR/build/qwen35_dflash_hiai\" --reference \"$GE_BOARD_RUN/reference.json\" --output \"$HDC_RUN_DIR\" --execution-only",
-      "requires": "Rebuild current runner using build_hiai.py; reuse existing OMC and reference",
-      "guide": "docs/hdc-board-run.md"
+      "next_command": "sha256sum \"$GE_OMC_DIR/manifest.json\"; grep -n -E 'partition type|run[_ -]*by[_ -]*cl|PreGraphSplit|CompileGraph.*(target|SubGraph)' \"$GE_OMC_DIR/target/omg.log\" | tail -n 100; cat \"$GE_OMC_DIR/target/command.json\"",
+      "requires": "Read existing compiler evidence first; no blind rerun, runner rebuild or dtype change",
+      "guide": "docs/hdc-board-run.md",
+      "user_evidence": "specs/hiai-model-execution-user-report.json",
+      "current_failure": "User HiLog confirms CPUCL FP16 MatMul compatibility rejection during target restoration; exact node/compile partition unresolved"
     }
   },
   "operator_support_probe": {

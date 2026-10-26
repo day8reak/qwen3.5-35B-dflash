@@ -201,7 +201,7 @@ AiModelManagerClientImpl::Load: CreateLocalBuffer return null, load failed
 
 本板端拒绝组合 `-x` 与 `-z`，返回 `Mutlti commands can't be used in combination [CODE: -31]`。此前组合命令有误，现已改为单独的 `hilog -x`：读完当前缓冲区后退出，完整输出保存在文件中，终端只显示有限摘要。如果抓取程序把该参数错误写到 stdout 且返回 0，也会标记为不可用，不能当成成功取得 HIAI 日志。
 
-`hiai-hilog.txt` 是共享日志缓冲区快照，可能包含其他进程或较早的日志；需要按时间、进程和模型名关联，不能把所有匹配行都当成本次错误。程序逐行扫描整个已校验快照，最多显示最后 60 条候选相关日志及原始行号；完整快照留在服务器输出目录。不会仅检查文件最后 64 KiB，避免后续系统流量掩盖之前的模型错误。摘要排除 `HDC_LOG` 传输日志，`NPU` 按完整单词匹配，并单独匹配 `NPUCL` 等组件，避免误匹配 `input`。候选条数为 0 表示本次筛选没有找到相关内容，不表示模型运行成功或没有底层错误。
+`hiai-hilog.txt` 是共享日志缓冲区快照，可能包含其他进程或较早的日志；需要按时间、进程和模型名关联，不能把所有匹配行都当成本次错误。程序扫描整个已校验快照，优先选择最新观察到的 `qwen35_dflash_hiai` 会话候选，按 PID、日期和 foundation 初始化分隔，保留头部、首条 E/F、Restore 失败前后及尾部，去重后最多60行。同 PID 的 MUSL 加载错误也纳入，其他服务进程不混入。候选身份尚未独立绑定本次执行，首条 E 可能是已处理的库回退，摘要不自动判定根因。无法解析会话时沿用最后60条关键词候选；完整快照留在服务器输出目录。不会仅检查文件最后 64 KiB，避免后续系统流量掩盖之前的模型错误。摘要排除 `HDC_LOG` 传输日志，`NPU` 按完整单词匹配，并单独匹配 `NPUCL` 等组件，避免误匹配 `input`。候选条数为 0 表示本次筛选没有找到相关内容，不表示模型运行成功或没有底层错误。
 
 仅日志抓取和筛选修改无需重编译；上述 HCL 模型缓冲区修正需要重编译二进制，OMC 可以沿用。更新后使用上面的一条四参数命令，换新的 `HDC_RUN_DIR` 即可；不再传旧命令中的 `--lib-dir`，自动按构建记录准备库。
 
@@ -221,3 +221,18 @@ grep -n -v 'HDC_LOG' "$HDC_RUN_DIR/hiai-hilog-manual.txt" | \
 清理前若发现归属标记不匹配、目录被替换成符号链接，脚本会拒绝删除。清理命令失败或无法确认删除结果时也返回非零，`board_cleanup.status` 为 `FAILED`；已回传的服务器文件仍保留，板端目录可能完整保留、部分清理或已删除，需按日志确认。只有运行与比较已通过而清理失败时，`device_validation` 可为 `PASS`，整体 `status` 仍为 `FAILED`。
 
 `comparison.json` 为 PASS 表示这次普通/DFlash token 与停止原因匹配参考，并通过既有产物身份检查。当前 tiny 测试不证明完整35B量化、内存、质量或性能，也不能仅由 OMC 成功运行推断所有节点都在 NPU 上执行。脚本开发使用模拟 HDC 验证流程；真实 CPro 运行结果由你执行后提供。
+
+
+### 2026-10-26：板端 HCL 下的完整图 CPUCL 拒绝
+
+当前执行优先的 smoke 已使用排除 DDK HCL 两库的部署。用户补齐 PID25399 的日志后，终止链条为 `input1 dtype should be fp32, but now it is fp16` → `op:MatMul not support` → `compatibleHelper CheckCompatibility failed by cl CPUCL` → `Recompile failed` → `Load failed`。另外记录了 activation.mode9 和 Cast 类型检查失败。前序缺少已排除 DDK HCL 库的报错之后，运行时已打开板端 `libcpucl_itf.so`，不能将该报错当成新的缺库修复目标。
+
+这证明当前 target 在恢复时遇到 CPUCL 算子兼容性阻断，尚未执行 IO 适配、Process 或 draft。它没有给出拒绝节点名，也不能独自判断是编译分区还是恢复逻辑导致。直接 GE 导出和 OMG 调用没有强制 CPU 设置；小 MatMul 的成功不覆盖完整图的所有形状和相邻子图。下一步读取失败 OMC 对应的编译记录：
+
+```bash
+sha256sum "$GE_OMC_DIR/manifest.json"
+grep -n -E 'partition type|run[_ -]*by[_ -]*cl|PreGraphSplit|CompileGraph.*(target|SubGraph)' "$GE_OMC_DIR/target/omg.log" | tail -n 100
+cat "$GE_OMC_DIR/target/command.json"
+```
+
+对照 `result.json` 的 manifest 哈希，区分主图、常量折叠图和最终子图；单个 NPU 子库的 CheckSupported 拒绝不是最终分区。已有 OMC 不会随 runner 更新获得 GDN 布局改动；是否重导出或调整某个节点应由这份编译证据决定。保持 FP16 和当前已通过小图验证的部署策略。此次日志摘要更新只涉及服务器 Python，无需重编 runner 或为它重跑板端。

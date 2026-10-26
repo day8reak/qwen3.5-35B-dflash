@@ -59,5 +59,10 @@
   "guide": "docs/hdc-board-run.md",
   "experience_audit": "docs/experience.md",
   "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_hdc.py\" --omc \"$GE_OMC_DIR\" --runner \"$HIAI_BUILD_DIR/build/qwen35_dflash_hiai\" --reference \"$GE_BOARD_RUN/reference.json\" --output \"$HDC_RUN_DIR\" --execution-only",
-  "prerequisite": "Build current sources with build_hiai.py into a new HIAI_BUILD_DIR; use existing environment and OMC/reference"
+  "prerequisite": "Build current sources with build_hiai.py into a new HIAI_BUILD_DIR; use existing environment and OMC/reference",
+  "subsequent_user_execution": {
+    "status": "USER_REPORTED_FAILED_TARGET_LOAD",
+    "evidence": "specs/hiai-model-execution-user-report.json",
+    "note": "Source host checks remain valid for their recorded hashes; they do not establish board success"
+  }
 }

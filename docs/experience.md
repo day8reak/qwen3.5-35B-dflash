@@ -275,3 +275,11 @@ GDN 去掉 batch=1 单例维并用静态 Slice/Concat 替代三角 BOOL Select�
 新增独立 smoke 运行路径，强制两图各一次，即使生成下一token为EOS也不跳过draft。报告准确标记 EXECUTION_COMPLETE，返回两组Top1数组，精度与性能为NOT_EVALUATED；不运行普通/DFlash token一致性比较、不把输入参考的历史PASS转成板端精度通过。Python收取层拒绝fake证据、不足两次图调用、身份和输出大小/范围不符，并保留退出状态、SHA256和所有权清理保护。旧benchmark仍按原阈值比较；HiLog抓取失败不覆盖真实执行状态。
 
 主机原生调度、生命周期、缓冲区、13种IO布局和probe回归通过；Python传输协议与CLI相关回归见 `specs/hiai-model-execution-verification.json`。这些测试不连接板端。下一步只重编正式runner，沿用旧OMC/参考执行 `--execution-only`，以实际Load/Process及回传输出确认链路。完整35B质量、内存、算子位置和2倍提速均未通过。经验固化在模型文档、共用部署guard及可执行测试，未修改通用技能或共享资源。
+
+## 2026-10-26：完整图恢复失败与日志上下文
+
+run：`20261026T005353Z-17889-cf9a01`。用户最新正式 smoke 使用已裁减的 DDK 库集合与 vendor 搜索路径，仍在 target Load 返回1。原摘要只显示9803条关键词匹配的最后60条，多为析构及服务清理，遗漏了实际错误。补齐同时间窗 PID25399 日志后，确认 CPUCL 拒绝 FP16 MatMul，随后 CheckCompatibility、Recompile 和 RestoreFromBuffer 失败。缺少被有意排除的 DDK HCL 库之后已进入板端 CPUCL 初始化，因此不能把前面的 dlopen 错误重新解释为需要补回该库。activation.mode9 与 Cast 类型也有拒绝记录，但不能仅凭无节点名的日志定位到 GDN。
+
+直接 GE 导出不设置 CPU 执行亲和，完整图与探针使用相同的 OMG 基本参数。小 MatMul 数值通过不能证明完整图中的不同形状、相邻算子或 CPU 分区兼容；更新 runner 不会改写旧 OMC。下一证据是与失败 manifest 哈希一致的 target 编译分区和节点，区分常量折叠、候选支持与最终分区，再做有依据的布局/子图改写。未改 FP16、运行库、编译选项或模型数学，精度与两倍加速目标保持后续门槛。
+
+摘要现在按最新观察到的 app 会话候选保留头部、首条 E/F、Restore 失败前后及尾部，包含同 PID 的 MUSL，排除 HDC 和其他进程；去重后最多60行，每行1000字符，完整快照不改写。PID/date/init 分隔并未独立绑定当前调用，首条 E/F 也可能是成功回退，报告明确保留这些限制。无可解析候选时沿用关键词尾部。85项主机回归及独立审查通过，见 `specs/hiai-log-summary-verification.json`；这只是诊断修复，不是板端 Load 修复。经验留在本模型，没有修改通用技能或共享资源。

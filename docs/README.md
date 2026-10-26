@@ -4,7 +4,7 @@
 
 **最终目标：精度达标后，DFlash 相比同板、同目标权重的普通解码至少提速 2 倍。当前优先打通 target/draft 双图上板执行，精度排查后置，尚无加速结论。** 验收口径保存在 [DFlash 合约](../specs/dflash-contract.json)：完整 decode 循环计入 draft、verify、接受/拒绝处理和数据搬运，另报 prefill + decode 总耗时；前缀重算和全专家计算只作正确性联调基线。
 
-**当前进度：用户已反馈 tiny target/draft 双图 AIR→OMC 编译成功；候选运行库部署下，FP16 MatMul、四维 Add 和五维 Add 三个探针均通过加载、执行及数值比较。完整模型板端验证仍待完成。** 算子结果见本页末尾的复测入口；模型结构改动见[按 Cpro 参考结构调整](direct-model-air.md#6-按-cpro-参考结构调整)。原 OMC 可继续用于复测；验证新结构需要重新导出、编译。
+**当前进度：用户已反馈 tiny target/draft 双图 AIR→OMC 编译成功；候选运行库部署下，FP16 MatMul、四维 Add 和五维 Add 三个探针均通过加载、执行及数值比较。最新双图 smoke 在 target `Load` 失败：CPUCL 拒绝 FP16 MatMul，尚未进入推理；正在核对该 OMC 的编译分区和具体节点。** 算子结果见本页末尾的复测入口；模型结构改动见[按 Cpro 参考结构调整](direct-model-air.md#6-按-cpro-参考结构调整)。原 OMC 可继续用于复测；验证新结构需要重新导出、编译。
 
 **服务器没有 OHOS SDK：[获取 Native SDK 与配置编译路径](ohos-native-sdk.md)。** 已找到的 HIAI `.so` 是链接/运行库，还需匹配的交叉编译器与 sysroot；SDK 留在服务器。
 
