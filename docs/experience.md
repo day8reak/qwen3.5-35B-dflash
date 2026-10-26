@@ -283,3 +283,16 @@ run：`20261026T005353Z-17889-cf9a01`。用户最新正式 smoke 使用已裁减
 直接 GE 导出不设置 CPU 执行亲和，完整图与探针使用相同的 OMG 基本参数。小 MatMul 数值通过不能证明完整图中的不同形状、相邻算子或 CPU 分区兼容；更新 runner 不会改写旧 OMC。下一证据是与失败 manifest 哈希一致的 target 编译分区和节点，区分常量折叠、候选支持与最终分区，再做有依据的布局/子图改写。未改 FP16、运行库、编译选项或模型数学，精度与两倍加速目标保持后续门槛。
 
 摘要现在按最新观察到的 app 会话候选保留头部、首条 E/F、Restore 失败前后及尾部，包含同 PID 的 MUSL，排除 HDC 和其他进程；去重后最多60行，每行1000字符，完整快照不改写。PID/date/init 分隔并未独立绑定当前调用，首条 E/F 也可能是成功回退，报告明确保留这些限制。无可解析候选时沿用关键词尾部。85项主机回归及独立审查通过，见 `specs/hiai-log-summary-verification.json`；这只是诊断修复，不是板端 Load 修复。经验留在本模型，没有修改通用技能或共享资源。
+
+
+## 2026-10-26：NPU 分区超限导致整图 CPU 回退
+
+run：`20261026T010136Z-21603-7ab64d`。用户补齐同一失败 manifest 对应的 OMG 日志：L19509/L31879 的 CPU 分区属于 `constNodeGraph`，主编译入口在 L63103–63109；L110650 明确记录 `Partition of type: NPUCL is more than 9, will rollback to CPU`，随后 CPU 优化、保存 OMC、OMG 返回成功。这把板端 CPUCL 拒绝 FP16 MatMul 与主图分区回退连接起来，不能再把早期常量图 CPU 分区作为主图证据，也不能把 OMG 成功当成 NPU 产物可运行。日志只给出大于9，未给精确分区数或全部断点。
+
+本地蓝区 DDK 的只读审查发现相同回退分支会清空原分区再构造 CPU 图，且跳过正常分区计数日志；未发现公开可用的 cap/fallback CLI。该审查不是用户内部 DDK 的执行证明；主图根因由用户日志单独确认，不猜参数、不改厂商二进制。
+
+新增标准库解析模块和显式 `--reject-cpu-fallback`：区分命名常量图、主图和未知作用域；只有明确阶段边界才退出常量图。OMG 返回成功仍检查完整日志，主图或未知作用域的明确 NPUCL 超限回退会保留 OMC、日志和转储，写 failure.json 并停止发布双图成功 manifest；常量图回退可继续。无该日志不能证明全图 NPU 执行。编译入口保持无 NumPy/Torch 依赖。
+
+图适配只改变精确布局/元数据：ReduceSum/ReduceMean 的 axes 改为蓝区公开 schema 声明的 INT32，保留负轴与顺序、验证范围，数据仍 FP16；draft 的 KV 头复制改为四维 Gather，去掉五维广播，头顺序和非有限 FP16 位模式不变。结合已有 GDN 降维，目的是减少 CPU/NPU 分割；是否足以压到分区上限内仍需内部 OMG 验证，不预报收益。
+
+相关主机参考、序列化、诊断和 CLI 回归通过，独立审查未发现阻塞，见 `specs/npu-partition-recovery-verification.json`。下一步复用旧 prepared 的不可变权重，由当前源码重新 export/compile 到新目录；参考和已更新的 runner 可以复用。当前保持 static 专家策略，不切 selected，也不为了 CPUCL 接受而改成 FP32。用户仍需回传新版编译与 execution-only 结果。精度排查后置，最终 DFlash 至少2倍目标不变，未修改通用技能或共享资源。

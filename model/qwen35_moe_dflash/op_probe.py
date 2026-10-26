@@ -254,7 +254,7 @@ def run(args):
     implementation.update(Path(module.__file__) for name, module in list(sys.modules.items())
                           if name.startswith(__package__ + ".") and getattr(module, "__file__", None)
                           and (name.rsplit(".", 1)[-1].startswith(("ge", "op_probe"))
-                               or name.rsplit(".", 1)[-1] in {"compile", "hdc_run", "hiai_deployment"}))
+                               or name.rsplit(".", 1)[-1] in {"compile", "compiler_evidence", "hdc_run", "hiai_deployment"}))
     manifest["implementation_sha256"] = {path.name: sha256_file(path) for path in sorted(implementation)}
     if resources:
         ge, ddk, _, omg, _ = resources

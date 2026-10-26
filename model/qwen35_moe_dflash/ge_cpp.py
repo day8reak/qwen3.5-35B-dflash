@@ -276,6 +276,27 @@ class _Emitter:
     def helper(self, value, data, dtype="int64", suffix="parameter"):
         return self.constant(data, dtype, f"__ge/{value.name}/{suffix}")
 
+    def reduction_axes(self, output, source, axes):
+        """Keep the ReduceSum/ReduceMean axes contract INT32 without narrowing overflow."""
+        if (not isinstance(axes, (list, tuple, np.ndarray))
+                or (isinstance(axes, np.ndarray) and axes.ndim != 1)):
+            raise ValueError(f"{output.name}: reduction axes must be a one-dimensional integer sequence")
+        checked, normalized = [], set()
+        rank = len(source.shape)
+        for axis in axes:
+            if isinstance(axis, (bool, np.bool_)) or not isinstance(axis, (int, np.integer)):
+                raise ValueError(f"{output.name}: reduction axes must contain integers")
+            axis = int(axis)
+            if not -(1 << 31) <= axis < (1 << 31):
+                raise ValueError(f"{output.name}: reduction axis must fit INT32")
+            if not -rank <= axis < rank:
+                raise ValueError(f"{output.name}: reduction axis {axis} is outside input rank {rank}")
+            if axis % rank in normalized:
+                raise ValueError(f"{output.name}: duplicate reduction axis {axis}")
+            normalized.add(axis % rank)
+            checked.append(axis)  # Preserve legal negative values and axis order.
+        return self.helper(output, checked, dtype="int32", suffix="axes")
+
     def reshape_shape(self, output, dimensions=None):
         """Use checked INT32 dimensions for OMG's Reshape shape rewrites.
 
@@ -474,7 +495,7 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
                 attrs = {"axis": "int64_t{0}", "num_axes": "int64_t{-1}"}
         elif kind in {"reduce_mean", "reduce_sum"}:
             typ, ports = ("ReduceMean" if kind == "reduce_mean" else "ReduceSum"), ["x", "axes"]
-            ins.append(e.helper(v, a["axes"], suffix="axes"))
+            ins.append(e.reduction_axes(v, ins[0], a.get("axes")))
             attrs = {"keep_dims": str(bool(a.get("keepdims", False))).lower()}
             if kind == "reduce_mean":
                 attrs["noop_with_empty_axes"] = "true"

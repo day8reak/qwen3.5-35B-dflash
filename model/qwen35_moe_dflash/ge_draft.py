@@ -78,10 +78,13 @@ class _DraftBuilder:
         c, g = self.c, self.g
         if c.num_key_value_groups == 1:
             return x
-        x = self.reshape(x, (1, c.num_key_value_heads, 1, self.k, c.head_dim))
-        expanded = (1, c.num_key_value_heads, c.num_key_value_groups, self.k, c.head_dim)
-        x = g.op("broadcast_to", x, shape=expanded, attrs={"shape": list(expanded)})
-        return self.reshape(x, (1, c.num_attention_heads, self.k, c.head_dim))
+        # Match target repeat_heads: copy each KV head consecutively using
+        # exact INT32 indices, without a rank-five expansion or arithmetic.
+        indices = g.const([head for head in range(c.num_key_value_heads)
+                           for _ in range(c.num_key_value_groups)], dtype="int32")
+        return g.op("gather", x, indices,
+                    shape=(1, c.num_attention_heads, self.k, c.head_dim),
+                    dtype=x.dtype, attrs={"axis": 1})
 
     def attention(self, x: Value, context: Value, cosine: Value, sine: Value,
                   positions: Value, key_valid: Value, layer: int) -> Value:

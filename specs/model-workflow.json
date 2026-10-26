@@ -290,11 +290,13 @@
       "accuracy": "DEFERRED_NOT_EVALUATED",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "sed -n '19480,19525p;31850,31895p' \"$GE_OMC_DIR/target/omg.log\"; tail -n 160 \"$GE_OMC_DIR/target/omg.log\"",
-      "requires": "Read existing compiler evidence first; no blind rerun, runner rebuild or dtype change",
+      "next_command": "Follow docs/direct-model-air.md section 7: re-export existing prepared weights, compile with --reject-cpu-fallback, run execution-only only after successful compilation",
+      "requires": "New AIR/OMC to apply current GDN layout, draft rank4 Gather and INT32 reduction axes; existing matching runner/reference can be reused",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "Target CPUCL FP16 MatMul compatibility rejection; matching OMC has two earlier CPU partition records of unresolved graph scope, followed by another PreGraphSplit"
+      "current_failure": "User OMG L110650: main NPUCL partition count >9 rolls whole graph back to CPU; resulting artifact fails board CPUCL FP16 MatMul compatibility",
+      "followup_run_id": "20261026T010136Z-21603-7ab64d",
+      "followup_evidence": "specs/npu-partition-recovery-verification.json"
     }
   },
   "operator_support_probe": {
@@ -329,6 +331,7 @@
     "milestone": "target/draft load + one execution each + output/log retrieval",
     "accuracy_work": "DEFERRED_NOT_WAIVED",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
-    "guide": "docs/hdc-board-run.md"
+    "guide": "docs/hdc-board-run.md",
+    "next_action": "Reduce compiler fragmentation, reject explicit whole-graph CPU fallback, then verify target/draft board execution"
   }
 }

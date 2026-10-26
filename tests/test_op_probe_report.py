@@ -9,6 +9,129 @@ import pytest
 from qwen35_moe_dflash.op_probe_report import compare_outputs, compile_evidence, write_report
 
 
+_LIMIT_ROLLBACK = ('W/AI_FMK  (158555): graph_partition.cpp Partition(320)::'
+                   '"Partition of type: NPUCL is more than 9," " will rollback to CPU"')
+
+
+def test_real_unbracketed_constant_scope_and_main_limit_rollback_are_separate():
+    log = '\n'.join([
+        'start InferShape for graph[qwen35_target] ....',
+        'I/AI_FMK IR InferShape for Graph constNodeGraph Success',
+        'partition type NPU:0, CPU:1, GPU:0, ISP:0.',
+        'I/AI_FMK IR InferShape for Graph constNodeGraph Success',
+        'partition type NPU:0, CPU:1, GPU:0, ISP:0.',
+        'I/AI_FMK omg.cpp GenerateOMCModel(191)::"TCH BuildOrigin2IRGraph end ..."',
+        'I/AI_FMK omg.cpp BuildOfflineCompiledModel(122)::"TCH iCompiler->Compile begin ..."',
+        _LIMIT_ROLLBACK,
+    ])
+    evidence = compile_evidence(log)
+    assert [event['scope'] for event in evidence['partition_events']] == ['constant_folding'] * 2
+    assert all(event['graph'] == 'constNodeGraph' for event in evidence['partition_events'])
+    assert evidence['main_partition_events'] == []
+    event, = evidence['rollback_events']
+    assert event == {'line': 8, 'scope': 'main', 'graph': 'qwen35_target', 'device': 'NPUCL',
+                     'limit': 9, 'reason': 'partition_limit_exceeded', 'target_device': 'CPU', 'text': _LIMIT_ROLLBACK}
+    assert evidence['runtime_placement'] == 'UNVERIFIED'
+
+
+@pytest.mark.parametrize('phase', ['TCH BuildOrigin2IRGraph end ...', 'TCH iCompiler->Compile begin ...'])
+def test_main_phase_ends_constant_scope_without_inventing_main_graph(phase):
+    evidence = compile_evidence('\n'.join([
+        'IR InferShape for Graph constNodeGraph Success',
+        'partition type NPU:0, CPU:1, GPU:0, ISP:0.', phase, _LIMIT_ROLLBACK,
+        'partition type NPU:0, CPU:1, GPU:0, ISP:0.',
+    ]))
+    event, = evidence['rollback_events']
+    assert event['scope'] == 'unknown' and event['graph'] is None
+    assert evidence['partition_events'][-1]['scope'] == 'unknown'
+    assert evidence['main_partition_events'] == []
+
+
+def test_constant_rollback_does_not_become_main_rollback(tmp_path):
+    case, _, _ = _fixture(tmp_path)
+    evidence = compile_evidence('\n'.join([
+        'start InferShape for graph[probe_main] ....',
+        'partition type NPU:1, CPU:0, GPU:0, ISP:0.',
+        'IR InferShape for Graph constNodeGraph Success', _LIMIT_ROLLBACK,
+        'partition type NPU:0, CPU:1, GPU:0, ISP:0.',
+    ]))
+    assert evidence['rollback_events'][0]['scope'] == 'constant_folding'
+    case['compile']['evidence'] = evidence
+    write_report(tmp_path, {'cases': [case]})
+    text = (tmp_path / 'report.txt').read_text()
+    assert 'compiler rollback' not in text
+    assert 'compiler partition (main, log line 2): NPU=1, CPU=0' in text
+    assert 'compiler partition (constant_folding' not in text
+    assert 'runtime placement unverified' in text
+
+
+@pytest.mark.parametrize('named_main', [False, True])
+def test_report_prioritizes_limit_rollback_over_old_npu_or_late_constant_partition(tmp_path, named_main):
+    case, _, _ = _fixture(tmp_path)
+    lines = ['start InferShape for graph[probe_main] ....'] if named_main else []
+    lines += ['partition type NPU:1, CPU:0, GPU:0, ISP:0.', _LIMIT_ROLLBACK,
+              'IR InferShape for Graph constNodeGraph Success',
+              'partition type NPU:0, CPU:1, GPU:0, ISP:0.']
+    case['compile']['evidence'] = compile_evidence('\n'.join(lines))
+    write_report(tmp_path, {'cases': [case]})
+    text = (tmp_path / 'report.txt').read_text()
+    scope = 'main' if named_main else 'unknown'
+    assert f'compiler rollback ({scope}, log line' in text
+    assert 'NPUCL partition count exceeds limit 9; compiler will rollback to CPU' in text
+    assert 'no post-rollback main/unknown summary recorded' in text
+    assert 'NPU=1' not in text and 'NPU=0, CPU=1' not in text
+    assert 'runtime placement unverified' in text
+
+
+def test_post_rollback_unknown_partition_is_reported_without_promoting_constant_graph(tmp_path):
+    case, _, _ = _fixture(tmp_path)
+    case['compile']['evidence'] = compile_evidence(_LIMIT_ROLLBACK + '\npartition type NPU:0, CPU:1, GPU:0, ISP:0.')
+    write_report(tmp_path, {'cases': [case]})
+    text = (tmp_path / 'report.txt').read_text()
+    assert text.index('compiler rollback (unknown') < text.index('compiler partition (unknown')
+    assert 'NPU=0, CPU=1' in text
+
+
+@pytest.mark.parametrize('log', [
+    'partition type NPU:1, CPU:0, GPU:0, ISP:0.',
+    'CheckSupported: MatMul is supported by NPUCL',
+    'Partition of type: NPUCL is more than 9,',
+    'Partition of type: NPUCL is more than 9,\nunrelated log\nwill rollback to CPU',
+    'Partition of type: NPUCL is more than 9,\nIR InferShape for Graph constNodeGraph Success will rollback to CPU',
+])
+def test_no_rollback_inferred_from_support_or_incomplete_diagnostic(log):
+    evidence = compile_evidence(log)
+    assert evidence['rollback_events'] == []
+    assert evidence['runtime_placement'] == 'UNVERIFIED'
+
+
+def test_adjacent_split_rollback_retains_first_line_and_graph_scope():
+    evidence = compile_evidence('Partition of type: NPUCL is more than 9,\n will rollback to CPU')
+    event, = evidence['rollback_events']
+    assert event['line'] == 1 and event['end_line'] == 2
+    assert event['scope'] == 'unknown' and event['graph'] is None
+    assert event['limit'] == 9
+
+
+def test_missing_partition_summary_does_not_claim_npu_success(tmp_path):
+    case, _, _ = _fixture(tmp_path)
+    write_report(tmp_path, {'cases': [case]})
+    text = (tmp_path / 'report.txt').read_text()
+    assert 'no main/unknown summary recorded; runtime placement unverified' in text
+    assert 'NPU=' not in text
+
+
+def test_compile_evidence_is_reexported_from_standard_library_only_module():
+    import ast
+    import qwen35_moe_dflash.compiler_evidence as module
+
+    assert compile_evidence is module.compile_evidence
+    tree = ast.parse(Path(module.__file__).read_text())
+    imports = [node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
+    assert all((isinstance(node, ast.Import) and all(name.name == 're' for name in node.names))
+               or (isinstance(node, ast.ImportFrom) and node.module == '__future__') for node in imports)
+
+
 def test_compiler_candidates_are_not_placement_and_scopes_remain_separate():
     log = '''start InferShape for graph[constNodeGraph] ....
 opDeviceSupport: op=constmm, devices=[1,0,]

@@ -50,6 +50,8 @@ Path('check_result.json').write_text(json.dumps({'note': 'pre-check candidates, 
 Path('kernel_meta').mkdir()
 Path('kernel_meta/private.bin').write_bytes(b'not a model sidecar')
 print('subGraph fixture run by cl: CPUCL -- TEST DOUBLE')
+if os.environ.get('FAKE_PARTITION_GRAPH', name) == name:
+    print(os.environ.get('FAKE_PARTITION_LOG', ''))
 if os.environ.get('FAKE_DIAGNOSTIC_OMG_FAILURE'):
     (dump / '02_fail.irpb').write_bytes(b'failure test fixture')
     print('[ERROR] primary test converter failure')
@@ -161,3 +163,75 @@ def test_diagnostics_excluded_before_payload_walk_but_other_symlinks_rejected(tm
     (graph / "unexpected-link").symlink_to(private / "secret")
     with pytest.raises(ValueError, match="symlink"):
         _compiled_payloads(graph, tmp_path)
+
+
+_ROLLBACK = ('W/AI_FMK (158555): partitioner_strategy.cpp ToPartitionerList(345)::'
+             '"Partition of type: NPUCL is more than 9," " will rollback to CPU"')
+
+
+@pytest.mark.parametrize("graph", ["target", "draft"])
+def test_explicit_rollback_rejected_after_retaining_compiler_output(fake_omg_case, tmp_path, monkeypatch, graph):
+    bundle, ddk = fake_omg_case
+    monkeypatch.setenv("FAKE_PARTITION_GRAPH", graph)
+    monkeypatch.setenv("FAKE_PARTITION_LOG", "TCH iCompiler->Compile begin ...\n" + _ROLLBACK)
+    output = tmp_path / "omc"
+    with pytest.raises(RuntimeError, match="NPU partition limit 9 exceeded"):
+        compile_air(bundle, output, ddk, ddk_id="fake-retention", reject_cpu_fallback=True)
+    failure = json.loads((output / "failure.json").read_text())
+    assert failure["status"] == "FAILED" and failure["stage"] == f"{graph}-placement-check"
+    assert failure["returncode"] is None  # OMG succeeded; our requested placement check failed.
+    assert failure["cpu_fallback_rejections"][0]["limit"] == 9
+    assert failure["graphs"][-1]["name"] == graph
+    assert not (output / "manifest.json").exists()
+    assert (output / graph / f"{graph}.omc").read_bytes() == b"FAKE OMC"
+    assert (output / graph / "diagnostics/05_after_Partition.irpb").exists()
+    if graph == "target":
+        assert not (output / "draft").exists()
+
+
+def test_default_records_and_warns_of_rollback_without_claiming_npu(fake_omg_case, tmp_path, monkeypatch, capsys):
+    bundle, ddk = fake_omg_case
+    monkeypatch.setenv("FAKE_PARTITION_LOG", _ROLLBACK)
+    output = tmp_path / "omc"
+    result = compile_air(bundle, output, ddk, ddk_id="fake-retention")
+    assert result["status"] == "COMPILED" and result["device_validation"] == "PENDING"
+    assert "rollback to CPU" in capsys.readouterr().err
+    for graph in result["graphs"]:
+        evidence = graph["compiler_evidence"]
+        assert evidence["rollback_events"][0]["scope"] == "unknown"
+        assert evidence["log_sha256"] == sha256_file(output / graph["name"] / "omg.log")
+        assert evidence["runtime_placement"] == "UNVERIFIED"
+
+
+def test_constant_graph_cpu_fallback_does_not_block_main_npu_compile(fake_omg_case, tmp_path, monkeypatch):
+    bundle, ddk = fake_omg_case
+    monkeypatch.setenv("FAKE_PARTITION_LOG", "\n".join([
+        "IR InferShape for Graph constNodeGraph Success", _ROLLBACK,
+        "TCH BuildOrigin2IRGraph end ...", "start InferShape for graph[target] ...",
+        "partition type NPU:1, CPU:0, GPU:0, ISP:0."]))
+    result = compile_air(bundle, tmp_path / "omc", ddk, ddk_id="fake-retention", reject_cpu_fallback=True)
+    assert result["status"] == "COMPILED"
+    assert all(g["compiler_evidence"]["rollback_events"][0]["scope"] == "constant_folding"
+               for g in result["graphs"])
+
+
+def test_compile_module_stays_standard_library_only():
+    import subprocess
+    result = subprocess.run([sys.executable, "-S", "-c",
+        "from qwen35_moe_dflash.compile import compile_air; "
+        "import sys; assert 'numpy' not in sys.modules and 'torch' not in sys.modules"],
+        capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_direct_compile_cli_forwards_rollback_check(fake_omg_case, tmp_path, monkeypatch):
+    import subprocess
+    bundle, ddk = fake_omg_case
+    monkeypatch.setenv("FAKE_PARTITION_LOG", _ROLLBACK)
+    script = Path(__file__).resolve().parents[1] / "targets/cpro/scripts/direct_model_air.py"
+    output = tmp_path / "cli-omc"
+    result = subprocess.run([sys.executable, str(script), "compile", "--air", str(bundle),
+        "--ddk-root", str(ddk), "--ddk-id", "test", "--output", str(output),
+        "--reject-cpu-fallback"], capture_output=True, text=True)
+    assert result.returncode == 1 and "NPU partition limit 9 exceeded" in result.stderr
+    assert json.loads((output / "failure.json").read_text())["stage"] == "target-placement-check"

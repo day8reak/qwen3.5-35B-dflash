@@ -4,11 +4,13 @@ import os
 from pathlib import Path
 import subprocess
 import shutil
+import sys
 import tempfile
 from contextlib import contextmanager
 from .artifacts import checked_file, files_under, output_path, save_json
 from .hashing import sha256_file
 from .tool_logs import log_excerpt
+from .compiler_evidence import compile_evidence
 
 
 def _prepend_paths(paths, inherited):
@@ -218,7 +220,8 @@ def _compiled_payloads(folder, root):
     return records
 
 
-def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600):
+def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600,
+                reject_cpu_fallback=False):
     root = Path(bundle).resolve()
     manifest_path = root / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -250,7 +253,8 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600):
         result["expert_execution"] = manifest["expert_execution"]
     result.update(schema_version=2, artifact_kind="qwen35-cpro-omc-pair", status="COMPILING",
                   platform="kirinx90", runtime="hiai", device_validation="PENDING", graphs=records,
-                  ddk_id=ddk_id, omg_sha256=sha256_file(omg), air_manifest_sha256=sha256_file(manifest_path))
+                  ddk_id=ddk_id, omg_sha256=sha256_file(omg), air_manifest_sha256=sha256_file(manifest_path),
+                  reject_cpu_fallback=reject_cpu_fallback)
     stage = "prepare"
     name = None
     log_path = None
@@ -313,13 +317,33 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600):
             omc = folder / f"{name}.omc"
             # Detect accidental compiler mutation of AIR or external weights.
             for payload in graph["files"]: checked_file(root, payload)
+            evidence = compile_evidence(log_path.read_text(encoding="utf-8", errors="replace"))
+            evidence["log_sha256"] = sha256_file(log_path)
             records.append({"name": name, "omc": str(omc.relative_to(output)),
                             "sha256": sha256_file(omc), "bytes": omc.stat().st_size,
                             "inputs": graph["inputs"], "outputs": graph["outputs"],
                             "input_shapes": graph["input_shapes"], "input_dtypes": graph["input_dtypes"],
                             "output_shapes": graph["output_shapes"], "output_dtypes": graph["output_dtypes"],
                             "compiler_diagnostics": compiler_diagnostics,
+                            "compiler_evidence": evidence,
                             "payloads": _compiled_payloads(folder, output)})
+            # OMG may return success after abandoning all NPU partitions.
+            # Constant-folding CPU graphs are expected and are not deployment
+            # evidence. Unknown scope remains unknown, but an explicit rollback
+            # must not silently pass a requested NPU bring-up check.
+            rollbacks = [event for event in evidence.get("rollback_events", [])
+                         if event["scope"] in {"main", "unknown"} and event["device"] == "NPUCL"]
+            if rollbacks:
+                event = rollbacks[-1]
+                message = (f"graph={name}: OMG reported NPU partition limit {event['limit']} exceeded "
+                           f"and rollback to CPU (scope={event['scope']}, log line {event['line']}). "
+                           f"OMC and diagnostics retained: {folder}. "
+                           "This is compiler fallback evidence, not successful NPU execution.")
+                print(f"compile-air: {message}", file=sys.stderr)
+                if reject_cpu_fallback:
+                    stage = f"{name}-placement-check"
+                    result["cpu_fallback_rejections"] = rollbacks
+                    raise RuntimeError(message)
         result["status"] = "COMPILED"
         save_json(output / "manifest.json", result)
     except Exception as error:

@@ -2,9 +2,9 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-2026-10-22 用户在位置截断修复后反馈 **tiny target/draft 双图 AIR→OMC 编译成功**，记录为USER_REPORTED_PASS；尚未取得独立产物哈希和HIAI板端结果。下一步按 [直接 GE tiny OMC 上板指南](direct-ge-board.md) 生成匹配参考、交叉编译HIAI程序并上板。成功的OMC和prepared直接复用，不必重导。
+2026-10-22 用户反馈 tiny target/draft 双图 AIR→OMC 编译成功。2026-10-26 的后续证据确认：旧 target OMC 在 OMG 主图分区时因 NPUCL 超过9个分区回退 CPU，板端恢复被 CPUCL 的 FP16 MatMul 检查拒绝。当前按[第7节](#7-当前现场复用原权重重新导出并检查分区回退)复用原 prepared 和参考，重新导出、编译并检查回退，再执行双图 smoke；保留已更新的 runner。
 
-下文保留首次生成流程和历史失败修复；算子核查见 [兼容性记录](ge-operator-compatibility.md)。tiny编译成功不表示完整35B权重、量化、内存或性能已经通过。
+第1–4节保留首次生成流程和历史失败修复；当前现场无需重新 prepare 或生成参考。算子核查见 [兼容性记录](ge-operator-compatibility.md)。tiny 编译成功不表示完整35B权重、量化、内存或性能已经通过。
 
 ## 实现范围
 
@@ -75,14 +75,14 @@ export GE_OMC_DIR="$GE_PAIR_RUN/omc"
 python3 "$GE_MODEL_TOOL" compile \
   --air "$GE_AIR_DIR" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$GE_OMC_DIR"
+  --output "$GE_OMC_DIR" --reject-cpu-fallback
 ```
 
-沿用现有 `compile_air`：`--framework=1 --target=omc --platform=kirinx90 --weight_data_type=FP16`，两个 OMG 子进程各有独立的 run 内临时目录和日志。成功为 `COMPILED`，设备状态仍是 `PENDING`。这一步可能暴露内部 DDK 的算子、属性或布局差异，应按具体 `omg.log` 修图。
+沿用现有 `compile_air`：`--framework=1 --target=omc --platform=kirinx90 --weight_data_type=FP16`，两个 OMG 子进程各有独立的 run 内临时目录和日志。`--reject-cpu-fallback` 是本项目包装器的检查参数，不是厂商 OMG 参数，行为见第7节。成功为 `COMPILED`，设备状态仍是 `PENDING`。这一步可能暴露内部 DDK 的算子、属性或布局差异，应按具体 `omg.log` 修图。
 
 ### 内部 OMG 兼容性修正与重试
 
-**以下为历史失败及重建说明。用户已反馈tiny双图编译成功；已有成功产物请直接进入[上板步骤](direct-ge-board.md)。**
+**以下为历史失败及重建说明。当时的双图编译成功不代表板端加载成功；当前分区回退问题按第7节重新导出，不再复跑旧 OMC。**
 
 此前失败日志（draft 进程 158383）已越过整数 Gather 的验证，最终在兼容性检查拒绝 `v12/Maximum`。它执行上下文位置的 `max(cumsum(context_valid)-1, 0)`，输入/输出是 INT32。前面的描述回显、ImportWarning 和缺少内置 kernel 库提示不是这条日志明确报告的最终失败原因。
 
@@ -132,7 +132,7 @@ tail -n 100 "$GE_OMC_DIR/draft/omg.log"
 
 日志中的 `Ascend310B1` 也不足以判断目标配错：蓝区 Kirin 工具链存在平台名映射、Ascend310B kernel magic 和 ESL 标识。内部 X90 的具体映射不可直接检查，继续使用原来的 `--platform=kirinx90`，不手工改成其他芯片。
 
-以下为此前 BatchMatMul 更新的命令；本轮请使用上方 `air-clamp` / `omc-clamp` 命令。
+以下为此前 BatchMatMul 更新的历史命令；当前现场使用第7节命令。
 
 ```bash
 cd "$REPO_DIR"
@@ -296,7 +296,7 @@ python3 "$GE_MODEL_TOOL" export \
 
 每个 token 收集的两组专家权重合计为 `K × 3 × H × I × 2` 字节，35B 配置下为 48 MiB。这只是逻辑张量大小；整个静态图的调度、活跃期和峰值工作区未测，不能当作内存上界。全量专家权重仍然存在，FP16 完整模型的存储问题也未解决。候选支持最多 2048 个专家，以保证用 FP16 排序专家 ID 时不丢失整数精度。
 
-先在新目录生成 tiny 结构候选及独立参考，再导出编译。沿用已有 `AI_RUN_DIR`、`CANN_ROOT`、`CPRO_DDK_ROOT` 和 `CPRO_DDK_ID`：
+以下是后续可独立开展的 selected 结构实验，不是当前上板步骤；当前按第7节保留原 prepared 的专家模式。开展此实验时，在新目录生成 tiny 候选及独立参考，再导出编译，沿用已有 `AI_RUN_DIR`、`CANN_ROOT`、`CPRO_DDK_ROOT` 和 `CPRO_DDK_ID`：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -318,6 +318,38 @@ python3 "$GE_MODEL_TOOL" compile \
   --output "$GE_STRUCTURE_RUN/omc"
 ```
 
-每一步成功后再执行下一步。plan、prepared、AIR 和 OMC 的 manifest 都记录 `expert_dispatch`，export 按 prepared 的选择重建图；老 prepared 缺少该字段时沿用 static。全量旧算子复测仍可用 `probe_hdc_runtime.py --replay-all`，但它复用旧 OMC，不能代替本节新结构的 OMG/板端验证。正式双图上板入口现使用探针已验证的候选部署；先按 [只执行模式](hdc-board-run.md#当前优先复用-omc-打通双图执行) 复用旧 OMC 打通链路，再验证本节结构候选。
+每一步成功后再执行下一步。plan、prepared、AIR 和 OMC 的 manifest 都记录 `expert_dispatch`，export 按 prepared 的选择重建图；老 prepared 缺少该字段时沿用 static。全量旧算子复测仍可用 `probe_hdc_runtime.py --replay-all`，但它复用旧 OMC，不能代替本节新结构的 OMG/板端验证。正式双图上板入口使用探针已验证的候选部署；当前先按第7节重导出、检查编译回退，再进入[只执行模式](hdc-board-run.md#当前优先重新导出后打通双图执行)，不切换到 selected。
 
 可选的主机 GDN 诊断入口为 `targets/cpro/scripts/diagnose_gdn_precision.py`，输出逐 chunk FP16/FP32 输出与状态误差。无输入时仅跑小型合成样例，不能确认真实模型的精度根因。当前优先上板执行，此诊断不作为前置步骤，也不改变部署 FP16。
+
+## 7. 当前现场：复用原权重重新导出并检查分区回退
+
+用户核对的旧 OMC manifest SHA256 与失败记录一致。target OMG 第110650行明确报告 `Partition of type: NPUCL is more than 9,`，随后 `will rollback to CPU`；第19509、31879行的 CPU 分区则来自 `constNodeGraph`，不能据此判定主图。板端 CPUCL 的 FP16 MatMul 拒绝与这份回退产物对应，当前需更新图产物。
+
+保留 `$GE_PAIR_RUN/prepared`、`$GE_BOARD_RUN/reference.json` 和已经更新的 `$HIAI_BUILD_DIR/build/qwen35_dflash_hiai`，无需重新 prepare、切换 selected 或重编 runner。沿用 `CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID`、`SN`、`BIP`：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
+export GE_REEXPORT_RUN="$AI_RUN_DIR/ge-npu-$(date +%Y%m%d-%H%M%S)"
+export HDC_RUN_DIR="$AI_RUN_DIR/hdc-execution-$(date +%Y%m%d-%H%M%S)"
+
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --output "$GE_REEXPORT_RUN/air" &&
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_REEXPORT_RUN/air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_REEXPORT_RUN/omc" --reject-cpu-fallback &&
+python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+  --omc "$GE_REEXPORT_RUN/omc" \
+  --runner "$HIAI_BUILD_DIR/build/qwen35_dflash_hiai" \
+  --reference "$GE_BOARD_RUN/reference.json" \
+  --output "$HDC_RUN_DIR" --execution-only
+```
+
+`export_pair` 使用当前 Python 重新构图，复用原 prepared 的权重、配置与专家模式；原参考继续提供身份和输入配置，浮点精度保持 FP16。已有 GDN 降维、本轮 Reduce 的 INT32 axes 和 draft 的 rank4 Gather 都是兼容性候选，是否能将主图 NPUCL 分区数降到9以内仍待此次 OMG，不能提前标记为已修复或已在 NPU 上执行。
+
+`--reject-cpu-fallback` 是本项目 compile 包装器参数，不传给厂商 OMG。检测到主图或归属未知的 NPUCL 分区超限回退时，即使 OMG 已生成 OMC，也会保留产物、日志和诊断，写 `failure.json`，不发布成功 manifest。常量折叠图的 CPU 执行允许保留；没有发现该回退也不代表全 NPU 覆盖。
+
+命令用 `&&` 串联，仅两步生成都成功才把新 OMC 传板。`--execution-only` 强制 target/draft 各执行一次并回传输出，不做精度和性能结论；失败日志或成功执行报告继续按 [HDC 指南](hdc-board-run.md#当前优先重新导出后打通双图执行)核对。当前不重复运行旧 OMC，也不通过修改 FP16 为 FP32 绕过 CPUCL 报错。

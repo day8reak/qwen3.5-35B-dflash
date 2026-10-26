@@ -45,6 +45,8 @@ def main():
     p.add_argument("--resources")
     p.add_argument("--ddk-root")
     p.add_argument("--ddk-id")
+    p.add_argument("--reject-cpu-fallback", action="store_true",
+                   help="reject explicit NPU partition-limit rollback to CPU; retain generated OMC/logs for diagnosis")
     p.add_argument("--timeout-seconds", type=int, default=3600)
     p = sub.add_parser("reference-tiny")
     p.add_argument("--prepared", required=True)
@@ -93,7 +95,8 @@ def main():
             identity = args.ddk_id or os.path.expandvars(resources.get("ddk_id", ""))
             if not identity or "$" in identity:
                 raise ValueError("declare --ddk-id or CPRO_DDK_ID")
-            result = compile_air(args.air, args.output, ddk, ddk_id=identity, timeout_seconds=args.timeout_seconds)
+            result = compile_air(args.air, args.output, ddk, ddk_id=identity, timeout_seconds=args.timeout_seconds,
+                                 reject_cpu_fallback=args.reject_cpu_fallback)
         else:
             from qwen35_moe_dflash.ge_reference import reference_tiny
             result = reference_tiny(args.prepared, args.output,

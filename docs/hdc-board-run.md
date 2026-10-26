@@ -8,20 +8,27 @@ hdc -t "$SN" -s "$BIP" ...
 
 `-s` 是 HDC 服务端地址，填写你现有连接实际使用的 `IP:端口`，不能只填 IP；`SN` 选择该服务端连接的设备，见[官方远程连接说明](https://github.com/openharmony/docs/blob/master/en/application-dev/dfx/hdc.md#remote-connection)。本脚本使用已有连接，不配置网络转发或启动远端 HDC 服务。
 
-## 当前优先：复用 OMC 打通双图执行
+## 当前优先：重新导出后打通双图执行
 
-最终目标仍是精度达标后 DFlash 至少提速 2 倍。当前按用户要求先验证上板执行，不将精度诊断作为前置步骤。复用已经编译成功的 target/draft OMC 和现有参考 JSON，无需重导 AIR 或重编 OMC。
+最终目标仍是精度达标后 DFlash 至少提速 2 倍。当前先验证上板执行。用户已核对失败记录与旧 OMC manifest 的 SHA256 一致；对应 target OMG 第110650行明确报告 NPUCL 分区数超过9，整图回退 CPU。第19509、31879行的 CPU 分区属于 `constNodeGraph`，不能当作主图结论。旧 OMC 已在恢复阶段被 CPUCL 的 FP16 MatMul 兼容性检查拒绝，需要从当前图代码重新导出。
 
-沿用原构建环境及 `SN`、`BIP`，重新编译正式 runner 后执行：
+保留 `$GE_PAIR_RUN/prepared` 的原权重、`$GE_BOARD_RUN/reference.json` 和已经更新的 `$HIAI_BUILD_DIR` runner。沿用原环境及 `SN`、`BIP`，无需重新 prepare、切换 selected 或重编 runner：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-export HIAI_BUILD_DIR="$AI_RUN_DIR/hiai-execution-$(date +%Y%m%d-%H%M%S)"
-python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" --output "$HIAI_BUILD_DIR"
-
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
+export GE_REEXPORT_RUN="$AI_RUN_DIR/ge-npu-$(date +%Y%m%d-%H%M%S)"
 export HDC_RUN_DIR="$AI_RUN_DIR/hdc-execution-$(date +%Y%m%d-%H%M%S)"
+
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --output "$GE_REEXPORT_RUN/air" &&
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_REEXPORT_RUN/air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_REEXPORT_RUN/omc" --reject-cpu-fallback &&
 python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
-  --omc "$GE_OMC_DIR" \
+  --omc "$GE_REEXPORT_RUN/omc" \
   --runner "$HIAI_BUILD_DIR/build/qwen35_dflash_hiai" \
   --reference "$GE_BOARD_RUN/reference.json" \
   --output "$HDC_RUN_DIR" --execution-only
@@ -29,6 +36,10 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 cat "$HDC_RUN_DIR/result.json"
 cat "$HDC_RUN_DIR/benchmark.stderr"
 ```
+
+`&&` 保证只有 export 和 compile 都成功才上传新 OMC。`export_pair` 使用当前 Python 重新构图，并复用原 prepared 的权重与专家模式，浮点精度保持 FP16。GDN 降维、Reduce 的 INT32 axes 和 draft 的 rank4 Gather 都是待 OMG 验证的布局候选，尚未证实能将主图 NPUCL 分区数降到9以内。
+
+`--reject-cpu-fallback` 是本项目 compile 包装器参数，不传给厂商 OMG。它遇到主图或归属未知的 NPUCL 分区超限回退时停止，保留已生成的 OMC、编译日志和诊断，写入 `failure.json`，不发布成功 manifest。常量折叠图的 CPU 执行允许保留；没有发现这类回退也不证明所有算子都在 NPU 上。
 
 此模式沿用文件名 `benchmark.json`，但报告的 `mode` 是 `smoke`：强制 target 和 draft 各调用一次，将 target 特征传给 draft，保存两图 Top1 输出。即使 prompt 的下一 token 是 EOS，也会执行 draft。成功标为 `EXECUTION_COMPLETE`；`accuracy`、`performance` 为 `NOT_EVALUATED`，不产生 `comparison.json`。参考 JSON 仍用于身份和输入配置检查；其历史 PASS 不是本次板端精度结论。
 
@@ -38,7 +49,7 @@ cat "$HDC_RUN_DIR/benchmark.stderr"
 
 ## 服务器准备
 
-先完成[直接 GE tiny 上板指南的第1、2节](direct-ge-board.md)：保留成功的 OMC bundle、同一批 prepared 生成的 `reference.json`，以及正式链接的 `qwen35_dflash_hiai`。无需重新生成 AIR/OMC。
+首次准备参考与 runner 可查[直接 GE tiny 上板指南的第1、2节](direct-ge-board.md)。当前现场已有原 prepared、匹配的 `reference.json` 和更新后的 `qwen35_dflash_hiai`，直接按上节重新导出和编译。
 
 需要的资源为：
 
@@ -56,9 +67,9 @@ cat "$HDC_RUN_DIR/benchmark.stderr"
 
 板端须能通过 shell 执行 `sh`、`mkdir`、`chmod`、`sha256sum` 等基础命令，且部署位置允许执行程序与访问 HIAI。脚本自动定位构建记录中的 HIAI 库和 OHOS SDK 的 ARM64 C++ 运行库。
 
-## 一条命令完成上板步骤
+## 后续严格 benchmark 入口
 
-沿用已有 `REPO_DIR`、`AI_RUN_DIR`、`GE_OMC_DIR`、`GE_BOARD_RUN`。如果你用上一轮独立构建命令生成了程序，使用 `$HIAI_BUILD_DIR/build/qwen35_dflash_hiai`；如果按上板指南第2节构建，则用 `$GE_BOARD_RUN/hiai-build/build/qwen35_dflash_hiai`。
+新 OMC 的双图 smoke 通过后，再使用本节严格 benchmark 与参考比较。沿用已有 `REPO_DIR`、`AI_RUN_DIR`、`GE_BOARD_RUN` 和更新后的 runner；`GE_OMC_DIR` 指向上节新编译成功的目录。
 
 ```bash
 cd "$REPO_DIR"
@@ -67,6 +78,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 export SN='填写设备ID'
 export BIP='填写远程HDC服务端IP:端口'
+export GE_OMC_DIR="$GE_REEXPORT_RUN/omc"
 export HDC_RUN_DIR="$AI_RUN_DIR/hdc-$(date +%Y%m%d-%H%M%S)"
 
 python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
@@ -105,7 +117,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 以下是默认 benchmark 流程；当前执行联调使用上文 `--execution-only`，第5–6步改为一次双图 smoke 及执行报告校验。
 
 1. 检查 OMC 清单与文件哈希、参考权重身份、prompt 和序列长度，检查程序是 ARM64 ELF。
-2. 创建新的板端目录，按文件精确上传程序、manifest、清单中的 OMC/附属文件及自动定位的运行库，保留相对目录结构。清单中包含的编译诊断文件也可能随 bundle 一并传输。
+2. 创建新的板端目录，按文件精确上传程序、manifest、清单中的 OMC 模型载荷、附属权重及自动定位的运行库，保留相对目录结构。编译诊断文件留在服务器，不随模型上传。
 3. 在板端用 `sha256sum` 核对上传内容。
 4. 设置本次运行的 `LD_LIBRARY_PATH=<部署目录>/lib:/vendor/lib64/chipsetsdk:<板端原值>`，执行 `--probe` 并回传 JSON；要求 `npu_supported=true`。
 5. 根据 manifest 和 probe 自动生成 benchmark 命令，执行普通生成与 DFlash 一致性检查，并各进行3次预热、10次测量。prompt 与生成长度直接取参考 JSON。
@@ -147,7 +159,11 @@ cat "$HDC_RUN_DIR/comparison.json"
 
 如果列表为空或设备状态异常，先确认设备是否连接到 `BIP` 指定的 HDC 服务端、板端调试及授权是否就绪。若列表中的连接标识不同，用该标识更新 `SN`；网络连接的标识可能是 `IP:端口`，并非 USB 序列号，见[官方设备选择说明](https://github.com/openharmony/docs/blob/master/en/application-dev/dfx/hdc.md#connecting-to-the-specified-target-device)。确认 shell 输出 `HDC_OK` 后，换一个新的 `HDC_RUN_DIR` 再运行；不需要重新生成 OMC。
 
-若 `probe` 返回127，先读 `$HDC_RUN_DIR/probe.stderr`。曾出现程序链接 DDK 库，却上传示例中的另一份 `libhiai.so`，导致缺少 `libhiai_ir_build.so` 和 `CheckNPUSupport` 符号。现在自动按构建记录选择库，已有 OMC 无需重建。
+## 历史加载接口与运行库排障
+
+以下保留此前加载接口及运行库问题的排障记录。其中重编 runner、沿用 OMC 的命令仅对应当时的问题；当前已确认分区超限回退，使用本文开头的新导出、编译检查和已有 runner。
+
+若 `probe` 返回127，先读 `$HDC_RUN_DIR/probe.stderr`。曾出现程序链接 DDK 库，却上传示例中的另一份 `libhiai.so`，导致缺少 `libhiai_ir_build.so` 和 `CheckNPUSupport` 符号。现在自动按构建记录选择库，这一历史库问题本身不要求重建 OMC。
 
 用户随后反馈 `probe.exitcode=0`、`probe.stderr` 为空，但 `benchmark.exitcode=1`；这表示程序探测通过，推理尚未通过。此时应看 benchmark 自己的日志，不再用 probe 日志解释推理失败：
 
@@ -223,11 +239,11 @@ grep -n -v 'HDC_LOG' "$HDC_RUN_DIR/hiai-hilog-manual.txt" | \
 `comparison.json` 为 PASS 表示这次普通/DFlash token 与停止原因匹配参考，并通过既有产物身份检查。当前 tiny 测试不证明完整35B量化、内存、质量或性能，也不能仅由 OMC 成功运行推断所有节点都在 NPU 上执行。脚本开发使用模拟 HDC 验证流程；真实 CPro 运行结果由你执行后提供。
 
 
-### 2026-10-26：板端 HCL 下的完整图 CPUCL 拒绝
+## 2026-10-26：完整图分区超限回退已定位
 
 当前执行优先的 smoke 已使用排除 DDK HCL 两库的部署。用户补齐 PID25399 的日志后，终止链条为 `input1 dtype should be fp32, but now it is fp16` → `op:MatMul not support` → `compatibleHelper CheckCompatibility failed by cl CPUCL` → `Recompile failed` → `Load failed`。另外记录了 activation.mode9 和 Cast 类型检查失败。前序缺少已排除 DDK HCL 库的报错之后，运行时已打开板端 `libcpucl_itf.so`，不能将该报错当成新的缺库修复目标。
 
-这证明当前 target 在恢复时遇到 CPUCL 算子兼容性阻断，尚未执行 IO 适配、Process 或 draft。它没有给出拒绝节点名，也不能独自判断是编译分区还是恢复逻辑导致。直接 GE 导出和 OMG 调用没有强制 CPU 设置；小 MatMul 的成功不覆盖完整图的所有形状和相邻子图。下一步读取失败 OMC 对应的编译记录：
+这次 target 在恢复时遇到 CPUCL 算子兼容性阻断，尚未执行 IO 适配、Process 或 draft。用户随后核对 manifest SHA256 与失败记录相同，并提供该 OMC 的 target OMG 第110650行：`Partition of type: NPUCL is more than 9,`，紧接着 `will rollback to CPU`。这已定位主图编译时的分区超限回退；较早第19509、31879行的 CPU 分区属于 `constNodeGraph`。以下只读命令用于核对历史现场：
 
 ```bash
 sha256sum "$GE_OMC_DIR/manifest.json"
@@ -235,4 +251,4 @@ grep -n -E 'partition type|run[_ -]*by[_ -]*cl|PreGraphSplit|CompileGraph.*(targ
 cat "$GE_OMC_DIR/target/command.json"
 ```
 
-对照 `result.json` 的 manifest 哈希，区分主图、常量折叠图和最终子图；单个 NPU 子库的 CheckSupported 拒绝不是最终分区。已有 OMC 不会随 runner 更新获得 GDN 布局改动；是否重导出或调整某个节点应由这份编译证据决定。保持 FP16 和当前已通过小图验证的部署策略。此次日志摘要更新只涉及服务器 Python，无需重编 runner 或为它重跑板端。
+已有 OMC 不会随代码或 runner 更新获得图改动。当前操作是本文开头的重新 export、带 `--reject-cpu-fallback` 编译、再执行双图 smoke，继续保持原 prepared、FP16 和已通过小图验证的部署策略。实际新图是否满足分区限制仍待 OMG；即使未触发回退，也要检查最终分区与板端执行，不能宣称已修复或全 NPU。

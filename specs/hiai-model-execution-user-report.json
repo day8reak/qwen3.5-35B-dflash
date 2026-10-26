@@ -37,9 +37,12 @@
     "L193128-193133: op:MatMul not support -> compatibleHelper CheckCompatibility failed by cl CPUCL -> Recompile failed -> BuildModelByHcl failed",
     "L193139-193150: RestoreFromBuffer failed -> create built model failed -> no runtime support -> Load failed",
     "Original summary displayed last60 of9803 global keyword matches, omitting the earlier CPUCL rejection",
-    "Remote directory retained; no transport retrieval errors reported"
+    "Remote directory retained; no transport retrieval errors reported",
+    "Target OMG PID158555 L19509 and L31879 CPU partitions are constNodeGraph constant folding, confirmed by surrounding InferShape records",
+    "After main BuildOrigin2IRGraph/iCompiler Compile entry at L63103-L63109, L110650 explicitly reports NPUCL partition count more than 9 and rollback to CPU",
+    "Following CPU subgraph dump and optimization, OMG saves target.omc and returns success; this artifact later fails board CPUCL compatibility checks"
   ],
-  "root_cause": "WHY_THIS_MODEL_REQUIRES_CPUCL_MATMUL_PENDING_COMPILER_PARTITION_EVIDENCE",
+  "root_cause": "USER_LOG_CONFIRMED_MAIN_GRAPH_NPU_PARTITION_LIMIT_ROLLBACK_TO_CPU",
   "excluded_as_this_failure_stage": [
     "ND IO validation",
     "generation precision comparison",
@@ -48,13 +51,14 @@
   ],
   "not_established": [
     "Exact rejected MatMul node name and compiler partition",
-    "Whether original compile assigned this MatMul to CPU or restore changed placement",
     "NPU operator coverage",
     "Library/firmware ABI or model format compatibility",
     "mmap loading defect",
-    "GDN numerical issue"
+    "GDN numerical issue",
+    "Exact NPU partition count before rollback (only >9 is reported)",
+    "Which CPU-only graph boundaries cause fragmentation in the revised graph"
   ],
-  "next_evidence": "Target OMG lines19480..19525 and31850..31895, plus last160 lines, to identify partition graph scope and final compile outcome",
+  "next_evidence": "Fresh AIR/OMC from existing prepared weights using current GDN/draft lowering and INT32 reduction axes; compiler rollback guard then target/draft execution-only if compilation passes",
   "experience_audit": "docs/experience.md",
   "failure_cause": "USER_LOG_CONFIRMED_CPUCL_MATMUL_COMPATIBILITY_REJECTION_DURING_TARGET_RESTORE",
   "source_audit": {
@@ -78,7 +82,8 @@
           "GPU": 0,
           "ISP": 0
         },
-        "scope": "UNRESOLVED"
+        "scope": "constant_folding",
+        "graph": "constNodeGraph"
       },
       {
         "line": 31879,
@@ -89,7 +94,8 @@
           "GPU": 0,
           "ISP": 0
         },
-        "scope": "UNRESOLVED"
+        "scope": "constant_folding",
+        "graph": "constNodeGraph"
       }
     ],
     "later_pre_graph_split_line": 63115,
@@ -104,6 +110,30 @@
       "--use_origin_format=true",
       "--weight_data_type=FP16"
     ],
-    "interpretation": "Two earlier CPU partitions are not established as main-graph placement; later main-stage completion still needs the log tail"
-  }
+    "interpretation": "Main graph exceeded the NPU partition limit and rolled back to CPU before successful serialization. Earlier CPU count summaries belong to constant folding. CPUCL rejects FP16 MatMul during board restore of the matching artifact.",
+    "main_entry_lines": [
+      63103,
+      63104,
+      63105,
+      63106,
+      63107,
+      63108,
+      63109
+    ],
+    "rollback_events": [
+      {
+        "line": 110650,
+        "scope": "main",
+        "scope_basis": "User supplied surrounding main compiler entry and complete tail; not inferred from CPUCL logger alone",
+        "device": "NPUCL",
+        "limit": 9,
+        "exact_partition_count": "NOT_REPORTED",
+        "target_device": "CPU",
+        "reason": "partition_limit_exceeded",
+        "text": "Partition of type: NPUCL is more than 9, will rollback to CPU"
+      }
+    ],
+    "final_compile_status": "USER_LOG_OMG_SUCCESS_WITH_CPU_FALLBACK"
+  },
+  "followup_run_id": "20261026T010136Z-21603-7ab64d"
 }

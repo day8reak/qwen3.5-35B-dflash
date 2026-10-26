@@ -43,6 +43,8 @@ def parser():
         if name == "compile-omc":
             cmd.add_argument("--air", required=True)
             cmd.add_argument("--timeout-seconds", type=int, default=3600)
+            cmd.add_argument("--reject-cpu-fallback", action="store_true",
+                             help="reject explicit NPU partition-limit rollback to CPU")
         if name == "prompt":
             cmd.add_argument("--text", required=True)
             cmd.add_argument("--enable-thinking", action="store_true")
@@ -203,7 +205,8 @@ def execute(args):
         ddk_id = os.path.expandvars(resources.get("ddk_id", ""))
         if not ddk_id or "$" in ddk_id: raise ValueError("declare ddk_id in resource JSON or CPRO_DDK_ID")
         compile_air(args.air, output, resource_path(resources, "ddk_root", directory=True),
-                    ddk_id=ddk_id, timeout_seconds=args.timeout_seconds)
+                    ddk_id=ddk_id, timeout_seconds=args.timeout_seconds,
+                    reject_cpu_fallback=args.reject_cpu_fallback)
         return
     elif args.command == "board-command":
         import shlex

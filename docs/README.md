@@ -4,37 +4,41 @@
 
 **最终目标：精度达标后，DFlash 相比同板、同目标权重的普通解码至少提速 2 倍。当前优先打通 target/draft 双图上板执行，精度排查后置，尚无加速结论。** 验收口径保存在 [DFlash 合约](../specs/dflash-contract.json)：完整 decode 循环计入 draft、verify、接受/拒绝处理和数据搬运，另报 prefill + decode 总耗时；前缀重算和全专家计算只作正确性联调基线。
 
-**当前进度：用户已反馈 tiny target/draft 双图 AIR→OMC 编译成功；候选运行库部署下，FP16 MatMul、四维 Add 和五维 Add 三个探针均通过加载、执行及数值比较。最新双图 smoke 在 target `Load` 失败：CPUCL 拒绝 FP16 MatMul，尚未进入推理；正在核对该 OMC 的编译分区和具体节点。** 算子结果见本页末尾的复测入口；模型结构改动见[按 Cpro 参考结构调整](direct-model-air.md#6-按-cpro-参考结构调整)。原 OMC 可继续用于复测；验证新结构需要重新导出、编译。
+**当前阻塞已由用户日志定位：旧 target 的 OMG 日志 L110650 报 `Partition of type: NPUCL is more than 9`，随后 `will rollback to CPU`；板端因此在 CPUCL 的 FP16 MatMul 兼容性检查处加载失败。** L19509、L31879 的 CPU 分区属于 `constNodeGraph`，不是主图结论；用户提供的 OMC manifest SHA256 与失败记录一致。候选库部署下三个 MatMul/Add 探针已通过，但完整双图尚未通过。当前需要重新导出、编译，保留原 prepared 权重和参考。
 
 **服务器没有 OHOS SDK：[获取 Native SDK 与配置编译路径](ohos-native-sdk.md)。** 已找到的 HIAI `.so` 是链接/运行库，还需匹配的交叉编译器与 sysroot；SDK 留在服务器。
 
-**HDC 自动上板：[传文件、设置环境、运行与结果回传](hdc-board-run.md)。** 设置 `SN`（设备ID）和 `BIP`（远程HDC服务端地址），统一使用 `hdc -t "$SN" -s "$BIP"`。复用现有成功的 OMC 和匹配参考；本次需重编正式 runner 以获得 ND 补维适配和 `smoke` 模式。沿用已有构建环境变量，在服务器执行：
+**当前入口：[重新导出后上板执行](hdc-board-run.md#当前优先重新导出后打通双图执行)。** 沿用 `SN`、`BIP`、原 `$GE_PAIR_RUN/prepared`、`$GE_BOARD_RUN/reference.json` 和已更新的 `$HIAI_BUILD_DIR` runner；本次不重新 prepare、不切换 selected，也无需重编 runner。服务器执行：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-export HIAI_BUILD_DIR="$AI_RUN_DIR/hiai-execution-$(date +%Y%m%d-%H%M%S)"
-python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" --output "$HIAI_BUILD_DIR"
-
-export SN='填写设备ID'
-export BIP='填写远程HDC服务端IP:端口'
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
+export GE_REEXPORT_RUN="$AI_RUN_DIR/ge-npu-$(date +%Y%m%d-%H%M%S)"
 export HDC_RUN_DIR="$AI_RUN_DIR/hdc-$(date +%Y%m%d-%H%M%S)"
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --output "$GE_REEXPORT_RUN/air" &&
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_REEXPORT_RUN/air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_REEXPORT_RUN/omc" --reject-cpu-fallback &&
 python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
-  --omc "$GE_OMC_DIR" \
+  --omc "$GE_REEXPORT_RUN/omc" \
   --runner "$HIAI_BUILD_DIR/build/qwen35_dflash_hiai" \
   --reference "$GE_BOARD_RUN/reference.json" \
   --output "$HDC_RUN_DIR" --execution-only
 
-cat "$HDC_RUN_DIR/result.json"
-cat "$HDC_RUN_DIR/benchmark.stderr"
 ```
+
+只有 export 和 compile 都成功才上传新 OMC。`--reject-cpu-fallback` 是本项目编译包装器参数，不传给 vendor OMG；发现主图或 unknown 作用域的 NPUCL 分区超限回退时，保留 OMC、日志和诊断，写 `failure.json`，不发布成功 manifest。常量折叠图使用 CPU 不触发此门槛；未发现该回退也不证明所有节点都在 NPU 上。
+
+export 会按当前 Python 图定义重建 AIR，并校验复用的权重。GDN 降维、Reduce axes INT32 和 draft rank4 Gather 都仍是候选；实际分区是否降至限制内要看新 OMG 结果，FP16 不变，不能宣称已修复或已在 NPU 执行。
 
 无需设置库目录或增加库参数。脚本从 `--runner` 对应的构建目录读取 `command.json` / `result.json`，验证程序及链接库 SHA256，自动收集同套 HIAI 库，按已通过三个探针的候选部署策略排除 DDK 的 `libhiai_hcl_model_runtime.so` / `libhiai_hcl_model_runtime_impl.so`，并从构建时的 OHOS SDK 补充可找到的 ARM64 C++ 运行库。板端进程搜索路径加入 `/vendor/lib64/chipsetsdk`，不改系统库。保留构建目录、DDK 与 SDK 路径即可。
 
 当前 `--execution-only` 执行 probe，再强制 target/draft 各执行一次、回传两图的 Top1 输出及日志；现有参考只用于匹配身份、prompt 和配置，不比较输出精度，也不运行 benchmark。成功标记为 `EXECUTION_COMPLETE`，精度和性能为 `NOT_EVALUATED`。以后去掉该参数可恢复原有配对 benchmark 和参考比较。全部成功后删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。probe 或 benchmark 失败时会直接显示已回传的错误日志末尾，并自动抓取板端 HiLog 缓冲区快照作为排障材料。日志摘要会扫描整个快照、排除 HDC 传输记录，并避免将 `input` 误匹配为 `NPU`；完整日志始终保留。
 
-遇到 `HIAI Load failed: 1`，且 HiLog 显示 HCL `CreateLocalBuffer` 的 `data != nullptr && size > 0` 检查失败，需要更新并重新编译推理程序：现将 OMC 只读映射后通过 `SetModelBuffer` 提供数据，保留路径，并检查加载状态及后续张量。映射保持到模型卸载和客户端销毁之后。该缓冲区接口仅接受不超过 `UINT32_MAX` 字节的单个 OMC，完整 35B 大文件加载仍待验证。OMC 和参考文件无需重建，命令见[板端排障与重试](hdc-board-run.md#结果与失败排查)。
-
-此前完整双图在 `Load` 返回 `1`，后续独立探针已定位 DDK HCL 后端缺少 NPUCL，候选部署可运行 MatMul/Add。现在将该部署策略接入正式 runner；完整双图结果仍待本次实测。请使用上面的新 runner 与旧 OMC 组合。
+此前 HCL 空缓冲区、库选择和 ND 补维问题及当时的重编 runner 命令保存在[历史排障记录](hdc-board-run.md#历史加载接口与运行库排障)。本轮沿用已更新的 runner 和候选库部署，重新生成模型产物。
 
 以后要保留大体积独立权重时，加 `--board-cleanup omc`，只删除清单中的 OMC 文件，保留目录、独立权重、程序、库和日志；加 `--board-cleanup none` 则全部保留。默认是 `--board-cleanup all`。嵌入 OMC 内部的权重随 OMC 一起删除。
 

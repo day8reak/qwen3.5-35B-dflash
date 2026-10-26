@@ -88,7 +88,8 @@
     "Native W4A8/I4ZN, incremental KV/GDN state and fused custom kernels remain unimplemented",
     "Complete model quality and >=2x speedup remain unvalidated"
   ],
-  "current_next_action": "Prioritize execution-only deployment of existing OMC; new structure compilation and GDN precision investigation are follow-up",
+  "current_next_action": "User old OMC main graph rolled back to CPU after exceeding 9 NPU partitions; re-export current graph from existing prepared weights before next board execution",
   "guide": "docs/direct-model-air.md",
-  "experience_audit": "docs/experience.md"
+  "experience_audit": "docs/experience.md",
+  "followup_evidence": "specs/npu-partition-recovery-verification.json"
 }

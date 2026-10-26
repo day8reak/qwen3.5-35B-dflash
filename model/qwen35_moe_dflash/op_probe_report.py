@@ -10,91 +10,13 @@ import tarfile
 
 import numpy as np
 
+from .compiler_evidence import compile_evidence
 
-_PARTITIONS = re.compile(r"partition\s+type\s+NPU\s*:\s*(\d+)\s*,\s*CPU\s*:\s*(\d+)"
-                         r"\s*,\s*GPU\s*:\s*(\d+)\s*,\s*ISP\s*:\s*(\d+)", re.I)
+
 _HILOG = re.compile(r"^\s*(?:\d+[-:])?(?:\d{4}-)?\d{2}-\d{2}\s+\S+\s+(\d+)\s+\d+\s+[VDIWEF]\s")
 _DTYPES = {"float16": np.dtype("<f2"), "float32": np.dtype("<f4"), "int32": np.dtype("<i4")}
 _LIMIT = 32 * 1024 * 1024
 _LOG_LIMIT = 256 * 1024
-
-
-def _diagnostic_priority(line):
-    """Rank concrete rejection details above noisy per-store capability checks."""
-    low = line.lower()
-    if "return hiai::success" in low or "infershape success" in low:
-        return None
-    if re.search(r"kernelid\s+not\s+registered|castt\s+selectkernel\s+failed", low):
-        return -1, "missing_kernel"
-    if re.search(r"modulenotfounderror|importerror|attributeerror|cannot open shared|no such file|tbeinitialize failed|failed to initialize tbe", low):
-        return 0, "environment"
-    if re.search(r"does(?:n't| not) exist.*tbe.*ops.*store|(?:not found|missing).*tbe.*ops.*store", low):
-        return 0, "missing_kernel"
-    if (re.search(r"dtype|data\s*type|rank|dim(?:num|cnt|ension)|realdimcnt", low)
-            and re.search(r"wrong|must|should|support|>|<|exceed|limit|failed", low)):
-        return 1, "candidate_check" if re.search(r"checksupport|check support", low) else "compiler_diagnostic"
-    if re.search(r"infershape.*failed|verify.*failed|check ir model compatibility failed|beforecompile.*fail|failed to generator|omg generate.*failed|\[fatal\]", low):
-        return 2, "compiler_diagnostic"
-    if re.search(r"don.t support|not support|unsupported", low):
-        return (4, "candidate_check") if re.search(r"checksupport|check support|not supported in .*store", low) else (3, "compiler_diagnostic")
-    return None
-
-
-def compile_evidence(logtext: str) -> dict:
-    """Retain placement events, including their known or unknown graph scope.
-
-    CheckSupported and opDeviceSupport are candidate capability queries. Even a
-    final compiler partition is a compile decision, not evidence of board NPU
-    execution. With no explicit graph/phase context, scope stays unknown.
-    """
-    partitions, subgraphs = [], []
-    diagnostics, diagnostic_seen, diagnostic_total = [], {}, 0
-    graph, scope, candidates = None, "unknown", 0
-    for number, line in enumerate(logtext.splitlines(), 1):
-        low = line.lower()
-        graph_match = re.search(r"(?:start\s+)?infershape\s+for\s+graph\s*\[([^]]+)\]", line, re.I)
-        if graph_match:
-            graph = graph_match.group(1)
-            scope = ("constant_folding" if "constnodegraph" in graph.lower() else
-                     "subgraph" if "subgraph" in graph.lower() else "main")
-        if re.search(r"constantfolding\s+begin", low):
-            scope, graph = "constant_folding", None
-        elif re.search(r"constantfolding\s+(?:end|success|finish)", low):
-            scope, graph = "unknown", None
-        if any(word in low for word in ("opdevicesupport", "checksupported", "checksupport", "check support")):
-            candidates += 1
-        diagnostic = _diagnostic_priority(line)
-        if diagnostic is not None:
-            diagnostic_total += 1
-            text = line[:1600]
-            # Remove volatile process IDs from the deduplication key.
-            key = re.sub(r"\(\d+\)", "(PID)", text)
-            if key in diagnostic_seen:
-                diagnostic_seen[key]["occurrences"] += 1
-            else:
-                priority, category = diagnostic
-                item = {"line": number, "text": text, "occurrences": 1,
-                        "category": category, "priority": priority}
-                diagnostic_seen[key] = item
-        match = _PARTITIONS.search(line)
-        if match:
-            partitions.append({"line": number, "scope": scope, "graph": graph,
-                               "counts": dict(zip(("NPU", "CPU", "GPU", "ISP"), map(int, match.groups()))),
-                               "text": line})
-        # Only explicit assignment/report records, never arbitrary messages from
-        # a CPUCL/NPUCL logger or a candidate kernel's CheckSupport function.
-        if (re.search(r"run[_\s-]*by[_\s-]*cl\b", line, re.I)
-                or ("subgraph" in low and re.search(r"(?:cpucl|npucl).*subgraph.*\.irpb", low))):
-            subgraphs.append({"line": number, "scope": scope, "graph": graph,
-                              "text": line, "kind": "run_by_cl" if "irpb" not in low else "partition_dump"})
-    diagnostics = sorted(diagnostic_seen.values(), key=lambda item: (item["priority"], item["line"]))[:32]
-    return {"partition_events": partitions, "subgraph_events": subgraphs,
-            "main_partition_events": [e for e in partitions if e["scope"] == "main"],
-            "constant_folding_partition_events": [e for e in partitions if e["scope"] == "constant_folding"],
-            "support_candidate_lines": candidates, "runtime_placement": "UNVERIFIED",
-            "diagnostics": diagnostics, "diagnostic_matching_lines": diagnostic_total,
-            "diagnostic_omitted_distinct": max(0, len(diagnostic_seen) - len(diagnostics)),
-            "note": "Compiler partitions describe compilation only. Candidate support checks do not prove placement or execution."}
 
 
 def _inside(directory: Path, name: str) -> Path:
@@ -442,13 +364,31 @@ def write_report(root: Path, manifest, boardresult=None):
         if row["compile"].get("error"):
             lines.append("  compile: " + str(row["compile"]["error"]))
         compile_info = row["compile"].get("evidence", {})
+        rollbacks = [event for event in compile_info.get("rollback_events", [])
+                     if event.get("scope") in ("main", "unknown")]
+        rollback = rollbacks[-1] if rollbacks else None
+        if rollback is not None:
+            lines.append(f"  compiler rollback ({rollback['scope']}, log line {rollback['line']}): "
+                         f"{rollback['device']} partition count exceeds limit {rollback['limit']}; "
+                         f"compiler will rollback to {rollback['target_device']}; runtime placement unverified")
         for diagnostic in compile_info.get("diagnostics", [])[:6]:
             lines.append(f"  compiler diagnostic ({diagnostic['category']}, log line {diagnostic['line']}): {diagnostic['text']}")
-        events = compile_info.get("main_partition_events") or [event for event in compile_info.get("partition_events", []) if event.get("scope") == "unknown"]
+        main = [event for event in compile_info.get("main_partition_events", []) if event.get("scope") == "main"]
+        events = main or [event for event in compile_info.get("partition_events", [])
+                          if event.get("scope") == "main"]
+        unknown = [event for event in compile_info.get("partition_events", []) if event.get("scope") == "unknown"]
+        if rollback is not None:
+            boundary = rollback.get("end_line", rollback["line"])
+            events = [event for event in events if event["line"] > boundary]
+            unknown = [event for event in unknown if event["line"] > boundary]
+        events = events or unknown
         if events:
             event = events[-1]
             counts = ", ".join(f"{key}={value}" for key, value in event["counts"].items())
             lines.append(f"  compiler partition ({event['scope']}, log line {event['line']}): {counts}; runtime placement unverified")
+        else:
+            qualifier = "post-rollback " if rollback is not None else ""
+            lines.append(f"  compiler partition: no {qualifier}main/unknown summary recorded; runtime placement unverified")
     lines.extend(["", *report["limitations"], *archive_notes])
     _exclusive_text(text_path, "\n".join(lines) + "\n")
     with tarfile.open(archive_path, "x:gz") as archive:
