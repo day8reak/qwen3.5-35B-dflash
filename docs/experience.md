@@ -513,3 +513,14 @@ run：`20261026T111926Z-29824-5b5c4c`。用户 `ge-draft-rope-20261026-194345` �
 此次HiLog显示记录PID11937匹配，仍保留复用可能；HCL dlopen与Binder清理消息伴随最终执行成功。不能仅因日志含E就否定已核验的必需执行路径，或再次改动库部署。反过来，smoke通过也不证明数值正确、实际NPU位置、性能或完整35B可用。
 
 本轮仅更新模型证据与后续入口，没有修改生产源码或共享技能；不为文档/证据更改新增实现测试。验证JSON结构、源码判定路径及文档shell语法。下一步复用已有OMC/runner，去掉execution-only，在新目录做严格生成/参考比较；旧参考必须PASS、身份匹配且生成长度不超过静态S。每种模式3次预热/10次测量是tiny诊断，完整质量及最终至少2倍目标仍未关闭。
+
+
+## 2026-10-26：区分稳定的板端参考偏差与运行间不稳定
+
+run：`20261026T113029Z-30107-3feb06`。用户严格比较返回board/reference身份全部一致、native PASS、stop一致，但tokens/dflash_tokens/ten_stable_runs失败。源码审查发现 `ten_stable_runs` 同时包含10次计数和每次对外部参考的相等性；native `FinalizeBenchmark` 本身拒绝重复测量之间的token/stop变化，`BenchmarkPair`拒绝ordinary与DFlash差异。故这组状态不能解释为硬件随机不稳定，更不能直接归因draft或某个算子。用户随后回传两模式各10次均为 `[55,54,49,9]`，参考均为 `[45,42,60,42]`；公共prompt `[1,2,3]` 后首token即45→55。记录见 `specs/draft-rope-comparison-user-report.json`。
+
+比较器保留所有旧检查及PASS/FAIL公式，只补充各模式重复性、测量与汇总相等性、两模式相互一致性、首个参考token/长度/stop差异，以及终端简要信息。离线复用已有OMC和报告，保留输入文件/参考及其哈希。测量少于10次、空测量、两模式差异、某次漂移、汇总不实与长度不同均有针对性回归，不能将diagnostics结果代替旧门槛。验证见 `specs/comparison-diagnostics-verification.json`。
+
+元数据确认 `tiny=true`、seed17、S8、FP16、`quantization=null`；这里没有INT4量化。主机使用与用户相同的FP16 payload哈希复现PyTorch生成45/42/60/42；直接图和实际归约/compact recipes的主机投影与其prefill特征完全一致，三层GDN core与独立上游FP16 helper一致。S8只涉及从零状态开始的一个chunk；这些结果不能证明OMG/板端GDN正确。主机证据见 `specs/target-prefill-host-verification.json`。
+
+为避免改变中间图再次触发不同分区，新增可选runner特征捕获：复用原OMC的FP16输出，在draft前复制精确字节，通过现有JSON哈希回收流程传回。离线工具按原prepared权重和有效prompt比较layer0/2边界，并记录代码哈希、输入身份和非有限值。各边界包括GDN、MoE及残差，报告不设新精度阈值，也不自动归因GDN。默认runner与严格比较门槛保持；仅诊断时重新构建runner并执行一次smoke，不重导出或编译OMC。验证合计121项Python测试及6项原生CTest通过，44个文档shell片段通过语法检查；证据见 `specs/target-feature-capture-verification.json`。完整质量、性能、实际NPU位置仍未验证；没有修改共享技能或DDK。

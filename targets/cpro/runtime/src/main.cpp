@@ -80,6 +80,13 @@ void WriteDoubles(std::ostream& output, const std::vector<double>& values) {
   output << ']';
 }
 
+void WriteHex(std::ostream& output, const std::vector<std::uint8_t>& bytes) {
+  constexpr char digits[] = "0123456789abcdef";
+  output << '"';
+  for (const auto byte : bytes) output << digits[byte >> 4] << digits[byte & 15];
+  output << '"';
+}
+
 void WriteDistribution(std::ostream& output, const Distribution& value) {
   output << "{\"count\":" << value.count << ",\"min\":" << value.min
          << ",\"max\":" << value.max << ",\"mean\":" << value.mean
@@ -201,6 +208,7 @@ void Help() {
             << "--prompt-token-ids CSV --output REPORT.json "
             << "[--mode generate|benchmark|smoke --generation-mode dflash|ordinary --max-new-tokens 32 --max-draft-tokens 15 --pad-token-id 248044 "
             << "--eos-token-ids 248044,248046 --feature-width 16384 --vocab-size 248320]\n";
+  std::cout << "Smoke diagnostics only: [--capture-target-features 0|1] (at most 65536 bytes)\n";
 }
 }  // namespace
 int main(int argc, char** argv) {
@@ -236,6 +244,13 @@ int main(int argc, char** argv) {
     const auto ddk = take("--ddk-id"), firmware = take("--firmware-id");
     if (ddk.empty() || firmware.empty()) throw std::invalid_argument("DDK and firmware identities required");
     const auto mode = take("--mode", "generate");
+    const bool capture_option_present = args.count("--capture-target-features") != 0;
+    const auto capture_option = take("--capture-target-features", "0");
+    if (capture_option != "0" && capture_option != "1")
+      throw std::invalid_argument("--capture-target-features must be 0 or 1");
+    if (capture_option_present && mode != "smoke")
+      throw std::invalid_argument("--capture-target-features requires --mode smoke");
+    const bool capture_target_features = capture_option == "1";
     const auto generation_mode = take("--generation-mode", "dflash");
     if (mode != "generate" && mode != "benchmark" && mode != "smoke")
       throw std::invalid_argument("unknown --mode");
@@ -255,7 +270,7 @@ int main(int argc, char** argv) {
     for (auto token : options.eos_token_ids)
       if (static_cast<std::size_t>(token) >= vocab) throw std::invalid_argument("EOS outside vocabulary");
     qwen35::dflash::HiaiExecutor executor(target, draft, runtime_version, feature_width, vocab,
-                                         static_cast<std::uint32_t>(timeout));
+                                         static_cast<std::uint32_t>(timeout), capture_target_features);
     std::ostringstream report;
     report << std::setprecision(17)
            << "{\"schema_version\":2,\"abi_version\":2,\"feature_dtype\":\"torch.float16\",\"status\":\""
@@ -283,6 +298,14 @@ int main(int argc, char** argv) {
       WriteTokenIds(report, result.target_top1);
       report << ",\"draft_top1\":";
       WriteTokenIds(report, result.draft_top1);
+      if (capture_target_features) {
+        const auto& features = executor.target_features();
+        report << ",\"target_features\":{\"dtype\":\"float16\",\"encoding\":\"hex-le\",\"shape\":[1,"
+               << executor.sequence_length() << ',' << feature_width << "],\"bytes\":"
+               << features.size() << ",\"data\":";
+        WriteHex(report, features);
+        report << '}';
+      }
       report << '}';
     } else {
       report << ",\"timing_scope\":\"synchronous model loop; excludes load/tokenization\","

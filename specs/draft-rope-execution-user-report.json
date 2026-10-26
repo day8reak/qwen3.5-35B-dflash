@@ -61,7 +61,24 @@
   "raw_reports": {
     "benchmark.json": "NOT_PROVIDED",
     "result.json": "NOT_PROVIDED",
-    "top1_values": "NOT_PROVIDED",
+    "top1_values": {
+      "target": [
+        41,
+        41,
+        55,
+        43,
+        43,
+        43,
+        43,
+        43
+      ],
+      "draft": [
+        43,
+        43,
+        18
+      ],
+      "provenance": "USER_TERMINAL_SUMMARY"
+    },
     "firmware_id": "NOT_PROVIDED"
   },
   "accuracy": "NOT_EVALUATED",
@@ -78,12 +95,14 @@
       "len(prompt)+max_new_tokens-1<=sequence_length"
     ],
     "execution": "Remove --execution-only;3 warmups and10 measurements per mode with token/stop comparison",
-    "limits": "Tiny measurements are diagnostic; not full-model quality or final optimized DFlash>=2x proof."
+    "limits": "Tiny measurements are diagnostic; not full-model quality or final optimized DFlash>=2x proof.",
+    "followup": "Strict comparison completed and failed; see specs/draft-rope-comparison-user-report.json for current localization."
   },
   "experience_audit": {
     "capture": "docs/experience.md",
     "shared_skills_changed": false,
     "production_changes": false,
     "lesson": "Read success according to required native/report checks; optional shared-system diagnostic errors do not override validated execution. Keep smoke execution distinct from accuracy, placement and performance."
-  }
+  },
+  "later_comparison_followup": "specs/draft-rope-comparison-user-report.json"
 }

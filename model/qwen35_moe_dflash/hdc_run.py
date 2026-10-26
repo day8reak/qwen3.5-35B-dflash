@@ -177,6 +177,8 @@ def parser():
     p.add_argument("--reference", required=True, help="matching reference.json; prompt/config only with --execution-only, otherwise must be successful")
     p.add_argument("--execution-only", action="store_true",
                    help="execute target and draft once using reference prompt/config; skip accuracy comparison and performance benchmark")
+    p.add_argument("--capture-target-features", action="store_true",
+                   help="requires --execution-only; capture at most 65536 bytes of target FP16 features for offline diagnosis")
     p.add_argument("--lib-dir", action="append", default=[], help="legacy manual library override; omit to use matching build libraries automatically")
     p.add_argument("--output", required=True, help="new output directory below AI_RUN_DIR")
     p.add_argument("--board-root", help="new remote directory; existing directories are never reused")
@@ -285,6 +287,8 @@ def _build_association(build_dir, runner, uploads):
 
 
 def _preflight(args):
+    if args.capture_target_features and not args.execution_only:
+        raise ValueError("--capture-target-features requires --execution-only")
     sn, bip = _text(os.environ.get("SN"), "SN"), _text(os.environ.get("BIP"), "BIP")
     if sn.startswith("-") or bip.startswith("-"):
         raise ValueError("SN and BIP cannot start with an option prefix")
@@ -304,6 +308,8 @@ def _preflight(args):
     for field in ("sequence_length", "vocab_size", "feature_width", "draft_width"):
         if type(manifest.get(field)) is not int or not 0 < manifest[field] <= 2147483647:
             raise ValueError(f"invalid manifest {field}")
+    if args.capture_target_features and 2 * manifest["sequence_length"] * manifest["feature_width"] > 65536:
+        raise ValueError("target feature capture exceeds 65536-byte limit")
     _text(manifest.get("ddk_id"), "manifest DDK identity")
     vocab = manifest["vocab_size"]
     special = manifest.get("eos_token_ids")
@@ -537,7 +543,7 @@ def _cleanup_remote(hdc, board, owner_token, *, mode="all", omc_files=()):
         raise ValueError(f"unsupported cleanup mode: {mode}")
 
 
-def _smoke_checks(report, manifest, reference, runtime, firmware):
+def _smoke_checks(report, manifest, reference, runtime, firmware, *, capture_target_features=False):
     """Check completed target/draft execution identity, never numerical accuracy."""
     if not isinstance(report, dict):
         raise ValueError("smoke report must be a JSON object")
@@ -563,6 +569,22 @@ def _smoke_checks(report, manifest, reference, runtime, firmware):
         checks[name + "_top1"] = (isinstance(tokens, list) and len(tokens) == length
                                   and all(type(token) is int and 0 <= token < manifest["vocab_size"] for token in tokens))
     checks["execution_only"] = not any(key in report for key in ("ordinary", "dflash", "generation", "timing_scope"))
+    if capture_target_features:
+        payload = execution.get("target_features")
+        checks["target_features_present"] = isinstance(payload, dict)
+        if isinstance(payload, dict):
+            shape = [1, manifest["sequence_length"], manifest["feature_width"]]
+            size = 2 * shape[1] * shape[2]
+            raw_shape, data = payload.get("shape"), payload.get("data")
+            checks.update(
+                target_features_dtype=payload.get("dtype") == "float16",
+                target_features_encoding=payload.get("encoding") == "hex-le",
+                target_features_shape=(isinstance(raw_shape, list) and raw_shape == shape
+                                       and all(type(dim) is int for dim in raw_shape)),
+                target_features_bytes=(type(payload.get("bytes")) is int and payload["bytes"] == size
+                                       and 0 < size <= 65536),
+                target_features_data=(0 < size <= 65536 and isinstance(data, str)
+                                      and len(data) == 2 * size and re.fullmatch(r"[0-9a-f]+", data) is not None))
     return checks
 
 
@@ -581,6 +603,8 @@ def execute(args):
         result.update(scope="HIAI target-and-draft execution only", device_execution="PENDING",
                       device_validation="NOT_EVALUATED", accuracy="NOT_EVALUATED", performance="NOT_EVALUATED")
         result["board_cleanup"]["policy"] = "after-successful-retrieval-and-execution-report-validation"
+    if args.capture_target_features:
+        result["capture_target_features"] = True
 
     def collect(names, *, recovery=False, timeout=None):
         for name in names:
@@ -778,12 +802,15 @@ def execute(args):
         result["firmware_id"] = _text(firmware, "firmware identity")
         stage = "benchmark-command"
         from .cli import parser as cli_parser, execute as cli_execute
-        cli_execute(cli_parser().parse_args(["board-command", "--omc", str(context["root"]),
+        command_args = ["board-command", "--omc", str(context["root"]),
             "--prompt", str(out / "prompt.json"), "--output", str(out / "board-command.json"),
             "--board-model-dir", str(board / "models"), "--board-output", str(board / "benchmark.json"),
             "--runner", str(board / "bin/qwen35_dflash_hiai"), "--runtime-version", runtime,
             "--firmware-id", firmware, "--max-new-tokens", str(reference["max_new_tokens"]),
-            "--mode", "smoke" if args.execution_only else "benchmark"]))
+            "--mode", "smoke" if args.execution_only else "benchmark"]
+        if args.capture_target_features:
+            command_args.append("--capture-target-features")
+        cli_execute(cli_parser().parse_args(command_args))
         command = json.loads((out / "board-command.json").read_text())
         run_script = out / "run.sh"
         run_script.write_text(_script(board, command["argv"], "benchmark.stdout", "benchmark.stderr", "benchmark.exitcode",
@@ -807,7 +834,8 @@ def execute(args):
             raise ValueError("manifest or reference changed since preflight")
         if args.execution_only:
             report = json.loads((out / "benchmark.json").read_text())
-            result["execution_checks"] = _smoke_checks(report, manifest, reference, runtime, firmware)
+            result["execution_checks"] = _smoke_checks(report, manifest, reference, runtime, firmware,
+                                                       capture_target_features=args.capture_target_features)
             if not all(result["execution_checks"].values()):
                 failed = ", ".join(key for key, value in result["execution_checks"].items() if not value)
                 raise ValueError("smoke execution report failed checks: " + failed)

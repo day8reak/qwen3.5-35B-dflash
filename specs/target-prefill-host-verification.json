@@ -1,0 +1,210 @@
+{
+  "schema_version": 1,
+  "run_id": "20261026T113029Z-30107-3feb06",
+  "status": "HOST_SOURCE_PARITY_CONFIRMED_DEVICE_ACCURACY_PENDING",
+  "scope": "Same payload identity, S8 and prompt confirmed from user terminal metadata; actual user OMC and reports not independently retrieved.",
+  "source_payload_sha256": "d1f1a3476f89454d4311288346fa6fc712ea88c2b5a396ddd567a479b63963e2",
+  "configuration": {
+    "tiny": true,
+    "precision": "float16",
+    "quantization": null,
+    "sequence_length": 8,
+    "expert_dispatch": "static",
+    "prompt": [
+      1,
+      2,
+      3
+    ]
+  },
+  "host_report": {
+    "path": "$AI_RUN_DIR/host-gdn-source-audit/report-user-bound.json",
+    "sha256": "bb0d7403e832ac4b8d078206e4bc1cf98594e6a636cc17b89a5fea2902641033"
+  },
+  "host_reproducer": "$AI_RUN_DIR/audit_target_gdn_host.py",
+  "reference_tokens": [
+    45,
+    42,
+    60,
+    42
+  ],
+  "pytorch_prefill_top1": [
+    41,
+    41,
+    45,
+    43,
+    59,
+    59,
+    59,
+    59
+  ],
+  "neutral_ir_prefill_top1": [
+    [
+      41,
+      41,
+      45,
+      43,
+      59,
+      59,
+      59,
+      59
+    ]
+  ],
+  "projected_lowerings_prefill_top1": [
+    [
+      41,
+      41,
+      45,
+      43,
+      59,
+      59,
+      59,
+      59
+    ]
+  ],
+  "features_vs_pytorch": {
+    "neutral_ir": {
+      "shape": [
+        1,
+        8,
+        32
+      ],
+      "elements": 256,
+      "compared_finite_elements": 256,
+      "reference_nonfinite": 0,
+      "actual_nonfinite": 0,
+      "status": "FINITE",
+      "max_abs": 0.0,
+      "relative_l2": 0.0,
+      "relative_l2_status": "DEFINED"
+    },
+    "projected_lowerings": {
+      "shape": [
+        1,
+        8,
+        32
+      ],
+      "elements": 256,
+      "compared_finite_elements": 256,
+      "reference_nonfinite": 0,
+      "actual_nonfinite": 0,
+      "status": "FINITE",
+      "max_abs": 0.0,
+      "relative_l2": 0.0,
+      "relative_l2_status": "DEFINED"
+    }
+  },
+  "gdn_core_comparisons": [
+    {
+      "layer": 0,
+      "vs_upstream_fp16": {
+        "shape": [
+          1,
+          8,
+          2,
+          8
+        ],
+        "elements": 128,
+        "compared_finite_elements": 128,
+        "reference_nonfinite": 0,
+        "actual_nonfinite": 0,
+        "status": "FINITE",
+        "max_abs": 0.0,
+        "relative_l2": 0.0,
+        "relative_l2_status": "DEFINED"
+      },
+      "vs_fp32_same_half_inputs": {
+        "shape": [
+          1,
+          8,
+          2,
+          8
+        ],
+        "elements": 128,
+        "compared_finite_elements": 128,
+        "reference_nonfinite": 0,
+        "actual_nonfinite": 0,
+        "status": "FINITE",
+        "max_abs": 1.6069971024990082e-06,
+        "relative_l2": 0.0006907112795427072,
+        "relative_l2_status": "DEFINED"
+      }
+    },
+    {
+      "layer": 1,
+      "vs_upstream_fp16": {
+        "shape": [
+          1,
+          8,
+          2,
+          8
+        ],
+        "elements": 128,
+        "compared_finite_elements": 128,
+        "reference_nonfinite": 0,
+        "actual_nonfinite": 0,
+        "status": "FINITE",
+        "max_abs": 0.0,
+        "relative_l2": 0.0,
+        "relative_l2_status": "DEFINED"
+      },
+      "vs_fp32_same_half_inputs": {
+        "shape": [
+          1,
+          8,
+          2,
+          8
+        ],
+        "elements": 128,
+        "compared_finite_elements": 128,
+        "reference_nonfinite": 0,
+        "actual_nonfinite": 0,
+        "status": "FINITE",
+        "max_abs": 1.9354047253727913e-06,
+        "relative_l2": 0.0005278790674282147,
+        "relative_l2_status": "DEFINED"
+      }
+    },
+    {
+      "layer": 2,
+      "vs_upstream_fp16": {
+        "shape": [
+          1,
+          8,
+          2,
+          8
+        ],
+        "elements": 128,
+        "compared_finite_elements": 128,
+        "reference_nonfinite": 0,
+        "actual_nonfinite": 0,
+        "status": "FINITE",
+        "max_abs": 0.0,
+        "relative_l2": 0.0,
+        "relative_l2_status": "DEFINED"
+      },
+      "vs_fp32_same_half_inputs": {
+        "shape": [
+          1,
+          8,
+          2,
+          8
+        ],
+        "elements": 128,
+        "compared_finite_elements": 128,
+        "reference_nonfinite": 0,
+        "actual_nonfinite": 0,
+        "status": "FINITE",
+        "max_abs": 3.7136487662792206e-06,
+        "relative_l2": 0.0007183878906860575,
+        "relative_l2_status": "DEFINED"
+      }
+    }
+  ],
+  "limitations": [
+    "Host reference and device use unquantized FP16 tiny random weights, not full35B weights.",
+    "S8 uses one GDN chunk starting from zero state; no cross-chunk accumulation tested here.",
+    "Emitted reductions and compact row-Mul recipes projected on host are not an OMG or HIAI emulator.",
+    "This parity does not prove device GDN kernels correct or determine the first device divergence."
+  ],
+  "next_action": "Capture original target feature output from unchanged OMC, compare valid rows at post-layer0 and post-layer2 boundaries including normalization/MoE."
+}

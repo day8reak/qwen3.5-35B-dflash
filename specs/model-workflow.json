@@ -287,14 +287,14 @@
         "ND exact, trailing-one-to-rank4, or rank3 leading-one-to-rank4 adaptation; rank2 token axis contract unchanged",
         "smoke executes both graphs exactly once and returns Top1 arrays"
       ],
-      "accuracy": "DEFERRED_NOT_EVALUATED",
+      "accuracy": "USER_REPORTED_REFERENCE_TOKEN_MISMATCH",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "Reuse GE_DRAFT_ROPE_RUN/omc and its existing hiai-build runner; run_hdc without --execution-only to fresh GE_DRAFT_ROPE_CHECK_RUN with existing matching PASS reference. No model export/compile or runner rebuild. Tiny generation comparison does not close full-weight quality or final DFlash>=2x gates.",
-      "requires": "Existing GE_DRAFT_ROPE_RUN OMC and runner, matching PASS reference and unchanged DDK/HDC environment; fresh check output directory.",
+      "next_command": "Follow docs/hdc-board-run.md original-OMC feature capture: rebuild runner only, execution-only capture once, offline compare-target-features with existing prepared/reference/OMC.",
+      "requires": "Existing GE_DRAFT_ROPE_RUN OMC, original tiny prepared and PASS reference; unchanged DDK/HDC deployment; new diagnostic runner and output directories.",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": null,
+      "current_failure": "Stable board ordinary/DFlash both [55,54,49,9] (10 identical each), reference both [45,42,60,42]; first target prefill next-token 45→55 at shared prompt[1,2,3]. FP16 tiny random weights, quantization null. Device GDN cause unproven.",
       "followup_run_id": "20261026T111926Z-29824-5b5c4c",
       "followup_evidence": "specs/draft-rope-execution-user-report.json",
       "source_contract_verification": "specs/ge-dtype-contract-verification.json",
@@ -338,7 +338,20 @@
         "device_status": "USER_REPORTED_EXECUTION_COMPLETE",
         "user_followup": "specs/draft-rope-execution-user-report.json"
       },
-      "current_execution_scope": "Tiny pair Load, target.Process once and draft.Process once, output retrieval and smoke report checks; user console evidence only."
+      "current_execution_scope": "Tiny pair Load, target.Process once and draft.Process once, output retrieval and smoke report checks; user console evidence only.",
+      "generation_comparison": {
+        "run_id": "20261026T113029Z-30107-3feb06",
+        "status": "USER_REPORTED_REFERENCE_TOKEN_MISMATCH",
+        "evidence": "specs/draft-rope-comparison-user-report.json",
+        "raw_reports": "USER_SUPPLIED_TOKEN_GROUPS_AND_METADATA; original files not independently retrieved",
+        "first_mismatch": {
+          "generated_index": 0,
+          "reference": 45,
+          "board": 55
+        },
+        "host_audit": "specs/target-prefill-host-verification.json",
+        "next_capture": "Original target output[1], valid prompt features from layers0 and2; no OMC rebuild"
+      }
     }
   },
   "operator_support_probe": {
@@ -419,11 +432,12 @@
     "date": "2026-10-26",
     "user_directive": "先打通上板执行的链路吧，后续再考虑精度问题",
     "milestone": "target/draft load + one execution each + output/log retrieval",
-    "accuracy_work": "NEXT_TINY_GENERATION_COMPARISON_FULL_QUALITY_PENDING",
+    "accuracy_work": "LOCALIZE_TINY_REFERENCE_TOKEN_MISMATCH",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
     "guide": "docs/hdc-board-run.md",
-    "next_action": "Reuse GE_DRAFT_ROPE_RUN/omc and its existing hiai-build runner; run_hdc without --execution-only to fresh GE_DRAFT_ROPE_CHECK_RUN with existing matching PASS reference. No model export/compile or runner rebuild. Tiny generation comparison does not close full-weight quality or final DFlash>=2x gates.",
+    "next_action": "Read existing GE_DRAFT_ROPE_CHECK_RUN/benchmark.json and GE_BOARD_RUN/reference.json to identify board/reference first divergence, per-mode measured repeatability and ordinary/DFlash agreement. Reuse existing artifacts; no board rerun or model rebuild before localization.",
     "milestone_status": "USER_REPORTED_TINY_EXECUTION_COMPLETE",
-    "evidence": "specs/draft-rope-execution-user-report.json"
+    "evidence": "specs/draft-rope-execution-user-report.json",
+    "comparison_evidence": "specs/draft-rope-comparison-user-report.json"
   }
 }

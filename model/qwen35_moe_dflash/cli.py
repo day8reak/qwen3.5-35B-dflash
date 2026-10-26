@@ -13,6 +13,77 @@ from .hashing import sha256_file
 from .diagnostics import format_error, probe_reference_import
 
 
+def _generation_difference(expected_tokens, expected_stop, actual_tokens, actual_stop):
+    """Bounded diagnostic detail; this does not define an acceptance gate."""
+    expected_valid = isinstance(expected_tokens, list)
+    actual_valid = isinstance(actual_tokens, list)
+    mismatch = None
+    if expected_valid and actual_valid:
+        for index in range(max(len(expected_tokens), len(actual_tokens))):
+            expected_present = index < len(expected_tokens)
+            actual_present = index < len(actual_tokens)
+            expected = expected_tokens[index] if expected_present else None
+            actual = actual_tokens[index] if actual_present else None
+            if not expected_present or not actual_present or expected != actual:
+                mismatch = {"generated_index": index, "expected_token": expected,
+                            "actual_token": actual, "expected_present": expected_present,
+                            "actual_present": actual_present}
+                break
+    return {"tokens_equal": expected_valid and actual_valid and expected_tokens == actual_tokens,
+            "stop_equal": isinstance(expected_stop, str) and isinstance(actual_stop, str)
+                          and expected_stop == actual_stop,
+            "expected_length": len(expected_tokens) if expected_valid else None,
+            "actual_length": len(actual_tokens) if actual_valid else None,
+            "expected_stop": expected_stop, "actual_stop": actual_stop,
+            "first_token_mismatch": mismatch}
+
+
+def _comparison_diagnostics(board, reference):
+    """Separate repetition consistency, cross-mode agreement and reference accuracy."""
+    expected = reference["ordinary"]
+    modes = {}
+    for mode in ("ordinary", "dflash"):
+        data = board[mode]
+        rows = data["measurements"]
+        first = rows[0] if rows and isinstance(rows[0], dict) else {}
+        reference_differences, repetition_differences, stable_differences = [], [], []
+        for row in rows:
+            row = row if isinstance(row, dict) else {}
+            args = (row.get("generated_token_ids"), row.get("stop_reason"))
+            reference_differences.append(_generation_difference(
+                expected["token_ids"], expected["stop_reason"], *args))
+            repetition_differences.append(_generation_difference(
+                first.get("generated_token_ids"), first.get("stop_reason"), *args))
+            stable_differences.append(_generation_difference(
+                data["stable_generated_token_ids"], data["stable_stop_reason"], *args))
+
+        def first_failure(differences):
+            return next(({"measurement_index": index, **detail}
+                         for index, detail in enumerate(differences)
+                         if not (detail["tokens_equal"] and detail["stop_equal"])), None)
+
+        modes[mode] = {
+            "measurement_count": len(rows), "has_ten_measurements": len(rows) == 10,
+            "repeatable_tokens": bool(rows) and all(d["tokens_equal"] for d in repetition_differences),
+            "repeatable_stop": bool(rows) and all(d["stop_equal"] for d in repetition_differences),
+            "measurements_match_reported_stable": bool(rows) and first_failure(stable_differences) is None,
+            "stable_vs_reference": _generation_difference(
+                expected["token_ids"], expected["stop_reason"],
+                data["stable_generated_token_ids"], data["stable_stop_reason"]),
+            "first_measurement_reference_mismatch": first_failure(reference_differences),
+            "first_measurement_repeatability_mismatch": first_failure(repetition_differences),
+        }
+    ordinary, dflash = board["ordinary"], board["dflash"]
+    return {
+        "scope": "Diagnostic only; existing acceptance checks remain unchanged.",
+        "ten_stable_runs_meaning": "Requires ten measurements per mode, each equal to the reference tokens and stop reason; false does not by itself mean run-to-run variation.",
+        "ordinary_vs_dflash": _generation_difference(
+            ordinary["stable_generated_token_ids"], ordinary["stable_stop_reason"],
+            dflash["stable_generated_token_ids"], dflash["stable_stop_reason"]),
+        "modes": modes,
+    }
+
+
 def parser():
     p = argparse.ArgumentParser(description="Qwen3.5-35B-A3B DFlash: AIR -> OMG -> OMC -> HIAI")
     p.add_argument("--resources", help="Local resource JSON; default QWEN35_RESOURCES or project manifest")
@@ -62,6 +133,8 @@ def parser():
             cmd.add_argument("--firmware-id", required=True)
             cmd.add_argument("--max-new-tokens", type=int, default=32)
             cmd.add_argument("--mode", choices=["generate", "benchmark", "smoke"], default="generate")
+            cmd.add_argument("--capture-target-features", action="store_true",
+                             help="smoke only: capture at most 65536 bytes of target FP16 features for offline diagnosis")
     return p
 
 
@@ -210,11 +283,19 @@ def execute(args):
         return
     elif args.command == "board-command":
         import shlex
+        if args.capture_target_features and args.mode != "smoke":
+            raise ValueError("--capture-target-features requires --mode smoke")
         root = Path(args.omc).resolve(); m = json.loads((root / "manifest.json").read_text())
         if m.get("artifact_kind") != "qwen35-cpro-omc-pair" or m.get("status") != "COMPILED":
             raise ValueError("expected a successful OMC bundle")
         if m.get("abi_version") != 2 or m.get("feature_dtype") != "torch.float16":
             raise ValueError("runner requires ABI v2 with FP16 features; regenerate old FP32 bundles")
+        if args.capture_target_features:
+            if any(type(m.get(key)) is not int or m[key] <= 0
+                   for key in ("sequence_length", "feature_width")):
+                raise ValueError("target feature capture requires positive integer sequence_length and feature_width")
+            if 2 * m["sequence_length"] * m["feature_width"] > 65536:
+                raise ValueError("target feature capture exceeds 65536-byte limit")
         graphs = {g["name"]: g for g in m["graphs"]}
         for g in graphs.values(): checked_file(root, {**g, "path": g["omc"]})
         prompt = json.loads(Path(args.prompt).read_text())["prompt_token_ids"]
@@ -231,6 +312,8 @@ def execute(args):
                 "--prompt-token-ids", ",".join(map(str,prompt)), "--feature-width", str(m["feature_width"]),
                 "--vocab-size", str(m["vocab_size"]), "--max-new-tokens", str(args.max_new_tokens),
                 "--max-draft-tokens", str(m["draft_width"]), "--output", args.board_output]
+        if args.capture_target_features:
+            argv += ["--capture-target-features", "1"]
         save_json(output, {"argv": argv, "shell": shlex.join(argv),
                            "manifest_sha256": sha256_file(root/"manifest.json"),
                            "prompt_sha256": sha256_file(Path(args.prompt))}); return
@@ -263,10 +346,20 @@ def execute(args):
                       for r in board[mode]["measurements"]) for mode in ["ordinary", "dflash"])}
         result = {"scope": "token-and-stop-reference-comparison", "checks": checks,
                   "status": "PASS" if all(checks.values()) else "FAIL",
+                  "diagnostics": _comparison_diagnostics(board, reference),
                   "reference_sha256": sha256_file(Path(args.reference)), "board_sha256": sha256_file(Path(args.report)),
                   "source": manifest.get("source")}
         save_json(output, result)
-        if result["status"] != "PASS": raise ValueError(f"comparison failed: {checks}")
+        if result["status"] != "PASS":
+            diagnostics = result["diagnostics"]
+            agreement = diagnostics["ordinary_vs_dflash"]
+            summary = [f"board_modes(tokens/stop)={agreement['tokens_equal']}/{agreement['stop_equal']}"]
+            for mode, detail in diagnostics["modes"].items():
+                first = detail["stable_vs_reference"]["first_token_mismatch"]
+                summary.append(f"{mode}: count={detail['measurement_count']}, "
+                    f"repeatable(tokens/stop)={detail['repeatable_tokens']}/{detail['repeatable_stop']}, "
+                    f"stable/reference_first_token_mismatch={json.dumps(first, separators=(',', ':'))}")
+            raise ValueError(f"comparison failed: {checks}; {'; '.join(summary)}; diagnostic details: {output}")
         return
     else:
         raise ValueError(args.command)

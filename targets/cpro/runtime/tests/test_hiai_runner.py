@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import tempfile
 runner = Path(sys.argv[1]).resolve()
@@ -144,3 +145,47 @@ for number, (failure, flag, value, message) in enumerate([
     assert result.returncode == 1 and message.lower() in result.stderr.lower(), (failure, result.stderr)
     assert not report.exists() and "LEAK" not in result.stderr, result.stderr
 print("HIAI smoke: two calls including immediate EOS, identity/ABI faults, and no quality/performance claims passed")
+
+# Capture is opt-in and preserves the exact target buffer before draft execution,
+# including signed zero/NaN bits that a floating-point JSON conversion can lose.
+for number, (failure, width, capture) in enumerate([
+    ("", 32, "0"), ("", 32, "1"), ("overwrite-target-on-draft", 32, "1"),
+    ("capture-limit", 1024, "1"), ("large-features", 1025, "0"),
+]):
+    smoke = base[:]
+    smoke[smoke.index("--mode") + 1] = "smoke"
+    smoke[smoke.index("--feature-width") + 1] = str(width)
+    report = root / ("capture-" + str(number))
+    result = subprocess.run(smoke + ["--capture-target-features", capture, "--output", str(report)],
+        env=dict(os.environ, FAKE_HIAI_FAILURE=failure), capture_output=True, text=True)
+    assert result.returncode == 0 and "LEAK" not in result.stderr, result.stderr
+    execution = json.loads(report.read_text())["execution"]
+    if capture == "0":
+        assert "target_features" not in execution
+    else:
+        values = [1234, 0x8000, 0x7e01] + [0] * (32 * width - 4) + [4321]
+        expected = struct.pack("<" + "H" * len(values), *values)
+        assert execution["target_features"] == {
+            "dtype": "float16", "encoding": "hex-le", "shape": [1, 32, width],
+            "bytes": len(expected), "data": expected.hex(),
+        }
+
+for number, (mode, capture, failure, width, message) in enumerate([
+    ("smoke", "2", "", 32, "must be 0 or 1"),
+    ("smoke", "true", "", 32, "must be 0 or 1"),
+    ("smoke", "01", "", 32, "must be 0 or 1"),
+    ("benchmark", "1", "", 32, "requires --mode smoke"),
+    ("generate", "0", "", 32, "requires --mode smoke"),
+    ("smoke", "1", "large-features", 1025, "65536-byte"),
+    ("smoke", "1", "oversized-buffer", 32, "65536-byte"),
+    ("smoke", "1", "run", 32, "Process"),
+]):
+    rejected = base[:]
+    rejected[rejected.index("--mode") + 1] = mode
+    rejected[rejected.index("--feature-width") + 1] = str(width)
+    report = root / ("capture-rejected-" + str(number))
+    result = subprocess.run(rejected + ["--capture-target-features", capture, "--output", str(report)],
+        env=dict(os.environ, FAKE_HIAI_FAILURE=failure), capture_output=True, text=True)
+    assert result.returncode == 1 and message in result.stderr, result.stderr
+    assert not report.exists() and "LEAK" not in result.stderr, result.stderr
+print("HIAI feature capture: exact pre-draft FP16 bytes, opt-in, smoke-only and 65536-byte bound checked")

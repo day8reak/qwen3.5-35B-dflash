@@ -7,7 +7,11 @@
 #include <stdexcept>
 namespace {
 int tensors=0, clients=0;
+std::uint16_t* target_features=nullptr;
 std::string Failure() { const auto* p=std::getenv("FAKE_HIAI_FAILURE"); return p?p:""; }
+std::uint32_t FeatureWidth() {
+  return Failure()=="large-features"?1025:Failure()=="capture-limit"?1024:32;
+}
 std::string Layout() { const auto* p=std::getenv("FAKE_HIAI_LAYOUT"); return p?p:""; }
 void Trace(const char* event) {
   if (const auto* path=std::getenv("FAKE_HIAI_TRACE")) std::ofstream(path, std::ios::app) << event << '\n';
@@ -49,7 +53,9 @@ AIStatus AiTensor::Init(const TensorDimension* dim, HIAI_DataType type) {
   data_.resize((bytes_+3)/4); return AI_SUCCESS;
 }
 void* AiTensor::GetBuffer() const { return const_cast<std::int32_t*>(data_.data()); }
-std::uint32_t AiTensor::GetSize() const { return Failure()=="short-buffer"?1:bytes_; }
+std::uint32_t AiTensor::GetSize() const {
+  return Failure()=="short-buffer"?1:Failure()=="oversized-buffer"?65537:bytes_;
+}
 AiModelDescription::AiModelDescription(const std::string& n,int freq,int framework,int model,int device):name(n) {
   if(freq!=3 || framework!=0 || model!=1 || device!=0) throw std::runtime_error("wrong HIAI model mode");
 }
@@ -98,7 +104,7 @@ AIStatus AiModelMngerClient::UnLoadModel(){
 }
 AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vector<TensorDimension>& in,std::vector<TensorDimension>& out){
   if(n!=name_ || !loaded_ || Failure()=="io-dims") return 1;
-  TensorDimension ids({1,32}), features({1,32,32});
+  TensorDimension ids({1,32}), features({1,32,FeatureWidth()});
   if(n=="qwen35_target") { in={ids,ids}; out={ids,features}; }
   else { in={features,ids,ids}; out={TensorDimension({1,3})}; }
   if(Layout()=="padded" || Layout()=="padded-mixed") {
@@ -152,12 +158,16 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
   if(!length) return 1;
   if(target) {
     for(int i=0;i<32;++i) top[i]=(ids[i]+1)%64;
-    auto* f=static_cast<std::uint16_t*>(out[1]->GetBuffer()); std::fill_n(f,32*32,0);
+    auto* f=static_cast<std::uint16_t*>(out[1]->GetBuffer()); std::fill_n(f,32*FeatureWidth(),0);
     f[0]=1234;
-    f[32*32-1]=4321;
+    f[1]=0x8000; // Negative zero and a NaN payload must survive raw capture.
+    f[2]=0x7e01;
+    f[32*FeatureWidth()-1]=4321;
+    target_features=f;
   } else {
     const auto* f=static_cast<std::uint16_t*>(in[0]->GetBuffer());
-    if(f[0]!=1234 || f[32*32-1]!=4321) return 1;
+    if(f[0]!=1234 || f[32*FeatureWidth()-1]!=4321) return 1;
+    if(Failure()=="overwrite-target-on-draft") std::fill_n(target_features,32*FeatureWidth(),0);
     for(int i=0;i<3;++i) top[i]=(ids[length-1]+i+1)%64;
     if(Failure()=="corrupt-draft") top[1]=63;
   }

@@ -19,13 +19,62 @@ hdc -t "$SN" -s "$BIP" ...
 
 <a id="当前读取-gdn-整图加载失败证据"></a>
 
-## 当前：tiny 双图已完成执行，复用现有 OMC 验证生成结果
+## 当前：板端生成已完成，定位与主机参考的 token 差异
+
+用户随后完成严格benchmark，native报告通过，但主机比较的 `tokens`、`dflash_tokens`、`ten_stable_runs` 为False；来源、权重、精度、量化、ABI、OMC身份、prompt、生成长度及stop检查均通过。精度门槛仍失败，不能据此发布提速结论。记录见 `specs/draft-rope-comparison-user-report.json`。
+
+`ten_stable_runs` 的历史实现要求两种模式各10次结果都等于主机参考，不单独代表板端重复性。用户已回传：ordinary和DFlash均为 `[55,54,49,9]`，各10次全部相同；参考两模式均为 `[45,42,60,42]`。第一差异是共享prompt `[1,2,3]` 后的首token：45→55，已发生在target首轮，不能归因于后续draft验收。
+
+prepared/reference已确认是seed17、S8、static dispatch、未量化FP16 tiny随机权重，`quantization=null`，并非完整35B或INT4。相同payload哈希的主机PyTorch、直接图及MatMul/compact改写投影均得首token45，原始target特征完全一致；尚不能证明板端GDN正确或确定设备偏差来源。主机证据见 `specs/target-prefill-host-verification.json`。
+
+比较器现新增诊断字段，分别记录两模式一致性、各模式重复性、汇总与测量一致性、首个参考差异位置/值和长度差异；原有检查及PASS/FAIL条件全部保持。更新源码后可对已有文件离线重比，输出使用新文件：
+
+```bash
+export GE_COMPARE_DETAILS="$GE_DRAFT_ROPE_CHECK_RUN/comparison-details-$(date +%Y%m%d-%H%M%S).json"
+PYTHONPATH="$REPO_DIR/model${PYTHONPATH:+:$PYTHONPATH}" python3 -m qwen35_moe_dflash.cli compare \
+  --omc "$GE_DRAFT_ROPE_RUN/omc" \
+  --report "$GE_DRAFT_ROPE_CHECK_RUN/benchmark.json" \
+  --reference "$GE_BOARD_RUN/reference.json" \
+  --output "$GE_COMPARE_DETAILS"
+```
+
+存在参考偏差时命令仍返回FAIL，并保留完整诊断JSON；终端会显示每种模式的测量数、重复性及首差异。它只读取已有OMC/报告并核验哈希，不调用OMG/HDC，不改旧报告或参考。首差异的 `generated_index` 从0计数，长度不同还会明确哪一侧已结束。已有smoke的有效三行target Top1为 `[41,41,55]`，同权重主机为 `[41,41,45]`；只比较有效prompt位置，padding输出不计入。
+
+## 采集原始 OMC 的 target 特征
+
+下一步只重建runner，复用已有OMC、prepared及参考。新选项在target Process之后、draft Process之前保存原始FP16字节，随已有 `benchmark.json` 的远端SHA256流程回传；不会改变OMC输出接口。仅允许execution-only，最多65536字节。tiny S8输出为 `[1,8,32]`、512字节；前后16列分别是第0、2层结束后的特征。每层还包含归一化、MoE和残差，所以单个边界的偏差不能独立归因GDN。
+
+```bash
+cd "$REPO_DIR"
+git pull --ff-only
+export GE_FEATURE_RUN="$AI_RUN_DIR/ge-target-features-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$GE_FEATURE_RUN/hiai-build" &&
+python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+  --omc "$GE_DRAFT_ROPE_RUN/omc" \
+  --runner "$GE_FEATURE_RUN/hiai-build/build/qwen35_dflash_hiai" \
+  --reference "$GE_BOARD_RUN/reference.json" \
+  --output "$GE_FEATURE_RUN/board" --execution-only --capture-target-features &&
+python3 "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" compare-target-features \
+  --prepared "$GE_PAIR_RUN/prepared" \
+  --omc "$GE_DRAFT_ROPE_RUN/omc" \
+  --board-run "$GE_FEATURE_RUN/board" \
+  --reference "$GE_BOARD_RUN/reference.json" \
+  --output "$GE_FEATURE_RUN/comparison"
+```
+
+离线工具只依赖NumPy，读取并核验原prepared权重、两份OMC、参考及已完成capture报告的哈希。支持已有tiny配置、S=2–16；按有效prompt token及layer0/layer2分别输出finite数、max_abs、RMS、relative L2和数值相等性，同时列出主机末个有效位置的Top5。它使用当前源码中立图，不模拟OMG内部优化，不改变精度门槛或旧参考；输出 `DIAGNOSTIC_COMPLETE` 不代表精度通过。绑定覆盖相同权重identity/config与运行文件，未读取AIR，因此不声称完整prepared→AIR文档哈希链。当前源码哈希也保存在报告中。
+
+分享新的 `comparison/report.txt`；首先核对本次仍复现target的55，再看哪一个特征边界出现偏差。如果两处均一致，只能进一步缩小到尚未观察的后续层/归一化/head等区域，不能直接宣布全部GDN正确。该runner改动已由host fake验证，真实板端捕获仍待执行；源码及测试证据见 `specs/target-feature-capture-verification.json`。
+
+## 已完成：tiny 双图执行与严格 benchmark
+
 
 用户 `ge-draft-rope-20261026-194345` 已导出、编译并构建成功，板端返回 `EXECUTION_COMPLETE`。当前脚本只有在 target/draft 均 Load、初始化张量、各调用一次 Process，target 特征传给 draft，必要输出回收及哈希校验、smoke 报告身份与输出范围检查都通过后才设置此状态。记录为用户回传通过，原始 `benchmark.json`、`result.json` 和哈希尚未在本工作区独立读取。证据见 `specs/draft-rope-execution-user-report.json`。
 
 这次日志已匹配记录的 PID11937；仍保留PID复用限制。HCL dlopen警告和Binder清理信息与本次执行成功同时出现，无需仅凭这些信息补库或重跑 smoke。`EXECUTION_COMPLETE` 不包括精度、NPU运行位置或性能判定。
 
-下一步复用这批 OMC、runner 和匹配参考，在新结果目录运行生成与参考比较，**无需重新导出、编译或构建**：
+以下benchmark命令已经执行并得到上述参考差异，保留供历史复现；当前采集单轮特征，不重复benchmark：
 
 ```bash
 export GE_DRAFT_ROPE_CHECK_RUN="$AI_RUN_DIR/ge-draft-rope-check-$(date +%Y%m%d-%H%M%S)"
@@ -81,7 +130,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 ## 已完成：将已验证的 GDN Gather 复制接入整图
 
-以下是较早的 GDN 候选链路，当时完成到 target Load 失败；当前执行页首的现有 OMC 生成比较。
+以下是较早的 GDN 候选链路，当时完成到 target Load 失败；当前定位页首的已有比较失败报告。
 
 最新`ge-row-chain-20261026-144144`已通过ReshapeFusion，19个row Mul CPU-only候选消失；已识别CPU-only计算从117减到98，主图仍因NPUCL分区数超过9回退，尚未执行双图。保留本次产物与诊断，不重新运行旧整图。
 
@@ -231,7 +280,7 @@ cat "$GE_ROW_CHAIN_INSPECT_RUN/report.txt"
 
 ## 后续严格 benchmark 入口
 
-当前 smoke 已通过，直接执行页首 `GE_DRAFT_ROPE_CHECK_RUN` 命令。保留现有 `SN`、`BIP`、`GE_DRAFT_ROPE_RUN` 和 `GE_BOARD_RUN`；不重新设置设备占位符或使用旧的回退 OMC。
+当前 smoke 和native benchmark均已通过，参考比较失败；先执行页首已有报告的离线诊断。保留现有 `SN`、`BIP`、`GE_DRAFT_ROPE_RUN` 和 `GE_BOARD_RUN`；不重新设置设备占位符或使用旧的回退 OMC。
 
 若 `hdc` 不在 PATH，先设置 `export HDC=/your/host/toolchains/hdc`。无需设置 `HIAI_RUNTIME_LIB_DIR`，无需手动拷贝 C++ 库，也无需传库目录或构建目录参数。
 

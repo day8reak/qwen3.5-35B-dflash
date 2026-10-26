@@ -14,6 +14,7 @@
 
 namespace qwen35::dflash {
 namespace {
+constexpr std::size_t kFeatureCaptureLimit = 65536;
 void Check(hiai::AIStatus status, const char* operation) {
   if (status != hiai::AI_SUCCESS)
     throw std::runtime_error(std::string("HIAI ") + operation + " failed: " + std::to_string(status));
@@ -208,17 +209,24 @@ struct HiaiExecutor::Impl {
   Model target, draft;
   std::size_t sequence = 0, width = 0, vocab = 0;
   GraphOutputs outputs;
+  bool capture_target_features = false, features_available = false;
+  std::vector<std::uint8_t> target_features;
 };
 HiaiExecutor::HiaiExecutor(const std::filesystem::path& target,
                            const std::filesystem::path& draft,
                            const std::string& expected_version,
                            std::size_t feature_width, std::size_t vocabulary_size,
-                           std::uint32_t timeout_ms)
+                           std::uint32_t timeout_ms, bool capture_target_features)
     : impl_(std::make_unique<Impl>()) {
   if (!feature_width || feature_width > INT32_MAX || !timeout_ms ||
       !vocabulary_size || vocabulary_size > INT32_MAX || expected_version.empty())
     throw std::invalid_argument("positive int32 feature width/vocabulary and runtime version required");
+  const std::uint16_t endian_marker = 1;
+  if (capture_target_features &&
+      *reinterpret_cast<const std::uint8_t*>(&endian_marker) != 1)
+    throw std::invalid_argument("target feature capture requires little-endian FP16 buffers");
   impl_->vocab = vocabulary_size;
+  impl_->capture_target_features = capture_target_features;
   impl_->target.Load(target, "qwen35_target", expected_version, timeout_ms, 2, 2);
   impl_->draft.Load(draft, "qwen35_draft", expected_version, timeout_ms, 3, 1);
   const auto actual_shape = impl_->target.input_dims[0].GetDims();
@@ -227,10 +235,16 @@ HiaiExecutor::HiaiExecutor(const std::filesystem::path& target,
   const std::vector<std::uint32_t> shape{1, actual_shape[1]};
   impl_->sequence = shape[1];
   const std::vector<std::uint32_t> features{1, shape[1], static_cast<std::uint32_t>(feature_width)};
+  if (capture_target_features &&
+      feature_width > kFeatureCaptureLimit / 2 / impl_->sequence)
+    throw std::invalid_argument("target feature capture exceeds 65536-byte limit");
   impl_->target.Add(true, 0, shape, hiai::HIAI_DATATYPE_INT32);
   impl_->target.Add(true, 1, shape, hiai::HIAI_DATATYPE_INT32);
   impl_->target.Add(false, 0, shape, hiai::HIAI_DATATYPE_INT32);
   impl_->target.Add(false, 1, features, hiai::HIAI_DATATYPE_FLOAT16);
+  if (capture_target_features &&
+      impl_->target.outputs[1].value->GetSize() > kFeatureCaptureLimit)
+    throw std::invalid_argument("target feature buffer exceeds 65536-byte capture limit");
   impl_->draft.Add(true, 0, features, hiai::HIAI_DATATYPE_FLOAT16);
   impl_->draft.Add(true, 1, shape, hiai::HIAI_DATATYPE_INT32);
   impl_->draft.Add(true, 2, shape, hiai::HIAI_DATATYPE_INT32);
@@ -247,8 +261,15 @@ HiaiExecutor::~HiaiExecutor() = default;
 std::size_t HiaiExecutor::sequence_length() const noexcept { return impl_->sequence; }
 std::size_t HiaiExecutor::draft_width() const noexcept { return impl_->width; }
 const std::string& HiaiExecutor::runtime_version() const noexcept { return impl_->target.version; }
+const std::vector<std::uint8_t>& HiaiExecutor::target_features() const {
+  if (!impl_->capture_target_features || !impl_->features_available)
+    throw std::logic_error("target feature capture unavailable before successful execution");
+  return impl_->target_features;
+}
 const GraphOutputs& HiaiExecutor::Execute(const std::vector<std::int64_t>& prefix,
                                          std::int64_t pad, bool produce_draft) {
+  impl_->features_available = false;
+  impl_->target_features.clear();
   if (prefix.empty() || prefix.size() > impl_->sequence)
     throw std::invalid_argument("prefix outside sequence gear");
   auto valid = [this](std::int64_t t) { return t >= 0 && static_cast<std::size_t>(t) < impl_->vocab; };
@@ -261,6 +282,13 @@ const GraphOutputs& HiaiExecutor::Execute(const std::vector<std::int64_t>& prefi
   std::copy(prefix.begin(), prefix.end(), ids);
   std::fill_n(mask, prefix.size(), 1);
   impl_->target.Run();
+  if (impl_->capture_target_features) {
+    const auto& features = impl_->target.outputs[1];
+    if (features.value->GetSize() > kFeatureCaptureLimit)
+      throw std::runtime_error("target feature buffer exceeds 65536-byte capture limit");
+    const auto* bytes = static_cast<const std::uint8_t*>(features.Data());
+    impl_->target_features.assign(bytes, bytes + features.bytes);
+  }
   const auto* top1 = static_cast<const std::int32_t*>(impl_->target.outputs[0].Data());
   std::copy_n(top1, impl_->sequence, impl_->outputs.target_top1.begin());
   std::fill(impl_->outputs.draft_top1.begin(), impl_->outputs.draft_top1.end(), 0);
@@ -275,6 +303,7 @@ const GraphOutputs& HiaiExecutor::Execute(const std::vector<std::int64_t>& prefi
   if (!std::all_of(impl_->outputs.target_top1.begin(), impl_->outputs.target_top1.end(), valid) ||
       !std::all_of(impl_->outputs.draft_top1.begin(), impl_->outputs.draft_top1.end(), valid))
     throw std::runtime_error("HIAI produced a token outside vocabulary");
+  impl_->features_available = impl_->capture_target_features;
   return impl_->outputs;
 }
 }  // namespace qwen35::dflash

@@ -73,6 +73,12 @@ def main():
     p.add_argument("--ddk-root", required=True)
     p.add_argument("--ddk-id", required=True)
     p.add_argument("--max-partition-bytes", type=int, default=64 << 20)
+    p = sub.add_parser("compare-target-features", help="compare captured original tiny OMC features to the prepared-weight host graph; no compilation or board access")
+    p.add_argument("--prepared", required=True)
+    p.add_argument("--omc", required=True)
+    p.add_argument("--board-run", required=True)
+    p.add_argument("--reference", required=True)
+    p.add_argument("--output", required=True)
     p = sub.add_parser("reference-tiny")
     p.add_argument("--prepared", required=True)
     p.add_argument("--prompt-token-ids", default="1,2,3")
@@ -137,6 +143,10 @@ def main():
             from qwen35_moe_dflash.omc_cpu_inspect import inspect_omc_cpu
             result = inspect_omc_cpu(args.omc, args.inspection, args.output, args.ddk_root,
                                      ddk_id=args.ddk_id, max_partition_bytes=args.max_partition_bytes)
+            print((Path(args.output) / "report.txt").read_text())
+        elif args.command == "compare-target-features":
+            from qwen35_moe_dflash.ge_target_features import compare_target_features
+            result = compare_target_features(args.prepared, args.omc, args.board_run, args.reference, args.output)
             print((Path(args.output) / "report.txt").read_text())
         else:
             from qwen35_moe_dflash.ge_reference import reference_tiny
