@@ -214,8 +214,11 @@ def _logged(command, *, folder, env, log, timeout):
         raise RuntimeError(f"{error}\nFull log: {log}\n{_log_excerpt(log)}") from error
 
 
-def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, timeout_seconds=3600):
+def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, timeout_seconds=3600,
+                fp16_reductions="native"):
     from .ge_cpp import emit_cpp
+    if fp16_reductions not in {"native", "matmul"}:
+        raise ValueError("fp16_reductions must be native or matmul")
     prepared = Path(prepared_dir).resolve()
     manifest_path = prepared / "prepared.json"
     plan = json.loads(manifest_path.read_text())
@@ -275,8 +278,12 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
         for graph in graphs:
             name = graph.name; folder = root / name; folder.mkdir()
             source = folder / f"{name}.cpp"
+            stage = f"{name}-lowering"
+            reduction_report = {}
             source.write_text(emit_cpp(graph, paths, external_weights=plan["external_weights"],
-                                       recipe_dir=folder / "recipe"))
+                                       recipe_dir=folder / "recipe", fp16_reductions=fp16_reductions,
+                                       reduction_report=reduction_report))
+            save_json(folder / "reduction-lowering.json", reduction_report)
             construction = files_under(folder, root)
             for item in construction:
                 checked_file(root, item)
@@ -311,7 +318,9 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
                             "input_dtypes": ["torch." + v.dtype for v in graph.inputs],
                             "output_shapes": [list(v.shape) for v in graph.outputs],
                             "output_dtypes": ["torch." + v.dtype for v in graph.outputs], "files": files,
-                            "builder_sha256": sha256_file(source), "construction_files": construction})
+                            "builder_sha256": sha256_file(source), "construction_files": construction,
+                            "reduction_lowering": {"mode": reduction_report["mode"],
+                                                   "counts": reduction_report["counts"]}})
         for item in plan["weights"].values():
             checked_file(root, item)
         config = Qwen35DFlashConfig.from_dict(plan["draft_config"])
@@ -325,6 +334,7 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
                     "precision": "torch.float16", "feature_dtype": "torch.float16", "precision_audit": audit,
                     "quantization": None, "state_policy": "recompute",
                     "expert_dispatch": dispatch, "expert_execution": execution,
+                    "fp16_reductions": fp16_reductions,
                     "source": plan["source"], "pad_token_id": 0 if plan["tiny"] else 248044,
                     "eos_token_ids": [] if plan["tiny"] else [248044, 248046],
                     "export_root": str(root), "graphs": records, "external_weights": plan["external_weights"],
@@ -335,5 +345,6 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
         return manifest
     except Exception as error:
         save_json(root / "failure.json", {"status": "FAILED", "stage": stage,
+                                          "fp16_reductions": fp16_reductions,
                                           "device_validation": "PENDING", "error": str(error)})
         raise

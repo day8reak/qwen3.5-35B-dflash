@@ -280,7 +280,7 @@
     },
     "board_execution_bringup": {
       "run_id": "20261026T002510Z-8234-33823c",
-      "status": "USER_REPORTED_SIX_MATMUL_CANDIDATES_LOAD_PASS_FIVE_IO_BLOCKED",
+      "status": "OPT_IN_REDUCTION_INTEGRATION_HOST_VALIDATED_BOARD_PENDING",
       "scope": "Existing compiled target/draft OMC pair; not a newly compiled full-weight model",
       "runtime_deployment": "Private library set excludes DDK HCL pair; process path includes /vendor/lib64/chipsetsdk",
       "runner_changes": [
@@ -290,13 +290,13 @@
       "accuracy": "DEFERRED_NOT_EVALUATED",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$GE_REDUCE_MM_RUN\" --native-from \"$OP_PROBE_RUN\" --refresh-runner --replay-all --output \"$GE_REDUCE_MM_REPLAY_RUN\"",
-      "requires": "Original six compiled cases and same-DDK native donor with SDK/headers/link libraries; use a new output directory; no AIR/OMC rebuild",
+      "next_command": "Follow docs/direct-model-air.md: export existing prepared --fp16-reductions matmul, compile --reject-cpu-fallback; on success rebuild formal HIAI runner and run execution-only",
+      "requires": "Existing prepared weights, same GE/internal OMG and SDK/HIAI resources; new AIR/OMC/build/board directories; unchanged FP16 and original reference identity",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "Full target previously exceeded NPU partition limit9. Six isolated MatMul reductions now compile NPU1/CPU0 and Load passes; one numerical PASS, five NOT_RUN due to rank3 ND leading singleton IO descriptors.",
-      "followup_run_id": "20261026T015924Z-25481-adbe34",
-      "followup_evidence": "specs/hiai-leading-nd-padding-verification.json"
+      "current_failure": "Previous full target exceeded NPU partition limit9. Six isolated MatMul reduction candidates now pass Load/Process/numerical checks; integrated lowering must be compiled and executed before clearing the full-target blocker.",
+      "followup_run_id": "20261026T022432Z-26593-f5d385",
+      "followup_evidence": "specs/ge-reduction-integration-verification.json"
     }
   },
   "operator_support_probe": {
@@ -332,6 +332,6 @@
     "accuracy_work": "DEFERRED_NOT_WAIVED",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
     "guide": "docs/hdc-board-run.md",
-    "next_action": "Refresh diagnostic runner and replay existing six MatMul reduction OMC cases to resolve IO-stage rejection; defer production reduction integration until board numerical evidence"
+    "next_action": "Compile the implemented opt-in --fp16-reductions matmul target/draft export with --reject-cpu-fallback, then rebuild the formal runner and collect execution-only results"
   }
 }

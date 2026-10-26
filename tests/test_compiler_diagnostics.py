@@ -94,6 +94,78 @@ def test_success_retains_reports_and_partition_dumps_off_board_payloads(fake_omg
         assert "subGraph fixture run by cl: CPUCL" in (folder / "omg.log").read_text()
 
 
+def test_unknown_reduction_mode_rejected_before_omg(fake_omg_case, tmp_path):
+    bundle, ddk = fake_omg_case
+    path = bundle / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["fp16_reductions"] = "fp32"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="fp16_reductions"):
+        compile_air(bundle, tmp_path / "omc", ddk, ddk_id="fake-retention")
+    assert not (tmp_path / "omc").exists()
+
+
+def _add_reduction_reports(bundle):
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["fp16_reductions"] = "matmul"
+    for graph in manifest["graphs"]:
+        path = bundle / graph["name"] / "reduction-lowering.json"
+        path.parent.mkdir()
+        report = {"mode": "matmul", "graph": graph["name"], "counts": {"replaced": 1, "retained": 0}}
+        path.write_text(json.dumps(report))
+        graph["construction_files"] = [{"path": str(path.relative_to(bundle)),
+                                        "bytes": path.stat().st_size, "sha256": sha256_file(path)}]
+        graph["reduction_lowering"] = {k: report[k] for k in ("mode", "counts")}
+    manifest_path.write_text(json.dumps(manifest))
+    return manifest
+
+
+@pytest.mark.parametrize("problem", ["corrupt", "missing_record", "duplicate_record", "missing_mode",
+                                     "top_mode", "graph_mode", "counts", "missing_summary"])
+def test_reduction_report_identity_checked_before_converter(fake_omg_case, tmp_path, monkeypatch, problem):
+    bundle, ddk = fake_omg_case
+    manifest = _add_reduction_reports(bundle)
+    graph = manifest["graphs"][0]
+    if problem == "corrupt":
+        (bundle / "target/reduction-lowering.json").write_text("corrupt")
+    elif problem == "missing_record":
+        graph["construction_files"] = []
+    elif problem == "duplicate_record":
+        graph["construction_files"] *= 2
+    elif problem == "missing_mode":
+        del manifest["fp16_reductions"]
+    elif problem == "top_mode":
+        manifest["fp16_reductions"] = "native"
+    elif problem == "graph_mode":
+        graph["reduction_lowering"]["mode"] = "native"
+    elif problem == "counts":
+        graph["reduction_lowering"]["counts"]["replaced"] = 2
+    else:
+        del graph["reduction_lowering"]
+    (bundle / "manifest.json").write_text(json.dumps(manifest))
+    def forbidden(*args):
+        raise AssertionError("must reject before resolving OMG")
+    monkeypatch.setattr("qwen35_moe_dflash.compile.omg_environment", forbidden)
+    with pytest.raises(ValueError):
+        compile_air(bundle, tmp_path / "omc", ddk, ddk_id="fake-retention")
+    assert not (tmp_path / "omc").exists()
+
+
+def test_reduction_report_mutation_during_compile_invalidates_output(fake_omg_case, tmp_path, monkeypatch):
+    bundle, ddk = fake_omg_case
+    _add_reduction_reports(bundle)
+    binary = ddk / "tools/tools_omg/master/omg"
+    with binary.open("a") as stream:
+        stream.write("\nPath(os.environ['FAKE_LOWERING_REPORT']).write_text('changed during OMG')\n")
+    monkeypatch.setenv("FAKE_LOWERING_REPORT", str(bundle / "target/reduction-lowering.json"))
+    with pytest.raises(ValueError, match="SHA256/size"):
+        compile_air(bundle, tmp_path / "omc", ddk, ddk_id="fake-retention")
+    assert not (tmp_path / "omc/manifest.json").exists()
+    result = json.loads((tmp_path / "omc/failure.json").read_text())
+    assert result["status"] == "FAILED" and result["failed_graph"] == "target"
+
+
 def test_failure_retains_diagnostics_without_masking_primary_error(fake_omg_case, tmp_path, monkeypatch):
     bundle, ddk = fake_omg_case
     monkeypatch.setenv("FAKE_DIAGNOSTIC_OMG_FAILURE", "1")

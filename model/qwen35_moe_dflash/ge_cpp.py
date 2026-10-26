@@ -196,8 +196,15 @@ def _opindex(reference):
 
 
 class _Emitter:
-    def __init__(self, graph, *, recipe=False):
+    def __init__(self, graph, *, recipe=False, fp16_reductions="native"):
+        if not isinstance(fp16_reductions, str) or fp16_reductions not in {"native", "matmul"}:
+            raise ValueError("fp16_reductions must be native or matmul")
         self.graph = graph
+        self.fp16_reductions = fp16_reductions
+        self.reduction_report = {"mode": fp16_reductions, "graph": graph.name,
+            "counts": {"total": 0, "replaced": 0, "retained": 0, "fp16_replaced": 0,
+                       "integer_retained": 0, "scan_prefix_replaced": 0},
+            "replaced": [], "retained": []}
         self.lines = _DiscardLines() if recipe else [_HEADER]
         self.refs = {}
         self.counter = 0
@@ -276,7 +283,7 @@ class _Emitter:
     def helper(self, value, data, dtype="int64", suffix="parameter"):
         return self.constant(data, dtype, f"__ge/{value.name}/{suffix}")
 
-    def reduction_axes(self, output, source, axes):
+    def checked_reduction_axes(self, output, source, axes):
         """Keep the ReduceSum/ReduceMean axes contract INT32 without narrowing overflow."""
         if (not isinstance(axes, (list, tuple, np.ndarray))
                 or (isinstance(axes, np.ndarray) and axes.ndim != 1)):
@@ -295,7 +302,99 @@ class _Emitter:
                 raise ValueError(f"{output.name}: duplicate reduction axis {axis}")
             normalized.add(axis % rank)
             checked.append(axis)  # Preserve legal negative values and axis order.
+        return checked
+
+    def reduction_axes(self, output, source, axes):
+        checked = self.checked_reduction_axes(output, source, axes)
         return self.helper(output, checked, dtype="int32", suffix="axes")
+
+    def emit_reduction(self, output, source, kind, axes, keepdims, *, axes_value=None, origin="graph"):
+        """Apply the optional contraction policy to graph and scan reductions."""
+        checked = self.checked_reduction_axes(output, source, axes)
+        keepdims = bool(keepdims)
+        contract = {"name": output.name, "origin": origin, "kind": kind,
+                    "source": {"name": source.name, "shape": list(source.shape), "dtype": source.dtype},
+                    "output": {"name": output.name, "shape": list(output.shape), "dtype": output.dtype},
+                    "axes": checked, "keepdims": keepdims}
+        reason, plan = "mode_native", None
+        if self.fp16_reductions == "matmul":
+            if source.dtype != output.dtype:
+                raise ValueError(f"{output.name}: reduction source/output dtype must match")
+            reduced = {axis % len(source.shape) for axis in checked}
+            expected_shape = tuple(1 if axis in reduced else dim for axis, dim in enumerate(source.shape)) if keepdims else tuple(
+                dim for axis, dim in enumerate(source.shape) if axis not in reduced)
+            if output.shape != expected_shape:
+                raise ValueError(f"{output.name}: reduction output shape {output.shape} differs from expected {expected_shape}")
+            if source.dtype != "float16" or output.dtype != "float16":
+                reason = "non_fp16_source_or_output"
+            elif len(checked) != 1:
+                reason = "requires_single_axis"
+            elif not source.shape or any(d <= 0 for d in source.shape):
+                reason = "requires_positive_static_shape"
+            else:
+                from .ge_reduction_matmul import reduction_matmul_plan
+                try:
+                    plan = reduction_matmul_plan(source, kind=kind, axis=checked[0], keepdims=keepdims)
+                except ValueError:
+                    # Axes, dtype, shape and kind are already checked; a mean
+                    # with an inexact reciprocal retains its native operation.
+                    reason = "mean_requires_exact_fp16_reciprocal"
+                else:
+                    if any(d > (1 << 31) - 1 for d in (*source.shape, plan["M"], plan["K"])):
+                        reason = "reshape_dimensions_exceed_int32"
+                    else:
+                        reason = None
+        counts = self.reduction_report["counts"]
+        counts["total"] += 1
+        if reason is None:
+            self._emit_reduction_matmul(output, source, plan)
+            contract.update({key: plan[key] for key in ("axis", "K", "M", "coefficient")})
+            self.reduction_report["replaced"].append(contract)
+            counts["replaced"] += 1
+            counts["fp16_replaced"] += 1
+            counts["scan_prefix_replaced"] += int(origin == "scan_prefix")
+        else:
+            axes_value = axes_value if axes_value is not None else self.helper(output, checked, dtype="int32", suffix="axes")
+            attrs = {"keep_dims": str(keepdims).lower()}
+            if kind == "reduce_mean":
+                attrs["noop_with_empty_axes"] = "true"
+            var = self.op(output.name, "ReduceMean" if kind == "reduce_mean" else "ReduceSum",
+                          [("x", source), ("axes", axes_value)], [("y", output)], attrs)
+            self.refs[output.name] = (var, "y")
+            self.reduction_report["retained"].append({**contract, "reason": reason})
+            counts["retained"] += 1
+            counts["integer_retained"] += int(source.dtype in {"int32", "int64"}
+                                               and output.dtype == source.dtype)
+        return output
+
+    def _emit_reduction_matmul(self, output, source, plan):
+        """Emit the probe-validated plan without mutating the original Graph."""
+        prefix = f"__ge/{output.name}/reduction"
+
+        def bind(value, kind, inputs, attrs):
+            var = self.op(value.name, kind, inputs, [("y", value)], attrs)
+            self.refs[value.name] = (var, "y")
+            return value
+
+        def reshape(value, result):
+            shape = self.reshape_shape(result)
+            return bind(result, "Reshape", [("x", value), ("shape", shape)],
+                        {"axis": "int64_t{0}", "num_axes": "int64_t{-1}"})
+
+        value = source
+        perm = plan["permutation"]
+        if perm != list(range(len(source.shape))):
+            transposed = Value(prefix + "/transpose", tuple(source.shape[i] for i in perm), "float16")
+            permutation = self.helper(transposed, perm, suffix="perm")
+            value = bind(transposed, "Transpose", [("x", value), ("perm", permutation)], {})
+        flat = Value(prefix + "/flat", (plan["M"], plan["K"]), "float16")
+        value = reshape(value, flat)
+        weight = self.constant(np.full((1, plan["K"]), plan["coefficient"], dtype=np.float16),
+                               "float16", prefix + "/weight")
+        contracted = Value(prefix + "/matmul", (plan["M"], 1), "float16")
+        value = bind(contracted, "MatMul", [("x1", value), ("x2", weight)],
+                     {"transpose_x1": "false", "transpose_x2": "true"})
+        reshape(value, output)
 
     def reshape_shape(self, output, dimensions=None):
         """Use checked INT32 dimensions for OMG's Reshape shape rewrites.
@@ -350,7 +449,7 @@ class _Emitter:
 
 
 def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=None,
-             fold_constant_arithmetic=True):
+             fold_constant_arithmetic=True, fp16_reductions="native", reduction_report=None):
     """Return a self-contained C++ AIR serializer.
 
     ``weight_paths`` maps canonical graph weight keys to existing raw contiguous
@@ -361,7 +460,13 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     The legacy fold_constant_arithmetic flag controls both kinds of folding.
     Descriptor-only tooling can disable folding when real weight payloads are
     unavailable; model export always enables it.
+    ``fp16_reductions="matmul"`` replaces eligible FP16 single-axis reductions
+    only during emission. The default native serialization is unchanged.
+    An optional dictionary receives deterministic lowering evidence, not a
+    claim about compiler partitioning or runtime numerical agreement.
     """
+    if reduction_report is not None and not isinstance(reduction_report, dict):
+        raise TypeError("reduction_report must be a mutable dictionary")
     graph.validate()
     if recipe_dir is None and len(graph.nodes) > 10_000:
         raise ValueError("large graphs require recipe_dir to bound generated C++ compiler memory")
@@ -372,7 +477,7 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     total = sum(math.prod(v.shape) * DTYPES[v.dtype].itemsize for v in graph.weights.values())
     if not external_weights and total >= 1_800_000_000:
         raise ValueError("large graphs require external_weights=True (AIR protobuf size limit)")
-    e = _Emitter(graph, recipe=recipe_dir is not None)
+    e = _Emitter(graph, recipe=recipe_dir is not None, fp16_reductions=fp16_reductions)
     live = {v.name for v in graph.outputs}
     for node in reversed(graph.nodes):
         if node.output.name in live:
@@ -494,11 +599,10 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
             if kind == "reshape":
                 attrs = {"axis": "int64_t{0}", "num_axes": "int64_t{-1}"}
         elif kind in {"reduce_mean", "reduce_sum"}:
-            typ, ports = ("ReduceMean" if kind == "reduce_mean" else "ReduceSum"), ["x", "axes"]
-            ins.append(e.reduction_axes(v, ins[0], a.get("axes")))
-            attrs = {"keep_dims": str(bool(a.get("keepdims", False))).lower()}
-            if kind == "reduce_mean":
-                attrs["noop_with_empty_axes"] = "true"
+            if len(ins) != 1:
+                raise ValueError(f"{kind}: unexpected input count {len(ins)}")
+            e.emit_reduction(v, ins[0], kind, a.get("axes"), a.get("keepdims", False))
+            continue
         elif kind == "slice":
             typ, ports = "Slice", ["x", "offsets", "size"]
             ins.extend([e.helper(v, a["starts"], suffix="starts"), e.helper(v, a["sizes"], suffix="sizes")])
@@ -608,6 +712,9 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
             e.refs[boolean_output.name] = (var, "y")
     for output in graph.outputs:
         e.ensure_constant(output)
+    if reduction_report is not None:
+        reduction_report.clear()
+        reduction_report.update(e.reduction_report)
     # A compact recipe keeps full-model compiler memory independent of node count.
     if recipe_dir is not None:
         from .ge_recipe import emit_recipe_cpp

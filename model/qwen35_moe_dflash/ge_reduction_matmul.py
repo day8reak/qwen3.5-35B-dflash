@@ -1,4 +1,4 @@
-"""Isolated FP16 contraction candidates for operator probes, not production.
+"""FP16 contraction plan shared by probes and optional GE emission lowering.
 
 The real-number reduction is unchanged and there is one FP16 output boundary.
 MatMul accumulation order/internal precision can differ from ReduceSum/Mean;
@@ -13,17 +13,8 @@ import numpy as np
 from .ge_ir import Graph, Value
 
 
-def reduce_via_matmul(graph: Graph, source: Value, *, kind: str, axis: int,
-                      keepdims: bool, name: str = "result") -> Value:
-    """Contract one static axis with FP16 ones (or exact mean coefficients).
-
-    Consume the existing FP16 source, including any preceding rounded product;
-    do not fuse that producer. Move only the reduced axis to the end, flatten
-    independent rows, and restore their original order and requested shape.
-    Even K=1 emits MatMul so a probe actually exercises that kernel contract.
-    """
-    if not isinstance(graph, Graph) or not isinstance(source, Value) or graph._values.get(source.name) is not source:
-        raise ValueError("reduction source must belong to the supplied graph")
+def reduction_matmul_plan(source: Value, *, kind: str, axis: int, keepdims: bool) -> dict:
+    """Validate and describe the same single-axis contraction for both callers."""
     if source.dtype != "float16":
         raise ValueError("MatMul reduction candidates require FP16 input; integer reductions stay integer")
     if kind not in {"reduce_sum", "reduce_mean"}:
@@ -44,21 +35,35 @@ def reduce_via_matmul(graph: Graph, source: Value, *, kind: str, axis: int,
             raise ValueError("MatMul mean requires a power-of-two axis with an exact nonzero FP16 reciprocal")
 
     remaining = [i for i in range(rank) if i != axis]
-    perm = remaining + [axis]
-    value = source
-    if perm != list(range(rank)):
-        shape = tuple(source.shape[i] for i in perm)
-        value = graph.op("transpose", value, shape=shape, attrs={"perm": perm})
-    rows = math.prod(source.shape[i] for i in remaining)
-    value = graph.op("reshape", value, shape=(rows, length), attrs={"shape": [rows, length]})
-    # Match the existing dense projection probe's right-transpose convention;
-    # N=1 is still its own unverified device contract.
-    weight = graph.const(np.full((1, length), coefficient, dtype=np.float16))
-    value = graph.op("matmul", value, weight, shape=(rows, 1),
-                     attrs={"transpose_a": False, "transpose_b": True})
     shape = list(source.shape)
     if keepdims:
         shape[axis] = 1
     else:
         shape.pop(axis)
+    return {"axis": axis, "K": length, "M": math.prod(source.shape[i] for i in remaining),
+            "coefficient": coefficient, "permutation": remaining + [axis], "output_shape": tuple(shape)}
+
+
+def reduce_via_matmul(graph: Graph, source: Value, *, kind: str, axis: int,
+                      keepdims: bool, name: str = "result") -> Value:
+    """Contract one axis, preserving the existing FP16 producer boundary.
+
+    Move only the reduced axis, flatten independent rows, and restore their
+    order and requested shape. Even K=1 emits a real MatMul.
+    """
+    if not isinstance(graph, Graph) or not isinstance(source, Value) or graph._values.get(source.name) is not source:
+        raise ValueError("reduction source must belong to the supplied graph")
+    plan = reduction_matmul_plan(source, kind=kind, axis=axis, keepdims=keepdims)
+    perm, rows, length = plan["permutation"], plan["M"], plan["K"]
+    value = source
+    if perm != list(range(len(source.shape))):
+        shape = tuple(source.shape[i] for i in perm)
+        value = graph.op("transpose", value, shape=shape, attrs={"perm": perm})
+    value = graph.op("reshape", value, shape=(rows, length), attrs={"shape": [rows, length]})
+    # Match the tested contraction probes' right-transpose convention. Their
+    # device evidence applies only to the tested shapes and runtime.
+    weight = graph.const(np.full((1, length), plan["coefficient"], dtype=np.float16))
+    value = graph.op("matmul", value, weight, shape=(rows, 1),
+                     attrs={"transpose_a": False, "transpose_b": True})
+    shape = list(plan["output_shape"])
     return graph.op("reshape", value, shape=tuple(shape), attrs={"shape": shape}, name=name)

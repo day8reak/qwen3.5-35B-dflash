@@ -85,13 +85,15 @@ def fake_ge(tmp_path):
     return root
 
 
+@pytest.mark.parametrize("fp16_reductions", ["native", "matmul"])
 @pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize("dispatch", ["static", "selected"])
-def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, external, dispatch):
+def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, external, dispatch, fp16_reductions):
     from qwen35_moe_dflash.compile import compile_air
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
     prepared = tmp_path / "prepared"
     plan = ge_export.prepare_pair(prepared, tiny=True, external_weights=external, expert_dispatch=dispatch)
+    original_prepared = (prepared / "prepared.json").read_bytes()
     # Existing prepared payloads remain usable after a generator-only fix.
     # Export must regenerate construction files, never compile this stale copy.
     (prepared / "target/target.cpp").write_text("STALE_PREPARED_GENERATOR\n")
@@ -108,26 +110,69 @@ def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, extern
             Path(command[1]).write_bytes(b"mock serialized air")
         kwargs["stdout"].write("mock tool log\n")
     monkeypatch.setattr(subprocess, "run", tool)
-    manifest = ge_export.export_pair(prepared, tmp_path / "air", ge)
+    manifest = ge_export.export_pair(prepared, tmp_path / "air", ge, fp16_reductions=fp16_reductions)
     assert manifest["status"] == "EXPORTED" and manifest["abi_version"] == 2
     assert manifest["pipeline"][0] == "ge-cpp" and manifest["quantization"] is None
     assert manifest["expert_dispatch"] == dispatch
     assert manifest["expert_execution"] == plan["expert_execution"]
+    assert manifest["fp16_reductions"] == fp16_reductions
+    assert (prepared / "prepared.json").read_bytes() == original_prepared
     assert manifest["source"]["fp16_payload_sha256"] == ge_export.weight_identity(plan["weights"])
     for graph in manifest["graphs"]:
         assert bool(len(graph["files"]) > 1) == external
         construction = graph["construction_files"]
         assert {Path(item["path"]).name for item in construction} == {
-            f"{graph['name']}.cpp", "graph.recipe", "constants.bin"}
+            f"{graph['name']}.cpp", "graph.recipe", "constants.bin", "reduction-lowering.json"}
+        report = json.loads((tmp_path / "air" / graph["name"] / "reduction-lowering.json").read_text())
+        assert graph["reduction_lowering"] == {"mode": fp16_reductions, "counts": report["counts"]}
+        assert bool(report["replaced"]) == (fp16_reductions == "matmul")
+        for key, item in plan["weights"].items():
+            ge_export.checked_file(prepared, item)
+            ge_export.checked_file(tmp_path / "air", item)
     ddk = tmp_path / "ddk"; master = ddk / "tools/tools_omg/master"; master.mkdir(parents=True)
     (master / "omg").write_bytes(b"mock omg"); (master / "omg").chmod(0o700)
     result = compile_air(tmp_path / "air", tmp_path / "omc", ddk, ddk_id="mock-ddk")
     assert result["status"] == "COMPILED" and result["device_validation"] == "PENDING"
     assert result["expert_dispatch"] == dispatch
     assert result["expert_execution"] == plan["expert_execution"]
+    assert result["fp16_reductions"] == fp16_reductions
+    assert [g["reduction_lowering"] for g in result["graphs"]] == [g["reduction_lowering"] for g in manifest["graphs"]]
     assert result["graphs"][0]["output_shapes"] == [[1, 8], [1, 8, 32]]
     assert result["graphs"][1]["output_shapes"] == [[1, 3]]
     assert plan["unique_weight_bytes"] > 0
+
+
+def test_invalid_reduction_mode_fails_before_reading_prepared_or_creating_output(tmp_path):
+    with pytest.raises(ValueError, match="fp16_reductions"):
+        ge_export.export_pair(tmp_path / "missing", tmp_path / "air", tmp_path / "unused", fp16_reductions="fp32")
+    assert not (tmp_path / "air").exists()
+
+
+def test_direct_export_cli_accepts_opt_in_reduction_mode_without_loading_model(tmp_path):
+    repo = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", AI_RUN_DIR=str(tmp_path))
+    script = str(repo / "targets/cpro/scripts/direct_model_air.py")
+    result = subprocess.run([sys.executable, script, "export", "--help"], cwd=tmp_path,
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 0
+    assert "--fp16-reductions {native,matmul}" in result.stdout
+    bad = subprocess.run([sys.executable, script, "export", "--prepared", "unused", "--output", "unused",
+                          "--fp16-reductions", "fp32"], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert bad.returncode == 2 and "invalid choice" in bad.stderr
+
+
+def test_default_export_retains_native_reductions(tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    ge_export.prepare_pair(tmp_path / "prepared", tiny=True)
+    def tool(command, **kwargs):
+        destination = command[command.index("-o") + 1] if "-o" in command else command[1]
+        Path(destination).write_bytes(b"mock native default")
+    monkeypatch.setattr(subprocess, "run", tool)
+    result = ge_export.export_pair(tmp_path / "prepared", tmp_path / "air", fake_ge(tmp_path))
+    assert result["fp16_reductions"] == "native"
+    for graph in result["graphs"]:
+        report = json.loads((tmp_path / "air" / graph["name"] / "reduction-lowering.json").read_text())
+        assert report["mode"] == "native" and not report["replaced"]
 
 
 def test_invalid_dispatch_rejected_before_output_or_tools(tmp_path, monkeypatch):

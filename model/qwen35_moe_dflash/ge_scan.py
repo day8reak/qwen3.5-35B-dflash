@@ -66,8 +66,8 @@ def emit_cumsum(e, output: Value, source: Value, axis: int, *, scope=None):
         for size in range(1, length + 1):
             prefix = _slice(e, source, output, axis, size, f"prefix_{size}")
             part = Value(f"__ge/{output.name}/sum_{size}", tuple(shape), source.dtype)
-            parts.append(_output(e, part, "ReduceSum", [("x", prefix), ("axes", axes)],
-                                 {"keep_dims": "true"}))
+            parts.append(e.emit_reduction(part, prefix, "reduce_sum", [axis], True,
+                                          axes_value=axes, origin="scan_prefix"))
         if length == 1:
             e.refs[output.name] = e.refs[parts[0].name]
         else:

@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T022432Z-26593-f5d385",
+  "baseline_commit": "97dd374c8fa78566c12ff190171a788c1ec0ecbb",
+  "status": "HOST_VALIDATED_INTEGRATED_OMG_AND_BOARD_PENDING",
+  "scope": "Opt-in FP16 single-axis MatMul reduction emission for target/draft, including generated GDN scan prefixes",
+  "user_evidence": "specs/hiai-model-execution-user-report.json#reduction_matmul_replay",
+  "policy": {
+    "option": "export --fp16-reductions matmul",
+    "default": "native",
+    "classification": "Same real-number contraction; accumulation order and internal precision are kernel-dependent, not bitwise-equivalent",
+    "mean": "Only power-of-two axis lengths with exact nonzero FP16 reciprocal; multiply by reciprocal within contraction to avoid FP16 intermediate-sum overflow",
+    "preserved": [
+      "prepared weight bytes and hashes",
+      "FP16 producer rounding and output ABI",
+      "integer reductions",
+      "original numerical thresholds",
+      "runtime deployment library policy"
+    ],
+    "scan": "Independent original prefixes; no triangular zero matrix or sequential FP16 accumulation",
+    "report": "Per-graph reduction-lowering.json hash-locked at export and rechecked before/after OMG; summary mode/graph/counts cross-checked"
+  },
+  "tiny_static_emission": {
+    "target": {
+      "total_reductions": 437,
+      "fp16_replaced": 421,
+      "scan_prefix_replaced": 192,
+      "integer_retained": 16
+    },
+    "draft": {
+      "total_reductions": 11,
+      "fp16_replaced": 10,
+      "scan_prefix_replaced": 0,
+      "integer_retained": 1
+    },
+    "scope": "Construction recipe before OMG optimization, not final partitions"
+  },
+  "host_validation": {
+    "pytest": {
+      "reduction-lowering.xml": {
+        "tests": 191,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "reduction-pair-tests.xml": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "export-final-tests.xml": {
+        "tests": 59,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "total_passed": 251,
+    "shell_blocks_passed": 53,
+    "default_native": "Four historical emission hashes unchanged",
+    "pair_projection": "Actual emitted reduction/scan recipes embedded in the complete tiny neutral graph; other model nodes retain the original oracle",
+    "pair_prompts": [
+      1,
+      3,
+      8
+    ],
+    "pair_result": "Target/draft Top1 equal and finite target FP16 features within original torch FP16 comparison gate; unchanged prepared payload hashes",
+    "negative_tests": "Ineligible/malformed lowering contracts, eight pre-OMG metadata/report inconsistencies and a during-OMG report mutation",
+    "compiler_protocol": "Mock GE/OMG tests; no internal compiler or board execution performed"
+  },
+  "source_sha256": {
+    "model/qwen35_moe_dflash/ge_cpp.py": "0c85fd0f1fe06b46ec311b5330dde29ed9fbe69c15b5e251740bd96d93960b94",
+    "model/qwen35_moe_dflash/ge_scan.py": "9cff0d46d30988bf3b7d36eeb9f40b8509d0a07bb9ac19c685d24e128d5c2853",
+    "model/qwen35_moe_dflash/ge_reduction_matmul.py": "586f79641c403bc41c31d532e00c2c9001c9fb3ff69f2240ae1692a73b22766c",
+    "model/qwen35_moe_dflash/ge_export.py": "957e633446ab6ccba98174306b292e53a2c6223b1056d8e1ab2ea45ffa72b1ba",
+    "model/qwen35_moe_dflash/compile.py": "24ba2b4e81afaeb3380faafdf268b5baedde922fd6083a8b897a6fd746bf518a",
+    "targets/cpro/scripts/direct_model_air.py": "88300bfde708f544f5a815002b3d2b9a9c78bd6bbdc0e4258d2ab5388f308970",
+    "tests/test_ge_reduction_lowering.py": "81f8af7a062b6f5afc0fbdf84782baa11a63a913398349aa7e57ff79eb9086ba",
+    "tests/test_ge_reduction_pair.py": "3ff86bd7b88cc3aae66d046ca364b680cea5b893bce14bbf9d80ac27d4feee32",
+    "tests/test_ge_export.py": "28c5bae648fc358d5e816a35c4b9c620c69bc2c3257672eb195aa1fd70338a84",
+    "tests/test_compiler_diagnostics.py": "9f796483dec1723a71692764f474775d86f37f56bc8fe33031666ceaa7fc69e0"
+  },
+  "artifacts": {
+    "reduction-lowering.xml": "f973ce3a1bcd6d227b9b4e10a98afd576195a1be1d85aba363c125121f000153",
+    "reduction-pair-tests.xml": "c001b36edea0cea93fe29662527e57b6a35334a60664b6783200975a9b1b636c",
+    "export-final-tests.xml": "dc493bb697ffa4de3f509d0230c5dc546b27ba044d4f89a3a9bcbf3cf88b7c11",
+    "export-final-tests.log": "cabb2b2f85f742911db75399ba1a94de76349bb6d23aa432f6c5c78cbace983b",
+    "docs-shell-syntax.json": "db19ff532b30f5d35aedbd9b2d7272646c92c0b3ae3b7466008b525a70611b75"
+  },
+  "independent_review": {
+    "status": "PASSED_NO_OPEN_BLOCKING_FINDINGS",
+    "scopes": [
+      "emitter contract/shape/boundary review",
+      "independent review of recipe projection integration test",
+      "export/compile/CLI manifest binding and rollback review",
+      "documentation command and variable continuity"
+    ],
+    "resolved": "Compile previously copied reduction summary without validating its report; now validates before OMG and rechecks after execution"
+  },
+  "device_validation": "PENDING_USER_INTEGRATED_PAIR_COMPILE_AND_EXECUTION",
+  "prior_full_target_failure": "NPU partitions exceed limit9 and whole-graph CPU rollback; not cleared by six isolated probe successes",
+  "accuracy": "FULL_MODEL_DEFERRED_NOT_EVALUATED",
+  "performance": "NOT_MEASURED_DFLASH_GOAL_AT_LEAST_2X",
+  "next_action": "Re-export existing prepared with --fp16-reductions matmul; compile --reject-cpu-fallback; if both compile, rebuild formal runner and run --execution-only. On rollback, inspect only the new failed compile.",
+  "guide": "docs/direct-model-air.md#7-当前现场双图采用可选-matmul-归约",
+  "experience_audit": {
+    "record": "docs/experience.md",
+    "changed_skills": [],
+    "captured": "Model-specific lowering, generated scan coverage, report binding and evidence boundaries are executable checks; no universal skill change justified",
+    "pending_hypotheses": [
+      "Integrated reduction lowering may reduce CPU/NPU fragmentation",
+      "Device accumulation differences outside the six tested shapes remain unmeasured"
+    ]
+  }
+}

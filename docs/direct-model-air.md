@@ -2,7 +2,7 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-2026-10-22 用户反馈 tiny target/draft 双图 AIR→OMC 编译成功。2026-10-26 的后续证据确认：旧 target OMC 在 OMG 主图分区时因 NPUCL 超过9个分区回退 CPU，板端恢复被 CPUCL 的 FP16 MatMul 检查拒绝。用户基于 `78d94ef` 重新导出后，新 target 的主图窗口 L91094–L127615 仍以分区超限回退结束。后续已定位归约候选，六个 MatMul 小图全部编译为单个 NPU 分区且 Load 通过；当前按[第7节](#7-当前现场验证-matmul-归约候选)刷新探针、复用这六个 OMC，完成被 ND 前补维检查拦住的执行验证。
+2026-10-22 用户反馈 tiny target/draft 双图 AIR→OMC 编译成功。2026-10-26 的后续证据确认：旧 target OMC 在 OMG 主图分区时因 NPUCL 超过9个分区回退 CPU，板端恢复被 CPUCL 的 FP16 MatMul 检查拒绝。用户基于 `78d94ef` 重新导出后，新 target 的主图窗口 L91094–L127615 仍以分区超限回退结束。后续六个 MatMul 归约小图已全部通过 Load、Process 和数值检查；当前按[第7节](#7-当前现场双图采用可选-matmul-归约)可选导出新的 MatMul 归约双图，检查编译分区后用新构建的正式 runner 执行。
 
 第1–4节保留首次生成流程和历史失败修复；当前现场无需重新 prepare 或生成参考。算子核查见 [兼容性记录](ge-operator-compatibility.md)。tiny 编译成功不表示完整35B权重、量化、内存或性能已经通过。
 
@@ -82,7 +82,7 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 内部 OMG 兼容性修正与重试
 
-**以下为历史失败及重建说明。当时的双图编译成功不代表板端加载成功；当前按第7节刷新探针复测既有六个 MatMul OMC，明确图修复后再生成完整新图。**
+**以下为历史失败及重建说明。当时的双图编译成功不代表板端加载成功；当前按第7节采用可选 MatMul 归约导出新的双图，保留原 prepared 与专家模式。**
 
 此前失败日志（draft 进程 158383）已越过整数 Gather 的验证，最终在兼容性检查拒绝 `v12/Maximum`。它执行上下文位置的 `max(cumsum(context_valid)-1, 0)`，输入/输出是 INT32。前面的描述回显、ImportWarning 和缺少内置 kernel 库提示不是这条日志明确报告的最终失败原因。
 
@@ -318,37 +318,86 @@ python3 "$GE_MODEL_TOOL" compile \
   --output "$GE_STRUCTURE_RUN/omc"
 ```
 
-每一步成功后再执行下一步。plan、prepared、AIR 和 OMC 的 manifest 都记录 `expert_dispatch`，export 按 prepared 的选择重建图；老 prepared 缺少该字段时沿用 static。全量旧算子复测仍可用 `probe_hdc_runtime.py --replay-all`，但它复用旧 OMC，不能代替本节新结构的 OMG/板端验证。正式双图上板入口使用探针已验证的候选部署；当前先按第7节刷新探针复测既有归约候选，明确修复后再进入[重导出与只执行模式](hdc-board-run.md#明确修复后重新导出并执行双图)，不切换到 selected。
+每一步成功后再执行下一步。plan、prepared、AIR 和 OMC 的 manifest 都记录 `expert_dispatch`，export 按 prepared 的选择重建图；老 prepared 缺少该字段时沿用 static。全量旧算子复测仍可用 `probe_hdc_runtime.py --replay-all`，但它复用旧 OMC，不能代替本节新结构的 OMG/板端验证。正式双图上板入口使用探针已验证的候选部署；当前按第7节采用可选 MatMul 归约并进入[重导出与只执行模式](hdc-board-run.md#当前双图采用可选-matmul-归约)，不切换到 selected。
 
 可选的主机 GDN 诊断入口为 `targets/cpro/scripts/diagnose_gdn_precision.py`，输出逐 chunk FP16/FP32 输出与状态误差。无输入时仅跑小型合成样例，不能确认真实模型的精度根因。当前优先上板执行，此诊断不作为前置步骤，也不改变部署 FP16。
 
 <a id="7-当前现场复用原权重重新导出并检查分区回退"></a>
 <a id="7-当前现场先读取现有编译产物定位候选切断点"></a>
 
-## 7. 当前现场：验证 MatMul 归约候选
+<a id="7-当前现场验证-matmul-归约候选"></a>
 
-最新六个 MatMul 归约候选全部编译为 NPU=1、CPU=0，板端 Load 全部通过。`reduce_mean_head_matmul` 已通过执行和数值检查；其余五项停在 IO 描述检查，执行和数值为 `NOT_RUN`。运行库对三维 ND 描述前补一个1，例如 `[1,8,16] → [1,1,8,16]`、`[2,1,64] → [1,2,1,64]`；旧探针只识别尾部补维，因此提前拒绝。当前窄修后需要复测，尚不能宣布六项全部执行或数值通过。
+## 7. 当前现场：双图采用可选 MatMul 归约
 
-仅刷新独立算子探针，复用原六个 OMC。保持 `GE_REDUCE_MM_RUN` 指向本轮已编译成功的 compile-only 目录；`OP_PROBE_RUN` 仍是原同 DDK、含完整 native 记录的旧探测目录。上一轮板端结果目录保留，只新建 `GE_REDUCE_MM_REPLAY_RUN`，不再次调用 OMG：
+用户回传 `reduce-mm-replay-20261026-104025` 的六项结果已全部 Load、Process、数值 PASS；每个主图编译分区为 NPU=1、CPU=0，实际执行位置仍为 `UNVERIFIED`。此前五项 IO `NOT_RUN` 已通过受限 ND 前补1适配后的复测，不再要求重复小图。完整双图执行、全图精度和2倍加速仍未验证。
+
+当前 `export --fp16-reductions matmul` 为显式候选，默认 `native` 保留旧归约。候选只替换符合条件的 FP16 单轴归约；整数、非 FP16 及不符合条件的归约仍走 native。保留归约前已经舍入的 FP16 数据，Mean 以可精确表示的 `1/N` 权重收缩，避免先形成 FP16 总和再缩放；MatMul 的内部累加和舍入可能与原 Reduce 不同，小图通过不能替代全模型数值验证。
+
+复用 `$GE_PAIR_RUN/prepared` 和 `$GE_BOARD_RUN/reference.json`，不重新 prepare、不改专家模式、不更换库。沿用原 `CANN_ROOT`、DDK、resources/环境中的 OHOS SDK、HIAI 头文件和链接配置，以及 `SN`、`BIP`。每次使用新目录：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-export GE_REDUCE_MM_REPLAY_RUN="$AI_RUN_DIR/reduce-mm-replay-$(date +%Y%m%d-%H%M%S)"
-python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
-  --probe-run "$GE_REDUCE_MM_RUN" --native-from "$OP_PROBE_RUN" \
-  --refresh-runner --replay-all --output "$GE_REDUCE_MM_REPLAY_RUN"
-cat "$GE_REDUCE_MM_REPLAY_RUN/runtime-comparison.txt"
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
+export GE_REDUCE_MODEL_RUN="$AI_RUN_DIR/ge-reduce-model-$(date +%Y%m%d-%H%M%S)"
+export HIAI_REDUCE_BUILD_DIR="$GE_REDUCE_MODEL_RUN/hiai-build"
+export HDC_REDUCE_RUN_DIR="$GE_REDUCE_MODEL_RUN/board"
+
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --fp16-reductions matmul --output "$GE_REDUCE_MODEL_RUN/air" &&
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_REDUCE_MODEL_RUN/air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_REDUCE_MODEL_RUN/omc" --reject-cpu-fallback &&
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$HIAI_REDUCE_BUILD_DIR" &&
+python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+  --omc "$GE_REDUCE_MODEL_RUN/omc" \
+  --runner "$HIAI_REDUCE_BUILD_DIR/build/qwen35_dflash_hiai" \
+  --reference "$GE_BOARD_RUN/reference.json" \
+  --output "$HDC_REDUCE_RUN_DIR" --execution-only
 ```
 
-新增规则只接受 ND 的逻辑 rank3 `[a,b,c]` 对应运行时 `[1,a,b,c]`，并使用运行库返回的描述初始化张量。此前已验证的 ND 尾补1规则继续保留；不扩展到任意前补维、中间插维、维度置换或非 ND，也不按元素数相同放行。输入输出字节、原产物哈希与数值容差不变。正式 `hiai_executor` 源码也同步此受限规则，仅扩展 rank3 特征描述的对应；rank2 token 合同与宽度推导不变。本轮命令只刷新独立 probe，不重编正式 runner，已部署的正式二进制不会自动更新。完整 target/draft 尚未采用 MatMul 归约，先等待这六项的执行和数值结果。
+四步以 `&&` 串联，导出或编译失败就停止后续构建及上板。新的正式 runner 含 `97dd374` 的受限 ND rank3 `[a,b,c] → [1,a,b,c]` 兼容，原 ND 尾补1继续允许；rank2 token 合同、宽度推导、字节检查和数值门槛不变。之前刷新的是独立 probe，不能拿旧正式二进制代替这次构建。若原 `build_hiai.py` 使用显式 resources 文件或兼容 SDK 版本，继续沿用同一配置，不临时换 SDK/库。
 
-此前主图 NPUCL 分区超过9个后回退 CPU，`inspect-compile` 已取得13,613项完整支持表，识别538个 CPU-only 计算候选，其中437个归约包括421个 FP16 和16个整数节点。旧 AIR 中192个 INT64 axes 记录属于该产物，不是后续补丁未生效的证据。六个 rank/`keep_dims` 对照的前五项均 NPU=0、CPU=1，第六项 NPU=1、CPU=1，不能证明其中 ReduceSum 在 NPU。已有统计和 rank 对照不必重跑。
+导出分别写出构造记录 `air/target/reduction-lowering.json`、`air/draft/reduction-lowering.json`，其中 `mode` 记录选择，`counts` 汇总 `total`、`replaced`、`retained`、`fp16_replaced`、`integer_retained` 和 `scan_prefix_replaced`。当前 tiny/static 预期 target/draft 分别替换421/10个 FP16 归约、保留16/1个整数归约；实际以该次导出报告为准，不将统计预期当作编译或执行证明。可直接反馈：
 
-### 六项 MatMul 归约候选
+```bash
+python3 - <<'PYCOUNTS'
+import json
+import os
+from pathlib import Path
+
+for name in ("target", "draft"):
+    path = Path(os.environ["GE_REDUCE_MODEL_RUN"]) / "air" / name / "reduction-lowering.json"
+    report = json.loads(path.read_text())
+    print(name, report["mode"], report["counts"])
+PYCOUNTS
+cat "$HDC_REDUCE_RUN_DIR/result.json"
+cat "$HDC_REDUCE_RUN_DIR/benchmark.stderr"
+```
+
+`--reject-cpu-fallback` 只检查主图或归属未知的 NPUCL 分区超限回退，不会证明所有算子进入 NPU。小图通过和归约替换都不保证完整图解除9分区上限。编译成功后，`--execution-only` 强制 target/draft 各执行一次，使用原参考的身份、prompt 与配置，不比较精度、不测 benchmark；成功为 `EXECUTION_COMPLETE`，精度/性能为 `NOT_EVALUATED`。当前优先打通执行，最终仍要求完整模型精度达标后 DFlash 至少提速2倍。
+
+### 新图仍发生分区回退时
+
+保留新目录的 AIR、recipe、OMC、OMG 日志和 `failure.json`，对这一次产物运行只读诊断；不要把旧 `GE_REEXPORT_RUN` 的日志用于解释新图，也不要直接重复编译：
+
+```bash
+export GE_REDUCE_INSPECT_RUN="$AI_RUN_DIR/ge-reduce-inspect-$(date +%Y%m%d-%H%M%S)"
+python3 "$GE_MODEL_TOOL" inspect-compile \
+  --air "$GE_REDUCE_MODEL_RUN/air" --omc "$GE_REDUCE_MODEL_RUN/omc" \
+  --graph target --output "$GE_REDUCE_INSPECT_RUN"
+cat "$GE_REDUCE_INSPECT_RUN/report.txt"
+```
+
+上例对应 target 失败；若失败的是 draft，把 `--graph` 改为 `draft` 并使用新的诊断输出目录。诊断按产物哈希关联构图与日志，不访问板端、不读取权重载荷。候选支持集及构造时边不等于最终分区或实际运行位置。
+
+### 已通过的六项 MatMul 归约探针
 
 候选将归约轴移到末轴、展平为二维，与常量右权重 `[1,N]` 做 `transpose_b=True` 的 MatMul，再还原输出维度。Sum 使用全1权重；本轮 Mean 长度8/16的 `1/N` 在 FP16 中可精确表示，不先生成 FP16 的总和再缩放，避免额外的求和中间值溢出。普通浮点输入、输出仍为 FP16；模型归约之前已经舍入的平方或其他乘积不可因此被提升精度或重新计算。
 
-MatMul 和 Reduce 的累加顺序、舍入仍可能不同。这一轮不改生产图、不新增全图替换开关、不放宽数值容差，也不能从数学等式推断 FP16 位级等价。
+MatMul 和 Reduce 的累加顺序、舍入仍可能不同；六项按原容差通过，不代表 FP16 位级等价。本轮全图适配只在显式 `--fp16-reductions matmul` 下生效，默认 native 不变。
 
 | case | 输入与等价归约 | 覆盖目的 |
 |---|---|---|
@@ -359,6 +408,17 @@ MatMul 和 Reduce 的累加顺序、舍入仍可能不同。这一轮不改生�
 | `reduce_sum_gdn_matmul_k7` | `[2,1,7,7]`，axis=2 Sum，去掉归约维 | 非对齐短归约 |
 | `reduce_sum_gdn_matmul_k1` | `[2,1,1,1]`，axis=2 Sum，去掉归约维 | 长度1边界 |
 
+当时的小图复测命令如下，仅作历史复现。当前六项已通过，直接执行上面的双图流程；如果需要复现，保留原 `GE_REDUCE_MM_RUN`、原 `OP_PROBE_RUN`，仅新建结果目录：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+export GE_REDUCE_MM_REPLAY_RUN="$AI_RUN_DIR/reduce-mm-replay-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
+  --probe-run "$GE_REDUCE_MM_RUN" --native-from "$OP_PROBE_RUN" \
+  --refresh-runner --replay-all --output "$GE_REDUCE_MM_REPLAY_RUN"
+cat "$GE_REDUCE_MM_REPLAY_RUN/runtime-comparison.txt"
+```
+
 两类来源用途固定：
 
 - `--probe-run` 提供本轮模型、输入、参考和各自哈希，必须是没有 native 产物的 `COMPILE_COMPLETE` 批次，且 `board_requested=false`。
@@ -366,13 +426,13 @@ MatMul 和 Reduce 的累加顺序、舍入仍可能不同。这一轮不改生�
 
 刷新仅构建当前 `qwen35_hiai_op_probe`，不导出 AIR、不调用 OMG，不改两份源目录、旧 OMC 或系统库。上板仅运行 `candidate_without_ddk_hcl`：排除两个 DDK HCL 库并使用已验证的 vendor 搜索路径。旧53项或原47项不会随本轮候选一起重跑。默认回传校验后清理本次板端目录；需要保留现场时加 `--keep-board`。
 
-保留已有编译 `report.txt`，反馈新的 `GE_REDUCE_MM_REPLAY_RUN/runtime-comparison.txt` 和该结果目录中的 `results.tar.gz`。编译失败的案例保持失败，不会被 replay 变成成功；每个已编译案例分别记录 Load、Process、数值状态和原编译分区。即使小图通过，运行位置仍为 `UNVERIFIED`，直到有独立执行证据；它也不能证明完整 target/draft 通过或分区数已下降。当前先打通执行，完整模型精度验证后置，最终仍要求精度达标后 DFlash 至少提速2倍。
+已通过的结果保存在 `GE_REDUCE_MM_REPLAY_RUN/runtime-comparison.txt` 和该目录的 `results.tar.gz`，与原编译 `report.txt` 一起保留。编译失败的案例保持失败，不会被 replay 变成成功；每个已编译案例分别记录 Load、Process、数值状态和原编译分区。即使小图通过，运行位置仍为 `UNVERIFIED`，直到有独立执行证据；它也不能证明完整 target/draft 通过或分区数已下降。当前先打通执行，完整模型精度验证后置，最终仍要求精度达标后 DFlash 至少提速2倍。
 
 已声明 blue profile 中另有 `RmsNorm` 的公开 schema、FP16 ND 配置及预编译 kernel 键，属于后续候选线索。本地 `kirin9030/next-6.0.1.0` 不能代替用户 `kirinx90/ddk_0806` 的可用性验证；本轮没有新增该探针，也没有将 GDN scan/三角归约视作可直接替换的 RMSNorm。
 
 ### 首次生成六项 MatMul 候选
 
-当前六项已编译完成，以下仅供首次生成或历史复现。当前现场不要运行或重设 `GE_REDUCE_MM_RUN`；直接执行本节开头的 runner 刷新复测。首次生成需要 NumPy、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID` 和主机编译环境；`--compile-only` 不构建 runner，也不访问板端：
+当前六项已完成编译、执行及数值检查，以下仅供首次生成或历史复现。当前现场不要运行或重设 `GE_REDUCE_MM_RUN`；直接执行本节开头的双图流程。首次生成需要 NumPy、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID` 和主机编译环境；`--compile-only` 不构建 runner，也不访问板端：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -386,7 +446,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
 cat "$GE_REDUCE_MM_RUN/report.txt"
 ```
 
-编译完成后可使用第7节开头的 `--native-from` 命令。当前现场已有这些产物，执行来源保持原路径。
+首次编译完成后可使用上文历史小图的 `--native-from` 命令；当前现场已有通过结果，无需重复。
 
 ### 历史参考：只读编译诊断
 
@@ -416,7 +476,7 @@ python3 "$GE_MODEL_TOOL" inspect-compile \
 | `reduce_sum_gdn_dropdims` | `[2,1,64,64]`，axis=2 Sum，直接去维 | NPU=0、CPU=1 |
 | `reduce_sum_gdn_keepdims` | 同输入及归约轴，保留维后 Reshape 为 `[2,1,64]` | NPU=1、CPU=1；ReduceSum 位置未确定 |
 
-以下仅保留当时的复现命令；当前执行上面的 MatMul 候选：
+以下仅保留当时的复现命令；当前执行本节开头的双图流程：
 
 ```bash
 export GE_REDUCE_PROBE_RUN="$AI_RUN_DIR/reduce-probe-$(date +%Y%m%d-%H%M%S)"
@@ -432,30 +492,4 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
 
 ### 明确修复后的重导出与上板流程
 
-以下保留小图证据支持并完成明确图修复后的命令，当前先完成上面的六项候选，不直接重编完整模型。届时保留 `$GE_PAIR_RUN/prepared`、`$GE_BOARD_RUN/reference.json` 和已更新的 runner，复用原权重、专家模式及 FP16；无需重新 prepare、切换 selected 或重编 runner。先保留旧 `GE_REEXPORT_RUN` 的实际路径与诊断，再为新图设置新的目录。沿用 `CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID`、`SN`、`BIP`：
-
-```bash
-git -C "$REPO_DIR" pull --ff-only
-export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
-export GE_REEXPORT_RUN="$AI_RUN_DIR/ge-npu-$(date +%Y%m%d-%H%M%S)"
-export HDC_RUN_DIR="$AI_RUN_DIR/hdc-execution-$(date +%Y%m%d-%H%M%S)"
-
-python3 "$GE_MODEL_TOOL" export \
-  --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
-  --output "$GE_REEXPORT_RUN/air" &&
-python3 "$GE_MODEL_TOOL" compile \
-  --air "$GE_REEXPORT_RUN/air" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$GE_REEXPORT_RUN/omc" --reject-cpu-fallback &&
-python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
-  --omc "$GE_REEXPORT_RUN/omc" \
-  --runner "$HIAI_BUILD_DIR/build/qwen35_dflash_hiai" \
-  --reference "$GE_BOARD_RUN/reference.json" \
-  --output "$HDC_RUN_DIR" --execution-only
-```
-
-`export_pair` 使用修复后的 Python 图定义重新构图，复用原 prepared 的权重、配置与专家模式；原参考继续提供身份和输入配置。必须重新核对新 OMG 的分区结果，不能从主机测试或代码改动提前认定回退已解除。
-
-`--reject-cpu-fallback` 是本项目 compile 包装器参数，不传给厂商 OMG。检测到主图或归属未知的 NPUCL 分区超限回退时，即使 OMG 已生成 OMC，也会保留产物、日志和诊断，写 `failure.json`，不发布成功 manifest。常量折叠图的 CPU 执行允许保留；没有发现该回退也不代表全 NPU 覆盖。
-
-命令用 `&&` 串联，仅两步生成都成功才把新 OMC 传板。若再次触发回退，保留新目录并对它运行 `inspect-compile`。`--execution-only` 强制 target/draft 各执行一次并回传输出，不做精度和性能结论；失败日志或成功执行报告继续按 [HDC 指南](hdc-board-run.md#明确修复后重新导出并执行双图)核对。当前不通过修改 FP16 为 FP32 绕过 CPUCL 报错。
+本轮已进入第7节开头的可选 MatMul 双图流程。使用新 `GE_REDUCE_MODEL_RUN`、新 `HIAI_REDUCE_BUILD_DIR`、新 `HDC_REDUCE_RUN_DIR`，保留旧产物；不能仅更新代码后重跑旧 OMC。当前不通过把 FP16 改为 FP32 绕过 CPUCL 报错。详细报告、清理行为和后续 benchmark 入口见 [HDC 指南](hdc-board-run.md#当前双图采用可选-matmul-归约)。
