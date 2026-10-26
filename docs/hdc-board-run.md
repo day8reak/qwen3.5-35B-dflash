@@ -17,9 +17,17 @@ hdc -t "$SN" -s "$BIP" ...
 
 <a id="当前双图采用可选-matmul-归约"></a>
 
-## 当前：MatMul 归约与 row Mul compact 双图适配
+## 当前：先验证7项GDN Gather复制探针
 
-最新`ge-row-mul-20261026-121239`已确认归约421/10、row Mul19/0，但target在OMG的ReshapeFusion/ByPassNode阶段失败，尚未到分区检查；没有构建runner或上板。本轮在导出端合并涉及row Mul的连续静态reshape，保留共享分支和图输出，避免把这部分链交给厂商pass处理；能否避开故障仍需验证。新结果使用`GE_ROW_CHAIN_RUN`，旧`GE_ROW_MUL_RUN`保留。已修复的`inspect-compile`可直接读取这份早期失败留档，命令见[当前导出指南](direct-model-air.md#当前下一步可选-row-mul-整图适配)。
+最新`ge-row-chain-20261026-144144`已通过ReshapeFusion，19个row Mul CPU-only候选消失；已识别CPU-only计算从117减到98，主图仍因NPUCL分区数超过9回退，尚未执行双图。保留本次产物与诊断，不重新运行旧整图。
+
+当前按[7项GDN Gather对照](direct-model-air.md#gdn-indexed-copy-probes)一次compile-only，再用原`OP_PROBE_RUN`作native donor刷新probe并replay-all。新目录为`GE_GDN_COPY_RUN`和`GE_GDN_COPY_BOARD_RUN`。只测试mask普通/严格、mask→Exp→mask上下文及Sub同形复制候选；FP16、原参考及门槛保持。原HDC配置和candidate库策略继续复用。独立case结果决定下一步整图适配，完整准确率与DFlash至少2倍仍待验证。
+
+## 历史：MatMul归约与row Mul compact双图复测
+
+以下整图重跑和诊断已完成，当前无需重复。
+
+历史`ge-row-mul-20261026-121239`已确认归约421/10、row Mul19/0，但target在OMG的ReshapeFusion/ByPassNode阶段失败，尚未到分区检查；没有构建runner或上板。本轮在导出端合并涉及row Mul的连续静态reshape，保留共享分支和图输出，避免把这部分链交给厂商pass处理；后续用户重跑已通过该pass，但仍触发分区超限。新结果使用`GE_ROW_CHAIN_RUN`，旧`GE_ROW_MUL_RUN`保留。已修复的`inspect-compile`可直接读取这份早期失败留档，命令见[当前导出指南](direct-model-air.md#当前下一步可选-row-mul-整图适配)。
 
 用户回传 `layout-probe-20261026-113524` / `layout-board-20261026-113529`：9项均通过 Load、Process 和原数值比较。两种 row Mul 原形为 NPU=0、CPU=1，compact 均为 NPU=1、CPU=0，因此只将 row Mul compact 推进整图候选。outer Sub compact 仍为 NPU=2、CPU=1；Concat64 原形、tree8、tree2 都是 NPU=1、CPU=0，不能将整图中的Concat拒绝归因于64路扇入，也没有依据用树替换原形。Sub和Concat保持原实现。
 
@@ -53,7 +61,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 四步用 `&&` 串联；导出或编译失败就停止正式 runner 构建和上板。新的 `qwen35_dflash_hiai` 包含现有 ND 补维兼容；旧独立 probe 或旧正式二进制不能代替该次构建。旧 prepared、OMC、runner、探针与板端结果均保留。
 
-row Mul compact 只将已验证的两种 FP16 广播形状压成二维，保持行顺序、原操作数及一次 FP16 Mul，再恢复原输出形状。当前 tiny/static 源码预期 target 替换19项（rows16为10项、rows128为9项）、draft为0项；用户已确认上一轮实际导出计数为19/0，但该轮在ReshapeFusion提前失败；新链处理后的编译与执行仍待验证。每图新增 `row-mul-lowering.json`，同时保留 `reduction-lowering.json`；反馈 `mode` 和 `counts` 即可：
+row Mul compact 只将已验证的两种 FP16 广播形状压成二维，保持行顺序、原操作数及一次 FP16 Mul，再恢复原输出形状。当前 tiny/static 源码预期 target 替换19项（rows16为10项、rows128为9项）、draft为0项；用户已确认上一轮实际导出计数为19/0，链处理后的新重跑通过ReshapeFusion，19项Mul退出CPU-only列表；主图仍分区超限，完整执行待验证。每图新增 `row-mul-lowering.json`，同时保留 `reduction-lowering.json`；反馈 `mode` 和 `counts` 即可：
 
 ```bash
 python3 - <<'PYCOUNTS'
@@ -77,7 +85,7 @@ for file in result.json benchmark.stderr; do
 done
 ```
 
-上一轮已导出，但target在OMG图优化阶段失败，draft编译和上板未运行；本轮修复候选仍待编译与执行。改写19处Mul不保证解除9分区上限，其CPU支持与最终分区仍待整图核验，原整数归约、路由、TopK等仍可能切分图。编译通过后 `--execution-only` 强制 target/draft 各执行一次并回传输出；精度和性能为 `NOT_EVALUATED`。完整精度后续验证，最终目标仍为同板同目标权重下 DFlash 至少提速2倍。
+历史首次导出在OMG图优化阶段失败；链处理后的重跑通过ReshapeFusion，但主图仍超过9分区，draft编译和上板未运行。整数归约、路由、TopK及GDN掩码等候选仍待处理。编译通过后 `--execution-only` 强制 target/draft 各执行一次并回传输出；精度和性能为 `NOT_EVALUATED`。完整精度后续验证，最终目标仍为同板同目标权重下 DFlash 至少提速2倍。
 
 若新编译失败或仍回退，保留本次 AIR/OMC、日志和 `failure.json`，对同一产物运行只读诊断，不直接重复编译：
 
@@ -97,7 +105,7 @@ cat "$GE_ROW_CHAIN_INSPECT_RUN/report.txt"
 
 此模式沿用文件名 `benchmark.json`，但报告的 `mode` 是 `smoke`：强制 target 和 draft 各调用一次，将 target 特征传给 draft，保存两图 Top1 输出。即使 prompt 的下一 token 是 EOS，也会执行 draft。成功标为 `EXECUTION_COMPLETE`；`accuracy`、`performance` 为 `NOT_EVALUATED`，不产生 `comparison.json`。参考 JSON 仍用于身份和输入配置检查；其历史 PASS 不是本次板端精度结论。
 
-程序保留模型哈希、版本、张量数量、格式、大小和 token 范围检查。ND 描述允许原有尾部补1到四维，例如 `[1,S] → [1,S,1,1]`、`[1,S,F] → [1,S,F,1]`；源码另支持逻辑 rank3 `[a,b,c] → [1,a,b,c]`，使用运行库返回的描述初始化张量。新增规则仅扩展 rank3 特征，rank2 token 合同及宽度推导不变；仍不按元素总数放行任意布局。本轮命令在新目录重新构建正式 runner，以实际取得这项兼容。成功和失败都会尝试回传 HiLog，日志缺失单独记录。
+程序保留模型哈希、版本、张量数量、格式、大小和 token 范围检查。ND 描述允许原有尾部补1到四维，例如 `[1,S] → [1,S,1,1]`、`[1,S,F] → [1,S,F,1]`；源码另支持逻辑 rank3 `[a,b,c] → [1,a,b,c]`，使用运行库返回的描述初始化张量。新增规则仅扩展 rank3 特征，rank2 token 合同及宽度推导不变；仍不按元素总数放行任意布局。后续整图编译成功后需在新目录重建正式runner以取得这项兼容；当前7项探针只刷新独立probe。成功和失败都会尝试回传 HiLog，日志缺失单独记录。
 
 当前没有完整模型板端通过证据；这个命令用于取得实际加载/执行结果。去掉 `--execution-only` 后仍是下文的严格 benchmark + 参考比较。
 

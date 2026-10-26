@@ -391,3 +391,16 @@ run：`20261026T034741Z-31332-34dca8`。用户回传`ge-row-mul-20261026-121239`
 同时修复只读inspect-compile无法读取旧早期失败的问题：只允许failure.json中明确匹配的failed_graph、stage、完成图前缀及绝对log_path，继续校验AIR和recipe绑定；若已有编译图记录，其历史log SHA缺失/不匹配仍失败。旧早期归档没有历史log SHA，报告明确标成diagnostic_capture/NOT_RECORDED，本次计算哈希不能充当历史验证。无有界主图支持窗口时只展示缺失/部分状态及有界失败上下文，不将constNodeGraph候选关联到主图，不构造虚假的编译图记录。用户归档尚未独立收取。
 
 本轮358项主机测试通过、4项真实GE环境测试跳过。经验固化在共享view反例、两种发射后端一致性、早期失败归档绑定和实际双图结构审计中，未修改通用技能或共享DDK。当前采用新`GE_ROW_CHAIN_RUN`复编同一prepared，保留原失败目录，成功后才执行双图execution-only；厂商pass修复效果、最终分区与板端执行仍待现场验证。完整精度后置未豁免，最终DFlash至少2倍目标尚未测量。
+
+
+## 2026-10-26：Reshape链通过后隔离GDN掩码上下文
+
+run：`20261026T061719Z-1062-8f8246`。用户更新后回传`ge-row-chain-20261026-144144`及其inspect报告：ReshapeFusion通过并融合18对，19个row Mul不再是CPU-only计算候选，已识别CPU计算从117降至98；主图仍在L150570超过9个NPUCL分区而回退。支持表15,747项完整、无重复或冲突，排除8,683个边界项及7个角色未确定项。候选数不是分区数，也不是运行位置。此前14:34重跑由用户确认漏了git pull，不能作为更新版本的有效失败复测。当前证据仍为用户粘贴文本，未独立取得产物哈希，draft编译、正式runner构建和双图执行未发生。
+
+源码对照发现，6个Concat候选中的v2624来自Exp之后的普通下三角mask，v2879来自严格下三角mask。原64输入Concat探针不能代表其动态Slice前缀、常量零尾和上下游关系。tiny源码包含9个mask拼接，与优化后6个候选不直接等同。本轮增加普通/严格mask各两项控制与Gather候选、mask→Exp→mask两项上下文，以及outer Sub Gather一项，共7项；生产target/draft发射器保持当前版本。
+
+mask候选只展平、追加一个正零、按静态INT32索引Gather并恢复形状，保留各head的独立偏移；Sub将左右输入分别复制至原广播结果shape后做一次原FP16减法。不改算术顺序，不用乘零掩码、one-hot MatMul或额外数值屏障。保留Exp前后两个mask，未将它们合并。helper限正静态rank4、FP16、INT32维度/索引及最多2^20输出元素；当前索引32KiB、数据shape为[2,1,64,64]，新设备shape支持尚待验证。
+
+主机214项相关测试通过，实际prepare-only生成7项，59段文档shell语法通过。mask参考使用原Slice/Concat，8192个不同非零有限FP16输入覆盖head和掩码错序；helper另用非有限和signed-zero位模式验证复制行为。Exp和Sub沿用既有FP16门槛，纯mask零容差；原68项探针发射C++、输入、参考和门槛逐项摘要不变。内部OMG及HDC未在本地执行，完整图和设备性能均未验证。证据见`specs/gdn-indexed-copy-probe-verification.json`。
+
+剩余80个MoE bool/int控制节点不能单凭计数删除：选中权重可能下溢为零，未选专家输出可能非有限，改用scale>0或移除active Select会改变语义。本轮不改变路由。下一步只编译7项新对照并复用原native donor回放，根据编译分区和板端结果决定整图适配。执行链路优先、精度后置未豁免、DFlash至少2倍目标保持。经验记录在本模型的上下文探针、复制索引守卫和原案例身份检查；没有修改通用技能或共享工具链。

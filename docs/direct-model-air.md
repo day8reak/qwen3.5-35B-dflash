@@ -2,7 +2,7 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-2026-10-22 用户反馈 tiny target/draft 双图 AIR→OMC 编译成功。2026-10-26 的后续证据确认：旧 target OMC 在 OMG 主图分区时因 NPUCL 超过9个分区回退 CPU，板端恢复被 CPUCL 的 FP16 MatMul 检查拒绝。用户基于 `78d94ef` 重新导出后，新 target 的主图窗口 L91094–L127615 仍以分区超限回退结束。后续六个 MatMul 归约小图已全部通过 Load、Process 和数值检查；整图采用该归约后仍超限；九项布局探针现已回传，仅两种row Mul compact改善编译分区，当前按[可选row Mul整图流程](#当前下一步可选-row-mul-整图适配)继续。
+2026-10-22 用户反馈 tiny target/draft 双图 AIR→OMC 编译成功。2026-10-26 的后续证据确认：旧 target OMC 在 OMG 主图分区时因 NPUCL 超过9个分区回退 CPU，板端恢复被 CPUCL 的 FP16 MatMul 检查拒绝。用户基于 `78d94ef` 重新导出后，新 target 的主图窗口 L91094–L127615 仍以分区超限回退结束。后续六个 MatMul 归约小图已全部通过 Load、Process 和数值检查；整图采用该归约后仍超限；九项布局探针已回传；row Mul整图修正后ReshapeFusion通过、19个Mul CPU-only候选消失，但主图仍分区超限。当前按[7项GDN Gather对照](#gdn-indexed-copy-probes)继续。
 
 第1–4节保留首次生成流程和历史失败修复；当前现场无需重新 prepare 或生成参考。算子核查见 [兼容性记录](ge-operator-compatibility.md)。tiny 编译成功不表示完整35B权重、量化、内存或性能已经通过。
 
@@ -327,14 +327,63 @@ python3 "$GE_MODEL_TOOL" compile \
 
 <a id="7-当前现场验证-matmul-归约候选"></a>
 
-## 7. 当前现场：双图采用可选 MatMul 归约
+## 7. 当前现场：GDN 掩码与广播减法探针
 
 
-### 当前下一步：可选 row Mul 整图适配
+<a id="gdn-indexed-copy-probes"></a>
 
-最新用户结果 `ge-row-mul-20261026-121239` 已导出target/draft，归约替换为421/10，row Mul替换为19/0；target的OMG在`ReshapeFusion`删除视图后报`graph_bypasser.cpp ByPassNode: PreCheck false`，退出1。该次未到主图分区检查，不能沿用上一轮“超过9分区”的失败分类；draft编译、runner构建和上板均未运行。更早的kernel库路径报错尚未证实是这次终止原因。
+### 当前下一步：GDN 掩码与 Sub 的 Gather 对照
 
-本地实际配方显示，新增Mul右输入连接到原升维reshape，恢复后的Mul输出又连接到原reshape和BMM辅助reshape。当前`compact`候选在导出端只合并涉及这些视图的连续、同dtype、同元素数的完整静态Reshape，保持最外视图名与输出形状，保留仍被其他分支或图输出引用的父视图，不跨越Transpose或算术。此处是针对已观察故障的精确候选，不是已验证的厂商故障修复；原默认`native`不改变。
+用户更新后重跑 `ge-row-chain-20261026-144144`，ReshapeFusion 已通过（fused 18 pairs），此前19个row Mul不再列为CPU-only计算候选；完整支持表15,747项，无重复或冲突，排除8,683项边界及7项角色未确定后，已识别CPU-only计算从117降至98。主图L150570仍超过9个NPUCL分区而回退；draft编译、新正式runner构建和上板未执行。支持候选数量不等于分区数量，也不是运行位置证明。`ge-row-chain-20261026-143421`那次相同早期错误已由用户确认漏了git pull，不作为807c063的有效复测。
+
+当前重点是6个GDN Concat、3个outer Sub；另有80个MoE bool/int路由节点、4个TopK和5个其他候选。源码核对v2624来自Exp后的三角掩码，v2879来自严格三角掩码；原“64独立Data输入”Concat探针没有覆盖动态Slice前缀、常量零尾和Exp前后两个mask。源码共有9个64路mask，不把这些名字或数量直接等同于编译后的6个候选。
+
+本轮新增7项隔离对照，生产target/draft及其prepared/参考不变。掩码候选将FP16矩阵展平后追加一个正零，使用静态INT32 Gather(axis0)选取原元素或该零，再恢复shape；不乘浮点mask。Sub候选用两次静态Gather分别将左右输入复制到同形，再做一次原FP16减法。拷贝步骤保留元素位模式，真实内核的行为和新shape支持仍须编译/上板验证。
+
+| 对照 | 案例 | 数值门槛 |
+|---|---|---|
+| 普通三角mask | `gdn_mask_lower_slice_concat` / `gdn_mask_lower_gather` | 原Slice/Concat参考，零容差 |
+| 严格三角mask（不保留对角） | `gdn_mask_strict_slice_concat` / `gdn_mask_strict_gather` | 原Slice/Concat参考，零容差 |
+| mask→Exp→mask真实上下文 | `gdn_mask_exp_chain_slice_concat` / `gdn_mask_exp_chain_gather` | 原两个mask和一次FP16 Exp，原FP16门槛 |
+| outer Sub | `sub_outer_gather` | 与已测`sub_outer_rank4`完全相同的输入、参考、门槛 |
+
+全部矩阵输出为`[2,1,64,64]`。mask输入含8192个不同且非零的有限FP16值，两个head数据不同；Gather索引最大8192，单mask索引32KiB。Sub输入仍为`[2,1,64,1]`和`[2,1,1,64]`，展开只复制数据。新helper限正静态rank4和输出最多1,048,576元素，不引入浮点索引或权重转换。
+
+沿用已有CANN/DDK、HDC和SDK配置，复用原`OP_PROBE_RUN`的native身份，先编译7项，再仅重建独立probe并回放。不要重新运行默认完整75项，也不要重编已回退的整图：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+export GE_GDN_COPY_RUN="$AI_RUN_DIR/gdn-copy-$(date +%Y%m%d-%H%M%S)"
+export GE_GDN_COPY_BOARD_RUN="$AI_RUN_DIR/gdn-copy-board-$(date +%Y%m%d-%H%M%S)"
+
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
+  --compile-only \
+  --case gdn_mask_lower_slice_concat --case gdn_mask_lower_gather \
+  --case gdn_mask_strict_slice_concat --case gdn_mask_strict_gather \
+  --case gdn_mask_exp_chain_slice_concat --case gdn_mask_exp_chain_gather \
+  --case sub_outer_gather \
+  --output "$GE_GDN_COPY_RUN" &&
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
+  --probe-run "$GE_GDN_COPY_RUN" --native-from "$OP_PROBE_RUN" \
+  --refresh-runner --replay-all --output "$GE_GDN_COPY_BOARD_RUN"
+
+cat "$GE_GDN_COPY_RUN/report.txt"
+if [ -f "$GE_GDN_COPY_BOARD_RUN/runtime-comparison.txt" ]; then
+  cat "$GE_GDN_COPY_BOARD_RUN/runtime-comparison.txt"
+fi
+```
+
+保留`GE_ROW_CHAIN_RUN`及其inspect报告。根据新case的编译主图分区、Load、Process和原参考数值结果再决定整图适配；如果控制和候选都只在CPU，不能因数值通过就晋级。即使探针通过，仍须验证完整图的分区和执行，当前精度后置、最终DFlash至少2倍目标保持。
+
+<a id="当前下一步可选-row-mul-整图适配"></a>
+
+### 历史：row Mul 整图适配与Reshape修正
+
+以下是已完成的复测过程；当前采用上方7项Gather对照，无需再次运行这组整图命令。
+
+历史用户结果 `ge-row-mul-20261026-121239` 已导出target/draft，归约替换为421/10，row Mul替换为19/0；target的OMG在`ReshapeFusion`删除视图后报`graph_bypasser.cpp ByPassNode: PreCheck false`，退出1。该次未到主图分区检查，不能沿用上一轮“超过9分区”的失败分类；draft编译、runner构建和上板均未运行。更早的kernel库路径报错尚未证实是这次终止原因。
+
+本地实际配方显示，新增Mul右输入连接到原升维reshape，恢复后的Mul输出又连接到原reshape和BMM辅助reshape。当前`compact`候选在导出端只合并涉及这些视图的连续、同dtype、同元素数的完整静态Reshape，保持最外视图名与输出形状，保留仍被其他分支或图输出引用的父视图，不跨越Transpose或算术。该精确改写在用户后续重跑中已通过ReshapeFusion；没有证明厂商pass内部的故障原因，原默认`native`不改变。
 
 此前`inspect-compile`要求已有compiled graph记录，而这种早期失败的`graphs=[]`，因此误拒绝诊断。更新后可直接读取旧留档；只在failed_graph、stage、log_path和AIR身份匹配时接受，并明确日志哈希是本次诊断采集、没有历史编译哈希。无可信支持表时报告缺失/不完整，不把常量折叠子图当成主图分区：
 
@@ -386,7 +435,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
 
 四步用 `&&` 串联；导出或编译失败就停止正式 runner 构建和上板。新的 `qwen35_dflash_hiai` 包含现有 ND 补维兼容；旧独立 probe 或旧正式二进制不能代替该次构建。旧 prepared、OMC、runner、探针与板端结果均保留。
 
-row Mul compact 只将已验证的两种 FP16 广播形状压成二维，保持行顺序、原操作数及一次 FP16 Mul，再恢复原输出形状。当前 tiny/static 源码预期 target 替换19项（rows16为10项、rows128为9项）、draft为0项；用户已确认上一轮实际导出计数为19/0，但该轮在ReshapeFusion提前失败；新链处理后的编译与执行仍待验证。每图新增 `row-mul-lowering.json`，同时保留 `reduction-lowering.json`；反馈 `mode` 和 `counts` 即可：
+row Mul compact 只将已验证的两种 FP16 广播形状压成二维，保持行顺序、原操作数及一次 FP16 Mul，再恢复原输出形状。当前 tiny/static 源码预期 target 替换19项（rows16为10项、rows128为9项）、draft为0项；用户已确认上一轮实际导出计数为19/0，链处理后的新重跑通过ReshapeFusion，19项Mul退出CPU-only列表；主图仍分区超限，完整执行待验证。每图新增 `row-mul-lowering.json`，同时保留 `reduction-lowering.json`；反馈 `mode` 和 `counts` 即可：
 
 ```bash
 python3 - <<'PYCOUNTS'
@@ -410,7 +459,7 @@ for file in result.json benchmark.stderr; do
 done
 ```
 
-上一轮已导出，但target在OMG图优化阶段失败，draft编译和上板未运行；本轮修复候选仍待编译与执行。改写19处Mul不保证解除9分区上限，其CPU支持与最终分区仍待整图核验，原整数归约、路由、TopK等仍可能切分图。编译通过后 `--execution-only` 强制 target/draft 各执行一次并回传输出；精度和性能为 `NOT_EVALUATED`。完整精度后续验证，最终目标仍为同板同目标权重下 DFlash 至少提速2倍。
+历史首次导出在OMG图优化阶段失败；链处理后的重跑通过ReshapeFusion，但主图仍超过9分区，draft编译和上板未运行。整数归约、路由、TopK及GDN掩码等候选仍待处理。编译通过后 `--execution-only` 强制 target/draft 各执行一次并回传输出；精度和性能为 `NOT_EVALUATED`。完整精度后续验证，最终目标仍为同板同目标权重下 DFlash 至少提速2倍。
 
 若新编译失败或仍回退，保留本次 AIR/OMC、日志和 `failure.json`，对同一产物运行只读诊断，不直接重复编译：
 
@@ -632,4 +681,4 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
 
 ### 明确修复后的重导出与上板流程
 
-可选MatMul归约双图曾触发分区超限，九项布局探针随后均执行和数值通过；row Mul 整图候选又在 ReshapeFusion 的 ByPassNode 检查处失败。本轮对 row Mul 周围符合条件的连续 Reshape 做导出端合并，按第7节开头重新导出整图。保留现有 `GE_REDUCE_MODEL_RUN`、`GE_ROW_MUL_RUN` 和布局探针，新图使用独立 `GE_ROW_CHAIN_RUN`。完整编译和执行仍待验证。详细报告、清理行为和后续 benchmark 入口见 [HDC 指南](hdc-board-run.md#当前双图采用可选-matmul-归约)。
+row Mul周围的连续Reshape合并已通过用户复测，19个Mul退出CPU-only候选列表；主图仍超过9个NPUCL分区。保留现有整图及探针产物，按[本节当前入口](#gdn-indexed-copy-probes)验证7项GDN Gather复制对照。完整双图执行尚未打通，详细报告、清理行为和后续benchmark入口见[HDC指南](hdc-board-run.md#当前双图采用可选-matmul-归约)。

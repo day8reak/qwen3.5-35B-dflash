@@ -1093,5 +1093,89 @@
     "accuracy": "DEFERRED_NOT_EVALUATED",
     "performance": "NOT_MEASURED",
     "runtime_placement": "UNVERIFIED"
+  },
+  "fp16_row_chain_integrated_compile": {
+    "date": "2026-10-26",
+    "recording_run_id": "20261026T061719Z-1062-8f8246",
+    "evidence_kind": "USER_PASTED_LOG_AND_INSPECT_REPORT_NOT_INDEPENDENTLY_RETRIEVED",
+    "reported_run": "ge-row-chain-20261026-144144",
+    "inspect_run": "ge-row-chain-inspect-20261026-144320",
+    "suggested_revision": "807c063",
+    "actual_revision": "USER_CONFIRMED_PULL_BUT_HASH_NOT_PROVIDED",
+    "artifact_hashes": "NOT_PROVIDED",
+    "status": "RESHAPE_FUSION_PASSED_MAIN_NPU_PARTITION_LIMIT_ROLLBACK",
+    "export": "PASSED",
+    "target_compile": "OMC_RETAINED_REJECTED_CPU_ROLLBACK",
+    "draft_compile": "NOT_RUN",
+    "formal_runner_build": "NOT_RUN",
+    "device_execution": "NOT_RUN",
+    "options": [
+      "--fp16-reductions matmul",
+      "--fp16-row-mul compact",
+      "--reject-cpu-fallback"
+    ],
+    "compiler_pid": 174605,
+    "reshape_fusion": {
+      "status": "PASSED",
+      "line": 111347,
+      "fused_pairs": 18
+    },
+    "rollback": {
+      "scope": "main",
+      "line": 150570,
+      "npu_partition_limit": 9
+    },
+    "support_snapshot": {
+      "status": "complete",
+      "window": [
+        111354,
+        150570
+      ],
+      "expected_count": 15747,
+      "entry_count": 15747,
+      "distinct_count": 15747,
+      "duplicate_count": 0,
+      "conflicting_count": 0,
+      "malformed_count": 0,
+      "cpu_only_candidate": 8788,
+      "npu_candidate": 6959,
+      "exact_recipe_matches": 15740,
+      "unmatched": 7,
+      "cpu_boundary_excluded": 8683,
+      "cpu_unresolved": 7,
+      "known_cpu_compute": 98,
+      "previous_known_cpu_compute": 117
+    },
+    "known_cpu_compute": {
+      "BroadcastTo_bool": 16,
+      "Cast_bool": 16,
+      "Equal_int32": 16,
+      "Greater_int32": 16,
+      "ReduceSum_int32": 16,
+      "ConcatD_fp16": 6,
+      "TopKD_fp16": 4,
+      "Sub_fp16": 3,
+      "ArgMaxExt2": 1,
+      "BatchMatMul": 1,
+      "Cast_int32": 1,
+      "LogicalAnd": 1,
+      "Reshape_bool": 1
+    },
+    "observations": [
+      "All19 previously reported row Mul CPU-only compute candidates absent.",
+      "inspect-compile completed successfully; compiler candidates are not actual partition counts or runtime placement.",
+      "Source has9 triangular mask Concats; six compiler CPU candidates cannot be equated with all9 source nodes.",
+      "Example v2624 follows Exp and v2879 is strict lower triangle in current source."
+    ],
+    "stale_retry": {
+      "reported_run": "ge-row-chain-20261026-143421",
+      "user_correction": "我的错忘git pull了稍等",
+      "valid_retest_of_suggested_revision": false
+    },
+    "followup": "specs/gdn-indexed-copy-probe-verification.json",
+    "next_action": "Compile seven probe-only Slice/Concat versus Gather mask controls, Exp context and outer Sub Gather case; replay using original native donor. No full model recompile until candidate results.",
+    "accuracy": "DEFERRED_NOT_EVALUATED",
+    "performance": "NOT_MEASURED",
+    "runtime_placement": "UNVERIFIED"
   }
 }

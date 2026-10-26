@@ -261,6 +261,7 @@ def cases():
     yield from _reduction_layout_cases()
     yield from _matmul_reduction_cases()
     yield from _fp16_layout_cases()
+    yield from _gdn_indexed_copy_cases()
 
 
 def _matmul_reduction_cases():
@@ -340,3 +341,80 @@ def _fp16_layout_cases():
                       "Ordered adjacent groups only, unchanged output/reference and exact tolerance. "
                       "OMG may optimize the tree; compiler and device results still require inspection.",
                       exact=True, pair="concat64_layout_pair", reference_graph=reference)
+
+
+def _slice_concat_mask_control(graph, source, *, strict=False, name="result"):
+    """Mirror GDN's current dynamic row prefix + positive-zero tail context."""
+    from .ge_target import _Builder
+
+    builder = _Builder(graph)
+    width = source.shape[-1]
+    zero_row = builder.constant(np.zeros((*source.shape[:-2], 1, width), dtype=np.float16))
+    rows = []
+    for row in range(width):
+        kept = row if strict else row + 1
+        if kept == 0:
+            rows.append(zero_row)
+            continue
+        parts = [builder.slice(builder.slice(source, -2, row, 1), -1, 0, kept)]
+        if kept < width:
+            parts.append(builder.slice(zero_row, -1, 0, width - kept))
+        rows.append(builder.cat(parts, -1))
+    return graph.op("concat", *rows, shape=source.shape, attrs={"axis": 2}, name=name)
+
+
+def _gdn_indexed_copy_cases():
+    """Probe exact indexed copies before changing any integrated GDN policy."""
+    from .ge_indexed_copy import outer_sub_gather, triangular_mask_gather
+
+    shape = (2, 1, 64, 64)
+    # 8192 distinct, nonzero, finite FP16 values: masked regions differ from
+    # input and the two heads cannot be confused by a repeated fixture pattern.
+    payload = (np.arange(math.prod(shape), dtype=np.uint16) + np.uint16(0x2000)).view(np.float16).reshape(shape)
+    for label, strict in (("lower", False), ("strict", True)):
+        reference = Graph(f"gdn_mask_{label}_reference")
+        rx = reference.input("x", shape)
+        reference.outputs = [_slice_concat_mask_control(reference, rx, strict=strict)]
+        for mode in ("slice_concat", "gather"):
+            graph = Graph(f"gdn_mask_{label}_{mode}")
+            x = graph.input("x", shape)
+            helper = _slice_concat_mask_control if mode == "slice_concat" else triangular_mask_gather
+            graph.outputs = [helper(graph, x, strict=strict)]
+            yield _finish(graph, {"x": payload.copy()},
+                          f"FP16 GDN {label} triangle, {mode}; shared dynamic matrix, "
+                          "retained row prefixes and positive-zero masked entries. "
+                          "Candidate uses static INT32 axis0 Gather and one positive-zero sentinel; "
+                          "original Slice/Concat reference, exact tolerance. Probe only.",
+                          exact=True, pair=f"gdn_mask_{label}_copy_pair", reference_graph=reference)
+
+    # The reported post-exp Concat has a producer that the standalone dynamic
+    # concat probe omitted. Retain both masking sites and the single FP16 Exp.
+    reference = Graph("gdn_mask_exp_chain_reference")
+    rx = reference.input("x", shape)
+    before = _slice_concat_mask_control(reference, rx, name="before_exp")
+    exponential = reference.op("exp", before, shape=shape, name="exponential")
+    reference.outputs = [_slice_concat_mask_control(reference, exponential)]
+    for mode in ("slice_concat", "gather"):
+        graph = Graph(f"gdn_mask_exp_chain_{mode}")
+        x = graph.input("x", shape)
+        helper = _slice_concat_mask_control if mode == "slice_concat" else triangular_mask_gather
+        before = helper(graph, x, name="before_exp")
+        exponential = graph.op("exp", before, shape=shape, name="exponential")
+        graph.outputs = [helper(graph, exponential)]
+        yield _finish(graph, {"x": payload.copy()},
+                      f"GDN lower-mask -> FP16 Exp -> lower-mask context, {mode}; "
+                      "both masks and Exp boundary retained. Original Slice/Concat reference, "
+                      "existing FP16 tolerance for Exp; no model policy change.",
+                      pair="gdn_mask_exp_context_pair", reference_graph=reference)
+
+    graph = Graph("sub_outer_gather")
+    x, y = graph.input("x", (2, 1, 64, 1)), graph.input("y", (2, 1, 1, 64))
+    graph.outputs = [outer_sub_gather(graph, x, y)]
+    reference = Graph("sub_outer_gather_reference")
+    rx, ry = reference.input("x", x.shape), reference.input("y", y.shape)
+    reference.outputs = [reference.op("sub", rx, ry, shape=shape)]
+    yield _finish(graph, {"x": _fp(x.shape, 1), "y": _fp(y.shape, 6)},
+                  "FP16 outer Sub after static INT32 axis0 Gather copies each operand to "
+                  "[2,1,64,64]; one original left-minus-right FP16 operation, "
+                  "same inputs/reference/tolerance as sub_outer_rank4. Probe only.",
+                  pair="sub_outer_layout_pair", reference_graph=reference)

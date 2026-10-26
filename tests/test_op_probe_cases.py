@@ -24,13 +24,20 @@ FP16_LAYOUT_CASES = (
     "sub_outer_rank4", "sub_outer_compact", "concat64_rank4", "concat64_tree8", "concat64_tree2",
 )
 
+GDN_INDEXED_COPY_CASES = (
+    "gdn_mask_lower_slice_concat", "gdn_mask_lower_gather",
+    "gdn_mask_strict_slice_concat", "gdn_mask_strict_gather",
+    "gdn_mask_exp_chain_slice_concat", "gdn_mask_exp_chain_gather", "sub_outer_gather",
+)
+
 
 def test_case_inputs_references_and_serialization_are_complete():
     suite = list(cases())
-    assert len(suite) == 68
+    assert len(suite) == 75
     assert tuple(c["name"] for c in suite[47:53]) == REDUCTION_CASES
     assert tuple(c["name"] for c in suite[53:59]) == MATMUL_REDUCTION_CASES
-    assert tuple(c["name"] for c in suite[59:]) == FP16_LAYOUT_CASES
+    assert tuple(c["name"] for c in suite[59:68]) == FP16_LAYOUT_CASES
+    assert tuple(c["name"] for c in suite[68:]) == GDN_INDEXED_COPY_CASES
     assert len({c["name"] for c in suite}) == len(suite)
     for case in suite:
         graph = case["graph"]
@@ -232,3 +239,70 @@ def test_concat64_probe_preserves_distinct_dynamic_port_order_and_original_refer
     assert all(2 <= len(row["inputs"]) <= fan_in for row in concats)
     assert all(row["attrs"]["concat_dim"] == 2 for row in concats)
     assert records[outputs[0][0]]["outputs"][0]["shape"] == (2, 1, 64, 64)
+
+
+@pytest.mark.parametrize("label,diagonal", [("lower", 0), ("strict", -1)])
+def test_gdn_mask_probes_use_shared_matrix_and_original_zero_fill_reference(label, diagonal, tmp_path):
+    suite = {case["name"]: case for case in cases()}
+    control = suite[f"gdn_mask_{label}_slice_concat"]
+    candidate = suite[f"gdn_mask_{label}_gather"]
+    mask = np.tril(np.ones((64, 64), dtype=bool), k=diagonal)
+    data = control["inputs"]["x"]
+    assert np.unique(data.view(np.uint16)).size == 8192 and np.all(data != 0)
+    expected = np.where(mask, data, np.float16(0))
+    assert candidate["inputs"]["x"].tobytes() == data.tobytes()
+    assert control["equivalence_group"] == candidate["equivalence_group"]
+    assert control["expected"][0].tobytes() == candidate["expected"][0].tobytes() == expected.tobytes()
+    for case in (control, candidate):
+        assert len(case["graph"].inputs) == 1
+        assert case["tolerances"] == [{"rtol": 0.0, "atol": 0.0}]
+        emit_cpp(case["graph"], recipe_dir=tmp_path / case["name"])
+        records, inputs, outputs = RecipeReader(tmp_path / case["name"] / "graph.recipe").read()
+        assert [records[i]["name"] for i in inputs] == ["x"]
+        assert records[outputs[0][0]]["outputs"][0]["shape"] == (2, 1, 64, 64)
+        kinds = [row["type"] for row in records]
+        if case is control:
+            assert "GatherV2" not in kinds and kinds.count("ConcatD") == 64
+            outer, = [r for r in records if r["name"] == "result"]
+            parents = [records[p["src"]] for p in outer["inputs"]]
+            assert [p["type"] for p in parents].count("ConcatD") == 63
+            assert parents[0 if diagonal == -1 else -1]["type"] == ("Const" if diagonal == -1 else "Slice")
+        else:
+            assert kinds.count("GatherV2") == 1 and kinds.count("ConcatD") == 1
+            assert set(kinds) <= {"Data", "Const", "Reshape", "ConcatD", "GatherV2"}
+
+
+def test_gdn_exp_context_keeps_both_masks_and_original_fp16_exp_boundary(tmp_path):
+    suite = {case["name"]: case for case in cases()}
+    control, candidate = (suite[f"gdn_mask_exp_chain_{mode}"] for mode in ("slice_concat", "gather"))
+    mask = np.tril(np.ones((64, 64), dtype=bool))
+    data = control["inputs"]["x"]
+    expected = np.where(mask, np.exp(np.where(mask, data, np.float16(0)).astype(np.float32)).astype(np.float16), np.float16(0))
+    assert candidate["inputs"]["x"].tobytes() == data.tobytes()
+    assert control["expected"][0].tobytes() == candidate["expected"][0].tobytes() == expected.tobytes()
+    for case in (control, candidate):
+        assert case["tolerances"] == [{"rtol": 0.01, "atol": 0.002}]
+        kinds = [node.kind for node in case["graph"].nodes]
+        assert kinds.count("exp") == 1
+        emit_cpp(case["graph"], recipe_dir=tmp_path / case["name"])
+        records, _, outputs = RecipeReader(tmp_path / case["name"] / "graph.recipe").read()
+        exponential, = [r for r in records if r["type"] == "Exp"]
+        assert records[exponential["inputs"][0]["src"]]["name"] == "before_exp"
+        assert records[outputs[0][0]]["name"] == "result"
+        assert sum(r["type"] == "GatherV2" for r in records) == (2 if case is candidate else 0)
+
+
+def test_outer_gather_probe_retains_existing_control_input_reference_and_tolerance(tmp_path):
+    suite = {case["name"]: case for case in cases()}
+    control, candidate = suite["sub_outer_rank4"], suite["sub_outer_gather"]
+    assert control["equivalence_group"] == candidate["equivalence_group"]
+    for name, data in control["inputs"].items():
+        assert data.tobytes() == candidate["inputs"][name].tobytes()
+    assert control["expected"][0].tobytes() == candidate["expected"][0].tobytes()
+    assert control["tolerances"] == candidate["tolerances"]
+    emit_cpp(candidate["graph"], recipe_dir=tmp_path / "recipe")
+    records, _, _ = RecipeReader(tmp_path / "recipe/graph.recipe").read()
+    assert sum(r["type"] == "GatherV2" for r in records) == 2
+    sub, = [r for r in records if r["type"] == "Sub"]
+    assert [p["shape"] for p in sub["inputs"]] == [(2, 1, 64, 64)] * 2
+    assert not any(r["type"] in {"Mul", "Cast", "BroadcastTo", "SelectV2"} for r in records)
