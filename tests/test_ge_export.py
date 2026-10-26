@@ -86,9 +86,10 @@ def fake_ge(tmp_path):
 
 
 @pytest.mark.parametrize("fp16_reductions", ["native", "matmul"])
+@pytest.mark.parametrize("fp16_row_mul", ["native", "compact"])
 @pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize("dispatch", ["static", "selected"])
-def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, external, dispatch, fp16_reductions):
+def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, external, dispatch, fp16_reductions, fp16_row_mul):
     from qwen35_moe_dflash.compile import compile_air
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
     prepared = tmp_path / "prepared"
@@ -110,22 +111,27 @@ def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, extern
             Path(command[1]).write_bytes(b"mock serialized air")
         kwargs["stdout"].write("mock tool log\n")
     monkeypatch.setattr(subprocess, "run", tool)
-    manifest = ge_export.export_pair(prepared, tmp_path / "air", ge, fp16_reductions=fp16_reductions)
+    manifest = ge_export.export_pair(prepared, tmp_path / "air", ge, fp16_reductions=fp16_reductions,
+                                     fp16_row_mul=fp16_row_mul)
     assert manifest["status"] == "EXPORTED" and manifest["abi_version"] == 2
     assert manifest["pipeline"][0] == "ge-cpp" and manifest["quantization"] is None
     assert manifest["expert_dispatch"] == dispatch
     assert manifest["expert_execution"] == plan["expert_execution"]
     assert manifest["fp16_reductions"] == fp16_reductions
+    assert manifest["fp16_row_mul"] == fp16_row_mul
     assert (prepared / "prepared.json").read_bytes() == original_prepared
     assert manifest["source"]["fp16_payload_sha256"] == ge_export.weight_identity(plan["weights"])
     for graph in manifest["graphs"]:
         assert bool(len(graph["files"]) > 1) == external
         construction = graph["construction_files"]
         assert {Path(item["path"]).name for item in construction} == {
-            f"{graph['name']}.cpp", "graph.recipe", "constants.bin", "reduction-lowering.json"}
+            f"{graph['name']}.cpp", "graph.recipe", "constants.bin", "reduction-lowering.json", "row-mul-lowering.json"}
         report = json.loads((tmp_path / "air" / graph["name"] / "reduction-lowering.json").read_text())
         assert graph["reduction_lowering"] == {"mode": fp16_reductions, "counts": report["counts"]}
         assert bool(report["replaced"]) == (fp16_reductions == "matmul")
+        row_report = json.loads((tmp_path / "air" / graph["name"] / "row-mul-lowering.json").read_text())
+        assert graph["row_mul_lowering"] == {"mode": fp16_row_mul, "counts": row_report["counts"]}
+        assert row_report["counts"]["replaced"] == (19 if fp16_row_mul == "compact" and graph["name"] == "target" else 0)
         for key, item in plan["weights"].items():
             ge_export.checked_file(prepared, item)
             ge_export.checked_file(tmp_path / "air", item)
@@ -136,28 +142,32 @@ def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, extern
     assert result["expert_dispatch"] == dispatch
     assert result["expert_execution"] == plan["expert_execution"]
     assert result["fp16_reductions"] == fp16_reductions
+    assert result["fp16_row_mul"] == fp16_row_mul
     assert [g["reduction_lowering"] for g in result["graphs"]] == [g["reduction_lowering"] for g in manifest["graphs"]]
+    assert [g["row_mul_lowering"] for g in result["graphs"]] == [g["row_mul_lowering"] for g in manifest["graphs"]]
     assert result["graphs"][0]["output_shapes"] == [[1, 8], [1, 8, 32]]
     assert result["graphs"][1]["output_shapes"] == [[1, 3]]
     assert plan["unique_weight_bytes"] > 0
 
 
-def test_invalid_reduction_mode_fails_before_reading_prepared_or_creating_output(tmp_path):
-    with pytest.raises(ValueError, match="fp16_reductions"):
-        ge_export.export_pair(tmp_path / "missing", tmp_path / "air", tmp_path / "unused", fp16_reductions="fp32")
+@pytest.mark.parametrize("policy", ["fp16_reductions", "fp16_row_mul"])
+def test_invalid_lowering_mode_fails_before_reading_prepared_or_creating_output(tmp_path, policy):
+    with pytest.raises(ValueError, match=policy):
+        ge_export.export_pair(tmp_path / "missing", tmp_path / "air", tmp_path / "unused", **{policy: "fp32"})
     assert not (tmp_path / "air").exists()
 
 
-def test_direct_export_cli_accepts_opt_in_reduction_mode_without_loading_model(tmp_path):
+@pytest.mark.parametrize("option,choices", [("--fp16-reductions", "native,matmul"), ("--fp16-row-mul", "native,compact")])
+def test_direct_export_cli_accepts_opt_in_mode_without_loading_model(tmp_path, option, choices):
     repo = Path(__file__).resolve().parents[1]
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", AI_RUN_DIR=str(tmp_path))
     script = str(repo / "targets/cpro/scripts/direct_model_air.py")
     result = subprocess.run([sys.executable, script, "export", "--help"], cwd=tmp_path,
                             env=env, capture_output=True, text=True)
     assert result.returncode == 0
-    assert "--fp16-reductions {native,matmul}" in result.stdout
+    assert option + " {" + choices + "}" in result.stdout
     bad = subprocess.run([sys.executable, script, "export", "--prepared", "unused", "--output", "unused",
-                          "--fp16-reductions", "fp32"], cwd=tmp_path, env=env, capture_output=True, text=True)
+                          option, "fp32"], cwd=tmp_path, env=env, capture_output=True, text=True)
     assert bad.returncode == 2 and "invalid choice" in bad.stderr
 
 
@@ -170,9 +180,11 @@ def test_default_export_retains_native_reductions(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", tool)
     result = ge_export.export_pair(tmp_path / "prepared", tmp_path / "air", fake_ge(tmp_path))
     assert result["fp16_reductions"] == "native"
+    assert result["fp16_row_mul"] == "native"
     for graph in result["graphs"]:
-        report = json.loads((tmp_path / "air" / graph["name"] / "reduction-lowering.json").read_text())
-        assert report["mode"] == "native" and not report["replaced"]
+        for filename in ("reduction-lowering.json", "row-mul-lowering.json"):
+            report = json.loads((tmp_path / "air" / graph["name"] / filename).read_text())
+            assert report["mode"] == "native" and not report["replaced"]
 
 
 def test_invalid_dispatch_rejected_before_output_or_tools(tmp_path, monkeypatch):
@@ -245,7 +257,8 @@ def test_log_excerpt_bounds_oversized_lines_and_ignores_error_catalog(tmp_path):
     assert ge_export._log_excerpt(tmp_path / "missing") == ""
 
 
-def test_export_detects_recipe_mutation_during_tool_run(tmp_path, monkeypatch):
+@pytest.mark.parametrize("filename", ["recipe/graph.recipe", "row-mul-lowering.json"])
+def test_export_detects_construction_mutation_during_tool_run(tmp_path, monkeypatch, filename):
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
     ge_export.prepare_pair(tmp_path / "prepared", tiny=True)
     def tool(command, **kwargs):
@@ -253,7 +266,7 @@ def test_export_detects_recipe_mutation_during_tool_run(tmp_path, monkeypatch):
             Path(command[command.index("-o") + 1]).write_bytes(b"mock exporter")
         else:
             Path(command[1]).write_bytes(b"mock air")
-            (Path(kwargs["cwd"]) / "recipe/graph.recipe").write_bytes(b"changed graph")
+            (Path(kwargs["cwd"]) / filename).write_bytes(b"changed construction")
     monkeypatch.setattr(subprocess, "run", tool)
     with pytest.raises(ValueError, match="SHA256/size"):
         ge_export.export_pair(tmp_path / "prepared", tmp_path / "air", fake_ge(tmp_path))

@@ -2,7 +2,7 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-2026-10-22 用户反馈 tiny target/draft 双图 AIR→OMC 编译成功。2026-10-26 的后续证据确认：旧 target OMC 在 OMG 主图分区时因 NPUCL 超过9个分区回退 CPU，板端恢复被 CPUCL 的 FP16 MatMul 检查拒绝。用户基于 `78d94ef` 重新导出后，新 target 的主图窗口 L91094–L127615 仍以分区超限回退结束。后续六个 MatMul 归约小图已全部通过 Load、Process 和数值检查；整图采用该归约后仍超限，当前按[布局探针](#当前下一步广播与拼接布局探针)核对剩余Mul/Sub/Concat候选。
+2026-10-22 用户反馈 tiny target/draft 双图 AIR→OMC 编译成功。2026-10-26 的后续证据确认：旧 target OMC 在 OMG 主图分区时因 NPUCL 超过9个分区回退 CPU，板端恢复被 CPUCL 的 FP16 MatMul 检查拒绝。用户基于 `78d94ef` 重新导出后，新 target 的主图窗口 L91094–L127615 仍以分区超限回退结束。后续六个 MatMul 归约小图已全部通过 Load、Process 和数值检查；整图采用该归约后仍超限；九项布局探针现已回传，仅两种row Mul compact改善编译分区，当前按[可选row Mul整图流程](#当前下一步可选-row-mul-整图适配)继续。
 
 第1–4节保留首次生成流程和历史失败修复；当前现场无需重新 prepare 或生成参考。算子核查见 [兼容性记录](ge-operator-compatibility.md)。tiny 编译成功不表示完整35B权重、量化、内存或性能已经通过。
 
@@ -82,7 +82,7 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 内部 OMG 兼容性修正与重试
 
-**以下为历史失败及重建说明。当时的双图编译成功不代表板端加载成功；当前按第7节执行9项布局探针，保留原 prepared、专家模式及已导出的MatMul归约图。**
+**以下为历史失败及重建说明。当时的双图编译成功不代表板端加载成功；当前按第7节导出可选row Mul新图，保留原 prepared、专家模式及已导出的MatMul归约图。**
 
 此前失败日志（draft 进程 158383）已越过整数 Gather 的验证，最终在兼容性检查拒绝 `v12/Maximum`。它执行上下文位置的 `max(cumsum(context_valid)-1, 0)`，输入/输出是 INT32。前面的描述回显、ImportWarning 和缺少内置 kernel 库提示不是这条日志明确报告的最终失败原因。
 
@@ -318,7 +318,7 @@ python3 "$GE_MODEL_TOOL" compile \
   --output "$GE_STRUCTURE_RUN/omc"
 ```
 
-每一步成功后再执行下一步。plan、prepared、AIR 和 OMC 的 manifest 都记录 `expert_dispatch`，export 按 prepared 的选择重建图；老 prepared 缺少该字段时沿用 static。全量旧算子复测仍可用 `probe_hdc_runtime.py --replay-all`，但它复用旧 OMC，不能代替本节新结构的 OMG/板端验证。正式双图上板入口使用探针已验证的候选部署；当前按第7节执行布局探针，后续再进入[重导出与只执行模式](hdc-board-run.md#当前双图采用可选-matmul-归约)，不切换到 selected。
+每一步成功后再执行下一步。plan、prepared、AIR 和 OMC 的 manifest 都记录 `expert_dispatch`，export 按 prepared 的选择重建图；老 prepared 缺少该字段时沿用 static。全量旧算子复测仍可用 `probe_hdc_runtime.py --replay-all`，但它复用旧 OMC，不能代替本节新结构的 OMG/板端验证。正式双图上板入口使用探针已验证的候选部署；当前按第7节采用已通过小图的row Mul候选，并进入[重导出与只执行模式](hdc-board-run.md#当前双图采用可选-matmul-归约)，不切换到 selected。
 
 可选的主机 GDN 诊断入口为 `targets/cpro/scripts/diagnose_gdn_precision.py`，输出逐 chunk FP16/FP32 输出与状态误差。无输入时仅跑小型合成样例，不能确认真实模型的精度根因。当前优先上板执行，此诊断不作为前置步骤，也不改变部署 FP16。
 
@@ -330,11 +330,87 @@ python3 "$GE_MODEL_TOOL" compile \
 ## 7. 当前现场：双图采用可选 MatMul 归约
 
 
-### 当前下一步：广播与拼接布局探针
+### 当前下一步：可选 row Mul 整图适配
+
+用户回传 `layout-probe-20261026-113524` / `layout-board-20261026-113529`：9项均通过 Load、Process 和原数值比较。两种 row Mul 原形为 NPU=0、CPU=1，compact 均为 NPU=1、CPU=0，因此只将 row Mul compact 推进整图候选。outer Sub compact 仍为 NPU=2、CPU=1；Concat64 原形、tree8、tree2 都是 NPU=1、CPU=0，不能将整图中的Concat拒绝归因于64路扇入，也没有依据用树替换原形。Sub和Concat保持原实现。
+
+以上是用户粘贴报告，未独立获取并核对原始产物哈希；此前建议 revision 为 `37ba5d3`，实际运行 revision 未报告。编译分区与实际执行位置分开记录，9项的 runtime placement 仍为 `UNVERIFIED`。
+
+| 案例 | 编译主图 NPU/CPU | Load / Process / 数值 |
+|---|---|---|
+| `mul_rows16_rank4`、`mul_rows128_rank4` | 0 / 1 | 全部 PASSED |
+| `mul_rows16_compact`、`mul_rows128_compact` | 1 / 0 | 全部 PASSED |
+| `sub_outer_rank4` | 0 / 1 | 全部 PASSED |
+| `sub_outer_compact` | 2 / 1 | 全部 PASSED |
+| `concat64_rank4`、`concat64_tree8`、`concat64_tree2` | 1 / 0 | 全部 PASSED |
+
+复用 `$GE_PAIR_RUN/prepared` 和 `$GE_BOARD_RUN/reference.json`，显式叠加 `--fp16-reductions matmul --fp16-row-mul compact`，导出到新目录。两个选项默认均为 `native`；不重新 prepare、不改专家模式、不换库。构建沿用原 resources/环境中的 SDK、头文件和链接资源；若此前显式指定 resources 或兼容 SDK 版本，继续使用同一配置。
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
+export GE_ROW_MUL_RUN="$AI_RUN_DIR/ge-row-mul-$(date +%Y%m%d-%H%M%S)"
+export HIAI_ROW_MUL_BUILD_DIR="$GE_ROW_MUL_RUN/hiai-build"
+export HDC_ROW_MUL_RUN_DIR="$GE_ROW_MUL_RUN/board"
+
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --fp16-reductions matmul --fp16-row-mul compact \
+  --output "$GE_ROW_MUL_RUN/air" &&
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_ROW_MUL_RUN/air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_ROW_MUL_RUN/omc" --reject-cpu-fallback &&
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$HIAI_ROW_MUL_BUILD_DIR" &&
+python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+  --omc "$GE_ROW_MUL_RUN/omc" \
+  --runner "$HIAI_ROW_MUL_BUILD_DIR/build/qwen35_dflash_hiai" \
+  --reference "$GE_BOARD_RUN/reference.json" \
+  --output "$HDC_ROW_MUL_RUN_DIR" --execution-only
+```
+
+四步用 `&&` 串联；导出或编译失败就停止正式 runner 构建和上板。新的 `qwen35_dflash_hiai` 包含现有 ND 补维兼容；旧独立 probe 或旧正式二进制不能代替该次构建。旧 prepared、OMC、runner、探针与板端结果均保留。
+
+row Mul compact 只将已验证的两种 FP16 广播形状压成二维，保持行顺序、原操作数及一次 FP16 Mul，再恢复原输出形状。当前 tiny/static 源码预期 target 替换19项（rows16为10项、rows128为9项）、draft为0项；用户这次实际导出计数仍待核验，不将预期当作编译或板端结果。每图新增 `row-mul-lowering.json`，同时保留 `reduction-lowering.json`；反馈 `mode` 和 `counts` 即可：
+
+```bash
+python3 - <<'PYCOUNTS'
+import json
+import os
+from pathlib import Path
+
+for name in ("target", "draft"):
+    folder = Path(os.environ["GE_ROW_MUL_RUN"]) / "air" / name
+    for filename in ("reduction-lowering.json", "row-mul-lowering.json"):
+        report = json.loads((folder / filename).read_text())
+        print(name, filename, report["mode"], report["counts"])
+PYCOUNTS
+cat "$HDC_ROW_MUL_RUN_DIR/result.json"
+cat "$HDC_ROW_MUL_RUN_DIR/benchmark.stderr"
+```
+
+这轮整图导出、编译与上板仍为待验证。改写19处Mul不保证解除9分区上限，其CPU支持与最终分区仍待整图核验，原整数归约、路由、TopK等仍可能切分图。编译通过后 `--execution-only` 强制 target/draft 各执行一次并回传输出；精度和性能为 `NOT_EVALUATED`。完整精度后续验证，最终目标仍为同板同目标权重下 DFlash 至少提速2倍。
+
+若新编译仍回退，保留本次 AIR/OMC、日志和 `failure.json`，对同一产物运行只读诊断，不直接重复编译：
+
+```bash
+export GE_ROW_MUL_INSPECT_RUN="$AI_RUN_DIR/ge-row-mul-inspect-$(date +%Y%m%d-%H%M%S)"
+python3 "$GE_MODEL_TOOL" inspect-compile \
+  --air "$GE_ROW_MUL_RUN/air" --omc "$GE_ROW_MUL_RUN/omc" \
+  --graph target --output "$GE_ROW_MUL_INSPECT_RUN"
+cat "$GE_ROW_MUL_INSPECT_RUN/report.txt"
+```
+
+上例对应 target 失败；draft 失败时改 `--graph draft` 并使用新诊断目录。候选支持与构造时边不等于最终分区或设备执行位置。
+
+<a id="当前下一步广播与拼接布局探针"></a>
+
+### 历史：已完成的广播与拼接布局探针
 
 `ge-reduce-inspect-20261026-111501` 已取得完整主图支持表，15,675项无冲突，15,668项与recipe精确匹配；排除8,647个边界项后，CPU-only计算候选为117（此前538），另7项角色未确定。target确实替换421个FP16归约（含192个扫描前缀），保留16个整数归约；draft替换10个、保留1个。新CPU计算列表不再出现FP16 Reduce，整图仍因分区数超过9回退。
 
-优先隔离两侧均为NPU候选的19个Mul、3个Sub和6个64路Concat。保持现有整图产物，运行以下9项探针；只有候选取得编译与设备结果后再选择整图适配。两种Mul形状在本地tiny源码中匹配19个节点，但回传仅列每组前两例，不将其视为19个精确名称均已核对。
+优先隔离两侧均为NPU候选的19个Mul、3个Sub和6个64路Concat。当时保持整图产物并运行以下9项探针；当前结果和选定适配已记录在本节开头，无需重复这批探针。两种Mul形状在本地tiny源码中匹配19个节点，但回传仅列每组前两例，不将其视为19个精确名称均已核对。
 
 | 探针组 | 原形 | 候选 | 数量 |
 |---|---|---|---|
@@ -343,7 +419,7 @@ python3 "$GE_MODEL_TOOL" compile \
 | `sub_outer` | `[2,1,64,1] - [2,1,1,64]` | `[2,64,1] - [2,1,64]` 后恢复 | 2 |
 | `concat64` | 64个 `[2,1,1,64]`，axis=2 | 相邻8路或2路逐层拼接，保持顺序 | 3 |
 
-Mul/Sub仅改变Reshape，保留原始操作顺序和一次FP16出口；不引入额外算术或新dtype。Concat只复制数据，三图均使用64个独立动态输入，每个元素使用不同的有限FP16位模式，避免常量折叠、整段Slice→Concat恒等消除及重复数据掩盖错序。三图IO载荷各32KiB，主机runner允许65个IO，但设备是否接受及OMG是否将树重新合并仍由这次实验确认。
+Mul/Sub仅改变Reshape，保留原始操作顺序和一次FP16出口；不引入额外算术或新dtype。Concat只复制数据，三图均使用64个独立动态输入，每个元素使用不同的有限FP16位模式，避免常量折叠、整段Slice→Concat恒等消除及重复数据掩盖错序。三图IO载荷各32KiB、65个IO均已在回传中通过加载与执行；OMG是否将树重新合并尚未独立核验。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -365,7 +441,7 @@ cat "$GE_LAYOUT_PROBE_RUN/report.txt"
 cat "$GE_LAYOUT_BOARD_RUN/runtime-comparison.txt"
 ```
 
-新batch只包含这9项；复用原`OP_PROBE_RUN`的native/库身份，刷新小探针一次。原形和候选使用同一输入/原参考：Mul/Sub沿用FP16容差，Concat零容差；不更改运行库、整图或数值门槛。报告分别判断编译分区、Load、Process和数值结果，原形控制落CPU不表示候选失败；设备位置仍需独立证据。64路Concat每图需上传64个小输入文件，传输较慢不等于执行变慢。本次未进行性能测量。
+以上历史batch只包含这9项；复用原`OP_PROBE_RUN`的native/库身份，刷新小探针一次。原形和候选使用同一输入/原参考：Mul/Sub沿用FP16容差，Concat零容差；不更改运行库、整图或数值门槛。报告分别判断编译分区、Load、Process和数值结果，原形控制落CPU不表示候选失败；设备位置仍需独立证据。64路Concat每图需上传64个小输入文件，传输较慢不等于执行变慢。本次未进行性能测量。
 
 其他CPU-only候选仍有MoE布尔/整数路由、TopK及图边界；CPU-only节点数不是分区数，即使上述探针通过也不能保证整图≤9分区。最终目标仍是精度达标后DFlash至少提速2倍，当前先打通完整执行链路。
 
@@ -425,7 +501,7 @@ cat "$HDC_REDUCE_RUN_DIR/benchmark.stderr"
 
 ### 新图仍发生分区回退时
 
-保留新目录的 AIR、recipe、OMC、OMG 日志和 `failure.json`，对这一次产物运行只读诊断；不要把旧 `GE_REEXPORT_RUN` 的日志用于解释新图，也不要直接重复编译：
+以下保留上次MatMul归约图的诊断命令；本轮row Mul新图应使用本节开头的`GE_ROW_MUL_INSPECT_RUN`命令。保留新目录的 AIR、recipe、OMC、OMG 日志和 `failure.json`，对这一次产物运行只读诊断；不要把旧 `GE_REEXPORT_RUN` 的日志用于解释新图，也不要直接重复编译：
 
 ```bash
 export GE_REDUCE_INSPECT_RUN="$AI_RUN_DIR/ge-reduce-inspect-$(date +%Y%m%d-%H%M%S)"
@@ -452,7 +528,7 @@ MatMul 和 Reduce 的累加顺序、舍入仍可能不同；六项按原容差�
 | `reduce_sum_gdn_matmul_k7` | `[2,1,7,7]`，axis=2 Sum，去掉归约维 | 非对齐短归约 |
 | `reduce_sum_gdn_matmul_k1` | `[2,1,1,1]`，axis=2 Sum，去掉归约维 | 长度1边界 |
 
-当时的小图复测命令如下，仅作历史复现。当前六项已通过，直接执行本节开头的布局探针；如果需要复现，保留原 `GE_REDUCE_MM_RUN`、原 `OP_PROBE_RUN`，仅新建结果目录：
+当时的小图复测命令如下，仅作历史复现。当前六项已通过，继续本节开头的可选row Mul整图流程；如果需要复现，保留原 `GE_REDUCE_MM_RUN`、原 `OP_PROBE_RUN`，仅新建结果目录：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -476,7 +552,7 @@ cat "$GE_REDUCE_MM_REPLAY_RUN/runtime-comparison.txt"
 
 ### 首次生成六项 MatMul 候选
 
-当前六项已完成编译、执行及数值检查，以下仅供首次生成或历史复现。当前现场不要运行或重设 `GE_REDUCE_MM_RUN`；直接执行本节开头的布局探针。首次生成需要 NumPy、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID` 和主机编译环境；`--compile-only` 不构建 runner，也不访问板端：
+当前六项已完成编译、执行及数值检查，以下仅供首次生成或历史复现。当前现场不要运行或重设 `GE_REDUCE_MM_RUN`；执行本节开头的可选row Mul整图流程。首次生成需要 NumPy、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID` 和主机编译环境；`--compile-only` 不构建 runner，也不访问板端：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -520,7 +596,7 @@ python3 "$GE_MODEL_TOOL" inspect-compile \
 | `reduce_sum_gdn_dropdims` | `[2,1,64,64]`，axis=2 Sum，直接去维 | NPU=0、CPU=1 |
 | `reduce_sum_gdn_keepdims` | 同输入及归约轴，保留维后 Reshape 为 `[2,1,64]` | NPU=1、CPU=1；ReduceSum 位置未确定 |
 
-以下仅保留当时的复现命令；当前执行本节开头的布局探针：
+以下仅保留当时的复现命令；当前执行本节开头的可选row Mul整图流程：
 
 ```bash
 export GE_REDUCE_PROBE_RUN="$AI_RUN_DIR/reduce-probe-$(date +%Y%m%d-%H%M%S)"
@@ -536,4 +612,4 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
 
 ### 明确修复后的重导出与上板流程
 
-可选MatMul归约双图已再次触发分区超限，本轮执行第7节开头的布局探针。保留现有 `GE_REDUCE_MODEL_RUN`，新探针使用独立目录；后续确定图改动后才重新导出整图。当前不通过把 FP16 改为 FP32 绕过 CPUCL 报错。详细报告、清理行为和后续 benchmark 入口见 [HDC 指南](hdc-board-run.md#当前双图采用可选-matmul-归约)。
+可选MatMul归约双图已再次触发分区超限，九项布局探针随后均执行和数值通过；本轮仅采用两种row Mul compact，按第7节开头重新导出整图。保留现有 `GE_REDUCE_MODEL_RUN` 和布局探针，新图使用独立 `GE_ROW_MUL_RUN`。当前不通过把 FP16 改为 FP32 绕过 CPUCL 报错。详细报告、清理行为和后续 benchmark 入口见 [HDC 指南](hdc-board-run.md#当前双图采用可选-matmul-归约)。

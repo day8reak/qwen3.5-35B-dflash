@@ -196,11 +196,16 @@ def _opindex(reference):
 
 
 class _Emitter:
-    def __init__(self, graph, *, recipe=False, fp16_reductions="native"):
+    def __init__(self, graph, *, recipe=False, fp16_reductions="native", fp16_row_mul="native"):
         if not isinstance(fp16_reductions, str) or fp16_reductions not in {"native", "matmul"}:
             raise ValueError("fp16_reductions must be native or matmul")
+        if not isinstance(fp16_row_mul, str) or fp16_row_mul not in {"native", "compact"}:
+            raise ValueError("fp16_row_mul must be native or compact")
         self.graph = graph
         self.fp16_reductions = fp16_reductions
+        self.fp16_row_mul = fp16_row_mul
+        self.row_mul_report = {"mode": fp16_row_mul, "graph": graph.name,
+            "counts": {"total": 0, "replaced": 0, "retained": 0}, "replaced": [], "retained": []}
         self.reduction_report = {"mode": fp16_reductions, "graph": graph.name,
             "counts": {"total": 0, "replaced": 0, "retained": 0, "fp16_replaced": 0,
                        "integer_retained": 0, "scan_prefix_replaced": 0},
@@ -396,6 +401,58 @@ class _Emitter:
                      {"transpose_x1": "false", "transpose_x2": "true"})
         reshape(value, output)
 
+    def emit_mul(self, output, left, right):
+        """Compact only the two board-tested FP16 row-scale shape contracts."""
+        def descriptor(value):
+            return {"name": value.name, "shape": list(value.shape), "dtype": value.dtype}
+
+        contract = {"name": output.name, "left": descriptor(left), "right": descriptor(right),
+                    "output": descriptor(output)}
+        reason = "mode_native"
+        if self.fp16_row_mul == "compact":
+            verified_shapes = {((1, 8, 2, 8), (1, 8, 2, 1)),
+                               ((1, 2, 64, 8), (1, 2, 64, 1))}
+            if left.dtype != "float16" or right.dtype != "float16":
+                reason = "non_fp16"
+            elif (left.shape, right.shape) not in verified_shapes:
+                reason = "outside_verified_shapes"
+            elif output.shape != left.shape or output.dtype != "float16":
+                raise ValueError(f"{output.name}: row Mul output shape/dtype differs from the verified contract")
+            else:
+                reason = None
+        if reason is None:
+            rows, width = math.prod(left.shape[:-1]), left.shape[-1]
+            prefix = f"__ge/{output.name}/row_mul"
+            lhs = Value(prefix + "/left", (rows, width), "float16")
+            rhs = Value(prefix + "/right", (rows, 1), "float16")
+            product = Value(prefix + "/product", (rows, width), "float16")
+            generated_names = [lhs.name, rhs.name, product.name,
+                               *(f"__ge/{value.name}/shape" for value in (lhs, rhs, output))]
+            if any(name in self.graph._values or name in self.refs or name in self.pending_constants
+                   for name in generated_names):
+                raise ValueError(f"{output.name}: row Mul generated name collision")
+
+            def reshape(source, result):
+                shape = self.reshape_shape(result)
+                var = self.op(result.name, "Reshape", [("x", source), ("shape", shape)], [("y", result)],
+                              {"axis": "int64_t{0}", "num_axes": "int64_t{-1}"})
+                self.refs[result.name] = (var, "y")
+
+            reshape(left, lhs)
+            reshape(right, rhs)
+            var = self.op(product.name, "Mul", [("x1", lhs), ("x2", rhs)], [("y", product)])
+            self.refs[product.name] = (var, "y")
+            reshape(product, output)
+            contract.update(rows=rows, width=width, compact_shape=[rows, width])
+            self.row_mul_report["replaced"].append(contract)
+            self.row_mul_report["counts"]["replaced"] += 1
+        else:
+            var = self.op(output.name, "Mul", [("x1", left), ("x2", right)], [("y", output)])
+            self.refs[output.name] = (var, "y")
+            self.row_mul_report["retained"].append({**contract, "reason": reason})
+            self.row_mul_report["counts"]["retained"] += 1
+        self.row_mul_report["counts"]["total"] += 1
+
     def reshape_shape(self, output, dimensions=None):
         """Use checked INT32 dimensions for OMG's Reshape shape rewrites.
 
@@ -449,7 +506,8 @@ class _Emitter:
 
 
 def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=None,
-             fold_constant_arithmetic=True, fp16_reductions="native", reduction_report=None):
+             fold_constant_arithmetic=True, fp16_reductions="native", reduction_report=None,
+             fp16_row_mul="native", row_mul_report=None):
     """Return a self-contained C++ AIR serializer.
 
     ``weight_paths`` maps canonical graph weight keys to existing raw contiguous
@@ -464,9 +522,13 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     only during emission. The default native serialization is unchanged.
     An optional dictionary receives deterministic lowering evidence, not a
     claim about compiler partitioning or runtime numerical agreement.
+    ``fp16_row_mul="compact"`` limits Mul layout changes to two tested shape
+    pairs; all other Mul shapes and all Sub/Concat operations stay unchanged.
     """
     if reduction_report is not None and not isinstance(reduction_report, dict):
         raise TypeError("reduction_report must be a mutable dictionary")
+    if row_mul_report is not None and not isinstance(row_mul_report, dict):
+        raise TypeError("row_mul_report must be a mutable dictionary")
     graph.validate()
     if recipe_dir is None and len(graph.nodes) > 10_000:
         raise ValueError("large graphs require recipe_dir to bound generated C++ compiler memory")
@@ -477,7 +539,8 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     total = sum(math.prod(v.shape) * DTYPES[v.dtype].itemsize for v in graph.weights.values())
     if not external_weights and total >= 1_800_000_000:
         raise ValueError("large graphs require external_weights=True (AIR protobuf size limit)")
-    e = _Emitter(graph, recipe=recipe_dir is not None, fp16_reductions=fp16_reductions)
+    e = _Emitter(graph, recipe=recipe_dir is not None, fp16_reductions=fp16_reductions,
+                 fp16_row_mul=fp16_row_mul)
     live = {v.name for v in graph.outputs}
     for node in reversed(graph.nodes):
         if node.output.name in live:
@@ -556,7 +619,12 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
             v = Value(f"__ge/{v.name}/integer_output", v.shape, "int32")
         attrs, outport = {}, "y"
         outputs = [("y", v)]
-        if kind in binary:
+        if kind == "mul":
+            if len(ins) != 2:
+                raise ValueError(f"{v.name}: Mul requires exactly two inputs")
+            e.emit_mul(v, ins[0], ins[1])
+            continue
+        elif kind in binary:
             typ, ports = binary[kind], ["x1", "x2"]
         elif kind in unary:
             typ, ports = unary[kind], ["x"]
@@ -715,6 +783,9 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     if reduction_report is not None:
         reduction_report.clear()
         reduction_report.update(e.reduction_report)
+    if row_mul_report is not None:
+        row_mul_report.clear()
+        row_mul_report.update(e.row_mul_report)
     # A compact recipe keeps full-model compiler memory independent of node count.
     if recipe_dir is not None:
         from .ge_recipe import emit_recipe_cpp

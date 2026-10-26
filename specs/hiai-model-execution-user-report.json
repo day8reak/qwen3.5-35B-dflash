@@ -58,7 +58,7 @@
     "Exact NPU partition count before rollback (only >9 is reported)",
     "Which CPU-only graph boundaries cause fragmentation in the revised graph"
   ],
-  "next_evidence": "Integrated target/draft export with --fp16-reductions matmul, compiler rollback checks and execution-only board result",
+  "next_evidence": "Export existing prepared weights with --fp16-reductions matmul --fp16-row-mul compact into a new bundle; reject compiler rollback, build the formal runner and execute target/draft once only after successful compile.",
   "experience_audit": "docs/experience.md",
   "failure_cause": "USER_LOG_CONFIRMED_CPUCL_MATMUL_COMPATIBILITY_REJECTION_DURING_TARGET_RESTORE",
   "source_audit": {
@@ -848,5 +848,182 @@
     "artifact_hashes": "NOT_PROVIDED",
     "runtime_placement": "UNVERIFIED",
     "full_model_execution": "NOT_RUN"
+  },
+  "fp16_layout_probe_replay": {
+    "date": "2026-10-26",
+    "recorded_in_run_id": "20261026T032819Z-30205-6073af",
+    "evidence_kind": "USER_PASTED_REPORT_NOT_INDEPENDENTLY_RETRIEVED",
+    "compiled_run": "layout-probe-20261026-113524",
+    "reported_run": "layout-board-20261026-113529",
+    "suggested_revision": "37ba5d3",
+    "actual_revision": "NOT_REPORTED",
+    "artifact_hashes": "NOT_PROVIDED_IN_PASTED_REPORT",
+    "independent_artifact_hash_verification": "NOT_PERFORMED",
+    "status": "USER_REPORTED_NINE_CASES_LOAD_PROCESS_NUMERICAL_PASS",
+    "cases": [
+      {
+        "case": "mul_rows16_rank4",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 0,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "compiler_partition_scope": "main",
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "case": "mul_rows16_compact",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "compiler_partition_scope": "main",
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "case": "mul_rows128_rank4",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 0,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "compiler_partition_scope": "main",
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "case": "mul_rows128_compact",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "compiler_partition_scope": "main",
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "case": "sub_outer_rank4",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 0,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "compiler_partition_scope": "main",
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "case": "sub_outer_compact",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 2,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "compiler_partition_scope": "main",
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "case": "concat64_rank4",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "compiler_partition_scope": "main",
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "case": "concat64_tree8",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "compiler_partition_scope": "main",
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "case": "concat64_tree2",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "compiler_partition_scope": "main",
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "placement": "UNVERIFIED"
+      }
+    ],
+    "selected_integrated_candidate": "FP16_ROW_MUL_COMPACT_ONLY",
+    "interpretation": [
+      "Both tested compact row Mul shapes change the compiler partition from CPU-only to NPU-only while preserving original-reference numerical checks.",
+      "Outer Sub compact remains mixed NPU2/CPU1; do not integrate it merely because execution passes.",
+      "Concat64 control and both trees compile NPU1/CPU0; the whole-model CPU candidates cannot be attributed to fan-in 64 from these results. Preserve original Concat.",
+      "Compiler partition counts and small-case numerical passes do not establish runtime placement, full-model accuracy, integrated partition recovery or speedup."
+    ],
+    "runtime_placement": "UNVERIFIED",
+    "full_model_execution": "NOT_VALIDATED_BY_THIS_REPLAY",
+    "full_model_accuracy": "NOT_EVALUATED",
+    "performance": "NOT_MEASURED",
+    "next_action": "Export existing prepared weights with --fp16-reductions matmul --fp16-row-mul compact into a new bundle; reject compiler rollback, build the formal runner and execute target/draft once only after successful compile.",
+    "integrated_row_mul_followup": {
+      "status": "EXPORT_COMPILE_BOARD_PENDING",
+      "option": "--fp16-row-mul compact",
+      "default": "native",
+      "retained_reduction_option": "--fp16-reductions matmul",
+      "source_count_expectation": {
+        "target": 19,
+        "target_rows16": 10,
+        "target_rows128": 9,
+        "draft": 0
+      },
+      "source_count_scope": "LOCAL_TINY_STATIC_ORIGINAL_IR_ONLY; user integrated reports not yet verified",
+      "report": "air/{target,draft}/row-mul-lowering.json",
+      "sub_changed": false,
+      "concat_changed": false
+    }
   }
 }

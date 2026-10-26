@@ -215,10 +215,12 @@ def _logged(command, *, folder, env, log, timeout):
 
 
 def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, timeout_seconds=3600,
-                fp16_reductions="native"):
+                fp16_reductions="native", fp16_row_mul="native"):
     from .ge_cpp import emit_cpp
     if fp16_reductions not in {"native", "matmul"}:
         raise ValueError("fp16_reductions must be native or matmul")
+    if fp16_row_mul not in {"native", "compact"}:
+        raise ValueError("fp16_row_mul must be native or compact")
     prepared = Path(prepared_dir).resolve()
     manifest_path = prepared / "prepared.json"
     plan = json.loads(manifest_path.read_text())
@@ -280,10 +282,13 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
             source = folder / f"{name}.cpp"
             stage = f"{name}-lowering"
             reduction_report = {}
+            row_mul_report = {}
             source.write_text(emit_cpp(graph, paths, external_weights=plan["external_weights"],
                                        recipe_dir=folder / "recipe", fp16_reductions=fp16_reductions,
-                                       reduction_report=reduction_report))
+                                       reduction_report=reduction_report, fp16_row_mul=fp16_row_mul,
+                                       row_mul_report=row_mul_report))
             save_json(folder / "reduction-lowering.json", reduction_report)
+            save_json(folder / "row-mul-lowering.json", row_mul_report)
             construction = files_under(folder, root)
             for item in construction:
                 checked_file(root, item)
@@ -320,7 +325,9 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
                             "output_dtypes": ["torch." + v.dtype for v in graph.outputs], "files": files,
                             "builder_sha256": sha256_file(source), "construction_files": construction,
                             "reduction_lowering": {"mode": reduction_report["mode"],
-                                                   "counts": reduction_report["counts"]}})
+                                                   "counts": reduction_report["counts"]},
+                            "row_mul_lowering": {"mode": row_mul_report["mode"],
+                                                 "counts": row_mul_report["counts"]}})
         for item in plan["weights"].values():
             checked_file(root, item)
         config = Qwen35DFlashConfig.from_dict(plan["draft_config"])
@@ -335,6 +342,7 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
                     "quantization": None, "state_policy": "recompute",
                     "expert_dispatch": dispatch, "expert_execution": execution,
                     "fp16_reductions": fp16_reductions,
+                    "fp16_row_mul": fp16_row_mul,
                     "source": plan["source"], "pad_token_id": 0 if plan["tiny"] else 248044,
                     "eos_token_ids": [] if plan["tiny"] else [248044, 248046],
                     "export_root": str(root), "graphs": records, "external_weights": plan["external_weights"],
@@ -346,5 +354,6 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
     except Exception as error:
         save_json(root / "failure.json", {"status": "FAILED", "stage": stage,
                                           "fp16_reductions": fp16_reductions,
+                                          "fp16_row_mul": fp16_row_mul,
                                           "device_validation": "PENDING", "error": str(error)})
         raise

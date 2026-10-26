@@ -220,21 +220,21 @@ def _compiled_payloads(folder, root):
     return records
 
 
-def _checked_reduction_report(root, manifest, graph):
+def _checked_lowering_report(root, manifest, graph, *, policy, summary, filename, label):
     """Bind new lowering summaries to the export's recorded construction file."""
-    if "fp16_reductions" not in manifest and "reduction_lowering" not in graph:
+    if policy not in manifest and summary not in graph:
         return None  # Older AIR bundles predate this optional emission policy.
-    expected_path = f"{graph['name']}/reduction-lowering.json"
+    expected_path = f"{graph['name']}/{filename}"
     entries = [item for item in graph.get("construction_files", []) if item.get("path") == expected_path]
-    if len(entries) != 1 or "fp16_reductions" not in manifest:
-        raise ValueError("reduction lowering requires a hash-locked report and explicit mode")
+    if len(entries) != 1 or policy not in manifest:
+        raise ValueError(f"{label} lowering requires a hash-locked report and explicit mode")
     path = checked_file(root, entries[0])
     report = json.loads(path.read_text())
-    mode = manifest["fp16_reductions"]
+    mode = manifest[policy]
     if (not isinstance(report, dict) or report.get("mode") != mode
             or report.get("graph") != graph["name"] or not isinstance(report.get("counts"), dict)
-            or graph.get("reduction_lowering") != {"mode": mode, "counts": report["counts"]}):
-        raise ValueError("reduction lowering mode/counts differ from the hash-locked report")
+            or graph.get(summary) != {"mode": mode, "counts": report["counts"]}):
+        raise ValueError(f"{label} lowering mode/counts differ from the hash-locked report")
     return entries[0]
 
 
@@ -252,17 +252,26 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600,
         raise ValueError("compile AIR at its export_root: FileConstant weights may contain absolute paths")
     if manifest.get("fp16_reductions", "native") not in {"native", "matmul"}:
         raise ValueError("AIR fp16_reductions must be native or matmul")
+    if manifest.get("fp16_row_mul", "native") not in {"native", "compact"}:
+        raise ValueError("AIR fp16_row_mul must be native or compact")
     graphs = manifest["graphs"]
     if [g["name"] for g in graphs] != ["target", "draft"]:
         raise ValueError("AIR bundle must contain target then draft")
     if not ddk_id or timeout_seconds <= 0:
         raise ValueError("DDK identity and positive timeout required")
-    reduction_reports = {}
+    lowering_reports = {}
     for graph in graphs:
         paths = {r["path"]: checked_file(root, r) for r in graph["files"]}
         if graph["air"] not in paths or paths[graph["air"]].suffix != ".air":
             raise ValueError("AIR graph is missing from hash-locked payloads")
-        reduction_reports[graph["name"]] = _checked_reduction_report(root, manifest, graph)
+        lowering_reports[graph["name"]] = [
+            _checked_lowering_report(root, manifest, graph, policy="fp16_reductions",
+                                     summary="reduction_lowering", filename="reduction-lowering.json",
+                                     label="reduction"),
+            _checked_lowering_report(root, manifest, graph, policy="fp16_row_mul",
+                                     summary="row_mul_lowering", filename="row-mul-lowering.json",
+                                     label="row-Mul"),
+        ]
     omg, env = omg_environment(ddk_root)
     if not os.access(omg, os.X_OK):
         raise PermissionError(f"OMG is not executable: {omg}; fix the run-local extraction permissions")
@@ -275,6 +284,8 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600,
         result["expert_execution"] = manifest["expert_execution"]
     if "fp16_reductions" in manifest:
         result["fp16_reductions"] = manifest["fp16_reductions"]
+    if "fp16_row_mul" in manifest:
+        result["fp16_row_mul"] = manifest["fp16_row_mul"]
     result.update(schema_version=2, artifact_kind="qwen35-cpro-omc-pair", status="COMPILING",
                   platform="kirinx90", runtime="hiai", device_validation="PENDING", graphs=records,
                   ddk_id=ddk_id, omg_sha256=sha256_file(omg), air_manifest_sha256=sha256_file(manifest_path),
@@ -341,8 +352,9 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600,
             omc = folder / f"{name}.omc"
             # Detect accidental compiler mutation of AIR or external weights.
             for payload in graph["files"]: checked_file(root, payload)
-            if reduction_reports[name] is not None:
-                checked_file(root, reduction_reports[name])
+            for report in lowering_reports[name]:
+                if report is not None:
+                    checked_file(root, report)
             evidence = compile_evidence(log_path.read_text(encoding="utf-8", errors="replace"))
             evidence["log_sha256"] = sha256_file(log_path)
             records.append({"name": name, "omc": str(omc.relative_to(output)),
@@ -355,6 +367,8 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600,
                             "payloads": _compiled_payloads(folder, output)})
             if "reduction_lowering" in graph:
                 records[-1]["reduction_lowering"] = graph["reduction_lowering"]
+            if "row_mul_lowering" in graph:
+                records[-1]["row_mul_lowering"] = graph["row_mul_lowering"]
             # OMG may return success after abandoning all NPU partitions.
             # Constant-folding CPU graphs are expected and are not deployment
             # evidence. Unknown scope remains unknown, but an explicit rollback

@@ -94,55 +94,64 @@ def test_success_retains_reports_and_partition_dumps_off_board_payloads(fake_omg
         assert "subGraph fixture run by cl: CPUCL" in (folder / "omg.log").read_text()
 
 
-def test_unknown_reduction_mode_rejected_before_omg(fake_omg_case, tmp_path):
+@pytest.mark.parametrize("policy", ["fp16_reductions", "fp16_row_mul"])
+def test_unknown_lowering_mode_rejected_before_omg(fake_omg_case, tmp_path, policy):
     bundle, ddk = fake_omg_case
     path = bundle / "manifest.json"
     manifest = json.loads(path.read_text())
-    manifest["fp16_reductions"] = "fp32"
+    manifest[policy] = "fp32"
     path.write_text(json.dumps(manifest))
-    with pytest.raises(ValueError, match="fp16_reductions"):
+    with pytest.raises(ValueError, match=policy):
         compile_air(bundle, tmp_path / "omc", ddk, ddk_id="fake-retention")
     assert not (tmp_path / "omc").exists()
 
 
-def _add_reduction_reports(bundle):
+LOWERING_REPORTS = [
+    ("fp16_reductions", "matmul", "reduction_lowering", "reduction-lowering.json"),
+    ("fp16_row_mul", "compact", "row_mul_lowering", "row-mul-lowering.json"),
+]
+
+
+def _add_lowering_reports(bundle, policy, mode, summary, filename):
     manifest_path = bundle / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    manifest["fp16_reductions"] = "matmul"
+    manifest[policy] = mode
     for graph in manifest["graphs"]:
-        path = bundle / graph["name"] / "reduction-lowering.json"
+        path = bundle / graph["name"] / filename
         path.parent.mkdir()
-        report = {"mode": "matmul", "graph": graph["name"], "counts": {"replaced": 1, "retained": 0}}
+        report = {"mode": mode, "graph": graph["name"], "counts": {"replaced": 1, "retained": 0}}
         path.write_text(json.dumps(report))
         graph["construction_files"] = [{"path": str(path.relative_to(bundle)),
                                         "bytes": path.stat().st_size, "sha256": sha256_file(path)}]
-        graph["reduction_lowering"] = {k: report[k] for k in ("mode", "counts")}
+        graph[summary] = {k: report[k] for k in ("mode", "counts")}
     manifest_path.write_text(json.dumps(manifest))
     return manifest
 
 
 @pytest.mark.parametrize("problem", ["corrupt", "missing_record", "duplicate_record", "missing_mode",
                                      "top_mode", "graph_mode", "counts", "missing_summary"])
-def test_reduction_report_identity_checked_before_converter(fake_omg_case, tmp_path, monkeypatch, problem):
+@pytest.mark.parametrize("policy,mode,summary,filename", LOWERING_REPORTS)
+def test_lowering_report_identity_checked_before_converter(fake_omg_case, tmp_path, monkeypatch,
+                                                         problem, policy, mode, summary, filename):
     bundle, ddk = fake_omg_case
-    manifest = _add_reduction_reports(bundle)
+    manifest = _add_lowering_reports(bundle, policy, mode, summary, filename)
     graph = manifest["graphs"][0]
     if problem == "corrupt":
-        (bundle / "target/reduction-lowering.json").write_text("corrupt")
+        (bundle / "target" / filename).write_text("corrupt")
     elif problem == "missing_record":
         graph["construction_files"] = []
     elif problem == "duplicate_record":
         graph["construction_files"] *= 2
     elif problem == "missing_mode":
-        del manifest["fp16_reductions"]
+        del manifest[policy]
     elif problem == "top_mode":
-        manifest["fp16_reductions"] = "native"
+        manifest[policy] = "native"
     elif problem == "graph_mode":
-        graph["reduction_lowering"]["mode"] = "native"
+        graph[summary]["mode"] = "native"
     elif problem == "counts":
-        graph["reduction_lowering"]["counts"]["replaced"] = 2
+        graph[summary]["counts"]["replaced"] = 2
     else:
-        del graph["reduction_lowering"]
+        del graph[summary]
     (bundle / "manifest.json").write_text(json.dumps(manifest))
     def forbidden(*args):
         raise AssertionError("must reject before resolving OMG")
@@ -152,13 +161,15 @@ def test_reduction_report_identity_checked_before_converter(fake_omg_case, tmp_p
     assert not (tmp_path / "omc").exists()
 
 
-def test_reduction_report_mutation_during_compile_invalidates_output(fake_omg_case, tmp_path, monkeypatch):
+@pytest.mark.parametrize("policy,mode,summary,filename", LOWERING_REPORTS)
+def test_lowering_report_mutation_during_compile_invalidates_output(fake_omg_case, tmp_path, monkeypatch,
+                                                                  policy, mode, summary, filename):
     bundle, ddk = fake_omg_case
-    _add_reduction_reports(bundle)
+    _add_lowering_reports(bundle, policy, mode, summary, filename)
     binary = ddk / "tools/tools_omg/master/omg"
     with binary.open("a") as stream:
         stream.write("\nPath(os.environ['FAKE_LOWERING_REPORT']).write_text('changed during OMG')\n")
-    monkeypatch.setenv("FAKE_LOWERING_REPORT", str(bundle / "target/reduction-lowering.json"))
+    monkeypatch.setenv("FAKE_LOWERING_REPORT", str(bundle / "target" / filename))
     with pytest.raises(ValueError, match="SHA256/size"):
         compile_air(bundle, tmp_path / "omc", ddk, ddk_id="fake-retention")
     assert not (tmp_path / "omc/manifest.json").exists()

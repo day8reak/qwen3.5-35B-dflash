@@ -6,31 +6,35 @@
 
 **用户回传 `reduce-mm-replay-20261026-104025`：六个 MatMul 归约候选全部 Load、Process、数值 PASS。** 每项编译主图为 NPU=1、CPU=0，实际运行位置仍为 `UNVERIFIED`；小图通过不等于完整 target/draft 或2倍加速已经通过。
 
-**新支持表确认归约替换生效：CPU-only计算候选由538降至117，但整图仍超过9个NPUCL分区。** target替换421个FP16归约、draft替换10个；剩余优先核对19个广播Mul、3个广播Sub及6个64路Concat，构造支持集不代表最终运行位置。
+**9项布局探针均通过 Load、Process、原数值比较；本轮只将两种 row Mul compact 接入可选整图导出。** 两种Mul从原形NPU=0/CPU=1变为compact NPU=1/CPU=0；Sub compact仍为NPU=2/CPU=1，Concat64原形和两种树均为NPU=1/CPU=0，暂不改Sub和Concat。用户粘贴报告尚未独立核验产物哈希，实际执行位置仍为`UNVERIFIED`。
 
-**当前入口：[广播与拼接布局探针](direct-model-air.md#当前下一步广播与拼接布局探针)。** 原形与候选共9项，保持原FP16操作、数据顺序及原数值门槛，先取得编译/执行结果，再接入整图。保留`GE_REDUCE_MODEL_RUN`及此前成功的小图产物。
+**当前入口：[可选 row Mul 整图适配](direct-model-air.md#当前下一步可选-row-mul-整图适配)。** 复用原prepared与参考，在新目录显式叠加两种适配；默认均为native。原`GE_REDUCE_MODEL_RUN`及所有探针结果保留。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-export GE_LAYOUT_PROBE_RUN="$AI_RUN_DIR/layout-probe-$(date +%Y%m%d-%H%M%S)"
-export GE_LAYOUT_BOARD_RUN="$AI_RUN_DIR/layout-board-$(date +%Y%m%d-%H%M%S)"
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
+export GE_ROW_MUL_RUN="$AI_RUN_DIR/ge-row-mul-$(date +%Y%m%d-%H%M%S)"
+export HIAI_ROW_MUL_BUILD_DIR="$GE_ROW_MUL_RUN/hiai-build"
+export HDC_ROW_MUL_RUN_DIR="$GE_ROW_MUL_RUN/board"
 
-python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
-  --compile-only \
-  --case mul_rows16_rank4 --case mul_rows16_compact \
-  --case mul_rows128_rank4 --case mul_rows128_compact \
-  --case sub_outer_rank4 --case sub_outer_compact \
-  --case concat64_rank4 --case concat64_tree8 --case concat64_tree2 \
-  --output "$GE_LAYOUT_PROBE_RUN" &&
-python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
-  --probe-run "$GE_LAYOUT_PROBE_RUN" --native-from "$OP_PROBE_RUN" \
-  --refresh-runner --replay-all --output "$GE_LAYOUT_BOARD_RUN"
-
-cat "$GE_LAYOUT_PROBE_RUN/report.txt"
-cat "$GE_LAYOUT_BOARD_RUN/runtime-comparison.txt"
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --fp16-reductions matmul --fp16-row-mul compact \
+  --output "$GE_ROW_MUL_RUN/air" &&
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_ROW_MUL_RUN/air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_ROW_MUL_RUN/omc" --reject-cpu-fallback &&
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$HIAI_ROW_MUL_BUILD_DIR" &&
+python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+  --omc "$GE_ROW_MUL_RUN/omc" \
+  --runner "$HIAI_ROW_MUL_BUILD_DIR/build/qwen35_dflash_hiai" \
+  --reference "$GE_BOARD_RUN/reference.json" \
+  --output "$HDC_ROW_MUL_RUN_DIR" --execution-only
 ```
 
-编译与板端结果分别保留在两个新目录。原形控制可能留在CPU；关注同组候选是否转成NPU编译分区以及实际加载、执行、数值状态。默认完整探针数现为68，但上面的`--case`只选择本次9项，不重跑旧59项。源图已拆分Concat不代表OMG不会重新合并，完整模型仍未通过执行门槛。
+`&&` 保证编译失败后不构建或上板。沿用原resources、SDK和库配置，不重新prepare或改变专家模式。当前tiny/static源码预期target替换19个row Mul、draft为0；实际以新`row-mul-lowering.json`为准，两图完整编译/执行仍待验证。若仍发生超过9个NPUCL分区回退，按第7节读取本次新图诊断，不直接重编。完整精度和2倍加速均未验证。
 
 **服务器没有 OHOS SDK：[获取 Native SDK 与配置编译路径](ohos-native-sdk.md)。** SDK 留在服务器；本次 `build_hiai.py` 沿用原 resources/环境中的 SDK、头文件和链接资源。
 
@@ -276,7 +280,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
   --output "$AI_RUN_DIR/op-probe-$(date +%Y%m%d-%H%M%S)"
 ```
 
-默认套件包含 68 个小图，覆盖当前模型中的重点算子和变体，包括 MatMul、BatchMatMul、激活、类型转换、索引、广播，以及四维/五维输入差异；其中包括六项已完成的 rank/keep_dims 归约对照、六个已通过的 MatMul 归约候选，以及本轮9个广播/拼接布局对照；原59项内容保持不变。六项保留为独立小图对照；模型导出默认 native，当前双图流程显式选择 MatMul 归约。MatMul 包含输出宽度为 1、2、8 的常量/动态右输入，BatchMatMul 包含卷积降解所用的 `[48,8,4] × [48,4,1]`。每个案例生成独立 AIR/OMC 和输入，按 `hdc -t "$SN" -s "$BIP"` 上传后实际调用 HIAI Load 与 Process，并取回输出和日志。单个案例编译或执行失败会记录后继续测试其他案例；全部案例编译失败时返回非零退出码。六项归约候选现已全部执行和数值通过，当前按本文开头验证9项布局候选；小图首次编译和复测命令保存在[第7节](direct-model-air.md#首次生成六项-matmul-候选)，无需重跑默认整套。
+默认套件包含 68 个小图，覆盖当前模型中的重点算子和变体，包括 MatMul、BatchMatMul、激活、类型转换、索引、广播，以及四维/五维输入差异；其中包括六项已完成的 rank/keep_dims 归约对照、六个已通过的 MatMul 归约候选，以及本轮9个广播/拼接布局对照；原59项内容保持不变。六项保留为独立小图对照；模型导出默认 native，当前双图流程显式选择 MatMul 归约与row Mul compact。MatMul 包含输出宽度为 1、2、8 的常量/动态右输入，BatchMatMul 包含卷积降解所用的 `[48,8,4] × [48,4,1]`。每个案例生成独立 AIR/OMC 和输入，按 `hdc -t "$SN" -s "$BIP"` 上传后实际调用 HIAI Load 与 Process，并取回输出和日志。单个案例编译或执行失败会记录后继续测试其他案例；全部案例编译失败时返回非零退出码。六项归约候选现已全部执行和数值通过，9项布局对照也已回传，当前按本文开头验证可选row Mul完整双图；小图首次编译和复测命令保存在[第7节](direct-model-air.md#首次生成六项-matmul-候选)，无需重跑默认整套。
 
 输出目录包含 `report.json`、`report.txt` 和 `results.tar.gz`。报告分别记录各阶段结果；浮点数学案例使用 FP16 参考对比，默认 `rtol=0.01`、`atol=0.002`，纯复制/重排和整数结果要求精确一致。小图成功只能证明该输入形状、类型和工具链下的案例通过，不能据此宣称整个算子支持所有形状，或完整模型全部由 NPU 执行。算子执行成功与设备分区证据分别记录。
 

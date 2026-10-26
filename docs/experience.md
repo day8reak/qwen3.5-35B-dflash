@@ -367,3 +367,15 @@ run：`20261026T024720Z-27959-5f7575`。用户新诊断`ge-reduce-inspect-202610
 311项相关主机测试、54段文档shell语法及实际9项prepare-only均通过；旧59项发射C++、输入/参考字节和阈值逐项哈希一致。三个独立审查覆盖两helper、实际recipe、case注册、原参考及native-donor命令；历史入口误指整图重跑的文字已同步。证据为`specs/fp16-layout-probe-verification.json`。没有运行用户内部OMG或板端，不改共享工具链。下一步用新batch一次compile-only，再复用原native donor刷新probe并replay-all，按每项编译、Load、Process与数值结果选择后续整图适配。
 
 经验审计固化在模型级shape守卫、真实recipe测试、distinct64端口fixture和旧案例哈希核对。MoE布尔/整数、TopK等CPU候选仍待后续处理，不因本轮少量候选通过预报整图≤9分区；布局支持、OMG重合并、设备数值和整图分区数保留为待证。执行链路优先、完整精度后置和最终DFlash至少2倍目标保持，未新增通用技能规则。
+
+## 2026-10-26：布局九项通过后仅推进 row Mul
+
+run：`20261026T032819Z-30205-6073af`。用户回传`layout-probe-20261026-113524`及`layout-board-20261026-113529`，九项均Load、Process和原数值比较通过。两种row Mul原形主图NPU0/CPU1，compact均NPU1/CPU0；outer Sub compact仍为NPU2/CPU1，原形为NPU0/CPU1；Concat64原形、fan8、fan2均NPU1/CPU0。GPU/ISP均0，实际运行位置均UNVERIFIED。证据是用户粘贴报告，未独立获取原始归档和哈希；上一建议revision为37ba5d3，用户实际revision未知。
+
+本轮只推进两种已验证row Mul形状的可选整图适配。按原C序展平相同前缀，保持左右操作数、FP16 dtype和一次Mul出口，恢复原输出形状；不引入新算术或扩大数值门槛。Sub降维未消除CPU分区，不晋级整图；Concat控制已经单NPU分区，不能把整图CPU候选归因于64路扇入，源图树也不能证明OMG保留其层次。本轮保持Sub和Concat原实现，后续如需处理应读取整图上下文与优化后证据。
+
+新增显式`export --fp16-row-mul compact`与已有`--fp16-reductions matmul`组合，两个默认仍为native。原prepared权重与参考身份保留，导出每图`row-mul-lowering.json`供替换/保留计数核验。本地tiny/static原IR统计预期target19项（rows16十项、rows128九项）、draft0项；这不是用户新整图实际计数或分区结果。当前新整图编译与上板均待执行，不预报117个CPU候选会精确减少多少，不能保证解除9分区上限。
+
+文档主入口使用新GE_ROW_MUL_RUN，导出、带回退拒绝的编译、新正式runner构建及execution-only以&&串联。失败保留新产物并inspect-compile，成功才强制target/draft各执行一次；不覆盖旧结果，不更换库、SDK或专家策略。经验审计将“成功控制反驳简单fan-in归因”和“混合分区候选不自动晋级”记录在本模型，未更改通用技能或共享资源。当前优先打通执行，完整精度后置未豁免，DFlash至少2倍仍未测量。
+
+本次整图候选的主机验证为272项通过、4项真实GE头文件/库测试因未配置而跳过，57段文档shell语法通过。实际发射报告为target Mul总312项、替换19、保留293；draft总41、全部保留；FP16归约仍为target421/draft10项。与37ba5d3的发射器比较，target/draft在native和matmul归约模式下的默认C++、规范化recipe及常量字节均一致。真实候选recipe投影回tiny中立IR后，长度1/3/8的target/draft Top1精确一致、特征通过原FP16门槛，原图和prepared权重哈希未变；此验证不等于完整AIR或设备执行。两次独立审查覆盖发射shape/引用合同、组合回归、默认兼容与报告哈希绑定。完整证据为`specs/ge-row-mul-integration-verification.json`，内部OMG和板端整图继续由用户现场复测。

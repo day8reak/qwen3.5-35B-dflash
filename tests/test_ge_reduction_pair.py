@@ -1,11 +1,13 @@
-"""Embed emitted FP16 reduction recipes in a complete tiny host graph pair.
+"""Embed emitted FP16 reduction/row-Mul recipes in a complete tiny host pair.
 
-Only reduction/scan recipes are projected back into the neutral IR; all other
-nodes retain the original oracle. This is not full serialized-model execution,
-OMG validation, a device result, or a claim of model-quality accuracy.
+Only reduction/scan and explicitly selected row-Mul recipes are projected back
+into the neutral IR; all other nodes retain the original oracle. This is not
+full serialized-model execution, OMG validation, a device result, or a claim of
+model-quality accuracy.
 """
 from collections import Counter
 from pathlib import Path
+import pickle
 
 import numpy as np
 import torch
@@ -18,19 +20,40 @@ from qwen35_moe_dflash.hashing import sha256_file
 from test_ge_select_lowering import RecipeReader
 
 
-def _project_recipe(clone, source, node, folder, counts):
+ROW_MUL_SHAPES = {((1, 8, 2, 8), (1, 8, 2, 1)),
+                  ((1, 2, 64, 8), (1, 2, 64, 1))}
+
+
+def _project_recipe(clone, sources, node, folder, counts, compact_rows=False):
     """Interpret actual emitted edges, constants and attrs, not lowering plans."""
     fixture = Graph("reduction_fixture")
-    x = fixture.input("x", source.shape, source.dtype)
-    fixture.outputs = [fixture.op(node.kind, x, shape=node.output.shape,
+    fixture_inputs = [fixture.input(f"x{index}", source.shape, source.dtype)
+                      for index, source in enumerate(sources)]
+    fixture.outputs = [fixture.op(node.kind, *fixture_inputs, shape=node.output.shape,
                                   dtype=node.output.dtype, attrs=dict(node.attrs), name="result")]
-    report = {}
-    emit_cpp(fixture, recipe_dir=folder, fp16_reductions="matmul", reduction_report=report)
+    report, row_report = {}, {}
+    kwargs = ({"fp16_row_mul": "compact", "row_mul_report": row_report}
+              if compact_rows else {})
+    emit_cpp(fixture, recipe_dir=folder, fp16_reductions="matmul", reduction_report=report, **kwargs)
     records, inputs, outputs = RecipeReader(folder / "graph.recipe").read()
-    assert len(inputs) == len(outputs) == 1
+    assert len(inputs) == len(sources) and len(outputs) == 1
+    assert [records[index]["name"] for index in inputs] == [value.name for value in fixture_inputs]
+    bound_inputs = dict(zip(inputs, sources))
     assert report["counts"]["retained"] == 0
-    assert report["counts"]["replaced"] == (source.shape[node.attrs["axis"]]
-                                               if node.kind == "cumsum" else 1)
+    if node.kind == "mul":
+        assert compact_rows and report["counts"]["replaced"] == 0
+        assert row_report["counts"]["replaced"] == 1
+        assert Counter(record["type"] for record in records) == {
+            "Data": 2, "Const": 3, "Reshape": 3, "Mul": 1}
+        operation, = [record for record in records if record["type"] == "Mul"]
+        rows = int(np.prod(sources[0].shape[:-1]))
+        assert [port["shape"] for port in operation["inputs"]] == [(rows, 8), (rows, 1)]
+        assert operation["outputs"][0]["shape"] == (rows, 8)
+    else:
+        assert report["counts"]["replaced"] == (sources[0].shape[node.attrs["axis"]]
+                                                 if node.kind == "cumsum" else 1)
+        if compact_rows:
+            assert row_report["counts"]["replaced"] == 0
     counts["scan_prefixes"] += report["counts"]["scan_prefix_replaced"]
     counts["matmuls"] += sum(record["type"] == "MatMul" for record in records)
     counts[node.kind] += 1
@@ -44,11 +67,13 @@ def _project_recipe(clone, source, node, folder, counts):
         output, = record["outputs"]
         kind = record["type"]
         args = [values[(port["src"], port["src_port"])] for port in record["inputs"]]
+        assert [(value.shape, value.dtype) for value in args] == [
+            (port["shape"], port["dtype"]) for port in record["inputs"]]
         name = f"__projected/{node.output.name}/{index}"
         shape, dtype = output["shape"], output["dtype"]
         if kind == "Data":
-            assert index == inputs[0] and shape == source.shape and dtype == source.dtype
-            value = source
+            value = bound_inputs[index]
+            assert shape == value.shape and dtype == value.dtype
         elif kind == "Const":
             path, offset, size = record["constant"]
             with Path(path).open("rb") as stream:
@@ -78,8 +103,11 @@ def _project_recipe(clone, source, node, folder, counts):
             elif kind == "ConcatD":
                 assert record["attrs"]["N"] == len(args)
                 ir_kind, attrs = "concat", {"axis": record["attrs"]["concat_dim"]}
+            elif kind == "Mul":
+                assert node.kind == "mul" and compact_rows
+                ir_kind, attrs = "mul", {}
             else:
-                raise AssertionError(f"unexpected operation in emitted reduction recipe: {kind}")
+                raise AssertionError(f"unexpected operation in emitted candidate recipe: {kind}")
             value = clone.op(ir_kind, *args, shape=shape, dtype=dtype, attrs=attrs, name=name)
         assert (value.shape, value.dtype) == (shape, dtype)
         values[(index, output["port"])] = value
@@ -89,7 +117,8 @@ def _project_recipe(clone, source, node, folder, counts):
     return result
 
 
-def _project_reductions(original, folder):
+def _project_reductions(original, folder, compact_rows=False):
+    original_snapshot = pickle.dumps(original)
     clone, values, counts = Graph(original.name), {}, Counter()
     for value in original.inputs:
         values[value.name] = clone.input(value.name, value.shape, value.dtype)
@@ -101,7 +130,11 @@ def _project_reductions(original, folder):
         args = [values[value.name] for value in node.inputs]
         if node.kind in {"reduce_mean", "reduce_sum", "cumsum"} and node.inputs[0].dtype == "float16":
             assert len(args) == 1 and node.output.dtype == "float16"
-            value = _project_recipe(clone, args[0], node, folder / node.output.name, counts)
+            value = _project_recipe(clone, args, node, folder / node.output.name, counts, compact_rows)
+        elif (compact_rows and node.kind == "mul" and node.output.dtype == "float16"
+              and all(value.dtype == "float16" for value in node.inputs)
+              and tuple(value.shape for value in node.inputs) in ROW_MUL_SHAPES):
+            value = _project_recipe(clone, args, node, folder / node.output.name, counts, compact_rows)
         else:
             value = clone.op(node.kind, *args, shape=node.output.shape, dtype=node.output.dtype,
                              attrs=dict(node.attrs), name=node.output.name)
@@ -119,21 +152,25 @@ def _project_reductions(original, folder):
     assert integer_reductions(clone) == integer_reductions(original)
     assert not any(node.kind in {"reduce_sum", "reduce_mean", "cumsum"}
                    and node.inputs[0].dtype == "float16" for node in clone.nodes)
+    assert pickle.dumps(original) == original_snapshot
     return clone, counts
 
 
-def test_emitted_fp16_reductions_preserve_tiny_pair_outputs(tmp_path, monkeypatch):
+def _check_pair(tmp_path, monkeypatch, compact_rows=False):
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
     prepared = tmp_path / "prepared"
     plan = prepare_pair(prepared, sequence_length=8, tiny=True)
     original = build_pair(plan["target_config"], plan["draft_config"], 8)
     projected, counts = [], {}
     for graph in original:
-        candidate, count = _project_reductions(graph, tmp_path / "recipes" / graph.name)
+        candidate, count = _project_reductions(graph, tmp_path / "recipes" / graph.name, compact_rows)
         projected.append(candidate)
         counts[graph.name] = count
-    assert counts["target"] == {"reduce_mean": 14, "reduce_sum": 215, "cumsum": 3,
-                                 "scan_prefixes": 192, "matmuls": 421}
+    target_counts = {"reduce_mean": 14, "reduce_sum": 215, "cumsum": 3,
+                     "scan_prefixes": 192, "matmuls": 421}
+    if compact_rows:
+        target_counts["mul"] = 19
+    assert counts["target"] == target_counts
     assert counts["draft"] == {"reduce_mean": 10, "scan_prefixes": 0, "matmuls": 10}
     weights = {}
     for key, item in plan["weights"].items():
@@ -160,3 +197,11 @@ def test_emitted_fp16_reductions_preserve_tiny_pair_outputs(tmp_path, monkeypatc
         np.testing.assert_array_equal(actual_draft, expected_draft)
     for item in plan["weights"].values():
         assert sha256_file(prepared / item["path"]) == item["sha256"]
+
+
+def test_emitted_fp16_reductions_preserve_tiny_pair_outputs(tmp_path, monkeypatch):
+    _check_pair(tmp_path, monkeypatch)
+
+
+def test_emitted_fp16_reductions_and_compact_row_mul_preserve_tiny_pair_outputs(tmp_path, monkeypatch):
+    _check_pair(tmp_path, monkeypatch, compact_rows=True)

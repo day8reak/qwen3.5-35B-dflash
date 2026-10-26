@@ -280,8 +280,8 @@
     },
     "board_execution_bringup": {
       "run_id": "20261026T002510Z-8234-33823c",
-      "status": "REDUCTIONS_LOWERED_REMAINING_LAYOUT_PROBES_PENDING",
-      "scope": "Existing compiled target/draft OMC pair; not a newly compiled full-weight model",
+      "status": "ROW_MUL_INTEGRATION_HOST_VALIDATED_VENDOR_COMPILE_AND_BOARD_PENDING",
+      "scope": "New direct-GE candidate export/compile/execution chain reusing existing tiny prepared weights; not a full-weight model",
       "runtime_deployment": "Private library set excludes DDK HCL pair; process path includes /vendor/lib64/chipsetsdk",
       "runner_changes": [
         "ND exact, trailing-one-to-rank4, or rank3 leading-one-to-rank4 adaptation; rank2 token axis contract unchanged",
@@ -290,13 +290,13 @@
       "accuracy": "DEFERRED_NOT_EVALUATED",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "Follow docs/direct-model-air.md#当前下一步广播与拼接布局探针: compile nine selected controls/candidates then replay from OP_PROBE_RUN native donor.",
+      "next_command": "Follow docs/direct-model-air.md#当前下一步可选-row-mul-整图适配: reuse prepared; export --fp16-reductions matmul --fp16-row-mul compact; compile --reject-cpu-fallback; build a new formal runner and execute both graphs only after successful compile.",
       "requires": "Existing prepared weights, same GE/internal OMG and SDK/HIAI resources; new AIR/OMC/build/board directories; unchanged FP16 and original reference identity",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "Main target still exceeds partition limit9. New complete support snapshot has117 CPU-only compute candidates after421 FP16 reductions were replaced; prioritize19 row Mul,3 outer Sub,6 large-fan-in Concat candidates. No integrated board execution yet.",
-      "followup_run_id": "20261026T024720Z-27959-5f7575",
-      "followup_evidence": "specs/fp16-layout-probe-verification.json"
+      "current_failure": "The previous MatMul-reduction target still exceeds partition limit9. Nine layout probes now pass Load/Process/numerical; only compact row Mul improves both tested compiler partitions to NPU1/CPU0. Integrated recovery remains pending; Sub/Concat unchanged.",
+      "followup_run_id": "20261026T032819Z-30205-6073af",
+      "followup_evidence": "specs/ge-row-mul-integration-verification.json"
     }
   },
   "operator_support_probe": {
@@ -322,6 +322,15 @@
       "runtime_evidence": "USER_LOG_NPUCL_REGISTERED_GRAPH_LOAD_PASSED_ADD_DEVICE_SUBMISSION_OBSERVED",
       "io_fix_evidence": "specs/hiai-probe-nd-padding-verification.json",
       "replay_evidence": "specs/hiai-operator-replay-verification.json"
+    },
+    "latest_layout_probe": {
+      "status": "USER_REPORTED_NINE_CASES_NUMERICAL_PASS",
+      "compiled_run": "layout-probe-20261026-113524",
+      "reported_run": "layout-board-20261026-113529",
+      "evidence": "specs/hiai-model-execution-user-report.json#fp16_layout_probe_replay",
+      "runtime_placement": "UNVERIFIED",
+      "integrated_candidate": "row Mul compact only; Sub/Concat unchanged",
+      "full_model_gate_advanced": false
     }
   },
   "delivery_objective": "specs/dflash-contract.json#delivery_objective",
@@ -332,6 +341,6 @@
     "accuracy_work": "DEFERRED_NOT_WAIVED",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
     "guide": "docs/hdc-board-run.md",
-    "next_action": "Run nine isolated FP16 broadcast/concat layout controls and candidates. Choose integrated adaptation from compiler, Load/Process and original-reference numerical evidence; preserve current graph and thresholds."
+    "next_action": "Integrate only tested FP16 row Mul compact shapes as an opt-in alongside MatMul reductions, retaining prepared weights/reference and original Sub/Concat. Compile with rollback rejection into a new directory; build a fresh formal runner and execute target/draft only after success. Full-model accuracy and DFlash >=2x remain unvalidated."
   }
 }
