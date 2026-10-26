@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "date": "2026-10-26",
-  "run_id": "20261026T094740Z-21011-32f1a9",
+  "run_id": "20261026T101534Z-22567-a7a57c",
   "evidence_kind": "USER_PASTED_CONSOLE_NOT_INDEPENDENTLY_RETRIEVED",
   "suggested_revision": "60a9b77",
   "actual_revision": "NOT_REPORTED",
@@ -80,11 +80,11 @@
     "adjacent_cast_check": {
       "raw_srcType": 0,
       "raw_inputDataType": 1,
-      "association": "Strong adjacent-log evidence for failing target insert_cast_4. Its name occurs in target OMC bytes, but the completed conversion JSON did not expose its node attributes or input edges.",
+      "association": "User-decoded target CPU SubGraph_0 contains insert_cast_4 with src_dtype=0, dst_dtype=1 and input/output protobuf dtype=2. Its exact producer v10/BatchMatMul also outputs dtype=2. This matches the node name and mismatch pattern in the older candidate HiLog, whose PID binding remains unconfirmed.",
       "enum_decode": "NOT_VERIFIED_FOR_USER_INTERNAL_DDK"
     },
-    "root_cause": "NOT_ESTABLISHED",
-    "underlying_graph_or_runtime_defect": "PENDING_OFFLINE_CPU_COMPILED_SUBGRAPH_INSPECTION",
+    "root_cause": "SERIALIZED_CAST_CONTRACT_ANOMALY_LOCALIZED_INTERNAL_COMPILER_CAUSE_UNRESOLVED",
+    "underlying_graph_or_runtime_defect": "SERIALIZED_CAST_SOURCE_CONTRACT_ANOMALY_OBSERVED_COMPILER_INTERNAL_CAUSE_UNRESOLVED",
     "requested_local_artifacts": {
       "status": "USER_REPORTED_COMPILE_MANIFEST_AND_TARGET_OMG_LOG_INSPECTED",
       "compiler_diagnostics": {
@@ -104,9 +104,13 @@
         "observed": "The initial terminal excerpt jumped from backend registration to teardown; middle records had not been pasted.",
         "root_cause_at_that_point": "NOT_ESTABLISHED",
         "next_action_at_that_point": "Read existing snapshot lines130330..130480 without recompilation or replay; now completed by the user."
+      },
+      {
+        "run_id": "20261026T094740Z-21011-32f1a9",
+        "observed": "Main JSON exposed only target cast5..13; target cast4 was then unresolved. Later CPU task decoding now exposes cast4 and its producer; previous omc_inspection records remain historical main-JSON evidence."
       }
     ],
-    "cast_creation_stage": "UNRESOLVED_TARGET_NAME_PRESENT_IN_OMC_BYTES_NODE_NOT_EXPOSED_IN_JSON",
+    "cast_creation_stage": "FAILED_NAME_AND_NODE_PRESENT_IN_SERIALIZED_CPU_SUBGRAPH_BEFORE_LOAD",
     "omc_inspection": {
       "status": "USER_REPORTED_CONVERSION_COMPLETE_NODE_COVERAGE_PARTIAL",
       "evidence_kind": "USER_PASTED_INSPECTION_RESULTS_NOT_INDEPENDENTLY_RETRIEVED",
@@ -220,11 +224,12 @@
         "Cast attributes and protobuf descriptor dtype fields use different enum spaces; their raw numeric differences are not direct mismatch evidence.",
         "Visible target cast5/cast6 and draft cast4 are not a substitute for the missing target cast4 attributes and producer.",
         "Underlying defect and exact target CPU subgraph remain unresolved; conversion completion alone is not full graph coverage."
-      ]
+      ],
+      "scope": "Historical main-JSON inspection result before CPU task decoding; see cpu_subgraph_inspection for the later complete CPU coverage."
     },
     "cpu_subgraph_inspection": {
-      "tool_status": "IMPLEMENTED_HOST_VERIFICATION_PENDING",
-      "user_execution": "NOT_REPORTED",
+      "tool_status": "IMPLEMENTED_HOST_VERIFIED",
+      "user_execution": "USER_REPORTED_DIAGNOSTIC_COMPLETE",
       "command": "python3 \"$GE_MODEL_TOOL\" inspect-omc-cpu --omc \"$GE_GDN_MODEL_RUN/omc\" --inspection \"$GE_GDN_OMC_INSPECT_RUN\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --output \"$GE_GDN_CPU_INSPECT_RUN\"",
       "inputs": "Existing OMC bundle, hash-checked previous inspect-omc report and model.json, and the active DDK libai_fmk_graph_proto_host.so schema symbols",
       "method": "Validate the IMOD container and common main ModelDef structure against the existing JSON before following CPUCL GraphOp task offset/size into bounded GraphDef records",
@@ -234,14 +239,105 @@
         "schema-evidence.json",
         "per-graph CPU subgraph JSON"
       ],
-      "limits": "Name, layout and schema mismatches produce explicit partial coverage. No guessed fallback scan, OMG invocation, compilation or board execution. No failed target cast4 descriptor or full CPU graph result is yet reported."
+      "limits": "User-pasted results, not independently retrieved. All CPU slices decoded by the user tool; only insert_cast_4 and its producer were expanded in the supplied console. Other CPU Cast semantics have not been independently audited from their complete JSON. Historical HiLog PID remains unbound. No new compilation or board execution in this inspection.",
+      "reported_run": "ge-gdn-cpu-inspect-20261026-184436",
+      "target": {
+        "status": "CPU_GRAPHS_DECODED",
+        "subgraph_cast_counts": {
+          "SubGraph_0": 2,
+          "SubGraph_2": 4,
+          "SubGraph_4": 4,
+          "SubGraph_6": 4,
+          "SubGraph_8": 4,
+          "SubGraph_10": 0
+        },
+        "cast_count": 18
+      },
+      "draft": {
+        "status": "CPU_GRAPHS_DECODED",
+        "subgraph_cast_counts": {
+          "SubGraph_0": 6,
+          "SubGraph_2": 0,
+          "SubGraph_4": 0,
+          "SubGraph_6": 0
+        },
+        "cast_count": 6
+      },
+      "failed_node": {
+        "graph": "target",
+        "subgraph": "SubGraph_0",
+        "slice_file_offset": 5093586,
+        "slice_bytes": 6090,
+        "path": "$/op/9",
+        "name": "insert_cast_4",
+        "type": "CastT",
+        "attrs": {
+          "src_dtype": 0,
+          "dst_dtype": 1
+        },
+        "input_edge": "v10:0",
+        "input_proto_dtype": 2,
+        "output_proto_dtype": 2,
+        "input_shape": [
+          1,
+          2,
+          8
+        ],
+        "output_shape": [
+          1,
+          2,
+          8
+        ],
+        "input_bytes": 32,
+        "output_bytes": 32,
+        "descriptor_device_type": "NPU",
+        "descriptor_device_type_scope": "Serialized metadata in an explicitly CPUCL-owned task; not runtime placement"
+      },
+      "producer": {
+        "name": "v10",
+        "type": "BatchMatMul",
+        "inputs": [
+          "v8:0",
+          "v9:0"
+        ],
+        "is_input_const": [
+          true,
+          true
+        ],
+        "input_shapes": [
+          [
+            1,
+            2,
+            1
+          ],
+          [
+            1,
+            1,
+            8
+          ]
+        ],
+        "output_shape": [
+          1,
+          2,
+          8
+        ],
+        "input_proto_dtypes": [
+          2,
+          2
+        ],
+        "output_proto_dtype": 2,
+        "fp16_flag": false,
+        "adj_x1": false,
+        "adj_x2": false
+      },
+      "interpretation": "Same-OMC visible main Casts provide empirical attr0/proto1 and attr1/proto2 controls; target CPU insert_cast_4 instead declares attr src0 for proto2 input. Raw integer inequality alone is not used as a mismatch rule. Producer and Cast input/output descriptors agree on proto2. This locates the serialized anomaly and source path, but does not establish the internal compiler pass responsible or successful runtime recovery."
     }
   },
   "source_audit": {
     "load_api": "Both formal and probe paths use Init, HIGH/FRAMEWORK_NONE/OFFLINE/NPU, SetModelPath and SetModelBuffer with retained backing storage.",
     "library_policy": "Both exclude exact DDK HCL pair and prepend private lib plus /vendor/lib64/chipsetsdk. Matching policy does not establish matching deployed library hashes.",
     "cast_contract": "The public GE Cast interface declares dst_type; source dtype comes from its input descriptor. Omission of a source-level src_type attribute is not itself a defect, and adding one without inspecting the actual CastT is unsupported.",
-    "compiled_node_inspection": "inspect-omc conversion has completed for the existing target and draft OMC. Target JSON exposes insert_cast_5..13 only, while target OMC bytes also contain insert_cast_4. The next step inspects CPU compiled-subgraph payloads offline using the existing OMC and existing conversion JSON; it does not rerun OMG conversion or use the pre-optimization recipe as a substitute.",
+    "compiled_node_inspection": "User CPU task decoding now identifies target insert_cast_4 <- v10/BatchMatMul; local source construction maps v10 to the constant RoPE frequency product in ge_target.py. Target and draft OMC graphs remain preserved.",
     "topk_contract_bug": "Source audit fixed contradictory requested TopK dtype/shape and added shared dtype/shape checks. Verification: specs/ge-dtype-contract-verification.json. Legal probe and tiny-pair construction is unchanged, so this does not resolve insert_cast_4 or justify replaying the same model.",
     "differences_not_proven_causes": [
       "Fresh formal build library discovery versus frozen old probe donor inventory",
@@ -251,21 +347,64 @@
     "not_inferred": [
       "No claim that the HCL dlopen line is the terminal Load failure",
       "No claim all model operations are NPU-only",
-      "No claim that the preceding FP16MatMul is the direct producer of insert_cast_4 without compiled graph edges",
       "No mapping of raw dtype codes to names using a different DDK enum",
       "No accusation of Gather arithmetic, IO layout, draft coexistence or mmap defect without restoration evidence",
-      "No attribution of insert_cast_4 creation to compilation or runtime from the missing OMG-log match or a different local library",
       "No interpretation of raw Cast-attribute versus protobuf-descriptor integer inequality as a dtype defect",
       "No association of draft insert_cast_4 with the target Load failure merely because their names match",
-      "No claim that a byte-string match decodes the target CPU subgraph or identifies the failing node producer"
+      "No claim that a byte-string match decodes the target CPU subgraph or identifies the failing node producer",
+      "No claim that the internal compiler pass responsible is identified by locating the already serialized Cast node",
+      "No claim that removing the constant producer fixes every CPU Cast or establishes new board execution"
     ],
     "local_creation_stage_clue": {
       "artifact": "locally declared blue libcpucl_host",
       "observed": "CPUCL InsertConvertOpOptimizer contains the insert_cast_ literal",
       "limit": "This is not the user active internal DDK. It identifies a CPUCL conversion-insertion implementation in that reference SDK, but establishes neither creation stage nor the underlying defect in this run."
+    },
+    "constant_k1_workaround": {
+      "status": "HOST_ORACLE_AND_EXPORT_REGRESSIONS_PASSED_BOARD_PENDING",
+      "source_node": "target/v10",
+      "source_location": "model/qwen35_moe_dflash/ge_target.py RoPE frequency",
+      "tiny_shapes": [
+        [
+          1,
+          2,
+          1
+        ],
+        [
+          1,
+          1,
+          8
+        ],
+        [
+          1,
+          2,
+          8
+        ]
+      ],
+      "full_configuration_shapes": [
+        [
+          1,
+          32,
+          1
+        ],
+        [
+          1,
+          1,
+          8
+        ],
+        [
+          1,
+          32,
+          8
+        ]
+      ],
+      "scope": "Bounded finite FP16 MatMul with both inputs direct graph constants and effective K=1; use the original FP32 np.matmul followed by FP16 output boundary. No new external weight access; signed-zero semantics follow MatMul, not an elementwise multiplication shortcut.",
+      "audit": "Current tiny/full selected target each have one eligible node. Tiny static/selected native/gather variants map to the same RoPE node. Draft positions remain dynamic; all 118 existing probes have no all-constant MatMul. This audit is source-level and does not assert correctness of all 24 compiled CPU Casts.",
+      "verification": "specs/ge-constant-matmul-verification.json",
+      "board_status": "NEW_GRAPH_NOT_RUN"
     }
   },
-  "next_action": "Run inspect-omc-cpu with the existing OMC bundle and completed GE_GDN_OMC_INSPECT_RUN in a fresh GE_GDN_CPU_INSPECT_RUN output directory, using the same active DDK identity. Read report.txt. This offline path reuses hash-checked JSON, validates the container/main graph and follows bounded CPUCL task records; it invokes no OMG and performs no compilation or board execution. Host verification is pending; target insert_cast_4 and its producer remain unresolved until actual inspection evidence is returned.",
+  "next_action": "Pull source and follow fresh GE_ROPE_MODEL_RUN export/compile/build/execution-only chain in docs/hdc-board-run.md; reuse prepared/reference and preserve original OMC/inspection artifacts.",
   "full_model_execution": "FAILED_AT_TARGET_LOAD",
   "full_model_accuracy": "DEFERRED_NOT_EVALUATED",
   "performance": "NOT_MEASURED",

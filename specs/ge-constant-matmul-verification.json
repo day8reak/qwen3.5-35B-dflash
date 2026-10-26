@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T101534Z-22567-a7a57c",
+  "baseline_commit": "55f22dc",
+  "status": "HOST_ORACLE_AND_EXPORT_REGRESSIONS_PASSED_BOARD_PENDING",
+  "scope": "Bounded host folding of small finite FP16 direct-constant K=1 MatMul; removes target static RoPE producer from emitted records. No private OMG or board validation.",
+  "trigger": {
+    "user_evidence": "specs/gdn-model-load-user-report.json",
+    "graph": "target",
+    "subgraph": "SubGraph_0",
+    "cast": "insert_cast_4",
+    "producer": "v10/BatchMatMul",
+    "shapes": [
+      [
+        1,
+        2,
+        1
+      ],
+      [
+        1,
+        1,
+        8
+      ],
+      [
+        1,
+        2,
+        8
+      ]
+    ],
+    "attributes": {
+      "src_dtype": 0,
+      "dst_dtype": 1
+    },
+    "input_output_proto_dtypes": [
+      2,
+      2
+    ],
+    "observed": "Serialized Cast source declaration conflicts with the same-OMC main-Cast attribute/descriptor controls. Historical runtime candidate reports matching node name and src/input mismatch; original PID association is still unconfirmed."
+  },
+  "implementation": {
+    "location": "model/qwen35_moe_dflash/ge_constants.py",
+    "eligible": "Both operands directly in graph.constants; FP16 inputs/output, K=1, positive static shape and valid batch/output shape, actual boolean transpose flags, known attributes, finite operands/result, original tensor and retained-byte budgets.",
+    "evaluation": "Convert inputs to FP32, apply original transpose flags, np.matmul, one original FP16 output boundary. Preserve node name; ordinary export liveness drops original constant BMM operands.",
+    "excluded": [
+      "Dynamic inputs",
+      "External weights, including small weights",
+      "Previously folded expressions",
+      "K>1",
+      "Unknown attributes",
+      "Nonfinite operands or FP16 overflow",
+      "Over-budget inputs or output"
+    ],
+    "abi_weights": "Original IR, tensor ABI and surviving FileConstant records/payloads unchanged. Compiler flags and runtime library policy unchanged."
+  },
+  "source_audit": {
+    "artifact": {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T101534Z-22567-a7a57c/constant-k1-source-audit.json",
+      "sha256": "8b549cb7c430cd5999fda82d2b1b7b58ab3bb13cd541b54ef7fe5a046e75f0d2"
+    },
+    "cases": "S=8 tiny static and full selected configuration metadata, no checkpoint weights read; tiny static/selected native/gather variants independently mapped.",
+    "target_constant_matmuls": 1,
+    "draft_constant_matmuls": 0,
+    "existing_probe_cases": 118,
+    "probe_constant_matmuls": 0,
+    "tiny_fold_bytes": 32,
+    "full_configuration_fold_bytes": 512,
+    "limit": "Source metadata audit is not full-weight inference, and does not validate the 24 compiled CPU Casts whose complete user JSON was not locally retrieved."
+  },
+  "numeric_scope": {
+    "artifact": {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T101534Z-22567-a7a57c/constant-k1-semantics-audit.json",
+      "sha256": "50e3415581a712de918351218772a6d0625eba265d953e5a5729da028b6b426e"
+    },
+    "finite_fp16_products_checked": 698368,
+    "fp32_vs_fp64_matmul_fp16_byte_differences": 0,
+    "matmul_vs_multiply_zero_sign_differences": 63497,
+    "decision": "Do not substitute elementwise multiply for K=1 MatMul; retain np.matmul and exclude nonfinite domain.",
+    "limits": "Host oracle equivalence only. Device handling of signed zero, subnormal/FTZ and rounding remains unverified."
+  },
+  "validation": {
+    "unique_test_outcomes": {
+      "passed": 249,
+      "skipped": 4,
+      "failed": 0
+    },
+    "junit": [
+      {
+        "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T101534Z-22567-a7a57c/pytest-constant-k1-agent.xml",
+        "sha256": "ef256f4379b15bdcbaab8735f7430e5b1ed1330b4e1d5c18c299ae1da5ea1add"
+      },
+      {
+        "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T101534Z-22567-a7a57c/rope-full-pair-tests.xml",
+        "sha256": "1c4b20811dc8db471fa371dfdefb80729d880270558dbef2e40d53e2286669eb"
+      },
+      {
+        "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T101534Z-22567-a7a57c/ge-regression.xml",
+        "sha256": "9d23015dd659584309e92ed39b9b201b4fd74a73080aa929d83b62e9f1425813"
+      }
+    ],
+    "deduplication": "Union by test module basename and parametrized test name; repeated constant tests count once.",
+    "whole_pair_cases": "Actual default and matmul/compact/gather recipe emission; target v10 becomes exact FP16 Const, draft records identical, ABI and all surviving external weights unchanged. Complete target and downstream draft oracle bytes agree at valid lengths1/3/8 under native and gather construction.",
+    "guards": "Signed zero, transpose and batch broadcast, nonfinite input/output, shape/metadata rejection, byte-budget-before-payload and never-reading-external-weight sentinels.",
+    "docs": {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T101534Z-22567-a7a57c/docs-verification.json",
+      "sha256": "30eae237aa0062669af24643f97237b3311fed90821ac92f50ce54a3d1ffd884"
+    },
+    "independent_review": "No material blocker; retained host/device parity limitation.",
+    "skipped": "Two actual GE header compilation tests require Q35_GE_TEST_INCLUDE; two actual GE Save/Load tests require Q35_GE_TEST_ROOT. Generated recipe records and host oracle were validated; native GE serialization remains unverified in this run."
+  },
+  "source_sha256": {
+    "model/qwen35_moe_dflash/ge_constants.py": "8d4eccdd6a2d21e6da9ab9d6855368553ad4098e4b92dd01508bb08f5678fe01",
+    "model/qwen35_moe_dflash/ge_cpp.py": "cb1a9d97e03f58e7ace63a9b34f6eb7eef378f19b50a5ee6fb841ed92c811309",
+    "model/qwen35_moe_dflash/ge_eval.py": "735faa0a965fa1c3598272392d452b49f86d8c4a80af86b36cb0f2043095a421",
+    "model/qwen35_moe_dflash/ge_target.py": "ce933f88bcd6d75888fdac24ea57d7048ccc99b32a1ad0f59152744b56cdb717",
+    "tests/test_ge_constant_matmul.py": "bf454047f97442daba67f34a6dbce813ea4066725af4f93ff9863924f8305dd4",
+    "tests/test_ge_rope_constant_fold.py": "ae47659aaf882715a231e99ac897d7da2200994853a0e4d36dd3ff6392c885d9"
+  },
+  "device": {
+    "internal_omg": "NOT_RUN",
+    "new_target_load": "NOT_RUN",
+    "new_draft_load": "NOT_RUN",
+    "new_process": "NOT_RUN",
+    "runtime_placement": "UNVERIFIED",
+    "full_model_accuracy": "DEFERRED_NOT_WAIVED",
+    "performance": "NOT_MEASURED"
+  },
+  "environment": "Declared qwen3.5-py310 interpreter, NumPy2.2.6. Default cpro-blue-pending target profile remains absent locally; no resource/profile changes. User owns active private DDK/HDC execution.",
+  "next_action": "Pull source and follow fresh GE_ROPE_MODEL_RUN export/compile/build/execution-only chain in docs/hdc-board-run.md; reuse prepared/reference and preserve original OMC/inspection artifacts.",
+  "experience_audit": {
+    "captured": "CPU task decoding exposes a constant RoPE producer hidden from mode1 JSON; K=1 multiply shortcut can change zero bits; bounded folding keeps original oracle boundary.",
+    "updated_checks": [
+      "tests/test_ge_constant_matmul.py",
+      "tests/test_ge_rope_constant_fold.py"
+    ],
+    "shared_skills_changed": false,
+    "rejected_promotions": [
+      "No claim that internal compiler pass is identified",
+      "No claim all CPU Casts are fixed",
+      "No new runtime/accuracy/performance pass"
+    ]
+  }
+}

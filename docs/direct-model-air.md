@@ -6,15 +6,13 @@
 
 剩余43项探针现已回传：42项编译并完成板端数值比较，1项CastT编译失败；附加HiLog回收失败不需要重跑42项。此前按[整图GDN候选命令](hdc-board-run.md#当前将已验证的-gdn-gather-复制接入整图)复用prepared，显式叠加`--gdn-indexed-copy gather`。该开关仅改写已测FP16形状的三角复制与outer Sub，不改递推算术或权重。每图生成哈希绑定的`gdn-copy-lowering.json`，编译校验其mode/counts与manifest一致。默认`native`保留旧图，未测形状继续原实现。
 
-最新`ge-gdn-model-20261026-171048`已成功编译双图，随后target Load返回1。用户补齐的HiLog显示CPU FP16MatMul初始化成功，CPUCL的`insert_cast_4/CastT`初始化失败，再导致`SubGraph_0` Prepare失败。相邻原始`srcType=0/inputDataType=1`仍需节点和输入边确认；候选PID尚未独立绑定到本次执行。
+最新`ge-gdn-model-20261026-171048`编译通过后，target Load因CPUCL `insert_cast_4/CastT`初始化失败。用户现已用`inspect-omc-cpu`解码target全部6个CPU子图和draft全部4个CPU子图：失败节点位于target `SubGraph_0`，输入是`v10/BatchMatMul`。Cast属性为`src_dtype=0,dst_dtype=1`，但生产者输出、Cast输入/输出的protobuf dtype均为2，shape `[1,2,8]`。同OMC正常main Cast的字段提供经验对照；不能把Cast属性和protobuf枚举的原始数值直接比较。旧HiLog候选PID仍未独立绑定。
 
-编译记录已确认：target主图L113871为NPU=5、CPU=6；draft主图L5697为NPU=3、CPU=4；GPU/ISP均为0，两图的rollback均为`[]`、`compiler_diagnostics`均为`NOT_EMITTED`。target的`omg.log`没有`insert_cast`名称；这项日志检查已经完成。
+源码中`v10`是两个常量的RoPE频率计算。导出器新增有界常量K=1 MatMul折叠，沿用FP32 `np.matmul`后转FP16，保留原节点舍入边界和负零行为；当前tiny target的`v10`成为32字节Const。只接受直接常量、有限FP16及预算内形状，不新增外部权重读取；动态draft位置计算及其他MatMul保留。源码同类审计仅发现target这一处，不能据此宣称所有编译CPU Cast均无问题。
 
-用户现已完成两张已有OMC的JSON转换。target字节中`insert_cast_4`有4次名称匹配，`insert_cast_5..13`各2次，但JSON只暴露后面9个节点；draft字节与JSON均能找到`insert_cast_0..8`。字节匹配次数不是节点数，draft同名节点也不能用于解释target失败。已显示样本中，target cast5的属性dtype为`1→0`、protobuf dtype为`2→1`；target cast6和draft cast4分别为`0→1`与`1→2`。这两类字段属于不同枚举空间，不能用原始编号不相等判定类型冲突。
+按[静态RoPE修复验证链路](hdc-board-run.md#当前读取-gdn-整图加载失败证据)复用prepared/reference，在新的`GE_ROPE_MODEL_RUN`重新导出、编译并执行双图。旧OMC保持不变，无需重复诊断转换或算子批次。主机验证见`specs/ge-constant-matmul-verification.json`；内部OMG、板端Load/Process与完整模型精度性能尚未验证。
 
-转换完成仍未取得target `insert_cast_4`的属性、生产者及完整CPU编译子图。当前使用[离线CPU子图检查入口](hdc-board-run.md#当前读取-gdn-整图加载失败证据)`inspect-omc-cpu`，复用原OMC、已生成JSON及同一DDK的schema证据继续定位；入口已实现，主机验证记录待完成。此命令不调用OMG，不再重复mode1转换、编译日志搜索、重新编译或上板。实际运行位置、创建阶段和底层缺陷仍未确定。公开GE `Cast`只声明`dst_type`，源类型由输入descriptor提供；当前不猜测添加`src_type`。
-
-源码审计已修复TopK静默覆盖输出dtype、共享输出未检查shape，以及ArgMax、Cast、native归约缺少类型/形状校验的问题。inline与recipe导出统一验证连接描述和算子类型关系，错误声明在写AIR前失败。118个探针和tiny双图默认/当前组合策略的构图记录与C++对比均保持不变；本轮检查没有改变合法图，不能视为`insert_cast_4`加载问题已解决。验证见`specs/ge-dtype-contract-verification.json`。
+此前TopK、ArgMax、Cast、归约及公共类型校验的修复见`specs/ge-dtype-contract-verification.json`；其合法构图记录保持不变，是独立的合同检查。公开GE `Cast`源类型来自输入descriptor，不猜测增加`src_type`或直接修改OMC中的Cast属性。
 
 第1–4节保留首次生成流程和历史失败修复；当前现场无需重新 prepare 或生成参考。算子核查见 [兼容性记录](ge-operator-compatibility.md)。tiny 编译成功不表示完整35B权重、量化、内存或性能已经通过。
 
@@ -344,7 +342,7 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 当前入口：检查已有 OMC 的 CPU 编译子图
 
-用户已回传GDN7项及其余43项：四个GDN Gather候选通过，其余42个已编译案例也完成数值比较。带`--gdn-indexed-copy gather`的新候选已成功编译双图，target的CPUCL Cast初始化失败。两张OMC的JSON转换已完成，但失败target `insert_cast_4`只在OMC字节中匹配到名称，未出现在target JSON节点记录中。当前按[离线CPU子图检查入口](hdc-board-run.md#当前读取-gdn-整图加载失败证据)复用现有OMC和JSON定位；不重复转换，根因尚未确定。以下保留候选设计及历史命令。
+用户已回传GDN7项及其余43项：四个GDN Gather候选通过，其余42个已编译案例完成数值比较。整图GDN候选的target Load随后失败；CPU子图解码已定位到静态RoPE BMM之后的insert_cast_4。当前按[静态RoPE修复验证链路](hdc-board-run.md#当前读取-gdn-整图加载失败证据)重新导出修复候选，内部编译与板端执行待验证。以下保留GDN候选设计及历史命令。
 
 <a id="gdn-indexed-copy-probes"></a>
 

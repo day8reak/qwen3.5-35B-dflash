@@ -469,3 +469,14 @@ run：`20261026T094740Z-21011-32f1a9`。用户实际完成两图mode1转换：ta
 读取声明参考SDK的容器、CPU saver和schema实现，确认CPU任务切片由主GraphOp的cl_name/graphop_task_offset/graphop_task_size定位，saver使用HIAI GraphDef。新增inspect-omc-cpu复用用户已有OMC及转换JSON，不调用OMG。工具从实际选定DDK ELF符号取schema，核验容器总长、表和唯一分区、主图与原JSON共同结构，再逐一读取两图CPU切片；重叠、名称不匹配或未知schema保持不支持，不猜偏移。所有CPU子图独立保留，优先展示失败名称和精确端口引用候选。
 
 192项相关主机测试和文档shell语法检查通过。实际参考SDK schema在Python -S下读取成功，原生Data及Data+属性合成容器转换与解析结果一致；独立预期主图视图的合成protobuf CPU切片也被正确解码。两份合成GraphOp原生转换在RemoveAippNode检查失败，原因尚未解释，明确不当作真实编译CPU兼容性验证，不放宽主图匹配门槛。原始用户CPU切片未在本地取得，没有编译模型或上板，详见specs/omc-cpu-inspection-verification.json。经验固化在本模型，无共享SDK或通用技能变更；完整执行、精度和最终DFlash至少2倍仍待验证。
+
+
+## 2026-10-26：CPU任务确认静态RoPE后的Cast异常，以有界常量折叠规避
+
+run：`20261026T101534Z-22567-a7a57c`。用户实际完成CPU切片解码：target六个CPU子图共18个Cast，draft四个CPU子图共6个Cast。target SubGraph_0中的insert_cast_4接在v10/BatchMatMul之后；属性src=0/dst=1，但输入输出描述均为protobuf dtype2，生产者也输出dtype2。同OMC main Cast样本提供独立经验对照，避免混用两个枚举。旧HiLog候选PID仍未独立绑定，内部缺陷所属编译pass仍未知。完整CPU JSON未在本地取得，不能把对一个节点的定位扩展成全部Cast已检查通过。
+
+当前源码映射v10为两个常量的RoPE频率，tiny形状[1,2,1]×[1,1,8]，全尺寸配置S=8为[1,32,1]×[1,1,8]。同类源图审计仅target这一处，draft位置计算依赖运行时输入；118个既有探针无全常量MatMul。新增折叠仅覆盖直接常量、有限FP16、有效K=1及原大小预算；沿用FP32 np.matmul后转FP16，保持节点名和原舍入边界，未增加权重读取或改写OMC。动态、派生常量、权重、K>1、非有限值、未知属性和超预算均保留原路径。
+
+698368组有限FP16乘积的FP32/FP64 MatMul再转FP16结果一致，但直接乘法有63497组零符号不同，因此拒绝Mul快捷替换。该证据仅限定主机oracle，不能推断设备FTZ、舍入或加载恢复。新回归检查实际默认及matmul/compact/gather导出，target v10成为32字节Const，draft记录、ABI和外部权重保持一致；有效长度1/3/8的完整target及下游draft输出逐字节相同。
+
+249项不重复主机回归通过，4项跳过；修改文档的42段shell通过bash -n。验证及源码哈希见`specs/ge-constant-matmul-verification.json`。经验固化在本模型及可执行回归，无共享技能或DDK变更。下一步复用prepared/reference，在新目录重新导出、编译和execution-only验证；不重跑原探针/诊断转换。新内部OMG、板端Load/Process、完整精度与DFlash至少2倍均未验证。

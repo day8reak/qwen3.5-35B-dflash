@@ -19,63 +19,52 @@ hdc -t "$SN" -s "$BIP" ...
 
 <a id="当前读取-gdn-整图加载失败证据"></a>
 
-## 当前：检查已有 OMC 的 CPU 编译子图
+## 当前：折叠静态 RoPE 频率后重新验证双图
 
-用户`ge-gdn-model-20261026-171048`已成功导出、编译target/draft，并通过`--reject-cpu-fallback`检查，随后构建正式runner。板端`qwen35_target`的`Load`返回1，运行库版本`800.631.120.010`。失败发生在查询输入输出描述和Process之前，draft尚未加载。远端退出1而HDC进程退出0已被脚本识别。
+用户`ge-gdn-model-20261026-171048`已完成导出和编译，target的Load返回1。主图分区为target NPU5/CPU6、draft NPU3/CPU4，均没有rollback。`--reject-cpu-fallback`检查显式分区超限回退，不表示CPU分区为0。Load失败发生在IO描述查询和Process之前，draft尚未加载。
 
-用户补齐的HiLog中，候选PID13111/03-09先报告CPU `FP16MatMul ComputeInit`成功，随后`insert_cast_4/CastT`初始化失败，继而`SubGraph_0`的CPUCL Prepare失败，最终target Load返回1。紧邻检查报原始`srcType=0`与`inputDataType=1`不一致；节点属性和实际生产者仍需关联，暂不借用另一套DDK枚举解释数字。候选PID尚未独立绑定到本次执行，`ComputeInit Success`也不是算子执行或数值通过的证据。
+用户随后完成`inspect-omc`和`inspect-omc-cpu`，实际解码了target的6个、draft的4个CPU子图。target CPU子图有18个Cast，draft有6个。失败节点现在可直接从序列化CPU图定位：
 
-最新回传已经确认现有编译记录和日志：
+| 字段 | target / SubGraph_0 / insert_cast_4 |
+| --- | --- |
+| CPU切片 | offset=5093586，bytes=6090 |
+| Cast属性 | `src_dtype=0`，`dst_dtype=1` |
+| 输入与输出protobuf描述 | 均为dtype=2，shape `[1,2,8]`，32字节 |
+| 生产者 | `v10:0`，`BatchMatMul` |
+| 生产者输入 | 两个常量，`[1,2,1] × [1,1,8]`，均为FP16 |
 
-| 图 | 主图分区日志行 | NPU | CPU | GPU / ISP | rollback | compiler_diagnostics |
-| --- | ---: | ---: | ---: | --- | --- | --- |
-| target | 113871 | 5 | 6 | 0 / 0 | `[]` | `NOT_EMITTED` |
-| draft | 5697 | 3 | 4 | 0 / 0 | `[]` | `NOT_EMITTED` |
+Cast属性与protobuf描述使用不同枚举，不能直接比较原始数字。这里的对照来自同一OMC：main图的cast5使用属性`1→0`、描述`2→1`，cast6使用属性`0→1`、描述`1→2`；CPU cast4却把属性src=0接在描述dtype=2的生产者上。这与旧HiLog中的`srcType=0/inputDataType=1`检查失败相符。旧候选PID13111/03-09仍未独立绑定到本次运行；内部哪个编译阶段造成该不一致仍未确定。CPU任务内descriptor的`device_type=NPU`也不证明实际NPU执行。
 
-target的`omg.log`没有任何`insert_cast`名称。`NOT_EMITTED`说明此次没有保留下来的诊断dump；无需再重复文件清单或日志搜索。编译记录仍含CPU分区，`--reject-cpu-fallback`通过不表示CPU分区为0；这些计数也不证明实际运行位置。前面的HCL库加载报错之后仍有CPUCL/NPUCL注册和初始化，不能据此认定它是此次终止原因。
+源码映射确认`v10`是`ge_target.py`开头的RoPE频率。导出器现在对**两个输入均为直接常量、有限FP16、K=1且满足预算**的MatMul使用原参考的FP32 `np.matmul`，再保留原FP16舍入边界。当前tiny target只增加32字节折叠结果，`v10`导出为Const；其后的Transpose、Concat、Cos/Sin保持原路径。不能直接换成逐元素乘法，因为负零行为不同。动态输入、外部权重、K>1、非有限值及超预算情况继续原GE路径。
 
-用户已完成两张OMC的`inspect-omc`转换。转换成功，但target失败节点的JSON覆盖仍不完整：
+源码同类审计发现当前tiny/full target各只有这一个全常量MatMul；draft的RoPE位置依赖运行时输入，保持动态。现有118个算子探针无全常量MatMul。这个源代码审计不等于逐一确认所有24个已编译CPU Cast；用户本次只展开了cast4的详细字段。主机验证见`specs/ge-constant-matmul-verification.json`，新候选的内部OMG编译和板端恢复仍待验证。
 
-| 图 | OMC字节中的名称匹配 | 转换JSON中列出的Cast节点 |
-| --- | --- | --- |
-| target | `insert_cast_4`出现4次；`insert_cast_5..13`各2次 | 9个：`insert_cast_5..13`，没有`insert_cast_4` |
-| draft | `insert_cast_0..8`各2次 | 9个：`insert_cast_0..8` |
-
-这些匹配次数是字节串出现次数，不能当作节点数量。target的OMC字节确实含失败名称，旧`omg.log`及本次转换JSON没有列出它；当前无需继续搜索旧编译日志，也无需重复`--mode=1`转换。draft中的同名`insert_cast_4`属于另一张图，不能用于解释target Load失败，draft尚未进入Load。
-
-已暴露节点的原始字段如下，保留两类dtype字段各自的编号：
-
-| 图 / 节点 | `src_dtype → dst_dtype`属性 | protobuf输入 → 输出dtype | shape | 输入边 |
-| --- | --- | --- | --- | --- |
-| target / `insert_cast_5` | `1 → 0` | `2 → 1` | `[8,4]` | `SubGraph_1:1` |
-| target / `insert_cast_6` | `0 → 1` | `1 → 2` | `[8,2]` | `SubGraph_2:4` |
-| draft / `insert_cast_4` | `0 → 1` | `1 → 2` | `[1,12,4]` | `SubGraph_2:0` |
-
-Cast属性和protobuf描述使用不同的dtype枚举空间，必须分别解释；不能因为上表两列原始整数不同就判定类型冲突。这些已显示的节点也不能替代缺失的target `insert_cast_4`描述。当前尚未取得该失败节点的属性、直接生产者及完整CPU编译子图，根因仍未确定。
-
-下一步离线检查**已有OMC中的CPU编译子图数据**，复用本次`GE_GDN_OMC_INSPECT_RUN`里的报告和JSON。入口已实现并通过192项相关主机测试；使用同一套实际DDK及一个尚不存在的输出目录：
+保留旧OMC及两个inspection目录。复用已有prepared/reference，在新目录一次验证修复后的完整链路；无需重跑算子探针或诊断转换：
 
 ```bash
-export GE_GDN_CPU_INSPECT_RUN="$AI_RUN_DIR/ge-gdn-cpu-inspect-$(date +%Y%m%d-%H%M%S)"
-python3 "$GE_MODEL_TOOL" inspect-omc-cpu \
-  --omc "$GE_GDN_MODEL_RUN/omc" \
-  --inspection "$GE_GDN_OMC_INSPECT_RUN" \
+git -C "$REPO_DIR" pull --ff-only &&
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py" &&
+export GE_ROPE_MODEL_RUN="$AI_RUN_DIR/ge-rope-model-$(date +%Y%m%d-%H%M%S)" &&
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --fp16-reductions matmul --fp16-row-mul compact --gdn-indexed-copy gather \
+  --output "$GE_ROPE_MODEL_RUN/air" &&
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_ROPE_MODEL_RUN/air" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$GE_GDN_CPU_INSPECT_RUN"
-cat "$GE_GDN_CPU_INSPECT_RUN/report.txt"
+  --output "$GE_ROPE_MODEL_RUN/omc" --reject-cpu-fallback &&
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$GE_ROPE_MODEL_RUN/hiai-build" &&
+python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+  --omc "$GE_ROPE_MODEL_RUN/omc" \
+  --runner "$GE_ROPE_MODEL_RUN/hiai-build/build/qwen35_dflash_hiai" \
+  --reference "$GE_BOARD_RUN/reference.json" \
+  --output "$GE_ROPE_MODEL_RUN/board" --execution-only
 ```
 
-此入口不会调用OMG，也不重新编译或访问板端。它先核验已有报告、JSON和OMC的哈希，读取当前DDK `libai_fmk_graph_proto_host.so`的schema符号证据；只有IMOD容器和主ModelDef结构与已有JSON一致后，才按CPUCL GraphOp任务记录的offset/size读取有界GraphDef。名称、布局或schema不匹配会明确记录覆盖不完整，不使用猜测位置的回退扫描。
+本轮改变的是导出图，需要重新导出、编译；直接重放旧OMC仍会保留原节点。新runner会记录probe/benchmark PID并回收退出码、输出及日志；实际运行位置、完整模型精度及性能仍需各自验证。若仍失败，保留新`board/benchmark.stderr`、`board/result.json`及候选HiLog即可继续定位，不提前删除Cast或改写二进制OMC。
 
-输出为`report.txt`、`report.json`、`schema-evidence.json`及每图的CPU子图JSON。当前尚无用户实际CPU子图结果，不能据此宣称已经取到完整CPU图或修复失败Cast。保留原OMC和前次转换目录；本次CPU检查工具的验证及边界见`specs/omc-cpu-inspection-verification.json`；此前OMG转换工具记录见`specs/omc-inspection-verification.json`。
-
-本地另一套blue `libcpucl_host`中可见CPUCL `InsertConvertOpOptimizer`及`insert_cast_`字样，只能说明参考SDK存在这类实现；当前仍不能据此确定用户DDK中失败节点的创建阶段。
-
-`inspect-compile`关联优化前recipe，不能代替这里对已有OMC的检查。公开GE `Cast`接口只声明`dst_type`，源类型来自输入descriptor；不应猜测增加`src_type`属性来修复。源码审计已补齐TopK、ArgMax、Cast、归约及公共类型校验，118个探针和tiny双图默认/当前组合策略的构图记录与C++均保持不变；这没有修复当前加载失败，也不构成再次上板的理由。验证见`specs/ge-dtype-contract-verification.json`。
-
-保留现有AIR/OMC、正式runner、板端结果及完整HiLog。此前HiLog窗口、编译日志确认和OMC到JSON转换都已完成，当前无需重跑探针、转换、编译或板端模型。完整证据见`specs/gdn-model-load-user-report.json`。
-
-后续实际运行时，脚本会分别记录并哈希回收`probe.pid`、`benchmark.pid`；候选日志另存`hiai-hilog-candidate.txt`，在`result.json`中绑定原快照哈希及筛选信息。该改动不要求为补PID重跑本次模型，PID复用及快照覆盖仍需单独判断。
+原诊断工具仍可用于其他已有产物：`inspect-omc-cpu`复用哈希核验的OMC和mode1 JSON，读取选定DDK schema，验证主图结构后按CPU GraphOp offset/size解码完整切片，不调用OMG或扫描猜偏移。工具验证见`specs/omc-cpu-inspection-verification.json`；用户证据与历史边界见`specs/gdn-model-load-user-report.json`。
 
 <a id="当前将已验证的-gdn-gather-复制接入整图"></a>
 
