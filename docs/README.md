@@ -10,7 +10,7 @@
 
 **最新整图：target/draft编译成功，正式runner在target Load返回1。** 新GDN候选已通过`--reject-cpu-fallback`，失败阶段推进到模型加载；尚未查询IO或执行Process，draft也未加载。
 
-**当前入口：[先确认实际运行文件，再定位CPUCL插入Cast](hdc-board-run.md#当前读取-gdn-整图加载失败证据)。** 用户已补齐HiLog中间窗口：CPU FP16MatMul初始化通过，`insert_cast_4/CastT`初始化失败，继而`SubGraph_0` Prepare失败、target Load返回1。候选PID归属仍未确认；相邻源类型检查需要实际编译描述确认。随后用户反馈要求的文件都找不到，先打印`GE_GDN_MODEL_RUN`并列出现有文件，区分路径、版本及`NOT_EMITTED`；定位后再条件读取编译日志和诊断，无需重跑探针或整图。缺HCL库不是该终止链；`SubGraph_0..10`也不等于11个NPU分区。
+**当前入口：[检查已有 OMC 的 Cast 描述](hdc-board-run.md#当前读取-gdn-整图加载失败证据)。** 用户已确认target主图为NPU=5、CPU=6，draft为NPU=3、CPU=4；两图均无回退记录，诊断为`NOT_EMITTED`，target编译日志没有`insert_cast`名称。HiLog中的`insert_cast_4/CastT`初始化失败仍待定位，创建阶段未定。下一步使用同一DDK的`inspect-omc`，先核对OMG帮助，再将已有两张OMC转换为JSON并提取Cast信息；无需重复目录清单、grep、编译或上板。
 
 完整模型执行、精度和2倍加速仍待验证。
 

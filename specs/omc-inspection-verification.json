@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T093313Z-19756-5a5a2b",
+  "status": "HOST_VALIDATED_USER_OMC_INSPECTION_PENDING",
+  "scope": "Existing OMC diagnosis only. No graph lowering changes or fix claimed for the target Load failure.",
+  "entrypoint": "direct_model_air.py inspect-omc",
+  "source_files": [
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/models/qwen3.5-35B-moe/model/qwen35_moe_dflash/omc_inspect.py",
+      "bytes": 16981,
+      "sha256": "17b088769edb3544869c10a75ddcb37e4a9ed850b74a324bde898db933f3705e"
+    },
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/models/qwen3.5-35B-moe/targets/cpro/scripts/direct_model_air.py",
+      "bytes": 8344,
+      "sha256": "dcb9c57ea0a9ce022f5db5d8914890f87328fc837c4305cf783cf5222805e9d6"
+    },
+    {
+      "path": "/home/cann/workspaces/ai-model-workspace/models/qwen3.5-35B-moe/tests/test_omc_inspect.py",
+      "bytes": 15601,
+      "sha256": "23585ef1b22b3b26285edd6bcb34ec6ce3687e72afac71da51b8f92878a66986"
+    }
+  ],
+  "validation": {
+    "host_tests": {
+      "passed": 129,
+      "failed": 0,
+      "groups": [
+        {
+          "passed": 29,
+          "kind": "new inspection tests with fake OMG and synthetic JSON; not real OMC conversion",
+          "junit": {
+            "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T093313Z-19756-5a5a2b/pytest-omc-inspect-agent-final.xml",
+            "bytes": 4683,
+            "sha256": "d124631c27a92a603a3765d7212853c7b38b1bf334e18804dd494699fe97e80d"
+          }
+        },
+        {
+          "passed": 100,
+          "kind": "compiler inspection, retained diagnostics, OMG environment and IPC regressions",
+          "junit": {
+            "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T093313Z-19756-5a5a2b/out/omc-related-tests.xml",
+            "bytes": 18316,
+            "sha256": "49f186a9e32cd5658144a64b4d05293dfd5d280d83b4bdd71622bfb35c07eccf"
+          }
+        }
+      ]
+    },
+    "documentation": {
+      "shell_blocks": 61,
+      "status": "PASSED",
+      "record": {
+        "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T093313Z-19756-5a5a2b/out/omc-doc-check.json",
+        "bytes": 55,
+        "sha256": "4e3bbd3edad2ed026f87ba83db33a62075a1d298bc14172b2e2bd52b4138135e"
+      }
+    },
+    "actual_reference_sdk_help": {
+      "command": [
+        "/home/cann/workspaces/ai-model-workspace/shared/targets/kirin9030/next-6.0.1.0/ddk/tools/tools_omg/master/omg",
+        "--help"
+      ],
+      "cwd": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T093313Z-19756-5a5a2b/blue-omg-help-audit",
+      "returncode": 0,
+      "ddk_root": "/home/cann/workspaces/ai-model-workspace/shared/targets/kirin9030/next-6.0.1.0/ddk",
+      "profile_id": "kirin9030-next-6.0.1.0",
+      "manifest": {
+        "path": "/home/cann/workspaces/ai-model-workspace/shared/targets/kirin9030/next-6.0.1.0/manifest.json",
+        "size": 6228,
+        "sha256": "a1c58a308516a1fd7c2dbcb3f97e3b64ce0c5c46a4bc61f7983680722584e81d"
+      },
+      "omg": {
+        "path": "/home/cann/workspaces/ai-model-workspace/shared/targets/kirin9030/next-6.0.1.0/ddk/tools/tools_omg/master/omg",
+        "size": 178088,
+        "sha256": "4a767c436a1f12578512dc06e8944d2f57f392220643f06bcae514aa9c4efcc4"
+      },
+      "stdout": {
+        "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T093313Z-19756-5a5a2b/blue-omg-help-audit/help.stdout.txt",
+        "size": 4597,
+        "sha256": "fde3ba3c59b4d8f899b0890afd8b63245a8ce4fdfebd25e78476da883e9d8dc8"
+      },
+      "stderr": {
+        "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T093313Z-19756-5a5a2b/blue-omg-help-audit/help.stderr.txt",
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "activity": "help only; no model conversion, compilation, or device execution"
+    },
+    "help_evidence": {
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T093313Z-19756-5a5a2b/blue-omg-help-audit/invocation.json",
+      "bytes": 1512,
+      "sha256": "8ef742b0b89fa40ba6fe468a060cdb5461dd95c859f18a2bc9706ca3dac307f3"
+    },
+    "actual_user_ddk_conversion": "NOT_RUN_REMOTE_ENVIRONMENT_UNAVAILABLE",
+    "real_board_execution": "NOT_RUN",
+    "full_model_accuracy": "DEFERRED_NOT_EVALUATED",
+    "performance": "NOT_MEASURED"
+  },
+  "behavior": [
+    "Verify original pair manifest, each OMC size/hash, recorded DDK identity and OMG binary hash before invocation; check immutable inputs again afterward.",
+    "Capture active OMG --help. Invoke only documented --mode=1 --om=input.omc --json=model.json, without --framework or any compile flag.",
+    "Process target and draft separately in fresh run-owned output; a failed conversion does not skip the second graph.",
+    "Retain command/environment/log/JSON hashes. No recognized op objects yields partial coverage; oversized JSON is retained but not parsed.",
+    "Read GraphDef.op objects recursively, including nested attr.g and attr.list.g. Match explicit src_name/srcName within the same graph only; retain raw input strings without guessing their encoding.",
+    "Bound byte-name counts, Cast previews and neighbor reports, prioritize insert_cast_4, and preserve raw dtype values without enum conversion.",
+    "Byte names are not decoded nodes; missing Casts in JSON do not prove Load-time insertion or complete opaque-subgraph coverage."
+  ],
+  "primary_schema_reference": {
+    "resource": "declared kirin9030-next-6.0.1.0 DDK/tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so",
+    "sha256": "5e2428daa68150a99f3694cfd00c64024877181cd9abeb2742c5bea7a22a8f6e",
+    "embedded_descriptor": "proto/ge_ir.proto",
+    "offset": "0x8d8c0",
+    "length": "0xbee",
+    "scope": "Reference SDK only, not user active DDK. Converted JSON is still validated for recognized op arrays; numeric proto enum is not equated with CPUCL diagnostic numbers."
+  },
+  "skill_audit": "Model-specific recovery and evidence handling captured in existing code/tests/docs. No shared SDK, resource profile, or general skill changed."
+}

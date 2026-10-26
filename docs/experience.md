@@ -451,3 +451,12 @@ run：`20261026T084733Z-7577-be91b5`。用户`ge-gdn-model-20261026-171048`成�
 正式脚本此前未记录实际PID，probe和benchmark又是同名的两个进程。本轮复用已验证的shell记录$$后exec模式，分别保存probe.pid/benchmark.pid并按原哈希规则回收。PID不可用仅作诊断缺口，必需输出与原退出状态不变；有效PID在快照里不存在时拒绝换成其他进程。完整候选记录另存hiai-hilog-candidate.txt，带原行号、快照与候选文件哈希及会话筛选元数据，保留完整行并排他创建；终端仍限长。PID复用仍可能发生，筛选不是完美运行归属，更不是根因结论。无需重建native，也不要求为新PID记录重跑已有失败。
 
 95项主机HDC/HiLog回归通过，62段文档shell通过bash -n；独立只读审查无阻塞。测试包含真实host exec PID、特殊字符引用、无匹配PID拒绝替代、遗漏中间错误的完整记录、辅助PID损坏与原错误并存、以及必需输出哈希与清理保护。验证见`specs/hiai-pid-diagnostics-verification.json`。没有真实HDC或内部OMG调用，未改变模型算术、数值门槛或库部署。经验固化在已有模型工具与测试，无共享技能变更；本次实际Load根因、完整精度和DFlash至少2倍仍未解决。
+
+
+## 2026-10-26：编译日志无节点名时直接检查已有OMC
+
+run：`20261026T093313Z-19756-5a5a2b`。用户确认当前target主图NPU5/CPU6、draft主图NPU3/CPU4，两图rollback为空、诊断NOT_EMITTED，target OMG日志没有insert_cast名称。保留Load阶段CPUCL insert_cast_4初始化失败这一观察，停止重复grep和索取不存在的dump。日志无名称不能确定节点在编译还是Load阶段创建；本地参考SDK的CPUCL转换优化器字样只提供实现线索，不能代替用户DDK证据。
+
+新增inspect-omc，一次检查已有target/draft：先校验原manifest、OMC和编译OMG身份，保存实际帮助，仅在帮助明确支持时使用--mode=1、--om、--json进行转换。不能带--framework=1，否则参考OMG会选择框架模型转JSON分支。使用新目录，独立记录两图转换状态，失败仍继续另一图。JSON按真实schema的op数组提取Cast及显式src_name邻边，递归覆盖嵌套图；不模糊匹配、不混用protobuf、GE与CPUCL的dtype编号。缺少可识别节点、超出解析预算或不透明载荷不计为完整节点覆盖。终端只输出短摘要，原JSON和哈希留档。
+
+129项主机测试及61段shell语法检查通过，真实参考OMG仅执行--help；新转换链使用fake OMG/合成JSON验证，尚未转换用户实际OMC或运行板端。原模型算术、编译选项和部署库均未改变，当前Load缺陷未关闭。证据见specs/omc-inspection-verification.json。经验固化于模型工具和回归，无共享SDK或通用技能改动；完整精度后置未豁免，DFlash至少2倍目标未测量。

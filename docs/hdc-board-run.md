@@ -19,76 +19,41 @@ hdc -t "$SN" -s "$BIP" ...
 
 <a id="当前读取-gdn-整图加载失败证据"></a>
 
-## 当前：定位 CPUCL 插入 Cast 的编译描述
+## 当前：从已有 OMC 检查 Cast 描述
 
-用户`ge-gdn-model-20261026-171048`已成功导出、编译target/draft，并通过`--reject-cpu-fallback`检查，随后构建正式runner。板端`qwen35_target`的`Load`返回1，运行库版本`800.631.120.010`。失败发生在查询输入输出描述和Process之前，draft尚未加载。远端退出1而HDC进程退出0已被脚本识别，这次是模型加载失败。
+用户`ge-gdn-model-20261026-171048`已成功导出、编译target/draft，并通过`--reject-cpu-fallback`检查，随后构建正式runner。板端`qwen35_target`的`Load`返回1，运行库版本`800.631.120.010`。失败发生在查询输入输出描述和Process之前，draft尚未加载。远端退出1而HDC进程退出0已被脚本识别。
 
-用户已补齐最初摘要省略的中间日志。候选PID13111/03-09中，CPU的`FP16MatMul ComputeInit`成功，随后明确报`insert_cast_4/CastT`初始化失败，继而`SubGraph_0`的CPUCL Prepare失败，最终target Load返回1。紧邻的Cast支持检查报`srcType=0`与`inputDataType=1`不一致，并进入ReshapeUpdate/Init/GenerateOp失败链；这些相邻记录强烈指向同一Cast，但属性与实际生产者仍需编译图精确关联，暂不借用另一套DDK枚举解释数字。
+用户补齐的HiLog中，候选PID13111/03-09先报告CPU `FP16MatMul ComputeInit`成功，随后`insert_cast_4/CastT`初始化失败，继而`SubGraph_0`的CPUCL Prepare失败，最终target Load返回1。紧邻检查报原始`srcType=0`与`inputDataType=1`不一致；节点属性和实际生产者仍需关联，暂不借用另一套DDK枚举解释数字。候选PID尚未独立绑定到本次执行，`ComputeInit Success`也不是算子执行或数值通过的证据。
 
-这次终止链已经具体到CPUCL插入Cast；前面的缺HCL库信息之后仍有CPUCL/NPUCL注册与初始化，不能把它当作此次终止错误。`ComputeInit Success`也只表示初始化通过，不能当成MatMul已执行。日志列出`SubGraph_0`至`SubGraph_10`，是11个子图名称，不等于11个NPU分区。该候选PID仍未独立绑定到本次执行，日期来自板端日志。
+最新回传已经确认现有编译记录和日志：
 
-用户随后反馈所请求的文件都找不到，当前先核对变量和实际运行目录，不能继续假定下列诊断路径存在：
+| 图 | 主图分区日志行 | NPU | CPU | GPU / ISP | rollback | compiler_diagnostics |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| target | 113871 | 5 | 6 | 0 / 0 | `[]` | `NOT_EMITTED` |
+| draft | 5697 | 3 | 4 | 0 / 0 | `[]` | `NOT_EMITTED` |
 
-```bash
-printf 'GE_GDN_MODEL_RUN=%s\n' "${GE_GDN_MODEL_RUN-}"
-if [ -n "${GE_GDN_MODEL_RUN-}" ] && [ -d "$GE_GDN_MODEL_RUN" ]; then
-  find "$GE_GDN_MODEL_RUN" -maxdepth 4 -type f
-else
-  printf '%s\n' 'GE_GDN_MODEL_RUN未指向现有目录，先确认本次实际输出位置。'
-fi
-```
+target的`omg.log`没有任何`insert_cast`名称。`NOT_EMITTED`说明此次没有保留下来的诊断dump；无需再重复文件清单或日志搜索。编译记录仍含CPU分区，`--reject-cpu-fallback`通过不表示CPU分区为0；这些计数也不证明实际运行位置。前面的HCL库加载报错之后仍有CPUCL/NPUCL注册和初始化，不能据此认定它是此次终止原因。
 
-可能是变量指向其他位置、运行版本尚未保留这些诊断，或者OMG没有输出可保留的文件。当前`compile.py`在没有诊断候选时返回`NOT_EMITTED`，不会创建`diagnostics/manifest.json`；这只能解释诊断目录缺失，不能直接解释`omg.log`也找不到。以实际文件清单和对应编译manifest为准，先保留已存在的产物。
-
-**仅在清单中定位并确认实际OMC目录后**，才执行以下条件检查；若目录布局不同，先按清单调整路径。目标仍是核对`insert_cast_4`的属性、输入输出descriptor、直接生产者与所属子图，不能把存在诊断dump作为继续排查的前提：
+下一步用同一套实际DDK的OMG，将**已有target/draft OMC转换为JSON**，检查文件是否包含失败Cast及其属性、输入输出描述和生产者。选择一个尚不存在的诊断输出目录后执行一次：
 
 ```bash
-python3 - <<'PYDIAGNOSTICS'
-import json
-import os
-from pathlib import Path
-
-root = Path(os.environ["GE_GDN_MODEL_RUN"]) / "omc" / "target"
-compiled = root.parent / "manifest.json"
-if compiled.is_file():
-    for graph in json.loads(compiled.read_text()).get("graphs", []):
-        if graph.get("name") == "target":
-            print("recorded compiler diagnostics:", graph.get("compiler_diagnostics", "NOT_RECORDED"))
-manifest = root / "diagnostics" / "manifest.json"
-if manifest.is_file():
-    report = json.loads(manifest.read_text())
-    print("diagnostics:", report.get("status"), "outcome:", report.get("compile_outcome"))
-    for item in report.get("files", []):
-        print(item.get("status"), item.get("bytes"), item.get("name"), item.get("sha256", ""))
-else:
-    print("No retained diagnostics manifest:", manifest)
-PYDIAGNOSTICS
-
-if [ -f "$GE_GDN_MODEL_RUN/omc/target/omg.log" ]; then
-  grep -n -F -C 12 'insert_cast_4' "$GE_GDN_MODEL_RUN/omc/target/omg.log"
-fi
-if [ -d "$GE_GDN_MODEL_RUN/omc/target/diagnostics" ]; then
-  find "$GE_GDN_MODEL_RUN/omc/target/diagnostics" -type f -name '*.irpb' \
-    -exec grep -a -l -F 'insert_cast_4' {} +
-fi
+export GE_GDN_OMC_INSPECT_RUN="$AI_RUN_DIR/ge-gdn-omc-inspect-$(date +%Y%m%d-%H%M%S)"
+python3 "$GE_MODEL_TOOL" inspect-omc \
+  --omc "$GE_GDN_MODEL_RUN/omc" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_GDN_OMC_INSPECT_RUN"
+cat "$GE_GDN_OMC_INSPECT_RUN/report.txt"
 ```
 
-最后一条只列出命中的IRPB文件；先确认其实际格式，再按对应DDK格式读取节点，不能将二进制内容当文本属性。`grep`无命中时返回1，不表示本次编译失败。当前版本在成功编译后也尝试保留已输出的诊断，总预算16MiB；manifest中的`SKIPPED_SIZE_BUDGET`表示未保留，缺失文件不代表节点不存在。`inspect-compile`目前关联优化前recipe，不能用其结果代替编译器插入节点的实际描述。公开GE `Cast`接口只声明`dst_type`，源类型来自输入descriptor；不应猜测增加`src_type`属性来修复。
+工具先记录当前OMG的帮助信息，确认支持对应选项后才调用`--mode=1 --om=已有OMC --json=新路径`，分别转换两张图；不附加编译用的framework/platform参数。它不重新编译模型或访问板端，只向OMG提供已有OMC路径，并在检查前后核对原文件哈希。输出包括`report.txt`、`report.json`和`omg-help.log`；每图尝试转换时记录`convert.log`及命令/环境，成功生成JSON时另有`target/model.json`或`draft/model.json`。帮助信息不支持或转换失败也会留下诊断报告。工具验证记录见`specs/omc-inspection-verification.json`。
 
-源码审计已补齐TopK、ArgMax、Cast、归约与公共导出类型校验；118个探针和tiny双图默认/当前组合策略的构图记录与C++和修改前一致。这些修复用于阻止错误声明进入AIR，没有改变当前合法图，不能直接宣布已修好`insert_cast_4`。验证见`specs/ge-dtype-contract-verification.json`。
+报告只提取有界的Cast节点信息。JSON转换成功不保证包含完整节点描述；未找到`insert_cast_4`也不能单独证明它由运行时创建。其创建阶段目前未定：本地另一套blue `libcpucl_host`中可见CPUCL `InsertConvertOpOptimizer`及`insert_cast_`字样，只能作为线索，不能代替用户当前DDK的证据。若JSON含对应节点，再按实际属性和输入边定位；信息缺失或格式不支持应保留该结论。
 
-保留找到的AIR/OMC、正式runner、`board/result.json`、`board/preflight.json`及完整HiLog，不重新编译、跑通用探针或上板。清单确认快照位置后，需要复查时可在本机查看该候选PID的完整记录：
+`inspect-compile`关联优化前recipe，不能代替这里对已有OMC的检查。公开GE `Cast`接口只声明`dst_type`，源类型来自输入descriptor；不应猜测增加`src_type`属性来修复。源码审计已补齐TopK、ArgMax、Cast、归约及公共类型校验，118个探针和tiny双图默认/当前组合策略的构图记录与C++均保持不变；这没有修复当前加载失败，也不构成再次上板的理由。验证见`specs/ge-dtype-contract-verification.json`。
 
-```bash
-if [ -f "$GE_GDN_MODEL_RUN/board/hiai-hilog.txt" ]; then
-  awk '$1=="03-09" && $3==13111 {printf "L%d: %s\n", NR, $0}' \
-    "$GE_GDN_MODEL_RUN/board/hiai-hilog.txt"
-fi
-```
+保留现有AIR/OMC、正式runner、板端结果及完整HiLog。此前读取L130330–L130480和确认编译日志的步骤都已完成，当前无需重跑探针、编译或板端模型。完整证据见`specs/gdn-model-load-user-report.json`。
 
-更新后的脚本为未来运行分别记录并哈希回收`probe.pid`、`benchmark.pid`。有效PID只筛选对应进程，快照中没有该PID时不会改选其他进程；PID不可用时仍明确标为启发式候选。完整候选记录另存`hiai-hilog-candidate.txt`，在`result.json`中绑定原快照哈希及筛选信息。PID复用仍可能发生，候选日志不能自动作为根因或运行位置证明。此改动无需重建native，也不要求为补PID重跑本次模型。
-
-此前读取L130330–L130480的步骤已完成；这些行号和PID仅适用于这次留档。编译通过只证明未被当前回退检查拒绝，不表示CPU分区为0。完整证据及初始摘要缺失的历史见`specs/gdn-model-load-user-report.json`。
+后续实际运行时，脚本会分别记录并哈希回收`probe.pid`、`benchmark.pid`；候选日志另存`hiai-hilog-candidate.txt`，在`result.json`中绑定原快照哈希及筛选信息。该改动不要求为补PID重跑本次模型，PID复用及快照覆盖仍需单独判断。
 
 <a id="当前将已验证的-gdn-gather-复制接入整图"></a>
 

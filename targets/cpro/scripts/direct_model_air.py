@@ -59,6 +59,13 @@ def main():
     p.add_argument("--omc", required=True)
     p.add_argument("--graph", choices=("target", "draft"), default="target")
     p.add_argument("--output", required=True)
+    p = sub.add_parser("inspect-omc", help="inspect existing target/draft OMC with the recorded OMG; no rebuild or board access")
+    p.add_argument("--omc", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--ddk-root", required=True)
+    p.add_argument("--ddk-id", required=True)
+    p.add_argument("--timeout-seconds", type=int, default=300)
+    p.add_argument("--max-json-bytes", type=int, default=64 << 20)
     p = sub.add_parser("reference-tiny")
     p.add_argument("--prepared", required=True)
     p.add_argument("--prompt-token-ids", default="1,2,3")
@@ -113,6 +120,11 @@ def main():
         elif args.command == "inspect-compile":
             from qwen35_moe_dflash.compile_inspect import inspect_compile
             result = inspect_compile(args.air, args.omc, args.output, graph=args.graph)
+            print((Path(args.output) / "report.txt").read_text())
+        elif args.command == "inspect-omc":
+            from qwen35_moe_dflash.omc_inspect import inspect_omc
+            result = inspect_omc(args.omc, args.output, args.ddk_root, ddk_id=args.ddk_id,
+                                 timeout_seconds=args.timeout_seconds, max_json_bytes=args.max_json_bytes)
             print((Path(args.output) / "report.txt").read_text())
         else:
             from qwen35_moe_dflash.ge_reference import reference_tiny

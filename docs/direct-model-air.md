@@ -6,9 +6,11 @@
 
 剩余43项探针现已回传：42项编译并完成板端数值比较，1项CastT编译失败；附加HiLog回收失败不需要重跑42项。此前按[整图GDN候选命令](hdc-board-run.md#当前将已验证的-gdn-gather-复制接入整图)复用prepared，显式叠加`--gdn-indexed-copy gather`。该开关仅改写已测FP16形状的三角复制与outer Sub，不改递推算术或权重。每图生成哈希绑定的`gdn-copy-lowering.json`，编译校验其mode/counts与manifest一致。默认`native`保留旧图，未测形状继续原实现。
 
-最新`ge-gdn-model-20261026-171048`已成功编译双图，随后target Load返回1。用户补齐的HiLog中间段显示：CPU FP16MatMul初始化成功，CPUCL的`insert_cast_4/CastT`初始化失败，再导致`SubGraph_0` Prepare失败。相邻`srcType=0/inputDataType=1`检查仍需编译节点和输入边确认；候选PID尚未独立绑定到本次执行。用户随后反馈请求的文件都找不到，当前先按[文件定位步骤](hdc-board-run.md#当前读取-gdn-整图加载失败证据)确认变量与实际文件清单；定位后才条件读取编译诊断。`NOT_EMITTED`时不会创建诊断目录，不重复生成或上板来补文件。
+最新`ge-gdn-model-20261026-171048`已成功编译双图，随后target Load返回1。用户补齐的HiLog显示CPU FP16MatMul初始化成功，CPUCL的`insert_cast_4/CastT`初始化失败，再导致`SubGraph_0` Prepare失败。相邻原始`srcType=0/inputDataType=1`仍需节点和输入边确认；候选PID尚未独立绑定到本次执行。
 
-`SubGraph_0`至`SubGraph_10`不是11个NPU分区的证据，缺HCL库行也不是本次日志中的终止错误。公开GE `Cast`只声明`dst_type`，源类型由输入descriptor提供；当前不猜测添加`src_type`，也不借另一套DDK枚举解读原始类型编号。
+最新编译记录已确认：target主图L113871为NPU=5、CPU=6；draft主图L5697为NPU=3、CPU=4；GPU/ISP均为0，两图的rollback均为`[]`、`compiler_diagnostics`均为`NOT_EMITTED`。target的`omg.log`没有`insert_cast`名称，当前不再重复文件清单或grep。下一步按[已有OMC检查命令](hdc-board-run.md#当前读取-gdn-整图加载失败证据)运行`inspect-omc`：先检查同一实际DDK的OMG帮助，再用其支持的`--mode=1 --om=... --json=...`将已有两张OMC转换为JSON，读取新目录的`report.txt`。不重新编译或上板，只向OMG提供已有OMC路径。
+
+编译通过仍包含CPU分区，实际运行位置未验证。Cast的创建阶段尚未确定；本地blue CPUCL库的`InsertConvertOpOptimizer`/`insert_cast_`字样不能证明用户DDK在Load时创建了该节点。JSON转换成功也不保证完整节点覆盖。公开GE `Cast`只声明`dst_type`，源类型由输入descriptor提供；当前不猜测添加`src_type`，也不借另一套DDK枚举解读原始类型编号。
 
 源码审计已修复TopK静默覆盖输出dtype、共享输出未检查shape，以及ArgMax、Cast、native归约缺少类型/形状校验的问题。inline与recipe导出统一验证连接描述和算子类型关系，错误声明在写AIR前失败。118个探针和tiny双图默认/当前组合策略的构图记录与C++对比均保持不变；本轮检查没有改变合法图，不能视为`insert_cast_4`加载问题已解决。验证见`specs/ge-dtype-contract-verification.json`。
 
@@ -338,9 +340,9 @@ python3 "$GE_MODEL_TOOL" compile \
 ## 7. 当前现场：GDN 复制整图候选与探针历史
 
 
-### 当前入口：新图编译已过，先确认实际运行文件
+### 当前入口：检查已有 OMC 的 Cast 描述
 
-用户已回传GDN7项及其余43项：四个GDN Gather候选通过，其余42个已编译案例也完成数值比较。带`--gdn-indexed-copy gather`的新候选已成功编译双图，target的CPUCL插入Cast初始化失败；用户随后反馈请求的文件找不到，当前先按[文件定位步骤](hdc-board-run.md#当前读取-gdn-整图加载失败证据)确认实际目录和清单，再检查可用的编译节点描述，无需重复探针或导出。以下保留候选设计及历史命令。
+用户已回传GDN7项及其余43项：四个GDN Gather候选通过，其余42个已编译案例也完成数值比较。带`--gdn-indexed-copy gather`的新候选已成功编译双图，target的CPUCL Cast初始化失败。两图主图分区、空rollback记录、`NOT_EMITTED`及target日志无`insert_cast`名称均已确认，当前按[已有OMC检查命令](hdc-board-run.md#当前读取-gdn-整图加载失败证据)转换和检查实际OMC；节点创建阶段及根因尚未确定。以下保留候选设计及历史命令。
 
 <a id="gdn-indexed-copy-probes"></a>
 
