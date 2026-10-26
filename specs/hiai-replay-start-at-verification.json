@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T075242Z-3501-38bea2",
+  "baseline_commit": "94e0d70",
+  "status": "HOST_VALIDATED_DEVICE_REPLAY_PENDING",
+  "scope": "Replay selection only; compiled models, graph semantics, tolerances and deployment policy unchanged.",
+  "option": "--replay-all --start-at CASE",
+  "semantics": "Inclusive suffix of COMPILED cases in original manifest order; requires new output; earlier compiled cases excluded without inheriting any results; failed/uncompiled cases remain separately not retried.",
+  "user_evidence": "specs/remaining-cpu-probes-user-report.json",
+  "expected_user_replay_count": 19,
+  "validation": {
+    "runtime_replay_tests": 86,
+    "failures": 0,
+    "xml": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T075242Z-3501-38bea2/start-at-tests-verified.xml",
+    "xml_sha256": "32748596038b4ddd8958811097e342618f3cdea58deadb3bbcc6a65a8b674ebf",
+    "shell_snippets_bash_n": 4,
+    "recorded_case_count": 43,
+    "initial_test_failure": "Old parser-option allowlist required adding the new --start-at flag; initial85 passed/1failed, corrected final86passed."
+  },
+  "source_sha256": {
+    "model/qwen35_moe_dflash/hiai_runtime_probe.py": "38c83ab2aad15394683042ef5104738373490456165ca50934d723a6b99915eb",
+    "tests/test_hiai_runtime_probe.py": "655b8befa144139583a8d6d4a9a0adcc5a70ba45bf4d53fab53d8082aca5c719",
+    "docs/cpu-gap-probes.md": "2def112db36c425138794bc3f7922b3a1066c19391d32517122fa52c98f892cb"
+  },
+  "reviews": [
+    "Independent source/log interpretation: CastT INT32-to-BOOL task failure distinct from HDC disconnection; no mixed-partition candidate promoted.",
+    "Independent replay code review: inclusive source order, before-output rejection, donor/payload hashes, excluded prior cases and report metadata; no blockers."
+  ],
+  "experience_audit": {
+    "captured_in": "docs/experience.md",
+    "executable_checks": "Selection/donor integrity, no inherited PASS, source immutability and output-preservation regression tests.",
+    "shared_skill_changes": "none; scoped model-tool behavior",
+    "unproven": [
+      "Remaining19 board outcomes",
+      "Runtime placement",
+      "Full model partition count after any future rewrite",
+      "Complete-model accuracy/performance"
+    ]
+  },
+  "local_vendor_compile": "NOT_RUN",
+  "local_board_execution": "NOT_RUN",
+  "production_graph_changed": false
+}

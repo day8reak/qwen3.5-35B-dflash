@@ -280,7 +280,7 @@
     },
     "board_execution_bringup": {
       "run_id": "20261026T002510Z-8234-33823c",
-      "status": "ROW_CHAIN_ROLLBACK_GDN_GATHER_USER_PASS_BROAD_PROBES_PENDING",
+      "status": "ROW_CHAIN_ROLLBACK_CPU_PROBES_PARTIAL_HDC_DISCONNECTED",
       "scope": "New direct-GE candidate export/compile/execution chain reusing existing tiny prepared weights; not a full-weight model",
       "runtime_deployment": "Private library set excludes DDK HCL pair; process path includes /vendor/lib64/chipsetsdk",
       "runner_changes": [
@@ -290,13 +290,13 @@
       "accuracy": "DEFERRED_NOT_EVALUATED",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "Follow docs/cpu-gap-probes.md: --suite remaining-cpu --exclude-family gdn --compile-only; then replay with original native donor, --refresh-runner --replay-all. Runs43 cases once, reuses seven GDN results.",
+      "next_command": "Follow docs/cpu-gap-probes.md: restore original HDC device, replay original compiled batch with --replay-all --start-at selection_argmax_rank2_ties and a new output directory; no model recompilation.",
       "requires": "Existing prepared weights, same GE/internal OMG and SDK/HIAI resources; new AIR/OMC/build/board directories; unchanged FP16 and original reference identity",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
       "current_failure": "User ge-row-chain-20261026-144144 passed ReshapeFusion with18 fused pairs. Known CPU-only compute117->98, all19 row Mul candidates removed. Main NPUCL partitions still exceed9 at line150570; draft compile, formal runner build and board not run.",
-      "followup_run_id": "20261026T063807Z-1895-16df84",
-      "followup_evidence": "specs/remaining-cpu-probes-verification.json"
+      "followup_run_id": "20261026T075242Z-3501-38bea2",
+      "followup_evidence": "specs/remaining-cpu-probes-user-report.json"
     }
   },
   "operator_support_probe": {
@@ -342,23 +342,33 @@
       "reported_run": "gdn-copy-board-20261026-150641"
     },
     "latest_remaining_cpu_batch": {
-      "run_id": "20261026T063807Z-1895-16df84",
-      "status": "HOST_VALIDATED_VENDOR_COMPILE_AND_BOARD_PENDING",
+      "run_id": "20261026T075242Z-3501-38bea2",
+      "status": "USER_REPORTED_PARTIAL_REPLAY_INFRASTRUCTURE_FAILED",
       "suite": "remaining-cpu",
       "total_cases": 50,
       "excluded_families": [
         "gdn"
       ],
-      "next_batch_cases": 43,
       "families": {
         "gdn": 7,
         "routing": 16,
         "selection": 15,
         "position": 12
       },
-      "evidence": "specs/remaining-cpu-probes-verification.json",
+      "evidence": "specs/remaining-cpu-probes-user-report.json",
       "production_model_changed": false,
-      "runtime_placement": "UNVERIFIED"
+      "runtime_placement": "UNVERIFIED",
+      "compiled_run": "cpu-gaps-20261026-153933",
+      "board_run": "cpu-gaps-board-20261026-153938",
+      "counts": {
+        "requested": 43,
+        "compiled": 42,
+        "compile_failed": 1,
+        "board_numerical_passed": 23,
+        "compiled_without_completed_validation": 19
+      },
+      "full_model_gate_advanced": false,
+      "next_replay_cases": 19
     }
   },
   "delivery_objective": "specs/dflash-contract.json#delivery_objective",

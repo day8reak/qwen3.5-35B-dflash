@@ -1,0 +1,660 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T075242Z-3501-38bea2",
+  "evidence_kind": "USER_PASTED_REPORTS_NOT_INDEPENDENTLY_RETRIEVED",
+  "suggested_revision": "94e0d70",
+  "actual_revision": "NOT_REPORTED",
+  "artifact_hashes": "NOT_PROVIDED",
+  "status": "USER_REPORTED_PARTIAL_REPLAY_INFRASTRUCTURE_FAILED",
+  "compiled_run": "cpu-gaps-20261026-153933",
+  "board_run": "cpu-gaps-board-20261026-153938",
+  "native_donor": "op-probe-20261023-165317",
+  "arm": "candidate_without_ddk_hcl",
+  "counts": {
+    "requested": 43,
+    "compiled": 42,
+    "compile_failed": 1,
+    "board_numerical_passed": 23,
+    "compiled_without_completed_validation": 19
+  },
+  "interruption": {
+    "case": "selection_argmax_rank2_ties",
+    "compiled_case_ordinal": 24,
+    "stage": "hash-result",
+    "call_record": "arms/candidate_without_ddk_hcl/board/calls/0515-hash-result.json",
+    "stdout": "[Fail]Device not founded or connected",
+    "error": "HDC hash-result missing unique remote exit marker; remote success is unverified",
+    "scope": "Reported NOT_RUN is absence of completed verified evidence; remote execution state is not established."
+  },
+  "compile_failure": {
+    "case": "moe_cast_bool_roundtrip",
+    "node": "v0",
+    "op": "CastT",
+    "chain": [
+      "InitKernelAttr: Get tbe kernel name failed",
+      "TaskBuild: Initialize TBE kernel attr failed",
+      "NPUCL GenModelTaskDef failed",
+      "CompileGraph failed"
+    ],
+    "scope": "Failure occurs during compile task construction despite an earlier NPU1/CPU0 partition record. Missing optional libraries or schedule config warnings are not independently proven root causes.",
+    "source_contract": "v0 converts the INT32 membership input to BOOL; v1 converts it back to INT32. The failure is not evidence that every BOOL-to-INT32 case fails."
+  },
+  "cases": [
+    {
+      "name": "moe_equal_cast_int32",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 0,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_cast_bool_roundtrip",
+      "compile": "FAILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 0,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_count_reduce_int32",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 0,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_active_greater_int32",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 0,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_membership_native",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 0,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_membership_gather",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 0,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_count_native",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 0,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_count_gather",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 0,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_active_native",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 0,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_active_gather",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 0,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_weights_native",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_weights_gather",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_gate_select",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_gate_gather",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_route_native",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "moe_route_gather",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_topk_rank2_unique",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 0,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_topk_rank3_unique",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 2,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_topk_rank4_unique",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 2,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_argmax_rank3_unique",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 0,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_argmax_rank2_unique",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_argmax_rank2_keepdims_unique",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_argmax_rank4_unique",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_argmax_rank3_ties",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 0,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "PASSED",
+      "run": "PASSED",
+      "numerical": "PASSED",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_argmax_rank2_ties",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_argmax_rank2_keepdims_ties",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_argmax_rank4_ties",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_argmax_topk1_unique",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_router_rank2_unique",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 2,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_router_rank3_unique",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 2,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "selection_router_rank4_unique",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 2,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "rope_frequency_bmm",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 0,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "rope_frequency_matmul2d",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 0,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "rope_frequency_outer_mul",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 0,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "position_cast_tiny_native",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 0,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "position_cast_tiny_compact",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "position_cast_rounding_native",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 0,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "position_cast_rounding_compact",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "attention_mask_and_select",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "attention_mask_reshape_before_cast",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 1,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "attention_mask_sequential_select",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 2,
+        "CPU": 2,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "attention_mask_lut_int32",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 2,
+        "CPU": 2,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    {
+      "name": "attention_mask_lut_fp16",
+      "compile": "COMPILED",
+      "reported_main_compiler_partition": {
+        "NPU": 2,
+        "CPU": 1,
+        "GPU": 0,
+        "ISP": 0
+      },
+      "load": "NOT_RUN",
+      "run": "NOT_RUN",
+      "numerical": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    }
+  ],
+  "interpretation": [
+    "MoE integer membership/count/active Gather candidates remain compiler CPU-only in these tested contracts.",
+    "Source inspection: routing Gather helpers retain INT32 tables and INT32 index Slice/Mul/Add operations. This explains why a Gather spelling alone does not imply the same support contract as GDN FP16 copies; exact compiled operator placement remains unproven.",
+    "MoE weights/gate/full route native and Gather cases remain compiler mixed NPU1/CPU1, all original comparisons passed.",
+    "TopK rank3/4 add compiler NPU partitions while retaining CPU1; no proof TopK compute moved to NPU.",
+    "RoPE BMM/MatMul2d and native position Cast have NPU1/CPU0 compile records, but their board validation was not reached.",
+    "Case compile failure and HDC infrastructure failure are separate; an existing output directory is preserved and cannot be overwritten.",
+    "No production graph candidate promoted, no model accuracy or performance gate advanced."
+  ],
+  "next_action": "After original device reconnects, reuse compiled source with --replay-all --start-at selection_argmax_rank2_ties in a new output directory; preserve both reports.",
+  "full_model_execution": "NOT_ESTABLISHED",
+  "full_model_accuracy": "DEFERRED_NOT_WAIVED",
+  "performance": "NOT_MEASURED"
+}

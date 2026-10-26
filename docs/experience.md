@@ -416,3 +416,14 @@ run：`20261026T063807Z-1895-16df84`。用户指出逐组7项会产生过多编�
 MoE16项覆盖整数/布尔控制与INT32查表候选、权重选择及四专家路由上下文；索引始终是整数，正零sentinel执行拷贝，membership与零权重独立，保留FP16乘积和expert升序加和。完整路由两臂复用已有MatMul归约实现做两槽求和，该K=2合同仍需本批次上板验证；独立参考保留原ReduceSum，避免已知Reduce回退掩盖本次路由差异。选择15项含TopK三种布局、ArgMax四种布局各unique/tie、只限unique的TopK1以及Softmax→TopK→sum→Div上下文；不把未规定的TopK tie序当作ArgMax首索引策略。位置12项覆盖K1 RoPE外积、INT32 Cast及舍入边界、动态二值attention mask五种表达；LUT限定二值域，不能推广到任意非零整数。
 
 实际CLI准备43项通过，175项批次/报告/native-donor相关回归通过，62段文档shell语法通过；加上路由42、位置31、选择16项，共264项通过；各家族主机测试与审查见`specs/remaining-cpu-probes-verification.json`。选择测试另外修正了自身语法、新目录约束及recipe dtype标签断言，生产代码未因这些测试错误改动。没有执行本地内部OMG或HDC。经验固化为批次选择、家族排除、可追溯case合同和上下文对照；未改通用技能或共享工具链。下一步只需用户一次运行43项并回传两份汇总，再按整批证据统一改图。上板执行优先、完整精度后置未豁免、最终DFlash至少2倍目标保持。
+
+
+## 2026-10-26：大批次断连后复用编译产物补跑
+
+run：`20261026T075242Z-3501-38bea2`。用户43项CPU候选批次有42项编译成功、1项CastT编译失败；板端前23项完成Load、Process及原数值比较，第24个已编译案例`selection_argmax_rank2_ties`在hash-result校验时收到HDC设备未连接，批次为INFRASTRUCTURE_FAILED，余19项没有完整验证。报告NOT_RUN不证明远端从未启动；不能把结果回传中断归因于ArgMax tie。单独的`moe_cast_bool_roundtrip`在v0 INT32→BOOL的TBE任务生成阶段缺kernel name；早先NPU1/CPU0分区不等于编译成功，缺库警告也不是已证实根因。证据为用户文本，原始产物和版本未独立获取，记录在`specs/remaining-cpu-probes-user-report.json`。
+
+MoE整数查表及索引操作仍含CPU分区，完整路由两臂均NPU1/CPU1；TopK/ArgMax布局变化仍留CPU分区，不能把新增NPU分区推断成选择算子已迁入NPU。此次未晋级任何整图替代方案，原RoPE BMM/二维MatMul及原形位置Cast虽编译NPU1/CPU0，仍待板端补测。实际NPU位置、整图9分区回退、完整精度及2倍性能目标均未关闭。
+
+新增回放`--start-at CASE`，要求`--replay-all`与原批次COMPILED起点，按manifest顺序选取含起点的后缀。用户本例只需补跑19项，不重编42个OMC。之前编译成功的23项列为excluded_before_start，不复制、不上传、不继承PASS；原编译失败项单列NOT_RETRIED。仍要求新输出目录，保留旧证据。原manifest、选中载荷、native donor/DDK身份和调用前后快照校验保持；本次selection与原source_selection分开记录。传输中断不自动重连/重启/杀进程，也不通过忽略哈希或放宽比较继续。
+
+86项主机回放回归通过，4段文档shell通过bash -n；43项记录和19项后缀核对通过。首轮仅旧CLI允许选项断言未包含新参数导致失败，修正测试预期后全部通过。独立审查覆盖源顺序、编译失败分离、报告counts、源不可变与donor验证，没有阻塞。经验固化在模型工具和回归，不修改共享技能或工具链；本地未运行内部OMG/HDC。详见`specs/hiai-replay-start-at-verification.json`。

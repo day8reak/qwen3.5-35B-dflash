@@ -42,6 +42,8 @@ def parser():
                         help="build only the diagnostic runner from recorded SDK/header/link inputs")
     result.add_argument("--replay-all", action="store_true",
                         help="replay every compiled case in the candidate deployment only; automatically refresh the runner once, never compile models")
+    result.add_argument("--start-at", metavar="CASE",
+                        help="with --replay-all, start at this compiled case inclusively in original manifest order; use a new output directory")
     result.add_argument("--timeout-seconds", type=int, default=300)
     return result
 
@@ -227,12 +229,14 @@ def _ddk_identity(manifest):
             "omg_sha256": _digest(tools.get("omg_sha256"))}
 
 
-def validate_source(source, *, replay_all=False, native_from=None):
+def validate_source(source, *, replay_all=False, native_from=None, start_at=None):
     """Validate original model/native records without rediscovery or vendor tools.
 
     An explicit donor can supply native records only for a genuine compile-only
     run. It cannot replace an original native inventory, including broken ones.
     """
+    if start_at is not None and not replay_all:
+        raise ValueError("--start-at requires --replay-all")
     source = Path(source).expanduser().resolve(strict=True)
     snapshot = Snapshot()
     manifest = _json(source / "manifest.json", snapshot)
@@ -278,10 +282,17 @@ def validate_source(source, *, replay_all=False, native_from=None):
         if record.get("compile", {}).get("status", "NOT_RUN") not in {"COMPILED", "FAILED", "NOT_RUN"}:
             raise ValueError(f"invalid original compile status: {name}")
         by_name[name] = record
-    skipped = []
+    skipped, excluded_before_start = [], []
     if replay_all:
         records = [record for record in all_cases if record.get("compile", {}).get("status") == "COMPILED"]
         skipped = [record for record in all_cases if record.get("compile", {}).get("status") != "COMPILED"]
+        if start_at is not None:
+            if start_at not in by_name:
+                raise ValueError(f"--start-at case is absent from the original probe: {start_at}")
+            if by_name[start_at].get("compile", {}).get("status") != "COMPILED":
+                raise ValueError(f"--start-at requires a COMPILED case: {start_at}")
+            index = next(i for i, record in enumerate(records) if record["name"] == start_at)
+            excluded_before_start, records = records[:index], records[index:]
         if not records:
             raise ValueError("--replay-all requires at least one existing COMPILED case")
     else:
@@ -299,6 +310,7 @@ def validate_source(source, *, replay_all=False, native_from=None):
             "native_source": native_source, "native_manifest": native_manifest,
             "native_from": native_from is not None, "ddk_identity": ddk_identity,
             "runner": runner, "libraries": libraries, "records": records, "skipped": skipped,
+            "excluded_before_start": [record["name"] for record in excluded_before_start],
             "snapshot": snapshot, "dependencies": dependencies}
 
 
@@ -338,7 +350,7 @@ def _freeze(validated, root):
 
 def _combined_report(root, comparison):
     save_json(root / "runtime-comparison.json", comparison)
-    reuse = ("Replays existing compiled cases in the candidate deployment only; refreshes the diagnostic runner once. No model compilation."
+    reuse = ("Replays selected existing compiled cases in the candidate deployment only; refreshes the diagnostic runner once. No model compilation."
              if comparison["replay_all"] else
              "Reuses existing models, inputs and references; builds only the diagnostic runner once for both arms."
              if comparison["refresh_runner"] else
@@ -350,6 +362,10 @@ def _combined_report(root, comparison):
     if comparison.get("native_from"):
         lines[4:4] = ["Native build/library donor: " + comparison["native_from"],
                       "The compiled-model source and native donor are separately hash-bound; recorded DDK identities match."]
+    if comparison.get("start_at") is not None:
+        lines += ["Replay starts inclusively at: " + comparison["start_at"],
+                  f"Earlier compiled cases excluded: {len(comparison['excluded_before_start'])}; no previous results inherited.",
+                  "Original non-compiled cases remain listed separately as not retried."]
     for arm in comparison["arms"]:
         lines.append(f"{arm['name']}: {arm['status']}")
         for reason in arm.get("blocked_reasons", []):
@@ -421,10 +437,13 @@ def run(args):
         raise ValueError("--timeout-seconds must be positive")
     if args.native_from is not None and not (args.replay_all and args.refresh_runner):
         raise ValueError("--native-from requires both --replay-all and --refresh-runner")
+    start_at = args.start_at
+    if start_at is not None and not args.replay_all:
+        raise ValueError("--start-at requires --replay-all")
     root = output_path(args.output)
     if root.exists() or root.is_symlink():
         raise FileExistsError(f"comparison output already exists: {root}")
-    validated = validate_source(args.probe_run, replay_all=args.replay_all, native_from=args.native_from)
+    validated = validate_source(args.probe_run, replay_all=args.replay_all, native_from=args.native_from, start_at=start_at)
     source = validated["source"]
     for protected in {source, validated["native_source"]}:
         if root == protected or protected in root.parents or root in protected.parents:
@@ -458,8 +477,9 @@ def run(args):
         "scope": "Hashes bind reused artifacts and, when explicitly requested, the refreshed native build; backend selection is unverified."})
     blockers = candidate_blockers(dependencies)
     frozen_by_name = {record["name"]: record for record in records}
+    excluded = set(validated["excluded_before_start"])
     report_records = [frozen_by_name.get(record["name"], copy.deepcopy(record))
-                      for record in validated["manifest"]["cases"]] if args.replay_all else records
+                      for record in validated["manifest"]["cases"] if record["name"] not in excluded] if args.replay_all else records
     comparison = {"schema_version": 1, "artifact_kind": "qwen35-hiai-runtime-comparison",
         "created_utc": datetime.now(timezone.utc).isoformat(), "probe_run": str(source),
         "source_manifest_sha256": sha256_file(source / "manifest.json"), "status": "RUNNING",
@@ -469,6 +489,7 @@ def run(args):
         "refresh_runner": refresh_runner, "replay_all": args.replay_all, "runner": runner_record,
         "counts": {"cases": len(report_records), "compiled": len(records), "skipped": len(validated["skipped"])},
         "selected_cases": [record["name"] for record in records],
+        "start_at": start_at, "excluded_before_start": validated["excluded_before_start"],
         "skipped_cases": [record["name"] for record in validated["skipped"]], "excluded_library_names": sorted(EXCLUDED),
         "backend_selection": "UNVERIFIED", "runtime_placement": "UNVERIFIED", "arms": [],
         "limitations": [
@@ -501,7 +522,14 @@ def run(args):
                         "cases": report_records, "comparison_arm": arm["name"], "source_probe_run": str(source),
                         "skipped_cases": comparison["skipped_cases"], "replay_all": args.replay_all}
             if args.replay_all and validated["manifest"].get("selection") is not None:
-                manifest["selection"] = validated["manifest"]["selection"]
+                manifest["selection"] = copy.deepcopy(validated["manifest"]["selection"])
+                if start_at is not None:
+                    manifest["source_selection"] = copy.deepcopy(manifest["selection"])
+                    manifest["selection"].update(selected_cases=comparison["selected_cases"],
+                                                 start_at=start_at, excluded_before_start=comparison["excluded_before_start"])
+            if start_at is not None:
+                manifest["replay_selection"] = {"start_at": start_at, "selected_cases": comparison["selected_cases"],
+                                                "excluded_before_start": comparison["excluded_before_start"]}
             board = None
             try:
                 print(f"runtime-probe: {arm['name']}: running {len(records)} existing cases", flush=True)

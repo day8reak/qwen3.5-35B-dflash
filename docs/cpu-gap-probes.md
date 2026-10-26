@@ -13,6 +13,29 @@
 
 这个表描述覆盖范围，不表示所有候选都能进入 NPU。纯复制/整数输出保持精确比较；FP16 算术沿用既有门槛，不放宽。使用查表的 attention mask 候选限二值输入；不能直接推广成任意非零整数掩码。ArgMax 首个最大值和 TopK 的 tie 行为分别检查，不能因唯一分数通过就推断 tie 已对齐。
 
+## 已有批次断连后补跑
+
+用户回传 `cpu-gaps-20261026-153933` / `cpu-gaps-board-20261026-153938`：43项中42项编译成功，23项完成加载、执行和数值比较。第24个已编译案例 `selection_argmax_rank2_ties` 的 hash-result 调用收到 `[Fail]Device not founded or connected`，批次状态为 `INFRASTRUCTURE_FAILED`。该项及后续共19项没有完成验证，不应判为算子执行失败。`moe_cast_bool_roundtrip` 是独立的编译失败，日志在 CastT v0 的 `InitKernelAttr` 报告缺少 TBE kernel name，未进入板端。
+
+不用重新导出或编译。确认所选 HDC server 上原设备恢复连接后，复用原 `GE_CPU_GAPS_RUN`，从未完成项开始，在新目录补跑：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+"${HDC:-hdc}" -s "$BIP" list targets -v
+export GE_CPU_GAPS_REMAINDER_RUN="$AI_RUN_DIR/cpu-gaps-remainder-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
+  --probe-run "$GE_CPU_GAPS_RUN" --native-from "$OP_PROBE_RUN" \
+  --refresh-runner --replay-all --start-at selection_argmax_rank2_ties \
+  --output "$GE_CPU_GAPS_REMAINDER_RUN"
+cat "$GE_CPU_GAPS_REMAINDER_RUN/runtime-comparison.txt"
+```
+
+`--start-at` 包含指定项，按原manifest顺序选择此项及其后的已编译案例，只刷新一次probe runner。它要求 `--replay-all`，起点必须是原批次中编译成功的案例；不会重新编译，也不会把旧通过结果搬进新报告。旧输出目录保留，重复使用会报 `FileExistsError`。新旧报告需要一起保留；如果已经开始全量回放，可让它完成，无需为了使用该选项再启动第二个回放。
+
+这次结果还表明：MoE membership/count/active的Gather版本仍为编译CPU1；weights/gate/完整route的两类方案均为NPU1/CPU1。TopK rank2为CPU1，rank3/4为NPU2/CPU1，不能将多出的NPU分区当成TopK已经由NPU执行。RoPE BMM/二维MatMul及原形位置Cast显示NPU1/CPU0，但板端尚未验证。完整图仍未解除9分区上限，当前不晋级这些路由/选择替代方案。详见 `specs/remaining-cpu-probes-user-report.json`。
+
+## 首次运行批次
+
 在原服务器环境运行，继续复用 `CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID`、`OP_PROBE_RUN`、`SN`、`BIP` 和原 SDK 配置：
 
 ```bash

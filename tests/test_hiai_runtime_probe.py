@@ -257,7 +257,7 @@ def test_missing_case_and_missing_required_hash_are_rejected(previous, monkeypat
 
 def test_no_library_parameters_are_exposed():
     options = {option for action in probe.parser()._actions for option in action.option_strings}
-    assert options == {"-h", "--help", "--probe-run", "--output", "--keep-board", "--timeout-seconds", "--refresh-runner", "--replay-all", "--native-from"}
+    assert options == {"-h", "--help", "--probe-run", "--output", "--keep-board", "--timeout-seconds", "--refresh-runner", "--replay-all", "--native-from", "--start-at"}
 
 
 @pytest.mark.parametrize("field,value", [("sha256", None), ("sha256", "invalid"), ("bytes", None), ("bytes", True)])
@@ -586,6 +586,105 @@ def test_replay_keeps_frozen_source_batch_selection(compile_only, monkeypatch):
     arm = compile_only["output"] / "arms/candidate_without_ddk_hcl"
     for filename in ("manifest.json", "report.json"):
         assert json.loads((arm / filename).read_text())["selection"] == selection
+
+
+def test_start_at_requires_replay_all_before_output(previous, monkeypatch):
+    builds = _refresh(monkeypatch, previous)
+    transport = _transport(monkeypatch, previous)
+    with pytest.raises(ValueError, match="--start-at requires --replay-all"):
+        probe.run(_args(previous, "--start-at", probe.CASE_NAMES[0]))
+    assert not builds and not transport and not previous["output"].exists()
+
+
+@pytest.mark.parametrize("name", ["absent", "select_rank4", "unprepared"])
+def test_start_at_rejects_unknown_or_noncompiled_case(replay, monkeypatch, name):
+    builds = _refresh(monkeypatch, replay)
+    transport = _transport(monkeypatch, replay)
+    with pytest.raises(ValueError, match="--start-at"):
+        probe.run(_args(replay, "--replay-all", "--start-at", name))
+    assert not builds and not transport and not replay["output"].exists()
+
+
+def test_start_at_replays_inclusive_suffix_with_donor_and_keeps_failed_cases_separate(compile_only, monkeypatch):
+    state = compile_only
+    original = state["manifest"]["cases"]
+    # A failed compile precedes the start; it stays reported, never executed.
+    original.insert(1, original.pop())
+    before_name, start = original[0]["name"], original[2]["name"]
+    selection = {"suite": "remaining-cpu", "excluded_families": ["gdn"],
+                 "requested_cases": [], "selected_cases": [row["name"] for row in original]}
+    state["manifest"]["selection"] = copy.deepcopy(selection)
+    _json(state["source"] / "manifest.json", state["manifest"])
+    before = {str(path): sha256_file(path) for folder in (state["source"], state["donor"])
+              for path in folder.rglob("*") if path.is_file()}
+    state["transport_cases"] = [start]
+    builds = _refresh(monkeypatch, state)
+    transport = _transport(monkeypatch, state)
+    assert probe.run(_donor_args(state, "--start-at", start)) == 0
+    assert len(builds) == len(transport) == 1
+    assert before == {path: sha256_file(Path(path)) for path in before}
+    root = state["output"]
+    report = json.loads((root / "runtime-comparison.json").read_text())
+    assert report["selected_cases"] == [start]
+    assert report["excluded_before_start"] == [before_name]
+    assert report["skipped_cases"] == ["uncompiled_case"]
+    assert report["counts"] == {"cases": 2, "compiled": 1, "skipped": 1}
+    assert report["source_manifest_sha256"] == sha256_file(state["source"] / "manifest.json")
+    assert report["native_source_manifest_sha256"] == sha256_file(state["donor"] / "manifest.json")
+    assert [row["name"] for row in report["arms"][0]["cases"]] == ["uncompiled_case", start]
+    assert not (root / "reused/cases" / before_name).exists()
+    assert not (root / "arms/candidate_without_ddk_hcl/board" / before_name).exists()
+    arm = root / "arms/candidate_without_ddk_hcl"
+    for filename in ("manifest.json", "report.json"):
+        subset = json.loads((arm / filename).read_text())["selection"]
+        assert subset["selected_cases"] == [start] and subset["start_at"] == start
+        assert subset["excluded_before_start"] == [before_name]
+    assert json.loads((arm / "manifest.json").read_text())["source_selection"] == selection
+    assert "no previous results inherited" in (root / "runtime-comparison.txt").read_text()
+    with tarfile.open(root / "results.tar.gz") as archive:
+        packaged = json.load(archive.extractfile("runtime-comparison.json"))
+        assert packaged["selected_cases"] == [start]
+        assert json.load(archive.extractfile("source-records/manifest.json")) == state["manifest"]
+
+
+def test_start_at_first_keeps_manifest_order_and_all_compiled_cases(replay, monkeypatch):
+    # Deliberately use reverse order to rule out alphabetical suffix selection.
+    original = replay["manifest"]["cases"]
+    original.reverse()
+    _json(replay["source"] / "manifest.json", replay["manifest"])
+    selected = [row["name"] for row in original if row["compile"]["status"] == "COMPILED"]
+    replay["transport_cases"] = selected
+    _refresh(monkeypatch, replay)
+    transport = _transport(monkeypatch, replay)
+    assert probe.run(_args(replay, "--replay-all", "--start-at", selected[0])) == 0
+    report = json.loads((replay["output"] / "runtime-comparison.json").read_text())
+    assert report["selected_cases"] == selected and report["excluded_before_start"] == []
+    assert len(transport) == 1
+
+
+@pytest.mark.parametrize("artifact", ["model", "io", "donor_library"])
+def test_start_at_still_rejects_changed_selected_payload_or_donor(compile_only, monkeypatch, artifact):
+    selected = compile_only["records"][-1]
+    path = (Path(compile_only["libraries"][0]["path"]) if artifact == "donor_library"
+            else Path(selected[artifact]))
+    path.write_bytes(path.read_bytes() + b"changed")
+    builds = _refresh(monkeypatch, compile_only)
+    transport = _transport(monkeypatch, compile_only)
+    with pytest.raises(ValueError, match="SHA256"):
+        probe.run(_donor_args(compile_only, "--start-at", selected["name"]))
+    assert not builds and not transport and not compile_only["output"].exists()
+
+
+def test_start_at_keeps_existing_output_untouched(compile_only, monkeypatch):
+    root = compile_only["output"]
+    root.mkdir()
+    (root / "runtime-comparison.txt").write_text("retained old evidence")
+    builds = _refresh(monkeypatch, compile_only)
+    transport = _transport(monkeypatch, compile_only)
+    with pytest.raises(FileExistsError, match="output already exists"):
+        probe.run(_donor_args(compile_only, "--start-at", compile_only["records"][-1]["name"]))
+    assert not builds and not transport
+    assert (root / "runtime-comparison.txt").read_text() == "retained old evidence"
 
 
 @pytest.mark.parametrize("flags", [[], ["--replay-all"], ["--refresh-runner"]])
