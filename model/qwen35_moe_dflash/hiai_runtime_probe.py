@@ -1,7 +1,7 @@
 """Compare two isolated HIAI library deployments using existing probe artifacts.
 
-This command never compiles models or builds a runner. Backend selection and
-runtime NPU placement remain unverified, including after numerical success.
+Models are never recompiled. The recorded runner is reused unless explicitly
+refreshed; backend selection and NPU placement remain unverified after success.
 """
 from __future__ import annotations
 
@@ -36,6 +36,8 @@ def parser():
     result.add_argument("--probe-run", required=True, help="existing completed operator probe directory")
     result.add_argument("--output", required=True, help="new comparison directory below AI_RUN_DIR")
     result.add_argument("--keep-board", action="store_true", help="retain only these comparison deployments")
+    result.add_argument("--refresh-runner", action="store_true",
+                        help="build only the diagnostic runner from recorded SDK/header/link inputs")
     result.add_argument("--timeout-seconds", type=int, default=300)
     return result
 
@@ -289,8 +291,10 @@ def _freeze(validated, root):
 
 def _combined_report(root, comparison):
     save_json(root / "runtime-comparison.json", comparison)
-    lines = ["HIAI runtime deployment comparison", "", "Status: " + comparison["status"],
-             "Reuses existing models, inputs, references and native binary; no compilation or build.",
+    reuse = ("Reuses existing models, inputs and references; builds only the diagnostic runner once for both arms."
+             if comparison["refresh_runner"] else
+             "Reuses existing models, inputs, references and native binary; no compilation or build.")
+    lines = ["HIAI runtime deployment comparison", "", "Status: " + comparison["status"], reuse,
              "Backend selection and NPU execution remain UNVERIFIED.", "",
              "arm | case | load | run | numerical | placement"]
     for arm in comparison["arms"]:
@@ -311,6 +315,8 @@ def _combined_report(root, comparison):
     # excludes models, libraries, tensors and the shared raw HiLog snapshot.
     members = [root / name for name in ("runtime-comparison.json", "runtime-comparison.txt", "source-snapshot.json")]
     members += [root / "arms" / arm / "results.tar.gz" for arm in ARMS]
+    if comparison["refresh_runner"]:
+        members += [root / "refreshed-native" / name for name in ("command.json", "build-command.json", "result.json")]
     with tarfile.open(root / "results.tar.gz", "x:gz") as archive:
         for path in members:
             if path.is_file() and not path.is_symlink():
@@ -330,6 +336,15 @@ def run(args):
     root.mkdir(parents=True)
     try:
         runner, libraries, records, frozen = _freeze(validated, root)
+        runner_record = {"mode": "REUSED_NATIVE", "path": str(runner), "sha256": sha256_file(runner),
+                         "historical_binary": {"path": str(validated["runner"]), "sha256": sha256_file(validated["runner"])}}
+        dependencies = validated["dependencies"]
+        if args.refresh_runner:
+            from .hiai_probe_build import build_probe
+            runner, runner_record = build_probe(root, validated, libraries, frozen, args.timeout_seconds)
+            dependencies = [{"path": str(runner), "name": runner.name, "sha256": runner_record["sha256"],
+                             "kind": "runner", **runner_record["dependencies"]},
+                            *[entry for entry in dependencies if entry["kind"] == "library"]]
     except Exception as error:
         save_json(root / "failure.json", {"status": "PREFLIGHT_FAILED", "board_started": False,
                   "error": f"{type(error).__name__}: {error}"})
@@ -337,12 +352,13 @@ def run(args):
     save_json(root / "source-snapshot.json", {
         "schema_version": 1, "probe_run": str(source), "files": list(validated["snapshot"].files.values()),
         "frozen_files": list(frozen.files.values()), "historical_native_sources": validated["command"].get("sources", []),
-        "dependencies": validated["dependencies"],
-        "scope": "Hashes bind existing artifacts; no current-source rebuild or runtime backend verification."})
-    blockers = candidate_blockers(validated["dependencies"])
+        "dependencies": dependencies, "historical_dependencies": validated["dependencies"], "runner": runner_record,
+        "scope": "Hashes bind reused artifacts and, when explicitly requested, the refreshed native build; backend selection is unverified."})
+    blockers = candidate_blockers(dependencies)
     comparison = {"schema_version": 1, "artifact_kind": "qwen35-hiai-runtime-comparison",
         "created_utc": datetime.now(timezone.utc).isoformat(), "probe_run": str(source),
         "source_manifest_sha256": sha256_file(source / "manifest.json"), "status": "RUNNING",
+        "refresh_runner": args.refresh_runner, "runner": runner_record,
         "selected_cases": list(CASE_NAMES), "excluded_library_names": sorted(EXCLUDED),
         "backend_selection": "UNVERIFIED", "runtime_placement": "UNVERIFIED", "arms": [],
         "limitations": [

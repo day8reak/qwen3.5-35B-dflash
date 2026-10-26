@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261025T235900Z-6378-a4df2b",
+  "baseline_commit": "2d8e211",
+  "status": "USER_REPORTED_CANDIDATE_LOAD_RECOVERY_MATMUL_IO_BLOCKED",
+  "provenance": "User pasted runtime-comparison.txt and candidate MatMul/Add HiLog; original JSON/archive/artifact hashes not independently received",
+  "transport_status": "COMPARISON_COMPLETE",
+  "results": {
+    "ddk_baseline": {
+      "matmul_m8_b_dynamic": {
+        "load": "FAILED",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN"
+      },
+      "add_rank4": {
+        "load": "FAILED",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN"
+      },
+      "add_rank5": {
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED"
+      }
+    },
+    "candidate_without_ddk_hcl": {
+      "matmul_m8_b_dynamic": {
+        "load": "PASSED",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN",
+        "error": "OMC tensor shape/format differs from IO TSV"
+      },
+      "add_rank4": {
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED"
+      },
+      "add_rank5": {
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED"
+      }
+    }
+  },
+  "observations": [
+    "The candidate library-set plus vendor-search-path deployment passed Load for all three tested cases",
+    "The NPU-partitioned add_rank4 case now executes with matching output; independent runtime placement remains unverified",
+    "MatMul now fails after Load at the strict IO check, before Process; this is distinct from the previous shared NPUCL registration failure",
+    "Default comparison deliberately reuses the original native binary; updating the repository alone cannot add detailed IO diagnostics to that binary"
+  ],
+  "unverified": [
+    "Exact mapped runtime DSO identities and independent per-kernel hardware execution profiling; NPUCL registration/loading and Add device submission now have user-log evidence",
+    "Whether MatMul mismatch is rank, shape or format; no particular padding/layout equivalence assumed",
+    "Effect of pair omission separately from added vendor search path",
+    "Full-model and untested operator success"
+  ],
+  "next_action": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$RUNTIME_IO_RUN\" --refresh-runner",
+  "decisions": [
+    "Add explicit native-runner refresh while preserving original model/input/reference/library contracts and default exact binary reuse",
+    "Use the same refreshed runner in both arms with new source/build/dependency records",
+    "Keep shape/format checks, tolerances, production deployment defaults and model precision unchanged"
+  ],
+  "experience_audit": "docs/experience.md",
+  "candidate_hilog_followup": {
+    "runtime_version": "800.631.120.010",
+    "provenance": "User pasted per-process HiLog text; no independent board access",
+    "matmul": {
+      "pid": 13929,
+      "board_log_time": "03-08 23:22:58",
+      "stage": "LOAD_PASSED_NO_PROCESS_BEFORE_IO_FAILURE",
+      "evidence": [
+        "Open ComputeLibrary so: libai_npucore_itf_client.so",
+        "NpuclEventListener register.",
+        "npu_graph_executor_client.cc Init: load model begin client id:65536",
+        "LoadModelsByHcl success"
+      ],
+      "actual_io_descriptors": "NOT_PRESENT_IN_SUPPLIED_LOG"
+    },
+    "add_rank4": {
+      "pid": 14066,
+      "board_log_time": "03-08 23:23:24",
+      "stage": "NPUCL_LOAD_AND_DEVICE_SUBMISSION_OBSERVED_NUMERICAL_PASS_REPORTED",
+      "evidence": [
+        "Open ComputeLibrary so: libai_npucore_itf_client.so",
+        "NpuclEventListener register.",
+        "npu_graph_executor_client.cc Init: load model begin client id:65536",
+        "LoadModelsByHcl success",
+        "hcl_model_executor_impl.cpp Run: modelExecutor Execute start2...",
+        "DirectEngine execute modelId = 1 taskId = 32678",
+        "model exec ioctl done, modelId = 1 taskId = 32678",
+        "notify recv thread, model id 1, task id 32678"
+      ]
+    },
+    "interpretation": "The candidate registers and initializes the NPUCL graph path. Add logs include model execution submission/completion messages, distinct from subsequent stop commands. MatMul has no model Run before the IO guard exits.",
+    "excluded_library_warning": "libhiai_hcl_model_runtime.so lookup failure occurs before successful candidate backend initialization; it is not this run's terminal failure and is not a reason to restore the excluded library",
+    "limitations": "Exact mapped runtime DSO paths/build IDs and per-kernel hardware profiling are not supplied; retain automated placement UNVERIFIED rather than asserting every op or full model is NPU-verified"
+  }
+}

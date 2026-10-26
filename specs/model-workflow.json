@@ -272,23 +272,26 @@
     "board_guide": "docs/direct-ge-board.md"
   },
   "operator_support_probe": {
-    "run_id": "20261023T092155Z-30133-a88918",
-    "status": "USER_REPORTED_NPUCL_LOAD_FAILURE",
+    "run_id": "20261025T235900Z-6378-a4df2b",
+    "status": "USER_REPORTED_CANDIDATE_LOAD_RECOVERY_MATMUL_IO_BLOCKED",
     "scope": "47 independent small operator contracts; no full-model gate advanced",
     "evidence": "specs/operator-support-probe-verification.json",
     "guide": "docs/README.md#板端算子探测",
     "current_model_device_status": "USER_REPORTED_HCL_CPUCL_MATMUL_COMPATIBILITY_FAILURE",
     "new_probe_device_execution": "USER_REPORTED_7_NUMERICAL_PASSES_35_NPU_PARTITION_LOAD_FAILURES",
-    "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$RUNTIME_AB_RUN\"",
+    "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$RUNTIME_IO_RUN\" --refresh-runner",
     "experience_audit": "docs/experience.md",
     "user_evidence": "specs/operator-support-probe-user-report.json",
-    "confirmed_probe_blocker": "NPUCL not registered in the MatMul and Add probe processes; backend package/configuration cause still unverified",
+    "confirmed_probe_blocker": "Candidate MatMul Load succeeds but IO shape/format comparison fails before Process; actual descriptors needed",
     "runtime_inventory_status": "USER_REPORTED_BOARD_NPU_BACKEND_FILES_PRESENT_SELECTION_UNVERIFIED",
     "runtime_comparison": {
-      "status": "SOURCE_HANDOFF_BOARD_PENDING",
+      "status": "USER_REPORTED_CANDIDATE_ADD_PASS_MATMUL_IO_BLOCKED",
       "evidence": "specs/hiai-runtime-comparison-verification.json",
       "reuse_original_artifacts": true,
-      "production_runtime_policy_changed": false
+      "production_runtime_policy_changed": false,
+      "user_evidence": "specs/hiai-runtime-comparison-user-report.json",
+      "next_runner_mode": "EXPLICIT_DIAGNOSTIC_REFRESH",
+      "runtime_evidence": "USER_LOG_NPUCL_REGISTERED_GRAPH_LOAD_PASSED_ADD_DEVICE_SUBMISSION_OBSERVED"
     }
   }
 }

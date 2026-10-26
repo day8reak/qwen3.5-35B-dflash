@@ -229,3 +229,11 @@ run：`20261023T092155Z-30133-a88918`，基线 `ffe0d18`。用户回传实际 EL
 新增 `probe_hdc_runtime.py` 从原 manifest/build/result 及 SHA256 记录复用既有 runner、三份 OMC、输入和参考，不因更新仓库重编译历史探针。基线保留原完整库集合；候选组仅排除两个指定 DDK HCL 库，并在局部搜索路径加入 `/vendor/lib64/chipsetsdk`。这是库集合与搜索路径的联合对照，成功也不能单独证明是哪项变化起效。检查全部保留 ELF 的 DT_NEEDED、SONAME 和重复内容，避免直接依赖缺失或别名重新带入；冻结小产物并在两组前后核对原文件和副本。每组独立目录、回传及受限清理，不触碰已有大权重目录。
 
 ELF 读取器通过程序头解析动态表，不执行目标文件；三份本地真实 ARM64 ELF 的结果与 SDK llvm-readelf 一致。最终相关主机回归 109 项通过；首次最终复跑漏设 PYTHONPATH 导致收集失败，补上既有 model 路径后通过，记录保留于工作目录。严格 IO 和数值阈值未改变。板端库实际映射、NPUCL 注册及执行位置仍待用户对照结果，不把测试通过升级为模型精度或性能结论。证据见 `specs/hiai-runtime-comparison-verification.json`。经验保留在模型内，无需据此改通用技能或共享 SDK/DDK。
+
+## 后端对照通过加载后的 IO 诊断（2026-10-26）
+
+run：`20261025T235900Z-6378-a4df2b`。用户粘贴的 A/B 报告显示：基线 MatMul、四维 Add 仍在 Load 失败，五维 Add 数值通过；候选组三项均加载成功，两个 Add 均数值通过，MatMul 停在严格 IO 形状/格式校验。随后收到候选 MatMul PID13929 与 Add PID14066 的 HiLog：均打开 `libai_npucore_itf_client.so`，注册 NpuclEventListener，完成 NPU 图执行器初始化和 LoadModelsByHcl；Add 还有 Run、modelId=1 的执行 ioctl 完成记录，区别于后续停止模型的命令。这为候选 NPUCL 加载恢复及 Add 设备提交提供了用户日志证据，不能再视为 NPUCL 完全不可用。MatMul 尚未调用 Process。缺少已排除 DDK HCL 库的前序报错后面接续成功加载，不作为本次终止原因。
+
+实际映射 DSO 身份、逐 kernel 硬件执行证据及库排除和 vendor 路径各自的贡献尚未独立证明，自动报告仍保留 placement=UNVERIFIED。不能把当前 IO 错误归为 MatMul 算子不支持，也不能直接跳过布局检查。原始报告归档尚未收到，证据等级保持用户文本回传，见 `specs/hiai-runtime-comparison-user-report.json`。
+
+A/B 默认精确复用旧 runner，因此更新源码不会让旧二进制获得已加入的详细 IO 输出。对照原探针提交后确认 native 差异仅为描述和错误信息；新增显式 `--refresh-runner` 只重建诊断可执行文件，并让两组使用同一个新文件。原 OMC、输入、参考及库哈希继续复用，重新核对新 runner 动态依赖，保留旧二进制身份和当前构建证据。新输出能区分具体输入/输出、声明形状/格式与实际形状/格式，但旧 HIAI 查询接口仍不能直接提供 dtype。下一步依据这些描述选择有证据的布局适配，不猜测单例维度、不降低精度或数值门槛。默认部署策略和共享资源保持原样；主机验证结果见 `specs/hiai-runner-refresh-verification.json`，未推进完整模型门槛。经验固化于显式刷新模式及回归，无需修改通用技能。

@@ -84,7 +84,7 @@ def _transport(monkeypatch, previous, *, mutation=None, fail=False):
     def run(output, runner, libraries, records, **kwargs):
         call = {"output": output, "runner": runner, "libraries": libraries, "records": records, **kwargs}
         calls.append(call)
-        assert Path(runner).read_bytes() == previous["runner"].read_bytes()
+        assert Path(runner).read_bytes() == previous.get("transport_runner_bytes", previous["runner"].read_bytes())
         assert [row["name"] for row in records] == list(probe.CASE_NAMES)
         result = {"status": "TRANSPORT_COMPLETE", "cases": {}, "board_cleanup": "REMOVED",
                   "serial": "fixture-device", "hdc_server": "127.0.0.2:8790"}
@@ -116,6 +116,8 @@ def _transport(monkeypatch, previous, *, mutation=None, fail=False):
 
 
 def test_reuses_exact_artifacts_two_arms_and_no_rebuild(previous, monkeypatch):
+    from qwen35_moe_dflash import hiai_probe_build
+    monkeypatch.setattr(hiai_probe_build, "build_probe", _no_build)
     before = {str(path): sha256_file(path) for path in previous["source"].rglob("*") if path.is_file()}
     calls = _transport(monkeypatch, previous)
     assert probe.run(_args(previous, "--keep-board", "--timeout-seconds", "41")) == 0
@@ -133,6 +135,7 @@ def test_reuses_exact_artifacts_two_arms_and_no_rebuild(previous, monkeypatch):
     assert before == {str(path): sha256_file(path) for path in previous["source"].rglob("*") if path.is_file()}
     report = json.loads((previous["output"] / "runtime-comparison.json").read_text())
     assert report["status"] == "COMPARISON_COMPLETE"
+    assert report["refresh_runner"] is False and report["runner"]["mode"] == "REUSED_NATIVE"
     assert report["runtime_placement"] == report["backend_selection"] == "UNVERIFIED"
     assert [row["load"] for row in report["arms"][0]["cases"]] == ["FAILED", "FAILED", "PASSED"]
     assert all(row["numerical"] == "PASSED" for row in report["arms"][1]["cases"])
@@ -254,7 +257,7 @@ def test_missing_case_and_missing_required_hash_are_rejected(previous, monkeypat
 
 def test_no_library_parameters_are_exposed():
     options = {option for action in probe.parser()._actions for option in action.option_strings}
-    assert options == {"-h", "--help", "--probe-run", "--output", "--keep-board", "--timeout-seconds"}
+    assert options == {"-h", "--help", "--probe-run", "--output", "--keep-board", "--timeout-seconds", "--refresh-runner"}
 
 
 @pytest.mark.parametrize("field,value", [("sha256", None), ("sha256", "invalid"), ("bytes", None), ("bytes", True)])
@@ -263,3 +266,93 @@ def test_case_metadata_cannot_disable_historical_integrity(previous, field, valu
     _json(previous["source"] / "manifest.json", previous["manifest"])
     with pytest.raises(ValueError, match="SHA256|byte size"):
         probe.validate_source(previous["source"])
+
+
+def _refresh(monkeypatch, previous, *, needed=(), failure=False):
+    from qwen35_moe_dflash import hiai_probe_build
+    calls = []
+    previous["transport_runner_bytes"] = b"fixture refreshed diagnostic binary"
+
+    def build(root, validated, libraries, frozen, timeout):
+        calls.append({"root": root, "libraries": libraries, "timeout": timeout})
+        assert root == previous["output"]
+        assert all(root / "reused/lib" == path.parent for path in libraries)
+        if failure:
+            raise RuntimeError("fixture native build failed")
+        runner = root / "refreshed-native/build/qwen35_hiai_op_probe"
+        runner.parent.mkdir(parents=True)
+        runner.write_bytes(previous["transport_runner_bytes"])
+        digest = sha256_file(runner)
+        frozen.add(runner, expected=digest, role="refreshed-native-runner")
+        metadata = {"mode": "REFRESHED_NATIVE", "path": str(runner), "sha256": digest,
+                    "historical_binary": {"path": str(validated["runner"]), "sha256": sha256_file(validated["runner"])},
+                    "dependencies": {"needed": list(needed), "soname": None, "rpath": None, "runpath": None}}
+        for filename in ("command.json", "build-command.json", "result.json"):
+            path = root / "refreshed-native" / filename
+            _json(path, {"status": "fixture", "binary_sha256": digest})
+            frozen.add(path, role="refresh-build-metadata")
+        return runner, metadata
+
+    monkeypatch.setattr(hiai_probe_build, "build_probe", build)
+    return calls
+
+
+def test_refresh_builds_once_and_both_arms_share_new_runner(previous, monkeypatch):
+    old_files = {str(path): sha256_file(path) for path in previous["source"].rglob("*") if path.is_file()}
+    build_calls = _refresh(monkeypatch, previous)
+    transport = _transport(monkeypatch, previous)
+    assert probe.run(_args(previous, "--refresh-runner")) == 0
+    assert len(build_calls) == 1 and len(transport) == 2
+    assert transport[0]["runner"] == transport[1]["runner"]
+    assert transport[0]["runner"].parent.parent.name == "refreshed-native"
+    assert transport[0]["records"] == transport[1]["records"]
+    assert old_files == {str(path): sha256_file(path) for path in previous["source"].rglob("*") if path.is_file()}
+    report = json.loads((previous["output"] / "runtime-comparison.json").read_text())
+    assert report["refresh_runner"] and report["runner"]["mode"] == "REFRESHED_NATIVE"
+    assert report["runner"]["historical_binary"]["sha256"] == sha256_file(previous["runner"])
+    assert report["runner"]["sha256"] != report["runner"]["historical_binary"]["sha256"]
+    snapshot = json.loads((previous["output"] / "source-snapshot.json").read_text())
+    assert any(row["sha256"] == report["runner"]["historical_binary"]["sha256"] for row in snapshot["frozen_files"])
+    assert any(row["sha256"] == report["runner"]["sha256"] for row in snapshot["frozen_files"])
+    assert next(row for row in snapshot["dependencies"] if row["kind"] == "runner")["sha256"] == report["runner"]["sha256"]
+    text = (previous["output"] / "runtime-comparison.txt").read_text()
+    assert "builds only the diagnostic runner once for both arms" in text
+    assert "no compilation or build" not in text
+    with tarfile.open(previous["output"] / "results.tar.gz") as archive:
+        assert {"refreshed-native/command.json", "refreshed-native/build-command.json", "refreshed-native/result.json"} <= set(archive.getnames())
+        assert not any("/build/" in name for name in archive.getnames())
+
+
+def test_refreshed_runner_dependencies_recompute_candidate_guard(previous, monkeypatch):
+    _refresh(monkeypatch, previous, needed=["/absolute/path/libhiai_hcl_model_runtime.so"])
+    transport = _transport(monkeypatch, previous)
+    assert probe.run(_args(previous, "--refresh-runner")) == 1
+    assert len(transport) == 1
+    report = json.loads((previous["output"] / "runtime-comparison.json").read_text())
+    assert report["status"] == "CANDIDATE_BLOCKED"
+    assert "DT_NEEDED" in report["arms"][1]["blocked_reasons"][0]
+
+
+def test_refresh_failure_records_preflight_and_never_uploads(previous, monkeypatch):
+    _refresh(monkeypatch, previous, failure=True)
+    transport = _transport(monkeypatch, previous)
+    with pytest.raises(RuntimeError, match="fixture native build failed"):
+        probe.run(_args(previous, "--refresh-runner"))
+    assert not transport
+    failure = json.loads((previous["output"] / "failure.json").read_text())
+    assert failure["status"] == "PREFLIGHT_FAILED" and failure["board_started"] is False
+    assert not (previous["output"] / "arms").exists()
+
+
+def test_refreshed_binary_is_verified_between_arms(previous, monkeypatch):
+    _refresh(monkeypatch, previous)
+    def mutate(calls):
+        path = calls[0]["runner"]
+        path.write_bytes(path.read_bytes() + b"changed")
+    transport = _transport(monkeypatch, previous, mutation=mutate)
+    assert probe.run(_args(previous, "--refresh-runner")) == 1
+    assert len(transport) == 1
+    report = json.loads((previous["output"] / "runtime-comparison.json").read_text())
+    assert report["status"] == "INFRASTRUCTURE_FAILED"
+    assert "snapshotted source changed" in report["arms"][0]["error"]
+    assert report["arms"][1]["status"] == "NOT_RUN"

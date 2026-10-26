@@ -78,7 +78,7 @@
     "Preserve strict IO validation and improve actual/expected descriptor diagnostics",
     "Surface explicit PID-bound NPUCL failure evidence without promoting runtime placement"
   ],
-  "next_action": "Run the isolated three-case deployment comparison without rebuilding the original operator probe artifacts",
+  "next_action": "Candidate load recovery is user-reported; refresh only the native diagnostic runner to obtain actual MatMul tensor descriptors while reusing original OMC/data/libs",
   "runtime_placement": "UNVERIFIED",
   "model_gates": "No complete-model accuracy, performance or release gate advanced",
   "experience_audit": "docs/experience.md",
@@ -152,8 +152,9 @@
         "Reported build-machine RUNPATHs and readelf DWARF warnings do not establish the cause of NPUCL registration failure"
       ],
       "comparison_evidence": "specs/hiai-runtime-comparison-verification.json",
-      "board_result": "PENDING_USER_RUN",
-      "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$RUNTIME_AB_RUN\""
+      "board_result": "USER_REPORTED_CANDIDATE_ADD_NUMERIC_PASS_MATMUL_LOAD_PASS_IO_MISMATCH",
+      "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$RUNTIME_IO_RUN\" --refresh-runner",
+      "comparison_user_evidence": "specs/hiai-runtime-comparison-user-report.json"
     }
   }
 }

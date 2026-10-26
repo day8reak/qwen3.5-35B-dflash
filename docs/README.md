@@ -325,3 +325,17 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
 执行前直接解析 ELF 动态依赖表；若保留库直接依赖被排除库或存在相关 SONAME 冲突，候选测试会标记阻塞。脚本不执行目标二进制来分析依赖，也不依赖主机 `readelf` 的 DWARF 支持。检查只能覆盖 ELF 显式依赖，动态加载及 namespace 限制要由本次运行日志确认。
 
 输出 `runtime-comparison.txt`、`runtime-comparison.json` 和可反馈的 `results.tar.gz`，各组保留独立报告、PID 日志及数值对比。默认取回校验后清理本次创建的目录，`--keep-board` 可保留；原探测目录、原库文件和板端系统库均不修改。即使候选组成功，也需确认后端选择和实际执行位置，再决定是否调整正式部署策略。
+
+若候选组已通过 Load，却只报 `OMC tensor shape/format differs from IO TSV`，原探针可能早于详细 IO 诊断版本。可在新目录加 `--refresh-runner`：
+
+```bash
+export RUNTIME_IO_RUN="${OP_PROBE_RUN}-runtime-io-$(date +%Y%m%d-%H%M%S)"
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
+  --probe-run "$OP_PROBE_RUN" \
+  --output "$RUNTIME_IO_RUN" \
+  --refresh-runner
+cat "$RUNTIME_IO_RUN/runtime-comparison.txt"
+cat "$RUNTIME_IO_RUN/arms/candidate_without_ddk_hcl/board/matmul_m8_b_dynamic/stderr"
+```
+
+此模式需要原构建记录中的 OHOS SDK、HIAI 头文件和 CMake 可用，只构建一次当前诊断 runner，两组共用新二进制；原 OMC、输入、参考和库集合继续按原哈希复用。它不会重新导出 AIR 或编译 OMC。新旧 runner、当前源码、SDK/头文件及链接库的身份写入构建记录，报告注明已刷新 runner。新版会在比较前输出全部实际形状和格式，并指出具体不匹配项；dtype 无法由该旧版 HIAI 查询接口直接读取，仍由原产物合约约束。保持严格校验，不能仅凭元素总数相同跳过格式或布局差异。
