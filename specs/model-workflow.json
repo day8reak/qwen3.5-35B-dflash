@@ -280,7 +280,7 @@
     },
     "board_execution_bringup": {
       "run_id": "20261026T002510Z-8234-33823c",
-      "status": "USER_REPORTED_PAIR_COMPILED_TARGET_LOAD_FAILED",
+      "status": "USER_REPORTED_TARGET_CPUCL_INSERTED_CAST_INIT_FAILED",
       "scope": "New direct-GE candidate export/compile/execution chain reusing existing tiny prepared weights; not a full-weight model",
       "runtime_deployment": "Private library set excludes DDK HCL pair; process path includes /vendor/lib64/chipsetsdk",
       "runner_changes": [
@@ -290,13 +290,14 @@
       "accuracy": "DEFERRED_NOT_EVALUATED",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "Read existing board/hiai-hilog.txt lines130330..130480; preserve current AIR/OMC/runner and failure logs, no repeated compile or board run yet.",
+      "next_command": "Print GE_GDN_MODEL_RUN and list actual run files first; user reports all requested paths missing. Distinguish unknown path/version from NOT_EMITTED, then conditionally inspect located compiler records for insert_cast_4. Preserve existing artifacts; no recompilation or board replay merely for diagnostics.",
       "requires": "Existing prepared weights, same GE/internal OMG and SDK/HIAI resources; new AIR/OMC/build/board directories; unchanged FP16 and original reference identity",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "User ge-gdn-model-20261026-171048 exported and compiled both graphs with --reject-cpu-fallback. Fresh formal runner target Load returned1 before IO checks/Process; draft load not reached. HiLog candidate PID13111 is unconfirmed and middle lines130348..130473 not shown; root cause unresolved.",
-      "followup_run_id": "20261026T084733Z-7577-be91b5",
-      "followup_evidence": "specs/gdn-model-load-user-report.json"
+      "current_failure": "User supplied missing HiLog middle records for candidate PID13111/03-09, still not independently bound to this invocation. CPU FP16MatMul ComputeInit succeeds, then CPUCL insert_cast_4/CastT Init -> SubGraph_0 Prepare -> target Load=1 fails. Adjacent Cast CheckSupport srcType0/inputDataType1 strongly suggests descriptor/attribute inconsistency but needs compiled-node and producer binding; raw enums are not decoded using another DDK. SubGraph_0..10 are total observed subgraph names, not eleven NPU partitions. Draft/Process not reached.",
+      "followup_run_id": "20261026T090021Z-16360-b23276",
+      "followup_evidence": "specs/gdn-model-load-user-report.json",
+      "source_contract_verification": "specs/ge-dtype-contract-verification.json"
     }
   },
   "operator_support_probe": {
@@ -380,6 +381,6 @@
     "accuracy_work": "DEFERRED_NOT_WAIVED",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
     "guide": "docs/hdc-board-run.md",
-    "next_action": "Read existing hiai-hilog.txt lines130330..130480 (no recompilation or board replay); inspect actual restoration errors before changing graph or deployment. Pair compile guard passed; full execution, accuracy and DFlash >=2x remain unvalidated."
+    "next_action": "HiLog middle records now identify candidate CPUCL insert_cast_4 Init -> SubGraph_0 Prepare -> Load1. User reports requested files missing: print GE_GDN_MODEL_RUN and inventory the actual run directory before conditionally inspecting compiler records. Distinguish unknown path/version from NOT_EMITTED; no recompilation or replay to obtain missing diagnostics. Independent graph contract fixes are implemented but validation is recorded separately. Full execution, accuracy and DFlash >=2x remain unvalidated."
   }
 }

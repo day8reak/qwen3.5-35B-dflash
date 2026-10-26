@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from .ge_ir import DTYPES, Value
+from .ge_type_contracts import GE_DTYPE_IDS
 
 SCHEMA_SOURCE = "https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py"
 _DT = {"float16": "ge::DT_FLOAT16", "int32": "ge::DT_INT32", "int64": "ge::DT_INT64", "bool": "ge::DT_BOOL"}
@@ -29,6 +30,54 @@ def _ints(values):
 
 def _desc(value):
     return f"Desc({_ints(value.shape)}, {_DT[value.dtype]})"
+
+
+def _validate_cast_selection(node):
+    """Reject source descriptor contradictions before lowering/shared outputs.
+
+    This checks source-IR contracts, not compiler-created CastT nodes or target
+    support. TopK must preserve declared descriptors when sharing its GE op.
+    """
+    kind, output, attrs = node.kind, node.output, node.attrs
+    if kind not in {"cast", "argmax", "topk_values", "topk_indices"}:
+        return
+    if len(node.inputs) != 1:
+        raise ValueError(f"{output.name}: {kind} requires exactly one input")
+    source = node.inputs[0]
+    if kind == "cast":
+        if output.shape != source.shape:
+            raise ValueError(f"{output.name}: Cast must preserve its input shape")
+        return
+    if source.dtype == "bool":
+        raise ValueError(f"{output.name}: {kind} does not accept bool data")
+    rank = len(source.shape)
+    axis = attrs.get("axis", -1)
+    if (isinstance(axis, (bool, np.bool_)) or not isinstance(axis, (int, np.integer))
+            or not -rank <= axis < rank):
+        raise ValueError(f"{output.name}: {kind} axis must be an integer within input rank {rank}")
+    axis = int(axis) % rank
+    if kind == "argmax":
+        if output.dtype not in {"int32", "int64"}:
+            raise ValueError(f"{output.name}: ArgMax output dtype must be int32 or int64")
+        if source.shape[axis] == 0:
+            raise ValueError(f"{output.name}: ArgMax requires a nonempty reduction axis")
+        keepdims = attrs.get("keepdims", False)
+        if not isinstance(keepdims, (bool, np.bool_)):
+            raise ValueError(f"{output.name}: ArgMax keepdims must be boolean")
+        expected = source.shape[:axis] + ((1,) if keepdims else ()) + source.shape[axis + 1:]
+    else:
+        if axis != rank - 1:
+            raise ValueError("GE TopKV2 lowering currently requires the last axis")
+        k = attrs.get("k")
+        if (isinstance(k, (bool, np.bool_)) or not isinstance(k, (int, np.integer))
+                or not 0 <= k <= min(source.shape[axis], (1 << 31) - 1)):
+            raise ValueError(f"{output.name}: TopKV2 k must be an INT32 integer between zero and the axis size")
+        expected_dtype = "int32" if kind == "topk_indices" else source.dtype
+        if output.dtype != expected_dtype:
+            raise ValueError(f"{output.name}: {kind} output dtype must be {expected_dtype}")
+        expected = source.shape[:-1] + (int(k),)
+    if output.shape != expected:
+        raise ValueError(f"{output.name}: {kind} output shape {output.shape} differs from expected {expected}")
 
 
 _HEADER = r'''// Generated host-only GE graph construction. Not an NPU implementation.
@@ -171,7 +220,7 @@ class _DiscardLines:
 
 def _typed_attr(literal):
     """Decode this module's closed C++ literal vocabulary for recipe emission."""
-    enum = {"ge::DT_FLOAT16": 1, "ge::DT_INT32": 3, "ge::DT_INT64": 9, "ge::DT_BOOL": 12}
+    enum = {_DT[dtype]: value for dtype, value in GE_DTYPE_IDS.items()}
     if literal in enum:
         return {"type": "dtype", "value": {v: k for k, v in _DT.items()}[literal]}
     if literal in {"true", "false"}:
@@ -363,9 +412,22 @@ class _Emitter:
         checked = self.checked_reduction_axes(output, source, axes)
         return self.helper(output, checked, dtype="int32", suffix="axes")
 
+    def checked_reduction_contract(self, output, source, axes, keepdims):
+        checked = self.checked_reduction_axes(output, source, axes)
+        if not isinstance(keepdims, (bool, np.bool_)):
+            raise ValueError(f"{output.name}: reduction keepdims must be boolean")
+        if source.dtype != output.dtype:
+            raise ValueError(f"{output.name}: reduction source/output dtype must match")
+        reduced = {axis % len(source.shape) for axis in checked}
+        expected_shape = tuple(1 if axis in reduced else dim for axis, dim in enumerate(source.shape)) if keepdims else tuple(
+            dim for axis, dim in enumerate(source.shape) if axis not in reduced)
+        if output.shape != expected_shape:
+            raise ValueError(f"{output.name}: reduction output shape {output.shape} differs from expected {expected_shape}")
+        return checked
+
     def emit_reduction(self, output, source, kind, axes, keepdims, *, axes_value=None, origin="graph"):
         """Apply the optional contraction policy to graph and scan reductions."""
-        checked = self.checked_reduction_axes(output, source, axes)
+        checked = self.checked_reduction_contract(output, source, axes, keepdims)
         keepdims = bool(keepdims)
         contract = {"name": output.name, "origin": origin, "kind": kind,
                     "source": {"name": source.name, "shape": list(source.shape), "dtype": source.dtype},
@@ -373,13 +435,6 @@ class _Emitter:
                     "axes": checked, "keepdims": keepdims}
         reason, plan = "mode_native", None
         if self.fp16_reductions == "matmul":
-            if source.dtype != output.dtype:
-                raise ValueError(f"{output.name}: reduction source/output dtype must match")
-            reduced = {axis % len(source.shape) for axis in checked}
-            expected_shape = tuple(1 if axis in reduced else dim for axis, dim in enumerate(source.shape)) if keepdims else tuple(
-                dim for axis, dim in enumerate(source.shape) if axis not in reduced)
-            if output.shape != expected_shape:
-                raise ValueError(f"{output.name}: reduction output shape {output.shape} differs from expected {expected_shape}")
             if source.dtype != "float16" or output.dtype != "float16":
                 reason = "non_fp16_source_or_output"
             elif len(checked) != 1:
@@ -595,6 +650,14 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     for node in reversed(graph.nodes):
         if node.output.name in live:
             live.update(value.name for value in node.inputs)
+    for node in graph.nodes:
+        if node.output.name in live:
+            _validate_cast_selection(node)
+            if node.kind in {"reduce_mean", "reduce_sum"}:
+                if len(node.inputs) != 1:
+                    raise ValueError(f"{node.kind}: unexpected input count {len(node.inputs)}")
+                e.checked_reduction_contract(node.output, node.inputs[0], node.attrs.get("axes"),
+                                             node.attrs.get("keepdims", False))
     folded = {}
     if fold_constant_arithmetic:
         from .ge_constants import fold_constants
@@ -838,10 +901,11 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
         from .ge_reshape_chains import compact_row_mul_reshape_chains
         records, input_indices, output_pairs, chains = compact_row_mul_reshape_chains(
             records, input_indices, output_pairs, [r["name"] for r in e.row_mul_report["replaced"]])
-        if chains["rewrites"]:
-            from .ge_recipe import _validate
-            _validate(records, graph.name, input_indices, output_pairs)
         e.row_mul_report["reshape_chains"] = chains
+    # Inline and recipe serialization must enforce the same descriptor/edge
+    # contracts, including when lowering creates or shares intermediate nodes.
+    from .ge_recipe import _validate
+    _validate(records, graph.name, input_indices, output_pairs)
     if reduction_report is not None:
         reduction_report.clear()
         reduction_report.update(e.reduction_report)

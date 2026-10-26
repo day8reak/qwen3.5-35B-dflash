@@ -13,6 +13,8 @@ import math
 from pathlib import Path
 import struct
 
+from .ge_type_contracts import validate_record_types
+
 _DT = {"float16": (1, 2), "int32": (2, 4), "int64": (3, 8), "bool": (4, 1)}
 _AT = {"int": 1, "float": 2, "bool": 3, "ints": 4, "dtype": 5, "string": 6}
 _MAX_OPS = 2_000_000
@@ -137,6 +139,7 @@ def _validate(records, graph_name, input_indices, output_pairs):
                 raise ValueError("FileConstant descriptor and metadata disagree")
         if typ == "ConcatD" and [v["port"] for v in inputs] != [f"x{i}" for i in range(len(inputs))]:
             raise ValueError("ConcatD requires contiguous dynamic x ports")
+        validate_record_types(record)
     if len(input_indices) > 65536 or len(output_pairs) > 65536 or len(set(input_indices)) != len(input_indices):
         raise ValueError("recipe graph boundary count is outside bounds")
     for order, index in enumerate(input_indices):

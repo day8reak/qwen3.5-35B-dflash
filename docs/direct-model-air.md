@@ -6,7 +6,11 @@
 
 剩余43项探针现已回传：42项编译并完成板端数值比较，1项CastT编译失败；附加HiLog回收失败不需要重跑42项。此前按[整图GDN候选命令](hdc-board-run.md#当前将已验证的-gdn-gather-复制接入整图)复用prepared，显式叠加`--gdn-indexed-copy gather`。该开关仅改写已测FP16形状的三角复制与outer Sub，不改递推算术或权重。每图生成哈希绑定的`gdn-copy-lowering.json`，编译校验其mode/counts与manifest一致。默认`native`保留旧图，未测形状继续原实现。
 
-最新`ge-gdn-model-20261026-171048`已成功编译双图，随后target Load返回1。当前先按[留档诊断](hdc-board-run.md#当前读取-gdn-整图加载失败证据)读取已有HiLog中间段，不重复以下生成或上板命令。
+最新`ge-gdn-model-20261026-171048`已成功编译双图，随后target Load返回1。用户补齐的HiLog中间段显示：CPU FP16MatMul初始化成功，CPUCL的`insert_cast_4/CastT`初始化失败，再导致`SubGraph_0` Prepare失败。相邻`srcType=0/inputDataType=1`检查仍需编译节点和输入边确认；候选PID尚未独立绑定到本次执行。用户随后反馈请求的文件都找不到，当前先按[文件定位步骤](hdc-board-run.md#当前读取-gdn-整图加载失败证据)确认变量与实际文件清单；定位后才条件读取编译诊断。`NOT_EMITTED`时不会创建诊断目录，不重复生成或上板来补文件。
+
+`SubGraph_0`至`SubGraph_10`不是11个NPU分区的证据，缺HCL库行也不是本次日志中的终止错误。公开GE `Cast`只声明`dst_type`，源类型由输入descriptor提供；当前不猜测添加`src_type`，也不借另一套DDK枚举解读原始类型编号。
+
+源码审计已修复TopK静默覆盖输出dtype、共享输出未检查shape，以及ArgMax、Cast、native归约缺少类型/形状校验的问题。inline与recipe导出统一验证连接描述和算子类型关系，错误声明在写AIR前失败。118个探针和tiny双图默认/当前组合策略的构图记录与C++对比均保持不变；本轮检查没有改变合法图，不能视为`insert_cast_4`加载问题已解决。验证见`specs/ge-dtype-contract-verification.json`。
 
 第1–4节保留首次生成流程和历史失败修复；当前现场无需重新 prepare 或生成参考。算子核查见 [兼容性记录](ge-operator-compatibility.md)。tiny 编译成功不表示完整35B权重、量化、内存或性能已经通过。
 
@@ -86,7 +90,7 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 内部 OMG 兼容性修正与重试
 
-**以下为历史失败及重建说明。当时的双图编译成功不代表板端加载成功；当前按页首链接导出GDN候选新图，保留原 prepared、专家模式及已导出的MatMul归约图。**
+**以下为历史失败及重建说明。当时的双图编译成功不代表板端加载成功；当前按页首链接确认实际运行文件，再检查可用的编译诊断，保留原 prepared、专家模式及已导出的图。**
 
 此前失败日志（draft 进程 158383）已越过整数 Gather 的验证，最终在兼容性检查拒绝 `v12/Maximum`。它执行上下文位置的 `max(cumsum(context_valid)-1, 0)`，输入/输出是 INT32。前面的描述回显、ImportWarning 和缺少内置 kernel 库提示不是这条日志明确报告的最终失败原因。
 
@@ -334,9 +338,9 @@ python3 "$GE_MODEL_TOOL" compile \
 ## 7. 当前现场：GDN 复制整图候选与探针历史
 
 
-### 当前入口：新图编译已过，读取已有加载失败日志
+### 当前入口：新图编译已过，先确认实际运行文件
 
-用户已回传GDN7项及其余43项：四个GDN Gather候选通过，其余42个已编译案例也完成数值比较。带`--gdn-indexed-copy gather`的新候选已成功编译双图，target在Load阶段失败；当前先按[留档诊断](hdc-board-run.md#当前读取-gdn-整图加载失败证据)读取已有日志，无需重复探针或导出。以下保留候选设计及历史命令。
+用户已回传GDN7项及其余43项：四个GDN Gather候选通过，其余42个已编译案例也完成数值比较。带`--gdn-indexed-copy gather`的新候选已成功编译双图，target的CPUCL插入Cast初始化失败；用户随后反馈请求的文件找不到，当前先按[文件定位步骤](hdc-board-run.md#当前读取-gdn-整图加载失败证据)确认实际目录和清单，再检查可用的编译节点描述，无需重复探针或导出。以下保留候选设计及历史命令。
 
 <a id="gdn-indexed-copy-probes"></a>
 

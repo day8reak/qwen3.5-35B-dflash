@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T090021Z-16360-b23276",
+  "baseline_commit": "ee87eeffb391e81ec6f374ae3dc1088f62b8adcd",
+  "status": "HOST_EXPORT_CONTRACT_CHECKS_PASSED",
+  "scope": "Shared target/draft/probe construction validation; no change to legal graph arithmetic, precision, ABI or compiler options. Not a fix claim for compiler-inserted insert_cast_4.",
+  "fixed_contract_gaps": [
+    "TopK values silently replaced a contradictory requested dtype; shared TopK outputs could alias inconsistent declared shapes.",
+    "Cast could declare a shape change; ArgMax accepted invalid index dtypes/shapes/axes; ArgMax/TopK accepted BOOL source data.",
+    "Native reductions skipped the source/output dtype and derived-shape checks used by matmul lowering. Both policies now check before constant folding, including keepdims type.",
+    "Inline emission bypassed recipe connected-descriptor validation. Both now validate the same lowered records.",
+    "Cast/ArgMax dtype attributes and TopK outputs are checked against descriptors; comparisons, logical ops, Select, Gather, metadata tensors and the model same-dtype arithmetic subset are checked centrally."
+  ],
+  "schema_evidence": {
+    "public_cast": {
+      "archived_source": ".work/qwen3.5-35B-moe/20261022T074906Z-6507-ca8b2b/ge-engine-audit/ge_graph.py",
+      "sha256": "be1d8dac8777ac9705dade91886bee3adb06a93902dcce14fbf3f31229d73f3e",
+      "line": 1502,
+      "finding": "Public GE Cast requires integer dst_type and copies its input descriptor; no invented src_type attribute added."
+    },
+    "public_generated_ops": {
+      "archived_source": ".work/qwen3.5-35B-moe/20261022T101117Z-15205-4ffded/op-audit/official_ge_ops.py",
+      "sha256": "791a2f1c66793af39387c709f337e7f5ffca0c01a9f1a000ccaf1b9964c170d0",
+      "argmax_line": 12611,
+      "topk_line": 68440
+    },
+    "limits": "Public GE contracts and repository export subset, not private HIAI CastT schema or NPU support. Raw user DDK enum codes remain undecoded."
+  },
+  "validation": {
+    "latest_outcomes_by_test_id": {
+      "passed": 1217,
+      "skipped": 4
+    },
+    "aggregation": "Union of broad run and relevant final reruns, normalizing pytest root prefixes only; no repeated tests double-counted.",
+    "junit": [
+      {
+        "file": "ge-audit-final.xml",
+        "sha256": "1c02e6ebd2b32b1e20d5696c7241fd2fc6bb22c25a2d6b0595111416eb64280c"
+      },
+      {
+        "file": "dtype-final.xml",
+        "sha256": "f6a49b1f31dad7e4369e438857f1fe04397a09e002d185970fe1fb8fb2ab4b06"
+      },
+      {
+        "file": "pytest-ge-reshape-shape-fixed.xml",
+        "sha256": "d7c9a1be4c95b698711389dc6d72f1584e3e0c6222bec69601654d2f20c134a4"
+      }
+    ],
+    "skipped": "Two actual GE header cases and two GE Save/Load cases need explicitly configured matching GE resources.",
+    "stale_test_correction": {
+      "baseline_reproduction": "reshape-stale-test-head-reproduction.log",
+      "sha256": "619332e3d6ea7ad020405656f5c591343a0debffc76bc23e6c359ff309fc1817",
+      "finding": "Both reshape test failures reproduced with HEAD emitter; updated old INT64 reduction-axis expectation and replaced outdated helper count with all-live-authored-view coverage.",
+      "rerun_passed": 22
+    },
+    "shell_blocks_passed": 63
+  },
+  "preservation": {
+    "file": "ge-dtype-emission-preservation.json",
+    "sha256": "b080d388d079302fc8ebbdb7220419656c575401bbfc551c26e9d9df6a00135d",
+    "probes": {
+      "count": 118,
+      "records_identical": 118,
+      "inline_cpp_identical": 118,
+      "total_records": 3422,
+      "case_results_sha256": "25d274c5c1d7849a11e14213b1a0ae5890e4c9ab255756087c27d0ec070be153"
+    },
+    "tiny_pair": [
+      {
+        "graph": "target",
+        "policy": "native",
+        "records": 14982,
+        "records_identical": true,
+        "inline_cpp_identical": true,
+        "records_sha256": "16be2524a93153697f8adc46139ca2b555ccd470f46ce5312cd7f66f18d95325",
+        "inline_cpp_sha256": "28c6ee536ab2eae244f3493579c09dd42c79a5584e1667a8ba6e7e47f761f484"
+      },
+      {
+        "graph": "draft",
+        "policy": "native",
+        "records": 440,
+        "records_identical": true,
+        "inline_cpp_identical": true,
+        "records_sha256": "3ae7f68f98d3c221bafac14b98a403636a2a734c50fb70abccff09d104c2cf9d",
+        "inline_cpp_sha256": "ad229dd515dada5eb11a30bfa72f118016ba6586e9c0126e7a768002a7b6212a"
+      },
+      {
+        "graph": "target",
+        "policy": "active",
+        "records": 11710,
+        "records_identical": true,
+        "inline_cpp_identical": true,
+        "records_sha256": "a7e90e651bf5d697f9f7ed0bc612583fa537fcd2a4d658a1b37450f014f21ee4",
+        "inline_cpp_sha256": "b4bc697b2aef3cc2df17f4b626715258303a7f21810a5f61d2afce5372e0a452"
+      },
+      {
+        "graph": "draft",
+        "policy": "active",
+        "records": 480,
+        "records_identical": true,
+        "inline_cpp_identical": true,
+        "records_sha256": "29b97d6e4f3ceb48d74803229c1c90cdb63ab259855debff6bb8316ba4c5ee5d",
+        "inline_cpp_sha256": "70bda54088f37a3924a73b8ac5a504d8901dbf293fa5b73a640f51326d2da33f"
+      }
+    ],
+    "limits": "Host construction metadata and inline source preservation only; no GE serialization, OMG, board execution, weight payload reads or accuracy result."
+  },
+  "source_sha256": {
+    "model/qwen35_moe_dflash/ge_cpp.py": "d22daeef7923e32d608b1c63af849e56558b6f34b6a34696cf96abdcaff23456",
+    "model/qwen35_moe_dflash/ge_recipe.py": "d04ee9632236381389f8d03f1892948c8a5c9250450634b303092a61821942d0",
+    "model/qwen35_moe_dflash/ge_type_contracts.py": "8934c032ba17b1e670201d0da83e7c2c9f75930f78b4404870a4adc916596172",
+    "tests/test_ge_dtype_contracts.py": "c84c5c13b1378659d482b3ad1d5967c0daf0c0c2a8121949df6dc451d4214a66",
+    "tests/test_ge_record_types.py": "37dbd6d363f0bb603dd78f2be8da9e46d555a8eb04d8e4b10dddd7bf8364c94c",
+    "tests/test_ge_reshape_shape.py": "d7dbee4083bea2fddd2c1c46724843eae7ef1af68412804f9a890a90b158d8f1"
+  },
+  "experience_audit": {
+    "captured": [
+      "Public Cast attributes must not be confused with compiler-inserted CastT metadata.",
+      "Validate requested output ABI before TopK sharing and before folding.",
+      "Apply dtype/shape checks to both native and alternate lowering policies.",
+      "Missing diagnostics may mean NOT_EMITTED; inspect actual run inventory before assuming paths."
+    ],
+    "updated_checks": [
+      "model/qwen35_moe_dflash/ge_cpp.py",
+      "model/qwen35_moe_dflash/ge_recipe.py",
+      "model/qwen35_moe_dflash/ge_type_contracts.py"
+    ],
+    "shared_skill_changes": "none; findings are model-specific and encoded in local executable checks",
+    "rejected_promotions": [
+      "No runtime fix claim from validation-only changes",
+      "No NPU execution, full-model accuracy or speedup claim"
+    ]
+  },
+  "device_status": "USER_REPORTED_TARGET_LOAD_FAILED; no new GE/OMG/device execution performed",
+  "next_action": "User reports requested files missing. Confirm GE_GDN_MODEL_RUN and list actual run files, then locate existing compiler records if available. No repeat compilation/probe batch requested."
+}

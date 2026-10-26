@@ -166,9 +166,22 @@ def test_every_tiny_model_reshape_uses_int32_and_other_controls_keep_width(tmp_p
         r'ops\.push_back\(Op\(("[^"\n]+"), ("[^"\n]+"),', cpp)]
     assert declarations == [(record["name"], record["type"]) for record in records]
     reshapes = [item for item in records if item["type"] == "Reshape"]
-    normalized_batches = sum(node.kind == "matmul" and min(len(x.shape) for x in node.inputs) > 2
-                             and max(len(x.shape) for x in node.inputs) > 3 for node in graph.nodes)
-    assert len(reshapes) == [739, 65][graph_index] + 3 * normalized_batches
+    # Helper counts change as layouts are simplified. Cover every live authored
+    # view by its descriptor contract, then check all emitted helper views too.
+    live = {value.name for value in graph.outputs}
+    for node in reversed(graph.nodes):
+        if node.output.name in live:
+            live.update(value.name for value in node.inputs)
+    authored = {node.output.name: node for node in graph.nodes
+                if node.kind == "reshape" and node.output.name in live}
+    emitted = {record["name"]: record for record in reshapes}
+    assert authored and authored.keys() <= emitted.keys()
+    for name, node in authored.items():
+        record = emitted[name]
+        assert (record["inputs"][0]["shape"], record["inputs"][0]["dtype"]) == (
+            node.inputs[0].shape, node.inputs[0].dtype)
+        assert (record["outputs"][0]["shape"], record["outputs"][0]["dtype"]) == (
+            node.output.shape, node.output.dtype)
     for record in reshapes:
         _check_reshape(records, record)
     if graph_index == 0:
@@ -177,12 +190,14 @@ def test_every_tiny_model_reshape_uses_int32_and_other_controls_keep_width(tmp_p
         # the old rank5 descriptors are retained in the standalone fixtures.
         shapes = {record["outputs"][0]["shape"] for record in reshapes}
         assert (2, 1, 55) in shapes and (2, 1, 55, 1) in shapes
-    controls = {"Slice": {"offsets", "size"}, "ReduceSum": {"axes"},
-                "ReduceMean": {"axes"}, "Transpose": {"perm"}, "BroadcastTo": {"shape"}}
+    controls = {"Slice": {"offsets": "int64", "size": "int64"},
+                "ReduceSum": {"axes": "int32"}, "ReduceMean": {"axes": "int32"},
+                "Transpose": {"perm": "int64"}, "BroadcastTo": {"shape": "int64"}}
     for record in records:
         for port in record["inputs"]:
-            if port["port"] in controls.get(record["type"], set()):
-                assert port["dtype"] == "int64", (record["name"], port)
+            expected_dtype = controls.get(record["type"], {}).get(port["port"])
+            if expected_dtype is not None:
+                assert port["dtype"] == expected_dtype, (record["name"], port)
 
 
 def test_full_model_reshape_dimensions_fit_int32_without_weight_loading():

@@ -10,7 +10,7 @@
 
 **最新整图：target/draft编译成功，正式runner在target Load返回1。** 新GDN候选已通过`--reject-cpu-fallback`，失败阶段推进到模型加载；尚未查询IO或执行Process，draft也未加载。
 
-**当前入口：[读取已有加载失败日志](hdc-board-run.md#当前读取-gdn-整图加载失败证据)。** 当前HiLog摘要跳过了中间窗口，候选PID归属未确认。先取现有`board/hiai-hilog.txt`的L130330–L130480，无需重跑42项探针或重新编译整图。HCL排除策略已与通过探针保持一致，不能仅凭缺库行判断此次根因。
+**当前入口：[先确认实际运行文件，再定位CPUCL插入Cast](hdc-board-run.md#当前读取-gdn-整图加载失败证据)。** 用户已补齐HiLog中间窗口：CPU FP16MatMul初始化通过，`insert_cast_4/CastT`初始化失败，继而`SubGraph_0` Prepare失败、target Load返回1。候选PID归属仍未确认；相邻源类型检查需要实际编译描述确认。随后用户反馈要求的文件都找不到，先打印`GE_GDN_MODEL_RUN`并列出现有文件，区分路径、版本及`NOT_EMITTED`；定位后再条件读取编译日志和诊断，无需重跑探针或整图。缺HCL库不是该终止链；`SubGraph_0..10`也不等于11个NPU分区。
 
 完整模型执行、精度和2倍加速仍待验证。
 
@@ -20,7 +20,7 @@
 
 上板流程的 `--execution-only` 执行 probe，再强制 target/draft 各执行一次、回传两图的 Top1 输出及日志；现有参考只用于匹配身份、prompt 和配置，不比较输出精度，也不运行 benchmark。成功标记为 `EXECUTION_COMPLETE`，精度和性能为 `NOT_EVALUATED`。以后去掉该参数可恢复原有配对 benchmark 和参考比较。全部成功后删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。probe 或 benchmark 失败时会直接显示已回传的错误日志末尾，并自动抓取板端 HiLog 缓冲区快照作为排障材料。日志摘要会扫描整个快照、排除 HDC 传输记录，并避免将 `input` 误匹配为 `NPU`；完整日志始终保留。
 
-此前 HCL 空缓冲区、库选择和 ND 补维问题及当时的重编 runner 命令保存在[历史排障记录](hdc-board-run.md#历史加载接口与运行库排障)。后续整图编译通过再构建正式runner；当前先读取已有Load失败日志，旧runner和模型产物继续保留。
+此前 HCL 空缓冲区、库选择和 ND 补维问题及当时的重编 runner 命令保存在[历史排障记录](hdc-board-run.md#历史加载接口与运行库排障)。当前正式runner已构建并尝试加载，先定位实际运行文件，继续保留已存在的runner和模型产物。
 
 以后要保留大体积独立权重时，加 `--board-cleanup omc`，只删除清单中的 OMC 文件，保留目录、独立权重、程序、库和日志；加 `--board-cleanup none` 则全部保留。默认是 `--board-cleanup all`。嵌入 OMC 内部的权重随 OMC 一起删除。
 

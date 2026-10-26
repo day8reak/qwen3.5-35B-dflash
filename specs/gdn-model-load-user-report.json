@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "date": "2026-10-26",
-  "run_id": "20261026T084733Z-7577-be91b5",
+  "run_id": "20261026T090021Z-16360-b23276",
   "evidence_kind": "USER_PASTED_CONSOLE_NOT_INDEPENDENTLY_RETRIEVED",
   "suggested_revision": "60a9b77",
   "actual_revision": "NOT_REPORTED",
   "artifact_hashes": "NOT_PROVIDED",
   "reported_run": "ge-gdn-model-20261026-171048",
-  "status": "USER_REPORTED_PAIR_COMPILED_TARGET_LOAD_FAILED",
+  "status": "USER_REPORTED_TARGET_CPUCL_INSERTED_CAST_INIT_FAILED",
   "export": {
     "status": "EXPORTED",
     "options": {
@@ -19,7 +19,7 @@
   "compile": {
     "status": "COMPILED",
     "reject_cpu_fallback": true,
-    "scope": "Both target and draft compiled by pair wrapper. No explicit partition-limit rollback detected by requested guard. Final partition counts/CPU subgraphs not provided."
+    "scope": "Both target and draft compiled by pair wrapper. No explicit partition-limit rollback detected by requested guard. The later runtime candidate logs include a CPUCL subgraph; the guard does not establish zero CPU partitions."
   },
   "native_build": "COMPLETED_BY_COMMAND_CHAIN",
   "runtime": {
@@ -40,31 +40,67 @@
     "candidate_pid": 13111,
     "candidate_date": "03-09",
     "attribution": "UNCONFIRMED_SESSION_CANDIDATE",
-    "shown_gap": [
-      130348,
-      130473
-    ],
     "observed": [
-      "Candidate logs contain missing HCL runtime library then CPUCL and NPUCL interface registration.",
-      "Terminal excerpt jumps from registration to teardown; full middle records not pasted."
+      "The user supplied the previously omitted middle records from the same retained HiLog snapshot.",
+      "After the HCL dlopen failure, CPUCL and NPUCL interfaces register and CPUCL initialization proceeds; the missing-library line is not the terminal failure.",
+      "CPU FP16MatMul reports ComputeInit Success. This is initialization evidence, not successful Process or numerical validation.",
+      "Cast CheckSupport reports raw srcType=0 versus inputDataType=1, followed by ReshapeUpdate/Init/GenerateOp failures.",
+      "The subsequent failure explicitly names insert_cast_4/CastT; CPUCL SubGraph_0 Prepare then fails and target Load returns 1.",
+      "SubGraph_0 through SubGraph_10 are eleven observed subgraph names, not a count of eleven NPU partitions."
     ],
-    "root_cause": "NOT_ESTABLISHED"
+    "established_failure_chain": [
+      "CPUCL insert_cast_4/CastT initialization fails",
+      "SubGraph_0 Prepare fails",
+      "qwen35_target Load returns 1"
+    ],
+    "adjacent_cast_check": {
+      "raw_srcType": 0,
+      "raw_inputDataType": 1,
+      "association": "Strong adjacent-log evidence for the failing Cast, pending exact compiled-node attributes and input-edge binding",
+      "enum_decode": "NOT_VERIFIED_FOR_USER_INTERNAL_DDK"
+    },
+    "root_cause": "CPUCL_INSERTED_CAST_INIT_FAILURE_IN_UNCONFIRMED_SESSION_CANDIDATE",
+    "underlying_graph_or_runtime_defect": "PENDING_COMPILED_NODE_DESCRIPTOR_AND_PRODUCER_INSPECTION",
+    "requested_local_artifacts": {
+      "status": "USER_REPORTED_ALL_REQUESTED_FILES_NOT_FOUND",
+      "inventory": "PENDING_ACTUAL_RUN_DIRECTORY_AND_FILE_LIST",
+      "possibilities_not_resolved": [
+        "GE_GDN_MODEL_RUN is unset or points to a different directory/layout",
+        "The executed revision predates diagnostic retention",
+        "OMG emitted no supported diagnostic files: current retention returns NOT_EMITTED without creating diagnostics/manifest.json"
+      ],
+      "scope": "NOT_EMITTED can explain an absent diagnostics directory, but does not by itself explain an absent omg.log. No local artifact presence is assumed."
+    },
+    "history": [
+      {
+        "run_id": "20261026T084733Z-7577-be91b5",
+        "shown_gap": [130348, 130473],
+        "observed": "The initial terminal excerpt jumped from backend registration to teardown; middle records had not been pasted.",
+        "root_cause_at_that_point": "NOT_ESTABLISHED",
+        "next_action_at_that_point": "Read existing snapshot lines130330..130480 without recompilation or replay; now completed by the user."
+      }
+    ]
   },
   "source_audit": {
     "load_api": "Both formal and probe paths use Init, HIGH/FRAMEWORK_NONE/OFFLINE/NPU, SetModelPath and SetModelBuffer with retained backing storage.",
     "library_policy": "Both exclude exact DDK HCL pair and prepend private lib plus /vendor/lib64/chipsetsdk. Matching policy does not establish matching deployed library hashes.",
+    "cast_contract": "The public GE Cast interface declares dst_type; source dtype comes from its input descriptor. Omission of a source-level src_type attribute is not itself a defect, and adding one without inspecting the compiled CastT is unsupported.",
+    "compiled_node_inspection": "inspect-compile currently correlates support logs with the pre-optimization recipe. Compiler-created insert_cast_4 needs compiled descriptors, if available in retained target diagnostics or OMG records; locate the actual files first rather than assume their presence.",
+    "topk_contract_bug": "Source audit fixed contradictory requested TopK dtype/shape and added shared dtype/shape checks. Verification: specs/ge-dtype-contract-verification.json. Legal probe and tiny-pair construction is unchanged, so this does not resolve insert_cast_4 or justify replaying the same model.",
     "differences_not_proven_causes": [
       "Fresh formal build library discovery versus frozen old probe donor inventory",
       "Formal read-only mmap storage versus probe writable vector",
       "Full model OMC/sidecars and root working directory versus small standalone probe OMC"
     ],
     "not_inferred": [
-      "No claim that the HCL dlopen line caused Load failure",
+      "No claim that the HCL dlopen line is the terminal Load failure",
       "No claim all model operations are NPU-only",
+      "No claim that the preceding FP16MatMul is the direct producer of insert_cast_4 without compiled graph edges",
+      "No mapping of raw dtype codes to names using a different DDK enum",
       "No accusation of Gather arithmetic, IO layout, draft coexistence or mmap defect without restoration evidence"
     ]
   },
-  "next_action": "Read existing hiai-hilog.txt lines130330..130480 (no recompilation or board replay); inspect actual restoration errors before changing graph or deployment.",
+  "next_action": "Print GE_GDN_MODEL_RUN and list actual files under that existing run directory first. Distinguish unknown path/version from NOT_EMITTED; only after locating files, conditionally inspect compiler diagnostics manifest, exact insert_cast_4 OMG log context and matching retained IRPB. No recompilation, generic probe batch or board replay merely to recover missing diagnostics.",
   "full_model_execution": "FAILED_AT_TARGET_LOAD",
   "full_model_accuracy": "DEFERRED_NOT_EVALUATED",
   "performance": "NOT_MEASURED"
