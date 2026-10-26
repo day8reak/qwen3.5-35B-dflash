@@ -1010,7 +1010,7 @@
     "performance": "NOT_MEASURED",
     "next_action": "Export existing prepared weights with --fp16-reductions matmul --fp16-row-mul compact into a new bundle; reject compiler rollback, build the formal runner and execute target/draft once only after successful compile.",
     "integrated_row_mul_followup": {
-      "status": "EXPORT_COMPILE_BOARD_PENDING",
+      "status": "USER_REPORTED_TARGET_OMG_IR_OPTIMIZATION_FAILURE",
       "option": "--fp16-row-mul compact",
       "default": "native",
       "retained_reduction_option": "--fp16-reductions matmul",
@@ -1020,10 +1020,78 @@
         "target_rows128": 9,
         "draft": 0
       },
-      "source_count_scope": "LOCAL_TINY_STATIC_ORIGINAL_IR_ONLY; user integrated reports not yet verified",
+      "source_count_scope": "USER_REPORTED_TARGET19_DRAFT0; original artifact hashes not independently verified",
       "report": "air/{target,draft}/row-mul-lowering.json",
       "sub_changed": false,
-      "concat_changed": false
+      "concat_changed": false,
+      "user_result": "#fp16_row_mul_integrated_compile"
     }
+  },
+  "fp16_row_mul_integrated_compile": {
+    "date": "2026-10-26",
+    "recording_run_id": "20261026T034741Z-31332-34dca8",
+    "evidence_kind": "USER_PASTED_LOG_AND_COUNTS_NOT_INDEPENDENTLY_RETRIEVED",
+    "reported_run": "ge-row-mul-20261026-121239",
+    "suggested_revision": "ee6e87e",
+    "actual_revision": "NOT_REPORTED",
+    "artifact_hashes": "NOT_PROVIDED",
+    "status": "USER_REPORTED_TARGET_OMG_IR_OPTIMIZATION_FAILURE",
+    "export": "PASSED",
+    "target_compile": "FAILED_EXIT_1",
+    "draft_compile": "NOT_RUN",
+    "formal_runner_build": "NOT_RUN",
+    "device_execution": "NOT_RUN",
+    "options": [
+      "--fp16-reductions matmul",
+      "--fp16-row-mul compact",
+      "--reject-cpu-fallback"
+    ],
+    "compiler_pid": 174350,
+    "observations": [
+      "OMG tail records ReshapeFusion removing v1904, __ge/v83/row_mul/right, __ge/v85/row_mul/right and v90.",
+      "Next fatal chain is graph_bypasser.cpp ByPassNode PreCheck(node) false, Pass Run failed status1, AfterInferShape failed, BuildOrigin2IRGraph failed, OMG exit1.",
+      "Failure occurs before the main partition check; this run does not report a main NPU partition count or its recovery.",
+      "Earlier GetKernelbinAddr missing library path is present; this does not establish the cause of the later ByPassNode failure.",
+      "Two inspect-compile attempts fail with expected exactly one compiled graph record for target.",
+      "The chained runner build and board invocation do not execute after failed compile."
+    ],
+    "reported_lowering_counts": {
+      "target": {
+        "reduction": {
+          "total": 437,
+          "replaced": 421,
+          "retained": 16,
+          "fp16_replaced": 421,
+          "integer_retained": 16,
+          "scan_prefix_replaced": 192
+        },
+        "row_mul": {
+          "total": 312,
+          "replaced": 19,
+          "retained": 293
+        }
+      },
+      "draft": {
+        "reduction": {
+          "total": 11,
+          "replaced": 10,
+          "retained": 1,
+          "fp16_replaced": 10,
+          "integer_retained": 1,
+          "scan_prefix_replaced": 0
+        },
+        "row_mul": {
+          "total": 41,
+          "replaced": 0,
+          "retained": 41
+        }
+      }
+    },
+    "root_cause_status": "FATAL_PASS_CHAIN_IDENTIFIED_VENDOR_INTERNAL_CAUSE_UNPROVEN",
+    "followup": "specs/ge-row-mul-reshape-chain-verification.json",
+    "next_action": "Inspect retained early failure with updated reader if needed; re-export same prepared weights with the scoped Reshape-chain composition to a new GE_ROW_CHAIN_RUN and compile with rollback rejection. Board only after compile success.",
+    "accuracy": "DEFERRED_NOT_EVALUATED",
+    "performance": "NOT_MEASURED",
+    "runtime_placement": "UNVERIFIED"
   }
 }

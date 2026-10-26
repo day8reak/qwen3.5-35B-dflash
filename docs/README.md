@@ -8,33 +8,35 @@
 
 **9项布局探针均通过 Load、Process、原数值比较；本轮只将两种 row Mul compact 接入可选整图导出。** 两种Mul从原形NPU=0/CPU=1变为compact NPU=1/CPU=0；Sub compact仍为NPU=2/CPU=1，Concat64原形和两种树均为NPU=1/CPU=0，暂不改Sub和Concat。用户粘贴报告尚未独立核验产物哈希，实际执行位置仍为`UNVERIFIED`。
 
-**当前入口：[可选 row Mul 整图适配](direct-model-air.md#当前下一步可选-row-mul-整图适配)。** 复用原prepared与参考，在新目录显式叠加两种适配；默认均为native。原`GE_REDUCE_MODEL_RUN`及所有探针结果保留。
+**最新整图在 `ReshapeFusion` 提前失败。** `ge-row-mul-20261026-121239` 已确认target改写19处Mul，随后OMG删除连续reshape时`ByPassNode PreCheck`失败，尚未到分区检查。当前候选会在导出端合并涉及row Mul的连续reshape，保留共享消费者、图输出及原算术；是否避开厂商pass故障仍需复编验证。
+
+**当前入口：[可选 row Mul 整图适配](direct-model-air.md#当前下一步可选-row-mul-整图适配)。** 新结果写入`GE_ROW_CHAIN_RUN`，保留失败的`GE_ROW_MUL_RUN`。`inspect-compile`也已支持早期失败留档，详见入口中的只读命令。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
-export GE_ROW_MUL_RUN="$AI_RUN_DIR/ge-row-mul-$(date +%Y%m%d-%H%M%S)"
-export HIAI_ROW_MUL_BUILD_DIR="$GE_ROW_MUL_RUN/hiai-build"
-export HDC_ROW_MUL_RUN_DIR="$GE_ROW_MUL_RUN/board"
+export GE_ROW_CHAIN_RUN="$AI_RUN_DIR/ge-row-chain-$(date +%Y%m%d-%H%M%S)"
+export HIAI_ROW_CHAIN_BUILD_DIR="$GE_ROW_CHAIN_RUN/hiai-build"
+export HDC_ROW_CHAIN_RUN_DIR="$GE_ROW_CHAIN_RUN/board"
 
 python3 "$GE_MODEL_TOOL" export \
   --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
   --fp16-reductions matmul --fp16-row-mul compact \
-  --output "$GE_ROW_MUL_RUN/air" &&
+  --output "$GE_ROW_CHAIN_RUN/air" &&
 python3 "$GE_MODEL_TOOL" compile \
-  --air "$GE_ROW_MUL_RUN/air" \
+  --air "$GE_ROW_CHAIN_RUN/air" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$GE_ROW_MUL_RUN/omc" --reject-cpu-fallback &&
+  --output "$GE_ROW_CHAIN_RUN/omc" --reject-cpu-fallback &&
 python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$HIAI_ROW_MUL_BUILD_DIR" &&
+  --output "$HIAI_ROW_CHAIN_BUILD_DIR" &&
 python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
-  --omc "$GE_ROW_MUL_RUN/omc" \
-  --runner "$HIAI_ROW_MUL_BUILD_DIR/build/qwen35_dflash_hiai" \
+  --omc "$GE_ROW_CHAIN_RUN/omc" \
+  --runner "$HIAI_ROW_CHAIN_BUILD_DIR/build/qwen35_dflash_hiai" \
   --reference "$GE_BOARD_RUN/reference.json" \
-  --output "$HDC_ROW_MUL_RUN_DIR" --execution-only
+  --output "$HDC_ROW_CHAIN_RUN_DIR" --execution-only
 ```
 
-`&&` 保证编译失败后不构建或上板。沿用原resources、SDK和库配置，不重新prepare或改变专家模式。当前tiny/static源码预期target替换19个row Mul、draft为0；实际以新`row-mul-lowering.json`为准，两图完整编译/执行仍待验证。若仍发生超过9个NPUCL分区回退，按第7节读取本次新图诊断，不直接重编。完整精度和2倍加速均未验证。
+`&&` 保证编译失败后不构建或上板。沿用原resources、SDK和库配置，不重新prepare或改变专家模式。当前tiny/static源码预期target替换19个row Mul、draft为0；实际以新`row-mul-lowering.json`为准，两图完整编译/执行仍待验证。若编译失败或发生分区回退，按第7节读取本次新图诊断，不直接重编。完整精度和2倍加速均未验证。
 
 **服务器没有 OHOS SDK：[获取 Native SDK 与配置编译路径](ohos-native-sdk.md)。** SDK 留在服务器；本次 `build_hiai.py` 沿用原 resources/环境中的 SDK、头文件和链接资源。
 

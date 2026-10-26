@@ -379,3 +379,15 @@ run：`20261026T032819Z-30205-6073af`。用户回传`layout-probe-20261026-11352
 文档主入口使用新GE_ROW_MUL_RUN，导出、带回退拒绝的编译、新正式runner构建及execution-only以&&串联。失败保留新产物并inspect-compile，成功才强制target/draft各执行一次；不覆盖旧结果，不更换库、SDK或专家策略。经验审计将“成功控制反驳简单fan-in归因”和“混合分区候选不自动晋级”记录在本模型，未更改通用技能或共享资源。当前优先打通执行，完整精度后置未豁免，DFlash至少2倍仍未测量。
 
 本次整图候选的主机验证为272项通过、4项真实GE头文件/库测试因未配置而跳过，57段文档shell语法通过。实际发射报告为target Mul总312项、替换19、保留293；draft总41、全部保留；FP16归约仍为target421/draft10项。与37ba5d3的发射器比较，target/draft在native和matmul归约模式下的默认C++、规范化recipe及常量字节均一致。真实候选recipe投影回tiny中立IR后，长度1/3/8的target/draft Top1精确一致、特征通过原FP16门槛，原图和prepared权重哈希未变；此验证不等于完整AIR或设备执行。两次独立审查覆盖发射shape/引用合同、组合回归、默认兼容与报告哈希绑定。完整证据为`specs/ge-row-mul-integration-verification.json`，内部OMG和板端整图继续由用户现场复测。
+
+## 2026-10-26：row Mul 整图触发 ReshapeFusion 早期失败
+
+run：`20261026T034741Z-31332-34dca8`。用户回传`ge-row-mul-20261026-121239`：导出成功，target19个Mul及421个归约替换、draft0个Mul及10个归约替换均得到报告确认；OMG却在主图分区前退出1。末尾依次删除v1904、两个row_mul/right及v90，随后`ByPassNode PreCheck(node)`失败，经Pass Run、AfterInferShape和BuildOrigin2IRGraph传播到OMG失败。没有该轮分区数，不能继续用上一轮超过9分区解释此次退出；早先缺少kernel库路径也不是已证实根因。因命令用&&串联，draft编译、新runner构建和上板均未执行。
+
+源码结构审计发现，独立Mul探针没有覆盖完整模型的生产消费链：beta向量先升维再被row Mul展平，乘积恢复四维后又被GDN及BatchMatMul连续reshape。v89还有非view消费者，v90仅供后续BMM；某些父view被多路共享。v1904的连续view在native路径也存在，不能说它完全由本轮新增。当前候选在导出记录层仅从row Mul两端新增view及输出恢复节点出发，合并满足严格静态合同的连续Reshape，保留外层名字/输出描述、共享父节点及图输出，不跨越算术或Transpose。检查INT32 shape字节、正维度、dtype、元素数及端口描述；不插入Add0/Identity等屏障，不改变Sub、Concat、权重或数值门槛。
+
+实际tiny双图recipe审计：target改接33个view输入，清理21个无消费者的Reshape及21个shape常量，记录16054→16012；draft无改接/清理。原算术记录与输入边、两图IO合同及prepared权重哈希完全一致。默认row-Mul native下，两种归约模式、target/draft共四份inline C++与ee6e87e逐字一致。recipe与inline使用同一份规范化记录。独立审查指出inline重渲染可能掩盖坏输入描述，现已在分支前统一校验；故障注入验证两后端都拒绝而不产生recipe。此为结构与host数值证据，仍不能证明厂商优化器接受新图或完整serialized图已执行。
+
+同时修复只读inspect-compile无法读取旧早期失败的问题：只允许failure.json中明确匹配的failed_graph、stage、完成图前缀及绝对log_path，继续校验AIR和recipe绑定；若已有编译图记录，其历史log SHA缺失/不匹配仍失败。旧早期归档没有历史log SHA，报告明确标成diagnostic_capture/NOT_RECORDED，本次计算哈希不能充当历史验证。无有界主图支持窗口时只展示缺失/部分状态及有界失败上下文，不将constNodeGraph候选关联到主图，不构造虚假的编译图记录。用户归档尚未独立收取。
+
+本轮358项主机测试通过、4项真实GE环境测试跳过。经验固化在共享view反例、两种发射后端一致性、早期失败归档绑定和实际双图结构审计中，未修改通用技能或共享DDK。当前采用新`GE_ROW_CHAIN_RUN`复编同一prepared，保留原失败目录，成功后才执行双图execution-only；厂商pass修复效果、最终分区与板端执行仍待现场验证。完整精度后置未豁免，最终DFlash至少2倍目标尚未测量。

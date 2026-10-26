@@ -332,6 +332,20 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 当前下一步：可选 row Mul 整图适配
 
+最新用户结果 `ge-row-mul-20261026-121239` 已导出target/draft，归约替换为421/10，row Mul替换为19/0；target的OMG在`ReshapeFusion`删除视图后报`graph_bypasser.cpp ByPassNode: PreCheck false`，退出1。该次未到主图分区检查，不能沿用上一轮“超过9分区”的失败分类；draft编译、runner构建和上板均未运行。更早的kernel库路径报错尚未证实是这次终止原因。
+
+本地实际配方显示，新增Mul右输入连接到原升维reshape，恢复后的Mul输出又连接到原reshape和BMM辅助reshape。当前`compact`候选在导出端只合并涉及这些视图的连续、同dtype、同元素数的完整静态Reshape，保持最外视图名与输出形状，保留仍被其他分支或图输出引用的父视图，不跨越Transpose或算术。此处是针对已观察故障的精确候选，不是已验证的厂商故障修复；原默认`native`不改变。
+
+此前`inspect-compile`要求已有compiled graph记录，而这种早期失败的`graphs=[]`，因此误拒绝诊断。更新后可直接读取旧留档；只在failed_graph、stage、log_path和AIR身份匹配时接受，并明确日志哈希是本次诊断采集、没有历史编译哈希。无可信支持表时报告缺失/不完整，不把常量折叠子图当成主图分区：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+export GE_EARLY_INSPECT_RUN="$AI_RUN_DIR/ge-early-inspect-$(date +%Y%m%d-%H%M%S)"
+python3 "$GE_MODEL_TOOL" inspect-compile \
+  --air "$GE_ROW_MUL_RUN/air" --omc "$GE_ROW_MUL_RUN/omc" \
+  --graph target --output "$GE_EARLY_INSPECT_RUN"
+```
+
 用户回传 `layout-probe-20261026-113524` / `layout-board-20261026-113529`：9项均通过 Load、Process 和原数值比较。两种 row Mul 原形为 NPU=0、CPU=1，compact 均为 NPU=1、CPU=0，因此只将 row Mul compact 推进整图候选。outer Sub compact 仍为 NPU=2、CPU=1；Concat64 原形、tree8、tree2 都是 NPU=1、CPU=0，不能将整图中的Concat拒绝归因于64路扇入，也没有依据用树替换原形。Sub和Concat保持原实现。
 
 以上是用户粘贴报告，未独立获取并核对原始产物哈希；此前建议 revision 为 `37ba5d3`，实际运行 revision 未报告。编译分区与实际执行位置分开记录，9项的 runtime placement 仍为 `UNVERIFIED`。
@@ -349,30 +363,30 @@ python3 "$GE_MODEL_TOOL" compile \
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
-export GE_ROW_MUL_RUN="$AI_RUN_DIR/ge-row-mul-$(date +%Y%m%d-%H%M%S)"
-export HIAI_ROW_MUL_BUILD_DIR="$GE_ROW_MUL_RUN/hiai-build"
-export HDC_ROW_MUL_RUN_DIR="$GE_ROW_MUL_RUN/board"
+export GE_ROW_CHAIN_RUN="$AI_RUN_DIR/ge-row-chain-$(date +%Y%m%d-%H%M%S)"
+export HIAI_ROW_CHAIN_BUILD_DIR="$GE_ROW_CHAIN_RUN/hiai-build"
+export HDC_ROW_CHAIN_RUN_DIR="$GE_ROW_CHAIN_RUN/board"
 
 python3 "$GE_MODEL_TOOL" export \
   --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
   --fp16-reductions matmul --fp16-row-mul compact \
-  --output "$GE_ROW_MUL_RUN/air" &&
+  --output "$GE_ROW_CHAIN_RUN/air" &&
 python3 "$GE_MODEL_TOOL" compile \
-  --air "$GE_ROW_MUL_RUN/air" \
+  --air "$GE_ROW_CHAIN_RUN/air" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$GE_ROW_MUL_RUN/omc" --reject-cpu-fallback &&
+  --output "$GE_ROW_CHAIN_RUN/omc" --reject-cpu-fallback &&
 python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$HIAI_ROW_MUL_BUILD_DIR" &&
+  --output "$HIAI_ROW_CHAIN_BUILD_DIR" &&
 python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
-  --omc "$GE_ROW_MUL_RUN/omc" \
-  --runner "$HIAI_ROW_MUL_BUILD_DIR/build/qwen35_dflash_hiai" \
+  --omc "$GE_ROW_CHAIN_RUN/omc" \
+  --runner "$HIAI_ROW_CHAIN_BUILD_DIR/build/qwen35_dflash_hiai" \
   --reference "$GE_BOARD_RUN/reference.json" \
-  --output "$HDC_ROW_MUL_RUN_DIR" --execution-only
+  --output "$HDC_ROW_CHAIN_RUN_DIR" --execution-only
 ```
 
 四步用 `&&` 串联；导出或编译失败就停止正式 runner 构建和上板。新的 `qwen35_dflash_hiai` 包含现有 ND 补维兼容；旧独立 probe 或旧正式二进制不能代替该次构建。旧 prepared、OMC、runner、探针与板端结果均保留。
 
-row Mul compact 只将已验证的两种 FP16 广播形状压成二维，保持行顺序、原操作数及一次 FP16 Mul，再恢复原输出形状。当前 tiny/static 源码预期 target 替换19项（rows16为10项、rows128为9项）、draft为0项；用户这次实际导出计数仍待核验，不将预期当作编译或板端结果。每图新增 `row-mul-lowering.json`，同时保留 `reduction-lowering.json`；反馈 `mode` 和 `counts` 即可：
+row Mul compact 只将已验证的两种 FP16 广播形状压成二维，保持行顺序、原操作数及一次 FP16 Mul，再恢复原输出形状。当前 tiny/static 源码预期 target 替换19项（rows16为10项、rows128为9项）、draft为0项；用户已确认上一轮实际导出计数为19/0，但该轮在ReshapeFusion提前失败；新链处理后的编译与执行仍待验证。每图新增 `row-mul-lowering.json`，同时保留 `reduction-lowering.json`；反馈 `mode` 和 `counts` 即可：
 
 ```bash
 python3 - <<'PYCOUNTS'
@@ -381,25 +395,31 @@ import os
 from pathlib import Path
 
 for name in ("target", "draft"):
-    folder = Path(os.environ["GE_ROW_MUL_RUN"]) / "air" / name
+    folder = Path(os.environ["GE_ROW_CHAIN_RUN"]) / "air" / name
     for filename in ("reduction-lowering.json", "row-mul-lowering.json"):
         report = json.loads((folder / filename).read_text())
         print(name, filename, report["mode"], report["counts"])
+        if "reshape_chains" in report:
+            print("  reshape_chains", report["reshape_chains"]["counts"])
 PYCOUNTS
-cat "$HDC_ROW_MUL_RUN_DIR/result.json"
-cat "$HDC_ROW_MUL_RUN_DIR/benchmark.stderr"
+# 仅上板已尝试并生成对应文件时读取；编译失败不会进入该阶段。
+for file in result.json benchmark.stderr; do
+  if [ -f "$HDC_ROW_CHAIN_RUN_DIR/$file" ]; then
+    cat "$HDC_ROW_CHAIN_RUN_DIR/$file"
+  fi
+done
 ```
 
-这轮整图导出、编译与上板仍为待验证。改写19处Mul不保证解除9分区上限，其CPU支持与最终分区仍待整图核验，原整数归约、路由、TopK等仍可能切分图。编译通过后 `--execution-only` 强制 target/draft 各执行一次并回传输出；精度和性能为 `NOT_EVALUATED`。完整精度后续验证，最终目标仍为同板同目标权重下 DFlash 至少提速2倍。
+上一轮已导出，但target在OMG图优化阶段失败，draft编译和上板未运行；本轮修复候选仍待编译与执行。改写19处Mul不保证解除9分区上限，其CPU支持与最终分区仍待整图核验，原整数归约、路由、TopK等仍可能切分图。编译通过后 `--execution-only` 强制 target/draft 各执行一次并回传输出；精度和性能为 `NOT_EVALUATED`。完整精度后续验证，最终目标仍为同板同目标权重下 DFlash 至少提速2倍。
 
-若新编译仍回退，保留本次 AIR/OMC、日志和 `failure.json`，对同一产物运行只读诊断，不直接重复编译：
+若新编译失败或仍回退，保留本次 AIR/OMC、日志和 `failure.json`，对同一产物运行只读诊断，不直接重复编译：
 
 ```bash
-export GE_ROW_MUL_INSPECT_RUN="$AI_RUN_DIR/ge-row-mul-inspect-$(date +%Y%m%d-%H%M%S)"
+export GE_ROW_CHAIN_INSPECT_RUN="$AI_RUN_DIR/ge-row-chain-inspect-$(date +%Y%m%d-%H%M%S)"
 python3 "$GE_MODEL_TOOL" inspect-compile \
-  --air "$GE_ROW_MUL_RUN/air" --omc "$GE_ROW_MUL_RUN/omc" \
-  --graph target --output "$GE_ROW_MUL_INSPECT_RUN"
-cat "$GE_ROW_MUL_INSPECT_RUN/report.txt"
+  --air "$GE_ROW_CHAIN_RUN/air" --omc "$GE_ROW_CHAIN_RUN/omc" \
+  --graph target --output "$GE_ROW_CHAIN_INSPECT_RUN"
+cat "$GE_ROW_CHAIN_INSPECT_RUN/report.txt"
 ```
 
 上例对应 target 失败；draft 失败时改 `--graph draft` 并使用新诊断目录。候选支持与构造时边不等于最终分区或设备执行位置。
@@ -501,7 +521,7 @@ cat "$HDC_REDUCE_RUN_DIR/benchmark.stderr"
 
 ### 新图仍发生分区回退时
 
-以下保留上次MatMul归约图的诊断命令；本轮row Mul新图应使用本节开头的`GE_ROW_MUL_INSPECT_RUN`命令。保留新目录的 AIR、recipe、OMC、OMG 日志和 `failure.json`，对这一次产物运行只读诊断；不要把旧 `GE_REEXPORT_RUN` 的日志用于解释新图，也不要直接重复编译：
+以下保留上次MatMul归约图的诊断命令；本轮row Mul新图应使用本节开头的`GE_ROW_CHAIN_INSPECT_RUN`命令。保留新目录的 AIR、recipe、OMC、OMG 日志和 `failure.json`，对这一次产物运行只读诊断；不要把旧 `GE_REEXPORT_RUN` 的日志用于解释新图，也不要直接重复编译：
 
 ```bash
 export GE_REDUCE_INSPECT_RUN="$AI_RUN_DIR/ge-reduce-inspect-$(date +%Y%m%d-%H%M%S)"
@@ -581,7 +601,7 @@ python3 "$GE_MODEL_TOOL" inspect-compile \
   --graph target --output "$GE_INSPECT_RUN"
 ```
 
-命令只需 Python 标准库，验证 AIR manifest、编译 `failure.json` 或成功 manifest、recipe 和 OMG 日志的哈希绑定，不读取权重载荷、不访问板端。`report.txt` 给出候选分组，`report.json` 保留明细及原构图生产消费关系；旧 prepared 的 recipe 不能替代该次 AIR 的 recipe。主图、常量折叠、子图及未知范围分开，部分或冲突支持信息保持 `partial`/`unknown`，GE 改名节点不按前缀猜测关联。构造时 shape/dtype 和候选跨设备边都不是最终分区或实际执行证据。
+命令只需 Python 标准库，验证 AIR manifest、编译 `failure.json` 或成功 manifest、recipe 的绑定；已有编译图记录必须通过历史 OMG 日志哈希检查。旧版早期失败没有编译图记录时，严格匹配失败图、阶段和日志路径，并标明日志哈希为本次诊断采集，不能冒充历史核验。命令不读取权重载荷、不访问板端。`report.txt` 给出候选分组，`report.json` 保留明细及原构图生产消费关系；旧 prepared 的 recipe 不能替代该次 AIR 的 recipe。主图、常量折叠、子图及未知范围分开，没有主图支持窗口时不关联常量图中的候选；GE 改名节点不按前缀猜测关联。构造时 shape/dtype 和候选跨设备边都不是最终分区或实际执行证据。
 
 <a id="六项归约编译对照"></a>
 
@@ -612,4 +632,4 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
 
 ### 明确修复后的重导出与上板流程
 
-可选MatMul归约双图已再次触发分区超限，九项布局探针随后均执行和数值通过；本轮仅采用两种row Mul compact，按第7节开头重新导出整图。保留现有 `GE_REDUCE_MODEL_RUN` 和布局探针，新图使用独立 `GE_ROW_MUL_RUN`。当前不通过把 FP16 改为 FP32 绕过 CPUCL 报错。详细报告、清理行为和后续 benchmark 入口见 [HDC 指南](hdc-board-run.md#当前双图采用可选-matmul-归约)。
+可选MatMul归约双图曾触发分区超限，九项布局探针随后均执行和数值通过；row Mul 整图候选又在 ReshapeFusion 的 ByPassNode 检查处失败。本轮对 row Mul 周围符合条件的连续 Reshape 做导出端合并，按第7节开头重新导出整图。保留现有 `GE_REDUCE_MODEL_RUN`、`GE_ROW_MUL_RUN` 和布局探针，新图使用独立 `GE_ROW_CHAIN_RUN`。完整编译和执行仍待验证。详细报告、清理行为和后续 benchmark 入口见 [HDC 指南](hdc-board-run.md#当前双图采用可选-matmul-归约)。

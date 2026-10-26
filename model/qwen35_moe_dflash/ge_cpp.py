@@ -195,6 +195,56 @@ def _opindex(reference):
     return int(reference[4:-1])
 
 
+def _cpp_attr(attribute):
+    """Render the same closed attribute vocabulary after a record rewrite."""
+    kind, value = attribute["type"], attribute["value"]
+    if kind == "dtype":
+        return _DT[value]
+    if kind == "bool":
+        return "true" if value else "false"
+    if kind == "int":
+        return f"int64_t{{{value}}}"
+    if kind == "float":
+        return f"float{{{value!r}}}"
+    if kind == "ints":
+        return _ints(value)
+    if kind == "string":
+        return f"ge::AscendString({_q(value)})"
+    raise ValueError(f"unsupported internal GE attribute kind {kind!r}")
+
+
+def _inline_records(graph, records):
+    """Rebuild inline C++ from the exact records also consumed by the recipe writer."""
+    emitter = _Emitter(graph)
+    bound = {}
+    for index, record in enumerate(records):
+        outputs = [(port["port"], Value(f"__render/{index}/{port['port']}",
+                                       tuple(port["shape"]), port["dtype"])) for port in record["outputs"]]
+        inputs = [(port["port"], bound[(port["src"], port["src_port"])]) for port in record["inputs"]]
+        attrs = {key: _cpp_attr(value) for key, value in record["attrs"].items()}
+        var = emitter.op(record["name"], record["type"], inputs, outputs, attrs)
+        for port, value in outputs:
+            bound[(index, port)] = value
+            emitter.refs[value.name] = (var, port)
+        if record["type"] == "Data":
+            emitter.lines.append(f"  Check({var}.UpdateInputDesc(\"x\", {_desc(outputs[0][1])}), \"Data input descriptor\");")
+        constant = record.get("constant")
+        if constant is not None:
+            if "data" in constant:
+                payload = "std::vector<uint8_t>{" + ",".join(str(x) for x in constant["data"]) + "}"
+            else:
+                if constant.get("offset", 0) != 0:
+                    raise ValueError("inline weight constants require zero offset")
+                payload = f"Read({_q(str(Path(constant['path']).resolve()))}, {constant['size']}ULL)"
+            emitter.lines.append(f"  SetConst({var}, {_desc(outputs[0][1])}, {payload});")
+        if record["type"] == "FileConstant":
+            path = str(Path(record["attrs"]["file_path"]["value"]).resolve())
+            value = outputs[0][1]
+            size = math.prod(value.shape) * DTYPES[value.dtype].itemsize
+            emitter.lines.append(f"  if (!fs::is_regular_file({_q(path)}) || fs::file_size({_q(path)}) != {size}ULL) throw std::runtime_error(\"external weight size mismatch\");")
+    return emitter
+
+
 class _Emitter:
     def __init__(self, graph, *, recipe=False, fp16_reductions="native", fp16_row_mul="native"):
         if not isinstance(fp16_reductions, str) or fp16_reductions not in {"native", "matmul"}:
@@ -780,6 +830,18 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
             e.refs[boolean_output.name] = (var, "y")
     for output in graph.outputs:
         e.ensure_constant(output)
+    input_indices = [_opindex(e.refs[v.name][0]) for v in graph.inputs]
+    output_pairs = [(_opindex(e.refs[v.name][0]), 1 if e.refs[v.name][1] == "indices" else 0)
+                    for v in graph.outputs]
+    records = e.records
+    if fp16_row_mul == "compact":
+        from .ge_reshape_chains import compact_row_mul_reshape_chains
+        records, input_indices, output_pairs, chains = compact_row_mul_reshape_chains(
+            records, input_indices, output_pairs, [r["name"] for r in e.row_mul_report["replaced"]])
+        if chains["rewrites"]:
+            from .ge_recipe import _validate
+            _validate(records, graph.name, input_indices, output_pairs)
+        e.row_mul_report["reshape_chains"] = chains
     if reduction_report is not None:
         reduction_report.clear()
         reduction_report.update(e.reduction_report)
@@ -789,19 +851,17 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     # A compact recipe keeps full-model compiler memory independent of node count.
     if recipe_dir is not None:
         from .ge_recipe import emit_recipe_cpp
-        return emit_recipe_cpp(e.records, graph.name,
-                               [_opindex(e.refs[v.name][0]) for v in graph.inputs],
-                               [(_opindex(e.refs[v.name][0]), 1 if e.refs[v.name][1] == "indices" else 0)
-                                for v in graph.outputs], recipe_dir)
+        return emit_recipe_cpp(records, graph.name, input_indices, output_pairs, recipe_dir)
+    if fp16_row_mul == "compact" and chains["rewrites"]:
+        e = _inline_records(graph, records)
     # Explicit output indices preserve the ABI even for TopK's second output.
     e.lines.append(f"  ge::Graph graph({_q(graph.name)});")
     e.lines.append('  std::cout << "Constructing GE graph with SetInputs..." << std::endl;')
-    e.lines.append("  graph.SetInputs(std::vector<ge::Operator>{" + ",".join(e.refs[v.name][0] for v in graph.inputs) + "});")
+    e.lines.append("  graph.SetInputs(std::vector<ge::Operator>{" + ",".join(f"ops[{index}]" for index in input_indices) + "});")
     e.lines.append('  Require(graph.IsValid(), "GE Graph::SetInputs failed; inspect earlier GE errors in export.log");')
     output_ops = []
-    for v in graph.outputs:
-        var, port = e.refs[v.name]
-        output_ops.append("{" + var + ",{1}}" if port == "indices" else "{" + var + ",{0}}")
+    for index, port in output_pairs:
+        output_ops.append("{ops[" + str(index) + "],{" + str(port) + "}}")
     e.lines.append("  graph.SetOutputs(std::vector<std::pair<ge::Operator, std::vector<size_t>>>{" + ",".join(output_ops) + "});")
     e.lines.append(_FOOTER)
     return "\n".join(e.lines)
