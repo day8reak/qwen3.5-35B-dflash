@@ -290,11 +290,11 @@
       "accuracy": "DEFERRED_NOT_EVALUATED",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "sha256sum \"$GE_OMC_DIR/manifest.json\"; grep -n -E 'partition type|run[_ -]*by[_ -]*cl|PreGraphSplit|CompileGraph.*(target|SubGraph)' \"$GE_OMC_DIR/target/omg.log\" | tail -n 100; cat \"$GE_OMC_DIR/target/command.json\"",
+      "next_command": "sed -n '19480,19525p;31850,31895p' \"$GE_OMC_DIR/target/omg.log\"; tail -n 160 \"$GE_OMC_DIR/target/omg.log\"",
       "requires": "Read existing compiler evidence first; no blind rerun, runner rebuild or dtype change",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "User HiLog confirms CPUCL FP16 MatMul compatibility rejection during target restoration; exact node/compile partition unresolved"
+      "current_failure": "Target CPUCL FP16 MatMul compatibility rejection; matching OMC has two earlier CPU partition records of unresolved graph scope, followed by another PreGraphSplit"
     }
   },
   "operator_support_probe": {

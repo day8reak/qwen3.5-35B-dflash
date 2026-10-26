@@ -54,7 +54,7 @@
     "mmap loading defect",
     "GDN numerical issue"
   ],
-  "next_evidence": "Hash of the failed OMC manifest; target/omg.log partition type and explicit run_by_cl records with scope; target/command.json",
+  "next_evidence": "Target OMG lines19480..19525 and31850..31895, plus last160 lines, to identify partition graph scope and final compile outcome",
   "experience_audit": "docs/experience.md",
   "failure_cause": "USER_LOG_CONFIRMED_CPUCL_MATMUL_COMPATIBILITY_REJECTION_DURING_TARGET_RESTORE",
   "source_audit": {
@@ -62,5 +62,48 @@
     "compiler_parameters": "Same framework1/omc/kirinx90/use_origin_format/FP16 as operator probe",
     "new_model_layout": "Existing OMC does not acquire d5eb468 GDN/MoE changes when only the runner is rebuilt",
     "precision": "Unchanged; no FP32 fallback introduced"
+  },
+  "compiler_followup": {
+    "evidence_kind": "USER_PASTED_LOG_EXCERPT",
+    "manifest_sha256_matches_failure": true,
+    "reported_omc_run": "ge-pair-20261022-175616/omc",
+    "compiler_pid": 158555,
+    "partition_events": [
+      {
+        "line": 19509,
+        "preceding_pre_graph_split_line": 19498,
+        "counts": {
+          "NPU": 0,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "scope": "UNRESOLVED"
+      },
+      {
+        "line": 31879,
+        "preceding_pre_graph_split_line": 31868,
+        "counts": {
+          "NPU": 0,
+          "CPU": 1,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "scope": "UNRESOLVED"
+      }
+    ],
+    "later_pre_graph_split_line": 63115,
+    "later_partition_records_in_user_filter": false,
+    "command": [
+      "omg",
+      "--framework=1",
+      "--model=input.air",
+      "--output=target",
+      "--target=omc",
+      "--platform=kirinx90",
+      "--use_origin_format=true",
+      "--weight_data_type=FP16"
+    ],
+    "interpretation": "Two earlier CPU partitions are not established as main-graph placement; later main-stage completion still needs the log tail"
   }
 }
