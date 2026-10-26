@@ -280,23 +280,23 @@
     },
     "board_execution_bringup": {
       "run_id": "20261026T002510Z-8234-33823c",
-      "status": "USER_REPORTED_REDUCTION_LAYOUT_CONTROLS_CPU_ONLY_OR_MIXED",
+      "status": "USER_REPORTED_SIX_MATMUL_CANDIDATES_LOAD_PASS_FIVE_IO_BLOCKED",
       "scope": "Existing compiled target/draft OMC pair; not a newly compiled full-weight model",
       "runtime_deployment": "Private library set excludes DDK HCL pair; process path includes /vendor/lib64/chipsetsdk",
       "runner_changes": [
-        "ND exact or trailing-one-to-rank4 adaptation",
+        "ND exact, trailing-one-to-rank4, or rank3 leading-one-to-rank4 adaptation; rank2 token axis contract unchanged",
         "smoke executes both graphs exactly once and returns Top1 arrays"
       ],
       "accuracy": "DEFERRED_NOT_EVALUATED",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "Follow docs/direct-model-air.md current probe section: compile six isolated FP16 MatMul reduction cases, then replay using --native-from \"$OP_PROBE_RUN\" --refresh-runner --replay-all",
-      "requires": "Same GE/internal OMG environment plus original successful probe native build records and SDK; production model graph remains unchanged",
+      "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$GE_REDUCE_MM_RUN\" --native-from \"$OP_PROBE_RUN\" --refresh-runner --replay-all --output \"$GE_REDUCE_MM_REPLAY_RUN\"",
+      "requires": "Original six compiled cases and same-DDK native donor with SDK/headers/link libraries; use a new output directory; no AIR/OMC rebuild",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "Fresh full target still exceeds NPU partition limit9; all six rank/keepdims reduction controls retain CPU partitions. Mixed keepdims+Reshape case does not identify Reduce placement.",
-      "followup_run_id": "20261026T013946Z-24443-de03bd",
-      "followup_evidence": "specs/reduction-matmul-probe-verification.json"
+      "current_failure": "Full target previously exceeded NPU partition limit9. Six isolated MatMul reductions now compile NPU1/CPU0 and Load passes; one numerical PASS, five NOT_RUN due to rank3 ND leading singleton IO descriptors.",
+      "followup_run_id": "20261026T015924Z-25481-adbe34",
+      "followup_evidence": "specs/hiai-leading-nd-padding-verification.json"
     }
   },
   "operator_support_probe": {
@@ -332,6 +332,6 @@
     "accuracy_work": "DEFERRED_NOT_WAIVED",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
     "guide": "docs/hdc-board-run.md",
-    "next_action": "Validate isolated FP16 MatMul reduction alternatives with current internal compiler and candidate board deployment; preserve ordinary FP16 graph until evidence supports integration"
+    "next_action": "Refresh diagnostic runner and replay existing six MatMul reduction OMC cases to resolve IO-stage rejection; defer production reduction integration until board numerical evidence"
   }
 }

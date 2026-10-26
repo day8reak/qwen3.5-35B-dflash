@@ -322,3 +322,11 @@ run：`20261026T013946Z-24443-de03bd`。用户只读检查成功读取13,613项�
 为减少编译与上板往返，runtime probe增加显式--native-from，仅接受无native的COMPILE_COMPLETE批次并要求--replay-all和--refresh-runner。新批次提供OMC/输入/参考，旧批次单独提供完整LINKED构建与运行库库存；两DDK root/id/OMG hash必须一致，旧库/SDK/头文件/ELF与源产物均冻结核对。只重建当前小runner，candidate部署继续排除DDK HCL两库，不覆盖系统库或历史native。残缺native不能用donor掩盖，原A/B路径不变。主机110项运行协议测试与78项归约/案例测试通过，实际prepare-only生成六项；未运行内部OMG或HDC。
 
 蓝区现有RmsNorm schema/config及kernel键是后续融合候选线索，但不能跨版本宣称用户internal支持，也未复制共享库或更改融合边界。完整模型仍需解决其他CPU-only MoE、拼接和广播节点；本轮小图成功不会自动解除整图分区上限。执行链路优先，完整精度后置且未豁免，DFlash至少2倍尚未测量。经验固化在模型文档、两来源验证和数值回归；没有修改通用技能或共享工具链。
+
+## 2026-10-26：MatMul 归约加载通过，修正 rank3 ND 前补维检查
+
+run：`20261026T015924Z-25481-adbe34`。用户报告六个隔离候选全部编译为主图NPU1/CPU0并Load通过，四维`reduce_mean_head_matmul`执行与数值通过。其余五项未进入Process：运行库报告三维ND输入或输出前补一个1至四维，而旧探针只接受尾补1。这是IO合同检查阻塞，不能记为kernel执行失败或数值不通过；当前报告没有证明所有算子的实际运行位置。
+
+探针与正式executor同步新增严格的rank3 `[a,b,c]` 对应rank4 `[1,a,b,c]`，外围仍要求ND。原有exact和尾补1规则保持，不做全局squeeze、不按元素数相等放行。实际descriptor用于AiTensor初始化，文件与特征传递仍按原逻辑字节数；rank2 token合同及sequence/draft width推导不变。主机五组CTest通过，其中probe118项覆盖用户报告的形状、三种dtype、输入/输出独立前补、真实descriptor身份、非ND/换轴/中插维/非单例/越界rank拒绝，以及分配失败和短buffer。正式executor测试包含target前补而draft尾补的特征传递，保留首尾数据及生成token检查。这些是fake HIAI协议测试，不能代替设备数值复测。
+
+下一步只刷新独立probe，复用`reduce-mm-20261026-101758`的六份OMC和原`OP_PROBE_RUN` native身份，写新结果目录，避免重复编译或覆盖旧证据。当前命令不重编正式runner，已有正式二进制不会自动获得此源码更新。生产target/draft归约未切换MatMul，数值阈值、FP16、运行库部署策略均未改。完整执行优先、精度后置与最终DFlash至少2倍目标不变。经验留在模型合同、文档及回归中，没有修改通用技能或共享资源。

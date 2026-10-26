@@ -4,33 +4,26 @@
 
 **最终目标：精度达标后，DFlash 相比同板、同目标权重的普通解码至少提速 2 倍。当前优先打通 target/draft 双图上板执行，精度排查后置，尚无加速结论。** 验收口径保存在 [DFlash 合约](../specs/dflash-contract.json)：完整 decode 循环计入 draft、verify、接受/拒绝处理和数据搬运，另报 prefill + decode 总耗时；前缀重算和全专家计算只作正确性联调基线。
 
-**当前阻塞仍是主图 NPUCL 分区超过9个后回退 CPU。** 用户基于 `78d94ef` 重导出的 target 仍在主图窗口 L91094–L127615 回退；只读检查已取得13,613项完整支持表，识别538个 CPU-only 计算候选，其中437个归约包括421个 FP16 和16个整数节点。旧 AIR 中192个 INT64 axes 记录属于该旧产物，不能据此判定后续补丁未生效；归约也不是只改 axes 就能解决。六个 FP16 rank/`keep_dims` 对照已完成：前五项均为 NPU=0、CPU=1，第六项为 NPU=1、CPU=1，混合分区不能证明其中 ReduceSum 在 NPU 上。
+**六个 MatMul 归约候选已全部编译为 NPU=1、CPU=0，且板端 Load 全部通过。** `reduce_mean_head_matmul` 的四维输入已经执行并通过数值检查；其余五项在 IO 描述检查时停止，执行和数值均为 `NOT_RUN`。本次看到的是三维 ND 张量前补一个1到四维，例如 `[1,8,16] → [1,1,8,16]`、`[2,1,64] → [1,2,1,64]`。探针现增加这一窄范围适配，等待复测；这不是五项算子执行失败，也不是六项已全部通过。
 
-**当前入口：[六个 MatMul 归约候选的编译与板端验证](direct-model-air.md#7-当前现场验证-matmul-归约候选)。** 已完成的统计和 rank 对照保留作证据，无需重复运行。本轮仅探测独立小图，不改完整 target/draft 图；先编译六个候选，再复用原同 DDK 探测记录构建当前 runner，对这一轮的 OMC 上板验证。沿用现有 NumPy、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID`、`SN`、`BIP`；`OP_PROBE_RUN` 保持指向原来含完整 native 构建记录的算子探测目录：
+**当前入口：[刷新探针，复用这六个 OMC 复测](direct-model-air.md#7-当前现场验证-matmul-归约候选)。** `GE_REDUCE_MM_RUN` 保持指向刚刚六项全部编译成功的 compile-only 目录，`OP_PROBE_RUN` 保持指向原同 DDK、含完整 native 构建记录的旧探测目录。不要重设这两个来源，不重编 OMC、不覆盖上一轮失败结果；只创建新的 `GE_REDUCE_MM_REPLAY_RUN`：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-export GE_REDUCE_MM_RUN="$AI_RUN_DIR/reduce-mm-$(date +%Y%m%d-%H%M%S)"
-export GE_REDUCE_MM_BOARD_RUN="$AI_RUN_DIR/reduce-mm-board-$(date +%Y%m%d-%H%M%S)"
-python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
-  --compile-only \
-  --case reduce_mean_rms_matmul --case reduce_mean_head_matmul \
-  --case reduce_sum_scan_matmul --case reduce_sum_gdn_matmul_k64 \
-  --case reduce_sum_gdn_matmul_k7 --case reduce_sum_gdn_matmul_k1 \
-  --output "$GE_REDUCE_MM_RUN" &&
+export GE_REDUCE_MM_REPLAY_RUN="$AI_RUN_DIR/reduce-mm-replay-$(date +%Y%m%d-%H%M%S)"
 python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
   --probe-run "$GE_REDUCE_MM_RUN" --native-from "$OP_PROBE_RUN" \
-  --refresh-runner --replay-all --output "$GE_REDUCE_MM_BOARD_RUN"
-
-cat "$GE_REDUCE_MM_RUN/report.txt"
-cat "$GE_REDUCE_MM_BOARD_RUN/runtime-comparison.txt"
+  --refresh-runner --replay-all --output "$GE_REDUCE_MM_REPLAY_RUN"
+cat "$GE_REDUCE_MM_REPLAY_RUN/runtime-comparison.txt"
 ```
 
-新批次提供 OMC、输入和参考；旧批次只提供 native 构建身份及已记录库集合。两批的规范化 DDK 路径、DDK ID 和 OMG SHA256 必须一致，原 SDK、头文件、链接库及产物哈希仍须通过校验；不匹配或 native 记录残缺会在 HDC 前停止。脚本只刷新小探针，不重新生成候选 OMC、不修改两批源产物，也无需库参数。保留两批原目录和新结果中的 `results.tar.gz`。
+探针与正式 runner 源码同步新增 ND 的 rank3 `[a,b,c] → [1,a,b,c]`，使用运行库返回的描述创建张量；原有 ND 尾补1规则继续保留。中间插维、维度置换、非单例新增维和非 ND 格式仍会拒绝，不按元素总数相同放行，数值容差不变。正式 runner 的 rank2 token 合同及宽度推导不变；当前命令只刷新独立探针，不重编正式 runner、不改模型图。沿用 `SN`、`BIP` 和原 SDK/头文件/链接资源即可。
+
+已编译批次提供 OMC、输入和参考；旧批次只提供 native 构建身份及已记录库集合。两批的规范化 DDK 路径、DDK ID 和 OMG SHA256 必须一致，原 SDK、头文件、链接库及产物哈希仍须通过校验；不匹配或 native 记录残缺会在 HDC 前停止。脚本只刷新小探针，不重新生成候选 OMC、不修改两批源产物，也无需库参数。保留两批原目录和新结果中的 `results.tar.gz`。
 
 这些候选用常量右权重 `[1,N]` 与 `transpose_b=True` 的 MatMul 表达归约：Sum 使用全1权重，Mean 使用 `1/N` 权重，避免先求和再缩放的 FP16 中间溢出；归约之前已有的 FP16 乘积舍入仍须保留。MatMul 的累加舍入可能与 Reduce 不同，因此保留原数值容差，不直接启用全图替换。报告分别检查编译分区、Load、Process 和数值；即使全部通过，实际运行位置仍需独立证据，完整双图和2倍加速均未验证。
 
-完整模型重导出和上板命令保留在[明确修复后的流程](hdc-board-run.md#明确修复后重新导出并执行双图)，等待小图证据与明确的图修复后再使用。原 prepared、参考、runner、失败 AIR/OMC 及已取得的诊断都保留。
+完整模型归约尚未切换为 MatMul，先等待六项执行和数值结果。完整模型重导出和上板命令保留在[明确修复后的流程](hdc-board-run.md#明确修复后重新导出并执行双图)，等待小图证据与明确的图修复后再使用。原 prepared、参考、runner、失败 AIR/OMC 及已取得的诊断都保留。
 
 **服务器没有 OHOS SDK：[获取 Native SDK 与配置编译路径](ohos-native-sdk.md)。** SDK 留在服务器；上述刷新使用原 native 记录中的 SDK、头文件和链接资源。
 
@@ -276,7 +269,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
   --output "$AI_RUN_DIR/op-probe-$(date +%Y%m%d-%H%M%S)"
 ```
 
-默认套件包含 59 个小图，覆盖当前模型中的重点算子和变体，包括 MatMul、BatchMatMul、激活、类型转换、索引、广播，以及四维/五维输入差异；其中包括六项已完成的 rank/keep_dims 归约对照和本轮六个 MatMul 归约候选；原53项内容保持不变。候选与完整模型隔离，当前命令只选择新增六项。MatMul 包含输出宽度为 1、2、8 的常量/动态右输入，BatchMatMul 包含卷积降解所用的 `[48,8,4] × [48,4,1]`。每个案例生成独立 AIR/OMC 和输入，按 `hdc -t "$SN" -s "$BIP"` 上传后实际调用 HIAI Load 与 Process，并取回输出和日志。单个案例编译或执行失败会记录后继续测试其他案例；全部案例编译失败时返回非零退出码。当前归约排查使用本文开头显式选择的六项 `--compile-only`，随后用 `--native-from` 复用原同 DDK 的 native 记录上板；无需重跑默认整套。
+默认套件包含 59 个小图，覆盖当前模型中的重点算子和变体，包括 MatMul、BatchMatMul、激活、类型转换、索引、广播，以及四维/五维输入差异；其中包括六项已完成的 rank/keep_dims 归约对照和本轮六个 MatMul 归约候选；原53项内容保持不变。候选与完整模型隔离，当前命令只选择新增六项。MatMul 包含输出宽度为 1、2、8 的常量/动态右输入，BatchMatMul 包含卷积降解所用的 `[48,8,4] × [48,4,1]`。每个案例生成独立 AIR/OMC 和输入，按 `hdc -t "$SN" -s "$BIP"` 上传后实际调用 HIAI Load 与 Process，并取回输出和日志。单个案例编译或执行失败会记录后继续测试其他案例；全部案例编译失败时返回非零退出码。当前归约候选已完成六项编译，按本文开头只刷新探针复测现有 OMC；首次编译命令保存在[第7节](direct-model-air.md#首次生成六项-matmul-候选)，无需重跑默认整套。
 
 输出目录包含 `report.json`、`report.txt` 和 `results.tar.gz`。报告分别记录各阶段结果；浮点数学案例使用 FP16 参考对比，默认 `rtol=0.01`、`atol=0.002`，纯复制/重排和整数结果要求精确一致。小图成功只能证明该输入形状、类型和工具链下的案例通过，不能据此宣称整个算子支持所有形状，或完整模型全部由 NPU 执行。算子执行成功与设备分区证据分别记录。
 
@@ -353,7 +346,7 @@ cat "$RUNTIME_IO_RUN/arms/candidate_without_ddk_hcl/board/matmul_m8_b_dynamic/st
 
 此模式需要原构建记录中的 OHOS SDK、HIAI 头文件和 CMake 可用，只构建一次当前诊断 runner，两组共用新二进制；原 OMC、输入、参考和库集合继续按原哈希复用。它不会重新导出 AIR 或编译 OMC。新旧 runner、当前源码、SDK/头文件及链接库的身份写入构建记录，报告注明已刷新 runner。新版会在比较前输出全部实际形状和格式，并指出具体不匹配项；dtype 无法由该旧版 HIAI 查询接口直接读取，仍由原产物合约约束。保持严格校验，不能仅凭元素总数相同跳过格式或布局差异。
 
-已针对板端实测的 ND 尾部补维增加兼容：逻辑形状 `[8,16]` 与运行时 `[8,16,1,1]` 可以对应。仅接受原 rank 为 1～3、运行时恰好 rank 4、原维度前缀完全相同且新增尾维全部为 `1` 的情况，格式必须仍为 ND。探针记录该对应关系，用运行时返回的描述创建张量，输入输出字节及数值门槛不变；原样匹配的其他 rank 继续支持。前部或中间补维、非单例尾维、维度置换及非 ND 格式仍会拒绝。更新后用上面的 `--refresh-runner` 命令和新输出目录复测即可；正式模型 runner 也采用相同的受限 ND 尾部补维规则。
+已针对板端实测的 ND 尾部补维增加兼容：逻辑形状 `[8,16]` 与运行时 `[8,16,1,1]` 可以对应。仅接受原 rank 为 1～3、运行时恰好 rank 4、原维度前缀完全相同且新增尾维全部为 `1` 的情况，格式必须仍为 ND。探针记录该对应关系，用运行时返回的描述创建张量，输入输出字节及数值门槛不变；原样匹配的其他 rank 继续支持。最新六项归约探针又实测到 rank3 前补一个1至四维，探针另接受 `[a,b,c] → [1,a,b,c]`；中间补维、非单例新增维、维度置换及非 ND 格式仍会拒绝。当前使用本文开头的 `--refresh-runner` 命令和新输出目录复测这六项。正式模型 runner 源码也同步采用这两类受限 ND 补维规则，rank2 token 合同和宽度推导不变；当前命令仅刷新独立算子探针，现有正式 runner 二进制不会随源码更新改变。
 
 三个对照案例通过后，可复用原探测的全部已编译 OMC，仅在候选部署下复测：
 

@@ -41,6 +41,15 @@ bool IsTrailingOnePadding(const std::vector<std::uint32_t>& declared,
     if (actual[i] != (i < declared.size() ? declared[i] : 1)) return false;
   return true;
 }
+bool IsLeadingOnePadding(const std::vector<std::uint32_t>& declared,
+                         const std::vector<std::uint32_t>& actual) {
+  // Match the probe's rank3 ND [a,b,c] -> [1,a,b,c] adaptation. Rank2
+  // token IO still follows its original exact/trailing-one ABI rules.
+  if (declared.size() != 3 || actual.size() != 4 || actual[0] != 1) return false;
+  for (std::size_t i = 0; i < declared.size(); ++i)
+    if (actual[i + 1] != declared[i]) return false;
+  return true;
+}
 struct Tensor {
   std::shared_ptr<hiai::AiTensor> value;
   std::size_t bytes;
@@ -156,11 +165,14 @@ struct Model {
         std::to_string(index) + "]: declared_shape=" + Shape(shape) +
         ", actual_shape=" + Shape(actual) + ", actual_format=" +
         std::to_string(static_cast<int>(dim.GetFormat()));
-    const bool padded = IsTrailingOnePadding(shape, actual);
+    const bool trailing = IsTrailingOnePadding(shape, actual);
+    const bool leading = IsLeadingOnePadding(shape, actual);
+    const bool padded = trailing || leading;
     if (dim.GetFormat() != hiai::Format::ND || (actual != shape && !padded))
       throw std::runtime_error("HIAI OMC tensor shape/format differs from ND ABI v2: " + context);
     if (padded)
-      std::cerr << "HIAI accepted ND trailing-one padding for " << context
+      std::cerr << "HIAI accepted ND " << (trailing ? "trailing-one" : "leading-one")
+                << " padding for " << context
                 << "; using runtime descriptor\n";
     if (dtype != hiai::HIAI_DATATYPE_FLOAT16 && dtype != hiai::HIAI_DATATYPE_INT32)
       throw std::invalid_argument("ABI v2 allows only FP16 features and INT32 tokens/masks");

@@ -1,5 +1,6 @@
 """Exercise bounded IO, transport and failure lifetimes; no device claims."""
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -124,6 +125,23 @@ for dtype in ("float32", "int32"):
     case(dtype=dtype, actual_inputs=[[1, 4, 1, 1]], actual_outputs=[[1, 4, 1, 1]],
          expected_init_shapes=[[1, 4, 1, 1], [1, 4, 1, 1]])
 
+# The reduction probes reported exactly rank3 -> rank4 leading-one padding.
+# Exercise input/output independently and verify the runtime descriptor reaches
+# Init unchanged, without changing byte order or the declared dtype.
+for declared in ([1, 8, 16], [2, 1, 64], [2, 1, 7], [2, 1, 1]):
+    dims = ",".join(map(str, declared))
+    padded = [1] + declared
+    for dtype in ("float16", "float32", "int32"):
+        data = bytes(i % 256 for i in range(math.prod(declared) * (2 if dtype == "float16" else 4)))
+        for direction in ("input", "output", "both"):
+            actual_input = declared if direction == "output" else padded
+            actual_output = declared if direction == "input" else padded
+            result = case(dtype=dtype, data=data,
+                          spec=f"input\t{dtype}\t{dims}\tinput.bin\noutput\t{dtype}\t{dims}\toutput.bin\n",
+                          actual_inputs=[actual_input], actual_outputs=[actual_output],
+                          expected_init_shapes=[actual_input, actual_output])
+            assert result.stderr.count("accepted ND leading-one padding") == (2 if direction == "both" else 1)
+
 # Match the board-reported MatMul ABI: two inputs and one output. Fake HIAI
 # still only copies input[0]; this validates ABI handling, not MatMul arithmetic.
 matmul_shapes = [[8, 16, 1, 1], [16, 16, 1, 1], [8, 16, 1, 1]]
@@ -141,7 +159,7 @@ for rank in range(1, 9):
     dims = ",".join(map(str, shape))
     result = case(spec=f"input\tfloat16\t{dims}\tinput.bin\noutput\tfloat16\t{dims}\toutput.bin\n",
                   actual_inputs=[shape], actual_outputs=[shape], expected_init_shapes=[shape, shape])
-    assert "accepted ND trailing-one padding" not in result.stderr
+    assert "accepted ND " not in result.stderr
 
 # Equal element counts do not permit moved/inserted axes or arbitrary ranks.
 for declared, incompatible in (
@@ -154,16 +172,21 @@ for declared, incompatible in (
     ([2, 4], [2, 4, 1]),          # padded to rank3, not rank4
     ([2, 4], [2, 4, 1, 1, 1]),    # rank2 extended beyond rank4
     ([1, 2, 2, 2], [1, 2, 2, 2, 1]),  # rank4 must not be extended
+    ([2, 3, 4], [2, 1, 3, 4]),   # rank3 middle singleton
+    ([2, 3, 4], [1, 3, 2, 4]),   # rank3 permuted after leading one
+    ([2, 3, 4], [2, 2, 3, 4]),   # non-singleton leading axis
+    ([2, 3, 4], [1, 1, 6, 4]),   # same numel with changed original axes
+    ([2, 3, 4], [1, 1, 2, 3, 4]),  # leading padding beyond rank4
 ):
     dims = ",".join(map(str, declared))
     for direction in ("input", "output"):
         result = case(spec=f"input\tfloat16\t{dims}\tinput.bin\noutput\tfloat16\t{dims}\toutput.bin\n",
-                      data=bytes(range(16)),
+                      data=bytes(range(math.prod(declared) * 2)),
                       actual_inputs=[incompatible if direction == "input" else declared],
                       actual_outputs=[incompatible if direction == "output" else declared],
                       expected="FAILED", expected_stage="io")
         assert f"IO TSV: {direction}[0];" in json.loads(result.stdout)["error"]
-        assert "accepted ND trailing-one padding" not in result.stderr
+        assert "accepted ND " not in result.stderr
 
 for direction in ("input", "output"):
     result = case(actual_inputs=[[1, 4, 1, 1]], actual_outputs=[[1, 4, 1, 1]],
@@ -172,6 +195,17 @@ for direction in ("input", "output"):
                   expected="FAILED", expected_stage="io")
     assert f"IO TSV: {direction}[0];" in json.loads(result.stdout)["error"]
     assert "actual_format=0" in json.loads(result.stdout)["error"]
+    # Matching rank3 leading-one padding cannot waive ND or buffer checks.
+    result = case(spec="input\tfloat16\t1,2,2\tinput.bin\noutput\tfloat16\t1,2,2\toutput.bin\n",
+                  actual_inputs=[[1, 1, 2, 2]], actual_outputs=[[1, 1, 2, 2]],
+                  input_format=0 if direction == "input" else 2,
+                  output_format=0 if direction == "output" else 2,
+                  expected="FAILED", expected_stage="io")
+    assert f"IO TSV: {direction}[0];" in json.loads(result.stdout)["error"]
+for failure in ("allocation", "short-buffer"):
+    case(spec="input\tfloat16\t1,2,2\tinput.bin\noutput\tfloat16\t1,2,2\toutput.bin\n",
+         actual_inputs=[[1, 1, 2, 2]], actual_outputs=[[1, 1, 2, 2]],
+         failure=failure, expected="FAILED", expected_stage="io")
 
 case(model=b"", expected="FAILED", expected_stage="model-buffer")
 case(oversized=True, expected="FAILED", expected_stage="model-buffer")

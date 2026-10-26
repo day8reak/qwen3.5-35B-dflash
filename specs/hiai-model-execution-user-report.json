@@ -58,7 +58,7 @@
     "Exact NPU partition count before rollback (only >9 is reported)",
     "Which CPU-only graph boundaries cause fragmentation in the revised graph"
   ],
-  "next_evidence": "Six MatMul contraction compiler/board probe results; retain existing full target failure as rollback baseline",
+  "next_evidence": "Replay six existing MatMul reduction OMC cases with refreshed runner after rank3 ND leading-one IO adaptation; no model recompilation",
   "experience_audit": "docs/experience.md",
   "failure_cause": "USER_LOG_CONFIRMED_CPUCL_MATMUL_COMPATIBILITY_REJECTION_DURING_TARGET_RESTORE",
   "source_audit": {
@@ -380,5 +380,198 @@
     "conclusion": "Tested singleton-rank and keepdims changes did not eliminate CPU partitions. Last mixed graph includes Reshape and cannot establish NPU Reduce execution.",
     "non_conclusion": "These results do not prove every Reduce shape or every DDK/backend is unsupported.",
     "next_action": "Probe isolated FP16 MatMul contractions and reuse matching prior native deployment for board checks; no production rewrite before scoped evidence"
+  },
+  "reduction_matmul_probe_retest": {
+    "date": "2026-10-26",
+    "recorded_in_run_id": "20261026T015924Z-25481-adbe34",
+    "evidence_kind": "USER_PASTED_REPORT_NOT_INDEPENDENTLY_RETRIEVED",
+    "compiled_run": "reduce-mm-20261026-101758",
+    "board_run": "reduce-mm-board-20261026-101805",
+    "native_donor_run": "op-probe-20261023-165317",
+    "deployment": "candidate_without_ddk_hcl",
+    "actual_revision": "NOT_REPORTED",
+    "artifact_hashes": "NOT_PROVIDED_IN_PASTED_REPORT",
+    "cases": [
+      {
+        "case": "reduce_mean_rms_matmul",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "load": "PASSED",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN",
+        "placement": "UNVERIFIED",
+        "io_mismatch": {
+          "direction": "input",
+          "index": 0,
+          "declared_shape": [
+            1,
+            8,
+            16
+          ],
+          "runtime_shape": [
+            1,
+            1,
+            8,
+            16
+          ],
+          "declared_format": "ND(2)",
+          "actual_format": 2,
+          "actual_dtype": "unavailable"
+        }
+      },
+      {
+        "case": "reduce_mean_head_matmul",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "load": "PASSED",
+        "run": "PASSED",
+        "numerical": "PASSED",
+        "placement": "UNVERIFIED"
+      },
+      {
+        "case": "reduce_sum_scan_matmul",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "load": "PASSED",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN",
+        "placement": "UNVERIFIED",
+        "io_mismatch": {
+          "direction": "input",
+          "index": 0,
+          "declared_shape": [
+            2,
+            1,
+            64
+          ],
+          "runtime_shape": [
+            1,
+            2,
+            1,
+            64
+          ],
+          "declared_format": "ND(2)",
+          "actual_format": 2,
+          "actual_dtype": "unavailable"
+        }
+      },
+      {
+        "case": "reduce_sum_gdn_matmul_k64",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "load": "PASSED",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN",
+        "placement": "UNVERIFIED",
+        "io_mismatch": {
+          "direction": "output",
+          "index": 0,
+          "declared_shape": [
+            2,
+            1,
+            64
+          ],
+          "runtime_shape": [
+            1,
+            2,
+            1,
+            64
+          ],
+          "declared_format": "ND(2)",
+          "actual_format": 2,
+          "actual_dtype": "unavailable"
+        }
+      },
+      {
+        "case": "reduce_sum_gdn_matmul_k7",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "load": "PASSED",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN",
+        "placement": "UNVERIFIED",
+        "io_mismatch": {
+          "direction": "output",
+          "index": 0,
+          "declared_shape": [
+            2,
+            1,
+            7
+          ],
+          "runtime_shape": [
+            1,
+            2,
+            1,
+            7
+          ],
+          "declared_format": "ND(2)",
+          "actual_format": 2,
+          "actual_dtype": "unavailable"
+        }
+      },
+      {
+        "case": "reduce_sum_gdn_matmul_k1",
+        "compile": "COMPILED",
+        "compiler_partition": {
+          "NPU": 1,
+          "CPU": 0,
+          "GPU": 0,
+          "ISP": 0
+        },
+        "load": "PASSED",
+        "run": "NOT_RUN",
+        "numerical": "NOT_RUN",
+        "placement": "UNVERIFIED",
+        "io_mismatch": {
+          "direction": "output",
+          "index": 0,
+          "declared_shape": [
+            2,
+            1,
+            1
+          ],
+          "runtime_shape": [
+            1,
+            2,
+            1,
+            1
+          ],
+          "declared_format": "ND(2)",
+          "actual_format": 2,
+          "actual_dtype": "unavailable"
+        }
+      }
+    ],
+    "interpretation": "All six main compiler partitions are NPU1/CPU0 and Load passes. One rank4 case executes and passes numerical comparison; five stop before Process because rank3 ND descriptors have a leading singleton to rank4. This is not five kernel execution or accuracy failures.",
+    "next_action": "Replay existing six OMC cases with refreshed diagnostic runner; accept only bounded ND rank3 leading-one padding in addition to existing rules.",
+    "full_model_graph_changed": false,
+    "runtime_placement": "UNVERIFIED",
+    "accuracy": "FULL_MODEL_NOT_EVALUATED",
+    "performance": "NOT_MEASURED"
   }
 }

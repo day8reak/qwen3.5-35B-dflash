@@ -14,29 +14,22 @@ hdc -t "$SN" -s "$BIP" ...
 
 ## 当前优先：本轮 MatMul 归约候选上板
 
-最终目标仍是精度达标后 DFlash 至少提速2倍，当前先打通 target/draft 上板执行。完整 target 在 NPUCL 分区超过9个后回退 CPU；已有完整13,613项支持表识别538个 CPU-only 计算候选，其中437个归约为421个 FP16 加16个整数节点。旧 AIR 的192个 INT64 axes 记录不意味着后续补丁未生效，也不足以解释这些 FP16 归约拒绝。
+六个 MatMul 归约候选现已全部编译为 NPU=1、CPU=0，且板端 Load 全部通过。四维 `reduce_mean_head_matmul` 已通过执行和数值检查；另外五项在 IO 描述检查停止，执行和数值仍是 `NOT_RUN`。实测运行库把三维 ND 张量前补一个1到四维，例如 `[1,8,16] → [1,1,8,16]`、`[2,1,64] → [1,2,1,64]`。当前更新只补这一受限描述对应，等待原 OMC 复测，不把 IO 拒绝当作算子执行失败。
 
-六个 rank/`keep_dims` 小图已完成：前五项 NPU=0、CPU=1，最后一项 NPU=1、CPU=1；混合分区不证明 ReduceSum 进入 NPU。已有统计和 rank 对照无需重跑，当前用六个独立 MatMul 候选验证替代归约的可行性。候选不改完整模型，原 prepared、参考、runner 和失败产物继续保留；详细形状、数值边界和历史命令见[直接 GE 第7节](direct-model-air.md#7-当前现场验证-matmul-归约候选)。
-
-在原 GE/OMG 环境编译本轮六个小图，再使用原同 DDK 的完整 `OP_PROBE_RUN` native 构建记录刷新小探针并上板。沿用 `SN`、`BIP`、`AI_RUN_DIR`，不需要库参数：
+保持 `GE_REDUCE_MM_RUN` 指向已经六项全部编译成功的 compile-only 目录，`OP_PROBE_RUN` 指向原同 DDK 的完整 native 探测记录。沿用 `SN`、`BIP`、原 SDK/头文件/链接资源，刷新独立探针即可；不重新编译 OMC，不覆盖上一轮结果，只创建新的输出目录：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-export GE_REDUCE_MM_RUN="$AI_RUN_DIR/reduce-mm-$(date +%Y%m%d-%H%M%S)"
-export GE_REDUCE_MM_BOARD_RUN="$AI_RUN_DIR/reduce-mm-board-$(date +%Y%m%d-%H%M%S)"
-python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
-  --compile-only \
-  --case reduce_mean_rms_matmul --case reduce_mean_head_matmul \
-  --case reduce_sum_scan_matmul --case reduce_sum_gdn_matmul_k64 \
-  --case reduce_sum_gdn_matmul_k7 --case reduce_sum_gdn_matmul_k1 \
-  --output "$GE_REDUCE_MM_RUN" &&
+export GE_REDUCE_MM_REPLAY_RUN="$AI_RUN_DIR/reduce-mm-replay-$(date +%Y%m%d-%H%M%S)"
 python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
   --probe-run "$GE_REDUCE_MM_RUN" --native-from "$OP_PROBE_RUN" \
-  --refresh-runner --replay-all --output "$GE_REDUCE_MM_BOARD_RUN"
-
-cat "$GE_REDUCE_MM_RUN/report.txt"
-cat "$GE_REDUCE_MM_BOARD_RUN/runtime-comparison.txt"
+  --refresh-runner --replay-all --output "$GE_REDUCE_MM_REPLAY_RUN"
+cat "$GE_REDUCE_MM_REPLAY_RUN/runtime-comparison.txt"
 ```
+
+新增白名单仅为 ND、逻辑 rank3 `[a,b,c]` 对应运行时 `[1,a,b,c]`，使用运行库返回的描述创建张量；原有受限尾补1规则保持。中间插维、维度置换、非单例新增维和非 ND 仍拒绝，不按元素总数相同放行，输入输出字节与数值容差不变。探针与正式 `hiai_executor` 源码同步该规则，正式 runner 的 rank2 token 合同及宽度推导不变；当前命令仅重建独立探针，现有正式 runner 和模型图继续保留。六项全部通过与否以这次新结果为准。
+
+完整 target/draft 图尚未切换为 MatMul 归约，先等六项执行和数值证据。此前完整图分区超限、13,613项支持表、437个归约 CPU-only 候选及 rank 对照均已记录，无需重跑；详细形状、首次编译命令和历史证据见[直接 GE 第7节](direct-model-air.md#7-当前现场验证-matmul-归约候选)。最终仍要求完整模型精度达标后 DFlash 至少提速2倍，当前没有这个结论。
 
 `--probe-run` 使用本轮 compile-only 产物中的 OMC、输入、参考与哈希；`--native-from` 只提供旧完整批次的 native 身份和已记录库集合。两批必须具有相同的规范化 DDK 根目录、DDK ID 和 OMG SHA256，原 SDK、头文件、链接输入及冻结库也要通过校验。新来源必须是无 native 的 `COMPILE_COMPLETE`、`board_requested=false` 批次；残缺 native 或不匹配的另一套 DDK 会在 HDC 前被拒绝，不能借此替换已记录的构建来源。
 
@@ -46,7 +39,7 @@ cat "$GE_REDUCE_MM_BOARD_RUN/runtime-comparison.txt"
 
 ## 明确修复后：重新导出并执行双图
 
-以下是六项小图证据支持并完成明确图修复后的流程，当前先完成候选验证。先保存旧 `GE_REEXPORT_RUN` 的实际路径与诊断，再为新图设置新目录；不要因同一回退日志直接重复编译。保留 `$GE_PAIR_RUN/prepared` 的原权重、`$GE_BOARD_RUN/reference.json` 和已经更新的 `$HIAI_BUILD_DIR` runner。沿用原环境及 `SN`、`BIP`，无需重新 prepare、切换 selected 或重编 runner：
+以下是六项小图证据支持并完成明确图修复后的流程，当前先刷新探针完成现有六个候选的数值验证。先保存旧 `GE_REEXPORT_RUN` 的实际路径与诊断，再为新图设置新目录；不要因同一回退日志直接重复编译。保留 `$GE_PAIR_RUN/prepared` 的原权重、`$GE_BOARD_RUN/reference.json` 和已经更新的 `$HIAI_BUILD_DIR` runner。沿用原环境及 `SN`、`BIP`，无需重新 prepare、切换 selected 或重编 runner：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -77,7 +70,7 @@ cat "$HDC_RUN_DIR/benchmark.stderr"
 
 此模式沿用文件名 `benchmark.json`，但报告的 `mode` 是 `smoke`：强制 target 和 draft 各调用一次，将 target 特征传给 draft，保存两图 Top1 输出。即使 prompt 的下一 token 是 EOS，也会执行 draft。成功标为 `EXECUTION_COMPLETE`；`accuracy`、`performance` 为 `NOT_EVALUATED`，不产生 `comparison.json`。参考 JSON 仍用于身份和输入配置检查；其历史 PASS 不是本次板端精度结论。
 
-程序保留模型哈希、版本、张量数量、格式、大小和 token 范围检查。仅接受 ND 原始维度后补到四维的 `1`，例如 `[1,S] → [1,S,1,1]`、`[1,S,F] → [1,S,F,1]`，并用运行库返回的描述初始化张量；不按元素总数放行任意布局。成功和失败都会尝试回传 HiLog，日志缺失单独记录。
+程序保留模型哈希、版本、张量数量、格式、大小和 token 范围检查。ND 描述允许原有尾部补1到四维，例如 `[1,S] → [1,S,1,1]`、`[1,S,F] → [1,S,F,1]`；源码另支持逻辑 rank3 `[a,b,c] → [1,a,b,c]`，使用运行库返回的描述初始化张量。新增规则仅扩展 rank3 特征，rank2 token 合同及宽度推导不变；仍不按元素总数放行任意布局。本轮开头的命令只刷新独立 probe，正式 runner 要在后续实际重新构建后才具有新增规则。成功和失败都会尝试回传 HiLog，日志缺失单独记录。
 
 当前没有完整模型板端通过证据；这个命令用于取得实际加载/执行结果。去掉 `--execution-only` 后仍是下文的严格 benchmark + 参考比较。
 
@@ -285,4 +278,4 @@ grep -n -E 'partition type|run[_ -]*by[_ -]*cl|PreGraphSplit|CompileGraph.*(targ
 cat "$GE_OMC_DIR/target/command.json"
 ```
 
-已有 OMC 不会随代码或 runner 更新获得图改动。用户随后已按 `78d94ef` 重新 export，新的主图窗口 L91094–L127615 再次回退；随后已完成 `inspect-compile` 与六项 rank/keep_dims 对照，当前操作转为本文开头的 MatMul 归约候选，待小图证据与明确修复后再重导出与 smoke。保持原 prepared、FP16 和已通过小图验证的部署策略；即使后续未触发回退，也要检查最终分区与板端执行，不能宣称已修复或全 NPU。
+已有 OMC 不会随代码或 runner 更新获得图改动。用户随后已按 `78d94ef` 重新 export，新的主图窗口 L91094–L127615 再次回退；随后已完成 `inspect-compile` 与六项 rank/keep_dims 对照，随后六个 MatMul 候选均已编译为 NPU=1、CPU=0 且 Load 通过；当前按本文开头刷新探针，复测被 ND 前补维检查拦住的五项，待小图证据与明确修复后再重导出与 smoke。保持原 prepared、FP16 和已通过小图验证的部署策略；即使后续未触发回退，也要检查最终分区与板端执行，不能宣称已修复或全 NPU。

@@ -114,6 +114,15 @@ bool IsTrailingOnePadding(const std::vector<std::uint32_t>& declared,
     if (actual[i] != (i < declared.size() ? declared[i] : 1)) return false;
   return true;
 }
+bool IsLeadingOnePadding(const std::vector<std::uint32_t>& declared,
+                         const std::vector<std::uint32_t>& actual) {
+  // Some rank3 ND IO is reported as [1,a,b,c]. Keep all original axes
+  // in order; do not generalize this to squeezing singleton dimensions.
+  if (declared.size() != 3 || actual.size() != 4 || actual[0] != 1) return false;
+  for (std::size_t i = 0; i < declared.size(); ++i)
+    if (actual[i + 1] != declared[i]) return false;
+  return true;
+}
 std::vector<Spec> ReadSpecs(const fs::path& path) {
   const auto text = Read(path, 64 << 10);
   std::istringstream lines(std::string(text.begin(), text.end()));
@@ -220,11 +229,14 @@ struct Probe {
       Require(index < dims.size(), "IO TSV has more tensors than OMC");
       const auto& dim = dims[index];
       const auto actual_shape = dim.GetDims();
-      const bool padded = IsTrailingOnePadding(spec.shape, actual_shape);
+      const bool trailing = IsTrailingOnePadding(spec.shape, actual_shape);
+      const bool leading = IsLeadingOnePadding(spec.shape, actual_shape);
+      const bool padded = trailing || leading;
       Require(dim.GetFormat() == hiai::Format::ND && (actual_shape == spec.shape || padded),
               DimensionMismatch(spec, index, dim));
       if (padded)
-        std::cerr << "qwen35_hiai_op_probe: accepted ND trailing-one padding for "
+        std::cerr << "qwen35_hiai_op_probe: accepted ND "
+                  << (trailing ? "trailing-one" : "leading-one") << " padding for "
                   << (spec.input ? "input" : "output") << '[' << index << ']'
                   << ": declared_shape=" << Shape(spec.shape)
                   << ", actual_shape=" << Shape(actual_shape)
