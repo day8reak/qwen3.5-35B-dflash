@@ -161,8 +161,10 @@ def _hilog(hdc, board, local, cases, timeout):
 
 def run_board(output: Path, runner: Path, libraries: list[Path], records: list[dict],
               hdc_executable="hdc", timeout=120, keep_board=False, *, library_search_paths=()) -> dict:
-    """Run independent cases; native failures are results, transport failures raise.
+    """Run independent cases; required transport/cleanup failures raise.
 
+    Native failures are results. Final HiLog failure is a diagnostic warning
+    after all required case files are verified, and retains the remote directory.
     Files live in output/board/<name>/{stdout,stderr,exitcode,pid,output_N.bin,hilog.txt}.
     Returned cases map contains exitcode/PID integers, paths, and hash records.
     The full shared snapshot and HDC calls are local evidence, not deliverables.
@@ -254,8 +256,19 @@ def run_board(output: Path, runner: Path, libraries: list[Path], records: list[d
             print(f"op-probe: [{index}/{len(prepared)}] {name}: native exit {saved}; "
                   f"logs: {case}", file=sys.stderr, flush=True)
         stage = "hilog"
-        result["hilog"] = _hilog(hdc, board, local, result["cases"], min(timeout, 30))
-        if not keep_board:
+        try:
+            result["hilog"] = _hilog(hdc, board, local, result["cases"], min(timeout, 30))
+        except Exception as error:
+            # Every required case file has already been retrieved and verified.
+            # Retain incomplete diagnostic evidence for inspection, without
+            # replacing it or changing the execution/numerical evidence.
+            result["hilog"] = {"status": "INCOMPLETE", "command": ["hilog", "-x"],
+                               "error": f"{type(error).__name__}: {error}",
+                               "scope": "Final optional HiLog capture/retrieval failed; remote evidence retained.",
+                               "deliverable_policy": "Include case PID logs; exclude _evidence and raw HDC calls."}
+            print(f"op-probe: diagnostic warning: {result['hilog']['error']}; "
+                  f"remote evidence retained: {board}", file=sys.stderr, flush=True)
+        if not keep_board and result["hilog"]["status"] == "CAPTURED":
             stage = "cleanup"
             _cleanup_remote(hdc, board, owner)
             result["board_cleanup"] = "REMOVED"

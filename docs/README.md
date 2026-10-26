@@ -6,23 +6,11 @@
 
 **用户回传 `reduce-mm-replay-20261026-104025`：六个 MatMul 归约候选全部 Load、Process、数值 PASS。** 每项编译主图为 NPU=1、CPU=0，实际运行位置仍为 `UNVERIFIED`；小图通过不等于完整 target/draft 或2倍加速已经通过。
 
-**最新整图已通过 ReshapeFusion，19个row Mul CPU-only候选消失，但仍超过9个NPUCL分区回退。** 已识别CPU-only计算从117降至98，target/draft还未完成上板。当前保留整图，将剩余候选算子集中探测。
+**最新算子回放：42个已编译案例全部完成Load、Process和数值比较，另1项CastT编译失败。** 最后的`hilog.stderr`回收失败只影响附加诊断，无需重跑42项。新版脚本会显示诊断警告并保留远端证据；旧报告保留原样。
 
-**当前入口：[一批验证剩余 CPU 候选](cpu-gap-probes.md)。** `--suite remaining-cpu`共50项；用户已回传GDN的7项，所以本轮加`--exclude-family gdn`只跑其余43项MoE路由、TopK/ArgMax、RoPE与注意力掩码。生产模型保持当前版本。
+**当前入口：[将已验证的GDN Gather复制接入整图](hdc-board-run.md#当前将已验证的-gdn-gather-复制接入整图)。** 复用原prepared/reference，显式使用`--fp16-reductions matmul --fp16-row-mul compact --gdn-indexed-copy gather`，在新目录导出、带CPU回退拒绝的编译，然后构建正式runner并执行双图。无需重新运行[remaining-cpu批次](cpu-gap-probes.md)。
 
-```bash
-git -C "$REPO_DIR" pull --ff-only
-export GE_CPU_GAPS_RUN="$AI_RUN_DIR/cpu-gaps-$(date +%Y%m%d-%H%M%S)"
-export GE_CPU_GAPS_BOARD_RUN="$AI_RUN_DIR/cpu-gaps-board-$(date +%Y%m%d-%H%M%S)"
-python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
-  --suite remaining-cpu --exclude-family gdn --compile-only --output "$GE_CPU_GAPS_RUN" &&
-python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
-  --probe-run "$GE_CPU_GAPS_RUN" --native-from "$OP_PROBE_RUN" \
-  --refresh-runner --replay-all --output "$GE_CPU_GAPS_BOARD_RUN"
-```
-
-
-回传两个report即可。沿用原resources、SDK和库部署；`OP_PROBE_RUN`仅提供同DDK的native构建身份，本批次提供各自OMC、输入和参考。完整模型精度、实际NPU运行位置和2倍加速均未验证。
+上一整图已通过ReshapeFusion并移除19个row Mul CPU-only候选，但仍超过9个NPUCL分区回退。新开关只整合此前已验证的GDN复制形状；路由、选择和attention mask方案仍含CPU分区，暂不替换。完整模型执行、精度和2倍加速仍待验证。
 
 **服务器没有 OHOS SDK：[获取 Native SDK 与配置编译路径](ohos-native-sdk.md)。** SDK 留在服务器；独立probe通过原native记录复用SDK、头文件和链接资源。
 
@@ -30,7 +18,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
 
 上板流程的 `--execution-only` 执行 probe，再强制 target/draft 各执行一次、回传两图的 Top1 输出及日志；现有参考只用于匹配身份、prompt 和配置，不比较输出精度，也不运行 benchmark。成功标记为 `EXECUTION_COMPLETE`，精度和性能为 `NOT_EVALUATED`。以后去掉该参数可恢复原有配对 benchmark 和参考比较。全部成功后删除本次创建的板端目录；失败时保留排查，服务器结果始终保留。probe 或 benchmark 失败时会直接显示已回传的错误日志末尾，并自动抓取板端 HiLog 缓冲区快照作为排障材料。日志摘要会扫描整个快照、排除 HDC 传输记录，并避免将 `input` 误匹配为 `NPU`；完整日志始终保留。
 
-此前 HCL 空缓冲区、库选择和 ND 补维问题及当时的重编 runner 命令保存在[历史排障记录](hdc-board-run.md#历史加载接口与运行库排障)。后续整图编译通过再构建正式runner；当前仅运行上述remaining-cpu批次，旧runner和模型产物继续保留。
+此前 HCL 空缓冲区、库选择和 ND 补维问题及当时的重编 runner 命令保存在[历史排障记录](hdc-board-run.md#历史加载接口与运行库排障)。后续整图编译通过再构建正式runner；当前使用上述GDN候选整图链路，旧runner和模型产物继续保留。
 
 以后要保留大体积独立权重时，加 `--board-cleanup omc`，只删除清单中的 OMC 文件，保留目录、独立权重、程序、库和日志；加 `--board-cleanup none` 则全部保留。默认是 `--board-cleanup all`。嵌入 OMC 内部的权重随 OMC 一起删除。
 

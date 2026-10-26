@@ -1,7 +1,8 @@
 """Embed emitted FP16 reduction/row-Mul recipes in a complete tiny host pair.
 
 Only reduction/scan and explicitly selected row-Mul recipes are projected back
-into the neutral IR; all other nodes retain the original oracle. This is not
+into the neutral IR; the combined test also uses the integrated GDN copy IR.
+All other nodes retain the original oracle. This is not
 full serialized-model execution, OMG validation, a device result, or a claim of
 model-quality accuracy.
 """
@@ -156,13 +157,18 @@ def _project_reductions(original, folder, compact_rows=False):
     return clone, counts
 
 
-def _check_pair(tmp_path, monkeypatch, compact_rows=False):
+def _check_pair(tmp_path, monkeypatch, compact_rows=False, gdn_indexed_copy="native"):
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
     prepared = tmp_path / "prepared"
     plan = prepare_pair(prepared, sequence_length=8, tiny=True)
     original = build_pair(plan["target_config"], plan["draft_config"], 8)
+    copy_reports = {}
+    candidate_graphs = build_pair(plan["target_config"], plan["draft_config"], 8,
+                                  gdn_indexed_copy=gdn_indexed_copy, gdn_copy_reports=copy_reports)
+    assert copy_reports["target"]["counts"]["replaced"] == (12 if gdn_indexed_copy == "gather" else 0)
+    assert copy_reports["draft"]["counts"]["total"] == 0
     projected, counts = [], {}
-    for graph in original:
+    for graph in candidate_graphs:
         candidate, count = _project_reductions(graph, tmp_path / "recipes" / graph.name, compact_rows)
         projected.append(candidate)
         counts[graph.name] = count
@@ -205,3 +211,7 @@ def test_emitted_fp16_reductions_preserve_tiny_pair_outputs(tmp_path, monkeypatc
 
 def test_emitted_fp16_reductions_and_compact_row_mul_preserve_tiny_pair_outputs(tmp_path, monkeypatch):
     _check_pair(tmp_path, monkeypatch, compact_rows=True)
+
+
+def test_combined_reductions_row_mul_and_gdn_copies_preserve_tiny_pair_outputs(tmp_path, monkeypatch):
+    _check_pair(tmp_path, monkeypatch, compact_rows=True, gdn_indexed_copy="gather")

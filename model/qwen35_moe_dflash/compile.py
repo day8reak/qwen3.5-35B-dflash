@@ -254,6 +254,8 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600,
         raise ValueError("AIR fp16_reductions must be native or matmul")
     if manifest.get("fp16_row_mul", "native") not in {"native", "compact"}:
         raise ValueError("AIR fp16_row_mul must be native or compact")
+    if manifest.get("gdn_indexed_copy", "native") not in {"native", "gather"}:
+        raise ValueError("AIR gdn_indexed_copy must be native or gather")
     graphs = manifest["graphs"]
     if [g["name"] for g in graphs] != ["target", "draft"]:
         raise ValueError("AIR bundle must contain target then draft")
@@ -271,6 +273,9 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600,
             _checked_lowering_report(root, manifest, graph, policy="fp16_row_mul",
                                      summary="row_mul_lowering", filename="row-mul-lowering.json",
                                      label="row-Mul"),
+            _checked_lowering_report(root, manifest, graph, policy="gdn_indexed_copy",
+                                     summary="gdn_copy_lowering", filename="gdn-copy-lowering.json",
+                                     label="GDN copy"),
         ]
     omg, env = omg_environment(ddk_root)
     if not os.access(omg, os.X_OK):
@@ -286,6 +291,8 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600,
         result["fp16_reductions"] = manifest["fp16_reductions"]
     if "fp16_row_mul" in manifest:
         result["fp16_row_mul"] = manifest["fp16_row_mul"]
+    if "gdn_indexed_copy" in manifest:
+        result["gdn_indexed_copy"] = manifest["gdn_indexed_copy"]
     result.update(schema_version=2, artifact_kind="qwen35-cpro-omc-pair", status="COMPILING",
                   platform="kirinx90", runtime="hiai", device_validation="PENDING", graphs=records,
                   ddk_id=ddk_id, omg_sha256=sha256_file(omg), air_manifest_sha256=sha256_file(manifest_path),
@@ -369,6 +376,8 @@ def compile_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600,
                 records[-1]["reduction_lowering"] = graph["reduction_lowering"]
             if "row_mul_lowering" in graph:
                 records[-1]["row_mul_lowering"] = graph["row_mul_lowering"]
+            if "gdn_copy_lowering" in graph:
+                records[-1]["gdn_copy_lowering"] = graph["gdn_copy_lowering"]
             # OMG may return success after abandoning all NPU partitions.
             # Constant-folding CPU graphs are expected and are not deployment
             # evidence. Unknown scope remains unknown, but an explicit rollback

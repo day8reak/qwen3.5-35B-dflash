@@ -43,6 +43,8 @@ def main():
                    help="matmul: opt-in single-axis FP16 reduction lowering; retain integer reductions and original prepared weights")
     p.add_argument("--fp16-row-mul", choices=("native", "compact"), default="native",
                    help="compact: opt-in reshape for the two board-tested FP16 row-Mul shapes; retain original weights and graph IO")
+    p.add_argument("--gdn-indexed-copy", choices=("native", "gather"), default="native",
+                   help="gather: opt-in GDN mask/outer-Sub copies for the tested FP16 [2,1,64,64] shape; retain other shapes")
     p = sub.add_parser("compile")
     p.add_argument("--air", required=True)
     p.add_argument("--output", required=True)
@@ -95,7 +97,8 @@ def main():
                 ge = resource_path(resources, "ge_root", directory=True)
             result = export_pair(args.prepared, args.output, ge, cxx=args.cxx,
                                  cxx11_abi=args.cxx11_abi, timeout_seconds=args.timeout_seconds,
-                                 fp16_reductions=args.fp16_reductions, fp16_row_mul=args.fp16_row_mul)
+                                 fp16_reductions=args.fp16_reductions, fp16_row_mul=args.fp16_row_mul,
+                                 gdn_indexed_copy=args.gdn_indexed_copy)
         elif args.command == "compile":
             from qwen35_moe_dflash.compile import compile_air
             resources = {}

@@ -15,8 +15,41 @@ from .ge_ir import Graph
 
 
 class _Builder:
-    def __init__(self, graph):
+    def __init__(self, graph, *, gdn_indexed_copy="native", gdn_copy_report=None):
+        if not isinstance(gdn_indexed_copy, str) or gdn_indexed_copy not in {"native", "gather"}:
+            raise ValueError("gdn_indexed_copy must be native or gather")
+        if gdn_copy_report is not None and not isinstance(gdn_copy_report, dict):
+            raise ValueError("gdn_copy_report must be a dictionary")
         self.g = graph
+        self.gdn_indexed_copy = gdn_indexed_copy
+        self.gdn_copy_report = {} if gdn_copy_report is None else gdn_copy_report
+        self.gdn_copy_report.clear()
+        self.gdn_copy_report.update({"schema_version": 1, "graph": graph.name, "mode": gdn_indexed_copy,
+                                     "counts": {"total": 0, "replaced": 0, "retained": 0,
+                                                "mask_replaced": 0, "sub_replaced": 0}, "entries": []})
+
+    def gdn_copy_strategy(self, kind, *inputs):
+        if self.gdn_indexed_copy == "native":
+            return "native", "native_policy"
+        shapes = {"triangular_mask": ((2, 1, 64, 64),),
+                  "outer_sub": ((2, 1, 64, 1), (2, 1, 1, 64))}
+        if (tuple(value.shape for value in inputs) == shapes[kind]
+                and all(value.dtype == "float16" for value in inputs)):
+            return "gather", "tested_shape"
+        return "native", "outside_tested_shape"
+
+    def record_gdn_copy(self, kind, inputs, result, strategy, reason, **details):
+        counts = self.gdn_copy_report["counts"]
+        counts["total"] += 1
+        counts["replaced" if strategy == "gather" else "retained"] += 1
+        if strategy == "gather":
+            counts["mask_replaced" if kind == "triangular_mask" else "sub_replaced"] += 1
+        self.gdn_copy_report["entries"].append({
+            "kind": kind, "node": result.name, "inputs": [value.name for value in inputs],
+            "input_shapes": [list(value.shape) for value in inputs],
+            "input_dtypes": [value.dtype for value in inputs], "shape": list(result.shape),
+            "dtype": result.dtype, "strategy": strategy, "reason": reason, **details})
+        return result
 
     def constant(self, value, dtype="float16"):
         return self.g.const(np.asarray(value, dtype=dtype), dtype=dtype)
@@ -126,7 +159,9 @@ def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None):
 
     Keep padding and reduction widths of 64 even for tiny sequences: replacing
     this with a token recurrence changes FP16 accumulation and requires a new
-    accuracy audit. No nonzero/gather routing or data-dependent Python loops.
+    accuracy audit. No data-dependent routing or Python loops are introduced.
+    Opt-in indexed copies change only the tested static triangular masks and
+    outer subtraction; their floating-point arithmetic boundaries stay intact.
     The target ABI has batch=1: drop only that singleton in chunk carriers so
     elementwise/slice operations stay at rank four, not just the lowered BMMs.
     An optional diagnostic list observes each chunk's updated recurrent state,
@@ -158,7 +193,14 @@ def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None):
                  scope="gdn_nonpositive")
     zero_row = b.constant(np.zeros((heads, count, 1, chunk), dtype=np.float16))
 
-    def triangular_mask(x, *, strict=False):
+    def triangular_mask(x, *, strict=False, site):
+        strategy, reason = b.gdn_copy_strategy("triangular_mask", x)
+        if strategy == "gather":
+            from .ge_indexed_copy import triangular_mask_gather
+            name = f"__gdn_copy/mask_{b.gdn_copy_report['counts']['total']}"
+            result = triangular_mask_gather(b.g, x, strict=strict, name=name)
+            return b.record_gdn_copy("triangular_mask", (x,), result, strategy, reason,
+                                     strict=strict, site=site)
         # These masks are compile-time lower triangles. Slice and concatenate
         # retained values with positive zeros, preserving NaN/Inf and signed
         # zero semantics without a BOOL Select/CastT path or arithmetic masking.
@@ -172,14 +214,23 @@ def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None):
             if kept < chunk:
                 parts.append(b.slice(zero_row, -1, 0, chunk - kept))
             rows.append(b.cat(parts, -1))
-        return b.cat(rows, -2)
+        return b.record_gdn_copy("triangular_mask", (x,), b.cat(rows, -2), strategy, reason,
+                                 strict=strict, site=site)
 
-    diff = b.op("sub", b.view(decay, (heads, count, chunk, 1)),
-                b.view(decay, (heads, count, 1, chunk)), shape=(heads, count, chunk, chunk))
-    decay_mask = triangular_mask(diff)
-    decay_mask = triangular_mask(b.op("exp", decay_mask))
+    left = b.view(decay, (heads, count, chunk, 1))
+    right = b.view(decay, (heads, count, 1, chunk))
+    strategy, reason = b.gdn_copy_strategy("outer_sub", left, right)
+    if strategy == "gather":
+        from .ge_indexed_copy import outer_sub_gather
+        diff = outer_sub_gather(b.g, left, right,
+                               name=f"__gdn_copy/outer_sub_{b.gdn_copy_report['counts']['total']}")
+    else:
+        diff = b.op("sub", left, right, shape=(heads, count, chunk, chunk))
+    b.record_gdn_copy("outer_sub", (left, right), diff, strategy, reason)
+    decay_mask = triangular_mask(diff, site="before_exp")
+    decay_mask = triangular_mask(b.op("exp", decay_mask), site="after_exp")
     attn = b.op("matmul", k_beta, key, shape=diff.shape, transpose_a=False, transpose_b=True)
-    attn = b.op("neg", triangular_mask(b.op("mul", attn, decay_mask), strict=True))
+    attn = b.op("neg", triangular_mask(b.op("mul", attn, decay_mask), strict=True, site="before_neg"))
     for i in range(1, chunk):
         row = b.slice(b.slice(attn, -2, i, 1), -1, 0, i)
         sub = b.slice(b.slice(attn, -2, 0, i), -1, 0, i)
@@ -338,8 +389,11 @@ def _config(config, draft, sequence_length):
     return c
 
 
-def build_target(config, draft_config, sequence_length, *, head_chunk_rows=16, expert_dispatch="static"):
+def build_target(config, draft_config, sequence_length, *, head_chunk_rows=16, expert_dispatch="static",
+                 gdn_indexed_copy="native", gdn_copy_report=None):
     """Construct both target ABI outputs without importing a tensor framework."""
+    if not isinstance(gdn_indexed_copy, str) or gdn_indexed_copy not in {"native", "gather"}:
+        raise ValueError("gdn_indexed_copy must be native or gather")
     c = _config(config, draft_config, sequence_length)
     if expert_dispatch not in {"static", "selected"}:
         raise ValueError("direct GE expert_dispatch must be static or selected")
@@ -349,7 +403,7 @@ def build_target(config, draft_config, sequence_length, *, head_chunk_rows=16, e
         raise ValueError("head_chunk_rows must be a positive integer")
     s, h = sequence_length, c["hidden_size"]
     graph = Graph("target")
-    b = _Builder(graph)
+    b = _Builder(graph, gdn_indexed_copy=gdn_indexed_copy, gdn_copy_report=gdn_copy_report)
     ids = graph.input("input_ids", (1, s), "int32")
     attention = graph.input("attention_mask", (1, s), "int32")
     table = graph.weight("target.embed_tokens.weight", (c["vocab_size"], h))

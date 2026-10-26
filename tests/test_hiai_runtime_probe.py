@@ -78,7 +78,7 @@ def _args(previous, *extra):
                                      "--output", str(previous["output"]), *extra])
 
 
-def _transport(monkeypatch, previous, *, mutation=None, fail=False, failed_cases=()):
+def _transport(monkeypatch, previous, *, mutation=None, fail=False, failed_cases=(), hilog_warning=False):
     calls = []
 
     def run(output, runner, libraries, records, **kwargs):
@@ -88,6 +88,10 @@ def _transport(monkeypatch, previous, *, mutation=None, fail=False, failed_cases
         assert [row["name"] for row in records] == previous.get("transport_cases", list(probe.CASE_NAMES))
         result = {"status": "TRANSPORT_COMPLETE", "cases": {}, "board_cleanup": "REMOVED",
                   "serial": "fixture-device", "hdc_server": "127.0.0.2:8790"}
+        if hilog_warning:
+            result.update(board_cleanup="RETAINED", board_root="/data/local/tmp/fixture-retained",
+                          hilog={"status": "INCOMPLETE", "error": "fixture missing HiLog stderr",
+                                 "local_evidence_only": [{"path": "raw-shared-private-log"}]})
         for record in records:
             folder = output / "board" / record["name"]
             folder.mkdir(parents=True)
@@ -432,6 +436,31 @@ def test_replay_all_new_dependency_blocker_never_runs_baseline_or_hdc(replay, mo
     assert report["arms"][0]["status"] == "BLOCKED"
     assert len(report["arms"][0]["cases"]) == 6
     assert all(row["load"] == row["run"] == row["numerical"] == "NOT_RUN" for row in report["arms"][0]["cases"])
+
+
+@pytest.mark.parametrize('replay_all', [False, True])
+def test_final_hilog_warning_preserves_completed_replay(previous, monkeypatch, replay_all):
+    if replay_all:
+        _refresh(monkeypatch, previous)
+        previous['transport_cases'] = [row['name'] for row in previous['manifest']['cases']]
+    transport = _transport(monkeypatch, previous, hilog_warning=True)
+    assert probe.run(_args(previous, *(['--replay-all'] if replay_all else []))) == 0
+    report = json.loads((previous['output'] / 'runtime-comparison.json').read_text())
+    prefix = 'REPLAY' if replay_all else 'COMPARISON'
+    assert report['status'] == prefix + '_COMPLETE_WITH_DIAGNOSTIC_WARNINGS'
+    assert len(transport) == (1 if replay_all else 2)
+    for arm in report['arms']:
+        assert arm['status'] == 'COMPLETE_WITH_DIAGNOSTIC_WARNINGS'
+        assert arm['board_transport_status'] == 'TRANSPORT_COMPLETE'
+        assert arm['board_transport']['board_cleanup'] == 'RETAINED'
+        assert arm['board_diagnostics']['hilog']['status'] == 'INCOMPLETE'
+        assert all(case['placement'] == 'UNVERIFIED' for case in arm['cases'])
+    assert all(case['load'] == case['run'] == case['numerical'] == 'PASSED'
+               for case in report['arms'][-1]['cases'])
+    text = (previous['output'] / 'runtime-comparison.txt').read_text()
+    assert 'diagnostic warning: HiLog INCOMPLETE; fixture missing HiLog stderr' in text
+    assert 'remote evidence retained: /data/local/tmp/fixture-retained' in text
+    assert 'raw-shared-private-log' not in json.dumps(report)
 
 
 @pytest.mark.parametrize("fault", ["unsafe-compiled", "unsafe-skipped", "plus-name", "duplicate", "not-object", "invalid-status", "no-compiled", "missing-model", "tampered-extra"])

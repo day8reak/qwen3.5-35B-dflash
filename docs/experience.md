@@ -427,3 +427,16 @@ MoE整数查表及索引操作仍含CPU分区，完整路由两臂均NPU1/CPU1�
 新增回放`--start-at CASE`，要求`--replay-all`与原批次COMPILED起点，按manifest顺序选取含起点的后缀。用户本例只需补跑19项，不重编42个OMC。之前编译成功的23项列为excluded_before_start，不复制、不上传、不继承PASS；原编译失败项单列NOT_RETRIED。仍要求新输出目录，保留旧证据。原manifest、选中载荷、native donor/DDK身份和调用前后快照校验保持；本次selection与原source_selection分开记录。传输中断不自动重连/重启/杀进程，也不通过忽略哈希或放宽比较继续。
 
 86项主机回放回归通过，4段文档shell通过bash -n；43项记录和19项后缀核对通过。首轮仅旧CLI允许选项断言未包含新参数导致失败，修正测试预期后全部通过。独立审查覆盖源顺序、编译失败分离、报告counts、源不可变与donor验证，没有阻塞。经验固化在模型工具和回归，不修改共享技能或工具链；本地未运行内部OMG/HDC。详见`specs/hiai-replay-start-at-verification.json`。
+
+
+## 2026-10-26：完整探针回传后分离日志故障并接入GDN复制
+
+run：`20261026T081958Z-4068-1d4a82`。用户全量回放42个已编译案例，Load、Process及原数值比较全部通过；唯一未回放项是CastT编译失败。末尾`hilog.stderr`回收缺失使旧工具标记INFRASTRUCTURE_FAILED，但案例结果已完整回收，不应要求再跑42项。报告仍保留原状态，新增完整回传观察，并保留此前23项通过、19项未完成的断连历史；用户原始归档与版本未独立获取。此次缺失文件是否为空、HDC回收失败的原因都未确定。
+
+收尾逻辑仅将全部必需案例结果校验之后的HiLog异常分为INCOMPLETE/诊断警告，保留远端目录；不伪造空日志，不削弱输出/哈希/退出码或cleanup检查，不扩大归档中的原始共享日志范围。主机fake HDC测试重现空stderr回收未落地这一种情况，但不把该模拟当成用户故障根因。已有42项证据无需为这项工具修复重跑。
+
+完整批次支持判断没有改变：路由Gather仍含CPU分区，TopK/ArgMax布局也未消除CPU。RoPE动态输入探针与整图常量输入不同，位置INT32→FP16探针与整图mask的INT32→BOOL不同，不能仅按算子名推广。本轮只把此前四个已通过的GDN Gather合同接入显式`--gdn-indexed-copy gather`，目标匹配FP16[2,1,64,64]三角复制及对应outer Sub。其他形状保留native；默认图和描述型C++与798a71e字节一致。tiny替换9个mask和3个Sub构造，加入15个Gather；保留Exp前后两mask、Neg前严格mask、原Sub次序和一次FP16算术，以及后续递推。source9mask与OMG6Concat候选不能直接按数推算分区。
+
+每图增加哈希绑定的gdn-copy-lowering报告，AIR/OMC模式与计数前后校验。完整tiny target/draft在1/3/8有效token的输出位级一致；GDN序列8/64输出及最终状态位级一致。组合归约421/10、row Mul19/0的recipe结构不变，补充三个开关组合的双图数值投影，用原FP16门槛。共406个不同主机测试最终通过、64段文档shell语法通过；初始失败仅涉及测试fixture权重路径、scan也包含Concat64的断言范围及manifest顺序预期，已修正并复测。两个独立只读审查无阻塞。证据见`specs/gdn-copy-model-verification.json`。
+
+当前入口改为复用原prepared/reference，在新目录一次导出、拒绝CPU回退的编译、正式runner构建和execution-only；不要求重复探针，也不承诺新的完整图已低于9分区。内部OMG、设备执行及完整模型精度/性能未在本地运行。经验固化于模型代码、测试和报告，无共享技能/DDK/库策略变更；执行优先、精度后置未豁免和最终DFlash至少2倍目标保持。

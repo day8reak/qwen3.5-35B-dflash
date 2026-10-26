@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "run_id": "20261026T081958Z-4068-1d4a82",
+  "baseline_commit": "798a71ef627e0c11fac0c21594b85109b96616b6",
+  "status": "HOST_VALIDATED_FULL_GRAPH_VENDOR_AND_BOARD_PENDING",
+  "user_evidence": "specs/remaining-cpu-probes-user-report.json",
+  "changes": {
+    "gdn_indexed_copy": "Explicit native/gather construction mode; native default unchanged; only tested FP16 [2,1,64,64] masks and matching outer Sub inputs; other shapes retained with reason.",
+    "expected_tiny_counts": {
+      "target": {
+        "total": 12,
+        "replaced": 12,
+        "mask_replaced": 9,
+        "sub_replaced": 3,
+        "gather_nodes_added": 15
+      },
+      "draft": {
+        "total": 0,
+        "replaced": 0
+      }
+    },
+    "combined_lowerings": {
+      "target_fp16_reductions": 421,
+      "target_row_mul": 19,
+      "draft_fp16_reductions": 10,
+      "draft_row_mul": 0
+    },
+    "artifact_binding": "gdn-copy-lowering.json is a hashed construction file; AIR/OMC policy and per-graph summaries verified before and after OMG. Old manifests without this policy remain supported.",
+    "hilog": "After required case payload verification, optional final HiLog failure records INCOMPLETE, warning status and retained remote directory. Required payload/hash/exit/cleanup failures remain hard failures. No fabricated empty file, historical report rewrite or replay required."
+  },
+  "validation": {
+    "distinct_host_tests_passed": 406,
+    "results": [
+      {
+        "xml": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T081958Z-4068-1d4a82/pytest-gdn.xml",
+        "sha256": "eda8238ffe0bf9ce78cb92a299ed704a01ce8b24a5a8005dfc7a133c73d43c19",
+        "tests": 90,
+        "failures": 2
+      },
+      {
+        "xml": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T081958Z-4068-1d4a82/pytest-gdn-final.xml",
+        "sha256": "f8241e2b8c8601f1ce4de6e977e10eb78faa17e90f46ce3a9dcc00bad98917b3",
+        "tests": 15,
+        "failures": 0
+      },
+      {
+        "xml": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T081958Z-4068-1d4a82/pytest-export-gdn.xml",
+        "sha256": "75fed276fd0c84d5d9beecb3d453eabb510f76e2cc17a9172cab84e15740212d",
+        "tests": 139,
+        "failures": 0
+      },
+      {
+        "xml": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T081958Z-4068-1d4a82/pytest-combined-gdn.xml",
+        "sha256": "ce3c270262a2ba227e50c445cc8fb34e51f4c491332a95bf2dbbb58a125c8cf5",
+        "tests": 3,
+        "failures": 0
+      },
+      {
+        "xml": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261026T081958Z-4068-1d4a82/hilog-warning-tests-2.xml",
+        "sha256": "c767bbec350ef7dc430c91e2764db0f5be0e8545563df020663eaf405433f139",
+        "tests": 176,
+        "failures": 0
+      }
+    ],
+    "final_failures": 0,
+    "initial_fixture_failures": "GDN tests needed actual weight paths and a shape-scoped Concat64 assertion (scan still uses Concat64). Replay warning test needed source-manifest order. Fixed assertions; final affected cases passed.",
+    "numerical_scope": "Complete tiny neutral IR GDN-copy candidate matches native target features/Top1 and draft Top1 bitwise for 1/3/8 valid tokens; GDN output/final state bits match at sequence8/64. Combined test embeds actual emitted reduction/row-Mul recipes plus GDN copy IR into full tiny pair with unchanged FP16 comparison threshold; not serialized AIR/OMC execution.",
+    "default_byte_identity": {
+      "baseline_commit": "798a71ef627e0c11fac0c21594b85109b96616b6",
+      "scope": "tiny target default graph and descriptor-only inline C++; no vendor or device execution",
+      "default_graph_pickle_identical": true,
+      "default_cpp_bytes_identical": true,
+      "graph_sha256": "ff78b9e1fd4985c29086c2999fbde162ad089f813a0d86f0165377a7e9db92b3",
+      "cpp_sha256": "e3b4eb5eb65dc1d40f7e49cccd79c21ee04eadb1a53af305deedb5cef55c7898"
+    },
+    "shell_snippets_bash_n": 64
+  },
+  "reviews": [
+    "Independent read-only HiLog error/status/archive review: no blockers; required evidence stays strict.",
+    "Independent read-only GDN shape/semantics/default/ABI/report-binding review: no blockers; added combined numerical projection after coverage suggestion."
+  ],
+  "experience_audit": {
+    "captured_in": "docs/experience.md",
+    "executable_checks": "Missing final HiLog versus required result failures; static GDN dtype/shape guards, original special-value copy tests, final states, full tiny outputs, unchanged defaults and hashed reports.",
+    "shared_skill_changes": "none; model-specific integration and tool reporting",
+    "unproven": [
+      "New full-graph OMG acceptance/partition count",
+      "New target/draft board execution",
+      "Actual runtime placement",
+      "Full model accuracy and DFlash >=2x speedup"
+    ]
+  },
+  "local_vendor_compile": "NOT_RUN",
+  "local_board_execution": "NOT_RUN",
+  "source_sha256": {
+    "model/qwen35_moe_dflash/compile.py": "c283abf4710fac727cd4bcc05a86476fc31df14899bb59c784bcfbfe2a5d65fa",
+    "model/qwen35_moe_dflash/ge_export.py": "3102717a70d4b715bdd5b20352897e71869364dfbb52f3842b3891d5fbdd5fb4",
+    "model/qwen35_moe_dflash/ge_indexed_copy.py": "cbae99677fc0e1a8d876e9b61e2085fa26ddf6bc40810749cb414ffb182cfab8",
+    "model/qwen35_moe_dflash/ge_target.py": "ce933f88bcd6d75888fdac24ea57d7048ccc99b32a1ad0f59152744b56cdb717",
+    "model/qwen35_moe_dflash/hiai_runtime_probe.py": "a81f95bd4066a576ff39fded46d98e91049d7ba530c665f0c6c139673c06a2aa",
+    "model/qwen35_moe_dflash/op_probe_hdc.py": "7f49f28ff848a13ebf385b4c2ba4ca87bca7bad14f70791dda48c44aead45a4c",
+    "model/qwen35_moe_dflash/op_probe_report.py": "21f8a8ae38bfaabcff9b97d60d35a57cc82c70105e717166964feffd33af07dd",
+    "targets/cpro/scripts/direct_model_air.py": "6e0a91cf6309fb59fc10db3b2cb0baa4044a1671fe483a9c40595f835cd4835f",
+    "tests/test_compiler_diagnostics.py": "e8636f5f00b0a618768ffb78195696f54bda4c3d7a4320461ea2f1ee4db07e94",
+    "tests/test_ge_export.py": "9795eafb4ac7cb8730c34a0680c86f1591d9ea7ff124152519afee64a9578413",
+    "tests/test_ge_reduction_pair.py": "6a98ddb2848774d96d7c661a8ad9f90c59a8c50acb9f5c54e82bd4ad93cf11b1",
+    "tests/test_hiai_runtime_probe.py": "3360fb20b644350e88f2d24e34e864d472ee40624dc6ca3859fe1104f4b67734",
+    "tests/test_op_probe_hdc.py": "e6a61cbb0b3aed8d139c96ba59cc7ba81bcac9ba19558b0f2d0b7e4fa3aa1824",
+    "tests/test_op_probe_report.py": "d25f3ef6f3cd8c92ded44fd93881a208bfc4b387804530c408c5f936a9e508e5",
+    "tests/test_ge_gdn_indexed_copy.py": "6233342563e935197722a44c498ec7237bb38abd9cea2aacefabc02ac7a8f1d4"
+  }
+}

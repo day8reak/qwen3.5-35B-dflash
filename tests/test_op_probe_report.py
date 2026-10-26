@@ -440,6 +440,26 @@ def test_reports_refuse_overwrite_without_modifying_existing_evidence(tmp_path):
     assert all(path.read_bytes() == value for path, value in before.items())
 
 
+def test_hilog_warning_summary_excludes_raw_diagnostic_evidence(tmp_path):
+    case, board, _ = _fixture(tmp_path)
+    (board / 'stdout').write_text('{"status":"EXECUTED"}')
+    (board / 'exitcode').write_text('0')
+    record = {'status': 'TRANSPORT_COMPLETE', 'board_cleanup': 'RETAINED',
+              'board_root': '/data/local/tmp/fixture-retained', 'cases': {},
+              'hilog': {'status': 'INCOMPLETE', 'error': 'missing HiLog stderr',
+                        'local_evidence_only': [{'path': 'raw-shared-private-log'}]}}
+    report = write_report(tmp_path, {'cases': [case], 'status': 'COLLECTED'}, record)
+    assert report['cases'][0]['numerical']['status'] == 'PASSED'
+    assert report['board_transport_status'] == 'TRANSPORT_COMPLETE'
+    assert report['board_diagnostics']['hilog'] == {'status': 'INCOMPLETE', 'error': 'missing HiLog stderr'}
+    text = (tmp_path / 'report.txt').read_text()
+    assert 'Diagnostic warning: HiLog INCOMPLETE; missing HiLog stderr' in text
+    assert 'Remote evidence retained: /data/local/tmp/fixture-retained' in text
+    with tarfile.open(tmp_path / 'results.tar.gz') as archive:
+        packaged = archive.extractfile('report.json').read()
+        assert b'raw-shared-private-log' not in packaged and b'INCOMPLETE' in packaged
+
+
 def test_text_report_distinguishes_compile_partition_from_runtime_placement(tmp_path):
     case, _, _ = _fixture(tmp_path)
     case['compile']['evidence'] = compile_evidence('partition type NPU:1, CPU:0, GPU:0, ISP:0.')

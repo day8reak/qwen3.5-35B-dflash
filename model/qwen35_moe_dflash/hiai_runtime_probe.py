@@ -372,6 +372,10 @@ def _combined_report(root, comparison):
             lines.append("  blocked: " + reason)
         if arm.get("error"):
             lines.append("  error: " + arm["error"])
+        hilog = arm.get("board_diagnostics", {}).get("hilog", {})
+        if hilog.get("status") == "INCOMPLETE":
+            lines.append("  diagnostic warning: HiLog INCOMPLETE; " + str(hilog.get("error", "")))
+            lines.append("  remote evidence retained: " + str(arm["board_transport"].get("board_root", "unknown")))
         for case in arm.get("cases", []):
             partition = case.get("compiler_partition")
             partition_text = (",".join(f"{key}={partition['counts'][key]}" for key in ("NPU", "CPU", "GPU", "ISP"))
@@ -539,7 +543,8 @@ def run(args):
                 validated["snapshot"].verify()
                 frozen.verify()
                 manifest["status"] = "COLLECTED"
-                arm["status"] = "COMPLETE"
+                arm["status"] = ("COMPLETE_WITH_DIAGNOSTIC_WARNINGS"
+                                 if board.get("hilog", {}).get("status") == "INCOMPLETE" else "COMPLETE")
             except Exception as error:
                 failed = True
                 arm.update(status="INFRASTRUCTURE_FAILED", error=f"{type(error).__name__}: {error}")
@@ -550,6 +555,7 @@ def run(args):
                 arm["cases"] = [_case_summary(row, row["runtime"], row["numerical"]["status"]) for row in report["cases"]]
                 arm["board_transport_status"] = report["board_transport_status"]
                 arm["board_transport"] = report["board_transport"]
+                arm["board_diagnostics"] = report["board_diagnostics"]
                 arm["report"] = str((arm_root / "report.json").relative_to(root))
             if failed:
                 break
@@ -559,6 +565,9 @@ def run(args):
     finally:
         comparison["status"] = ("INFRASTRUCTURE_FAILED" if failed else
                                 "CANDIDATE_BLOCKED" if blockers else "REPLAY_COMPLETE" if args.replay_all else "COMPARISON_COMPLETE")
+        if not failed and not blockers and any(arm.get("status") == "COMPLETE_WITH_DIAGNOSTIC_WARNINGS"
+                                              for arm in comparison["arms"]):
+            comparison["status"] += "_WITH_DIAGNOSTIC_WARNINGS"
         _combined_report(root, comparison)
         print(f"Runtime comparison: {root / 'runtime-comparison.txt'}", flush=True)
         print(f"Share results: {root / 'results.tar.gz'}", flush=True)

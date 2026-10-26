@@ -25,7 +25,11 @@ args = args[4:]
 if args[:2] == ['file', 'send']:
     shutil.copyfile(args[2], translated(args[3]))
 elif args[:2] == ['file', 'recv']:
+    if mode == 'hilog-missing-stderr' and args[2].endswith('/hilog.stderr'):
+        sys.exit(0)  # HDC claims success but never creates the received file.
     shutil.copyfile(translated(args[2]), args[3])
+    if mode == 'hilog-corrupt' and args[2].endswith('/hilog.txt'):
+        with open(args[3], 'ab') as f: f.write(b'corrupt')
     if ((mode == 'corrupt-output' or (mode == 'corrupt-later' and '/cases/later/' in args[2]))
             and args[2].endswith('/output_0.bin')):
         with open(args[3], 'ab') as f: f.write(b'corrupt')
@@ -245,10 +249,10 @@ def test_keep_board_preserves_inputs_outputs_and_scripts(case, tmp_path, monkeyp
 
 
 @pytest.mark.parametrize('mode, expected', [
-    ('corrupt-output','SHA256'), ('hilog-argument','CODE -31'), ('owner-mismatch','cleanup-board'),
+    ('corrupt-output','SHA256'), ('owner-mismatch','cleanup-board'),
     ('no-marker','missing unique remote exit marker'),
 ])
-def test_transport_and_diagnostic_failures_never_clean_remote(case, tmp_path, monkeypatch, mode, expected):
+def test_required_transport_and_cleanup_failures_remain_hard(case, tmp_path, monkeypatch, mode, expected):
     monkeypatch.setenv('FAKE_MODE', mode)
     with pytest.raises(RuntimeError, match=expected):
         run_board(**case)
@@ -262,6 +266,42 @@ def test_transport_and_diagnostic_failures_never_clean_remote(case, tmp_path, mo
     if mode=='corrupt-output':
         assert not (case['output']/'board/good/output_0.bin').exists()
         assert (case['output']/'board/good/output_0.bin.received').exists()
+
+
+@pytest.mark.parametrize('mode, expected', [
+    ('hilog-missing-stderr', 'without retrieving'), ('hilog-argument', 'CODE -31'),
+    ('hilog-corrupt', 'SHA256'),
+])
+def test_final_hilog_failure_is_warning_and_retains_verified_case_results(case, tmp_path, monkeypatch, mode, expected):
+    import tarfile
+    from qwen35_moe_dflash.op_probe_report import write_report
+
+    records = _prepare_report_records(case)
+    monkeypatch.setenv('FAKE_MODE', mode)
+    board = run_board(**case)
+    assert board['status'] == 'TRANSPORT_COMPLETE' and board['native_failures'] == 1
+    assert board['hilog']['status'] == 'INCOMPLETE' and expected in board['hilog']['error']
+    assert board['board_cleanup'] == 'RETAINED'
+    assert (tmp_path/'fake-board/.qwen35-hdc-owner').is_file()
+    assert json.loads((case['output']/'board/result.json').read_text()) == board
+    assert not (case['output']/'board/failure.json').exists()
+    calls = list(map(json.loads, (tmp_path/'calls.jsonl').read_text().splitlines()))
+    assert not any('rm -rf' in ' '.join(row) for row in calls)
+    if mode == 'hilog-missing-stderr':
+        assert (tmp_path/'fake-board/hilog.stderr').stat().st_size == 0
+        assert not (case['output']/'board/_evidence/hilog.stderr').exists()
+        assert not (case['output']/'board/_evidence/hilog.stderr.received').exists()
+    report = write_report(case['output'], {'status': 'COLLECTED', 'cases': records})
+    rows = {row['name']: row for row in report['cases']}
+    assert rows['good']['numerical']['status'] == rows['later']['numerical']['status'] == 'PASSED'
+    assert rows['bad']['load'] == 'FAILED'
+    assert report['board_diagnostics']['hilog']['status'] == 'INCOMPLETE'
+    assert 'Diagnostic warning: HiLog INCOMPLETE' in (case['output']/'report.txt').read_text()
+    assert all(row['placement'] == 'UNVERIFIED' for row in rows.values())
+    with tarfile.open(case['output']/'results.tar.gz') as archive:
+        assert not any('_evidence' in name or '/calls/' in name for name in archive.getnames())
+        assert not any(b'unrelated-private-entry' in archive.extractfile(member).read()
+                       for member in archive.getmembers() if member.isfile())
 
 
 def test_remote_timeout_retains_owned_directory(case, tmp_path, monkeypatch):

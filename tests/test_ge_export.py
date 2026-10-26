@@ -87,9 +87,10 @@ def fake_ge(tmp_path):
 
 @pytest.mark.parametrize("fp16_reductions", ["native", "matmul"])
 @pytest.mark.parametrize("fp16_row_mul", ["native", "compact"])
+@pytest.mark.parametrize("gdn_indexed_copy", ["native", "gather"])
 @pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize("dispatch", ["static", "selected"])
-def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, external, dispatch, fp16_reductions, fp16_row_mul):
+def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, external, dispatch, fp16_reductions, fp16_row_mul, gdn_indexed_copy):
     from qwen35_moe_dflash.compile import compile_air
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
     prepared = tmp_path / "prepared"
@@ -112,26 +113,31 @@ def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, extern
         kwargs["stdout"].write("mock tool log\n")
     monkeypatch.setattr(subprocess, "run", tool)
     manifest = ge_export.export_pair(prepared, tmp_path / "air", ge, fp16_reductions=fp16_reductions,
-                                     fp16_row_mul=fp16_row_mul)
+                                     fp16_row_mul=fp16_row_mul, gdn_indexed_copy=gdn_indexed_copy)
     assert manifest["status"] == "EXPORTED" and manifest["abi_version"] == 2
     assert manifest["pipeline"][0] == "ge-cpp" and manifest["quantization"] is None
     assert manifest["expert_dispatch"] == dispatch
     assert manifest["expert_execution"] == plan["expert_execution"]
     assert manifest["fp16_reductions"] == fp16_reductions
     assert manifest["fp16_row_mul"] == fp16_row_mul
+    assert manifest["gdn_indexed_copy"] == gdn_indexed_copy
     assert (prepared / "prepared.json").read_bytes() == original_prepared
     assert manifest["source"]["fp16_payload_sha256"] == ge_export.weight_identity(plan["weights"])
     for graph in manifest["graphs"]:
         assert bool(len(graph["files"]) > 1) == external
         construction = graph["construction_files"]
         assert {Path(item["path"]).name for item in construction} == {
-            f"{graph['name']}.cpp", "graph.recipe", "constants.bin", "reduction-lowering.json", "row-mul-lowering.json"}
+            f"{graph['name']}.cpp", "graph.recipe", "constants.bin", "reduction-lowering.json",
+            "row-mul-lowering.json", "gdn-copy-lowering.json"}
         report = json.loads((tmp_path / "air" / graph["name"] / "reduction-lowering.json").read_text())
         assert graph["reduction_lowering"] == {"mode": fp16_reductions, "counts": report["counts"]}
         assert bool(report["replaced"]) == (fp16_reductions == "matmul")
         row_report = json.loads((tmp_path / "air" / graph["name"] / "row-mul-lowering.json").read_text())
         assert graph["row_mul_lowering"] == {"mode": fp16_row_mul, "counts": row_report["counts"]}
         assert row_report["counts"]["replaced"] == (19 if fp16_row_mul == "compact" and graph["name"] == "target" else 0)
+        copy_report = json.loads((tmp_path / "air" / graph["name"] / "gdn-copy-lowering.json").read_text())
+        assert graph["gdn_copy_lowering"] == {"mode": gdn_indexed_copy, "counts": copy_report["counts"]}
+        assert copy_report["counts"]["replaced"] == (12 if gdn_indexed_copy == "gather" and graph["name"] == "target" else 0)
         for key, item in plan["weights"].items():
             ge_export.checked_file(prepared, item)
             ge_export.checked_file(tmp_path / "air", item)
@@ -143,21 +149,24 @@ def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, extern
     assert result["expert_execution"] == plan["expert_execution"]
     assert result["fp16_reductions"] == fp16_reductions
     assert result["fp16_row_mul"] == fp16_row_mul
+    assert result["gdn_indexed_copy"] == gdn_indexed_copy
     assert [g["reduction_lowering"] for g in result["graphs"]] == [g["reduction_lowering"] for g in manifest["graphs"]]
     assert [g["row_mul_lowering"] for g in result["graphs"]] == [g["row_mul_lowering"] for g in manifest["graphs"]]
+    assert [g["gdn_copy_lowering"] for g in result["graphs"]] == [g["gdn_copy_lowering"] for g in manifest["graphs"]]
     assert result["graphs"][0]["output_shapes"] == [[1, 8], [1, 8, 32]]
     assert result["graphs"][1]["output_shapes"] == [[1, 3]]
     assert plan["unique_weight_bytes"] > 0
 
 
-@pytest.mark.parametrize("policy", ["fp16_reductions", "fp16_row_mul"])
+@pytest.mark.parametrize("policy", ["fp16_reductions", "fp16_row_mul", "gdn_indexed_copy"])
 def test_invalid_lowering_mode_fails_before_reading_prepared_or_creating_output(tmp_path, policy):
     with pytest.raises(ValueError, match=policy):
         ge_export.export_pair(tmp_path / "missing", tmp_path / "air", tmp_path / "unused", **{policy: "fp32"})
     assert not (tmp_path / "air").exists()
 
 
-@pytest.mark.parametrize("option,choices", [("--fp16-reductions", "native,matmul"), ("--fp16-row-mul", "native,compact")])
+@pytest.mark.parametrize("option,choices", [("--fp16-reductions", "native,matmul"), ("--fp16-row-mul", "native,compact"),
+                                           ("--gdn-indexed-copy", "native,gather")])
 def test_direct_export_cli_accepts_opt_in_mode_without_loading_model(tmp_path, option, choices):
     repo = Path(__file__).resolve().parents[1]
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", AI_RUN_DIR=str(tmp_path))
@@ -181,10 +190,13 @@ def test_default_export_retains_native_reductions(tmp_path, monkeypatch):
     result = ge_export.export_pair(tmp_path / "prepared", tmp_path / "air", fake_ge(tmp_path))
     assert result["fp16_reductions"] == "native"
     assert result["fp16_row_mul"] == "native"
+    assert result["gdn_indexed_copy"] == "native"
     for graph in result["graphs"]:
         for filename in ("reduction-lowering.json", "row-mul-lowering.json"):
             report = json.loads((tmp_path / "air" / graph["name"] / filename).read_text())
             assert report["mode"] == "native" and not report["replaced"]
+        copy_report = json.loads((tmp_path / "air" / graph["name"] / "gdn-copy-lowering.json").read_text())
+        assert copy_report["mode"] == "native" and copy_report["counts"]["replaced"] == 0
 
 
 def test_invalid_dispatch_rejected_before_output_or_tools(tmp_path, monkeypatch):
@@ -257,7 +269,7 @@ def test_log_excerpt_bounds_oversized_lines_and_ignores_error_catalog(tmp_path):
     assert ge_export._log_excerpt(tmp_path / "missing") == ""
 
 
-@pytest.mark.parametrize("filename", ["recipe/graph.recipe", "row-mul-lowering.json"])
+@pytest.mark.parametrize("filename", ["recipe/graph.recipe", "row-mul-lowering.json", "gdn-copy-lowering.json"])
 def test_export_detects_construction_mutation_during_tool_run(tmp_path, monkeypatch, filename):
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
     ge_export.prepare_pair(tmp_path / "prepared", tiny=True)

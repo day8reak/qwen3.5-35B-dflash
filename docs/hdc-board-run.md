@@ -17,11 +17,47 @@ hdc -t "$SN" -s "$BIP" ...
 
 <a id="当前双图采用可选-matmul-归约"></a>
 
-## 当前：一次运行剩余 CPU 候选批次
+## 当前：将已验证的 GDN Gather 复制接入整图
 
 最新`ge-row-chain-20261026-144144`已通过ReshapeFusion，19个row Mul CPU-only候选消失；已识别CPU-only计算从117减到98，主图仍因NPUCL分区数超过9回退，尚未执行双图。保留本次产物与诊断，不重新运行旧整图。
 
-当前按[remaining-cpu批次](cpu-gap-probes.md)一次compile-only，再用原`OP_PROBE_RUN`作native donor刷新probe并replay-all。完整50项包含GDN、MoE路由、TopK/ArgMax、RoPE和布尔掩码对照，覆盖最新报告的全部13类已识别CPU-only计算候选。GDN7项已有用户结果，当前加`--exclude-family gdn`只跑其余43项。只需一次提供编译和板端报告，不必逐组等待反馈。原HDC配置、candidate库策略与数值门槛保持。完整准确率与DFlash至少2倍仍待验证。
+用户重放[remaining-cpu批次](cpu-gap-probes.md)后，42个已编译案例全部通过Load、Process和原数值比较。唯一未上板的是`moe_cast_bool_roundtrip`，它在编译时失败。最后`hilog.stderr`回收失败导致旧脚本把整批标成`INFRASTRUCTURE_FAILED`，但42项结果已完整回收；无需为此重跑。新脚本将这种附加日志失败标为`INCOMPLETE`和`REPLAY_COMPLETE_WITH_DIAGNOSTIC_WARNINGS`，保留远端目录，不伪造日志或修改旧报告；必需结果/哈希/退出码失败仍中止。
+
+这批路由Gather、TopK/ArgMax布局与attention mask候选均未消除编译CPU分区，暂不替换。RoPE BMM/二维MatMul及原形位置Cast虽通过，但其输入/转换合同与整图相关节点不同，不据此改图。当前只接入此前4个已验证的GDN Gather候选，新增显式`--gdn-indexed-copy gather`，默认仍为`native`。它仅覆盖FP16 `[2,1,64,64]`三角掩码及对应outer Sub；其他形状保留原实现并报告原因。Exp前后两个普通掩码和Neg前的严格掩码均保留，Sub仍只做一次原FP16减法。权重、专家策略、GDN递推顺序与双图ABI不变。
+
+复用已有prepared和reference，在新目录一次运行以下链路；无需再跑算子批次：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
+export GE_GDN_MODEL_RUN="$AI_RUN_DIR/ge-gdn-model-$(date +%Y%m%d-%H%M%S)"
+
+python3 "$GE_MODEL_TOOL" export \
+  --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --fp16-reductions matmul --fp16-row-mul compact --gdn-indexed-copy gather \
+  --output "$GE_GDN_MODEL_RUN/air" &&
+python3 "$GE_MODEL_TOOL" compile \
+  --air "$GE_GDN_MODEL_RUN/air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_GDN_MODEL_RUN/omc" --reject-cpu-fallback &&
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$GE_GDN_MODEL_RUN/hiai-build" &&
+python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+  --omc "$GE_GDN_MODEL_RUN/omc" \
+  --runner "$GE_GDN_MODEL_RUN/hiai-build/build/qwen35_dflash_hiai" \
+  --reference "$GE_BOARD_RUN/reference.json" \
+  --output "$GE_GDN_MODEL_RUN/board" --execution-only
+```
+
+每图新增并哈希绑定`gdn-copy-lowering.json`，当前tiny预期target替换9个mask与3个outer Sub，draft为0；这些源图替换数不是最终分区数。已有两种lowering报告继续保留。编译失败或仍回退时，链路自动停在构建/上板之前，对同一产物做只读检查：
+
+```bash
+python3 "$GE_MODEL_TOOL" inspect-compile \
+  --air "$GE_GDN_MODEL_RUN/air" --omc "$GE_GDN_MODEL_RUN/omc" \
+  --graph target --output "$GE_GDN_MODEL_RUN/inspect-target"
+```
+
+若失败发生在draft，改`--graph draft`及新诊断目录。不要重复编译同一失败产物。新整图OMG分区和双图执行仍待现场验证；小图通过不能保证解除9分区上限。实际NPU位置、完整精度及DFlash至少2倍尚未验证。
 
 ## 历史：MatMul归约与row Mul compact双图复测
 
@@ -105,7 +141,7 @@ cat "$GE_ROW_CHAIN_INSPECT_RUN/report.txt"
 
 此模式沿用文件名 `benchmark.json`，但报告的 `mode` 是 `smoke`：强制 target 和 draft 各调用一次，将 target 特征传给 draft，保存两图 Top1 输出。即使 prompt 的下一 token 是 EOS，也会执行 draft。成功标为 `EXECUTION_COMPLETE`；`accuracy`、`performance` 为 `NOT_EVALUATED`，不产生 `comparison.json`。参考 JSON 仍用于身份和输入配置检查；其历史 PASS 不是本次板端精度结论。
 
-程序保留模型哈希、版本、张量数量、格式、大小和 token 范围检查。ND 描述允许原有尾部补1到四维，例如 `[1,S] → [1,S,1,1]`、`[1,S,F] → [1,S,F,1]`；源码另支持逻辑 rank3 `[a,b,c] → [1,a,b,c]`，使用运行库返回的描述初始化张量。新增规则仅扩展 rank3 特征，rank2 token 合同及宽度推导不变；仍不按元素总数放行任意布局。后续整图编译成功后需在新目录重建正式runner以取得这项兼容；当前remaining-cpu批次只刷新独立probe。成功和失败都会尝试回传 HiLog，日志缺失单独记录。
+程序保留模型哈希、版本、张量数量、格式、大小和 token 范围检查。ND 描述允许原有尾部补1到四维，例如 `[1,S] → [1,S,1,1]`、`[1,S,F] → [1,S,F,1]`；源码另支持逻辑 rank3 `[a,b,c] → [1,a,b,c]`，使用运行库返回的描述初始化张量。新增规则仅扩展 rank3 特征，rank2 token 合同及宽度推导不变；仍不按元素总数放行任意布局。后续整图编译成功后需在新目录重建正式runner以取得这项兼容；此前remaining-cpu批次只刷新独立probe。成功和失败都会尝试回传 HiLog，日志缺失单独记录。
 
 当前没有完整模型板端通过证据；这个命令用于取得实际加载/执行结果。去掉 `--execution-only` 后仍是下文的严格 benchmark + 参考比较。
 

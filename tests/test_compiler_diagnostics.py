@@ -94,7 +94,7 @@ def test_success_retains_reports_and_partition_dumps_off_board_payloads(fake_omg
         assert "subGraph fixture run by cl: CPUCL" in (folder / "omg.log").read_text()
 
 
-@pytest.mark.parametrize("policy", ["fp16_reductions", "fp16_row_mul"])
+@pytest.mark.parametrize("policy", ["fp16_reductions", "fp16_row_mul", "gdn_indexed_copy"])
 def test_unknown_lowering_mode_rejected_before_omg(fake_omg_case, tmp_path, policy):
     bundle, ddk = fake_omg_case
     path = bundle / "manifest.json"
@@ -109,6 +109,7 @@ def test_unknown_lowering_mode_rejected_before_omg(fake_omg_case, tmp_path, poli
 LOWERING_REPORTS = [
     ("fp16_reductions", "matmul", "reduction_lowering", "reduction-lowering.json"),
     ("fp16_row_mul", "compact", "row_mul_lowering", "row-mul-lowering.json"),
+    ("gdn_indexed_copy", "gather", "gdn_copy_lowering", "gdn-copy-lowering.json"),
 ]
 
 

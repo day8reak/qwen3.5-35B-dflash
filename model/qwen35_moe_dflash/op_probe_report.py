@@ -339,6 +339,9 @@ def write_report(root: Path, manifest, boardresult=None):
                           "numerical_passed": sum(r["numerical"]["status"] == "PASSED" for r in rows)},
               "board_transport_status": (boardresult or {}).get("status", "NOT_RUN"),
               "board_transport": {key: boardresult[key] for key in ("status", "stage", "error", "serial", "hdc_server", "firmware", "board_root", "board_cleanup", "library_search_paths") if key in boardresult},
+              "board_diagnostics": {"hilog": {key: boardresult["hilog"][key]
+                  for key in ("status", "command", "error", "scope", "deliverable_policy")
+                  if key in boardresult["hilog"]}} if "hilog" in boardresult else {},
               "manifest_status": manifest.get("status"), "manifest_error": manifest.get("error"),
               "limitations": ["Each result applies only to the tested shape, dtype, attributes and runtime.",
                               "Compile, load, execution, numerical agreement and NPU placement are separate checks.",
@@ -357,6 +360,10 @@ def write_report(root: Path, manifest, boardresult=None):
         lines.append("Probe families: " + ", ".join(f"{name}={count}" for name, count in report["probe_families"].items()))
     if report["board_transport"].get("error"):
         lines.append("Transport error: " + str(report["board_transport"]["error"]))
+    hilog = report["board_diagnostics"].get("hilog", {})
+    if hilog.get("status") == "INCOMPLETE":
+        lines.append("Diagnostic warning: HiLog INCOMPLETE; " + str(hilog.get("error", "")))
+        lines.append("Remote evidence retained: " + str(report["board_transport"].get("board_root", "unknown")))
     if report["manifest_error"]:
         lines.append("Workflow error: " + str(report["manifest_error"]))
     lines.extend(["", "case | compile | load | run | numerical | placement"])

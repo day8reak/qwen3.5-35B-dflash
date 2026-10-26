@@ -47,15 +47,24 @@ def configurations(*, tiny=False):
     return target, draft
 
 
-def build_pair(target_config, draft_config, sequence_length, *, expert_dispatch="static"):
+def build_pair(target_config, draft_config, sequence_length, *, expert_dispatch="static",
+               gdn_indexed_copy="native", gdn_copy_reports=None):
     from .ge_target import build_target
     from .ge_draft import build_draft
     config = Qwen35DFlashConfig.from_dict(draft_config)
     if (sequence_length < 2 or sequence_length + config.block_size > config.max_position_embeddings
             or sequence_length * config.feature_size * 2 > 2**32 - 1):
         raise ValueError("sequence length exceeds graph, RoPE or HIAI capacity")
-    graphs = [build_target(target_config, config, sequence_length, expert_dispatch=expert_dispatch),
+    target_copy_report = {}
+    graphs = [build_target(target_config, config, sequence_length, expert_dispatch=expert_dispatch,
+                           gdn_indexed_copy=gdn_indexed_copy, gdn_copy_report=target_copy_report),
               build_draft(config, sequence_length)]
+    if gdn_copy_reports is not None:
+        gdn_copy_reports.clear()
+        gdn_copy_reports.update(target=target_copy_report,
+                                draft={"schema_version": 1, "graph": "draft", "mode": gdn_indexed_copy,
+                                       "counts": {"total": 0, "replaced": 0, "retained": 0,
+                                                  "mask_replaced": 0, "sub_replaced": 0}, "entries": []})
     expected = [
         ([(1, sequence_length)] * 2, ["int32", "int32"],
          [(1, sequence_length), (1, sequence_length, config.feature_size)], ["int32", "float16"]),
@@ -215,12 +224,14 @@ def _logged(command, *, folder, env, log, timeout):
 
 
 def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, timeout_seconds=3600,
-                fp16_reductions="native", fp16_row_mul="native"):
+                fp16_reductions="native", fp16_row_mul="native", gdn_indexed_copy="native"):
     from .ge_cpp import emit_cpp
     if fp16_reductions not in {"native", "matmul"}:
         raise ValueError("fp16_reductions must be native or matmul")
     if fp16_row_mul not in {"native", "compact"}:
         raise ValueError("fp16_row_mul must be native or compact")
+    if gdn_indexed_copy not in {"native", "gather"}:
+        raise ValueError("gdn_indexed_copy must be native or gather")
     prepared = Path(prepared_dir).resolve()
     manifest_path = prepared / "prepared.json"
     plan = json.loads(manifest_path.read_text())
@@ -242,8 +253,10 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
     compiler = shutil.which(cxx)
     if compiler is None:
         raise FileNotFoundError(f"C++ compiler not found: {cxx}")
+    gdn_copy_reports = {}
     graphs = build_pair(plan["target_config"], plan["draft_config"], plan["sequence_length"],
-                        expert_dispatch=dispatch)
+                        expert_dispatch=dispatch, gdn_indexed_copy=gdn_indexed_copy,
+                        gdn_copy_reports=gdn_copy_reports)
     shapes = weight_shapes(graphs)
     if set(shapes) != set(plan["weights"]):
         raise ValueError("prepared weight set does not match target/draft graphs")
@@ -289,6 +302,7 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
                                        row_mul_report=row_mul_report))
             save_json(folder / "reduction-lowering.json", reduction_report)
             save_json(folder / "row-mul-lowering.json", row_mul_report)
+            save_json(folder / "gdn-copy-lowering.json", gdn_copy_reports[name])
             construction = files_under(folder, root)
             for item in construction:
                 checked_file(root, item)
@@ -327,7 +341,9 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
                             "reduction_lowering": {"mode": reduction_report["mode"],
                                                    "counts": reduction_report["counts"]},
                             "row_mul_lowering": {"mode": row_mul_report["mode"],
-                                                 "counts": row_mul_report["counts"]}})
+                                                 "counts": row_mul_report["counts"]},
+                            "gdn_copy_lowering": {"mode": gdn_copy_reports[name]["mode"],
+                                                  "counts": gdn_copy_reports[name]["counts"]}})
         for item in plan["weights"].values():
             checked_file(root, item)
         config = Qwen35DFlashConfig.from_dict(plan["draft_config"])
@@ -343,6 +359,7 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
                     "expert_dispatch": dispatch, "expert_execution": execution,
                     "fp16_reductions": fp16_reductions,
                     "fp16_row_mul": fp16_row_mul,
+                    "gdn_indexed_copy": gdn_indexed_copy,
                     "source": plan["source"], "pad_token_id": 0 if plan["tiny"] else 248044,
                     "eos_token_ids": [] if plan["tiny"] else [248044, 248046],
                     "export_root": str(root), "graphs": records, "external_weights": plan["external_weights"],
@@ -355,5 +372,6 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
         save_json(root / "failure.json", {"status": "FAILED", "stage": stage,
                                           "fp16_reductions": fp16_reductions,
                                           "fp16_row_mul": fp16_row_mul,
+                                          "gdn_indexed_copy": gdn_indexed_copy,
                                           "device_validation": "PENDING", "error": str(error)})
         raise

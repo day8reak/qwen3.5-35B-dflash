@@ -2,7 +2,9 @@
 
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
-2026-10-22 用户反馈 tiny target/draft 双图 AIR→OMC 编译成功。2026-10-26 的后续证据确认：旧 target OMC 在 OMG 主图分区时因 NPUCL 超过9个分区回退 CPU，板端恢复被 CPUCL 的 FP16 MatMul 检查拒绝。用户基于 `78d94ef` 重新导出后，新 target 的主图窗口 L91094–L127615 仍以分区超限回退结束。后续六个 MatMul 归约小图已全部通过 Load、Process 和数值检查；整图采用该归约后仍超限；九项布局探针已回传；row Mul整图修正后ReshapeFusion通过、19个Mul CPU-only候选消失，但主图仍分区超限。当前按[剩余CPU候选批次](cpu-gap-probes.md)一次验证所有剩余算子家族。
+2026-10-22 用户反馈 tiny target/draft 双图 AIR→OMC 编译成功。2026-10-26 的后续证据确认：旧 target OMC 在 OMG 主图分区时因 NPUCL 超过9个分区回退 CPU，板端恢复被 CPUCL 的 FP16 MatMul 检查拒绝。用户基于 `78d94ef` 重新导出后，新 target 的主图窗口 L91094–L127615 仍以分区超限回退结束。后续六个 MatMul 归约小图已全部通过 Load、Process 和数值检查；整图采用该归约后仍超限；九项布局探针已回传；row Mul整图修正后ReshapeFusion通过、19个Mul CPU-only候选消失，但主图仍分区超限。[剩余CPU候选批次](cpu-gap-probes.md)的后续完整回传见下。
+
+剩余43项探针现已回传：42项编译并完成板端数值比较，1项CastT编译失败；附加HiLog回收失败不需要重跑42项。当前按[整图GDN候选命令](hdc-board-run.md#当前将已验证的-gdn-gather-复制接入整图)复用prepared，显式叠加`--gdn-indexed-copy gather`。该开关仅改写已测FP16形状的三角复制与outer Sub，不改递推算术或权重。每图生成哈希绑定的`gdn-copy-lowering.json`，编译校验其mode/counts与manifest一致。默认`native`保留旧图，未测形状继续原实现。
 
 第1–4节保留首次生成流程和历史失败修复；当前现场无需重新 prepare 或生成参考。算子核查见 [兼容性记录](ge-operator-compatibility.md)。tiny 编译成功不表示完整35B权重、量化、内存或性能已经通过。
 
@@ -82,7 +84,7 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ### 内部 OMG 兼容性修正与重试
 
-**以下为历史失败及重建说明。当时的双图编译成功不代表板端加载成功；当前按第7节导出可选row Mul新图，保留原 prepared、专家模式及已导出的MatMul归约图。**
+**以下为历史失败及重建说明。当时的双图编译成功不代表板端加载成功；当前按页首链接导出GDN候选新图，保留原 prepared、专家模式及已导出的MatMul归约图。**
 
 此前失败日志（draft 进程 158383）已越过整数 Gather 的验证，最终在兼容性检查拒绝 `v12/Maximum`。它执行上下文位置的 `max(cumsum(context_valid)-1, 0)`，输入/输出是 INT32。前面的描述回显、ImportWarning 和缺少内置 kernel 库提示不是这条日志明确报告的最终失败原因。
 
@@ -296,7 +298,7 @@ python3 "$GE_MODEL_TOOL" export \
 
 每个 token 收集的两组专家权重合计为 `K × 3 × H × I × 2` 字节，35B 配置下为 48 MiB。这只是逻辑张量大小；整个静态图的调度、活跃期和峰值工作区未测，不能当作内存上界。全量专家权重仍然存在，FP16 完整模型的存储问题也未解决。候选支持最多 2048 个专家，以保证用 FP16 排序专家 ID 时不丢失整数精度。
 
-以下是后续可独立开展的 selected 结构实验，不是当前上板步骤；当前按第7节保留原 prepared 的专家模式。开展此实验时，在新目录生成 tiny 候选及独立参考，再导出编译，沿用已有 `AI_RUN_DIR`、`CANN_ROOT`、`CPRO_DDK_ROOT` 和 `CPRO_DDK_ID`：
+以下是后续可独立开展的 selected 结构实验，不是当前上板步骤；当前仍保留原 prepared 的专家模式。开展此实验时，在新目录生成 tiny 候选及独立参考，再导出编译，沿用已有 `AI_RUN_DIR`、`CANN_ROOT`、`CPRO_DDK_ROOT` 和 `CPRO_DDK_ID`：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -318,7 +320,7 @@ python3 "$GE_MODEL_TOOL" compile \
   --output "$GE_STRUCTURE_RUN/omc"
 ```
 
-每一步成功后再执行下一步。plan、prepared、AIR 和 OMC 的 manifest 都记录 `expert_dispatch`，export 按 prepared 的选择重建图；老 prepared 缺少该字段时沿用 static。全量旧算子复测仍可用 `probe_hdc_runtime.py --replay-all`，但它复用旧 OMC，不能代替本节新结构的 OMG/板端验证。正式双图上板入口使用探针已验证的候选部署；当前按第7节采用已通过小图的row Mul候选，并进入[重导出与只执行模式](hdc-board-run.md#当前双图采用可选-matmul-归约)，不切换到 selected。
+每一步成功后再执行下一步。plan、prepared、AIR 和 OMC 的 manifest 都记录 `expert_dispatch`，export 按 prepared 的选择重建图；老 prepared 缺少该字段时沿用 static。全量旧算子复测仍可用 `probe_hdc_runtime.py --replay-all`，但它复用旧 OMC，不能代替本节新结构的 OMG/板端验证。正式双图上板入口使用探针已验证的候选部署；当前采用已通过小图的GDN复制候选，并进入[重导出与只执行模式](hdc-board-run.md#当前双图采用可选-matmul-归约)，不切换到 selected。
 
 可选的主机 GDN 诊断入口为 `targets/cpro/scripts/diagnose_gdn_precision.py`，输出逐 chunk FP16/FP32 输出与状态误差。无输入时仅跑小型合成样例，不能确认真实模型的精度根因。当前优先上板执行，此诊断不作为前置步骤，也不改变部署 FP16。
 
@@ -327,16 +329,16 @@ python3 "$GE_MODEL_TOOL" compile \
 
 <a id="7-当前现场验证-matmul-归约候选"></a>
 
-## 7. 当前现场：GDN 掩码与广播减法探针
+## 7. 当前现场：GDN 复制整图候选与探针历史
 
 
-### 当前入口：一次验证所有剩余 CPU 候选
+### 当前入口：复用完整探针结果导出一次新图
 
-用户要求减少现场往返，当前使用[`--suite remaining-cpu`](cpu-gap-probes.md)，将7项GDN与MoE路由、TopK/ArgMax、RoPE、布尔掩码对照合并为50项。用户已回传GDN7项，当前加`--exclude-family gdn`只编译/回放其余43项，结果返回后再统一改整图。
+用户已回传GDN7项及其余43项：四个GDN Gather候选通过，其余42个已编译案例也完成数值比较。当前按[整图链路](hdc-board-run.md#当前将已验证的-gdn-gather-复制接入整图)导出带`--gdn-indexed-copy gather`的新候选；无需重复探针。以下保留候选设计及历史命令。
 
 <a id="gdn-indexed-copy-probes"></a>
 
-### GDN 子集说明（已包含在 remaining-cpu 批次）
+### 历史 GDN 子集说明（已包含在 remaining-cpu 批次）
 
 用户更新后重跑 `ge-row-chain-20261026-144144`，ReshapeFusion 已通过（fused 18 pairs），此前19个row Mul不再列为CPU-only计算候选；完整支持表15,747项，无重复或冲突，排除8,683项边界及7项角色未确定后，已识别CPU-only计算从117降至98。主图L150570仍超过9个NPUCL分区而回退；draft编译、新正式runner构建和上板未执行。支持候选数量不等于分区数量，也不是运行位置证明。`ge-row-chain-20261026-143421`那次相同早期错误已由用户确认漏了git pull，不作为807c063的有效复测。
 
@@ -353,7 +355,7 @@ python3 "$GE_MODEL_TOOL" compile \
 
 全部矩阵输出为`[2,1,64,64]`。mask输入含8192个不同且非零的有限FP16值，两个head数据不同；Gather索引最大8192，单mask索引32KiB。Sub输入仍为`[2,1,64,1]`和`[2,1,1,64]`，展开只复制数据。新helper限正静态rank4和输出最多1,048,576元素，不引入浮点索引或权重转换。
 
-下方保留7项子集的独立命令，仅用于需要单独复测时。当前请使用[完整remaining-cpu批次命令](cpu-gap-probes.md)，不必先执行下方命令：
+下方保留7项子集的独立命令，仅用于需要单独复测时。当前已有完整回传，请使用页首链接中的整图命令，不必执行下方命令：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -383,7 +385,7 @@ fi
 
 ### 历史：row Mul 整图适配与Reshape修正
 
-以下是已完成的复测过程；当前采用remaining-cpu批次，无需再次运行这组整图命令。
+以下是已完成的复测过程；当前采用页首链接中的GDN整图候选，无需再次运行这组旧整图命令。
 
 历史用户结果 `ge-row-mul-20261026-121239` 已导出target/draft，归约替换为421/10，row Mul替换为19/0；target的OMG在`ReshapeFusion`删除视图后报`graph_bypasser.cpp ByPassNode: PreCheck false`，退出1。该次未到主图分区检查，不能沿用上一轮“超过9分区”的失败分类；draft编译、runner构建和上板均未运行。更早的kernel库路径报错尚未证实是这次终止原因。
 
@@ -601,7 +603,7 @@ MatMul 和 Reduce 的累加顺序、舍入仍可能不同；六项按原容差�
 | `reduce_sum_gdn_matmul_k7` | `[2,1,7,7]`，axis=2 Sum，去掉归约维 | 非对齐短归约 |
 | `reduce_sum_gdn_matmul_k1` | `[2,1,1,1]`，axis=2 Sum，去掉归约维 | 长度1边界 |
 
-当时的小图复测命令如下，仅作历史复现。当前六项已通过，继续本节开头的可选row Mul整图流程；如果需要复现，保留原 `GE_REDUCE_MM_RUN`、原 `OP_PROBE_RUN`，仅新建结果目录：
+当时的小图复测命令如下，仅作历史复现。当前六项已通过，继续页首链接中的GDN整图流程；如果需要复现，保留原 `GE_REDUCE_MM_RUN`、原 `OP_PROBE_RUN`，仅新建结果目录：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -625,7 +627,7 @@ cat "$GE_REDUCE_MM_REPLAY_RUN/runtime-comparison.txt"
 
 ### 首次生成六项 MatMul 候选
 
-当前六项已完成编译、执行及数值检查，以下仅供首次生成或历史复现。当前现场不要运行或重设 `GE_REDUCE_MM_RUN`；执行本节开头的可选row Mul整图流程。首次生成需要 NumPy、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID` 和主机编译环境；`--compile-only` 不构建 runner，也不访问板端：
+当前六项已完成编译、执行及数值检查，以下仅供首次生成或历史复现。当前现场不要运行或重设 `GE_REDUCE_MM_RUN`；执行页首链接中的GDN整图流程。首次生成需要 NumPy、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID` 和主机编译环境；`--compile-only` 不构建 runner，也不访问板端：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -669,7 +671,7 @@ python3 "$GE_MODEL_TOOL" inspect-compile \
 | `reduce_sum_gdn_dropdims` | `[2,1,64,64]`，axis=2 Sum，直接去维 | NPU=0、CPU=1 |
 | `reduce_sum_gdn_keepdims` | 同输入及归约轴，保留维后 Reshape 为 `[2,1,64]` | NPU=1、CPU=1；ReduceSum 位置未确定 |
 
-以下仅保留当时的复现命令；当前执行本节开头的可选row Mul整图流程：
+以下仅保留当时的复现命令；当前执行页首链接中的GDN整图流程：
 
 ```bash
 export GE_REDUCE_PROBE_RUN="$AI_RUN_DIR/reduce-probe-$(date +%Y%m%d-%H%M%S)"
@@ -685,4 +687,4 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
 
 ### 明确修复后的重导出与上板流程
 
-row Mul周围的连续Reshape合并已通过用户复测，19个Mul退出CPU-only候选列表；主图仍超过9个NPUCL分区。保留现有整图及探针产物，按[remaining-cpu批次](cpu-gap-probes.md)验证50项剩余CPU候选对照。完整双图执行尚未打通，详细报告、清理行为和后续benchmark入口见[HDC指南](hdc-board-run.md#当前双图采用可选-matmul-归约)。
+row Mul周围的连续Reshape合并已通过用户复测，19个Mul退出CPU-only候选列表；主图仍超过9个NPUCL分区。保留现有整图及探针产物，按页首链接导出GDN候选新图；[remaining-cpu批次](cpu-gap-probes.md)已有完整回传。完整双图执行尚未打通，详细报告、清理行为和后续benchmark入口见[HDC指南](hdc-board-run.md#当前双图采用可选-matmul-归约)。

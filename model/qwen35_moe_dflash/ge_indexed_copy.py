@@ -1,9 +1,10 @@
-"""Bounded Gather copy candidates for probes, not production graph policy.
+"""Bounded Gather copies shared by probes and the opt-in target GDN policy.
 
 Masking selects existing FP16 elements or one positive-zero sentinel. Outer
 subtraction copies each operand to the broadcast result shape before one FP16
 Sub. Neither construction introduces arithmetic into its copy/mask steps.
-Compiler support and device execution must be checked for each tested shape.
+The target policy separately restricts integration to previously tested shapes;
+compiler support and device execution remain specific to the compiled graph.
 """
 from __future__ import annotations
 
