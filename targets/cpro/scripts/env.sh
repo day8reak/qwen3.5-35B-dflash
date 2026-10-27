@@ -17,16 +17,34 @@ _qwen35_load_env() (
   required=(REPO_DIR AI_RUN_DIR MODEL_PYTHON CANN_ROOT CPRO_DDK_ROOT CPRO_DDK_ID
             OHOS_NATIVE_SDK HIAI_INCLUDE_DIR HIAI_LIBRARIES HDC BIP SN)
   optional=(BOARD_HIAI_LIB_DIR QWEN35_TARGET_WEIGHTS QWEN35_DRAFT_WEIGHTS)
+  configured=(REPO_DIR AI_RUN_DIR CANN_ROOT CPRO_DDK_ID OHOS_NATIVE_SDK BIP SN)
+  declare -A descriptions=(
+    [REPO_DIR]='项目源码目录；默认使用当前脚本所在仓库'
+    [AI_RUN_DIR]='运行产物根目录；新批次自动建子目录，必须在仓库外'
+    [CANN_ROOT]='主机CANN目录：提供GE头文件和libgraph，用于生成AIR；不是目标DDK'
+    [CPRO_DDK_ID]='所选DDK的准确版本，写入编译及上板记录；不能从目录名猜测'
+    [OHOS_NATIVE_SDK]='HarmonyOS native SDK目录：包含交叉编译器和sysroot，用于构建ARM64 runner'
+    [BIP]='HDC服务端的IP:端口；不是默认使用手机IP'
+    [SN]='通过该HDC服务端连接的设备序列号'
+    [CPRO_DDK_ROOT]='目标DDK根目录；source vendor脚本后自动读取DDK_PATH，可省略'
+    [MODEL_PYTHON]='模型Python可执行文件；默认使用已激活conda环境的bin/python3'
+    [HDC]='HDC可执行文件；默认从PATH查找hdc'
+  )
+  ddk_from_environment=${DDK_PATH:-${CPRO_DDK_ROOT:-}}
   if [[ ! -f $config ]]; then
     # Capture declared values when available; never invent a device or DDK ID.
     REPO_DIR=$repo
     AI_RUN_DIR=${AI_RUN_DIR:-"$repo-run"}
     MODEL_PYTHON=${MODEL_PYTHON:-${CONDA_PREFIX:+"$CONDA_PREFIX/bin/python3"}}
-    CPRO_DDK_ROOT=${CPRO_DDK_ROOT:-${DDK_PATH:-}}
+    CPRO_DDK_ROOT=$ddk_from_environment
     HDC=${HDC:-$(command -v hdc || true)}
     OHOS_NATIVE_SDK=${OHOS_NATIVE_SDK:-${OHOS_SDK:-}}
     HIAI_INCLUDE_DIR=${HIAI_INCLUDE_DIR:-auto}
     HIAI_LIBRARIES=${HIAI_LIBRARIES:-auto}
+    # Do not duplicate values supplied by an activated vendor/conda shell.
+    [[ -n ${DDK_PATH:-} ]] || configured+=(CPRO_DDK_ROOT)
+    [[ -n ${CONDA_PREFIX:-} ]] || configured+=(MODEL_PYTHON)
+    command -v hdc >/dev/null 2>&1 || configured+=(HDC)
     if [[ $config == "$repo/"* || $config == "$(realpath -m -- "$AI_RUN_DIR")/"* ]]; then
       printf '%s\n' 'cpro-env: keep the private config outside the repository and AI_RUN_DIR' >&2
       return 1
@@ -36,19 +54,30 @@ _qwen35_load_env() (
       umask 077
       set -o noclobber
       {
-        printf '%s\n' '# Private Bash config: fill empty required values once, then source env.sh.'
-        printf '%s\n' '# BIP is the HDC SERVER IP:port; SN is the device serial.'
-        printf '%s\n' '# HIAI_LIBRARIES: host ARM64 library files, separated by colons.'
-        printf '%s\n' '# HIAI paths may be auto: unique header / AArch64 libhiai.so in an ohos directory within this DDK.'
-        for name in "${required[@]}"; do printf '%s=%q\n' "$name" "${!name-}"; done
+        printf '%s\n' '# 项目补充配置：先加载已有conda/DDK环境，再source项目env.sh。'
+        for name in "${configured[@]}"; do
+          printf '\n# %s\n%s=%q\n' "${descriptions[$name]}" "$name" "${!name-}"
+        done
+        printf '\n%s\n' '# HIAI_INCLUDE_DIR/HIAI_LIBRARIES 默认auto；仅有歧义时填头文件目录/主机上的OHOS ARM64库文件。'
+        printf '%s\n' '# 不填写vendor已导出的PATH、PYTHONPATH、LD_LIBRARY_PATH、DDK_PATH等变量。'
       } > "$config"
     ) || return 1
     printf 'cpro-env: created %s\nFill its required values, then source this script again.\n' "$config" >&2
     return 1
   fi
   # The config is a trusted, user-owned Bash file. Its output is not shell code.
-  for name in "${required[@]}" "${optional[@]}"; do unset "$name"; done
+  # An explicit config root wins; otherwise use the currently selected DDK_PATH
+  # instead of a CPRO_DDK_ROOT alias left by a previous activation.
+  unset CPRO_DDK_ROOT
   source "$config" >&2 || return 1
+  REPO_DIR=${REPO_DIR:-$repo}
+  AI_RUN_DIR=${AI_RUN_DIR:-"$REPO_DIR-run"}
+  CPRO_DDK_ROOT=${CPRO_DDK_ROOT:-$ddk_from_environment}
+  MODEL_PYTHON=${MODEL_PYTHON:-${CONDA_PREFIX:+"$CONDA_PREFIX/bin/python3"}}
+  HDC=${HDC:-$(command -v hdc || true)}
+  OHOS_NATIVE_SDK=${OHOS_NATIVE_SDK:-${OHOS_SDK:-}}
+  HIAI_INCLUDE_DIR=${HIAI_INCLUDE_DIR:-auto}
+  HIAI_LIBRARIES=${HIAI_LIBRARIES:-auto}
   errors=0
   for name in "${required[@]}"; do
     if [[ -z ${!name-} ]]; then printf 'cpro-env: missing %s in %s\n' "$name" "$config" >&2; errors=1; fi
@@ -151,7 +180,11 @@ _qwen35_load_env() (
   QWEN35_RESOURCES="$REPO_DIR/specs/resources.json"
   QWEN35_ENV_CONFIG=$config
   PYTHONDONTWRITEBYTECODE=1
+  IFS=: read -r -a old_python_path <<< "${PYTHONPATH:-}"
   PYTHONPATH="$REPO_DIR/model:$REPO_DIR"
+  for path in "${old_python_path[@]}"; do
+    [[ -z $path || :$PYTHONPATH: == *":$path:"* ]] || PYTHONPATH+=":$path"
+  done
   # Prefer the selected interpreter for OMG workers; repeated sourcing is stable.
   IFS=: read -r -a old_path <<< "${PATH:-}"
   PATH="$(dirname -- "$MODEL_PYTHON")"

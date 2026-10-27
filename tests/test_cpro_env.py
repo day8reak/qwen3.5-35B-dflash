@@ -66,14 +66,14 @@ first_path=$PATH
 source "$1" "$2"
 test "$PATH" = "$first_path"
 "$3" -c 'import json,os; print(json.dumps(dict(os.environ)))'
-''', env={**runtime, "QWEN35_RESOURCES": "/deleted/resources.json"})
+''', env={**runtime, "QWEN35_RESOURCES": "/deleted/resources.json", "PYTHONPATH": "/vendor/tbe:/vendor/python"})
     assert result.returncode == 0, result.stderr
     restored = json.loads(result.stdout)
     for key, value in values.items():
         assert restored[key] == value
     for key, value in runtime.items():
         assert restored[key] == value
-    assert restored["PYTHONPATH"] == f"{REPO}/model:{REPO}"
+    assert restored["PYTHONPATH"] == f"{REPO}/model:{REPO}:/vendor/tbe:/vendor/python"
     assert restored["PATH"].split(":")[0] == str(Path(values["MODEL_PYTHON"]).parent)
     assert restored["QWEN35_RESOURCES"] == str(REPO / "specs/resources.json")
     assert Path(values["AI_RUN_DIR"]).is_dir()
@@ -102,17 +102,53 @@ test "$PATH" = "$before_path"
 
 def test_first_source_creates_private_config_without_overwriting(config):
     path, values = config
+    activated = {"DDK_PATH": values["CPRO_DDK_ROOT"],
+                 "CONDA_PREFIX": str(Path(values["MODEL_PYTHON"]).parents[1]),
+                 "PATH": str(path.parent) + os.pathsep + os.environ["PATH"],
+                 "HIAI_INCLUDE_DIR": values["HIAI_INCLUDE_DIR"],
+                 "HIAI_LIBRARIES": values["HIAI_LIBRARIES"]}
     result = bash(path, 'source "$1" "$2"', env={**values, "FUSED_PROBE_RUN": "/temporary/probes",
-                                                "FIRMWARE_ID": "TEMPORARY"})
+                                                "FIRMWARE_ID": "TEMPORARY", **activated})
     assert result.returncode == 1
     assert "created" in result.stderr
     assert path.stat().st_mode & 0o777 == 0o600
     original = path.read_bytes()
     assert "TEST-SERIAL" in original.decode()
     assert "FUSED_PROBE_RUN" not in original.decode() and "FIRMWARE_ID" not in original.decode()
-    again = bash(path, 'source "$1" "$2"')
+    assignments = {line.split("=", 1)[0] for line in original.decode().splitlines()
+                   if line and not line.startswith("#")}
+    assert assignments == {"REPO_DIR", "AI_RUN_DIR", "CANN_ROOT", "CPRO_DDK_ID", "OHOS_NATIVE_SDK", "BIP", "SN"}
+    assert "HDC服务端的IP:端口" in original.decode()
+    again = bash(path, 'source "$1" "$2"', env=activated)
     assert again.returncode == 0, again.stderr
     assert path.read_bytes() == original
+
+
+def test_reuses_selected_vendor_environment_without_redeclaring_its_variables(config):
+    path, values = config
+    configured = {key: value for key, value in values.items()
+                  if key not in {"CPRO_DDK_ROOT", "MODEL_PYTHON", "HDC"}}
+    write_config(path, configured)
+    inherited = {"DDK_PATH": values["CPRO_DDK_ROOT"], "CPRO_DDK_ROOT": "/previous/ddk",
+                 "CONDA_PREFIX": str(Path(values["MODEL_PYTHON"]).parents[1]),
+                 "MODEL_PYTHON": "", "HDC": "",
+                 "TOOLCHAIN_HOME": values["CPRO_DDK_ROOT"], "HIAI_VERSION": "/vendor/omg",
+                 "LD_LIBRARY_PATH": "/vendor/omg/lib64:/vendor/tbe/lib64",
+                 "PYTHONPATH": "/vendor/tbe/ops:/vendor/package/python",
+                 "PATH": str(path.parent) + os.pathsep + os.environ["PATH"]}
+    result = bash(path, '''
+set -eu
+source "$1" "$2"
+"$3" -c 'import json,os; print(json.dumps(dict(os.environ)))'
+''', env=inherited)
+    assert result.returncode == 0, result.stderr
+    restored = json.loads(result.stdout)
+    for key in ("CPRO_DDK_ROOT", "MODEL_PYTHON", "HDC"):
+        assert restored[key] == values[key]
+    for key in ("DDK_PATH", "TOOLCHAIN_HOME", "HIAI_VERSION", "LD_LIBRARY_PATH"):
+        assert restored[key] == inherited[key]
+    assert restored["PYTHONPATH"] == f"{REPO}/model:{REPO}:" + inherited["PYTHONPATH"]
+    assert restored["PATH"].split(os.pathsep)[1:] == list(dict.fromkeys(inherited["PATH"].split(os.pathsep)))
 
 
 @pytest.mark.parametrize("mode", ["unique", "ambiguous", "host-only"])

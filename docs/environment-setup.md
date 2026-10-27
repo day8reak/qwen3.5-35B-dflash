@@ -6,33 +6,79 @@
 
 ## Docker 重进后的配置恢复
 
-当前算子探针流程可以使用仓库自带的 Bash 入口：
+先激活已安装的模型conda环境，并沿用本机已确认的当前DDK环境入口；然后在仓库根目录执行：
 
 ```bash
 source targets/cpro/scripts/env.sh
 ```
 
-首次执行会在**仓库旁边**创建 `qwen35-cpro.env`（权限600），复制当前已设置的相关变量并保留缺项为空，然后提示填写。配置文件不放在运行目录里，清理运行结果时不会被一起删掉。编辑一次该文件，再执行同一条 `source` 即可；也可指定私有配置路径：`source targets/cpro/scripts/env.sh /absolute/path/cpro.env`。
+首次执行会在**仓库旁边**创建 `qwen35-cpro.env`（权限600），保存固定配置并提示补齐缺项。配置不放在运行目录里，清理结果时不会被一起删掉。填写一次后，每次重进Docker、恢复conda/DDK环境，再执行同一条 `source`。也可指定文件：`source targets/cpro/scripts/env.sh /absolute/path/cpro.env`。
 
-| 必填配置 | 内容 |
+默认配置只保留下面七项。已有值会填入模板；项目路径默认取当前仓库，运行根目录默认取项目路径加 `-run`，其余不能确定的值需要填写。
+
+| 固定配置 | 含义 |
 |---|---|
-| `REPO_DIR` | 项目绝对路径，首次自动填当前仓库 |
-| `AI_RUN_DIR` | 仓库外运行根目录，默认是项目路径加 `-run`；每次source保持不变，各任务自动分配新子目录 |
-| `MODEL_PYTHON` | 已安装模型环境的Python绝对路径，如选定conda环境的 `bin/python3` |
-| `CANN_ROOT` | 用于GE导出AIR的CANN目录 |
-| `CPRO_DDK_ROOT`、`CPRO_DDK_ID` | 当前目标DDK目录及准确版本 |
-| `OHOS_NATIVE_SDK` | 包含 `build/cmake/ohos.toolchain.cmake`、`llvm/bin/clang++`、`sysroot/` 的 `native/` 目录 |
-| `HIAI_INCLUDE_DIR` | 包含 `HiAiModelManagerService.h` 的目录；或 `auto` |
-| `HIAI_LIBRARIES` | 主机上HarmonyOS ARM64链接库文件；多个路径用冒号分隔；或 `auto` |
-| `HDC`、`BIP`、`SN` | HDC可执行文件或PATH中的命令名、**HDC服务器IP:端口**、设备序列号；BIP不是自动推断的手机IP |
+| `REPO_DIR` | 项目绝对路径，用来定位脚本、模型代码和资源清单 |
+| `AI_RUN_DIR` | 仓库外的固定产物根目录；不是某次临时批次目录，每个任务会在下面分配新子目录 |
+| `CANN_ROOT` | 服务器端CANN目录，用其中的GE头文件和库将图导出为AIR；与目标DDK用途不同 |
+| `CPRO_DDK_ID` | 所选DDK的准确版本标识，用于绑定/编译产物一致性检查；不会从路径猜版本 |
+| `OHOS_NATIVE_SDK` | 编译手机端runner的OHOS Native SDK，必须指向含 `build/cmake/ohos.toolchain.cmake`、`llvm/bin/clang++`、`sysroot/` 的 `native/`；已有 `OHOS_SDK` 可用于填初值 |
+| `BIP` | **HDC服务器的IP:端口**，例如远端转发的HDC服务；不是根据手机网络地址自动推断的值 |
+| `SN` | HDC列出的目标设备序列号，用于选择具体手机 |
 
-配置只保存上表的固定环境。板端私有库目录 `BOARD_HIAI_LIB_DIR` 和两套权重路径可按需自行加入，不生成空占位。首次初始化复制已有声明，支持从已有 `OHOS_SDK` 获取 `OHOS_NATIVE_SDK`；没有HIAI路径时在模板中写 `auto`。设备、安装包和历史产物不自动选择。
+下面这些值可以从当前环境派生，不用把vendor脚本已经export的内容再抄一遍。必要时也可在私有配置中显式指定覆盖值。
 
-`FUSED_PROBE_RUN`、`TBE_DIAG_JOB`、`GE_CUSTOM_BINDINGS`、`FIRMWARE_ID`、`HIAI_RUNTIME_VERSION` 属于单次运行参数，不放入配置；需要时在运行命令前设置或使用对应CLI参数。`source env.sh` 不读取、覆盖或清除调用者的这些变量；旧配置里若有这些行，可直接删掉。
+| 可省略配置 | 默认来源与作用 |
+|---|---|
+| `CPRO_DDK_ROOT` | 使用已选DDK的 `DDK_PATH`；定位OMG、TBE和安装版算子源码。未加载DDK时需填写绝对路径 |
+| `MODEL_PYTHON` | 使用已声明的模型Python，或当前conda环境 `CONDA_PREFIX/bin/python3`；执行探针数据、平台诊断及编译调度，不重新安装环境 |
+| `HDC` | 已声明的HDC路径，或PATH中的 `hdc`；执行设备传输与命令。找不到时需填写实际可执行文件 |
+| `HIAI_INCLUDE_DIR` | 默认 `auto`，在所选DDK内查找唯一 `HiAiModelManagerService.h` 的父目录；也可明确指定 |
+| `HIAI_LIBRARIES` | 默认 `auto`，在所选DDK内查找手机端链接库；也可指定主机上的HarmonyOS ARM64库文件，多文件用冒号分隔 |
 
-HIAI的 `auto` 只在**已指定的DDK目录**内查找，深度最多8层；头文件必须唯一，`libhiai.so` 必须唯一且位于含 `ohos` 或 `*-ohos` 目录的路径下，并通过 `readelf` 的ELF64、小端、AArch64、共享库头检查。不会使用OMG的x86库、猜其他库名或跟随目录链接进入其他安装。多个候选或未找到会列出路径并要求显式填写；这只是构建候选选择，不是ABI兼容性或设备通过证明。
+vendor环境中常见的变量含义如下；入口保留它们，不生成重复配置。路径存在只说明环境已声明，不代表芯片编译或上板通过。
 
-该入口检查必填变量和工具文件，检查成功后才修改当前shell；自动设置 `GE_MODEL_TOOL`、`CPRO_TARGET=kirinx90`、模型 `PYTHONPATH`、Python的bin路径以及环境变量驱动的 `specs/resources.json`。重复source不会累加路径。它不激活conda、不运行vendor环境脚本、不全局混入CANN/DDK原生库，也不连接设备；GE/OMG调用继续由现有脚本设置子进程环境。原私有 `QWEN35_RESOURCES` 会被上述仓库清单替换，所选头文件/库应填写到配置变量中。
+| vendor变量 | 含义 |
+|---|---|
+| `DDK_PATH` | 当前目标DDK的根目录，供 `CPRO_DDK_ROOT` 派生 |
+| `TOOLCHAIN_HOME` | vendor工具链的根目录/内部查找基准 |
+| `HIAI_VERSION` | 此DDK环境中通常指OMG的master目录；不是板端 `HIAI_RUNTIME_VERSION` 字符串 |
+| `PATH` | OMG、编译器、Python等可执行文件的查找路径 |
+| `LD_LIBRARY_PATH` | 主机工具运行时的动态库查找路径；不是给手机部署的库列表 |
+| `PYTHONPATH` | vendor Python模块查找路径；项目入口仅补入缺少的仓库模块路径 |
+
+这些vendor变量不能替代 `CANN_ROOT`、OHOS Native SDK、准确DDK版本或实际手机端HIAI链接库的选择。`HIAI_LIBRARIES=auto` 只在已选DDK目录内查找，深度最多8层；候选必须是唯一的 `libhiai.so`，位于含 `ohos` 或 `*-ohos` 目录的路径下，并通过 `readelf` 的ELF64、小端、AArch64、共享库头检查。头文件也必须唯一。多个候选或未找到会列出路径，改为明确填写即可；不猜其他库名，不使用OMG的x86库，不跟随目录链接扫描其他安装。这只是构建候选选择，ABI仍需链接及设备验证。
+
+下面是按需使用的固定配置，不生成空占位：
+
+| 可选变量 | 含义 |
+|---|---|
+| `BOARD_HIAI_LIB_DIR` | **手机上**已有的私有HIAI库目录；与主机端 `HIAI_LIBRARIES` 不同。留空时脚本按runner构建记录打包部署库 |
+| `QWEN35_TARGET_WEIGHTS` | 完整目标模型的检查点目录；算子探针不读取它 |
+| `QWEN35_DRAFT_WEIGHTS` | DFlash草稿模型的检查点目录；算子探针不读取它 |
+| `QWEN35_ENV_CONFIG` | 私有环境配置文件路径；命令行给 `source env.sh` 的路径优先，其次此变量，最后仓库旁默认文件 |
+
+入口检查成功后才修改当前shell，并自动导出以下值，无需手填：
+
+| 自动变量 | 含义 |
+|---|---|
+| `GE_MODEL_TOOL` | 仓库内 `targets/cpro/scripts/direct_model_air.py` 的绝对路径 |
+| `CPRO_TARGET` | 固定为当前部署目标 `kirinx90` |
+| `QWEN35_RESOURCES` | 指向仓库 `specs/resources.json`，由上面的变量解析资源；原私有清单会被此设置替换 |
+| `PYTHONDONTWRITEBYTECODE` | 固定为1，防止Python在代码/工具链目录写缓存 |
+| `PATH`、`PYTHONPATH` | 保留已有vendor路径，加入模型Python的bin及缺少的仓库模块路径；重复source不累加 |
+
+入口不激活conda、不执行vendor脚本、不追加全局CANN/DDK库路径，也不连接设备；GE/OMG继续通过现有脚本设置各自子进程环境。
+
+以下变量属于单次运行，**不写入固定配置**，需要时在执行前设置或使用CLI参数。`source env.sh` 不读取、覆盖或清除调用者的这些值；旧配置有这些行可删除。
+
+| 单次运行变量 | 含义 / 替代入口 |
+|---|---|
+| `FUSED_PROBE_RUN` | 已生成探针或批次目录；可直接使用 `--probe-run` |
+| `TBE_DIAG_JOB` | 包含 `diagnosis/` 的诊断任务目录；新批次重试可自动继承记录，无需另行export |
+| `GE_CUSTOM_BINDINGS` | 直接调用GE工具时使用的bindings JSON路径；`--fresh` 自动重新生成 |
+| `FIRMWARE_ID` | 本次设备固件身份的显式值；未设置时脚本从设备查询 |
+| `HIAI_RUNTIME_VERSION` | 本次预期板端HIAI版本；若设置，必须与实际runtime probe一致 |
 
 **如果旧运行目录已经清空：** 保留权重目录，恢复环境后一次重建全部探针，无需设置任何历史产物变量：
 
