@@ -17,7 +17,35 @@
 
 ## 用户现在执行什么
 
-先按[环境配置](environment-setup.md)设置变量。**黄区现在先跑[融合探针生成/编译](ge-guide.md#融合算子调用探针)，再按[板端批量执行](board-guide.md#融合算子调用探针)一次跑完5例**；无需模型权重，回传 `comparison/report.txt`。
+**先在黄区一次性编译5个融合算子用例，确认DDK能识别接口。** 无需模型权重；先按[环境配置](environment-setup.md)设置 `REPO_DIR`、`MODEL_PYTHON`、`AI_RUN_DIR`、`CANN_ROOT`、`CPRO_DDK_ROOT` 和 `CPRO_DDK_ID`。
+
+下面更新代码、生成接口绑定，再导出AIR并编译OMC。`--target kirinx90` 对应当前CPro编译平台，`--gdn-initial-state-dtype float16` 选择文档Cpro的FP16初态。
+
+```bash
+cd "$REPO_DIR"
+git pull --ff-only
+
+export FUSED_PROBE_JOB="$(mktemp -d "$AI_RUN_DIR/fused-probes-XXXXXXXX")"
+export GE_CUSTOM_BINDINGS="$FUSED_PROBE_JOB/bindings.json"
+export FUSED_PROBE_RUN="$FUSED_PROBE_JOB/probes"
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
+
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" bindings-from-document \
+  --target kirinx90 --ddk-id "$CPRO_DDK_ID" \
+  --gdn-initial-state-dtype float16 \
+  --output "$GE_CUSTOM_BINDINGS"
+
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" probe-fused-ops \
+  --bindings "$GE_CUSTOM_BINDINGS" --ge-root "$CANN_ROOT" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$FUSED_PROBE_RUN"
+
+cat "$FUSED_PROBE_RUN/report.txt"
+```
+
+全部编译成功后，在同一终端继续[板端批量执行命令](board-guide.md#融合算子调用探针)，无需等待确认。完成后回传 `$FUSED_PROBE_JOB/comparison/report.txt`；编译失败则先回传 `$FUSED_PROBE_RUN/report.txt`。
+
+## 完整模型构图（按需）
 
 需要完整模型结构时选择下面一条路径；`sequence-length=8`只限定输入长度，模型层数、专家和词表均为完整尺寸。
 
@@ -40,16 +68,6 @@
 
 ## 文档融合接口
 
-需要GE融合GDN、conv state或RMS时生成绑定。`ddk-id`填写实际安装版本；下面选择文档Cpro的FP16初态。
-
-```bash
-export GE_BINDING_RUN="$(mktemp -d "$AI_RUN_DIR/ge-bindings-XXXXXXXX")"
-export GE_CUSTOM_BINDINGS="$GE_BINDING_RUN/bindings.json"
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" bindings-from-document \
-  --target "${CPRO_TARGET:-kirinx90}" --ddk-id "${CPRO_DDK_ID:?填写DDK版本}" \
-  --gdn-initial-state-dtype float16 --output "$GE_CUSTOM_BINDINGS"
-```
-
-绑定来自用户文档，不代表kernel已安装或已在目标芯片验证。融合构图命令见[GE指南](ge-guide.md)。
+上面的 `GE_CUSTOM_BINDINGS` 可复用于GE融合构图。绑定来自用户文档，不代表kernel已安装或已在目标芯片验证；融合构图命令见[GE指南](ge-guide.md)。
 
 完整W4A8 + FP16 DFlash先按24–28GiB可用RAM规划；这不是实测峰值，也不适用于当前FP16权重导出，见[内存预算](environment-setup.md#内存预算文档-w4a8--dflash)。
