@@ -98,6 +98,109 @@ def _environment_record(ddk_root, env):
             "candidate_note": "PYTHONPATH order only; embedded Python and site-packages may differ."}
 
 
+_PLATFORM_CHECK = r'''
+import hashlib, json, pathlib, sys, traceback
+output = pathlib.Path(sys.argv[1])
+result = {"initialization": "IMPORT_ONLY", "worker_reproduction": "NOT_ESTABLISHED",
+          "python": sys.executable, "python_version": sys.version,
+          "native_arguments": ["kirinx90", "AiCore", "", "false"], "stage": "IMPORT"}
+def save():
+    output.write_text(json.dumps(result, indent=2) + "\n")
+def specs(platform):
+    values = {}
+    for key in ("SOC_VERSION", "SHORT_SOC_VERSION", "CORE_TYPE", "CORE_NUM"):
+        try:
+            values[key] = str(platform.get_soc_spec(key))
+        except Exception as error:
+            values[key] = {"error": repr(error)}
+    return values
+save()
+try:
+    import tbe.common.platform as platform
+    from tbe.common.platform import platform_info
+    result["modules"] = {}
+    for name in ("tbe", "tbe.tvm", "tbe.common.platform", "tbe.common.platform.platform_info"):
+        path = getattr(sys.modules.get(name), "__file__", None)
+        item = {"path": path}
+        if path and pathlib.Path(path).is_file():
+            item["sha256"] = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+        result["modules"][name] = item
+    result["before"] = specs(platform)
+    result["stage"] = "LOOKUP"
+    save()
+    native = platform_info.get_global_func("cce.te_update_version")
+    result["stage"] = "NATIVE_UPDATE"
+    save()
+    value = native(*result["native_arguments"])
+    result.update(native_return_type=type(value).__name__, native_return_repr=repr(value))
+    result.update(native_success=bool(value == "success"), stage="COMPLETE")
+    result["after"] = specs(platform)
+except Exception as error:
+    result.update(error=repr(error), traceback=traceback.format_exc(), native_success=False)
+finally:
+    try:
+        paths = {line.split()[-1] for line in pathlib.Path("/proc/self/maps").read_text().splitlines()
+                 if any(name in line for name in ("libtvm", "libplatform", "libpython", "libcce"))}
+        result["mapped_libraries"] = sorted(paths)
+    except OSError as error:
+        result["mapped_libraries_error"] = str(error)
+    save()
+'''
+
+
+def check_tbe_platform(ddk_root, output_dir, *, python, timeout_seconds=30):
+    """Expose TBE's native return in a fresh process; no compiler/kernel call.
+
+    Import-only initialization is intentionally not declared equivalent to the
+    embedded OMG worker. Neither a pass nor failure establishes target support.
+    """
+    interpreter = Path(python).absolute()
+    if not interpreter.is_file() or not os.access(interpreter, os.X_OK):
+        raise ValueError("--python must name the existing executable used by the failed worker")
+    if not 0 < timeout_seconds <= 60:
+        raise ValueError("platform check timeout must be between 1 and 60 seconds")
+    _, env = omg_environment(ddk_root)
+    root = output_path(output_dir)
+    if root.is_relative_to(Path(ddk_root).resolve()):
+        raise ValueError("platform check output must be outside DDK")
+    root.mkdir(parents=True, exist_ok=False)
+    script = root / "platform-check.py"
+    script.write_text(_PLATFORM_CHECK)
+    child_result = root / "native-result.json"
+    argv = [str(interpreter), str(script), str(child_result)]
+    save_json(root / "command.json", {"argv": argv, "cwd": str(root), "timeout_seconds": timeout_seconds})
+    result = {"schema_version": 1, "artifact_kind": "qwen35-tbe-platform-check", "status": "FAILED",
+              "compiler_execution": "NOT_RUN", "device_execution": "NOT_RUN", "returncode": None,
+              "scope": "Fresh Python process, import-only initialization and one native platform update. "
+                       "Not an OMG worker reproduction or a compiler/target support gate."}
+    with _omg_ipc_environment(root, env) as (child_env, _), (root / "platform.log").open("x") as log:
+        save_json(root / "omg-environment.json", _environment_record(ddk_root, child_env))
+        try:
+            proc = subprocess.run(argv, cwd=root, env=child_env, stdout=log, stderr=subprocess.STDOUT,
+                                  timeout=timeout_seconds, check=False)
+            result["returncode"] = proc.returncode
+        except (subprocess.TimeoutExpired, OSError) as error:
+            result["error"] = str(error)
+    if child_result.is_file():
+        try:
+            result["native"] = json.loads(child_result.read_text())
+        except (OSError, ValueError) as error:
+            result["error"] = str(error)
+    if (result["returncode"] == 0 and result.get("native", {}).get("stage") == "COMPLETE"
+            and result["native"].get("native_success") is True):
+        result["status"] = "RAW_UPDATE_SUCCEEDED"
+    result["files"] = files_under(root, root)
+    save_json(root / "report.json", result)
+    lines = ["TBE raw platform update (no model compilation or device execution)",
+             result["scope"], "status=" + result["status"],
+             json.dumps({key: value for key, value in result.items() if key in {"returncode", "error"}}),
+             json.dumps(result.get("native", {}), indent=2), "Full child output: platform.log"]
+    # Include the child's output even on crashes/import errors which preceded JSON completion.
+    lines.append((root / "platform.log").read_text(errors="replace")[-12000:])
+    (root / "report.txt").write_text("\n".join(lines) + "\n")
+    return result
+
+
 @contextmanager
 def _omg_ipc_environment(scratch, env):
     """Keep multiprocessing socket names short, with all data inside this run.

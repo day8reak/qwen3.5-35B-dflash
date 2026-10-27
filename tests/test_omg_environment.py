@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from qwen35_moe_dflash.compile import (
-    _environment_record, _retain_failure_diagnostics, compile_air, omg_environment,
+    _environment_record, _retain_failure_diagnostics, check_tbe_platform, compile_air, omg_environment,
 )
 from qwen35_moe_dflash.hashing import sha256_file
 
@@ -100,6 +100,59 @@ def test_environment_diagnostics_list_candidates_without_import(ddk, tmp_path):
                                                        str(unknown / "te_fusion/log_util.py")]
     assert "PRIVATE_TOKEN" not in record["environment"]
     assert "site-packages may differ" in record["candidate_note"]
+
+
+@pytest.mark.parametrize("native_return", ["success", "MOCK unknown soc kirinx90"])
+def test_platform_check_keeps_raw_native_return_in_isolated_real_child(ddk, tmp_path, monkeypatch, native_return):
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    package = ddk / "tools/tools_ascendc/package/python/tbe"
+    platform = package / "common/platform"
+    platform.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "common/__init__.py").write_text("")
+    (platform / "__init__.py").write_text("def get_soc_spec(key): return 'MOCK_INITIAL_SOC'\n")
+    source = platform / "platform_info.py"
+    source.write_text("import json, pathlib\n"
+                      "def get_global_func(name):\n"
+                      "    assert name == 'cce.te_update_version'\n"
+                      "    def native(*args):\n"
+                      "        pathlib.Path('calls.json').write_text(json.dumps([args]))\n"
+                      f"        return {native_return!r}\n"
+                      "    return native\n")
+    before = source.read_bytes(), dict(os.environ)
+    output = tmp_path / "check"
+    result = check_tbe_platform(ddk, output, python=sys.executable)
+    native = result["native"]
+    assert native["native_return_repr"] == repr(native_return)
+    assert native["native_return_type"] == "str"
+    assert native["before"]["SOC_VERSION"] == 'MOCK_INITIAL_SOC'
+    assert native["initialization"] == "IMPORT_ONLY" and native["worker_reproduction"] == "NOT_ESTABLISHED"
+    assert result["status"] == ("RAW_UPDATE_SUCCEEDED" if native_return == "success" else "FAILED")
+    assert result["compiler_execution"] == result["device_execution"] == "NOT_RUN"
+    assert json.loads((output / 'calls.json').read_text()) == [["kirinx90", "AiCore", "", "false"]]
+    assert native["modules"]["tbe.common.platform.platform_info"]["sha256"] == sha256_file(source)
+    assert source.read_bytes() == before[0] and dict(os.environ) == before[1]
+    assert not list(package.rglob('*.pyc')) and not list(output.glob('.ipc-*'))
+    assert (output / 'report.txt').is_file() and (output / 'omg-environment.json').is_file()
+
+
+def test_platform_check_retains_import_errors_and_timeout(ddk, tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    package = ddk / "tools/tools_ascendc/package/python/tbe"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("raise RuntimeError('MOCK import error')\n")
+    result = check_tbe_platform(ddk, tmp_path / "import-failed", python=sys.executable)
+    assert result["status"] == "FAILED" and result["native"]["stage"] == "IMPORT"
+    assert 'MOCK import error' in result["native"]["traceback"]
+    def timeout(argv, **kwargs):
+        kwargs['stdout'].write('MOCK hung import\n')
+        raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+    monkeypatch.setattr(subprocess, 'run', timeout)
+    result = check_tbe_platform(ddk, tmp_path / 'timeout', python=sys.executable, timeout_seconds=1)
+    assert result['status'] == 'FAILED' and result['returncode'] is None
+    assert 'timed out' in result['error']
+    assert 'MOCK hung import' in (tmp_path / 'timeout/report.txt').read_text()
+    assert not list((tmp_path / 'timeout').glob('.ipc-*'))
 
 
 def test_diagnostic_retention_prioritizes_failure_and_respects_budget(tmp_path, monkeypatch):

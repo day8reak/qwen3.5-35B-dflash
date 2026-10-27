@@ -271,20 +271,80 @@ def document_bindings(*, target, ddk_id, gdn_initial_state_dtype):
     return document
 
 
-def write_document_bindings(output, *, target, ddk_id, gdn_initial_state_dtype):
+def _installed_fp16_state_evidence(source):
+    """Recognize the observed direct half-buffer ABI; never compile/import source.
+
+    This bounded lexical check is deliberately narrower than a C++ parser. It
+    does not evaluate preprocessing, trace aliases or prove the active kernel.
+    Unknown or contradictory state-buffer expressions require manual review.
+    """
+    path = Path(source).resolve()
+    if path.name != "chunk_gated_delta_rule.cpp" or not path.is_file():
+        raise ValueError("gdn_state_source must be an existing chunk_gated_delta_rule.cpp")
+    if path.stat().st_size > 8 * 1024 * 1024:
+        raise ValueError("GDN state source exceeds 8 MiB")
+    payload = path.read_bytes()
+    if len(payload) > 8 * 1024 * 1024:
+        raise ValueError("GDN state source exceeds 8 MiB")
+    text = payload.decode("utf-8")
+    # Preserve offsets/line numbers while excluding commented-out examples and
+    # strings containing code-looking text from the source evidence.
+    ignored = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
+    code = ignored.sub(lambda match: re.sub(r"[^\n]", " ", match.group()), text)
+    declarations = {}
+    for match in re.finditer(r"\bGlobalTensor\s*<\s*([^<>]+?)\s*>\s*(\w+)\s*[;=]", code):
+        declarations.setdefault(match.group(2), set()).add(match.group(1).strip())
+    states = {"initial_state": [], "last_recurrent_state": []}
+    for match in re.finditer(r"\b(\w+)\s*\.\s*SetGlobalBuffer\s*\(([^;]*?)\)\s*;", code):
+        receiver, arguments = match.group(1), match.group(2)
+        for name, records in states.items():
+            if not re.search(r"\b" + name + r"\b", arguments):
+                continue
+            direct = re.fullmatch(r"\s*reinterpret_cast\s*<\s*__gm__\s+half\s*\*\s*>"
+                                  r"\s*\(\s*" + name + r"\s*\)\s*(?:,.*)?", arguments, re.S)
+            if declarations.get(receiver) != {"half"} or direct is None:
+                raise ValueError(f"GDN {name} buffer has contradictory or unrecognized dtype/address evidence")
+            records.append({"line": code.count("\n", 0, match.start()) + 1,
+                            "receiver": receiver, "statement": text[match.start():match.end()]})
+    if any(not records for records in states.values()):
+        raise ValueError("GDN source must show both initial_state and last_recurrent_state direct half buffers")
+    return {"path": str(path), "sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload),
+            "state_dtype": "float16", "matches": states,
+            "verification_kind": "BOUNDED_SOURCE_PATTERN",
+            "scope": "Observed source buffer ABI only; preprocessing, compiled binary and runtime are unverified."}
+
+
+def write_document_bindings(output, *, target, ddk_id, gdn_initial_state_dtype, gdn_state_source=None):
     """Write a new binding JSON and explicit provenance sidecar under this run."""
     output = output_path(output)
     metadata = output_path(output.with_suffix(".metadata.json"))
-    if output.exists() or metadata.exists():
+    evidence_path = output_path(output.with_suffix(".sources.json")) if gdn_state_source is not None else None
+    if output.exists() or metadata.exists() or evidence_path is not None and evidence_path.exists():
         raise FileExistsError("binding or provenance output already exists; use a new path")
     document = document_bindings(target=target, ddk_id=ddk_id,
                                  gdn_initial_state_dtype=gdn_initial_state_dtype)
+    document_source = deepcopy(document["source"])
+    evidence = None
+    if gdn_state_source is not None:
+        if gdn_initial_state_dtype != "float16":
+            raise ValueError("installed FP16 state override requires gdn_initial_state_dtype=float16")
+        evidence = _installed_fp16_state_evidence(gdn_state_source)
+        sources = {"schema_version": 1, "artifact_kind": "qwen35-ge-binding-source-evidence",
+                   "document": document_source, "source_section_sha256": _PORTS_SECTION_SHA256,
+                   "installed_gdn_state": evidence,
+                   "override": {"gdn.outputs.final_state.dtype": {"document": "float32", "selected": "float16"}},
+                   "compile_validation": "NOT_RUN", "device_validation": "NOT_RUN"}
+        save_json(evidence_path, sources)
+        document["source"] = {"path": str(evidence_path), "sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest()}
+        document["operators"]["gdn"]["outputs"]["final_state"]["dtype"] = "float16"
+        OperatorBindings(document)
     result = {
         "status": "BINDINGS_FROM_USER_DOCUMENT", "output": str(output),
         "metadata": str(metadata), "source": document["source"],
         "source_section": "4.6 GE 端口信息速查", "source_section_sha256": _PORTS_SECTION_SHA256,
         "source_platform": "Ascend310P3", "requested_target": target, "declared_ddk_id": ddk_id,
         "gdn_initial_state_dtype": gdn_initial_state_dtype,
+        "gdn_final_state_dtype": document["operators"]["gdn"]["outputs"]["final_state"]["dtype"],
         "gdn_initial_state_choice": ("documented Cpro caller" if gdn_initial_state_dtype == "float16"
                                      else "documented FP32 interface/other variants"),
         "conv_history_policy": "last K-1 entries of documented y2 history/current concatenation; y1 chronology not assumed",
@@ -293,6 +353,11 @@ def write_document_bindings(output, *, target, ddk_id, gdn_initial_state_dtype):
         "scope": "Port/attribute transcription only; target and DDK labels are declarations, not installation checks.",
         "shape_scope": "Documented full-model GDN/conv dimensions; tiny reduced heads/channels are rejected.",
     }
+    if evidence is not None:
+        result.update(status="BINDINGS_WITH_INSTALLED_GDN_STATE", schema_origin="USER_DOCUMENT_WITH_SOURCE_STATE_OVERRIDE",
+                      document_source=document_source, installed_gdn_state=evidence,
+                      gdn_initial_state_choice="explicit installed-source FP16 input/output state ABI",
+                      scope="Document ports plus hash-bound observed FP16 GDN state buffers; compiled/runtime ABI unverified.")
     save_json(output, document)
     result["binding_sha256"] = hashlib.sha256(output.read_bytes()).hexdigest()
     save_json(metadata, result)

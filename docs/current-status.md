@@ -17,28 +17,35 @@
 
 ## 用户现在执行什么
 
-**补齐GDN平台错误的调用链、编译环境和状态读写类型，不重编、不上板。** 上次报告已定位 `te_update_version() return error`，但截掉了中间调用帧。更新后沿用原 `FUSED_PROBE_RUN`，使用新的输出目录：
+**生成匹配安装源码的GDN状态绑定，然后读取TBE底层平台错误。** 不再重读旧日志，不编译模型、不上板。`--gdn-state-source` 校验并记录安装源码的FP16初态/末态指针；`--python` 使用本次报错的 `custom_pypto` 解释器（当前 `MODEL_PYTHON`）。
 
 ```bash
 cd "$REPO_DIR"
 git pull --ff-only
-export FUSED_INSPECT_JOB="$(mktemp -d "$AI_RUN_DIR/fused-inspect-XXXXXXXX")"
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" inspect-fused-probes \
-  --probe-run "${FUSED_PROBE_RUN:?设置上次失败的probes目录}" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$FUSED_INSPECT_JOB/inspection"
-cat "$FUSED_INSPECT_JOB/inspection/report.txt"
+export FUSED_NEXT_JOB="$(mktemp -d "$AI_RUN_DIR/fused-platform-XXXXXXXX")"
+export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
+export GE_CUSTOM_BINDINGS="$FUSED_NEXT_JOB/bindings.json"
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" bindings-from-document \
+  --target kirinx90 --ddk-id "$CPRO_DDK_ID" \
+  --gdn-initial-state-dtype float16 \
+  --gdn-state-source "$CPRO_DDK_ROOT/ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp" \
+  --output "$GE_CUSTOM_BINDINGS"
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" check-tbe-platform \
+  --ddk-root "$CPRO_DDK_ROOT" --python "$MODEL_PYTHON" \
+  --output "$FUSED_NEXT_JOB/platform"
+cat "$FUSED_NEXT_JOB/platform/report.txt"
 ```
 
-回传上面的 `report.txt`。此命令只读已有日志、环境记录及报错指向的Python源码，不执行TBE、不修改DDK。
+回传 `platform/report.txt`。平台检查会在独立子进程导入TBE并调用一次底层 `cce.te_update_version`，保留原始返回值、模块来源和加载库；30秒超时。不修改DDK、不安装包、不切换SoC。`FAILED` 也会生成报告；`RAW_UPDATE_SUCCEEDED` 仅表示这一次调用成功，尚未复现完整OMG工作进程，先不要重跑五例编译。
 
 | 已定位 | 下一步要核对 |
 |---|---|
-| GDN子进程在 `te_update_version()` 退出 | 调用参数、实际TBE源码和DDK平台配置；Conda安装路径本身不证明版本混用 |
+| GDN包装层隐藏了底层平台函数的非success返回值 | 直接记录原始返回值；Conda安装路径本身不证明版本混用 |
+| 安装版GDN用 `half*` 读初态、写末态 | 已增加源码绑定的FP16状态选项，真实编译和运行待验证 |
 | conv输入 `x2` 要求宽度4，文档写3 | 安装版状态顺序、输出与控制参数；不能直接给生产缓存补一个槽位 |
 | `AdnRmsNorm` 无可用维推函数 | 当前DDK的注册与实现是否配套 |
 
-GDN的OMG末态dtype为FP16，文档绑定为FP32，仍待核对kernel实际读写类型。暂不改SoC名称、dtype或生产缓存语义。后续编译现场会保存在 `cases/<用例>/compile-work/`；旧版已删除的临时文件无法恢复。
+原文档的FP32末态描述保留，安装源码覆盖另存 `.sources.json` 并记录SHA256。Conv/RMS仍未修复，不要直接使用本绑定启用这两个融合算子。后续编译现场会保存在 `cases/<用例>/compile-work/`。
 
 ## 首次生成与编译（当前失败批次无需重跑）
 

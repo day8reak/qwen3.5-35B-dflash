@@ -12,6 +12,11 @@ sys.path.insert(0, str(REPO))
 
 
 def _add_stateful_commands(sub):
+    platform = sub.add_parser("check-tbe-platform", help="call the native platform update once in a fresh Python process; no compilation")
+    platform.add_argument("--ddk-root", required=True)
+    platform.add_argument("--python", required=True, help="absolute Python executable used by the failed compiler worker")
+    platform.add_argument("--output", required=True)
+    platform.add_argument("--timeout-seconds", type=int, default=30)
     inspect = sub.add_parser("inspect-fused-probes", help="read existing failures and installed interface text without recompiling or importing DDK code")
     inspect.add_argument("--probe-run", required=True)
     inspect.add_argument("--ddk-root", required=True)
@@ -55,6 +60,7 @@ def _add_stateful_commands(sub):
     binding.add_argument("--ddk-id", required=True, help="declared intended DDK identity; no installation check")
     binding.add_argument("--gdn-initial-state-dtype", choices=("float16", "float32"), required=True,
                          help="document reports Cpro FP16 caller and FP32 interface/other variants; choose explicitly")
+    binding.add_argument("--gdn-state-source", help="installed GDN C++ source: require half state pointers and bind both states as FP16; preserve source hashes")
     for name in ("plan-stateful", "export-stateful"):
         p = sub.add_parser(name, help=("generate checked explicit-state C++/recipe without GE" if name == "plan-stateful" else
                                       "serialize explicit-state target AIR with a matching GE installation"))
@@ -171,7 +177,11 @@ def main():
     args = parser.parse_args()
     try:
         from qwen35_moe_dflash.resources import load_resources, resource_path
-        if args.command == "inspect-fused-probes":
+        if args.command == "check-tbe-platform":
+            from qwen35_moe_dflash.compile import check_tbe_platform
+            result = check_tbe_platform(args.ddk_root, args.output, python=args.python,
+                                        timeout_seconds=args.timeout_seconds)
+        elif args.command == "inspect-fused-probes":
             from qwen35_moe_dflash.ge_fused.probes import inspect_fused_probes
             result = inspect_fused_probes(args.probe_run, args.ddk_root, args.output)
         elif args.command == "probe-fused-ops":
@@ -195,7 +205,8 @@ def main():
         elif args.command == "bindings-from-document":
             from qwen35_moe_dflash.ge_fused.bindings import write_document_bindings
             result = write_document_bindings(args.output, target=args.target, ddk_id=args.ddk_id,
-                                             gdn_initial_state_dtype=args.gdn_initial_state_dtype)
+                                             gdn_initial_state_dtype=args.gdn_initial_state_dtype,
+                                             gdn_state_source=args.gdn_state_source)
             print(json.dumps(result, ensure_ascii=False))
             return 0
         elif args.command in {"plan-stateful", "export-stateful"}:
@@ -277,6 +288,8 @@ def main():
         print(f"direct-model-air: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
     print(json.dumps({"status": result["status"], "output": args.output}, ensure_ascii=False))
+    if args.command == "check-tbe-platform":
+        return int(result["status"] != "RAW_UPDATE_SUCCEEDED")
     if args.command == "probe-fused-ops":
         return int(result["status"] in {"FAILED", "PARTIAL"})
     if args.command == "compare-fused-probes":

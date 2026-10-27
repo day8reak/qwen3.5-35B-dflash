@@ -153,3 +153,73 @@ document_bindings(target='test',ddk_id='test',gdn_initial_state_dtype='float32')
     result = subprocess.run([sys.executable, "-c", source], env=env, cwd=tmp_path,
                             text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
+
+
+_INSTALLED_STATE = """
+GlobalTensor<half> isGlobal;
+GlobalTensor<half> lsGlobal;
+isGlobal.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(initial_state), stateElements);
+lsGlobal.SetGlobalBuffer(
+    reinterpret_cast<__gm__ half *>(last_recurrent_state), stateElements);
+"""
+
+
+def test_installed_state_override_pins_composite_source_without_changing_document(tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    source = tmp_path / "installed/chunk_gated_delta_rule.cpp"
+    source.parent.mkdir()
+    source.write_text(_INSTALLED_STATE)
+    before = source.read_bytes(), module._DOCUMENT_PATH.read_bytes()
+    output = tmp_path / "generated/bindings.json"
+    result = module.write_document_bindings(output, target="kirinx90", ddk_id="declared-ddk",
+                                            gdn_initial_state_dtype="float16", gdn_state_source=source)
+    binding = OperatorBindings.from_file(output).manifest()
+    assert result["status"] == "BINDINGS_WITH_INSTALLED_GDN_STATE"
+    assert result["gdn_final_state_dtype"] == "float16"
+    assert result["kernel_installation"] == result["target_compatibility"] == "UNVERIFIED"
+    assert result["device_validation"] == "NOT_RUN"
+    assert binding["operators"]["gdn"]["outputs"]["final_state"]["dtype"] == "float16"
+    assert binding["operators"]["conv_state"] == make()["operators"]["conv_state"]
+    evidence_path = Path(binding["source"]["path"])
+    assert binding["source"]["sha256"] == hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    evidence = json.loads(evidence_path.read_text())
+    assert evidence["document"] == make()["source"]
+    assert evidence["installed_gdn_state"]["sha256"] == hashlib.sha256(before[0]).hexdigest()
+    assert set(evidence["installed_gdn_state"]["matches"]) == {"initial_state", "last_recurrent_state"}
+    assert evidence["installed_gdn_state"]["verification_kind"] == "BOUNDED_SOURCE_PATTERN"
+    assert evidence["compile_validation"] == evidence["device_validation"] == "NOT_RUN"
+    assert source.read_bytes() == before[0] and module._DOCUMENT_PATH.read_bytes() == before[1]
+    assert make()["operators"]["gdn"]["outputs"]["final_state"]["dtype"] == "float32"
+    with pytest.raises(FileExistsError):
+        module.write_document_bindings(output, target="kirinx90", ddk_id="declared-ddk",
+                                       gdn_initial_state_dtype="float16", gdn_state_source=source)
+
+
+@pytest.mark.parametrize("source_text", [
+    "// " + _INSTALLED_STATE.replace("\n", "\n// "),
+    "/*" + _INSTALLED_STATE + "*/",
+    _INSTALLED_STATE.replace("last_recurrent_state", "some_other_output"),
+    _INSTALLED_STATE.replace("__gm__ half *", "__gm__ float *"),
+    _INSTALLED_STATE.replace("GlobalTensor<half> lsGlobal", "GlobalTensor<float> lsGlobal"),
+    _INSTALLED_STATE + "\nGlobalTensor<float> other;\nother.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(last_recurrent_state));\n",
+    _INSTALLED_STATE.replace("(initial_state)", "(initial_state + offset)"),
+])
+def test_installed_state_override_rejects_missing_or_contradictory_evidence(tmp_path, monkeypatch, source_text):
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    source = tmp_path / "chunk_gated_delta_rule.cpp"
+    source.write_text(source_text)
+    output = tmp_path / "generated/bindings.json"
+    with pytest.raises(ValueError, match="GDN"):
+        module.write_document_bindings(output, target="kirinx90", ddk_id="declared-ddk",
+                                       gdn_initial_state_dtype="float16", gdn_state_source=source)
+    assert not output.exists() and not output.with_suffix(".sources.json").exists()
+
+
+def test_installed_state_override_requires_matching_input_dtype(tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    source = tmp_path / "chunk_gated_delta_rule.cpp"
+    source.write_text(_INSTALLED_STATE)
+    with pytest.raises(ValueError, match="requires.*float16"):
+        module.write_document_bindings(tmp_path / "out.json", target="kirinx90", ddk_id="declared-ddk",
+                                       gdn_initial_state_dtype="float32", gdn_state_source=source)
+    assert not (tmp_path / "out.json").exists()
