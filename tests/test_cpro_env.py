@@ -156,6 +156,49 @@ source "$1" "$2"
     assert restored["MODEL_PYTHON"] == inherited["MODEL_PYTHON"]
 
 
+@pytest.mark.parametrize("mode", ["complete", "missing-ir-build", "arm32-ir", "explicit"])
+def test_known_ddk_hiai_bundle_restores_all_three_libraries(config, mode):
+    path, values = config
+    ddk = Path(values["CPRO_DDK_ROOT"])
+    include = ddk / "ddk/ai_ddk_lib/include"
+    include.mkdir(parents=True)
+    (include / "HiAiModelManagerService.h").write_text("// previous runner interface\n")
+    libraries = []
+    for name in ("libhiai.so", "libhiai_ir.so", "libhiai_ir_build.so"):
+        library = ddk / "ddk/ai_ddk_lib/lib64" / name
+        libraries.append(str(library))
+        if mode == "missing-ir-build" and name == "libhiai_ir_build.so":
+            continue
+        library.parent.mkdir(parents=True, exist_ok=True)
+        machine = 40 if mode == "arm32-ir" and name == "libhiai_ir.so" else 183
+        ident = b"\x7fELF\x02\x01\x01" + bytes(9)
+        library.write_bytes(struct.pack("<16sHHIQQQIHHHHHH", ident, 3, machine, 1,
+                                        0, 0, 0, 0, 64, 56, 0, 64, 0, 0))
+    # The exact returned layout must win over other same-architecture copies.
+    for extra in ("tools/tools_sysdbg/libhiai.so", "ddk/hiai_pipe_lib/lib64/libhiai.so"):
+        extra_path = ddk / extra
+        extra_path.parent.mkdir(parents=True)
+        extra_path.write_bytes(Path(libraries[0]).read_bytes())
+    if mode != "explicit":
+        values.update(HIAI_INCLUDE_DIR="auto", HIAI_LIBRARIES="auto")
+    write_config(path, values)
+    result = bash(path, '''
+set -eu
+source "$1" "$2"
+"$3" -c 'import json,os; print(json.dumps([os.environ["HIAI_INCLUDE_DIR"], os.environ["HIAI_LIBRARIES"], os.environ["REPO_DIR"]]))'
+''')
+    if mode == "complete":
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == [str(include), ":".join(libraries), str(REPO)]
+    elif mode == "explicit":
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == [values["HIAI_INCLUDE_DIR"], values["HIAI_LIBRARIES"], str(REPO)]
+    else:
+        assert result.returncode != 0
+        assert "libhiai_ir" in result.stderr
+        assert not Path(values["AI_RUN_DIR"]).exists()
+
+
 @pytest.mark.parametrize("mode", ["unique", "ddk-ai", "ddk-pipe", "alias", "ambiguous",
                                  "ambiguous-ddk", "host-only", "glibc-only"])
 def test_auto_hiai_is_confined_to_selected_ddk_and_checks_architecture(config, mode):

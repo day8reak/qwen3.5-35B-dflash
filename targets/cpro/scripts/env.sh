@@ -79,6 +79,50 @@ _qwen35_load_env() (
     if [[ -z ${!name-} ]]; then printf 'cpro-env: missing %s in %s\n' "$name" "$config" >&2; errors=1; fi
   done
   [[ $errors == 0 ]] || return 1
+  # The user's previous runner configuration uses this complete DDK bundle.
+  # Resolve the declared layout before the generic single-library fallback;
+  # debug/pipe copies of libhiai.so are not substitutes for the three libraries.
+  bundle_root="$CPRO_DDK_ROOT/ddk/ai_ddk_lib"
+  if [[ -f $bundle_root/include/HiAiModelManagerService.h ]]; then
+    if [[ $HIAI_INCLUDE_DIR == auto ]]; then
+      resolved=$(realpath -- "$bundle_root/include/HiAiModelManagerService.h") || return 1
+      if [[ $resolved != "$(realpath -- "$CPRO_DDK_ROOT")/"* ]]; then
+        printf 'cpro-env: HIAI bundle header points outside the selected DDK: %s\n' "$resolved" >&2
+        return 1
+      fi
+      HIAI_INCLUDE_DIR="$bundle_root/include"
+    fi
+    if [[ $HIAI_LIBRARIES == auto && $(realpath -- "$HIAI_INCLUDE_DIR") == "$(realpath -- "$bundle_root/include")" ]]; then
+      if ! command -v readelf >/dev/null 2>&1; then
+        printf '%s\n' 'cpro-env: readelf is required to check the selected DDK HIAI bundle' >&2
+        return 1
+      fi
+      bundle_libraries=()
+      for library in libhiai.so libhiai_ir.so libhiai_ir_build.so; do
+        path="$bundle_root/lib64/$library"
+        if [[ ! -f $path ]]; then
+          printf 'cpro-env: incomplete ai_ddk_lib bundle, missing %s; restore it or set HIAI_LIBRARIES explicitly\n' "$path" >&2
+          return 1
+        fi
+        resolved=$(realpath -- "$path") || return 1
+        if [[ $resolved != "$(realpath -- "$CPRO_DDK_ROOT")/"* ]]; then
+          printf 'cpro-env: HIAI bundle library points outside the selected DDK: %s\n' "$path" >&2
+          return 1
+        fi
+        if ! elf=$(LC_ALL=C readelf -h -- "$resolved" 2>/dev/null) ||
+           ! dynamic=$(LC_ALL=C readelf -d -- "$resolved" 2>/dev/null) ||
+           ! versions=$(LC_ALL=C readelf -V -- "$resolved" 2>/dev/null) ||
+           [[ $elf != *ELF64* || $elf != *AArch64* || $elf != *DYN* || $elf != *"little endian"* ||
+              $dynamic == *'Shared library: [libc.so.6]'* || $versions == *GLIBC_* ]]; then
+          printf 'cpro-env: HIAI bundle library failed ARM64 ELF/dependency checks: %s\n' "$resolved" >&2
+          return 1
+        fi
+        bundle_libraries+=("$resolved")
+      done
+      HIAI_LIBRARIES=$(IFS=:; printf '%s' "${bundle_libraries[*]}")
+      printf 'cpro-env: using ai_ddk_lib headers and three-library bundle\n  include: %s\n  libraries: %s\n  OHOS ABI: pending link/device validation\n' "$HIAI_INCLUDE_DIR" "$HIAI_LIBRARIES" >&2
+    fi
+  fi
   if [[ $HIAI_INCLUDE_DIR == auto || $HIAI_LIBRARIES == auto ]]; then
     if [[ $CPRO_DDK_ROOT != /* || ! -d $CPRO_DDK_ROOT ]]; then
       printf '%s\n' 'cpro-env: HIAI auto lookup requires the selected absolute CPRO_DDK_ROOT' >&2
@@ -148,6 +192,7 @@ _qwen35_load_env() (
       if [[ ${#hiai_libs[@]} == 1 ]]; then HIAI_LIBRARIES=${hiai_libs[0]}; else
         printf 'cpro-env: found %s AArch64 libhiai.so candidates; set HIAI_LIBRARIES explicitly in %s\n' "${#hiai_libs[@]}" "$config" >&2
         printf '  %s\n' "${candidates[@]:0:12}" >&2
+        printf '%s\n' 'cpro-env: configuration was not loaded; caller variables (including REPO_DIR) are unchanged' >&2
         return 1
       fi
     fi

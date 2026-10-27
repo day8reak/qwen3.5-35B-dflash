@@ -41,7 +41,7 @@ export BIP='实际HDC服务器IP:端口'
 export SN='实际设备序列号'
 ```
 
-不用另填 `CPRO_DDK_ROOT`、`HDC` 或重写搜索路径：项目入口会读取 `DDK_PATH` 和PATH中的 `hdc`。HIAI头文件与OHOS ARM64库默认在选定DDK内查找，只有查找失败或存在歧义时才补显式路径。不要把OMG的主机 `LD_LIBRARY_PATH` 当作手机端链接库路径。
+不用另填 `CPRO_DDK_ROOT`、`HDC` 或重写搜索路径：项目入口会读取 `DDK_PATH` 和PATH中的 `hdc`。HIAI默认先识别用户回传的 `ddk/ai_ddk_lib/include` 与 `lib64` 三库布局；其他布局再在选定DDK内查找。只有查找失败或存在歧义时才补显式路径。不要把OMG的主机 `LD_LIBRARY_PATH` 当作手机端链接库路径。
 
 ### 第3步：首次保存配置
 
@@ -85,8 +85,8 @@ source targets/cpro/scripts/env.sh &&
 |---|---|
 | `CPRO_DDK_ROOT` | 使用已选DDK的 `DDK_PATH`；定位OMG、TBE和安装版算子源码。未加载DDK时需填写绝对路径 |
 | `HDC` | 已声明的HDC路径，或PATH中的 `hdc`；执行设备传输与命令。找不到时需填写实际可执行文件 |
-| `HIAI_INCLUDE_DIR` | 默认 `auto`，在所选DDK内查找唯一 `HiAiModelManagerService.h` 的父目录；也可明确指定 |
-| `HIAI_LIBRARIES` | 默认 `auto`，在所选DDK内查找手机端链接库；也可指定主机上的HarmonyOS ARM64库文件，多文件用冒号分隔 |
+| `HIAI_INCLUDE_DIR` | 默认 `auto`，优先所选DDK的 `ddk/ai_ddk_lib/include`；其他布局查找唯一 `HiAiModelManagerService.h` 的父目录；也可明确指定 |
+| `HIAI_LIBRARIES` | 默认 `auto`，配套上述头文件时选择 `ddk/ai_ddk_lib/lib64` 下 `libhiai.so`、`libhiai_ir.so`、`libhiai_ir_build.so` 三库；也可显式指定，多文件用冒号分隔 |
 
 vendor环境中常见的变量含义如下；入口保留它们，不生成重复配置。路径存在只说明环境已声明，不代表芯片编译或上板通过。
 
@@ -99,9 +99,25 @@ vendor环境中常见的变量含义如下；入口保留它们，不生成重�
 | `LD_LIBRARY_PATH` | 主机工具运行时的动态库查找路径；不是给手机部署的库列表 |
 | `PYTHONPATH` | vendor Python模块查找路径；项目入口仅补入缺少的仓库模块路径 |
 
-这些vendor变量不能替代 `CANN_ROOT`、OHOS Native SDK、准确DDK版本或实际手机端HIAI链接库的选择。`HIAI_LIBRARIES=auto` 只在已选DDK目录内查找，深度最多8层。通过 `readelf` 检查 `libhiai.so` 的ELF64、小端、AArch64和共享库类型，并排除明确依赖 `libc.so.6` 或 `GLIBC_*` 的库；不会要求目录名含 `ohos`。例如 `ddk/ai_ddk_lib/lib64`、`ddk/hiai_pipe_lib/lib64` 中的库也会检查，同一真实文件的符号链接只计一次。唯一候选才自动采用；头文件也必须唯一。不跟随目录链接扫描其他安装。没有GLIBC依赖也不证明OHOS ABI兼容，仍需真实链接及设备验证。
+这些vendor变量不能替代 `CANN_ROOT`、OHOS Native SDK、准确DDK版本或实际手机端HIAI链接库的选择。用户回贴的旧配置明确使用 `ddk/ai_ddk_lib/include` 与 `lib64` 三库；项目入口按该布局恢复完整列表，检查每个库的ELF64、小端、AArch64、共享库类型，并排除明确的GLIBC依赖。该布局缺任一库时报告缺失，不换用 `tools_sysdbg` 或 `hiai_pipe_lib` 的单个同名库。显式配置仍优先，布局识别不表示OHOS ABI或设备验证已通过。
 
-如果出现 `found 0` 或多个候选，输出会逐项列出架构不符、GLIBC依赖等排除理由，以及仍合格的链接候选。旧版仅因目录名不含 `ohos` 就报0，不能据此判断DDK缺库；先更新代码再source。若两份 `lib64/libhiai.so` 都是候选，不按目录名猜哪份正确：将已确认的路径写入报错指出的私有配置文件，例如 `HIAI_LIBRARIES='/实际DDK根目录/ddk/ai_ddk_lib/lib64/libhiai.so'`，再source。该例仅演示配置格式，不表示这份库已在用户设备验证。
+其他布局的自动查找只扫描已选DDK，深度最多8层，不跟随目录链接到其他安装；对 `libhiai.so` 做相同ELF/依赖检查，无 `ohos` 目录名要求，同一真实文件只计一次。唯一候选才自动采用；多个候选列出排除理由，要求显式配置。没有GLIBC依赖也不证明OHOS ABI兼容。
+
+### 恢复已知的HIAI三库配置
+
+如果旧版提示3份候选，或需要明确锁定之前使用的配置，可在仓库根目录执行下面两步。DDK环境已source即可；不依赖尚未成功导出的 `REPO_DIR`。
+
+```bash
+cat >> ../qwen35-cpro.env <<'EOF'
+
+# 之前使用的ai_ddk_lib头文件及完整三库；路径跟随已加载DDK。
+HIAI_INCLUDE_DIR="${DDK_PATH:?先加载DDK环境}/ddk/ai_ddk_lib/include"
+HIAI_LIBRARIES="${DDK_PATH}/ddk/ai_ddk_lib/lib64/libhiai.so:${DDK_PATH}/ddk/ai_ddk_lib/lib64/libhiai_ir.so:${DDK_PATH}/ddk/ai_ddk_lib/lib64/libhiai_ir_build.so"
+EOF
+source targets/cpro/scripts/env.sh
+```
+
+若此前指定了其他私有配置文件，将 `../qwen35-cpro.env` 换成报错显示的路径。末尾两项覆盖文件前面的旧HIAI值，其余配置保留。只有项目入口校验成功后才导出变量；失败时 `echo "$REPO_DIR"` 仍为空是整体加载未完成。无需因此重新设置所有项目变量。
 
 下面是按需使用的固定配置，不生成空占位：
 
