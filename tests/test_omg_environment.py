@@ -11,6 +11,7 @@ import pytest
 
 from qwen35_moe_dflash.compile import (
     _environment_record, _retain_failure_diagnostics, check_tbe_platform, compile_air, omg_environment,
+    prepare_tbe_compatibility, verify_tbe_compatibility,
 )
 from qwen35_moe_dflash.hashing import sha256_file
 
@@ -340,6 +341,90 @@ def test_diagnosis_raw_success_with_unresolved_soc_is_not_a_candidate(ddk, tmp_p
     for mode in ('requested', 'empty'):
         native = cases['current_omg_first_' + mode]['native']
         assert native['native_success'] is True and native['initialized_soc_preserved'] is False
+
+
+def _compatibility_diagnosis(ddk, tmp_path, monkeypatch, *, chained=False, duplicate=False):
+    import _ctypes
+    monkeypatch.setenv('AI_RUN_DIR', str(tmp_path))
+    python = _platform_comparison_packages(ddk)
+    library = ddk / 'tools/tools_omg/master/lib64/libplatform.so'
+    library.parent.mkdir(parents=True)
+    library.write_bytes(Path(_ctypes.__file__).read_bytes())  # real ELF mapping, mocked platform behavior
+    (python / 'tbe/common/platform/__init__.py').write_text("soc='unset'\ndef get_soc_spec(key): return soc\n")
+    (python / 'te/platform/cce_conf.py').write_text(
+        "from tbe.common import platform\ndef te_set_version(soc):\n"
+        "    assert soc == 'kirinx90'\n    platform.soc = 'InstalledAlias'\n")
+    native = ("import pathlib, json, ctypes\nfrom tbe.common import platform\n"
+              f"mapped_test_library = ctypes.CDLL({str(library)!r})\n"
+              "def get_global_func(name):\n"
+              "    def native(*args):\n"
+              "        pathlib.Path('called-args.json').write_text(json.dumps(args))\n"
+              "        return 'success' if args[0] == 'InstalledAlias' else 'error'\n"
+              "    return native\n"
+              "def te_update_version(soc_version, core_type='AiCore', aicore_num='', l1_fusion='false'):\n")
+    call = ("    value = get_global_func('cce.te_update_version')(soc_version, core_type, aicore_num, l1_fusion)\n"
+            if chained else "    func = get_global_func('cce.te_update_version')\n"
+                            "    value = func(soc_version, core_type, aicore_num, l1_fusion)\n")
+    (python / 'tbe/common/platform/platform_info.py').write_text(native + call * (2 if duplicate else 1) + '    return value\n')
+    folder = ddk / 'ddk/tbe/lib64'
+    folder.mkdir(parents=True)
+    with zipfile.ZipFile(folder / 'te-test.whl', 'w') as wheel:
+        for path in python.rglob('*.py'):
+            wheel.write(path, path.relative_to(python))
+    diagnosis = tmp_path / 'diagnosis'
+    check_tbe_platform(ddk, diagnosis, python=sys.executable, diagnose=True)
+    return diagnosis
+
+
+@pytest.mark.parametrize('chained', [False, True])
+def test_run_local_compatibility_applies_only_to_initialized_target_and_audits_real_child(ddk, tmp_path, monkeypatch, chained):
+    diagnosis = _compatibility_diagnosis(ddk, tmp_path, monkeypatch, chained=chained)
+    before = {path: path.read_bytes() for path in ddk.rglob('*') if path.is_file()}
+    inherited = omg_environment(ddk)[1]
+    env, metadata = prepare_tbe_compatibility(ddk, diagnosis, tmp_path / 'compat', inherited=inherited)
+    assert metadata['status'] == 'PREPARED' and verify_tbe_compatibility(metadata)['status'] == 'NOT_OBSERVED'
+    assert env['SOC_VERSION'] == 'kirinx90' and env['LD_LIBRARY_PATH'] == inherited['LD_LIBRARY_PATH']
+    assert env['PYTHONPATH'] != inherited.get('PYTHONPATH')
+    script = ("from te.platform import cce_conf\nfrom tbe.common.platform import platform_info as pi\n"
+              "cce_conf.te_set_version('kirinx90')\n"
+              "assert pi.te_update_version('kirinx90','VectorCore','9','true') == 'success'\n")
+    subprocess.run([sys.executable, '-c', script], cwd=tmp_path / 'compat', env=env, check=True, capture_output=True, text=True)
+    assert json.loads((tmp_path / 'compat/called-args.json').read_text()) == ['InstalledAlias', 'VectorCore', '9', 'true']
+    audit = verify_tbe_compatibility(metadata)
+    assert audit['status'] == 'APPLIED' and audit['events'][0]['pid'] != os.getpid()
+    assert audit['events'][0]['module_path'] == metadata['adapted_module']['path']
+    subprocess.run([sys.executable, '-c', "from tbe.common.platform import platform_info as pi; pi.te_update_version('other','X','4','false')"],
+                   cwd=tmp_path / 'compat', env=env, check=True, capture_output=True, text=True)
+    assert json.loads((tmp_path / 'compat/called-args.json').read_text()) == ['other', 'X', '4', 'false']
+    assert verify_tbe_compatibility(metadata)['events'][-1]['event'] == 'PASSTHROUGH'
+    failed = subprocess.run([sys.executable, '-c', "from tbe.common.platform import platform_info as pi; pi.te_update_version('kirinx90')"],
+                            cwd=tmp_path / 'compat', env=env, capture_output=True, text=True)
+    assert failed.returncode != 0 and 'requires the evidence-bound initialized SOC' in failed.stderr
+    assert verify_tbe_compatibility(metadata)['status'] == 'REJECTED'
+    assert all(path.read_bytes() == value for path, value in before.items())
+    assert not list(ddk.rglob('*.pyc'))
+
+
+def test_compatibility_rejects_ambiguous_source_and_changed_wheel(ddk, tmp_path, monkeypatch):
+    diagnosis = _compatibility_diagnosis(ddk, tmp_path, monkeypatch, duplicate=True)
+    with pytest.raises(ValueError, match='ambiguous native|handle is rebound'):
+        prepare_tbe_compatibility(ddk, diagnosis, tmp_path / 'ambiguous')
+    archive = ddk / 'ddk/tbe/lib64/te-test.whl'
+    archive.write_bytes(archive.read_bytes() + b'changed wheel identity')
+    with pytest.raises(ValueError, match='wheel differs'):
+        prepare_tbe_compatibility(ddk, diagnosis, tmp_path / 'changed')
+
+
+def test_compatibility_rejects_mixed_vendor_module_origins_in_actual_worker(ddk, tmp_path, monkeypatch):
+    diagnosis = _compatibility_diagnosis(ddk, tmp_path, monkeypatch)
+    env, metadata = prepare_tbe_compatibility(ddk, diagnosis, tmp_path / 'compat')
+    script = ("import sys, types\nfrom te.platform import cce_conf\nfrom tbe.common.platform import platform_info as pi\n"
+              "cce_conf.te_set_version('kirinx90')\nforeign=types.ModuleType('tbe.foreign')\n"
+              "foreign.__file__='/foreign/tbe/foreign.py'\nsys.modules['tbe.foreign']=foreign\npi.te_update_version('kirinx90')\n")
+    child = subprocess.run([sys.executable, '-c', script], cwd=tmp_path / 'compat', env=env, capture_output=True, text=True)
+    assert child.returncode != 0 and 'module provenance mismatch' in child.stderr
+    assert verify_tbe_compatibility(metadata)['status'] == 'REJECTED'
+    assert not (tmp_path / 'compat/called-args.json').exists()
 
 
 def test_diagnostic_retention_prioritizes_failure_and_respects_budget(tmp_path, monkeypatch):

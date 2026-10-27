@@ -17,41 +17,35 @@
 
 ## 用户现在执行什么
 
-**执行下面这一轮平台排查即可。** 上轮四组全部失败，单改库顺序没有解决问题。本轮 `--diagnose` 最多12组、`--jobs 4` 并行执行，覆盖Python包来源、库顺序和平台更新参数；每组30秒超时，完成一组立即显示结果。
-
-目标仍是 **CPro/X90（`kirinx90`）**。文档的 `Ascend310P3` 是原工程平台；日志的 `Ascend310B1` 是当前DDK调用 `te_set_version("kirinx90")` 后报告的内部名称。OMG命令一直使用 `--platform=kirinx90`，这轮只检查两个平台API是否使用不同名称。
+**平台排查已收敛，现在只重编译GDN prefill/decode两例。** `--tbe-diagnosis` 使用刚完成的12组报告，为本次OMG进程生成平台名称适配；`--cases` 跳过已知接口不匹配的conv/RMS。保留已生成的FP16状态 `GE_CUSTOM_BINDINGS`。
 
 ```bash
 cd "$REPO_DIR"
 git pull --ff-only
-export TBE_DIAG_JOB="$(mktemp -d "$AI_RUN_DIR/tbe-diagnose-XXXXXXXX")"
+export FUSED_PROBE_JOB="$(mktemp -d "$AI_RUN_DIR/fused-gdn-XXXXXXXX")"
+export FUSED_PROBE_RUN="$FUSED_PROBE_JOB/probes"
 export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" check-tbe-platform \
-  --ddk-root "$CPRO_DDK_ROOT" --python "$MODEL_PYTHON" \
-  --diagnose --jobs 4 --timeout-seconds 30 \
-  --output "$TBE_DIAG_JOB/diagnosis"
-cat "$TBE_DIAG_JOB/diagnosis/report.txt"
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" probe-fused-ops \
+  --bindings "${GE_CUSTOM_BINDINGS:?使用已生成的安装版FP16状态绑定}" \
+  --ge-root "$CANN_ROOT" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --cases gdn_prefill,gdn_decode \
+  --tbe-diagnosis "${TBE_DIAG_JOB:?设置刚完成的平台诊断目录}/diagnosis" \
+  --output "$FUSED_PROBE_RUN"
+cat "$FUSED_PROBE_RUN/report.txt"
 ```
 
-回传 `diagnosis/report.txt`。测试维度如下，按组合运行：
+回传 `report.txt`，包含实际编译结果和名称适配是否被工作进程调用。两例均编译成功后，可继续[板端批量执行](board-guide.md#融合算子调用探针)，脚本只执行本次选中的用例。
 
-| 维度 | 对照项 |
+**目标始终是CPro/X90：OMG仍传 `--platform=kirinx90`。** 当前DDK初始化该目标后报告内部名称 `Ascend310B1`；适配仅把TBE底层更新接口的参数改为经本次报告验证的当前名称，不改初始化目标。代码副本放在本次运行目录，不改DDK或当前Python安装。文档的 `Ascend310P3` 是原工程平台。
+
+| 当前结论 | 后续验证 |
 |---|---|
-| Python包 | 当前环境；当前DDK自带的唯一 `te-*.whl` 解压到本次运行目录 |
-| 动态库 | OMG目录优先；TBE目录优先 |
-| 平台更新参数 | `kirinx90`；初始化后查询到的SOC名；空字符串（包装API省略SOC时使用的值） |
+| 12组中，更新传 `kirinx90` 均失败；传内部名称/空值均成功且SOC保持 | 此次用内部名称适配重跑真实OMG |
+| 两种库顺序结果相同；当前环境与DDK wheel所列模块哈希一致 | 本轮保留OMG库优先，不重装Python包 |
+| 安装版GDN初态和末态均用FP16 | 用已有源码绑定重新生成AIR并编译 |
+| conv状态宽度要求4、RMS维推注册缺失 | 分别处理；本轮不重复编译 |
 
-全部先以 `kirinx90` 初始化。DDK wheel副本只用于独立诊断进程，不执行pip安装；来源不完整或不唯一会记录失败/跳过。`DIAGNOSIS_COMPLETE` 表示报告收集完成，某组更新成功也还需真实OMG编译验证。现有FP16 `GE_CUSTOM_BINDINGS` 保留，本轮不重建AIR或运行设备。
-
-| 已定位 | 下一步要核对 |
-|---|---|
-| 两种库顺序下，初始化均报告 `Ascend310B1`，随后传 `kirinx90` 更新均返回 `error` | 初始化/更新API的名称处理是否不同；这是待验证假设 |
-| 四组均使用当前环境的TBE Python包 | 当前DDK自带wheel与已安装包的行为是否一致 |
-| 安装版GDN用 `half*` 读初态、写末态 | 已增加源码绑定的FP16状态选项，真实编译和运行待验证 |
-| conv输入 `x2` 要求宽度4，文档写3 | 安装版状态顺序、输出与控制参数；不能直接给生产缓存补一个槽位 |
-| `AdnRmsNorm` 无可用维推函数 | 当前DDK的注册与实现是否配套 |
-
-原文档的FP32末态描述保留，安装源码覆盖另存 `.sources.json` 并记录SHA256。Conv/RMS仍未修复，不要直接使用本绑定启用这两个融合算子。后续编译现场会保存在 `cases/<用例>/compile-work/`。
+编译现场保留在 `cases/<用例>/compile-work/`；平台适配与调用记录在该用例的 `tbe-compat/`。API测试成功还不代表OMC编译或板端精度通过。
 
 首次生成安装版GDN状态绑定时执行；本次已成功生成的无需再运行：
 

@@ -36,6 +36,37 @@ _CASES = (("gdn_prefill", "gdn", 8), ("gdn_decode", "gdn", 1),
 _TYPES = {"gdn": "ChunkGatedDeltaRule", "conv_state": "LinearAttentionConvstateUpdate", "rms": "AdnRmsNorm"}
 
 
+def _select_cases(cases):
+    if cases is None:
+        return list(_CASES)
+    if isinstance(cases, str):
+        cases = cases.split(",")
+    if (not isinstance(cases, (list, tuple)) or not cases
+            or any(not isinstance(name, str) for name in cases)):
+        raise ValueError("cases must be a nonempty unique subset of known probe names")
+    known = {name for name, _, _ in _CASES}
+    if len(set(cases)) != len(cases) or not set(cases) <= known:
+        raise ValueError("cases must be a nonempty unique subset of known probe names")
+    return [case for case in _CASES if case[0] in cases]
+
+
+def _validate_probe_manifest(manifest):
+    if (manifest.get("artifact_kind") != "qwen35-fused-op-probes"
+            or type(manifest.get("schema_version")) is not int or manifest["schema_version"] != 1):
+        raise ValueError("expected a fused operator probe manifest")
+    selected = manifest.get("selected_cases", [item[0] for item in _CASES])
+    if not isinstance(selected, list) or selected != [item[0] for item in _select_cases(selected)]:
+        raise ValueError("probe selected_cases must be a canonical nonempty subset")
+    rows = manifest.get("cases")
+    if (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
+            or [row.get("name") for row in rows] != selected):
+        raise ValueError("probe cases must exactly match selected_cases (legacy manifests require all five)")
+    for row, (name, role, sequence) in zip(rows, _select_cases(selected)):
+        if (row.get("role") != role or type(row.get("sequence_length")) is not int or row["sequence_length"] != sequence
+                or row.get("operator_type") != _TYPES[role]):
+            raise ValueError(f"probe case contract disagrees with known case {name}")
+
+
 def inspect_fused_probes(probe_run, ddk_root, output_dir):
     """Read existing failures and installed interface text; never import or run it.
 
@@ -44,8 +75,7 @@ def inspect_fused_probes(probe_run, ddk_root, output_dir):
     """
     root, ddk = Path(probe_run).resolve(), Path(ddk_root).resolve()
     manifest = _stateful_json(root / "manifest.json")
-    if manifest.get("artifact_kind") != "qwen35-fused-op-probes":
-        raise ValueError("expected a fused operator probe manifest")
+    _validate_probe_manifest(manifest)
     if not ddk.is_dir():
         raise ValueError("ddk_root must be the existing selected DDK directory")
     output = output_path(output_dir)
@@ -379,7 +409,7 @@ def _export_case(folder, ge_root, cxx, cxx11_abi, timeout_seconds):
     return {"ge_root": str(ge), "libgraph_sha256": sha256_file(lib / "libgraph.so"), "cxx11_abi": cxx11_abi}
 
 
-def _compile_case(folder, ddk_root, timeout_seconds):
+def _compile_case(folder, ddk_root, timeout_seconds, tbe_diagnosis=None):
     omg, env = omg_environment(ddk_root)
     if not os.access(omg, os.X_OK):
         raise PermissionError("selected OMG executable is not executable")
@@ -396,9 +426,16 @@ def _compile_case(folder, ddk_root, timeout_seconds):
     save_json(folder / "compile-command.json", {
         "argv": command, "cwd": "compile-work",
         "diagnostics_retention": "Compiler work retained on success and failure; IPC temporary files cleaned."})
+    compatibility = None
+    invocation, outcome = "NOT_ATTEMPTED", "NOT_RUN"
     try:
+        if tbe_diagnosis is not None:
+            from ..compile import prepare_tbe_compatibility
+            env, compatibility = prepare_tbe_compatibility(ddk_root, tbe_diagnosis,
+                                                            folder / "tbe-compat", inherited=env)
         with _omg_ipc_environment(scratch, env) as (local_env, _):
             save_json(folder / "omg-environment.json", _environment_record(ddk_root, local_env))
+            invocation = "ATTEMPTED"
             _logged(command, folder=scratch, env=local_env, log=folder / "compile.log", timeout=timeout_seconds)
         model = scratch / "probe.omc"
         if model.is_symlink() or not model.is_file() or not model.stat().st_size:
@@ -406,8 +443,24 @@ def _compile_case(folder, ddk_root, timeout_seconds):
         for path in scratch.iterdir():
             if path.name.startswith("probe") and not path.is_symlink():
                 shutil.move(str(path), str(destination / path.name))
+        outcome = "PASSED"
     except Exception as error:
+        if invocation == "ATTEMPTED":
+            outcome = "FAILED"
         raise RuntimeError(f"{error}\nRetained compiler work: {scratch}") from error
+    finally:
+        if tbe_diagnosis is not None:
+            audit = {"status": "NOT_PREPARED" if compatibility is None else "NOT_OBSERVED"}
+            if compatibility is not None and invocation == "ATTEMPTED":
+                from ..compile import verify_tbe_compatibility
+                try:
+                    audit = verify_tbe_compatibility(compatibility)
+                except (OSError, ValueError, TypeError, KeyError) as error:
+                    audit = {"status": "AUDIT_FAILED", "error": str(error)}
+            save_json(folder / "tbe-compatibility-result.json", {
+                "compiler_invocation": invocation, "compile": outcome,
+                "audit": audit, "metadata": compatibility,
+                "scope": "Prepared files alone do not establish worker use; compiler outcome and adaptation audit are separate."})
     return {"omg_sha256": sha256_file(omg),
             "compile_work": str(scratch.relative_to(folder.parents[1])),
             "compiler_evidence": compile_evidence((folder / "compile.log").read_text(errors="replace"))}
@@ -452,18 +505,22 @@ def _bundle_case(root, case):
 
 
 def build_fused_probes(output_dir, bindings_path, *, ge_root=None, ddk_root=None, ddk_id=None,
-                       cxx="c++", cxx11_abi=0, timeout_seconds=3600):
+                       cxx="c++", cxx11_abi=0, timeout_seconds=3600, cases=None, tbe_diagnosis=None):
+    selected = _select_cases(cases)
+    selected_roles = {role for _, role, _ in selected}
     bindings = OperatorBindings.from_file(bindings_path)
-    bindings.require(_TYPES)
+    bindings.require(selected_roles)
     declared = bindings.manifest()
-    if any(declared["operators"][role]["op_type"] != name for role, name in _TYPES.items()):
-        raise ValueError("this probe suite requires the three documented operator types")
+    if any(declared["operators"][role]["op_type"] != _TYPES[role] for role in selected_roles):
+        raise ValueError("selected probes require the corresponding documented operator types")
     if (ddk_root is None) != (ddk_id is None) or (ddk_root is not None and ge_root is None):
         raise ValueError("compilation requires ge_root, ddk_root and ddk_id together")
     if ddk_root is not None and (declared["ddk_id"] != ddk_id or declared["target"] != "kirinx90"):
         raise ValueError("binding DDK identity and target must match selected DDK and OMG platform kirinx90")
     if type(cxx11_abi) is not int or cxx11_abi not in (0, 1) or timeout_seconds <= 0:
         raise ValueError("invalid C++ ABI or timeout")
+    if tbe_diagnosis is not None and ddk_root is None:
+        raise ValueError("tbe_diagnosis requires an actual DDK compilation")
     root = output_path(output_dir)
     root.mkdir(parents=True, exist_ok=False)
     (root / "bundle").mkdir()
@@ -471,7 +528,7 @@ def build_fused_probes(output_dir, bindings_path, *, ge_root=None, ddk_root=None
     if sha256_file(root / "bindings.json") != bindings.sha256:
         raise ValueError("bindings changed while copying")
     cases = []
-    for name, role, sequence in _CASES:
+    for name, role, sequence in selected:
         case = {"name": name, "role": role, "sequence_length": sequence, "operator_type": _TYPES[role],
                 "status": "FAILED", "construction": "NOT_RUN", "export": "NOT_RUN", "compile": "NOT_RUN",
                 "load": "NOT_RUN", "process": "NOT_RUN", "numerical": "NOT_RUN", "placement": "UNVERIFIED"}
@@ -485,7 +542,7 @@ def build_fused_probes(output_dir, bindings_path, *, ge_root=None, ddk_root=None
                 case.update(status="EXPORTED", export="PASSED", air=_record(folder / "probe.air", root))
             if ddk_root is not None:
                 stage = "compile"
-                case.update(_compile_case(folder, ddk_root, timeout_seconds))
+                case.update(_compile_case(folder, ddk_root, timeout_seconds, tbe_diagnosis))
                 case.update(status="COMPILED", compile="PASSED", ddk_id=ddk_id, platform="kirinx90")
                 case["model"] = _record(folder / "omc/probe.omc", root)
                 stage = "bundle"
@@ -493,8 +550,14 @@ def build_fused_probes(output_dir, bindings_path, *, ge_root=None, ddk_root=None
         except Exception as error:
             case.update(status="FAILED", failed_stage=stage, error=f"{type(error).__name__}: {error}")
             case[stage] = "FAILED"
+        compatibility_result = root / "cases" / name / "tbe-compatibility-result.json"
+        if compatibility_result.is_file():
+            case["tbe_compatibility"] = _stateful_json(compatibility_result)
         case["files"] = files_under(root / "cases" / name, root) if (root / "cases" / name).exists() else []
         cases.append(case)
+        if ddk_root is not None:
+            print(json.dumps({"case": name, "export": case["export"], "compile": case["compile"],
+                              "completed": len(cases), "total": len(selected)}), flush=True)
     compiled = [case["name"] for case in cases if case["status"] == "COMPILED"]
     script = '''#!/bin/sh
 set -u
@@ -528,6 +591,7 @@ printf '%s\\n' "$code" >"$results/{name}.exitcode"
               "status": next(iter(statuses)) if len(statuses) == 1 else "PARTIAL",
               "bindings": _record(root / "bindings.json", root), "binding_contract": declared,
               "ddk_id": ddk_id, "platform": "kirinx90" if ddk_root is not None else None,
+              "selected_cases": [name for name, _, _ in selected],
               "cases": cases, "run_script": _record(root / "bundle/run-board.sh", root),
               "reference_policy": "FP32 sequential GDN and RMS logic; outputs rounded to declared dtype; not kernel emulation. Conv y1 ordering is unspecified.",
               "device_execution": "NOT_RUN", "placement": "UNVERIFIED"}
@@ -543,6 +607,24 @@ def _report(path, cases):
                                 ("name", "construction", "export", "compile", "load", "process", "numerical", "placement")))
         if case.get("error"):
             lines.append("  " + case["error"])
+        if case.get("tbe_compatibility"):
+            compatibility = case["tbe_compatibility"]
+            audit = compatibility["audit"]
+            events = [event for event in audit.get("events", []) if isinstance(event, dict)]
+            summary = {"status": audit["status"],
+                       "applied_count": sum(event.get("event") == "APPLIED" for event in events),
+                       "rejected_count": sum(event.get("event") == "REJECTED" for event in events),
+                       "pids": sorted({event["pid"] for event in events
+                                       if type(event.get("pid")) is int and event["pid"] > 0}),
+                       "audit_log": audit.get("audit_log") or (compatibility.get("metadata") or {}).get("audit_log")}
+            error = audit.get("error") or next((event.get("error") or event.get("reason") for event in events
+                                               if event.get("event") == "REJECTED" and
+                                               (event.get("error") or event.get("reason"))), None)
+            if error:
+                summary["error"] = error
+            lines.append("  TBE compatibility: " + json.dumps({
+                "compiler_invocation": compatibility["compiler_invocation"],
+                "compile": compatibility["compile"], "audit": summary}, allow_nan=False))
         for item in case.get("diagnostics", []):
             lines.append("  " + json.dumps(item, allow_nan=False))
     lines.extend(["", "Numerical values are diagnostics without an acceptance threshold. Runtime placement remains UNVERIFIED.",
@@ -582,9 +664,7 @@ def compare_fused_probes(probe_run, board_run, output_dir, *, allow_host_fake=Fa
         raise ValueError("allow_host_fake must be boolean")
     root, board = Path(probe_run).resolve(), Path(board_run).resolve()
     manifest = _stateful_json(root / "manifest.json")
-    if (manifest.get("artifact_kind") != "qwen35-fused-op-probes" or manifest.get("schema_version") != 1
-            or [case.get("name") for case in manifest.get("cases", [])] != [item[0] for item in _CASES]):
-        raise ValueError("expected the complete five-case fused operator probe manifest")
+    _validate_probe_manifest(manifest)
     bindings = OperatorBindings.from_file(_step_file(root, manifest["bindings"]))
     if bindings.manifest() != manifest["binding_contract"]:
         raise ValueError("probe bindings differ from recorded contract")

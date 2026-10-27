@@ -89,7 +89,7 @@ cat "$BOARD_JOB/benchmark/comparison.json"
 
 ## 融合算子调用探针
 
-先按 [GE 指南](ge-guide.md#融合算子调用探针)生成并编译 5 个用例，再构建最新 runner。`BOARD_HIAI_LIB_DIR` 指板端已有且验证过的私有库目录；运行库版本、DDK 和固件标识均填写实际值。
+先按[当前更新](current-status.md#用户现在执行什么)编译所选用例，再构建最新 runner；以下脚本也适用于仅包含GDN两例的批次。`BOARD_HIAI_LIB_DIR` 指板端已有且验证过的私有库目录；运行库版本、DDK 和固件标识均填写实际值。
 
 ```bash
 "$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \

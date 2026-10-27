@@ -83,6 +83,127 @@ def test_five_source_graphs_are_exact_single_custom_ops(setup, tmp_path, monkeyp
     assert not list(root.rglob("*.air")) and not list(root.rglob("*.omc"))
 
 
+def test_selected_gdn_cases_compile_bundle_and_compare_in_canonical_order(setup, tmp_path, monkeypatch, capsys):
+    binding, ge, ddk = setup
+    calls = _mock_tools(monkeypatch)
+    root = tmp_path / "compiled"
+    manifest = build_fused_probes(root, binding, ge_root=ge, ddk_root=ddk, ddk_id="test-ddk",
+                                  cases=["gdn_decode", "gdn_prefill"])
+    assert manifest["selected_cases"] == ["gdn_prefill", "gdn_decode"]
+    assert len(calls) == 6 and len(manifest["cases"]) == 2
+    assert sorted(path.name for path in (root / "cases").iterdir()) == ["gdn_decode", "gdn_prefill"]
+    script = (root / "bundle/run-board.sh").read_text()
+    assert "gdn_prefill/step.tsv" in script and "gdn_decode/step.tsv" in script
+    assert "conv_prefill" not in script and "rms/step.tsv" not in script
+    progress = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [row["completed"] for row in progress] == [1, 2]
+    assert all(row["compile"] == "PASSED" and row["total"] == 2 for row in progress)
+    board = tmp_path / "board"
+    _fake_results(root, board, manifest)
+    comparison = compare_fused_probes(root, board, tmp_path / "compared", allow_host_fake=True)
+    assert len(comparison["cases"]) == 2 and all(row["process"] == "PASSED" for row in comparison["cases"])
+    inspection = inspect_fused_probes(root, ddk, tmp_path / "inspected")
+    assert [row["name"] for row in inspection["cases"]] == manifest["selected_cases"]
+
+
+@pytest.mark.parametrize("selected", [[], "", ["gdn_prefill", "gdn_prefill"], ["unknown"], [None]])
+def test_probe_selection_rejects_empty_duplicate_unknown_before_writing(setup, tmp_path, selected):
+    binding, _, _ = setup
+    with pytest.raises(ValueError, match="nonempty unique subset"):
+        build_fused_probes(tmp_path / "invalid", binding, cases=selected)
+    assert not (tmp_path / "invalid").exists()
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "unknown", "undeclared_subset", "wrong_contract"])
+def test_manifest_case_selection_rejects_incomplete_or_forged_rows(setup, tmp_path, mutation):
+    binding, _, ddk = setup
+    root = tmp_path / "source"
+    manifest = build_fused_probes(root, binding, cases="gdn_prefill,gdn_decode")
+    if mutation == "missing":
+        manifest["cases"].pop()
+    elif mutation == "duplicate":
+        manifest["selected_cases"] = ["gdn_prefill", "gdn_prefill"]
+        manifest["cases"][1] = manifest["cases"][0]
+    elif mutation == "unknown":
+        manifest["selected_cases"] = ["unknown"]
+        manifest["cases"] = [{"name": "unknown"}]
+    elif mutation == "undeclared_subset":
+        del manifest["selected_cases"]
+    else:
+        manifest["cases"][0]["operator_type"] = "DifferentOperator"
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError):
+        compare_fused_probes(root, tmp_path / "board", tmp_path / "compared")
+    with pytest.raises(ValueError):
+        inspect_fused_probes(root, ddk, tmp_path / "inspected")
+    assert not (tmp_path / "compared").exists() and not (tmp_path / "inspected").exists()
+
+
+def test_legacy_complete_manifest_without_selection_remains_readable(setup, tmp_path):
+    binding, _, ddk = setup
+    root = tmp_path / "source"
+    manifest = build_fused_probes(root, binding)
+    del manifest["selected_cases"]
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    assert len(inspect_fused_probes(root, ddk, tmp_path / "inspected")["cases"]) == 5
+    assert len(compare_fused_probes(root, tmp_path / "board", tmp_path / "compared")["cases"]) == 5
+
+
+def test_tbe_diagnosis_requires_compilation_and_distinguishes_audit_from_outcome(setup, tmp_path, monkeypatch):
+    from qwen35_moe_dflash import compile as compiler
+    binding, ge, ddk = setup
+    diagnosis = tmp_path / "diagnosis"
+    with pytest.raises(ValueError, match="actual DDK compilation"):
+        build_fused_probes(tmp_path / "invalid", binding, tbe_diagnosis=diagnosis)
+    assert not (tmp_path / "invalid").exists()
+    calls = _mock_tools(monkeypatch, fail="gdn_prefill")
+    tool_run = subprocess.run
+    prepared = []
+    def prepare(ddk_root, diagnosis_run, output_dir, *, inherited):
+        assert ddk_root == ddk and diagnosis_run == diagnosis
+        output_dir.mkdir()
+        audit = output_dir / "worker-audit.jsonl"
+        prepared.append(output_dir.parent.name)
+        return dict(inherited, MOCK_TBE_AUDIT=str(audit)), {"audit_log": str(audit)}
+    def verify(metadata):
+        audit = Path(metadata["audit_log"])
+        return {"status": "APPLIED" if audit.is_file() else "NOT_OBSERVED", "audit_log": str(audit),
+                "events": [{"event": "APPLIED", "pid": 123,
+                            "module_origins": {"tbe.module": "/mock/long-module-path"}}] if audit.is_file() else []}
+    def run(command, **kwargs):
+        if "--target=omc" in command:
+            assert "--platform=kirinx90" in command
+            audit = Path(kwargs["env"]["MOCK_TBE_AUDIT"])
+            if Path(kwargs["cwd"]).parent.name == "gdn_prefill":
+                audit.write_text('{"status":"ADAPTED"}\n')
+        return tool_run(command, **kwargs)
+    monkeypatch.setattr(compiler, "prepare_tbe_compatibility", prepare, raising=False)
+    monkeypatch.setattr(compiler, "verify_tbe_compatibility", verify, raising=False)
+    monkeypatch.setattr(subprocess, "run", run)
+    root = tmp_path / "compiled"
+    result = build_fused_probes(root, binding, ge_root=ge, ddk_root=ddk, ddk_id="test-ddk",
+                                cases="gdn_prefill,gdn_decode", tbe_diagnosis=diagnosis)
+    assert prepared == ["gdn_prefill", "gdn_decode"] and len(calls) == 6
+    failed, passed = result["cases"]
+    assert failed["compile"] == "FAILED" and failed["tbe_compatibility"]["audit"]["status"] == "APPLIED"
+    assert failed["tbe_compatibility"]["compile"] == "FAILED"
+    assert passed["compile"] == "PASSED" and passed["tbe_compatibility"]["audit"]["status"] == "NOT_OBSERVED"
+    assert passed["tbe_compatibility"]["compiler_invocation"] == "ATTEMPTED"
+    report = (root / "report.txt").read_text()
+    assert "APPLIED" in report and "NOT_OBSERVED" in report
+    assert '"applied_count": 1' in report and '"pids": [123]' in report and '"audit_log":' in report
+    assert "module_origins" not in report and "long-module-path" not in report
+    assert failed["tbe_compatibility"]["audit"]["events"][0]["module_origins"]
+    from qwen35_moe_dflash.ge_fused.probes import _report
+    rejected = dict(failed, tbe_compatibility=dict(failed["tbe_compatibility"], audit={
+        "status": "REJECTED", "events": [{"event": "REJECTED", "pid": 456,
+                                           "error": "module provenance mismatch", "module_origins": {"tbe": "wrong"}}]}))
+    _report(tmp_path / "rejected.txt", [rejected])
+    rejected_report = (tmp_path / "rejected.txt").read_text()
+    assert '"rejected_count": 1' in rejected_report and "module provenance mismatch" in rejected_report
+    assert "module_origins" not in rejected_report
+
+
 def test_export_compile_boundaries_and_continue_after_failure(setup, tmp_path, monkeypatch):
     binding, ge, ddk = setup
     calls = _mock_tools(monkeypatch, fail="gdn_prefill")

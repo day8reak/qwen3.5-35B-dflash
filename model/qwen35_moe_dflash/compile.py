@@ -1,4 +1,5 @@
 """Hash-checked AIR -> OMG --framework=1 -> OMC. Never invokes ATC or ONNX."""
+import ast
 import json
 import math
 import os
@@ -275,6 +276,193 @@ def _platform_wheel_copy(ddk_root, root):
                           unpacked_bytes=sum(item.file_size for item in entries))
     except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as error:
         result["error"] = str(error)
+    return result
+
+
+_TBE_COMPAT_HELPER = '''
+def _qwen35_tbe_update_soc_compat(requested):
+    import hashlib, json, os, pathlib, sys
+    config = __QWEN35_CONFIG__
+    event = {"pid": os.getpid(), "requested_soc": requested, "native_soc": requested,
+             "module_path": str(pathlib.Path(__file__).resolve()), "event": "PASSTHROUGH",
+             "scope": "Argument adaptation before the native update, not compiler success"}
+    try:
+        if requested == "kirinx90":
+            from tbe.common.platform import get_soc_spec
+            current = get_soc_spec("SOC_VERSION")
+            event["current_soc"] = current
+            wheel = pathlib.Path(config["wheel_root"])
+            origins = {name: str(pathlib.Path(module.__file__).resolve())
+                       for name, module in list(sys.modules.items())
+                       if name.split('.')[0] in {"te", "tbe", "te_fusion"} and getattr(module, "__file__", None)}
+            event["module_origins"] = origins
+            event["mapped_libraries"] = sorted({line.split()[-1] for line in pathlib.Path("/proc/self/maps").read_text().splitlines()
+                                                if any(name in line for name in ("libtvm", "libplatform", "libcce"))})
+            event["module_sha256"] = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()
+            if current != config["expected_initialized_soc"]:
+                raise RuntimeError("TBE compatibility requires the evidence-bound initialized SOC; got " + repr(current))
+            if event["module_path"] != config["module_path"] or any(not pathlib.Path(path).is_relative_to(wheel) for path in origins.values()):
+                raise RuntimeError("TBE compatibility module provenance mismatch; vendor package mixed or not selected")
+            if not set(config["expected_native_libraries"]).issubset(event["mapped_libraries"]):
+                raise RuntimeError("TBE compatibility native library provenance differs from the selected diagnosis")
+            event.update(event="APPLIED", native_soc=current)
+    except Exception as error:
+        event.update(event="REJECTED", error=repr(error))
+        raise
+    finally:
+        fd = os.open(config["audit_log"], os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, (json.dumps(event, default=repr) + "\\n").encode())
+        finally:
+            os.close(fd)
+    return event["native_soc"]
+
+'''
+
+
+def prepare_tbe_compatibility(ddk_root, diagnosis_run, output_dir, *, inherited=None):
+    """Prepare an explicit, evidence-bound run-local wrapper; default OMG is unchanged."""
+    evidence_root, ddk = Path(diagnosis_run).resolve(), Path(ddk_root).resolve()
+    report_path = evidence_root / 'report.json'
+    report = _stateful_json(report_path)
+    names = {f'{package}_{order}_{mode}' for package in ('current', 'wheel')
+             for order in ('omg_first', 'tbe_first') for mode in ('requested', 'reported', 'empty')}
+    cases = report.get('cases', [])
+    if (report.get('artifact_kind') != 'qwen35-tbe-platform-diagnosis' or report.get('status') != 'DIAGNOSIS_COMPLETE'
+            or len(cases) != 12 or {case.get('name') for case in cases} != names):
+        raise ValueError('TBE compatibility requires the complete 12-case diagnosis report')
+    selected = {case['name']: case for case in cases}
+    candidate, control = selected['wheel_omg_first_reported'], selected['wheel_omg_first_requested']
+    inventory = {item['path']: item for item in report.get('files', [])}
+    for case in (candidate, control):
+        record = inventory.get(case.get('report'))
+        if record is None:
+            raise ValueError('diagnosis lacks hash-bound candidate/control reports')
+        actual = _stateful_json(checked_file(evidence_root, record))
+        if any(actual.get(key) != case.get(key) for key in ('native', 'status', 'returncode')):
+            raise ValueError('diagnosis case differs from its hash-bound report')
+    native, requested = candidate.get('native') or {}, control.get('native') or {}
+    expected = native.get('after_init', {}).get('SOC_VERSION')
+    if (candidate['status'] != 'RAW_UPDATE_SUCCEEDED' or native.get('native_success') is not True
+            or native.get('initialized_soc_preserved') is not True or native.get('stage') != 'COMPLETE'
+            or not isinstance(expected, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_.-]*', expected)
+            or expected.lower() in {'unknown', 'none', 'null', 'error'} or expected == 'kirinx90'
+            or native.get('after', {}).get('SOC_VERSION') != expected
+            or native.get('native_arguments') != [expected, 'AiCore', '', 'false']
+            or native.get('init_api', {}).get('arguments') != ['kirinx90']
+            or native.get('package_provenance', {}).get('status') != 'ISOLATED'
+            or control['status'] != 'FAILED' or requested.get('stage') != 'COMPLETE'
+            or requested.get('native_success') is not False
+            or requested.get('native_arguments') != ['kirinx90', 'AiCore', '', 'false']
+            or candidate.get('returncode') != 0 or control.get('returncode') != 0
+            or requested.get('after_init', {}).get('SOC_VERSION') != expected
+            or requested.get('after', {}).get('SOC_VERSION') != expected
+            or native.get('init_api') != requested.get('init_api')
+            or native.get('modules') != requested.get('modules')
+            or native.get('mapped_libraries') != requested.get('mapped_libraries')):
+        raise ValueError('diagnosis does not establish the requested-versus-reported same-target update mismatch')
+    old_wheel = Path(report['wheel']['root']).resolve()
+    modules = list(native.get('modules', {}).values()) + [native.get('init_api', {})]
+    for module in modules:
+        if not module.get('path'):
+            continue
+        path = Path(module['path']).resolve()
+        if old_wheel not in path.parents or evidence_root not in path.parents or sha256_file(path) != module.get('sha256'):
+            raise ValueError('diagnosis vendor module origin/hash mismatch')
+        record = inventory.get(path.relative_to(evidence_root).as_posix())
+        if record is None or checked_file(evidence_root, record) != path:
+            raise ValueError('diagnosis module is not retained in its file inventory')
+    root = output_path(output_dir)
+    if root == evidence_root or evidence_root in root.parents or root == ddk or ddk in root.parents:
+        raise ValueError('compatibility output must be separate from diagnosis and DDK')
+    root.mkdir(parents=True, exist_ok=False)
+    wheel = _platform_wheel_copy(ddk, root)
+    if wheel.get('status') != 'READY' or wheel.get('sha256') != report.get('wheel', {}).get('sha256'):
+        raise ValueError('selected DDK wheel differs from the diagnosis: ' + str(wheel))
+    original = native['modules']['tbe.common.platform.platform_info']
+    relative = Path(original['path']).resolve().relative_to(old_wheel)
+    module_path = Path(wheel['root']) / relative
+    payload = module_path.read_bytes()
+    if sha256_file(module_path) != original['sha256']:
+        raise ValueError('new wheel platform_info.py differs from the diagnosed source')
+    tree = ast.parse(payload)
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'te_update_version']
+    if len(functions) != 1 or any(isinstance(node, ast.Name) and node.id == '_qwen35_tbe_update_soc_compat' for node in ast.walk(tree)):
+        raise ValueError('expected one unmodified platform_info.te_update_version function')
+    function = functions[0]
+    def lookup(node):
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'get_global_func'
+                and not node.keywords and len(node.args) == 1 and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == 'cce.te_update_version')
+    handles = {node.targets[0].id for node in ast.walk(function) if isinstance(node, ast.Assign)
+               and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and lookup(node.value)}
+    if any(sum(isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id == name
+               for node in ast.walk(function)) != 1 for name in handles):
+        raise ValueError('native update function handle is rebound; no adaptation applied')
+    calls = [node for node in ast.walk(function) if isinstance(node, ast.Call)
+             and (lookup(node.func) or isinstance(node.func, ast.Name) and node.func.id in handles)]
+    if (len(calls) != 1 or calls[0].keywords or len(calls[0].args) != 4
+            or [getattr(arg, 'id', None) for arg in calls[0].args] != ['soc_version', 'core_type', 'aicore_num', 'l1_fusion']):
+        raise ValueError('unrecognized or ambiguous native te_update_version call; no adaptation applied')
+    mapped = native.get('mapped_libraries')
+    if not isinstance(mapped, list) or any(not isinstance(path, str) for path in mapped):
+        raise ValueError('diagnosis native library provenance is missing or invalid')
+    expected_libraries = [path for path in mapped
+                          if any(name in Path(path).name for name in ('libtvm', 'libplatform', 'libcce'))]
+    if not expected_libraries or any(not Path(path).resolve().is_relative_to(ddk) for path in expected_libraries):
+        raise ValueError('diagnosis native platform libraries are outside the selected DDK')
+    config = {'wheel_root': wheel['root'], 'module_path': str(module_path), 'expected_initialized_soc': expected,
+              'expected_native_libraries': expected_libraries, 'audit_log': str(root / 'worker-audit.jsonl')}
+    lines = payload.splitlines(keepends=True)
+    arg = calls[0].args[0]
+    start, end = sum(map(len, lines[:arg.lineno - 1])) + arg.col_offset, sum(map(len, lines[:arg.end_lineno - 1])) + arg.end_col_offset
+    patched = payload[:start] + b'_qwen35_tbe_update_soc_compat(' + payload[start:end] + b')' + payload[end:]
+    insertion = sum(map(len, lines[:min([function.lineno] + [node.lineno for node in function.decorator_list]) - 1]))
+    helper = _TBE_COMPAT_HELPER.replace('__QWEN35_CONFIG__', repr(config)).encode()
+    patched = patched[:insertion] + helper + patched[insertion:]
+    ast.parse(patched)
+    original_path = root / 'platform_info.original.py'
+    original_path.write_bytes(payload)
+    module_path.write_bytes(patched)
+    metadata = {**config, 'status': 'PREPARED', 'candidate': candidate['name'], 'wheel': wheel,
+                'diagnosis_report': {'path': str(report_path), 'sha256': sha256_file(report_path)},
+                'original_module': {'path': str(original_path), 'sha256': original['sha256']},
+                'adapted_module': {'path': str(module_path), 'sha256': sha256_file(module_path)},
+                'scope': 'Run-local native-update argument compatibility only; APPLIED requires a real worker audit.'}
+    save_json(root / 'compatibility.json', metadata)
+    env = dict(inherited) if inherited is not None else omg_environment(ddk)[1]
+    roots = [Path(wheel['root'])] + list(Path(wheel['root']).glob('*.data/purelib'))
+    env['PYTHONPATH'] = _prepend_paths(roots, env.get('PYTHONPATH', ''))
+    return env, metadata
+
+
+def verify_tbe_compatibility(metadata):
+    """Report observed worker adaptation separately from actual OMG success/failure."""
+    result = {'status': 'NOT_OBSERVED', 'audit_log': metadata['audit_log'], 'events': []}
+    try:
+        path = Path(metadata['audit_log'])
+        if not path.is_file():
+            return result
+        if path.is_symlink() or path.stat().st_size > 8 * 1024 * 1024:
+            raise ValueError('invalid/oversized worker compatibility audit')
+        result['events'] = [json.loads(line) for line in path.read_text().splitlines()]
+        for event in result['events']:
+            if not isinstance(event, dict):
+                raise ValueError('worker audit contains a non-object event')
+            if event.get('event') != 'APPLIED':
+                continue
+            if (type(event.get('pid')) is not int or event['pid'] <= 0
+                    or event.get('requested_soc') != 'kirinx90' or event.get('current_soc') != metadata['expected_initialized_soc']
+                    or event.get('native_soc') != metadata['expected_initialized_soc']
+                    or event.get('module_path') != metadata['adapted_module']['path']
+                    or event.get('module_sha256') != metadata['adapted_module']['sha256']):
+                raise ValueError('worker audit differs from prepared adaptation')
+            result['status'] = 'APPLIED'
+        if any(event.get('event') == 'REJECTED' for event in result['events']):
+            result['status'] = 'REJECTED'
+        result['audit_sha256'] = sha256_file(path)
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        result.update(status='REJECTED', error=str(error))
     return result
 
 
