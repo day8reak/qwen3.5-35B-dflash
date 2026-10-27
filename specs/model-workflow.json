@@ -3,7 +3,7 @@
   "updated": "2026-10-27",
   "active_phase": "integration",
   "delivery_status": "HOST_IMPLEMENTED_DEVICE_INTEGRATION_PENDING",
-  "run_id": "20261027T042416Z-26211-1de593",
+  "run_id": "20261027T083100Z-6254-881432",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -68,6 +68,75 @@
           "date": "2026-10-27",
           "source": "USER_PASTED_REPORT",
           "artifact_hash_verification": "NOT_RECHECKED",
+          "platform": "kirinx90",
+          "board_run_name": "fused-all-97b7612ef879",
+          "status": "FAILED",
+          "case_groups": [
+            {
+              "cases": [
+                "gdn_prefill",
+                "gdn_decode",
+                "cache_prefill",
+                "cache_decode"
+              ],
+              "construction": "PASSED",
+              "export": "PASSED",
+              "compile": "PASSED",
+              "load": "PASSED",
+              "process": "PASSED",
+              "numerical": "DIAGNOSTIC_COMPLETE"
+            },
+            {
+              "cases": [
+                "conv_prefill",
+                "conv_decode",
+                "rms"
+              ],
+              "construction": "PASSED",
+              "export": "PASSED",
+              "compile": "FAILED",
+              "load": "NOT_RUN",
+              "process": "NOT_RUN",
+              "numerical": "NOT_RUN"
+            },
+            {
+              "cases": [
+                "attention_prefill",
+                "attention_decode"
+              ],
+              "construction": "PASSED",
+              "export": "FAILED",
+              "compile": "NOT_RUN",
+              "load": "NOT_RUN",
+              "process": "NOT_RUN",
+              "numerical": "NOT_RUN"
+            }
+          ],
+          "placement": "UNVERIFIED",
+          "scope": "User pasted nine-case summary and subsequent detailed logs. GDN/Cache load and process completed; Cache has no numerical golden and prior GDN numerical mismatch remains unresolved. Original artifacts not obtained for local hash validation.",
+          "next_command_document": "docs/current-status.md#用户现在执行什么",
+          "next_action": "Retry Attention with corrected optional-port verification; reuse previous GDN/Cache OMC and inspect installed Conv/RMS interfaces and format registration without changing shared DDK.",
+          "failures": {
+            "conv_prefill_decode": {
+              "stage": "compile",
+              "observed": "Width-4 input passed initial shape inference; y2 [1,8192,1,11] / [1,8192,1,4], then generated_lib reports Not supported OP and Get format configs failed. This does not prove global kernel absence.",
+              "tbe_compatibility_applied_count": 0
+            },
+            "rms": {
+              "stage": "compile",
+              "observed": "Get AdnRmsNorm infershape func failed.",
+              "tbe_compatibility_applied_count": 0
+            },
+            "attention_prefill_decode": {
+              "stage": "export",
+              "observed": "GE recipe failed: input port order mismatch. Source verifier incorrectly treats compact connected ports as complete schema slots."
+            }
+          }
+        },
+        "previous_gdn_user_report": {
+          "date": "2026-10-27",
+          "source": "USER_PASTED_REPORT",
+          "artifact_hash_verification": "NOT_RECHECKED",
           "ddk_id": "100.520.020.010",
           "platform": "kirinx90",
           "cases": [
@@ -120,7 +189,7 @@
       "status": "pending",
       "owner": "model-workflow",
       "evidence": "docs/ge-guide.md",
-      "note": "Five custom operator types now have standalone invocation probes. GDN user-reported load/process completed with large numerical mismatches; remaining operator calls unverified."
+      "note": "Nine standalone cases attempted. User reports GDN/Cache load/process completed; Conv/RMS compile failed and Attention export failed. Numerical correctness and execution placement are unverified."
     },
     {
       "name": "integration",
@@ -129,7 +198,7 @@
       "evidence": "docs/current-status.md",
       "working_directory": "$AI_RUN_DIR",
       "next_command_document": "docs/current-status.md#用户现在执行什么",
-      "note": "First complete invocation coverage of all five required custom operator types. Reuse GDN OMC, compile missing cases and execute successful compilations through run_fused_probes.py --all-ops. Numerical alignment and full model integration remain incomplete."
+      "note": "Complete remaining Conv/RMS/Attention invocation coverage. Correct confirmed Attention exporter port verification; inspect Conv format registration and RMS missing inference registration. Preserve passed GDN/Cache artifacts. Numerical alignment and full model integration remain incomplete."
     },
     {
       "name": "accuracy",

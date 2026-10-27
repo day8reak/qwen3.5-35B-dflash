@@ -19,7 +19,7 @@ from qwen35_moe_dflash.elf_dynamic import dynamic_info
 from qwen35_moe_dflash.ge_fused.bindings import OperatorBindings
 from qwen35_moe_dflash.ge_fused.export import _step_file
 from qwen35_moe_dflash.ge_fused.probes import (
-    _CASES, _validate_probe_manifest, _wire, build_fused_probes, compare_fused_probes,
+    _CASES, _validate_probe_manifest, _wire, build_fused_probes, compare_fused_probes, inspect_fused_probes,
 )
 from qwen35_moe_dflash.hashing import sha256_file
 from qwen35_moe_dflash.hdc_run import Hdc, _file_record, _positive, _relative, _text, _upload
@@ -34,11 +34,12 @@ def parser():
     result.add_argument("--output", help="new directory below AI_RUN_DIR; otherwise allocated automatically")
     result.add_argument("--all-ops", action="store_true",
                         help="reuse compiled cases, compile missing cases for all five custom operators, then run all compiled cases")
+    result.add_argument("--retry-cases", help="with --all-ops, compile only these missing comma-separated cases; --probe-run may be an earlier all-ops batch")
     result.add_argument("--timeout-seconds", type=_positive, default=3600)
     return result
 
 
-def _prepare(root):
+def _prepare(root, *, allow_empty=False):
     manifest = _stateful_json(root / "manifest.json")
     _validate_probe_manifest(manifest)
     if manifest.get("platform") != "kirinx90":
@@ -87,7 +88,7 @@ def _prepare(root):
             remote = path.relative_to(root).as_posix()
             uploads[remote] = _file_record(path, remote)
         compiled.append(case)
-    if not compiled:
+    if not compiled and not allow_empty:
         raise ValueError("no successfully compiled fused probe cases; no model compilation is performed here")
     return manifest, compiled, list(uploads.values())
 
@@ -319,6 +320,51 @@ def _compile_missing(root, output, missing):
     )
 
 
+def _probe_groups(root, out):
+    """Read one prior batch's explicit manifests, never recursively discover runs."""
+    if (root / "manifest.json").is_file():
+        paths, recorded = [root], {}
+    else:
+        batch = _stateful_json(root / "result.json")
+        paths = batch.get("probe_runs")
+        if (batch.get("model_compilation") != "MISSING_CASES_ONLY" or not isinstance(paths, list)
+                or not 1 <= len(paths) <= len(_CASES) or any(not isinstance(path, str) for path in paths)):
+            raise ValueError("expected a probe manifest or all-ops result with at most nine explicit probe_runs")
+        recorded = batch.get("probe_manifests", {})
+        if not isinstance(recorded, dict):
+            raise ValueError("invalid recorded probe manifest hashes")
+        if any(not Path(path).expanduser().is_absolute() for path in paths):
+            raise ValueError("recorded probe paths must be absolute")
+        paths = [Path(_text(path, "recorded probe path")).expanduser().resolve() for path in paths]
+        if len(set(paths)) != len(paths):
+            raise ValueError("duplicate recorded probe directory")
+        if recorded and set(recorded) != {str(path) for path in paths}:
+            raise ValueError("recorded manifest hashes do not cover the probe directories")
+    groups, compiled_names, identity = [], set(), None
+    for path in paths:
+        if path == out or path in out.parents or out in path.parents:
+            raise ValueError("batch output must be separate from every recorded probe directory")
+        digest = recorded.get(str(path))
+        if digest is not None and digest != sha256_file(path / "manifest.json"):
+            raise ValueError("recorded probe manifest SHA256 mismatch: " + str(path))
+        manifest, compiled, _ = _prepare(path, allow_empty=True)
+        current = (manifest["ddk_id"], manifest["binding_contract"])
+        if identity is not None and identity != current:
+            raise ValueError("recorded probe DDK or binding identities differ")
+        identity = current
+        names = {case["name"] for case in compiled}
+        if compiled_names & names:
+            raise ValueError("compiled cases occur in multiple recorded manifests: " + ", ".join(sorted(compiled_names & names)))
+        compiled_names.update(names)
+        groups.append((path, manifest))
+    return groups, compiled_names
+
+
+def _error_detail(error):
+    text = str(error)
+    return text if len(text) <= 16000 else text[:8000] + "\n[excerpt omitted; see full log]\n" + text[-8000:]
+
+
 def run_all(args):
     """Keep old and new manifests separate; reuse only their recorded binaries."""
     storage = Path(_text(os.environ.get("AI_RUN_DIR"), "AI_RUN_DIR"))
@@ -334,25 +380,45 @@ def run_all(args):
         root = Path(_text(args.probe_run, "FUSED_PROBE_RUN / --probe-run")).expanduser().resolve()
         if root == out or root in out.parents:
             raise ValueError("batch output must be separate from the existing probe directory")
-        original, compiled, _ = _prepare(root)
+        groups, reusable = _probe_groups(root, out)
+        source, original = groups[0]
         if os.environ.get("CPRO_DDK_ID") and os.environ["CPRO_DDK_ID"] != original["ddk_id"]:
             raise ValueError("CPRO_DDK_ID differs from the compiled probe manifest")
-        reusable = {case["name"] for case in compiled}
         missing = [name for name in rows if name not in reusable]
+        requested = getattr(args, "retry_cases", None)
+        if requested is not None:
+            selected = requested.split(",")
+            if not selected or len(set(selected)) != len(selected) or not set(selected) <= set(rows):
+                raise ValueError("--retry-cases must be unique known comma-separated case names")
+            missing = [name for name in missing if name in selected]
         result.update(reused_cases=sorted(reusable), compiled_cases_requested=missing)
-        groups = [(root, original)]
         if missing:
             print("fused-all: compiling missing cases: " + ", ".join(missing), flush=True)
             generated = out / "probes"
             try:
-                manifest = _compile_missing(root, generated, missing)
+                manifest = _compile_missing(source, generated, missing)
                 groups.append((generated, manifest))
             except Exception as error:
                 result["compile_error"] = f"{type(error).__name__}: {error}"
+        if requested is not None:
+            failed = next((path for path, manifest in reversed(groups)
+                           if any(case["role"] in {"conv_state", "rms"} and case.get("compile") == "FAILED"
+                                  for case in manifest["cases"])), None)
+            if failed is not None:
+                try:
+                    inspection = inspect_fused_probes(failed, _text(os.environ.get("CPRO_DDK_ROOT"), "CPRO_DDK_ROOT"), out / "inspection")
+                    result["inspection"] = str(out / "inspection")
+                    result["installed_registration"] = inspection.get("installed_registration", {})
+                except Exception as error:
+                    result["inspection_error"] = f"{type(error).__name__}: {error}"
         runner_cache = {}
+        result["probe_manifests"] = {}
         for index, (probe_run, manifest) in enumerate(groups):
             result["probe_runs"].append(str(probe_run))
+            result["probe_manifests"][str(probe_run)] = sha256_file(probe_run / "manifest.json")
             for case in manifest["cases"]:
+                if case["name"] in reusable and case.get("status") != "COMPILED":
+                    continue
                 rows[case["name"]].pop("error", None)
                 rows[case["name"]].update(load="NOT_RUN", process="NOT_RUN", numerical="NOT_RUN")
                 rows[case["name"]].update({key: case[key] for key in
@@ -367,6 +433,8 @@ def run_all(args):
                 comparison = Path(board_args.output) / "comparison/report.json"
                 if comparison.is_file():
                     for case in _stateful_json(comparison)["cases"]:
+                        if rows[case["name"]].get("probe_run") != str(probe_run):
+                            continue
                         # A failed legacy case can be retried by the new group.
                         rows[case["name"]].update({key: case[key] for key in
                             ("load", "process", "numerical", "error") if key in case})
@@ -386,13 +454,24 @@ def run_all(args):
         lines.append(" | ".join(str(row[key]) for key in
             ("name", "construction", "export", "compile", "load", "process", "numerical")))
         if row.get("error"):
-            lines.append("  " + row["error"][:400])
+            lines.append("  " + _error_detail(row["error"]))
     for item in result["executions"]:
         lines.append(f"Board result: {item['output']} ({item['status']})")
         if item.get("error"):
-            lines.append("  " + item["error"][:400])
+            lines.append("  " + _error_detail(item["error"]))
     for probe_run in result["probe_runs"]:
         lines.append("Compilation details: " + str(Path(probe_run) / "report.txt"))
+    if result.get("inspection"):
+        lines.append("Read-only DDK inspection: " + str(Path(result["inspection"]) / "report.txt"))
+        registration = result.get("installed_registration", {})
+        for record in registration.get("records", [])[:12]:
+            lines.append("  " + str(record.get("path", "registration metadata")))
+            for snippet in record.get("excerpts", [])[:6]:
+                lines.append(f"    L{snippet.get('line', '?')}: {str(snippet.get('text', ''))[:500]}")
+        if not registration.get("records"):
+            lines.append("  No matching registration text in the scanned roots; installed implementation remains unresolved.")
+    if result.get("inspection_error"):
+        lines.append("Read-only inspection: " + _error_detail(result["inspection_error"]))
     for key in ("error", "compile_error"):
         if key in result:
             lines.append(result[key])
@@ -407,6 +486,8 @@ def run_all(args):
 def main(argv=None):
     try:
         args = parser().parse_args(argv)
+        if args.retry_cases is not None and not args.all_ops:
+            raise ValueError("--retry-cases requires --all-ops")
         result = run_all(args) if args.all_ops else execute(args)
     except Exception as error:
         print(f"fused-board: {type(error).__name__}: {error}", file=sys.stderr)

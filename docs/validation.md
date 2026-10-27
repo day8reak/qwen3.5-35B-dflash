@@ -4,6 +4,22 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 五类算子最新批量回传
+
+2026-10-27，用户回传 `fused-all-97b7612ef879`，来源为粘贴总表，原始产物未在本地重新核验：
+
+| 用例 | AIR导出 | OMC编译 | 加载 / 执行 | 数值 |
+|---|---|---|---|---|
+| GDN prefill/decode | PASSED | PASSED（复用） | PASSED / PASSED | DIAGNOSTIC_COMPLETE；此前明显偏差尚未解决 |
+| CacheUpdate prefill/decode | PASSED | PASSED | PASSED / PASSED | DIAGNOSTIC_COMPLETE；无golden，不能判精度通过 |
+| ConvStateUpdate prefill/decode | PASSED | FAILED | NOT_RUN / NOT_RUN | NOT_RUN |
+| AdnRmsNorm | PASSED | FAILED | NOT_RUN / NOT_RUN | NOT_RUN |
+| AdnFusedInferAttention prefill/decode | FAILED | NOT_RUN | NOT_RUN / NOT_RUN | NOT_RUN |
+
+全部执行位置仍为UNVERIFIED。随后完整日志确认：Attention两例报 `GE recipe failed: input port order mismatch`；导出器将8个连接端口当成完整18个注册端口校验，需保留可选端口间隔，修正后重试真实GE/OMG和上板。conv宽度4已通过初始维推，y2分别为 `[1,8192,1,11]` / `[1,8192,1,4]`，后续报 `Not supported OP`（`generated_lib`）及 `Get format configs failed`；这是本次编译路径的格式配置失败，不能直接断言整个DDK没有kernel。RMS仍报 `AdnRmsNorm` 维推函数缺失。conv/RMS未观察到TBE兼容适配调用（0次），不应归因于此前GDN的平台更新错误。
+
+本次已修正Attention导出器按注册槽位校验描述符和连边。主机C++回归运行实际生成的校验函数：旧逻辑复现端口顺序失败，新逻辑接受可选槽位空缺，并拒绝错序、错误描述符/来源及额外连接；recipe解析测试本身不覆盖这一步。真实GE导出、OMG编译与上板待上述重试。
+
 ## 自定义算子调用覆盖与GDN板端回传
 
 2026-10-27，用户回传 `fused-board-ec7f1df7f0b1`：GDN prefill/decode均加载、执行成功，但数值明显不符。prefill核心输出relL2约0.9992、末态约0.8856；decode核心输出全零（参考非零）、末态relL2约0.9696。来源为用户粘贴报告，原始结果未在本地重新核验；该记录只证明报告中的调用完成，不能作为精度或NPU执行位置通过。

@@ -6,19 +6,17 @@
 
 ## 用户现在执行什么
 
-**先跑通全部五类自定义算子的调用。** `--all-ops` 复用已有GDN OMC，补编conv、RMS、CacheUpdate和分页Attention，共覆盖9个用例；编译失败不阻止其它用例上板。
-
-沿用现有环境、`FUSED_PROBE_RUN`、`CANN_ROOT`、`CPRO_DDK_ROOT` 和 `TBE_DIAG_JOB`。更新代码后执行：
+**GDN和CacheUpdate已完成加载/执行；Attention导出器已修正，conv/RMS仍有DDK注册问题待查。** 更新后只重编Attention两例，并自动收集conv/RMS的DDK注册文本：
 
 ```bash
 cd "$REPO_DIR"
 git pull --ff-only
-"$MODEL_PYTHON" targets/cpro/scripts/run_fused_probes.py --all-ops
+"$MODEL_PYTHON" targets/cpro/scripts/run_fused_probes.py --all-ops \
+  --probe-run "$AI_RUN_DIR/fused-all-97b7612ef879" \
+  --retry-cases attention_prefill,attention_decode
 ```
 
-脚本只构建一次runner，自动上传、查询版本、执行和回收；结果放在 `$AI_RUN_DIR/fused-all-*`。conv使用DDK日志要求的宽度4候选，输出顺序尚未确认；RMS仍使用原名 `AdnRmsNorm`，缺注册会明确列为失败。
-
-回传最后打印的 `report.txt` 总表；各组详细结果位于 `board-*/comparison/report.txt`。所有日志保留。当前先检查调用覆盖，GDN数值异常保留记录，全部调用确认后再集中对齐精度。
+`--probe-run` 是上次批量运行的目录；沿用 `CANN_ROOT`、`CPRO_DDK_ROOT`、`TBE_DIAG_JOB` 和HDC环境。脚本复用GDN/Cache四个OMC，连同新编译成功的Attention上板；conv/RMS不重复编译，其失败继续保留在总表。回传最后打印的报告，完整注册检查在新目录的 `inspection/report.txt`。脚本不修改DDK。
 
 ## 当前状态
 
@@ -26,7 +24,7 @@ git pull --ff-only
 |---|---|
 | PyTorch完整结构 | 全尺寸meta模型及层级FX图；不加载权重 |
 | GE完整结构 | target/draft完整节点、连边、C++和recipe；融合可选 |
-| 自定义算子探针 | 五类9例代码已齐；GDN两例用户回传加载/执行通过，但数值明显偏离；其余待批量验证 |
+| 自定义算子探针 | 五类9例已批量尝试；GDN/CacheUpdate四例加载和执行通过，conv/RMS编译失败，Attention导出失败 |
 | 真实权重AIR导出 | 旧双图支持完整FP16；新GE target支持显式缓存 |
 | 状态执行 | 主机fake prefill→decode接续通过；真实板端待验证 |
 | 尚未完成 | W4A8映射、常驻缓存与native DFlash调度、完整模型设备精度和性能 |
@@ -38,8 +36,10 @@ git pull --ff-only
 | GDN两例 | 用户回传加载/执行通过；decode核心输出全零，prefill核心输出relL2约0.999；未通过精度验收 |
 | 编译目标 | 始终为 `kirinx90`；`Ascend310B1` 是DDK初始化后返回的内部名称，`Ascend310P3` 是原工程平台 |
 | GDN状态 | 安装版初态/末态为FP16；本次runner修正了末态只接受FP32的旧校验 |
-| conv / RMS | 状态宽度4与文档3不一致 / 当前维推注册缺失，分别待处理 |
-| CacheUpdate / Attention | 新增prefill/decode独立探针；Attention包含动态K/V端口及可选端口占位，待真实编译/上板 |
+| conv | 宽度4已通过初始维推；生成的y2为 `[1,8192,1,S+3]`，随后格式配置失败；不能据此断言DDK完全没有kernel |
+| RMS | 本次仍找不到 `AdnRmsNorm` 维推函数，尚未进入板端执行 |
+| CacheUpdate | prefill/decode两例编译、加载和执行通过；无数值golden，不代表精度通过 |
+| Attention | 两例确认报 `input port order mismatch`；导出器可选端口校验修正后需重试真实GE/OMG和上板 |
 | 尚未验证 | 全部五类调用覆盖、正确数值及NPU执行位置；完整模型与连续状态验证另行进行 |
 
 ## 完整模型构图（按需）

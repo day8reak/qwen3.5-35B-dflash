@@ -94,6 +94,8 @@ def inspect_fused_probes(probe_run, ddk_root, output_dir):
                        r"AttributeError|OSError|FileNotFoundError|KeyError|SyntaxError)\b|"
                        r"fatal error:|LLVM ERROR|Segmentation fault|core dumped|undefined symbol|"
                        r"compiler process died|Input .*must be|infershape func failed|"
+                       r"GE recipe failed|port order mismatch|Get format configs failed|"
+                       r"find op format config failed|Not supported OP|"
                        r"No such file or directory|\bKilled\b|\bAborted\b", re.I)
     crash = re.compile(r"Traceback|\b[A-Za-z]+Error:|fatal error:|LLVM ERROR|Segmentation fault|"
                        r"core dumped|undefined symbol|\bKilled\b|\bAborted\b", re.I)
@@ -148,6 +150,8 @@ def inspect_fused_probes(probe_run, ddk_root, output_dir):
         name = case["name"]
         folder = root / "cases" / name
         logs = [folder / "compile.log"]
+        if (folder / "export.log").is_file():
+            logs.append(folder / "export.log")
         work = folder / "compile-work"
         if work.is_dir() and not work.is_symlink():
             logs += sorted(p for p in work.rglob("*") if p.suffix in {".log", ".err", ".txt"})[:12]
@@ -181,7 +185,8 @@ def inspect_fused_probes(probe_run, ddk_root, output_dir):
         reports.append(item)
     sources = []
     ops = ddk / "ddk/ascendc/ops"
-    names = ("chunkgateddeltarule", "linearattentionconvstateupdate", "adnrmsnorm")
+    names = ("chunkgateddeltarule", "linearattentionconvstateupdate", "adnrmsnorm",
+             "cacheupdate", "adnfusedinferattention")
     if ops.is_dir():
         for path in sorted(ops.rglob("*")):
             name = re.sub(r"[^a-z0-9]", "", path.stem.lower())
@@ -203,6 +208,42 @@ def inspect_fused_probes(probe_run, ddk_root, output_dir):
                     sources[-1]["state_storage"] = [{"line": i + 1, "text": lines[i]} for i in indices]
                 if len(sources) == 24:
                     break
+    # Format/implementation registrations often live in shared configuration
+    # files, not in a filename containing the op name. Read bounded text only.
+    registration = {"roots": [], "files_read": 0, "bytes_read": 0, "limited": False,
+                    "records": [], "scope": "Text matches only; absence does not prove missing registration or kernel."}
+    registration_pattern = re.compile(r"LinearAttentionConvstateUpdate|linear_attention_convstate_update|"
+                                      r"AdnRmsNorm|adn_rms_norm|\bRmsNorm\b|\brms_norm\b")
+    for relative_root in ("ddk/ascendc/ops", "ddk/tbe/ops", "ddk/ascendc/conf", "ddk/ascendcpp/conf",
+                          "tools/tools_omg/master/config", "tools/tools_omg/master/conf"):
+        search_root = ddk / relative_root
+        registration["roots"].append({"path": str(search_root), "exists": search_root.is_dir()})
+        if not search_root.is_dir() or search_root.is_symlink():
+            continue
+        for path in search_root.rglob("*"):
+            if path.suffix.lower() not in {".json", ".ini", ".cfg", ".conf", ".xml"}:
+                continue
+            if registration["files_read"] >= 2048 or len(registration["records"]) >= 12:
+                registration["limited"] = True
+                break
+            try:
+                resolved = path.resolve()
+                if ddk not in resolved.parents or not resolved.is_file():
+                    continue
+                size = resolved.stat().st_size
+                if size > 8 << 20 or registration["bytes_read"] + size > 64 << 20:
+                    registration["limited"] = True
+                    continue
+                registration["files_read"] += 1
+                payload = resolved.read_bytes()
+                registration["bytes_read"] += len(payload)
+                if not registration_pattern.search(payload.decode("utf-8", errors="replace")):
+                    continue
+                relative = path.relative_to(ddk)
+                registration["records"].append(read_text(
+                    path, ddk, "registration/" + relative.as_posix(), registration_pattern, 6))
+            except OSError:
+                registration["limited"] = True
     platform_sources = []
     for index, path in enumerate(sorted(platform_paths)[:4]):
         # Only this exact traceback-named module is eligible outside the run/DDK.
@@ -239,10 +280,11 @@ def inspect_fused_probes(probe_run, ddk_root, output_dir):
     result = {"schema_version": 1, "artifact_kind": "qwen35-fused-probe-inspection", "status": "INSPECTED",
               "probe_manifest_sha256": sha256_file(root / "manifest.json"), "ddk_root": str(ddk),
               "declared_ddk_id": manifest.get("ddk_id"), "cases": reports, "installed_sources": sources,
+              "installed_registration": registration,
               "library_paths": libraries, "platform_sources": platform_sources, "ddk_directories": directories,
               "new_compilation": "NOT_RUN", "device_execution": "NOT_RUN",
               "scope": "Read-only excerpts and copies; no DDK code imported, no bindings changed, no installed-kernel claim.",
-              "limits": "At most 24 interface files, 4 traceback-named platform modules, 13 logs/case, 4 tracebacks/log (60 lines each); 32 MiB/file. Absence is not proof of no registration. Old compiler work may be removed."}
+              "limits": "At most 24 interface files, 4 traceback-named platform modules, 14 logs/case, 4 tracebacks/log (60 lines each); 32 MiB/file. Registration scan: 2048 files, 8 MiB/file, 64 MiB payload; at most 12 matches re-read for copying. Absence is not proof of no registration. Old compiler work may be removed."}
     save_json(output / "report.json", result)
     lines = ["Existing fused probe failure inspection (no compilation or device execution)",
              f"DDK identity (declared): {manifest.get('ddk_id')}", ""]
@@ -263,6 +305,11 @@ def inspect_fused_probes(probe_run, ddk_root, output_dir):
             lines.append(f"  L{entry['line']}: {entry['text']}")
     if not sources:
         lines.append("No matching interface source filename found under selected DDK/ddk/ascendc/ops; registration is unresolved.")
+    lines.append("\nSelected DDK registration text (read only):")
+    lines.append(json.dumps({key: value for key, value in registration.items() if key != "records"}))
+    for record in registration["records"]:
+        lines.append(f"{record['source']} [{record['status']}]")
+        lines.extend(f"  L{entry['line']}: {entry['text']}" for entry in record.get("excerpts", []))
     lines.append("\nTraceback-named TBE platform source (read/AST only; never imported):")
     for record in platform_sources:
         lines.append(f"{record['source']} [{record['status']}]")

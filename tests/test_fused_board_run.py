@@ -369,3 +369,125 @@ def test_all_ops_compiles_only_missing_cases_and_keeps_each_bundle(case, monkeyp
         assert 'AdnRmsNorm infershape func failed' in (case['output'] / 'report.txt').read_text()
     assert case['original'] == {str(path.relative_to(case['probe'])): sha256_file(path)
                                 for path in case['probe'].rglob('*') if path.is_file()}
+
+
+def _partial_batch(case, monkeypatch):
+    """Recorded first batch: GDN and Cache compile; all remaining calls fail."""
+    batch = case['root'] / 'prior-all'
+    batch.mkdir()
+
+    def export(folder, *unused):
+        if folder.name.startswith('attention'):
+            raise RuntimeError('SIMULATED GE recipe failed: input port order mismatch')
+        (folder / 'probe.air').write_bytes(b'SIMULATED AIR')
+        return {'simulation': True}
+
+    def compile_one(folder, *unused):
+        if not folder.name.startswith('cache'):
+            raise RuntimeError('SIMULATED long command ' + 'x' * 600 + '\nGet format configs failed')
+        (folder / 'omc').mkdir()
+        (folder / 'omc/probe.omc').write_bytes(b'SIMULATED OMC')
+        return {'simulation': True}
+
+    with monkeypatch.context() as build:
+        build.setattr(probes, '_export_case', export)
+        build.setattr(probes, '_compile_case', compile_one)
+        probes.build_fused_probes(batch / 'probes', case['probe'] / 'bindings.json',
+                                  ge_root=case['root'], ddk_root=case['root'], ddk_id='SIMULATED-DDK',
+                                  cases=[name for name, _, _ in probes._CASES if not name.startswith('gdn')],
+                                  conv_history_width=4)
+    (batch / 'result.json').write_text(json.dumps({'model_compilation': 'MISSING_CASES_ONLY',
+                                                  'probe_runs': [str(case['probe']), str(batch / 'probes')]}))
+    return batch
+
+
+def test_all_ops_resumes_batch_and_only_retries_attention(case, monkeypatch):
+    batch = _partial_batch(case, monkeypatch)
+    calls, executed, inspected = [], [], []
+
+    def compile_missing(root, output, selected):
+        calls.append(selected)
+
+        def export(folder, *unused):
+            (folder / 'probe.air').write_bytes(b'SIMULATED corrected AIR')
+            return {'simulation': True}
+
+        def compile_one(folder, *unused):
+            (folder / 'omc').mkdir()
+            (folder / 'omc/probe.omc').write_bytes(b'SIMULATED corrected OMC')
+            return {'simulation': True}
+
+        with monkeypatch.context() as build:
+            build.setattr(probes, '_export_case', export)
+            build.setattr(probes, '_compile_case', compile_one)
+            return probes.build_fused_probes(output, root / 'bindings.json', ge_root=case['root'],
+                                            ddk_root=case['root'], ddk_id='SIMULATED-DDK', cases=selected)
+
+    def execute(args, *, runner_cache):
+        manifest, compiled, _ = case['module']._prepare(Path(args.probe_run))
+        executed.extend(row['name'] for row in compiled)
+        output = Path(args.output)
+        (output / 'comparison').mkdir(parents=True)
+        rows = [{'name': row['name'], 'load': 'PASSED' if row['status'] == 'COMPILED' else 'NOT_RUN',
+                 'process': 'PASSED' if row['status'] == 'COMPILED' else 'NOT_RUN', 'numerical': 'DIAGNOSTIC_COMPLETE'}
+                for row in manifest['cases']]
+        (output / 'comparison/report.json').write_text(json.dumps({'cases': rows}))
+        return {'status': 'EXECUTION_COMPLETE', 'output': str(output)}
+
+    def inspect(root, ddk, output):
+        inspected.append(root)
+        return probes.inspect_fused_probes(root, ddk, output)
+
+    selected_ddk = case['root'] / 'selected-ddk'
+    registration = selected_ddk / 'ddk/ascendc/ops/config/fixture.ini'
+    registration.parent.mkdir(parents=True)
+    registration.write_text('[LinearAttentionConvstateUpdate]\nfixture=SIMULATED Conv registration\n')
+
+    monkeypatch.setattr(case['module'], '_compile_missing', compile_missing)
+    monkeypatch.setattr(case['module'], 'execute', execute)
+    monkeypatch.setattr(case['module'], 'inspect_fused_probes', inspect)
+    monkeypatch.setenv('CPRO_DDK_ROOT', str(selected_ddk))
+    code = case['module'].main(['--all-ops', '--probe-run', str(batch), '--output', str(case['output']),
+                               '--retry-cases', 'attention_prefill,attention_decode'])
+    result = json.loads((case['output'] / 'result.json').read_text())
+    assert code == 1 and result['status'] == 'FAILED'  # Conv/RMS remain unresolved.
+    assert calls == [['attention_prefill', 'attention_decode']]
+    assert result['reused_cases'] == ['cache_decode', 'cache_prefill', 'gdn_decode', 'gdn_prefill']
+    assert set(executed) == set(result['reused_cases']) | set(calls[0])
+    assert inspected == [batch / 'probes']
+    rows = {row['name']: row for row in result['cases']}
+    assert all(rows[name]['process'] == 'PASSED' for name in executed)
+    assert all(rows[name]['compile'] == 'FAILED' for name in ['conv_prefill', 'conv_decode', 'rms'])
+    assert len(result['probe_runs']) == len(result['probe_manifests']) == 3
+    report = (case['output'] / 'report.txt').read_text()
+    assert 'Get format configs failed' in report  # Was hidden by [:400].
+    assert 'SIMULATED Conv registration' in report
+    assert case['original'] == {str(path.relative_to(case['probe'])): sha256_file(path)
+                                for path in case['probe'].rglob('*') if path.is_file()}
+
+
+@pytest.mark.parametrize('damage', ['model', 'manifest-hash', 'identity', 'nested-batch', 'duplicate-compiled'])
+def test_all_ops_resumed_artifacts_are_validated_before_retry(case, monkeypatch, damage):
+    batch = _partial_batch(case, monkeypatch)
+    path = batch / 'result.json'
+    record = json.loads(path.read_text())
+    if damage == 'model':
+        (batch / 'probes/cases/cache_prefill/omc/probe.omc').write_bytes(b'tampered')
+    elif damage == 'manifest-hash':
+        record['probe_manifests'] = {str(case['probe']): '0' * 64}
+    elif damage == 'identity':
+        monkeypatch.setenv('CPRO_DDK_ID', 'DIFFERENT-DDK')
+    elif damage == 'nested-batch':
+        record['probe_runs'] = [str(batch)]
+    else:
+        import shutil
+        clone = case['root'] / 'duplicate-probes'
+        shutil.copytree(case['probe'], clone)
+        record['probe_runs'].append(str(clone))
+    path.write_text(json.dumps(record))
+    monkeypatch.setattr(case['module'], '_compile_missing', lambda *a: pytest.fail('invalid old artifacts must not compile'))
+    code = case['module'].main(['--all-ops', '--probe-run', str(batch), '--output', str(case['output']),
+                               '--retry-cases', 'attention_prefill,attention_decode'])
+    result = json.loads((case['output'] / 'result.json').read_text())
+    assert code == 1 and result['status'] == 'FAILED' and result.get('error')
+    assert not result['executions'] and not _calls(case)

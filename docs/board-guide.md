@@ -91,6 +91,8 @@ cat "$BOARD_JOB/benchmark/comparison.json"
 
 使用 `targets/cpro/scripts/run_fused_probes.py --all-ops` 一次完成五类算子的缺项编译、runner构建、上传、执行和回收。执行命令集中在[当前更新](current-status.md#用户现在执行什么)。已有 `FUSED_PROBE_RUN` 中编译成功的OMC直接复用，缺项另建目录；编译失败仍继续其余用例。省略 `--all-ops` 则只运行已有编译产物。
 
+`--all-ops --probe-run 上次批量目录 --retry-cases attention_prefill,attention_decode` 只重编指定缺项，并复用该批次各组已编译OMC。未重试的失败仍保留；已有conv/RMS编译失败时，自动读取DDK注册配置到 `inspection/`，不执行安装或改写DDK。
+
 默认新建独立板端目录，按原上板脚本的规则收集构建对应的运行库、排除DDK HCL库对，并加入 `/vendor/lib64/chipsetsdk` 搜索路径。`BOARD_HIAI_LIB_DIR` 可显式复用已有私有库目录。运行库版本和固件标识自动查询；传输文件校验SHA256，执行失败仍尝试回收。
 
 全部模式的 `report.txt` 汇总9例；`probes/` 为缺项编译产物，`board-*/` 分别保留原批次/新批次的上板记录。各组 `results/` 为输出和日志，`comparison/report.txt` 为详细诊断。runner在同次批量运行中只构建一次。成功和失败均保留板端目录；数值验收及NPU执行位置另行验证。

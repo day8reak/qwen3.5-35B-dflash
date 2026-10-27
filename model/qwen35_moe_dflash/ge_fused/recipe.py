@@ -18,7 +18,7 @@ import struct
 from ..ge_type_contracts import validate_record_types as _legacy_validate_record_types
 from ..ge_recipe import _CPP as _LEGACY_CPP, _string, _integer
 from ..ge_recipe_read import _Reader as _LegacyReader
-from .ir import ATTENTION_CONNECTED_PORTS, attention_registration_cpp
+from .ir import ATTENTION_INPUT_SCHEMA, ATTENTION_CONNECTED_PORTS, attention_registration_cpp
 
 _DT = {"float16": (1, 2), "int32": (2, 4), "int64": (3, 8), "bool": (4, 1),
        "float32": (5, 4), "int16": (6, 2)}
@@ -210,6 +210,41 @@ def emit_recipe_cpp(records, graph_name, input_indices, output_pairs, recipe_dir
 # The shared bounded reader is extended at explicit versioned seams. Assertions
 # prevent a future legacy reader edit from silently losing an extension. No
 # module globals are modified, and old recipes retain their original magic.
+def _attention_verifier_cpp():
+    # The recipe stores connected tensors only. Optional registered GE slots
+    # still occupy indices, so their positions cannot be inferred from that list.
+    names = [port + "0" if kind == "dynamic" else port for port, kind in ATTENTION_INPUT_SCHEMA]
+    return r'''
+const std::vector<std::string>& AttentionInputNames() {
+  static const std::vector<std::string> names = {@NAMES@}; return names;
+}
+int32_t ExpectedInputIndex(const Record& r, const Port& port, size_t compact) {
+  if (r.type != "AdnFusedInferAttention") return static_cast<int32_t>(compact);
+  const auto& names = AttentionInputNames();
+  auto found = std::find(names.begin(), names.end(), port.name);
+  Require(found != names.end(), "unknown attention input " + port.name);
+  return static_cast<int32_t>(std::distance(names.begin(), found));
+}
+void VerifyAttentionInputs(const ge::GNode& node, const Record& r) {
+  if (r.type != "AdnFusedInferAttention") return;
+  const auto& names = AttentionInputNames();
+  for (size_t i = 0; i < names.size(); ++i) {
+    int32_t index = -1;
+    const bool connected = std::any_of(r.inputs.begin(), r.inputs.end(), [&](const Port& p) { return p.name == names[i]; });
+    // GE can omit descriptors for unconnected optional ports. Connected names
+    // are always checked by Verify; inspect absent ports when GE exposes them.
+    if (node.GetInputIndexByName(ge::AscendString(names[i].c_str()), index) != ge::GRAPH_SUCCESS) {
+      Require(!connected, "missing attention schema port " + r.name + "/" + names[i]);
+      continue;
+    }
+    Require(index == static_cast<int32_t>(i), "attention schema port order mismatch " + r.name);
+    if (!connected) Require(node.GetInDataNodesAndPortIndexs(index).first == nullptr,
+                            "unexpected optional attention edge " + r.name + "/" + names[i]);
+  }
+}
+'''.replace("@NAMES@", ", ".join(json.dumps(name) for name in names))
+
+
 def _extended_cpp():
     source = _LEGACY_CPP
     replacements = (
@@ -225,6 +260,17 @@ def _extended_cpp():
         ('    if (r.type == "ConcatD")',
          '    if (r.type == "AdnFusedInferAttention") {\n' + attention_registration_cpp()
          + '\n    } else if (r.type == "ConcatD")', 1),
+        ('void Verify(ge::Graph& graph, const Recipe& recipe) {',
+         _attention_verifier_cpp() + '\nvoid Verify(ge::Graph& graph, const Recipe& recipe) {', 1),
+        ('node.GetInputsSize() == (r.type == "Data" ? 1 : r.inputs.size())',
+         '(node.GetInputsSize() == (r.type == "Data" ? 1 : r.inputs.size()) || '
+         '(r.type == "AdnFusedInferAttention" && node.GetInputsSize() == AttentionInputNames().size()))', 1),
+        ('    for (size_t i = 0; i < r.outputs.size(); ++i) {\n      int32_t index = -1;',
+         '    VerifyAttentionInputs(node, r);\n    for (size_t i = 0; i < r.outputs.size(); ++i) {\n      int32_t index = -1;', 1),
+        ('Require(index == static_cast<int32_t>(i), "input port order mismatch " + r.name);',
+         'Require(index == ExpectedInputIndex(r, p, i), "input port order mismatch " + r.name);', 1),
+        ('node.GetInputDesc(i, d)', 'node.GetInputDesc(index, d)', 1),
+        ('node.GetInDataNodesAndPortIndexs(i)', 'node.GetInDataNodesAndPortIndexs(index)', 1),
     )
     for old, new, expected in replacements:
         if source.count(old) != expected:

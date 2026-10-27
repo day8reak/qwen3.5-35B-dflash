@@ -156,6 +156,134 @@ def test_attention_recipe_cpp_parser_reads_dynamic_elements_and_absent_slots(set
     assert "AIR_EXPORTED" not in parsed.stdout  # host parser check, no GE/compiler/kernel claim
 
 
+def test_attention_compute_graph_verifier_preserves_optional_slots(tmp_path):
+    """Execute the generated Verify body against an explicit host graph fixture.
+
+    This tests our verifier, not GE registration, serialization or DDK support.
+    The fixture has 18 registered inputs and eight edges at noncompact indices.
+    """
+    from qwen35_moe_dflash.ge_fused.recipe import _CPP
+    from qwen35_moe_dflash.ge_recipe import _CPP as legacy_cpp
+    compiler = shutil.which("g++")
+    if compiler is None:
+        pytest.skip("C++ compiler unavailable")
+    structs = _CPP[_CPP.index("struct Desc {"):_CPP.index("class Reader {")]
+    fixture = r'''
+#include <algorithm>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+void Require(bool ok, const std::string& why) { if (!ok) throw std::runtime_error(why); }
+@STRUCTS@
+namespace ge {
+constexpr int GRAPH_SUCCESS = 0;
+struct AscendString { std::string value; AscendString() = default;
+  explicit AscendString(const char* s) : value(s) {} const char* GetString() const { return value.c_str(); } };
+using TensorDesc = Desc;
+struct Tensor { TensorDesc GetTensorDesc() const { return {}; } size_t GetSize() const { return 0; }
+  const uint8_t* GetData() const { return nullptr; } };
+struct GNode {
+  std::string name, type; std::vector<std::string> inputs, outputs;
+  int reported_input_count = -1;
+  std::vector<Desc> in_desc, out_desc;
+  std::vector<std::pair<std::shared_ptr<GNode>, int32_t>> edges;
+  int GetName(AscendString& v) const { v.value = name; return 0; }
+  int GetType(AscendString& v) const { v.value = type; return 0; }
+  size_t GetInputsSize() const { return reported_input_count >= 0 ? static_cast<size_t>(reported_input_count) : inputs.size(); }
+  size_t GetOutputsSize() const { return outputs.size(); }
+  static int Index(const std::vector<std::string>& ports, const AscendString& n, int32_t& i) {
+    auto it = std::find(ports.begin(), ports.end(), n.value); if (it == ports.end()) return 1;
+    i = static_cast<int32_t>(std::distance(ports.begin(), it)); return 0;
+  }
+  int GetInputIndexByName(const AscendString& n, int32_t& i) const { return Index(inputs, n, i); }
+  int GetOutputIndexByName(const AscendString& n, int32_t& i) const { return Index(outputs, n, i); }
+  int GetInputDesc(int32_t i, TensorDesc& d) const { d = in_desc.at(i); return 0; }
+  int GetOutputDesc(int32_t i, TensorDesc& d) const { d = out_desc.at(i); return 0; }
+  auto GetInDataNodesAndPortIndexs(int32_t i) const { return edges.at(i); }
+  int GetAttr(const AscendString&, Tensor&) const { return 1; }
+};
+struct Graph { std::vector<GNode> nodes; bool IsValid() const { return true; }
+  const auto& GetAllNodes() const { return nodes; } };
+}
+void Check(int status, const char* why) { Require(status == 0, why); }
+void VerifyDesc(const ge::TensorDesc& got, const Desc& want, const std::string& name) {
+  Require(got.dtype == want.dtype && got.shape == want.shape, "descriptor mismatch " + name);
+}
+void VerifyAttribute(const ge::GNode&, const Attr&) { throw std::runtime_error("fixture has no attributes"); }
+uint64_t Hash(const uint8_t*, size_t) { throw std::runtime_error("fixture has no constants"); }
+@VERIFIER@
+int main(int argc, char** argv) {
+  const std::string mode = argc > 1 ? argv[1] : "valid";
+  try {
+    const std::vector<std::string> names = {"query", "key0", "value0", "pse_shift", "atten_mask",
+      "actual_seq_lengths_q", "actual_seq_lengths_kv", "dequant_scale1", "quant_scale1", "dequant_scale2",
+      "quant_scale2", "quant_offset2", "antiquant_scale", "antiquant_offset", "block_table",
+      "kv_padding_size", "all_seq_lengths_q", "actual_seq_lengths_q_back"};
+    const std::vector<int> connected = {0, 1, 2, 4, 5, 6, 14, 16};
+    Recipe recipe; ge::Graph graph; Record attention; attention.name = "attention";
+    attention.type = "AdnFusedInferAttention";
+    ge::GNode node; node.name = attention.name; node.type = attention.type;
+    node.inputs = names; node.in_desc.resize(18); node.edges.resize(18);
+    node.reported_input_count = 8; // Observed GE counts connected inputs, with noncompact name indices.
+    if (mode == "registered_count") node.reported_input_count = -1;
+    const Desc output{1, {1, 256, 8, 16}, 65536};
+    attention.outputs.push_back({"attention_out", output, 0, ""});
+    node.outputs = {"attention_out"}; node.out_desc = {output};
+    for (size_t i = 0; i < connected.size(); ++i) {
+      const int slot = connected[i]; const Desc d{1, {static_cast<int64_t>(i + 1)}, 2 * (i + 1)};
+      Record r; r.name = "source_" + std::to_string(i); r.type = "FixtureInput";
+      r.outputs.push_back({"y", d, 0, ""}); recipe.records.push_back(r);
+      ge::GNode source; source.name = r.name; source.type = r.type; source.outputs = {"y"}; source.out_desc = {d};
+      graph.nodes.push_back(source); node.in_desc[slot] = d; node.edges[slot] = {std::make_shared<ge::GNode>(source), 0};
+      attention.inputs.push_back({names[slot], d, static_cast<uint32_t>(i), "y"});
+    }
+    if (mode == "compact" || mode == "generic_valid" || mode == "generic_swapped") {
+      ge::GNode compact = node; compact.inputs.clear(); compact.in_desc.clear(); compact.edges.clear();
+      for (int slot : connected) { compact.inputs.push_back(node.inputs[slot]);
+        compact.in_desc.push_back(node.in_desc[slot]); compact.edges.push_back(node.edges[slot]); }
+      node = compact;
+    }
+    if (mode.find("generic_") == 0) { node.type = attention.type = "OrdinaryOp"; node.reported_input_count = -1; }
+    if (mode == "swapped" || mode == "generic_swapped") std::swap(node.inputs[0], node.inputs[1]);
+    if (mode == "wrong_edge") node.edges[4] = node.edges[0];
+    if (mode == "extra_optional") node.edges[3] = node.edges[0];
+    if (mode == "wrong_descriptor") node.in_desc[14].shape = {999};
+    if (mode == "disconnected") node.edges[5].first.reset();
+    recipe.records.push_back(attention); graph.nodes.push_back(node);
+    Verify(graph, recipe); std::cout << "HOST_VERIFIER_PASSED\n"; return 0;
+  } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
+}
+'''.replace("@STRUCTS@", structs)
+    for label, source in (("current", _CPP), ("before", legacy_cpp)):
+        begin = source.index("const std::vector<std::string>& AttentionInputNames()") if label == "current" else source.index("void Verify(ge::Graph& graph, const Recipe& recipe)")
+        verifier = source[begin:source.index("void Absent(", begin)]
+        cpp, binary = tmp_path / (label + ".cpp"), tmp_path / label
+        cpp.write_text(fixture.replace("@VERIFIER@", verifier))
+        subprocess.run([compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(binary)],
+                       check=True, capture_output=True, text=True, timeout=30)
+        result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+        if label == "before":
+            assert result.returncode == 1 and "input port order mismatch attention" in result.stderr
+            continue
+        assert result.returncode == 0, result.stderr
+        for mode, message in {
+            "compact": "schema port order mismatch", "swapped": "schema port order mismatch",
+            "wrong_edge": "input edge source mismatch", "extra_optional": "unexpected optional attention edge",
+            "wrong_descriptor": "descriptor mismatch", "disconnected": "missing input edge",
+            "generic_swapped": "input port order mismatch", "generic_expanded": "port count mismatch",
+        }.items():
+            bad = subprocess.run([str(binary), mode], capture_output=True, text=True, timeout=10)
+            assert bad.returncode == 1 and message in bad.stderr, (mode, bad.stdout, bad.stderr)
+        generic = subprocess.run([str(binary), "generic_valid"], capture_output=True, text=True, timeout=10)
+        assert generic.returncode == 0, generic.stderr
+        expanded = subprocess.run([str(binary), "registered_count"], capture_output=True, text=True, timeout=10)
+        assert expanded.returncode == 0, expanded.stderr
+
+
 @pytest.mark.parametrize("initial_dtype,final_dtype", [("float32", "float32"), ("float16", "float32"), ("float16", "float16")])
 def test_selected_gdn_cases_compile_bundle_and_compare_in_canonical_order(setup, tmp_path, monkeypatch, capsys,
                                                                         initial_dtype, final_dtype):
@@ -419,6 +547,36 @@ def test_failure_inspection_reads_existing_middle_errors_and_never_runs_ddk(setu
         with pytest.raises(ValueError, match='separate'):
             inspect_fused_probes(root, ddk, forbidden)
         assert not forbidden.exists()
+
+
+def test_inspection_reads_export_errors_and_shared_registration_configs(setup, tmp_path, monkeypatch):
+    binding, _, ddk = setup
+    root = tmp_path / "source"
+    build_fused_probes(root, binding, cases="conv_prefill,rms,attention_prefill")
+    (root / "cases/conv_prefill/compile.log").write_text(
+        "trace\n" * 500 + "Get format configs failed, node : conv_prefill_fused, substore: !\n" + "trace\n" * 500)
+    (root / "cases/attention_prefill/export.log").write_text(
+        "GE recipe failed: input port order mismatch attention_prefill_fused\n")
+    config = ddk / "ddk/ascendc/ops/config/kirinx90/aic-supported-ops.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"LinearAttentionConvstateUpdate": {"format": "ND"},
+                                 "RmsNorm": {"impl": "rms_norm"}}, indent=2))
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"AdnRmsNorm": "OUTSIDE_MUST_NOT_READ"}')
+    config.with_name('escape.json').symlink_to(outside)
+    before = config.read_bytes()
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("inspection must not execute tools"))
+    output = tmp_path / "inspection"
+    result = inspect_fused_probes(root, ddk, output)
+    report = (output / "report.txt").read_text()
+    assert "Get format configs failed" in report and "input port order mismatch" in report
+    registration = result["installed_registration"]
+    assert registration["files_read"] == 1 and len(registration["records"]) == 1
+    record = registration["records"][0]
+    assert record["sha256"] == sha256_file(config) and (output / record["path"]).read_bytes() == before
+    assert "LinearAttentionConvstateUpdate" in report and "RmsNorm" in report
+    assert "OUTSIDE_MUST_NOT_READ" not in report and config.read_bytes() == before
+    assert result["new_compilation"] == result["device_execution"] == "NOT_RUN"
 
 
 def test_hash_bound_runtime_failures_preserve_stage_without_numerical_claim(setup, tmp_path, monkeypatch):
