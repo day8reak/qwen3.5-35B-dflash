@@ -4,6 +4,48 @@
 
 沿用已安装的模型环境和工具链，只配置本次所需阶段；无需替换已有 PyTorch 或共享 DDK。
 
+## Docker 重进后的配置恢复
+
+当前算子探针流程可以使用仓库自带的 Bash 入口：
+
+```bash
+source targets/cpro/scripts/env.sh
+```
+
+首次执行会在**仓库旁边**创建 `qwen35-cpro.env`（权限600），复制当前已设置的相关变量并保留缺项为空，然后提示填写。配置文件不放在运行目录里，清理运行结果时不会被一起删掉。编辑一次该文件，再执行同一条 `source` 即可；也可指定私有配置路径：`source targets/cpro/scripts/env.sh /absolute/path/cpro.env`。
+
+| 必填配置 | 内容 |
+|---|---|
+| `REPO_DIR` | 项目绝对路径，首次自动填当前仓库 |
+| `AI_RUN_DIR` | 仓库外运行根目录，默认是项目路径加 `-run`；每次source保持不变，各任务自动分配新子目录 |
+| `MODEL_PYTHON` | 已安装模型环境的Python绝对路径，如选定conda环境的 `bin/python3` |
+| `CANN_ROOT` | 用于GE导出AIR的CANN目录 |
+| `CPRO_DDK_ROOT`、`CPRO_DDK_ID` | 当前目标DDK目录及准确版本 |
+| `OHOS_NATIVE_SDK` | 包含 `build/cmake/ohos.toolchain.cmake`、`llvm/bin/clang++`、`sysroot/` 的 `native/` 目录 |
+| `HIAI_INCLUDE_DIR` | 包含 `HiAiModelManagerService.h` 的目录 |
+| `HIAI_LIBRARIES` | 主机上HarmonyOS ARM64链接库文件；多个路径用冒号分隔 |
+| `HDC`、`BIP`、`SN` | HDC可执行文件或PATH中的命令名、**HDC服务器IP:端口**、设备序列号；BIP不是自动推断的手机IP |
+
+可选项为板端私有库目录 `BOARD_HIAI_LIB_DIR`、固件/运行库标识、两套权重路径，以及要复用的 `FUSED_PROBE_RUN`、`TBE_DIAG_JOB`、`GE_CUSTOM_BINDINGS`。首次初始化只复制已有声明，不搜索磁盘猜设备、安装包或最新产物。
+
+该入口检查必填变量和工具文件，检查成功后才修改当前shell；自动设置 `GE_MODEL_TOOL`、`CPRO_TARGET=kirinx90`、模型 `PYTHONPATH`、Python的bin路径以及环境变量驱动的 `specs/resources.json`。重复source不会累加路径。它不激活conda、不运行vendor环境脚本、不全局混入CANN/DDK原生库，也不连接设备；GE/OMG调用继续由现有脚本设置子进程环境。原私有 `QWEN35_RESOURCES` 会被上述仓库清单替换，所选头文件/库应填写到配置变量中。
+
+**如果旧运行目录已经清空：** 把三个旧产物路径留空，保留权重目录即可；旧路径不存在或关键记录已删除时，入口也会清除对应导出值。恢复环境后一次重建全部探针：
+
+```bash
+"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
+```
+
+`--fresh` 依次生成安装源码约束的FP16 GDN状态绑定、12例TBE平台诊断、全部五类九例AIR/OMC，然后执行编译成功的case。它忽略旧产物环境变量、不读取权重、不删除目录，也不会在本批中重复编译刚失败的case。失败项仍保留在总表；这是重新执行流程，不是宣称Conv/RMS或数值问题已经修复。SDK或HIAI库若此前也放在已删除目录内，必须恢复那些文件，仅重新export无法恢复工具链。
+
+后续重试使用打印出的批次目录；新批次会记录TBE诊断路径，重试自动沿用，不必另找 `TBE_DIAG_JOB`：
+
+```bash
+"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
+  --probe-run /absolute/path/to/fused-all-new-batch \
+  --retry-cases attention_prefill,attention_decode
+```
+
 | 阶段 | 依赖 / 资源 |
 |---|---|
 | 完整 PyTorch 结构（meta） | 现有 Torch、Transformers 等[模型依赖](../model/requirements-reference.txt)，不需权重 |

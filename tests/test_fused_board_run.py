@@ -491,3 +491,136 @@ def test_all_ops_resumed_artifacts_are_validated_before_retry(case, monkeypatch,
     result = json.loads((case['output'] / 'result.json').read_text())
     assert code == 1 and result['status'] == 'FAILED' and result.get('error')
     assert not result['executions'] and not _calls(case)
+
+
+def _fresh_ddk(case, monkeypatch):
+    ddk = case['root'] / 'fresh-ddk'
+    source = ddk / 'ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp'
+    source.parent.mkdir(parents=True)
+    source.write_text('''GlobalTensor<half> initialGlobal;
+GlobalTensor<half> finalGlobal;
+initialGlobal.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(initial_state), sizeState);
+finalGlobal.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(last_recurrent_state), sizeState);
+''')
+    for name, value in {'CPRO_DDK_ROOT': str(ddk), 'CPRO_DDK_ID': 'SIMULATED-DDK',
+                        'CANN_ROOT': str(case['root'] / 'fake-ge'),
+                        'FUSED_PROBE_RUN': str(case['root'] / 'deleted-old-probes'),
+                        'TBE_DIAG_JOB': str(case['root'] / 'deleted-old-diagnosis'),
+                        'GE_CUSTOM_BINDINGS': str(case['root'] / 'deleted-bindings.json')}.items():
+        monkeypatch.setenv(name, value)
+    return ddk, source
+
+
+@pytest.mark.parametrize('direct_update', [False, True], ids=['diagnosed-adapter', 'native-request-succeeds'])
+def test_fresh_all_ops_rebuilds_deleted_artifacts_once_and_can_resume(case, monkeypatch, direct_update):
+    """Host substitutes for GE/OMG/device only; source binding/artifacts are real."""
+    ddk, source = _fresh_ddk(case, monkeypatch)
+    diagnostics, compiled, executions, policies = [], [], [], []
+    fail_rms = True
+
+    def diagnose(root, output, **kwargs):
+        diagnostics.append((root, output, kwargs))
+        output.mkdir()
+        report = {'status': 'DIAGNOSIS_COMPLETE', 'cases': [{
+            'name': 'current_omg_first_requested',
+            'status': 'RAW_UPDATE_SUCCEEDED' if direct_update else 'FAILED', 'returncode': 0,
+            'native': {'stage': 'COMPLETE', 'native_success': direct_update,
+                       'initialized_soc_preserved': True,
+                       'native_arguments': ['kirinx90', 'AiCore', '', 'false']}}]}
+        (output / 'report.json').write_text(json.dumps(report))
+        (output / 'report.txt').write_text('SIMULATED TBE diagnosis; no native calls')
+        return report
+
+    def export(folder, *unused):
+        (folder / 'probe.air').write_bytes(b'SIMULATED AIR; no GE execution')
+        return {'simulation': True}
+
+    def compile_one(folder, ddk_root, timeout, diagnosis):
+        compiled.append(folder.name)
+        policies.append((timeout, diagnosis))
+        if fail_rms and folder.name == 'rms':
+            raise RuntimeError('SIMULATED AdnRmsNorm infershape func failed')
+        (folder / 'omc').mkdir()
+        (folder / 'omc/probe.omc').write_bytes(b'SIMULATED OMC; no compilation')
+        return {'simulation': True}
+
+    def execute(args, *, runner_cache):
+        manifest, selected, _ = case['module']._prepare(Path(args.probe_run))
+        executions.append([row['name'] for row in selected])
+        output = Path(args.output)
+        (output / 'comparison').mkdir(parents=True)
+        rows = [{'name': row['name'], 'load': 'PASSED', 'process': 'PASSED',
+                 'numerical': 'DIAGNOSTIC_COMPLETE'} for row in selected]
+        (output / 'comparison/report.json').write_text(json.dumps({'cases': rows}))
+        return {'status': 'EXECUTION_COMPLETE', 'output': str(output), 'simulation': 'HOST ONLY'}
+
+    monkeypatch.setattr(case['module'], 'check_tbe_platform', diagnose)
+    monkeypatch.setattr(probes, '_export_case', export)
+    monkeypatch.setattr(probes, '_compile_case', compile_one)
+    monkeypatch.setattr(case['module'], 'execute', execute)
+    code = case['module'].main(['--all-ops', '--fresh', '--output', str(case['output']),
+                               '--timeout-seconds', '47'])
+    result = json.loads((case['output'] / 'result.json').read_text())
+    assert code == 1 and result['status'] == 'FAILED'  # RMS remains visible.
+    names = [name for name, _, _ in probes._CASES]
+    assert compiled == names  # Failed RMS was not immediately compiled again.
+    assert executions == [[name for name in names if name != 'rms']]
+    assert diagnostics == [(ddk, case['output'] / 'diagnosis',
+                            {'python': sys.executable, 'diagnose': True, 'jobs': 4, 'timeout_seconds': 30})]
+    assert policies == [(47, None if direct_update else case['output'] / 'diagnosis')] * 9
+    assert result['reused_cases'] == [] and result['compiled_cases_requested'] == names
+    assert result['model_compilation'] == 'FRESH_ALL_CASES'
+    assert result['bindings'] == str(case['output'] / 'bindings.json')
+    assert result['tbe_diagnosis'] == str(case['output'] / 'diagnosis')
+    assert result['fresh_stage'] == 'probes-built'
+    binding = json.loads((case['output'] / 'bindings.json').read_text())
+    assert binding['operators']['gdn']['outputs']['final_state']['dtype'] == 'float16'
+    evidence = json.loads((case['output'] / 'bindings.sources.json').read_text())
+    assert evidence['installed_gdn_state']['sha256'] == sha256_file(source)
+    assert all(row['process'] == ('NOT_RUN' if row['name'] == 'rms' else 'PASSED') for row in result['cases'])
+
+    # A fresh batch is also a valid future --probe-run input; only failed RMS
+    # gets another compile attempt, with the original artifacts left intact.
+    fail_rms = False
+    monkeypatch.delenv('TBE_DIAG_JOB')
+    retry = case['root'] / 'fresh-retry'
+    code = case['module'].main(['--all-ops', '--probe-run', str(case['output']),
+                               '--retry-cases', 'rms', '--output', str(retry)])
+    resumed = json.loads((retry / 'result.json').read_text())
+    assert code == 0 and resumed['status'] == 'EXECUTION_COMPLETE', resumed
+    assert compiled == names + ['rms']
+    assert policies[-1][1] == (None if direct_update else str(case['output'] / 'diagnosis'))
+    assert resumed['tbe_diagnosis'] == str(case['output'] / 'diagnosis')
+    assert resumed['reused_cases'] == sorted(name for name in names if name != 'rms')
+    assert diagnostics == [(ddk, case['output'] / 'diagnosis',
+                            {'python': sys.executable, 'diagnose': True, 'jobs': 4, 'timeout_seconds': 30})]
+
+
+@pytest.mark.parametrize('failure', ['bindings', 'tbe-diagnosis'])
+def test_fresh_failure_keeps_stage_paths_without_using_deleted_runs(case, monkeypatch, failure):
+    _, source = _fresh_ddk(case, monkeypatch)
+    if failure == 'bindings':
+        source.unlink()
+
+    def diagnose(*args, **kwargs):
+        assert failure == 'tbe-diagnosis'
+        raise RuntimeError('SIMULATED diagnosis failure')
+
+    monkeypatch.setattr(case['module'], 'check_tbe_platform', diagnose)
+    monkeypatch.setattr(case['module'], 'build_fused_probes', lambda *a, **k: pytest.fail('failed bootstrap must not compile'))
+    code = case['module'].main(['--all-ops', '--fresh', '--output', str(case['output'])])
+    result = json.loads((case['output'] / 'result.json').read_text())
+    assert code == 1 and result['status'] == 'FAILED' and result['fresh_stage'] == failure
+    assert result['bindings'] == str(case['output'] / 'bindings.json')
+    assert result['tbe_diagnosis'] == str(case['output'] / 'diagnosis')
+    assert not result['executions'] and not _calls(case)
+    assert 'Fresh stage: ' + failure in (case['output'] / 'report.txt').read_text()
+
+
+def test_fresh_requires_all_ops_and_rejects_retry_or_explicit_probe(case):
+    assert case['module'].main(['--fresh']) == 1
+    assert case['module'].main(['--all-ops', '--fresh', '--retry-cases', 'rms']) == 1
+    with pytest.raises(SystemExit) as error:
+        case['module'].main(['--all-ops', '--fresh', '--probe-run', str(case['probe'])])
+    assert error.value.code == 2
+    assert not case['output'].exists() and not _calls(case)

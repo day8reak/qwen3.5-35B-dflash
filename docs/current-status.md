@@ -6,6 +6,15 @@
 
 ## 用户现在执行什么
 
+**Docker重进且旧run产物已删除：** 先按[持久配置入口](environment-setup.md#docker-重进后的配置恢复)填写仓库旁的 `qwen35-cpro.env`，然后执行：
+
+```bash
+source targets/cpro/scripts/env.sh
+"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
+```
+
+不再引用已经删除的bindings、TBE诊断或OMC；安装版FP16绑定、平台诊断和全部探针自动重建，编译成功者上板。保留权重无需重新准备。
+
 **Attention重试遇到导出器C++的const接口错误，现已修正；conv/RMS仍待解决。** 更新后只重编Attention两例：
 
 ```bash
@@ -16,7 +25,7 @@ git pull --ff-only
   --retry-cases attention_prefill,attention_decode
 ```
 
-`--probe-run` 是上次批量运行的目录；沿用 `CANN_ROOT`、`CPRO_DDK_ROOT`、`TBE_DIAG_JOB` 和HDC环境。脚本复用GDN/Cache四个OMC，连同新编译成功的Attention上板；conv/RMS不重复编译，其失败继续保留在总表。回传最后打印的报告，完整注册检查在新目录的 `inspection/report.txt`。脚本不修改DDK。
+上面的旧批次重试命令仅适用于**旧产物仍存在**的情况；已经清空run时用 `--fresh`。`--probe-run` 是上次批量运行的目录；沿用 `CANN_ROOT`、`CPRO_DDK_ROOT`、`TBE_DIAG_JOB` 和HDC环境。脚本复用GDN/Cache四个OMC，连同新编译成功的Attention上板；conv/RMS不重复编译，其失败继续保留在总表。回传最后打印的报告，完整注册检查在新目录的 `inspection/report.txt`。脚本不修改DDK。
 
 ## 当前状态
 

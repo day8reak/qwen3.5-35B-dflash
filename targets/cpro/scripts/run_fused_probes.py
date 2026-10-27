@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a runner and execute existing compiled fused-op bundles through HDC."""
+"""Compile fresh fused-op probes or reuse recorded bundles, then execute through HDC."""
 import argparse
 import json
 import os
@@ -14,9 +14,9 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "model"))
 
 from qwen35_moe_dflash.artifacts import output_path, save_json
-from qwen35_moe_dflash.compile import _stateful_json
+from qwen35_moe_dflash.compile import _stateful_json, check_tbe_platform
 from qwen35_moe_dflash.elf_dynamic import dynamic_info
-from qwen35_moe_dflash.ge_fused.bindings import OperatorBindings
+from qwen35_moe_dflash.ge_fused.bindings import OperatorBindings, write_document_bindings
 from qwen35_moe_dflash.ge_fused.export import _step_file
 from qwen35_moe_dflash.ge_fused.probes import (
     _CASES, _validate_probe_manifest, _wire, build_fused_probes, compare_fused_probes, inspect_fused_probes,
@@ -30,7 +30,10 @@ from qwen35_moe_dflash.hiai_deployment import (
 
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--probe-run", default=os.environ.get("FUSED_PROBE_RUN"), help="existing compiled probe directory; defaults to FUSED_PROBE_RUN")
+    source = result.add_mutually_exclusive_group()
+    source.add_argument("--probe-run", default=os.environ.get("FUSED_PROBE_RUN"), help="existing compiled probe directory; defaults to FUSED_PROBE_RUN")
+    source.add_argument("--fresh", action="store_true",
+                        help="with --all-ops, regenerate bindings, TBE diagnosis and all nine probes; ignore old run environment variables")
     result.add_argument("--output", help="new directory below AI_RUN_DIR; otherwise allocated automatically")
     result.add_argument("--all-ops", action="store_true",
                         help="reuse compiled cases, compile missing cases for all five custom operators, then run all compiled cases")
@@ -308,7 +311,7 @@ def execute(args, *, runner_cache=None):
     return result
 
 
-def _compile_missing(root, output, missing):
+def _compile_missing(root, output, missing, *, tbe_diagnosis=None):
     manifest = _stateful_json(root / "manifest.json")
     diagnosis = os.environ.get("TBE_DIAG_JOB")
     return build_fused_probes(
@@ -316,7 +319,7 @@ def _compile_missing(root, output, missing):
         ge_root=_text(os.environ.get("CANN_ROOT"), "CANN_ROOT"),
         ddk_root=_text(os.environ.get("CPRO_DDK_ROOT"), "CPRO_DDK_ROOT"),
         ddk_id=manifest["ddk_id"], cases=missing, conv_history_width=4,
-        tbe_diagnosis=str(Path(diagnosis) / "diagnosis") if diagnosis else None,
+        tbe_diagnosis=str(Path(diagnosis) / "diagnosis") if diagnosis else tbe_diagnosis,
     )
 
 
@@ -327,7 +330,7 @@ def _probe_groups(root, out):
     else:
         batch = _stateful_json(root / "result.json")
         paths = batch.get("probe_runs")
-        if (batch.get("model_compilation") != "MISSING_CASES_ONLY" or not isinstance(paths, list)
+        if (batch.get("model_compilation") not in {"MISSING_CASES_ONLY", "FRESH_ALL_CASES"} or not isinstance(paths, list)
                 or not 1 <= len(paths) <= len(_CASES) or any(not isinstance(path, str) for path in paths)):
             raise ValueError("expected a probe manifest or all-ops result with at most nine explicit probe_runs")
         recorded = batch.get("probe_manifests", {})
@@ -365,41 +368,99 @@ def _error_detail(error):
     return text if len(text) <= 16000 else text[:8000] + "\n[excerpt omitted; see full log]\n" + text[-8000:]
 
 
+def _fresh_probes(out, result, args):
+    """Rebuild deleted run artifacts once, preserving every stage's evidence."""
+    ddk = Path(_text(os.environ.get("CPRO_DDK_ROOT"), "CPRO_DDK_ROOT")).expanduser().resolve()
+    ddk_id = _text(os.environ.get("CPRO_DDK_ID"), "CPRO_DDK_ID")
+    ge = _text(os.environ.get("CANN_ROOT"), "CANN_ROOT")
+    bindings, diagnosis, generated = out / "bindings.json", out / "diagnosis", out / "probes"
+    result.update(fresh_stage="bindings", bindings=str(bindings), tbe_diagnosis=str(diagnosis),
+                  generated_probes=str(generated), reused_cases=[],
+                  compiled_cases_requested=[name for name, _, _ in _CASES])
+    print("fused-all: fresh bindings from selected DDK FP16 GDN state source", flush=True)
+    write_document_bindings(bindings, target="kirinx90", ddk_id=ddk_id,
+                            gdn_initial_state_dtype="float16",
+                            gdn_state_source=ddk / "ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp")
+    result["fresh_stage"] = "tbe-diagnosis"
+    print("fused-all: fresh TBE diagnosis (12 cases, 4 workers)", flush=True)
+    report = check_tbe_platform(ddk, diagnosis, python=sys.executable, diagnose=True,
+                                jobs=4, timeout_seconds=30)
+    requested = next((case for case in report.get("cases", [])
+                      if case.get("name") == "current_omg_first_requested"), {})
+    native = requested.get("native") or {}
+    # A fresh environment may already accept the requested platform. In that
+    # case retain the diagnosis but let real OMG compile without adaptation.
+    direct = (requested.get("status") == "RAW_UPDATE_SUCCEEDED" and requested.get("returncode") == 0
+              and native.get("stage") == "COMPLETE" and native.get("native_success") is True
+              and native.get("initialized_soc_preserved") is True
+              and native.get("native_arguments") == ["kirinx90", "AiCore", "", "false"])
+    result["tbe_compatibility_policy"] = "DIRECT_REQUEST_SUCCEEDED" if direct else "VALIDATE_DIAGNOSED_ADAPTER"
+    result["fresh_stage"] = "compile"
+    print("fused-all: compiling all nine fresh cases once", flush=True)
+    manifest = build_fused_probes(generated, bindings, ge_root=ge, ddk_root=ddk, ddk_id=ddk_id,
+                                  cases="all", conv_history_width=4, timeout_seconds=args.timeout_seconds,
+                                  tbe_diagnosis=None if direct else diagnosis)
+    result["fresh_stage"] = "probes-built"
+    return [(generated, manifest)], set()
+
+
 def run_all(args):
     """Keep old and new manifests separate; reuse only their recorded binaries."""
     storage = Path(_text(os.environ.get("AI_RUN_DIR"), "AI_RUN_DIR"))
     out = output_path(args.output or storage / ("fused-all-" + uuid.uuid4().hex[:12]))
     out.mkdir(parents=True, exist_ok=False)
     result = {"status": "FAILED", "output": str(out), "executions": [], "probe_runs": [],
-              "model_compilation": "MISSING_CASES_ONLY", "numerical_acceptance": "NOT_DEFINED",
+              "model_compilation": "FRESH_ALL_CASES" if getattr(args, "fresh", False) else "MISSING_CASES_ONLY", "numerical_acceptance": "NOT_DEFINED",
               "runtime_placement": "UNVERIFIED", "cases": []}
     rows = {name: {"name": name, "role": role, "construction": "NOT_RUN", "export": "NOT_RUN",
                    "compile": "NOT_RUN", "load": "NOT_RUN", "process": "NOT_RUN", "numerical": "NOT_RUN"}
             for name, role, _ in _CASES}
     try:
-        root = Path(_text(args.probe_run, "FUSED_PROBE_RUN / --probe-run")).expanduser().resolve()
-        if root == out or root in out.parents:
-            raise ValueError("batch output must be separate from the existing probe directory")
-        groups, reusable = _probe_groups(root, out)
-        source, original = groups[0]
-        if os.environ.get("CPRO_DDK_ID") and os.environ["CPRO_DDK_ID"] != original["ddk_id"]:
-            raise ValueError("CPRO_DDK_ID differs from the compiled probe manifest")
-        missing = [name for name in rows if name not in reusable]
         requested = getattr(args, "retry_cases", None)
-        if requested is not None:
-            selected = requested.split(",")
-            if not selected or len(set(selected)) != len(selected) or not set(selected) <= set(rows):
-                raise ValueError("--retry-cases must be unique known comma-separated case names")
-            missing = [name for name in missing if name in selected]
-        result.update(reused_cases=sorted(reusable), compiled_cases_requested=missing)
-        if missing:
-            print("fused-all: compiling missing cases: " + ", ".join(missing), flush=True)
-            generated = out / "probes"
-            try:
-                manifest = _compile_missing(source, generated, missing)
-                groups.append((generated, manifest))
-            except Exception as error:
-                result["compile_error"] = f"{type(error).__name__}: {error}"
+        if getattr(args, "fresh", False):
+            groups, reusable = _fresh_probes(out, result, args)
+        else:
+            root = Path(_text(args.probe_run, "FUSED_PROBE_RUN / --probe-run")).expanduser().resolve()
+            if root == out or root in out.parents:
+                raise ValueError("batch output must be separate from the existing probe directory")
+            groups, reusable = _probe_groups(root, out)
+            # A recreated batch owns its diagnosis. Keep that explicit path
+            # across retries so a new shell need not export a transient job ID.
+            # An explicitly configured TBE_DIAG_JOB still takes precedence.
+            diagnosis_job = os.environ.get("TBE_DIAG_JOB")
+            if diagnosis_job:
+                result["tbe_diagnosis"] = str(Path(diagnosis_job).expanduser().resolve() / "diagnosis")
+            elif not (root / "manifest.json").is_file():
+                previous = _stateful_json(root / "result.json")
+                if previous.get("tbe_diagnosis"):
+                    diagnosis = Path(_text(previous["tbe_diagnosis"], "recorded TBE diagnosis")).expanduser()
+                    if not diagnosis.is_absolute():
+                        raise ValueError("recorded TBE diagnosis must be an absolute path")
+                    result["tbe_diagnosis"] = str(diagnosis)
+                    result["tbe_compatibility_policy"] = previous.get("tbe_compatibility_policy", "VALIDATE_DIAGNOSED_ADAPTER")
+            source, original = groups[0]
+            if os.environ.get("CPRO_DDK_ID") and os.environ["CPRO_DDK_ID"] != original["ddk_id"]:
+                raise ValueError("CPRO_DDK_ID differs from the compiled probe manifest")
+            missing = [name for name in rows if name not in reusable]
+            if requested is not None:
+                selected = requested.split(",")
+                if not selected or len(set(selected)) != len(selected) or not set(selected) <= set(rows):
+                    raise ValueError("--retry-cases must be unique known comma-separated case names")
+                missing = [name for name in missing if name in selected]
+            result.update(reused_cases=sorted(reusable), compiled_cases_requested=missing)
+            if missing:
+                print("fused-all: compiling missing cases: " + ", ".join(missing), flush=True)
+                generated = out / "probes"
+                try:
+                    inherited_diagnosis = result.get("tbe_diagnosis")
+                    if (not diagnosis_job and inherited_diagnosis
+                            and result.get("tbe_compatibility_policy") != "DIRECT_REQUEST_SUCCEEDED"):
+                        manifest = _compile_missing(source, generated, missing, tbe_diagnosis=inherited_diagnosis)
+                    else:
+                        manifest = _compile_missing(source, generated, missing)
+                    groups.append((generated, manifest))
+                except Exception as error:
+                    result["compile_error"] = f"{type(error).__name__}: {error}"
         if requested is not None:
             failed = next((path for path, manifest in reversed(groups)
                            if any(case["role"] in {"conv_state", "rms"} and case.get("compile") == "FAILED"
@@ -461,6 +522,12 @@ def run_all(args):
             lines.append("  " + _error_detail(item["error"]))
     for probe_run in result["probe_runs"]:
         lines.append("Compilation details: " + str(Path(probe_run) / "report.txt"))
+    if "fresh_stage" in result:
+        lines.extend(["Fresh stage: " + result["fresh_stage"], "Bindings: " + result["bindings"],
+                      "TBE diagnosis: " + str(Path(result["tbe_diagnosis"]) / "report.txt"),
+                      "Fresh probes: " + result["generated_probes"]])
+    elif result.get("tbe_diagnosis"):
+        lines.append("TBE diagnosis: " + str(Path(result["tbe_diagnosis"]) / "report.txt"))
     if result.get("inspection"):
         lines.append("Read-only DDK inspection: " + str(Path(result["inspection"]) / "report.txt"))
         registration = result.get("installed_registration", {})
@@ -486,6 +553,8 @@ def run_all(args):
 def main(argv=None):
     try:
         args = parser().parse_args(argv)
+        if args.fresh and (not args.all_ops or args.retry_cases is not None):
+            raise ValueError("--fresh requires --all-ops and cannot be combined with --retry-cases")
         if args.retry_cases is not None and not args.all_ops:
             raise ValueError("--retry-cases requires --all-ops")
         result = run_all(args) if args.all_ops else execute(args)
