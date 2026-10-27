@@ -1229,7 +1229,7 @@ def _check_stateful_abi(manifest):
 
 
 def compile_stateful_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_seconds=3600,
-                         reject_cpu_fallback=False):
+                         reject_cpu_fallback=False, tbe_diagnosis=None):
     """Compile one checked explicit-state target; never adapts it to legacy ABI v2."""
     if not isinstance(ddk_id, str) or not ddk_id.strip() or timeout_seconds <= 0:
         raise ValueError("declare a nonempty ddk_id and positive timeout_seconds")
@@ -1262,9 +1262,37 @@ def compile_stateful_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_second
                   validation_scope="Host OMG compilation only; explicit-state runner and device execution remain unvalidated.")
     folder = output / "target"
     log_path = folder / "omg.log"
+    compatibility, compatibility_saved = None, False
+    if tbe_diagnosis is not None:
+        compatibility = {"diagnosis": str(Path(tbe_diagnosis).resolve()),
+                         "compiler_invocation": "NOT_ATTEMPTED", "compile": "NOT_RUN",
+                         "audit": {"status": "NOT_PREPARED"}, "metadata": None,
+                         "scope": "Compiler outcome and worker adaptation are separate; NOT_OBSERVED does not establish a repair."}
+        result["tbe_compatibility"] = compatibility
+
+    def finish_compatibility():
+        nonlocal compatibility_saved
+        if compatibility is None or compatibility_saved:
+            return
+        if compatibility["metadata"] is not None and compatibility["compiler_invocation"] == "ATTEMPTED":
+            try:
+                audit = verify_tbe_compatibility(compatibility["metadata"])
+                if not isinstance(audit, dict) or audit.get("status") not in {"APPLIED", "NOT_OBSERVED", "REJECTED"}:
+                    raise ValueError("invalid TBE compatibility audit result")
+                compatibility["audit"] = audit
+            except Exception as error:
+                compatibility["audit"] = {"status": "AUDIT_FAILED", "error": f"{type(error).__name__}: {error}"}
+        save_json(output / "tbe-compatibility-result.json", compatibility)
+        compatibility_saved = True
+
     stage = "target-setup"
     try:
         folder.mkdir()
+        if compatibility is not None:
+            stage = "target-tbe-compatibility-prepare"
+            env, metadata = prepare_tbe_compatibility(ddk_root, tbe_diagnosis,
+                                                       output / "tbe-compat", inherited=env)
+            compatibility.update(metadata=metadata, audit={"status": "NOT_OBSERVED"})
         command = [str(omg), "--framework=1", "--model=input.air", "--output=target", "--target=omc",
                    "--platform=kirinx90", "--use_origin_format=true", "--weight_data_type=FP16"]
         save_json(folder / "command.json", {"argv": command, "ddk_id": ddk_id, "air_source": str(air),
@@ -1278,12 +1306,16 @@ def compile_stateful_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_second
                     environment_record = _environment_record(ddk_root, local_env)
                     environment_record["ipc_temporary_directory"] = ipc
                     save_json(folder / "omg-environment.json", environment_record)
+                    if compatibility is not None:
+                        compatibility.update(compiler_invocation="ATTEMPTED", compile="FAILED")
                     subprocess.run(command, cwd=scratch, env=local_env, stdout=log, stderr=subprocess.STDOUT,
                                    check=True, timeout=timeout_seconds)
                 stage = "target-output-check"
                 generated = scratch / "target.omc"
                 if generated.is_symlink() or not generated.is_file() or not generated.stat().st_size:
                     raise RuntimeError("OMG succeeded without a nonempty regular target.omc")
+                if compatibility is not None:
+                    compatibility["compile"] = "PASSED"
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, RuntimeError) as error:
                 diagnostic_note = ""
                 try:
@@ -1292,6 +1324,8 @@ def compile_stateful_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_second
                     diagnostic_note = f"\nCould not retain graph diagnostics: {diagnostic_error}"
                 raise RuntimeError(f"OMG graph=target stage={stage}: {error}\nFull log: {log_path}\n"
                                    f"{log_excerpt(log_path)}{diagnostic_note}") from error
+            finally:
+                finish_compatibility()
             try:
                 compiler_diagnostics = _retain_compiler_diagnostics(scratch, folder)
             except OSError as diagnostic_error:
@@ -1300,6 +1334,10 @@ def compile_stateful_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_second
             for item in scratch.iterdir():
                 if item.name.startswith("target") and not item.is_symlink():
                     shutil.move(str(item), str(folder / item.name))
+        if compatibility is not None and compatibility["audit"]["status"] not in {"APPLIED", "NOT_OBSERVED"}:
+            stage = "target-tbe-compatibility-audit"
+            raise RuntimeError("TBE compatibility audit rejected this compilation: " +
+                               json.dumps(compatibility["audit"]))
         stage = "target-source-check"
         if sha256_file(manifest_path) != manifest_sha:
             raise ValueError("stateful AIR manifest changed during compilation")
@@ -1327,6 +1365,9 @@ def compile_stateful_air(bundle, output_dir, ddk_root, *, ddk_id, timeout_second
         save_json(output / "manifest.json", result)
         return result
     except Exception as error:
+        if compatibility is not None and compatibility["metadata"] is None:
+            compatibility["audit"] = {"status": "NOT_PREPARED", "error": f"{type(error).__name__}: {error}"}
+        finish_compatibility()
         cause = error.__cause__ or error
         result.update(status="FAILED", stage=stage, failed_graph="target", log_path=str(log_path),
                       error=f"{type(error).__name__}: {error}",

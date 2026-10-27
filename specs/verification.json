@@ -223,5 +223,58 @@
       ],
       "next_validation": "Run the five compiled custom-op cases with the actual yellow-environment DDK and board."
     }
+  },
+  "latest_full_model_priority": {
+    "run_id": "20261027T122457Z-6530-786c84",
+    "status": "HOST_COMPILER_ENTRYPOINT_VERIFIED_FULL_DEVICE_MODEL_PENDING",
+    "source": "USER_URGENCY_AND_REPOSITORY_READINESS_AUDIT",
+    "milestone_order": [
+      "Quantized 40-layer target compile and ordinary prefill/decode",
+      "DFlash draft/verify integration",
+      "Complete model accuracy and performance closure"
+    ],
+    "implemented": "compile-stateful accepts the existing evidence-bound TBE compatibility adapter without changing kirinx90 or the default compiler path",
+    "host_tests": {
+      "passed": 9,
+      "junit": "stateful-tbe-final.xml",
+      "ge_omg_execution": "MOCKED",
+      "real_worker_audit_verifier": true
+    },
+    "checks": [
+      "CLI help",
+      "JSON parsing",
+      "12 documentation bash blocks syntax",
+      "git diff --check"
+    ],
+    "device_model_compilation": "NOT_RUN",
+    "device_model_execution": "NOT_RUN",
+    "remaining": [
+      "Direct GE packed W4A8 weights/operator mapping",
+      "Reusable decode/state deployment",
+      "GDN output-prefill dependence unresolved"
+    ],
+    "experience_audit": {
+      "captured": [
+        "Do not infer deployable full model from unbound structure or standalone probe invocation",
+        "Selected-expert dispatch does not reduce resident full model weight storage",
+        "Reuse retained TBE diagnosis in the actual stateful compile entrypoint, keep its worker files out of device payloads",
+        "Completed three-fill diagnosis must not be repeated as the default next user command"
+      ],
+      "updated": [
+        "docs/current-status.md",
+        "docs/ge-guide.md",
+        "specs/model-workflow.json",
+        "stateful compiler and regression tests"
+      ],
+      "rejected_claims": [
+        "Full-model device readiness",
+        "GDN zero initialization as a proven repair",
+        "Cache coherency as a proven root cause"
+      ],
+      "skill_updates": "None: urgency and readiness findings are model-specific; existing compile adapter reused.",
+      "unresolved_hypotheses": [
+        "GDN partial writes/output accumulation/cache visibility; current internal-DDK buffer API and kernel writes require evidence"
+      ]
+    }
   }
 }

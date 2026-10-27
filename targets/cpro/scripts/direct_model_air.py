@@ -154,6 +154,8 @@ def main():
         p.add_argument("--reject-cpu-fallback", action="store_true",
                        help="reject explicit NPU partition-limit rollback to CPU; retain generated OMC/logs for diagnosis")
         p.add_argument("--timeout-seconds", type=int, default=3600)
+        if name == "compile-stateful":
+            p.add_argument("--tbe-diagnosis", help="completed TBE diagnosis directory; use its evidence-bound run-local adapter and retain the worker audit")
     p = sub.add_parser("inspect-compile", help="read existing compiler support and construction metadata; no rebuild or board access")
     p.add_argument("--air", required=True)
     p.add_argument("--omc", required=True)
@@ -275,7 +277,8 @@ def main():
                 raise ValueError("declare --ddk-id or CPRO_DDK_ID")
             compile_fn = compile_stateful_air if args.command == "compile-stateful" else compile_air
             result = compile_fn(args.air, args.output, ddk, ddk_id=identity, timeout_seconds=args.timeout_seconds,
-                                reject_cpu_fallback=args.reject_cpu_fallback)
+                                reject_cpu_fallback=args.reject_cpu_fallback,
+                                **({"tbe_diagnosis": args.tbe_diagnosis} if args.command == "compile-stateful" else {}))
         elif args.command == "inspect-compile":
             from qwen35_moe_dflash.compile_inspect import inspect_compile
             result = inspect_compile(args.air, args.omc, args.output, graph=args.graph)

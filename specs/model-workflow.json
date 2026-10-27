@@ -3,7 +3,7 @@
   "updated": "2026-10-27",
   "active_phase": "integration",
   "delivery_status": "HOST_IMPLEMENTED_DEVICE_INTEGRATION_PENDING",
-  "run_id": "20261027T115942Z-26038-e68837",
+  "run_id": "20261027T122457Z-6530-786c84",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -327,8 +327,7 @@
           "scope": "Three retained custom operator families; base Conv/RMS full-model device validation is still required. Standalone CacheUpdate/Attention success is not production GE integration."
         },
         "gdn_io_diagnostic_plan": {
-          "command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_gdn_diagnostics.py\" --resume \"$AI_RUN_DIR/gdn-diagnostic-c0cbac5ac9cf\"",
-          "status": "TARGET_DIAGNOSTIC_INCOMPLETE_TRANSPORT_FAILURE",
+          "status": "DIAGNOSIS_COMPLETE_OUTPUT_DEPENDS_ON_PREFILL",
           "cases": [
             "gdn_prefill",
             "gdn_decode"
@@ -350,21 +349,68 @@
           "model_compilation": "NOT_RUN",
           "platform_diagnosis": "NOT_RUN",
           "conv_rms_candidates": "DISABLED",
-          "device_result": "INCOMPLETE",
+          "device_result": "USER_REPORTED_DIAGNOSIS_COMPLETE_ACCURACY_UNRESOLVED",
           "latest_user_report": {
-            "source": "USER_PASTED_REPORT_AND_NESTED_ERROR",
+            "source": "USER_PASTED_REPORT",
             "artifact_hash_verification": "NOT_RECHECKED",
-            "run_name": "gdn-diagnostic-c0cbac5ac9cf",
-            "completed_fill": 0,
-            "failed_fill": 165,
-            "failure_stage": "upload",
-            "operation": "verify-checksums",
-            "observed": "[Fail]Failed to communicate with daemon; missing unique remote exit marker",
-            "failed_round_process": "NOT_RUN",
-            "numerical_results": "NOT_YET_PASTED",
-            "next_action": "Revalidate the retained zero-fill trial and runner, then execute only missing fills using --resume. The failed read-only checksum query may retry the exact daemon transport failure up to three times; checksum mismatch and missing markers still cannot establish success."
+            "run_name": "gdn-diagnostic-138b60d3eba7",
+            "resumed_from": "gdn-diagnostic-c0cbac5ac9cf",
+            "status": "DIAGNOSIS_COMPLETE",
+            "output_fill_bytes": [
+              0,
+              165,
+              90
+            ],
+            "host_input_readback": "MATCHED_IN_EVERY_RUN",
+            "same_omc_and_inputs": true,
+            "signal": "PREFILL_PATTERN_OBSERVED_IN_VALID_OUTPUT_REGIONS",
+            "relative_l2": {
+              "gdn_prefill": {
+                "core_attn": [
+                  0.00391887986652238,
+                  3.4424223519221515,
+                  30080.189167072163
+                ],
+                "last_recurrent_state": [
+                  0.14637710494905992,
+                  1.3779856279162368,
+                  11011.508208936926
+                ]
+              },
+              "gdn_decode": {
+                "core_attn": [
+                  0.056429322872540794,
+                  11.185566226871277,
+                  102303.22425300514
+                ],
+                "last_recurrent_state": [
+                  0.1552299024706118,
+                  2.780772935822094,
+                  23911.354336013617
+                ]
+              }
+            },
+            "cause": "UNRESOLVED_PARTIAL_WRITE_ACCUMULATION_OR_VISIBILITY",
+            "accuracy": "NOT_ACCEPTED",
+            "next_action": "Keep the completed three-fill evidence; do not repeat this batch. Inspect exact internal-DDK output-write and buffer contracts while advancing full-target quantized compilation and reusable decode integration."
           },
-          "scope": "Targeted buffer handoff, output writeback and repeat-execution diagnosis only; no current result establishes a cause or fix. Conv state and RMS remain base operators."
+          "scope": "Three-fill transport completed per user report. Output dependence is observed, but the cause and fix are unresolved. Zero initialization is not a proven repair. No new Conv/RMS or platform matrix.",
+          "last_completed_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_gdn_diagnostics.py\" --resume \"$AI_RUN_DIR/gdn-diagnostic-c0cbac5ac9cf\"",
+          "historical_user_reports": [
+            {
+              "source": "USER_PASTED_REPORT_AND_NESTED_ERROR",
+              "artifact_hash_verification": "NOT_RECHECKED",
+              "run_name": "gdn-diagnostic-c0cbac5ac9cf",
+              "completed_fill": 0,
+              "failed_fill": 165,
+              "failure_stage": "upload",
+              "operation": "verify-checksums",
+              "observed": "[Fail]Failed to communicate with daemon; missing unique remote exit marker",
+              "failed_round_process": "NOT_RUN",
+              "numerical_results": "NOT_YET_PASTED",
+              "next_action": "Revalidate the retained zero-fill trial and runner, then execute only missing fills using --resume. The failed read-only checksum query may retry the exact daemon transport failure up to three times; checksum mismatch and missing markers still cannot establish success."
+            }
+          ]
         }
       },
       "selected_fused_roles": [
@@ -406,14 +452,14 @@
       "evidence": "docs/current-status.md",
       "working_directory": "$AI_RUN_DIR",
       "next_command_document": "docs/current-status.md#用户现在执行什么",
-      "note": "Preserve six selected standalone artifacts. Diagnose GDN buffer handoff and output writeback with original two OMC files and three output-fill trials per case; no model recompilation. Select only gdn in production fusion with base Conv/RMS. CacheUpdate/Attention production integration remains pending."
+      "note": "Urgent priority: real quantized 40-layer target compilation and ordinary prefill/decode first, DFlash integration next. FP16-only direct GE preparation, missing packed W4A8 mapping, static past-length decode and stateful deployment orchestration remain substantive gaps. Diagnose observed GDN output-prefill dependence in parallel from retained evidence; no repeated completed probe batches."
     },
     {
       "name": "accuracy",
       "status": "pending",
       "owner": "model-workflow",
       "evidence": "docs/validation.md",
-      "note": "Latest user report: both GDN core outputs are zero (relative L2=1); state relative L2 is 0.9603274111031198/0.9745207122180418. CacheUpdate/Attention only have SHAPE_ONLY_UNVERIFIED_CONTRACT diagnostics. No accuracy pass; full-model quality and state continuity remain pending."
+      "note": "Three-fill GDN diagnosis completed per user report: output depends on fill pattern despite matching host input hashes. Zero-fill core relative L2 is 0.00392/0.0564 and state 0.146/0.155; no acceptance or root-cause conclusion. CacheUpdate/Attention remain shape-only diagnostics. Full-model quality and state continuity remain pending."
     },
     {
       "name": "performance",
@@ -433,16 +479,34 @@
   "probe_policy": "The active model-ops scope is three custom operator types and six prefill/decode cases, explicitly selected by the user. Conv state and RMS use existing base operators. Reuse compiled cases; retain all-ops nine-case records and custom Conv/RMS failures as optional historical diagnostics, not passes. No new Conv/RMS fusion-candidate plan.",
   "evidence": "specs/verification.json",
   "delivery_plan": {
-    "priority": "This-week runnable structure; parallel integration before accuracy/performance closure",
+    "priority": "Urgent: compiled quantized full target and ordinary prefill/decode before DFlash; do not serialize model integration behind optional standalone diagnostics",
     "parallel_workstreams": [
-      "documented fused operator adapter",
-      "stateful GE compile and input bundle",
-      "native explicit-state target execution"
+      "packed quantized target weights and GE mapping",
+      "full target compilation and reusable decode/state deployment",
+      "GDN output writeback/visibility investigation using retained three-fill evidence"
     ],
     "avoid": [
       "re-running concluded standalone probe batches",
-      "unrelated framework or documentation expansion"
+      "new Conv/RMS custom candidates",
+      "unrelated framework or documentation expansion",
+      "claiming an unbound full graph or FP16 conversion diagnostic is a deployable 32GB model"
     ],
-    "memory_plan": "specs/device-memory-report.json"
+    "memory_plan": "specs/device-memory-report.json",
+    "first_device_milestone": "40-layer target with real packed weights: compile, load, ordinary prefill and decode; invocation success remains separate from numerical acceptance",
+    "readiness_gaps": {
+      "direct_ge_weights": "FP16_ONLY; packed W4A8 mapping is not implemented",
+      "memory": "Approximately 34.66B text parameters require about 69.3GB in FP16; not a 32GB device deployment",
+      "selected_experts": "Selected dispatch reduces expert computation, not resident full weight storage",
+      "stateful_decode": "past_length is static; reusable decode/cache contract and deployment orchestration are pending",
+      "gdn": "Output depends on output-buffer prefill; accuracy and cause unresolved",
+      "cache_attention": "Standalone invocation evidence is not production graph integration"
+    },
+    "stateful_compile_compatibility": {
+      "status": "HOST_TESTED_DEVICE_PENDING",
+      "option": "compile-stateful --tbe-diagnosis",
+      "uses_existing_diagnosis": true,
+      "platform": "kirinx90",
+      "scope": "Run-local TBE argument adapter only; no quantized full model built in this run."
+    }
   }
 }

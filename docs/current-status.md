@@ -2,21 +2,17 @@
 
 [首页](README.md) · [环境配置](environment-setup.md) · [验证记录](validation.md)
 
-更新日期：2026-10-27。当前主线是完整40层target、6层DFlash和可选融合算子。
+更新日期：2026-10-27。用户明确时间紧迫：先推进完整40层target的普通prefill/decode，再接6层DFlash；最终目标不变。
 
 ## 用户现在执行什么
 
-**最新诊断批次 `gdn-diagnostic-c0cbac5ac9cf` 在第二轮上传校验时发生HDC通信故障：`Failed to communicate with daemon`，该轮尚未执行GDN。** 首轮已完成，更新后直接续跑剩余两轮：
+**三填充诊断已完成，不需要再续跑或重跑这批探针。** 用户回传 `gdn-diagnostic-138b60d3eba7` 为 `DIAGNOSIS_COMPLETE`：原 `gdn-diagnostic-c0cbac5ac9cf` 的零填充结果复核完成，另两轮执行完成，三轮host输入回读SHA256一致。保留这两个诊断目录和原 `fused-all-f6b81ead7ae8` 批次，后续直接分析已有证据。
 
-```bash
-git pull --ff-only &&
-python3 "$REPO_DIR/targets/cpro/scripts/run_gdn_diagnostics.py" \
-  --resume "$AI_RUN_DIR/gdn-diagnostic-c0cbac5ac9cf"
-```
+同一OMC/输入的GDN输出随预填充值变化。零填充时prefill/decode核心relative L2约为0.00392/0.0564，末态约0.146/0.155；A5填充时核心升至3.44/11.19；5A填充时出现约203.25的误差，与FP16位模式 `0x5A5A` 的值一致。有效token区域已排除padding。当前证据不能区分部分写、输出累加和缓存可见性；清零不是已验证修复，数值验收仍未通过。上述结果来自用户报告，原始远端文件尚未在本地重新核验。
 
-`--resume` 在新目录重新核验已完成首轮的输入、输出、设备身份和runner哈希，复用原runner与OMC，只执行缺少的 `0xA5/0x5A` 两轮（共四次Process）。原报告和文件保持不变；校验不符则停止。HDC只读checksum查询遇到这类daemon通信错误时最多尝试三次，间隔一秒；不会把缺少退出标记或真实哈希不匹配当作成功，也不自动重启daemon。失败报告现在显示具体阶段与错误，以及已完成各轮诊断。
+整模工作与该问题并行推进，下一里程碑是**带真实量化权重的target OMC编译与一次普通prefill/decode**。当前没有可诚实宣称“一键完整上板”的命令：直接GE权重路径只支持FP16，W4A8尚未接入；约34.66B文本参数的FP16数据约69.3GB，不能作为32GB板端方案。`--expert-dispatch selected`减少参与计算的专家，不减少常驻权重。现有stateful图的 `past_length` 静态，单步native执行已实现，但可复用decode图/常驻状态及对应部署入口仍待接通。整模编译准备不以所有可选探针通过为前提；实际整模执行必须具备这些资源与接口条件。
 
-三轮诊断在所有输入拷贝和输出填充完成后、Process前统一回读输入SHA256，记录输出对象/容量/填充值残留及有效前缀差异。源码和已有编译证据有界复制，缺失单独记录。不重新编译模型、重跑平台诊断或Conv/RMS。此前GDN核心全零及末态大偏差仍未解决；Cache/Attention也只有形状检查。预填充值残留仅是未写/部分写线索，所有预填充都变零也不能单独证明kernel执行。
+当前优先级：接通量化权重与算子映射、整模编译入口和target状态执行；并行处理阻塞运行的GDN读写问题。暂不增加Conv/RMS候选、重复平台诊断或新的性能矩阵。需要实机验证时给单一入口命令。
 
 模型范围仍保留GDN、CacheUpdate、Attention三类六例，Conv/RMS使用基础算子。只有确需重新执行全部六例时才使用 `run_fused_probes.py --model-ops`；旧九例 `--all-ops` 保留为可选诊断，原Conv/RMS失败不改为通过。
 
@@ -39,7 +35,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_gdn_diagnostics.py" \
 
 | 项目 | 结论 |
 |---|---|
-| GDN两例 | 最新board-1回传的prefill/decode核心输出均全零、relL2=1；末态非零数33172/23424，relL2约0.9603/0.9745；未通过精度验收，原始远端文件未在本地核验 |
+| GDN两例 | 三填充诊断已完成，输出依赖预填充值；零填充改善但末态relL2仍约0.146/0.155，未通过精度验收，原因未定位 |
 | 编译目标 | 始终为 `kirinx90`；`Ascend310B1` 是DDK初始化后返回的内部名称，`Ascend310P3` 是原工程平台 |
 | GDN状态 | 安装版初态/末态为FP16；本次runner修正了末态只接受FP32的旧校验 |
 | conv | 当前走基础算子的历史拼接/截取路径；原Cpro自定义Conv两例在rank-4 y2维推后格式配置失败，历史结论不变 |

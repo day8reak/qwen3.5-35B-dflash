@@ -378,6 +378,143 @@ def test_compile_stateful_cli_dispatch(stateful_air, tmp_path, monkeypatch):
     assert json.loads((tmp_path / "omc/manifest.json").read_text())["reject_cpu_fallback"] is True
 
 
+def _stateful_compatibility_fixture(monkeypatch, ddk, diagnosis):
+    """Simulate only adapter preparation; retain the real worker-audit verifier."""
+    from qwen35_moe_dflash import compile as compiler
+    from qwen35_moe_dflash.hashing import sha256_file
+    prepared = []
+
+    def prepare(ddk_root, diagnosis_run, output_dir, *, inherited):
+        assert Path(ddk_root) == ddk and Path(diagnosis_run) == diagnosis
+        output_dir.mkdir()
+        module = output_dir / "platform_info.py"
+        module.write_text("# simulated run-local worker adapter\n")
+        metadata = {"audit_log": str(output_dir / "worker-audit.jsonl"),
+                    "expected_initialized_soc": "Ascend310B1",
+                    "adapted_module": {"path": str(module), "sha256": sha256_file(module)}}
+        prepared.append(metadata)
+        return dict(inherited, PYTHONPATH=str(output_dir) + os.pathsep + inherited.get("PYTHONPATH", "")), metadata
+
+    monkeypatch.setattr(compiler, "prepare_tbe_compatibility", prepare)
+    return prepared
+
+
+def _write_stateful_worker_audit(metadata, status):
+    if status == "NOT_OBSERVED":
+        return
+    event = {"event": status, "pid": 123, "requested_soc": "kirinx90",
+             "current_soc": "Ascend310B1", "native_soc": "Ascend310B1",
+             "module_path": metadata["adapted_module"]["path"],
+             "module_sha256": metadata["adapted_module"]["sha256"]}
+    Path(metadata["audit_log"]).write_text("malformed audit\n" if status == "MALFORMED"
+                                           else json.dumps(event) + "\n")
+
+
+@pytest.mark.parametrize("audit_status", ["APPLIED", "NOT_OBSERVED", "REJECTED", "MALFORMED", "EXCEPTION"])
+def test_compile_stateful_tbe_compatibility_retains_audit_and_fails_closed(
+        stateful_air, tmp_path, monkeypatch, audit_status):
+    from qwen35_moe_dflash import compile as compiler
+    air, _, ddk, calls = stateful_air
+    original = (air / "manifest.json").read_bytes()
+    original_path = os.environ.get("PYTHONPATH")
+    diagnosis = tmp_path / "diagnosis"
+    prepared = _stateful_compatibility_fixture(monkeypatch, ddk, diagnosis)
+    compile_tool = subprocess.run
+
+    def run(command, **kwargs):
+        assert "--platform=kirinx90" in command
+        assert kwargs["env"]["PYTHONPATH"].startswith(str(tmp_path / "omc/tbe-compat") + os.pathsep)
+        _write_stateful_worker_audit(prepared[0], audit_status)
+        return compile_tool(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    if audit_status == "EXCEPTION":
+        def fail_audit(metadata):
+            raise OSError("simulated audit read failure")
+        monkeypatch.setattr(compiler, "verify_tbe_compatibility", fail_audit)
+    if audit_status in {"APPLIED", "NOT_OBSERVED"}:
+        result = compiler.compile_stateful_air(air, tmp_path / "omc", ddk, ddk_id="mock-schema",
+                                               tbe_diagnosis=diagnosis)
+        assert result["status"] == "COMPILED"
+        assert not any("tbe-compat" in item["path"] for item in result["graphs"][0]["payloads"])
+    else:
+        with pytest.raises(RuntimeError, match="compatibility audit rejected"):
+            compiler.compile_stateful_air(air, tmp_path / "omc", ddk, ddk_id="mock-schema",
+                                           tbe_diagnosis=diagnosis)
+        result = json.loads((tmp_path / "omc/failure.json").read_text())
+        assert result["status"] == "FAILED" and result["stage"] == "target-tbe-compatibility-audit"
+        assert not (tmp_path / "omc/manifest.json").exists()
+    retained = json.loads((tmp_path / "omc/tbe-compatibility-result.json").read_text())
+    assert result["tbe_compatibility"] == retained
+    assert retained["compiler_invocation"] == "ATTEMPTED" and retained["compile"] == "PASSED"
+    expected = "REJECTED" if audit_status == "MALFORMED" else "AUDIT_FAILED" if audit_status == "EXCEPTION" else audit_status
+    assert retained["audit"]["status"] == expected
+    assert "NOT_OBSERVED does not establish a repair" in retained["scope"]
+    assert len(calls) == len(prepared) == 1
+    assert (tmp_path / "omc/target/target.omc").read_bytes() == b"MOCK OMC"
+    assert (air / "manifest.json").read_bytes() == original
+    assert os.environ.get("PYTHONPATH") == original_path
+
+
+def test_compile_stateful_bad_tbe_diagnosis_rejects_before_omg(stateful_air, tmp_path):
+    from qwen35_moe_dflash.compile import compile_stateful_air
+    air, _, ddk, calls = stateful_air
+    diagnosis = tmp_path / "diagnosis"
+    diagnosis.mkdir()
+    (diagnosis / "report.json").write_text('{"status":"INCOMPLETE"}')
+    with pytest.raises(ValueError, match="complete 12-case diagnosis"):
+        compile_stateful_air(air, tmp_path / "omc", ddk, ddk_id="mock-schema", tbe_diagnosis=diagnosis)
+    assert calls == []
+    failure = json.loads((tmp_path / "omc/failure.json").read_text())
+    record = json.loads((tmp_path / "omc/tbe-compatibility-result.json").read_text())
+    assert failure["stage"] == "target-tbe-compatibility-prepare" and failure["tbe_compatibility"] == record
+    assert record["compiler_invocation"] == "NOT_ATTEMPTED" and record["compile"] == "NOT_RUN"
+    assert record["audit"]["status"] == "NOT_PREPARED"
+    assert not (tmp_path / "omc/manifest.json").exists()
+
+
+def test_compile_stateful_tbe_audit_retained_when_omg_fails(stateful_air, tmp_path, monkeypatch):
+    from qwen35_moe_dflash.compile import compile_stateful_air
+    air, _, ddk, _ = stateful_air
+    diagnosis = tmp_path / "diagnosis"
+    prepared = _stateful_compatibility_fixture(monkeypatch, ddk, diagnosis)
+
+    def fail(command, **kwargs):
+        _write_stateful_worker_audit(prepared[0], "APPLIED")
+        (Path(kwargs["cwd"]) / "check_result.json").write_text('{"mock":"compiler failure"}')
+        raise subprocess.CalledProcessError(7, command)
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="non-zero exit status 7"):
+        compile_stateful_air(air, tmp_path / "omc", ddk, ddk_id="mock-schema", tbe_diagnosis=diagnosis)
+    failure = json.loads((tmp_path / "omc/failure.json").read_text())
+    assert failure["status"] == "FAILED" and failure["returncode"] == 7
+    assert failure["tbe_compatibility"]["audit"]["status"] == "APPLIED"
+    assert failure["tbe_compatibility"]["compile"] == "FAILED"
+    assert (tmp_path / "omc/target/diagnostics/check_result.json").is_file()
+    assert not (tmp_path / "omc/manifest.json").exists()
+
+
+def test_compile_stateful_cli_accepts_tbe_diagnosis_only_for_stateful(stateful_air, tmp_path, monkeypatch):
+    import runpy
+    air, _, ddk, calls = stateful_air
+    diagnosis = tmp_path / "diagnosis"
+    prepared = _stateful_compatibility_fixture(monkeypatch, ddk, diagnosis)
+    script = Path(__file__).resolve().parents[1] / "targets/cpro/scripts/direct_model_air.py"
+    arguments = ["--air", str(air), "--ddk-root", str(ddk), "--ddk-id", "mock-schema",
+                 "--output", str(tmp_path / "omc"), "--tbe-diagnosis", str(diagnosis)]
+    monkeypatch.setattr(sys, "argv", [str(script), "compile-stateful", *arguments])
+    with pytest.raises(SystemExit) as completed:
+        runpy.run_path(str(script), run_name="__main__")
+    assert completed.value.code == 0 and len(calls) == len(prepared) == 1
+    result = json.loads((tmp_path / "omc/manifest.json").read_text())
+    assert result["tbe_compatibility"]["audit"]["status"] == "NOT_OBSERVED"
+    monkeypatch.setattr(sys, "argv", [str(script), "compile", *arguments])
+    with pytest.raises(SystemExit) as rejected:
+        runpy.run_path(str(script), run_name="__main__")
+    assert rejected.value.code == 2 and len(calls) == 1
+
+
 @pytest.mark.parametrize("stateful_air", [{"past": 0}], indirect=True)
 class TestPrepareStatefulStep:
     """Mock tool output; real hashes, ABI checks and continuation staging."""

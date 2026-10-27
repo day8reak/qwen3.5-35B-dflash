@@ -4,6 +4,8 @@
 
 本路径使用 Python/NumPy 描述图，生成 C++ 并调用 GE 保存 AIR，不经过 PyTorch/TorchAir。先按[环境配置](environment-setup.md)激活 `custom_pypto` 并加载项目配置；以下使用当前环境的 `python3`。
 
+当前入口覆盖完整构图和FP16转换诊断，尚未实现32GB板端所需的完整W4A8映射。近期里程碑是先完成量化target的普通prefill/decode，再接DFlash；下面的FP16命令是接口参考，不是已可上板的量化整模流程。
+
 ## 1. 生成完整模型结构
 
 构造完整 40 层 target 和 6 层 DFlash，保留 256 专家/top8、hidden 2048、词表 248320；S=8 只表示输入长度。此步无需权重或 GE，输出源码、recipe、节点连边和权重需求，状态为 `STRUCTURE_READY`，不能直接编译 OMC。
@@ -32,29 +34,26 @@ python3 "$GE_MODEL_TOOL" prepare --full --float-baseline \
 
 ## 状态图与可选融合
 
-先生成文档 §4.6 的接口绑定；它不安装算子，也不证明所选 DDK 支持这些算子。下面选择 Cpro 的 FP16 初态，GDN 输出 state 为 FP32。
+当前只选择GDN融合，Conv状态和RMS使用基础算子。复用已经生成、与安装版GDN源码绑定的FP16输入/输出state接口及同批TBE诊断，避免重新生成文档默认FP32末态绑定：
 
 ```bash
-export GE_BINDING_RUN="$(mktemp -d "$AI_RUN_DIR/ge-bindings-XXXXXXXX")"
-export GE_CUSTOM_BINDINGS="$GE_BINDING_RUN/bindings.json"
-python3 "$GE_MODEL_TOOL" bindings-from-document \
-  --target "${CPRO_TARGET:-kirinx90}" --ddk-id "$CPRO_DDK_ID" \
-  --gdn-initial-state-dtype float16 --output "$GE_CUSTOM_BINDINGS"
+export GE_CUSTOM_BINDINGS="$AI_RUN_DIR/fused-all-f6b81ead7ae8/bindings.json"
+export GE_TBE_DIAGNOSIS="$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
 ```
 
-融合角色可选 `gdn,conv_state,rms` 的任意不重复组合；不用融合时改为 `--fused-ops none`，省略 `--bindings` 和 `--gdn-state-casts allow`。同样的选项也适用于 `build-full-structure`，但每次使用新输出目录。
+绑定是接口依据，不证明数值正确；已有GDN三填充结果仍待修复。不用融合时可改为 `--fused-ops none` 并省略 `--bindings`。同样的选项也适用于 `build-full-structure`，每次使用新输出目录。
 
 ```bash
 export GE_STATEFUL_RUN="$(mktemp -d "$AI_RUN_DIR/ge-stateful-XXXXXXXX")"
 python3 "$GE_MODEL_TOOL" export-stateful \
   --prepared "$GE_FULL_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
   --sequence-length 3 --past-length 0 \
-  --fused-ops gdn,conv_state,rms --bindings "$GE_CUSTOM_BINDINGS" \
-  --recurrent-dtype float16 --gdn-state-casts allow \
+  --fused-ops gdn --bindings "$GE_CUSTOM_BINDINGS" \
+  --recurrent-dtype float16 \
   --output "$GE_STATEFUL_RUN/air"
 ```
 
-`allow` 显式允许 GDN 末态转回 FP16 缓存并记录于 ABI；仅生成源码时将 `export-stateful` 改为 `plan-stateful`，去掉 `--ge-root`。文档融合绑定只接受完整模型尺寸，不适用于 tiny。
+这里初态和末态均为FP16，无需插入状态类型转换。仅生成源码时将 `export-stateful` 改为 `plan-stateful`，去掉 `--ge-root`。文档融合绑定只接受完整模型尺寸，不适用于 tiny。
 
 ## 状态图：编译和输入打包
 
@@ -63,11 +62,14 @@ python3 "$GE_MODEL_TOOL" export-stateful \
 ```bash
 python3 "$GE_MODEL_TOOL" compile-stateful \
   --air "$GE_STATEFUL_RUN/air" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$GE_TBE_DIAGNOSIS" \
   --output "$GE_STATEFUL_RUN/omc"
 python3 "$GE_MODEL_TOOL" prepare-stateful-step \
   --omc "$GE_STATEFUL_RUN/omc" --token-ids 1,2,3 \
   --output "$GE_STATEFUL_RUN/step-prefill"
 ```
+
+`--tbe-diagnosis`核验已有诊断并仅在本次编译目录准备兼容适配，OMG目标保持 `kirinx90`。编译结果与worker审计分开记录；审计拒绝/失败时整次编译失败，`NOT_OBSERVED`不表示适配生效。无需这项适配的DDK可省略该参数。
 
 继续 decode 时，用相同 prepared 和融合选项导出 S=1/T=3 的图；`PREFILL_RESULT` 是回收的完整 prefill 结果目录，`NEXT_TOKEN_ID` 是下一步要消费的 token。
 
@@ -75,11 +77,12 @@ python3 "$GE_MODEL_TOOL" prepare-stateful-step \
 python3 "$GE_MODEL_TOOL" export-stateful \
   --prepared "$GE_FULL_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
   --sequence-length 1 --past-length 3 \
-  --fused-ops gdn,conv_state,rms --bindings "$GE_CUSTOM_BINDINGS" \
-  --recurrent-dtype float16 --gdn-state-casts allow \
+  --fused-ops gdn --bindings "$GE_CUSTOM_BINDINGS" \
+  --recurrent-dtype float16 \
   --output "$GE_STATEFUL_RUN/decode-air"
 python3 "$GE_MODEL_TOOL" compile-stateful \
   --air "$GE_STATEFUL_RUN/decode-air" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$GE_TBE_DIAGNOSIS" \
   --output "$GE_STATEFUL_RUN/decode-omc"
 python3 "$GE_MODEL_TOOL" prepare-stateful-step \
   --omc "$GE_STATEFUL_RUN/decode-omc" --token-ids "$NEXT_TOKEN_ID" \
