@@ -4,7 +4,9 @@
 
 本路径使用 Python/NumPy 描述图，生成 C++ 并调用 GE 保存 AIR，不经过 PyTorch/TorchAir。先按[环境配置](environment-setup.md)激活 `custom_pypto` 并加载项目配置；以下使用当前环境的 `python3`。
 
-当前入口覆盖完整构图和FP16转换诊断，尚未实现32GB板端所需的完整W4A8映射。近期里程碑是先完成量化target的普通prefill/decode，再接DFlash；下面的FP16命令是接口参考，不是已可上板的量化整模流程。
+当前优先复用用户已导出的完整AIR及64/1动态档位，使用 [当前整模编译命令](current-status.md#用户现在执行什么) 中的 `compile_full_target.py`。该入口保留量化图及外置权重选项，复用已完成TBE诊断；不重建权重、不运行探针，不假定原AIR满足本仓库runner ABI。默认从当前DDK的实际 `master/omg` 编译并尝试提取真实图接口。
+
+下方自建GE入口覆盖完整构图和FP16转换诊断，尚未实现32GB板端所需的完整W4A8映射。近期里程碑是target普通prefill/decode，再接DFlash；下面的FP16命令是接口参考，不是已可上板的量化整模流程。`prepare_full_target.py` 为备用流式逻辑INT4/INT8缓存准备器，支持 `--resume` 校验复用，但尚未完成I4ZN/QPARAM硬件打包；有原AIR时不需先执行它。
 
 ## 1. 生成完整模型结构
 

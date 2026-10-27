@@ -5,6 +5,7 @@ import re
 import numpy as np
 
 from ..artifacts import output_path, save_json
+from ..compile import _stateful_json
 from ..hashing import sha256_file
 from .export import _step_file
 from .ir import DTYPES
@@ -215,3 +216,233 @@ def compare_fills(payloads, outputs):
                      "nonzero_elements": [int(np.count_nonzero(value)) for value in values],
                      "nonfinite_elements": [int(np.count_nonzero(~np.isfinite(value))) for value in values]})
     return rows
+
+
+def _retained_json(path, digest=None):
+    path = Path(path)
+    if (not path.is_absolute() or path.is_symlink() or not path.is_file()
+            or path.stat().st_size > 8 << 20):
+        raise ValueError("retained JSON requires an absolute regular file below 8 MiB")
+    actual = sha256_file(path)
+    if digest is not None and actual != digest:
+        raise ValueError("retained JSON SHA256 mismatch: " + str(path))
+    value = _stateful_json(path)
+    if not isinstance(value, dict):
+        raise ValueError("retained JSON must contain an object")
+    return value, actual
+
+
+def _sentinel_rows(mask, name):
+    counts = np.count_nonzero(mask, axis=-1)
+    groups = []
+    for batch in range(counts.shape[0]):
+        for index in range(counts.shape[1]):
+            row = counts[batch, index]
+            groups.append({"batch": batch, "token" if name == "core_attn" else "head": index,
+                           "row_element_counts": row.tolist(),
+                           "rows_with_matches": int(np.count_nonzero(row)),
+                           "fully_matching_rows": int(np.count_nonzero(row == mask.shape[-1]))})
+    return {"row_axis": "head" if name == "core_attn" else "key_row",
+            "row_width": mask.shape[-1], "groups": groups}
+
+
+def _retained_sentinels(payloads, descriptors):
+    byte_summary = compare_fills(payloads, descriptors)
+    result = []
+    for index, (desc, previous) in enumerate(zip(descriptors, byte_summary)):
+        shape = desc["shape"]
+        if (desc["name"] not in {"core_attn", "last_recurrent_state"} or len(shape) != 4
+                or any(type(size) is not int or size < 1 for size in shape)
+                or shape[0] != 1 or shape[-1] > 1024 or np.prod(shape[:-1]) > 65536):
+            raise ValueError("retained GDN rows require bounded rank-four output descriptors")
+        dtype = DTYPES[desc["dtype"]]
+        integer = np.dtype("<u2" if dtype.itemsize == 2 else "<u4")
+        masks, trials = [], []
+        for fill in FILLS:
+            words = np.frombuffer(payloads[fill][index], integer).reshape(shape)
+            sentinel = int.from_bytes(bytes([fill]) * dtype.itemsize, "little")
+            complete = words == sentinel
+            valid = complete[:, :previous["compared_shape"][1]] if desc["name"] == "core_attn" else complete
+            masks.append(valid)
+            matched = int(np.count_nonzero(valid))
+            trials.append({"fill": fill, "sentinel_word": f"0x{sentinel:0{dtype.itemsize * 2}x}",
+                           "matching_elements": int(np.count_nonzero(complete)),
+                           "valid_matching_elements": matched,
+                           "padding_matching_elements": int(np.count_nonzero(complete)) - matched,
+                           "valid_rows": _sentinel_rows(valid, desc["name"])})
+        follows = np.logical_and.reduce(masks)
+        result.append({**previous, "dtype": desc["dtype"], "element_bytes": dtype.itemsize,
+                       "fills": trials, "complete_elements_following_prefill": int(np.count_nonzero(follows)),
+                       "following_prefill_rows": _sentinel_rows(follows, desc["name"])})
+    return result
+
+
+def _retained_source_context(installed):
+    inventory, digest = _retained_json(installed / "report.json")
+    files = inventory.get("files")
+    if not isinstance(files, list) or len(files) > 24:
+        raise ValueError("retained installed-source inventory exceeds its capture bound")
+    critical_pattern = re.compile(r"InitOutput|SetAtomic\w*|\batomic\w*|Duplicate|"
+                                  r"\b(?:memset|memset_s|SetValue|Fill)\b", re.I)
+    pattern = re.compile(critical_pattern.pattern + r"|SetGlobalBuffer|DataCopy\w*|CopyOut|"
+                         r"\bStore\w*|last_recurrent|core_attn", re.I)
+
+    def first_last(indices, limit):
+        if not limit:
+            return []
+        if len(indices) <= limit:
+            return indices
+        return indices[:(limit + 1) // 2] + (indices[-(limit // 2):] if limit // 2 else [])
+
+    rows, total = [], 0
+    for record in files:
+        if not isinstance(record, dict):
+            raise ValueError("invalid retained source file record")
+        if record.get("status") != "COPIED":
+            rows.append({"source": record.get("source"), "status": record.get("status")})
+            continue
+        if not _size(record.get("bytes"), 0, 32 << 20) or total + record["bytes"] > 64 << 20:
+            raise ValueError("retained source payload exceeds its capture bound")
+        path = _step_file(installed, record)
+        total += record["bytes"]
+        lines = path.read_text(errors="replace").splitlines()
+        hits = [i for i, line in enumerate(lines) if pattern.search(line)]
+        critical = [i for i in hits if critical_pattern.search(lines[i])]
+        critical_set = set(critical)
+        preferred = first_last(critical, 24)
+        chosen = sorted(preferred + first_last([i for i in hits if i not in critical_set], 24 - len(preferred)))
+        contexts = [{"match_line": i + 1, "match_text": lines[i], "critical": i in critical_set,
+                     "lines": [{"line": j + 1, "text": lines[j]}
+                               for j in range(max(0, i - 3), min(len(lines), i + 6))]} for i in chosen]
+        rows.append({"source": record.get("source"), "captured_path": str(path), "status": "VERIFIED_COPY",
+                     "sha256": record["sha256"], "matched_lines": len(hits), "contexts_limited": len(chosen) < len(hits),
+                     "critical_matched_lines": len(critical), "critical_contexts_limited": len(preferred) < len(critical),
+                     "contexts": contexts})
+    return {"inventory": str(installed / "report.json"), "inventory_sha256": digest,
+            "capture_status": inventory.get("status"), "capture_limited": inventory.get("limited"),
+            "files": rows, "scope": "Previously captured copies only. Matches are clues, not proof of output initialization "
+            "or complete writes. Uncaptured helper files and compiled-kernel identity remain unverified."}
+
+
+def summarize_retained_diagnosis(diagnosis_run, output_dir):
+    """Summarize a completed three-fill run without DDK scans or device calls."""
+    from .probes import _validate_probe_manifest
+
+    root, output = Path(diagnosis_run).expanduser().resolve(), output_path(output_dir)
+    report, report_hash = _retained_json(root / "report.json")
+    if (type(report.get("schema_version")) is not int or report["schema_version"] != 1
+            or report.get("status") != "DIAGNOSIS_COMPLETE" or report.get("fills") != list(FILLS)
+            or report.get("model_compilation") != "NOT_RUN"):
+        raise ValueError("a completed three-fill GDN diagnostic report is required")
+    protected = [root]
+    manifests = report.get("probe_manifests")
+    if not isinstance(manifests, dict) or not 1 <= len(manifests) <= 2:
+        raise ValueError("retained diagnosis requires one or two explicit probe manifests")
+    contracts = {}
+    for folder, digest in manifests.items():
+        probe = Path(folder)
+        manifest, _ = _retained_json(probe / "manifest.json", digest)
+        _validate_probe_manifest(manifest)
+        protected.append(probe.resolve())
+        for case in manifest["cases"]:
+            if case["name"] not in GDN_CASES or case["status"] != "COMPILED":
+                continue
+            if case["name"] in contracts:
+                raise ValueError("duplicate retained GDN source case")
+            step_path = _step_file(probe, case["bundle_manifest"])
+            step, _ = _retained_json(step_path)
+            if (step.get("artifact_kind") != "qwen35-fused-op-step" or step.get("status") != "PREPARED"
+                    or step.get("operator_type") != "ChunkGatedDeltaRule" or len(step.get("outputs", [])) != 2):
+                raise ValueError("retained source is not a prepared GDN step")
+            _step_file(probe, case["model"])
+            _step_file(step_path.parent, step["model"])
+            _step_file(step_path.parent, step["operator_abi"])
+            _step_file(step_path.parent, step["step_plan"])
+            if any(step["model"][key] != case["model"][key] for key in ("sha256", "bytes")):
+                raise ValueError("retained bundled model differs from compiled GDN source")
+            if len(step["inputs"]) != len(case["inputs"]):
+                raise ValueError("retained GDN input count differs from source")
+            for actual, expected in zip(step["inputs"], case["inputs"]):
+                if any(actual.get(key) != expected[key] for key in ("index", "name", "shape", "dtype", "bytes", "sha256")):
+                    raise ValueError("retained GDN input differs from source")
+                _step_file(probe, expected)
+                _step_file(step_path.parent, actual)
+            for actual, expected in zip(step["outputs"], case["outputs"]):
+                if any(actual.get(key) != expected[key] for key in ("index", "name", "shape", "dtype")):
+                    raise ValueError("retained GDN output differs from source")
+            contracts[case["name"]] = (case, step, manifest["ddk_id"])
+    cases = report.get("cases")
+    if (not isinstance(cases, list) or len(cases) != 2 or any(not isinstance(case, dict) for case in cases)
+            or {case.get("name") for case in cases} != set(GDN_CASES) or set(contracts) != set(GDN_CASES)):
+        raise ValueError("retained diagnosis must contain both GDN cases exactly once")
+    summaries, identity = [], None
+    for case in sorted(cases, key=lambda row: GDN_CASES.index(row["name"])):
+        original, step, ddk = contracts[case["name"]]
+        runs = case.get("runs")
+        if (case.get("host_input_readback") != "MATCHED" or not isinstance(runs, list) or len(runs) != 3
+                or any(not isinstance(row, dict) or type(row.get("fill")) is not int for row in runs)
+                or {row["fill"] for row in runs} != set(FILLS)):
+            raise ValueError("each retained GDN case requires three unique verified fills")
+        payloads, trial_records = {}, []
+        for trial in sorted(runs, key=lambda row: FILLS.index(row["fill"])):
+            native_path = Path(trial["result"])
+            native, _ = _retained_json(native_path, trial.get("result_sha256", ""))
+            protected.append(native_path.parent.resolve())
+            if (native.get("status") != "EXECUTED" or native.get("scope") != "fused-operator-probe"
+                    or native.get("operator_type") != "ChunkGatedDeltaRule" or native.get("ddk_id") != ddk
+                    or native.get("model_sha256") != step["model"]["sha256"]
+                    or native.get("operator_abi_sha256") != step["operator_abi"]["sha256"]
+                    or native.get("step_plan_sha256") != step["step_plan"]["sha256"]):
+                raise ValueError("retained native result differs from its source GDN step")
+            current_identity = tuple(native.get(key) for key in ("runtime_version", "firmware_id", "ddk_id", "evidence_kind"))
+            if any(not isinstance(value, str) or not value for value in current_identity):
+                raise ValueError("retained native result lacks runtime identity")
+            if identity is not None and identity != current_identity:
+                raise ValueError("retained runtime/firmware/DDK/evidence identity differs across trials")
+            identity = current_identity
+            for key, fields in (("inputs", ("index", "name", "shape", "dtype", "bytes", "sha256")),
+                                ("outputs", ("index", "name", "shape", "dtype"))):
+                if len(native.get(key, [])) != len(step[key]):
+                    raise ValueError("retained native port count differs from GDN step")
+                for actual, expected in zip(native[key], step[key]):
+                    if any(actual.get(field) != expected[field] for field in fields):
+                        raise ValueError("retained native port differs from GDN step")
+            payloads[trial["fill"]] = validate_io(native, step, native_path.parent, trial["fill"])
+            trial_records.append({"fill": trial["fill"], "result": str(native_path), "result_sha256": trial["result_sha256"]})
+        summaries.append({"name": case["name"], "host_input_readback": "MATCHED",
+                          "runs": trial_records, "outputs": _retained_sentinels(payloads, original["outputs"])})
+    sources = _retained_source_context(root / "installed")
+    if any(output == path or path in output.parents or output in path.parents for path in protected):
+        raise ValueError("summary output must be separate from every retained input directory")
+    if sha256_file(root / "report.json") != report_hash:
+        raise ValueError("retained diagnostic report changed while reading")
+    result = {"schema_version": 1, "status": "SUMMARIZED", "output": str(output), "diagnosis_run": str(root),
+              "diagnosis_report_sha256": report_hash, "model_compilation": "NOT_RUN", "device_execution": "NOT_RUN",
+              "numerical_acceptance": "NOT_DEFINED", "placement": "UNVERIFIED", "cases": summaries,
+              "installed_source": sources,
+              "scope": "Read-only retained-file integrity and sentinel statistics. A single-fill match can be coincidental; "
+              "cross-fill matching still does not distinguish accumulation, incomplete writes or cache visibility."}
+    output.mkdir(parents=True, exist_ok=False)
+    save_json(output / "report.json", result)
+    lines = ["Retained GDN diagnosis summary: SUMMARIZED", "No compilation, DDK scan or device execution.",
+             "Source: " + str(root), "Report SHA256: " + report_hash, ""]
+    for case in summaries:
+        lines.append(case["name"] + ": host input readback MATCHED; output/source SHA256 checked")
+        for row in case["outputs"]:
+            counts = ", ".join(f"{trial['fill']:02x}={trial['valid_matching_elements']}" for trial in row["fills"])
+            lines.append(f"  {row['name']} ({row['dtype']}): complete elements following all fills="
+                         f"{row['complete_elements_following_prefill']}; valid matches {counts}; "
+                         f"padding excluded={row['padding_bytes_unchecked']} bytes")
+    verified = [row for row in sources["files"] if row["status"] == "VERIFIED_COPY"]
+    lines += ["", f"Installed source copies verified={len(verified)}; capture_limited={sources['capture_limited']}."]
+    for row in verified:
+        lines.append(f"  {row['source']}: output/atomic/write clue lines={row['matched_lines']}")
+        critical = [context for context in row["contexts"] if context["critical"]]
+        if critical:
+            lines.extend(f"    L{context['match_line']}: {context['match_text']}" for context in critical[:4])
+        else:
+            lines.append("    No explicit initialization/atomic match in this captured source.")
+    lines += [sources["scope"],
+              "Per-token/head and state-row counts, source SHA256 and numbered contexts: report.json.", result["scope"]]
+    (output / "report.txt").write_text("\n".join(lines) + "\n")
+    return result

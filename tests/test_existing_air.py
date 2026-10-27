@@ -1,0 +1,331 @@
+"""Isolated existing-AIR compilation; mock OMG only, never an actual device."""
+import errno
+import json
+from pathlib import Path
+import subprocess
+from types import SimpleNamespace
+
+import pytest
+
+from qwen35_moe_dflash import existing_air as module
+
+
+@pytest.fixture
+def case(tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    source = tmp_path / "source"
+    source.mkdir()
+    air = source / "export.air"
+    air.write_bytes(b"SIMULATED UNINSPECTED AIR")
+    (source / "weights").mkdir()
+    (source / "weights/w.bin").write_bytes(b"SIDE DATA")
+    (source / "target.omc").write_bytes(b"OLD MODEL")
+    (source / "compile.log").write_text("OLD LOG")
+    (source / "outside").mkdir()
+    (source / "outside/ignored.bin").write_bytes(b"NOT SELECTED")
+    ddk = tmp_path / "ddk"
+    omg = ddk / "tools/tools_omg/master/omg"
+    omg.parent.mkdir(parents=True)
+    omg.write_text("#!/bin/sh\nexit 0\n")
+    omg.chmod(0o755)
+    return air, tmp_path / "result", ddk
+
+
+def _tool(command, **kwargs):
+    if "--help" in command:
+        return _help(command, **kwargs)
+    model = Path(next(value.split("=", 1)[1] for value in command if value.startswith("--model=")))
+    output = Path(next(value.split("=", 1)[1] for value in command if value.startswith("--output=")))
+    assert model.read_bytes() == b"SIMULATED UNINSPECTED AIR"
+    assert (model.parent / "weights/w.bin").read_bytes() == b"SIDE DATA"
+    assert kwargs["cwd"] == model.parent
+    assert kwargs["env"]["SOC_VERSION"] == "kirinx90"
+    assert "--platform=kirinx90" in command
+    assert not any(value.startswith("--weight_data_type") for value in command)
+    assert not any(value.startswith("--use_origin_format") for value in command)
+    output.with_suffix(".omc").write_bytes(b"SIMULATED OMC")
+    kwargs["stdout"].write("simulation only\n")
+
+
+def _help(command, **kwargs):
+    kwargs["stdout"].write("OMG usage: --input_shape --dynamic_dims --limit_partition_size --save_weights_as_external_data\n")
+    return subprocess.CompletedProcess(command, 0)
+
+
+def test_existing_air_compiles_without_original_writes_or_runner_abi(case, monkeypatch):
+    air, output, ddk = case
+    before = {str(p.relative_to(air.parent)): p.read_bytes() for p in air.parent.rglob("*") if p.is_file()}
+    monkeypatch.setattr(subprocess, "run", _tool)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK")
+    assert result["status"] == "COMPILED" and result["model_compilation"] == "PASSED"
+    assert result["device_execution"] == "NOT_RUN" and result["device_ready"] is False
+    assert set(result["source_contract"].values()) == {"UNVERIFIED"}
+    assert result["legacy_hiai_abi_compatible"] == "UNVERIFIED"
+    assert (output / result["omc"]["path"]).read_bytes() == b"SIMULATED OMC"
+    assert {row["source_relative"] for row in result["input_snapshots"]} == {"export.air", "weights/w.bin"}
+    assert not list((output / "compile-work").rglob("*.sh"))
+    assert all(not path.is_symlink() for path in (output / "compile-work").rglob("*"))
+    assert before == {str(p.relative_to(air.parent)): p.read_bytes() for p in air.parent.rglob("*") if p.is_file()}
+    assert result["source_preservation"]["status"] == "UNCHANGED_BY_STAT"
+
+
+def test_snapshot_copy_fallback_rejects_insufficient_disk_before_copy(case, monkeypatch):
+    air, output, ddk = case
+    sources = [air, air.parent / "weights/w.bin"]
+    before = {path: (path.read_bytes(), module._stat(path)) for path in sources}
+    total_bytes = sum(len(value[0]) for value in before.values())
+    progress = []
+
+    def no_clone(*args):
+        raise OSError(errno.EOPNOTSUPP, "reflink unavailable")
+
+    def no_space(fd):
+        # Selection accounting must be persisted before any physical copy.
+        selection = json.loads((output / "input-selection.json").read_text())
+        assert selection["file_count"] == 2 and selection["total_bytes"] == total_bytes
+        return SimpleNamespace(f_bavail=0, f_frsize=4096)
+
+    def help_only(command, **kwargs):
+        assert command[-1] == "--help", "disk failure must prevent model compilation"
+        return _help(command, **kwargs)
+
+    monkeypatch.setattr(module.fcntl, "ioctl", no_clone)
+    monkeypatch.setattr(module.os, "fstatvfs", no_space)
+    monkeypatch.setattr(subprocess, "run", help_only)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK", progress=progress.append)
+    assert result["status"] == "FAILED" and result["stage"] == "input-snapshot"
+    assert result["model_compilation"] == "NOT_RUN" and result["input_snapshots"] == []
+    assert "physical copy needs" in result["error"] and "Free disk space" in result["error"]
+    assert (output / "compile-work/input/export.air").read_bytes() == b""
+    assert not (output / "compile-work/input/weights/w.bin").exists()
+    assert before == {path: (path.read_bytes(), module._stat(path)) for path in sources}
+    assert result["input_selection"]["total_bytes"] == total_bytes
+    assert any(row.get("total") == 2 and row.get("total_bytes") == total_bytes for row in progress)
+
+
+def test_snapshot_copy_fallback_with_sufficient_disk_preserves_exact_bytes(case, monkeypatch):
+    air, output, ddk = case
+    sources = [air, air.parent / "weights/w.bin"]
+    before = {path: (path.read_bytes(), module._stat(path)) for path in sources}
+    checks = []
+
+    def no_clone(*args):
+        raise OSError(errno.EXDEV, "cross-filesystem reflink unavailable")
+
+    def sufficient_space(fd):
+        checks.append(fd)
+        return SimpleNamespace(f_bavail=(1 << 30) // 4096, f_frsize=4096)
+
+    monkeypatch.setattr(module.fcntl, "ioctl", no_clone)
+    monkeypatch.setattr(module.os, "fstatvfs", sufficient_space)
+    monkeypatch.setattr(subprocess, "run", _tool)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK")
+    assert result["status"] == "COMPILED" and len(checks) == 2
+    assert result["input_selection"]["file_count"] == 2
+    assert result["input_selection"]["total_bytes"] == sum(len(value[0]) for value in before.values())
+    for row in result["input_snapshots"]:
+        assert row["snapshot_method"] == "COPY"
+        assert (output / row["path"]).read_bytes() == before[Path(row["source"])][0]
+        assert row["sha256"] == module.sha256_file(output / row["path"])
+    assert before == {path: (path.read_bytes(), module._stat(path)) for path in sources}
+
+
+@pytest.mark.parametrize("failure", ["compiler", "timeout", "empty"])
+def test_failure_retains_logs_dumps_context_and_original(case, monkeypatch, failure):
+    air, output, ddk = case
+    def tool(command, **kwargs):
+        if "--help" in command:
+            return _help(command, **kwargs)
+        scratch = kwargs["cwd"]
+        (scratch / "dump_graph").mkdir()
+        (scratch / "dump_graph/failed.irpb").write_bytes(b"FAILED GRAPH")
+        kwargs["stdout"].write("Get format configs failed\n")
+        if failure == "compiler":
+            raise subprocess.CalledProcessError(1, command)
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, 3)
+    monkeypatch.setattr(subprocess, "run", tool)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK")
+    assert result["status"] == "FAILED" and not (output / "manifest.json").exists()
+    assert (output / "failure.json").is_file()
+    assert (output / "diagnostics/failed.irpb").read_bytes() == b"FAILED GRAPH"
+    assert (output / "compile-work/input/export.air").read_bytes() == air.read_bytes()
+    assert "Get format configs failed" in (output / "report.txt").read_text()
+
+
+@pytest.mark.parametrize("audit,expected", [("APPLIED", "COMPILED"), ("NOT_OBSERVED", "COMPILED"),
+                                            ("REJECTED", "FAILED"), ("MALFORMED", "FAILED")])
+def test_reuses_tbe_diagnosis_and_fails_closed_on_invalid_audit(case, monkeypatch, audit, expected):
+    air, output, ddk = case
+    diagnosis = output.parent / "existing-diagnosis"
+    calls = []
+    def prepare(selected, retained, destination, *, inherited):
+        calls.append((selected, retained))
+        return inherited, {"audit_log": str(destination / "audit.jsonl")}
+    monkeypatch.setattr(module, "prepare_tbe_compatibility", prepare)
+    monkeypatch.setattr(module, "verify_tbe_compatibility", lambda metadata: {"status": audit})
+    monkeypatch.setattr(subprocess, "run", _tool)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK", tbe_diagnosis=diagnosis)
+    assert result["status"] == expected and calls == [(ddk, diagnosis)]
+    assert result["tbe_compatibility"]["compile"] == "PASSED"
+    assert result["tbe_compatibility"]["audit"]["status"] == ("AUDIT_FAILED" if audit == "MALFORMED" else audit)
+    assert (output / "tbe-compatibility-result.json").is_file()
+    assert (output / "manifest.json").exists() == (expected == "COMPILED")
+
+
+def test_invalid_diagnosis_prevents_compiler_and_source_overlap_is_rejected(case, monkeypatch):
+    air, output, ddk = case
+    def prepare(*args, **kwargs):
+        raise ValueError("diagnosis does not match selected DDK")
+    monkeypatch.setattr(module, "prepare_tbe_compatibility", prepare)
+    def help_only(command, **kwargs):
+        assert command[-1] == "--help", "invalid diagnosis must prevent actual compilation"
+        return _help(command, **kwargs)
+    monkeypatch.setattr(subprocess, "run", help_only)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK", tbe_diagnosis="old")
+    assert result["status"] == "FAILED"
+    assert result["tbe_compatibility"]["compiler_invocation"] == "NOT_ATTEMPTED"
+    assert result["tbe_compatibility"]["audit"]["status"] == "NOT_PREPARED"
+    with pytest.raises(ValueError, match="outside"):
+        module.compile_existing_air(air, air.parent / "new", ddk, ddk_id="MOCK")
+
+
+def test_existing_output_and_symlink_sidecars_cannot_modify_source(case, monkeypatch):
+    air, output, ddk = case
+    (air.parent / "alias.bin").symlink_to(air.parent / "weights/w.bin")
+    output.mkdir()
+    (output / "keep").write_text("OLD")
+    with pytest.raises(FileExistsError):
+        module.compile_existing_air(air, output, ddk, ddk_id="MOCK")
+    assert list(output.iterdir()) == [output / "keep"]
+    monkeypatch.setattr(subprocess, "run", _tool)
+    result = module.compile_existing_air(air, output.parent / "second", ddk, ddk_id="MOCK")
+    assert {row["path"]: row["reason"] for row in result["external_weights"]["skipped"]}["alias.bin"] == "SYMLINK_NOT_FOLLOWED"
+
+
+def test_explicit_elf_and_original_conversion_flags_are_passed_as_single_arguments(case, monkeypatch):
+    air, output, ddk = case
+    binary = ddk / "tools/tools_omg/omg-actual"
+    binary.write_bytes(b"\x7fELF SIMULATED EXECUTABLE")
+    binary.chmod(0o755)
+    alias = ddk / "tools/tools_omg/omg-selected"
+    alias.symlink_to(binary)
+    shape = "tokens:1,-1;mask:1,-1;state:1,32,128,128"
+    gears = "64,64;1,1"
+    calls, progress = [], []
+    def tool(command, **kwargs):
+        calls.append(command)
+        assert command[0] == str(binary)
+        if "--help" not in command:
+            assert command[-4:] == [f"--input_shape={shape}", f"--dynamic_dims={gears}",
+                                    "--limit_partition_size=false", "--save_weights_as_external_data=true"]
+        return _tool(command, **kwargs)
+    monkeypatch.setattr(subprocess, "run", tool)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK", omg_path=alias,
+        input_shape=shape, dynamic_dims=gears, limit_partition_size=False,
+        save_weights_as_external_data=True, progress=progress.append)
+    assert result["status"] == "COMPILED"
+    assert len(calls) == 2 and calls[0] == [str(binary), "--help"]
+    assert result["omg_path"] == str(binary)
+    assert result["help_check"]["missing"] == []
+    assert {row["stage"] for row in progress} >= {"omg-help", "input-snapshot", "omg"}
+    assert (output / "help.log").is_file() and (output / "help-command.json").is_file()
+
+
+@pytest.mark.parametrize("options", [
+    {"dynamic_dims": "64;1"}, {"input_shape": "x:1,-1\n--bad"},
+    {"input_shape": "x:1,-1", "dynamic_dims": "64;$(touch bad)"},
+    {"limit_partition_size": "false"}, {"save_weights_as_external_data": 1},
+])
+def test_bad_dynamic_or_boolean_options_fail_before_output_or_tool(case, monkeypatch, options):
+    air, output, ddk = case
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("invalid options must not invoke tool"))
+    with pytest.raises(ValueError):
+        module.compile_existing_air(air, output, ddk, ddk_id="MOCK", **options)
+    assert not output.exists()
+
+
+def test_explicit_vendor_script_and_foreign_elf_are_rejected_before_execution(case, monkeypatch):
+    air, output, ddk = case
+    script = ddk / "tools/tools_omg/omg"
+    script.write_text("#!/bin/sh\n# vendor wrapper\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("wrapper must not run"))
+    with pytest.raises(ValueError, match="ELF.*master/omg"):
+        module.compile_existing_air(air, output, ddk, ddk_id="MOCK", omg_path=script)
+    foreign = output.parent / "foreign-omg"
+    foreign.write_bytes(b"\x7fELF MOCK")
+    foreign.chmod(0o755)
+    with pytest.raises(ValueError, match="within the selected DDK"):
+        module.compile_existing_air(air, output, ddk, ddk_id="MOCK", omg_path=foreign)
+    assert not output.exists()
+
+
+def test_unadvertised_internal_flags_are_preserved_for_actual_compiler_validation(case, monkeypatch):
+    air, output, ddk = case
+    commands, events = [], []
+    def tool(command, **kwargs):
+        commands.append(command)
+        if command[-1] == "--help":
+            kwargs["stdout"].write("Usage: --input_shape --d11ynamic_dims --limit_partition_size\n")
+            return subprocess.CompletedProcess(command, 0)
+        assert "--dynamic_dims=64;1" in command
+        assert "--save_weights_as_external_data=true" in command
+        assert "--input_shape=tokens:1,-1" in command
+        assert (kwargs["cwd"] / "export.air").read_bytes() == air.read_bytes()
+        kwargs["stdout"].write("Unknown option --dynamic_dims\n")
+        raise subprocess.CalledProcessError(1, command)
+    monkeypatch.setattr(subprocess, "run", tool)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK",
+        input_shape="tokens:1,-1", dynamic_dims="64;1", save_weights_as_external_data=True,
+        progress=events.append)
+    assert result["status"] == "FAILED" and result["stage"] == "omg"
+    assert result["model_compilation"] == "FAILED" and result["input_snapshots"]
+    assert len(commands) == 2 and result["returncode"] == 1
+    check = json.loads((output / "help-check.json").read_text())
+    assert check["status"] == "OPTIONS_NOT_ADVERTISED"
+    assert check["missing"] == ["dynamic_dims", "save_weights_as_external_data"]
+    assert any("compiler will validate" in event["message"] for event in events)
+    assert (output / "compile-command.json").is_file()
+
+
+def test_help_loader_error_is_not_option_evidence(case, monkeypatch):
+    air, output, ddk = case
+    def tool(command, **kwargs):
+        assert command[-1] == "--help"
+        kwargs["stdout"].write("error while loading shared libraries: libmissing.so: cannot open shared object file\n")
+        return subprocess.CompletedProcess(command, 127)
+    monkeypatch.setattr(subprocess, "run", tool)
+    monkeypatch.setattr(module, "_snapshot", lambda *a: pytest.fail("loader error must stop before copying"))
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK")
+    assert result["status"] == "FAILED" and result["stage"] == "omg-help"
+    assert result["help_check"]["status"] == "INVALID_HELP_RESPONSE"
+    assert result["input_snapshots"] == []
+
+
+@pytest.mark.parametrize("compile_fails", [False, True])
+def test_external_data_and_auxiliary_outputs_are_retained_hashed_even_on_failure(case, monkeypatch, compile_fails):
+    air, output, ddk = case
+    def tool(command, **kwargs):
+        if "--help" in command:
+            return _help(command, **kwargs)
+        _tool(command, **kwargs)
+        generated = Path(next(value.split("=", 1)[1] for value in command if value.startswith("--output="))).parent
+        (generated / "model.weights").mkdir()
+        (generated / "model.weights/chunk0.bin").write_bytes(b"EXTERNAL WEIGHTS")
+        (generated / "model.omc.data").write_bytes(b"MORE EXTERNAL DATA")
+        (kwargs["cwd"] / "compiler-extra.bin").write_bytes(b"RETAIN WORK TOO")
+        if compile_fails:
+            raise subprocess.CalledProcessError(1, command)
+    monkeypatch.setattr(subprocess, "run", tool)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK", save_weights_as_external_data=True)
+    assert result["status"] == ("FAILED" if compile_fails else "COMPILED")
+    assert {row["path"] for row in result["generated_artifacts"]} == {
+        "compile-work/generated/model.omc", "compile-work/generated/model.omc.data",
+        "compile-work/generated/model.weights/chunk0.bin"}
+    assert len(result["external_data_candidates"]) == 2
+    assert any(row["path"] == "compile-work/input/compiler-extra.bin" for row in result["compiler_work_artifacts"])
+    for row in result["generated_artifacts"] + result["compiler_work_artifacts"]:
+        assert row["sha256"] == module.sha256_file(output / row["path"])
+        assert row["stat"] == module._stat(output / row["path"])
+    assert result["omc"]["role"] == "primary_omc"

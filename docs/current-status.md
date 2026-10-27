@@ -6,13 +6,28 @@
 
 ## 用户现在执行什么
 
+**现在直接编译原始工程的完整 AIR。** 用户提供了原 AIR 路径和40层、64/1双档转换命令，不再等待重建量化权重。恢复环境后在仓库执行：
+
+```bash
+git pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/compile_full_target.py" \
+  --air /home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/export.air \
+  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
+```
+
+脚本内置用户提供的89个输入形状、80个`RefData`状态输入和5个动态轴，使用 `--dynamic_dims="64,64,64,64,64;1,1,1,1,1"`，保留 `--limit_partition_size=false` 和 `--save_weights_as_external_data=true`。原命令中的 `--d11ynamic_dims` 按拼写错误处理；执行前记录所选OMG帮助。帮助未列出的内部参数仍按用户命令原样交给实际编译器验证，不偷偷删参数。默认调用当前DDK的 `tools/tools_omg/master/omg` 实际程序，沿用已经成功的隔离环境，避免外层脚本修改共享工具目录；不添加FP16权重强制转换或探针的布局选项。
+
+每次输出到新的 `full-target-compile-*`，保留 `compilation/compile.log`、完整命令、输入快照、OMC及生成的外置数据文件。编译成功后尝试读取编译图接口，报告在 `interface/report.txt`；工具不支持或转换失败单独报告，不改写编译成功状态。文件名和用户形状声明不等于实际AIR验证。原AIR保持原图，**本仓库基础Conv/RMS替代不会自动修改这份AIR**；以真实编译及图检查结果确认节点、状态和量化接口。
+
+这条入口开始整模编译，不自动套用探针runner。原AIR的动态档位、输入顺序/dtype、RefData持久状态和外置权重装载还需与实际HIAI接口对齐后才能上板。
+
 **三填充诊断已完成，不需要再续跑或重跑这批探针。** 用户回传 `gdn-diagnostic-138b60d3eba7` 为 `DIAGNOSIS_COMPLETE`：原 `gdn-diagnostic-c0cbac5ac9cf` 的零填充结果复核完成，另两轮执行完成，三轮host输入回读SHA256一致。保留这两个诊断目录和原 `fused-all-f6b81ead7ae8` 批次，后续直接分析已有证据。
 
 同一OMC/输入的GDN输出随预填充值变化。零填充时prefill/decode核心relative L2约为0.00392/0.0564，末态约0.146/0.155；A5填充时核心升至3.44/11.19；5A填充时出现约203.25的误差，与FP16位模式 `0x5A5A` 的值一致。有效token区域已排除padding。当前证据不能区分部分写、输出累加和缓存可见性；清零不是已验证修复，数值验收仍未通过。上述结果来自用户报告，原始远端文件尚未在本地重新核验。
 
-整模工作与该问题并行推进，下一里程碑是**带真实量化权重的target OMC编译与一次普通prefill/decode**。当前没有可诚实宣称“一键完整上板”的命令：直接GE权重路径只支持FP16，W4A8尚未接入；约34.66B文本参数的FP16数据约69.3GB，不能作为32GB板端方案。`--expert-dispatch selected`减少参与计算的专家，不减少常驻权重。现有stateful图的 `past_length` 静态，单步native执行已实现，但可复用decode图/常驻状态及对应部署入口仍待接通。整模编译准备不以所有可选探针通过为前提；实际整模执行必须具备这些资源与接口条件。
+整模工作与该问题并行推进，下一里程碑是**target OMC编译与一次普通prefill/decode**。现成AIR路线绕过当前直接GE的W4A8重建缺口，但不能据此宣称整模已可上板。作为备选，新增加的权重准备器可流式生成完整target的逻辑INT4/INT8/FP16缓存，支持中断后校验复用；其约18.1GB数据尚非I4ZN/QPARAM，也不是板端峰值内存。直接GE的量化算子映射仍待接入；FP16约69.3GB不适合32GB板端。`--expert-dispatch selected`只减少计算，不减少常驻权重。现有自建stateful图的 `past_length` 静态；原AIR的动态状态契约需要独立检查。
 
-当前优先级：接通量化权重与算子映射、整模编译入口和target状态执行；并行处理阻塞运行的GDN读写问题。暂不增加Conv/RMS候选、重复平台诊断或新的性能矩阵。需要实机验证时给单一入口命令。
+当前优先级：按用户原转换契约编译现有AIR、读取实际图接口、接通target状态执行；并行处理阻塞运行的GDN读写问题。暂不增加Conv/RMS候选、重复平台诊断或新的性能矩阵。需要实机验证时给单一入口命令。
 
 模型范围仍保留GDN、CacheUpdate、Attention三类六例，Conv/RMS使用基础算子。只有确需重新执行全部六例时才使用 `run_fused_probes.py --model-ops`；旧九例 `--all-ops` 保留为可选诊断，原Conv/RMS失败不改为通过。
 
@@ -28,6 +43,8 @@
 | GE完整结构 | target/draft完整节点、连边、C++和recipe；融合可选 |
 | 自定义算子探针 | 当前选择GDN/CacheUpdate/Attention三类6例，用户回传导出、编译、加载及执行通过；原Conv/RMS三例失败保留为可选诊断 |
 | 真实权重AIR导出 | 旧双图支持完整FP16；新GE target支持显式缓存 |
+| 原工程完整AIR | 已提供路径及89输入、64/1动态档位转换契约；新入口就绪，实际整模编译结果待回传 |
+| 备选量化缓存 | 主机流式写入及校验续跑已实现；I4ZN/QPARAM及GE量化映射未完成，当前无需重建 |
 | 状态执行 | 主机fake prefill→decode接续通过；真实板端待验证 |
 | 尚未完成 | W4A8映射、常驻缓存与native DFlash调度、完整模型设备精度和性能 |
 

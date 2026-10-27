@@ -3,7 +3,7 @@
   "updated": "2026-10-27",
   "active_phase": "integration",
   "delivery_status": "HOST_IMPLEMENTED_DEVICE_INTEGRATION_PENDING",
-  "run_id": "20261027T122457Z-6530-786c84",
+  "run_id": "20261027T123103Z-6824-18a3c3",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -421,6 +421,26 @@
         "rms"
       ],
       "production_integration_scope": "Current production fusion roles are gdn, conv_state and rms. Select gdn only; conv-state history and RMS use the existing base-operator graph. CacheUpdate and AdnFusedInferAttention standalone probes do not establish production GE integration."
+    },
+    "existing_original_air": {
+      "implementation": "model/qwen35_moe_dflash/existing_air.py",
+      "status": "HOST_IMPLEMENTED_TARGET_COMPILATION_PENDING",
+      "profile": "cpro-40block-64-1",
+      "contract_source": "USER_PROVIDED_ORIGINAL_OMG_COMMAND",
+      "declared_inputs": 89,
+      "declared_refdata_inputs": 80,
+      "declared_dynamic_axes": 5,
+      "dynamic_dims": "64,64,64,64,64;1,1,1,1,1",
+      "limit_partition_size": false,
+      "save_weights_as_external_data": true,
+      "platform": "kirinx90",
+      "input_dtype_override": null,
+      "entrypoint": "python3 targets/cpro/scripts/compile_full_target.py --air ORIGINAL_TARGET_AIR --tbe-diagnosis EXISTING_DIAGNOSIS",
+      "actual_air_contract": "UNVERIFIED",
+      "existing_project_runner_abi": "UNVERIFIED",
+      "model_compilation": "NOT_RUN_LOCALLY",
+      "device_execution": "NOT_RUN",
+      "scope": "Direct existing AIR, independent input snapshot, actual selected-DDK OMG, retained external data and optional compiled interface inspection. No automatic graph replacement or board execution."
     }
   },
   "phases": [
@@ -452,7 +472,7 @@
       "evidence": "docs/current-status.md",
       "working_directory": "$AI_RUN_DIR",
       "next_command_document": "docs/current-status.md#用户现在执行什么",
-      "note": "Urgent priority: real quantized 40-layer target compilation and ordinary prefill/decode first, DFlash integration next. FP16-only direct GE preparation, missing packed W4A8 mapping, static past-length decode and stateful deployment orchestration remain substantive gaps. Diagnose observed GDN output-prefill dependence in parallel from retained evidence; no repeated completed probe batches."
+      "note": "Urgent primary route: compile the provided original AIR with user-declared 89-input 64/1 dynamic profile and external-weight options; inspect the real graph and then implement its state/runtime contract. Current self-built GE W4A8 and static-decode gaps remain fallback limitations; no repeated completed probes."
     },
     {
       "name": "accuracy",
@@ -481,9 +501,9 @@
   "delivery_plan": {
     "priority": "Urgent: compiled quantized full target and ordinary prefill/decode before DFlash; do not serialize model integration behind optional standalone diagnostics",
     "parallel_workstreams": [
-      "packed quantized target weights and GE mapping",
-      "full target compilation and reusable decode/state deployment",
-      "GDN output writeback/visibility investigation using retained three-fill evidence"
+      "Existing original AIR full-target OMG compilation and actual interface inspection",
+      "Original graph dynamic gear, RefData and external weights runtime integration",
+      "GDN writeback investigation from retained three-fill files; no repeat execution"
     ],
     "avoid": [
       "re-running concluded standalone probe batches",
@@ -494,12 +514,13 @@
     "memory_plan": "specs/device-memory-report.json",
     "first_device_milestone": "40-layer target with real packed weights: compile, load, ordinary prefill and decode; invocation success remains separate from numerical acceptance",
     "readiness_gaps": {
-      "direct_ge_weights": "FP16_ONLY; packed W4A8 mapping is not implemented",
+      "direct_ge_weights": "Fallback logical INT4/INT8/FP16 cache writer implemented and resumable; I4ZN/QPARAM/GE hardware mapping remains pending. Existing AIR primary route does not require this rebuild.",
       "memory": "Approximately 34.66B text parameters require about 69.3GB in FP16; not a 32GB device deployment",
       "selected_experts": "Selected dispatch reduces expert computation, not resident full weight storage",
       "stateful_decode": "past_length is static; reusable decode/cache contract and deployment orchestration are pending",
       "gdn": "Output depends on output-buffer prefill; accuracy and cause unresolved",
-      "cache_attention": "Standalone invocation evidence is not production graph integration"
+      "cache_attention": "Standalone invocation evidence is not production graph integration",
+      "original_air": "Provided user compilation contract remains unverified against actual AIR; full compile, input/output ABI, RefData state, dynamic gear and external weight loading require target evidence."
     },
     "stateful_compile_compatibility": {
       "status": "HOST_TESTED_DEVICE_PENDING",
@@ -507,6 +528,17 @@
       "uses_existing_diagnosis": true,
       "platform": "kirinx90",
       "scope": "Run-local TBE argument adapter only; no quantized full model built in this run."
+    },
+    "primary_route": "existing_original_air",
+    "fallback_weight_preparation": {
+      "entrypoint": "targets/cpro/scripts/prepare_full_target.py",
+      "tensor_count": 693,
+      "parameters": 34660610688,
+      "logical_payload_bytes": 18121047296,
+      "format": "PORTABLE_LOGICAL_INT4_INT8_FP16_WITH_FP32_SCALES",
+      "hardware_layout": "NOT_I4ZN_OR_QPARAM",
+      "device_ready": false,
+      "scope": "Optional fallback only; preserve raw HF norm weights, validate resumed source/output hashes; no full-model quantized target execution."
     }
   }
 }

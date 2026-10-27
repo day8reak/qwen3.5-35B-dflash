@@ -276,5 +276,71 @@
         "GDN partial writes/output accumulation/cache visibility; current internal-DDK buffer API and kernel writes require evidence"
       ]
     }
+  },
+  "existing_original_air_bringup": {
+    "run_id": "20261027T123103Z-6824-18a3c3",
+    "status": "HOST_IMPLEMENTED_TARGET_COMPILATION_PENDING",
+    "input_contract": "User original conversion command; normalized dynamic_dims spelling and stray RefData_32 leading space",
+    "implemented": [
+      "40-block 89-input preset with 5 dynamic axes and 64/1 gears",
+      "Read-only original AIR snapshot and preserved neighboring data",
+      "Selected-DDK actual OMG with help option check and retained TBE diagnosis",
+      "No forced FP16 cast; external generated data retained and hashed",
+      "Post-compile raw interface inspection independent of model runner ABI",
+      "Fallback streamed logical quantized target cache and hash-checked resume",
+      "Retained three-fill GDN analysis without board execution"
+    ],
+    "host_tests": {
+      "status": "PASSED",
+      "unique_cases": 133,
+      "combined_suite": {
+        "passed": 114,
+        "junit": "full-target-final-tests.xml"
+      },
+      "omc_inspection": {
+        "passed": 17,
+        "junit": "existing-omc-inspect-final-tests.xml"
+      },
+      "copy_space_followup": {
+        "additional_cases": 2,
+        "existing_air_suite_total_passed": 23
+      },
+      "real_omg": "NOT_RUN",
+      "real_device": "NOT_RUN",
+      "checks": [
+        "Python AST parsing",
+        "CLI help",
+        "2 JSON files",
+        "13 documentation bash blocks",
+        "git diff --check"
+      ]
+    },
+    "actual_original_air_contract": "UNVERIFIED",
+    "device_numerical_acceptance": "NOT_RUN",
+    "experience_audit": {
+      "captured": [
+        "Use the user original AIR compilation contract to avoid unnecessary weight reconstruction",
+        "Dynamic shapes and RefData declarations require checking actual graph ABI before selecting a runner",
+        "External-weight compiler mode requires retaining output files besides OMC",
+        "Logical INT4 packing is not hardware I4ZN/QPARAM",
+        "Unadvertised internal OMG CLI options remain unchanged for actual compilation; missing help text is not proof of unsupported conversion"
+      ],
+      "updated": [
+        "Existing AIR compiler, profile, inspection and regression checks",
+        "docs/current-status.md",
+        "specs/model-workflow.json"
+      ],
+      "skill_changes": "None; these are model-specific contracts and executable checks",
+      "rejected_promotions": [
+        "Filename-derived quantization correctness",
+        "Host mock compilation as real OMG success",
+        "Output zeroing as GDN correctness fix"
+      ],
+      "remaining": [
+        "Actual full AIR compilation and original runtime ABI",
+        "GDN output fill dependence root cause",
+        "Full model numerical accuracy and performance"
+      ]
+    }
   }
 }
