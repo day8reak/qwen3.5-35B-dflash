@@ -18,6 +18,8 @@
 
 用户再回贴旧回答，补齐配置：`ddk/ai_ddk_lib/include`，以及 `ddk/ai_ddk_lib/lib64` 下的 `libhiai.so:libhiai_ir.so:libhiai_ir_build.so`。据此优先识别完整三库布局，避免将三个目录里的单个 `libhiai.so` 继续当作未知选择；文档给出独立于 `REPO_DIR` 的私有配置恢复命令。20项主机环境测试通过，新增完整三库恢复、排除其他同架构副本、缺库/错误架构拒绝及显式配置优先。该记录来自用户粘贴的旧配置，不据此宣称三库的OHOS ABI或设备兼容性已验证。
 
+首次生成私有配置时现自动写入HIAI头文件与三库两项，保留DDK变量引用供加载时展开；生成前已有显式HIAI路径则原样保存。仍只需手填原来的七项，已有配置不覆盖。22项环境测试通过，覆盖模板展开、切换到含空格的新DDK路径、未加载DDK时引用配置内根目录，以及后续不再手动exportHIAI路径。
+
 ## Attention导出器C++接口修正
 
 用户回传 `fused-all-9759eb4f9b0b`：Attention两例在构建导出器时失败，尚未进入GE序列化或OMG。CANN 9.1的 `GNode::GetInputIndexByName` 为非const方法，新增helper误传 `const GNode&`。现改为可变引用；主机测试的同名方法也按用户日志中的真实声明改为非const，先复现旧代码编译失败，再验证修正。此前测试夹具错误地将该方法声明为const，未能拦截这次回归。

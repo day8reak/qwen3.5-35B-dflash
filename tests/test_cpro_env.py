@@ -120,11 +120,37 @@ def test_first_source_creates_private_config_without_overwriting(config):
     assert "FUSED_PROBE_RUN" not in original.decode() and "FIRMWARE_ID" not in original.decode()
     assignments = {line.split("=", 1)[0] for line in original.decode().splitlines()
                    if line and not line.startswith("#")}
-    assert assignments == {"REPO_DIR", "AI_RUN_DIR", "CANN_ROOT", "CPRO_DDK_ID", "OHOS_NATIVE_SDK", "BIP", "SN"}
+    assert assignments == {"REPO_DIR", "AI_RUN_DIR", "CANN_ROOT", "CPRO_DDK_ID", "OHOS_NATIVE_SDK", "BIP", "SN",
+                           "HIAI_INCLUDE_DIR", "HIAI_LIBRARIES"}
     assert "HDC服务端的IP:端口" in original.decode()
-    again = bash(path, 'source "$1" "$2"', env=activated)
+    # Explicit HIAI paths are now stored, so a subsequent shell need not export them.
+    again = bash(path, 'source "$1" "$2"', env={**activated, "HIAI_INCLUDE_DIR": "", "HIAI_LIBRARIES": ""})
     assert again.returncode == 0, again.stderr
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("ddk_loaded", [True, False])
+def test_generated_hiai_defaults_expand_when_config_is_loaded(config, ddk_loaded):
+    path, values = config
+    result = bash(path, 'source "$1" "$2"', env={**values,
+        "DDK_PATH": values["CPRO_DDK_ROOT"] if ddk_loaded else "",
+        "HIAI_INCLUDE_DIR": "", "HIAI_LIBRARIES": ""})
+    assert result.returncode == 1, result.stderr
+    root_variable = "DDK_PATH" if ddk_loaded else "CPRO_DDK_ROOT"
+    assert f'HIAI_INCLUDE_DIR="${{{root_variable}:?' in path.read_text()
+    assert f'HIAI_LIBRARIES="${{{root_variable}}}/ddk/ai_ddk_lib/lib64/libhiai.so:' in path.read_text()
+    # Source the generated config itself to check deferred expansion, including
+    # spaces in a newly selected DDK, without invoking any vendor binaries.
+    selected_ddk = str(path.parent / "new DDK") if ddk_loaded else values["CPRO_DDK_ROOT"]
+    restored = bash(path, '''
+set -eu
+source "$2"
+printf '%s\\n' "$HIAI_INCLUDE_DIR" "$HIAI_LIBRARIES"
+''', env={"DDK_PATH": selected_ddk if ddk_loaded else ""})
+    assert restored.returncode == 0, restored.stderr
+    assert restored.stdout.splitlines() == [selected_ddk + "/ddk/ai_ddk_lib/include",
+        ":".join(selected_ddk + "/ddk/ai_ddk_lib/lib64/" + name
+                 for name in ("libhiai.so", "libhiai_ir.so", "libhiai_ir_build.so"))]
 
 
 def test_reuses_selected_vendor_environment_without_redeclaring_its_variables(config):

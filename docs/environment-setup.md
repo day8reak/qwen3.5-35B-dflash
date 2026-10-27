@@ -41,7 +41,7 @@ export BIP='实际HDC服务器IP:端口'
 export SN='实际设备序列号'
 ```
 
-不用另填 `CPRO_DDK_ROOT`、`HDC` 或重写搜索路径：项目入口会读取 `DDK_PATH` 和PATH中的 `hdc`。HIAI默认先识别用户回传的 `ddk/ai_ddk_lib/include` 与 `lib64` 三库布局；其他布局再在选定DDK内查找。只有查找失败或存在歧义时才补显式路径。不要把OMG的主机 `LD_LIBRARY_PATH` 当作手机端链接库路径。
+不用另填 `CPRO_DDK_ROOT`、`HDC` 或重写搜索路径：项目入口会读取 `DDK_PATH` 和PATH中的 `hdc`。第3步会自动写入HIAI头文件及完整三库的默认配置，无需再手工填写两项。不要把OMG的主机 `LD_LIBRARY_PATH` 当作手机端链接库路径。
 
 ### 第3步：首次保存配置
 
@@ -49,7 +49,9 @@ export SN='实际设备序列号'
 source "$REPO_DIR/targets/cpro/scripts/env.sh"
 ```
 
-首次会在**仓库旁边**创建 `qwen35-cpro.env`（权限600），把第2步的七项保存并附中文注释，提示再次加载；首次创建返回1表示配置尚未加载，不是编译失败。已有文件不会被覆盖，也不会因再次export而更新它；需要变更时编辑该文件。若第2步使用了示例占位值，先在文件里改为实际值，再继续第4步。
+首次会在**仓库旁边**创建 `qwen35-cpro.env`（权限600），保存第2步的七项，并自动增加带注释的 `HIAI_INCLUDE_DIR`、`HIAI_LIBRARIES`，正常场景共九项。HIAI默认表达式在每次读取配置时随 `DDK_PATH` 展开，指向 `ddk/ai_ddk_lib/include` 和 `lib64` 下完整三库；生成时已有明确的非 `auto` HIAI值会原样保留。若尚未加载DDK、模板需要保存 `CPRO_DDK_ROOT`，HIAI表达式改为引用该项。
+
+首次创建返回1表示配置尚未加载，提示再次加载，不是编译失败。已有文件不会被覆盖，也不会因再次export而更新它；需要变更时编辑原文件，无需删除重建。若第2步使用了示例占位值，先在文件里改为实际值，再继续第4步。
 
 配置不放在运行目录里，清理结果时不会被一起删掉。也可指定文件：`source targets/cpro/scripts/env.sh /absolute/path/cpro.env`。
 
@@ -67,7 +69,7 @@ source targets/cpro/scripts/env.sh &&
 
 ### 配置字段说明
 
-默认配置只保留下面七项。已有值会填入模板；项目路径默认取当前仓库，运行根目录默认取项目路径加 `-run`，其余不能确定的值需要填写。
+默认配置包含手工声明的七项和自动写入的两项HIAI配置。已有值会填入模板；项目路径默认取当前仓库，运行根目录默认取项目路径加 `-run`，其余不能确定的值需要填写。
 
 | 固定配置 | 含义 |
 |---|---|
@@ -78,6 +80,8 @@ source targets/cpro/scripts/env.sh &&
 | `OHOS_NATIVE_SDK` | 编译手机端runner的OHOS Native SDK，必须指向含 `build/cmake/ohos.toolchain.cmake`、`llvm/bin/clang++`、`sysroot/` 的 `native/`；已有 `OHOS_SDK` 可用于填初值 |
 | `BIP` | **HDC服务器的IP:端口**，例如远端转发的HDC服务；不是根据手机网络地址自动推断的值 |
 | `SN` | HDC列出的目标设备序列号，用于选择具体手机 |
+| `HIAI_INCLUDE_DIR` | 自动写入，默认引用当前 `DDK_PATH` 下 `ddk/ai_ddk_lib/include`，用于编译runner；生成时已有非 `auto` 值则保留 |
+| `HIAI_LIBRARIES` | 自动写入，默认引用同一DDK的 `ddk/ai_ddk_lib/lib64/libhiai.so`、`libhiai_ir.so`、`libhiai_ir_build.so`，用冒号连接；生成时已有非 `auto` 值则保留 |
 
 下面这些值可以从当前环境派生，不用把vendor脚本已经export的内容再抄一遍。必要时也可在私有配置中显式指定覆盖值。
 
@@ -85,8 +89,6 @@ source targets/cpro/scripts/env.sh &&
 |---|---|
 | `CPRO_DDK_ROOT` | 使用已选DDK的 `DDK_PATH`；定位OMG、TBE和安装版算子源码。未加载DDK时需填写绝对路径 |
 | `HDC` | 已声明的HDC路径，或PATH中的 `hdc`；执行设备传输与命令。找不到时需填写实际可执行文件 |
-| `HIAI_INCLUDE_DIR` | 默认 `auto`，优先所选DDK的 `ddk/ai_ddk_lib/include`；其他布局查找唯一 `HiAiModelManagerService.h` 的父目录；也可明确指定 |
-| `HIAI_LIBRARIES` | 默认 `auto`，配套上述头文件时选择 `ddk/ai_ddk_lib/lib64` 下 `libhiai.so`、`libhiai_ir.so`、`libhiai_ir_build.so` 三库；也可显式指定，多文件用冒号分隔 |
 
 vendor环境中常见的变量含义如下；入口保留它们，不生成重复配置。路径存在只说明环境已声明，不代表芯片编译或上板通过。
 
@@ -99,13 +101,13 @@ vendor环境中常见的变量含义如下；入口保留它们，不生成重�
 | `LD_LIBRARY_PATH` | 主机工具运行时的动态库查找路径；不是给手机部署的库列表 |
 | `PYTHONPATH` | vendor Python模块查找路径；项目入口仅补入缺少的仓库模块路径 |
 
-这些vendor变量不能替代 `CANN_ROOT`、OHOS Native SDK、准确DDK版本或实际手机端HIAI链接库的选择。用户回贴的旧配置明确使用 `ddk/ai_ddk_lib/include` 与 `lib64` 三库；项目入口按该布局恢复完整列表，检查每个库的ELF64、小端、AArch64、共享库类型，并排除明确的GLIBC依赖。该布局缺任一库时报告缺失，不换用 `tools_sysdbg` 或 `hiai_pipe_lib` 的单个同名库。显式配置仍优先，布局识别不表示OHOS ABI或设备验证已通过。
+这些vendor变量不能替代 `CANN_ROOT`、OHOS Native SDK或准确DDK版本。新模板的HIAI默认值来自用户回贴的旧配置：`ddk/ai_ddk_lib/include` 与 `lib64` 三库。旧配置省略HIAI值或使用 `auto` 时，入口也优先识别该布局，检查每个库的ELF64、小端、AArch64、共享库类型，并排除明确的GLIBC依赖。该布局缺任一库时报告缺失，不换用 `tools_sysdbg` 或 `hiai_pipe_lib` 的单个同名库。显式配置仍优先，配置恢复或布局识别不表示OHOS ABI或设备验证已通过。
 
 其他布局的自动查找只扫描已选DDK，深度最多8层，不跟随目录链接到其他安装；对 `libhiai.so` 做相同ELF/依赖检查，无 `ohos` 目录名要求，同一真实文件只计一次。唯一候选才自动采用；多个候选列出排除理由，要求显式配置。没有GLIBC依赖也不证明OHOS ABI兼容。
 
-### 恢复已知的HIAI三库配置
+### 旧配置迁移：补齐HIAI三库
 
-如果旧版提示3份候选，或需要明确锁定之前使用的配置，可在仓库根目录执行下面两步。DDK环境已source即可；不依赖尚未成功导出的 `REPO_DIR`。
+新生成的配置已经包含这两项，跳过本节。只有旧文件缺少这两项或仍保留旧HIAI值时，才在原文件补齐，既不用删除文件，也不用重新创建。DDK环境已source后，可在仓库根目录执行下面两步；不依赖尚未成功导出的 `REPO_DIR`。
 
 ```bash
 cat >> ../qwen35-cpro.env <<'EOF'

@@ -8,6 +8,8 @@
 
 **当前是Docker重进且旧run产物已删除。** 按[环境指南的四步顺序](environment-setup.md#docker-重进后的配置恢复)执行：恢复conda/DDK → 首次补七项export → 保存仓库旁配置 → 加载并运行。DDK脚本已经导出的变量不用重复配置。
 
+首次创建的配置会自动增加带注释的HIAI头文件及完整三库两项，正常场景共九项，无需另填。默认路径在读取配置时随 `DDK_PATH` 展开；未加载DDK时引用模板中的 `CPRO_DDK_ROOT`。生成时已有明确的非 `auto` HIAI值会保留。已有配置不覆盖、不必重建，只有旧文件需要补齐时才使用[旧配置迁移步骤](environment-setup.md#旧配置迁移补齐hiai三库)。
+
 已有配置时，恢复 `custom_pypto` conda/DDK环境后，在仓库根目录直接执行；以下 `python3` 使用当前已激活的模型环境：
 
 ```bash

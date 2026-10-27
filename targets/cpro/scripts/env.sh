@@ -55,7 +55,23 @@ _qwen35_load_env() (
         for name in "${configured[@]}"; do
           printf '\n# %s\n%s=%q\n' "${descriptions[$name]}" "$name" "${!name-}"
         done
-        printf '\n%s\n' '# HIAI_INCLUDE_DIR/HIAI_LIBRARIES 默认auto；仅有歧义时填头文件目录/主机上的OHOS ARM64库文件。'
+        # Keep the standard bundle relative to the DDK selected on each load.
+        # Preserve explicitly supplied paths for other installations.
+        hiai_ddk_variable=DDK_PATH
+        [[ -n ${DDK_PATH:-} ]] || hiai_ddk_variable=CPRO_DDK_ROOT
+        printf '\n%s\n' '# HIAI头文件目录；默认跟随所选DDK的ai_ddk_lib布局。'
+        if [[ $HIAI_INCLUDE_DIR == auto ]]; then
+          printf 'HIAI_INCLUDE_DIR="${%s:?请先加载或填写DDK环境}/ddk/ai_ddk_lib/include"\n' "$hiai_ddk_variable"
+        else
+          printf 'HIAI_INCLUDE_DIR=%q\n' "$HIAI_INCLUDE_DIR"
+        fi
+        printf '\n%s\n' '# HIAI完整三库，按冒号分隔；用于ARM64 runner链接，不是主机LD_LIBRARY_PATH。'
+        if [[ $HIAI_LIBRARIES == auto ]]; then
+          printf 'HIAI_LIBRARIES="${%s}/ddk/ai_ddk_lib/lib64/libhiai.so:${%s}/ddk/ai_ddk_lib/lib64/libhiai_ir.so:${%s}/ddk/ai_ddk_lib/lib64/libhiai_ir_build.so"\n' \
+            "$hiai_ddk_variable" "$hiai_ddk_variable" "$hiai_ddk_variable"
+        else
+          printf 'HIAI_LIBRARIES=%q\n' "$HIAI_LIBRARIES"
+        fi
         printf '%s\n' '# 不填写vendor已导出的PATH、PYTHONPATH、LD_LIBRARY_PATH、DDK_PATH等变量。'
       } > "$config"
     ) || return 1
