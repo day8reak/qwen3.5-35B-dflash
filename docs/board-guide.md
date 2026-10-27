@@ -89,37 +89,9 @@ cat "$BOARD_JOB/benchmark/comparison.json"
 
 ## 融合算子调用探针
 
-先按[当前更新](current-status.md#用户现在执行什么)编译所选用例，再构建最新 runner；以下脚本也适用于仅包含GDN两例的批次。`BOARD_HIAI_LIB_DIR` 指板端已有且验证过的私有库目录；运行库版本、DDK 和固件标识均填写实际值。
+当前GDN prefill/decode两例已编译通过。按[当前更新的上板命令](current-status.md#用户现在执行什么)重建支持FP16末态的runner，再上传、执行和回收；复用已有OMC。
 
-```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$FUSED_PROBE_RUN/native"
-export FUSED_PROBE_RUNNER="$FUSED_PROBE_RUN/native/build/qwen35_dflash_hiai"
-export BOARD_FUSED_ROOT="/data/local/tmp/qwen35-fused-$(date +%Y%m%d-%H%M%S)-$RANDOM"
-: "${BOARD_HIAI_LIB_DIR:?设置板端已验证的私有库目录}"
-: "${HIAI_RUNTIME_VERSION:?设置实际运行库版本}" "${CPRO_DDK_ID:?}" "${FIRMWARE_ID:?}"
-tar -C "$FUSED_PROBE_RUN" -cf "$FUSED_PROBE_JOB/bundle.tar" bundle
-"$HDC" -t "$SN" -s "$BIP" shell "mkdir -p '$BOARD_FUSED_ROOT'"
-"$HDC" -t "$SN" -s "$BIP" file send "$FUSED_PROBE_JOB/bundle.tar" "$BOARD_FUSED_ROOT/bundle.tar"
-"$HDC" -t "$SN" -s "$BIP" file send "$FUSED_PROBE_RUNNER" "$BOARD_FUSED_ROOT/runner"
-"$HDC" -t "$SN" -s "$BIP" shell \
-  "cd '$BOARD_FUSED_ROOT' && tar -xf bundle.tar && chmod +x runner && LD_LIBRARY_PATH='$BOARD_HIAI_LIB_DIR:/vendor/lib64/chipsetsdk' sh bundle/run-board.sh '$BOARD_FUSED_ROOT/runner' '$BOARD_FUSED_ROOT/results' '$HIAI_RUNTIME_VERSION' '$CPRO_DDK_ID' '$FIRMWARE_ID'"
-```
-
-回收整批结果再比较；板端 shell 需有 `tar`，此次目录和结果均保留。
-
-```bash
-"$HDC" -t "$SN" -s "$BIP" shell \
-  "tar -cf '$BOARD_FUSED_ROOT/results.tar' -C '$BOARD_FUSED_ROOT' results"
-"$HDC" -t "$SN" -s "$BIP" file recv "$BOARD_FUSED_ROOT/results.tar" "$FUSED_PROBE_JOB/results.tar"
-tar -xf "$FUSED_PROBE_JOB/results.tar" -C "$FUSED_PROBE_JOB"
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" compare-fused-probes \
-  --probe-run "$FUSED_PROBE_RUN" --board-run "$FUSED_PROBE_JOB/results" \
-  --output "$FUSED_PROBE_JOB/comparison"
-cat "$FUSED_PROBE_JOB/comparison/report.txt"
-```
-
-脚本使用 runner 的独立 `--fused-op-step` 模式；成功调用与数值诊断分别记录，当前未设置数值验收阈值。
+`FUSED_PROBE_RUN` 指向编译产物，`FUSED_BOARD_JOB` 保存本次runner及回收结果。生成的 `run-board.sh` 只运行该批次已编译的用例；runner使用独立 `--fused-op-step` 模式。加载、执行和数值诊断分别记录，当前没有数值验收阈值；失败时也保留退出码及stdout/stderr。
 
 ## tiny 回归
 

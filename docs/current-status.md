@@ -10,82 +10,69 @@
 |---|---|
 | PyTorch完整结构 | 全尺寸meta模型及层级FX图；不加载权重 |
 | GE完整结构 | target/draft完整节点、连边、C++和recipe；融合可选 |
-| 融合算子探针 | 5例AIR成功、OMC失败：GDN平台初始化异常；conv状态宽度不符；RMS维推注册缺失 |
+| 融合算子探针 | GDN prefill/decode已真实编译通过，名称适配已生效；上板待验证。conv/RMS接口问题待处理 |
 | 真实权重AIR导出 | 旧双图支持完整FP16；新GE target支持显式缓存 |
 | 状态执行 | 主机fake prefill→decode接续通过；真实板端待验证 |
 | 尚未完成 | W4A8映射、常驻缓存与native DFlash调度、完整模型设备精度和性能 |
 
 ## 用户现在执行什么
 
-**平台排查已收敛，现在只重编译GDN prefill/decode两例。** `--tbe-diagnosis` 使用刚完成的12组报告，为本次OMG进程生成平台名称适配；`--cases` 跳过已知接口不匹配的conv/RMS。保留已生成的FP16状态 `GE_CUSTOM_BINDINGS`。
+**复用已编译的两份GDN OMC，上板执行并回收结果。** 更新代码后重建runner，它已支持本DDK的FP16末态；无需重建AIR/OMC或重跑平台探针。以下操作使用[环境配置](environment-setup.md#5-ohos--hiai--hdc)中的OHOS SDK、HIAI和HDC变量。
+
+**1. 更新runner并上传。** 保留刚成功编译时的 `FUSED_PROBE_RUN`；`FUSED_BOARD_JOB` 是本次上板的新目录，`BOARD_HIAI_LIB_DIR` 沿用已验证的板端私有运行库目录。
 
 ```bash
 cd "$REPO_DIR"
 git pull --ff-only
-export FUSED_PROBE_JOB="$(mktemp -d "$AI_RUN_DIR/fused-gdn-XXXXXXXX")"
-export FUSED_PROBE_RUN="$FUSED_PROBE_JOB/probes"
-export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" probe-fused-ops \
-  --bindings "${GE_CUSTOM_BINDINGS:?使用已生成的安装版FP16状态绑定}" \
-  --ge-root "$CANN_ROOT" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --cases gdn_prefill,gdn_decode \
-  --tbe-diagnosis "${TBE_DIAG_JOB:?设置刚完成的平台诊断目录}/diagnosis" \
-  --output "$FUSED_PROBE_RUN"
-cat "$FUSED_PROBE_RUN/report.txt"
+: "${FUSED_PROBE_RUN:?设置刚成功编译的probes目录}"
+: "${BOARD_HIAI_LIB_DIR:?设置板端已验证的私有库目录}"
+: "${HIAI_RUNTIME_VERSION:?设置实际运行库版本}" "${CPRO_DDK_ID:?}" "${FIRMWARE_ID:?}"
+"$HDC" -t "$SN" -s "$BIP" shell "echo qwen35-fused-board-ready"
+export FUSED_BOARD_JOB="$(mktemp -d "$AI_RUN_DIR/fused-board-XXXXXXXX")"
+"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$FUSED_BOARD_JOB/native"
+export FUSED_PROBE_RUNNER="$FUSED_BOARD_JOB/native/build/qwen35_dflash_hiai"
+export BOARD_FUSED_ROOT="/data/local/tmp/qwen35_fused_$(date +%Y%m%d_%H%M%S)_$RANDOM"
+tar -C "$FUSED_PROBE_RUN" -cf "$FUSED_BOARD_JOB/bundle.tar" bundle
+"$HDC" -t "$SN" -s "$BIP" shell "mkdir -p '$BOARD_FUSED_ROOT'"
+"$HDC" -t "$SN" -s "$BIP" file send "$FUSED_BOARD_JOB/bundle.tar" "$BOARD_FUSED_ROOT/bundle.tar"
+"$HDC" -t "$SN" -s "$BIP" file send "$FUSED_PROBE_RUNNER" "$BOARD_FUSED_ROOT/runner"
 ```
 
-回传 `report.txt`，包含实际编译结果和名称适配是否被工作进程调用。两例均编译成功后，可继续[板端批量执行](board-guide.md#融合算子调用探针)，脚本只执行本次选中的用例。
+**2. 执行两例。** 使用本批次生成的 `run-board.sh`，逐例保存输出、stderr和退出码。
 
-**目标始终是CPro/X90：OMG仍传 `--platform=kirinx90`。** 当前DDK初始化该目标后报告内部名称 `Ascend310B1`；适配仅把TBE底层更新接口的参数改为经本次报告验证的当前名称，不改初始化目标。代码副本放在本次运行目录，不改DDK或当前Python安装。文档的 `Ascend310P3` 是原工程平台。
+```bash
+"$HDC" -t "$SN" -s "$BIP" shell \
+  "cd '$BOARD_FUSED_ROOT' && tar -xf bundle.tar && chmod +x runner && LD_LIBRARY_PATH='$BOARD_HIAI_LIB_DIR:/vendor/lib64/chipsetsdk' sh bundle/run-board.sh '$BOARD_FUSED_ROOT/runner' '$BOARD_FUSED_ROOT/results' '$HIAI_RUNTIME_VERSION' '$CPRO_DDK_ID' '$FIRMWARE_ID'"
+```
 
-| 当前结论 | 后续验证 |
+**3. 回收并比较，执行失败也继续回收。** 回传 `comparison/report.txt`；失败时下方命令同时打印对应日志。数值误差目前作诊断，尚未设验收阈值。
+
+```bash
+"$HDC" -t "$SN" -s "$BIP" shell \
+  "tar -cf '$BOARD_FUSED_ROOT/results.tar' -C '$BOARD_FUSED_ROOT' results"
+"$HDC" -t "$SN" -s "$BIP" file recv "$BOARD_FUSED_ROOT/results.tar" "$FUSED_BOARD_JOB/results.tar"
+tar -xf "$FUSED_BOARD_JOB/results.tar" -C "$FUSED_BOARD_JOB"
+"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" compare-fused-probes \
+  --probe-run "$FUSED_PROBE_RUN" --board-run "$FUSED_BOARD_JOB/results" \
+  --output "$FUSED_BOARD_JOB/comparison"
+cat "$FUSED_BOARD_JOB/comparison/report.txt"
+for name in gdn_prefill gdn_decode; do
+  if [ "$(cat "$FUSED_BOARD_JOB/results/$name.exitcode")" != 0 ]; then
+    tail -n 40 "$FUSED_BOARD_JOB/results/$name.stdout" "$FUSED_BOARD_JOB/results/$name.stderr"
+  fi
+done
+```
+
+## 已确认与剩余问题
+
+| 项目 | 结论 |
 |---|---|
-| 12组中，更新传 `kirinx90` 均失败；传内部名称/空值均成功且SOC保持 | 此次用内部名称适配重跑真实OMG |
-| 两种库顺序结果相同；当前环境与DDK wheel所列模块哈希一致 | 本轮保留OMG库优先，不重装Python包 |
-| 安装版GDN初态和末态均用FP16 | 用已有源码绑定重新生成AIR并编译 |
-| conv状态宽度要求4、RMS维推注册缺失 | 分别处理；本轮不重复编译 |
-
-编译现场保留在 `cases/<用例>/compile-work/`；平台适配与调用记录在该用例的 `tbe-compat/`。API测试成功还不代表OMC编译或板端精度通过。
-
-首次生成安装版GDN状态绑定时执行；本次已成功生成的无需再运行：
-
-```bash
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" bindings-from-document \
-  --target kirinx90 --ddk-id "$CPRO_DDK_ID" \
-  --gdn-initial-state-dtype float16 \
-  --gdn-state-source "$CPRO_DDK_ROOT/ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp" \
-  --output "$GE_CUSTOM_BINDINGS"
-```
-
-## 首次生成与编译（当前失败批次无需重跑）
-
-**先在黄区一次性编译5个融合算子用例，确认DDK能识别接口。** 无需模型权重；先按[环境配置](environment-setup.md)设置 `REPO_DIR`、`MODEL_PYTHON`、`AI_RUN_DIR`、`CANN_ROOT`、`CPRO_DDK_ROOT` 和 `CPRO_DDK_ID`。
-
-下面更新代码、生成接口绑定，再导出AIR并编译OMC。`--target kirinx90` 对应当前CPro编译平台，`--gdn-initial-state-dtype float16` 选择文档Cpro的FP16初态。
-
-```bash
-cd "$REPO_DIR"
-git pull --ff-only
-
-export FUSED_PROBE_JOB="$(mktemp -d "$AI_RUN_DIR/fused-probes-XXXXXXXX")"
-export GE_CUSTOM_BINDINGS="$FUSED_PROBE_JOB/bindings.json"
-export FUSED_PROBE_RUN="$FUSED_PROBE_JOB/probes"
-export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
-
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" bindings-from-document \
-  --target kirinx90 --ddk-id "$CPRO_DDK_ID" \
-  --gdn-initial-state-dtype float16 \
-  --output "$GE_CUSTOM_BINDINGS"
-
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" probe-fused-ops \
-  --bindings "$GE_CUSTOM_BINDINGS" --ge-root "$CANN_ROOT" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$FUSED_PROBE_RUN"
-
-cat "$FUSED_PROBE_RUN/report.txt"
-```
-
-全部编译成功后，在同一终端继续[板端批量执行命令](board-guide.md#融合算子调用探针)，无需等待确认。完成后回传 `$FUSED_PROBE_JOB/comparison/report.txt`；编译失败则先回传 `$FUSED_PROBE_RUN/report.txt`。
+| GDN两例 | 用户回传构图、AIR、OMC均通过；每例名称适配 `APPLIED=1`、拒绝0 |
+| 编译目标 | 始终为 `kirinx90`；`Ascend310B1` 是DDK初始化后返回的内部名称，`Ascend310P3` 是原工程平台 |
+| GDN状态 | 安装版初态/末态为FP16；本次runner修正了末态只接受FP32的旧校验 |
+| conv / RMS | 状态宽度4与文档3不一致 / 当前维推注册缺失，分别待处理 |
+| 尚未验证 | 真实设备加载、执行、输出数值和NPU执行位置；完整模型与连续状态验证另行进行 |
 
 ## 完整模型构图（按需）
 

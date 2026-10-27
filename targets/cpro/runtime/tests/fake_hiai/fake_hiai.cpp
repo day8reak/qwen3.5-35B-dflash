@@ -204,7 +204,11 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
       const auto effective=*static_cast<const std::int16_t*>(in[6]->GetBuffer());
       if(effective<1 || effective>s) return AI_FAILED;
       std::fill_n(static_cast<std::uint16_t*>(out[0]->GetBuffer()),s*32*128,0x3800);
-      std::fill_n(static_cast<float*>(out[1]->GetBuffer()),32*128*128,0.25F);
+      if(out[1]->GetSize()==32*128*128*2)
+        std::fill_n(static_cast<std::uint16_t*>(out[1]->GetBuffer()),32*128*128,0x3400);
+      else if(out[1]->GetSize()==32*128*128*4)
+        std::fill_n(static_cast<float*>(out[1]->GetBuffer()),32*128*128,0.25F);
+      else return AI_FAILED;
     } else if(marker.find("fused-conv-")==0) {
       if(in.size()!=3 || out.size()!=2) return AI_FAILED;
       for(auto& tensor:out) std::fill_n(static_cast<std::uint16_t*>(tensor->GetBuffer()),tensor->GetSize()/2,0x3400);

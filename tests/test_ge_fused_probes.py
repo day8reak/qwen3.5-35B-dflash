@@ -83,8 +83,14 @@ def test_five_source_graphs_are_exact_single_custom_ops(setup, tmp_path, monkeyp
     assert not list(root.rglob("*.air")) and not list(root.rglob("*.omc"))
 
 
-def test_selected_gdn_cases_compile_bundle_and_compare_in_canonical_order(setup, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("initial_dtype,final_dtype", [("float32", "float32"), ("float16", "float32"), ("float16", "float16")])
+def test_selected_gdn_cases_compile_bundle_and_compare_in_canonical_order(setup, tmp_path, monkeypatch, capsys,
+                                                                        initial_dtype, final_dtype):
     binding, ge, ddk = setup
+    contract = json.loads(binding.read_text())
+    contract["operators"]["gdn"]["inputs"]["initial_state"]["dtype"] = initial_dtype
+    contract["operators"]["gdn"]["outputs"]["final_state"]["dtype"] = final_dtype
+    binding.write_text(json.dumps(contract))
     calls = _mock_tools(monkeypatch)
     root = tmp_path / "compiled"
     manifest = build_fused_probes(root, binding, ge_root=ge, ddk_root=ddk, ddk_id="test-ddk",
@@ -102,6 +108,10 @@ def test_selected_gdn_cases_compile_bundle_and_compare_in_canonical_order(setup,
     _fake_results(root, board, manifest)
     comparison = compare_fused_probes(root, board, tmp_path / "compared", allow_host_fake=True)
     assert len(comparison["cases"]) == 2 and all(row["process"] == "PASSED" for row in comparison["cases"])
+    for case, compared in zip(manifest["cases"], comparison["cases"]):
+        assert case["inputs"][5]["dtype"] == initial_dtype and case["outputs"][1]["dtype"] == final_dtype
+        assert compared["diagnostics"][1]["dtype"] == final_dtype
+        assert compared["diagnostics"][1]["max_abs_error"] == 0
     inspection = inspect_fused_probes(root, ddk, tmp_path / "inspected")
     assert [row["name"] for row in inspection["cases"]] == manifest["selected_cases"]
 

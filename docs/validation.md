@@ -4,7 +4,20 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
-## 融合探针首次真实编译回传
+## 融合GDN最新真实编译回传
+
+2026-10-27，用户回传DDK `100.520.020.010`、目标 `kirinx90` 的两例真实编译结果：
+
+| 用例 | 构图 / AIR导出 / OMC编译 | TBE适配 | 加载 / 执行 / 数值 | 执行位置 |
+|---|---|---|---|---|
+| `gdn_prefill` | PASSED / PASSED / PASSED | APPLIED 1次，拒绝0次 | NOT_RUN / NOT_RUN / NOT_RUN | UNVERIFIED |
+| `gdn_decode` | PASSED / PASSED / PASSED | APPLIED 1次，拒绝0次 | NOT_RUN / NOT_RUN / NOT_RUN | UNVERIFIED |
+
+来源为用户粘贴报告，本次未取得原始产物重新核对SHA256。该结果不覆盖完整模型、设备执行或数值验收；conv/RMS仍保留此前未通过的结论。下一步复用这两例编译产物，执行[当前更新首节的上板命令](current-status.md#用户现在执行什么)，不重复编译或扩展探针。
+
+上板前发现runner仍硬编码FP32末态，已改为接受绑定中显式声明的FP16/FP32，保留FP16初态→FP32末态兼容；更新测试替身按对应字节数写出，避免FP16缓冲区越界。主机CMake构建及CTest 5/5通过，探针/回收比较23项通过，覆盖prefill和decode的FP16末态及三种状态dtype组合。无需重编OMC，只重建runner；未修改数值阈值，真实设备结果仍为NOT_RUN。
+
+## 融合探针编译排查历史
 
 2026-10-27，用户回传DDK `100.520.020.010` 的5例结果：构图与AIR导出通过，OMC编译均失败，未上板。conv维推明确要求 `x2=[1,8192,4]`，与文档绑定的3不符；RMS当前注册表找不到 `AdnRmsNorm` 维推函数；GDN进入 `chunk_gated_delta_rule.py` 编译入口后子进程退出。GDN编译日志的末态是FP16，导出绑定为FP32，尚不能断定变化原因。`Ascend310B1` 内部日志及缺库提示也不能单独证明目标选错或崩溃根因。
 
@@ -12,11 +25,11 @@
 
 随后用户回传只读检查结果：两例GDN都在TBE `platform_info.py` 的 `te_update_version()` 抛出 `RuntimeError`，说明本次直接失败点是编译子进程的平台设置；尚不能判定参数、包版本或配置文件中的哪一项不匹配。路径位于Conda的 `site-packages` 不足以证明环境混用，`Ascend310B1` 与 `kirinx90` 的日志也不足以证明需要切换目标。安装目录确有GDN的Python编译入口及C++源码；仅凭通用 `DTYPE_MAP` 不能确认状态dtype支持范围。
 
-针对首次检查遗漏调用帧的问题，检查器补充完整traceback、保存的OMG环境记录、报错指向的TBE平台函数源码、选定DDK配置目录及GDN状态读写片段。8项主机测试通过，覆盖调用帧保留、仅读源码、环境字段过滤及状态读写片段提取；独立代码审查通过。只读源文件，不执行TBE；这是诊断修正，尚未修复实际编译失败。
+针对首次检查遗漏调用帧的问题，检查器补充完整traceback、保存的OMG环境记录、报错指向的TBE平台函数源码、选定DDK配置目录及GDN状态读写片段。8项主机测试通过，覆盖调用帧保留、仅读源码、环境字段过滤及状态读写片段提取；独立代码审查通过。该次诊断修正只读源文件、不执行TBE，当时尚未验证编译修复。
 
 第二次检查回传进一步确认：安装版GDN的 `isGlobal`、`lsGlobal` 均为 `GlobalTensor<half>`，分别以 `reinterpret_cast<__gm__ half *>` 绑定 `initial_state` 和 `last_recurrent_state`。这为该源码的FP16状态ABI提供依据，与文档的FP32末态不同；不推广到其它DDK。新增 `bindings-from-document --gdn-state-source`，校验两处直接half指针后生成FP16末态绑定，并用组合来源文件绑定原文档和安装源码SHA256；默认文档绑定不变。
 
-TBE源码显示：包装函数调用 `cce.te_update_version("kirinx90", "AiCore", "", "false")` 后丢弃非success返回值，抛出通用异常。新增 `check-tbe-platform` 在独立Python进程中读取该底层返回值，使用与OMG相同的环境构造，记录调用前后平台信息、模块哈希及加载库。仅导入初始化，不能宣称复现OMG工作进程；无论成功失败，都不能单独判断目标支持或编译通过。源码/接口修正及此轻量调用的实际结果仍待黄区执行。
+TBE源码显示：包装函数调用 `cce.te_update_version("kirinx90", "AiCore", "", "false")` 后丢弃非success返回值，抛出通用异常。新增 `check-tbe-platform` 在独立Python进程中读取该底层返回值，使用与OMG相同的环境构造，记录调用前后平台信息、模块哈希及加载库。仅导入初始化，不能宣称复现OMG工作进程；无论成功失败，都不能单独判断目标支持或编译通过。该次工具改动时尚未取得黄区执行结果。
 
 本轮40项主机定向测试通过；命令行测试另验证源码覆盖、两例GDN的FP16输出描述和参考字节数，以及模拟底层返回成功/失败、字符串对象的退出状态。使用模拟TBE验证子进程流程，未调用真实DDK或设备。
 
@@ -36,7 +49,7 @@ TBE源码显示：包装函数调用 `cce.te_update_version("kirinx90", "AiCore"
 
 新增显式 `probe-fused-ops --tbe-diagnosis`：核对该诊断与选定DDK的来源，在运行目录复制TE wheel，只适配 `platform_info.te_update_version` 的底层平台名称参数。只有请求为 `kirinx90` 且当前SOC与已验证的初始化结果一致时才转换，其余参数保持；记录真实工作进程调用。OMG平台参数仍为 `kirinx90`，DDK及已安装Python包保持不变。`--cases gdn_prefill,gdn_decode` 只重试两张真实尺寸GDN图，conv/RMS另行处理。
 
-兼容适配的28项环境测试与40项探针/绑定测试通过；最终AST守卫的4项定向复测通过。实际CLI以模拟GE/OMG工具联通两例GDN，独立Python工作进程均加载运行目录副本并留下 `APPLIED` 记录；参数仍为 `--platform=kirinx90`。这验证主机接线与审计，不是实际DDK编译通过。文档命令及独立审查通过，真实OMG结果待回传。
+兼容适配的28项环境测试与40项探针/绑定测试通过；最终AST守卫的4项定向复测通过。实际CLI以模拟GE/OMG工具联通两例GDN，独立Python工作进程均加载运行目录副本并留下 `APPLIED` 记录；参数仍为 `--platform=kirinx90`。这验证主机接线与审计，不是实际DDK编译通过。文档命令及独立审查通过；后续真实OMG编译回传见本页首节。
 
 ## 完整结构与独立融合调用
 

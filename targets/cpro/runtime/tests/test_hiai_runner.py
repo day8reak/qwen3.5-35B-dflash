@@ -347,7 +347,7 @@ print("HIAI stateful target: single Process, FP16/FP32 cache handoff, hashes, ND
 
 # These five fixtures model documented full-size operator IO only. Fake outputs
 # are finite sentinels for transport checks, not mathematical golden results.
-def fused_bundle(kind, sequence, state_dtype="float32", label=""):
+def fused_bundle(kind, sequence, state_dtype="float32", label="", final_state_dtype="float32"):
     folder = root / f"fused-{kind}-s{sequence}{label}"
     folder.mkdir()
     model, abi = folder / "operator.omc", folder / "operator-abi.json"
@@ -358,7 +358,7 @@ def fused_bundle(kind, sequence, state_dtype="float32", label=""):
         inputs += [(name, "float16", [1, sequence, 32]) for name in ("g", "beta")]
         inputs += [("initial_state", state_dtype, [1, 32, 128, 128]), ("effective_length", "int16", [1])]
         outputs = [("core_attn", "float16", [1, sequence, 32, 128]),
-                   ("last_recurrent_state", "float32", [1, 32, 128, 128])]
+                   ("last_recurrent_state", final_state_dtype, [1, 32, 128, 128])]
     elif kind == "conv":
         op = "LinearAttentionConvstateUpdate"
         inputs = [("x1", "float16", [1, sequence, 8192]), ("x2", "float16", [1, 8192, 3]),
@@ -428,6 +428,19 @@ folder, rows = fused_bundle("gdn", 1, "float16", "-fp16-state")
 result, output, events = fused_run(folder, "result")
 assert result.returncode == 0 and events == ["load", "process", "unload"], result.stderr
 assert json.loads((output / "result.json").read_text())["inputs"][5]["dtype"] == "float16"
+assert json.loads((output / "result.json").read_text())["outputs"][1]["dtype"] == "float32"
+for sequence in (8, 1):
+    folder, rows = fused_bundle("gdn", sequence, "float16", "-both-fp16", final_state_dtype="float16")
+    result, output, events = fused_run(folder, "result")
+    assert result.returncode == 0 and events == ["load", "process", "unload"], result.stderr
+    report = json.loads((output / "result.json").read_text())
+    state_output = report["outputs"][1]
+    assert report["inputs"][5]["dtype"] == state_output["dtype"] == "float16"
+    assert state_output["shape"] == [1, 32, 128, 128] and state_output["bytes"] == 32 * 128 * 128 * 2
+    state_file = output / state_output["path"]
+    assert state_file.stat().st_size == state_output["bytes"] and sha(state_file) == state_output["sha256"]
+    assert state_file.read_bytes() == struct.pack("<e", 0.25) * (32 * 128 * 128)
+    assert (folder / "result.dtypes").read_text().splitlines() == ["2"] * 6 + ["5", "2", "2"]
 
 gdn, good_rows = fused_cases["gdn", 8]
 for layout in ("padded", "leading-feature", "mixed-feature"):
@@ -456,7 +469,7 @@ for label, change, message in [
     ("port-name", lambda x: [*x[:4], x[4].replace("query", "q"), *x[5:]], "contract"),
     ("head-layout", lambda x: [*x[:4], x[4].replace("1,8,32,128", "1,8,128,32"), *x[5:]], "contract"),
     ("effective-dtype", lambda x: [*x[:10], x[10].replace("int16", "float16"), *x[11:]], "contract"),
-    ("output-dtype", lambda x: [*x[:-1], x[-1].replace("float32", "float16")], "contract"),
+    ("output-dtype", lambda x: [*x[:-1], x[-1].replace("float32", "int16")], "contract"),
     ("missing-output", lambda x: x[:-1], "count"),
     ("reordered-input", lambda x: [*x[:4], x[5], x[4], *x[6:]], "indices"),
     ("mixed-order", lambda x: [*x[:4], x[-1], *x[4:-1]], "indices"),

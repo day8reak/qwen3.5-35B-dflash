@@ -61,7 +61,32 @@
           "AdnRmsNorm"
         ],
         "cases": 5,
-        "scope": "Standalone calls only; real export/compile/load/process/numerical and placement statuses recorded separately"
+        "scope": "Standalone calls only; real export/compile/load/process/numerical and placement statuses recorded separately",
+        "latest_user_report": {
+          "date": "2026-10-27",
+          "source": "USER_PASTED_REPORT",
+          "artifact_hash_verification": "NOT_RECHECKED",
+          "ddk_id": "100.520.020.010",
+          "platform": "kirinx90",
+          "cases": [
+            "gdn_prefill",
+            "gdn_decode"
+          ],
+          "construction": "PASSED",
+          "export": "PASSED",
+          "compile": "PASSED",
+          "tbe_compatibility": {
+            "status": "APPLIED",
+            "applied_calls_per_case": 1,
+            "rejected_calls_per_case": 0
+          },
+          "load": "NOT_RUN",
+          "process": "NOT_RUN",
+          "numerical": "NOT_RUN",
+          "placement": "UNVERIFIED",
+          "scope": "Two standalone GDN cases only; raw artifacts not obtained for hash revalidation. No full-model or device validation claim.",
+          "next_command_document": "docs/current-status.md#用户现在执行什么"
+        }
       }
     }
   },
@@ -85,7 +110,7 @@
       "status": "pending",
       "owner": "model-workflow",
       "evidence": "docs/ge-guide.md",
-      "note": "Document ports mapped; installed kernels not verified."
+      "note": "Document ports mapped; two standalone GDN OMC compilations user-reported PASSED. Conv/RMS compatibility and installed-kernel device execution remain unverified."
     },
     {
       "name": "integration",
@@ -94,7 +119,7 @@
       "evidence": "docs/current-status.md",
       "working_directory": "$AI_RUN_DIR",
       "next_command_document": "docs/current-status.md#用户现在执行什么",
-      "note": "Full-model structures generated locally; validate the three documented fused operators with bounded standalone calls before real full-weight integration."
+      "note": "Full-model structures generated locally; user-reported GDN prefill/decode OMC compilation passed. Next run the existing two compiled cases on board using the current-status commands; do not repeat compilation or expand probes. Device execution and full-weight integration remain pending."
     },
     {
       "name": "accuracy",

@@ -299,16 +299,20 @@ void CheckFusedPlan(StepPlan& plan) {
     throw std::invalid_argument("fused operator probe supports sequence lengths 1 or 8 only");
   std::vector<HiaiTensorSpec> inputs, outputs;
   if (plan.operator_type == "ChunkGatedDeltaRule") {
+    if (plan.outputs.size() != 2)
+      throw std::invalid_argument("ChunkGatedDeltaRule output count differs from its two-port contract");
     if (plan.inputs.size() != 7 ||
         (plan.inputs[5].spec.dtype != "float16" && plan.inputs[5].spec.dtype != "float32"))
       throw std::invalid_argument("ChunkGatedDeltaRule requires seven inputs and explicit FP16/FP32 state");
+    if (plan.outputs[1].dtype != "float16" && plan.outputs[1].dtype != "float32")
+      throw std::invalid_argument("ChunkGatedDeltaRule final state contract requires explicit FP16/FP32 dtype");
     inputs = {{"query", "float16", {1,s,32,128}}, {"key", "float16", {1,s,32,128}},
               {"value", "float16", {1,s,32,128}}, {"g", "float16", {1,s,32}},
               {"beta", "float16", {1,s,32}},
               {"initial_state", plan.inputs[5].spec.dtype, {1,32,128,128}},
               {"effective_length", "int16", {1}}};
     outputs = {{"core_attn", "float16", {1,s,32,128}},
-               {"last_recurrent_state", "float32", {1,32,128,128}}};
+               {"last_recurrent_state", plan.outputs[1].dtype, {1,32,128,128}}};
   } else if (plan.operator_type == "LinearAttentionConvstateUpdate") {
     inputs = {{"x1", "float16", {1,s,8192}}, {"x2", "float16", {1,8192,3}},
               {"x3", "int32", {128}}};
