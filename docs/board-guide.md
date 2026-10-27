@@ -89,9 +89,11 @@ cat "$BOARD_JOB/benchmark/comparison.json"
 
 ## 融合算子调用探针
 
-当前GDN prefill/decode两例已编译通过。按[当前更新的上板命令](current-status.md#用户现在执行什么)重建支持FP16末态的runner，再上传、执行和回收；复用已有OMC。
+使用 `targets/cpro/scripts/run_fused_probes.py` 一次完成runner构建、上传、执行、回收和比较。执行命令集中在[当前更新](current-status.md#用户现在执行什么)，输入为已编译的 `FUSED_PROBE_RUN`，只运行该批次编译成功的用例。
 
-`FUSED_PROBE_RUN` 指向编译产物，`FUSED_BOARD_JOB` 保存本次runner及回收结果。生成的 `run-board.sh` 只运行该批次已编译的用例；runner使用独立 `--fused-op-step` 模式。加载、执行和数值诊断分别记录，当前没有数值验收阈值；失败时也保留退出码及stdout/stderr。
+默认新建独立板端目录，按原上板脚本的规则收集构建对应的运行库、排除DDK HCL库对，并加入 `/vendor/lib64/chipsetsdk` 搜索路径。`BOARD_HIAI_LIB_DIR` 可显式复用已有私有库目录。运行库版本和固件标识自动查询；传输文件校验SHA256，执行失败仍尝试回收。
+
+结果保存在脚本打印的服务器目录：`native/` 为runner构建，`results/` 为板端输出和日志，`comparison/report.txt` 为数值诊断。成功和失败均保留本次板端目录。当前没有数值验收阈值，执行完成不代表已证明NPU执行位置。
 
 ## tiny 回归
 

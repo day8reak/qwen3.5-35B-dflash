@@ -22,7 +22,8 @@ reference/                    tiny、融合逻辑与中性 GE 的主机参考
 targets/cpro/
   scripts/direct_model_air.py  GE 命令入口（含状态图与绑定生成）
   scripts/build_hiai.py        构建 HarmonyOS HIAI runner
-  scripts/run_hdc.py           上传、执行、回收、比较
+  scripts/run_hdc.py           原始target/draft双图上板与比较
+  scripts/run_fused_probes.py  已编译融合探针的一键构建runner、上板与比较
   scripts/prepare_blue_ddk.py  可选的工具链目录准备辅助
   runtime/                    板端 C++ 程序及其主机回归
 tests/                        Python 模型、状态、导出与执行回归

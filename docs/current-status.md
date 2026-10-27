@@ -4,6 +4,22 @@
 
 更新日期：2026-10-27。当前主线是完整40层target、6层DFlash和可选融合算子。
 
+## 用户现在执行什么
+
+**一条命令上板执行已编译的GDN prefill/decode。** 脚本自动构建当前runner、上传OMC及运行库、执行、回收并比较；复用已有OMC。
+
+沿用[OHOS/HIAI/HDC环境](environment-setup.md#5-ohos--hiai--hdc)和刚才的 `FUSED_PROBE_RUN`。更新代码后执行：
+
+```bash
+cd "$REPO_DIR"
+git pull --ff-only
+"$MODEL_PYTHON" targets/cpro/scripts/run_fused_probes.py
+```
+
+`FUSED_PROBE_RUN` 是编译产物目录，也可用 `--probe-run 路径` 指定。脚本自动在 `$AI_RUN_DIR` 下新建结果目录、查询运行库版本和固件标识，结束时打印报告及失败日志。运行库默认从本次runner构建记录自动收集；已有板端私有库时可用 `BOARD_HIAI_LIB_DIR` 复用。
+
+回传脚本打印的 `comparison/report.txt`；失败也保留本次板端目录、服务器日志和已回收结果。数值误差暂作诊断，NPU执行位置仍待验证。
+
 ## 当前状态
 
 | 项目 | 状态 |
@@ -14,55 +30,6 @@
 | 真实权重AIR导出 | 旧双图支持完整FP16；新GE target支持显式缓存 |
 | 状态执行 | 主机fake prefill→decode接续通过；真实板端待验证 |
 | 尚未完成 | W4A8映射、常驻缓存与native DFlash调度、完整模型设备精度和性能 |
-
-## 用户现在执行什么
-
-**复用已编译的两份GDN OMC，上板执行并回收结果。** 更新代码后重建runner，它已支持本DDK的FP16末态；无需重建AIR/OMC或重跑平台探针。以下操作使用[环境配置](environment-setup.md#5-ohos--hiai--hdc)中的OHOS SDK、HIAI和HDC变量。
-
-**1. 更新runner并上传。** 保留刚成功编译时的 `FUSED_PROBE_RUN`；`FUSED_BOARD_JOB` 是本次上板的新目录，`BOARD_HIAI_LIB_DIR` 沿用已验证的板端私有运行库目录。
-
-```bash
-cd "$REPO_DIR"
-git pull --ff-only
-: "${FUSED_PROBE_RUN:?设置刚成功编译的probes目录}"
-: "${BOARD_HIAI_LIB_DIR:?设置板端已验证的私有库目录}"
-: "${HIAI_RUNTIME_VERSION:?设置实际运行库版本}" "${CPRO_DDK_ID:?}" "${FIRMWARE_ID:?}"
-"$HDC" -t "$SN" -s "$BIP" shell "echo qwen35-fused-board-ready"
-export FUSED_BOARD_JOB="$(mktemp -d "$AI_RUN_DIR/fused-board-XXXXXXXX")"
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$FUSED_BOARD_JOB/native"
-export FUSED_PROBE_RUNNER="$FUSED_BOARD_JOB/native/build/qwen35_dflash_hiai"
-export BOARD_FUSED_ROOT="/data/local/tmp/qwen35_fused_$(date +%Y%m%d_%H%M%S)_$RANDOM"
-tar -C "$FUSED_PROBE_RUN" -cf "$FUSED_BOARD_JOB/bundle.tar" bundle
-"$HDC" -t "$SN" -s "$BIP" shell "mkdir -p '$BOARD_FUSED_ROOT'"
-"$HDC" -t "$SN" -s "$BIP" file send "$FUSED_BOARD_JOB/bundle.tar" "$BOARD_FUSED_ROOT/bundle.tar"
-"$HDC" -t "$SN" -s "$BIP" file send "$FUSED_PROBE_RUNNER" "$BOARD_FUSED_ROOT/runner"
-```
-
-**2. 执行两例。** 使用本批次生成的 `run-board.sh`，逐例保存输出、stderr和退出码。
-
-```bash
-"$HDC" -t "$SN" -s "$BIP" shell \
-  "cd '$BOARD_FUSED_ROOT' && tar -xf bundle.tar && chmod +x runner && LD_LIBRARY_PATH='$BOARD_HIAI_LIB_DIR:/vendor/lib64/chipsetsdk' sh bundle/run-board.sh '$BOARD_FUSED_ROOT/runner' '$BOARD_FUSED_ROOT/results' '$HIAI_RUNTIME_VERSION' '$CPRO_DDK_ID' '$FIRMWARE_ID'"
-```
-
-**3. 回收并比较，执行失败也继续回收。** 回传 `comparison/report.txt`；失败时下方命令同时打印对应日志。数值误差目前作诊断，尚未设验收阈值。
-
-```bash
-"$HDC" -t "$SN" -s "$BIP" shell \
-  "tar -cf '$BOARD_FUSED_ROOT/results.tar' -C '$BOARD_FUSED_ROOT' results"
-"$HDC" -t "$SN" -s "$BIP" file recv "$BOARD_FUSED_ROOT/results.tar" "$FUSED_BOARD_JOB/results.tar"
-tar -xf "$FUSED_BOARD_JOB/results.tar" -C "$FUSED_BOARD_JOB"
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" compare-fused-probes \
-  --probe-run "$FUSED_PROBE_RUN" --board-run "$FUSED_BOARD_JOB/results" \
-  --output "$FUSED_BOARD_JOB/comparison"
-cat "$FUSED_BOARD_JOB/comparison/report.txt"
-for name in gdn_prefill gdn_decode; do
-  if [ "$(cat "$FUSED_BOARD_JOB/results/$name.exitcode")" != 0 ]; then
-    tail -n 40 "$FUSED_BOARD_JOB/results/$name.stdout" "$FUSED_BOARD_JOB/results/$name.stderr"
-  fi
-done
-```
 
 ## 已确认与剩余问题
 
