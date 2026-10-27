@@ -9,6 +9,9 @@ import shutil
 import sys
 import tempfile
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import stat
+import zipfile
 from .artifacts import checked_file, files_under, output_path, save_json
 from .hashing import sha256_file
 from .tool_logs import log_excerpt
@@ -99,11 +102,14 @@ def _environment_record(ddk_root, env):
 
 
 _PLATFORM_CHECK = r'''
-import hashlib, importlib, inspect, json, pathlib, sys, traceback
+import hashlib, importlib, importlib.machinery, inspect, json, pathlib, re, sys, traceback
 output = pathlib.Path(sys.argv[1])
+update_mode = sys.argv[3] if len(sys.argv) > 3 else "requested"
+wheel = pathlib.Path(sys.argv[4]).resolve() if len(sys.argv) > 4 and sys.argv[4] else None
 result = {"initialization": "IMPORT_ONLY", "worker_reproduction": "NOT_ESTABLISHED",
           "python": sys.executable, "python_version": sys.version,
-          "native_arguments": ["kirinx90", "AiCore", "", "false"], "stage": "IMPORT"}
+          "native_arguments": ["kirinx90", "AiCore", "", "false"], "stage": "IMPORT",
+          "update_mode": update_mode, "package_mode": "wheel" if wheel else "current"}
 def save():
     output.write_text(json.dumps(result, indent=2) + "\n")
 def specs(platform):
@@ -120,8 +126,25 @@ def libraries():
                        if any(name in line for name in ("libtvm", "libplatform", "libpython", "libcce"))})
     except OSError as error:
         return {"error": str(error)}
+def valid_soc(value):
+    return (isinstance(value, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", value.strip())
+            and value.strip().lower() not in {"unknown", "none", "null", "error", "n/a"})
 save()
 try:
+    if wheel:
+        roots = [str(wheel)] + [str(path) for path in wheel.glob("*.data/purelib")]
+        class WheelVendorOnly:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname.split('.')[0] not in {"te", "tbe", "te_fusion"}:
+                    return None
+                selected = roots if path is None else [p for p in path if pathlib.Path(p).resolve().is_relative_to(wheel)]
+                spec = importlib.machinery.PathFinder.find_spec(fullname, selected)
+                if spec is None:
+                    raise ModuleNotFoundError("wheel isolation: missing vendor module " + fullname, name=fullname)
+                return spec
+        sys.meta_path.insert(0, WheelVendorOnly())
+        sys.path[:0] = roots
+        result["wheel_import_roots"] = roots
     import tbe.common.platform as platform
     from tbe.common.platform import platform_info
     result["modules"] = {}
@@ -168,6 +191,15 @@ try:
             result["libraries_after_init"] = libraries()
             save()
     result["stage"] = "LOOKUP"
+    if update_mode == "reported":
+        reported = platform.get_soc_spec("SOC_VERSION")
+        if not valid_soc(reported):
+            raise ValueError("reported SOC_VERSION is not a nonempty string; raw alias unresolved")
+        result["native_arguments"][0] = reported.strip()
+    elif update_mode == "empty":
+        result["native_arguments"][0] = ""
+    elif update_mode != "requested":
+        raise ValueError("unknown raw update argument mode")
     save()
     native = platform_info.get_global_func("cce.te_update_version")
     result["stage"] = "NATIVE_UPDATE"
@@ -176,16 +208,151 @@ try:
     result.update(native_return_type=type(value).__name__, native_return_repr=repr(value))
     result.update(native_success=bool(value == "success"), stage="COMPLETE")
     result["after"] = specs(platform)
+    if "after_init" in result:
+        prior, after = result["after_init"].get("SOC_VERSION"), result["after"].get("SOC_VERSION")
+        result["initialized_soc_preserved"] = bool(valid_soc(prior) and valid_soc(after) and prior.strip() == after.strip())
 except Exception as error:
     result.update(error=repr(error), traceback=traceback.format_exc(), native_success=False)
 finally:
+    modules = result.setdefault("modules", {})
+    for name in ("te", "te.platform.cce_conf", "te_fusion"):
+        path = getattr(sys.modules.get(name), "__file__", None)
+        if path:
+            modules[name] = {"path": path}
+            try:
+                modules[name]["sha256"] = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+            except OSError as error:
+                modules[name]["error"] = str(error)
+    if wheel:
+        outside = {name: getattr(module, "__file__", None) for name, module in list(sys.modules.items())
+                   if name.split('.')[0] in {"te", "tbe", "te_fusion"} and getattr(module, "__file__", None)
+                   and not pathlib.Path(module.__file__).resolve().is_relative_to(wheel)}
+        result["package_provenance"] = {"status": "MIXED" if outside else "ISOLATED", "outside_modules": outside}
+        if outside:
+            result.update(native_success=False, stage="PACKAGE_PROVENANCE_FAILED")
     result["mapped_libraries"] = libraries()
     save()
 '''
 
 
+def _platform_wheel_copy(ddk_root, root):
+    """Copy only the unique selected-DDK TE wheel, never install it or follow links."""
+    folder = Path(ddk_root).resolve() / "ddk/tbe/lib64"
+    candidates = sorted(folder.glob("te-*.whl"))
+    result = {"status": "UNAVAILABLE", "candidates": [str(path) for path in candidates]}
+    try:
+        if len(candidates) != 1:
+            raise ValueError("expected exactly one te-*.whl in selected DDK/ddk/tbe/lib64")
+        source = candidates[0]
+        if (source.is_symlink() or not source.resolve().is_relative_to(Path(ddk_root).resolve())
+                or not source.is_file() or source.stat().st_size > 512 * 1024 * 1024):
+            raise ValueError("wheel must be a regular non-symlink file <=512 MiB")
+        result.update(source=str(source), sha256=sha256_file(source), bytes=source.stat().st_size)
+        with zipfile.ZipFile(source) as archive:
+            entries = archive.infolist()
+            if len(entries) > 20000 or sum(item.file_size for item in entries) > 1024 * 1024 * 1024:
+                raise ValueError("wheel exceeds 20000 entries or 1 GiB unpacked limit")
+            seen = set()
+            for item in entries:
+                parts = item.filename.rstrip('/').split('/')
+                mode = stat.S_IFMT(item.external_attr >> 16)
+                if (any(part in {'', '.', '..'} for part in parts) or '\\' in item.filename or ':' in item.filename
+                        or mode not in {0, stat.S_IFREG, stat.S_IFDIR} or item.filename in seen
+                        or item.file_size > 256 * 1024 * 1024):
+                    raise ValueError("unsafe wheel path/type, duplicate, or file >256 MiB")
+                seen.add(item.filename)
+            destination = root / "wheel-python"
+            destination.mkdir()
+            for item in entries:
+                path = destination / item.filename
+                if item.is_dir():
+                    path.mkdir(parents=True, exist_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.open(item) as incoming, path.open('xb') as outgoing:
+                        shutil.copyfileobj(incoming, outgoing, 1024 * 1024)
+            result.update(status="READY", root=str(destination), files=len(entries),
+                          unpacked_bytes=sum(item.file_size for item in entries))
+    except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as error:
+        result["error"] = str(error)
+    return result
+
+
+def _diagnose_tbe_platform(ddk_root, root, interpreter, env, timeout_seconds, jobs):
+    root.mkdir(parents=True, exist_ok=False)
+    wheel = _platform_wheel_copy(ddk_root, root)
+    tbe = Path(ddk_root).resolve() / "ddk/tbe/lib64"
+    plans = [(package, order, mode) for package in ("current", "wheel")
+             for order in ("omg_first", "tbe_first") for mode in ("requested", "reported", "empty")]
+    result = {"schema_version": 1, "artifact_kind": "qwen35-tbe-platform-diagnosis", "status": "DIAGNOSIS_COMPLETE",
+              "compiler_execution": "NOT_RUN", "device_execution": "NOT_RUN", "jobs": jobs, "wheel": wheel,
+              "scope": "At most 12 fresh children. OMG target/environment and initialization remain kirinx90; "
+                       "raw update argument is requested, reported or empty for diagnosis only. No production changes "
+                       "or compiler/target support claim.", "cases": []}
+
+    def run(plan):
+        package, order, mode = plan
+        name = '_'.join(plan)
+        case = {"name": name, "package": package, "library_order": order, "update_mode": mode}
+        try:
+            if package == 'wheel' and wheel['status'] != 'READY':
+                return {**case, "status": "UNAVAILABLE", "error": wheel['error']}
+            if order == 'tbe_first' and not tbe.is_dir():
+                return {**case, "status": "UNAVAILABLE", "error": "selected DDK TBE lib64 missing"}
+            selected_env = dict(env)
+            if order == 'tbe_first':
+                selected_env['LD_LIBRARY_PATH'] = _prepend_paths([tbe], env.get('LD_LIBRARY_PATH', ''))
+            arm = _check_tbe_platform_arm(ddk_root, root / name, interpreter, selected_env, True, timeout_seconds,
+                                          mode, wheel.get('root') if package == 'wheel' else None)
+            return {**case, "status": arm['status'], "native": arm.get('native'), "returncode": arm['returncode'],
+                    "error": arm.get('error'), "report": name + '/report.json'}
+        except Exception as error:
+            return {**case, "status": "FAILED", "error": repr(error)}
+
+    with (root / 'progress.jsonl').open('x') as progress, ThreadPoolExecutor(max_workers=jobs) as pool:
+        for future in as_completed([pool.submit(run, plan) for plan in plans]):
+            case = future.result()
+            result['cases'].append(case)
+            progress.write(json.dumps(case) + '\n')
+            progress.flush()
+            print(json.dumps({"case": case['name'], "status": case['status'], "completed": len(result['cases']),
+                              "total": len(plans)}), flush=True)
+    order = {'_'.join(plan): i for i, plan in enumerate(plans)}
+    result['cases'].sort(key=lambda case: order[case['name']])
+    result['candidate_arms'] = [case['name'] for case in result['cases'] if case['status'] == 'RAW_UPDATE_SUCCEEDED'
+                                and (case.get('native') or {}).get('initialized_soc_preserved') is True]
+    result['files'] = files_under(root, root)
+    save_json(root / 'report.json', result)
+    lines = ['TBE diagnostic matrix (no model compilation)', result['scope'],
+             'case | status | stage | exit | initialized SOC | update argument | raw return | SOC preserved | source/libs/error']
+    profiles, maps, errors = {}, {}, {}
+    for case in result['cases']:
+        native = case.get('native') or {}
+        api = native.get('init_api', {})
+        profile = json.dumps({'modules': native.get('modules', {}), 'init_api': {
+            key: api[key] for key in ('module', 'name', 'signature', 'path', 'sha256') if key in api}}, sort_keys=True)
+        source_id = profiles.setdefault(profile, 'S' + str(len(profiles) + 1))
+        mapping = json.dumps(native.get('mapped_libraries', []))
+        map_id = maps.setdefault(mapping, 'L' + str(len(maps) + 1))
+        error = case.get('error') or native.get('error')
+        error_id = errors.setdefault(str(error), 'E' + str(len(errors) + 1)) if error else '-'
+        lines.append(' | '.join(str(value) for value in (case['name'], case['status'],
+                     native.get('stage'), case.get('returncode'),
+                     native.get('after_init', {}).get('SOC_VERSION'), repr(native.get('native_arguments', [None])[0]),
+                     native.get('native_return_repr', 'NOT_CALLED'), native.get('initialized_soc_preserved'),
+                     source_id + '/' + map_id + '/' + error_id)))
+    lines.extend(key + ': ' + value for value, key in errors.items())
+    lines.extend(key + ' modules: ' + value for value, key in profiles.items())
+    lines.extend(key + ' loaded libraries: ' + value for value, key in maps.items())
+    lines += ['Wheel: ' + json.dumps(wheel), 'Diagnostic candidates: ' + json.dumps(result['candidate_arms']),
+              'Candidates require a real OMG compile; this report does not establish a repair.',
+              'Full per-case evidence and progress: report.json, progress.jsonl, */report.txt, */platform.log.']
+    (root / 'report.txt').write_text('\n'.join(lines) + '\n')
+    return result
+
+
 def check_tbe_platform(ddk_root, output_dir, *, python, timeout_seconds=30,
-                       compare_libraries=False, initialize=False):
+                       compare_libraries=False, initialize=False, diagnose=False, jobs=4):
     """Expose TBE's native return in a fresh process; no compiler/kernel call.
 
     Import-only initialization is intentionally not declared equivalent to the
@@ -196,12 +363,16 @@ def check_tbe_platform(ddk_root, output_dir, *, python, timeout_seconds=30,
         raise ValueError("--python must name the existing executable used by the failed worker")
     if not 0 < timeout_seconds <= 60:
         raise ValueError("platform check timeout must be between 1 and 60 seconds")
-    if type(compare_libraries) is not bool or type(initialize) is not bool:
+    if any(type(value) is not bool for value in (compare_libraries, initialize, diagnose)):
         raise ValueError("platform comparison/initialization selectors must be boolean")
+    if type(jobs) is not int or not 1 <= jobs <= 4 or diagnose and compare_libraries:
+        raise ValueError("jobs must be 1..4; diagnose and compare_libraries are mutually exclusive")
     _, env = omg_environment(ddk_root)
     root = output_path(output_dir)
     if root.is_relative_to(Path(ddk_root).resolve()):
         raise ValueError("platform check output must be outside DDK")
+    if diagnose:
+        return _diagnose_tbe_platform(ddk_root, root, interpreter, env, timeout_seconds, jobs)
     if not compare_libraries:
         return _check_tbe_platform_arm(ddk_root, root, interpreter, env, initialize, timeout_seconds)
     root.mkdir(parents=True, exist_ok=False)
@@ -248,12 +419,14 @@ def check_tbe_platform(ddk_root, output_dir, *, python, timeout_seconds=30,
     return result
 
 
-def _check_tbe_platform_arm(ddk_root, root, interpreter, env, initialize, timeout_seconds):
+def _check_tbe_platform_arm(ddk_root, root, interpreter, env, initialize, timeout_seconds,
+                            update_mode="requested", wheel_root=None):
     root.mkdir(parents=True, exist_ok=False)
     script = root / "platform-check.py"
     script.write_text(_PLATFORM_CHECK)
     child_result = root / "native-result.json"
-    argv = [str(interpreter), str(script), str(child_result)] + (["initialize"] if initialize else [])
+    argv = [str(interpreter), str(script), str(child_result), "initialize" if initialize else "import",
+            update_mode, str(wheel_root) if wheel_root else ""]
     save_json(root / "command.json", {"argv": argv, "cwd": str(root), "timeout_seconds": timeout_seconds})
     result = {"schema_version": 1, "artifact_kind": "qwen35-tbe-platform-check", "status": "FAILED",
               "compiler_execution": "NOT_RUN", "device_execution": "NOT_RUN", "returncode": None,

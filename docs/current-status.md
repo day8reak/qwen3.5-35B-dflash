@@ -17,27 +17,36 @@
 
 ## 用户现在执行什么
 
-**继续使用当前DDK，做一次平台初始化与库搜索顺序对照。** 已生成的FP16 `GE_CUSTOM_BINDINGS` 保留，无需重建。`--compare-libraries` 最多启动四个独立Python进程，对比OMG目录优先/TBE目录优先，以及仅导入/调用已安装的初始化接口；目标始终为 `kirinx90`。
+**执行下面这一轮平台排查即可。** 上轮四组全部失败，单改库顺序没有解决问题。本轮 `--diagnose` 最多12组、`--jobs 4` 并行执行，覆盖Python包来源、库顺序和平台更新参数；每组30秒超时，完成一组立即显示结果。
 
-正式编译当前直接调用 `$CPRO_DDK_ROOT/tools/tools_omg/master/omg`，环境由项目脚本配置；本次对照用于检查这层环境配置，不替换OMG工具。
+目标仍是 **CPro/X90（`kirinx90`）**。文档的 `Ascend310P3` 是原工程平台；日志的 `Ascend310B1` 是当前DDK调用 `te_set_version("kirinx90")` 后报告的内部名称。OMG命令一直使用 `--platform=kirinx90`，这轮只检查两个平台API是否使用不同名称。
 
 ```bash
 cd "$REPO_DIR"
 git pull --ff-only
-export TBE_COMPARE_JOB="$(mktemp -d "$AI_RUN_DIR/tbe-compare-XXXXXXXX")"
+export TBE_DIAG_JOB="$(mktemp -d "$AI_RUN_DIR/tbe-diagnose-XXXXXXXX")"
 export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
 "$MODEL_PYTHON" "$GE_MODEL_TOOL" check-tbe-platform \
   --ddk-root "$CPRO_DDK_ROOT" --python "$MODEL_PYTHON" \
-  --compare-libraries --output "$TBE_COMPARE_JOB/comparison"
-cat "$TBE_COMPARE_JOB/comparison/report.txt"
+  --diagnose --jobs 4 --timeout-seconds 30 \
+  --output "$TBE_DIAG_JOB/diagnosis"
+cat "$TBE_DIAG_JOB/diagnosis/report.txt"
 ```
 
-回传 `comparison/report.txt`。每个进程30秒超时，不修改DDK、当前终端或正式编译配置，不编译模型、不上板。`COMPARISON_COMPLETE` 只表示报告已收集；需看各行结果。初始化接口缺失或签名不匹配会记录跳过，不猜替代芯片。
+回传 `diagnosis/report.txt`。测试维度如下，按组合运行：
+
+| 维度 | 对照项 |
+|---|---|
+| Python包 | 当前环境；当前DDK自带的唯一 `te-*.whl` 解压到本次运行目录 |
+| 动态库 | OMG目录优先；TBE目录优先 |
+| 平台更新参数 | `kirinx90`；初始化后查询到的SOC名；空字符串（包装API省略SOC时使用的值） |
+
+全部先以 `kirinx90` 初始化。DDK wheel副本只用于独立诊断进程，不执行pip安装；来源不完整或不唯一会记录失败/跳过。`DIAGNOSIS_COMPLETE` 表示报告收集完成，某组更新成功也还需真实OMG编译验证。现有FP16 `GE_CUSTOM_BINDINGS` 保留，本轮不重建AIR或运行设备。
 
 | 已定位 | 下一步要核对 |
 |---|---|
-| 底层平台更新返回 `error`；导入后SOC仍为 `Ascend310` | 对比已安装接口初始化；之前OMG工作进程打印的是 `Ascend310B1`，两种初始化状态不相同 |
-| `libtvm.so` 来自TBE目录，`libplatform.so` 来自OMG目录 | 在独立子进程改变搜索顺序，核对实际加载库；路径不同本身不证明ABI冲突 |
+| 两种库顺序下，初始化均报告 `Ascend310B1`，随后传 `kirinx90` 更新均返回 `error` | 初始化/更新API的名称处理是否不同；这是待验证假设 |
+| 四组均使用当前环境的TBE Python包 | 当前DDK自带wheel与已安装包的行为是否一致 |
 | 安装版GDN用 `half*` 读初态、写末态 | 已增加源码绑定的FP16状态选项，真实编译和运行待验证 |
 | conv输入 `x2` 要求宽度4，文档写3 | 安装版状态顺序、输出与控制参数；不能直接给生产缓存补一个槽位 |
 | `AdnRmsNorm` 无可用维推函数 | 当前DDK的注册与实现是否配套 |

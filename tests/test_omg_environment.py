@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import stat
+import zipfile
 
 import pytest
 
@@ -230,6 +232,114 @@ def test_platform_comparison_all_failures_are_collected_and_init_failure_skips_u
             assert not (tmp_path / 'comparison' / case['name'] / 'calls.json').exists()
         else:
             assert case['native']['stage'] == 'COMPLETE' and case['native']['native_return_repr'] == "'error'"
+
+
+def test_platform_diagnosis_batches_alias_package_library_variants_with_real_children(ddk, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv('AI_RUN_DIR', str(tmp_path))
+    python = _platform_comparison_packages(ddk)
+    (python / 'te_fusion').mkdir()
+    (python / 'te_fusion/__init__.py').write_text('')
+    (python / 'tbe/common/platform/__init__.py').write_text(
+        "soc = 'unset'\ndef get_soc_spec(key): return soc\n")
+    (python / 'te/platform/cce_conf.py').write_text(
+        "from tbe.common import platform\ndef te_set_version(soc):\n"
+        "    assert soc == 'kirinx90'\n    platform.soc = 'InstalledAlias'\n")
+    (python / 'tbe/common/platform/platform_info.py').write_text(
+        "import os, time, json, pathlib, te_fusion\nfrom tbe.common import platform\n"
+        "def get_global_func(name):\n"
+        "    def native(soc, *args):\n"
+        "        if pathlib.Path.cwd().name == 'current_tbe_first_requested': os._exit(7)\n"
+        "        start = time.time()\n        time.sleep(.2)\n"
+        "        pathlib.Path('window.json').write_text(json.dumps([start, time.time()]))\n"
+        "        if soc == '': platform.soc = 'cleared'\n"
+        "        return 'success' if soc in ('InstalledAlias', '') else 'error'\n"
+        "    return native\n")
+    folder = ddk / 'ddk/tbe/lib64'
+    folder.mkdir(parents=True)
+    archive = folder / 'te-test.whl'
+    with zipfile.ZipFile(archive, 'w') as wheel:
+        for path in python.rglob('*.py'):
+            wheel.write(path, path.relative_to(python))
+    before = {path: path.read_bytes() for path in ddk.rglob('*') if path.is_file()}
+    output = tmp_path / 'diagnosis'
+    result = check_tbe_platform(ddk, output, python=sys.executable, diagnose=True, jobs=4)
+    assert result['status'] == 'DIAGNOSIS_COMPLETE' and len(result['cases']) == 12
+    assert len(result['candidate_arms']) == 4 and all(name.endswith('_reported') for name in result['candidate_arms'])
+    assert result['wheel']['sha256'] == sha256_file(archive)
+    assert len((output / 'progress.jsonl').read_text().splitlines()) == 12
+    assert len(capsys.readouterr().out.splitlines()) == 12
+    events = []
+    for case in result['cases']:
+        native = case['native']
+        assert native['init_api']['arguments'] == ['kirinx90']
+        if case['name'] == 'current_tbe_first_requested':
+            assert case['returncode'] == 7 and case['status'] == 'FAILED'
+        else:
+            start, end = json.loads((output / case['name'] / 'window.json').read_text())
+            events += [(start, 1), (end, -1)]
+        if case['update_mode'] == 'reported':
+            assert native['native_arguments'][0] == 'InstalledAlias'
+        elif case['update_mode'] == 'empty':
+            assert native['native_arguments'][0] == '' and native['initialized_soc_preserved'] is False
+        if case['package'] == 'wheel':
+            assert native['package_provenance']['status'] == 'ISOLATED'
+            assert all(Path(desc['path']).is_relative_to(output / 'wheel-python')
+                       for desc in native['modules'].values() if desc['path'])
+    active = maximum = 0
+    for _, delta in sorted(events):
+        active += delta
+        maximum = max(maximum, active)
+    assert 2 <= maximum <= 4
+    assert all(path.read_bytes() == payload for path, payload in before.items())
+    assert not list(ddk.rglob('*.pyc')) and not list(output.rglob('.ipc-*'))
+
+
+@pytest.mark.parametrize('kind', ['traversal', 'symlink', 'multiple', 'incomplete'])
+def test_platform_diagnosis_rejects_unsafe_wheels_and_never_falls_back_vendor_packages(ddk, tmp_path, monkeypatch, kind):
+    monkeypatch.setenv('AI_RUN_DIR', str(tmp_path))
+    python = _platform_comparison_packages(ddk)
+    (python / 'te/platform/cce_conf.py').write_text('def te_set_version(soc): pass\n')
+    folder = ddk / 'ddk/tbe/lib64'
+    folder.mkdir(parents=True)
+    with zipfile.ZipFile(folder / 'te-test.whl', 'w') as wheel:
+        if kind == 'traversal':
+            wheel.writestr('../escaped.py', 'invalid')
+        elif kind == 'symlink':
+            info = zipfile.ZipInfo('tbe')
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            wheel.writestr(info, '/outside')
+        else:
+            wheel.writestr('te/__init__.py', '')  # no tbe: existing vendor package must not supply it
+    if kind == 'multiple':
+        (folder / 'te-other.whl').write_bytes(b'not used')
+    output = tmp_path / 'diagnosis'
+    result = check_tbe_platform(ddk, output, python=sys.executable, diagnose=True, jobs=2)
+    wheel_cases = [case for case in result['cases'] if case['package'] == 'wheel']
+    if kind == 'incomplete':
+        assert result['wheel']['status'] == 'READY'
+        assert all(case['status'] == 'FAILED' and 'wheel isolation: missing vendor module tbe' in case['native']['error']
+                   for case in wheel_cases)
+    else:
+        assert result['wheel']['status'] == 'UNAVAILABLE'
+        assert all(case['status'] == 'UNAVAILABLE' for case in wheel_cases)
+    assert not (output / 'escaped.py').exists()
+
+
+@pytest.mark.parametrize('soc', ['unknown', 'error'])
+def test_diagnosis_raw_success_with_unresolved_soc_is_not_a_candidate(ddk, tmp_path, monkeypatch, soc):
+    monkeypatch.setenv('AI_RUN_DIR', str(tmp_path))
+    python = _platform_comparison_packages(ddk)
+    body = "raise RuntimeError('lookup failed')" if soc == 'error' else "return 'unknown'"
+    (python / 'tbe/common/platform/__init__.py').write_text('def get_soc_spec(key): ' + body + '\n')
+    (python / 'te/platform/cce_conf.py').write_text('def te_set_version(soc): pass\n')
+    (python / 'tbe/common/platform/platform_info.py').write_text("def get_global_func(name): return lambda *a: 'success'\n")
+    result = check_tbe_platform(ddk, tmp_path / 'diagnosis', python=sys.executable, diagnose=True)
+    assert result['candidate_arms'] == []
+    cases = {case['name']: case for case in result['cases']}
+    assert cases['current_omg_first_reported']['status'] == 'FAILED'
+    for mode in ('requested', 'empty'):
+        native = cases['current_omg_first_' + mode]['native']
+        assert native['native_success'] is True and native['initialized_soc_preserved'] is False
 
 
 def test_diagnostic_retention_prioritizes_failure_and_respects_budget(tmp_path, monkeypatch):
