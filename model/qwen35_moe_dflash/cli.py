@@ -88,6 +88,9 @@ def parser():
     p = argparse.ArgumentParser(description="Qwen3.5-35B-A3B DFlash: AIR -> OMG -> OMC -> HIAI")
     p.add_argument("--resources", help="Local resource JSON; default QWEN35_RESOURCES or project manifest")
     sub = p.add_subparsers(dest="command", required=True)
+    full = sub.add_parser("build-full-pytorch", help="construct all 40 target and 6 draft layers as meta PyTorch/FX graphs; no checkpoint or AIR")
+    full.add_argument("--output", required=True, help="new structure artifact directory below AI_RUN_DIR")
+    full.add_argument("--sequence-length", type=int, default=128)
     for name in ["preflight", "audit", "demo", "reference", "export-air", "export-tiny-air", "compile-omc", "prompt", "decode", "compare", "board-command", "quant-plan", "quantize"]:
         cmd = sub.add_parser(name); cmd.add_argument("--output", required=True)
         if name in ("reference", "export-air", "export-tiny-air", "demo", "quant-plan", "quantize"):
@@ -141,6 +144,10 @@ def parser():
 def execute(args):
     output = output_path(args.output)
     if output.exists(): raise FileExistsError(output)
+    if args.command == "build-full-pytorch":
+        from .export import build_full_pytorch
+        build_full_pytorch(output, sequence_length=args.sequence_length)
+        return
     if args.command == "quant-plan":
         from .quantization import meta_graphs, make_plan, memory_budget, dopt_config
         target, draft = meta_graphs()
@@ -398,6 +405,9 @@ def main():
         if args.command in ("demo", "reference"):
             from .backends import configure_reference_backend
             configure_reference_backend(args.device)
+        elif args.command == "build-full-pytorch":
+            from .backends import configure_reference_backend
+            configure_reference_backend("cpu")
         execute(args)
     except Exception as error:
         print(f"qwen35: {format_error(error)}", file=sys.stderr)

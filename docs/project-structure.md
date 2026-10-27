@@ -40,7 +40,7 @@ tests/                        Python 模型、状态、导出与执行回归
 | `weights.py`、`checkpoints.py` | 按锁定版本加载上游 target 与本地 draft，核对检查点 |
 | `graphs.py`、`target_features.py` | 包装 target/draft 的图输入输出，抽取 draft 需要的目标层特征 |
 | `precision.py`、`export_moe.py` | 原 PyTorch 导出路径的精度及 MoE/位置计算改写 |
-| `export.py` | 调用 TorchAir，生成 target/draft AIR 和产物清单 |
+| `export.py` | 生成完整meta/层级FX结构；有真实权重时调用TorchAir导出target/draft AIR |
 | `fused/model.py` | 加载 prepared 权重，按混合注意力+MoE结构执行新的 target 前向，检查算子返回的 shape/dtype |
 | `fused/ops.py` | 外部完整基础后端及可选GDN/conv/RMS覆盖、模块ABI校验与调用 |
 | `fused/session.py` | conv/recurrent/KV 状态、prefill/step、验证分支和接受前缀提交 |
@@ -64,7 +64,8 @@ tests/                        Python 模型、状态、导出与执行回归
 | `ge_fused/bindings.py` | 文档端口绑定生成、绑定校验、算子属性与 dtype 约束 |
 | `ge_fused/emitter.py` | 融合节点及普通节点生成真实 GE 构图调用 |
 | `ge_fused/recipe.py` | 新图描述的读写，含融合多输出信息 |
-| `ge_fused/export.py`、`ge_fused/__init__.py` | 新状态图源码/AIR与单步输入产物编排及包入口 |
+| `ge_fused/export.py`、`ge_fused/__init__.py` | 完整无权重target/draft构图、新状态图AIR及单步输入产物编排 |
+| `ge_fused/probes.py` | 仅GDN、卷积状态更新、RMS三个融合算子的独立构图、编译与结果诊断 |
 
 `--fused-ops none` 使用展开图，`gdn,conv_state,rms` 可按角色选择。绑定文件把逻辑角色映射到黄区算子的真实 GE 端口；它不会安装或实现 kernel。用法集中在 [GE 指南](ge-guide.md)。
 

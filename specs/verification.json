@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "updated": "2026-10-27",
-  "scope": "Source consolidation, documentation reorganization and host stateful integration; real device pending",
+  "scope": "Source consolidation, full PyTorch/GE structure generation and host stateful/fused-call integration; real device pending",
   "status": "HOST_VALIDATED_DEVICE_PENDING",
   "run_id": "20261027T032529Z-17962-4c1981",
   "local_run": "$WORKSPACE_ROOT/.work/qwen3.5-35B-moe/20261027T032529Z-17962-4c1981",
@@ -139,6 +139,89 @@
       "errors": 0,
       "diff_check": "PASS",
       "source_document_edit": "Corrected one table-of-contents link only; GE ports section SHA256 unchanged."
+    }
+  },
+  "latest_full_graph_and_fused_probe": {
+    "run_id": "20261027T042416Z-26211-1de593",
+    "local_run": "$WORKSPACE_ROOT/.work/qwen3.5-35B-moe/20261027T042416Z-26211-1de593",
+    "status": "HOST_VALIDATED_DEVICE_PENDING",
+    "full_structure": {
+      "target_layers": 40,
+      "draft_layers": 6,
+      "experts": 256,
+      "top_k": 8,
+      "vocab_size": 248320,
+      "pytorch": "Complete meta module hierarchy and executable decoder-level FX; not ATen lowering",
+      "ge": "Complete target/draft nodes, edges, C++, recipe, unbound weight requirements and explicit target state ABI",
+      "real_weights_loaded": false,
+      "real_air_export": "NOT_RUN"
+    },
+    "probes": {
+      "operators": [
+        "ChunkGatedDeltaRule",
+        "LinearAttentionConvstateUpdate",
+        "AdnRmsNorm"
+      ],
+      "cases": [
+        "gdn_prefill",
+        "gdn_decode",
+        "conv_prefill",
+        "conv_decode",
+        "rms"
+      ],
+      "construction": "One custom operator per graph, full-model operator dimensions",
+      "gdn_prefill_effective_length": 6,
+      "numerical_acceptance": "NOT_DEFINED_DIAGNOSTIC_ONLY",
+      "conv_y1_reference": "UNSPECIFIED_STATE_ORDER_SHAPE_ONLY",
+      "zero_compiled_script": "NONZERO_EXIT",
+      "failed_native_results": "HASH_BOUND_STAGE_REPORTING"
+    },
+    "host_tests": {
+      "pytorch_full_structure_and_changed_input_equivalence": 2,
+      "ge_full_structure_contract": 7,
+      "ge_existing_export_regression": 71,
+      "fused_probe_final_contract": 6,
+      "native_ctest": 5,
+      "five_case_python_shell_native_compare": "PASSED",
+      "real_ddk_header_object_compile": "PASSED"
+    },
+    "integration": {
+      "external_ge_omg_tools": "MOCKED",
+      "hiai": "host-fake-hiai",
+      "device_execution": "NOT_RUN",
+      "placement": "UNVERIFIED"
+    },
+    "verification_records": [
+      "pytorch-full-verification.json",
+      "full-ge-verification.json",
+      "structure-tests.xml",
+      "export-regression-tests.xml",
+      "fused-probe-final-tests.xml",
+      "native-fused-verification.json",
+      "fused-probe-integration/integration-result.json",
+      "fused-cli-check.json",
+      "execution-guide-check.json"
+    ],
+    "limits": [
+      "Real GE/OMG and installed fused kernels need yellow-environment validation",
+      "W4A8 graph/weight mapping and resident native DFlash integration remain pending"
+    ],
+    "documentation": "Full-model commands first; concise parameter notes; tiny commands last; standalone five-case batch instructions included",
+    "experience_audit": {
+      "captured_in": [
+        "docs/validation.md",
+        "docs/current-status.md"
+      ],
+      "lessons": [
+        "Full model dimensions and short sequence specialization are separate; structure artifacts must explicitly remain weight-unbound and non-AIR.",
+        "One-node custom-op graphs and hash-bound failure stages distinguish construction, compile and invocation failures.",
+        "GDN padded output positions are outside numerical comparison; runtime placement and kernel accuracy remain unverified."
+      ],
+      "skills_changed": [],
+      "rejected_promotions": [
+        "Host fake results are not device support or numerical acceptance."
+      ],
+      "next_validation": "Run the five compiled custom-op cases with the actual yellow-environment DDK and board."
     }
   }
 }

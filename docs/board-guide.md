@@ -1,133 +1,29 @@
 # 板端执行与参考比较
 
-[返回首页](README.md) · [环境配置](environment-setup.md) · [当前进展](current-status.md)
+[首页](README.md) · [环境配置](environment-setup.md) · [GE 指南](ge-guide.md)
 
-第1–5节用于**已有 ABI v2 的 target/draft 双图 OMC**。PyTorch → AIR 和直接 GE → AIR
-都可走此流程，但必须使用各自同源的参考。新 stateful GE 图带显式缓存输入/输出，
-使用[第6节的单步模式](#6-新状态图的单步执行)，尚未接入下述旧双图 `run_hdc.py` 流程。
+新缓存图使用 runner 的 `--stateful-step`；原始 ABI v2 target/draft 双图使用 `run_hdc.py`。完整 FP16 模型约 65 GiB 权重，以下执行接口不代表它已能部署到 32GB 板端。
 
-## 1. 选择已有 OMC 与同源参考
+## 1. 构建 HIAI runner
 
-先按[环境配置](environment-setup.md)设置 `REPO_DIR`、`MODEL_PYTHON`、`PYTHONPATH`、
-`AI_RUN_DIR`、OHOS/HIAI 资源以及 `SN`、`BIP`、`HDC`。保留已可用的设备连接和工具链。
-`BIP` 是 HDC server 的 `IP:端口`。
-
-将下列两个路径替换为已有产物；每次执行用新的结果目录：
+先配置 OHOS/HIAI/HDC 环境；已有匹配的新 runner 可跳过构建，保留相邻构建记录及其引用的库路径。
 
 ```bash
-export OMC_DIR='/实际路径/已编译的双图OMC目录'
-export REFERENCE_JSON='/实际路径/同源reference.json'
-: "${AI_RUN_DIR:?请先设置本次仓库外输出目录}"
 export BOARD_JOB="$(mktemp -d "$AI_RUN_DIR/board-XXXXXXXX")"
-test -f "$OMC_DIR/manifest.json"
-test -f "$REFERENCE_JSON"
-"${HDC:-hdc}" -s "$BIP" list targets
-```
-
-OMC 清单须为 `qwen35-cpro-omc-pair`、`COMPILED`、ABI `2`，包含 target 和 draft，
-精度与特征类型为 `torch.float16`。参考的 `source`、`precision`、`quantization`、
-`sequence_length` 必须与 OMC 清单相同；脚本会在上传前检查这些字段及模型载荷哈希。
-
-| OMC 来源 | 参考来源 |
-|---|---|
-| 旧 PyTorch 双图导出 | 按 [PyTorch 指南](pytorch-guide.md)使用相同 target/draft 权重、精度、量化和序列配置生成的参考 |
-| 旧直接 GE tiny 双图 | 按 [GE 指南](ge-guide.md)用该次 `prepared` 执行 `direct_model_air.py reference-tiny` 得到的参考 |
-
-不能用另一次 `demo` 生成的随机 tiny 权重替代原参考，也不能手改参考身份字段来绕过检查。
-`reference-tiny` 仅适用于其支持的 tiny prepared；完整模型参考需走对应的完整权重流程。
-
-## 2. 构建正式 HIAI runner
-
-```bash
 "$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
   --output "$BOARD_JOB/hiai-build"
-cat "$BOARD_JOB/hiai-build/result.json"
 export HIAI_RUNNER="$BOARD_JOB/hiai-build/build/qwen35_dflash_hiai"
+cat "$BOARD_JOB/hiai-build/result.json"
+"$HDC" -s "$BIP" list targets
 ```
 
-应得到 `LINKED` 和 HarmonyOS ARM64 程序。需要指定最低兼容 API 时，可显式增加
-`--compatible-sdk-version 正整数`；不指定则使用所选 SDK 默认值。
-`--headers-only` 只验证头文件编译，不能用于上板。
+构建结果应为 `LINKED`；`--headers-only` 产物不能上板，需要指定最低 SDK API 时增加 `--compatible-sdk-version 正整数`。
 
-已有匹配 runner 可直接将 `HIAI_RUNNER` 指向它，跳过构建。保留相邻的
-`command.json`、`result.json` 以及其引用的库和 SDK 路径；运行脚本据此校验并收集同套
-HIAI/C++ 库，无需另行猜测库目录。资源路径来自环境或 `QWEN35_RESOURCES`。
+<a id="6-新状态图的单步执行"></a>
 
-## 3. 只验证双图执行
+## 2. 新状态图的单步执行
 
-需要首次检查该产物能否加载、执行和传递 target 特征时运行：
-
-```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
-  --omc "$OMC_DIR" --runner "$HIAI_RUNNER" \
-  --reference "$REFERENCE_JSON" \
-  --output "$BOARD_JOB/smoke" --execution-only
-cat "$BOARD_JOB/smoke/result.json"
-```
-
-脚本创建独立板端目录，上传并校验载荷，检查运行库能力，再让 target/draft 各执行一次。
-该模式仍核对参考身份与 prompt，但不要求参考状态为 PASS，也不比较生成质量或计时收益。
-`EXECUTION_COMPLETE` 表示本次双图执行与回传检查完成；精度、性能和实际算子运行位置未由此确认。
-已有同一产物成功执行证据时，不必重复这一步。
-
-## 4. 完整生成比较
-
-严格比较要求参考状态为 `PASS`，并满足
-`prompt 长度 + max_new_tokens − 1 ≤ OMC sequence_length`。prompt 与生成上限直接读取参考 JSON。
-去掉 `--execution-only`，使用新的输出目录：
-
-```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
-  --omc "$OMC_DIR" --runner "$HIAI_RUNNER" \
-  --reference "$REFERENCE_JSON" \
-  --output "$BOARD_JOB/benchmark"
-cat "$BOARD_JOB/benchmark/result.json"
-cat "$BOARD_JOB/benchmark/comparison.json"
-```
-
-该流程检查普通生成与 DFlash 一致性，并为两种模式各做 3 次预热、10 次测量，
-回收结果后自动调用项目 `compare`。通过要求包括 OMC/权重身份、prompt、生成上限、
-两种模式每次测量的 token 序列及停止原因与参考一致。
-
-若已经有完整 benchmark，可只在主机重新比较，无需再上板；输出文件必须尚不存在：
-
-```bash
-"$MODEL_PYTHON" -m qwen35_moe_dflash.cli compare \
-  --omc "$OMC_DIR" \
-  --report "$BOARD_JOB/benchmark/benchmark.json" \
-  --reference "$REFERENCE_JSON" \
-  --output "$BOARD_JOB/comparison-recheck.json"
-```
-
-这里的 `--report` 必须是完整生成测量报告，不能使用 execution-only 的 smoke 报告。
-比较失败会保存 `FAIL` 结果并以非零退出码退出；查看 `diagnostics` 可区分重复运行不一致、
-ordinary/DFlash 互不一致，以及两者都稳定但偏离参考。
-
-## 5. 产物、清理和结果边界
-
-| 文件 | 内容 |
-|---|---|
-| `result.json` | 流程状态、身份、失败阶段和板端清理结果 |
-| `runtime-probe.json` | HIAI 运行库版本与能力查询；不是模型执行位置证明 |
-| `benchmark.json` | smoke 双图输出，或 ordinary/DFlash 的完整测量 |
-| `comparison.json` | 完整模式的参考比较；smoke 不生成 |
-| `benchmark.stdout` / `.stderr` / `.exitcode` | 板端推理日志与实际退出码 |
-| `calls/`、`failure.json` | HDC 调用记录；失败时的原因 |
-
-默认成功完成回传及相应检查后删除本次板端目录，失败时保留；服务器结果始终保留。
-需要保留部署内容时加 `--board-cleanup none`；`--board-cleanup omc` 仅在成功后删除清单中的
-OMC 文件，保留独立权重及其它文件。下次执行仍需新目录。传到板端的是程序、OMC 及附属载荷、
-清单和运行库；prepared、AIR、Python、CANN、DDK、编译 SDK 留在服务器。
-
-`PASS` 的范围是这批输入和产物的 token/停止原因比较，不能代替逐层数值检查。
-tiny 结果也不代表完整 35B 模型质量或加速收益；NPU 能力查询、编译分区和 Process 成功
-均不单独证明实际 NPU 执行位置。新融合与缓存路径的接入状态统一查看[当前进展](current-status.md)。
-
-## 6. 新状态图的单步执行
-
-新状态图使用同一份正式runner的独立 `--stateful-step` 模式；构建方法同第2节，旧runner需重新构建。主机先按[GE指南](ge-guide.md#状态图编译和输入打包)生成完整step bundle。自动 `run_hdc.py` 当前仍只接旧双图，不接这个bundle。
-
-将完整bundle、runner及匹配运行库部署到板端，保持bundle相对路径；然后在板端已配置对应进程库搜索路径的shell执行：
+按 [GE 指南](ge-guide.md#状态图编译和输入打包)准备 step bundle，将完整 bundle、runner 和匹配运行库部署到板端并保持相对路径。当前 `run_hdc.py` 不负责此新 ABI 的部署；在已配置运行库路径的**板端 shell**中设置实际路径和身份后执行：
 
 ```bash
 "$BOARD_RUNNER" --stateful-step "$BOARD_STEP_DIR/step.tsv" \
@@ -136,6 +32,95 @@ tiny 结果也不代表完整 35B 模型质量或加速收益；NPU 能力查询
   --ddk-id "$CPRO_DDK_ID" --firmware-id "$FIRMWARE_ID"
 ```
 
-上述变量是**板端**runner路径、step目录、新结果目录、实际运行库版本与固件身份，不是服务器路径。输出 `result.json` 及全部 `output_*.bin`，回收完整结果目录后，才能准备下一T位置的decode。该模式检查模型/ABI/输入哈希、shape和dtype，保留FP32 recurrent状态；与旧target/draft参数互斥。
+`BOARD_RUNNER`、`BOARD_STEP_DIR`、`BOARD_RESULT_DIR` 均为板端路径，结果目录必须是新目录；运行库版本和固件标识需填实际值。回收 `result.json` 及全部 `output_*.bin` 后，按 GE 指南准备下一 T 位置的 decode；`EXECUTED` 只表示单步执行完成，真实数值及 DFlash 性能仍待验证。
 
-`EXECUTED`只表示一次target执行及输出写出，不表示数值验收或DFlash性能通过。当前主机fake已覆盖接口；真实编译和板端结果仍待获得。单步进程用于接通状态路径，每次启动会重新加载模型，不能用它估计最终常驻解码性能。
+## 3. 选择原始双图与同源参考
+
+以下步骤适用于清单为 `qwen35-cpro-omc-pair`、`COMPILED`、ABI 2 的 target/draft OMC；参考必须匹配权重、精度、量化、序列长度和 prompt，脚本会检查。
+
+```bash
+export OMC_DIR='/实际路径/已编译的双图OMC目录'
+export REFERENCE_JSON='/实际路径/同源reference.json'
+test -f "$OMC_DIR/manifest.json"
+test -f "$REFERENCE_JSON"
+```
+
+## 4. 双图执行检查
+
+`--execution-only` 让 target/draft 各执行一次并检查回传，不做生成质量或速度验收；已有相同产物的成功记录可跳过。
+
+```bash
+"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+  --omc "$OMC_DIR" --runner "$HIAI_RUNNER" --reference "$REFERENCE_JSON" \
+  --output "$BOARD_JOB/smoke" --execution-only
+cat "$BOARD_JOB/smoke/result.json"
+```
+
+## 5. 完整生成比较
+
+参考状态须为 `PASS`，并满足 `prompt长度 + max_new_tokens − 1 ≤ sequence_length`。该命令对 ordinary/DFlash 各做 3 次预热、10 次测量，并比较全部 token 与停止原因。
+
+```bash
+"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+  --omc "$OMC_DIR" --runner "$HIAI_RUNNER" --reference "$REFERENCE_JSON" \
+  --output "$BOARD_JOB/benchmark"
+cat "$BOARD_JOB/benchmark/result.json"
+cat "$BOARD_JOB/benchmark/comparison.json"
+```
+
+已有完整 benchmark 时，可只重新比较，无需上板；`--report` 不能指向 execution-only 报告。
+
+```bash
+"$MODEL_PYTHON" -m qwen35_moe_dflash.cli compare \
+  --omc "$OMC_DIR" --report "$BOARD_JOB/benchmark/benchmark.json" \
+  --reference "$REFERENCE_JSON" --output "$BOARD_JOB/comparison-recheck.json"
+```
+
+## 结果与保留策略
+
+| 产物 | 内容 |
+|---|---|
+| `result.json` | 状态、身份、失败阶段及清理结果 |
+| `benchmark.json` / `comparison.json` | 双图输出或完整生成测量 / 参考比较；smoke 不生成 comparison |
+| `benchmark.stdout` / `.stderr` / `.exitcode` | 板端日志和实际退出码 |
+| `calls/` / `failure.json` | HDC 调用记录 / 失败原因 |
+
+默认成功回传并完成检查后清理本次板端目录，失败保留；加 `--board-cleanup none` 可保留全部内容，服务器结果始终保留。编译分区、能力查询和 Process 成功均不能单独证明实际 NPU 运行位置；验证范围见 [validation.md](validation.md)。
+
+## 融合算子调用探针
+
+先按 [GE 指南](ge-guide.md#融合算子调用探针)生成并编译 5 个用例，再构建最新 runner。`BOARD_HIAI_LIB_DIR` 指板端已有且验证过的私有库目录；运行库版本、DDK 和固件标识均填写实际值。
+
+```bash
+"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$FUSED_PROBE_RUN/native"
+export FUSED_PROBE_RUNNER="$FUSED_PROBE_RUN/native/build/qwen35_dflash_hiai"
+export BOARD_FUSED_ROOT="/data/local/tmp/qwen35-fused-$(date +%Y%m%d-%H%M%S)-$RANDOM"
+: "${BOARD_HIAI_LIB_DIR:?设置板端已验证的私有库目录}"
+: "${HIAI_RUNTIME_VERSION:?设置实际运行库版本}" "${CPRO_DDK_ID:?}" "${FIRMWARE_ID:?}"
+tar -C "$FUSED_PROBE_RUN" -cf "$FUSED_PROBE_JOB/bundle.tar" bundle
+"$HDC" -t "$SN" -s "$BIP" shell "mkdir -p '$BOARD_FUSED_ROOT'"
+"$HDC" -t "$SN" -s "$BIP" file send "$FUSED_PROBE_JOB/bundle.tar" "$BOARD_FUSED_ROOT/bundle.tar"
+"$HDC" -t "$SN" -s "$BIP" file send "$FUSED_PROBE_RUNNER" "$BOARD_FUSED_ROOT/runner"
+"$HDC" -t "$SN" -s "$BIP" shell \
+  "cd '$BOARD_FUSED_ROOT' && tar -xf bundle.tar && chmod +x runner && LD_LIBRARY_PATH='$BOARD_HIAI_LIB_DIR:/vendor/lib64/chipsetsdk' sh bundle/run-board.sh '$BOARD_FUSED_ROOT/runner' '$BOARD_FUSED_ROOT/results' '$HIAI_RUNTIME_VERSION' '$CPRO_DDK_ID' '$FIRMWARE_ID'"
+```
+
+回收整批结果再比较；板端 shell 需有 `tar`，此次目录和结果均保留。
+
+```bash
+"$HDC" -t "$SN" -s "$BIP" shell \
+  "tar -cf '$BOARD_FUSED_ROOT/results.tar' -C '$BOARD_FUSED_ROOT' results"
+"$HDC" -t "$SN" -s "$BIP" file recv "$BOARD_FUSED_ROOT/results.tar" "$FUSED_PROBE_JOB/results.tar"
+tar -xf "$FUSED_PROBE_JOB/results.tar" -C "$FUSED_PROBE_JOB"
+"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" compare-fused-probes \
+  --probe-run "$FUSED_PROBE_RUN" --board-run "$FUSED_PROBE_JOB/results" \
+  --output "$FUSED_PROBE_JOB/comparison"
+cat "$FUSED_PROBE_JOB/comparison/report.txt"
+```
+
+脚本使用 runner 的独立 `--fused-op-step` 模式；成功调用与数值诊断分别记录，当前未设置数值验收阈值。
+
+## tiny 回归
+
+复用同一执行命令，只替换 OMC 和参考：PyTorch tiny 使用同次 `demo/export-tiny-air`；GE tiny 使用同次 prepared 的 `reference-tiny`。两种随机模型的参考不能混用，tiny 通过也不代表完整模型通过。

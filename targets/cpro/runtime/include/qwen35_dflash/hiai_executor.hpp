@@ -21,15 +21,16 @@ struct HiaiTensorSpec {
 };
 std::size_t HiaiTensorBytes(const HiaiTensorSpec& spec);
 
-// One immutable stateful target, synchronous Process, caller-owned state flow.
-// No draft model, speculative scheduling, implicit state mutation or benchmark.
+// One immutable graph, synchronous Process, caller-owned ordered tensor flow.
+// The caller enforces either the stateful target or documented fused-op ABI.
 class HiaiStatefulExecutor final {
  public:
   HiaiStatefulExecutor(const std::filesystem::path& target,
                       const std::string& expected_runtime_version,
                       const std::vector<HiaiTensorSpec>& inputs,
                       const std::vector<HiaiTensorSpec>& outputs,
-                      std::uint32_t timeout_ms = 300000);
+                      std::uint32_t timeout_ms = 300000,
+                      bool fused_operator_probe = false);
   ~HiaiStatefulExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
   void Execute();

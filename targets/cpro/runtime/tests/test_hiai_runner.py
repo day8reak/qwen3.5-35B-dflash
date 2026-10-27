@@ -343,3 +343,139 @@ result, output, events = stateful_run(decode, "reject-wrong-state")
 assert result.returncode == 1 and "Process" in result.stderr
 assert events == ["load", "process", "unload"] and not (output / "result.json").exists()
 print("HIAI stateful target: single Process, FP16/FP32 cache handoff, hashes, ND padding, bounded plans and failures checked")
+
+
+# These five fixtures model documented full-size operator IO only. Fake outputs
+# are finite sentinels for transport checks, not mathematical golden results.
+def fused_bundle(kind, sequence, state_dtype="float32", label=""):
+    folder = root / f"fused-{kind}-s{sequence}{label}"
+    folder.mkdir()
+    model, abi = folder / "operator.omc", folder / "operator-abi.json"
+    model.write_bytes(f"fused-{kind}-s{sequence}-fixture".encode())
+    if kind == "gdn":
+        op = "ChunkGatedDeltaRule"
+        inputs = [(name, "float16", [1, sequence, 32, 128]) for name in ("query", "key", "value")]
+        inputs += [(name, "float16", [1, sequence, 32]) for name in ("g", "beta")]
+        inputs += [("initial_state", state_dtype, [1, 32, 128, 128]), ("effective_length", "int16", [1])]
+        outputs = [("core_attn", "float16", [1, sequence, 32, 128]),
+                   ("last_recurrent_state", "float32", [1, 32, 128, 128])]
+    elif kind == "conv":
+        op = "LinearAttentionConvstateUpdate"
+        inputs = [("x1", "float16", [1, sequence, 8192]), ("x2", "float16", [1, 8192, 3]),
+                  ("x3", "int32", [128])]
+        outputs = [("y1", "float16", [1, 8192, 4]), ("y2", "float16", [1, 8192, sequence + 3])]
+    else:
+        op = "AdnRmsNorm"
+        inputs = [("self", "float16", [1, sequence, 2048]), ("gamma", "float16", [2048])]
+        outputs = [("y", "float16", [1, sequence, 2048]), ("rstd", "float32", [1, sequence, 1])]
+    abi.write_text(json.dumps({"operator_type": op, "inputs": inputs, "outputs": outputs}))
+    rows = ["QWEN35_FUSED_OP_STEP\t1", f"model\toperator.omc\t{sha(model)}",
+            f"operator_abi\toperator-abi.json\t{sha(abi)}", f"operator\t{op}"]
+    for index, (name, dtype, shape) in enumerate(inputs):
+        count = 1
+        for dim in shape:
+            count *= dim
+        payload = struct.pack("<h", sequence) if dtype == "int16" else bytes(count * (2 if dtype == "float16" else 4))
+        file = folder / f"input_{index:04d}.bin"
+        file.write_bytes(payload)
+        rows.append("\t".join(["input", str(index), name, dtype, ",".join(map(str, shape)), file.name, sha(file)]))
+    rows += ["\t".join(["output", str(i), name, dtype, ",".join(map(str, shape))])
+             for i, (name, dtype, shape) in enumerate(outputs)]
+    (folder / "step.tsv").write_text("\n".join(rows) + "\n")
+    return folder, rows
+
+
+def fused_run(folder, label, failure="", layout="", extra=()):
+    output, trace = folder / label, folder / (label + ".trace")
+    result = subprocess.run([
+        str(runner), "--fused-op-step", str(folder / "step.tsv"), "--output", str(output),
+        "--expected-runtime-version", "FAKE-HIAI-X90", "--ddk-id", "fake", "--firmware-id", "fake", *extra,
+    ], env=dict(os.environ, FAKE_HIAI_FAILURE=failure, FAKE_HIAI_LAYOUT=layout,
+                FAKE_HIAI_TRACE=str(trace), FAKE_HIAI_DTYPE_TRACE=str(folder / (label + ".dtypes"))),
+        text=True, capture_output=True)
+    assert "LEAK" not in result.stderr, result.stderr
+    return result, output, trace.read_text().splitlines() if trace.exists() else []
+
+
+fused_cases = {}
+for kind, sequence in [("gdn", 8), ("gdn", 1), ("conv", 8), ("conv", 1), ("rms", 8)]:
+    folder, rows = fused_bundle(kind, sequence)
+    fused_cases[kind, sequence] = folder, rows
+    result, output, events = fused_run(folder, "result")
+    assert result.returncode == 0, result.stderr
+    assert events == ["load", "process", "unload"], events
+    report = json.loads((output / "result.json").read_text())
+    assert report["status"] == "EXECUTED" and report["scope"] == "fused-operator-probe"
+    assert report["evidence_kind"] == "host-fake-hiai" and report["operator_type"] == rows[3].split("\t")[1]
+    assert report["operator_calls"] == 1 and report["target_calls"] == report["draft_calls"] == 0
+    assert report["accuracy"] == report["performance"] == "NOT_EVALUATED"
+    assert report["runtime_placement"] == "UNVERIFIED" and "state_policy" not in report
+    assert report["step_plan_sha256"] == sha(folder / "step.tsv")
+    assert report["operator_abi_sha256"] == sha(folder / "operator-abi.json")
+    assert report["model_sha256"] == sha(folder / "operator.omc")
+    assert "next_past_length" not in report and "state_abi_sha256" not in report
+    for direction in ("inputs", "outputs"):
+        for index, item in enumerate(report[direction]):
+            file = (folder if direction == "inputs" else output) / item["path"]
+            assert item["index"] == index and item["bytes"] == file.stat().st_size and item["sha256"] == sha(file)
+    if kind == "gdn":
+        assert "5" in (folder / "result.dtypes").read_text().splitlines(), "effective_length was not INT16"
+        assert (output / "output_0001.bin").read_bytes() == struct.pack("<f", 0.25) * (32*128*128)
+    if kind == "rms":
+        assert (output / "output_0001.bin").read_bytes() == struct.pack("<8f", *([0.5] * 8))
+
+folder, rows = fused_bundle("gdn", 1, "float16", "-fp16-state")
+result, output, events = fused_run(folder, "result")
+assert result.returncode == 0 and events == ["load", "process", "unload"], result.stderr
+assert json.loads((output / "result.json").read_text())["inputs"][5]["dtype"] == "float16"
+
+gdn, good_rows = fused_cases["gdn", 8]
+for layout in ("padded", "leading-feature", "mixed-feature"):
+    result, output, events = fused_run(gdn, "layout-" + layout, layout=layout)
+    assert result.returncode == 0 and events == ["load", "process", "unload"], result.stderr
+    assert (output / "output_0001.bin").stat().st_size == 32*128*128*4
+for failure in ("init", "version", "no-npu", "path", "load", "model-buffer", "io-dims",
+                "shape", "format", "count", "allocation", "short-buffer", "run"):
+    result, output, events = fused_run(gdn, "failure-" + failure, failure=failure)
+    assert result.returncode == 1, (failure, result.stderr)
+    report = json.loads((output / "result.json").read_text())
+    assert report["status"] == "RUNTIME_FAILED" and report["scope"] == "fused-operator-probe"
+    assert report["failure_stage"] == ("PROCESS" if failure == "run" else "LOAD_OR_SETUP")
+    assert report["outputs"] == [] and report["target_calls"] == report["draft_calls"] == 0
+    assert not list(output.glob("*.bin")) and events.count("process") <= 1
+    assert "compatibility-query" not in events
+    if failure != "init":
+        assert events[-1] == "unload", (failure, events)
+
+for label, change, message in [
+    ("header", lambda x: ["QWEN35_STATEFUL_STEP\t1", *x[1:]], "header"),
+    ("unknown-op", lambda x: [*x[:3], "operator\tUnknownKernel", *x[4:]], "unknown documented"),
+    ("model-hash", lambda x: [x[0], x[1].rsplit("\t", 1)[0] + "\t" + "0"*64, *x[2:]], "SHA256"),
+    ("abi-hash", lambda x: [*x[:2], x[2].rsplit("\t", 1)[0] + "\t" + "0"*64, *x[3:]], "SHA256"),
+    ("input-hash", lambda x: [*x[:4], x[4].rsplit("\t", 1)[0] + "\t" + "0"*64, *x[5:]], "SHA256"),
+    ("port-name", lambda x: [*x[:4], x[4].replace("query", "q"), *x[5:]], "contract"),
+    ("head-layout", lambda x: [*x[:4], x[4].replace("1,8,32,128", "1,8,128,32"), *x[5:]], "contract"),
+    ("effective-dtype", lambda x: [*x[:10], x[10].replace("int16", "float16"), *x[11:]], "contract"),
+    ("output-dtype", lambda x: [*x[:-1], x[-1].replace("float32", "float16")], "contract"),
+    ("missing-output", lambda x: x[:-1], "count"),
+    ("reordered-input", lambda x: [*x[:4], x[5], x[4], *x[6:]], "indices"),
+    ("mixed-order", lambda x: [*x[:4], x[-1], *x[4:-1]], "indices"),
+    ("traversal", lambda x: [*x[:4], x[4].replace("input_0000.bin", "../input_0000.bin"), *x[5:]], "traversal"),
+]:
+    (gdn / "step.tsv").write_text("\n".join(change(good_rows)) + "\n")
+    result, output, events = fused_run(gdn, "reject-" + label)
+    assert result.returncode == 1 and message in result.stderr, (label, result.stderr)
+    assert not output.exists() and not events, (label, events)
+(gdn / "step.tsv").write_text("\n".join(good_rows) + "\n")
+result, output, events = fused_run(gdn, "reject-mixed-mode", extra=("--stateful-step", str(prefill / "step.tsv")))
+assert result.returncode == 1 and "unknown fused operator option" in result.stderr and not events
+result, output, events = fused_run(gdn, "result")
+assert result.returncode == 1 and "already exists" in result.stderr
+assert events == ["load", "process", "unload"], "existing-output rejection added a runtime call"
+(gdn / "input_0006.bin").write_bytes(struct.pack("<h", 9))
+bad_rows = good_rows[:]
+bad_rows[10] = bad_rows[10].rsplit("\t", 1)[0] + "\t" + sha(gdn / "input_0006.bin")
+(gdn / "step.tsv").write_text("\n".join(bad_rows) + "\n")
+result, output, events = fused_run(gdn, "reject-effective-length")
+assert result.returncode == 1 and "effective_length" in result.stderr and not events and not output.exists()
+print("HIAI fused operators: five documented full-size IO contracts, FP16/FP32/INT16, single Process, hashes and scoped failures checked")

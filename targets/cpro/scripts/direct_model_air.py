@@ -12,6 +12,32 @@ sys.path.insert(0, str(REPO))
 
 
 def _add_stateful_commands(sub):
+    probe = sub.add_parser("probe-fused-ops", help="build only five calls to the three documented fused operators; no model checkpoint")
+    probe.add_argument("--output", required=True)
+    probe.add_argument("--bindings", required=True)
+    probe.add_argument("--ge-root", help="serialize real AIR; omit for source generation only")
+    probe.add_argument("--ddk-root", help="compile each AIR with the selected target DDK")
+    probe.add_argument("--ddk-id")
+    probe.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
+    probe.add_argument("--cxx11-abi", choices=(0, 1), type=int, default=0)
+    probe.add_argument("--timeout-seconds", type=int, default=3600)
+    compare = sub.add_parser("compare-fused-probes", help="verify returned probe files and report numerical diagnostics")
+    compare.add_argument("--probe-run", required=True)
+    compare.add_argument("--board-run", required=True)
+    compare.add_argument("--output", required=True)
+    compare.add_argument("--allow-host-fake", action="store_true", help="permit fake HIAI for host plumbing checks only")
+    full = sub.add_parser("build-full-structure", help="write complete 40-layer target and 6-layer draft GE construction without checkpoint data")
+    full.add_argument("--output", required=True)
+    full.add_argument("--sequence-length", type=int, default=8, help="static valid token count; model dimensions remain full size")
+    full.add_argument("--past-length", type=int, default=0, help="static incoming target cache length")
+    full.add_argument("--fused-ops", default="none", help="none or comma-separated gdn,conv_state,rms")
+    full.add_argument("--bindings", help="declared GE contracts for selected fused roles")
+    full.add_argument("--recurrent-dtype", choices=("float16", "float32"), default="float16")
+    full.add_argument("--gdn-state-casts", choices=("reject", "allow"), default="reject")
+    full.add_argument("--expert-dispatch", choices=("static", "selected"), default="selected")
+    full.add_argument("--fp16-reductions", choices=("native", "matmul"), default="native")
+    full.add_argument("--fp16-row-mul", choices=("native", "compact"), default="native")
+    full.add_argument("--gdn-indexed-copy", choices=("native", "gather"), default="native")
     step = sub.add_parser("prepare-stateful-step", help="stage one explicit-state HIAI call and verified previous state")
     step.add_argument("--omc", required=True)
     step.add_argument("--output", required=True)
@@ -141,7 +167,25 @@ def main():
     args = parser.parse_args()
     try:
         from qwen35_moe_dflash.resources import load_resources, resource_path
-        if args.command == "bindings-from-document":
+        if args.command == "probe-fused-ops":
+            from qwen35_moe_dflash.ge_fused.probes import build_fused_probes
+            result = build_fused_probes(
+                args.output, args.bindings, ge_root=args.ge_root, ddk_root=args.ddk_root,
+                ddk_id=args.ddk_id, cxx=args.cxx, cxx11_abi=args.cxx11_abi,
+                timeout_seconds=args.timeout_seconds)
+        elif args.command == "compare-fused-probes":
+            from qwen35_moe_dflash.ge_fused.probes import compare_fused_probes
+            result = compare_fused_probes(args.probe_run, args.board_run, args.output,
+                                          allow_host_fake=args.allow_host_fake)
+        elif args.command == "build-full-structure":
+            from qwen35_moe_dflash.ge_fused.export import build_full_structure, selected_fusion
+            result = build_full_structure(
+                args.output, args.sequence_length, past_length=args.past_length,
+                fused_ops=selected_fusion(args.fused_ops), bindings_path=args.bindings,
+                recurrent_dtype=args.recurrent_dtype, gdn_state_casts=args.gdn_state_casts,
+                expert_dispatch=args.expert_dispatch, fp16_reductions=args.fp16_reductions,
+                fp16_row_mul=args.fp16_row_mul, gdn_indexed_copy=args.gdn_indexed_copy)
+        elif args.command == "bindings-from-document":
             from qwen35_moe_dflash.ge_fused.bindings import write_document_bindings
             result = write_document_bindings(args.output, target=args.target, ddk_id=args.ddk_id,
                                              gdn_initial_state_dtype=args.gdn_initial_state_dtype)
@@ -226,6 +270,10 @@ def main():
         print(f"direct-model-air: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
     print(json.dumps({"status": result["status"], "output": args.output}, ensure_ascii=False))
+    if args.command == "probe-fused-ops":
+        return int(result["status"] in {"FAILED", "PARTIAL"})
+    if args.command == "compare-fused-probes":
+        return int(any(case["process"] != "PASSED" for case in result["cases"]))
     return 0
 
 

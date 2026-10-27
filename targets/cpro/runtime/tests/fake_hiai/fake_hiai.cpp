@@ -17,6 +17,12 @@ void Trace(const char* event) {
   if (const auto* path=std::getenv("FAKE_HIAI_TRACE")) std::ofstream(path, std::ios::app) << event << '\n';
 }
 bool ModelBytesValid(const void* buffer, std::uint32_t bytes, const std::string& name) {
+  if (name=="qwen35_fused_operator") {
+    for (const char* expected : {"fused-gdn-s8-fixture", "fused-gdn-s1-fixture",
+                                "fused-conv-s8-fixture", "fused-conv-s1-fixture", "fused-rms-s8-fixture"})
+      if (buffer && bytes==std::strlen(expected) && std::memcmp(buffer,expected,bytes)==0) return true;
+    return false;
+  }
   if (name=="qwen35_stateful_target") {
     for (const char* expected : {"stateful-prefill-fixture", "stateful-decode-fixture"})
       if (buffer && bytes==std::strlen(expected) && std::memcmp(buffer,expected,bytes)==0) return true;
@@ -53,10 +59,11 @@ AIStatus AiTensor::Init(const TensorDimension* dim, HIAI_DataType type) {
   if (Failure()=="allocation" && tensors==5) return AI_FAILED;
   if (const auto* path=std::getenv("FAKE_HIAI_DTYPE_TRACE"))
     std::ofstream(path,std::ios::app) << static_cast<int>(type) << '\n';
-  if (type!=HIAI_DATATYPE_INT32 && type!=HIAI_DATATYPE_FLOAT16 && type!=HIAI_DATATYPE_FLOAT32) return AI_FAILED;
-  if (dim->GetDims().size()==3 && type!=HIAI_DATATYPE_FLOAT16) return AI_FAILED;
+  if (type!=HIAI_DATATYPE_INT32 && type!=HIAI_DATATYPE_INT16 &&
+      type!=HIAI_DATATYPE_FLOAT16 && type!=HIAI_DATATYPE_FLOAT32) return AI_FAILED;
+  if (dim->GetDims().size()==3 && type!=HIAI_DATATYPE_FLOAT16 && type!=HIAI_DATATYPE_FLOAT32) return AI_FAILED;
   std::size_t n=1; for(auto d:dim->GetDims()) n*=d;
-  bytes_=n*(type==HIAI_DATATYPE_FLOAT16?2:4);
+  bytes_=n*(type==HIAI_DATATYPE_FLOAT16 || type==HIAI_DATATYPE_INT16?2:4);
   data_.resize((bytes_+3)/4); return AI_SUCCESS;
 }
 void* AiTensor::GetBuffer() const { return const_cast<std::int32_t*>(data_.data()); }
@@ -126,6 +133,22 @@ AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vecto
          TensorDimension({1,2,2,2}),TensorDimension({1,1,decode?4U:3U,2}),
          TensorDimension({1,1,decode?4U:3U,2})};
   }
+  else if(n=="qwen35_fused_operator") {
+    const std::string marker(static_cast<const char*>(model_buffer_),model_bytes_);
+    const std::uint32_t s=marker.find("-s1-")!=std::string::npos?1:8;
+    if(marker.find("fused-gdn-")==0) {
+      in={TensorDimension({1,s,32,128}),TensorDimension({1,s,32,128}),TensorDimension({1,s,32,128}),
+          TensorDimension({1,s,32}),TensorDimension({1,s,32}),TensorDimension({1,32,128,128}),
+          TensorDimension({1})};
+      out={TensorDimension({1,s,32,128}),TensorDimension({1,32,128,128})};
+    } else if(marker.find("fused-conv-")==0) {
+      in={TensorDimension({1,s,8192}),TensorDimension({1,8192,3}),TensorDimension({128})};
+      out={TensorDimension({1,8192,4}),TensorDimension({1,8192,s+3})};
+    } else {
+      in={TensorDimension({1,8,2048}),TensorDimension({2048})};
+      out={TensorDimension({1,8,2048}),TensorDimension({1,8,1})};
+    }
+  }
   else if(n=="qwen35_target") { in={ids,ids}; out={ids,features}; }
   else { in={features,ids,ids}; out={TensorDimension({1,3})}; }
   if(Layout()=="padded" || Layout()=="padded-mixed") {
@@ -171,6 +194,28 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
   Trace("process");
   RequireModelBytes(model_buffer_, model_bytes_, name_);
   if(c.model!=name_ || !timeout || !loaded_ || Failure()=="run") return 1;
+  if(name_=="qwen35_fused_operator") {
+    // Deliberately a lifecycle/byte transport double, never a fused-op kernel.
+    // Distinct finite raw patterns let tests detect truncation and wrong dtypes.
+    const std::string marker(static_cast<const char*>(model_buffer_),model_bytes_);
+    if(marker.find("fused-gdn-")==0) {
+      const std::int16_t s=marker.find("-s1-")!=std::string::npos?1:8;
+      if(in.size()!=7 || out.size()!=2) return AI_FAILED;
+      const auto effective=*static_cast<const std::int16_t*>(in[6]->GetBuffer());
+      if(effective<1 || effective>s) return AI_FAILED;
+      std::fill_n(static_cast<std::uint16_t*>(out[0]->GetBuffer()),s*32*128,0x3800);
+      std::fill_n(static_cast<float*>(out[1]->GetBuffer()),32*128*128,0.25F);
+    } else if(marker.find("fused-conv-")==0) {
+      if(in.size()!=3 || out.size()!=2) return AI_FAILED;
+      for(auto& tensor:out) std::fill_n(static_cast<std::uint16_t*>(tensor->GetBuffer()),tensor->GetSize()/2,0x3400);
+    } else {
+      if(in.size()!=2 || out.size()!=2) return AI_FAILED;
+      std::fill_n(static_cast<std::uint16_t*>(out[0]->GetBuffer()),8*2048,0x3c00);
+      std::fill_n(static_cast<float*>(out[1]->GetBuffer()),8,0.5F);
+    }
+    stamp=1;
+    return AI_SUCCESS;
+  }
   if(name_=="qwen35_stateful_target") {
     const bool decode = std::string(static_cast<const char*>(model_buffer_),model_bytes_)=="stateful-decode-fixture";
     const std::size_t s=decode?1:3;

@@ -562,3 +562,102 @@ class TestPrepareStatefulStep:
         with pytest.raises(ValueError):
             prepare_stateful_step(decode, tmp_path / "next-step", [2], tmp_path / "step", tmp_path / "result")
         assert not (tmp_path / "next-step").exists()
+
+
+@pytest.mark.parametrize("sequence,past,fused", [(1, 0, False), (8, 0, True), (1, 3, True)])
+def test_complete_structure_contains_all_target_and_draft_edges(tmp_path, monkeypatch, sequence, past, fused):
+    """Full dimensions and weights remain metadata; no checkpoint/tool stubs."""
+    from qwen35_moe_dflash import ge_constants
+    from qwen35_moe_dflash.compile import compile_stateful_air
+    from qwen35_moe_dflash.ge_fused.bindings import document_bindings
+    from qwen35_moe_dflash.ge_fused.export import build_full_structure
+    from qwen35_moe_dflash.ge_fused.recipe import read_recipe as read_target
+    from qwen35_moe_dflash.ge_recipe_read import read_recipe as read_draft
+
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    def forbidden(*args, **kwargs):
+        pytest.fail("structure-only generation must not fold weights or execute an external tool")
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    monkeypatch.setattr(ge_constants, "fold_constants", forbidden)
+    binding = None
+    if fused:
+        binding = tmp_path / "binding.json"
+        binding.write_text(json.dumps(document_bindings(target="structure-only", ddk_id="unverified",
+                                                        gdn_initial_state_dtype="float32")))
+    output = tmp_path / "full"
+    result = build_full_structure(output, sequence, past_length=past,
+                                 fused_ops="gdn,conv_state,rms" if fused else "none",
+                                 bindings_path=binding, recurrent_dtype="float32" if fused else "float16")
+    assert result["status"] == "STRUCTURE_READY" and result["readiness"] == "WEIGHTS_REQUIRED_STRUCTURE_ONLY"
+    assert result["weights_status"] == "UNBOUND" and result["tiny"] is False and result["air"] is None
+    assert result["target_config"]["num_hidden_layers"] == 40
+    assert result["target_config"]["num_experts"] == 256 and result["target_config"]["num_experts_per_tok"] == 8
+    assert result["target_config"]["vocab_size"] == 248320 and result["draft_config"]["num_hidden_layers"] == 6
+    assert result["feature_layers"] == [1, 6, 11, 16, 22, 27, 32, 37]
+    assert result["feature_width"] == 16384 and result["draft_sequence_length"] == sequence + past
+    weights = result["weights"]
+    assert len(weights) == 762 and result["unique_weight_bytes"] == 70093033728
+    assert weights["target.embed_tokens.weight"]["shape"] == [248320, 2048]
+    assert weights["target.lm_head.weight"]["consumers"] == ["target", "draft"]
+    assert sorted({int(key.split(".")[2]) for key in weights if key.startswith("target.layers.")}) == list(range(40))
+    assert sorted({int(key.split(".")[2]) for key in weights if key.startswith("draft.layers.")}) == list(range(6))
+    banks = [item for key, item in weights.items() if ".experts." in key]
+    assert len(banks) == 80 and all(item["shape"][0] == 256 for item in banks)
+    assert all(item["status"] == "UNBOUND" and "sha256" not in item and not (output / item["path"]).exists()
+               for item in weights.values())
+    assert not list(output.rglob("*.air")) and not list(output.rglob("*.omc"))
+    for role, read in (("target", read_target), ("draft", read_draft)):
+        graph = json.loads((output / role / "graph.json").read_text())
+        assert len(graph["nodes"]) == graph["node_count"]
+        available = {item["name"] for item in graph["inputs"]} | set(graph["weights"]) | set(graph["constants"])
+        for node in graph["nodes"]:
+            assert all(item["source"] in available for item in node["inputs"])
+            assert all(item["name"] not in available for item in node["outputs"])
+            available.update(item["name"] for item in node["outputs"])
+        assert all(item["name"] in available for item in graph["outputs"])
+        recipe = read(output / role / "recipe/graph.recipe")
+        records = recipe["records"]
+        assert len(records) > 500
+        assert any(record["type"] == "FileConstant" for record in records)
+        assert len(recipe["inputs"]) == len(graph["inputs"])
+        assert len(recipe["outputs"]) == len(graph["outputs"])
+        assert "Constructing GE graph" in (output / role / f"{role}.cpp").read_text()
+        summary = next(item for item in result["graphs"] if item["role"] == role)
+        for item in summary["construction_files"]:
+            checked_file(output, item)
+        if role == "target":
+            states = graph["state_abi"]["states"]
+            assert len(states) == 80 and len(graph["outputs"]) == 82
+            assert len(graph["inputs"]) == (81 if past else 1)
+            assert graph["outputs"][1]["shape"] == [1, sequence, 16384]
+            assert all(item["output_shape"][2] == sequence + past for item in states if item["role"] in {"key", "value"})
+            customs = graph["custom_ops"]
+            assert len([item for item in customs if item["type"] == "ChunkGatedDeltaRule"]) == (30 if fused else 0)
+            assert len([item for item in customs if item["type"] == "LinearAttentionConvstateUpdate"]) == (30 if fused else 0)
+        else:
+            assert graph["inputs"][0]["shape"] == [1, sequence + past, 16384]
+            assert graph["outputs"][0]["shape"] == [1, 15]
+    with pytest.raises(ValueError, match="EXPORTED qwen35-stateful-ge-air"):
+        compile_stateful_air(output, tmp_path / "forbidden-compile", tmp_path / "no-ddk", ddk_id="unverified")
+    assert not (tmp_path / "forbidden-compile").exists()
+
+
+@pytest.mark.parametrize("sequence", [0, True, 65, 2048])
+def test_complete_structure_rejects_budget_before_build(tmp_path, monkeypatch, sequence):
+    from qwen35_moe_dflash.ge_fused import target
+    from qwen35_moe_dflash.ge_fused.export import build_full_structure
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    monkeypatch.setattr(target, "build_target", lambda *a, **kw: pytest.fail("must reject before allocating full graph"))
+    with pytest.raises(ValueError, match="bounded host construction budget"):
+        build_full_structure(tmp_path / "full", sequence)
+    assert not (tmp_path / "full").exists()
+
+
+def test_complete_structure_rejects_total_context_before_build(tmp_path, monkeypatch):
+    from qwen35_moe_dflash.ge_fused import target
+    from qwen35_moe_dflash.ge_fused.export import build_full_structure
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    monkeypatch.setattr(target, "build_target", lambda *a, **kw: pytest.fail("must reject before allocating full graph"))
+    with pytest.raises(ValueError, match="2048-token host construction budget"):
+        build_full_structure(tmp_path / "full", 1, past_length=2048)
+    assert not (tmp_path / "full").exists()

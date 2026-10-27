@@ -1,24 +1,143 @@
 # 直接 GE 构图与执行
 
-[首页](README.md) · [环境配置](environment-setup.md) · [端到端流程](project-structure.md#端到端如何运行)
+[首页](README.md) · [环境配置](environment-setup.md) · [板端执行](board-guide.md)
 
-统一命令入口是 `targets/cpro/scripts/direct_model_air.py`。Python/NumPy 描述图，生成 C++ 并调用真实 GE 库保存 AIR；构图不经过 PyTorch/TorchAir。PyTorch 只在需要对应框架参考时使用。
+本路径使用 Python/NumPy 描述图，生成 C++ 并调用 GE 保存 AIR，不经过 PyTorch/TorchAir。先设置环境页中的公共变量。
 
-## 选择哪条路径
+## 1. 生成完整模型结构
 
-| 路径 | 命令 | 产物及用途 |
-|---|---|---|
-| 原始 target/draft 双图 | `prepare → export → compile` | HIAI ABI v2，可交给现有 runner；按前缀重算 |
-| 新 target 状态图 | `plan-stateful` / `export-stateful` / `compile-stateful` / `prepare-stateful-step` | 显式 conv/recurrent/KV，融合可选；独立单步runner模式，尚未真实上板 |
-| 文档融合接口 | `bindings-from-document` | 根据用户 MD §4.6 写绑定 JSON，不安装 kernel |
-
-## 原始双图：准备、导出、编译
-
-以下用于从头复现 tiny；已有 prepared/AIR/OMC 时复用对应目录，不必重复前序步骤。先设置环境页中的 `CANN_ROOT` 和目标 DDK 变量。
+构造完整 40 层 target 和 6 层 DFlash，保留 256 专家/top8、hidden 2048、词表 248320；S=8 只表示输入长度。此步无需权重或 GE，输出源码、recipe、节点连边和权重需求，状态为 `STRUCTURE_READY`，不能直接编译 OMC。
 
 ```bash
 export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
-export GE_PAIR_RUN="$(mktemp -d "$AI_RUN_DIR/ge-pair-XXXXXXXX")"
+export GE_FULL_RUN="$(mktemp -d "$AI_RUN_DIR/ge-full-XXXXXXXX")"
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" build-full-structure \
+  --sequence-length 8 --past-length 0 --expert-dispatch selected \
+  --fused-ops none --output "$GE_FULL_RUN/structure"
+```
+
+Target 带显式缓存 ABI；draft 仍按完整上下文重算。`selected` 按 token 选取专家，但保留全部专家权重，尚非供应商 grouped GEMM 实现。
+
+## 2. 准备完整真实权重
+
+按[权重准备](weights.md)设置两套检查点目录。此命令流式转换 BF16→FP16 并使用外部权重文件；去重权重约 65.28 GiB，不适用 W4A8 板端内存预算。
+
+```bash
+export GE_FULL_PAIR_RUN="$(mktemp -d "$AI_RUN_DIR/ge-full-weights-XXXXXXXX")"
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" prepare --full --float-baseline \
+  --sequence-length 8 --expert-dispatch selected \
+  --target-weights "$QWEN35_TARGET_WEIGHTS" --draft-weights "$QWEN35_DRAFT_WEIGHTS" \
+  --output "$GE_FULL_PAIR_RUN/prepared"
+```
+
+## 状态图与可选融合
+
+先生成文档 §4.6 的接口绑定；它不安装算子，也不证明所选 DDK 支持这些算子。下面选择 Cpro 的 FP16 初态，GDN 输出 state 为 FP32。
+
+```bash
+export GE_BINDING_RUN="$(mktemp -d "$AI_RUN_DIR/ge-bindings-XXXXXXXX")"
+export GE_CUSTOM_BINDINGS="$GE_BINDING_RUN/bindings.json"
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" bindings-from-document \
+  --target "${CPRO_TARGET:-kirinx90}" --ddk-id "$CPRO_DDK_ID" \
+  --gdn-initial-state-dtype float16 --output "$GE_CUSTOM_BINDINGS"
+```
+
+融合角色可选 `gdn,conv_state,rms` 的任意不重复组合；不用融合时改为 `--fused-ops none`，省略 `--bindings` 和 `--gdn-state-casts allow`。同样的选项也适用于 `build-full-structure`，但每次使用新输出目录。
+
+```bash
+export GE_STATEFUL_RUN="$(mktemp -d "$AI_RUN_DIR/ge-stateful-XXXXXXXX")"
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" export-stateful \
+  --prepared "$GE_FULL_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --sequence-length 3 --past-length 0 \
+  --fused-ops gdn,conv_state,rms --bindings "$GE_CUSTOM_BINDINGS" \
+  --recurrent-dtype float16 --gdn-state-casts allow \
+  --output "$GE_STATEFUL_RUN/air"
+```
+
+`allow` 显式允许 GDN 末态转回 FP16 缓存并记录于 ABI；仅生成源码时将 `export-stateful` 改为 `plan-stateful`，去掉 `--ge-root`。文档融合绑定只接受完整模型尺寸，不适用于 tiny。
+
+## 状态图：编译和输入打包
+
+编译只接受真实 `EXPORTED` AIR；保留 AIR、外部权重和导出目录原路径。以下打包 S=3/T=0 的 prefill，完成后按[板端单步模式](board-guide.md#6-新状态图的单步执行)执行。
+
+```bash
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" compile-stateful \
+  --air "$GE_STATEFUL_RUN/air" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_STATEFUL_RUN/omc"
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" prepare-stateful-step \
+  --omc "$GE_STATEFUL_RUN/omc" --token-ids 1,2,3 \
+  --output "$GE_STATEFUL_RUN/step-prefill"
+```
+
+继续 decode 时，用相同 prepared 和融合选项导出 S=1/T=3 的图；`PREFILL_RESULT` 是回收的完整 prefill 结果目录，`NEXT_TOKEN_ID` 是下一步要消费的 token。
+
+```bash
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" export-stateful \
+  --prepared "$GE_FULL_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --sequence-length 1 --past-length 3 \
+  --fused-ops gdn,conv_state,rms --bindings "$GE_CUSTOM_BINDINGS" \
+  --recurrent-dtype float16 --gdn-state-casts allow \
+  --output "$GE_STATEFUL_RUN/decode-air"
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" compile-stateful \
+  --air "$GE_STATEFUL_RUN/decode-air" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_STATEFUL_RUN/decode-omc"
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" prepare-stateful-step \
+  --omc "$GE_STATEFUL_RUN/decode-omc" --token-ids "$NEXT_TOKEN_ID" \
+  --previous-step "$GE_STATEFUL_RUN/step-prefill" --previous-result "$PREFILL_RESULT" \
+  --output "$GE_STATEFUL_RUN/step-decode"
+```
+
+每个 T 需要匹配的静态图，打包会校验模型身份和逐层状态；该单步流程尚未形成常驻模型与 native DFlash 调度。
+
+## 原始完整双图 AIR / OMC
+
+需要旧 ABI v2 的 target/draft 时，复用第2节的完整 prepared 执行以下命令；此路径按前缀重算，不使用新缓存 ABI。
+
+```bash
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" export \
+  --prepared "$GE_FULL_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
+  --output "$GE_FULL_PAIR_RUN/air"
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" compile \
+  --air "$GE_FULL_PAIR_RUN/air" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$GE_FULL_PAIR_RUN/omc"
+```
+
+## 参数与接口参考
+
+| 参数 / 角色 | 含义 |
+|---|---|
+| `sequence-length S` / `past-length T` | batch=1，输入 S 个连续有效 token，已有 T 个 token 状态 |
+| `gdn` | `ChunkGatedDeltaRule`，含 Q/K L2 和 recurrent state；不融合整层 |
+| `conv_state` | `LinearAttentionConvstateUpdate`，从 y2 尾部取 K−1 项逻辑历史 |
+| `rms` | `AdnRmsNorm`；主 norm gamma=`1+w`，gated norm gamma=`w` |
+| `fp16-reductions` / `fp16-row-mul` / `gdn-indexed-copy` | 默认 native；保留已有 opt-in 改写，详见 `--help` |
+
+新状态图只接 `compile-stateful` 和 runner 的 `--stateful-step`，不能传给旧 `compile/run_hdc.py`。`CacheUpdate`、`AdnFusedInferAttention` 尚未在此 GE 路径启用；DFlash 部分接受必须提交接受前缀的状态。
+
+`inspect-compile`、`inspect-omc`、`inspect-omc-cpu`、`compare-target-features` 可读取已有资料；当前不要求重跑旧探针。验证范围见 [validation.md](validation.md)。
+
+## 融合算子调用探针
+
+只检查文档中的三个融合算子，共 5 个用例：GDN prefill/decode、conv-state prefill/decode、RMS；使用完整模型的算子尺寸，不需要模型权重。先生成上文的 `GE_CUSTOM_BINDINGS`，再导出和编译：
+
+```bash
+export FUSED_PROBE_JOB="$(mktemp -d "$AI_RUN_DIR/fused-probes-XXXXXXXX")"
+export FUSED_PROBE_RUN="$FUSED_PROBE_JOB/probes"
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" probe-fused-ops \
+  --bindings "$GE_CUSTOM_BINDINGS" --ge-root "$CANN_ROOT" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$FUSED_PROBE_RUN"
+cat "$FUSED_PROBE_RUN/report.txt"
+```
+
+仅生成源码时省略 `--ge-root`、`--ddk-root`、`--ddk-id`；上板使用成功编译后的 `bundle/run-board.sh`，命令见[融合探针批量执行](board-guide.md#融合算子调用探针)。编译、加载、调用和数值诊断分别记录，不据此宣称 NPU 运行位置。
+
+## tiny 回归
+
+仅检查旧小模型链路；参考必须来自本次 prepared，不能替换成 PyTorch `demo` 的随机模型。
+
+```bash
+export GE_PAIR_RUN="$(mktemp -d "$AI_RUN_DIR/ge-tiny-XXXXXXXX")"
 "$MODEL_PYTHON" "$GE_MODEL_TOOL" prepare --tiny --sequence-length 8 \
   --output "$GE_PAIR_RUN/prepared"
 "$MODEL_PYTHON" "$GE_MODEL_TOOL" export \
@@ -27,92 +146,7 @@ export GE_PAIR_RUN="$(mktemp -d "$AI_RUN_DIR/ge-pair-XXXXXXXX")"
 "$MODEL_PYTHON" "$GE_MODEL_TOOL" compile \
   --air "$GE_PAIR_RUN/air" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --output "$GE_PAIR_RUN/omc"
-```
-
-依次生成 `PREPARED`、`EXPORTED`、`COMPILED` 清单。prepare 是权重和构图输入准备，不能当成 AIR；export 需要真正的主机 GE 库。默认采用 native lowering；显式的 `--fp16-reductions matmul`、`--fp16-row-mul compact`、`--gdn-indexed-copy gather` 是已有诊断/改写选项，不是最终精度或性能保证。
-
-在模型 Python 环境生成同一份 prepared 的参考，再交给[板端指南](board-guide.md)：
-
-```bash
 "$MODEL_PYTHON" "$GE_MODEL_TOOL" reference-tiny \
   --prepared "$GE_PAIR_RUN/prepared" --prompt-token-ids 1,2,3 --max-new-tokens 4 \
   --output "$GE_PAIR_RUN/reference.json"
 ```
-
-tiny 为 target4层、draft2层、hidden16、词表64、block4，只验证结构和接口。完整结构使用 `plan --full`；准备完整 FP16 权重须显式 `prepare --full --float-baseline` 并提供 `--target-weights`、`--draft-weights`。这是服务器转换诊断，尚非32GB板机部署方案；直接 GE 的压缩量化映射未完成。
-
-## 状态图与可选融合
-
-已有 prepared 时，先生成源码和 ABI，不调用 GE 或设备：
-
-```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" plan-stateful \
-  --prepared "$GE_PAIR_RUN/prepared" --sequence-length 3 --past-length 0 \
-  --fused-ops none --output "$AI_RUN_DIR/ge-stateful-source-$(date +%Y%m%d-%H%M%S)"
-```
-
-`--fused-ops` 可选 `none`，或 `gdn,conv_state,rms` 的任意不重复组合；选用的角色缺少绑定时直接报错。
-
-| 角色 | 关闭时 | 开启时 |
-|---|---|---|
-| gdn | FP16 chunk/recurrent 基础图 | `ChunkGatedDeltaRule`，含 Q/K L2、显式有效长度和状态 |
-| conv_state | 历史与新 QKV 拼接 | `LinearAttentionConvstateUpdate`，从 y2 尾部取规范化历史 |
-| rms | 基础 RMS 运算 | `AdnRmsNorm`，主 norm 的 gamma=1+w，gated norm 的 gamma=w |
-
-卷积运算、SiLU、gated norm 外的门控、投影、MoE、全注意力和 KV 追加仍在各自图边界。GDN 融合不代表整层全部融合。
-
-接口生成命令集中在[当前待执行命令](current-status.md#用户现在执行什么)。生成器按文档绑定 GDN 的 `last_recurrent_state`（FP32）、3个GE Int属性，RMS 的 `self`/FP32 `rstd`，以及 conv 的 `x1/x2/x3 → y1/y2`。卷积 y1 排列未说明，因此逻辑缓存取 y2（历史‖当前）最后 K−1 项。
-
-绑定限定实际模型32头×128维、8192卷积通道，不能套用 tiny。完整形状 prepared 和匹配 GE/DDK 就绪时可按下例导出；`GE_FULL_PAIR_RUN` 指完整权重 prepared，`GE_CUSTOM_BINDINGS` 指生成的接口文件：
-
-```bash
-export GE_STATEFUL_RUN="$(mktemp -d "$AI_RUN_DIR/ge-stateful-XXXXXXXX")"
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" export-stateful \
-  --prepared "$GE_FULL_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
-  --sequence-length 3 --past-length 0 \
-  --fused-ops gdn,conv_state,rms --bindings "$GE_CUSTOM_BINDINGS" \
-  --recurrent-dtype float16 --gdn-state-casts allow \
-  --output "$GE_STATEFUL_RUN/air"
-```
-
-该例使用文档 Cpro 的 FP16 初态、FP32 末态，显式允许末态转回 FP16 缓存；Cast 会记录于 ABI。也可显式选用其他文档初态类型与 FP32 缓存。转换不是精度验证，不自动改变原路径的精度合同。
-
-## 状态图：编译和输入打包
-
-获得真实 `EXPORTED` 的状态AIR后，使用独立命令，保留导出目录和外部权重原路径：
-
-```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" compile-stateful \
-  --air "$GE_STATEFUL_RUN/air" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$GE_STATEFUL_RUN/omc"
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" prepare-stateful-step \
-  --omc "$GE_STATEFUL_RUN/omc" --token-ids 1,2,3 \
-  --output "$GE_STATEFUL_RUN/step-prefill"
-```
-
-编译入口校验AIR、权重、recipe、状态ABI和bindings；source-only产物会被拒绝。打包生成 `step.tsv`、状态ABI、模型载荷和有哈希的输入文件，供正式runner的 `--stateful-step` 模式使用，见[板端说明](board-guide.md#6-新状态图的单步执行)。
-
-prefill为S=3/T=0。继续decode需用相同权重与算子策略导出、编译S=1/T=3的状态图；将其目录设为 `GE_DECODE_OMC`，将上一步回收的完整结果目录设为 `PREFILL_RESULT`：
-
-```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" prepare-stateful-step \
-  --omc "$GE_DECODE_OMC" --token-ids "$NEXT_TOKEN_ID" \
-  --previous-step "$GE_STATEFUL_RUN/step-prefill" --previous-result "$PREFILL_RESULT" \
-  --output "$GE_STATEFUL_RUN/step-decode"
-```
-
-`NEXT_TOKEN_ID` 为要消费的下一个token。打包检查模型身份、位置、全部输出哈希及逐层state形状，接续上一轮conv/recurrent/KV；不接受把整段投机末态作为部分接受前缀。host-fake结果默认拒绝，主机联调需显式 `--allow-host-fake`。
-
-这是状态接续的单步结构，尚不是常驻模型的高性能生成循环。完整35B部署还需真实量化权重映射与内存验证，不能直接以FP16全权重图作为32GB板端方案。
-
-## 缓存、产物和运行边界
-
-batch=1，S个输入均有效且连续。`--past-length T` 是静态参数：prefill为T=0，消费3个token后单token decode为S=1/T=3；T变化需要相应图。输出前两项为Top1和target特征，随后是逐层状态；`target/state-abi.json`记录全部输入输出的名称、顺序、shape、dtype与状态策略。
-
-源码输出类型为 `qwen35-stateful-ge-source`，AIR输出为 `qwen35-stateful-ge-air`；均不是旧的target/draft双图ABI v2。**它们不能传给旧 `compile`、`run_hdc.py`；请使用 `compile-stateful` 与runner的独立 `--stateful-step` 模式。** 常驻状态bank和native DFlash调度尚未完成。 DFlash部分接受必须提交接受前缀的状态，不能直接提交整段verify的末态。
-
-`CacheUpdate` 与 `AdnFusedInferAttention` 还需动态列表端口、可选口和NZ/分页布局；用户文档的长度列表与 `pse_shift/all_seq_lengths_q` 分支存在需确认的表述。当前固定ND端口实现没有仅凭名字启用这两个算子。
-
-## 保留的离线诊断
-
-统一入口的 `inspect-compile`、`inspect-omc`、`inspect-omc-cpu`、`compare-target-features` 用于读取已有构图、编译或输出资料。其参数以 `命令 --help` 为准。独立批量算子探针已经归档，不属于当前执行流程。

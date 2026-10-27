@@ -3,7 +3,7 @@
   "updated": "2026-10-27",
   "active_phase": "integration",
   "delivery_status": "HOST_IMPLEMENTED_DEVICE_INTEGRATION_PENDING",
-  "run_id": "20261027T035253Z-24076-116518",
+  "run_id": "20261027T042416Z-26211-1de593",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -28,7 +28,9 @@
         "complete production FP16 base adapter and real vendor kernel verification",
         "export wire ABI",
         "native draft integration"
-      ]
+      ],
+      "full_structure_command": "python -m qwen35_moe_dflash.cli build-full-pytorch --sequence-length 8 --output NEW_DIRECTORY",
+      "full_structure_scope": "Full original target/draft meta modules and executable decoder-hierarchy FX; not a new-state-ABI TorchAir artifact"
     },
     "ge_stateful_target": {
       "implementation": "model/qwen35_moe_dflash/ge_fused",
@@ -49,7 +51,18 @@
         "compile-stateful",
         "prepare-stateful-step",
         "native --stateful-step with prefill/decode file handoff"
-      ]
+      ],
+      "full_structure_command": "python targets/cpro/scripts/direct_model_air.py build-full-structure --sequence-length 8 --expert-dispatch selected --fused-ops none --output NEW_DIRECTORY",
+      "full_structure_scope": "Full stateful target plus full prefix-recompute draft GE nodes/edges, C++ and recipe; weights unbound, not AIR",
+      "fused_operator_probes": {
+        "operators": [
+          "ChunkGatedDeltaRule",
+          "LinearAttentionConvstateUpdate",
+          "AdnRmsNorm"
+        ],
+        "cases": 5,
+        "scope": "Standalone calls only; real export/compile/load/process/numerical and placement statuses recorded separately"
+      }
     }
   },
   "phases": [
@@ -81,7 +94,7 @@
       "evidence": "docs/current-status.md",
       "working_directory": "$AI_RUN_DIR",
       "next_command_document": "docs/current-status.md#用户现在执行什么",
-      "note": "Generate document bindings without board execution; then connect actual kernel/state runtime."
+      "note": "Full-model structures generated locally; validate the three documented fused operators with bounded standalone calls before real full-weight integration."
     },
     {
       "name": "accuracy",
@@ -105,7 +118,7 @@
       "note": "No device validated release."
     }
   ],
-  "probe_policy": "Completed standalone probes and historical per-change reports archived outside Git; conclusions retained in docs/validation.md. No repeat probe batch requested.",
+  "probe_policy": "Historical broad probes remain archived; only five focused calls for the three user-requested documented fused operators are active.",
   "evidence": "specs/verification.json",
   "delivery_plan": {
     "priority": "This-week runnable structure; parallel integration before accuracy/performance closure",

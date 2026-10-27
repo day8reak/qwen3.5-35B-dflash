@@ -286,12 +286,52 @@ struct StepInput {
 };
 struct StepPlan {
   std::filesystem::path model;
-  std::string model_hash, abi_hash, plan_hash;
+  std::string model_hash, abi_hash, plan_hash, operator_type;
   std::uint32_t sequence = 0, past = 0;
   std::vector<StepInput> inputs;
   std::vector<HiaiTensorSpec> outputs;
 };
-StepPlan ReadStepPlan(const std::filesystem::path& path) {
+void CheckFusedPlan(StepPlan& plan) {
+  if (plan.inputs.empty() || plan.inputs[0].spec.shape.size() < 2)
+    throw std::invalid_argument("fused operator requires its documented ordered IO contract");
+  const auto s = plan.inputs[0].spec.shape[1];
+  if (s != 1 && s != 8)
+    throw std::invalid_argument("fused operator probe supports sequence lengths 1 or 8 only");
+  std::vector<HiaiTensorSpec> inputs, outputs;
+  if (plan.operator_type == "ChunkGatedDeltaRule") {
+    if (plan.inputs.size() != 7 ||
+        (plan.inputs[5].spec.dtype != "float16" && plan.inputs[5].spec.dtype != "float32"))
+      throw std::invalid_argument("ChunkGatedDeltaRule requires seven inputs and explicit FP16/FP32 state");
+    inputs = {{"query", "float16", {1,s,32,128}}, {"key", "float16", {1,s,32,128}},
+              {"value", "float16", {1,s,32,128}}, {"g", "float16", {1,s,32}},
+              {"beta", "float16", {1,s,32}},
+              {"initial_state", plan.inputs[5].spec.dtype, {1,32,128,128}},
+              {"effective_length", "int16", {1}}};
+    outputs = {{"core_attn", "float16", {1,s,32,128}},
+               {"last_recurrent_state", "float32", {1,32,128,128}}};
+  } else if (plan.operator_type == "LinearAttentionConvstateUpdate") {
+    inputs = {{"x1", "float16", {1,s,8192}}, {"x2", "float16", {1,8192,3}},
+              {"x3", "int32", {128}}};
+    outputs = {{"y1", "float16", {1,8192,4}}, {"y2", "float16", {1,8192,s+3}}};
+  } else if (plan.operator_type == "AdnRmsNorm") {
+    if (s != 8) throw std::invalid_argument("AdnRmsNorm probe requires sequence length 8");
+    inputs = {{"self", "float16", {1,s,2048}}, {"gamma", "float16", {2048}}};
+    outputs = {{"y", "float16", {1,s,2048}}, {"rstd", "float32", {1,s,1}}};
+  } else throw std::invalid_argument("unknown documented fused operator");
+  if (inputs.size() != plan.inputs.size() || outputs.size() != plan.outputs.size())
+    throw std::invalid_argument("fused operator IO count differs from documented contract");
+  for (bool input : {true, false}) {
+    const auto& expected = input ? inputs : outputs;
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+      const auto& actual = input ? plan.inputs[i].spec : plan.outputs[i];
+      if (actual.name != expected[i].name || actual.dtype != expected[i].dtype ||
+          actual.shape != expected[i].shape)
+        throw std::invalid_argument("fused operator ordered name/shape/dtype differs from documented contract");
+    }
+  }
+  plan.sequence = s;
+}
+StepPlan ReadStepPlan(const std::filesystem::path& path, bool fused = false) {
   const auto payload = StepRead(path, 1ULL << 20);
   const std::string text(payload.begin(), payload.end());
   for (unsigned char c : text)
@@ -299,15 +339,16 @@ StepPlan ReadStepPlan(const std::filesystem::path& path) {
       throw std::invalid_argument("stateful step plan must contain ASCII fields with LF line endings");
   auto rows = Split(text, '\n');
   if (!rows.empty() && rows.back().empty()) rows.pop_back();
-  if (rows.size() < 7 || rows[0] != "QWEN35_STATEFUL_STEP\t1")
-    throw std::invalid_argument("stateful step plan header must be QWEN35_STATEFUL_STEP version 1");
+  const std::string header = fused ? "QWEN35_FUSED_OP_STEP\t1" : "QWEN35_STATEFUL_STEP\t1";
+  if (rows.size() < 7 || rows[0] != header)
+    throw std::invalid_argument("step plan header must be " + header);
   const auto root = std::filesystem::absolute(path).lexically_normal().parent_path();
   StepPlan plan;
   plan.plan_hash = BytesHash(payload);
   for (std::size_t i = 1; i <= 2; ++i) {
     const auto fields = Split(rows[i], '\t');
-    if (fields.size() != 3 || fields[0] != (i == 1 ? "model" : "state_abi"))
-      throw std::invalid_argument("stateful plan requires ordered model and state_abi records");
+    if (fields.size() != 3 || fields[0] != (i == 1 ? "model" : fused ? "operator_abi" : "state_abi"))
+      throw std::invalid_argument("step plan requires ordered model and ABI records");
     StepHash(fields[2]);
     const auto file = StepPayload(root, fields[1]);
     StepFileSize(file, i == 1 ? UINT32_MAX : 1ULL << 20);
@@ -315,13 +356,19 @@ StepPlan ReadStepPlan(const std::filesystem::path& path) {
     if (i == 1) { plan.model = file; plan.model_hash = fields[2]; }
     else plan.abi_hash = fields[2];
   }
-  const auto tokens = Split(rows[3], '\t');
-  if (tokens.size() != 3 || tokens[0] != "tokens")
-    throw std::invalid_argument("stateful plan requires sequence/past token counts");
-  plan.sequence = static_cast<std::uint32_t>(StepInteger(tokens[1], INT32_MAX));
-  plan.past = static_cast<std::uint32_t>(StepInteger(tokens[2], INT32_MAX, true));
-  if (static_cast<std::uint64_t>(plan.sequence) + plan.past > INT32_MAX)
-    throw std::invalid_argument("stateful next past length exceeds int32");
+  const auto control = Split(rows[3], '\t');
+  if (fused) {
+    if (control.size() != 2 || control[0] != "operator")
+      throw std::invalid_argument("fused operator plan requires one operator record");
+    plan.operator_type = control[1];
+  } else {
+    if (control.size() != 3 || control[0] != "tokens")
+      throw std::invalid_argument("stateful plan requires sequence/past token counts");
+    plan.sequence = static_cast<std::uint32_t>(StepInteger(control[1], INT32_MAX));
+    plan.past = static_cast<std::uint32_t>(StepInteger(control[2], INT32_MAX, true));
+    if (static_cast<std::uint64_t>(plan.sequence) + plan.past > INT32_MAX)
+      throw std::invalid_argument("stateful next past length exceeds int32");
+  }
   std::set<std::string> input_names, output_names;
   std::uint64_t total = 0;
   for (std::size_t i = 4; i < rows.size(); ++i) {
@@ -346,6 +393,7 @@ StepPlan ReadStepPlan(const std::filesystem::path& path) {
       plan.inputs.push_back({spec, file, fields[5], fields[6]});
     } else plan.outputs.push_back(spec);
   }
+  if (fused) { CheckFusedPlan(plan); return plan; }
   const std::vector<std::uint32_t> ids_shape{1, plan.sequence};
   if (plan.inputs.empty() || plan.outputs.size() < 4 ||
       plan.inputs[0].spec.name != "input_ids" || plan.inputs[0].spec.dtype != "int32" ||
@@ -395,38 +443,77 @@ void StepTensorJson(std::ostream& out, std::size_t index, const HiaiTensorSpec& 
   out << "],\"bytes\":" << HiaiTensorBytes(spec) << ",\"path\":\"" << JsonEscape(path)
       << "\",\"sha256\":\"" << hash << "\"}";
 }
-int RunStatefulStep(const std::string& path, const std::string& output,
+int RunTensorStep(const std::string& path, const std::string& output,
                     const std::string& version, const std::string& ddk,
-                    const std::string& firmware, std::uint32_t timeout) {
+                    const std::string& firmware, std::uint32_t timeout, bool fused = false) {
   const auto destination = std::filesystem::absolute(output).lexically_normal();
   NoSymlinks(destination);
   if (std::filesystem::exists(destination)) throw std::runtime_error("stateful output already exists");
   if (!std::filesystem::is_directory(destination.parent_path()))
     throw std::invalid_argument("stateful output parent directory must already exist");
-  const auto plan = ReadStepPlan(path);
+  const auto plan = ReadStepPlan(path, fused);
   std::vector<HiaiTensorSpec> input_specs;
+  std::vector<std::vector<std::uint8_t>> input_bytes;
   for (const auto& input : plan.inputs) input_specs.push_back(input.spec);
-  HiaiStatefulExecutor executor(plan.model, version, input_specs, plan.outputs, timeout);
+  // Reject input tampering before any device load, for either execution scope.
   for (std::size_t i = 0; i < plan.inputs.size(); ++i) {
     const auto& input = plan.inputs[i];
     const auto bytes = StepRead(input.file, HiaiTensorBytes(input.spec));
     if (BytesHash(bytes) != input.sha256) throw std::runtime_error("stateful input SHA256 mismatch");
-    executor.SetInput(i, bytes);
+    if (fused && input.spec.name == "effective_length") {
+      const std::uint32_t length = static_cast<std::uint32_t>(bytes[0]) |
+                                   (static_cast<std::uint32_t>(bytes[1]) << 8);
+      if (!length || length > plan.sequence)
+        throw std::invalid_argument("fused GDN probe effective_length must be within 1..sequence length");
+    }
+    input_bytes.push_back(bytes);
   }
-  executor.Execute();
+  std::unique_ptr<HiaiStatefulExecutor> executor;
+  std::string failure_stage = "LOAD_OR_SETUP";
+  try {
+    executor = std::make_unique<HiaiStatefulExecutor>(plan.model, version, input_specs,
+                                                     plan.outputs, timeout, fused);
+    failure_stage = "INPUT_BINDING";
+    for (std::size_t i = 0; i < input_bytes.size(); ++i) executor->SetInput(i, input_bytes[i]);
+    failure_stage = "PROCESS";
+    executor->Execute();
+  } catch (const std::exception& error) {
+    if (fused && std::filesystem::create_directory(destination)) {
+      std::ostringstream failed;
+      failed << "{\"schema_version\":1,\"status\":\"RUNTIME_FAILED\","
+             << "\"scope\":\"fused-operator-probe\",\"evidence_kind\":\"" << kEvidenceKind
+             << "\",\"operator_type\":\"" << plan.operator_type
+             << "\",\"failure_stage\":\"" << failure_stage << "\",\"reason\":\""
+             << JsonEscape(error.what()) << "\",\"expected_runtime_version\":\"" << JsonEscape(version)
+             << "\",\"ddk_id\":\"" << JsonEscape(ddk) << "\",\"firmware_id\":\"" << JsonEscape(firmware)
+             << "\",\"step_plan_sha256\":\"" << plan.plan_hash
+             << "\",\"operator_abi_sha256\":\"" << plan.abi_hash
+             << "\",\"model_sha256\":\"" << plan.model_hash
+             << "\",\"target_calls\":0,\"draft_calls\":0,\"accuracy\":\"NOT_EVALUATED\","
+             << "\"performance\":\"NOT_EVALUATED\",\"runtime_placement\":\"UNVERIFIED\",\"outputs\":[]}";
+      AtomicWrite(destination / "result.json", failed.str());
+    }
+    throw;
+  }
   // A failed write leaves no success result.json; existing output is never replaced.
   if (!std::filesystem::create_directory(destination))
     throw std::runtime_error("cannot create new stateful output directory");
   std::ostringstream report;
-  report << "{\"schema_version\":1,\"status\":\"EXECUTED\",\"scope\":\"stateful-target-step\","
+  report << "{\"schema_version\":1,\"status\":\"EXECUTED\",\"scope\":\""
+         << (fused ? "fused-operator-probe" : "stateful-target-step") << "\","
          << "\"evidence_kind\":\"" << kEvidenceKind << "\",\"runtime_version\":\""
-         << JsonEscape(executor.runtime_version()) << "\",\"ddk_id\":\"" << JsonEscape(ddk)
+         << JsonEscape(executor->runtime_version()) << "\",\"ddk_id\":\"" << JsonEscape(ddk)
          << "\",\"firmware_id\":\"" << JsonEscape(firmware) << "\",\"step_plan_sha256\":\""
-         << plan.plan_hash << "\",\"state_abi_sha256\":\"" << plan.abi_hash
-         << "\",\"model_sha256\":\"" << plan.model_hash << "\",\"sequence_length\":" << plan.sequence
-         << ",\"past_length\":" << plan.past << ",\"next_past_length\":" << plan.past + plan.sequence
-         << ",\"state_policy\":\"explicit\",\"target_calls\":1,\"draft_calls\":0,"
-         << "\"accuracy\":\"NOT_EVALUATED\",\"performance\":\"NOT_EVALUATED\","
+         << plan.plan_hash << "\",\"" << (fused ? "operator_abi_sha256" : "state_abi_sha256")
+         << "\":\"" << plan.abi_hash << "\",\"model_sha256\":\"" << plan.model_hash
+         << "\",\"sequence_length\":" << plan.sequence;
+  if (fused)
+    report << ",\"operator_type\":\"" << plan.operator_type
+           << "\",\"operator_calls\":1,\"target_calls\":0,\"draft_calls\":0,";
+  else
+    report << ",\"past_length\":" << plan.past << ",\"next_past_length\":" << plan.past + plan.sequence
+           << ",\"state_policy\":\"explicit\",\"target_calls\":1,\"draft_calls\":0,";
+  report << "\"accuracy\":\"NOT_EVALUATED\",\"performance\":\"NOT_EVALUATED\","
          << "\"runtime_placement\":\"UNVERIFIED\",\"dtype_source\":\"hash-bound-plan\",\"inputs\":[";
   for (std::size_t i = 0; i < plan.inputs.size(); ++i) {
     if (i) report << ',';
@@ -438,7 +525,7 @@ int RunStatefulStep(const std::string& path, const std::string& output,
     if (i) report << ',';
     std::ostringstream name;
     name << "output_" << std::setfill('0') << std::setw(4) << i << ".bin";
-    const auto bytes = executor.CopyOutput(i);
+    const auto bytes = executor->CopyOutput(i);
     std::ofstream file(destination / name.str(), std::ios::binary);
     file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     file.flush();
@@ -447,7 +534,8 @@ int RunStatefulStep(const std::string& path, const std::string& output,
   }
   report << "]}";
   AtomicWrite(destination / "result.json", report.str());
-  std::cout << "EXECUTED: stateful target step; report=" << (destination / "result.json") << '\n';
+  std::cout << "EXECUTED: " << (fused ? "fused operator probe" : "stateful target step")
+            << "; report=" << (destination / "result.json") << '\n';
   return 0;
 }
 void Help() {
@@ -460,6 +548,8 @@ void Help() {
             << "--eos-token-ids 248044,248046 --feature-width 16384 --vocab-size 248320]\n";
   std::cout << "Smoke diagnostics only: [--capture-target-features 0|1] (at most 65536 bytes)\n";
   std::cout << "qwen35_dflash_hiai --stateful-step STEP.tsv --output NEW_DIRECTORY "
+            << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID [--timeout-ms 300000]\n";
+  std::cout << "qwen35_dflash_hiai --fused-op-step STEP.tsv --output NEW_DIRECTORY "
             << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID [--timeout-ms 300000]\n";
 }
 }  // namespace
@@ -486,15 +576,17 @@ int main(int argc, char** argv) {
       }
       std::string value = it->second; args.erase(it); return value;
     };
-    if (args.count("--stateful-step")) {
-      const auto plan = take("--stateful-step"), output = take("--output");
+    if (args.count("--stateful-step") || args.count("--fused-op-step")) {
+      const bool fused = args.count("--fused-op-step");
+      const auto plan = take(fused ? "--fused-op-step" : "--stateful-step"), output = take("--output");
       const auto version = take("--expected-runtime-version");
       const auto ddk = take("--ddk-id"), firmware = take("--firmware-id");
       const auto timeout = StepInteger(take("--timeout-ms", "300000"), UINT32_MAX);
       if (plan.empty() || output.empty() || version.empty() || ddk.empty() || firmware.empty())
         throw std::invalid_argument("stateful plan, output and runtime/toolchain identities are required");
-      if (!args.empty()) throw std::invalid_argument("unknown stateful option " + args.begin()->first);
-      return RunStatefulStep(plan, output, version, ddk, firmware, static_cast<std::uint32_t>(timeout));
+      if (!args.empty()) throw std::invalid_argument(std::string("unknown ") +
+          (fused ? "fused operator" : "stateful") + " option " + args.begin()->first);
+      return RunTensorStep(plan, output, version, ddk, firmware, static_cast<std::uint32_t>(timeout), fused);
     }
     const auto target = take("--target"), draft = take("--draft");
     const auto target_hash = take("--target-sha256"), draft_hash = take("--draft-sha256");

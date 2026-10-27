@@ -38,6 +38,180 @@ def selected_fusion(value):
     return tuple(sorted(roles))
 
 
+def _structure_graph(graph):
+    """Retain every construction edge, including opaque secondary outputs.
+
+    The companion recipe contains the lowered GE ports and constant payloads.
+    Weight descriptors here deliberately have no invented bytes or hash.
+    """
+    from .ir import CustomNode, node_outputs
+    import hashlib
+
+    def desc(value):
+        return {"name": value.name, "shape": list(value.shape), "dtype": value.dtype}
+
+    result = graph.manifest()
+    result["constants"] = {
+        name: {**desc(graph._values[name]), "bytes": array.nbytes,
+               "sha256": hashlib.sha256(array.tobytes()).hexdigest()}
+        for name, array in graph.constants.items()}
+    result["nodes"] = []
+    for node in graph.nodes:
+        custom = isinstance(node, CustomNode)
+        inputs = [{"index": index, "source": value.name, "shape": list(value.shape), "dtype": value.dtype,
+                   **({"port": node.input_ports[index]} if custom else {})}
+                  for index, value in enumerate(node.inputs)]
+        outputs = [{"index": index, **desc(value),
+                    **({"port": node.output_ports[index]} if custom else {})}
+                   for index, value in enumerate(node_outputs(node))]
+        result["nodes"].append({"name": node.name if custom else node.output.name,
+                                "kind": node.kind,
+                                **({"op_type": node.op_type} if custom else {}),
+                                "inputs": inputs, "outputs": outputs, "attrs": node.attrs})
+    return result
+
+
+def build_full_structure(output_dir, sequence_length=8, *, past_length=0, fused_ops=(),
+                         bindings_path=None, recurrent_dtype="float16", gdn_state_casts="reject",
+                         expert_dispatch="selected", fp16_reductions="native",
+                         fp16_row_mul="native", gdn_indexed_copy="native"):
+    """Construct the complete locked text target and DFlash without weights.
+
+    This saves real GE construction recipes and their C++ serializers, not AIR.
+    FileConstant inputs remain unbound and their files are never synthesized.
+    Full layer counts, expert banks and vocabulary come from the locked specs;
+    only the explicit sequence/past specialization controls tensor lengths.
+    The 64-token bound is a host construction budget for this entry point,
+    not a model context or vendor-kernel limit. Selected MoE expands per token.
+    """
+    from ..ge_draft import build_draft
+    from ..ge_cpp import emit_cpp as emit_draft_cpp
+    from ..ge_recipe_read import read_recipe as read_draft_recipe
+    from ..resources import repository_root
+    from .bindings import OperatorBindings
+    from .emitter import emit_cpp as emit_target_cpp
+    from .recipe import read_recipe as read_target_recipe
+    from .target import build_target
+
+    if type(sequence_length) is not int or not 1 <= sequence_length <= 64:
+        raise ValueError("full structure sequence_length must be 1..64 for the bounded host construction budget; "
+                         "this is not a model context or kernel limit")
+    if type(past_length) is not int or past_length < 0:
+        raise ValueError("past_length must be a nonnegative integer")
+    if past_length + sequence_length > 2048:
+        raise ValueError("full structure past_length + sequence_length exceeds the 2048-token host construction budget; "
+                         "this is not the model context limit")
+    if expert_dispatch not in {"static", "selected"}:
+        raise ValueError("expert_dispatch must be static or selected")
+    if fp16_reductions not in {"native", "matmul"} or fp16_row_mul not in {"native", "compact"}:
+        raise ValueError("unsupported FP16 reduction or row-mul lowering")
+    if gdn_indexed_copy not in {"native", "gather"} or gdn_state_casts not in {"reject", "allow"}:
+        raise ValueError("unsupported GDN copy or state-cast policy")
+    roles = selected_fusion(fused_ops)
+    if bool(roles) != (bindings_path is not None):
+        raise ValueError("selected fused_ops require --bindings; no bindings are accepted with fused_ops=none")
+    binding_file = None if bindings_path is None else Path(bindings_path).resolve()
+    bindings = None if binding_file is None else OperatorBindings.from_file(binding_file)
+    if bindings is not None:
+        bindings.require(roles)
+    specs = repository_root() / "specs"
+    spec_payloads = {name: (specs / name).read_bytes() for name in ("target-config.json", "draft-config.json")}
+    target_config = json.loads(spec_payloads["target-config.json"])["text_config"]
+    raw_draft = json.loads(spec_payloads["draft-config.json"])
+    draft_config = Qwen35DFlashConfig.from_dict(raw_draft)
+    # All graph creation and policy validation happen before reserving output.
+    target = build_target(target_config, draft_config, sequence_length, past_length=past_length,
+                          fused_ops=roles, bindings=bindings, recurrent_dtype=recurrent_dtype,
+                          expert_dispatch=expert_dispatch, gdn_indexed_copy=gdn_indexed_copy,
+                          gdn_state_casts=gdn_state_casts)
+    # The retained drafter recomputes its feature context. It consumes the full
+    # committed prefix, whereas the target emits features for this step only.
+    draft_sequence = past_length + sequence_length
+    draft = build_draft(draft_config, draft_sequence)
+    root = output_path(output_dir)
+    root.mkdir(parents=True, exist_ok=False)
+    stage = "save-configuration"
+    try:
+        (root / "config").mkdir()
+        for name, payload in spec_payloads.items():
+            (root / "config" / name).write_bytes(payload)
+        if bindings is not None:
+            shutil.copyfile(binding_file, root / "bindings.json")
+            if sha256_file(root / "bindings.json") != bindings.sha256:
+                raise ValueError("operator bindings changed during structure construction")
+        weights, graphs = {}, (("target", target, emit_target_cpp, read_target_recipe),
+                               ("draft", draft, emit_draft_cpp, read_draft_recipe))
+        for role, graph, _, _ in graphs:
+            for key, value in graph.weights.items():
+                descriptor = {"shape": list(value.shape), "dtype": value.dtype,
+                              "bytes": math.prod(value.shape) * 2}
+                if value.dtype != "float16" or (key in weights and any(
+                        weights[key][field] != expected for field, expected in descriptor.items())):
+                    raise ValueError(f"full target/draft weight contract mismatch: {key}")
+                weights.setdefault(key, {**descriptor, "consumers": []})["consumers"].append(role)
+        for number, (key, item) in enumerate(sorted(weights.items())):
+            item.update(path=f"weights/w{number:05d}.bin", status="UNBOUND")
+        save_json(root / "weight-requirements.json", {"status": "UNBOUND", "weights": weights})
+        paths = {key: str(root / item["path"]) for key, item in weights.items()}
+        summaries = []
+        for role, graph, emit, read in graphs:
+            stage = f"{role}-construction"
+            folder = root / role
+            folder.mkdir()
+            save_json(folder / "graph.json", _structure_graph(graph))
+            reductions, row_mul = {}, {}
+            source = emit(graph, paths, external_weights=True, recipe_dir=folder / "recipe",
+                          fold_constant_arithmetic=False, fp16_reductions=fp16_reductions,
+                          reduction_report=reductions, fp16_row_mul=fp16_row_mul, row_mul_report=row_mul)
+            (folder / f"{role}.cpp").write_text(source)
+            save_json(folder / "reduction-lowering.json", reductions)
+            save_json(folder / "row-mul-lowering.json", row_mul)
+            recipe = read(folder / "recipe/graph.recipe")
+            summary = {"role": role, **graph.manifest(), "recipe_records": len(recipe["records"]),
+                       "construction_files": files_under(folder, root), "air": None,
+                       "weight_status": "UNBOUND", "constant_folding": "DISABLED_NO_WEIGHT_READS"}
+            if role == "target":
+                save_json(folder / "state-abi.json", graph.state_abi)
+                save_json(folder / "gdn-copy-lowering.json", graph.gdn_copy_report)
+                summary["construction_files"] = files_under(folder, root)
+            summaries.append(summary)
+        stage = "save-manifest"
+        result = {
+            "schema_version": 1, "artifact_kind": "qwen35-full-ge-structure",
+            "status": "STRUCTURE_READY", "readiness": "WEIGHTS_REQUIRED_STRUCTURE_ONLY",
+            "weights_status": "UNBOUND", "tiny": False, "model_scope": "complete-text-target-and-dflash",
+            "export_backend": "direct-ge", "air": None, "external_weights": True,
+            "precision": "float16", "quantization": None, "fused_ops": list(roles),
+            "bindings": None if bindings is None else {
+                "path": "bindings.json", "bytes": (root / "bindings.json").stat().st_size,
+                "sha256": bindings.sha256},
+            "binding_contract": None if bindings is None else bindings.manifest(),
+            "sequence_length": sequence_length, "past_length": past_length,
+            "draft_sequence_length": draft_sequence, "expert_dispatch": expert_dispatch,
+            "expert_execution": _expert_execution(target_config, expert_dispatch),
+            "recurrent_dtype": recurrent_dtype, "gdn_state_casts": gdn_state_casts,
+            "fp16_reductions": fp16_reductions, "fp16_row_mul": fp16_row_mul,
+            "gdn_indexed_copy": gdn_indexed_copy,
+            "target_config": target_config, "draft_config": raw_draft,
+            "feature_layers": list(draft_config.target_layer_ids), "feature_width": draft_config.feature_size,
+            "feature_handoff": "append target_features for each committed step; supply the complete prefix to draft",
+            "target_state_policy": "explicit", "draft_state_policy": "cache-free-recomputation",
+            "legacy_hiai_abi_compatible": False, "graphs": summaries,
+            "weights": weights, "unique_weight_bytes": sum(item["bytes"] for item in weights.values()),
+            "config_files": files_under(root / "config", root),
+            "device_validation": "NOT_RUN", "kernel_registration": "UNVERIFIED",
+            "validation_scope": "Complete host GE construction only; no weight payload, GE library, AIR, OMG or device execution.",
+            "structure_budget": {"max_sequence_length": 64, "max_total_length": 2048,
+                                 "scope": "host construction only"},
+        }
+        save_json(root / "manifest.json", result)
+        return result
+    except Exception as error:
+        save_json(root / "failure.json", {"status": "FAILED", "stage": stage,
+                                         "error": f"{type(error).__name__}: {error}"})
+        raise
+
+
 def _prepared_graph(prepared_dir, *, sequence_length, past_length, fused_ops,
                     bindings_path, recurrent_dtype, expert_dispatch, gdn_indexed_copy,
                     gdn_state_casts):
