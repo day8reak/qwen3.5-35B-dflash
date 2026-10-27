@@ -6,13 +6,64 @@
 
 ## Docker 重进后的配置恢复
 
-先激活已安装的模型conda环境，并沿用本机已确认的当前DDK环境入口；然后在仓库根目录执行：
+按下面顺序执行。第1步每次重进Docker恢复；第2、3步首次配置时执行；已有 `qwen35-cpro.env` 时，第1步后直接进入第4步。示例中的安装路径和设备值需替换为本机实际值，私有路径和设备配置保存在仓库外。
+
+### 第1步：恢复conda和DDK环境
 
 ```bash
-source targets/cpro/scripts/env.sh
+conda activate custom_pypto
+source '/实际DDK根目录/tools/tools_ascendc/set_ascendc_env.sh'
 ```
 
-首次执行会在**仓库旁边**创建 `qwen35-cpro.env`（权限600），保存固定配置并提示补齐缺项。配置不放在运行目录里，清理结果时不会被一起删掉。填写一次后，每次重进Docker、恢复conda/DDK环境，再执行同一条 `source`。也可指定文件：`source targets/cpro/scripts/env.sh /absolute/path/cpro.env`。
+脚本相对路径来自用户成功回传的入口：`tools/tools_ascendc/set_ascendc_env.sh`，不是 `tool/tools_ascendc/set_ascend_env.sh`。若当前终端已经激活该conda并成功source该DDK，跳过本步，不重复加载。
+
+该次source输出已包含 `DDK_PATH`、`TOOLCHAIN_HOME`、`HIAI_VERSION`、`PATH`、`LD_LIBRARY_PATH`、`PYTHONPATH`，后续不再手工export这六项。它没有给出项目目录、运行根目录、主机CANN、准确DDK版本、OHOS Native SDK及设备连接信息，首次需要补下面七项。
+
+### 第2步：只补充项目需要的七项
+
+进入项目仓库根目录后执行一次。下列变量会在第3步保存，不需要每次重进Docker重新输入。
+
+```bash
+# 项目源码；先cd到仓库根目录
+export REPO_DIR="$(pwd -P)"
+# 固定运行产物根目录，不是某次fused-all批次
+export AI_RUN_DIR="${REPO_DIR}-run"
+# 主机GE头文件和libgraph，用于导出AIR；不是上面的DDK
+export CANN_ROOT='/实际CANN版本目录'
+# 填安装包准确版本；此前回传版本为100.520.020.010
+export CPRO_DDK_ID='100.520.020.010'
+# 编译手机端runner的Native SDK
+export OHOS_NATIVE_SDK='/实际SDK目录/openharmony/native'
+# HDC服务器IP:端口，以及其连接的手机序列号
+export BIP='实际HDC服务器IP:端口'
+export SN='实际设备序列号'
+```
+
+不用另填 `CPRO_DDK_ROOT`、`MODEL_PYTHON`、`HDC` 或重写搜索路径：项目入口会分别读取 `DDK_PATH`、当前conda环境和PATH中的 `hdc`。HIAI头文件与OHOS ARM64库默认在选定DDK内查找，只有查找失败或存在歧义时才补显式路径。不要把OMG的主机 `LD_LIBRARY_PATH` 当作手机端链接库路径。
+
+### 第3步：首次保存配置
+
+```bash
+source "$REPO_DIR/targets/cpro/scripts/env.sh"
+```
+
+首次会在**仓库旁边**创建 `qwen35-cpro.env`（权限600），把第2步的七项保存并附中文注释，提示再次加载；首次创建返回1表示配置尚未加载，不是编译失败。已有文件不会被覆盖，也不会因再次export而更新它；需要变更时编辑该文件。若第2步使用了示例占位值，先在文件里改为实际值，再继续第4步。
+
+配置不放在运行目录里，清理结果时不会被一起删掉。也可指定文件：`source targets/cpro/scripts/env.sh /absolute/path/cpro.env`。
+
+### 第4步：加载项目配置并从零执行
+
+当前旧run产物已删除，使用 `--fresh`。在仓库根目录更新代码并执行；加载配置失败时，`&&` 会阻止后续编译/上板。
+
+```bash
+git pull --ff-only &&
+source targets/cpro/scripts/env.sh &&
+  "$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
+```
+
+它会自动生成FP16 GDN状态绑定、TBE平台诊断，尝试导出/编译全部五类九例AIR/OMC，再构建runner并执行编译成功的case。无需另export bindings、诊断或探针路径；不读取或修改保留的权重。编译失败仍列入总表，命令不是宣称已修复Conv/RMS或数值问题。
+
+### 配置字段说明
 
 默认配置只保留下面七项。已有值会填入模板；项目路径默认取当前仓库，运行根目录默认取项目路径加 `-run`，其余不能确定的值需要填写。
 
@@ -80,13 +131,9 @@ vendor环境中常见的变量含义如下；入口保留它们，不生成重�
 | `FIRMWARE_ID` | 本次设备固件身份的显式值；未设置时脚本从设备查询 |
 | `HIAI_RUNTIME_VERSION` | 本次预期板端HIAI版本；若设置，必须与实际runtime probe一致 |
 
-**如果旧运行目录已经清空：** 保留权重目录，恢复环境后一次重建全部探针，无需设置任何历史产物变量：
+`--fresh` 忽略旧产物环境变量，不会在本批中重复编译刚失败的case。SDK或HIAI库若此前也放在已删除目录内，必须恢复那些文件，仅重新export无法恢复工具链。
 
-```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
-```
-
-`--fresh` 依次生成安装源码约束的FP16 GDN状态绑定、12例TBE平台诊断、全部五类九例AIR/OMC，然后执行编译成功的case。它忽略旧产物环境变量、不读取权重、不删除目录，也不会在本批中重复编译刚失败的case。失败项仍保留在总表；这是重新执行流程，不是宣称Conv/RMS或数值问题已经修复。SDK或HIAI库若此前也放在已删除目录内，必须恢复那些文件，仅重新export无法恢复工具链。
+### 后续仅重试指定用例
 
 后续重试使用打印出的批次目录；新批次会记录TBE诊断路径，重试自动沿用，不必另找 `TBE_DIAG_JOB`：
 
@@ -95,6 +142,10 @@ vendor环境中常见的变量含义如下；入口保留它们，不生成重�
   --probe-run /absolute/path/to/fused-all-new-batch \
   --retry-cases attention_prefill,attention_decode
 ```
+
+## 按需检查与其他模型流程
+
+完成上面的算子探针入口后，不需要依次再执行下方全部检查。以下用于完整模型、TorchAir或单独阶段排障。
 
 | 阶段 | 依赖 / 资源 |
 |---|---|
@@ -108,20 +159,10 @@ vendor环境中常见的变量含义如下；入口保留它们，不生成重�
 
 ## 1. 公共变量
 
-从仓库根目录执行，先激活模型 Python 环境；工作区用户沿用 `ws` 分配的 `AI_RUN_DIR`。独立 clone 若无任务目录，先将下面路径改为实际仓库外存储目录：
+已加载项目 `env.sh` 的终端无需重新export公共变量，只按需检查解释器。工作区托管任务沿用 `ws` 分配的 `AI_RUN_DIR`；独立clone使用配置中的固定运行根目录，不在每次source时重新分配目录。
 
 ```bash
-if [ -z "${AI_RUN_DIR:-}" ]; then
-  export QWEN35_RUN_STORAGE='/实际路径/仓库外运行目录'
-  mkdir -p "$QWEN35_RUN_STORAGE"
-  export AI_RUN_DIR="$(mktemp -d "$QWEN35_RUN_STORAGE/qwen35-XXXXXXXX")"
-fi
-export REPO_DIR="$(pwd -P)"
 test -f "$REPO_DIR/project.yaml"
-export MODEL_PYTHON="${MODEL_PYTHON:-$(command -v python3)}"
-export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH="$REPO_DIR/model:$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
-mkdir -p "$AI_RUN_DIR"
 "$MODEL_PYTHON" -c 'import sys, numpy; print(sys.executable); print("NumPy:", numpy.__version__)'
 ```
 
@@ -139,7 +180,7 @@ print("CUDA available:", torch.cuda.is_available())
 PY
 ```
 
-导出 AIR 时再检查配套 TorchNPU/TorchAir；先加载下节服务器 CANN 环境。原生库或版本问题见 [AIR 排障](air-troubleshooting.md)。
+仅走TorchAir导出路径时，才在单独终端按该TorchNPU/TorchAir安装要求加载服务器CANN环境并检查导入；当前直接GE融合探针不需要这一步。原生库或版本问题见 [AIR 排障](air-troubleshooting.md)。
 
 ```bash
 TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$MODEL_PYTHON" - <<'PY'
@@ -153,11 +194,9 @@ PY
 
 ## 3. 主机 GE：生成 AIR
 
-`CANN_ROOT` 指实际服务器 CANN 版本目录；直接 GE 构图的源码阶段不需要它，保存真实 AIR 才需要。`--cxx11-abi` 默认 0，需与所选 GE 库匹配。
+`CANN_ROOT` 已从项目配置加载；直接GE构图的源码阶段不需要它，保存真实AIR才需要。当前直接GE导出器会为自己的子进程设置CANN库路径，无需再全局source CANN的 `set_env.sh`。`--cxx11-abi` 默认0，需与所选GE库匹配。
 
 ```bash
-export CANN_ROOT='/实际路径/服务器CANN版本目录'
-source "$CANN_ROOT/set_env.sh"
 test -f "$CANN_ROOT/include/graph/graph.h"
 test -f "$CANN_ROOT/include/graph/operator.h"
 test -f "$CANN_ROOT/lib64/libgraph.so"
@@ -166,23 +205,17 @@ test -f "$CANN_ROOT/lib64/libgraph.so"
 
 ## 4. 目标 DDK：编译 OMC
 
-在已加载内部 DDK 环境脚本的终端设置准确版本；`CANN_ROOT` 与 `CPRO_DDK_ROOT` 用途不同。当前编译入口固定使用 OMG 的 `--platform=kirinx90`，文档 bindings 不证明 kernel 已安装或兼容。
+第1步的 `DDK_PATH` 已由项目入口派生为 `CPRO_DDK_ROOT`，版本来自配置，无需再export。当前编译入口固定使用OMG的 `--platform=kirinx90`，文档bindings不证明kernel已安装或兼容。
 
 ```bash
-export CPRO_DDK_ROOT="$(realpath "${CPRO_DDK_ROOT:-${DDK_PATH:?请先加载内部DDK环境}}")"
-export CPRO_DDK_ID='当前安装包的准确版本'
-export CPRO_TARGET=kirinx90
 test -x "$CPRO_DDK_ROOT/tools/tools_omg/master/omg"
 ```
 
 ## 5. OHOS / HIAI / HDC
 
-构建 runner 时配置实际 SDK、头文件和同套 HarmonyOS ARM64 库；多个库用冒号分隔，私有资源 JSON 中非空 `hiai_libraries` 优先。SDK 获取方法见 [OHOS SDK](ohos-native-sdk.md)。
+项目入口已加载SDK并解析HIAI头文件/库路径，无需再抄一组export。若自动查找失败，只在私有配置中补 `HIAI_INCLUDE_DIR` 和 `HIAI_LIBRARIES`（多个库文件用冒号分隔），再次source项目入口。SDK获取方法见 [OHOS SDK](ohos-native-sdk.md)。
 
 ```bash
-export OHOS_NATIVE_SDK='/实际路径/ohos/native'
-export HIAI_INCLUDE_DIR='/实际路径/hiai/include'
-export HIAI_LIBRARIES='/实际路径/hiai/ohos/libhiai.so'
 test -f "$OHOS_NATIVE_SDK/build/cmake/ohos.toolchain.cmake"
 test -x "$OHOS_NATIVE_SDK/llvm/bin/clang++"
 test -d "$OHOS_NATIVE_SDK/sysroot"
@@ -190,12 +223,9 @@ test -f "$HIAI_INCLUDE_DIR/HiAiModelManagerService.h"
 cmake --version
 ```
 
-连接设备时设置序列号和 HDC server 地址；`BIP` 为 server 的 `IP:端口`。保留 runner 构建目录中的 `command.json`、`result.json` 及其引用路径，上传脚本据此查找运行库。
+设备序列号和HDC server地址已从配置加载；`BIP` 为server的 `IP:端口`。需要单独检查连接时执行下面命令；正常上板脚本会自行检查。保留runner构建目录中的 `command.json`、`result.json` 及其引用路径，上传脚本据此查找运行库。
 
 ```bash
-export HDC="${HDC:-hdc}"
-export SN='实际设备序列号'
-export BIP='实际HDC服务器IP:端口'
 "$HDC" -s "$BIP" list targets
 ```
 

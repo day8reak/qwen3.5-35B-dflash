@@ -8,7 +8,7 @@
 |---|---|
 | [模型结构](model-architecture.md) | 混合注意力、MoE、DFlash 与三类缓存 |
 | [当前更新与待执行命令](current-status.md) | 已完成什么、现在需要运行什么 |
-| [环境配置](environment-setup.md) | Python、主机 GE、目标 DDK、OHOS/HIAI、HDC |
+| [环境配置](environment-setup.md#docker-重进后的配置恢复) | 按顺序source已有环境、补七项export、保存配置、执行全新算子探针 |
 | [PyTorch 执行](pytorch-guide.md) | 参考推理、TorchAir 导出、独立融合模型 |
 | [GE 构图执行](ge-guide.md) | 准备权重、基础双图、可选融合与状态图 |
 | [板端执行与对比](board-guide.md) | 编译 runner、上传 OMC、运行、回收与比较 |

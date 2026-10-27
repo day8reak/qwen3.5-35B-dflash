@@ -6,26 +6,27 @@
 
 ## 用户现在执行什么
 
-**Docker重进且旧run产物已删除：** 先按[持久配置入口](environment-setup.md#docker-重进后的配置恢复)填写仓库旁的 `qwen35-cpro.env`，然后执行：
+**当前是Docker重进且旧run产物已删除。** 按[环境指南的四步顺序](environment-setup.md#docker-重进后的配置恢复)执行：恢复conda/DDK → 首次补七项export → 保存仓库旁配置 → 加载并运行。DDK脚本已经导出的变量不用重复配置。
+
+已有配置时，恢复conda/DDK后，在仓库根目录直接执行：
 
 ```bash
-source targets/cpro/scripts/env.sh
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
+git pull --ff-only &&
+source targets/cpro/scripts/env.sh &&
+  "$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
 ```
 
 不再引用已经删除的bindings、TBE诊断或OMC；安装版FP16绑定、平台诊断和全部探针自动重建，编译成功者上板。保留权重无需重新准备。
 
-**Attention重试遇到导出器C++的const接口错误，现已修正；conv/RMS仍待解决。** 更新后只重编Attention两例：
+**后续重试：** 等本次fresh打印出新的批次目录后，才使用下面命令。将占位路径换成该新目录；已经删除的历史批次不能复用。Attention导出器的const接口修正已提交，Conv/RMS仍待解决。
 
 ```bash
-cd "$REPO_DIR"
-git pull --ff-only
-"$MODEL_PYTHON" targets/cpro/scripts/run_fused_probes.py --all-ops \
-  --probe-run "$AI_RUN_DIR/fused-all-9759eb4f9b0b" \
+"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
+  --probe-run '/实际路径/本次新生成的fused-all批次' \
   --retry-cases attention_prefill,attention_decode
 ```
 
-上面的旧批次重试命令仅适用于**旧产物仍存在**的情况；已经清空run时用 `--fresh`。`--probe-run` 是上次批量运行的目录；沿用 `CANN_ROOT`、`CPRO_DDK_ROOT`、`TBE_DIAG_JOB` 和HDC环境。脚本复用GDN/Cache四个OMC，连同新编译成功的Attention上板；conv/RMS不重复编译，其失败继续保留在总表。回传最后打印的报告，完整注册检查在新目录的 `inspection/report.txt`。脚本不修改DDK。
+脚本复用新批次内已成功编译的OMC，只重编指定缺项；TBE诊断自动从新批次记录继承，无需另export `TBE_DIAG_JOB`。未重试的失败继续保留在总表。回传最后打印的报告；如该批次包含Conv/RMS失败，其注册检查另写到 `inspection/report.txt`。脚本不修改DDK。
 
 ## 当前状态
 
@@ -76,6 +77,6 @@ git pull --ff-only
 
 ## 文档融合接口
 
-上面的 `GE_CUSTOM_BINDINGS` 可复用于GE融合构图。绑定来自用户文档，不代表kernel已安装或已在目标芯片验证；融合构图命令见[GE指南](ge-guide.md)。
+本次fresh批次的 `bindings.json` 可复用于GE融合构图，需要时在构图命令前设置其路径。绑定包含文档端口与安装源码的GDN状态声明，不代表全部kernel已安装或已在目标芯片验证；融合构图命令见[GE指南](ge-guide.md)。
 
 完整W4A8 + FP16 DFlash先按24–28GiB可用RAM规划；这不是实测峰值，也不适用于当前FP16权重导出，见[内存预算](environment-setup.md#内存预算文档-w4a8--dflash)。
