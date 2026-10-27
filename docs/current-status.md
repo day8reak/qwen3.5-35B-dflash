@@ -6,23 +6,17 @@
 
 ## 用户现在执行什么
 
-**按用户决定，模型所需自定义算子保留GDN、CacheUpdate、Attention三类六例，Conv状态和RMS走当前基础算子路径。** `fused-all-f6b81ead7ae8` 已有六例调用和 `board-1` 数值诊断；源图及OMC未变，当前无需再次上板，先读取现有报告检查GDN精度：
+**最新回传确认GDN prefill/decode核心输出均全零，relative L2均为1，精度问题仍在。** 两例末态relative L2分别约0.9603、0.9745；CacheUpdate/Attention仅为 `SHAPE_ONLY_UNVERIFIED_CONTRACT`，也未通过精度验证。下一步只做GDN输入/输出缓冲区定向检查：
 
 ```bash
 git pull --ff-only &&
-cat "$AI_RUN_DIR/fused-all-f6b81ead7ae8/board-1/comparison/report.txt"
-```
-
-优先核对GDN核心输出和末态的误差、非零数量，确认旧报告中的decode全零和prefill大偏差是否仍存在。六例调用通过及 `DIAGNOSTIC_COMPLETE` 均不等于精度通过。
-
-只有后续确需重新执行这六例时，才使用下面入口：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --model-ops \
+python3 "$REPO_DIR/targets/cpro/scripts/run_gdn_diagnostics.py" \
   --probe-run "$AI_RUN_DIR/fused-all-f6b81ead7ae8"
 ```
 
-命令复用现有六例OMC，构建runner并上板执行、回收诊断；Conv/RMS不再作为此模式的必需项。旧九例 `--all-ops` 保留为可选诊断，原Conv两例和AdnRmsNorm编译失败仍按失败记录，不因退出当前依赖范围而改为通过。
+该入口复用原两例OMC和输入，只构建一次runner；输出缓冲区分别用 `0x00`、`0xA5`、`0x5A` 预填充，每例各执行三轮，共六次Process。全部输入拷贝和输出填充完成后，紧接Process前统一回读输入SHA256；同时记录输出对象与容量、填充值残留及三轮差异。只比较有效前缀，padding保留为未检查。有界收集所选DDK中可找到的GDN源码及已有编译日志/JSON，缺失或扫描限制单独记录。它不重新编译模型、不重跑平台诊断或Conv/RMS；尚无真实回传，不能宣称已定位或修复。输出残留填充值是未写/部分写的线索；所有预填充都变为零也不能单独证明kernel执行，因为runtime可能清零。
+
+模型范围仍保留GDN、CacheUpdate、Attention三类六例，Conv/RMS使用基础算子。只有确需重新执行全部六例时才使用 `run_fused_probes.py --model-ops`；旧九例 `--all-ops` 保留为可选诊断，原Conv/RMS失败不改为通过。
 
 原工程中 `LinearAttentionConvstateUpdate` 用于Cpro，`AdnRmsNorm` 用于ND，Cpro的RMS调用内置 `npu_rms_norm`。本仓库当前选择现有基础算子实现Conv历史拼接/截取和RMS，生产GE只启用 `--fused-ops gdn`。CacheUpdate/Attention的独立探针通过尚不等于已接入生产GE模型；完整模型及数值验证继续保留。
 
@@ -43,13 +37,13 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --model-ops \
 
 | 项目 | 结论 |
 |---|---|
-| GDN两例 | 新批次两例调用完成、数值诊断已生成；旧报告的decode核心输出全零、prefill核心输出relL2约0.999，尚未证实已解决；未通过精度验收 |
+| GDN两例 | 最新board-1回传的prefill/decode核心输出均全零、relL2=1；末态非零数33172/23424，relL2约0.9603/0.9745；未通过精度验收，原始远端文件未在本地核验 |
 | 编译目标 | 始终为 `kirinx90`；`Ascend310B1` 是DDK初始化后返回的内部名称，`Ascend310P3` 是原工程平台 |
 | GDN状态 | 安装版初态/末态为FP16；本次runner修正了末态只接受FP32的旧校验 |
 | conv | 当前走基础算子的历史拼接/截取路径；原Cpro自定义Conv两例在rank-4 y2维推后格式配置失败，历史结论不变 |
 | RMS | 当前走基础算子RMS路径；原ND用的 `AdnRmsNorm` 探针缺维推函数，保留失败；不再尝试其他融合RMS候选 |
-| CacheUpdate | 新批次prefill/decode两例导出、编译、加载和执行通过，数值诊断已生成；无数值golden，不代表精度通过 |
-| Attention | 新批次prefill/decode两例导出、编译、加载和执行均通过，先前导出器问题不再阻止调用；数值仅为DIAGNOSTIC_COMPLETE，尚未验收 |
+| CacheUpdate | prefill/decode调用通过，比较仅为SHAPE_ONLY_UNVERIFIED_CONTRACT，无数值精度通过结论 |
+| Attention | prefill/decode调用通过，比较仅为SHAPE_ONLY_UNVERIFIED_CONTRACT；先前导出器问题不再阻止调用，精度仍未验证 |
 | 尚未验证 | 当前六例的正确数值及NPU执行位置；CacheUpdate/Attention生产GE接入、基础Conv/RMS的完整模型目标验证与连续状态验证仍待完成 |
 
 新增调用源码的[核对与勘误](qwen35-moe-operators-and-quantization-analysis.md#调用源码核对与勘误2026-10-27)确认：Attention converter把Python `pse_shift`实参接到GE端口16，端口3留空，当前探针方向正确；Conv的输出rank、GDN的Meta/安装版状态dtype和Cache的Functionalize调用名仍有差异，不能凭前端声明判定安装版行为。

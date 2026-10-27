@@ -597,12 +597,17 @@ def _bundle_case(root, case):
     return _record(folder / "manifest.json", root)
 
 
-def _board_script(cases):
+def _board_script(cases, *, output_fill_byte=None):
     """Return the board batch script for ordered, already compiled case names."""
     known = {name for name, _, _ in _CASES}
     if (not isinstance(cases, (list, tuple)) or any(not isinstance(name, str) for name in cases)
             or len(set(cases)) != len(cases) or not set(cases) <= known):
         raise ValueError("board script cases must be unique known probe names")
+    if output_fill_byte is not None and (type(output_fill_byte) is not int
+            or not 0 <= output_fill_byte <= 255 or not cases
+            or not set(cases) <= {"gdn_prefill", "gdn_decode"}):
+        raise ValueError("output fill diagnostic requires GDN cases and a byte in 0..255")
+    diagnostic = "" if output_fill_byte is None else f" --output-fill-byte {output_fill_byte}"
     script = '''#!/bin/sh
 set -u
 [ "$#" -eq 5 ] || { echo "usage: run-board.sh RUNNER NEW_RESULTS_DIR RUNTIME_VERSION DDK_ID FIRMWARE_ID" >&2; exit 2; }
@@ -622,7 +627,7 @@ printf '%s\\n' "No COMPILED cases; no operator invocation attempted." >"$results
 exit 2
 '''
     for name in cases:
-        script += f'''"$runner" --fused-op-step "$bundle/{name}/step.tsv" --output "$results/{name}" --expected-runtime-version "$runtime" --ddk-id "$ddk" --firmware-id "$firmware" >"$results/{name}.stdout" 2>"$results/{name}.stderr"
+        script += f'''"$runner" --fused-op-step "$bundle/{name}/step.tsv" --output "$results/{name}" --expected-runtime-version "$runtime" --ddk-id "$ddk" --firmware-id "$firmware"{diagnostic} >"$results/{name}.stdout" 2>"$results/{name}.stderr"
 code=$?
 printf '%s\\n' "$code" >"$results/{name}.exitcode"
 [ "$code" -eq 0 ] || overall=1

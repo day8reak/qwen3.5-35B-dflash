@@ -10,15 +10,30 @@
 
 | 用例 | AIR导出 | OMC编译 | 加载 / 执行 | 数值 |
 |---|---|---|---|---|
-| GDN prefill/decode | PASSED | PASSED | PASSED / PASSED | DIAGNOSTIC_COMPLETE；未证明历史数值偏差已解决 |
-| CacheUpdate prefill/decode | PASSED | PASSED | PASSED / PASSED | DIAGNOSTIC_COMPLETE；未验收 |
-| AdnFusedInferAttention prefill/decode | PASSED | PASSED | PASSED / PASSED | DIAGNOSTIC_COMPLETE；未验收 |
+| GDN prefill/decode | PASSED | PASSED | PASSED / PASSED | DIAGNOSTIC_COMPLETE；最新回传核心输出均全零、relL2=1 |
+| CacheUpdate prefill/decode | PASSED | PASSED | PASSED / PASSED | SHAPE_ONLY_UNVERIFIED_CONTRACT；未验证精度 |
+| AdnFusedInferAttention prefill/decode | PASSED | PASSED | PASSED / PASSED | SHAPE_ONLY_UNVERIFIED_CONTRACT；未验证精度 |
 | ConvStateUpdate prefill/decode | PASSED | FAILED | NOT_RUN / NOT_RUN | NOT_RUN |
 | AdnRmsNorm | PASSED | FAILED | NOT_RUN / NOT_RUN | NOT_RUN |
 
 Attention已完成两种调用，先前的端口校验与导出器const接口错误未再阻止该批次。Conv仍在rank-4的y2（`[1,8192,1,S+3]`）维推后遇到格式配置失败；RMS仍找不到 `AdnRmsNorm` 维推函数。历史五类调用未全部通过，不能据此认定整个DDK没有相关kernel；随后用户选择取消Conv/RMS自定义依赖，原失败保留，不改为通过。
 
-`DIAGNOSTIC_COMPLETE` 只表示诊断已生成，不是精度通过。旧GDN报告中的decode核心输出全零、prefill核心输出relL2约0.999，尚无新数值证据证明已经解决；实际NPU执行位置、完整模型与连续状态精度仍未验证。保留本批次的报告、编译工作目录和上板结果，供后续只读排查使用。
+用户随后粘贴同批次 `board-1/comparison/report.txt`，GDN数值如下；原始远端文件未取得本地核验：
+
+| 用例 / 输出 | 非零元素数 | relative L2 | 最大绝对误差 |
+|---|---:|---:|---:|
+| prefill core_attn | 0 | 1 | 0.019012451 |
+| prefill last_recurrent_state | 33172 | 0.9603274111031198 | 0.08654785 |
+| decode core_attn | 0 | 1 | 0.005325317 |
+| decode last_recurrent_state | 23424 | 0.9745207122180418 | 0.040130615 |
+
+`DIAGNOSTIC_COMPLETE` 只表示诊断已生成。两例核心输出全零、末态大偏差确认精度问题仍在；Cache/Attention仅做形状检查，不能归为accuracy通过。实际NPU执行位置、完整模型与连续状态精度也未验证。
+
+下一步入口为 `run_gdn_diagnostics.py --probe-run ...`：复用原两例OMC和输入，runner只构建一次，分别以 `0x00/0xA5/0x5A` 预填输出后各执行一次，共六次Process。将记录输入缓冲区回读SHA256、输出对象/容量/填充值残留、三轮输出差异，并复制所选DDK的GDN cpp/py/h与tiling证据。不重新编译模型、不执行平台诊断、不恢复Conv/RMS候选。该诊断用于检验输入交接、输出写回和重复执行行为；尚无真实设备回传，不代表问题已定位或解决。
+
+主机独立参考核验已将当前探针输入与固定环境的Transformers recurrent/chunk实现对照，FP16结果的relative L2均小于 `1.6e-5`。prefill/decode参考核心输出全部非零，分别有24431/4022项处于FP16正常数范围；最终输出舍入下溢解释不了板端全零。旧初态在128×128两轴严格对称，尚不能检验初态转置；如缓冲诊断排除交接问题，后续需要非对称初态读入用例。核验及复现脚本保存在本次工作区运行记录 `20261027T113904Z-21762-792bc2/gdn-reference-audit/`，没有执行DDK或设备。
+
+GDN诊断及原编排共63项主机测试通过（初轮62项，增加有效前缀检查后最终诊断13项复验）；C++编译和5组CTest通过。模拟故障覆盖输出未写/部分写/写零、输出对象或缓冲被替换、后续输入或输出填充覆盖先前输入、输入回读/回收文件损坏、FP32末态解析及padding不误判。所有输入在拷贝和输出填充完成后、Process前统一回读；对象替换或输入不符时保留诊断并停止。三轮复用同一runner、OMC和输入，原文件不变。源码与编译证据有文件数/字节限制，仅复制可读文件，不保证找到所有tiling实现。上述主机测试及内存观察不证明设备缓冲一致性、kernel实际执行或数值正确。
 
 本次补齐 `--fresh` 中Conv/RMS失败后的只读检查，并新增 `run_fused_probes.py --inspect-only --probe-run ...`：支持探针目录及all-ops批次，打印关键日志与安装注册文本摘要，保留完整复制证据；已成功重试的历史失败不再触发自动检查。29项板端编排主机测试通过，覆盖禁止编译/TBE/runner/HDC、原产物与DDK不变、损坏产物拒绝、模式冲突及fresh/重试回归。CLI帮助、29个文档Bash代码块及diff检查通过。本地验证使用模拟编译/设备夹具，未在用户DDK或设备执行，也未修复Conv/RMS本身。
 
@@ -32,7 +47,7 @@ Attention已完成两种调用，先前的端口校验与导出器const接口错
 
 本次选择改变依赖范围，不构成基础Conv/RMS在完整模型目标执行或数值精度上的通过证据。GDN历史数值偏差、所选六例精度、NPU执行位置、完整模型状态连续性和性能仍待验证；不继续新增Conv/RMS融合候选。
 
-本轮200项主机测试通过：35项板端编排、43项探针与筛选、122项GE目标构图及导出回归。新增覆盖旧Conv/RMS即使已编译也不上传、不执行、不参与模型模式比较；fresh模型模式只编译六例；旧清单和脚本保持不变。抽取后的板端脚本在全部512个用例子集上与旧生成器逐字节一致。34个文档Bash代码块、工作流JSON、CLI帮助及diff检查通过。GE/OMG/HIAI使用主机替身；没有新增真实DDK编译或上板证据。现有六例OMC未变，下一步读取原 `board-1/comparison/report.txt`，优先核对GDN数值。
+本轮200项主机测试通过：35项板端编排、43项探针与筛选、122项GE目标构图及导出回归。新增覆盖旧Conv/RMS即使已编译也不上传、不执行、不参与模型模式比较；fresh模型模式只编译六例；旧清单和脚本保持不变。抽取后的板端脚本在全部512个用例子集上与旧生成器逐字节一致。34个文档Bash代码块、工作流JSON、CLI帮助及diff检查通过。GE/OMG/HIAI使用主机替身；没有新增真实DDK编译或上板证据。现有六例OMC未变，用户随后回传的 `board-1` 数值见上表；这些主机测试不覆盖新的GDN缓冲区诊断。
 
 ## Docker环境恢复与删除产物后的重建
 

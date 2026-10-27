@@ -1,4 +1,5 @@
 #include "qwen35_dflash/hiai_executor.hpp"
+#include "qwen35_dflash/sha256.hpp"
 #include <HiAiModelManagerService.h>
 #include <algorithm>
 #include <cerrno>
@@ -232,14 +233,43 @@ struct HiaiStatefulExecutor::Impl {
   Model target;
   std::vector<bool> ready;
   bool outputs_available = false;
+  HiaiIoDiagnostic diagnostic;
+  std::vector<const void*> output_buffers_before;
+  std::vector<std::string> input_source_hashes;
+
+  bool ObserveDiagnosticOutputs() {
+    bool unchanged = target.output_ptrs.size() == target.outputs.size();
+    for (std::size_t i = 0; i < target.outputs.size(); ++i) {
+      auto& record = diagnostic.outputs.at(i);
+      record.checked_after_process = true;
+      const auto current = i < target.output_ptrs.size() ? target.output_ptrs[i] : nullptr;
+      const auto* buffer = current ? current->GetBuffer() : nullptr;
+      record.allocated_bytes_after = current ? current->GetSize() : 0;
+      record.object_same = current == target.outputs[i].value;
+      record.buffer_same = buffer && buffer == output_buffers_before.at(i);
+      record.fill_count_available = buffer && record.allocated_bytes_after >= record.logical_bytes;
+      if (record.fill_count_available) {
+        const auto* data = static_cast<const std::uint8_t*>(buffer);
+        record.fill_byte_count = static_cast<std::size_t>(std::count(
+            data, data + record.logical_bytes, static_cast<std::uint8_t>(diagnostic.output_fill_byte)));
+      }
+      unchanged = unchanged && record.object_same && record.buffer_same && record.fill_count_available;
+    }
+    return unchanged;
+  }
 };
 HiaiStatefulExecutor::HiaiStatefulExecutor(
     const std::filesystem::path& target, const std::string& expected_version,
     const std::vector<HiaiTensorSpec>& inputs, const std::vector<HiaiTensorSpec>& outputs,
-    std::uint32_t timeout_ms, bool fused_operator_probe) : impl_(std::make_unique<Impl>()) {
+    std::uint32_t timeout_ms, bool fused_operator_probe,
+    int diagnostic_output_fill_byte) : impl_(std::make_unique<Impl>()) {
   if (inputs.empty() || inputs.size() > 1024 || outputs.empty() || outputs.size() > 1024 ||
       expected_version.empty() || !timeout_ms)
     throw std::invalid_argument("stateful target requires bounded ordered IO, runtime identity and timeout");
+  if (diagnostic_output_fill_byte < -1 || diagnostic_output_fill_byte > 255 ||
+      (diagnostic_output_fill_byte >= 0 && !fused_operator_probe))
+    throw std::invalid_argument("output fill diagnostic requires a fused probe and a byte in 0..255");
+  impl_->diagnostic.output_fill_byte = diagnostic_output_fill_byte;
   const std::uint16_t endian = 1;
   if (*reinterpret_cast<const std::uint8_t*>(&endian) != 1)
     throw std::invalid_argument("stateful target payloads require little-endian buffers");
@@ -272,9 +302,21 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
         throw std::runtime_error("stateful runtime tensor buffers exceed bounded IO allocation");
       // Extra runtime allocation is not interpreted as physical row padding.
       std::memset(tensor.Data(), 0, tensor.bytes);
+      if (diagnostic_output_fill_byte >= 0) {
+        if (input) {
+          HiaiInputIoDiagnostic record;
+          record.index = i; record.logical_bytes = tensor.bytes; record.allocated_bytes = tensor.value->GetSize();
+          impl_->diagnostic.inputs.push_back(record);
+        } else {
+          HiaiOutputIoDiagnostic record;
+          record.index = i; record.logical_bytes = tensor.bytes;
+          impl_->diagnostic.outputs.push_back(record);
+        }
+      }
     }
   }
   impl_->ready.assign(inputs.size(), false);
+  if (diagnostic_output_fill_byte >= 0) impl_->input_source_hashes.resize(inputs.size());
 }
 HiaiStatefulExecutor::~HiaiStatefulExecutor() = default;
 void HiaiStatefulExecutor::SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes) {
@@ -284,6 +326,12 @@ void HiaiStatefulExecutor::SetInput(std::size_t index, const std::vector<std::ui
   if (bytes.size() != tensor.bytes)
     throw std::invalid_argument("stateful input byte count differs from declared shape/dtype");
   std::memcpy(tensor.Data(), bytes.data(), bytes.size());
+  if (impl_->diagnostic.output_fill_byte >= 0) {
+    impl_->input_source_hashes.at(index) = Sha256(std::string_view(
+        reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    impl_->diagnostic.inputs.at(index).readback_sha256.clear();
+    impl_->diagnostic.inputs.at(index).readback_matches_source = false;
+  }
   impl_->ready[index] = true;
 }
 void HiaiStatefulExecutor::Execute() {
@@ -291,7 +339,46 @@ void HiaiStatefulExecutor::Execute() {
   if (!std::all_of(impl_->ready.begin(), impl_->ready.end(), [](bool ready) { return ready; }))
     throw std::logic_error("all explicit stateful inputs must be supplied for each step");
   std::fill(impl_->ready.begin(), impl_->ready.end(), false);
-  impl_->target.Run();
+  if (impl_->diagnostic.output_fill_byte >= 0) {
+    impl_->diagnostic.process_called = false;
+    impl_->output_buffers_before.clear();
+    for (std::size_t i = 0; i < impl_->target.outputs.size(); ++i) {
+      const auto& tensor = impl_->target.outputs[i];
+      auto& record = impl_->diagnostic.outputs[i];
+      record.allocated_bytes_before = tensor.value->GetSize();
+      record.checked_after_process = record.object_same = record.buffer_same = false;
+      record.fill_count_available = false; record.fill_byte_count = 0;
+      void* data = tensor.Data();
+      impl_->output_buffers_before.push_back(data);
+      std::memset(data, impl_->diagnostic.output_fill_byte, tensor.bytes);
+    }
+    // Read every input only after all copies AND output fills. Immediate
+    // per-SetInput readback would miss later writes through aliased buffers.
+    bool inputs_match = true;
+    for (std::size_t i = 0; i < impl_->target.inputs.size(); ++i) {
+      const auto& tensor = impl_->target.inputs[i];
+      auto& record = impl_->diagnostic.inputs[i];
+      record.allocated_bytes = tensor.value->GetSize();
+      const auto* readback = static_cast<const char*>(tensor.Data());
+      record.readback_sha256 = Sha256(std::string_view(readback, tensor.bytes));
+      record.readback_matches_source = record.readback_sha256 == impl_->input_source_hashes[i];
+      inputs_match = inputs_match && record.readback_matches_source;
+    }
+    if (!inputs_match)
+      throw std::runtime_error("GDN diagnostic input tensor readback differs from supplied bytes before Process");
+    impl_->diagnostic.process_called = true;
+    try {
+      impl_->target.Run();
+    } catch (...) {
+      static_cast<void>(impl_->ObserveDiagnosticOutputs());
+      throw;
+    }
+    if (!impl_->ObserveDiagnosticOutputs())
+      throw std::runtime_error("GDN diagnostic output object, buffer or size changed during Process; "
+                               "refusing to read the original output tensor");
+  } else {
+    impl_->target.Run();
+  }
   impl_->outputs_available = true;
 }
 std::vector<std::uint8_t> HiaiStatefulExecutor::CopyOutput(std::size_t index) const {
@@ -303,6 +390,9 @@ std::vector<std::uint8_t> HiaiStatefulExecutor::CopyOutput(std::size_t index) co
 }
 const std::string& HiaiStatefulExecutor::runtime_version() const noexcept {
   return impl_->target.version;
+}
+const HiaiIoDiagnostic& HiaiStatefulExecutor::io_diagnostic() const noexcept {
+  return impl_->diagnostic;
 }
 
 struct HiaiExecutor::Impl {

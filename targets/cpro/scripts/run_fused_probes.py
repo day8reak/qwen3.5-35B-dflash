@@ -179,13 +179,16 @@ def execute(args, *, runner_cache=None):
             raise ValueError("board output must be separate from the compiled probe directory")
         selected = getattr(args, "selected_cases", None)
         manifest, cases, uploads = _prepare(root, case_names=selected)
-        if selected is not None:
+        output_fill_byte = getattr(args, "output_fill_byte", None)
+        if selected is not None or output_fill_byte is not None:
             # Keep the recorded script immutable; stage a selected script under
             # the same remote bundle path so relative per-case paths still work.
             script = out / "selected-run-board.sh"
-            script.write_text(_board_script([case["name"] for case in cases]))
+            script.write_text(_board_script([case["name"] for case in cases], output_fill_byte=output_fill_byte))
             uploads = [entry for entry in uploads if entry["remote"] != "bundle/run-board.sh"]
             uploads.insert(0, _file_record(script, "bundle/run-board.sh"))
+        if output_fill_byte is not None:
+            result["output_fill_byte"] = output_fill_byte
         ddk = _text(manifest.get("ddk_id"), "compiled DDK identity")
         if os.environ.get("CPRO_DDK_ID") and os.environ["CPRO_DDK_ID"] != ddk:
             raise ValueError("CPRO_DDK_ID differs from the compiled probe manifest")

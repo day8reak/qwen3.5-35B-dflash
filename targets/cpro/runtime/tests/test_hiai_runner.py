@@ -427,6 +427,7 @@ for kind, sequence in [("gdn", 8), ("gdn", 1), ("conv", 8), ("conv", 1), ("rms",
     assert report["operator_calls"] == 1 and report["target_calls"] == report["draft_calls"] == 0
     assert report["accuracy"] == report["performance"] == "NOT_EVALUATED"
     assert report["runtime_placement"] == "UNVERIFIED" and "state_policy" not in report
+    assert "io_diagnostic" not in report
     assert report["step_plan_sha256"] == sha(folder / "step.tsv")
     assert report["operator_abi_sha256"] == sha(folder / "operator-abi.json")
     assert report["model_sha256"] == sha(folder / "operator.omc")
@@ -537,6 +538,107 @@ assert result.returncode == 1 and "unknown fused operator option" in result.stde
 result, output, events = fused_run(gdn, "result")
 assert result.returncode == 1 and "already exists" in result.stderr
 assert events == ["load", "process", "unload"], "existing-output rejection added a runtime call"
+
+# Explicit GDN diagnostics preserve the supplied input hash while distinguishing
+# a successful but unwritten/partly written output from deliberately written zero.
+# Each invocation is a new process and does not claim device or kernel evidence.
+diagnostic_rows = good_rows[:]
+query_file = gdn / "input_0000.bin"
+query_original = query_file.read_bytes()
+query_file.write_bytes(bytes(range(256)) * (len(query_original) // 256))
+diagnostic_rows[4] = diagnostic_rows[4].rsplit("\t", 1)[0] + "\t" + sha(query_file)
+(gdn / "step.tsv").write_text("\n".join(diagnostic_rows) + "\n")
+for fill in (0, 165, 90):
+    for failure in ("", "gdn-no-write", "gdn-partial-write", "gdn-zero-write"):
+        result, output, events = fused_run(gdn, f"diagnostic-{fill}-{failure or 'written'}", failure=failure,
+                                           extra=("--output-fill-byte", str(fill)))
+        assert result.returncode == 0 and events == ["load", "process", "unload"], result.stderr
+        report = json.loads((output / "result.json").read_text())
+        io = report["io_diagnostic"]
+        assert io["enabled"] and io["output_fill_byte"] == fill and io["process_called"]
+        assert io["input_readback_point"] == "AFTER_ALL_INPUT_COPIES_AND_OUTPUT_FILL_BEFORE_PROCESS"
+        assert len(io["inputs"]) == 7 and len(io["outputs"]) == 2
+        for actual, original in zip(io["inputs"], report["inputs"]):
+            assert actual["index"] == original["index"]
+            assert actual["readback_sha256"] == original["sha256"] and actual["readback_matches_source"]
+            assert actual["logical_bytes"] == actual["allocated_bytes"] == original["bytes"]
+        for actual, original in zip(io["outputs"], report["outputs"]):
+            raw = (output / original["path"]).read_bytes()
+            assert actual["checked_after_process"] and actual["object_same"] and actual["buffer_same"]
+            assert actual["fill_count_available"] and actual["fill_byte_count"] == raw.count(fill)
+            assert actual["logical_bytes"] == actual["allocated_bytes_before"] == actual["allocated_bytes_after"] == len(raw)
+            if failure == "gdn-no-write":
+                assert raw == bytes([fill]) * len(raw) and actual["fill_byte_count"] == len(raw)
+            elif failure == "gdn-partial-write":
+                assert raw == bytes(64) + bytes([fill]) * (len(raw) - 64)
+                assert actual["fill_byte_count"] == (len(raw) if fill == 0 else len(raw) - 64)
+            elif failure == "gdn-zero-write":
+                assert raw == bytes(len(raw)) and actual["fill_byte_count"] == (len(raw) if fill == 0 else 0)
+
+for failure in ("gdn-replace-output", "gdn-replace-buffer"):
+    result, output, events = fused_run(gdn, "diagnostic-" + failure, failure=failure,
+                                       extra=("--output-fill-byte", "165"))
+    assert result.returncode == 1 and events == ["load", "process", "unload"], result.stderr
+    report = json.loads((output / "result.json").read_text())
+    assert report["status"] == "RUNTIME_FAILED" and report["failure_stage"] == "PROCESS"
+    assert report["outputs"] == [] and not list(output.glob("*.bin"))
+    io = report["io_diagnostic"]
+    assert io["process_called"] and io["outputs"][0]["checked_after_process"]
+    assert io["outputs"][0]["object_same"] == (failure == "gdn-replace-buffer")
+    assert not io["outputs"][0]["buffer_same"]
+    assert io["outputs"][1]["object_same"] and io["outputs"][1]["buffer_same"]
+
+result, output, events = fused_run(gdn, "diagnostic-readback-corrupt", failure="gdn-readback-corrupt",
+                                   extra=("--output-fill-byte", "165"))
+assert result.returncode == 1 and events == ["load", "unload"], result.stderr
+report = json.loads((output / "result.json").read_text())
+assert report["failure_stage"] == "INPUT_BINDING" and report["outputs"] == []
+io = report["io_diagnostic"]
+changed = bytearray(query_file.read_bytes())
+changed[0] ^= 1
+assert io["inputs"][0]["readback_sha256"] == hashlib.sha256(changed).hexdigest()
+assert io["inputs"][0]["readback_sha256"] != sha(query_file)
+assert not io["inputs"][0]["readback_matches_source"] and not io["process_called"]
+assert not any(item["checked_after_process"] for item in io["outputs"])
+
+for failure, overwritten in (("gdn-input-alias", bytes(query_file.stat().st_size)),
+                             ("gdn-output-alias", bytes([165]) * query_file.stat().st_size)):
+    result, output, events = fused_run(gdn, "diagnostic-" + failure, failure=failure,
+                                       extra=("--output-fill-byte", "165"))
+    assert result.returncode == 1 and events == ["load", "unload"], result.stderr
+    report = json.loads((output / "result.json").read_text())
+    assert report["failure_stage"] == "INPUT_BINDING" and report["outputs"] == []
+    io = report["io_diagnostic"]
+    assert not io["process_called"] and not io["inputs"][0]["readback_matches_source"]
+    assert io["inputs"][0]["readback_sha256"] == hashlib.sha256(overwritten).hexdigest()
+
+for failure in ("load", "run"):
+    result, output, events = fused_run(gdn, "diagnostic-failure-" + failure, failure=failure,
+                                       extra=("--output-fill-byte", "90"))
+    assert result.returncode == 1, result.stderr
+    report = json.loads((output / "result.json").read_text())
+    io = report["io_diagnostic"]
+    assert io["enabled"] and io["output_fill_byte"] == 90
+    assert io["process_called"] == (failure == "run")
+    if failure == "run":
+        assert all(row["fill_byte_count"] == row["logical_bytes"] for row in io["outputs"])
+
+for value in ("-1", "256", "1.5"):
+    result, output, events = fused_run(gdn, "diagnostic-invalid-" + value, extra=("--output-fill-byte", value))
+    assert result.returncode == 1 and not events and not output.exists(), result.stderr
+for kind in ("conv", "rms", "cache", "attention"):
+    folder, _ = fused_cases[kind, 8]
+    result, output, events = fused_run(folder, "diagnostic-reject-scope", extra=("--output-fill-byte", "165"))
+    assert result.returncode == 1 and not events and not output.exists(), result.stderr
+    assert "restricted to fused ChunkGatedDeltaRule" in result.stderr
+stateful_output = prefill / "diagnostic-reject-scope"
+rejected = subprocess.run([str(runner), "--stateful-step", str(prefill / "step.tsv"), "--output", str(stateful_output),
+                           "--expected-runtime-version", "FAKE-HIAI-X90", "--ddk-id", "fake", "--firmware-id", "fake",
+                           "--output-fill-byte", "165"], capture_output=True, text=True)
+assert rejected.returncode == 1 and "requires --fused-op-step" in rejected.stderr and not stateful_output.exists()
+query_file.write_bytes(query_original)
+(gdn / "step.tsv").write_text("\n".join(good_rows) + "\n")
+
 (gdn / "input_0006.bin").write_bytes(struct.pack("<h", 9))
 bad_rows = good_rows[:]
 bad_rows[10] = bad_rows[10].rsplit("\t", 1)[0] + "\t" + sha(gdn / "input_0006.bin")

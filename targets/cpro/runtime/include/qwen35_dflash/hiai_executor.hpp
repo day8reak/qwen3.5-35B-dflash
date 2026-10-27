@@ -21,6 +21,24 @@ struct HiaiTensorSpec {
 };
 std::size_t HiaiTensorBytes(const HiaiTensorSpec& spec);
 
+struct HiaiInputIoDiagnostic {
+  std::size_t index = 0, logical_bytes = 0, allocated_bytes = 0;
+  std::string readback_sha256;
+  bool readback_matches_source = false;
+};
+struct HiaiOutputIoDiagnostic {
+  std::size_t index = 0, logical_bytes = 0, allocated_bytes_before = 0, allocated_bytes_after = 0;
+  bool checked_after_process = false, object_same = false, buffer_same = false;
+  bool fill_count_available = false;
+  std::size_t fill_byte_count = 0;
+};
+struct HiaiIoDiagnostic {
+  int output_fill_byte = -1;
+  bool process_called = false;
+  std::vector<HiaiInputIoDiagnostic> inputs;
+  std::vector<HiaiOutputIoDiagnostic> outputs;
+};
+
 // One immutable graph, synchronous Process, caller-owned ordered tensor flow.
 // The caller enforces either the stateful target or documented fused-op ABI.
 class HiaiStatefulExecutor final {
@@ -30,12 +48,14 @@ class HiaiStatefulExecutor final {
                       const std::vector<HiaiTensorSpec>& inputs,
                       const std::vector<HiaiTensorSpec>& outputs,
                       std::uint32_t timeout_ms = 300000,
-                      bool fused_operator_probe = false);
+                      bool fused_operator_probe = false,
+                      int diagnostic_output_fill_byte = -1);
   ~HiaiStatefulExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
   void Execute();
   std::vector<std::uint8_t> CopyOutput(std::size_t index) const;
   const std::string& runtime_version() const noexcept;
+  const HiaiIoDiagnostic& io_diagnostic() const noexcept;
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

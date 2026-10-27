@@ -474,15 +474,48 @@ void StepTensorJson(std::ostream& out, std::size_t index, const HiaiTensorSpec& 
   out << "],\"bytes\":" << HiaiTensorBytes(spec) << ",\"path\":\"" << JsonEscape(path)
       << "\",\"sha256\":\"" << hash << "\"}";
 }
+void WriteIoDiagnostic(std::ostream& out, int fill, const HiaiStatefulExecutor* executor) {
+  if (fill < 0) return;
+  const HiaiIoDiagnostic empty;
+  const auto& diagnostic = executor ? executor->io_diagnostic() : empty;
+  out << ",\"io_diagnostic\":{\"enabled\":true,\"output_fill_byte\":" << fill
+      << ",\"process_called\":" << (diagnostic.process_called ? "true" : "false")
+      << ",\"input_readback_point\":\"AFTER_ALL_INPUT_COPIES_AND_OUTPUT_FILL_BEFORE_PROCESS\",\"inputs\":[";
+  for (std::size_t i = 0; i < diagnostic.inputs.size(); ++i) {
+    if (i) out << ',';
+    const auto& input = diagnostic.inputs[i];
+    out << "{\"index\":" << input.index << ",\"logical_bytes\":" << input.logical_bytes
+        << ",\"allocated_bytes\":" << input.allocated_bytes
+        << ",\"readback_sha256\":\"" << input.readback_sha256 << "\",\"readback_matches_source\":"
+        << (input.readback_matches_source ? "true" : "false") << '}';
+  }
+  out << "],\"outputs\":[";
+  for (std::size_t i = 0; i < diagnostic.outputs.size(); ++i) {
+    if (i) out << ',';
+    const auto& output = diagnostic.outputs[i];
+    out << "{\"index\":" << output.index << ",\"logical_bytes\":" << output.logical_bytes
+        << ",\"allocated_bytes_before\":" << output.allocated_bytes_before
+        << ",\"allocated_bytes_after\":" << output.allocated_bytes_after
+        << ",\"checked_after_process\":" << (output.checked_after_process ? "true" : "false")
+        << ",\"object_same\":" << (output.object_same ? "true" : "false")
+        << ",\"buffer_same\":" << (output.buffer_same ? "true" : "false")
+        << ",\"fill_count_available\":" << (output.fill_count_available ? "true" : "false")
+        << ",\"fill_byte_count\":" << output.fill_byte_count << '}';
+  }
+  out << "]}";
+}
 int RunTensorStep(const std::string& path, const std::string& output,
                     const std::string& version, const std::string& ddk,
-                    const std::string& firmware, std::uint32_t timeout, bool fused = false) {
+                    const std::string& firmware, std::uint32_t timeout, bool fused = false,
+                    int diagnostic_output_fill_byte = -1) {
   const auto destination = std::filesystem::absolute(output).lexically_normal();
   NoSymlinks(destination);
   if (std::filesystem::exists(destination)) throw std::runtime_error("stateful output already exists");
   if (!std::filesystem::is_directory(destination.parent_path()))
     throw std::invalid_argument("stateful output parent directory must already exist");
   const auto plan = ReadStepPlan(path, fused);
+  if (diagnostic_output_fill_byte >= 0 && (!fused || plan.operator_type != "ChunkGatedDeltaRule"))
+    throw std::invalid_argument("--output-fill-byte is restricted to fused ChunkGatedDeltaRule probes");
   std::vector<HiaiTensorSpec> input_specs;
   std::vector<std::vector<std::uint8_t>> input_bytes;
   for (const auto& input : plan.inputs) input_specs.push_back(input.spec);
@@ -503,12 +536,14 @@ int RunTensorStep(const std::string& path, const std::string& output,
   std::string failure_stage = "LOAD_OR_SETUP";
   try {
     executor = std::make_unique<HiaiStatefulExecutor>(plan.model, version, input_specs,
-                                                     plan.outputs, timeout, fused);
+                                                     plan.outputs, timeout, fused, diagnostic_output_fill_byte);
     failure_stage = "INPUT_BINDING";
     for (std::size_t i = 0; i < input_bytes.size(); ++i) executor->SetInput(i, input_bytes[i]);
     failure_stage = "PROCESS";
     executor->Execute();
   } catch (const std::exception& error) {
+    if (diagnostic_output_fill_byte >= 0 && executor && !executor->io_diagnostic().process_called)
+      failure_stage = "INPUT_BINDING";
     if (fused && std::filesystem::create_directory(destination)) {
       std::ostringstream failed;
       failed << "{\"schema_version\":1,\"status\":\"RUNTIME_FAILED\","
@@ -521,7 +556,9 @@ int RunTensorStep(const std::string& path, const std::string& output,
              << "\",\"operator_abi_sha256\":\"" << plan.abi_hash
              << "\",\"model_sha256\":\"" << plan.model_hash
              << "\",\"target_calls\":0,\"draft_calls\":0,\"accuracy\":\"NOT_EVALUATED\","
-             << "\"performance\":\"NOT_EVALUATED\",\"runtime_placement\":\"UNVERIFIED\",\"outputs\":[]}";
+             << "\"performance\":\"NOT_EVALUATED\",\"runtime_placement\":\"UNVERIFIED\",\"outputs\":[]";
+      WriteIoDiagnostic(failed, diagnostic_output_fill_byte, executor.get());
+      failed << '}';
       AtomicWrite(destination / "result.json", failed.str());
     }
     throw;
@@ -563,7 +600,9 @@ int RunTensorStep(const std::string& path, const std::string& output,
     if (!file) throw std::runtime_error("could not write stateful output tensor");
     StepTensorJson(report, i, plan.outputs[i], name.str(), BytesHash(bytes));
   }
-  report << "]}";
+  report << ']';
+  WriteIoDiagnostic(report, diagnostic_output_fill_byte, executor.get());
+  report << '}';
   AtomicWrite(destination / "result.json", report.str());
   std::cout << "EXECUTED: " << (fused ? "fused operator probe" : "stateful target step")
             << "; report=" << (destination / "result.json") << '\n';
@@ -582,6 +621,7 @@ void Help() {
             << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID [--timeout-ms 300000]\n";
   std::cout << "qwen35_dflash_hiai --fused-op-step STEP.tsv --output NEW_DIRECTORY "
             << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID [--timeout-ms 300000]\n";
+  std::cout << "GDN probe I/O diagnostics only: [--output-fill-byte 0..255]\n";
 }
 }  // namespace
 int main(int argc, char** argv) {
@@ -613,11 +653,17 @@ int main(int argc, char** argv) {
       const auto version = take("--expected-runtime-version");
       const auto ddk = take("--ddk-id"), firmware = take("--firmware-id");
       const auto timeout = StepInteger(take("--timeout-ms", "300000"), UINT32_MAX);
+      int output_fill_byte = -1;
+      if (args.count("--output-fill-byte")) {
+        if (!fused) throw std::invalid_argument("--output-fill-byte requires --fused-op-step");
+        output_fill_byte = static_cast<int>(StepInteger(take("--output-fill-byte"), 255, true));
+      }
       if (plan.empty() || output.empty() || version.empty() || ddk.empty() || firmware.empty())
         throw std::invalid_argument("stateful plan, output and runtime/toolchain identities are required");
       if (!args.empty()) throw std::invalid_argument(std::string("unknown ") +
           (fused ? "fused operator" : "stateful") + " option " + args.begin()->first);
-      return RunTensorStep(plan, output, version, ddk, firmware, static_cast<std::uint32_t>(timeout), fused);
+      return RunTensorStep(plan, output, version, ddk, firmware, static_cast<std::uint32_t>(timeout), fused,
+                           output_fill_byte);
     }
     const auto target = take("--target"), draft = take("--draft");
     const auto target_hash = take("--target-sha256"), draft_hash = take("--draft-sha256");

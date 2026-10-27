@@ -73,7 +73,18 @@
             {
               "cases": [
                 "gdn_prefill",
-                "gdn_decode",
+                "gdn_decode"
+              ],
+              "construction": "PASSED",
+              "export": "PASSED",
+              "compile": "PASSED",
+              "load": "PASSED",
+              "process": "PASSED",
+              "numerical": "DIAGNOSTIC_COMPLETE",
+              "numerical_observation": "CORE_ALL_ZERO_REFERENCE_NONZERO_AND_LARGE_STATE_MISMATCH"
+            },
+            {
+              "cases": [
                 "cache_prefill",
                 "cache_decode",
                 "attention_prefill",
@@ -84,7 +95,9 @@
               "compile": "PASSED",
               "load": "PASSED",
               "process": "PASSED",
-              "numerical": "DIAGNOSTIC_COMPLETE"
+              "numerical": "DIAGNOSTIC_COMPLETE",
+              "comparison_reference": "SHAPE_ONLY_UNVERIFIED_CONTRACT",
+              "accuracy_validation": "NOT_RUN"
             },
             {
               "cases": [
@@ -101,9 +114,9 @@
             }
           ],
           "placement": "UNVERIFIED",
-          "scope": "User pasted fresh nine-case summary and logs after environment recovery. GDN, CacheUpdate and Attention each completed export/compile/load/process for prefill and decode (six cases). Conv and AdnRmsNorm compile failed (three cases). Numerical acceptance remains undefined; prior GDN mismatch is not demonstrated resolved. Original artifacts not obtained for local hash validation.",
+          "scope": "User pasted fresh nine-case summary, logs and board-1 numerical report. Six selected cases completed export/compile/load/process. GDN prefill/decode core outputs are both zero with relative L2=1, and recurrent states have large mismatch. CacheUpdate/Attention use SHAPE_ONLY_UNVERIFIED_CONTRACT, not an accuracy pass. Original remote artifacts have not been obtained for local hash validation. Historical Conv/AdnRmsNorm failures remain optional diagnostics; base Conv/RMS paths remain selected.",
           "next_command_document": "docs/current-status.md#用户现在执行什么",
-          "next_action": "Read the preserved board-1/comparison/report.txt numerical diagnostics first; no repeat device execution is required for unchanged OMC files. Keep Conv state and RMS on base operators; use --model-ops only when a new six-case execution is needed.",
+          "next_action": "Run run_gdn_diagnostics.py against the preserved fresh batch: reuse the original two OMC models and inputs, build one runner, and perform three output-fill trials per GDN case (0x00/0xA5/0x5A; six Process calls). Record input-buffer readback hashes and output ownership/capacity/fill remnants plus inter-trial differences. Copy selected DDK GDN source/tiling evidence. No model compilation, TBE diagnosis, or Conv/RMS candidate work.",
           "failures": {
             "conv_prefill_decode": {
               "stage": "compile",
@@ -114,7 +127,39 @@
               "observed": "Get AdnRmsNorm infershape func failed."
             }
           },
-          "numerical_acceptance": "NOT_DEFINED"
+          "numerical_acceptance": "NOT_DEFINED",
+          "comparison_report": "board-1/comparison/report.txt",
+          "gdn_diagnostics": {
+            "gdn_prefill": {
+              "core_attn": {
+                "actual_nonzero": 0,
+                "relative_l2": 1.0,
+                "max_abs_error": 0.019012451171875,
+                "all_zero_with_nonzero_reference": true
+              },
+              "last_recurrent_state": {
+                "actual_nonzero": 33172,
+                "relative_l2": 0.9603274111031198,
+                "max_abs_error": 0.0865478515625
+              }
+            },
+            "gdn_decode": {
+              "core_attn": {
+                "actual_nonzero": 0,
+                "relative_l2": 1.0,
+                "max_abs_error": 0.0053253173828125,
+                "all_zero_with_nonzero_reference": true
+              },
+              "last_recurrent_state": {
+                "actual_nonzero": 23424,
+                "relative_l2": 0.9745207122180418,
+                "max_abs_error": 0.040130615234375
+              }
+            },
+            "source": "USER_PASTED_BOARD_COMPARISON",
+            "artifact_hash_verification": "NOT_RECHECKED",
+            "cause": "UNRESOLVED"
+          }
         },
         "previous_gdn_user_report": {
           "date": "2026-10-27",
@@ -280,6 +325,33 @@
           "numerical_acceptance": "NOT_DEFINED",
           "production_integration": "PENDING",
           "scope": "Three retained custom operator families; base Conv/RMS full-model device validation is still required. Standalone CacheUpdate/Attention success is not production GE integration."
+        },
+        "gdn_io_diagnostic_plan": {
+          "command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_gdn_diagnostics.py\" --probe-run \"$AI_RUN_DIR/fused-all-f6b81ead7ae8\"",
+          "status": "TARGET_DIAGNOSTIC_NOT_RUN",
+          "cases": [
+            "gdn_prefill",
+            "gdn_decode"
+          ],
+          "model_and_input_policy": "Reuse the original OMC files and input bytes; no model recompilation.",
+          "runner_builds": 1,
+          "output_fill_bytes": [
+            0,
+            165,
+            90
+          ],
+          "process_calls": 6,
+          "planned_evidence": [
+            "Actual input buffer readback SHA256 after all input copies and output fills, immediately before Process",
+            "Output tensor objects and capacities",
+            "Remaining output prefill bytes and differences across the three trials, valid prefix only",
+            "Bounded copies of available selected-DDK GDN source and retained compiler text/JSON; missing files and scan limits recorded"
+          ],
+          "model_compilation": "NOT_RUN",
+          "platform_diagnosis": "NOT_RUN",
+          "conv_rms_candidates": "DISABLED",
+          "device_result": "PENDING",
+          "scope": "Targeted buffer handoff, output writeback and repeat-execution diagnosis only; no current result establishes a cause or fix. Conv state and RMS remain base operators."
         }
       },
       "selected_fused_roles": [
@@ -321,14 +393,14 @@
       "evidence": "docs/current-status.md",
       "working_directory": "$AI_RUN_DIR",
       "next_command_document": "docs/current-status.md#用户现在执行什么",
-      "note": "Reuse and execute the selected six standalone cases with --model-ops. Select only gdn in the current production GE fusion interface, retaining base Conv state and RMS. Integrate CacheUpdate/Attention into production GE separately; numerical alignment and complete model target execution remain incomplete."
+      "note": "Preserve six selected standalone artifacts. Diagnose GDN buffer handoff and output writeback with original two OMC files and three output-fill trials per case; no model recompilation. Select only gdn in production fusion with base Conv/RMS. CacheUpdate/Attention production integration remains pending."
     },
     {
       "name": "accuracy",
       "status": "pending",
       "owner": "model-workflow",
       "evidence": "docs/validation.md",
-      "note": "Validate the selected final path, state continuity and full model quality."
+      "note": "Latest user report: both GDN core outputs are zero (relative L2=1); state relative L2 is 0.9603274111031198/0.9745207122180418. CacheUpdate/Attention only have SHAPE_ONLY_UNVERIFIED_CONTRACT diagnostics. No accuracy pass; full-model quality and state continuity remain pending."
     },
     {
       "name": "performance",

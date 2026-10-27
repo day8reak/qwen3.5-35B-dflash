@@ -29,9 +29,12 @@ class AiTensor {
   AIStatus Init(const TensorDimension*, HIAI_DataType);
   void* GetBuffer() const;
   std::uint32_t GetSize() const;
+  void ReplaceBufferForTest();
  private:
   std::vector<std::int32_t> data_;
   std::uint32_t bytes_=0;
+  mutable unsigned buffer_reads_=0;
+  int ordinal_=0;
 };
 class AiModelDescription {
  public:

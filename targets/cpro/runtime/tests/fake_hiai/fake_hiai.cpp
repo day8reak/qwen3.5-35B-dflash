@@ -8,6 +8,7 @@
 namespace {
 int tensors=0, clients=0;
 std::uint16_t* target_features=nullptr;
+void* diagnostic_query_buffer=nullptr;
 std::string Failure() { const auto* p=std::getenv("FAKE_HIAI_FAILURE"); return p?p:""; }
 std::uint32_t FeatureWidth() {
   return Failure()=="large-features"?1025:Failure()=="capture-limit"?1024:32;
@@ -49,7 +50,7 @@ struct CheckLeaks {
 } check_leaks;
 }
 namespace hiai {
-AiTensor::AiTensor() { ++tensors; }
+AiTensor::AiTensor() : ordinal_(++tensors) {}
 AiTensor::~AiTensor() { --tensors; }
 AIStatus AiTensor::Init(const TensorDimension* dim, HIAI_DataType type) {
   if (const auto* path=std::getenv("FAKE_HIAI_INIT_TRACE")) {
@@ -69,7 +70,21 @@ AIStatus AiTensor::Init(const TensorDimension* dim, HIAI_DataType type) {
   bytes_=n*(type==HIAI_DATATYPE_INT64?8:type==HIAI_DATATYPE_FLOAT16 || type==HIAI_DATATYPE_INT16?2:4);
   data_.resize((bytes_+3)/4); return AI_SUCCESS;
 }
-void* AiTensor::GetBuffer() const { return const_cast<std::int32_t*>(data_.data()); }
+void* AiTensor::GetBuffer() const {
+  auto* data = const_cast<std::int32_t*>(data_.data());
+  if (ordinal_==1) diagnostic_query_buffer=data;
+  if ((Failure()=="gdn-input-alias" && ordinal_==2) ||
+      (Failure()=="gdn-output-alias" && ordinal_==8)) return diagnostic_query_buffer;
+  // Init validation and zeroing read this pointer four times; SetInput reads
+  // it twice for memcpy. Corrupt only the subsequent diagnostic readback.
+  if (Failure()=="gdn-readback-corrupt" && ++buffer_reads_==7 && bytes_)
+    reinterpret_cast<std::uint8_t*>(data)[0] ^= 1;
+  return data;
+}
+void AiTensor::ReplaceBufferForTest() {
+  auto replacement=data_;
+  data_.swap(replacement);
+}
 std::uint32_t AiTensor::GetSize() const {
   return Failure()=="short-buffer"?1:Failure()=="oversized-buffer"?65537:bytes_;
 }
@@ -217,6 +232,19 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
       if(in.size()!=7 || out.size()!=2) return AI_FAILED;
       const auto effective=*static_cast<const std::int16_t*>(in[6]->GetBuffer());
       if(effective<1 || effective>s) return AI_FAILED;
+      if(Failure()=="gdn-no-write") { stamp=1; return AI_SUCCESS; }
+      if(Failure()=="gdn-partial-write" || Failure()=="gdn-zero-write") {
+        for(auto& tensor:out)
+          std::memset(tensor->GetBuffer(),0,Failure()=="gdn-partial-write"?64:tensor->GetSize());
+        stamp=1; return AI_SUCCESS;
+      }
+      if(Failure()=="gdn-replace-output") {
+        auto replacement=std::make_shared<AiTensor>();
+        TensorDimension dim({1,static_cast<std::uint32_t>(s),32,128});
+        if(replacement->Init(&dim,HIAI_DATATYPE_FLOAT16)!=AI_SUCCESS) return AI_FAILED;
+        out[0]=replacement;
+      }
+      if(Failure()=="gdn-replace-buffer") out[0]->ReplaceBufferForTest();
       std::fill_n(static_cast<std::uint16_t*>(out[0]->GetBuffer()),s*32*128,0x3800);
       if(out[1]->GetSize()==32*128*128*2)
         std::fill_n(static_cast<std::uint16_t*>(out[1]->GetBuffer()),32*128*128,0x3400);
