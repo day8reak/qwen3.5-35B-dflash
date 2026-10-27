@@ -16,11 +16,23 @@
 | ConvStateUpdate prefill/decode | PASSED | FAILED | NOT_RUN / NOT_RUN | NOT_RUN |
 | AdnRmsNorm | PASSED | FAILED | NOT_RUN / NOT_RUN | NOT_RUN |
 
-Attention已完成两种调用，先前的端口校验与导出器const接口错误未再阻止该批次。Conv仍在rank-4的y2（`[1,8192,1,S+3]`）维推后遇到格式配置失败；RMS仍找不到 `AdnRmsNorm` 维推函数。剩余三个失败用例使全部五类调用覆盖尚未完成，不能据此认定整个DDK没有相关kernel。
+Attention已完成两种调用，先前的端口校验与导出器const接口错误未再阻止该批次。Conv仍在rank-4的y2（`[1,8192,1,S+3]`）维推后遇到格式配置失败；RMS仍找不到 `AdnRmsNorm` 维推函数。历史五类调用未全部通过，不能据此认定整个DDK没有相关kernel；随后用户选择取消Conv/RMS自定义依赖，原失败保留，不改为通过。
 
 `DIAGNOSTIC_COMPLETE` 只表示诊断已生成，不是精度通过。旧GDN报告中的decode核心输出全零、prefill核心输出relL2约0.999，尚无新数值证据证明已经解决；实际NPU执行位置、完整模型与连续状态精度仍未验证。保留本批次的报告、编译工作目录和上板结果，供后续只读排查使用。
 
 本次补齐 `--fresh` 中Conv/RMS失败后的只读检查，并新增 `run_fused_probes.py --inspect-only --probe-run ...`：支持探针目录及all-ops批次，打印关键日志与安装注册文本摘要，保留完整复制证据；已成功重试的历史失败不再触发自动检查。29项板端编排主机测试通过，覆盖禁止编译/TBE/runner/HDC、原产物与DDK不变、损坏产物拒绝、模式冲突及fresh/重试回归。CLI帮助、29个文档Bash代码块及diff检查通过。本地验证使用模拟编译/设备夹具，未在用户DDK或设备执行，也未修复Conv/RMS本身。
+
+## 当前模型算子选择与保留的Conv/RMS失败
+
+用户随后回传 `fused-inspect-bc256ae0b0f4`：检查扫描176个文件、`limited=False`，未找到Conv/RMS注册文本。该结论只覆盖扫描范围，不证明整个DDK缺少实现；原始证据未在本地重新获取或校验。Conv的rank-4 y2后续格式配置失败及AdnRmsNorm维推缺失仍是当前已观察到的失败点。
+
+用户明确决定取消Conv状态更新和RMS的自定义算子依赖，采用本仓库已有基础算子路径；保留GDN、CacheUpdate、Attention三类六例。原工程的自定义Conv用于Cpro，AdnRmsNorm用于ND，Cpro RMS调用内置 `npu_rms_norm`，这两种原工程路径不能混为同一自定义依赖。
+
+`run_fused_probes.py --model-ops --probe-run ...` 复用保留批次中的六例OMC，只检查并上板这六例；`--all-ops` 仍可作为历史九例的可选诊断，原Conv/RMS失败不变。生产GE使用 `--fused-ops gdn`，沿用基础算子的Conv历史拼接/截取和RMS；当前融合接口仅支持 `gdn,conv_state,rms`，六例探针通过不表示CacheUpdate/Attention已接入生产GE图。
+
+本次选择改变依赖范围，不构成基础Conv/RMS在完整模型目标执行或数值精度上的通过证据。GDN历史数值偏差、所选六例精度、NPU执行位置、完整模型状态连续性和性能仍待验证；不继续新增Conv/RMS融合候选。
+
+本轮200项主机测试通过：35项板端编排、43项探针与筛选、122项GE目标构图及导出回归。新增覆盖旧Conv/RMS即使已编译也不上传、不执行、不参与模型模式比较；fresh模型模式只编译六例；旧清单和脚本保持不变。抽取后的板端脚本在全部512个用例子集上与旧生成器逐字节一致。34个文档Bash代码块、工作流JSON、CLI帮助及diff检查通过。GE/OMG/HIAI使用主机替身；没有新增真实DDK编译或上板证据。现有六例OMC未变，下一步读取原 `board-1/comparison/report.txt`，优先核对GDN数值。
 
 ## Docker环境恢复与删除产物后的重建
 

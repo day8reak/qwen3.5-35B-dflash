@@ -19,7 +19,7 @@ from qwen35_moe_dflash.elf_dynamic import dynamic_info
 from qwen35_moe_dflash.ge_fused.bindings import OperatorBindings, write_document_bindings
 from qwen35_moe_dflash.ge_fused.export import _step_file
 from qwen35_moe_dflash.ge_fused.probes import (
-    _CASES, _validate_probe_manifest, _wire, build_fused_probes, compare_fused_probes, inspect_fused_probes,
+    _CASES, _board_script, _validate_probe_manifest, _wire, build_fused_probes, compare_fused_probes, inspect_fused_probes,
 )
 from qwen35_moe_dflash.hashing import sha256_file
 from qwen35_moe_dflash.hdc_run import Hdc, _file_record, _positive, _relative, _text, _upload
@@ -27,24 +27,28 @@ from qwen35_moe_dflash.hiai_deployment import (
     BOARD_LIBRARY_SEARCH_PATHS, DDK_HCL_EXCLUDED, candidate_blockers, discover_libraries,
 )
 
+_MODEL_CASES = tuple(case for case in _CASES if case[1] in {"gdn", "cache", "attention"})
+
 
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
     source = result.add_mutually_exclusive_group()
     source.add_argument("--probe-run", default=os.environ.get("FUSED_PROBE_RUN"), help="existing compiled probe directory; defaults to FUSED_PROBE_RUN")
     source.add_argument("--fresh", action="store_true",
-                        help="with --all-ops, regenerate bindings, TBE diagnosis and all nine probes; ignore old run environment variables")
+                        help="with --model-ops or --all-ops, regenerate bindings, TBE diagnosis and selected probes; ignore old run environment variables")
     result.add_argument("--output", help="new directory below AI_RUN_DIR; otherwise allocated automatically")
     result.add_argument("--all-ops", action="store_true",
                         help="reuse compiled cases, compile missing cases for all five custom operators, then run all compiled cases")
+    result.add_argument("--model-ops", action="store_true",
+                        help="run only GDN, CacheUpdate and Attention (six cases); Conv/RMS use the base graph path")
     result.add_argument("--inspect-only", action="store_true",
                         help="read existing probe/all-ops logs and selected-DDK registration text; no compilation or board execution")
-    result.add_argument("--retry-cases", help="with --all-ops, compile only these missing comma-separated cases; --probe-run may be an earlier all-ops batch")
+    result.add_argument("--retry-cases", help="with --model-ops or --all-ops, compile only these missing cases; --probe-run may be an earlier batch")
     result.add_argument("--timeout-seconds", type=_positive, default=3600)
     return result
 
 
-def _prepare(root, *, allow_empty=False):
+def _prepare(root, *, allow_empty=False, case_names=None):
     manifest = _stateful_json(root / "manifest.json")
     _validate_probe_manifest(manifest)
     if manifest.get("platform") != "kirinx90":
@@ -56,8 +60,14 @@ def _prepare(root, *, allow_empty=False):
     if script != root / "bundle/run-board.sh":
         raise ValueError("probe batch script must be bundle/run-board.sh")
     uploads = {"bundle/run-board.sh": _file_record(script, "bundle/run-board.sh")}
+    if case_names is not None:
+        if (not case_names or len(set(case_names)) != len(case_names)
+                or not set(case_names) <= {case["name"] for case in manifest["cases"]}):
+            raise ValueError("selected cases must be unique names from this probe manifest")
     compiled = []
     for case in manifest["cases"]:
+        if case_names is not None and case["name"] not in case_names:
+            continue
         if case["status"] != "COMPILED":
             continue
         if case.get("compile") != "PASSED" or case.get("ddk_id") != manifest["ddk_id"]:
@@ -167,7 +177,15 @@ def execute(args, *, runner_cache=None):
         root = Path(_text(args.probe_run, "FUSED_PROBE_RUN / --probe-run")).expanduser().resolve()
         if out == root or root in out.parents:
             raise ValueError("board output must be separate from the compiled probe directory")
-        manifest, cases, uploads = _prepare(root)
+        selected = getattr(args, "selected_cases", None)
+        manifest, cases, uploads = _prepare(root, case_names=selected)
+        if selected is not None:
+            # Keep the recorded script immutable; stage a selected script under
+            # the same remote bundle path so relative per-case paths still work.
+            script = out / "selected-run-board.sh"
+            script.write_text(_board_script([case["name"] for case in cases]))
+            uploads = [entry for entry in uploads if entry["remote"] != "bundle/run-board.sh"]
+            uploads.insert(0, _file_record(script, "bundle/run-board.sh"))
         ddk = _text(manifest.get("ddk_id"), "compiled DDK identity")
         if os.environ.get("CPRO_DDK_ID") and os.environ["CPRO_DDK_ID"] != ddk:
             raise ValueError("CPRO_DDK_ID differs from the compiled probe manifest")
@@ -180,7 +198,7 @@ def execute(args, *, runner_cache=None):
         board = PurePosixPath("/data/local/tmp/qwen35-fused-" + uuid.uuid4().hex)
         result.update(probe_run=str(root), probe_manifest_sha256=sha256_file(root / "manifest.json"),
                       selected_cases=[case["name"] for case in cases],
-                      skipped_cases=[case["name"] for case in manifest["cases"] if case["status"] != "COMPILED"],
+                      skipped_cases=[case["name"] for case in manifest["cases"] if case["name"] not in {item["name"] for item in cases}],
                       ddk_id=ddk, serial=sn, hdc_server=bip, board_root=str(board))
         print("fused-board: checking HDC and board library paths", flush=True)
         private = os.environ.get("BOARD_HIAI_LIB_DIR")
@@ -276,7 +294,8 @@ def execute(args, *, runner_cache=None):
             try:
                 if sha256_file(root / "manifest.json") != result["probe_manifest_sha256"]:
                     raise ValueError("probe manifest changed during deployment")
-                comparison = compare_fused_probes(root, out / "results", out / "comparison")
+                comparison = compare_fused_probes(root, out / "results", out / "comparison",
+                                                 **({"case_names": selected} if selected is not None else {}))
                 result["comparison"] = str(out / "comparison/report.txt")
                 rows = {case["name"]: case for case in comparison["cases"]}
                 result["identity_errors"] = []
@@ -429,9 +448,10 @@ def _fresh_probes(out, result, args):
     ddk_id = _text(os.environ.get("CPRO_DDK_ID"), "CPRO_DDK_ID")
     ge = _text(os.environ.get("CANN_ROOT"), "CANN_ROOT")
     bindings, diagnosis, generated = out / "bindings.json", out / "diagnosis", out / "probes"
+    selected = [name for name, _, _ in (_MODEL_CASES if getattr(args, "model_ops", False) else _CASES)]
     result.update(fresh_stage="bindings", bindings=str(bindings), tbe_diagnosis=str(diagnosis),
                   generated_probes=str(generated), reused_cases=[],
-                  compiled_cases_requested=[name for name, _, _ in _CASES])
+                  compiled_cases_requested=selected)
     print("fused-all: fresh bindings from selected DDK FP16 GDN state source", flush=True)
     write_document_bindings(bindings, target="kirinx90", ddk_id=ddk_id,
                             gdn_initial_state_dtype="float16",
@@ -451,9 +471,9 @@ def _fresh_probes(out, result, args):
               and native.get("native_arguments") == ["kirinx90", "AiCore", "", "false"])
     result["tbe_compatibility_policy"] = "DIRECT_REQUEST_SUCCEEDED" if direct else "VALIDATE_DIAGNOSED_ADAPTER"
     result["fresh_stage"] = "compile"
-    print("fused-all: compiling all nine fresh cases once", flush=True)
+    print(f"fused-probes: compiling {len(selected)} selected fresh cases once", flush=True)
     manifest = build_fused_probes(generated, bindings, ge_root=ge, ddk_root=ddk, ddk_id=ddk_id,
-                                  cases="all", conv_history_width=4, timeout_seconds=args.timeout_seconds,
+                                  cases=selected, conv_history_width=4, timeout_seconds=args.timeout_seconds,
                                   tbe_diagnosis=None if direct else diagnosis)
     result["fresh_stage"] = "probes-built"
     return [(generated, manifest)], set()
@@ -462,14 +482,19 @@ def _fresh_probes(out, result, args):
 def run_all(args):
     """Keep old and new manifests separate; reuse only their recorded binaries."""
     storage = Path(_text(os.environ.get("AI_RUN_DIR"), "AI_RUN_DIR"))
-    out = output_path(args.output or storage / ("fused-all-" + uuid.uuid4().hex[:12]))
+    model_scope = getattr(args, "model_ops", False)
+    selected = _MODEL_CASES if model_scope else _CASES
+    out = output_path(args.output or storage / (("fused-model-" if model_scope else "fused-all-") + uuid.uuid4().hex[:12]))
     out.mkdir(parents=True, exist_ok=False)
     result = {"status": "FAILED", "output": str(out), "executions": [], "probe_runs": [],
               "model_compilation": "FRESH_ALL_CASES" if getattr(args, "fresh", False) else "MISSING_CASES_ONLY", "numerical_acceptance": "NOT_DEFINED",
               "runtime_placement": "UNVERIFIED", "cases": []}
+    result.update(requested_scope="MODEL_CUSTOM_OPS" if model_scope else "ALL_DOCUMENTED_OPS",
+                  selected_cases=[name for name, _, _ in selected],
+                  excluded_cases=[name for name, _, _ in _CASES if name not in {item[0] for item in selected}])
     rows = {name: {"name": name, "role": role, "construction": "NOT_RUN", "export": "NOT_RUN",
                    "compile": "NOT_RUN", "load": "NOT_RUN", "process": "NOT_RUN", "numerical": "NOT_RUN"}
-            for name, role, _ in _CASES}
+            for name, role, _ in selected}
     try:
         requested = getattr(args, "retry_cases", None)
         if getattr(args, "fresh", False):
@@ -479,6 +504,7 @@ def run_all(args):
             if root == out or root in out.parents:
                 raise ValueError("batch output must be separate from the existing probe directory")
             groups, reusable = _probe_groups(root, out)
+            reusable.intersection_update(rows)
             # A recreated batch owns its diagnosis. Keep that explicit path
             # across retries so a new shell need not export a transient job ID.
             # An explicitly configured TBE_DIAG_JOB still takes precedence.
@@ -521,7 +547,7 @@ def run_all(args):
         successful = {case["name"] for _, manifest in groups for case in manifest["cases"]
                       if case.get("status") == "COMPILED"}
         failed = next((path for path, manifest in reversed(groups)
-                       if any(case["role"] in {"conv_state", "rms"} and case.get("compile") == "FAILED"
+                       if any(case["name"] in rows and case["role"] in {"conv_state", "rms"} and case.get("compile") == "FAILED"
                               and case["name"] not in successful for case in manifest["cases"])), None)
         if failed is not None:
             try:
@@ -536,27 +562,33 @@ def run_all(args):
             result["probe_runs"].append(str(probe_run))
             result["probe_manifests"][str(probe_run)] = sha256_file(probe_run / "manifest.json")
             for case in manifest["cases"]:
+                if case["name"] not in rows:
+                    continue
                 if case["name"] in reusable and case.get("status") != "COMPILED":
                     continue
                 rows[case["name"]].pop("error", None)
                 rows[case["name"]].update(load="NOT_RUN", process="NOT_RUN", numerical="NOT_RUN")
                 rows[case["name"]].update({key: case[key] for key in
                     ("construction", "export", "compile", "error") if key in case}, probe_run=str(probe_run))
-            if not any(case.get("status") == "COMPILED" for case in manifest["cases"]):
+            if not any(case["name"] in rows and case.get("status") == "COMPILED" for case in manifest["cases"]):
                 continue
             board_args = argparse.Namespace(**vars(args))
             board_args.probe_run, board_args.output = str(probe_run), str(out / f"board-{index + 1}")
+            if model_scope:
+                board_args.selected_cases = [case["name"] for case in manifest["cases"] if case["name"] in rows]
             try:
                 execution = execute(board_args, runner_cache=runner_cache)
                 result["executions"].append(execution)
                 comparison = Path(board_args.output) / "comparison/report.json"
                 if comparison.is_file():
                     for case in _stateful_json(comparison)["cases"]:
+                        if case["name"] not in rows:
+                            continue
                         if rows[case["name"]].get("probe_run") != str(probe_run):
                             continue
                         # A failed legacy case can be retried by the new group.
                         rows[case["name"]].update({key: case[key] for key in
-                            ("load", "process", "numerical", "error") if key in case})
+                            ("load", "process", "numerical", "diagnostics", "error") if key in case})
             except Exception as error:
                 result["executions"].append({"status": "FAILED", "output": board_args.output,
                                              "error": f"{type(error).__name__}: {error}"})
@@ -567,13 +599,18 @@ def run_all(args):
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
     result["cases"] = list(rows.values())
-    lines = ["Five custom operator invocation coverage", "",
+    lines = ["Three selected custom operator invocation coverage" if model_scope else "Five custom operator invocation coverage", "",
              "case | construction | export | compile | load | process | numerical diagnostic"]
     for row in rows.values():
         lines.append(" | ".join(str(row[key]) for key in
             ("name", "construction", "export", "compile", "load", "process", "numerical")))
         if row.get("error"):
             lines.append("  " + _error_detail(row["error"]))
+        for diagnostic in row.get("diagnostics", []):
+            summary = {key: diagnostic[key] for key in (
+                "name", "reference", "raw_nonfinite", "actual_nonzero", "max_abs_error",
+                "relative_l2", "all_zero_with_nonzero_reference") if key in diagnostic}
+            lines.append("  " + json.dumps(summary))
     for item in result["executions"]:
         lines.append(f"Board result: {item['output']} ({item['status']})")
         if item.get("error"):
@@ -600,8 +637,13 @@ def run_all(args):
     for key in ("error", "compile_error"):
         if key in result:
             lines.append(result[key])
-    lines += ["", "Numerical acceptance is NOT_DEFINED; execution placement remains UNVERIFIED.",
-              "Conv width 4 is an explicit invocation candidate; its state ordering is not validated."]
+    if model_scope:
+        lines += ["", "Conv/RMS custom probes excluded by model policy; their historical results are unchanged.",
+                  "Use --fused-ops gdn for the GE target's existing base Conv/RMS path.",
+                  "Cache/Attention standalone probes do not establish integration into the full GE target."]
+    else:
+        lines += ["", "Conv width 4 is an explicit invocation candidate; its state ordering is not validated."]
+    lines.append("Numerical acceptance is NOT_DEFINED; execution placement remains UNVERIFIED.")
     (out / "report.txt").write_text("\n".join(lines) + "\n")
     result["comparison"] = str(out / "report.txt")
     save_json(out / "result.json", result)
@@ -611,13 +653,15 @@ def run_all(args):
 def main(argv=None):
     try:
         args = parser().parse_args(argv)
-        if args.inspect_only and (args.fresh or args.all_ops or args.retry_cases is not None):
-            raise ValueError("--inspect-only cannot be combined with --fresh, --all-ops or --retry-cases")
-        if args.fresh and (not args.all_ops or args.retry_cases is not None):
-            raise ValueError("--fresh requires --all-ops and cannot be combined with --retry-cases")
-        if args.retry_cases is not None and not args.all_ops:
-            raise ValueError("--retry-cases requires --all-ops")
-        result = inspect_existing(args) if args.inspect_only else run_all(args) if args.all_ops else execute(args)
+        if args.all_ops and args.model_ops:
+            raise ValueError("choose --model-ops or --all-ops")
+        if args.inspect_only and (args.fresh or args.all_ops or args.model_ops or args.retry_cases is not None):
+            raise ValueError("--inspect-only cannot be combined with execution modes")
+        if args.fresh and (not (args.all_ops or args.model_ops) or args.retry_cases is not None):
+            raise ValueError("--fresh requires --model-ops or --all-ops and cannot be combined with --retry-cases")
+        if args.retry_cases is not None and not (args.all_ops or args.model_ops):
+            raise ValueError("--retry-cases requires --model-ops or --all-ops")
+        result = inspect_existing(args) if args.inspect_only else run_all(args) if args.all_ops or args.model_ops else execute(args)
     except Exception as error:
         print(f"fused-board: {type(error).__name__}: {error}", file=sys.stderr)
         return 1

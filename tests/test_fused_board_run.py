@@ -406,6 +406,86 @@ def _tree_hashes(root):
             for path in root.rglob('*') if path.is_file()}
 
 
+MODEL_CASES = ['gdn_prefill', 'gdn_decode', 'cache_prefill', 'cache_decode',
+               'attention_prefill', 'attention_decode']
+OPTIONAL_CASES = ['conv_prefill', 'conv_decode', 'rms']
+
+
+def _assert_model_board_selection(case, result):
+    assert result['status'] == 'EXECUTION_COMPLETE', result
+    assert result['selected_cases'] == MODEL_CASES
+    assert result['excluded_cases'] == OPTIONAL_CASES
+    assert [row['name'] for row in result['cases']] == MODEL_CASES
+    assert all(row['process'] == 'PASSED' for row in result['cases'])
+    assert len(result['executions']) == 1 and len(case['built']) == 1
+    board_output = Path(result['executions'][0]['output'])
+    calls = _calls(case, runner=True)
+    assert calls[0] == ['--probe'] and len(calls) == 7
+    invocation_names = [Path(dict(zip(row[::2], row[1::2]))['--fused-op-step']).parent.name
+                        for row in calls[1:]]
+    assert invocation_names == MODEL_CASES
+    upload = json.loads((board_output / 'upload-plan.json').read_text())
+    remote_names = [item['remote'] for item in upload['files']]
+    assert all(not any('/' + name + '/' in remote for name in OPTIONAL_CASES) for remote in remote_names)
+    assert all(any('/' + name + '/step.tsv' in remote for remote in remote_names) for name in MODEL_CASES)
+    selected_script = board_output / 'selected-run-board.sh'
+    assert selected_script.is_file()
+    text = selected_script.read_text()
+    assert all(name + '/step.tsv' in text for name in MODEL_CASES)
+    assert all(name + '/step.tsv' not in text for name in OPTIONAL_CASES)
+    script_upload = next(item for item in upload['files'] if item['remote'] == 'bundle/run-board.sh')
+    assert Path(script_upload['local']) == selected_script
+    comparison = json.loads((board_output / 'comparison/report.json').read_text())
+    assert [row['name'] for row in comparison['cases']] == MODEL_CASES
+    assert all(row['process'] == 'PASSED' for row in comparison['cases'])
+
+
+@pytest.mark.parametrize('optional_compiled,input_kind', [(False, 'manifest'), (True, 'batch')],
+                         ids=['failed-optional-manifest', 'compiled-optional-batch'])
+def test_model_ops_reuses_only_six_cases_even_when_optional_models_are_compiled(
+        case, monkeypatch, optional_compiled, input_kind):
+    """Simulated HDC transport must never send or execute Conv/RMS bundles."""
+    batch = case['root'] / 'recorded-nine-case-batch'
+    old = batch / 'probes'
+
+    def export(folder, *unused):
+        (folder / 'probe.air').write_bytes(b'SIMULATED AIR; no GE execution')
+        return {'simulation': True}
+
+    def compile_one(folder, *unused):
+        if folder.name in OPTIONAL_CASES and not optional_compiled:
+            raise RuntimeError('SIMULATED optional Conv/RMS compilation failure')
+        (folder / 'omc').mkdir()
+        (folder / 'omc/probe.omc').write_bytes(b'SIMULATED OMC; no model compilation')
+        return {'simulation': True}
+
+    with monkeypatch.context() as build:
+        build.setattr(probes, '_export_case', export)
+        build.setattr(probes, '_compile_case', compile_one)
+        probes.build_fused_probes(old, case['probe'] / 'bindings.json', ge_root=case['root'],
+                                  ddk_root=case['root'], ddk_id='SIMULATED-DDK', cases='all',
+                                  conv_history_width=4)
+    (batch / 'result.json').write_text(json.dumps({'model_compilation': 'FRESH_ALL_CASES',
+        'probe_runs': [str(old)], 'probe_manifests': {str(old): sha256_file(old / 'manifest.json')}}))
+    original = _tree_hashes(batch)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('model-ops with recorded required cases must not compile, diagnose or inspect')
+
+    for name in ('_compile_missing', 'build_fused_probes', 'check_tbe_platform', 'inspect_fused_probes'):
+        monkeypatch.setattr(case['module'], name, forbidden)
+    source = old if input_kind == 'manifest' else batch
+    code = case['module'].main(['--model-ops', '--probe-run', str(source),
+                               '--output', str(case['output']), '--timeout-seconds', '20'])
+    result = json.loads((case['output'] / 'result.json').read_text())
+    assert code == 0, result
+    _assert_model_board_selection(case, result)
+    assert result['compiled_cases_requested'] == []
+    assert result['reused_cases'] == sorted(MODEL_CASES)
+    assert not result.get('inspection') and not result.get('inspection_error')
+    assert original == _tree_hashes(batch)
+
+
 def _forbid_inspection_execution(case, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail('inspect-only must not compile, initialize TBE, build a runner or access the board')
@@ -615,6 +695,54 @@ finalGlobal.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(last_recurrent_state
     return ddk, source
 
 
+def test_fresh_model_ops_compiles_six_once_and_never_inspects_optional_failures(case, monkeypatch):
+    ddk, _ = _fresh_ddk(case, monkeypatch)
+    compiled, diagnosed = [], []
+
+    def diagnose(root, output, **kwargs):
+        diagnosed.append(root)
+        output.mkdir()
+        report = {'status': 'DIAGNOSIS_COMPLETE', 'cases': [{
+            'name': 'current_omg_first_requested', 'status': 'RAW_UPDATE_SUCCEEDED', 'returncode': 0,
+            'native': {'stage': 'COMPLETE', 'native_success': True,
+                       'initialized_soc_preserved': True,
+                       'native_arguments': ['kirinx90', 'AiCore', '', 'false']}}]}
+        (output / 'report.json').write_text(json.dumps(report))
+        (output / 'report.txt').write_text('SIMULATED TBE diagnosis; no native calls')
+        return report
+
+    def export(folder, *unused):
+        (folder / 'probe.air').write_bytes(b'SIMULATED AIR; no GE execution')
+        return {'simulation': True}
+
+    def compile_one(folder, selected_ddk, timeout, diagnosis):
+        assert folder.name in MODEL_CASES and selected_ddk == ddk and diagnosis is None
+        compiled.append(folder.name)
+        (folder / 'omc').mkdir()
+        (folder / 'omc/probe.omc').write_bytes(b'SIMULATED OMC; no model compilation')
+        return {'simulation': True}
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('fresh model scope must not retry compilation or inspect excluded Conv/RMS')
+
+    monkeypatch.setattr(case['module'], 'check_tbe_platform', diagnose)
+    monkeypatch.setattr(case['module'], '_compile_missing', forbidden)
+    monkeypatch.setattr(case['module'], 'inspect_fused_probes', forbidden)
+    monkeypatch.setattr(probes, '_export_case', export)
+    monkeypatch.setattr(probes, '_compile_case', compile_one)
+    code = case['module'].main(['--model-ops', '--fresh', '--output', str(case['output']),
+                               '--timeout-seconds', '20'])
+    result = json.loads((case['output'] / 'result.json').read_text())
+    assert code == 0, result
+    _assert_model_board_selection(case, result)
+    assert compiled == MODEL_CASES and diagnosed == [ddk]
+    assert result['compiled_cases_requested'] == MODEL_CASES and result['reused_cases'] == []
+    assert not result.get('inspection') and not result.get('inspection_error')
+    manifest = json.loads((case['output'] / 'probes/manifest.json').read_text())
+    assert manifest['selected_cases'] == MODEL_CASES
+    assert not any((case['output'] / 'probes/cases' / name).exists() for name in OPTIONAL_CASES)
+
+
 @pytest.mark.parametrize('direct_update', [False, True], ids=['diagnosed-adapter', 'native-request-succeeds'])
 def test_fresh_all_ops_rebuilds_deleted_artifacts_once_and_can_resume(case, monkeypatch, direct_update):
     """Host substitutes for GE/OMG/device only; source binding/artifacts are real."""
@@ -740,3 +868,28 @@ def test_fresh_requires_all_ops_and_rejects_retry_or_explicit_probe(case):
         case['module'].main(['--all-ops', '--fresh', '--probe-run', str(case['probe'])])
     assert error.value.code == 2
     assert not case['output'].exists() and not _calls(case)
+
+
+@pytest.mark.parametrize('conflict', ['--all-ops', '--inspect-only'])
+def test_model_ops_rejects_other_scope_modes_before_work(case, monkeypatch, conflict):
+    def forbidden(*args, **kwargs):
+        pytest.fail('conflicting scope modes must be rejected before any workflow')
+
+    for name in ('run_all', 'execute', 'inspect_existing'):
+        monkeypatch.setattr(case['module'], name, forbidden)
+    assert case['module'].main(['--model-ops', conflict, '--output', str(case['output'])]) == 1
+    assert not case['output'].exists() and not _calls(case)
+
+
+def test_model_ops_rejects_retrying_excluded_rms(case, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail('excluded RMS retry must not compile, inspect or access the board')
+
+    for name in ('_compile_missing', 'build_fused_probes', 'check_tbe_platform',
+                 'inspect_fused_probes', '_build_runner', 'execute', 'Hdc'):
+        monkeypatch.setattr(case['module'], name, forbidden)
+    code = case['module'].main(['--model-ops', '--probe-run', str(case['probe']),
+                               '--retry-cases', 'rms', '--output', str(case['output'])])
+    result = json.loads((case['output'] / 'result.json').read_text())
+    assert code == 1 and result['status'] == 'FAILED' and '--retry-cases' in result['error']
+    assert not result['executions'] and not _calls(case)

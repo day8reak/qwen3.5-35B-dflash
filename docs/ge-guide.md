@@ -118,32 +118,16 @@ python3 "$GE_MODEL_TOOL" compile \
 
 ## 融合算子调用探针
 
-覆盖文档的五类自定义算子，共9例：GDN、conv-state、CacheUpdate、分页Attention各prefill/decode，以及RMS。使用完整模型的头数和通道尺寸，不需要模型权重。先按[环境配置](environment-setup.md)依次恢复当前DDK环境和剩余固定配置。
+当前模型范围为GDN、CacheUpdate、分页Attention三类，共六例。Conv状态和RMS自定义算子退出必需项；GE完整模型使用 `--fused-ops gdn` 选择已有基础Conv/RMS路径。Cache/Attention独立探针与这条GE模型路径的整合仍是后续工作。
 
-当前已有批次 `fused-all-f6b81ead7ae8`，GDN、CacheUpdate、Attention各prefill/decode共六例已完成导出、编译、加载和执行；数值仍未验收。先读取该批次的Conv/RMS失败证据：
+当前批次 `fused-all-f6b81ead7ae8` 中所选六例已完成调用，数值未验收。继续执行时直接复用这些OMC：
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --inspect-only \
+python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --model-ops \
   --probe-run "$AI_RUN_DIR/fused-all-f6b81ead7ae8"
 ```
 
-该命令自动分配新的检查目录，只读已有报告、日志和安装接口，不重新编译、不调用HDC，也不修改原批次。
-
-**仅首次开始或运行产物已删除时**，才使用完整重建入口；已有批次无需再执行：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
-```
-
-它自动生成安装源码约束的FP16 GDN状态绑定和TBE平台诊断，尝试导出/编译九例AIR/OMC，并将编译成功的case上板执行。无需先执行本页手动生成bindings、逐项编译或打包的命令；结果保存在新批次的 `report.txt`，详细目录见[板端探针说明](board-guide.md#融合算子调用探针)。
-
-**只有修复Conv/RMS对应绑定或安装问题后**，才复用保留批次重试缺项。Attention两例已完成调用，无需因旧导出错误重跑；命令不依赖 `FUSED_PROBE_RUN` 环境变量：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
-  --probe-run "$AI_RUN_DIR/fused-all-f6b81ead7ae8" \
-  --retry-cases conv_prefill,conv_decode,rms
-```
+只有首次开始或产物已删除时才改用 `--model-ops --fresh`，自动生成绑定、TBE诊断及所选六例。原Conv/RMS失败记录保留，不影响模型模式的调用统计。`--all-ops` 留作可选的文档五类九例诊断；只读现有记录仍可用 `--inspect-only`。详细目录见[板端探针说明](board-guide.md#融合算子调用探针)。
 
 **以下仅供单独调试GE导出/编译。** 需自行准备与安装版状态ABI一致的 `GE_CUSTOM_BINDINGS`；必要的TBE诊断也需单独准备。它不自动上板，已使用上述fresh入口时不需要再执行：
 

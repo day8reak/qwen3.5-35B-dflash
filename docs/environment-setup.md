@@ -64,16 +64,16 @@ git pull --ff-only &&
 source targets/cpro/scripts/env.sh
 ```
 
-当前已保留新批次 `fused-all-f6b81ead7ae8`，GDN、CacheUpdate、Attention六例已完成调用，无需再次 `--fresh`。加载成功后按[GE指南的只读检查](ge-guide.md#融合算子调用探针)读取该批次，继续定位Conv/RMS。
+当前已保留新批次 `fused-all-f6b81ead7ae8`，GDN、CacheUpdate、Attention六例已完成调用，无需再次 `--fresh`。加载成功后按[GE指南](ge-guide.md#融合算子调用探针)用 `--model-ops` 复用这六例；Conv/RMS自定义算子已退出当前必需范围。
 
 **仅首次开始或运行产物已清空时**，才从零重建：
 
 ```bash
 source targets/cpro/scripts/env.sh &&
-  python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
+  python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --model-ops --fresh
 ```
 
-此入口自动生成FP16 GDN状态绑定、TBE平台诊断，尝试导出/编译全部五类九例AIR/OMC，再构建runner并执行编译成功的case。无需另export bindings、诊断或探针路径；不读取或修改保留的权重。编译失败仍列入总表，命令不是宣称已修复Conv/RMS或数值问题。
+此入口自动生成FP16 GDN状态绑定、TBE平台诊断，尝试导出/编译所选三类六例AIR/OMC，再构建runner并执行编译成功的case。无需另export bindings、诊断或探针路径；不读取或修改保留的权重。编译失败仍列入总表，命令不是宣称已修复Conv/RMS或数值问题。
 
 ### 配置字段说明
 
@@ -164,13 +164,7 @@ source targets/cpro/scripts/env.sh
 
 ### 后续仅重试指定用例
 
-当前Attention两例已完成调用，不再重试它们。**只有修复Conv/RMS对应绑定或安装问题后**，才复用保留批次重试这三例；TBE诊断自动沿用，不必另找 `TBE_DIAG_JOB`：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
-  --probe-run "$AI_RUN_DIR/fused-all-f6b81ead7ae8" \
-  --retry-cases conv_prefill,conv_decode,rms
-```
+用 `--model-ops --probe-run` 复用保留批次；只有所选六例缺项才会编译。确需限制重试范围时，附加 `--retry-cases` 和所选用例名。Conv/RMS已改走基础路径，不再作为模型模式的缺项重试；`--all-ops` 保留旧五类诊断口径，历史失败不改写。
 
 ## 按需检查与其他模型流程
 

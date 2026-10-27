@@ -597,6 +597,39 @@ def _bundle_case(root, case):
     return _record(folder / "manifest.json", root)
 
 
+def _board_script(cases):
+    """Return the board batch script for ordered, already compiled case names."""
+    known = {name for name, _, _ in _CASES}
+    if (not isinstance(cases, (list, tuple)) or any(not isinstance(name, str) for name in cases)
+            or len(set(cases)) != len(cases) or not set(cases) <= known):
+        raise ValueError("board script cases must be unique known probe names")
+    script = '''#!/bin/sh
+set -u
+[ "$#" -eq 5 ] || { echo "usage: run-board.sh RUNNER NEW_RESULTS_DIR RUNTIME_VERSION DDK_ID FIRMWARE_ID" >&2; exit 2; }
+runner=$1
+results=$2
+runtime=$3
+ddk=$4
+firmware=$5
+bundle=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+[ ! -e "$results" ] || { echo "results directory already exists" >&2; exit 2; }
+mkdir -p "$results" || exit 2
+overall=0
+'''
+    if not cases:
+        script += '''echo "No COMPILED fused operator cases; export and compile the source graphs before running." >&2
+printf '%s\\n' "No COMPILED cases; no operator invocation attempted." >"$results/run-error.txt"
+exit 2
+'''
+    for name in cases:
+        script += f'''"$runner" --fused-op-step "$bundle/{name}/step.tsv" --output "$results/{name}" --expected-runtime-version "$runtime" --ddk-id "$ddk" --firmware-id "$firmware" >"$results/{name}.stdout" 2>"$results/{name}.stderr"
+code=$?
+printf '%s\\n' "$code" >"$results/{name}.exitcode"
+[ "$code" -eq 0 ] || overall=1
+'''
+    return script + 'exit "$overall"\n'
+
+
 def build_fused_probes(output_dir, bindings_path, *, ge_root=None, ddk_root=None, ddk_id=None,
                        cxx="c++", cxx11_abi=0, timeout_seconds=3600, cases=None, tbe_diagnosis=None,
                        conv_history_width=3):
@@ -655,32 +688,7 @@ def build_fused_probes(output_dir, bindings_path, *, ge_root=None, ddk_root=None
             print(json.dumps({"case": name, "export": case["export"], "compile": case["compile"],
                               "completed": len(cases), "total": len(selected)}), flush=True)
     compiled = [case["name"] for case in cases if case["status"] == "COMPILED"]
-    script = '''#!/bin/sh
-set -u
-[ "$#" -eq 5 ] || { echo "usage: run-board.sh RUNNER NEW_RESULTS_DIR RUNTIME_VERSION DDK_ID FIRMWARE_ID" >&2; exit 2; }
-runner=$1
-results=$2
-runtime=$3
-ddk=$4
-firmware=$5
-bundle=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-[ ! -e "$results" ] || { echo "results directory already exists" >&2; exit 2; }
-mkdir -p "$results" || exit 2
-overall=0
-'''
-    if not compiled:
-        script += '''echo "No COMPILED fused operator cases; export and compile the source graphs before running." >&2
-printf '%s\\n' "No COMPILED cases; no operator invocation attempted." >"$results/run-error.txt"
-exit 2
-'''
-    for name in compiled:
-        script += f'''"$runner" --fused-op-step "$bundle/{name}/step.tsv" --output "$results/{name}" --expected-runtime-version "$runtime" --ddk-id "$ddk" --firmware-id "$firmware" >"$results/{name}.stdout" 2>"$results/{name}.stderr"
-code=$?
-printf '%s\\n' "$code" >"$results/{name}.exitcode"
-[ "$code" -eq 0 ] || overall=1
-'''
-    script += 'exit "$overall"\n'
-    (root / "bundle/run-board.sh").write_text(script)
+    (root / "bundle/run-board.sh").write_text(_board_script(compiled))
     (root / "bundle/run-board.sh").chmod(0o700)
     statuses = {case["status"] for case in cases}
     result = {"schema_version": 1, "artifact_kind": "qwen35-fused-op-probes",
@@ -754,18 +762,27 @@ def _diagnostic(actual, reference, desc):
     return result
 
 
-def compare_fused_probes(probe_run, board_run, output_dir, *, allow_host_fake=False):
+def compare_fused_probes(probe_run, board_run, output_dir, *, allow_host_fake=False, case_names=None):
     """Check complete native result identity, then report threshold-free errors."""
     if type(allow_host_fake) is not bool:
         raise ValueError("allow_host_fake must be boolean")
     root, board = Path(probe_run).resolve(), Path(board_run).resolve()
     manifest = _stateful_json(root / "manifest.json")
     _validate_probe_manifest(manifest)
+    names = {case["name"] for case in manifest["cases"]}
+    if case_names is not None:
+        if (not isinstance(case_names, (list, tuple)) or not case_names
+                or any(not isinstance(name, str) for name in case_names)
+                or len(set(case_names)) != len(case_names) or not set(case_names) <= names):
+            raise ValueError("case_names must be a nonempty unique subset of probe manifest names")
+        names = set(case_names)
     bindings = OperatorBindings.from_file(_step_file(root, manifest["bindings"]))
     if bindings.manifest() != manifest["binding_contract"]:
         raise ValueError("probe bindings differ from recorded contract")
     cases = []
     for original in manifest["cases"]:
+        if original["name"] not in names:
+            continue
         case = {key: original.get(key, "NOT_RUN") for key in
                 ("name", "construction", "export", "compile", "load", "process", "numerical", "placement")}
         case["placement"] = "UNVERIFIED"

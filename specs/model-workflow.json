@@ -3,7 +3,7 @@
   "updated": "2026-10-27",
   "active_phase": "integration",
   "delivery_status": "HOST_IMPLEMENTED_DEVICE_INTEGRATION_PENDING",
-  "run_id": "20261027T083100Z-6254-881432",
+  "run_id": "20261027T112039Z-18164-c4a3d9",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -52,24 +52,22 @@
         "prepare-stateful-step",
         "native --stateful-step with prefill/decode file handoff"
       ],
-      "full_structure_command": "python targets/cpro/scripts/direct_model_air.py build-full-structure --sequence-length 8 --expert-dispatch selected --fused-ops none --output NEW_DIRECTORY",
+      "full_structure_command": "python3 targets/cpro/scripts/direct_model_air.py build-full-structure --sequence-length 8 --expert-dispatch selected --fused-ops gdn --bindings BINDINGS_JSON --output NEW_DIRECTORY",
       "full_structure_scope": "Full stateful target plus full prefix-recompute draft GE nodes/edges, C++ and recipe; weights unbound, not AIR",
       "fused_operator_probes": {
         "operators": [
           "ChunkGatedDeltaRule",
-          "LinearAttentionConvstateUpdate",
-          "AdnRmsNorm",
           "CacheUpdate",
           "AdnFusedInferAttention"
         ],
-        "cases": 9,
-        "scope": "Standalone calls only; real export/compile/load/process/numerical and placement statuses recorded separately",
+        "cases": 6,
+        "scope": "User-selected model operator calls: GDN, CacheUpdate and Attention prefill/decode. The original nine-case all-ops diagnostics and Conv/RMS failures remain historical optional evidence. Export, compile, load, process, numerical and placement statuses are separate.",
         "latest_user_report": {
           "date": "2026-10-27",
           "source": "USER_PASTED_REPORT",
           "artifact_hash_verification": "NOT_RECHECKED",
           "platform": "kirinx90",
-          "board_run_name": "fused-all-97b7612ef879",
+          "board_run_name": "fused-all-f6b81ead7ae8",
           "status": "FAILED",
           "case_groups": [
             {
@@ -77,7 +75,9 @@
                 "gdn_prefill",
                 "gdn_decode",
                 "cache_prefill",
-                "cache_decode"
+                "cache_decode",
+                "attention_prefill",
+                "attention_decode"
               ],
               "construction": "PASSED",
               "export": "PASSED",
@@ -98,40 +98,23 @@
               "load": "NOT_RUN",
               "process": "NOT_RUN",
               "numerical": "NOT_RUN"
-            },
-            {
-              "cases": [
-                "attention_prefill",
-                "attention_decode"
-              ],
-              "construction": "PASSED",
-              "export": "FAILED",
-              "compile": "NOT_RUN",
-              "load": "NOT_RUN",
-              "process": "NOT_RUN",
-              "numerical": "NOT_RUN"
             }
           ],
           "placement": "UNVERIFIED",
-          "scope": "User pasted nine-case summary and subsequent detailed logs. GDN/Cache load and process completed; Cache has no numerical golden and prior GDN numerical mismatch remains unresolved. Original artifacts not obtained for local hash validation.",
+          "scope": "User pasted fresh nine-case summary and logs after environment recovery. GDN, CacheUpdate and Attention each completed export/compile/load/process for prefill and decode (six cases). Conv and AdnRmsNorm compile failed (three cases). Numerical acceptance remains undefined; prior GDN mismatch is not demonstrated resolved. Original artifacts not obtained for local hash validation.",
           "next_command_document": "docs/current-status.md#用户现在执行什么",
-          "next_action": "Retry Attention with corrected optional-port verification; reuse previous GDN/Cache OMC and inspect installed Conv/RMS interfaces and format registration without changing shared DDK.",
+          "next_action": "Read the preserved board-1/comparison/report.txt numerical diagnostics first; no repeat device execution is required for unchanged OMC files. Keep Conv state and RMS on base operators; use --model-ops only when a new six-case execution is needed.",
           "failures": {
             "conv_prefill_decode": {
               "stage": "compile",
-              "observed": "Width-4 input passed initial shape inference; y2 [1,8192,1,11] / [1,8192,1,4], then generated_lib reports Not supported OP and Get format configs failed. This does not prove global kernel absence.",
-              "tbe_compatibility_applied_count": 0
+              "observed": "Width-4 state passed initial inference; y2 is rank 4 [1,8192,1,S+3], followed by format configuration failure. This does not prove global kernel absence."
             },
             "rms": {
               "stage": "compile",
-              "observed": "Get AdnRmsNorm infershape func failed.",
-              "tbe_compatibility_applied_count": 0
-            },
-            "attention_prefill_decode": {
-              "stage": "export",
-              "observed": "GE recipe failed: input port order mismatch. Source verifier incorrectly treats compact connected ports as complete schema slots."
+              "observed": "Get AdnRmsNorm infershape func failed."
             }
-          }
+          },
+          "numerical_acceptance": "NOT_DEFINED"
         },
         "previous_gdn_user_report": {
           "date": "2026-10-27",
@@ -177,10 +160,136 @@
           "status": "FAILED",
           "observed": "CANN 9.1 GNode::GetInputIndexByName is non-const; helper incorrectly accepted const GNode&.",
           "repair": "Use mutable GNode reference; regression fixture now uses the observed non-const API.",
-          "target_revalidation": "PENDING",
-          "registration_scan": "No matches in scanned text roots; implementation availability remains unresolved."
+          "target_revalidation": "USER_REPORTED_EXPORT_COMPILE_LOAD_PROCESS_PASSED_IN_FRESH_BATCH",
+          "registration_scan": "No matches in scanned text roots; implementation availability remains unresolved.",
+          "superseded_by": "fused-all-f6b81ead7ae8"
+        },
+        "historical_user_reports": [
+          {
+            "date": "2026-10-27",
+            "source": "USER_PASTED_REPORT",
+            "artifact_hash_verification": "NOT_RECHECKED",
+            "platform": "kirinx90",
+            "board_run_name": "fused-all-97b7612ef879",
+            "status": "FAILED",
+            "case_groups": [
+              {
+                "cases": [
+                  "gdn_prefill",
+                  "gdn_decode",
+                  "cache_prefill",
+                  "cache_decode"
+                ],
+                "construction": "PASSED",
+                "export": "PASSED",
+                "compile": "PASSED",
+                "load": "PASSED",
+                "process": "PASSED",
+                "numerical": "DIAGNOSTIC_COMPLETE"
+              },
+              {
+                "cases": [
+                  "conv_prefill",
+                  "conv_decode",
+                  "rms"
+                ],
+                "construction": "PASSED",
+                "export": "PASSED",
+                "compile": "FAILED",
+                "load": "NOT_RUN",
+                "process": "NOT_RUN",
+                "numerical": "NOT_RUN"
+              },
+              {
+                "cases": [
+                  "attention_prefill",
+                  "attention_decode"
+                ],
+                "construction": "PASSED",
+                "export": "FAILED",
+                "compile": "NOT_RUN",
+                "load": "NOT_RUN",
+                "process": "NOT_RUN",
+                "numerical": "NOT_RUN"
+              }
+            ],
+            "placement": "UNVERIFIED",
+            "scope": "User pasted nine-case summary and subsequent detailed logs. GDN/Cache load and process completed; Cache has no numerical golden and prior GDN numerical mismatch remains unresolved. Original artifacts not obtained for local hash validation.",
+            "next_command_document": "docs/current-status.md#用户现在执行什么",
+            "next_action": "Retry Attention with corrected optional-port verification; reuse previous GDN/Cache OMC and inspect installed Conv/RMS interfaces and format registration without changing shared DDK.",
+            "failures": {
+              "conv_prefill_decode": {
+                "stage": "compile",
+                "observed": "Width-4 input passed initial shape inference; y2 [1,8192,1,11] / [1,8192,1,4], then generated_lib reports Not supported OP and Get format configs failed. This does not prove global kernel absence.",
+                "tbe_compatibility_applied_count": 0
+              },
+              "rms": {
+                "stage": "compile",
+                "observed": "Get AdnRmsNorm infershape func failed.",
+                "tbe_compatibility_applied_count": 0
+              },
+              "attention_prefill_decode": {
+                "stage": "export",
+                "observed": "GE recipe failed: input port order mismatch. Source verifier incorrectly treats compact connected ports as complete schema slots."
+              }
+            }
+          }
+        ],
+        "latest_registration_inspection": {
+          "date": "2026-10-27",
+          "source": "USER_PASTED_REPORT",
+          "run_name": "fused-inspect-bc256ae0b0f4",
+          "probe_run_name": "fused-all-f6b81ead7ae8",
+          "scanned_files": 176,
+          "limited": false,
+          "matching_conv_rms_registration_text": "NOT_FOUND_IN_SCANNED_FILES",
+          "implementation_availability": "UNRESOLVED",
+          "artifact_hash_verification": "NOT_RECHECKED",
+          "scope": "Bounded text inspection only; lack of matches does not establish absence from the DDK."
+        },
+        "documented_operators": [
+          "ChunkGatedDeltaRule",
+          "LinearAttentionConvstateUpdate",
+          "AdnRmsNorm",
+          "CacheUpdate",
+          "AdnFusedInferAttention"
+        ],
+        "historical_all_ops_cases": 9,
+        "model_operator_selection": {
+          "source": "EXPLICIT_USER_DECISION",
+          "date": "2026-10-27",
+          "required_cases": [
+            "gdn_prefill",
+            "gdn_decode",
+            "cache_prefill",
+            "cache_decode",
+            "attention_prefill",
+            "attention_decode"
+          ],
+          "base_operator_roles": [
+            "conv_state",
+            "rms"
+          ],
+          "optional_historical_cases": [
+            "conv_prefill",
+            "conv_decode",
+            "rms"
+          ],
+          "command": "python3 targets/cpro/scripts/run_fused_probes.py --model-ops --probe-run \"$AI_RUN_DIR/fused-all-f6b81ead7ae8\"",
+          "artifact_policy": "Reuse the six existing compiled OMC cases; preserve original all-ops failures.",
+          "numerical_acceptance": "NOT_DEFINED",
+          "production_integration": "PENDING",
+          "scope": "Three retained custom operator families; base Conv/RMS full-model device validation is still required. Standalone CacheUpdate/Attention success is not production GE integration."
         }
-      }
+      },
+      "selected_fused_roles": [
+        "gdn"
+      ],
+      "base_operator_roles": [
+        "conv_state",
+        "rms"
+      ],
+      "production_integration_scope": "Current production fusion roles are gdn, conv_state and rms. Select gdn only; conv-state history and RMS use the existing base-operator graph. CacheUpdate and AdnFusedInferAttention standalone probes do not establish production GE integration."
     }
   },
   "phases": [
@@ -203,7 +312,7 @@
       "status": "pending",
       "owner": "model-workflow",
       "evidence": "docs/ge-guide.md",
-      "note": "Nine standalone cases attempted. User reports GDN/Cache load/process completed; Conv/RMS compile failed and Attention export failed. Numerical correctness and execution placement are unverified."
+      "note": "User selected GDN/CacheUpdate/Attention six cases, which completed export/compile/load/process in the fresh report. Conv state and RMS use existing base operators; original custom Conv/AdnRmsNorm failures remain optional historical diagnostics. Numerical correctness and placement are unverified."
     },
     {
       "name": "integration",
@@ -212,7 +321,7 @@
       "evidence": "docs/current-status.md",
       "working_directory": "$AI_RUN_DIR",
       "next_command_document": "docs/current-status.md#用户现在执行什么",
-      "note": "Complete remaining Conv/RMS/Attention invocation coverage. Correct confirmed Attention exporter port verification; inspect Conv format registration and RMS missing inference registration. Preserve passed GDN/Cache artifacts. Numerical alignment and full model integration remain incomplete."
+      "note": "Reuse and execute the selected six standalone cases with --model-ops. Select only gdn in the current production GE fusion interface, retaining base Conv state and RMS. Integrate CacheUpdate/Attention into production GE separately; numerical alignment and complete model target execution remain incomplete."
     },
     {
       "name": "accuracy",
@@ -236,7 +345,7 @@
       "note": "No device validated release."
     }
   ],
-  "probe_policy": "Only the five documented custom operator types are active: nine focused prefill/decode/RMS calls. Existing compiled cases are reused; unrelated historical broad probes stay archived.",
+  "probe_policy": "The active model-ops scope is three custom operator types and six prefill/decode cases, explicitly selected by the user. Conv state and RMS use existing base operators. Reuse compiled cases; retain all-ops nine-case records and custom Conv/RMS failures as optional historical diagnostics, not passes. No new Conv/RMS fusion-candidate plan.",
   "evidence": "specs/verification.json",
   "delivery_plan": {
     "priority": "This-week runnable structure; parallel integration before accuracy/performance closure",

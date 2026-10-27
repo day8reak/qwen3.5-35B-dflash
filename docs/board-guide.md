@@ -91,27 +91,20 @@ python3 -m qwen35_moe_dflash.cli compare \
 
 先按[环境配置](environment-setup.md)的顺序恢复当前DDK环境、填写剩余固定配置，再执行本节命令。入口会自动构建runner，不需先跑前面的手动runner构建步骤。
 
-旧运行目录已删除或首次开始时，使用这一条命令完成五类九例的绑定生成、TBE诊断、AIR/OMC编译、runner构建、上传、执行和回收；无需历史产物变量：
+当前模型只保留GDN、CacheUpdate、Attention三类自定义算子探针，各prefill/decode，共六例。Conv状态处理和RMS使用基础算子路径。复用已存在的九例批次时：
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
+python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --model-ops \
+  --probe-run "$AI_RUN_DIR/fused-all-f6b81ead7ae8"
 ```
 
-脚本会打印新批次的输出目录。编译失败的case不会上板，其余编译成功的case继续执行；失败仍保留在总表，不会在同批中重复编译。
+该模式只上传、执行和比较所选六例；旧批次中Conv/RMS即使曾编译成功，也不会执行。旧清单、脚本和失败记录保留。缺少的六例会单独编译，已有OMC复用；无需重新生成绑定或TBE诊断。
 
-以后要重试时，把下面路径替换为**实际保留的新批次目录**，不要使用已删除的旧目录，也不必export `FUSED_PROBE_RUN`：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
-  --probe-run /absolute/path/to/fused-all-new-batch \
-  --retry-cases attention_prefill,attention_decode
-```
-
-重试只重编指定缺项，复用记录中的已编译OMC；未另行设置 `TBE_DIAG_JOB` 时自动沿用新批次记录的诊断路径。未重试的失败继续保留。已有conv/RMS编译失败时，自动读取DDK注册配置到 `inspection/`。只需再次执行已有编译产物时，省略 `--all-ops` 并将 `--probe-run` 指向具体的 `probes/` 目录；该模式不接受汇总批次根目录。
+**仅首次开始或产物已删除时**，使用 `--model-ops --fresh` 重建六例所需的绑定、TBE诊断和AIR/OMC，然后上板。`--all-ops` 继续作为文档五类九例的可选完整诊断，不能与 `--model-ops` 同时使用。仅重试某个所选缺项，可附加 `--retry-cases`；Conv/RMS不属于模型模式的重试范围。
 
 默认新建独立板端目录，按原上板脚本的规则收集构建对应的运行库、排除DDK HCL库对，并加入 `/vendor/lib64/chipsetsdk` 搜索路径。`BOARD_HIAI_LIB_DIR` 可显式复用已有私有库目录。运行库版本和固件标识自动查询；传输文件校验SHA256，执行失败仍尝试回收。
 
-批量模式的 `report.txt` 汇总9例；fresh批次另保留 `bindings.json`、`diagnosis/`，`probes/` 保存本次编译产物。`board-*/` 分组保留上板记录，其中 `results/` 为输出和日志，`comparison/report.txt` 为详细诊断。runner在同次批量运行中只构建一次。成功和失败均保留板端目录；脚本不安装或改写DDK，数值验收及NPU执行位置另行验证。
+批量模式的 `report.txt` 按所选范围汇总六例或九例，并显示已有数值诊断；fresh批次另保留 `bindings.json`、`diagnosis/`，`probes/` 保存本次编译产物。`board-*/` 分组保留上板记录，其中 `results/` 为输出和日志，`comparison/report.txt` 为详细诊断。runner在同次批量运行中只构建一次。成功和失败均保留板端目录；脚本不安装或改写DDK，数值验收及NPU执行位置另行验证。
 
 ## tiny 回归
 
