@@ -16,9 +16,7 @@ _qwen35_load_env() (
   config=$(realpath -m -- "$config") || return 1
   required=(REPO_DIR AI_RUN_DIR MODEL_PYTHON CANN_ROOT CPRO_DDK_ROOT CPRO_DDK_ID
             OHOS_NATIVE_SDK HIAI_INCLUDE_DIR HIAI_LIBRARIES HDC BIP SN)
-  optional=(BOARD_HIAI_LIB_DIR HIAI_RUNTIME_VERSION FIRMWARE_ID
-            QWEN35_TARGET_WEIGHTS QWEN35_DRAFT_WEIGHTS
-            FUSED_PROBE_RUN TBE_DIAG_JOB GE_CUSTOM_BINDINGS)
+  optional=(BOARD_HIAI_LIB_DIR QWEN35_TARGET_WEIGHTS QWEN35_DRAFT_WEIGHTS)
   if [[ ! -f $config ]]; then
     # Capture declared values when available; never invent a device or DDK ID.
     REPO_DIR=$repo
@@ -43,8 +41,6 @@ _qwen35_load_env() (
         printf '%s\n' '# HIAI_LIBRARIES: host ARM64 library files, separated by colons.'
         printf '%s\n' '# HIAI paths may be auto: unique header / AArch64 libhiai.so in an ohos directory within this DDK.'
         for name in "${required[@]}"; do printf '%s=%q\n' "$name" "${!name-}"; done
-        printf '\n%s\n' '# Optional. Leave old artifact paths empty after deleting run data.'
-        for name in "${optional[@]}"; do printf '%s=%q\n' "$name" "${!name-}"; done
       } > "$config"
     ) || return 1
     printf 'cpro-env: created %s\nFill its required values, then source this script again.\n' "$config" >&2
@@ -148,20 +144,8 @@ _qwen35_load_env() (
   [[ $errors == 0 ]] || return 1
   mkdir -p -- "$AI_RUN_DIR" || return 1
 
-  # Missing history must not prevent fresh initialization or retain stale exports.
-  for name in FUSED_PROBE_RUN TBE_DIAG_JOB GE_CUSTOM_BINDINGS; do
-    value=${!name-}
-    valid=1
-    case "$name" in
-      FUSED_PROBE_RUN) [[ -f $value/manifest.json || -f $value/result.json ]] || valid=0 ;;
-      TBE_DIAG_JOB) [[ -f $value/diagnosis/report.json ]] || valid=0 ;;
-      GE_CUSTOM_BINDINGS) [[ -f $value ]] || valid=0 ;;
-    esac
-    if [[ -n $value && $valid == 0 ]]; then
-      printf 'cpro-env: cleared missing %s: %s\n' "$name" "$value" >&2
-      unset "$name"
-    fi
-  done
+  # Per-run paths and runtime identity overrides belong to the invocation;
+  # leave any caller-provided values untouched.
   CPRO_TARGET=kirinx90
   GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
   QWEN35_RESOURCES="$REPO_DIR/specs/resources.json"

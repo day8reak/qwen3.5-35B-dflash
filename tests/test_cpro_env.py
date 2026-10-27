@@ -50,11 +50,15 @@ def bash(path, script, *, env=None):
                           capture_output=True, text=True)
 
 
-def test_restores_once_and_twice_without_path_growth_or_stale_artifacts(config):
+def test_restores_once_and_twice_without_path_growth_or_changing_run_variables(config):
     path, values = config
-    values.update(FUSED_PROBE_RUN=str(path.parent / "deleted"), TBE_DIAG_JOB=str(path.parent / "deleted"),
-                  GE_CUSTOM_BINDINGS=str(path.parent / "deleted.json"))
+    runtime = {"FUSED_PROBE_RUN": "/invocation/probes", "TBE_DIAG_JOB": "/invocation/diagnosis",
+               "GE_CUSTOM_BINDINGS": "/invocation/bindings.json", "FIRMWARE_ID": "INVOCATION-FIRMWARE",
+               "HIAI_RUNTIME_VERSION": "INVOCATION-RUNTIME"}
     write_config(path, values)
+    # Legacy config entries must not overwrite command-specific values either.
+    with path.open("a") as stream:
+        stream.write("FUSED_PROBE_RUN=/old/config/probes\n")
     result = bash(path, '''
 set -eu
 source "$1" "$2"
@@ -62,14 +66,13 @@ first_path=$PATH
 source "$1" "$2"
 test "$PATH" = "$first_path"
 "$3" -c 'import json,os; print(json.dumps(dict(os.environ)))'
-''', env={"FIRMWARE_ID": "STALE-FIRMWARE", "QWEN35_RESOURCES": "/deleted/resources.json"})
+''', env={**runtime, "QWEN35_RESOURCES": "/deleted/resources.json"})
     assert result.returncode == 0, result.stderr
     restored = json.loads(result.stdout)
     for key, value in values.items():
-        if key not in {"FUSED_PROBE_RUN", "TBE_DIAG_JOB", "GE_CUSTOM_BINDINGS"}:
-            assert restored[key] == value
-    for key in ("FUSED_PROBE_RUN", "TBE_DIAG_JOB", "GE_CUSTOM_BINDINGS", "FIRMWARE_ID"):
-        assert key not in restored
+        assert restored[key] == value
+    for key, value in runtime.items():
+        assert restored[key] == value
     assert restored["PYTHONPATH"] == f"{REPO}/model:{REPO}"
     assert restored["PATH"].split(":")[0] == str(Path(values["MODEL_PYTHON"]).parent)
     assert restored["QWEN35_RESOURCES"] == str(REPO / "specs/resources.json")
@@ -99,12 +102,14 @@ test "$PATH" = "$before_path"
 
 def test_first_source_creates_private_config_without_overwriting(config):
     path, values = config
-    result = bash(path, 'source "$1" "$2"', env=values)
+    result = bash(path, 'source "$1" "$2"', env={**values, "FUSED_PROBE_RUN": "/temporary/probes",
+                                                "FIRMWARE_ID": "TEMPORARY"})
     assert result.returncode == 1
     assert "created" in result.stderr
     assert path.stat().st_mode & 0o777 == 0o600
     original = path.read_bytes()
     assert "TEST-SERIAL" in original.decode()
+    assert "FUSED_PROBE_RUN" not in original.decode() and "FIRMWARE_ID" not in original.decode()
     again = bash(path, 'source "$1" "$2"')
     assert again.returncode == 0, again.stderr
     assert path.read_bytes() == original

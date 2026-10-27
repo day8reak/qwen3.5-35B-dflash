@@ -26,13 +26,15 @@ source targets/cpro/scripts/env.sh
 | `HIAI_LIBRARIES` | 主机上HarmonyOS ARM64链接库文件；多个路径用冒号分隔；或 `auto` |
 | `HDC`、`BIP`、`SN` | HDC可执行文件或PATH中的命令名、**HDC服务器IP:端口**、设备序列号；BIP不是自动推断的手机IP |
 
-可选项为板端私有库目录 `BOARD_HIAI_LIB_DIR`、固件/运行库标识、两套权重路径，以及要复用的 `FUSED_PROBE_RUN`、`TBE_DIAG_JOB`、`GE_CUSTOM_BINDINGS`。首次初始化复制已有声明，支持从已有 `OHOS_SDK` 获取 `OHOS_NATIVE_SDK`；没有HIAI路径时在模板中写 `auto`。设备、安装包和历史产物不自动选择。
+配置只保存上表的固定环境。板端私有库目录 `BOARD_HIAI_LIB_DIR` 和两套权重路径可按需自行加入，不生成空占位。首次初始化复制已有声明，支持从已有 `OHOS_SDK` 获取 `OHOS_NATIVE_SDK`；没有HIAI路径时在模板中写 `auto`。设备、安装包和历史产物不自动选择。
+
+`FUSED_PROBE_RUN`、`TBE_DIAG_JOB`、`GE_CUSTOM_BINDINGS`、`FIRMWARE_ID`、`HIAI_RUNTIME_VERSION` 属于单次运行参数，不放入配置；需要时在运行命令前设置或使用对应CLI参数。`source env.sh` 不读取、覆盖或清除调用者的这些变量；旧配置里若有这些行，可直接删掉。
 
 HIAI的 `auto` 只在**已指定的DDK目录**内查找，深度最多8层；头文件必须唯一，`libhiai.so` 必须唯一且位于含 `ohos` 或 `*-ohos` 目录的路径下，并通过 `readelf` 的ELF64、小端、AArch64、共享库头检查。不会使用OMG的x86库、猜其他库名或跟随目录链接进入其他安装。多个候选或未找到会列出路径并要求显式填写；这只是构建候选选择，不是ABI兼容性或设备通过证明。
 
 该入口检查必填变量和工具文件，检查成功后才修改当前shell；自动设置 `GE_MODEL_TOOL`、`CPRO_TARGET=kirinx90`、模型 `PYTHONPATH`、Python的bin路径以及环境变量驱动的 `specs/resources.json`。重复source不会累加路径。它不激活conda、不运行vendor环境脚本、不全局混入CANN/DDK原生库，也不连接设备；GE/OMG调用继续由现有脚本设置子进程环境。原私有 `QWEN35_RESOURCES` 会被上述仓库清单替换，所选头文件/库应填写到配置变量中。
 
-**如果旧运行目录已经清空：** 把三个旧产物路径留空，保留权重目录即可；旧路径不存在或关键记录已删除时，入口也会清除对应导出值。恢复环境后一次重建全部探针：
+**如果旧运行目录已经清空：** 保留权重目录，恢复环境后一次重建全部探针，无需设置任何历史产物变量：
 
 ```bash
 "$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
