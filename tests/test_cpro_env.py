@@ -18,14 +18,13 @@ SCRIPT = REPO / "targets/cpro/scripts/env.sh"
 def config(tmp_path):
     values = {
         "REPO_DIR": str(REPO), "AI_RUN_DIR": str(tmp_path / "runs"),
-        "MODEL_PYTHON": str(tmp_path / "model env/bin/python3"),
         "CANN_ROOT": str(tmp_path / "cann"), "CPRO_DDK_ROOT": str(tmp_path / "ddk"),
         "CPRO_DDK_ID": "TEST-DDK", "OHOS_NATIVE_SDK": str(tmp_path / "native"),
         "HIAI_INCLUDE_DIR": str(tmp_path / "headers"),
         "HIAI_LIBRARIES": str(tmp_path / "libs/libhiai $(touch SHOULD_NOT_EXIST).so"),
         "HDC": str(tmp_path / "hdc"), "BIP": "127.0.0.1:8710", "SN": "TEST-SERIAL",
     }
-    files = [values["MODEL_PYTHON"], values["HDC"], values["HIAI_LIBRARIES"],
+    files = [values["HDC"], values["HIAI_LIBRARIES"],
              values["HIAI_INCLUDE_DIR"] + "/HiAiModelManagerService.h",
              values["CANN_ROOT"] + "/include/graph/graph.h", values["CANN_ROOT"] + "/lib64/libgraph.so",
              values["CPRO_DDK_ROOT"] + "/tools/tools_omg/master/omg",
@@ -61,10 +60,14 @@ def test_restores_once_and_twice_without_path_growth_or_changing_run_variables(c
         stream.write("FUSED_PROBE_RUN=/old/config/probes\n")
     result = bash(path, '''
 set -eu
+unset MODEL_PYTHON CONDA_PREFIX
+original_python=$(type -P python3)
 source "$1" "$2"
 first_path=$PATH
 source "$1" "$2"
 test "$PATH" = "$first_path"
+test "$(type -P python3)" = "$original_python"
+test -z "${MODEL_PYTHON+x}"
 "$3" -c 'import json,os; print(json.dumps(dict(os.environ)))'
 ''', env={**runtime, "QWEN35_RESOURCES": "/deleted/resources.json", "PYTHONPATH": "/vendor/tbe:/vendor/python"})
     assert result.returncode == 0, result.stderr
@@ -74,14 +77,14 @@ test "$PATH" = "$first_path"
     for key, value in runtime.items():
         assert restored[key] == value
     assert restored["PYTHONPATH"] == f"{REPO}/model:{REPO}:/vendor/tbe:/vendor/python"
-    assert restored["PATH"].split(":")[0] == str(Path(values["MODEL_PYTHON"]).parent)
+    assert restored["PATH"] == os.environ["PATH"]
     assert restored["QWEN35_RESOURCES"] == str(REPO / "specs/resources.json")
     assert Path(values["AI_RUN_DIR"]).is_dir()
     assert not (path.parent / "SHOULD_NOT_EXIST").exists()
 
 
 @pytest.mark.parametrize("field,value", [("BIP", "127.0.0.1"), ("BIP", "127.0.0.1:99999"),
-                                         ("SN", ""), ("MODEL_PYTHON", "/missing/python"),
+                                         ("SN", ""), ("OHOS_NATIVE_SDK", "/missing/native"),
                                          ("AI_RUN_DIR", str(REPO / "forbidden-run"))])
 def test_invalid_config_is_atomic_and_reports_field(config, field, value):
     path, values = config
@@ -103,7 +106,7 @@ test "$PATH" = "$before_path"
 def test_first_source_creates_private_config_without_overwriting(config):
     path, values = config
     activated = {"DDK_PATH": values["CPRO_DDK_ROOT"],
-                 "CONDA_PREFIX": str(Path(values["MODEL_PYTHON"]).parents[1]),
+                 "CONDA_PREFIX": "", "MODEL_PYTHON": "/obsolete/python",
                  "PATH": str(path.parent) + os.pathsep + os.environ["PATH"],
                  "HIAI_INCLUDE_DIR": values["HIAI_INCLUDE_DIR"],
                  "HIAI_LIBRARIES": values["HIAI_LIBRARIES"]}
@@ -127,15 +130,16 @@ def test_first_source_creates_private_config_without_overwriting(config):
 def test_reuses_selected_vendor_environment_without_redeclaring_its_variables(config):
     path, values = config
     configured = {key: value for key, value in values.items()
-                  if key not in {"CPRO_DDK_ROOT", "MODEL_PYTHON", "HDC"}}
+                  if key not in {"CPRO_DDK_ROOT", "HDC"}}
     write_config(path, configured)
+    with path.open("a") as stream:
+        stream.write("MODEL_PYTHON=/old/config/python\n")
     inherited = {"DDK_PATH": values["CPRO_DDK_ROOT"], "CPRO_DDK_ROOT": "/previous/ddk",
-                 "CONDA_PREFIX": str(Path(values["MODEL_PYTHON"]).parents[1]),
-                 "MODEL_PYTHON": "", "HDC": "",
+                 "CONDA_PREFIX": "", "MODEL_PYTHON": "/obsolete/python", "HDC": "",
                  "TOOLCHAIN_HOME": values["CPRO_DDK_ROOT"], "HIAI_VERSION": "/vendor/omg",
                  "LD_LIBRARY_PATH": "/vendor/omg/lib64:/vendor/tbe/lib64",
                  "PYTHONPATH": "/vendor/tbe/ops:/vendor/package/python",
-                 "PATH": str(path.parent) + os.pathsep + os.environ["PATH"]}
+                 "PATH": (str(path.parent) + os.pathsep) * 2 + os.environ["PATH"]}
     result = bash(path, '''
 set -eu
 source "$1" "$2"
@@ -143,12 +147,13 @@ source "$1" "$2"
 ''', env=inherited)
     assert result.returncode == 0, result.stderr
     restored = json.loads(result.stdout)
-    for key in ("CPRO_DDK_ROOT", "MODEL_PYTHON", "HDC"):
+    for key in ("CPRO_DDK_ROOT", "HDC"):
         assert restored[key] == values[key]
     for key in ("DDK_PATH", "TOOLCHAIN_HOME", "HIAI_VERSION", "LD_LIBRARY_PATH"):
         assert restored[key] == inherited[key]
     assert restored["PYTHONPATH"] == f"{REPO}/model:{REPO}:" + inherited["PYTHONPATH"]
-    assert restored["PATH"].split(os.pathsep)[1:] == list(dict.fromkeys(inherited["PATH"].split(os.pathsep)))
+    assert restored["PATH"] == inherited["PATH"]
+    assert restored["MODEL_PYTHON"] == inherited["MODEL_PYTHON"]
 
 
 @pytest.mark.parametrize("mode", ["unique", "ambiguous", "host-only"])

@@ -2,7 +2,7 @@
 
 [首页](README.md) · [环境配置](environment-setup.md) · [板端执行](board-guide.md)
 
-本路径使用 Python/NumPy 描述图，生成 C++ 并调用 GE 保存 AIR，不经过 PyTorch/TorchAir。先设置环境页中的公共变量。
+本路径使用 Python/NumPy 描述图，生成 C++ 并调用 GE 保存 AIR，不经过 PyTorch/TorchAir。先按[环境配置](environment-setup.md)激活 `custom_pypto` 并加载项目配置；以下使用当前环境的 `python3`。
 
 ## 1. 生成完整模型结构
 
@@ -11,7 +11,7 @@
 ```bash
 export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
 export GE_FULL_RUN="$(mktemp -d "$AI_RUN_DIR/ge-full-XXXXXXXX")"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" build-full-structure \
+python3 "$GE_MODEL_TOOL" build-full-structure \
   --sequence-length 8 --past-length 0 --expert-dispatch selected \
   --fused-ops none --output "$GE_FULL_RUN/structure"
 ```
@@ -24,7 +24,7 @@ Target 带显式缓存 ABI；draft 仍按完整上下文重算。`selected` 按 
 
 ```bash
 export GE_FULL_PAIR_RUN="$(mktemp -d "$AI_RUN_DIR/ge-full-weights-XXXXXXXX")"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" prepare --full --float-baseline \
+python3 "$GE_MODEL_TOOL" prepare --full --float-baseline \
   --sequence-length 8 --expert-dispatch selected \
   --target-weights "$QWEN35_TARGET_WEIGHTS" --draft-weights "$QWEN35_DRAFT_WEIGHTS" \
   --output "$GE_FULL_PAIR_RUN/prepared"
@@ -37,7 +37,7 @@ export GE_FULL_PAIR_RUN="$(mktemp -d "$AI_RUN_DIR/ge-full-weights-XXXXXXXX")"
 ```bash
 export GE_BINDING_RUN="$(mktemp -d "$AI_RUN_DIR/ge-bindings-XXXXXXXX")"
 export GE_CUSTOM_BINDINGS="$GE_BINDING_RUN/bindings.json"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" bindings-from-document \
+python3 "$GE_MODEL_TOOL" bindings-from-document \
   --target "${CPRO_TARGET:-kirinx90}" --ddk-id "$CPRO_DDK_ID" \
   --gdn-initial-state-dtype float16 --output "$GE_CUSTOM_BINDINGS"
 ```
@@ -46,7 +46,7 @@ export GE_CUSTOM_BINDINGS="$GE_BINDING_RUN/bindings.json"
 
 ```bash
 export GE_STATEFUL_RUN="$(mktemp -d "$AI_RUN_DIR/ge-stateful-XXXXXXXX")"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" export-stateful \
+python3 "$GE_MODEL_TOOL" export-stateful \
   --prepared "$GE_FULL_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
   --sequence-length 3 --past-length 0 \
   --fused-ops gdn,conv_state,rms --bindings "$GE_CUSTOM_BINDINGS" \
@@ -61,10 +61,10 @@ export GE_STATEFUL_RUN="$(mktemp -d "$AI_RUN_DIR/ge-stateful-XXXXXXXX")"
 编译只接受真实 `EXPORTED` AIR；保留 AIR、外部权重和导出目录原路径。以下打包 S=3/T=0 的 prefill，完成后按[板端单步模式](board-guide.md#6-新状态图的单步执行)执行。
 
 ```bash
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" compile-stateful \
+python3 "$GE_MODEL_TOOL" compile-stateful \
   --air "$GE_STATEFUL_RUN/air" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --output "$GE_STATEFUL_RUN/omc"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" prepare-stateful-step \
+python3 "$GE_MODEL_TOOL" prepare-stateful-step \
   --omc "$GE_STATEFUL_RUN/omc" --token-ids 1,2,3 \
   --output "$GE_STATEFUL_RUN/step-prefill"
 ```
@@ -72,16 +72,16 @@ export GE_STATEFUL_RUN="$(mktemp -d "$AI_RUN_DIR/ge-stateful-XXXXXXXX")"
 继续 decode 时，用相同 prepared 和融合选项导出 S=1/T=3 的图；`PREFILL_RESULT` 是回收的完整 prefill 结果目录，`NEXT_TOKEN_ID` 是下一步要消费的 token。
 
 ```bash
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" export-stateful \
+python3 "$GE_MODEL_TOOL" export-stateful \
   --prepared "$GE_FULL_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
   --sequence-length 1 --past-length 3 \
   --fused-ops gdn,conv_state,rms --bindings "$GE_CUSTOM_BINDINGS" \
   --recurrent-dtype float16 --gdn-state-casts allow \
   --output "$GE_STATEFUL_RUN/decode-air"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" compile-stateful \
+python3 "$GE_MODEL_TOOL" compile-stateful \
   --air "$GE_STATEFUL_RUN/decode-air" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --output "$GE_STATEFUL_RUN/decode-omc"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" prepare-stateful-step \
+python3 "$GE_MODEL_TOOL" prepare-stateful-step \
   --omc "$GE_STATEFUL_RUN/decode-omc" --token-ids "$NEXT_TOKEN_ID" \
   --previous-step "$GE_STATEFUL_RUN/step-prefill" --previous-result "$PREFILL_RESULT" \
   --output "$GE_STATEFUL_RUN/step-decode"
@@ -94,10 +94,10 @@ export GE_STATEFUL_RUN="$(mktemp -d "$AI_RUN_DIR/ge-stateful-XXXXXXXX")"
 需要旧 ABI v2 的 target/draft 时，复用第2节的完整 prepared 执行以下命令；此路径按前缀重算，不使用新缓存 ABI。
 
 ```bash
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" export \
+python3 "$GE_MODEL_TOOL" export \
   --prepared "$GE_FULL_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
   --output "$GE_FULL_PAIR_RUN/air"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" compile \
+python3 "$GE_MODEL_TOOL" compile \
   --air "$GE_FULL_PAIR_RUN/air" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --output "$GE_FULL_PAIR_RUN/omc"
 ```
@@ -123,7 +123,7 @@ export GE_STATEFUL_RUN="$(mktemp -d "$AI_RUN_DIR/ge-stateful-XXXXXXXX")"
 **旧运行目录已删除或首次开始时，直接使用完整入口：**
 
 ```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
+python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
 ```
 
 它自动生成安装源码约束的FP16 GDN状态绑定和TBE平台诊断，尝试导出/编译九例AIR/OMC，并将编译成功的case上板执行。无需先执行本页手动生成bindings、逐项编译或打包的命令；结果保存在新批次的 `report.txt`，详细目录见[板端探针说明](board-guide.md#融合算子调用探针)。
@@ -131,7 +131,7 @@ export GE_STATEFUL_RUN="$(mktemp -d "$AI_RUN_DIR/ge-stateful-XXXXXXXX")"
 后续仅重试部分缺项时，使用刚打印且仍保留的新批次路径，不依赖 `FUSED_PROBE_RUN` 环境变量：
 
 ```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
+python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
   --probe-run /absolute/path/to/fused-all-new-batch \
   --retry-cases attention_prefill,attention_decode
 ```
@@ -141,7 +141,7 @@ export GE_STATEFUL_RUN="$(mktemp -d "$AI_RUN_DIR/ge-stateful-XXXXXXXX")"
 ```bash
 export FUSED_PROBE_JOB="$(mktemp -d "$AI_RUN_DIR/fused-probes-XXXXXXXX")"
 export FUSED_PROBE_RUN="$FUSED_PROBE_JOB/probes"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" probe-fused-ops \
+python3 "$GE_MODEL_TOOL" probe-fused-ops \
   --bindings "$GE_CUSTOM_BINDINGS" --ge-root "$CANN_ROOT" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --cases all --conv-history-width 4 \
@@ -159,15 +159,15 @@ cat "$FUSED_PROBE_RUN/report.txt"
 
 ```bash
 export GE_PAIR_RUN="$(mktemp -d "$AI_RUN_DIR/ge-tiny-XXXXXXXX")"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" prepare --tiny --sequence-length 8 \
+python3 "$GE_MODEL_TOOL" prepare --tiny --sequence-length 8 \
   --output "$GE_PAIR_RUN/prepared"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" export \
+python3 "$GE_MODEL_TOOL" export \
   --prepared "$GE_PAIR_RUN/prepared" --ge-root "$CANN_ROOT" \
   --output "$GE_PAIR_RUN/air"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" compile \
+python3 "$GE_MODEL_TOOL" compile \
   --air "$GE_PAIR_RUN/air" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --output "$GE_PAIR_RUN/omc"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" reference-tiny \
+python3 "$GE_MODEL_TOOL" reference-tiny \
   --prepared "$GE_PAIR_RUN/prepared" --prompt-token-ids 1,2,3 --max-new-tokens 4 \
   --output "$GE_PAIR_RUN/reference.json"
 ```

@@ -6,11 +6,11 @@
 
 ## 1. 构建 HIAI runner
 
-先配置 OHOS/HIAI/HDC 环境；已有匹配的新 runner 可跳过构建，保留相邻构建记录及其引用的库路径。
+先按[环境配置](environment-setup.md)激活 `custom_pypto` 并配置 OHOS/HIAI/HDC；以下 `python3` 使用该环境。已有匹配的新 runner 可跳过构建，保留相邻构建记录及其引用的库路径。
 
 ```bash
 export BOARD_JOB="$(mktemp -d "$AI_RUN_DIR/board-XXXXXXXX")"
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
   --output "$BOARD_JOB/hiai-build"
 export HIAI_RUNNER="$BOARD_JOB/hiai-build/build/qwen35_dflash_hiai"
 cat "$BOARD_JOB/hiai-build/result.json"
@@ -50,7 +50,7 @@ test -f "$REFERENCE_JSON"
 `--execution-only` 让 target/draft 各执行一次并检查回传，不做生成质量或速度验收；已有相同产物的成功记录可跳过。
 
 ```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
   --omc "$OMC_DIR" --runner "$HIAI_RUNNER" --reference "$REFERENCE_JSON" \
   --output "$BOARD_JOB/smoke" --execution-only
 cat "$BOARD_JOB/smoke/result.json"
@@ -61,7 +61,7 @@ cat "$BOARD_JOB/smoke/result.json"
 参考状态须为 `PASS`，并满足 `prompt长度 + max_new_tokens − 1 ≤ sequence_length`。该命令对 ordinary/DFlash 各做 3 次预热、10 次测量，并比较全部 token 与停止原因。
 
 ```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
+python3 "$REPO_DIR/targets/cpro/scripts/run_hdc.py" \
   --omc "$OMC_DIR" --runner "$HIAI_RUNNER" --reference "$REFERENCE_JSON" \
   --output "$BOARD_JOB/benchmark"
 cat "$BOARD_JOB/benchmark/result.json"
@@ -71,7 +71,7 @@ cat "$BOARD_JOB/benchmark/comparison.json"
 已有完整 benchmark 时，可只重新比较，无需上板；`--report` 不能指向 execution-only 报告。
 
 ```bash
-"$MODEL_PYTHON" -m qwen35_moe_dflash.cli compare \
+python3 -m qwen35_moe_dflash.cli compare \
   --omc "$OMC_DIR" --report "$BOARD_JOB/benchmark/benchmark.json" \
   --reference "$REFERENCE_JSON" --output "$BOARD_JOB/comparison-recheck.json"
 ```
@@ -94,7 +94,7 @@ cat "$BOARD_JOB/benchmark/comparison.json"
 旧运行目录已删除或首次开始时，使用这一条命令完成五类九例的绑定生成、TBE诊断、AIR/OMC编译、runner构建、上传、执行和回收；无需历史产物变量：
 
 ```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
+python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
 ```
 
 脚本会打印新批次的输出目录。编译失败的case不会上板，其余编译成功的case继续执行；失败仍保留在总表，不会在同批中重复编译。
@@ -102,7 +102,7 @@ cat "$BOARD_JOB/benchmark/comparison.json"
 以后要重试时，把下面路径替换为**实际保留的新批次目录**，不要使用已删除的旧目录，也不必export `FUSED_PROBE_RUN`：
 
 ```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
+python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
   --probe-run /absolute/path/to/fused-all-new-batch \
   --retry-cases attention_prefill,attention_decode
 ```

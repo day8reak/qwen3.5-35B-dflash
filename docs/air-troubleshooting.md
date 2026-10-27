@@ -2,7 +2,7 @@
 
 [环境配置](environment-setup.md) · [PyTorch 执行](pytorch-guide.md) · [GE 执行](ge-guide.md)
 
-先确认失败发生在哪一阶段，再检查该阶段的依赖。现有可用环境直接复用；早期安装记录不作为当前安装指令。
+先按[环境配置](environment-setup.md)激活 `custom_pypto`，以下 `python3` 使用当前模型环境。先确认失败发生在哪一阶段，再检查该阶段的依赖。现有可用环境直接复用；早期安装记录不作为当前安装指令。
 
 | 现象 | 检查与处理 |
 |---|---|
@@ -18,9 +18,9 @@
 
 ```bash
 export AIR_CHECK_RUN="$(mktemp -d "$AI_RUN_DIR/air-check-XXXXXXXX")"
-"$MODEL_PYTHON" -m qwen35_moe_dflash.cli preflight \
+python3 -m qwen35_moe_dflash.cli preflight \
   --output "$AIR_CHECK_RUN/preflight.json"
-"$MODEL_PYTHON" -m pip check
+python3 -m pip check
 ```
 
 `preflight` 区分自然 Torch/AIR 导入与隔离后的 CPU 参考导入。参考可用而 AIR 不可用是有效结果，不能用参考通过代替导出通过。导出使用新进程，避免沿用参考进程的后端隔离。

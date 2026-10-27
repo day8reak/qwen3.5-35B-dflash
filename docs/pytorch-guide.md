@@ -2,7 +2,7 @@
 
 [首页](README.md) · [环境配置](environment-setup.md) · [GE 路径](ge-guide.md)
 
-先完成环境配置。以下完整模型使用 40 层 target、6 层 DFlash、hidden 2048、词表 248320；`sequence-length` 只控制输入长度。
+先按[环境配置](environment-setup.md)激活 `custom_pypto` 并加载项目配置，以下使用当前环境的 `python3`。以下完整模型使用 40 层 target、6 层 DFlash、hidden 2048、词表 248320；`sequence-length` 只控制输入长度。
 
 ## 1. 生成完整模型结构
 
@@ -10,7 +10,7 @@
 
 ```bash
 export TORCH_FULL_RUN="$(mktemp -d "$AI_RUN_DIR/torch-full-XXXXXXXX")"
-"$MODEL_PYTHON" -m qwen35_moe_dflash.cli build-full-pytorch \
+python3 -m qwen35_moe_dflash.cli build-full-pytorch \
   --sequence-length 8 --output "$TORCH_FULL_RUN/structure"
 ```
 
@@ -19,7 +19,7 @@ export TORCH_FULL_RUN="$(mktemp -d "$AI_RUN_DIR/torch-full-XXXXXXXX")"
 按[权重准备](weights.md)设置完整 target/draft 目录。下面使用 FP16 和 CUDA，需要足够显存；改为 `--device cpu` 时需要足够主机内存。
 
 ```bash
-"$MODEL_PYTHON" -m qwen35_moe_dflash.cli reference \
+python3 -m qwen35_moe_dflash.cli reference \
   --device cuda:0 --precision fp16 --sequence-length 8 \
   --prompt-token-ids 1,2,3 --max-new-tokens 4 \
   --output "$TORCH_FULL_RUN/reference.json"
@@ -30,9 +30,9 @@ export TORCH_FULL_RUN="$(mktemp -d "$AI_RUN_DIR/torch-full-XXXXXXXX")"
 在匹配的 TorchNPU/TorchAir/CANN 环境导出，再使用目标 DDK 编译。`--float-baseline` 是完整未量化 FP16 转换诊断，不是 32GB 板端部署方案。
 
 ```bash
-"$MODEL_PYTHON" -m qwen35_moe_dflash.cli export-air \
+python3 -m qwen35_moe_dflash.cli export-air \
   --float-baseline --sequence-length 8 --output "$TORCH_FULL_RUN/air"
-"$MODEL_PYTHON" -m qwen35_moe_dflash.cli compile-omc \
+python3 -m qwen35_moe_dflash.cli compile-omc \
   --air "$TORCH_FULL_RUN/air" --output "$TORCH_FULL_RUN/omc"
 ```
 
@@ -44,7 +44,7 @@ export TORCH_FULL_RUN="$(mktemp -d "$AI_RUN_DIR/torch-full-XXXXXXXX")"
 
 ```bash
 export FUSED_OPS='gdn,conv_state,rms'
-"$MODEL_PYTHON" - <<'PY'
+python3 - <<'PY'
 import os
 import torch
 from qwen35_moe_dflash.fused import (
@@ -97,11 +97,11 @@ PY
 
 ```bash
 export TORCH_TINY_RUN="$(mktemp -d "$AI_RUN_DIR/torch-tiny-XXXXXXXX")"
-"$MODEL_PYTHON" -m qwen35_moe_dflash.cli demo \
+python3 -m qwen35_moe_dflash.cli demo \
   --sequence-length 8 --prompt-token-ids 1,2,3 --max-new-tokens 4 \
   --output "$TORCH_TINY_RUN/reference.json"
-"$MODEL_PYTHON" -m qwen35_moe_dflash.cli export-tiny-air \
+python3 -m qwen35_moe_dflash.cli export-tiny-air \
   --sequence-length 8 --output "$TORCH_TINY_RUN/air"
-"$MODEL_PYTHON" -m qwen35_moe_dflash.cli compile-omc \
+python3 -m qwen35_moe_dflash.cli compile-omc \
   --air "$TORCH_TINY_RUN/air" --output "$TORCH_TINY_RUN/omc"
 ```

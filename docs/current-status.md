@@ -8,12 +8,12 @@
 
 **当前是Docker重进且旧run产物已删除。** 按[环境指南的四步顺序](environment-setup.md#docker-重进后的配置恢复)执行：恢复conda/DDK → 首次补七项export → 保存仓库旁配置 → 加载并运行。DDK脚本已经导出的变量不用重复配置。
 
-已有配置时，恢复conda/DDK后，在仓库根目录直接执行：
+已有配置时，恢复 `custom_pypto` conda/DDK环境后，在仓库根目录直接执行；以下 `python3` 使用当前已激活的模型环境：
 
 ```bash
 git pull --ff-only &&
 source targets/cpro/scripts/env.sh &&
-  "$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
+  python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
 ```
 
 不再引用已经删除的bindings、TBE诊断或OMC；安装版FP16绑定、平台诊断和全部探针自动重建，编译成功者上板。保留权重无需重新准备。
@@ -21,7 +21,7 @@ source targets/cpro/scripts/env.sh &&
 **后续重试：** 等本次fresh打印出新的批次目录后，才使用下面命令。将占位路径换成该新目录；已经删除的历史批次不能复用。Attention导出器的const接口修正已提交，Conv/RMS仍待解决。
 
 ```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
+python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
   --probe-run '/实际路径/本次新生成的fused-all批次' \
   --retry-cases attention_prefill,attention_decode
 ```
@@ -61,14 +61,14 @@ source targets/cpro/scripts/env.sh &&
 **PyTorch：** 生成完整meta模型和层级FX结构，不需要检查点或TorchAir。
 
 ```bash
-"$MODEL_PYTHON" -m qwen35_moe_dflash.cli build-full-pytorch \
+python3 -m qwen35_moe_dflash.cli build-full-pytorch \
   --sequence-length 8 --output "$AI_RUN_DIR/torch-full-$(date +%Y%m%d-%H%M%S)"
 ```
 
 **GE：** 生成完整target/draft构图源码，默认不使用融合算子，不需要检查点或GE库。
 
 ```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" build-full-structure \
+python3 "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" build-full-structure \
   --sequence-length 8 --expert-dispatch selected --fused-ops none \
   --output "$AI_RUN_DIR/ge-full-$(date +%Y%m%d-%H%M%S)"
 ```

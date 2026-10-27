@@ -17,6 +17,8 @@ source '/实际DDK根目录/tools/tools_ascendc/set_ascendc_env.sh'
 
 脚本相对路径来自用户成功回传的入口：`tools/tools_ascendc/set_ascendc_env.sh`，不是 `tool/tools_ascendc/set_ascend_env.sh`。若当前终端已经激活该conda并成功source该DDK，跳过本步，不重复加载。
 
+后续命令直接使用当前环境的 `python3`，无需export `MODEL_PYTHON`。平台诊断和runner构建子进程沿用启动脚本的解释器。
+
 该次source输出已包含 `DDK_PATH`、`TOOLCHAIN_HOME`、`HIAI_VERSION`、`PATH`、`LD_LIBRARY_PATH`、`PYTHONPATH`，后续不再手工export这六项。它没有给出项目目录、运行根目录、主机CANN、准确DDK版本、OHOS Native SDK及设备连接信息，首次需要补下面七项。
 
 ### 第2步：只补充项目需要的七项
@@ -39,7 +41,7 @@ export BIP='实际HDC服务器IP:端口'
 export SN='实际设备序列号'
 ```
 
-不用另填 `CPRO_DDK_ROOT`、`MODEL_PYTHON`、`HDC` 或重写搜索路径：项目入口会分别读取 `DDK_PATH`、当前conda环境和PATH中的 `hdc`。HIAI头文件与OHOS ARM64库默认在选定DDK内查找，只有查找失败或存在歧义时才补显式路径。不要把OMG的主机 `LD_LIBRARY_PATH` 当作手机端链接库路径。
+不用另填 `CPRO_DDK_ROOT`、`HDC` 或重写搜索路径：项目入口会读取 `DDK_PATH` 和PATH中的 `hdc`。HIAI头文件与OHOS ARM64库默认在选定DDK内查找，只有查找失败或存在歧义时才补显式路径。不要把OMG的主机 `LD_LIBRARY_PATH` 当作手机端链接库路径。
 
 ### 第3步：首次保存配置
 
@@ -58,7 +60,7 @@ source "$REPO_DIR/targets/cpro/scripts/env.sh"
 ```bash
 git pull --ff-only &&
 source targets/cpro/scripts/env.sh &&
-  "$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
+  python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
 ```
 
 它会自动生成FP16 GDN状态绑定、TBE平台诊断，尝试导出/编译全部五类九例AIR/OMC，再构建runner并执行编译成功的case。无需另export bindings、诊断或探针路径；不读取或修改保留的权重。编译失败仍列入总表，命令不是宣称已修复Conv/RMS或数值问题。
@@ -82,7 +84,6 @@ source targets/cpro/scripts/env.sh &&
 | 可省略配置 | 默认来源与作用 |
 |---|---|
 | `CPRO_DDK_ROOT` | 使用已选DDK的 `DDK_PATH`；定位OMG、TBE和安装版算子源码。未加载DDK时需填写绝对路径 |
-| `MODEL_PYTHON` | 使用已声明的模型Python，或当前conda环境 `CONDA_PREFIX/bin/python3`；执行探针数据、平台诊断及编译调度，不重新安装环境 |
 | `HDC` | 已声明的HDC路径，或PATH中的 `hdc`；执行设备传输与命令。找不到时需填写实际可执行文件 |
 | `HIAI_INCLUDE_DIR` | 默认 `auto`，在所选DDK内查找唯一 `HiAiModelManagerService.h` 的父目录；也可明确指定 |
 | `HIAI_LIBRARIES` | 默认 `auto`，在所选DDK内查找手机端链接库；也可指定主机上的HarmonyOS ARM64库文件，多文件用冒号分隔 |
@@ -117,9 +118,9 @@ vendor环境中常见的变量含义如下；入口保留它们，不生成重�
 | `CPRO_TARGET` | 固定为当前部署目标 `kirinx90` |
 | `QWEN35_RESOURCES` | 指向仓库 `specs/resources.json`，由上面的变量解析资源；原私有清单会被此设置替换 |
 | `PYTHONDONTWRITEBYTECODE` | 固定为1，防止Python在代码/工具链目录写缓存 |
-| `PATH`、`PYTHONPATH` | 保留已有vendor路径，加入模型Python的bin及缺少的仓库模块路径；重复source不累加 |
+| `PYTHONPATH` | 保留已有vendor路径，补入缺少的仓库模块路径；重复source不累加 |
 
-入口不激活conda、不执行vendor脚本、不追加全局CANN/DDK库路径，也不连接设备；GE/OMG继续通过现有脚本设置各自子进程环境。
+入口保留当前 `PATH`，不再读取或导出 `MODEL_PYTHON`；旧配置中的这一行可删除。入口不激活conda、不执行vendor脚本、不追加全局CANN/DDK库路径，也不连接设备；GE/OMG继续通过现有脚本设置各自子进程环境。
 
 以下变量属于单次运行，**不写入固定配置**，需要时在执行前设置或使用CLI参数。`source env.sh` 不读取、覆盖或清除调用者的这些值；旧配置有这些行可删除。
 
@@ -138,7 +139,7 @@ vendor环境中常见的变量含义如下；入口保留它们，不生成重�
 后续重试使用打印出的批次目录；新批次会记录TBE诊断路径，重试自动沿用，不必另找 `TBE_DIAG_JOB`：
 
 ```bash
-"$MODEL_PYTHON" "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
+python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
   --probe-run /absolute/path/to/fused-all-new-batch \
   --retry-cases attention_prefill,attention_decode
 ```
@@ -163,7 +164,7 @@ vendor环境中常见的变量含义如下；入口保留它们，不生成重�
 
 ```bash
 test -f "$REPO_DIR/project.yaml"
-"$MODEL_PYTHON" -c 'import sys, numpy; print(sys.executable); print("NumPy:", numpy.__version__)'
+python3 -c 'import sys, numpy; print(sys.executable); print("NumPy:", numpy.__version__)'
 ```
 
 资源默认读取 [specs/resources.json](../specs/resources.json) 并展开环境变量；已有私有清单时设置 `QWEN35_RESOURCES=/实际路径/resources.json`。完整权重路径与锁定版本见[权重准备](weights.md)，每次命令使用新的输出目录。
@@ -173,7 +174,7 @@ test -f "$REPO_DIR/project.yaml"
 完整结构和 CPU/CUDA 参考使用现有 Torch；先检查导入。完整结构命令见 [PyTorch 指南](pytorch-guide.md)。
 
 ```bash
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$MODEL_PYTHON" - <<'PY'
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 - <<'PY'
 import torch
 print("Torch:", torch.__version__)
 print("CUDA available:", torch.cuda.is_available())
@@ -183,7 +184,7 @@ PY
 仅走TorchAir导出路径时，才在单独终端按该TorchNPU/TorchAir安装要求加载服务器CANN环境并检查导入；当前直接GE融合探针不需要这一步。原生库或版本问题见 [AIR 排障](air-troubleshooting.md)。
 
 ```bash
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$MODEL_PYTHON" - <<'PY'
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 - <<'PY'
 import torch_npu
 import torchair
 print("TorchNPU:", torch_npu.__version__)

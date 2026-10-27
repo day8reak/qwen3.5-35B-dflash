@@ -14,7 +14,7 @@ _qwen35_load_env() (
   repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P) || return 1
   config=${1:-${QWEN35_ENV_CONFIG:-"$repo/../qwen35-cpro.env"}}
   config=$(realpath -m -- "$config") || return 1
-  required=(REPO_DIR AI_RUN_DIR MODEL_PYTHON CANN_ROOT CPRO_DDK_ROOT CPRO_DDK_ID
+  required=(REPO_DIR AI_RUN_DIR CANN_ROOT CPRO_DDK_ROOT CPRO_DDK_ID
             OHOS_NATIVE_SDK HIAI_INCLUDE_DIR HIAI_LIBRARIES HDC BIP SN)
   optional=(BOARD_HIAI_LIB_DIR QWEN35_TARGET_WEIGHTS QWEN35_DRAFT_WEIGHTS)
   configured=(REPO_DIR AI_RUN_DIR CANN_ROOT CPRO_DDK_ID OHOS_NATIVE_SDK BIP SN)
@@ -27,7 +27,6 @@ _qwen35_load_env() (
     [BIP]='HDC服务端的IP:端口；不是默认使用手机IP'
     [SN]='通过该HDC服务端连接的设备序列号'
     [CPRO_DDK_ROOT]='目标DDK根目录；source vendor脚本后自动读取DDK_PATH，可省略'
-    [MODEL_PYTHON]='模型Python可执行文件；默认使用已激活conda环境的bin/python3'
     [HDC]='HDC可执行文件；默认从PATH查找hdc'
   )
   ddk_from_environment=${DDK_PATH:-${CPRO_DDK_ROOT:-}}
@@ -35,15 +34,13 @@ _qwen35_load_env() (
     # Capture declared values when available; never invent a device or DDK ID.
     REPO_DIR=$repo
     AI_RUN_DIR=${AI_RUN_DIR:-"$repo-run"}
-    MODEL_PYTHON=${MODEL_PYTHON:-${CONDA_PREFIX:+"$CONDA_PREFIX/bin/python3"}}
     CPRO_DDK_ROOT=$ddk_from_environment
     HDC=${HDC:-$(command -v hdc || true)}
     OHOS_NATIVE_SDK=${OHOS_NATIVE_SDK:-${OHOS_SDK:-}}
     HIAI_INCLUDE_DIR=${HIAI_INCLUDE_DIR:-auto}
     HIAI_LIBRARIES=${HIAI_LIBRARIES:-auto}
-    # Do not duplicate values supplied by an activated vendor/conda shell.
+    # Do not duplicate values supplied by the activated vendor shell.
     [[ -n ${DDK_PATH:-} ]] || configured+=(CPRO_DDK_ROOT)
-    [[ -n ${CONDA_PREFIX:-} ]] || configured+=(MODEL_PYTHON)
     command -v hdc >/dev/null 2>&1 || configured+=(HDC)
     if [[ $config == "$repo/"* || $config == "$(realpath -m -- "$AI_RUN_DIR")/"* ]]; then
       printf '%s\n' 'cpro-env: keep the private config outside the repository and AI_RUN_DIR' >&2
@@ -73,7 +70,6 @@ _qwen35_load_env() (
   REPO_DIR=${REPO_DIR:-$repo}
   AI_RUN_DIR=${AI_RUN_DIR:-"$REPO_DIR-run"}
   CPRO_DDK_ROOT=${CPRO_DDK_ROOT:-$ddk_from_environment}
-  MODEL_PYTHON=${MODEL_PYTHON:-${CONDA_PREFIX:+"$CONDA_PREFIX/bin/python3"}}
   HDC=${HDC:-$(command -v hdc || true)}
   OHOS_NATIVE_SDK=${OHOS_NATIVE_SDK:-${OHOS_SDK:-}}
   HIAI_INCLUDE_DIR=${HIAI_INCLUDE_DIR:-auto}
@@ -133,7 +129,7 @@ _qwen35_load_env() (
     fi
     printf 'cpro-env: HIAI include: %s\n  link libraries: %s\n' "$HIAI_INCLUDE_DIR" "$HIAI_LIBRARIES" >&2
   fi
-  for name in REPO_DIR AI_RUN_DIR MODEL_PYTHON CANN_ROOT CPRO_DDK_ROOT OHOS_NATIVE_SDK HIAI_INCLUDE_DIR; do
+  for name in REPO_DIR AI_RUN_DIR CANN_ROOT CPRO_DDK_ROOT OHOS_NATIVE_SDK HIAI_INCLUDE_DIR; do
     if [[ ${!name} != /* ]]; then printf 'cpro-env: %s must be absolute\n' "$name" >&2; errors=1; fi
   done
   [[ $errors == 0 ]] || return 1
@@ -159,9 +155,12 @@ _qwen35_load_env() (
   for path in "${files[@]}"; do
     if [[ $path != /* || ! -f $path ]]; then printf 'cpro-env: missing file: %s\n' "$path" >&2; errors=1; fi
   done
-  for path in "$MODEL_PYTHON" "$CPRO_DDK_ROOT/tools/tools_omg/master/omg" "$OHOS_NATIVE_SDK/llvm/bin/clang++"; do
+  for path in "$CPRO_DDK_ROOT/tools/tools_omg/master/omg" "$OHOS_NATIVE_SDK/llvm/bin/clang++"; do
     if [[ ! -f $path || ! -x $path ]]; then printf 'cpro-env: missing executable: %s\n' "$path" >&2; errors=1; fi
   done
+  if ! type -P python3 >/dev/null; then
+    printf '%s\n' 'cpro-env: python3 not found in PATH; activate the model Python environment first' >&2; errors=1
+  fi
   if [[ ! -d $OHOS_NATIVE_SDK/sysroot ]]; then printf 'cpro-env: SDK must point to native/, missing sysroot: %s\n' "$OHOS_NATIVE_SDK" >&2; errors=1; fi
   if [[ $SN == -* || $SN == *[[:space:]]* || $BIP == -* || $BIP == *[[:space:]]* || ! $BIP =~ ^.+:[0-9]{1,5}$ ]]; then
     printf '%s\n' 'cpro-env: invalid SN or BIP; BIP must be the HDC server IP:port' >&2; errors=1
@@ -185,14 +184,9 @@ _qwen35_load_env() (
   for path in "${old_python_path[@]}"; do
     [[ -z $path || :$PYTHONPATH: == *":$path:"* ]] || PYTHONPATH+=":$path"
   done
-  # Prefer the selected interpreter for OMG workers; repeated sourcing is stable.
-  IFS=: read -r -a old_path <<< "${PATH:-}"
-  PATH="$(dirname -- "$MODEL_PYTHON")"
-  for path in "${old_path[@]}"; do
-    [[ -z $path || :$PATH: == *":$path:"* ]] || PATH+=":$path"
-  done
+  # Use the active shell's python3; Python entry points propagate sys.executable.
   for name in "${required[@]}" "${optional[@]}" CPRO_TARGET GE_MODEL_TOOL QWEN35_RESOURCES \
-              QWEN35_ENV_CONFIG PYTHONDONTWRITEBYTECODE PYTHONPATH PATH; do
+              QWEN35_ENV_CONFIG PYTHONDONTWRITEBYTECODE PYTHONPATH; do
     if [[ -n ${!name-} ]]; then printf 'export %s=%q\n' "$name" "${!name}"; else printf 'unset %s\n' "$name"; fi
   done
   printf 'cpro-env: loaded %s\n  project: %s\n  runs: %s\n  HDC server: %s  device: %s\n' "$config" "$REPO_DIR" "$AI_RUN_DIR" "$BIP" "$SN" >&2

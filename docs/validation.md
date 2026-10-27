@@ -12,6 +12,8 @@
 
 进一步按用户要求复用已激活的vendor/conda环境：默认配置缩减为七项并附中文解释，DDK根目录取 `DDK_PATH`、Python取当前conda、HDC从PATH查找，已有vendor模块及库路径保留。环境回归更新为11项通过，新增覆盖无重复配置时的派生值，以及切换DDK后不沿用旧的派生 `CPRO_DDK_ROOT`；显式配置仍优先。未实际运行vendor环境脚本或目标工具。
 
+随后将当前指南的执行命令统一为 `python3`，项目入口移除 `MODEL_PYTHON` 配置依赖并保持调用者PATH不变。更新后的11项环境测试通过，覆盖未设置解释器变量、旧配置含失效Python路径、首次生成配置及重复source；6份当前指南的41个Bash代码块和 `env.sh` 语法检查通过。仅验证主机配置与命令语法，未重新编译或上板。
+
 ## Attention导出器C++接口修正
 
 用户回传 `fused-all-9759eb4f9b0b`：Attention两例在构建导出器时失败，尚未进入GE序列化或OMG。CANN 9.1的 `GNode::GetInputIndexByName` 为非const方法，新增helper误传 `const GNode&`。现改为可变引用；主机测试的同名方法也按用户日志中的真实声明改为非const，先复现旧代码编译失败，再验证修正。此前测试夹具错误地将该方法声明为const，未能拦截这次回归。
