@@ -37,10 +37,12 @@ git pull --ff-only
 | 编译目标 | 始终为 `kirinx90`；`Ascend310B1` 是DDK初始化后返回的内部名称，`Ascend310P3` 是原工程平台 |
 | GDN状态 | 安装版初态/末态为FP16；本次runner修正了末态只接受FP32的旧校验 |
 | conv | 宽度4已通过初始维推；生成的y2为 `[1,8192,1,S+3]`，随后格式配置失败；不能据此断言DDK完全没有kernel |
-| RMS | 本次仍找不到 `AdnRmsNorm` 维推函数，尚未进入板端执行 |
+| RMS | 编译时仍找不到 `AdnRmsNorm` 维推函数；新增调用摘录表明它用于ND，原Cpro用内置 `npu_rms_norm`，实际GE映射待核对；本仓库可选 `rms` 融合绑定仍依赖Adn |
 | CacheUpdate | prefill/decode两例编译、加载和执行通过；无数值golden，不代表精度通过 |
 | Attention | 端口顺序校验已修正；最新重试在C++构建时暴露 `GNode` const不匹配，已按CANN 9.1头文件声明修正，待真实重试 |
 | 尚未验证 | 全部五类调用覆盖、正确数值及NPU执行位置；完整模型与连续状态验证另行进行 |
+
+新增调用源码的[核对与勘误](qwen35-moe-operators-and-quantization-analysis.md#调用源码核对与勘误2026-10-27)确认：Attention converter把Python `pse_shift`实参接到GE端口16，端口3留空，当前探针方向正确；Conv的输出rank、GDN的Meta/安装版状态dtype和Cache的Functionalize调用名仍有差异，不能凭前端声明判定安装版行为。
 
 ## 完整模型构图（按需）
 

@@ -1,5 +1,7 @@
 # Qwen3.5-MoE（35B-A3B）NPU 工程：算子与量化分析
 
+> **当前部署目标：cpro / `kirinx90`。** 下文保留原分析快照，其 `Ascend310P3` / ATC / `.om` 描述不是当前部署命令；当前使用所选 DDK 的 OMG 生成 `.omc`。2026-10-27 用户补充的建模调用与 converter 摘录已核对，见文末[调用源码核对与勘误](#调用源码核对与勘误2026-10-27)。其中 Attention 端口、RMS 变体和安装版状态 ABI 的说明应结合该勘误阅读。
+
 > 分析对象目录：`qwen35_moe/`
 
 > 适用平台：昇腾 310P（`Ascend310P3`）
@@ -937,3 +939,29 @@ zero_point = 0（对称）
    - NZ/Cpro 的 NPU 侧 `mlp.gate` 是 `nn.Linear`，`replace_linear_to_QLinear` 会替换为 QLinear；两侧 key（`model.layers.X.mlp.gate_quant_weight`）对应一致。
 
    - 保留提醒：NZ 路由目前是 `softmax+topk`（导出一条 fp16 门控矩阵乘路径），Cpro 用 `npu_moe_gating_top_k_softmax`；两套路由裁剪策略不同，改路由实现时需重新对齐权重量化格式。
+
+---
+
+## 调用源码核对与勘误（2026-10-27）
+
+依据用户补充的 §4.7 调用/converter 代码摘录，以及此前回传的 DDK 维推日志和 GDN 源码检查。未取得原 `qwen35_moe/` 完整源码树复核行号；摘录不能证明当前安装包包含对应 kernel。§4.6 仍保留为原始端口转录的哈希绑定快照，以下纠正其解释及与安装版的差异。
+
+**Attention：Python 实参名与 GE 端口必须分开看。** 建模代码在导出时传 `pse_shift=allQLen`，但提供的 converter 实际写的是：
+
+```python
+# convert_npu_adn_fused_infer_attention 内的两个 GE inputs 项
+'pse_shift': None,                  # GE 端口 3：未连接
+'all_seq_lengths_q': pse_shift,     # GE 端口 16：接 Python pse_shift 实参
+```
+
+因此 §4.6“导出分支接 GE 端口 3”的说法不成立；当前直接 GE 探针连接端口 16、保留端口 3 空位，与该 converter 一致。`key` / `value` 是动态列表端口，当前单元素对应 `key0` / `value0`；可选端口空位不能压缩成连续的八个输入。另一个待核对项是该 converter 未使用同名 Python 参数 `all_seq_lengths_q`：若经它导出只传该参数的调用，端口 16 会为空；不能据此推断不经过 converter 的 eager 调用也失败。
+
+**RMS：显式 `AdnRmsNorm` 调用属于 ND。** 所给代码中 ND 调用 `adn_rms_norm(x, self.weight, eps)`，Cpro/NZ 调用内置 `npu_rms_norm`。原文“GE 侧同样可落到该实现”没有对应 converter 证据，不能认为 Cpro 必须依赖 `AdnRmsNorm`。当前五类探针仍覆盖它，且本仓库显式启用 `--fused-ops rms` 的绑定确实使用它，所以该可选路径仍被维推失败阻塞。原 Cpro 内置 RMS 路径需依据实际导出映射验证；不能把 Adn 的失败直接判为原 Cpro RMS 不可用，也不能直接标为通过。
+
+**GDN：Meta 的 FP32 末态与安装源码的 FP16 缓冲区有冲突。** 提供的 Meta 返回 `torch.float32` 状态，Cpro 调用传入 FP16 初态。已回传的安装版 C++ 对 `initial_state` 和 `last_recurrent_state` 都使用 `reinterpret_cast<__gm__ half *>`。因此当前探针保留显式、源码哈希绑定的 FP16 输入/输出状态，不能仅凭 Meta 改回 FP32。Meta 只声明前端图的 shape/dtype；编译与加载成功也不代表数值正确，已有 GDN decode 全零输出仍待解决。
+
+**Conv：调用说明与当前 DDK 的形状约定尚未对齐。** 摘录/Meta 声明 `x2=[1,8192,3]`、`y2=[1,8192,S+3]`，但 DDK 已明确拒绝宽度 3；宽度 4 候选通过初始维推后，日志显示 `y2=[1,8192,1,S+3]`，随后失败在格式配置。提供的 `F.conv1d(padded, ...)` 调用不能解释该额外维度，Meta 也不能证明真实输出和状态顺序。下一步需核对安装版端口/格式注册及输出 ABI，不能反复退回宽度 3，或把补维/去维当作已验证修复。
+
+**CacheUpdate：Functionalize 包装里还有一个命名疑点。** 所给 `custom_scatter_npu` 克隆输入后调用 `torch.ops.npu.my_inplace(...)`，而前面的接口/注册名为 `npu_cache_update_`。除非其他源码注册了 `my_inplace` 别名，否则这是需要修正的前端调用；须查完整注册后判断。当前 `CacheUpdate` 直接 GE 探针绕过这个包装，其加载/执行成功没有验证该 Functionalize 分支。
+
+这些摘录明确了原 Cpro 路径中四类显式自定义调用：CacheUpdate、Attention、GDN、Conv 状态更新；RMS 走内置接口，其实际 GE 映射尚待确认。本仓库五类九例的覆盖结果继续逐项保留，不因变体分类变化隐藏失败或替代数值验收。
