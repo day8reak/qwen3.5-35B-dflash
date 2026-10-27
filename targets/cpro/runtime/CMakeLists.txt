@@ -30,10 +30,6 @@ if(BUILD_HIAI_RUNNER)
   endforeach()
   add_executable(qwen35_dflash_hiai $<TARGET_OBJECTS:hiai_adapter>)
   target_link_libraries(qwen35_dflash_hiai PRIVATE dflash_core ${HIAI_LIBRARIES})
-  add_executable(qwen35_hiai_op_probe src/hiai_op_probe.cpp)
-  target_include_directories(qwen35_hiai_op_probe PRIVATE "${HIAI_INCLUDE_DIR}")
-  target_compile_options(qwen35_hiai_op_probe PRIVATE -Wall -Wextra -Wpedantic)
-  target_link_libraries(qwen35_hiai_op_probe PRIVATE ${HIAI_LIBRARIES})
 endif()
 if(BUILD_HOST_TESTS)
   enable_testing()
@@ -63,9 +59,4 @@ if(BUILD_HOST_TESTS)
   add_test(NAME hiai_io_padding
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_io_padding.py
       $<TARGET_FILE:hiai_runner_fake> ${CMAKE_CURRENT_BINARY_DIR}/padding-cases)
-  add_executable(hiai_op_probe_fake src/hiai_op_probe.cpp tests/probe_fake/fake_hiai.cpp)
-  target_include_directories(hiai_op_probe_fake PRIVATE tests/fake_hiai)
-  add_test(NAME hiai_op_probe
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_op_probe.py
-      $<TARGET_FILE:hiai_op_probe_fake> ${CMAKE_CURRENT_BINARY_DIR}/probe-cases)
 endif()

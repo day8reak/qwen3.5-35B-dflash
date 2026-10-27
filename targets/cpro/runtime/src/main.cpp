@@ -8,6 +8,8 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <regex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -200,6 +202,254 @@ std::size_t Size(const std::string& text, bool allow_zero = false) {
     throw std::invalid_argument("invalid nonnegative integer: " + text);
   return static_cast<std::size_t>(value);
 }
+std::uint64_t StepInteger(const std::string& text, std::uint64_t maximum, bool zero = false) {
+  if (text.empty() || text.size() > 20)
+    throw std::invalid_argument("invalid stateful plan integer");
+  std::uint64_t value = 0;
+  for (char c : text) {
+    if (c < '0' || c > '9' || value > maximum / 10 ||
+        (value == maximum / 10 && static_cast<unsigned>(c - '0') > maximum % 10))
+      throw std::invalid_argument("stateful plan integer outside bounds");
+    value = value * 10 + static_cast<unsigned>(c - '0');
+  }
+  if (!zero && !value) throw std::invalid_argument("stateful plan integer must be positive");
+  return value;
+}
+std::vector<std::string> Split(const std::string& text, char separator) {
+  std::vector<std::string> values;
+  std::size_t start = 0;
+  for (;;) {
+    const auto end = text.find(separator, start);
+    values.push_back(text.substr(start, end == std::string::npos ? end : end - start));
+    if (end == std::string::npos) return values;
+    start = end + 1;
+  }
+}
+void NoSymlinks(const std::filesystem::path& path) {
+  std::filesystem::path current;
+  for (const auto& part : std::filesystem::absolute(path).lexically_normal()) {
+    current /= part;
+    if (std::filesystem::is_symlink(std::filesystem::symlink_status(current)))
+      throw std::invalid_argument("stateful paths cannot contain symlinks: " + current.string());
+  }
+}
+std::uintmax_t StepFileSize(const std::filesystem::path& path, std::uintmax_t maximum) {
+  NoSymlinks(path);
+  if (!std::filesystem::is_regular_file(path))
+    throw std::invalid_argument("stateful payload must be a regular file: " + path.string());
+  const auto bytes = std::filesystem::file_size(path);
+  if (!bytes || bytes > maximum)
+    throw std::invalid_argument("stateful payload is empty or exceeds its size limit: " + path.string());
+  return bytes;
+}
+std::filesystem::path StepPayload(const std::filesystem::path& root, const std::string& value) {
+  const std::filesystem::path relative(value);
+  if (value.empty() || value.size() > 1024 || relative.is_absolute() ||
+      !std::regex_match(value, std::regex("[A-Za-z0-9_./-]+")))
+    throw std::invalid_argument("stateful payload requires a bounded relative path");
+  for (const auto& part : relative)
+    if (part == "." || part == ".." || part.empty())
+      throw std::invalid_argument("stateful payload path traversal is forbidden");
+  const auto result = root / relative;
+  NoSymlinks(result);
+  return result;
+}
+void StepHash(const std::string& value) {
+  if (!std::regex_match(value, std::regex("[0-9a-f]{64}")))
+    throw std::invalid_argument("stateful payload requires lowercase SHA256");
+}
+std::vector<std::uint8_t> StepRead(const std::filesystem::path& path, std::uintmax_t maximum) {
+  const auto size = StepFileSize(path, maximum);
+  std::vector<std::uint8_t> data(static_cast<std::size_t>(size));
+  std::ifstream input(path, std::ios::binary);
+  input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+  if (!input || input.peek() != std::char_traits<char>::eof())
+    throw std::runtime_error("stateful payload changed size or could not be read");
+  return data;
+}
+std::string BytesHash(const std::vector<std::uint8_t>& bytes) {
+  return Sha256(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+}
+HiaiTensorSpec StepTensor(const std::vector<std::string>& fields) {
+  if (!std::regex_match(fields[2], std::regex("[A-Za-z_][A-Za-z0-9_]{0,127}")))
+    throw std::invalid_argument("invalid stateful tensor name");
+  HiaiTensorSpec result{fields[2], fields[3], {}};
+  for (const auto& dim : Split(fields[4], ','))
+    result.shape.push_back(static_cast<std::uint32_t>(StepInteger(dim, UINT32_MAX)));
+  static_cast<void>(HiaiTensorBytes(result));
+  return result;
+}
+struct StepInput {
+  HiaiTensorSpec spec;
+  std::filesystem::path file;
+  std::string path, sha256;
+};
+struct StepPlan {
+  std::filesystem::path model;
+  std::string model_hash, abi_hash, plan_hash;
+  std::uint32_t sequence = 0, past = 0;
+  std::vector<StepInput> inputs;
+  std::vector<HiaiTensorSpec> outputs;
+};
+StepPlan ReadStepPlan(const std::filesystem::path& path) {
+  const auto payload = StepRead(path, 1ULL << 20);
+  const std::string text(payload.begin(), payload.end());
+  for (unsigned char c : text)
+    if ((c < 32 && c != '\t' && c != '\n') || c > 126)
+      throw std::invalid_argument("stateful step plan must contain ASCII fields with LF line endings");
+  auto rows = Split(text, '\n');
+  if (!rows.empty() && rows.back().empty()) rows.pop_back();
+  if (rows.size() < 7 || rows[0] != "QWEN35_STATEFUL_STEP\t1")
+    throw std::invalid_argument("stateful step plan header must be QWEN35_STATEFUL_STEP version 1");
+  const auto root = std::filesystem::absolute(path).lexically_normal().parent_path();
+  StepPlan plan;
+  plan.plan_hash = BytesHash(payload);
+  for (std::size_t i = 1; i <= 2; ++i) {
+    const auto fields = Split(rows[i], '\t');
+    if (fields.size() != 3 || fields[0] != (i == 1 ? "model" : "state_abi"))
+      throw std::invalid_argument("stateful plan requires ordered model and state_abi records");
+    StepHash(fields[2]);
+    const auto file = StepPayload(root, fields[1]);
+    StepFileSize(file, i == 1 ? UINT32_MAX : 1ULL << 20);
+    if (Sha256File(file) != fields[2]) throw std::runtime_error("stateful model/state ABI SHA256 mismatch");
+    if (i == 1) { plan.model = file; plan.model_hash = fields[2]; }
+    else plan.abi_hash = fields[2];
+  }
+  const auto tokens = Split(rows[3], '\t');
+  if (tokens.size() != 3 || tokens[0] != "tokens")
+    throw std::invalid_argument("stateful plan requires sequence/past token counts");
+  plan.sequence = static_cast<std::uint32_t>(StepInteger(tokens[1], INT32_MAX));
+  plan.past = static_cast<std::uint32_t>(StepInteger(tokens[2], INT32_MAX, true));
+  if (static_cast<std::uint64_t>(plan.sequence) + plan.past > INT32_MAX)
+    throw std::invalid_argument("stateful next past length exceeds int32");
+  std::set<std::string> input_names, output_names;
+  std::uint64_t total = 0;
+  for (std::size_t i = 4; i < rows.size(); ++i) {
+    const auto fields = Split(rows[i], '\t');
+    const bool input = fields[0] == "input";
+    if ((input && (fields.size() != 7 || !plan.outputs.empty())) ||
+        (!input && (fields.size() != 5 || fields[0] != "output")))
+      throw std::invalid_argument("invalid stateful tensor record or input/output ordering");
+    const auto index = StepInteger(fields[1], 1023, true);
+    if (index != (input ? plan.inputs.size() : plan.outputs.size()))
+      throw std::invalid_argument("stateful tensor indices must be contiguous and ordered");
+    const auto spec = StepTensor(fields);
+    total += HiaiTensorBytes(spec);
+    if (total > (2ULL << 30)) throw std::invalid_argument("stateful target IO exceeds 2 GiB");
+    if (!(input ? input_names : output_names).insert(spec.name).second)
+      throw std::invalid_argument("duplicate stateful tensor name");
+    if (input) {
+      StepHash(fields[6]);
+      const auto file = StepPayload(root, fields[5]);
+      if (StepFileSize(file, 512ULL << 20) != HiaiTensorBytes(spec))
+        throw std::invalid_argument("stateful input file size differs from tensor shape/dtype");
+      plan.inputs.push_back({spec, file, fields[5], fields[6]});
+    } else plan.outputs.push_back(spec);
+  }
+  const std::vector<std::uint32_t> ids_shape{1, plan.sequence};
+  if (plan.inputs.empty() || plan.outputs.size() < 4 ||
+      plan.inputs[0].spec.name != "input_ids" || plan.inputs[0].spec.dtype != "int32" ||
+      plan.inputs[0].spec.shape != ids_shape || plan.outputs[0].name != "target_top1" ||
+      plan.outputs[0].dtype != "int32" || plan.outputs[0].shape != ids_shape ||
+      plan.outputs[1].name != "target_features" || plan.outputs[1].dtype != "float16" ||
+      plan.outputs[1].shape.size() != 3 || plan.outputs[1].shape[0] != 1 ||
+      plan.outputs[1].shape[1] != plan.sequence)
+    throw std::invalid_argument("step plan is not the explicit-state Qwen target IO contract");
+  if ((!plan.past && plan.inputs.size() != 1) ||
+      (plan.past && plan.inputs.size() + 1 != plan.outputs.size()))
+    throw std::invalid_argument("prefill must initialize state in graph; decode must supply every state input");
+  std::map<std::string, std::set<std::string>> layers;
+  for (std::size_t i = 2; i < plan.outputs.size(); ++i) {
+    const auto& out = plan.outputs[i];
+    std::smatch match;
+    if (!std::regex_match(out.name, match, std::regex("layer_([0-9]+)_(conv_history|recurrent|key|value)_out")))
+      throw std::invalid_argument("invalid target state output name");
+    const std::string layer = match[1], role = match[2];
+    layers[layer].insert(role);
+    const auto rank = role == "conv_history" ? 3U : 4U;
+    if (out.shape.size() != rank || out.shape[0] != 1 ||
+        (out.dtype != "float16" && !(role == "recurrent" && out.dtype == "float32")))
+      throw std::invalid_argument("invalid target state output shape/dtype");
+    if ((role == "key" || role == "value") && out.shape[2] != plan.past + plan.sequence)
+      throw std::invalid_argument("KV output length differs from next past length");
+    if (plan.past) {
+      const auto& in = plan.inputs[i - 1].spec;
+      auto expected_shape = out.shape;
+      if (role == "key" || role == "value") expected_shape[2] = plan.past;
+      if (in.name != out.name.substr(0, out.name.size() - 4) || in.dtype != out.dtype ||
+          in.shape != expected_shape)
+        throw std::invalid_argument("state input/output order, shape or dtype differs");
+    }
+  }
+  for (const auto& entry : layers)
+    if (entry.second != std::set<std::string>{"conv_history", "recurrent"} &&
+        entry.second != std::set<std::string>{"key", "value"})
+      throw std::invalid_argument("each target layer must expose its complete state pair");
+  return plan;
+}
+void StepTensorJson(std::ostream& out, std::size_t index, const HiaiTensorSpec& spec,
+                    const std::string& path, const std::string& hash) {
+  out << "{\"index\":" << index << ",\"name\":\"" << spec.name << "\",\"dtype\":\""
+      << spec.dtype << "\",\"shape\":[";
+  for (std::size_t i = 0; i < spec.shape.size(); ++i) { if (i) out << ','; out << spec.shape[i]; }
+  out << "],\"bytes\":" << HiaiTensorBytes(spec) << ",\"path\":\"" << JsonEscape(path)
+      << "\",\"sha256\":\"" << hash << "\"}";
+}
+int RunStatefulStep(const std::string& path, const std::string& output,
+                    const std::string& version, const std::string& ddk,
+                    const std::string& firmware, std::uint32_t timeout) {
+  const auto destination = std::filesystem::absolute(output).lexically_normal();
+  NoSymlinks(destination);
+  if (std::filesystem::exists(destination)) throw std::runtime_error("stateful output already exists");
+  if (!std::filesystem::is_directory(destination.parent_path()))
+    throw std::invalid_argument("stateful output parent directory must already exist");
+  const auto plan = ReadStepPlan(path);
+  std::vector<HiaiTensorSpec> input_specs;
+  for (const auto& input : plan.inputs) input_specs.push_back(input.spec);
+  HiaiStatefulExecutor executor(plan.model, version, input_specs, plan.outputs, timeout);
+  for (std::size_t i = 0; i < plan.inputs.size(); ++i) {
+    const auto& input = plan.inputs[i];
+    const auto bytes = StepRead(input.file, HiaiTensorBytes(input.spec));
+    if (BytesHash(bytes) != input.sha256) throw std::runtime_error("stateful input SHA256 mismatch");
+    executor.SetInput(i, bytes);
+  }
+  executor.Execute();
+  // A failed write leaves no success result.json; existing output is never replaced.
+  if (!std::filesystem::create_directory(destination))
+    throw std::runtime_error("cannot create new stateful output directory");
+  std::ostringstream report;
+  report << "{\"schema_version\":1,\"status\":\"EXECUTED\",\"scope\":\"stateful-target-step\","
+         << "\"evidence_kind\":\"" << kEvidenceKind << "\",\"runtime_version\":\""
+         << JsonEscape(executor.runtime_version()) << "\",\"ddk_id\":\"" << JsonEscape(ddk)
+         << "\",\"firmware_id\":\"" << JsonEscape(firmware) << "\",\"step_plan_sha256\":\""
+         << plan.plan_hash << "\",\"state_abi_sha256\":\"" << plan.abi_hash
+         << "\",\"model_sha256\":\"" << plan.model_hash << "\",\"sequence_length\":" << plan.sequence
+         << ",\"past_length\":" << plan.past << ",\"next_past_length\":" << plan.past + plan.sequence
+         << ",\"state_policy\":\"explicit\",\"target_calls\":1,\"draft_calls\":0,"
+         << "\"accuracy\":\"NOT_EVALUATED\",\"performance\":\"NOT_EVALUATED\","
+         << "\"runtime_placement\":\"UNVERIFIED\",\"dtype_source\":\"hash-bound-plan\",\"inputs\":[";
+  for (std::size_t i = 0; i < plan.inputs.size(); ++i) {
+    if (i) report << ',';
+    const auto& input = plan.inputs[i];
+    StepTensorJson(report, i, input.spec, input.path, input.sha256);
+  }
+  report << "],\"outputs\":[";
+  for (std::size_t i = 0; i < plan.outputs.size(); ++i) {
+    if (i) report << ',';
+    std::ostringstream name;
+    name << "output_" << std::setfill('0') << std::setw(4) << i << ".bin";
+    const auto bytes = executor.CopyOutput(i);
+    std::ofstream file(destination / name.str(), std::ios::binary);
+    file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    file.flush();
+    if (!file) throw std::runtime_error("could not write stateful output tensor");
+    StepTensorJson(report, i, plan.outputs[i], name.str(), BytesHash(bytes));
+  }
+  report << "]}";
+  AtomicWrite(destination / "result.json", report.str());
+  std::cout << "EXECUTED: stateful target step; report=" << (destination / "result.json") << '\n';
+  return 0;
+}
 void Help() {
   std::cout << "qwen35_dflash_hiai --probe\n"
             << "qwen35_dflash_hiai --target TARGET.omc --target-sha256 HEX "
@@ -209,6 +459,8 @@ void Help() {
             << "[--mode generate|benchmark|smoke --generation-mode dflash|ordinary --max-new-tokens 32 --max-draft-tokens 15 --pad-token-id 248044 "
             << "--eos-token-ids 248044,248046 --feature-width 16384 --vocab-size 248320]\n";
   std::cout << "Smoke diagnostics only: [--capture-target-features 0|1] (at most 65536 bytes)\n";
+  std::cout << "qwen35_dflash_hiai --stateful-step STEP.tsv --output NEW_DIRECTORY "
+            << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID [--timeout-ms 300000]\n";
 }
 }  // namespace
 int main(int argc, char** argv) {
@@ -234,6 +486,16 @@ int main(int argc, char** argv) {
       }
       std::string value = it->second; args.erase(it); return value;
     };
+    if (args.count("--stateful-step")) {
+      const auto plan = take("--stateful-step"), output = take("--output");
+      const auto version = take("--expected-runtime-version");
+      const auto ddk = take("--ddk-id"), firmware = take("--firmware-id");
+      const auto timeout = StepInteger(take("--timeout-ms", "300000"), UINT32_MAX);
+      if (plan.empty() || output.empty() || version.empty() || ddk.empty() || firmware.empty())
+        throw std::invalid_argument("stateful plan, output and runtime/toolchain identities are required");
+      if (!args.empty()) throw std::invalid_argument("unknown stateful option " + args.begin()->first);
+      return RunStatefulStep(plan, output, version, ddk, firmware, static_cast<std::uint32_t>(timeout));
+    }
     const auto target = take("--target"), draft = take("--draft");
     const auto target_hash = take("--target-sha256"), draft_hash = take("--draft-sha256");
     const auto output = take("--output");

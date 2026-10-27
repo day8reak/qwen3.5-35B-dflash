@@ -15,6 +15,8 @@
 namespace qwen35::dflash {
 namespace {
 constexpr std::size_t kFeatureCaptureLimit = 65536;
+constexpr std::size_t kStatefulTensorLimit = 512ULL << 20;
+constexpr std::uint64_t kStatefulTotalLimit = 2ULL << 30;
 void Check(hiai::AIStatus status, const char* operation) {
   if (status != hiai::AI_SUCCESS)
     throw std::runtime_error(std::string("HIAI ") + operation + " failed: " + std::to_string(status));
@@ -56,7 +58,7 @@ struct Tensor {
   std::size_t bytes;
   void* Data() const {
     if (!value || !value->GetBuffer() || value->GetSize() < bytes)
-      throw std::runtime_error("HIAI tensor buffer is smaller than ABI v2");
+      throw std::runtime_error("HIAI tensor buffer is smaller than the declared tensor ABI");
     return value->GetBuffer();
   }
 };
@@ -116,7 +118,7 @@ struct Model {
   }
   void Load(const std::filesystem::path& path, const std::string& model_name,
             const std::string& expected_version, std::uint32_t timeout_ms,
-            std::size_t input_count, std::size_t output_count) {
+            std::size_t input_count, std::size_t output_count, const char* abi = "ABI v2") {
     name = model_name; timeout = timeout_ms;
     Check(client.Init(nullptr), "Init(sync)"); initialized = true;
     version = Version(client);
@@ -156,10 +158,10 @@ struct Model {
                   << ", dtype=unavailable\n";
     }
     if (input_dims.size() != input_count || output_dims.size() != output_count)
-      throw std::runtime_error("HIAI OMC tensor count differs from ABI v2");
+      throw std::runtime_error(std::string("HIAI OMC tensor count differs from ") + abi);
   }
   void Add(bool input, std::size_t index, const std::vector<std::uint32_t>& shape,
-           hiai::HIAI_DataType dtype) {
+           hiai::HIAI_DataType dtype, bool stateful = false) {
     const auto& dim = (input ? input_dims : output_dims).at(index);
     const auto actual = dim.GetDims();
     const std::string context = name + ' ' + (input ? "input[" : "output[") +
@@ -170,12 +172,14 @@ struct Model {
     const bool leading = IsLeadingOnePadding(shape, actual);
     const bool padded = trailing || leading;
     if (dim.GetFormat() != hiai::Format::ND || (actual != shape && !padded))
-      throw std::runtime_error("HIAI OMC tensor shape/format differs from ND ABI v2: " + context);
+      throw std::runtime_error(std::string("HIAI OMC tensor shape/format differs from ") +
+          (stateful ? "stateful ND ABI: " : "ND ABI v2: ") + context);
     if (padded)
       std::cerr << "HIAI accepted ND " << (trailing ? "trailing-one" : "leading-one")
                 << " padding for " << context
                 << "; using runtime descriptor\n";
-    if (dtype != hiai::HIAI_DATATYPE_FLOAT16 && dtype != hiai::HIAI_DATATYPE_INT32)
+    if (dtype != hiai::HIAI_DATATYPE_FLOAT16 && dtype != hiai::HIAI_DATATYPE_INT32 &&
+        !(stateful && dtype == hiai::HIAI_DATATYPE_FLOAT32))
       throw std::invalid_argument("ABI v2 allows only FP16 features and INT32 tokens/masks");
     std::uint64_t bytes = dtype == hiai::HIAI_DATATYPE_FLOAT16 ? 2 : 4;
     for (auto n : shape) {
@@ -205,6 +209,92 @@ HiaiProbe ProbeHiai() {
   Check(client.Init(nullptr), "Init(sync)");
   return {Version(client), client.CheckNPUSupport()};
 }
+
+std::size_t HiaiTensorBytes(const HiaiTensorSpec& spec) {
+  if (spec.name.empty() || spec.shape.empty() || spec.shape.size() > 8 ||
+      (spec.dtype != "int32" && spec.dtype != "float16" && spec.dtype != "float32"))
+    throw std::invalid_argument("stateful tensor requires a name, rank 1..8 and int32/float16/float32 dtype");
+  std::size_t bytes = spec.dtype == "float16" ? 2 : 4;
+  for (auto dim : spec.shape) {
+    if (!dim || bytes > kStatefulTensorLimit / dim)
+      throw std::invalid_argument("stateful tensor exceeds 512 MiB or has a zero dimension");
+    bytes *= dim;
+  }
+  return bytes;
+}
+
+struct HiaiStatefulExecutor::Impl {
+  Model target;
+  std::vector<bool> ready;
+  bool outputs_available = false;
+};
+HiaiStatefulExecutor::HiaiStatefulExecutor(
+    const std::filesystem::path& target, const std::string& expected_version,
+    const std::vector<HiaiTensorSpec>& inputs, const std::vector<HiaiTensorSpec>& outputs,
+    std::uint32_t timeout_ms) : impl_(std::make_unique<Impl>()) {
+  if (inputs.empty() || inputs.size() > 1024 || outputs.empty() || outputs.size() > 1024 ||
+      expected_version.empty() || !timeout_ms)
+    throw std::invalid_argument("stateful target requires bounded ordered IO, runtime identity and timeout");
+  const std::uint16_t endian = 1;
+  if (*reinterpret_cast<const std::uint8_t*>(&endian) != 1)
+    throw std::invalid_argument("stateful target payloads require little-endian buffers");
+  std::uint64_t total = 0;
+  for (const auto* specs : {&inputs, &outputs}) {
+    for (const auto& spec : *specs) {
+      total += HiaiTensorBytes(spec);
+      if (total > kStatefulTotalLimit)
+        throw std::invalid_argument("stateful target IO exceeds 2 GiB");
+    }
+  }
+  impl_->target.Load(target, "qwen35_stateful_target", expected_version, timeout_ms,
+                     inputs.size(), outputs.size(), "stateful target ABI");
+  std::uint64_t allocated = 0;
+  for (bool input : {true, false}) {
+    const auto& specs = input ? inputs : outputs;
+    for (std::size_t i = 0; i < specs.size(); ++i) {
+      const auto& spec = specs[i];
+      const auto dtype = spec.dtype == "float16" ? hiai::HIAI_DATATYPE_FLOAT16 :
+                         spec.dtype == "float32" ? hiai::HIAI_DATATYPE_FLOAT32 : hiai::HIAI_DATATYPE_INT32;
+      impl_->target.Add(input, i, spec.shape, dtype, true);
+      const auto& tensor = (input ? impl_->target.inputs : impl_->target.outputs).back();
+      allocated += tensor.value->GetSize();
+      if (tensor.value->GetSize() > kStatefulTensorLimit || allocated > kStatefulTotalLimit)
+        throw std::runtime_error("stateful runtime tensor buffers exceed bounded IO allocation");
+      // Extra runtime allocation is not interpreted as physical row padding.
+      std::memset(tensor.Data(), 0, tensor.bytes);
+    }
+  }
+  impl_->ready.assign(inputs.size(), false);
+}
+HiaiStatefulExecutor::~HiaiStatefulExecutor() = default;
+void HiaiStatefulExecutor::SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes) {
+  impl_->outputs_available = false;
+  const auto& tensor = impl_->target.inputs.at(index);
+  impl_->ready.at(index) = false;
+  if (bytes.size() != tensor.bytes)
+    throw std::invalid_argument("stateful input byte count differs from declared shape/dtype");
+  std::memcpy(tensor.Data(), bytes.data(), bytes.size());
+  impl_->ready[index] = true;
+}
+void HiaiStatefulExecutor::Execute() {
+  impl_->outputs_available = false;
+  if (!std::all_of(impl_->ready.begin(), impl_->ready.end(), [](bool ready) { return ready; }))
+    throw std::logic_error("all explicit stateful inputs must be supplied for each step");
+  std::fill(impl_->ready.begin(), impl_->ready.end(), false);
+  impl_->target.Run();
+  impl_->outputs_available = true;
+}
+std::vector<std::uint8_t> HiaiStatefulExecutor::CopyOutput(std::size_t index) const {
+  if (!impl_->outputs_available)
+    throw std::logic_error("stateful outputs unavailable before successful Process");
+  const auto& tensor = impl_->target.outputs.at(index);
+  const auto* data = static_cast<const std::uint8_t*>(tensor.Data());
+  return {data, data + tensor.bytes};
+}
+const std::string& HiaiStatefulExecutor::runtime_version() const noexcept {
+  return impl_->target.version;
+}
+
 struct HiaiExecutor::Impl {
   Model target, draft;
   std::size_t sequence = 0, width = 0, vocab = 0;

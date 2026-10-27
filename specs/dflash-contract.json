@@ -135,8 +135,8 @@
     "user_requirement": "验证 DFlash 有优化效果，希望至少提速 2 倍",
     "target_speedup": 2.0,
     "status": "NOT_MEASURED",
-    "current_priority": "BOARD_EXECUTION_FIRST_ACCURACY_FOLLOWUP",
-    "current_milestone": "Load the existing target/draft OMC pair, execute both graphs, retrieve hash-verified outputs and logs",
+    "current_priority": "FUSED_OPERATOR_AND_STATEFUL_RUNTIME_INTEGRATION",
+    "current_milestone": "Connect installed fused kernels and explicit state ABI to target execution and draft scheduling",
     "primary_working_metric": "median ordinary full decode-loop latency / median DFlash full decode-loop latency",
     "included_decode_costs": [
       "target calls",
@@ -165,7 +165,8 @@
     "accuracy_for_final_claim": "Preserve token/stop equality gates and separately validate model quality; execution smoke does not close either accuracy gate",
     "baseline_policy": "Prefix recomputation and all-expert execution are correctness bring-up baselines; a >=2x result against these alone does not establish the final optimized decoding benefit",
     "measurement_scope_note": "Full decode-loop timing is the current working definition; also report prefill+decode speedup explicitly, and report model loading/cold start separately",
-    "current_milestone_status": "USER_REPORTED_TINY_EXECUTION_COMPLETE",
-    "current_milestone_evidence": "specs/draft-rope-execution-user-report.json"
-  }
+    "current_milestone_status": "HOST_IMPLEMENTED_DEVICE_INTEGRATION_PENDING",
+    "current_milestone_evidence": "specs/verification.json"
+  },
+  "scope_note": "This contract describes the preserved ABI v2 prefix-recompute target/draft pair. The independent fused/stateful target has a separate generated state ABI; native integration is pending."
 }

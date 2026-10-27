@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace qwen35::dflash {
@@ -11,6 +12,33 @@ struct HiaiProbe {
   bool npu_supported;
 };
 HiaiProbe ProbeHiai();
+
+// The explicit-state target has a separate, ordered ABI. Dtype comes from the
+// hash-bound graph contract; the legacy HIAI descriptor exposes shape/format.
+struct HiaiTensorSpec {
+  std::string name, dtype;
+  std::vector<std::uint32_t> shape;
+};
+std::size_t HiaiTensorBytes(const HiaiTensorSpec& spec);
+
+// One immutable stateful target, synchronous Process, caller-owned state flow.
+// No draft model, speculative scheduling, implicit state mutation or benchmark.
+class HiaiStatefulExecutor final {
+ public:
+  HiaiStatefulExecutor(const std::filesystem::path& target,
+                      const std::string& expected_runtime_version,
+                      const std::vector<HiaiTensorSpec>& inputs,
+                      const std::vector<HiaiTensorSpec>& outputs,
+                      std::uint32_t timeout_ms = 300000);
+  ~HiaiStatefulExecutor();
+  void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
+  void Execute();
+  std::vector<std::uint8_t> CopyOutput(std::size_t index) const;
+  const std::string& runtime_version() const noexcept;
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
 
 // Synchronous HIAI, two immutable offline models, persistent tensors.
 class HiaiExecutor final : public GraphExecutor {

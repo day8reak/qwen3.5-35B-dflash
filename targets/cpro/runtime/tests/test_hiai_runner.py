@@ -189,3 +189,157 @@ for number, (mode, capture, failure, width, message) in enumerate([
     assert result.returncode == 1 and message in result.stderr, result.stderr
     assert not report.exists() and "LEAK" not in result.stderr, result.stderr
 print("HIAI feature capture: exact pre-draft FP16 bytes, opt-in, smoke-only and 65536-byte bound checked")
+
+
+# The independent stateful target executes once and hands state to the host.
+# Its fake models check the actual history/recurrent/KV bytes across two loads.
+def stateful_bundle(label, previous=None):
+    folder = root / ("stateful-" + label)
+    folder.mkdir()
+    sequence, past = (1, 3) if previous else (3, 0)
+    model = folder / "target.omc"
+    model.write_bytes(b"stateful-decode-fixture" if previous else b"stateful-prefill-fixture")
+    abi = folder / "state-abi.json"
+    abi.write_text(json.dumps({"schema_version": 1, "sequence_length": sequence, "past_length": past}))
+    inputs = [("input_ids", "int32", [1, sequence])]
+    outputs = [
+        ("target_top1", "int32", [1, sequence]),
+        ("target_features", "float16", [1, sequence, 4]),
+        ("layer_0_conv_history_out", "float16", [1, 8, 3]),
+        ("layer_0_recurrent_out", "float32", [1, 2, 2, 2]),
+        ("layer_1_key_out", "float16", [1, 1, past + sequence, 2]),
+        ("layer_1_value_out", "float16", [1, 1, past + sequence, 2]),
+    ]
+    payloads = [struct.pack("<" + "i" * sequence, *([4] if previous else [1, 2, 3]))]
+    if previous:
+        previous_report = json.loads((previous / "result.json").read_text())
+        for item in previous_report["outputs"][2:]:
+            inputs.append((item["name"].removesuffix("_out"), item["dtype"], item["shape"]))
+            payloads.append((previous / item["path"]).read_bytes())
+    rows = ["QWEN35_STATEFUL_STEP\t1", f"model\ttarget.omc\t{sha(model)}",
+            f"state_abi\tstate-abi.json\t{sha(abi)}", f"tokens\t{sequence}\t{past}"]
+    for i, ((name, dtype, shape), payload) in enumerate(zip(inputs, payloads)):
+        file = folder / f"input_{i:04d}.bin"
+        file.write_bytes(payload)
+        rows.append("\t".join(["input", str(i), name, dtype, ",".join(map(str, shape)), file.name, sha(file)]))
+    rows.extend("\t".join(["output", str(i), name, dtype, ",".join(map(str, shape))])
+                for i, (name, dtype, shape) in enumerate(outputs))
+    (folder / "step.tsv").write_text("\n".join(rows) + "\n")
+    return folder, rows
+
+
+def stateful_run(folder, label, failure="", layout="", extra=()):
+    output, trace = folder / label, folder / (label + ".trace")
+    result = subprocess.run([
+        str(runner), "--stateful-step", str(folder / "step.tsv"), "--output", str(output),
+        "--expected-runtime-version", "FAKE-HIAI-X90", "--ddk-id", "fake", "--firmware-id", "fake",
+        *extra,
+    ], env=dict(os.environ, FAKE_HIAI_FAILURE=failure, FAKE_HIAI_LAYOUT=layout,
+                FAKE_HIAI_TRACE=str(trace), FAKE_HIAI_DTYPE_TRACE=str(folder / (label + ".dtypes"))),
+        text=True, capture_output=True)
+    assert "LEAK" not in result.stderr, result.stderr
+    events = trace.read_text().splitlines() if trace.exists() else []
+    return result, output, events
+
+
+prefill, good_rows = stateful_bundle("prefill")
+first, first_output, events = stateful_run(prefill, "result")
+assert first.returncode == 0, first.stderr
+assert events == ["load", "process", "unload"], events
+for folder, output in [(prefill, first_output)]:
+    report = json.loads((output / "result.json").read_text())
+    assert report["status"] == "EXECUTED" and report["scope"] == "stateful-target-step"
+    assert report["evidence_kind"] == "host-fake-hiai"
+    assert report["step_plan_sha256"] == sha(folder / "step.tsv")
+    assert report["state_abi_sha256"] == sha(folder / "state-abi.json")
+    assert report["model_sha256"] == sha(folder / "target.omc")
+    assert report["sequence_length"] == 3 and report["past_length"] == 0 and report["next_past_length"] == 3
+    assert report["target_calls"] == 1 and report["draft_calls"] == 0
+    assert report["accuracy"] == report["performance"] == "NOT_EVALUATED"
+    assert report["dtype_source"] == "hash-bound-plan"
+    assert len(report["inputs"]) == 1 and len(report["outputs"]) == 6
+    for i, item in enumerate(report["outputs"]):
+        assert item["index"] == i and item["path"] == f"output_{i:04d}.bin"
+        file = output / item["path"]
+        assert item["bytes"] == file.stat().st_size and item["sha256"] == sha(file)
+    assert (output / "output_0000.bin").read_bytes() == struct.pack("<3i", 2, 3, 4)
+    assert (output / "output_0003.bin").read_bytes() == struct.pack("<8f", *range(1, 9))
+    assert "1" in (folder / "result.dtypes").read_text().splitlines(), "FP32 state was not initialized as FP32"
+
+decode, decode_rows = stateful_bundle("decode", first_output)
+second, second_output, events = stateful_run(decode, "result")
+assert second.returncode == 0, second.stderr
+assert events == ["load", "process", "unload"], events
+report = json.loads((second_output / "result.json").read_text())
+assert (report["sequence_length"], report["past_length"], report["next_past_length"]) == (1, 3, 4)
+assert len(report["inputs"]) == 5 and len(report["outputs"]) == 6
+assert (second_output / "output_0000.bin").read_bytes() == struct.pack("<i", 5)
+assert (second_output / "output_0003.bin").read_bytes() == struct.pack("<8f", *range(2, 10))
+for i in (4, 5):
+    assert (second_output / f"output_{i:04d}.bin").read_bytes()[:12] == (first_output / f"output_{i:04d}.bin").read_bytes()
+for item in report["inputs"]:
+    assert item["sha256"] == sha(decode / item["path"])
+for item in report["outputs"]:
+    assert item["sha256"] == sha(second_output / item["path"])
+
+for layout in ("padded", "leading-feature", "mixed-feature"):
+    result, output, events = stateful_run(prefill, "layout-" + layout, layout=layout)
+    assert result.returncode == 0, result.stderr
+    assert events == ["load", "process", "unload"]
+    assert (output / "output_0003.bin").read_bytes() == struct.pack("<8f", *range(1, 9))
+
+for failure in ("init", "version", "no-npu", "path", "load", "model-buffer", "io-dims",
+                "shape", "format", "count", "allocation", "short-buffer", "run"):
+    result, output, events = stateful_run(prefill, "failure-" + failure, failure=failure)
+    assert result.returncode == 1 and not (output / "result.json").exists(), (failure, result.stderr)
+    assert events.count("process") <= 1 and "compatibility-query" not in events
+    if failure != "init":
+        assert events[-1] == "unload", (failure, events)
+
+# Keep the known-good prefill intact while checking strict manifest parsing.
+for label, change, message in [
+    ("version", lambda rows: ["QWEN35_STATEFUL_STEP\t2", *rows[1:]], "header"),
+    ("model-hash", lambda rows: [rows[0], rows[1].rsplit("\t", 1)[0] + "\t" + "0"*64, *rows[2:]], "SHA256"),
+    ("abi-hash", lambda rows: [*rows[:2], rows[2].rsplit("\t", 1)[0] + "\t" + "0"*64, *rows[3:]], "SHA256"),
+    ("input-hash", lambda rows: [*rows[:4], rows[4].rsplit("\t", 1)[0] + "\t" + "0"*64, *rows[5:]], "SHA256"),
+    ("input-index", lambda rows: [*rows[:4], rows[4].replace("input\t0\t", "input\t1\t"), *rows[5:]], "indices"),
+    ("input-type", lambda rows: [*rows[:4], rows[4].replace("\tint32\t", "\tfloat32\t"), *rows[5:]], "contract"),
+    ("traversal", lambda rows: [*rows[:4], rows[4].replace("input_0000.bin", "../input_0000.bin"), *rows[5:]], "traversal"),
+    ("absolute", lambda rows: [*rows[:4], rows[4].replace("input_0000.bin", "/input_0000.bin"), *rows[5:]], "relative"),
+    ("unknown-dtype", lambda rows: [*rows[:4], rows[4].replace("\tint32\t", "\tint16\t"), *rows[5:]], "dtype"),
+    ("zero-shape", lambda rows: [*rows[:4], rows[4].replace("\t1,3\t", "\t1,0\t"), *rows[5:]], "positive"),
+    ("generic-op", lambda rows: [*rows[:5], rows[5].replace("target_top1", "generic_output"), *rows[6:]], "contract"),
+    ("missing-state", lambda rows: rows[:-1], "complete state pair"),
+    ("trailing-field", lambda rows: [*rows[:4], rows[4] + "\textra", *rows[5:]], "record"),
+]:
+    (prefill / "step.tsv").write_text("\n".join(change(good_rows)) + "\n")
+    result, output, events = stateful_run(prefill, "reject-" + label)
+    assert result.returncode == 1 and message in result.stderr, (label, result.stderr)
+    assert not (output / "result.json").exists() and "process" not in events, (label, events)
+(prefill / "step.tsv").write_text("\n".join(good_rows) + "\n")
+result, output, events = stateful_run(prefill, "result")
+assert result.returncode == 1 and "already exists" in result.stderr
+assert sha(first_output / "output_0003.bin") == hashlib.sha256(struct.pack("<8f", *range(1, 9))).hexdigest()
+result, output, events = stateful_run(prefill, "reject-old-cli", extra=("--draft", "unused.omc"))
+assert result.returncode == 1 and "unknown stateful option" in result.stderr and not events
+(prefill / "input-alias.bin").symlink_to(prefill / "input_0000.bin")
+(prefill / "step.tsv").write_text("\n".join(good_rows).replace("input_0000.bin", "input-alias.bin") + "\n")
+result, output, events = stateful_run(prefill, "reject-symlink")
+assert result.returncode == 1 and "symlink" in result.stderr and not events
+(prefill / "step.tsv").write_text("x" * ((1 << 20) + 1))
+result, output, events = stateful_run(prefill, "reject-plan-size")
+assert result.returncode == 1 and "size limit" in result.stderr and not events
+(prefill / "step.tsv").write_text("\n".join(good_rows) + "\n")
+(decode / "step.tsv").write_text("\n".join(decode_rows[:5] + decode_rows[6:]) + "\n")
+result, output, events = stateful_run(decode, "reject-state-omission")
+assert result.returncode == 1 and not events and not (output / "result.json").exists()
+(decode / "step.tsv").write_text("\n".join(decode_rows) + "\n")
+state = decode / "input_0002.bin"
+state.write_bytes(struct.pack("<8f", *([0] * 8)))
+changed = decode_rows[:]
+changed[6] = changed[6].rsplit("\t", 1)[0] + "\t" + sha(state)
+(decode / "step.tsv").write_text("\n".join(changed) + "\n")
+result, output, events = stateful_run(decode, "reject-wrong-state")
+assert result.returncode == 1 and "Process" in result.stderr
+assert events == ["load", "process", "unload"] and not (output / "result.json").exists()
+print("HIAI stateful target: single Process, FP16/FP32 cache handoff, hashes, ND padding, bounded plans and failures checked")

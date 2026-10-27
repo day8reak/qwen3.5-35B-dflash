@@ -1,397 +1,144 @@
 {
-  "schema_version": 2,
+  "schema_version": 1,
+  "updated": "2026-10-27",
+  "scope": "Source consolidation, documentation reorganization and host stateful integration; real device pending",
   "status": "HOST_VALIDATED_DEVICE_PENDING",
-  "run_id": "20261020T092412Z-4528-622cba",
-  "source_tree_sha256": "ea2d09dfd2e755bf2a5943fd199c47f749fc818767a5efb8dd5070e1457102ad",
-  "source_hash_scope": [
-    "model",
-    "reference",
-    "targets",
-    "tests"
-  ],
-  "source_files": [
+  "run_id": "20261027T032529Z-17962-4c1981",
+  "local_run": "$WORKSPACE_ROOT/.work/qwen3.5-35B-moe/20261027T032529Z-17962-4c1981",
+  "host_tests": [
     {
-      "path": "model/qwen35_moe_dflash/__init__.py",
-      "sha256": "c4363a9165e4882e6b5bb5cdf933139aeb95f303ee8b3b7aac680052c4b23038"
+      "suite": "PyTorch fused model/ops/state/session",
+      "passed": 89,
+      "subtests_passed": 27,
+      "junit": "fused-pytest.xml"
     },
     {
-      "path": "model/qwen35_moe_dflash/artifacts.py",
-      "sha256": "73cce9d27e14dcbe26e93362f620df07e84ea3623744e9573670c00116896186"
+      "suite": "GE fused plus legacy GE export",
+      "passed": 154,
+      "junit": "ge-consolidation-pytest.xml"
     },
     {
-      "path": "model/qwen35_moe_dflash/checkpoints.py",
-      "sha256": "07070a8318f24544f2cf5bb22a9dc3b048e1bde1c374e5efdb6fc203cb0580a4"
+      "suite": "Production HIAI/HDC",
+      "passed": 150,
+      "junit": "probe-cleanup-tests.xml"
     },
     {
-      "path": "model/qwen35_moe_dflash/cli.py",
-      "sha256": "95f41e417f66696da1f3036ed6d6b9c7a28a52fb85dbebd69616476fb28e55ce"
+      "suite": "Native host CMake/CTest",
+      "passed": 5,
+      "junit": "probe-cleanup-native-tests.xml"
     },
     {
-      "path": "model/qwen35_moe_dflash/compile.py",
-      "sha256": "64a2d40435f900b53fcc32e1507f71b297509734d7290597dead38092eeb79e6"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/config.py",
-      "sha256": "775fb7b08cc40c95606d5bb5f4c98cc84554fd1211f3aa48ebe57819155452f7"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/export.py",
-      "sha256": "2a25aace3d00ffb07ec770268d67704ec72b0119f73ad9cf182eb07f0838c274"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/export_moe.py",
-      "sha256": "745e5bcd4636f04d5632d93402bbccbdca2b94631d62d99340a57c86ba5b5097"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/graphs.py",
-      "sha256": "6ab344cc408be484a8f728c44aab2439955348d6cc63a3f4acad3dcbff504cd8"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/model.py",
-      "sha256": "9524f9b35e6c07c80b30deb83a9ffe95bcbac85e29d2cb62b00d69efdbb340fb"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/onnx_reference.py",
-      "sha256": "9372253cd02b1873360f777038851ec02b79beeca81297ced7405310184deee1"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/ops.py",
-      "sha256": "595a73d68565a009cc7bd9f8523f94e846accff41a9926a9fe3d8e24400fcb94"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/precision.py",
-      "sha256": "317ba9374d273cc05b4fa5362510a992d64b96aa665c45c73d5e658a0b0731d3"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/quantization.py",
-      "sha256": "1c451165dd6aa953e261af4807f45ed3dce2e2a27d21953832c13d950d839adf"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/reference_quant.py",
-      "sha256": "d17b17d15776e6008a56ce8eea6722ce29f7840496f8ffe7211c0b121e0f85ce"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/resources.py",
-      "sha256": "b646a03d6688b0e8d6e310ac2dfbf408c2a8fce617a367ade772761cafe6480c"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/runtime.py",
-      "sha256": "df92dc3debe9d092d79b764ee8d8bec401ed36c81a2f40219810d2169c087a8b"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/target_features.py",
-      "sha256": "91a403f96668a10e586f5e9b475c71d743aa00cc3dc914edd109d9304d61340f"
-    },
-    {
-      "path": "model/qwen35_moe_dflash/weights.py",
-      "sha256": "75c2722aad4cfe7f8d03d4ff29aca399e9eff672d0464a3956d4a226291eaecb"
-    },
-    {
-      "path": "model/requirements-reference.txt",
-      "sha256": "06428f55e38c2aa1a8144d51c35148ee9c3bf94807977602122d1e2317023795"
-    },
-    {
-      "path": "reference/cases.json",
-      "sha256": "b73c0a15af7c149b4e63fdacfac422336deb29b69d139bee066235a9debea2e4"
-    },
-    {
-      "path": "reference/tiny.py",
-      "sha256": "a8f918acd366373374139850ead738d83a18ba6e99064a8bd97251cf1b116b38"
-    },
-    {
-      "path": "targets/cpro/runtime/CMakeLists.txt",
-      "sha256": "e89c383c32ae4299700b1f7a7b270384084c11686e2f3f4564f85f5d61c86212"
-    },
-    {
-      "path": "targets/cpro/runtime/include/qwen35_dflash/generation.hpp",
-      "sha256": "efa814f77142b3c7b8fd1dcc60c482b9055c4bf849ec0bb053c06a1556841aa6"
-    },
-    {
-      "path": "targets/cpro/runtime/include/qwen35_dflash/hiai_executor.hpp",
-      "sha256": "d771bc2d934a8d25b5f8c7e47a8a20c5e79d2604625d2787a8b3e7abf5b1463f"
-    },
-    {
-      "path": "targets/cpro/runtime/include/qwen35_dflash/sha256.hpp",
-      "sha256": "fc430e38616b76d159d16b6ab47dc11fed333523b954eb8722ac87fff28b8e3c"
-    },
-    {
-      "path": "targets/cpro/runtime/src/generation.cpp",
-      "sha256": "fb5b26fcc825093f5f63526c71875d020df1237483f2ca533835e9173a0c8465"
-    },
-    {
-      "path": "targets/cpro/runtime/src/hiai_executor.cpp",
-      "sha256": "067eaed0102ae64409bd8b17106e6e3abf46efb8fff664cc96c53bf6d8271ba4"
-    },
-    {
-      "path": "targets/cpro/runtime/src/main.cpp",
-      "sha256": "800d1feb2a41899b38ac0e83ea75b45f037d8bdf8e343b143c7db3c0ab5374b3"
-    },
-    {
-      "path": "targets/cpro/runtime/src/sha256.cpp",
-      "sha256": "0b04000a9430a6a2e58a68c975f2e63ef29cf09bb9f5903839371ace523ac584"
-    },
-    {
-      "path": "targets/cpro/runtime/tests/fake_hiai/HiAiModelManagerService.h",
-      "sha256": "f8f10dd13c782e40541c31c003512ffb7620d339d3d5d34fc94b9b816ad207bd"
-    },
-    {
-      "path": "targets/cpro/runtime/tests/fake_hiai/fake_hiai.cpp",
-      "sha256": "6b14ee5b38c5f90ec500ac1f32582f4472dae5448b00017c4a6de1c139c5b3d3"
-    },
-    {
-      "path": "targets/cpro/runtime/tests/test_generation.cpp",
-      "sha256": "69fdb6649c429c224971542b12256532f7263017aa9ac426da240cc8782c9bb2"
-    },
-    {
-      "path": "targets/cpro/runtime/tests/test_hiai_runner.py",
-      "sha256": "782d761f997dc5aee2c35d1d4da59298debef575cacf1824bf679cc636ade622"
-    },
-    {
-      "path": "targets/cpro/scripts/build_hiai.py",
-      "sha256": "41210fd8e58284e047d9cc2770b6a1c6d5416a1aea20e3582727c522bf175080"
-    },
-    {
-      "path": "targets/cpro/scripts/prepare_blue_ddk.py",
-      "sha256": "17bc8229d74a5ce132f9402c633153809e9fd356502e074a1b623e3c2e94383f"
-    },
-    {
-      "path": "tests/test_air_pipeline.py",
-      "sha256": "4cf43946570d2e87e87e6c9edf6ded37920472655790e776404372d9436f5e65"
-    },
-    {
-      "path": "tests/test_cli.py",
-      "sha256": "e8b7e10a67f612ad78caa5c94813e11d595b5776412f24d6ddc750912e147a3d"
-    },
-    {
-      "path": "tests/test_dflash.py",
-      "sha256": "35164f6e2ad3a7ca0a9eb5ccb862f8762c931ad9f03958109cfc8ce51722ece0"
-    },
-    {
-      "path": "tests/test_dflash_target_features.py",
-      "sha256": "2851903a4f6a7c771abc34d532c81fd7a6c00ee861c082565f4ff4c338c5da18"
-    },
-    {
-      "path": "tests/test_export_capture.py",
-      "sha256": "c7dc3a4ddf662e929e1b0a8c3834e5776e0fbf86beecd6970291ca5f7d38b9bd"
-    },
-    {
-      "path": "tests/test_onnx.py",
-      "sha256": "fdf362a3c7e58351b79e411044f97c800de3bfd96f3b280c91cf8583ffa64990"
-    },
-    {
-      "path": "tests/test_precision.py",
-      "sha256": "c12ebcd88567e9bb376935bc028109cf495f9b1ba0616e777b418b548e5d02a3"
-    },
-    {
-      "path": "tests/test_quantization.py",
-      "sha256": "36f0e794d8b4d16baad0d3fcb74f9ee0f062dd9ef9cee8b8404136b1be329fcb"
-    },
-    {
-      "path": "tests/test_runtime.py",
-      "sha256": "f7d3e9a00a6559efd54996886038d7dc9729f1115fc66abd3f8e35ce37da3b74"
+      "suite": "All remaining Python tests collection",
+      "collected": 1843,
+      "import_errors": 0,
+      "evidence": "add-smoke-cleanup.json"
     }
   ],
-  "python_tests": {
-    "passed": 118,
-    "failed": 0,
-    "skipped": 0,
-    "includes_real_blue_dopt": true
+  "source_move_checks": [
+    "fused-consolidation-ast-audit.json",
+    "ge-consolidation-preservation.json",
+    "ge-consolidation-legacy-cli.json"
+  ],
+  "user_reported_device": {
+    "evidence_type": "USER_PASTED_REPORT_NOT_REHASHED_IN_THIS_RUN",
+    "legacy_tiny": "Target/draft executed; ordinary/DFlash matched in reported run, but differed from host reference.",
+    "gdn_repair": {
+      "compiled_loaded_executed": 41,
+      "numerical_passed": 32,
+      "numerical_failed": 9,
+      "native_norm_layer0_final": {
+        "max_abs": 0.000793457,
+        "relative_l2": 0.005915196552830379
+      },
+      "native_norm_stages_failed_output": "normalized_key"
+    },
+    "placement": "UNVERIFIED",
+    "conclusions": "docs/validation.md"
   },
-  "cpp_ctest_groups": {
-    "passed": 2,
-    "failed": 0
-  },
-  "hiai_real_header_cross_compile": "PASS_OBJECTS_ONLY",
-  "quantization": "REAL_BLUE_DOPT_TINY_CALIBRATION_AND_REFERENCE_PASS_NOT_DEVICE",
-  "air_omc": "ORCHESTRATION_TESTS_ONLY_NO_REAL_CONVERSION",
-  "full_model_device": "PENDING",
-  "device_access": "UNAVAILABLE_BY_USER_ACCESS_CONSTRAINT",
-  "hardware_reference_policy": "use",
-  "capability_hash": null,
-  "physical_workload_hash": null,
-  "dependency_aware_latency": null,
-  "ddk_id": "blue-next-6.1.1.0-kirinx90",
-  "dopt_identity": {
-    "api_path": "dopt/dopt_lm/do_opt.so",
-    "api_sha256": "248f9a61b93cfc2936035c42dfaaa7ba57e945bc42c3dfe6bcdef8bb53e582bc",
-    "component_files": [
-      {
-        "path": "dopt/dopt_lm/builder.so",
-        "bytes": 52776,
-        "sha256": "26004eb747c602e270dad51330f3c2e1d665509d0ba37c4a7a1dbce1ffbca136"
-      },
-      {
-        "path": "dopt/dopt_lm/common_tools/do_opt.so",
-        "bytes": 168200,
-        "sha256": "5a181c7a3609348dddf2782ca5993fa60e6175057bec5af1f4b9fdea9bdb1bbe"
-      },
-      {
-        "path": "dopt/dopt_lm/common_tools/fix_tools.so",
-        "bytes": 81448,
-        "sha256": "71e5b55ccc05c6b1343d249eb007d738441ef0315f9518e320a3cbbb6cf999d4"
-      },
-      {
-        "path": "dopt/dopt_lm/common_tools/onnx_utils.so",
-        "bytes": 225288,
-        "sha256": "e1937b0d3c93e7ffc012f8a0a79e942a8f88e82ccc6f8f24bab5f9c472033c4c"
-      },
-      {
-        "path": "dopt/dopt_lm/do_opt.so",
-        "bytes": 365192,
-        "sha256": "248f9a61b93cfc2936035c42dfaaa7ba57e945bc42c3dfe6bcdef8bb53e582bc"
-      },
-      {
-        "path": "dopt/dopt_lm/modules/attention.so",
-        "bytes": 258152,
-        "sha256": "791cd7007c21a8ff66d9028e7bb5f92dacc484e7d709a6187f7743364c0085fe"
-      },
-      {
-        "path": "dopt/dopt_lm/modules/npu_quantizer.so",
-        "bytes": 81544,
-        "sha256": "51aac213514daa5a4f600183d0bc557634634af67bdd77699ad2192be1e0c938"
-      },
-      {
-        "path": "dopt/dopt_lm/modules/qconv.so",
-        "bytes": 89768,
-        "sha256": "b1f24e498cb32826c73ee212f8486a980e67b9688c9ba2c108dda84c78033f9b"
-      },
-      {
-        "path": "dopt/dopt_lm/modules/qembed.so",
-        "bytes": 73320,
-        "sha256": "e12ab7e64a19384caa6f61e8e21ff04815a209ef2f7041f967ab6d8e507ab45a"
-      },
-      {
-        "path": "dopt/dopt_lm/modules/qlinear.so",
-        "bytes": 186344,
-        "sha256": "5e1093e80c87b7c29a4cdac8ae08983aa78f6ff8f71b126476be82894c659b8e"
-      },
-      {
-        "path": "dopt/dopt_lm/modules/utils.so",
-        "bytes": 44616,
-        "sha256": "e9260fc3cd1683989e0ca93d9cb77a30b3ff73a1755171803675ec5feb7e8410"
-      },
-      {
-        "path": "dopt/dopt_lm/opt_main.py",
-        "bytes": 2852,
-        "sha256": "ab0b3ece4a2bdaac5e0fb624c2b6a34ff6ac3d81166faba8be08b79aa3fe7131"
-      },
-      {
-        "path": "dopt/dopt_lm/quantizer/qema.so",
-        "bytes": 229672,
-        "sha256": "582271b61e424bf7d41707f153f45e91c20de0a13ea88d56c799bb71c76227f7"
-      },
-      {
-        "path": "dopt/dopt_lm/quantizer/qmanager.so",
-        "bytes": 111560,
-        "sha256": "48781316e50b38096d35684e631c805de1ec45bcc8fed555f6f212c735ebf26f"
-      },
-      {
-        "path": "dopt/dopt_lm/quantizer/qmin_max.so",
-        "bytes": 273160,
-        "sha256": "84d358157f306ddbce56d00903b814a872d6e17be6484ac326b3138454f02b6b"
-      },
-      {
-        "path": "dopt/dopt_lm/quantizer/qutils.so",
-        "bytes": 93992,
-        "sha256": "2dc6684806df92363871b02148cdfdf3797fedc4ac363438c5cbc1331f7716d3"
-      },
-      {
-        "path": "dopt/dopt_lm/quantizer/strategy.so",
-        "bytes": 56872,
-        "sha256": "6d73216bb93984525248ec37966d9f8447d26dd18f177a45438e0d46eb3fde8b"
-      },
-      {
-        "path": "dopt/dopt_lm/quantizer/svd_quant.so",
-        "bytes": 165096,
-        "sha256": "d5482756eb1b62499c584ab285f22d89eaf01632ec8cffc6861395fc18afa76b"
-      },
-      {
-        "path": "dopt/dopt_lm/train.so",
-        "bytes": 410248,
-        "sha256": "69de6b135c11bb67392a597976b7dc17714ca95038b032250f480538d79c0873"
-      },
-      {
-        "path": "dopt/dopt_lm/weight_quant_ptq/ptq_algo_heissen/datautils.so",
-        "bytes": 89768,
-        "sha256": "f0ae33c941e6dbbb7f98f2c7d31c40dcba53eb621128bbbf0928976e080b1953"
-      },
-      {
-        "path": "dopt/dopt_lm/weight_quant_ptq/ptq_algo_heissen/modelutils.so",
-        "bytes": 56904,
-        "sha256": "3bae4cfbde02e2e0201048aa21a3fcec2eb3487c910b9fac2348b84c156da9aa"
-      },
-      {
-        "path": "dopt/dopt_lm/weight_quant_ptq/ptq_algo_heissen/ptq_algo.so",
-        "bytes": 179848,
-        "sha256": "40237eb9a396633e1f88c93e471f602e7273fd7ed6643349ba72297ca80de2a3"
-      },
-      {
-        "path": "dopt/dopt_lm/weight_quant_ptq/ptq_algo_heissen/ptq_loop.so",
-        "bytes": 197224,
-        "sha256": "fcecc1916922c0617d797612f920b00cc2d4a38ceb59dfe6a78cf8cfc01a7301"
-      },
-      {
-        "path": "dopt/dopt_lm/weight_quant_ptq/ptq_algo_heissen/quant.so",
-        "bytes": 126696,
-        "sha256": "2e3799e200e19494794d58618effb356e0fc6dd73905f9d4050f4f36bba87fc0"
-      }
+  "not_validated": [
+    "new fused kernel installation/target support",
+    "new stateful GE real export/compile/device execution",
+    "resident native state bank and draft/verify integration",
+    "full model quality",
+    "compressed W4A8 deployment and measured memory peak",
+    "final speedup"
+  ],
+  "archive": {
+    "path_relative_to_run": "before-reorganization/source.tar.gz",
+    "sha256": "4269cccd3b3a57f04a15e8b520fb81f248a77a441593fa8a3b2d4ba0651071c3",
+    "manifest_relative_to_run": "before-reorganization/manifest.json",
+    "files": 313,
+    "source_head": "4a043641fb5872b5af24c39b86b4b86e70b77014",
+    "includes_uncommitted_changes": true,
+    "deletion_records": [
+      "probe-cleanup.json",
+      "add-smoke-cleanup.json",
+      "documentation-cleanup.json"
     ]
   },
-  "packages": {
-    "torch": "2.12.1+cpu",
-    "transformers": "5.13.0",
-    "torchair": null,
-    "torch_npu": null,
-    "safetensors": "0.8.0"
+  "documentation_checks": {
+    "report": "documentation-check.json",
+    "local_links": 88,
+    "bash_blocks": 29,
+    "python_blocks": 3,
+    "errors": 0,
+    "diff_check": "PASS",
+    "host_cli_examples": "command-check/results.json"
   },
-  "evidence": [
-    {
-      "path": "log/python-final.log",
-      "sha256": "3b1ee28b55e481f2a3371f4f89f63a04ca057a1bc06aca8cbaa594e776981072"
+  "latest_integration": {
+    "run_id": "20261027T035253Z-24076-116518",
+    "local_run": "$WORKSPACE_ROOT/.work/qwen3.5-35B-moe/20261027T035253Z-24076-116518",
+    "status": "HOST_VALIDATED_DEVICE_PENDING",
+    "implemented": [
+      "SelectiveFusedOps for documented gdn/conv_state/rms roles over an explicit complete base backend",
+      "compile-stateful with source and state ABI verification",
+      "prepare-stateful-step with verified prior output handoff",
+      "native --stateful-step explicit-state single target execution"
+    ],
+    "verification_records": [
+      "selective-fused-verification.json",
+      "compile-stateful-verification.json",
+      "stateful-step-verification.json",
+      "stateful-native-tests-final.xml",
+      "stateful-integration/integration-result.json"
+    ],
+    "host_tests": {
+      "selective_fused_unique_passed": 108,
+      "selective_fused_subtests_passed": 27,
+      "selective_fused_note": "One new test fixture failed initially; corrected fixture passed the targeted rerun.",
+      "stateful_compile_regression_passed": 133,
+      "stateful_compile_supplemental_checks_passed": 4,
+      "stateful_step_passed": 35,
+      "native_ctest_passed": 5
     },
-    {
-      "path": "out/python-final.xml",
-      "sha256": "607f512a807b7c37abc4db9a7934731ba34073451114ef133a8699374403ac2a"
+    "integration": {
+      "evidence_kind": "host-fake-hiai",
+      "external_ge_omg_tools": "MOCKED",
+      "past_length_chain": [
+        0,
+        3,
+        4
+      ],
+      "exact_state_transfers": [
+        "conv",
+        "FP32 recurrent",
+        "key",
+        "value"
+      ],
+      "device_execution": "NOT_RUN"
     },
-    {
-      "path": "log/ctest-host.log",
-      "sha256": "1a4db460c92eb4e3b79207a40ba40da8fec65b724b968f9c103afc4694793101"
-    },
-    {
-      "path": "out/hiai-headers/result.json",
-      "sha256": "e5bc08866fc43fed8b0fe57af0929a6fb2d7664e388cd1721f50b8f97b218d61"
-    },
-    {
-      "path": "out/hiai-headers/build.log",
-      "sha256": "f662b1b40878674abed9632793c379358961778eec4734c57993002d54b7a9bf"
-    },
-    {
-      "path": "out/fp16-demo.json",
-      "sha256": "8a14e621a1ee4757ef3e89e773e43b167c93182893da6084d3f4e4353b955578"
-    },
-    {
-      "path": "out/preflight.json",
-      "sha256": "f1284e108e73c5019afff9e6a83da3877f2d43fcba1b91ca43005db77661e410"
-    },
-    {
-      "path": "out/quant-plan-delivery.json",
-      "sha256": "25e78d34c0a3fd753eca0f59fa2a9186634c4787c76b9c11e72bc85c233c155d"
-    },
-    {
-      "path": "log/python-tests.log",
-      "sha256": "ad9a07864ebff87f7ad9bcfb889762ee8dc1413d62bfe095511dd8a51dd1aa07"
-    },
-    {
-      "path": "log/dopt-frozen-compare-v2.log",
-      "sha256": "6ed4af886c760d54584187430a261dc8729584f2dfe32a407e780bfb0392d986"
+    "environment_limit": "cpro-blue-pending target resources manifest unavailable; no real DDK/board run",
+    "memory_estimate": "md-w4a8-memory-estimate.json",
+    "documentation_checks": {
+      "record": "final-doc-check.json",
+      "documents": 13,
+      "local_links": 104,
+      "bash_blocks": 32,
+      "python_blocks": 4,
+      "python_heredocs": 4,
+      "errors": 0,
+      "diff_check": "PASS",
+      "source_document_edit": "Corrected one table-of-contents link only; GE ports section SHA256 unchanged."
     }
-  ],
-  "limitations": [
-    "Full weights not accessed",
-    "No TorchAir or torch_npu; DOPT NpuQLinear missing",
-    "No internal HIAI library link",
-    "No target run, full-model quality, peak memory or performance pass",
-    "No sparse MoE dispatch or incremental cache",
-    "Current 18G free insufficient for candidate weight estimate"
-  ]
+  }
 }

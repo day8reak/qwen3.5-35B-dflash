@@ -1,459 +1,123 @@
 {
   "schema_version": 1,
-  "active_phase": "contract",
-  "delivery_status": "SOURCE_HANDOFF_DEVICE_PENDING",
-  "run_id": "20261020T092412Z-4528-622cba",
+  "updated": "2026-10-27",
+  "active_phase": "integration",
+  "delivery_status": "HOST_IMPLEMENTED_DEVICE_INTEGRATION_PENDING",
+  "run_id": "20261027T035253Z-24076-116518",
+  "navigation": {
+    "home": "docs/README.md",
+    "current_commands": "docs/current-status.md",
+    "structure": "docs/project-structure.md",
+    "environment": "docs/environment-setup.md",
+    "pytorch": "docs/pytorch-guide.md",
+    "ge": "docs/ge-guide.md",
+    "board": "docs/board-guide.md",
+    "validation": "docs/validation.md"
+  },
+  "paths": {
+    "legacy_pair": {
+      "abi": 2,
+      "state": "prefix-recompute",
+      "status": "USER_REPORTED_TINY_EXECUTION_WITH_REFERENCE_MISMATCH",
+      "contract": "specs/dflash-contract.json"
+    },
+    "pytorch_stateful_target": {
+      "implementation": "model/qwen35_moe_dflash/fused",
+      "status": "HOST_TESTED",
+      "pending": [
+        "complete production FP16 base adapter and real vendor kernel verification",
+        "export wire ABI",
+        "native draft integration"
+      ]
+    },
+    "ge_stateful_target": {
+      "implementation": "model/qwen35_moe_dflash/ge_fused",
+      "status": "HOST_TESTED",
+      "fused_roles": [
+        "gdn",
+        "conv_state",
+        "rms"
+      ],
+      "pending": [
+        "real target/DDK kernel compatibility and device execution",
+        "automated HDC stateful workflow",
+        "resident state bank and native draft integration",
+        "packed W4A8 integration"
+      ],
+      "host_implemented": [
+        "source/AIR generation",
+        "compile-stateful",
+        "prepare-stateful-step",
+        "native --stateful-step with prefill/decode file handoff"
+      ]
+    }
+  },
   "phases": [
     {
       "name": "contract",
-      "status": "blocked",
+      "status": "pending",
       "owner": "model-workflow",
-      "evidence": "docs/validation.md",
-      "working_directory": "$AI_RUN_DIR",
-      "next_command": "python -m qwen35_moe_dflash.cli quant-plan --available-gib 18 --output \"$AI_RUN_DIR/quant-plan.json\"",
-      "blocker": "Await matching quantized AIR stack, full-weight quality gates, sufficient device memory and user-run X90 evidence",
-      "experience_audit": "docs/experience.md"
+      "evidence": "specs/dflash-contract.json",
+      "note": "Legacy contract preserved; new states have separate generated ABI."
     },
     {
       "name": "reference",
       "status": "pending",
       "owner": "model-workflow",
-      "evidence": "docs/validation.md",
-      "working_directory": "$AI_RUN_DIR",
-      "next_command": "python -m qwen35_moe_dflash.cli reference --quantized-checkpoint \"$AI_RUN_DIR/calibrated\" --device cpu --sequence-length 128 --prompt-token-ids \"$PROMPT_IDS\" --max-new-tokens 32 --output \"$AI_RUN_DIR/reference.json\"",
-      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
-      "experience_audit": "docs/experience.md"
-    },
-    {
-      "name": "target_plan",
-      "status": "pending",
-      "owner": "model-workflow",
-      "evidence": "docs/validation.md",
-      "working_directory": "$AI_RUN_DIR",
-      "next_command": "python -m qwen35_moe_dflash.cli export-tiny-air --sequence-length 8 --output \"$AI_RUN_DIR/tiny-air\"",
-      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
-      "experience_audit": "docs/experience.md"
+      "evidence": "specs/verification.json",
+      "note": "Tiny/host regression passed; full model quality pending."
     },
     {
       "name": "adaptation",
       "status": "pending",
       "owner": "model-workflow",
-      "evidence": "docs/validation.md",
-      "working_directory": "$AI_RUN_DIR",
-      "next_command": "python -m pytest \"$REPO_DIR/tests\" -p no:cacheprovider --basetemp \"$AI_RUN_DIR/pytest\"",
-      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
-      "experience_audit": "docs/experience.md"
+      "evidence": "docs/ge-guide.md",
+      "note": "Document ports mapped; installed kernels not verified."
     },
     {
       "name": "integration",
-      "status": "pending",
+      "status": "in_progress",
       "owner": "model-workflow",
-      "evidence": "docs/validation.md",
+      "evidence": "docs/current-status.md",
       "working_directory": "$AI_RUN_DIR",
-      "next_command": "python -m qwen35_moe_dflash.cli compile-omc --air \"$AI_RUN_DIR/air-s128\" --output \"$AI_RUN_DIR/omc-s128\"",
-      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
-      "experience_audit": "docs/experience.md"
+      "next_command_document": "docs/current-status.md#用户现在执行什么",
+      "note": "Generate document bindings without board execution; then connect actual kernel/state runtime."
     },
     {
       "name": "accuracy",
       "status": "pending",
       "owner": "model-workflow",
       "evidence": "docs/validation.md",
-      "working_directory": "$AI_RUN_DIR",
-      "next_command": "python -m qwen35_moe_dflash.cli compare --report \"$AI_RUN_DIR/board-report.json\" --reference \"$AI_RUN_DIR/reference.json\" --omc \"$AI_RUN_DIR/omc-s128\" --output \"$AI_RUN_DIR/comparison.json\"",
-      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
-      "experience_audit": "docs/experience.md"
+      "note": "Validate the selected final path, state continuity and full model quality."
     },
     {
       "name": "performance",
       "status": "pending",
       "owner": "model-workflow",
-      "evidence": "docs/validation.md",
-      "working_directory": "$AI_RUN_DIR",
-      "next_command": "execute board-command.json shell on CPro with --mode benchmark; retain all 10 paired invocations",
-      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
-      "experience_audit": "docs/experience.md"
+      "evidence": "specs/dflash-contract.json",
+      "note": "Matched ordinary vs DFlash full decode-loop target >= 2x; not measured."
     },
     {
       "name": "release",
       "status": "pending",
       "owner": "model-workflow",
-      "evidence": "docs/validation.md",
-      "working_directory": "$AI_RUN_DIR",
-      "next_command": "review source-bound comparison, 10-run measurements, exact internal DDK/firmware and capacity evidence",
-      "blocker": "Full weights and target environment inaccessible; earlier full-model gates not passed",
-      "experience_audit": "docs/experience.md"
+      "evidence": "docs/current-status.md",
+      "note": "No device validated release."
     }
   ],
-  "hardware_reference_policy": "use",
-  "hardware_profile": null,
-  "device_probe": {
-    "status": "UNAVAILABLE_BY_USER_ACCESS_CONSTRAINT",
-    "source": "user states board inaccessible; user will pull/run",
-    "board_command": "./qwen35_dflash_hiai --probe"
-  },
-  "capability_hash": null,
-  "physical_workload_hash": null,
-  "dependency_aware_latency": null,
-  "preliminary_work": "FP16 graph lowering, HIAI ABI v2, complete expert exposure, real blue DOPT tiny calibration/reference and source delivery; no full-model or device gates advanced",
-  "direct_air_probe": {
-    "run_id": "20261022T064712Z-4550-c5859a",
-    "scope": "GE C++ FP16 Add -> AIR -> internal OMG smoke; not Qwen/DFlash",
-    "status": "USER_REPORTED_AIR_AND_OMC_PASS",
-    "evidence": "docs/direct-air-smoke.md",
-    "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/direct_model_air.py\" prepare --tiny --sequence-length 8 --output \"$AI_RUN_DIR/ge-pair/prepared\"",
-    "full_model_migration": "SOURCE_IMPLEMENTED_RUNTIME_PENDING",
-    "device_execution": "PENDING",
-    "lookup_fix": {
-      "run_id": "20261022T072928Z-5968-3afd6d",
-      "observed_user_revision": "94c053e",
-      "observed_user_result": "BUILD_AND_START_SUCCEEDED_VERIFYGRAPH_FINDOPBYNAME_FAILED",
-      "fix": "Use compute-graph GNode API before SaveToFile and after LoadFromFile",
-      "status": "USER_REPORTED_AIR_AND_OMC_PASS",
-      "evidence": "specs/direct-air-lookup-verification.json",
-      "next_action": "Add AIR/OMC success reported; validate target/draft via docs/direct-model-air.md"
-    },
-    "user_report": {
-      "date": "2026-10-22",
-      "statement": "成功生成air和omc了",
-      "scope": "FP16 Add smoke only",
-      "artifact_hashes": "NOT_PROVIDED",
-      "device_execution": "PENDING"
-    }
-  },
-  "direct_ge_model": {
-    "run_id": "20261022T074906Z-6507-ca8b2b",
-    "status": "TINY_AIR_OMC_USER_REPORTED_PASS_HIAI_PENDING",
-    "pipeline": [
-      "ge-cpp",
-      "air",
-      "omg",
-      "omc",
-      "hiai"
+  "probe_policy": "Completed standalone probes and historical per-change reports archived outside Git; conclusions retained in docs/validation.md. No repeat probe batch requested.",
+  "evidence": "specs/verification.json",
+  "delivery_plan": {
+    "priority": "This-week runnable structure; parallel integration before accuracy/performance closure",
+    "parallel_workstreams": [
+      "documented fused operator adapter",
+      "stateful GE compile and input bundle",
+      "native explicit-state target execution"
     ],
-    "pytorch_route": "RETAINED",
-    "scope": "FP16 target/draft static recompute baseline; full architecture plus tiny weights",
-    "evidence": "specs/direct-ge-model-verification.json",
-    "full_weights_loaded": false,
-    "real_model_air": "PENDING",
-    "real_model_omg": "PENDING",
-    "device_execution": "USER_REPORTED_FAILED_TARGET_LOAD",
-    "native_quantized_ge_mapping": "NOT_IMPLEMENTED",
-    "next_command": "python3 \"$GE_MODEL_TOOL\" reference-tiny --prepared \"$GE_PAIR_RUN/prepared\" --prompt-token-ids 1,2,3 --max-new-tokens 4 --output \"$GE_BOARD_RUN/reference.json\"",
-    "guide": "docs/direct-model-air.md",
-    "data_factory_fix": {
-      "run_id": "20261022T084136Z-11227-7c2c63",
-      "baseline_commit": "aa8c6e135065bb40ae2d1fdebd7ed11397d8c161",
-      "observed_result": "USER_REPORTED_TARGET_SETINPUTS_FAILURE_BEFORE_AIR_SAVE",
-      "root_cause": "Data input prototype factory not registered",
-      "status": "USER_REPORTED_AIR_PASS",
-      "evidence": "specs/direct-ge-data-factory-verification.json",
-      "next_command": "python3 \"$GE_MODEL_TOOL\" export --prepared \"$GE_PAIR_RUN/prepared\" --ge-root \"$CANN_ROOT\" --output \"$GE_AIR_DIR\"",
-      "prototype_check_fix": {
-        "run_id": "20261022T092815Z-12515-a03008",
-        "baseline_commit": "6590f77a3fb3054121f34f0e0f123ea053c6663c",
-        "observed": "Data creator v2 registered; TryGetInputDesc precheck failed before model graph construction",
-        "fix": "Remove rank-dependent prototype description query; retain factory and real graph verification",
-        "status": "USER_REPORTED_AIR_PASS",
-        "evidence": "specs/direct-ge-prototype-check-verification.json"
-      }
-    },
-    "tiny_air": {
-      "status": "USER_REPORTED_PASS",
-      "date": "2026-10-22",
-      "baseline_commit": "0097330037312e4274aaaec3a84d9810d64aefbd",
-      "artifact_hashes": "NOT_PROVIDED",
-      "scope": "tiny target/draft AIR; latest user reports subsequent OMG success"
-    },
-    "tiny_omg": {
-      "status": "USER_REPORTED_PASS",
-      "run_id": "20261022T115225Z-22316-828ee6",
-      "observed": [
-        "User replied 成功了 to the latest tiny target/draft AIR->OMC retry after b83774a"
-      ],
-      "evidence": "specs/direct-ge-tiny-omc-user-report.json",
-      "previous_failure": {
-        "run_id": "20261022T093951Z-12973-586101",
-        "observed": [
-          "CPUCL v23 Add input0Type_ differs from input1Type_",
-          "v7 Select x1Shape.GetDimNum differs from x2Shape.GetDimNum; infer shape failed"
-        ],
-        "evidence": "specs/direct-ge-omg-select-verification.json"
-      },
-      "previous_softplus_failure": {
-        "status": "USER_REPORTED_SOFTPLUSV2_FAILURE_FIX_RETEST_PENDING",
-        "run_id": "20261022T095753Z-14065-91325c",
-        "observed": [
-          "PID157178: v52 SoftplusV2 has no infer shape function",
-          "CPUCL input32B expected64B; fp16Flag0; failed node not identified"
-        ],
-        "evidence": "specs/direct-ge-softplus-verification.json"
-      },
-      "previous_cumsum_failure": {
-        "status": "USER_REPORTED_CUMSUM_FAILURE_FIX_RETEST_PENDING",
-        "run_id": "20261022T101117Z-15205-4ffded",
-        "observed": [
-          "PID157297: v92 Cumsum has no infer shape function",
-          "CPUCL input2B expected4B; failed node not identified; nearby static zero BroadcastTo identified in source"
-        ],
-        "evidence": "specs/direct-ge-compatibility-verification.json"
-      },
-      "previous_reshape_slice_te_failure": {
-        "status": "USER_REPORTED_RESHAPE_SLICE_TE_FAILURE_FIX_RETEST_PENDING",
-        "run_id": "20261022T103232Z-17196-b89598",
-        "observed": [
-          "PID157562 ConstantFolding Slice dtype restriction",
-          "te_fusion.log_util lacks get_py_exception_dict; loaded package path unknown",
-          "ConvertReshape v974 and v975 changes55 0 to-1 0; v974 then infers2147483647"
-        ],
-        "evidence": "specs/direct-ge-reshape-env-verification.json"
-      },
-      "previous_ipc_failure": {
-        "status": "USER_REPORTED_IPC_TE_BATCHMATMUL_FAILURE_FIX_RETEST_PENDING",
-        "run_id": "20261022T104957Z-18903-e12366",
-        "observed": [
-          "PID157707 OSError AF_UNIX path too long before TE multi_process_check initialization failure",
-          "ImportError cannot load module more than once per process after first initialization failure",
-          "Final compatibility check reports v1115 BatchMatMul unsupported; causal link to failed TE remains inference"
-        ],
-        "evidence": "specs/direct-ge-ipc-verification.json"
-      },
-      "previous_batchmatmul_failure": {
-        "status": "USER_REPORTED_BATCHMATMUL_FAILURE_RANK3_FIX_RETEST_PENDING",
-        "run_id": "20261022T110926Z-19546-f28296",
-        "observed": [
-          "PID157847 Tbe inner init successfully and Parallel compilation init success (8 workers)",
-          "Final v1115 BatchMatMul support check still fails; original shape rank5, NN FP16",
-          "Absent builtin kernel library reports JIT-only continuation; no proof this library must be installed",
-          "Ascend310B1 name alone does not establish wrong kirinx90 mapping"
-        ],
-        "evidence": "specs/direct-ge-bmm-verification.json"
-      },
-      "target_compile": {
-        "status": "USER_REPORTED_PASS",
-        "artifact_hashes": "NOT_PROVIDED",
-        "source_revision": "UNCONFIRMED_FROM_USER_LOG",
-        "device_execution": "PENDING"
-      },
-      "previous_integer_gather_failure": {
-        "status": "TARGET_COMPILE_USER_LOG_PASS_DRAFT_INTEGER_GATHER_FIX_RETEST_PENDING",
-        "run_id": "20261022T112725Z-20655-b96dab",
-        "observed": [
-          "PID158166 fails in draft-omg; compile wrapper reaches draft only after target nonempty OMC and input hash checks",
-          "draft v4 GatherElements rejects Input0 INT32 in RunVerify"
-        ],
-        "evidence": "specs/direct-ge-integer-gather-verification.json"
-      },
-      "previous_position_clamp_failure": {
-        "status": "TARGET_COMPILE_USER_LOG_PASS_DRAFT_POSITION_CLAMP_FIX_RETEST_PENDING",
-        "run_id": "20261022T114012Z-21463-7a8f45",
-        "observed": [
-          "PID158383 reaches draft backend compatibility check; previous GatherElements verification failure no longer reported",
-          "draft v12 Maximum (INT32 context position clamp) is unsupported"
-        ],
-        "evidence": "specs/direct-ge-position-clamp-verification.json"
-      },
-      "user_report": {
-        "date": "2026-10-22",
-        "statement": "成功了",
-        "scope": "Tiny target/draft AIR->OMC compile, inferred from immediate retry context",
-        "suggested_revision": "b83774a",
-        "actual_revision": "NOT_INDEPENDENTLY_VERIFIED",
-        "artifact_hashes": "NOT_PROVIDED",
-        "device_execution": "PENDING"
-      },
-      "draft_compile": {
-        "status": "USER_REPORTED_PASS",
-        "artifact_hashes": "NOT_PROVIDED",
-        "device_execution": "PENDING"
-      }
-    },
-    "operator_audit": "specs/ge-operator-audit.json",
-    "board_guide": "docs/direct-ge-board.md",
-    "structure_adaptation": {
-      "run_id": "20261026T002510Z-8234-33823c",
-      "status": "HOST_VALIDATED_NEW_GRAPH_BOARD_PENDING",
-      "evidence": "specs/cpro-structure-adaptation-verification.json",
-      "mode": "static default; selected opt-in",
-      "accuracy_diagnostic": "OPTIONAL_DEFERRED",
-      "device_status": "NEW_GRAPH_NOT_RUN"
-    },
-    "board_execution_bringup": {
-      "run_id": "20261026T002510Z-8234-33823c",
-      "status": "USER_REPORTED_TARGET_DRAFT_EXECUTION_COMPLETE",
-      "scope": "New direct-GE candidate export/compile/execution chain reusing existing tiny prepared weights; not a full-weight model",
-      "runtime_deployment": "Private library set excludes DDK HCL pair; process path includes /vendor/lib64/chipsetsdk",
-      "runner_changes": [
-        "ND exact, trailing-one-to-rank4, or rank3 leading-one-to-rank4 adaptation; rank2 token axis contract unchanged",
-        "smoke executes both graphs exactly once and returns Top1 arrays"
-      ],
-      "accuracy": "USER_REPORTED_REFERENCE_TOKEN_MISMATCH",
-      "performance": "NOT_MEASURED",
-      "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "Follow docs/hdc-board-run.md gdn-comprehensive: compile/replay26 same-weight and explicit-control probes covering IO, convolution windows/BMM, L2, padding, row Mul, prefix scan and core cuts in one batch; refresh native runner for allocation metadata.",
-      "requires": "Existing prepared/reference/original OMC and OP_PROBE_RUN donor; matching DDK ID/OMG hash and new probe output directories.",
-      "guide": "docs/hdc-board-run.md",
-      "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "Both core diagnostics execute but fail numerically: first-layer projected_qkv near source, convolved_qkv large divergence; intra-chunk output zero before crop. Standalone core normalized Q/K, weighted_value and prefix scan also diverge. Specific source/kernel/layout cause unresolved.",
-      "followup_run_id": "20261026T111926Z-29824-5b5c4c",
-      "followup_evidence": "specs/draft-rope-execution-user-report.json",
-      "source_contract_verification": "specs/ge-dtype-contract-verification.json",
-      "compiler_main_partitions": {
-        "target": {
-          "NPU": 5,
-          "CPU": 6,
-          "GPU": 0,
-          "ISP": 0,
-          "log_line": 113871
-        },
-        "draft": {
-          "NPU": 3,
-          "CPU": 4,
-          "GPU": 0,
-          "ISP": 0,
-          "log_line": 5697
-        }
-      },
-      "existing_omc_inspection": "USER_REPORTED_CONVERSION_COMPLETE_TARGET_CAST4_NODE_COVERAGE_PARTIAL",
-      "offline_cpu_subgraph_inspection": "IMPLEMENTED_HOST_VERIFICATION_PENDING_USER_RUN_NOT_REPORTED",
-      "constant_matmul_fix": {
-        "run_id": "20261026T101534Z-22567-a7a57c",
-        "status": "HOST_ORACLE_AND_EXPORT_REGRESSIONS_PASSED_BOARD_PENDING",
-        "evidence": "specs/ge-constant-matmul-verification.json",
-        "device_status": "NEW_GRAPH_NOT_RUN",
-        "user_followup": "SOURCE_CANDIDATE_TARGET_COMPILE_FAILED"
-      },
-      "constant_rope_region_fix": {
-        "run_id": "20261026T104356Z-23819-4eead0",
-        "status": "USER_REPORTED_BOTH_COMPILED_TARGET_LOAD_PASS",
-        "evidence": "specs/ge-constant-rope-region-verification.json",
-        "device_status": "TARGET_LOAD_IO_QUERY_PASS_PROCESS_NOT_REACHED",
-        "user_followup": "specs/rope-chain-model-load-user-report.json"
-      },
-      "compiler_main_partitions_scope": "Historical ge-gdn-model-20261026-171048 only; new rope-chain partitions not supplied.",
-      "dynamic_draft_rope_fix": {
-        "run_id": "20261026T110115Z-24555-dec793",
-        "status": "USER_REPORTED_COMPILE_AND_DUAL_GRAPH_EXECUTION_PASS",
-        "evidence": "specs/ge-draft-rope-frequency-verification.json",
-        "device_status": "USER_REPORTED_EXECUTION_COMPLETE",
-        "user_followup": "specs/draft-rope-execution-user-report.json"
-      },
-      "current_execution_scope": "Tiny pair Load, target.Process once and draft.Process once, output retrieval and smoke report checks; user console evidence only.",
-      "generation_comparison": {
-        "run_id": "20261026T113029Z-30107-3feb06",
-        "status": "USER_REPORTED_REFERENCE_TOKEN_MISMATCH",
-        "evidence": "specs/draft-rope-comparison-user-report.json",
-        "raw_reports": "USER_SUPPLIED_TOKEN_GROUPS_AND_METADATA; original files not independently retrieved",
-        "first_mismatch": {
-          "generated_index": 0,
-          "reference": 45,
-          "board": 55
-        },
-        "host_audit": "specs/target-prefill-host-verification.json",
-        "target_feature_capture": "USER_REPORTED_EXECUTION_COMPLETE_AND_RAW_HEX_RECEIVED",
-        "localization": "specs/gdn-accuracy-localization.json",
-        "next_probe": "Follow docs/hdc-board-run.md gdn-comprehensive: compile/replay26 same-weight and explicit-control probes covering IO, convolution windows/BMM, L2, padding, row Mul, prefix scan and core cuts in one batch; refresh native runner for allocation metadata.",
-        "core_zero_evidence": "specs/gdn-core-zero-user-report.json",
-        "original_context_comparison": "USER_REPORTED_FINAL_AND_STAGED_BOTH_48_OF_48_EXACT_TO_ORIGINAL_CAPTURE",
-        "core_stages_evidence": "specs/gdn-core-stages-user-report.json"
-      }
-    }
-  },
-  "operator_support_probe": {
-    "run_id": "20261026T002510Z-8234-33823c",
-    "status": "USER_REPORTED_THREE_CANDIDATE_CASES_NUMERICAL_PASS",
-    "scope": "47 independent small operator contracts; no full-model gate advanced",
-    "evidence": "specs/operator-support-probe-verification.json",
-    "guide": "docs/README.md#板端算子探测",
-    "current_model_device_status": "USER_REPORTED_HCL_CPUCL_MATMUL_COMPATIBILITY_FAILURE",
-    "new_probe_device_execution": "USER_REPORTED_7_NUMERICAL_PASSES_35_NPU_PARTITION_LOAD_FAILURES",
-    "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py\" --probe-run \"$OP_PROBE_RUN\" --output \"$OP_REPLAY_RUN\" --replay-all",
-    "experience_audit": "docs/experience.md",
-    "user_evidence": "specs/operator-support-probe-user-report.json",
-    "confirmed_probe_blocker": "Sampled MatMul ND IO issue passed user board numerical retest; remaining compiled operator contracts require candidate replay",
-    "runtime_inventory_status": "USER_REPORTED_BOARD_NPU_BACKEND_FILES_PRESENT_SELECTION_UNVERIFIED",
-    "runtime_comparison": {
-      "status": "USER_REPORTED_THREE_CASE_NUMERICAL_PASS",
-      "evidence": "specs/hiai-runtime-comparison-verification.json",
-      "reuse_original_artifacts": true,
-      "production_runtime_policy_changed": false,
-      "user_evidence": "specs/hiai-runtime-comparison-user-report.json",
-      "next_runner_mode": "REPLAY_ALL_COMPILED_WITH_REFRESH",
-      "runtime_evidence": "USER_LOG_NPUCL_REGISTERED_GRAPH_LOAD_PASSED_ADD_DEVICE_SUBMISSION_OBSERVED",
-      "io_fix_evidence": "specs/hiai-probe-nd-padding-verification.json",
-      "replay_evidence": "specs/hiai-operator-replay-verification.json"
-    },
-    "latest_layout_probe": {
-      "status": "USER_REPORTED_NINE_CASES_NUMERICAL_PASS",
-      "compiled_run": "layout-probe-20261026-113524",
-      "reported_run": "layout-board-20261026-113529",
-      "evidence": "specs/hiai-model-execution-user-report.json#fp16_layout_probe_replay",
-      "runtime_placement": "UNVERIFIED",
-      "integrated_candidate": "row Mul compact only; Sub/Concat unchanged",
-      "full_model_gate_advanced": false
-    },
-    "latest_gdn_copy_probe": {
-      "run_id": "20261026T061719Z-1062-8f8246",
-      "status": "USER_REPORTED_FOUR_GATHER_CANDIDATES_NUMERICAL_PASS",
-      "scope": "Seven original probes retained; four passing Gather candidates integrated behind explicit export switch for tested FP16 shapes.",
-      "evidence": "specs/hiai-model-execution-user-report.json#gdn_copy_probe_replay",
-      "runtime_placement": "UNVERIFIED",
-      "full_model_gate_advanced": false,
-      "reported_run": "gdn-copy-board-20261026-150641",
-      "integration": "--gdn-indexed-copy gather; target9 masks +3 outer Sub copies, draft0; full-model compile/execution pending"
-    },
-    "latest_remaining_cpu_batch": {
-      "run_id": "20261026T081958Z-4068-1d4a82",
-      "status": "USER_REPORTED_42_NUMERICAL_PASSES_HILOG_INCOMPLETE",
-      "suite": "remaining-cpu",
-      "total_cases": 50,
-      "excluded_families": [
-        "gdn"
-      ],
-      "families": {
-        "gdn": 7,
-        "routing": 16,
-        "selection": 15,
-        "position": 12
-      },
-      "evidence": "specs/remaining-cpu-probes-user-report.json",
-      "production_model_changed": false,
-      "runtime_placement": "UNVERIFIED",
-      "compiled_run": "cpu-gaps-20261026-153933",
-      "board_run": "cpu-gaps-board-20261026-153938",
-      "counts": {
-        "requested": 43,
-        "compiled": 42,
-        "compile_failed": 1,
-        "board_numerical_passed": 42,
-        "compiled_without_completed_validation": 0
-      },
-      "full_model_gate_advanced": false,
-      "next_replay_cases": 0
-    }
-  },
-  "delivery_objective": "specs/dflash-contract.json#delivery_objective",
-  "current_priority": {
-    "date": "2026-10-27",
-    "user_directive": "最终使用黄区已有融合GDN自定义算子；停止将临时基础算子展开精度闭环作为前置条件。",
-    "milestone": "target/draft load + one execution each + output/log retrieval",
-    "accuracy_work": "INTEGRATE_EXISTING_FUSED_GDN_AND_VALIDATE_FINAL_PATH",
-    "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
-    "guide": "docs/hdc-board-run.md#当前接入黄区已有融合-gdn",
-    "next_action": "Obtain the declared yellow-zone fused GDN package/example location, inspect fusion boundary and ABI, then integrate the existing implementation. Do not request gdn-repair41 execution as a prerequisite.",
-    "milestone_status": "USER_REPORTED_TINY_EXECUTION_COMPLETE",
-    "evidence": "specs/draft-rope-execution-user-report.json",
-    "comparison_evidence": "specs/draft-rope-comparison-user-report.json",
-    "localization_evidence": "specs/gdn-comprehensive-user-report.json",
-    "probe_batch_preference": "User requests broad one-batch coverage instead of recurring one/two-case handoffs.",
-    "repair_verification": "specs/gdn-repair-verification.json",
-    "probe_batch_status": "GDN_REPAIR_41_DEFERRED_NOT_A_PREREQUISITE",
-    "existing_fused_gdn": {
-      "availability": "USER_REPORTED_IN_YELLOW_ZONE",
-      "package_location": "NOT_YET_DECLARED",
-      "local_resource_binding": "NOT_FOUND_IN_REPOSITORY_MANIFESTS",
-      "fusion_boundary": "UNKNOWN: determine whether causal convolution, Q/K norm, recurrence and output norm are included",
-      "integration": "NOT_STARTED_ABI_REQUIRED"
-    }
+    "avoid": [
+      "re-running concluded standalone probe batches",
+      "unrelated framework or documentation expansion"
+    ],
+    "memory_plan": "specs/device-memory-report.json"
   }
 }

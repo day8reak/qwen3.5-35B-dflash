@@ -17,6 +17,11 @@ void Trace(const char* event) {
   if (const auto* path=std::getenv("FAKE_HIAI_TRACE")) std::ofstream(path, std::ios::app) << event << '\n';
 }
 bool ModelBytesValid(const void* buffer, std::uint32_t bytes, const std::string& name) {
+  if (name=="qwen35_stateful_target") {
+    for (const char* expected : {"stateful-prefill-fixture", "stateful-decode-fixture"})
+      if (buffer && bytes==std::strlen(expected) && std::memcmp(buffer,expected,bytes)==0) return true;
+    return false;
+  }
   const char* expected=name=="qwen35_target"?"target-fixture":
                        name=="qwen35_draft"?"draft-fixture":nullptr;
   return expected && buffer && bytes==std::strlen(expected) &&
@@ -46,7 +51,9 @@ AIStatus AiTensor::Init(const TensorDimension* dim, HIAI_DataType type) {
   }
   if(Layout()=="padded" && dim->GetDims().size()!=4) return AI_FAILED;
   if (Failure()=="allocation" && tensors==5) return AI_FAILED;
-  if (type!=HIAI_DATATYPE_INT32 && type!=HIAI_DATATYPE_FLOAT16) return AI_FAILED;
+  if (const auto* path=std::getenv("FAKE_HIAI_DTYPE_TRACE"))
+    std::ofstream(path,std::ios::app) << static_cast<int>(type) << '\n';
+  if (type!=HIAI_DATATYPE_INT32 && type!=HIAI_DATATYPE_FLOAT16 && type!=HIAI_DATATYPE_FLOAT32) return AI_FAILED;
   if (dim->GetDims().size()==3 && type!=HIAI_DATATYPE_FLOAT16) return AI_FAILED;
   std::size_t n=1; for(auto d:dim->GetDims()) n*=d;
   bytes_=n*(type==HIAI_DATATYPE_FLOAT16?2:4);
@@ -105,7 +112,21 @@ AIStatus AiModelMngerClient::UnLoadModel(){
 AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vector<TensorDimension>& in,std::vector<TensorDimension>& out){
   if(n!=name_ || !loaded_ || Failure()=="io-dims") return 1;
   TensorDimension ids({1,32}), features({1,32,FeatureWidth()});
-  if(n=="qwen35_target") { in={ids,ids}; out={ids,features}; }
+  if(n=="qwen35_stateful_target") {
+    const bool decode = std::string(static_cast<const char*>(model_buffer_),model_bytes_)=="stateful-decode-fixture";
+    const std::uint32_t s=decode?1:3;
+    in={TensorDimension({1,s})};
+    if(decode) {
+      in.emplace_back(std::vector<std::uint32_t>{1,8,3});
+      in.emplace_back(std::vector<std::uint32_t>{1,2,2,2});
+      in.emplace_back(std::vector<std::uint32_t>{1,1,3,2});
+      in.emplace_back(std::vector<std::uint32_t>{1,1,3,2});
+    }
+    out={TensorDimension({1,s}),TensorDimension({1,s,4}),TensorDimension({1,8,3}),
+         TensorDimension({1,2,2,2}),TensorDimension({1,1,decode?4U:3U,2}),
+         TensorDimension({1,1,decode?4U:3U,2})};
+  }
+  else if(n=="qwen35_target") { in={ids,ids}; out={ids,features}; }
   else { in={features,ids,ids}; out={TensorDimension({1,3})}; }
   if(Layout()=="padded" || Layout()=="padded-mixed") {
     for(auto* dims : {&in, &out}) {
@@ -150,6 +171,39 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
   Trace("process");
   RequireModelBytes(model_buffer_, model_bytes_, name_);
   if(c.model!=name_ || !timeout || !loaded_ || Failure()=="run") return 1;
+  if(name_=="qwen35_stateful_target") {
+    const bool decode = std::string(static_cast<const char*>(model_buffer_),model_bytes_)=="stateful-decode-fixture";
+    const std::size_t s=decode?1:3;
+    if(in.size()!=(decode?5U:1U) || out.size()!=6) return AI_FAILED;
+    auto* ids=static_cast<std::int32_t*>(in[0]->GetBuffer());
+    auto* top=static_cast<std::int32_t*>(out[0]->GetBuffer());
+    for(std::size_t i=0;i<s;++i) top[i]=(ids[i]+1)%64;
+    auto* features=static_cast<std::uint16_t*>(out[1]->GetBuffer());
+    for(std::size_t i=0;i<s*4;++i) features[i]=static_cast<std::uint16_t>(0x3800+i);
+    auto* history=static_cast<std::uint16_t*>(out[2]->GetBuffer());
+    auto* recurrent=static_cast<float*>(out[3]->GetBuffer());
+    for(std::size_t i=0;i<24;++i) {
+      const auto old=decode?static_cast<const std::uint16_t*>(in[1]->GetBuffer())[i]:0;
+      if(decode && old!=0x3c00+i) return AI_FAILED;
+      history[i]=static_cast<std::uint16_t>(decode?old+1:0x3c00+i);
+    }
+    for(std::size_t i=0;i<8;++i) {
+      const auto old=decode?static_cast<const float*>(in[2]->GetBuffer())[i]:0;
+      if(decode && old!=static_cast<float>(i+1)) return AI_FAILED;
+      recurrent[i]=decode?old+1:static_cast<float>(i+1);
+    }
+    for(std::size_t index=4;index<6;++index) {
+      auto* next=static_cast<std::uint16_t*>(out[index]->GetBuffer());
+      const std::uint16_t base=index==4?0x4000:0x4200;
+      for(std::size_t i=0;i<(decode?8U:6U);++i) {
+        if(decode && i<6 && static_cast<const std::uint16_t*>(in[index-1]->GetBuffer())[i]!=base+i)
+          return AI_FAILED;
+        next[i]=static_cast<std::uint16_t>(base+i);
+      }
+    }
+    stamp=1;
+    return AI_SUCCESS;
+  }
   const bool target=name_=="qwen35_target";
   auto* ids=static_cast<std::int32_t*>(in[target?0:1]->GetBuffer());
   auto* mask=static_cast<std::int32_t*>(in[target?1:2]->GetBuffer());
