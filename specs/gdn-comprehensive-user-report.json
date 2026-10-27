@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-27",
+  "run_id": "20261027T010928Z-11784-b78c36",
+  "baseline_handoff_commit": "ffe268c",
+  "provenance": "User pasted GE_GDN_ALL_BOARD_RUN/runtime-comparison.txt and arms/candidate_without_ddk_hcl/gdn-summary.txt. Remote files, hashes and source revision not independently retrieved.",
+  "status": "USER_REPORTED_LAYOUT_AND_SMALL_SUM_FAILURES_LOCALIZED",
+  "replay": "REPLAY_COMPLETE",
+  "transport": "TRANSPORT_COMPLETE",
+  "counts": {"compiled": 26, "load_passed": 20, "run_passed": 20, "numerical_passed": 7, "numerical_failed": 13, "load_failed": 6},
+  "load_failed_cases": ["gc_conv_bmm_actual_const", "gc_conv_bmm_tagged_const", "gc_weighted_mul_actual_padded", "gc_weighted_mul_tagged_padded", "gc_scan_actual_padded", "gc_scan_moderate_padded"],
+  "observations": {
+    "io": {
+      "actual_and_tagged_neg": "BIT_EXACT",
+      "allocation_bytes": "Every recorded successful-case allocation equals logical bytes, despite runtime singleton-dimension adaptation.",
+      "scope": "No evidence here for changing external tensor packing. Internal layout remains unobserved."
+    },
+    "rank3_convolution_padding": {
+      "transpose": "BIT_EXACT_ACTUAL_AND_TAGGED",
+      "input_shape": [1, 48, 8],
+      "left_zero_shape": [1, 48, 3],
+      "output_shape": [1, 48, 11],
+      "nonzero_actual_reference": [8, 384],
+      "actual_nonzero_channel": 13,
+      "actual_nonzero_positions": [1, 8],
+      "expected_nonzero_positions": [3, 10],
+      "windows_nonzero_actual_reference": [28, 1248],
+      "independent_runtime_windows_bmm": {"actual_relative_l2": 0.0002659982123762283, "tagged_relative_l2": 0.0003021430075736943, "status": "PASSED_EXISTING_TOLERANCE"},
+      "interpretation": "Earliest isolated bad output is rank3 zero-padding concat. Correct-window BMM, activation view and SiLU controls pass; does not identify an internal compiler pass."
+    },
+    "rank3_core_padding": {
+      "value_rank4_pad": "BIT_EXACT_ACTUAL_AND_TAGGED",
+      "beta_decay_rank3_transpose": "BIT_EXACT_ACTUAL_AND_TAGGED",
+      "input_shape": [1, 2, 8],
+      "output_shape": [1, 2, 64],
+      "actual_sequence_nonzero_marginal": "0..7=1,8..55=0,56..63=1",
+      "reference_sequence_nonzero_marginal": "0..7=2,8..63=0",
+      "weighted_head_nonzero_actual_reference": [[64, 0], [64, 64]],
+      "prefix_head_nonzero_actual_reference": [[64, 8], [64, 64]],
+      "independent_dense_weighted_mul": "BIT_EXACT_ACTUAL_AND_TAGGED",
+      "interpretation": "Incorrect beta/decay padding is already present before Mul/scan. Marginals do not establish physical strides or exact element permutation."
+    },
+    "l2": {
+      "query_square": "BIT_EXACT_120_NONZERO",
+      "key_square": "BIT_EXACT_123_NONZERO",
+      "query_sum": {"nonzero_actual_reference": [14, 16], "zero_rows": [[0, 0], [0, 1]], "max_abs_error": 0.0000282526},
+      "key_sum": {"nonzero_actual_reference": [15, 16], "zero_rows": [[0, 0]], "max_abs_error": 0.000026226},
+      "query_result": {"max_abs": 3.984375, "relative_l2": 1.5126355862011047},
+      "key_result": {"max_abs": 3.490234375, "relative_l2": 1.0270264948797303},
+      "rank2_control": "SAME_LOST_ROWS_AND_ERROR_STATISTICS_AS_RANK4",
+      "normal_input_control": "SQUARE_SUM_EPSILON_BIT_EXACT_GAIN_AND_RESULT_PASS",
+      "interpretation": "Small nonzero sums are lost at or before the observed sum output; follows correct FP16 squares, precedes epsilon/Rsqrt. Matches previous sum-FTZ counterfactual but does not identify a universal hardware FTZ rule."
+    },
+    "final_bmm": {
+      "actual_nonzero_reference": [92, 128],
+      "actual_max_abs_error": 0.0000608563,
+      "actual_relative_l2": 0.03814209059303115,
+      "tagged_nonzero_reference": [1024, 1024],
+      "tagged_relative_l2": 0.0003880480446637431,
+      "final_cut": "Same error/nonzero counts survive add, crop and transpose.",
+      "interpretation": "Existing absolute gate passes despite small-value losses; not complete arithmetic correctness. Final crop alone does not explain upstream all-zero core."
+    }
+  },
+  "load_failure_hypothesis": "All six failing probe graphs expose a Data or folded Const directly as an output; this structural commonality is not a confirmed Load root cause. Remove needless constant observation and materialize signed input observations; keep real consumers unchanged.",
+  "decisions": [
+    "Apply exact rank3-to-rank4 concat carrier lowering, including prefix-scan concat, with bit-preservation tests.",
+    "Retain original FP16 square, sum and epsilon boundaries; compare native ReduceSum with MatMul reduction without changing tolerances or silently using FP32.",
+    "Validate original controls, corrected observers, subnormal boundaries and integrated first-layer candidates together in one batch.",
+    "Do not modify shared DDK libraries, runner packing, source weights, reference tokens or accuracy thresholds."
+  ],
+  "limitations": [
+    "Unquantized FP16 tiny seed17/S8 only; not full35B accuracy or quantization evidence.",
+    "Compiler NPU=1 CPU=0 partitions do not prove runtime placement.",
+    "New graph observations can change optimization; unchanged original OMC remains rollback evidence.",
+    "No repaired device result yet; full-model accuracy remains failed and performance unvalidated."
+  ]
+}

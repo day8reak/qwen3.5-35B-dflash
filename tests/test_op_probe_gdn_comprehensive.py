@@ -39,6 +39,10 @@ def _outputs(item):
     return dict(zip(item["output_labels"], item["expected"]))
 
 
+def _same_negated_half(actual, source):
+    np.testing.assert_array_equal(actual.view(np.uint16), source.view(np.uint16) ^ np.uint16(0x8000))
+
+
 def _original_stages(case):
     pair, provenance = core_cases(case["prepared"], case["reference_path"], case["omc"], core_stages=True)
     full, replay = pair
@@ -135,7 +139,10 @@ def test_convolution_views_and_static_dynamic_rhs_use_identical_exact_weights(ca
         _same_half(item["weights"][key] if mode == "const" else item["inputs"]["kernel"], kernel)
         assert set(item["graph"].weights) == ({key} if mode == "const" else set())
         actual = _outputs(item)
-        _same_half(actual["kernel_view"], kernel.reshape(48, 4, 1))
+        if mode == "const":
+            assert "kernel_view" not in actual
+        else:
+            _same_half(actual["kernel_view"], kernel.reshape(48, 4, 1))
         _same_half(actual["produced_windows"], windows)
         _same_half(actual["convolved"], expected)
         _same_half(actual["produced_convolved"], expected)
@@ -197,8 +204,12 @@ def test_pad_and_weighted_mul_controls_distinguish_both_heads_and_dense_runtime_
     for mode in ("chain", "padded"):
         item = batch[f"gc_weighted_mul_{fixture}_{mode}"]
         actual = _outputs(item)
-        _same_half(actual["value_carrier"], left)
-        _same_half(actual["beta_carrier"], right)
+        if mode == "padded":
+            _same_negated_half(actual["value_carrier_neg"], left)
+            _same_negated_half(actual["beta_carrier_neg"], right)
+        else:
+            _same_half(actual["value_carrier"], left)
+            _same_half(actual["beta_carrier"], right)
         _same_half(actual["weighted"], expected)
         _same_half(actual["dense_weighted"], expected.reshape(128, 8))
         _same_half(item["inputs"]["dense_value"], left.reshape(128, 8))
@@ -215,12 +226,57 @@ def test_scan_retains_nonzero_normal_prefixes_through_zero_padding(case, fixture
     carrier = np.pad(source.transpose(0, 2, 1), ((0, 0), (0, 0), (0, 56))).reshape(2, 1, 64)
     expected = np.cumsum(carrier.astype(np.float32), axis=-1).astype(np.float16)
     _same_half(padded["inputs"]["decay_padded"], carrier)
+    _same_half(_outputs(chain)["carrier"], carrier)
+    _same_negated_half(_outputs(padded)["carrier_neg"], carrier)
     for item in (chain, padded):
-        _same_half(_outputs(item)["carrier"], carrier)
         _same_half(_outputs(item)["prefix"], expected)
     assert np.all(expected < 0) and np.all(np.abs(expected) >= np.finfo(np.float16).tiny)
     assert np.count_nonzero(expected) == 128
     _same_half(expected[:, :, 8:], np.broadcast_to(expected[:, :, 7:8], (2, 1, 56)))
+
+
+def test_observers_avoid_direct_data_and_constant_only_outputs_without_changing_consumers(case):
+    batch, _ = _suite(case)
+    for item in batch.values():
+        graph = item["graph"]
+        producers = {node.output.name: node for node in graph.nodes}
+        runtime_values = {value.name for value in graph.inputs}
+        for node in graph.nodes:
+            if any(value.name in runtime_values for value in node.inputs):
+                runtime_values.add(node.output.name)
+        assert all(value.name in producers and value.name in runtime_values for value in graph.outputs)
+        assert len({value.name for value in graph.outputs}) == len(graph.outputs)
+
+    for fixture in ("actual", "tagged"):
+        item = batch[f"gc_weighted_mul_{fixture}_padded"]
+        nodes = {node.output.name: node for node in item["graph"].nodes}
+        outputs = dict(zip(item["output_labels"], item["graph"].outputs))
+        mul = nodes[outputs["weighted"].name]
+        assert mul.kind == "mul" and [v.name for v in mul.inputs] == ["value_padded", "beta_padded"]
+        for label, operand in zip(("value_carrier_neg", "beta_carrier_neg"), mul.inputs):
+            observer = nodes[outputs[label].name]
+            assert observer.kind == "neg" and observer.inputs == (operand,)
+            assert item["tolerances"][item["output_labels"].index(label)] == {"rtol": 0, "atol": 0}
+    for fixture in ("actual", "moderate"):
+        item = batch[f"gc_scan_{fixture}_padded"]
+        nodes = {node.output.name: node for node in item["graph"].nodes}
+        outputs = dict(zip(item["output_labels"], item["graph"].outputs))
+        scan, observer = nodes[outputs["prefix"].name], nodes[outputs["carrier_neg"].name]
+        assert scan.kind == "cumsum" and scan.inputs[0].name == "decay_padded"
+        assert observer.kind == "neg" and observer.inputs == scan.inputs
+
+
+@pytest.mark.parametrize("constant_only", [False, True])
+def test_factory_rejects_direct_input_and_constant_foldable_observers(constant_only):
+    from qwen35_moe_dflash.ge_ir import Graph
+    from qwen35_moe_dflash.op_probe_gdn_comprehensive import _make
+    graph = Graph("invalid_observer")
+    source = graph.input("x", (1, 8))
+    if constant_only:
+        source = graph.op("neg", graph.const(np.ones((1, 8), np.float16)), shape=(1, 8))
+    with pytest.raises(ValueError, match="diagnostic output requires a runtime operation"):
+        _make(graph, {"x": np.ones((1, 8), np.float16)}, {"carrier": source}, "invalid observer",
+              {"fp16_reductions": "matmul", "fp16_row_mul": "compact"})
 
 
 def test_final_bmm_and_core_cuts_retain_original_reachable_arithmetic(case):
@@ -275,6 +331,14 @@ def test_real_cli_freezes_all_cases_inputs_outputs_and_lowered_recipes_without_v
         records, inputs, outputs = RecipeReader(folder / "recipe/graph.recipe").read()
         assert [records[index]["name"] for index in inputs] == [tensor["name"] for tensor in item["input_tensors"]]
         assert len(outputs) == len(item["outputs"]) == len(item["output_labels"])
+        assert len(set(inputs)) == len(inputs) and len(set(outputs)) == len(outputs)
+        assert not set(inputs) & {index for index, _ in outputs}
+        assert all(records[index]["type"] not in {"Data", "Const"} for index, _ in outputs)
+        for (index, _), output_record in zip(outputs, item["outputs"]):
+            if output_record["label"].endswith("_neg"):
+                assert records[index]["type"] == "Neg"
+                assert output_record["rtol"] == output_record["atol"] == 0
+                assert output_record["reference"]["sha256"] == sha256_file(folder / output_record["expected"])
         all_records[item["name"]] = records
     l2 = all_records["gc_l2_query_actual"]
     assert any(record["type"] == "MatMul" and "/reduction/matmul" in record["name"] for record in l2)

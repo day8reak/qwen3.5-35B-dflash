@@ -76,9 +76,18 @@ def prepare_case(case, root):
         raise ValueError(f"output labels must uniquely name every graph output: {case['name']}")
     options = case.get("emit_options", {})
     allowed = {"fp16_reductions": {"native", "matmul"}, "fp16_row_mul": {"native", "compact"}}
-    if (not isinstance(options, dict) or set(options) - allowed.keys()
-            or any(not isinstance(value, str) or value not in allowed[key] for key, value in options.items())):
+    if (not isinstance(options, dict) or set(options) - (allowed.keys() | {"fp16_native_reductions"})
+            or any(not isinstance(value, str) or value not in allowed[key]
+                   for key, value in options.items() if key in allowed)):
         raise ValueError(f"unsupported probe emit_options: {case['name']}")
+    native_names = options.get("fp16_native_reductions", ())
+    reduction_names = {node.output.name for node in graph.nodes
+                       if node.kind in {"reduce_sum", "reduce_mean"} and node.output.dtype == "float16"
+                       and all(value.dtype == "float16" for value in node.inputs)}
+    if (not isinstance(native_names, (list, tuple))
+            or any(not isinstance(name, str) or name not in reduction_names for name in native_names)
+            or len(set(native_names)) != len(native_names)):
+        raise ValueError(f"unsupported probe native reduction override: {case['name']}")
     weights = case.get("weights", {})
     if not isinstance(weights, dict) or set(weights) != set(graph.weights):
         raise ValueError(f"probe weight keys differ from graph: {case['name']}")
@@ -278,13 +287,16 @@ def run(args):
         raise ValueError("--exclude-family requires --suite")
     provenance = None
     source_options = (args.prepared, args.reference, args.omc)
-    accuracy_suite = args.suite in {"gdn-accuracy", "gdn-core-accuracy", "gdn-comprehensive"}
+    accuracy_suite = args.suite in {"gdn-accuracy", "gdn-core-accuracy", "gdn-comprehensive", "gdn-repair"}
     if accuracy_suite:
         if not all(source_options):
             raise ValueError(f"--suite {args.suite} requires --prepared, --reference and --omc")
         if args.exclude_family:
             raise ValueError(f"--suite {args.suite} does not accept --exclude-family")
-        if args.suite == "gdn-comprehensive":
+        if args.suite == "gdn-repair":
+            from .op_probe_gdn_repair import cases_from_prepared
+            selected, provenance = cases_from_prepared(*source_options)
+        elif args.suite == "gdn-comprehensive":
             from .op_probe_gdn_comprehensive import cases_from_prepared
             selected, provenance = cases_from_prepared(*source_options)
         else:
@@ -296,7 +308,7 @@ def run(args):
         selected = list(selected)
     else:
         if any(value is not None for value in source_options):
-            raise ValueError("--prepared, --reference and --omc require --suite gdn-accuracy, gdn-core-accuracy or gdn-comprehensive")
+            raise ValueError("--prepared, --reference and --omc require --suite gdn-accuracy, gdn-core-accuracy, gdn-comprehensive or gdn-repair")
         selected = list(cases())
     names = {case["name"] for case in selected}
     if set(args.case) - names:

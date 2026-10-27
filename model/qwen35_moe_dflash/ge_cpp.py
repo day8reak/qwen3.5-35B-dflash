@@ -295,17 +295,30 @@ def _inline_records(graph, records):
 
 
 class _Emitter:
-    def __init__(self, graph, *, recipe=False, fp16_reductions="native", fp16_row_mul="native"):
+    def __init__(self, graph, *, recipe=False, fp16_reductions="native", fp16_row_mul="native",
+                 fp16_native_reductions=()):
         if not isinstance(fp16_reductions, str) or fp16_reductions not in {"native", "matmul"}:
             raise ValueError("fp16_reductions must be native or matmul")
         if not isinstance(fp16_row_mul, str) or fp16_row_mul not in {"native", "compact"}:
             raise ValueError("fp16_row_mul must be native or compact")
+        if (not isinstance(fp16_native_reductions, (tuple, list))
+                or any(not isinstance(name, str) or not name for name in fp16_native_reductions)
+                or len(set(fp16_native_reductions)) != len(fp16_native_reductions)):
+            raise ValueError("fp16_native_reductions must be a tuple/list of unique nonempty node names")
+        eligible = {node.output.name for node in graph.nodes
+                    if node.kind in {"reduce_sum", "reduce_mean"} and node.output.dtype == "float16"
+                    and len(node.inputs) == 1 and node.inputs[0].dtype == "float16"}
+        if set(fp16_native_reductions) - eligible:
+            raise ValueError("fp16_native_reductions must name existing FP16 graph ReduceSum/Mean outputs: "
+                             + ", ".join(sorted(set(fp16_native_reductions) - eligible)))
         self.graph = graph
         self.fp16_reductions = fp16_reductions
         self.fp16_row_mul = fp16_row_mul
+        self.fp16_native_reductions = frozenset(fp16_native_reductions)
         self.row_mul_report = {"mode": fp16_row_mul, "graph": graph.name,
             "counts": {"total": 0, "replaced": 0, "retained": 0}, "replaced": [], "retained": []}
         self.reduction_report = {"mode": fp16_reductions, "graph": graph.name,
+            "native_overrides": list(fp16_native_reductions),
             "counts": {"total": 0, "replaced": 0, "retained": 0, "fp16_replaced": 0,
                        "integer_retained": 0, "scan_prefix_replaced": 0},
             "replaced": [], "retained": []}
@@ -434,7 +447,9 @@ class _Emitter:
                     "output": {"name": output.name, "shape": list(output.shape), "dtype": output.dtype},
                     "axes": checked, "keepdims": keepdims}
         reason, plan = "mode_native", None
-        if self.fp16_reductions == "matmul":
+        if origin == "graph" and output.name in self.fp16_native_reductions:
+            reason = "explicit_native_override"
+        elif self.fp16_reductions == "matmul":
             if source.dtype != "float16" or output.dtype != "float16":
                 reason = "non_fp16_source_or_output"
             elif len(checked) != 1:
@@ -575,6 +590,43 @@ class _Emitter:
             raise ValueError(f"{output.name}: Reshape dimensions must fit nonnegative INT32")
         return self.helper(output, dimensions, dtype="int32", suffix="shape")
 
+    def emit_concat(self, output, inputs, axis):
+        """Keep FP16 rank3 concatenation axes explicit through rank4 carriers.
+
+        Board probes lost/reordered rank3 padding rows, while the matching
+        rank4 padding path copied both heads correctly. Appending one trailing
+        singleton preserves linear element order and the original concat axis;
+        no arithmetic, cast or floating-point boundary is introduced.
+        """
+        inputs = list(inputs)
+        if output.dtype != "float16" or len(output.shape) != 3:
+            var = self.op(output.name, "ConcatD", [(f"x{i}", value) for i, value in enumerate(inputs)],
+                          [("y", output)], {"concat_dim": f"int64_t{{{axis}}}", "N": f"int64_t{{{len(inputs)}}}"})
+            self.refs[output.name] = (var, "y")
+            return output
+        if (not inputs or isinstance(axis, (bool, np.bool_)) or not isinstance(axis, (int, np.integer))
+                or not -3 <= int(axis) < 3):
+            raise ValueError(f"{output.name}: FP16 rank3 concat requires inputs and an in-range integer axis")
+        axis = int(axis) % 3
+        if any(value.dtype != output.dtype or len(value.shape) != 3 or
+               any(value.shape[i] != output.shape[i] for i in range(3) if i != axis)
+               for value in inputs) or sum(value.shape[axis] for value in inputs) != output.shape[axis]:
+            raise ValueError(f"{output.name}: FP16 rank3 concat input/output descriptors disagree")
+        def reshape(source, target):
+            shape = self.reshape_shape(target)
+            var = self.op(target.name, "Reshape", [("x", source), ("shape", shape)], [("y", target)],
+                          {"axis": "int64_t{0}", "num_axes": "int64_t{-1}"})
+            self.refs[target.name] = (var, "y")
+            return target
+        prefix = f"__ge/{output.name}/concat_rank4"
+        carriers = [reshape(value, Value(f"{prefix}/input_{i}", (*value.shape, 1), value.dtype))
+                    for i, value in enumerate(inputs)]
+        joined = Value(prefix + "/joined", (*output.shape, 1), output.dtype)
+        var = self.op(joined.name, "ConcatD", [(f"x{i}", value) for i, value in enumerate(carriers)],
+                      [("y", joined)], {"concat_dim": f"int64_t{{{axis}}}", "N": f"int64_t{{{len(carriers)}}}"})
+        self.refs[joined.name] = (var, "y")
+        return reshape(joined, output)
+
     def broadcast(self, source, output, index):
         """Give Select concrete equal-shaped inputs before OMG lowers its IR."""
         if source.shape == output.shape:
@@ -612,7 +664,7 @@ class _Emitter:
 
 def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=None,
              fold_constant_arithmetic=True, fp16_reductions="native", reduction_report=None,
-             fp16_row_mul="native", row_mul_report=None):
+             fp16_row_mul="native", row_mul_report=None, fp16_native_reductions=()):
     """Return a self-contained C++ AIR serializer.
 
     ``weight_paths`` maps canonical graph weight keys to existing raw contiguous
@@ -631,8 +683,14 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     only during emission. The default native serialization is unchanged.
     An optional dictionary receives deterministic lowering evidence, not a
     claim about compiler partitioning or runtime numerical agreement.
+    ``fp16_native_reductions`` is a diagnostic list of existing FP16 graph
+    ReduceSum/Mean output names that retain the native reduction despite the
+    global MatMul policy. It cannot select generated scan-prefix nodes.
     ``fp16_row_mul="compact"`` limits Mul layout changes to two tested shape
-    pairs; all other Mul shapes and all Sub/Concat operations stay unchanged.
+    pairs; all other Mul shapes and all Sub operations stay unchanged. FP16
+    rank3 concatenations use exact rank4 carriers with a trailing singleton,
+    then restore the original rank and output name; graph and scan concatenation
+    share this lowering.
     """
     if reduction_report is not None and not isinstance(reduction_report, dict):
         raise TypeError("reduction_report must be a mutable dictionary")
@@ -649,7 +707,7 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     if not external_weights and total >= 1_800_000_000:
         raise ValueError("large graphs require external_weights=True (AIR protobuf size limit)")
     e = _Emitter(graph, recipe=recipe_dir is not None, fp16_reductions=fp16_reductions,
-                 fp16_row_mul=fp16_row_mul)
+                 fp16_row_mul=fp16_row_mul, fp16_native_reductions=fp16_native_reductions)
     live = {v.name for v in graph.outputs}
     for node in reversed(graph.nodes):
         if node.output.name in live:
@@ -792,6 +850,9 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
             typ, ports = "Slice", ["x", "offsets", "size"]
             ins.extend([e.helper(v, a["starts"], suffix="starts"), e.helper(v, a["sizes"], suffix="sizes")])
         elif kind == "concat":
+            if v.dtype == "float16" and len(v.shape) == 3:
+                e.emit_concat(v, ins, a["axis"])
+                continue
             typ, ports = "ConcatD", [f"x{i}" for i in range(len(ins))]
             attrs = {"concat_dim": f"int64_t{{{a['axis']}}}", "N": f"int64_t{{{len(ins)}}}"}
         elif kind == "gather":

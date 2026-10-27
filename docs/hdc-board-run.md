@@ -40,11 +40,50 @@ PYTHONPATH="$REPO_DIR/model${PYTHONPATH:+:$PYTHONPATH}" python3 -m qwen35_moe_df
 
 存在参考偏差时命令仍返回FAIL，并保留完整诊断JSON；终端会显示每种模式的测量数、重复性及首差异。它只读取已有OMC/报告并核验哈希，不调用OMG/HDC，不改旧报告或参考。首差异的 `generated_index` 从0计数，长度不同还会明确哪一侧已结束。已有smoke的有效三行target Top1为 `[41,41,55]`，同权重主机为 `[41,41,45]`；只比较有效prompt位置，padding输出不计入。
 
-## 当前：一次覆盖 GDN 故障链
+## 当前：修复拼接并一次验证布局、精度和完整第一层
+
+26案例结果已回传：20个Load/Process成功，其中7个案例通过原数值门槛、13个失败；另6个Load失败。关键证据见 `specs/gdn-comprehensive-user-report.json`：
+
+- 实际值和标记值的IO均逐项相等，已记录分配大小都等于逻辑大小；继续使用当前输入输出打包。
+- 卷积转置正确，三维左补零后只剩8/384项非零；给BMM独立输入正确窗口时卷积通过。value的四维补零逐项正确，beta/decay的三维补零却把一个head移到序列尾部，导致后续乘法丢失整个head。
+- Q/K平方逐项相等，MatMul求和输出丢失Q的两行、K的一行小值；独立二维对照同样失败，正常幅度对照通过。后续gain达到992是小sum丢失的结果，不能只改Rsqrt。
+- 最终BMM实际输入仍有36/128个非零结果丢失，relative L2约0.038；原绝对容差使其PASSED，因此不能把它视为完全正确。裁剪/转置未再增加这组误差。
+
+本次将所有FP16三维Concat的输入 `[a,b,c]` 精确视为 `[a,b,c,1]`，沿原轴执行四维Concat，再恢复原形状；普通图和前缀和内部拼接共同采用。权重、数值、图输出合同与舍入边界不变。设备是否保留该carrier及是否修复错误，需本批结果确认。
+
+六个Load失败用例共同包含直接Data或可折叠Const输出，这只是结构关联，尚未证明是Load根因。新版删去常量kernel的非必要输出；预填充输入的观察支路改为精确Neg，标签带 `_neg`、参考相应取负，实际BMM/Mul/scan消费者不变。
+
+**只运行下面一个41案例批次**：包含修正后的原26案例、11个精度/边界控制、4个完整第一层回归。11个控制覆盖原生ReduceSum的Q/K实际值及正常值、独立正确sum输入、正负次正规数/最小正常数、MatMul乘积和抵消。4个整层案例分别观察最终输出/所有core阶段，并对比原MatMul策略和仅Q/K sum、core输出mean三个位置恢复原生算子的策略。其他归约与scan维持原策略；该局部原生策略仅用于诊断候选，生产导出不自动采用。没有增加FP32路径或重新定义参考。
+
+```bash
+git -C "$REPO_DIR" pull --ff-only &&
+export GE_GDN_REPAIR_RUN="$AI_RUN_DIR/ge-gdn-repair-$(date +%Y%m%d-%H%M%S)" &&
+export GE_GDN_REPAIR_BOARD_RUN="${GE_GDN_REPAIR_RUN}-board" &&
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
+  --suite gdn-repair --prepared "$GE_PAIR_RUN/prepared" \
+  --reference "$GE_BOARD_RUN/reference.json" --omc "$GE_DRAFT_ROPE_RUN/omc" \
+  --compile-only --output "$GE_GDN_REPAIR_RUN" &&
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
+  --probe-run "$GE_GDN_REPAIR_RUN" --native-from "$OP_PROBE_RUN" \
+  --refresh-runner --replay-all --output "$GE_GDN_REPAIR_BOARD_RUN"
+```
+
+保留原prepared、reference和OMC作为来源及回退证据，暂不重建完整双图。个别native候选编译或Load失败时，其他已编译案例仍能运行；失败本身也用于判定替代路径能否使用。新构造的可精确表示边界控制采用零容差，原模型/实际算术容差保持。不能从native候选通过推断最终BMM的小值问题也已解决。
+
+回传这两份摘要即可，无需按案例逐个找日志：
+
+```bash
+cat "$GE_GDN_REPAIR_BOARD_RUN/runtime-comparison.txt"
+cat "$GE_GDN_REPAIR_BOARD_RUN/arms/candidate_without_ddk_hcl/gdn-summary.txt"
+```
+
+<a id="当前一次覆盖-gdn-故障链"></a>
+
+## 已完成：26案例覆盖 GDN 故障链
 
 用户已完成两个core诊断，均Load、Process、回收成功，但数值失败。原第一层的projected_qkv通过原门槛，convolved_qkv已出现大偏差，384项只有173项非零；chunk_0_intra在裁剪前就全零，因而末端裁剪不能单独解释本次归零。单独core使用主机Q/K/V等正确输入也失败：normalized_query/key幅度异常，weighted_value仅64/128项非零，decay_prefix为72/128项非零。记录见`specs/gdn-core-stages-user-report.json`。目前未确认某个算子或公共布局是唯一根因。
 
-根据用户要求，本轮一次生成 **26个小案例**，覆盖原值、正常幅度、独立布局以及串联上下文。以下是同一批次的覆盖范围，不需要逐组手动运行：
+根据用户要求，上一轮一次生成 **26个小案例**，覆盖原值、正常幅度、独立布局以及串联上下文。以下是同一批次的覆盖范围，不需要逐组手动运行：
 
 | 范围 | 案例数 | 对照内容 |
 | --- | ---: | --- |
@@ -60,7 +99,7 @@ PYTHONPATH="$REPO_DIR/model${PYTHONPATH:+:$PYTHONPATH}" python3 -m qwen35_moe_df
 
 新版runner记录每个张量的逻辑形状/字节数、运行时形状/format及实际分配字节数，成功失败都保留已有记录。分配更大只说明存储更大，不能直接推断行stride；当前输入拷贝及输出读取方式不变，不读取未初始化的padding。新增报告按逻辑轴统计非零分布，帮助定位具体head/位置丢失。精确复制案例使用零容差；算术案例保持原FP16门槛，信号全部消失仍会明确显示。
 
-复用当前prepared、reference、原始OMC及native donor，在新目录执行一次：
+下面26案例命令保留供历史复现，当前使用上面的41案例修复验证批次：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only &&
@@ -75,7 +114,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
   --refresh-runner --replay-all --output "$GE_GDN_ALL_BOARD_RUN"
 ```
 
-回传以下两份摘要即可。新`gdn-summary.txt`包含各阶段误差、非零数量、变化轴分布及IO大小，省去重复编译器环境警告；完整统计和日志仍保留在`report.json`、`report.txt`及`results.tar.gz`。若个别案例编译失败，其他已编译案例仍会回放；传输失败仍保留原错误，不计为完成。
+以下两份摘要已经回传。`gdn-summary.txt`包含各阶段误差、非零数量、变化轴分布及IO大小，省去重复编译器环境警告；完整统计和日志仍保留在`report.json`、`report.txt`及`results.tar.gz`。若个别案例编译失败，其他已编译案例仍会回放；传输失败仍保留原错误，不计为完成。
 
 ```bash
 cat "$GE_GDN_ALL_BOARD_RUN/runtime-comparison.txt"

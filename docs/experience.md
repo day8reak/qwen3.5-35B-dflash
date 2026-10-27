@@ -561,3 +561,17 @@ run：`20261027T002058Z-10155-371fd2`。用户两个core案例均完成编译、
 native未发现确定的输入输出顺序错误，但旧诊断没有记录实际allocation大小。现为每个IO保存逻辑描述、实际runtime shape/format和GetSize；失败也保留已经观察到的字段，实际dtype明确unavailable。生产拷贝及输出只取逻辑前缀的行为不变，不读取未初始化padding。fake HIAI补充五输入、24个可区分且重排的输出及已知额外分配尾部，126项传输/生命周期案例通过；这仍不是设备物理stride证据。报告新增按轴非零分布及压缩的gdn-summary.txt，完整报告和校验继续保留。
 
 156项不同Python测试通过（81项原回归、14项综合批次、61项报告），另有126项native fake案例通过；相关3项卷积/CLI复测不重复计数。51段文档shell语法、两段内嵌Python解析通过，独立代码审查无阻塞。新26项已通过真实prepare-only，模型源码算术保持。验证见`specs/gdn-comprehensive-verification.json`。本地没有内部OMG或HDC执行；交付一个完整批次供用户服务器运行，原三案例、两个core和完整OMC均无需再生成。经验保存在本模型的探针域、来源约束、IO元数据和回归，没有把未证实的FTZ或布局假设写成通用平台规则；实际根因、全模型精度和2倍性能目标继续待验证。
+
+## 2026-10-27：综合 GDN 批次把数据位置与小值损失分开
+
+用户回传26案例：IO Neg实际值/标记值逐项通过，成功案例的分配字节等于逻辑字节；没有据此调整runner packing。三维卷积左补零前的转置正确，补零后仅8/384项非零；独立正确窗口的BMM与后续activation通过。core中四维value补零完全正确，三维beta/decay补零却把第二head的有效区域移到56..63，之后weighted_value丢失整个head。记录见 `specs/gdn-comprehensive-user-report.json`。
+
+修正方式是GE发射阶段对FP16 rank3 Concat统一增加尾部singleton，按原axis做rank4 Concat并恢复形状；同时覆盖普通图和scan内部拼接。此操作不增加浮点算术。主机验证需要检查实际序列化recipe和FP16位模式，不能仅检查中立图。内部OMG仍可能消除或传播reshape，设备候选尚不能提升为已修复。
+
+Q/K平方与参考逐项一致，sum输出已分别丢两行/一行小值；独立rank2和原rank4一致，正常幅度控制通过。此前sum冲零反事实现在得到行位置与误差摘要支持，但没有证明整个设备的统一FTZ机制。最终BMM还丢失36个小值，绝对门槛PASS不代表小信号保持；因此诊断增加可精确表示的正负次正规/最小正常边界和正常输入抵消对照，不修改已有实际算术门槛。原生ReduceSum候选保留FP16 square/sum/epsilon边界，仅三个指定归一化节点可覆盖MatMul策略，不以改变epsilon或全图FP32掩盖问题。
+
+六个Load失败用例都含直接Data或可折叠Const观察输出；结构共性仍是待验证假设。改为去掉不必要常量观察，或单次Neg的运行时观察输出，并保持真正消费者原输入。新增工厂检查拒绝直接输入/仅常量依赖输出，参考显式对应负值，避免观测结构阻塞原本要测的算术。
+
+当前GDN是参照Transformers `torch_chunk_gated_delta_rule` 的FP16基础算子图展开（`ge_target._chunk_gdn`），不是现成融合GDN自定义算子或手写AscendC内核。当前故障归属是该展开图在所测OMG/runtime上的拼接及小值路径；算法、完整模型精度和性能结论不能从这些局部案例推广。
+
+经验审计：模型特定证据留在本节及spec；通用可执行防护留在观察工厂与host recipe/边界测试。没有将某DDK的三维行为或FTZ假设写成全平台规则。精确layout候选、局部native候选及整层回归放入同一 `gdn-repair` 批次，仍以新设备结果决定下一步。

@@ -21,7 +21,7 @@ def _case(tmp_path, reference, actual):
                 "shape": list(reference.shape), "rtol": .01, "atol": .002}]}, board
 
 
-@pytest.mark.parametrize("suite", ["gdn-accuracy", "gdn-core-accuracy", "gdn-comprehensive"])
+@pytest.mark.parametrize("suite", ["gdn-accuracy", "gdn-core-accuracy", "gdn-comprehensive", "gdn-repair"])
 def test_tiny_zero_output_remains_visible_even_inside_existing_tolerance(tmp_path, suite):
     case, board = _case(tmp_path, [.001, -.001, 0], [0, 0, 0])
     case["probe_suite"] = suite

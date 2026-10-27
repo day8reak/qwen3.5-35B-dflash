@@ -55,6 +55,17 @@ def _normal_rows(offset):
 
 
 def _make(graph, feeds, outputs, description, policies, *, weights=None, exact=False, fixture="actual"):
+    # Direct Data outputs and observations that can be folded to a standalone
+    # Const are avoidable diagnostic structures. Keep observations on runtime
+    # operations; this does not assert why an older board model failed to load.
+    operation_outputs = {node.output.name for node in graph.nodes}
+    runtime_values = {value.name for value in graph.inputs}
+    for node in graph.nodes:
+        if any(value.name in runtime_values for value in node.inputs):
+            runtime_values.add(node.output.name)
+    for label, value in outputs.items():
+        if value.name not in operation_outputs or value.name not in runtime_values:
+            raise ValueError(f"diagnostic output requires a runtime operation: {graph.name}/{label}")
     labels, stage_map = _observe_outputs(graph, outputs)
     weights = {} if weights is None else weights
     expected = evaluate(graph, feeds, weights)
@@ -164,13 +175,17 @@ def cases_from_prepared(prepared_dir, reference_path, omc_dir):
             produced = _conv_layout(builder, _input(graph, feeds, "projected", projected))["windows"]
             produced_result = builder.op("matmul", produced, rhs, shape=(48, 8, 1),
                                           transpose_a=False, transpose_b=False)
-            outputs = {"kernel_view": rhs, "produced_windows": produced,
-                       "convolved": result, "produced_convolved": produced_result,
-                       "activation_view": builder.view(result, (1, 48, 8))}
+            # The const kernel's view folds to a Const. Its frozen payload is
+            # already hash-bound; do not expose that standalone Const as an IO.
+            outputs = {} if mode == "const" else {"kernel_view": rhs}
+            outputs.update({"produced_windows": produced,
+                            "convolved": result, "produced_convolved": produced_result,
+                            "activation_view": builder.view(result, (1, 48, 8))})
             outputs["activated"] = builder.permute(builder.op("silu", outputs["activation_view"]), (0, 2, 1))
             add(graph, feeds, outputs, "Actual convolution kernel and independently frozen windows, "
                 f"with {mode} right operand; compare graph-produced windows with runtime windows, then view/SiLU/transpose.",
-                weights=weights, exact={"kernel_view", "produced_windows"}, fixture=fixture)
+                weights=weights, exact={"produced_windows"} | ({"kernel_view"} if mode == "dynamic" else set()),
+                fixture=fixture)
 
     for kind in ("query", "key"):
         for fixture in ("actual", "normal"):
@@ -223,9 +238,17 @@ def cases_from_prepared(prepared_dir, reference_path, omc_dir):
             dense_lhs = _input(graph, feeds, "dense_value", padded_value.reshape(128, 8))
             dense_rhs = _input(graph, feeds, "dense_beta", padded_beta.reshape(128, 1))
             dense = builder.op("mul", dense_lhs, dense_rhs)
-            add(graph, feeds, {"value_carrier": lhs, "beta_carrier": rhs, "weighted": result, "dense_weighted": dense},
-                "One FP16 weighted-value Mul with original carrier/layout policy and independent dense rank2 control.",
-                exact={"value_carrier", "beta_carrier"}, fixture=fixture)
+            if mode == "padded":
+                # Sign reversal is observable and exact for finite FP16. The
+                # actual Mul still consumes the original unmodified inputs.
+                carriers = {"value_carrier_neg": builder.op("neg", lhs),
+                            "beta_carrier_neg": builder.op("neg", rhs)}
+            else:
+                carriers = {"value_carrier": lhs, "beta_carrier": rhs}
+            add(graph, feeds, {**carriers, "weighted": result, "dense_weighted": dense},
+                "One FP16 weighted-value Mul with original carrier/layout policy and independent dense rank2 control. "
+                "Padded runtime carriers are observed through exact Neg branches; Mul inputs are unchanged.",
+                exact=set(carriers), fixture=fixture)
 
     for fixture in ("actual", "moderate"):
         decay = actual["decay"] if fixture == "actual" else -_tagged((1, 8, 2), positive=True, offset=127)
@@ -239,9 +262,11 @@ def cases_from_prepared(prepared_dir, reference_path, omc_dir):
             else:
                 value = _input(graph, feeds, "decay_padded", carrier)
             prefix = builder.op("cumsum", value, axis=-1, scope="gdn_nonpositive")
-            add(graph, feeds, {"carrier": value, "prefix": prefix},
+            observation = {"carrier_neg": builder.op("neg", value)} if mode == "padded" else {"carrier": value}
+            add(graph, feeds, {**observation, "prefix": prefix},
                 "Original nonpositive FP16 prefix-scan lowering, including56 zero-padded positions per head; "
-                "compare prelayout and independently padded runtime inputs.", exact={"carrier"}, fixture=fixture)
+                "compare prelayout and independently padded runtime inputs. Padded carrier observation uses exact Neg "
+                "without changing the scan input.", exact=set(observation), fixture=fixture)
 
     for fixture in ("actual", "tagged"):
         graph, feeds = Graph("gc_final_bmm_" + fixture), {}
@@ -306,6 +331,7 @@ def cases_from_prepared(prepared_dir, reference_path, omc_dir):
         "Actual fixtures use same-weight host FP16 tensors; tagged/normal/moderate controls deliberately change only diagnostic inputs.",
         "Core cuts retain reachable original operations but replace declared intermediate Values with frozen host runtime inputs.",
         "Original arithmetic thresholds remain unchanged; exact copy controls use zero tolerance and small arithmetic signals require magnitude inspection.",
+        "Standalone constant outputs are omitted; direct runtime-input observations use exact Neg branches with explicitly negated labels/goldens. This does not confirm any earlier Load-failure cause.",
         "Native dtype/physical-layout introspection remains limited by the selected HIAI API.",
         "Prepared/reference/OMC and compiler identities are retained from validated source; no original OMC is modified."]
     return cases, result

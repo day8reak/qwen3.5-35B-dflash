@@ -20,7 +20,7 @@ from .ge_ir import Graph
 # allow ordinary FP16 implementation differences, without changing graph dtype.
 FP16_TOLERANCE = {"rtol": 0.01, "atol": 0.002}
 EXACT_TOLERANCE = {"rtol": 0.0, "atol": 0.0}
-PROBE_SUITES = ("remaining-cpu", "gdn-accuracy", "gdn-core-accuracy", "gdn-comprehensive")
+PROBE_SUITES = ("remaining-cpu", "gdn-accuracy", "gdn-core-accuracy", "gdn-comprehensive", "gdn-repair")
 PROBE_FAMILIES = ("gdn", "routing", "selection", "position")
 
 

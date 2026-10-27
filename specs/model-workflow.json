@@ -435,16 +435,17 @@
   "delivery_objective": "specs/dflash-contract.json#delivery_objective",
   "current_priority": {
     "date": "2026-10-27",
-    "user_directive": "先打通上板执行的链路吧，后续再考虑精度问题",
+    "user_directive": "定位并修复精度差异；探针一次覆盖完整故障链，避免反复一两个用例。",
     "milestone": "target/draft load + one execution each + output/log retrieval",
-    "accuracy_work": "COMPREHENSIVE_ACTUAL_AND_NORMAL_DOMAIN_LAYOUT_ARITHMETIC_DIAGNOSTICS",
+    "accuracy_work": "EXACT_CONCAT_CORRECTION_AND_NATIVE_REDUCTION_VALIDATION",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
     "guide": "docs/hdc-board-run.md",
-    "next_action": "Follow docs/hdc-board-run.md gdn-comprehensive: compile/replay26 same-weight and explicit-control probes covering IO, convolution windows/BMM, L2, padding, row Mul, prefix scan and core cuts in one batch; refresh native runner for allocation metadata.",
+    "next_action": "Run the single41-case gdn-repair batch in docs/hdc-board-run.md: corrected original26 controls,11 precision controls,4 integrated first-layer candidates. Retain prepared/reference/original OMC; no threshold relaxation.",
     "milestone_status": "USER_REPORTED_TINY_EXECUTION_COMPLETE",
     "evidence": "specs/draft-rope-execution-user-report.json",
     "comparison_evidence": "specs/draft-rope-comparison-user-report.json",
-    "localization_evidence": "specs/gdn-core-stages-user-report.json",
-    "probe_batch_preference": "User requests broad one-batch coverage instead of recurring one/two-case handoffs."
+    "localization_evidence": "specs/gdn-comprehensive-user-report.json",
+    "probe_batch_preference": "User requests broad one-batch coverage instead of recurring one/two-case handoffs.",
+    "repair_verification": "specs/gdn-repair-verification.json"
   }
 }

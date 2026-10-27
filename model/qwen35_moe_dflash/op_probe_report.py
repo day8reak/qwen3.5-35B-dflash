@@ -71,7 +71,7 @@ def _comprehensive_summary(report):
              "Numerical gates unchanged. Detailed evidence: report.json / report.txt.",
              "Axis count ranges are inclusive logical indices, not physical strides."]
     for row in report["cases"]:
-        if row.get("probe_suite") != "gdn-comprehensive":
+        if row.get("probe_suite") not in {"gdn-comprehensive", "gdn-repair"}:
             continue
         lines.append(f"\n{row['name']} | {row['compile'].get('status', 'NOT_RUN')} | "
                      f"load={row['load']} run={row['run']} numerical={row['numerical']['status']}")
@@ -197,7 +197,7 @@ def compare_outputs(case_record: dict, output_dir: Path, received_files=None) ->
                                    "relative_l2_defined": reference_signal["l2"] > 0},
                            examples=[{"flat_index": int(i), "actual": actual.ravel()[i].item(),
                                       "expected": expected.ravel()[i].item()} for i in mismatch[:8]])
-                if case_record.get("probe_suite") == "gdn-comprehensive":
+                if case_record.get("probe_suite") in {"gdn-comprehensive", "gdn-repair"}:
                     row["signal"]["nonzero_by_axis"] = {
                         "reference": _nonzero_by_axis(b), "actual": _nonzero_by_axis(a)}
         except (KeyError, TypeError, ValueError, OSError, OverflowError) as error:
@@ -352,7 +352,7 @@ def write_report(root: Path, manifest, boardresult=None):
     root.mkdir(parents=True, exist_ok=True)
     manifest_path, report_path, text_path = root / "report-manifest.json", root / "report.json", root / "report.txt"
     archive_path, evidence_root = root / "results.tar.gz", root / "report-evidence"
-    comprehensive = any(case.get("probe_suite") == "gdn-comprehensive" for case in _case_records(manifest))
+    comprehensive = any(case.get("probe_suite") in {"gdn-comprehensive", "gdn-repair"} for case in _case_records(manifest))
     summary_path = root / "gdn-summary.txt" if comprehensive else None
     for path in (manifest_path, report_path, text_path, archive_path, evidence_root, *([summary_path] if comprehensive else [])):
         if path.exists() or path.is_symlink():
@@ -439,11 +439,11 @@ def write_report(root: Path, manifest, boardresult=None):
                               "Runtime placement remains UNVERIFIED without independent execution evidence."],
               "archive_notes": archive_notes}
     report["selection"] = manifest.get("selection")
-    if any(row.get("probe_suite") in {"gdn-accuracy", "gdn-core-accuracy", "gdn-comprehensive"} for row in rows):
+    if any(row.get("probe_suite") in {"gdn-accuracy", "gdn-core-accuracy", "gdn-comprehensive", "gdn-repair"} for row in rows):
         report["limitations"].append(
             "GDN signal statistics are diagnostic only; unchanged absolute tolerance may accept a tiny output that is entirely zero. "
             "New probe graphs may optimize differently from the original OMC; compare final-only and staged block outputs with its captured features.")
-    if any(row.get("probe_suite") == "gdn-comprehensive" for row in rows):
+    if any(row.get("probe_suite") in {"gdn-comprehensive", "gdn-repair"} for row in rows):
         report["limitations"].append(
             "Nonzero counts by axis are marginals, not a physical-stride measurement. "
             "A buffer larger than logical tensor bytes does not by itself establish row padding; packing is unchanged.")
@@ -467,7 +467,7 @@ def write_report(root: Path, manifest, boardresult=None):
     for row in rows:
         lines.append(" | ".join((row["name"], row["compile"].get("status", "NOT_RUN"), row["load"], row["run"],
                                  row["numerical"]["status"], row["placement"])))
-        if row.get("probe_suite") == "gdn-comprehensive":
+        if row.get("probe_suite") in {"gdn-comprehensive", "gdn-repair"}:
             native = row["runtime"].get("native") or {}
             io_tensors = native.get("io_tensors")
             if not isinstance(io_tensors, list) or not io_tensors:
@@ -475,12 +475,12 @@ def write_report(root: Path, manifest, boardresult=None):
             else:
                 for tensor in io_tensors:
                     lines.append("  runtime IO: " + json.dumps(tensor, allow_nan=False))
-        if row.get("probe_suite") in {"gdn-accuracy", "gdn-core-accuracy", "gdn-comprehensive"}:
+        if row.get("probe_suite") in {"gdn-accuracy", "gdn-core-accuracy", "gdn-comprehensive", "gdn-repair"}:
             for output in row["numerical"]["outputs"]:
                 details = {key: output[key] for key in
                     ("status", "reason", "error", "shape", "elements", "max_abs_error", "signal")
                     if key in output}
-                if row["probe_suite"] in {"gdn-core-accuracy", "gdn-comprehensive"} and "signal" in details:
+                if row["probe_suite"] in {"gdn-core-accuracy", "gdn-comprehensive", "gdn-repair"} and "signal" in details:
                     # Keep the larger stage trace readable; report.json retains
                     # the complete statistics for every tensor.
                     signal = details.pop("signal")

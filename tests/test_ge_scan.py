@@ -63,6 +63,9 @@ def _execute(records, outputs, array):
             elif kind == "ConcatD":
                 assert record["attrs"]["N"] == len(args)
                 value = np.concatenate(args, axis=record["attrs"]["concat_dim"])
+            elif kind == "Reshape":
+                assert args[1].dtype == np.int32
+                value = args[0].reshape(tuple(args[1]))
             elif kind == "Add":
                 assert dtype in (np.int32, np.int64)
                 value = np.add(args[0], args[1], dtype=dtype)
@@ -101,7 +104,7 @@ def test_fp16_scan_of_actual_gdn_decay_graph(tmp_path, sequence):
     actual, records = _scan(tmp_path, decay, -1, "gdn_nonpositive")
     expected = torch.cumsum(torch.from_numpy(decay), -1)
     torch.testing.assert_close(torch.from_numpy(actual), expected)
-    assert {r["type"] for r in records} == {"Data", "Const", "Slice", "ReduceSum", "ConcatD"}
+    assert {r["type"] for r in records} == {"Data", "Const", "Slice", "ReduceSum", "ConcatD", "Reshape"}
     assert sum(r["type"] == "ReduceSum" for r in records) == 64
     assert all(p["dtype"] != "float32" for r in records for p in r["outputs"])
 

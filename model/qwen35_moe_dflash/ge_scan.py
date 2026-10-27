@@ -32,8 +32,10 @@ def _slice(e, source, output, axis, size, suffix):
 
 
 def _concat(e, output, inputs, axis):
-    return _output(e, output, "ConcatD", [(f"x{i}", value) for i, value in enumerate(inputs)],
-                   {"concat_dim": f"int64_t{{{axis}}}", "N": f"int64_t{{{len(inputs)}}}"})
+    # Scan assembly must use the same rank3 layout handling as graph Concat;
+    # otherwise the prefix reductions can be correct but assembled on a wrong
+    # physical axis by the rank3 backend path.
+    return e.emit_concat(output, inputs, axis)
 
 
 def emit_cumsum(e, output: Value, source: Value, axis: int, *, scope=None):
