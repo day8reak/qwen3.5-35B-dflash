@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from qwen35_moe_dflash.ge_fused.bindings import document_bindings
-from qwen35_moe_dflash.ge_fused.probes import build_fused_probes, compare_fused_probes
+from qwen35_moe_dflash.ge_fused.probes import build_fused_probes, compare_fused_probes, inspect_fused_probes
 from qwen35_moe_dflash.ge_fused.recipe import read_recipe
 from qwen35_moe_dflash.hashing import sha256_file
 
@@ -37,8 +37,13 @@ def _mock_tools(monkeypatch, fail=None):
         calls.append(command)
         folder = Path(kwargs["cwd"])
         if "--target=omc" in command:
+            (folder / "dump_graph").mkdir()
+            (folder / "kernel_meta").mkdir()
+            (folder / "kernel_meta/worker.log").write_text("MOCK child compilation traceback\n")
             if folder.parent.name == fail:
+                (folder / "dump_graph/02_after_infershape_1_fail.irpb").write_bytes(b"MOCK FAILED IR")
                 raise subprocess.CalledProcessError(1, command)
+            (folder / "dump_graph/after_infershape.irpb").write_bytes(b"MOCK SUCCESS IR")
             (folder / "probe.omc").write_bytes(b"MOCK OMC " + folder.parent.name.encode())
         else:
             path = command[command.index("-o") + 1] if "-o" in command else command[1]
@@ -85,10 +90,23 @@ def test_export_compile_boundaries_and_continue_after_failure(setup, tmp_path, m
     assert result["status"] == "PARTIAL" and len(calls) == 15
     assert result["cases"][0]["export"] == "PASSED" and result["cases"][0]["compile"] == "FAILED"
     assert all(case["status"] == "COMPILED" for case in result["cases"][1:])
+    failed = tmp_path / "compiled/cases/gdn_prefill/compile-work"
+    assert (failed / "dump_graph/02_after_infershape_1_fail.irpb").read_bytes() == b"MOCK FAILED IR"
+    assert (failed / "kernel_meta/worker.log").read_text() == "MOCK child compilation traceback\n"
+    assert (failed / "input.air").is_file() and not (failed / "input.air").is_symlink()
+    assert "Retained compiler work:" in result["cases"][0]["error"]
+    inventory = {item["path"]: item for item in result["cases"][0]["files"]}
+    worker_record = inventory["cases/gdn_prefill/compile-work/kernel_meta/worker.log"]
+    assert worker_record["sha256"] == sha256_file(failed / "kernel_meta/worker.log")
+    assert not list((tmp_path / "compiled").rglob(".ipc-*"))
     script = (tmp_path / "compiled/bundle/run-board.sh").read_text()
     assert "gdn_prefill/step.tsv" not in script and "rms/step.tsv" in script
     for case in result["cases"][1:]:
+        work = tmp_path / "compiled" / case["compile_work"]
+        assert (work / "dump_graph/after_infershape.irpb").read_bytes() == b"MOCK SUCCESS IR"
+        assert (work / "kernel_meta/worker.log").is_file()
         root = tmp_path / "compiled/bundle" / case["name"]
+        assert not list(root.rglob("worker.log"))  # compiler diagnostics are not uploaded as model payloads
         lines = (root / "step.tsv").read_text().splitlines()
         assert lines[0] == "QWEN35_FUSED_OP_STEP\t1" and lines[3] == "operator\t" + case["operator_type"]
         assert lines[2].startswith("operator_abi\toperator-abi.json\t")
@@ -168,6 +186,35 @@ def test_no_compiled_cases_script_fails_without_invocation(setup, tmp_path):
     assert "no operator invocation attempted" in (tmp_path / "board/run-error.txt").read_text()
     assert (root / "report.txt").is_file()
     assert not list((tmp_path / "board").glob("*.exitcode"))
+
+
+def test_failure_inspection_reads_existing_middle_errors_and_never_runs_ddk(setup, tmp_path, monkeypatch):
+    binding, _, ddk = setup
+    root = tmp_path / "source"
+    build_fused_probes(root, binding)
+    log = root / "cases/gdn_prefill/compile.log"
+    log.write_text("No such file or directory: optional.so\n" * 20 +
+                   "Traceback (most recent call last):\n  wrapper.py:24\nModuleNotFoundError: missing_dependency\n" +
+                   "compiler process died\n" * 20)
+    source = ddk / "ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("raise RuntimeError('DO NOT IMPORT THIS INSTALLED MODULE')\n"
+                      "def chunk_gated_delta_rule(initial_state, output_final_state):\n    pass\n")
+    before = {p: p.read_bytes() for folder in (root, ddk) for p in folder.rglob('*') if p.is_file()}
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("inspection must not execute any tool"))
+    output = tmp_path / "inspection"
+    result = inspect_fused_probes(root, ddk, output)
+    assert result['new_compilation'] == result['device_execution'] == 'NOT_RUN'
+    assert result['cases'][0]['compile_work_retained'] is False
+    assert 'ModuleNotFoundError: missing_dependency' in (output / 'report.txt').read_text()
+    assert len(result['installed_sources']) == 1
+    assert (output / result['installed_sources'][0]['path']).read_bytes() == source.read_bytes()
+    assert all(path.read_bytes() == payload for path, payload in before.items())
+    assert result['cases'][1]['logs'][0]['status'] == 'UNREADABLE'
+    for forbidden in (root / 'inspection', ddk / 'inspection'):
+        with pytest.raises(ValueError, match='separate'):
+            inspect_fused_probes(root, ddk, forbidden)
+        assert not forbidden.exists()
 
 
 def test_hash_bound_runtime_failures_preserve_stage_without_numerical_claim(setup, tmp_path, monkeypatch):

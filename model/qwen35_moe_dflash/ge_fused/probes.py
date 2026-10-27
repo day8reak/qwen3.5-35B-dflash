@@ -10,9 +10,9 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
-import tempfile
 
 import numpy as np
 
@@ -33,6 +33,132 @@ _CASES = (("gdn_prefill", "gdn", 8), ("gdn_decode", "gdn", 1),
           ("conv_prefill", "conv_state", 8), ("conv_decode", "conv_state", 1),
           ("rms", "rms", 8))
 _TYPES = {"gdn": "ChunkGatedDeltaRule", "conv_state": "LinearAttentionConvstateUpdate", "rms": "AdnRmsNorm"}
+
+
+def inspect_fused_probes(probe_run, ddk_root, output_dir):
+    """Read existing failures and installed interface text; never import or run it.
+
+    This reports evidence, not an automatically repaired binding. Compiler
+    intermediates are available only when retained by the generating revision.
+    """
+    root, ddk = Path(probe_run).resolve(), Path(ddk_root).resolve()
+    manifest = _stateful_json(root / "manifest.json")
+    if manifest.get("artifact_kind") != "qwen35-fused-op-probes":
+        raise ValueError("expected a fused operator probe manifest")
+    if not ddk.is_dir():
+        raise ValueError("ddk_root must be the existing selected DDK directory")
+    output = output_path(output_dir)
+    if output == root or root in output.parents or output == ddk or ddk in output.parents:
+        raise ValueError("inspection output must be separate from the existing probe run and DDK")
+    output.mkdir(parents=True, exist_ok=False)
+    # Ignore noisy framework E/ logs and ImportWarning; retain exception
+    # context and the exact interface/compiler failure, even in a long log.
+    fault = re.compile(r"Traceback|\b(?:ModuleNotFoundError|ImportError|RuntimeError|TypeError|ValueError|"
+                       r"AttributeError|OSError|FileNotFoundError|KeyError|SyntaxError)\b|"
+                       r"fatal error:|LLVM ERROR|Segmentation fault|core dumped|undefined symbol|"
+                       r"compiler process died|Input .*must be|infershape func failed|"
+                       r"No such file or directory|\bKilled\b|\bAborted\b", re.I)
+    crash = re.compile(r"Traceback|\b[A-Za-z]+Error:|fatal error:|LLVM ERROR|Segmentation fault|"
+                       r"core dumped|undefined symbol|\bKilled\b|\bAborted\b", re.I)
+    context = re.compile(r"outputs1:|soc_version:|File\[.*\.py\]|GetKernelbinAddr.*not valid")
+    source_hint = re.compile(r"^\s*(?:def |class |@)|register|initial_state|last_recurrent_state|"
+                             r"effective_length|llmConfig|llm_config|conv_state|rstd|"
+                             r"get_soc|dtype|shape|chunk_size|output_final_state", re.I)
+    reports = []
+
+    def read_text(path, base, relative, pattern, limit):
+        record = {"source": str(path), "status": "UNREADABLE"}
+        try:
+            resolved = path.resolve()
+            if base not in resolved.parents or not resolved.is_file():
+                raise ValueError("file missing or resolves outside the selected source root")
+            size = resolved.stat().st_size
+            if size > 32 * 1024 * 1024:
+                record.update(status="SIZE_LIMIT", bytes=size)
+                return record
+            payload = resolved.read_bytes()
+            destination = output / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(payload)
+            lines = payload.decode("utf-8", errors="replace").splitlines()
+            hits = [i for i, line in enumerate(lines) if pattern.search(line) and "ImportWarning" not in line]
+            selected = (hits[:limit // 2] + hits[-limit // 2:]) if len(hits) > limit else hits
+            if pattern is fault:
+                primary = [i for i in hits if crash.search(lines[i])]
+                selected = sorted(set(primary[:limit] + selected[:2] + selected[-2:]))
+            indices = sorted({j for i in selected for j in range(max(0, i - 2), min(len(lines), i + 4))})
+            record.update(status="READ", **_record(destination, output), total_lines=len(lines),
+                          matched_lines=len(hits), omitted_matches=max(0, len(hits) - len(selected)),
+                          excerpts=[{"line": i + 1, "text": lines[i]} for i in indices])
+        except (OSError, ValueError) as error:
+            record["error"] = str(error)
+        return record
+
+    for case in manifest.get("cases", []):
+        if case.get("name") not in {entry[0] for entry in _CASES}:
+            raise ValueError("unexpected probe case name")
+        name = case["name"]
+        folder = root / "cases" / name
+        logs = [folder / "compile.log"]
+        work = folder / "compile-work"
+        if work.is_dir() and not work.is_symlink():
+            logs += sorted(p for p in work.rglob("*") if p.suffix in {".log", ".err", ".txt"})[:12]
+        item = {"name": name, "construction": case.get("construction"), "export": case.get("export"),
+                "compile": case.get("compile"), "compile_work_retained": work.is_dir(), "logs": []}
+        for i, path in enumerate(logs):
+            rec = read_text(path, root, f"logs/{name}/{i:02d}-{path.name}", fault, 8)
+            if rec["status"] == "READ" and i == 0:
+                # Descriptor/SoC evidence is separate from the error excerpts.
+                saved = (output / rec["path"]).read_text(errors="replace").splitlines()
+                rec["descriptor_context"] = [{"line": j + 1, "text": line} for j, line in enumerate(saved)
+                                             if context.search(line)][:12]
+            item["logs"].append(rec)
+        reports.append(item)
+    sources = []
+    ops = ddk / "ddk/ascendc/ops"
+    names = ("chunkgateddeltarule", "linearattentionconvstateupdate", "adnrmsnorm")
+    if ops.is_dir():
+        for path in sorted(ops.rglob("*")):
+            name = re.sub(r"[^a-z0-9]", "", path.stem.lower())
+            if (path.suffix.lower() in {".py", ".h", ".hpp", ".cpp", ".json", ".ini"}
+                    and any(key in name for key in names)):
+                relative = path.relative_to(ddk)
+                sources.append(read_text(path, ddk, "installed/" + relative.as_posix(), source_hint, 8))
+                if len(sources) == 24:
+                    break
+    libraries = []
+    for name in ("libai_npucore_ascendc_kernel.so", "libai_npucore_ascendcpp.so"):
+        path = ddk / "tools/tools_omg/master/lib64" / name
+        libraries.append({"path": str(path), "exists": path.is_file()})
+    result = {"schema_version": 1, "artifact_kind": "qwen35-fused-probe-inspection", "status": "INSPECTED",
+              "probe_manifest_sha256": sha256_file(root / "manifest.json"), "ddk_root": str(ddk),
+              "declared_ddk_id": manifest.get("ddk_id"), "cases": reports, "installed_sources": sources,
+              "library_paths": libraries, "new_compilation": "NOT_RUN", "device_execution": "NOT_RUN",
+              "scope": "Read-only excerpts and copies; no DDK code imported, no bindings changed, no installed-kernel claim.",
+              "limits": "At most 24 matching interface filenames and 13 logs per case; 32 MiB/file. Absence is not proof of no registration. Old temporary compiler work may already be removed."}
+    save_json(output / "report.json", result)
+    lines = ["Existing fused probe failure inspection (no compilation or device execution)",
+             f"DDK identity (declared): {manifest.get('ddk_id')}", ""]
+    for case in reports:
+        lines.append(f"{case['name']}: export={case['export']} compile={case['compile']} retained_work={case['compile_work_retained']}")
+        for record in case["logs"]:
+            lines.append(f"  {record['source']} [{record['status']}]")
+            for entry in record.get("excerpts", []) + record.get("descriptor_context", []):
+                lines.append(f"  L{entry['line']}: {entry['text']}")
+            if record.get("omitted_matches"):
+                lines.append(f"  Further matches: {record['omitted_matches']}; full copied text: {record['path']}")
+    lines.append("\nInstalled interface text (read, never imported):")
+    for record in sources:
+        lines.append(f"{record['source']} [{record['status']}]")
+        for entry in record.get("excerpts", []):
+            lines.append(f"  L{entry['line']}: {entry['text']}")
+    if not sources:
+        lines.append("No matching interface source filename found under selected DDK/ddk/ascendc/ops; registration is unresolved.")
+    lines += ["", "Library path existence is diagnostic, not proof of the compile failure cause."]
+    lines.extend(json.dumps(item) for item in libraries)
+    lines.extend(["", result["limits"], "Full evidence: report.json, logs/, installed/."])
+    (output / "report.txt").write_text("\n".join(lines) + "\n")
+    return result
 
 
 def _record(path, root):
@@ -181,10 +307,16 @@ def _compile_case(folder, ddk_root, timeout_seconds):
     destination.mkdir()
     command = [str(omg), "--framework=1", "--model=input.air", "--output=probe", "--target=omc",
                "--platform=kirinx90", "--use_origin_format=true", "--weight_data_type=FP16"]
-    save_json(folder / "compile-command.json", {"argv": command})
-    with tempfile.TemporaryDirectory(prefix="omg-probe-", dir=folder) as temporary:
-        scratch = Path(temporary)
-        (scratch / "input.air").symlink_to(folder / "probe.air")
+    scratch = folder / "compile-work"
+    scratch.mkdir()
+    # Retain compiler workers' tracebacks, kernel metadata and failed IR dumps.
+    # These single-op AIR files have no external weights; a regular input copy
+    # also keeps the retained case inventory free of our own temporary links.
+    shutil.copyfile(folder / "probe.air", scratch / "input.air")
+    save_json(folder / "compile-command.json", {
+        "argv": command, "cwd": "compile-work",
+        "diagnostics_retention": "Compiler work retained on success and failure; IPC temporary files cleaned."})
+    try:
         with _omg_ipc_environment(scratch, env) as (local_env, _):
             save_json(folder / "omg-environment.json", _environment_record(ddk_root, local_env))
             _logged(command, folder=scratch, env=local_env, log=folder / "compile.log", timeout=timeout_seconds)
@@ -194,7 +326,10 @@ def _compile_case(folder, ddk_root, timeout_seconds):
         for path in scratch.iterdir():
             if path.name.startswith("probe") and not path.is_symlink():
                 shutil.move(str(path), str(destination / path.name))
+    except Exception as error:
+        raise RuntimeError(f"{error}\nRetained compiler work: {scratch}") from error
     return {"omg_sha256": sha256_file(omg),
+            "compile_work": str(scratch.relative_to(folder.parents[1])),
             "compiler_evidence": compile_evidence((folder / "compile.log").read_text(errors="replace"))}
 
 

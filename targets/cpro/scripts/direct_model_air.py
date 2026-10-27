@@ -12,6 +12,10 @@ sys.path.insert(0, str(REPO))
 
 
 def _add_stateful_commands(sub):
+    inspect = sub.add_parser("inspect-fused-probes", help="read existing failures and installed interface text without recompiling or importing DDK code")
+    inspect.add_argument("--probe-run", required=True)
+    inspect.add_argument("--ddk-root", required=True)
+    inspect.add_argument("--output", required=True)
     probe = sub.add_parser("probe-fused-ops", help="build only five calls to the three documented fused operators; no model checkpoint")
     probe.add_argument("--output", required=True)
     probe.add_argument("--bindings", required=True)
@@ -167,7 +171,10 @@ def main():
     args = parser.parse_args()
     try:
         from qwen35_moe_dflash.resources import load_resources, resource_path
-        if args.command == "probe-fused-ops":
+        if args.command == "inspect-fused-probes":
+            from qwen35_moe_dflash.ge_fused.probes import inspect_fused_probes
+            result = inspect_fused_probes(args.probe_run, args.ddk_root, args.output)
+        elif args.command == "probe-fused-ops":
             from qwen35_moe_dflash.ge_fused.probes import build_fused_probes
             result = build_fused_probes(
                 args.output, args.bindings, ge_root=args.ge_root, ddk_root=args.ddk_root,
