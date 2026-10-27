@@ -3,7 +3,7 @@
   "updated": "2026-10-27",
   "active_phase": "integration",
   "delivery_status": "HOST_IMPLEMENTED_DEVICE_INTEGRATION_PENDING",
-  "run_id": "20261027T112039Z-18164-c4a3d9",
+  "run_id": "20261027T115942Z-26038-e68837",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -327,8 +327,8 @@
           "scope": "Three retained custom operator families; base Conv/RMS full-model device validation is still required. Standalone CacheUpdate/Attention success is not production GE integration."
         },
         "gdn_io_diagnostic_plan": {
-          "command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_gdn_diagnostics.py\" --probe-run \"$AI_RUN_DIR/fused-all-f6b81ead7ae8\"",
-          "status": "TARGET_DIAGNOSTIC_NOT_RUN",
+          "command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_gdn_diagnostics.py\" --resume \"$AI_RUN_DIR/gdn-diagnostic-c0cbac5ac9cf\"",
+          "status": "TARGET_DIAGNOSTIC_INCOMPLETE_TRANSPORT_FAILURE",
           "cases": [
             "gdn_prefill",
             "gdn_decode"
@@ -350,7 +350,20 @@
           "model_compilation": "NOT_RUN",
           "platform_diagnosis": "NOT_RUN",
           "conv_rms_candidates": "DISABLED",
-          "device_result": "PENDING",
+          "device_result": "INCOMPLETE",
+          "latest_user_report": {
+            "source": "USER_PASTED_REPORT_AND_NESTED_ERROR",
+            "artifact_hash_verification": "NOT_RECHECKED",
+            "run_name": "gdn-diagnostic-c0cbac5ac9cf",
+            "completed_fill": 0,
+            "failed_fill": 165,
+            "failure_stage": "upload",
+            "operation": "verify-checksums",
+            "observed": "[Fail]Failed to communicate with daemon; missing unique remote exit marker",
+            "failed_round_process": "NOT_RUN",
+            "numerical_results": "NOT_YET_PASTED",
+            "next_action": "Revalidate the retained zero-fill trial and runner, then execute only missing fills using --resume. The failed read-only checksum query may retry the exact daemon transport failure up to three times; checksum mismatch and missing markers still cannot establish success."
+          },
           "scope": "Targeted buffer handoff, output writeback and repeat-execution diagnosis only; no current result establishes a cause or fix. Conv state and RMS remain base operators."
         }
       },

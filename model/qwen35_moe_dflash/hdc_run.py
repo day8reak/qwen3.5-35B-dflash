@@ -18,6 +18,7 @@ import shlex
 import struct
 import subprocess
 import sys
+import time
 import uuid
 
 from .artifacts import checked_file, output_path, save_json
@@ -507,13 +508,37 @@ def _check_local(entry):
         raise ValueError(f"upload source changed since preflight: {path}")
 
 
-def _upload(hdc, board, entries, checksum):
+def _upload(hdc, board, entries, checksum, *, checksum_connection_retries=0):
+    if type(checksum_connection_retries) is not int or not 0 <= checksum_connection_retries <= 2:
+        raise ValueError("checksum_connection_retries must be an integer in 0..2")
     for entry in entries:
         _check_local(entry)
         hdc.send(entry["local"], board / entry["remote"])
     checksum.write_text("".join(entry["sha256"] + "  " + entry["remote"] + "\n" for entry in entries))
     hdc.send(checksum, board / checksum.name, "send-checksums")
-    hdc.shell("cd " + shlex.quote(str(board)) + " && sha256sum -c " + shlex.quote(checksum.name), "verify-checksums")
+    command = "cd " + shlex.quote(str(board)) + " && sha256sum -c " + shlex.quote(checksum.name)
+    # Repeat only the read-only checksum query after this observed HDC transport
+    # failure. Never replay uploads or Process, accept a missing exit marker, or
+    # treat an actual remote checksum failure as a retryable connection error.
+    # Opt-in bounded probe queries use short attempts. Large-model uploads keep
+    # their existing timeout and single-query behavior unless explicitly chosen.
+    options = {"timeout": min(30, hdc.timeout)} if checksum_connection_retries else {}
+    for attempt in range(checksum_connection_retries + 1):
+        try:
+            hdc.shell(command, "verify-checksums", **options)
+            break
+        except RuntimeError as error:
+            if attempt == checksum_connection_retries:
+                raise
+            record = hdc.last_call or {}
+            channels = [record.get(name, "").strip() for name in ("stdout", "stderr")]
+            daemon_failure = [value for value in channels if value] == ["[Fail]Failed to communicate with daemon"]
+            transport_failure = (str(error).startswith("HDC verify-checksums missing unique remote exit marker;")
+                                 or str(error).startswith("HDC verify-checksums failed with exit code "))
+            if record.get("label") != "verify-checksums" or not daemon_failure or not transport_failure:
+                raise
+            print(f"hdc-upload: checksum query lost daemon connection; retry {attempt + 2}/{checksum_connection_retries + 1}", flush=True)
+            time.sleep(1)
 
 
 def _cleanup_remote(hdc, board, owner_token, *, mode="all", omc_files=()):

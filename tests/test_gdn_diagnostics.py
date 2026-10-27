@@ -3,6 +3,7 @@ from copy import deepcopy
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 
 import numpy as np
 import pytest
@@ -133,8 +134,9 @@ if '--output-fill-byte' in flags:
 '''
 
 
-@pytest.mark.parametrize("failure,expected_runs", [("", 3), ("bad-readback", 1), ("execute", 1)])
-def test_three_fill_orchestration_reuses_models_runner_and_checks_evidence(case, monkeypatch, failure, expected_runs):
+@pytest.mark.parametrize("failure,expected_runs", [("", 3), ("bad-readback", 1), ("execute", 1),
+                                                  ("second-round-setup", 2)])
+def test_three_fill_orchestration_reuses_models_runner_and_checks_evidence(case, monkeypatch, capsys, failure, expected_runs):
     script = Path(__file__).resolve().parents[1] / "targets/cpro/scripts/run_gdn_diagnostics.py"
     spec = importlib.util.spec_from_file_location("test_gdn_entry", script)
     module = importlib.util.module_from_spec(spec)
@@ -144,13 +146,28 @@ def test_three_fill_orchestration_reuses_models_runner_and_checks_evidence(case,
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("FUSED_TEST_FAILURE", failure)
     _executable(case["root"] / "fake-runner", FAKE_RUNNER.replace("base['status'] = 'EXECUTED'", DIAGNOSTIC_FAKE + "\nbase['status'] = 'EXECUTED'"))
+    if failure == "second-round-setup":
+        execute = module.board.execute
+
+        def fail_second(args, *, runner_cache):
+            if args.output_fill_byte == 165:
+                out = Path(args.output)
+                out.mkdir()
+                report = {"status": "FAILED", "stage": "select-libraries", "output": str(out),
+                          "error": "ValueError: SIMULATED second-round library mismatch"}
+                (out / "result.json").write_text(json.dumps(report))
+                return report
+            return execute(args, runner_cache=runner_cache)
+
+        monkeypatch.setattr(module.board, "execute", fail_second)
     code = module.main(["--probe-run", str(case["probe"]), "--output", str(case["output"]), "--timeout-seconds", "20"])
     report = json.loads((case["output"] / "report.json").read_text())
     assert code == (1 if failure else 0), report
     assert len(report["runs"]) == expected_runs and len(case["built"]) == 1
     calls = [dict(zip(row[::2], row[1::2])) for row in _calls(case, runner=True) if row != ["--probe"]]
-    assert len(calls) == expected_runs * 2
-    assert [int(row["--output-fill-byte"]) for row in calls] == [fill for fill in FILLS[:expected_runs] for _ in range(2)]
+    executed_runs = 1 if failure == "second-round-setup" else expected_runs
+    assert len(calls) == executed_runs * 2
+    assert [int(row["--output-fill-byte"]) for row in calls] == [fill for fill in FILLS[:executed_runs] for _ in range(2)]
     assert {Path(row["--fused-op-step"]).parent.name for row in calls} == {"gdn_prefill", "gdn_decode"}
     assert case["original"] == {str(path.relative_to(case["probe"])): sha256_file(path)
                                 for path in case["probe"].rglob("*") if path.is_file()}
@@ -160,3 +177,82 @@ def test_three_fill_orchestration_reuses_models_runner_and_checks_evidence(case,
         assert report["numerical_acceptance"] == "NOT_DEFINED" and report["placement"] == "UNVERIFIED"
     else:
         assert report["status"] == "FAILED" and report["cases"] == []
+    if failure == "second-round-setup":
+        assert report["failed_execution"]["stage"] == "select-libraries"
+        assert len(report["completed_trials"]) == 2
+        assert {trial["fill"] for trial in report["completed_trials"]} == {0}
+        output = capsys.readouterr().out
+        assert "SIMULATED second-round library mismatch" in output
+        assert "stage=select-libraries" in output
+        assert "three-fill comparison INCOMPLETE" in output
+        assert "gdn_prefill fill=0x00" in output and "gdn_decode fill=0x00" in output
+
+
+@pytest.mark.parametrize("tamper", [None, "output", "runner"])
+def test_resume_revalidates_old_trial_and_runs_only_missing_fills(case, monkeypatch, tamper):
+    script = Path(__file__).resolve().parents[1] / "targets/cpro/scripts/run_gdn_diagnostics.py"
+    spec = importlib.util.spec_from_file_location("test_gdn_resume_entry", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "board", case["module"])
+    for key in ("CPRO_DDK_ROOT", "DDK_PATH"):
+        monkeypatch.delenv(key, raising=False)
+    fake = _executable(case["root"] / "fake-runner", FAKE_RUNNER.replace(
+        "base['status'] = 'EXECUTED'", DIAGNOSTIC_FAKE + "\nbase['status'] = 'EXECUTED'"))
+
+    def build(out, timeout):
+        case["built"].append((out, timeout))
+        native = out / "native"
+        runner = native / "build/qwen35_dflash_hiai"
+        runner.parent.mkdir(parents=True)
+        shutil.copyfile(fake, runner)
+        (native / "command.json").write_text(json.dumps({"fixture": "HOST SCRIPT, NOT NATIVE DEVICE CODE"}))
+        (native / "result.json").write_text(json.dumps({"status": "LINKED", "binary_sha256": sha256_file(runner),
+            "command_sha256": sha256_file(native / "command.json")}))
+        return runner
+
+    monkeypatch.setattr(module.board, "_build_runner", build)
+    execute = module.board.execute
+
+    def disconnect(args, *, runner_cache):
+        if args.output_fill_byte != 165:
+            return execute(args, runner_cache=runner_cache)
+        out = Path(args.output)
+        out.mkdir()
+        failed = {"status": "FAILED", "output": str(out), "stage": "upload",
+                  "error": "SIMULATED Failed to communicate with daemon"}
+        (out / "result.json").write_text(json.dumps(failed))
+        return failed
+
+    monkeypatch.setattr(module.board, "execute", disconnect)
+    assert module.main(["--probe-run", str(case["probe"]), "--output", str(case["output"])]) == 1
+    first = json.loads((case["output"] / "report.json").read_text())
+    assert len(first["completed_trials"]) == 2
+    old_calls = len(_calls(case, runner=True))
+    if tamper == "output":
+        target = case["output"] / "fill-00-0/results/gdn_prefill/output_0000.bin"
+        target.write_bytes(b"changed" + target.read_bytes()[7:])
+    elif tamper == "runner":
+        target = case["output"] / "fill-00-0/native/build/qwen35_dflash_hiai"
+        target.write_bytes(target.read_bytes() + b"\n# changed runner\n")
+    original = {str(file.relative_to(case["output"])): sha256_file(file)
+                for file in case["output"].rglob("*") if file.is_file()}
+    monkeypatch.setattr(module.board, "execute", execute)
+    resumed = case["root"] / "resumed"
+    code = module.main(["--resume", str(case["output"]), "--output", str(resumed), "--timeout-seconds", "20"])
+    report = json.loads((resumed / "report.json").read_text())
+    assert code == (0 if tamper is None else 1), report
+    assert len(case["built"]) == 1
+    assert original == {str(file.relative_to(case["output"])): sha256_file(file)
+                        for file in case["output"].rglob("*") if file.is_file()}
+    if tamper:
+        assert len(_calls(case, runner=True)) == old_calls
+        assert "SHA256 mismatch" in report["error"] or "runner differs" in report["error"]
+    else:
+        assert [row["reused"] for row in report["runs"]] == [True, False, False]
+        calls = [dict(zip(row[::2], row[1::2])) for row in _calls(case, runner=True)[old_calls:] if row != ["--probe"]]
+        assert [int(row["--output-fill-byte"]) for row in calls] == [165, 165, 90, 90]
+        assert report["status"] == "DIAGNOSIS_COMPLETE" and len(report["completed_trials"]) == 6
+        count = len(_calls(case, runner=True))
+        assert module.main(["--resume", str(resumed), "--output", str(case["root"] / "recheck")]) == 0
+        assert len(_calls(case, runner=True)) == count

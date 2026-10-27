@@ -215,6 +215,7 @@ def execute(args, *, runner_cache=None):
             "test -d " + shlex.quote(path) + " && test -r " + shlex.quote(path) for path in paths), "preflight")
         result["stage"] = "build-runner"
         if runner_cache and "runner" in runner_cache:
+            result["stage"] = "reuse-runner"
             print("fused-board: reusing this batch's runner and existing OMC files", flush=True)
             runner = runner_cache["runner"]
             if sha256_file(runner) != runner_cache["sha256"]:
@@ -228,6 +229,7 @@ def execute(args, *, runner_cache=None):
                 runner_cache.update(runner=runner, sha256=sha256_file(runner), native_build=native_build)
         result["runner_build"] = str(native_build)
         uploads.append(_file_record(runner, "runner"))
+        result["stage"] = "select-libraries"
         if private:
             result["libraries"] = {"mode": "existing-board-directory", "path": private, "compatibility": "UNVERIFIED"}
         else:
@@ -248,7 +250,7 @@ def execute(args, *, runner_cache=None):
         hdc.shell("mkdir " + shlex.quote(str(board)), "create-root")
         directories = sorted({str((board / entry["remote"]).parent) for entry in uploads})
         hdc.shell("mkdir -p " + " ".join(map(shlex.quote, directories)), "create-subdirs")
-        _upload(hdc, board, uploads, out / "payloads.sha256")
+        _upload(hdc, board, uploads, out / "payloads.sha256", checksum_connection_retries=2)
         hdc.shell("chmod 755 " + shlex.quote(str(board / "runner")), "runner-permissions")
         environment = "LD_LIBRARY_PATH=" + shlex.quote(":".join(paths)) + " "
         result["stage"] = "runtime-probe"
@@ -328,6 +330,9 @@ def execute(args, *, runner_cache=None):
         result["hdc_invocations"] = hdc.count if hdc else 0
         save_json(out / "result.json", result)
         if result["status"] != "EXECUTION_COMPLETE":
+            print(f"fused-board: FAILED stage={result['stage']}: "
+                  f"{result.get('error') or result.get('comparison_error') or 'see result.json'}; "
+                  f"evidence={out / 'result.json'}", file=sys.stderr, flush=True)
             for path in [out / "runner-build.log", out / "native/build.log", out / "runtime.stderr",
                          out / "batch.stderr", out / "batch.stdout", *sorted((out / "results").glob("*.stderr")),
                          *sorted((out / "results").glob("*.stdout"))]:

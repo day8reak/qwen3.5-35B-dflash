@@ -4,6 +4,14 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## GDN诊断第二轮HDC通信失败与续跑
+
+2026-10-27，用户回传 `gdn-diagnostic-c0cbac5ac9cf`：`0x00` 首轮两例执行完成，进入 `0xA5` 轮后在 `upload` 阶段失败。嵌套错误是 `HDC verify-checksums missing unique remote exit marker`，HDC stdout为 `[Fail]Failed to communicate with daemon`。该轮尚未进入GDN执行；这次失败是传输问题，不能判为算子Process失败，也未提供新的完整三轮数值结论。原始远端文件仍未本地取得。
+
+修正诊断总报告隐藏具体异常、失败时不展示已完成轮次的问题；细分runner复用和库选择阶段。新增 `--resume`，在新目录重新校验原结果、每个回收文件及runner构建/上传哈希，保留同一设备、runtime、firmware、模型及输入，复用首轮runner，只跑缺少轮次，原文件不改。只对fused探针的只读checksum查询启用精确daemon通信故障的有限重试（最多3次，每次≤30秒，间隔1秒）；不重传、不重跑Process、不重启daemon，真实checksum失败不重试。完整模型上传默认超时和单次行为不变。
+
+本轮147项主机测试通过：17项GDN诊断/续跑及130项板端编排与HDC传输回归。覆盖首轮保留而只执行余下四次Process、已完成批次再次核验不执行、输出/runner篡改拒绝、真实构建记录自动库发现的连续复用、daemon短暂故障恢复/持续失败、真实checksum失败不重试及完整模型默认超时不变。工作流JSON、4段当前文档Bash语法和CLI帮助通过。工作区证据为 `20261027T115942Z-26038-e68837`；主机使用模拟HDC/runner，没有验证真实连接已恢复，也没有新增GDN精度通过结论。
+
 ## 环境恢复后九例探针最新回传
 
 2026-10-27，用户回传新批次 `fused-all-f6b81ead7ae8`：恢复后的环境已重新尝试全部九例，GDN、CacheUpdate、Attention各prefill/decode共六例完成AIR导出、OMC编译、加载和执行。以下来自用户粘贴报告，原始产物未在本地主机重新获取、校验或复跑。

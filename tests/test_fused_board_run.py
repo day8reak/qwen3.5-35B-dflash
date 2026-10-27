@@ -9,6 +9,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -48,6 +49,20 @@ elif args[:1] == ['shell']:
     assert command[:2] == ['sh', '-c'] and len(command) == 3
     payload = command[2].replace(remote, local).replace('/vendor/lib64/chipsetsdk', local + '/vendor-libs')
     payload = payload.replace('param get const.ohos.fullname', "printf '%s\\n' SIMULATED-FIRMWARE")
+    failure = os.environ.get('FUSED_TEST_FAILURE', '')
+    if 'sha256sum -c' in payload and failure.startswith('checksum-'):
+        counter = pathlib.Path(local) / 'checksum-attempts.txt'
+        attempt = int(counter.read_text()) if counter.exists() else 0
+        counter.write_text(str(attempt + 1))
+        if failure in {'checksum-daemon-always', 'checksum-daemon-host-always'} or (
+                failure in {'checksum-daemon-once', 'checksum-daemon-host-once'} and attempt == 0):
+            print('[Fail]Failed to communicate with daemon')
+            sys.exit(1 if '-host-' in failure else 0)
+        if failure == 'checksum-mismatch':
+            checksum = next(pathlib.Path(local).glob('qwen35-fused-*/payloads.sha256'))
+            lines = checksum.read_text().splitlines()
+            lines[0] = '0' * 64 + lines[0][64:]
+            checksum.write_text('\n'.join(lines) + '\n')
     proc = subprocess.run(['sh', '-c', payload], capture_output=True)
     sys.stdout.buffer.write(proc.stdout)
     sys.stderr.buffer.write(proc.stderr)
@@ -242,6 +257,179 @@ def test_fused_board_default_library_upload_excludes_ddk_hcl(case, monkeypatch):
     assert not any(Path(path).name in names[1:] for path in uploads)
     assert _calls(case, runner=True)[0] == ['--probe']
     assert result['libraries']['mode'] == 'candidate_without_ddk_hcl'
+
+
+def _automatic_cached_build(case, monkeypatch):
+    """Real discovery/build-record checks; only the runnable shell fixture is non-ELF."""
+    from qwen35_moe_dflash import hiai_deployment
+    from test_hdc_run import _shared_elf
+
+    monkeypatch.delenv('BOARD_HIAI_LIB_DIR')
+    folder = case['root'] / 'selected-ddk-libraries'
+    library = _shared_elf(folder / 'libhiai.so', 'SIMULATED LINK LIBRARY', soname='libhiai.so')
+    _shared_elf(folder / 'libhiai_ir.so', 'SIMULATED ADJACENT LIBRARY', soname='libhiai_ir.so')
+    for name in hiai_deployment.DDK_HCL_EXCLUDED:
+        _shared_elf(folder / name, 'SIMULATED EXCLUDED ' + name, soname=name)
+
+    def build_runner(output, timeout):
+        case['built'].append((output, timeout))
+        native = output / 'native'
+        runner = native / 'build/qwen35_dflash_hiai'
+        runner.parent.mkdir(parents=True)
+        _executable(runner, FAKE_RUNNER)
+        command = native / 'command.json'
+        command.write_text(json.dumps({'argv': [], 'headers_only': False,
+                                      'libraries': [{'path': str(library), 'sha256': sha256_file(library)}]}))
+        (native / 'result.json').write_text(json.dumps({'status': 'LINKED', 'binary_sha256': sha256_file(runner),
+                                                       'command_sha256': sha256_file(command)}))
+        return runner
+
+    actual_elf, actual_dynamic = hiai_deployment._elf, case['module'].dynamic_info
+
+    def elf(path, *, executable=False):
+        if executable:
+            assert path.name == 'qwen35_dflash_hiai' and path.read_bytes().startswith(b'#!')
+        else:
+            actual_elf(path)
+
+    def dynamic(path):
+        if Path(path).name == 'qwen35_dflash_hiai':
+            return {'needed': [], 'soname': None, 'rpath': None, 'runpath': None}
+        return actual_dynamic(path)
+
+    discovery_calls = []
+
+    def discover(runner, build_dir):
+        discovery_calls.append((runner, build_dir))
+        return hiai_deployment.discover_libraries(runner, build_dir)
+
+    monkeypatch.setattr(case['module'], '_build_runner', build_runner)
+    monkeypatch.setattr(hiai_deployment, '_elf', elf)
+    monkeypatch.setattr(case['module'], 'dynamic_info', dynamic)
+    monkeypatch.setattr(case['module'], 'discover_libraries', discover)
+    return library, discovery_calls
+
+
+def test_fused_board_cached_runner_rechecks_original_automatic_build_records(case, monkeypatch):
+    _, discovery_calls = _automatic_cached_build(case, monkeypatch)
+    cache = {}
+    results = []
+    first_build_hashes = None
+    for index in range(2):
+        output = case['root'] / f'automatic-{index}'
+        result = case['module'].execute(SimpleNamespace(probe_run=str(case['probe']), output=str(output),
+                                                       timeout_seconds=20), runner_cache=cache)
+        results.append(result)
+        assert result['status'] == 'EXECUTION_COMPLETE', result
+        native = case['root'] / 'automatic-0/native'
+        hashes = {str(path.relative_to(native)): sha256_file(path) for path in native.rglob('*') if path.is_file()}
+        if first_build_hashes is None:
+            first_build_hashes = hashes
+        else:
+            assert hashes == first_build_hashes
+        assert result['runner_build'] == str(native)
+        assert result['libraries']['discovery']['build_dir'] == str(native)
+        assert result['libraries']['discovery']['command_binding'] == 'sha256-verified'
+        uploads = json.loads((output / 'upload-plan.json').read_text())['files']
+        assert {Path(row['remote']).name for row in uploads if row['remote'].startswith('lib/')} == {
+            'libhiai.so', 'libhiai_ir.so'}
+    assert len(case['built']) == 1
+    assert discovery_calls[0] == discovery_calls[1] == (cache['runner'], cache['native_build'])
+    assert not (case['root'] / 'automatic-1/native').exists()
+    assert results[0]['board_root'] != results[1]['board_root']
+    assert len(_calls(case, runner=True)) == 6
+    assert case['original'] == {str(path.relative_to(case['probe'])): sha256_file(path)
+                                for path in case['probe'].rglob('*') if path.is_file()}
+
+
+@pytest.mark.parametrize('fault', ['link-library-changed', 'build-command-changed'])
+def test_fused_board_cached_discovery_failure_retains_stage_before_second_upload(case, monkeypatch, fault):
+    library, discovery_calls = _automatic_cached_build(case, monkeypatch)
+    cache = {}
+    first = case['module'].execute(SimpleNamespace(probe_run=str(case['probe']), output=str(case['root'] / 'first'),
+                                                  timeout_seconds=20), runner_cache=cache)
+    assert first['status'] == 'EXECUTION_COMPLETE', first
+    if fault == 'link-library-changed':
+        library.write_bytes(library.read_bytes() + b'CHANGED AFTER FIRST RUN')
+        expected = 'library SHA256 mismatch'
+    else:
+        command = cache['native_build'] / 'command.json'
+        command.write_text(command.read_text() + '\n')
+        expected = 'build command SHA256 mismatch'
+    calls_before = len(_calls(case, runner=True))
+    output = case['root'] / 'second'
+    second = case['module'].execute(SimpleNamespace(probe_run=str(case['probe']), output=str(output),
+                                                   timeout_seconds=20), runner_cache=cache)
+    assert second['status'] == 'FAILED' and second['stage'] == 'select-libraries'
+    assert expected in second['error']
+    assert json.loads((output / 'result.json').read_text()) == second
+    assert len(case['built']) == 1 and discovery_calls[0] == discovery_calls[1]
+    assert len(_calls(case, runner=True)) == calls_before
+    assert not (output / 'upload-plan.json').exists()
+
+
+@pytest.mark.parametrize('failure,attempts,success', [
+    ('checksum-daemon-once', 2, True),
+    ('checksum-daemon-host-once', 2, True),
+    ('checksum-daemon-always', 3, False),
+    ('checksum-mismatch', 1, False),
+])
+def test_upload_retries_only_readonly_checksum_daemon_failures(case, monkeypatch, failure, attempts, success):
+    from qwen35_moe_dflash import hdc_run
+
+    sleeps = []
+    monkeypatch.setattr(hdc_run, 'time', SimpleNamespace(sleep=sleeps.append))
+    timeouts = []
+    real_shell = hdc_run.Hdc.shell
+
+    def shell(self, command, label, **kwargs):
+        if label == 'verify-checksums':
+            timeouts.append(kwargs.get('timeout'))
+        return real_shell(self, command, label, **kwargs)
+
+    monkeypatch.setattr(hdc_run.Hdc, 'shell', shell)
+    monkeypatch.setenv('FUSED_TEST_FAILURE', failure)
+    code, result = _run(case)
+    assert (code == 0) is success, result
+    assert int((case['board'] / 'checksum-attempts.txt').read_text()) == attempts
+    assert sleeps == [1] * (attempts - 1)
+    assert timeouts == [20] * attempts
+    calls = _calls(case)
+    sends = [row[6:] for row in calls if row[4:6] == ['file', 'send']]
+    destinations = [row[1] for row in sends]
+    assert len(destinations) == len(set(destinations)), 'checksum retry must never resend a payload'
+    records = [json.loads(path.read_text()) for path in (case['output'] / 'calls').glob('*-verify-checksums.json')]
+    assert len(records) == attempts
+    if success:
+        assert result['status'] == 'EXECUTION_COMPLETE'
+        assert len(_calls(case, runner=True)) == 3, 'only one probe and two original Process calls'
+    else:
+        assert result['stage'] == 'upload' and result['status'] == 'FAILED'
+        assert not _calls(case, runner=True)
+        if failure == 'checksum-mismatch':
+            assert 'remote verify-checksums failed with exit code' in result['error']
+        else:
+            assert '[Fail]Failed to communicate with daemon' in result['error']
+
+
+def test_upload_default_preserves_large_model_checksum_timeout(tmp_path):
+    from qwen35_moe_dflash.hdc_run import _file_record, _upload
+
+    sent, queries = [], []
+    hdc = SimpleNamespace(timeout=3600, send=lambda *args: sent.append(args),
+                          shell=lambda *args, **kwargs: queries.append((args, kwargs)))
+    payload = tmp_path / 'payload.bin'
+    payload.write_bytes(b'SIMULATED large-model payload')
+    _upload(hdc, Path('/data/local/tmp/example'), [_file_record(payload, 'payload.bin')], tmp_path / 'payloads.sha256')
+    assert len(sent) == 2 and len(queries) == 1
+    assert queries[0][1] == {}, 'default upload must let HDC retain its configured full-model timeout'
+
+    def failure(*args, **kwargs):
+        raise RuntimeError('original full-model checksum failure')
+
+    hdc.shell = failure
+    with pytest.raises(RuntimeError, match='original full-model checksum failure'):
+        _upload(hdc, Path('/data/local/tmp/example'), [_file_record(payload, 'payload.bin')], tmp_path / 'failed.sha256')
 
 
 def test_fused_board_execution_failure_retains_logs_and_compares(case, monkeypatch):

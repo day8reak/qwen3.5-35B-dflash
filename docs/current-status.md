@@ -6,15 +6,17 @@
 
 ## 用户现在执行什么
 
-**最新回传确认GDN prefill/decode核心输出均全零，relative L2均为1，精度问题仍在。** 两例末态relative L2分别约0.9603、0.9745；CacheUpdate/Attention仅为 `SHAPE_ONLY_UNVERIFIED_CONTRACT`，也未通过精度验证。下一步只做GDN输入/输出缓冲区定向检查：
+**最新诊断批次 `gdn-diagnostic-c0cbac5ac9cf` 在第二轮上传校验时发生HDC通信故障：`Failed to communicate with daemon`，该轮尚未执行GDN。** 首轮已完成，更新后直接续跑剩余两轮：
 
 ```bash
 git pull --ff-only &&
 python3 "$REPO_DIR/targets/cpro/scripts/run_gdn_diagnostics.py" \
-  --probe-run "$AI_RUN_DIR/fused-all-f6b81ead7ae8"
+  --resume "$AI_RUN_DIR/gdn-diagnostic-c0cbac5ac9cf"
 ```
 
-该入口复用原两例OMC和输入，只构建一次runner；输出缓冲区分别用 `0x00`、`0xA5`、`0x5A` 预填充，每例各执行三轮，共六次Process。全部输入拷贝和输出填充完成后，紧接Process前统一回读输入SHA256；同时记录输出对象与容量、填充值残留及三轮差异。只比较有效前缀，padding保留为未检查。有界收集所选DDK中可找到的GDN源码及已有编译日志/JSON，缺失或扫描限制单独记录。它不重新编译模型、不重跑平台诊断或Conv/RMS；尚无真实回传，不能宣称已定位或修复。输出残留填充值是未写/部分写的线索；所有预填充都变为零也不能单独证明kernel执行，因为runtime可能清零。
+`--resume` 在新目录重新核验已完成首轮的输入、输出、设备身份和runner哈希，复用原runner与OMC，只执行缺少的 `0xA5/0x5A` 两轮（共四次Process）。原报告和文件保持不变；校验不符则停止。HDC只读checksum查询遇到这类daemon通信错误时最多尝试三次，间隔一秒；不会把缺少退出标记或真实哈希不匹配当作成功，也不自动重启daemon。失败报告现在显示具体阶段与错误，以及已完成各轮诊断。
+
+三轮诊断在所有输入拷贝和输出填充完成后、Process前统一回读输入SHA256，记录输出对象/容量/填充值残留及有效前缀差异。源码和已有编译证据有界复制，缺失单独记录。不重新编译模型、重跑平台诊断或Conv/RMS。此前GDN核心全零及末态大偏差仍未解决；Cache/Attention也只有形状检查。预填充值残留仅是未写/部分写线索，所有预填充都变零也不能单独证明kernel执行。
 
 模型范围仍保留GDN、CacheUpdate、Attention三类六例，Conv/RMS使用基础算子。只有确需重新执行全部六例时才使用 `run_fused_probes.py --model-ops`；旧九例 `--all-ops` 保留为可选诊断，原Conv/RMS失败不改为通过。
 
