@@ -98,12 +98,36 @@ _qwen35_load_env() (
       if [[ ${path##*/} == HiAiModelManagerService.h ]]; then
         headers+=("$path")
       else
-        candidates+=("$path")
-        [[ ${path,,} == */ohos/* || ${path,,} == */*-ohos/* ]] || continue
-        elf=$(LC_ALL=C readelf -h -- "$path" 2>/dev/null) || continue
-        if [[ $elf == *ELF64* && $elf == *AArch64* && $elf == *DYN* && $elf == *"little endian"* ]]; then
-          hiai_libs+=("$path")
+        if ! elf=$(LC_ALL=C readelf -h -- "$path" 2>/dev/null); then
+          candidates+=("$path [rejected: unreadable ELF header]")
+          continue
         fi
+        machine=unknown
+        while IFS= read -r line; do
+          if [[ $line =~ Machine:[[:space:]]*(.*) ]]; then machine=${BASH_REMATCH[1]}; break; fi
+        done <<< "$elf"
+        if [[ $elf != *ELF64* || $elf != *AArch64* || $elf != *DYN* || $elf != *"little endian"* ]]; then
+          candidates+=("$path [rejected: requires ELF64 little-endian AArch64 DYN; machine=$machine]")
+          continue
+        fi
+        # Target libraries may live in ai_ddk_lib/lib64 or hiai_pipe_lib/lib64
+        # without an 'ohos' path component. Check the file, not the directory name.
+        if ! dynamic=$(LC_ALL=C readelf -d -- "$path" 2>/dev/null) ||
+           ! versions=$(LC_ALL=C readelf -V -- "$path" 2>/dev/null); then
+          candidates+=("$path [rejected: unreadable ELF dependencies/version information]")
+          continue
+        fi
+        if [[ $dynamic == *'Shared library: [libc.so.6]'* || $versions == *GLIBC_* ]]; then
+          candidates+=("$path [rejected: GNU/Linux GLIBC dependency]")
+          continue
+        fi
+        candidates+=("$path [candidate: AArch64; OHOS ABI requires link/device validation]")
+        # Repeated symlinks to the same file are one candidate.
+        seen=0
+        for library in "${hiai_libs[@]}"; do
+          [[ $resolved != "$library" ]] || seen=1
+        done
+        (( seen )) || hiai_libs+=("$resolved")
       fi
     done < <(
       if command -v rg >/dev/null 2>&1; then
@@ -122,12 +146,12 @@ _qwen35_load_env() (
     fi
     if [[ $HIAI_LIBRARIES == auto ]]; then
       if [[ ${#hiai_libs[@]} == 1 ]]; then HIAI_LIBRARIES=${hiai_libs[0]}; else
-        printf 'cpro-env: found %s AArch64 OHOS libhiai.so candidates; set HIAI_LIBRARIES explicitly\n' "${#hiai_libs[@]}" >&2
+        printf 'cpro-env: found %s AArch64 libhiai.so candidates; set HIAI_LIBRARIES explicitly in %s\n' "${#hiai_libs[@]}" "$config" >&2
         printf '  %s\n' "${candidates[@]:0:12}" >&2
         return 1
       fi
     fi
-    printf 'cpro-env: HIAI include: %s\n  link libraries: %s\n' "$HIAI_INCLUDE_DIR" "$HIAI_LIBRARIES" >&2
+    printf 'cpro-env: HIAI include: %s\n  link libraries: %s\n  OHOS ABI: pending link/device validation\n' "$HIAI_INCLUDE_DIR" "$HIAI_LIBRARIES" >&2
   fi
   for name in REPO_DIR AI_RUN_DIR CANN_ROOT CPRO_DDK_ROOT OHOS_NATIVE_SDK HIAI_INCLUDE_DIR; do
     if [[ ${!name} != /* ]]; then printf 'cpro-env: %s must be absolute\n' "$name" >&2; errors=1; fi

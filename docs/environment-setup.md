@@ -99,7 +99,9 @@ vendor环境中常见的变量含义如下；入口保留它们，不生成重�
 | `LD_LIBRARY_PATH` | 主机工具运行时的动态库查找路径；不是给手机部署的库列表 |
 | `PYTHONPATH` | vendor Python模块查找路径；项目入口仅补入缺少的仓库模块路径 |
 
-这些vendor变量不能替代 `CANN_ROOT`、OHOS Native SDK、准确DDK版本或实际手机端HIAI链接库的选择。`HIAI_LIBRARIES=auto` 只在已选DDK目录内查找，深度最多8层；候选必须是唯一的 `libhiai.so`，位于含 `ohos` 或 `*-ohos` 目录的路径下，并通过 `readelf` 的ELF64、小端、AArch64、共享库头检查。头文件也必须唯一。多个候选或未找到会列出路径，改为明确填写即可；不猜其他库名，不使用OMG的x86库，不跟随目录链接扫描其他安装。这只是构建候选选择，ABI仍需链接及设备验证。
+这些vendor变量不能替代 `CANN_ROOT`、OHOS Native SDK、准确DDK版本或实际手机端HIAI链接库的选择。`HIAI_LIBRARIES=auto` 只在已选DDK目录内查找，深度最多8层。通过 `readelf` 检查 `libhiai.so` 的ELF64、小端、AArch64和共享库类型，并排除明确依赖 `libc.so.6` 或 `GLIBC_*` 的库；不会要求目录名含 `ohos`。例如 `ddk/ai_ddk_lib/lib64`、`ddk/hiai_pipe_lib/lib64` 中的库也会检查，同一真实文件的符号链接只计一次。唯一候选才自动采用；头文件也必须唯一。不跟随目录链接扫描其他安装。没有GLIBC依赖也不证明OHOS ABI兼容，仍需真实链接及设备验证。
+
+如果出现 `found 0` 或多个候选，输出会逐项列出架构不符、GLIBC依赖等排除理由，以及仍合格的链接候选。旧版仅因目录名不含 `ohos` 就报0，不能据此判断DDK缺库；先更新代码再source。若两份 `lib64/libhiai.so` 都是候选，不按目录名猜哪份正确：将已确认的路径写入报错指出的私有配置文件，例如 `HIAI_LIBRARIES='/实际DDK根目录/ddk/ai_ddk_lib/lib64/libhiai.so'`，再source。该例仅演示配置格式，不表示这份库已在用户设备验证。
 
 下面是按需使用的固定配置，不生成空占位：
 

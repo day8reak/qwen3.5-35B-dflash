@@ -156,7 +156,8 @@ source "$1" "$2"
     assert restored["MODEL_PYTHON"] == inherited["MODEL_PYTHON"]
 
 
-@pytest.mark.parametrize("mode", ["unique", "ambiguous", "host-only"])
+@pytest.mark.parametrize("mode", ["unique", "ddk-ai", "ddk-pipe", "alias", "ambiguous",
+                                 "ambiguous-ddk", "host-only", "glibc-only"])
 def test_auto_hiai_is_confined_to_selected_ddk_and_checks_architecture(config, mode):
     path, values = config
     ddk = Path(values["CPRO_DDK_ROOT"])
@@ -164,19 +165,47 @@ def test_auto_hiai_is_confined_to_selected_ddk_and_checks_architecture(config, m
     header.parent.mkdir(parents=True)
     header.write_text("// selected DDK header fixture\n")
 
-    def elf(name, machine):
+    def elf(name, machine, *, needed=None):
         library = ddk / name
         library.parent.mkdir(parents=True, exist_ok=True)
         ident = b"\x7fELF\x02\x01\x01" + bytes(9)
+        # A real dynamic section lets readelf inspect NEEDED without running code.
+        strings = b"\0" + needed.encode() + b"\0" if needed else b""
+        string_offset = 64 + 2 * 56
+        dynamic = struct.pack("<qQqQqQqQ", 1, 1, 5, string_offset, 10, len(strings), 0, 0) if needed else b""
+        shoff = string_offset + len(strings) + len(dynamic) if needed else 0
+        sections = programs = b""
+        if needed:
+            sections = bytes(64)
+            sections += struct.pack("<IIQQQQIIQQ", 0, 3, 0, 0, string_offset, len(strings), 0, 0, 1, 0)
+            dynamic_offset = string_offset + len(strings)
+            sections += struct.pack("<IIQQQQIIQQ", 0, 6, 0, 0, dynamic_offset, len(dynamic), 1, 0, 8, 16)
+            programs = struct.pack("<IIQQQQQQ", 1, 4, 0, 0, 0, shoff, shoff, 8)
+            programs += struct.pack("<IIQQQQQQ", 2, 4, dynamic_offset, dynamic_offset,
+                                    dynamic_offset, len(dynamic), len(dynamic), 8)
         library.write_bytes(struct.pack("<16sHHIQQQIHHHHHH", ident, 3, machine, 1,
-                                        0, 0, 0, 0, 64, 56, 0, 64, 0, 0))
+                                        0, 64 if needed else 0, shoff, 0, 64, 56,
+                                        2 if needed else 0, 64, 3 if needed else 0, 0)
+                            + programs + strings + dynamic + sections)
         return library
 
     elf("tools/tools_omg/master/lib64/libhiai.so", 62)
-    elf("libs/linux/arm64/libhiai.so", 183)  # Architecture alone cannot select OHOS.
-    selected = elf("libs/ohos/arm64/libhiai.so", 62 if mode == "host-only" else 183)
+    elf("libs/linux/arm64/libhiai.so", 183, needed="libc.so.6")
+    # Neither directory naming nor a lib64 suffix establishes the actual ABI.
+    elf("ddk/ai_ddk_lib/lib/libhiai.so", 40)
+    selected_name = ("ddk/hiai_pipe_lib/lib64/libhiai.so" if mode == "ddk-pipe" else
+                     "ddk/ai_ddk_lib/lib64/libhiai.so" if mode in {"ddk-ai", "alias", "ambiguous-ddk"}
+                     else "libs/ohos/arm64/libhiai.so")
+    selected = elf(selected_name, 62 if mode == "host-only" else 183,
+                   needed="libc.so.6" if mode == "glibc-only" else None)
     if mode == "ambiguous":
         elf("another/ohos/arm64/libhiai.so", 183)
+    if mode == "ambiguous-ddk":
+        elf("ddk/hiai_pipe_lib/lib64/libhiai.so", 183)
+    if mode == "alias":
+        alias = ddk / "ddk/hiai_pipe_lib/lib64/libhiai.so"
+        alias.parent.mkdir(parents=True)
+        alias.symlink_to(selected)
     values.update(HIAI_INCLUDE_DIR="auto", HIAI_LIBRARIES="auto")
     write_config(path, values)
     result = bash(path, '''
@@ -184,10 +213,16 @@ set -eu
 source "$1" "$2"
 "$3" -c 'import json,os; print(json.dumps([os.environ["HIAI_INCLUDE_DIR"], os.environ["HIAI_LIBRARIES"]]))'
 ''')
-    if mode == "unique":
+    if mode in {"unique", "ddk-ai", "ddk-pipe", "alias"}:
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == [str(header.parent), str(selected)]
     else:
         assert result.returncode != 0
         assert "set HIAI_LIBRARIES explicitly" in result.stderr
+        assert "GNU/Linux GLIBC dependency" in result.stderr
+        assert "machine=Advanced Micro Devices X86-64" in result.stderr
+        if mode == "ambiguous-ddk":
+            assert "found 2 AArch64" in result.stderr
+            assert "ai_ddk_lib/lib64/libhiai.so [candidate:" in result.stderr
+            assert "hiai_pipe_lib/lib64/libhiai.so [candidate:" in result.stderr
         assert not (path.parent / "runs").exists()

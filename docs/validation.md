@@ -14,6 +14,8 @@
 
 随后将当前指南的执行命令统一为 `python3`，项目入口移除 `MODEL_PYTHON` 配置依赖并保持调用者PATH不变。更新后的11项环境测试通过，覆盖未设置解释器变量、旧配置含失效Python路径、首次生成配置及重复source；6份当前指南的41个Bash代码块和 `env.sh` 语法检查通过。仅验证主机配置与命令语法，未重新编译或上板。
 
+用户随后回传HIAI自动选择为0，候选位于 `tools_sysdbg`、`ddk/ai_ddk_lib`、`ddk/hiai_pipe_lib` 的 `lib` / `lib64`。旧逻辑要求路径包含 `ohos`，因此在读取实际ELF前就排除了这些文件。已取消该目录名条件，按ELF架构、已知GLIBC依赖和真实路径去重筛选；多候选继续要求明确选择，并逐项说明原因。16项主机环境测试通过，包含无ohos目录名、ARM/x86排除、真实readelf读取GLIBC依赖、符号链接去重和多候选拒绝。尚未取得用户库的ELF/链接结果，也未恢复此前成功上板使用的确切HIAI库路径。
+
 ## Attention导出器C++接口修正
 
 用户回传 `fused-all-9759eb4f9b0b`：Attention两例在构建导出器时失败，尚未进入GE序列化或OMG。CANN 9.1的 `GNode::GetInputIndexByName` 为非const方法，新增helper误传 `const GNode&`。现改为可变引用；主机测试的同名方法也按用户日志中的真实声明改为非const，先复现旧代码编译失败，再验证修正。此前测试夹具错误地将该方法声明为const，未能拦截这次回归。
