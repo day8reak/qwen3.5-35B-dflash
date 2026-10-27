@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import struct
 import subprocess
 import sys
 
@@ -107,3 +108,40 @@ def test_first_source_creates_private_config_without_overwriting(config):
     again = bash(path, 'source "$1" "$2"')
     assert again.returncode == 0, again.stderr
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("mode", ["unique", "ambiguous", "host-only"])
+def test_auto_hiai_is_confined_to_selected_ddk_and_checks_architecture(config, mode):
+    path, values = config
+    ddk = Path(values["CPRO_DDK_ROOT"])
+    header = ddk / "tools/tools_ascendc/include/ddk/HiAiModelManagerService.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("// selected DDK header fixture\n")
+
+    def elf(name, machine):
+        library = ddk / name
+        library.parent.mkdir(parents=True, exist_ok=True)
+        ident = b"\x7fELF\x02\x01\x01" + bytes(9)
+        library.write_bytes(struct.pack("<16sHHIQQQIHHHHHH", ident, 3, machine, 1,
+                                        0, 0, 0, 0, 64, 56, 0, 64, 0, 0))
+        return library
+
+    elf("tools/tools_omg/master/lib64/libhiai.so", 62)
+    elf("libs/linux/arm64/libhiai.so", 183)  # Architecture alone cannot select OHOS.
+    selected = elf("libs/ohos/arm64/libhiai.so", 62 if mode == "host-only" else 183)
+    if mode == "ambiguous":
+        elf("another/ohos/arm64/libhiai.so", 183)
+    values.update(HIAI_INCLUDE_DIR="auto", HIAI_LIBRARIES="auto")
+    write_config(path, values)
+    result = bash(path, '''
+set -eu
+source "$1" "$2"
+"$3" -c 'import json,os; print(json.dumps([os.environ["HIAI_INCLUDE_DIR"], os.environ["HIAI_LIBRARIES"]]))'
+''')
+    if mode == "unique":
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == [str(header.parent), str(selected)]
+    else:
+        assert result.returncode != 0
+        assert "set HIAI_LIBRARIES explicitly" in result.stderr
+        assert not (path.parent / "runs").exists()
