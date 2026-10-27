@@ -99,7 +99,7 @@ def _environment_record(ddk_root, env):
 
 
 _PLATFORM_CHECK = r'''
-import hashlib, json, pathlib, sys, traceback
+import hashlib, importlib, inspect, json, pathlib, sys, traceback
 output = pathlib.Path(sys.argv[1])
 result = {"initialization": "IMPORT_ONLY", "worker_reproduction": "NOT_ESTABLISHED",
           "python": sys.executable, "python_version": sys.version,
@@ -114,6 +114,12 @@ def specs(platform):
         except Exception as error:
             values[key] = {"error": repr(error)}
     return values
+def libraries():
+    try:
+        return sorted({line.split()[-1] for line in pathlib.Path("/proc/self/maps").read_text().splitlines()
+                       if any(name in line for name in ("libtvm", "libplatform", "libpython", "libcce"))})
+    except OSError as error:
+        return {"error": str(error)}
 save()
 try:
     import tbe.common.platform as platform
@@ -126,6 +132,41 @@ try:
             item["sha256"] = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
         result["modules"][name] = item
     result["before"] = specs(platform)
+    result["libraries_before"] = libraries()
+    if len(sys.argv) > 2 and sys.argv[2] == "initialize":
+        result.update(initialization="INSTALLED_API_REQUESTED", stage="INIT_API_UNRESOLVED")
+        save()
+        try:
+            module = importlib.import_module("te.platform.cce_conf")
+            initialize = getattr(module, "te_set_version", None)
+        except ModuleNotFoundError as error:
+            if error.name not in {"te", "te.platform", "te.platform.cce_conf"}:
+                raise
+            initialize = None
+        if initialize is None:
+            initialize = getattr(platform, "te_set_version", None)
+        if not callable(initialize):
+            raise RuntimeError("installed te_set_version API is unavailable; no initializer guessed")
+        signature = inspect.signature(initialize)
+        path = inspect.getsourcefile(initialize)
+        result["init_api"] = {"module": initialize.__module__, "name": initialize.__name__,
+                              "signature": str(signature), "path": path, "arguments": ["kirinx90"]}
+        if path and pathlib.Path(path).is_file():
+            result["init_api"]["sha256"] = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+        try:
+            result["init_api"]["source"] = inspect.getsource(initialize)
+        except (OSError, TypeError) as error:
+            result["init_api"]["source_error"] = str(error)
+        signature.bind("kirinx90")
+        result["stage"] = "INITIALIZE"
+        save()
+        try:
+            value = initialize("kirinx90")
+            result.update(init_return_type=type(value).__name__, init_return_repr=repr(value))
+        finally:
+            result["after_init"] = specs(platform)
+            result["libraries_after_init"] = libraries()
+            save()
     result["stage"] = "LOOKUP"
     save()
     native = platform_info.get_global_func("cce.te_update_version")
@@ -138,17 +179,13 @@ try:
 except Exception as error:
     result.update(error=repr(error), traceback=traceback.format_exc(), native_success=False)
 finally:
-    try:
-        paths = {line.split()[-1] for line in pathlib.Path("/proc/self/maps").read_text().splitlines()
-                 if any(name in line for name in ("libtvm", "libplatform", "libpython", "libcce"))}
-        result["mapped_libraries"] = sorted(paths)
-    except OSError as error:
-        result["mapped_libraries_error"] = str(error)
+    result["mapped_libraries"] = libraries()
     save()
 '''
 
 
-def check_tbe_platform(ddk_root, output_dir, *, python, timeout_seconds=30):
+def check_tbe_platform(ddk_root, output_dir, *, python, timeout_seconds=30,
+                       compare_libraries=False, initialize=False):
     """Expose TBE's native return in a fresh process; no compiler/kernel call.
 
     Import-only initialization is intentionally not declared equivalent to the
@@ -159,19 +196,68 @@ def check_tbe_platform(ddk_root, output_dir, *, python, timeout_seconds=30):
         raise ValueError("--python must name the existing executable used by the failed worker")
     if not 0 < timeout_seconds <= 60:
         raise ValueError("platform check timeout must be between 1 and 60 seconds")
+    if type(compare_libraries) is not bool or type(initialize) is not bool:
+        raise ValueError("platform comparison/initialization selectors must be boolean")
     _, env = omg_environment(ddk_root)
     root = output_path(output_dir)
     if root.is_relative_to(Path(ddk_root).resolve()):
         raise ValueError("platform check output must be outside DDK")
+    if not compare_libraries:
+        return _check_tbe_platform_arm(ddk_root, root, interpreter, env, initialize, timeout_seconds)
+    root.mkdir(parents=True, exist_ok=False)
+    tbe = Path(ddk_root).resolve() / "ddk/tbe/lib64"
+    result = {"schema_version": 1, "artifact_kind": "qwen35-tbe-platform-comparison",
+              "status": "COMPARISON_COMPLETE", "compiler_execution": "NOT_RUN", "device_execution": "NOT_RUN",
+              "scope": "Up to four fresh Python children: selected-DDK library order and same-target initialization. "
+                       "No production OMG environment change, SoC substitution, or worker reproduction claim.", "cases": []}
+    for order in ("omg_first", "tbe_first"):
+        for init in (False, True):
+            name = order + ("_initialized" if init else "_import_only")
+            selected_env = dict(env)
+            if order == "tbe_first":
+                if not tbe.is_dir():
+                    result["cases"].append({"name": name, "status": "UNAVAILABLE", "reason": "selected DDK TBE lib64 missing"})
+                    continue
+                selected_env["LD_LIBRARY_PATH"] = _prepend_paths([tbe], env.get("LD_LIBRARY_PATH", ""))
+            case = _check_tbe_platform_arm(ddk_root, root / name, interpreter, selected_env, init, timeout_seconds)
+            result["cases"].append({"name": name, "status": case["status"], "native": case.get("native"),
+                                    "returncode": case["returncode"], "report": name + "/report.json"})
+    result["successful_arms"] = [case["name"] for case in result["cases"] if case["status"] == "RAW_UPDATE_SUCCEEDED"]
+    result["files"] = files_under(root, root)
+    save_json(root / "report.json", result)
+    lines = ["TBE library order / same-target initialization comparison", result["scope"], "",
+             "case | status | initial SOC | after init SOC | native return"]
+    shown_sources, shown_maps = set(), set()
+    for case in result["cases"]:
+        native = case.get("native") or {}
+        lines.append(" | ".join(str(value) for value in (case["name"], case["status"],
+                     native.get("before", {}).get("SOC_VERSION"), native.get("after_init", {}).get("SOC_VERSION"),
+                     native.get("native_return_repr", "NOT_CALLED"))))
+        if native.get("error") or case.get("reason"):
+            lines.append("  " + str(native.get("error") or case["reason"]))
+        api = native.get("init_api", {})
+        if api and api.get("sha256", api.get("path")) not in shown_sources:
+            shown_sources.add(api.get("sha256", api.get("path")))
+            lines.append("  Init API: " + json.dumps(api))
+        maps = json.dumps(native.get("mapped_libraries", []))
+        if maps not in shown_maps:
+            shown_maps.add(maps)
+            lines.append("  Loaded libraries: " + maps)
+        lines.append("  Full evidence: " + case.get("report", case["name"]))
+    (root / "report.txt").write_text("\n".join(lines) + "\n")
+    return result
+
+
+def _check_tbe_platform_arm(ddk_root, root, interpreter, env, initialize, timeout_seconds):
     root.mkdir(parents=True, exist_ok=False)
     script = root / "platform-check.py"
     script.write_text(_PLATFORM_CHECK)
     child_result = root / "native-result.json"
-    argv = [str(interpreter), str(script), str(child_result)]
+    argv = [str(interpreter), str(script), str(child_result)] + (["initialize"] if initialize else [])
     save_json(root / "command.json", {"argv": argv, "cwd": str(root), "timeout_seconds": timeout_seconds})
     result = {"schema_version": 1, "artifact_kind": "qwen35-tbe-platform-check", "status": "FAILED",
               "compiler_execution": "NOT_RUN", "device_execution": "NOT_RUN", "returncode": None,
-              "scope": "Fresh Python process, import-only initialization and one native platform update. "
+              "scope": "Fresh Python process; " + ("installed same-target initializer" if initialize else "import-only initialization") + " and one native platform update. "
                        "Not an OMG worker reproduction or a compiler/target support gate."}
     with _omg_ipc_environment(root, env) as (child_env, _), (root / "platform.log").open("x") as log:
         save_json(root / "omg-environment.json", _environment_record(ddk_root, child_env))
@@ -189,6 +275,8 @@ def check_tbe_platform(ddk_root, output_dir, *, python, timeout_seconds=30):
     if (result["returncode"] == 0 and result.get("native", {}).get("stage") == "COMPLETE"
             and result["native"].get("native_success") is True):
         result["status"] = "RAW_UPDATE_SUCCEEDED"
+    elif result.get("native", {}).get("stage") == "INIT_API_UNRESOLVED":
+        result["status"] = "INIT_API_UNRESOLVED"
     result["files"] = files_under(root, root)
     save_json(root / "report.json", result)
     lines = ["TBE raw platform update (no model compilation or device execution)",

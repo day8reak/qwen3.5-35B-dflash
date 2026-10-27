@@ -155,6 +155,83 @@ def test_platform_check_retains_import_errors_and_timeout(ddk, tmp_path, monkeyp
     assert not list((tmp_path / 'timeout').glob('.ipc-*'))
 
 
+def _platform_comparison_packages(ddk):
+    python = ddk / "tools/tools_ascendc/package/python"
+    for relative in ("tbe", "tbe/common", "tbe/common/platform", "te", "te/platform"):
+        package = python / relative
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "__init__.py").write_text("")
+    (python / "tbe/common/platform/__init__.py").write_text(
+        "initialized = False\ndef get_soc_spec(key): return 'kirinx90' if initialized else 'MOCK_IMPORT_SOC'\n")
+    (python / "tbe/common/platform/platform_info.py").write_text(
+        "import os, json, pathlib\nfrom tbe.common import platform\n"
+        "def get_global_func(name):\n"
+        "    def native(*args):\n"
+        "        pathlib.Path('calls.json').write_text(json.dumps([args]))\n"
+        "        first = os.environ['LD_LIBRARY_PATH'].split(os.pathsep)[0]\n"
+        "        return 'success' if first.endswith('/ddk/tbe/lib64') and platform.initialized else 'error'\n"
+        "    return native\n")
+    return python
+
+
+def test_platform_comparison_uses_four_fresh_children_and_same_target_only(ddk, tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    python = _platform_comparison_packages(ddk)
+    source = python / "te/platform/cce_conf.py"
+    source.write_text("from tbe.common import platform\n"
+                      "def te_set_version(soc, core_type='AiCore'):\n"
+                      "    assert soc == 'kirinx90' and not platform.initialized\n"
+                      "    platform.initialized = True\n")
+    (ddk / "ddk/tbe/lib64").mkdir(parents=True)
+    before = dict(os.environ)
+    result = check_tbe_platform(ddk, tmp_path / "comparison", python=sys.executable, compare_libraries=True)
+    assert result['status'] == 'COMPARISON_COMPLETE'
+    assert result['successful_arms'] == ['tbe_first_initialized']
+    assert len(result['cases']) == 4 and dict(os.environ) == before
+    for case in result['cases']:
+        assert case['native']['before']['SOC_VERSION'] == 'MOCK_IMPORT_SOC'
+        assert case['native']['native_arguments'] == ['kirinx90', 'AiCore', '', 'false']
+        folder = tmp_path / 'comparison' / case['name']
+        assert json.loads((folder / 'calls.json').read_text()) == [['kirinx90', 'AiCore', '', 'false']]
+        env = json.loads((folder / 'omg-environment.json').read_text())['environment']
+        first = 'ddk/tbe/lib64' if case['name'].startswith('tbe_first') else 'tools/tools_omg/master/lib64'
+        assert env['LD_LIBRARY_PATH'].split(os.pathsep)[0] == str(ddk / first)
+        if case['name'].endswith('_initialized'):
+            assert case['native']['after_init']['SOC_VERSION'] == 'kirinx90'
+            assert case['native']['init_api']['sha256'] == sha256_file(source)
+    assert not list(python.rglob('*.pyc')) and not list((tmp_path / 'comparison').rglob('.ipc-*'))
+
+
+def test_platform_initialization_rejects_unknown_signature_and_records_missing_library_arm(ddk, tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    python = _platform_comparison_packages(ddk)
+    (python / "te/platform/cce_conf.py").write_text(
+        "def te_set_version(soc, required_unknown):\n    raise AssertionError('MUST NOT CALL')\n")
+    result = check_tbe_platform(ddk, tmp_path / 'comparison', python=sys.executable, compare_libraries=True)
+    assert [case['status'] for case in result['cases']] == ['FAILED', 'INIT_API_UNRESOLVED', 'UNAVAILABLE', 'UNAVAILABLE']
+    assert not (tmp_path / 'comparison/omg_first_initialized/calls.json').exists()
+    assert 'required_unknown' in result['cases'][1]['native']['init_api']['signature']
+    assert 'missing' in result['cases'][1]['native']['error']
+
+
+@pytest.mark.parametrize("init_raises", [False, True])
+def test_platform_comparison_all_failures_are_collected_and_init_failure_skips_update(ddk, tmp_path, monkeypatch, init_raises):
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    python = _platform_comparison_packages(ddk)
+    body = "raise RuntimeError('MOCK init failed')" if init_raises else "return None"
+    (python / 'te/platform/cce_conf.py').write_text("def te_set_version(soc):\n    " + body + "\n")
+    (ddk / 'ddk/tbe/lib64').mkdir(parents=True)
+    result = check_tbe_platform(ddk, tmp_path / 'comparison', python=sys.executable, compare_libraries=True)
+    assert result['status'] == 'COMPARISON_COMPLETE' and result['successful_arms'] == []
+    assert [case['status'] for case in result['cases']] == ['FAILED'] * 4
+    for case in result['cases']:
+        if init_raises and case['name'].endswith('_initialized'):
+            assert case['native']['stage'] == 'INITIALIZE'
+            assert not (tmp_path / 'comparison' / case['name'] / 'calls.json').exists()
+        else:
+            assert case['native']['stage'] == 'COMPLETE' and case['native']['native_return_repr'] == "'error'"
+
+
 def test_diagnostic_retention_prioritizes_failure_and_respects_budget(tmp_path, monkeypatch):
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
     scratch = tmp_path / "scratch"

@@ -17,35 +17,42 @@
 
 ## 用户现在执行什么
 
-**生成匹配安装源码的GDN状态绑定，然后读取TBE底层平台错误。** 不再重读旧日志，不编译模型、不上板。`--gdn-state-source` 校验并记录安装源码的FP16初态/末态指针；`--python` 使用本次报错的 `custom_pypto` 解释器（当前 `MODEL_PYTHON`）。
+**继续使用当前DDK，做一次平台初始化与库搜索顺序对照。** 已生成的FP16 `GE_CUSTOM_BINDINGS` 保留，无需重建。`--compare-libraries` 最多启动四个独立Python进程，对比OMG目录优先/TBE目录优先，以及仅导入/调用已安装的初始化接口；目标始终为 `kirinx90`。
+
+正式编译当前直接调用 `$CPRO_DDK_ROOT/tools/tools_omg/master/omg`，环境由项目脚本配置；本次对照用于检查这层环境配置，不替换OMG工具。
 
 ```bash
 cd "$REPO_DIR"
 git pull --ff-only
-export FUSED_NEXT_JOB="$(mktemp -d "$AI_RUN_DIR/fused-platform-XXXXXXXX")"
+export TBE_COMPARE_JOB="$(mktemp -d "$AI_RUN_DIR/tbe-compare-XXXXXXXX")"
 export GE_MODEL_TOOL="$REPO_DIR/targets/cpro/scripts/direct_model_air.py"
-export GE_CUSTOM_BINDINGS="$FUSED_NEXT_JOB/bindings.json"
-"$MODEL_PYTHON" "$GE_MODEL_TOOL" bindings-from-document \
-  --target kirinx90 --ddk-id "$CPRO_DDK_ID" \
-  --gdn-initial-state-dtype float16 \
-  --gdn-state-source "$CPRO_DDK_ROOT/ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp" \
-  --output "$GE_CUSTOM_BINDINGS"
 "$MODEL_PYTHON" "$GE_MODEL_TOOL" check-tbe-platform \
   --ddk-root "$CPRO_DDK_ROOT" --python "$MODEL_PYTHON" \
-  --output "$FUSED_NEXT_JOB/platform"
-cat "$FUSED_NEXT_JOB/platform/report.txt"
+  --compare-libraries --output "$TBE_COMPARE_JOB/comparison"
+cat "$TBE_COMPARE_JOB/comparison/report.txt"
 ```
 
-回传 `platform/report.txt`。平台检查会在独立子进程导入TBE并调用一次底层 `cce.te_update_version`，保留原始返回值、模块来源和加载库；30秒超时。不修改DDK、不安装包、不切换SoC。`FAILED` 也会生成报告；`RAW_UPDATE_SUCCEEDED` 仅表示这一次调用成功，尚未复现完整OMG工作进程，先不要重跑五例编译。
+回传 `comparison/report.txt`。每个进程30秒超时，不修改DDK、当前终端或正式编译配置，不编译模型、不上板。`COMPARISON_COMPLETE` 只表示报告已收集；需看各行结果。初始化接口缺失或签名不匹配会记录跳过，不猜替代芯片。
 
 | 已定位 | 下一步要核对 |
 |---|---|
-| GDN包装层隐藏了底层平台函数的非success返回值 | 直接记录原始返回值；Conda安装路径本身不证明版本混用 |
+| 底层平台更新返回 `error`；导入后SOC仍为 `Ascend310` | 对比已安装接口初始化；之前OMG工作进程打印的是 `Ascend310B1`，两种初始化状态不相同 |
+| `libtvm.so` 来自TBE目录，`libplatform.so` 来自OMG目录 | 在独立子进程改变搜索顺序，核对实际加载库；路径不同本身不证明ABI冲突 |
 | 安装版GDN用 `half*` 读初态、写末态 | 已增加源码绑定的FP16状态选项，真实编译和运行待验证 |
 | conv输入 `x2` 要求宽度4，文档写3 | 安装版状态顺序、输出与控制参数；不能直接给生产缓存补一个槽位 |
 | `AdnRmsNorm` 无可用维推函数 | 当前DDK的注册与实现是否配套 |
 
 原文档的FP32末态描述保留，安装源码覆盖另存 `.sources.json` 并记录SHA256。Conv/RMS仍未修复，不要直接使用本绑定启用这两个融合算子。后续编译现场会保存在 `cases/<用例>/compile-work/`。
+
+首次生成安装版GDN状态绑定时执行；本次已成功生成的无需再运行：
+
+```bash
+"$MODEL_PYTHON" "$GE_MODEL_TOOL" bindings-from-document \
+  --target kirinx90 --ddk-id "$CPRO_DDK_ID" \
+  --gdn-initial-state-dtype float16 \
+  --gdn-state-source "$CPRO_DDK_ROOT/ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp" \
+  --output "$GE_CUSTOM_BINDINGS"
+```
 
 ## 首次生成与编译（当前失败批次无需重跑）
 

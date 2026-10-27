@@ -17,6 +17,8 @@ def _add_stateful_commands(sub):
     platform.add_argument("--python", required=True, help="absolute Python executable used by the failed compiler worker")
     platform.add_argument("--output", required=True)
     platform.add_argument("--timeout-seconds", type=int, default=30)
+    platform.add_argument("--compare-libraries", action="store_true",
+                          help="compare OMG/TBE library order and import/vendor initialization in up to four fresh processes")
     inspect = sub.add_parser("inspect-fused-probes", help="read existing failures and installed interface text without recompiling or importing DDK code")
     inspect.add_argument("--probe-run", required=True)
     inspect.add_argument("--ddk-root", required=True)
@@ -180,7 +182,8 @@ def main():
         if args.command == "check-tbe-platform":
             from qwen35_moe_dflash.compile import check_tbe_platform
             result = check_tbe_platform(args.ddk_root, args.output, python=args.python,
-                                        timeout_seconds=args.timeout_seconds)
+                                        timeout_seconds=args.timeout_seconds,
+                                        compare_libraries=args.compare_libraries)
         elif args.command == "inspect-fused-probes":
             from qwen35_moe_dflash.ge_fused.probes import inspect_fused_probes
             result = inspect_fused_probes(args.probe_run, args.ddk_root, args.output)
@@ -289,7 +292,7 @@ def main():
         return 1
     print(json.dumps({"status": result["status"], "output": args.output}, ensure_ascii=False))
     if args.command == "check-tbe-platform":
-        return int(result["status"] != "RAW_UPDATE_SUCCEEDED")
+        return int(result["status"] not in {"RAW_UPDATE_SUCCEEDED", "COMPARISON_COMPLETE"})
     if args.command == "probe-fused-ops":
         return int(result["status"] in {"FAILED", "PARTIAL"})
     if args.command == "compare-fused-probes":
