@@ -199,7 +199,8 @@ struct GNode {
     auto it = std::find(ports.begin(), ports.end(), n.value); if (it == ports.end()) return 1;
     i = static_cast<int32_t>(std::distance(ports.begin(), it)); return 0;
   }
-  int GetInputIndexByName(const AscendString& n, int32_t& i) const { return Index(inputs, n, i); }
+  // CANN 9.1 graph/gnode.h: this lookup is non-const, despite being a query.
+  int GetInputIndexByName(const AscendString& n, int32_t& i) { return Index(inputs, n, i); }
   int GetOutputIndexByName(const AscendString& n, int32_t& i) const { return Index(outputs, n, i); }
   int GetInputDesc(int32_t i, TensorDesc& d) const { d = in_desc.at(i); return 0; }
   int GetOutputDesc(int32_t i, TensorDesc& d) const { d = out_desc.at(i); return 0; }

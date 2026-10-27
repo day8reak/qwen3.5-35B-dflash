@@ -6,13 +6,13 @@
 
 ## 用户现在执行什么
 
-**GDN和CacheUpdate已完成加载/执行；Attention导出器已修正，conv/RMS仍有DDK注册问题待查。** 更新后只重编Attention两例，并自动收集conv/RMS的DDK注册文本：
+**Attention重试遇到导出器C++的const接口错误，现已修正；conv/RMS仍待解决。** 更新后只重编Attention两例：
 
 ```bash
 cd "$REPO_DIR"
 git pull --ff-only
 "$MODEL_PYTHON" targets/cpro/scripts/run_fused_probes.py --all-ops \
-  --probe-run "$AI_RUN_DIR/fused-all-97b7612ef879" \
+  --probe-run "$AI_RUN_DIR/fused-all-9759eb4f9b0b" \
   --retry-cases attention_prefill,attention_decode
 ```
 
@@ -39,7 +39,7 @@ git pull --ff-only
 | conv | 宽度4已通过初始维推；生成的y2为 `[1,8192,1,S+3]`，随后格式配置失败；不能据此断言DDK完全没有kernel |
 | RMS | 本次仍找不到 `AdnRmsNorm` 维推函数，尚未进入板端执行 |
 | CacheUpdate | prefill/decode两例编译、加载和执行通过；无数值golden，不代表精度通过 |
-| Attention | 两例确认报 `input port order mismatch`；导出器可选端口校验修正后需重试真实GE/OMG和上板 |
+| Attention | 端口顺序校验已修正；最新重试在C++构建时暴露 `GNode` const不匹配，已按CANN 9.1头文件声明修正，待真实重试 |
 | 尚未验证 | 全部五类调用覆盖、正确数值及NPU执行位置；完整模型与连续状态验证另行进行 |
 
 ## 完整模型构图（按需）

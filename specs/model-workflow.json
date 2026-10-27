@@ -165,6 +165,20 @@
             "gdn_decode_core_all_zero": true,
             "gdn_decode_state_relative_l2": 0.9696434098100927
           }
+        },
+        "latest_export_retry": {
+          "source": "USER_PASTED_REPORT",
+          "board_run_name": "fused-all-9759eb4f9b0b",
+          "cases": [
+            "attention_prefill",
+            "attention_decode"
+          ],
+          "stage": "EXPORTER_CPP_BUILD",
+          "status": "FAILED",
+          "observed": "CANN 9.1 GNode::GetInputIndexByName is non-const; helper incorrectly accepted const GNode&.",
+          "repair": "Use mutable GNode reference; regression fixture now uses the observed non-const API.",
+          "target_revalidation": "PENDING",
+          "registration_scan": "No matches in scanned text roots; implementation availability remains unresolved."
         }
       }
     }

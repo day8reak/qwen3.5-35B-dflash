@@ -225,7 +225,7 @@ int32_t ExpectedInputIndex(const Record& r, const Port& port, size_t compact) {
   Require(found != names.end(), "unknown attention input " + port.name);
   return static_cast<int32_t>(std::distance(names.begin(), found));
 }
-void VerifyAttentionInputs(const ge::GNode& node, const Record& r) {
+void VerifyAttentionInputs(ge::GNode& node, const Record& r) {
   if (r.type != "AdnFusedInferAttention") return;
   const auto& names = AttentionInputNames();
   for (size_t i = 0; i < names.size(); ++i) {
