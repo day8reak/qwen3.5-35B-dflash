@@ -19,7 +19,10 @@ void Trace(const char* event) {
 bool ModelBytesValid(const void* buffer, std::uint32_t bytes, const std::string& name) {
   if (name=="qwen35_fused_operator") {
     for (const char* expected : {"fused-gdn-s8-fixture", "fused-gdn-s1-fixture",
-                                "fused-conv-s8-fixture", "fused-conv-s1-fixture", "fused-rms-s8-fixture"})
+                                "fused-conv-s8-fixture", "fused-conv-s1-fixture", "fused-rms-s8-fixture",
+                                "fused-conv4-s8-fixture", "fused-conv4-s1-fixture",
+                                "fused-cache-s8-fixture", "fused-cache-s1-fixture",
+                                "fused-attention-s8-fixture", "fused-attention-s1-fixture"})
       if (buffer && bytes==std::strlen(expected) && std::memcmp(buffer,expected,bytes)==0) return true;
     return false;
   }
@@ -59,11 +62,11 @@ AIStatus AiTensor::Init(const TensorDimension* dim, HIAI_DataType type) {
   if (Failure()=="allocation" && tensors==5) return AI_FAILED;
   if (const auto* path=std::getenv("FAKE_HIAI_DTYPE_TRACE"))
     std::ofstream(path,std::ios::app) << static_cast<int>(type) << '\n';
-  if (type!=HIAI_DATATYPE_INT32 && type!=HIAI_DATATYPE_INT16 &&
+  if (type!=HIAI_DATATYPE_INT32 && type!=HIAI_DATATYPE_INT16 && type!=HIAI_DATATYPE_INT64 &&
       type!=HIAI_DATATYPE_FLOAT16 && type!=HIAI_DATATYPE_FLOAT32) return AI_FAILED;
   if (dim->GetDims().size()==3 && type!=HIAI_DATATYPE_FLOAT16 && type!=HIAI_DATATYPE_FLOAT32) return AI_FAILED;
   std::size_t n=1; for(auto d:dim->GetDims()) n*=d;
-  bytes_=n*(type==HIAI_DATATYPE_FLOAT16 || type==HIAI_DATATYPE_INT16?2:4);
+  bytes_=n*(type==HIAI_DATATYPE_INT64?8:type==HIAI_DATATYPE_FLOAT16 || type==HIAI_DATATYPE_INT16?2:4);
   data_.resize((bytes_+3)/4); return AI_SUCCESS;
 }
 void* AiTensor::GetBuffer() const { return const_cast<std::int32_t*>(data_.data()); }
@@ -141,9 +144,18 @@ AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vecto
           TensorDimension({1,s,32}),TensorDimension({1,s,32}),TensorDimension({1,32,128,128}),
           TensorDimension({1})};
       out={TensorDimension({1,s,32,128}),TensorDimension({1,32,128,128})};
-    } else if(marker.find("fused-conv-")==0) {
-      in={TensorDimension({1,s,8192}),TensorDimension({1,8192,3}),TensorDimension({128})};
+    } else if(marker.find("fused-conv-")==0 || marker.find("fused-conv4-")==0) {
+      const std::uint32_t width=marker.find("fused-conv4-")==0?4:3;
+      in={TensorDimension({1,s,8192}),TensorDimension({1,8192,width}),TensorDimension({128})};
       out={TensorDimension({1,8192,4}),TensorDimension({1,8192,s+3})};
+    } else if(marker.find("fused-cache-")==0) {
+      in={TensorDimension({64,32,32,16}),TensorDimension({s,32,16}),TensorDimension({1}),TensorDimension(std::vector<std::uint32_t>{})};
+      out={TensorDimension({64,32,32,16})};
+    } else if(marker.find("fused-attention-")==0) {
+      in={TensorDimension({1,256,s,16}),TensorDimension({64,32,32,16}),TensorDimension({64,32,32,16}),
+          TensorDimension({1,1,s,2048}),TensorDimension({1}),TensorDimension({1}),
+          TensorDimension({1,64}),TensorDimension({1})};
+      out={TensorDimension({1,256,s,16})};
     } else {
       in={TensorDimension({1,8,2048}),TensorDimension({2048})};
       out={TensorDimension({1,8,2048}),TensorDimension({1,8,1})};
@@ -171,6 +183,8 @@ AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vecto
       }
     }
   }
+  if(n=="qwen35_fused_operator" && in.size()==4 && Layout()=="scalar-nonunit")
+    in[3]=TensorDimension({1,1,1,2});
   if(n=="qwen35_target") {
     if(Layout()=="leading-one") in[0]=TensorDimension({1,1,32,1});
     if(Layout()=="middle-one") out[1]=TensorDimension({1,32,1,32});
@@ -209,9 +223,15 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
       else if(out[1]->GetSize()==32*128*128*4)
         std::fill_n(static_cast<float*>(out[1]->GetBuffer()),32*128*128,0.25F);
       else return AI_FAILED;
-    } else if(marker.find("fused-conv-")==0) {
+    } else if(marker.find("fused-conv-")==0 || marker.find("fused-conv4-")==0) {
       if(in.size()!=3 || out.size()!=2) return AI_FAILED;
       for(auto& tensor:out) std::fill_n(static_cast<std::uint16_t*>(tensor->GetBuffer()),tensor->GetSize()/2,0x3400);
+    } else if(marker.find("fused-cache-")==0) {
+      if(in.size()!=4 || out.size()!=1 || in[3]->GetSize()!=4) return AI_FAILED;
+      std::fill_n(static_cast<std::uint16_t*>(out[0]->GetBuffer()),out[0]->GetSize()/2,0x3400);
+    } else if(marker.find("fused-attention-")==0) {
+      if(in.size()!=8 || out.size()!=1 || in[4]->GetSize()!=8 || in[5]->GetSize()!=8 || in[7]->GetSize()!=8) return AI_FAILED;
+      std::fill_n(static_cast<std::uint16_t*>(out[0]->GetBuffer()),out[0]->GetSize()/2,0x3800);
     } else {
       if(in.size()!=2 || out.size()!=2) return AI_FAILED;
       std::fill_n(static_cast<std::uint16_t*>(out[0]->GetBuffer()),8*2048,0x3c00);

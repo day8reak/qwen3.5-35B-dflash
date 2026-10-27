@@ -118,7 +118,7 @@ export GE_STATEFUL_RUN="$(mktemp -d "$AI_RUN_DIR/ge-stateful-XXXXXXXX")"
 
 ## 融合算子调用探针
 
-只检查文档中的三个融合算子，共 5 个用例：GDN prefill/decode、conv-state prefill/decode、RMS；使用完整模型的算子尺寸，不需要模型权重。先生成上文的 `GE_CUSTOM_BINDINGS`，再导出和编译：
+覆盖文档的五类自定义算子，共9例：GDN、conv-state、CacheUpdate、分页Attention各prefill/decode，以及RMS。使用完整模型的头数和通道尺寸，不需要模型权重。已有GDN编译产物时直接执行[当前更新的一条命令](current-status.md#用户现在执行什么)；下面仅用于从绑定新建整批探针：
 
 ```bash
 export FUSED_PROBE_JOB="$(mktemp -d "$AI_RUN_DIR/fused-probes-XXXXXXXX")"
@@ -126,11 +126,14 @@ export FUSED_PROBE_RUN="$FUSED_PROBE_JOB/probes"
 "$MODEL_PYTHON" "$GE_MODEL_TOOL" probe-fused-ops \
   --bindings "$GE_CUSTOM_BINDINGS" --ge-root "$CANN_ROOT" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --cases all --conv-history-width 4 \
   --output "$FUSED_PROBE_RUN"
 cat "$FUSED_PROBE_RUN/report.txt"
 ```
 
-仅生成源码时省略 `--ge-root`、`--ddk-root`、`--ddk-id`；上板使用成功编译后的 `bundle/run-board.sh`，命令见[融合探针批量执行](board-guide.md#融合算子调用探针)。编译、加载、调用和数值诊断分别记录，不据此宣称 NPU 运行位置。
+`--cases all` 启用9例，省略则保持原GDN/conv/RMS五例。`--conv-history-width 4` 仅测试日志确认的输入宽度，输出顺序尚未验证；该候选、CacheUpdate和Attention当前只做调用及形状/有限值诊断。Attention使用独立文档端口契约，动态K/V列表各一个分页张量，可选端口保留原索引，尚未接入生产模型。
+
+仅生成源码时省略 `--ge-root`、`--ddk-root`、`--ddk-id`；需要当前DDK名称适配时加 `--tbe-diagnosis "$TBE_DIAG_JOB/diagnosis"`。编译、加载、调用和数值诊断分别记录，不据此宣称NPU运行位置。
 
 ## tiny 回归
 

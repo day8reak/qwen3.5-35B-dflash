@@ -359,11 +359,24 @@ def fused_bundle(kind, sequence, state_dtype="float32", label="", final_state_dt
         inputs += [("initial_state", state_dtype, [1, 32, 128, 128]), ("effective_length", "int16", [1])]
         outputs = [("core_attn", "float16", [1, sequence, 32, 128]),
                    ("last_recurrent_state", final_state_dtype, [1, 32, 128, 128])]
-    elif kind == "conv":
+    elif kind in ("conv", "conv4"):
         op = "LinearAttentionConvstateUpdate"
-        inputs = [("x1", "float16", [1, sequence, 8192]), ("x2", "float16", [1, 8192, 3]),
+        inputs = [("x1", "float16", [1, sequence, 8192]), ("x2", "float16", [1, 8192, 4 if kind == "conv4" else 3]),
                   ("x3", "int32", [128])]
         outputs = [("y1", "float16", [1, 8192, 4]), ("y2", "float16", [1, 8192, sequence + 3])]
+    elif kind == "cache":
+        op = "CacheUpdate"
+        inputs = [("x", "float16", [64, 32, 32, 16]), ("updates", "float16", [sequence, 32, 16]),
+                  ("targetBlock", "int32", [1]), ("offsetInBlock", "int32", [])]
+        outputs = [("x", "float16", [64, 32, 32, 16])]
+    elif kind == "attention":
+        op = "AdnFusedInferAttention"
+        inputs = [("query", "float16", [1, 256, sequence, 16]),
+                  ("key0", "float16", [64, 32, 32, 16]), ("value0", "float16", [64, 32, 32, 16]),
+                  ("atten_mask", "float16", [1, 1, sequence, 2048]),
+                  ("actual_seq_lengths_q", "int64", [1]), ("actual_seq_lengths_kv", "int64", [1]),
+                  ("block_table", "int32", [1, 64]), ("all_seq_lengths_q", "int64", [1])]
+        outputs = [("attention_out", "float16", [1, 256, sequence, 16])]
     else:
         op = "AdnRmsNorm"
         inputs = [("self", "float16", [1, sequence, 2048]), ("gamma", "float16", [2048])]
@@ -375,7 +388,9 @@ def fused_bundle(kind, sequence, state_dtype="float32", label="", final_state_dt
         count = 1
         for dim in shape:
             count *= dim
-        payload = struct.pack("<h", sequence) if dtype == "int16" else bytes(count * (2 if dtype == "float16" else 4))
+        payload = (struct.pack("<h", sequence) if dtype == "int16" else
+                   struct.pack("<q", sequence) * count if dtype == "int64" else
+                   bytes(count * (2 if dtype == "float16" else 4)))
         file = folder / f"input_{index:04d}.bin"
         file.write_bytes(payload)
         rows.append("\t".join(["input", str(index), name, dtype, ",".join(map(str, shape)), file.name, sha(file)]))
@@ -398,7 +413,9 @@ def fused_run(folder, label, failure="", layout="", extra=()):
 
 
 fused_cases = {}
-for kind, sequence in [("gdn", 8), ("gdn", 1), ("conv", 8), ("conv", 1), ("rms", 8)]:
+for kind, sequence in [("gdn", 8), ("gdn", 1), ("conv", 8), ("conv", 1), ("rms", 8),
+                       ("conv4", 8), ("conv4", 1), ("cache", 8), ("cache", 1),
+                       ("attention", 8), ("attention", 1)]:
     folder, rows = fused_bundle(kind, sequence)
     fused_cases[kind, sequence] = folder, rows
     result, output, events = fused_run(folder, "result")
@@ -423,6 +440,16 @@ for kind, sequence in [("gdn", 8), ("gdn", 1), ("conv", 8), ("conv", 1), ("rms",
         assert (output / "output_0001.bin").read_bytes() == struct.pack("<f", 0.25) * (32*128*128)
     if kind == "rms":
         assert (output / "output_0001.bin").read_bytes() == struct.pack("<8f", *([0.5] * 8))
+    if kind == "cache":
+        assert report["sequence_length"] == sequence  # derived from updates, not cache dimensions
+        assert report["inputs"][3]["shape"] == [] and report["inputs"][3]["bytes"] == 4
+        assert (output / "output_0000.bin").read_bytes() == struct.pack("<e", 0.25) * (64 * 32 * 32 * 16)
+    if kind == "attention":
+        assert report["sequence_length"] == sequence  # NZ query uses sequence axis 2
+        assert (folder / "result.dtypes").read_text().splitlines() == ["2", "2", "2", "2", "7", "7", "3", "7", "2"]
+        for index in (4, 5, 7):
+            assert report["inputs"][index]["dtype"] == "int64" and report["inputs"][index]["bytes"] == 8
+        assert (output / "output_0000.bin").read_bytes() == struct.pack("<e", 0.5) * (256 * sequence * 16)
 
 folder, rows = fused_bundle("gdn", 1, "float16", "-fp16-state")
 result, output, events = fused_run(folder, "result")
@@ -441,6 +468,31 @@ for sequence in (8, 1):
     assert state_file.stat().st_size == state_output["bytes"] and sha(state_file) == state_output["sha256"]
     assert state_file.read_bytes() == struct.pack("<e", 0.25) * (32 * 128 * 128)
     assert (folder / "result.dtypes").read_text().splitlines() == ["2"] * 6 + ["5", "2", "2"]
+
+for kind in ("cache", "attention"):
+    folder, _ = fused_cases[kind, 8]
+    result, output, events = fused_run(folder, "padded", layout="padded")
+    assert result.returncode == 0 and events == ["load", "process", "unload"], result.stderr
+    report = json.loads((output / "result.json").read_text())
+    assert report["inputs"][3 if kind == "cache" else 4]["bytes"] == (4 if kind == "cache" else 8)
+
+cache, cache_rows = fused_cases["cache", 8]
+result, output, events = fused_run(cache, "scalar-nonunit", layout="scalar-nonunit")
+assert result.returncode == 1 and events == ["load", "unload"], result.stderr
+assert json.loads((output / "result.json").read_text())["failure_stage"] == "LOAD_OR_SETUP"
+for kind, index, old, replacement in [
+    ("cache", 7, "\tint32\t\t", "\tint32\t1\t"),
+    ("attention", 5, "\tkey0\t", "\tkey\t"),
+    ("attention", 8, "\tint64\t1\t", "\tfloat32\t2\t"),
+]:
+    folder, original = fused_cases[kind, 8]
+    changed = original[:]
+    assert old in changed[index]
+    changed[index] = changed[index].replace(old, replacement)
+    (folder / "step.tsv").write_text("\n".join(changed) + "\n")
+    result, output, events = fused_run(folder, "reject-extra-contract-" + str(index))
+    assert result.returncode == 1 and "contract" in result.stderr and not events and not output.exists(), result.stderr
+    (folder / "step.tsv").write_text("\n".join(original) + "\n")
 
 gdn, good_rows = fused_cases["gdn", 8]
 for layout in ("padded", "leading-feature", "mixed-feature"):
@@ -491,4 +543,4 @@ bad_rows[10] = bad_rows[10].rsplit("\t", 1)[0] + "\t" + sha(gdn / "input_0006.bi
 (gdn / "step.tsv").write_text("\n".join(bad_rows) + "\n")
 result, output, events = fused_run(gdn, "reject-effective-length")
 assert result.returncode == 1 and "effective_length" in result.stderr and not events and not output.exists()
-print("HIAI fused operators: five documented full-size IO contracts, FP16/FP32/INT16, single Process, hashes and scoped failures checked")
+print("HIAI fused operators: five operator families, explicit conv-width4 candidate, FP16/FP32/INT16/INT64/scalar IO, single Process, hashes and scoped failures checked")

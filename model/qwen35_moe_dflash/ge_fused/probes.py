@@ -1,4 +1,4 @@
-"""Five explicit single-custom-op GE cases for the documented fused bindings.
+"""Explicit single-custom-op GE cases for the documented fused bindings.
 
 Construction, AIR serialization, OMG compilation and device execution are
 separate evidence. NumPy references describe FP32 mathematics, not kernel
@@ -7,6 +7,7 @@ rounding. No kernel is installed and no primitive fallback graph is generated.
 from __future__ import annotations
 
 import ast
+from copy import deepcopy
 import json
 import math
 import os
@@ -23,21 +24,26 @@ from ..compile import (_environment_record, _omg_ipc_environment, _stateful_json
 from ..compiler_evidence import compile_evidence
 from ..ge_export import _logged
 from ..hashing import sha256_file
-from .bindings import OperatorBindings
+from .bindings import OperatorBindings, document_probe_spec
 from .emitter import emit_cpp
 from .export import _step_file, _structure_graph, _toolchain
 from .ir import DTYPES, CustomNode, Graph
 from .recipe import read_recipe
 
 
-_CASES = (("gdn_prefill", "gdn", 8), ("gdn_decode", "gdn", 1),
+_LEGACY_CASES = (("gdn_prefill", "gdn", 8), ("gdn_decode", "gdn", 1),
           ("conv_prefill", "conv_state", 8), ("conv_decode", "conv_state", 1),
           ("rms", "rms", 8))
-_TYPES = {"gdn": "ChunkGatedDeltaRule", "conv_state": "LinearAttentionConvstateUpdate", "rms": "AdnRmsNorm"}
+_CASES = _LEGACY_CASES + (("cache_prefill", "cache", 8), ("cache_decode", "cache", 1),
+                         ("attention_prefill", "attention", 8), ("attention_decode", "attention", 1))
+_TYPES = {"gdn": "ChunkGatedDeltaRule", "conv_state": "LinearAttentionConvstateUpdate", "rms": "AdnRmsNorm",
+          "cache": "CacheUpdate", "attention": "AdnFusedInferAttention"}
 
 
 def _select_cases(cases):
     if cases is None:
+        return list(_LEGACY_CASES)
+    if cases == "all":
         return list(_CASES)
     if isinstance(cases, str):
         cases = cases.split(",")
@@ -54,7 +60,7 @@ def _validate_probe_manifest(manifest):
     if (manifest.get("artifact_kind") != "qwen35-fused-op-probes"
             or type(manifest.get("schema_version")) is not int or manifest["schema_version"] != 1):
         raise ValueError("expected a fused operator probe manifest")
-    selected = manifest.get("selected_cases", [item[0] for item in _CASES])
+    selected = manifest.get("selected_cases", [item[0] for item in _LEGACY_CASES])
     if not isinstance(selected, list) or selected != [item[0] for item in _select_cases(selected)]:
         raise ValueError("probe selected_cases must be a canonical nonempty subset")
     rows = manifest.get("cases")
@@ -282,7 +288,7 @@ def _pattern(shape, scale, phase=0, dtype="float16"):
     return (values * np.float32(scale)).reshape(shape).astype(DTYPES[dtype])
 
 
-def _case_values(role, sequence, bindings):
+def _case_values(role, sequence, bindings, conv_history_width=3):
     """Use nonzero signed inputs and effective gamma; no checkpoint needed."""
     if role == "gdn":
         state_dtype = bindings.tensor_dtype(role, "inputs", "initial_state")
@@ -313,11 +319,30 @@ def _case_values(role, sequence, bindings):
         shapes = {"core_attn": shape, "final_state": state.shape}
     elif role == "conv_state":
         inputs = {"projected": _pattern((1, sequence, 8192), .003, 7),
-                  "history": _pattern((1, 8192, 3), .004, 31),
+                  "history": _pattern((1, 8192, conv_history_width), .004, 31),
                   "update_control": np.zeros((128,), dtype="<i4")}
-        padded = np.concatenate((inputs["history"], inputs["projected"].transpose(0, 2, 1)), axis=-1)
+        padded = np.concatenate((inputs["history"][:, :, -3:], inputs["projected"].transpose(0, 2, 1)), axis=-1)
         shapes = {"history": (1, 8192, bindings.conv_history_size(4)), "padded": padded.shape}
-        refs, attrs = {"history": None, "padded": padded}, {}
+        refs, attrs = {"history": None, "padded": padded if conv_history_width == 3 else None}, {}
+    elif role == "cache":
+        inputs = {"x": _pattern((64, 32, 32, 16), .001),
+                  "updates": _pattern((sequence, 32, 16), .002, 17),
+                  "targetBlock": np.asarray([3], dtype="<i4"),
+                  "offsetInBlock": np.asarray(0 if sequence == 8 else 7, dtype="<i4")}
+        shapes, refs, attrs = {"x": inputs["x"].shape}, {"x": None}, {}
+    elif role == "attention":
+        mask = np.full((1, 1, sequence, 2048), -10000, dtype="<f2")
+        for row in range(sequence):
+            mask[0, 0, row, :row + 1 if sequence > 1 else 8] = 0
+        inputs = {"query": _pattern((1, 256, sequence, 16), .002),
+                  "key0": _pattern((64, 32, 32, 16), .001, 17),
+                  "value0": _pattern((64, 32, 32, 16), .003, 37),
+                  "atten_mask": mask,
+                  "actual_seq_lengths_q": np.asarray([sequence], dtype="<i8"),
+                  "actual_seq_lengths_kv": np.asarray([2048], dtype="<i8"),
+                  "block_table": np.arange(64, dtype="<i4").reshape(1, 64),
+                  "all_seq_lengths_q": np.asarray([sequence], dtype="<i8")}
+        shapes, refs, attrs = {"attention_out": inputs["query"].shape}, {"attention_out": None}, {}
     else:
         inputs = {"x": _pattern((1, sequence, 2048), .03125, 11),
                   "gamma": (.75 + np.arange(2048, dtype=np.float32) % 17 / 32).astype("<f2")}
@@ -331,18 +356,33 @@ def _case_values(role, sequence, bindings):
     return inputs, shapes, refs, attrs
 
 
-def _construct_case(root, name, role, sequence, bindings):
+def _construct_case(root, name, role, sequence, bindings, conv_history_width=3):
     folder = root / "cases" / name
     folder.mkdir(parents=True)
-    values, shapes, references, attrs = _case_values(role, sequence, bindings)
-    spec = bindings.manifest()["operators"][role]
+    values, shapes, references, attrs = _case_values(role, sequence, bindings, conv_history_width)
+    probe_only = role in {"cache", "attention"}
+    spec = document_probe_spec(role) if probe_only else bindings.manifest()["operators"][role]
+    conv_candidate = role == "conv_state" and conv_history_width == 4
+    if conv_candidate:
+        spec = deepcopy(spec)
+        spec["inputs"]["history"]["shape"] = [1, 8192, 4]
     graph, inputs = Graph(name), {}
     for logical, port in spec["inputs"].items():
         value = values[logical]
         inputs[logical] = graph.input(port["port"], value.shape, str(value.dtype))
-    outputs = bindings.call(graph, role, inputs=inputs,
-                            outputs={key: (shape, bindings.tensor_dtype(role, "outputs", key))
-                                     for key, shape in shapes.items()}, attrs=attrs, name=name + "_fused")
+    if probe_only or conv_candidate:
+        for logical, value in inputs.items():
+            OperatorBindings._tensor_contract(spec["inputs"][logical], value.shape, value.dtype, logical)
+        for logical, desc in spec["outputs"].items():
+            OperatorBindings._tensor_contract(desc, shapes[logical], desc["dtype"], logical)
+        raw = graph.custom(spec["op_type"], {spec["inputs"][key]["port"]: value for key, value in inputs.items()},
+                           {desc["port"]: (shapes[key], desc["dtype"]) for key, desc in spec["outputs"].items()},
+                           spec["attrs"] if probe_only else spec.get("static_attrs", {}), name=name + "_fused")
+        outputs = {key: raw[desc["port"]] for key, desc in spec["outputs"].items()}
+    else:
+        outputs = bindings.call(graph, role, inputs=inputs,
+                                outputs={key: (shape, bindings.tensor_dtype(role, "outputs", key))
+                                         for key, shape in shapes.items()}, attrs=attrs, name=name + "_fused")
     graph.outputs = list(outputs.values())
     graph.validate()
     assert len(graph.nodes) == 1 and isinstance(graph.nodes[0], CustomNode) and not graph.weights and not graph.constants
@@ -350,6 +390,11 @@ def _construct_case(root, name, role, sequence, bindings):
     abi = {"schema_version": 1, "artifact_kind": "qwen35-fused-operator-abi",
            "role": role, "operator_type": node.op_type, "binding_sha256": bindings.sha256,
            "attrs": node.attrs, "inputs": [], "outputs": []}
+    if probe_only:
+        abi["probe_contract"] = spec
+    if conv_candidate:
+        abi["probe_override"] = {"conv_history_width": 4, "status": "UNVERIFIED_CANDIDATE",
+                                 "scope": "Installed infer-shape requires x2 width4; y1/y2 shapes and control semantics still document-derived; no numerical reference."}
     for direction, ports, tensors in (("inputs", node.input_ports, node.inputs),
                                       ("outputs", node.output_ports, node.outputs)):
         abi[direction] = [{"index": index, "name": port, "dtype": tensor.dtype, "shape": list(tensor.shape)}
@@ -367,7 +412,8 @@ def _construct_case(root, name, role, sequence, bindings):
         input_records.append({**desc, **_record(path, root)})
     for index, (logical, desc) in enumerate(zip(spec["outputs"], abi["outputs"])):
         item = {**desc, "logical": logical, "reference": None,
-                "comparison": "SHAPE_ONLY_UNSPECIFIED_STATE_ORDER" if references[logical] is None else "FP32_LOGIC_DIAGNOSTIC"}
+                "comparison": ("SHAPE_ONLY_UNVERIFIED_CONTRACT" if probe_only or conv_candidate else
+                               "SHAPE_ONLY_UNSPECIFIED_STATE_ORDER") if references[logical] is None else "FP32_LOGIC_DIAGNOSTIC"}
         if role == "gdn" and logical == "core_attn":
             item["valid_prefix_length"] = int(values["effective_length"][0])
         if references[logical] is not None:
@@ -505,13 +551,14 @@ def _bundle_case(root, case):
 
 
 def build_fused_probes(output_dir, bindings_path, *, ge_root=None, ddk_root=None, ddk_id=None,
-                       cxx="c++", cxx11_abi=0, timeout_seconds=3600, cases=None, tbe_diagnosis=None):
+                       cxx="c++", cxx11_abi=0, timeout_seconds=3600, cases=None, tbe_diagnosis=None,
+                       conv_history_width=3):
     selected = _select_cases(cases)
     selected_roles = {role for _, role, _ in selected}
     bindings = OperatorBindings.from_file(bindings_path)
-    bindings.require(selected_roles)
+    bindings.require(selected_roles - {"cache", "attention"})
     declared = bindings.manifest()
-    if any(declared["operators"][role]["op_type"] != _TYPES[role] for role in selected_roles):
+    if any(declared["operators"][role]["op_type"] != _TYPES[role] for role in selected_roles - {"cache", "attention"}):
         raise ValueError("selected probes require the corresponding documented operator types")
     if (ddk_root is None) != (ddk_id is None) or (ddk_root is not None and ge_root is None):
         raise ValueError("compilation requires ge_root, ddk_root and ddk_id together")
@@ -519,6 +566,8 @@ def build_fused_probes(output_dir, bindings_path, *, ge_root=None, ddk_root=None
         raise ValueError("binding DDK identity and target must match selected DDK and OMG platform kirinx90")
     if type(cxx11_abi) is not int or cxx11_abi not in (0, 1) or timeout_seconds <= 0:
         raise ValueError("invalid C++ ABI or timeout")
+    if type(conv_history_width) is not int or conv_history_width not in (3, 4):
+        raise ValueError("conv_history_width must be 3 (document) or 4 (unverified installed-shape candidate)")
     if tbe_diagnosis is not None and ddk_root is None:
         raise ValueError("tbe_diagnosis requires an actual DDK compilation")
     root = output_path(output_dir)
@@ -534,7 +583,7 @@ def build_fused_probes(output_dir, bindings_path, *, ge_root=None, ddk_root=None
                 "load": "NOT_RUN", "process": "NOT_RUN", "numerical": "NOT_RUN", "placement": "UNVERIFIED"}
         stage = "construction"
         try:
-            case = _construct_case(root, name, role, sequence, bindings)
+            case = _construct_case(root, name, role, sequence, bindings, conv_history_width)
             folder = root / "cases" / name
             if ge_root is not None:
                 stage = "export"
@@ -593,7 +642,7 @@ printf '%s\\n' "$code" >"$results/{name}.exitcode"
               "ddk_id": ddk_id, "platform": "kirinx90" if ddk_root is not None else None,
               "selected_cases": [name for name, _, _ in selected],
               "cases": cases, "run_script": _record(root / "bundle/run-board.sh", root),
-              "reference_policy": "FP32 sequential GDN and RMS logic; outputs rounded to declared dtype; not kernel emulation. Conv y1 ordering is unspecified.",
+              "reference_policy": "FP32 sequential GDN and RMS logic; outputs rounded to declared dtype; not kernel emulation. Conv y1 ordering is unspecified. Width4 conv, cache and attention outputs have no semantic reference or accuracy acceptance.",
               "device_execution": "NOT_RUN", "placement": "UNVERIFIED"}
     save_json(root / "manifest.json", result)
     _report(root / "report.txt", cases)

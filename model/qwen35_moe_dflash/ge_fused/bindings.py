@@ -214,6 +214,46 @@ def _port(name, dtype, shape=None):
     return {"port": name, "dtype": dtype, **({"shape": shape} if shape is not None else {})}
 
 
+def document_probe_spec(role):
+    """NZ single-op diagnostics only; these do not enable production fusion.
+
+    The legacy ND binding file stays unchanged. This independent contract is
+    pinned to the same user document and is stored with each new probe ABI.
+    """
+    from .ir import ATTENTION_INPUT_SCHEMA
+    source = _source_record()
+    cache = [64, 32, 32, 16]
+    if role == "cache":
+        return {"op_type": "CacheUpdate", "layout": "NZ", "source": source,
+                "inputs": {"x": _port("x", "float16", cache),
+                           "updates": _port("updates", "float16", [None, 32, 16]),
+                           "targetBlock": _port("targetBlock", "int32", [1]),
+                           "offsetInBlock": _port("offsetInBlock", "int32", [])},
+                "outputs": {"x": _port("x", "float16", cache)}, "attrs": {}}
+    if role != "attention":
+        raise ValueError("document probe role must be cache or attention")
+    return {"op_type": "AdnFusedInferAttention", "layout": "NZ", "source": source,
+            "inputs": {"query": _port("query", "float16", [1, 256, None, 16]),
+                       "key0": _port("key0", "float16", cache),
+                       "value0": _port("value0", "float16", cache),
+                       "atten_mask": _port("atten_mask", "float16", [1, 1, None, 2048]),
+                       "actual_seq_lengths_q": _port("actual_seq_lengths_q", "int64", [1]),
+                       "actual_seq_lengths_kv": _port("actual_seq_lengths_kv", "int64", [1]),
+                       "block_table": _port("block_table", "int32", [1, 64]),
+                       "all_seq_lengths_q": _port("all_seq_lengths_q", "int64", [1])},
+            "outputs": {"attention_out": _port("attention_out", "float16", [1, 256, None, 16])},
+            "attrs": {"num_heads": {"type": "int", "value": 16},
+                      "num_key_value_heads": {"type": "int", "value": 2},
+                      "block_size": {"type": "int", "value": 32},
+                      "scale_value": {"type": "float", "value": 256 ** -.5},
+                      "input_layout": {"type": "string", "value": "BNSD"},
+                      "inner_precise": {"type": "int", "value": 2}},
+            "ge_input_schema": [{"index": index, "name": port, "kind": kind,
+                                 **({"count": 1} if kind == "dynamic" else {})}
+                                for index, (port, kind) in enumerate(ATTENTION_INPUT_SCHEMA)],
+            "scope": "Document-derived one-element KV lists; optional slots retained. Target registration, all_seq_lengths_q semantics and NZ kernel compatibility are unverified."}
+
+
 def document_bindings(*, target, ddk_id, gdn_initial_state_dtype):
     """Construct the documented three-op contract with an explicit state choice.
 

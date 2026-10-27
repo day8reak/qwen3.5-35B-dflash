@@ -294,3 +294,78 @@ def test_fused_board_rejects_unsafe_bundle_path_before_transport(case):
     code, result = _run(case)
     assert code != 0 and result['status'] == 'FAILED'
     assert not _calls(case) and not case['built']
+
+
+@pytest.mark.parametrize('rms_failure', [False, True], ids=['all-invoked', 'rms-fails-others-continue'])
+def test_all_ops_compiles_only_missing_cases_and_keeps_each_bundle(case, monkeypatch, rms_failure):
+    """Compilation/execution are host substitutes; artifact and batch logic are real."""
+    missing = ['conv_prefill', 'conv_decode', 'rms', 'cache_prefill', 'cache_decode',
+               'attention_prefill', 'attention_decode']
+    compilation_requests, compilation_calls, executions = [], [], []
+    cache_objects = []
+
+    def compile_missing(root, output, selected):
+        compilation_requests.append((root, output, selected))
+
+        def export(folder, *unused):
+            (folder / 'probe.air').write_bytes(b'SIMULATED AIR; no GE execution')
+            return {'simulation': True}
+
+        def compile_one(folder, *unused):
+            compilation_calls.append(folder.name)
+            if rms_failure and folder.name == 'rms':
+                raise RuntimeError('SIMULATED AdnRmsNorm infershape func failed')
+            (folder / 'omc').mkdir()
+            (folder / 'omc/probe.omc').write_bytes(b'SIMULATED OMC; no model compilation')
+            return {'simulation': True}
+
+        with monkeypatch.context() as build:
+            build.setattr(probes, '_export_case', export)
+            build.setattr(probes, '_compile_case', compile_one)
+            return probes.build_fused_probes(output, root / 'bindings.json', ge_root=case['root'],
+                                            ddk_root=case['root'], ddk_id='SIMULATED-DDK',
+                                            cases=selected, conv_history_width=4)
+
+    def execute(args, *, runner_cache):
+        root, output = Path(args.probe_run), Path(args.output)
+        manifest, compiled, _ = case['module']._prepare(root)
+        cache_objects.append(runner_cache)
+        if len(cache_objects) == 1:
+            runner_cache['fixture_runner'] = 'SHARED HOST SUBSTITUTE'
+        else:
+            assert runner_cache is cache_objects[0]
+            assert runner_cache['fixture_runner'] == 'SHARED HOST SUBSTITUTE'
+        executions.append((root, [row['name'] for row in compiled]))
+        (output / 'comparison').mkdir(parents=True)
+        rows = [{'name': row['name'], 'load': 'PASSED' if row['status'] == 'COMPILED' else 'NOT_RUN',
+                 'process': 'PASSED' if row['status'] == 'COMPILED' else 'NOT_RUN',
+                 'numerical': 'DIAGNOSTIC_ONLY' if row['status'] == 'COMPILED' else 'NOT_RUN'}
+                for row in manifest['cases']]
+        (output / 'comparison/report.json').write_text(json.dumps({'cases': rows}))
+        return {'status': 'EXECUTION_COMPLETE', 'output': str(output), 'simulation': 'HOST SUBSTITUTE ONLY'}
+
+    monkeypatch.setattr(case['module'], '_compile_missing', compile_missing)
+    monkeypatch.setattr(case['module'], 'execute', execute)
+    monkeypatch.setenv('FUSED_PROBE_RUN', str(case['probe']))
+    code = case['module'].main(['--all-ops', '--output', str(case['output'])])
+    result = json.loads((case['output'] / 'result.json').read_text())
+    assert code == (1 if rms_failure else 0), result
+    assert result['status'] == ('FAILED' if rms_failure else 'EXECUTION_COMPLETE'), result
+    assert compilation_requests == [(case['probe'], case['output'] / 'probes', missing)]
+    assert compilation_calls == missing
+    assert executions == [(case['probe'], ['gdn_prefill', 'gdn_decode']),
+                          (case['output'] / 'probes', [name for name in missing
+                                                       if not (rms_failure and name == 'rms')])]
+    assert result['reused_cases'] == ['gdn_decode', 'gdn_prefill']
+    assert result['compiled_cases_requested'] == missing
+    assert result['model_compilation'] == 'MISSING_CASES_ONLY'
+    assert result['numerical_acceptance'] == 'NOT_DEFINED' and result['runtime_placement'] == 'UNVERIFIED'
+    rows = {row['name']: row for row in result['cases']}
+    assert len(rows) == 9
+    assert all(row['process'] == 'PASSED' for name, row in rows.items() if name != 'rms')
+    assert rows['rms']['compile'] == ('FAILED' if rms_failure else 'PASSED')
+    assert rows['rms']['process'] == ('NOT_RUN' if rms_failure else 'PASSED')
+    if rms_failure:
+        assert 'AdnRmsNorm infershape func failed' in (case['output'] / 'report.txt').read_text()
+    assert case['original'] == {str(path.relative_to(case['probe'])): sha256_file(path)
+                                for path in case['probe'].rglob('*') if path.is_file()}

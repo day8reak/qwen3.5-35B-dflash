@@ -274,8 +274,9 @@ HiaiTensorSpec StepTensor(const std::vector<std::string>& fields) {
   if (!std::regex_match(fields[2], std::regex("[A-Za-z_][A-Za-z0-9_]{0,127}")))
     throw std::invalid_argument("invalid stateful tensor name");
   HiaiTensorSpec result{fields[2], fields[3], {}};
-  for (const auto& dim : Split(fields[4], ','))
-    result.shape.push_back(static_cast<std::uint32_t>(StepInteger(dim, UINT32_MAX)));
+  if (!fields[4].empty())
+    for (const auto& dim : Split(fields[4], ','))
+      result.shape.push_back(static_cast<std::uint32_t>(StepInteger(dim, UINT32_MAX)));
   static_cast<void>(HiaiTensorBytes(result));
   return result;
 }
@@ -292,9 +293,22 @@ struct StepPlan {
   std::vector<HiaiTensorSpec> outputs;
 };
 void CheckFusedPlan(StepPlan& plan) {
-  if (plan.inputs.empty() || plan.inputs[0].spec.shape.size() < 2)
+  if (plan.inputs.empty())
     throw std::invalid_argument("fused operator requires its documented ordered IO contract");
-  const auto s = plan.inputs[0].spec.shape[1];
+  std::uint32_t s = 0;
+  if (plan.operator_type == "CacheUpdate") {
+    if (plan.inputs.size() != 4 || plan.inputs[1].spec.shape.size() != 3)
+      throw std::invalid_argument("CacheUpdate requires its four-port contract");
+    s = plan.inputs[1].spec.shape[0];
+  } else if (plan.operator_type == "AdnFusedInferAttention") {
+    if (plan.inputs[0].spec.shape.size() != 4)
+      throw std::invalid_argument("AdnFusedInferAttention requires its NZ query contract");
+    s = plan.inputs[0].spec.shape[2];
+  } else {
+    if (plan.inputs[0].spec.shape.size() < 2)
+      throw std::invalid_argument("fused operator requires its documented ordered IO contract");
+    s = plan.inputs[0].spec.shape[1];
+  }
   if (s != 1 && s != 8)
     throw std::invalid_argument("fused operator probe supports sequence lengths 1 or 8 only");
   std::vector<HiaiTensorSpec> inputs, outputs;
@@ -314,13 +328,26 @@ void CheckFusedPlan(StepPlan& plan) {
     outputs = {{"core_attn", "float16", {1,s,32,128}},
                {"last_recurrent_state", plan.outputs[1].dtype, {1,32,128,128}}};
   } else if (plan.operator_type == "LinearAttentionConvstateUpdate") {
-    inputs = {{"x1", "float16", {1,s,8192}}, {"x2", "float16", {1,8192,3}},
+    if (plan.inputs.size() != 3 || plan.inputs[1].spec.shape.size() != 3 ||
+        (plan.inputs[1].spec.shape[2] != 3 && plan.inputs[1].spec.shape[2] != 4))
+      throw std::invalid_argument("LinearAttentionConvstateUpdate requires its explicit width-3/4 probe contract");
+    inputs = {{"x1", "float16", {1,s,8192}}, {"x2", "float16", {1,8192,plan.inputs[1].spec.shape[2]}},
               {"x3", "int32", {128}}};
     outputs = {{"y1", "float16", {1,8192,4}}, {"y2", "float16", {1,8192,s+3}}};
   } else if (plan.operator_type == "AdnRmsNorm") {
     if (s != 8) throw std::invalid_argument("AdnRmsNorm probe requires sequence length 8");
     inputs = {{"self", "float16", {1,s,2048}}, {"gamma", "float16", {2048}}};
     outputs = {{"y", "float16", {1,s,2048}}, {"rstd", "float32", {1,s,1}}};
+  } else if (plan.operator_type == "CacheUpdate") {
+    inputs = {{"x", "float16", {64,32,32,16}}, {"updates", "float16", {s,32,16}},
+              {"targetBlock", "int32", {1}}, {"offsetInBlock", "int32", {}}};
+    outputs = {{"x", "float16", {64,32,32,16}}};
+  } else if (plan.operator_type == "AdnFusedInferAttention") {
+    inputs = {{"query", "float16", {1,256,s,16}}, {"key0", "float16", {64,32,32,16}},
+              {"value0", "float16", {64,32,32,16}}, {"atten_mask", "float16", {1,1,s,2048}},
+              {"actual_seq_lengths_q", "int64", {1}}, {"actual_seq_lengths_kv", "int64", {1}},
+              {"block_table", "int32", {1,64}}, {"all_seq_lengths_q", "int64", {1}}};
+    outputs = {{"attention_out", "float16", {1,256,s,16}}};
   } else throw std::invalid_argument("unknown documented fused operator");
   if (inputs.size() != plan.inputs.size() || outputs.size() != plan.outputs.size())
     throw std::invalid_argument("fused operator IO count differs from documented contract");

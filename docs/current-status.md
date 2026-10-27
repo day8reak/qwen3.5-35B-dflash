@@ -6,19 +6,19 @@
 
 ## 用户现在执行什么
 
-**一条命令上板执行已编译的GDN prefill/decode。** 脚本自动构建当前runner、上传OMC及运行库、执行、回收并比较；复用已有OMC。
+**先跑通全部五类自定义算子的调用。** `--all-ops` 复用已有GDN OMC，补编conv、RMS、CacheUpdate和分页Attention，共覆盖9个用例；编译失败不阻止其它用例上板。
 
-沿用[OHOS/HIAI/HDC环境](environment-setup.md#5-ohos--hiai--hdc)和刚才的 `FUSED_PROBE_RUN`。更新代码后执行：
+沿用现有环境、`FUSED_PROBE_RUN`、`CANN_ROOT`、`CPRO_DDK_ROOT` 和 `TBE_DIAG_JOB`。更新代码后执行：
 
 ```bash
 cd "$REPO_DIR"
 git pull --ff-only
-"$MODEL_PYTHON" targets/cpro/scripts/run_fused_probes.py
+"$MODEL_PYTHON" targets/cpro/scripts/run_fused_probes.py --all-ops
 ```
 
-`FUSED_PROBE_RUN` 是编译产物目录，也可用 `--probe-run 路径` 指定。脚本自动在 `$AI_RUN_DIR` 下新建结果目录、查询运行库版本和固件标识，结束时打印报告及失败日志。运行库默认从本次runner构建记录自动收集；已有板端私有库时可用 `BOARD_HIAI_LIB_DIR` 复用。
+脚本只构建一次runner，自动上传、查询版本、执行和回收；结果放在 `$AI_RUN_DIR/fused-all-*`。conv使用DDK日志要求的宽度4候选，输出顺序尚未确认；RMS仍使用原名 `AdnRmsNorm`，缺注册会明确列为失败。
 
-回传脚本打印的 `comparison/report.txt`；失败也保留本次板端目录、服务器日志和已回收结果。数值误差暂作诊断，NPU执行位置仍待验证。
+回传最后打印的 `report.txt` 总表；各组详细结果位于 `board-*/comparison/report.txt`。所有日志保留。当前先检查调用覆盖，GDN数值异常保留记录，全部调用确认后再集中对齐精度。
 
 ## 当前状态
 
@@ -26,7 +26,7 @@ git pull --ff-only
 |---|---|
 | PyTorch完整结构 | 全尺寸meta模型及层级FX图；不加载权重 |
 | GE完整结构 | target/draft完整节点、连边、C++和recipe；融合可选 |
-| 融合算子探针 | GDN prefill/decode已真实编译通过，名称适配已生效；上板待验证。conv/RMS接口问题待处理 |
+| 自定义算子探针 | 五类9例代码已齐；GDN两例用户回传加载/执行通过，但数值明显偏离；其余待批量验证 |
 | 真实权重AIR导出 | 旧双图支持完整FP16；新GE target支持显式缓存 |
 | 状态执行 | 主机fake prefill→decode接续通过；真实板端待验证 |
 | 尚未完成 | W4A8映射、常驻缓存与native DFlash调度、完整模型设备精度和性能 |
@@ -35,11 +35,12 @@ git pull --ff-only
 
 | 项目 | 结论 |
 |---|---|
-| GDN两例 | 用户回传构图、AIR、OMC均通过；每例名称适配 `APPLIED=1`、拒绝0 |
+| GDN两例 | 用户回传加载/执行通过；decode核心输出全零，prefill核心输出relL2约0.999；未通过精度验收 |
 | 编译目标 | 始终为 `kirinx90`；`Ascend310B1` 是DDK初始化后返回的内部名称，`Ascend310P3` 是原工程平台 |
 | GDN状态 | 安装版初态/末态为FP16；本次runner修正了末态只接受FP32的旧校验 |
 | conv / RMS | 状态宽度4与文档3不一致 / 当前维推注册缺失，分别待处理 |
-| 尚未验证 | 真实设备加载、执行、输出数值和NPU执行位置；完整模型与连续状态验证另行进行 |
+| CacheUpdate / Attention | 新增prefill/decode独立探针；Attention包含动态K/V端口及可选端口占位，待真实编译/上板 |
+| 尚未验证 | 全部五类调用覆盖、正确数值及NPU执行位置；完整模型与连续状态验证另行进行 |
 
 ## 完整模型构图（按需）
 

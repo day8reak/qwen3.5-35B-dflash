@@ -1,6 +1,7 @@
 """Bounded contracts for the five documented single-op GE cases."""
 import json
 from pathlib import Path
+import shutil
 import subprocess
 
 import numpy as np
@@ -81,6 +82,78 @@ def test_five_source_graphs_are_exact_single_custom_ops(setup, tmp_path, monkeyp
             assert case["inputs"][0]["name"] == "self" and case["inputs"][0]["shape"] == [1, 8, 2048]
             assert case["input_policy"]["ranges"]["gamma"]["min"] == .75
     assert not list(root.rglob("*.air")) and not list(root.rglob("*.omc"))
+
+
+def test_all_cases_add_cache_and_dynamic_attention_without_production_bindings(setup, tmp_path):
+    from qwen35_moe_dflash.ge_fused.ir import ATTENTION_INPUT_SCHEMA, ATTENTION_CONNECTED_PORTS
+    binding, _, _ = setup
+    original = binding.read_bytes()
+    root = tmp_path / "all-operators"
+    manifest = build_fused_probes(root, binding, cases="all")
+    assert manifest["status"] == "SOURCE_READY" and len(manifest["cases"]) == 9
+    assert binding.read_bytes() == original
+    assert set(manifest["binding_contract"]["operators"]) == {"gdn", "conv_state", "rms"}
+    for case in manifest["cases"][5:]:
+        assert case["construction"] == "PASSED"
+        folder = root / "cases" / case["name"]
+        abi = json.loads((folder / "operator-abi.json").read_text())
+        recipe = read_recipe(folder / "recipe/graph.recipe")
+        assert len(recipe["records"]) == len(case["inputs"]) + 1
+        assert recipe["records"][-1]["type"] == case["operator_type"]
+        assert all(output["reference"] is None for output in case["outputs"])
+        assert abi["probe_contract"]["source"]["path"].endswith("operators-and-quantization-analysis.md")
+        sequence = case["sequence_length"]
+        if case["role"] == "cache":
+            assert [port["name"] for port in case["inputs"]] == ["x", "updates", "targetBlock", "offsetInBlock"]
+            assert case["inputs"][-1]["shape"] == [] and case["inputs"][-1]["bytes"] == 4
+            assert case["inputs"][1]["shape"] == [sequence, 32, 16]
+            assert case["outputs"][0]["shape"] == [64, 32, 32, 16]
+        else:
+            assert tuple(port["name"] for port in case["inputs"]) == ATTENTION_CONNECTED_PORTS
+            assert [entry["name"] for entry in abi["probe_contract"]["ge_input_schema"]] == [p for p, _ in ATTENTION_INPUT_SCHEMA]
+            assert [entry["index"] for entry in abi["probe_contract"]["ge_input_schema"]] == list(range(18))
+            assert case["inputs"][0]["shape"] == case["outputs"][0]["shape"] == [1, 256, sequence, 16]
+            assert case["inputs"][4]["dtype"] == case["inputs"][5]["dtype"] == "int64"
+            cpp = (folder / "probe.cpp").read_text()
+            assert 'DynamicInputRegister("key", 1);' in cpp and 'DynamicInputRegister("value", 1);' in cpp
+            assert 'OptionalInputRegister("pse_shift");' in cpp
+            assert 'OptionalInputRegister("actual_seq_lengths_q_back");' in cpp
+            assert cpp.index('DynamicInputRegister("value", 1)') < cpp.index('OptionalInputRegister("pse_shift")') < cpp.index('OptionalInputRegister("atten_mask")')
+            assert 'InputRegister("key0")' not in cpp and 'InputRegister("value0")' not in cpp
+
+
+def test_new_operator_bundle_compare_and_scalar_wire(setup, tmp_path, monkeypatch):
+    binding, ge, ddk = setup
+    _mock_tools(monkeypatch)
+    root = tmp_path / "new-compiled"
+    manifest = build_fused_probes(root, binding, cases="cache_decode,attention_decode",
+                                  ge_root=ge, ddk_root=ddk, ddk_id="test-ddk")
+    assert manifest["status"] == "COMPILED"
+    wire = (root / "bundle/cache_decode/step.tsv").read_text()
+    assert "input\t3\toffsetInBlock\tint32\t\t" in wire
+    board = tmp_path / "new-board"
+    _fake_results(root, board, manifest)
+    result = compare_fused_probes(root, board, tmp_path / "new-comparison", allow_host_fake=True)
+    assert all(case["process"] == "PASSED" for case in result["cases"])
+    assert all(case["numerical"] == "DIAGNOSTIC_COMPLETE" for case in result["cases"])
+
+
+def test_attention_recipe_cpp_parser_reads_dynamic_elements_and_absent_slots(setup, tmp_path):
+    compiler = shutil.which("g++")
+    if compiler is None:
+        pytest.skip("C++ compiler unavailable")
+    binding, _, _ = setup
+    root = tmp_path / "attention-parser"
+    result = build_fused_probes(root, binding, cases="attention_decode")
+    assert result["status"] == "SOURCE_READY"
+    folder = root / "cases/attention_decode"
+    executable = tmp_path / "attention-recipe-reader"
+    subprocess.run([compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-DQ35_RECIPE_PARSE_ONLY",
+                    str(folder / "probe.cpp"), "-o", str(executable)], check=True, capture_output=True, text=True)
+    parsed = subprocess.run([str(executable), str(folder / "recipe/graph.recipe")],
+                            check=True, capture_output=True, text=True, timeout=15)
+    assert parsed.stdout.startswith("RECIPE_VALID ")
+    assert "AIR_EXPORTED" not in parsed.stdout  # host parser check, no GE/compiler/kernel claim
 
 
 @pytest.mark.parametrize("initial_dtype,final_dtype", [("float32", "float32"), ("float16", "float32"), ("float16", "float16")])

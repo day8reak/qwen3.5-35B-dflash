@@ -18,6 +18,7 @@ import struct
 from ..ge_type_contracts import validate_record_types as _legacy_validate_record_types
 from ..ge_recipe import _CPP as _LEGACY_CPP, _string, _integer
 from ..ge_recipe_read import _Reader as _LegacyReader
+from .ir import ATTENTION_CONNECTED_PORTS, attention_registration_cpp
 
 _DT = {"float16": (1, 2), "int32": (2, 4), "int64": (3, 8), "bool": (4, 1),
        "float32": (5, 4), "int16": (6, 2)}
@@ -74,7 +75,11 @@ def _attribute(value):
 def validate_record_types(record):
     # Extend only public Cast's enum. Other primitive contracts remain shared;
     # custom schemas are validated by bindings before graph construction.
-    if record["type"] == "Cast" and any(p["dtype"] in {"float32", "int16"}
+    if record["type"] == "AdnFusedInferAttention":
+        if (tuple(port["port"] for port in record["inputs"]) != ATTENTION_CONNECTED_PORTS
+                or [port["port"] for port in record["outputs"]] != ["attention_out"]):
+            raise ValueError("documented attention probe requires key/value dynamic lists of one and fixed optional-slot wiring")
+    elif record["type"] == "Cast" and any(p["dtype"] in {"float32", "int16"}
                                         for p in record["outputs"]):
         inputs, outputs = record["inputs"], record["outputs"]
         if (len(inputs) != 1 or inputs[0]["port"] != "x" or len(outputs) != 1
@@ -217,6 +222,9 @@ def _extended_cpp():
          "d.dtype == 1 || d.dtype == 6 ? 2 : d.dtype == 2 || d.dtype == 5 ? 4 : d.dtype == 3 ? 8 : 1", 1),
         ("case 4: return ge::DT_BOOL;",
          "case 4: return ge::DT_BOOL; case 5: return ge::DT_FLOAT; case 6: return ge::DT_INT16;", 1),
+        ('    if (r.type == "ConcatD")',
+         '    if (r.type == "AdnFusedInferAttention") {\n' + attention_registration_cpp()
+         + '\n    } else if (r.type == "ConcatD")', 1),
     )
     for old, new, expected in replacements:
         if source.count(old) != expected:
@@ -308,6 +316,8 @@ def _read(reader):
                 raise ValueError("FileConstant descriptor and metadata disagree")
         if op_type == "ConcatD" and [port["port"] for port in record["inputs"]] != [f"x{i}" for i in range(len(record["inputs"]))]:
             raise ValueError("ConcatD dynamic ports must be contiguous")
+        if op_type == "AdnFusedInferAttention":
+            validate_record_types(record)
         records.append(record)
     inputs, seen_inputs = [], set()
     for order in range(reader.count(65536, "graph input", minimum=1, item_bytes=4)):

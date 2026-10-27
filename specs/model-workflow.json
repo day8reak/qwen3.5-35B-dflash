@@ -58,9 +58,11 @@
         "operators": [
           "ChunkGatedDeltaRule",
           "LinearAttentionConvstateUpdate",
-          "AdnRmsNorm"
+          "AdnRmsNorm",
+          "CacheUpdate",
+          "AdnFusedInferAttention"
         ],
-        "cases": 5,
+        "cases": 9,
         "scope": "Standalone calls only; real export/compile/load/process/numerical and placement statuses recorded separately",
         "latest_user_report": {
           "date": "2026-10-27",
@@ -80,12 +82,20 @@
             "applied_calls_per_case": 1,
             "rejected_calls_per_case": 0
           },
-          "load": "NOT_RUN",
-          "process": "NOT_RUN",
-          "numerical": "NOT_RUN",
+          "load": "PASSED",
+          "process": "PASSED",
+          "numerical": "DIAGNOSTIC_COMPLETE_WITH_LARGE_MISMATCH",
           "placement": "UNVERIFIED",
-          "scope": "Two standalone GDN cases only; raw artifacts not obtained for hash revalidation. No full-model or device validation claim.",
-          "next_command_document": "docs/current-status.md#用户现在执行什么"
+          "scope": "User pasted two standalone GDN execution reports; original returned files not obtained for local hash revalidation. Numerical correctness not accepted; no full-model or NPU placement pass.",
+          "next_command_document": "docs/current-status.md#用户现在执行什么",
+          "board_run_name": "fused-board-ec7f1df7f0b1",
+          "diagnostics": {
+            "gdn_prefill_core_relative_l2": 0.9992132279397122,
+            "gdn_prefill_state_relative_l2": 0.8856394981722032,
+            "gdn_decode_core_relative_l2": 1.0,
+            "gdn_decode_core_all_zero": true,
+            "gdn_decode_state_relative_l2": 0.9696434098100927
+          }
         }
       }
     }
@@ -110,7 +120,7 @@
       "status": "pending",
       "owner": "model-workflow",
       "evidence": "docs/ge-guide.md",
-      "note": "Document ports mapped; two standalone GDN OMC compilations user-reported PASSED. Conv/RMS compatibility and installed-kernel device execution remain unverified."
+      "note": "Five custom operator types now have standalone invocation probes. GDN user-reported load/process completed with large numerical mismatches; remaining operator calls unverified."
     },
     {
       "name": "integration",
@@ -119,7 +129,7 @@
       "evidence": "docs/current-status.md",
       "working_directory": "$AI_RUN_DIR",
       "next_command_document": "docs/current-status.md#用户现在执行什么",
-      "note": "Full-model structures generated locally; user-reported GDN prefill/decode OMC compilation passed. Next run the existing two compiled cases on board using the current-status commands; do not repeat compilation or expand probes. Device execution and full-weight integration remain pending."
+      "note": "First complete invocation coverage of all five required custom operator types. Reuse GDN OMC, compile missing cases and execute successful compilations through run_fused_probes.py --all-ops. Numerical alignment and full model integration remain incomplete."
     },
     {
       "name": "accuracy",
@@ -143,7 +153,7 @@
       "note": "No device validated release."
     }
   ],
-  "probe_policy": "Historical broad probes remain archived; only five focused calls for the three user-requested documented fused operators are active.",
+  "probe_policy": "Only the five documented custom operator types are active: nine focused prefill/decode/RMS calls. Existing compiled cases are reused; unrelated historical broad probes stay archived.",
   "evidence": "specs/verification.json",
   "delivery_plan": {
     "priority": "This-week runnable structure; parallel integration before accuracy/performance closure",

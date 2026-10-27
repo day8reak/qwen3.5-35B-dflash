@@ -170,18 +170,22 @@ struct Model {
         std::to_string(static_cast<int>(dim.GetFormat()));
     const bool trailing = IsTrailingOnePadding(shape, actual);
     const bool leading = IsLeadingOnePadding(shape, actual);
-    const bool padded = trailing || leading;
+    const bool scalar = shape.empty() && !actual.empty() && actual.size() <= 4 &&
+                        std::all_of(actual.begin(), actual.end(), [](auto dim) { return dim == 1; });
+    const bool padded = trailing || leading || scalar;
     if (dim.GetFormat() != hiai::Format::ND || (actual != shape && !padded))
       throw std::runtime_error(std::string("HIAI OMC tensor shape/format differs from ") +
           (stateful ? "stateful ND ABI: " : "ND ABI v2: ") + context);
     if (padded)
-      std::cerr << "HIAI accepted ND " << (trailing ? "trailing-one" : "leading-one")
+      std::cerr << "HIAI accepted ND " << (scalar ? "scalar-one" : trailing ? "trailing-one" : "leading-one")
                 << " padding for " << context
                 << "; using runtime descriptor\n";
     if (dtype != hiai::HIAI_DATATYPE_FLOAT16 && dtype != hiai::HIAI_DATATYPE_INT32 &&
-        !(stateful && (dtype == hiai::HIAI_DATATYPE_FLOAT32 || dtype == hiai::HIAI_DATATYPE_INT16)))
+        !(stateful && (dtype == hiai::HIAI_DATATYPE_FLOAT32 || dtype == hiai::HIAI_DATATYPE_INT16 ||
+                       dtype == hiai::HIAI_DATATYPE_INT64)))
       throw std::invalid_argument("ABI v2 allows only FP16 features and INT32 tokens/masks");
-    std::uint64_t bytes = dtype == hiai::HIAI_DATATYPE_FLOAT16 || dtype == hiai::HIAI_DATATYPE_INT16 ? 2 : 4;
+    std::uint64_t bytes = dtype == hiai::HIAI_DATATYPE_INT64 ? 8 :
+                          dtype == hiai::HIAI_DATATYPE_FLOAT16 || dtype == hiai::HIAI_DATATYPE_INT16 ? 2 : 4;
     for (auto n : shape) {
       if (!n || bytes > UINT32_MAX / n)
         throw std::runtime_error("HIAI tensor exceeds uint32 byte-size limit");
@@ -211,10 +215,11 @@ HiaiProbe ProbeHiai() {
 }
 
 std::size_t HiaiTensorBytes(const HiaiTensorSpec& spec) {
-  if (spec.name.empty() || spec.shape.empty() || spec.shape.size() > 8 ||
-      (spec.dtype != "int32" && spec.dtype != "int16" && spec.dtype != "float16" && spec.dtype != "float32"))
-    throw std::invalid_argument("ordered tensor requires a name, rank 1..8 and int16/int32/float16/float32 dtype");
-  std::size_t bytes = spec.dtype == "float16" || spec.dtype == "int16" ? 2 : 4;
+  if (spec.name.empty() || spec.shape.size() > 8 ||
+      (spec.dtype != "int32" && spec.dtype != "int16" && spec.dtype != "int64" &&
+       spec.dtype != "float16" && spec.dtype != "float32"))
+    throw std::invalid_argument("ordered tensor requires a name, rank 0..8 and int16/int32/int64/float16/float32 dtype");
+  std::size_t bytes = spec.dtype == "int64" ? 8 : spec.dtype == "float16" || spec.dtype == "int16" ? 2 : 4;
   for (auto dim : spec.shape) {
     if (!dim || bytes > kStatefulTensorLimit / dim)
       throw std::invalid_argument("stateful tensor exceeds 512 MiB or has a zero dimension");
@@ -241,6 +246,8 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
   std::uint64_t total = 0;
   for (const auto* specs : {&inputs, &outputs}) {
     for (const auto& spec : *specs) {
+      if (!fused_operator_probe && (spec.shape.empty() || spec.dtype == "int64"))
+        throw std::invalid_argument("scalar/INT64 IO is restricted to the explicit fused-operator contract");
       total += HiaiTensorBytes(spec);
       if (total > kStatefulTotalLimit)
         throw std::invalid_argument("stateful target IO exceeds 2 GiB");
@@ -256,6 +263,7 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
       const auto& spec = specs[i];
       const auto dtype = spec.dtype == "float16" ? hiai::HIAI_DATATYPE_FLOAT16 :
                          spec.dtype == "float32" ? hiai::HIAI_DATATYPE_FLOAT32 :
+                         spec.dtype == "int64" ? hiai::HIAI_DATATYPE_INT64 :
                          spec.dtype == "int16" ? hiai::HIAI_DATATYPE_INT16 : hiai::HIAI_DATATYPE_INT32;
       impl_->target.Add(input, i, spec.shape, dtype, true);
       const auto& tensor = (input ? impl_->target.inputs : impl_->target.outputs).back();

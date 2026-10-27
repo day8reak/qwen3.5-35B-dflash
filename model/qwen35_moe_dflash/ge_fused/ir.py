@@ -19,6 +19,29 @@ from ..ge_ir import DTYPES as _LEGACY_DTYPES, Graph as _Graph, Value
 DTYPES = {**_LEGACY_DTYPES, "float32": np.dtype("<f4"), "int16": np.dtype("<i2")}
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_./-]*")
 
+# Document §4.6: these are GE schema slots, not the compact Data boundary.
+# key/value are dynamic lists with one tensor each in this diagnostic profile.
+ATTENTION_INPUT_SCHEMA = (
+    ("query", "required"), ("key", "dynamic"), ("value", "dynamic"),
+    ("pse_shift", "optional"), ("atten_mask", "optional"),
+    ("actual_seq_lengths_q", "optional"), ("actual_seq_lengths_kv", "optional"),
+    ("dequant_scale1", "optional"), ("quant_scale1", "optional"),
+    ("dequant_scale2", "optional"), ("quant_scale2", "optional"),
+    ("quant_offset2", "optional"), ("antiquant_scale", "optional"),
+    ("antiquant_offset", "optional"), ("block_table", "optional"),
+    ("kv_padding_size", "optional"), ("all_seq_lengths_q", "optional"),
+    ("actual_seq_lengths_q_back", "optional"),
+)
+ATTENTION_CONNECTED_PORTS = ("query", "key0", "value0", "atten_mask", "actual_seq_lengths_q",
+                             "actual_seq_lengths_kv", "block_table", "all_seq_lengths_q")
+
+
+def attention_registration_cpp():
+    """Register real dynamic/optional GE ports without compressing absent slots."""
+    calls = {"required": "InputRegister", "optional": "OptionalInputRegister", "dynamic": "DynamicInputRegister"}
+    return "\n".join(f'      {calls[kind]}("{port}"' + (", 1" if kind == "dynamic" else "") + ");"
+                     for port, kind in ATTENTION_INPUT_SCHEMA)
+
 
 @dataclass
 class CustomNode:

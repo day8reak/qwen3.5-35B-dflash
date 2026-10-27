@@ -18,7 +18,9 @@ from qwen35_moe_dflash.compile import _stateful_json
 from qwen35_moe_dflash.elf_dynamic import dynamic_info
 from qwen35_moe_dflash.ge_fused.bindings import OperatorBindings
 from qwen35_moe_dflash.ge_fused.export import _step_file
-from qwen35_moe_dflash.ge_fused.probes import _validate_probe_manifest, _wire, compare_fused_probes
+from qwen35_moe_dflash.ge_fused.probes import (
+    _CASES, _validate_probe_manifest, _wire, build_fused_probes, compare_fused_probes,
+)
 from qwen35_moe_dflash.hashing import sha256_file
 from qwen35_moe_dflash.hdc_run import Hdc, _file_record, _positive, _relative, _text, _upload
 from qwen35_moe_dflash.hiai_deployment import (
@@ -30,6 +32,8 @@ def parser():
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--probe-run", default=os.environ.get("FUSED_PROBE_RUN"), help="existing compiled probe directory; defaults to FUSED_PROBE_RUN")
     result.add_argument("--output", help="new directory below AI_RUN_DIR; otherwise allocated automatically")
+    result.add_argument("--all-ops", action="store_true",
+                        help="reuse compiled cases, compile missing cases for all five custom operators, then run all compiled cases")
     result.add_argument("--timeout-seconds", type=_positive, default=3600)
     return result
 
@@ -132,7 +136,7 @@ def _tail(path):
             print(str(path) + ":\n" + "\n".join(text.splitlines()[-35:]), file=sys.stderr)
 
 
-def execute(args):
+def execute(args, *, runner_cache=None):
     storage = Path(_text(os.environ.get("AI_RUN_DIR"), "AI_RUN_DIR"))
     out = output_path(args.output or storage / ("fused-board-" + uuid.uuid4().hex[:12]))
     out.mkdir(parents=True, exist_ok=False)
@@ -183,13 +187,24 @@ def execute(args):
         hdc.shell("command -v sha256sum >/dev/null && " + " && ".join(
             "test -d " + shlex.quote(path) + " && test -r " + shlex.quote(path) for path in paths), "preflight")
         result["stage"] = "build-runner"
-        print("fused-board: building current runner; reusing compiled OMC files", flush=True)
-        runner = _build_runner(out, args.timeout_seconds)
+        if runner_cache and "runner" in runner_cache:
+            print("fused-board: reusing this batch's runner and existing OMC files", flush=True)
+            runner = runner_cache["runner"]
+            if sha256_file(runner) != runner_cache["sha256"]:
+                raise ValueError("runner changed during this batch")
+            native_build = runner_cache["native_build"]
+        else:
+            print("fused-board: building current runner; reusing compiled OMC files", flush=True)
+            runner = _build_runner(out, args.timeout_seconds)
+            native_build = out / "native"
+            if runner_cache is not None:
+                runner_cache.update(runner=runner, sha256=sha256_file(runner), native_build=native_build)
+        result["runner_build"] = str(native_build)
         uploads.append(_file_record(runner, "runner"))
         if private:
             result["libraries"] = {"mode": "existing-board-directory", "path": private, "compatibility": "UNVERIFIED"}
         else:
-            discovery = discover_libraries(runner, out / "native")
+            discovery = discover_libraries(runner, native_build)
             libraries = [_file_record(path.resolve(), "lib/" + str(_relative(path.name))) for path in discovery["libraries"]]
             dependencies = [{"name": PurePosixPath(entry["remote"]).name, "kind": "runner" if entry["remote"] == "runner" else "library",
                              "sha256": entry["sha256"], **dynamic_info(entry["local"])} for entry in [uploads[-1], *libraries]]
@@ -292,9 +307,107 @@ def execute(args):
     return result
 
 
+def _compile_missing(root, output, missing):
+    manifest = _stateful_json(root / "manifest.json")
+    diagnosis = os.environ.get("TBE_DIAG_JOB")
+    return build_fused_probes(
+        output, _step_file(root, manifest["bindings"]),
+        ge_root=_text(os.environ.get("CANN_ROOT"), "CANN_ROOT"),
+        ddk_root=_text(os.environ.get("CPRO_DDK_ROOT"), "CPRO_DDK_ROOT"),
+        ddk_id=manifest["ddk_id"], cases=missing, conv_history_width=4,
+        tbe_diagnosis=str(Path(diagnosis) / "diagnosis") if diagnosis else None,
+    )
+
+
+def run_all(args):
+    """Keep old and new manifests separate; reuse only their recorded binaries."""
+    storage = Path(_text(os.environ.get("AI_RUN_DIR"), "AI_RUN_DIR"))
+    out = output_path(args.output or storage / ("fused-all-" + uuid.uuid4().hex[:12]))
+    out.mkdir(parents=True, exist_ok=False)
+    result = {"status": "FAILED", "output": str(out), "executions": [], "probe_runs": [],
+              "model_compilation": "MISSING_CASES_ONLY", "numerical_acceptance": "NOT_DEFINED",
+              "runtime_placement": "UNVERIFIED", "cases": []}
+    rows = {name: {"name": name, "role": role, "construction": "NOT_RUN", "export": "NOT_RUN",
+                   "compile": "NOT_RUN", "load": "NOT_RUN", "process": "NOT_RUN", "numerical": "NOT_RUN"}
+            for name, role, _ in _CASES}
+    try:
+        root = Path(_text(args.probe_run, "FUSED_PROBE_RUN / --probe-run")).expanduser().resolve()
+        if root == out or root in out.parents:
+            raise ValueError("batch output must be separate from the existing probe directory")
+        original, compiled, _ = _prepare(root)
+        if os.environ.get("CPRO_DDK_ID") and os.environ["CPRO_DDK_ID"] != original["ddk_id"]:
+            raise ValueError("CPRO_DDK_ID differs from the compiled probe manifest")
+        reusable = {case["name"] for case in compiled}
+        missing = [name for name in rows if name not in reusable]
+        result.update(reused_cases=sorted(reusable), compiled_cases_requested=missing)
+        groups = [(root, original)]
+        if missing:
+            print("fused-all: compiling missing cases: " + ", ".join(missing), flush=True)
+            generated = out / "probes"
+            try:
+                manifest = _compile_missing(root, generated, missing)
+                groups.append((generated, manifest))
+            except Exception as error:
+                result["compile_error"] = f"{type(error).__name__}: {error}"
+        runner_cache = {}
+        for index, (probe_run, manifest) in enumerate(groups):
+            result["probe_runs"].append(str(probe_run))
+            for case in manifest["cases"]:
+                rows[case["name"]].pop("error", None)
+                rows[case["name"]].update(load="NOT_RUN", process="NOT_RUN", numerical="NOT_RUN")
+                rows[case["name"]].update({key: case[key] for key in
+                    ("construction", "export", "compile", "error") if key in case}, probe_run=str(probe_run))
+            if not any(case.get("status") == "COMPILED" for case in manifest["cases"]):
+                continue
+            board_args = argparse.Namespace(**vars(args))
+            board_args.probe_run, board_args.output = str(probe_run), str(out / f"board-{index + 1}")
+            try:
+                execution = execute(board_args, runner_cache=runner_cache)
+                result["executions"].append(execution)
+                comparison = Path(board_args.output) / "comparison/report.json"
+                if comparison.is_file():
+                    for case in _stateful_json(comparison)["cases"]:
+                        # A failed legacy case can be retried by the new group.
+                        rows[case["name"]].update({key: case[key] for key in
+                            ("load", "process", "numerical", "error") if key in case})
+            except Exception as error:
+                result["executions"].append({"status": "FAILED", "output": board_args.output,
+                                             "error": f"{type(error).__name__}: {error}"})
+        if (not result.get("compile_error") and result["executions"]
+                and all(item["status"] == "EXECUTION_COMPLETE" for item in result["executions"])
+                and all(row["compile"] == "PASSED" and row["process"] == "PASSED" for row in rows.values())):
+            result["status"] = "EXECUTION_COMPLETE"
+    except Exception as error:
+        result["error"] = f"{type(error).__name__}: {error}"
+    result["cases"] = list(rows.values())
+    lines = ["Five custom operator invocation coverage", "",
+             "case | construction | export | compile | load | process | numerical diagnostic"]
+    for row in rows.values():
+        lines.append(" | ".join(str(row[key]) for key in
+            ("name", "construction", "export", "compile", "load", "process", "numerical")))
+        if row.get("error"):
+            lines.append("  " + row["error"][:400])
+    for item in result["executions"]:
+        lines.append(f"Board result: {item['output']} ({item['status']})")
+        if item.get("error"):
+            lines.append("  " + item["error"][:400])
+    for probe_run in result["probe_runs"]:
+        lines.append("Compilation details: " + str(Path(probe_run) / "report.txt"))
+    for key in ("error", "compile_error"):
+        if key in result:
+            lines.append(result[key])
+    lines += ["", "Numerical acceptance is NOT_DEFINED; execution placement remains UNVERIFIED.",
+              "Conv width 4 is an explicit invocation candidate; its state ordering is not validated."]
+    (out / "report.txt").write_text("\n".join(lines) + "\n")
+    result["comparison"] = str(out / "report.txt")
+    save_json(out / "result.json", result)
+    return result
+
+
 def main(argv=None):
     try:
-        result = execute(parser().parse_args(argv))
+        args = parser().parse_args(argv)
+        result = run_all(args) if args.all_ops else execute(args)
     except Exception as error:
         print(f"fused-board: {type(error).__name__}: {error}", file=sys.stderr)
         return 1

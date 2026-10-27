@@ -66,7 +66,7 @@ tests/                        Python 模型、状态、导出与执行回归
 | `ge_fused/emitter.py` | 融合节点及普通节点生成真实 GE 构图调用 |
 | `ge_fused/recipe.py` | 新图描述的读写，含融合多输出信息 |
 | `ge_fused/export.py`、`ge_fused/__init__.py` | 完整无权重target/draft构图、新状态图AIR及单步输入产物编排 |
-| `ge_fused/probes.py` | 仅GDN、卷积状态更新、RMS三个融合算子的独立构图、编译与结果诊断 |
+| `ge_fused/probes.py` | GDN、卷积状态更新、RMS、CacheUpdate和分页Attention五类算子的9例独立调用；生产模型接入另行验证 |
 
 `--fused-ops none` 使用展开图，`gdn,conv_state,rms` 可按角色选择。绑定文件把逻辑角色映射到黄区算子的真实 GE 端口；它不会安装或实现 kernel。用法集中在 [GE 指南](ge-guide.md)。
 

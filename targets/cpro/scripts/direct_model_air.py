@@ -28,13 +28,15 @@ def _add_stateful_commands(sub):
     inspect.add_argument("--probe-run", required=True)
     inspect.add_argument("--ddk-root", required=True)
     inspect.add_argument("--output", required=True)
-    probe = sub.add_parser("probe-fused-ops", help="build selected calls to the three documented fused operators; no model checkpoint")
+    probe = sub.add_parser("probe-fused-ops", help="build selected calls to five documented custom operators; no model checkpoint")
     probe.add_argument("--output", required=True)
     probe.add_argument("--bindings", required=True)
     probe.add_argument("--ge-root", help="serialize real AIR; omit for source generation only")
     probe.add_argument("--ddk-root", help="compile each AIR with the selected target DDK")
     probe.add_argument("--ddk-id")
-    probe.add_argument("--cases", help="comma-separated case subset, e.g. gdn_prefill,gdn_decode; default: all five")
+    probe.add_argument("--cases", help="comma-separated case names or all for all nine; default: original five GDN/conv/RMS cases")
+    probe.add_argument("--conv-history-width", type=int, choices=(3, 4), default=3,
+                       help="3 uses document binding; 4 is an installed-shape invocation candidate without a semantic reference")
     probe.add_argument("--tbe-diagnosis", help="completed TBE diagnosis directory; enable an evidence-bound, run-local platform-name adapter")
     probe.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
     probe.add_argument("--cxx11-abi", choices=(0, 1), type=int, default=0)
@@ -201,8 +203,8 @@ def main():
                 args.output, args.bindings, ge_root=args.ge_root, ddk_root=args.ddk_root,
                 ddk_id=args.ddk_id, cxx=args.cxx, cxx11_abi=args.cxx11_abi,
                 timeout_seconds=args.timeout_seconds,
-                cases=tuple(name.strip() for name in args.cases.split(",")) if args.cases is not None else None,
-                tbe_diagnosis=args.tbe_diagnosis)
+                cases="all" if args.cases == "all" else tuple(name.strip() for name in args.cases.split(",")) if args.cases is not None else None,
+                tbe_diagnosis=args.tbe_diagnosis, conv_history_width=args.conv_history_width)
         elif args.command == "compare-fused-probes":
             from qwen35_moe_dflash.ge_fused.probes import compare_fused_probes
             result = compare_fused_probes(args.probe_run, args.board_run, args.output,

@@ -8,7 +8,7 @@ namespace hiai {
 using AIStatus = std::int32_t;
 constexpr AIStatus AI_SUCCESS=0, AI_FAILED=1;
 enum HIAI_DataType { HIAI_DATATYPE_FLOAT32=1, HIAI_DATATYPE_FLOAT16=2,
-                     HIAI_DATATYPE_INT32=3, HIAI_DATATYPE_INT16=5 };
+                     HIAI_DATATYPE_INT32=3, HIAI_DATATYPE_INT16=5, HIAI_DATATYPE_INT64=7 };
 enum class Format { NCHW=0, NHWC=1, ND=2 };
 constexpr int AiModelDescription_Frequency_HIGH=3, HIAI_FRAMEWORK_NONE=0,
               HIAI_MODELTYPE_OFFLINE=1, AiModelDescription_DeviceType_NPU=0;
