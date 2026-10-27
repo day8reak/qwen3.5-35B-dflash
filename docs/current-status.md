@@ -10,14 +10,14 @@
 |---|---|
 | PyTorch完整结构 | 全尺寸meta模型及层级FX图；不加载权重 |
 | GE完整结构 | target/draft完整节点、连边、C++和recipe；融合可选 |
-| 融合算子探针 | 用户回传：5例AIR导出成功、OMC编译失败；当前核对DDK接口与编译子进程错误 |
+| 融合算子探针 | 5例AIR成功、OMC失败：GDN平台初始化异常；conv状态宽度不符；RMS维推注册缺失 |
 | 真实权重AIR导出 | 旧双图支持完整FP16；新GE target支持显式缓存 |
 | 状态执行 | 主机fake prefill→decode接续通过；真实板端待验证 |
 | 尚未完成 | W4A8映射、常驻缓存与native DFlash调度、完整模型设备精度和性能 |
 
 ## 用户现在执行什么
 
-**先读取本次失败日志和已安装接口，不重编、不上板。** 保留 `FUSED_PROBE_RUN` 指向刚才失败的 `probes` 目录，沿用当前环境变量：
+**补齐GDN平台错误的调用链、编译环境和状态读写类型，不重编、不上板。** 上次报告已定位 `te_update_version() return error`，但截掉了中间调用帧。更新后沿用原 `FUSED_PROBE_RUN`，使用新的输出目录：
 
 ```bash
 cd "$REPO_DIR"
@@ -30,9 +30,15 @@ export FUSED_INSPECT_JOB="$(mktemp -d "$AI_RUN_DIR/fused-inspect-XXXXXXXX")"
 cat "$FUSED_INSPECT_JOB/inspection/report.txt"
 ```
 
-回传上面的 `report.txt`。完整日志和找到的接口文本保存在同目录的 `logs/`、`installed/`，只读取DDK，不导入或执行其中代码。
+回传上面的 `report.txt`。此命令只读已有日志、环境记录及报错指向的Python源码，不执行TBE、不修改DDK。
 
-当前结论：conv输入状态在此DDK要求宽度4，文档写3；RMS未找到维推函数；GDN已进入自定义编译入口，但子进程退出原因待查，末态dtype也与文档有差异。暂不改缓存顺序或强行改dtype。新版本会保留后续编译的 `cases/<用例>/compile-work/`；旧版已删除的临时文件无法恢复。
+| 已定位 | 下一步要核对 |
+|---|---|
+| GDN子进程在 `te_update_version()` 退出 | 调用参数、实际TBE源码和DDK平台配置；Conda安装路径本身不证明版本混用 |
+| conv输入 `x2` 要求宽度4，文档写3 | 安装版状态顺序、输出与控制参数；不能直接给生产缓存补一个槽位 |
+| `AdnRmsNorm` 无可用维推函数 | 当前DDK的注册与实现是否配套 |
+
+GDN的OMG末态dtype为FP16，文档绑定为FP32，仍待核对kernel实际读写类型。暂不改SoC名称、dtype或生产缓存语义。后续编译现场会保存在 `cases/<用例>/compile-work/`；旧版已删除的临时文件无法恢复。
 
 ## 首次生成与编译（当前失败批次无需重跑）
 

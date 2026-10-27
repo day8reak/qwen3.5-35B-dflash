@@ -6,6 +6,7 @@ rounding. No kernel is installed and no primitive fallback graph is generated.
 """
 from __future__ import annotations
 
+import ast
 import json
 import math
 import os
@@ -64,7 +65,7 @@ def inspect_fused_probes(probe_run, ddk_root, output_dir):
     source_hint = re.compile(r"^\s*(?:def |class |@)|register|initial_state|last_recurrent_state|"
                              r"effective_length|llmConfig|llm_config|conv_state|rstd|"
                              r"get_soc|dtype|shape|chunk_size|output_final_state", re.I)
-    reports = []
+    reports, platform_paths = [], set()
 
     def read_text(path, base, relative, pattern, limit):
         record = {"source": str(path), "status": "UNREADABLE"}
@@ -87,6 +88,17 @@ def inspect_fused_probes(probe_run, ddk_root, output_dir):
                 primary = [i for i in hits if crash.search(lines[i])]
                 selected = sorted(set(primary[:limit] + selected[:2] + selected[-2:]))
             indices = sorted({j for i in selected for j in range(max(0, i - 2), min(len(lines), i + 4))})
+            if pattern is fault:
+                # Individual regex hits omit caller frames: retain whole bounded tracebacks.
+                for start in [i for i, line in enumerate(lines) if "Traceback (most recent call last):" in line][:4]:
+                    end = min(len(lines), start + 60)
+                    for j in range(start + 1, end):
+                        if re.match(r"^[\w.]+(?:Error|Exception):", lines[j]):
+                            end = j + 1
+                            break
+                    indices = sorted(set(indices).union(range(start, end)))
+                for match in re.finditer(r'File "(/[^"\n]+/tbe/common/platform/platform_info\.py)", line \d+', "\n".join(lines)):
+                    platform_paths.add(Path(match.group(1)))
             record.update(status="READ", **_record(destination, output), total_lines=len(lines),
                           matched_lines=len(hits), omitted_matches=max(0, len(hits) - len(selected)),
                           excerpts=[{"line": i + 1, "text": lines[i]} for i in indices])
@@ -105,6 +117,23 @@ def inspect_fused_probes(probe_run, ddk_root, output_dir):
             logs += sorted(p for p in work.rglob("*") if p.suffix in {".log", ".err", ".txt"})[:12]
         item = {"name": name, "construction": case.get("construction"), "export": case.get("export"),
                 "compile": case.get("compile"), "compile_work_retained": work.is_dir(), "logs": []}
+        env_path = folder / "omg-environment.json"
+        item["compiler_environment"] = {"source": str(env_path), "status": "UNREADABLE"}
+        try:
+            if root not in env_path.resolve().parents or env_path.stat().st_size > 32 * 1024 * 1024:
+                raise ValueError("environment record outside run or exceeds size limit")
+            saved_env = _stateful_json(env_path)
+            keys = ("PYTHONPATH", "LD_LIBRARY_PATH", "PATH", "DDK_PATH", "TOOLCHAIN_HOME", "HIAI_VERSION",
+                    "CCE_LIB_DIR", "SOC_VERSION", "KIRIN_CONF_JSON_PATH", "ASCEND_OPP_PATH", "PYTHONHOME")
+            safe_env = {key: value for key, value in saved_env.get("environment", {}).items()
+                        if key in keys and isinstance(value, str)}
+            dest = output / "logs" / name / "omg-environment.json"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            save_json(dest, {"environment": safe_env})
+            item["compiler_environment"].update(status="READ", source_sha256=sha256_file(env_path),
+                                                environment=safe_env, **_record(dest, output))
+        except (OSError, ValueError, TypeError, AttributeError) as error:
+            item["compiler_environment"]["error"] = str(error)
         for i, path in enumerate(logs):
             rec = read_text(path, root, f"logs/{name}/{i:02d}-{path.name}", fault, 8)
             if rec["status"] == "READ" and i == 0:
@@ -124,8 +153,49 @@ def inspect_fused_probes(probe_run, ddk_root, output_dir):
                     and any(key in name for key in names)):
                 relative = path.relative_to(ddk)
                 sources.append(read_text(path, ddk, "installed/" + relative.as_posix(), source_hint, 8))
+                if path.suffix.lower() in {".cpp", ".h", ".hpp"} and sources[-1]["status"] == "READ":
+                    lines = (output / sources[-1]["path"]).read_text(errors="replace").splitlines()
+                    state = re.compile(r"initial_state|last_recurrent_state|\byz\b")
+                    calls = [i for i, line in enumerate(lines) if "SetGlobalBuffer" in line
+                             and state.search("\n".join(lines[i:i + 3]))][:8]
+                    receivers = {match.group(1) for i in calls
+                                 for match in re.finditer(r"(\w+)\s*\.SetGlobalBuffer", lines[i])}
+                    declarations = [i for i, line in enumerate(lines) if "GlobalTensor" in line]
+                    declarations.sort(key=lambda i: not any(re.search(r"\b" + name + r"\b", lines[i]) for name in receivers))
+                    hits = calls + declarations[:12 - len(calls)]
+                    indices = sorted({j for i in hits for j in range(max(0, i - 1), min(len(lines), i + 4))})
+                    sources[-1]["state_storage"] = [{"line": i + 1, "text": lines[i]} for i in indices]
                 if len(sources) == 24:
                     break
+    platform_sources = []
+    for index, path in enumerate(sorted(platform_paths)[:4]):
+        # Only this exact traceback-named module is eligible outside the run/DDK.
+        if not path.is_absolute() or path.parts[-4:] != ("tbe", "common", "platform", "platform_info.py") or path.is_symlink():
+            continue
+        record = read_text(path, path.parent.resolve(), f"installed/platform-{index}/platform_info.py", re.compile(r"a^"), 1)
+        if record["status"] == "READ":
+            text = (output / record["path"]).read_text(errors="replace")
+            try:
+                tree = ast.parse(text)
+                nodes = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))
+                         or isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                         and node.name in {"te_update_version", "te_set_version"}]
+                indices = sorted({i for node in nodes for i in range(node.lineno - 1, node.end_lineno)})
+                lines = text.splitlines()
+                record["excerpts"] = [{"line": i + 1, "text": lines[i]} for i in indices]
+            except SyntaxError as error:
+                record["parse_error"] = str(error)
+        platform_sources.append(record)
+    directories = []
+    for relative in ("tools/platform/kirinx90", "ddk/ascendcpp/conf", "ddk/ascendc/conf",
+                     "ddk/tbe/lib64", "tools/tools_ascendc/package/python"):
+        path = ddk / relative
+        item = {"path": str(path), "exists": path.is_dir()}
+        try:
+            item["entry_sample"] = sorted(p.name for p in path.iterdir())[:12] if path.is_dir() else []
+        except OSError as error:
+            item["error"] = str(error)
+        directories.append(item)
     libraries = []
     for name in ("libai_npucore_ascendc_kernel.so", "libai_npucore_ascendcpp.so"):
         path = ddk / "tools/tools_omg/master/lib64" / name
@@ -133,14 +203,17 @@ def inspect_fused_probes(probe_run, ddk_root, output_dir):
     result = {"schema_version": 1, "artifact_kind": "qwen35-fused-probe-inspection", "status": "INSPECTED",
               "probe_manifest_sha256": sha256_file(root / "manifest.json"), "ddk_root": str(ddk),
               "declared_ddk_id": manifest.get("ddk_id"), "cases": reports, "installed_sources": sources,
-              "library_paths": libraries, "new_compilation": "NOT_RUN", "device_execution": "NOT_RUN",
+              "library_paths": libraries, "platform_sources": platform_sources, "ddk_directories": directories,
+              "new_compilation": "NOT_RUN", "device_execution": "NOT_RUN",
               "scope": "Read-only excerpts and copies; no DDK code imported, no bindings changed, no installed-kernel claim.",
-              "limits": "At most 24 matching interface filenames and 13 logs per case; 32 MiB/file. Absence is not proof of no registration. Old temporary compiler work may already be removed."}
+              "limits": "At most 24 interface files, 4 traceback-named platform modules, 13 logs/case, 4 tracebacks/log (60 lines each); 32 MiB/file. Absence is not proof of no registration. Old compiler work may be removed."}
     save_json(output / "report.json", result)
     lines = ["Existing fused probe failure inspection (no compilation or device execution)",
              f"DDK identity (declared): {manifest.get('ddk_id')}", ""]
     for case in reports:
         lines.append(f"{case['name']}: export={case['export']} compile={case['compile']} retained_work={case['compile_work_retained']}")
+        env = case["compiler_environment"]
+        lines.append(f"  Compiler environment [{env['status']}]: " + json.dumps(env.get("environment", {})))
         for record in case["logs"]:
             lines.append(f"  {record['source']} [{record['status']}]")
             for entry in record.get("excerpts", []) + record.get("descriptor_context", []):
@@ -150,10 +223,17 @@ def inspect_fused_probes(probe_run, ddk_root, output_dir):
     lines.append("\nInstalled interface text (read, never imported):")
     for record in sources:
         lines.append(f"{record['source']} [{record['status']}]")
-        for entry in record.get("excerpts", []):
+        for entry in record.get("excerpts", []) + record.get("state_storage", []):
             lines.append(f"  L{entry['line']}: {entry['text']}")
     if not sources:
         lines.append("No matching interface source filename found under selected DDK/ddk/ascendc/ops; registration is unresolved.")
+    lines.append("\nTraceback-named TBE platform source (read/AST only; never imported):")
+    for record in platform_sources:
+        lines.append(f"{record['source']} [{record['status']}]")
+        for entry in record.get("excerpts", []):
+            lines.append(f"  L{entry['line']}: {entry['text']}")
+    lines.append("\nSelected DDK directory samples (non-recursive):")
+    lines.extend(json.dumps(item) for item in directories)
     lines += ["", "Library path existence is diagnostic, not proof of the compile failure cause."]
     lines.extend(json.dumps(item) for item in libraries)
     lines.extend(["", result["limits"], "Full evidence: report.json, logs/, installed/."])

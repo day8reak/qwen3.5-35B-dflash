@@ -252,3 +252,57 @@ def test_hash_bound_runtime_failures_preserve_stage_without_numerical_claim(setu
     report = (output / "report.txt").read_text()
     assert all("Native " + stage + " failed" in report for stage in stages[:3])
     assert (output / "report.json").is_file()
+
+
+def test_inspection_preserves_traceback_and_reads_exact_platform_module_without_execution(setup, tmp_path, monkeypatch):
+    binding, _, ddk = setup
+    root = tmp_path / "source"
+    build_fused_probes(root, binding)
+    platform = tmp_path / "external/tbe/common/platform/platform_info.py"
+    platform.parent.mkdir(parents=True)
+    platform.write_text("import ctypes\nraise AssertionError('MUST NOT EXECUTE')\n"
+                        "def te_update_version(soc):\n    return native_update(soc)\n"
+                        "def te_set_version(soc):\n    return native_init(soc)\n"
+                        "def unrelated():\n    return 'DO_NOT_DISPLAY'\n")
+    case = root / "cases/gdn_prefill"
+    log = ("Traceback (most recent call last):\n" + "  caller frame\n" * 30 +
+           "  options = {'soc_version': 'kirinx90'}\n" +
+           f'  File "{platform}", line 4, in te_update_version\n' +
+           "RuntimeError: te_update_version() return error.\n")
+    (case / "compile.log").write_text(log)
+    (case / "omg-environment.json").write_text(json.dumps({
+        "environment": {"SOC_VERSION": "kirinx90", "PYTHONPATH": "/selected/tbe", "SECRET_TOKEN": "do-not-copy"},
+        "unrelated_secret": "do-not-copy"}))
+    cpp = ddk / "ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp"
+    cpp.parent.mkdir(parents=True)
+    cpp.write_text("".join(f"GlobalTensor<half> unrelated_{i};\n" for i in range(16)) +
+                   "GlobalTensor<half> state;\nstate.SetGlobalBuffer(\n    (__gm__ half *)initial_state);\n")
+    config = ddk / "ddk/ascendcpp/conf"
+    config.mkdir(parents=True)
+    (config / "soc.json").write_text('{}')
+    before = platform.read_bytes()
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("read-only inspection must not run tools"))
+    output = tmp_path / "inspection"
+    result = inspect_fused_probes(root, ddk, output)
+    report = (output / "report.txt").read_text()
+    excerpts = result["cases"][0]["logs"][0]["excerpts"]
+    assert [row["text"] for row in excerpts] == log.splitlines()
+    assert "native_update(soc)" in report and "native_init(soc)" in report
+    assert "DO_NOT_DISPLAY" not in report and "MUST NOT EXECUTE" not in report
+    assert platform.read_bytes() == before and not list(platform.parent.rglob("*.pyc"))
+    record = result["platform_sources"][0]
+    assert record["sha256"] == sha256_file(platform) and (output / record["path"]).read_bytes() == before
+    env = result["cases"][0]["compiler_environment"]
+    assert env["environment"] == {"SOC_VERSION": "kirinx90", "PYTHONPATH": "/selected/tbe"}
+    assert "do-not-copy" not in report and "do-not-copy" not in (output / env["path"]).read_text()
+    assert "GlobalTensor<half> state" in report and "state.SetGlobalBuffer" in report
+    assert next(row for row in result["ddk_directories"] if row["path"] == str(config))["entry_sample"] == ["soc.json"]
+    # A path with the same basename outside the exact TBE suffix is never collected.
+    other = tmp_path / "external/platform_info.py"
+    other.write_text("raise RuntimeError('unrelated')\n")
+    (case / "compile.log").write_text(f'Traceback (most recent call last):\n  File "{other}", line 1\n'
+                                     + "  frame\n" * 100 + "RuntimeError: long traceback\n")
+    limited = inspect_fused_probes(root, ddk, tmp_path / "bounded")
+    assert limited["platform_sources"] == []
+    indices = {row["line"] for row in limited["cases"][0]["logs"][0]["excerpts"]}
+    assert 60 in indices and 61 not in indices  # bounded traceback plus separate terminal-error context
