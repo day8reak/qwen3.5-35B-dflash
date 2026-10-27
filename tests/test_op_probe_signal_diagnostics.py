@@ -20,8 +20,10 @@ def _case(tmp_path, reference, actual):
                 "shape": list(reference.shape), "rtol": .01, "atol": .002}]}, board
 
 
-def test_tiny_zero_output_remains_visible_even_inside_existing_tolerance(tmp_path):
+@pytest.mark.parametrize("suite", ["gdn-accuracy", "gdn-core-accuracy"])
+def test_tiny_zero_output_remains_visible_even_inside_existing_tolerance(tmp_path, suite):
     case, board = _case(tmp_path, [.001, -.001, 0], [0, 0, 0])
+    case["probe_suite"] = suite
     result = compare_outputs(case, board)
     assert result["status"] == "PASSED"  # Preserve the old acceptance formula.
     output, = result["outputs"]
@@ -29,6 +31,7 @@ def test_tiny_zero_output_remains_visible_even_inside_existing_tolerance(tmp_pat
     signal = output["signal"]
     assert signal["actual"]["nonzero"] == 0
     assert signal["reference"]["nonzero"] == 2
+    assert signal["all_zero_with_nonzero_reference"] is True
     assert signal["relative_l2_to_reference"] == pytest.approx(1)
     assert signal["error_rms"] > 0
     assert signal["exact_elements"] == 1
@@ -38,6 +41,7 @@ def test_tiny_zero_output_remains_visible_even_inside_existing_tolerance(tmp_pat
     report = (tmp_path / "report.txt").read_text()
     assert "output 0 (chunk_core)" in report
     assert '"nonzero": 0' in report and '"relative_l2_to_reference": 1.0' in report
+    assert '"all_zero_with_nonzero_reference": true' in report
 
 
 def test_zero_reference_has_explicitly_undefined_relative_norm(tmp_path):
@@ -46,6 +50,7 @@ def test_zero_reference_has_explicitly_undefined_relative_norm(tmp_path):
     assert output["status"] == "FAILED"
     assert output["signal"]["relative_l2_to_reference"] is None
     assert output["signal"]["relative_l2_defined"] is False
+    assert output["signal"]["all_zero_with_nonzero_reference"] is False
     assert output["signal"]["actual"]["l2"] == .25
     json.dumps(output, allow_nan=False)
 

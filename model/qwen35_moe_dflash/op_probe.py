@@ -38,9 +38,9 @@ def parser():
                            help="named batch of related controls/candidates; excludes unrelated historical probes")
     p.add_argument("--exclude-family", choices=PROBE_FAMILIES, action="append", default=[],
                    help="with --suite, skip an already tested family; repeat to exclude several")
-    p.add_argument("--prepared", help="required only for --suite gdn-accuracy: prepared tiny model bundle")
-    p.add_argument("--reference", help="required only for --suite gdn-accuracy: matching reference.json")
-    p.add_argument("--omc", help="required only for --suite gdn-accuracy: original compiled model bundle")
+    p.add_argument("--prepared", help="required for gdn-accuracy/gdn-core-accuracy: prepared tiny model bundle")
+    p.add_argument("--reference", help="required for gdn-accuracy/gdn-core-accuracy: matching reference.json")
+    p.add_argument("--omc", help="required for gdn-accuracy/gdn-core-accuracy: original compiled model bundle")
     p.add_argument("--list-cases", action="store_true")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--prepare-only", action="store_true", help="write recipes and references without vendor tools")
@@ -278,24 +278,28 @@ def run(args):
         raise ValueError("--exclude-family requires --suite")
     provenance = None
     source_options = (args.prepared, args.reference, args.omc)
-    if args.suite == "gdn-accuracy":
+    accuracy_suite = args.suite in {"gdn-accuracy", "gdn-core-accuracy"}
+    if accuracy_suite:
         if not all(source_options):
-            raise ValueError("--suite gdn-accuracy requires --prepared, --reference and --omc")
+            raise ValueError(f"--suite {args.suite} requires --prepared, --reference and --omc")
         if args.exclude_family:
-            raise ValueError("--suite gdn-accuracy does not accept --exclude-family")
+            raise ValueError(f"--suite {args.suite} does not accept --exclude-family")
         from .op_probe_gdn_accuracy import cases_from_prepared
-        selected, provenance = cases_from_prepared(*source_options)
+        if args.suite == "gdn-core-accuracy":
+            selected, provenance = cases_from_prepared(*source_options, core_stages=True)
+        else:
+            selected, provenance = cases_from_prepared(*source_options)
         selected = list(selected)
     else:
         if any(value is not None for value in source_options):
-            raise ValueError("--prepared, --reference and --omc require --suite gdn-accuracy")
+            raise ValueError("--prepared, --reference and --omc require --suite gdn-accuracy or gdn-core-accuracy")
         selected = list(cases())
     names = {case["name"] for case in selected}
     if set(args.case) - names:
         raise ValueError("unknown probe cases: " + ", ".join(sorted(set(args.case) - names)))
     if args.case:
         selected = [c for c in selected if c["name"] in args.case]
-    elif args.suite and args.suite != "gdn-accuracy":
+    elif args.suite and not accuracy_suite:
         selected = [c for c in selected if c.get("probe_suite") == args.suite
                     and c.get("probe_family") not in args.exclude_family]
     if not selected:
@@ -310,9 +314,9 @@ def run(args):
     if resources is not None and provenance is not None:
         current_ddk = os.environ.get("CPRO_DDK_ID")
         if not current_ddk or current_ddk != provenance.get("ddk_id"):
-            raise ValueError("gdn-accuracy compiler DDK identity differs from original OMC")
+            raise ValueError(f"{args.suite} compiler DDK identity differs from original OMC")
         if sha256_file(resources[3]) != provenance.get("omg_sha256"):
-            raise ValueError("gdn-accuracy OMG hash differs from original OMC")
+            raise ValueError(f"{args.suite} OMG hash differs from original OMC")
     board_requested = not (args.prepare_only or args.compile_only)
     if board_requested:
         from .hdc_run import _text

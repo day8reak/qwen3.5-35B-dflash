@@ -101,5 +101,11 @@
     "Instrumented/probe graphs may change compiler placement and arithmetic; no root-cause claim before context controls.",
     "Rsqrt actual input means source host intermediate, not a captured original OMC internal tensor.",
     "No full AIR provenance chain, runtime NPU placement, full35B quality or >=2x speedup established."
-  ]
+  ],
+  "device_followup": {
+    "evidence": "specs/gdn-core-zero-user-report.json",
+    "status": "USER_REPORTED_ALL_THREE_EXECUTED_CORE_ZERO",
+    "numerical_passes": 1,
+    "numerical_failures": 2
+  }
 }

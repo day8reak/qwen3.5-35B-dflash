@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-27",
+  "run_id": "20261026T235815Z-8961-aa46fe",
+  "baseline_commit": "7cec25e",
+  "status": "HOST_VALIDATED_CORE_DEVICE_PROBES_PENDING",
+  "trigger": "specs/gdn-core-zero-user-report.json",
+  "scope": "Two same-weight tiny GDN diagnostics; production arithmetic, original OMC, tolerances and runtime deployment unchanged.",
+  "suite": {
+    "name": "gdn-core-accuracy",
+    "cases": [
+      {
+        "name": "gdn_layer0_core_stages",
+        "inputs": 1,
+        "outputs": 24,
+        "weights": 19
+      },
+      {
+        "name": "gdn_core_replay",
+        "inputs": 5,
+        "outputs": 14,
+        "weights": 0
+      }
+    ],
+    "replay_input_order": [
+      "query",
+      "key",
+      "value",
+      "decay",
+      "beta"
+    ],
+    "replay_input_source": "Exact FP16 host evaluation of the supplied prepared weights and prompt; not captured device intermediate values.",
+    "bindings": [
+      "original prepared/reference/OMC source and payload identities",
+      "original ABI and lowering policies",
+      "original DDK ID and OMG SHA256 before output creation",
+      "frozen five-input shape/dtype/byte count/raw FP16 SHA256"
+    ],
+    "output_aliases": "Single-chunk padded output and padded_core share one output_index; crop and transpose outputs remain distinct.",
+    "native_limits_review": "Full graph has25 IO tensors, replay19; rank <=4 and each tensor <=16KiB, within existing runner limits."
+  },
+  "validation": {
+    "distinct_python_tests_passed": 169,
+    "groups": {
+      "signal_and_report": 57,
+      "existing_gdn_graphs": 31,
+      "weighted_and_existing_accuracy": 74,
+      "new_core_accuracy": 7
+    },
+    "graph_parity": {
+      "checks": 16,
+      "baseline": "7cec25e",
+      "fields": [
+        "nodes",
+        "attributes",
+        "input/output edges",
+        "IDs/counter",
+        "weights",
+        "constant bytes"
+      ],
+      "coverage": [
+        "chunk S8/64/65 with native/gather and state outputs on/off",
+        "complete tiny target native/gather",
+        "linear attention native/gather"
+      ]
+    },
+    "new_regressions": [
+      "observers do not add computations or change default nodes",
+      "five replay inputs independently derived from actual weighted layer",
+      "original full-target layer0 and isolated core host equality",
+      "first-token zero-state formula",
+      "padded/cropped/transposed boundaries",
+      "real recipes preserve scan, compact Mul and gather policies",
+      "prepare-only CLI output counts, frozen payloads and provenance hashes"
+    ],
+    "docs": {
+      "shell_blocks_passed": 49,
+      "embedded_python_blocks_parsed": 2,
+      "spec_json_parse": "PASSED"
+    },
+    "review": "Independent read-only factory/report/native IO and final commands/provenance reviews found no blocking issues. Historical repeated requests were marked complete."
+  },
+  "original_context_comparison": {
+    "source": "user terminal result, with reported probe SHA256 verification",
+    "final_only_exact_elements": 48,
+    "staged_exact_elements": 48,
+    "elements": 48,
+    "both_max_abs": 0.0,
+    "both_relative_l2": 0.0,
+    "scope": "Valid original OMC layer0 features only, not all internal nodes."
+  },
+  "reports": [
+    {
+      "path": "$AI_RUN_DIR/gdn-observer-head-parity.json",
+      "sha256": "56319306a0cb387f002719eecfe6b15600846bc2c5460c4e36ed20b752ac5b4e"
+    },
+    {
+      "path": "$AI_RUN_DIR/signal-tests.xml",
+      "sha256": "1b1d504a82a54935e008244bfda2b7ea44da8078bf01d22b9ccfa78cd5971b36"
+    },
+    {
+      "path": "$AI_RUN_DIR/pytest-gdn-core-final.xml",
+      "sha256": "e6ebe1ca4136f6d060d6cdd1cf3b62b82cb262a84f1c52a176eef7180c55191a"
+    },
+    {
+      "path": "$AI_RUN_DIR/docs-check.json",
+      "sha256": "4e685e3b533c77b14f29f42e8bea13e9ce170f95b12b0de47be34be901166ffc"
+    }
+  ],
+  "files_sha256": {
+    "model/qwen35_moe_dflash/ge_target.py": "474dd387a145d3055fcb1334a98310b21135d4ab3813887d155269ac9e89afd4",
+    "model/qwen35_moe_dflash/op_probe.py": "a5f47e25740e8b6b7ac1d01544c45f91ead9ed4b660e44103a712d9c203d42e7",
+    "model/qwen35_moe_dflash/op_probe_cases.py": "3b6aef547631bc4bfceb3e7473ba6b7f39ec8379cc7881ffec6ee00a992c111d",
+    "model/qwen35_moe_dflash/op_probe_gdn_accuracy.py": "c533e33161e9b80cd47b46e017505bc64923f183673dbfb1701e9125ef51157f",
+    "model/qwen35_moe_dflash/op_probe_report.py": "6ab6cadfed9c6735edc6620e21de4911b0c0aa4e565b809e977223bda934723f",
+    "tests/test_op_probe_gdn_core_accuracy.py": "95050cae746856cc3a234322bd95a18cb58f60564ff71e278ef71db92bccf1d0",
+    "tests/test_op_probe_signal_diagnostics.py": "b18b19d4a43e9a21645878ee7bd1a894bcc100f950559e012cadf97bc26614a7"
+  },
+  "device_status": "NOT_RUN_LOCALLY; new two-case OMG/HDC validation pending on user server.",
+  "limitations": [
+    "No specific faulty operator, compiler pass or runtime backend identified.",
+    "New outputs and standalone replay may alter compilation context.",
+    "Old FP16 acceptance tolerances unchanged; all-zero signal flag is diagnostic.",
+    "No runtime NPU placement, full-model accuracy, full35B delivery or >=2x speedup established."
+  ],
+  "next_action": "docs/hdc-board-run.md#当前定位-core-首次归零的计算或裁剪边界"
+}

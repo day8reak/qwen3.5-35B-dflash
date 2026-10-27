@@ -40,11 +40,48 @@ PYTHONPATH="$REPO_DIR/model${PYTHONPATH:+:$PYTHONPATH}" python3 -m qwen35_moe_df
 
 存在参考偏差时命令仍返回FAIL，并保留完整诊断JSON；终端会显示每种模式的测量数、重复性及首差异。它只读取已有OMC/报告并核验哈希，不调用OMG/HDC，不改旧报告或参考。首差异的 `generated_index` 从0计数，长度不同还会明确哪一侧已结束。已有smoke的有效三行target Top1为 `[41,41,55]`，同权重主机为 `[41,41,45]`；只比较有效prompt位置，padding输出不计入。
 
-## 当前：检查第一层 GDN 分支为何贡献接近零
+## 当前：定位 core 首次归零的计算或裁剪边界
+
+用户 `ge-gdn-accuracy-20261027-082151` 的三个探针均编译、Load、Process及回收完成。第一层单输出和多输出探针数值失败，独立Rsqrt通过。多输出图的 `input_norm` 相对L2误差约0.00174，仍有128个非零值；`chunk_core` 却是128个零，后面的门控和输出投影也全零。`norm_input`只剩FP16舍入后的epsilon，`norm_gain=992`与这种输入相符，不能把该增益相对主机参考的差异单独归为Rsqrt故障。独立Rsqrt对实际主机norm输入的相对L2误差约0.00185。记录见 `specs/gdn-core-zero-user-report.json`。
+
+目前最早**已观察**的错误边界是core输出；前面的投影、卷积、q/k归一化和core内部尚未观察。另一个需要区分的情况是裁剪：GDN保持64行chunk，实际S8的结果要从中裁出8行，填充区本来全零。主机core有92个正常FP16数，仅冲零次正规数不能解释128个零。首token也不依赖历史状态，源图明确非零。这些检查缩小范围，但不确定具体设备算子或编译pass。
+
+用户随后完成已有文件对照：单输出及多输出探针的前3个有效位置共48个特征，均与原OMC逐元素相等，max_abs和relative L2都为0。当前两图复现了原故障在该边界的结果；这不等于其内部优化全部相同。该对照无需再跑。
+
+下一步仅运行两个新案例，复用原prepared实际权重、参考、OMC记录及相同DDK/OMG：
+
+- `gdn_layer0_core_stages`：观察原第一层投影、卷积/激活、core内部、裁剪前后及块结束输出。
+- `gdn_core_replay`：把同权重主机求得的query/key/value/decay/beta作为运行时输入，单独观察相同core，区分core之前的计算和core自身。
+
+这些观察点只引用已有节点，不改变默认模型计算，也不增加新的中间算术。把它们作为新模型输出仍可能改变编译优化，因此保留最终core及第一层输出作对照。原三个案例和独立Rsqrt无需重跑。新报告明确标出 `all_zero_with_nonzero_reference`，原精度门槛保持；新套件终端摘要简化，完整统计仍在 `report.json`。
+
+```bash
+git -C "$REPO_DIR" pull --ff-only &&
+export GE_GDN_CORE_RUN="$AI_RUN_DIR/ge-gdn-core-$(date +%Y%m%d-%H%M%S)" &&
+export GE_GDN_CORE_BOARD_RUN="${GE_GDN_CORE_RUN}-board" &&
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
+  --suite gdn-core-accuracy --prepared "$GE_PAIR_RUN/prepared" \
+  --reference "$GE_BOARD_RUN/reference.json" --omc "$GE_DRAFT_ROPE_RUN/omc" \
+  --compile-only --output "$GE_GDN_CORE_RUN" &&
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
+  --probe-run "$GE_GDN_CORE_RUN" --native-from "$OP_PROBE_RUN" \
+  --refresh-runner --replay-all --output "$GE_GDN_CORE_BOARD_RUN"
+```
+
+回传下面两份报告。原图上下文对照已完成；下节的 `vs_original_omc_valid_layer0` 命令仅保留供历史复现：
+
+```bash
+cat "$GE_GDN_CORE_BOARD_RUN/runtime-comparison.txt"
+cat "$GE_GDN_CORE_BOARD_RUN/arms/candidate_without_ddk_hcl/report.txt"
+```
+
+<a id="当前检查第一层-gdn-分支为何贡献接近零"></a>
+
+## 已完成：第一层 GDN 分支分阶段检查
 
 用户已完成原OMC特征采集：有效prompt的第0层relative L2约0.129，第2层约0.229；首token仍为55，源图和参考均为45。这里使用未量化FP16 tiny权重。对用户回传的512字节原始特征做主机干预实验，把三层GDN的输出投影结果置零，可以复现板端完整序列 `[55,54,49,9]`；第0、2层有效特征最大差仅约 `3.05e-5`、`6.10e-5`。这强烈指向GDN分支的有效贡献消失，但没有证明是哪一个算子或编译pass出错；跳过部分归一化也会造成类似现象。置零只用于定位，没有应用到生产图。证据见 `specs/gdn-accuracy-localization.json`。
 
-下一步只编译三个诊断案例，使用原prepared实际权重、原prompt和原OMC的lowering选项；核验来源、权重、ABI、DDK/OMG身份，不重新生成随机权重或完整模型：
+以下三个诊断案例已经执行，命令保留用于历史复现。它们使用原prepared实际权重、原prompt和原OMC的lowering选项；核验来源、权重、ABI、DDK/OMG身份，不重新生成随机权重或完整模型：
 
 - `gdn_layer0_final`：原第一层完整计算，仅导出块结束特征。
 - `gdn_layer0_stages`：同一层同时观察输入归一化、GDN core、归一化输入/增益、门控结果、输出投影及块结束特征。
@@ -63,16 +100,16 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
   --refresh-runner --replay-all --output "$GE_GDN_ACCURACY_BOARD_RUN"
 ```
 
-`OP_PROBE_RUN`仍指向此前含native构建的探针批次，复用已验证的candidate库部署。新案例会改变编译上下文，第一层单输出/多输出结果必须先与原OMC捕获的第0层有效特征比较；不能把插桩图内部结果直接认定为原OMC内部结果。Rsqrt输入来自同权重主机求值，不是板端内部采集。源码不调整原数值门槛；原绝对容差0.002可能掩盖很小的GDN core全零，因此新报告对每个输出打印幅度、非零数、RMS和relative L2，PASS也要检查这些指标。全部8行用于探针原比较，归因时原capture只比较前3个有效prompt位置。
+`OP_PROBE_RUN`指向此前含native构建的探针批次，复用了已验证的candidate库部署。第一层单输出/多输出结果与原OMC捕获的第0层有效特征比较已经完成，均为48/48相等；仍不能把插桩图内部结果直接认定为原OMC内部结果。Rsqrt输入来自同权重主机求值，不是板端内部采集。源码不调整原数值门槛；原绝对容差0.002可能掩盖很小的GDN core全零，因此报告对每个输出打印幅度、非零数、RMS和relative L2，PASS也要检查这些指标。全部8行用于探针原比较，归因时原capture只比较前3个有效prompt位置。
 
-回传以下两个报告即可；若有编译失败，同时提供编译批次的 `report.txt`：
+以下两个报告已回传，读取命令仅供历史复现：
 
 ```bash
 cat "$GE_GDN_ACCURACY_BOARD_RUN/runtime-comparison.txt"
 cat "$GE_GDN_ACCURACY_BOARD_RUN/arms/candidate_without_ddk_hcl/report.txt"
 ```
 
-再用已回收的输出核对两个诊断图是否仍复现原图第0层特征。下面只读取文件、检查回收哈希并打印有效位置误差；不重新运行模型或修改参考：
+已有输出也已确认两个诊断图复现原图第0层有效特征。下面保留只读比较命令供历史复现，它检查回收哈希并打印有效位置误差：
 
 ```bash
 python3 - "$GE_FEATURE_RUN/board/benchmark.json" "$GE_GDN_ACCURACY_RUN/manifest.json" "$GE_GDN_ACCURACY_BOARD_RUN" <<'PY'
@@ -130,7 +167,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" compare-target-feat
 
 离线工具只依赖NumPy，读取并核验原prepared权重、两份OMC、参考及已完成capture报告的哈希。支持已有tiny配置、S=2–16；按有效prompt token及layer0/layer2分别输出finite数、max_abs、RMS、relative L2和数值相等性，同时列出主机末个有效位置的Top5。它使用当前源码中立图，不模拟OMG内部优化，不改变精度门槛或旧参考；输出 `DIAGNOSTIC_COMPLETE` 不代表精度通过。绑定覆盖相同权重identity/config与运行文件，未读取AIR，因此不声称完整prepared→AIR文档哈希链。当前源码哈希也保存在报告中。
 
-用户已回传 `comparison/report.txt` 及原始特征hex，确认本次仍复现target的55且两个边界均有偏差。记录为用户提供的终端证据，远端完整文件尚未独立获取；源码及测试证据见 `specs/target-feature-capture-verification.json`。当前使用上面的三个分阶段探针继续定位。
+用户已回传 `comparison/report.txt` 及原始特征hex，确认本次仍复现target的55且两个边界均有偏差。记录为用户提供的终端证据，远端完整文件尚未独立获取；源码及测试证据见 `specs/target-feature-capture-verification.json`。首轮三个分阶段探针也已完成，当前使用页首两个core内部探针继续定位。
 
 ## 已完成：tiny 双图执行与严格 benchmark
 

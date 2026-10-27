@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-27",
+  "run_id": "20261026T235815Z-8961-aa46fe",
+  "status": "USER_REPORTED_CORE_ZERO_EARLIEST_OBSERVED_BOUNDARY",
+  "provenance": "User terminal reports from ge-gdn-accuracy-20261027-082151 and its board replay; original manifests, tensor files and their hashes not independently retrieved.",
+  "baseline_handoff_commit": "7cec25e",
+  "runtime_replay": "REPLAY_COMPLETE",
+  "board_transport": "TRANSPORT_COMPLETE",
+  "native_donor": "op-probe-20261023-165317",
+  "compiled": 3,
+  "skipped": 0,
+  "load_passed": 3,
+  "run_passed": 3,
+  "cases": [
+    {
+      "name": "gdn_layer0_final",
+      "numerical": "FAILED",
+      "compiler_partition": {
+        "NPU": 2,
+        "CPU": 1
+      },
+      "max_abs_error": 0.02154541015625,
+      "relative_l2": 0.13793392797777437
+    },
+    {
+      "name": "gdn_layer0_stages",
+      "numerical": "FAILED",
+      "compiler_partition": {
+        "NPU": 2,
+        "CPU": 1
+      },
+      "outputs": [
+        {
+          "label": "layer0_final",
+          "elements": 128,
+          "numerical": "FAILED",
+          "max_abs_error": 0.02154541015625,
+          "relative_l2": 0.13793392797777437
+        },
+        {
+          "label": "input_norm",
+          "elements": 128,
+          "numerical": "PASSED",
+          "actual_nonzero": 128,
+          "reference_nonzero": 128,
+          "max_abs_error": 0.00390625,
+          "relative_l2": 0.0017429493151794896
+        },
+        {
+          "label": "chunk_core",
+          "elements": 128,
+          "numerical": "PASSED",
+          "actual_nonzero": 0,
+          "reference_nonzero": 128,
+          "actual_max_abs": 0.0,
+          "reference_max_abs": 0.0017614364624023438,
+          "relative_l2": 1.0
+        },
+        {
+          "label": "norm_input",
+          "elements": 16,
+          "numerical": "PASSED",
+          "actual_min": 1.0132789611816406e-06,
+          "actual_max": 1.0132789611816406e-06,
+          "relative_l2": 0.26857633536482933
+        },
+        {
+          "label": "norm_gain",
+          "elements": 16,
+          "numerical": "FAILED",
+          "actual_min": 992.0,
+          "actual_max": 992.0,
+          "max_abs_error": 231.5,
+          "relative_l2": 0.1439658957653908
+        },
+        {
+          "label": "gated_core",
+          "elements": 128,
+          "numerical": "FAILED",
+          "actual_nonzero": 0,
+          "reference_nonzero": 128,
+          "max_abs_error": 0.137939453125,
+          "relative_l2": 1.0
+        },
+        {
+          "label": "attention_branch",
+          "elements": 128,
+          "numerical": "FAILED",
+          "actual_nonzero": 0,
+          "reference_nonzero": 128,
+          "max_abs_error": 0.0218963623046875,
+          "relative_l2": 1.0
+        }
+      ]
+    },
+    {
+      "name": "gdn_layer0_rsqrt",
+      "numerical": "PASSED",
+      "compiler_partition": {
+        "NPU": 1,
+        "CPU": 0
+      },
+      "outputs": [
+        {
+          "label": "actual_norm_gain",
+          "max_abs_error": 2.0,
+          "relative_l2": 0.0018508788577997174
+        },
+        {
+          "label": "control_norm_gain",
+          "max_abs_error": 0.00390625,
+          "relative_l2": 0.001953125
+        }
+      ]
+    }
+  ],
+  "conclusions": [
+    "Within the staged probe, the earliest observed incorrect boundary is chunk_core; it is all zero after a nonzero input_norm boundary.",
+    "Zero gated_core and attention_branch follow the zero core; norm_input equal to rounded epsilon and norm_gain992 are consistent downstream consequences.",
+    "Standalone Rsqrt returns finite nonzero results for actual source subnormal inputs and normal controls. This weakens a blanket Rsqrt range failure, without proving fused-context equivalence.",
+    "The existing atol0.002 allows the entirely zero core to pass its old tolerance; this does not establish correct core behavior.",
+    "Both final-only and staged probes reproduce all48 original OMC valid layer0 elements exactly. This closes output-context reproduction at this boundary, without equating every internal node."
+  ],
+  "host_audit": {
+    "source_payload_sha256": "d1f1a3476f89454d4311288346fa6fc712ea88c2b5a396ddd567a479b63963e2",
+    "source_core": {
+      "max_abs": 0.0017614364624023438,
+      "nonzero": 128,
+      "elements": 128,
+      "nonfinite": 0
+    },
+    "bounded_final_core_FTZ": {
+      "max_abs": 0.0017614364624023438,
+      "nonzero": 92,
+      "elements": 128,
+      "nonfinite": 0
+    },
+    "bounded_final_matmul_product_FTZ": {
+      "max_abs": 0.0017614364624023438,
+      "nonzero": 106,
+      "elements": 128,
+      "nonfinite": 0
+    },
+    "first_token": [
+      {
+        "head": 0,
+        "q_scaled_dot_k": 0.0750732421875,
+        "beta": 0.45947265625,
+        "direct_core_matches": true,
+        "decay_mask_diagonal": 1.0,
+        "transform_diagonal": 1.0
+      },
+      {
+        "head": 1,
+        "q_scaled_dot_k": -0.215576171875,
+        "beta": 0.52099609375,
+        "direct_core_matches": true,
+        "decay_mask_diagonal": 1.0,
+        "transform_diagonal": 1.0
+      }
+    ],
+    "interpretation": "Source first-token output is nonzero without historical state; limited FTZ simulations retain92/106 nonzeros and cannot explain128 zeros. Other device transformations remain untested.",
+    "layout_alternative": "Padded intra-chunk output has64 rows; rows8..63 are zero. Wrong crop/layout selecting padding could also yield all-zero final core."
+  },
+  "artifacts": [
+    {
+      "path": "$AI_RUN_DIR/gdn-precore-audit/report.json",
+      "sha256": "6c5bf5f3c26322ac2738f393c7acf28613f56224ee174dea3e431bf2f2f64e4e"
+    },
+    {
+      "path": "$AI_RUN_DIR/gdn-precore-audit/first-token.json",
+      "sha256": "b3526badf7e166448b3d0849ae18c6ca0f716293ea49ac6ae3d665d3f006b486"
+    }
+  ],
+  "next_action": {
+    "suite": "gdn-core-accuracy",
+    "cases": [
+      "gdn_layer0_core_stages",
+      "gdn_core_replay"
+    ],
+    "scope": "Trace unchanged first-layer operations and separately replay chunk core using same-weight source query/key/value/decay/beta; observe both arithmetic and crop boundaries.",
+    "original_context": "CLOSED_AT_VALID_LAYER0: both existing probes match all48 original capture elements exactly.",
+    "guide": "docs/hdc-board-run.md"
+  },
+  "limitations": [
+    "No specific kernel, compiler pass or runtime backend identified.",
+    "New diagnostic graphs can alter compiler optimization; their observations remain scoped to the exact tested graphs.",
+    "User result proves probe execution, not NPU placement or whole-model accuracy.",
+    "No production arithmetic or tolerance change was authorized by this observation; no such change applied."
+  ],
+  "original_context_comparison": {
+    "provenance": "User terminal offline comparison; probe output SHA256 checked against its numerical report; no original files independently retrieved.",
+    "valid_prompt_elements": 48,
+    "gdn_layer0_final": {
+      "max_abs": 0.0,
+      "relative_l2": 0.0,
+      "exact_elements": 48
+    },
+    "gdn_layer0_stages": {
+      "max_abs": 0.0,
+      "relative_l2": 0.0,
+      "exact_elements": 48
+    },
+    "scope": "Both probes exactly reproduce the captured original OMC valid layer0 output. Internal compiler behavior and later layers are not proven identical."
+  }
+}

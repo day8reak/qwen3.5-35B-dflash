@@ -187,5 +187,11 @@
     "This is unquantized FP16 tiny diagnostic data, not full 35B accuracy or performance evidence.",
     "No thresholds were relaxed; zeroing/normalization interventions were never applied to exported production graphs.",
     "NPU execution placement, full generation correctness and >=2x DFlash speedup remain unverified."
-  ]
+  ],
+  "device_followup": {
+    "evidence": "specs/gdn-core-zero-user-report.json",
+    "status": "USER_REPORTED_ALL_THREE_EXECUTED_CORE_ZERO",
+    "numerical_passes": 1,
+    "numerical_failures": 2
+  }
 }

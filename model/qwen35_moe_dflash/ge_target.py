@@ -154,7 +154,17 @@ def _full_attention(b, x, prefix, c, mask, rotary):
     return b.linear(b.op("mul", mixed, b.op("sigmoid", gate)), prefix + ".o_proj.weight", h)
 
 
-def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None):
+def _observe_gdn(diagnostics, name, value):
+    """Record an existing value without adding graph nodes or output edges."""
+    if diagnostics is not None:
+        if not isinstance(diagnostics, dict):
+            raise ValueError("GDN diagnostics must be a dictionary")
+        if name in diagnostics:
+            raise ValueError(f"duplicate GDN diagnostic: {name}")
+        diagnostics[name] = value
+
+
+def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None, diagnostics=None):
     """The installed Transformers torch_chunk_gated_delta_rule, FP16-lowered.
 
     Keep padding and reduction widths of 64 even for tiny sequences: replacing
@@ -166,7 +176,11 @@ def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None):
     elementwise/slice operations stay at rank four, not just the lowered BMMs.
     An optional diagnostic list observes each chunk's updated recurrent state,
     including the otherwise unused final update; the default graph is unchanged.
+    The optional diagnostics dictionary records existing intermediate values;
+    it adds neither computation nor graph outputs.
     """
+    if diagnostics is not None and not isinstance(diagnostics, dict):
+        raise ValueError("GDN diagnostics must be a dictionary")
     if any(x.shape[0] != 1 for x in (query, key, value, decay, beta)):
         raise ValueError("direct GDN chunk carriers require batch=1")
     sequence, heads, kdim, vdim = query.shape[1], query.shape[2], query.shape[3], value.shape[3]
@@ -174,6 +188,8 @@ def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None):
     count = (sequence + chunk - 1) // chunk
     padded = count * chunk
     query, key = b.l2(query), b.l2(key)
+    _observe_gdn(diagnostics, "normalized_query", query)
+    _observe_gdn(diagnostics, "normalized_key", key)
     tensors = []
     for x in (query, key, value, beta, decay):
         x = b.permute(x, (0, 2, 1, 3) if len(x.shape) == 4 else (0, 2, 1))
@@ -184,13 +200,16 @@ def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None):
         tensors.append(x)
     query, key, value, beta, decay = tensors
     query = b.op("scalar_mul", query, value=kdim**-0.5)
+    _observe_gdn(diagnostics, "scaled_query", query)
     v_beta = b.op("mul", value, b.view(beta, (1, heads, padded, 1)))
+    _observe_gdn(diagnostics, "weighted_value", v_beta)
     k_beta = b.op("mul", key, b.view(beta, (1, heads, padded, 1)))
     query, key, value, k_beta, v_beta = [b.view(x, (heads, count, chunk, x.shape[-1])) for x in (query, key, value, k_beta, v_beta)]
     # This scan sums -exp(A_log) * softplus(a + dt_bias), hence nonpositive
     # values. Mark the domain for the bounded FP16 prefix-reduction lowering.
     decay = b.op("cumsum", b.view(decay, (heads, count, chunk)), axis=-1,
                  scope="gdn_nonpositive")
+    _observe_gdn(diagnostics, "decay_prefix", decay)
     zero_row = b.constant(np.zeros((heads, count, 1, chunk), dtype=np.float16))
 
     def triangular_mask(x, *, strict=False, site):
@@ -229,6 +248,7 @@ def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None):
     b.record_gdn_copy("outer_sub", (left, right), diff, strategy, reason)
     decay_mask = triangular_mask(diff, site="before_exp")
     decay_mask = triangular_mask(b.op("exp", decay_mask), site="after_exp")
+    _observe_gdn(diagnostics, "decay_mask", decay_mask)
     attn = b.op("matmul", k_beta, key, shape=diff.shape, transpose_a=False, transpose_b=True)
     attn = b.op("neg", triangular_mask(b.op("mul", attn, decay_mask), strict=True, site="before_neg"))
     for i in range(1, chunk):
@@ -244,7 +264,9 @@ def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None):
             rows.append(b.slice(attn, -2, i+1, chunk-i-1))
         attn = b.cat(rows, -2)
     attn = b.op("add", attn, b.constant(np.eye(chunk, dtype=np.float16)))
+    _observe_gdn(diagnostics, "triangular_transform", attn)
     value = b.op("matmul", attn, v_beta, shape=(heads, count, chunk, vdim), transpose_a=False, transpose_b=False)
+    _observe_gdn(diagnostics, "transformed_value", value)
     exp_decay = b.view(b.op("exp", decay), (heads, count, chunk, 1))
     k_cum = b.op("matmul", attn, b.op("mul", k_beta, exp_decay),
                  shape=(heads, count, chunk, kdim), transpose_a=False, transpose_b=False)
@@ -256,14 +278,19 @@ def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None):
         dec_i = take(decay_mask)
         scores = b.op("matmul", q_i, k_i, shape=(1, heads, chunk, chunk), transpose_a=False, transpose_b=True)
         scores = b.op("mul", scores, dec_i)
+        _observe_gdn(diagnostics, f"chunk_{i}_scores", scores)
         old_value = b.op("matmul", take(k_cum), state, shape=(1, heads, chunk, vdim), transpose_a=False, transpose_b=False)
         new_value = b.op("sub", v_i, old_value)
+        _observe_gdn(diagnostics, f"chunk_{i}_new_value", new_value)
         g_i = take(decay)
         exp_i = b.view(b.op("exp", g_i), (1, heads, chunk, 1))
         inter = b.op("matmul", b.op("mul", q_i, exp_i), state,
                      shape=(1, heads, chunk, vdim), transpose_a=False, transpose_b=False)
-        out.append(b.op("add", inter, b.op("matmul", scores, new_value,
-                        shape=(1, heads, chunk, vdim), transpose_a=False, transpose_b=False)))
+        intra = b.op("matmul", scores, new_value,
+                     shape=(1, heads, chunk, vdim), transpose_a=False, transpose_b=False)
+        _observe_gdn(diagnostics, f"chunk_{i}_intra", intra)
+        out.append(b.op("add", inter, intra))
+        _observe_gdn(diagnostics, f"chunk_{i}_padded_output", out[-1])
         if i + 1 < count or state_outputs is not None:
             final = b.slice(g_i, -1, chunk-1, 1)
             factor = b.view(b.op("exp", b.op("sub", final, g_i, shape=g_i.shape)), (1, heads, chunk, 1))
@@ -274,20 +301,28 @@ def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None):
             if state_outputs is not None:
                 state_outputs.append(state)
     result = b.cat(out, 2)
+    _observe_gdn(diagnostics, "padded_core", result)
     if padded > sequence:
         result = b.slice(result, 2, 0, sequence)
-    return b.permute(result, (0, 2, 1, 3))
+    _observe_gdn(diagnostics, "cropped_core", result)
+    result = b.permute(result, (0, 2, 1, 3))
+    _observe_gdn(diagnostics, "chunk_core", result)
+    return result
 
 
-def _linear_attention(b, x, prefix, c):
+def _linear_attention(b, x, prefix, c, *, diagnostics=None):
     # The pinned upstream helper masks only batch > 1. This ABI has batch=1;
     # padded GDN rows remain present, matching prepare_fp16_pair exactly.
+    if diagnostics is not None and not isinstance(diagnostics, dict):
+        raise ValueError("GDN diagnostics must be a dictionary")
     s, h = x.shape[1], c["hidden_size"]
     kh, vh = c["linear_num_key_heads"], c["linear_num_value_heads"]
     kd, vd, kernel = c["linear_key_head_dim"], c["linear_value_head_dim"], c["linear_conv_kernel_dim"]
     kw, vw = kh*kd, vh*vd
     width = kw*2 + vw
-    mixed = b.permute(b.linear(x, prefix + ".in_proj_qkv.weight", width), (0, 2, 1))
+    projected = b.linear(x, prefix + ".in_proj_qkv.weight", width)
+    _observe_gdn(diagnostics, "projected_qkv", projected)
+    mixed = b.permute(projected, (0, 2, 1))
     conv = b.g.weight(prefix + ".conv1d.weight", (width, 1, kernel))
     # Conv1d cross-correlation: weight[tap] consumes t-(K-1)+tap.
     padded = b.cat([b.constant(np.zeros((1, width, kernel-1), dtype=np.float16)), mixed], -1)
@@ -295,17 +330,24 @@ def _linear_attention(b, x, prefix, c):
     # One matmul reduction avoids rounding each individual tap product to FP16.
     convolved = b.op("matmul", windows, b.view(conv, (width, kernel, 1)),
                      shape=(width, s, 1), transpose_a=False, transpose_b=False)
+    _observe_gdn(diagnostics, "convolved_qkv", convolved)
     mixed = b.permute(b.op("silu", b.view(convolved, (1, width, s))), (0, 2, 1))
+    _observe_gdn(diagnostics, "activated_qkv", mixed)
     query = b.view(b.slice(mixed, -1, 0, kw), (1, s, kh, kd))
     key = b.view(b.slice(mixed, -1, kw, kw), (1, s, kh, kd))
     value = b.view(b.slice(mixed, -1, kw*2, vw), (1, s, vh, vd))
     query, key = [b.repeat_heads(t, 2, vh // kh) for t in (query, key)]
+    _observe_gdn(diagnostics, "query_input", query)
+    _observe_gdn(diagnostics, "key_input", key)
+    _observe_gdn(diagnostics, "value_input", value)
     beta = b.op("sigmoid", b.linear(x, prefix + ".in_proj_b.weight", vh))
+    _observe_gdn(diagnostics, "beta_input", beta)
     a = b.linear(x, prefix + ".in_proj_a.weight", vh)
     dt = b.g.weight(prefix + ".dt_bias", (vh,))
     a = b.op("softplus", b.op("add", a, dt), beta=1.0, threshold=20.0)
     decay = b.op("mul", b.op("neg", b.op("exp", b.g.weight(prefix + ".A_log", (vh,)))), a, shape=a.shape)
-    core = _chunk_gdn(b, query, key, value, decay, beta)
+    _observe_gdn(diagnostics, "decay_input", decay)
+    core = _chunk_gdn(b, query, key, value, decay, beta, diagnostics=diagnostics)
     z = b.view(b.linear(x, prefix + ".in_proj_z.weight", vw), (1, s, vh, vd))
     core = b.rms(core, prefix + ".norm.weight", c["rms_norm_eps"], offset=False)
     core = b.op("mul", core, b.op("silu", z))

@@ -1,4 +1,4 @@
-"""Three same-weight tiny layer-0 diagnostics; never changes the original OMC."""
+"""Same-weight tiny layer-0 diagnostics; never changes the original OMC."""
 from __future__ import annotations
 
 import copy
@@ -15,7 +15,7 @@ from .config import Qwen35DFlashConfig
 from .ge_eval import evaluate
 from .ge_export import build_pair, configurations, weight_identity, weight_shapes
 from .ge_ir import Graph
-from .ge_target import _Builder, _config, _linear_attention, _moe
+from .ge_target import _Builder, _chunk_gdn, _config, _linear_attention, _moe
 from .hashing import sha256_file
 from .op_probe_cases import FP16_TOLERANCE
 
@@ -55,7 +55,7 @@ def _tokens(value, label):
     return value
 
 
-def _layer0(config, draft, dispatch, copy_mode):
+def _layer0(config, draft, dispatch, copy_mode, *, diagnostics=None):
     """Reuse production helpers and expose semantic boundaries by graph edges."""
     graph = Graph("gdn_layer0_stages")
     builder = _Builder(graph, gdn_indexed_copy=copy_mode)
@@ -65,7 +65,9 @@ def _layer0(config, draft, dispatch, copy_mode):
                        ids, shape=(1, 8, 16), axis=0)
     prefix = "target.layers.0"
     normed = builder.rms(embed, prefix + ".input_layernorm.weight", c["rms_norm_eps"])
-    branch = _linear_attention(builder, normed, prefix + ".linear_attn", c)
+    branch = (_linear_attention(builder, normed, prefix + ".linear_attn", c)
+              if diagnostics is None else
+              _linear_attention(builder, normed, prefix + ".linear_attn", c, diagnostics=diagnostics))
     residual = builder.op("add", embed, branch)
     postnorm = builder.rms(residual, prefix + ".post_attention_layernorm.weight", c["rms_norm_eps"])
     final = builder.op("add", residual, _moe(builder, postnorm, prefix + ".mlp", c, dispatch))
@@ -121,7 +123,7 @@ def _layer0(config, draft, dispatch, copy_mode):
     return graph, stages
 
 
-def _case(graph, inputs, weights, expected, labels, description, emit_options):
+def _case(graph, inputs, weights, expected, labels, description, emit_options, *, suite="gdn-accuracy"):
     graph.validate()
     if set(weights) != set(graph.weights):
         raise ValueError(f"{graph.name}: diagnostic weights differ from graph weights")
@@ -135,17 +137,107 @@ def _case(graph, inputs, weights, expected, labels, description, emit_options):
             "weights": dict(weights), "expected": expected,
             "tolerances": [dict(FP16_TOLERANCE) for _ in expected],
             "description": description, "output_labels": list(labels),
-            "emit_options": dict(emit_options), "probe_suite": "gdn-accuracy", "probe_family": "gdn"}
+            "emit_options": dict(emit_options), "probe_suite": suite, "probe_family": "gdn"}
 
 
-def cases_from_prepared(prepared_dir, reference_path, omc_dir):
-    """Return exactly three bounded cases and source provenance, without tools.
+_CORE_STAGES = ("normalized_query", "normalized_key", "scaled_query", "weighted_value",
+                "decay_prefix", "decay_mask", "triangular_transform", "transformed_value",
+                "chunk_0_scores", "chunk_0_new_value", "chunk_0_intra", "chunk_0_padded_output",
+                "padded_core", "cropped_core", "chunk_core")
+_CUT_INPUTS = {"query": "query_input", "key": "key_input", "value": "value_input",
+               "decay": "decay_input", "beta": "beta_input"}
+
+
+def _observe_outputs(graph, stages):
+    """Export each tensor once, retaining semantic aliases in its stage map."""
+    graph.outputs = []
+    labels, indices, stage_map = [], {}, {}
+    for label, value in stages.items():
+        if value.dtype != "float16":
+            raise ValueError(f"GDN diagnostic stage must retain FP16: {label}")
+        if value.name not in indices:
+            indices[value.name] = len(graph.outputs)
+            graph.outputs.append(value)
+            labels.append(label)
+        stage_map[label] = {"name": value.name, "shape": list(value.shape), "dtype": value.dtype,
+                            "output_index": indices[value.name]}
+    graph.validate()
+    return labels, stage_map
+
+
+def _core_cases(graph, stages, observed, inputs, weights, policies, emit_options):
+    """Compare the weighted branch to its core replay with frozen host inputs."""
+    full_stages = {"layer0_final": stages["layer0_final"], "input_norm": stages["input_norm"]}
+    keys = ("projected_qkv", "convolved_qkv", "activated_qkv", "query_input", "key_input", "value_input",
+            "beta_input", "decay_input", *_CORE_STAGES)
+    required = set(keys) | set(_CUT_INPUTS.values())
+    if not required <= observed.keys() or observed["chunk_core"] != stages["chunk_core"]:
+        raise ValueError("GDN core observers do not match the production layer-0 graph")
+    full_stages.update((key, observed[key]) for key in keys)
+    graph.name = "gdn_layer0_core_stages"
+    labels, full_map = _observe_outputs(graph, full_stages)
+
+    # Host evaluation may request additional existing Values without making
+    # them native outputs or changing the graph that will be compiled.
+    host_graph = copy.copy(graph)
+    host_graph.outputs = list(graph.outputs)
+    host_indices = {value.name: index for index, value in enumerate(host_graph.outputs)}
+    for stage in _CUT_INPUTS.values():
+        value = observed[stage]
+        if value.name not in host_indices:
+            host_indices[value.name] = len(host_graph.outputs)
+            host_graph.outputs.append(value)
+    host_graph.validate()
+    values = evaluate(host_graph, inputs, weights)
+    expected = values[:len(graph.outputs)]
+    replay = Graph("gdn_core_replay")
+    replay_inputs, arguments, cut_records = {}, [], {}
+    for name, stage in _CUT_INPUTS.items():
+        source = observed[stage]
+        shape = (1, 8, 2) if name in {"decay", "beta"} else (1, 8, 2, 8)
+        array = values[host_indices[source.name]]
+        if (source.shape != shape or source.dtype != "float16" or array.dtype != np.dtype("float16")
+                or array.shape != shape or not np.isfinite(array).all()):
+            raise ValueError(f"unsupported actual GDN core input: {name}")
+        arguments.append(replay.input(name, source.shape, source.dtype))
+        replay_inputs[name] = np.ascontiguousarray(array)
+        raw = replay_inputs[name].astype("<f2", copy=False).tobytes()
+        cut_records[name] = {"source_stage": stage, "source_value_name": source.name,
+                             "shape": list(shape), "dtype": source.dtype, "bytes": len(raw),
+                             "sha256": hashlib.sha256(raw).hexdigest()}
+    replay_observed = {}
+    core = _chunk_gdn(_Builder(replay, gdn_indexed_copy=policies["gdn_indexed_copy"]),
+                      *arguments, diagnostics=replay_observed)
+    if not set(_CORE_STAGES) <= replay_observed.keys() or replay_observed["chunk_core"] != core:
+        raise ValueError("runtime-input core observers do not match production")
+    replay_labels, replay_map = _observe_outputs(replay, {key: replay_observed[key] for key in _CORE_STAGES})
+    replay_expected = evaluate(replay, replay_inputs)
+    for key in _CORE_STAGES:
+        left, right = expected[full_map[key]["output_index"]], replay_expected[replay_map[key]["output_index"]]
+        if not np.array_equal(left, right):
+            raise ValueError(f"host GDN core replay differs from weighted layer-0 stage: {key}")
+    cases = [
+        _case(graph, inputs, weights, expected, labels,
+              "Original weighted first layer with GDN projections, recurrence and padding/crop boundaries exposed; "
+              "additional outputs may change compiler optimization and partitioning.", emit_options, suite="gdn-core-accuracy"),
+        _case(replay, replay_inputs, {}, replay_expected, replay_labels,
+              "Production GDN core with five runtime inputs evaluated from the same weighted host layer; "
+              "cut inputs are not intermediate values captured from the original board execution.",
+              emit_options, suite="gdn-core-accuracy")]
+    return cases, {"stage_maps": {graph.name: full_map, replay.name: replay_map},
+                   "cut_inputs": cut_records}
+
+
+def cases_from_prepared(prepared_dir, reference_path, omc_dir, *, core_stages=False):
+    """Return three norm diagnostics or two core diagnostics, without tools.
 
     Whole-pair records and payloads establish source identity; only the 19
     first-layer weights become case arrays. New probe OMCs may optimize
     differently from the supplied original pair and cannot establish its
     internal execution values or a GDN root cause by themselves.
     """
+    if type(core_stages) is not bool:
+        raise ValueError("core_stages must be a bool")
     prepared, omc = [Path(path).expanduser().resolve() for path in (prepared_dir, omc_dir)]
     reference_path = Path(reference_path).expanduser().resolve()
     prepared_path, manifest_path = prepared / "prepared.json", omc / "manifest.json"
@@ -247,7 +339,9 @@ def cases_from_prepared(prepared_dir, reference_path, omc_dir):
         _fields(record, {"shape": list(shape), "dtype": "float16", "bytes": math.prod(shape) * 2},
                 "prepared weight " + key)
         paths[key] = _payload(prepared, record)
-    graph, stages = _layer0(target_config, draft_config, dispatch, policies["gdn_indexed_copy"])
+    observed = {} if core_stages else None
+    graph, stages = _layer0(target_config, draft_config, dispatch, policies["gdn_indexed_copy"],
+                            diagnostics=observed)
     if len(graph.weights) != 19:
         raise ValueError("supported layer-0 graph must use exactly 19 original weight tensors")
     weights = {key: np.fromfile(paths[key], dtype="<f2").reshape(value.shape)
@@ -260,28 +354,32 @@ def cases_from_prepared(prepared_dir, reference_path, omc_dir):
     ids = np.zeros((1, 8), dtype=np.int32)
     ids[0, :len(prompt)] = prompt
     inputs = {"input_ids": ids}
-    expected = evaluate(graph, inputs, weights)
     emit_options = {key: policies[key] for key in ("fp16_reductions", "fp16_row_mul")}
-    final_graph = copy.deepcopy(graph)
-    final_graph.name = "gdn_layer0_final"
-    final_graph.outputs = [final_graph.outputs[0]]
-    cases = [_case(final_graph, inputs, weights, [expected[0]], ["layer0_final"],
-                   "Original first-layer embedding, GDN and MoE residuals with only the final block output; "
-                   "control for optimization changes introduced by extra diagnostic outputs.", emit_options),
-             _case(graph, inputs, weights, expected, stages,
-                   "The same first layer with final output and semantic GDN normalization boundaries exposed.",
-                   emit_options)]
-    rsqrt = Graph("gdn_layer0_rsqrt")
-    actual_input = rsqrt.input("actual_norm_input", stages["norm_input"].shape)
-    control_input = rsqrt.input("normal_control", actual_input.shape)
-    rsqrt.outputs = [rsqrt.op("rsqrt", value, shape=value.shape, name=name)
-                     for value, name in ((actual_input, "actual_norm_gain"), (control_input, "control_norm_gain"))]
-    rsqrt_inputs = {"actual_norm_input": np.ascontiguousarray(expected[list(stages).index("norm_input")]),
-                   "normal_control": np.resize(np.array([0.25, 1, 4, 16], dtype=np.float16), actual_input.shape)}
-    cases.append(_case(rsqrt, rsqrt_inputs, {}, evaluate(rsqrt, rsqrt_inputs),
-                       ["actual_norm_gain", "control_norm_gain"],
-                       "Rsqrt on the actual same-weight host norm input, with a same-shaped positive-normal runtime-input control; "
-                       "this does not claim the input is an internal tensor captured from the original OMC.", emit_options))
+    core_provenance = None
+    if core_stages:
+        cases, core_provenance = _core_cases(graph, stages, observed, inputs, weights, policies, emit_options)
+    else:
+        expected = evaluate(graph, inputs, weights)
+        final_graph = copy.deepcopy(graph)
+        final_graph.name = "gdn_layer0_final"
+        final_graph.outputs = [final_graph.outputs[0]]
+        cases = [_case(final_graph, inputs, weights, [expected[0]], ["layer0_final"],
+                       "Original first-layer embedding, GDN and MoE residuals with only the final block output; "
+                       "control for optimization changes introduced by extra diagnostic outputs.", emit_options),
+                 _case(graph, inputs, weights, expected, stages,
+                       "The same first layer with final output and semantic GDN normalization boundaries exposed.",
+                       emit_options)]
+        rsqrt = Graph("gdn_layer0_rsqrt")
+        actual_input = rsqrt.input("actual_norm_input", stages["norm_input"].shape)
+        control_input = rsqrt.input("normal_control", actual_input.shape)
+        rsqrt.outputs = [rsqrt.op("rsqrt", value, shape=value.shape, name=name)
+                         for value, name in ((actual_input, "actual_norm_gain"), (control_input, "control_norm_gain"))]
+        rsqrt_inputs = {"actual_norm_input": np.ascontiguousarray(expected[list(stages).index("norm_input")]),
+                       "normal_control": np.resize(np.array([0.25, 1, 4, 16], dtype=np.float16), actual_input.shape)}
+        cases.append(_case(rsqrt, rsqrt_inputs, {}, evaluate(rsqrt, rsqrt_inputs),
+                           ["actual_norm_gain", "control_norm_gain"],
+                           "Rsqrt on the actual same-weight host norm input, with a same-shaped positive-normal runtime-input control; "
+                           "this does not claim the input is an internal tensor captured from the original OMC.", emit_options))
     provenance = {"schema_version": 1, "source": copy.deepcopy(source),
                   "bindings": {"prepared_manifest_sha256": prepared_sha,
                                "reference_sha256": reference_sha,
@@ -301,6 +399,17 @@ def cases_from_prepared(prepared_dir, reference_path, omc_dir):
                       "FP16 probe tolerances are unchanged; the 0.002 absolute tolerance can hide zeroing of a tiny chunk core, so raw magnitudes and error metrics remain necessary.",
                       "Batch-one GDN retains padded rows in the production helper; only the prefix positions are prompt tokens.",
                       "This preparation neither executes a device nor identifies a runtime backend or establishes a GDN root cause."]}
+    if core_provenance is not None:
+        provenance.update(core_provenance)
+        provenance["limits"] = {**provenance["limits"], "cases": 2, "core_runtime_inputs": 5}
+        provenance["limitations"] = [
+            "Observed core outputs may change compiler optimization/partitioning; compare weighted final features to prior probes and the original capture.",
+            "Prepared/reference/OMC payload identities are checked; AIR is not read and a complete prepared-to-AIR document chain is not asserted.",
+            "Replay inputs are exact host-evaluated FP16 core inputs, not internal tensors captured from the original OMC.",
+            "FP16 probe tolerances are unchanged; raw magnitudes and error metrics remain necessary even when tiny zero outputs pass absolute tolerance.",
+            "Single-chunk semantic aliases share one native output and retain the same output_index in stage_maps.",
+            "Batch-one GDN retains padded rows in the production helper; only prefix positions are prompt tokens.",
+            "This preparation neither executes a device nor identifies a runtime backend or establishes a GDN root cause."]
     if any(sha256_file(path) != digest for path, digest in (
             (prepared_path, prepared_sha), (reference_path, reference_sha), (manifest_path, manifest_sha))):
         raise ValueError("prepared/reference/OMC metadata changed during diagnostic preparation")

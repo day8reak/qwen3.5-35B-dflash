@@ -125,6 +125,8 @@ def compare_outputs(case_record: dict, output_dir: Path, received_files=None) ->
                            max_abs_error=float(difference.max()),
                            max_relative_error_on_nonzero_reference=float(relative.max()) if relative.size else 0.0,
                            signal={"reference": reference_signal, "actual": actual_signal,
+                                   "all_zero_with_nonzero_reference": actual_signal["nonzero"] == 0
+                                       and reference_signal["nonzero"] > 0,
                                    "exact_elements": int(np.count_nonzero(actual == expected)),
                                    "error_rms": float(np.sqrt(np.mean(difference * difference))),
                                    "relative_l2_to_reference": error_l2 / reference_signal["l2"]
@@ -369,7 +371,7 @@ def write_report(root: Path, manifest, boardresult=None):
                               "Runtime placement remains UNVERIFIED without independent execution evidence."],
               "archive_notes": archive_notes}
     report["selection"] = manifest.get("selection")
-    if any(row.get("probe_suite") == "gdn-accuracy" for row in rows):
+    if any(row.get("probe_suite") in {"gdn-accuracy", "gdn-core-accuracy"} for row in rows):
         report["limitations"].append(
             "GDN signal statistics are diagnostic only; unchanged absolute tolerance may accept a tiny output that is entirely zero. "
             "New probe graphs may optimize differently from the original OMC; compare final-only and staged block outputs with its captured features.")
@@ -393,12 +395,22 @@ def write_report(root: Path, manifest, boardresult=None):
     for row in rows:
         lines.append(" | ".join((row["name"], row["compile"].get("status", "NOT_RUN"), row["load"], row["run"],
                                  row["numerical"]["status"], row["placement"])))
-        if row.get("probe_suite") == "gdn-accuracy":
+        if row.get("probe_suite") in {"gdn-accuracy", "gdn-core-accuracy"}:
             for output in row["numerical"]["outputs"]:
+                details = {key: output[key] for key in
+                    ("status", "reason", "error", "shape", "elements", "max_abs_error", "signal")
+                    if key in output}
+                if row["probe_suite"] == "gdn-core-accuracy" and "signal" in details:
+                    # Keep the larger stage trace readable; report.json retains
+                    # the complete statistics for every tensor.
+                    signal = details.pop("signal")
+                    details["signal"] = {key: signal[key] for key in
+                        ("all_zero_with_nonzero_reference", "relative_l2_to_reference")}
+                    for side in ("reference", "actual"):
+                        details["signal"][side] = {key: signal[side][key]
+                            for key in ("nonzero", "max_abs", "rms")}
                 lines.append(f"  output {output['index']} ({output.get('label') or output.get('name')}): "
-                             + json.dumps({key: output[key] for key in
-                                 ("status", "reason", "error", "shape", "elements", "max_abs_error", "signal")
-                                 if key in output}, allow_nan=False))
+                             + json.dumps(details, allow_nan=False))
         if row["runtime"].get("error"):
             lines.append("  runtime: " + str(row["runtime"]["error"]))
         for diagnostic in row["runtime"].get("diagnostics", []):
