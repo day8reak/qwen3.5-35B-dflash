@@ -401,6 +401,110 @@ def _partial_batch(case, monkeypatch):
     return batch
 
 
+def _tree_hashes(root):
+    return {str(path.relative_to(root)): sha256_file(path)
+            for path in root.rglob('*') if path.is_file()}
+
+
+def _forbid_inspection_execution(case, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail('inspect-only must not compile, initialize TBE, build a runner or access the board')
+
+    for name in ('_compile_missing', 'build_fused_probes', 'check_tbe_platform',
+                 '_build_runner', 'execute', 'Hdc'):
+        monkeypatch.setattr(case['module'], name, forbidden)
+    for name in ('SN', 'BIP', 'HDC', 'BOARD_HIAI_LIB_DIR', 'OHOS_SDK',
+                 'HIAI_INCLUDE_DIR', 'HIAI_LIBRARIES', 'CANN_ROOT'):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.mark.parametrize('input_kind', ['manifest', 'all-ops-batch'])
+def test_inspect_only_reads_existing_failures_and_registration_without_execution(case, monkeypatch, input_kind):
+    batch = _partial_batch(case, monkeypatch)
+    for name in ('conv_prefill', 'conv_decode'):
+        (batch / 'probes/cases' / name / 'compile.log').write_text(
+            'SIMULATED existing compiler output\n'
+            'Not supported OP, subStoreType = generated_lib, type = LinearAttentionConvstateUpdate\n'
+            'Get format configs failed, node : ' + name + '_fused, substore: !\n')
+    (batch / 'probes/cases/rms/compile.log').write_text(
+        'SIMULATED existing compiler output\n'
+        'get [op:rms_fused type:AdnRmsNorm] infershape func failed.\n')
+    ddk = case['root'] / 'inspection-ddk'
+    registration = ddk / 'ddk/ascendc/ops/config/fixture.ini'
+    registration.parent.mkdir(parents=True)
+    registration.write_text('[LinearAttentionConvstateUpdate]\nfixture=SIMULATED Conv registration\n'
+                            '[AdnRmsNorm]\nfixture=SIMULATED RMS registration\n')
+    monkeypatch.setenv('CPRO_DDK_ROOT', str(ddk))
+    monkeypatch.setenv('CPRO_DDK_ID', 'SIMULATED-DDK')
+    root = batch / 'probes' if input_kind == 'manifest' else batch
+    expected_roots = [batch / 'probes'] if input_kind == 'manifest' else [case['probe'], batch / 'probes']
+    original = {path: _tree_hashes(path) for path in (case['probe'], batch, ddk)}
+    inspected = []
+
+    def inspect(probe_run, ddk_root, output):
+        inspected.append((Path(probe_run), Path(output)))
+        return probes.inspect_fused_probes(probe_run, ddk_root, output)
+
+    monkeypatch.setattr(case['module'], 'inspect_fused_probes', inspect)
+    _forbid_inspection_execution(case, monkeypatch)
+    code = case['module'].main(['--inspect-only', '--probe-run', str(root),
+                               '--output', str(case['output'])])
+    result = json.loads((case['output'] / 'result.json').read_text())
+    assert code == 0 and result['status'] == 'INSPECTED', result
+    assert result['model_compilation'] == result['device_execution'] == 'NOT_RUN'
+    assert [path for path, _ in inspected] == expected_roots
+    assert [(Path(row['probe_run']), Path(row['output'])) for row in result['inspections']] == inspected
+    assert all((output / 'report.json').is_file() for _, output in inspected)
+    summary = Path(result['comparison']).read_text()
+    assert 'Get format configs failed' in summary
+    assert 'AdnRmsNorm' in summary and 'infershape func failed' in summary
+    assert 'SIMULATED Conv registration' in summary and 'SIMULATED RMS registration' in summary
+    assert original == {path: _tree_hashes(path) for path in original}
+    assert not _calls(case) and not _calls(case, runner=True) and not case['built']
+
+
+@pytest.mark.parametrize('damage', ['model', 'manifest-hash'])
+def test_inspect_only_rejects_damaged_artifacts_before_scanning(case, monkeypatch, capsys, damage):
+    batch = _partial_batch(case, monkeypatch)
+    ddk = case['root'] / 'inspection-ddk'
+    ddk.mkdir()
+    monkeypatch.setenv('CPRO_DDK_ROOT', str(ddk))
+    if damage == 'model':
+        (batch / 'probes/cases/cache_prefill/omc/probe.omc').write_bytes(b'tampered')
+    else:
+        path = batch / 'result.json'
+        result = json.loads(path.read_text())
+        result['probe_manifests'] = {str(case['probe']): '0' * 64,
+                                    str(batch / 'probes'): sha256_file(batch / 'probes/manifest.json')}
+        path.write_text(json.dumps(result))
+    original = _tree_hashes(batch)
+    _forbid_inspection_execution(case, monkeypatch)
+    monkeypatch.setattr(case['module'], 'inspect_fused_probes',
+                        lambda *a, **k: pytest.fail('invalid artifacts must be rejected before inspection'))
+    code = case['module'].main(['--inspect-only', '--probe-run', str(batch),
+                               '--output', str(case['output'])])
+    assert code == 1
+    recorded = case['output'] / 'result.json'
+    if recorded.is_file():
+        result = json.loads(recorded.read_text())
+        assert result['status'] == 'FAILED' and result.get('error'), result
+        assert result['model_compilation'] == result['device_execution'] == 'NOT_RUN'
+        assert not result.get('inspections')
+    else:
+        assert any(word in capsys.readouterr().err.lower() for word in ('sha256', 'hash', 'size'))
+    assert original == _tree_hashes(batch)
+    assert not _calls(case) and not _calls(case, runner=True) and not case['built']
+
+
+@pytest.mark.parametrize('conflicting', [['--fresh'], ['--all-ops'], ['--retry-cases', 'rms']])
+def test_inspect_only_rejects_execution_modes_before_work(case, monkeypatch, conflicting):
+    _forbid_inspection_execution(case, monkeypatch)
+    monkeypatch.setattr(case['module'], 'inspect_fused_probes',
+                        lambda *a, **k: pytest.fail('conflicting modes must be rejected before inspection'))
+    assert case['module'].main(['--inspect-only', '--output', str(case['output']), *conflicting]) == 1
+    assert not case['output'].exists() and not _calls(case)
+
+
 def test_all_ops_resumes_batch_and_only_retries_attention(case, monkeypatch):
     batch = _partial_batch(case, monkeypatch)
     calls, executed, inspected = [], [], []
@@ -515,7 +619,7 @@ finalGlobal.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(last_recurrent_state
 def test_fresh_all_ops_rebuilds_deleted_artifacts_once_and_can_resume(case, monkeypatch, direct_update):
     """Host substitutes for GE/OMG/device only; source binding/artifacts are real."""
     ddk, source = _fresh_ddk(case, monkeypatch)
-    diagnostics, compiled, executions, policies = [], [], [], []
+    diagnostics, compiled, executions, policies, inspected = [], [], [], [], []
     fail_rms = True
 
     def diagnose(root, output, **kwargs):
@@ -554,10 +658,15 @@ def test_fresh_all_ops_rebuilds_deleted_artifacts_once_and_can_resume(case, monk
         (output / 'comparison/report.json').write_text(json.dumps({'cases': rows}))
         return {'status': 'EXECUTION_COMPLETE', 'output': str(output), 'simulation': 'HOST ONLY'}
 
+    def inspect(root, ddk_root, output):
+        inspected.append(Path(root))
+        return probes.inspect_fused_probes(root, ddk_root, output)
+
     monkeypatch.setattr(case['module'], 'check_tbe_platform', diagnose)
     monkeypatch.setattr(probes, '_export_case', export)
     monkeypatch.setattr(probes, '_compile_case', compile_one)
     monkeypatch.setattr(case['module'], 'execute', execute)
+    monkeypatch.setattr(case['module'], 'inspect_fused_probes', inspect)
     code = case['module'].main(['--all-ops', '--fresh', '--output', str(case['output']),
                                '--timeout-seconds', '47'])
     result = json.loads((case['output'] / 'result.json').read_text())
@@ -565,6 +674,9 @@ def test_fresh_all_ops_rebuilds_deleted_artifacts_once_and_can_resume(case, monk
     names = [name for name, _, _ in probes._CASES]
     assert compiled == names  # Failed RMS was not immediately compiled again.
     assert executions == [[name for name in names if name != 'rms']]
+    assert inspected == [case['output'] / 'probes']
+    assert Path(result['inspection']).is_dir()
+    assert not result.get('inspection_error')
     assert diagnostics == [(ddk, case['output'] / 'diagnosis',
                             {'python': sys.executable, 'diagnose': True, 'jobs': 4, 'timeout_seconds': 30})]
     assert policies == [(47, None if direct_update else case['output'] / 'diagnosis')] * 9
@@ -581,6 +693,7 @@ def test_fresh_all_ops_rebuilds_deleted_artifacts_once_and_can_resume(case, monk
 
     # A fresh batch is also a valid future --probe-run input; only failed RMS
     # gets another compile attempt, with the original artifacts left intact.
+    original = _tree_hashes(case['output'])
     fail_rms = False
     monkeypatch.delenv('TBE_DIAG_JOB')
     retry = case['root'] / 'fresh-retry'
@@ -589,6 +702,9 @@ def test_fresh_all_ops_rebuilds_deleted_artifacts_once_and_can_resume(case, monk
     resumed = json.loads((retry / 'result.json').read_text())
     assert code == 0 and resumed['status'] == 'EXECUTION_COMPLETE', resumed
     assert compiled == names + ['rms']
+    assert inspected == [case['output'] / 'probes']  # Old failures were resolved; do not inspect them again.
+    assert not resumed.get('inspection') and not resumed.get('inspection_error')
+    assert original == _tree_hashes(case['output'])
     assert policies[-1][1] == (None if direct_update else str(case['output'] / 'diagnosis'))
     assert resumed['tbe_diagnosis'] == str(case['output'] / 'diagnosis')
     assert resumed['reused_cases'] == sorted(name for name in names if name != 'rms')

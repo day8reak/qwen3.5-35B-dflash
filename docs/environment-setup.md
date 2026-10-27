@@ -55,17 +55,25 @@ source "$REPO_DIR/targets/cpro/scripts/env.sh"
 
 配置不放在运行目录里，清理结果时不会被一起删掉。也可指定文件：`source targets/cpro/scripts/env.sh /absolute/path/cpro.env`。
 
-### 第4步：加载项目配置并从零执行
+### 第4步：加载项目配置并使用已有批次
 
-当前旧run产物已删除，使用 `--fresh`。在仓库根目录更新代码并执行；加载配置失败时，`&&` 会阻止后续编译/上板。
+在仓库根目录更新代码并加载配置：
 
 ```bash
 git pull --ff-only &&
+source targets/cpro/scripts/env.sh
+```
+
+当前已保留新批次 `fused-all-f6b81ead7ae8`，GDN、CacheUpdate、Attention六例已完成调用，无需再次 `--fresh`。加载成功后按[GE指南的只读检查](ge-guide.md#融合算子调用探针)读取该批次，继续定位Conv/RMS。
+
+**仅首次开始或运行产物已清空时**，才从零重建：
+
+```bash
 source targets/cpro/scripts/env.sh &&
   python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
 ```
 
-它会自动生成FP16 GDN状态绑定、TBE平台诊断，尝试导出/编译全部五类九例AIR/OMC，再构建runner并执行编译成功的case。无需另export bindings、诊断或探针路径；不读取或修改保留的权重。编译失败仍列入总表，命令不是宣称已修复Conv/RMS或数值问题。
+此入口自动生成FP16 GDN状态绑定、TBE平台诊断，尝试导出/编译全部五类九例AIR/OMC，再构建runner并执行编译成功的case。无需另export bindings、诊断或探针路径；不读取或修改保留的权重。编译失败仍列入总表，命令不是宣称已修复Conv/RMS或数值问题。
 
 ### 配置字段说明
 
@@ -156,12 +164,12 @@ source targets/cpro/scripts/env.sh
 
 ### 后续仅重试指定用例
 
-后续重试使用打印出的批次目录；新批次会记录TBE诊断路径，重试自动沿用，不必另找 `TBE_DIAG_JOB`：
+当前Attention两例已完成调用，不再重试它们。**只有修复Conv/RMS对应绑定或安装问题后**，才复用保留批次重试这三例；TBE诊断自动沿用，不必另找 `TBE_DIAG_JOB`：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
-  --probe-run /absolute/path/to/fused-all-new-batch \
-  --retry-cases attention_prefill,attention_decode
+  --probe-run "$AI_RUN_DIR/fused-all-f6b81ead7ae8" \
+  --retry-cases conv_prefill,conv_decode,rms
 ```
 
 ## 按需检查与其他模型流程

@@ -4,6 +4,24 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 环境恢复后九例探针最新回传
+
+2026-10-27，用户回传新批次 `fused-all-f6b81ead7ae8`：恢复后的环境已重新尝试全部九例，GDN、CacheUpdate、Attention各prefill/decode共六例完成AIR导出、OMC编译、加载和执行。以下来自用户粘贴报告，原始产物未在本地主机重新获取、校验或复跑。
+
+| 用例 | AIR导出 | OMC编译 | 加载 / 执行 | 数值 |
+|---|---|---|---|---|
+| GDN prefill/decode | PASSED | PASSED | PASSED / PASSED | DIAGNOSTIC_COMPLETE；未证明历史数值偏差已解决 |
+| CacheUpdate prefill/decode | PASSED | PASSED | PASSED / PASSED | DIAGNOSTIC_COMPLETE；未验收 |
+| AdnFusedInferAttention prefill/decode | PASSED | PASSED | PASSED / PASSED | DIAGNOSTIC_COMPLETE；未验收 |
+| ConvStateUpdate prefill/decode | PASSED | FAILED | NOT_RUN / NOT_RUN | NOT_RUN |
+| AdnRmsNorm | PASSED | FAILED | NOT_RUN / NOT_RUN | NOT_RUN |
+
+Attention已完成两种调用，先前的端口校验与导出器const接口错误未再阻止该批次。Conv仍在rank-4的y2（`[1,8192,1,S+3]`）维推后遇到格式配置失败；RMS仍找不到 `AdnRmsNorm` 维推函数。剩余三个失败用例使全部五类调用覆盖尚未完成，不能据此认定整个DDK没有相关kernel。
+
+`DIAGNOSTIC_COMPLETE` 只表示诊断已生成，不是精度通过。旧GDN报告中的decode核心输出全零、prefill核心输出relL2约0.999，尚无新数值证据证明已经解决；实际NPU执行位置、完整模型与连续状态精度仍未验证。保留本批次的报告、编译工作目录和上板结果，供后续只读排查使用。
+
+本次补齐 `--fresh` 中Conv/RMS失败后的只读检查，并新增 `run_fused_probes.py --inspect-only --probe-run ...`：支持探针目录及all-ops批次，打印关键日志与安装注册文本摘要，保留完整复制证据；已成功重试的历史失败不再触发自动检查。29项板端编排主机测试通过，覆盖禁止编译/TBE/runner/HDC、原产物与DDK不变、损坏产物拒绝、模式冲突及fresh/重试回归。CLI帮助、29个文档Bash代码块及diff检查通过。本地验证使用模拟编译/设备夹具，未在用户DDK或设备执行，也未修复Conv/RMS本身。
+
 ## Docker环境恢复与删除产物后的重建
 
 2026-10-27，用户说明Docker退出，且运行目录除权重外已清空。此前粘贴的编译/上板结果继续保留为历史证据，旧路径不再作为可复用产物。新增 `source targets/cpro/scripts/env.sh`，私有配置存于仓库旁并在检查成功后恢复变量；`run_fused_probes.py --all-ops --fresh` 从选定DDK源码绑定开始重建平台诊断和九例探针。
@@ -26,7 +44,7 @@
 
 该批次复用的GDN/Cache再次完成加载/执行，数值验收仍未通过或未定义。Conv/RMS未重新编译；只读扫描未找到匹配的注册文本，这不证明整个DDK缺少实现。原始产物未在本地重新核验。
 
-## 五类算子最新批量回传
+## 五类算子早期批量回传
 
 2026-10-27，用户回传 `fused-all-97b7612ef879`，来源为粘贴总表，原始产物未在本地重新核验：
 

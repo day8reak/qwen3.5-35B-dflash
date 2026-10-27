@@ -6,29 +6,19 @@
 
 ## 用户现在执行什么
 
-**当前是Docker重进且旧run产物已删除。** 按[环境指南的四步顺序](environment-setup.md#docker-重进后的配置恢复)执行：恢复conda/DDK → 首次补七项export → 保存仓库旁配置 → 加载并运行。DDK脚本已经导出的变量不用重复配置。
-
-首次创建的配置会自动增加带注释的HIAI头文件及完整三库两项，正常场景共九项，无需另填。默认路径在读取配置时随 `DDK_PATH` 展开；未加载DDK时引用模板中的 `CPRO_DDK_ROOT`。生成时已有明确的非 `auto` HIAI值会保留。已有配置不覆盖、不必重建，只有旧文件需要补齐时才使用[旧配置迁移步骤](environment-setup.md#旧配置迁移补齐hiai三库)。
-
-已有配置时，恢复 `custom_pypto` conda/DDK环境后，在仓库根目录直接执行；以下 `python3` 使用当前已激活的模型环境：
+**最新批次已恢复并完成九例尝试。** `fused-all-f6b81ead7ae8` 中GDN、CacheUpdate、Attention共六例调用通过；Conv两例和AdnRmsNorm仍编译失败。保留该批次，先读取其失败日志与所选DDK的注册文本：
 
 ```bash
 git pull --ff-only &&
-source targets/cpro/scripts/env.sh &&
-  python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops --fresh
+python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --inspect-only \
+  --probe-run "$AI_RUN_DIR/fused-all-f6b81ead7ae8"
 ```
 
-不再引用已经删除的bindings、TBE诊断或OMC；安装版FP16绑定、平台诊断和全部探针自动重建，编译成功者上板。保留权重无需重新准备。
+命令自动在 `AI_RUN_DIR` 下创建新的 `fused-inspect-*` 目录，并直接打印摘要。它支持单次探针目录和all-ops批次；只读取、复制现有证据，不编译、不构建runner、不连接设备。回传打印的摘要即可，完整日志和匹配的安装文本路径也会打印。`INSPECTED` 仅表示检查完成，不改变原三例失败结论。
 
-**后续重试：** 等本次fresh打印出新的批次目录后，才使用下面命令。将占位路径换成该新目录；已经删除的历史批次不能复用。Attention导出器的const接口修正已提交，Conv/RMS仍待解决。
+此前 `--fresh` 漏掉了Conv/RMS失败后的自动检查，现已补齐；以后新批次出现这类失败时也写入 `inspection/report.txt`。已有成功重试的历史失败不再触发检查。Conv/RMS实际绑定或安装问题解决后，才需要[选择性重试](ge-guide.md)，无需重复fresh。
 
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
-  --probe-run '/实际路径/本次新生成的fused-all批次' \
-  --retry-cases attention_prefill,attention_decode
-```
-
-脚本复用新批次内已成功编译的OMC，只重编指定缺项；TBE诊断自动从新批次记录继承，无需另export `TBE_DIAG_JOB`。未重试的失败继续保留在总表。回传最后打印的报告；如该批次包含Conv/RMS失败，其注册检查另写到 `inspection/report.txt`。脚本不修改DDK。
+若再次进入Docker，恢复conda/DDK后执行 `source targets/cpro/scripts/env.sh` 即可；配置含自动生成的HIAI头文件及三库路径，详见[环境恢复指南](environment-setup.md#docker-重进后的配置恢复)。只有运行产物再次丢失时才用 `--all-ops --fresh` 重建；保留权重无需重新准备。
 
 ## 当前状态
 
@@ -36,7 +26,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
 |---|---|
 | PyTorch完整结构 | 全尺寸meta模型及层级FX图；不加载权重 |
 | GE完整结构 | target/draft完整节点、连边、C++和recipe；融合可选 |
-| 自定义算子探针 | 五类9例已批量尝试；GDN/CacheUpdate四例加载和执行通过，conv/RMS编译失败，Attention导出失败 |
+| 自定义算子探针 | 用户回传新批次 `fused-all-f6b81ead7ae8`：五类9例已重建尝试；GDN/CacheUpdate/Attention六例导出、编译、加载及执行通过，conv/RMS三例编译失败 |
 | 真实权重AIR导出 | 旧双图支持完整FP16；新GE target支持显式缓存 |
 | 状态执行 | 主机fake prefill→decode接续通过；真实板端待验证 |
 | 尚未完成 | W4A8映射、常驻缓存与native DFlash调度、完整模型设备精度和性能 |
@@ -45,14 +35,14 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_fused_probes.py" --all-ops \
 
 | 项目 | 结论 |
 |---|---|
-| GDN两例 | 用户回传加载/执行通过；decode核心输出全零，prefill核心输出relL2约0.999；未通过精度验收 |
+| GDN两例 | 新批次两例调用完成、数值诊断已生成；旧报告的decode核心输出全零、prefill核心输出relL2约0.999，尚未证实已解决；未通过精度验收 |
 | 编译目标 | 始终为 `kirinx90`；`Ascend310B1` 是DDK初始化后返回的内部名称，`Ascend310P3` 是原工程平台 |
 | GDN状态 | 安装版初态/末态为FP16；本次runner修正了末态只接受FP32的旧校验 |
-| conv | 宽度4已通过初始维推；生成的y2为 `[1,8192,1,S+3]`，随后格式配置失败；不能据此断言DDK完全没有kernel |
+| conv | 新批次两例仍编译失败：宽度4已通过初始维推，y2为 `[1,8192,1,S+3]`，随后格式配置失败；不能据此断言DDK完全没有kernel |
 | RMS | 编译时仍找不到 `AdnRmsNorm` 维推函数；新增调用摘录表明它用于ND，原Cpro用内置 `npu_rms_norm`，实际GE映射待核对；本仓库可选 `rms` 融合绑定仍依赖Adn |
-| CacheUpdate | prefill/decode两例编译、加载和执行通过；无数值golden，不代表精度通过 |
-| Attention | 端口顺序校验已修正；最新重试在C++构建时暴露 `GNode` const不匹配，已按CANN 9.1头文件声明修正，待真实重试 |
-| 尚未验证 | 全部五类调用覆盖、正确数值及NPU执行位置；完整模型与连续状态验证另行进行 |
+| CacheUpdate | 新批次prefill/decode两例导出、编译、加载和执行通过，数值诊断已生成；无数值golden，不代表精度通过 |
+| Attention | 新批次prefill/decode两例导出、编译、加载和执行均通过，先前导出器问题不再阻止调用；数值仅为DIAGNOSTIC_COMPLETE，尚未验收 |
+| 尚未验证 | Conv/RMS三例调用、全部用例的正确数值及NPU执行位置；完整模型与连续状态验证另行进行 |
 
 新增调用源码的[核对与勘误](qwen35-moe-operators-and-quantization-analysis.md#调用源码核对与勘误2026-10-27)确认：Attention converter把Python `pse_shift`实参接到GE端口16，端口3留空，当前探针方向正确；Conv的输出rank、GDN的Meta/安装版状态dtype和Cache的Functionalize调用名仍有差异，不能凭前端声明判定安装版行为。
 

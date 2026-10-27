@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile fresh fused-op probes or reuse recorded bundles, then execute through HDC."""
+"""Compile/run fused-op probes, or inspect an existing batch without compilation or HDC."""
 import argparse
 import json
 import os
@@ -37,6 +37,8 @@ def parser():
     result.add_argument("--output", help="new directory below AI_RUN_DIR; otherwise allocated automatically")
     result.add_argument("--all-ops", action="store_true",
                         help="reuse compiled cases, compile missing cases for all five custom operators, then run all compiled cases")
+    result.add_argument("--inspect-only", action="store_true",
+                        help="read existing probe/all-ops logs and selected-DDK registration text; no compilation or board execution")
     result.add_argument("--retry-cases", help="with --all-ops, compile only these missing comma-separated cases; --probe-run may be an earlier all-ops batch")
     result.add_argument("--timeout-seconds", type=_positive, default=3600)
     return result
@@ -368,6 +370,59 @@ def _error_detail(error):
     return text if len(text) <= 16000 else text[:8000] + "\n[excerpt omitted; see full log]\n" + text[-8000:]
 
 
+def inspect_existing(args):
+    """Inspect explicit recorded groups and print a bounded failure summary."""
+    root = Path(_text(args.probe_run, "FUSED_PROBE_RUN / --probe-run")).expanduser().resolve()
+    ddk = Path(_text(os.environ.get("CPRO_DDK_ROOT"), "CPRO_DDK_ROOT")).expanduser().resolve()
+    storage = Path(_text(os.environ.get("AI_RUN_DIR"), "AI_RUN_DIR"))
+    out = output_path(args.output or storage / ("fused-inspect-" + uuid.uuid4().hex[:12]))
+    if root == out or root in out.parents or out in root.parents:
+        raise ValueError("inspection output must be separate from the existing batch")
+    groups, _ = _probe_groups(root, out)
+    out.mkdir(parents=True, exist_ok=False)
+    result = {"status": "INSPECTED", "output": str(out), "source": str(root), "inspections": [],
+              "model_compilation": "NOT_RUN", "device_execution": "NOT_RUN"}
+    lines = ["Existing fused batch: read-only inspection", "No compilation or board execution.", ""]
+    faults = re.compile(r"Get format configs failed|find op format config failed|infershape func failed|"
+                        r"GE recipe failed|Not supported OP|Input .*must be|error:", re.I)
+    for index, (probe_run, _) in enumerate(groups, 1):
+        destination = out / f"inspection-{index}"
+        report = inspect_fused_probes(probe_run, ddk, destination)
+        result["inspections"].append({"probe_run": str(probe_run), "output": str(destination),
+                                      "probe_manifest_sha256": report["probe_manifest_sha256"]})
+        lines.append("Probe source: " + str(probe_run))
+        for case in report["cases"]:
+            lines.append(f"  {case['name']}: export={case['export']} compile={case['compile']}")
+            if case["export"] != "FAILED" and case["compile"] != "FAILED":
+                continue
+            for log in case["logs"]:
+                snippets = [entry for entry in log.get("excerpts", []) if faults.search(entry["text"])]
+                if snippets:
+                    lines.append("    " + log["source"])
+                    lines.extend(f"    L{entry['line']}: {entry['text'][:700]}" for entry in snippets[:6])
+                elif log["status"] != "READ":
+                    lines.append(f"    {log['source']} [{log['status']}]")
+        registration = report.get("installed_registration", {})
+        lines.append(f"  DDK registration scan: files={registration.get('files_read', 0)}, "
+                     f"limited={registration.get('limited', False)}")
+        for item in registration.get("roots", []):
+            lines.append(f"    {item['path']} exists={item['exists']}")
+        sources = [item for item in report.get("installed_sources", [])
+                   if re.search(r"conv|rms", Path(item["source"]).name, re.I)]
+        for item in [*registration.get("records", []), *sources]:
+            lines.append(f"  {item['source']} [{item['status']}]")
+            lines.extend(f"    L{entry['line']}: {entry['text'][:700]}" for entry in item.get("excerpts", [])[:12])
+        if not registration.get("records"):
+            lines.append("  No matching registration text in scanned roots; implementation remains unresolved.")
+        lines.append("  Full copied evidence: " + str(destination / "report.txt"))
+    lines.extend(["", "Inspection does not change previous failures or establish numerical accuracy/placement.",
+                  "Missing text is not proof of no kernel; scan limits are recorded in each report.json."])
+    result["comparison"] = str(out / "report.txt")
+    (out / "report.txt").write_text("\n".join(lines) + "\n")
+    save_json(out / "result.json", result)
+    return result
+
+
 def _fresh_probes(out, result, args):
     """Rebuild deleted run artifacts once, preserving every stage's evidence."""
     ddk = Path(_text(os.environ.get("CPRO_DDK_ROOT"), "CPRO_DDK_ROOT")).expanduser().resolve()
@@ -461,17 +516,20 @@ def run_all(args):
                     groups.append((generated, manifest))
                 except Exception as error:
                     result["compile_error"] = f"{type(error).__name__}: {error}"
-        if requested is not None:
-            failed = next((path for path, manifest in reversed(groups)
-                           if any(case["role"] in {"conv_state", "rms"} and case.get("compile") == "FAILED"
-                                  for case in manifest["cases"])), None)
-            if failed is not None:
-                try:
-                    inspection = inspect_fused_probes(failed, _text(os.environ.get("CPRO_DDK_ROOT"), "CPRO_DDK_ROOT"), out / "inspection")
-                    result["inspection"] = str(out / "inspection")
-                    result["installed_registration"] = inspection.get("installed_registration", {})
-                except Exception as error:
-                    result["inspection_error"] = f"{type(error).__name__}: {error}"
+        # Fresh and ordinary runs need the same evidence as explicit retries.
+        # Ignore a historical failure once a recorded/new group compiled it.
+        successful = {case["name"] for _, manifest in groups for case in manifest["cases"]
+                      if case.get("status") == "COMPILED"}
+        failed = next((path for path, manifest in reversed(groups)
+                       if any(case["role"] in {"conv_state", "rms"} and case.get("compile") == "FAILED"
+                              and case["name"] not in successful for case in manifest["cases"])), None)
+        if failed is not None:
+            try:
+                inspection = inspect_fused_probes(failed, _text(os.environ.get("CPRO_DDK_ROOT"), "CPRO_DDK_ROOT"), out / "inspection")
+                result["inspection"] = str(out / "inspection")
+                result["installed_registration"] = inspection.get("installed_registration", {})
+            except Exception as error:
+                result["inspection_error"] = f"{type(error).__name__}: {error}"
         runner_cache = {}
         result["probe_manifests"] = {}
         for index, (probe_run, manifest) in enumerate(groups):
@@ -553,18 +611,20 @@ def run_all(args):
 def main(argv=None):
     try:
         args = parser().parse_args(argv)
+        if args.inspect_only and (args.fresh or args.all_ops or args.retry_cases is not None):
+            raise ValueError("--inspect-only cannot be combined with --fresh, --all-ops or --retry-cases")
         if args.fresh and (not args.all_ops or args.retry_cases is not None):
             raise ValueError("--fresh requires --all-ops and cannot be combined with --retry-cases")
         if args.retry_cases is not None and not args.all_ops:
             raise ValueError("--retry-cases requires --all-ops")
-        result = run_all(args) if args.all_ops else execute(args)
+        result = inspect_existing(args) if args.inspect_only else run_all(args) if args.all_ops else execute(args)
     except Exception as error:
         print(f"fused-board: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
     print(json.dumps({key: result[key] for key in ("status", "output", "comparison", "error", "execution_error", "comparison_error") if key in result}, ensure_ascii=False))
     if result.get("comparison"):
         print(Path(result["comparison"]).read_text(), end="")
-    return 0 if result["status"] == "EXECUTION_COMPLETE" else 1
+    return 0 if result["status"] in {"EXECUTION_COMPLETE", "INSPECTED"} else 1
 
 
 if __name__ == "__main__":
