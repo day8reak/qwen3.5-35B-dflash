@@ -1,5 +1,7 @@
 # Target / Draft 直接 GE 构图 → AIR
 
+当前主线已调整为接入黄区已有融合GDN自定义算子。基础算子展开的41案例验证暂不执行，不作为融合算子集成的前置条件；先核对融合范围与ABI，随后验证最终执行路径。见[当前接入计划](hdc-board-run.md#当前接入黄区已有融合-gdn)。
+
 新增入口为 `targets/cpro/scripts/direct_model_air.py`。target 和 draft 的图定义分别在 `ge_target.py`、`ge_draft.py`；通过主机 GE C++ 接口保存 AIR，生成端不导入 PyTorch、TorchNPU、TorchAir，也不初始化 NPU。原有 PyTorch 模型、参考、`export-air` 与 `export-tiny-air` 全部保留。
 
 2026-10-22 用户反馈 tiny target/draft 双图 AIR→OMC 编译成功。2026-10-26 的后续证据确认：旧 target OMC 在 OMG 主图分区时因 NPUCL 超过9个分区回退 CPU，板端恢复被 CPUCL 的 FP16 MatMul 检查拒绝。用户基于 `78d94ef` 重新导出后，新 target 的主图窗口 L91094–L127615 仍以分区超限回退结束。后续六个 MatMul 归约小图已全部通过 Load、Process 和数值检查；整图采用该归约后仍超限；九项布局探针已回传；row Mul整图修正后ReshapeFusion通过、19个Mul CPU-only候选消失，但主图仍分区超限。[剩余CPU候选批次](cpu-gap-probes.md)的后续完整回传见下。
@@ -10,7 +12,7 @@
 
 此前 target 的静态RoPE七节点原子折叠解决编译/加载阻塞；draft `SubGraph_2/v29/Mul` 的类型不匹配改为有界K=1 BatchMatMul后，实际tiny图已完成上述执行。仍保留INT32→FP16舍入、动态mask位置、双图ABI和外部权重；不同形状和域外合同不借此次结果视作板端通过。源码与主机验证见 `specs/ge-draft-rope-frequency-verification.json`。
 
-后续严格benchmark的板端报告已通过，但主机参考比较的tokens/dflash_tokens/ten_stable_runs失败，stop及身份检查通过。当前native通过要求两模式内部重复性和相互一致；旧ten_stable_runs还检查参考相等，不能据其False断言板端随机不稳定。用户已确认板端两模式各10次均为 `[55,54,49,9]`，参考 `[45,42,60,42]`；偏差始于target首轮。此批是未量化FP16 tiny随机权重，量化字段为空。相同payload主机GDN/整图结果一致，设备原因尚未定位。原OMC特征已回传，第0、2层有效位置都有偏差。主机仅把三层GDN分支输出置零，就能复现板端token序列且两处特征最大差仅约3e-5/6e-5；这提示分支贡献消失，具体原因尚未确定。第一轮三个探针现已完成：input_norm仍非零，chunk_core及后续分支全零，独立Rsqrt通过。两个core案例也已回传：第一层卷积输出开始大幅偏离，独立core从Q/K归一化及填充后的乘法/前缀和出现错误；全零在裁剪前已经发生。26案例综合批次已将故障定位到三维补零拼接和小值求和输出：IO/转置与独立正确窗口BMM通过，rank3补零错误，Q/K平方正确但sum丢失小值。当前已加入精确rank4拼接carrier，并用[41案例修复验证批次](hdc-board-run.md#当前修复拼接并一次验证布局精度和完整第一层)同时检查原控制、边界值与完整第一层；局部原生归约仅为待上板候选，完整OMC暂不重导出。证据见 `specs/draft-rope-comparison-user-report.json`；完整质量和最终至少2倍收益未通过。
+后续严格benchmark的板端报告已通过，但主机参考比较的tokens/dflash_tokens/ten_stable_runs失败，stop及身份检查通过。当前native通过要求两模式内部重复性和相互一致；旧ten_stable_runs还检查参考相等，不能据其False断言板端随机不稳定。用户已确认板端两模式各10次均为 `[55,54,49,9]`，参考 `[45,42,60,42]`；偏差始于target首轮。此批是未量化FP16 tiny随机权重，量化字段为空。相同payload主机GDN/整图结果一致，设备原因尚未定位。原OMC特征已回传，第0、2层有效位置都有偏差。主机仅把三层GDN分支输出置零，就能复现板端token序列且两处特征最大差仅约3e-5/6e-5；这提示分支贡献消失，具体原因尚未确定。第一轮三个探针现已完成：input_norm仍非零，chunk_core及后续分支全零，独立Rsqrt通过。两个core案例也已回传：第一层卷积输出开始大幅偏离，独立core从Q/K归一化及填充后的乘法/前缀和出现错误；全零在裁剪前已经发生。26案例综合批次已将故障定位到三维补零拼接和小值求和输出：IO/转置与独立正确窗口BMM通过，rank3补零错误，Q/K平方正确但sum丢失小值。此前已加入精确rank4拼接carrier，并准备[暂存的41案例验证](hdc-board-run.md#暂存基础算子展开的41案例验证)用于原控制、边界值与完整第一层检查；本批次现暂不执行，后续采用页首融合算子接入路线。证据见 `specs/draft-rope-comparison-user-report.json`；完整质量和最终至少2倍收益未通过。
 
 此前TopK、ArgMax、Cast、归约及公共类型校验的修复见`specs/ge-dtype-contract-verification.json`；其合法构图记录保持不变，是独立的合同检查。公开GE `Cast`源类型来自输入descriptor，不猜测增加`src_type`或直接修改OMC中的Cast属性。
 

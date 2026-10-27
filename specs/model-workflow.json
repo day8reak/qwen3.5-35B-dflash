@@ -435,17 +435,25 @@
   "delivery_objective": "specs/dflash-contract.json#delivery_objective",
   "current_priority": {
     "date": "2026-10-27",
-    "user_directive": "定位并修复精度差异；探针一次覆盖完整故障链，避免反复一两个用例。",
+    "user_directive": "最终使用黄区已有融合GDN自定义算子；停止将临时基础算子展开精度闭环作为前置条件。",
     "milestone": "target/draft load + one execution each + output/log retrieval",
-    "accuracy_work": "EXACT_CONCAT_CORRECTION_AND_NATIVE_REDUCTION_VALIDATION",
+    "accuracy_work": "INTEGRATE_EXISTING_FUSED_GDN_AND_VALIDATE_FINAL_PATH",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
-    "guide": "docs/hdc-board-run.md",
-    "next_action": "Run the single41-case gdn-repair batch in docs/hdc-board-run.md: corrected original26 controls,11 precision controls,4 integrated first-layer candidates. Retain prepared/reference/original OMC; no threshold relaxation.",
+    "guide": "docs/hdc-board-run.md#当前接入黄区已有融合-gdn",
+    "next_action": "Obtain the declared yellow-zone fused GDN package/example location, inspect fusion boundary and ABI, then integrate the existing implementation. Do not request gdn-repair41 execution as a prerequisite.",
     "milestone_status": "USER_REPORTED_TINY_EXECUTION_COMPLETE",
     "evidence": "specs/draft-rope-execution-user-report.json",
     "comparison_evidence": "specs/draft-rope-comparison-user-report.json",
     "localization_evidence": "specs/gdn-comprehensive-user-report.json",
     "probe_batch_preference": "User requests broad one-batch coverage instead of recurring one/two-case handoffs.",
-    "repair_verification": "specs/gdn-repair-verification.json"
+    "repair_verification": "specs/gdn-repair-verification.json",
+    "probe_batch_status": "GDN_REPAIR_41_DEFERRED_NOT_A_PREREQUISITE",
+    "existing_fused_gdn": {
+      "availability": "USER_REPORTED_IN_YELLOW_ZONE",
+      "package_location": "NOT_YET_DECLARED",
+      "local_resource_binding": "NOT_FOUND_IN_REPOSITORY_MANIFESTS",
+      "fusion_boundary": "UNKNOWN: determine whether causal convolution, Q/K norm, recurrence and output norm are included",
+      "integration": "NOT_STARTED_ABI_REQUIRED"
+    }
   }
 }

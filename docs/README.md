@@ -8,9 +8,9 @@
 
 **最新算子回放：42个已编译案例全部完成Load、Process和数值比较，另1项CastT编译失败。** 最后的`hilog.stderr`回收失败只影响附加诊断，无需重跑42项。新版脚本会显示诊断警告并保留远端证据；旧报告保留原样。
 
-**最新整图：target/draft编译成功，正式runner在target Load返回1。** 新GDN候选已通过`--reject-cpu-fallback`，失败阶段推进到模型加载；尚未查询IO或执行Process，draft也未加载。
+**最新整图：tiny target/draft 已执行成功，ordinary/DFlash 各10次稳定一致，但均与主机参考存在token偏差。** 当前质量门槛未通过，尚无最终性能结论。
 
-**当前入口：[检查已有 OMC 的 CPU 编译子图](hdc-board-run.md#当前读取-gdn-整图加载失败证据)。** 两张OMC已经转换成功。target字节中`insert_cast_4`出现4次，但转换JSON仅列出`insert_cast_5..13`；draft虽有同名Cast，也不能替代target失败节点。已显示Cast的属性和protobuf dtype使用不同枚举，原始编号不同不能直接判错。下一步复用原OMC和现有JSON离线定位CPU子图，失败节点及根因仍待确认，无需重复转换、grep、编译或上板。
+**当前入口：[接入黄区已有融合GDN](hdc-board-run.md#当前接入黄区已有融合-gdn)。** 用户确认生产路径将采用已有融合自定义算子；暂不运行基础算子展开的41案例批次。先核对算子包、融合范围与state接口，再验证最终路径的数值、DFlash一致性及至少2倍端到端收益。
 
 完整模型执行、精度和2倍加速仍待验证。
 
