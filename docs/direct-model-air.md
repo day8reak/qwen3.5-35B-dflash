@@ -10,7 +10,7 @@
 
 此前 target 的静态RoPE七节点原子折叠解决编译/加载阻塞；draft `SubGraph_2/v29/Mul` 的类型不匹配改为有界K=1 BatchMatMul后，实际tiny图已完成上述执行。仍保留INT32→FP16舍入、动态mask位置、双图ABI和外部权重；不同形状和域外合同不借此次结果视作板端通过。源码与主机验证见 `specs/ge-draft-rope-frequency-verification.json`。
 
-后续严格benchmark的板端报告已通过，但主机参考比较的tokens/dflash_tokens/ten_stable_runs失败，stop及身份检查通过。当前native通过要求两模式内部重复性和相互一致；旧ten_stable_runs还检查参考相等，不能据其False断言板端随机不稳定。用户已确认板端两模式各10次均为 `[55,54,49,9]`，参考 `[45,42,60,42]`；偏差始于target首轮。此批是未量化FP16 tiny随机权重，量化字段为空。相同payload主机GDN/整图结果一致，设备原因尚未定位。原OMC特征已回传，第0、2层有效位置都有偏差。主机仅把三层GDN分支输出置零，就能复现板端token序列且两处特征最大差仅约3e-5/6e-5；这提示分支贡献消失，具体原因尚未确定。第一轮三个探针现已完成：input_norm仍非零，chunk_core及后续分支全零，独立Rsqrt通过。下一步按[core内部诊断入口](hdc-board-run.md#当前定位-core-首次归零的计算或裁剪边界)运行两个同权重案例，区分投影/卷积、core内部计算及64→8行裁剪；无需重新导出完整OMC。证据见 `specs/draft-rope-comparison-user-report.json`；完整质量和最终至少2倍收益未通过。
+后续严格benchmark的板端报告已通过，但主机参考比较的tokens/dflash_tokens/ten_stable_runs失败，stop及身份检查通过。当前native通过要求两模式内部重复性和相互一致；旧ten_stable_runs还检查参考相等，不能据其False断言板端随机不稳定。用户已确认板端两模式各10次均为 `[55,54,49,9]`，参考 `[45,42,60,42]`；偏差始于target首轮。此批是未量化FP16 tiny随机权重，量化字段为空。相同payload主机GDN/整图结果一致，设备原因尚未定位。原OMC特征已回传，第0、2层有效位置都有偏差。主机仅把三层GDN分支输出置零，就能复现板端token序列且两处特征最大差仅约3e-5/6e-5；这提示分支贡献消失，具体原因尚未确定。第一轮三个探针现已完成：input_norm仍非零，chunk_core及后续分支全零，独立Rsqrt通过。两个core案例也已回传：第一层卷积输出开始大幅偏离，独立core从Q/K归一化及填充后的乘法/前缀和出现错误；全零在裁剪前已经发生。按用户要求，下一步采用[26案例综合批次](hdc-board-run.md#当前一次覆盖-gdn-故障链)，一次覆盖IO、实际值与正常域、布局和串联算术；无需重新导出完整OMC。证据见 `specs/draft-rope-comparison-user-report.json`；完整质量和最终至少2倍收益未通过。
 
 此前TopK、ArgMax、Cast、归约及公共类型校验的修复见`specs/ge-dtype-contract-verification.json`；其合法构图记录保持不变，是独立的合同检查。公开GE `Cast`源类型来自输入descriptor，不猜测增加`src_type`或直接修改OMC中的Cast属性。
 

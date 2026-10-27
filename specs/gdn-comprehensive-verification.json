@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-27",
+  "run_id": "20261027T002058Z-10155-371fd2",
+  "baseline_commit": "3f341c9",
+  "status": "HOST_VALIDATED_COMPREHENSIVE_DEVICE_BATCH_PENDING",
+  "trigger": "specs/gdn-core-stages-user-report.json",
+  "user_direction": "One comprehensive diagnostic batch instead of repeated one/two-case handoffs.",
+  "suite": {
+    "name": "gdn-comprehensive",
+    "cases": 26,
+    "groups": {
+      "io": 2,
+      "convolution_layout_and_bmm": 6,
+      "query_key_l2": 4,
+      "padding_view": 2,
+      "weighted_mul": 4,
+      "prefix_scan": 4,
+      "final_bmm_and_core_cuts": 4
+    },
+    "inputs": "Same-weight frozen host FP16 values plus explicit tagged/normal/moderate controls. No device intermediate values are claimed.",
+    "original_policy_binding": true,
+    "original_ddk_omg_identity_binding": true,
+    "limits": {
+      "sequence_length": 8,
+      "layer": 0,
+      "max_io_tensors_per_case": 32,
+      "max_tensor_bytes": 32768,
+      "max_rank": 4
+    },
+    "cut_equivalence": "Memoized graph extraction retains source shapes/dtypes/attrs/constants and rejects unresolved inputs/weights. Both core cuts reproduce source host stage bytes.",
+    "tolerances": "Original FP16 arithmetic tolerances retained; exact sign/copy/carrier controls use zero tolerance."
+  },
+  "native_metadata": {
+    "field": "io_tensors",
+    "scope": "Logical shape/dtype/bytes, actual runtime shape/format, allocationbytes, present in success/failure JSON; runtime dtype unavailable.",
+    "packing_changed": false,
+    "padding_dumped": false,
+    "limitations": "Allocated bytes alone do not establish physical strides or backend selection."
+  },
+  "report_changes": [
+    "bounded nonzero marginals for axes of length<=64",
+    "gdn-summary.txt with logical-axis run-length summaries and IO metadata",
+    "summary protected against overwrite and included in explicit archive allowlist"
+  ],
+  "validation": {
+    "distinct_python_tests_passed": 156,
+    "python_groups": {
+      "existing_weighted_accuracy_core": 81,
+      "comprehensive": 14,
+      "reports": 61
+    },
+    "affected_conv_cli_repeat_passes": 3,
+    "repeat_count_in_total": false,
+    "native": {
+      "ctest": "hiai_op_probe PASS",
+      "fake_cases": 126,
+      "compiler_warnings": 0,
+      "scope": "Host fake transport/lifetimes only, including5inputs/24reorderedoutputs and oversized allocation sentinel"
+    },
+    "serialized_recipe_host_comparisons": {
+      "cases": 6,
+      "status": "ALL_OBSERVED_STAGES_BIT_EXACT_TO_IR",
+      "scope": "Host interpreter, not OMG or board kernel arithmetic"
+    },
+    "prepare_only_cli": "PASS:all26generated without vendor calls; every constructionfile hash and fixtureinput hash/shape/dtype/bytes verified",
+    "docs": {
+      "shell_blocks_passed": 51,
+      "embedded_python_blocks_parsed": 2,
+      "spec_json_parse": "PASSED"
+    },
+    "review": "Independent source/provenance/cut/native IO and report reviews found no blocking defects."
+  },
+  "reports": [
+    {
+      "path": "$AI_RUN_DIR/report-tests.xml",
+      "sha256": "48087a253456becebc4c9edf7cb95576c4b91479fec195f6fe4e5658c98c689d"
+    },
+    {
+      "path": "$AI_RUN_DIR/pytest-gdn-comprehensive.xml",
+      "sha256": "77af9144dc7ab5351e5ba8454468cc4c339b406a3070ad86122ac7761149d9d9"
+    },
+    {
+      "path": "$AI_RUN_DIR/pytest-gdn-comprehensive-conv.xml",
+      "sha256": "5a6aa5d36d6c80b7a80159e824318afe46d9df10df370b9ded5b4df26c49b1ff"
+    },
+    {
+      "path": "$AI_RUN_DIR/pytest-gdn-comprehensive-regressions.xml",
+      "sha256": "77d4d32980b0dd83c1fb5e6b2a61c58ca577cfd9e2e464b1e5a3b0a40f356ef7"
+    },
+    {
+      "path": "$AI_RUN_DIR/native-probe-io-validation.json",
+      "sha256": "5373f34440c1ff1ee34614de87f534108adc50bca72daf469ff2c03441d6e8a7"
+    },
+    {
+      "path": "$AI_RUN_DIR/native-probe-io-test.log",
+      "sha256": "6edafdd1b62d2f0657009f9f8b610ef963a1c168bdf6ea8cd4c265b6773d9b84"
+    },
+    {
+      "path": "$AI_RUN_DIR/docs-check.json",
+      "sha256": "32f8b737c19c19a5b305fd6523699bd6400eda262a36ae9dc613142a5e4f09be"
+    },
+    {
+      "path": "$AI_RUN_DIR/emitted-layout-audit/report.json",
+      "sha256": "91937cc75f8a1c7c898d55ca8afb1210090ffdeb4aafa3f3bf967b1a9f1a959d"
+    },
+    {
+      "path": "$AI_RUN_DIR/l2-sum-ftz.json",
+      "sha256": "bd791ed28eab5ccfc5db7a4dce0dbeed3f296767c0527cf3e507e04411574913"
+    }
+  ],
+  "files_sha256": {
+    "model/qwen35_moe_dflash/op_probe.py": "3f4d1202a191280e38d930f0997be6533ad07b4d0c7b53cec33cab367ae1c791",
+    "model/qwen35_moe_dflash/op_probe_cases.py": "4abd5f15d09dda823e5b368e4aefd06f5def9435a7645de78cf4a46e7791f31d",
+    "model/qwen35_moe_dflash/op_probe_gdn_comprehensive.py": "6e057dfc7d57d9a59cd9393a0a63a8723e03c53e2743adb9a7919700b6e40d56",
+    "model/qwen35_moe_dflash/op_probe_report.py": "a00d26b54d87f1203fa2d951a72b3cb7b2b4d39761d3050b32e4c915e5256f79",
+    "targets/cpro/runtime/src/hiai_op_probe.cpp": "3f1d41a09d01f1f971b7d73f2e9300e26fefd2602d4a5d6b55dde0971e16e0d1",
+    "targets/cpro/runtime/tests/probe_fake/fake_hiai.cpp": "d52ea7e6dc9da3e126a6869eebfbf526e657204753a92c1b1eacbedcce652d05",
+    "targets/cpro/runtime/tests/test_hiai_op_probe.py": "3b0ea8b52f5348acbf3bdc2ee71d3689f9e1cb6e585588907680d4461cbd4635",
+    "tests/test_op_probe_gdn_comprehensive.py": "70c634a1307c69aa6e4fc99f06629e87ecd6bf0ae187af5254e4016d7125499d",
+    "tests/test_op_probe_signal_diagnostics.py": "2a174e12f73a590b3a610a4a870fc15ec9f054a81a79996e47e53cef87a8bec1"
+  },
+  "device_status": "No local internal OMG or HDC execution. Latest user two-case accuracy failed; new26cases pending user-server execution.",
+  "hypotheses": [
+    "sum-to-epsilon subnormal loss closely reproduces Q/K normalization summary but is not a full-tensor or kernel root-cause proof",
+    "convolution window/layout, row scaling and prefix-scan failures require their independent controls",
+    "instrumented graphs and runtime cut inputs can change compiler context"
+  ],
+  "unchanged": [
+    "production model arithmetic and graph outputs",
+    "original prepared weights/reference/OMC",
+    "runtime library deployment",
+    "full-model accuracy acceptance"
+  ],
+  "next_command": "docs/hdc-board-run.md#当前一次覆盖-gdn-故障链",
+  "experience_audit": "docs/experience.md: model-scoped evidence, hypothesis limits and executable checks updated; no unsupported general skill rule promoted."
+}

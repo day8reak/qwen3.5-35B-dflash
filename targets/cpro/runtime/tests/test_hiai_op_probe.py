@@ -16,7 +16,8 @@ counter = 0
 def case(*, dtype="float16", failure="", spec=None, data=None, model=b"probe-fixture",
          expected="EXECUTED", expected_stage=None, expected_error=None,
          existing=False, oversized=False, actual_inputs=None, actual_outputs=None,
-         input_format=2, output_format=2, additional_inputs=None, expected_init_shapes=None):
+         input_format=2, output_format=2, additional_inputs=None, expected_init_shapes=None,
+         extra_buffer_bytes=0, output_inputs=None, expected_outputs=None):
     global counter
     counter += 1
     directory = root / str(counter)
@@ -43,9 +44,12 @@ def case(*, dtype="float16", failure="", spec=None, data=None, model=b"probe-fix
                                  "FAKE_HIAI_INIT_TRACE": str(init_trace),
                                  "FAKE_HIAI_INPUT_DIMS": shape_text(actual_inputs),
                                  "FAKE_HIAI_OUTPUT_DIMS": shape_text(actual_outputs),
+                                 "FAKE_HIAI_EXTRA_BUFFER_BYTES": str(extra_buffer_bytes),
+                                 "FAKE_HIAI_OUTPUT_INPUTS": ",".join(map(str, output_inputs or [])),
                                  "FAKE_HIAI_INPUT_FORMAT": str(input_format), "FAKE_HIAI_OUTPUT_FORMAT": str(output_format)},
                             text=True, capture_output=True)
     parsed = json.loads(result.stdout)
+    assert isinstance(parsed["io_tensors"], list), parsed
     assert parsed["status"] == expected, (parsed, result.stderr)
     assert result.returncode == (0 if expected == "EXECUTED" else 1), result.stderr
     if expected_stage:
@@ -59,7 +63,10 @@ def case(*, dtype="float16", failure="", spec=None, data=None, model=b"probe-fix
         assert trace.read_text().splitlines() == ["load", "unload", "destroy"]
     if expected == "EXECUTED":
         assert parsed["placement"] == "UNVERIFIED"
-        assert (output / "output.bin").read_bytes() == data
+        expected_outputs = {"output.bin": data} if expected_outputs is None else expected_outputs
+        assert {p.name for p in output.iterdir()} == set(expected_outputs)
+        for name, contents in expected_outputs.items():
+            assert (output / name).read_bytes() == contents
         assert trace.read_text().splitlines() == ["load", "process", "unload", "destroy"]
     if expected_init_shapes is not None:
         dtype_value = {"float16": 2, "float32": 1, "int32": 3}[dtype]
@@ -77,6 +84,12 @@ for dtype in ("float16", "float32", "int32"):
     assert "model IO: inputs=1, outputs=1\n" in result.stderr, result.stderr
     for direction in ("input", "output"):
         assert f"model IO {direction}[0]: shape=[1,4], format=2, dtype=unavailable\n" in result.stderr
+    expected_bytes = 8 if dtype == "float16" else 16
+    assert json.loads(result.stdout)["io_tensors"] == [
+        {"direction": direction, "index": 0, "logical_shape": [1, 4], "logical_dtype": dtype,
+         "logical_bytes": expected_bytes, "runtime_shape": [1, 4], "runtime_format": 2,
+         "runtime_dtype": "unavailable", "allocation_bytes": expected_bytes}
+        for direction in ("input", "output")]
 for failure, stage in (("init", "init"), ("model-buffer", "load"), ("load", "load"),
                        ("process", "process"),
                        ("count", "io"), ("allocation", "io"), ("short-buffer", "io"),
@@ -206,6 +219,63 @@ for failure in ("allocation", "short-buffer"):
     case(spec="input\tfloat16\t1,2,2\tinput.bin\noutput\tfloat16\t1,2,2\toutput.bin\n",
          actual_inputs=[[1, 1, 2, 2]], actual_outputs=[[1, 1, 2, 2]],
          failure=failure, expected="FAILED", expected_stage="io")
+
+# Metadata survives failures without claiming unqueried descriptors or failed
+# allocations. All runtime descriptors are recorded before the first guard.
+result = case(failure="load", expected="FAILED", expected_stage="load")
+for record in json.loads(result.stdout)["io_tensors"]:
+    assert record["logical_shape"] == [1, 4] and record["logical_bytes"] == 8
+    assert record["runtime_shape"] is None and record["runtime_format"] is None
+    assert record["allocation_bytes"] is None
+result = case(failure="shape", expected="FAILED", expected_stage="io")
+records = json.loads(result.stdout)["io_tensors"]
+assert [record["runtime_shape"] for record in records] == [[4], [1, 4]]
+assert all(record["allocation_bytes"] is None for record in records)
+result = case(failure="allocation-second", expected="FAILED", expected_stage="io")
+assert [record["allocation_bytes"] for record in json.loads(result.stdout)["io_tensors"]] == [8, None]
+result = case(failure="short-buffer", expected="FAILED", expected_stage="io")
+assert [record["allocation_bytes"] for record in json.loads(result.stdout)["io_tensors"]] == [1, None]
+result = case(actual_outputs=[[1, 4], [2, 2]], expected="FAILED", expected_stage="io")
+extra = json.loads(result.stdout)["io_tensors"][-1]
+assert extra == {"direction": "output", "index": 1, "logical_shape": None, "logical_dtype": None,
+                 "logical_bytes": None, "runtime_shape": [2, 2], "runtime_format": 2,
+                 "runtime_dtype": "unavailable", "allocation_bytes": None}
+
+# Match the diagnostic scale (five inputs, 24 outputs), with distinct source
+# patterns and permuted output mapping. Narrow width and multiple batches must
+# preserve dense bytes; extra allocation contains a fake-only known sentinel.
+# This tests logical IO handling, not any vendor row/batch packing convention.
+shapes = [[1, 8, 2, 8], [1, 8, 2, 8], [48, 8, 1], [2, 1, 64], [1, 8, 2]]
+payloads = [bytes((i * (index + 1) + 17 * index) % 251 for i in range(math.prod(shape) * 2))
+            for index, shape in enumerate(shapes)]
+sources = [(index * 3 + 2) % 5 for index in range(24)]
+rows = [f"input\tfloat16\t{','.join(map(str, shape))}\t{'input.bin' if i == 0 else f'in{i}.bin'}"
+        for i, shape in enumerate(shapes)]
+rows += [f"output\tfloat16\t{','.join(map(str, shapes[source]))}\tout{i}.bin"
+         for i, source in enumerate(sources)]
+runtime_inputs = [shape if len(shape) == 4 else [1] + shape for shape in shapes]
+runtime_outputs = [runtime_inputs[source] for source in sources]
+for slack in (0, 64):
+    result = case(spec="\n".join(rows) + "\n", data=payloads[0],
+                  additional_inputs={f"in{i}.bin": payloads[i] for i in range(1, 5)},
+                  actual_inputs=runtime_inputs, actual_outputs=runtime_outputs,
+                  output_inputs=sources, extra_buffer_bytes=slack,
+                  expected_outputs={f"out{i}.bin": payloads[source] for i, source in enumerate(sources)},
+                  expected_init_shapes=runtime_inputs + runtime_outputs)
+    records = json.loads(result.stdout)["io_tensors"]
+    assert len(records) == 29
+    for direction, indices in (("input", range(5)), ("output", sources)):
+        group = [record for record in records if record["direction"] == direction]
+        for index, (record, source) in enumerate(zip(group, indices)):
+            assert record["index"] == index
+            assert record["logical_shape"] == shapes[source]
+            assert record["logical_dtype"] == "float16"
+            assert record["logical_bytes"] == len(payloads[source])
+            assert record["runtime_shape"] == runtime_inputs[source]
+            assert record["runtime_format"] == 2 and record["runtime_dtype"] == "unavailable"
+            assert record["allocation_bytes"] == len(payloads[source]) + slack
+result = case(failure="process", extra_buffer_bytes=64, expected="FAILED", expected_stage="process")
+assert [record["allocation_bytes"] for record in json.loads(result.stdout)["io_tensors"]] == [72, 72]
 
 case(model=b"", expected="FAILED", expected_stage="model-buffer")
 case(oversized=True, expected="FAILED", expected_stage="model-buffer")

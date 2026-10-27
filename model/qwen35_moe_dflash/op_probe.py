@@ -38,9 +38,9 @@ def parser():
                            help="named batch of related controls/candidates; excludes unrelated historical probes")
     p.add_argument("--exclude-family", choices=PROBE_FAMILIES, action="append", default=[],
                    help="with --suite, skip an already tested family; repeat to exclude several")
-    p.add_argument("--prepared", help="required for gdn-accuracy/gdn-core-accuracy: prepared tiny model bundle")
-    p.add_argument("--reference", help="required for gdn-accuracy/gdn-core-accuracy: matching reference.json")
-    p.add_argument("--omc", help="required for gdn-accuracy/gdn-core-accuracy: original compiled model bundle")
+    p.add_argument("--prepared", help="required for GDN accuracy suites: prepared tiny model bundle")
+    p.add_argument("--reference", help="required for GDN accuracy suites: matching reference.json")
+    p.add_argument("--omc", help="required for GDN accuracy suites: original compiled model bundle")
     p.add_argument("--list-cases", action="store_true")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--prepare-only", action="store_true", help="write recipes and references without vendor tools")
@@ -278,21 +278,25 @@ def run(args):
         raise ValueError("--exclude-family requires --suite")
     provenance = None
     source_options = (args.prepared, args.reference, args.omc)
-    accuracy_suite = args.suite in {"gdn-accuracy", "gdn-core-accuracy"}
+    accuracy_suite = args.suite in {"gdn-accuracy", "gdn-core-accuracy", "gdn-comprehensive"}
     if accuracy_suite:
         if not all(source_options):
             raise ValueError(f"--suite {args.suite} requires --prepared, --reference and --omc")
         if args.exclude_family:
             raise ValueError(f"--suite {args.suite} does not accept --exclude-family")
-        from .op_probe_gdn_accuracy import cases_from_prepared
-        if args.suite == "gdn-core-accuracy":
-            selected, provenance = cases_from_prepared(*source_options, core_stages=True)
-        else:
+        if args.suite == "gdn-comprehensive":
+            from .op_probe_gdn_comprehensive import cases_from_prepared
             selected, provenance = cases_from_prepared(*source_options)
+        else:
+            from .op_probe_gdn_accuracy import cases_from_prepared
+            if args.suite == "gdn-core-accuracy":
+                selected, provenance = cases_from_prepared(*source_options, core_stages=True)
+            else:
+                selected, provenance = cases_from_prepared(*source_options)
         selected = list(selected)
     else:
         if any(value is not None for value in source_options):
-            raise ValueError("--prepared, --reference and --omc require --suite gdn-accuracy or gdn-core-accuracy")
+            raise ValueError("--prepared, --reference and --omc require --suite gdn-accuracy, gdn-core-accuracy or gdn-comprehensive")
         selected = list(cases())
     names = {case["name"] for case in selected}
     if set(args.case) - names:

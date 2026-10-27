@@ -290,11 +290,11 @@
       "accuracy": "USER_REPORTED_REFERENCE_TOKEN_MISMATCH",
       "performance": "NOT_MEASURED",
       "evidence": "specs/hiai-model-execution-verification.json",
-      "next_command": "Follow docs/hdc-board-run.md gdn-core-accuracy: compile/replay two same-weight diagnostics observing projections, convolution, chunk internals and crop; reuse existing original OMC and native donor.",
+      "next_command": "Follow docs/hdc-board-run.md gdn-comprehensive: compile/replay26 same-weight and explicit-control probes covering IO, convolution windows/BMM, L2, padding, row Mul, prefix scan and core cuts in one batch; refresh native runner for allocation metadata.",
       "requires": "Existing prepared/reference/original OMC and OP_PROBE_RUN donor; matching DDK ID/OMG hash and new probe output directories.",
       "guide": "docs/hdc-board-run.md",
       "user_evidence": "specs/hiai-model-execution-user-report.json",
-      "current_failure": "User staged first-layer probe input_norm near source, chunk_core all128zero; gated output and attention projection zero. Independent Rsqrt relL2~0.00185. First-zero operation/crop cause unresolved.",
+      "current_failure": "Both core diagnostics execute but fail numerically: first-layer projected_qkv near source, convolved_qkv large divergence; intra-chunk output zero before crop. Standalone core normalized Q/K, weighted_value and prefix scan also diverge. Specific source/kernel/layout cause unresolved.",
       "followup_run_id": "20261026T111926Z-29824-5b5c4c",
       "followup_evidence": "specs/draft-rope-execution-user-report.json",
       "source_contract_verification": "specs/ge-dtype-contract-verification.json",
@@ -352,9 +352,10 @@
         "host_audit": "specs/target-prefill-host-verification.json",
         "target_feature_capture": "USER_REPORTED_EXECUTION_COMPLETE_AND_RAW_HEX_RECEIVED",
         "localization": "specs/gdn-accuracy-localization.json",
-        "next_probe": "Follow docs/hdc-board-run.md gdn-core-accuracy: compile/replay two same-weight diagnostics observing projections, convolution, chunk internals and crop; reuse existing original OMC and native donor.",
+        "next_probe": "Follow docs/hdc-board-run.md gdn-comprehensive: compile/replay26 same-weight and explicit-control probes covering IO, convolution windows/BMM, L2, padding, row Mul, prefix scan and core cuts in one batch; refresh native runner for allocation metadata.",
         "core_zero_evidence": "specs/gdn-core-zero-user-report.json",
-        "original_context_comparison": "USER_REPORTED_FINAL_AND_STAGED_BOTH_48_OF_48_EXACT_TO_ORIGINAL_CAPTURE"
+        "original_context_comparison": "USER_REPORTED_FINAL_AND_STAGED_BOTH_48_OF_48_EXACT_TO_ORIGINAL_CAPTURE",
+        "core_stages_evidence": "specs/gdn-core-stages-user-report.json"
       }
     }
   },
@@ -436,13 +437,14 @@
     "date": "2026-10-27",
     "user_directive": "先打通上板执行的链路吧，后续再考虑精度问题",
     "milestone": "target/draft load + one execution each + output/log retrieval",
-    "accuracy_work": "LOCALIZE_FIRST_ZERO_WITHIN_PRECORE_CORE_OR_CROP",
+    "accuracy_work": "COMPREHENSIVE_ACTUAL_AND_NORMAL_DOMAIN_LAYOUT_ARITHMETIC_DIAGNOSTICS",
     "final_performance_goal": "DFlash >=2x; NOT_MEASURED",
     "guide": "docs/hdc-board-run.md",
-    "next_action": "Follow docs/hdc-board-run.md gdn-core-accuracy: compile/replay two same-weight diagnostics observing projections, convolution, chunk internals and crop; reuse existing original OMC and native donor.",
+    "next_action": "Follow docs/hdc-board-run.md gdn-comprehensive: compile/replay26 same-weight and explicit-control probes covering IO, convolution windows/BMM, L2, padding, row Mul, prefix scan and core cuts in one batch; refresh native runner for allocation metadata.",
     "milestone_status": "USER_REPORTED_TINY_EXECUTION_COMPLETE",
     "evidence": "specs/draft-rope-execution-user-report.json",
     "comparison_evidence": "specs/draft-rope-comparison-user-report.json",
-    "localization_evidence": "specs/gdn-core-zero-user-report.json"
+    "localization_evidence": "specs/gdn-core-stages-user-report.json",
+    "probe_batch_preference": "User requests broad one-batch coverage instead of recurring one/two-case handoffs."
   }
 }

@@ -85,6 +85,66 @@ const char* DtypeName(hiai::HIAI_DataType dtype) {
     default: return "unknown";
   }
 }
+struct TensorEvidence {
+  bool input;
+  std::size_t index;
+  bool declared = false, runtime = false, allocated = false;
+  std::vector<std::uint32_t> logical_shape, runtime_shape;
+  std::string logical_dtype;
+  std::uint64_t logical_bytes = 0, allocation_bytes = 0;
+  int runtime_format = 0;
+};
+// Retain bounded metadata across Probe destruction so failures report the same
+// observed contracts as successful runs. No buffer contents or addresses here.
+std::vector<TensorEvidence> io_tensors;
+TensorEvidence& TensorRecord(bool input, std::size_t index) {
+  for (auto& record : io_tensors)
+    if (record.input == input && record.index == index) return record;
+  Require(io_tensors.size() < 256, "runtime IO metadata exceeds tensor-count limit");
+  TensorEvidence record{};
+  record.input = input;
+  record.index = index;
+  io_tensors.push_back(std::move(record));
+  return io_tensors.back();
+}
+void RecordDeclared(const std::vector<Spec>& specs) {
+  std::size_t input_index = 0, output_index = 0;
+  for (const auto& spec : specs) {
+    auto& record = TensorRecord(spec.input, spec.input ? input_index++ : output_index++);
+    record.declared = true;
+    record.logical_shape = spec.shape;
+    record.logical_dtype = DtypeName(spec.dtype);
+    record.logical_bytes = spec.bytes;
+  }
+}
+void RecordRuntime(bool input, const std::vector<hiai::TensorDimension>& dims) {
+  for (std::size_t i = 0; i < dims.size(); ++i) {
+    auto& record = TensorRecord(input, i);
+    record.runtime = true;
+    record.runtime_shape = dims[i].GetDims();
+    record.runtime_format = static_cast<int>(dims[i].GetFormat());
+  }
+}
+std::string IoEvidence() {
+  std::ostringstream out;
+  out << '[';
+  bool first = true;
+  for (const auto& record : io_tensors) {
+    if (!first) out << ',';
+    first = false;
+    out << "{\"direction\":" << Json(record.input ? "input" : "output")
+        << ",\"index\":" << record.index
+        << ",\"logical_shape\":" << (record.declared ? Shape(record.logical_shape) : "null")
+        << ",\"logical_dtype\":" << (record.declared ? Json(record.logical_dtype) : "null")
+        << ",\"logical_bytes\":" << (record.declared ? std::to_string(record.logical_bytes) : "null")
+        << ",\"runtime_shape\":" << (record.runtime ? Shape(record.runtime_shape) : "null")
+        << ",\"runtime_format\":" << (record.runtime ? std::to_string(record.runtime_format) : "null")
+        << ",\"runtime_dtype\":\"unavailable\""
+        << ",\"allocation_bytes\":" << (record.allocated ? std::to_string(record.allocation_bytes) : "null")
+        << '}';
+  }
+  return out.str() + ']';
+}
 void DumpDimensions(const char* direction, const std::vector<hiai::TensorDimension>& dims) {
   for (std::size_t i = 0; i < dims.size(); ++i)
     std::cerr << "qwen35_hiai_op_probe: model IO " << direction << '[' << i
@@ -216,6 +276,8 @@ struct Probe {
     stage = "io";
     std::vector<hiai::TensorDimension> input_dims, output_dims;
     Check(client.GetModelIOTensorDim(name, input_dims, output_dims), "GetModelIOTensorDim");
+    RecordRuntime(true, input_dims);
+    RecordRuntime(false, output_dims);
     // Keep all actual descriptors even when the first TSV comparison fails.
     // This legacy API does not expose the model's IO dtypes.
     std::cerr << "qwen35_hiai_op_probe: model IO: inputs=" << input_dims.size()
@@ -246,6 +308,9 @@ struct Probe {
       // The legacy API exposes shape/format, not dtype introspection. The
       // host manifest binds dtype declarations to the model and input hashes.
       Check(tensor->Init(&dim, spec.dtype), "AiTensor::Init");
+      auto& evidence = TensorRecord(spec.input, index - 1);
+      evidence.allocation_bytes = tensor->GetSize();
+      evidence.allocated = true;
       Require(tensor->GetBuffer() && tensor->GetSize() >= spec.bytes,
               "tensor allocation smaller than declared IO bytes");
       if (spec.input) {
@@ -298,18 +363,20 @@ int main(int argc, char** argv) {
     Require(!fs::exists(output), "output directory must not already exist");
     stage = "io-spec";
     const auto specs = ReadSpecs(io);
+    RecordDeclared(specs);
     {
       Probe probe;
       probe.Run(model, specs, output);
     }
     std::cout << "{\"status\":\"EXECUTED\",\"runtime_version\":" << Json(runtime_version)
-              << ",\"placement\":\"UNVERIFIED\"}\n";
+              << ",\"placement\":\"UNVERIFIED\",\"io_tensors\":" << IoEvidence() << "}\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "qwen35_hiai_op_probe: stage=" << stage << ": " << error.what() << '\n';
     std::cout << "{\"status\":\"FAILED\",\"stage\":" << Json(stage)
               << ",\"runtime_version\":" << Json(runtime_version)
-              << ",\"error\":" << Json(error.what()) << "}\n";
+              << ",\"error\":" << Json(error.what())
+              << ",\"io_tensors\":" << IoEvidence() << "}\n";
     return 1;
   }
 }

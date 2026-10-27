@@ -1,0 +1,381 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-27",
+  "run_id": "20261027T002058Z-10155-371fd2",
+  "baseline_handoff_commit": "3f341c9",
+  "provenance": "User terminal runtime-comparison.txt and report.txt from GE_GDN_CORE_BOARD_RUN; actual remote artifact paths, hashes and source revision not independently retrieved.",
+  "status": "USER_REPORTED_BOTH_EXECUTED_NUMERICAL_FAILED",
+  "replay": "REPLAY_COMPLETE",
+  "transport": "TRANSPORT_COMPLETE",
+  "compiled": 2,
+  "load_passed": 2,
+  "run_passed": 2,
+  "numerical_passed": 0,
+  "cases": [
+    {
+      "name": "gdn_layer0_core_stages",
+      "compiler_main_partition": {
+        "NPU": 2,
+        "CPU": 1
+      },
+      "outputs": [
+        {
+          "label": "layer0_final",
+          "max_abs_error": 0.02154541015625,
+          "relative_l2": 0.13793392797777437,
+          "reference_nonzero": 128,
+          "actual_nonzero": 128
+        },
+        {
+          "label": "input_norm",
+          "max_abs_error": 0.00390625,
+          "relative_l2": 0.0017429493151794896,
+          "reference_nonzero": 128,
+          "actual_nonzero": 128
+        },
+        {
+          "label": "projected_qkv",
+          "max_abs_error": 0.0009765625,
+          "relative_l2": 0.001894151510771865,
+          "reference_nonzero": 384,
+          "actual_nonzero": 384
+        },
+        {
+          "label": "convolved_qkv",
+          "max_abs_error": 0.08135986328125,
+          "relative_l2": 1.2912771777094856,
+          "reference_nonzero": 384,
+          "actual_nonzero": 173
+        },
+        {
+          "label": "activated_qkv",
+          "max_abs_error": 0.040435791015625,
+          "relative_l2": 1.2876235689582571,
+          "reference_nonzero": 384,
+          "actual_nonzero": 173
+        },
+        {
+          "label": "query_input",
+          "max_abs_error": 0.0265045166015625,
+          "relative_l2": 1.1727000157315461,
+          "reference_nonzero": 128,
+          "actual_nonzero": 24
+        },
+        {
+          "label": "key_input",
+          "max_abs_error": 0.040435791015625,
+          "relative_l2": 1.4081708163711466,
+          "reference_nonzero": 128,
+          "actual_nonzero": 127
+        },
+        {
+          "label": "value_input",
+          "max_abs_error": 0.016590118408203125,
+          "relative_l2": 1.0730044101904357,
+          "reference_nonzero": 128,
+          "actual_nonzero": 22
+        },
+        {
+          "label": "beta_input",
+          "max_abs_error": 0.00048828125,
+          "relative_l2": 0.0005981597750844875,
+          "reference_nonzero": 16,
+          "actual_nonzero": 16
+        },
+        {
+          "label": "decay_input",
+          "max_abs_error": 0.000766754150390625,
+          "relative_l2": 0.0427795314850952,
+          "reference_nonzero": 16,
+          "actual_nonzero": 16
+        },
+        {
+          "label": "normalized_query",
+          "max_abs_error": 6.3660888671875,
+          "relative_l2": 3.269977864397957,
+          "reference_nonzero": 128,
+          "actual_nonzero": 24
+        },
+        {
+          "label": "normalized_key",
+          "max_abs_error": 1.58056640625,
+          "relative_l2": 1.470552394114343,
+          "reference_nonzero": 128,
+          "actual_nonzero": 127
+        },
+        {
+          "label": "scaled_query",
+          "max_abs_error": 2.2506103515625,
+          "relative_l2": 3.2692928904292455,
+          "reference_nonzero": 128,
+          "actual_nonzero": 24
+        },
+        {
+          "label": "weighted_value",
+          "max_abs_error": 0.008436203002929688,
+          "relative_l2": 1.0709859574600635,
+          "reference_nonzero": 128,
+          "actual_nonzero": 22
+        },
+        {
+          "label": "decay_prefix",
+          "max_abs_error": 0.04119873046875,
+          "relative_l2": 0.38424915662291326,
+          "reference_nonzero": 128,
+          "actual_nonzero": 72
+        },
+        {
+          "label": "decay_mask",
+          "max_abs_error": 0.0419921875,
+          "relative_l2": 0.010798702174116982,
+          "reference_nonzero": 4160,
+          "actual_nonzero": 4160
+        },
+        {
+          "label": "triangular_transform",
+          "max_abs_error": 0.67919921875,
+          "relative_l2": 0.15070484602705472,
+          "reference_nonzero": 184,
+          "actual_nonzero": 156
+        },
+        {
+          "label": "transformed_value",
+          "max_abs_error": 0.00848388671875,
+          "relative_l2": 1.043786542797676,
+          "reference_nonzero": 128,
+          "actual_nonzero": 24
+        },
+        {
+          "label": "chunk_0_scores",
+          "max_abs_error": 1.74951171875,
+          "relative_l2": 3.0673139302515056,
+          "reference_nonzero": 72,
+          "actual_nonzero": 36
+        },
+        {
+          "label": "chunk_0_new_value",
+          "max_abs_error": 0.00848388671875,
+          "relative_l2": 1.043786542797676,
+          "reference_nonzero": 128,
+          "actual_nonzero": 24
+        },
+        {
+          "label": "chunk_0_intra",
+          "max_abs_error": 0.0017614364624023438,
+          "relative_l2": 1.0,
+          "reference_nonzero": 128,
+          "actual_nonzero": 0
+        },
+        {
+          "label": "chunk_0_padded_output",
+          "max_abs_error": 0.0017614364624023438,
+          "relative_l2": 1.0,
+          "reference_nonzero": 128,
+          "actual_nonzero": 0
+        },
+        {
+          "label": "cropped_core",
+          "max_abs_error": 0.0017614364624023438,
+          "relative_l2": 1.0,
+          "reference_nonzero": 128,
+          "actual_nonzero": 0
+        },
+        {
+          "label": "chunk_core",
+          "max_abs_error": 0.0017614364624023438,
+          "relative_l2": 1.0,
+          "reference_nonzero": 128,
+          "actual_nonzero": 0
+        }
+      ]
+    },
+    {
+      "name": "gdn_core_replay",
+      "compiler_main_partition": {
+        "NPU": 1,
+        "CPU": 0
+      },
+      "outputs": [
+        {
+          "label": "normalized_query",
+          "max_abs_error": 3.24169921875,
+          "relative_l2": 1.5126355862011047,
+          "reference_nonzero": 128,
+          "actual_nonzero": 128
+        },
+        {
+          "label": "normalized_key",
+          "max_abs_error": 2.81591796875,
+          "relative_l2": 1.0270264948797303,
+          "reference_nonzero": 128,
+          "actual_nonzero": 128
+        },
+        {
+          "label": "scaled_query",
+          "max_abs_error": 1.1455078125,
+          "relative_l2": 1.5120902519969415,
+          "reference_nonzero": 128,
+          "actual_nonzero": 128
+        },
+        {
+          "label": "weighted_value",
+          "max_abs_error": 0.006622314453125,
+          "relative_l2": 0.5322207845739005,
+          "reference_nonzero": 128,
+          "actual_nonzero": 64
+        },
+        {
+          "label": "decay_prefix",
+          "max_abs_error": 0.04119873046875,
+          "relative_l2": 0.3838634985736286,
+          "reference_nonzero": 128,
+          "actual_nonzero": 72
+        },
+        {
+          "label": "decay_mask",
+          "max_abs_error": 0.04052734375,
+          "relative_l2": 0.01065028685981973,
+          "reference_nonzero": 4160,
+          "actual_nonzero": 4160
+        },
+        {
+          "label": "triangular_transform",
+          "max_abs_error": 0.98193359375,
+          "relative_l2": 0.12979997417813588,
+          "reference_nonzero": 184,
+          "actual_nonzero": 156
+        },
+        {
+          "label": "transformed_value",
+          "max_abs_error": 0.0066986083984375,
+          "relative_l2": 0.6281891488802775,
+          "reference_nonzero": 128,
+          "actual_nonzero": 62
+        },
+        {
+          "label": "chunk_0_scores",
+          "max_abs_error": 2.0089111328125,
+          "relative_l2": 2.2419608443222003,
+          "reference_nonzero": 72,
+          "actual_nonzero": 72
+        },
+        {
+          "label": "chunk_0_new_value",
+          "max_abs_error": 0.0066986083984375,
+          "relative_l2": 0.6281891488802775,
+          "reference_nonzero": 128,
+          "actual_nonzero": 62
+        },
+        {
+          "label": "chunk_0_intra",
+          "max_abs_error": 0.00675511360168457,
+          "relative_l2": 2.023821311373417,
+          "reference_nonzero": 128,
+          "actual_nonzero": 53
+        },
+        {
+          "label": "chunk_0_padded_output",
+          "max_abs_error": 0.00675511360168457,
+          "relative_l2": 2.023821311373417,
+          "reference_nonzero": 128,
+          "actual_nonzero": 53
+        },
+        {
+          "label": "cropped_core",
+          "max_abs_error": 0.00675511360168457,
+          "relative_l2": 2.023821311373417,
+          "reference_nonzero": 128,
+          "actual_nonzero": 53
+        },
+        {
+          "label": "chunk_core",
+          "max_abs_error": 0.00675511360168457,
+          "relative_l2": 2.023821311373417,
+          "reference_nonzero": 128,
+          "actual_nonzero": 53
+        }
+      ]
+    }
+  ],
+  "observations": [
+    "The first observed large full-layer divergence is convolved_qkv after projected_qkv passes its existing tolerance. Convolution windows and layout steps between these boundaries were not exposed.",
+    "Full-layer intra-chunk result is already all zero before padding/crop/transpose; an error confined to the final crop cannot explain that observed zero.",
+    "Standalone core with host query/key/value/decay/beta also fails. Conv alone cannot explain all observed failures; no unique common cause established.",
+    "Replay weighted_value loses64 of128 nonzero values and decay_prefix loses56 of128; marginals/actual bytes are required to identify which heads or rows.",
+    "Replay normalized query max3.984375 and key max3.490234375 exceed expected maxima .87548828125/.8671875. Tiny square underflow, gain pairing, input interpretation and internal layout are competing explanations.",
+    "Full-layer final error statistics match the previous probes; raw elementwise comparison of this new24-output graph to original OMC has not been supplied."
+  ],
+  "native_io_audit": {
+    "finding": "No definite host index/order defect found. Dense logical input prefix is copied into AiTensor GetSize>=logical bytes; only logical output prefix is retained.",
+    "gap": "Allocation sizes were not recorded, dtype unavailable through legacy API, physical strides unknown. Larger allocation alone would not prove row padding.",
+    "scope": "Add metadata, do not silently change packing or dump uninitialized padding."
+  },
+  "user_direction": "Cover the full suspected chain in one comprehensive batch instead of repeated one/two-case handoffs.",
+  "next_suite": "gdn-comprehensive",
+  "limitations": [
+    "No exact faulty kernel, compiler pass or runtime layout identified.",
+    "Original model is unquantized FP16 tiny; no production arithmetic or tolerance changed.",
+    "New graphs may optimize differently; compile partitions are not runtime placement.",
+    "Full-model accuracy and performance remain failed/unverified."
+  ],
+  "host_followup": {
+    "serialized_recipes": {
+      "cases": 6,
+      "status": "ALL_OBSERVED_STAGES_BIT_EXACT_TO_NEUTRAL_IR",
+      "scope": "linear/core with native/native,matmul/native,matmul/compact; host interpretation only"
+    },
+    "square_ftz": {
+      "query_subnormal_squares": 104,
+      "key_subnormal_squares": 96,
+      "elements_each": 128,
+      "query_max": 6.2734375,
+      "key_max": 7.109375,
+      "board_summary_match": false
+    },
+    "sum_ftz_with_epsilon_gain_992": {
+      "status": "HYPOTHESIS_SUM_TO_EPSILON_SUBNORMAL_LOSS_CLOSE_SUMMARY_FINGERPRINT",
+      "query": {
+        "max_abs": 3.984375,
+        "relative_l2": 1.5126351761484325,
+        "board_relative_l2": 1.5126355862011047,
+        "affected_rows": [
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            1
+          ]
+        ]
+      },
+      "key": {
+        "max_abs": 3.490234375,
+        "relative_l2": 1.0270257155192248,
+        "board_relative_l2": 1.0270264948797303,
+        "affected_rows": [
+          [
+            0,
+            0
+          ]
+        ]
+      },
+      "scope": "Keep original FP16 squares, flush subnormal sum results only, force epsilon-only gain992 from prior board Rsqrt evidence. No production change.",
+      "limits": "Only matches summary metrics. Raw board arrays unavailable; cannot distinguish sum output versus following Power input, nor explain all convolution/layout failures."
+    },
+    "artifacts": [
+      {
+        "path": "$AI_RUN_DIR/emitted-layout-audit/report.json",
+        "sha256": "91937cc75f8a1c7c898d55ca8afb1210090ffdeb4aafa3f3bf967b1a9f1a959d"
+      },
+      {
+        "path": "$AI_RUN_DIR/emitted-layout-audit/l2-square-ftz.json",
+        "sha256": "12c88de70f3893120130e783d30ed09f8e9c11f0bc9b696eebd93a9de30d8e98"
+      },
+      {
+        "path": "$AI_RUN_DIR/l2-sum-ftz.json",
+        "sha256": "bd791ed28eab5ccfc5db7a4dce0dbeed3f296767c0527cf3e507e04411574913"
+      }
+    ]
+  }
+}

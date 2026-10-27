@@ -3,11 +3,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 namespace {
 std::vector<const hiai::TensorDimension*> runtime_dimensions;
 std::size_t initialized_dimensions = 0, input_count = 0, output_count = 0;
+std::map<const hiai::AiTensor*, std::uint32_t> logical_sizes;
 std::string Failure() { const auto* p = std::getenv("FAKE_HIAI_FAILURE"); return p ? p : ""; }
 void Trace(const char* event) {
   if (const auto* p = std::getenv("FAKE_HIAI_TRACE")) std::ofstream(p, std::ios::app) << event << '\n';
@@ -34,7 +36,7 @@ std::vector<hiai::TensorDimension> Dimensions(const char* shape_key, const char*
 }
 namespace hiai {
 AiTensor::AiTensor() = default;
-AiTensor::~AiTensor() = default;
+AiTensor::~AiTensor() { logical_sizes.erase(this); }
 AIStatus AiTensor::Init(const TensorDimension* dim, HIAI_DataType type) {
   if (initialized_dimensions >= runtime_dimensions.size() || runtime_dimensions[initialized_dimensions++] != dim)
     throw std::runtime_error("AiTensor::Init must receive the actual runtime descriptor");
@@ -45,10 +47,19 @@ AIStatus AiTensor::Init(const TensorDimension* dim, HIAI_DataType type) {
     for (std::size_t i = 0; i < shape.size(); ++i) trace << (i ? "," : "") << shape[i];
     trace << '\n';
   }
-  if (Failure() == "allocation") return 1;
+  if (Failure() == "allocation" || (Failure() == "allocation-second" && initialized_dimensions == 2)) return 1;
   bytes_ = type == HIAI_DATATYPE_FLOAT16 ? 2 : 4;
   for (auto n : dim->GetDims()) bytes_ *= n;
+  logical_sizes[this] = bytes_;
+  if (const auto* extra = std::getenv("FAKE_HIAI_EXTRA_BUFFER_BYTES")) {
+    const auto count = std::stoul(extra);
+    if (count > 1024) throw std::runtime_error("fake extra allocation exceeds test bound");
+    bytes_ += static_cast<std::uint32_t>(count);
+  }
   data_.resize((bytes_ + 3) / 4);
+  // A known test sentinel makes extra allocation observable without assuming
+  // that production allocation slack is initialized or is a row stride.
+  std::memset(data_.data(), 0xa5, data_.size() * sizeof(data_[0]));
   return 0;
 }
 void* AiTensor::GetBuffer() const { return const_cast<std::int32_t*>(data_.data()); }
@@ -105,8 +116,27 @@ AIStatus AiModelMngerClient::Process(AiContext& context, std::vector<std::shared
   if (!Valid(model_buffer_, model_bytes_) || context.model != name_ || timeout != 30000 || !loaded_) std::abort();
   if (Failure() == "process") return 1;
   if (initialized_dimensions != runtime_dimensions.size() || in.size() != input_count || out.size() != output_count
-      || in.empty() || out.size() != 1 || in[0]->GetSize() != out[0]->GetSize()) return 1;
-  std::memcpy(out[0]->GetBuffer(), in[0]->GetBuffer(), in[0]->GetSize()); stamp = 1;
+      || in.empty()) return 1;
+  for (const auto& tensor : in) {
+    const auto* bytes = static_cast<const unsigned char*>(tensor->GetBuffer());
+    for (auto i = logical_sizes.at(tensor.get()); i < tensor->GetSize(); ++i)
+      if (bytes[i] != 0xa5) throw std::runtime_error("probe changed input allocation slack");
+  }
+  std::vector<std::size_t> sources(out.size(), 0);
+  if (const auto* mapping = std::getenv("FAKE_HIAI_OUTPUT_INPUTS"); mapping && *mapping) {
+    std::istringstream fields(mapping);
+    std::string field;
+    sources.clear();
+    while (std::getline(fields, field, ',')) sources.push_back(std::stoul(field));
+  }
+  if (sources.size() != out.size()) return 1;
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    if (sources[i] >= in.size()) return 1;
+    const auto bytes = logical_sizes.at(out[i].get());
+    if (bytes != logical_sizes.at(in[sources[i]].get())) return 1;
+    std::memcpy(out[i]->GetBuffer(), in[sources[i]]->GetBuffer(), bytes);
+  }
+  stamp = 1;
   return 0;
 }
 AIStatus AiModelMngerClient::UnLoadModel() {

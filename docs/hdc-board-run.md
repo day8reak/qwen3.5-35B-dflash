@@ -40,15 +40,61 @@ PYTHONPATH="$REPO_DIR/model${PYTHONPATH:+:$PYTHONPATH}" python3 -m qwen35_moe_df
 
 存在参考偏差时命令仍返回FAIL，并保留完整诊断JSON；终端会显示每种模式的测量数、重复性及首差异。它只读取已有OMC/报告并核验哈希，不调用OMG/HDC，不改旧报告或参考。首差异的 `generated_index` 从0计数，长度不同还会明确哪一侧已结束。已有smoke的有效三行target Top1为 `[41,41,55]`，同权重主机为 `[41,41,45]`；只比较有效prompt位置，padding输出不计入。
 
-## 当前：定位 core 首次归零的计算或裁剪边界
+## 当前：一次覆盖 GDN 故障链
+
+用户已完成两个core诊断，均Load、Process、回收成功，但数值失败。原第一层的projected_qkv通过原门槛，convolved_qkv已出现大偏差，384项只有173项非零；chunk_0_intra在裁剪前就全零，因而末端裁剪不能单独解释本次归零。单独core使用主机Q/K/V等正确输入也失败：normalized_query/key幅度异常，weighted_value仅64/128项非零，decay_prefix为72/128项非零。记录见`specs/gdn-core-stages-user-report.json`。目前未确认某个算子或公共布局是唯一根因。
+
+根据用户要求，本轮一次生成 **26个小案例**，覆盖原值、正常幅度、独立布局以及串联上下文。以下是同一批次的覆盖范围，不需要逐组手动运行：
+
+| 范围 | 案例数 | 对照内容 |
+| --- | ---: | --- |
+| 输入输出搬运 | 2 | 实际值/非周期标记，五种core输入及窄卷积输出形状，精确Neg |
+| 卷积 | 6 | 转置/左填充/窗口构造；图内窗口与正确运行时窗口；常量/动态权重；后续view/SiLU/转置 |
+| Q/K归一化 | 4 | 实际小值/所有平方正常的变范数行；square/sum/epsilon/Rsqrt/Mul及独立二维分支 |
+| core布局 | 2 | value/beta/decay的转置、双head补零、view，实际值/标记值 |
+| 逐行乘法 | 4 | 布局串联/正确预填充输入，实际值/标记值，并列独立二维控制 |
+| 前缀和 | 4 | 布局串联/正确预填充输入，实际小值/较大负值，观察完整64个前缀 |
+| core后段 | 4 | 实际/正常正值的scores×value；跳过Q/K归一化的精确切点；末端BMM到裁剪/转置的串联 |
+
+主机实际序列化recipe与源图的六组执行对照全部位级一致，目前没有可确认的源码边连接错误。实际Q/K平方包含大量次正规数，冲零实验能够产生大于1的归一化结果，因此不能仅凭该现象判定布局问题。平方冲零没有复现摘要。进一步仅模拟sum→epsilon边界的次正规数丢失，并对epsilon-only行使用已观察到的gain992，得到Q/K最大值3.984375/3.490234375，与设备一致，相对L2误差只差约4.1e-7/7.7e-7。这是较强的局部假设，尚无设备原始张量逐元素确认，也不能区分MatMul输出或后续Power输入处丢失；正常域及各步骤输出用于进一步区分。
+
+新版runner记录每个张量的逻辑形状/字节数、运行时形状/format及实际分配字节数，成功失败都保留已有记录。分配更大只说明存储更大，不能直接推断行stride；当前输入拷贝及输出读取方式不变，不读取未初始化的padding。新增报告按逻辑轴统计非零分布，帮助定位具体head/位置丢失。精确复制案例使用零容差；算术案例保持原FP16门槛，信号全部消失仍会明确显示。
+
+复用当前prepared、reference、原始OMC及native donor，在新目录执行一次：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only &&
+export GE_GDN_ALL_RUN="$AI_RUN_DIR/ge-gdn-comprehensive-$(date +%Y%m%d-%H%M%S)" &&
+export GE_GDN_ALL_BOARD_RUN="${GE_GDN_ALL_RUN}-board" &&
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_ops.py" \
+  --suite gdn-comprehensive --prepared "$GE_PAIR_RUN/prepared" \
+  --reference "$GE_BOARD_RUN/reference.json" --omc "$GE_DRAFT_ROPE_RUN/omc" \
+  --compile-only --output "$GE_GDN_ALL_RUN" &&
+python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
+  --probe-run "$GE_GDN_ALL_RUN" --native-from "$OP_PROBE_RUN" \
+  --refresh-runner --replay-all --output "$GE_GDN_ALL_BOARD_RUN"
+```
+
+回传以下两份摘要即可。新`gdn-summary.txt`包含各阶段误差、非零数量、变化轴分布及IO大小，省去重复编译器环境警告；完整统计和日志仍保留在`report.json`、`report.txt`及`results.tar.gz`。若个别案例编译失败，其他已编译案例仍会回放；传输失败仍保留原错误，不计为完成。
+
+```bash
+cat "$GE_GDN_ALL_BOARD_RUN/runtime-comparison.txt"
+cat "$GE_GDN_ALL_BOARD_RUN/arms/candidate_without_ddk_hcl/gdn-summary.txt"
+```
+
+原三案例、两个core案例和完整模型不需要重复。新增探针的切点值来自相同权重的主机计算；增加输出或切开图仍可能改变编译，不能把其结果无条件推广为原OMC所有内部行为。生产计算、原始OMC、库部署与完整精度门槛保持不变。
+
+<a id="当前定位-core-首次归零的计算或裁剪边界"></a>
+
+## 已完成：定位 core 首次归零的计算或裁剪边界
 
 用户 `ge-gdn-accuracy-20261027-082151` 的三个探针均编译、Load、Process及回收完成。第一层单输出和多输出探针数值失败，独立Rsqrt通过。多输出图的 `input_norm` 相对L2误差约0.00174，仍有128个非零值；`chunk_core` 却是128个零，后面的门控和输出投影也全零。`norm_input`只剩FP16舍入后的epsilon，`norm_gain=992`与这种输入相符，不能把该增益相对主机参考的差异单独归为Rsqrt故障。独立Rsqrt对实际主机norm输入的相对L2误差约0.00185。记录见 `specs/gdn-core-zero-user-report.json`。
 
-目前最早**已观察**的错误边界是core输出；前面的投影、卷积、q/k归一化和core内部尚未观察。另一个需要区分的情况是裁剪：GDN保持64行chunk，实际S8的结果要从中裁出8行，填充区本来全零。主机core有92个正常FP16数，仅冲零次正规数不能解释128个零。首token也不依赖历史状态，源图明确非零。这些检查缩小范围，但不确定具体设备算子或编译pass。
+当时最早**已观察**的错误边界是core输出；后续两个core案例已将大偏差提前定位到卷积，并在独立core中观察到归一化异常。另一个需要区分的情况是裁剪：GDN保持64行chunk，实际S8的结果要从中裁出8行，填充区本来全零。主机core有92个正常FP16数，仅冲零次正规数不能解释128个零。首token也不依赖历史状态，源图明确非零。这些检查缩小范围，但不确定具体设备算子或编译pass。
 
 用户随后完成已有文件对照：单输出及多输出探针的前3个有效位置共48个特征，均与原OMC逐元素相等，max_abs和relative L2都为0。当前两图复现了原故障在该边界的结果；这不等于其内部优化全部相同。该对照无需再跑。
 
-下一步仅运行两个新案例，复用原prepared实际权重、参考、OMC记录及相同DDK/OMG：
+以下两个案例已经运行，命令仅保留作历史复现；它们复用原prepared实际权重、参考、OMC记录及相同DDK/OMG：
 
 - `gdn_layer0_core_stages`：观察原第一层投影、卷积/激活、core内部、裁剪前后及块结束输出。
 - `gdn_core_replay`：把同权重主机求得的query/key/value/decay/beta作为运行时输入，单独观察相同core，区分core之前的计算和core自身。
@@ -68,7 +114,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/probe_hdc_runtime.py" \
   --refresh-runner --replay-all --output "$GE_GDN_CORE_BOARD_RUN"
 ```
 
-回传下面两份报告。原图上下文对照已完成；下节的 `vs_original_omc_valid_layer0` 命令仅保留供历史复现：
+下面两份报告已回传。原图上下文对照也已完成；下节的 `vs_original_omc_valid_layer0` 命令仅保留供历史复现：
 
 ```bash
 cat "$GE_GDN_CORE_BOARD_RUN/runtime-comparison.txt"

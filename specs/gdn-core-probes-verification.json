@@ -123,5 +123,10 @@
     "Old FP16 acceptance tolerances unchanged; all-zero signal flag is diagnostic.",
     "No runtime NPU placement, full-model accuracy, full35B delivery or >=2x speedup established."
   ],
-  "next_action": "docs/hdc-board-run.md#当前定位-core-首次归零的计算或裁剪边界"
+  "next_action": "docs/hdc-board-run.md#当前定位-core-首次归零的计算或裁剪边界",
+  "device_followup": {
+    "status": "USER_REPORTED_BOTH_EXECUTED_NUMERICAL_FAILED",
+    "evidence": "specs/gdn-core-stages-user-report.json",
+    "next_suite": "gdn-comprehensive"
+  }
 }
