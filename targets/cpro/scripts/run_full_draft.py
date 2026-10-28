@@ -12,6 +12,13 @@ import uuid
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "model"))
 
+# Match the FP16 tiny target/draft compiler path. Generic original-AIR
+# compilation deliberately has no dtype/layout override, since it may be W4.
+DRAFT_COMPILE_OPTIONS = {
+    "use_origin_format": "true", "weight_data_type": "FP16",
+    "limit_partition_size": "false", "save_weights_as_external_data": "true",
+}
+
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
@@ -76,6 +83,7 @@ def main(argv=None):
               "status": "PREPARING", "stage": "preflight", "components": {},
               "target_execution": "NOT_RUN", "device_execution": "NOT_RUN",
               "numerical_validation": "NOT_RUN", "runtime_placement": "UNVERIFIED",
+              "compile_options": dict(DRAFT_COMPILE_OPTIONS),
               "scope": "Complete draft with fixed synthetic target features; not language quality, acceptance or speedup evidence."}
     root = None
 
@@ -155,6 +163,18 @@ def main(argv=None):
                         "preserved": [name for name in ("prepared", "fixture") if name in result["components"]],
                         "scope": "Re-export and recompile in the new job; previous evidence is unchanged."}]
                     stage("resume", "Previous AIR serialization needs updating; reusing weights/reference and rebuilding AIR/OMC")
+            if "compilation" in result["components"]:
+                _, prior_compile = _read_component(result["components"]["compilation"])
+                options = prior_compile.get("requested_options", {})
+                if any(options.get(key) != value for key, value in DRAFT_COMPILE_OPTIONS.items()):
+                    obsolete = {name: result["components"].pop(name)
+                                for name in ("compilation", "bundle") if name in result["components"]}
+                    result.setdefault("resume_invalidations", []).append({
+                        "reason": "DRAFT_COMPILE_OPTIONS_CHANGED", "previous_options": options,
+                        "required_options": dict(DRAFT_COMPILE_OPTIONS), "components": obsolete,
+                        "preserved": [name for name in ("prepared", "fixture", "air") if name in result["components"]],
+                        "scope": "Recompile existing AIR in the new job; previous evidence is unchanged."})
+                    stage("resume", "Updating draft compilation to the FP16 tiny profile; reusing weights/reference/AIR")
         if settings["sequence_length"] < 2:
             raise ValueError("--sequence-length must be at least 2")
         if settings["valid_length"] is None:
@@ -202,14 +222,15 @@ def main(argv=None):
                 prepared_dir, folder, args.ge_root, cxx=args.cxx, cxx11_abi=args.cxx11_abi,
                 timeout_seconds=args.timeout_seconds, progress=progress))
             _verify_air(air_dir, exported)
-            stage("compilation", "Compiling only the draft AIR; no target compilation")
+            stage("compilation", "Compiling draft AIR with the tiny FP16 profile: use_origin_format=true, weight_data_type=FP16")
             from qwen35_moe_dflash.existing_air import compile_existing_air
             def compile_draft(folder):
                 compiled = compile_existing_air(
                     air_dir / exported["graphs"][0]["air"], folder, args.ddk_root,
                     ddk_id=args.ddk_id, tbe_diagnosis=args.tbe_diagnosis,
                     timeout_seconds=args.timeout_seconds, input_layout="air-directory",
-                    limit_partition_size=False, save_weights_as_external_data=True, progress=progress)
+                    limit_partition_size=False, save_weights_as_external_data=True,
+                    use_origin_format=True, weight_data_type="FP16", progress=progress)
                 _verify_air(air_dir, exported)
                 if compiled.get("status") != "COMPILED":
                     result["compile_log"] = str(folder / "compile.log")
@@ -217,6 +238,9 @@ def main(argv=None):
             compilation_dir, compiled = component("compilation", "report.json", compile_draft)
             if compiled.get("status") != "COMPILED":
                 raise ValueError("resume compilation is not complete")
+            if any(compiled.get("requested_options", {}).get(key) != value
+                   for key, value in DRAFT_COMPILE_OPTIONS.items()):
+                raise ValueError("draft compilation does not match the required FP16 compiler options")
             checked_file(compilation_dir, compiled["omc"])
             if args.ddk_id and compiled["ddk_id"] != args.ddk_id:
                 raise ValueError("selected DDK differs from the reused compilation")

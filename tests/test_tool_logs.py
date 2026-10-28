@@ -92,3 +92,71 @@ def test_reshape_chain_trace_does_not_hide_cumsum_or_cpucl_error(tmp_path):
     early = log_excerpt(log).split("Log tail:")[0]
     assert 'L41: [CPUCL]' in early and 'size[2] must >= tensor size[4]' in early
     assert 'Cumsum' in early and 'change reshape' not in early
+
+
+@pytest.mark.parametrize("failure", [
+    'E/AI_NPUCL (1): Node __ge/v20/flat_output type MatMul don\'t support!',
+    'Node __ge/v20/flat_output type MatMul don\'t support!',
+    'E/AI_FMK (1): get [op:rms type:AdnRmsNorm] infershape func failed.',
+    'E/AI_NPUCL (1): Get format configs failed, node : conv_fused, substore: !',
+])
+def test_concrete_failure_survives_first_six_severity_only_lines(tmp_path, failure):
+    log = tmp_path / "compile.log"
+    log.write_text('E/AI_FMK (1): pass_manager.cpp Run(52)::"PassManager::Run begin"\n' * 20
+                   + failure + '\n' + '[DEBUG] catalog filler\n' * 800)
+    early, tail = log_excerpt(log).split("Log tail:")
+    assert early.startswith('Priority error messages:\nL21: ' + failure)
+    assert failure not in tail
+    assert 'L1: E/AI_FMK' in early  # unknown E-level evidence is still retained
+    assert len(log_excerpt(log)) < 14000
+
+
+def test_kernel_and_python_failure_take_priority_without_optional_plugin_noise(tmp_path):
+    log = tmp_path / "compile.log"
+    log.write_text('E/AI_FMK (1): PassManager::Run begin\n' * 20
+                   + 'W/ASC (1): optional kernel plugin not found\n'
+                   + 'E/ASC (1): required kernel file path is not valid\n'
+                   + 'Traceback (most recent call last):\n'
+                   + '  File "export.py", line 3, in main\n'
+                   + 'RuntimeError: exporter failed to serialize graph\n'
+                   + '[DEBUG] filler\n' * 800)
+    early = log_excerpt(log).split("Log tail:")[0]
+    assert early.startswith('Priority error messages:\nL22: ')
+    assert 'required kernel file path is not valid' in early
+    assert 'Traceback (most recent call last)' in early and 'RuntimeError:' in early
+    assert 'optional kernel plugin' not in early
+
+
+def test_diagnostic_scan_and_long_line_reads_are_bounded(tmp_path, monkeypatch):
+    from qwen35_moe_dflash import tool_logs
+    monkeypatch.setattr(tool_logs, '_MAX_SCAN_BYTES', 1024)
+    log = tmp_path / "compile.log"
+    payload = b'E/AI_FMK (1): long diagnostic ' + b'X' * 20000 + b'\nlast raw tail\n'
+    log.write_bytes(payload)
+    original_open = Path.open
+    total_read = []
+    class Reader:
+        def __init__(self, stream):
+            self.stream = stream
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+        def __getattr__(self, key):
+            return getattr(self.stream, key)
+        def read(self, size=-1):
+            assert 0 < size <= 8192
+            data = self.stream.read(size)
+            total_read.append(len(data))
+            return data
+        def readline(self, size=-1):
+            assert 0 < size <= 8192
+            data = self.stream.readline(size)
+            total_read.append(len(data))
+            return data
+    monkeypatch.setattr(Path, 'open', lambda path, *args, **kwargs: Reader(original_open(path, *args, **kwargs)))
+    excerpt = log_excerpt(log)
+    assert sum(total_read) <= 1024 + 8192
+    assert 'Diagnostic scan limited to first 1024 bytes' in excerpt
+    assert '[truncated]' in excerpt
+    assert excerpt.endswith('last raw tail\n')

@@ -1,8 +1,9 @@
 """Compile an existing AIR with its own, still unverified model/runtime ABI.
 
 Inputs are copied or reflinked into an isolated input directory. No source
-directory links, FileConstant rewrites, FP16 coercion, graph reconstruction,
-platform diagnosis matrix, or device execution is performed.
+directory links, FileConstant rewrites, graph reconstruction, platform diagnosis
+matrix, or device execution is performed. Original AIR defaults do not override
+weight precision or format; callers may explicitly select the FP16 draft profile.
 """
 from __future__ import annotations
 
@@ -114,7 +115,8 @@ def _input_inventory(air):
     return [air, *sorted(path for path in files if path != air)], skipped
 
 
-def _conversion_options(input_shape, dynamic_dims, limit_partition_size, save_weights_as_external_data):
+def _conversion_options(input_shape, dynamic_dims, limit_partition_size, save_weights_as_external_data,
+                        use_origin_format=None, weight_data_type=None):
     values = {}
     for name, value in (("input_shape", input_shape), ("dynamic_dims", dynamic_dims)):
         if value is not None:
@@ -136,11 +138,16 @@ def _conversion_options(input_shape, dynamic_dims, limit_partition_size, save_we
         if re.fullmatch(r"[1-9][0-9]*(,[1-9][0-9]*)*(;[1-9][0-9]*(,[1-9][0-9]*)*)*", dynamic_dims) is None:
             raise ValueError("dynamic_dims requires positive comma-separated dimensions and semicolon-separated gears")
     for name, value in (("limit_partition_size", limit_partition_size),
-                        ("save_weights_as_external_data", save_weights_as_external_data)):
+                        ("save_weights_as_external_data", save_weights_as_external_data),
+                        ("use_origin_format", use_origin_format)):
         if value is not None:
             if type(value) is not bool:
                 raise ValueError(f"{name} must be bool or None")
             values[name] = "true" if value else "false"
+    if weight_data_type is not None:
+        if not isinstance(weight_data_type, str) or weight_data_type != "FP16":
+            raise ValueError("weight_data_type must be FP16 or None")
+        values["weight_data_type"] = weight_data_type
     return values
 
 
@@ -216,7 +223,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                          tbe_diagnosis=None, timeout_seconds=7200, omg_path=None,
                          input_shape=None, dynamic_dims=None, limit_partition_size=None,
                          save_weights_as_external_data=None, progress=None,
-                         input_layout="air-directory"):
+                         input_layout="air-directory", use_origin_format=None,
+                         weight_data_type=None):
     """Return a host compilation report, retaining failures without deployment.
 
     Only inventoried local snapshots are hash bound. Absolute or out-of-tree
@@ -227,6 +235,10 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     export-directory prefixes data paths with the original export folder name,
     matching TorchAir references such as ./export_folder/parameter_weight.
     The staged AIR and compiler cwd coincide in both modes.
+    ``use_origin_format`` and ``weight_data_type`` are explicit optional compiler
+    settings. Both default to omitted; the complete FP16 draft uses True/FP16
+    to match its previously successful tiny compiler profile. This is not an
+    inferred policy for arbitrary or quantized AIR inputs.
     """
     if (not isinstance(ddk_id, str) or not ddk_id.strip()
             or isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
@@ -236,7 +248,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         raise ValueError("progress must be callable or None")
     if input_layout not in INPUT_LAYOUTS:
         raise ValueError(f"input_layout must be one of {INPUT_LAYOUTS}")
-    options = _conversion_options(input_shape, dynamic_dims, limit_partition_size, save_weights_as_external_data)
+    options = _conversion_options(input_shape, dynamic_dims, limit_partition_size,
+                                  save_weights_as_external_data, use_origin_format, weight_data_type)
 
     def notify(stage, message, **details):
         if progress is not None:
@@ -353,7 +366,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                    "--output=model", "--target=omc", "--platform=kirinx90"]
         command.extend(f"--{name}={value}" for name, value in options.items())
         save_json(output / "compile-command.json", {"argv": command, "cwd": str(inputs),
-                                                    "weight_dtype_override": None})
+                                                    "weight_dtype_override": weight_data_type})
         stage = "omg"
         notify(stage, "Compiling existing AIR with the selected DDK; full output is in compile.log")
         notify(stage, f"Live log: {log}; wait updates every 30s; timeout={timeout_seconds:g}s")

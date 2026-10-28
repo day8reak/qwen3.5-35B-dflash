@@ -69,6 +69,8 @@ def test_existing_air_compiles_without_original_writes_or_runner_abi(case, monke
     assert all(not path.is_symlink() for path in (output / "compile-work").rglob("*"))
     assert before == {str(p.relative_to(air.parent)): p.read_bytes() for p in air.parent.rglob("*") if p.is_file()}
     assert result["source_preservation"]["status"] == "UNCHANGED_BY_STAT"
+    assert result["requested_options"] == {}
+    assert json.loads((output / "compile-command.json").read_text())["weight_dtype_override"] is None
 
 
 def test_output_basename_is_independent_of_punctuated_long_run_directory(case, monkeypatch):
@@ -360,10 +362,53 @@ def test_explicit_elf_and_original_conversion_flags_are_passed_as_single_argumen
     assert (output / "help.log").is_file() and (output / "help-command.json").is_file()
 
 
+@pytest.mark.parametrize("use_origin_format", [True, False])
+def test_explicit_fp16_profile_reaches_compiler_and_retained_metadata(case, monkeypatch, use_origin_format):
+    air, output, ddk = case
+    before = {path: path.read_bytes() for path in (air, air.parent / "weights/w.bin")}
+    commands = []
+
+    def tool(command, **kwargs):
+        if "--help" in command:
+            # Internal flags absent from public help are still passed unchanged.
+            return _help(command, **kwargs)
+        commands.append(list(command))
+        assert command.count("--use_origin_format=" + str(use_origin_format).lower()) == 1
+        assert command.count("--weight_data_type=FP16") == 1
+        assert "--limit_partition_size=false" in command
+        assert "--save_weights_as_external_data=true" in command
+        model = Path(next(value.split("=", 1)[1] for value in command if value.startswith("--model=")))
+        assert model.read_bytes() == before[air]
+        assert model.parent == kwargs["cwd"]
+        assert (kwargs["cwd"] / "weights/w.bin").read_bytes() == before[air.parent / "weights/w.bin"]
+        (kwargs["cwd"] / "model.omc").write_bytes(b"SIMULATED FP16 PROFILE OMC")
+        kwargs["stdout"].write("mock profile command accepted; no actual OMG invocation\n")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", tool)
+    result = module.compile_existing_air(
+        air, output, ddk, ddk_id="MOCK", use_origin_format=use_origin_format,
+        weight_data_type="FP16", limit_partition_size=False, save_weights_as_external_data=True)
+    assert result["status"] == "COMPILED" and len(commands) == 1
+    assert result["requested_options"] == {
+        "use_origin_format": str(use_origin_format).lower(), "weight_data_type": "FP16",
+        "limit_partition_size": "false", "save_weights_as_external_data": "true",
+    }
+    assert set(result["help_check"]["missing"]) == {"use_origin_format", "weight_data_type"}
+    recorded = json.loads((output / "compile-command.json").read_text())
+    assert recorded["argv"] == commands[0]
+    assert recorded["weight_dtype_override"] == "FP16"
+    assert {path: path.read_bytes() for path in before} == before
+    assert result["device_execution"] == "NOT_RUN" and result["device_ready"] is False
+
+
 @pytest.mark.parametrize("options", [
     {"dynamic_dims": "64;1"}, {"input_shape": "x:1,-1\n--bad"},
     {"input_shape": "x:1,-1", "dynamic_dims": "64;$(touch bad)"},
     {"limit_partition_size": "false"}, {"save_weights_as_external_data": 1},
+    {"use_origin_format": "true"}, {"use_origin_format": 1},
+    {"weight_data_type": "FP32"}, {"weight_data_type": "fp16"},
+    {"weight_data_type": True}, {"weight_data_type": ["FP16"]},
 ])
 def test_bad_dynamic_or_boolean_options_fail_before_output_or_tool(case, monkeypatch, options):
     air, output, ddk = case

@@ -52,6 +52,7 @@ def job(tmp_path, monkeypatch):
         calls.append("compilation")
         assert source.name == "draft.air" and kwargs["input_layout"] == "air-directory"
         assert kwargs["save_weights_as_external_data"] is True
+        assert kwargs["use_origin_format"] is True and kwargs["weight_data_type"] == "FP16"
         assert "input_shape" not in kwargs  # never the original 40-layer profile
         folder.mkdir()
         if "compilation" in failures:
@@ -59,7 +60,9 @@ def job(tmp_path, monkeypatch):
             return {"status": "FAILED", "error": "fixture compile failure"}
         model = folder / "model.omc"
         model.write_bytes(b"fixture-compiled-draft")
-        result = {"status": "COMPILED", "ddk_id": "test-ddk", "omc": file_record(model, folder)}
+        result = {"status": "COMPILED", "ddk_id": "test-ddk", "omc": file_record(model, folder),
+                  "requested_options": {"use_origin_format": "true", "weight_data_type": "FP16",
+                                        "limit_partition_size": "false", "save_weights_as_external_data": "true"}}
         save_json(folder / "report.json", result)
         return result
 
@@ -147,6 +150,41 @@ def test_compile_failure_never_reaches_board_and_retry_reuses_air(job, tmp_path)
     failures.clear(); calls.clear()
     assert main([*common, "--resume", str(previous), "--output", str(tmp_path / "retry")]) == 0
     assert calls == ["compilation", "bundle", "board"]
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_old_compile_options_reuse_air_and_rebuild_only_compilation_bundle(job, tmp_path, interrupted):
+    main, fresh, common, calls, _ = job
+    previous = tmp_path / "old-profile"
+    assert main([*fresh, "--output", str(previous)]) == 0
+    report_path = previous / "compilation/report.json"
+    report = json.loads(report_path.read_text())
+    report["requested_options"].pop("use_origin_format")
+    report["requested_options"].pop("weight_data_type")
+    report_path.write_text(json.dumps(report))
+    receipt_path = previous / "completed-compilation.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["manifest"].update(bytes=report_path.stat().st_size, sha256=sha256_file(report_path))
+    receipt_path.write_text(json.dumps(receipt))
+    old = json.loads((previous / "result.json").read_text())
+    old["components"]["compilation"] = receipt
+    (previous / "result.json").write_text(json.dumps(old))
+    if interrupted:
+        (previous / "result.json").unlink()
+    before = {p: p.read_bytes() for p in previous.rglob("*") if p.is_file()}
+    calls.clear()
+    resumed = tmp_path / "new-profile"
+    # Successful AIR means host GE is not needed for this retry.
+    without_ge = common[2:]
+    assert main([*without_ge, "--resume", str(previous), "--output", str(resumed)]) == 0
+    assert calls == ["compilation", "bundle", "board"]
+    result = json.loads((resumed / "result.json").read_text())
+    assert all(result["components"][name] == old["components"][name] for name in ("prepared", "fixture", "air"))
+    invalidation = result["resume_invalidations"][0]
+    assert invalidation["reason"] == "DRAFT_COMPILE_OPTIONS_CHANGED"
+    assert set(invalidation["components"]) == {"compilation", "bundle"}
+    assert invalidation["preserved"] == ["prepared", "fixture", "air"]
+    assert all(p.read_bytes() == data for p, data in before.items())
 
 
 @pytest.mark.parametrize("contract", [None, "legacy-absolute-fileconstant"])

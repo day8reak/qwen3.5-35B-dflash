@@ -3,6 +3,15 @@
 import re
 
 
+_MAX_SCAN_BYTES = 64 << 20
+_CONCRETE_FAILURE = re.compile(
+    rb"(?:node|\bop\b|type).*(?:don't support|does not support|not support|unsupported)"
+    rb"|(?:infershape|infer.?shape).*(?:failed|missing|not found)"
+    rb"|(?:get|find).*format config.*failed", re.I)
+_KERNEL_FAILURE = re.compile(rb"kernel.*(?:failed|missing|not found|not valid|invalid)", re.I)
+_PYTHON_FAILURE = re.compile(rb"^(?:Traceback \(most recent call last\):|[\w.]+(?:Error|Exception):)")
+
+
 _OMG_TRACE_PATTERNS = tuple(re.compile(pattern) for pattern in (
     # Some internal OMG builds emit these ordinary graph traces at E severity.
     # Match complete, observed messages rather than dropping all [lsy] lines.
@@ -28,7 +37,7 @@ def _is_error(line):
         return False
     return bool(re.search(rb"(?:^|\s)[ef]/[a-z_][a-z0-9_.-]*(?=[\s:(])", low)) or any(
         word in low for word in (b"[error]", b"[fatal]", b"error:", b"failed", b"unsupported",
-                                 b"not support", b"init error", b"not equals to",
+                                 b"not support", b"don't support", b"does not support", b"init error", b"not equals to",
                                  b"set input basebuffer error")
     ) or bool(re.search(rb"\[cpucl\].*input ix\[\d+\] size\[\d+\] must >= tensor size\[\d+\]", low))
 
@@ -42,28 +51,43 @@ def log_excerpt(log):
 
 
 def _read_excerpt(log):
-    """Show bounded early diagnostics and tail without loading the entire tool log."""
+    """Prioritize concrete failures over E-level traces; retain the raw tail."""
     if not log.is_file():
         return ""
-    first = []
-    budget = 4096
+    candidates = {0: [], 1: [], 2: []}
     with log.open("rb") as stream:
         line_number = 0
-        while budget > 0 and len(first) < 6:
+        scanned = 0
+        while scanned < _MAX_SCAN_BYTES:
             # Bound memory even for a malformed tool log with a huge line.
-            chunk = stream.readline(8192)
+            chunk = stream.readline(min(8192, _MAX_SCAN_BYTES - scanned))
             if not chunk:
                 break
+            scanned += len(chunk)
             line_number += 1
-            matched = _is_error(chunk)
-            if matched:
-                excerpt = chunk[:min(2048, budget)]
-                suffix = " [truncated]" if len(chunk) > len(excerpt) or not chunk.endswith(b"\n") else ""
-                first.append(f"L{line_number}: " + excerpt.decode("utf-8", errors="replace").rstrip() + suffix)
-                budget -= len(excerpt)
-            while chunk and not chunk.endswith(b"\n"):
-                chunk = stream.readline(8192)
+            python_failure = bool(_PYTHON_FAILURE.search(chunk))
+            if _is_error(chunk) or python_failure:
+                priority = (0 if _CONCRETE_FAILURE.search(chunk) else
+                            1 if python_failure or _KERNEL_FAILURE.search(chunk) else 2)
+                if len(candidates[priority]) < 6:
+                    candidates[priority].append((line_number, chunk[:2048],
+                                                 len(chunk) > 2048 or not chunk.endswith(b"\n")))
+            while chunk and not chunk.endswith(b"\n") and scanned < _MAX_SCAN_BYTES:
+                chunk = stream.readline(min(8192, _MAX_SCAN_BYTES - scanned))
+                scanned += len(chunk)
+        scan_limited = stream.tell() < log.stat().st_size
         stream.seek(max(0, log.stat().st_size - 8192))
         tail = stream.read(8192).decode("utf-8", errors="replace")
-    initial = "First error messages:\n" + "\n".join(first) + "\n" if first else ""
+    first, budget = [], 4096
+    for number, chunk, truncated in (candidates[0] + candidates[1] + candidates[2])[:6]:
+        if budget <= 0:
+            break
+        excerpt = chunk[:budget]
+        suffix = " [truncated]" if truncated or len(excerpt) < len(chunk) else ""
+        first.append(f"L{number}: " + excerpt.decode("utf-8", errors="replace").rstrip() + suffix)
+        budget -= len(excerpt)
+    label = "Priority error messages:" if candidates[0] or candidates[1] else "First error messages:"
+    initial = label + "\n" + "\n".join(first) + "\n" if first else ""
+    if scan_limited:
+        initial += f"Diagnostic scan limited to first {_MAX_SCAN_BYTES} bytes; raw tail retained.\n"
     return initial + "Log tail:\n" + tail

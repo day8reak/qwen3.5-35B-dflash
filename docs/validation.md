@@ -4,6 +4,14 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 完整 draft 对照成功 tiny 的编译参数
+
+2026-10-28，用户回传 `full-draft-5133743f7c9c` 已复用 prepared/reference，重新导出的 AIR 越过 FileConstant 读取，随后在 `__ge/v20/flat_output type MatMul don't support` 失败。该节点是 `draft.fc` 的 FP16 特征投影：完整 `[64,16384] × [2048,16384]^T -> [64,2048]`；tiny 对应 `[8,32] × [16,32]^T -> [8,16]`。导出器及转置属性相同。
+
+历史提交 `51e07a7` 和 `0d108c1` 保存 tiny 编译及执行成功的用户报告；对应源码显式传入 `--use_origin_format=true --weight_data_type=FP16`。新入口复用了默认不覆盖原量化 AIR 精度/格式的通用编译函数，因此遗漏这两个参数。本次只为 FP16 draft 恢复它们，记录实际 requested_options 和 dtype override；原 target AIR 默认仍不传。续跑校验编译参数，变化时仅重新编译及打包，保留正确版本 AIR 和之前的权重/reference。
+
+日志摘要优先显示明确的 unsupported-node、infer-shape、format 失败，原始日志与尾部保留。主机测试覆盖两项参数实际传递、默认不覆盖、参数校验、恢复后不重导 AIR，以及被普通 E 级跟踪日志遮蔽的 MatMul 报错。该改动修复了已确认的编译配置差异；完整尺寸能否编译尚未验证，未据此修改 MatMul kernel 或宣称设备成功。经验限定为本项目 FP16 draft 入口回归，不推广为所有 AIR 都应使用 FP16 参数。
+
 ## 完整 draft 的 FileConstant 与续跑
 
 2026-10-28，用户回传 `full-draft-d7b4db958850`：71个权重准备、完整六层 PyTorch 参考和 GE AIR 导出完成，OMG 读取首个 `draft.fc.weight` 时报告 `dtype` 未识别，并将绝对权重路径拼到编译工作目录下。此处失败发生在 AIR 解析阶段，未运行设备；用户报告未由本地原始产物重新核验。
