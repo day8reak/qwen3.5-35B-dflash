@@ -84,8 +84,10 @@ class QuantOperatorBindings:
                 actual = []
                 for logical, port in ports.items():
                     dtype = expected[logical]
-                    if not isinstance(port, dict) or set(port) != {"port", "dtype"} or port["dtype"] != dtype:
-                        raise ValueError(f"{role}.{logical} requires explicit {dtype} port")
+                    allowed = {"float16", "float32"} if role == "dynamic_quant" and logical == "x" else {dtype}
+                    if (not isinstance(port, dict) or set(port) != {"port", "dtype"}
+                            or not isinstance(port["dtype"], str) or port["dtype"] not in allowed):
+                        raise ValueError(f"{role}.{logical} requires explicit {'/'.join(sorted(allowed))} port")
                     actual.append(port["port"])
                 if len(set(actual)) != len(actual) or not set(actual) <= set(names) or not set(required) <= set(actual):
                     raise ValueError(f"{role} {direction} does not match its complete schema")
@@ -142,13 +144,16 @@ class QuantOperatorBindings:
     def manifest(self):
         return deepcopy(self._document)
 
+    def tensor_dtype(self, role, direction, logical):
+        return self._document["operators"][role][direction][logical]["dtype"]
+
     def call(self, graph, role, *, inputs, outputs, attrs=None, name):
         spec = self._document["operators"][role]
         expected_inputs, expected_outputs, logical_attrs = _ROLES[role]
         attrs = {} if attrs is None else attrs
         if set(inputs) != set(expected_inputs) or set(outputs) != set(expected_outputs) or set(attrs) != logical_attrs:
             raise ValueError("quant invocation does not match declared logical contract")
-        if any(inputs[key].dtype != dtype for key, dtype in expected_inputs.items()):
+        if any(inputs[key].dtype != self.tensor_dtype(role, "inputs", key) for key in expected_inputs):
             raise ValueError("quant invocation input dtype differs from its contract")
         if any(outputs[key][1] != dtype for key, dtype in expected_outputs.items()):
             raise ValueError("quant invocation output dtype differs from its contract")

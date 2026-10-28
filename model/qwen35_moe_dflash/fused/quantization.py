@@ -137,10 +137,10 @@ class OriginalQuantizedWeights(nn.Module):
         return getattr(self, wname), getattr(self, sname)
 
     def embedding(self, token_ids):
-        # Original row scale is applied once in FP32, then the target's explicit
-        # FP16 activation contract applies. This is not bitwise original-AIR parity.
+        # Cpro applies the original row scale once and keeps the residual
+        # stream in FP32. Individual quantized projections still return FP16.
         return (self.embedding_weight[token_ids.long()].float()
-                * self.embedding_scale[token_ids.long()]).half()
+                * self.embedding_scale[token_ids.long()])
 
     def _dynamic_quant(self, x):
         quant, scale = self.ops.npu_dynamic_quant(x)
@@ -240,7 +240,14 @@ def load_original_quantized_target(config, *, model_file, quanted_pth,
     model.original_quant_contract = {
         "weight_source": "ORIGINAL_W4_NO_REQUANTIZATION", "layout": "I4ZN_INT32",
         "ordinary_scale": "FP32", "expert_scale": "VENDOR_INT64_QPARAM",
-        "embedding": "ORIGINAL_INT8_TIMES_FP32_ROW_SCALE_THEN_FP16",
+        "embedding": "ORIGINAL_INT8_TIMES_FP32_ROW_SCALE",
+        "residual_dtype": "float32", "quantized_projection_output_dtype": "float16",
+        "base_weight_storage": "float16",
+        "precision_limits": "Base weights remain FP16 snapshots; full bitwise original-AIR parity is not established.",
+        "gdn_gate_math": "FP32_THEN_EXPLICIT_FP16_PORT_CAST",
+        "gated_norm_math": "FP32_RMS_AND_SILU_PRODUCT_THEN_FP16",
+        "rotary_math": "FP32_POSITIONS_FREQUENCIES_TRIG_THEN_ACTIVATION_CAST",
+        "final_norm_and_head_input": "float32", "dflash_features": "float16",
         "norm_main_addend": 1, "norm_gated_addend": 0,
         "backend": quant_ops.backend_id, "reference_backend": quant_ops.is_reference,
         "execution_device_type": quant_ops.device_type,

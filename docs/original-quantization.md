@@ -22,7 +22,11 @@
 
 专家 scale 必须由实际厂商 `npu_trans_quant_param(..., None, 1)` 或显式提供的等价厂商转换器生成 INT64 QPARAM。FP32 转 INT64、位重解释都不能替代这一步。未提供转换器时，准备器保留 FP32 scale 并报告 `QPARAM_PENDING`，实际 GE 导出拒绝继续。
 
-原 embedding 按 token 取 INT8 行和 FP32 scale，FP32 相乘后进入现有 FP16 激活边界。main/q/k RMS 使用原 HF 权重，在计算时只加一次 1；gated RMS 不加 1。原 loader 和 forward 中重复偏移的组合没有照搬。Conv 历史拼接和 RMS 保持基础算子。prefill/decode 分开构图，GDN chunk 分别为 64/1，不依赖给静态导出图增加动态档位来重新执行 Python 分支。
+target 按用户原 Cpro forward 对齐计算边界：embedding 的 INT8 行与 FP32 scale 相乘后，残差流保留 FP32；普通量化 Linear 输出 FP16。GDN 的衰减门计算、gated RMS 与 SiLU 乘积、RoPE 频率和三角函数使用 FP32。RoPE 表在进入 FP16 Q/K 运算前转换；gated RMS 在乘 gate 后转换为 FP16；最终 RMS 保留 FP32，再进入量化词表头。
+
+main/q/k RMS 使用原 HF 权重，在计算时只加一次 1；gated RMS 不加 1。原 loader 和 forward 中重复偏移的组合没有照搬。Conv 历史拼接和 RMS 保持基础算子。prefill/decode 分开构图，GDN chunk 分别为 64/1，不依赖给静态导出图增加动态档位来重新执行 Python 分支。
+
+这些是计算路径对齐，不是原 AIR 位级一致声明。当前基础权重缓存仍为 FP16；PyTorch 的逻辑 GDN 接口在 FP32 门计算后显式转 FP16，GE 根据绑定中的 GDN dtype 转换。GE DynamicQuant 允许显式声明 FP16 或 FP32 输入；所选绑定若要求 FP16，会保留转换节点并记录在 `precision_boundary_casts`。设备支持与数值误差需要实际编译、执行确认。
 
 ## 本地准备入口
 
@@ -52,6 +56,26 @@ python3 "$REPO_DIR/targets/cpro/scripts/adapt_original_target.py" \
 
 `FusedTargetModel(..., quantization=...)` 保留原 Top1/features/state 接口，`forward(..., return_logits=True)` 可附带完整 FP32 logits。权重加载不建立完整反量化专家库。量化 backend 与 GDN/cache/attention 的物理布局适配仍各自需要实际目标验证。
 
+普通 target 推理可使用新增的 `OriginalCproTargetWrapper`，由 YAML 工厂直接建立：
+
+```python
+from qwen35_moe_dflash.original_model_config import OriginalModelConfig
+
+config = OriginalModelConfig.from_yaml(original_yaml)
+target = config.load_pytorch_wrapper(
+    feature_layers=feature_layers, ops=ops, quant_ops=quant_ops, device="npu:0",
+)
+prefill = target(input_ids, output_pos=-1)
+decode = target(next_token_ids, past_key_values=prefill.state, output_pos=-1)
+logits = decode.logits  # FP32 [1, 1, vocab_size]
+```
+
+`ops`、`quant_ops` 仍由调用者提供已验证适配器。支持原代码风格的外部量化 embedding：`target(inputs_embeds=int8_rows, embed_scale=fp32_scales, output_pos=-1)`，scale 只乘一次。也可传已经反量化的 FP16/FP32 embedding，此时不再传 scale。`input_ids` 和 `inputs_embeds` 二选一。
+
+`output_pos` 使用本次输入中的零基索引，`-1` 取末 token，`None` 取全部，也接受原调用形式的 INT32/INT64 一维 Tensor。先选行再计算 LM head，features 和状态仍覆盖全部输入 token。拒绝原导出脚本中的越界 `output_pos=[seq_len]`；可选 `effective_length`、`allQLen` 必须等于本次非填充 token 数，不能沿用导出占位值零。
+
+`past_key_values` 接受本仓库 `TargetState`，不接受原 AIR 的 RefData/NZ 列表。可选 `position_ids` 和 `new_kv_cache_pos` 必须与状态位置连续一致。前一轮状态保持不变，下一轮传入返回的 `.state`。这层接口服务 PyTorch 普通 prefill/decode，尚未证明可直接通过 TorchAir 导出。
+
 ## 直接 GE 路径
 
 `build_quantized_target` 接入 DynamicQuant、量化 Linear、按 token 选择的专家 GMM。只计算选中的 TopK 专家；普通 scale 是 FP32，专家 scale 是厂商 INT64 QPARAM。`QuantOperatorBindings` 要求完整的 required/optional/dynamic 端口表、属性及来源 SHA256；测试中的 `Test*` 类型名仅用于主机回归，不能当作真实 DDK 绑定。
@@ -64,11 +88,13 @@ python3 "$REPO_DIR/targets/cpro/scripts/adapt_original_target.py" \
   --prepared /实际准备结果目录 \
   --quant-bindings /实际DDK量化绑定.json \
   --fused-bindings "$AI_RUN_DIR/fused-all-f6b81ead7ae8/bindings.json" \
-  --sequence-length 64 --past-length 0
+  --sequence-length 64 --past-length 0 --output-pos -1 --full-logits
 ```
 
 这条命令生成 C++、recipe 和图清单，状态为 `GE_SOURCE_GENERATED`，尚未生成 AIR/OMC。decode 对应 `--sequence-length 1 --past-length 64`；当前 past length 为静态特化，不是任意长度解码循环。省略 `--fused-bindings` 会构建基础 GDN，仅用于明确选择的结构路径。
 
-此图沿用本仓库 functional stateful ABI：外部 embedding 行/scale、显式缓存、Top1/features/状态输出。Conv 历史为 K−1，full-attention 缓存为逻辑 ND。它不同于原 AIR 的 89 输入/RefData/paged ABI，不能套用原 AIR 的形状表或旧探针 runner。
+此图沿用本仓库 functional stateful ABI：外部 embedding 行/scale、显式缓存、Top1/features/状态输出。`--output-pos -1` 只对末 token 计算词表头；`--full-logits` 在状态输出之后追加所选行的 FP32 `target_logits`，`output_contract` 记录实际选择。省略两项保持全部 Top1 行及原输出顺序。
+
+Conv 历史为 K−1，full-attention 缓存为逻辑 ND。PyTorch 使用原 routing/GMM/finalize 调用，GE 当前使用逐 token 收集选中专家的 GMM 图；其物理契约和效果尚待实际验证。这些路径不同于原 AIR 的 89 输入/RefData/paged ABI，不能套用原 AIR 的形状表或旧探针 runner。
 
 当前验证为主机权重打包、独立 CPU 数值参考、小模型状态接续、完整 40 层 64/1 构图和 recipe 检查。真实 DDK 量化端口契约、AIR/OMC 编译、整模设备数值及性能仍未通过验证。

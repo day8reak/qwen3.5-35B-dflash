@@ -74,8 +74,8 @@ class OriginalModelConfig:
     def embedding_rows(self, token_ids):
         """Return original INT8 rows and FP32 per-token scales for GE Data.
 
-        Keep the two tensors separate. The target applies FP32 multiplication
-        then its declared FP16 activation boundary, matching the PyTorch path.
+        Keep the two tensors separate. The original target applies FP32
+        multiplication and retains the FP32 residual stream.
         """
         config = self.text_config()
         vocab, hidden = config["vocab_size"], config["hidden_size"]
@@ -117,3 +117,11 @@ class OriginalModelConfig:
                 "kv_cache_max_len": self.kv_cache_max_len,
                 "quantization": "REUSE_ORIGINAL_NO_REQUANTIZATION",
                 "norm_weights": "RAW_HF_MAIN_OFFSET_ONCE_GATED_NO_OFFSET"}
+
+    def load_pytorch_wrapper(self, *, feature_layers, ops, quant_ops, device="cpu", recurrent_dtype=None):
+        """Original-style external embedding/selected-logit entry, functional caches."""
+        from .fused.original_wrapper import OriginalCproTargetWrapper
+
+        return OriginalCproTargetWrapper(self.load_pytorch(
+            feature_layers=feature_layers, ops=ops, quant_ops=quant_ops,
+            device=device, recurrent_dtype=recurrent_dtype))

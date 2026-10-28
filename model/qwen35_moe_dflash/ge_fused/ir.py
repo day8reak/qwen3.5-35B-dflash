@@ -186,6 +186,8 @@ class Graph(_Graph):
                                   "attrs": deepcopy(n.attrs)} for n in self.nodes if isinstance(n, CustomNode)]}
         if hasattr(self, "state_abi"):
             result["state_abi"] = deepcopy(self.state_abi)
+        if hasattr(self, "output_contract"):
+            result["output_contract"] = deepcopy(self.output_contract)
         if hasattr(self, "quantization_contract"):
             result["quantization_contract"] = deepcopy(self.quantization_contract)
         return result

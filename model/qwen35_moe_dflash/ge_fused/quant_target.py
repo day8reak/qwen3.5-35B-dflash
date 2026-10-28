@@ -19,6 +19,70 @@ class _QuantBuilder(_StatefulBuilder):
         self.quant = quant_bindings
         self.descriptors = quant_descriptors
         self.sources = {}
+        self.precision_casts = []
+
+    def op(self, kind, *values, shape=None, dtype=None, **attrs):
+        # Preserve source FP32 residuals. GE binary inputs must agree; explicit
+        # casts make promotion visible instead of only changing descriptors.
+        if dtype is None:
+            dtype = "float32" if any(value.dtype == "float32" for value in values) else "float16"
+        if kind in {"add", "sub", "mul", "div", "matmul", "maximum", "minimum"}:
+            values = tuple(super(_QuantBuilder, self).op("cast", value, dtype=dtype)
+                           if value.dtype in {"float16", "float32"} and value.dtype != dtype else value
+                           for value in values)
+        return super().op(kind, *values, shape=shape, dtype=dtype, **attrs)
+
+    def boundary_cast(self, value, dtype, reason):
+        if value.dtype == dtype:
+            return value
+        result = self.op("cast", value, dtype=dtype)
+        self.precision_casts.append({"node": result.name, "source": value.name,
+            "from_dtype": value.dtype, "to_dtype": dtype, "reason": reason})
+        return result
+
+    def rms(self, x, key, eps, offset=True):
+        if "rms" in self.fused_ops:
+            raise ValueError("original quant target uses source-aligned basic RMS; do not select fused rms")
+        dtype = x.dtype
+        value = self.op("cast", x, dtype="float32") if dtype != "float32" else x
+        square = self.op("mul", value, value)
+        mean = self.reduce("reduce_mean", square, -1)
+        scale = self.op("rsqrt", self.op("scalar_add", mean, value=eps))
+        gamma = self.op("cast", self.g.weight(key, (x.shape[-1],)), dtype="float32")
+        if offset:
+            gamma = self.op("scalar_add", gamma, value=1.0)
+        result = self.op("mul", self.op("mul", value, scale), gamma)
+        return self.op("cast", result, dtype=dtype) if dtype != "float32" else result
+
+    def gdn_decay(self, a, prefix, heads):
+        value = self.op("cast", a, dtype="float32")
+        bias = self.op("cast", self.g.weight(prefix + ".dt_bias", (heads,)), dtype="float32")
+        log_rate = self.op("cast", self.g.weight(prefix + ".A_log", (heads,)), dtype="float32")
+        value = self.op("softplus", self.op("add", value, bias), beta=1.0, threshold=20.0)
+        decay = self.op("mul", self.op("neg", self.op("exp", log_rate)), value, shape=value.shape)
+        native = self.bound_dtype("gdn", "inputs", "g", "float16") if "gdn" in self.fused_ops else "float16"
+        if native not in {"float16", "float32"}:
+            raise ValueError("GDN decay binding must declare float16 or float32")
+        return self.boundary_cast(decay, native, "GDN declared decay input dtype")
+
+    def gated_norm(self, core, gate, key, eps):
+        value = self.rms(self.op("cast", core, dtype="float32"), key, eps, offset=False)
+        gate = self.op("silu", self.op("cast", gate, dtype="float32"))
+        return self.op("cast", self.op("mul", value, gate), dtype=core.dtype)
+
+    def rotary_tables(self, config, sequence_length, past_length):
+        # Match the source's FP32 frequency/cache construction; only the final
+        # cos/sin tensors cross the FP16 attention-projection boundary.
+        inv = 1.0 / (np.float32(config["rope_theta"]) **
+                     (np.arange(0, config["rotary_dim"], 2, dtype=np.float32) / config["rotary_dim"]))
+        positions = np.arange(past_length, past_length + sequence_length, dtype=np.int64).astype(np.float32)
+        frequency = self.op("matmul", self.constant(inv.reshape(1, -1, 1), "float32"),
+                            self.constant(positions.reshape(1, 1, sequence_length), "float32"),
+                            shape=(1, len(inv), sequence_length), transpose_a=False, transpose_b=False)
+        frequency = self.permute(frequency, (0, 2, 1))
+        angles = self.cat([frequency, frequency], -1)
+        return tuple(self.view(self.op("cast", self.op(kind, angles), dtype="float16"),
+                               (1, 1, sequence_length, config["rotary_dim"])) for kind in ("cos", "sin"))
 
     def input_embedding(self, sequence_length, config):
         shape = (1, sequence_length, config["hidden_size"])
@@ -26,7 +90,7 @@ class _QuantBuilder(_StatefulBuilder):
         scales = self.g.input("embedding_scale", (1, sequence_length, 1), "float32")
         expanded = self.op("cast", rows, dtype="float32")
         dequantized = self.op("mul", expanded, scales, dtype="float32")
-        return self.op("cast", dequantized, dtype="float16")
+        return dequantized
 
     def quantized_weights(self, key, logical_shape, *, expert=False):
         if key not in self.descriptors:
@@ -58,8 +122,10 @@ class _QuantBuilder(_StatefulBuilder):
         return weight, scale
 
     def dynamic_quant(self, x):
-        if x.dtype != "float16" or len(x.shape) != 2:
-            raise ValueError("dynamic quant requires flattened FP16 [tokens, hidden]")
+        if x.dtype not in {"float16", "float32"} or len(x.shape) != 2:
+            raise ValueError("dynamic quant requires flattened floating [tokens, hidden]")
+        x = self.boundary_cast(x, self.quant.tensor_dtype("dynamic_quant", "inputs", "x"),
+                               "DynamicQuant declared activation input dtype")
         result = self.quant.call(self.g, "dynamic_quant", inputs={"x": x},
             outputs={"quantized": (x.shape, "int8"), "scale": ((x.shape[0],), "float32")},
             name=f"quant_{len(self.g.nodes)}")
@@ -99,7 +165,8 @@ class _QuantBuilder(_StatefulBuilder):
         if expert_dispatch != "selected" or experts > 2048:
             raise ValueError("original quantized MoE requires selected dispatch with at most 2048 experts")
         flat = self.view(x, (s, h))
-        probs = self.op("softmax", self.linear(flat, prefix + ".gate.weight", experts), axis=-1)
+        router = self.op("cast", self.linear(flat, prefix + ".gate.weight", experts), dtype="float32")
+        probs = self.op("softmax", router, axis=-1)
         values = self.op("topk_values", probs, shape=(s, topk), axis=-1, k=topk)
         ids = self.op("topk_indices", probs, shape=(s, topk), dtype="int32", axis=-1, k=topk)
         routes = self.op("div", values, self.reduce("reduce_sum", values, -1)) if config.get("norm_topk_prob", True) else values
@@ -123,6 +190,8 @@ class _QuantBuilder(_StatefulBuilder):
             gate, up = self.slice(projected, -1, 0, middle), self.slice(projected, -1, middle, middle)
             activated = self.op("mul", self.op("silu", gate), up)
             projected = self.grouped(activated, gather(down), gather(down_scale), h)
+            # Source finalize routing converts scales to the expert output dtype.
+            route = self.op("cast", route, dtype=projected.dtype)
             weighted = self.op("mul", projected, self.view(route, (topk, 1)))
             summed = self.slice(weighted, 0, 0, 1)
             for slot in range(1, topk):
@@ -138,7 +207,8 @@ class _QuantBuilder(_StatefulBuilder):
 
 def build_quantized_target(config, draft_config, sequence_length, *, quant_bindings,
                            quant_descriptors, past_length=0, fused_ops=(), bindings=None,
-                           recurrent_dtype="float16", head_chunk_rows=16, gdn_state_casts="reject"):
+                           recurrent_dtype="float16", head_chunk_rows=16, gdn_state_casts="reject",
+                           output_positions=None, return_logits=False):
     if not isinstance(quant_bindings, QuantOperatorBindings):
         raise ValueError("quantized direct GE requires explicit QuantOperatorBindings; no installed schema is assumed")
     if sequence_length not in {1, 64}:
@@ -164,13 +234,20 @@ def build_quantized_target(config, draft_config, sequence_length, *, quant_bindi
     graph = build_target(config, draft_config, sequence_length, past_length=past_length,
         fused_ops=fused_ops, bindings=bindings, recurrent_dtype=recurrent_dtype,
         expert_dispatch="selected", head_chunk_rows=head_chunk_rows, gdn_state_casts=gdn_state_casts,
-        builder_factory=factory)
+        builder_factory=factory, output_positions=output_positions, return_logits=return_logits)
     graph.quant_bindings = quant_bindings
     graph.quant_weight_sources = builders[0].sources
     graph.quantization_contract = {
         "source": "ORIGINAL_W4_NO_REQUANTIZATION", "scale_group_size": 256,
         "expert_dispatch": "selected_per_token", "expert_count_evaluated_per_token": config.get("text_config", config)["num_experts_per_tok"],
-        "embedding": "external_INT8_rows_times_FP32_scale_then_FP16",
+        "embedding": "external_INT8_rows_times_FP32_scale",
+        "residual_dtype": "float32", "rotary_cache_compute": "float32_then_float16",
+        "gated_norm_compute": "float32_norm_and_silu_then_float16",
+        "decay_compute": "float32_then_declared_GDN_input_dtype",
+        "base_weight_storage": "float16", "source_bitwise_parity": "UNVERIFIED",
+        "precision_boundary_casts": builders[0].precision_casts,
+        "routing": "FP32_softmax_topk_then_FP16_finalize_scales",
+        "routing_layout": "selected_gathered_banks_not_original_routing_kernel",
         "pending_expert_qparam": [key for key, desc in graph.quant_weight_sources.items() if desc["scale_encoding"] == "QPARAM_REQUIRED"],
         "ge_bindings": quant_bindings.manifest(), "device_execution": "NOT_RUN",
         "runtime_abi": "functional_stateful_target_not_original_paged_RefData",

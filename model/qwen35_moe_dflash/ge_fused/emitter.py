@@ -338,11 +338,13 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
         elif kind == "softplus":
             # Internal OMG lacks SoftplusV2 shape inference. Native Softplus
             # expresses this model's beta=1 case without intermediate rounding.
-            # Above threshold 20, log1p(exp(x)) and x round to the same FP16
-            # value. Do not silently generalize this mapping to other settings.
+            # Above threshold 20, log1p(exp(x)) - x < exp(-20), below half
+            # an FP32 ULP (and FP16 ULP) at x=20. Preserve the source FP32 gate
+            # path without an intermediate FP16 conversion. Device validation
+            # of this native operation remains separate from graph emission.
             if (float(a.get("beta", 1)) != 1.0 or float(a.get("threshold", 20)) != 20.0
-                    or v.dtype != "float16" or ins[0].dtype != "float16"):
-                raise NotImplementedError("native Softplus lowering requires FP16 beta=1 threshold=20")
+                    or v.dtype not in {"float16", "float32"} or ins[0].dtype != v.dtype):
+                raise NotImplementedError("native Softplus lowering requires matching FP16/FP32 beta=1 threshold=20")
             typ, ports = "Softplus", ["x"]
         elif kind in {"reshape", "broadcast_to", "transpose"}:
             if kind == "broadcast_to":

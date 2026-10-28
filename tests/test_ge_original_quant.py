@@ -111,7 +111,8 @@ def test_external_embedding_keeps_original_int8_fp32_arithmetic(monkeypatch):
     values = np.asarray([[[-128, -7, 3, 127]]], dtype=np.int8)
     scale = np.asarray([[[0.0200123]]], dtype=np.float32)
     actual = evaluate(graph, {"inputs_embeds": values, "embedding_scale": scale})[0]
-    np.testing.assert_array_equal(actual, (values.astype(np.float32) * scale).astype(np.float16))
+    np.testing.assert_array_equal(actual, values.astype(np.float32) * scale)
+    assert actual.dtype == np.float32
     assert [value.dtype for value in graph.inputs] == ["int8", "float32"]
     assert not graph.weights
 
@@ -231,3 +232,128 @@ def test_yaml_cache_capacity_bounds_static_graph_before_construction(small_confi
         quant_bindings=bindings, quant_descriptors=metadata)
     assert graph.state_abi["next_past_length"] == 64
     assert graph.quantization_contract["kv_cache_max_len"] == 64
+
+
+def _precision_builder(graph):
+    return _QuantBuilder(graph, (), None,
+                         quant_bindings=QuantOperatorBindings(contract_document()), quant_descriptors={})
+
+
+def test_decay_uses_source_fp32_equation_before_declared_boundary(monkeypatch, tmp_path):
+    from qwen35_moe_dflash.ge_fused.emitter import emit_cpp
+    monkeypatch.setattr("qwen35_moe_dflash.ge_eval.DTYPES", DTYPES)
+    graph = Graph("source_decay")
+    builder = _precision_builder(graph)
+    activation = graph.input("a", (1, 8, 32))
+    graph.outputs = [builder.gdn_decay(activation, "linear", 32)]
+    rng = np.random.default_rng(42)
+    a = rng.normal(0, 2, activation.shape).astype(np.float16)
+    bias = rng.normal(0, 1, 32).astype(np.float16)
+    log_rate = rng.normal(0, 1, 32).astype(np.float16)
+    actual = evaluate(graph, {"a": a}, {"linear.dt_bias": bias, "linear.A_log": log_rate})[0]
+    expected = (-np.exp(log_rate.astype(np.float32))
+                * np.logaddexp(np.float32(0), a.astype(np.float32) + bias.astype(np.float32))).astype(np.float16)
+    np.testing.assert_array_equal(actual, expected)
+    old = (-np.exp(log_rate.astype(np.float32)).astype(np.float16)
+           * np.logaddexp(np.float32(0), (a + bias).astype(np.float16).astype(np.float32)).astype(np.float16)).astype(np.float16)
+    assert np.any(old != actual), "fixture must expose premature FP16 rounding"
+    assert builder.precision_casts[-1]["from_dtype"] == "float32"
+    emit_cpp(graph, {key: tmp_path / (key + ".bin") for key in graph.weights}, recipe_dir=tmp_path / "recipe")
+    softplus = next(row for row in read_recipe(tmp_path / "recipe/graph.recipe")["records"] if row["type"] == "Softplus")
+    assert softplus["outputs"][0]["dtype"] == "float32"
+
+
+def test_gated_norm_rounds_only_after_fp32_silu_product(monkeypatch):
+    monkeypatch.setattr("qwen35_moe_dflash.ge_eval.DTYPES", DTYPES)
+    graph = Graph("source_gated_norm")
+    builder = _precision_builder(graph)
+    core = graph.input("core", (1, 2, 2, 32))
+    gate = graph.input("gate", core.shape)
+    graph.outputs = [builder.gated_norm(core, gate, "gated.weight", 1e-6)]
+    rng = np.random.default_rng(71)
+    x, z = [rng.normal(0, 1, core.shape).astype(np.float16) for _ in range(2)]
+    gamma = rng.uniform(.3, 1.4, 32).astype(np.float16)
+    actual = evaluate(graph, {"core": x, "gate": z}, {"gated.weight": gamma})[0]
+    xf, zf = x.astype(np.float32), z.astype(np.float32)
+    normalized = xf * (1 / np.sqrt(np.mean(xf * xf, axis=-1, keepdims=True) + np.float32(1e-6)))
+    expected = (normalized * gamma.astype(np.float32) * (zf / (1 + np.exp(-zf)))).astype(np.float16)
+    np.testing.assert_array_equal(actual, expected)
+    assert next(node for node in graph.nodes if node.kind == "silu").output.dtype == "float32"
+
+
+def test_rotary_uses_exact_positions_and_fp32_angles_before_half_cast(monkeypatch):
+    monkeypatch.setattr("qwen35_moe_dflash.ge_eval.DTYPES", DTYPES)
+    graph = Graph("source_rope")
+    graph.input("unused", (1,))
+    builder = _precision_builder(graph)
+    graph.outputs = list(builder.rotary_tables({"rope_theta": 1000000., "rotary_dim": 8}, 4, 2049))
+    actual = evaluate(graph, {"unused": np.zeros(1, dtype=np.float16)})
+    inv = 1 / (np.float32(1000000.) ** (np.arange(0, 8, 2, dtype=np.float32) / 8))
+    angles = np.arange(2049, 2053, dtype=np.float32)[:, None] * inv[None, :]
+    angles = np.concatenate([angles, angles], axis=-1).reshape(1, 1, 4, 8)
+    for output, function in zip(actual, (np.cos, np.sin)):
+        np.testing.assert_array_equal(output, function(angles).astype(np.float16))
+    assert actual[0][0, 0, 0, 0] != actual[0][0, 0, 1, 0]
+
+
+def test_quantized_head_selects_rows_and_appends_full_logits(small_config):
+    config, draft = small_config
+    graph = build_quantized_target(config, draft, 64,
+        quant_bindings=QuantOperatorBindings(contract_document()), quant_descriptors=descriptors_for(config, draft),
+        output_positions=(-1, 0, 20), return_logits=True)
+    assert graph.outputs[0].shape == (1, 3)
+    assert graph.outputs[1].shape == (1, 64, 512) and graph.outputs[1].dtype == "float16"
+    assert graph.outputs[-1].name == "target_logits" and graph.outputs[-1].shape == (1, 3, 256)
+    assert graph.outputs[-1].dtype == "float32"
+    assert [v.name for v in graph.outputs[2:-1]] == [row["output"] for row in graph.state_abi["states"]]
+    assert graph.manifest()["output_contract"]["head_positions"] == [63, 0, 20]
+    head = [node for node in graph.nodes if isinstance(node, CustomNode)
+            and node.op_type == "TestQuantMatmul" and node.inputs[1].name == "target.lm_head.weight"]
+    assert len(head) == 1 and head[0].inputs[0].shape[0] == 3
+    assert graph.quantization_contract["residual_dtype"] == "float32"
+    assert graph.quantization_contract["precision_boundary_casts"]
+
+
+def test_explicit_fp32_dynamic_quant_contract_is_respected(small_config, tmp_path):
+    config, draft = small_config
+    doc = contract_document()
+    doc["operators"]["dynamic_quant"]["inputs"]["x"]["dtype"] = "float32"
+    graph = build_quantized_target(config, draft, 1, past_length=64,
+        quant_bindings=QuantOperatorBindings(doc), quant_descriptors=descriptors_for(config, draft),
+        output_positions=(-1,), return_logits=True)
+    quantizers = [node for node in graph.nodes if isinstance(node, CustomNode) and node.op_type == "TestDynamicQuant"]
+    assert quantizers and all(node.inputs[0].dtype == "float32" for node in quantizers)
+    casts = graph.quantization_contract["precision_boundary_casts"]
+    assert not any(row["to_dtype"] == "float16" and row["reason"].startswith("DynamicQuant") for row in casts)
+    code = emit_quantized_cpp(graph, {key: tmp_path / (key + ".bin") for key in graph.weights}, recipe_dir=tmp_path / "recipe")
+    records = read_recipe(tmp_path / "recipe/graph.recipe")["records"]
+    assert "TestDynamicQuant" in code
+    for row in records:
+        if row["type"] == "TestDynamicQuant":
+            producer = records[row["inputs"][0]["src"]]
+            assert producer["outputs"][0]["dtype"] == "float32"
+
+
+@pytest.mark.parametrize("positions", [(), (64,), (-65,), (True,), [0]])
+def test_invalid_output_positions_rejected(small_config, positions):
+    config, draft = small_config
+    with pytest.raises(ValueError, match="output_positions"):
+        build_quantized_target(config, draft, 64,
+            quant_bindings=QuantOperatorBindings(contract_document()), quant_descriptors=descriptors_for(config, draft),
+            output_positions=positions)
+
+
+def test_row_selection_preserves_numerical_logits_features_and_all_states(monkeypatch):
+    from qwen35_moe_dflash.ge_weights import tiny_weights
+    monkeypatch.setattr("qwen35_moe_dflash.ge_eval.DTYPES", DTYPES)
+    config, draft = configurations(tiny=True)
+    draft = Qwen35DFlashConfig.from_dict(draft)
+    all_rows = build_target(config, draft, 4, return_logits=True, head_chunk_rows=2)
+    selected = build_target(config, draft, 4, output_positions=(-1, 1, -1), return_logits=True, head_chunk_rows=2)
+    weights = tiny_weights({key: value.shape for key, value in all_rows.weights.items()})
+    values = {"input_ids": np.asarray([[1, 3, 7, 9]], dtype=np.int32)}
+    expected, actual = evaluate(all_rows, values, weights), evaluate(selected, values, weights)
+    np.testing.assert_array_equal(actual[0], expected[0][:, [3, 1, 3]])
+    np.testing.assert_array_equal(actual[-1], expected[-1][:, [3, 1, 3]])
+    for observed, reference in zip(actual[1:-1], expected[1:-1]):
+        np.testing.assert_array_equal(observed, reference)

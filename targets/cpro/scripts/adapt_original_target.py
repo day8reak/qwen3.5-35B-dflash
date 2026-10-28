@@ -51,7 +51,9 @@ def _build_ge(args, config, output):
     draft = Qwen35DFlashConfig.from_dict(json.loads((REPO / "specs/draft-config.json").read_text()))
     graph = build_quantized_target(document["config"], draft, args.sequence_length,
         quant_bindings=quant, quant_descriptors=document["quant_descriptors"],
-        past_length=args.past_length, fused_ops=("gdn",) if fused else (), bindings=fused)
+        past_length=args.past_length, fused_ops=("gdn",) if fused else (), bindings=fused,
+        output_positions=None if getattr(args, "output_pos", None) is None else (args.output_pos,),
+        return_logits=getattr(args, "full_logits", False))
     if graph.quantization_contract["pending_expert_qparam"]:
         raise ValueError("prepared expert scales still need vendor QPARAM conversion; FP32 cannot be used as INT64")
     paths = {}
@@ -67,6 +69,7 @@ def _build_ge(args, config, output):
     report = {"schema_version": 1, "status": "GE_SOURCE_GENERATED", "output": str(output),
               "prepared": str(prepared), "prepared_manifest_sha256": sha256_file(manifest),
               "quantization_contract": graph.quantization_contract,
+              "output_contract": graph.output_contract,
               "sequence_length": args.sequence_length, "past_length": args.past_length,
               "air_export": "NOT_RUN", "model_compilation": "NOT_RUN", "device_execution": "NOT_RUN",
               "device_ready": False, "sources": config.record()}
@@ -85,6 +88,10 @@ def main(argv=None):
     parser.add_argument("--fused-bindings", help="existing checked GDN binding; Conv and RMS remain base operators")
     parser.add_argument("--sequence-length", type=int, choices=(1, 64), default=64)
     parser.add_argument("--past-length", type=int, default=0)
+    parser.add_argument("--output-pos", type=int,
+                        help="zero-based position within this input; -1 selects last; omitted selects all")
+    parser.add_argument("--full-logits", action="store_true",
+                        help="append full-vocabulary FP32 logits for selected positions")
     args = parser.parse_args(argv)
     from qwen35_moe_dflash.artifacts import output_path
     from qwen35_moe_dflash.original_model_config import OriginalModelConfig

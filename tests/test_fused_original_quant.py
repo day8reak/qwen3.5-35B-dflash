@@ -151,7 +151,7 @@ def test_original_quant_loader_prefill_decode_and_full_logits(model_data):
     model, _, backend, embedding, scales, chunks = model_data
     ids = torch.tensor([[3, 5]], dtype=torch.int32)
     actual_embedding = model.quantization.embedding(ids)
-    expected = torch.from_numpy((embedding[[[3, 5]]].astype(np.float32) * scales[[[3, 5]]]).astype(np.float16))
+    expected = torch.from_numpy(embedding[[[3, 5]]].astype(np.float32) * scales[[[3, 5]]])
     torch.testing.assert_close(actual_embedding, expected, rtol=0, atol=0)
     assert all("experts" not in key and "embed_tokens" not in key for key in model._weight_names)
     before = model.initial_state()
@@ -164,6 +164,143 @@ def test_original_quant_loader_prefill_decode_and_full_logits(model_data):
     assert decoded.logits is None and decoded.state.position == 3 and chunks == [64, 1]
     assert {"QuantMatmul", "GroupedMatmul", "MoeGatingTopKSoftmax", "MoeInitRoutingV2", "MoeFinalizeRouting"} <= set(backend.calls)
     assert model.original_quant_contract["accuracy"] == "UNVERIFIED"
+
+
+def test_source_external_embedding_path_matches_token_path_and_selects_only_head_rows(model_data, monkeypatch):
+    model, _, _, embedding, scales, _ = model_data
+    ids = torch.tensor([[3, 5, 7]], dtype=torch.int32)
+    expected = model(ids, return_logits=True)
+    head_dtypes = []
+    original_linear = model._linear
+
+    def linear(x, prefix):
+        if prefix == "target.lm_head":
+            head_dtypes.append(x.dtype)
+        return original_linear(x, prefix)
+
+    monkeypatch.setattr(model, "_linear", linear)
+    output = model.forward_embeddings(torch.from_numpy(embedding[ids.numpy()]),
+        embed_scale=torch.from_numpy(scales[ids.numpy()]), output_pos=torch.tensor([-1, 0]))
+    torch.testing.assert_close(output.logits, expected.logits[:, [2, 0]], rtol=0, atol=0)
+    torch.testing.assert_close(output.top1, expected.top1[:, [2, 0]], rtol=0, atol=0)
+    torch.testing.assert_close(output.features, expected.features, rtol=0, atol=0)
+    assert output.features.dtype == torch.float16 and output.state.position == 3
+    assert head_dtypes == [torch.float32, torch.float32]
+    for actual, reference in zip(output.state.layers, expected.state.layers):
+        for name in ("conv", "recurrent", "key", "value"):
+            left, right = getattr(actual, name), getattr(reference, name)
+            if left is not None:
+                torch.testing.assert_close(left, right, rtol=0, atol=0)
+    decoded = model(torch.tensor([[4]], dtype=torch.int32), output.state, output_pos=-1, return_logits=True)
+    assert decoded.logits.shape == (1, 1, 32) and decoded.state.position == 4
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_external_float_embeddings_are_already_dequantized(model_data, dtype):
+    model = model_data[0]
+    x = torch.linspace(-.3, .3, 512).reshape(1, 2, 256).to(dtype)
+    result = model.forward_embeddings(x, output_pos=-1)
+    reference = model.forward_embeddings(x.float(), output_pos=-1)
+    torch.testing.assert_close(result.logits, reference.logits, rtol=0, atol=0)
+    assert result.logits.shape == (1, 1, 32)
+
+
+@pytest.mark.parametrize("output_pos", [2, -3, True, [], [0, .5], torch.tensor([0.]), torch.tensor(0)])
+def test_invalid_head_positions_fail_before_any_layer_compute(model_data, monkeypatch, output_pos):
+    model = model_data[0]
+    monkeypatch.setattr(model, "_linear", lambda *a, **kw: pytest.fail("must validate positions before compute"))
+    with pytest.raises(ValueError, match="output_pos"):
+        model(torch.tensor([[3, 5]], dtype=torch.int32), output_pos=output_pos)
+    with pytest.raises(ValueError, match="output_pos"):
+        model.forward_embeddings(torch.zeros(1, 2, 256), output_pos=output_pos)
+
+
+@pytest.mark.parametrize("failure", ["missing-scale", "half-scale", "scale-shape", "negative-scale",
+                                     "nonfinite-scale", "double-scale", "nonfinite-input", "overflow"])
+def test_external_embeddings_reject_invalid_scale_or_dtype_before_compute(model_data, monkeypatch, failure):
+    model = model_data[0]
+    x, scale = torch.ones(1, 2, 256, dtype=torch.int8), torch.ones(1, 2, 1)
+    if failure == "missing-scale":
+        scale = None
+    elif failure == "half-scale":
+        scale = scale.half()
+    elif failure == "scale-shape":
+        scale = torch.ones(1, 2)
+    elif failure == "negative-scale":
+        scale.fill_(-1)
+    elif failure == "nonfinite-scale":
+        scale.fill_(float("nan"))
+    elif failure == "double-scale":
+        x = x.float()
+    elif failure == "nonfinite-input":
+        x, scale = x.float().fill_(float("inf")), None
+    else:
+        x.fill_(127)
+        scale.fill_(torch.finfo(torch.float32).max)
+    monkeypatch.setattr(model, "_linear", lambda *a, **kw: pytest.fail("must validate inputs before compute"))
+    with pytest.raises(ValueError):
+        model.forward_embeddings(x, embed_scale=scale)
+
+
+def test_original_gated_norm_rounds_after_fp32_silu_product(model_data):
+    model = model_data[0]
+    generator = torch.Generator().manual_seed(9)
+    core = torch.randn(1, 3, 16, 16, generator=generator).half()
+    z = torch.randn(core.shape, generator=generator).half()
+    prefix = "target.layers.0.linear_attn.norm"
+    gamma = model.weight(prefix + ".weight").float()
+    normalized = core.float() * torch.rsqrt(core.float().square().mean(-1, keepdim=True) + 1e-6)
+    expected = (normalized * gamma * F.silu(z.float())).half()
+    actual = model._gated_norm(core, z, prefix)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    premature_rounding = (normalized * gamma).half() * F.silu(z)
+    assert not torch.equal(actual, premature_rounding)
+
+
+def test_original_rope_keeps_positions_and_trigonometry_fp32(model_data):
+    model = model_data[0]
+    x = torch.linspace(-1, 1, 32).reshape(1, 1, 2, 16).half()
+    width, start = model.config["rotary_dim"], 4097
+    frequency = torch.arange(start, start + 2, dtype=torch.float32)[:, None] * model.inv_freq[None, :]
+    angle = torch.cat((frequency, frequency), -1)[None, None]
+    first, second = x[..., :width].chunk(2, -1)
+    rotated = x[..., :width] * angle.cos().half() + torch.cat((-second, first), -1) * angle.sin().half()
+    expected = torch.cat((rotated, x[..., width:]), -1)
+    assert model.inv_freq.dtype == torch.float32
+    torch.testing.assert_close(model._rotary(x, start), expected, rtol=0, atol=0)
+
+
+def test_original_decay_uses_fp32_arithmetic_before_declared_fp16_gdn_port(model_data, monkeypatch):
+    model = model_data[0]
+    prefix = "target.layers.0.linear_attn"
+    seen = {}
+    original_linear = model._linear
+    original_ops = model.ops
+    module = ModuleType("capture_gate")
+    module.FUSED_OPS_ABI = 1
+    module.BACKEND_ID = "CPU_TEST_ONLY"
+    module.IS_REFERENCE_BACKEND = True
+    for name in ModuleFusedOps.required_operations:
+        setattr(module, name, getattr(original_ops, name))
+
+    def linear(x, name):
+        output = original_linear(x, name)
+        if name == prefix + ".in_proj_a":
+            seen["a"] = output.clone()
+        return output
+
+    def gdn(q, k, v, g, beta, *args, **kwargs):
+        seen["g"] = g.clone()
+        return original_ops.chunk_gated_delta_rule(q, k, v, g, beta, *args, **kwargs)
+
+    module.chunk_gated_delta_rule = gdn
+    monkeypatch.setattr(model, "_linear", linear)
+    model.ops = ModuleFusedOps(module, allow_reference=True)
+    model._gdn(torch.linspace(-.5, .5, 512).reshape(1, 2, 256), prefix, model.initial_state().layers[0])
+    expected = (-model.weight(prefix + ".A_log").float().exp()
+                * F.softplus(seen["a"].float() + model.weight(prefix + ".dt_bias").float())).half()
+    assert seen["g"].dtype == torch.float16
+    torch.testing.assert_close(seen["g"], expected, rtol=0, atol=0)
 
 
 def test_original_linear_matches_independent_group_dequantization(model_data):

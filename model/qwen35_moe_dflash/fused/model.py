@@ -132,7 +132,8 @@ class FusedTargetModel(nn.Module):
             self.register_buffer(buffer_name, value.detach().clone().contiguous())
         c = self.config
         inv = 1.0 / (c["rope_theta"] ** (torch.arange(0, c["rotary_dim"], 2, dtype=torch.float32) / c["rotary_dim"]))
-        self.register_buffer("inv_freq", inv.to(device=device, dtype=torch.float16))
+        rotary_dtype = torch.float32 if quantization is not None else torch.float16
+        self.register_buffer("inv_freq", inv.to(device=device, dtype=rotary_dtype))
         self.eval()
 
     @property
@@ -196,13 +197,32 @@ class FusedTargetModel(nn.Module):
     def _linear(self, x, prefix):
         if self.quantization is not None and self.quantization.has_weight(prefix + ".weight"):
             return self.quantization.linear(x, prefix + ".weight")
-        return F.linear(x, self.weight(prefix + ".weight"))
+        weight = self.weight(prefix + ".weight")
+        if self.quantization is not None:
+            # The Cpro shared-expert gate runs in the residual-stream dtype.
+            weight = weight.to(x.dtype)
+        return F.linear(x, weight)
 
     def _norm(self, x, prefix, *, zero_centered=True):
         gamma = self.weight(prefix + ".weight")
+        if self.quantization is not None:
+            # Base RMS arithmetic is explicit for the original-quant target.
+            # Keep reductions/gamma in FP32, with one zero-centered offset.
+            gamma = gamma.float() + (1.0 if zero_centered else 0.0)
+            source = x.float()
+            normalized = source * torch.rsqrt(source.square().mean(-1, keepdim=True) + self.config["rms_norm_eps"])
+            return self._tensor((normalized * gamma).to(x.dtype), x.shape, prefix, x.dtype)
         if zero_centered:
             gamma = gamma + 1.0
         return self._tensor(self.ops.rms_norm(x, gamma, self.config["rms_norm_eps"]), x.shape, prefix)
+
+    def _gated_norm(self, core, z, prefix):
+        if self.quantization is not None:
+            # Original Cpro normalizes and gates in FP32, rounding only once
+            # after the product, rather than before SiLU/multiplication.
+            normalized = self._norm(core.float(), prefix, zero_centered=False)
+            return (normalized * F.silu(z.float())).to(core.dtype)
+        return self._norm(core, prefix, zero_centered=False) * F.silu(z)
 
     def _gdn(self, x, prefix, cache):
         c, s = self.config, x.shape[1]
@@ -221,8 +241,16 @@ class FusedTargetModel(nn.Module):
         q, k = [t.reshape(1, s, kh, kd).repeat_interleave(vh // kh, dim=2).contiguous() for t in (q, k)]
         v = v.reshape(1, s, vh, vd).contiguous()
         beta = torch.sigmoid(self._linear(x, prefix + ".in_proj_b"))
-        a = self._linear(x, prefix + ".in_proj_a") + self.weight(prefix + ".dt_bias")
-        g = -torch.exp(self.weight(prefix + ".A_log")) * F.softplus(a)
+        a = self._linear(x, prefix + ".in_proj_a")
+        if self.quantization is not None:
+            g = -torch.exp(self.weight(prefix + ".A_log").float()) * F.softplus(
+                a.float() + self.weight(prefix + ".dt_bias").float())
+            # The currently bound logical/DDK GDN port requires FP16 g.
+            # This explicit boundary cast is separate from FP32 gate math.
+            g = g.to(q.dtype)
+        else:
+            a = a + self.weight(prefix + ".dt_bias")
+            g = -torch.exp(self.weight(prefix + ".A_log")) * F.softplus(a)
         valid = torch.tensor([s], dtype=torch.int16, device=self.device)
         core, recurrent = self.ops.chunk_gated_delta_rule(
             q, k, v, g, beta, cache.recurrent, valid,
@@ -231,17 +259,20 @@ class FusedTargetModel(nn.Module):
         self._tensor(recurrent, (1, vh, kd, vd), "ChunkGatedDeltaRule state", self.recurrent_dtype)
         recurrent = recurrent.detach().clone()
         z = self._linear(x, prefix + ".in_proj_z").reshape(1, s, vh, vd)
-        core = self._norm(core, prefix + ".norm", zero_centered=False) * F.silu(z)
+        core = self._gated_norm(core, z, prefix + ".norm")
         return self._linear(core.reshape(1, s, vw), prefix + ".out_proj"), LayerState(conv=conv, recurrent=recurrent)
 
     def _rotary(self, x, start):
         width = self.config["rotary_dim"]
-        positions = torch.arange(start, start + x.shape[-2], device=self.device).to(torch.float16)
+        positions = torch.arange(start, start + x.shape[-2], device=self.device).to(self.inv_freq.dtype)
         frequency = positions[:, None] * self.inv_freq[None, :]
         angle = torch.cat((frequency, frequency), dim=-1)[None, None]
         a, tail = x[..., :width], x[..., width:]
         first, second = a.chunk(2, dim=-1)
-        a = a * angle.cos() + torch.cat((-second, first), dim=-1) * angle.sin()
+        cos, sin = angle.cos(), angle.sin()
+        if self.quantization is not None:
+            cos, sin = cos.to(x.dtype), sin.to(x.dtype)
+        a = a * cos + torch.cat((-second, first), dim=-1) * sin
         return torch.cat((a, tail), dim=-1).contiguous()
 
     def _attention(self, x, prefix, cache, start):
@@ -275,17 +306,85 @@ class FusedTargetModel(nn.Module):
         shared = self._linear(shared, prefix + ".shared_expert.down_proj")
         return result + shared * torch.sigmoid(self._linear(x, prefix + ".shared_expert_gate"))
 
+    def _output_positions(self, output_pos, sequence_length):
+        """Validate source-style zero-based selected head rows before compute."""
+        if output_pos is None:
+            values = list(range(sequence_length))
+        elif isinstance(output_pos, Tensor):
+            if output_pos.ndim != 1 or output_pos.dtype not in (torch.int32, torch.int64):
+                raise ValueError("output_pos must be a 1D INT32/INT64 tensor")
+            values = output_pos.tolist()
+        elif type(output_pos) is int:
+            values = [output_pos]
+        elif isinstance(output_pos, (list, tuple)):
+            values = list(output_pos)
+        else:
+            raise ValueError("output_pos must be an integer, integer sequence or 1D integer tensor")
+        if (not values or any(type(value) is not int or not -sequence_length <= value < sequence_length
+                              for value in values)):
+            raise ValueError("output_pos requires nonempty zero-based positions within [-S, S-1]")
+        values = [value % sequence_length for value in values]
+        return torch.tensor(values, dtype=torch.int64, device=self.device)
+
+    def _sequence_length(self, sequence_length, output_pos, return_logits):
+        if not 1 <= sequence_length <= 32767:
+            raise ValueError("unpadded sequence length must fit a positive INT16 effective_length")
+        if type(return_logits) is not bool:
+            raise ValueError("return_logits must be a bool")
+        return self._output_positions(output_pos, sequence_length)
+
     @torch.inference_mode()
     def forward(self, input_ids: Tensor, state: TargetState | None = None, *,
-                return_logits: bool = False) -> FusedTargetOutput:
+                return_logits: bool = False, output_pos=None) -> FusedTargetOutput:
         if (not isinstance(input_ids, Tensor) or input_ids.ndim != 2 or input_ids.shape[0] != 1
                 or input_ids.dtype not in (torch.int32, torch.int64) or input_ids.device != self.device):
             raise ValueError("input_ids must be int32/int64 [1,S] on the weight device")
         s = input_ids.shape[1]
-        if not 1 <= s <= 32767:
-            raise ValueError("unpadded sequence length must fit a positive INT16 effective_length")
+        positions = self._sequence_length(s, output_pos, return_logits)
         if (input_ids < 0).any() or (input_ids >= self.config["vocab_size"]).any():
             raise ValueError("input token is outside the vocabulary")
+        hidden = (self.quantization.embedding(input_ids) if self.quantization is not None else
+                  F.embedding(input_ids.long(), self.weight("target.embed_tokens.weight")))
+        return self._forward_hidden(hidden, state, positions, return_logits)
+
+    @torch.inference_mode()
+    def forward_embeddings(self, inputs_embeds: Tensor, state: TargetState | None = None, *,
+                           embed_scale: Tensor | None = None, output_pos=None,
+                           return_logits: bool = True) -> FusedTargetOutput:
+        """Run source-style external embeddings through the same target layers.
+
+        INT8 rows require FP32 [1,S,1] scales. Floating rows are already
+        dequantized and cannot also receive a scale. The original-quant model
+        carries FP32 residuals; the unquantized logical model retains FP16.
+        """
+        if (not isinstance(inputs_embeds, Tensor) or inputs_embeds.ndim != 3
+                or inputs_embeds.shape[0] != 1 or inputs_embeds.shape[-1] != self.config["hidden_size"]
+                or inputs_embeds.device != self.device):
+            raise ValueError("inputs_embeds must be [1,S,hidden_size] on the weight device")
+        s = inputs_embeds.shape[1]
+        positions = self._sequence_length(s, output_pos, return_logits)
+        if inputs_embeds.dtype == torch.int8:
+            if (not isinstance(embed_scale, Tensor) or embed_scale.shape != (1, s, 1)
+                    or embed_scale.dtype != torch.float32 or embed_scale.device != self.device):
+                raise ValueError("INT8 inputs_embeds require FP32 embed_scale [1,S,1] on the weight device")
+            if not torch.isfinite(embed_scale).all() or (embed_scale < 0).any():
+                raise ValueError("embed_scale must be finite and nonnegative")
+            hidden = inputs_embeds.float() * embed_scale
+        elif inputs_embeds.dtype in (torch.float16, torch.float32):
+            if embed_scale is not None:
+                raise ValueError("floating inputs_embeds are already dequantized; omit embed_scale")
+            if not torch.isfinite(inputs_embeds).all():
+                raise ValueError("inputs_embeds must be finite")
+            hidden = inputs_embeds
+        else:
+            raise ValueError("inputs_embeds must be INT8 with scale, or FP16/FP32 without scale")
+        hidden = hidden.to(torch.float32 if self.quantization is not None else torch.float16)
+        if not torch.isfinite(hidden).all():
+            raise ValueError("dequantized inputs_embeds must remain finite in the target residual dtype")
+        return self._forward_hidden(hidden, state, positions, return_logits)
+
+    def _forward_hidden(self, hidden, state, output_positions, return_logits):
+        s = hidden.shape[1]
         state = self.initial_state() if state is None else state
         self._validate_state(state)
         if state.position + s > self.cache_capacity:
@@ -293,8 +392,6 @@ class FusedTargetModel(nn.Module):
         # Vendor operations may mutate their input caches. They only see this
         # private branch, never the caller's committed state.
         working = state.clone()
-        hidden = (self.quantization.embedding(input_ids) if self.quantization is not None else
-                  F.embedding(input_ids.long(), self.weight("target.embed_tokens.weight")))
         states, features = [], {}
         for index, kind in enumerate(self.config["layer_types"]):
             p = f"target.layers.{index}"
@@ -307,18 +404,23 @@ class FusedTargetModel(nn.Module):
             states.append(new_state)
             if index in self.feature_layers:
                 features[index] = hidden
-        hidden = self._norm(hidden, "target.norm")
+        hidden = self._norm(hidden.float() if self.quantization is not None else hidden, "target.norm")
         if self.config["num_hidden_layers"] - 1 in features:
             features[self.config["num_hidden_layers"] - 1] = hidden
-        # Per-row head bounds temporary vocabulary logits without changing Top1.
+        selected = hidden.index_select(1, output_positions)
+        # Select rows before the expensive vocabulary head. State and feature
+        # capture still cover every consumed input token.
         top1, full_logits = [], []
-        for i in range(s):
-            logits = self._linear(hidden[:, i:i+1], "target.lm_head")
+        for i in range(selected.shape[1]):
+            logits = self._linear(selected[:, i:i+1], "target.lm_head")
             self._tensor(logits, (1, 1, self.config["vocab_size"]), "vocabulary logits")
             top1.append(logits.argmax(-1).to(torch.int32))
             if return_logits:
                 full_logits.append(logits.float())
         captured = torch.cat([features[i] for i in self.feature_layers], dim=-1)
+        if self.quantization is not None:
+            # Existing DFlash feature ABI remains explicitly FP16.
+            captured = captured.half()
         self._tensor(captured, (1, s, len(self.feature_layers) * self.config["hidden_size"]), "target features")
         return FusedTargetOutput(torch.cat(top1, dim=1), captured,
                                  TargetState(position=working.position + s, layers=tuple(states)),

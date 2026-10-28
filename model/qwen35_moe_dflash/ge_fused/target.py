@@ -36,6 +36,31 @@ class _StatefulBuilder(_Builder):
     def moe(self, x, prefix, config, expert_dispatch):
         return _moe(self, x, prefix, config, expert_dispatch)
 
+    def gdn_decay(self, a, prefix, heads):
+        a = self.op("softplus", self.op("add", a, self.g.weight(prefix + ".dt_bias", (heads,))),
+                    beta=1.0, threshold=20.0)
+        return self.op("mul", self.op("neg", self.op("exp", self.g.weight(prefix + ".A_log", (heads,)))), a,
+                       shape=a.shape)
+
+    def gated_norm(self, core, gate, key, eps):
+        return self.op("mul", self.rms(core, key, eps, offset=False), self.op("silu", gate))
+
+    def rotary_tables(self, config, sequence_length, past_length):
+        s, total = sequence_length, past_length + sequence_length
+        if total - 1 > float(np.finfo(np.float16).max):
+            raise ValueError("position exceeds this graph's finite FP16 RoPE range")
+        inv = (1.0 / (np.float32(config["rope_theta"]) **
+                      (np.arange(0, config["rotary_dim"], 2, dtype=np.float32) / config["rotary_dim"]))).astype(np.float16)
+        # Form integer positions before casting; FP16 arange can round its step.
+        positions = np.arange(past_length, total, dtype=np.int64).astype(np.float16)
+        frequency = self.op("matmul", self.constant(inv.reshape(1, -1, 1)),
+                            self.constant(positions.reshape(1, 1, s)), shape=(1, len(inv), s),
+                            transpose_a=False, transpose_b=False)
+        frequency = self.permute(frequency, (0, 2, 1))
+        angles = self.cat([frequency, frequency], -1)
+        return tuple(self.view(self.op(kind, angles), (1, 1, s, config["rotary_dim"]))
+                     for kind in ("cos", "sin"))
+
     def bound_dtype(self, role, direction, logical, fallback):
         declared = getattr(self.bindings, "tensor_dtype", None)
         return declared(role, direction, logical) if callable(declared) else fallback
@@ -225,10 +250,7 @@ def _linear_attention(b, x, prefix, c, history, recurrent):
     query, key = [b.repeat_heads(t, 2, vh // kh) for t in (query, key)]
     beta = b.op("sigmoid", b.linear(x, prefix + ".in_proj_b.weight", vh))
     a = b.linear(x, prefix + ".in_proj_a.weight", vh)
-    a = b.op("softplus", b.op("add", a, b.g.weight(prefix + ".dt_bias", (vh,))),
-             beta=1.0, threshold=20.0)
-    decay = b.op("mul", b.op("neg", b.op("exp", b.g.weight(prefix + ".A_log", (vh,)))), a,
-                 shape=a.shape)
+    decay = b.gdn_decay(a, prefix, vh)
     if "gdn" in b.fused_ops:
         native_input_dtype = b.bound_dtype("gdn", "inputs", "initial_state", recurrent.dtype)
         native_output_dtype = b.bound_dtype("gdn", "outputs", "final_state", recurrent.dtype)
@@ -267,8 +289,7 @@ def _linear_attention(b, x, prefix, c, history, recurrent):
     else:
         core, next_recurrent = _expanded_gdn(b, query, key, value, decay, beta, recurrent)
     z = b.view(b.linear(x, prefix + ".in_proj_z.weight", vw), (1, s, vh, vd))
-    core = b.rms(core, prefix + ".norm.weight", c["rms_norm_eps"], offset=False)
-    core = b.op("mul", core, b.op("silu", z))
+    core = b.gated_norm(core, z, prefix + ".norm.weight", c["rms_norm_eps"])
     return b.linear(b.view(core, (1, s, vw)), prefix + ".out_proj.weight", h), next_history, next_recurrent
 
 
@@ -301,15 +322,27 @@ def _full_attention(b, x, prefix, c, past_key, past_value, mask, rotary):
 def build_target(config, draft_config, sequence_length, *, past_length=0, fused_ops=(),
                  bindings=None, recurrent_dtype="float16", expert_dispatch="static",
                  head_chunk_rows=16, gdn_indexed_copy="native", gdn_copy_report=None,
-                 gdn_state_casts="reject", builder_factory=None):
+                 gdn_state_casts="reject", builder_factory=None,
+                 output_positions=None, return_logits=False):
     """Build a stateful target; selected fusion roles require explicit bindings.
 
     Outputs are target_top1, target_features, then conv/recurrent or key/value
-    for every layer in layer order. ``graph.state_abi`` records their routing.
-    A graph for a different past length must be built to append more tokens.
+    for every layer in layer order. Optional FP32 target_logits is appended last.
+    output_positions selects zero-based current-call rows for the head only;
+    negative indices are normalized, and all rows still update features/state.
+    ``graph.state_abi`` records state routing. A graph for a different past
+    length must be built to append more tokens.
     """
     if isinstance(sequence_length, bool) or not isinstance(sequence_length, int) or sequence_length < 1:
         raise ValueError("sequence_length must be a positive integer")
+    if type(return_logits) is not bool:
+        raise ValueError("return_logits must be bool")
+    if output_positions is not None:
+        if (not isinstance(output_positions, tuple) or not output_positions
+                or any(type(value) is not int or not -sequence_length <= value < sequence_length
+                       for value in output_positions)):
+            raise ValueError("output_positions must be a nonempty tuple of valid zero-based token indices")
+        output_positions = tuple(value % sequence_length for value in output_positions)
     if isinstance(past_length, bool) or not isinstance(past_length, int) or past_length < 0:
         raise ValueError("past_length must be a nonnegative integer")
     if isinstance(fused_ops, str):
@@ -339,8 +372,6 @@ def build_target(config, draft_config, sequence_length, *, past_length=0, fused_
     if expert_dispatch == "selected" and c["num_experts"] > 2048:
         raise ValueError("selected expert dispatch requires at most 2048 experts")
     s, h, total = sequence_length, c["hidden_size"], past_length + sequence_length
-    if total - 1 > float(np.finfo(np.float16).max):
-        raise ValueError("position exceeds this graph's finite FP16 RoPE range")
     graph = Graph("stateful_target")
     factory = _StatefulBuilder if builder_factory is None else builder_factory
     if not callable(factory):
@@ -351,19 +382,7 @@ def build_target(config, draft_config, sequence_length, *, past_length=0, fused_
     hidden = b.input_embedding(s, c)
     visible = np.arange(total)[None, :] <= np.arange(past_length, total)[:, None]
     mask = b.constant(np.where(visible, 0, np.finfo(np.float16).min).reshape(1, 1, s, total))
-    inv = (1.0 / (np.float32(c["rope_theta"]) **
-                  (np.arange(0, c["rotary_dim"], 2, dtype=np.float32) / c["rotary_dim"]))).astype(np.float16)
-    # Generate exact integer positions before rounding each value to FP16.
-    # np.arange(start, stop, dtype=float16) can round its effective step to
-    # zero or two at large starts, producing a different position sequence.
-    positions = np.arange(past_length, total, dtype=np.int64).astype(np.float16)
-    frequency = b.op("matmul", b.constant(inv.reshape(1, -1, 1)),
-                     b.constant(positions.reshape(1, 1, s)), shape=(1, len(inv), s),
-                     transpose_a=False, transpose_b=False)
-    frequency = b.permute(frequency, (0, 2, 1))
-    angles = b.cat([frequency, frequency], -1)
-    rotary = tuple(b.view(b.op(kind, angles), (1, 1, s, c["rotary_dim"]))
-                   for kind in ("cos", "sin"))
+    rotary = b.rotary_tables(c, s, past_length)
     captures, state_outputs, state_records = {}, [], []
 
     def incoming(index, role, shape, dtype="float16"):
@@ -414,15 +433,28 @@ def build_target(config, draft_config, sequence_length, *, past_length=0, fused_
     if c["num_hidden_layers"] - 1 in captures:
         captures[c["num_hidden_layers"] - 1] = hidden
     features = b.cat([captures[i] for i in draft_config.target_layer_ids], -1)
-    top1 = []
-    for start in range(0, s, head_chunk_rows):
-        rows = b.slice(hidden, 1, start, min(head_chunk_rows, s - start))
+    if features.dtype != "float16":
+        features = b.op("cast", features, dtype="float16")
+    head_input = hidden
+    if output_positions is not None:
+        head_input = b.op("gather", hidden, b.constant(output_positions, "int32"),
+                          shape=(1, len(output_positions), h), dtype=hidden.dtype, axis=1)
+    top1, full_logits = [], []
+    for start in range(0, head_input.shape[1], head_chunk_rows):
+        rows = b.slice(head_input, 1, start, min(head_chunk_rows, head_input.shape[1] - start))
         logits = b.linear(rows, "target.lm_head.weight", c["vocab_size"])
         top1.append(b.op("argmax", logits, shape=logits.shape[:-1], dtype="int32", axis=-1, keepdims=False))
+        if return_logits:
+            full_logits.append(b.op("cast", logits, dtype="float32"))
     def named(value, name):
         return graph.op("reshape", value, shape=value.shape, dtype=value.dtype,
                         attrs={"shape": list(value.shape)}, name=name)
     graph.outputs = [named(b.cat(top1, 1), "target_top1"), named(features, "target_features"), *state_outputs]
+    if return_logits:
+        graph.outputs.append(named(b.cat(full_logits, 1), "target_logits"))
+    graph.output_contract = {"head_positions": list(range(s)) if output_positions is None else list(output_positions),
+                             "position_scope": "zero_based_current_call", "features": "all_sequence_positions",
+                             "state_update": "all_sequence_positions", "full_logits": return_logits}
     graph.state_abi = {
         "schema_version": 1, "batch_size": 1, "sequence_length": s,
         "past_length": past_length, "next_past_length": total,

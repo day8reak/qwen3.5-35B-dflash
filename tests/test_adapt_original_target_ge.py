@@ -51,6 +51,20 @@ def test_prepared_yaml_weights_emit_real_recipe_with_synthetic_operator_schema(p
     assert (prepared / "manifest.json").is_file()
 
 
+def test_ge_entry_selects_last_token_and_emits_full_logits(prepared_case, tmp_path):
+    module, args, config, _, _ = prepared_case
+    args.sequence_length = 64
+    args.output_pos, args.full_logits = -1, True
+    report = module["_build_ge"](args, config, tmp_path / "ge-last")
+    graph = json.loads((tmp_path / "ge-last/graph.json").read_text())
+    outputs = {entry["name"]: entry for entry in graph["outputs"]}
+    assert outputs["target_top1"]["shape"] == [1, 1]
+    assert outputs["target_logits"]["shape"] == [1, 1, 32]
+    assert outputs["target_logits"]["dtype"] == "float32"
+    assert outputs["target_features"]["shape"][1] == 64
+    assert report["device_execution"] == "NOT_RUN"
+
+
 @pytest.mark.parametrize("tamper", ["yaml", "config", "weight", "dtype", "qparam"])
 def test_ge_rejects_changed_source_or_unready_weights_before_writing(prepared_case, tmp_path, tamper):
     module, args, config, prepared, report = prepared_case

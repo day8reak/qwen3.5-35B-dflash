@@ -472,7 +472,7 @@
       }
     },
     "original_quantized_target": {
-      "status": "HOST_IMPLEMENTED_DEVICE_PENDING",
+      "status": "SOURCE_ALIGNED_HOST_TESTED_DEVICE_PENDING",
       "configuration": "original YAML four source paths plus kv_cache_max_len",
       "pytorch": "model/qwen35_moe_dflash/fused/quantization.py",
       "ge": "model/qwen35_moe_dflash/ge_fused/quant_target.py",
@@ -482,8 +482,27 @@
       "abi": "functional stateful, separate from original89inputRefData",
       "privacy": "User authorized publishing implementation/docs on 2026-10-28; original sources and original YAML remain outside Git",
       "device_execution": "NOT_RUN",
-      "evidence": "local-adaptation-evidence.json",
-      "run_id": "20261027T130835Z-9607-68b43f"
+      "evidence": "source-target-alignment-evidence.json",
+      "run_id": "20261028T010212Z-16908-f051e3",
+      "source_style_pytorch_entry": "model/qwen35_moe_dflash/fused/original_wrapper.py:OriginalCproTargetWrapper",
+      "source_precision": {
+        "residual": "float32",
+        "rms": "float32_then_input_dtype",
+        "gated_rms_silu": "float32_then_float16",
+        "rope": "float32_then_float16",
+        "base_weight_storage": "float16",
+        "pytorch_gdn_gate_boundary": "float16",
+        "ge_port_boundaries": "explicit_selected_binding_and_recorded_casts",
+        "bitwise_original_parity": "UNVERIFIED"
+      },
+      "output_selection": "Zero-based positions before vocabulary head; all input tokens update states/features; optional FP32 full logits",
+      "entrypoint_ge_last_logits": "python3 targets/cpro/scripts/adapt_original_target.py --config ORIGINAL_YAML --stage ge --prepared PREPARED --quant-bindings QUANT_BINDINGS --sequence-length 64 --past-length 0 --output-pos -1 --full-logits",
+      "host_validation": {
+        "run_id": "20261028T010212Z-16908-f051e3",
+        "unique_cases_passed": 327,
+        "pytorch_subtests_passed": 27,
+        "scope": "CPU references and synthetic GE schemas; real vendor/device validation pending"
+      }
     }
   },
   "phases": [

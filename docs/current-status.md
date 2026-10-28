@@ -45,8 +45,8 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_full_target.py" \
 
 | 项目 | 状态 |
 |---|---|
-| PyTorch完整结构 | 全尺寸meta/FX结构保留；新增原量化W4/scale/embedding加载和显式量化后端，小模型状态接续通过 |
-| GE完整结构 | 新增原W4量化target完整40层64/1构图与typed recipe；实际DDK量化绑定尚需提供 |
+| PyTorch完整结构 | 原量化 target 按 Cpro forward 对齐 FP32 residual/门控/RoPE；新增原风格 embedding/位置选择入口，功能式状态接续通过主机测试 |
+| GE完整结构 | 原W4量化target完整40层64/1构图；同步 FP32 计算边界与指定位置完整 logits，实际DDK量化绑定和设备验证待完成 |
 | 自定义算子探针 | 当前选择GDN/CacheUpdate/Attention三类6例，用户回传导出、编译、加载及执行通过；原Conv/RMS三例失败保留为可选诊断 |
 | 真实权重AIR导出 | 旧双图支持完整FP16；新GE target支持显式缓存 |
 | 原工程完整AIR | 已进入 AIR 解析；缺失外置权重快照及目录前缀的问题已修复，真实 OMG 重试待执行；未执行设备推理 |

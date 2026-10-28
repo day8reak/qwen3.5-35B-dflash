@@ -4,6 +4,16 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## target 按原 Cpro forward 对齐
+
+2026-10-28，继续按用户提供的原模型代码修改 PyTorch/GE target。修正重建路径提前降为 FP16 的 embedding/残差、GDN 门计算、gated RMS 与 SiLU 乘积、RoPE 表及最终 norm/head 输入。基础算子权重仍保留已有 FP16 缓存；算子输入精度按明确边界处理，不把结构对齐当作原 AIR 位级一致。
+
+新增原风格 PyTorch wrapper：token IDs 或外部 embedding 二选一，scale 只乘一次，`output_pos` 在 LM head 前选择行，返回完整词表 FP32 logits；所有输入 token 仍更新完整状态和 features。拒绝原导出占位值中越界的 `output_pos=seq_len`、不匹配的有效长度及不连续位置。保留功能式状态，不原地覆盖调用者缓存。GE 同步支持指定行和追加 logits；DynamicQuant 的 FP16/FP32 输入必须来自实际绑定，转换节点和输出位置写入报告。
+
+验证使用显式 CPU 量化参考和合成 GE schema，包含独立 FP32 公式、超过 FP16 精确整数范围的 RoPE 位置、选中行与完整 logits 对照、prefill/decode 状态接续、完整40层64/1构图及 typed recipe。原始源码继续留在私有区。真正的厂商量化/GDN ABI、原 AIR RefData/NZ 兼容性、整模设备精度及性能仍未验证。进行 PyTorch/GE 数值比较时还必须匹配 DynamicQuant 和 GDN 端口精度；当前 PyTorch GDN 门固定转 FP16，GE 按声明绑定转换。
+
+本轮去重327项主机用例及27个子测试通过，证据为 `20261028T010212Z-16908-f051e3/source-target-alignment-evidence.json`。其中 GE 大套件曾有一个 RoPE 测试夹具缺少 Graph 必需输入的错误；修复夹具后同一用例在独立25项量化回归中通过，原失败及替代通过记录均保留。未重复运行已通过的大套件，也没有将它计作设备验证。
+
 ## 原 AIR 同级外置权重与目录前缀
 
 2026-10-28，用户提供 `full-target-compile-e019e4a7ad53` 完整日志并确认权重位于 `export.air` 同级目录。OMG 已开始解析 AIR，首个致命错误是 `arg3_1` 的 `ConvertFileConstant` 无法读取 `./glm_export_air_cpro_40block_55_quant/model_model_layers_0_input_layernorm_weight`。此前仅选中 AIR 的 6,361,049 字节；无扩展名权重被筛掉，且原导出目录前缀未保留。此批次失败不是此前的输出参数校验，也不能据启动时的库警告判定算子不支持。
