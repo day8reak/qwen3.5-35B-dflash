@@ -33,6 +33,8 @@ _DATA_DIRECTORIES = frozenset({"weights", "weight", "data", "constants", "extern
 INPUT_LAYOUTS = ("air-directory", "export-directory")
 _MAX_ENTRIES, _MAX_FILES, _MAX_DEPTH = 8192, 4096, 4
 _COPY_RESERVE_BYTES = 64 << 20
+_PRIMARY_OMC_PATHS = (Path("compile-work/generated/model.omc"),
+                     Path("compile-work/generated/model/model.omc"))
 
 
 def _stat(path):
@@ -186,8 +188,37 @@ def _check_help(omg, env, output, options, timeout_seconds):
     return record
 
 
+def select_primary_omc(compilation_dir, *, required=True):
+    """Select the unique main output from the two observed OMG layouts.
+
+    With external weights, the same ``--output=model`` can produce
+    ``model/model.omc`` next to ``model/SubGraph_N.weight``. Do not flatten that
+    hierarchy or guess among arbitrary OMC files. This validates paths only;
+    compiler success and hash binding remain separate requirements.
+    """
+    root = Path(compilation_dir).resolve()
+    generated = root / "compile-work/generated"
+    for ancestor in (root / "compile-work", generated, generated / "model"):
+        if ancestor.is_symlink():
+            raise ValueError(f"primary OMC path contains a symlink: {ancestor.relative_to(root)}")
+    candidates = [root / relative for relative in _PRIMARY_OMC_PATHS
+                  if (root / relative).exists() or (root / relative).is_symlink()]
+    if len(candidates) > 1:
+        raise ValueError("ambiguous primary OMC outputs: both model.omc and model/model.omc exist")
+    if not candidates:
+        if required:
+            raise ValueError("OMG succeeded without a nonempty regular model.omc at either supported output path: "
+                             "compile-work/generated/model.omc or compile-work/generated/model/model.omc")
+        return None
+    candidate = candidates[0]
+    if candidate.is_symlink() or not candidate.is_file() or not candidate.stat().st_size:
+        raise ValueError(f"primary OMC must be a nonempty regular non-symlink file: {candidate.relative_to(root)}")
+    return candidate
+
+
 def _generated_inventory(output, snapshots):
     """Hash all retained compiler files, excluding independently staged inputs."""
+    primary = select_primary_omc(output, required=False)
     excluded = {row["path"] for row in snapshots}
     generated, context, skipped = [], [], []
     work = output / "compile-work"
@@ -211,7 +242,7 @@ def _generated_inventory(output, snapshots):
             if _stat(path) != before:
                 raise ValueError(f"compiler artifact changed while hashing: {relative}")
             in_generated = (work / "generated") in path.parents
-            role = ("primary_omc" if relative == "compile-work/generated/model.omc" else
+            role = ("primary_omc" if path == primary else
                     "external_data_candidate" if in_generated else "compiler_context")
             row = {"path": relative, "bytes": before[2], "sha256": digest,
                    "stat": before, "role": role}
@@ -382,10 +413,12 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                 report["compile_observation"] = observation
                 subprocess.run(command, cwd=inputs, env=local_env, stdout=stream, stderr=subprocess.STDOUT,
                                check=True, timeout=timeout_seconds)
+                # check=True returned normally. Keep this distinct from the
+                # subsequent output/inventory checks for resumable recovery.
+                report["returncode"] = 0
         stage = "output-check"
-        omc = generated / "model.omc"
-        if omc.is_symlink() or not omc.is_file() or not omc.stat().st_size:
-            raise RuntimeError("OMG succeeded without a nonempty regular model.omc")
+        omc = select_primary_omc(output)
+        report["primary_omc_layout"] = omc.relative_to(generated).as_posix()
         report["model_compilation"] = "PASSED"
         if compatibility is not None:
             compatibility["compile"] = "PASSED"
@@ -471,6 +504,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
              f"Input layout: {input_layout}; sidecar prefix: {data_prefix}",
              "Full compiler log: compile.log; compiler work: compile-work/"]
     lines.append(f"Generated files: {len(report.get('generated_artifacts', []))}; external-data candidates: {len(report.get('external_data_candidates', []))}")
+    if report.get("omc"):
+        lines.append(f"Primary OMC: {report['omc']['path']}")
     if compatibility is not None:
         lines.append("TBE compatibility: " + json.dumps({key: compatibility[key] for key in
                                                        ("compiler_invocation", "compile", "audit")}))

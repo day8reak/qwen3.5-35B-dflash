@@ -8,11 +8,11 @@
 
 **先运行完整 draft 的独立入口。** [独立 draft 指南](draft-standalone.md)提供一条命令完成真实权重准备、PyTorch参考、GE导出、OMG编译和HIAI执行。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
-最新用户回传 `full-draft-23abc47e25e7` 已确认两个 tiny 参数生效，但仍在 `__ge/v20/flat_output type MatMul don't support` 失败；恢复编译参数尚未解除阻塞。71个权重和完整六层 PyTorch 参考继续复用，外置权重读取已越过此前的路径错误，尚未上板。日志由用户提供，远端原文件未在本地重新核验。
+最新用户回传 `full-draft-a091f16d13d8` 已出现 `SaveCompiledModelToFile SUCCESS` 和 `OMG generate offline model success`。单个Conv2D表达完整draft.fc的方案已越过此前K>8000的MatMul限制。当前失败来自脚本检查错了输出位置：外置权重模式写出 `generated/model/model.omc` 与同目录的 `SubGraph_*.weight`，旧脚本只检查 `generated/model.omc`。这是用户日志中的编译成功证据，远端原始产物尚未由本地重新核验，板端尚未执行。
 
-补充日志已定位该节点的具体拒绝：L13661 `Matrix k greater than 8000 is not supported`，经过一层 batchmatmul 支持检查后，L13663 拒绝 `__ge/v20/flat_output`。完整 `draft.fc` 的 K=16384，tiny 的 K=32，因此不能直接复用 tiny 的尺寸结论。dtype 3/12 的报错属于其他候选节点，不能据此把该投影改成整数计算。
+更新后按[独立 draft 指南](draft-standalone.md)从 **`a091f16d13d8`** 续跑。脚本校验保留的编译日志、AIR、OMC和外置权重，创建新的恢复记录并进入上板；不会重跑权重准备、参考、AIR导出和OMG。模型及外置权重保留原有相对目录。损坏或不匹配的产物直接报错，不以重编译掩盖校验失败。
 
-当前仅将完整 `draft.fc` 改为一次等价的 4×4 Conv2D：输入 `[S,1024,4,4]`、权重 `[2048,1024,4,4]`、输出 `[S,2048,1,1]`，再恢复原形状。原权重字节、全部16384项点积与一次FP16输出边界保留，不拆K累加。主机代数/布局验证通过，实际DDK支持和板端误差待验证。更新后按[独立 draft 指南](draft-standalone.md)从 `23abc47e25e7` 续跑，自动复用权重和原始PyTorch参考、重新导出及编译。只读检查入口保留为可选工具。
+4B参考已按用户指定更正为 `feature/gdr-chunk-verify`、提交 `9018673`。该分支记录六层FP16 draft为20.22 ms/次（310P、C16/C64混合均值）；源码包含合并K/V、gate/up投影和增量缓存。先完成当前独立draft的板端输出验证，再按这版迁移图结构与缓存，性能须在Cpro重新测量。
 
 ## 保留的 target 编译与诊断
 

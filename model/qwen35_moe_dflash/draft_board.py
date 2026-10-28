@@ -68,6 +68,33 @@ def _wire(manifest):
     return ('\n'.join(lines)+'\n').encode('ascii')
 
 
+def _compiler_payload_layout(report):
+    """Preserve the compiler's generated tree, including nested OMC sidecars."""
+    records = report.get('generated_artifacts', [])
+    by_path, planned = {}, []
+    for record in records:
+        source_relative = _relative(record['path'])
+        try:
+            generated_relative = source_relative.relative_to('compile-work/generated')
+        except ValueError as error:
+            raise ValueError('compiler payload is outside the generated tree: '+record['path']) from error
+        if not generated_relative.parts or record['path'] in by_path:
+            raise ValueError('duplicate or invalid compiler payload path: '+record['path'])
+        by_path[record['path']] = record
+        planned.append((record, PurePosixPath('model') / generated_relative))
+    primary = report.get('omc', {})
+    model = by_path.get(primary.get('path'))
+    if (model is None or PurePosixPath(model['path']).suffix != '.omc'
+            or type(model.get('bytes')) is not int or model['bytes'] <= 0
+            or any(model.get(key) != primary.get(key) for key in ('bytes', 'sha256'))):
+        raise ValueError('primary OMC missing from compiler output inventory')
+    for sidecar in report.get('external_data_candidates', []):
+        retained = by_path.get(sidecar.get('path'))
+        if retained is None or any(retained.get(key) != sidecar.get(key) for key in ('bytes', 'sha256')):
+            raise ValueError('external compiler payload missing from generated inventory')
+    return planned
+
+
 def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, ddk_id, export_dir=None):
     """Snapshot the existing compiler payloads and fixture; never compile a model.
 
@@ -83,6 +110,7 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
             or report.get('model_compilation') != 'PASSED' or report.get('ddk_id') != ddk_id
             or report.get('platform') != 'kirinx90'):
         raise ValueError('draft requires successful matching-DDK kirinx90 compilation')
+    planned_payloads = _compiler_payload_layout(report)
     if (reference.get('artifact_kind') != 'qwen35-draft-reference'
             or reference.get('status') not in {'REFERENCE_COMPLETE','INPUTS_PREPARED'}
             or reference.get('draft_config') != config):
@@ -132,10 +160,11 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
     root = output_path(output_dir)
     root.mkdir(parents=True,exist_ok=False)
     payloads, by_path = [], {}
-    for record in report.get('generated_artifacts',[]):
+    for record, relative in planned_payloads:
         source = _file(compiler, record)
-        relative = PurePosixPath(record['path']).relative_to('compile-work/generated')
-        destination = root/'model'/relative
+        # Preserve every relative path under generated. In particular, an OMG
+        # model/model.omc keeps its sibling model/SubGraph_N.weight files.
+        destination = root/relative
         destination.parent.mkdir(parents=True,exist_ok=True)
         _snapshot(source,destination)
         copied = _record(destination,root)

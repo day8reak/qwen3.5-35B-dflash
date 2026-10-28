@@ -65,6 +65,22 @@ def _verify_air(folder, manifest):
         checked_file(folder, row)
 
 
+def _retained_output_candidate(previous):
+    """Identify the old post-OMG path error; recovery still verifies every file."""
+    from qwen35_moe_dflash.retained_air import LEGACY_OUTPUT_ERROR
+    folder = previous / "compilation"
+    path = folder / "report.json"
+    if not path.is_file():
+        return None
+    report = json.loads(path.read_text())
+    if (report.get("artifact_kind") == "qwen35-existing-air-compilation"
+            and report.get("status") == "FAILED" and report.get("stage") == "output-check"
+            and report.get("error") == LEGACY_OUTPUT_ERROR
+            and report.get("requested_options") == DRAFT_COMPILE_OPTIONS):
+        return folder
+    return None
+
+
 def _weight_path(explicit, key):
     from qwen35_moe_dflash.resources import load_resources, resource_path
     if explicit:
@@ -88,6 +104,7 @@ def main(argv=None):
               "compile_options": dict(DRAFT_COMPILE_OPTIONS),
               "scope": "Complete draft with fixed synthetic target features; not language quality, acceptance or speedup evidence."}
     root = None
+    retained_compilation = None
 
     def progress(row):
         message = row["message"]
@@ -192,6 +209,9 @@ def main(argv=None):
                         "preserved": [name for name in ("prepared", "fixture", "air") if name in result["components"]],
                         "scope": "Recompile existing AIR in the new job; previous evidence is unchanged."})
                     stage("resume", "Updating draft compilation to the FP16 tiny profile; reusing weights/reference/AIR")
+            if (not args.prepare_only and "air" in result["components"]
+                    and "compilation" not in result["components"] and not result.get("resume_invalidations")):
+                retained_compilation = _retained_output_candidate(previous)
         if settings["sequence_length"] < 2:
             raise ValueError("--sequence-length must be at least 2")
         if settings["valid_length"] is None:
@@ -216,7 +236,8 @@ def main(argv=None):
         if not args.prepare_only:
             if "air" not in result["components"] and not args.ge_root:
                 raise ValueError("CANN_ROOT or --ge-root is required for AIR export")
-            if "compilation" not in result["components"] and (not args.ddk_root or not args.ddk_id):
+            if ("compilation" not in result["components"] and retained_compilation is None
+                    and (not args.ddk_root or not args.ddk_id)):
                 raise ValueError("CPRO_DDK_ROOT/DDK_PATH and CPRO_DDK_ID are required for OMG")
 
         stage("prepared", "Preparing only draft weights and the shared embedding/LM head")
@@ -239,15 +260,26 @@ def main(argv=None):
                 prepared_dir, folder, args.ge_root, cxx=args.cxx, cxx11_abi=args.cxx11_abi,
                 timeout_seconds=args.timeout_seconds, progress=progress))
             _verify_air(air_dir, exported)
-            stage("compilation", "Compiling draft AIR with the tiny FP16 profile: use_origin_format=true, weight_data_type=FP16")
+            stage("compilation", "Verifying retained OMG output and external weights; no recompilation"
+                  if retained_compilation is not None else
+                  "Compiling draft AIR with the tiny FP16 profile: use_origin_format=true, weight_data_type=FP16")
             from qwen35_moe_dflash.existing_air import compile_existing_air
             def compile_draft(folder):
-                compiled = compile_existing_air(
-                    air_dir / exported["graphs"][0]["air"], folder, args.ddk_root,
-                    ddk_id=args.ddk_id, tbe_diagnosis=args.tbe_diagnosis,
-                    timeout_seconds=args.timeout_seconds, input_layout="air-directory",
-                    limit_partition_size=False, save_weights_as_external_data=True,
-                    use_origin_format=True, weight_data_type="FP16", progress=progress)
+                if retained_compilation is not None:
+                    from qwen35_moe_dflash.retained_air import recover_retained_air
+                    # Any failed recovery check is terminal; do not silently run OMG.
+                    compiled = recover_retained_air(
+                        retained_compilation, folder, export_dir=air_dir,
+                        expected_options=DRAFT_COMPILE_OPTIONS, ddk_id=args.ddk_id,
+                        ddk_root=args.ddk_root, progress=progress)
+                    result["compilation_recovery"] = compiled["recovery"]
+                else:
+                    compiled = compile_existing_air(
+                        air_dir / exported["graphs"][0]["air"], folder, args.ddk_root,
+                        ddk_id=args.ddk_id, tbe_diagnosis=args.tbe_diagnosis,
+                        timeout_seconds=args.timeout_seconds, input_layout="air-directory",
+                        limit_partition_size=False, save_weights_as_external_data=True,
+                        use_origin_format=True, weight_data_type="FP16", progress=progress)
                 _verify_air(air_dir, exported)
                 if compiled.get("status") != "COMPILED":
                     result["compile_log"] = str(folder / "compile.log")

@@ -152,6 +152,81 @@ def test_compile_failure_never_reaches_board_and_retry_reuses_air(job, tmp_path)
     assert calls == ["compilation", "bundle", "board"]
 
 
+@pytest.fixture
+def retained_job(job, tmp_path, monkeypatch):
+    """Model the legacy post-compile error; file verification has separate tests."""
+    from qwen35_moe_dflash import retained_air
+    main, fresh, _, calls, failures = job
+    previous = tmp_path / "retained"
+    failures.add("compilation")
+    assert main([*fresh, "--output", str(previous)]) == 1
+    options = {"use_origin_format": "true", "weight_data_type": "FP16",
+               "limit_partition_size": "false", "save_weights_as_external_data": "true"}
+    save_json(previous / "compilation/report.json", {
+        "artifact_kind": "qwen35-existing-air-compilation", "status": "FAILED",
+        "stage": "output-check", "error": retained_air.LEGACY_OUTPUT_ERROR,
+        "requested_options": options})
+    failures.clear(); calls.clear()
+
+    def recover(source, destination, *, export_dir, expected_options, **kwargs):
+        calls.append("recovery")
+        assert source == previous / "compilation" and export_dir == previous / "air"
+        assert expected_options == options
+        if "recovery" in failures:
+            raise ValueError("retained external weight SHA256 mismatch")
+        model = destination / "compile-work/generated/model/model.omc"
+        model.parent.mkdir(parents=True)
+        model.write_bytes(b"retained-model")
+        report = {"status": "COMPILED", "ddk_id": "test-ddk", "requested_options": options,
+                  "recovery": {"source": str(source), "compiler_execution": "NOT_RUN"},
+                  "omc": {"path": str(model.relative_to(destination)),
+                          "bytes": model.stat().st_size, "sha256": sha256_file(model)}}
+        save_json(destination / "report.json", report)
+        return report
+    monkeypatch.setattr(retained_air, "recover_retained_air", recover)
+    return previous
+
+
+@pytest.mark.parametrize("compile_only", [False, True])
+def test_resume_recovers_retained_omc_without_ge_or_compiler(job, retained_job, tmp_path, compile_only):
+    main, _, _, calls, _ = job
+    before = {p: p.read_bytes() for p in retained_job.rglob("*") if p.is_file()}
+    output = tmp_path / "recovered"
+    args = ["--resume", str(retained_job), "--output", str(output)]
+    assert main(args + (["--compile-only"] if compile_only else [])) == 0
+    assert calls == ["recovery"] + ([] if compile_only else ["bundle", "board"])
+    result = json.loads((output / "result.json").read_text())
+    assert result["compilation_recovery"]["compiler_execution"] == "NOT_RUN"
+    assert result["status"] == ("COMPILED" if compile_only else "EXECUTION_COMPLETE")
+    assert all(p.read_bytes() == data for p, data in before.items())
+    calls.clear()
+    assert main(["--resume", str(output), "--compile-only", "--output", str(tmp_path / "again")]) == 0
+    assert calls == []
+
+
+def test_bad_retained_weight_never_recompiles_or_runs_board(job, retained_job, tmp_path):
+    main, _, common, calls, failures = job
+    failures.add("recovery")
+    output = tmp_path / "refused"
+    assert main([*common, "--resume", str(retained_job), "--output", str(output)]) == 1
+    assert calls == ["recovery"]
+    result = json.loads((output / "result.json").read_text())
+    assert "SHA256 mismatch" in result["error"] and result["device_execution"] == "NOT_RUN"
+
+
+def test_prepare_only_does_not_copy_retained_outputs(job, retained_job, tmp_path):
+    main, _, _, calls, _ = job
+    assert main(["--resume", str(retained_job), "--prepare-only", "--output", str(tmp_path / "prepared-only")]) == 0
+    assert calls == []
+
+
+def test_obsolete_air_never_recovers_incompatible_compiler_outputs(job, retained_job, tmp_path):
+    main, _, common, calls, _ = job
+    _make_legacy_air(retained_job)
+    assert main([*common, "--resume", str(retained_job), "--output", str(tmp_path / "reexport")]) == 0
+    assert calls == ["air", "compilation", "bundle", "board"]
+
+
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_old_compile_options_reuse_air_and_rebuild_only_compilation_bundle(job, tmp_path, interrupted):
     main, fresh, common, calls, _ = job

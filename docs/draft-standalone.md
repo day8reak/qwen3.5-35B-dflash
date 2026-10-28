@@ -44,16 +44,20 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 `full-draft-5133743f7c9c` 在首个 MatMul 兼容检查处失败。补齐tiny两个编译参数后，`full-draft-23abc47e25e7` 仍失败；用户追加上下文明确显示该实现拒绝 K>8000，而首个 `draft.fc` 的 K=16384。新导出仅将这一个投影表达成一次无bias、无padding的4×4 Conv2D。输入和权重只是reshape，显式NCHW描述；全点积和一次FP16结果边界保留。其他投影、六层结构和完整词表均不变，PyTorch参考仍使用原MatMul。
 
-更新后续跑已有任务：
+`full-draft-a091f16d13d8` 的用户日志已显示OMG编译和保存成功。外置权重模式实际生成 `compile-work/generated/model/model.omc`，而旧脚本只检查 `generated/model.omc`，因此误报失败。现在只接受这两种明确布局中的唯一非空普通模型文件，拒绝歧义、符号链接和空文件；保存并上传整个相对目录，保持 `SubGraph_*.weight` 与OMC的位置关系。
+
+更新后从这次已经成功编译的任务续跑：
 
 ```bash
 git pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
-  --resume "$AI_RUN_DIR/full-draft-23abc47e25e7" \
+  --resume "$AI_RUN_DIR/full-draft-a091f16d13d8" \
   --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
 ```
 
-导出契约更新为 `cpro-fileconstant-relative-int-fc-conv2d-v2`，旧AIR及依赖产物自动失效，prepared/reference复用。`air/draft/projection-lowering.json`记录精确形状和等价范围。主机数值验证不是DDK支持证明；Conv2D与MatMul的累加顺序可能不同，板端继续对照原参考，未宣称逐位一致或20ms性能。recipe为显式NCHW使用Q35GE002，普通ND图保持Q35GE001并兼容读取。
+恢复仅适用于这个明确的旧版输出检查错误：核验成功日志、原导出及编译输入、DDK/参数、全部编译产物和TBE审计后，在新目录保存独立快照与成功记录，旧失败证据不变。旧版没有记录成功退出码，因此恢复记录会明确标注由检查阶段及成功日志推断；新编译直接保存真实返回码。校验失败不会自动重编译。此流程不再执行OMG，`--compile-only` 可停在恢复完成后。
+
+导出契约仍为 `cpro-fileconstant-relative-int-fc-conv2d-v2`；更早的AIR及依赖产物自动失效，prepared/reference复用。`air/draft/projection-lowering.json`记录精确形状和等价范围。Conv2D与MatMul的累加顺序可能不同，板端继续对照原参考，未宣称逐位一致或20ms性能。recipe为显式NCHW使用Q35GE002，普通ND图保持Q35GE001并兼容读取。
 
 需要只读检查已有日志、recipe和编译图dump时，可选：
 
@@ -68,12 +72,14 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 如果首次准备权重尚未成功（`components` 为空），直接修正路径或文件后重跑上面的完整命令；这时没有已完成的权重、导出或编译需要复用。
 
-主机验证覆盖draft-only准备、六层参考计算、GE构图/导出、阶段恢复、外置权重绑定、原生输入检查与模拟执行失败；真实DDK和板端执行仍待服务器结果。
+主机验证覆盖draft-only准备、六层参考计算、GE构图/导出、阶段恢复、外置权重绑定、原生输入检查与模拟执行失败。完整OMG成功来自用户日志；板端执行和数值比较仍待服务器结果。
 
 ## 与已用过的 4B draft 对照
 
-已只读核对 [4B框架提交631c86fc](https://github.com/day8reak/qwen3.5-4B-dflash/tree/631c86fc0c4e053817f0786ab8067b5565638d50)（`framework/quant-air-om` 分支）。其中 draft 的投影仍是 `F.linear`，走 TorchAir→ATC；不能由310P支持推出当前Cpro OMG支持K=16384。两版draft均为6层、block16、32个Q头/8个KV头、head_dim128，但4B的hidden/intermediate/feature_width为2560/9216/20480，本版为2048/6144/16384，权重和产物不可直接互换。
+用户指定参考为 [`feature/gdr-chunk-verify`，提交9018673](https://github.com/day8reak/qwen3.5-4B-dflash/tree/90186732d915e8b058b2a053d205991d805eae76)。此前检查的 `framework/quant-air-om` 和 `main` 仅是历史对照，不再用于解释20ms路径。
 
-另核对默认 [main提交19e7c24](https://github.com/day8reak/qwen3.5-4B-dflash/tree/19e7c24b8ec6beaff707f94aaf12411385505aa9)：这是PyTorch eager的完整前缀重算路径，没有上述framework分支的draft KV缓存。不能把两个分支混为同一实现，也不能把用户20ms归因于未确认采用的缓存路径；仓库说明实测报告未上传GitHub。
+该分支[结果记录](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/docs/RESULTS.md)给出六层FP16 draft **20.22 ms/call**，是C16/C64 context加16行block的同步OM混合均值；W8 runtime为63.52ms、W8离线NZ为47.89ms、W4 runtime为94.68ms，后三者使用另外的五层检查点。数据来自用户设备报告，状态为 `PASS_WITH_DIFFERENCES`，ordinary token一致性未通过，任务质量未评估。这些是310P的观测，不能直接当作Cpro性能。
 
-后续连续推理优先借鉴它的增量执行：仅投影新增target features、维护各层draft KV与cursor、Draft/Verify及缓冲区常驻。当前独立入口仍是prefix-recompute，一次固定输入诊断不等于该增量路径。4B还保留FP32 RMS/attention计算，与本入口FP16参考契约不同，需要单独核对精度后移植。用户报告310P约20ms；所读源码未包含对应的实机计时记录，暂不将其作为Cpro性能承诺。
+源码可借鉴的结构有：`PackedDraftLayer`合并K/V及gate/up权重，context与block合并执行一次KV投影；GQA将Q分组折入行维，避免四份KV复制；每轮只持久写入新增已提交context的KV，block KV只临时参与注意力。当前六层图的逻辑投影调用为56次，合并后可为32次；这是源码级计数，不是已编译kernel数量或耗时承诺。当前独立入口仍为prefix-recompute，增量缓存需要同步修改ABI、状态和调度。
+
+两版FP16 draft均为6层、block16、32个Q头/8个KV头、head_dim128；4B hidden/intermediate/feature_width为2560/9216/20480，本版为2048/6144/16384。4B路径保留FP32 RMS归约、score/softmax，与当前FP16参考需分别核对。其W4/W8是group128、FP16激活的WeightQuantBatchMatmul路径，不能套用原target的A8W4/I4ZN。融合head与新W8 kernel在参考仓库仍是规划；当前head是完整词表linear加argmax。

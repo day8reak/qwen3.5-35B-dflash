@@ -79,6 +79,62 @@ def test_bundle_copies_all_compiler_payloads_and_strict_draft_wire(bundle):
     assert all('target.omc' not in r['remote'] for r in uploads)
 
 
+def _nested_compiler_payloads(bundle):
+    root, manifest = bundle
+    compiler = root.parent/'compilation'
+    generated = compiler/'compile-work/generated'
+    model_dir = generated/'model'
+    model_dir.mkdir()
+    (generated/'model.omc').rename(model_dir/'model.omc')
+    (generated/'weights.bin').rename(model_dir/'SubGraph_0.weight')
+    extra = model_dir/'partitions/SubGraph_1.weight'
+    extra.parent.mkdir()
+    extra.write_bytes(b'second-subgraph-weight')
+    paths = [model_dir/'model.omc', model_dir/'SubGraph_0.weight', extra]
+    report = json.loads((compiler/'report.json').read_text())
+    report.update(omc=record(paths[0],compiler), generated_artifacts=[record(path,compiler) for path in paths],
+                  external_data_candidates=[record(path,compiler) for path in paths[1:]])
+    write_json(compiler/'report.json',report)
+    return compiler, report, manifest
+
+
+def test_nested_omc_sidecars_keep_exact_relative_layout_through_upload(bundle,tmp_path):
+    compiler, report, original = _nested_compiler_payloads(bundle)
+    root = tmp_path/'nested-bundle'
+    manifest = board.prepare_draft_bundle(compiler,tmp_path/'fixture',root,
+        config=original['draft_config'],ddk_id='fixture')
+    assert manifest['model']['path']=='model/model/model.omc'
+    assert 'model\tmodel/model/model.omc\t' in (root/'step.tsv').read_text()
+    _, uploads = board._validate_bundle(root)
+    remote = {row['remote']: row for row in uploads}
+    for source in report['generated_artifacts']:
+        suffix = Path(source['path']).relative_to('compile-work/generated')
+        destination = root/'model'/suffix
+        assert destination.read_bytes()==(compiler/source['path']).read_bytes()
+        assert remote['bundle/model/'+suffix.as_posix()]['sha256']==source['sha256']
+    assert not (root/'model.omc').exists()
+    assert not (root/'model/SubGraph_0.weight').exists()
+
+
+@pytest.mark.parametrize('fault',['missing-sidecar','duplicate-path','outside-generated','wrong-primary-hash'])
+def test_invalid_compiler_layout_fails_before_bundle_creation(bundle,tmp_path,fault):
+    compiler, report, original = _nested_compiler_payloads(bundle)
+    if fault=='missing-sidecar':
+        report['generated_artifacts'].pop()
+    elif fault=='duplicate-path':
+        report['generated_artifacts'].append(report['generated_artifacts'][1])
+    elif fault=='outside-generated':
+        report['generated_artifacts'][1]['path']='compile-work/elsewhere.weight'
+    else:
+        report['omc']['sha256']='0'*64
+    write_json(compiler/'report.json',report)
+    destination = tmp_path/'invalid-bundle'
+    with pytest.raises(ValueError):
+        board.prepare_draft_bundle(compiler,tmp_path/'fixture',destination,
+            config=original['draft_config'],ddk_id='fixture')
+    assert not destination.exists()
+
+
 def test_host_fake_requires_explicit_test_opt_in(bundle,tmp_path):
     result=tmp_path/'native';native_result(bundle,result)
     with pytest.raises(ValueError,match='device evidence'):

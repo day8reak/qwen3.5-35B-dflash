@@ -60,6 +60,7 @@ def test_existing_air_compiles_without_original_writes_or_runner_abi(case, monke
     monkeypatch.setattr(subprocess, "run", _tool)
     result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK")
     assert result["status"] == "COMPILED" and result["model_compilation"] == "PASSED"
+    assert result["returncode"] == 0 and result["primary_omc_layout"] == "model.omc"
     assert result["device_execution"] == "NOT_RUN" and result["device_ready"] is False
     assert set(result["source_contract"].values()) == {"UNVERIFIED"}
     assert result["legacy_hiai_abi_compatible"] == "UNVERIFIED"
@@ -506,3 +507,100 @@ def test_external_data_and_auxiliary_outputs_are_retained_hashed_even_on_failure
         assert row["sha256"] == module.sha256_file(output / row["path"])
         assert row["stat"] == module._stat(output / row["path"])
     assert result["omc"]["role"] == "primary_omc"
+
+
+@pytest.mark.parametrize("compile_fails", [False, True])
+def test_nested_main_omc_and_external_weights_keep_their_original_hierarchy(case, monkeypatch, compile_fails):
+    air, output, ddk = case
+    def tool(command, **kwargs):
+        if "--help" in command:
+            return _help(command, **kwargs)
+        assert "--output=model" in command
+        folder = kwargs["cwd"] / "model"
+        folder.mkdir()
+        (folder / "model.omc").write_bytes(b"SIMULATED NESTED OMC")
+        (folder / "SubGraph_0.weight").write_bytes(b"SIMULATED EXTERNAL WEIGHTS ZERO")
+        (folder / "SubGraph_1.weight").write_bytes(b"SIMULATED EXTERNAL WEIGHTS ONE")
+        kwargs["stdout"].write("SaveCompiledModelToFile SUCCESS\n")
+        if compile_fails:
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(subprocess, "run", tool)
+    before = {path: path.read_bytes() for path in air.parent.rglob("*") if path.is_file()}
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK", save_weights_as_external_data=True)
+    assert result["status"] == ("FAILED" if compile_fails else "COMPILED")
+    assert result["returncode"] == (1 if compile_fails else 0)
+    assert result["model_compilation"] == ("FAILED" if compile_fails else "PASSED")
+    assert result["omc"]["path"] == "compile-work/generated/model/model.omc"
+    assert result["omc"]["role"] == "primary_omc"
+    assert len(result["generated_artifacts"]) == 3
+    assert {row["path"] for row in result["external_data_candidates"]} == {
+        "compile-work/generated/model/SubGraph_0.weight", "compile-work/generated/model/SubGraph_1.weight"}
+    for row in result["generated_artifacts"]:
+        assert row["sha256"] == module.sha256_file(output / row["path"])
+    assert not (output / "compile-work/generated/model.omc").exists()
+    assert before == {path: path.read_bytes() for path in before}
+    if not compile_fails:
+        assert result["primary_omc_layout"] == "model/model.omc"
+        assert json.loads((output / "manifest.json").read_text())["omc"] == result["omc"]
+
+
+@pytest.mark.parametrize("layout", ["model.omc", "model/model.omc"])
+@pytest.mark.parametrize("invalid", ["empty", "directory", "symlink", "broken_symlink"])
+def test_primary_selector_rejects_invalid_candidates_even_when_optional(tmp_path, layout, invalid):
+    root = tmp_path / "compile"
+    path = root / "compile-work/generated" / layout
+    path.parent.mkdir(parents=True)
+    if invalid == "empty":
+        path.touch()
+    elif invalid == "directory":
+        path.mkdir()
+    else:
+        other = tmp_path / "external-model.omc"
+        if invalid == "symlink":
+            other.write_bytes(b"NOT A LOCAL OUTPUT")
+        path.symlink_to(other)
+    for required in (True, False):
+        with pytest.raises(ValueError, match="nonempty regular non-symlink"):
+            module.select_primary_omc(root, required=required)
+
+
+def test_primary_selector_rejects_ambiguity_and_parent_symlinks(tmp_path):
+    root = tmp_path / "compile"
+    generated = root / "compile-work/generated"
+    (generated / "model").mkdir(parents=True)
+    (generated / "model.omc").write_bytes(b"FLAT")
+    (generated / "model/model.omc").write_bytes(b"NESTED")
+    with pytest.raises(ValueError, match="ambiguous"):
+        module.select_primary_omc(root)
+    (generated / "model/model.omc").unlink()
+    (generated / "model").rmdir()
+    (generated / "model").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    with pytest.raises(ValueError, match="contains a symlink"):
+        module.select_primary_omc(root)
+
+
+def test_primary_selector_does_not_guess_unrecognized_paths(tmp_path):
+    generated = tmp_path / "compile-work/generated"
+    (generated / "arbitrary/deeper").mkdir(parents=True)
+    (generated / "other.omc").write_bytes(b"UNRELATED")
+    (generated / "arbitrary/deeper/model.omc").write_bytes(b"UNRECOGNIZED LAYOUT")
+    assert module.select_primary_omc(tmp_path, required=False) is None
+    with pytest.raises(ValueError, match="either supported output path"):
+        module.select_primary_omc(tmp_path)
+
+
+def test_zero_exit_with_ambiguous_main_output_is_still_failed(case, monkeypatch):
+    air, output, ddk = case
+    def tool(command, **kwargs):
+        if "--help" in command:
+            return _help(command, **kwargs)
+        root = kwargs["cwd"]
+        (root / "model").mkdir()
+        (root / "model.omc").write_bytes(b"FLAT")
+        (root / "model/model.omc").write_bytes(b"NESTED")
+    monkeypatch.setattr(subprocess, "run", tool)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK")
+    assert result["status"] == "FAILED" and result["stage"] == "output-check"
+    assert result["returncode"] == 0 and result["model_compilation"] == "FAILED"
+    assert "ambiguous" in result["error"] and "omc" not in result

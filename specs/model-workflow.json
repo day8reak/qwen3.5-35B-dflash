@@ -524,14 +524,14 @@
     },
     "standalone_draft": {
       "entrypoint": "targets/cpro/scripts/run_full_draft.py",
-      "status": "HOST_IMPLEMENTED_DEVICE_PENDING",
+      "status": "OMG_SUCCESS_USER_REPORTED_DEVICE_PENDING",
       "latest_compile_feedback": {
         "source": "USER_PASTED_LOG_CONTEXT",
-        "run": "full-draft-23abc47e25e7",
-        "status": "FAILED",
-        "node": "__ge/v20/flat_output",
-        "cause": "SELECTED_MATMUL_IMPLEMENTATION_REJECTS_K_GREATER_THAN_8000",
-        "actual_k": 16384,
+        "run": "full-draft-a091f16d13d8",
+        "status": "OMG_SUCCESS_WRAPPER_OUTPUT_CHECK_FAILED",
+        "cause": "EXTERNAL_WEIGHT_OUTPUT_IS_GENERATED_MODEL_MODEL_OMC",
+        "primary_omc": "compile-work/generated/model/model.omc",
+        "recovery": "Verify retained inputs, compiler outputs, success log and audit; snapshot into a new job without invoking OMG",
         "device_execution": "NOT_RUN",
         "remote_artifact_hash_verification": "NOT_RECHECKED"
       },
@@ -539,27 +539,34 @@
         "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-v2",
         "scope": "Only full draft.fc: one valid 4x4 Conv2D with explicit NCHW views, unchanged FP16 operands and one FP16 arithmetic result",
         "reference": "Preserve original MatMul PyTorch outputs",
-        "compiler_validation": "NOT_RUN",
+        "compiler_validation": "SUCCESS_USER_REPORTED_LOG",
         "device_validation": "NOT_RUN",
         "bitwise_equivalence": "NOT_ESTABLISHED"
       },
       "related_4b_reference": {
         "repository": "day8reak/qwen3.5-4B-dflash",
-        "branch": "framework/quant-air-om",
-        "commit": "631c86fc0c4e053817f0786ab8067b5565638d50",
-        "main_commit": "19e7c24b8ec6beaff707f94aaf12411385505aa9",
-        "main_scope": "PyTorch eager prefix recomputation, without the framework branch draft KV cache",
-        "reviewed": "Full F.linear on 310P; incremental target feature projection, per-layer draft KV and persistent Draft/Verify execution",
-        "reuse_next": "Incremental draft integration after standalone compilation and numerical closure",
+        "branch": "feature/gdr-chunk-verify",
+        "commit": "90186732d915e8b058b2a053d205991d805eae76",
+        "reviewed": "Six-layer FP16: packed K/V and gate/up projections, grouped-query row reshape, committed-context-only draft KV, persistent Draft/Verify runtime",
+        "reuse_next": "Validate existing compiled draft on board, then port packed projections and GQA; incremental cache requires ABI and scheduling changes",
         "user_reported_latency_ms": 20,
-        "timing_scope": "NOT_VERIFIED_FROM_REVIEWED_SOURCE",
+        "repository_reported_latency_ms": 20.22,
+        "timing_scope": "docs/RESULTS.md user-supplied Ascend310P synchronous OM C16/C64 mixed average; PASS_WITH_DIFFERENCES, ordinary token equality failed, quality unassessed",
         "cpro_performance": "NOT_MEASURED"
       },
       "implementation": [
         "model/qwen35_moe_dflash/draft_standalone.py",
         "model/qwen35_moe_dflash/draft_reference.py",
-        "model/qwen35_moe_dflash/draft_board.py"
+        "model/qwen35_moe_dflash/draft_board.py",
+        "model/qwen35_moe_dflash/retained_air.py"
       ],
+      "output_recovery_validation": {
+        "run_id": "20261028T031352Z-23260-7e0c53",
+        "python_host_cases_passed": 134,
+        "native_host_groups_passed": 1,
+        "real_ddk_execution": "NOT_RUN",
+        "device_execution": "NOT_RUN"
+      },
       "architecture": {
         "layers": 6,
         "block_size": 16,
