@@ -4,13 +4,31 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 完整 draft v4 越过 CPUCL 初始化后的权重内存失败
+
+2026-10-28，用户回传 `full-draft-732b26335347`：v4 AIR编译及打包成功，PID46426日志显示CPUCL初始化成功，已越过前两版的 `v501/BroadcastTo` 障碍。随后NPU `SubGraph_1` 的 `InitRuntimeParams` 失败，报告 `weightsMemBaseSize=16`、`modelWeightMemorySize=1151486976` 字节。失败仍在Load阶段，没有Process或数值比较；掩码替代的设备数值和完整模型正确性均未验证。
+
+同一日志中 `compiled_model_utils.cpp operator()(524)` 对15个子图均打印 `weight hash:0x1dabbe2881ec5472`，其权重尺寸不同。这个运行时字段的含义尚未确认，不能当作文件SHA256、文件内容相同或错配根因的证明；该批次实际sidecar文件哈希清单尚未回传。16字节同样是运行时内存大小记录，不能直接解释为上传文件被截断。
+
+用户随后回传编译目录的文件大小：`SubGraph_1.weight` 为1,151,486,976字节，与模型要求一致；`model.omc` 为2,905,990字节。其余14份权重的大小也已记录到工作流清单。该观察排除所列编译端 `SubGraph_1.weight` 被截断为16字节，但不证明其内容、设备副本或运行时选中的文件正确；没有收到这些原文件的独立SHA256复核。
+
+本轮 `20261028T063649Z-28459-d40778` 进行了源码只读审查：`existing_air._generated_inventory` 按完整相对路径枚举并记录大小/SHA256；`draft_board` 保留目录与文件名，按路径字典选取OMC，不依赖子图编号排序；`retained_air` 恢复同一路径后重新核验；上传前检查本地SHA256，并在运行前执行远端 `sha256sum -c`。这未发现脚本层的索引或basename错配，但既不是远端文件复核，也不证明HIAI实际打开了已上传的sidecar路径。
+
+当前runner先 `SetModelPath` 再 `SetModelBuffer`；较旧的[Huawei署名公开源码镜像](https://github.com/946166920/hiai_ddk/blob/42142161fb414a8d53973b0d5ccbd0de7872d5d9/src/framework/model_manager/compatible/AiModelDescription.cpp#L113-L131)显示后者清空模型路径，可能影响外置权重定位。用户已回传所选DDK头文件，没有显式外置权重setter；声明本身不能确定getter语义或路径是否保留，旧实现也不能证明本次路径已被清空或解释16字节来源。此前成功tiny的编译命令未启用 `--save_weights_as_external_data=true`，完整draft启用了它；tiny成功不验证外置权重加载。实际清单SHA256与设备校验调用也仍需保留核对。
+
+用户随后要求尝试将权重与模型一起编入OMC。新增显式 `--weight-storage embedded` 将 `save_weights_as_external_data` 改为false，从732复用v4 AIR及d7 prepared/fixture，只重建compilation/bundle；新任务默认仍为external，未指定模式的续跑继承原模式。原732外置产物和失败证据保留，模型图、权重内容、参考、量化和输出ABI不变，HIAI加载调用也不变。这是装载方式兼容候选，不是已确认根因或已验证设备修复。
+
+所列15份外置权重合计2,849,468,580字节，小于runner UINT32长度上限4,294,967,295字节；该合计不是新OMC长度的保证。打包前与原生加载按实际OMC文件大小检查；所选DDK是否生成完整内嵌产物、Load是否成功以及数值误差均待本次运行验证。执行命令见[独立draft指南](draft-standalone.md)。
+
+本轮 `20261028T063649Z-28459-d40778/embedded-regression.xml` 记录203项主机回归通过，用时8.68秒。覆盖模式选择与续跑继承、只重建编译/bundle、模拟OMG收到false参数及相应元数据，以及无sidecar的单OMC bundle校验和上传计划；并回归既有AIR编译、产物恢复和只读检查。OMG与板端路径使用模拟环境，未在本地执行所选DDK或真实设备，不能作为内嵌OMC实际编译、Load或数值通过证据。
+
 ## 完整 draft 的 INT32 形状参数重试仍失败
 
 2026-10-28，用户回传 `full-draft-b2ecbb36f2cd`：v3 AIR已完成编译和打包，板端PID29314仍在CPUCL的 `v501/BroadcastTo` 初始化处报告 `InitInput1Desc` 输出维16对应输入维0，随后 `SubGraph_0` Prepare与HIAI Load失败。该节点的源/导出描述仍为 `BOOL [1,1,1,80] → [1,1,16,80]`。这说明只修改形状控制常量宽度不足以解决当前故障；没有证明运行时出现0的解码原因，也没有执行Process或数值比较。下节INT32版本的主机通过记录保持原验证范围，不能作为设备修复证据。
 
 下一候选仅替换动态BOOL掩码的单例维复制路径：Cast成INT32的0/1，GatherV2通过全零索引复制query/head单例维，再Cast回BOOL。范围为完整六层的6处query-row扩展及6处Select补出的head扩展，共12处。保留掩码值与布尔语义、模型权重、PyTorch参考、浮点计算及输出ABI。没有选择直接BOOL ConcatD，因为公开ConcatD类型契约不包含BOOL；既有tiny的KV Gather仅提供精确复制思路，不能替代本次BOOL路径的设备验证。
 
-新契约为 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4`。所选DDK能否编译、加载和执行仍需重试，不承诺消除其他设备限制。恢复以 `b2ecbb36f2cd` 为入口，保留其引用的 `d7b4db958850` prepared/fixture，重建AIR及依赖的compilation/bundle。检查用户指定4B参考分支时，integrated与incremental源码仍使用mask expand，没有找到Cpro CPUCL BOOL BroadcastTo的现成替代；不能从其310P运行记录推定本次兼容性。
+当时新契约为 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4`，从 `b2ecbb36f2cd` 复用d7 prepared/fixture，重建AIR及依赖产物；后续732批次的编译与CPUCL初始化结果见上节。检查用户指定4B参考分支时，integrated与incremental源码仍使用mask expand，没有找到Cpro CPUCL BOOL BroadcastTo的现成替代；不能从其310P运行记录推定本次兼容性。
 
 主机回归在 `20261028T060146Z-27345-da9c4b/mask-combined.xml` 记录279项通过、4项因未配置真实GE头文件/运行库跳过。独立recipe解释器覆盖完整六层12处mask复制、tiny、两条导出路径、短/部分/完整前缀和含NaN/Inf/符号零的Select逐位比较；阶段恢复测试确认v2/v3旧产物只复用prepared/fixture，原目录不变。失败日志摘要为空时还会打印筛选状态、PID及大小限制原因，捕获成功不再与摘要生成混淆。上述结果不包含所选DDK编译或板端执行。
 

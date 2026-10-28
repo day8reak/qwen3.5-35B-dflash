@@ -8,9 +8,23 @@
 
 **先运行完整 draft 的独立入口。** [独立 draft 指南](draft-standalone.md)提供一条命令完成真实权重准备、PyTorch参考、GE导出、OMG编译和HIAI执行。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
-最新用户回传 **`full-draft-b2ecbb36f2cd`** 已完成v3 AIR编译和打包，但PID29314仍在 `SubGraph_0` 的CPUCL节点 `v501/BroadcastTo` 初始化失败：`InitInput1Desc` 再次报告输出维16对应输入维0，最终HIAI Load失败，未进入Process。将形状参数改成INT32没有解决这次故障。该节点复制最后一层注意力掩码，`BOOL [1,1,1,80] → [1,1,16,80]`；源码及导出尺寸均为正数，运行时为何得到0仍未证明。
+最新用户回传 **`full-draft-732b26335347`** 已完成v4 AIR编译和打包。PID46426的日志显示CPUCL初始化成功，已经越过此前 `v501/BroadcastTo` 障碍；随后NPU `SubGraph_1` 在 `InitRuntimeParams` 失败：`weightsMemBaseSize=16`，模型要求 `modelWeightMemorySize=1151486976` 字节。模型仍未进入Process，掩码与完整draft的数值结果尚未验证。
 
-下一候选将BOOL掩码转成INT32的0/1，用GatherV2的全零索引复制单例维，再转回BOOL，避开该动态BroadcastTo路径；同时覆盖六层显式mask扩展和六层Select的head扩展，共12处。模型权重、PyTorch参考、浮点计算和输出ABI保留。成功tiny的KV复制已经采用Gather，但当时BOOL掩码仍用BroadcastTo；4B参考源码也仍用mask expand，没有找到现成的Cpro CPUCL掩码绕行。新契约 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4` 仍需重新导出AIR、编译和上板验证；从 **`b2ecbb36f2cd`** 续跑，保留其引用的 `d7b4db958850` prepared/fixture，旧AIR、compilation及bundle失效。模型尚未进入数值比较，远端证据尚未由本地复核。
+当前保留 **`732b26335347`** 的v4 AIR及失败证据，以及它引用的 `d7b4db958850` prepared/fixture。按用户要求，下一步尝试将权重内嵌到OMC，复用已有AIR、权重和参考，只重新编译及打包：
+
+```bash
+git pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
+  --resume "$AI_RUN_DIR/full-draft-732b26335347" \
+  --weight-storage embedded \
+  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
+```
+
+该选项明确传入 `--save_weights_as_external_data=false`；新任务默认仍为external，续跑未指定时继承原模式。这是装载方式验证，不是已确认的故障修复；不改变六层图、量化方式、权重内容或参考。已有15份sidecar共2,849,468,580字节，低于runner的UINT32大小上限，但新OMC实际长度还取决于编译布局，打包前和原生加载时仍检查真实文件大小。
+
+运行时给15个不同子图打印了同一个 `weight hash:0x1dabbe2881ec5472`，但它不是文件SHA256，不能据此断言15份权重内容相同或确定错配原因。实际文件哈希尚未回传。本仓库只读审查未发现按编号重排或丢失目录：编译到bundle再到上传均按完整相对路径处理；这仍不能证明设备HIAI打开了这些路径。
+
+用户随后列出的编译文件中，`SubGraph_1.weight` 是 **1,151,486,976字节**，与模型要求一致，`model.omc` 是2,905,990字节；因此这份编译文件本身不是16字节。文件大小不能替代SHA256或证明运行时选中了正确文件。runner先 `SetModelPath` 再 `SetModelBuffer`，较旧的公开实现中后者会清空路径，但当前DDK是否如此尚未核实；已回传的所选头文件没有显式外置权重setter，仍不能由声明推出getter或路径保留行为，见[验证记录](validation.md#完整-draft-v4-越过-cpucl-初始化后的权重内存失败)。此前成功tiny没有开启外置权重选项，不能直接验证这条加载契约；目前没有已确认的运行时修复。
 
 原生失败保存在 `board/results/result.json`、`board/comparison.json` 与 `board/draft.stderr`。错误回传已修正：保留原生失败原因，单独记录传输/证据问题，运行失败时不要求成功输出bin。此前 `a091f16d13d8` 的嵌套OMC输出路径问题已修复。
 

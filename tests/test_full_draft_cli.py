@@ -51,7 +51,7 @@ def job(tmp_path, monkeypatch):
     def compile_air(source, folder, ddk, **kwargs):
         calls.append("compilation")
         assert source.name == "draft.air" and kwargs["input_layout"] == "air-directory"
-        assert kwargs["save_weights_as_external_data"] is True
+        assert type(kwargs["save_weights_as_external_data"]) is bool
         assert kwargs["use_origin_format"] is True and kwargs["weight_data_type"] == "FP16"
         assert "input_shape" not in kwargs  # never the original 40-layer profile
         folder.mkdir()
@@ -62,7 +62,9 @@ def job(tmp_path, monkeypatch):
         model.write_bytes(b"fixture-compiled-draft")
         result = {"status": "COMPILED", "ddk_id": "test-ddk", "omc": file_record(model, folder),
                   "requested_options": {"use_origin_format": "true", "weight_data_type": "FP16",
-                                        "limit_partition_size": "false", "save_weights_as_external_data": "true"}}
+                                        "limit_partition_size": "false", "save_weights_as_external_data":
+                                        str(kwargs["save_weights_as_external_data"]).lower()},
+                  "external_data_candidates": []}
         save_json(folder / "report.json", result)
         return result
 
@@ -119,6 +121,192 @@ def test_complete_job_only_runs_draft_pipeline(job, tmp_path):
     result = json.loads((root / "result.json").read_text())
     assert result["status"] == "EXECUTION_COMPLETE" and result["target_execution"] == "NOT_RUN"
     assert result["runtime_placement"] == "UNVERIFIED"
+
+
+def test_external_board_failure_can_switch_to_embedded_without_reexport_or_reference(job, tmp_path):
+    main, fresh, common, calls, failures = job
+    previous = tmp_path / "external-load-failed"
+    failures.add("board")
+    assert main([*fresh, "--output", str(previous)]) == 1
+    old = json.loads((previous / "result.json").read_text())
+    before = {path: path.read_bytes() for path in previous.rglob("*") if path.is_file()}
+    failures.clear(); calls.clear()
+    embedded = tmp_path / "embedded"
+    # Reuse the current AIR: neither GE nor the full source weights are needed.
+    assert main([*common[2:], "--resume", str(previous), "--weight-storage", "embedded",
+                 "--output", str(embedded)]) == 0
+    assert calls == ["compilation", "bundle", "board"]
+    result = json.loads((embedded / "result.json").read_text())
+    assert result["compile_options"]["save_weights_as_external_data"] == "false"
+    assert all(result["components"][name] == old["components"][name]
+               for name in ("prepared", "fixture", "air"))
+    invalidation, = result["resume_invalidations"]
+    assert invalidation["reason"] == "DRAFT_COMPILE_OPTIONS_CHANGED"
+    assert set(invalidation["components"]) == {"compilation", "bundle"}
+    assert invalidation["required_options"]["save_weights_as_external_data"] == "false"
+    assert invalidation["preserved"] == ["prepared", "fixture", "air"]
+    assert all(path.read_bytes() == payload for path, payload in before.items())
+
+    calls.clear()
+    unchanged = tmp_path / "embedded-resumed"
+    assert main(["--resume", str(embedded), "--output", str(unchanged)]) == 0
+    assert calls == ["board"]
+    resumed = json.loads((unchanged / "result.json").read_text())
+    assert resumed["compile_options"]["save_weights_as_external_data"] == "false"
+    assert resumed["components"] == result["components"]
+
+    calls.clear()
+    external = tmp_path / "explicit-external"
+    assert main([*common[2:], "--resume", str(unchanged), "--weight-storage", "external",
+                 "--output", str(external)]) == 0
+    assert calls == ["compilation", "bundle", "board"]
+    restored = json.loads((external / "result.json").read_text())
+    assert restored["compile_options"]["save_weights_as_external_data"] == "true"
+    assert all(restored["components"][name] == result["components"][name]
+               for name in ("prepared", "fixture", "air"))
+    assert all(path.read_bytes() == payload for path, payload in before.items())
+
+
+@pytest.mark.parametrize("storage", ["external", "embedded"])
+def test_fresh_storage_option_is_passed_to_compiler_and_recorded(job, tmp_path, storage):
+    main, fresh, _, calls, _ = job
+    root = tmp_path / storage
+    assert main([*fresh, "--weight-storage", storage, "--compile-only", "--output", str(root)]) == 0
+    assert calls == ["prepared", "fixture", "air", "compilation"]
+    expected = "false" if storage == "embedded" else "true"
+    for filename in ("job.json", "result.json"):
+        report = json.loads((root / filename).read_text())
+        assert report["compile_options"]["save_weights_as_external_data"] == expected
+    compiled = json.loads((root / "compilation/report.json").read_text())
+    assert compiled["requested_options"]["save_weights_as_external_data"] == expected
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_embedded_resume_inherits_verified_receipt_instead_of_stale_parent_defaults(job, tmp_path, interrupted):
+    main, fresh, _, calls, _ = job
+    previous = tmp_path / "embedded-compiled"
+    assert main([*fresh, "--weight-storage", "embedded", "--compile-only", "--output", str(previous)]) == 0
+    result_path = previous / "result.json"
+    if interrupted:
+        result_path.unlink()
+        parent_path = previous / "job.json"
+    else:
+        parent_path = result_path
+    parent = json.loads(parent_path.read_text())
+    parent["compile_options"]["save_weights_as_external_data"] = "true"
+    parent_path.write_text(json.dumps(parent))
+    calls.clear()
+    resumed = tmp_path / "inherited"
+    assert main(["--resume", str(previous), "--compile-only", "--output", str(resumed)]) == 0
+    assert calls == []
+    result = json.loads((resumed / "result.json").read_text())
+    assert result["compile_options"]["save_weights_as_external_data"] == "false"
+
+
+def test_failed_embedded_compilation_keeps_storage_choice_without_completed_receipt(job, tmp_path):
+    main, fresh, common, calls, failures = job
+    previous = tmp_path / "embedded-compile-failed"
+    failures.add("compilation")
+    assert main([*fresh, "--weight-storage", "embedded", "--output", str(previous)]) == 1
+    assert not (previous / "completed-compilation.json").exists()
+    failures.clear(); calls.clear()
+    resumed = tmp_path / "embedded-retry"
+    assert main([*common[2:], "--resume", str(previous), "--output", str(resumed)]) == 0
+    assert calls == ["compilation", "bundle", "board"]
+    result = json.loads((resumed / "result.json").read_text())
+    assert result["compile_options"]["save_weights_as_external_data"] == "false"
+
+
+@pytest.mark.parametrize("filename", ["SubGraph_1.weight", "model.weights", "model.omc.data",
+                                     "model.weights/part_0.bin"])
+@pytest.mark.parametrize("compile_only", [False, True])
+def test_embedded_mode_rejects_observed_nonempty_weight_sidecars_before_bundle(
+        job, tmp_path, monkeypatch, filename, compile_only):
+    from qwen35_moe_dflash import existing_air
+    main, fresh, _, calls, _ = job
+    original = existing_air.compile_existing_air
+    def compile_with_sidecar(source, folder, ddk, **kwargs):
+        report = original(source, folder, ddk, **kwargs)
+        path = folder / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"unexpected-external-weight")
+        report["external_data_candidates"] = [{"path": filename, "bytes": path.stat().st_size,
+                                                "sha256": sha256_file(path)}]
+        (folder / "report.json").write_text(json.dumps(report))
+        return report
+    monkeypatch.setattr(existing_air, "compile_existing_air", compile_with_sidecar)
+    root = tmp_path / "unexpected-sidecar"
+    args = [*fresh, "--weight-storage", "embedded", "--output", str(root)]
+    assert main(args + (["--compile-only"] if compile_only else [])) == 1
+    assert calls == ["prepared", "fixture", "air", "compilation"]
+    report = json.loads((root / "result.json").read_text())
+    assert report["device_execution"] == "NOT_RUN"
+    assert "embedded" in report["error"].lower() and "weight" in report["error"].lower()
+
+
+@pytest.mark.parametrize("filename", ["dump_graph/SubGraph_1.weight", "dump_graph/model.omc.data",
+                                     "diagnostic.bin"])
+def test_embedded_mode_does_not_mistake_generated_diagnostics_for_weight_sidecars(
+        job, tmp_path, monkeypatch, filename):
+    from qwen35_moe_dflash import existing_air
+    main, fresh, _, calls, _ = job
+    original = existing_air.compile_existing_air
+    def compile_with_diagnostic(source, folder, ddk, **kwargs):
+        report = original(source, folder, ddk, **kwargs)
+        path = folder / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"compiler-diagnostic")
+        report["external_data_candidates"] = [{"path": filename, "bytes": path.stat().st_size,
+                                                "sha256": sha256_file(path)}]
+        (folder / "report.json").write_text(json.dumps(report))
+        return report
+    monkeypatch.setattr(existing_air, "compile_existing_air", compile_with_diagnostic)
+    assert main([*fresh, "--weight-storage", "embedded", "--output", str(tmp_path / "diagnostics")]) == 0
+    assert calls == ["prepared", "fixture", "air", "compilation", "bundle", "board"]
+
+
+@pytest.mark.parametrize("compile_only", [False, True])
+def test_embedded_omc_over_uint32_limit_is_rejected_before_hash_or_board(
+        job, tmp_path, monkeypatch, compile_only):
+    from qwen35_moe_dflash import artifacts, existing_air
+    main, fresh, _, calls, _ = job
+    original = existing_air.compile_existing_air
+    def oversized_compile(source, folder, ddk, **kwargs):
+        report = original(source, folder, ddk, **kwargs)
+        # The declared size alone must reject this result before any payload
+        # read. No multi-gigabyte allocation or fake successful SHA check.
+        report["omc"]["bytes"] = 1 << 32
+        (folder / "report.json").write_text(json.dumps(report))
+        return report
+    original_check = artifacts.checked_file
+    def no_model_check(root, record):
+        if record["path"].endswith(".omc"):
+            pytest.fail("oversized OMC must fail before checked_file hashes its payload")
+        return original_check(root, record)
+    monkeypatch.setattr(existing_air, "compile_existing_air", oversized_compile)
+    monkeypatch.setattr(artifacts, "checked_file", no_model_check)
+    root = tmp_path / "oversized-embedded"
+    args = [*fresh, "--weight-storage", "embedded", "--output", str(root)]
+    assert main(args + (["--compile-only"] if compile_only else [])) == 1
+    assert calls == ["prepared", "fixture", "air", "compilation"]
+    report = json.loads((root / "result.json").read_text())
+    assert "UINT32" in report["error"] and report["device_execution"] == "NOT_RUN"
+
+
+def test_storage_option_rejects_invalid_enum_before_execution(job, tmp_path):
+    main, fresh, _, calls, _ = job
+    with pytest.raises(SystemExit) as error:
+        main([*fresh, "--weight-storage", "both", "--output", str(tmp_path / "invalid")])
+    assert error.value.code == 2 and calls == [] and not (tmp_path / "invalid").exists()
+
+
+@pytest.mark.parametrize("storage", ["external", "embedded"])
+def test_inspect_only_rejects_weight_storage_selection(job, tmp_path, storage):
+    main, _, _, calls, _ = job
+    output = tmp_path / "invalid-inspection"
+    assert main(["--inspect-only", "--resume", "retained", "--weight-storage", storage,
+                 "--output", str(output)]) == 1
+    assert calls == [] and not output.exists()
 
 
 def test_hdc_failure_resume_reuses_compilation_and_fixtures(job, tmp_path):

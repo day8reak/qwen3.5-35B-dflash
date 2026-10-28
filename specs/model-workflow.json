@@ -524,53 +524,76 @@
     },
     "standalone_draft": {
       "entrypoint": "targets/cpro/scripts/run_full_draft.py",
-      "status": "BOARD_BROADCASTTO_LOAD_FAILED_USER_REPORTED",
+      "status": "BOARD_NPU_WEIGHT_MEMORY_LOAD_FAILED_USER_REPORTED",
       "latest_compile_feedback": {
         "source": "USER_PASTED_LOG_CONTEXT",
-        "run": "full-draft-b2ecbb36f2cd",
+        "run": "full-draft-732b26335347",
         "status": "PASSED_USER_REPORTED",
         "primary_omc": "compile-work/generated/model/model.omc",
-        "recovery": "Latest successful v3 compilation remains failed at device Load; next graph contract requires AIR re-export and recompilation",
+        "recovery": "Preserve the 732 external compile artifacts as evidence; reuse its matching v4 AIR and d7 prepared/fixture, and recompile OMC plus rebuild the bundle for the user-requested embedded mode",
         "device_execution": "FAILED_USER_REPORTED",
         "remote_artifact_hash_verification": "NOT_RECHECKED",
-        "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-broadcast-i32-v3"
+        "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4"
       },
       "latest_board_feedback": {
         "source": "USER_PASTED_NATIVE_RESULT_COMPARISON_AND_HILOG",
-        "run": "full-draft-b2ecbb36f2cd",
+        "run": "full-draft-732b26335347",
         "status": "RUNTIME_FAILED",
         "failure_stage": "LOAD_OR_SETUP",
         "reason": "HIAI Load failed: 1",
         "process_called": false,
         "runtime_version": "800.631.120.010",
         "firmware_id": "OpenHarmony-6.0.0.43",
-        "hilog_pid": 29314,
-        "last_observed_failure": "CPUCL v501/BroadcastTo InitInput1Desc failed, then SubGraph_0 GraphOp Prepare and HIAI Load failed",
+        "hilog_pid": 46426,
+        "last_observed_failure": "CPUCL initialization succeeded; NPU SubGraph_1 InitRuntimeParams rejected weight memory of 16 bytes versus the required 1151486976 bytes",
         "numerical_validation": "NOT_EVALUATED",
-        "root_cause": "BROADCASTTO_INIT_FAILURE_REPRODUCED_WITH_INT32_SHAPE_CAUSE_UNPROVEN",
-        "failed_node": {
-          "name": "v501",
-          "type": "BroadcastTo",
-          "subgraph": "SubGraph_0",
-          "source_dtype": "bool",
-          "source_shape": [
-            1,
-            1,
-            1,
-            80
-          ],
-          "output_shape": [
-            1,
-            1,
-            16,
-            80
-          ],
-          "source_and_export_dimensions": "ALL_POSITIVE",
-          "runtime_error": "InitInput1Desc reports output dimension16 with input dimension0",
-          "descriptor_scope": "Source/export metadata; not independently decoded runtime descriptor"
+        "root_cause": "EXTERNAL_WEIGHT_MEMORY_SIZE_MISMATCH_CAUSE_UNDETERMINED",
+        "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4",
+        "cpucl_initialization": "SUCCESS_USER_REPORTED",
+        "mask_device_numerics": "NOT_EVALUATED",
+        "failed_component": {
+          "subgraph": "SubGraph_1",
+          "backend": "NPU",
+          "operation": "InitRuntimeParams",
+          "weightsMemBaseSize": 16,
+          "modelWeightMemorySize": 1151486976,
+          "unit": "bytes"
         },
-        "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-broadcast-i32-v3",
-        "control_width_change_result": "INT32_SHAPE_CHANGE_INSUFFICIENT_SAME_NODE_FAILURE"
+        "runtime_weight_hash_observation": {
+          "source": "compiled_model_utils.cpp operator()(524)",
+          "subgraph_records": 15,
+          "reported_value": "0x1dabbe2881ec5472",
+          "reported_sizes": "DIFFERENT",
+          "field_meaning": "UNVERIFIED",
+          "file_sha256_inventory": "NOT_RECEIVED",
+          "interpretation": "Runtime-reported weight hash is not file SHA256 and does not establish identical sidecar bytes"
+        },
+        "compiled_file_size_observation": {
+          "source": "USER_PASTED_FIND_OUTPUT_FROM_COMPILED_GENERATED_DIRECTORY",
+          "run": "full-draft-732b26335347",
+          "unit": "bytes",
+          "files": {
+            "SubGraph_0.weight": 2608,
+            "SubGraph_1.weight": 1151486976,
+            "SubGraph_2.weight": 16,
+            "SubGraph_3.weight": 117672448,
+            "SubGraph_4.weight": 16,
+            "SubGraph_5.weight": 117672448,
+            "SubGraph_6.weight": 16,
+            "SubGraph_7.weight": 117672448,
+            "SubGraph_8.weight": 16,
+            "SubGraph_9.weight": 117672448,
+            "SubGraph_10.weight": 16,
+            "SubGraph_11.weight": 117672448,
+            "SubGraph_12.weight": 16,
+            "SubGraph_13.weight": 1109616640,
+            "SubGraph_14.weight": 20,
+            "model.omc": 2905990
+          },
+          "failed_subgraph_file_size_matches_required": true,
+          "file_sha256_verification": "NOT_RECEIVED",
+          "scope": "The listed compiler-side SubGraph_1.weight is 1151486976 bytes, not 16; size alone does not establish content, device-copy identity, or which file HIAI selected"
+        }
       },
       "board_failure_reporting_validation": {
         "run_id": "20261028T033225Z-24433-7bb3f5",
@@ -736,10 +759,47 @@
             "runtime_error": "InitInput1Desc reports output dimension16 with input dimension0",
             "descriptor_scope": "Source/export metadata; not independently decoded runtime descriptor"
           }
+        },
+        {
+          "source": "USER_PASTED_NATIVE_RESULT_COMPARISON_AND_HILOG",
+          "run": "full-draft-b2ecbb36f2cd",
+          "status": "RUNTIME_FAILED",
+          "failure_stage": "LOAD_OR_SETUP",
+          "reason": "HIAI Load failed: 1",
+          "process_called": false,
+          "runtime_version": "800.631.120.010",
+          "firmware_id": "OpenHarmony-6.0.0.43",
+          "hilog_pid": 29314,
+          "last_observed_failure": "CPUCL v501/BroadcastTo InitInput1Desc failed, then SubGraph_0 GraphOp Prepare and HIAI Load failed",
+          "numerical_validation": "NOT_EVALUATED",
+          "root_cause": "BROADCASTTO_INIT_FAILURE_REPRODUCED_WITH_INT32_SHAPE_CAUSE_UNPROVEN",
+          "failed_node": {
+            "name": "v501",
+            "type": "BroadcastTo",
+            "subgraph": "SubGraph_0",
+            "source_dtype": "bool",
+            "source_shape": [
+              1,
+              1,
+              1,
+              80
+            ],
+            "output_shape": [
+              1,
+              1,
+              16,
+              80
+            ],
+            "source_and_export_dimensions": "ALL_POSITIVE",
+            "runtime_error": "InitInput1Desc reports output dimension16 with input dimension0",
+            "descriptor_scope": "Source/export metadata; not independently decoded runtime descriptor"
+          },
+          "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-broadcast-i32-v3",
+          "control_width_change_result": "INT32_SHAPE_CHANGE_INSUFFICIENT_SAME_NODE_FAILURE"
         }
       ],
       "broadcast_mask_copy_candidate": {
-        "status": "SELECTED_DDK_AND_DEVICE_RETEST_PENDING",
+        "status": "COMPILE_AND_CPUCL_INIT_PASSED_MODEL_LOAD_FAILED_USER_REPORTED",
         "scope": "Exact dynamic BOOL mask singleton replication; 6 explicit query-row and 6 Select-generated head expansions",
         "copies": 12,
         "preserved": [
@@ -749,19 +809,18 @@
           "floating calculations",
           "output ABI"
         ],
-        "resume_run": "full-draft-b2ecbb36f2cd",
+        "resume_run": "full-draft-732b26335347",
         "prepared_fixture_source_run": "full-draft-d7b4db958850",
         "reuse": [
           "prepared",
-          "fixture"
-        ],
-        "invalidate": [
+          "fixture",
           "air",
           "compilation",
           "bundle"
         ],
-        "selected_ddk_validation": "NOT_RUN",
-        "device_validation": "NOT_RUN",
+        "invalidate": [],
+        "selected_ddk_validation": "COMPILE_PASSED_USER_REPORTED",
+        "device_validation": "CPUCL_INIT_PASSED_NPU_LOAD_FAILED_NO_PROCESS",
         "run_id": "20261028T060146Z-27345-da9c4b",
         "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4",
         "implementation": "Cast BOOL to INT32 0/1; GatherV2 with zero indices replicates singleton query/head axes; Cast back to BOOL",
@@ -775,7 +834,120 @@
         "dtype_decision": "No direct BOOL ConcatD: its public schema lacks BOOL; integer copy carrier preserves boolean semantics exactly",
         "tiny_reference": "Reuse the exact-copy Gather idea from existing KV head repetition; tiny BOOL mask broadcasting itself was not replaced",
         "related_4b_reference": "Reviewed feature/gdr-chunk-verify integrated.py and incremental.py: key_valid.expand/mask expand remain; no explicit Cpro CPUCL mask workaround found in these paths",
-        "root_cause_claim": "NOT_ESTABLISHED"
+        "root_cause_claim": "NOT_ESTABLISHED",
+        "initial_upgrade_from": "full-draft-b2ecbb36f2cd",
+        "device_retry": {
+          "run": "full-draft-732b26335347",
+          "pid": 46426,
+          "compile_status": "PASSED_USER_REPORTED",
+          "cpucl_initialization": "SUCCESS_USER_REPORTED",
+          "v501_barrier": "SURPASSED_USER_REPORTED",
+          "next_failure": "NPU SubGraph_1 weight memory of 16 bytes versus the required 1151486976 bytes",
+          "process_called": false,
+          "numerical_validation": "NOT_EVALUATED"
+        }
+      },
+      "external_weight_load_investigation": {
+        "run_id": "20261028T063649Z-28459-d40778",
+        "status": "COMPILED_FILE_SIZES_AND_SELECTED_HEADER_USER_REPORTED_EMBEDDED_RETRY_PENDING",
+        "source_audit": [
+          "Generated inventory preserves full paths and records per-file sizes/SHA256",
+          "Bundle maps generated/model/SubGraph_1.weight to bundle/model/model/SubGraph_1.weight; no basename or numeric-order mapping",
+          "Recovery snapshots preserve paths and verify digests",
+          "Upload verifies local files and runs remote sha256sum -c before Load"
+        ],
+        "limits": "No independently retrieved remote inventory/checksum-call evidence; does not establish which sidecar path HIAI opens",
+        "next_evidence": [
+          "Selected DDK embedded OMC compile result and actual output inventory/size",
+          "HIAI Load/Process result and numerical comparison for the embedded candidate",
+          "Selected DDK model-description path readback if external loading investigation continues",
+          "Original compiler/bundle SHA256 inventory and retained remote checksum-call result"
+        ],
+        "artifact_policy": "Preserve the 732 external output/evidence and d7 prepared/fixture; the user-requested embedded retry reuses v4 AIR and invalidates compilation/bundle only",
+        "resume_run": "full-draft-732b26335347",
+        "compiled_file_size_result": "User reports SubGraph_1.weight at 1151486976 bytes and model.omc at 2905990 bytes; this excludes the observed compiler file being 16 bytes, not runtime load-path or content errors",
+        "selected_api_hypothesis": {
+          "runner_call_order": [
+            "SetModelPath",
+            "SetModelBuffer"
+          ],
+          "older_public_source": "https://github.com/946166920/hiai_ddk/blob/42142161fb414a8d53973b0d5ccbd0de7872d5d9/src/framework/model_manager/compatible/AiModelDescription.cpp#L113-L131",
+          "source_scope": "Huawei-authored older public-source mirror, not the selected current DDK",
+          "observed_older_behavior": "SetModelBuffer clears model path",
+          "selected_ddk_behavior": "HEADER_RECEIVED_NO_EXPLICIT_EXTERNAL_WEIGHT_SETTER_GETTER_AND_PATH_SEMANTICS_UNVERIFIED",
+          "causal_status": "HYPOTHESIS_ONLY_DOES_NOT_EXPLAIN_16_BYTE_RUNTIME_MEMORY_WITHOUT_FURTHER_EVIDENCE",
+          "functional_fix": "LOADER_CALLS_UNCHANGED_EMBEDDED_STORAGE_CANDIDATE_NOT_YET_VALIDATED"
+        },
+        "tiny_full_external_weight_difference": {
+          "prior_successful_tiny_compile": "save_weights_as_external_data option omitted",
+          "standalone_full_draft_compile": "save_weights_as_external_data=true",
+          "scope": "Tiny success does not validate the full draft external-weight load contract"
+        }
+      },
+      "embedded_weight_candidate": {
+        "status": "IMPLEMENTED_SELECTED_DDK_AND_DEVICE_RETRY_PENDING",
+        "user_request": "Compile weights into the OMC with the model",
+        "resume_run": "full-draft-732b26335347",
+        "prepared_fixture_source_run": "full-draft-d7b4db958850",
+        "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4",
+        "cli_option": "--weight-storage embedded",
+        "compile_option": {
+          "save_weights_as_external_data": "false"
+        },
+        "fresh_default": "external",
+        "resume_unspecified_mode": "INHERIT_RECORDED_MODE",
+        "reuse": [
+          "prepared",
+          "fixture",
+          "air"
+        ],
+        "invalidate": [
+          "compilation",
+          "bundle"
+        ],
+        "unchanged": [
+          "model_graph",
+          "weights",
+          "quantization",
+          "pytorch_reference",
+          "output_abi",
+          "hiai_loader_call_order"
+        ],
+        "source_sidecar_bytes_user_reported": 2849468580,
+        "source_main_omc_bytes_user_reported": 2905990,
+        "set_model_buffer_max_bytes": 4294967295,
+        "actual_omc_size_check": [
+          "before_bundle_snapshot",
+          "native_load"
+        ],
+        "size_scope": "Existing sidecar sum is below uint32 but does not guarantee the new embedded OMC layout or file size",
+        "selected_ddk_validation": "NOT_RUN_LOCALLY_REMOTE_RETRY_PENDING",
+        "device_validation": "PENDING_NO_SUCCESS_CLAIM",
+        "root_cause_status": "CANDIDATE_STORAGE_ROUTE_NOT_CONFIRMED_EXTERNAL_LOAD_ROOT_CAUSE",
+        "artifact_policy": "Keep the original 732 external artifacts and failure evidence; create a new retry output directory",
+        "host_validation": {
+          "run_id": "20261028T063649Z-28459-d40778",
+          "evidence": "embedded-regression.xml",
+          "tests_passed": 203,
+          "elapsed_seconds": 8.68,
+          "test_files": [
+            "tests/test_full_draft_cli.py",
+            "tests/test_existing_air.py",
+            "tests/test_retained_air.py",
+            "tests/test_draft_board.py",
+            "tests/test_draft_compile_inspect.py"
+          ],
+          "scope": [
+            "Storage-mode selection and resume inheritance",
+            "Reuse prepared/fixture/AIR while rebuilding compilation/bundle for changed storage mode",
+            "Mocked OMG receives save_weights_as_external_data=false with matching metadata",
+            "Single OMC without sidecars passes bundle validation and produces its upload plan",
+            "Existing AIR compile, retained-output recovery and read-only inspection regressions"
+          ],
+          "selected_ddk_execution": "NOT_RUN_LOCALLY",
+          "device_execution": "NOT_RUN_LOCALLY",
+          "limits": "Mocked compilation and board paths do not establish actual embedded OMC compilation, HIAI Load success or numerical accuracy"
+        }
       }
     }
   },

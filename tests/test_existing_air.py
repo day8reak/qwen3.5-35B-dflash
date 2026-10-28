@@ -364,8 +364,10 @@ def test_explicit_elf_and_original_conversion_flags_are_passed_as_single_argumen
     assert (output / "help.log").is_file() and (output / "help-command.json").is_file()
 
 
-@pytest.mark.parametrize("use_origin_format", [True, False])
-def test_explicit_fp16_profile_reaches_compiler_and_retained_metadata(case, monkeypatch, use_origin_format):
+@pytest.mark.parametrize("use_origin_format,save_external", [(True, True), (False, True), (True, False)],
+                         ids=["external-origin", "external-nchw", "embedded-origin"])
+def test_explicit_fp16_profile_reaches_compiler_and_retained_metadata(
+        case, monkeypatch, use_origin_format, save_external):
     air, output, ddk = case
     before = {path: path.read_bytes() for path in (air, air.parent / "weights/w.bin")}
     commands = []
@@ -378,7 +380,8 @@ def test_explicit_fp16_profile_reaches_compiler_and_retained_metadata(case, monk
         assert command.count("--use_origin_format=" + str(use_origin_format).lower()) == 1
         assert command.count("--weight_data_type=FP16") == 1
         assert "--limit_partition_size=false" in command
-        assert "--save_weights_as_external_data=true" in command
+        assert [value for value in command if value.startswith("--save_weights_as_external_data=")] == [
+            "--save_weights_as_external_data=" + str(save_external).lower()]
         model = Path(next(value.split("=", 1)[1] for value in command if value.startswith("--model=")))
         assert model.read_bytes() == before[air]
         assert model.parent == kwargs["cwd"]
@@ -390,12 +393,13 @@ def test_explicit_fp16_profile_reaches_compiler_and_retained_metadata(case, monk
     monkeypatch.setattr(subprocess, "run", tool)
     result = module.compile_existing_air(
         air, output, ddk, ddk_id="MOCK", use_origin_format=use_origin_format,
-        weight_data_type="FP16", limit_partition_size=False, save_weights_as_external_data=True)
+        weight_data_type="FP16", limit_partition_size=False, save_weights_as_external_data=save_external)
     assert result["status"] == "COMPILED" and len(commands) == 1
     assert result["requested_options"] == {
         "use_origin_format": str(use_origin_format).lower(), "weight_data_type": "FP16",
-        "limit_partition_size": "false", "save_weights_as_external_data": "true",
+        "limit_partition_size": "false", "save_weights_as_external_data": str(save_external).lower(),
     }
+    assert json.loads((output / "report.json").read_text())["requested_options"] == result["requested_options"]
     assert set(result["help_check"]["missing"]) == {"use_origin_format", "weight_data_type"}
     recorded = json.loads((output / "compile-command.json").read_text())
     assert recorded["argv"] == commands[0]

@@ -81,6 +81,25 @@ def test_bundle_copies_all_compiler_payloads_and_strict_draft_wire(bundle):
     assert all('target.omc' not in r['remote'] for r in uploads)
 
 
+def test_single_embedded_omc_bundle_needs_no_external_weight_payload(bundle, tmp_path):
+    _, original = bundle
+    compiler = tmp_path/'compilation'
+    report = json.loads((compiler/'report.json').read_text())
+    report.update(generated_artifacts=[report['omc']], external_data_candidates=[],
+                  requested_options={'save_weights_as_external_data':'false'})
+    write_json(compiler/'report.json', report)
+    root = tmp_path/'embedded-bundle'
+    manifest = board.prepare_draft_bundle(compiler, tmp_path/'fixture', root,
+        config=original['draft_config'], ddk_id='fixture')
+    assert manifest['model_payloads'] == [manifest['model']]
+    assert manifest['model']['sha256'] == report['omc']['sha256']
+    _, uploads = board._validate_bundle(root)
+    model_uploads = [row for row in uploads if row['remote'].startswith('bundle/model/')]
+    assert len(model_uploads) == 1
+    assert model_uploads[0]['remote'] == 'bundle/model/model.omc'
+    assert not (root/'model/weights.bin').exists()
+
+
 def _nested_compiler_payloads(bundle):
     root, manifest = bundle
     compiler = root.parent/'compilation'

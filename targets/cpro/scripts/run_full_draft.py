@@ -32,6 +32,8 @@ def parser():
     p.add_argument("--ddk-root", default=os.environ.get("CPRO_DDK_ROOT") or os.environ.get("DDK_PATH"))
     p.add_argument("--ddk-id", default=os.environ.get("CPRO_DDK_ID"))
     p.add_argument("--tbe-diagnosis", help="reuse completed TBE diagnosis; no new diagnosis matrix")
+    p.add_argument("--weight-storage", choices=("external", "embedded"),
+                   help="OMC weight storage; fresh jobs default external, resume inherits the recorded compilation")
     p.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
     p.add_argument("--cxx11-abi", type=int, choices=(0, 1), default=0)
     p.add_argument("--timeout-seconds", type=int, default=3600)
@@ -65,7 +67,7 @@ def _verify_air(folder, manifest):
         checked_file(folder, row)
 
 
-def _retained_output_candidate(previous):
+def _retained_output_candidate(previous, compile_options):
     """Identify the old post-OMG path error; recovery still verifies every file."""
     from qwen35_moe_dflash.retained_air import LEGACY_OUTPUT_ERROR
     folder = previous / "compilation"
@@ -76,9 +78,25 @@ def _retained_output_candidate(previous):
     if (report.get("artifact_kind") == "qwen35-existing-air-compilation"
             and report.get("status") == "FAILED" and report.get("stage") == "output-check"
             and report.get("error") == LEGACY_OUTPUT_ERROR
-            and report.get("requested_options") == DRAFT_COMPILE_OPTIONS):
+            and report.get("requested_options") == compile_options):
         return folder
     return None
+
+
+def _external_weight_candidates(compiled):
+    """Recognize observed payload names, not every generated diagnostic file."""
+    weights = []
+    for row in compiled.get("external_data_candidates", []):
+        path = Path(row["path"])
+        if "dump_graph" in path.parts:
+            continue
+        if (path.suffix.lower() in {".weight", ".weights"}
+                or path.name.lower().endswith(".omc.data") or "model.weights" in path.parts):
+            if type(row.get("bytes")) is not int or row["bytes"] < 0:
+                raise ValueError("invalid external-weight candidate size: " + row["path"])
+            if row["bytes"]:
+                weights.append(row)
+    return weights
 
 
 def _weight_path(explicit, key):
@@ -143,6 +161,10 @@ def main(argv=None):
     root = None
     retained_compilation = None
     board_hilog = None
+    weight_storage = args.weight_storage or "external"
+    compile_options = {**DRAFT_COMPILE_OPTIONS,
+                       "save_weights_as_external_data": "true" if weight_storage == "external" else "false"}
+    result.update(weight_storage=weight_storage, compile_options=compile_options)
 
     def progress(row):
         message = row["message"]
@@ -183,8 +205,8 @@ def main(argv=None):
             if not args.resume:
                 raise ValueError("--inspect-only requires --resume pointing to the retained full-draft job")
             if any(value is not None for value in (args.target_weights, args.draft_weights,
-                                                   args.sequence_length, args.valid_length)):
-                raise ValueError("inspection reads the retained job; do not select new weights or inputs")
+                                                   args.sequence_length, args.valid_length, args.weight_storage)):
+                raise ValueError("inspection reads the retained job; do not select new weights, inputs or weight storage")
             from qwen35_moe_dflash.draft_compile_inspect import inspect_draft_compile
             inspection_dir = output_path(args.output or Path(run) / ("full-draft-inspect-" + uuid.uuid4().hex[:12]))
             inspected = inspect_draft_compile(args.resume, inspection_dir, schema_library=args.schema_library)
@@ -216,6 +238,20 @@ def main(argv=None):
                     record = json.loads(receipt.read_text())
                     _read_component(record)
                     result["components"][name] = record
+            # Use the verified compilation receipt before the parent job's
+            # summary, including when an export-contract change rebuilds AIR.
+            inherited_options = old.get("compile_options", {})
+            if "compilation" in result["components"]:
+                _, inherited_compile = _read_component(result["components"]["compilation"])
+                inherited_options = inherited_compile.get("requested_options", {})
+            if args.weight_storage is None:
+                stored = inherited_options.get("save_weights_as_external_data")
+                if stored not in (None, "true", "false"):
+                    raise ValueError("resume compilation has an invalid weight-storage option")
+                weight_storage = "embedded" if stored == "false" else "external"
+                compile_options = {**DRAFT_COMPILE_OPTIONS,
+                    "save_weights_as_external_data": "true" if weight_storage == "external" else "false"}
+                result.update(weight_storage=weight_storage, compile_options=compile_options)
             result["resumed_from"] = str(previous)
             if "air" in result["components"]:
                 from qwen35_moe_dflash.draft_standalone import CURRENT_DRAFT_EXPORT_CONTRACT
@@ -238,18 +274,18 @@ def main(argv=None):
             if "compilation" in result["components"]:
                 _, prior_compile = _read_component(result["components"]["compilation"])
                 options = prior_compile.get("requested_options", {})
-                if any(options.get(key) != value for key, value in DRAFT_COMPILE_OPTIONS.items()):
+                if any(options.get(key) != value for key, value in compile_options.items()):
                     obsolete = {name: result["components"].pop(name)
                                 for name in ("compilation", "bundle") if name in result["components"]}
                     result.setdefault("resume_invalidations", []).append({
                         "reason": "DRAFT_COMPILE_OPTIONS_CHANGED", "previous_options": options,
-                        "required_options": dict(DRAFT_COMPILE_OPTIONS), "components": obsolete,
+                        "required_options": dict(compile_options), "components": obsolete,
                         "preserved": [name for name in ("prepared", "fixture", "air") if name in result["components"]],
                         "scope": "Recompile existing AIR in the new job; previous evidence is unchanged."})
-                    stage("resume", "Updating draft compilation to the FP16 tiny profile; reusing weights/reference/AIR")
+                    stage("resume", f"Updating draft compilation to FP16 with {weight_storage} OMC weights; reusing weights/reference/AIR")
             if (not args.prepare_only and "air" in result["components"]
                     and "compilation" not in result["components"] and not result.get("resume_invalidations")):
-                retained_compilation = _retained_output_candidate(previous)
+                retained_compilation = _retained_output_candidate(previous, compile_options)
         if settings["sequence_length"] < 2:
             raise ValueError("--sequence-length must be at least 2")
         if settings["valid_length"] is None:
@@ -261,7 +297,7 @@ def main(argv=None):
         root.mkdir(parents=True, exist_ok=False)
         result["output"] = str(root)
         save_json(root / "job.json", result)
-        stage("preflight", f"output {root}; full six-layer draft, block 16, full vocabulary")
+        stage("preflight", f"output {root}; full six-layer draft, block 16, full vocabulary; OMC weights={weight_storage}")
 
         from qwen35_moe_dflash.draft_standalone import prepare_draft, export_draft
         from qwen35_moe_dflash.draft_reference import prepare_draft_reference
@@ -298,9 +334,10 @@ def main(argv=None):
                 prepared_dir, folder, args.ge_root, cxx=args.cxx, cxx11_abi=args.cxx11_abi,
                 timeout_seconds=args.timeout_seconds, progress=progress))
             _verify_air(air_dir, exported)
-            stage("compilation", "Verifying retained OMG output and external weights; no recompilation"
+            stage("compilation", f"Verifying retained OMG output with {weight_storage} OMC weights; no recompilation"
                   if retained_compilation is not None else
-                  "Compiling draft AIR with the tiny FP16 profile: use_origin_format=true, weight_data_type=FP16")
+                  f"Compiling draft AIR with {weight_storage} OMC weights: use_origin_format=true, weight_data_type=FP16, "
+                  f"save_weights_as_external_data={compile_options['save_weights_as_external_data']}")
             from qwen35_moe_dflash.existing_air import compile_existing_air
             def compile_draft(folder):
                 if retained_compilation is not None:
@@ -308,7 +345,7 @@ def main(argv=None):
                     # Any failed recovery check is terminal; do not silently run OMG.
                     compiled = recover_retained_air(
                         retained_compilation, folder, export_dir=air_dir,
-                        expected_options=DRAFT_COMPILE_OPTIONS, ddk_id=args.ddk_id,
+                        expected_options=compile_options, ddk_id=args.ddk_id,
                         ddk_root=args.ddk_root, progress=progress)
                     result["compilation_recovery"] = compiled["recovery"]
                 else:
@@ -316,7 +353,7 @@ def main(argv=None):
                         air_dir / exported["graphs"][0]["air"], folder, args.ddk_root,
                         ddk_id=args.ddk_id, tbe_diagnosis=args.tbe_diagnosis,
                         timeout_seconds=args.timeout_seconds, input_layout="air-directory",
-                        limit_partition_size=False, save_weights_as_external_data=True,
+                        limit_partition_size=False, save_weights_as_external_data=(weight_storage == "external"),
                         use_origin_format=True, weight_data_type="FP16", progress=progress)
                 _verify_air(air_dir, exported)
                 if compiled.get("status") != "COMPILED":
@@ -326,9 +363,22 @@ def main(argv=None):
             if compiled.get("status") != "COMPILED":
                 raise ValueError("resume compilation is not complete")
             if any(compiled.get("requested_options", {}).get(key) != value
-                   for key, value in DRAFT_COMPILE_OPTIONS.items()):
+                   for key, value in compile_options.items()):
                 raise ValueError("draft compilation does not match the required FP16 compiler options")
-            checked_file(compilation_dir, compiled["omc"])
+            model_bytes = compiled["omc"].get("bytes")
+            if type(model_bytes) is not int or not 0 < model_bytes <= (1 << 32) - 1:
+                raise ValueError("compiled OMC exceeds the native SetModelBuffer UINT32_MAX size limit or has invalid size")
+            model_path = checked_file(compilation_dir, compiled["omc"])
+            if model_path.stat().st_size > (1 << 32) - 1:
+                raise ValueError("compiled OMC exceeds the native SetModelBuffer UINT32_MAX size limit")
+            observed_weights = _external_weight_candidates(compiled)
+            result["weight_storage_validation"] = {
+                "requested": weight_storage, "omc_bytes": model_bytes,
+                "observed_weight_candidates": observed_weights,
+                "scope": "Recorded compiler option and known weight filenames only; OMC dependency contents are not decoded."}
+            if weight_storage == "embedded" and observed_weights:
+                raise ValueError("embedded OMC compilation retained nonempty external weight payloads: "
+                                 + ", ".join(row["path"] for row in observed_weights[:8]))
             if args.ddk_id and compiled["ddk_id"] != args.ddk_id:
                 raise ValueError("selected DDK differs from the reused compilation")
             result["model_compilation"] = "PASSED"
