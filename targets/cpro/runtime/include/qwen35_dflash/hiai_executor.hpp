@@ -13,6 +13,25 @@ struct HiaiProbe {
 };
 HiaiProbe ProbeHiai();
 
+struct HiaiDescriptionSnapshot {
+  std::string operation, model_path;
+  std::int64_t setter_status = 0;
+  bool buffer_present = false, buffer_matches_input = false;
+  std::uint32_t model_bytes = 0;
+};
+struct HiaiDescriptionOrder {
+  std::string order;
+  std::vector<HiaiDescriptionSnapshot> steps;
+};
+struct HiaiDescriptionProbe {
+  HiaiProbe runtime;
+  std::string model_path, model_sha256;
+  std::uint32_t model_bytes = 0;
+  std::vector<HiaiDescriptionOrder> observations;
+};
+// Observes descriptor setters only. Never loads or executes the model.
+HiaiDescriptionProbe ProbeHiaiModelDescription(const std::filesystem::path& model);
+
 // The explicit-state target has a separate, ordered ABI. Dtype comes from the
 // hash-bound graph contract; the legacy HIAI descriptor exposes shape/format.
 struct HiaiTensorSpec {

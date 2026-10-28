@@ -4,6 +4,16 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 外置模型加载描述符诊断入口
+
+2026-10-28，固定目录迁移后新增 `probe_draft_load.py`，从当前成功external编译记录核验小主OMC，使用与完整draft相同的运行库选择规则构建并部署当前runner。仅上传主OMC（上限64MiB）、runner及运行库，不读取或上传权重sidecar，也不执行AIR/OMG、模型Load或Process。
+
+原生入口为 `--probe-model-description`，在两份新 `AiModelDescription` 上分别执行路径→buffer与buffer→路径，记录每步setter状态和getter读出的路径、buffer存在/匹配状态及长度。这用于确认当前DDK是否会清掉另一字段，不预设旧版公开实现仍适用。正常模型加载调用未改变，诊断结果不能证明外置权重加载、模型执行或数值正确；732的Load失败与6599的embedded序列化失败仍未解决。
+
+结果集中在 `full-draft/load-diagnostic`，复用固定工作目录锁，重试只替换该入口已识别的旧诊断目录，不清理模型阶段。主机端验证回收结果的模型身份、两种调用顺序和未执行Load/Process声明，完整观察才标为 `INSPECTED`；原生非零退出或传输/身份错误不得升级为成功。本轮本地缺少 `cpro-blue-pending` 配置，未执行所选DDK或真实设备；实际setter行为仍需用户执行并回传。
+
+本轮 `20261028T073909Z-31045-e9d76e` 的 `probe-driver-final.xml` 记录19项Python测试通过，`native-description-ctest.xml` 记录7项原生CTest通过。覆盖不读取/上传sidecar、身份和传输失败、诊断目录覆盖，以及模拟setter相互清除字段、非零返回码和无Load/Process调用；原有runner回归也通过。首次驱动测试的两项失败来自模拟返回缺少新增的 `evidence_kind` 字段，修正夹具后通过，未放松真实结果校验。
+
 ## 固定 draft 工作目录与内嵌模型保存失败
 
 2026-10-28，最新用户回传 `full-draft-6599025a0b74` 的embedded重试：日志到达 `Compile end`，随后 `SaveToBuffer/CreateCompiledModelBuffer` 中 `LargeMemoryOps::Copy` 的 `memcpy_s` 失败，经 `SetModelHeader/CopyDataToBuffer` 返回 `Save compiled model to file failed`。没有生成可用于本次执行的成功编译结果，也未调用设备Process。当前只确认大缓冲区序列化失败，具体大小上限、参数或内存原因未证实；此前sidecar总量小于UINT32并不能证明编译器能生成这个大小的内嵌OMC。没有自动切换external或重新运行失败编译。

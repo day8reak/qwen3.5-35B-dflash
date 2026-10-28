@@ -215,6 +215,40 @@ HiaiProbe ProbeHiai() {
   return {Version(client), client.CheckNPUSupport()};
 }
 
+HiaiDescriptionProbe ProbeHiaiModelDescription(const std::filesystem::path& model) {
+  constexpr std::uintmax_t limit = 64ULL << 20;
+  if (!std::filesystem::is_regular_file(model) || std::filesystem::file_size(model) > limit)
+    throw std::invalid_argument("descriptor probe requires a regular main OMC of at most 64 MiB");
+  ModelBuffer buffer;
+  buffer.Open(model);
+  if (buffer.Size() > limit)
+    throw std::invalid_argument("descriptor probe main OMC exceeds 64 MiB");
+  HiaiDescriptionProbe result;
+  result.model_path = std::filesystem::absolute(model).string();
+  result.model_bytes = buffer.Size();
+  result.model_sha256 = Sha256(std::string_view(static_cast<const char*>(buffer.Data()), buffer.Size()));
+  result.runtime = ProbeHiai();
+  for (const bool path_first : {true, false}) {
+    // A fresh description for each order isolates setter interactions. Keep
+    // mapped bytes alive until both descriptions have been destroyed.
+    hiai::AiModelDescription description("qwen35_model_description_probe",
+        hiai::AiModelDescription_Frequency_HIGH, hiai::HIAI_FRAMEWORK_NONE,
+        hiai::HIAI_MODELTYPE_OFFLINE, hiai::AiModelDescription_DeviceType_NPU);
+    HiaiDescriptionOrder observation;
+    observation.order = path_first ? "path-then-buffer" : "buffer-then-path";
+    for (const bool set_path : {path_first, !path_first}) {
+      const auto status = set_path ? description.SetModelPath(result.model_path)
+          : description.SetModelBuffer(buffer.Data(), buffer.Size());
+      const auto* actual_buffer = description.GetModelBuffer();
+      observation.steps.push_back({set_path ? "SetModelPath" : "SetModelBuffer",
+          description.GetModelPath(), static_cast<std::int64_t>(status),
+          actual_buffer != nullptr, actual_buffer == buffer.Data(), description.GetModelNetSize()});
+    }
+    result.observations.push_back(std::move(observation));
+  }
+  return result;
+}
+
 std::size_t HiaiTensorBytes(const HiaiTensorSpec& spec) {
   if (spec.name.empty() || spec.shape.size() > 8 ||
       (spec.dtype != "int32" && spec.dtype != "int16" && spec.dtype != "int64" &&

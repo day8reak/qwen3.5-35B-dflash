@@ -2,7 +2,18 @@
 
 当前优先跑通完整六层 DFlash，不等待40层 target 编译。沿用已经配置的 `env.sh`、主机GE、目标DDK和HDC环境。默认工作目录固定为 `$AI_RUN_DIR/full-draft`，后续自动复用成功阶段并覆盖失败阶段的日志，不再为每次重试生成新目录。
 
-当前最新 `full-draft-6599025a0b74` 的embedded编译在 `Compile end` 后保存模型失败。首选从此前732批次迁入已有成功阶段，保留external OMC和bundle；本次只整理已有产物，不编译、不上板：
+固定目录迁移完成后，下一步先观察所选DDK的加载描述符：
+
+```bash
+git pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/probe_draft_load.py"
+```
+
+诊断仅上传经过清单大小/SHA256验证的external主OMC（当前2,905,990字节，上限64MiB）、新构建的runner和与完整draft相同规则选择的运行库，不上传大权重sidecar，不运行AIR/OMG，也不调用模型Load/Process。两份新描述符分别执行 `SetModelPath → SetModelBuffer` 和 `SetModelBuffer → SetModelPath`，逐步报告setter返回值及getter读出的模型路径、缓冲区和长度。正常模型加载方式保持不变；只有得到当前DDK的实际行为后才决定修复。`INSPECTED`仅表示诊断观察完整，不代表外置权重已加载或模型通过。
+
+结果位于 `$AI_RUN_DIR/full-draft/load-diagnostic/result.json`，原生输出为同目录的 `probe.json`、`probe.stderr`、`probe.exitcode`。重试只覆盖已识别的诊断目录，不重置已完成模型阶段；固定工作目录锁拒绝并发运行。默认使用当前固定目录，其他完整external任务可显式指定 `--job`。本地缺少所选Cpro配置，没有真实设备诊断结果。
+
+当前最新 `full-draft-6599025a0b74` 的embedded编译在 `Compile end` 后保存模型失败。以下是此前首次迁移命令，已完成迁移时无需重跑。它从732批次迁入已有成功阶段，保留external OMC和bundle，只整理已有产物，不编译、不上板：
 
 ```bash
 git pull --ff-only
@@ -44,7 +55,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 这一步验证完整draft在固定输入上的执行与输出，不是独立文本生成，也不证明原始BF16质量、与量化target的接受率或加速。当前实现是prefix recomputation，没有新增draft KV增量缓存。后续将固定features换成真实target的八层特征，再做接入验证。
 
-后续需要执行时省略 `--resume`，入口自动读取固定目录中的任务。例如下面是常规续跑形式；本次先完成上面的迁移，确定下一步加载诊断前不重复运行设备：
+后续需要执行完整模型时省略 `--resume`，入口自动读取固定目录中的任务。下面保留常规续跑形式；当前先完成上面的加载接口诊断，不重复运行已知失败的模型Load：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
@@ -59,7 +70,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 v4将BOOL掩码转成INT32的0/1，GatherV2使用全零索引复制单例query/head维，最后转回BOOL；覆盖六层显式扩展和Select补出的六层head扩展，共12处。掩码值、权重、PyTorch参考、浮点计算和输出ABI不变。此前v3的INT32形状参数修改没有解决设备加载问题，历史失败记录保留；v4目前只取得编译及CPUCL初始化进展，完整执行仍失败。
 
-随后 `full-draft-6599025a0b74` 使用embedded模式，在 `Compile end` 后的 `SaveToBuffer/CreateCompiledModelBuffer` 失败：`LargeMemoryOps::Copy` 的 `memcpy_s` 报错，经 `SetModelHeader/CopyDataToBuffer` 返回 `Save compiled model to file failed`。没有进入板端执行；当前确认的是保存大缓冲区失败，具体大小限制和根因未证实。单次调用失败后不会自动切换模式或再试；再次执行常规入口会重试失败阶段，因此当前仅执行上面的迁移命令。
+随后 `full-draft-6599025a0b74` 使用embedded模式，在 `Compile end` 后的 `SaveToBuffer/CreateCompiledModelBuffer` 失败：`LargeMemoryOps::Copy` 的 `memcpy_s` 报错，经 `SetModelHeader/CopyDataToBuffer` 返回 `Save compiled model to file failed`。没有进入板端执行；当前确认的是保存大缓冲区失败，具体大小限制和根因未证实。单次调用失败后不会自动切换模式或再试；再次执行常规入口会重试失败阶段，因此迁移后先运行加载接口诊断。
 
 `embedded` 显式设置OMG的 `--save_weights_as_external_data=false`，`external` 设置为true。新任务默认external，续跑不指定时继承已记录模式；首选从732迁移会继承external并保留成功编译和bundle。也可从6599迁移其完成的prepared/fixture/AIR，但会继承embedded，无法同时保留732的成功编译，因此不是当前首选。存储模式变化只使compilation/bundle失效，prepared/fixture/AIR复用。当前迁移不改变此模式，也不修改图、量化、权重、参考或加载API；不是模型加载或编译故障修复。
 

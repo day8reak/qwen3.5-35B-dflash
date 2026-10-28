@@ -6,11 +6,20 @@
 
 ## 用户现在执行什么
 
-**先运行完整 draft 的独立入口。** [独立 draft 指南](draft-standalone.md)提供一条命令完成真实权重准备、PyTorch参考、GE导出、OMG编译和HIAI执行。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
+**固定目录迁移完成后，先运行加载接口诊断。** 当前普通入口仍会遇到未解决的external Load失败，下一步仅观察所选DDK中模型路径和缓冲区setter的实际行为：
+
+```bash
+git pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/probe_draft_load.py"
+```
+
+入口复用 `$AI_RUN_DIR/full-draft` 中成功编译的external主OMC，仅上传这个约2.9MB的文件、当前runner及同一选择规则下的运行库，不上传权重sidecar，不调用AIR/OMG或模型Load/Process。分别用新描述符观察 `SetModelPath → SetModelBuffer` 以及相反顺序之后的路径、buffer和长度；不会自动改变正常加载代码或重编译模型。结果写入 `full-draft/load-diagnostic/result.json`、`probe.json` 和 `probe.stderr`，同一诊断目录后续替换；工作目录锁避免与完整draft续跑并发。当前没有真实设备诊断结果，setter是否清空另一字段仍是待验证线索。
+
+[独立 draft 指南](draft-standalone.md)保留完整模型入口。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
 最新内嵌重试 **`full-draft-6599025a0b74`** 在 `Compile end` 后保存模型失败：`SaveToBuffer/CreateCompiledModelBuffer` 中的 `LargeMemoryOps::Copy` 报 `memcpy_s` 失败，经 `SetModelHeader/CopyDataToBuffer` 返回保存失败。它没有进入板端执行；目前只能确认大缓冲区序列化失败，不能确定是某个固定大小上限或其他原因，也不会自动改回external重跑。
 
-按用户要求，入口现在默认使用固定 **`$AI_RUN_DIR/full-draft`**。首选从732迁入已完成权重、参考、v4 AIR，以及已经成功编译的external OMC和bundle，**本次只整理已有产物，不编译、不上板**：
+按用户要求，入口现在默认使用固定 **`$AI_RUN_DIR/full-draft`**。此前一次迁移命令如下；已经完成迁移时不再执行它。它从732迁入已完成权重、参考、v4 AIR，以及已经成功编译的external OMC和bundle，不编译或上板：
 
 ```bash
 git pull --ff-only

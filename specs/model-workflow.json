@@ -524,7 +524,25 @@
     },
     "standalone_draft": {
       "entrypoint": "targets/cpro/scripts/run_full_draft.py",
-      "status": "EMBEDDED_OMC_SERIALIZATION_FAILED_USER_REPORTED_FIXED_WORKSPACE_ADOPTION_NEXT",
+      "status": "EXTERNAL_LOAD_AND_EMBEDDED_SAVE_UNRESOLVED_DESCRIPTOR_PROBE_NEXT",
+      "descriptor_probe": {
+        "entrypoint": "targets/cpro/scripts/probe_draft_load.py",
+        "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_draft_load.py\"",
+        "output": "${AI_RUN_DIR}/full-draft/load-diagnostic",
+        "status": "HOST_TESTED_AWAITING_SELECTED_DEVICE",
+        "observations": ["SetModelPath then SetModelBuffer", "SetModelBuffer then SetModelPath"],
+        "payload": "Hash-bound external main OMC only, at most 64 MiB, plus current runner and selected runtime libraries; no sidecars or model inputs",
+        "model_load_called": false,
+        "model_process_called": false,
+        "normal_loader_changed": false,
+        "host_validation": {
+          "run_id": "20261028T073909Z-31045-e9d76e",
+          "python_tests_passed": 19,
+          "native_ctest_cases_passed": 7,
+          "evidence": ["probe-driver-final.xml", "native-description-ctest.xml"]
+        },
+        "limits": "Observes descriptor behavior only; no external-weight loading, model execution or numerical validation. Actual selected-DDK setter semantics remain unverified."
+      },
       "latest_compile_feedback": {
         "source": "USER_PASTED_OMG_LOG",
         "run": "full-draft-6599025a0b74",
@@ -551,7 +569,7 @@
           "fixture": "full-draft-d7b4db958850",
           "air": "full-draft-732b26335347"
         },
-        "next_action": "Preserve this embedded failure observation; adopt all completed stages from 732 into AI_RUN_DIR/full-draft with --prepare-only to retain the already successful external compilation/bundle without running OMG or board"
+        "next_action": "After fixed-workspace adoption, run probe_draft_load.py to inspect selected-DDK descriptor setters without model Load/Process or another compilation"
       },
       "latest_board_feedback": {
         "source": "USER_PASTED_NATIVE_RESULT_COMPARISON_AND_HILOG",

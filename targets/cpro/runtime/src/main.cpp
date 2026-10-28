@@ -657,6 +657,7 @@ int RunTensorStep(const std::string& path, const std::string& output,
 }
 void Help() {
   std::cout << "qwen35_dflash_hiai --probe\n"
+            << "qwen35_dflash_hiai --probe-model-description MAIN.omc (at most 64 MiB; no Load/Process)\n"
             << "qwen35_dflash_hiai --target TARGET.omc --target-sha256 HEX "
             << "--draft DRAFT.omc --draft-sha256 HEX --expected-runtime-version VERSION "
             << "--ddk-id VERSION --firmware-id VERSION "
@@ -681,6 +682,36 @@ int main(int argc, char** argv) {
       std::cout << "{\"runtime_version\":\"" << JsonEscape(probe.version)
                 << "\",\"npu_supported\":" << (probe.npu_supported ? "true" : "false") << "}\n";
       return probe.npu_supported ? 0 : 1;
+    }
+    if (argc == 3 && std::string(argv[1]) == "--probe-model-description") {
+      const auto probe = ProbeHiaiModelDescription(argv[2]);
+      std::cout << "{\"schema_version\":1,\"artifact_kind\":\"qwen35-hiai-model-description-probe\","
+                << "\"status\":\"INSPECTED\",\"evidence_kind\":\"" << kEvidenceKind
+                << "\",\"model_path\":\"" << JsonEscape(probe.model_path)
+                << "\",\"model_sha256\":\"" << probe.model_sha256
+                << "\",\"model_bytes\":" << probe.model_bytes
+                << ",\"runtime_version\":\"" << JsonEscape(probe.runtime.version)
+                << "\",\"npu_supported\":" << (probe.runtime.npu_supported ? "true" : "false")
+                << ",\"process_id\":" << static_cast<long long>(getpid())
+                << ",\"load_called\":false,\"process_called\":false,\"observations\":[";
+      for (std::size_t i = 0; i < probe.observations.size(); ++i) {
+        if (i) std::cout << ',';
+        const auto& observation = probe.observations[i];
+        std::cout << "{\"order\":\"" << JsonEscape(observation.order) << "\",\"steps\":[";
+        for (std::size_t j = 0; j < observation.steps.size(); ++j) {
+          if (j) std::cout << ',';
+          const auto& step = observation.steps[j];
+          std::cout << "{\"operation\":\"" << JsonEscape(step.operation)
+                    << "\",\"setter_status\":" << step.setter_status
+                    << ",\"model_path\":\"" << JsonEscape(step.model_path)
+                    << "\",\"buffer_present\":" << (step.buffer_present ? "true" : "false")
+                    << ",\"buffer_matches_input\":" << (step.buffer_matches_input ? "true" : "false")
+                    << ",\"model_bytes\":" << step.model_bytes << '}';
+        }
+        std::cout << "]}";
+      }
+      std::cout << "]}\n";
+      return 0;
     }
     std::map<std::string, std::string> args;
     for (int i = 1; i < argc; i += 2) {

@@ -95,10 +95,17 @@ std::uint32_t AiTensor::GetSize() const {
 AiModelDescription::AiModelDescription(const std::string& n,int freq,int framework,int model,int device):name(n) {
   if(freq!=3 || framework!=0 || model!=1 || device!=0) throw std::runtime_error("wrong HIAI model mode");
 }
-AIStatus AiModelDescription::SetModelPath(const std::string& p) { path=p; return Failure()=="path"?1:0; }
+AIStatus AiModelDescription::SetModelPath(const std::string& p) {
+  path=p;
+  if (Failure()=="descriptor-exclusive") { model_buffer_=nullptr; model_bytes_=0; }
+  return Failure()=="path"?1:0;
+}
 AIStatus AiModelDescription::SetModelBuffer(const void* data, std::uint32_t bytes) {
   if(Failure()=="model-buffer") return AI_FAILED;
-  if(!ModelBytesValid(data, bytes, name)) return AI_FAILED;
+  if(name=="qwen35_model_description_probe") {
+    if(!data || !bytes) return AI_FAILED;
+  } else if(!ModelBytesValid(data, bytes, name)) return AI_FAILED;
+  if(Failure()=="descriptor-exclusive") path.clear();
   model_buffer_=data; model_bytes_=bytes; return AI_SUCCESS;
 }
 void* AiModelDescription::GetModelBuffer() const {

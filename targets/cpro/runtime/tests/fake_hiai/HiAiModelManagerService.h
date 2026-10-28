@@ -40,6 +40,7 @@ class AiModelDescription {
  public:
   AiModelDescription(const std::string&, int, int, int, int);
   AIStatus SetModelPath(const std::string& path);
+  const std::string& GetModelPath() const { return path; }
   AIStatus SetModelBuffer(const void*, std::uint32_t);
   void* GetModelBuffer() const;
   std::uint32_t GetModelNetSize() const;
