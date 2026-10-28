@@ -2,18 +2,16 @@
 
 当前优先跑通完整六层 DFlash，不等待40层 target 编译。沿用已经配置的 `env.sh`、主机GE、目标DDK和HDC环境。默认工作目录固定为 `$AI_RUN_DIR/full-draft`，后续自动复用成功阶段并覆盖失败阶段的日志，不再为每次重试生成新目录。
 
-已有固定目录和成功external OMC时，当前执行：
+最新流式内嵌模型已在设备执行成功，当前FAILED是主机比较报告中的inf无法写入JSON。先复核保留输出：
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --weight-storage embedded-stream
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --compare-only
 ```
 
-用户最新回传确认V2 `RestoreFromFile`成功，但 `IModelManager::Init`仍报NPU权重内存只有16字节。新选项复用external编译，按所选DDK描述解析图中权重偏移和大小，将经哈希核验的sidecar直接流式写进bundle的单个OMC。图、任务和权重字节不改；容器长度和分区表按严格已知布局更新。源编译产物保留，只有bundle和board重建；无需重新准备参考、导出AIR或调用OMG。
+复核只读取已回收的native输出，重新核验bundle、进程退出、runtime/firmware、回读及传输SHA256，生成 `full-draft/comparison-review.json`。原始board报告和文件不变；不访问设备、不重编译、不重新生成参考。Top1、hidden绝对误差与双方数值统计一次打印。零参考范数的relative_l2为null且带原因，全零参考显式标为退化；不能将其Top1巧合匹配解释为完整数值正确。
 
-`embedded-stream`默认用legacy-buffer加载。封装产物约2.85GB，只写一份；大小/偏移/哈希不一致、未知容器或空间不足会在上传前停止。封装报告在 `bundle/weight-packing.json`，成功后继续完整推理及参考比较。主机验证不证明当前设备已能加载该模型。
-
-`--weight-storage external`直接打包外置编译结果，`embedded`让OMG生成内嵌模型，`embedded-stream`则从external编译结果封装内嵌模型。最后一种不把原编译选项伪记为embedded。再次运行默认继承当前方式；切回external只替换bundle和board。`--model-load-api`可显式选择file-v2或legacy-buffer，单独修改它不会重编译。同步V2 Run无超时参数，HDC等待上限不保证远端取消。
+后续确需重新执行完整draft时使用 `--weight-storage embedded-stream`：复用external编译，将核验后的sidecar按图中权重偏移封装到bundle内单个OMC，默认legacy-buffer加载。该模式已越过当前设备的加载障碍，但本次数值结果尚待上述复核。`external`直接打包外置产物，`embedded`让OMG内嵌编译；二者保留为显式选项。普通续跑继承当前模式和固定目录，只替换失败阶段。
 
 失败报告包含 `model_load_api` 和 `runtime_stage`，区分文件恢复、初始化、张量设置及推理。自动HiLog摘要流式处理超过16MB的快照，并纳入明确提及runner PID的hiaiserver失败线程上下文；保留原快照和行号。SDK构建失败会打印编译错误及实际ND头文件声明，并保留 `board/native/selected-v2-headers.txt`。不需要先重新运行 `probe_draft_load.py`。
 

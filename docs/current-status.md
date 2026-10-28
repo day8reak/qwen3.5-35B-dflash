@@ -6,20 +6,20 @@
 
 ## 用户现在执行什么
 
-**V2 文件恢复已通过，但初始化仍返回同一个16字节权重错误。下一步复用外置编译产物，流式封装为单个内嵌 OMC，再执行完整 draft 和参考比较：**
+**完整 draft 已在设备加载并执行一次。当前只需复核已回收输出，不要重跑上板：**
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --weight-storage embedded-stream
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --compare-only
 ```
 
-这条路径不调用OMG、不重导AIR、不重新准备权重或参考。它从所选DDK读取protobuf描述，逐个解析主图的 `graphop_weight_offset/graphop_weight_size`，核对15份sidecar的文件名、大小和SHA256，将原始字节分块写入OMC权重分区。图和编译任务字节保持不变；仅调整已核实的容器长度、分区表与权重分区。严格拒绝未知分区布局、缺失或重叠的权重范围、文件变化及空间不足，不按文件名字典序猜测顺序，也不自动退回失败的加载路径。
+最新用户回传：流式内嵌OMC大小2,852,374,570字节，SHA256为 `dc1136c5fe9ce7c83157f2fa50504a89eb3f7f5c6487a7b654dd274bb17ae0b4`；PID14008输出 `EXECUTED`，退出码0、回收无错误。原先的权重加载障碍已越过。本次最终FAILED来自主机比较报告：hidden相对L2计算得到inf，严格JSON序列化拒绝保存，尚不能确认数值一致。
 
-固定 `full-draft` 只替换bundle和board；原external编译结果保留。新OMC直接写在bundle内，约2.85GB，不额外复制一份模型；生成后上传这一个模型，默认用 `legacy-buffer` 加载并继续推理、回收和参考比较。后续省略参数会继承此封装方式。`bundle/weight-packing.json`记录源文件、偏移和输出哈希。`--weight-storage embedded`仍表示交给OMG内嵌编译，与本次流式封装不同。
+`--compare-only`核验已有bundle、原生结果、输出、回读及传输哈希后重新比较，写入固定 `full-draft/comparison-review.json`。它不编译、不上传、不调用HDC、不重跑模型，也不改写原始board证据。输出包含Top1差异数与ID、双方hidden的有限/非零数量、范围、L2、绝对误差，以及小型norm权重统计。零参考范数以null和明确状态表示，不用极小分母伪造相对误差；非有限结果仍判失败。若参考hidden全零，将标记参考退化，Top1巧合匹配不能当作完整精度验收。
 
-该方案绕开外置加载和已失败的OMG大缓冲区保存入口，但当前设备对这个内嵌模型的支持及数值结果仍未验证。若失败，单次命令自动显示原生阶段和相关HiLog；无需重新运行API探针或手工筛选PID。
+源码审查发现当前FP16 primitive参考的RMS平方可能溢出后产生全零且finite的输出。这是可复现的参考实现风险，尚未证明是当前完整模型的根因；本次复核先读取保留数据，不改golden或重跑参考。原生单步报告未记录推理耗时，此次不能据日志时间推算20ms性能。
 
-最新用户回传PID6868：所选DDK成功构建V2 runner，`RestoreFromFile`成功、CPUCL初始化成功，`IModelManager::Init`时NPU仍报 `weightsMemBaseSize=16 modelWeightMemorySize=1151486976`。15份实际sidecar大小和SHA256已随报告回传；文件大小及传输校验不等于运行时已正确绑定。仅切换文件恢复API未解决问题，暂不重复同一路径。
+此前 `--weight-storage embedded-stream`复用external编译结果，按所选DDK图中权重偏移和大小将15份sidecar封装到一个内嵌OMC；图、任务和权重字节保持不变。原external编译产物保留，bundle封装记录在 `weight-packing.json`。需要未来重新执行设备时沿用该模式；现在先使用上面的离线比较命令。
 
 [独立 draft 指南](draft-standalone.md)保留完整模型入口。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 

@@ -156,7 +156,7 @@ class DraftWorkspace:
     def save(self, name, value):
         """Atomically replace only a known top-level job or stage receipt."""
         self._owned()
-        allowed = {"job.json", "result.json"} | {f"completed-{stage}.json" for stage in STAGES}
+        allowed = {"job.json", "result.json", "comparison-review.json"} | {f"completed-{stage}.json" for stage in STAGES}
         if name not in allowed:
             raise ValueError("unknown draft workspace metadata name")
         self._write(name, value)

@@ -44,6 +44,7 @@ def parser():
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--prepare-only", action="store_true", help="prepare full weights and PyTorch fixture; no GE/DDK/board")
     mode.add_argument("--compile-only", action="store_true", help="prepare reference, export AIR and compile OMC; no board")
+    mode.add_argument("--compare-only", action="store_true", help="recheck existing board outputs locally; no rebuild, upload, HDC or execution")
     mode.add_argument("--inspect-only", action="store_true", help="read --resume job's retained compiler evidence; no export, compilation or board")
     return p
 
@@ -219,6 +220,27 @@ def _main(args, stack):
         run = os.environ.get("AI_RUN_DIR")
         if not run:
             raise ValueError("AI_RUN_DIR is required; source the project env.sh")
+        if args.compare_only:
+            if any(value is not None for value in (args.target_weights, args.draft_weights,
+                    args.sequence_length, args.valid_length, args.weight_storage, args.model_load_api,
+                    args.schema_library)):
+                raise ValueError("--compare-only reads the retained execution; do not select changed inputs, storage or loader")
+            if args.resume and args.output and Path(args.resume).resolve() != Path(args.output).resolve():
+                raise ValueError("--compare-only does not migrate jobs; select one existing job directory")
+            from qwen35_moe_dflash.draft_review import review_draft_result
+            from qwen35_moe_dflash.draft_workspace import DraftWorkspace
+            selected = Path(args.resume or args.output or Path(run)/"full-draft")
+            if not selected.is_dir() or selected.is_symlink():
+                raise ValueError("--compare-only needs an existing real draft job directory")
+            print("full-draft: Rechecking retained native outputs locally; no rebuild, upload or board execution", flush=True)
+            with DraftWorkspace(selected) as review_workspace:
+                if review_workspace.load_pending() is not None:
+                    raise ValueError("finish the pending workspace migration before comparing retained outputs")
+                reviewed = review_draft_result(selected)
+                review_workspace.save("comparison-review.json", reviewed)
+            print(json.dumps(reviewed, ensure_ascii=False, allow_nan=False), flush=True)
+            print(f"full-draft: Retained comparison: {selected / 'comparison-review.json'}", flush=True)
+            return 1 if reviewed["status"] == "FAILED" else 0
         if args.inspect_only:
             if not args.resume:
                 raise ValueError("--inspect-only requires --resume pointing to the retained full-draft job")

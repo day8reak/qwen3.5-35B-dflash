@@ -280,6 +280,53 @@ def _validate_bundle(root):
     return manifest,uploads
 
 
+def _hidden_summary(values):
+    """Summarize FP16 hidden tensors in FP64 without JSON NaN/Infinity values."""
+    finite = np.isfinite(values)
+    selected = values[finite]
+    count = int(selected.size)
+    nonzero = int(np.count_nonzero(selected))
+    norm = float(np.linalg.norm(values)) if count == values.size else None
+    if norm is not None and not math.isfinite(norm):
+        norm = None
+    return {'elements':int(values.size), 'finite_count':count,
+            'nonfinite_count':int(values.size)-count, 'zero_count':count-nonzero,
+            'nonzero_count':nonzero, 'nan_count':int(np.count_nonzero(np.isnan(values))),
+            'positive_infinity_count':int(np.count_nonzero(np.isposinf(values))),
+            'negative_infinity_count':int(np.count_nonzero(np.isneginf(values))),
+            'finite_min':float(np.min(selected)) if count else None,
+            'finite_max':float(np.max(selected)) if count else None,
+            'l2_norm':norm,
+            'l2_norm_status':('NONFINITE_VALUES' if count != values.size else
+                              'NONFINITE_METRIC' if norm is None else 'ZERO' if norm == 0 else 'FINITE')}
+
+
+def _hidden_comparison(expected, actual):
+    expected_summary, actual_summary = _hidden_summary(expected), _hidden_summary(actual)
+    report = {'expected':expected_summary, 'actual':actual_summary,
+              'max_abs_error':None, 'error_l2':None, 'relative_l2':None,
+              'exact_match':False, 'acceptance_threshold':'NOT_DEFINED'}
+    if expected_summary['nonfinite_count'] or actual_summary['nonfinite_count']:
+        report.update(status='NONFINITE_VALUES', relative_l2_status='NONFINITE_VALUES')
+        return report
+    error = actual - expected
+    max_error, error_norm = float(np.max(np.abs(error))), float(np.linalg.norm(error))
+    expected_norm = expected_summary['l2_norm']
+    if expected_norm is None or not math.isfinite(max_error) or not math.isfinite(error_norm):
+        report.update(status='NONFINITE_METRIC', relative_l2_status='NONFINITE_METRIC')
+        return report
+    report.update(max_abs_error=max_error,error_l2=error_norm,exact_match=bool(np.array_equal(expected,actual)))
+    if expected_norm == 0:
+        report.update(status='MISMATCH_ZERO_REFERENCE' if error_norm else 'MATCHED_ZERO_REFERENCE',
+                      relative_l2_status='RELATIVE_L2_UNDEFINED_ZERO_REFERENCE')
+    else:
+        relative = error_norm / expected_norm
+        report.update(status='FINITE_DIAGNOSTIC' if math.isfinite(relative) else 'NONFINITE_METRIC',
+                      relative_l2=relative if math.isfinite(relative) else None,
+                      relative_l2_status='DEFINED' if math.isfinite(relative) else 'NONFINITE_METRIC')
+    return report
+
+
 def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False, expected_model_load_api=None):
     """Validate native identity/readback before comparing Top1 and hidden values."""
     root, result_root = Path(bundle_dir).resolve(), Path(result_dir).resolve()
@@ -348,9 +395,9 @@ def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False, expec
         values.append(np.fromfile(_file(result_root,row),dtype=dtype).reshape(row['shape']))
     report.update(status='EXECUTION_COMPLETE',device_execution='PASSED',host_input_readback='MATCHED',
                   numerical_validation='NOT_EVALUATED',runtime_version=native.get('runtime_version'),firmware_id=native.get('firmware_id'))
-    if np.any(values[0]<0) or np.any(values[0]>=manifest['vocab_size']) or not np.isfinite(values[1]).all():
-        report.update(status='FAILED',numerical_validation='FAILED',error='invalid token IDs or nonfinite draft hidden output')
-        return report
+    errors=[]
+    if np.any(values[0]<0) or np.any(values[0]>=manifest['vocab_size']):
+        errors.append('invalid draft token IDs')
     top_record,hidden_record=manifest['expected']
     if top_record is not None:
         expected=np.fromfile(_file(root,top_record),dtype='<i4').reshape(values[0].shape)
@@ -358,16 +405,29 @@ def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False, expec
         report.update(token_mismatches=mismatch,actual_top1=values[0].tolist(),expected_top1=expected.tolist(),
                       numerical_validation='TOP1_MATCHED' if mismatch==0 else 'FAILED')
         if mismatch:
-            report.update(status='FAILED',error='draft Top1 differs from PyTorch reference on identical inputs')
+            errors.append('draft Top1 differs from PyTorch reference on identical inputs')
+    actual=values[1].astype(np.float64)
     if hidden_record is not None:
         expected=np.fromfile(_file(root,hidden_record),dtype='<f2').reshape(values[1].shape).astype(np.float64)
-        actual=values[1].astype(np.float64)
-        if not np.isfinite(expected).all():
-            raise ValueError('nonfinite reference hidden output')
-        error=actual-expected
-        report['hidden_diagnostic']={'max_abs_error':float(np.max(np.abs(error))),
-            'relative_l2':float(np.linalg.norm(error)/max(float(np.linalg.norm(expected)),np.finfo(np.float64).tiny)),
-            'acceptance_threshold':'NOT_DEFINED'}
+        hidden=report['hidden_diagnostic']=_hidden_comparison(expected,actual)
+        report['reference_quality']=('NONFINITE_HIDDEN' if hidden['expected']['nonfinite_count'] else
+            'DEGENERATE_ZERO_HIDDEN' if hidden['expected']['nonzero_count']==0 else 'FINITE_NONZERO_HIDDEN')
+        if report['reference_quality']=='DEGENERATE_ZERO_HIDDEN':
+            report['reference_warning']='All reference hidden values are zero; Top1 agreement alone cannot establish useful numerical accuracy.'
+        if hidden['expected']['nonfinite_count']:
+            errors.append('nonfinite reference hidden output')
+        if hidden['actual']['nonfinite_count']:
+            errors.append('nonfinite draft hidden output')
+        if hidden['status']=='NONFINITE_METRIC':
+            errors.append('hidden comparison produced a nonfinite metric')
+    else:
+        summary=_hidden_summary(actual)
+        report['hidden_diagnostic']={'actual':summary,'reference_available':False,
+                                     'acceptance_threshold':'NOT_DEFINED'}
+        if summary['nonfinite_count']:
+            errors.append('nonfinite draft hidden output')
+    if errors:
+        report.update(status='FAILED',numerical_validation='FAILED',error='; '.join(errors))
     report['accuracy_scope']='Top1 agreement and hidden diagnostics on this fixture only; full numerical accuracy and language quality remain unverified'
     return report
 

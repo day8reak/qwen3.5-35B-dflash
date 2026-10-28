@@ -4,6 +4,18 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 完整 draft 执行与保留输出复核
+
+用户回传流式内嵌OMC已在PID14008执行，native为EXECUTED，退出码0，输出回收无错误。模型大小2,852,374,570字节，SHA256为 `dc1136c5fe9ce7c83157f2fa50504a89eb3f7f5c6487a7b654dd274bb17ae0b4`。原加载故障已越过；最终作业FAILED发生在主机hidden相对L2产生inf后写JSON，因此不能把作业FAILED解释为本次Process失败，也不能据EXECUTED宣称精度通过。
+
+比较器现在对零参考范数返回relative_l2=null及明确原因，保留绝对误差、误差范数、双方有限/零/非零值和范围。非有限参考或实际值返回可序列化的失败结果；全零参考单独标记退化。无新hidden验收阈值。
+
+`--compare-only`对原bundle、native结果、输出、退出状态、传输哈希和runtime身份重新核验后比较，原board文件不变，只更新固定comparison-review.json。它不执行HDC、编译器、加载或参考重放。小型norm权重统计只用于排查全零scale；不能代替中间激活诊断。
+
+本轮 `20261028T091818Z-3980-265c4f/retained-comparison-regression.xml` 记录206项主机测试通过，覆盖零/非有限比较、严格回收证据、重复离线复核及固定工作区。测试中的device标记为模拟数据，不是新增实机证据。
+
+当前FP16 primitive参考的RMS平方有明确溢出风险：FP16输入[300,1,-2,3]的平方包含inf，归一化结果可全零且finite。这个最小复现不证明完整draft的当前根因。GE同样有FP16平方/归约图，实际融合与累积行为还需对照；未偷偷改成FP32 golden。原生单步未计时，性能未评估。
+
 ## 外置编译结果流式封装
 
 2026-10-28，最新用户报告PID6868确认所选DDK已构建V2 runner，文件恢复成功，CPUCL初始化成功，NPU初始化仍报 `weightsMemBaseSize=16 modelWeightMemorySize=1151486976`，尚未调用Run。不能再把文件恢复API存在或Restore成功当作外置权重加载通过。

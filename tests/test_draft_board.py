@@ -323,6 +323,101 @@ def test_top1_mismatch_is_failed_not_shape_only_success(bundle,tmp_path):
     assert report['device_execution']=='PASSED'
 
 
+def _set_hidden_comparison(bundle,folder,expected,actual):
+    root,manifest=bundle
+    native=native_result(bundle,folder)
+    shape=tuple(manifest['outputs'][1]['shape'])
+    for values,path in ((expected,root/manifest['expected'][1]['path']),
+                        (actual,folder/native['outputs'][1]['path'])):
+        path.chmod(0o644)
+        np.broadcast_to(np.asarray(values,dtype='<f2'),shape).astype('<f2').tofile(path)
+    reference=root/manifest['expected'][1]['path']
+    manifest['expected'][1].update(bytes=reference.stat().st_size,sha256=sha256_file(reference))
+    output=folder/native['outputs'][1]['path']
+    native['outputs'][1].update(bytes=output.stat().st_size,sha256=sha256_file(output))
+    write_json(root/'manifest.json',manifest)
+    write_json(folder/'result.json',native)
+    return native
+
+
+@pytest.mark.parametrize('actual',[0,.5])
+def test_zero_hidden_reference_has_explicit_undefined_ratio_and_serializable_metrics(bundle,tmp_path,actual):
+    folder=tmp_path/'native-zero-reference'
+    _set_hidden_comparison(bundle,folder,0,actual)
+    with np.errstate(all='raise'):
+        report=board.compare_draft_result(bundle[0],folder,allow_host_fake=True)
+    hidden=report['hidden_diagnostic']
+    count=15*2048
+    assert hidden['relative_l2'] is None
+    assert hidden['relative_l2_status']=='RELATIVE_L2_UNDEFINED_ZERO_REFERENCE'
+    assert report['reference_quality']=='DEGENERATE_ZERO_HIDDEN'
+    assert hidden['status']==('MISMATCH_ZERO_REFERENCE' if actual else 'MATCHED_ZERO_REFERENCE')
+    assert hidden['max_abs_error']==actual
+    assert hidden['error_l2']==pytest.approx(actual*np.sqrt(count))
+    assert hidden['expected']['l2_norm']==0 and hidden['expected']['l2_norm_status']=='ZERO'
+    assert hidden['expected']['zero_count']==count and hidden['expected']['nonzero_count']==0
+    assert hidden['actual']['nonzero_count']==(count if actual else 0)
+    assert hidden['actual']['finite_min']==actual and hidden['actual']['finite_max']==actual
+    assert hidden['exact_match']==(actual==0)
+    assert hidden['acceptance_threshold']=='NOT_DEFINED'
+    assert report['device_execution']=='PASSED' and report['numerical_validation']=='TOP1_MATCHED'
+    assert 'full numerical accuracy' in report['accuracy_scope']
+    json.dumps(report,allow_nan=False)
+
+
+def test_small_nonzero_fp16_reference_keeps_real_finite_ratio(bundle,tmp_path):
+    folder=tmp_path/'native-small-reference'
+    expected=float(np.nextafter(np.float16(0),np.float16(1)))
+    actual=float(np.finfo(np.float16).max)
+    _set_hidden_comparison(bundle,folder,expected,actual)
+    with np.errstate(all='raise'):
+        report=board.compare_draft_result(bundle[0],folder,allow_host_fake=True)
+    hidden=report['hidden_diagnostic']
+    assert hidden['relative_l2_status']=='DEFINED'
+    assert hidden['relative_l2']==pytest.approx((actual-expected)/expected)
+    assert hidden['expected']['l2_norm']>0
+    assert hidden['actual']['l2_norm']==pytest.approx(actual*np.sqrt(15*2048))
+    json.dumps(report,allow_nan=False)
+
+
+@pytest.mark.parametrize('owner',['expected','actual','both'])
+def test_nonfinite_hidden_values_return_failed_json_with_counts_not_exception(bundle,tmp_path,owner):
+    folder=tmp_path/('native-nonfinite-'+owner)
+    invalid=np.full((1,15,2048),.5,dtype='<f2')
+    invalid.flat[:3]=[np.nan,np.inf,-np.inf]
+    _set_hidden_comparison(bundle,folder,invalid if owner in {'expected','both'} else .5,
+                           invalid if owner in {'actual','both'} else .5)
+    with np.errstate(all='raise'):
+        report=board.compare_draft_result(bundle[0],folder,allow_host_fake=True)
+    assert report['status']=='FAILED' and report['numerical_validation']=='FAILED'
+    assert report['device_execution']=='PASSED' and report['token_mismatches']==0
+    hidden=report['hidden_diagnostic']
+    assert hidden['status']=='NONFINITE_VALUES' and hidden['relative_l2'] is None
+    assert hidden['relative_l2_status']=='NONFINITE_VALUES'
+    assert hidden['max_abs_error'] is None and hidden['error_l2'] is None
+    for name in ('expected','actual'):
+        if owner in {name,'both'}:
+            summary=hidden[name]
+            assert summary['nonfinite_count']==3 and summary['finite_count']==15*2048-3
+            assert summary['nan_count']==summary['positive_infinity_count']==summary['negative_infinity_count']==1
+            assert summary['l2_norm'] is None and summary['l2_norm_status']=='NONFINITE_VALUES'
+            assert summary['finite_min']==summary['finite_max']==.5
+    json.dumps(report,allow_nan=False)
+
+
+def test_all_nonfinite_hidden_has_null_bounds_and_never_looks_zero(bundle,tmp_path):
+    folder=tmp_path/'native-all-nonfinite'
+    _set_hidden_comparison(bundle,folder,np.nan,np.inf)
+    report=board.compare_draft_result(bundle[0],folder,allow_host_fake=True)
+    assert report['status']=='FAILED'
+    for name in ('expected','actual'):
+        summary=report['hidden_diagnostic'][name]
+        assert summary['finite_count']==summary['zero_count']==summary['nonzero_count']==0
+        assert summary['finite_min'] is None and summary['finite_max'] is None
+        assert summary['l2_norm'] is None
+    json.dumps(report,allow_nan=False)
+
+
 def test_bundle_mutation_rejected_before_any_hdc(bundle,tmp_path,monkeypatch):
     root,m=bundle
     (root/'input_0000.bin').chmod(0o644)
