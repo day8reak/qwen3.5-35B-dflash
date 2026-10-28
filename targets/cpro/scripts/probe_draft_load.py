@@ -14,13 +14,22 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job", help="completed external draft job; default AI_RUN_DIR/full-draft")
     parser.add_argument("--timeout-seconds", type=int, default=300)
+    parser.add_argument("--inspect-api", action="store_true",
+                        help="read headers and ELF symbols from the completed probe's selected DDK; no board calls")
     args = parser.parse_args(argv)
     from qwen35_moe_dflash.descriptor_probe import run_probe
     try:
         run = os.environ.get("AI_RUN_DIR")
         if not run:
             raise ValueError("AI_RUN_DIR is required; source the project env.sh")
-        result = run_probe(args.job or Path(run) / "full-draft", timeout_seconds=args.timeout_seconds)
+        job = args.job or Path(run) / "full-draft"
+        if args.inspect_api:
+            from qwen35_moe_dflash.hiai_load_api import inspect_load_api
+            report, text = inspect_load_api(job)
+            print(text, flush=True)
+            print("Reports: " + str(Path(job) / "load-diagnostic/api-report.json"), flush=True)
+            return 0 if report["status"] == "INSPECTED" else 1
+        result = run_probe(job, timeout_seconds=args.timeout_seconds)
     except Exception as error:
         print(f"draft-load-probe: {type(error).__name__}: {error}", file=sys.stderr)
         return 1

@@ -6,14 +6,16 @@
 
 ## 用户现在执行什么
 
-**固定目录迁移完成后，先运行加载接口诊断。** 当前普通入口仍会遇到未解决的external Load失败，下一步仅观察所选DDK中模型路径和缓冲区setter的实际行为：
+**描述符诊断已回传，下一步读取所选DDK的加载API。** 当前DDK的两个setter互相清空另一字段，不能靠交换调用顺序同时保留路径和buffer。先确认可用的文件恢复与外置权重接口：
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/probe_draft_load.py"
+python3 "$REPO_DIR/targets/cpro/scripts/probe_draft_load.py" --inspect-api
 ```
 
-入口复用 `$AI_RUN_DIR/full-draft` 中成功编译的external主OMC，仅上传这个约2.9MB的文件、当前runner及同一选择规则下的运行库，不上传权重sidecar，不调用AIR/OMG或模型Load/Process。分别用新描述符观察 `SetModelPath → SetModelBuffer` 以及相反顺序之后的路径、buffer和长度；不会自动改变正常加载代码或重编译模型。结果写入 `full-draft/load-diagnostic/result.json`、`probe.json` 和 `probe.stderr`，同一诊断目录后续替换；工作目录锁避免与完整draft续跑并发。当前没有真实设备诊断结果，setter是否清空另一字段仍是待验证线索。
+`--inspect-api` 根据已有 `full-draft/load-diagnostic/native/command.json` 定位本次构建所选的头文件和库，收集相关加载声明及动态符号，写入同目录的 `api-report.json`、`api-report.txt`。它不调用HDC，不读取模型或权重，不重新构建runner，不重跑或清理已有描述符诊断。正常加载代码尚未改变，API声明或符号存在也不等于外置权重已能加载。
+
+用户回传的DDK `100.520.020.010`、运行库 `800.631.120.010`、PID63057诊断显示，两种顺序中的setter均返回0：`SetModelBuffer` 将路径清空，`SetModelPath` 将buffer清空且长度归零。该结果确认现有“路径→buffer”代码最终丢失路径，但没有执行Load/Process，不能单独证明此前16字节权重内存错误的全部原因。此前tiny只设置路径曾在HCL `CreateLocalBuffer` 因buffer为空失败，因此不盲目改回只传路径；不再重复已经完成的setter诊断。
 
 [独立 draft 指南](draft-standalone.md)保留完整模型入口。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
@@ -34,7 +36,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 运行时给15个不同子图打印了同一个 `weight hash:0x1dabbe2881ec5472`，但它不是文件SHA256，不能据此断言15份权重内容相同或确定错配原因。实际文件哈希尚未回传。本仓库只读审查未发现按编号重排或丢失目录：编译到bundle再到上传均按完整相对路径处理；这仍不能证明设备HIAI打开了这些路径。
 
-用户随后列出的编译文件中，`SubGraph_1.weight` 是 **1,151,486,976字节**，与模型要求一致，`model.omc` 是2,905,990字节；因此这份编译文件本身不是16字节。文件大小不能替代SHA256或证明运行时选中了正确文件。runner先 `SetModelPath` 再 `SetModelBuffer`，较旧的公开实现中后者会清空路径，但当前DDK是否如此尚未核实；已回传的所选头文件没有显式外置权重setter，仍不能由声明推出getter或路径保留行为，见[验证记录](validation.md#完整-draft-v4-越过-cpucl-初始化后的权重内存失败)。此前成功tiny没有开启外置权重选项，不能直接验证这条加载契约；目前没有已确认的运行时修复。
+用户随后列出的编译文件中，`SubGraph_1.weight` 是 **1,151,486,976字节**，与模型要求一致，`model.omc` 是2,905,990字节；因此这份编译文件本身不是16字节。文件大小不能替代SHA256或证明运行时选中了正确文件。runner的“路径→buffer”调用会丢失路径，已由本次getter观察确认；外置权重文件的实际选择和加载契约仍待核对，见[验证记录](validation.md#外置模型加载描述符诊断入口)。此前成功tiny没有开启外置权重选项，不能直接验证这条加载契约；目前没有已确认的运行时修复。
 
 原生失败保存在 `board/results/result.json`、`board/comparison.json` 与 `board/draft.stderr`。错误回传已修正：保留原生失败原因，单独记录传输/证据问题，运行失败时不要求成功输出bin。此前 `a091f16d13d8` 的嵌套OMC输出路径问题已修复。
 

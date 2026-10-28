@@ -524,13 +524,16 @@
     },
     "standalone_draft": {
       "entrypoint": "targets/cpro/scripts/run_full_draft.py",
-      "status": "EXTERNAL_LOAD_AND_EMBEDDED_SAVE_UNRESOLVED_DESCRIPTOR_PROBE_NEXT",
+      "status": "EXTERNAL_LOAD_AND_EMBEDDED_SAVE_UNRESOLVED_SELECTED_API_INSPECTION_NEXT",
       "descriptor_probe": {
         "entrypoint": "targets/cpro/scripts/probe_draft_load.py",
-        "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_draft_load.py\"",
+        "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_draft_load.py\" --inspect-api",
         "output": "${AI_RUN_DIR}/full-draft/load-diagnostic",
-        "status": "HOST_TESTED_AWAITING_SELECTED_DEVICE",
-        "observations": ["SetModelPath then SetModelBuffer", "SetModelBuffer then SetModelPath"],
+        "status": "SETTERS_MUTUALLY_EXCLUSIVE_USER_REPORTED",
+        "observations": [
+          "SetModelPath then SetModelBuffer",
+          "SetModelBuffer then SetModelPath"
+        ],
         "payload": "Hash-bound external main OMC only, at most 64 MiB, plus current runner and selected runtime libraries; no sidecars or model inputs",
         "model_load_called": false,
         "model_process_called": false,
@@ -539,9 +542,64 @@
           "run_id": "20261028T073909Z-31045-e9d76e",
           "python_tests_passed": 19,
           "native_ctest_cases_passed": 7,
-          "evidence": ["probe-driver-final.xml", "native-description-ctest.xml"]
+          "evidence": [
+            "probe-driver-final.xml",
+            "native-description-ctest.xml"
+          ]
         },
-        "limits": "Observes descriptor behavior only; no external-weight loading, model execution or numerical validation. Actual selected-DDK setter semantics remain unverified."
+        "limits": "User-reported selected-device getter observations confirm path loss in current path-then-buffer code. They do not establish the complete cause of the 16-byte external weight memory or validate external-weight loading, model execution or numerical accuracy.",
+        "device_observation": {
+          "source": "USER_PASTED_DESCRIPTOR_DIAGNOSTIC_REPORT",
+          "ddk_id": "100.520.020.010",
+          "runtime_version": "800.631.120.010",
+          "native_process_id": 63057,
+          "model_sha256": "cc9a70f56639bf96b74b773f31cf5213c8fba65c63f46d3d8d6abd574bed9132",
+          "model_bytes": 2905990,
+          "probe_json_sha256": "3b79e966c46f9d934d0845fe5df28d7d3eba080d8bab1bbf94c1ce343fda1ebf",
+          "remote_exitcode": 0,
+          "retrieval_errors": [],
+          "setter_statuses": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "path_then_buffer": {
+            "final_model_path": "",
+            "final_buffer_present": true,
+            "final_model_bytes": 2905990
+          },
+          "buffer_then_path": {
+            "final_path_present": true,
+            "final_buffer_present": false,
+            "final_model_bytes": 0
+          },
+          "conclusion": "Both setters clear the other representation; changing call order cannot preserve path and buffer together",
+          "model_load_called": false,
+          "model_process_called": false,
+          "raw_remote_artifacts_independently_rechecked": false
+        },
+        "previous_path_only_failure": {
+          "source_commit": "bf545c2",
+          "observation": "HCL CreateLocalBuffer rejected null model buffer/zero length after SetModelPath alone",
+          "decision": "Do not blindly change setter order or revert to path-only; inspect selected file-aware restore and weight APIs first"
+        },
+        "next_api_inspection": {
+          "mode": "--inspect-api",
+          "input": "${AI_RUN_DIR}/full-draft/load-diagnostic/native/command.json",
+          "outputs": [
+            "${AI_RUN_DIR}/full-draft/load-diagnostic/api-report.json",
+            "${AI_RUN_DIR}/full-draft/load-diagnostic/api-report.txt"
+          ],
+          "scope": "Read selected-DDK load declarations and dynamic symbols; no HDC, model/weight read, runner build, Load or Process; do not reset prior descriptor diagnostic",
+          "status": "AWAITING_SELECTED_DDK_API_REPORT",
+          "host_validation": {
+            "run_id": "20261028T075743Z-31932-5ac257",
+            "tests_passed": 27,
+            "evidence": "api-inventory.xml",
+            "scope": "Header/symbol inventory with synthetic tool responses and existing descriptor-driver regression; selected-DDK API availability unverified"
+          }
+        }
       },
       "latest_compile_feedback": {
         "source": "USER_PASTED_OMG_LOG",
@@ -569,7 +627,7 @@
           "fixture": "full-draft-d7b4db958850",
           "air": "full-draft-732b26335347"
         },
-        "next_action": "After fixed-workspace adoption, run probe_draft_load.py to inspect selected-DDK descriptor setters without model Load/Process or another compilation"
+        "next_action": "Read selected-DDK loading API declarations and dynamic symbols using probe_draft_load.py --inspect-api; keep embedded serialization and external Load failures unresolved"
       },
       "latest_board_feedback": {
         "source": "USER_PASTED_NATIVE_RESULT_COMPARISON_AND_HILOG",
@@ -895,7 +953,7 @@
         "limits": "No independently retrieved remote inventory/checksum-call evidence; does not establish which sidecar path HIAI opens",
         "next_evidence": [
           "Exact selected-DDK embedded model serialization failure context and buffer sizes",
-          "Selected-DDK model-description path behavior if external loading investigation continues"
+          "Selected-DDK file-aware model restore and external-weight API declarations and dynamic symbols from the read-only --inspect-api report"
         ],
         "artifact_policy": "Adopt all completed stages from 732 into fixed full-draft, including successful external compilation/bundle; after successful self-contained adoption, legacy batch roots are optional history and may be removed by the user",
         "resume_run": "full-draft-732b26335347",
@@ -908,9 +966,9 @@
           "older_public_source": "https://github.com/946166920/hiai_ddk/blob/42142161fb414a8d53973b0d5ccbd0de7872d5d9/src/framework/model_manager/compatible/AiModelDescription.cpp#L113-L131",
           "source_scope": "Huawei-authored older public-source mirror, not the selected current DDK",
           "observed_older_behavior": "SetModelBuffer clears model path",
-          "selected_ddk_behavior": "HEADER_RECEIVED_NO_EXPLICIT_EXTERNAL_WEIGHT_SETTER_GETTER_AND_PATH_SEMANTICS_UNVERIFIED",
+          "selected_ddk_behavior": "USER_REPORTED_PROBE_BOTH_SETTERS_RETURN_SUCCESS_AND_CLEAR_THE_OTHER_REPRESENTATION",
           "causal_status": "HYPOTHESIS_ONLY_DOES_NOT_EXPLAIN_16_BYTE_RUNTIME_MEMORY_WITHOUT_FURTHER_EVIDENCE",
-          "functional_fix": "LOADER_CALLS_UNCHANGED_EMBEDDED_STORAGE_CANDIDATE_NOT_YET_VALIDATED"
+          "functional_fix": "LOADER_UNCHANGED_SELECTED_API_INSPECTION_NEXT_EMBEDDED_SERIALIZATION_FAILED"
         },
         "tiny_full_external_weight_difference": {
           "prior_successful_tiny_compile": "save_weights_as_external_data option omitted",

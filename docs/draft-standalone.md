@@ -2,16 +2,18 @@
 
 当前优先跑通完整六层 DFlash，不等待40层 target 编译。沿用已经配置的 `env.sh`、主机GE、目标DDK和HDC环境。默认工作目录固定为 `$AI_RUN_DIR/full-draft`，后续自动复用成功阶段并覆盖失败阶段的日志，不再为每次重试生成新目录。
 
-固定目录迁移完成后，下一步先观察所选DDK的加载描述符：
+描述符诊断已经回传：两个setter互相清空另一字段。下一步只读取所选DDK的加载API声明和动态符号：
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/probe_draft_load.py"
+python3 "$REPO_DIR/targets/cpro/scripts/probe_draft_load.py" --inspect-api
 ```
 
-诊断仅上传经过清单大小/SHA256验证的external主OMC（当前2,905,990字节，上限64MiB）、新构建的runner和与完整draft相同规则选择的运行库，不上传大权重sidecar，不运行AIR/OMG，也不调用模型Load/Process。两份新描述符分别执行 `SetModelPath → SetModelBuffer` 和 `SetModelBuffer → SetModelPath`，逐步报告setter返回值及getter读出的模型路径、缓冲区和长度。正常模型加载方式保持不变；只有得到当前DDK的实际行为后才决定修复。`INSPECTED`仅表示诊断观察完整，不代表外置权重已加载或模型通过。
+`--inspect-api` 读取已有 `full-draft/load-diagnostic/native/command.json` 中所选头文件和库的信息，输出 `full-draft/load-diagnostic/api-report.json` 与 `api-report.txt`。不调用HDC、不读取模型或权重、不重编译runner，也不重跑或清理此前诊断。目的是确认当前DDK是否提供携带文件位置的恢复接口及外置权重加载接口；声明或符号存在仍不能证明实际加载成功。
 
-结果位于 `$AI_RUN_DIR/full-draft/load-diagnostic/result.json`，原生输出为同目录的 `probe.json`、`probe.stderr`、`probe.exitcode`。重试只覆盖已识别的诊断目录，不重置已完成模型阶段；固定工作目录锁拒绝并发运行。默认使用当前固定目录，其他完整external任务可显式指定 `--job`。本地缺少所选Cpro配置，没有真实设备诊断结果。
+此前无 `--inspect-api` 的设备诊断仅上传经过清单大小/SHA256验证的external主OMC（2,905,990字节，上限64MiB）、runner和相同规则选择的运行库，没有上传sidecar或调用模型Load/Process。用户回传DDK `100.520.020.010`、运行库 `800.631.120.010`、PID63057的结果：`SetModelBuffer` 成功后路径为空；`SetModelPath` 成功后buffer为空且长度为0。交换顺序不能同时保留两项。该观察确认现有代码丢失路径，但尚未确认16字节权重内存错误的全部原因；此前tiny只传路径曾因HCL `CreateLocalBuffer` 收到空buffer失败，因此没有改回只传路径。
+
+设备诊断结果位于 `$AI_RUN_DIR/full-draft/load-diagnostic/result.json`，原生输出为同目录的 `probe.json`、`probe.stderr`、`probe.exitcode`。本次不重复该诊断。`INSPECTED`只表示描述符观察完整，不代表外置权重加载或模型通过。正常模型加载方式保持不变，完整draft仍未执行成功。
 
 当前最新 `full-draft-6599025a0b74` 的embedded编译在 `Compile end` 后保存模型失败。以下是此前首次迁移命令，已完成迁移时无需重跑。它从732批次迁入已有成功阶段，保留external OMC和bundle，只整理已有产物，不编译、不上板：
 
@@ -106,7 +108,7 @@ tail -n 100 "$AI_RUN_DIR/full-draft/board/draft.stderr"
 
 外置权重路径审查只覆盖本仓库源码：编译清单逐文件记录大小和SHA256，bundle保留 `generated` 下相对路径，上传前再核验本地文件，设备执行前调用 `sha256sum -c`。文件按路径匹配，没有按自然数或字典序重新分配子图权重；例如 `generated/model/SubGraph_1.weight` 对应 `bundle/model/model/SubGraph_1.weight`，与主OMC同级。当前未独立回收732批次的实际文件清单及校验调用记录，也不知道HIAI最终打开的文件；不能以源码审查代替远端身份或加载路径验证。
 
-加载接口仍是待核对线索：runner先调用 `SetModelPath`，随后调用 `SetModelBuffer`。较旧的[Huawei署名公开源码镜像](https://github.com/946166920/hiai_ddk/blob/42142161fb414a8d53973b0d5ccbd0de7872d5d9/src/framework/model_manager/compatible/AiModelDescription.cpp#L113-L131)中，`SetModelBuffer` 会清空模型路径；这只是定位线索，尚未确认当前所选DDK有相同行为。用户回传的所选头文件没有显式外置权重setter，但声明不能确定getter语义或路径是否保留。此前成功tiny未传 `--save_weights_as_external_data=true`，完整draft则明确启用外置权重，因此tiny成功没有覆盖这项差异。本次embedded候选沿用现有加载API，不据旧源码猜测并修改调用行为；没有新增导出契约或已验证的加载修复。
+加载接口仍需核对：runner先调用 `SetModelPath`，随后调用 `SetModelBuffer`。较旧的[Huawei署名公开源码镜像](https://github.com/946166920/hiai_ddk/blob/42142161fb414a8d53973b0d5ccbd0de7872d5d9/src/framework/model_manager/compatible/AiModelDescription.cpp#L113-L131)曾提供清空路径的线索；当前所选DDK的对应行为现已由用户回传的getter观察确认，反向调用也会清空buffer。该行为不能单独确认外置权重错误的全部原因。此前成功tiny未启用外置权重，且只传路径曾有空buffer失败，不直接作为修复。下一步读取所选DDK的文件恢复及权重API，普通加载代码仍未改变。
 
 需要只读检查已有日志、recipe和编译图dump时，可选：
 

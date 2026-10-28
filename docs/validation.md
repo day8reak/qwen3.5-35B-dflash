@@ -6,11 +6,17 @@
 
 ## 外置模型加载描述符诊断入口
 
+只读API检查在 `20261028T075743Z-31932-5ac257/api-inventory.xml` 中与已有描述符驱动合跑27项主机测试，全部通过。覆盖按已有构建记录定位SDK与库、声明/符号提取、身份变化拒绝、工具缺失报告，以及重复检查保留原设备证据和模型文件；未在本地执行所选DDK的符号工具，不能据测试断言接口存在。
+
 2026-10-28，固定目录迁移后新增 `probe_draft_load.py`，从当前成功external编译记录核验小主OMC，使用与完整draft相同的运行库选择规则构建并部署当前runner。仅上传主OMC（上限64MiB）、runner及运行库，不读取或上传权重sidecar，也不执行AIR/OMG、模型Load或Process。
 
-原生入口为 `--probe-model-description`，在两份新 `AiModelDescription` 上分别执行路径→buffer与buffer→路径，记录每步setter状态和getter读出的路径、buffer存在/匹配状态及长度。这用于确认当前DDK是否会清掉另一字段，不预设旧版公开实现仍适用。正常模型加载调用未改变，诊断结果不能证明外置权重加载、模型执行或数值正确；732的Load失败与6599的embedded序列化失败仍未解决。
+原生入口为 `--probe-model-description`，在两份新 `AiModelDescription` 上分别执行路径→buffer与buffer→路径，记录每步setter状态和getter读出的路径、buffer存在/匹配状态及长度。用户现已回传DDK `100.520.020.010`、运行库 `800.631.120.010`、PID63057的设备观察：四次setter返回值均为0；`SetModelBuffer` 后路径为空、buffer保留且长度2,905,990；`SetModelPath` 后路径保留、buffer为空且长度0。两个setter互相清空另一字段，交换调用顺序无法同时保留两项。正常模型加载代码仍未改变。
 
-结果集中在 `full-draft/load-diagnostic`，复用固定工作目录锁，重试只替换该入口已识别的旧诊断目录，不清理模型阶段。主机端验证回收结果的模型身份、两种调用顺序和未执行Load/Process声明，完整观察才标为 `INSPECTED`；原生非零退出或传输/身份错误不得升级为成功。本轮本地缺少 `cpro-blue-pending` 配置，未执行所选DDK或真实设备；实际setter行为仍需用户执行并回传。
+这份用户粘贴报告绑定主OMC SHA256 `cc9a70f56639bf96b74b773f31cf5213c8fba65c63f46d3d8d6abd574bed9132`、大小2,905,990字节，回收 `probe.json` SHA256为 `3b79e966c46f9d934d0845fe5df28d7d3eba080d8bab1bbf94c1ce343fda1ebf`，远端退出0，传输错误为空。本地未重新获取原始文件独立复核；证据范围是用户回传的所选设备诊断。没有调用Load/Process，不能把 `INSPECTED` 当作外置权重加载、模型执行或数值正确。
+
+该观察确认现有“路径→buffer”加载代码最终失去路径，但不能单独证明NPU所收权重16字节的全部原因。历史提交 `bf545c2` 记录过只设置路径后HCL `CreateLocalBuffer` 因 `data != nullptr && size > 0` 失败；因此不盲目改回路径模式，也不重复两种setter顺序。732的Load失败与6599的embedded序列化失败仍未解决。
+
+结果集中在 `full-draft/load-diagnostic`，设备诊断复用固定工作目录锁，重试只替换该入口已识别的旧诊断目录，不清理模型阶段。主机端验证回收结果的模型身份、两种调用顺序和未执行Load/Process声明，完整观察才标为 `INSPECTED`；原生非零退出或传输/身份错误不得升级为成功。下一步 `probe_draft_load.py --inspect-api` 从已有 `native/command.json` 收集所选头文件声明和动态符号，写入 `api-report.json`、`api-report.txt`；不调用HDC、不读取模型或权重、不重跑或重置设备诊断。本轮本地缺少 `cpro-blue-pending` 配置，实际文件恢复/外置权重加载路线尚未验证。
 
 本轮 `20261028T073909Z-31045-e9d76e` 的 `probe-driver-final.xml` 记录19项Python测试通过，`native-description-ctest.xml` 记录7项原生CTest通过。覆盖不读取/上传sidecar、身份和传输失败、诊断目录覆盖，以及模拟setter相互清除字段、非零返回码和无Load/Process调用；原有runner回归也通过。首次驱动测试的两项失败来自模拟返回缺少新增的 `evidence_kind` 字段，修正夹具后通过，未放松真实结果校验。
 
@@ -36,7 +42,7 @@
 
 本轮 `20261028T063649Z-28459-d40778` 进行了源码只读审查：`existing_air._generated_inventory` 按完整相对路径枚举并记录大小/SHA256；`draft_board` 保留目录与文件名，按路径字典选取OMC，不依赖子图编号排序；`retained_air` 恢复同一路径后重新核验；上传前检查本地SHA256，并在运行前执行远端 `sha256sum -c`。这未发现脚本层的索引或basename错配，但既不是远端文件复核，也不证明HIAI实际打开了已上传的sidecar路径。
 
-当前runner先 `SetModelPath` 再 `SetModelBuffer`；较旧的[Huawei署名公开源码镜像](https://github.com/946166920/hiai_ddk/blob/42142161fb414a8d53973b0d5ccbd0de7872d5d9/src/framework/model_manager/compatible/AiModelDescription.cpp#L113-L131)显示后者清空模型路径，可能影响外置权重定位。用户已回传所选DDK头文件，没有显式外置权重setter；声明本身不能确定getter语义或路径是否保留，旧实现也不能证明本次路径已被清空或解释16字节来源。此前成功tiny的编译命令未启用 `--save_weights_as_external_data=true`，完整draft启用了它；tiny成功不验证外置权重加载。实际清单SHA256与设备校验调用也仍需保留核对。
+当前runner先 `SetModelPath` 再 `SetModelBuffer`；较旧的[Huawei署名公开源码镜像](https://github.com/946166920/hiai_ddk/blob/42142161fb414a8d53973b0d5ccbd0de7872d5d9/src/framework/model_manager/compatible/AiModelDescription.cpp#L113-L131)提供清空路径线索。所选DDK的相同行为现已由上节用户回传getter观察确认，反向setter也清空buffer；原先头文件声明本身不提供这项证据。路径丢失仍不能单独解释16字节来源。此前成功tiny未启用外置权重，不验证当前加载契约；实际外置文件选择和文件恢复接口仍待核对。
 
 用户随后要求尝试将权重与模型一起编入OMC。新增显式 `--weight-storage embedded` 将 `save_weights_as_external_data` 改为false，从732复用v4 AIR及d7 prepared/fixture，只重建compilation/bundle；新任务默认仍为external，未指定模式的续跑继承原模式。原732外置产物和失败证据保留，模型图、权重内容、参考、量化和输出ABI不变，HIAI加载调用也不变。这是装载方式兼容候选，不是已确认根因或已验证设备修复。
 
