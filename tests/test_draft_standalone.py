@@ -82,8 +82,9 @@ def test_checkpoint_preparation_reads_only_selected_tensors_and_retains_hashes(t
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
     configs = configurations(tiny=True)
     monkeypatch.setattr(ds, "configurations", lambda **kwargs: configs)
-    monkeypatch.setattr(ds, "_locked_checkpoints", lambda *args: [
-        {"repo": "fixture-target", "revision": "fixture"}, {"repo": "fixture-draft", "revision": "fixture"}])
+    monkeypatch.setattr(ds, "_standalone_checkpoint_metadata", lambda *args: [
+        {"owner": "target", "repo": "fixture-target", "expected_revision": "fixture"},
+        {"owner": "draft", "repo": "fixture-draft", "expected_revision": "fixture"}])
     graph = ds._graph(8)[2]
     values = tiny_weights({key: v.shape for key, v in graph.weights.items()})
     selected = {"target": {}, "draft": {}}
@@ -117,10 +118,87 @@ def test_full_preparation_requires_matching_checkpoint_metadata_before_output(tm
         ds.prepare_draft(tmp_path / "missing")
     def mismatch(*args):
         raise ValueError("config differs from locked revision")
-    monkeypatch.setattr(ds, "_locked_checkpoints", mismatch)
+    monkeypatch.setattr(ds, "_standalone_checkpoint_metadata", mismatch)
     with pytest.raises(ValueError, match="locked revision"):
         ds.prepare_draft(tmp_path / "bad", target_path="target", draft_path="draft")
     assert not (tmp_path / "bad").exists()
+
+
+def _locked_configs(target, draft):
+    specs = Path(__file__).resolve().parents[1] / "specs"
+    for root, name in ((target, "target-config.json"), (draft, "draft-config.json")):
+        root.mkdir(exist_ok=True)
+        (root / "config.json").write_bytes((specs / name).read_bytes())
+
+
+def test_standalone_metadata_requires_config_but_not_pair_index_or_generation_settings(tmp_path):
+    target, draft = tmp_path / "target", tmp_path / "draft"
+    _locked_configs(target, draft)
+    identities = ds._standalone_checkpoint_metadata(target, draft)
+    for item in identities:
+        assert item["metadata"]["config.json"]["status"] == "MATCHED"
+        assert item["metadata"]["model.safetensors.index.json"]["status"] == "ABSENT_ALLOWED"
+        assert item["metadata"]["generation_config.json"]["status"] == "ABSENT_ALLOWED"
+        assert item["revision_verification"] == "NOT_ESTABLISHED" and "revision" not in item
+    (target / "model.safetensors.index.json").write_text('{"weight_map":{}}')
+    (target / "generation_config.json").write_text('{"temperature":0.7}')
+    identities = ds._standalone_checkpoint_metadata(target, draft)
+    assert identities[0]["metadata"]["model.safetensors.index.json"]["status"] == "DIFFERS_FROM_LOCK"
+    assert identities[0]["metadata"]["generation_config.json"]["status"] == "DIFFERS_FROM_LOCK"
+    (draft / "config.json").write_text('{}')
+    with pytest.raises(ValueError, match="config.json differs from locked configuration"):
+        ds._standalone_checkpoint_metadata(target, draft)
+
+
+def _indexless_fixture(tmp_path, monkeypatch, *, omit_head=False, bad_last_shape=False):
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    configs = configurations(tiny=True)
+    monkeypatch.setattr(ds, "configurations", lambda **kwargs: configs)
+    graph = ds._graph(8)[2]
+    values = tiny_weights({key: value.shape for key, value in graph.weights.items()})
+    selected = {"target": {}, "draft": {}}
+    for key, value in values.items():
+        owner, source_key = checkpoint_key(key)
+        if omit_head and key == "target.lm_head.weight":
+            continue
+        selected[owner][source_key] = value
+    if bad_last_shape:
+        selected["draft"]["norm.weight"] = np.zeros((1,), dtype="<f2")
+    target, draft = tmp_path / "target", tmp_path / "draft"
+    _safetensors(target, selected["target"])
+    _safetensors(draft, selected["draft"])
+    _locked_configs(target, draft)
+    (target / "model.safetensors.index.json").unlink()
+    (target / "selected.safetensors").rename(target / "model.safetensors-00001-of-00014.safetensors")
+    (draft / "model.safetensors.index.json").unlink()
+    (draft / "selected.safetensors").rename(draft / "model.safetensors")
+    return target, draft
+
+
+def test_indexless_partial_target_shards_suffice_when_both_shared_tensors_exist(tmp_path, monkeypatch):
+    target, draft = _indexless_fixture(tmp_path, monkeypatch)
+    result = ds.prepare_draft(tmp_path / "prepared", 8, target_path=target, draft_path=draft)
+    assert result["status"] == "PREPARED"
+    identity = result["source"]["checkpoints"][0]
+    assert identity["metadata"]["model.safetensors.index.json"]["status"] == "ABSENT_ALLOWED"
+    assert identity["revision_verification"] == "NOT_ESTABLISHED"
+    assert identity["discovery"]
+    assert {item["tensor"] for item in identity["selected_tensors"]} == {
+        "model.language_model.embed_tokens.weight", "lm_head.weight"}
+    assert not (target / "model.safetensors.index.json").exists(), "reader must not synthesize an upstream index"
+
+
+@pytest.mark.parametrize("problem", ["missing_head", "late_draft_shape"])
+def test_all_required_tensors_preflight_before_any_conversion(tmp_path, monkeypatch, problem):
+    from qwen35_moe_dflash.ge_weights import SafeTensorFiles
+    target, draft = _indexless_fixture(tmp_path, monkeypatch, omit_head=problem == "missing_head",
+                                       bad_last_shape=problem == "late_draft_shape")
+    def no_convert(*args, **kwargs):
+        pytest.fail("conversion began before every required tensor passed preflight")
+    monkeypatch.setattr(SafeTensorFiles, "write_fp16", no_convert)
+    with pytest.raises(ValueError, match="lm_head.weight" if problem == "missing_head" else "norm.weight"):
+        ds.prepare_draft(tmp_path / "prepared", 8, target_path=target, draft_path=draft)
+    assert not (tmp_path / "prepared").exists()
 
 
 @pytest.mark.parametrize("include_hidden", [True, False])

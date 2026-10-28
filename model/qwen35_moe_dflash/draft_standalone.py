@@ -15,8 +15,9 @@ import shutil
 from .artifacts import checked_file, files_under, output_path, save_json
 from .config import Qwen35DFlashConfig
 from .ge_draft import build_draft
-from .ge_export import configurations, graph_summary, weight_identity, _locked_checkpoints, _logged
+from .ge_export import configurations, graph_summary, weight_identity, _logged
 from .hashing import sha256_file
+from .resources import repository_root
 
 
 def _graph(sequence_length, *, tiny=False, draft_config=None, include_hidden=True):
@@ -68,6 +69,40 @@ def _source_tensor_identity(reader, key, shape, digest):
             "dtype": dtype, "shape": list(shape), "sha256": digest}
 
 
+def _standalone_checkpoint_metadata(target_path, draft_path):
+    """Require the compute configurations; inventory optional packaging metadata.
+
+    Standalone draft needs only two target tensors, so a target index covering
+    all 40 layers is not required. Matching JSON metadata does not establish the
+    provenance of weight bytes; selected tensor hashes are recorded separately.
+    """
+    lock = json.loads((repository_root() / "specs/upstream.lock.json").read_text())
+    identities = []
+    for owner, directory, pin in zip(("target", "draft"), (target_path, draft_path), lock):
+        root = Path(directory).resolve()
+        config = root / "config.json"
+        expected = pin["files"]["config.json"]["sha256"]
+        if not config.is_file() or sha256_file(config) != expected:
+            raise ValueError(f"{pin['repo']}: config.json differs from locked configuration")
+        metadata = {"config.json": {"status": "MATCHED", "sha256": expected,
+                                     "required_for_draft": True}}
+        # Neither generation settings nor an all-target-layer index changes
+        # draft math. A present index is still validated by SafeTensorFiles.
+        for name in ("model.safetensors.index.json", "generation_config.json"):
+            path = root / name
+            if not path.is_file():
+                metadata[name] = {"status": "ABSENT_ALLOWED", "required_for_draft": False}
+                continue
+            digest = sha256_file(path)
+            expected = pin["files"].get(name, {}).get("sha256")
+            metadata[name] = {"status": ("MATCHED" if digest == expected else
+                                          "DIFFERS_FROM_LOCK" if expected else "OBSERVED_UNPINNED"),
+                              "sha256": digest, "required_for_draft": False}
+        identities.append({"owner": owner, "repo": pin["repo"], "expected_revision": pin["revision"],
+                           "revision_verification": "NOT_ESTABLISHED", "metadata": metadata})
+    return identities
+
+
 def prepare_draft(output_dir, sequence_length=64, *, target_path=None, draft_path=None,
                   tiny=False, include_hidden=True, progress=None):
     """Stream only draft tensors plus the target embedding/head into FP16 files."""
@@ -75,13 +110,26 @@ def prepare_draft(output_dir, sequence_length=64, *, target_path=None, draft_pat
     from .ge_weights import SafeTensorFiles, checkpoint_key, tiny_weights
     if not tiny and (target_path is None or draft_path is None):
         raise ValueError("full draft needs original draft and target checkpoint directories (embedding/head only)")
-    lock = None if tiny else _locked_checkpoints(target_path, draft_path)
+    _, _, graph = _graph(sequence_length, tiny=tiny, include_hidden=include_hidden)
+    shapes = {key: value.shape for key, value in graph.weights.items()}
+    identities = None if tiny else _standalone_checkpoint_metadata(target_path, draft_path)
+    readers = {}
+    if not tiny:
+        required = {owner: {checkpoint_key(key)[1] for key in shapes if checkpoint_key(key)[0] == owner}
+                    for owner in ("target", "draft")}
+        readers = {owner: SafeTensorFiles(path, allow_indexless_shards=True, required_keys=required[owner])
+                   for owner, path in (("target", target_path), ("draft", draft_path))}
+        # Reject a missing head or any malformed draft tensor before writing
+        # gigabytes of already valid weights into a failed preparation.
+        for key, shape in shapes.items():
+            owner, source_key = checkpoint_key(key)
+            _, _, _, dtype = readers[owner].tensor(source_key, shape)
+            if dtype != "BF16":
+                raise ValueError(f"{source_key}: original draft/shared weights must be BF16")
     root = output_path(output_dir)
     plan = plan_draft(root, sequence_length, tiny=tiny, include_hidden=include_hidden)
     stage = "prepare-weights"
     try:
-        _, _, graph = _graph(sequence_length, tiny=tiny, include_hidden=include_hidden)
-        shapes = {key: value.shape for key, value in graph.weights.items()}
         folder = root / "weights"
         folder.mkdir()
         records = {}
@@ -94,7 +142,6 @@ def prepare_draft(output_dir, sequence_length=64, *, target_path=None, draft_pat
                                 "dtype": "float16", "bytes": path.stat().st_size, "sha256": sha256_file(path)}
             identity = {"kind": "ge-tiny-numpy-random", "seed": 17, "not_upstream_weights": True}
         else:
-            readers = {"target": SafeTensorFiles(target_path), "draft": SafeTensorFiles(draft_path)}
             tensors = {"target": [], "draft": []}
             for number, (key, shape) in enumerate(sorted(shapes.items())):
                 if progress:
@@ -107,9 +154,9 @@ def prepare_draft(output_dir, sequence_length=64, *, target_path=None, draft_pat
                 records[key] = {**entry, "path": str(path.relative_to(root)),
                                 "shape": list(shape), "dtype": "float16"}
             identity = {"kind": "original-checkpoint-fp16-draft-conversion",
-                        "checkpoints": [{"owner": owner, "repo": pin["repo"], "revision": pin["revision"],
-                                         "selected_tensors": tensors[owner]}
-                                        for owner, pin in zip(("target", "draft"), lock)]}
+                        "checkpoints": [{**entry, "selected_tensors": tensors[entry["owner"]],
+                                         "discovery": readers[entry["owner"]].discovery}
+                                        for entry in identities]}
         stage = "emit-cpp"
         identity["fp16_payload_sha256"] = weight_identity(records)
         paths = {key: str(root / item["path"]) for key, item in records.items()}

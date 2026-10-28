@@ -562,6 +562,18 @@
         "pytest_passed": 103,
         "native_ctest_groups_passed": 6,
         "scope": "Host and fake-HIAI only; real compilation/device validation pending"
+      },
+      "indexless_checkpoint_support": {
+        "status": "HOST_TESTED",
+        "required_source_keys": [
+          "model.language_model.embed_tokens.weight",
+          "lm_head.weight"
+        ],
+        "preflight": "All required draft and shared tensors must have matching shape, BF16 dtype and complete byte extents before conversion",
+        "fallback": "Bounded local *.safetensors header scan only when index absent; no upstream completeness or revision claim",
+        "host_passed": 78,
+        "run_id": "20261028T021808Z-19662-fa8d34",
+        "user_failure": "full-draft-74ea1f4240c0 missing target index before compilation"
       }
     }
   },

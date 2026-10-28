@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import struct
 
@@ -19,18 +20,77 @@ from .hashing import sha256_file
 class SafeTensorFiles:
     """Read the documented safetensors header and bounded contiguous slices."""
 
-    def __init__(self, root):
+    MAX_DISCOVERY_ENTRIES = 4096
+    MAX_DISCOVERY_SHARDS = 512
+    MAX_DISCOVERY_HEADER_BYTES = 64 << 20
+
+    def __init__(self, root, *, allow_indexless_shards=False, required_keys=None):
         self.root = Path(root).resolve()
         self.headers = {}
+        self.header_records = {}
+        if required_keys is not None:
+            if isinstance(required_keys, (str, bytes)):
+                raise ValueError("required_keys must contain tensor names, not one string")
+            required_keys = tuple(required_keys)
+            if any(not isinstance(key, str) or not key or key == "__metadata__" for key in required_keys):
+                raise ValueError("required_keys must contain nonempty tensor names")
+        self.required_keys = tuple(sorted(set(required_keys or ())))
         index = self.root / "model.safetensors.index.json"
+        self.discovery = {"mode": None, "index_present": index.is_file(), "files": [],
+                          "required_keys": list(self.required_keys), "selected_mapping": {},
+                          "scope": "Local tensor locations only; not full checkpoint completeness or upstream weight identity."}
         if index.is_file():
             self.mapping = json.loads(index.read_text())["weight_map"]
+            if not isinstance(self.mapping, dict) or any(
+                    not isinstance(key, str) or not isinstance(value, str)
+                    for key, value in self.mapping.items()):
+                raise ValueError("invalid safetensors weight_map")
+            self.discovery.update(mode="INDEX", index_sha256=sha256_file(index))
+        elif allow_indexless_shards:
+            self.mapping = self._discover_headers()
+            self.discovery["mode"] = "HEADER_SCAN"
         else:
             path = self.root / "model.safetensors"
             header, _ = self._header(path)
             self.mapping = {key: path.name for key in header if key != "__metadata__"}
+            self.discovery["mode"] = "MONOLITHIC"
+        missing = sorted(set(self.required_keys) - self.mapping.keys())
+        self.discovery["selected_mapping"] = {key: self.mapping[key] for key in self.required_keys if key in self.mapping}
+        if missing:
+            raise ValueError(f"Required checkpoint tensors missing from {self.root}: {', '.join(missing)}; "
+                             f"mapping={self.discovery['mode']}, local headers inspected={len(self.headers)}. "
+                             "Provide the safetensors files containing these exact tensors; other target decoder shards are not needed for standalone draft.")
 
-    def _header(self, path):
+    def _discover_headers(self):
+        """Inspect bounded immediate shard headers without reading tensor payloads."""
+        paths = []
+        with os.scandir(self.root) as entries:
+            for count, entry in enumerate(entries, 1):
+                if count > self.MAX_DISCOVERY_ENTRIES:
+                    raise ValueError("indexless safetensors discovery exceeds directory entry limit")
+                if not entry.name.endswith(".safetensors"):
+                    continue
+                if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                    raise ValueError(f"indexless checkpoint shard must be a regular file: {entry.name}")
+                paths.append(Path(entry.path))
+                if len(paths) > self.MAX_DISCOVERY_SHARDS:
+                    raise ValueError("indexless safetensors discovery exceeds shard limit")
+        if not paths:
+            raise FileNotFoundError(f"No safetensors index or regular *.safetensors files found in {self.root}")
+        mapping, total = {}, 0
+        for path in sorted(paths):
+            header, start = self._header(path, max_header_bytes=self.MAX_DISCOVERY_HEADER_BYTES - total)
+            total += start - 8
+            for key in header:
+                if key == "__metadata__":
+                    continue
+                if key in mapping:
+                    raise ValueError(f"Ambiguous checkpoint tensor {key}: present in both {mapping[key]} and {path.name}")
+                mapping[key] = path.name
+        self.discovery["header_bytes_read"] = total
+        return mapping
+
+    def _header(self, path, *, max_header_bytes=100_000_000):
         path = path.resolve()
         if self.root not in path.parents or not path.is_file():
             raise ValueError(f"checkpoint shard missing or outside checkpoint: {path.name}")
@@ -40,10 +100,26 @@ class SafeTensorFiles:
                 if len(prefix) != 8:
                     raise ValueError("truncated safetensors length")
                 size = struct.unpack("<Q", prefix)[0]
-                if not 2 <= size <= min(100_000_000, path.stat().st_size - 8):
-                    raise ValueError("invalid safetensors header length")
-                header = json.loads(stream.read(size))
+                if not 2 <= size <= min(100_000_000, max_header_bytes, path.stat().st_size - 8):
+                    raise ValueError(f"invalid or over-budget safetensors header length: {path.name}")
+                raw = stream.read(size)
+                if len(raw) != size:
+                    raise ValueError(f"truncated safetensors header: {path.name}")
+                def unique_object(pairs):
+                    result = {}
+                    for key, value in pairs:
+                        if key in result:
+                            raise ValueError(f"duplicate safetensors header key {key}: {path.name}")
+                        result[key] = value
+                    return result
+                header = json.loads(raw, object_pairs_hook=unique_object)
+                if not isinstance(header, dict):
+                    raise ValueError(f"safetensors header must be an object: {path.name}")
             self.headers[path] = (header, size + 8)
+            self.header_records[path] = {"file": path.relative_to(self.root).as_posix(),
+                                         "bytes": path.stat().st_size, "header_bytes": size,
+                                         "header_sha256": hashlib.sha256(raw).hexdigest()}
+            self.discovery["files"] = list(self.header_records.values())
         return self.headers[path]
 
     def tensor(self, key, expected_shape):
