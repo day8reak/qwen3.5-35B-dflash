@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -26,8 +27,8 @@ def parser():
     p.add_argument("--draft-weights", help="downloaded DFlash folder containing config.json and safetensors")
     p.add_argument("--sequence-length", type=int, help="fixed context capacity; default 64")
     p.add_argument("--valid-length", type=int, help="valid fixture prefix, default min(6, capacity)")
-    p.add_argument("--resume", help="previous full-draft job; reuse completed stages in a new output directory")
-    p.add_argument("--output", help="new job directory below AI_RUN_DIR")
+    p.add_argument("--resume", help="previous draft job; import completed stages into full-draft, or resume it in place")
+    p.add_argument("--output", help="job directory below AI_RUN_DIR; default full-draft automatically resumes")
     p.add_argument("--ge-root", default=os.environ.get("CANN_ROOT"))
     p.add_argument("--ddk-root", default=os.environ.get("CPRO_DDK_ROOT") or os.environ.get("DDK_PATH"))
     p.add_argument("--ddk-id", default=os.environ.get("CPRO_DDK_ID"))
@@ -149,7 +150,11 @@ def _print_board_failure(result, hilog=None):
 
 
 def main(argv=None):
-    args = parser().parse_args(argv)
+    with ExitStack() as stack:
+        return _main(parser().parse_args(argv), stack)
+
+
+def _main(args, stack):
     from qwen35_moe_dflash.artifacts import checked_file, output_path, save_json
 
     result = {"schema_version": 1, "artifact_kind": "qwen35-full-draft-job",
@@ -161,6 +166,7 @@ def main(argv=None):
     root = None
     retained_compilation = None
     board_hilog = None
+    workspace = None
     weight_storage = args.weight_storage or "external"
     compile_options = {**DRAFT_COMPILE_OPTIONS,
                        "save_weights_as_external_data": "true" if weight_storage == "external" else "false"}
@@ -180,6 +186,12 @@ def main(argv=None):
         result["stage"] = name
         progress({"message": message})
 
+    def save_job(name, value):
+        if workspace is not None:
+            workspace.save(name, value)
+        else:
+            save_json(root / name, value)
+
     def component(name, filename, build):
         if name in result["components"]:
             stage(name, f"Reusing completed {name}; verifying its manifest")
@@ -191,8 +203,9 @@ def main(argv=None):
         if payload.get("status") == "FAILED":
             raise RuntimeError(payload.get("error", f"{name} failed"))
         result["components"][name] = record
-        # Immutable receipts also survive an interrupted parent process.
-        save_json(root / f"completed-{name}.json", record)
+        # A completed receipt survives interruption; in-place retries remove
+        # obsolete receipts before replacing their stage directories.
+        save_job(f"completed-{name}.json", record)
         return _read_component(record)
 
     try:
@@ -216,12 +229,29 @@ def main(argv=None):
             return 0
         if args.schema_library:
             raise ValueError("--schema-library is only used with --inspect-only")
+        requested_output = Path(args.output) if args.output else Path(run) / "full-draft"
+        if requested_output.is_symlink():
+            raise ValueError("draft workspace output must not be a symlink")
+        destination = output_path(requested_output)
+        pending = None
+        previous = Path(args.resume).resolve() if args.resume else None
+        if not args.output or destination == Path(run).resolve() / "full-draft" or destination.exists():
+            from qwen35_moe_dflash.draft_workspace import DraftWorkspace
+            workspace = stack.enter_context(DraftWorkspace(destination))
+            pending = workspace.load_pending()
+            if pending is not None:
+                previous = destination
+            elif (destination / "result.json").is_file() or (destination / "job.json").is_file():
+                if previous is not None and previous != destination:
+                    raise ValueError("full-draft already contains a job; omit --resume to continue it, "
+                                     "or choose a new --output for another job")
+                previous = destination
         settings = {"sequence_length": 64 if args.sequence_length is None else args.sequence_length, "valid_length": args.valid_length,
                     "seed": 17}
-        if args.resume:
-            previous = Path(args.resume).resolve()
+        if previous is not None:
             prior_result = previous / "result.json"
-            old = json.loads((prior_result if prior_result.is_file() else previous / "job.json").read_text())
+            old = pending if pending is not None else json.loads(
+                (prior_result if prior_result.is_file() else previous / "job.json").read_text())
             if old.get("artifact_kind") != result["artifact_kind"]:
                 raise ValueError("--resume requires a previous full-draft job")
             settings = old["settings"]
@@ -229,12 +259,20 @@ def main(argv=None):
                 value = getattr(args, key)
                 if value is not None and value != settings[key]:
                     raise ValueError(f"resume {key} differs; use a new job for changed inputs")
-            if args.target_weights or args.draft_weights:
-                raise ValueError("resume reuses existing weight identity; start a new job to change weights")
+            selected_paths = old.get("weight_paths", {})
+            for owner in ("target", "draft"):
+                selected = getattr(args, owner + "_weights")
+                if selected and (workspace is None or previous != destination
+                        or selected_paths.get(owner) != str(Path(selected).expanduser().resolve())):
+                    raise ValueError("resume reuses existing weight identity; use a new --output to change weights")
+            if selected_paths:
+                result["weight_paths"] = selected_paths
+            if old.get("imported_from"):
+                result["imported_from"] = old["imported_from"]
             result["components"] = dict(old["components"])
             for name in ("prepared", "fixture", "air", "compilation", "bundle"):
                 receipt = previous / f"completed-{name}.json"
-                if receipt.is_file():
+                if pending is None and receipt.is_file():
                     record = json.loads(receipt.read_text())
                     _read_component(record)
                     result["components"][name] = record
@@ -269,7 +307,8 @@ def main(argv=None):
                         "required_export_contract": CURRENT_DRAFT_EXPORT_CONTRACT,
                         "components": obsolete,
                         "preserved": [name for name in ("prepared", "fixture") if name in result["components"]],
-                        "scope": "Re-export and recompile in the new job; previous evidence is unchanged."}]
+                        "scope": ("Replace obsolete stages in the fixed workspace." if workspace else
+                                  "Re-export and recompile in the new job; previous evidence is unchanged.")}]
                     stage("resume", "Previous AIR export contract needs updating; reusing weights/reference and rebuilding AIR/OMC")
             if "compilation" in result["components"]:
                 _, prior_compile = _read_component(result["components"]["compilation"])
@@ -281,9 +320,10 @@ def main(argv=None):
                         "reason": "DRAFT_COMPILE_OPTIONS_CHANGED", "previous_options": options,
                         "required_options": dict(compile_options), "components": obsolete,
                         "preserved": [name for name in ("prepared", "fixture", "air") if name in result["components"]],
-                        "scope": "Recompile existing AIR in the new job; previous evidence is unchanged."})
+                        "scope": ("Replace compilation and bundle in the fixed workspace." if workspace else
+                                  "Recompile existing AIR in the new job; previous evidence is unchanged.")})
                     stage("resume", f"Updating draft compilation to FP16 with {weight_storage} OMC weights; reusing weights/reference/AIR")
-            if (not args.prepare_only and "air" in result["components"]
+            if (workspace is None and not args.prepare_only and "air" in result["components"]
                     and "compilation" not in result["components"] and not result.get("resume_invalidations")):
                 retained_compilation = _retained_output_candidate(previous, compile_options)
         if settings["sequence_length"] < 2:
@@ -293,18 +333,15 @@ def main(argv=None):
         if not 1 <= settings["valid_length"] <= settings["sequence_length"]:
             raise ValueError("--valid-length must be within the context capacity")
         result["settings"] = settings
-        root = output_path(args.output or Path(run) / ("full-draft-" + uuid.uuid4().hex[:12]))
-        root.mkdir(parents=True, exist_ok=False)
-        result["output"] = str(root)
-        save_json(root / "job.json", result)
-        stage("preflight", f"output {root}; full six-layer draft, block 16, full vocabulary; OMC weights={weight_storage}")
 
         from qwen35_moe_dflash.draft_standalone import prepare_draft, export_draft
         from qwen35_moe_dflash.draft_reference import prepare_draft_reference
 
         if "prepared" not in result["components"]:
-            target = _weight_path(args.target_weights, "target_weights")
-            draft = _weight_path(args.draft_weights, "draft_weights")
+            paths = result.get("weight_paths", {})
+            target = _weight_path(args.target_weights or paths.get("target"), "target_weights")
+            draft = _weight_path(args.draft_weights or paths.get("draft"), "draft_weights")
+            result["weight_paths"] = {"target": str(target), "draft": str(draft)}
         else:
             target = draft = None
         if not args.prepare_only:
@@ -313,6 +350,27 @@ def main(argv=None):
             if ("compilation" not in result["components"] and retained_compilation is None
                     and (not args.ddk_root or not args.ddk_id)):
                 raise ValueError("CPRO_DDK_ROOT/DDK_PATH and CPRO_DDK_ID are required for OMG")
+
+        # Validate the retained AIR before removing any old results. Importing
+        # keeps manifests byte-for-byte, including their historical provenance.
+        if workspace is not None:
+            if "air" in result["components"]:
+                prior_air_dir, prior_air = _read_component(result["components"]["air"])
+                _verify_air(prior_air_dir, prior_air)
+            if previous is not None and previous != destination:
+                result["imported_from"] = str(previous)
+            result = workspace.adopt(result)
+            workspace.reset(result)
+            root = destination
+            result["workspace_mode"] = "in-place"
+            result["output"] = str(root)
+            save_job("job.json", result)
+        else:
+            root = destination
+            root.mkdir(parents=True, exist_ok=False)
+            result["output"] = str(root)
+            save_job("job.json", result)
+        stage("preflight", f"output {root}; full six-layer draft, block 16, full vocabulary; OMC weights={weight_storage}")
 
         stage("prepared", "Preparing only draft weights and the shared embedding/LM head")
         prepared_dir, prepared = component("prepared", "prepared.json", lambda folder: prepare_draft(
@@ -410,7 +468,7 @@ def main(argv=None):
     except Exception as error:
         result.update(status="FAILED", error=f"{type(error).__name__}: {error}")
     if root is not None and root.is_dir() and result.get("output") == str(root):
-        save_json(root / "result.json", result)
+        save_job("result.json", result)
     print(json.dumps(result, ensure_ascii=False), flush=True)
     if result.get("compile_log"):
         from qwen35_moe_dflash.tool_logs import log_excerpt

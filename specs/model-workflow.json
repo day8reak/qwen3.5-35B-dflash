@@ -524,16 +524,34 @@
     },
     "standalone_draft": {
       "entrypoint": "targets/cpro/scripts/run_full_draft.py",
-      "status": "BOARD_NPU_WEIGHT_MEMORY_LOAD_FAILED_USER_REPORTED",
+      "status": "EMBEDDED_OMC_SERIALIZATION_FAILED_USER_REPORTED_FIXED_WORKSPACE_ADOPTION_NEXT",
       "latest_compile_feedback": {
-        "source": "USER_PASTED_LOG_CONTEXT",
-        "run": "full-draft-732b26335347",
-        "status": "PASSED_USER_REPORTED",
-        "primary_omc": "compile-work/generated/model/model.omc",
-        "recovery": "Preserve the 732 external compile artifacts as evidence; reuse its matching v4 AIR and d7 prepared/fixture, and recompile OMC plus rebuild the bundle for the user-requested embedded mode",
-        "device_execution": "FAILED_USER_REPORTED",
+        "source": "USER_PASTED_OMG_LOG",
+        "run": "full-draft-6599025a0b74",
+        "status": "FAILED_USER_REPORTED",
+        "weight_storage": "embedded",
+        "compile_option": {
+          "save_weights_as_external_data": "false"
+        },
+        "last_completed_log_stage": "Compile end",
+        "failed_stage": "SAVE_COMPILED_MODEL",
+        "failure_chain": [
+          "SaveToBuffer/CreateCompiledModelBuffer",
+          "LargeMemoryOps::Copy memcpy_s failure",
+          "SetModelHeader/CopyDataToBuffer",
+          "Save compiled model to file failed"
+        ],
+        "cause": "LARGE_BUFFER_SERIALIZATION_FAILURE_EXACT_LIMIT_OR_CAUSE_UNPROVEN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
         "remote_artifact_hash_verification": "NOT_RECHECKED",
-        "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4"
+        "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4",
+        "reuse_sources": {
+          "prepared": "full-draft-d7b4db958850",
+          "fixture": "full-draft-d7b4db958850",
+          "air": "full-draft-732b26335347"
+        },
+        "next_action": "Preserve this embedded failure observation; adopt all completed stages from 732 into AI_RUN_DIR/full-draft with --prepare-only to retain the already successful external compilation/bundle without running OMG or board"
       },
       "latest_board_feedback": {
         "source": "USER_PASTED_NATIVE_RESULT_COMPARISON_AND_HILOG",
@@ -659,7 +677,7 @@
       "numerical_gate": "Top1 zero mismatches on identical fixture; hidden diagnostic threshold NOT_DEFINED",
       "device_execution": "FAILED_USER_REPORTED",
       "runtime_placement": "UNVERIFIED",
-      "resume": "Hash-check completed stages in a new job; reuse prepared/fixture and invalidate AIR/compilation/bundle when export contract changes",
+      "resume": "Default AI_RUN_DIR/full-draft resumes in place with a lock: preserve successful payload bytes and replace failed/invalid stages plus old board output; import completed legacy stages by same-filesystem rename. A new explicit --output retains independent-directory reference reuse.",
       "scope": "Complete draft execution diagnostic only; no quality, acceptance or speedup claim",
       "host_evidence_run": "20261028T020133Z-18261-26b372",
       "host_validation": {
@@ -849,7 +867,7 @@
       },
       "external_weight_load_investigation": {
         "run_id": "20261028T063649Z-28459-d40778",
-        "status": "COMPILED_FILE_SIZES_AND_SELECTED_HEADER_USER_REPORTED_EMBEDDED_RETRY_PENDING",
+        "status": "EXTERNAL_LOAD_CAUSE_UNRESOLVED_EMBEDDED_SERIALIZATION_FAILED_USER_REPORTED",
         "source_audit": [
           "Generated inventory preserves full paths and records per-file sizes/SHA256",
           "Bundle maps generated/model/SubGraph_1.weight to bundle/model/model/SubGraph_1.weight; no basename or numeric-order mapping",
@@ -858,12 +876,10 @@
         ],
         "limits": "No independently retrieved remote inventory/checksum-call evidence; does not establish which sidecar path HIAI opens",
         "next_evidence": [
-          "Selected DDK embedded OMC compile result and actual output inventory/size",
-          "HIAI Load/Process result and numerical comparison for the embedded candidate",
-          "Selected DDK model-description path readback if external loading investigation continues",
-          "Original compiler/bundle SHA256 inventory and retained remote checksum-call result"
+          "Exact selected-DDK embedded model serialization failure context and buffer sizes",
+          "Selected-DDK model-description path behavior if external loading investigation continues"
         ],
-        "artifact_policy": "Preserve the 732 external output/evidence and d7 prepared/fixture; the user-requested embedded retry reuses v4 AIR and invalidates compilation/bundle only",
+        "artifact_policy": "Adopt all completed stages from 732 into fixed full-draft, including successful external compilation/bundle; after successful self-contained adoption, legacy batch roots are optional history and may be removed by the user",
         "resume_run": "full-draft-732b26335347",
         "compiled_file_size_result": "User reports SubGraph_1.weight at 1151486976 bytes and model.omc at 2905990 bytes; this excludes the observed compiler file being 16 bytes, not runtime load-path or content errors",
         "selected_api_hypothesis": {
@@ -885,7 +901,7 @@
         }
       },
       "embedded_weight_candidate": {
-        "status": "IMPLEMENTED_SELECTED_DDK_AND_DEVICE_RETRY_PENDING",
+        "status": "SELECTED_DDK_SERIALIZATION_FAILED_USER_REPORTED",
         "user_request": "Compile weights into the OMC with the model",
         "resume_run": "full-draft-732b26335347",
         "prepared_fixture_source_run": "full-draft-d7b4db958850",
@@ -920,11 +936,11 @@
           "before_bundle_snapshot",
           "native_load"
         ],
-        "size_scope": "Existing sidecar sum is below uint32 but does not guarantee the new embedded OMC layout or file size",
-        "selected_ddk_validation": "NOT_RUN_LOCALLY_REMOTE_RETRY_PENDING",
-        "device_validation": "PENDING_NO_SUCCESS_CLAIM",
+        "size_scope": "Existing sidecar sum is below the native uint32 limit, but the selected compiler failed during serialization; its exact size limit or cause is unproven",
+        "selected_ddk_validation": "REMOTE_USER_REPORT_SAVE_MODEL_FAILED_AFTER_COMPILE_END_NOT_RUN_LOCALLY",
+        "device_validation": "NOT_RUN_FOR_EMBEDDED_MODEL",
         "root_cause_status": "CANDIDATE_STORAGE_ROUTE_NOT_CONFIRMED_EXTERNAL_LOAD_ROOT_CAUSE",
-        "artifact_policy": "Keep the original 732 external artifacts and failure evidence; create a new retry output directory",
+        "artifact_policy": "Record 6599 as the latest embedded serialization failure; prefer --prepare-only adoption from 732 to preserve the successful external OMC/bundle, without automatically retrying either compiler or device",
         "host_validation": {
           "run_id": "20261028T063649Z-28459-d40778",
           "evidence": "embedded-regression.xml",
@@ -947,6 +963,107 @@
           "selected_ddk_execution": "NOT_RUN_LOCALLY",
           "device_execution": "NOT_RUN_LOCALLY",
           "limits": "Mocked compilation and board paths do not establish actual embedded OMC compilation, HIAI Load success or numerical accuracy"
+        },
+        "retry_run": "full-draft-6599025a0b74"
+      },
+      "historical_compile_feedback": [
+        {
+          "source": "USER_PASTED_LOG_CONTEXT",
+          "run": "full-draft-732b26335347",
+          "status": "PASSED_USER_REPORTED",
+          "primary_omc": "compile-work/generated/model/model.omc",
+          "recovery": "Preserve the 732 external compile artifacts as evidence; reuse its matching v4 AIR and d7 prepared/fixture, and recompile OMC plus rebuild the bundle for the user-requested embedded mode",
+          "device_execution": "FAILED_USER_REPORTED",
+          "remote_artifact_hash_verification": "NOT_RECHECKED",
+          "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4"
+        }
+      ],
+      "fixed_workspace": {
+        "status": "IMPLEMENTED_HOST_REGRESSION_PASSED_REMOTE_ADOPTION_PENDING",
+        "run_id": "20261028T070549Z-29814-248e1c",
+        "default_output": "${AI_RUN_DIR}/full-draft",
+        "current_import_source": "full-draft-732b26335347",
+        "current_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --resume \"$AI_RUN_DIR/full-draft-732b26335347\" --prepare-only",
+        "current_scope": "Adopt existing prepared/fixture/AIR plus successful external compilation/bundle; no reference, export, OMG or board execution",
+        "completed_component_sources": {
+          "prepared": "full-draft-d7b4db958850",
+          "fixture": "full-draft-d7b4db958850",
+          "air": "full-draft-732b26335347",
+          "compilation": "full-draft-732b26335347",
+          "bundle": "full-draft-732b26335347"
+        },
+        "reuse": "Verify receipts and preserve successful stage payload bytes",
+        "in_place_replacement": [
+          "failed_or_incomplete_stages",
+          "invalidated_stage_directories_and_receipts",
+          "old_board_outputs",
+          "latest_job_and_result_reports"
+        ],
+        "invalidation": {
+          "export_contract_changed": [
+            "air",
+            "compilation",
+            "bundle"
+          ],
+          "compile_options_changed": [
+            "compilation",
+            "bundle"
+          ]
+        },
+        "migration": "Same-filesystem directory rename; manifests remain byte-identical and top-level component directory records relocate",
+        "cross_filesystem": "REJECT_WITHOUT_COPY",
+        "concurrency": "WORKSPACE_LOCK_REJECTS_CONCURRENT_MUTATION",
+        "interruption": "MIGRATION_JOURNAL_RECOVERY",
+        "explicit_existing_output": "Auto-resume a recognized owned job in place",
+        "explicit_new_output_with_resume": "Retain legacy independent output and references for compatibility",
+        "subsequent_command": "Omit --resume to continue the fixed workspace after the next executable action is determined",
+        "legacy_root_cleanup": "Not automatic; after successful self-contained adoption, the user may remove obsolete batch roots. Independent TBE diagnosis and unrelated tasks are outside this cleanup.",
+        "disk_scope": "Avoids accumulating retry directories and copies during adoption; one compilation still needs input-snapshot/output space",
+        "model_changes": "NONE",
+        "selected_ddk_execution": "NOT_RUN_LOCALLY",
+        "device_execution": "NOT_RUN_LOCALLY",
+        "legacy_source_after_adoption": "Selected d7 and 732 stage directories are MOVED; their old jobs no longer resume at original paths. Continue only from fixed full-draft after successful adoption.",
+        "host_validation": {
+          "run_id": "20261028T070549Z-29814-248e1c",
+          "evidence": "fixed-combined.xml",
+          "tests_passed": 227,
+          "elapsed_seconds": 16.18,
+          "test_files": [
+            "tests/test_full_draft_cli.py",
+            "tests/test_draft_workspace.py",
+            "tests/test_existing_air.py",
+            "tests/test_retained_air.py",
+            "tests/test_draft_board.py",
+            "tests/test_draft_compile_inspect.py"
+          ],
+          "scope": [
+            "Fixed-output auto-resume and successful-stage reuse",
+            "Same-filesystem stage adoption, byte-identical manifests and self-contained component paths",
+            "Workspace locks, interrupted migration recovery and invalid-stage cleanup",
+            "Existing AIR compilation, retained output recovery, bundle and inspection regressions"
+          ],
+          "initial_result": {
+            "evidence": "fixed-first.xml",
+            "passed": 65,
+            "failed": 13,
+            "cause": "Mock fixtures lacked required artifact_kind",
+            "resolution": "Fixtures corrected; final combined regression passed"
+          },
+          "selected_ddk_execution": "NOT_RUN_LOCALLY",
+          "device_execution": "NOT_RUN_LOCALLY",
+          "limits": "Does not establish a fix for embedded OMC serialization or external-weight HIAI Load"
+        },
+        "inherited_weight_storage": "external",
+        "import_source_rationale": "Preserve the existing successful external OMC and bundle after the later embedded serialization failure; external HIAI Load remains unresolved",
+        "alternative_import": {
+          "source": "full-draft-6599025a0b74",
+          "components": [
+            "prepared",
+            "fixture",
+            "air"
+          ],
+          "inherited_weight_storage": "embedded",
+          "scope": "Valid but does not import the 732 successful external compilation and bundle; not the preferred consolidation source"
         }
       }
     }

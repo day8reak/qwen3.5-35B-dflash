@@ -8,19 +8,20 @@
 
 **先运行完整 draft 的独立入口。** [独立 draft 指南](draft-standalone.md)提供一条命令完成真实权重准备、PyTorch参考、GE导出、OMG编译和HIAI执行。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
-最新用户回传 **`full-draft-732b26335347`** 已完成v4 AIR编译和打包。PID46426的日志显示CPUCL初始化成功，已经越过此前 `v501/BroadcastTo` 障碍；随后NPU `SubGraph_1` 在 `InitRuntimeParams` 失败：`weightsMemBaseSize=16`，模型要求 `modelWeightMemorySize=1151486976` 字节。模型仍未进入Process，掩码与完整draft的数值结果尚未验证。
+最新内嵌重试 **`full-draft-6599025a0b74`** 在 `Compile end` 后保存模型失败：`SaveToBuffer/CreateCompiledModelBuffer` 中的 `LargeMemoryOps::Copy` 报 `memcpy_s` 失败，经 `SetModelHeader/CopyDataToBuffer` 返回保存失败。它没有进入板端执行；目前只能确认大缓冲区序列化失败，不能确定是某个固定大小上限或其他原因，也不会自动改回external重跑。
 
-当前保留 **`732b26335347`** 的v4 AIR及失败证据，以及它引用的 `d7b4db958850` prepared/fixture。按用户要求，下一步尝试将权重内嵌到OMC，复用已有AIR、权重和参考，只重新编译及打包：
+按用户要求，入口现在默认使用固定 **`$AI_RUN_DIR/full-draft`**。首选从732迁入已完成权重、参考、v4 AIR，以及已经成功编译的external OMC和bundle，**本次只整理已有产物，不编译、不上板**：
 
 ```bash
 git pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
   --resume "$AI_RUN_DIR/full-draft-732b26335347" \
-  --weight-storage embedded \
-  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
+  --prepare-only
 ```
 
-该选项明确传入 `--save_weights_as_external_data=false`；新任务默认仍为external，续跑未指定时继承原模式。这是装载方式验证，不是已确认的故障修复；不改变六层图、量化方式、权重内容或参考。已有15份sidecar共2,849,468,580字节，低于runner的UINT32大小上限，但新OMC实际长度还取决于编译布局，打包前和原生加载时仍检查真实文件大小。
+迁移采用同一文件系统内的目录重命名，不复制大权重；保留原清单字节及哈希，并将组件目录改为固定目录下的路径。从732继承external模式，保留现有成功编译和bundle；6599的embedded保存失败仍作为最新故障记录。成功后后续命令省略 `--resume`，自动从固定目录继续。成功阶段复用；失败或失效阶段及旧board输出会在原位置清理重建，最新日志和报告覆盖旧版，不再默认生成新批次目录。并发运行会被锁拒绝，中断的迁移通过日志恢复。迁入完成且组件均已位于固定目录后，旧批次目录可按用户选择清理；入口不自动删除整个旧目录，也不删除独立TBE诊断目录。固定目录仍需容纳一次编译的输入暂存和输出，不能替代释放已满磁盘空间。
+
+此前 **`full-draft-732b26335347`** 的external模式已完成v4 AIR编译和打包。PID46426日志显示CPUCL初始化成功，越过 `v501/BroadcastTo` 障碍；随后NPU `SubGraph_1` 在 `InitRuntimeParams` 报 `weightsMemBaseSize=16`、`modelWeightMemorySize=1151486976`。尚无Process或数值结果。6599继续复用该v4 AIR和 `d7b4db958850` prepared/fixture，本次迁移不改变图、权重、参考或加载行为。
 
 运行时给15个不同子图打印了同一个 `weight hash:0x1dabbe2881ec5472`，但它不是文件SHA256，不能据此断言15份权重内容相同或确定错配原因。实际文件哈希尚未回传。本仓库只读审查未发现按编号重排或丢失目录：编译到bundle再到上传均按完整相对路径处理；这仍不能证明设备HIAI打开了这些路径。
 

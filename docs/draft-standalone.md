@@ -1,14 +1,28 @@
 # 完整 draft 独立执行
 
-当前优先跑通完整六层 DFlash，不等待40层 target 编译。沿用已经配置的 `env.sh`、主机GE、目标DDK和HDC环境。这里的“权重目录”指含 `config.json`、safetensors文件及可能的索引文件的下载目录，不是AIR或OMC输出目录。
+当前优先跑通完整六层 DFlash，不等待40层 target 编译。沿用已经配置的 `env.sh`、主机GE、目标DDK和HDC环境。默认工作目录固定为 `$AI_RUN_DIR/full-draft`，后续自动复用成功阶段并覆盖失败阶段的日志，不再为每次重试生成新目录。
+
+当前最新 `full-draft-6599025a0b74` 的embedded编译在 `Compile end` 后保存模型失败。首选从此前732批次迁入已有成功阶段，保留external OMC和bundle；本次只整理已有产物，不编译、不上板：
 
 ```bash
 git pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
+  --resume "$AI_RUN_DIR/full-draft-732b26335347" \
+  --prepare-only
+```
+
+这次迁入d7的prepared/fixture，以及732的v4 AIR、成功external compilation和bundle；`--prepare-only`不会重新执行已完成的PyTorch参考、导出、OMG或设备，并从732继承external模式。这只是保存当前唯一已成功编译的路线，不代表它的HIAI加载故障已修复。迁移只在同一文件系统内重命名完成阶段的目录，不复制大权重；跨文件系统会明确报错。原清单字节及其哈希保留，顶层组件路径更新到固定目录。完成后d7和732的对应组件已移走，旧任务不能再按原路径续跑；以固定目录的最新清单为准。
+
+只有首次尚无任务时才指定检查点目录，例如：
+
+```bash
 python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
   --draft-weights "$QWEN35_DRAFT_WEIGHTS" \
   --target-weights "$QWEN35_TARGET_WEIGHTS" \
   --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
 ```
+
+这里的“权重目录”指含 `config.json`、safetensors文件及可能索引文件的下载目录，不是AIR或OMC输出目录。
 
 两个权重参数也可直接填写服务器上的实际目录；省略时读取 `QWEN35_RESOURCES` 中对应配置并展开环境变量。target目录使用原始模型权重，只读取其embedding和LM head，不读取40层decoder权重，不重新量化原target。
 
@@ -18,7 +32,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 默认上下文容量64、有效前缀6，完整6层、block16、248320词表保持不变。输出 `int32[1,15]` 候选ID和 `float16[1,15,2048]` 的head前hidden。FP16权重包含共享embedding/head约2.61GiB，这是存储量估计，不是板端峰值内存。
 
-入口自动建立新的 `full-draft-*` 目录，依次执行：
+首次运行在固定 `full-draft` 目录中依次执行以下步骤；后续跳过已完成且身份、契约与参数一致的阶段：
 
 1. 核对锁定配置，流式准备71个FP16权重张量；同一读取过程中记录原始张量和转换后数据哈希。
 2. 使用全部draft层和完整LM head生成PyTorch参考。输入是固定的合成target features、token IDs和有效前缀mask。
@@ -30,42 +44,37 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 这一步验证完整draft在固定输入上的执行与输出，不是独立文本生成，也不证明原始BF16质量、与量化target的接受率或加速。当前实现是prefix recomputation，没有新增draft KV增量缓存。后续将固定features换成真实target的八层特征，再做接入验证。
 
-如果编译或HDC失败，直接保留目录并恢复：
+后续需要执行时省略 `--resume`，入口自动读取固定目录中的任务。例如下面是常规续跑形式；本次先完成上面的迁移，确定下一步加载诊断前不重复运行设备：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
-  --resume "$AI_RUN_DIR/full-draft-实际批次号" \
   --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
 ```
 
-恢复创建新目录并验证复用阶段的清单哈希；进程中断时可从 `job.json` 和 `completed-*.json` 恢复。与当前导出契约一致的成功导出和编译不重跑。旧版 AIR 的外置权重序列化契约失效时，自动保留 prepared 权重和 PyTorch reference，重新导出 AIR、编译和上板；新结果记录 `resume_invalidations`，旧目录不改动。更换权重或输入形状需新建任务。只准备权重和参考可用 `--prepare-only`；准备至OMC但暂不上板可用 `--compile-only`。不要为本入口重跑旧算子探针或平台诊断矩阵。
+固定目录中的成功阶段保留字节并验证清单哈希；未完成或失效阶段连同相应receipt清理后原位重建，旧board输出和最新任务报告也会替换。导出契约变化使AIR/compilation/bundle失效，编译选项变化只使compilation/bundle失效。`job.json`、`completed-*.json`与迁移日志支持中断恢复；工作目录锁拒绝并发修改。明确指定一个已有、可识别的 `--output` 也会原位恢复；明确指定全新的 `--output` 并配合 `--resume` 则保留旧版新目录引用复用方式。更换权重或输入形状使用新的显式output。只准备或迁入已有阶段可用 `--prepare-only`；准备至OMC但暂不上板可用 `--compile-only`。不要为本入口重跑旧算子探针或平台诊断矩阵。
 
-最新 `full-draft-732b26335347` 已完成v4 AIR编译和bundle，用户HiLog显示PID46426的CPUCL初始化成功，已越过此前 `v501/BroadcastTo` 失败。随后NPU `SubGraph_1` 的 `InitRuntimeParams` 报权重内存大小不匹配：`weightsMemBaseSize=16`，`modelWeightMemorySize=1151486976`。模型尚未进入Process，不能把CPUCL初始化成功当作掩码或模型数值通过。
+迁移成功且所有已完成组件都位于固定目录后，旧批次目录不再是当前任务的运行依赖，可按用户选择清理。入口只移动选中的完成阶段，不自动删除整个旧根目录；独立的TBE诊断、其他任务及原始权重不属于这次清理。文中历史保留记录说明当时证据，并不要求永久保留所有旧批次。固定目录减少重试积累，但一次编译的暂存和输出仍需要磁盘空间。
+
+此前external批次 `full-draft-732b26335347` 已完成v4 AIR编译和bundle，用户HiLog显示PID46426的CPUCL初始化成功，已越过此前 `v501/BroadcastTo` 失败。随后NPU `SubGraph_1` 的 `InitRuntimeParams` 报权重内存大小不匹配：`weightsMemBaseSize=16`，`modelWeightMemorySize=1151486976`。模型尚未进入Process，不能把CPUCL初始化成功当作掩码或模型数值通过。
 
 v4将BOOL掩码转成INT32的0/1，GatherV2使用全零索引复制单例query/head维，最后转回BOOL；覆盖六层显式扩展和Select补出的六层head扩展，共12处。掩码值、权重、PyTorch参考、浮点计算和输出ABI不变。此前v3的INT32形状参数修改没有解决设备加载问题，历史失败记录保留；v4目前只取得编译及CPUCL初始化进展，完整执行仍失败。
 
-保留最新732批次的AIR、compilation、bundle和board证据，以及其引用的 `d7b4db958850/prepared` 与fixture。运行时15条子图记录都显示 `weight hash:0x1dabbe2881ec5472`，尺寸却不同；这是运行时日志字段，不是15份文件的SHA256相同证据。用户现已选择尝试权重内嵌OMC：
+随后 `full-draft-6599025a0b74` 使用embedded模式，在 `Compile end` 后的 `SaveToBuffer/CreateCompiledModelBuffer` 失败：`LargeMemoryOps::Copy` 的 `memcpy_s` 报错，经 `SetModelHeader/CopyDataToBuffer` 返回 `Save compiled model to file failed`。没有进入板端执行；当前确认的是保存大缓冲区失败，具体大小限制和根因未证实。单次调用失败后不会自动切换模式或再试；再次执行常规入口会重试失败阶段，因此当前仅执行上面的迁移命令。
 
-```bash
-git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
-  --resume "$AI_RUN_DIR/full-draft-732b26335347" \
-  --weight-storage embedded \
-  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
-```
+`embedded` 显式设置OMG的 `--save_weights_as_external_data=false`，`external` 设置为true。新任务默认external，续跑不指定时继承已记录模式；首选从732迁移会继承external并保留成功编译和bundle。也可从6599迁移其完成的prepared/fixture/AIR，但会继承embedded，无法同时保留732的成功编译，因此不是当前首选。存储模式变化只使compilation/bundle失效，prepared/fixture/AIR复用。当前迁移不改变此模式，也不修改图、量化、权重、参考或加载API；不是模型加载或编译故障修复。
 
-`embedded` 显式设置OMG的 `--save_weights_as_external_data=false`，`external` 设置为true。新任务默认external；续跑不指定时继承已记录模式。模式变化只使compilation/bundle失效，复用732的v4 AIR以及d7 prepared/fixture，在新目录编译、打包和执行，旧证据不改。这不重算参考、不重新量化，也不修改图或权重；只是另一种装载方式，所选DDK编译及设备Load能否成功仍待验证。
+732日志中15条子图记录都显示 `weight hash:0x1dabbe2881ec5472`，尺寸却不同；这是运行时字段，不是15份文件的SHA256相同证据。
 
 用户追加的编译文件大小显示 `SubGraph_1.weight` 为1,151,486,976字节，恰好等于模型要求；`model.omc` 为2,905,990字节。这排除了所列编译权重文件只有16字节的解释，尚未独立验证文件SHA256、设备副本或HIAI实际选择的权重。
 
-15份原sidecar共2,849,468,580字节，低于 `SetModelBuffer` 的UINT32长度上限4,294,967,295字节；该合计不能保证内嵌后的OMC大小或编译布局。打包和原生加载按新OMC的实际长度检查，超限明确报错；最终是否内嵌及是否仍产生外置数据，以真实编译产物为准。
+15份原sidecar共2,849,468,580字节，低于 `SetModelBuffer` 的UINT32长度上限4,294,967,295字节；该合计不能保证编译器能构造这个大小的内嵌OMC。6599正是在序列化阶段失败，因此不能把runner的UINT32上限当成编译器已验证的容量。打包和原生加载仍检查实际OMC长度。
 
-发生板端失败时，入口会显示 `board_stage`、通过身份校验的 `failure_stage`/原生原因，以及独立的传输或比较错误，并输出有界stderr/stdout日志。旧版没有打印原因时，可直接读取已有文件，无需再次运行模型：
+发生板端失败时，入口会显示 `board_stage`、通过身份校验的 `failure_stage`/原生原因，以及独立的传输或比较错误，并输出有界stderr/stdout日志。后续板端运行的报告位于固定目录；有这些文件时可直接读取，无需再次运行模型：
 
 ```bash
-cat "$AI_RUN_DIR/full-draft-732b26335347/board/results/result.json"
-cat "$AI_RUN_DIR/full-draft-732b26335347/board/comparison.json"
-tail -n 100 "$AI_RUN_DIR/full-draft-732b26335347/board/draft.stderr"
+cat "$AI_RUN_DIR/full-draft/board/results/result.json"
+cat "$AI_RUN_DIR/full-draft/board/comparison.json"
+tail -n 100 "$AI_RUN_DIR/full-draft/board/draft.stderr"
 ```
 
 `LOAD_OR_SETUP` 包含模型加载和IO建立，`INPUT_BINDING` 是输入绑定，`PROCESS` 是推理调用；需结合 `reason` 与原生日志定位，不能仅用阶段名断言根因。失败记录不要求生成输出bin，缺失成功输出不再掩盖已有原生错误。产物/运行时身份不匹配和证据回收失败仍使任务失败。
@@ -78,9 +87,9 @@ tail -n 100 "$AI_RUN_DIR/full-draft-732b26335347/board/draft.stderr"
 
 `full-draft-a091f16d13d8` 的用户日志已显示OMG编译和保存成功。外置权重模式实际生成 `compile-work/generated/model/model.omc`，而旧脚本只检查 `generated/model.omc`，因此误报失败。现在只接受这两种明确布局中的唯一非空普通模型文件，拒绝歧义、符号链接和空文件；保存并上传整个相对目录，保持 `SubGraph_*.weight` 与OMC的位置关系。
 
-旧版输出检查错误的恢复会核验成功日志、原导出及编译输入、DDK/参数、全部编译产物和TBE审计，在新目录保存独立快照与成功记录；旧失败证据不变。旧日志没有成功退出码，恢复记录明确标注由检查阶段及成功日志推断。该恢复不重跑OMG，但不能复用已经过期的导出契约。
+旧版显式新目录模式的输出检查错误恢复会核验成功日志、原导出及编译输入、DDK/参数、全部编译产物和TBE审计，在新目录保存独立快照与成功记录；旧失败证据不变。旧日志没有成功退出码，恢复记录明确标注由检查阶段及成功日志推断。该恢复不重跑OMG，但不能复用已经过期的导出契约。
 
-当前导出契约仍为 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4`，最新732批次与它一致，AIR继续复用。本次显式切换embedded会改变编译参数，仅重新编译和打包；同一模式后续续跑可复用已完成产物。更早的v2/v3批次恢复仍会触发重导和编译，因此不作为当前恢复起点。
+当前导出契约仍为 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4`，732 AIR与它一致，迁入后继续复用。首选迁移起点是732，6599保留为最新embedded失败记录；迁移成功后使用固定目录，更早的v2/v3批次恢复仍会触发重导和编译。
 
 `air/draft/projection-lowering.json`继续记录fc卷积表达的形状和等价范围。Conv2D与MatMul的累加顺序可能不同，板端仍须对照原参考，未宣称逐位一致或20ms性能。recipe为显式NCHW使用Q35GE002，普通ND图保持Q35GE001并兼容读取。
 
@@ -101,7 +110,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 如果首次准备权重尚未成功（`components` 为空），直接修正路径或文件后重跑上面的完整命令；这时没有已完成的权重、导出或编译需要复用。
 
-主机验证覆盖draft-only准备、六层参考计算、GE构图/导出、阶段恢复、外置权重绑定、原生输入检查与模拟执行失败。用户日志确认v4完整OMG与CPUCL初始化成功；模型Load仍在NPU子图权重内存检查失败，完整执行和数值结果尚未取得。
+主机验证覆盖draft-only准备、六层参考计算、GE构图/导出、阶段恢复、外置权重绑定、原生输入检查与模拟执行失败。用户日志确认external模式的v4 OMG与CPUCL初始化成功，但随后NPU子图权重内存检查失败；embedded模式则在保存模型时失败。完整执行和数值结果尚未取得。
 
 ## 与已用过的 4B draft 对照
 

@@ -4,6 +4,18 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 固定 draft 工作目录与内嵌模型保存失败
+
+2026-10-28，最新用户回传 `full-draft-6599025a0b74` 的embedded重试：日志到达 `Compile end`，随后 `SaveToBuffer/CreateCompiledModelBuffer` 中 `LargeMemoryOps::Copy` 的 `memcpy_s` 失败，经 `SetModelHeader/CopyDataToBuffer` 返回 `Save compiled model to file failed`。没有生成可用于本次执行的成功编译结果，也未调用设备Process。当前只确认大缓冲区序列化失败，具体大小上限、参数或内存原因未证实；此前sidecar总量小于UINT32并不能证明编译器能生成这个大小的内嵌OMC。没有自动切换external或重新运行失败编译。
+
+用户要求停止积累随机批次目录。入口默认改为 `$AI_RUN_DIR/full-draft`：已有合法任务自动原位恢复；成功组件保留字节并复核，失效或未完成阶段连同旧board输出清理重建，最新报告/失败日志替换旧版。AIR契约变化清理AIR/compilation/bundle，编译选项变化只清理compilation/bundle。工作目录锁拒绝并发修改，迁移日志支持中断恢复；显式全新 `--output` 仍保留旧版独立目录引用复用方式。
+
+本次首选使用 `--resume "$AI_RUN_DIR/full-draft-732b26335347" --prepare-only`，将d7 prepared/fixture与732 v4 AIR、成功external compilation、bundle迁入固定目录，不调用OMG或设备。从732继承external模式，以保留当前已有的成功编译结果；这不证明external Load故障已修复。6599仍是最新embedded失败记录；从它迁移也有效，但只有prepared/fixture/AIR，不能一并保留732的成功编译，故不是首选。迁移采用同一文件系统内目录重命名，无大权重副本；保留组件清单原字节及哈希，仅改顶层组件目录。原prepared/export根路径作为历史来源保留，实际payload使用组件内相对路径。旧批次根目录不自动整目录删除；迁入完成且当前组件不再引用旧目录后，用户可清理旧批次。下文“保留旧目录/新目录恢复”是当时流程的历史记录，不是当前永久保留要求。
+
+固定目录只改变本地工作目录和重试管理，不改变模型图、参考、权重、量化、HIAI加载调用或设备结论；本轮本地未运行所选DDK或真实设备。后续按[独立draft指南](draft-standalone.md)使用固定目录，待保存模型故障定位后再执行需要的编译步骤。
+
+本轮 `20261028T070549Z-29814-248e1c/fixed-combined.xml` 记录227项主机回归通过，用时16.18秒，覆盖CLI、工作目录迁移/锁/中断恢复、已有AIR编译与产物恢复、bundle及只读检查。首次 `fixed-first.xml` 的65项通过、13项失败来自模拟夹具缺少 `artifact_kind`，修正后通过上述最终组合测试；原失败记录保留。这些测试未执行所选DDK或真实设备，不是6599序列化故障或732加载故障已修复的证据。
+
 ## 完整 draft v4 越过 CPUCL 初始化后的权重内存失败
 
 2026-10-28，用户回传 `full-draft-732b26335347`：v4 AIR编译及打包成功，PID46426日志显示CPUCL初始化成功，已越过前两版的 `v501/BroadcastTo` 障碍。随后NPU `SubGraph_1` 的 `InitRuntimeParams` 失败，报告 `weightsMemBaseSize=16`、`modelWeightMemorySize=1151486976` 字节。失败仍在Load阶段，没有Process或数值比较；掩码替代的设备数值和完整模型正确性均未验证。
@@ -18,7 +30,7 @@
 
 用户随后要求尝试将权重与模型一起编入OMC。新增显式 `--weight-storage embedded` 将 `save_weights_as_external_data` 改为false，从732复用v4 AIR及d7 prepared/fixture，只重建compilation/bundle；新任务默认仍为external，未指定模式的续跑继承原模式。原732外置产物和失败证据保留，模型图、权重内容、参考、量化和输出ABI不变，HIAI加载调用也不变。这是装载方式兼容候选，不是已确认根因或已验证设备修复。
 
-所列15份外置权重合计2,849,468,580字节，小于runner UINT32长度上限4,294,967,295字节；该合计不是新OMC长度的保证。打包前与原生加载按实际OMC文件大小检查；所选DDK是否生成完整内嵌产物、Load是否成功以及数值误差均待本次运行验证。执行命令见[独立draft指南](draft-standalone.md)。
+所列15份外置权重合计2,849,468,580字节，小于runner UINT32长度上限4,294,967,295字节；该合计不是新OMC长度的保证。打包前与原生加载按实际OMC文件大小检查；当时尚待验证的内嵌保存步骤，随后在6599批次失败，见上节；Load和数值仍未验证。当前先迁移固定目录，命令见[独立draft指南](draft-standalone.md)。
 
 本轮 `20261028T063649Z-28459-d40778/embedded-regression.xml` 记录203项主机回归通过，用时8.68秒。覆盖模式选择与续跑继承、只重建编译/bundle、模拟OMG收到false参数及相应元数据，以及无sidecar的单OMC bundle校验和上传计划；并回归既有AIR编译、产物恢复和只读检查。OMG与板端路径使用模拟环境，未在本地执行所选DDK或真实设备，不能作为内嵌OMC实际编译、Load或数值通过证据。
 

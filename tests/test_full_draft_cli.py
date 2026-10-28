@@ -25,14 +25,14 @@ def job(tmp_path, monkeypatch):
         calls.append("prepared")
         assert kwargs["target_path"] == target and kwargs["draft_path"] == draft
         folder.mkdir()
-        save_json(folder / "prepared.json", {"status": "PREPARED", "tiny": False,
+        save_json(folder / "prepared.json", {"artifact_kind": "qwen35-draft-ge-prepared", "status": "PREPARED", "tiny": False,
                   "draft_config": config, "sequence_length": length})
 
     def reference(prepared, folder, **kwargs):
         calls.append("fixture")
         assert kwargs["valid_length"] == 6
         folder.mkdir()
-        save_json(folder / "report.json", {"status": "REFERENCE_COMPLETE",
+        save_json(folder / "report.json", {"artifact_kind": "qwen35-draft-reference", "status": "REFERENCE_COMPLETE",
                   "expected_top1": {"path": "top1.bin"}, "expected_hidden": {"path": "hidden.bin"}})
 
     def file_record(path, root):
@@ -44,7 +44,7 @@ def job(tmp_path, monkeypatch):
         folder.mkdir()
         air = folder / "draft.air"
         air.write_bytes(b"fixture-draft-air")
-        save_json(folder / "manifest.json", {"status": "EXPORTED",
+        save_json(folder / "manifest.json", {"artifact_kind": "qwen35-cpro-draft-air", "status": "EXPORTED",
             "export_contract": draft_standalone.CURRENT_DRAFT_EXPORT_CONTRACT, "graphs": [
             {"name": "draft", "air": "draft.air", "files": [file_record(air, folder)]}]})
 
@@ -60,7 +60,7 @@ def job(tmp_path, monkeypatch):
             return {"status": "FAILED", "error": "fixture compile failure"}
         model = folder / "model.omc"
         model.write_bytes(b"fixture-compiled-draft")
-        result = {"status": "COMPILED", "ddk_id": "test-ddk", "omc": file_record(model, folder),
+        result = {"artifact_kind": "qwen35-existing-air-compilation", "status": "COMPILED", "ddk_id": "test-ddk", "omc": file_record(model, folder),
                   "requested_options": {"use_origin_format": "true", "weight_data_type": "FP16",
                                         "limit_partition_size": "false", "save_weights_as_external_data":
                                         str(kwargs["save_weights_as_external_data"]).lower()},
@@ -72,7 +72,7 @@ def job(tmp_path, monkeypatch):
         calls.append("bundle")
         assert kwargs["config"] == config and kwargs["export_dir"].name == "air"
         folder.mkdir()
-        save_json(folder / "manifest.json", {"status": "PREPARED"})
+        save_json(folder / "manifest.json", {"artifact_kind": "qwen35-standalone-draft-bundle", "status": "PREPARED"})
 
     def board(bundle, folder, **kwargs):
         calls.append("board")
@@ -424,7 +424,7 @@ def retained_job(job, tmp_path, monkeypatch):
         model = destination / "compile-work/generated/model/model.omc"
         model.parent.mkdir(parents=True)
         model.write_bytes(b"retained-model")
-        report = {"status": "COMPILED", "ddk_id": "test-ddk", "requested_options": options,
+        report = {"artifact_kind": "qwen35-existing-air-compilation", "status": "COMPILED", "ddk_id": "test-ddk", "requested_options": options,
                   "recovery": {"source": str(source), "compiler_execution": "NOT_RUN"},
                   "omc": {"path": str(model.relative_to(destination)),
                           "bytes": model.stat().st_size, "sha256": sha256_file(model)}}
@@ -659,3 +659,270 @@ def test_resume_refuses_changed_inputs_and_preserves_prior_run(job, tmp_path):
     calls.clear()
     assert main([*common, "--resume", str(previous), "--sequence-length", "128"]) == 1
     assert calls == [] and (previous / "result.json").read_bytes() == original
+
+
+def _stage_payloads(result, stages=None):
+    """Capture real bytes and inode identity, independently of job receipts."""
+    selected = result["components"] if stages is None else stages
+    return {path: (path.read_bytes(), path.stat().st_ino)
+            for name in selected
+            for path in Path(result["components"][name]["directory"]).rglob("*") if path.is_file()}
+
+
+def _assert_payloads_unchanged(payloads):
+    assert all(path.read_bytes() == data and path.stat().st_ino == inode
+               for path, (data, inode) in payloads.items())
+
+
+def test_fixed_default_directory_retries_original_command_without_rebuilding_completed_stages(job, tmp_path):
+    main, fresh, _, calls, failures = job
+    root = tmp_path / "full-draft"
+    failures.add("board")
+    assert main(fresh) == 1
+    old = json.loads((root / "result.json").read_text())
+    assert old["output"] == str(root)
+    preserved = _stage_payloads(old)
+    (root / "board/stale-device.log").write_text("previous board attempt")
+    failures.clear(); calls.clear()
+    assert main(fresh) == 0
+    assert calls == ["board"]
+    assert not (root / "board/stale-device.log").exists()
+    _assert_payloads_unchanged(preserved)
+    assert json.loads((root / "result.json").read_text())["status"] == "EXECUTION_COMPLETE"
+    assert [path.name for path in tmp_path.glob("full-draft*")] == ["full-draft"]
+
+
+def test_explicit_same_output_and_resume_retries_only_board(job, tmp_path):
+    main, fresh, _, calls, failures = job
+    root = tmp_path / "named-workspace"
+    failures.add("board")
+    assert main([*fresh, "--output", str(root)]) == 1
+    preserved = _stage_payloads(json.loads((root / "result.json").read_text()))
+    failures.clear(); calls.clear()
+    assert main(["--resume", str(root), "--output", str(root)]) == 0
+    assert calls == ["board"]
+    _assert_payloads_unchanged(preserved)
+
+
+def test_fixed_retry_removes_partial_compilation_and_downstream_but_preserves_air(job, tmp_path):
+    main, fresh, common, calls, failures = job
+    root = tmp_path / "full-draft"
+    failures.add("compilation")
+    assert main(fresh) == 1
+    old = json.loads((root / "result.json").read_text())
+    preserved = _stage_payloads(old)
+    (root / "compilation/partial-output.bin").write_bytes(b"incomplete compiler output")
+    (root / "bundle").mkdir()
+    (root / "bundle/partial-upload.bin").write_bytes(b"incomplete bundle")
+    failures.clear(); calls.clear()
+    assert main(common[2:]) == 0
+    assert calls == ["compilation", "bundle", "board"]
+    assert not (root / "compilation/partial-output.bin").exists()
+    assert not (root / "bundle/partial-upload.bin").exists()
+    _assert_payloads_unchanged(preserved)
+
+
+def test_fixed_changed_compile_profile_cannot_reuse_old_receipts_after_failed_recompile(job, tmp_path):
+    main, fresh, common, calls, failures = job
+    root = tmp_path / "full-draft"
+    assert main(fresh) == 0
+    old = json.loads((root / "result.json").read_text())
+    preserved = _stage_payloads(old, ("prepared", "fixture", "air"))
+    (root / "compilation/old-external-weight.weight").write_bytes(b"old compiler payload")
+    (root / "board/old.log").write_text("old board")
+    calls.clear(); failures.add("compilation")
+    assert main([*common[2:], "--weight-storage", "embedded"]) == 1
+    assert calls == ["compilation"]
+    for name in ("compilation", "bundle"):
+        assert not (root / f"completed-{name}.json").exists()
+    assert not (root / "bundle").exists() and not (root / "board").exists()
+    assert not (root / "compilation/old-external-weight.weight").exists()
+    _assert_payloads_unchanged(preserved)
+    failures.clear(); calls.clear()
+    assert main(common[2:]) == 0
+    assert calls == ["compilation", "bundle", "board"]
+    assert json.loads((root / "result.json").read_text())["weight_storage"] == "embedded"
+    _assert_payloads_unchanged(preserved)
+
+
+def test_fixed_obsolete_air_removes_all_dependent_receipts_even_if_export_fails(job, tmp_path, monkeypatch):
+    from qwen35_moe_dflash import draft_standalone
+    main, fresh, common, calls, _ = job
+    root = tmp_path / "full-draft"
+    assert main(fresh) == 0
+    old = _make_legacy_air(root, contract="cpro-fileconstant-relative-int-fc-conv2d-broadcast-i32-v3")
+    preserved = _stage_payloads(old, ("prepared", "fixture"))
+    original = draft_standalone.export_draft
+    def failed_export(prepared, folder, ge, **kwargs):
+        calls.append("air")
+        folder.mkdir()
+        (folder / "partial.air").write_bytes(b"interrupted exporter")
+        raise RuntimeError("fixture AIR export failure")
+    monkeypatch.setattr(draft_standalone, "export_draft", failed_export)
+    calls.clear()
+    assert main(common) == 1
+    assert calls == ["air"]
+    for name in ("air", "compilation", "bundle"):
+        assert not (root / f"completed-{name}.json").exists()
+    for name in ("compilation", "bundle", "board"):
+        assert not (root / name).exists()
+    _assert_payloads_unchanged(preserved)
+    monkeypatch.setattr(draft_standalone, "export_draft", original)
+    calls.clear()
+    assert main(common) == 0
+    assert calls == ["air", "compilation", "bundle", "board"]
+    assert not (root / "air/partial.air").exists()
+    _assert_payloads_unchanged(preserved)
+
+
+@pytest.mark.parametrize("changed", ["weights", "inputs", "manifest"])
+def test_fixed_invalid_retry_does_not_clean_or_overwrite_the_previous_attempt(job, tmp_path, changed):
+    main, fresh, _, calls, failures = job
+    root = tmp_path / "full-draft"
+    failures.add("board")
+    assert main(fresh) == 1
+    (root / "board/keep-failure.log").write_text("retain until retry preflight succeeds")
+    args = []
+    if changed == "weights":
+        alternate = tmp_path / "different-target"
+        alternate.mkdir()
+        args = ["--target-weights", str(alternate)]
+    elif changed == "inputs":
+        args = ["--sequence-length", "128"]
+    else:
+        with (root / "air/manifest.json").open("a") as stream:
+            stream.write(" ")
+    before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    calls.clear()
+    assert main(args) == 1
+    assert calls == []
+    assert all(path.read_bytes() == payload for path, payload in before.items())
+    assert (root / "board/keep-failure.log").exists()
+
+
+def test_fixed_workspace_lock_rejects_concurrent_cli_without_rewriting_active_evidence(job, tmp_path):
+    from qwen35_moe_dflash.draft_workspace import DraftWorkspace
+    main, fresh, _, calls, _ = job
+    root = tmp_path / "full-draft"
+    assert main([*fresh, "--compile-only"]) == 0
+    calls.clear()
+    with DraftWorkspace(root):
+        before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        assert main(["--compile-only"]) == 1
+        assert calls == []
+        assert {path: path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
+
+
+def test_fixed_default_refuses_unrecognized_nonempty_directory_without_deleting_files(job, tmp_path):
+    main, fresh, _, calls, _ = job
+    root = tmp_path / "full-draft"
+    root.mkdir()
+    protected = root / "unrelated-user-file.bin"
+    protected.write_bytes(b"not a recognized draft job")
+    assert main(fresh) == 1
+    assert calls == [] and protected.read_bytes() == b"not a recognized draft job"
+    assert not (root / "job.json").exists() and not (root / "result.json").exists()
+
+
+def test_legacy_resume_adopts_cross_job_stages_into_self_contained_fixed_directory(job, tmp_path):
+    main, fresh, common, calls, _ = job
+    origin, later = tmp_path / "legacy-first", tmp_path / "legacy-second"
+    assert main([*fresh, "--compile-only", "--output", str(origin)]) == 0
+    assert main([*common, "--resume", str(origin), "--output", str(later)]) == 0
+    old = json.loads((later / "result.json").read_text())
+    before = {name: {path.relative_to(record["directory"]): (path.read_bytes(), path.stat().st_ino)
+                     for path in Path(record["directory"]).rglob("*") if path.is_file()}
+              for name, record in old["components"].items()}
+    assert Path(old["components"]["prepared"]["directory"]).parent == origin
+    assert Path(old["components"]["bundle"]["directory"]).parent == later
+    calls.clear()
+    assert main(["--resume", str(later)]) == 0
+    assert calls == ["board"]
+    root = tmp_path / "full-draft"
+    adopted = json.loads((root / "result.json").read_text())
+    for name, record in adopted["components"].items():
+        folder = Path(record["directory"])
+        assert folder == root / name and not Path(old["components"][name]["directory"]).exists()
+        assert {path.relative_to(folder): (path.read_bytes(), path.stat().st_ino)
+                for path in folder.rglob("*") if path.is_file()} == before[name]
+        receipt = json.loads((root / f"completed-{name}.json").read_text())
+        assert receipt == record
+    origin.rename(tmp_path / "old-origin-unavailable")
+    later.rename(tmp_path / "old-later-unavailable")
+    calls.clear()
+    assert main(["--compile-only"]) == 0
+    assert calls == []
+
+
+def test_cli_resumes_partial_adoption_from_journal_after_move_before_checkpoint(job, tmp_path, monkeypatch):
+    from qwen35_moe_dflash import draft_workspace
+    main, fresh, _, calls, _ = job
+    source = tmp_path / "legacy-to-adopt"
+    assert main([*fresh, "--output", str(source)]) == 0
+    old = json.loads((source / "result.json").read_text())
+    before = {name: {path.relative_to(record["directory"]): (path.read_bytes(), path.stat().st_ino)
+                     for path in Path(record["directory"]).rglob("*") if path.is_file()}
+              for name, record in old["components"].items()}
+    original_rename = draft_workspace.os.rename
+    interrupted = False
+    def rename_then_interrupt(src, dst, *args, **kwargs):
+        nonlocal interrupted
+        result = original_rename(src, dst, *args, **kwargs)
+        if not interrupted and Path(src) == source / "prepared":
+            interrupted = True
+            raise OSError("fixture interruption after stage rename")
+        return result
+    monkeypatch.setattr(draft_workspace.os, "rename", rename_then_interrupt)
+    calls.clear()
+    assert main(["--resume", str(source)]) == 1
+    assert interrupted and calls == []
+    root = tmp_path / "full-draft"
+    assert (root / "prepared").is_dir() and not (source / "prepared").exists()
+    assert (root / ".draft-migration.json").is_file()
+    # The first failure happens before CLI commits its new job root. The
+    # journal, not a possibly missing/stale result.json, must drive retry.
+    monkeypatch.setattr(draft_workspace.os, "rename", original_rename)
+    assert main([]) == 0
+    assert calls == ["board"]
+    adopted = json.loads((root / "result.json").read_text())
+    assert not (root / ".draft-migration.json").exists()
+    for name, record in adopted["components"].items():
+        folder = Path(record["directory"])
+        assert folder == root / name
+        assert {path.relative_to(folder): (path.read_bytes(), path.stat().st_ino)
+                for path in folder.rglob("*") if path.is_file()} == before[name]
+    source.rename(tmp_path / "legacy-source-unavailable")
+    calls.clear()
+    assert main(["--compile-only"]) == 0 and calls == []
+
+
+def test_cli_refuses_adoption_from_a_locked_source_workspace_without_moving_payloads(job, tmp_path):
+    from qwen35_moe_dflash.draft_workspace import DraftWorkspace
+    main, fresh, _, calls, _ = job
+    source = tmp_path / "active-source"
+    assert main([*fresh, "--output", str(source)]) == 0
+    root = tmp_path / "full-draft"
+    calls.clear()
+    with DraftWorkspace(source):
+        before = {path: (path.read_bytes(), path.stat().st_ino)
+                  for path in source.rglob("*") if path.is_file()}
+        assert main(["--resume", str(source)]) == 1
+        assert calls == []
+        assert {path: (path.read_bytes(), path.stat().st_ino)
+                for path in source.rglob("*") if path.is_file()} == before
+        assert not any((root / stage).exists() for stage in ("prepared", "fixture", "air", "compilation", "bundle"))
+
+
+def test_cli_rejects_symlink_output_before_resolving_or_touching_the_other_workspace(job, tmp_path):
+    main, fresh, _, calls, _ = job
+    source = tmp_path / "real-job"
+    assert main([*fresh, "--compile-only", "--output", str(source)]) == 0
+    alias = tmp_path / "output-alias"
+    alias.symlink_to(source, target_is_directory=True)
+    before = {path: (path.read_bytes(), path.stat().st_ino)
+              for path in source.rglob("*") if path.is_file()}
+    calls.clear()
+    assert main(["--output", str(alias), "--compile-only"]) == 1
+    assert calls == [] and alias.is_symlink()
+    assert {path: (path.read_bytes(), path.stat().st_ino)
+            for path in source.rglob("*") if path.is_file()} == before
