@@ -1,4 +1,4 @@
-"""Read bounded Q35GE001 construction metadata using only the standard library.
+"""Read bounded Q35GE001/002 metadata using only the standard library.
 
 Descriptors and edges describe the exported recipe, not the optimized OMG graph.
 Constant storage references are returned as metadata; their paths are never opened.
@@ -17,11 +17,13 @@ _MAX_BYTES = 256 << 20
 _MAX_OPS = 2_000_000
 _MAX_STRING = 1 << 20
 _DTYPES = {1: ("float16", 2), 2: ("int32", 4), 3: ("int64", 8), 4: ("bool", 1)}
+_FORMATS = {0: "ND", 1: "NCHW"}
 
 
 class _Reader:
     def __init__(self, stream, size):
         self.stream, self.remaining = stream, size
+        self.with_layout = False
 
     def take(self, size):
         if size > self.remaining:
@@ -61,13 +63,22 @@ class _Reader:
 
     def descriptor(self):
         dtype, width = self.dtype()
+        result = {"dtype": dtype}
+        if self.with_layout:
+            layout = self.number("B")
+            if layout not in _FORMATS:
+                raise ValueError("unsupported recipe descriptor format")
+            result["format"] = _FORMATS[layout]
         rank = self.count(16, "rank", item_bytes=8)
+        if result.get("format") == "NCHW" and rank != 4:
+            raise ValueError("NCHW recipe descriptors require rank 4")
         shape = [self.number("q") for _ in range(rank)]
         if any(dimension < 0 for dimension in shape):
             raise ValueError("negative recipe dimension")
         if math.prod(shape) * width >= 1 << 63:
             raise ValueError("recipe tensor byte size overflows int64")
-        return {"shape": shape, "dtype": dtype}
+        result["shape"] = shape
+        return result
 
     def attribute(self):
         tag = self.number("B")
@@ -100,8 +111,10 @@ def _byte_size(descriptor):
 
 
 def _read(reader):
-    if reader.take(8) != b"Q35GE001":
+    magic = reader.take(8)
+    if magic not in (b"Q35GE001", b"Q35GE002"):
         raise ValueError("unknown recipe format")
+    reader.with_layout = magic == b"Q35GE002"
     graph_name = reader.text(nonempty=True)
     count = reader.count(_MAX_OPS, "operator", minimum=1)
     records, names, source_ports = [], set(), []
@@ -126,7 +139,8 @@ def _read(reader):
                     if port["src"] >= index:
                         raise ValueError("recipe source must refer to an earlier operator")
                     source = source_ports[port["src"]].get(port["src_port"])
-                    if source is None or any(source[key] != port[key] for key in ("shape", "dtype")):
+                    if (source is None or any(source[key] != port[key] for key in ("shape", "dtype"))
+                            or source.get("format", "ND") != port.get("format", "ND")):
                         raise ValueError("recipe source port or connected descriptor mismatch")
                 ports[port_name] = port
                 record[direction].append(port)

@@ -35,9 +35,11 @@ def parser():
     p.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
     p.add_argument("--cxx11-abi", type=int, choices=(0, 1), default=0)
     p.add_argument("--timeout-seconds", type=int, default=3600)
+    p.add_argument("--schema-library", help="inspection only: selected DDK protobuf library, read without loading it")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--prepare-only", action="store_true", help="prepare full weights and PyTorch fixture; no GE/DDK/board")
     mode.add_argument("--compile-only", action="store_true", help="prepare reference, export AIR and compile OMC; no board")
+    mode.add_argument("--inspect-only", action="store_true", help="read --resume job's retained compiler evidence; no export, compilation or board")
     return p
 
 
@@ -122,6 +124,21 @@ def main(argv=None):
         run = os.environ.get("AI_RUN_DIR")
         if not run:
             raise ValueError("AI_RUN_DIR is required; source the project env.sh")
+        if args.inspect_only:
+            if not args.resume:
+                raise ValueError("--inspect-only requires --resume pointing to the retained full-draft job")
+            if any(value is not None for value in (args.target_weights, args.draft_weights,
+                                                   args.sequence_length, args.valid_length)):
+                raise ValueError("inspection reads the retained job; do not select new weights or inputs")
+            from qwen35_moe_dflash.draft_compile_inspect import inspect_draft_compile
+            inspection_dir = output_path(args.output or Path(run) / ("full-draft-inspect-" + uuid.uuid4().hex[:12]))
+            inspected = inspect_draft_compile(args.resume, inspection_dir, schema_library=args.schema_library)
+            print(json.dumps({"status": inspected["status"], "output": str(inspection_dir),
+                              "comparison": str(inspection_dir / "report.txt")}, ensure_ascii=False), flush=True)
+            print((inspection_dir / "report.txt").read_text(), flush=True)
+            return 0
+        if args.schema_library:
+            raise ValueError("--schema-library is only used with --inspect-only")
         settings = {"sequence_length": 64 if args.sequence_length is None else args.sequence_length, "valid_length": args.valid_length,
                     "seed": 17}
         if args.resume:
@@ -162,7 +179,7 @@ def main(argv=None):
                         "components": obsolete,
                         "preserved": [name for name in ("prepared", "fixture") if name in result["components"]],
                         "scope": "Re-export and recompile in the new job; previous evidence is unchanged."}]
-                    stage("resume", "Previous AIR serialization needs updating; reusing weights/reference and rebuilding AIR/OMC")
+                    stage("resume", "Previous AIR export contract needs updating; reusing weights/reference and rebuilding AIR/OMC")
             if "compilation" in result["components"]:
                 _, prior_compile = _read_component(result["components"]["compilation"])
                 options = prior_compile.get("requested_options", {})

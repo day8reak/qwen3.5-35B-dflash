@@ -59,6 +59,96 @@ def test_real_cpp_parser_accepts_typed_attributes_and_shared_constant_blob(parse
     assert parser[1].with_name("constants.bin").read_bytes() == b"\x00\x3c" * 4
 
 
+def test_explicit_nd_keeps_version_one_bytes_unchanged(parser, tmp_path):
+    graph = [records()[0]]
+    emit_recipe_cpp(graph, "nd", [0], [(0, 0)], tmp_path / "implicit")
+    graph[0]["outputs"][0]["format"] = "ND"
+    emit_recipe_cpp(graph, "nd", [0], [(0, 0)], tmp_path / "explicit")
+    first = tmp_path / "implicit/graph.recipe"
+    second = tmp_path / "explicit/graph.recipe"
+    assert first.read_bytes().startswith(b"Q35GE001")
+    assert first.read_bytes() == second.read_bytes()
+    assert run(parser, first).returncode == run(parser, second).returncode == 0
+
+
+def _layout_graph():
+    graph = records()
+    for record in graph:
+        for port in record["inputs"] + record["outputs"]:
+            port.update(shape=[1, 1, 1, 4], format="NCHW")
+    graph.append({"name": "nd_input", "type": "Data", "inputs": [],
+                  "outputs": [{"port": "y", "shape": [1, 4], "dtype": "int32"}],
+                  "attrs": {"index": {"type": "int", "value": 1}}})
+    return graph
+
+
+def test_real_cpp_parser_accepts_mixed_nd_nchw_descriptors(parser, tmp_path):
+    folder = tmp_path / "mixed"
+    code = emit_recipe_cpp(_layout_graph(), "mixed", [0, 5], [(4, 0), (5, 0)], folder)
+    path = folder / "graph.recipe"
+    assert path.read_bytes().startswith(b"Q35GE002")
+    result = run(parser, path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "RECIPE_VALID 6\n"
+    # This checks generated construction/verification, not actual GE execution.
+    assert "case 1: return ge::FORMAT_NCHW" in code
+    assert "ge::Shape(d.shape), Format(d.layout), DType(d.dtype)" in code
+    assert "got.GetFormat() == Format(want.layout)" in code
+
+
+@pytest.mark.parametrize("fault", ["unknown_layout", "connected_layout_mismatch", "nchw_rank"])
+def test_cpp_reader_rejects_corrupt_version_two_layout(parser, tmp_path, fault):
+    folder = tmp_path / "mixed"
+    emit_recipe_cpp(_layout_graph(), "mixed", [0, 5], [(4, 0)], folder)
+    path = folder / "graph.recipe"
+    payload = bytearray(path.read_bytes())
+    def text(value):
+        return struct.pack("<I", len(value)) + value.encode()
+    desc = struct.pack("<BBIqqqq", 1, 1, 4, 1, 1, 1, 4)
+    prefix = text("x1") + struct.pack("<I", 0) + text("y") if fault == "connected_layout_mismatch" else text("y")
+    offset = payload.index(prefix + desc) + len(prefix) + 1
+    if fault == "nchw_rank":
+        payload[offset+1:offset+5] = struct.pack("<I", 3)
+    else:
+        payload[offset] = 2 if fault == "unknown_layout" else 0
+    path.write_bytes(payload)
+    result = run(parser, path)
+    assert result.returncode != 0
+    assert {"unknown_layout": "unsupported recipe descriptor format",
+            "connected_layout_mismatch": "connected descriptor mismatch",
+            "nchw_rank": "NCHW recipe descriptors require rank 4"}[fault] in result.stderr
+
+
+@pytest.mark.parametrize("shape", [[], [1, 4], [1, 1, 1, 1, 4]])
+def test_writer_requires_rank_four_for_nchw(tmp_path, shape):
+    graph = [records()[0]]
+    graph[0]["outputs"][0].update(format="NCHW", shape=shape)
+    with pytest.raises(ValueError, match="NCHW recipe descriptors require rank 4"):
+        emit_recipe_cpp(graph, "bad", [0], [(0, 0)], tmp_path / "bad")
+    assert not (tmp_path / "bad").exists()
+
+
+@pytest.mark.parametrize("layout", ["NHWC", "nchw", "", None, 1, ["NCHW"]])
+def test_writer_rejects_invalid_layout_before_creating_outputs(tmp_path, layout):
+    graph = [records()[0]]
+    graph[0]["outputs"][0]["format"] = layout
+    with pytest.raises(ValueError, match="descriptor format"):
+        emit_recipe_cpp(graph, "bad", [0], [(0, 0)], tmp_path / "bad")
+    assert not (tmp_path / "bad").exists()
+
+
+@pytest.mark.parametrize("explicit_nd", [False, True])
+def test_writer_rejects_connected_layout_mismatch_before_outputs(tmp_path, explicit_nd):
+    graph = _layout_graph()
+    port = graph[2]["inputs"][0]
+    port.pop("format")
+    if explicit_nd:
+        port["format"] = "ND"
+    with pytest.raises(ValueError, match="connected descriptor mismatch"):
+        emit_recipe_cpp(graph, "bad", [0, 5], [(4, 0)], tmp_path / "bad")
+    assert not (tmp_path / "bad").exists()
+
+
 @pytest.mark.parametrize("fault", ["magic", "truncated", "trailing", "oversized_string", "forward_reference", "invalid_bool", "unknown_dtype"])
 def test_actual_cpp_reader_rejects_corrupt_recipe(parser, tmp_path, fault):
     payload = bytearray(parser[1].read_bytes())

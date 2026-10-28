@@ -52,6 +52,54 @@ def test_real_writer_round_trip_preserves_names_ports_shapes_and_typed_attribute
     json.dumps(result, allow_nan=False)
 
 
+def _layout_records():
+    records = _records()
+    for record in records:
+        for port in record["inputs"] + record["outputs"]:
+            port.update(shape=[1, 1, 1, 4], format="NCHW")
+    # An isolated ND boundary verifies that every v2 descriptor has a layout byte.
+    records.append({"name": "mask", "type": "Data", "inputs": [],
+                    "outputs": [{"port": "y", "shape": [1, 4], "dtype": "int32"}],
+                    "attrs": {"index": {"type": "int", "value": 1}}})
+    return records
+
+
+def test_version_two_round_trip_preserves_explicit_layouts_and_dtype_attributes(tmp_path):
+    records = _layout_records()
+    folder = tmp_path / "mixed"
+    emit_recipe_cpp(records, "mixed", [0, 3], [(2, 0), (3, 0)], folder)
+    result = read_recipe(folder / "graph.recipe")
+    assert (folder / "graph.recipe").read_bytes()[:8] == b"Q35GE002"
+    for record in result["records"][:3]:
+        for port in record["inputs"] + record["outputs"]:
+            assert port["format"] == "NCHW"
+            assert port["shape"] == [1, 1, 1, 4]
+            assert port["dtype"] == "float16"
+    assert result["records"][3]["outputs"] == [
+        {"port": "y", "shape": [1, 4], "dtype": "int32", "format": "ND"}]
+    assert result["records"][2]["attrs"]["kind"] == {"type": "dtype", "value": "int32"}
+
+
+@pytest.mark.parametrize("fault", ["unknown_layout", "connected_layout_mismatch", "nchw_rank"])
+def test_reader_rejects_corrupt_version_two_layout(tmp_path, fault):
+    folder = tmp_path / "mixed"
+    emit_recipe_cpp(_layout_records(), "mixed", [0, 3], [(2, 0)], folder)
+    path = folder / "graph.recipe"
+    payload = bytearray(path.read_bytes())
+    desc = struct.pack("<BBIqqqq", 1, 1, 4, 1, 1, 1, 4)
+    prefix = _text("x1") + struct.pack("<I", 0) + _text("y") if fault == "connected_layout_mismatch" else _text("y")
+    offset = payload.index(prefix + desc) + len(prefix) + 1
+    if fault == "nchw_rank":
+        payload[offset+1:offset+5] = struct.pack("<I", 3)
+    else:
+        payload[offset] = 2 if fault == "unknown_layout" else 0
+    path.write_bytes(payload)
+    message = {"unknown_layout": "descriptor format", "connected_layout_mismatch": "connected descriptor mismatch",
+               "nchw_rank": "NCHW recipe descriptors require rank 4"}[fault]
+    with pytest.raises(ValueError, match=message):
+        read_recipe(path)
+
+
 @pytest.mark.parametrize("dtype,width", [("float16", 2), ("int32", 4), ("int64", 8), ("bool", 1)])
 @pytest.mark.parametrize("shape,items", [([], 1), ([0, 4], 0)])
 def test_scalar_and_zero_element_descriptors_preserve_all_format_dtypes(tmp_path, dtype, width, shape, items):

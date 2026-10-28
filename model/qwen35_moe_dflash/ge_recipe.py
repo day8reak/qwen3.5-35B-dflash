@@ -4,6 +4,8 @@ The recipe is host construction input, never AIR. Version Q35GE001 uses little
 endian integers, length-prefixed UTF-8 strings, typed descriptors/attributes,
 backward input references, and explicit graph input/output indices. Constants
 share a binary blob; checkpoint tensors reference their existing raw files.
+Q35GE002 adds a descriptor layout byte after dtype (0=ND, 1=NCHW); ND-only
+graphs retain the original version and byte layout.
 Only the real GE runtime can write the AIR output.
 """
 from __future__ import annotations
@@ -16,6 +18,7 @@ import struct
 from .ge_type_contracts import GE_DTYPE_IDS, validate_record_types
 
 _DT = {"float16": (1, 2), "int32": (2, 4), "int64": (3, 8), "bool": (4, 1)}
+_FORMATS = {"ND": 0, "NCHW": 1}
 _AT = {"int": 1, "float": 2, "bool": 3, "ints": 4, "dtype": 5, "string": 6}
 _MAX_OPS = 2_000_000
 _MAX_STRING = 1_048_576
@@ -36,19 +39,27 @@ def _integer(value, *, minimum=-(1 << 63), maximum=(1 << 63)-1):
     return value
 
 
-def _descriptor(value):
+def _descriptor(value, *, include_layout=False):
     dtype = value["dtype"]
     if dtype not in _DT:
         raise ValueError(f"unsupported recipe dtype {dtype!r}")
+    layout = value.get("format", "ND")
+    if not isinstance(layout, str) or layout not in _FORMATS:
+        raise ValueError(f"unsupported recipe descriptor format {layout!r}")
     shape = tuple(value["shape"])
     if len(shape) > 16:
         raise ValueError("recipe tensor rank exceeds 16")
+    if layout == "NCHW" and len(shape) != 4:
+        raise ValueError("NCHW recipe descriptors require rank 4")
     for dimension in shape:
         _integer(dimension, minimum=0)
     size = math.prod(shape) * _DT[dtype][1]
     if size >= 1 << 63:
         raise ValueError("recipe tensor byte size overflows int64")
-    return struct.pack("<BI", _DT[dtype][0], len(shape)) + b"".join(struct.pack("<q", d) for d in shape), size
+    prefix = struct.pack("<B", _DT[dtype][0])
+    if include_layout:
+        prefix += struct.pack("<B", _FORMATS[layout])
+    return prefix + struct.pack("<I", len(shape)) + b"".join(struct.pack("<q", d) for d in shape), size
 
 
 def _attribute(value):
@@ -109,7 +120,7 @@ def _validate(records, graph_name, input_indices, output_pairs):
         for port in inputs:
             source = _integer(port["src"], minimum=0, maximum=index-1)
             candidates = [v for v in records[source]["outputs"] if v["port"] == port["src_port"]]
-            if len(candidates) != 1 or _descriptor(candidates[0])[0] != _descriptor(port)[0]:
+            if len(candidates) != 1 or _descriptor(candidates[0], include_layout=True)[0] != _descriptor(port, include_layout=True)[0]:
                 raise ValueError("recipe source port or connected descriptor mismatch")
         for key, value in attrs.items():
             _string(key)
@@ -164,21 +175,23 @@ def emit_recipe_cpp(records, graph_name, input_indices, output_pairs, recipe_dir
     derived FP16 parameter constants may already be evaluated by the emitter.
     """
     _validate(records, graph_name, input_indices, output_pairs)
+    include_layout = any(port.get("format", "ND") != "ND" for record in records
+                         for direction in ("inputs", "outputs") for port in record[direction])
     folder = Path(recipe_dir).resolve()
     folder.mkdir(parents=True, exist_ok=False)
     recipe, blob = folder / "graph.recipe", folder / "constants.bin"
     with recipe.open("xb") as stream, blob.open("xb") as constants:
-        stream.write(b"Q35GE001")
+        stream.write(b"Q35GE002" if include_layout else b"Q35GE001")
         stream.write(_string(graph_name))
         stream.write(struct.pack("<I", len(records)))
         for record in records:
             stream.write(_string(record["name"]) + _string(record["type"]))
             stream.write(struct.pack("<I", len(record["inputs"])))
             for port in record["inputs"]:
-                stream.write(_string(port["port"]) + struct.pack("<I", port["src"]) + _string(port["src_port"]) + _descriptor(port)[0])
+                stream.write(_string(port["port"]) + struct.pack("<I", port["src"]) + _string(port["src_port"]) + _descriptor(port, include_layout=include_layout)[0])
             stream.write(struct.pack("<I", len(record["outputs"])))
             for port in record["outputs"]:
-                stream.write(_string(port["port"]) + _descriptor(port)[0])
+                stream.write(_string(port["port"]) + _descriptor(port, include_layout=include_layout)[0])
             attrs = record.get("attrs", {})
             stream.write(struct.pack("<I", len(attrs)))
             for name, attr in attrs.items():
@@ -244,7 +257,7 @@ namespace {
 namespace fs = std::filesystem;
 constexpr const char* kRecipe = @RECIPE@;
 void Require(bool ok, const std::string& why) { if (!ok) throw std::runtime_error(why); }
-struct Desc { uint8_t dtype; std::vector<int64_t> shape; uint64_t bytes; };
+struct Desc { uint8_t dtype; uint8_t layout = 0; std::vector<int64_t> shape; uint64_t bytes; };
 struct Port { std::string name; Desc desc; uint32_t source = 0; std::string source_port; };
 struct Attr {
   std::string name; uint8_t type = 0; int64_t integer = 0; float scalar = 0;
@@ -280,11 +293,14 @@ class Reader {
     std::string s(n, '\0'); Read(s.data(), n);
     Require(s.find('\0') == std::string::npos, "NUL in recipe string"); return s;
   }
-  Desc Descriptor() {
+  Desc Descriptor(bool with_layout) {
     Desc d{}; d.dtype = Number<uint8_t>();
     Require(d.dtype >= 1 && d.dtype <= 4, "unsupported recipe dtype");
+    if (with_layout) d.layout = Number<uint8_t>();
+    Require(d.layout <= 1, "unsupported recipe descriptor format");
     d.bytes = d.dtype == 1 ? 2 : d.dtype == 2 ? 4 : d.dtype == 3 ? 8 : 1;
     auto rank = Count(16);
+    Require(d.layout != 1 || rank == 4, "NCHW recipe descriptors require rank 4");
     for (uint32_t i = 0; i < rank; ++i) {
       auto size = Number<int64_t>(); Require(size >= 0, "negative static dimension");
       Require(size == 0 || d.bytes <= static_cast<uint64_t>(INT64_MAX) / static_cast<uint64_t>(size), "tensor size overflow");
@@ -307,7 +323,7 @@ class Reader {
   }
   void End() { Require(remaining_ == 0, "trailing recipe bytes"); }
 };
-bool Same(const Desc& a, const Desc& b) { return a.dtype == b.dtype && a.shape == b.shape; }
+bool Same(const Desc& a, const Desc& b) { return a.dtype == b.dtype && a.layout == b.layout && a.shape == b.shape; }
 int64_t GEDTypeId(uint8_t code) {
   // These are GE enum IDs, not the Q35GE001 descriptor tags.
   switch (code) { case 1: return 1; case 2: return 3; case 3: return 9; case 4: return 12; }
@@ -325,7 +341,8 @@ void FileRegion(const Record& op) {
 }
 Recipe Load(const char* path) {
   Reader in(path); char magic[8]; in.Read(magic, 8);
-  Require(std::memcmp(magic, "Q35GE001", 8) == 0, "unknown recipe format");
+  const bool with_layout = std::memcmp(magic, "Q35GE002", 8) == 0;
+  Require(with_layout || std::memcmp(magic, "Q35GE001", 8) == 0, "unknown recipe format");
   Recipe recipe; recipe.name = in.Text(); Require(!recipe.name.empty(), "empty graph name");
   auto count = in.Count(2000000); Require(count > 0, "empty graph");
   std::set<std::string> names;
@@ -334,7 +351,7 @@ Recipe Load(const char* path) {
     Require(!op.name.empty() && !op.type.empty() && names.insert(op.name).second, "duplicate or empty operator name");
     auto n = in.Count(65536); std::set<std::string> ports;
     for (uint32_t i = 0; i < n; ++i) {
-      Port p; p.name = in.Text(); p.source = in.Number<uint32_t>(); p.source_port = in.Text(); p.desc = in.Descriptor();
+      Port p; p.name = in.Text(); p.source = in.Number<uint32_t>(); p.source_port = in.Text(); p.desc = in.Descriptor(with_layout);
       Require(!p.name.empty() && ports.insert(p.name).second, "duplicate or empty input port");
       Require(p.source < index, "recipe source must refer to an earlier operator");
       const auto& source = recipe.records[p.source];
@@ -344,7 +361,7 @@ Recipe Load(const char* path) {
     }
     n = in.Count(65536); Require(n > 0, "operator has no outputs"); ports.clear();
     for (uint32_t i = 0; i < n; ++i) {
-      Port p; p.name = in.Text(); p.desc = in.Descriptor();
+      Port p; p.name = in.Text(); p.desc = in.Descriptor(with_layout);
       Require(!p.name.empty() && ports.insert(p.name).second, "duplicate or empty output port"); op.outputs.push_back(std::move(p));
     }
     n = in.Count(1024); ports.clear();
@@ -404,7 +421,11 @@ ge::DataType DType(uint8_t code) {
   switch (code) { case 1: return ge::DT_FLOAT16; case 2: return ge::DT_INT32; case 3: return ge::DT_INT64; case 4: return ge::DT_BOOL; }
   throw std::runtime_error("unknown dtype");
 }
-ge::TensorDesc TensorDesc(const Desc& d) { return ge::TensorDesc(ge::Shape(d.shape), ge::FORMAT_ND, DType(d.dtype)); }
+ge::Format Format(uint8_t code) {
+  switch (code) { case 0: return ge::FORMAT_ND; case 1: return ge::FORMAT_NCHW; }
+  throw std::runtime_error("unknown descriptor format");
+}
+ge::TensorDesc TensorDesc(const Desc& d) { return ge::TensorDesc(ge::Shape(d.shape), Format(d.layout), DType(d.dtype)); }
 class Op : public ge::Operator {
  public:
   explicit Op(const Record& r) : ge::Operator(r.name.c_str(), r.type.c_str()) {
@@ -439,7 +460,7 @@ void SetConst(Op& op, Record& r) {
   ge::Tensor value(TensorDesc(r.outputs[0].desc)); Check(value.SetData(bytes.data(), bytes.size()), "Const SetData"); op.SetAttr("value", value);
 }
 void VerifyDesc(const ge::TensorDesc& got, const Desc& want, const std::string& name) {
-  Require(got.GetShape().GetDims() == want.shape && got.GetFormat() == ge::FORMAT_ND && got.GetDataType() == DType(want.dtype), "descriptor mismatch " + name);
+  Require(got.GetShape().GetDims() == want.shape && got.GetFormat() == Format(want.layout) && got.GetDataType() == DType(want.dtype), "descriptor mismatch " + name);
 }
 void VerifyAttribute(const ge::GNode& node, const Attr& a) {
   ge::AscendString name(a.name.c_str());

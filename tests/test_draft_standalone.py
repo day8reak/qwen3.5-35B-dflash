@@ -247,6 +247,9 @@ def test_export_only_builds_draft_and_regenerates_sources_with_external_payloads
         assert (output / rel).is_file()
     command = json.loads((output / "draft/export-command.json").read_text())
     assert command["cwd"] == str(output) and command["export_contract"] == ds.CURRENT_DRAFT_EXPORT_CONTRACT
+    projection = json.loads((output / "draft/projection-lowering.json").read_text())
+    assert projection["mode"] == "conv2d" and projection["replaced"] == []  # tiny remains native
+    assert manifest["graphs"][0]["projection_lowering"] == projection
 
 
 @pytest.mark.parametrize("corruption", ["payload", "config", "weight_set", "identity"])

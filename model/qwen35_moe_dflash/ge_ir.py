@@ -21,6 +21,7 @@ class Value:
     name: str
     shape: tuple[int, ...]
     dtype: str
+    format: str = "ND"
 
 
 @dataclass

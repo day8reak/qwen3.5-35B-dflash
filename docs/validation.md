@@ -4,6 +4,20 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 完整 draft K 限制与完整点积卷积表达
+
+2026-10-28，用户回传 `full-draft-23abc47e25e7`，实际命令已含 origin-format 与 FP16 参数，仍然在同一 `__ge/v20/flat_output` MatMul 兼容检查处失败。上一轮恢复参数的修改消除了配置差异，但没有解决本次失败。dtype 3/12 的单个 store 拒绝没有在用户摘要中绑定到该 MatMul，不能据此下类型错误结论。
+
+随后用户通过grep提供精确节点上下文：L13661 `matmul_nd_check_support.cc CheckBatchMatMulCubeDim` 明确拒绝 K>8000，L13662是batchmatmul检查包装错误，L13663对应 `__ge/v20/flat_output`。完整图仅该投影K=16384超过限制；其余投影K为2048/4096/6144。该结论只适用于已观察的编译器实现，不等于芯片所有MatMul均有相同限制。
+
+修复候选只将完整draft.fc表达为单个Conv2D：X[m,c,h,w]=X原[m,16c+4h+w]，W[n,c,h,w]=W原[n,16c+4h+w]，c=0..1023、h/w=0..3。无padding/bias、stride1、groups1，输出是原始16384项完整点积，只在结果保留一次FP16边界。没有使用多个FP16 MatMul再求和；后者会引入额外舍入。tiny与通用默认lowering不变，原PyTorch参考保留。NCHW视图用显式描述符和向后兼容recipe v2；ND reshape压缩不得跨越格式变化。
+
+主机检查覆盖完整K/N的CPU卷积与独立矩阵乘、可精确表示的dyadic输入逐位对照、随机值与抽样FP64点积、完整六层GE recipe及全部剩余MatMul的K、旧AIR失效后权重/reference复用。测试阈值仅用于这些host算例，不是新增完整模型验收阈值。实际GE序列化、OMG对Conv2D的支持及板端误差尚未验证，不能宣称已跑通或提速。
+
+保留可选 `--inspect-only --resume`：核对manifest、recipe、编译输入记录，提取命名节点及相邻K限制；用所选DDK库的静态schema尝试解码有界IR。不会运行库、OMG或模型，也不打开外置权重文件。schema/文件缺失或过大均明确报告。日志摘要现在优先显示命名节点和矩阵尺寸限制，避免dtype候选拒绝淹没真正原因。tiny内嵌Const与完整FileConstant的差异仍存在，但当前证据无需把它当成本次拒绝的解释。
+
+本轮 `20261028T024744Z-21237-d382b5` 去重458项主机用例通过，4项需要真实GE的用例跳过。初次整图测试有3项夹具误用recipe返回键，修正后通过；共享recipe升级还触发stateful reader的严格版本防护，已修复并验证Q35GF001原有字节布局不变。保留初次失败和替代通过记录。4B框架仅作只读参考，借鉴增量features/KV及常驻执行；未移植其权重或把310P约20ms报告当作Cpro实测。
+
 ## 完整 draft 对照成功 tiny 的编译参数
 
 2026-10-28，用户回传 `full-draft-5133743f7c9c` 已复用 prepared/reference，重新导出的 AIR 越过 FileConstant 读取，随后在 `__ge/v20/flat_output type MatMul don't support` 失败。该节点是 `draft.fc` 的 FP16 特征投影：完整 `[64,16384] × [2048,16384]^T -> [64,2048]`；tiny 对应 `[8,32] × [16,32]^T -> [8,16]`。导出器及转置属性相同。

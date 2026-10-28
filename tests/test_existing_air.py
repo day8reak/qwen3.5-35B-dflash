@@ -71,6 +71,7 @@ def test_existing_air_compiles_without_original_writes_or_runner_abi(case, monke
     assert result["source_preservation"]["status"] == "UNCHANGED_BY_STAT"
     assert result["requested_options"] == {}
     assert json.loads((output / "compile-command.json").read_text())["weight_dtype_override"] is None
+    assert "AIR weight dtype retained without override" in (output / "report.txt").read_text()
 
 
 def test_output_basename_is_independent_of_punctuated_long_run_directory(case, monkeypatch):
@@ -398,6 +399,9 @@ def test_explicit_fp16_profile_reaches_compiler_and_retained_metadata(case, monk
     recorded = json.loads((output / "compile-command.json").read_text())
     assert recorded["argv"] == commands[0]
     assert recorded["weight_dtype_override"] == "FP16"
+    rendered = (output / "report.txt").read_text()
+    assert "explicit compiler weight dtype override=FP16" in rendered
+    assert "without FP16 override" not in rendered
     assert {path: path.read_bytes() for path in before} == before
     assert result["device_execution"] == "NOT_RUN" and result["device_ready"] is False
 

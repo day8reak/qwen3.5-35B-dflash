@@ -127,6 +127,45 @@ def test_kernel_and_python_failure_take_priority_without_optional_plugin_noise(t
     assert 'optional kernel plugin' not in early
 
 
+@pytest.mark.parametrize("dtype", [3, 12])
+def test_terminal_named_node_rejection_precedes_repeated_candidate_dtype_rejections(tmp_path, dtype):
+    log = tmp_path / "compile.log"
+    generic = ('E/AI_NPUCL (1): op_check_support.cc CheckIfTensorTypeSupport(100)::'
+               f'"inputdataType is not support {dtype}"\n')
+    terminal = 'E/AI_NPUCL (1): "Node __ge/v20/flat_output type MatMul don\'t support!"'
+    log.write_text(generic * 20 + terminal + '\n' + '[DEBUG] filler\n' * 800)
+    early = log_excerpt(log).split("Log tail:")[0]
+    assert early.startswith('Priority error messages:\nL21: ' + terminal)
+    assert 'CheckIfTensorTypeSupport' in early
+    assert len([line for line in early.splitlines() if line.startswith('L')]) <= 6
+
+
+def test_named_node_has_priority_over_other_concrete_rejections(tmp_path):
+    log = tmp_path / "compile.log"
+    prior = 'E/AI_NPUCL (1): type INT32 not support in candidate store\n'
+    terminal = 'E/AI_NPUCL (1): [op:__ge/v20/flat_output type:MatMul] unsupported'
+    log.write_text(prior * 20 + terminal + '\n' + '[DEBUG] filler\n' * 800)
+    assert log_excerpt(log).split("Log tail:")[0].startswith('Priority error messages:\nL21: ' + terminal)
+
+
+def test_causal_matrix_limit_is_kept_alongside_terminal_node_after_dtype_attempts(tmp_path):
+    log = tmp_path / "compile.log"
+    generic = ('E/AI_NPUCL (1): op_check_support.cc CheckIfTensorTypeSupport(100)::'
+               '"inputdataType is not support {dtype}"\n')
+    attempts = ''.join(generic.format(dtype=dtype) for dtype in [3, 12] * 20)
+    limit = ('E/AI_NPUCL (1): elementary_matmul.cc CheckSupport(100)::'
+             '"Matrix k greater than 8000 is not supported"')
+    terminal = 'E/AI_NPUCL (1): "Node __ge/v20/flat_output type MatMul don\'t support!"'
+    log.write_text(attempts + limit + '\n' + terminal + '\n' + '[DEBUG] filler\n' * 800)
+    early, tail = log_excerpt(log).split("Log tail:")
+    rows = early.splitlines()
+    assert rows[1] == 'L42: ' + terminal
+    assert rows[2] == 'L41: ' + limit
+    assert 'CheckIfTensorTypeSupport' in early
+    assert limit not in tail and terminal not in tail
+    assert len([line for line in rows if line.startswith('L')]) <= 6
+
+
 def test_diagnostic_scan_and_long_line_reads_are_bounded(tmp_path, monkeypatch):
     from qwen35_moe_dflash import tool_logs
     monkeypatch.setattr(tool_logs, '_MAX_SCAN_BYTES', 1024)

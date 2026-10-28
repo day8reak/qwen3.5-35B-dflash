@@ -29,6 +29,12 @@ def _ints(values):
 
 
 def _desc(value):
+    if value.format not in {"ND", "NCHW"}:
+        raise ValueError(f"unsupported GE descriptor format {value.format!r}")
+    if value.format == "NCHW":
+        if len(value.shape) != 4:
+            raise ValueError("NCHW descriptor requires rank four")
+        return f"Desc({_ints(value.shape)}, {_DT[value.dtype]}, ge::FORMAT_NCHW)"
     return f"Desc({_ints(value.shape)}, {_DT[value.dtype]})"
 
 
@@ -126,8 +132,8 @@ void VerifyDataFactory() {
   // assigned during graph construction and checked by Verify afterward.
   prototype.BreakConnect();
 }
-ge::TensorDesc Desc(const std::vector<int64_t>& shape, ge::DataType dtype) {
-  return ge::TensorDesc(ge::Shape(shape), ge::FORMAT_ND, dtype);
+ge::TensorDesc Desc(const std::vector<int64_t>& shape, ge::DataType dtype, ge::Format format = ge::FORMAT_ND) {
+  return ge::TensorDesc(ge::Shape(shape), format, dtype);
 }
 class Op : public ge::Operator {
  public:
@@ -172,7 +178,7 @@ void Verify(ge::Graph& graph, const std::vector<Expected>& expected) {
       ge::TensorDesc got;
       Check(it->second.GetOutputDesc(static_cast<int32_t>(i), got), "GetOutputDesc");
       const auto& want = e.outputs[i];
-      if (got.GetShape().GetDims() != want.GetShape().GetDims() || got.GetFormat() != ge::FORMAT_ND ||
+      if (got.GetShape().GetDims() != want.GetShape().GetDims() || got.GetFormat() != want.GetFormat() ||
           got.GetDataType() != want.GetDataType()) throw std::runtime_error("descriptor mismatch " + e.name);
     }
   }
@@ -268,7 +274,8 @@ def _inline_records(graph, records):
     bound = {}
     for index, record in enumerate(records):
         outputs = [(port["port"], Value(f"__render/{index}/{port['port']}",
-                                       tuple(port["shape"]), port["dtype"])) for port in record["outputs"]]
+                                       tuple(port["shape"]), port["dtype"], port.get("format", "ND")))
+                   for port in record["outputs"]]
         inputs = [(port["port"], bound[(port["src"], port["src_port"])]) for port in record["inputs"]]
         attrs = {key: _cpp_attr(value) for key, value in record["attrs"].items()}
         var = emitter.op(record["name"], record["type"], inputs, outputs, attrs)
@@ -341,7 +348,10 @@ class _Emitter:
         for _, value in inputs:
             self.ensure_constant(value)
         def desc(value):
-            return {"shape": list(value.shape), "dtype": value.dtype}
+            descriptor = {"shape": list(value.shape), "dtype": value.dtype}
+            if value.format != "ND":
+                descriptor["format"] = value.format
+            return descriptor
         self.records.append({
             "name": name, "type": typ,
             "inputs": [{"port": port, "src": _opindex(self.refs[value.name][0]),
@@ -667,7 +677,8 @@ class _Emitter:
 def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=None,
              fold_constant_arithmetic=True, fp16_reductions="native", reduction_report=None,
              fp16_row_mul="native", row_mul_report=None, fp16_native_reductions=(),
-             file_constant_policy="ge-absolute-type", file_constant_root=None):
+             file_constant_policy="ge-absolute-type", file_constant_root=None,
+             draft_fc_policy="native", draft_fc_report=None):
     """Return a self-contained C++ AIR serializer.
 
     ``weight_paths`` maps canonical graph weight keys to existing raw contiguous
@@ -698,7 +709,17 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     rank3 concatenations use exact rank4 carriers with a trailing singleton,
     then restore the original rank and output name; graph and scan concatenation
     share this lowering.
+    ``draft_fc_policy="conv2d"`` expresses only the full draft.fc K=16384
+    projection as one valid 4x4 Conv2D with bit-preserving views. It retains
+    the complete dot product and one FP16 output boundary. Kernel reduction
+    order, DDK support and device numerical agreement still need validation.
     """
+    if draft_fc_policy not in {"native", "conv2d"}:
+        raise ValueError("draft_fc_policy must be native or conv2d")
+    if draft_fc_report is not None and not isinstance(draft_fc_report, dict):
+        raise TypeError("draft_fc_report must be a mutable dictionary")
+    projection_report = {"mode": draft_fc_policy, "replaced": [],
+                         "compiler_validation": "NOT_RUN", "device_validation": "NOT_RUN"}
     if reduction_report is not None and not isinstance(reduction_report, dict):
         raise TypeError("reduction_report must be a mutable dictionary")
     if row_mul_report is not None and not isinstance(row_mul_report, dict):
@@ -940,6 +961,12 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
             emit_cumsum(e, v, ins[0], a["axis"], scope=a.get("scope"))
             continue
         elif kind == "matmul":
+            if draft_fc_policy == "conv2d":
+                from .ge_dense_projection import emit_draft_fc_conv2d
+                projection = emit_draft_fc_conv2d(e, v, ins[0], ins[1], a)
+                if projection is not None:
+                    projection_report["replaced"].append(projection)
+                    continue
             if len(ins[0].shape) > 2 and len(ins[1].shape) == 2 and not a.get("transpose_a", False):
                 # Dense projections need no mixed-rank broadcast matmul. Preserve
                 # the exact FP16 matmul boundary by flattening only batch axes.
@@ -1002,6 +1029,9 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     if row_mul_report is not None:
         row_mul_report.clear()
         row_mul_report.update(e.row_mul_report)
+    if draft_fc_report is not None:
+        draft_fc_report.clear()
+        draft_fc_report.update(projection_report)
     # A compact recipe keeps full-model compiler memory independent of node count.
     if recipe_dir is not None:
         from .ge_recipe import emit_recipe_cpp

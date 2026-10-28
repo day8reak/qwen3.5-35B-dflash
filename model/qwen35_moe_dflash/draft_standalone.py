@@ -23,7 +23,7 @@ from .resources import repository_root
 # Version the serialized FileConstant contract separately from prepared weights
 # and reference inputs. Updating it requires a new AIR, not weight conversion or
 # PyTorch recomputation. Real selected-DDK acceptance remains a separate gate.
-CURRENT_DRAFT_EXPORT_CONTRACT = "cpro-fileconstant-relative-int-v1"
+CURRENT_DRAFT_EXPORT_CONTRACT = "cpro-fileconstant-relative-int-fc-conv2d-v2"
 
 
 def _graph(sequence_length, *, tiny=False, draft_config=None, include_hidden=True):
@@ -241,14 +241,21 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
         folder = root / "draft"
         folder.mkdir()
         source = folder / "draft.cpp"
-        reduction_report, row_mul_report = {}, {}
+        reduction_report, row_mul_report, projection_report = {}, {}, {}
         stage = "draft-lowering"
         source.write_text(emit_cpp(graph, paths, external_weights=True, recipe_dir=folder / "recipe",
                                    fp16_reductions=fp16_reductions, reduction_report=reduction_report,
                                    fp16_row_mul=fp16_row_mul, row_mul_report=row_mul_report,
-                                   file_constant_policy="cpro-relative-int", file_constant_root=root))
+                                   file_constant_policy="cpro-relative-int", file_constant_root=root,
+                                   draft_fc_policy="conv2d", draft_fc_report=projection_report))
+        expected_replacements = 0 if plan["tiny"] else 1
+        if len(projection_report["replaced"]) != expected_replacements:
+            raise ValueError("draft.fc Conv2D lowering did not match the locked topology")
+        if expected_replacements and progress:
+            progress({"stage": stage, "message": "draft.fc K=16384: one full-dot Conv2D with unchanged FP16 weights; target support unverified"})
         save_json(folder / "reduction-lowering.json", reduction_report)
         save_json(folder / "row-mul-lowering.json", row_mul_report)
+        save_json(folder / "projection-lowering.json", projection_report)
         construction = files_under(folder, root)
         binary, air = folder / "draft_exporter", root / "draft.air"
         command = [compiler, "-std=c++17", f"-D_GLIBCXX_USE_CXX11_ABI={cxx11_abi}", "-I", str(include),
@@ -288,7 +295,8 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
                   "output_dtypes": ["torch." + v.dtype for v in graph.outputs], "files": files,
                   "builder_sha256": sha256_file(source), "construction_files": construction,
                   "reduction_lowering": {"mode": reduction_report["mode"], "counts": reduction_report["counts"]},
-                  "row_mul_lowering": {"mode": row_mul_report["mode"], "counts": row_mul_report["counts"]}}
+                  "row_mul_lowering": {"mode": row_mul_report["mode"], "counts": row_mul_report["counts"]},
+                  "projection_lowering": projection_report}
         manifest = {"schema_version": 1, "artifact_kind": "qwen35-cpro-draft-air", "status": "EXPORTED",
                     "export_contract": CURRENT_DRAFT_EXPORT_CONTRACT,
                     "file_constant_policy": "cpro-relative-int", "file_constant_path_base": "air-parent",

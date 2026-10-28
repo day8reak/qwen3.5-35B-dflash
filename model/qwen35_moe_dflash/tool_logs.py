@@ -4,10 +4,17 @@ import re
 
 
 _MAX_SCAN_BYTES = 64 << 20
+_NAMED_NODE_REJECTION = re.compile(
+    rb"(?:\bnode\s+[^\s\"']+\s+type\s+[^\s\"']+|\[(?:op|node):[^\]\r\n]+\btype:[^\]\r\n]+\])"
+    rb".*(?:don't support|does not support|not support|unsupported)", re.I)
+_MATRIX_SIZE_LIMIT = re.compile(
+    rb"\bMatrix\s+[mnk]\s+(?:greater|less)\s+than\s+\d+\s+is\s+not\s+supported\b", re.I)
 _CONCRETE_FAILURE = re.compile(
-    rb"(?:node|\bop\b|type).*(?:don't support|does not support|not support|unsupported)"
+    rb"(?:\bnode\b|\bop\b|\btype\b).*(?:don't support|does not support|not support|unsupported)"
     rb"|(?:infershape|infer.?shape).*(?:failed|missing|not found)"
     rb"|(?:get|find).*format config.*failed", re.I)
+_SUPPORT_DTYPE_FAILURE = re.compile(
+    rb"(?:CheckIfTensorTypeSupport|(?:input|output)(?:data)?Type).*(?:not support|unsupported)", re.I)
 _KERNEL_FAILURE = re.compile(rb"kernel.*(?:failed|missing|not found|not valid|invalid)", re.I)
 _PYTHON_FAILURE = re.compile(rb"^(?:Traceback \(most recent call last\):|[\w.]+(?:Error|Exception):)")
 
@@ -54,7 +61,7 @@ def _read_excerpt(log):
     """Prioritize concrete failures over E-level traces; retain the raw tail."""
     if not log.is_file():
         return ""
-    candidates = {0: [], 1: [], 2: []}
+    candidates = {priority: [] for priority in range(6)}
     with log.open("rb") as stream:
         line_number = 0
         scanned = 0
@@ -67,8 +74,14 @@ def _read_excerpt(log):
             line_number += 1
             python_failure = bool(_PYTHON_FAILURE.search(chunk))
             if _is_error(chunk) or python_failure:
-                priority = (0 if _CONCRETE_FAILURE.search(chunk) else
-                            1 if python_failure or _KERNEL_FAILURE.search(chunk) else 2)
+                # A backend can reject many candidate dtypes before declaring
+                # the actual named node unsupported. Never let those attempts
+                # consume every slot ahead of the terminal node/type message.
+                priority = (0 if _NAMED_NODE_REJECTION.search(chunk) else
+                            1 if _MATRIX_SIZE_LIMIT.search(chunk) else
+                            3 if _SUPPORT_DTYPE_FAILURE.search(chunk) else
+                            2 if _CONCRETE_FAILURE.search(chunk) else
+                            4 if python_failure or _KERNEL_FAILURE.search(chunk) else 5)
                 if len(candidates[priority]) < 6:
                     candidates[priority].append((line_number, chunk[:2048],
                                                  len(chunk) > 2048 or not chunk.endswith(b"\n")))
@@ -79,14 +92,15 @@ def _read_excerpt(log):
         stream.seek(max(0, log.stat().st_size - 8192))
         tail = stream.read(8192).decode("utf-8", errors="replace")
     first, budget = [], 4096
-    for number, chunk, truncated in (candidates[0] + candidates[1] + candidates[2])[:6]:
+    selected = [row for priority in range(6) for row in candidates[priority]][:6]
+    for number, chunk, truncated in selected:
         if budget <= 0:
             break
         excerpt = chunk[:budget]
         suffix = " [truncated]" if truncated or len(excerpt) < len(chunk) else ""
         first.append(f"L{number}: " + excerpt.decode("utf-8", errors="replace").rstrip() + suffix)
         budget -= len(excerpt)
-    label = "Priority error messages:" if candidates[0] or candidates[1] else "First error messages:"
+    label = "Priority error messages:" if any(candidates[p] for p in range(5)) else "First error messages:"
     initial = label + "\n" + "\n".join(first) + "\n" if first else ""
     if scan_limited:
         initial += f"Diagnostic scan limited to first {_MAX_SCAN_BYTES} bytes; raw tail retained.\n"

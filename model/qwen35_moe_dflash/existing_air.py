@@ -459,8 +459,11 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     else:
         save_json(output / "manifest.json", report)
     save_json(output / "report.json", report)
+    dtype_policy = ("AIR weight dtype retained without override" if weight_data_type is None
+                    else f"explicit compiler weight dtype override={weight_data_type}")
     lines = ["Existing AIR -> selected-DDK OMG compilation", f"status={report['status']}",
-             "Target: kirinx90; AIR weight dtype retained without FP16 override.",
+             f"Target: kirinx90; {dtype_policy}.",
+             "Requested compiler options: " + json.dumps(options, sort_keys=True),
              "Original model checkpoint, quantization, layer count, shapes and runtime ABI remain UNVERIFIED.",
              "No board execution; this artifact is not validated against this project's runner ABI.",
              "Tool help: help.log; option verification: help-check.json.",

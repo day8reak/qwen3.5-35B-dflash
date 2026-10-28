@@ -8,9 +8,11 @@
 
 **先运行完整 draft 的独立入口。** [独立 draft 指南](draft-standalone.md)提供一条命令完成真实权重准备、PyTorch参考、GE导出、OMG编译和HIAI执行。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
-最新用户回传 `full-draft-5133743f7c9c` 已复用71个权重和完整六层 PyTorch 参考，重新导出的 AIR 越过外置权重读取。OMG 目前停在兼容检查：首个特征投影 `draft.fc` 的 `__ge/v20/flat_output`（FP16 MatMul）不支持；尚未上板。日志由用户提供，远端原文件未在本地重新核验。
+最新用户回传 `full-draft-23abc47e25e7` 已确认两个 tiny 参数生效，但仍在 `__ge/v20/flat_output type MatMul don't support` 失败；恢复编译参数尚未解除阻塞。71个权重和完整六层 PyTorch 参考继续复用，外置权重读取已越过此前的路径错误，尚未上板。日志由用户提供，远端原文件未在本地重新核验。
 
-对照成功 tiny 的历史源码，新完整 draft 入口遗漏了 `--use_origin_format=true --weight_data_type=FP16`，本次已恢复这两项。两者的首个投影使用相同 MatMul 导出方式，完整输入为 `[64,16384] × [2048,16384]^T`。更新后以 `--resume` 指向 **`full-draft-5133743f7c9c`**，复用权重、参考和此次 AIR，仅重新编译，成功后继续上板。编译参数差异是否足以解除完整尺寸限制仍需实际 OMG 确认。原量化 target 的默认参数不受影响；详见[独立 draft 指南](draft-standalone.md)。
+补充日志已定位该节点的具体拒绝：L13661 `Matrix k greater than 8000 is not supported`，经过一层 batchmatmul 支持检查后，L13663 拒绝 `__ge/v20/flat_output`。完整 `draft.fc` 的 K=16384，tiny 的 K=32，因此不能直接复用 tiny 的尺寸结论。dtype 3/12 的报错属于其他候选节点，不能据此把该投影改成整数计算。
+
+当前仅将完整 `draft.fc` 改为一次等价的 4×4 Conv2D：输入 `[S,1024,4,4]`、权重 `[2048,1024,4,4]`、输出 `[S,2048,1,1]`，再恢复原形状。原权重字节、全部16384项点积与一次FP16输出边界保留，不拆K累加。主机代数/布局验证通过，实际DDK支持和板端误差待验证。更新后按[独立 draft 指南](draft-standalone.md)从 `23abc47e25e7` 续跑，自动复用权重和原始PyTorch参考、重新导出及编译。只读检查入口保留为可选工具。
 
 ## 保留的 target 编译与诊断
 

@@ -187,7 +187,7 @@ def test_old_compile_options_reuse_air_and_rebuild_only_compilation_bundle(job, 
     assert all(p.read_bytes() == data for p, data in before.items())
 
 
-@pytest.mark.parametrize("contract", [None, "legacy-absolute-fileconstant"])
+@pytest.mark.parametrize("contract", [None, "legacy-absolute-fileconstant", "cpro-fileconstant-relative-int-v1"])
 def test_old_air_after_compile_failure_reexports_without_loading_weights_or_reference(job, tmp_path, contract):
     main, fresh, common, calls, failures = job
     previous = tmp_path / "old-compile-failed"
@@ -268,6 +268,34 @@ def test_prepare_only_needs_neither_ddk_nor_board(job, tmp_path):
     main, fresh, _, calls, _ = job
     assert main([*fresh[:4], "--prepare-only", "--output", str(tmp_path / "prepared")]) == 0
     assert calls == ["prepared", "fixture"]
+
+
+def test_inspect_only_dispatches_without_any_model_or_tool_execution(job, tmp_path, monkeypatch):
+    main, _, _, calls, _ = job
+    import sys
+    import types
+    previous = tmp_path / "retained-job"
+    output = tmp_path / "inspection"
+    library = tmp_path / "selected-schema.so"
+    inspected = []
+    def inspect(source, destination, *, schema_library):
+        inspected.append((source, destination, schema_library))
+        destination.mkdir()
+        (destination / "report.txt").write_text("Existing compiler evidence; no execution.\n")
+        return {"status": "INSPECTED"}
+    monkeypatch.setitem(sys.modules, "qwen35_moe_dflash.draft_compile_inspect",
+                        types.SimpleNamespace(inspect_draft_compile=inspect))
+    assert main(["--inspect-only", "--resume", str(previous), "--output", str(output),
+                 "--schema-library", str(library)]) == 0
+    assert calls == [] and inspected == [(str(previous), output, str(library))]
+
+
+@pytest.mark.parametrize("extra", [["--inspect-only"], ["--schema-library", "schema.so"],
+    ["--inspect-only", "--resume", "retained", "--sequence-length", "64"]])
+def test_invalid_inspection_options_do_not_run_pipeline(job, tmp_path, extra):
+    main, _, _, calls, _ = job
+    assert main([*extra, "--output", str(tmp_path / "unused")]) == 1
+    assert calls == [] and not (tmp_path / "unused").exists()
 
 
 @pytest.mark.parametrize("extra", [["--sequence-length", "0"], ["--valid-length", "65"], ["--timeout-seconds", "0"]])

@@ -33,7 +33,8 @@ def _source(records, port):
 
 def _same_descriptor(left, right):
     return (right is not None and _shape(left) is not None
-            and _shape(left) == _shape(right) and left.get("dtype") == right.get("dtype"))
+            and _shape(left) == _shape(right) and left.get("dtype") == right.get("dtype")
+            and left.get("format", "ND") == right.get("format", "ND"))
 
 
 def _reshape_input(records, index):
@@ -56,6 +57,11 @@ def _reshape_input(records, index):
     if set(ports) != {"x", "shape"}:
         return None
     data, shape_port, output = ports["x"], ports["shape"], outputs[0]
+    # This transform only composes ordinary ND views. A format-changing view
+    # can be a required boundary, e.g. the NCHW Conv2D result restored to ND
+    # before RMSNorm; bypassing it would change the connected descriptor.
+    if any(port.get("format", "ND") != "ND" for port in (data, shape_port, output)):
+        return None
     source_desc, literal_desc = _source(records, data), _source(records, shape_port)
     if not _same_descriptor(data, source_desc) or not _same_descriptor(shape_port, literal_desc):
         return None

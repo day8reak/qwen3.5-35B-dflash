@@ -1,6 +1,7 @@
 """Stateful GE structural/serialization checks, without Torch, GE, or a board."""
 import copy
 import shutil
+import struct
 import subprocess
 
 import numpy as np
@@ -9,6 +10,7 @@ import pytest
 from qwen35_moe_dflash.ge_fused.emitter import emit_cpp
 from qwen35_moe_dflash.ge_fused.ir import Graph
 from qwen35_moe_dflash.ge_fused.recipe import read_recipe
+from qwen35_moe_dflash.ge_fused.recipe import emit_recipe_cpp
 from qwen35_moe_dflash.ge_ir import Graph as LegacyGraph, DTYPES as LEGACY_DTYPES
 from qwen35_moe_dflash.ge_recipe_read import read_recipe as read_legacy_recipe
 
@@ -130,6 +132,38 @@ def test_legacy_dtype_registry_and_wire_format_stay_unchanged(tmp_path):
         read_legacy_recipe(payload)
 
 
+@pytest.mark.parametrize("dtype,tag", [("float16", 1), ("int32", 2), ("int64", 3), ("bool", 4),
+                                       ("float32", 5), ("int16", 6), ("int8", 7)])
+def test_stateful_nd_wire_bytes_stay_unchanged_for_all_types(tmp_path, dtype, tag):
+    output = {"port": "y", "shape": [2], "dtype": dtype}
+    records = [{"name": "input", "type": "Data", "inputs": [], "outputs": [output],
+                "attrs": {"index": {"type": "int", "value": 0}}}]
+    emit_recipe_cpp(records, "state", [0], [(0, 0)], tmp_path / "implicit")
+    output["format"] = "ND"
+    emit_recipe_cpp(records, "state", [0], [(0, 0)], tmp_path / "explicit")
+    def text(value):
+        value = value.encode()
+        return struct.pack("<I", len(value)) + value
+    expected = (b"Q35GF001" + text("state") + struct.pack("<I", 1)
+                + text("input") + text("Data") + struct.pack("<II", 0, 1)
+                + text("y") + struct.pack("<BIq", tag, 1, 2)
+                + struct.pack("<I", 1) + text("index") + struct.pack("<Bq", 1, 0) + b"\0"
+                + struct.pack("<IIIII", 1, 0, 1, 0, 0))
+    assert (tmp_path / "implicit/graph.recipe").read_bytes() == expected
+    assert (tmp_path / "explicit/graph.recipe").read_bytes() == expected
+    result = read_recipe(tmp_path / "explicit/graph.recipe")
+    assert result["records"][0]["outputs"] == [{"port": "y", "shape": [2], "dtype": dtype}]
+
+
+def test_stateful_wire_rejects_nchw_instead_of_dropping_format(tmp_path):
+    records = [{"name": "input", "type": "Data", "inputs": [],
+                "outputs": [{"port": "y", "shape": [1, 1, 1, 2], "dtype": "float16", "format": "NCHW"}],
+                "attrs": {"index": {"type": "int", "value": 0}}}]
+    with pytest.raises(ValueError, match="support only ND format"):
+        emit_recipe_cpp(records, "state", [0], [(0, 0)], tmp_path / "bad")
+    assert not (tmp_path / "bad").exists()
+
+
 def test_cpp_parser_reads_extended_descriptors_attributes_and_constants(tmp_path):
     compiler = shutil.which("g++")
     if compiler is None:
@@ -145,7 +179,10 @@ def test_cpp_parser_reads_extended_descriptors_attributes_and_constants(tmp_path
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith("RECIPE_VALID ") and "AIR_EXPORTED" not in result.stdout
-    invalid = tmp_path / "old_magic.recipe"
-    invalid.write_bytes(b"Q35GE001" + (folder / "graph.recipe").read_bytes()[8:])
-    result = subprocess.run([str(binary), str(invalid)], capture_output=True, text=True, timeout=15)
-    assert result.returncode != 0 and "unknown recipe format" in result.stderr
+    for magic in (b"Q35GE001", b"Q35GE002"):
+        invalid = tmp_path / (magic.decode() + ".recipe")
+        invalid.write_bytes(magic + (folder / "graph.recipe").read_bytes()[8:])
+        result = subprocess.run([str(binary), str(invalid)], capture_output=True, text=True, timeout=15)
+        assert result.returncode != 0 and "unknown recipe format" in result.stderr
+        with pytest.raises(ValueError, match="unknown recipe format"):
+            read_recipe(invalid)

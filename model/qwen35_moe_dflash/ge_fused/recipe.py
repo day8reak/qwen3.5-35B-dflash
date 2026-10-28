@@ -30,6 +30,8 @@ def _descriptor(value):
     dtype = value["dtype"]
     if dtype not in _DT:
         raise ValueError(f"unsupported recipe dtype {dtype!r}")
+    if value.get("format", "ND") != "ND":
+        raise ValueError("stateful Q35GF001 descriptors support only ND format")
     shape = tuple(value["shape"])
     if len(shape) > 16:
         raise ValueError("recipe tensor rank exceeds 16")
@@ -248,7 +250,10 @@ void VerifyAttentionInputs(ge::GNode& node, const Record& r) {
 def _extended_cpp():
     source = _LEGACY_CPP
     replacements = (
-        ("Q35GE001", "Q35GF001", 1),
+        ('  const bool with_layout = std::memcmp(magic, "Q35GE002", 8) == 0;\n'
+         '  Require(with_layout || std::memcmp(magic, "Q35GE001", 8) == 0, "unknown recipe format");',
+         '  constexpr bool with_layout = false;  // Q35GF001 has ND-only descriptors.\n'
+         '  Require(std::memcmp(magic, "Q35GF001", 8) == 0, "unknown recipe format");', 1),
         ("DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL",
          "DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL, DT_FLOAT, DT_INT16, DT_INT8", 2),
         ("d.dtype <= 4", "d.dtype <= 7", 1),

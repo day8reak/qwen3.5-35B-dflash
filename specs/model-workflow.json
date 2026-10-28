@@ -525,6 +525,34 @@
     "standalone_draft": {
       "entrypoint": "targets/cpro/scripts/run_full_draft.py",
       "status": "HOST_IMPLEMENTED_DEVICE_PENDING",
+      "latest_compile_feedback": {
+        "source": "USER_PASTED_LOG_CONTEXT",
+        "run": "full-draft-23abc47e25e7",
+        "status": "FAILED",
+        "node": "__ge/v20/flat_output",
+        "cause": "SELECTED_MATMUL_IMPLEMENTATION_REJECTS_K_GREATER_THAN_8000",
+        "actual_k": 16384,
+        "device_execution": "NOT_RUN",
+        "remote_artifact_hash_verification": "NOT_RECHECKED"
+      },
+      "projection_candidate": {
+        "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-v2",
+        "scope": "Only full draft.fc: one valid 4x4 Conv2D with explicit NCHW views, unchanged FP16 operands and one FP16 arithmetic result",
+        "reference": "Preserve original MatMul PyTorch outputs",
+        "compiler_validation": "NOT_RUN",
+        "device_validation": "NOT_RUN",
+        "bitwise_equivalence": "NOT_ESTABLISHED"
+      },
+      "related_4b_reference": {
+        "repository": "day8reak/qwen3.5-4B-dflash",
+        "branch": "framework/quant-air-om",
+        "commit": "631c86fc0c4e053817f0786ab8067b5565638d50",
+        "reviewed": "Full F.linear on 310P; incremental target feature projection, per-layer draft KV and persistent Draft/Verify execution",
+        "reuse_next": "Incremental draft integration after standalone compilation and numerical closure",
+        "user_reported_latency_ms": 20,
+        "timing_scope": "NOT_VERIFIED_FROM_REVIEWED_SOURCE",
+        "cpro_performance": "NOT_MEASURED"
+      },
       "implementation": [
         "model/qwen35_moe_dflash/draft_standalone.py",
         "model/qwen35_moe_dflash/draft_reference.py",

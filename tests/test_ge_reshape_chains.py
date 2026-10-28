@@ -185,6 +185,42 @@ def test_chain_does_not_cross_a_transpose_or_arithmetic_boundary(barrier):
     assert _source(records, "native_view")[0] == "input"
 
 
+def test_nd_chain_stops_at_conv_output_format_restoration():
+    builder = Records()
+    data = builder.data("conv_output", (2, 64, 1, 1))
+    builder.records[data]["outputs"][0]["format"] = "NCHW"
+    restored = builder.reshape("fc_nd_output", data, (1, 2, 64))
+    inner = builder.reshape("normalized_view", restored, (1, 2, 64, 1))
+    child = builder.reshape("__ge/m/row_mul/left", inner, (2, 64))
+    records, _, _, report = _run(builder, [(child, 0)])
+
+    # Ordinary ND views still compose, but the explicit NCHW-to-ND boundary
+    # and both sides' connected descriptors must survive unchanged.
+    assert report["counts"]["rewrites"] == 1
+    assert _source(records, "__ge/m/row_mul/left")[0] == "fc_nd_output"
+    assert _source(records, "__ge/m/row_mul/left")[1].get("format", "ND") == "ND"
+    assert _source(records, "fc_nd_output")[0] == "conv_output"
+    assert _source(records, "fc_nd_output")[1]["format"] == "NCHW"
+    assert _named(records, "fc_nd_output")["outputs"][0].get("format", "ND") == "ND"
+
+
+@pytest.mark.parametrize("fault", ["format_change", "edge_format_mismatch"])
+def test_format_sensitive_seed_is_not_rewritten(fault):
+    builder = Records()
+    data = builder.data("data", (1, 2, 64, 1))
+    inner = builder.reshape("inner", data, (1, 2, 32, 2))
+    child = builder.reshape("__ge/m/row_mul/right", inner, (1, 2, 16, 4))
+    if fault == "format_change":
+        builder.records[child]["outputs"][0]["format"] = "NCHW"
+    else:
+        # A malformed edge must remain visible to the normal recipe validator;
+        # compaction may not silently hide it by using an earlier producer.
+        builder.records[inner]["outputs"][0]["format"] = "NCHW"
+    records, _, _, report = _run(builder, [(child, 0)], validate=fault == "format_change")
+    assert report["counts"]["rewrites"] == 0
+    assert _source(records, "__ge/m/row_mul/right")[0] == "inner"
+
+
 @pytest.mark.parametrize("kind", ["Const", "FileConstant"])
 def test_constant_data_root_does_not_require_opening_external_weights(monkeypatch, kind):
     builder = Records()
