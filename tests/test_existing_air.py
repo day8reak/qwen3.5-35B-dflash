@@ -35,7 +35,9 @@ def _tool(command, **kwargs):
     if "--help" in command:
         return _help(command, **kwargs)
     model = Path(next(value.split("=", 1)[1] for value in command if value.startswith("--model=")))
-    output = Path(next(value.split("=", 1)[1] for value in command if value.startswith("--output=")))
+    output_name = next(value.split("=", 1)[1] for value in command if value.startswith("--output="))
+    assert output_name == "model", "OMG must receive a bare basename, even below long/punctuated run roots"
+    output = kwargs["cwd"] / output_name
     assert model.read_bytes() == b"SIMULATED UNINSPECTED AIR"
     assert (model.parent / "weights/w.bin").read_bytes() == b"SIDE DATA"
     assert kwargs["cwd"] == model.parent
@@ -69,6 +71,32 @@ def test_existing_air_compiles_without_original_writes_or_runner_abi(case, monke
     assert result["source_preservation"]["status"] == "UNCHANGED_BY_STAT"
 
 
+def test_output_basename_is_independent_of_punctuated_long_run_directory(case, monkeypatch):
+    air, output, ddk = case
+    output = output.parent / ("run.with spaces-and-punctuation_" * 5) / "result"
+    monkeypatch.setattr(subprocess, "run", _tool)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK")
+    assert result["status"] == "COMPILED"
+    recorded = json.loads((output / "compile-command.json").read_text())
+    assert "--output=model" in recorded["argv"]
+    assert Path(recorded["cwd"]) == output / "compile-work/generated"
+    assert Path(recorded["cwd"]) / "model.omc" == output / result["omc"]["path"]
+
+
+def test_reserved_output_prefix_cannot_overwrite_staged_input(case, monkeypatch):
+    air, output, ddk = case
+    collision = air.parent / "model.bin"
+    collision.write_bytes(b"ORIGINAL SIDECAR")
+    def help_only(command, **kwargs):
+        assert "--help" in command
+        return _help(command, **kwargs)
+    monkeypatch.setattr(subprocess, "run", help_only)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK")
+    assert result["status"] == "FAILED" and result["model_compilation"] == "NOT_RUN"
+    assert "reserved compiler output basename" in result["error"]
+    assert collision.read_bytes() == b"ORIGINAL SIDECAR"
+
+
 def test_snapshot_copy_fallback_rejects_insufficient_disk_before_copy(case, monkeypatch):
     air, output, ddk = case
     sources = [air, air.parent / "weights/w.bin"]
@@ -96,8 +124,8 @@ def test_snapshot_copy_fallback_rejects_insufficient_disk_before_copy(case, monk
     assert result["status"] == "FAILED" and result["stage"] == "input-snapshot"
     assert result["model_compilation"] == "NOT_RUN" and result["input_snapshots"] == []
     assert "physical copy needs" in result["error"] and "Free disk space" in result["error"]
-    assert (output / "compile-work/input/export.air").read_bytes() == b""
-    assert not (output / "compile-work/input/weights/w.bin").exists()
+    assert (output / "compile-work/generated/export.air").read_bytes() == b""
+    assert not (output / "compile-work/generated/weights/w.bin").exists()
     assert before == {path: (path.read_bytes(), module._stat(path)) for path in sources}
     assert result["input_selection"]["total_bytes"] == total_bytes
     assert any(row.get("total") == 2 and row.get("total_bytes") == total_bytes for row in progress)
@@ -149,7 +177,7 @@ def test_failure_retains_logs_dumps_context_and_original(case, monkeypatch, fail
     assert result["status"] == "FAILED" and not (output / "manifest.json").exists()
     assert (output / "failure.json").is_file()
     assert (output / "diagnostics/failed.irpb").read_bytes() == b"FAILED GRAPH"
-    assert (output / "compile-work/input/export.air").read_bytes() == air.read_bytes()
+    assert (output / "compile-work/generated/export.air").read_bytes() == air.read_bytes()
     assert "Get format configs failed" in (output / "report.txt").read_text()
 
 
@@ -310,7 +338,7 @@ def test_external_data_and_auxiliary_outputs_are_retained_hashed_even_on_failure
         if "--help" in command:
             return _help(command, **kwargs)
         _tool(command, **kwargs)
-        generated = Path(next(value.split("=", 1)[1] for value in command if value.startswith("--output="))).parent
+        generated = kwargs["cwd"]
         (generated / "model.weights").mkdir()
         (generated / "model.weights/chunk0.bin").write_bytes(b"EXTERNAL WEIGHTS")
         (generated / "model.omc.data").write_bytes(b"MORE EXTERNAL DATA")
@@ -322,9 +350,9 @@ def test_external_data_and_auxiliary_outputs_are_retained_hashed_even_on_failure
     assert result["status"] == ("FAILED" if compile_fails else "COMPILED")
     assert {row["path"] for row in result["generated_artifacts"]} == {
         "compile-work/generated/model.omc", "compile-work/generated/model.omc.data",
-        "compile-work/generated/model.weights/chunk0.bin"}
-    assert len(result["external_data_candidates"]) == 2
-    assert any(row["path"] == "compile-work/input/compiler-extra.bin" for row in result["compiler_work_artifacts"])
+        "compile-work/generated/model.weights/chunk0.bin", "compile-work/generated/compiler-extra.bin"}
+    assert len(result["external_data_candidates"]) == 3
+    assert any(row["path"] == "compile-work/generated/compiler-extra.bin" for row in result["generated_artifacts"])
     for row in result["generated_artifacts"] + result["compiler_work_artifacts"]:
         assert row["sha256"] == module.sha256_file(output / row["path"])
         assert row["stat"] == module._stat(output / row["path"])

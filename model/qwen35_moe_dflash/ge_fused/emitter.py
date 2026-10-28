@@ -19,10 +19,10 @@ from ..ge_ir import Node, Value
 from ..ge_type_contracts import GE_DTYPE_IDS as _LEGACY_GE_DTYPE_IDS
 from .ir import DTYPES, CustomNode, node_outputs, attention_registration_cpp
 
-GE_DTYPE_IDS = {**_LEGACY_GE_DTYPE_IDS, "float32": 0, "int16": 6}
-_DT = {**_legacy._DT, "float32": "ge::DT_FLOAT", "int16": "ge::DT_INT16"}
+GE_DTYPE_IDS = {**_LEGACY_GE_DTYPE_IDS, "float32": 0, "int16": 6, "int8": 2}
+_DT = {**_legacy._DT, "float32": "ge::DT_FLOAT", "int16": "ge::DT_INT16", "int8": "ge::DT_INT8"}
 _HEADER = _legacy._HEADER.replace("DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL",
-                                 "DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL, DT_FLOAT, DT_INT16")
+                                 "DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL, DT_FLOAT, DT_INT16, DT_INT8")
 _HEADER = _HEADER.replace('    if (std::strcmp(type, "ConcatD") == 0)',
     '    if (std::strcmp(type, "AdnFusedInferAttention") == 0) {\n' + attention_registration_cpp()
     + '\n    } else if (std::strcmp(type, "ConcatD") == 0)')

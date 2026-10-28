@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-27",
+  "updated": "2026-10-28",
   "scope": "Source consolidation, full PyTorch/GE structure generation and host stateful/fused-call integration; real device pending",
   "status": "HOST_VALIDATED_DEVICE_PENDING",
   "run_id": "20261027T032529Z-17962-4c1981",
@@ -342,5 +342,43 @@
         "Full model numerical accuracy and performance"
       ]
     }
+  },
+  "original_quantized_target_local_adaptation": {
+    "run_id": "20261027T130835Z-9607-68b43f",
+    "status": "HOST_VALIDATED_DEVICE_PENDING",
+    "unique_passing_test_cases": 230,
+    "suites": [
+      {
+        "file": "pytorch-config-air-review-tests.xml",
+        "passed": 79,
+        "failures": 0
+      },
+      {
+        "file": "ge-original-quant-tests-final.xml",
+        "passed": 85,
+        "failures": 0
+      },
+      {
+        "file": "original-quant-prepare-tests.xml",
+        "passed": 56,
+        "failures": 0
+      },
+      {
+        "file": "original-quant-prepare-cli-tests.xml",
+        "passed": 12,
+        "failures": 0
+      },
+      {
+        "file": "cli-ge-tests-v2.xml",
+        "passed": 6,
+        "failures": 0
+      }
+    ],
+    "evidence": "local-adaptation-evidence.json",
+    "source_pack_equivalence_cases": 4,
+    "real_air_omg_compilation": "NOT_RUN_LOCALLY",
+    "target_device_execution": "NOT_RUN",
+    "remote_original_air_attempt": "FAILED_OUTPUT_ARGUMENT_VALIDATION",
+    "git": "PUBLICATION_AUTHORIZED_2026_10_28_ORIGINAL_SOURCES_EXCLUDED"
   }
 }

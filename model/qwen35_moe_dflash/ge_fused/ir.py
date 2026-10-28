@@ -16,7 +16,8 @@ import numpy as np
 
 from ..ge_ir import DTYPES as _LEGACY_DTYPES, Graph as _Graph, Value
 
-DTYPES = {**_LEGACY_DTYPES, "float32": np.dtype("<f4"), "int16": np.dtype("<i2")}
+DTYPES = {**_LEGACY_DTYPES, "float32": np.dtype("<f4"), "int16": np.dtype("<i2"),
+          "int8": np.dtype("i1")}
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_./-]*")
 
 # Document §4.6: these are GE schema slots, not the compact Data boundary.
@@ -138,16 +139,19 @@ class Graph(_Graph):
             raise ValueError("invalid custom operator name")
         if name in self._values or name in self._custom_names:
             raise ValueError(f"duplicate graph operator {name!r}")
-        # Validate on a temporary graph so invalid ports cannot partially mutate
-        # this graph's value registry.
+        # Stage only this node's outputs. Copying the full existing registry for
+        # every custom node makes a full quantized model quadratic to construct.
+        # Check global collisions explicitly before merging the staged values.
         staged = Graph(self.name)
-        staged._values = dict(self._values)
-        staged._custom_names = self._custom_names | {name}
+        staged._custom_names = {name}
         result = {}
         for port, descriptor in outputs.items():
             if not isinstance(descriptor, (tuple, list)) or len(descriptor) != 2:
                 raise ValueError("custom output descriptor must be (shape, dtype)")
-            result[port] = staged._value(f"{name}/{port}", *descriptor)
+            output_name = f"{name}/{port}"
+            if output_name in self._values or output_name in self._custom_names:
+                raise ValueError(f"duplicate graph value {output_name!r}")
+            result[port] = staged._value(output_name, *descriptor)
         self._values.update({v.name: v for v in result.values()})
         self._custom_names.add(name)
         self.nodes.append(CustomNode(name, op_type, tuple(inputs), tuple(inputs.values()),
@@ -182,4 +186,6 @@ class Graph(_Graph):
                                   "attrs": deepcopy(n.attrs)} for n in self.nodes if isinstance(n, CustomNode)]}
         if hasattr(self, "state_abi"):
             result["state_abi"] = deepcopy(self.state_abi)
+        if hasattr(self, "quantization_contract"):
+            result["quantization_contract"] = deepcopy(self.quantization_contract)
         return result

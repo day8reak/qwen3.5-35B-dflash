@@ -248,9 +248,12 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     if not os.access(omg, os.X_OK):
         raise PermissionError(f"selected OMG is not executable: {omg}")
     output.mkdir(parents=True, exist_ok=False)
-    scratch, inputs, generated = output / "compile-work", output / "compile-work/input", output / "compile-work/generated"
+    # Some OMG builds validate --output as a model name, rejecting a full
+    # path before graph parsing. Stage inputs alongside the output so a bare
+    # basename also preserves relative FileConstant and external-data paths.
+    scratch = output / "compile-work"
+    inputs = generated = scratch / "generated"
     inputs.mkdir(parents=True)
-    generated.mkdir()
     log = output / "compile.log"
     report = {
         "schema_version": 1, "artifact_kind": "qwen35-existing-air-compilation",
@@ -295,6 +298,10 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
             compatibility.update(metadata=metadata, audit={"status": "NOT_OBSERVED"})
         stage = "input-snapshot"
         selected, skipped = _input_inventory(air)
+        if any(source.relative_to(air.parent).parts[0] == "model"
+               or source.relative_to(air.parent).parts[0].startswith("model.")
+               for source in selected):
+            raise ValueError("AIR snapshot conflicts with reserved compiler output basename 'model'")
         report["external_weights"]["skipped"] = skipped
         selection = {"file_count": len(selected),
                      "total_bytes": sum(source.stat().st_size for source in selected),
@@ -319,7 +326,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         save_json(output / "input-inventory.json", {"files": report["input_snapshots"],
                                                     "external_weights": report["external_weights"]})
         command = [str(omg), "--framework=1", f"--model={inputs / air.name}",
-                   f"--output={generated / 'model'}", "--target=omc", "--platform=kirinx90"]
+                   "--output=model", "--target=omc", "--platform=kirinx90"]
         command.extend(f"--{name}={value}" for name, value in options.items())
         save_json(output / "compile-command.json", {"argv": command, "cwd": str(inputs),
                                                     "weight_dtype_override": None})

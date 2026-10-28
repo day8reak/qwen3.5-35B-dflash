@@ -21,7 +21,7 @@ from ..ge_recipe_read import _Reader as _LegacyReader
 from .ir import ATTENTION_INPUT_SCHEMA, ATTENTION_CONNECTED_PORTS, attention_registration_cpp
 
 _DT = {"float16": (1, 2), "int32": (2, 4), "int64": (3, 8), "bool": (4, 1),
-       "float32": (5, 4), "int16": (6, 2)}
+       "float32": (5, 4), "int16": (6, 2), "int8": (7, 1)}
 _AT = {"int": 1, "float": 2, "bool": 3, "ints": 4, "dtype": 5, "string": 6}
 _MAX_OPS = 2_000_000
 
@@ -79,13 +79,13 @@ def validate_record_types(record):
         if (tuple(port["port"] for port in record["inputs"]) != ATTENTION_CONNECTED_PORTS
                 or [port["port"] for port in record["outputs"]] != ["attention_out"]):
             raise ValueError("documented attention probe requires key/value dynamic lists of one and fixed optional-slot wiring")
-    elif record["type"] == "Cast" and any(p["dtype"] in {"float32", "int16"}
+    elif record["type"] == "Cast" and any(p["dtype"] in {"float32", "int16", "int8"}
                                         for p in record["outputs"]):
         inputs, outputs = record["inputs"], record["outputs"]
         if (len(inputs) != 1 or inputs[0]["port"] != "x" or len(outputs) != 1
                 or outputs[0]["port"] != "y" or inputs[0]["shape"] != outputs[0]["shape"]
                 or record.get("attrs", {}).get("dst_type") !=
-                {"type": "int", "value": {"float32": 0, "int16": 6}[outputs[0]["dtype"]]}):
+                {"type": "int", "value": {"float32": 0, "int16": 6, "int8": 2}[outputs[0]["dtype"]]}):
             raise ValueError("Cast descriptor/attribute contract mismatch")
     else:
         _legacy_validate_record_types(record)
@@ -250,13 +250,13 @@ def _extended_cpp():
     replacements = (
         ("Q35GE001", "Q35GF001", 1),
         ("DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL",
-         "DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL, DT_FLOAT, DT_INT16", 2),
-        ("d.dtype <= 4", "d.dtype <= 6", 1),
-        ("a.dtype <= 4", "a.dtype <= 6", 1),
+         "DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL, DT_FLOAT, DT_INT16, DT_INT8", 2),
+        ("d.dtype <= 4", "d.dtype <= 7", 1),
+        ("a.dtype <= 4", "a.dtype <= 7", 1),
         ("d.dtype == 1 ? 2 : d.dtype == 2 ? 4 : d.dtype == 3 ? 8 : 1",
          "d.dtype == 1 || d.dtype == 6 ? 2 : d.dtype == 2 || d.dtype == 5 ? 4 : d.dtype == 3 ? 8 : 1", 1),
         ("case 4: return ge::DT_BOOL;",
-         "case 4: return ge::DT_BOOL; case 5: return ge::DT_FLOAT; case 6: return ge::DT_INT16;", 1),
+         "case 4: return ge::DT_BOOL; case 5: return ge::DT_FLOAT; case 6: return ge::DT_INT16; case 7: return ge::DT_INT8;", 1),
         ('    if (r.type == "ConcatD")',
          '    if (r.type == "AdnFusedInferAttention") {\n' + attention_registration_cpp()
          + '\n    } else if (r.type == "ConcatD")', 1),
@@ -284,7 +284,7 @@ _CPP = _extended_cpp()
 
 _MAX_BYTES = 256 << 20
 _READ_DTYPES = {1: ("float16", 2), 2: ("int32", 4), 3: ("int64", 8), 4: ("bool", 1),
-           5: ("float32", 4), 6: ("int16", 2)}
+           5: ("float32", 4), 6: ("int16", 2), 7: ("int8", 1)}
 
 
 class _Reader(_LegacyReader):

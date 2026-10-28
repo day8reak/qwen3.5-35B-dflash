@@ -25,6 +25,17 @@ class _StatefulBuilder(_Builder):
         self.gdn_state_casts = gdn_state_casts
         self.gdn_state_contracts = []
 
+    def embedding(self, ids, config):
+        return self.op("gather", self.g.weight("target.embed_tokens.weight",
+                       (config["vocab_size"], config["hidden_size"])), ids,
+                       shape=(1, ids.shape[1], config["hidden_size"]), axis=0)
+
+    def input_embedding(self, sequence_length, config):
+        return self.embedding(self.g.input("input_ids", (1, sequence_length), "int32"), config)
+
+    def moe(self, x, prefix, config, expert_dispatch):
+        return _moe(self, x, prefix, config, expert_dispatch)
+
     def bound_dtype(self, role, direction, logical, fallback):
         declared = getattr(self.bindings, "tensor_dtype", None)
         return declared(role, direction, logical) if callable(declared) else fallback
@@ -290,7 +301,7 @@ def _full_attention(b, x, prefix, c, past_key, past_value, mask, rotary):
 def build_target(config, draft_config, sequence_length, *, past_length=0, fused_ops=(),
                  bindings=None, recurrent_dtype="float16", expert_dispatch="static",
                  head_chunk_rows=16, gdn_indexed_copy="native", gdn_copy_report=None,
-                 gdn_state_casts="reject"):
+                 gdn_state_casts="reject", builder_factory=None):
     """Build a stateful target; selected fusion roles require explicit bindings.
 
     Outputs are target_top1, target_features, then conv/recurrent or key/value
@@ -331,12 +342,13 @@ def build_target(config, draft_config, sequence_length, *, past_length=0, fused_
     if total - 1 > float(np.finfo(np.float16).max):
         raise ValueError("position exceeds this graph's finite FP16 RoPE range")
     graph = Graph("stateful_target")
-    b = _StatefulBuilder(graph, selected, bindings, gdn_indexed_copy=gdn_indexed_copy,
-                         gdn_copy_report=gdn_copy_report, gdn_state_casts=gdn_state_casts)
+    factory = _StatefulBuilder if builder_factory is None else builder_factory
+    if not callable(factory):
+        raise ValueError("builder_factory must be callable or None")
+    b = factory(graph, selected, bindings, gdn_indexed_copy=gdn_indexed_copy,
+                gdn_copy_report=gdn_copy_report, gdn_state_casts=gdn_state_casts)
     graph.gdn_copy_report = b.gdn_copy_report
-    ids = graph.input("input_ids", (1, s), "int32")
-    hidden = b.op("gather", graph.weight("target.embed_tokens.weight", (c["vocab_size"], h)),
-                  ids, shape=(1, s, h), axis=0)
+    hidden = b.input_embedding(s, c)
     visible = np.arange(total)[None, :] <= np.arange(past_length, total)[:, None]
     mask = b.constant(np.where(visible, 0, np.finfo(np.float16).min).reshape(1, 1, s, total))
     inv = (1.0 / (np.float32(c["rope_theta"]) **
@@ -395,7 +407,7 @@ def build_target(config, draft_config, sequence_length, *, past_length=0, fused_
             record(index, kind, "value", old_value, new_value)
         hidden = b.op("add", hidden, mixed)
         normalized = b.rms(hidden, prefix + ".post_attention_layernorm.weight", c["rms_norm_eps"])
-        hidden = b.op("add", hidden, _moe(b, normalized, prefix + ".mlp", c, expert_dispatch))
+        hidden = b.op("add", hidden, b.moe(normalized, prefix + ".mlp", c, expert_dispatch))
         if index in draft_config.target_layer_ids:
             captures[index] = hidden
     hidden = b.rms(hidden, "target.norm.weight", c["rms_norm_eps"])

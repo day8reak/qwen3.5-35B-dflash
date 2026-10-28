@@ -2,7 +2,9 @@
 from .model import FusedTargetModel, FusedTargetOutput, load_prepared_target
 from .ops import FusedOps, ModuleFusedOps, SelectiveFusedOps
 from .session import LayerState, TargetState, StateStore, FusedTargetSession, TargetVerification
+from .quantization import OriginalQuantOps, OriginalQuantizedWeights, load_original_quantized_target
 
 __all__ = ["FusedTargetModel", "FusedTargetOutput", "FusedOps", "ModuleFusedOps", "SelectiveFusedOps",
            "LayerState", "TargetState", "StateStore", "load_prepared_target",
-           "FusedTargetSession", "TargetVerification"]
+           "FusedTargetSession", "TargetVerification", "OriginalQuantOps",
+           "OriginalQuantizedWeights", "load_original_quantized_target"]
