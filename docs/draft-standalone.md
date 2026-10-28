@@ -2,16 +2,18 @@
 
 当前优先跑通完整六层 DFlash，不等待40层 target 编译。沿用已经配置的 `env.sh`、主机GE、目标DDK和HDC环境。默认工作目录固定为 `$AI_RUN_DIR/full-draft`，后续自动复用成功阶段并覆盖失败阶段的日志，不再为每次重试生成新目录。
 
-最新流式内嵌模型已在设备执行成功，当前FAILED是主机比较报告中的inf无法写入JSON。先复核保留输出：
+最新复核确认设备执行成功，但旧FP16参考hidden全零，15个Top1也全为0。当前执行CPU参考重放与已有设备输出比较：
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --compare-only
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --replay-reference
 ```
 
-复核只读取已回收的native输出，重新核验bundle、进程退出、runtime/firmware、回读及传输SHA256，生成 `full-draft/comparison-review.json`。原始board报告和文件不变；不访问设备、不重编译、不重新生成参考。Top1、hidden绝对误差与双方数值统计一次打印。零参考范数的relative_l2为null且带原因，全零参考显式标为退化；不能将其Top1巧合匹配解释为完整数值正确。
+入口使用prepared的同一份FP16权重和bundle已执行的精确输入，运行旧FP16 primitive和仅RMS计算改为FP32两轮，记录每个RMS输入、平方及输出，先检查旧golden能否精确复现，再比较FP32 RMS对照与保留板端输出。固定 `reference-replay`目录保存两套小输出、trace和报告。原fixture、bundle、OMC和board文件不改，不需要原始target checkpoint，也没有NPU/编译/上传操作。
 
-后续确需重新执行完整draft时使用 `--weight-storage embedded-stream`：复用external编译，将核验后的sidecar按图中权重偏移封装到bundle内单个OMC，默认legacy-buffer加载。该模式已越过当前设备的加载障碍，但本次数值结果尚待上述复核。`external`直接打包外置产物，`embedded`让OMG内嵌编译；二者保留为显式选项。普通续跑继承当前模式和固定目录，只替换失败阶段。
+这是RMS精度的受控对照，保留了其它FP16 primitive边界，不冒充完整上游BF16 oracle。旧参考无法复现或对照输出非有限、全零时不建立新验收结论。旧 `--compare-only`仍可单独重看已有golden对比；它不会重放CPU参考。
+
+后续确需重新执行完整draft时沿用 `--weight-storage embedded-stream`。该路径已完成一次设备执行，当前先处理参考问题，避免重复大模型上传和设备执行。
 
 失败报告包含 `model_load_api` 和 `runtime_stage`，区分文件恢复、初始化、张量设置及推理。自动HiLog摘要流式处理超过16MB的快照，并纳入明确提及runner PID的hiaiserver失败线程上下文；保留原快照和行号。SDK构建失败会打印编译错误及实际ND头文件声明，并保留 `board/native/selected-v2-headers.txt`。不需要先重新运行 `probe_draft_load.py`。
 

@@ -182,6 +182,8 @@ def prepare_draft_reference(prepared_dir, output_dir, *, seed=17, valid_length=N
                 head_handle.remove()
             if len(captured) != 1 or logits_finite != [True] or not torch.isfinite(captured[0]).all():
                 raise FloatingPointError("nonfinite or missing complete draft reference output")
+            if not bool(torch.count_nonzero(captured[0])):
+                raise FloatingPointError("degenerate all-zero draft hidden reference; inspect RMS intermediate precision before accepting a golden")
             result["expected_top1"] = _write_tensor(root, "draft_top1", top1.numpy().astype("<i4"), 0)
             result["expected_hidden"] = _write_tensor(root, "draft_hidden", captured[0].numpy().astype("<f2"), 1)
             result.update(status="REFERENCE_COMPLETE", torch_version=torch.__version__,

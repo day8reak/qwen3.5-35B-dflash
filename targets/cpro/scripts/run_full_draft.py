@@ -45,6 +45,7 @@ def parser():
     mode.add_argument("--prepare-only", action="store_true", help="prepare full weights and PyTorch fixture; no GE/DDK/board")
     mode.add_argument("--compile-only", action="store_true", help="prepare reference, export AIR and compile OMC; no board")
     mode.add_argument("--compare-only", action="store_true", help="recheck existing board outputs locally; no rebuild, upload, HDC or execution")
+    mode.add_argument("--replay-reference", action="store_true", help="CPU replay exact retained inputs with RMS traces and FP32-statistics comparison; keeps original golden and board files")
     mode.add_argument("--inspect-only", action="store_true", help="read --resume job's retained compiler evidence; no export, compilation or board")
     return p
 
@@ -220,22 +221,32 @@ def _main(args, stack):
         run = os.environ.get("AI_RUN_DIR")
         if not run:
             raise ValueError("AI_RUN_DIR is required; source the project env.sh")
-        if args.compare_only:
+        if args.compare_only or args.replay_reference:
+            option = "--replay-reference" if args.replay_reference else "--compare-only"
             if any(value is not None for value in (args.target_weights, args.draft_weights,
                     args.sequence_length, args.valid_length, args.weight_storage, args.model_load_api,
                     args.schema_library)):
-                raise ValueError("--compare-only reads the retained execution; do not select changed inputs, storage or loader")
+                raise ValueError(option+" reads the retained execution; do not select changed inputs, storage or loader")
             if args.resume and args.output and Path(args.resume).resolve() != Path(args.output).resolve():
-                raise ValueError("--compare-only does not migrate jobs; select one existing job directory")
+                raise ValueError(option+" does not migrate jobs; select one existing job directory")
             from qwen35_moe_dflash.draft_review import review_draft_result
             from qwen35_moe_dflash.draft_workspace import DraftWorkspace
             selected = Path(args.resume or args.output or Path(run)/"full-draft")
             if not selected.is_dir() or selected.is_symlink():
-                raise ValueError("--compare-only needs an existing real draft job directory")
-            print("full-draft: Rechecking retained native outputs locally; no rebuild, upload or board execution", flush=True)
+                raise ValueError(option+" needs an existing real draft job directory")
+            print("full-draft: Replaying CPU reference on retained inputs; no rebuild, upload or board execution"
+                  if args.replay_reference else
+                  "full-draft: Rechecking retained native outputs locally; no rebuild, upload or board execution", flush=True)
             with DraftWorkspace(selected) as review_workspace:
                 if review_workspace.load_pending() is not None:
                     raise ValueError("finish the pending workspace migration before comparing retained outputs")
+                if args.replay_reference:
+                    from qwen35_moe_dflash.draft_reference_replay import replay_reference
+                    reviewed = replay_reference(selected, selected/"reference-replay",
+                        progress=lambda message: print("draft-reference: "+message, flush=True))
+                    print(json.dumps(reviewed, ensure_ascii=False, allow_nan=False), flush=True)
+                    print(f"full-draft: Reference replay: {selected / 'reference-replay/report.json'}", flush=True)
+                    return 0 if reviewed.get("numerical_validation") == "TOP1_MATCHED" else 1
                 reviewed = review_draft_result(selected)
                 review_workspace.save("comparison-review.json", reviewed)
             print(json.dumps(reviewed, ensure_ascii=False, allow_nan=False), flush=True)

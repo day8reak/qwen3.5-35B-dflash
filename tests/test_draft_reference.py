@@ -150,3 +150,19 @@ def test_failure_retains_input_identity_and_error(prepared, tmp_path, monkeypatc
     result = json.loads((tmp_path / "failed" / "report.json").read_text())
     assert result["status"] == "FAILED" and len(result["inputs"]) == 3
     assert result["expected_top1"] is None and "fixture failure" in result["error"]
+
+
+def test_finite_all_zero_hidden_is_not_accepted_as_reference(prepared, tmp_path, monkeypatch):
+    root, _, _, _, _ = prepared
+    graph = subject.load_draft_reference(root)
+    # Simulate finite collapse at the final norm. The head remains finite and
+    # argmax returns zeros, so the former finite-only guard would accept it.
+    graph.draft.norm.register_forward_hook(lambda module, inputs, output: torch.zeros_like(output))
+    monkeypatch.setattr(subject, "_load_graph", lambda *args: graph)
+    folder = tmp_path/"collapsed-reference"
+    with pytest.raises(FloatingPointError, match="degenerate all-zero"):
+        subject.prepare_draft_reference(root, folder)
+    report = json.loads((folder/"report.json").read_text())
+    assert report["status"] == "FAILED"
+    assert report["expected_top1"] is report["expected_hidden"] is None
+    assert len(report["inputs"]) == 3

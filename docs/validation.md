@@ -4,6 +4,18 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 退化参考与RMS精度重放
+
+用户回传compare-only报告确认：旧参考hidden全部30,720个元素为零，expected Top1为15个0；板端hidden全部finite，30,711个非零，L2=357.4925270667643，范围[-9.5,10.171875]。双方Top1差异15个。norm审计核验26份scale均有限且非全零；最终norm和hidden_norm的2,048个scale均为1。设备执行已通过，当前旧参考退化，不足以单独判断设备精度。
+
+新增CPU重放保持原输入、权重、fixture、bundle和板端文件。先重放旧FP16 primitive并逐字节对照旧golden，然后仅对DFlashRMSNorm采用现有TorchDFlashOps的FP32归一化公式；其它FP16计算边界不变。逐节点trace记录输入/FP16平方/输出统计，区分原本为零的padding行与有限非零输入变全零的行。未观察实际完整重放前，FP16平方溢出仍只是具有最小复现的候选根因。
+
+RMS公式核对依据是[Transformers v5.7.0 Qwen3RMSNorm](https://github.com/huggingface/transformers/blob/6ffbb07f93d9e44457450d1150136309b0dc966b/src/transformers/models/qwen3/modeling_qwen3.py#L50)：归一化在FP32中完成，normalized转回输入dtype后乘直接scale。当前checkpoint源码锁未包含有效的35B dflash.py；因此这个对照不宣称复现完整历史上游BF16实现，尤其RoPE和attention仍保留旧参考FP16边界。
+
+新参考生成增加全零hidden拒绝；finite-only检查不再把这种退化输出记为REFERENCE_COMPLETE。重放产物只用于诊断，原golden与现有数值阈值不覆盖、不放宽。
+
+本次主机验证286项通过：包括六层小模型旧参考逐字节复现、受控FP16平方溢出与FP32恢复、输入/权重/输出哈希绑定、诊断文件复用及原始证据保持。证据位于run `20261028T114628Z-5767-f04adf` 的 `out/reference-replay-integration.xml`（260项）和 `out/draft-reference-replay-tests.xml`（26项）。完整服务器权重重放及板端数值对齐仍待运行。
+
 ## 完整 draft 执行与保留输出复核
 
 用户回传流式内嵌OMC已在PID14008执行，native为EXECUTED，退出码0，输出回收无错误。模型大小2,852,374,570字节，SHA256为 `dc1136c5fe9ce7c83157f2fa50504a89eb3f7f5c6487a7b654dd274bb17ae0b4`。原加载故障已越过；最终作业FAILED发生在主机hidden相对L2产生inf后写JSON，因此不能把作业FAILED解释为本次Process失败，也不能据EXECUTED宣称精度通过。

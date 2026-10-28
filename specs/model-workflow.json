@@ -524,10 +524,10 @@
     },
     "standalone_draft": {
       "entrypoint": "targets/cpro/scripts/run_full_draft.py",
-      "status": "DEVICE_EXECUTED_USER_REPORTED_RETAINED_COMPARISON_PENDING",
+      "status": "DEVICE_EXECUTED_DEGENERATE_REFERENCE_REPLAY_PENDING",
       "descriptor_probe": {
         "entrypoint": "targets/cpro/scripts/probe_draft_load.py",
-        "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --compare-only",
+        "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --replay-reference",
         "output": "${AI_RUN_DIR}/full-draft/load-diagnostic",
         "status": "SETTERS_MUTUALLY_EXCLUSIVE_USER_REPORTED",
         "observations": [
@@ -1112,7 +1112,7 @@
         "interruption": "MIGRATION_JOURNAL_RECOVERY",
         "explicit_existing_output": "Auto-resume a recognized owned job in place",
         "explicit_new_output_with_resume": "Retain legacy independent output and references for compatibility",
-        "subsequent_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --compare-only",
+        "subsequent_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --replay-reference",
         "legacy_root_cleanup": "Not automatic; after successful self-contained adoption, the user may remove obsolete batch roots. Independent TBE diagnosis and unrelated tasks are outside this cleanup.",
         "disk_scope": "Avoids accumulating retry directories and copies during adoption; one compilation still needs input-snapshot/output space",
         "model_changes": "NONE",
@@ -1318,6 +1318,82 @@
           "errors": 0,
           "evidence": "retained-comparison-regression.xml",
           "scope": "Host comparison, retained evidence, CLI and fixed workspace regression; synthetic device markers in tests are not hardware evidence"
+        },
+        "user_result": {
+          "device_execution": "PASSED",
+          "numerical_validation": "FAILED",
+          "token_mismatches": 15,
+          "expected_top1": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "expected_hidden_nonzero": 0,
+          "expected_hidden_elements": 30720,
+          "actual_hidden_nonzero": 30711,
+          "actual_hidden_nonfinite": 0,
+          "actual_hidden_range": [
+            -9.5,
+            10.171875
+          ],
+          "actual_hidden_l2": 357.4925270667643,
+          "norm_tensors_checked": 26,
+          "norm_all_zero": [],
+          "norm_nonfinite": [],
+          "reference_quality": "DEGENERATE_ZERO_HIDDEN"
+        }
+      },
+      "reference_replay": {
+        "run_id": "20261028T114628Z-5767-f04adf",
+        "command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --replay-reference",
+        "status": "HOST_IMPLEMENTATION_DEVICE_OUTPUT_COMPARISON_PENDING",
+        "modes": [
+          "legacy-fp16",
+          "fp32-stats"
+        ],
+        "change": "Only DFlash RMS normalization arithmetic: normalize in FP32, cast normalized to input dtype, then multiply effective weight",
+        "unchanged": [
+          "prepared FP16 weights",
+          "exact executed input bytes",
+          "legacy attention/RoPE precision",
+          "original fixture/golden",
+          "OMC/bundle",
+          "retained native outputs"
+        ],
+        "gates": [
+          "strict retained execution identity verification",
+          "legacy replay byte-identical to stored golden",
+          "candidate finite and nondegenerate",
+          "zero Top1 mismatches for TOP1_MATCHED"
+        ],
+        "hidden_threshold": "NOT_DEFINED",
+        "outputs": "${AI_RUN_DIR}/full-draft/reference-replay",
+        "new_device_execution": "NOT_RUN",
+        "new_compilation": "NOT_RUN",
+        "new_reference_guard": "Reject finite but all-zero hidden instead of marking REFERENCE_COMPLETE",
+        "upstream_scope": "Qwen3 RMS formula confirmed against Transformers v5.7.0; not a full BF16 upstream oracle",
+        "cause_status": "FP16 square overflow reproduced on a controlled tensor; actual full-draft stage awaits trace",
+        "host_validation": {
+          "unique_cases_passed": 286,
+          "failures": 0,
+          "errors": 0,
+          "evidence": [
+            "out/reference-replay-integration.xml",
+            "out/draft-reference-replay-tests.xml"
+          ],
+          "scope": "CPU replay, six-layer legacy byte reproduction, RMS overflow intervention, exact retained input binding, evidence preservation and CLI regression; full remote replay is pending"
         }
       }
     }

@@ -6,20 +6,20 @@
 
 ## 用户现在执行什么
 
-**完整 draft 已在设备加载并执行一次。当前只需复核已回收输出，不要重跑上板：**
+**设备执行已经通过；当前先修复退化参考，直接用保留文件做一次CPU重放与板端结果对照：**
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --compare-only
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --replay-reference
 ```
 
-最新用户回传：流式内嵌OMC大小2,852,374,570字节，SHA256为 `dc1136c5fe9ce7c83157f2fa50504a89eb3f7f5c6487a7b654dd274bb17ae0b4`；PID14008输出 `EXECUTED`，退出码0、回收无错误。原先的权重加载障碍已越过。本次最终FAILED来自主机比较报告：hidden相对L2计算得到inf，严格JSON序列化拒绝保存，尚不能确认数值一致。
+最新离线复核已核验本次输出身份：设备hidden的30,720个元素全部有限，30,711个非零，范围[-9.5,10.171875]；旧参考hidden全部为零，15个Top1也全为0，与板端15个ID全不匹配。26份norm权重均有限且非全零，最终norm/hidden_norm的scale均为1。当前参考已经退化，不能用它单独判定板端计算正确或错误。
 
-`--compare-only`核验已有bundle、原生结果、输出、回读及传输哈希后重新比较，写入固定 `full-draft/comparison-review.json`。它不编译、不上传、不调用HDC、不重跑模型，也不改写原始board证据。输出包含Top1差异数与ID、双方hidden的有限/非零数量、范围、L2、绝对误差，以及小型norm权重统计。零参考范数以null和明确状态表示，不用极小分母伪造相对误差；非有限结果仍判失败。若参考hidden全零，将标记参考退化，Top1巧合匹配不能当作完整精度验收。
+新入口复用prepared权重和已执行的精确输入，先重放旧FP16 primitive参考并核对旧golden，再仅将RMS归一化计算改为FP32做第二次CPU对照。每个RMS节点记录输入、FP16平方及输出的有限值/零行统计，用来定位首次溢出或非零输入塌缩。其余注意力、RoPE、权重和输入不改；不构造target、不调用HDC、不编译或上传OMC。
 
-源码审查发现当前FP16 primitive参考的RMS平方可能溢出后产生全零且finite的输出。这是可复现的参考实现风险，尚未证明是当前完整模型的根因；本次复核先读取保留数据，不改golden或重跑参考。原生单步报告未记录推理耗时，此次不能据日志时间推算20ms性能。
+两轮输出、逐层trace和比较报告保存在固定 `full-draft/reference-replay`，原fixture、bundle和board证据保持不变。第二轮会直接比较已回收板端的Top1和hidden，不需要再单独运行比较命令。旧参考若不能精确复现，或新输出非有限/退化，不会据此宣布参考修复。即使Top1匹配，hidden仍按现有未定义阈值报告，完整BF16源模型精度、语言质量及性能都未验收。
 
-此前 `--weight-storage embedded-stream`复用external编译结果，按所选DDK图中权重偏移和大小将15份sidecar封装到一个内嵌OMC；图、任务和权重字节保持不变。原external编译产物保留，bundle封装记录在 `weight-packing.json`。需要未来重新执行设备时沿用该模式；现在先使用上面的离线比较命令。
+Qwen3的RMSNorm在FP32中计算归一化，转回输入精度后乘直接scale；与当前diagnostic FP16平方不同，见[Transformers v5.7.0实现](https://github.com/huggingface/transformers/blob/6ffbb07f93d9e44457450d1150136309b0dc966b/src/transformers/models/qwen3/modeling_qwen3.py#L50)。FP16平方溢出是已复现的实现风险，完整draft具体发生位置以本次trace为准。新生成的参考若hidden全零将明确失败，不再只检查finite。
 
 [独立 draft 指南](draft-standalone.md)保留完整模型入口。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
