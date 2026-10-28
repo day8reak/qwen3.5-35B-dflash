@@ -6,9 +6,13 @@
 
 ## 用户现在执行什么
 
-**已定位并修正外置权重暂存问题，更新后重试整模编译。** `full-target-compile-e019e4a7ad53` 已通过输出参数校验并开始解析 AIR，在 `arg3_1` 的 `ConvertFileConstant` 处找不到 `./glm_export_air_cpro_40block_55_quant/model_model_layers_0_input_layernorm_weight`。用户确认这些权重就在原 `export.air` 同级目录；旧收集逻辑漏掉无扩展名文件，暂存布局也缺少引用里的导出目录前缀。
+**已经在编译的任务先保留，用另一个终端观察。** 旧脚本在 `Compiling existing AIR` 后将输出写入 `compilation/compile.log`，直到 OMG 退出才刷新终端；默认7200秒只是超时上限，不是预计完成时间。十几分钟没有终端输出不能单独判定卡死。查看本次目录里的日志尾部、文件更新时间以及 OMG/编译子进程的 CPU 累计耗时、内存和等待状态；日志静默也可能来自缓冲。先定位当前阶段，不重复启动另一个整模编译。
 
-入口现在收集同级无扩展名的普通文件，保持 AIR 位于编译工作目录，将权重快照放在其下的原导出目录名中。默认 `--input-layout export-directory`；其它 AIR 若使用不带导出目录名的相对路径，可显式选择 `--input-layout air-directory`。不改写 AIR，不借用原目录链接，也不重新转换 YAML 指定的量化权重。按以下命令重试：
+新入口等待期间每30秒显示已用时间、日志字节数、最近写入时间距今秒数及有长度限制的最后一行。这是等待观察，不是完成百分比或编译正常的判定；监控失败不会重启、终止或改写编译结果。它只影响以后启动的任务，正在运行的旧进程继续通过日志观察。
+
+**上一轮外置权重暂存问题已修正。** `full-target-compile-e019e4a7ad53` 已通过输出参数校验并开始解析 AIR，在 `arg3_1` 的 `ConvertFileConstant` 处找不到 `./glm_export_air_cpro_40block_55_quant/model_model_layers_0_input_layernorm_weight`。用户确认这些权重就在原 `export.air` 同级目录；旧收集逻辑漏掉无扩展名文件，暂存布局也缺少引用里的导出目录前缀。
+
+入口现在收集同级无扩展名的普通文件，保持 AIR 位于编译工作目录，将权重快照放在其下的原导出目录名中。默认 `--input-layout export-directory`；其它 AIR 若使用不带导出目录名的相对路径，可显式选择 `--input-layout air-directory`。不改写 AIR，不借用原目录链接，也不重新转换 YAML 指定的量化权重。以下保留启动命令供后续需要时使用；已有编译运行时不要重复启动：
 
 ```bash
 git pull --ff-only

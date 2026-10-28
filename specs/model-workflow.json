@@ -469,6 +469,24 @@
         "passed": 73,
         "junit": "air-sidecar-tests.xml",
         "scope": "Host mock OMG; exact reported relative FileConstant path, no real full-model compile or device execution"
+      },
+      "waiting_observation": {
+        "user_report": "10+ minutes without console output after Compiling existing AIR",
+        "cause": "UNDETERMINED_PENDING_LIVE_LOG_AND_PROCESS_EVIDENCE",
+        "known_cli_behavior": "subprocess.run waits synchronously; stdout/stderr redirected to compile.log",
+        "new_heartbeat_seconds": 30,
+        "default_timeout_seconds": 7200,
+        "policy": "Keep the running job; observe its log/processes without restart or another compile",
+        "claims": "Heartbeat is not percentage, liveness proof, or device validation",
+        "host_validation": {
+          "run_id": "20261028T014652Z-18033-5b7a3e",
+          "passed": 59,
+          "junit": [
+            "compiler-wait-regression.xml",
+            "heartbeat-tests.xml"
+          ],
+          "scope": "Host tests only; no selected DDK execution or diagnosis of the live remote compiler"
+        }
       }
     },
     "original_quantized_target": {

@@ -21,6 +21,7 @@ from .compile import (omg_environment, _environment_record, _omg_ipc_environment
                       _retain_compiler_diagnostics, prepare_tbe_compatibility,
                       verify_tbe_compatibility)
 from .compiler_evidence import compile_evidence
+from .compile_progress import compiler_heartbeat
 from .hashing import sha256_file
 from .tool_logs import log_excerpt
 
@@ -355,6 +356,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                                                     "weight_dtype_override": None})
         stage = "omg"
         notify(stage, "Compiling existing AIR with the selected DDK; full output is in compile.log")
+        notify(stage, f"Live log: {log}; wait updates every 30s; timeout={timeout_seconds:g}s")
         with _omg_ipc_environment(inputs, env) as (local_env, ipc), log.open("x") as stream:
             environment = _environment_record(ddk, local_env)
             environment["ipc_temporary_directory"] = ipc
@@ -363,8 +365,10 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
             report["model_compilation"] = "FAILED"
             if compatibility is not None:
                 compatibility.update(compiler_invocation="ATTEMPTED", compile="FAILED")
-            subprocess.run(command, cwd=inputs, env=local_env, stdout=stream, stderr=subprocess.STDOUT,
-                           check=True, timeout=timeout_seconds)
+            with compiler_heartbeat(log, progress) as observation:
+                report["compile_observation"] = observation
+                subprocess.run(command, cwd=inputs, env=local_env, stdout=stream, stderr=subprocess.STDOUT,
+                               check=True, timeout=timeout_seconds)
         stage = "output-check"
         omc = generated / "model.omc"
         if omc.is_symlink() or not omc.is_file() or not omc.stat().st_size:
