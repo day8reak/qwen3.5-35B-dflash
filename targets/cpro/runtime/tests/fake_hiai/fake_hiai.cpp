@@ -18,6 +18,10 @@ void Trace(const char* event) {
   if (const auto* path=std::getenv("FAKE_HIAI_TRACE")) std::ofstream(path, std::ios::app) << event << '\n';
 }
 bool ModelBytesValid(const void* buffer, std::uint32_t bytes, const std::string& name) {
+  if (name=="qwen35_standalone_draft") {
+    const char* expected="draft-standalone-fixture";
+    return buffer && bytes==std::strlen(expected) && std::memcmp(buffer,expected,bytes)==0;
+  }
   if (name=="qwen35_fused_operator") {
     for (const char* expected : {"fused-gdn-s8-fixture", "fused-gdn-s1-fixture",
                                 "fused-conv-s8-fixture", "fused-conv-s1-fixture", "fused-rms-s8-fixture",
@@ -137,7 +141,11 @@ AIStatus AiModelMngerClient::UnLoadModel(){
 AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vector<TensorDimension>& in,std::vector<TensorDimension>& out){
   if(n!=name_ || !loaded_ || Failure()=="io-dims") return 1;
   TensorDimension ids({1,32}), features({1,32,FeatureWidth()});
-  if(n=="qwen35_stateful_target") {
+  if(n=="qwen35_standalone_draft") {
+    in={TensorDimension({1,8,16384}),TensorDimension({1,8}),TensorDimension({1,8})};
+    out={TensorDimension({1,15}),TensorDimension({1,15,2048})};
+  }
+  else if(n=="qwen35_stateful_target") {
     const bool decode = std::string(static_cast<const char*>(model_buffer_),model_bytes_)=="stateful-decode-fixture";
     const std::uint32_t s=decode?1:3;
     in={TensorDimension({1,s})};
@@ -223,6 +231,14 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
   Trace("process");
   RequireModelBytes(model_buffer_, model_bytes_, name_);
   if(c.model!=name_ || !timeout || !loaded_ || Failure()=="run") return 1;
+  if(name_=="qwen35_standalone_draft") {
+    // Transport fixture only; never a numerical DFlash implementation.
+    if(in.size()!=3 || out.size()!=2) return AI_FAILED;
+    auto* top=static_cast<std::int32_t*>(out[0]->GetBuffer());
+    for(std::int32_t i=0;i<15;++i) top[i]=i+10;
+    std::fill_n(static_cast<std::uint16_t*>(out[1]->GetBuffer()),15*2048,0x3800);
+    stamp=1; return AI_SUCCESS;
+  }
   if(name_=="qwen35_fused_operator") {
     // Deliberately a lifecycle/byte transport double, never a fused-op kernel.
     // Distinct finite raw patterns let tests detect truncation and wrong dtypes.

@@ -135,8 +135,8 @@
     "user_requirement": "验证 DFlash 有优化效果，希望至少提速 2 倍",
     "target_speedup": 2.0,
     "status": "NOT_MEASURED",
-    "current_priority": "FUSED_OPERATOR_AND_STATEFUL_RUNTIME_INTEGRATION",
-    "current_milestone": "Connect installed fused kernels and explicit state ABI to target execution and draft scheduling",
+    "current_priority": "STANDALONE_FULL_DRAFT_EXECUTION",
+    "current_milestone": "Run all six draft layers with real weights on fixed target-feature inputs; compare PyTorch Top1 and hidden diagnostics without target execution",
     "primary_working_metric": "median ordinary full decode-loop latency / median DFlash full decode-loop latency",
     "included_decode_costs": [
       "target calls",

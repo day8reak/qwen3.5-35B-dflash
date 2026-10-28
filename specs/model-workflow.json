@@ -521,6 +521,48 @@
         "pytorch_subtests_passed": 27,
         "scope": "CPU references and synthetic GE schemas; real vendor/device validation pending"
       }
+    },
+    "standalone_draft": {
+      "entrypoint": "targets/cpro/scripts/run_full_draft.py",
+      "status": "HOST_IMPLEMENTED_DEVICE_PENDING",
+      "implementation": [
+        "model/qwen35_moe_dflash/draft_standalone.py",
+        "model/qwen35_moe_dflash/draft_reference.py",
+        "model/qwen35_moe_dflash/draft_board.py"
+      ],
+      "architecture": {
+        "layers": 6,
+        "block_size": 16,
+        "vocab_size": 248320,
+        "default_context_capacity": 64
+      },
+      "weights": {
+        "tensors": 71,
+        "fp16_bytes": 2806049792,
+        "target_tensors": [
+          "embedding",
+          "lm_head"
+        ],
+        "target_decoder_loaded": false
+      },
+      "inputs": "Fixed synthetic target features plus token IDs and prefix mask",
+      "outputs": [
+        "draft_top1",
+        "draft_hidden"
+      ],
+      "reference": "Standalone PyTorch FP16 primitives matching the GE deployment boundary policy",
+      "state_policy": "prefix-recompute",
+      "numerical_gate": "Top1 zero mismatches on identical fixture; hidden diagnostic threshold NOT_DEFINED",
+      "device_execution": "NOT_RUN",
+      "runtime_placement": "UNVERIFIED",
+      "resume": "Hash-checked completed stages; new output directory; no repeat OMG after successful compilation",
+      "scope": "Complete draft execution diagnostic only; no quality, acceptance or speedup claim",
+      "host_evidence_run": "20261028T020133Z-18261-26b372",
+      "host_validation": {
+        "pytest_passed": 103,
+        "native_ctest_groups_passed": 6,
+        "scope": "Host and fake-HIAI only; real compilation/device validation pending"
+      }
     }
   },
   "phases": [
@@ -579,8 +621,9 @@
   "probe_policy": "The active model-ops scope is three custom operator types and six prefill/decode cases, explicitly selected by the user. Conv state and RMS use existing base operators. Reuse compiled cases; retain all-ops nine-case records and custom Conv/RMS failures as optional historical diagnostics, not passes. No new Conv/RMS fusion-candidate plan.",
   "evidence": "specs/verification.json",
   "delivery_plan": {
-    "priority": "Urgent: compiled quantized full target and ordinary prefill/decode before DFlash; do not serialize model integration behind optional standalone diagnostics",
+    "priority": "Urgent: run the complete six-layer draft independently first; retain ongoing full target compile without starting another target compile",
     "parallel_workstreams": [
+      "Complete standalone draft with real weights, PyTorch fixture, GE AIR, OMG OMC and HIAI execution",
       "Existing original AIR full-target OMG compilation and actual interface inspection",
       "Original graph dynamic gear, RefData and external weights runtime integration",
       "GDN writeback investigation from retained three-fill files; no repeat execution"
@@ -592,7 +635,7 @@
       "claiming an unbound full graph or FP16 conversion diagnostic is a deployable 32GB model"
     ],
     "memory_plan": "specs/device-memory-report.json",
-    "first_device_milestone": "40-layer target with real packed weights: compile, load, ordinary prefill and decode; invocation success remains separate from numerical acceptance",
+    "first_device_milestone": "Complete six-layer draft single invocation with identical-input PyTorch Top1 comparison; hidden diagnostics and placement remain separately unverified",
     "readiness_gaps": {
       "direct_ge_weights": "Fallback logical INT4/INT8/FP16 cache writer implemented and resumable; I4ZN/QPARAM/GE hardware mapping remains pending. Existing AIR primary route does not require this rebuild.",
       "memory": "Approximately 34.66B text parameters require about 69.3GB in FP16; not a 32GB device deployment",
@@ -609,7 +652,7 @@
       "platform": "kirinx90",
       "scope": "Run-local TBE argument adapter only; no quantized full model built in this run."
     },
-    "primary_route": "existing_original_air",
+    "primary_route": "standalone_draft",
     "fallback_weight_preparation": {
       "entrypoint": "targets/cpro/scripts/prepare_full_target.py",
       "tensor_count": 693,

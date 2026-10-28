@@ -72,6 +72,7 @@ class SafeTensorFiles:
         if chunk_elements < 1:
             raise ValueError("chunk_elements must be positive")
         digest = hashlib.sha256()
+        source_digest = hashlib.sha256()
         with path.open("rb") as source, Path(destination).open("xb") as output:
             source.seek(offset)
             for begin in range(0, count, chunk_elements):
@@ -80,6 +81,7 @@ class SafeTensorFiles:
                 data = source.read(n * width)
                 if len(data) != n * width:
                     raise ValueError(f"{key}: truncated tensor")
+                source_digest.update(data)
                 if dtype == "BF16":
                     values = (np.frombuffer(data, dtype="<u2").astype("<u4") << 16).view("<f4")
                 else:
@@ -91,7 +93,7 @@ class SafeTensorFiles:
                 payload = half.tobytes()
                 output.write(payload)
                 digest.update(payload)
-        return {"bytes": count * 2, "sha256": digest.hexdigest(), "source_tensor": key,
+        return {"bytes": count * 2, "sha256": digest.hexdigest(), "source_sha256": source_digest.hexdigest(), "source_tensor": key,
                 "source_shard": path.name, "source_dtype": dtype}
 
     def source_files(self, names):

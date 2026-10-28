@@ -2,9 +2,15 @@
 
 [首页](README.md) · [环境配置](environment-setup.md) · [验证记录](validation.md)
 
-更新日期：2026-10-28。用户明确时间紧迫：先推进完整40层target的普通prefill/decode，再接6层DFlash；最终目标不变。
+更新日期：2026-10-28。用户将当前优先级调整为先独立跑通完整6层DFlash draft；保留正在进行的40层target编译。最终仍需接通target验证、连续生成与性能比较。
 
 ## 用户现在执行什么
+
+**先运行完整 draft 的独立入口。** [独立 draft 指南](draft-standalone.md)提供一条命令完成真实权重准备、PyTorch参考、GE导出、OMG编译和HIAI执行。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
+
+当前已通过主机测试和模拟HIAI验证；真实DDK编译及板端结果待用户运行回传。`--resume`复用哈希一致的已完成阶段，HDC中断后不重复导出或编译。已确认用户有下载好的DFlash权重，私有路径保存在本地运行记录，不加入版本库。
+
+## 保留的 target 编译与诊断
 
 **已经在编译的任务先保留，用另一个终端观察。** 旧脚本在 `Compiling existing AIR` 后将输出写入 `compilation/compile.log`，直到 OMG 退出才刷新终端；默认7200秒只是超时上限，不是预计完成时间。十几分钟没有终端输出不能单独判定卡死。查看本次目录里的日志尾部、文件更新时间以及 OMG/编译子进程的 CPU 累计耗时、内存和等待状态；日志静默也可能来自缓冲。先定位当前阶段，不重复启动另一个整模编译。
 
@@ -35,9 +41,9 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_full_target.py" \
 
 同一OMC/输入的GDN输出随预填充值变化。零填充时prefill/decode核心relative L2约为0.00392/0.0564，末态约0.146/0.155；A5填充时核心升至3.44/11.19；5A填充时出现约203.25的误差，与FP16位模式 `0x5A5A` 的值一致。有效token区域已排除padding。当前证据不能区分部分写、输出累加和缓存可见性；清零不是已验证修复，数值验收仍未通过。上述结果来自用户报告，原始远端文件尚未在本地重新核验。
 
-整模工作与该问题并行推进，下一里程碑是**target OMC编译与一次普通prefill/decode**。现成AIR路线绕过当前直接GE的W4A8重建缺口，但不能据此宣称整模已可上板。作为备选，新增加的权重准备器可流式生成完整target的逻辑INT4/INT8/FP16缓存，支持中断后校验复用；其约18.1GB数据尚非I4ZN/QPARAM，也不是板端峰值内存。原量化权重的 PyTorch/GE 路径现已接入，详见[原量化模型接入](original-quantization.md)；真实DDK量化绑定和QPARAM转换仍需实际环境提供。FP16约69.3GB不适合32GB板端。`--expert-dispatch selected`只减少计算，不减少常驻权重。现有自建stateful图的 `past_length` 静态；原AIR的动态状态契约需要独立检查。
+target原定里程碑为OMC编译与一次普通prefill/decode；当前先完成上述独立draft步骤，保留target已有编译及诊断。现成AIR路线绕过当前直接GE的W4A8重建缺口，但不能据此宣称整模已可上板。作为备选，新增加的权重准备器可流式生成完整target的逻辑INT4/INT8/FP16缓存，支持中断后校验复用；其约18.1GB数据尚非I4ZN/QPARAM，也不是板端峰值内存。原量化权重的 PyTorch/GE 路径现已接入，详见[原量化模型接入](original-quantization.md)；真实DDK量化绑定和QPARAM转换仍需实际环境提供。FP16约69.3GB不适合32GB板端。`--expert-dispatch selected`只减少计算，不减少常驻权重。现有自建stateful图的 `past_length` 静态；原AIR的动态状态契约需要独立检查。
 
-当前优先级：按用户原转换契约编译现有AIR、读取实际图接口、接通target状态执行；并行处理阻塞运行的GDN读写问题。暂不增加Conv/RMS候选、重复平台诊断或新的性能矩阵。需要实机验证时给单一入口命令。
+target后续工作：按用户原转换契约完成现有AIR编译、读取实际图接口、接通状态执行；继续分析GDN读写问题。暂不增加Conv/RMS候选、重复平台诊断或新的性能矩阵。需要实机验证时给单一入口命令。
 
 模型范围仍保留GDN、CacheUpdate、Attention三类六例，Conv/RMS使用基础算子。只有确需重新执行全部六例时才使用 `run_fused_probes.py --model-ops`；旧九例 `--all-ops` 保留为可选诊断，原Conv/RMS失败不改为通过。
 

@@ -59,4 +59,7 @@ if(BUILD_HOST_TESTS)
   add_test(NAME hiai_io_padding
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_io_padding.py
       $<TARGET_FILE:hiai_runner_fake> ${CMAKE_CURRENT_BINARY_DIR}/padding-cases)
+  add_test(NAME hiai_draft_step
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_draft_step.py
+      $<TARGET_FILE:hiai_runner_fake> ${CMAKE_CURRENT_BINARY_DIR}/draft-cases)
 endif()

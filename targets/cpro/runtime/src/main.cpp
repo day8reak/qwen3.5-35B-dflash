@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -362,7 +363,43 @@ void CheckFusedPlan(StepPlan& plan) {
   }
   plan.sequence = s;
 }
-StepPlan ReadStepPlan(const std::filesystem::path& path, bool fused = false) {
+void CheckDraftPlan(const StepPlan& plan) {
+  const auto s = plan.sequence;
+  const std::vector<HiaiTensorSpec> inputs{{"target_features", "float16", {1,s,16384}},
+      {"input_ids", "int32", {1,s}}, {"attention_mask", "int32", {1,s}}};
+  const std::vector<HiaiTensorSpec> outputs{{"draft_top1", "int32", {1,15}},
+      {"draft_hidden", "float16", {1,15,2048}}};
+  if (plan.past || plan.inputs.size() != inputs.size() || plan.outputs.size() != outputs.size())
+    throw std::invalid_argument("standalone draft requires three inputs, two outputs and prefix recomputation");
+  for (bool input : {true, false}) {
+    const auto& expected = input ? inputs : outputs;
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+      const auto& actual = input ? plan.inputs[i].spec : plan.outputs[i];
+      if (actual.name != expected[i].name || actual.dtype != expected[i].dtype || actual.shape != expected[i].shape)
+        throw std::invalid_argument("standalone draft differs from the locked full draft IO contract");
+    }
+  }
+}
+void CheckDraftInputs(const std::vector<std::vector<std::uint8_t>>& values, std::uint32_t sequence) {
+  bool padding = false, nonempty = false;
+  for (std::size_t i = 0; i < sequence; ++i) {
+    std::int32_t token, mask;
+    std::memcpy(&token, values[1].data() + 4*i, 4);
+    std::memcpy(&mask, values[2].data() + 4*i, 4);
+    if (token < 0 || token >= 248320) throw std::invalid_argument("draft token ID outside full vocabulary");
+    if ((mask != 0 && mask != 1) || (padding && mask))
+      throw std::invalid_argument("draft attention mask must be a right-padded 0/1 prefix");
+    nonempty = nonempty || mask;
+    padding = padding || !mask;
+  }
+  if (!nonempty) throw std::invalid_argument("draft prefix must contain at least the anchor token");
+  for (std::size_t i = 0; i < values[0].size(); i += 2) {
+    const auto bits = static_cast<std::uint16_t>(values[0][i]) |
+                      (static_cast<std::uint16_t>(values[0][i+1]) << 8);
+    if ((bits & 0x7c00) == 0x7c00) throw std::invalid_argument("draft features must be finite FP16");
+  }
+}
+StepPlan ReadStepPlan(const std::filesystem::path& path, bool fused = false, bool draft = false) {
   const auto payload = StepRead(path, 1ULL << 20);
   const std::string text(payload.begin(), payload.end());
   for (unsigned char c : text)
@@ -370,7 +407,8 @@ StepPlan ReadStepPlan(const std::filesystem::path& path, bool fused = false) {
       throw std::invalid_argument("stateful step plan must contain ASCII fields with LF line endings");
   auto rows = Split(text, '\n');
   if (!rows.empty() && rows.back().empty()) rows.pop_back();
-  const std::string header = fused ? "QWEN35_FUSED_OP_STEP\t1" : "QWEN35_STATEFUL_STEP\t1";
+  const std::string header = draft ? "QWEN35_DRAFT_STEP\t1" :
+                             fused ? "QWEN35_FUSED_OP_STEP\t1" : "QWEN35_STATEFUL_STEP\t1";
   if (rows.size() < 7 || rows[0] != header)
     throw std::invalid_argument("step plan header must be " + header);
   const auto root = std::filesystem::absolute(path).lexically_normal().parent_path();
@@ -378,7 +416,7 @@ StepPlan ReadStepPlan(const std::filesystem::path& path, bool fused = false) {
   plan.plan_hash = BytesHash(payload);
   for (std::size_t i = 1; i <= 2; ++i) {
     const auto fields = Split(rows[i], '\t');
-    if (fields.size() != 3 || fields[0] != (i == 1 ? "model" : fused ? "operator_abi" : "state_abi"))
+    if (fields.size() != 3 || fields[0] != (i == 1 ? "model" : draft ? "draft_abi" : fused ? "operator_abi" : "state_abi"))
       throw std::invalid_argument("step plan requires ordered model and ABI records");
     StepHash(fields[2]);
     const auto file = StepPayload(root, fields[1]);
@@ -425,6 +463,7 @@ StepPlan ReadStepPlan(const std::filesystem::path& path, bool fused = false) {
     } else plan.outputs.push_back(spec);
   }
   if (fused) { CheckFusedPlan(plan); return plan; }
+  if (draft) { CheckDraftPlan(plan); return plan; }
   const std::vector<std::uint32_t> ids_shape{1, plan.sequence};
   if (plan.inputs.empty() || plan.outputs.size() < 4 ||
       plan.inputs[0].spec.name != "input_ids" || plan.inputs[0].spec.dtype != "int32" ||
@@ -507,14 +546,14 @@ void WriteIoDiagnostic(std::ostream& out, int fill, const HiaiStatefulExecutor* 
 int RunTensorStep(const std::string& path, const std::string& output,
                     const std::string& version, const std::string& ddk,
                     const std::string& firmware, std::uint32_t timeout, bool fused = false,
-                    int diagnostic_output_fill_byte = -1) {
+                    int diagnostic_output_fill_byte = -1, bool draft = false) {
   const auto destination = std::filesystem::absolute(output).lexically_normal();
   NoSymlinks(destination);
   if (std::filesystem::exists(destination)) throw std::runtime_error("stateful output already exists");
   if (!std::filesystem::is_directory(destination.parent_path()))
     throw std::invalid_argument("stateful output parent directory must already exist");
-  const auto plan = ReadStepPlan(path, fused);
-  if (diagnostic_output_fill_byte >= 0 && (!fused || plan.operator_type != "ChunkGatedDeltaRule"))
+  const auto plan = ReadStepPlan(path, fused, draft);
+  if (diagnostic_output_fill_byte >= 0 && !draft && (!fused || plan.operator_type != "ChunkGatedDeltaRule"))
     throw std::invalid_argument("--output-fill-byte is restricted to fused ChunkGatedDeltaRule probes");
   std::vector<HiaiTensorSpec> input_specs;
   std::vector<std::vector<std::uint8_t>> input_bytes;
@@ -532,11 +571,12 @@ int RunTensorStep(const std::string& path, const std::string& output,
     }
     input_bytes.push_back(bytes);
   }
+  if (draft) CheckDraftInputs(input_bytes, plan.sequence);
   std::unique_ptr<HiaiStatefulExecutor> executor;
   std::string failure_stage = "LOAD_OR_SETUP";
   try {
     executor = std::make_unique<HiaiStatefulExecutor>(plan.model, version, input_specs,
-                                                     plan.outputs, timeout, fused, diagnostic_output_fill_byte);
+                                                     plan.outputs, timeout, fused, diagnostic_output_fill_byte, draft);
     failure_stage = "INPUT_BINDING";
     for (std::size_t i = 0; i < input_bytes.size(); ++i) executor->SetInput(i, input_bytes[i]);
     failure_stage = "PROCESS";
@@ -544,16 +584,17 @@ int RunTensorStep(const std::string& path, const std::string& output,
   } catch (const std::exception& error) {
     if (diagnostic_output_fill_byte >= 0 && executor && !executor->io_diagnostic().process_called)
       failure_stage = "INPUT_BINDING";
-    if (fused && std::filesystem::create_directory(destination)) {
+    if ((fused || draft) && std::filesystem::create_directory(destination)) {
       std::ostringstream failed;
       failed << "{\"schema_version\":1,\"status\":\"RUNTIME_FAILED\","
-             << "\"scope\":\"fused-operator-probe\",\"evidence_kind\":\"" << kEvidenceKind
+             << "\"scope\":\"" << (draft ? "standalone-draft-step" : "fused-operator-probe")
+             << "\",\"evidence_kind\":\"" << kEvidenceKind
              << "\",\"operator_type\":\"" << plan.operator_type
              << "\",\"failure_stage\":\"" << failure_stage << "\",\"reason\":\""
              << JsonEscape(error.what()) << "\",\"expected_runtime_version\":\"" << JsonEscape(version)
              << "\",\"ddk_id\":\"" << JsonEscape(ddk) << "\",\"firmware_id\":\"" << JsonEscape(firmware)
              << "\",\"step_plan_sha256\":\"" << plan.plan_hash
-             << "\",\"operator_abi_sha256\":\"" << plan.abi_hash
+             << "\",\"" << (draft ? "draft_abi_sha256" : "operator_abi_sha256") << "\":\"" << plan.abi_hash
              << "\",\"model_sha256\":\"" << plan.model_hash
              << "\",\"target_calls\":0,\"draft_calls\":0,\"accuracy\":\"NOT_EVALUATED\","
              << "\"performance\":\"NOT_EVALUATED\",\"runtime_placement\":\"UNVERIFIED\",\"outputs\":[]";
@@ -568,14 +609,16 @@ int RunTensorStep(const std::string& path, const std::string& output,
     throw std::runtime_error("cannot create new stateful output directory");
   std::ostringstream report;
   report << "{\"schema_version\":1,\"status\":\"EXECUTED\",\"scope\":\""
-         << (fused ? "fused-operator-probe" : "stateful-target-step") << "\","
+         << (draft ? "standalone-draft-step" : fused ? "fused-operator-probe" : "stateful-target-step") << "\","
          << "\"evidence_kind\":\"" << kEvidenceKind << "\",\"runtime_version\":\""
          << JsonEscape(executor->runtime_version()) << "\",\"ddk_id\":\"" << JsonEscape(ddk)
          << "\",\"firmware_id\":\"" << JsonEscape(firmware) << "\",\"step_plan_sha256\":\""
-         << plan.plan_hash << "\",\"" << (fused ? "operator_abi_sha256" : "state_abi_sha256")
+         << plan.plan_hash << "\",\"" << (draft ? "draft_abi_sha256" : fused ? "operator_abi_sha256" : "state_abi_sha256")
          << "\":\"" << plan.abi_hash << "\",\"model_sha256\":\"" << plan.model_hash
          << "\",\"sequence_length\":" << plan.sequence;
-  if (fused)
+  if (draft)
+    report << ",\"state_policy\":\"prefix-recompute\",\"target_calls\":0,\"draft_calls\":1,";
+  else if (fused)
     report << ",\"operator_type\":\"" << plan.operator_type
            << "\",\"operator_calls\":1,\"target_calls\":0,\"draft_calls\":0,";
   else
@@ -604,7 +647,7 @@ int RunTensorStep(const std::string& path, const std::string& output,
   WriteIoDiagnostic(report, diagnostic_output_fill_byte, executor.get());
   report << '}';
   AtomicWrite(destination / "result.json", report.str());
-  std::cout << "EXECUTED: " << (fused ? "fused operator probe" : "stateful target step")
+  std::cout << "EXECUTED: " << (draft ? "standalone draft step" : fused ? "fused operator probe" : "stateful target step")
             << "; report=" << (destination / "result.json") << '\n';
   return 0;
 }
@@ -622,6 +665,8 @@ void Help() {
   std::cout << "qwen35_dflash_hiai --fused-op-step STEP.tsv --output NEW_DIRECTORY "
             << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID [--timeout-ms 300000]\n";
   std::cout << "GDN probe I/O diagnostics only: [--output-fill-byte 0..255]\n";
+  std::cout << "qwen35_dflash_hiai --draft-step STEP.tsv --output NEW_DIRECTORY "
+            << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID [--timeout-ms 300000]\n";
 }
 }  // namespace
 int main(int argc, char** argv) {
@@ -647,13 +692,14 @@ int main(int argc, char** argv) {
       }
       std::string value = it->second; args.erase(it); return value;
     };
-    if (args.count("--stateful-step") || args.count("--fused-op-step")) {
+    if (args.count("--stateful-step") || args.count("--fused-op-step") || args.count("--draft-step")) {
       const bool fused = args.count("--fused-op-step");
-      const auto plan = take(fused ? "--fused-op-step" : "--stateful-step"), output = take("--output");
+      const bool draft_step = args.count("--draft-step");
+      const auto plan = take(draft_step ? "--draft-step" : fused ? "--fused-op-step" : "--stateful-step"), output = take("--output");
       const auto version = take("--expected-runtime-version");
       const auto ddk = take("--ddk-id"), firmware = take("--firmware-id");
       const auto timeout = StepInteger(take("--timeout-ms", "300000"), UINT32_MAX);
-      int output_fill_byte = -1;
+      int output_fill_byte = draft_step ? 0 : -1;
       if (args.count("--output-fill-byte")) {
         if (!fused) throw std::invalid_argument("--output-fill-byte requires --fused-op-step");
         output_fill_byte = static_cast<int>(StepInteger(take("--output-fill-byte"), 255, true));
@@ -663,7 +709,7 @@ int main(int argc, char** argv) {
       if (!args.empty()) throw std::invalid_argument(std::string("unknown ") +
           (fused ? "fused operator" : "stateful") + " option " + args.begin()->first);
       return RunTensorStep(plan, output, version, ddk, firmware, static_cast<std::uint32_t>(timeout), fused,
-                           output_fill_byte);
+                           output_fill_byte, draft_step);
     }
     const auto target = take("--target"), draft = take("--draft");
     const auto target_hash = take("--target-sha256"), draft_hash = take("--draft-sha256");

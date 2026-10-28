@@ -40,7 +40,7 @@ struct HiaiIoDiagnostic {
 };
 
 // One immutable graph, synchronous Process, caller-owned ordered tensor flow.
-// The caller enforces either the stateful target or documented fused-op ABI.
+// The caller enforces the stateful target, standalone draft or fused-op ABI.
 class HiaiStatefulExecutor final {
  public:
   HiaiStatefulExecutor(const std::filesystem::path& target,
@@ -49,7 +49,8 @@ class HiaiStatefulExecutor final {
                       const std::vector<HiaiTensorSpec>& outputs,
                       std::uint32_t timeout_ms = 300000,
                       bool fused_operator_probe = false,
-                      int diagnostic_output_fill_byte = -1);
+                      int diagnostic_output_fill_byte = -1,
+                      bool standalone_draft = false);
   ~HiaiStatefulExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
   void Execute();

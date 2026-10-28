@@ -262,13 +262,13 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
     const std::filesystem::path& target, const std::string& expected_version,
     const std::vector<HiaiTensorSpec>& inputs, const std::vector<HiaiTensorSpec>& outputs,
     std::uint32_t timeout_ms, bool fused_operator_probe,
-    int diagnostic_output_fill_byte) : impl_(std::make_unique<Impl>()) {
+    int diagnostic_output_fill_byte, bool standalone_draft) : impl_(std::make_unique<Impl>()) {
   if (inputs.empty() || inputs.size() > 1024 || outputs.empty() || outputs.size() > 1024 ||
       expected_version.empty() || !timeout_ms)
     throw std::invalid_argument("stateful target requires bounded ordered IO, runtime identity and timeout");
   if (diagnostic_output_fill_byte < -1 || diagnostic_output_fill_byte > 255 ||
-      (diagnostic_output_fill_byte >= 0 && !fused_operator_probe))
-    throw std::invalid_argument("output fill diagnostic requires a fused probe and a byte in 0..255");
+      (diagnostic_output_fill_byte >= 0 && !fused_operator_probe && !standalone_draft))
+    throw std::invalid_argument("output fill diagnostic requires a probe/draft step and a byte in 0..255");
   impl_->diagnostic.output_fill_byte = diagnostic_output_fill_byte;
   const std::uint16_t endian = 1;
   if (*reinterpret_cast<const std::uint8_t*>(&endian) != 1)
@@ -283,8 +283,10 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
         throw std::invalid_argument("stateful target IO exceeds 2 GiB");
     }
   }
-  impl_->target.Load(target, fused_operator_probe ? "qwen35_fused_operator" : "qwen35_stateful_target",
+  impl_->target.Load(target, standalone_draft ? "qwen35_standalone_draft" :
+                     fused_operator_probe ? "qwen35_fused_operator" : "qwen35_stateful_target",
                      expected_version, timeout_ms, inputs.size(), outputs.size(),
+                     standalone_draft ? "standalone full draft ABI" :
                      fused_operator_probe ? "documented fused operator ABI" : "stateful target ABI");
   std::uint64_t allocated = 0;
   for (bool input : {true, false}) {
@@ -365,7 +367,7 @@ void HiaiStatefulExecutor::Execute() {
       inputs_match = inputs_match && record.readback_matches_source;
     }
     if (!inputs_match)
-      throw std::runtime_error("GDN diagnostic input tensor readback differs from supplied bytes before Process");
+      throw std::runtime_error("diagnostic input tensor readback differs from supplied bytes before Process");
     impl_->diagnostic.process_called = true;
     try {
       impl_->target.Run();
@@ -374,7 +376,7 @@ void HiaiStatefulExecutor::Execute() {
       throw;
     }
     if (!impl_->ObserveDiagnosticOutputs())
-      throw std::runtime_error("GDN diagnostic output object, buffer or size changed during Process; "
+      throw std::runtime_error("diagnostic output object, buffer or size changed during Process; "
                                "refusing to read the original output tensor");
   } else {
     impl_->target.Run();
