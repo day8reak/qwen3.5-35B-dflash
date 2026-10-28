@@ -359,6 +359,7 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
             typ = {"reshape": "Reshape", "broadcast_to": "BroadcastTo", "transpose": "Transpose"}[kind]
             key = "perm" if kind == "transpose" else "shape"
             ins.append(e.reshape_shape(v, a[key]) if kind == "reshape"
+                       else e.broadcast_shape(v, a[key]) if kind == "broadcast_to"
                        else e.helper(v, a[key], suffix=key))
             ports = ["x", key]
             if kind == "reshape":

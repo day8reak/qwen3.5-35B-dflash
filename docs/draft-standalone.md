@@ -40,7 +40,11 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 恢复创建新目录并验证复用阶段的清单哈希；进程中断时可从 `job.json` 和 `completed-*.json` 恢复。与当前导出契约一致的成功导出和编译不重跑。旧版 AIR 的外置权重序列化契约失效时，自动保留 prepared 权重和 PyTorch reference，重新导出 AIR、编译和上板；新结果记录 `resume_invalidations`，旧目录不改动。更换权重或输入形状需新建任务。只准备权重和参考可用 `--prepare-only`；准备至OMC但暂不上板可用 `--compile-only`。不要为本入口重跑旧算子探针或平台诊断矩阵。
 
-最新 `full-draft-d50bcea5ed15` 已完成编译和bundle，用户补充日志确认HIAI Load返回1，未进入Process；详细原因需设备系统日志。后续恢复使用这次任务，可复用全部已完成阶段；不要继续选最早的d7任务。发生板端失败时，入口会显示 `board_stage`、通过身份校验的 `failure_stage`/原生原因，以及独立的传输或比较错误，并输出有界stderr/stdout日志。旧版没有打印原因时，可直接读取已有文件，无需再次运行模型：
+最新 `full-draft-d50bcea5ed15` 已完成编译和bundle，用户补充HiLog确认CPUCL在 `SubGraph_0` 初始化 `v501/BroadcastTo` 时失败，最终HIAI Load返回1，未进入Process。该节点为最后一层掩码 `BOOL [1,1,1,80] → [1,1,16,80]`；源码及导出描述没有零维，运行时 `InitInput1Desc` 却报告输出维16对应输入维0。形状参数解码不一致是当前排查假设，尚未证明。
+
+当前候选将显式BroadcastTo及Select补出的BroadcastTo形状常量改为经范围检查的INT32，保持尺寸值、布尔数据、模型与参考不变。更新导出契约后，从这次任务恢复会复用prepared/fixture，重新导出AIR、编译及上板；不要继续选最早的d7任务，也不要把旧OMC成功编译当作修复后已验证。成功tiny已有的静态常量折叠和KV Gather复制仍在当前源码中，tiny成功不覆盖完整block16的本次失败。
+
+发生板端失败时，入口会显示 `board_stage`、通过身份校验的 `failure_stage`/原生原因，以及独立的传输或比较错误，并输出有界stderr/stdout日志。旧版没有打印原因时，可直接读取已有文件，无需再次运行模型：
 
 ```bash
 cat "$AI_RUN_DIR/full-draft-d50bcea5ed15/board/results/result.json"
@@ -58,18 +62,18 @@ tail -n 100 "$AI_RUN_DIR/full-draft-d50bcea5ed15/board/draft.stderr"
 
 `full-draft-a091f16d13d8` 的用户日志已显示OMG编译和保存成功。外置权重模式实际生成 `compile-work/generated/model/model.omc`，而旧脚本只检查 `generated/model.omc`，因此误报失败。现在只接受这两种明确布局中的唯一非空普通模型文件，拒绝歧义、符号链接和空文件；保存并上传整个相对目录，保持 `SubGraph_*.weight` 与OMC的位置关系。
 
-更新后从这次已经成功编译的任务续跑：
+旧版输出检查错误的恢复会核验成功日志、原导出及编译输入、DDK/参数、全部编译产物和TBE审计，在新目录保存独立快照与成功记录；旧失败证据不变。旧日志没有成功退出码，恢复记录明确标注由检查阶段及成功日志推断。该恢复不重跑OMG，但不能复用已经过期的导出契约。
+
+本次BroadcastTo形状参数修复后，从最新任务续跑；保留已核验的权重和参考，重新导出、编译及上板：
 
 ```bash
 git pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
-  --resume "$AI_RUN_DIR/full-draft-a091f16d13d8" \
+  --resume "$AI_RUN_DIR/full-draft-d50bcea5ed15" \
   --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
 ```
 
-恢复仅适用于这个明确的旧版输出检查错误：核验成功日志、原导出及编译输入、DDK/参数、全部编译产物和TBE审计后，在新目录保存独立快照与成功记录，旧失败证据不变。旧版没有记录成功退出码，因此恢复记录会明确标注由检查阶段及成功日志推断；新编译直接保存真实返回码。校验失败不会自动重编译。此流程不再执行OMG，`--compile-only` 可停在恢复完成后。
-
-导出契约仍为 `cpro-fileconstant-relative-int-fc-conv2d-v2`；更早的AIR及依赖产物自动失效，prepared/reference复用。`air/draft/projection-lowering.json`记录精确形状和等价范围。Conv2D与MatMul的累加顺序可能不同，板端继续对照原参考，未宣称逐位一致或20ms性能。recipe为显式NCHW使用Q35GE002，普通ND图保持Q35GE001并兼容读取。
+导出契约更新为 `cpro-fileconstant-relative-int-fc-conv2d-broadcast-i32-v3`，因此旧AIR及依赖产物自动失效，prepared/reference复用。BroadcastTo改变的是形状控制常量的整数宽度，尺寸值与数据语义保持不变；所选DDK和设备验证仍待完成。`air/draft/projection-lowering.json`继续记录fc卷积表达的形状和等价范围。Conv2D与MatMul的累加顺序可能不同，板端继续对照原参考，未宣称逐位一致或20ms性能。recipe为显式NCHW使用Q35GE002，普通ND图保持Q35GE001并兼容读取。
 
 需要只读检查已有日志、recipe和编译图dump时，可选：
 
@@ -84,7 +88,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 如果首次准备权重尚未成功（`components` 为空），直接修正路径或文件后重跑上面的完整命令；这时没有已完成的权重、导出或编译需要复用。
 
-主机验证覆盖draft-only准备、六层参考计算、GE构图/导出、阶段恢复、外置权重绑定、原生输入检查与模拟执行失败。完整OMG成功来自用户日志；板端首次运行失败的具体原因与数值比较仍待服务器结果。
+主机验证覆盖draft-only准备、六层参考计算、GE构图/导出、阶段恢复、外置权重绑定、原生输入检查与模拟执行失败。完整OMG成功来自用户日志；最新板端失败已定位到CPUCL BroadcastTo初始化，形状参数修复效果与数值比较仍待服务器验证。
 
 ## 与已用过的 4B draft 对照
 

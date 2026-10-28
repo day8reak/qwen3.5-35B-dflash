@@ -649,10 +649,27 @@ class _Emitter:
         constant = self.static_broadcast(source, value)
         if constant is not None:
             return constant
-        shape = self.helper(value, value.shape, suffix="shape")
+        shape = self.broadcast_shape(value)
         var = self.op(value.name, "BroadcastTo", [("x", source), ("shape", shape)], [("y", value)])
         self.refs[value.name] = (var, "y")
         return value
+
+    def broadcast_shape(self, output, dimensions=None):
+        """Use checked INT32 shape controls, as for Reshape on this target.
+
+        The full draft's BOOL mask BroadcastTo failed CPUCL initialization
+        with a zero dimension despite nonzero source/output descriptors.
+        Keep its shape payload and descriptor consistently INT32 rather than
+        depending on INT64 shape decoding. This changes no mask values or
+        tensor dimensions; selected-DDK and device validation remain required.
+        """
+        dimensions = tuple(output.shape if dimensions is None else dimensions)
+        if dimensions != output.shape:
+            raise ValueError(f"{output.name}: BroadcastTo shape differs from output descriptor")
+        if any(isinstance(d, (bool, np.bool_)) or not isinstance(d, (int, np.integer))
+               or not 0 <= d <= (1 << 31) - 1 for d in dimensions):
+            raise ValueError(f"{output.name}: BroadcastTo dimensions must fit nonnegative INT32")
+        return self.helper(output, dimensions, dtype="int32", suffix="shape")
 
     def static_broadcast(self, source, output):
         """Reuse small byte-exact Const expansions, avoiding CPUCL FP16 folding."""
@@ -713,6 +730,8 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     projection as one valid 4x4 Conv2D with bit-preserving views. It retains
     the complete dot product and one FP16 output boundary. Kernel reduction
     order, DDK support and device numerical agreement still need validation.
+    Runtime BroadcastTo shape controls use checked INT32 payloads/descriptors,
+    including Select's generated expansions; mask and data dtypes are unchanged.
     """
     if draft_fc_policy not in {"native", "conv2d"}:
         raise ValueError("draft_fc_policy must be native or conv2d")
@@ -883,6 +902,7 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
             typ = {"reshape": "Reshape", "broadcast_to": "BroadcastTo", "transpose": "Transpose"}[kind]
             key = "perm" if kind == "transpose" else "shape"
             ins.append(e.reshape_shape(v, a[key]) if kind == "reshape"
+                       else e.broadcast_shape(v, a[key]) if kind == "broadcast_to"
                        else e.helper(v, a[key], suffix=key))
             ports = ["x", key]
             if kind == "reshape":

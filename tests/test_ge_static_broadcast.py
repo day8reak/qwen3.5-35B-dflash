@@ -23,10 +23,10 @@ def _payload(record):
     return data
 
 
-def _serialize_both(graph, tmp_path):
-    ge_cpp.emit_cpp(graph, recipe_dir=tmp_path / "recipe")
+def _serialize_both(graph, tmp_path, **options):
+    ge_cpp.emit_cpp(graph, recipe_dir=tmp_path / "recipe", **options)
     records, inputs, outputs = RecipeReader(tmp_path / "recipe/graph.recipe").read()
-    cpp = ge_cpp.emit_cpp(graph)
+    cpp = ge_cpp.emit_cpp(graph, **options)
     # Verify the unrolled source emits the same operation order and constant
     # bytes as the independently decoded recipe, including NaN payload bits.
     declared = [(json.loads(name), json.loads(kind)) for name, kind in re.findall(
@@ -141,7 +141,7 @@ def test_budget_guard_precedes_attempt_to_expand_large_tensor(tmp_path, monkeypa
     graph = Graph("large_broadcast")
     graph.input("unused", (1,))
     scalar = graph.const(np.float16(0))
-    shape = (1 << 40,)
+    shape = ((1 << 31) - 1,)
     graph.outputs = [graph.op("broadcast_to", scalar, shape=shape, attrs={"shape": shape})]
 
     def forbidden(*args, **kwargs):

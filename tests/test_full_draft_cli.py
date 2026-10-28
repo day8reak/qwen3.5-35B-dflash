@@ -295,7 +295,8 @@ def test_old_compile_options_reuse_air_and_rebuild_only_compilation_bundle(job, 
     assert all(p.read_bytes() == data for p, data in before.items())
 
 
-@pytest.mark.parametrize("contract", [None, "legacy-absolute-fileconstant", "cpro-fileconstant-relative-int-v1"])
+@pytest.mark.parametrize("contract", [None, "legacy-absolute-fileconstant", "cpro-fileconstant-relative-int-v1",
+                                    "cpro-fileconstant-relative-int-fc-conv2d-v2"])
 def test_old_air_after_compile_failure_reexports_without_loading_weights_or_reference(job, tmp_path, contract):
     main, fresh, common, calls, failures = job
     previous = tmp_path / "old-compile-failed"
@@ -331,6 +332,26 @@ def test_old_air_receipts_invalidate_dependent_compilation_and_bundle_after_inte
     result = json.loads((resumed / "result.json").read_text())
     assert result["resume_invalidations"][0]["components"] == {
         name: old["components"][name] for name in ("air", "compilation", "bundle")}
+
+
+def test_int64_broadcast_air_rebuilds_after_board_failure_preserving_reference(job, tmp_path):
+    main, fresh, common, calls, failures = job
+    previous = tmp_path / "compiled-old-broadcast"
+    failures.add("board")
+    assert main([*fresh, "--output", str(previous)]) == 1
+    old = _make_legacy_air(previous, contract="cpro-fileconstant-relative-int-fc-conv2d-v2")
+    before = {path: path.read_bytes() for path in previous.rglob("*") if path.is_file()}
+    failures.clear(); calls.clear()
+    resumed = tmp_path / "int32-broadcast"
+    assert main([*common, "--resume", str(previous), "--output", str(resumed)]) == 0
+    assert calls == ["air", "compilation", "bundle", "board"]
+    result = json.loads((resumed / "result.json").read_text())
+    assert all(result["components"][name] == old["components"][name] for name in ("prepared", "fixture"))
+    invalidation, = result["resume_invalidations"]
+    assert invalidation["reason"] == "OBSOLETE_DRAFT_EXPORT_CONTRACT"
+    assert set(invalidation["components"]) == {"air", "compilation", "bundle"}
+    assert invalidation["required_export_contract"].endswith("broadcast-i32-v3")
+    assert all(path.read_bytes() == content for path, content in before.items())
 
 
 def test_obsolete_air_still_requires_verified_old_manifest_before_rebuild(job, tmp_path):

@@ -14,7 +14,7 @@ from qwen35_moe_dflash.ge_ir import DTYPES, Graph
 
 
 class RecipeReader:
-    """Independent reader for the Q35GE001 file consumed by the C++ exporter."""
+    """Independent reader for the v1/v2 files consumed by the C++ exporter."""
 
     def __init__(self, path):
         self.data = path.read_bytes()
@@ -34,8 +34,9 @@ class RecipeReader:
 
     def descriptor(self):
         dtype = {1: "float16", 2: "int32", 3: "int64", 4: "bool"}[self.number("B")]
+        layout = {0: "ND", 1: "NCHW"}[self.number("B")] if self.version == 2 else None
         shape = tuple(self.number("q") for _ in range(self.number("I")))
-        return {"shape": shape, "dtype": dtype}
+        return {"shape": shape, "dtype": dtype, **({"format": layout} if layout else {})}
 
     def attribute(self):
         kind = self.number("B")
@@ -47,7 +48,7 @@ class RecipeReader:
         return self.string()
 
     def read(self):
-        assert self.take(8) == b"Q35GE001"
+        self.version = {b"Q35GE001": 1, b"Q35GE002": 2}[self.take(8)]
         self.string()  # graph name
         records = []
         for _ in range(self.number("I")):

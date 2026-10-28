@@ -192,7 +192,7 @@ def test_every_tiny_model_reshape_uses_int32_and_other_controls_keep_width(tmp_p
         assert (2, 1, 55) in shapes and (2, 1, 55, 1) in shapes
     controls = {"Slice": {"offsets": "int64", "size": "int64"},
                 "ReduceSum": {"axes": "int32"}, "ReduceMean": {"axes": "int32"},
-                "Transpose": {"perm": "int64"}, "BroadcastTo": {"shape": "int64"}}
+                "Transpose": {"perm": "int64"}, "BroadcastTo": {"shape": "int32"}}
     for record in records:
         for port in record["inputs"]:
             expected_dtype = controls.get(record["type"], {}).get(port["port"])

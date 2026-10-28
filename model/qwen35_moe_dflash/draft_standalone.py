@@ -20,10 +20,10 @@ from .hashing import sha256_file
 from .resources import repository_root
 
 
-# Version the serialized FileConstant contract separately from prepared weights
+# Version the serialized GE contract separately from prepared weights
 # and reference inputs. Updating it requires a new AIR, not weight conversion or
 # PyTorch recomputation. Real selected-DDK acceptance remains a separate gate.
-CURRENT_DRAFT_EXPORT_CONTRACT = "cpro-fileconstant-relative-int-fc-conv2d-v2"
+CURRENT_DRAFT_EXPORT_CONTRACT = "cpro-fileconstant-relative-int-fc-conv2d-broadcast-i32-v3"
 
 
 def _graph(sequence_length, *, tiny=False, draft_config=None, include_hidden=True):

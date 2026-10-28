@@ -8,9 +8,11 @@
 
 **先运行完整 draft 的独立入口。** [独立 draft 指南](draft-standalone.md)提供一条命令完成真实权重准备、PyTorch参考、GE导出、OMG编译和HIAI执行。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
-最新用户回传 **`full-draft-d50bcea5ed15`** 已完成完整draft的OMG编译和打包，原生报告确认 `LOAD_OR_SETUP` / `HIAI Load failed: 1`，`process_called=false`。运行时为800.631.120.010，固件OpenHarmony-6.0.0.43；尚未执行模型或比较数值。此前 `a091f16d13d8` 的嵌套OMC输出路径问题已修复。当前需设备HIAI日志区分路径、库兼容性或模型内容原因，不能只用返回码1断言根因；远端证据尚未由本地复核。
+最新用户回传 **`full-draft-d50bcea5ed15`** 已完成完整draft的OMG编译和打包，原生报告确认 `LOAD_OR_SETUP` / `HIAI Load failed: 1`，`process_called=false`。补充HiLog已把失败定位到 `SubGraph_0` 的CPUCL节点 `v501/BroadcastTo` 初始化：`InitInput1Desc` 报输出维16对应的输入维为0。源码及导出描述中的尺寸均为正数；该节点复制最后一层注意力掩码，`BOOL [1,1,1,80] → [1,1,16,80]`。这确认了失败节点，尚不能证明形状参数如何被运行时解码。
 
-原生失败保存在 `board/results/result.json`、`board/comparison.json` 与 `board/draft.stderr`。错误回传已修正：保留原生失败原因，单独记录传输/证据问题，运行失败时不要求成功输出bin。定位并修复后，从 **`d50bcea5ed15`** 续跑可复用prepared、fixture、AIR、compilation及bundle。继续从旧 `d7b4db958850` 恢复会因AIR契约过期再次导出和编译。
+当前修复候选把显式及Select生成的BroadcastTo形状常量统一为经范围检查的INT32，沿用已有Reshape形状参数约定；不改变布尔掩码、模型权重、PyTorch参考或输出ABI。成功tiny使用的静态广播折叠及KV Gather复制均已保留，没有找到同一错误的历史修复记录。新的形状参数契约需要重新导出AIR、编译和上板；从 **`d50bcea5ed15`** 续跑保留prepared与fixture，旧AIR、compilation及bundle随契约变更失效。运行时800.631.120.010、固件OpenHarmony-6.0.0.43；模型尚未进入Process或数值比较，远端证据尚未由本地复核。
+
+原生失败保存在 `board/results/result.json`、`board/comparison.json` 与 `board/draft.stderr`。错误回传已修正：保留原生失败原因，单独记录传输/证据问题，运行失败时不要求成功输出bin。此前 `a091f16d13d8` 的嵌套OMC输出路径问题已修复。
 
 4B参考已按用户指定更正为 `feature/gdr-chunk-verify`、提交 `9018673`。该分支记录六层FP16 draft为20.22 ms/次（310P、C16/C64混合均值）；源码包含合并K/V、gate/up投影和增量缓存。先完成当前独立draft的板端输出验证，再按这版迁移图结构与缓存，性能须在Cpro重新测量。
 

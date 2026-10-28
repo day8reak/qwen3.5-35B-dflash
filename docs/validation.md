@@ -4,6 +4,18 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 完整 draft 的 BroadcastTo 加载失败与 tiny 对照
+
+2026-10-28，用户补充 `full-draft-d50bcea5ed15` 的PID13294 HiLog：`broad_cast_to_op_execute.cpp InitInput1Desc(167)` 报输出维16对应输入维0，随后 `cpu_graph_executor` 明确记录 `Op[name:v501,type:BroadcastTo] Init error`，并导致 `SubGraph_0` Prepare及模型Load失败。当前完整六层S64图的 `v501` 是最后一层full-attention掩码复制，输入 `BOOL [1,1,1,80]`，输出 `[1,1,16,80]`；源码和导出描述中的尺寸均为正数。模型没有进入Process，数值比较仍为NOT_EVALUATED。证据来自用户粘贴，未独立回收并核验该批次远端产物。
+
+对照历史：`5db0ef1` 只把有界静态Const广播提前展开，动态掩码广播保留；`78d94ef` 把KV头复制的五维广播改为四维GatherV2，保持顺序及FP16原始位模式。两项均仍存在。`0d108c1` 记录tiny板端执行成功，建议源码为 `c1dd0aa`，但未提供实际提交与产物哈希；当时对应动态掩码为 `[1,1,1,12] → [1,1,4,12]`。当前 `ge_draft.py` 与该成功记录时的版本一致，没有发现遗失修复，也没有找到相同InitInput1Desc错误的历史证据。
+
+当前兼容候选仅把BroadcastTo形状控制常量从INT64改为经范围检查的INT32，同时覆盖图中显式广播和Select生成的同形输入广播，沿用已有Reshape控制常量约定。布尔数据和目标尺寸保持不变；权重、浮点计算、PyTorch参考及模型ABI不变。运行时对形状常量的解码问题仍是假设，不能由源尺寸非零或主机序列化正确推出已修复设备Load。新导出契约 `cpro-fileconstant-relative-int-fc-conv2d-broadcast-i32-v3` 使旧AIR及依赖编译/bundle失效，只复用prepared与fixture；需要重新导出、编译及上板验证。
+
+固定版本的[官方TorchAir BroadcastTo定义](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py)允许BOOL数据，形状输入允许INT32或INT64。因此旧INT64符合该公开schema；此次修改是面向当前X90路径的兼容候选，不能推广成所有GE运行时都拒绝INT64形状。
+
+主机回归在 `20261028T033225Z-24433-7bb3f5` 完成：去重后235项通过；4项依赖真实GE头文件/运行库的测试因未配置资源跳过。完整S64/block16图的12处广播均核验INT32描述与4字节维度数据，动态mask的Select保留NaN及符号零位模式，旧v2板端失败任务恢复时会重建AIR及依赖产物。独立对照旧/新发射记录，tiny的528条和完整图1346条记录除了广播shape控制张量外一致。证据为该run内 `broadcast-cli.xml`、`broadcast-regression.xml`、`broadcast-i32-final.xml`；没有执行实际OMG或设备验证。
+
 ## 完整 draft 的 HIAI 加载失败与错误回传
 
 2026-10-28，用户回传 `full-draft-d50bcea5ed15` 的完整编译/打包成功状态，随后补充原生记录：`LOAD_OR_SETUP`，`HIAI Load failed: 1`，`process_called=false`，运行时800.631.120.010、固件OpenHarmony-6.0.0.43。这明确发生于Load，未进入推理和数值比较；返回码本身不能证明外置权重路径、库兼容性或某个图节点有问题。已请求只读设备HiLog，未据此改变图或模型加载方式。
