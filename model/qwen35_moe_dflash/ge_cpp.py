@@ -287,7 +287,9 @@ def _inline_records(graph, records):
                 payload = f"Read({_q(str(Path(constant['path']).resolve()))}, {constant['size']}ULL)"
             emitter.lines.append(f"  SetConst({var}, {_desc(outputs[0][1])}, {payload});")
         if record["type"] == "FileConstant":
-            path = str(Path(record["attrs"]["file_path"]["value"]).resolve())
+            # Keep the serialized spelling: a relocatable FileConstant is
+            # checked relative to the export process's AIR-parent cwd.
+            path = record["attrs"]["file_path"]["value"]
             value = outputs[0][1]
             size = math.prod(value.shape) * DTYPES[value.dtype].itemsize
             emitter.lines.append(f"  if (!fs::is_regular_file({_q(path)}) || fs::file_size({_q(path)}) != {size}ULL) throw std::runtime_error(\"external weight size mismatch\");")
@@ -664,12 +666,17 @@ class _Emitter:
 
 def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=None,
              fold_constant_arithmetic=True, fp16_reductions="native", reduction_report=None,
-             fp16_row_mul="native", row_mul_report=None, fp16_native_reductions=()):
+             fp16_row_mul="native", row_mul_report=None, fp16_native_reductions=(),
+             file_constant_policy="ge-absolute-type", file_constant_root=None):
     """Return a self-contained C++ AIR serializer.
 
     ``weight_paths`` maps canonical graph weight keys to existing raw contiguous
-    little-endian files. External mode emits official FileConstant nodes; files
-    must remain at the same absolute paths until OMG conversion has completed.
+    little-endian files. External mode defaults to GE FileConstant nodes with
+    absolute paths and Type attributes. ``cpro-relative-int`` emits paths
+    relative to ``file_constant_root`` and integer GE dtype IDs, an explicit
+    compatibility policy for the CPro AIR reader. Run the serializer from that
+    AIR-parent directory and retain the same sidecar tree for compilation.
+    Target compiler acceptance must be checked separately.
     Small constant arithmetic is evaluated with the original FP16 boundaries;
     bounded static Slice/Reshape operations copy their bytes before serialization.
     The complete static target RoPE chain folds atomically through its final
@@ -696,6 +703,17 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
         raise TypeError("reduction_report must be a mutable dictionary")
     if row_mul_report is not None and not isinstance(row_mul_report, dict):
         raise TypeError("row_mul_report must be a mutable dictionary")
+    if file_constant_policy not in {"ge-absolute-type", "cpro-relative-int"}:
+        raise ValueError("unsupported FileConstant policy")
+    relative_file_constants = file_constant_policy == "cpro-relative-int"
+    if relative_file_constants:
+        if not external_weights or file_constant_root is None:
+            raise ValueError("cpro-relative-int requires external_weights and file_constant_root")
+        file_constant_root = Path(file_constant_root).resolve()
+        if not file_constant_root.is_dir():
+            raise ValueError("file_constant_root must be an existing AIR-parent directory")
+    elif file_constant_root is not None:
+        raise ValueError("file_constant_root requires cpro-relative-int policy")
     graph.validate()
     if recipe_dir is None and len(graph.nodes) > 10_000:
         raise ValueError("large graphs require recipe_dir to bound generated C++ compiler memory")
@@ -747,9 +765,16 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
         path = str(Path(weight_paths[key]).resolve())
         size = math.prod(value.shape) * DTYPES[value.dtype].itemsize
         if external_weights:
+            if relative_file_constants:
+                try:
+                    path = Path(path).relative_to(file_constant_root).as_posix()
+                except ValueError as error:
+                    raise ValueError(f"FileConstant {key} must be inside file_constant_root") from error
+            dtype_attr = (f"int64_t{{{GE_DTYPE_IDS[value.dtype]}}}" if relative_file_constants
+                          else _DT[value.dtype])
             var = e.op(value.name, "FileConstant", [], [("y", value)],
                        {"file_path": f"ge::AscendString({_q(path)})", "shape": _ints(value.shape),
-                        "dtype": _DT[value.dtype], "file_id": 'ge::AscendString("")'})
+                        "dtype": dtype_attr, "file_id": 'ge::AscendString("")'})
             e.lines.append(f"  if (!fs::is_regular_file({_q(path)}) || fs::file_size({_q(path)}) != {size}ULL) throw std::runtime_error(\"external weight size mismatch\");")
         else:
             var = e.op(value.name, "Const", [], [("y", value)])

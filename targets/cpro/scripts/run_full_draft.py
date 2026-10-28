@@ -80,7 +80,14 @@ def main(argv=None):
     root = None
 
     def progress(row):
-        print("full-draft: " + row["message"], flush=True)
+        message = row["message"]
+        if row.get("stage") == "input-snapshot" and message == "Snapshotting input":
+            index, total = row.get("completed", 0), row.get("total", 0)
+            if index not in (0, total - 1) and index % 10:
+                return
+            message = (f"Snapshotting input {index + 1}/{total}: "
+                       f"{row.get('source_relative', '')} ({row.get('bytes', 0)} bytes)")
+        print("full-draft: " + message, flush=True)
 
     def stage(name, message):
         result["stage"] = name
@@ -130,6 +137,24 @@ def main(argv=None):
                     _read_component(record)
                     result["components"][name] = record
             result["resumed_from"] = str(previous)
+            if "air" in result["components"]:
+                from qwen35_moe_dflash.draft_standalone import CURRENT_DRAFT_EXPORT_CONTRACT
+                # Verify the immutable old receipt before deciding to rebuild.
+                # The prepared weights and CPU reference remain valid: this
+                # contract changes serialization, not the draft computation.
+                _, prior_air = _read_component(result["components"]["air"])
+                if prior_air.get("export_contract") != CURRENT_DRAFT_EXPORT_CONTRACT:
+                    obsolete = {name: result["components"].pop(name)
+                                for name in ("air", "compilation", "bundle")
+                                if name in result["components"]}
+                    result["resume_invalidations"] = [{
+                        "reason": "OBSOLETE_DRAFT_EXPORT_CONTRACT",
+                        "previous_export_contract": prior_air.get("export_contract"),
+                        "required_export_contract": CURRENT_DRAFT_EXPORT_CONTRACT,
+                        "components": obsolete,
+                        "preserved": [name for name in ("prepared", "fixture") if name in result["components"]],
+                        "scope": "Re-export and recompile in the new job; previous evidence is unchanged."}]
+                    stage("resume", "Previous AIR serialization needs updating; reusing weights/reference and rebuilding AIR/OMC")
         if settings["sequence_length"] < 2:
             raise ValueError("--sequence-length must be at least 2")
         if settings["valid_length"] is None:

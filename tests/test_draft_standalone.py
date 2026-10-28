@@ -12,6 +12,8 @@ import pytest
 
 from qwen35_moe_dflash import draft_standalone as ds
 from qwen35_moe_dflash.ge_export import configurations
+from qwen35_moe_dflash.ge_recipe_read import read_recipe
+from qwen35_moe_dflash.ge_type_contracts import GE_DTYPE_IDS
 from qwen35_moe_dflash.ge_weights import checkpoint_key, tiny_weights
 
 
@@ -216,10 +218,15 @@ def test_export_only_builds_draft_and_regenerates_sources_with_external_payloads
             assert "STALE_CODE" not in source.read_text()
             Path(command[command.index("-o") + 1]).write_bytes(b"fixture exporter")
         else:
+            assert kwargs["cwd"] == output, "relative external weights resolve from the AIR directory"
             Path(command[1]).write_bytes(b"fixture AIR")
     monkeypatch.setattr(subprocess, "run", tool)
     manifest = ds.export_draft(prepared, output, fake_ge(tmp_path))
     assert manifest["status"] == "EXPORTED" and len(calls) == 2
+    assert manifest["export_contract"] == ds.CURRENT_DRAFT_EXPORT_CONTRACT
+    assert manifest["file_constant_policy"] == "cpro-relative-int"
+    assert manifest["file_constant_path_base"] == "air-parent"
+    assert manifest["file_constant_target_validation"] == "NOT_RUN"
     assert manifest["artifact_kind"] == "qwen35-cpro-draft-air"
     assert manifest["graphs"][0]["air"] == "draft.air"
     assert (output / "draft.air").is_file()
@@ -228,6 +235,18 @@ def test_export_only_builds_draft_and_regenerates_sources_with_external_payloads
     assert len(manifest["graphs"][0]["files"]) == len(plan["weights"]) + 1
     assert (prepared / "prepared.json").read_bytes() == original
     assert manifest["device_validation"] == manifest["numerical_validation"] == "NOT_RUN"
+    recipe = read_recipe(output / "draft/recipe/graph.recipe")
+    constants = [record for record in recipe["records"] if record["type"] == "FileConstant"]
+    assert len(constants) == len(plan["weights"])
+    assert {record["attrs"]["file_path"]["value"] for record in constants} == {
+        item["path"] for item in plan["weights"].values()}
+    for record in constants:
+        assert record["attrs"]["dtype"] == {"type": "int", "value": GE_DTYPE_IDS["float16"]}
+        rel = Path(record["attrs"]["file_path"]["value"])
+        assert not rel.is_absolute() and ".." not in rel.parts
+        assert (output / rel).is_file()
+    command = json.loads((output / "draft/export-command.json").read_text())
+    assert command["cwd"] == str(output) and command["export_contract"] == ds.CURRENT_DRAFT_EXPORT_CONTRACT
 
 
 @pytest.mark.parametrize("corruption", ["payload", "config", "weight_set", "identity"])
@@ -265,3 +284,4 @@ def test_failed_serialize_retains_evidence_without_success_manifest(tmp_path, mo
     assert not (tmp_path / "air/manifest.json").exists()
     failure = json.loads((tmp_path / "air/failure.json").read_text())
     assert failure["stage"] == "draft-serialize" and failure["device_validation"] == "NOT_RUN"
+    assert failure["export_contract"] == ds.CURRENT_DRAFT_EXPORT_CONTRACT

@@ -20,6 +20,12 @@ from .hashing import sha256_file
 from .resources import repository_root
 
 
+# Version the serialized FileConstant contract separately from prepared weights
+# and reference inputs. Updating it requires a new AIR, not weight conversion or
+# PyTorch recomputation. Real selected-DDK acceptance remains a separate gate.
+CURRENT_DRAFT_EXPORT_CONTRACT = "cpro-fileconstant-relative-int-v1"
+
+
 def _graph(sequence_length, *, tiny=False, draft_config=None, include_hidden=True):
     raw = configurations(tiny=tiny)[1] if draft_config is None else draft_config
     config = Qwen35DFlashConfig.from_dict(raw)
@@ -239,7 +245,8 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
         stage = "draft-lowering"
         source.write_text(emit_cpp(graph, paths, external_weights=True, recipe_dir=folder / "recipe",
                                    fp16_reductions=fp16_reductions, reduction_report=reduction_report,
-                                   fp16_row_mul=fp16_row_mul, row_mul_report=row_mul_report))
+                                   fp16_row_mul=fp16_row_mul, row_mul_report=row_mul_report,
+                                   file_constant_policy="cpro-relative-int", file_constant_root=root))
         save_json(folder / "reduction-lowering.json", reduction_report)
         save_json(folder / "row-mul-lowering.json", row_mul_report)
         construction = files_under(folder, root)
@@ -257,11 +264,14 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
         if not binary.is_file() or not binary.stat().st_size:
             raise RuntimeError("compiler did not produce nonempty draft exporter")
         command = [str(binary), str(air)]
-        save_json(folder / "export-command.json", {"argv": command})
+        save_json(folder / "export-command.json", {"argv": command, "cwd": str(root),
+                                                   "export_contract": CURRENT_DRAFT_EXPORT_CONTRACT})
         stage = "draft-serialize"
         if progress:
             progress({"stage": stage, "message": f"Serializing full draft AIR; log: {folder / 'export.log'}"})
-        _logged(command, folder=folder, env=env, log=folder / "export.log", timeout=timeout_seconds)
+        # Both host FileConstant validation and OMG resolve weights relative to
+        # the AIR/compiler working directory. The C++ source stays in draft/.
+        _logged(command, folder=root, env=env, log=folder / "export.log", timeout=timeout_seconds)
         if not air.is_file() or air.is_symlink() or not air.stat().st_size:
             raise RuntimeError("exporter did not produce a nonempty regular draft AIR")
         for item in construction:
@@ -280,6 +290,9 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
                   "reduction_lowering": {"mode": reduction_report["mode"], "counts": reduction_report["counts"]},
                   "row_mul_lowering": {"mode": row_mul_report["mode"], "counts": row_mul_report["counts"]}}
         manifest = {"schema_version": 1, "artifact_kind": "qwen35-cpro-draft-air", "status": "EXPORTED",
+                    "export_contract": CURRENT_DRAFT_EXPORT_CONTRACT,
+                    "file_constant_policy": "cpro-relative-int", "file_constant_path_base": "air-parent",
+                    "file_constant_dtype_attr": "int", "file_constant_target_validation": "NOT_RUN",
                     "pipeline": ["ge-cpp", "air", "omg", "omc", "hiai"], "export_backend": "direct-ge",
                     "device_validation": "NOT_RUN", "numerical_validation": "NOT_RUN",
                     "acceptance_validation": "NOT_RUN", "sequence_length": plan["sequence_length"],
@@ -296,5 +309,6 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
         return manifest
     except Exception as error:
         save_json(root / "failure.json", {"status": "FAILED", "stage": stage,
+                                          "export_contract": CURRENT_DRAFT_EXPORT_CONTRACT,
                                           "device_validation": "NOT_RUN", "error": str(error)})
         raise

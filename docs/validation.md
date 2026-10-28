@@ -4,6 +4,14 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 完整 draft 的 FileConstant 与续跑
+
+2026-10-28，用户回传 `full-draft-d7b4db958850`：71个权重准备、完整六层 PyTorch 参考和 GE AIR 导出完成，OMG 读取首个 `draft.fc.weight` 时报告 `dtype` 未识别，并将绝对权重路径拼到编译工作目录下。此处失败发生在 AIR 解析阶段，未运行设备；用户报告未由本地原始产物重新核验。
+
+新 draft 导出契约将路径写为 AIR 父目录下的 `weights/wNNNNN.bin`，并从该父目录执行序列化。显式 CPro 策略将 FileConstant 的 dtype 写成整数 GE ID；通用 GE 默认仍使用 Type 属性。主机 recipe 写入器、Python/C++ 读取器同时核对 dtype 与输出描述，区别 GE ID 与 recipe 内部编码。整数策略是针对当前私有解析器的兼容候选，公开 TorchAir 使用 Type 属性；不能由主机测试推出真实 OMG 已接受。
+
+续跑校验旧 manifest 后，因导出契约不同仅使 AIR、compilation、bundle 失效；新任务复用 prepared 和 reference，旧目录不改动。测试覆盖版本失效、恢复中断 receipts、校验损坏拒绝、整数元数据及相对路径定位。真实 OMG 和板端比较仍需从上述批次续跑。已将本次经验限于此模型的导出契约与回归检查，未提升为通用 DDK 规则；完整模型精度与加速结论不变。
+
 ## target 按原 Cpro forward 对齐
 
 2026-10-28，继续按用户提供的原模型代码修改 PyTorch/GE target。修正重建路径提前降为 FP16 的 embedding/残差、GDN 门计算、gated RMS 与 SiLU 乘积、RoPE 表及最终 norm/head 输入。基础算子权重仍保留已有 FP16 缓存；算子输入精度按明确边界处理，不把结构对齐当作原 AIR 位级一致。

@@ -44,7 +44,8 @@ def job(tmp_path, monkeypatch):
         folder.mkdir()
         air = folder / "draft.air"
         air.write_bytes(b"fixture-draft-air")
-        save_json(folder / "manifest.json", {"status": "EXPORTED", "graphs": [
+        save_json(folder / "manifest.json", {"status": "EXPORTED",
+            "export_contract": draft_standalone.CURRENT_DRAFT_EXPORT_CONTRACT, "graphs": [
             {"name": "draft", "air": "draft.air", "files": [file_record(air, folder)]}]})
 
     def compile_air(source, folder, ddk, **kwargs):
@@ -87,6 +88,26 @@ def job(tmp_path, monkeypatch):
     return main, fresh, common, calls, failures
 
 
+def _make_legacy_air(previous, *, contract=None):
+    """Emulate receipts genuinely produced by an older exporter, not corruption."""
+    manifest_path = previous / "air/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if contract is None:
+        manifest.pop("export_contract")
+    else:
+        manifest["export_contract"] = contract
+    manifest_path.write_text(json.dumps(manifest))
+    receipt_path = previous / "completed-air.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["manifest"].update(bytes=manifest_path.stat().st_size, sha256=sha256_file(manifest_path))
+    receipt_path.write_text(json.dumps(receipt))
+    result_path = previous / "result.json"
+    result = json.loads(result_path.read_text())
+    result["components"]["air"] = receipt
+    result_path.write_text(json.dumps(result))
+    return result
+
+
 def test_complete_job_only_runs_draft_pipeline(job, tmp_path):
     main, fresh, _, calls, _ = job
     root = tmp_path / "job"
@@ -126,6 +147,73 @@ def test_compile_failure_never_reaches_board_and_retry_reuses_air(job, tmp_path)
     failures.clear(); calls.clear()
     assert main([*common, "--resume", str(previous), "--output", str(tmp_path / "retry")]) == 0
     assert calls == ["compilation", "bundle", "board"]
+
+
+@pytest.mark.parametrize("contract", [None, "legacy-absolute-fileconstant"])
+def test_old_air_after_compile_failure_reexports_without_loading_weights_or_reference(job, tmp_path, contract):
+    main, fresh, common, calls, failures = job
+    previous = tmp_path / "old-compile-failed"
+    failures.add("compilation")
+    assert main([*fresh, "--output", str(previous)]) == 1
+    old = _make_legacy_air(previous, contract=contract)
+    previous_bytes = {path: path.read_bytes() for path in previous.rglob("*") if path.is_file()}
+    failures.clear(); calls.clear()
+    resumed = tmp_path / "resumed"
+    assert main([*common, "--resume", str(previous), "--output", str(resumed)]) == 0
+    assert calls == ["air", "compilation", "bundle", "board"]
+    result = json.loads((resumed / "result.json").read_text())
+    assert result["components"]["prepared"] == old["components"]["prepared"]
+    assert result["components"]["fixture"] == old["components"]["fixture"]
+    invalidation = result["resume_invalidations"][0]
+    assert invalidation["reason"] == "OBSOLETE_DRAFT_EXPORT_CONTRACT"
+    assert invalidation["components"] == {"air": old["components"]["air"]}
+    assert invalidation["preserved"] == ["prepared", "fixture"]
+    assert invalidation["previous_export_contract"] == contract
+    assert all(path.read_bytes() == payload for path, payload in previous_bytes.items())
+
+
+def test_old_air_receipts_invalidate_dependent_compilation_and_bundle_after_interruption(job, tmp_path):
+    main, fresh, common, calls, _ = job
+    previous = tmp_path / "old-complete"
+    assert main([*fresh, "--output", str(previous)]) == 0
+    old = _make_legacy_air(previous)
+    (previous / "result.json").unlink()
+    calls.clear()
+    resumed = tmp_path / "resumed"
+    assert main([*common, "--resume", str(previous), "--output", str(resumed)]) == 0
+    assert calls == ["air", "compilation", "bundle", "board"]
+    result = json.loads((resumed / "result.json").read_text())
+    assert result["resume_invalidations"][0]["components"] == {
+        name: old["components"][name] for name in ("air", "compilation", "bundle")}
+
+
+def test_obsolete_air_still_requires_verified_old_manifest_before_rebuild(job, tmp_path):
+    main, fresh, common, calls, _ = job
+    previous = tmp_path / "old-air-corrupted"
+    assert main([*fresh, "--compile-only", "--output", str(previous)]) == 0
+    _make_legacy_air(previous)
+    with (previous / "air/manifest.json").open("a") as stream:
+        stream.write(" ")
+    calls.clear()
+    assert main([*common, "--resume", str(previous), "--output", str(tmp_path / "resumed")]) == 1
+    assert calls == []
+
+
+def test_snapshot_console_reports_bounded_progress(job, tmp_path, monkeypatch, capsys):
+    main, fresh, _, calls, _ = job
+    from qwen35_moe_dflash import existing_air
+    original = existing_air.compile_existing_air
+    def observed_compile(*args, **kwargs):
+        for index in range(23):
+            kwargs["progress"]({"stage": "input-snapshot", "message": "Snapshotting input",
+                "completed": index, "total": 23, "source_relative": f"weight_{index}.bin", "bytes": 4096})
+        return original(*args, **kwargs)
+    monkeypatch.setattr(existing_air, "compile_existing_air", observed_compile)
+    assert main([*fresh, "--compile-only", "--output", str(tmp_path / "progress")]) == 0
+    rows = [line for line in capsys.readouterr().out.splitlines() if line.startswith("full-draft: Snapshotting input")]
+    assert len(rows) == 4
+    assert "1/23: weight_0.bin (4096 bytes)" in rows[0]
+    assert "23/23: weight_22.bin (4096 bytes)" in rows[-1]
 
 
 def test_resume_rejects_changed_air_before_board(job, tmp_path):

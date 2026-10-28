@@ -8,9 +8,9 @@
 
 **先运行完整 draft 的独立入口。** [独立 draft 指南](draft-standalone.md)提供一条命令完成真实权重准备、PyTorch参考、GE导出、OMG编译和HIAI执行。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
-当前已通过主机测试和模拟HIAI验证；真实DDK编译及板端结果待用户运行回传。`--resume`复用哈希一致的已完成阶段，HDC中断后不重复导出或编译。已确认用户有下载好的DFlash权重，私有路径保存在本地运行记录，不加入版本库。
+用户回传 `full-draft-d7b4db958850` 已准备全部71个权重、完成完整六层 PyTorch 参考和 GE AIR 导出。OMG 在第一个 `FileConstant` 停止：`dtype` 属性未被识别，绝对权重路径被拼到编译目录之后；尚未上板。日志由用户提供，远端原文件未在本地重新核验。
 
-用户首次运行 `full-draft-74ea1f4240c0` 在准备阶段因target索引缺失失败，未开始编译。入口现支持无索引分片头部定位并先检查全部所需权重；锁定官方索引确认共享embedding/head均在用户目录已有的第9片，实际张量完整性仍由新入口检查。这次 `components` 为空，更新后重跑同一条完整命令即可。
+本次修改使用相对权重路径和显式整数 dtype 的 CPro 兼容策略，真实 OMG 接受情况待确认。更新后以 `--resume` 指向上述批次：校验并复用 prepared 权重和 reference，因导出契约升级自动重建 AIR/OMC，再继续上板。旧目录及失败证据保留。无须重新准备权重、运行参考或下载其它 target 分片；详见[独立 draft 指南](draft-standalone.md)。
 
 ## 保留的 target 编译与诊断
 

@@ -10,6 +10,8 @@ from pathlib import Path
 import stat
 import struct
 
+from .ge_type_contracts import GE_DTYPE_IDS
+
 
 _MAX_BYTES = 256 << 20
 _MAX_OPS = 2_000_000
@@ -152,10 +154,12 @@ def _read(reader):
             raise ValueError("Const has no storage")
         if op_type == "FileConstant":
             attrs = record["attrs"]
+            dtype = record["outputs"][0]["dtype"]
             if (len(record["outputs"]) != 1
                     or attrs.get("file_path", {}).get("type") != "string"
                     or attrs.get("shape") != {"type": "ints", "value": record["outputs"][0]["shape"]}
-                    or attrs.get("dtype") != {"type": "dtype", "value": record["outputs"][0]["dtype"]}):
+                    or attrs.get("dtype") not in ({"type": "dtype", "value": dtype},
+                                                 {"type": "int", "value": GE_DTYPE_IDS[dtype]})):
                 raise ValueError("FileConstant descriptor and metadata disagree")
         if op_type == "ConcatD" and [port["port"] for port in record["inputs"]] != [f"x{i}" for i in range(len(record["inputs"]))]:
             raise ValueError("ConcatD dynamic ports must be contiguous")

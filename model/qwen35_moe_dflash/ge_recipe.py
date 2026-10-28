@@ -13,7 +13,7 @@ import math
 from pathlib import Path
 import struct
 
-from .ge_type_contracts import validate_record_types
+from .ge_type_contracts import GE_DTYPE_IDS, validate_record_types
 
 _DT = {"float16": (1, 2), "int32": (2, 4), "int64": (3, 8), "bool": (4, 1)}
 _AT = {"int": 1, "float": 2, "bool": 3, "ints": 4, "dtype": 5, "string": 6}
@@ -132,10 +132,13 @@ def _validate(records, graph_name, input_indices, output_pairs):
         elif constant is not None:
             raise ValueError("constant storage is only valid for Const operators")
         if typ == "FileConstant":
-            required = {"file_path": "string", "shape": "ints", "dtype": "dtype"}
-            if len(outputs) != 1 or any(attrs.get(k, {}).get("type") != v for k, v in required.items()):
+            required = {"file_path": "string", "shape": "ints"}
+            if (len(outputs) != 1 or any(attrs.get(k, {}).get("type") != v for k, v in required.items())
+                    or attrs.get("dtype", {}).get("type") not in {"dtype", "int"}):
                 raise ValueError("FileConstant requires file_path, shape and dtype attributes")
-            if attrs["shape"]["value"] != list(outputs[0]["shape"]) or attrs["dtype"]["value"] != outputs[0]["dtype"]:
+            expected_dtype = (GE_DTYPE_IDS[outputs[0]["dtype"]] if attrs["dtype"]["type"] == "int"
+                              else outputs[0]["dtype"])
+            if attrs["shape"]["value"] != list(outputs[0]["shape"]) or attrs["dtype"]["value"] != expected_dtype:
                 raise ValueError("FileConstant descriptor and metadata disagree")
         if typ == "ConcatD" and [v["port"] for v in inputs] != [f"x{i}" for i in range(len(inputs))]:
             raise ValueError("ConcatD requires contiguous dynamic x ports")
@@ -305,6 +308,11 @@ class Reader {
   void End() { Require(remaining_ == 0, "trailing recipe bytes"); }
 };
 bool Same(const Desc& a, const Desc& b) { return a.dtype == b.dtype && a.shape == b.shape; }
+int64_t GEDTypeId(uint8_t code) {
+  // These are GE enum IDs, not the Q35GE001 descriptor tags.
+  switch (code) { case 1: return 1; case 2: return 3; case 3: return 9; case 4: return 12; }
+  throw std::runtime_error("unknown dtype");
+}
 const Attr& FindAttr(const Record& op, const std::string& name, uint8_t type) {
   for (const auto& a : op.attrs) if (a.name == name) { Require(a.type == type, "attribute type mismatch " + name); return a; }
   throw std::runtime_error("missing attribute " + name);
@@ -350,7 +358,11 @@ Recipe Load(const char* path) {
     if (op.type == "FileConstant") {
       Require(op.outputs.size() == 1, "FileConstant must have one output");
       const auto& filename = FindAttr(op, "file_path", 6);
-      Require(FindAttr(op, "shape", 4).integers == op.outputs[0].desc.shape && FindAttr(op, "dtype", 5).dtype == op.outputs[0].desc.dtype, "FileConstant metadata mismatch");
+      auto dtype = std::find_if(op.attrs.begin(), op.attrs.end(), [](const Attr& a) { return a.name == "dtype"; });
+      Require(dtype != op.attrs.end(), "FileConstant missing dtype");
+      bool dtype_matches = (dtype->type == 5 && dtype->dtype == op.outputs[0].desc.dtype) ||
+                           (dtype->type == 1 && dtype->integer == GEDTypeId(op.outputs[0].desc.dtype));
+      Require(FindAttr(op, "shape", 4).integers == op.outputs[0].desc.shape && dtype_matches, "FileConstant metadata mismatch");
       Require(fs::is_regular_file(filename.text) && fs::file_size(filename.text) == op.outputs[0].desc.bytes, "external weight file size mismatch");
     }
     if (op.type == "ConcatD") for (size_t i = 0; i < op.inputs.size(); ++i) Require(op.inputs[i].name == "x" + std::to_string(i), "ConcatD dynamic ports not contiguous");
