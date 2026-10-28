@@ -15,7 +15,11 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --diagnose-numerics
 
 用户最新回传的PID54002运行已使用v6 AIR和v3参考，设备退出码0、输入回读一致、输出均有限；15个Top1仍有12个不同。参考hidden L2为175.270586，设备为27883.188584，相对L2为159.063547，设备范围为[-258.75, 258.75]。这是明显数值错误，不能用正常FP16舍入解释。以下远端结果来自用户回传，尚未在本地主机重新核验原文件。
 
-新命令核验保留的输入、输出与清单，批量计算15行hidden的RMS、余弦和误差，并检查已保存编译IR中最终/特征RMS、各层归约和attention的类型、形状及连接。终端一次输出关键结果，完整报告固定写入 `full-draft/numerical-diagnostic/report.json`。它不重编译、不上传、不执行设备、不复制大权重，也不修改golden或放宽比较标准。仍有数值差异时退出码为1；报告中的INSPECTED只表示诊断完成。若没有可用的编译dump或DDK schema，会明确显示原因，不猜测类型编号。
+用户随后回传逐行诊断：全部15行RMS约150–162，余弦相似度约-0.026至0.136；±257.75分别出现1019/1031次。执行bundle与AIR/编译报告绑定一致，但没有 `dump_graph`。上一版入口仅查IR dump，未检查现成OMC；现已补上这一缺口，同一条命令改为直接检查已保留的小external OMC的ModelDef、明确归属的CPU GraphDef及模型输出描述。
+
+该入口通过packing receipt核对外置源OMC与已执行内嵌OMC的图/任务分区字节身份，读取所选DDK的静态schema，不加载执行库。NPU任务体保持opaque，只展示可验证的GraphOp边界；相关编译日志按清单哈希核验后提取最终norm节点上下文。同时检查原生输出分配字节数、FP16奇偶半字及同字节FP32假设视图，帮助排除输出解释问题。这些观察不改变原FP16比较，也不把±257.75直接认定为芯片饱和。
+
+终端输出关键结果，完整报告固定写入 `full-draft/numerical-diagnostic/report.json`。它不重编译、不上传、不执行设备、不复制大权重，也不修改golden或放宽比较标准。仍有数值差异时退出码为1；报告中的INSPECTED只表示诊断完成。schema、分区或任务格式不支持时明确显示原因，不猜测类型编号。
 
 此前离线重放逐字节复现了旧golden：首次塌缩位于 `draft.layers.0.post_attention_layernorm`，输入绝对最大值340、FP16平方出现27个非有限元素，9行变成全零。仅将RMS改为FP32后所有26个norm均无新零行，hidden恢复有限非零；与旧板端仍有12个Top1差异，hidden相对L2=1.9395076956574235。
 

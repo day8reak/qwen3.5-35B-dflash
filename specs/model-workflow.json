@@ -1576,7 +1576,7 @@
         ],
         "original_evidence": "UNCHANGED",
         "threshold_changes": "NONE",
-        "next_action": "Run one host-only diagnostic on the current full-draft workspace; avoid another full compile/upload of the unchanged graph",
+        "next_action": "Run updated --diagnose-numerics once to inspect existing compiled OMC and output byte interpretation; no full compilation/upload",
         "host_validation": {
           "passed": 212,
           "failed": 0,
@@ -1589,13 +1589,16 @@
             "Successful execution and finite output do not establish accuracy",
             "Unit final gamma provides an independent gross normalization invariant",
             "Compiled IR must bind to the executed bundle as well as to AIR",
-            "Batch retained diagnostics reduce full compile/upload round trips"
+            "Batch retained diagnostics reduce full compile/upload round trips",
+            "Missing IR dump does not exhaust retained evidence: inspect already bound OMC main/CPU task partitions before rebuilding"
           ],
           "updated_checks": [
             "test_draft_numerics.py",
             "test_draft_precision_inspect.py",
             "test_full_draft_numerics_cli.py",
-            "test_full_draft_failure_summary.py"
+            "test_full_draft_failure_summary.py",
+            "test_draft_precision_omc.py",
+            "test_draft_precision_log.py"
           ],
           "rejected_promotions": [
             "Specific Cpro kernel root cause",
@@ -1603,9 +1606,54 @@
             "FP16/BF16 policy differences as explanation for relative L2 159"
           ],
           "remaining_hypotheses": [
-            "Compiled final normalization/casts/output semantics need retained evidence"
+            "Compiled final normalization and casts versus output ABI; OMC CPU and port evidence required",
+            "Finite saturation-like 257.75/258.75 patterns are not proof of chip mechanism"
           ],
-          "validation": "212 host checks passed; device numerical validation still failed"
+          "validation": "Updated no-dump fallback: 290 unique host checks passed after focused follow-up; actual device numerical validation remains failed"
+        },
+        "followup_run_id": "20261028T132516Z-11513-4a97e8",
+        "user_observation": {
+          "native_process_id": 54002,
+          "unit_final_scale_constraint": "GROSSLY_VIOLATED",
+          "all_rows_rms_gt_2": true,
+          "actual_row_rms_range": [
+            150.67583160722916,
+            162.2494603107693
+          ],
+          "cosine_range": [
+            -0.02550206632985488,
+            0.13574722682210763
+          ],
+          "positive_257_75_count": 1019,
+          "negative_257_75_count": 1031,
+          "compiled_precision": "NOT_AVAILABLE_NO_DUMP_GRAPH",
+          "executed_bundle_binding": "MATCHED",
+          "root_cause": "UNRESOLVED"
+        },
+        "no_dump_fallback": {
+          "route": "BOUND_COMPILED_OMC",
+          "decode": [
+            "main ModelDef",
+            "explicit CPUCL GraphOp GraphDef task slices"
+          ],
+          "binding": "Compiler OMC hash, bundle/AIR/compiler hashes, packing source/output/schema and preserved graph/task partition hashes",
+          "opaque": "NPU task internals remain undecoded",
+          "auxiliary": [
+            "bound final RMS compiler log context",
+            "native output allocation and odd/even half-word views",
+            "same retained bytes as FP32 hypothesis only"
+          ],
+          "comparison_interpretation": "UNCHANGED_FLOAT16"
+        },
+        "fallback_host_validation": {
+          "unique_passed": 290,
+          "failed": 0,
+          "skipped": 0,
+          "reports": [
+            "out/omc-numerics-final-tests.xml",
+            "out/final-precision-tests.xml"
+          ],
+          "scope": "Host-only retained OMC decoding, output interpretation, identity/log checks, CLI and container/packing regressions; no new device run"
         }
       }
     }

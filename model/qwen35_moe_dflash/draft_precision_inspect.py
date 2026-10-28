@@ -14,10 +14,13 @@ from pathlib import Path
 import re
 
 from .draft_compile_inspect import _bound, _json, _one, _read
+from .draft_precision_log import inspect_precision_log
 from .draft_ir_inspect import _DUMP_DIRECTORY, _enum_fields, _graphs, _inputs, _node
 from .ge_recipe_read import _Reader, _read as _read_recipe
 from .hashing import sha256_file
 from .omc_inspect import _preview
+from .omc_container import read_container
+from .omc_cpu_inspect import _task
 from .omc_wire import load_schema
 
 
@@ -30,9 +33,11 @@ _MAX_REPORT_BYTES = 2 << 20
 _MAX_TARGETS = 160
 _MAX_CAPTURED_NODES = 256
 _MAX_ALIASES = 24
+_MAX_OMC_BYTES = 64 << 20
 _ATTRIBUTES = {"dtype", "dst_type", "src_type", "T", "shape", "axes", "axis", "keep_dims",
                "power", "scale", "shift", "epsilon", "eps", "half_to_float", "cl_name",
-               "transpose_x1", "transpose_x2", "adj_x1", "adj_x2", "data_format"}
+               "transpose_x1", "transpose_x2", "adj_x1", "adj_x2", "data_format", "src_dtype", "dst_dtype",
+               "graphop_task_offset", "graphop_task_size"}
 _DTYPE_NAMES = {"FLOAT": "float32", "DT_FLOAT": "float32", "FLOAT32": "float32", "FP32": "float32",
                 "HALF": "float16", "DT_FLOAT16": "float16", "FLOAT16": "float16", "FP16": "float16",
                 "INT32": "int32", "DT_INT32": "int32", "BOOL": "bool", "DT_BOOL": "bool"}
@@ -241,16 +246,36 @@ def _finish(report):
     norm_names = {name for group in report.get("source_targets", [])
                   if group["semantic"] in {"draft.norm.weight", "draft.hidden_norm.weight"}
                   for name in group["nodes"]}
+    final_names = {name for group in report.get("source_targets", [])
+                   if group["semantic"] == "draft.norm.weight" for name in group["nodes"]}
 
     def priority(row):
         return (row["kind"] != "DTYPE_DIFFERS", row["node"] not in norm_names,
                 row["field"] != "output_desc", row["file"], row["node"])
-    captured = 0
+    captured, final_conversions = 0, []
     for file in report["files"]:
         for graph in file.get("matches", []):
+            ancestry = {}
+            for edge in graph.get("ancestry", []):
+                if edge["status"] == "RESOLVED":
+                    ancestry.setdefault(edge["consumer_json_path"], set()).add(edge["producer_json_path"])
+            frontier = {row["json_path"] for row in graph["nodes"] if final_names.intersection(row["exact_match_targets"])}
+            related = set(frontier)
+            for _ in range(2):
+                frontier = {p for name in frontier for p in ancestry.get(name, ())}
+                related.update(frontier)
             for row in graph["nodes"]:
                 captured += 1
                 node = row["node"]
+                if (row["json_path"] in related and not row["exact_match_targets"]
+                        and node.get("type") in {"Cast", "CastT"} and len(final_conversions) < 12):
+                    final_conversions.append({"file": file["path"], "graph_path": graph["graph_path"],
+                        "json_path": row["json_path"], "name": node["name"], "type": node["type"],
+                        "name_status": row["name_status"], "input": node["input"],
+                        "src_name": node["src_name"], "src_index": node["src_index"],
+                        "attributes": node["attributes"],
+                        "input_descriptors": [_descriptor_summary(d) for d in node["input_desc"]],
+                        "output_descriptors": [_descriptor_summary(d) for d in node["output_desc"]]})
                 names.update(row["exact_match_targets"])
                 types[node.get("type", "")] += 1
                 for desc in node.get("output_desc", []):
@@ -258,7 +283,8 @@ def _finish(report):
                 for name in row["exact_match_targets"]:
                     observation = {"type": node.get("type"), "name_status": row["name_status"],
                                    "input_dtypes": [_dtype(d) or "NOT_INTERPRETED" for d in node["input_desc"]],
-                                   "output_dtypes": [_dtype(d) or "NOT_INTERPRETED" for d in node["output_desc"]]}
+                                   "output_dtypes": [_dtype(d) or "NOT_INTERPRETED" for d in node["output_desc"]],
+                                   "attributes": node.get("attributes", [])}
                     seen = observations.setdefault(name, [])
                     if observation not in seen and len(seen) < 8:
                         seen.append(observation)
@@ -278,7 +304,7 @@ def _finish(report):
     key_nodes = []
     for name in dict.fromkeys(key_names):
         declared = report["declared_nodes"].get(name)
-        if declared is not None:
+        if declared is not None and (name in final_names or name in observations):
             key_nodes.append({"name": name, "declared_type": declared["type"],
                               "declared_output_dtypes": [p["dtype"] for p in declared["outputs"]],
                               "observed": observations.get(name, []),
@@ -286,14 +312,76 @@ def _finish(report):
     report["summary"] = {"status": report["status"], "reason": report.get("reason"),
                          "source_binding": report["source_binding"],
                          "executed_bundle_binding": report["executed_bundle_binding"],
-                         "dump_files": len(report["files"]),
+                         "dump_files": sum(not f.get("evidence_kind", "").startswith("OMC_") for f in report["files"]),
+                         "compiled_descriptor_slices": sum(f.get("evidence_kind", "").startswith("OMC_") for f in report["files"]),
                          "decoded_files": sum(f["status"] == "DECODED" for f in report["files"]),
                          "captured_nodes": captured, "observed_source_names": len(names),
-                         "selected_source_names": len(targets), "not_observed": sorted(targets - names),
+                         "selected_source_names": len(targets), "not_observed": len(targets - names),
                          "captured_op_types": dict(types), "captured_output_dtypes": dict(dtypes),
                          "descriptor_differences": differences, "key_nodes": key_nodes,
+                         "final_norm_conversion_ancestors": final_conversions,
                          "scope": "Retained IR descriptors across dumps; not runtime placement, measured tensor values, or root-cause proof"}
+    report["not_observed_source_names"] = sorted(targets - names)
+    if "compile_log_evidence" in report:
+        report["summary"]["compile_log_evidence"] = report["compile_log_evidence"]
+    if "omc_inspection" in report:
+        omc = report["omc_inspection"]
+        owners = {row["name"]: row for row in omc.get("graphop_boundaries", [])}
+        needed = set(omc.get("final_norm_owners", []))
+        frontier = {row.get("producer_name") for row in omc.get("output_connections", [])}
+        # Exact main-graph predecessors provide context when the final NPU
+        # task is opaque. No cross-graph name stripping or inferred fusion.
+        for _ in range(2):
+            needed.update(frontier)
+            frontier = {edge.get("name") for name in frontier if name in owners
+                        for edge in owners[name]["explicit_input_references"]}
+        selected = [owners[name] for name in owners if name in needed][:8]
+        report["summary"].update(evidence_route="BOUND_COMPILED_OMC", omc_status=omc["status"],
+                                 omc_reason=omc.get("reason"), omc_binding=omc.get("binding"),
+                                 graphop_counts=omc.get("graphop_counts", {}),
+                                 graphop_boundaries=[{"name": row["name"], "serialized_cl_name": row["serialized_cl_name"],
+                                     "task_status": row["task_status"], "input": row["explicit_input_references"],
+                                     "input_descriptors": [_descriptor_summary(d) for d in row["node"]["input_desc"]],
+                                     "output_descriptors": [_descriptor_summary(d) for d in row["node"]["output_desc"]]}
+                                     for row in selected],
+                                 graphop_boundaries_omitted=len(owners) - len(selected),
+                                 output_connections=omc.get("output_connections", []),
+                                 opaque_task_note=omc.get("opaque_task_note"))
+        report["summary"]["scope"] = "Static compiled OMC descriptors and explicit GraphOp boundaries; not actual intermediate values or runtime placement"
     return report
+
+
+def _descriptor_summary(descriptor):
+    return {"dtype": _dtype(descriptor) or "NOT_INTERPRETED", "dtype_presence": descriptor.get("dtype_presence"),
+            "shape": descriptor["raw"].get("shape", {}).get("dim"),
+            "layout": descriptor["raw"].get("layout")}
+
+
+def _output_connections(ops, enums):
+    """Pair NetOutput input ports with exact producer outputs in the main graph."""
+    by_name = {node["name"]: (index, node) for index, node in enumerate(ops)}
+    rows = []
+    for index, node in enumerate(ops):
+        if node.get("type") != "NetOutput":
+            continue
+        for edge in _inputs(node):
+            row = {"consumer_name": node["name"], "consumer_json_path": f"$/graph/0/op/{index}",
+                   **edge, "status": "UNRESOLVED"}
+            input_index = edge["input_index"]
+            if input_index < len(node.get("input_desc", [])):
+                desc = _capture({"input_desc": [node["input_desc"][input_index]]}, enums)["input_desc"][0]
+                row["consumer_input_descriptor"] = _descriptor_summary(desc)
+            producer = by_name.get(edge.get("name"))
+            if producer is not None:
+                pi, pn = producer
+                row.update(producer_name=pn["name"], producer_type=pn.get("type"),
+                           producer_json_path=f"$/graph/0/op/{pi}", status="PRODUCER_RESOLVED_PORT_UNRESOLVED")
+                port = edge.get("output_port")
+                if type(port) is int and 0 <= port < len(pn.get("output_desc", [])):
+                    desc = _capture({"output_desc": [pn["output_desc"][port]]}, enums)["output_desc"][0]
+                    row.update(producer_output_descriptor=_descriptor_summary(desc), status="RESOLVED")
+            rows.append(row)
+    return rows
 
 
 def _dump_priority(path):
@@ -307,6 +395,149 @@ def _dump_priority(path):
     else:
         category = 3
     return category, name
+
+
+def _inspect_small_omc(report, compiled, compile_root, bundle, bundle_root, schema, targets, enums):
+    """Inspect the bound external source container, never its embedded weights.
+
+    The already retained packing receipt supplies the correspondence between
+    the external source and executed embedded model. Main/task byte identity,
+    cumulative partition offsets and explicit task owners gate CPU decoding.
+    Opaque NPU task bytes are hashed for binding but never interpreted.
+    """
+    result = {"status": "NOT_AVAILABLE", "binding": "NOT_ESTABLISHED", "graphop_boundaries": [],
+              "scope": "Strict external IMOD variant; selected schema and explicit task owners only; no vendor code"}
+    report["omc_inspection"] = result
+    omc = compiled.get("omc")
+    if not isinstance(omc, dict):
+        result["reason"] = "Compiler report has no retained OMC record"
+        return
+    if bundle is None or bundle_root is None:
+        result["reason"] = "No executed bundle identity for compiled OMC inspection"
+        return
+    try:
+        source = _bound(compile_root, omc)
+        before = source.stat()
+        identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        raw = _read(source, _MAX_OMC_BYTES, "small external OMC", report["sources"], omc)
+        container = read_container(source)
+        after = source.stat()
+        if identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise ValueError("source OMC changed during container inspection")
+        parts = container["partitions"]
+        if [p["type"] for p in parts] != [0, 1, 2] or parts[1]["bytes"] != 0:
+            raise ValueError("fallback requires external OMC [0,1,2] with empty weight partition")
+        cursor = 0
+        for part in parts:
+            if part["table_word"] != cursor:
+                raise ValueError("OMC partition words are not cumulative payload offsets")
+            cursor += part["bytes"]
+        if hashlib.sha256(raw[:256]).hexdigest() != container["header_sha256"]:
+            raise ValueError("OMC header differs from hash-bound bytes")
+
+        def payload(part):
+            return memoryview(raw)[part["offset"]:part["offset"] + part["bytes"]]
+
+        hashes = {part["type"]: hashlib.sha256(payload(part)).hexdigest() for part in parts if part["type"] in (0, 2)}
+        if bundle.get("weight_storage") == "embedded-stream":
+            receipt = bundle.get("weight_packing")
+            if not isinstance(receipt, dict):
+                raise ValueError("embedded-stream bundle has no bound packing receipt")
+            packing = _json(_bound(bundle_root, receipt), report["sources"], receipt)
+            if (packing.get("artifact_kind") != "qwen35-omc-embedded-stream" or packing.get("status") != "EMBEDDED"
+                    or any(packing.get("source", {}).get(k) != omc.get(k) for k in ("bytes", "sha256"))
+                    or any(packing.get("output", {}).get(k) != bundle.get("model", {}).get(k) for k in ("bytes", "sha256"))):
+                raise ValueError("packing source/output identity differs from compiler or executed bundle")
+            if packing.get("schema", {}).get("library_sha256") != schema.evidence.get("library_sha256"):
+                raise ValueError("selected schema differs from bound packing schema")
+            for part in (parts[0], parts[2]):
+                saved = _one(packing.get("partitions", []), lambda p: p.get("type") == part["type"], "packing partition")
+                if (saved.get("bytes") != part["bytes"] or saved.get("sha256") != hashes[part["type"]]
+                        or saved.get("preserved") != "BYTE_IDENTICAL"):
+                    raise ValueError("main/task partition differs from executed packing receipt")
+            result["binding"] = "PACKING_PRESERVED_MAIN_AND_TASK_BYTES"
+        elif all(bundle.get("model", {}).get(k) == omc.get(k) for k in ("bytes", "sha256")):
+            result["binding"] = "COMPILER_OMC_IDENTICAL_TO_EXECUTED_MODEL"
+        else:
+            raise ValueError("compiler OMC is not bound to the executed bundle")
+        model = schema.decode(payload(parts[0]), "ModelDef")
+        graphs = model.get("graph")
+        if not isinstance(graphs, list) or len(graphs) != 1 or not isinstance(graphs[0], dict):
+            raise ValueError("compiled OMC must contain exactly one main graph")
+        ops = graphs[0].get("op")
+        if not isinstance(ops, list) or not ops or len(ops) > 512:
+            raise ValueError("main graph has unsupported operation count")
+        names = [node.get("name") for node in ops]
+        if any(not isinstance(name, str) or not name or len(name) > 512 for name in names) or len(set(names)) != len(names):
+            raise ValueError("main graph has missing or duplicate names")
+        owners, ranges = [], []
+        for index, node in enumerate(ops):
+            if node.get("type") != "GraphOp":
+                continue
+            task = _task(node)
+            start, size = task["offset"], task["bytes"]
+            if not size or start > parts[2]["bytes"] or size > parts[2]["bytes"] - start:
+                raise ValueError("GraphOp task slice is outside the compiled task partition")
+            end = start + size
+            if any(start < right and left < end for left, right in ranges):
+                raise ValueError("GraphOp task slices overlap")
+            ranges.append((start, end))
+            owners.append((index, node, task))
+        if not owners or len(owners) > 128:
+            raise ValueError("unsupported number of GraphOp task owners")
+        # Validate every ownership bound before decoding any CPU slice.
+        result.update(container=container, main_partition_sha256=hashes[0], task_partition_sha256=hashes[2],
+                      source={"path": str(source), "bytes": len(raw), "sha256": omc["sha256"]},
+                      graphop_counts=dict(Counter(task["cl_name"] for _, _, task in owners)),
+                      model_io_boundaries=[{"json_path": f"$/graph/0/op/{i}", "node": _capture(n, enums),
+                                            "explicit_input_references": _inputs(n)} for i, n in enumerate(ops)
+                                           if n.get("type") in {"Data", "NetOutput"}],
+                      output_connections=_output_connections(ops, enums), final_norm_owners=[],
+                      main_graph_inputs=_preview(graphs[0].get("input", [])),
+                      main_graph_outputs=_preview(graphs[0].get("output", [])))
+        for index, node, task in owners:
+            result["graphop_boundaries"].append({"name": node["name"], "json_path": f"$/graph/0/op/{index}",
+                "serialized_cl_name": task["cl_name"], "task_bytes": task["bytes"], "task_offset": task["offset"],
+                "node": _capture(node, enums), "explicit_input_references": _inputs(node),
+                "task_status": "CPU_GRAPHDEF_CANDIDATE" if task["cl_name"] == "CPUCL" else "OPAQUE_TASK_NOT_DECODED"})
+        main_row = {"path": omc["path"] + "#main", "absolute_path": str(source), "evidence_kind": "OMC_MODELDEF",
+                    "status": "DECODED", "sha256": hashes[0], "bytes": parts[0]["bytes"],
+                    "matches": _select_model(model, targets, enums)}
+        rows = [main_row]
+        for index, node, task in owners:
+            if task["cl_name"] != "CPUCL":
+                continue
+            offset = parts[2]["offset"] + task["offset"]
+            data = memoryview(raw)[offset:offset + task["bytes"]]
+            row = {"path": omc["path"] + "#" + node["name"], "absolute_path": str(source),
+                   "evidence_kind": "OMC_CPU_GRAPHDEF", "owner_json_path": f"$/graph/0/op/{index}",
+                   "file_offset": offset, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                   "status": "UNSUPPORTED_CPU_SLICE"}
+            rows.append(row)
+            try:
+                graph = schema.decode(data, "GraphDef")
+                if graph.get("name") != node["name"]:
+                    raise ValueError("CPU GraphDef name differs from its explicit GraphOp owner")
+                row["matches"] = _select_model({"graph": [graph]}, targets, enums)
+                row["status"] = "DECODED"
+                final_names = {name for group in report["source_targets"]
+                               if group["semantic"] == "draft.norm.weight" for name in group["nodes"]}
+                if any(final_names.intersection(r["exact_match_targets"])
+                       for match in row["matches"] for r in match["nodes"]):
+                    result["final_norm_owners"].append(node["name"])
+            except (OSError, ValueError, TypeError, RecursionError) as error:
+                row["error"] = f"{type(error).__name__}: {str(error)[:512]}"
+            if len(json.dumps({"result": result, "files": rows}, ensure_ascii=True, allow_nan=False).encode()) > _MAX_REPORT_BYTES:
+                row.pop("matches", None)
+                row.update(status="OUTPUT_LIMIT", reason="bounded OMC descriptor report")
+                result["output_limited"] = True
+                break
+        report["files"].extend(rows)
+        result["status"] = "INSPECTED" if all(row["status"] == "DECODED" for row in rows) else "PARTIAL"
+        result["opaque_task_note"] = "Non-CPU task payloads were not decoded; GraphOp ports show serialized boundaries only. Missing final RMS internals still require intermediate-value evidence."
+    except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+        result.update(status="NOT_AVAILABLE", reason=f"{type(error).__name__}: {str(error)[:512]}")
+
 
 
 def inspect_draft_precision(job_dir, schema_library=None):
@@ -336,6 +567,7 @@ def inspect_draft_precision(job_dir, schema_library=None):
         if (air.get("artifact_kind") != "qwen35-cpro-draft-air" or air.get("status") != "EXPORTED"
                 or compiled.get("artifact_kind") != "qwen35-existing-air-compilation"):
             raise ValueError("unexpected AIR or compiler manifest")
+        bundle = bundle_root = None
         if "bundle" in components:
             bundle_record = components["bundle"]
             bundle_root = Path(bundle_record["directory"]).absolute()
@@ -362,6 +594,11 @@ def inspect_draft_precision(job_dir, schema_library=None):
         report.update(source_targets=groups, declared_nodes=targets, source_binding="RECORDED_AIR_HASH_MATCHED",
                       air_sha256=exported["sha256"], export_contract=air.get("export_contract"),
                       requested_options=compiled.get("requested_options", {}))
+        final_names = [name for group in groups if group["semantic"] == "draft.norm.weight" for name in group["nodes"]]
+        log = inspect_precision_log(compile_root, compiled, final_names)
+        report["compile_log_evidence"] = log
+        if log.get("source"):
+            sources.append(log["source"])
         if len(json.dumps(report, ensure_ascii=True, allow_nan=False).encode()) > 512 << 10:
             report.update(source_targets=[], declared_nodes={})
             raise ValueError("source diagnostic metadata exceeds bounded report allowance")
@@ -370,30 +607,6 @@ def inspect_draft_precision(job_dir, schema_library=None):
             if row.get("path") in inventory:
                 raise ValueError("duplicate compiler artifact inventory path")
             inventory[row.get("path")] = row
-        folder = compile_root / _DUMP_DIRECTORY
-        if not folder.is_dir():
-            report["reason"] = "No retained dump_graph directory"
-            return _finish(report)
-        if folder.resolve() != folder:
-            raise ValueError("dump directory contains symlink traversal")
-        # Inventory paths are already bounded by the compiler JSON read. Start
-        # with these names so a crowded directory cannot hide a later-stage
-        # dump beyond a filesystem iteration prefix. Only direct children of
-        # the fixed dump directory are considered.
-        candidates = {compile_root / relative for relative in inventory if isinstance(relative, str)
-                      and Path(relative).parent == _DUMP_DIRECTORY and Path(relative).suffix == ".irpb"}
-        for i, path in enumerate(folder.iterdir()):
-            if i >= _MAX_ENTRIES:
-                report["directory_scan_limited"] = True
-                break
-            if path.suffix == ".irpb":
-                candidates.add(path)
-        candidates = sorted(candidates, key=_dump_priority)
-        report.update(candidate_count=len(candidates), files_omitted=max(0, len(candidates) - _MAX_FILES),
-                      selection_policy="Filename hints prioritize after-partition/connection-point, then subgraph, then final/optimized; filenames do not prove compilation order")
-        if not candidates:
-            report["reason"] = "No retained .irpb dumps"
-            return _finish(report)
         if schema_library is None and compiled.get("ddk_root"):
             schema_library = Path(compiled["ddk_root"]) / "tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so"
         if schema_library is None:
@@ -402,6 +615,26 @@ def inspect_draft_precision(job_dir, schema_library=None):
         schema = load_schema(schema_library)
         enums = _enum_fields(schema)
         report.update(schema=schema.evidence, tensor_descriptor_enum_fields=enums)
+        folder = compile_root / _DUMP_DIRECTORY
+        if folder.is_dir() and folder.resolve() != folder:
+            raise ValueError("dump directory contains symlink traversal")
+        # Inventory paths are already bounded by the compiler JSON read. Start
+        # with these names so a crowded directory cannot hide a later-stage
+        # dump beyond a filesystem iteration prefix. Only direct children of
+        # the fixed dump directory are considered.
+        candidates = set()
+        if folder.is_dir():
+            candidates = {compile_root / relative for relative in inventory if isinstance(relative, str)
+                          and Path(relative).parent == _DUMP_DIRECTORY and Path(relative).suffix == ".irpb"}
+            for i, path in enumerate(folder.iterdir()):
+                if i >= _MAX_ENTRIES:
+                    report["directory_scan_limited"] = True
+                    break
+                if path.suffix == ".irpb":
+                    candidates.add(path)
+        candidates = sorted(candidates, key=_dump_priority)
+        report.update(candidate_count=len(candidates), files_omitted=max(0, len(candidates) - _MAX_FILES),
+                      selection_policy="Filename hints prioritize after-partition/connection-point, then subgraph, then final/optimized; filenames do not prove compilation order")
         total = 0
         for path in candidates[:_MAX_FILES]:
             relative = path.relative_to(compile_root).as_posix()
@@ -426,6 +659,9 @@ def inspect_draft_precision(job_dir, schema_library=None):
             except (OSError, ValueError, TypeError, RecursionError) as error:
                 row.update(status="INTEGRITY_MISMATCH" if "SHA256/size mismatch" in str(error) else "UNSUPPORTED_DUMP",
                            error=f"{type(error).__name__}: {str(error)[:512]}")
+        if not candidates:
+            report["dump_availability"] = "NO_RETAINED_IRPB"
+            _inspect_small_omc(report, compiled, compile_root, bundle, bundle_root, schema, targets, enums)
         report["read_bytes"] = total
         for source in sources:
             path = Path(source["path"])
@@ -435,9 +671,17 @@ def inspect_draft_precision(job_dir, schema_library=None):
                     and not report.get("output_limited") and all(r["status"] == "DECODED" for r in report["files"])
                     and not any(g.get("capture_limited") for r in report["files"] for g in r.get("matches", [])))
         report["status"] = "INSPECTED" if complete else "PARTIAL"
+        if not candidates:
+            report["status"] = report["omc_inspection"]["status"]
+            report["reason"] = report["omc_inspection"].get("reason", "Inspected bound OMC because no retained IRPB dumps exist")
     except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
         report.update(status="NOT_AVAILABLE", reason=f"{type(error).__name__}: {str(error)[:512]}")
         # Never retain decoded conclusions after a late metadata integrity error.
         for file in report["files"]:
             file.pop("matches", None)
+        if "omc_inspection" in report:
+            report["omc_inspection"] = {"status": "NOT_AVAILABLE", "binding": "NOT_ESTABLISHED",
+                                        "reason": report["reason"], "graphop_boundaries": []}
+        if "compile_log_evidence" in report:
+            report["compile_log_evidence"] = {"status": "NOT_AVAILABLE", "reason": report["reason"], "lines": []}
     return _finish(report)

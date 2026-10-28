@@ -9,7 +9,9 @@ git pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --diagnose-numerics
 ```
 
-此命令不重建或执行模型；核验保留文件后，输出各行hidden的RMS、余弦、误差和常见FP16值，同时静态解析所选DDK schema和已保存编译IR，检查最终/特征RMS、各层归约及attention。报告固定为 `numerical-diagnostic/report.json`，再次诊断只替换自己的报告，不修改原golden、OMC和板端证据。支持 `--schema-library` 显式选择schema库；缺dump、缺schema和不明确的dtype均单独报告。数值仍失败时返回1，INSPECTED不表示精度通过。
+此命令不重建或执行模型；核验保留文件后，输出各行hidden的RMS、余弦、误差和常见FP16值，同时静态解析所选DDK schema和已保存编译IR。没有IR dump时，从成功编译的小external OMC读取ModelDef和具有明确offset/size归属的CPU GraphDef，通过packing receipt核对其与执行模型的图/任务分区字节一致；不猜测NPU opaque任务内容。还显示模型输出描述、原生分配字节及FP16奇偶半字/FP32假设视图，原FP16比较保持不变。
+
+报告固定为 `numerical-diagnostic/report.json`，再次诊断只替换自己的报告，不修改原golden、OMC和板端证据。支持 `--schema-library` 显式选择schema库；不支持的schema、容器和dtype均单独报告。数值仍失败时返回1，INSPECTED不表示精度通过。
 
 旧参考重放已确认RMS平方的FP16溢出；当前GE和新参考已对齐4B实际AIR的精度边界。全部26处norm声明在FP32中归一化，再转FP16乘原scale；attention的QK/PV结果边界保持FP16，score/softmax使用FP32、概率转FP16后进入PV；RoPE角度和cos/sin使用FP32、完成后转FP16。35B训练配置、权重和六层结构不变。embedded-stream已完成本次设备执行，当前误差原因仍需定位，不能把导出声明视为设备数值正确的证明。
 

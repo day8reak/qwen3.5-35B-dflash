@@ -96,6 +96,12 @@ def test_retained_severe_scale_failure_is_inspected_without_changing_acceptance_
         assert set(report["summary"]["per_row"][0]) == {
             "row", "actual_rms", "expected_rms", "cosine", "max_abs_error", "relative_l2", "norm_ratio"}
         assert all(value is not None for value in report["summary"]["reference_policy"].values())
+        interpretation = report["output_interpretation"]
+        assert report["summary"]["output_interpretation"] == interpretation
+        assert interpretation["declared_output_dtype"] == "float16"
+        assert interpretation["comparison_interpretation"] == "UNCHANGED"
+        assert interpretation["retained_bytes"] == 61440
+        assert interpretation["fp16_half_word_lanes"][1]["finite_abs_gt_32_count"] == 15360
         path = retained["job"] / "numerical-diagnostic/report.json"
         assert json.loads(path.read_text()) == report
         json.dumps(report, allow_nan=False)
@@ -171,3 +177,56 @@ def test_diagnostic_never_overwrites_unowned_paths(retained, inspection, tmp_pat
 def test_hidden_reader_rejects_oversized_payload_before_access(tmp_path):
     with pytest.raises(ValueError, match="bounded payload size"):
         subject._read_hidden(tmp_path, {"bytes": subject.MAX_HIDDEN_BYTES + 1})
+
+
+def test_output_interpretation_reports_fp32_misread_signature_without_changing_bytes():
+    original = np.asarray([1., 2., 3., -.5], dtype="<f4")
+    half = original.view("<f2")
+    before = half.tobytes()
+    native = {"io_diagnostic": {"outputs": [
+        {"index": 0, "logical_bytes": 60, "allocated_bytes_before": 64,
+         "allocated_bytes_after": 64, "object_same": True, "buffer_same": True},
+        {"index": 1, "logical_bytes": 16, "allocated_bytes_before": 32,
+         "allocated_bytes_after": 32, "object_same": True, "buffer_same": True}]}}
+    report = subject._output_interpretation(half, native)
+    assert report["native_io_outputs"] == native["io_diagnostic"]["outputs"]
+    low, high = report["fp16_half_word_lanes"]
+    assert low["rms"] == 0
+    assert high["rms"] == pytest.approx(np.sqrt(np.mean([1.875**2, 2.**2, 2.125**2, 1.75**2])))
+    assert high["fp32_hypothesis_word"] == "high16"
+    assert low["finite_abs_gt_32_count"] == high["finite_abs_gt_32_count"] == 0
+    viewed = report["same_bytes_as_little_endian_fp32"]
+    assert viewed["finite_count"] == viewed["elements"] == 4
+    assert viewed["nonfinite_count"] == 0
+    assert viewed["finite_min"] == -.5 and viewed["finite_max"] == 3.
+    assert viewed["rms"] == pytest.approx(np.sqrt(np.mean(original.astype(np.float64)**2)))
+    assert "runtime dtype nor a root cause" in report["hypothesis_note"]
+    assert "status" not in report
+    assert half.tobytes() == before
+
+
+def test_output_interpretation_counts_large_half_words_in_both_lanes_without_inference():
+    half = np.asarray([257.75, -257.75, -257.75, 257.75, 1., 0.], dtype="<f2")
+    report = subject._output_interpretation(half, {})
+    for lane in report["fp16_half_word_lanes"]:
+        assert lane["positive_257_75_word_count"] == 1
+        assert lane["negative_257_75_word_count"] == 1
+        assert lane["finite_abs_gt_32_count"] == 2
+    assert report["native_io_outputs"] == []
+    assert report["declared_output_dtype"] == "float16"
+    assert report["comparison_interpretation"] == "UNCHANGED"
+    assert report["same_bytes_as_little_endian_fp32"]["elements"] == 3
+    json.dumps(report, allow_nan=False)
+
+
+def test_output_interpretation_keeps_nonfinite_and_partial_words_json_safe():
+    half = np.asarray([np.inf, 0, np.nan], dtype="<f2")
+    report = subject._output_interpretation(half, {})
+    assert report["fp16_half_word_lanes"][0]["nonfinite_count"] == 2
+    assert report["fp16_half_word_lanes"][0]["rms"] is None
+    assert not report["same_bytes_as_little_endian_fp32"]["available"]
+    paired = np.asarray([0x0000, 0x7F80, 0x0001, 0x7FC0], dtype="<u2").view("<f2")
+    viewed = subject._output_interpretation(paired, {})["same_bytes_as_little_endian_fp32"]
+    assert viewed["nonfinite_count"] == 2 and viewed["finite_count"] == 0
+    assert viewed["rms"] is viewed["finite_min"] is viewed["finite_max"] is None
+    json.dumps({"partial": report, "paired": viewed}, allow_nan=False)

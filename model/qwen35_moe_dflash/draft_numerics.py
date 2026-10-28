@@ -64,6 +64,60 @@ def _fingerprint(array):
             "sample_limit": SAMPLE_VALUES}
 
 
+def _output_interpretation(array, native):
+    """Expose byte-pattern hypotheses without changing the declared FP16 ABI."""
+    half = np.ascontiguousarray(array, dtype="<f2").reshape(-1)
+    words = half.view("<u2")
+    lanes = []
+    for index in (0, 1):
+        values, patterns = half[index::2], words[index::2]
+        finite = np.isfinite(values)
+        selected = values[finite].astype(np.float64)
+        lanes.append({
+            "half_word_index_mod_2": index,
+            "fp32_hypothesis_word": "low16" if index == 0 else "high16",
+            "elements": int(values.size), "nonfinite_count": int((~finite).sum()),
+            "rms": _number(np.sqrt(np.mean(selected * selected)))
+                if selected.size and finite.all() else None,
+            "finite_abs_gt_32_count": int(np.count_nonzero(np.abs(selected) > 32)),
+            "positive_257_75_word_count": int(np.count_nonzero(patterns == 0x5C07)),
+            "negative_257_75_word_count": int(np.count_nonzero(patterns == 0xDC07)),
+        })
+    allocation = []
+    for item in native.get("io_diagnostic", {}).get("outputs", []):
+        if isinstance(item, dict) and item.get("index") in (0, 1):
+            allocation.append({key: item[key] for key in (
+                "index", "logical_bytes", "allocated_bytes_before", "allocated_bytes_after",
+                "object_same", "buffer_same") if key in item})
+    # This view consumes exactly the retained bytes; it neither requests nor
+    # invents a second half of a possible FP32 output buffer.
+    if half.nbytes % 4:
+        reinterpretation = {"available": False, "reason": "retained byte count is not divisible by four"}
+    else:
+        floated = half.view("<f4")
+        finite = np.isfinite(floated)
+        selected = floated[finite].astype(np.float64)
+        reinterpretation = {
+            "available": True, "elements": int(floated.size),
+            "finite_count": int(finite.sum()), "nonfinite_count": int((~finite).sum()),
+            "finite_min": _number(selected.min()) if selected.size else None,
+            "finite_max": _number(selected.max()) if selected.size else None,
+            "rms": _number(np.sqrt(np.mean(selected * selected)))
+                if selected.size and finite.all() else None,
+        }
+    return {
+        "declared_output_dtype": "float16", "comparison_interpretation": "UNCHANGED",
+        "retained_bytes": int(half.nbytes), "native_io_outputs": allocation,
+        "fp16_half_word_lanes": lanes,
+        "same_bytes_as_little_endian_fp32": reinterpretation,
+        "hypothesis_note": (
+            "A simple misread of normal FP32 normalized values would have small high16 half-words; "
+            "large high16 half-word values do not fit that simple signature. "
+            "These byte views establish neither the runtime dtype nor a root cause, "
+            "and the FP32 view covers only the retained bytes."),
+    }
+
+
 def _row_metrics(actual, expected):
     rows = []
     width = actual.shape[-1]
@@ -205,6 +259,7 @@ def diagnose_draft_numerics(job_dir, schema_library=None):
               "native_process_id": review["native_process_id"],
               "comparison": review["comparison"], "reference_audit": review["reference_audit"],
               "reference_policy": reference_policy,
+              "output_interpretation": _output_interpretation(actual, native),
               "hidden": {"shape": list(actual.shape), "actual": {**_summary(actual), **_fingerprint(actual)},
                          "expected": {**_summary(expected), **_fingerprint(expected)} if expected is not None else None,
                          "per_row": rows},
@@ -230,6 +285,7 @@ def diagnose_draft_numerics(job_dir, schema_library=None):
                                       "relative_l2": row.get("relative_l2_error"),
                                       "norm_ratio": row.get("l2_norm_ratio")} for row in rows],
                          "common_actual_fp16_values": report["hidden"]["actual"]["common_fp16_values"],
+                         "output_interpretation": report["output_interpretation"],
                          "compiled_precision": precision.get("summary", {"status": precision.get("status"), "reason": precision.get("reason")}),
                          "new_device_execution": "NOT_RUN", "new_compilation": "NOT_RUN",
                          "threshold_changes": "NONE", "report": str(report_path)}
