@@ -120,15 +120,46 @@ def test_partial_or_corrupt_transfer_is_retained_without_claiming_snapshot(tmp_p
     assert not (tmp_path / name).exists()
 
 
-def test_large_snapshot_is_retained_but_not_parsed(tmp_path, monkeypatch):
-    monkeypatch.setattr(hilog, "_MAX_SUMMARY_BYTES", 5)
-    monkeypatch.setattr(hilog, "_hilog_summary_details", lambda *a, **k: pytest.fail("unbounded selection"))
-    _, result = capture(tmp_path)
-    assert result["status"] == "CAPTURED" and result["summary_lines"] == []
-    assert result["summary"]["status"] == "NOT_SELECTED"
-    assert result["summary"]["snapshot_bytes"] == len(SNAPSHOT.encode())
-    assert result["summary"]["max_bytes"] == 5
-    assert (tmp_path / "draft-hilog.txt").read_text() == SNAPSHOT
+def test_large_snapshot_keeps_useful_failure_without_loading_whole_file(tmp_path, monkeypatch):
+    snapshot = ("unrelated shared system log " + "x" * 1000 + "\n") * 17000 + SNAPSHOT
+    assert len(snapshot) > 16 * 1024 * 1024
+    original = Path.read_text
+    def no_whole_snapshot(path, *args, **kwargs):
+        assert path.name != "draft-hilog.txt", "snapshot selection must stream"
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", no_whole_snapshot)
+    _, result = capture(tmp_path, snapshot=snapshot)
+    assert result["status"] == "CAPTURED"
+    assert result["summary"]["snapshot_bytes"] == len(snapshot.encode())
+    assert result["summary"]["selection_io"] == "streamed"
+    assert "RestoreFromBuffer failed for draft" in "\n".join(result["summary_lines"])
+    assert len(result["summary_lines"]) <= 100
+
+
+def test_service_root_cause_around_explicit_runner_pid_is_included(tmp_path):
+    snapshot = (
+        "03-11 05:49:25.128 42 42 I C02154/runner/AI_FMK: load model begin\n"
+        "03-11 05:49:25.174 1112 9 E C02151/hiaiserver/AI_NPUCL: unrelated thread error\n"
+        "03-11 05:49:25.175 1112 1150 E C02151/hiaiserver/AI_NPUCL: Invalid weights memory size: weightsMemBaseSize=16 modelWeightMemorySize=1151486976\n"
+        "03-11 05:49:25.175 1112 1150 E C02151/hiaiserver/AI_NPUCL: InitRuntimeParams failed\n"
+        "03-11 05:49:25.175 1112 1150 E C02151/hiaiserver/AI_NPUCL: model loaded fail, Pid: 42\n"
+        "03-11 05:49:25.176 42 42 E C02151/runner/AI_NPUCL: Init failed\n"
+        "03-11 05:49:29.175 1112 1150 E C02151/hiaiserver/AI_NPUCL: outside runner lifetime error\n")
+    _, result = capture(tmp_path, snapshot=snapshot)
+    selected = "\n".join(result["summary_lines"])
+    assert "weightsMemBaseSize=16" in selected and "model loaded fail" in selected
+    assert "unrelated thread" not in selected and "outside runner lifetime" not in selected
+    assert result["summary"]["service_context"]["server_tid"] == 1150
+    assert result["summary"]["service_context"]["recorded_pid"] == 42
+
+
+def test_service_errors_without_explicit_matching_pid_are_not_attributed(tmp_path):
+    snapshot = SNAPSHOT.replace(
+        "10-28 11:30:00.002 99 99 E A00000/AI_FMK: Load unrelated model failed",
+        "10-28 11:30:00.002 1112 1150 E C02151/hiaiserver/AI_NPUCL: model loaded fail, Pid: 420")
+    _, result = capture(tmp_path, snapshot=snapshot)
+    assert "Pid: 420" not in "\n".join(result["summary_lines"])
+    assert result["summary"]["service_context"]["status"] == "NO_EXPLICIT_PID_FAILURE"
 
 
 def test_changed_snapshot_is_not_displayed(tmp_path, monkeypatch):

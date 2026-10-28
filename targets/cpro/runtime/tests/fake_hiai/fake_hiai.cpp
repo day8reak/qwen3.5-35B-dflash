@@ -1,4 +1,6 @@
 #include "HiAiModelManagerService.h"
+#include <model_manager/model_manager.h>
+#include <filesystem>
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -347,5 +349,117 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
   }
   if(Failure()=="token") top[0]=64;
   stamp=1; return 0;
+}
+}
+
+// V2 transport/lifetime double. It does not model proprietary external-weight
+// restoration or prove that a device supports this route.
+namespace hiai {
+namespace {
+class FakeNDTensor final : public INDTensorBuffer {
+ public:
+  explicit FakeNDTensor(NDTensorDesc desc) : desc_(std::move(desc)) {
+    ++tensors;
+    std::size_t size=desc_.dataType==DataType::FLOAT16?2:4;
+    for (auto d:desc_.dims) size*=static_cast<std::size_t>(d);
+    data_.resize(size);
+  }
+  ~FakeNDTensor() override { --tensors; }
+  void* GetData() override { return data_.data(); }
+  std::size_t GetSize() const override { return Failure()=="v2-short-buffer"?1:data_.size(); }
+  const NDTensorDesc& GetTensorDesc() const override { return desc_; }
+ private:
+  NDTensorDesc desc_;
+  std::vector<std::uint8_t> data_;
+};
+NDTensorDesc DraftDesc(std::vector<std::int32_t> dims, DataType type) {
+  if (Layout()=="padded") dims.resize(4,1);
+  else if (Layout()=="leading-feature" && dims.size()==3) dims.insert(dims.begin(),1);
+  return {dims,type,Format::ND};
+}
+class FakeBuiltModel final : public IBuiltModel {
+ public:
+  bool restored=false;
+  ~FakeBuiltModel() override { Trace("v2-built-model-destroy"); }
+  Status RestoreFromFile(const char* path) override {
+    Trace("v2-restore-file");
+    if (const auto* trace=std::getenv("FAKE_HIAI_PATH_TRACE")) std::ofstream(trace) << path;
+    std::ifstream file(path,std::ios::binary);
+    std::string data((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());
+    if (!std::filesystem::path(path).is_absolute() || data!="draft-standalone-fixture") return 2;
+    restored=Failure()!="v2-restore";
+    return restored?0:31;
+  }
+  std::vector<NDTensorDesc> GetInputTensorDescs() const override {
+    auto input=std::vector<NDTensorDesc>{DraftDesc({1,8,16384},DataType::FLOAT16),
+        DraftDesc({1,8},DataType::INT32),DraftDesc({1,8},DataType::INT32)};
+    if (Failure()=="v2-dtype") input[0].dataType=DataType::FLOAT32;
+    if (Failure()=="v2-format") input[0].format=Format::NCHW;
+    if (Failure()=="v2-shape") input[0].dims={1,4,32768};
+    if (Failure()=="v2-zero-dim") input[0].dims={1,0,16384};
+    return input;
+  }
+  std::vector<NDTensorDesc> GetOutputTensorDescs() const override {
+    if (Failure()=="v2-count") return {};
+    return {DraftDesc({1,15},DataType::INT32),DraftDesc({1,15,2048},DataType::FLOAT16)};
+  }
+};
+class FakeModelManager final : public IModelManager {
+ public:
+  FakeModelManager() { ++clients; }
+  ~FakeModelManager() override {
+    if (initialized_) { std::cerr << "LEAK v2 model manager\n"; std::abort(); }
+    Trace("v2-manager-destroy"); --clients;
+  }
+  Status Init(const ModelInitOptions& options,const std::shared_ptr<IBuiltModel>& model,
+              const std::shared_ptr<IModelManagerListener>& listener) override {
+    Trace("v2-init");
+    auto concrete=std::dynamic_pointer_cast<FakeBuiltModel>(model);
+    if (listener || options.perfMode!=PerfMode::HIGH || !concrete || !concrete->restored) return 4;
+    model_=model; initialized_=true;
+    return Failure()=="v2-init"?32:0;
+  }
+  Status Run(const std::vector<std::shared_ptr<INDTensorBuffer>>& inputs,
+             std::vector<std::shared_ptr<INDTensorBuffer>>& outputs) override {
+    Trace("v2-run");
+    if (!initialized_ || model_.expired() || inputs.size()!=3 || outputs.size()!=2) return 5;
+    if (Failure()=="v2-run") return 33;
+    // Validate all three supplied input payloads before producing test patterns.
+    if (inputs[0]->GetSize()!=8*16384*2 || inputs[1]->GetSize()!=8*4 || inputs[2]->GetSize()!=8*4) return 6;
+    auto* features=static_cast<const std::uint16_t*>(inputs[0]->GetData());
+    if (!std::all_of(features,features+8*16384,[](auto x){return x==0x3800;})) return 7;
+    auto* ids=static_cast<const std::int32_t*>(inputs[1]->GetData());
+    auto* mask=static_cast<const std::int32_t*>(inputs[2]->GetData());
+    for (int i=0;i<8;++i) if (ids[i]!=i || mask[i]!=(i<6?1:0)) return 8;
+    if (Failure()=="v2-replace-output") outputs[0]=CreateNDTensorBuffer(outputs[0]->GetTensorDesc());
+    auto* top=static_cast<std::int32_t*>(outputs[0]->GetData());
+    for (std::int32_t i=0;i<15;++i) top[i]=i+10;
+    std::fill_n(static_cast<std::uint16_t*>(outputs[1]->GetData()),15*2048,0x3800);
+    return 0;
+  }
+  void DeInit() override {
+    Trace("v2-deinit");
+    if (model_.expired()) { std::cerr << "premature v2 built model release\n"; std::abort(); }
+    initialized_=false;
+  }
+ private:
+  bool initialized_=false;
+  std::weak_ptr<IBuiltModel> model_;
+};
+}
+std::shared_ptr<INDTensorBuffer> CreateNDTensorBuffer(const NDTensorDesc& desc) {
+  Trace("v2-create-tensor");
+  if (Failure()=="v2-allocation" && tensors==3) return nullptr;
+  return std::make_shared<FakeNDTensor>(desc);
+}
+std::shared_ptr<IBuiltModel> CreateBuiltModel() {
+  Trace("v2-create-built-model");
+  if (Failure()=="v2-create-model") return nullptr;
+  return std::make_shared<FakeBuiltModel>();
+}
+std::shared_ptr<IModelManager> CreateModelManager() {
+  Trace("v2-create-manager");
+  if (Failure()=="v2-create-manager") return nullptr;
+  return std::make_shared<FakeModelManager>();
 }
 }

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 namespace qwen35::dflash {
@@ -58,7 +59,17 @@ struct HiaiIoDiagnostic {
   std::vector<HiaiOutputIoDiagnostic> outputs;
 };
 
-// One immutable graph, synchronous Process, caller-owned ordered tensor flow.
+// Carries the precise failure even when executor construction has not completed.
+class HiaiRuntimeError final : public std::runtime_error {
+ public:
+  HiaiRuntimeError(std::string stage, const std::string& message)
+      : std::runtime_error(message), stage_(std::move(stage)) {}
+  const std::string& stage() const noexcept { return stage_; }
+ private:
+  std::string stage_;
+};
+
+// One immutable graph, synchronous execution, caller-owned ordered tensor flow.
 // The caller enforces the stateful target, standalone draft or fused-op ABI.
 class HiaiStatefulExecutor final {
  public:
@@ -69,13 +80,15 @@ class HiaiStatefulExecutor final {
                       std::uint32_t timeout_ms = 300000,
                       bool fused_operator_probe = false,
                       int diagnostic_output_fill_byte = -1,
-                      bool standalone_draft = false);
+                      bool standalone_draft = false,
+                      const std::string& model_load_api = "legacy-buffer");
   ~HiaiStatefulExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
   void Execute();
   std::vector<std::uint8_t> CopyOutput(std::size_t index) const;
   const std::string& runtime_version() const noexcept;
   const HiaiIoDiagnostic& io_diagnostic() const noexcept;
+  const std::string& runtime_stage() const noexcept;
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

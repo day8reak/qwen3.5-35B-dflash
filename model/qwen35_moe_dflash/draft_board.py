@@ -232,7 +232,7 @@ def _validate_bundle(root):
     return manifest,uploads
 
 
-def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False):
+def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False, expected_model_load_api=None):
     """Validate native identity/readback before comparing Top1 and hidden values."""
     root, result_root = Path(bundle_dir).resolve(), Path(result_dir).resolve()
     manifest,_ = _validate_bundle(root)
@@ -244,12 +244,25 @@ def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False):
               'ddk_id':manifest['ddk_id'],'target_calls':0}
     if any(native.get(k)!=v for k,v in identity.items()):
         raise ValueError('native result does not bind the supplied draft bundle')
+    if expected_model_load_api is not None:
+        if expected_model_load_api not in {'file-v2','legacy-buffer'}:
+            raise ValueError('invalid expected model load API')
+        # Historical results predate this field and are legacy-only. A V2 run
+        # must name its route, so an old runner cannot silently stand in for it.
+        if native.get('model_load_api','legacy-buffer')!=expected_model_load_api:
+            raise ValueError('native model load API differs from this invocation')
+        report['model_load_api']=expected_model_load_api
     if any(type(native.get(k)) is not int for k in ('schema_version','target_calls','draft_calls')):
         raise ValueError('native call counters must be integers')
     evidence=native.get('evidence_kind')
     if evidence!='device-hiai' and not (allow_host_fake and evidence=='host-fake-hiai'):
         raise ValueError('device evidence required; host-fake is test-only')
     report['evidence_kind']=evidence
+    runtime_stage=native.get('runtime_stage')
+    if runtime_stage is not None:
+        if not isinstance(runtime_stage,str) or not runtime_stage or len(runtime_stage)>256:
+            raise ValueError('invalid native runtime stage')
+        report['runtime_stage']=runtime_stage
     if native.get('status')=='RUNTIME_FAILED':
         if (native['draft_calls'] != 0 or native.get('outputs') != []
                 or native.get('failure_stage') not in {'LOAD_OR_SETUP','INPUT_BINDING','PROCESS'}
@@ -349,11 +362,13 @@ def _receive(hdc,board,out,name,*,timeout_seconds=None):
     return text[:64]
 
 
-def execute_draft_bundle(bundle_dir,output_dir,*,timeout_seconds=3600):
+def execute_draft_bundle(bundle_dir,output_dir,*,timeout_seconds=3600,model_load_api='legacy-buffer'):
     """Build one runner, probe HDC, deploy one OMC, execute once and compare."""
     if (isinstance(timeout_seconds,bool) or not isinstance(timeout_seconds,(int,float))
             or not math.isfinite(timeout_seconds) or timeout_seconds < .001):
         raise ValueError('timeout_seconds must be finite and at least one millisecond')
+    if model_load_api not in {'file-v2','legacy-buffer'}:
+        raise ValueError('model_load_api must be file-v2 or legacy-buffer')
     native_timeout_ms=min(int(timeout_seconds*1000),2**32-1)
     root=Path(bundle_dir).resolve()
     out=output_path(output_dir)
@@ -362,7 +377,8 @@ def execute_draft_bundle(bundle_dir,output_dir,*,timeout_seconds=3600):
     out.mkdir(parents=True,exist_ok=False)
     result={'artifact_kind':'qwen35-standalone-draft-execution','status':'FAILED','stage':'preflight',
             'device_execution':'NOT_RUN','numerical_validation':'NOT_EVALUATED','runtime_placement':'UNVERIFIED',
-            'board_cleanup':'RETAINED','output':str(out),'retrieved_sha256':{},'retrieval_errors':[]}
+            'board_cleanup':'RETAINED','output':str(out),'retrieved_sha256':{},'retrieval_errors':[],
+            'model_load_api':model_load_api}
     hdc=board=None
     attempted=False
     def collect(names):
@@ -447,11 +463,16 @@ def execute_draft_bundle(bundle_dir,output_dir,*,timeout_seconds=3600):
                 raise ValueError('firmware query failed; supply actual FIRMWARE_ID')
         firmware=_text(firmware,'firmware identity')
         result.update(runtime_version=runtime,firmware_id=firmware,stage='execute',device_execution='UNVERIFIED')
-        result['native_timeout_ms']=native_timeout_ms
+        result['execution_timeout']={'host_hdc_seconds':timeout_seconds,
+            'native_process_timeout_ms':native_timeout_ms if model_load_api=='legacy-buffer' else None,
+            'scope':('HDC wait and legacy Process timeout' if model_load_api=='legacy-buffer' else
+                     'HDC wait only; synchronous V2 Run has no timeout argument; remote cancellation is unverified')}
+        if model_load_api=='legacy-buffer':
+            result['native_timeout_ms']=native_timeout_ms
         command=environment+shlex.join([str(board/'runner'),'--draft-step',str(board/'bundle/step.tsv'),
             '--output',str(board/'results'),'--expected-runtime-version',runtime,'--ddk-id',ddk,'--firmware-id',firmware,
-            '--timeout-ms',str(native_timeout_ms)])
-        print('draft-board: executing complete draft once; target is not loaded',flush=True)
+            '--timeout-ms',str(native_timeout_ms),'--model-load-api',model_load_api])
+        print(f'draft-board: executing complete draft once with {model_load_api}; target is not loaded',flush=True)
         attempted=True
         status,_=hdc.shell('cd '+shlex.quote(str(board))+' && '+command+' > draft.stdout 2> draft.stderr; '
                           'rc=$?; printf \'%s\\n\' "$rc" > '+shlex.quote(str(board/'draft.exitcode'))+'; exit "$rc"',
@@ -479,9 +500,11 @@ def execute_draft_bundle(bundle_dir,output_dir,*,timeout_seconds=3600):
                     collect(outputs)
                     if any(name not in result['retrieved_sha256'] for name in outputs):
                         raise ValueError('hash-verified native outputs are unavailable')
-                comparison=compare_draft_result(root,out/'results')
+                comparison=compare_draft_result(root,out/'results',expected_model_load_api=model_load_api)
                 save_json(out/'comparison.json',comparison)
                 result.update(native_status=native['status'],comparison=str(out/'comparison.json'))
+                if comparison.get('runtime_stage'):
+                    result['runtime_stage']=comparison['runtime_stage']
                 pid=native.get('process_id')
                 if type(pid) is int and 0 < pid <= 2**31-1:
                     result['native_process_id']=pid

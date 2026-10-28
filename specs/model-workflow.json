@@ -524,10 +524,10 @@
     },
     "standalone_draft": {
       "entrypoint": "targets/cpro/scripts/run_full_draft.py",
-      "status": "EXTERNAL_LOAD_AND_EMBEDDED_SAVE_UNRESOLVED_SELECTED_API_INSPECTION_NEXT",
+      "status": "FILE_V2_FULL_EXECUTION_IMPLEMENTED_DEVICE_RETRY_PENDING",
       "descriptor_probe": {
         "entrypoint": "targets/cpro/scripts/probe_draft_load.py",
-        "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/probe_draft_load.py\" --inspect-api",
+        "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --model-load-api file-v2",
         "output": "${AI_RUN_DIR}/full-draft/load-diagnostic",
         "status": "SETTERS_MUTUALLY_EXCLUSIVE_USER_REPORTED",
         "observations": [
@@ -592,12 +592,29 @@
             "${AI_RUN_DIR}/full-draft/load-diagnostic/api-report.txt"
           ],
           "scope": "Read selected-DDK load declarations and dynamic symbols; no HDC, model/weight read, runner build, Load or Process; do not reset prior descriptor diagnostic",
-          "status": "AWAITING_SELECTED_DDK_API_REPORT",
+          "status": "SELECTED_DDK_HEADERS_AND_DEFINED_SYMBOLS_USER_REPORTED",
           "host_validation": {
             "run_id": "20261028T075743Z-31932-5ac257",
             "tests_passed": 27,
             "evidence": "api-inventory.xml",
             "scope": "Header/symbol inventory with synthetic tool responses and existing descriptor-driver regression; selected-DDK API availability unverified"
+          },
+          "device_report": {
+            "runtime_version": "800.631.120.010",
+            "api_headers": [
+              "model/built_model.h",
+              "model_manager/model_manager.h",
+              "model_manager/model_manager_types.h"
+            ],
+            "available_methods": [
+              "CreateBuiltModel",
+              "IBuiltModel::RestoreFromFile",
+              "CreateModelManager",
+              "IModelManager::Init",
+              "IModelManager::Run",
+              "IModelManager::InitWeights"
+            ],
+            "scope": "Selected SDK header declarations and ELF definitions only, no external load or inference evidence"
           }
         }
       },
@@ -627,7 +644,7 @@
           "fixture": "full-draft-d7b4db958850",
           "air": "full-draft-732b26335347"
         },
-        "next_action": "Read selected-DDK loading API declarations and dynamic symbols using probe_draft_load.py --inspect-api; keep embedded serialization and external Load failures unresolved"
+        "next_action": "Reuse successful external OMC/bundle in fixed full-draft and execute complete file-v2 route; embedded serialization failure remains unresolved"
       },
       "latest_board_feedback": {
         "source": "USER_PASTED_NATIVE_RESULT_COMPARISON_AND_HILOG",
@@ -952,8 +969,8 @@
         ],
         "limits": "No independently retrieved remote inventory/checksum-call evidence; does not establish which sidecar path HIAI opens",
         "next_evidence": [
-          "Exact selected-DDK embedded model serialization failure context and buffer sizes",
-          "Selected-DDK file-aware model restore and external-weight API declarations and dynamic symbols from the read-only --inspect-api report"
+          "Full file-v2 run: RestoreFromFile, Init, ND tensor setup, Run and fixed-fixture comparison in one invocation",
+          "Automatically selected native and PID-associated hiaiserver failure context if any"
         ],
         "artifact_policy": "Adopt all completed stages from 732 into fixed full-draft, including successful external compilation/bundle; after successful self-contained adoption, legacy batch roots are optional history and may be removed by the user",
         "resume_run": "full-draft-732b26335347",
@@ -968,7 +985,7 @@
           "observed_older_behavior": "SetModelBuffer clears model path",
           "selected_ddk_behavior": "USER_REPORTED_PROBE_BOTH_SETTERS_RETURN_SUCCESS_AND_CLEAR_THE_OTHER_REPRESENTATION",
           "causal_status": "HYPOTHESIS_ONLY_DOES_NOT_EXPLAIN_16_BYTE_RUNTIME_MEMORY_WITHOUT_FURTHER_EVIDENCE",
-          "functional_fix": "LOADER_UNCHANGED_SELECTED_API_INSPECTION_NEXT_EMBEDDED_SERIALIZATION_FAILED"
+          "functional_fix": "FILE_V2_IMPLEMENTED_TARGET_VERIFICATION_PENDING"
         },
         "tiny_full_external_weight_difference": {
           "prior_successful_tiny_compile": "save_weights_as_external_data option omitted",
@@ -1055,7 +1072,7 @@
         }
       ],
       "fixed_workspace": {
-        "status": "IMPLEMENTED_HOST_REGRESSION_PASSED_REMOTE_ADOPTION_PENDING",
+        "status": "ADOPTED_USER_REPORTED",
         "run_id": "20261028T070549Z-29814-248e1c",
         "default_output": "${AI_RUN_DIR}/full-draft",
         "current_import_source": "full-draft-732b26335347",
@@ -1092,7 +1109,7 @@
         "interruption": "MIGRATION_JOURNAL_RECOVERY",
         "explicit_existing_output": "Auto-resume a recognized owned job in place",
         "explicit_new_output_with_resume": "Retain legacy independent output and references for compatibility",
-        "subsequent_command": "Omit --resume to continue the fixed workspace after the next executable action is determined",
+        "subsequent_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --model-load-api file-v2",
         "legacy_root_cleanup": "Not automatic; after successful self-contained adoption, the user may remove obsolete batch roots. Independent TBE diagnosis and unrelated tasks are outside this cleanup.",
         "disk_scope": "Avoids accumulating retry directories and copies during adoption; one compilation still needs input-snapshot/output space",
         "model_changes": "NONE",
@@ -1140,6 +1157,67 @@
           ],
           "inherited_weight_storage": "embedded",
           "scope": "Valid but does not import the 732 successful external compilation and bundle; not the preferred consolidation source"
+        }
+      },
+      "file_v2_execution": {
+        "run_id": "20261028T081315Z-32283-07df46",
+        "status": "HOST_REGRESSION_PASSED_DEVICE_RETRY_PENDING",
+        "command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --model-load-api file-v2",
+        "stages": [
+          "RestoreFromFile",
+          "ModelManager::Init",
+          "ND tensor validation/allocation",
+          "ModelManager::Run",
+          "output retrieval",
+          "reference comparison"
+        ],
+        "reuse": [
+          "prepared",
+          "fixture",
+          "air",
+          "compilation",
+          "bundle"
+        ],
+        "rebuild": [
+          "board runner",
+          "board outputs"
+        ],
+        "default": "file-v2 for external, legacy-buffer for embedded",
+        "init_weights_policy": "No speculative InitWeights ordering based on its declaration alone",
+        "timeout": "Host HDC wait bounds only for synchronous V2 Run; remote cancellation not established",
+        "diagnostics": [
+          "runtime_stage",
+          "model_load_api",
+          "streamed HiLog including service failure context naming runner PID",
+          "selected SDK ND headers on build failure"
+        ],
+        "device_execution": "NOT_RUN_LOCALLY",
+        "numerical_validation": "NOT_RUN_LOCALLY",
+        "host_validation": {
+          "results": [
+            {
+              "file": "diagnostics.xml",
+              "tests": 59,
+              "failures": 0,
+              "errors": 0,
+              "skipped": 0
+            },
+            {
+              "file": "v2-board-tests.xml",
+              "tests": 134,
+              "failures": 0,
+              "errors": 0,
+              "skipped": 0
+            },
+            {
+              "file": "native-file-v2-tests.xml",
+              "tests": 8,
+              "failures": 0,
+              "errors": 0,
+              "skipped": 0
+            }
+          ],
+          "scope": "Host transport doubles, V2 native fake interface and legacy regression; not real selected-DDK compilation, external-weight load, model math or device success"
         }
       }
     }

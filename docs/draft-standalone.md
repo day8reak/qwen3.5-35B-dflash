@@ -2,18 +2,20 @@
 
 当前优先跑通完整六层 DFlash，不等待40层 target 编译。沿用已经配置的 `env.sh`、主机GE、目标DDK和HDC环境。默认工作目录固定为 `$AI_RUN_DIR/full-draft`，后续自动复用成功阶段并覆盖失败阶段的日志，不再为每次重试生成新目录。
 
-描述符诊断已经回传：两个setter互相清空另一字段。下一步只读取所选DDK的加载API声明和动态符号：
+已有固定目录和成功external OMC时，下一步直接运行完整draft：
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/probe_draft_load.py" --inspect-api
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --model-load-api file-v2
 ```
 
-`--inspect-api` 读取已有 `full-draft/load-diagnostic/native/command.json` 中所选头文件和库的信息，输出 `full-draft/load-diagnostic/api-report.json` 与 `api-report.txt`。不调用HDC、不读取模型或权重、不重编译runner，也不重跑或清理此前诊断。目的是确认当前DDK是否提供携带文件位置的恢复接口及外置权重加载接口；声明或符号存在仍不能证明实际加载成功。
+所选DDK的API检查已回传，确认 `CreateBuiltModel`、`RestoreFromFile`、`CreateModelManager`、`Init` 和 `Run`。此次用V2完整路径恢复OMC，再初始化、分配并核验ND张量、运行完整draft、回收输出和参考比较；初始化成功不会停在诊断步骤。外置权重与OMC保持现有目录关系和大小/SHA256校验。单次命令不重编译成功的AIR/OMC、不准备新权重或参考；只重建runner和board结果，并上传完整现有bundle。
 
-此前无 `--inspect-api` 的设备诊断仅上传经过清单大小/SHA256验证的external主OMC（2,905,990字节，上限64MiB）、runner和相同规则选择的运行库，没有上传sidecar或调用模型Load/Process。用户回传DDK `100.520.020.010`、运行库 `800.631.120.010`、PID63057的结果：`SetModelBuffer` 成功后路径为空；`SetModelPath` 成功后buffer为空且长度为0。交换顺序不能同时保留两项。该观察确认现有代码丢失路径，但尚未确认16字节权重内存错误的全部原因；此前tiny只传路径曾因HCL `CreateLocalBuffer` 收到空buffer失败，因此没有改回只传路径。
+`--model-load-api` 可选 `file-v2` 或 `legacy-buffer`。默认external使用file-v2，embedded使用legacy-buffer。它不改变模型图、权重、编译选项和bundle。file-v2不调用旧描述符的setter，也未凭接口名称猜测调用 `InitWeights`。本地测试不代替当前设备的外置权重加载、执行及数值结果。V2同步Run无超时参数，报告单独说明HDC等待上限及远端取消未验证。
 
-设备诊断结果位于 `$AI_RUN_DIR/full-draft/load-diagnostic/result.json`，原生输出为同目录的 `probe.json`、`probe.stderr`、`probe.exitcode`。本次不重复该诊断。`INSPECTED`只表示描述符观察完整，不代表外置权重加载或模型通过。正常模型加载方式保持不变，完整draft仍未执行成功。
+失败报告包含 `model_load_api` 和 `runtime_stage`，区分文件恢复、初始化、张量设置及推理。自动HiLog摘要流式处理超过16MB的快照，并纳入明确提及runner PID的hiaiserver失败线程上下文；保留原快照和行号。SDK构建失败会打印编译错误及实际ND头文件声明，并保留 `board/native/selected-v2-headers.txt`。不需要先重新运行 `probe_draft_load.py`。
+
+此前描述符诊断显示两种setter顺序都无法同时保留路径和buffer，报告在 `full-draft/load-diagnostic`。这些历史观察解释了换用文件恢复入口的动机，仍不单独证明16字节权重内存错误的完整原因。
 
 当前最新 `full-draft-6599025a0b74` 的embedded编译在 `Compile end` 后保存模型失败。以下是此前首次迁移命令，已完成迁移时无需重跑。它从732批次迁入已有成功阶段，保留external OMC和bundle，只整理已有产物，不编译、不上板：
 
@@ -57,7 +59,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 这一步验证完整draft在固定输入上的执行与输出，不是独立文本生成，也不证明原始BF16质量、与量化target的接受率或加速。当前实现是prefix recomputation，没有新增draft KV增量缓存。后续将固定features换成真实target的八层特征，再做接入验证。
 
-后续需要执行完整模型时省略 `--resume`，入口自动读取固定目录中的任务。下面保留常规续跑形式；当前先完成上面的加载接口诊断，不重复运行已知失败的模型Load：
+后续执行完整模型时省略 `--resume`，入口自动读取固定目录中的任务。常规续跑也会按存储模式选择上述加载API：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
@@ -72,7 +74,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 v4将BOOL掩码转成INT32的0/1，GatherV2使用全零索引复制单例query/head维，最后转回BOOL；覆盖六层显式扩展和Select补出的六层head扩展，共12处。掩码值、权重、PyTorch参考、浮点计算和输出ABI不变。此前v3的INT32形状参数修改没有解决设备加载问题，历史失败记录保留；v4目前只取得编译及CPUCL初始化进展，完整执行仍失败。
 
-随后 `full-draft-6599025a0b74` 使用embedded模式，在 `Compile end` 后的 `SaveToBuffer/CreateCompiledModelBuffer` 失败：`LargeMemoryOps::Copy` 的 `memcpy_s` 报错，经 `SetModelHeader/CopyDataToBuffer` 返回 `Save compiled model to file failed`。没有进入板端执行；当前确认的是保存大缓冲区失败，具体大小限制和根因未证实。单次调用失败后不会自动切换模式或再试；再次执行常规入口会重试失败阶段，因此迁移后先运行加载接口诊断。
+随后 `full-draft-6599025a0b74` 使用embedded模式，在 `Compile end` 后的 `SaveToBuffer/CreateCompiledModelBuffer` 失败：`LargeMemoryOps::Copy` 的 `memcpy_s` 报错，经 `SetModelHeader/CopyDataToBuffer` 返回 `Save compiled model to file failed`。没有进入板端执行；当前确认的是保存大缓冲区失败，具体大小限制和根因未证实。单次调用失败后不会自动切换模式或再试；再次执行常规入口会重试失败阶段，已有成功external OMC的固定目录现在可直接执行上述file-v2路线。
 
 `embedded` 显式设置OMG的 `--save_weights_as_external_data=false`，`external` 设置为true。新任务默认external，续跑不指定时继承已记录模式；首选从732迁移会继承external并保留成功编译和bundle。也可从6599迁移其完成的prepared/fixture/AIR，但会继承embedded，无法同时保留732的成功编译，因此不是当前首选。存储模式变化只使compilation/bundle失效，prepared/fixture/AIR复用。当前迁移不改变此模式，也不修改图、量化、权重、参考或加载API；不是模型加载或编译故障修复。
 

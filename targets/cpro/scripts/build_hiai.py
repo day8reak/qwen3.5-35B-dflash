@@ -12,6 +12,29 @@ from qwen35_moe_dflash.resources import load_resources, resource_path
 from qwen35_moe_dflash.hashing import sha256_file
 
 
+_V2_HEADERS = ("model/built_model.h", "model_manager/model_manager.h",
+               "model_manager/model_manager_types.h", "tensor/nd_tensor_buffer.h",
+               "tensor/nd_tensor_desc.h", "tensor/buffer.h", "util/base_types.h")
+
+
+def record_v2_headers(include, out):
+    """Bind the headers actually used by this SDK build, without guessing ABI."""
+    records = []
+    contents = []
+    for name in _V2_HEADERS:
+        path = include / name
+        if not path.is_file():
+            records.append({"path": name, "status": "MISSING"})
+            continue
+        records.append({"path": name, "status": "PRESENT", "bytes": path.stat().st_size,
+                        "sha256": sha256_file(path)})
+        with path.open("rb") as stream:
+            text = stream.read(32768).decode("utf-8", errors="replace")
+        contents.append("HEADER " + str(path) + "\n" + text)
+    (out / "selected-v2-headers.txt").write_text("\n\n".join(contents))
+    return records
+
+
 def positive_api(value):
     try:
         api = int(value)
@@ -56,15 +79,30 @@ def main():
         "-DHIAI_LIBRARIES="+";".join(libraries)]
     if args.compatible_sdk_version is not None:
         command.append("-DOHOS_COMPATIBLE_SDK_VERSION="+str(args.compatible_sdk_version))
+    api_headers = record_v2_headers(include, out)
     save_json(out/"command.json", {"argv": command, "headers_only": args.headers_only,
         "compatible_sdk_version_requested": args.compatible_sdk_version,
         "sdk_api_policy": "explicit" if args.compatible_sdk_version is not None else "sdk_default",
         "sdk_toolchain_sha256": sha256_file(toolchain),
         "header_sha256": sha256_file(include/"HiAiModelManagerService.h"),
+        "v2_headers": api_headers,
         "libraries": [{"path": p, "sha256": sha256_file(Path(p))} for p in libraries]})
-    with (out/"build.log").open("w") as log:
-        subprocess.run(command, cwd=out, stdout=log, stderr=subprocess.STDOUT, check=True)
-        subprocess.run(["cmake", "--build", str(out/"build"), "-j", "4"], cwd=out, stdout=log, stderr=subprocess.STDOUT, check=True)
+    try:
+        with (out/"build.log").open("w") as log:
+            subprocess.run(command, cwd=out, stdout=log, stderr=subprocess.STDOUT, check=True)
+            subprocess.run(["cmake", "--build", str(out/"build"), "-j", "4"], cwd=out, stdout=log, stderr=subprocess.STDOUT, check=True)
+    except subprocess.CalledProcessError:
+        from qwen35_moe_dflash.tool_logs import log_excerpt
+        print("Native build failed; compiler diagnostics:\n" + log_excerpt(out / "build.log"), file=sys.stderr)
+        # Include the previously unobserved ND declarations automatically so a
+        # selected-SDK difference does not need a second manual header query.
+        print("Selected SDK header inventory: " + str(out / "selected-v2-headers.txt"), file=sys.stderr)
+        for name in _V2_HEADERS:
+            if name.startswith("tensor/") and (include / name).is_file():
+                with (include / name).open("rb") as stream:
+                    text = stream.read(16384).decode("utf-8", errors="replace")
+                print("HEADER " + name + "\n" + text, file=sys.stderr)
+        raise
     binary = out/"build/qwen35_dflash_hiai"
     save_json(out/"result.json", {"status": "HEADERS_COMPILED" if args.headers_only else "LINKED",
         "device_validation": "PENDING", "binary_sha256": sha256_file(binary) if binary.is_file() else None,

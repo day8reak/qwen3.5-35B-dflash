@@ -547,7 +547,8 @@ void WriteIoDiagnostic(std::ostream& out, int fill, const HiaiStatefulExecutor* 
 int RunTensorStep(const std::string& path, const std::string& output,
                     const std::string& version, const std::string& ddk,
                     const std::string& firmware, std::uint32_t timeout, bool fused = false,
-                    int diagnostic_output_fill_byte = -1, bool draft = false) {
+                    int diagnostic_output_fill_byte = -1, bool draft = false,
+                    const std::string& model_load_api = "legacy-buffer") {
   const auto process_id = static_cast<std::uint64_t>(::getpid());
   const auto destination = std::filesystem::absolute(output).lexically_normal();
   NoSymlinks(destination);
@@ -578,7 +579,7 @@ int RunTensorStep(const std::string& path, const std::string& output,
   std::string failure_stage = "LOAD_OR_SETUP";
   try {
     executor = std::make_unique<HiaiStatefulExecutor>(plan.model, version, input_specs,
-                                                     plan.outputs, timeout, fused, diagnostic_output_fill_byte, draft);
+                                                     plan.outputs, timeout, fused, diagnostic_output_fill_byte, draft, model_load_api);
     failure_stage = "INPUT_BINDING";
     for (std::size_t i = 0; i < input_bytes.size(); ++i) executor->SetInput(i, input_bytes[i]);
     failure_stage = "PROCESS";
@@ -587,12 +588,17 @@ int RunTensorStep(const std::string& path, const std::string& output,
     if (diagnostic_output_fill_byte >= 0 && executor && !executor->io_diagnostic().process_called)
       failure_stage = "INPUT_BINDING";
     if ((fused || draft) && std::filesystem::create_directory(destination)) {
+      const auto* runtime_error = dynamic_cast<const HiaiRuntimeError*>(&error);
+      const auto runtime_stage = runtime_error ? runtime_error->stage() :
+          executor ? executor->runtime_stage() : failure_stage;
       std::ostringstream failed;
       failed << "{\"schema_version\":1,\"status\":\"RUNTIME_FAILED\","
              << "\"process_id\":" << process_id << ','
              << "\"scope\":\"" << (draft ? "standalone-draft-step" : "fused-operator-probe")
              << "\",\"evidence_kind\":\"" << kEvidenceKind
              << "\",\"operator_type\":\"" << plan.operator_type
+             << "\",\"model_load_api\":\"" << model_load_api
+             << "\",\"runtime_stage\":\"" << JsonEscape(runtime_stage)
              << "\",\"failure_stage\":\"" << failure_stage << "\",\"reason\":\""
              << JsonEscape(error.what()) << "\",\"expected_runtime_version\":\"" << JsonEscape(version)
              << "\",\"ddk_id\":\"" << JsonEscape(ddk) << "\",\"firmware_id\":\"" << JsonEscape(firmware)
@@ -619,6 +625,8 @@ int RunTensorStep(const std::string& path, const std::string& output,
          << "\",\"firmware_id\":\"" << JsonEscape(firmware) << "\",\"step_plan_sha256\":\""
          << plan.plan_hash << "\",\"" << (draft ? "draft_abi_sha256" : fused ? "operator_abi_sha256" : "state_abi_sha256")
          << "\":\"" << plan.abi_hash << "\",\"model_sha256\":\"" << plan.model_hash
+         << "\",\"model_load_api\":\"" << model_load_api
+         << "\",\"runtime_stage\":\"" << JsonEscape(executor->runtime_stage())
          << "\",\"sequence_length\":" << plan.sequence;
   if (draft)
     report << ",\"state_policy\":\"prefix-recompute\",\"target_calls\":0,\"draft_calls\":1,";
@@ -671,7 +679,9 @@ void Help() {
             << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID [--timeout-ms 300000]\n";
   std::cout << "GDN probe I/O diagnostics only: [--output-fill-byte 0..255]\n";
   std::cout << "qwen35_dflash_hiai --draft-step STEP.tsv --output NEW_DIRECTORY "
-            << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID [--timeout-ms 300000]\n";
+            << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID [--timeout-ms 300000] "
+            << "[--model-load-api legacy-buffer|file-v2]\n"
+            << "file-v2 uses synchronous IModelManager::Run with no native timeout; bound the process externally.\n";
 }
 }  // namespace
 int main(int argc, char** argv) {
@@ -734,6 +744,13 @@ int main(int argc, char** argv) {
       const auto version = take("--expected-runtime-version");
       const auto ddk = take("--ddk-id"), firmware = take("--firmware-id");
       const auto timeout = StepInteger(take("--timeout-ms", "300000"), UINT32_MAX);
+      std::string model_load_api = "legacy-buffer";
+      if (args.count("--model-load-api")) {
+        if (!draft_step) throw std::invalid_argument("--model-load-api requires --draft-step");
+        model_load_api = take("--model-load-api");
+        if (model_load_api != "legacy-buffer" && model_load_api != "file-v2")
+          throw std::invalid_argument("--model-load-api must be legacy-buffer or file-v2");
+      }
       int output_fill_byte = draft_step ? 0 : -1;
       if (args.count("--output-fill-byte")) {
         if (!fused) throw std::invalid_argument("--output-fill-byte requires --fused-op-step");
@@ -744,7 +761,7 @@ int main(int argc, char** argv) {
       if (!args.empty()) throw std::invalid_argument(std::string("unknown ") +
           (fused ? "fused operator" : "stateful") + " option " + args.begin()->first);
       return RunTensorStep(plan, output, version, ddk, firmware, static_cast<std::uint32_t>(timeout), fused,
-                           output_fill_byte, draft_step);
+                           output_fill_byte, draft_step, model_load_api);
     }
     const auto target = take("--target"), draft = take("--draft");
     const auto target_hash = take("--target-sha256"), draft_hash = take("--draft-sha256");

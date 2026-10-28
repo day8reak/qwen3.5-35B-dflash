@@ -6,16 +6,18 @@
 
 ## 用户现在执行什么
 
-**描述符诊断已回传，下一步读取所选DDK的加载API。** 当前DDK的两个setter互相清空另一字段，不能靠交换调用顺序同时保留路径和buffer。先确认可用的文件恢复与外置权重接口：
+**下一步直接执行完整 draft：V2 文件恢复、初始化、推理和参考比较在同一次命令中完成。** 已有固定目录保存成功的external OMC与bundle时，复用全部模型阶段，只重建runner和本次board结果：
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/probe_draft_load.py" --inspect-api
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --model-load-api file-v2
 ```
 
-`--inspect-api` 根据已有 `full-draft/load-diagnostic/native/command.json` 定位本次构建所选的头文件和库，收集相关加载声明及动态符号，写入同目录的 `api-report.json`、`api-report.txt`。它不调用HDC，不读取模型或权重，不重新构建runner，不重跑或清理已有描述符诊断。正常加载代码尚未改变，API声明或符号存在也不等于外置权重已能加载。
+用户回传的所选DDK头文件及动态符号已经确认 `CreateBuiltModel`、`IBuiltModel::RestoreFromFile`、`CreateModelManager` 和 `IModelManager::Init/Run`。新入口用完整OMC路径恢复模型，保留与15份外置权重的相对目录关系，随后初始化和执行。它不再使用互相清空字段的legacy描述符setter组合；`InitWeights` 的调用时序与用途未由当前声明证明，因此没有猜测调用或自动切换加载方式。实际外置权重支持、加载和数值结果仍需这次设备运行确认。
 
-用户回传的DDK `100.520.020.010`、运行库 `800.631.120.010`、PID63057诊断显示，两种顺序中的setter均返回0：`SetModelBuffer` 将路径清空，`SetModelPath` 将buffer清空且长度归零。该结果确认现有“路径→buffer”代码最终丢失路径，但没有执行Load/Process，不能单独证明此前16字节权重内存错误的全部原因。此前tiny只设置路径曾在HCL `CreateLocalBuffer` 因buffer为空失败，因此不盲目改回只传路径；不再重复已经完成的setter诊断。
+本次不再运行描述符或API探针、不重编译AIR/OMC、不重新准备权重或PyTorch参考。板端上传当前runner、所选运行库及已有完整bundle（包括外置权重），执行一次完整draft；成功后自动回收并比较输出。失败自动显示 `runtime_stage`、本进程日志，以及明确提及runner PID的hiaiserver失败上下文；20MB以上HiLog也按流读取并选择有界摘要。若当前SDK编译接口不同，构建错误及所选ND头文件自动保留并输出，不需要先手工查询。
+
+默认external选择 `file-v2`，embedded仍选择 `legacy-buffer`；显式选择加载API仅影响board阶段。固定目录会替换旧board结果，成功模型阶段保持复用。同步V2 `Run` 没有超时参数；HDC等待超时不保证远端进程已被取消。
 
 [独立 draft 指南](draft-standalone.md)保留完整模型入口。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 

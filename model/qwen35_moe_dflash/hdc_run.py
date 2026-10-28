@@ -33,9 +33,9 @@ _HILOG_RECORD = re.compile(
     r"(?P<pid>[1-9]\d*)\s+\d+\s+(?P<level>[DIWEF])\s+(?P<tag>[^\s:]+):(?P<message>.*)$")
 _HILOG_APP = re.compile(r"(?:^|/)qwen35_dflash_hiai(?:/|$)")
 _HILOG_INIT = re.compile(r"HIAI_Foundation_Init\(\d+\).*init hiai foundation success", re.IGNORECASE)
-_HILOG_RESTORE_FAILURE = re.compile(r"(?:RestoreFromBuffer|restore model).*(?:fail|false|null)", re.IGNORECASE)
+_HILOG_RESTORE_FAILURE = re.compile(r"(?:RestoreFromBuffer|RestoreFromFile|restore model).*(?:fail|false|null)", re.IGNORECASE)
 _HILOG_RUNTIME_OPERATION = re.compile(
-    r"\b(?:Init|ComputeInit|GenerateOp|ReshapeUpdate|ParseModel|Prepare\w*|Load\w*|RestoreFromBuffer)\b|restore model",
+    r"\b(?:Init|ComputeInit|GenerateOp|ReshapeUpdate|ParseModel|Prepare\w*|Load\w*|RestoreFromBuffer|RestoreFromFile|Run)\b|restore model",
     re.IGNORECASE)
 _HILOG_FAILURE = re.compile(r"\b(?:fail\w*|error\w*|false|null|reject\w*)\b|!=", re.IGNORECASE)
 
@@ -98,6 +98,7 @@ def _hilog_summary_details(path, *, recorded_pid=None, candidate_output=None):
     after_error = after_failure = 0
     count = 0
     first_error_line = restore_line = failure_line = None
+    end_line, end_time = candidate["start_line"], candidate["start_time"]
     failure_count = 0
     destination = candidate_output.open("x", encoding="utf-8") if candidate_output is not None else nullcontext()
     with destination as complete, path.open(encoding="utf-8", errors="replace") as stream:
@@ -112,6 +113,7 @@ def _hilog_summary_details(path, *, recorded_pid=None, candidate_output=None):
             if complete is not None:
                 complete.write(f"L{number}: " + line.rstrip("\r\n") + "\n")
             item = (number, f"L{number}: {line.rstrip()}"[:1000])
+            end_line, end_time = number, parsed["time"]
             count += 1
             if len(head) < 6:
                 head.append(item)
@@ -142,6 +144,7 @@ def _hilog_summary_details(path, *, recorded_pid=None, candidate_output=None):
                 "candidate_pid": candidate["pid"], "candidate_date": candidate["date"],
                 "candidate_start_time": candidate["start_time"],
                 "candidate_start_line": candidate["start_line"],
+                "candidate_end_line": end_line, "candidate_end_time": end_time,
                 "candidate_foundation_init_line": candidate["init_line"],
                 "candidate_lines": count, "first_error_line": first_error_line,
                 "restore_failure_line": restore_line,

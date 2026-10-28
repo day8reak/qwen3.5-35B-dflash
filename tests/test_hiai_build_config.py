@@ -147,3 +147,24 @@ def test_linked_result_binds_binary_to_exact_command_record(build_case, tmp_path
     assert command["headers_only"] is False
     assert command["libraries"] == [{"path": str(library),
                                      "sha256": hashlib.sha256(library.read_bytes()).hexdigest()}]
+
+
+def test_sdk_build_failure_returns_compiler_error_and_actual_nd_header(build_case, monkeypatch, capsys):
+    case = build_case
+    include = Path(case["config"]["hiai_include_dir"])
+    header = include / "tensor/nd_tensor_buffer.h"
+    header.parent.mkdir()
+    header.write_text("// simulated selected SDK\nstruct SelectedActualNDDeclaration {};\n")
+    def fail_build(argv, **kwargs):
+        kwargs["stdout"].write("error: selected SDK has a different tensor factory\n")
+        raise subprocess.CalledProcessError(1, argv)
+    monkeypatch.setattr(case["module"].subprocess, "run", fail_build)
+    with pytest.raises(subprocess.CalledProcessError):
+        case["run"]()
+    diagnostics = capsys.readouterr().err
+    assert "different tensor factory" in diagnostics
+    assert "SelectedActualNDDeclaration" in diagnostics
+    command = json.loads((case["output"] / "command.json").read_text())
+    record = next(row for row in command["v2_headers"] if row["path"] == "tensor/nd_tensor_buffer.h")
+    assert record["sha256"] == hashlib.sha256(header.read_bytes()).hexdigest()
+    assert not (case["output"] / "result.json").exists()

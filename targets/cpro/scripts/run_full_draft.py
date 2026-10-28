@@ -35,6 +35,8 @@ def parser():
     p.add_argument("--tbe-diagnosis", help="reuse completed TBE diagnosis; no new diagnosis matrix")
     p.add_argument("--weight-storage", choices=("external", "embedded"),
                    help="OMC weight storage; fresh jobs default external, resume inherits the recorded compilation")
+    p.add_argument("--model-load-api", choices=("file-v2", "legacy-buffer"),
+                   help="board loader only; default file-v2 for external weights, legacy-buffer for embedded weights; does not recompile OMC")
     p.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
     p.add_argument("--cxx11-abi", type=int, choices=(0, 1), default=0)
     p.add_argument("--timeout-seconds", type=int, default=3600)
@@ -119,6 +121,8 @@ def _print_board_failure(result, hilog=None):
     print(f"full-draft: Board failure evidence: {folder / 'result.json'}", flush=True)
     if result.get("failure_stage"):
         print(f"full-draft: Native failure stage: {result['failure_stage']}", flush=True)
+    if result.get("runtime_stage"):
+        print(f"full-draft: Native runtime operation: {result['runtime_stage']}", flush=True)
     for name in ("error", "transport_error", "comparison_error"):
         if result.get(name):
             print(f"full-draft: {name}: {str(result[name])[:4096]}", flush=True)
@@ -168,9 +172,10 @@ def _main(args, stack):
     board_hilog = None
     workspace = None
     weight_storage = args.weight_storage or "external"
+    model_load_api = args.model_load_api or ("file-v2" if weight_storage == "external" else "legacy-buffer")
     compile_options = {**DRAFT_COMPILE_OPTIONS,
                        "save_weights_as_external_data": "true" if weight_storage == "external" else "false"}
-    result.update(weight_storage=weight_storage, compile_options=compile_options)
+    result.update(weight_storage=weight_storage, compile_options=compile_options, model_load_api=model_load_api)
 
     def progress(row):
         message = row["message"]
@@ -218,7 +223,8 @@ def _main(args, stack):
             if not args.resume:
                 raise ValueError("--inspect-only requires --resume pointing to the retained full-draft job")
             if any(value is not None for value in (args.target_weights, args.draft_weights,
-                                                   args.sequence_length, args.valid_length, args.weight_storage)):
+                                                   args.sequence_length, args.valid_length, args.weight_storage,
+                                                   args.model_load_api)):
                 raise ValueError("inspection reads the retained job; do not select new weights, inputs or weight storage")
             from qwen35_moe_dflash.draft_compile_inspect import inspect_draft_compile
             inspection_dir = output_path(args.output or Path(run) / ("full-draft-inspect-" + uuid.uuid4().hex[:12]))
@@ -289,7 +295,9 @@ def _main(args, stack):
                 weight_storage = "embedded" if stored == "false" else "external"
                 compile_options = {**DRAFT_COMPILE_OPTIONS,
                     "save_weights_as_external_data": "true" if weight_storage == "external" else "false"}
-                result.update(weight_storage=weight_storage, compile_options=compile_options)
+                model_load_api = args.model_load_api or ("file-v2" if weight_storage == "external" else "legacy-buffer")
+                result.update(weight_storage=weight_storage, compile_options=compile_options,
+                              model_load_api=model_load_api)
             result["resumed_from"] = str(previous)
             if "air" in result["components"]:
                 from qwen35_moe_dflash.draft_standalone import CURRENT_DRAFT_EXPORT_CONTRACT
@@ -424,11 +432,13 @@ def _main(args, stack):
                    for key, value in compile_options.items()):
                 raise ValueError("draft compilation does not match the required FP16 compiler options")
             model_bytes = compiled["omc"].get("bytes")
+            # V2 changes how sidecars are restored, not the native step-plan
+            # size contract. Larger main OMC files require separate validation.
             if type(model_bytes) is not int or not 0 < model_bytes <= (1 << 32) - 1:
-                raise ValueError("compiled OMC exceeds the native SetModelBuffer UINT32_MAX size limit or has invalid size")
+                raise ValueError("compiled OMC exceeds the native step-plan UINT32_MAX size limit or has invalid size")
             model_path = checked_file(compilation_dir, compiled["omc"])
             if model_path.stat().st_size > (1 << 32) - 1:
-                raise ValueError("compiled OMC exceeds the native SetModelBuffer UINT32_MAX size limit")
+                raise ValueError("compiled OMC exceeds the native step-plan UINT32_MAX size limit")
             observed_weights = _external_weight_candidates(compiled)
             result["weight_storage_validation"] = {
                 "requested": weight_storage, "omc_bytes": model_bytes,
@@ -447,8 +457,9 @@ def _main(args, stack):
                 stage("bundle", "Preparing hash-bound draft inputs and compiled payloads")
                 bundle_dir, _ = component("bundle", "manifest.json", lambda folder: prepare_draft_bundle(
                     compilation_dir, fixture_dir, folder, config=prepared["draft_config"], ddk_id=compiled["ddk_id"], export_dir=air_dir))
-                stage("board", "Running the complete draft on the board")
-                board = execute_draft_bundle(bundle_dir, root / "board", timeout_seconds=args.timeout_seconds)
+                stage("board", f"Running the complete draft on the board with {model_load_api}; reusing compiled payloads")
+                board = execute_draft_bundle(bundle_dir, root / "board", timeout_seconds=args.timeout_seconds,
+                                             model_load_api=model_load_api)
                 result["board"] = str(root / "board")
                 result["status"] = board["status"]
                 result["device_execution"] = board.get("device_execution", "UNVERIFIED")
@@ -458,7 +469,8 @@ def _main(args, stack):
                 if board_hilog:
                     result["hilog_status"] = board_hilog.get("status", "UNVERIFIED")
                 for key in ("failure_stage", "native_status", "error", "comparison_error",
-                            "transport_error", "remote_exitcode", "retrieval_errors", "native_process_id"):
+                            "transport_error", "remote_exitcode", "retrieval_errors", "native_process_id",
+                            "runtime_stage", "execution_timeout"):
                     if key in board:
                         result[key] = board[key]
                 if board["status"] == "FAILED" and not result.get("error"):

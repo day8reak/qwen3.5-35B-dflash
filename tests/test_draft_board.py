@@ -259,7 +259,7 @@ def test_failed_runtime_retains_native_failure_stage(bundle,tmp_path):
     assert report['numerical_validation']=='NOT_EVALUATED'
 
 
-def execute_with_fake_hdc(bundle,tmp_path,monkeypatch,*,failure_stage=None,fault=None):
+def execute_with_fake_hdc(bundle,tmp_path,monkeypatch,*,failure_stage=None,fault=None,model_load_api='legacy-buffer'):
     """Exercise orchestration and real hash-checked receive with a transport double.
 
     Native device markers below are fabricated test data, never board evidence.
@@ -270,6 +270,8 @@ def execute_with_fake_hdc(bundle,tmp_path,monkeypatch,*,failure_stage=None,fault
     native_dir=tmp_path/'fake-native-source'
     native=native_result((root,manifest),native_dir,evidence='device-hiai')
     native.update(runtime_version='test-runtime',firmware_id='test-firmware',process_id=4321)
+    if model_load_api=='file-v2':
+        native.update(model_load_api=model_load_api,runtime_stage='MODEL_MANAGER_INIT' if failure_stage else 'COMPLETE')
     rc=1 if failure_stage else 0
     if failure_stage:
         native.update(status='RUNTIME_FAILED',draft_calls=0,failure_stage=failure_stage,
@@ -285,6 +287,10 @@ def execute_with_fake_hdc(bundle,tmp_path,monkeypatch,*,failure_stage=None,fault
         native['step_plan_sha256']='0'*64
     elif fault=='output_hash':
         native['outputs'][0]['sha256']='0'*64
+    elif fault=='loader_mismatch':
+        native['model_load_api']='legacy-buffer' if model_load_api=='file-v2' else 'file-v2'
+    elif fault=='loader_missing':
+        native.pop('model_load_api',None)
     elif fault=='top1':
         path=native_dir/'output_0000.bin'
         np.zeros((1,15),dtype='<i4').tofile(path)
@@ -324,6 +330,7 @@ def execute_with_fake_hdc(bundle,tmp_path,monkeypatch,*,failure_stage=None,fault
             elif label=='execute':
                 self.files.update(files)
                 assert '--timeout-ms 1250' in command
+                assert '--model-load-api '+model_load_api in command
                 if fault=='hdc_disconnect':
                     raise RuntimeError('HDC fixture connection lost after remote execution')
                 return rc,''
@@ -364,7 +371,7 @@ def execute_with_fake_hdc(bundle,tmp_path,monkeypatch,*,failure_stage=None,fault
         return {'status':'CAPTURED','recorded_pid':recorded_pid}
     monkeypatch.setattr(draft_hilog,'capture_draft_hilog',capture)
     output=tmp_path/'fake-hdc-execution'
-    result=board.execute_draft_bundle(root,output,timeout_seconds=1.25)
+    result=board.execute_draft_bundle(root,output,timeout_seconds=1.25,model_load_api=model_load_api)
     assert json.loads((output/'result.json').read_text())==result
     assert len(captures)==(1 if result['status']=='FAILED' else 0)
     return result, requested
@@ -441,3 +448,39 @@ def test_diagnostic_log_failure_does_not_mask_native_load_failure(bundle,tmp_pat
     assert result['status']=='FAILED' and result['device_execution']=='FAILED'
     assert result['error']=='HIAI LOAD_OR_SETUP fixture failure'
     assert result['hilog']['status']=='FAILED' and 'fixture log capture failed' in result['hilog']['error']
+
+
+@pytest.mark.parametrize('failure_stage',[None,'LOAD_OR_SETUP','PROCESS'])
+def test_file_v2_runs_the_same_bundle_once_and_preserves_native_stage(bundle,tmp_path,monkeypatch,failure_stage):
+    result,requested=execute_with_fake_hdc(bundle,tmp_path,monkeypatch,
+        failure_stage=failure_stage,model_load_api='file-v2')
+    assert result['model_load_api']=='file-v2'
+    assert result['runtime_stage']==('MODEL_MANAGER_INIT' if failure_stage else 'COMPLETE')
+    assert result['execution_timeout']['native_process_timeout_ms'] is None
+    assert result['execution_timeout']['host_hdc_seconds']==1.25
+    assert 'native_timeout_ms' not in result
+    assert result['status']==('FAILED' if failure_stage else 'EXECUTION_COMPLETE')
+    assert result['numerical_validation']==('NOT_EVALUATED' if failure_stage else 'TOP1_MATCHED')
+    if failure_stage:
+        assert result['hilog']['recorded_pid']==4321
+        assert not any(name.startswith('results/output_') for name in requested)
+
+
+@pytest.mark.parametrize('fault',['loader_mismatch','loader_missing'])
+@pytest.mark.parametrize('failure_stage',[None,'LOAD_OR_SETUP'])
+def test_v2_requires_bound_route_even_when_model_and_outputs_match(bundle,tmp_path,monkeypatch,fault,failure_stage):
+    result,_=execute_with_fake_hdc(bundle,tmp_path,monkeypatch,
+        failure_stage=failure_stage,model_load_api='file-v2',fault=fault)
+    assert result['status']=='FAILED' and result['device_execution']=='UNVERIFIED'
+    assert 'load API differs' in result['comparison_error']
+    assert 'runtime_stage' not in result and 'native_status' not in result
+
+
+def test_invalid_loader_is_rejected_before_creating_output(bundle,tmp_path,monkeypatch):
+    def unexpected(*args,**kwargs):
+        pytest.fail('invalid load API must fail before HDC')
+    monkeypatch.setattr(board,'Hdc',unexpected)
+    output=tmp_path/'bad-loader'
+    with pytest.raises(ValueError,match='model_load_api'):
+        board.execute_draft_bundle(bundle[0],output,model_load_api='buffer-then-path')
+    assert not output.exists()

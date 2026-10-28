@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from pathlib import Path, PurePosixPath
 import re
 import shlex
@@ -11,9 +12,56 @@ from .hdc_run import _hilog_summary_details
 
 
 _NAMES = ("draft-hilog.txt", "draft-hilog.stderr", "draft-hilog.exitcode")
-_MAX_SUMMARY_BYTES = 16 * 1024 * 1024
 _SCOPE = ("Recent shared system-log snapshot; may include other processes and runs. "
           "A matching PID can be reused. Diagnostic candidates are not proof of this run's cause.")
+
+_SERVICE_RECORD = re.compile(
+    r"^(?P<date>\d{2}-\d{2})\s+(?P<time>\d{2}:\d{2}:\d{2}\.\d+)\s+"
+    r"(?P<pid>\d+)\s+(?P<tid>\d+)\s+[DIWEF]\s+[^\s:]*\/hiaiserver\/[^\s:]+:(?P<message>.*)$")
+
+
+def _service_failure_context(snapshot, recorded_pid, candidate):
+    """Stream same-thread context around service failures naming the runner PID.
+
+    A server PID differs from the runner PID. Never select an unrelated server
+    error solely by keyword or proximity to the end of a shared snapshot.
+    """
+    if not recorded_pid or not candidate.get("candidate_date"):
+        return [], {}
+    pid_pattern = re.compile(r"\bPid\s*[:=]\s*" + str(recorded_pid) + r"\b", re.IGNORECASE)
+    failures = re.compile(r"\b(?:fail\w*|error\w*|invalid)\b", re.IGNORECASE)
+    before = deque(maxlen=40)
+    selected = {}
+    anchor = None
+    anchor_line = None
+    with snapshot.open(encoding="utf-8", errors="replace") as stream:
+        for number, line in enumerate(stream, 1):
+            if number < candidate["candidate_start_line"]:
+                continue
+            if number > candidate["candidate_end_line"]:
+                break
+            match = _SERVICE_RECORD.match(line)
+            if not match or match["date"] != candidate["candidate_date"]:
+                continue
+            hours, minutes, seconds = map(float, match["time"].split(":"))
+            moment = hours * 3600 + minutes * 60 + seconds
+            item = (number, f"L{number}: {line.rstrip()}"[:1000])
+            thread = (match["pid"], match["tid"])
+            if pid_pattern.search(match["message"]) and failures.search(match["message"]):
+                anchor = (thread, moment)
+                anchor_line = number
+                selected = dict((old_item for old_thread, old_time, old_item in before
+                                 if old_thread == thread and 0 <= moment - old_time <= 2))
+                selected[number] = item[1]
+            elif anchor and thread == anchor[0] and 0 <= moment - anchor[1] <= 2 and len(selected) < 40:
+                selected[number] = item[1]
+            before.append((thread, moment, item))
+    if not selected:
+        return [], {"status": "NO_EXPLICIT_PID_FAILURE"}
+    return [selected[n] for n in sorted(selected)], {
+        "status": "SELECTED", "recorded_pid": recorded_pid, "anchor_line": anchor_line,
+        "server_pid": int(anchor[0][0]), "server_tid": int(anchor[0][1]),
+        "scope": "Same service thread within two seconds of a failure explicitly naming the runner PID; diagnostic context, not exclusive attribution."}
 
 
 def capture_draft_hilog(hdc, board, out, *, receive, recorded_pid=None):
@@ -98,16 +146,19 @@ def capture_draft_hilog(hdc, board, out, *, receive, recorded_pid=None):
                 return diagnostic
         snapshot = out / _NAMES[0]
         snapshot_bytes = snapshot.stat().st_size
-        if snapshot_bytes > _MAX_SUMMARY_BYTES:
-            diagnostic["summary"] = {"status": "NOT_SELECTED", "reason": "snapshot exceeds diagnostic selection byte limit",
-                                     "snapshot_bytes": snapshot_bytes, "max_bytes": _MAX_SUMMARY_BYTES}
-            return diagnostic
         try:
             lines, matches, metadata = _hilog_summary_details(
                 snapshot, recorded_pid=recorded_pid, candidate_output=candidate_path)
+            # Both selectors stream the snapshot and retain bounded display
+            # windows. A 20MB shared HiLog must not hide a useful load failure.
+            service_lines, service_metadata = _service_failure_context(snapshot, recorded_pid, metadata)
+            merged = {int(line.split(":", 1)[0][1:]): line for line in lines + service_lines}
+            lines = [merged[number] for number in sorted(merged)]
             if sha256_file(snapshot) != diagnostic["retrieved_sha256"][_NAMES[0]]:
                 raise ValueError("HiLog snapshot changed during diagnostic selection")
-            diagnostic["summary"] = {"matching_lines": matches, "shown_lines": len(lines), **metadata}
+            diagnostic["summary"] = {"matching_lines": matches, "shown_lines": len(lines),
+                                     "snapshot_bytes": snapshot_bytes, "selection_io": "streamed",
+                                     "service_context": service_metadata, **metadata}
             diagnostic["summary_lines"] = lines
             if candidate_path.is_file():
                 diagnostic["candidate_log"] = {"path": str(candidate_path), "bytes": candidate_path.stat().st_size,

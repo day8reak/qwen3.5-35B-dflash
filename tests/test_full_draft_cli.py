@@ -123,6 +123,71 @@ def test_complete_job_only_runs_draft_pipeline(job, tmp_path):
     assert result["runtime_placement"] == "UNVERIFIED"
 
 
+@pytest.mark.parametrize("storage,explicit,expected", [
+    ("external", None, "file-v2"), ("embedded", None, "legacy-buffer"),
+    ("external", "legacy-buffer", "legacy-buffer"), ("embedded", "file-v2", "file-v2"),
+])
+def test_board_loader_selection_does_not_change_compiler_options(
+        job, tmp_path, monkeypatch, storage, explicit, expected):
+    from qwen35_moe_dflash import draft_board
+    main, fresh, _, calls, _ = job
+    original = draft_board.execute_draft_bundle
+    received = []
+    def execute(bundle, folder, **kwargs):
+        received.append(kwargs["model_load_api"])
+        return original(bundle, folder, **kwargs)
+    monkeypatch.setattr(draft_board, "execute_draft_bundle", execute)
+    root = tmp_path / "selected-loader"
+    args = [*fresh, "--weight-storage", storage, "--output", str(root)]
+    if explicit is not None:
+        args += ["--model-load-api", explicit]
+    assert main(args) == 0
+    result = json.loads((root / "result.json").read_text())
+    assert result["model_load_api"] == expected and received == [expected]
+    assert result["compile_options"]["save_weights_as_external_data"] == str(storage == "external").lower()
+
+
+def test_changing_loader_reuses_all_compiled_payloads_and_replaces_only_board(job, tmp_path, monkeypatch):
+    from qwen35_moe_dflash import draft_board
+    main, fresh, _, calls, failures = job
+    root = tmp_path / "full-draft"
+    failures.add("board")
+    assert main([*fresh, "--model-load-api", "legacy-buffer"]) == 1
+    old = json.loads((root / "result.json").read_text())
+    preserved = _stage_payloads(old)
+    (root / "board/stale-legacy-result.json").write_text("previous load failed")
+    original = draft_board.execute_draft_bundle
+    def execute(bundle, folder, **kwargs):
+        assert kwargs["model_load_api"] == "file-v2"
+        return original(bundle, folder, **kwargs)
+    monkeypatch.setattr(draft_board, "execute_draft_bundle", execute)
+    failures.clear(); calls.clear()
+    assert main(["--model-load-api", "file-v2"]) == 0
+    assert calls == ["board"]
+    assert not (root / "board/stale-legacy-result.json").exists()
+    _assert_payloads_unchanged(preserved)
+    result = json.loads((root / "result.json").read_text())
+    assert result["model_load_api"] == "file-v2"
+    assert result["components"] == old["components"]
+    assert [p.name for p in tmp_path.glob("full-draft*")] == ["full-draft"]
+
+
+def test_automatic_loader_uses_inherited_compilation_storage(job, tmp_path, monkeypatch):
+    from qwen35_moe_dflash import draft_board
+    main, fresh, _, calls, _ = job
+    root = tmp_path / "full-draft"
+    assert main([*fresh, "--weight-storage", "embedded", "--compile-only"]) == 0
+    original = draft_board.execute_draft_bundle
+    def execute(bundle, folder, **kwargs):
+        assert kwargs["model_load_api"] == "legacy-buffer"
+        return original(bundle, folder, **kwargs)
+    monkeypatch.setattr(draft_board, "execute_draft_bundle", execute)
+    calls.clear()
+    assert main([]) == 0
+    assert calls == ["bundle", "board"]
+    assert json.loads((root / "result.json").read_text())["model_load_api"] == "legacy-buffer"
+
+
 def test_external_board_failure_can_switch_to_embedded_without_reexport_or_reference(job, tmp_path):
     main, fresh, common, calls, failures = job
     previous = tmp_path / "external-load-failed"

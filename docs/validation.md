@@ -4,19 +4,31 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## V2 文件加载与完整 draft 执行
+
+2026-10-28，用户回传所选DDK的API检查：当前头文件声明 `IBuiltModel::RestoreFromFile`、`IModelManager::Init`、`Run`、`InitWeights`，`libhiai.so`有CreateBuiltModel/CreateModelManager等对应已定义符号。此前两个setter互相清空字段的观察保持有效。API存在尚不是实际外置权重加载通过。
+
+新 `run_full_draft.py --model-load-api file-v2` 将文件恢复、初始化、ND张量核验、同步Run、输出回收及参考比较接在一次完整流程中，复用已有成功external编译和bundle。没有新图或权重转换，也没有推测调用InitWeights。legacy-buffer路径保留，target/fused入口仍使用原API。原生报告记录具体runtime_stage和加载API，Python要求file-v2结果身份匹配，旧runner结果不能冒充新路线。
+
+失败HiLog流式选择记录，取消16MB整文件大小拒绝；新增同一服务线程在明确提及runner PID的失败前后两秒上下文，且限制在候选runner记录区间内。共享服务线程仍可能穿插其他任务，因此这些行是关联诊断，不是独占归因。SDK编译失败自动展示实际编译错误和ND头文件。
+
+设备状态仍为用户已报告的external Load失败，V2路线等待所选DDK构建及设备执行。本地缺少cpro-blue-pending目标配置，不报告远端通过。验证命令与结果见本轮工作流记录。
+
+本轮 `20261028T081315Z-32283-07df46`：`v2-board-tests.xml` 记录134项Python流程测试通过；`diagnostics.xml` 记录59项日志/SDK构建配置测试通过；`native-file-v2-tests.xml` 记录8组CTest通过。覆盖完整V2调用、12种前置或推理故障、输出对象变更拒绝、ND形状/类型检查及旧路线回归。主机ND/HIAI使用测试替身，不证明外置权重加载或模型计算正确。
+
 ## 外置模型加载描述符诊断入口
 
 只读API检查在 `20261028T075743Z-31932-5ac257/api-inventory.xml` 中与已有描述符驱动合跑27项主机测试，全部通过。覆盖按已有构建记录定位SDK与库、声明/符号提取、身份变化拒绝、工具缺失报告，以及重复检查保留原设备证据和模型文件；未在本地执行所选DDK的符号工具，不能据测试断言接口存在。
 
 2026-10-28，固定目录迁移后新增 `probe_draft_load.py`，从当前成功external编译记录核验小主OMC，使用与完整draft相同的运行库选择规则构建并部署当前runner。仅上传主OMC（上限64MiB）、runner及运行库，不读取或上传权重sidecar，也不执行AIR/OMG、模型Load或Process。
 
-原生入口为 `--probe-model-description`，在两份新 `AiModelDescription` 上分别执行路径→buffer与buffer→路径，记录每步setter状态和getter读出的路径、buffer存在/匹配状态及长度。用户现已回传DDK `100.520.020.010`、运行库 `800.631.120.010`、PID63057的设备观察：四次setter返回值均为0；`SetModelBuffer` 后路径为空、buffer保留且长度2,905,990；`SetModelPath` 后路径保留、buffer为空且长度0。两个setter互相清空另一字段，交换调用顺序无法同时保留两项。正常模型加载代码仍未改变。
+原生入口为 `--probe-model-description`，在两份新 `AiModelDescription` 上分别执行路径→buffer与buffer→路径，记录每步setter状态和getter读出的路径、buffer存在/匹配状态及长度。用户现已回传DDK `100.520.020.010`、运行库 `800.631.120.010`、PID63057的设备观察：四次setter返回值均为0；`SetModelBuffer` 后路径为空、buffer保留且长度2,905,990；`SetModelPath` 后路径保留、buffer为空且长度0。两个setter互相清空另一字段，交换调用顺序无法同时保留两项。该次诊断没有修改正常加载代码；随后新增V2路线见上节。
 
 这份用户粘贴报告绑定主OMC SHA256 `cc9a70f56639bf96b74b773f31cf5213c8fba65c63f46d3d8d6abd574bed9132`、大小2,905,990字节，回收 `probe.json` SHA256为 `3b79e966c46f9d934d0845fe5df28d7d3eba080d8bab1bbf94c1ce343fda1ebf`，远端退出0，传输错误为空。本地未重新获取原始文件独立复核；证据范围是用户回传的所选设备诊断。没有调用Load/Process，不能把 `INSPECTED` 当作外置权重加载、模型执行或数值正确。
 
 该观察确认现有“路径→buffer”加载代码最终失去路径，但不能单独证明NPU所收权重16字节的全部原因。历史提交 `bf545c2` 记录过只设置路径后HCL `CreateLocalBuffer` 因 `data != nullptr && size > 0` 失败；因此不盲目改回路径模式，也不重复两种setter顺序。732的Load失败与6599的embedded序列化失败仍未解决。
 
-结果集中在 `full-draft/load-diagnostic`，设备诊断复用固定工作目录锁，重试只替换该入口已识别的旧诊断目录，不清理模型阶段。主机端验证回收结果的模型身份、两种调用顺序和未执行Load/Process声明，完整观察才标为 `INSPECTED`；原生非零退出或传输/身份错误不得升级为成功。下一步 `probe_draft_load.py --inspect-api` 从已有 `native/command.json` 收集所选头文件声明和动态符号，写入 `api-report.json`、`api-report.txt`；不调用HDC、不读取模型或权重、不重跑或重置设备诊断。本轮本地缺少 `cpro-blue-pending` 配置，实际文件恢复/外置权重加载路线尚未验证。
+结果集中在 `full-draft/load-diagnostic`，设备诊断复用固定工作目录锁，重试只替换该入口已识别的旧诊断目录，不清理模型阶段。主机端验证回收结果的模型身份、两种调用顺序和未执行Load/Process声明，完整观察才标为 `INSPECTED`；原生非零退出或传输/身份错误不得升级为成功。随后 `probe_draft_load.py --inspect-api` 从已有 `native/command.json` 收集所选头文件声明和动态符号，写入 `api-report.json`、`api-report.txt`；不调用HDC、不读取模型或权重、不重跑或重置设备诊断。本轮本地缺少 `cpro-blue-pending` 配置，实际文件恢复/外置权重加载路线尚未验证。
 
 本轮 `20261028T073909Z-31045-e9d76e` 的 `probe-driver-final.xml` 记录19项Python测试通过，`native-description-ctest.xml` 记录7项原生CTest通过。覆盖不读取/上传sidecar、身份和传输失败、诊断目录覆盖，以及模拟setter相互清除字段、非零返回码和无Load/Process调用；原有runner回归也通过。首次驱动测试的两项失败来自模拟返回缺少新增的 `evidence_kind` 字段，修正夹具后通过，未放松真实结果校验。
 
