@@ -120,6 +120,7 @@ def test_full_draft_recipe_has_no_rank5_carriers(draft_case, tmp_path):
     assert max(len(value.shape) for value in graph._values.values()) <= 4
     assert max(len(port["shape"]) for record in records for port in record["inputs"] + record["outputs"]) <= 4
     head_copies = [record for record in records if record["type"] == "GatherV2"
-                   and len(record["inputs"][0]["shape"]) == 4]
+                   and len(record["inputs"][0]["shape"]) == 4
+                   and record["inputs"][0]["dtype"] == "float16"]
     assert len(head_copies) == 4  # K and V for each of the two attention layers.
     assert all(record["inputs"][1]["dtype"] == "int32" for record in head_copies)

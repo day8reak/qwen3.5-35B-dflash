@@ -40,16 +40,16 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 恢复创建新目录并验证复用阶段的清单哈希；进程中断时可从 `job.json` 和 `completed-*.json` 恢复。与当前导出契约一致的成功导出和编译不重跑。旧版 AIR 的外置权重序列化契约失效时，自动保留 prepared 权重和 PyTorch reference，重新导出 AIR、编译和上板；新结果记录 `resume_invalidations`，旧目录不改动。更换权重或输入形状需新建任务。只准备权重和参考可用 `--prepare-only`；准备至OMC但暂不上板可用 `--compile-only`。不要为本入口重跑旧算子探针或平台诊断矩阵。
 
-最新 `full-draft-d50bcea5ed15` 已完成编译和bundle，用户补充HiLog确认CPUCL在 `SubGraph_0` 初始化 `v501/BroadcastTo` 时失败，最终HIAI Load返回1，未进入Process。该节点为最后一层掩码 `BOOL [1,1,1,80] → [1,1,16,80]`；源码及导出描述没有零维，运行时 `InitInput1Desc` 却报告输出维16对应输入维0。形状参数解码不一致是当前排查假设，尚未证明。
+最新 `full-draft-b2ecbb36f2cd` 已完成v3 AIR编译和bundle，用户HiLog显示PID29314仍在 `SubGraph_0` 初始化 `v501/BroadcastTo` 时失败，未进入Process。该节点为最后一层掩码 `BOOL [1,1,1,80] → [1,1,16,80]`；源码及导出描述没有零维，运行时 `InitInput1Desc` 仍报告输出维16对应输入维0。INT32形状参数修改不足以修复此故障，解码原因没有得到证明。
 
-当前候选将显式BroadcastTo及Select补出的BroadcastTo形状常量改为经范围检查的INT32，保持尺寸值、布尔数据、模型与参考不变。更新导出契约后，从这次任务恢复会复用prepared/fixture，重新导出AIR、编译及上板；不要继续选最早的d7任务，也不要把旧OMC成功编译当作修复后已验证。成功tiny已有的静态常量折叠和KV Gather复制仍在当前源码中，tiny成功不覆盖完整block16的本次失败。
+下一候选将BOOL掩码转成INT32的0/1，GatherV2使用全零索引复制单例query/head维，最后转回BOOL；覆盖六层显式扩展和Select补出的六层head扩展，共12处。掩码值、权重、PyTorch参考、浮点计算和输出ABI不变。更新导出契约后，从这次任务恢复会复用其引用的 `d7b4db958850/prepared` 与fixture，重新导出AIR、编译及上板；需要保留这些源目录，不要把旧OMC成功编译当作设备修复成功。成功tiny已有的静态常量折叠和KV Gather复制仍在当前源码中，但当时BOOL掩码仍用BroadcastTo，tiny成功不覆盖完整block16的本次失败。
 
 发生板端失败时，入口会显示 `board_stage`、通过身份校验的 `failure_stage`/原生原因，以及独立的传输或比较错误，并输出有界stderr/stdout日志。旧版没有打印原因时，可直接读取已有文件，无需再次运行模型：
 
 ```bash
-cat "$AI_RUN_DIR/full-draft-d50bcea5ed15/board/results/result.json"
-cat "$AI_RUN_DIR/full-draft-d50bcea5ed15/board/comparison.json"
-tail -n 100 "$AI_RUN_DIR/full-draft-d50bcea5ed15/board/draft.stderr"
+cat "$AI_RUN_DIR/full-draft-b2ecbb36f2cd/board/results/result.json"
+cat "$AI_RUN_DIR/full-draft-b2ecbb36f2cd/board/comparison.json"
+tail -n 100 "$AI_RUN_DIR/full-draft-b2ecbb36f2cd/board/draft.stderr"
 ```
 
 `LOAD_OR_SETUP` 包含模型加载和IO建立，`INPUT_BINDING` 是输入绑定，`PROCESS` 是推理调用；需结合 `reason` 与原生日志定位，不能仅用阶段名断言根因。失败记录不要求生成输出bin，缺失成功输出不再掩盖已有原生错误。产物/运行时身份不匹配和证据回收失败仍使任务失败。
@@ -64,16 +64,16 @@ tail -n 100 "$AI_RUN_DIR/full-draft-d50bcea5ed15/board/draft.stderr"
 
 旧版输出检查错误的恢复会核验成功日志、原导出及编译输入、DDK/参数、全部编译产物和TBE审计，在新目录保存独立快照与成功记录；旧失败证据不变。旧日志没有成功退出码，恢复记录明确标注由检查阶段及成功日志推断。该恢复不重跑OMG，但不能复用已经过期的导出契约。
 
-本次BroadcastTo形状参数修复后，从最新任务续跑；保留已核验的权重和参考，重新导出、编译及上板：
+本次动态mask复制适配后，从最新任务续跑；保留已核验的权重和参考，重新导出、编译及上板：
 
 ```bash
 git pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
-  --resume "$AI_RUN_DIR/full-draft-d50bcea5ed15" \
+  --resume "$AI_RUN_DIR/full-draft-b2ecbb36f2cd" \
   --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
 ```
 
-导出契约更新为 `cpro-fileconstant-relative-int-fc-conv2d-broadcast-i32-v3`，因此旧AIR及依赖产物自动失效，prepared/reference复用。BroadcastTo改变的是形状控制常量的整数宽度，尺寸值与数据语义保持不变；所选DDK和设备验证仍待完成。`air/draft/projection-lowering.json`继续记录fc卷积表达的形状和等价范围。Conv2D与MatMul的累加顺序可能不同，板端继续对照原参考，未宣称逐位一致或20ms性能。recipe为显式NCHW使用Q35GE002，普通ND图保持Q35GE001并兼容读取。
+导出契约更新为 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4`，因此旧AIR及依赖产物自动失效，prepared/reference复用。掩码适配只使用精确的BOOL/INT32转换和索引复制，不引入浮点运算；所选DDK和设备验证仍待完成。`air/draft/projection-lowering.json`继续记录fc卷积表达的形状和等价范围。Conv2D与MatMul的累加顺序可能不同，板端继续对照原参考，未宣称逐位一致或20ms性能。recipe为显式NCHW使用Q35GE002，普通ND图保持Q35GE001并兼容读取。
 
 需要只读检查已有日志、recipe和编译图dump时，可选：
 
@@ -88,7 +88,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 如果首次准备权重尚未成功（`components` 为空），直接修正路径或文件后重跑上面的完整命令；这时没有已完成的权重、导出或编译需要复用。
 
-主机验证覆盖draft-only准备、六层参考计算、GE构图/导出、阶段恢复、外置权重绑定、原生输入检查与模拟执行失败。完整OMG成功来自用户日志；最新板端失败已定位到CPUCL BroadcastTo初始化，形状参数修复效果与数值比较仍待服务器验证。
+主机验证覆盖draft-only准备、六层参考计算、GE构图/导出、阶段恢复、外置权重绑定、原生输入检查与模拟执行失败。完整OMG成功来自用户日志；INT32形状参数版仍在CPUCL BroadcastTo初始化失败，新动态mask复制方案的加载、执行及数值结果仍待服务器验证。
 
 ## 与已用过的 4B draft 对照
 
@@ -97,5 +97,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 该分支[结果记录](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/docs/RESULTS.md)给出六层FP16 draft **20.22 ms/call**，是C16/C64 context加16行block的同步OM混合均值；W8 runtime为63.52ms、W8离线NZ为47.89ms、W4 runtime为94.68ms，后三者使用另外的五层检查点。数据来自用户设备报告，状态为 `PASS_WITH_DIFFERENCES`，ordinary token一致性未通过，任务质量未评估。这些是310P的观测，不能直接当作Cpro性能。
 
 源码可借鉴的结构有：`PackedDraftLayer`合并K/V及gate/up权重，context与block合并执行一次KV投影；GQA将Q分组折入行维，避免四份KV复制；每轮只持久写入新增已提交context的KV，block KV只临时参与注意力。当前六层图的逻辑投影调用为56次，合并后可为32次；这是源码级计数，不是已编译kernel数量或耗时承诺。当前独立入口仍为prefix-recompute，增量缓存需要同步修改ABI、状态和调度。
+
+针对本次BOOL掩码故障，已检查该参考分支的integrated与incremental实现，两者仍通过 `key_valid.expand` 或mask expand复制维度，没有看到针对Cpro CPUCL BroadcastTo初始化的显式替代。它的310P执行记录不能证明当前Cpro节点兼容；本次选择沿用tiny中Gather精确复制的思路，增加BOOL/INT32转换以满足数据类型契约，另行上板验证。
 
 两版FP16 draft均为6层、block16、32个Q头/8个KV头、head_dim128；4B hidden/intermediate/feature_width为2560/9216/20480，本版为2048/6144/16384。4B路径保留FP32 RMS归约、score/softmax，与当前FP16参考需分别核对。其W4/W8是group128、FP16激活的WeightQuantBatchMatmul路径，不能套用原target的A8W4/I4ZN。融合head与新W8 kernel在参考仓库仍是规划；当前head是完整词表linear加argmax。

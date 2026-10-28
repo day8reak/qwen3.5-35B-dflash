@@ -126,6 +126,8 @@ def test_large_snapshot_is_retained_but_not_parsed(tmp_path, monkeypatch):
     _, result = capture(tmp_path)
     assert result["status"] == "CAPTURED" and result["summary_lines"] == []
     assert result["summary"]["status"] == "NOT_SELECTED"
+    assert result["summary"]["snapshot_bytes"] == len(SNAPSHOT.encode())
+    assert result["summary"]["max_bytes"] == 5
     assert (tmp_path / "draft-hilog.txt").read_text() == SNAPSHOT
 
 

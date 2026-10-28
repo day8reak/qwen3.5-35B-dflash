@@ -164,6 +164,32 @@ def test_board_failure_reports_native_cause_or_evidence_error_without_retry(job,
         assert "draft-hilog.txt" in text and "L17: HIAI fixture diagnostic candidate" in text
 
 
+@pytest.mark.parametrize("summary", [
+    {"status": "NOT_SELECTED", "reason": "snapshot exceeds diagnostic selection byte limit",
+     "snapshot_bytes": 17 * 1024 * 1024, "max_bytes": 16 * 1024 * 1024},
+    {"status": "NO_MATCHING_RECORDS", "recorded_pid": 29314,
+     "scope": "No records match the recorded PID; no other process was substituted."},
+])
+def test_captured_hilog_with_empty_summary_explains_selection_without_execution(job, tmp_path, capsys, summary):
+    main, _, _, calls, _ = job
+    result = {"status": "FAILED", "board": str(tmp_path), "failure_stage": "LOAD_OR_SETUP",
+              "error": "HIAI Load failed: 1"}
+    original = dict(result)
+    diagnostic = {"status": "CAPTURED", "summary_lines": [], "summary": summary,
+                  "process_identity": {"recorded_pid": 29314},
+                  "scope": "Shared system-log snapshot; may include other processes and runs."}
+    main.__globals__["_print_board_failure"](result, diagnostic)
+    output = capsys.readouterr().out
+    assert "status=CAPTURED" in output and f"summary: status={summary['status']}" in output
+    assert "recorded_pid=29314" in output and "HIAI Load failed: 1" in output
+    assert summary.get("scope", diagnostic["scope"]) in output
+    if summary["status"] == "NOT_SELECTED":
+        assert summary["reason"] in output
+        assert f"snapshot_bytes: {17 * 1024 * 1024}" in output
+        assert f"max_bytes: {16 * 1024 * 1024}" in output
+    assert result == original and calls == []
+
+
 def test_interruption_receipts_resume_without_final_result(job, tmp_path):
     main, fresh, common, calls, _ = job
     previous = tmp_path / "interrupted"
@@ -296,7 +322,8 @@ def test_old_compile_options_reuse_air_and_rebuild_only_compilation_bundle(job, 
 
 
 @pytest.mark.parametrize("contract", [None, "legacy-absolute-fileconstant", "cpro-fileconstant-relative-int-v1",
-                                    "cpro-fileconstant-relative-int-fc-conv2d-v2"])
+                                    "cpro-fileconstant-relative-int-fc-conv2d-v2",
+                                    "cpro-fileconstant-relative-int-fc-conv2d-broadcast-i32-v3"])
 def test_old_air_after_compile_failure_reexports_without_loading_weights_or_reference(job, tmp_path, contract):
     main, fresh, common, calls, failures = job
     previous = tmp_path / "old-compile-failed"
@@ -334,15 +361,17 @@ def test_old_air_receipts_invalidate_dependent_compilation_and_bundle_after_inte
         name: old["components"][name] for name in ("air", "compilation", "bundle")}
 
 
-def test_int64_broadcast_air_rebuilds_after_board_failure_preserving_reference(job, tmp_path):
+@pytest.mark.parametrize("contract", ["cpro-fileconstant-relative-int-fc-conv2d-v2",
+                                    "cpro-fileconstant-relative-int-fc-conv2d-broadcast-i32-v3"])
+def test_native_broadcast_air_rebuilds_after_board_failure_preserving_reference(job, tmp_path, contract):
     main, fresh, common, calls, failures = job
     previous = tmp_path / "compiled-old-broadcast"
     failures.add("board")
     assert main([*fresh, "--output", str(previous)]) == 1
-    old = _make_legacy_air(previous, contract="cpro-fileconstant-relative-int-fc-conv2d-v2")
+    old = _make_legacy_air(previous, contract=contract)
     before = {path: path.read_bytes() for path in previous.rglob("*") if path.is_file()}
     failures.clear(); calls.clear()
-    resumed = tmp_path / "int32-broadcast"
+    resumed = tmp_path / "gather-mask"
     assert main([*common, "--resume", str(previous), "--output", str(resumed)]) == 0
     assert calls == ["air", "compilation", "bundle", "board"]
     result = json.loads((resumed / "result.json").read_text())
@@ -350,7 +379,7 @@ def test_int64_broadcast_air_rebuilds_after_board_failure_preserving_reference(j
     invalidation, = result["resume_invalidations"]
     assert invalidation["reason"] == "OBSOLETE_DRAFT_EXPORT_CONTRACT"
     assert set(invalidation["components"]) == {"air", "compilation", "bundle"}
-    assert invalidation["required_export_contract"].endswith("broadcast-i32-v3")
+    assert invalidation["required_export_contract"].endswith("mask-gather-v4")
     assert all(path.read_bytes() == content for path, content in before.items())
 
 

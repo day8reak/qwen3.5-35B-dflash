@@ -35,7 +35,7 @@ def _check_shape(records, record):
     return literal
 
 
-def test_full_six_layer_s64_block16_v501_and_all_runtime_broadcast_controls(tmp_path):
+def test_full_six_layer_s64_block16_v501_and_all_mask_broadcasts_use_integer_copies(tmp_path):
     _, config, graph = _graph(64)
     assert config.num_hidden_layers == 6 and config.block_size == 16
     original = copy.deepcopy(graph.manifest())
@@ -48,20 +48,19 @@ def test_full_six_layer_s64_block16_v501_and_all_runtime_broadcast_controls(tmp_
     records, _, outputs = _serialize_both(graph, tmp_path, weight_paths=paths,
         external_weights=True, fold_constant_arithmetic=False, draft_fc_policy="conv2d")
     assert (tmp_path / "recipe/graph.recipe").read_bytes()[:8] == b"Q35GE002"
-    broadcasts = [record for record in records if record["type"] == "BroadcastTo"]
-    assert len(broadcasts) == 12
-    for record in broadcasts:
-        _check_shape(records, record)
-    explicit = next(record for record in broadcasts if record["name"] == "v501")
-    assert explicit["inputs"][0]["shape"] == observed.inputs[0].shape
+    assert not any(record["type"] == "BroadcastTo" for record in records)
+    copies = [record for record in records if record["type"] == "GatherV2" and "/mask_copy/" in record["name"]]
+    assert len(copies) == 12
+    explicit = next(record for record in records if record["name"] == "v501")
+    assert explicit["type"] == "Cast" and explicit["inputs"][0]["dtype"] == "int32"
     assert explicit["outputs"][0]["shape"] == observed.output.shape
-    assert explicit["inputs"][0]["dtype"] == explicit["outputs"][0]["dtype"] == "bool"
+    assert explicit["outputs"][0]["dtype"] == "bool"
     selected = _assert_select_contract(records)
     masks = [record for record in selected if record["outputs"][0]["dtype"] == "float16"]
     assert len(masks) == 6
     for record in masks:
         condition = records[record["inputs"][0]["src"]]
-        assert condition["type"] == "BroadcastTo" and condition["outputs"][0]["dtype"] == "bool"
+        assert condition["type"] == "Cast" and condition["outputs"][0]["dtype"] == "bool"
         assert record["outputs"][0]["shape"] == (1, 32, 16, 80)
     assert [records[index]["outputs"][port]["shape"] for index, port in outputs] == [(1, 15), (1, 15, 2048)]
     assert graph.manifest() == original
@@ -77,10 +76,8 @@ def test_dynamic_v501_mask_to_select_preserves_selected_nan_and_signed_zero_bits
     other = graph.const(np.float16(-np.inf))
     graph.outputs = [graph.op("where", expanded, scores, other, shape=scores.shape, name="v505")]
     records, _, outputs = _serialize_both(graph, tmp_path)
-    broadcasts = [record for record in records if record["type"] == "BroadcastTo"]
-    assert len(broadcasts) == 2 and {record["name"] for record in broadcasts} == {"v501", "__ge/v505/broadcast_0"}
-    for record in broadcasts:
-        _check_shape(records, record)
+    assert not any(record["type"] == "BroadcastTo" for record in records)
+    assert sum(record["type"] == "GatherV2" for record in records) == 2
     _assert_select_contract(records)
     mask = ((np.arange(80) // 8) % 2 == 0).reshape(condition.shape)
     # Every value appears on both selected and excluded positions; where must
@@ -90,7 +87,10 @@ def test_dynamic_v501_mask_to_select_preserves_selected_nan_and_signed_zero_bits
     expected = np.where(mask, feed, np.float16(-np.inf))
     actual, = _evaluate_recipe(records, outputs, {"condition": mask, "scores": feed})
     np.testing.assert_array_equal(actual.view("<u2"), expected.view("<u2"))
-    assert not any(record["type"] in {"Mul", "Add", "Cast"} for record in records)
+    assert not any(record["type"] in {"Mul", "Add"} for record in records)
+    assert all(record["inputs"][0]["dtype"] in {"bool", "int32"} and
+               record["outputs"][0]["dtype"] in {"bool", "int32"}
+               for record in records if record["type"] == "Cast")
 
 
 @pytest.mark.parametrize("dtype", ["float16", "int32", "int64", "bool"])

@@ -4,13 +4,23 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 完整 draft 的 INT32 形状参数重试仍失败
+
+2026-10-28，用户回传 `full-draft-b2ecbb36f2cd`：v3 AIR已完成编译和打包，板端PID29314仍在CPUCL的 `v501/BroadcastTo` 初始化处报告 `InitInput1Desc` 输出维16对应输入维0，随后 `SubGraph_0` Prepare与HIAI Load失败。该节点的源/导出描述仍为 `BOOL [1,1,1,80] → [1,1,16,80]`。这说明只修改形状控制常量宽度不足以解决当前故障；没有证明运行时出现0的解码原因，也没有执行Process或数值比较。下节INT32版本的主机通过记录保持原验证范围，不能作为设备修复证据。
+
+下一候选仅替换动态BOOL掩码的单例维复制路径：Cast成INT32的0/1，GatherV2通过全零索引复制query/head单例维，再Cast回BOOL。范围为完整六层的6处query-row扩展及6处Select补出的head扩展，共12处。保留掩码值与布尔语义、模型权重、PyTorch参考、浮点计算及输出ABI。没有选择直接BOOL ConcatD，因为公开ConcatD类型契约不包含BOOL；既有tiny的KV Gather仅提供精确复制思路，不能替代本次BOOL路径的设备验证。
+
+新契约为 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4`。所选DDK能否编译、加载和执行仍需重试，不承诺消除其他设备限制。恢复以 `b2ecbb36f2cd` 为入口，保留其引用的 `d7b4db958850` prepared/fixture，重建AIR及依赖的compilation/bundle。检查用户指定4B参考分支时，integrated与incremental源码仍使用mask expand，没有找到Cpro CPUCL BOOL BroadcastTo的现成替代；不能从其310P运行记录推定本次兼容性。
+
+主机回归在 `20261028T060146Z-27345-da9c4b/mask-combined.xml` 记录279项通过、4项因未配置真实GE头文件/运行库跳过。独立recipe解释器覆盖完整六层12处mask复制、tiny、两条导出路径、短/部分/完整前缀和含NaN/Inf/符号零的Select逐位比较；阶段恢复测试确认v2/v3旧产物只复用prepared/fixture，原目录不变。失败日志摘要为空时还会打印筛选状态、PID及大小限制原因，捕获成功不再与摘要生成混淆。上述结果不包含所选DDK编译或板端执行。
+
 ## 完整 draft 的 BroadcastTo 加载失败与 tiny 对照
 
 2026-10-28，用户补充 `full-draft-d50bcea5ed15` 的PID13294 HiLog：`broad_cast_to_op_execute.cpp InitInput1Desc(167)` 报输出维16对应输入维0，随后 `cpu_graph_executor` 明确记录 `Op[name:v501,type:BroadcastTo] Init error`，并导致 `SubGraph_0` Prepare及模型Load失败。当前完整六层S64图的 `v501` 是最后一层full-attention掩码复制，输入 `BOOL [1,1,1,80]`，输出 `[1,1,16,80]`；源码和导出描述中的尺寸均为正数。模型没有进入Process，数值比较仍为NOT_EVALUATED。证据来自用户粘贴，未独立回收并核验该批次远端产物。
 
 对照历史：`5db0ef1` 只把有界静态Const广播提前展开，动态掩码广播保留；`78d94ef` 把KV头复制的五维广播改为四维GatherV2，保持顺序及FP16原始位模式。两项均仍存在。`0d108c1` 记录tiny板端执行成功，建议源码为 `c1dd0aa`，但未提供实际提交与产物哈希；当时对应动态掩码为 `[1,1,1,12] → [1,1,4,12]`。当前 `ge_draft.py` 与该成功记录时的版本一致，没有发现遗失修复，也没有找到相同InitInput1Desc错误的历史证据。
 
-当前兼容候选仅把BroadcastTo形状控制常量从INT64改为经范围检查的INT32，同时覆盖图中显式广播和Select生成的同形输入广播，沿用已有Reshape控制常量约定。布尔数据和目标尺寸保持不变；权重、浮点计算、PyTorch参考及模型ABI不变。运行时对形状常量的解码问题仍是假设，不能由源尺寸非零或主机序列化正确推出已修复设备Load。新导出契约 `cpro-fileconstant-relative-int-fc-conv2d-broadcast-i32-v3` 使旧AIR及依赖编译/bundle失效，只复用prepared与fixture；需要重新导出、编译及上板验证。
+当时的兼容候选仅把BroadcastTo形状控制常量从INT64改为经范围检查的INT32，同时覆盖图中显式广播和Select生成的同形输入广播，沿用已有Reshape控制常量约定。布尔数据和目标尺寸保持不变；权重、浮点计算、PyTorch参考及模型ABI不变。该版本导出契约为 `cpro-fileconstant-relative-int-fc-conv2d-broadcast-i32-v3`。后续上述b2批次确认编译通过但设备Load仍失败；运行时对形状常量的解码问题没有得到证明。
 
 固定版本的[官方TorchAir BroadcastTo定义](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py)允许BOOL数据，形状输入允许INT32或INT64。因此旧INT64符合该公开schema；此次修改是面向当前X90路径的兼容候选，不能推广成所有GE运行时都拒绝INT64形状。
 

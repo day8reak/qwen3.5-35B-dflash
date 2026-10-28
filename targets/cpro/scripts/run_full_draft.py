@@ -115,7 +115,18 @@ def _print_board_failure(result, hilog=None):
     if hilog:
         print(f"full-draft: HIAI system log: {folder / 'draft-hilog.txt'}; status={hilog.get('status')}", flush=True)
         print("full-draft: System-log candidates may include other sessions; inspect PID and context.", flush=True)
-        for line in hilog.get("summary_lines", []):
+        lines = hilog.get("summary_lines", [])
+        if not lines:
+            summary = hilog.get("summary", {})
+            pid = summary.get("recorded_pid", hilog.get("process_identity", {}).get("recorded_pid"))
+            print(f"full-draft: HiLog summary: status={summary.get('status', 'EMPTY')}; recorded_pid={pid}", flush=True)
+            for key in ("reason", "snapshot_bytes", "max_bytes"):
+                if key in summary:
+                    print(f"full-draft: HiLog summary {key}: {str(summary[key])[:1000]}", flush=True)
+            scope = summary.get("scope", hilog.get("scope"))
+            if scope:
+                print(f"full-draft: HiLog summary scope: {str(scope)[:1000]}", flush=True)
+        for line in lines:
             print(str(line)[:1000], flush=True)
 
 

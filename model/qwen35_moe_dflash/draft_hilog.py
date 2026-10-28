@@ -97,9 +97,10 @@ def capture_draft_hilog(hdc, board, out, *, receive, recorded_pid=None):
                 diagnostic.update(status="UNAVAILABLE", reason="hilog rejected the command combination (CODE -31)")
                 return diagnostic
         snapshot = out / _NAMES[0]
-        if snapshot.stat().st_size > _MAX_SUMMARY_BYTES:
+        snapshot_bytes = snapshot.stat().st_size
+        if snapshot_bytes > _MAX_SUMMARY_BYTES:
             diagnostic["summary"] = {"status": "NOT_SELECTED", "reason": "snapshot exceeds diagnostic selection byte limit",
-                                     "max_bytes": _MAX_SUMMARY_BYTES}
+                                     "snapshot_bytes": snapshot_bytes, "max_bytes": _MAX_SUMMARY_BYTES}
             return diagnostic
         try:
             lines, matches, metadata = _hilog_summary_details(

@@ -352,9 +352,12 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
                     raise ValueError("BroadcastTo descriptor differs from its source/shape")
                 if np.broadcast_shapes(ins[0].shape, v.shape) != v.shape:
                     raise ValueError("BroadcastTo input cannot expand to output shape")
+                e.validate_broadcast_shape(v, a["shape"])
                 constant = e.static_broadcast(ins[0], v)
                 if constant is not None:
                     e.alias_constant(v, constant)
+                    continue
+                if e.emit_mask_broadcast(ins[0], v):
                     continue
             typ = {"reshape": "Reshape", "broadcast_to": "BroadcastTo", "transpose": "Transpose"}[kind]
             key = "perm" if kind == "transpose" else "shape"

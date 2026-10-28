@@ -8,9 +8,9 @@
 
 **先运行完整 draft 的独立入口。** [独立 draft 指南](draft-standalone.md)提供一条命令完成真实权重准备、PyTorch参考、GE导出、OMG编译和HIAI执行。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
-最新用户回传 **`full-draft-d50bcea5ed15`** 已完成完整draft的OMG编译和打包，原生报告确认 `LOAD_OR_SETUP` / `HIAI Load failed: 1`，`process_called=false`。补充HiLog已把失败定位到 `SubGraph_0` 的CPUCL节点 `v501/BroadcastTo` 初始化：`InitInput1Desc` 报输出维16对应的输入维为0。源码及导出描述中的尺寸均为正数；该节点复制最后一层注意力掩码，`BOOL [1,1,1,80] → [1,1,16,80]`。这确认了失败节点，尚不能证明形状参数如何被运行时解码。
+最新用户回传 **`full-draft-b2ecbb36f2cd`** 已完成v3 AIR编译和打包，但PID29314仍在 `SubGraph_0` 的CPUCL节点 `v501/BroadcastTo` 初始化失败：`InitInput1Desc` 再次报告输出维16对应输入维0，最终HIAI Load失败，未进入Process。将形状参数改成INT32没有解决这次故障。该节点复制最后一层注意力掩码，`BOOL [1,1,1,80] → [1,1,16,80]`；源码及导出尺寸均为正数，运行时为何得到0仍未证明。
 
-当前修复候选把显式及Select生成的BroadcastTo形状常量统一为经范围检查的INT32，沿用已有Reshape形状参数约定；不改变布尔掩码、模型权重、PyTorch参考或输出ABI。成功tiny使用的静态广播折叠及KV Gather复制均已保留，没有找到同一错误的历史修复记录。新的形状参数契约需要重新导出AIR、编译和上板；从 **`d50bcea5ed15`** 续跑保留prepared与fixture，旧AIR、compilation及bundle随契约变更失效。运行时800.631.120.010、固件OpenHarmony-6.0.0.43；模型尚未进入Process或数值比较，远端证据尚未由本地复核。
+下一候选将BOOL掩码转成INT32的0/1，用GatherV2的全零索引复制单例维，再转回BOOL，避开该动态BroadcastTo路径；同时覆盖六层显式mask扩展和六层Select的head扩展，共12处。模型权重、PyTorch参考、浮点计算和输出ABI保留。成功tiny的KV复制已经采用Gather，但当时BOOL掩码仍用BroadcastTo；4B参考源码也仍用mask expand，没有找到现成的Cpro CPUCL掩码绕行。新契约 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4` 仍需重新导出AIR、编译和上板验证；从 **`b2ecbb36f2cd`** 续跑，保留其引用的 `d7b4db958850` prepared/fixture，旧AIR、compilation及bundle失效。模型尚未进入数值比较，远端证据尚未由本地复核。
 
 原生失败保存在 `board/results/result.json`、`board/comparison.json` 与 `board/draft.stderr`。错误回传已修正：保留原生失败原因，单独记录传输/证据问题，运行失败时不要求成功输出bin。此前 `a091f16d13d8` 的嵌套OMC输出路径问题已修复。
 

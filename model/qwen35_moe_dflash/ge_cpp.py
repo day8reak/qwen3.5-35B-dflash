@@ -649,26 +649,72 @@ class _Emitter:
         constant = self.static_broadcast(source, value)
         if constant is not None:
             return constant
+        if self.emit_mask_broadcast(source, value):
+            return value
         shape = self.broadcast_shape(value)
         var = self.op(value.name, "BroadcastTo", [("x", source), ("shape", shape)], [("y", value)])
         self.refs[value.name] = (var, "y")
         return value
 
-    def broadcast_shape(self, output, dimensions=None):
-        """Use checked INT32 shape controls, as for Reshape on this target.
+    def emit_mask_broadcast(self, source, output):
+        """Copy rank4 attention masks with integer Gather instead of BroadcastTo.
 
-        The full draft's BOOL mask BroadcastTo failed CPUCL initialization
-        with a zero dimension despite nonzero source/output descriptors.
-        Keep its shape payload and descriptor consistently INT32 rather than
-        depending on INT64 shape decoding. This changes no mask values or
-        tensor dimensions; selected-DDK and device validation remain required.
+        CPUCL failed the full draft's singleton query-axis expansion with
+        both INT64 and INT32 shape controls. Copy only the singleton query/head
+        axes. BOOL -> INT32 -> BOOL is exact for 0/1; scores and Select remain
+        untouched, including their NaN/-inf behavior. Gather uses an integer
+        carrier because its public data schema does not advertise BOOL.
+        Bound the index vectors; other broadcast shapes retain native emission.
         """
+        if (source.dtype != "bool" or output.dtype != "bool"
+                or source.format != "ND" or output.format != "ND"
+                or len(source.shape) != 4 or len(output.shape) != 4
+                or source.shape[0] != 1 or output.shape[0] != 1
+                or source.shape[-1] != output.shape[-1]
+                or any(isinstance(d, (bool, np.bool_)) or not isinstance(d, (int, np.integer))
+                       or not 0 < d <= (1 << 31) - 1 for d in (*source.shape, *output.shape))):
+            return False
+        axes = [axis for axis in (1, 2) if source.shape[axis] != output.shape[axis]]
+        if not axes or any(source.shape[axis] != 1 or output.shape[axis] > 4096 for axis in axes):
+            return False
+        prefix = f"__ge/{output.name}/mask_copy"
+        current = Value(prefix + "/integer", source.shape, "int32")
+        var = self.op(current.name, "Cast", [("x", source)], [("y", current)],
+                      {"dst_type": "int64_t{ge::DT_INT32}"})
+        self.refs[current.name] = (var, "y")
+        for axis in axes:
+            shape = list(current.shape)
+            shape[axis] = output.shape[axis]
+            copied = Value(f"{prefix}/axis_{axis}", tuple(shape), "int32")
+            indices = self.helper(copied, np.zeros(shape[axis], dtype=np.int32), dtype="int32", suffix="indices")
+            axis_value = self.helper(copied, axis, dtype="int32", suffix="axis")
+            var = self.op(copied.name, "GatherV2", [("x", current), ("indices", indices), ("axis", axis_value)],
+                          [("y", copied)], {"batch_dims": "int64_t{0}",
+                          "negative_index_support": "false", "is_preprocessed": "false"})
+            self.refs[copied.name] = (var, "y")
+            current = copied
+        var = self.op(output.name, "Cast", [("x", current)], [("y", output)],
+                      {"dst_type": "int64_t{ge::DT_BOOL}"})
+        self.refs[output.name] = (var, "y")
+        return True
+
+    def validate_broadcast_shape(self, output, dimensions=None):
+        """Validate controls before narrowing, folding, or replacing an op."""
         dimensions = tuple(output.shape if dimensions is None else dimensions)
         if dimensions != output.shape:
             raise ValueError(f"{output.name}: BroadcastTo shape differs from output descriptor")
         if any(isinstance(d, (bool, np.bool_)) or not isinstance(d, (int, np.integer))
                or not 0 <= d <= (1 << 31) - 1 for d in dimensions):
             raise ValueError(f"{output.name}: BroadcastTo dimensions must fit nonnegative INT32")
+        return dimensions
+
+    def broadcast_shape(self, output, dimensions=None):
+        """Keep native BroadcastTo controls checked and consistently INT32.
+
+        INT32 controls alone did not resolve the full draft mask failure;
+        eligible masks use emit_mask_broadcast instead.
+        """
+        dimensions = self.validate_broadcast_shape(output, dimensions)
         return self.helper(output, dimensions, dtype="int32", suffix="shape")
 
     def static_broadcast(self, source, output):
@@ -732,6 +778,9 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     order, DDK support and device numerical agreement still need validation.
     Runtime BroadcastTo shape controls use checked INT32 payloads/descriptors,
     including Select's generated expansions; mask and data dtypes are unchanged.
+    Rank4 BOOL attention masks replicate singleton query/head axes through an
+    exact INT32 Gather carrier, replacing the BroadcastTo path that failed
+    CPUCL initialization; device support remains to be checked.
     """
     if draft_fc_policy not in {"native", "conv2d"}:
         raise ValueError("draft_fc_policy must be native or conv2d")
@@ -895,9 +944,12 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
                     raise ValueError("BroadcastTo descriptor differs from its source/shape")
                 if np.broadcast_shapes(ins[0].shape, v.shape) != v.shape:
                     raise ValueError("BroadcastTo input cannot expand to output shape")
+                e.validate_broadcast_shape(v, a["shape"])
                 constant = e.static_broadcast(ins[0], v)
                 if constant is not None:
                     e.alias_constant(v, constant)
+                    continue
+                if e.emit_mask_broadcast(ins[0], v):
                     continue
             typ = {"reshape": "Reshape", "broadcast_to": "BroadcastTo", "transpose": "Transpose"}[kind]
             key = "perm" if kind == "transpose" else "shape"
