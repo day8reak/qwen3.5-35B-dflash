@@ -739,6 +739,167 @@ def _assert_payloads_unchanged(payloads):
                for path, (data, inode) in payloads.items())
 
 
+@pytest.fixture
+def stream_bundle_job(job, tmp_path, monkeypatch):
+    """Exercise real job/receipt replacement with a small packaging double.
+
+    Raw OMC assembly and decoding have independent tests. Here actual stage
+    files make it possible to detect unwanted compiler reruns, source changes,
+    and stale bundle reuse across storage-mode switches.
+    """
+    from qwen35_moe_dflash import draft_board, existing_air
+    main, fresh, common, calls, failures = job
+    ddk = tmp_path / "ddk"
+    omg = ddk / "tools/tools_omg/master/omg"
+    schema = omg.parent / "lib64/libai_fmk_graph_proto_host.so"
+    schema.parent.mkdir(parents=True)
+    omg.write_bytes(b"selected-mock-omg")
+    schema.write_bytes(b"selected-mock-schema")
+    original_compile = existing_air.compile_existing_air
+    original_board = draft_board.execute_draft_bundle
+    bundles, loaders = [], []
+
+    def compile_with_identity(source, folder, selected_ddk, **kwargs):
+        result = original_compile(source, folder, selected_ddk, **kwargs)
+        if result.get("status") == "COMPILED":
+            result.update(ddk_root=str(ddk), omg_path=str(omg), omg_sha256=sha256_file(omg))
+            (folder / "report.json").write_text(json.dumps(result))
+        return result
+
+    def package(compiled, fixture, folder, **kwargs):
+        calls.append("bundle")
+        report = json.loads((compiled / "report.json").read_text())
+        mode = kwargs.get("weight_storage") or (
+            "external" if report["requested_options"]["save_weights_as_external_data"] == "true"
+            else "embedded")
+        bundles.append({"mode": mode, "schema_library": kwargs.get("schema_library")})
+        folder.mkdir()
+        if "bundle" in failures:
+            (folder / "partial.omc").write_bytes(b"unfinished-package")
+            raise ValueError("streamed OMC validation failed")
+        source = compiled / report["omc"]["path"]
+        payload = mode.encode() + b":" + source.read_bytes()
+        (folder / "model.omc").write_bytes(payload)
+        save_json(folder / "manifest.json", {
+            "artifact_kind": "qwen35-standalone-draft-bundle", "status": "PREPARED",
+            "weight_storage": mode,
+            "model": {"path": "model.omc", "bytes": len(payload),
+                      "sha256": sha256_file(folder / "model.omc")}})
+
+    def execute(bundle, folder, **kwargs):
+        loaders.append(kwargs["model_load_api"])
+        return original_board(bundle, folder, **kwargs)
+
+    monkeypatch.setattr(existing_air, "compile_existing_air", compile_with_identity)
+    monkeypatch.setattr(draft_board, "prepare_draft_bundle", package)
+    monkeypatch.setattr(draft_board, "execute_draft_bundle", execute)
+    return main, fresh, common, calls, failures, bundles, loaders, schema
+
+
+def test_streamed_embedding_repackages_existing_external_omc_without_compiler_or_reference(
+        stream_bundle_job, tmp_path):
+    main, fresh, _, calls, failures, bundles, loaders, schema = stream_bundle_job
+    root = tmp_path / "full-draft"
+    failures.add("board")
+    assert main(fresh) == 1
+    previous = json.loads((root / "result.json").read_text())
+    kept = _stage_payloads(previous, ("prepared", "fixture", "air", "compilation"))
+    old_bundle = (root / "bundle/model.omc").read_bytes()
+    failures.clear(); calls.clear(); bundles.clear(); loaders.clear()
+
+    assert main(["--weight-storage", "embedded-stream", "--schema-library", str(schema)]) == 0
+    result = json.loads((root / "result.json").read_text())
+    assert calls == ["bundle", "board"]
+    assert result["weight_storage"] == "embedded-stream"
+    assert result["compile_options"]["save_weights_as_external_data"] == "true"
+    assert result["model_load_api"] == "legacy-buffer" and loaders == ["legacy-buffer"]
+    assert len(bundles) == 1 and bundles[0]["mode"] == "embedded-stream"
+    assert Path(bundles[0]["schema_library"]) == schema
+    assert (root / "bundle/model.omc").read_bytes() != old_bundle
+    _assert_payloads_unchanged(kept)
+    assert all(result["components"][name] == previous["components"][name]
+               for name in ("prepared", "fixture", "air", "compilation"))
+    invalidated = [row for row in result["resume_invalidations"] if "bundle" in row["components"]]
+    assert len(invalidated) == 1 and set(invalidated[0]["components"]) == {"bundle"}
+    assert [path.name for path in tmp_path.glob("full-draft*")] == ["full-draft"]
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_streamed_embedding_retry_inherits_storage_and_needs_no_ddk_or_schema(
+        stream_bundle_job, tmp_path, interrupted):
+    main, fresh, _, calls, _, bundles, loaders, schema = stream_bundle_job
+    root = tmp_path / "full-draft"
+    assert main([*fresh, "--weight-storage", "embedded-stream", "--schema-library", str(schema)]) == 0
+    previous = json.loads((root / "result.json").read_text())
+    kept = _stage_payloads(previous)
+    # A completed bundle must not be decoded again. Deliberately remove the
+    # selected DDK schema and executable; receipts still bind the source files.
+    schema.unlink()
+    (schema.parent.parent / "omg").unlink()
+    if interrupted:
+        (root / "result.json").unlink()
+    calls.clear(); bundles.clear(); loaders.clear()
+    assert main([]) == 0
+    result = json.loads((root / "result.json").read_text())
+    assert calls == ["board"] and bundles == [] and loaders == ["legacy-buffer"]
+    assert result["weight_storage"] == "embedded-stream"
+    assert result["compile_options"]["save_weights_as_external_data"] == "true"
+    assert result["components"] == previous["components"]
+    _assert_payloads_unchanged(kept)
+
+
+def test_streamed_bundle_can_switch_back_to_external_without_recompilation(
+        stream_bundle_job, tmp_path):
+    main, fresh, _, calls, _, bundles, loaders, schema = stream_bundle_job
+    root = tmp_path / "full-draft"
+    assert main([*fresh, "--weight-storage", "embedded-stream", "--schema-library", str(schema)]) == 0
+    previous = json.loads((root / "result.json").read_text())
+    kept = _stage_payloads(previous, ("prepared", "fixture", "air", "compilation"))
+    old_bundle = (root / "bundle/model.omc").read_bytes()
+    calls.clear(); bundles.clear(); loaders.clear()
+    assert main(["--weight-storage", "external"]) == 0
+    result = json.loads((root / "result.json").read_text())
+    assert calls == ["bundle", "board"] and loaders == ["file-v2"]
+    assert bundles[0]["mode"] == "external"
+    assert result["compile_options"]["save_weights_as_external_data"] == "true"
+    assert result["weight_storage"] == "external"
+    assert (root / "bundle/model.omc").read_bytes() != old_bundle
+    _assert_payloads_unchanged(kept)
+
+
+def test_failed_streamed_package_never_runs_board_and_retry_keeps_storage_intent(
+        stream_bundle_job, tmp_path):
+    main, fresh, _, calls, failures, bundles, loaders, schema = stream_bundle_job
+    root = tmp_path / "full-draft"
+    assert main([*fresh, "--compile-only"]) == 0
+    previous = json.loads((root / "result.json").read_text())
+    kept = _stage_payloads(previous)
+    failures.add("bundle"); calls.clear(); bundles.clear(); loaders.clear()
+    assert main(["--weight-storage", "embedded-stream", "--schema-library", str(schema)]) == 1
+    failed = json.loads((root / "result.json").read_text())
+    assert calls == ["bundle"] and loaders == []
+    assert failed["device_execution"] == "NOT_RUN" and "streamed OMC validation failed" in failed["error"]
+    assert "bundle" not in failed["components"] and not (root / "completed-bundle.json").exists()
+    _assert_payloads_unchanged(kept)
+    failures.clear(); calls.clear(); bundles.clear()
+    assert main(["--schema-library", str(schema)]) == 0
+    assert calls == ["bundle", "board"] and loaders == ["legacy-buffer"]
+    assert bundles[0]["mode"] == "embedded-stream"
+    assert not (root / "bundle/partial.omc").exists()
+    _assert_payloads_unchanged(kept)
+
+
+def test_streamed_compile_only_retains_external_compiler_mode_and_defers_packaging(
+        stream_bundle_job, tmp_path):
+    main, fresh, _, calls, _, bundles, loaders, _ = stream_bundle_job
+    assert main([*fresh, "--weight-storage", "embedded-stream", "--compile-only"]) == 0
+    result = json.loads((tmp_path / "full-draft/result.json").read_text())
+    assert calls == ["prepared", "fixture", "air", "compilation"]
+    assert bundles == loaders == [] and "bundle" not in result["components"]
+    assert result["weight_storage"] == "embedded-stream"
+    assert result["compile_options"]["save_weights_as_external_data"] == "true"
+
+
 def test_fixed_default_directory_retries_original_command_without_rebuilding_completed_stages(job, tmp_path):
     main, fresh, _, calls, failures = job
     root = tmp_path / "full-draft"

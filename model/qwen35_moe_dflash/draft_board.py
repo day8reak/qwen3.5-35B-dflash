@@ -95,7 +95,8 @@ def _compiler_payload_layout(report):
     return planned
 
 
-def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, ddk_id, export_dir=None):
+def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, ddk_id, export_dir=None,
+                         weight_storage=None, schema_library=None):
     """Snapshot the existing compiler payloads and fixture; never compile a model.
 
     Pass export_dir to bind compiler AIR snapshots to the exported draft, and
@@ -111,6 +112,26 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
             or report.get('platform') != 'kirinx90'):
         raise ValueError('draft requires successful matching-DDK kirinx90 compilation')
     planned_payloads = _compiler_payload_layout(report)
+    compiled_storage = ('embedded' if report.get('requested_options', {}).get(
+        'save_weights_as_external_data') == 'false' else 'external')
+    weight_storage = weight_storage or compiled_storage
+    if weight_storage not in {'external', 'embedded', 'embedded-stream'}:
+        raise ValueError('unknown draft bundle weight storage')
+    if weight_storage != compiled_storage and weight_storage != 'embedded-stream':
+        raise ValueError('bundle weight storage differs from compiler output')
+    if weight_storage == 'embedded-stream':
+        if report.get('requested_options', {}).get('save_weights_as_external_data') != 'true':
+            raise ValueError('embedded-stream requires the retained external-weight compilation')
+        # Bind the decoder to the selected compiler installation. Do not import
+        # or execute vendor libraries, and do not infer a protobuf schema.
+        ddk = Path(report['ddk_root']).resolve()
+        omg = ddk/'tools/tools_omg/master/omg'
+        if sha256_file(omg) != report.get('omg_sha256'):
+            raise ValueError('selected OMG changed since this compilation')
+        schema_library = Path(schema_library).resolve() if schema_library else (
+            ddk/'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')
+        if not schema_library.is_relative_to(ddk):
+            raise ValueError('streamed OMC schema must belong to the recorded compiler DDK')
     if (reference.get('artifact_kind') != 'qwen35-draft-reference'
             or reference.get('status') not in {'REFERENCE_COMPLETE','INPUTS_PREPARED'}
             or reference.get('draft_config') != config):
@@ -160,21 +181,40 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
     root = output_path(output_dir)
     root.mkdir(parents=True,exist_ok=False)
     payloads, by_path = [], {}
-    for record, relative in planned_payloads:
-        source = _file(compiler, record)
-        # Preserve every relative path under generated. In particular, an OMG
-        # model/model.omc keeps its sibling model/SubGraph_N.weight files.
-        destination = root/relative
-        destination.parent.mkdir(parents=True,exist_ok=True)
-        _snapshot(source,destination)
-        copied = _record(destination,root)
-        if any(copied[k] != record[k] for k in ('bytes','sha256')):
-            raise ValueError('copied compiler payload differs')
-        payloads.append(copied)
-        by_path[record['path']] = copied
-    model = by_path.get(report.get('omc',{}).get('path'))
-    if model is None or model['bytes'] <= 0 or any(model[k] != report['omc'][k] for k in ('bytes','sha256')):
-        raise ValueError('primary OMC missing from compiler output inventory')
+    packing = None
+    if weight_storage == 'embedded-stream':
+        from .omc_embed_weights import embed_external_weights
+        source = _file(compiler, report['omc'])
+        sidecars = [{**record, 'path': str(_file(compiler, record))}
+                    for record, _ in planned_payloads if Path(record['path']).suffix == '.weight']
+        destination = root/'model/model.omc'
+        destination.parent.mkdir(parents=True)
+        print('draft-bundle: streaming compiled weights into one OMC; no AIR export or OMG compilation', flush=True)
+        packing = embed_external_weights(source, destination, schema_library,
+            expected_source_sha256=report['omc']['sha256'], sidecars=sidecars,
+            progress=lambda message: print('draft-bundle: '+message, flush=True))
+        model = _record(destination, root)
+        if (packing.get('status') != 'EMBEDDED'
+                or any(packing.get('output', {}).get(key) != model[key] for key in ('bytes','sha256'))):
+            raise ValueError('streamed OMC differs from weight-packing receipt')
+        save_json(root/'weight-packing.json', packing)
+        payloads.append(model)
+    else:
+        for record, relative in planned_payloads:
+            source = _file(compiler, record)
+            # Preserve every relative path under generated. In particular, an OMG
+            # model/model.omc keeps its sibling model/SubGraph_N.weight files.
+            destination = root/relative
+            destination.parent.mkdir(parents=True,exist_ok=True)
+            _snapshot(source,destination)
+            copied = _record(destination,root)
+            if any(copied[k] != record[k] for k in ('bytes','sha256')):
+                raise ValueError('copied compiler payload differs')
+            payloads.append(copied)
+            by_path[record['path']] = copied
+        model = by_path.get(report.get('omc',{}).get('path'))
+        if model is None or model['bytes'] <= 0 or any(model[k] != report['omc'][k] for k in ('bytes','sha256')):
+            raise ValueError('primary OMC missing from compiler output inventory')
     inputs = []
     for row in reference['inputs']:
         destination = root/f"input_{row['index']:04d}.bin"
@@ -195,11 +235,14 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
          'draft_config':config,'sequence_length':sequence,'state_policy':'prefix-recompute'}
     save_json(root/'draft-abi.json',abi)
     manifest={'schema_version':1,'artifact_kind':'qwen35-standalone-draft-bundle','status':'PREPARED',
+        'weight_storage':weight_storage,
         'ddk_id':_text(ddk_id,'DDK identity'),'platform':'kirinx90','sequence_length':sequence,'vocab_size':cfg.vocab_size,
         'draft_config':config,'model':model,'model_payloads':payloads,'draft_abi':_record(root/'draft-abi.json',root),
         'inputs':inputs,'outputs':outputs,'expected':expected,'source_identity':source_identity,
         'compiler_report_sha256':sha256_file(compiler/'report.json'),'fixture_report_sha256':sha256_file(fixture/'report.json'),
         'export_manifest_sha256':exported_hash,'reference_scope':'Same complete draft and fixed feature inputs; no target execution or acceptance evaluation'}
+    if packing is not None:
+        manifest['weight_packing'] = _record(root/'weight-packing.json', root)
     (root/'step.tsv').write_bytes(_wire(manifest))
     manifest['step_plan']=_record(root/'step.tsv',root)
     save_json(root/'manifest.json',manifest)
@@ -223,6 +266,11 @@ def _validate_bundle(root):
     if manifest['model'] not in manifest['model_payloads']:
         raise ValueError('model missing from payloads')
     records=[manifest['draft_abi'],manifest['step_plan'],*manifest['inputs'],*manifest['model_payloads']]
+    if manifest.get('weight_storage') == 'embedded-stream':
+        packing = _json(_file(root, manifest['weight_packing']))
+        if (packing.get('status') != 'EMBEDDED'
+                or any(packing.get('output', {}).get(key) != manifest['model'][key] for key in ('bytes','sha256'))):
+            raise ValueError('streamed OMC differs from weight-packing receipt')
     for record in [*records,*[r for r in manifest['expected'] if r is not None]]:
         _file(root,record)
     if _file(root,manifest['step_plan']).read_bytes()!=_wire(manifest):

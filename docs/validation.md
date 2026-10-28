@@ -4,6 +4,14 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 外置编译结果流式封装
+
+2026-10-28，最新用户报告PID6868确认所选DDK已构建V2 runner，文件恢复成功，CPUCL初始化成功，NPU初始化仍报 `weightsMemBaseSize=16 modelWeightMemorySize=1151486976`，尚未调用Run。不能再把文件恢复API存在或Restore成功当作外置权重加载通过。
+
+新 `--weight-storage embedded-stream` 保留已有external编译结果，将权重直接写入bundle内的新OMC，绕开OMG已失败的大缓冲区保存入口。静态参考DDK的写入/读取路径确认IMOD头长256字节，分区表记录type/累积偏移/大小，type1为按GraphOp权重偏移寻址的连续分区。实现仅接受 `[0,1,2]`、原type1为空、表偏移吻合、单主图和每个GraphOp范围连续且不重叠的情况；使用所选编译器的protobuf描述解析，不加载vendor库。原图、任务和权重字节不修改。已知参考DDK与用户所选DDK不同，因此仍严格检查实际输入，不宣称参考二进制重现了用户的memcpy_s故障。
+
+主机验证覆盖完整字节布局、哈希绑定、偏移与边界、原子发布、空间不足、源文件变化、bundle来源绑定和只重建必要阶段。报告中的EMBEDDED只指封装完成；设备执行和数值验证仍待实测。 本轮 `20261028T084216Z-2648-a906ed/embedded-stream-regression.xml` 记录253项通过；保留的参考DDK OMC经提取、重新封装后93,178字节逐字节相同，SHA256为 `c5582a919ace3de1f602c13bc21b60f3bda8176f214271575e59e5a1d4c0f98a`，证据为 `out/omc-embedded-reference-roundtrip/report.json`。参考文件回环不代表用户当前完整draft的兼容性验证。
+
 ## V2 文件加载与完整 draft 执行
 
 2026-10-28，用户回传所选DDK的API检查：当前头文件声明 `IBuiltModel::RestoreFromFile`、`IModelManager::Init`、`Run`、`InitWeights`，`libhiai.so`有CreateBuiltModel/CreateModelManager等对应已定义符号。此前两个setter互相清空字段的观察保持有效。API存在尚不是实际外置权重加载通过。
@@ -12,7 +20,7 @@
 
 失败HiLog流式选择记录，取消16MB整文件大小拒绝；新增同一服务线程在明确提及runner PID的失败前后两秒上下文，且限制在候选runner记录区间内。共享服务线程仍可能穿插其他任务，因此这些行是关联诊断，不是独占归因。SDK编译失败自动展示实际编译错误和ND头文件。
 
-设备状态仍为用户已报告的external Load失败，V2路线等待所选DDK构建及设备执行。本地缺少cpro-blue-pending目标配置，不报告远端通过。验证命令与结果见本轮工作流记录。
+设备状态为用户已报告的external初始化失败，V2路线已由所选DDK构建并在设备复现16字节权重错误。本地缺少cpro-blue-pending目标配置，不报告远端通过。验证命令与结果见本轮工作流记录。
 
 本轮 `20261028T081315Z-32283-07df46`：`v2-board-tests.xml` 记录134项Python流程测试通过；`diagnostics.xml` 记录59项日志/SDK构建配置测试通过；`native-file-v2-tests.xml` 记录8组CTest通过。覆盖完整V2调用、12种前置或推理故障、输出对象变更拒绝、ND形状/类型检查及旧路线回归。主机ND/HIAI使用测试替身，不证明外置权重加载或模型计算正确。
 

@@ -6,18 +6,20 @@
 
 ## 用户现在执行什么
 
-**下一步直接执行完整 draft：V2 文件恢复、初始化、推理和参考比较在同一次命令中完成。** 已有固定目录保存成功的external OMC与bundle时，复用全部模型阶段，只重建runner和本次board结果：
+**V2 文件恢复已通过，但初始化仍返回同一个16字节权重错误。下一步复用外置编译产物，流式封装为单个内嵌 OMC，再执行完整 draft 和参考比较：**
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --model-load-api file-v2
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --weight-storage embedded-stream
 ```
 
-用户回传的所选DDK头文件及动态符号已经确认 `CreateBuiltModel`、`IBuiltModel::RestoreFromFile`、`CreateModelManager` 和 `IModelManager::Init/Run`。新入口用完整OMC路径恢复模型，保留与15份外置权重的相对目录关系，随后初始化和执行。它不再使用互相清空字段的legacy描述符setter组合；`InitWeights` 的调用时序与用途未由当前声明证明，因此没有猜测调用或自动切换加载方式。实际外置权重支持、加载和数值结果仍需这次设备运行确认。
+这条路径不调用OMG、不重导AIR、不重新准备权重或参考。它从所选DDK读取protobuf描述，逐个解析主图的 `graphop_weight_offset/graphop_weight_size`，核对15份sidecar的文件名、大小和SHA256，将原始字节分块写入OMC权重分区。图和编译任务字节保持不变；仅调整已核实的容器长度、分区表与权重分区。严格拒绝未知分区布局、缺失或重叠的权重范围、文件变化及空间不足，不按文件名字典序猜测顺序，也不自动退回失败的加载路径。
 
-本次不再运行描述符或API探针、不重编译AIR/OMC、不重新准备权重或PyTorch参考。板端上传当前runner、所选运行库及已有完整bundle（包括外置权重），执行一次完整draft；成功后自动回收并比较输出。失败自动显示 `runtime_stage`、本进程日志，以及明确提及runner PID的hiaiserver失败上下文；20MB以上HiLog也按流读取并选择有界摘要。若当前SDK编译接口不同，构建错误及所选ND头文件自动保留并输出，不需要先手工查询。
+固定 `full-draft` 只替换bundle和board；原external编译结果保留。新OMC直接写在bundle内，约2.85GB，不额外复制一份模型；生成后上传这一个模型，默认用 `legacy-buffer` 加载并继续推理、回收和参考比较。后续省略参数会继承此封装方式。`bundle/weight-packing.json`记录源文件、偏移和输出哈希。`--weight-storage embedded`仍表示交给OMG内嵌编译，与本次流式封装不同。
 
-默认external选择 `file-v2`，embedded仍选择 `legacy-buffer`；显式选择加载API仅影响board阶段。固定目录会替换旧board结果，成功模型阶段保持复用。同步V2 `Run` 没有超时参数；HDC等待超时不保证远端进程已被取消。
+该方案绕开外置加载和已失败的OMG大缓冲区保存入口，但当前设备对这个内嵌模型的支持及数值结果仍未验证。若失败，单次命令自动显示原生阶段和相关HiLog；无需重新运行API探针或手工筛选PID。
+
+最新用户回传PID6868：所选DDK成功构建V2 runner，`RestoreFromFile`成功、CPUCL初始化成功，`IModelManager::Init`时NPU仍报 `weightsMemBaseSize=16 modelWeightMemorySize=1151486976`。15份实际sidecar大小和SHA256已随报告回传；文件大小及传输校验不等于运行时已正确绑定。仅切换文件恢复API未解决问题，暂不重复同一路径。
 
 [独立 draft 指南](draft-standalone.md)保留完整模型入口。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
@@ -36,9 +38,9 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 此前 **`full-draft-732b26335347`** 的external模式已完成v4 AIR编译和打包。PID46426日志显示CPUCL初始化成功，越过 `v501/BroadcastTo` 障碍；随后NPU `SubGraph_1` 在 `InitRuntimeParams` 报 `weightsMemBaseSize=16`、`modelWeightMemorySize=1151486976`。尚无Process或数值结果。6599继续复用该v4 AIR和 `d7b4db958850` prepared/fixture，本次迁移不改变图、权重、参考或加载行为。
 
-运行时给15个不同子图打印了同一个 `weight hash:0x1dabbe2881ec5472`，但它不是文件SHA256，不能据此断言15份权重内容相同或确定错配原因。实际文件哈希尚未回传。本仓库只读审查未发现按编号重排或丢失目录：编译到bundle再到上传均按完整相对路径处理；这仍不能证明设备HIAI打开了这些路径。
+运行时给15个不同子图打印了同一个 `weight hash:0x1dabbe2881ec5472`，但它不是文件SHA256，不能据此断言15份权重内容相同或确定错配原因。最新报告已回传实际文件SHA256清单。本仓库只读审查未发现按编号重排或丢失目录：编译到bundle再到上传均按完整相对路径处理；这仍不能证明设备HIAI打开了这些路径。
 
-用户随后列出的编译文件中，`SubGraph_1.weight` 是 **1,151,486,976字节**，与模型要求一致，`model.omc` 是2,905,990字节；因此这份编译文件本身不是16字节。文件大小不能替代SHA256或证明运行时选中了正确文件。runner的“路径→buffer”调用会丢失路径，已由本次getter观察确认；外置权重文件的实际选择和加载契约仍待核对，见[验证记录](validation.md#外置模型加载描述符诊断入口)。此前成功tiny没有开启外置权重选项，不能直接验证这条加载契约；目前没有已确认的运行时修复。
+用户随后列出的编译文件中，`SubGraph_1.weight` 是 **1,151,486,976字节**，与模型要求一致，`model.omc` 是2,905,990字节；因此这份编译文件本身不是16字节。文件大小不能替代SHA256或证明运行时选中了正确文件。runner的“路径→buffer”调用会丢失路径，已由本次getter观察确认；外置权重文件的实际选择和加载契约仍待核对，见[验证记录](validation.md#外置模型加载描述符诊断入口)。此前成功tiny没有开启外置权重选项，不能直接验证这条加载契约；V2文件恢复也已复现该故障，目前没有已确认的运行时修复。
 
 原生失败保存在 `board/results/result.json`、`board/comparison.json` 与 `board/draft.stderr`。错误回传已修正：保留原生失败原因，单独记录传输/证据问题，运行失败时不要求成功输出bin。此前 `a091f16d13d8` 的嵌套OMC输出路径问题已修复。
 

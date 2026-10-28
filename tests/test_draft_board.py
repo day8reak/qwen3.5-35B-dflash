@@ -3,6 +3,8 @@ import json
 import hashlib
 from pathlib import Path
 import shlex
+import sys
+import types
 
 import numpy as np
 import pytest
@@ -98,6 +100,131 @@ def test_single_embedded_omc_bundle_needs_no_external_weight_payload(bundle, tmp
     assert len(model_uploads) == 1
     assert model_uploads[0]['remote'] == 'bundle/model/model.omc'
     assert not (root/'model/weights.bin').exists()
+
+
+def _stream_source(bundle, tmp_path):
+    """Small immutable compiler inputs; a mocked converter is not OMC evidence."""
+    _, manifest = bundle
+    compiler = tmp_path/'compilation'
+    generated = compiler/'compile-work/generated'
+    (generated/'weights.bin').rename(generated/'SubGraph_0.weight')
+    ddk = tmp_path/'selected-ddk'
+    omg = ddk/'tools/tools_omg/master/omg'
+    omg.parent.mkdir(parents=True)
+    omg.write_bytes(b'selected-compiler-fixture')
+    schema = omg.parent/'lib64/libai_fmk_graph_proto_host.so'
+    schema.parent.mkdir()
+    schema.write_bytes(b'selected-schema-fixture')
+    report = json.loads((compiler/'report.json').read_text())
+    sidecar = record(generated/'SubGraph_0.weight', compiler)
+    report.update(ddk_root=str(ddk), omg_sha256=sha256_file(omg),
+                  requested_options={'save_weights_as_external_data':'true'},
+                  generated_artifacts=[report['omc'],sidecar], external_data_candidates=[sidecar])
+    write_json(compiler/'report.json',report)
+    return compiler, report, manifest['draft_config'], schema
+
+
+def _mock_stream_converter(monkeypatch, callback):
+    module = types.ModuleType('qwen35_moe_dflash.omc_embed_weights')
+    module.embed_external_weights = callback
+    monkeypatch.setitem(sys.modules,module.__name__,module)
+
+
+def test_streamed_bundle_keeps_source_provenance_and_uploads_only_new_model(bundle,tmp_path,monkeypatch):
+    compiler, compiled, config, schema = _stream_source(bundle,tmp_path)
+    source_records = compiled['generated_artifacts']
+    source_hashes = {r['path']:sha256_file(compiler/r['path']) for r in source_records}
+    calls = []
+    def convert(source,output,selected_schema,*,expected_source_sha256,sidecars,**kwargs):
+        calls.append((source,output,selected_schema))
+        assert selected_schema == schema
+        assert expected_source_sha256 == compiled['omc']['sha256']
+        assert len(sidecars) == 1
+        assert sidecars[0]['path'] == str(compiler/source_records[1]['path'])
+        assert sidecars[0]['sha256'] == source_records[1]['sha256']
+        output.write_bytes(b'fixture-repacked-model'+Path(sidecars[0]['path']).read_bytes())
+        return {'status':'EMBEDDED','source_sha256':expected_source_sha256,
+                'sidecars':sidecars,'output':{'bytes':output.stat().st_size,'sha256':sha256_file(output)}}
+    _mock_stream_converter(monkeypatch,convert)
+    root = tmp_path/'streamed-bundle'
+    manifest = board.prepare_draft_bundle(compiler,tmp_path/'fixture',root,config=config,
+        ddk_id='fixture',weight_storage='embedded-stream')
+    assert len(calls) == 1
+    assert manifest['weight_storage'] == 'embedded-stream'
+    assert manifest['compiler_report_sha256'] == sha256_file(compiler/'report.json')
+    assert manifest['model_payloads'] == [manifest['model']]
+    assert manifest['model']['path'] == 'model/model.omc'
+    assert manifest['model']['sha256'] != compiled['omc']['sha256']
+    assert not list(root.rglob('*.weight'))
+    assert record(root/'weight-packing.json',root) == manifest['weight_packing']
+    validated, uploads = board._validate_bundle(root)
+    assert validated == manifest
+    assert [r['remote'] for r in uploads if r['remote'].startswith('bundle/model/')] == ['bundle/model/model.omc']
+    assert all(sha256_file(compiler/path) == digest for path,digest in source_hashes.items())
+    assert json.loads((compiler/'report.json').read_text())['requested_options']['save_weights_as_external_data'] == 'true'
+    packing = json.loads((root/'weight-packing.json').read_text())
+    packing['output']['sha256'] = '0'*64
+    write_json(root/'weight-packing.json',packing)
+    with pytest.raises(ValueError,match='SHA256/size mismatch'):
+        board._validate_bundle(root)
+
+
+@pytest.mark.parametrize('fault',['compiler-changed','foreign-schema','embedded-compiler','sidecar-changed'])
+def test_streamed_bundle_rejects_wrong_source_before_converter_or_manifest(bundle,tmp_path,monkeypatch,fault):
+    compiler, report, config, schema = _stream_source(bundle,tmp_path)
+    if fault == 'compiler-changed':
+        report['omg_sha256'] = '0'*64
+    elif fault == 'foreign-schema':
+        schema = tmp_path/'other-schema.so';schema.write_bytes(b'unrelated-schema')
+    elif fault == 'embedded-compiler':
+        report['requested_options']['save_weights_as_external_data'] = 'false'
+    else:
+        (compiler/report['external_data_candidates'][0]['path']).write_bytes(b'changed-weight')
+    write_json(compiler/'report.json',report)
+    def unexpected(*args,**kwargs):
+        pytest.fail('invalid source identity must fail before conversion')
+    _mock_stream_converter(monkeypatch,unexpected)
+    root = tmp_path/'invalid-stream'
+    with pytest.raises(ValueError):
+        board.prepare_draft_bundle(compiler,tmp_path/'fixture',root,config=config,
+            ddk_id='fixture',weight_storage='embedded-stream',schema_library=schema)
+    assert not (root/'manifest.json').exists()
+
+
+def test_stream_conversion_failure_never_publishes_prepared_bundle(bundle,tmp_path,monkeypatch):
+    compiler, report, config, schema = _stream_source(bundle,tmp_path)
+    def fail(source,output,selected_schema,**kwargs):
+        assert selected_schema == schema
+        output.write_bytes(b'partial-write')
+        raise ValueError('fixture unsupported selected schema or OMC layout')
+    _mock_stream_converter(monkeypatch,fail)
+    root = tmp_path/'failed-stream'
+    with pytest.raises(ValueError,match='unsupported selected schema'):
+        board.prepare_draft_bundle(compiler,tmp_path/'fixture',root,config=config,
+            ddk_id='fixture',weight_storage='embedded-stream')
+    assert not (root/'manifest.json').exists() and not (root/'step.tsv').exists()
+    assert sha256_file(compiler/report['omc']['path']) == report['omc']['sha256']
+
+
+@pytest.mark.parametrize('fault',['status','hash','bytes'])
+def test_streamed_bundle_rejects_converter_receipt_mismatch_before_publishing(bundle,tmp_path,monkeypatch,fault):
+    compiler, _, config, _ = _stream_source(bundle,tmp_path)
+    def convert(source,output,schema,**kwargs):
+        output.write_bytes(b'fixture-repacked-model')
+        receipt = {'status':'EMBEDDED','output':{'bytes':output.stat().st_size,'sha256':sha256_file(output)}}
+        if fault == 'status':
+            receipt['status'] = 'FAILED'
+        elif fault == 'hash':
+            receipt['output']['sha256'] = '0'*64
+        else:
+            receipt['output']['bytes'] += 1
+        return receipt
+    _mock_stream_converter(monkeypatch,convert)
+    root = tmp_path/'mismatched-stream'
+    with pytest.raises(ValueError):
+        board.prepare_draft_bundle(compiler,tmp_path/'fixture',root,config=config,
+            ddk_id='fixture',weight_storage='embedded-stream')
+    assert not (root/'manifest.json').exists() and not (root/'step.tsv').exists()
 
 
 def _nested_compiler_payloads(bundle):

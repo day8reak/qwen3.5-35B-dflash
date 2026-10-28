@@ -33,14 +33,14 @@ def parser():
     p.add_argument("--ddk-root", default=os.environ.get("CPRO_DDK_ROOT") or os.environ.get("DDK_PATH"))
     p.add_argument("--ddk-id", default=os.environ.get("CPRO_DDK_ID"))
     p.add_argument("--tbe-diagnosis", help="reuse completed TBE diagnosis; no new diagnosis matrix")
-    p.add_argument("--weight-storage", choices=("external", "embedded"),
-                   help="OMC weight storage; fresh jobs default external, resume inherits the recorded compilation")
+    p.add_argument("--weight-storage", choices=("external", "embedded", "embedded-stream"),
+                   help="external/embedded select OMG storage; embedded-stream reuses external compilation and streams verified weights into the bundle OMC")
     p.add_argument("--model-load-api", choices=("file-v2", "legacy-buffer"),
                    help="board loader only; default file-v2 for external weights, legacy-buffer for embedded weights; does not recompile OMC")
     p.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
     p.add_argument("--cxx11-abi", type=int, choices=(0, 1), default=0)
     p.add_argument("--timeout-seconds", type=int, default=3600)
-    p.add_argument("--schema-library", help="inspection only: selected DDK protobuf library, read without loading it")
+    p.add_argument("--schema-library", help="selected DDK protobuf library for inspection or embedded-stream; read without loading it")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--prepare-only", action="store_true", help="prepare full weights and PyTorch fixture; no GE/DDK/board")
     mode.add_argument("--compile-only", action="store_true", help="prepare reference, export AIR and compile OMC; no board")
@@ -174,7 +174,7 @@ def _main(args, stack):
     weight_storage = args.weight_storage or "external"
     model_load_api = args.model_load_api or ("file-v2" if weight_storage == "external" else "legacy-buffer")
     compile_options = {**DRAFT_COMPILE_OPTIONS,
-                       "save_weights_as_external_data": "true" if weight_storage == "external" else "false"}
+                       "save_weights_as_external_data": "false" if weight_storage == "embedded" else "true"}
     result.update(weight_storage=weight_storage, compile_options=compile_options, model_load_api=model_load_api)
 
     def progress(row):
@@ -233,8 +233,6 @@ def _main(args, stack):
                               "comparison": str(inspection_dir / "report.txt")}, ensure_ascii=False), flush=True)
             print((inspection_dir / "report.txt").read_text(), flush=True)
             return 0
-        if args.schema_library:
-            raise ValueError("--schema-library is only used with --inspect-only")
         requested_output = Path(args.output) if args.output else Path(run) / "full-draft"
         if requested_output.is_symlink():
             raise ValueError("draft workspace output must not be a symlink")
@@ -292,9 +290,10 @@ def _main(args, stack):
                 stored = inherited_options.get("save_weights_as_external_data")
                 if stored not in (None, "true", "false"):
                     raise ValueError("resume compilation has an invalid weight-storage option")
-                weight_storage = "embedded" if stored == "false" else "external"
+                weight_storage = ("embedded" if stored == "false" else
+                                  "embedded-stream" if old.get("weight_storage") == "embedded-stream" else "external")
                 compile_options = {**DRAFT_COMPILE_OPTIONS,
-                    "save_weights_as_external_data": "true" if weight_storage == "external" else "false"}
+                    "save_weights_as_external_data": "false" if weight_storage == "embedded" else "true"}
                 model_load_api = args.model_load_api or ("file-v2" if weight_storage == "external" else "legacy-buffer")
                 result.update(weight_storage=weight_storage, compile_options=compile_options,
                               model_load_api=model_load_api)
@@ -331,9 +330,23 @@ def _main(args, stack):
                         "scope": ("Replace compilation and bundle in the fixed workspace." if workspace else
                                   "Recompile existing AIR in the new job; previous evidence is unchanged.")})
                     stage("resume", f"Updating draft compilation to FP16 with {weight_storage} OMC weights; reusing weights/reference/AIR")
+            if "bundle" in result["components"]:
+                _, prior_bundle = _read_component(result["components"]["bundle"])
+                previous_storage = prior_bundle.get("weight_storage", "embedded" if
+                    inherited_options.get("save_weights_as_external_data") == "false" else "external")
+                if previous_storage != weight_storage:
+                    obsolete = {"bundle": result["components"].pop("bundle")}
+                    result.setdefault("resume_invalidations", []).append({
+                        "reason": "DRAFT_BUNDLE_STORAGE_CHANGED", "previous_storage": previous_storage,
+                        "required_storage": weight_storage, "components": obsolete,
+                        "preserved": [name for name in ("prepared", "fixture", "air", "compilation")
+                                      if name in result["components"]]})
+                    stage("resume", "Updating bundle weight storage; reusing prepared weights, reference, AIR and compilation")
             if (workspace is None and not args.prepare_only and "air" in result["components"]
                     and "compilation" not in result["components"] and not result.get("resume_invalidations")):
                 retained_compilation = _retained_output_candidate(previous, compile_options)
+        if args.schema_library and weight_storage != "embedded-stream":
+            raise ValueError("--schema-library requires --inspect-only or --weight-storage embedded-stream")
         if settings["sequence_length"] < 2:
             raise ValueError("--sequence-length must be at least 2")
         if settings["valid_length"] is None:
@@ -419,7 +432,7 @@ def _main(args, stack):
                         air_dir / exported["graphs"][0]["air"], folder, args.ddk_root,
                         ddk_id=args.ddk_id, tbe_diagnosis=args.tbe_diagnosis,
                         timeout_seconds=args.timeout_seconds, input_layout="air-directory",
-                        limit_partition_size=False, save_weights_as_external_data=(weight_storage == "external"),
+                        limit_partition_size=False, save_weights_as_external_data=(weight_storage != "embedded"),
                         use_origin_format=True, weight_data_type="FP16", progress=progress)
                 _verify_air(air_dir, exported)
                 if compiled.get("status") != "COMPILED":
@@ -442,6 +455,7 @@ def _main(args, stack):
             observed_weights = _external_weight_candidates(compiled)
             result["weight_storage_validation"] = {
                 "requested": weight_storage, "omc_bytes": model_bytes,
+                "compiler_storage": "embedded" if compile_options['save_weights_as_external_data'] == 'false' else "external",
                 "observed_weight_candidates": observed_weights,
                 "scope": "Recorded compiler option and known weight filenames only; OMC dependency contents are not decoded."}
             if weight_storage == "embedded" and observed_weights:
@@ -455,8 +469,13 @@ def _main(args, stack):
             else:
                 from qwen35_moe_dflash.draft_board import prepare_draft_bundle, execute_draft_bundle
                 stage("bundle", "Preparing hash-bound draft inputs and compiled payloads")
-                bundle_dir, _ = component("bundle", "manifest.json", lambda folder: prepare_draft_bundle(
-                    compilation_dir, fixture_dir, folder, config=prepared["draft_config"], ddk_id=compiled["ddk_id"], export_dir=air_dir))
+                bundle_dir, bundle = component("bundle", "manifest.json", lambda folder: prepare_draft_bundle(
+                    compilation_dir, fixture_dir, folder, config=prepared["draft_config"], ddk_id=compiled["ddk_id"],
+                    export_dir=air_dir, weight_storage=weight_storage, schema_library=args.schema_library))
+                if weight_storage == "embedded-stream":
+                    result["weight_storage_validation"].update(
+                        bundle_model=bundle.get("model"), weight_packing=bundle.get("weight_packing"),
+                        scope="External compiler output retained; bundle weights streamed into a single OMC with packing receipt. Runtime support still requires board execution.")
                 stage("board", f"Running the complete draft on the board with {model_load_api}; reusing compiled payloads")
                 board = execute_draft_bundle(bundle_dir, root / "board", timeout_seconds=args.timeout_seconds,
                                              model_load_api=model_load_api)
