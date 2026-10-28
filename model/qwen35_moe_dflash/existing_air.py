@@ -28,6 +28,7 @@ from .tool_logs import log_excerpt
 _DATA_SUFFIXES = frozenset({".bin", ".data", ".dat", ".weights", ".weight",
                             ".npy", ".npz", ".safetensors"})
 _DATA_DIRECTORIES = frozenset({"weights", "weight", "data", "constants", "external_data"})
+INPUT_LAYOUTS = ("air-directory", "export-directory")
 _MAX_ENTRIES, _MAX_FILES, _MAX_DEPTH = 8192, 4096, 4
 _COPY_RESERVE_BYTES = 64 << 20
 
@@ -74,7 +75,7 @@ def _snapshot(source, destination):
 
 
 def _input_inventory(air):
-    """Bound traversal to data-like siblings and explicitly named data roots."""
+    """Include extensionless TorchAir weights within bounded sibling/data roots."""
     parent = air.parent
     files, skipped, visited = [air], [], 0
     directories = _DATA_DIRECTORIES | {air.name + ".data", air.stem + "_weights", air.stem + "_data"}
@@ -99,7 +100,9 @@ def _input_inventory(air):
                         skipped.append({"path": relative, "reason": "DEPTH_LIMIT"})
                     else:
                         walk(path, depth + 1)
-                elif entry.is_file(follow_symlinks=False) and path.suffix.lower() in _DATA_SUFFIXES:
+                elif entry.is_file(follow_symlinks=False) and (
+                        path.suffix.lower() in _DATA_SUFFIXES
+                        or (not path.suffix and not entry.name.startswith("."))):
                     files.append(path)
                     if len(files) > _MAX_FILES:
                         raise ValueError("AIR sidecar inventory exceeds bounded file limit")
@@ -211,12 +214,18 @@ def _generated_inventory(output, snapshots):
 def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                          tbe_diagnosis=None, timeout_seconds=7200, omg_path=None,
                          input_shape=None, dynamic_dims=None, limit_partition_size=None,
-                         save_weights_as_external_data=None, progress=None):
+                         save_weights_as_external_data=None, progress=None,
+                         input_layout="air-directory"):
     """Return a host compilation report, retaining failures without deployment.
 
     Only inventoried local snapshots are hash bound. Absolute or out-of-tree
     FileConstant references are not discovered or rewritten, so their identity
     and the original model's tensor ABI remain explicitly unverified.
+
+    air-directory retains neighboring data paths relative to the AIR directory.
+    export-directory prefixes data paths with the original export folder name,
+    matching TorchAir references such as ./export_folder/parameter_weight.
+    The staged AIR and compiler cwd coincide in both modes.
     """
     if (not isinstance(ddk_id, str) or not ddk_id.strip()
             or isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
@@ -224,6 +233,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         raise ValueError("declare a nonempty ddk_id and finite positive timeout_seconds")
     if progress is not None and not callable(progress):
         raise ValueError("progress must be callable or None")
+    if input_layout not in INPUT_LAYOUTS:
+        raise ValueError(f"input_layout must be one of {INPUT_LAYOUTS}")
     options = _conversion_options(input_shape, dynamic_dims, limit_partition_size, save_weights_as_external_data)
 
     def notify(stage, message, **details):
@@ -249,11 +260,17 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         raise PermissionError(f"selected OMG is not executable: {omg}")
     output.mkdir(parents=True, exist_ok=False)
     # Some OMG builds validate --output as a model name, rejecting a full
-    # path before graph parsing. Stage inputs alongside the output so a bare
-    # basename also preserves relative FileConstant and external-data paths.
+    # path before graph parsing. Keep AIR and cwd together; exported sidecars
+    # may need their original directory prefix for relative FileConstant paths.
     scratch = output / "compile-work"
     inputs = generated = scratch / "generated"
     inputs.mkdir(parents=True)
+    data_prefix = Path(air.parent.name) if input_layout == "export-directory" else Path()
+
+    def staged_relative(source):
+        relative = source.relative_to(air.parent)
+        return relative if source == air else data_prefix / relative
+
     log = output / "compile.log"
     report = {
         "schema_version": 1, "artifact_kind": "qwen35-existing-air-compilation",
@@ -267,12 +284,16 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         "model_compilation": "NOT_RUN", "device_execution": "NOT_RUN", "numerical_validation": "NOT_RUN",
         "runtime_placement": "UNVERIFIED", "device_ready": False,
         "compile_work": "compile-work", "compile_log": "compile.log",
+        "input_layout": {"mode": input_layout, "sidecar_prefix": str(data_prefix),
+                         "air_path": str((inputs / air.name).relative_to(output)),
+                         "compiler_cwd": str(inputs.relative_to(output))},
         "input_snapshots": [],
         "external_weights": {
             "status": "UNVERIFIED", "scope": "Only selected neighboring data files are inventoried and hash bound.",
             "limitations": "AIR is not parsed. Absolute/out-of-tree, symlinked, unselected names or deeper FileConstant references remain unbound; no path is rewritten.",
             "max_entries": _MAX_ENTRIES, "max_files": _MAX_FILES, "max_depth": _MAX_DEPTH,
             "data_suffixes": sorted(_DATA_SUFFIXES), "skipped": [],
+            "extensionless_regular_files": "INCLUDED_EXCEPT_HIDDEN_NAMES",
         },
     }
     compatibility = None
@@ -298,13 +319,14 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
             compatibility.update(metadata=metadata, audit={"status": "NOT_OBSERVED"})
         stage = "input-snapshot"
         selected, skipped = _input_inventory(air)
-        if any(source.relative_to(air.parent).parts[0] == "model"
-               or source.relative_to(air.parent).parts[0].startswith("model.")
+        if any(staged_relative(source).parts[0] == "model"
+               or staged_relative(source).parts[0].startswith("model.")
                for source in selected):
             raise ValueError("AIR snapshot conflicts with reserved compiler output basename 'model'")
         report["external_weights"]["skipped"] = skipped
         selection = {"file_count": len(selected),
                      "total_bytes": sum(source.stat().st_size for source in selected),
+                     "layout": report["input_layout"],
                      "physical_copy_reserve_bytes": _COPY_RESERVE_BYTES,
                      "scope": "Selected AIR and neighboring data candidates; not verified AIR dependencies. "
                               "Free space is checked per file only if reflink fails."}
@@ -312,9 +334,10 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         save_json(output / "input-selection.json", selection)
         notify(stage, f"Snapshotting {selection['file_count']} files, {selection['total_bytes']} bytes selected",
                total=selection["file_count"], total_bytes=selection["total_bytes"])
+        notify(stage, f"Input layout {input_layout}; sidecar prefix {data_prefix}")
         for index, source in enumerate(selected):
             relative = source.relative_to(air.parent)
-            snapshot = inputs / relative
+            snapshot = inputs / staged_relative(source)
             notify(stage, "Snapshotting input", completed=index, total=len(selected),
                    source_relative=str(relative), bytes=source.stat().st_size)
             row = _snapshot(source, snapshot)
@@ -425,6 +448,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
              "No board execution; this artifact is not validated against this project's runner ABI.",
              "Tool help: help.log; option verification: help-check.json.",
              f"Source AIR: {air}", "Input inventory: input-inventory.json",
+             f"Input layout: {input_layout}; sidecar prefix: {data_prefix}",
              "Full compiler log: compile.log; compiler work: compile-work/"]
     lines.append(f"Generated files: {len(report.get('generated_artifacts', []))}; external-data candidates: {len(report.get('external_data_candidates', []))}")
     if compatibility is not None:

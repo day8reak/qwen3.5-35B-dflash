@@ -424,7 +424,7 @@
     },
     "existing_original_air": {
       "implementation": "model/qwen35_moe_dflash/existing_air.py",
-      "status": "USER_REPORTED_RETRY_FAILED_AWAITING_COMPILER_LOG",
+      "status": "SIDECAR_STAGING_HOST_TESTED_REMOTE_RETRY_PENDING",
       "profile": "cpro-40block-64-1",
       "contract_source": "USER_PROVIDED_ORIGINAL_OMG_COMMAND",
       "declared_inputs": 89,
@@ -453,8 +453,22 @@
         "run": "full-target-compile-e019e4a7ad53",
         "output_argument": "model",
         "returncode": 1,
-        "cause": "UNKNOWN_PENDING_COMPILE_LOG",
-        "device_execution": "NOT_RUN"
+        "cause": "FILECONSTANT_WEIGHT_MISSING_IN_SNAPSHOT",
+        "device_execution": "NOT_RUN",
+        "failed_node": "arg3_1",
+        "missing_relative_path": "./glm_export_air_cpro_40block_55_quant/model_model_layers_0_input_layernorm_weight",
+        "source_weights_location": "USER_CONFIRMED_AIR_SIBLINGS",
+        "graph_stage": "AIR_PARSING",
+        "evidence": "USER_PASTED_LOG_NOT_LOCALLY_REHASHED"
+      },
+      "input_layout": "export-directory",
+      "sidecar_selection": "Bounded neighboring known-suffix and nonhidden extensionless regular files; symlinks skipped",
+      "next_action": "Update repository and rerun the same compile_full_target.py command; inspect snapshot file count and layout before actual OMG compilation",
+      "sidecar_staging_validation": {
+        "run_id": "20261028T004816Z-16432-ffea8e",
+        "passed": 73,
+        "junit": "air-sidecar-tests.xml",
+        "scope": "Host mock OMG; exact reported relative FileConstant path, no real full-model compile or device execution"
       }
     },
     "original_quantized_target": {

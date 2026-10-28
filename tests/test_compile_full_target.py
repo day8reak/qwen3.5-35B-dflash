@@ -36,6 +36,7 @@ def test_default_cli_reuses_air_and_diagnosis_with_user_dynamic_contract(cli, mo
         assert options["input_shape"].count("-1") == 5
         assert options["limit_partition_size"] is False
         assert options["save_weights_as_external_data"] is True
+        assert options["input_layout"] == "export-directory"
         assert options["tbe_diagnosis"] == str(output.parent / "diagnosis")
         assert options["omg_path"] is None
         seen.append(source)
@@ -48,6 +49,20 @@ def test_default_cli_reuses_air_and_diagnosis_with_user_dynamic_contract(cli, mo
     assert result["status"] == "COMPILED" and result["device_execution"] == "NOT_RUN"
     assert result["interface_inspection"] == "NOT_RUN" and result["device_ready"] is False
     assert air.read_bytes() == b"original opaque AIR"
+
+
+def test_cli_can_select_air_directory_relative_weight_layout(cli, monkeypatch):
+    main, air, _ = cli
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--input-layout", "air-directory"])
+    seen = []
+
+    def compile_air(source, destination, ddk, **options):
+        seen.append((source, options["input_layout"]))
+        return {"status": "COMPILED", "model_compilation": "PASSED", "omc": {"path": "generated/model.omc"}}
+
+    monkeypatch.setattr(existing_air, "compile_existing_air", compile_air)
+    assert main() == 0
+    assert seen == [(air, "air-directory")]
 
 
 def test_compile_failure_retained_and_no_inspection(cli, monkeypatch):

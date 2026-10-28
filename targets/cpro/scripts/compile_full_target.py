@@ -45,9 +45,13 @@ def main():
     from qwen35_moe_dflash.existing_air_profile import (
         EXISTING_AIR_PROFILE_NAMES, get_existing_air_profile,
     )
+    from qwen35_moe_dflash.existing_air import INPUT_LAYOUTS, compile_existing_air
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--air", required=True, help="original exported AIR; never modified")
+    parser.add_argument("--input-layout", choices=INPUT_LAYOUTS, default="export-directory",
+                        help="relative weight paths: default retains original export folder prefix; "
+                             "air-directory stages data directly beside AIR")
     parser.add_argument("--profile", choices=EXISTING_AIR_PROFILE_NAMES,
                         default="cpro-40block-64-1", help="user-provided input names and dynamic shapes")
     parser.add_argument("--ddk-root", default=os.environ.get("CPRO_DDK_ROOT") or os.environ.get("DDK_PATH"))
@@ -60,7 +64,6 @@ def main():
     args = parser.parse_args()
 
     from qwen35_moe_dflash.artifacts import output_path, save_json
-    from qwen35_moe_dflash.existing_air import compile_existing_air
 
     root = None
     owned_root = False
@@ -82,6 +85,7 @@ def main():
         profile = get_existing_air_profile(args.profile)
         save_json(root / "compile-profile.json", profile)
         result.update(output=str(root), air=str(air), profile="compile-profile.json",
+                      input_layout=args.input_layout,
                       compilation="compilation/report.json")
         print(f"full-target: output {root}", flush=True)
         print("full-target: original AIR; 64/1 dynamic shapes; external weights; kirinx90", flush=True)
@@ -97,6 +101,7 @@ def main():
             omg_path=args.omg, input_shape=profile["input_shape"], dynamic_dims=profile["dynamic_dims"],
             limit_partition_size=profile["limit_partition_size"],
             save_weights_as_external_data=profile["save_weights_as_external_data"], progress=progress,
+            input_layout=args.input_layout,
         )
         result["status"] = compiled["status"]
         result["model_compilation"] = compiled["model_compilation"]

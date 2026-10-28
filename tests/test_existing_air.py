@@ -83,6 +83,106 @@ def test_output_basename_is_independent_of_punctuated_long_run_directory(case, m
     assert Path(recorded["cwd"]) / "model.omc" == output / result["omc"]["path"]
 
 
+def test_export_directory_resolves_extensionless_fileconstants_without_source_writes(case, monkeypatch):
+    air, output, ddk = case
+    source = air.parent.with_name("glm_export_air_cpro_40block_55_quant")
+    air.parent.rename(source)
+    air = source / air.name
+    weight_name = "model_model_layers_0_input_layernorm_weight"
+    reference = f"./{source.name}/{weight_name}"
+    # This is a mock AIR payload, used only to exercise the actual file-open
+    # behavior of the compiler's reported relative FileConstant reference.
+    air.write_text(json.dumps({"file_constant": reference}))
+    (source / weight_name).write_bytes(b"EXPORTED PHYSICAL WEIGHT")
+    (source / "model.bin").write_bytes(b"SAFE NESTED SIDECAR")
+    (source / ".hidden_weight").write_bytes(b"UNSELECTED HIDDEN FILE")
+    (source / "weight_alias").symlink_to(source / weight_name)
+    (source / "outside/extensionless_weight").write_bytes(b"UNSELECTED SUBTREE")
+    before = {p: (p.read_bytes(), module._stat(p)) for p in source.rglob("*")
+              if p.is_file() and not p.is_symlink()}
+
+    def tool(command, **kwargs):
+        if "--help" in command:
+            return _help(command, **kwargs)
+        model = Path(next(arg.split("=", 1)[1] for arg in command if arg.startswith("--model=")))
+        cwd = kwargs["cwd"]
+        assert model == cwd / "export.air"
+        file_constant = json.loads(model.read_text())["file_constant"]
+        assert file_constant == reference
+        assert (cwd / file_constant).read_bytes() == b"EXPORTED PHYSICAL WEIGHT"
+        assert (model.parent / file_constant).read_bytes() == b"EXPORTED PHYSICAL WEIGHT"
+        assert (cwd / source.name / "weights/w.bin").read_bytes() == b"SIDE DATA"
+        assert (cwd / source.name / "model.bin").read_bytes() == b"SAFE NESTED SIDECAR"
+        assert not (cwd / weight_name).exists()
+        assert not (cwd / source.name / "export.air").exists()
+        assert "--output=model" in command
+        (cwd / "model.omc").write_bytes(b"SIMULATED OMC")
+
+    monkeypatch.setattr(subprocess, "run", tool)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK", input_layout="export-directory")
+    assert result["status"] == "COMPILED"
+    rows = {row["source_relative"]: row for row in result["input_snapshots"]}
+    assert set(rows) == {"export.air", weight_name, "model.bin", "weights/w.bin"}
+    assert rows["export.air"]["path"] == "compile-work/generated/export.air"
+    assert rows[weight_name]["path"] == f"compile-work/generated/{source.name}/{weight_name}"
+    assert {row["path"] for row in result["generated_artifacts"]} == {"compile-work/generated/model.omc"}
+    skipped = {row["path"]: row["reason"] for row in result["external_weights"]["skipped"]}
+    assert skipped["weight_alias"] == "SYMLINK_NOT_FOLLOWED"
+    assert ".hidden_weight" in skipped and skipped["outside"] == "UNSELECTED_DIRECTORY"
+    assert all(not p.is_symlink() for p in (output / "compile-work").rglob("*"))
+    assert before == {p: (p.read_bytes(), module._stat(p)) for p in before}
+    assert result["source_preservation"]["status"] == "UNCHANGED_BY_STAT"
+    for row in rows.values():
+        snapshot = output / row["path"]
+        assert row["sha256"] == module.sha256_file(snapshot)
+        assert module._stat(snapshot)[:2] != module._stat(Path(row["source"]))[:2]
+
+
+def test_default_air_directory_includes_extensionless_sidecars_in_allowed_roots(case, monkeypatch):
+    air, output, ddk = case
+    (air.parent / "layer_weight").write_bytes(b"ROOT WEIGHT")
+    (air.parent / "weights/layer_scale").write_bytes(b"NESTED SCALE")
+
+    def tool(command, **kwargs):
+        result = _tool(command, **kwargs)
+        if "--help" not in command:
+            assert (kwargs["cwd"] / "layer_weight").read_bytes() == b"ROOT WEIGHT"
+            assert (kwargs["cwd"] / "weights/layer_scale").read_bytes() == b"NESTED SCALE"
+        return result
+
+    monkeypatch.setattr(subprocess, "run", tool)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK")
+    assert result["status"] == "COMPILED"
+    assert {row["source_relative"] for row in result["input_snapshots"]} == {
+        "export.air", "weights/w.bin", "layer_weight", "weights/layer_scale"}
+
+
+@pytest.mark.parametrize("folder_name", ["model", "model.weights"])
+def test_export_directory_cannot_collide_with_compiler_output_root(case, monkeypatch, folder_name):
+    air, output, ddk = case
+    source = air.parent.with_name(folder_name)
+    air.parent.rename(source)
+    air = source / air.name
+
+    def help_only(command, **kwargs):
+        assert "--help" in command, "input layout collision must prevent model compilation"
+        return _help(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", help_only)
+    result = module.compile_existing_air(air, output, ddk, ddk_id="MOCK", input_layout="export-directory")
+    assert result["status"] == "FAILED" and result["model_compilation"] == "NOT_RUN"
+    assert "reserved compiler output basename" in result["error"]
+    assert (source / "weights/w.bin").read_bytes() == b"SIDE DATA"
+
+
+def test_unknown_input_layout_fails_before_output_or_tool(case, monkeypatch):
+    air, output, ddk = case
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("invalid layout must not invoke tool"))
+    with pytest.raises(ValueError, match="input_layout"):
+        module.compile_existing_air(air, output, ddk, ddk_id="MOCK", input_layout="unknown")
+    assert not output.exists()
+
+
 def test_reserved_output_prefix_cannot_overwrite_staged_input(case, monkeypatch):
     air, output, ddk = case
     collision = air.parent / "model.bin"
