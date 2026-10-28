@@ -74,4 +74,6 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 已只读核对 [4B框架提交631c86fc](https://github.com/day8reak/qwen3.5-4B-dflash/tree/631c86fc0c4e053817f0786ab8067b5565638d50)（`framework/quant-air-om` 分支）。其中 draft 的投影仍是 `F.linear`，走 TorchAir→ATC；不能由310P支持推出当前Cpro OMG支持K=16384。两版draft均为6层、block16、32个Q头/8个KV头、head_dim128，但4B的hidden/intermediate/feature_width为2560/9216/20480，本版为2048/6144/16384，权重和产物不可直接互换。
 
+另核对默认 [main提交19e7c24](https://github.com/day8reak/qwen3.5-4B-dflash/tree/19e7c24b8ec6beaff707f94aaf12411385505aa9)：这是PyTorch eager的完整前缀重算路径，没有上述framework分支的draft KV缓存。不能把两个分支混为同一实现，也不能把用户20ms归因于未确认采用的缓存路径；仓库说明实测报告未上传GitHub。
+
 后续连续推理优先借鉴它的增量执行：仅投影新增target features、维护各层draft KV与cursor、Draft/Verify及缓冲区常驻。当前独立入口仍是prefix-recompute，一次固定输入诊断不等于该增量路径。4B还保留FP32 RMS/attention计算，与本入口FP16参考契约不同，需要单独核对精度后移植。用户报告310P约20ms；所读源码未包含对应的实机计时记录，暂不将其作为Cpro性能承诺。

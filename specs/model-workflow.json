@@ -547,6 +547,8 @@
         "repository": "day8reak/qwen3.5-4B-dflash",
         "branch": "framework/quant-air-om",
         "commit": "631c86fc0c4e053817f0786ab8067b5565638d50",
+        "main_commit": "19e7c24b8ec6beaff707f94aaf12411385505aa9",
+        "main_scope": "PyTorch eager prefix recomputation, without the framework branch draft KV cache",
         "reviewed": "Full F.linear on 310P; incremental target feature projection, per-layer draft KV and persistent Draft/Verify execution",
         "reuse_next": "Incremental draft integration after standalone compilation and numerical closure",
         "user_reported_latency_ms": 20,
