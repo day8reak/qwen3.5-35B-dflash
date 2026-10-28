@@ -6,15 +6,18 @@
 
 ## 用户现在执行什么
 
-**旧参考的FP16 RMS溢出已复现；现已将GE与CPU参考的精度边界对齐4B实际AIR路径。更新后执行一次完整draft：**
+**v6完整draft已完成编译、加载和推理，当前卡在数值一致性。先检查本轮已保留的输出和编译图：**
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --weight-storage embedded-stream \
-  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --diagnose-numerics
 ```
 
-用户的离线重放逐字节复现了旧golden：首次塌缩位于 `draft.layers.0.post_attention_layernorm`，输入绝对最大值340、FP16平方出现27个非有限元素，9行变成全零。仅将RMS改为FP32后所有26个norm均无新零行，hidden恢复有限非零；与旧板端仍有12个Top1差异，hidden相对L2=1.9395076956574235，因此精度尚未通过。
+用户最新回传的PID54002运行已使用v6 AIR和v3参考，设备退出码0、输入回读一致、输出均有限；15个Top1仍有12个不同。参考hidden L2为175.270586，设备为27883.188584，相对L2为159.063547，设备范围为[-258.75, 258.75]。这是明显数值错误，不能用正常FP16舍入解释。以下远端结果来自用户回传，尚未在本地主机重新核验原文件。
+
+新命令核验保留的输入、输出与清单，批量计算15行hidden的RMS、余弦和误差，并检查已保存编译IR中最终/特征RMS、各层归约和attention的类型、形状及连接。终端一次输出关键结果，完整报告固定写入 `full-draft/numerical-diagnostic/report.json`。它不重编译、不上传、不执行设备、不复制大权重，也不修改golden或放宽比较标准。仍有数值差异时退出码为1；报告中的INSPECTED只表示诊断完成。若没有可用的编译dump或DDK schema，会明确显示原因，不猜测类型编号。
+
+此前离线重放逐字节复现了旧golden：首次塌缩位于 `draft.layers.0.post_attention_layernorm`，输入绝对最大值340、FP16平方出现27个非有限元素，9行变成全零。仅将RMS改为FP32后所有26个norm均无新零行，hidden恢复有限非零；与旧板端仍有12个Top1差异，hidden相对L2=1.9395076956574235。
 
 最终norm的2,048个scale均为1。正确FP32归一化后的30,720个hidden元素L2约为sqrt(30720)=175.271218；新参考175.271140符合，旧板端357.492527明显不符合。这确认旧设备最终输出不满足该归一化约束；具体设备FP16溢出如何处理尚未观察，不将饱和机制猜测当作事实。
 
@@ -24,7 +27,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --weight-storage embe
 
 续跑仍使用固定 `full-draft` 目录，保留prepared权重；自动使旧fixture、AIR、编译与bundle失效，重新生成参考和OMC并执行一次板端比较。新输入的字节哈希必须与旧fixture相同。采用已经执行成功的embedded-stream封装，无需原始target checkpoint。旧 `reference-replay` 小报告保留供诊断，但原阶段目录按固定工作区规则替换。
 
-GE导出契约更新为 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-air4b-precision-v6`，参考契约为 `pytorch-fp16-air4b-precision-v3`。本次修正的实际DDK编译、板端执行与数值一致仍待上述命令验证，不提前宣布通过。`--compare-only`仍可复核当前板端结果；`--replay-reference`仅用于旧FP16参考诊断。
+GE导出契约为 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-air4b-precision-v6`，参考契约为 `pytorch-fp16-air4b-precision-v3`。本次实际DDK编译及板端执行已由用户回传成功，数值仍失败；53个子图不单独证明实际执行位置或错误原因。当前先查最终RMS计算链与输出转换，尚未确定具体算子或芯片机制。`--compare-only`仍可复核当前板端结果；`--replay-reference`用于旧FP16参考诊断。
 
 [独立 draft 指南](draft-standalone.md)保留完整模型入口。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 

@@ -45,6 +45,7 @@ def parser():
     mode.add_argument("--prepare-only", action="store_true", help="prepare full weights and PyTorch fixture; no GE/DDK/board")
     mode.add_argument("--compile-only", action="store_true", help="prepare reference, export AIR and compile OMC; no board")
     mode.add_argument("--compare-only", action="store_true", help="recheck existing board outputs locally; no rebuild, upload, HDC or execution")
+    mode.add_argument("--diagnose-numerics", action="store_true", help="inspect retained hidden rows, normalization constraints and compiler precision dumps; no rebuild, upload or board execution")
     mode.add_argument("--replay-reference", action="store_true", help="CPU replay exact retained inputs with RMS traces and FP32-statistics comparison; keeps original golden and board files")
     mode.add_argument("--inspect-only", action="store_true", help="read --resume job's retained compiler evidence; no export, compilation or board")
     return p
@@ -116,11 +117,68 @@ def _weight_path(explicit, key):
         raise ValueError(f"{key}: set {option} to the downloaded model folder containing config.json and safetensors. {error}") from error
 
 
+def _print_retained_comparison(folder):
+    """Display existing comparison evidence; do not rerun or change its verdict."""
+    path = folder / "comparison.json"
+    try:
+        if not path.is_file():
+            return
+        if path.stat().st_size > 1024 * 1024:
+            raise ValueError("comparison exceeds the 1 MiB console-summary limit")
+        comparison = json.loads(path.read_text())
+        if not isinstance(comparison, dict):
+            raise ValueError("comparison must be a JSON object")
+    except (OSError, ValueError) as error:
+        print(f"full-draft: Could not summarize retained comparison {path}: {error}", flush=True)
+        return
+
+    def fields(record, names):
+        return "; ".join(f"{name}={json.dumps(record[name], ensure_ascii=False)[:512]}"
+                         for name in names if name in record)
+
+    print(f"full-draft: Retained numerical comparison: {path}", flush=True)
+    print("full-draft: Comparison: " + fields(comparison, (
+        "status", "device_execution", "numerical_validation", "host_input_readback")), flush=True)
+    if "token_mismatches" in comparison:
+        print("full-draft: Top1: " + fields(comparison, (
+            "token_mismatches", "actual_top1", "expected_top1")), flush=True)
+    hidden = comparison.get("hidden_diagnostic")
+    if isinstance(hidden, dict):
+        print("full-draft: Hidden diagnostic: " + fields(hidden, (
+            "status", "max_abs_error", "error_l2", "relative_l2", "relative_l2_status",
+            "exact_match", "acceptance_threshold")), flush=True)
+        for name in ("expected", "actual"):
+            if isinstance(hidden.get(name), dict):
+                print(f"full-draft: Hidden {name}: " + fields(hidden[name], (
+                    "elements", "finite_count", "nonfinite_count", "nonzero_count",
+                    "finite_min", "finite_max", "l2_norm", "l2_norm_status")), flush=True)
+    for name in ("reference_quality", "reference_warning", "accuracy_scope", "error"):
+        if comparison.get(name):
+            print("full-draft: " + fields(comparison, (name,)), flush=True)
+
+
+def _console_result(result):
+    """Keep large weight inventories in result.json while printing their size."""
+    validation = result.get("weight_storage_validation")
+    rows = validation.get("observed_weight_candidates") if isinstance(validation, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return result
+    summary = dict(result)
+    storage = summary["weight_storage_validation"] = dict(validation)
+    storage.pop("observed_weight_candidates")
+    storage["observed_weight_candidate_count"] = len(rows)
+    storage["observed_weight_candidate_bytes"] = sum(
+        row["bytes"] for row in rows if isinstance(row, dict) and type(row.get("bytes")) is int)
+    storage["details"] = str(Path(result["output"]) / "result.json")
+    return summary
+
+
 def _print_board_failure(result, hilog=None):
-    """Show retained native failures without another device invocation."""
+    """Show retained execution and comparison failures without another invocation."""
     from qwen35_moe_dflash.tool_logs import log_excerpt
     folder = Path(result["board"])
     print(f"full-draft: Board failure evidence: {folder / 'result.json'}", flush=True)
+    _print_retained_comparison(folder)
     if result.get("failure_stage"):
         print(f"full-draft: Native failure stage: {result['failure_stage']}", flush=True)
     if result.get("runtime_stage"):
@@ -221,11 +279,13 @@ def _main(args, stack):
         run = os.environ.get("AI_RUN_DIR")
         if not run:
             raise ValueError("AI_RUN_DIR is required; source the project env.sh")
-        if args.compare_only or args.replay_reference:
-            option = "--replay-reference" if args.replay_reference else "--compare-only"
+        if args.compare_only or args.replay_reference or args.diagnose_numerics:
+            option = ("--diagnose-numerics" if args.diagnose_numerics else
+                      "--replay-reference" if args.replay_reference else "--compare-only")
             if any(value is not None for value in (args.target_weights, args.draft_weights,
-                    args.sequence_length, args.valid_length, args.weight_storage, args.model_load_api,
-                    args.schema_library)):
+                    args.sequence_length, args.valid_length, args.weight_storage, args.model_load_api)):
+                raise ValueError(option+" reads the retained execution; do not select changed inputs, storage or loader")
+            if args.schema_library is not None and not args.diagnose_numerics:
                 raise ValueError(option+" reads the retained execution; do not select changed inputs, storage or loader")
             if args.resume and args.output and Path(args.resume).resolve() != Path(args.output).resolve():
                 raise ValueError(option+" does not migrate jobs; select one existing job directory")
@@ -234,12 +294,20 @@ def _main(args, stack):
             selected = Path(args.resume or args.output or Path(run)/"full-draft")
             if not selected.is_dir() or selected.is_symlink():
                 raise ValueError(option+" needs an existing real draft job directory")
-            print("full-draft: Replaying CPU reference on retained inputs; no rebuild, upload or board execution"
+            print("full-draft: Inspecting retained outputs and compiler precision; no rebuild, upload or board execution"
+                  if args.diagnose_numerics else
+                  "full-draft: Replaying CPU reference on retained inputs; no rebuild, upload or board execution"
                   if args.replay_reference else
                   "full-draft: Rechecking retained native outputs locally; no rebuild, upload or board execution", flush=True)
             with DraftWorkspace(selected) as review_workspace:
                 if review_workspace.load_pending() is not None:
                     raise ValueError("finish the pending workspace migration before comparing retained outputs")
+                if args.diagnose_numerics:
+                    from qwen35_moe_dflash.draft_numerics import diagnose_draft_numerics
+                    reviewed = diagnose_draft_numerics(selected, schema_library=args.schema_library)
+                    print(json.dumps(reviewed.get("summary", reviewed), ensure_ascii=False, allow_nan=False), flush=True)
+                    print(f"full-draft: Numerical diagnostic: {selected / 'numerical-diagnostic/report.json'}", flush=True)
+                    return 0 if reviewed.get("numerical_validation") == "TOP1_MATCHED" else 1
                 if args.replay_reference:
                     from qwen35_moe_dflash.draft_reference_replay import replay_reference
                     reviewed = replay_reference(selected, selected/"reference-replay",
@@ -561,7 +629,7 @@ def _main(args, stack):
         result.update(status="FAILED", error=f"{type(error).__name__}: {error}")
     if root is not None and root.is_dir() and result.get("output") == str(root):
         save_job("result.json", result)
-    print(json.dumps(result, ensure_ascii=False), flush=True)
+    print(json.dumps(_console_result(result), ensure_ascii=False), flush=True)
     if result.get("compile_log"):
         from qwen35_moe_dflash.tool_logs import log_excerpt
         print(log_excerpt(Path(result["compile_log"])), flush=True)

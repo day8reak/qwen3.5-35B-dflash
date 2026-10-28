@@ -2,15 +2,16 @@
 
 当前优先跑通完整六层 DFlash，不等待40层 target 编译。沿用已经配置的 `env.sh`、主机GE、目标DDK和HDC环境。默认工作目录固定为 `$AI_RUN_DIR/full-draft`，后续自动复用成功阶段并覆盖失败阶段的日志，不再为每次重试生成新目录。
 
-旧参考重放已确认RMS平方的FP16溢出；GE和新参考现已对齐4B实际AIR的RMS、attention和RoPE精度边界。执行一次更新后的完整流程：
+当前v6 AIR/v3参考已完成编译和设备推理，但数值仍失败：15个Top1中12个不一致，设备hidden相对L2=159.063547。现在复用保留产物做一次本地诊断：
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --weight-storage embedded-stream \
-  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --diagnose-numerics
 ```
 
-同一固定目录保留prepared权重，自动重建旧fixture、AIR、编译、bundle和board阶段。重新生成的输入须与旧fixture逐字节一致；无需原始target checkpoint。全部26处norm在FP32中归一化，再转FP16乘原scale；attention的QK/PV结果边界保持FP16，score/softmax使用FP32、概率转FP16后进入PV；RoPE角度和cos/sin使用FP32、完成后转FP16。35B训练配置、权重和六层结构不变。使用已完成过设备执行的embedded-stream封装，避免OMG直接内嵌大模型的保存故障。
+此命令不重建或执行模型；核验保留文件后，输出各行hidden的RMS、余弦、误差和常见FP16值，同时静态解析所选DDK schema和已保存编译IR，检查最终/特征RMS、各层归约及attention。报告固定为 `numerical-diagnostic/report.json`，再次诊断只替换自己的报告，不修改原golden、OMC和板端证据。支持 `--schema-library` 显式选择schema库；缺dump、缺schema和不明确的dtype均单独报告。数值仍失败时返回1，INSPECTED不表示精度通过。
+
+旧参考重放已确认RMS平方的FP16溢出；当前GE和新参考已对齐4B实际AIR的精度边界。全部26处norm声明在FP32中归一化，再转FP16乘原scale；attention的QK/PV结果边界保持FP16，score/softmax使用FP32、概率转FP16后进入PV；RoPE角度和cos/sin使用FP32、完成后转FP16。35B训练配置、权重和六层结构不变。embedded-stream已完成本次设备执行，当前误差原因仍需定位，不能把导出声明视为设备数值正确的证明。
 
 新参考契约为 `pytorch-fp16-air4b-precision-v3`，AIR契约以 `air4b-precision-v6` 结尾。旧参考的离线诊断保留在 `reference-replay`；新参考结果直接由正常board比较验证，或用 `--compare-only`复核。不能把旧板端的EXECUTED当作本次新模型的精度通过。
 
@@ -126,7 +127,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 如果首次准备权重尚未成功（`components` 为空），直接修正路径或文件后重跑上面的完整命令；这时没有已完成的权重、导出或编译需要复用。
 
-主机验证覆盖draft-only准备、六层参考计算、GE构图/导出、阶段恢复、外置权重绑定、原生输入检查与模拟执行失败。用户日志确认external模式的v4 OMG与CPUCL初始化成功，但随后NPU子图权重内存检查失败；embedded模式则在保存模型时失败。完整执行和数值结果尚未取得。
+主机验证覆盖draft-only准备、六层参考计算、GE构图/导出、阶段恢复、外置权重绑定、原生输入检查与模拟执行失败。历史external运行在NPU子图权重内存检查失败，直接embedded在保存模型时失败；目前embedded-stream的v6完整执行已成功，数值验证仍失败，见本文开头。
 
 ## 与已用过的 4B draft 对照
 

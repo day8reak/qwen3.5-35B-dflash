@@ -1442,7 +1442,7 @@
       "air4b_precision_update": {
         "run_id": "20261028T120455Z-6764-8b00f2",
         "command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --weight-storage embedded-stream --tbe-diagnosis \"$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis\"",
-        "status": "HOST_VALIDATED_DEVICE_RETRY_PENDING",
+        "status": "USER_REPORTED_DEVICE_EXECUTED_NUMERICAL_FAILED",
         "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-air4b-precision-v6",
         "reference_contract": "pytorch-fp16-air4b-precision-v3",
         "normalization": "FP32 input, square, mean, epsilon, rsqrt and normalization product; cast to FP16 before unchanged direct gamma",
@@ -1458,8 +1458,8 @@
           "bundle",
           "board"
         ],
-        "device_execution": "NOT_RUN",
-        "numerical_validation": "NOT_RUN",
+        "device_execution": "PASSED",
+        "numerical_validation": "FAILED",
         "saturation_hypothesis": "UNPROVEN",
         "unit_gamma_invariant": {
           "elements": 30720,
@@ -1488,7 +1488,7 @@
             "310P latency as numerical accuracy evidence",
             "Host source alignment as device pass"
           ],
-          "next_validation": "Selected DDK compilation plus full six-layer device numerical comparison"
+          "next_validation": "Inspect retained per-row hidden and compiled RMS/attention descriptors before changing graph or repeating execution"
         },
         "host_validation": {
           "reports": [
@@ -1527,6 +1527,85 @@
             "benchmark_revision_binding": "UNVERIFIED",
             "evidence": "sglang-source/manifest.json"
           }
+        },
+        "user_result": {
+          "native_process_id": 54002,
+          "runtime_version": "800.631.120.010",
+          "remote_exitcode": 0,
+          "host_input_readback": "MATCHED",
+          "reference_quality": "FINITE_NONZERO_HIDDEN",
+          "token_mismatches": 12,
+          "tokens": 15,
+          "expected_hidden_l2": 175.27058602513762,
+          "actual_hidden_l2": 27883.188584137377,
+          "hidden_relative_l2": 159.06354720130383,
+          "actual_hidden_range": [
+            -258.75,
+            258.75
+          ],
+          "actual_zero_count": 429,
+          "all_hidden_finite": true,
+          "compiled_subgraphs": 53,
+          "bundle_model_sha256": "717fc0c43a81a865cac05eb8626601e90ca5863bf15af91df02b1625c9d57a45",
+          "compilation_manifest_sha256": "dff57bf139cb3d5b0e924244affc8fec43faf6f6442daf208aacd3825382485a",
+          "bundle_manifest_sha256": "1a17878be2b50e12cce00c39c6d4727dc2e6214cc2ea73cc1cebcd8d75dabc22",
+          "evidence_scope": "User-pasted result and comparison; remote raw files not independently retrieved",
+          "root_cause": "UNRESOLVED",
+          "runtime_placement": "UNVERIFIED",
+          "performance": "NOT_EVALUATED"
+        }
+      },
+      "retained_numerical_diagnostic": {
+        "run_id": "20261028T124757Z-10057-688e0b",
+        "command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --diagnose-numerics",
+        "output": "${AI_RUN_DIR}/full-draft/numerical-diagnostic/report.json",
+        "operation": "HOST_RETAINED_NUMERICAL_DIAGNOSTIC",
+        "new_compilation": "NOT_RUN",
+        "new_device_execution": "NOT_RUN",
+        "checks": [
+          "Retained execution/input/output identity",
+          "Per-row hidden RMS, cosine and errors",
+          "Verified unit final gamma constraint",
+          "Common FP16 value/bit patterns",
+          "Batch retained compiler RMS/attention descriptors"
+        ],
+        "limitations": [
+          "Static IR descriptors do not prove runtime arithmetic",
+          "Missing/fused names and omitted dtype remain explicit",
+          "No source BF16/FA4 equivalence or device accuracy pass"
+        ],
+        "original_evidence": "UNCHANGED",
+        "threshold_changes": "NONE",
+        "next_action": "Run one host-only diagnostic on the current full-draft workspace; avoid another full compile/upload of the unchanged graph",
+        "host_validation": {
+          "passed": 212,
+          "failed": 0,
+          "skipped": 0,
+          "report": "out/final-numerics-tests.xml",
+          "scope": "Host report/identity/bounded IR decoding and CLI regressions; no selected DDK compilation or device run"
+        },
+        "experience_audit": {
+          "captured": [
+            "Successful execution and finite output do not establish accuracy",
+            "Unit final gamma provides an independent gross normalization invariant",
+            "Compiled IR must bind to the executed bundle as well as to AIR",
+            "Batch retained diagnostics reduce full compile/upload round trips"
+          ],
+          "updated_checks": [
+            "test_draft_numerics.py",
+            "test_draft_precision_inspect.py",
+            "test_full_draft_numerics_cli.py",
+            "test_full_draft_failure_summary.py"
+          ],
+          "rejected_promotions": [
+            "Specific Cpro kernel root cause",
+            "53 subgraphs as placement proof",
+            "FP16/BF16 policy differences as explanation for relative L2 159"
+          ],
+          "remaining_hypotheses": [
+            "Compiled final normalization/casts/output semantics need retained evidence"
+          ],
+          "validation": "212 host checks passed; device numerical validation still failed"
         }
       }
     }
