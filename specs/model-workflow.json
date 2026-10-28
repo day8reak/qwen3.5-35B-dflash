@@ -1517,7 +1517,16 @@
           "evidence": [
             "out/source35b-audit/report.json",
             "out/original35b-source-audit"
-          ]
+          ],
+          "sglang_snapshot": {
+            "commit": "5cc9c933fc8acdffb5fc847d3b4824f082cd3297",
+            "rms_native_difference": "Default cast_x_before_out_mul=False: FP32 normalize, multiply gamma, then cast; AIR/author Transformers cast before gamma",
+            "cuda": "Fused RMS and optional BF16 QK norm/RoPE; exact rounding unverified",
+            "attention": "Selected backend via RadixAttention",
+            "rope_internal_dtype": "NOT_AUDITED",
+            "benchmark_revision_binding": "UNVERIFIED",
+            "evidence": "sglang-source/manifest.json"
+          }
         }
       }
     }

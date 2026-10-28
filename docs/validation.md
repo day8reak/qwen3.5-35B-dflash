@@ -32,6 +32,8 @@ GE IR、C++描述符及recipe增加FP32类型，已有类型编码保持不变�
 
 [作者当前源码快照](https://github.com/z-lab/dflash/blob/07ebd93db9f472af339b644bb70221ad8428328a/dflash/model.py)使用Qwen3RMSNorm、Qwen3RotaryEmbedding和SDPA attention；RMS与RoPE的FP32计算及返回输入dtype顺序与本次修正一致。当前参数/主激活从BF16转换为FP16，且AIR显式物化FP16 QK/PV结果，SDPA/FA4内部累加和舍入不由这一表达证明。结论限定为FP16部署候选；原BF16质量及设备数值等价均未通过。35B结构/权重配置保持原样，4B只作为部署实现参考。
 
+补充核对SGLang当前固定源码 `5cc9c933fc8acdffb5fc847d3b4824f082cd3297`：DFlash创建的普通RMSNorm默认 `cast_x_before_out_mul=False`，`layers/layernorm.py:873–917` 的native路径在FP32归一化后先乘gamma、最后转换输出dtype。这与作者Transformers及当前AIR的“先转换再乘gamma”有舍入边界差异。CUDA分支调用融合RMS，BF16 Q/K还可融合norm/RoPE；Python native顺序不证明所有融合核的逐位行为。该SGLang提交也不是官方benchmark固定版本。源码快照及哈希在本run的 `sglang-source/manifest.json`。因此“RMS使用FP32有源码依据”不能扩展成“当前RMS与官方SGLang所有精度边界相同”。
+
 来源及文件哈希记录在本run的 `out/source35b-audit/report.json`；作者数学核对记录在 `out/original35b-source-audit`。未因源码核对更换checkpoint、回退mask修复或放宽验收阈值。
 
 ## 退化参考与RMS精度重放
