@@ -14,6 +14,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 #include <vector>
 namespace {
 using namespace qwen35::dflash;
@@ -547,6 +548,7 @@ int RunTensorStep(const std::string& path, const std::string& output,
                     const std::string& version, const std::string& ddk,
                     const std::string& firmware, std::uint32_t timeout, bool fused = false,
                     int diagnostic_output_fill_byte = -1, bool draft = false) {
+  const auto process_id = static_cast<std::uint64_t>(::getpid());
   const auto destination = std::filesystem::absolute(output).lexically_normal();
   NoSymlinks(destination);
   if (std::filesystem::exists(destination)) throw std::runtime_error("stateful output already exists");
@@ -587,6 +589,7 @@ int RunTensorStep(const std::string& path, const std::string& output,
     if ((fused || draft) && std::filesystem::create_directory(destination)) {
       std::ostringstream failed;
       failed << "{\"schema_version\":1,\"status\":\"RUNTIME_FAILED\","
+             << "\"process_id\":" << process_id << ','
              << "\"scope\":\"" << (draft ? "standalone-draft-step" : "fused-operator-probe")
              << "\",\"evidence_kind\":\"" << kEvidenceKind
              << "\",\"operator_type\":\"" << plan.operator_type
@@ -608,7 +611,8 @@ int RunTensorStep(const std::string& path, const std::string& output,
   if (!std::filesystem::create_directory(destination))
     throw std::runtime_error("cannot create new stateful output directory");
   std::ostringstream report;
-  report << "{\"schema_version\":1,\"status\":\"EXECUTED\",\"scope\":\""
+  report << "{\"schema_version\":1,\"status\":\"EXECUTED\",\"process_id\":" << process_id
+         << ",\"scope\":\""
          << (draft ? "standalone-draft-step" : fused ? "fused-operator-probe" : "stateful-target-step") << "\","
          << "\"evidence_kind\":\"" << kEvidenceKind << "\",\"runtime_version\":\""
          << JsonEscape(executor->runtime_version()) << "\",\"ddk_id\":\"" << JsonEscape(ddk)

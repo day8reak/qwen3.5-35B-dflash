@@ -251,6 +251,10 @@ def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False):
         raise ValueError('device evidence required; host-fake is test-only')
     report['evidence_kind']=evidence
     if native.get('status')=='RUNTIME_FAILED':
+        if (native['draft_calls'] != 0 or native.get('outputs') != []
+                or native.get('failure_stage') not in {'LOAD_OR_SETUP','INPUT_BINDING','PROCESS'}
+                or not isinstance(native.get('reason'),str) or not native['reason'].strip()):
+            raise ValueError('native runtime failure record has invalid stage, reason, counters or outputs')
         report.update(device_execution='FAILED',failure_stage=native.get('failure_stage'),error=native.get('reason'))
         return report
     if native.get('status')!='EXECUTED' or native.get('draft_calls')!=1:
@@ -321,10 +325,16 @@ def _build_runner(out,timeout):
     return runner
 
 
-def _receive(hdc,board,out,name):
+def _receive(hdc,board,out,name,*,timeout_seconds=None):
     _relative(name)
+    timeout=min(30,hdc.timeout)
+    if timeout_seconds is not None:
+        if (isinstance(timeout_seconds,bool) or not isinstance(timeout_seconds,(int,float))
+                or not math.isfinite(timeout_seconds) or timeout_seconds<=0):
+            raise ValueError('receive timeout_seconds must be finite and positive')
+        timeout=min(timeout,timeout_seconds)
     remote=shlex.quote(str(board/name))
-    _,text=hdc.shell(f"if test -f {remote}; then sha256sum {remote}; else printf '__MISSING__\\n'; fi",'hash-result',timeout=min(30,hdc.timeout))
+    _,text=hdc.shell(f"if test -f {remote}; then sha256sum {remote}; else printf '__MISSING__\\n'; fi",'hash-result',timeout=timeout)
     if text=='__MISSING__':
         return None
     if len(text.splitlines())!=1 or not re.match(r'^[0-9a-f]{64} [ *]',text):
@@ -332,7 +342,7 @@ def _receive(hdc,board,out,name):
     path=out/name
     path.parent.mkdir(parents=True,exist_ok=True)
     temporary=path.with_name(path.name+'.receiving')
-    hdc.receive(board/name,temporary,timeout=min(30,hdc.timeout))
+    hdc.receive(board/name,temporary,timeout=timeout)
     if sha256_file(temporary)!=text[:64]:
         raise ValueError('retrieved SHA256 mismatch: '+name)
     temporary.rename(path)
@@ -448,30 +458,80 @@ def execute_draft_bundle(bundle_dir,output_dir,*,timeout_seconds=3600):
                           'execute',allow_failure=True)
         result['remote_exitcode']=status
     except Exception as error:
-        result['error']=f'{type(error).__name__}: {error}'
+        result['transport_error' if attempted else 'error']=f'{type(error).__name__}: {error}'
     finally:
         if attempted:
-            names=('draft.stdout','draft.stderr','draft.exitcode','results/result.json','results/output_0000.bin','results/output_0001.bin')
-            collect(names)
+            required=['draft.stdout','draft.stderr','draft.exitcode','results/result.json']
+            collect(required)
+            comparison=None
             try:
                 if sha256_file(root/'manifest.json')!=result['bundle_manifest_sha256']:
                     raise ValueError('draft bundle changed during execution')
-                comparison=compare_draft_result(root,out/'results')
-                save_json(out/'comparison.json',comparison)
-                result.update(device_execution=comparison['device_execution'],numerical_validation=comparison['numerical_validation'])
+                if 'results/result.json' not in result['retrieved_sha256']:
+                    raise ValueError('hash-verified native result is unavailable')
                 native=_json(out/'results/result.json')
                 runtime_key='runtime_version' if native.get('status')=='EXECUTED' else 'expected_runtime_version'
                 if native.get(runtime_key)!=result['runtime_version'] or native.get('firmware_id')!=result['firmware_id']:
                     raise ValueError('native runtime/firmware differs from this invocation')
-                if (result.get('error') or result.get('remote_exitcode')!=0 or result['retrieval_errors']
-                        or any(name not in result['retrieved_sha256'] for name in names)
-                        or (out/'draft.exitcode').read_text().strip()!='0'):
-                    raise RuntimeError('draft execution/transport incomplete; see retained evidence')
-                result.update(status=comparison['status'],stage='complete',comparison=str(out/'comparison.json'))
-                if comparison.get('error'):
-                    result['error']=comparison['error']
+                if native.get('status')=='EXECUTED':
+                    outputs=['results/output_0000.bin','results/output_0001.bin']
+                    required.extend(outputs)
+                    collect(outputs)
+                    if any(name not in result['retrieved_sha256'] for name in outputs):
+                        raise ValueError('hash-verified native outputs are unavailable')
+                comparison=compare_draft_result(root,out/'results')
+                save_json(out/'comparison.json',comparison)
+                result.update(native_status=native['status'],comparison=str(out/'comparison.json'))
+                pid=native.get('process_id')
+                if type(pid) is int and 0 < pid <= 2**31-1:
+                    result['native_process_id']=pid
+                if native['status']=='RUNTIME_FAILED':
+                    # A verified failure has no successful output binaries.
+                    # Preserve its cause even if separate transport evidence
+                    # is incomplete; never promote unbound native messages.
+                    result.update(device_execution='FAILED',failure_stage=comparison['failure_stage'],
+                                  error=comparison['error'],stage='runtime-failed')
             except Exception as error:
                 result['comparison_error']=f'{type(error).__name__}: {error}'
+                comparison=None
+            transport=[]
+            if result.get('transport_error'):
+                transport.append(result['transport_error'])
+            missing=[name for name in required if name not in result['retrieved_sha256']]
+            if missing:
+                transport.append('missing verified execution evidence: '+', '.join(missing))
+            if result['retrieval_errors']:
+                transport.append('execution evidence retrieval failed; see retrieval_errors')
+            remote_exit=result.get('remote_exitcode')
+            if type(remote_exit) is not int or not 0 <= remote_exit <= 255:
+                transport.append('verified remote exit code is unavailable')
+            if 'draft.exitcode' in result['retrieved_sha256']:
+                exit_text=(out/'draft.exitcode').read_bytes().strip()
+                if not re.fullmatch(rb'0|[1-9][0-9]{0,2}',exit_text) or int(exit_text)>255:
+                    transport.append('invalid retained draft exit code')
+                elif int(exit_text)!=remote_exit:
+                    transport.append('remote exit code differs from retained draft exit code')
+                elif result.get('native_status')=='EXECUTED' and remote_exit!=0:
+                    transport.append('native EXECUTED conflicts with nonzero process exit')
+                elif result.get('native_status')=='RUNTIME_FAILED' and remote_exit==0:
+                    transport.append('native RUNTIME_FAILED conflicts with zero process exit')
+            if transport:
+                result['transport_error']='; '.join(transport)
+            elif comparison is not None and result.get('native_status')=='EXECUTED':
+                result.update(status=comparison['status'],stage='complete',
+                              device_execution=comparison['device_execution'],
+                              numerical_validation=comparison['numerical_validation'])
+                if comparison.get('error'):
+                    result['error']=comparison['error']
+            if result['status']=='FAILED':
+                # Read one diagnostic snapshot; never retry the model, clear
+                # device logs, or let collection replace the original failure.
+                try:
+                    from .draft_hilog import capture_draft_hilog
+                    result['hilog']=capture_draft_hilog(
+                        hdc,board,out,receive=_receive,recorded_pid=result.get('native_process_id'))
+                except Exception as error:
+                    result['hilog']={'status':'FAILED','error':f'{type(error).__name__}: {error}'}
         result['hdc_invocations']=hdc.count if hdc else 0
         save_json(out/'result.json',result)
     return result

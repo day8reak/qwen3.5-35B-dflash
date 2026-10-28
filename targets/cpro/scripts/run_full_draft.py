@@ -93,6 +93,32 @@ def _weight_path(explicit, key):
         raise ValueError(f"{key}: set {option} to the downloaded model folder containing config.json and safetensors. {error}") from error
 
 
+def _print_board_failure(result, hilog=None):
+    """Show retained native failures without another device invocation."""
+    from qwen35_moe_dflash.tool_logs import log_excerpt
+    folder = Path(result["board"])
+    print(f"full-draft: Board failure evidence: {folder / 'result.json'}", flush=True)
+    if result.get("failure_stage"):
+        print(f"full-draft: Native failure stage: {result['failure_stage']}", flush=True)
+    for name in ("error", "transport_error", "comparison_error"):
+        if result.get(name):
+            print(f"full-draft: {name}: {str(result[name])[:4096]}", flush=True)
+    names = (("runner-build.log",) if result.get("board_stage") == "build-runner"
+             else ("runtime.stderr", "draft.stderr", "draft.stdout"))
+    for name in names:
+        path = folder / name
+        try:
+            if path.is_file() and path.stat().st_size:
+                print(f"full-draft: {path}\n{log_excerpt(path)}", flush=True)
+        except OSError as error:
+            print(f"full-draft: Could not read {path}: {error}", flush=True)
+    if hilog:
+        print(f"full-draft: HIAI system log: {folder / 'draft-hilog.txt'}; status={hilog.get('status')}", flush=True)
+        print("full-draft: System-log candidates may include other sessions; inspect PID and context.", flush=True)
+        for line in hilog.get("summary_lines", []):
+            print(str(line)[:1000], flush=True)
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     from qwen35_moe_dflash.artifacts import checked_file, output_path, save_json
@@ -105,6 +131,7 @@ def main(argv=None):
               "scope": "Complete draft with fixed synthetic target features; not language quality, acceptance or speedup evidence."}
     root = None
     retained_compilation = None
+    board_hilog = None
 
     def progress(row):
         message = row["message"]
@@ -307,8 +334,17 @@ def main(argv=None):
                 result["status"] = board["status"]
                 result["device_execution"] = board.get("device_execution", "UNVERIFIED")
                 result["numerical_validation"] = board.get("numerical_validation", "UNVERIFIED")
-                if board.get("error"):
-                    result["error"] = board["error"]
+                result["board_stage"] = board.get("stage", "UNVERIFIED")
+                board_hilog = board.get("hilog")
+                if board_hilog:
+                    result["hilog_status"] = board_hilog.get("status", "UNVERIFIED")
+                for key in ("failure_stage", "native_status", "error", "comparison_error",
+                            "transport_error", "remote_exitcode", "retrieval_errors", "native_process_id"):
+                    if key in board:
+                        result[key] = board[key]
+                if board["status"] == "FAILED" and not result.get("error"):
+                    result["error"] = (board.get("transport_error") or board.get("comparison_error")
+                                       or f"Board execution failed; inspect {root / 'board/result.json'}")
                 result["stage"] = "complete" if board["status"] != "FAILED" else "board"
     except Exception as error:
         result.update(status="FAILED", error=f"{type(error).__name__}: {error}")
@@ -318,6 +354,8 @@ def main(argv=None):
     if result.get("compile_log"):
         from qwen35_moe_dflash.tool_logs import log_excerpt
         print(log_excerpt(Path(result["compile_log"])), flush=True)
+    if result.get("board") and result["status"] == "FAILED":
+        _print_board_failure(result, board_hilog)
     return 1 if result["status"] == "FAILED" else 0
 
 

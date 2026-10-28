@@ -1,6 +1,8 @@
 """Standalone draft bundling and evidence gates; never device accuracy evidence."""
 import json
+import hashlib
 from pathlib import Path
+import shlex
 
 import numpy as np
 import pytest
@@ -236,3 +238,187 @@ def test_failed_runtime_retains_native_failure_stage(bundle,tmp_path):
     report=board.compare_draft_result(root,folder,allow_host_fake=True)
     assert report['device_execution']=='FAILED' and report['failure_stage']=='PROCESS'
     assert report['numerical_validation']=='NOT_EVALUATED'
+
+
+def execute_with_fake_hdc(bundle,tmp_path,monkeypatch,*,failure_stage=None,fault=None):
+    """Exercise orchestration and real hash-checked receive with a transport double.
+
+    Native device markers below are fabricated test data, never board evidence.
+    """
+    root, manifest=bundle
+    manifest['source_identity']='MATCHED_EXPORT_AND_REFERENCE'
+    write_json(root/'manifest.json',manifest)
+    native_dir=tmp_path/'fake-native-source'
+    native=native_result((root,manifest),native_dir,evidence='device-hiai')
+    native.update(runtime_version='test-runtime',firmware_id='test-firmware',process_id=4321)
+    rc=1 if failure_stage else 0
+    if failure_stage:
+        native.update(status='RUNTIME_FAILED',draft_calls=0,failure_stage=failure_stage,
+                      reason='HIAI '+failure_stage+' fixture failure',outputs=[],
+                      expected_runtime_version='test-runtime')
+    if fault=='runtime':
+        native['expected_runtime_version' if failure_stage else 'runtime_version']='wrong-runtime'
+    elif fault=='firmware':
+        native['firmware_id']='wrong-firmware'
+    elif fault=='model':
+        native['model_sha256']='0'*64
+    elif fault=='plan':
+        native['step_plan_sha256']='0'*64
+    elif fault=='output_hash':
+        native['outputs'][0]['sha256']='0'*64
+    elif fault=='top1':
+        path=native_dir/'output_0000.bin'
+        np.zeros((1,15),dtype='<i4').tofile(path)
+        native['outputs'][0].update(sha256=sha256_file(path))
+    write_json(native_dir/'result.json',native)
+    files={'draft.stdout':b'','draft.stderr':b'native fixture stderr\n',
+           'draft.exitcode':str(rc).encode()+b'\n',
+           'results/result.json':(native_dir/'result.json').read_bytes()}
+    if not failure_stage:
+        for index in range(2):
+            name=f'output_{index:04d}.bin'
+            files['results/'+name]=(native_dir/name).read_bytes()
+    if fault=='missing_stderr':
+        files.pop('draft.stderr')
+    elif fault=='missing_output':
+        files.pop('results/output_0001.bin')
+    elif fault=='missing_native':
+        files.pop('results/result.json')
+    elif fault=='exit_mismatch':
+        files['draft.exitcode']=b'7\n'
+    elif fault=='invalid_exit':
+        files['draft.exitcode']=b'\xff\n'
+    elif fault=='native_exit_conflict':
+        rc=0 if failure_stage else 1
+        files['draft.exitcode']=str(rc).encode()+b'\n'
+    requested=[]
+    class FakeHdc:
+        def __init__(self,executable,sn,bip,out,timeout):
+            self.count=0; self.timeout=timeout; self.root=None; self.files={}
+        def shell(self,command,label,**kwargs):
+            self.count+=1
+            if label=='create-root':
+                self.root=Path(shlex.split(command)[1])
+            elif label=='runtime-probe':
+                self.files.update({'runtime.json':json.dumps({'npu_supported':True,'runtime_version':'test-runtime'}).encode(),
+                                   'runtime.stderr':b'', 'runtime.exitcode':b'0\n'})
+            elif label=='execute':
+                self.files.update(files)
+                assert '--timeout-ms 1250' in command
+                if fault=='hdc_disconnect':
+                    raise RuntimeError('HDC fixture connection lost after remote execution')
+                return rc,''
+            elif label=='hash-result':
+                tokens=shlex.split(command)
+                path=Path(tokens[tokens.index('-f')+1].rstrip(';'))
+                name=path.relative_to(self.root).as_posix()
+                requested.append(name)
+                if name not in self.files:
+                    return 0,'__MISSING__'
+                return 0,hashlib.sha256(self.files[name]).hexdigest()+'  '+str(path)
+            return 0,''
+        def receive(self,remote,local,**kwargs):
+            self.count+=1
+            name=Path(remote).relative_to(self.root).as_posix()
+            payload=self.files[name]
+            if ((fault=='delivery_hash' and name=='results/result.json')
+                    or (fault=='stderr_hash' and name=='draft.stderr')):
+                payload+=b'tampered'
+            Path(local).write_bytes(payload)
+    def runner(out,timeout):
+        path=out/'fake-runner';path.write_bytes(b'not-a-device-binary');return path
+    for key in ('CPRO_DDK_ID','HIAI_RUNTIME_VERSION'):
+        monkeypatch.delenv(key,raising=False)
+    for key,value in {'SN':'fake-serial','BIP':'127.0.0.1:1234','FIRMWARE_ID':'test-firmware',
+                      'BOARD_HIAI_LIB_DIR':'/fake-existing-board-libraries'}.items():
+        monkeypatch.setenv(key,value)
+    monkeypatch.setattr(board,'Hdc',FakeHdc)
+    monkeypatch.setattr(board,'_build_runner',runner)
+    monkeypatch.setattr(board,'_upload',lambda *a,**k: None)
+    from qwen35_moe_dflash import draft_hilog
+    captures=[]
+    def capture(hdc,remote,out,*,receive,recorded_pid=None):
+        captures.append(recorded_pid)
+        assert receive is board._receive
+        if fault=='hilog_failure':
+            raise RuntimeError('fixture log capture failed')
+        return {'status':'CAPTURED','recorded_pid':recorded_pid}
+    monkeypatch.setattr(draft_hilog,'capture_draft_hilog',capture)
+    output=tmp_path/'fake-hdc-execution'
+    result=board.execute_draft_bundle(root,output,timeout_seconds=1.25)
+    assert json.loads((output/'result.json').read_text())==result
+    assert len(captures)==(1 if result['status']=='FAILED' else 0)
+    return result, requested
+
+
+@pytest.mark.parametrize('failure_stage',['LOAD_OR_SETUP','INPUT_BINDING','PROCESS'])
+def test_fake_hdc_native_failure_preserves_cause_without_success_outputs(bundle,tmp_path,monkeypatch,failure_stage):
+    result,requested=execute_with_fake_hdc(bundle,tmp_path,monkeypatch,failure_stage=failure_stage)
+    assert result['status']=='FAILED' and result['device_execution']=='FAILED'
+    assert result['native_status']=='RUNTIME_FAILED' and result['failure_stage']==failure_stage
+    assert result['error']=='HIAI '+failure_stage+' fixture failure'
+    assert result['numerical_validation']=='NOT_EVALUATED'
+    assert result['remote_exitcode']==1
+    assert result['native_process_id']==4321 and result['hilog']['recorded_pid']==4321
+    assert 'transport_error' not in result and 'comparison_error' not in result
+    assert not any(name.startswith('results/output_') for name in requested)
+
+
+def test_fake_hdc_success_checks_outputs_before_promoting_execution(bundle,tmp_path,monkeypatch):
+    result,requested=execute_with_fake_hdc(bundle,tmp_path,monkeypatch)
+    assert result['status']=='EXECUTION_COMPLETE' and result['device_execution']=='PASSED'
+    assert result['numerical_validation']=='TOP1_MATCHED' and result['native_status']=='EXECUTED'
+    assert {'results/output_0000.bin','results/output_0001.bin'} <= set(requested)
+    assert not any(key in result for key in ('error','comparison_error','transport_error'))
+
+
+def test_fake_hdc_top1_failure_is_reported_separately_from_transport(bundle,tmp_path,monkeypatch):
+    result,_=execute_with_fake_hdc(bundle,tmp_path,monkeypatch,fault='top1')
+    assert result['status']=='FAILED' and result['device_execution']=='PASSED'
+    assert result['numerical_validation']=='FAILED' and 'Top1 differs' in result['error']
+    assert 'transport_error' not in result and 'comparison_error' not in result
+
+
+@pytest.mark.parametrize('failure_stage',[None,'PROCESS'])
+@pytest.mark.parametrize('fault',['runtime','firmware','model','plan'])
+def test_fake_hdc_unbound_native_records_never_promote_status_or_cause(bundle,tmp_path,monkeypatch,failure_stage,fault):
+    result,_=execute_with_fake_hdc(bundle,tmp_path,monkeypatch,failure_stage=failure_stage,fault=fault)
+    assert result['status']=='FAILED' and result['device_execution']=='UNVERIFIED'
+    assert result['numerical_validation']=='NOT_EVALUATED' and result['comparison_error']
+    assert 'native_status' not in result and 'failure_stage' not in result and 'error' not in result
+    assert result['hilog']['recorded_pid'] is None
+
+
+@pytest.mark.parametrize('fault',['hdc_disconnect','missing_stderr','stderr_hash','exit_mismatch','invalid_exit','native_exit_conflict'])
+@pytest.mark.parametrize('failure_stage',[None,'LOAD_OR_SETUP'])
+def test_fake_hdc_transport_failure_is_separate_and_keeps_verified_native_cause(bundle,tmp_path,monkeypatch,fault,failure_stage):
+    result,_=execute_with_fake_hdc(bundle,tmp_path,monkeypatch,failure_stage=failure_stage,fault=fault)
+    assert result['status']=='FAILED' and result['transport_error']
+    assert result['numerical_validation']=='NOT_EVALUATED'
+    if failure_stage:
+        assert result['device_execution']=='FAILED' and result['failure_stage']==failure_stage
+        assert result['error']=='HIAI '+failure_stage+' fixture failure'
+    else:
+        assert result['device_execution']=='UNVERIFIED'
+    assert 'comparison_error' not in result
+    if fault=='stderr_hash':
+        assert result['retrieval_errors'][0]['path']=='draft.stderr'
+
+
+@pytest.mark.parametrize('fault',['missing_native','missing_output','delivery_hash','output_hash'])
+def test_fake_hdc_missing_or_corrupt_evidence_never_passes(bundle,tmp_path,monkeypatch,fault):
+    result,_=execute_with_fake_hdc(bundle,tmp_path,monkeypatch,fault=fault)
+    assert result['status']=='FAILED' and result['device_execution']=='UNVERIFIED'
+    assert result['numerical_validation']=='NOT_EVALUATED' and result['comparison_error']
+    if fault!='output_hash':
+        assert result['transport_error']
+    if fault=='delivery_hash':
+        assert result['retrieval_errors'][0]['path']=='results/result.json'
+        assert 'SHA256 mismatch' in result['retrieval_errors'][0]['error']
+
+
+def test_diagnostic_log_failure_does_not_mask_native_load_failure(bundle,tmp_path,monkeypatch):
+    result,_=execute_with_fake_hdc(bundle,tmp_path,monkeypatch,failure_stage='LOAD_OR_SETUP',fault='hilog_failure')
+    assert result['status']=='FAILED' and result['device_execution']=='FAILED'
+    assert result['error']=='HIAI LOAD_OR_SETUP fixture failure'
+    assert result['hilog']['status']=='FAILED' and 'fixture log capture failed' in result['hilog']['error']

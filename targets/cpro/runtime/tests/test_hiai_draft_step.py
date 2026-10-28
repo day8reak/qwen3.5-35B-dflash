@@ -33,18 +33,20 @@ args=[str(runner),'--draft-step',str(root/'step.tsv'),'--expected-runtime-versio
 plan()
 for failure in ('','load','run'):
     out=root/('result-'+(failure or 'success'));trace=root/(out.name+'.trace')
-    proc=subprocess.run(args+['--output',str(out)],capture_output=True,text=True,
-        env=dict(os.environ,FAKE_HIAI_FAILURE=failure,FAKE_HIAI_TRACE=str(trace)))
-    assert 'LEAK' not in proc.stderr,proc.stderr
+    with subprocess.Popen(args+['--output',str(out)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
+        env=dict(os.environ,FAKE_HIAI_FAILURE=failure,FAKE_HIAI_TRACE=str(trace))) as proc:
+        stdout,stderr=proc.communicate()
+    assert 'LEAK' not in stderr,stderr
     result=json.loads((out/'result.json').read_text())
+    assert type(result['process_id']) is int and result['process_id']==proc.pid,result
     assert result['scope']=='standalone-draft-step' and result['target_calls']==0
     assert result['evidence_kind']=='host-fake-hiai'
     events=trace.read_text().splitlines()
     assert events.count('load')==1,events
     if failure:
-        assert proc.returncode==1 and result['status']=='RUNTIME_FAILED',(proc.stderr,result)
+        assert proc.returncode==1 and result['status']=='RUNTIME_FAILED',(stderr,result)
     else:
-        assert proc.returncode==0,(proc.stderr,result)
+        assert proc.returncode==0,(stderr,result)
         assert result['draft_calls']==1 and result['status']=='EXECUTED'
         assert events==['load','process','unload'],events
         assert all(x['readback_matches_source'] for x in result['io_diagnostic']['inputs'])

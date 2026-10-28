@@ -131,6 +131,39 @@ def test_hdc_failure_resume_reuses_compilation_and_fixtures(job, tmp_path):
     assert calls == ["board"]
 
 
+@pytest.mark.parametrize("native_reason", [True, False])
+def test_board_failure_reports_native_cause_or_evidence_error_without_retry(job, tmp_path, monkeypatch, capsys, native_reason):
+    from qwen35_moe_dflash import draft_board
+    main, fresh, _, calls, _ = job
+    def failed_board(bundle, folder, **kwargs):
+        calls.append("board")
+        folder.mkdir()
+        (folder / "draft.stderr").write_text("ERROR: mock HIAI load failed with code 17\n")
+        report = {"status": "FAILED", "stage": "execute", "device_execution": "FAILED" if native_reason else "UNVERIFIED",
+                  "numerical_validation": "NOT_EVALUATED", "remote_exitcode": 1,
+                  "retrieval_errors": []}
+        if native_reason:
+            report.update(error="mock HIAI load failed with code 17", failure_stage="LOAD_OR_SETUP", native_status="RUNTIME_FAILED")
+            report["hilog"] = {"status": "CAPTURED", "summary_lines": ["L17: HIAI fixture diagnostic candidate"]}
+        else:
+            report["comparison_error"] = "ValueError: native runtime identity mismatch"
+        return report
+    monkeypatch.setattr(draft_board, "execute_draft_bundle", failed_board)
+    root = tmp_path / "board-failed"
+    assert main([*fresh, "--output", str(root)]) == 1
+    assert calls == ["prepared", "fixture", "air", "compilation", "bundle", "board"]
+    report = json.loads((root / "result.json").read_text())
+    assert report["stage"] == "board" and report["board_stage"] == "execute"
+    assert report["remote_exitcode"] == 1
+    assert report["error"] == ("mock HIAI load failed with code 17" if native_reason else "ValueError: native runtime identity mismatch")
+    if native_reason:
+        assert report["failure_stage"] == "LOAD_OR_SETUP"
+    text = capsys.readouterr().out
+    assert "draft.stderr" in text and "ERROR: mock HIAI load failed with code 17" in text
+    if native_reason:
+        assert "draft-hilog.txt" in text and "L17: HIAI fixture diagnostic candidate" in text
+
+
 def test_interruption_receipts_resume_without_final_result(job, tmp_path):
     main, fresh, common, calls, _ = job
     previous = tmp_path / "interrupted"

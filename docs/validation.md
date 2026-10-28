@@ -4,6 +4,18 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 完整 draft 的 HIAI 加载失败与错误回传
+
+2026-10-28，用户回传 `full-draft-d50bcea5ed15` 的完整编译/打包成功状态，随后补充原生记录：`LOAD_OR_SETUP`，`HIAI Load failed: 1`，`process_called=false`，运行时800.631.120.010、固件OpenHarmony-6.0.0.43。这明确发生于Load，未进入推理和数值比较；返回码本身不能证明外置权重路径、库兼容性或某个图节点有问题。已请求只读设备HiLog，未据此改变图或模型加载方式。
+
+随后HiLog节选显示PID13294已解析模型子图元数据，CPUCL初始化后 `SubGraph_0` 的GraphOp Prepare失败，逐级传回Load。需要该PID的CPUCL失败上下文；较早的可选runtime库查找失败不能单独当作根因，子图权重元数据也不等于所有外置权重已正确加载。
+
+修复了两级错误回传：旧board入口因非零返回码或缺输出bin，先抛“execution/transport incomplete”，原生reason尚未复制；CLI又未显示comparison_error。现在原生身份、runtime/firmware和哈希验证后，保留failure_stage/reason，运行失败不索取成功输出bin，transport_error、retrieval_errors和comparison_error分别保留。身份/传输不完整不能提升为设备执行成功；数值不匹配与运行失败仍分开。
+
+原生报告增加实际process_id，失败后读取一次 `hilog -x`，每次HDC调用最多10秒，保留并校验快照、stderr、退出码。只按已验证的PID筛选；日志轮转、PID复用和共享进程记录仍限制归因。日志采集失败不会覆盖原生原因，不会清日志、修改设置或自动重跑模型。终端打印有界运行日志及候选系统日志，完整证据留在board目录。
+
+主机验证105项Python用例及1个原生测试组通过，包含真实子进程PID匹配、模拟HDC的Load/Process失败、完整成功、输出缺失/篡改、身份或退出码冲突，以及日志采集独立失败。证据见 `20261028T033225Z-24433-7bb3f5/draft-load-reporting-evidence.json`。这些验证只覆盖诊断链；实际模型Load故障尚未修复，设备状态仍失败。
+
 ## 完整 draft 编译成功与嵌套 OMC 恢复
 
 2026-10-28，用户回传 `full-draft-a091f16d13d8`：OMG日志明确记录保存 `model/model.omc` 以及 `model/SubGraph_0..14.weight`，随后 `OMG generate offline model success`。旧脚本因只检查 `generated/model.omc` 而误报失败。此前完整fc的K限制已越过，下面“卷积表达”小节的编译未验证状态是当时记录；当前编译成功仍限于用户日志，尚未本地复核远端产物，也未执行设备比较。

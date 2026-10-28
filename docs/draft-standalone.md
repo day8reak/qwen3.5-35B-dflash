@@ -40,6 +40,18 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 恢复创建新目录并验证复用阶段的清单哈希；进程中断时可从 `job.json` 和 `completed-*.json` 恢复。与当前导出契约一致的成功导出和编译不重跑。旧版 AIR 的外置权重序列化契约失效时，自动保留 prepared 权重和 PyTorch reference，重新导出 AIR、编译和上板；新结果记录 `resume_invalidations`，旧目录不改动。更换权重或输入形状需新建任务。只准备权重和参考可用 `--prepare-only`；准备至OMC但暂不上板可用 `--compile-only`。不要为本入口重跑旧算子探针或平台诊断矩阵。
 
+最新 `full-draft-d50bcea5ed15` 已完成编译和bundle，用户补充日志确认HIAI Load返回1，未进入Process；详细原因需设备系统日志。后续恢复使用这次任务，可复用全部已完成阶段；不要继续选最早的d7任务。发生板端失败时，入口会显示 `board_stage`、通过身份校验的 `failure_stage`/原生原因，以及独立的传输或比较错误，并输出有界stderr/stdout日志。旧版没有打印原因时，可直接读取已有文件，无需再次运行模型：
+
+```bash
+cat "$AI_RUN_DIR/full-draft-d50bcea5ed15/board/results/result.json"
+cat "$AI_RUN_DIR/full-draft-d50bcea5ed15/board/comparison.json"
+tail -n 100 "$AI_RUN_DIR/full-draft-d50bcea5ed15/board/draft.stderr"
+```
+
+`LOAD_OR_SETUP` 包含模型加载和IO建立，`INPUT_BINDING` 是输入绑定，`PROCESS` 是推理调用；需结合 `reason` 与原生日志定位，不能仅用阶段名断言根因。失败记录不要求生成输出bin，缺失成功输出不再掩盖已有原生错误。产物/运行时身份不匹配和证据回收失败仍使任务失败。
+
+后续runner报告实际 `process_id`。失败时入口自动读取一次 `hilog -x` 并保留 `board/draft-hilog.txt`、stderr、退出码；校验后按PID生成候选摘要。每次HDC诊断调用最多10秒，不清空设备日志或修改设置，也不自动重跑模型。系统日志及PID可能对应其他会话，需结合时间和路径确认；诊断失败不会覆盖模型原生错误。
+
 用户回传 `full-draft-d7b4db958850` 已完成71个权重、PyTorch参考和 AIR 导出；OMG 在首个 `FileConstant` 报告未识别 `dtype`，并将绝对权重路径拼在编译目录之后。新 draft 导出将权重引用写为 `weights/wNNNNN.bin`，从 AIR 父目录执行序列化，并显式使用整数 GE dtype ID 的 CPro 兼容策略。它不改变张量内容；通用 GE 默认 Type 属性保持原样。该兼容策略已纳入清单版本，后续 `full-draft-5133743f7c9c` 的日志已越过外置权重读取。
 
 `full-draft-5133743f7c9c` 在首个 MatMul 兼容检查处失败。补齐tiny两个编译参数后，`full-draft-23abc47e25e7` 仍失败；用户追加上下文明确显示该实现拒绝 K>8000，而首个 `draft.fc` 的 K=16384。新导出仅将这一个投影表达成一次无bias、无padding的4×4 Conv2D。输入和权重只是reshape，显式NCHW描述；全点积和一次FP16结果边界保留。其他投影、六层结构和完整词表均不变，PyTorch参考仍使用原MatMul。
@@ -72,7 +84,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 如果首次准备权重尚未成功（`components` 为空），直接修正路径或文件后重跑上面的完整命令；这时没有已完成的权重、导出或编译需要复用。
 
-主机验证覆盖draft-only准备、六层参考计算、GE构图/导出、阶段恢复、外置权重绑定、原生输入检查与模拟执行失败。完整OMG成功来自用户日志；板端执行和数值比较仍待服务器结果。
+主机验证覆盖draft-only准备、六层参考计算、GE构图/导出、阶段恢复、外置权重绑定、原生输入检查与模拟执行失败。完整OMG成功来自用户日志；板端首次运行失败的具体原因与数值比较仍待服务器结果。
 
 ## 与已用过的 4B draft 对照
 

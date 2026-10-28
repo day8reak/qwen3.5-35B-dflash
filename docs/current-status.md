@@ -8,9 +8,9 @@
 
 **先运行完整 draft 的独立入口。** [独立 draft 指南](draft-standalone.md)提供一条命令完成真实权重准备、PyTorch参考、GE导出、OMG编译和HIAI执行。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
-最新用户回传 `full-draft-a091f16d13d8` 已出现 `SaveCompiledModelToFile SUCCESS` 和 `OMG generate offline model success`。单个Conv2D表达完整draft.fc的方案已越过此前K>8000的MatMul限制。当前失败来自脚本检查错了输出位置：外置权重模式写出 `generated/model/model.omc` 与同目录的 `SubGraph_*.weight`，旧脚本只检查 `generated/model.omc`。这是用户日志中的编译成功证据，远端原始产物尚未由本地重新核验，板端尚未执行。
+最新用户回传 **`full-draft-d50bcea5ed15`** 已完成完整draft的OMG编译和打包，原生报告确认 `LOAD_OR_SETUP` / `HIAI Load failed: 1`，`process_called=false`。运行时为800.631.120.010，固件OpenHarmony-6.0.0.43；尚未执行模型或比较数值。此前 `a091f16d13d8` 的嵌套OMC输出路径问题已修复。当前需设备HIAI日志区分路径、库兼容性或模型内容原因，不能只用返回码1断言根因；远端证据尚未由本地复核。
 
-更新后按[独立 draft 指南](draft-standalone.md)从 **`a091f16d13d8`** 续跑。脚本校验保留的编译日志、AIR、OMC和外置权重，创建新的恢复记录并进入上板；不会重跑权重准备、参考、AIR导出和OMG。模型及外置权重保留原有相对目录。损坏或不匹配的产物直接报错，不以重编译掩盖校验失败。
+原生失败保存在 `board/results/result.json`、`board/comparison.json` 与 `board/draft.stderr`。错误回传已修正：保留原生失败原因，单独记录传输/证据问题，运行失败时不要求成功输出bin。定位并修复后，从 **`d50bcea5ed15`** 续跑可复用prepared、fixture、AIR、compilation及bundle。继续从旧 `d7b4db958850` 恢复会因AIR契约过期再次导出和编译。
 
 4B参考已按用户指定更正为 `feature/gdr-chunk-verify`、提交 `9018673`。该分支记录六层FP16 draft为20.22 ms/次（310P、C16/C64混合均值）；源码包含合并K/V、gate/up投影和增量缓存。先完成当前独立draft的板端输出验证，再按这版迁移图结构与缓存，性能须在Cpro重新测量。
 
