@@ -61,6 +61,60 @@ def test_compile_failure_retained_and_no_inspection(cli, monkeypatch):
     assert "interface_inspection" not in result and not (output / "interface").exists()
 
 
+def test_compiler_diagnostics_visible_without_repeating_full_argv(cli, monkeypatch, capsys):
+    main, _, output = cli
+    original_error = "CalledProcessError: ['omg', '--input_shape=" + "RefData_0:1,8192,4;" * 500 + "'] failed"
+
+    def failed(source, destination, *args, **kwargs):
+        destination.mkdir()
+        (destination / "compile-command.json").write_text(original_error)
+        (destination / "compile.log").write_text(
+            'ERROR: fixture compiler root cause\n' + '[INFO] trailing cleanup\n' * 1000)
+        return {"status": "FAILED", "model_compilation": "FAILED", "stage": "omg",
+                "returncode": 1, "error": original_error}
+
+    monkeypatch.setattr(existing_air, "compile_existing_air", failed)
+    assert main() == 1
+    stdout = capsys.readouterr().out
+    summary = next(json.loads(line) for line in stdout.splitlines() if line.startswith('{'))
+    assert summary["error"] == "OMG exited with status 1" and summary["stage"] == "omg"
+    assert summary["result_json"] == str(output / "result.json")
+    assert 'L1: ERROR: fixture compiler root cause' in stdout
+    assert "RefData_0:1,8192,4" not in stdout and len(stdout) < 15000
+    assert json.loads((output / "result.json").read_text())["error"] == original_error
+    assert (output / "compilation/compile-command.json").read_text() == original_error
+
+
+def test_help_failure_displays_help_log_when_compilation_did_not_start(cli, monkeypatch, capsys):
+    main, _, output = cli
+
+    def failed(source, destination, *args, **kwargs):
+        destination.mkdir()
+        (destination / "help.log").write_text('error: fixture missing tool library\n')
+        return {"status": "FAILED", "model_compilation": "NOT_RUN", "stage": "omg-help",
+                "error": "ValueError: help check failed"}
+
+    monkeypatch.setattr(existing_air, "compile_existing_air", failed)
+    assert main() == 1
+    stdout = capsys.readouterr().out
+    assert "fixture missing tool library" in stdout and "diagnostics from " in stdout
+    assert str(output / "compilation/help.log") in stdout
+    result = json.loads((output / "result.json").read_text())
+    assert result["model_compilation"] == "NOT_RUN" and result["stage"] == "omg-help"
+
+
+def test_timeout_summary_keeps_full_error_on_disk(cli, monkeypatch, capsys):
+    main, _, output = cli
+    error = "TimeoutExpired: --input_shape=" + "long-argument;" * 500
+    monkeypatch.setattr(existing_air, "compile_existing_air", lambda *a, **k: {
+        "status": "FAILED", "model_compilation": "FAILED", "stage": "omg",
+        "timeout_seconds": 12, "error": error})
+    assert main() == 1
+    stdout = capsys.readouterr().out
+    assert "OMG timed out after 12 seconds" in stdout and "long-argument" not in stdout
+    assert json.loads((output / "result.json").read_text())["error"] == error
+
+
 def test_existing_output_is_not_overwritten(cli, monkeypatch):
     main, _, output = cli
     output.mkdir()

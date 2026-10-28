@@ -424,7 +424,7 @@
     },
     "existing_original_air": {
       "implementation": "model/qwen35_moe_dflash/existing_air.py",
-      "status": "HOST_OUTPUT_ARGUMENT_FIXED_REAL_RETRY_PENDING",
+      "status": "USER_REPORTED_RETRY_FAILED_AWAITING_COMPILER_LOG",
       "profile": "cpro-40block-64-1",
       "contract_source": "USER_PROVIDED_ORIGINAL_OMG_COMMAND",
       "declared_inputs": 89,
@@ -448,7 +448,14 @@
         "graph_compilation": "NOT_REACHED",
         "evidence": "USER_PASTED_LOG_NOT_LOCALLY_REHASHED"
       },
-      "output_basename": "model"
+      "output_basename": "model",
+      "latest_user_reported_attempt": {
+        "run": "full-target-compile-e019e4a7ad53",
+        "output_argument": "model",
+        "returncode": 1,
+        "cause": "UNKNOWN_PENDING_COMPILE_LOG",
+        "device_execution": "NOT_RUN"
+      }
     },
     "original_quantized_target": {
       "status": "HOST_IMPLEMENTED_DEVICE_PENDING",

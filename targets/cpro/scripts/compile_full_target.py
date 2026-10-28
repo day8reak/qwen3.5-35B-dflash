@@ -13,6 +13,34 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "model"))
 
 
+def _print_result(result, *, result_path=None, log_paths=()):
+    """Show the tool's diagnostics without repeating the entire input-shape argv.
+
+    The on-disk result retains the full exception. This is only a bounded
+    console presentation, and does not infer the cause of a compiler failure.
+    """
+    from qwen35_moe_dflash.tool_logs import log_excerpt
+
+    console = dict(result)
+    if result.get("status") == "FAILED":
+        if "returncode" in result:
+            console["error"] = f"OMG exited with status {result['returncode']}"
+        elif "timeout_seconds" in result:
+            console["error"] = f"OMG timed out after {result['timeout_seconds']} seconds"
+        elif len(str(result.get("error", ""))) > 512:
+            console["error"] = str(result["error"])[:512] + " [full exception in result file]"
+    if result_path is not None:
+        console["result_json"] = str(result_path)
+    print(json.dumps(console, ensure_ascii=False), flush=True)
+    if result.get("status") == "FAILED":
+        for path in log_paths:
+            excerpt = log_excerpt(path)
+            if excerpt:
+                print(f"full-target: compiler diagnostics from {path}", flush=True)
+                print(excerpt, flush=True)
+                break
+
+
 def main():
     from qwen35_moe_dflash.existing_air_profile import (
         EXISTING_AIR_PROFILE_NAMES, get_existing_air_profile,
@@ -91,15 +119,20 @@ def main():
             result["next"] = "Confirm original graph I/O, external weights, dynamic gear and RefData state contract before board execution"
         else:
             result["error"] = compiled.get("error", "compilation failed")
+            result["stage"] = compiled.get("stage", "compilation")
+            for field in ("returncode", "timeout_seconds"):
+                if field in compiled:
+                    result[field] = compiled[field]
             result["next"] = "Inspect compilation/report.txt and retained compiler diagnostics"
         save_json(root / "result.json", result)
-        print(json.dumps(result, ensure_ascii=False), flush=True)
+        _print_result(result, result_path=root / "result.json",
+                      log_paths=(root / "compilation/compile.log", root / "compilation/help.log"))
         return 0 if result["status"] == "COMPILED" else 1
     except Exception as error:
         result.update(status="FAILED", error=f"{type(error).__name__}: {error}")
         if owned_root:
             save_json(root / "failure.json", result)
-        print(json.dumps(result, ensure_ascii=False), flush=True)
+        _print_result(result, result_path=root / "failure.json" if owned_root else None)
         return 1
 
 

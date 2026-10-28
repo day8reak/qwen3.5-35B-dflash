@@ -6,7 +6,13 @@
 
 ## 用户现在执行什么
 
-**先修复输出参数，再重试原始工程的完整 AIR。** 用户已授权将本轮代码和文档更新发布到 GitHub；原始源码和 YAML 仍保留在本地。更新仓库后执行下面命令。 用户提供了原 AIR 路径和40层、64/1双档转换命令，不再等待重建量化权重。恢复环境后在仓库执行：
+**当前先读取最新失败批次的日志，不重复编译。** 用户已回传 `full-target-compile-e019e4a7ad53`：实际命令使用 `--output=model`，OMG 仍退出 1；具体原因尚待日志核对，不能仅凭退出码判断是参数、权重还是算子问题。
+
+```bash
+tail -n 120 "$AI_RUN_DIR/full-target-compile-e019e4a7ad53/compilation/compile.log"
+```
+
+入口现在直接打印 有长度限制的日志摘要，终端不再被完整的89输入命令占满；完整异常和参数仍在 `result.json`、`compilation/compile-command.json` 中保留。帮助阶段失败则显示 `help.log`。确认原因并完成针对性修复后，整模编译仍使用以下命令；本次不要求重新准备权重或运行探针：
 
 ```bash
 git pull --ff-only
@@ -17,7 +23,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_full_target.py" \
 
 脚本内置用户提供的89个输入形状、80个`RefData`状态输入和5个动态轴，使用 `--dynamic_dims="64,64,64,64,64;1,1,1,1,1"`，保留 `--limit_partition_size=false` 和 `--save_weights_as_external_data=true`。原命令中的 `--d11ynamic_dims` 按拼写错误处理；执行前记录所选OMG帮助。帮助未列出的内部参数仍按用户命令原样交给实际编译器验证，不偷偷删参数。默认调用当前DDK的 `tools/tools_omg/master/omg` 实际程序，沿用已经成功的隔离环境，避免外层脚本修改共享工具目录；不添加FP16权重强制转换或探针的布局选项。
 
-用户回传的 `full-target-compile-771648b65da5` 在 `CheckOutputPathValid` 校验 `--output` 时退出，尚未编译模型图。当前修复为工作目录内的短名称 `--output=model`；输入快照和输出保存在同一隔离目录，避免移动外置数据。根因已定位到参数校验，不归因于算子或缺失权重；修复后的实际 OMG 结果待回传。
+用户回传的 `full-target-compile-771648b65da5` 在 `CheckOutputPathValid` 校验 `--output` 时退出，尚未编译模型图。当前修复为工作目录内的短名称 `--output=model`；输入快照和输出保存在同一隔离目录，避免移动外置数据。根因已定位到参数校验，不归因于算子或缺失权重；后续批次已使用短参数但仍失败，尚缺新的具体诊断日志。
 
 每次输出到新的 `full-target-compile-*`，保留 `compilation/compile.log`、完整命令、输入快照、OMC及生成的外置数据文件。编译成功后尝试读取编译图接口，报告在 `interface/report.txt`；工具不支持或转换失败单独报告，不改写编译成功状态。文件名和用户形状声明不等于实际AIR验证。原AIR保持原图，**本仓库基础Conv/RMS替代不会自动修改这份AIR**；以真实编译及图检查结果确认节点、状态和量化接口。
 
@@ -45,7 +51,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_full_target.py" \
 | GE完整结构 | 新增原W4量化target完整40层64/1构图与typed recipe；实际DDK量化绑定尚需提供 |
 | 自定义算子探针 | 当前选择GDN/CacheUpdate/Attention三类6例，用户回传导出、编译、加载及执行通过；原Conv/RMS三例失败保留为可选诊断 |
 | 真实权重AIR导出 | 旧双图支持完整FP16；新GE target支持显式缓存 |
-| 原工程完整AIR | 首次尝试被OMG输出路径校验拒绝；已本地修复短输出名，实际重试待回传 |
+| 原工程完整AIR | 短输出名已用于重试；新批次仍退出1，具体原因待compile.log；未执行设备推理 |
 | 原量化缓存 | 按原YAML读取已有W4及scale，I4ZN逐字节参考对照通过；专家QPARAM缺失时明确报告pending，不重新量化 |
 | 状态执行 | 主机fake prefill→decode接续通过；真实板端待验证 |
 | 尚未完成 | 真实DDK量化契约/目标执行、常驻缓存与native DFlash调度、完整模型设备精度和性能 |
