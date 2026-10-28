@@ -347,7 +347,10 @@ def export_pair(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0, ti
         for item in plan["weights"].values():
             checked_file(root, item)
         config = Qwen35DFlashConfig.from_dict(plan["draft_config"])
-        audit = {g.name: {"status": "PASS", "policy": "fp16", "scope": "declared GE graph tensor dtypes",
+        audit = {g.name: {"status": "PASS", "policy": "fp16-weights-air4b-precision" if g.name == "draft" else "fp16",
+                          "scope": "declared GE graph tensor dtypes; not compiler or runtime precision",
+                          "floating_intermediate_dtypes": sorted({n.output.dtype for n in g.nodes
+                                                                   if n.output.dtype.startswith("float")}),
                           "violations": [], "quantized_matmuls": []} for g in graphs}
         manifest = {"schema_version": 2, "abi_version": 2, "artifact_kind": "qwen35-cpro-air-pair",
                     "pipeline": ["ge-cpp", "air", "omg", "omc", "hiai"], "export_backend": "direct-ge",

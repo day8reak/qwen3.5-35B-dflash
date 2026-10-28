@@ -16,8 +16,9 @@ def test_tensor_ownership_reuse_and_dtype():
         g.weight("layer.weight", (4, 3))
     with pytest.raises(ValueError, match="duplicate"):
         g.input("x", (2, 3))
-    with pytest.raises(ValueError, match="FP16"):
-        g.input("bad", (1,), "float32")
+    assert g.input("fp32", (1,), "float32").dtype == "float32"
+    with pytest.raises(ValueError, match="unsupported dtype"):
+        g.input("bad", (1,), "float64")
     other = Graph("other").input("x", (2, 3))
     with pytest.raises(ValueError, match="owned"):
         g.op("add", x, other, shape=(2, 3))

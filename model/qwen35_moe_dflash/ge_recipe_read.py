@@ -16,7 +16,7 @@ from .ge_type_contracts import GE_DTYPE_IDS
 _MAX_BYTES = 256 << 20
 _MAX_OPS = 2_000_000
 _MAX_STRING = 1 << 20
-_DTYPES = {1: ("float16", 2), 2: ("int32", 4), 3: ("int64", 8), 4: ("bool", 1)}
+_DTYPES = {1: ("float16", 2), 2: ("int32", 4), 3: ("int64", 8), 4: ("bool", 1), 5: ("float32", 4)}
 _FORMATS = {0: "ND", 1: "NCHW"}
 
 

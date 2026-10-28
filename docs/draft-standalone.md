@@ -2,18 +2,17 @@
 
 当前优先跑通完整六层 DFlash，不等待40层 target 编译。沿用已经配置的 `env.sh`、主机GE、目标DDK和HDC环境。默认工作目录固定为 `$AI_RUN_DIR/full-draft`，后续自动复用成功阶段并覆盖失败阶段的日志，不再为每次重试生成新目录。
 
-最新复核确认设备执行成功，但旧FP16参考hidden全零，15个Top1也全为0。当前执行CPU参考重放与已有设备输出比较：
+旧参考重放已确认RMS平方的FP16溢出；GE和新参考现已对齐4B实际AIR的RMS、attention和RoPE精度边界。执行一次更新后的完整流程：
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --replay-reference
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --weight-storage embedded-stream \
+  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
 ```
 
-入口使用prepared的同一份FP16权重和bundle已执行的精确输入，运行旧FP16 primitive和仅RMS计算改为FP32两轮，记录每个RMS输入、平方及输出，先检查旧golden能否精确复现，再比较FP32 RMS对照与保留板端输出。固定 `reference-replay`目录保存两套小输出、trace和报告。原fixture、bundle、OMC和board文件不改，不需要原始target checkpoint，也没有NPU/编译/上传操作。
+同一固定目录保留prepared权重，自动重建旧fixture、AIR、编译、bundle和board阶段。重新生成的输入须与旧fixture逐字节一致；无需原始target checkpoint。全部26处norm在FP32中归一化，再转FP16乘原scale；attention的QK/PV结果边界保持FP16，score/softmax使用FP32、概率转FP16后进入PV；RoPE角度和cos/sin使用FP32、完成后转FP16。35B训练配置、权重和六层结构不变。使用已完成过设备执行的embedded-stream封装，避免OMG直接内嵌大模型的保存故障。
 
-这是RMS精度的受控对照，保留了其它FP16 primitive边界，不冒充完整上游BF16 oracle。旧参考无法复现或对照输出非有限、全零时不建立新验收结论。旧 `--compare-only`仍可单独重看已有golden对比；它不会重放CPU参考。
-
-后续确需重新执行完整draft时沿用 `--weight-storage embedded-stream`。该路径已完成一次设备执行，当前先处理参考问题，避免重复大模型上传和设备执行。
+新参考契约为 `pytorch-fp16-air4b-precision-v3`，AIR契约以 `air4b-precision-v6` 结尾。旧参考的离线诊断保留在 `reference-replay`；新参考结果直接由正常board比较验证，或用 `--compare-only`复核。不能把旧板端的EXECUTED当作本次新模型的精度通过。
 
 失败报告包含 `model_load_api` 和 `runtime_stage`，区分文件恢复、初始化、张量设置及推理。自动HiLog摘要流式处理超过16MB的快照，并纳入明确提及runner PID的hiaiserver失败线程上下文；保留原快照和行号。SDK构建失败会打印编译错误及实际ND头文件声明，并保留 `board/native/selected-v2-headers.txt`。不需要先重新运行 `probe_draft_load.py`。
 
@@ -106,7 +105,7 @@ tail -n 100 "$AI_RUN_DIR/full-draft/board/draft.stderr"
 
 旧版显式新目录模式的输出检查错误恢复会核验成功日志、原导出及编译输入、DDK/参数、全部编译产物和TBE审计，在新目录保存独立快照与成功记录；旧失败证据不变。旧日志没有成功退出码，恢复记录明确标注由检查阶段及成功日志推断。该恢复不重跑OMG，但不能复用已经过期的导出契约。
 
-当前导出契约仍为 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4`，732 AIR与它一致，迁入后继续复用。首选迁移起点是732，6599保留为最新embedded失败记录；迁移成功后使用固定目录，更早的v2/v3批次恢复仍会触发重导和编译。
+上述历史迁移使用v4契约。当前4B AIR精度对齐已升级为 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-air4b-precision-v6`；732的AIR需要重建，prepared权重仍可复用。现在直接继续固定full-draft目录即可。
 
 `air/draft/projection-lowering.json`继续记录fc卷积表达的形状和等价范围。Conv2D与MatMul的累加顺序可能不同，板端仍须对照原参考，未宣称逐位一致或20ms性能。recipe为显式NCHW使用Q35GE002，普通ND图保持Q35GE001并兼容读取。
 

@@ -2,8 +2,8 @@
 
 The legacy primitive vocabulary is retained. Custom nodes have explicit named
 ports and may return multiple tensors; their schemas come from caller-supplied
-bindings, never from guessed operator defaults. FP32 state and INT16 lengths
-are local extensions and do not change the legacy FP16 graph contract.
+bindings, never from guessed operator defaults. The direct graph vocabulary
+supports FP32 intermediates; INT16 lengths remain a stateful extension.
 """
 from __future__ import annotations
 

@@ -331,24 +331,41 @@ def _main(args, stack):
                 result.update(weight_storage=weight_storage, compile_options=compile_options,
                               model_load_api=model_load_api)
             result["resumed_from"] = str(previous)
+            if old.get("reference_input_identity"):
+                result["reference_input_identity"] = old["reference_input_identity"]
+            if "fixture" in result["components"]:
+                from qwen35_moe_dflash.draft_reference import DRAFT_REFERENCE_CONTRACT
+                _, prior_fixture = _read_component(result["components"]["fixture"])
+                if prior_fixture.get("reference_contract") != DRAFT_REFERENCE_CONTRACT:
+                    if prior_fixture.get("inputs"):
+                        result["reference_input_identity"] = prior_fixture["inputs"]
+                    obsolete = {name: result["components"].pop(name)
+                                for name in ("fixture", "bundle") if name in result["components"]}
+                    result.setdefault("resume_invalidations", []).append({
+                        "reason": "OBSOLETE_DRAFT_REFERENCE_CONTRACT",
+                        "previous_reference_contract": prior_fixture.get("reference_contract"),
+                        "required_reference_contract": DRAFT_REFERENCE_CONTRACT,
+                        "components": obsolete,
+                        "preserved": [name for name in ("prepared", "air", "compilation") if name in result["components"]],
+                        "scope": "Rebuild the CPU reference with 4B AIR-aligned precision and verify unchanged fixed inputs."})
+                    stage("resume", "Previous reference precision contract is obsolete; rebuilding with 4B AIR-aligned RMS, attention and RoPE")
             if "air" in result["components"]:
                 from qwen35_moe_dflash.draft_standalone import CURRENT_DRAFT_EXPORT_CONTRACT
                 # Verify the immutable old receipt before deciding to rebuild.
-                # The prepared weights and CPU reference remain valid: this
-                # contract changes serialization, not the draft computation.
+                # Reference arithmetic is versioned separately above.
                 _, prior_air = _read_component(result["components"]["air"])
                 if prior_air.get("export_contract") != CURRENT_DRAFT_EXPORT_CONTRACT:
                     obsolete = {name: result["components"].pop(name)
                                 for name in ("air", "compilation", "bundle")
                                 if name in result["components"]}
-                    result["resume_invalidations"] = [{
+                    result.setdefault("resume_invalidations", []).append({
                         "reason": "OBSOLETE_DRAFT_EXPORT_CONTRACT",
                         "previous_export_contract": prior_air.get("export_contract"),
                         "required_export_contract": CURRENT_DRAFT_EXPORT_CONTRACT,
                         "components": obsolete,
                         "preserved": [name for name in ("prepared", "fixture") if name in result["components"]],
                         "scope": ("Replace obsolete stages in the fixed workspace." if workspace else
-                                  "Re-export and recompile in the new job; previous evidence is unchanged.")}]
+                                  "Re-export and recompile in the new job; previous evidence is unchanged.")})
                     stage("resume", "Previous AIR export contract needs updating; reusing weights/reference and rebuilding AIR/OMC")
             if "compilation" in result["components"]:
                 _, prior_compile = _read_component(result["components"]["compilation"])
@@ -432,8 +449,19 @@ def _main(args, stack):
         if prepared.get("tiny") or prepared.get("draft_config", {}).get("num_hidden_layers") != 6:
             raise ValueError("full-draft entry requires the full six-layer checkpoint")
         stage("fixture", "Running standalone PyTorch draft on fixed inputs")
-        fixture_dir, fixture = component("fixture", "report.json", lambda folder: prepare_draft_reference(
-            prepared_dir, folder, seed=settings["seed"], valid_length=settings["valid_length"]))
+        def build_reference(folder):
+            refreshed = prepare_draft_reference(prepared_dir, folder, seed=settings["seed"],
+                                                valid_length=settings["valid_length"])
+            if result.get("reference_input_identity"):
+                keys = ("index", "name", "shape", "dtype", "bytes", "sha256")
+                def identities(rows):
+                    return [{key: row.get(key) for key in keys} for row in rows]
+                if identities(refreshed.get("inputs", [])) != identities(result["reference_input_identity"]):
+                    raise ValueError("rebuilt reference input bytes differ from retained fixture")
+        fixture_dir, fixture = component("fixture", "report.json", build_reference)
+        from qwen35_moe_dflash.draft_reference import DRAFT_REFERENCE_CONTRACT
+        if fixture.get("reference_contract") != DRAFT_REFERENCE_CONTRACT:
+            raise ValueError("draft reference is missing the current 4B AIR precision contract")
         if (fixture.get("status") != "REFERENCE_COMPLETE" or not fixture.get("expected_top1")
                 or not fixture.get("expected_hidden")):
             raise RuntimeError(fixture.get("error", "complete draft reference outputs are required"))

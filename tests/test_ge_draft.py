@@ -12,7 +12,6 @@ from qwen35_moe_dflash.ge_eval import evaluate
 from qwen35_moe_dflash.graphs import DraftGraph
 from qwen35_moe_dflash.model import DFlashDraftModel
 from qwen35_moe_dflash.ops import TorchDFlashOps, _repeat_kv
-from qwen35_moe_dflash.precision import lower_fp16
 from reference.ge_torch import evaluate_torch
 
 
@@ -85,30 +84,17 @@ def test_draft_runtime_prefix_and_layer_masks(length):
 
 
 class _FP16PrimitiveOps(TorchDFlashOps):
-    """PyTorch primitive oracle with the same explicit FP16 boundaries."""
-    def rms_norm(self, x, weight, eps):
-        return weight * (x * torch.rsqrt(x.square().mean(-1, keepdim=True) + eps))
+    """FP16 primitives with the source Qwen3 FP32 normalization contract."""
 
     def attention(self, query, key, value, attention_mask, scale, key_value_groups):
         key = _repeat_kv(key, key_value_groups)
         value = _repeat_kv(value, key_value_groups)
-        scores = torch.matmul(query, key.transpose(-1, -2)) * scale
-        scores = torch.where(attention_mask, scores, torch.tensor(-float("inf"), dtype=query.dtype))
-        return torch.matmul(torch.softmax(scores, -1), value)
+        scores = torch.matmul(query, key.transpose(-1, -2)).float() * scale
+        scores = torch.where(attention_mask, scores, torch.tensor(-float("inf"), dtype=torch.float32))
+        return torch.matmul(torch.softmax(scores, -1).to(query.dtype), value).float().to(query.dtype)
 
 
-class _FP16Rotary(nn.Module):
-    def __init__(self, original):
-        super().__init__()
-        self.register_buffer("inv_freq", original.inv_freq.half())
-
-    def forward(self, positions, dtype):
-        frequencies = positions.half().unsqueeze(-1) * self.inv_freq.view(1, 1, -1)
-        embedding = torch.cat((frequencies, frequencies), dim=-1)
-        return embedding.cos(), embedding.sin()
-
-
-def test_draft_matches_lowered_pytorch_and_primitive_hidden():
+def test_draft_matches_pytorch_air_precision_and_primitive_hidden():
     config, reference, weights = _fixture()
     graph = build_draft(config, 8)
     expected_keys = {f"draft.{name}" for name in config.required_tensor_shapes()}
@@ -118,14 +104,9 @@ def test_draft_matches_lowered_pytorch_and_primitive_hidden():
         ("input_ids", (1, 8), "int32"), ("attention_mask", (1, 8), "int32")]
     assert graph.outputs[0].shape == (1, 3) and graph.outputs[0].dtype == "int32"
     assert {value.dtype for value in graph.weights.values()} == {"float16"}
-    assert all(node.output.dtype in {"float16", "int32", "bool"} for node in graph.nodes)
+    assert all(node.output.dtype in {"float16", "float32", "int32", "bool"} for node in graph.nodes)
 
-    sample = _inputs(config, 4)
-    sample_tensors = tuple(torch.from_numpy(sample[value.name]) for value in graph.inputs)
-    lowered, audit = lower_fp16(reference, sample_tensors)
-    assert audit["status"] == "PASS"
     reference.draft.set_ops(_FP16PrimitiveOps())
-    reference.draft.rotary = _FP16Rotary(reference.draft.rotary)
     captured = []
     handle = reference.draft.norm.register_forward_hook(lambda module, args, output: captured.append(output[:, 1:].detach()))
     graph.outputs += _named(graph, "draft_hidden", "draft_logits")
@@ -136,10 +117,8 @@ def test_draft_matches_lowered_pytorch_and_primitive_hidden():
             top1, hidden, logits = evaluate(graph, inputs, weights)
             torch_top1, torch_hidden, torch_logits = evaluate_torch(graph, inputs, weights)
             with torch.inference_mode():
-                fused_top1 = lowered(*tensors)
                 primitive_top1 = reference(*tensors)
                 primitive_logits = reference.lm_head(captured[-1])
-            np.testing.assert_array_equal(top1, fused_top1.numpy())
             np.testing.assert_array_equal(top1, primitive_top1.numpy())
             torch.testing.assert_close(torch_top1, primitive_top1, rtol=0, atol=0)
             # Default FP16 tolerances on the same arithmetic backend separate

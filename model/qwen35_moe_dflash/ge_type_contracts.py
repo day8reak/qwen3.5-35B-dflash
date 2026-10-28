@@ -8,8 +8,8 @@ from __future__ import annotations
 
 
 # Public GE enum values already used by the Cast recipe encoding. These are
-# not Q35GE001's wire tags (1..4), nor a decoding table for private HIAI dumps.
-GE_DTYPE_IDS = {"float16": 1, "int32": 3, "int64": 9, "bool": 12}
+# not Q35GE001's wire tags (1..5), nor a decoding table for private HIAI dumps.
+GE_DTYPE_IDS = {"float16": 1, "float32": 0, "int32": 3, "int64": 9, "bool": 12}
 _INTEGER = {"int32", "int64"}
 _UNARY = {"Neg", "Sigmoid", "Exp", "Log", "Sqrt", "Rsqrt", "Cos", "Sin",
           "Power", "Swish", "Softplus", "SoftmaxV2"}

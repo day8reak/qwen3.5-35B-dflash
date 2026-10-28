@@ -4,17 +4,47 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 4B AIR精度对齐与结构核对
+
+用户完整服务器重放逐字节复现旧参考：第0层post_attention_layernorm输入最大340，FP16平方27个非有限值导致9行归一化输出为零。RMS单独改为FP32后，26处norm均无新零行，但与旧板端仍有12个Top1差异，hidden相对L2=1.9395076956574235。该RMS-only候选是历史诊断，不是本次完整精度对齐后的新参考。
+
+最终gamma为全1时，有限正确RMS输出L2应约为sqrt(30720)=175.271218，末端FP16舍入仅有小变化。RMS-only参考175.271140符合，旧板端357.492527不符合，表明旧板端最终输出不满足该约束；设备平方溢出是否采用饱和仍未观察，不能认定具体机制。
+
+按4B分支 `feature/gdr-chunk-verify`、提交 `90186732d915e8b058b2a053d205991d805eae76` 核对实际AIR路径后，GE与新CPU参考同步采用以下边界：
+
+- RMS：输入、平方、归约、epsilon、rsqrt及归一化乘积FP32，转FP16后乘原始gamma。没有对draft权重加1。
+- Attention：FP16 QK结果转FP32，再缩放、mask和softmax；概率转FP16后进入FP16 PV。Cast不证明硬件内部累加精度。
+- RoPE：inverse frequency、position、角度、cos/sin为FP32，仅最终cos/sin转FP16。
+
+源文件分别为 `models/dflash_v1/dflash_ascend310p_ops.py:124`、`framework/python/qwen35_dflash/ascend310p/quant_factory.py:237` 和 `models/dflash_v1/modeling_dflash.py:94`。固定源码快照位于本run的ref4b-source。4B的RESULTS.md标为PASS_WITH_DIFFERENCES，20.22ms不证明全部数值一致。
+
+GE IR、C++描述符及recipe增加FP32类型，已有类型编码保持不变。参考契约v3与AIR契约v6分别使旧阶段失效，重新生成的输入须与旧fixture哈希一致。旧legacy和RMS-only replay保留；当前新参考通过正常board比较或compare-only验证。旧设备执行成功不能作为新图的精度证据。
+
+两者训练结构都为六层DFlash、block16、32个Q头/8个KV头、head_dim128、前五层sliding加末层full attention。4B/35B的hidden分别为2560/2048，MLP为9216/6144，target feature宽度为20480/16384，target取层及embedding/head共享方式也不同。保留35B checkpoint配置。对固定4B源码及其padding adapter和当前35B实现做独立结构对照，在相同小配置、权重和公共运算下，prefix1/6/8、window4的三组六层hidden均逐字节相同。证据在run `20261028T120455Z-6764-8b00f2` 的 `out/structure-audit/report.json`，这不等于两个不同checkpoint的真实输出相同。
+
+本次最终有效主机结果去重后488项通过、4项可选GE runtime检查跳过，未解决失败为0。覆盖GE/recipe精度边界、完整六层源图计算、类型读写、恢复失效及保留结果复核；早期旧FP16断言失败由更新后的用例覆盖。证据为本run的 `out/air4b-test-summary.json` 及其列出的JUnit报告。
+
+当前本地缺少所选Cpro目标配置；本次新图的实际DDK编译、设备数值和性能仍需服务器完整入口验证。相关硬件精度结论保持未通过。
+
+## 与35B官方源码的精度关系
+
+再次核验固定checkpoint `52cb554b4995dede3e2e1bdb129cdb1f3529332b`：config下载字节与本地 `specs/draft-config.json` 及锁文件SHA完全一致。配置为BF16；[固定README](https://huggingface.co/z-lab/Qwen3.5-35B-A3B-DFlash/blob/52cb554b4995dede3e2e1bdb129cdb1f3529332b/README.md)记录SGLang、BF16和FA4 draft attention。该checkpoint目录没有dflash.py，也没有固定SGLang版本或作者代码commit。因此不能将4B AIR对齐或当前作者源码当作35B训练/服务数值行为的完整复现。
+
+[作者当前源码快照](https://github.com/z-lab/dflash/blob/07ebd93db9f472af339b644bb70221ad8428328a/dflash/model.py)使用Qwen3RMSNorm、Qwen3RotaryEmbedding和SDPA attention；RMS与RoPE的FP32计算及返回输入dtype顺序与本次修正一致。当前参数/主激活从BF16转换为FP16，且AIR显式物化FP16 QK/PV结果，SDPA/FA4内部累加和舍入不由这一表达证明。结论限定为FP16部署候选；原BF16质量及设备数值等价均未通过。35B结构/权重配置保持原样，4B只作为部署实现参考。
+
+来源及文件哈希记录在本run的 `out/source35b-audit/report.json`；作者数学核对记录在 `out/original35b-source-audit`。未因源码核对更换checkpoint、回退mask修复或放宽验收阈值。
+
 ## 退化参考与RMS精度重放
 
 用户回传compare-only报告确认：旧参考hidden全部30,720个元素为零，expected Top1为15个0；板端hidden全部finite，30,711个非零，L2=357.4925270667643，范围[-9.5,10.171875]。双方Top1差异15个。norm审计核验26份scale均有限且非全零；最终norm和hidden_norm的2,048个scale均为1。设备执行已通过，当前旧参考退化，不足以单独判断设备精度。
 
-新增CPU重放保持原输入、权重、fixture、bundle和板端文件。先重放旧FP16 primitive并逐字节对照旧golden，然后仅对DFlashRMSNorm采用现有TorchDFlashOps的FP32归一化公式；其它FP16计算边界不变。逐节点trace记录输入/FP16平方/输出统计，区分原本为零的padding行与有限非零输入变全零的行。未观察实际完整重放前，FP16平方溢出仍只是具有最小复现的候选根因。
+新增CPU重放保持原输入、权重、fixture、bundle和板端文件。先重放旧FP16 primitive并逐字节对照旧golden，然后仅对DFlashRMSNorm采用现有TorchDFlashOps的FP32归一化公式；其它FP16计算边界不变。逐节点trace记录输入/FP16平方/输出统计，区分原本为零的padding行与有限非零输入变全零的行。当时尚未观察完整重放；用户后续结果已确认这一参考退化路径，见上节。
 
 RMS公式核对依据是[Transformers v5.7.0 Qwen3RMSNorm](https://github.com/huggingface/transformers/blob/6ffbb07f93d9e44457450d1150136309b0dc966b/src/transformers/models/qwen3/modeling_qwen3.py#L50)：归一化在FP32中完成，normalized转回输入dtype后乘直接scale。当前checkpoint源码锁未包含有效的35B dflash.py；因此这个对照不宣称复现完整历史上游BF16实现，尤其RoPE和attention仍保留旧参考FP16边界。
 
 新参考生成增加全零hidden拒绝；finite-only检查不再把这种退化输出记为REFERENCE_COMPLETE。重放产物只用于诊断，原golden与现有数值阈值不覆盖、不放宽。
 
-本次主机验证286项通过：包括六层小模型旧参考逐字节复现、受控FP16平方溢出与FP32恢复、输入/权重/输出哈希绑定、诊断文件复用及原始证据保持。证据位于run `20261028T114628Z-5767-f04adf` 的 `out/reference-replay-integration.xml`（260项）和 `out/draft-reference-replay-tests.xml`（26项）。完整服务器权重重放及板端数值对齐仍待运行。
+本次主机验证286项通过：包括六层小模型旧参考逐字节复现、受控FP16平方溢出与FP32恢复、输入/权重/输出哈希绑定、诊断文件复用及原始证据保持。证据位于run `20261028T114628Z-5767-f04adf` 的 `out/reference-replay-integration.xml`（260项）和 `out/draft-reference-replay-tests.xml`（26项）。该轮测试时完整服务器重放仍待运行；后续用户已完成重放，结果见上节，板端数值对齐仍未通过。
 
 ## 完整 draft 执行与保留输出复核
 
@@ -26,7 +56,7 @@ RMS公式核对依据是[Transformers v5.7.0 Qwen3RMSNorm](https://github.com/hu
 
 本轮 `20261028T091818Z-3980-265c4f/retained-comparison-regression.xml` 记录206项主机测试通过，覆盖零/非有限比较、严格回收证据、重复离线复核及固定工作区。测试中的device标记为模拟数据，不是新增实机证据。
 
-当前FP16 primitive参考的RMS平方有明确溢出风险：FP16输入[300,1,-2,3]的平方包含inf，归一化结果可全零且finite。这个最小复现不证明完整draft的当前根因。GE同样有FP16平方/归约图，实际融合与累积行为还需对照；未偷偷改成FP32 golden。原生单步未计时，性能未评估。
+历史FP16 primitive参考的RMS平方有明确溢出风险：FP16输入[300,1,-2,3]的平方包含inf，归一化结果可全零且finite。当时这个最小复现不能单独证明完整draft的根因；后续用户逐字节重放已定位旧参考塌缩，当前修改见上节。原生单步未计时，性能未评估。
 
 ## 外置编译结果流式封装
 

@@ -131,7 +131,12 @@ def test_prepared_pair_export_and_existing_omg_abi(tmp_path, monkeypatch, extern
             "row-mul-lowering.json", "gdn-copy-lowering.json"}
         report = json.loads((tmp_path / "air" / graph["name"] / "reduction-lowering.json").read_text())
         assert graph["reduction_lowering"] == {"mode": fp16_reductions, "counts": report["counts"]}
-        assert bool(report["replaced"]) == (fp16_reductions == "matmul")
+        assert bool(report["replaced"]) == (fp16_reductions == "matmul" and graph["name"] == "target")
+        if graph["name"] == "draft":
+            means = [r for r in report["retained"] if r["kind"] == "reduce_mean"]
+            assert len(means) == 10
+            assert all(r["source"]["dtype"] == r["output"]["dtype"] == "float32" for r in means)
+            assert manifest["precision_audit"]["draft"]["policy"] == "fp16-weights-air4b-precision"
         row_report = json.loads((tmp_path / "air" / graph["name"] / "row-mul-lowering.json").read_text())
         assert graph["row_mul_lowering"] == {"mode": fp16_row_mul, "counts": row_report["counts"]}
         assert row_report["counts"]["replaced"] == (19 if fp16_row_mul == "compact" and graph["name"] == "target" else 0)

@@ -59,6 +59,21 @@ def test_real_cpp_parser_accepts_typed_attributes_and_shared_constant_blob(parse
     assert parser[1].with_name("constants.bin").read_bytes() == b"\x00\x3c" * 4
 
 
+def test_real_cpp_parser_accepts_fp32_payload_width_and_dtype_attributes(parser, tmp_path):
+    graph = records()
+    for record in graph:
+        for port in record["inputs"] + record["outputs"]:
+            port["dtype"] = "float32"
+    graph[1]["constant"]["data"] = struct.pack("<4f", 1, 2, 3, 4)
+    graph[2]["attrs"] = {"diagnostic_dtype": {"type": "dtype", "value": "float32"}}
+    folder = tmp_path / "fp32"
+    emit_recipe_cpp(graph, "fp32", [0], [(4, 0)], folder)
+    result = run(parser, folder / "graph.recipe")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "RECIPE_VALID 5\n"
+    assert (folder / "constants.bin").stat().st_size == 16
+
+
 def test_explicit_nd_keeps_version_one_bytes_unchanged(parser, tmp_path):
     graph = [records()[0]]
     emit_recipe_cpp(graph, "nd", [0], [(0, 0)], tmp_path / "implicit")

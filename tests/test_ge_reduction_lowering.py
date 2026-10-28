@@ -237,11 +237,13 @@ def test_malformed_output_contract_rejected_in_matmul_mode(tmp_path, shape, dtyp
     assert not (tmp_path / "recipe").exists()
 
 
+# Recomputed from the pre-RMS-fix emitter at a7279782427bef30a2ea45724d8184c58e16aaae;
+# earlier historical hashes predated subsequent Data-factory validation fixes.
 @pytest.mark.parametrize("kind,dtype,expected_sha", [
-    ("reduce_sum", "float16", "ed0a7f91ac68881fe67a1afdb697b0c55c5aaef4b3ead2ba45697cd06fb76237"),
-    ("reduce_mean", "float16", "b138055b0d06656dbdc770e24cf06c9a8d7867d7d6545db6e788e38cf681088d"),
-    ("reduce_sum", "int32", "3accf52a74e9c1082e677182f5bffc29ac4abd2e8fe87d2542bf3d7b3ea5611a"),
-    ("cumsum", "float16", "0d61c0e5884d64044c2cc63c7e6ac67491bd5ccfe89caf2bfd15bdba9467d3ba"),
+    ("reduce_sum", "float16", "435ad5fd250b3c87136d443f9be204fd81c13909b753b6dc7b1f0640ef609880"),
+    ("reduce_mean", "float16", "13f14c5d437cb767284b0649f6aac2ce541ef661536c1984ca39ec4a729d0a0f"),
+    ("reduce_sum", "int32", "fceec19cc583bd52b04cbbe6c6e1b8d3d438f85d5f6e1ab1058f5e0be9df246d"),
+    ("cumsum", "float16", "0d0efe8529f9a3a012a7830abe15ebafc598f3351667a6990c86527b02d26376"),
 ])
 def test_default_cpp_matches_prechange_bytes(kind, dtype, expected_sha):
     graph = Graph("native_reduction_identity")
@@ -252,7 +254,11 @@ def test_default_cpp_matches_prechange_bytes(kind, dtype, expected_sha):
     code = emit_cpp(graph)
     report = {"stale": "must be cleared"}
     assert emit_cpp(graph, fp16_reductions="native", reduction_report=report) == code
-    assert hashlib.sha256(code.encode()).hexdigest() == expected_sha
+    # The factory now also admits FP32 Data for RMS; all preexisting FP16 and
+    # integer operation construction remains byte-for-byte unchanged.
+    old_factory = code.replace("DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL, DT_FLOAT",
+                               "DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL")
+    assert hashlib.sha256(old_factory.encode()).hexdigest() == expected_sha
     assert "stale" not in report and report["mode"] == "native"
     assert report["counts"]["replaced"] == 0
 
@@ -267,8 +273,8 @@ def test_policy_and_report_argument_validation():
 
 
 def test_reports_deterministic_and_cover_actual_tiny_pair_including_nested_scans(tmp_path):
-    for graph, expected_fp16, expected_integer, expected_scan in zip(
-            build_pair(*configurations(tiny=True), 8), (421, 10), (16, 1), (192, 0)):
+    for graph, expected_fp16, expected_fp32, expected_integer, expected_scan in zip(
+            build_pair(*configurations(tiny=True), 8), (421, 0), (0, 10), (16, 1), (192, 0)):
         before = pickle.dumps(graph)
         # Descriptor-only audit deliberately avoids inventing checkpoint data.
         # The separate small recipes above execute the emitted operations.
@@ -281,13 +287,14 @@ def test_reports_deterministic_and_cover_actual_tiny_pair_including_nested_scans
                  reduction_report=second, **kwargs)
         assert json.dumps(report, sort_keys=True, allow_nan=False) == json.dumps(second, sort_keys=True, allow_nan=False)
         assert pickle.dumps(graph) == before
-        assert report["counts"] == {"total": expected_fp16 + expected_integer,
-            "replaced": expected_fp16, "retained": expected_integer, "fp16_replaced": expected_fp16,
+        assert report["counts"] == {"total": expected_fp16 + expected_fp32 + expected_integer,
+            "replaced": expected_fp16, "retained": expected_integer + expected_fp32, "fp16_replaced": expected_fp16,
             "integer_retained": expected_integer, "scan_prefix_replaced": expected_scan}
-        assert native_report["counts"]["total"] == expected_fp16 + expected_integer
+        assert native_report["counts"]["total"] == expected_fp16 + expected_fp32 + expected_integer
         reductions = [r for r in records if r["type"] in {"ReduceSum", "ReduceMean"}]
-        assert len(reductions) == expected_integer
-        assert all(r["inputs"][0]["dtype"] == r["outputs"][0]["dtype"] == "int32" for r in reductions)
+        assert len(reductions) == expected_integer + expected_fp32
+        assert sum(r["inputs"][0]["dtype"] == r["outputs"][0]["dtype"] == "int32" for r in reductions) == expected_integer
+        assert sum(r["inputs"][0]["dtype"] == r["outputs"][0]["dtype"] == "float32" for r in reductions) == expected_fp32
         originals = {r["name"]: r for r in native if r["type"] in {"ReduceSum", "ReduceMean"}}
         for retained in reductions:
             original = originals[retained["name"]]

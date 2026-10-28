@@ -20,10 +20,10 @@ from .hashing import sha256_file
 from .resources import repository_root
 
 
-# Version the serialized GE contract separately from prepared weights
-# and reference inputs. Updating it requires a new AIR, not weight conversion or
-# PyTorch recomputation. Real selected-DDK acceptance remains a separate gate.
-CURRENT_DRAFT_EXPORT_CONTRACT = "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4"
+# Version the GE contract separately from weights and the CPU reference.
+# Graph changes require a new AIR; reference arithmetic has its own contract.
+# Real selected-DDK acceptance remains a separate gate.
+CURRENT_DRAFT_EXPORT_CONTRACT = "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-air4b-precision-v6"
 
 
 def _graph(sequence_length, *, tiny=False, draft_config=None, include_hidden=True):
@@ -299,6 +299,9 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
                   "projection_lowering": projection_report}
         manifest = {"schema_version": 1, "artifact_kind": "qwen35-cpro-draft-air", "status": "EXPORTED",
                     "export_contract": CURRENT_DRAFT_EXPORT_CONTRACT,
+                    "rms_normalization": "FP32_NORMALIZE_CAST_FP16_THEN_DIRECT_SCALE",
+                    "attention_precision": "FP16_MATMUL_FP32_SCORES_SOFTMAX_FP16_PROBABILITY",
+                    "rope_precision": "FP32_ANGLES_COS_SIN_CAST_FP16",
                     "file_constant_policy": "cpro-relative-int", "file_constant_path_base": "air-parent",
                     "file_constant_dtype_attr": "int", "file_constant_target_validation": "NOT_RUN",
                     "pipeline": ["ge-cpp", "air", "omg", "omc", "hiai"], "export_backend": "direct-ge",

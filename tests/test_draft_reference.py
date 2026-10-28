@@ -58,6 +58,11 @@ def test_complete_six_layer_reference_matches_independent_ge_graph(prepared, tmp
     output = tmp_path / f"reference-{valid_length}"
     result = subject.prepare_draft_reference(root, output, valid_length=valid_length)
     assert result["status"] == "REFERENCE_COMPLETE"
+    assert result["reference"] == subject.DRAFT_REFERENCE_KIND
+    assert result["reference_contract"] == subject.DRAFT_REFERENCE_CONTRACT
+    assert result["rms_normalization"] == "FP32_NORMALIZE_CAST_FP16_THEN_DIRECT_SCALE"
+    assert result["attention_precision"] == "FP16_MATMUL_FP32_SCORE_SOFTMAX_FP16_PV"
+    assert result["rotary_precision"] == "FP32_ANGLES_COS_SIN_THEN_FP16"
     assert result["draft_layers_executed"] == 6 and result["full_vocabulary_rows"] == config.vocab_size
     assert result["target_features_source"] == "SYNTHETIC_DIAGNOSTIC_NOT_TARGET_EXECUTION"
     assert result["numerical_acceptance"]["hidden_threshold"] == "NOT_DEFINED"
@@ -142,7 +147,7 @@ def test_target_decoder_weight_is_rejected(prepared):
 
 def test_failure_retains_input_identity_and_error(prepared, tmp_path, monkeypatch):
     root, _, _, _, _ = prepared
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise RuntimeError("reference fixture failure")
     monkeypatch.setattr(subject, "_load_graph", fail)
     with pytest.raises(RuntimeError, match="fixture failure"):
@@ -158,7 +163,7 @@ def test_finite_all_zero_hidden_is_not_accepted_as_reference(prepared, tmp_path,
     # Simulate finite collapse at the final norm. The head remains finite and
     # argmax returns zeros, so the former finite-only guard would accept it.
     graph.draft.norm.register_forward_hook(lambda module, inputs, output: torch.zeros_like(output))
-    monkeypatch.setattr(subject, "_load_graph", lambda *args: graph)
+    monkeypatch.setattr(subject, "_load_graph", lambda *args, **kwargs: graph)
     folder = tmp_path/"collapsed-reference"
     with pytest.raises(FloatingPointError, match="degenerate all-zero"):
         subject.prepare_draft_reference(root, folder)
@@ -166,3 +171,112 @@ def test_finite_all_zero_hidden_is_not_accepted_as_reference(prepared, tmp_path,
     assert report["status"] == "FAILED"
     assert report["expected_top1"] is report["expected_hidden"] is None
     assert len(report["inputs"]) == 3
+
+
+def test_current_rms_uses_float32_normalization_then_cast_and_direct_scale(prepared):
+    root, _, config, _, _ = prepared
+    graph = subject.load_draft_reference(root)
+    norm = graph.draft.norm
+    x = torch.linspace(-340, 340, config.hidden_size, dtype=torch.float16).view(1, 1, -1)
+    scale = torch.linspace(.125, 1.875, config.hidden_size, dtype=torch.float16)
+    with torch.no_grad():
+        norm.weight.copy_(scale)
+        actual = norm(x)
+    x32 = x.float()
+    expected = (x32 * torch.rsqrt(x32.square().mean(-1, keepdim=True) + norm.eps)).half() * scale
+    assert graph.reference_rms_mode == "air4b-precision"
+    assert torch.isinf(x.square()).any()
+    assert torch.isfinite(actual).all() and torch.count_nonzero(actual) > 0
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert actual.dtype == torch.float16
+
+
+def test_legacy_loader_default_preserves_exact_fp16_overflow_behavior(prepared):
+    root, _, config, _, _ = prepared
+    _, _, _, paths = subject._validated_prepared(root)
+    legacy = subject._load_graph(config, paths)
+    explicit = subject.load_draft_reference(root, rms_mode="legacy-fp16")
+    x = torch.full((1, 1, config.hidden_size), 340, dtype=torch.float16)
+    with torch.inference_mode():
+        expected = (x * torch.rsqrt(x.square().mean(-1, keepdim=True) + legacy.draft.norm.eps)) * legacy.draft.norm.weight
+        actual = legacy.draft.norm(x)
+        actual_explicit = explicit.draft.norm(x)
+    assert legacy.reference_rms_mode == "legacy-fp16"
+    assert torch.count_nonzero(actual) == 0
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(actual_explicit, expected, rtol=0, atol=0)
+
+
+def test_historical_fp32_stats_mode_changes_only_rms_arithmetic(prepared):
+    root, _, config, _, _ = prepared
+    current = subject.load_draft_reference(root, rms_mode="fp32-stats")
+    legacy = subject.load_draft_reference(root, rms_mode="legacy-fp16")
+    torch.manual_seed(31)
+    x = torch.randn(1, 2, config.hidden_size, dtype=torch.float16)
+    query = torch.randn(1, config.num_attention_heads, 2, config.head_dim, dtype=torch.float16)
+    key = torch.randn(1, config.num_key_value_heads, 3, config.head_dim, dtype=torch.float16)
+    value = torch.randn_like(key)
+    mask = torch.tensor([[[[True, True, False], [True, True, True]]]])
+    positions = torch.arange(3, dtype=torch.int32).view(1, -1)
+    with torch.inference_mode():
+        torch.testing.assert_close(current.draft.layers[0].self_attn.q_proj(x),
+                                   legacy.draft.layers[0].self_attn.q_proj(x), rtol=0, atol=0)
+        torch.testing.assert_close(current.draft.ops.swiglu(x, x), legacy.draft.ops.swiglu(x, x), rtol=0, atol=0)
+        for first, second in zip(current.draft.rotary(positions, x.dtype), legacy.draft.rotary(positions, x.dtype)):
+            torch.testing.assert_close(first, second, rtol=0, atol=0)
+        first = current.draft.ops.attention(query, key, value, mask, config.head_dim ** -.5, config.num_key_value_groups)
+        second = legacy.draft.ops.attention(query, key, value, mask, config.head_dim ** -.5, config.num_key_value_groups)
+        torch.testing.assert_close(first, second, rtol=0, atol=0)
+
+
+def test_unknown_rms_mode_is_rejected_before_loading(prepared):
+    root, _, _, _, _ = prepared
+    with pytest.raises(ValueError, match="rms_mode"):
+        subject.load_draft_reference(root, rms_mode="all-float32")
+
+
+@pytest.mark.parametrize("groups", [1, 4])
+def test_air4b_attention_matches_pinned_air_grouped_formula(prepared, groups):
+    root, _, _, _, _ = prepared
+    graph = subject.load_draft_reference(root)
+    torch.manual_seed(169)
+    batch, kv_heads, query_rows, key_rows, width = 1, 2, 5, 11, 8
+    query = torch.randn(batch, kv_heads * groups, query_rows, width, dtype=torch.float16)
+    key = torch.randn(batch, kv_heads, key_rows, width, dtype=torch.float16)
+    value = torch.randn_like(key)
+    visible = torch.arange(key_rows)[None, None, None, :] <= torch.arange(query_rows)[None, None, :, None] + 3
+    scale = width ** -.5
+    # Independently reproduce pinned AirDFlashOps, including its grouped-query
+    # layout. Matmul result FP16 -> score scaling/mask/softmax FP32 -> P FP16.
+    grouped = query.reshape(batch, kv_heads, groups * query_rows, width)
+    scores = torch.matmul(grouped.half(), key.half().transpose(-2, -1)).float() * scale
+    grouped_mask = visible.expand(batch, kv_heads * groups, query_rows, key_rows).reshape(
+        batch, kv_heads, groups * query_rows, key_rows)
+    scores = scores.masked_fill(~grouped_mask, float("-inf"))
+    probability = torch.softmax(scores, dim=-1, dtype=torch.float32)
+    expected = torch.matmul(probability.half(), value.half()).float().to(query.dtype).reshape_as(query)
+    actual = graph.draft.ops.attention(query, key, value, visible, scale, groups)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert actual.dtype == torch.float16
+    assert torch.isfinite(actual).all()
+
+
+def test_air4b_rotary_matches_float32_angles_then_cast_and_preserves_old_modes(prepared):
+    root, _, config, _, _ = prepared
+    current = subject.load_draft_reference(root)
+    positions = torch.tensor([[1, 17, 63, 511, 2047]], dtype=torch.int32)
+    inverse = 1.0 / (config.rope_theta ** (torch.arange(0, config.head_dim, 2, dtype=torch.float32) / config.head_dim))
+    frequencies = positions.float().unsqueeze(-1) * inverse.view(1, 1, -1)
+    angles = torch.cat((frequencies, frequencies), dim=-1)
+    expected = (angles.cos().half(), angles.sin().half())
+    assert current.draft.rotary.inv_freq.dtype == torch.float32
+    for actual, reference in zip(current.draft.rotary(positions, torch.float16), expected):
+        torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+    old_frequency = positions.half().unsqueeze(-1) * inverse.half().view(1, 1, -1)
+    old_angles = torch.cat((old_frequency, old_frequency), dim=-1)
+    old_expected = (old_angles.cos(), old_angles.sin())
+    for mode in ("legacy-fp16", "fp32-stats"):
+        historical = subject.load_draft_reference(root, rms_mode=mode)
+        assert historical.draft.rotary.inv_freq.dtype == torch.float16
+        for actual, reference in zip(historical.draft.rotary(positions, torch.float16), old_expected):
+            torch.testing.assert_close(actual, reference, rtol=0, atol=0)

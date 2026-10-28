@@ -24,7 +24,7 @@
       "production performance claim"
     ]
   },
-  "source_precision": "original BF16 checkpoints; unmodified upstream reference retained",
+  "source_precision": "Original BF16 checkpoints; checkpoint identity locked; exact upstream runtime numerical equivalence remains unverified",
   "gdn_recurrence_precision": "FP16 in deployment graph; numerical comparison against upstream FP32 recurrence pending",
   "block_size": 16,
   "draft_width": 15,
@@ -129,7 +129,7 @@
     "omc",
     "hiai"
   ],
-  "direct_ge_precision": "FP16 correctness/conversion baseline; native compressed integer weight mapping pending",
+  "direct_ge_precision": "Target legacy FP16 conversion baseline; standalone draft uses the versioned mixed precision policy below. Native compressed integer target weight mapping remains separate.",
   "delivery_objective": {
     "date": "2026-10-26",
     "user_requirement": "验证 DFlash 有优化效果，希望至少提速 2 倍",
@@ -168,5 +168,17 @@
     "current_milestone_status": "HOST_IMPLEMENTED_DEVICE_INTEGRATION_PENDING",
     "current_milestone_evidence": "specs/verification.json"
   },
-  "scope_note": "This contract describes the preserved ABI v2 prefix-recompute target/draft pair. The independent fused/stateful target has a separate generated state ABI; native integration is pending."
+  "scope_note": "This contract describes the preserved ABI v2 prefix-recompute target/draft pair. The independent fused/stateful target has a separate generated state ABI; native integration is pending.",
+  "standalone_draft_precision": {
+    "reference_contract": "pytorch-fp16-air4b-precision-v3",
+    "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-air4b-precision-v6",
+    "checkpoint": "z-lab/Qwen3.5-35B-A3B-DFlash@52cb554b4995dede3e2e1bdb129cdb1f3529332b",
+    "parameters": "Prepared FP16 conversion of original BF16 weights; trained dimensions preserved",
+    "rms": "FP32 normalization, cast FP16, multiply direct checkpoint gamma",
+    "attention": "FP16 QK/PV result boundaries; FP32 scaling/mask/softmax; probability cast FP16 before PV",
+    "rope": "FP32 inverse frequency, positions, angles and trigonometry; cosine/sine cast FP16",
+    "deployment_reference": "Pinned4B actualAIR@90186732d915e8b058b2a053d205991d805eae76",
+    "upstream_equivalence": "Not established for original35B BF16 with FA4 backend",
+    "device_numerical_validation": "NOT_RUN_FOR_CURRENT_GRAPH"
+  }
 }

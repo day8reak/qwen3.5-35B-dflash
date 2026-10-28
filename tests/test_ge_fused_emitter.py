@@ -121,10 +121,11 @@ def test_custom_graph_rejects_invalid_bindings_without_partial_nodes(fault):
     assert graph._values == before and not graph.nodes
 
 
-def test_legacy_dtype_registry_and_wire_format_stay_unchanged(tmp_path):
-    assert "float32" not in LEGACY_DTYPES and "int16" not in LEGACY_DTYPES
+def test_direct_rms_fp32_support_does_not_merge_stateful_wire_format(tmp_path):
+    assert LEGACY_DTYPES["float32"] == np.dtype("<f4") and "int16" not in LEGACY_DTYPES
+    assert LegacyGraph("rms").input("stats", (1,), "float32").dtype == "float32"
     with pytest.raises(ValueError):
-        LegacyGraph("old").input("state", (1,), "float32")
+        LegacyGraph("old").input("state", (1,), "int16")
     emit_cpp(state_graph(), recipe_dir=tmp_path / "recipe")
     payload = tmp_path / "recipe/graph.recipe"
     assert payload.read_bytes()[:8] == b"Q35GF001"

@@ -188,17 +188,20 @@ def test_default_and_explicit_native_cpp_are_identical_and_clear_report():
 
 
 @pytest.mark.parametrize("left_shape,right_shape,dtype,digest", [
-    (*SHAPES[0][:2], "float16", "c595bade2b313a29528af4407ea48668fe514e369e3724e114a3da4a7e14341b"),
-    (*SHAPES[1][:2], "float16", "a113d9291e553aafa0104a3ec9fc1d39816e96d5a601fc82cf2f343979912c0c"),
-    (*SHAPES[0][:2], "int32", "d670719e3819b1c8264e875a9e8fd818afdb00e0d20fa2aec422a65ead3d1a38"),
-    ((2, 1, 64, 8), (2, 1, 64, 1), "float16", "1d63ebc87938c0f0ffac201bfc8624f12f7a3c2cc1611590513f9fa3251cca97"),
+    (*SHAPES[0][:2], "float16", "77bfca0f45a13d03765dff9bacb621dcdd0650816ac90a83a77225e0f015c583"),
+    (*SHAPES[1][:2], "float16", "a128b2cbd8d9dbd5b9357bae4cc3fb016cedfbd02426c8d38c996a7b129bcc34"),
+    (*SHAPES[0][:2], "int32", "4ac055085e9db3a2202797f747b335ef2c8de6f9259584e4a1d08c8ea6e53608"),
+    ((2, 1, 64, 8), (2, 1, 64, 1), "float16", "6f5b50313a399954e1cdefef93016438ac924f043c14ada255fcca57e8da90b5"),
 ])
 def test_default_cpp_matches_recorded_prechange_bytes(left_shape, right_shape, dtype, digest):
-    # Recorded with the parent revision before row-Mul emission was added.
+    # Audited pre-RMS emitter a7279782427bef30a2ea45724d8184c58e16aaae;
+    # only the Data factory's newly allowed FP32 type differs in this change.
     graph = _graph(left_shape, right_shape, dtype)
     graph.name = "row_mul_identity"
     code = emit_cpp(graph)
-    assert hashlib.sha256(code.encode()).hexdigest() == digest
+    old_factory = code.replace("DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL, DT_FLOAT",
+                               "DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL")
+    assert hashlib.sha256(old_factory.encode()).hexdigest() == digest
     assert emit_cpp(graph, fp16_row_mul="native") == code
 
 

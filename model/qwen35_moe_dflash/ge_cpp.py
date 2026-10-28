@@ -17,7 +17,7 @@ from .ge_ir import DTYPES, Value
 from .ge_type_contracts import GE_DTYPE_IDS
 
 SCHEMA_SOURCE = "https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py"
-_DT = {"float16": "ge::DT_FLOAT16", "int32": "ge::DT_INT32", "int64": "ge::DT_INT64", "bool": "ge::DT_BOOL"}
+_DT = {"float16": "ge::DT_FLOAT16", "float32": "ge::DT_FLOAT", "int32": "ge::DT_INT32", "int64": "ge::DT_INT64", "bool": "ge::DT_BOOL"}
 
 
 def _q(text):
@@ -108,8 +108,8 @@ _HEADER = r'''// Generated host-only GE graph construction. Not an NPU implement
 // of the existing Data operation; it does not install or implement a kernel.
 namespace ge {
 REG_OP(Data)
-    .INPUT(x, TensorType({DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL}))
-    .OUTPUT(y, TensorType({DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL}))
+    .INPUT(x, TensorType({DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL, DT_FLOAT}))
+    .OUTPUT(y, TensorType({DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL, DT_FLOAT}))
     .ATTR(index, Int, 0)
     .OP_END_FACTORY_REG(Data)
 }  // namespace ge

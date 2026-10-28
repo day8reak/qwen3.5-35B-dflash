@@ -210,14 +210,26 @@ def test_six_layer_mmap_replay_reproduces_existing_fixture_bytes_and_restores_di
     from qwen35_moe_dflash.hashing import sha256_file
     root, manifest, _, _, _ = prepared
     fixture = tmp_path / 'retained-reference'
-    original = draft_reference.prepare_draft_reference(root, fixture, valid_length=3)
+    original = draft_reference.prepare_draft_reference(root, fixture, valid_length=3, run_reference=False)
     inputs = {row['name']: np.fromfile(fixture / row['path'], dtype=row['dtype']).reshape(row['shape'])
               for row in original['inputs']}
-    graph = draft_reference.load_draft_reference(root)
+    graph = draft_reference.load_draft_reference(root, rms_mode='legacy-fp16')
+    # Build an old-contract retained golden independently. New preparation uses
+    # FP32 RMS and must never be mistaken for the legacy replay oracle.
+    recorded_hidden = []
+    handle = graph.draft.norm.register_forward_hook(
+        lambda module, args, output: recorded_hidden.append(output[:, 1:, :].detach().clone()))
+    try:
+        with torch.inference_mode():
+            old_top1 = graph(*(torch.from_numpy(inputs[name]) for name in
+                               ('target_features', 'input_ids', 'attention_mask'))).numpy().tobytes()
+    finally:
+        handle.remove()
+    old_hidden = recorded_hidden[0].numpy().tobytes()
     dispatch = {name: module.ops for name, module in graph.named_modules() if hasattr(module, 'ops')}
     legacy, trace = replay_graph(graph, inputs, rms_mode='legacy-fp16')
-    assert legacy['draft_top1'].tobytes() == (fixture / original['expected_top1']['path']).read_bytes()
-    assert legacy['draft_hidden'].tobytes() == (fixture / original['expected_hidden']['path']).read_bytes()
+    assert legacy['draft_top1'].tobytes() == old_top1
+    assert legacy['draft_hidden'].tobytes() == old_hidden
     assert trace['validation']['status'] == 'PASSED'
     assert len(trace['rms_nodes']) == 26
     expected_names = {name for name, module in graph.named_modules() if isinstance(module, DFlashRMSNorm)}

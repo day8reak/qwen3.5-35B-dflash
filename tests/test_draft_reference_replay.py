@@ -118,6 +118,20 @@ def test_legacy_exact_gate_required_before_candidate_top1_match(replay_case):
     assert result['modes']['fp32-stats']['token_mismatches'] == 0
 
 
+@pytest.mark.parametrize('reference_kind',['PYTORCH_FP16_RMS_FP32','PYTORCH_FP16_AIR4B_PRECISION','UNKNOWN_REFERENCE'])
+def test_replay_refuses_nonlegacy_fixture_with_clear_compare_only_guidance(replay_case,reference_kind):
+    case = replay_case
+    case['reference']['reference'] = reference_kind
+    _bind(case)
+    before = _source_snapshot(case)
+    with pytest.raises(ValueError,match='legacy PYTORCH_FP16_PRIMITIVES.*Use --compare-only') as error:
+        _run(case)
+    assert reference_kind in str(error.value)
+    assert case['calls'] == []
+    assert not (case['job']/'reference-replay').exists()
+    assert _source_snapshot(case) == before
+
+
 def test_collapsed_legacy_golden_reproduces_and_candidate_stays_separate(replay_case):
     case = replay_case
     for index,key in enumerate(('expected_top1','expected_hidden')):

@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-DTYPES = {"float16": np.dtype("<f2"), "int32": np.dtype("<i4"),
+DTYPES = {"float16": np.dtype("<f2"), "float32": np.dtype("<f4"), "int32": np.dtype("<i4"),
           "int64": np.dtype("<i8"), "bool": np.dtype("?")}
 
 
@@ -45,7 +45,7 @@ class Graph:
 
     def _value(self, name, shape, dtype):
         if dtype not in DTYPES:
-            raise ValueError(f"unsupported dtype {dtype!r}; floating operations must be FP16")
+            raise ValueError(f"unsupported dtype {dtype!r}")
         shape = tuple(int(x) for x in shape)
         if any(x < 0 for x in shape):
             raise ValueError("direct GE graph requires static nonnegative shapes")

@@ -33,7 +33,9 @@ def job(tmp_path, monkeypatch):
         assert kwargs["valid_length"] == 6
         folder.mkdir()
         save_json(folder / "report.json", {"artifact_kind": "qwen35-draft-reference", "status": "REFERENCE_COMPLETE",
+                  "reference_contract": draft_reference.DRAFT_REFERENCE_CONTRACT,
                   "expected_top1": {"path": "top1.bin"}, "expected_hidden": {"path": "hidden.bin"}})
+        return json.loads((folder / "report.json").read_text())
 
     def file_record(path, root):
         return {"path": str(path.relative_to(root)), "bytes": path.stat().st_size,
@@ -632,7 +634,7 @@ def test_native_broadcast_air_rebuilds_after_board_failure_preserving_reference(
     invalidation, = result["resume_invalidations"]
     assert invalidation["reason"] == "OBSOLETE_DRAFT_EXPORT_CONTRACT"
     assert set(invalidation["components"]) == {"air", "compilation", "bundle"}
-    assert invalidation["required_export_contract"].endswith("mask-gather-v4")
+    assert invalidation["required_export_contract"].endswith("air4b-precision-v6")
     assert all(path.read_bytes() == content for path, content in before.items())
 
 

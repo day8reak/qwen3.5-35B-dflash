@@ -33,7 +33,7 @@ class RecipeReader:
         return self.take(self.number("I")).decode()
 
     def descriptor(self):
-        dtype = {1: "float16", 2: "int32", 3: "int64", 4: "bool"}[self.number("B")]
+        dtype = {1: "float16", 2: "int32", 3: "int64", 4: "bool", 5: "float32"}[self.number("B")]
         layout = {0: "ND", 1: "NCHW"}[self.number("B")] if self.version == 2 else None
         shape = tuple(self.number("q") for _ in range(self.number("I")))
         return {"shape": shape, "dtype": dtype, **({"format": layout} if layout else {})}
@@ -111,7 +111,7 @@ def _evaluate_recipe(records, outputs, feeds):
             assert len(payload) == size
             value = np.frombuffer(payload, dtype=DTYPES[output["dtype"]]).reshape(output["shape"])
         elif kind == "Cast":
-            cast_dtype = {1: "float16", 3: "int32", 9: "int64", 12: "bool"}[record["attrs"]["dst_type"]]
+            cast_dtype = {0: "float32", 1: "float16", 3: "int32", 9: "int64", 12: "bool"}[record["attrs"]["dst_type"]]
             assert cast_dtype == output["dtype"]
             value = args[0].astype(DTYPES[cast_dtype])
         elif kind == "BroadcastTo":

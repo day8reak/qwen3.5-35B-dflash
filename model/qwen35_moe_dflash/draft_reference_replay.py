@@ -151,7 +151,11 @@ def replay_reference(job_dir, output_dir, *, progress=None):
             or manifest.get('fixture_report_sha256')!=sha256_file(fixture_file)
             or reference.get('prepared_manifest_sha256')!=sha256_file(prepared_file)):
         raise ValueError('reference replay source manifests differ from retained execution')
-    if (reference.get('status')!='REFERENCE_COMPLETE' or reference.get('reference')!='PYTORCH_FP16_PRIMITIVES'
+    if reference.get('reference')!='PYTORCH_FP16_PRIMITIVES':
+        raise ValueError('reference replay diagnoses legacy PYTORCH_FP16_PRIMITIVES fixtures only; '
+                         'retained reference is '+repr(reference.get('reference'))+'. '
+                         'Use --compare-only to compare this fixture with its retained board outputs.')
+    if (reference.get('status')!='REFERENCE_COMPLETE'
             or plan.get('tiny') is not False or plan.get('draft_config')!=manifest.get('draft_config')
             or reference.get('draft_config')!=plan.get('draft_config')
             or reference.get('sequence_length')!=manifest.get('sequence_length')

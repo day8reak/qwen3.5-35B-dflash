@@ -524,10 +524,10 @@
     },
     "standalone_draft": {
       "entrypoint": "targets/cpro/scripts/run_full_draft.py",
-      "status": "DEVICE_EXECUTED_DEGENERATE_REFERENCE_REPLAY_PENDING",
+      "status": "AIR4B_PRECISION_ALIGNED_HOST_VALIDATED_DEVICE_RETRY_PENDING",
       "descriptor_probe": {
         "entrypoint": "targets/cpro/scripts/probe_draft_load.py",
-        "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --replay-reference",
+        "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --weight-storage embedded-stream --tbe-diagnosis \"$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis\"",
         "output": "${AI_RUN_DIR}/full-draft/load-diagnostic",
         "status": "SETTERS_MUTUALLY_EXCLUSIVE_USER_REPORTED",
         "observations": [
@@ -730,7 +730,37 @@
         "user_reported_latency_ms": 20,
         "repository_reported_latency_ms": 20.22,
         "timing_scope": "docs/RESULTS.md user-supplied Ascend310P synchronous OM C16/C64 mixed average; PASS_WITH_DIFFERENCES, ordinary token equality failed, quality unassessed",
-        "cpro_performance": "NOT_MEASURED"
+        "cpro_performance": "NOT_MEASURED",
+        "precision_audit": {
+          "commit": "90186732d915e8b058b2a053d205991d805eae76",
+          "rms": "FP32 normalization; cast before direct gamma",
+          "air_attention": "FP16 QK/PV operands and result boundaries; FP32 score scaling/mask/softmax; probability cast FP16 before PV; internal accumulation not proven by casts",
+          "rope": "FP32 angles/cos/sin followed by input-dtype cast",
+          "source_paths": [
+            "models/dflash_v1/dflash_ascend310p_ops.py",
+            "framework/python/qwen35_dflash/ascend310p/quant_factory.py",
+            "models/dflash_v1/modeling_dflash.py"
+          ],
+          "evidence_run": "20261028T120455Z-6764-8b00f2",
+          "cpro_alignment": "RMS, attention and RoPE explicit precision boundaries aligned; compiler/kernel accumulation and real device equivalence remain unverified",
+          "structure_audit": {
+            "evidence": "out/structure-audit/report.json",
+            "prefix_lengths": [
+              1,
+              6,
+              8
+            ],
+            "hidden_byte_equal": true,
+            "checkpoint_differences": [
+              "hidden 2560/2048",
+              "MLP 9216/6144",
+              "feature width 20480/16384",
+              "target depth/tap IDs",
+              "tied/untied embedding and head"
+            ],
+            "scope": "Same synthetic six-layer configuration, weights and common arithmetic; distinct checkpoint outputs are not expected equal"
+          }
+        }
       },
       "implementation": [
         "model/qwen35_moe_dflash/draft_standalone.py",
@@ -790,7 +820,7 @@
         "run_id": "20261028T021808Z-19662-fa8d34",
         "user_failure": "full-draft-74ea1f4240c0 missing target index before compilation"
       },
-      "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-v4",
+      "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-air4b-precision-v6",
       "broadcast_shape_candidate": {
         "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-broadcast-i32-v3",
         "status": "COMPILED_BUT_SAME_DEVICE_LOAD_FAILURE_USER_REPORTED",
@@ -1112,7 +1142,7 @@
         "interruption": "MIGRATION_JOURNAL_RECOVERY",
         "explicit_existing_output": "Auto-resume a recognized owned job in place",
         "explicit_new_output_with_resume": "Retain legacy independent output and references for compatibility",
-        "subsequent_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --replay-reference",
+        "subsequent_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --weight-storage embedded-stream --tbe-diagnosis \"$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis\"",
         "legacy_root_cleanup": "Not automatic; after successful self-contained adoption, the user may remove obsolete batch roots. Independent TBE diagnosis and unrelated tasks are outside this cleanup.",
         "disk_scope": "Avoids accumulating retry directories and copies during adoption; one compilation still needs input-snapshot/output space",
         "model_changes": "NONE",
@@ -1358,7 +1388,7 @@
       "reference_replay": {
         "run_id": "20261028T114628Z-5767-f04adf",
         "command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --replay-reference",
-        "status": "HOST_IMPLEMENTATION_DEVICE_OUTPUT_COMPARISON_PENDING",
+        "status": "USER_REPLAY_CONFIRMED_FP16_RMS_COLLAPSE",
         "modes": [
           "legacy-fp16",
           "fp32-stats"
@@ -1384,7 +1414,7 @@
         "new_compilation": "NOT_RUN",
         "new_reference_guard": "Reject finite but all-zero hidden instead of marking REFERENCE_COMPLETE",
         "upstream_scope": "Qwen3 RMS formula confirmed against Transformers v5.7.0; not a full BF16 upstream oracle",
-        "cause_status": "FP16 square overflow reproduced on a controlled tensor; actual full-draft stage awaits trace",
+        "cause_status": "Legacy byte-identical replay first collapses at layer0 post-attention RMS; FP32 normalization removes collapse but old board outputs still mismatch",
         "host_validation": {
           "unique_cases_passed": 286,
           "failures": 0,
@@ -1394,6 +1424,100 @@
             "out/draft-reference-replay-tests.xml"
           ],
           "scope": "CPU replay, six-layer legacy byte reproduction, RMS overflow intervention, exact retained input binding, evidence preservation and CLI regression; full remote replay is pending"
+        },
+        "user_result": {
+          "legacy_reproduced": true,
+          "first_collapse": "draft.layers.0.post_attention_layernorm",
+          "first_collapse_input_abs_max": 340.0,
+          "fp16_square_nonfinite": 27,
+          "newly_zero_rows": 9,
+          "fp32_new_collapse": null,
+          "token_mismatches": 12,
+          "hidden_relative_l2": 1.9395076956574235,
+          "fp32_hidden_l2": 175.27114010550085,
+          "device_hidden_l2": 357.4925270667643,
+          "numerical_validation": "FAILED"
+        }
+      },
+      "air4b_precision_update": {
+        "run_id": "20261028T120455Z-6764-8b00f2",
+        "command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --weight-storage embedded-stream --tbe-diagnosis \"$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis\"",
+        "status": "HOST_VALIDATED_DEVICE_RETRY_PENDING",
+        "export_contract": "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-air4b-precision-v6",
+        "reference_contract": "pytorch-fp16-air4b-precision-v3",
+        "normalization": "FP32 input, square, mean, epsilon, rsqrt and normalization product; cast to FP16 before unchanged direct gamma",
+        "scope": "RMS, attention and RoPE precision aligned to pinned4B AIR source; unchanged35B checkpoint and topology",
+        "resume_preserved": [
+          "prepared weights",
+          "exact fixture input identities"
+        ],
+        "rebuilt": [
+          "fixture",
+          "air",
+          "compilation",
+          "bundle",
+          "board"
+        ],
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
+        "saturation_hypothesis": "UNPROVEN",
+        "unit_gamma_invariant": {
+          "elements": 30720,
+          "expected_hidden_l2_approximately": 175.27121840165316,
+          "scope": "finite FP32 normalization, unit final gamma, small FP16 rounding; independent of preceding attention semantics"
+        },
+        "attention": "FP16 QK/PV operands and result boundaries; FP32 score scaling/mask/softmax; probability cast FP16 before PV; internal accumulation not proven by casts",
+        "rope": "FP32 angles/cos/sin followed by input-dtype cast",
+        "experience_audit": {
+          "captured": [
+            "CPU legacy replay distinguishes reference collapse from chip behavior",
+            "Actual AIR path differs from generic backend precision; audit the deployed path",
+            "Matched architecture does not imply interchangeable trained dimensions or weights",
+            "Reference and AIR contracts invalidate independently while binding exact inputs",
+            "Checkpoint config identity and current author code inspection do not lock the original runtime arithmetic; BF16/FA4 vs FP16 AIR requires separate quality validation"
+          ],
+          "updated_checks": [
+            "test_draft_reference.py",
+            "test_ge_draft_rms.py",
+            "test_ge_draft_attention_precision.py",
+            "test_ge_draft_rope_frequency.py",
+            "test_full_draft_rms_resume.py"
+          ],
+          "not_promoted": [
+            "NPU saturation hypothesis",
+            "310P latency as numerical accuracy evidence",
+            "Host source alignment as device pass"
+          ],
+          "next_validation": "Selected DDK compilation plus full six-layer device numerical comparison"
+        },
+        "host_validation": {
+          "reports": [
+            "ge-air4b-precision-final.xml",
+            "ge-final-emitter-integration.xml",
+            "out/air4b-precision-resume-tests.xml",
+            "out/air4b-workflow-regression.xml",
+            "out/air4b-ir-dtype-followup.xml"
+          ],
+          "unique_passed": 488,
+          "unique_skipped": 4,
+          "unresolved_failures": [],
+          "scope": "Host graph/recipe, resume and retained comparison; no actual selected DDK or board. Later dtype followup supersedes obsolete FP32 rejection assertion."
+        },
+        "original_35b_source_audit": {
+          "checkpoint_revision": "52cb554b4995dede3e2e1bdb129cdb1f3529332b",
+          "config_sha256": "20784b063040f7871efec4bf63342e5cb941907925943540176dfbb8aaf186dc",
+          "config_binding": "BYTE_IDENTICAL_TO_LOCAL_PIN",
+          "official_runtime": "BF16 SGLang with FA4 draft attention",
+          "bundled_dflash_py": false,
+          "author_source_snapshot": "z-lab/dflash@07ebd93db9f472af339b644bb70221ad8428328a/dflash/model.py",
+          "rms_and_rope": "FP32 computation and cast order match author Transformers reference formula; input dtype differs",
+          "attention_difference": "Author reference calls SDPA; AIR explicitly rounds QK/PV outputs to FP16; original BF16+FA4 behavior is not reproduced",
+          "source_version_limitation": "Checkpoint README pins neither author code nor SGLang version",
+          "conclusion": "DEPLOYMENT_CANDIDATE_NOT_UPSTREAM_NUMERICAL_EQUIVALENCE",
+          "evidence": [
+            "out/source35b-audit/report.json",
+            "out/original35b-source-audit"
+          ]
         }
       }
     }

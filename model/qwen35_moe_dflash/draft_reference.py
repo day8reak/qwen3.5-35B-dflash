@@ -2,8 +2,10 @@
 
 The complete draft and the target embedding/head are loaded; no target decoder
 is constructed. Synthetic target features test computation, not proposal quality.
-The primitive reference follows the existing GE FP16 boundaries, independently
-of GE graph evaluation, and is not the original BF16/FP32 upstream oracle.
+The current primitive reference follows the pinned 4B AIR precision policy:
+FP16 parameters/matmul boundaries, FP32 RMS normalization and attention
+score/softmax, and FP32 RoPE angles/trigonometry before an FP16 cast. It is
+independent of GE graph evaluation, not the original BF16 upstream oracle.
 """
 from __future__ import annotations
 
@@ -18,6 +20,10 @@ from .artifacts import checked_file, output_path, save_json
 from .config import Qwen35DFlashConfig
 from .ge_export import configurations, weight_identity
 from .hashing import sha256_file
+
+
+DRAFT_REFERENCE_CONTRACT = "pytorch-fp16-air4b-precision-v3"
+DRAFT_REFERENCE_KIND = "PYTORCH_FP16_AIR4B_PRECISION"
 
 
 def _validated_prepared(prepared_dir):
@@ -53,7 +59,15 @@ def _validated_prepared(prepared_dir):
     return root, plan, config, paths
 
 
-def _load_graph(config, paths):
+def _load_graph(config, paths, *, rms_mode="legacy-fp16"):
+    """Load the draft; the legacy default preserves retained-fixture replay.
+
+    New fixture preparation explicitly selects ``air4b-precision``. The legacy
+    default exists only so replay of historical FP16 primitive goldens remains
+    byte-exact; it is not the current golden-generation contract.
+    """
+    if rms_mode not in {"legacy-fp16", "fp32-stats", "air4b-precision"}:
+        raise ValueError("rms_mode must be legacy-fp16, fp32-stats or air4b-precision")
     # This module does not import Transformers or TorchAir. Setting the public
     # PyTorch autoload control before importing torch also avoids initializing
     # a vendor NPU backend in a host-only reference process.
@@ -66,16 +80,28 @@ def _load_graph(config, paths):
 
     class FP16Primitives(TorchDFlashOps):
         def rms_norm(self, x, weight, eps):
+            if rms_mode != "legacy-fp16":
+                return super().rms_norm(x, weight, eps)
             return (x * torch.rsqrt(x.square().mean(-1, keepdim=True) + eps)) * weight
 
         def attention(self, query, key, value, attention_mask, scale, key_value_groups):
             key = _repeat_kv(key, key_value_groups)
             value = _repeat_kv(value, key_value_groups)
-            scores = torch.matmul(query, key.transpose(-1, -2)) * scale
+            if rms_mode == "air4b-precision":
+                # Match AirDFlashOps default FP16 matmul operands and result
+                # before its explicit FP32 score/softmax consumers. This is
+                # not a claim about the target kernel's internal accumulator.
+                scores = torch.matmul(query.half(), key.half().transpose(-1, -2)).float()
+            else:
+                scores = torch.matmul(query, key.transpose(-1, -2))
+            scores = scores * scale
             if attention_mask is not None:
                 scores = torch.where(attention_mask, scores,
                                      torch.tensor(-float("inf"), dtype=scores.dtype, device=scores.device))
-            return torch.matmul(torch.softmax(scores, -1), value)
+            probabilities = torch.softmax(scores, -1)
+            if rms_mode == "air4b-precision":
+                return torch.matmul(probabilities.half(), value.half()).to(dtype=query.dtype)
+            return torch.matmul(probabilities, value)
 
     class FP16Rotary(nn.Module):
         def __init__(self, inverse):
@@ -91,7 +117,8 @@ def _load_graph(config, paths):
     # 2+ GiB parameter set. Private mmap storage remains writable to PyTorch,
     # while any accidental write cannot alter the hash-locked source file.
     draft = DFlashDraftModel(config, ops=FP16Primitives(), device="meta", dtype=torch.float16)
-    draft.rotary = FP16Rotary(draft.rotary.inv_freq)
+    if rms_mode != "air4b-precision":
+        draft.rotary = FP16Rotary(draft.rotary.inv_freq)
     embedding = nn.Embedding(config.vocab_size, config.hidden_size, device="meta", dtype=torch.float16)
     head = nn.Linear(config.hidden_size, config.vocab_size, bias=False, device="meta", dtype=torch.float16)
     graph = DraftGraph(draft, embedding, head)
@@ -113,13 +140,14 @@ def _load_graph(config, paths):
         parent = owner.get_submodule(parent_name) if parent_name else owner
         setattr(parent, attribute, nn.Parameter(tensor, requires_grad=False))
     graph.config = config
+    graph.reference_rms_mode = rms_mode
     return graph.eval()
 
 
-def load_draft_reference(prepared_dir):
-    """Load only prepared draft/embedding/head parameters on CPU using mmap."""
+def load_draft_reference(prepared_dir, *, rms_mode="air4b-precision"):
+    """Load the current CPU reference, or explicitly select historical RMS math."""
     _, _, config, paths = _validated_prepared(prepared_dir)
-    return _load_graph(config, paths)
+    return _load_graph(config, paths, rms_mode=rms_mode)
 
 
 def _write_tensor(root, name, array, index):
@@ -159,14 +187,18 @@ def prepare_draft_reference(prepared_dir, output_dir, *, seed=17, valid_length=N
               "sequence_length": sequence, "valid_length": valid_length, "seed": seed,
               "target_features_source": "SYNTHETIC_DIAGNOSTIC_NOT_TARGET_EXECUTION",
               "target_decoder": "NOT_CONSTRUCTED", "state_policy": "prefix-recompute",
-              "reference": "PYTORCH_FP16_PRIMITIVES", "precision": "float16", "device": "cpu",
+              "reference": DRAFT_REFERENCE_KIND, "reference_contract": DRAFT_REFERENCE_CONTRACT,
+              "rms_normalization": "FP32_NORMALIZE_CAST_FP16_THEN_DIRECT_SCALE",
+              "attention_precision": "FP16_MATMUL_FP32_SCORE_SOFTMAX_FP16_PV",
+              "rotary_precision": "FP32_ANGLES_COS_SIN_THEN_FP16",
+              "precision": "float16", "device": "cpu",
               "numerical_acceptance": {"top1_mismatches": 0, "hidden_threshold": "NOT_DEFINED"},
               "scope": "Complete draft computation diagnostic; not BF16 source quality, acceptance or speed evidence.",
               "inputs": [_write_tensor(root, name, array, i) for i, (name, array) in enumerate(inputs)],
               "expected_top1": None, "expected_hidden": None}
     try:
         if run_reference:
-            graph = _load_graph(config, paths)
+            graph = _load_graph(config, paths, rms_mode="air4b-precision")
             import torch
             captured = []
             handle = graph.draft.norm.register_forward_hook(

@@ -17,7 +17,7 @@ import struct
 
 from .ge_type_contracts import GE_DTYPE_IDS, validate_record_types
 
-_DT = {"float16": (1, 2), "int32": (2, 4), "int64": (3, 8), "bool": (4, 1)}
+_DT = {"float16": (1, 2), "int32": (2, 4), "int64": (3, 8), "bool": (4, 1), "float32": (5, 4)}
 _FORMATS = {"ND": 0, "NCHW": 1}
 _AT = {"int": 1, "float": 2, "bool": 3, "ints": 4, "dtype": 5, "string": 6}
 _MAX_OPS = 2_000_000
@@ -246,8 +246,8 @@ _CPP = r'''// Host GE construction recipe reader. No device or GE session initia
 // of the existing Data operation; it does not install or implement a kernel.
 namespace ge {
 REG_OP(Data)
-    .INPUT(x, TensorType({DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL}))
-    .OUTPUT(y, TensorType({DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL}))
+    .INPUT(x, TensorType({DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL, DT_FLOAT}))
+    .OUTPUT(y, TensorType({DT_FLOAT16, DT_INT32, DT_INT64, DT_BOOL, DT_FLOAT}))
     .ATTR(index, Int, 0)
     .OP_END_FACTORY_REG(Data)
 }  // namespace ge
@@ -295,10 +295,10 @@ class Reader {
   }
   Desc Descriptor(bool with_layout) {
     Desc d{}; d.dtype = Number<uint8_t>();
-    Require(d.dtype >= 1 && d.dtype <= 4, "unsupported recipe dtype");
+    Require(d.dtype >= 1 && d.dtype <= 5, "unsupported recipe dtype");
     if (with_layout) d.layout = Number<uint8_t>();
     Require(d.layout <= 1, "unsupported recipe descriptor format");
-    d.bytes = d.dtype == 1 ? 2 : d.dtype == 2 ? 4 : d.dtype == 3 ? 8 : 1;
+    d.bytes = d.dtype == 1 ? 2 : d.dtype == 2 || d.dtype == 5 ? 4 : d.dtype == 3 ? 8 : 1;
     auto rank = Count(16);
     Require(d.layout != 1 || rank == 4, "NCHW recipe descriptors require rank 4");
     for (uint32_t i = 0; i < rank; ++i) {
@@ -315,7 +315,7 @@ class Reader {
       case 2: a.scalar = Number<float>(); Require(std::isfinite(a.scalar), "nonfinite float attribute"); break;
       case 3: { auto b = Number<uint8_t>(); Require(b <= 1, "invalid boolean attribute"); a.boolean = b; break; }
       case 4: { auto n = Count(65536); for (uint32_t i = 0; i < n; ++i) a.integers.push_back(Number<int64_t>()); break; }
-      case 5: a.dtype = Number<uint8_t>(); Require(a.dtype >= 1 && a.dtype <= 4, "invalid dtype attribute"); break;
+      case 5: a.dtype = Number<uint8_t>(); Require(a.dtype >= 1 && a.dtype <= 5, "invalid dtype attribute"); break;
       case 6: a.text = Text(); break;
       default: throw std::runtime_error("invalid attribute tag");
     }
@@ -326,7 +326,7 @@ class Reader {
 bool Same(const Desc& a, const Desc& b) { return a.dtype == b.dtype && a.layout == b.layout && a.shape == b.shape; }
 int64_t GEDTypeId(uint8_t code) {
   // These are GE enum IDs, not the Q35GE001 descriptor tags.
-  switch (code) { case 1: return 1; case 2: return 3; case 3: return 9; case 4: return 12; }
+  switch (code) { case 1: return 1; case 2: return 3; case 3: return 9; case 4: return 12; case 5: return 0; }
   throw std::runtime_error("unknown dtype");
 }
 const Attr& FindAttr(const Record& op, const std::string& name, uint8_t type) {
@@ -418,7 +418,7 @@ void VerifyDataFactory() {
   prototype.BreakConnect();
 }
 ge::DataType DType(uint8_t code) {
-  switch (code) { case 1: return ge::DT_FLOAT16; case 2: return ge::DT_INT32; case 3: return ge::DT_INT64; case 4: return ge::DT_BOOL; }
+  switch (code) { case 1: return ge::DT_FLOAT16; case 2: return ge::DT_INT32; case 3: return ge::DT_INT64; case 4: return ge::DT_BOOL; case 5: return ge::DT_FLOAT; }
   throw std::runtime_error("unknown dtype");
 }
 ge::Format Format(uint8_t code) {

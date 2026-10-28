@@ -6,20 +6,25 @@
 
 ## 用户现在执行什么
 
-**设备执行已经通过；当前先修复退化参考，直接用保留文件做一次CPU重放与板端结果对照：**
+**旧参考的FP16 RMS溢出已复现；现已将GE与CPU参考的精度边界对齐4B实际AIR路径。更新后执行一次完整draft：**
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --replay-reference
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --weight-storage embedded-stream \
+  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
 ```
 
-最新离线复核已核验本次输出身份：设备hidden的30,720个元素全部有限，30,711个非零，范围[-9.5,10.171875]；旧参考hidden全部为零，15个Top1也全为0，与板端15个ID全不匹配。26份norm权重均有限且非全零，最终norm/hidden_norm的scale均为1。当前参考已经退化，不能用它单独判定板端计算正确或错误。
+用户的离线重放逐字节复现了旧golden：首次塌缩位于 `draft.layers.0.post_attention_layernorm`，输入绝对最大值340、FP16平方出现27个非有限元素，9行变成全零。仅将RMS改为FP32后所有26个norm均无新零行，hidden恢复有限非零；与旧板端仍有12个Top1差异，hidden相对L2=1.9395076956574235，因此精度尚未通过。
 
-新入口复用prepared权重和已执行的精确输入，先重放旧FP16 primitive参考并核对旧golden，再仅将RMS归一化计算改为FP32做第二次CPU对照。每个RMS节点记录输入、FP16平方及输出的有限值/零行统计，用来定位首次溢出或非零输入塌缩。其余注意力、RoPE、权重和输入不改；不构造target、不调用HDC、不编译或上传OMC。
+最终norm的2,048个scale均为1。正确FP32归一化后的30,720个hidden元素L2约为sqrt(30720)=175.271218；新参考175.271140符合，旧板端357.492527明显不符合。这确认旧设备最终输出不满足该归一化约束；具体设备FP16溢出如何处理尚未观察，不将饱和机制猜测当作事实。
 
-两轮输出、逐层trace和比较报告保存在固定 `full-draft/reference-replay`，原fixture、bundle和board证据保持不变。第二轮会直接比较已回收板端的Top1和hidden，不需要再单独运行比较命令。旧参考若不能精确复现，或新输出非有限/退化，不会据此宣布参考修复。即使Top1匹配，hidden仍按现有未定义阈值报告，完整BF16源模型精度、语言质量及性能都未验收。
+对齐依据为4B `feature/gdr-chunk-verify` 的固定提交 `90186732d915e8b058b2a053d205991d805eae76`：全部26处RMS在FP32中归一化、转FP16后乘原scale；attention保持FP16 QK/PV矩阵乘结果边界，score缩放、mask和softmax使用FP32，概率转FP16后进入PV；RoPE角度和cos/sin使用FP32，完成后转FP16。内部矩阵乘累加精度不能仅从Cast推断。35B的权重、六层拓扑、输入和完整词表保持原样。
 
-Qwen3的RMSNorm在FP32中计算归一化，转回输入精度后乘直接scale；与当前diagnostic FP16平方不同，见[Transformers v5.7.0实现](https://github.com/huggingface/transformers/blob/6ffbb07f93d9e44457450d1150136309b0dc966b/src/transformers/models/qwen3/modeling_qwen3.py#L50)。FP16平方溢出是已复现的实现风险，完整draft具体发生位置以本次trace为准。新生成的参考若hidden全零将明确失败，不再只检查finite。
+与35B原版的区别已单独核验：[官方固定版本](https://huggingface.co/z-lab/Qwen3.5-35B-A3B-DFlash/blob/52cb554b4995dede3e2e1bdb129cdb1f3529332b/README.md)为BF16、SGLang/FA4；本次是FP16部署候选。RMS/RoPE的计算顺序符合作者参考源码，但不能将显式FP16 QK/PV边界视为SDPA/FA4内部数值复现，源模型质量验证仍需独立完成。
+
+续跑仍使用固定 `full-draft` 目录，保留prepared权重；自动使旧fixture、AIR、编译与bundle失效，重新生成参考和OMC并执行一次板端比较。新输入的字节哈希必须与旧fixture相同。采用已经执行成功的embedded-stream封装，无需原始target checkpoint。旧 `reference-replay` 小报告保留供诊断，但原阶段目录按固定工作区规则替换。
+
+GE导出契约更新为 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-air4b-precision-v6`，参考契约为 `pytorch-fp16-air4b-precision-v3`。本次修正的实际DDK编译、板端执行与数值一致仍待上述命令验证，不提前宣布通过。`--compare-only`仍可复核当前板端结果；`--replay-reference`仅用于旧FP16参考诊断。
 
 [独立 draft 指南](draft-standalone.md)保留完整模型入口。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
@@ -44,7 +49,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 原生失败保存在 `board/results/result.json`、`board/comparison.json` 与 `board/draft.stderr`。错误回传已修正：保留原生失败原因，单独记录传输/证据问题，运行失败时不要求成功输出bin。此前 `a091f16d13d8` 的嵌套OMC输出路径问题已修复。
 
-4B参考已按用户指定更正为 `feature/gdr-chunk-verify`、提交 `9018673`。该分支记录六层FP16 draft为20.22 ms/次（310P、C16/C64混合均值）；源码包含合并K/V、gate/up投影和增量缓存。先完成当前独立draft的板端输出验证，再按这版迁移图结构与缓存，性能须在Cpro重新测量。
+4B和35B draft均为六层DFlash、block16、前五层sliding attention加最后一层full attention，但checkpoint配置不同：hidden为2560/2048，MLP为9216/6144，target feature宽度为20480/16384，embedding/head分别共享/不共享。不能替换35B的训练宽度或权重。使用同一小配置、权重及公共运算测试两套结构，三组prefix的完整六层hidden逐字节相同。4B分支记录20.22 ms/次（310P、C16/C64混合均值），同时标注PASS_WITH_DIFFERENCES；这个速度不证明全部数值一致。合并投影与增量缓存属于后续优化，Cpro性能需重新测量。
 
 ## 保留的 target 编译与诊断
 
