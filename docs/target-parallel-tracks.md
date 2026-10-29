@@ -34,6 +34,8 @@ python3 -c 'import torch, torch_npu; print("npu_available:", torch.npu.is_availa
 
 `SOURCE_READY`只说明资源头/小源码就绪，不检查这一厂商依赖。若上面为False或导入失败，先保留结果，不加载完整模型；应核对原导出环境/原转换资源，不能把失败解释成模型精度问题。
 
+用户已回传原机该检查为`True`，NPU可见性已确认；继续保持同一原导出环境，运行上方资源预检。该结果不代替TorchAir/原自定义算子兼容性或实际导出结果。
+
 返回`SOURCE_READY`且原导出依赖与输出空间可用后，可直接在原机执行，无需再等待一次确认：
 
 ```bash
