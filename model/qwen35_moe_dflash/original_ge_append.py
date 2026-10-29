@@ -162,7 +162,7 @@ def inspect_original_ge_source(*, source_root=None, source_receipt_path=None, so
         except (OSError, ValueError) as error:
             errors.append({"path": str(source_receipt_path), "error": f"{type(error).__name__}: {error}"})
     try:
-        audit = audit_source(receipt or {})
+        audit = audit_source(receipt or {}, source_root=source_root)
     except (ValueError, TypeError) as error:
         audit = {"status": "SOURCE_AUDIT_INPUT_UNAVAILABLE", "error": f"{type(error).__name__}: {error}"}
     rows = audit.get("files", (receipt or {}).get("files", []))
@@ -175,6 +175,11 @@ def inspect_original_ge_source(*, source_root=None, source_receipt_path=None, so
             "matches_expected_bytes_sha256": actual.get("sha256") == expected,
             "receipt_occurrences": len(matches),
             "line_endings": diagnostics.get(name, {"status": "NOT_AVAILABLE_FROM_RECEIPT_OR_UNREADABLE_SOURCE"})})
+        if audit.get("source_revision_evidence", {}).get("status") == "VERIFIED_ACTUAL_SIX_FILE_SOURCE_ROOT":
+            accepted = {row["path"]: row for row in audit["source_revision_evidence"]["files"]}.get(name)
+            if accepted:
+                comparison[-1]["reviewed_documentation_revision_sha256"] = accepted["sha256"]
+                comparison[-1]["matches_reviewed_documentation_revision"] = actual.get("sha256") == accepted["sha256"]
         if "python_ast" in comparison[-1]["line_endings"]:
             comparison[-1]["python_ast"] = comparison[-1]["line_endings"].pop("python_ast")
     audit["comparison"] = comparison
@@ -317,7 +322,7 @@ def append_original_ge_features(air, output, *, torchair_pb2, gamma_template, se
         direct_paths = [cpp, Path(compiler).resolve(), Path(torchair_pb2).resolve(),
                         include / "graph/graph.h", include / "graph/operator.h", include / "graph/types.h",
                         lib / "libgraph.so", Path(__file__)]
-        for name in ("original_ge_append_cpp.py", "original_ge_append_wire.py", "original_ge_append_validation.py",
+        for name in ("original_ge_append_cpp.py", "original_ge_append_wire.py", "original_ge_append_validation.py", "original_ge_target.py",
                      "original_ge_taps.py", "original_air_roundtrip.py", "original_air_inspect.py", "air_schema.py", "omc_wire.py"):
             direct_paths.append(Path(__file__).with_name(name))
         if (lib / "libgraph_base.so").is_file():

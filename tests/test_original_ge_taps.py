@@ -16,6 +16,7 @@ from qwen35_moe_dflash.original_ge_taps import plan_original_ge_taps
 from test_air_schema import ge_descriptor, pb2
 from test_draft_ir_inspect import _attr, _blob, _desc, _int
 from test_original_air_inspect import selected, _node, _scalar_node
+from test_original_ge_target import documentation_case
 
 
 TEMPLATE = "./glm_export_air_cpro_40block_55_quant/model_model_layers_{layer}_input_layernorm_weight"
@@ -242,3 +243,16 @@ def test_changed_source_revision_and_incomplete_metadata_cannot_create_plan(repo
     assert "SOURCE_AUDIT_REQUIRED" in codes(result)
     graph(report)["file_constants"]["shown"] -= 1
     assert "FULL_FILECONSTANT_METADATA_REQUIRED" in codes(plan(report))
+
+
+def test_known_documentation_source_is_rechecked_from_actual_root_before_tap_binding(report_factory, documentation_case):
+    from qwen35_moe_dflash import original_ge_target as ge
+    root, _, _ = documentation_case
+    report = report_factory()
+    audit = ge.audit_source(ge.source_receipt(root), source_root=root)
+    result = plan_original_ge_taps(report, audit, TEMPLATE, sequence_length=55)
+    assert result["status"] == "FEATURE_BRANCH_PLAN_REVIEW_REQUIRED", result
+    assert result["source_to_air_revision"] == "UNVERIFIED"
+    (root / "utils.py").write_bytes((root / "utils.py").read_bytes() + b"# changed after first source audit\n")
+    result = plan_original_ge_taps(report, audit, TEMPLATE, sequence_length=55)
+    assert "SOURCE_AUDIT_REQUIRED" in codes(result) and result["taps"] == []

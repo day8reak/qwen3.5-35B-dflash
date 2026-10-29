@@ -81,8 +81,124 @@ def _snapshot(source, destination):
             "snapshot_stat": _stat(destination)}
 
 
-def _input_inventory(air):
+def _reuse_input_inventory(air):
+    """Select exactly the sidecars bound by a completed local reuse receipt.
+
+    Only small AIR/JSON metadata is hashed here. Payload hashes are checked
+    against the existing independent snapshot hash, avoiding a second complete
+    pre-snapshot read of the weights.
+    """
+    marker = air.parent / "reuse-receipt.json"
+    if not os.path.lexists(marker):
+        return None
+    from .target_export_reuse import (_directory, _inventory, _named_stat,
+                                      _read_small, _reject_constant, _unique_object)
+    raw, receipt_identity = _read_small(marker, 32 << 20)
+    receipt = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+    if (not isinstance(receipt, dict) or receipt.get("artifact_kind") != "qwen35-target-export-reuse"
+            or receipt.get("status") != "STAGED_HARDLINKS" or receipt.get("mode") != "APPLY"
+            or receipt.get("required_compile_input_layout") != "air-directory"
+            or receipt.get("weight_payload_validation") != "INITIAL_AND_FINAL_STREAMED_SHA256_MATCHED"
+            or receipt.get("output") != str(air.parent) or receipt.get("staged_air") != str(air)
+            or air.name != "export.air"):
+        raise ValueError("adjacent reuse receipt does not bind this completed local AIR staging task")
+    manifest_path = air.parent / "inventory.json"
+    raw_inventory, inventory_identity = _read_small(manifest_path, 32 << 20)
+    if any(inventory_identity[key] != receipt.get("inventory", {}).get(key) for key in ("bytes", "sha256")):
+        raise ValueError("staged inventory differs from the reuse receipt")
+    manifest, planned, prefix = _inventory(raw_inventory)
+    if prefix != receipt.get("source_relative_prefix") or len(planned) + 1 > _MAX_FILES:
+        raise ValueError("reuse receipt sidecar prefix/count differs from its inventory")
+    _, air_identity = _read_small(air, 64 << 20)
+    if any(air_identity[key] != expected.get(key) for expected in (manifest["air"], receipt.get("air", {}))
+           for key in ("bytes", "sha256")):
+        raise ValueError("staged AIR differs from the reuse receipt/inventory")
+    rows = receipt.get("files")
+    if not isinstance(rows, list) or len(rows) != len(planned):
+        raise ValueError("reuse receipt sidecar list is incomplete")
+    recorded = {}
+    for row in rows:
+        relative = row.get("relative_path") if isinstance(row, dict) else None
+        if not isinstance(relative, str) or relative in recorded:
+            raise ValueError("reuse receipt has ambiguous sidecar paths")
+        recorded[relative] = row
+    def identity_stat(identity):
+        return [identity[key] for key in ("device", "inode", "bytes", "mtime_ns", "ctime_ns")]
+    expected_files = {air.name: {"bytes": air_identity["bytes"], "sha256": air_identity["sha256"],
+                                 "source_stat": identity_stat(air_identity["stat"])}}
+    files = [air]
+    folder = air.parent / prefix
+    with _directory(folder) as descriptor:
+        actual_names = set()
+        with os.scandir(descriptor) as entries:
+            for entry in entries:
+                if len(actual_names) >= _MAX_ENTRIES:
+                    raise ValueError("reuse sidecar directory exceeds bounded entry limit")
+                if not entry.is_file(follow_symlinks=False) or entry.is_symlink():
+                    raise ValueError("reuse sidecar directory must contain only direct regular non-symlink files")
+                actual_names.add(entry.name)
+        if actual_names != {row["basename"] for row in planned}:
+            raise ValueError("reuse sidecar directory has missing or unrecorded files")
+        for row in planned:
+            relative = row["relative_path"]
+            saved = recorded.get(relative, {})
+            if (saved.get("status") != "HARDLINKED_AND_REHASHED"
+                    or any(saved.get(key) != row[key] for key in ("basename", "bytes", "sha256"))
+                    or saved.get("final_sha256") != row["sha256"]
+                    or _named_stat(descriptor, row["basename"]) != saved.get("staged_stat")):
+                raise ValueError("reuse sidecar identity differs from its completed receipt: " + row["basename"])
+            path = air.parent / relative
+            files.append(path)
+            expected_files[relative] = {"bytes": row["bytes"], "sha256": row["sha256"],
+                                        "source_stat": identity_stat(saved["staged_stat"])}
+    if set(recorded) != set(expected_files) - {air.name}:
+        raise ValueError("reuse receipt contains unrecorded sidecar paths")
+    guards = []
+    for path, identity in ((marker, receipt_identity), (manifest_path, inventory_identity)):
+        guards.append({"path": str(path), "sha256": identity["sha256"],
+                       "source_stat": identity_stat(identity["stat"])})
+    binding = {"status": "RECEIPT_BOUND_SELECTION", "source_relative_prefix": prefix,
+               "receipt": receipt_identity, "inventory": inventory_identity,
+               "expected_files": expected_files, "metadata_guards": guards,
+               "sidecar_directory": {"path": str(folder), "source_stat": _stat(folder)},
+               "payload_verification": "REQUIRES_EXISTING_SNAPSHOT_SHA256_MATCH_NO_EXTRA_PAYLOAD_HASH",
+               "schema_scope": "Inventory selected-schema identity retained; no schema is inferred or loaded by this scanner"}
+    if _recheck_reuse_binding(binding):
+        raise ValueError("reuse receipt/inventory identity changed during selection")
+    return [air, *sorted(path for path in files if path != air)], [], binding
+
+
+def _recheck_reuse_binding(binding):
+    changed = []
+    for row in binding.get("metadata_guards", []):
+        path = Path(row["path"])
+        try:
+            same = (not path.is_symlink() and _stat(path) == row["source_stat"]
+                    and sha256_file(path) == row["sha256"])
+        except OSError:
+            same = False
+        if not same:
+            changed.append(path.name)
+    directory = binding.get("sidecar_directory")
+    if directory:
+        path = Path(directory["path"])
+        try:
+            same = not path.is_symlink() and _stat(path) == directory["source_stat"]
+        except OSError:
+            same = False
+        if not same:
+            changed.append("reuse sidecar directory")
+    return changed
+
+
+def _input_inventory(air, *, reuse_binding=None):
     """Include extensionless TorchAir weights within bounded sibling/data roots."""
+    reused = _reuse_input_inventory(air)
+    if reused is not None:
+        files, skipped, binding = reused
+        if reuse_binding is not None:
+            reuse_binding.update(binding)
+        return files, skipped
     parent = air.parent
     files, skipped, visited = [air], [], 0
     directories = _DATA_DIRECTORIES | {air.name + ".data", air.stem + "_weights", air.stem + "_data"}
@@ -380,6 +496,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         },
     }
     compatibility = None
+    reuse_binding = {}
     if tbe_diagnosis is not None:
         compatibility = {"diagnosis": str(Path(tbe_diagnosis).resolve()),
                          "compiler_invocation": "NOT_ATTEMPTED", "compile": "NOT_RUN",
@@ -412,7 +529,11 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                                                        output / "tbe-compat", inherited=env)
             compatibility.update(metadata=metadata, audit={"status": "NOT_OBSERVED"})
         stage = "input-snapshot"
-        selected, skipped = _input_inventory(air)
+        selected, skipped = _input_inventory(air, reuse_binding=reuse_binding)
+        if reuse_binding:
+            if input_layout != "air-directory":
+                raise ValueError("receipt-bound reused target requires input_layout=air-directory")
+            report["external_weights"]["reuse_binding"] = reuse_binding
         if any(staged_relative(source).parts[0] == "model"
                or staged_relative(source).parts[0].startswith("model.")
                for source in selected):
@@ -435,6 +556,9 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
             notify(stage, "Snapshotting input", completed=index, total=len(selected),
                    source_relative=str(relative), bytes=source.stat().st_size)
             row = _snapshot(source, snapshot)
+            expected = reuse_binding.get("expected_files", {}).get(str(relative))
+            if expected is not None and any(row[key] != expected[key] for key in ("bytes", "sha256", "source_stat")):
+                raise ValueError("input snapshot differs from receipt-bound SHA256: " + str(relative))
             row.update(path=str(snapshot.relative_to(output)), source_relative=str(relative),
                        role="air" if source == air else "neighbor_data_candidate")
             report["input_snapshots"].append(row)
@@ -442,6 +566,13 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                 report["air"] = {"path": str(air), "bytes": row["bytes"], "sha256": row["sha256"]}
         save_json(output / "input-inventory.json", {"files": report["input_snapshots"],
                                                     "external_weights": report["external_weights"]})
+        if reuse_binding and _recheck_reuse_binding(reuse_binding):
+            raise ValueError("reuse receipt/inventory identity changed during input snapshot")
+        if reuse_binding and any(_stat(source) != reuse_binding["expected_files"][str(source.relative_to(air.parent))]["source_stat"]
+                                 for source in selected):
+            raise ValueError("receipt-bound AIR/sidecar identity changed during input snapshot")
+        if reuse_binding:
+            reuse_binding["payload_verification"] = "ALL_SELECTED_SNAPSHOT_SHA256_MATCHED_RECEIPT"
         command = [str(omg), "--framework=1", f"--model={inputs / air.name}",
                    "--output=model", "--target=omc", "--platform=kirinx90"]
         command.extend(f"--{name}={value}" for name, value in options.items())
@@ -518,6 +649,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                 error = exc
                 report.update(stage="artifact-inventory", error=report["artifact_inventory_error"])
         changed = []
+        if reuse_binding:
+            changed.extend(_recheck_reuse_binding(reuse_binding))
         for row in report["input_snapshots"]:
             try:
                 if (_stat(Path(row["source"])) != row["source_stat"]

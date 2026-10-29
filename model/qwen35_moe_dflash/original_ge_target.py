@@ -6,6 +6,7 @@ here. A tap is a structural candidate, never proof of source equivalence.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import math
@@ -28,6 +29,15 @@ SOURCE_SHA256 = {
     "utils.py": "67eac2adba648d0a8f6f35e31bffc7745ca7fc9480eaefe6603a8b7c5dc2c6c9",
 }
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
+DOCUMENTATION_REVISION_POLICY = "original-cpro-known-documentation-revision-v1"
+_DOCUMENTATION_REVISION = {
+    "models/export_model_wrapper_qwen3_5_moe.py": {
+        "bytes": 21332, "sha256": "dd4f45cd0964b144523193bfca847fdeacbb2d49ef8a4665dd607a2e215e6517",
+        "ast_sha256": "412cf36e028374a548383d5b2c4418425e596bd33bf7fe472c736efdfde5786e"},
+    "utils.py": {
+        "bytes": 26664, "sha256": "92b09abb29b5cc9dbb2ffa4f6049a0806a443f85bb0501122e135356fe7c6b10",
+        "ast_sha256": "c797c9f8564dd284ea078009f3f088b5732bf7f26793b7aaee94dbc1ab079681"},
+}
 
 
 def _identity(path):
@@ -76,7 +86,54 @@ def source_receipt(source_root):
     return {"source": "READ_ONLY_SIX_SOURCE_FILES", "files": rows}
 
 
-def audit_source(receipt):
+def _documentation_revision(rows, changed, source_root):
+    """One exact reviewed revision, never a generic AST equivalence policy."""
+    evidence = {"policy": DOCUMENTATION_REVISION_POLICY, "status": "NOT_APPLICABLE",
+        "scope": "Specific reviewed documentation revision only; source-to-AIR revision remains UNVERIFIED"}
+    if changed != sorted(_DOCUMENTATION_REVISION):
+        return evidence
+    identities = {row["path"]: {key: row[key] for key in ("bytes", "sha256")} for row in rows}
+    if any(identities[name] != {key: expected[key] for key in ("bytes", "sha256")}
+           for name, expected in _DOCUMENTATION_REVISION.items()):
+        evidence.update(status="REJECTED", reason="EXACT_DOCUMENTATION_REVISION_BYTES_OR_SHA_DIFFER")
+        return evidence
+    if source_root is None:
+        evidence.update(status="REJECTED", reason="ACTUAL_SOURCE_ROOT_REQUIRED; RECEIPT_ONLY_IS_INSUFFICIENT")
+        return evidence
+    try:
+        root = Path(source_root).expanduser().resolve()
+        rehashed = source_receipt(root)
+        if {row["path"]: {key: row[key] for key in ("bytes", "sha256")} for row in rehashed["files"]} != identities:
+            raise ValueError("actual six-file source receipt differs from supplied identities")
+        verified = []
+        for name, expected in _DOCUMENTATION_REVISION.items():
+            path = root / name
+            before = _identity(path)
+            with path.open("rb") as stream:
+                raw = stream.read((1 << 20) + 1)
+            if (_identity(path) != before or len(raw) != expected["bytes"]
+                    or hashlib.sha256(raw).hexdigest() != expected["sha256"]):
+                raise ValueError("documentation source bytes changed during bounded AST read: " + name)
+            tree = ast.parse(raw)
+            digest = hashlib.sha256(ast.dump(tree, include_attributes=False).encode()).hexdigest()
+            if digest != expected["ast_sha256"]:
+                raise ValueError("known documentation revision AST differs: " + name)
+            verified.append({"path": name, "bytes": len(raw), "sha256": expected["sha256"], "ast_sha256": digest})
+        # Recheck every source file after the two AST reads as one binding.
+        if source_receipt(root) != rehashed:
+            raise ValueError("one of the six source files changed during documentation review")
+        evidence.update(status="VERIFIED_ACTUAL_SIX_FILE_SOURCE_ROOT", source_root=str(root),
+            actual_six_files_rehashed=True, files=verified,
+            other_python_sources="EXACT_AUDITED_RAW_SHA256",
+            wrapper_review="Exact reconstructed raw revision: one load_npu_model docstring index-name correction; execution statements unchanged",
+            utils_review="Exact listed raw revision plus whole AST equal to the audited original",
+            computed_semantics="Reviewed static source statements only; no target weights, AIR revision, numerical or device proof")
+    except (OSError, ValueError, SyntaxError, TypeError, RecursionError) as error:
+        evidence.update(status="REJECTED", reason=f"{type(error).__name__}: {error}"[:512])
+    return evidence
+
+
+def audit_source(receipt, *, source_root=None):
     if receipt.get("artifact_kind") == "qwen35-original-target-feature-source":
         sources = receipt.get("source_files")
         if not isinstance(sources, dict):
@@ -97,8 +154,12 @@ def audit_source(receipt):
             raise ValueError("invalid or duplicate original source receipt")
         actual[name] = digest
     changed = sorted(name for name, digest in actual.items() if name.endswith(".py") and digest != SOURCE_SHA256[name])
-    return {"status": "MATCHED_AUDITED_SOURCE_RECEIPTS" if not changed else "UNSUPPORTED_SOURCE_REVISION",
+    documentation = _documentation_revision(rows, changed, source_root)
+    matched = not changed or documentation["status"] == "VERIFIED_ACTUAL_SIX_FILE_SOURCE_ROOT"
+    return {"status": "MATCHED_AUDITED_SOURCE_RECEIPTS" if matched else "UNSUPPORTED_SOURCE_REVISION",
             "files": rows, "different_files": changed,
+            "source_revision": DOCUMENTATION_REVISION_POLICY if changed and matched else "AUDITED_ORIGINAL" if not changed else "UNSUPPORTED",
+            "source_revision_evidence": documentation,
             "receipt_selection": receipt_selection,
             "configuration": {"path": "config/qwen3_5_moe.yaml",
                 "sha256": actual["config/qwen3_5_moe.yaml"],

@@ -8,6 +8,8 @@
 
 当前DDK机沿用成功draft导出的主机GE/CANN环境。源目录应为上传的原始5py+YAML，不能指向A已经改过wrapper的派生源码：
 
+已定位用户上传版本的两处文件身份变化：wrapper只修正loader文档字符串中的变量名，按此唯一修改重构的完整文件SHA精确匹配用户文件；utils的完整AST与原审计版本一致。入口仅为这份精确SHA/大小/AST的已知版本增加实际源码复核，必须使用`--source-root`，不接受仅receipt声明，也不放行任意其它修改。此核验不证明原源码与55档AIR的导出revision相同。
+
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/append_original_ge_features.py" \
@@ -16,10 +18,10 @@ python3 "$REPO_DIR/targets/cpro/scripts/append_original_ge_features.py" \
   --source-root /home/w00949577/qwen3.5-35B-moe \
   --gamma-template './glm_export_air_cpro_40block_55_quant/model_model_layers_{layer}_input_layernorm_weight' \
   --sequence-length 55 --ge-root "$CANN_ROOT" \
-  --output "$AI_RUN_DIR/target-ge/features"
+  --output "$AI_RUN_DIR/target-ge/features" --retry
 ```
 
-若当前机没有原源码，可把`--source-root ...`替换为`--source-receipt "$AI_RUN_DIR/target-pytorch-transfer/source-receipt.json"`；该小文件来自A准备阶段，代码审计只选择其中原source_files，不把派生wrapper当原source。
+`--retry`只归档并重试自身已记录、尚未进行GE构建的source-only失败；已有构图或产物时拒绝复用。若使用原始精确版本，仍可用其六文件receipt替代`--source-root`；当前这份文档修正版本必须实读源码，不能用receipt替代。
 
 本次仍使用原AIR的静态55量序；没有把输入或控制值改成64/1。OMG动态档和运行状态连续性后续单独验证。
 

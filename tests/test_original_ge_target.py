@@ -23,6 +23,71 @@ def receipt():
     return {"files": [{"path": name, "bytes": 100, "sha256": digest} for name, digest in ge.SOURCE_SHA256.items()]}
 
 
+@pytest.fixture
+def documentation_case(tmp_path, monkeypatch):
+    """A declared synthetic baseline models the one reviewed paired revision."""
+    root = tmp_path / "known-source"
+    wrapper = "models/export_model_wrapper_qwen3_5_moe.py"
+    baseline = {wrapper: b'def load_npu_model():\n    """index j+start_idx"""\n    return 1\n',
+                "utils.py": b"def scale(x):\n    return x + 1\n"}
+    variants = {wrapper: baseline[wrapper].replace(b"j+start_idx", b"j+start_layer_idx"),
+                "utils.py": b"# reviewed documentation revision\n" + baseline["utils.py"]}
+    import ast
+    for name in ge.SOURCE_SHA256:
+        original = baseline.get(name, b"value = 0\n")
+        monkeypatch.setitem(ge.SOURCE_SHA256, name, hashlib.sha256(original).hexdigest())
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(variants.get(name, original))
+    for name, raw in variants.items():
+        monkeypatch.setitem(ge._DOCUMENTATION_REVISION, name, {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+            "ast_sha256": hashlib.sha256(ast.dump(ast.parse(raw), include_attributes=False).encode()).hexdigest()})
+    return root, baseline, variants
+
+
+def test_only_exact_reviewed_pair_with_actual_six_source_reads_is_accepted(documentation_case):
+    root, _, _ = documentation_case
+    value = ge.source_receipt(root)
+    before = deepcopy(value)
+    rejected = ge.audit_source(value)
+    assert rejected["status"] == "UNSUPPORTED_SOURCE_REVISION"
+    assert "ACTUAL_SOURCE_ROOT_REQUIRED" in rejected["source_revision_evidence"]["reason"]
+    accepted = ge.audit_source(value, source_root=root)
+    assert accepted["status"] == "MATCHED_AUDITED_SOURCE_RECEIPTS"
+    assert accepted["source_revision"] == ge.DOCUMENTATION_REVISION_POLICY
+    assert accepted["different_files"] == sorted(ge._DOCUMENTATION_REVISION)
+    evidence = accepted["source_revision_evidence"]
+    assert evidence["status"] == "VERIFIED_ACTUAL_SIX_FILE_SOURCE_ROOT"
+    assert evidence["actual_six_files_rehashed"] and len(evidence["files"]) == 2
+    assert "UNVERIFIED" in evidence["scope"]
+    assert value == before and accepted["files"] == before["files"]
+
+
+@pytest.mark.parametrize("mutation", ["ast", "arbitrary_same_ast", "mixed_revision", "other_python", "receipt_bytes", "stale_receipt"])
+def test_documentation_revision_is_not_a_generic_ast_or_receipt_whitelist(documentation_case, monkeypatch, mutation):
+    root, baseline, _ = documentation_case
+    value = ge.source_receipt(root)
+    if mutation == "ast":
+        changed = dict(ge._DOCUMENTATION_REVISION["utils.py"], ast_sha256="a" * 64)
+        monkeypatch.setitem(ge._DOCUMENTATION_REVISION, "utils.py", changed)
+    elif mutation == "arbitrary_same_ast":
+        (root / "utils.py").write_bytes((root / "utils.py").read_bytes() + b"\n# an unreviewed extra comment\n")
+        value = ge.source_receipt(root)
+    elif mutation == "mixed_revision":
+        (root / "utils.py").write_bytes(baseline["utils.py"])
+        value = ge.source_receipt(root)
+    elif mutation == "other_python":
+        (root / "export_glm_model_qwen3_5_moe.py").write_bytes(b"value = 1\n")
+        value = ge.source_receipt(root)
+    elif mutation == "receipt_bytes":
+        next(row for row in value["files"] if row["path"] == "utils.py")["bytes"] += 1
+    elif mutation == "stale_receipt":
+        (root / "models/modeling_qwen3_5_moe_hiai_cpro.py").write_bytes(b"value = 1\n")
+    rejected = ge.audit_source(value, source_root=root)
+    assert rejected["status"] == "UNSUPPORTED_SOURCE_REVISION"
+    assert rejected["source_revision"] == "UNSUPPORTED"
+
+
 def feature_source_receipt():
     return {"artifact_kind": "qwen35-original-target-feature-source",
         "source_files": {row["path"]: dict(row, path="/original/" + row["path"]) for row in receipt()["files"]},

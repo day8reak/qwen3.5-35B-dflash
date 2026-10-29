@@ -15,6 +15,7 @@ from qwen35_moe_dflash.original_ge_target import SOURCE_SHA256
 from test_draft_ir_inspect import _attr, _blob, _desc, _int
 from test_original_air_inspect import _node, selected
 from test_original_ge_taps import TEMPLATE, op, report_factory
+from test_original_ge_target import documentation_case
 
 
 def _padding(raw, *, first_path="./absent_weights/padding_0"):
@@ -88,8 +89,9 @@ def harness(tmp_path, monkeypatch, report_factory):
     monkeypatch.setattr(append, "_logged", logged)
     monkeypatch.setattr(append, "probe_original_air_roundtrip", roundtrip)
     def run(name="output", **options):
+        sources = {"source_root": options.pop("source_root")} if "source_root" in options else {"source_receipt_path": receipt}
         return append.append_original_ge_features(air, tmp_path / name, torchair_pb2=schema,
-            gamma_template=TEMPLATE, sequence_length=55, source_receipt_path=receipt, ge_root=tool, **options)
+            gamma_template=TEMPLATE, sequence_length=55, ge_root=tool, **sources, **options)
     return {"run": run, "air": air, "schema": schema, "receipt": receipt, "tool": tool,
             "tmp": tmp_path, "calls": calls, "hooks": hooks}
 
@@ -118,6 +120,23 @@ def test_complete_chain_reaches_publication_but_never_claims_compile_device_accu
     assert not list((harness["tmp"] / "output").rglob("padding_0"))
     retained = json.loads((harness["tmp"] / "output/result.json").read_text())
     assert retained["status"] == result["status"]
+
+
+def test_known_documentation_revision_flows_through_append_and_tap_reaudit(harness, documentation_case):
+    root, _, _ = documentation_case
+    inspected = append.inspect_original_ge_source(source_root=root)
+    assert inspected["status"] == "SOURCE_AUDIT_MATCHED", inspected
+    assert len(inspected["source_audit"]["different_files"]) == 2
+    reviewed = [row for row in inspected["source_audit"]["comparison"] if row.get("matches_reviewed_documentation_revision")]
+    assert len(reviewed) == 2 and all(row["matches_expected_bytes_sha256"] is False for row in reviewed)
+    result = harness["run"](source_root=root)
+    assert result["status"] == "FEATURE_AIR_EXPORTED", result
+    assert result["tap_plan"]["status"] == "FEATURE_BRANCH_PLAN_REVIEW_REQUIRED"
+    assert result["source_preservation"] == "UNCHANGED_SIX_SOURCE_FILES"
+    assert result["source_to_air_revision"].startswith("UNVERIFIED")
+    retained = json.loads((harness["tmp"] / "output/source-receipt.json").read_text())
+    assert retained == inspected["source_receipt"]
+    assert result["source_audit"]["files"] == inspected["source_receipt"]["files"]
 
 
 @pytest.mark.parametrize("gate", ["source", "plan", "native", "wire", "validation", "roundtrip", "post_roundtrip_validation"])

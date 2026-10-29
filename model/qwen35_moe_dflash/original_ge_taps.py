@@ -10,7 +10,7 @@ from collections import Counter
 from copy import deepcopy
 import re
 
-from .original_ge_target import LAYER_IDS, _port, _proven_scalar_one, _unresolved_producer_shapes, audit_source
+from .original_ge_target import DOCUMENTATION_REVISION_POLICY, LAYER_IDS, _port, _proven_scalar_one, _unresolved_producer_shapes, audit_source
 
 
 class _Pending(ValueError):
@@ -216,7 +216,10 @@ def plan_original_ge_taps(air_report, source_audit, gamma_template, *, sequence_
               and "{" not in gamma_template.replace("{layer}", "") and "}" not in gamma_template.replace("{layer}", ""),
               "EXPLICIT_EXACT_GAMMA_TEMPLATE_REQUIRED")
         _need(isinstance(source_audit, dict) and source_audit.get("status") == "MATCHED_AUDITED_SOURCE_RECEIPTS", "SOURCE_AUDIT_REQUIRED")
-        verified_source = audit_source({"files": source_audit.get("files")})
+        revision = source_audit.get("source_revision_evidence", {})
+        source_root = revision.get("source_root") if (revision.get("policy") == DOCUMENTATION_REVISION_POLICY
+            and revision.get("status") == "VERIFIED_ACTUAL_SIX_FILE_SOURCE_ROOT") else None
+        verified_source = audit_source({"files": source_audit.get("files")}, source_root=source_root)
         _need(verified_source["status"] == "MATCHED_AUDITED_SOURCE_RECEIPTS", "SOURCE_AUDIT_REQUIRED")
         _need(air_report.get("artifact_kind") == "qwen35-original-air-inspection"
               and air_report.get("source_preservation") == "UNCHANGED_BY_STAT"
