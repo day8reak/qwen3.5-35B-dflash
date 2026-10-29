@@ -10,9 +10,32 @@ target采用用户原PyTorch量化工程，经原TorchAir入口导出AIR，再�
 
 原AIR没有draft所需的8层hidden。不能从logits或80个cache状态反推这些特征；本轮需原源码追加输出，生成一份新的target AIR/OMC。
 
+## 当前低磁盘安排
+
+执行服务器只有约10GB空闲，用户确认没有原HF/量化检查点，但原导出机仍有这些资源。当前主安排是把需要大检查点的PyTorch导出留在原机；能使用同版本Cpro DDK时，OMG及其大scratch/output也在原机或独立大盘完成。当前服务器保留已有原AIR、外置权重、draft bundle和执行工具。
+
+| 资源 | 安排 |
+| --- | --- |
+| `model_file` HF目录 | 留原导出机，供原loader使用 |
+| `quanted_pth`量化目录 | 留原导出机，保持原量化版本 |
+| 原INT8 embedding表 | 连续生成需查行；可单独传约485MiB |
+| 原FP32逐词scale表 | 可单独传约0.947MiB |
+| 新feature AIR | 原机导出，附引用和校验清单；复用现有源sidecars须逐项校验 |
+| 新OMC及编译权重 | 重新编译并绑定；scratch/output放有容量的原机/大盘，部署时避免本机再缓存整套副本 |
+
+两张embedding表的量级来自248320词×2048 INT8及每词一个FP32 scale，实际文件仍需核对。当前draft prepared只保留FP16 embedding，不能无损恢复原INT8+scale。完整HF/quant目录不因为上传6份源码而成为当前服务器导出的必需搬运项；改在原机使用它们。
+
+当前服务器原AIR和外置权重在：
+`/home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/`。
+保持该目录内容和旧证据不变。先使用[当前只读命令](current-status.md#用户现在执行什么)核对AIR结构和控制输入，再确定源sidecar复用或新产物部署。原机同版本DDK可用性仍待确认；仅有TorchAir时，需要给OMG另找大scratch/output空间，不能直接在10GB剩余空间中重启整模编译。
+
+直接加载原AIR并追加输出也是候选。公开GE有[读取AIR图的接口](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/ascendgraphapi/atlasgeapi_07_0018.html)，但这不证明当前私有Cpro AIR与所选schema/库兼容，也不证明8层hidden可唯一定位。必须先检查实际文件；本轮工具只有只读观察，没有AIR writer，不把OMC容器或解码字典直接写回AIR。
+
+原AIR源sidecar和新OMC的编译权重是两套绑定：追加features可能改变OMG分区和packing，旧OMC的`SubGraph_#.weight`不能直接替换新产物。新AIR在原机导出时也可能重新写整套sidecar；原机应为该输出留容量，或在验证后采用单独的复用流程。目前没有“重导出但自动零复制全部权重”的实现。
+
 ## 上传到执行服务器
 
-用户指定源码目录：`/home/w00949577/qwen3.5-35B-moe`。只需上传原快照的以下6个文件，保持相对目录：
+用户指定源码审查目录：`/home/w00949577/qwen3.5-35B-moe`。源码可保留用于审查；当前不在该服务器调用完整检查点导出。原机导出需要的最小源文件同样是以下6个文件，保持相对目录：
 
 ```text
 export_glm_model_qwen3_5_moe.py
@@ -45,7 +68,7 @@ config引用四个外部原始资源，需映射为该服务器真实路径，�
 
 **先只传小源码包，不重复传大权重或AIR/OMC。** 原loader实际先读HF权重，再覆盖量化参数；仅有量化文件不能推断原target已完整加载。缺少HF参数时原代码仅打印Missing，可能保留初始化值，因此在确认现有权重完整性前不要启动导出。需要保持原定制`torch_npu`/TorchAir环境，源码包不包含这些依赖。
 
-完成路径核对后再按[当前命令](current-status.md#用户现在执行什么)运行准备器，以免准备后修改config造成恢复身份失效。
+准备器应在原权重机器、路径核对完成后运行，以免准备后修改config造成恢复身份失效。当前服务器使用页首只读AIR检查，不因源码已上传而启动完整检查点导出。
 
 ## 派生源码与第82路输出
 
@@ -57,11 +80,11 @@ config引用四个外部原始资源，需映射为该服务器真实路径，�
 
 原私有快照不修改，源码不进入GitHub；准备阶段不读或复制权重、AIR、OMC。派生源码、config、导出脚本和原文件SHA记录在任务的`receipt.json`。未知源码结构、已修改的派生源码或部分任务不会被覆盖。
 
-在当前已配置原TorchAir环境的服务器中，先执行[当前命令](current-status.md#用户现在执行什么)的源码准备和控制输入只读检查。原工程路径不同，仅替换`--source-root`；config路径先映射到服务器已有的原权重，保持原权重内容不变。
+在原权重机器已有的原TorchAir环境中使用准备器；设置原机的独立AI_RUN_DIR，源码根目录使用原机实际路径，config继续指向原始资源。当前服务器不承担这一完整检查点加载步骤。
 
 准备产物的`export.sh`会从派生源码目录调用原入口，保持 `mode=export quant_mode=enable num_hidden_layers=40 seq_len=55 topK=16`。这与原AIR的导出形状一致，编译仍选64/1动态档。脚本拒绝覆盖已存在的导出目录；它尚未在本轮实际执行，TorchAir及设备仍待验证。
 
-仅在原权重路径和磁盘预算确认后执行一次导出：
+以下导出命令仅在原权重机器、路径和磁盘预算确认后执行一次：
 
 ```bash
 bash "$AI_RUN_DIR/original-target-features/export.sh"
@@ -79,7 +102,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_full_target.py" \
   --input-dir /home/w00949577/run_35B/chunksize_64_data
 ```
 
-这是新target的一次构建命令，当前不要求立即启动。已有完整编译任务时用`--resume "$AI_RUN_DIR/full-target-features"`继续，配合`--target-features --inspect-only`或`--run-board`；不重新编译。默认无`--target-features`的旧81路接口保持严格校验。新接口只接受末路FP16 `[1,T,16384]`；仅该轴为`-1`时按请求档位解析，固定64不会被推断成支持1。
+以上是新target的一次构建命令示例，OMG和输出应放在有容量、同版本DDK的构建机器；`--run-board`只在该机已有可用HDC和实际输入时使用，否则先只编译后另行部署。当前10GB服务器不立即启动该任务。已有完整编译任务时用`--resume "$AI_RUN_DIR/full-target-features"`继续，配合`--target-features --inspect-only`或`--run-board`；不重新编译。默认无`--target-features`的旧81路接口保持严格校验。新接口只接受末路FP16 `[1,T,16384]`；仅该轴为`-1`时按请求档位解析，固定64不会被推断成支持1。
 
 ## 连续状态与运行时输入
 

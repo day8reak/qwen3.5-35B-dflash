@@ -2188,6 +2188,18 @@
       "hardware_layout": "NOT_I4ZN_OR_QPARAM",
       "device_ready": false,
       "scope": "Optional fallback only; preserve raw HF norm weights, validate resumed source/output hashes; no full-model quantized target execution."
+    },
+    "storage_split": {
+      "source": "USER_CONFIRMED_2026_10_29",
+      "execution_server_free_gb_approx": 10,
+      "source_weight_machine_available": true,
+      "current_server_original_air": "/home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/export.air",
+      "external_air_weights_present": "USER_CONFIRMED",
+      "hf_and_quant_checkpoints": "KEEP_ON_ORIGINAL_WEIGHT_MACHINE",
+      "runtime_embedding_tables_mib_approx": 485.947265625,
+      "new_compile_output": "ORIGINAL_MACHINE_OR_INDEPENDENT_LARGE_SCRATCH_NOT_ASSUMED_TO_FIT_10GB",
+      "same_ddk_on_original_machine": "AWAITING_USER",
+      "direct_air_extension": "CANDIDATE_ONLY_REQUIRES_ACTUAL_GRAPH_AND_LOSSLESS_EDIT_PROOF"
     }
   },
   "delivery_timebox": {
@@ -2205,7 +2217,7 @@
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Prepare guarded derived original exporter and inspect actual small runtime-control files before new real-feature AIR/OMC build; preserve any active target task",
+    "next_target_action": "Inspect existing AIR and actual controls read-only; perform feature export on original weight machine and place OMG scratch/output on a sufficiently large same-DDK build machine",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone"
   },
   "execution_smoke": {

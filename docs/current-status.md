@@ -12,32 +12,31 @@
 
 这只解决当前固定合成 target-feature fixture 的 Top1，不代表真实特征、多轮或语言质量精度已经通过。`production_equivalence=DIFFERENT` 比较的是旧失败设备模型，不能误读成这次 Top1 失败。保留 `residual-fix/{result.json,compiled-output-abi.json,board/comparison.json,bundle/}`，端到端使用这份模型。**当前不重跑 draft 导出、OMG、打包或残差候选。**
 
-### target：沿用原量化 PyTorch 工程，追加真实特征
+### target：大权重留原导出机，当前服务器先只读核对
 
-目标模型主线是用户原40层量化模型：原 PyTorch/TorchAir 导出 → AIR → OMG → OMC。不是自建GE替代target，也不重新生成69GB FP16 target。现有原AIR含完整词表单位置logits和80状态，能作为逐token串行verify模型，但没有8层features。用户选择本轮补真实特征，不使用占位特征连接。
+用户已确认：执行服务器没有HF/量化检查点和embedding原表，约剩10GB；原导出机仍能登录且原权重保留。当前服务器已有原AIR和外置权重：
+`/home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/`。
 
-本机已找到原工程快照，并确认实际 Cpro wrapper 的decoder loop。新增准备器只复制约162KB的5个源码文件和原config到任务目录，在原loop后捕获层 `(1,6,11,16,22,27,32,37)`，追加第82路 `FP16[1,T,16384]`，原81路顺序保留；原权重、量化和计算语句保留。40层/40组状态/80状态输出不足即拒绝。原快照不修改，私有源码不上传GitHub。
+**调整此前方案：HF和量化检查点留在原机器。** 带8层真实features的PyTorch导出优先放原机执行；若可用同版本Cpro DDK，OMG编译和大临时目录也放原机或独立大盘。上传的小源码可用于审查，当前服务器不执行依赖完整检查点的PyTorch导出。原target仍为完整40层量化模型，不用自建FP16 target替代。
 
-原工程需先上传到 `/home/w00949577/qwen3.5-35B-moe`，最小清单和解压校验见[源码上传](original-target-features.md#上传到执行服务器)。先将YAML四个权重路径映射到服务器现有原始资源，再准备派生源码；准备完成后更改config会被身份检查拒绝。**这一步不复制权重、不导出AIR、不运行OMG**：
+执行服务器后续只需原INT8 embedding和FP32逐词scale两张表，用于连续token输入。按完整248320词表、hidden2048、每词一个scale计算，共约485.95MiB；draft prepared只有FP16表，不能据此恢复原INT8+scale。先确认原文件的实际大小和SHA，再传这两张原表，HF和量化检查点保持原位置。
+
+新AIR复用当前外置权重前，必须核对其FileConstant引用、dtype、shape、字节数和SHA；相同文件名不能作为一致证据。新OMC的分区/packing可能改变，编译权重仍需重新生成并绑定，不能套用旧OMC的SubGraph权重。**只传小AIR不等于新编译没有大磁盘开销**；10GB不作为足够的保证。
+
+当前先更新代码，只读检查已有AIR结构和实际控制输入。这两个命令不导出、不编译、不上板、不读外置权重：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/prepare_original_target_features.py" \
-  --source-root /home/w00949577/qwen3.5-35B-moe \
-  --output "$AI_RUN_DIR/original-target-features"
-```
-
-服务器原工程位置不同时，仅将 `--source-root` 换为实际原导出工程。YAML中路径可指向现有原始资源，保持原权重内容和量化版本；不要指向本项目的HF重建导出器。准备器结构不匹配会在生成前停止，已完成的同源任务可复用，不覆盖变更或失败证据。
-
-再只读核对已有实际运行输入中的控制量，便于接通64→1状态推进；若已有真实decode输入目录也用同一入口 `--sequence-length 1` 核对：
-
-```bash
+python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
+  --air /home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/export.air
 python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_inputs.py" \
   --input-dir /home/w00949577/run_35B/chunksize_64_data \
   --sequence-length 64
 ```
 
-原源码只提供导出dummy输入，`conv_state_pos` 等运行时语义还需实际样本/生成器确认。不能把导出时全零控制量当连续解码默认值。真实特征target的AIR/OMC必须重新导出/编译一次；先完成上述小文件检查和磁盘预算，不重复启动已有target任务。具体后续命令及接口见[原 target 真实特征接入](original-target-features.md)。
+AIR检查器只报告所选schema下可证明的结构；不能解析或边界不匹配就明确标记，不修改原AIR或猜8层节点。直接扩展原AIR作为省空间候选，需实际图、40层锚点和无损读写证明，当前未实现或验证。原机从源码导出仍是已有host验证的接口路线。磁盘分工和原机准备入口见[原target真实特征接入](original-target-features.md#当前低磁盘安排)。
+
+原源码导出dummy控制量不能当连续解码默认值，`conv_state_pos`等语义仍需实际样本/原生成器/DDK核对。真实features及64→1状态接续尚无完整设备证据；本轮不使用占位features。
 
 ### 端到端第一轮的验证范围
 
