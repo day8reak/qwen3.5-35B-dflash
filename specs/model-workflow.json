@@ -424,7 +424,8 @@
     },
     "existing_original_air": {
       "implementation": "model/qwen35_moe_dflash/existing_air.py",
-      "status": "SIDECAR_STAGING_HOST_TESTED_REMOTE_RETRY_PENDING",
+      "status": "CONTINUATION_AND_CONTRACT_HOST_TESTED_INTERNAL_TARGET_EXECUTION_PENDING",
+      "continuation_evidence": "specs/original-target-workflow.json",
       "profile": "cpro-40block-64-1",
       "contract_source": "USER_PROVIDED_ORIGINAL_OMG_COMMAND",
       "declared_inputs": 89,
@@ -463,7 +464,7 @@
       },
       "input_layout": "export-directory",
       "sidecar_selection": "Bounded neighboring known-suffix and nonhidden extensionless regular files; symlinks skipped",
-      "next_action": "Update repository and rerun the same compile_full_target.py command; inspect snapshot file count and layout before actual OMG compilation",
+      "next_action": "Original-target lane runs in a separate user window. Old full-target outputs were deleted per user; confirm source AIR/weights and process state, then compile once with a declared full-target output and source-root. Reuse only complete validated jobs with --resume; close native RefData/gear/external-weight contract before prefill/decode.",
       "sidecar_staging_validation": {
         "run_id": "20261028T004816Z-16432-ffea8e",
         "passed": 73,

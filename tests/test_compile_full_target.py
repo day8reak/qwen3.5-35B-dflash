@@ -165,3 +165,27 @@ def test_optional_inspection_cannot_relabel_successful_compile(cli, monkeypatch,
     assert result["status"] == "COMPILED"
     assert result["interface_inspection"] == "UNAVAILABLE"
     assert result["device_execution"] == "NOT_RUN"
+
+
+@pytest.mark.parametrize("board_status", ["EXECUTED_UNVALIDATED", "FAILED"])
+def test_original_tool_failure_or_missing_reference_never_relabels_model_compilation_or_accuracy(cli, monkeypatch, board_status):
+    from qwen35_moe_dflash import original_target_board
+    main, _, output = cli
+    monkeypatch.setattr(sys, "argv", [*sys.argv[:-1], "--run-board", "--input-dir", str(output.parent / "original-inputs")])
+    monkeypatch.setattr(existing_air, "compile_existing_air", lambda *a, **k: {
+        "status": "COMPILED", "model_compilation": "PASSED", "omc": {"path": "generated/model.omc"}})
+    seen = []
+    def execute(compilation, contract, destination, **options):
+        assert compilation == output / "compilation"
+        assert contract == output / "target-contract/report.json"
+        assert options["gear"] == 64 and options["host_input_dir"].endswith("original-inputs")
+        seen.append(destination)
+        return {"status": board_status, "device_execution": "FAILED" if board_status == "FAILED" else "EXECUTED_OUTPUTS_RETRIEVED",
+                "numerical_validation": "NOT_RUN_NO_REFERENCE", "error": "simulated tool failure"}
+    monkeypatch.setattr(original_target_board, "execute_target_tool", execute)
+    assert main() == (1 if board_status == "FAILED" else 0)
+    result = json.loads((output / "result.json").read_text())
+    assert seen == [output / "board"]
+    assert result["status"] == "COMPILED" and result["model_compilation"] == "PASSED"
+    assert result["board_status"] == board_status and result["numerical_validation"] == "NOT_RUN_NO_REFERENCE"
+    assert result["device_ready"] is False
