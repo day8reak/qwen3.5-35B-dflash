@@ -189,6 +189,93 @@ def test_static_retry_cannot_be_confused_with_completed_job_resume(cli, monkeypa
     assert failure.value.code == 2 and not output.exists()
 
 
+def _successor_cli(cli, monkeypatch, *, gates=True):
+    from qwen35_moe_dflash.existing_air_profile import get_existing_air_profile
+    main, air, output = cli
+    prior = output.parent / "failed-static64"
+    prior.mkdir()
+    (prior / "result.json").write_text(json.dumps({"air": str(air), "status": "FAILED",
+        "retained_failed_job": str(output.parent / "original-dual")}))
+    (prior / "compile-profile.json").write_text(json.dumps(get_existing_air_profile("cpro-40block-prefill-64")))
+    argv = [sys.argv[0], "--retry-static-prefill-from", str(prior), "--profile", "cpro-40block-prefill-64",
+        "--input-layout", "air-directory", "--target-features", "--skip-inspection", "--output", str(output)]
+    if gates:
+        argv += ["--tmpdir-probe", str(output.parent / "probe"), "--stop-receipt", str(output.parent / "stop")]
+    monkeypatch.setattr(sys, "argv", argv)
+    return main, air, output, prior
+
+
+def test_successor_requires_probe_and_stop_before_creating_output_or_compiling(cli, monkeypatch, capsys):
+    main, _, output, _ = _successor_cli(cli, monkeypatch, gates=False)
+    monkeypatch.setattr(existing_air, "compile_existing_air", lambda *a, **k: pytest.fail("gate failure cannot compile"))
+    assert main() == 1 and not output.exists()
+    assert "--tmpdir-probe and --stop-receipt" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("kind", ["raise", "not_passed"])
+def test_successor_failed_or_incomplete_gate_precedes_all_compiler_work(cli, monkeypatch, kind):
+    from qwen35_moe_dflash import target_retry_gate
+    main, _, output, _ = _successor_cli(cli, monkeypatch)
+    def check(*args, **kwargs):
+        if kind == "raise":
+            raise ValueError("old driver still running")
+        return {"status": "BLOCKED"}
+    monkeypatch.setattr(target_retry_gate, "validate_static_retry_gate", check)
+    monkeypatch.setattr(existing_air, "compile_existing_air", lambda *a, **k: pytest.fail("gate failure cannot compile"))
+    assert main() == 1 and not output.exists()
+
+
+def test_successor_verified_gate_is_retained_and_new_static_attempt_uses_original_air(cli, monkeypatch):
+    from qwen35_moe_dflash import target_retry_gate
+    main, air, output, prior = _successor_cli(cli, monkeypatch)
+    gate = {"status": "PREFLIGHT_PASSED", "metadata_bindings": [], "model_compilation": "NOT_RUN"}
+    checked, calls = [], []
+    def validate(job, **options):
+        checked.append(job)
+        assert job == prior and options == {"tmpdir_probe": str(output.parent / "probe"), "stop_receipt": str(output.parent / "stop")}
+        return gate
+    def compile_air(source, destination, ddk, **options):
+        calls.append(source)
+        assert source == air and options["reuse_failed_job"] == str(prior)
+        assert options["dynamic_dims"] is None and "-1" not in options["input_shape"]
+        assert json.loads((output / "retry-preflight.json").read_text()) == gate
+        return {"status": "COMPILED", "model_compilation": "PASSED", "omc": {"path": "generated/model.omc"}}
+    monkeypatch.setattr(target_retry_gate, "validate_static_retry_gate", validate)
+    monkeypatch.setattr(existing_air, "compile_existing_air", compile_air)
+    assert main() == 0 and checked == [prior] and calls == [air]
+    assert json.loads((output / "result.json").read_text())["retry_preflight"]["status"] == "PREFLIGHT_PASSED"
+
+
+def test_successor_rechecks_gate_metadata_immediately_before_compiler(cli, monkeypatch):
+    from qwen35_moe_dflash import artifacts, target_retry_gate
+    from qwen35_moe_dflash.target_export_reuse import _read_small
+    main, _, output, _ = _successor_cli(cli, monkeypatch)
+    proof = output.parent / "bound-probe-report.json"
+    proof.write_text('{"status":"PROBE_PASSED"}')
+    identity = _read_small(proof, 1024)[1]
+    gate = {"status": "PREFLIGHT_PASSED", "metadata_bindings": [identity]}
+    monkeypatch.setattr(target_retry_gate, "validate_static_retry_gate", lambda *a, **k: gate)
+    saved = artifacts.save_json
+    def change_after_gate(path, value):
+        saved(path, value)
+        if Path(path).name == "retry-preflight.json":
+            proof.write_text('{"status":"TAMPERED"}')
+    monkeypatch.setattr(artifacts, "save_json", change_after_gate)
+    monkeypatch.setattr(existing_air, "compile_existing_air", lambda *a, **k: pytest.fail("changed proof must not compile"))
+    assert main() == 1
+    assert "preflight metadata changed" in json.loads((output / "failure.json").read_text())["error"]
+    assert proof.read_text() == '{"status":"TAMPERED"}'
+
+
+@pytest.mark.parametrize("extra", [["--tmpdir-probe", "probe"], ["--tmpdir-probe", "probe", "--stop-receipt", "stop"]])
+def test_retry_gate_flags_reject_unrelated_or_incomplete_invocations(cli, monkeypatch, extra):
+    main, _, output = cli
+    monkeypatch.setattr(sys, "argv", [*sys.argv, *extra])
+    with pytest.raises(SystemExit) as failure:
+        main()
+    assert failure.value.code == 2 and not output.exists()
+
+
 @pytest.mark.parametrize("failure", ["import", "inspection"])
 def test_optional_inspection_cannot_relabel_successful_compile(cli, monkeypatch, failure):
     main, _, output = cli

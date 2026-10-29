@@ -436,3 +436,129 @@ def test_journal_write_failure_prevents_link_and_preserves_failure_evidence(case
     assert not destination.exists()
     assert plan.evidence["snapshot_attempts"][0]["status"] == "FAILED"
     assert plan.audit()["status"] == "FAILED"
+
+
+@pytest.fixture
+def static_case(case):
+    """A complete first-static failure built through the actual sharing API."""
+    plan = _prepare(case)
+    copied = _snapshots(case, plan)
+    for row, original in zip(copied, case["rows"]):
+        row.update({key: original[key] for key in ("path", "source_relative", "role")})
+    audit = json.loads(json.dumps(plan.audit()))
+    assert audit["status"] == "PASSED"
+    original_job = case["job"]
+    current_job, current_compilation = case["output"].parent, case["output"]
+    report = json.loads(json.dumps(case["report"]))
+    report.update(output=str(current_compilation), input_snapshots=copied,
+                  requested_options=retry._options(case["profile"], static=True),
+                  retained_input_reuse=audit, returncode=-15)
+    outer = dict(case["outer"], output=str(current_job), retained_failed_job=str(original_job),
+        input_snapshot_reuse={"status": "PASSED", "explicit_weight_copy_bytes": 0,
+            "report": str(current_compilation / "retained-input-reuse.json")})
+    _write(current_job / "compile-profile.json", get_existing_air_profile("cpro-40block-prefill-64"))
+    _write(current_compilation / "retained-input-reuse.json", audit)
+    _write(current_compilation / "input-inventory.json", {"files": copied})
+    command = json.loads((case["compilation"] / "compile-command.json").read_text())
+    command["argv"] = command["argv"][:6]
+    command["argv"][2] = "--model=" + str(current_compilation / copied[0]["path"])
+    command["argv"].extend(f"--{key}={value}" for key, value in report["requested_options"].items())
+    command["cwd"] = str(current_compilation / "compile-work/generated")
+    _write(current_compilation / "compile-command.json", command)
+    _write(current_compilation / "tbe-compatibility-result.json", report["tbe_compatibility"])
+    output = case["tmp"] / "successor-job/compilation"
+    output.mkdir(parents=True)
+    current = dict(case, ancestor_job=original_job, ancestor_compilation=case["compilation"],
+        job=current_job, compilation=current_compilation, generated=current_compilation / "compile-work/generated",
+        rows=copied, report=report, outer=outer, audit=audit, output=output)
+    _save(current)
+    return current
+
+
+def _save_static_audit(case):
+    case["report"]["retained_input_reuse"] = case["audit"]
+    _write(case["compilation"] / "retained-input-reuse.json", case["audit"])
+    _save(case)
+
+
+def test_audited_static_successor_preserves_both_prior_aliases_and_all_receipt_bytes(static_case):
+    c = static_case
+    old = {path: path.read_bytes() for job in (c["job"], c["ancestor_job"])
+           for path in job.rglob("*") if path.is_file() and path.suffix in {".json", ".jsonl"}}
+    sources = {path: retry._identity(path) for path in c["selected"]}
+    plan = _prepare(c)
+    rows = _snapshots(c, plan)
+    audit = plan.audit()
+    assert audit["status"] == "PASSED", audit
+    assert audit["reuse_lineage"] == "AUDITED_STATIC_SUCCESSOR"
+    assert audit["owner_chain"]["original_failed_job"] == str(c["ancestor_job"])
+    assert audit["explicit_weight_copy_bytes"] == 0
+    assert {path: path.read_bytes() for path in old} == old
+    assert {path: retry._identity(path) for path in sources} == sources
+    for current in rows[1:]:
+        name = Path(current["source"]).relative_to(c["source"])
+        paths = [job / "compilation/compile-work/generated" / name
+                 for job in (c["ancestor_job"], c["job"], c["output"].parent)]
+        assert len({path.stat().st_ino for path in paths}) == 1
+        assert all(path.stat().st_nlink == 3 for path in paths)
+    assert audit["owner_chain"]["prior_link_journal"]["sha256"] == _sha(c["compilation"] / "retained-input-links.jsonl")
+
+
+@pytest.mark.parametrize("fault", ["audit_failed", "audit_missing", "audit_mismatch", "chain_depth",
+    "wrong_lineage", "missing_completed", "duplicate_attempt", "bad_check", "wrong_owner_path",
+    "wrong_before_nlink", "bool_before_nlink", "journal_missing", "journal_changed", "journal_rebound_but_wrong_events", "journal_rebound_duplicate_key",
+    "original_changed", "original_result_changed", "original_snapshot_missing", "third_alias",
+    "writable_alias", "outer_missing_binding", "old_tool_binding", "wrong_audit_options"])
+def test_static_successor_rejects_any_gap_in_the_first_ownership_transition(static_case, fault):
+    c, audit = static_case, static_case["audit"]
+    journal = c["compilation"] / "retained-input-links.jsonl"
+    if fault == "audit_failed": audit["status"] = "FAILED"
+    elif fault == "audit_missing": pass
+    elif fault == "audit_mismatch": pass
+    elif fault == "chain_depth": audit["owner_chain"] = {"unexpected": "a second successor"}
+    elif fault == "wrong_lineage": audit["reuse_lineage"] = "AUDITED_STATIC_SUCCESSOR"
+    elif fault == "missing_completed": audit["completed_inputs"] -= 1
+    elif fault == "duplicate_attempt": audit["snapshot_attempts"][1] = dict(audit["snapshot_attempts"][0])
+    elif fault == "bad_check": audit["audit_checks"][1]["observed_sha256"] = "f" * 64
+    elif fault == "wrong_owner_path": audit["snapshot_attempts"][1]["old_snapshot"] = str(c["weights"][0])
+    elif fault == "wrong_before_nlink": audit["snapshot_attempts"][1]["before"]["nlink"] = 2
+    elif fault == "bool_before_nlink": audit["snapshot_attempts"][1]["before"]["nlink"] = True
+    elif fault == "journal_missing": journal.unlink()
+    elif fault == "journal_changed": journal.write_text(journal.read_text() + "{}\n")
+    elif fault == "journal_rebound_but_wrong_events":
+        events = [json.loads(line) for line in journal.read_text().splitlines()]
+        events[1]["expected_sha256"] = "f" * 64
+        journal.write_text("".join(json.dumps(event) + "\n" for event in events))
+        _, identity = retry._read_small(journal, retry.MAX_METADATA_BYTES)
+        audit["journal"].update(identity)
+    elif fault == "journal_rebound_duplicate_key":
+        data = journal.read_text().replace('{"completed_inputs":', '{"event": "ignored_duplicate", "completed_inputs":', 1)
+        journal.write_text(data)
+        _, identity = retry._read_small(journal, retry.MAX_METADATA_BYTES)
+        audit["journal"].update(identity)
+    elif fault == "original_changed": (c["ancestor_compilation"] / "report.json").write_text("{}\n")
+    elif fault == "original_result_changed": (c["ancestor_job"] / "result.json").write_text("{}\n")
+    elif fault == "original_snapshot_missing": (c["ancestor_compilation"] / c["rows"][1]["path"]).unlink()
+    elif fault == "third_alias": os.link(c["compilation"] / c["rows"][1]["path"], c["tmp"] / "unowned-third-alias")
+    elif fault == "writable_alias": (c["compilation"] / c["rows"][1]["path"]).chmod(0o644)
+    elif fault == "outer_missing_binding": c["outer"].pop("retained_failed_job")
+    elif fault == "old_tool_binding": audit["tool_binding"]["sha256"] = "f" * 64
+    elif fault == "wrong_audit_options": audit["old_options"]["input_shape"] = "other"
+    _save_static_audit(c)
+    if fault == "audit_missing": (c["compilation"] / "retained-input-reuse.json").unlink()
+    elif fault == "audit_mismatch": (c["compilation"] / "retained-input-reuse.json").write_text("{}\n")
+    with pytest.raises((OSError, ValueError, KeyError, TypeError)):
+        _prepare(c)
+    assert not (c["output"] / "retained-input-links.jsonl").exists()
+
+
+def test_successor_audit_detects_an_earlier_owner_alias_replaced_after_prepare(static_case):
+    c = static_case
+    plan = _prepare(c)
+    _snapshots(c, plan)
+    alias = c["ancestor_compilation"] / c["rows"][1]["path"]
+    alias.unlink()
+    alias.write_bytes(b"different earlier alias")
+    result = plan.audit()
+    assert result["status"] == "FAILED"
+    assert any(error.get("path") == str(alias) for error in result["audit_errors"])

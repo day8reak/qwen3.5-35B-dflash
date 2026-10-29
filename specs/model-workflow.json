@@ -2208,9 +2208,9 @@
         "location": "original_weight_machine",
         "entrypoint": "targets/cpro/scripts/prepare_target_pytorch.py",
         "directory": "target-pytorch",
-        "status": "CANONICAL_TMPDIR_ALIAS_CONTRACT_REPRODUCED; LEGACY_STOP_AND_IPC_PROBE_READY; DECODE1_TRANSFER_MATCHED",
+        "status": "USER_STOP_REQUESTED_AND_SOURCE_IPC_PROBE_PASSED; AUDITED_STATIC_SUCCESSOR_RETRY_READY",
         "tests": 14,
-        "next": "Run explicit legacy-stopped-tree termination/continue for current paused OMG and bound driver, collect final driver audit, then run exact-source directory/IPC probe; no new model compilation or repeated decode1 transfer.",
+        "next": "After original driver prints final failed report, run one static64 successor with --tmpdir-probe and --stop-receipt; read-only preflight checks final audit/process exit/probe before shared-input preparation. No duplicate large weight copy.",
         "user_report": {
           "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
           "original_air_sha256": "3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9",
@@ -2292,7 +2292,7 @@
           "other_static_branch": "GDN selects its original sequence-length-dependent chunk_size",
           "weight_policy": "Keep original weights and verify SHA before sharing; no new DDK-side large input copy without failed-snapshot reuse proof",
           "decode_original_machine_sidecar_write_bytes_approx": 19459474432,
-          "failed_job_retry_support": "IMPLEMENTED_EXPLICIT_FAILED_DUAL64_1_TO_STATIC64_ONLY; FRESH_PAYLOAD_SHA_BEFORE_AFTER_AND_SHARED_READONLY_INODE_JOURNAL; ACTUAL_RETRY_NOT_RUN",
+          "failed_job_retry_support": "ONE_AUDITED_STATIC_SUCCESSOR_WITH_COMPLETE_OWNER_CHAIN; OLD_NLINK_STATS_NEVER_SILENTLY_REFRESHED",
           "prefill_profile": "cpro-40block-prefill-64",
           "decode_profile": "cpro-40block-decode-1"
         },
@@ -2471,17 +2471,21 @@
           "binding": "Exact full recorded OMG argv and cwd; unique root; all targets starttime checked and Linux pidfds pinned before signals",
           "signals": "SIGTERM to observed descendants deepest first then OMG; driver untouched; no numericPID/PGID/SIGKILL fallback",
           "evidence": "New stopreceipt directory with fsynced plan and peraction intent/result journal",
-          "execution": "USER_REPORTED_BLOCKED_NO_EVENTS_PIDFD_UNAVAILABLE",
-          "final_driver_audit": "PENDING_REMOTE_STOP_AND_DRIVER_REPORT",
+          "execution": "USER_REPORTED_STOP_REQUESTED",
+          "final_driver_audit": "NOT_YET_PASTED; MUST_VERIFY_ACTUAL_FINAL_REPORT",
           "host_tests_passed": 35,
           "host_test_skips": 0,
           "host_evidence": "20261029T122749Z-22112-bb3103/stop-legacy-tests-v2.xml",
           "scope": "Stop request helper only; no model retry, input mutation or complete cleanup claim",
-          "remote_signals_sent": 0,
+          "remote_signals_sent": {
+            "SIGTERM": 11,
+            "SIGCONT": 12
+          },
           "remote_omg_and_descendant_states": "ALL_T_IN_LAST_STOP_REPORT",
           "legacy_mode": "EXPLICIT --legacy-stopped-tree; entire tree must already be T/t; bind driver absolute script and unique output",
           "legacy_signals": "QueueTERM for observedstoppedtree, thenCONT sameboundtargets; onlyCONT boundpauseddriver",
-          "legacy_identity": "Held proc directory/currentPID stat checks immediately before signals; numeric TOCTOU residual explicitly retained"
+          "legacy_identity": "Held proc directory/currentPID stat checks immediately before signals; numeric TOCTOU residual explicitly retained",
+          "process_exit": "NOT_INFERRED_FROM_STOP_REQUESTED"
         },
         "tmpdir_fix": {
           "status": "HOST_IMPLEMENTED; USER_SOURCE_PROBE_AND_ACTUAL_OMG_PENDING",
@@ -2506,7 +2510,59 @@
             "skipped": 0,
             "evidence": "20261029T122749Z-22112-bb3103/final-tests.xml",
             "scope": "PhysicalTMPDIR/stdlibIPCoverlay, exactsourcepredicateprobe, modern/legacystoppedcontrol, environment/existingAIR/snapshotreuse/staticretry regressions; no remoteOMG/model/device success"
+          },
+          "remote_probe_user_report": {
+            "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+            "status": "PROBE_PASSED",
+            "returncode": 0,
+            "ccec_source_sha256": "5bef4eba82325b701a544e1644a38e566788de7f1cff5888e36d3ac609fddb6a",
+            "source_predicate_sha256": "b1d2188107db3ccfbe9eb9a33818f907046e302c81c85fd8178f659ae2e69083",
+            "old_alias_control": "REJECTED_AS_EXPECTED",
+            "physical_tmpdir_predicate": "PASSED",
+            "stdlib_mp_sha256": "a5a42976033c7d63ee2740acceef949a3582dcb0e0442845f9717e1be771c68b",
+            "overlay_sha256": "5164b457b3d00a80c0347e2a2676275a5666fb4bd9f862d6b604cb08e975aa4b",
+            "forkserver_socket_status": "PASSED",
+            "socket_path_bytes": 48,
+            "python": "CPYTHON_3_11_USER_CUSTOM_PYPTO_ENV",
+            "weight_payload_access": "NONE",
+            "model_compilation": "NOT_RUN",
+            "native_cce_compilation": "NOT_RUN",
+            "embedded_omg_startup": "NOT_TESTED",
+            "device_execution": "NOT_RUN",
+            "scope": "Exact-source path predicate and standard-library IPC only; no model success inherited"
           }
+        },
+        "static_successor_retry": {
+          "status": "HOST_IMPLEMENTED; ACTUAL_FINAL_FAILURE_AND_RUNTIME_RETRY_PENDING",
+          "entrypoint": "targets/cpro/scripts/compile_full_target.py --retry-static-prefill-from target-pytorch-prefill64-compile",
+          "required_gates": [
+            "--tmpdir-probe target-pytorch-tmpdir-probe",
+            "--stop-receipt target-pytorch-prefill64-stop-legacy"
+          ],
+          "new_output": "target-pytorch-prefill64-tmpdirfix",
+          "preflight": "Read-only final FAILED report/SHA and PASSED input audit; exact probe source/body/child/overlay; stop plan/journal; recorded process starttime generations quiescent",
+          "reuse": "One original COPY->first audited shared static->successor static transition; complete journal explains1to2; newownlink2to3; readonly allaliases plus freshbeforeafterSHA",
+          "air": "NEW_INDEPENDENT_SMALL_SNAPSHOT",
+          "explicit_large_weight_copy_bytes": 0,
+          "old_receipt_policy": "BYTES_UNCHANGED; own link metadata changes retained in new owner audit",
+          "rejections": [
+            "Missing final audit/report",
+            "Live recorded old process generation",
+            "Probe or stop mismatch",
+            "Extra links or changed metadata/content",
+            "Timeout-only without actual nonzero exit",
+            "Deeper recursive successor"
+          ],
+          "gate_metadata_recheck": "Immediately before compiler call; altered proof preserved and rejected",
+          "scope": "Retry preparation only; actual embedded OMG/CCE/model execution still required"
+        },
+        "successor_host_verification": {
+          "tests_passed": 256,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "evidence": "20261029T124747Z-23515-906247/final-tests.xml",
+          "scope": "Owner-chain audit/gates, actual tiny inventory/stage/mocked static successor compilation and existing continuation regressions; no real original-target compile/device"
         }
       },
       "b": {
@@ -2631,14 +2687,14 @@
     "day1_gate": "Correct draft plus usable ordinary target prefill/decode",
     "day2_gate": "Multi-step DFlash token/stop equality and state handling",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
-    "current_target_status": "CanonicalTMPDIRliteralalias conflict identified; envsplit and legacy pausedstop implementedhostverified. Remoteoldstop sent0signals becausepidfd unavailable; currenttreepaused. Decode1actualtransferprofilematched. No complete targetOMC or devicepass.",
+    "current_target_status": "Legacy stop requested and exact-source path/IPC probe PASSED peruser; final driver failure/audit not yet pasted. One receipt-gated shared-snapshot static64 successor ready, runtime stillpending. Decode1transfer matched, B55backupcomplete.",
     "target_gaps": [
       "Original89input80RefData ordered ABI",
       "64/1 gear and persistent state",
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Apply explicitlegacy stop to allTtree and bounddriver, retain finalaudit, run sourcepredicate/IPCprobe before newmodelattempt. Reuse existingAIR/weights; no repeateddecode1transfer or Bwork.",
+    "next_target_action": "Run one static64 successor after originaldriver finalFAILED, with boundstop/probegates and verified1to2to3snapshotowners; newoutputsseparate/no19GBinputcopy; awaitactualOMGresult beforedecode1stage.",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone"
   },
   "execution_smoke": {

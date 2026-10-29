@@ -21,18 +21,22 @@ _HASH = re.compile(r"[0-9a-f]{64}")
 _MAX_FILES = 4096
 
 
+def _pairs(rows):
+    result = {}
+    for key, value in rows:
+        if key in result:
+            raise ValueError("duplicate retry metadata key: " + key)
+        result[key] = value
+    return result
+
+
+def _constant(value):
+    raise ValueError("nonfinite retry metadata: " + value)
+
+
 def _json(path, bindings):
     raw, identity = _read_small(path, MAX_METADATA_BYTES)
-    def pairs(rows):
-        result = {}
-        for key, value in rows:
-            if key in result:
-                raise ValueError("duplicate retry metadata key: " + key)
-            result[key] = value
-        return result
-    def constant(value):
-        raise ValueError("nonfinite retry metadata: " + value)
-    value = json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
+    value = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_constant)
     if not isinstance(value, dict):
         raise ValueError("retry metadata must be an object")
     bindings.append(identity)
@@ -284,6 +288,16 @@ class _ReusePlan:
                 check.update(status="FAILED", error="; ".join(failures))
                 errors.append(check.copy())
             checks.append(check)
+        for owner in self.evidence.get("owner_chain", {}).get("snapshot_aliases", []):
+            attempt = attempts.get(owner["source"])
+            expected = (attempt.get("after") if attempt and attempt.get("link_created")
+                        else owner["identity_before"])
+            for alias in owner["paths"]:
+                try:
+                    if _identity(alias) != expected:
+                        raise ValueError("earlier owner alias identity differs from this attempt's link transition")
+                except (OSError, ValueError) as error:
+                    errors.append({"path": alias, "error": str(error)})
         tool = self.evidence["tool_binding"]
         try:
             digest, current = _hash_file(tool["path"])
@@ -311,10 +325,189 @@ def _identity_directory(path):
     return {"dev": path.stat().st_dev}
 
 
+def _audited_static_owner(job, report, outer, air, metadata):
+    """Verify one completed original-COPY -> shared-static ownership transition.
+
+    Recorded old stat tuples are never silently refreshed. The prior audit and
+    its complete link journal must explain the exact 1 -> 2 link transition.
+    A further successor of this successor is intentionally not accepted here.
+    """
+    compilation = job / "compilation"
+    audit, audit_id = _json(compilation / "retained-input-reuse.json", metadata)
+    snapshots = report.get("input_snapshots")
+    if (not isinstance(snapshots, list) or not 1 <= len(snapshots) <= _MAX_FILES
+            or audit != report.get("retained_input_reuse") or audit.get("status") != "PASSED"
+            or audit.get("artifact_kind") != "qwen35-static-prefill-snapshot-reuse"
+            or audit.get("reuse_lineage") not in {None, "ORIGINAL_DUAL_TO_STATIC"}
+            or audit.get("owner_chain") or audit.get("output") != str(compilation)
+            or audit.get("original_air") != str(air) or audit.get("ownership") != "SHARED_READONLY_INODE"
+            or audit.get("explicit_weight_copy_bytes") != 0 or audit.get("audit_errors") != []
+            or audit.get("completed_inputs") != len(snapshots) or audit.get("input_count") != len(snapshots)
+            or report.get("retained_input_audit_error")):
+        raise ValueError("static successor requires the exact passed first-static ownership audit")
+    ancestor, _ = _safe(audit.get("failed_job"), directory=True)
+    if ancestor == job or ancestor in job.parents or job in ancestor.parents:
+        raise ValueError("static ownership ancestor must be a separate original failed job")
+    if (outer.get("retained_failed_job") != str(ancestor)
+            or outer.get("input_snapshot_reuse", {}).get("status") != "PASSED"
+            or outer.get("input_snapshot_reuse", {}).get("report") != str(compilation / "retained-input-reuse.json")):
+        raise ValueError("static outer receipt does not bind its passed ownership audit")
+    ancestor_comp = ancestor / "compilation"
+    original_outer, original_outer_id = _json(ancestor / "result.json", metadata)
+    original, original_id = _json(ancestor_comp / "report.json", metadata)
+    original_profile, _ = _json(ancestor / "compile-profile.json", metadata)
+    original_inventory, _ = _json(ancestor_comp / "input-inventory.json", metadata)
+    original_command, _ = _json(ancestor_comp / "compile-command.json", metadata)
+    frozen = get_existing_air_profile("cpro-40block-64-1")
+    if (original_profile != frozen or original_outer.get("artifact_kind") != "qwen35-original-target-job"
+            or original_outer.get("status") != "FAILED" or original_outer.get("model_compilation") != "FAILED"
+            or original_outer.get("output") != str(ancestor) or original_outer.get("air") != str(air)
+            or original_outer.get("compilation") != "compilation/report.json"
+            or original_outer.get("compilation_report_sha256") != original_id["sha256"]
+            or original.get("artifact_kind") != "qwen35-existing-air-compilation"
+            or original.get("status") != "FAILED" or original.get("model_compilation") != "FAILED"
+            or original.get("stage") != "omg" or type(original.get("returncode")) is not int
+            or original["returncode"] == 0 or original.get("requested_options") != _options(frozen, static=False)
+            or audit.get("failed_result_sha256") != original_outer_id["sha256"]
+            or audit.get("failed_report_sha256") != original_id["sha256"]
+            or audit.get("old_options") != _options(frozen, static=False)
+            or audit.get("new_options") != _options(frozen, static=True)):
+        raise ValueError("static ownership audit is not bound to the original failed dual-gear receipts")
+    if (any(original.get(key) != report.get(key) for key in
+            ("air_source", "air", "ddk_root", "ddk_id", "omg_path", "omg_sha256", "platform", "input_layout"))
+            or original.get("output") != str(ancestor_comp)
+            or original.get("source_preservation", {}).get("status") != "UNCHANGED_BY_STAT"
+            or original.get("source_preservation", {}).get("changed") != []
+            or original.get("audit_error") or original.get("artifact_inventory_error")
+            or original.get("skipped_nonregular_artifacts") or original.get("retained_input_reuse")):
+        raise ValueError("original COPY ancestor source/tool/layout/audit evidence differs")
+    if audit.get("tool_binding") != {"path": report["omg_path"], "sha256": report["omg_sha256"],
+                                     "identity": _identity(report["omg_path"])}:
+        raise ValueError("passed static ownership audit no longer binds the exact selected compiler")
+    original_rows = original.get("input_snapshots")
+    if (not isinstance(original_rows, list) or len(original_rows) != len(snapshots)
+            or original_inventory.get("files") != original_rows):
+        raise ValueError("original COPY ancestor inventory is incomplete")
+    # Require every original small identity that the first retry audited, with
+    # a fixed path allowlist rather than following arbitrary metadata paths.
+    allowed = {str(ancestor / "result.json"), str(ancestor / "compile-profile.json"),
+        *(str(ancestor_comp / name) for name in ("report.json", "input-inventory.json", "compile-command.json")), str(air)}
+    original_airs = [row for row in original_rows if isinstance(row, dict) and row.get("role") == "air"]
+    if len(original_airs) != 1:
+        raise ValueError("original ownership ancestor has no unique AIR")
+    allowed.add(str(_relative(ancestor_comp, original_airs[0].get("path"))))
+    compatibility = original.get("tbe_compatibility")
+    if compatibility is not None:
+        if not isinstance(compatibility, dict):
+            raise ValueError("original TBE binding is malformed")
+        allowed.add(str(ancestor_comp / "tbe-compatibility-result.json"))
+        allowed.add(str(Path(compatibility.get("diagnosis", "")) / "report.json"))
+    bindings = audit.get("metadata_bindings")
+    if (not isinstance(bindings, list) or any(not isinstance(row, dict) for row in bindings)
+            or len({row.get("path") for row in bindings}) != len(bindings)
+            or {row.get("path") for row in bindings} != allowed):
+        raise ValueError("original ownership metadata identity set is incomplete or unrecognized")
+    for identity in bindings:
+        _, current = _read_small(identity["path"], MAX_AIR_BYTES if identity["path"].endswith(".air") else MAX_METADATA_BYTES)
+        if current != identity:
+            raise ValueError("original ownership metadata changed since the first-static audit")
+        metadata.append(current)
+    if compatibility is not None:
+        bound, _ = _json(ancestor_comp / "tbe-compatibility-result.json", metadata)
+        if (bound != compatibility or compatibility.get("compiler_invocation") != "ATTEMPTED"
+                or compatibility.get("compile") != "FAILED"
+                or compatibility.get("audit", {}).get("status") not in {"APPLIED", "NOT_OBSERVED"}):
+            raise ValueError("original ownership TBE audit is incomplete")
+    attempts = audit.get("snapshot_attempts")
+    checks = audit.get("audit_checks")
+    if (not isinstance(attempts, list) or not isinstance(checks, list)
+            or len(attempts) != len(snapshots) or len(checks) != len(snapshots)
+            or any(not isinstance(row, dict) for row in attempts + checks)):
+        raise ValueError("static ownership audit lacks complete snapshot/check records")
+    observations = {row.get("source"): row for row in attempts}
+    verification = {row.get("source"): row for row in checks}
+    if len(observations) != len(snapshots) or len(verification) != len(snapshots):
+        raise ValueError("static ownership audit has duplicate snapshot/check sources")
+    journal = audit.get("journal", {})
+    expected_journal = compilation / "retained-input-links.jsonl"
+    raw_journal, journal_id = _read_small(expected_journal, MAX_METADATA_BYTES)
+    if any(journal.get(key) != journal_id[key] for key in ("path", "bytes", "sha256", "stat")):
+        raise ValueError("static ownership link journal SHA256/stat differs from its passed audit")
+    metadata.append(journal_id)
+    events = [json.loads(line, object_pairs_hook=_pairs, parse_constant=_constant) for line in raw_journal.splitlines()]
+    expected_events = [{"event": "PREPARED", "failed_job": str(ancestor), "input_count": len(snapshots)}]
+    owners, aliases = {}, []
+    for row, previous in zip(snapshots, original_rows):
+        if (not isinstance(row, dict) or not isinstance(previous, dict)
+                or previous.get("snapshot_method") != "COPY"
+                or any(row.get(key) != previous.get(key) for key in
+                    ("source", "source_stat", "source_relative", "path", "role", "bytes", "sha256"))):
+            raise ValueError("static snapshot is not the exact original COPY source inventory")
+        source = row["source"]
+        observation, check = observations.get(source, {}), verification.get(source, {})
+        old_path = _relative(ancestor_comp, row["path"])
+        current_path = _relative(compilation, row["path"])
+        if (observation.get("old_snapshot") != str(old_path) or observation.get("destination") != str(current_path)
+                or observation.get("role") != row["role"] or check.get("status") != "PASSED"):
+            raise ValueError("static ownership observation path/role/check differs")
+        after = observation.get("after")
+        identity_keys = {"dev", "ino", "bytes", "mtime_ns", "ctime_ns", "mode", "uid", "gid", "nlink"}
+        if (not isinstance(after, dict) or set(after) != identity_keys
+                or any(type(value) is not int for value in after.values())
+                or _identity(current_path) != after or _five(after) != row.get("snapshot_stat")):
+            raise ValueError("static snapshot identity differs from passed ownership observation")
+        if row["role"] == "air":
+            if (row.get("snapshot_method") not in {"COPY", "REFLINK"}
+                    or observation.get("status") != "INDEPENDENT_AIR_SNAPSHOT" or observation.get("link_created") is not False
+                    or after.get("nlink") != 1 or after.get("mode", 0) & 0o222
+                    or _five(_identity(old_path)) != previous.get("snapshot_stat")
+                    or len({_inode(after), _inode(_identity(old_path)), _inode(_identity(source))}) != 3):
+                raise ValueError("static AIR snapshot is not independent of its original COPY ancestor")
+        else:
+            before = observation.get("before")
+            if (not isinstance(before, dict) or set(before) != identity_keys
+                    or any(type(value) is not int for value in before.values())
+                    or row.get("snapshot_method") != "SHARED_READONLY_SNAPSHOT_INODE"
+                    or observation.get("status") != "SHARED_READONLY_SNAPSHOT_INODE" or observation.get("link_created") is not True
+                    or observation.get("alias_identity") != after or observation.get("own_nlink_increment") != 1
+                    or _five(before) != previous.get("snapshot_stat") or before.get("nlink") != 1
+                    or after.get("nlink") != 2 or after.get("mode", 0) & 0o222
+                    or any(after.get(key) != value for key, value in before.items() if key not in {"nlink", "ctime_ns"})
+                    or after["ctime_ns"] < before["ctime_ns"] or _identity(old_path) != after
+                    or check.get("payload_verification") != "FRESH_SHA256_MATCHED_AFTER_RETRY"
+                    or check.get("observed_sha256") != row["sha256"]):
+                raise ValueError("static payload ownership does not prove the exact readonly COPY 1-to-2 link transition")
+            expected_events.extend([
+                {"event": "LINK_INTENT", "source": source, "old_snapshot": str(old_path),
+                 "destination": str(current_path), "expected_sha256": row["sha256"], "before": before},
+                {"event": "LINK_CREATED", "source": source, "old_snapshot": str(old_path),
+                 "destination": str(current_path), "after": after, "alias_identity": after,
+                 "expected_nlink_increment": 1, "observed_nlink_increment": 1}])
+            aliases.append({"source": source, "paths": [str(old_path), str(current_path)], "identity_before": after})
+        owners[source] = after
+    expected_events.append({"event": "AUDIT", "status": "PASSED", "completed_inputs": len(snapshots),
+                            "failure_count": 0, "first_errors": []})
+    if events != expected_events:
+        raise ValueError("static ownership link journal events differ from its audited snapshots")
+    old_air = original_airs[0]
+    expected_argv = [original["omg_path"], "--framework=1", "--model=" + str(ancestor_comp / old_air["path"]),
+        "--output=model", "--target=omc", "--platform=kirinx90",
+        *(f"--{key}={value}" for key, value in _options(frozen, static=False).items())]
+    actual_argv = original_command.get("argv")
+    if (not isinstance(actual_argv, list) or actual_argv[:6] != expected_argv[:6]
+            or len(actual_argv) != len(expected_argv) or sorted(actual_argv[6:]) != sorted(expected_argv[6:])
+            or original_command.get("cwd") != str(ancestor_comp / "compile-work/generated")
+            or original_command.get("weight_dtype_override") is not None):
+        raise ValueError("original ownership compiler command is not the frozen dual-gear invocation")
+    return owners, {"prior_static_job": str(job), "original_failed_job": str(ancestor),
+        "prior_audit": audit_id, "prior_link_journal": journal_id, "snapshot_aliases": aliases,
+        "scope": "One audited static successor only; earlier receipt bytes remain unchanged, own links change shared inode ctime/nlink"}
+
+
 def prepare_failed_prefill_reuse(failed_job, *, air, ddk_root, ddk_id, omg_path,
                                 omg_sha256, tbe_diagnosis, input_layout, options,
                                 selected, output):
-    """Bind exactly a failed dual-gear target job to one new static64 attempt."""
+    """Bind original failed COPY inputs or one audited static predecessor."""
     job, _ = _safe(failed_job, directory=True)
     compilation, _ = _safe(job / "compilation", directory=True)
     air, _ = _safe(air)
@@ -341,9 +534,11 @@ def prepare_failed_prefill_reuse(failed_job, *, air, ddk_root, ddk_id, omg_path,
             or report.get("model_compilation") != "FAILED"
             or type(report.get("returncode")) is not int or report["returncode"] == 0):
         raise ValueError("retry requires a hash-bound original target FAILED job with a real nonzero OMG exit")
-    if (profile != frozen or report.get("requested_options") != _options(frozen, static=False)
+    successor = profile == get_existing_air_profile("cpro-40block-prefill-64")
+    if (profile not in (frozen, get_existing_air_profile("cpro-40block-prefill-64"))
+            or report.get("requested_options") != _options(frozen, static=successor)
             or options != _options(frozen, static=True)):
-        raise ValueError("retry permits only the frozen dual64/1 to static-prefill64 option change")
+        raise ValueError("retry permits only frozen dual64/1 or audited static64 to static-prefill64 options")
     layout = report.get("input_layout", {})
     if (input_layout not in {"air-directory", "export-directory"} or layout.get("mode") != input_layout
             or outer.get("input_layout") != input_layout or layout.get("compiler_cwd") != "compile-work/generated"
@@ -391,10 +586,12 @@ def prepare_failed_prefill_reuse(failed_job, *, air, ddk_root, ddk_id, omg_path,
             raise ValueError("retry selected sources exceed the file count bound")
     if len(chosen) != len(set(chosen)):
         raise ValueError("retry selected sources contain duplicates")
+    owners, owner_chain = _audited_static_owner(job, report, outer, air, metadata) if successor else ({}, None)
     rows, identities, paths, inodes = {}, {}, set(), set()
     air_rows = []
     for row in snapshots:
-        if (not isinstance(row, dict) or row.get("snapshot_method") != "COPY"
+        methods = ({"COPY", "REFLINK"} if row.get("role") == "air" else {"SHARED_READONLY_SNAPSHOT_INODE"}) if successor and isinstance(row, dict) else {"COPY"}
+        if (not isinstance(row, dict) or row.get("snapshot_method") not in methods
                 or type(row.get("bytes")) is not int or row["bytes"] < 0
                 or not isinstance(row.get("sha256"), str) or not _HASH.fullmatch(row["sha256"])
                 or row.get("role") not in {"air", "neighbor_data_candidate"}):
@@ -412,7 +609,7 @@ def prepare_failed_prefill_reuse(failed_job, *, air, ddk_root, ddk_id, omg_path,
         expected_path = (Path("compile-work/generated") / prefix / expected_relative).as_posix()
         if (_five(source_id) != row.get("source_stat") or _five(snapshot_id) != row.get("snapshot_stat")
                 or source_id["bytes"] != row["bytes"] or snapshot_id["bytes"] != row["bytes"]
-                or snapshot_id["mode"] & 0o222 or snapshot_id["nlink"] != 1
+                or snapshot_id["mode"] & 0o222 or (snapshot_id != owners.get(key) if successor else snapshot_id["nlink"] != 1)
                 or _inode(snapshot_id) == _inode(source_id) or _inode(snapshot_id) in inodes
                 or row["path"] != expected_path):
             raise ValueError("retry snapshot/source stat changed or snapshot is writable/shared/not independent")
@@ -434,7 +631,7 @@ def prepare_failed_prefill_reuse(failed_job, *, air, ddk_root, ddk_id, omg_path,
         raise ValueError("retry AIR layout/content receipt is not exact")
     argv = [str(omg), "--framework=1", "--model=" + str(compilation / air_row["path"]),
             "--output=model", "--target=omc", "--platform=kirinx90",
-            *(f"--{key}={value}" for key, value in _options(frozen, static=False).items())]
+            *(f"--{key}={value}" for key, value in _options(frozen, static=successor).items())]
     # JSON map ordering is not an option semantic; require exactly the fixed
     # prefix plus one occurrence of every expected old option.
     actual = command.get("argv")
@@ -448,9 +645,12 @@ def prepare_failed_prefill_reuse(failed_job, *, air, ddk_root, ddk_id, omg_path,
                 "original_air": str(air), "failed_result_sha256": outer_id["sha256"],
                 "failed_report_sha256": report_id["sha256"], "input_count": len(rows),
                 "tool_binding": {"path": str(omg), "sha256": omg_sha256, "identity": omg_identity},
-                "old_options": _options(frozen, static=False), "new_options": dict(options),
+                "old_options": _options(frozen, static=successor), "new_options": dict(options),
+                "reuse_lineage": "AUDITED_STATIC_SUCCESSOR" if successor else "ORIGINAL_DUAL_TO_STATIC",
                 "ownership": "SHARED_READONLY_INODE", "explicit_weight_copy_bytes": 0,
                 "snapshot_attempts": [], "metadata_bindings": metadata,
                 "device_execution": "NOT_RUN", "numerical_validation": "NOT_RUN",
                 "scope": "One static64 compiler retry only. Shared read-only inode content is verified before/after; privileged writes remain possible. Old receipts are unchanged; own links change old snapshot nlink/ctime. Physical allocation and compiler space are not inferred."}
+    if owner_chain is not None:
+        evidence["owner_chain"] = owner_chain
     return _ReusePlan(output=output, rows=rows, identities=identities, metadata=metadata, evidence=evidence)

@@ -40,6 +40,12 @@ decode1只手动传`canonical-export/export.air`、`canonical-export/inventory/i
 
 用户另已完成decode1的三小文件检查：`TRANSFER_INSPECTED`、`MATCHED_EXACT_DATA_NAMES_AND_DECLARED_GEOMETRIES`，九路实际Data与`cpro-40block-decode-1`一致，feature81 FP16`[1,1,16384]`。归一收据SHA `98ccc4e81f0893e4ae70e47705cf511cf45efa7ea37979db18bfaf87c68ad030`、AIR SHA `75dc9bd236518db9421532b2791d37e041a9c9e810e588fff19b8d26e155d527`、清单SHA `eb01e38ffe0ea5d40df8d3aac6fc36dea19abe7e5b3046e2aa54a75d3b686556`均已实读匹配；没有读DDK大权重、stage或调用OMG。无需再传三文件或重复检查；后续依旧先处理当前停止/最终审计和共享snapshot所有权，避免改动仍受审计的inode。
 
+用户已回传`STOP_REQUESTED`：11个本次编译目标收到SIGTERM和SIGCONT，绑定外层驱动收到SIGCONT；这仍不是最终报告或完整退出的证明。随后同版目录探针实际`PROBE_PASSED`：旧别名负对照被拒绝、真实TMPDIR正对照通过，Python3.11原始stdlib包及本地MP入口SHA一致，48字节forkserver socket完成往返。源谓词SHA为`b1d2188107db3ccfbe9eb9a33818f907046e302c81c85fd8178f659ae2e69083`；原始stdlib MP源码SHA为`a5a42976033c7d63ee2740acceef949a3582dcb0e0442845f9717e1be771c68b`。探针仍未运行嵌入式OMG、CCE代码生成或模型，不能继承这些通过状态。
+
+下一次只安排一次静态64后继任务。CLI对来源为静态任务的`--retry-static-prefill-from`要求成对提供`--tmpdir-probe`和`--stop-receipt`：先只读核最终FAILED报告/通过的输入审计、同版源谓词/当前探针执行体与MP入口、探针实际child结果、停止计划及逐项日志，并按PID/starttime确认记录的OMG/worker/driver已退出或换代。缺最终报告或旧进程还活着时，在创建新输出及读取大权重前阻止；保存预检后、开始编译前再核小元数据身份。`PREFLIGHT_PASSED`只代表这些前置条件，不是模型运行通过。
+
+权重复用新增一层有界所有权证明：原双档FAILED COPY输入 → 已审计首次静态共享输入 → 新静态尝试。它核首次静态任务的最终FAILED/nonzero退出与PASSED共享审计，原始COPY祖先的报告/工具/诊断身份，完整链接日志，以及原祖先和首次静态两个现有别名的只读inode身份。已有`1→2`链接变化必须由原审计解释，不能静默刷新旧stat或忽略额外链接；新的自有链接仅`2→3`，编译前后实读SHA并在新审计复核全部早期别名。AIR继续独立小快照，原报告字节不改，不复制大权重，不修复/删除异常现场；只支持这一层后继，不接受任意递归或timeout-only替代完整退出证据。模型修复后真实OMG和OMC仍待这次实际编译验证。
+
 用户另贴的原OMG命令只是记录，是否生成过OMC不确定；其中`--d11ynamic_dims`拼写也未得到实际成功日志确认，因此不作为双档成功基线，不据此切换现有已绑定编译器。
 
 新的只读诊断只检查小元数据、编译日志、失败IR、微小整数shape常量；1153权重快照只stat，不重新读payload。`INSPECTED`表示报告读取完成，`RECORDED_HASH_WITH_CURRENT_STAT`不是新一轮完整SHA验证，也不是重试通过；后续要按实际报告决定怎样保留并复用现有编译输入。源码AIR未提供其原机schema时不猜用另一版TorchAir schema解析，失败dump则使用所选DDK自己的HIAI schema。

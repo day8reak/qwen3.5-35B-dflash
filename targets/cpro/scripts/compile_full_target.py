@@ -61,7 +61,9 @@ def main():
     parser.add_argument("--omg", help="optional actual ELF binary in selected DDK; default tools/tools_omg/master/omg")
     parser.add_argument("--output", help="new job directory under AI_RUN_DIR")
     parser.add_argument("--resume", help="reuse a completed original-target job after source/DDK/artifact checks; never recompile failed/interrupted jobs")
-    parser.add_argument("--retry-static-prefill-from", help="new static64 attempt using only a failed dual-gear job's bound readonly COPY snapshots")
+    parser.add_argument("--retry-static-prefill-from", help="new static64 attempt using a failed dual-gear COPY job or its first audited static64 successor")
+    parser.add_argument("--tmpdir-probe", help="completed source-directory/IPC probe; required for an audited static64 successor retry")
+    parser.add_argument("--stop-receipt", help="completed exact-job stop receipt; required for an audited static64 successor retry")
     parser.add_argument("--inspect-only", action="store_true", help="requires --resume; inspect existing compilation without model compilation or board execution")
     parser.add_argument("--hiai-include", default=os.environ.get("HIAI_INCLUDE_DIR"),
                         help="selected HIAI header root; retain dynamic-gear/RefData/load declarations locally")
@@ -83,6 +85,10 @@ def main():
         parser.error("--retry-static-prefill-from creates a new attempt and cannot use --resume/--inspect-only")
     if args.retry_static_prefill_from and (args.profile != "cpro-40block-prefill-64" or args.input_layout != "air-directory"):
         parser.error("--retry-static-prefill-from requires --profile cpro-40block-prefill-64 and --input-layout air-directory")
+    if (args.tmpdir_probe or args.stop_receipt) and not args.retry_static_prefill_from:
+        parser.error("--tmpdir-probe/--stop-receipt require --retry-static-prefill-from")
+    if bool(args.tmpdir_probe) != bool(args.stop_receipt):
+        parser.error("--tmpdir-probe and --stop-receipt must be supplied together")
     if args.resume and args.output:
         parser.error("--resume and --output cannot be combined")
     if args.inspect_only and (not args.resume or args.skip_inspection):
@@ -98,6 +104,7 @@ def main():
     root = None
     owned_root = False
     continuation = None
+    retry_preflight = None
     guards = ExitStack()
     result = {"schema_version": 1, "artifact_kind": "qwen35-original-target-job",
               "status": "PREPARING", "device_execution": "NOT_RUN",
@@ -113,8 +120,23 @@ def main():
             prior = read_metadata(root / "result.json")
             args.air = args.air or prior.get("air")
         if args.retry_static_prefill_from:
-            previous = read_metadata(Path(args.retry_static_prefill_from) / "result.json")
+            predecessor = Path(args.retry_static_prefill_from).resolve()
+            previous = read_metadata(predecessor / "result.json")
             args.air = args.air or previous.get("air")
+            previous_profile_path = predecessor / "compile-profile.json"
+            previous_profile = read_metadata(previous_profile_path) if previous_profile_path.is_file() else {}
+            successor = previous_profile.get("name") == "cpro-40block-prefill-64" or bool(previous.get("retained_failed_job"))
+            if successor:
+                if not args.tmpdir_probe or not args.stop_receipt:
+                    raise ValueError("an audited static64 successor retry requires --tmpdir-probe and --stop-receipt")
+                from qwen35_moe_dflash.target_retry_gate import validate_static_retry_gate
+                retry_preflight = validate_static_retry_gate(predecessor,
+                    tmpdir_probe=args.tmpdir_probe, stop_receipt=args.stop_receipt)
+                if retry_preflight.get("status") != "PREFLIGHT_PASSED":
+                    raise ValueError("static64 retry preflight did not pass")
+                print("full-target: final failed-job audit, process exit and directory/IPC probe verified", flush=True)
+            elif args.tmpdir_probe or args.stop_receipt:
+                raise ValueError("directory/stop retry gates apply only to an audited static64 predecessor")
         if not args.air:
             raise ValueError("completed target job does not declare its original AIR")
         air = Path(args.air).resolve()
@@ -154,6 +176,11 @@ def main():
                       compilation="compilation/report.json")
         if args.retry_static_prefill_from:
             result["retained_failed_job"] = str(Path(args.retry_static_prefill_from).resolve())
+        if retry_preflight is not None:
+            save_json(evidence_root / "retry-preflight.json", retry_preflight)
+            result["retry_preflight"] = {"status": retry_preflight["status"],
+                "report": str(evidence_root / "retry-preflight.json"),
+                "scope": "Final failed-job/process/probe gates only; no model execution or accuracy pass"}
         if args.hiai_include or args.source_root:
             from qwen35_moe_dflash.original_target_contract import capture_runtime_sources
             try:
@@ -173,6 +200,11 @@ def main():
                 print("full-target: " + row["message"], flush=True)
 
         if not args.resume:
+            if retry_preflight is not None:
+                from qwen35_moe_dflash.target_export_reuse import _absolute, _read_small
+                for identity in retry_preflight.get("metadata_bindings", []):
+                    if _read_small(_absolute(identity["path"]), 16 << 20)[1] != identity:
+                        raise ValueError("static64 retry preflight metadata changed before compilation")
             compiled = compile_existing_air(
                 air, root / "compilation", args.ddk_root, ddk_id=args.ddk_id,
                 tbe_diagnosis=args.tbe_diagnosis, timeout_seconds=args.timeout_seconds,
