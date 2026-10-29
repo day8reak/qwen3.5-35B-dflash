@@ -2147,7 +2147,7 @@
   "probe_policy": "The active model-ops scope is three custom operator types and six prefill/decode cases, explicitly selected by the user. Conv state and RMS use existing base operators. Reuse compiled cases; retain all-ops nine-case records and custom Conv/RMS failures as optional historical diagnostics, not passes. No new Conv/RMS fusion-candidate plan.",
   "evidence": "specs/verification.json",
   "delivery_plan": {
-    "priority": "USER_DIRECTIVE: full original 40-layer quantized target plus complete 6-layer residual-fix draft; real eight-layer features and multi-round execution first; accuracy and performance remain separate gates",
+    "priority": "USER_DIRECTIVE: run original PyTorch/TorchAir and faithful direct-GE full40layer target routes in parallel, retain independent artifacts, realfeatures, same full6layer residual-fix draft; execution smoke first with accuracy/performance separately gated",
     "parallel_workstreams": [
       "Reuse already executed complete residual-fix draft bundle; no new draft export/compile/packing",
       "Derive original private Cpro PyTorch source with eight-layer feature concatenation appended as output82",
@@ -2178,7 +2178,7 @@
       "platform": "kirinx90",
       "scope": "Run-local TBE argument adapter only; no quantized full model built in this run."
     },
-    "primary_route": "original_quantized_target_features_plus_residual_fix_draft",
+    "primary_route": "parallel_original_pytorch_and_direct_ge_target_with_residual_fix_draft",
     "fallback_weight_preparation": {
       "entrypoint": "targets/cpro/scripts/prepare_full_target.py",
       "tensor_count": 693,
@@ -2200,6 +2200,34 @@
       "new_compile_output": "CURRENT_DDK_WRITES_TO_VERIFIED_LARGE_DISK_OR_MOUNTED_SHARED_STORAGE_UNDER_AI_RUN_DIR",
       "same_ddk_on_original_machine": "USER_CONFIRMED_NOT_AVAILABLE_ONLY_PYTORCH_TORCHAIR",
       "direct_air_extension": "CANDIDATE_ONLY_REQUIRES_ACTUAL_GRAPH_AND_LOSSLESS_EDIT_PROOF"
+    },
+    "parallel_target_tracks": {
+      "source": "USER_DIRECTIVE_2026_10_29",
+      "a": {
+        "name": "original_pytorch_torchair",
+        "location": "original_weight_machine",
+        "entrypoint": "targets/cpro/scripts/prepare_target_pytorch.py",
+        "directory": "target-pytorch",
+        "status": "HEADER_PREFLIGHT_HOST_TESTED_ORIGIN_EXECUTION_PENDING",
+        "tests": 14
+      },
+      "b": {
+        "name": "direct_ge_original_cpro_contract",
+        "location": "current_ddk_machine_with_large_shared_scratch",
+        "entrypoint": "targets/cpro/scripts/prepare_original_ge_target.py",
+        "directory": "target-ge",
+        "status": "CONTRACT_HOST_TESTED_PENDING_ORIGINAL_GE_SCHEMA",
+        "tests": 20,
+        "actual_air": {
+          "bytes": 6361049,
+          "sha256": "57934fc4177929a20c978eadbb121741602cefbfb212027e440fce67b08d32a6",
+          "selected_hiai_schema": "INCOMPATIBLE_USER_REPORTED",
+          "next": "Extract original TorchAir/GE descriptor without importing NPU packages; retain strict wire checks"
+        }
+      },
+      "shared_draft": "full-draft/residual-fix/bundle",
+      "acceptance": "Same original40layer quantization/fullvocab/realfeatures and89input80state contract; independent compilation/device evidence; neither lane inherits the other lane pass",
+      "docs": "docs/target-parallel-tracks.md"
     }
   },
   "delivery_timebox": {

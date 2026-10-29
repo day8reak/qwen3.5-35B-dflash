@@ -1,6 +1,6 @@
 """Read bounded AIR graph metadata without loading weights or vendor code.
 
-The selected HIAI schema is only a candidate for AIR. A decoded protobuf is
+An explicit TorchAir descriptor or selected HIAI schema is a candidate for AIR. A decoded protobuf is
 recognized only after its actual root boundaries pass the original 89/81
 checks. This module never serializes a graph or infers decoder tap producers.
 """
@@ -16,6 +16,7 @@ import stat
 
 from .omc_container import read_container
 from .omc_wire import load_schema
+from .air_schema import load_torchair_schema
 
 
 MAX_AIR_BYTES = 64 << 20
@@ -53,7 +54,8 @@ def _attrs(node):
 def _desc(value, enum):
     if not isinstance(value, dict):
         raise ValueError("tensor descriptor is missing")
-    shape = value.get("shape", {}).get("dim")
+    raw_shape = value.get("shape")
+    shape = raw_shape.get("dim", []) if isinstance(raw_shape, dict) else None
     if (not isinstance(shape, list) or len(shape) > 16
             or any(type(d) is not int or d < -1 for d in shape)):
         raise ValueError("tensor shape is missing or unsupported")
@@ -61,6 +63,14 @@ def _desc(value, enum):
     names = [k for k, v in enum.items() if type(raw) is int and v == raw]
     return {"shape": shape, "raw_dtype": raw, "schema_dtype_names": names,
             "layout": value.get("layout")}
+
+
+def _metadata_desc(value, enum):
+    """Incomplete internal metadata cannot weaken strict host boundaries."""
+    try:
+        return _desc(value, enum)
+    except (ValueError, TypeError) as error:
+        return {"status": "UNAVAILABLE", "error": str(error)[:256]}
 
 
 def _edge(edge, by_name, enum):
@@ -80,7 +90,7 @@ def _file_constant(node, enum):
     path = attrs.get("file_path", {}).get("s")
     row = {"name": _text(node["name"]), "path_status": "TEXT" if isinstance(path, str) else "UNRESOLVED",
            "file_path": _text(path) if isinstance(path, str) else None,
-           "outputs": [_desc(v, enum) for v in node.get("output_desc", [])[:4]],
+           "outputs": [_metadata_desc(v, enum) for v in node.get("output_desc", [])[:4]],
            "attribute_names": [_text(k) for k in attrs], "payload": "NOT_OPENED_NOT_HASHED_NOT_CHECKED"}
     # Preserve only declared integer extent metadata. Do not resolve a path,
     # stat a sidecar, or infer physical storage from the tensor's logical size.
@@ -200,13 +210,13 @@ def _candidate(document, kind, enum, full):
         summary["outputs"] = outputs
         summary["operations"] = [{"name": node["name"], "type": node.get("type"),
             "input": [_text(edge) for edge in node.get("input", [])],
-            "input_desc": [_desc(desc, enum) for desc in node.get("input_desc", [])],
-            "output_desc": [_desc(desc, enum) for desc in node.get("output_desc", [])],
+            "input_desc": [_metadata_desc(desc, enum) for desc in node.get("input_desc", [])],
+            "output_desc": [_metadata_desc(desc, enum) for desc in node.get("output_desc", [])],
             "attribute_names": [_text(key) for key in _attrs(node)]} for node in graph["op"]]
     return summary
 
 
-def inspect_original_air(air, ddk_root=None, *, full=False):
+def inspect_original_air(air, ddk_root=None, *, full=False, torchair_pb2=None):
     """Return metadata only. No external path in the AIR is opened or tested."""
     result = {"schema_version": 1, "artifact_kind": "qwen35-original-air-inspection", "status": "OPAQUE",
               "read_only": True, "external_weights": "NOT_OPENED_NOT_HASHED_NOT_CHECKED",
@@ -249,18 +259,20 @@ def inspect_original_air(air, ddk_root=None, *, full=False):
                 result["container"] = {"status": "IMOD_MAGIC_UNSUPPORTED_LAYOUT", "error": str(error)[:256]}
         else:
             result["container"] = {"status": "NO_IMOD_MAGIC", "scope": "Other containers remain possible"}
-        if not ddk_root:
-            result["schema"] = {"status": "UNAVAILABLE", "reason": "Declare --ddk-root or CPRO_DDK_ROOT/DDK_PATH"}
+        if not torchair_pb2 and not ddk_root:
+            result["schema"] = {"status": "UNAVAILABLE", "reason": "Declare --torchair-pb2 or --ddk-root/CPRO_DDK_ROOT/DDK_PATH"}
             return result
-        library = Path(ddk_root).expanduser() / "tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so"
+        library = (Path(torchair_pb2).expanduser() if torchair_pb2 else
+                   Path(ddk_root).expanduser() / "tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so")
         try:
             library_before = _stamp(library)
-            schema = load_schema(library)
-            result["schema"] = {"status": "CANDIDATE_ONLY", **schema.evidence}
+            schema = load_torchair_schema(library) if torchair_pb2 else load_schema(library)
+            result["schema"] = {"status": "CANDIDATE_ONLY", **schema.evidence,
+                                "selection": "EXPLICIT_TORCHAIR_PB2" if torchair_pb2 else "SELECTED_DDK_HIAI_CANDIDATE"}
         except (OSError, ValueError, TypeError) as error:
             result["schema"] = {"status": "UNAVAILABLE", "error": str(error)[:256]}
             return result
-        enum = schema.enums.get("hiai.proto.DataType", {})
+        enum = schema.enums.get(schema.evidence["schema_package"] + ".DataType", {})
         for label, payload, kind in payloads:
             row = {"format": label, "message_type": kind, "status": "UNSUPPORTED"}
             result["candidates"].append(row)
@@ -277,7 +289,7 @@ def inspect_original_air(air, ddk_root=None, *, full=False):
         elif recognized:
             result["ambiguity"] = "MULTIPLE_CANDIDATE_STRUCTURES; NO_FORMAT_SELECTED"
         if _stamp(library) != library_before:
-            raise ValueError("selected schema library changed during inspection")
+            raise ValueError("selected schema source changed during inspection")
         if len(json.dumps(result, ensure_ascii=True).encode()) > MAX_OUTPUT_BYTES:
             result["candidates"] = [{"format": row["format"], "status": row["status"],
                 "metadata": "OMITTED_OUTPUT_BUDGET"} for row in result["candidates"]]

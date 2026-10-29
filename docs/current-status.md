@@ -12,31 +12,37 @@
 
 这只解决当前固定合成 target-feature fixture 的 Top1，不代表真实特征、多轮或语言质量精度已经通过。`production_equivalence=DIFFERENT` 比较的是旧失败设备模型，不能误读成这次 Top1 失败。保留 `residual-fix/{result.json,compiled-output-abi.json,board/comparison.json,bundle/}`，端到端使用这份模型。**当前不重跑 draft 导出、OMG、打包或残差候选。**
 
-### target：大权重留原导出机，当前服务器先只读核对
+### target：A 原PyTorch 与 B 直接GE并行
 
-用户已确认：执行服务器没有HF/量化检查点和embedding原表，约剩10GB；原导出机仍能登录且原权重保留。当前服务器已有原AIR和外置权重：
-`/home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/`。
+用户最新要求两条方案并行，防止GE路线出问题。**A在原权重机器按原PyTorch/TorchAir导出；B在当前服务器对齐原Cpro算子、量化权重和paged/NZ/RefData接口，走直接GE。** 两条均为完整40层、原量化权重、完整248320词表及真实8层features，各自保留独立构建和设备证据，共用上方完整residual-fix draft。
 
-**调整此前方案：HF和量化检查点留在原机器。** 用户进一步确认原机只有PyTorch/TorchAir导出环境。因此带8层真实features的导出放原机；OMG使用当前服务器现有同版本DDK，但输入快照、scratch和输出放独立大盘，或原机提供的共享存储挂载点。上传的小源码可用于审查，当前服务器不执行依赖完整检查点的PyTorch导出。原target仍为完整40层量化模型，不用自建FP16 target替代。
-
-执行服务器后续只需原INT8 embedding和FP32逐词scale两张表，用于连续token输入。按完整248320词表、hidden2048、每词一个scale计算，共约485.95MiB；draft prepared只有FP16表，不能据此恢复原INT8+scale。先确认原文件的实际大小和SHA，再传这两张原表，HF和量化检查点保持原位置。
-
-新AIR复用当前外置权重前，必须核对其FileConstant引用、dtype、shape、字节数和SHA；相同文件名不能作为一致证据。新OMC的分区/packing可能改变，编译权重仍需重新生成并绑定，不能套用旧OMC的SubGraph权重。**只传小AIR不等于新编译没有大磁盘开销**；10GB不作为足够的保证。
-
-当前先更新代码，只读检查已有AIR结构和实际控制输入。这两个命令不导出、不编译、不上板、不读外置权重：
+完整命令、边界和状态见[双路线执行](target-parallel-tracks.md)。A原机入口为`prepare_target_pytorch.py`，先只读配置/分片头和小源码准备，缺原参数即停止；资源就绪后才在原机导出。用户已完成B原AIR检查：6361049字节、原文件保持，当前HIAI schema不匹配（`OPAQUE`）；不能重复用同一schema或把它当坏AIR。B当前先只读定位原TorchAir/GE生成的pb2，避免导入NPU包：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
-  --air /home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/export.air
-python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_inputs.py" \
-  --input-dir /home/w00949577/run_35B/chunksize_64_data \
-  --sequence-length 64
+  --find-torchair-schema
 ```
 
-AIR检查器只报告所选schema下可证明的结构；不能解析或边界不匹配就明确标记，不修改原AIR或猜8层节点。直接扩展原AIR作为省空间候选，需实际图、40层锚点和无损读写证明，当前未实现或验证。原机从源码导出仍是已有host验证的接口路线。磁盘分工和原机准备入口见[原target真实特征接入](original-target-features.md#当前低磁盘安排)。
+若当前服务器未找到，在原TorchAir机器运行同一查找命令，只取其实际`ge_ir_by_protoc_*_pb2.py`小文件到当前服务器即可，仍不传权重。`ge_ir_pb2.py`可能只是版本shim，应选择查找结果中可静态提取descriptor的文件。用实际路径设置`TORCHAIR_GE_PB2`后重新只读检查，写入新报告，旧OPAQUE报告保留：
 
-原源码导出dummy控制量不能当连续解码默认值，`conv_state_pos`等语义仍需实际样本/原生成器/DDK核对。真实features及64→1状态接续尚无完整设备证据；本轮不使用占位features。
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
+  --air /home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/export.air \
+  --torchair-pb2 "$TORCHAIR_GE_PB2" --full \
+  --output "$AI_RUN_DIR/target-ge-source-air-ge.json"
+```
+
+同名输出若已存在，工具拒绝覆盖；保留已有报告并使用其路径，不删除旧证据。B后续绑定入口为`prepare_original_ge_target.py`；实际图/来源/算子证据不全时保持待绑定，不把现有functional GE target当成原Cpro等价实现。原源码的norm表达式、量化pack/QPARAM、自定义算子及80状态都要逐项核实。
+
+原权重机器目前只有PyTorch/TorchAir，没有同版本Cpro DDK；OMG继续使用当前服务器原环境，大输入快照、scratch和输出放共享挂载或独立大盘。HF和quant检查点留原机，当前服务器仅需约485.95MiB的原INT8 embedding+FP32逐词scale用于连续输入。新AIR复用源sidecar必须逐项核对；新OMC分区/packing权重仍需重新编译，10GB不作为足够空间的保证。[详细空间安排](original-target-features.md#当前低磁盘安排)。
+
+实际控制输入仍用只读检查器核对，不能用导出dummy值推进连续状态：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_inputs.py" \
+  --input-dir /home/w00949577/run_35B/chunksize_64_data --sequence-length 64
+```
 
 ### 端到端第一轮的验证范围
 

@@ -127,27 +127,32 @@ class _Field:
 class Schema:
     """Schema decoded from a FileDescriptorProto; no vendor library is loaded."""
 
-    def __init__(self, descriptor, evidence=None):
+    def __init__(self, descriptor, evidence=None, *, expected_file="proto/ge_ir.proto",
+                 expected_package="hiai.proto"):
         if len(descriptor) > _MAX_DESCRIPTOR:
             raise ValueError("descriptor exceeds byte budget")
         self.evidence = dict(evidence or {})
         self.enums, self._messages = {}, {}
         budget = [_MAX_FIELDS]
         fields = _descriptor_fields(memoryview(descriptor), budget)
-        if (_text(_one(fields, 1, 2, b"")) != "proto/ge_ir.proto"
-                or _text(_one(fields, 2, 2, b"")) != "hiai.proto"):
-            raise ValueError("expected proto/ge_ir.proto in package hiai.proto")
+        if (_text(_one(fields, 1, 2, b"")) != expected_file
+                or _text(_one(fields, 2, 2, b"")) != expected_package):
+            raise ValueError(f"expected {expected_file} in package {expected_package}")
+        if (expected_package not in {"hiai.proto", "ge.proto"}
+                or expected_file not in {"proto/ge_ir.proto", "ge_ir.proto"}):
+            raise ValueError("unsupported explicit GE schema identity")
+        self.package = expected_package
         if _many(fields, 3, 2):
             raise ValueError("external descriptor dependencies are unsupported")
         syntax = _text(_one(fields, 12, 2, b"proto2"))
         if syntax not in {"proto2", "proto3"}:
             raise ValueError("unsupported descriptor syntax")
-        self.evidence.update(schema_file="proto/ge_ir.proto", schema_package="hiai.proto",
+        self.evidence.update(schema_file=expected_file, schema_package=expected_package,
                              schema_syntax=syntax)
         for raw in _many(fields, 5, 2):
-            self._enum(raw, "hiai.proto", budget)
+            self._enum(raw, self.package, budget)
         for raw in _many(fields, 4, 2):
-            self._message(raw, "hiai.proto", budget, 0)
+            self._message(raw, self.package, budget, 0)
         for message in self._messages.values():
             for field in message.values():
                 if field.kind == 11 and field.type_name not in self._messages:
@@ -210,8 +215,8 @@ class Schema:
         absent. Attribute bytes are text only for small printable strings.
         """
         name = type_name.lstrip(".")
-        if not name.startswith("hiai.proto."):
-            name = "hiai.proto." + name
+        if not name.startswith(self.package + "."):
+            name = self.package + "." + name
         if name not in self._messages:
             raise ValueError(f"unknown protobuf message {type_name}")
         return self._decode(memoryview(data), name, [_MAX_FIELDS], 0)
@@ -283,7 +288,8 @@ class Schema:
             return _text(value)
         if kind == 12:
             if (len(value) <= 256 and field.name == "s"
-                    and message in {"hiai.proto.AttrDef", "hiai.proto.AttrDef.ListValue"}):
+                    and message in {"hiai.proto.AttrDef", "hiai.proto.AttrDef.ListValue",
+                                    "ge.proto.AttrDef", "ge.proto.AttrDef.ListValue"}):
                 try:
                     text = _text(value)
                     if text.isprintable() or not text:

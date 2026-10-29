@@ -121,7 +121,10 @@ def test_real_wire_candidates_are_distinguished_and_weights_and_taps_remain_unve
     assert candidate["file_constants"]["examples"][0]["declared_extent"] == {"offset": 0}
     assert len(json.dumps(result)) < 20000
     assert "PRIVATE_TENSOR_BYTES" not in json.dumps(result)
-    assert all(path.stat() == stamp for path, stamp in before.items())
+    # Reads may update filesystem atime; stable content/identity fields must not change.
+    def identity(info):
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+    assert all(identity(path.stat()) == identity(stamp) for path, stamp in before.items())
 
 
 @pytest.mark.parametrize("mutation", ["missing_input", "unknown_dtype", "state_shape", "missing_output",
