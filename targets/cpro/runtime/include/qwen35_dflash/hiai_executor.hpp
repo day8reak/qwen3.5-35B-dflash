@@ -3,8 +3,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <map>
 #include <string>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 namespace qwen35::dflash {
@@ -32,6 +34,44 @@ struct HiaiDescriptionProbe {
 };
 // Observes descriptor setters only. Never loads or executes the model.
 HiaiDescriptionProbe ProbeHiaiModelDescription(const std::filesystem::path& model);
+
+struct HiaiModelIoTensor {
+  std::size_t index = 0;
+  std::vector<std::int64_t> shape;
+  int raw_dtype = 0, raw_format = 0;
+};
+struct HiaiModelIoEnumTable {
+  std::map<std::string, int> dtypes, formats;
+};
+namespace detail {
+template <typename Enum, typename = void>
+struct OptionalInt8Enum {
+  static constexpr bool available = false;
+  static void Append(std::map<std::string, int>&) {}
+};
+template <typename Enum>
+struct OptionalInt8Enum<Enum, std::void_t<decltype(Enum::INT8)>> {
+  static constexpr bool available = true;
+  static void Append(std::map<std::string, int>& values) {
+    values.emplace("INT8", static_cast<int>(Enum::INT8));
+  }
+};
+}  // namespace detail
+// Existing adapter constants plus INT8 only when that selected enum member
+// exists at compile time. Unknown raw IDs remain uninterpreted; no ID is guessed.
+HiaiModelIoEnumTable HiaiModelIoEnums();
+struct HiaiModelIoProbe {
+  HiaiProbe runtime;
+  std::string model_path, model_sha256;
+  std::uint64_t model_bytes = 0;
+  std::vector<HiaiModelIoTensor> inputs, outputs;
+};
+// Restores file-v2 metadata, observes ordered descriptors and releases it.
+// Never creates/initializes a file-v2 IModelManager, requests tensor buffers or calls
+// Process/Run. This bounded experiment does not establish external-weight
+// initialization, tensor names or equal-shaped input semantics.
+HiaiModelIoProbe ProbeHiaiModelIo(const std::filesystem::path& model,
+                                const std::string& expected_runtime_version);
 
 // The explicit-state target has a separate, ordered ABI. Dtype comes from the
 // hash-bound graph contract; the legacy HIAI descriptor exposes shape/format.

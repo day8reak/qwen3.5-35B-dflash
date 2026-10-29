@@ -68,4 +68,10 @@ if(BUILD_HOST_TESTS)
   add_test(NAME hiai_model_description_probe
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_model_description_probe.py
       $<TARGET_FILE:hiai_runner_fake> ${CMAKE_CURRENT_BINARY_DIR}/description-cases)
+  add_test(NAME hiai_model_io_probe
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_model_io_probe.py
+      $<TARGET_FILE:hiai_runner_fake> ${CMAKE_CURRENT_BINARY_DIR}/model-io-cases)
+  add_executable(hiai_optional_enum_tests tests/test_hiai_optional_enum.cpp)
+  target_link_libraries(hiai_optional_enum_tests PRIVATE dflash_core)
+  add_test(NAME hiai_optional_enum COMMAND hiai_optional_enum_tests)
 endif()

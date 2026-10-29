@@ -2,22 +2,53 @@
 
 <a id="用户现在执行什么"></a>
 
-A（已配置 HDC 的窗口，prefill64 和 decode1 均已编译完成）：绑定上次结果，在独占可写目录重新采集工具帮助。
+A，窗口 1：检查 prefill64 的运行时元数据；通过时输出 `IO_METADATA_OBSERVED`、`input_count=89`、`output_count=82`、`manager_init=NOT_RUN`。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_board_tool.py" \
-  --writable-help-from "$AI_RUN_DIR/target-board-tool-inspection" \
-  --output "$AI_RUN_DIR/target-board-tool-inspection-writable"
+python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_runtime_io.py" \
+  --job "$AI_RUN_DIR/target-pytorch-prefill64-tmpdirfix" \
+  --tool-inspection "$AI_RUN_DIR/target-board-tool-inspection-writable" \
+  --lock-wait-seconds 1800 \
+  --output "$AI_RUN_DIR/target-prefill64-runtime-io"
 ```
 
-A（DDK 服务器）：读取现有 64 档输入的小控制文件和 mask 统计，为首次上板核对输入。
+A，窗口 2：并行准备 decode1 探针，板端查询会自动排队；通过时同样输出 `IO_METADATA_OBSERVED` 和 89/82 路计数。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_inputs.py" \
+python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_runtime_io.py" \
+  --job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
+  --tool-inspection "$AI_RUN_DIR/target-board-tool-inspection-writable" \
+  --lock-wait-seconds 1800 \
+  --output "$AI_RUN_DIR/target-decode1-runtime-io"
+```
+
+A，两份探针通过后：核对首次 prefill 的实际输入与槽位，通过时输出 `PREFILL_SMOKE_PLANNED`，本步不上传大权重或执行模型。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/run_target_prefill_smoke.py" \
+  --job "$AI_RUN_DIR/target-pytorch-prefill64-tmpdirfix" \
+  --runtime-probe "$AI_RUN_DIR/target-prefill64-runtime-io" \
   --input-dir /home/w00949577/run_35B/chunksize_64_data \
-  --sequence-length 64
+  --output "$AI_RUN_DIR/target-prefill64-smoke-plan"
 ```
 
-B：55 档特征 AIR 和文件清单已完成，本轮保留备份，无需重复生成或编译。
+A，仅计划通过后：上传缺失的编译权重并执行一次 prefill；`EXECUTED_UNVALIDATED` 表示已执行并取回输出，准确性和状态接续尚待验证。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/run_target_prefill_smoke.py" \
+  --job "$AI_RUN_DIR/target-pytorch-prefill64-tmpdirfix" \
+  --runtime-probe "$AI_RUN_DIR/target-prefill64-runtime-io" \
+  --input-dir /home/w00949577/run_35B/chunksize_64_data \
+  --output "$AI_RUN_DIR/target-prefill64-smoke" \
+  --apply
+```
+
+A，任一步完成或失败后：汇总当前结果、下一步与失败日志；本命令只读取小报告，不重启任务或清理锁。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_morning_status.py"
+```
+
+B：55 档特征 AIR 保留备份，本轮无待执行命令。

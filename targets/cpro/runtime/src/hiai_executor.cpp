@@ -183,9 +183,9 @@ struct Model {
       throw std::runtime_error(std::string("HIAI OMC tensor count differs from ") + abi);
   }
   void LoadFile(const std::filesystem::path& path, const std::string& expected_version,
-                std::size_t input_count, std::size_t output_count) {
+                std::size_t input_count, std::size_t output_count, bool descriptor_only = false) {
     file_v2 = true;
-    name = "qwen35_standalone_draft";
+    name = descriptor_only ? "qwen35_model_io_probe" : "qwen35_standalone_draft";
     try {
       Stage("RUNTIME_IDENTITY");
       const auto probe = ProbeHiai();
@@ -201,6 +201,18 @@ struct Model {
       // the runtime. Do not round-trip through a buffer or legacy descriptor.
       const auto restored = built_model->RestoreFromFile(path.c_str());
       if (restored != 0) throw std::runtime_error("RestoreFromFile failed: " + std::to_string(restored));
+      if (descriptor_only) {
+        // Explicit restore-only experiment: query the restored object's public
+        // metadata before creating or initializing a manager. External-weight
+        // setup is not requested or inferred. Failure has no fallback route.
+        Stage("TENSOR_DESCRIPTORS");
+        nd_input_dims = built_model->GetInputTensorDescs();
+        nd_output_dims = built_model->GetOutputTensorDescs();
+        if (nd_input_dims.empty() || nd_output_dims.empty()
+            || nd_input_dims.size() > 4096 || nd_output_dims.size() > 4096)
+          throw std::runtime_error("model IO probe requires 1..4096 ordered descriptors per direction");
+        return;
+      }
       Stage("CREATE_MODEL_MANAGER");
       manager = hiai::CreateModelManager();
       if (!manager) throw std::runtime_error("CreateModelManager returned null");
@@ -357,6 +369,61 @@ HiaiDescriptionProbe ProbeHiaiModelDescription(const std::filesystem::path& mode
     }
     result.observations.push_back(std::move(observation));
   }
+  return result;
+}
+
+HiaiModelIoProbe ProbeHiaiModelIo(const std::filesystem::path& model,
+                                const std::string& expected_runtime_version) {
+  const auto path = std::filesystem::absolute(model);
+  if (expected_runtime_version.empty() || std::filesystem::is_symlink(path)
+      || !std::filesystem::is_regular_file(path) || std::filesystem::file_size(path) == 0)
+    throw std::invalid_argument("model IO probe requires a nonempty regular main OMC and runtime identity");
+  struct stat before {};
+  if (stat(path.c_str(), &before) != 0)
+    throw std::runtime_error("cannot stat model IO probe OMC");
+  HiaiModelIoProbe result;
+  result.model_path = path.string();
+  result.model_bytes = static_cast<std::uint64_t>(before.st_size);
+  result.model_sha256 = Sha256File(path);
+  {
+    Model loaded;
+    loaded.LoadFile(path, expected_runtime_version, 0, 0, true);
+    result.runtime = {loaded.version, true};
+    auto capture = [](const std::vector<hiai::NDTensorDesc>& descriptors) {
+      std::vector<HiaiModelIoTensor> observations;
+      for (std::size_t index = 0; index < descriptors.size(); ++index) {
+        const auto& descriptor = descriptors[index];
+        if (descriptor.dims.size() > 32)
+          throw HiaiRuntimeError("TENSOR_DESCRIPTORS", "runtime descriptor exceeds model IO probe rank limit32");
+        HiaiModelIoTensor item;
+        item.index = index;
+        item.shape.assign(descriptor.dims.begin(), descriptor.dims.end());
+        item.raw_dtype = static_cast<int>(descriptor.dataType);
+        item.raw_format = static_cast<int>(descriptor.format);
+        observations.push_back(std::move(item));
+      }
+      return observations;
+    };
+    result.inputs = capture(loaded.nd_input_dims);
+    result.outputs = capture(loaded.nd_output_dims);
+  }
+  struct stat after {};
+  if (stat(path.c_str(), &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino
+      || before.st_size != after.st_size || before.st_mtime != after.st_mtime
+      || before.st_ctime != after.st_ctime || before.st_mode != after.st_mode
+      || Sha256File(path) != result.model_sha256)
+    throw HiaiRuntimeError("MODEL_PRESERVATION", "main OMC changed during restore-only model IO observation");
+  return result;
+}
+
+HiaiModelIoEnumTable HiaiModelIoEnums() {
+  HiaiModelIoEnumTable result = {{{"FLOAT16", static_cast<int>(hiai::DataType::FLOAT16)},
+           {"FLOAT32", static_cast<int>(hiai::DataType::FLOAT32)},
+           {"INT32", static_cast<int>(hiai::DataType::INT32)},
+           {"INT16", static_cast<int>(hiai::DataType::INT16)},
+           {"INT64", static_cast<int>(hiai::DataType::INT64)}},
+          {{"ND", static_cast<int>(hiai::Format::ND)}}};
+  detail::OptionalInt8Enum<hiai::DataType>::Append(result.dtypes);
   return result;
 }
 

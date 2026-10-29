@@ -74,6 +74,29 @@ void WriteTokenIds(
   output << ']';
 }
 
+void WriteModelIoTensors(std::ostream& output, const std::vector<HiaiModelIoTensor>& values) {
+  output << '[';
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    if (i) output << ',';
+    output << "{\"index\":" << values[i].index << ",\"shape\":";
+    WriteTokenIds(output, values[i].shape);
+    output << ",\"raw_dtype\":" << values[i].raw_dtype
+           << ",\"raw_format\":" << values[i].raw_format << '}';
+  }
+  output << ']';
+}
+
+void WriteEnumTable(std::ostream& output, const std::map<std::string, int>& values) {
+  output << '{';
+  bool first = true;
+  for (const auto& item : values) {
+    if (!first) output << ',';
+    first = false;
+    output << '"' << JsonEscape(item.first) << "\":" << item.second;
+  }
+  output << '}';
+}
+
 void WriteDoubles(std::ostream& output, const std::vector<double>& values) {
   output << '[';
   for (std::size_t index = 0; index < values.size(); ++index) {
@@ -863,6 +886,8 @@ int RunTensorStep(const std::string& path, const std::string& output,
 void Help() {
   std::cout << "qwen35_dflash_hiai --probe\n"
             << "qwen35_dflash_hiai --probe-model-description MAIN.omc (at most 64 MiB; no Load/Process)\n"
+            << "qwen35_dflash_hiai --model-io-only MAIN.omc --descriptor-stage restore-only --model-sha256 SHA256 "
+            << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID --output NEW.json\n"
             << "qwen35_dflash_hiai --target TARGET.omc --target-sha256 HEX "
             << "--draft DRAFT.omc --draft-sha256 HEX --expected-runtime-version VERSION "
             << "--ddk-id VERSION --firmware-id VERSION "
@@ -934,6 +959,75 @@ int main(int argc, char** argv) {
       }
       std::string value = it->second; args.erase(it); return value;
     };
+    if (args.count("--model-io-only")) {
+      const auto model = std::filesystem::absolute(take("--model-io-only"));
+      const auto model_hash = take("--model-sha256");
+      StepHash(model_hash);
+      const auto descriptor_stage = take("--descriptor-stage");
+      if (descriptor_stage != "restore-only")
+        throw std::invalid_argument("--model-io-only requires --descriptor-stage restore-only");
+      const auto output = take("--output");
+      const auto version = take("--expected-runtime-version");
+      const auto ddk = take("--ddk-id"), firmware = take("--firmware-id");
+      if (output.empty() || version.empty() || ddk.empty() || firmware.empty() || !args.empty())
+        throw std::invalid_argument("model IO probe requires output, runtime/DDK/firmware identities and no unrelated options");
+      if (std::filesystem::exists(output))
+        throw std::runtime_error("output already exists");
+      if (std::filesystem::is_symlink(model) || !std::filesystem::is_regular_file(model)
+          || std::filesystem::file_size(model) == 0 || Sha256File(model) != model_hash)
+        throw std::runtime_error("model IO probe main OMC regular-file/SHA256 check failed before load");
+      std::ostringstream report;
+      report << "{\"schema_version\":1,\"artifact_kind\":\"qwen35-hiai-model-io-probe\","
+             << "\"evidence_kind\":\"" << kEvidenceKind << "\",\"model_path\":\"" << JsonEscape(model.string())
+             << "\",\"model_sha256\":\"" << model_hash << "\",\"expected_runtime_version\":\""
+             << JsonEscape(version) << "\",\"ddk_id\":\"" << JsonEscape(ddk)
+             << "\",\"firmware_id\":\"" << JsonEscape(firmware)
+             << "\",\"process_id\":" << static_cast<long long>(getpid())
+             << ",\"model_load_api\":\"file-v2\",\"process_called\":false,\"run_called\":false,"
+             << "\"descriptor_stage\":\"restore-only\",\"manager_init\":\"NOT_RUN\","
+             << "\"model_load_scope\":\"RESTORE_METADATA_ONLY\",\"restore_init\":\"NOT_RUN_METADATA_ONLY\","
+             << "\"external_weight_initialization\":\"NOT_REQUESTED\","
+             << "\"tensor_allocations_requested\":0,\"numerical_validation\":\"NOT_RUN\","
+             << "\"runtime_input_order\":\"ORDERED_DESCRIPTOR_INDICES_ONLY\","
+             << "\"runtime_tensor_names\":\"NOT_EXPOSED_BY_SELECTED_ADAPTER\","
+             << "\"semantic_slot_identity\":\"UNVERIFIED\",\"dtype_enum\":\"hiai::DataType\","
+             << "\"format_enum\":\"hiai::Format\",\"scope\":\"Explicit restore-only metadata experiment. "
+             << "No file-v2 IModelManager creation/initialization, external-weight initialization, input data, caller tensor allocation or inference. "
+             << "Repeated shapes and equal scalar descriptors do not establish semantic slots.\","
+             << "\"dtype_enum_values\":";
+      const auto enum_values = HiaiModelIoEnums();
+      WriteEnumTable(report, enum_values.dtypes);
+      report << ",\"format_enum_values\":";
+      WriteEnumTable(report, enum_values.formats);
+      report << ',';
+      bool succeeded = false;
+      try {
+        const auto observed = ProbeHiaiModelIo(model, version);
+        if (observed.model_sha256 != model_hash)
+          throw HiaiRuntimeError("MODEL_PRESERVATION", "main OMC changed before file-v2 load");
+        report << "\"status\":\"IO_DESCRIPTORS_OBSERVED\",\"runtime_stage\":\"TENSOR_DESCRIPTORS\","
+               << "\"restore\":\"PASSED\",\"runtime_version\":\"" << JsonEscape(observed.runtime.version)
+               << "\",\"npu_supported\":" << (observed.runtime.npu_supported ? "true" : "false")
+               << ",\"model_bytes\":" << observed.model_bytes << ",\"input_count\":" << observed.inputs.size()
+               << ",\"output_count\":" << observed.outputs.size() << ",\"inputs\":";
+        WriteModelIoTensors(report, observed.inputs);
+        report << ",\"outputs\":";
+        WriteModelIoTensors(report, observed.outputs);
+        succeeded = true;
+      } catch (const std::exception& error) {
+        const auto* runtime_error = dynamic_cast<const HiaiRuntimeError*>(&error);
+        const auto stage = runtime_error ? runtime_error->stage() : "MODEL_IO_PREFLIGHT";
+        report << "\"status\":\"MODEL_IO_FAILED\",\"restore\":\""
+               << ((stage == "TENSOR_DESCRIPTORS" || stage == "MODEL_PRESERVATION") ? "PASSED" : "FAILED_OR_NOT_REACHED")
+               << "\","
+               << "\"runtime_stage\":\"" << JsonEscape(runtime_error ? runtime_error->stage() : "MODEL_IO_PREFLIGHT")
+               << "\",\"reason\":\"" << JsonEscape(error.what()) << "\",\"inputs\":[],\"outputs\":[]";
+      }
+      report << '}';
+      AtomicWrite(output, report.str());
+      std::cout << report.str() << '\n';
+      return succeeded ? 0 : 1;
+    }
     if (args.count("--stateful-step") || args.count("--fused-op-step") || args.count("--draft-step")) {
       const bool fused = args.count("--fused-op-step");
       const bool draft_step = args.count("--draft-step");

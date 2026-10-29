@@ -53,7 +53,7 @@
     "Ordinary decode and multi-round DFlash stop/reject/commit behavior",
     "Matched numerical acceptance and measured end-to-end performance"
   ],
-  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/inspect_target_board_tool.py\" --writable-help-from \"$AI_RUN_DIR/target-board-tool-inspection\" --output \"$AI_RUN_DIR/target-board-tool-inspection-writable\"",
+  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/inspect_target_runtime_io.py\" --job \"$AI_RUN_DIR/target-pytorch-prefill64-tmpdirfix\" --tool-inspection \"$AI_RUN_DIR/target-board-tool-inspection-writable\" --lock-wait-seconds 1800 --output \"$AI_RUN_DIR/target-prefill64-runtime-io\"",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -68,7 +68,12 @@
       "Compilation may lower all80 RefData root inputs to Data while retaining state shapes and explicit outputs; preserve runtime uncertainty without relabeling compiler success",
       "A further hardlink to retained successful inputs changes nlink/ctime and invalidates owner receipts; decode input reuse uses bounded owned file aliases with fresh source validation instead",
       "The existing phone tool validates its default output_dir before producing option help; a matched binary/transport report with error-only text is not observed help. Bind prior identity and retry only --help in a fresh writable directory, without model arguments.",
-      "Both independently exported static64 and static1 complete target models compiled with feature81; successful decode1 individual-file references passed final source audit without new19GB input copies. This closes compilation only, not target runtime or state continuity."
+      "Both independently exported static64 and static1 complete target models compiled with feature81; successful decode1 individual-file references passed final source audit without new19GB input copies. This closes compilation only, not target runtime or state continuity.",
+      "Selected public file-v2 external draft Init had already failed; reuse that historical evidence and query restored metadata before manager creation instead of repeating a19GB known-incomplete load path.",
+      "SDK DataType/Format enum domains differ from GE protobuf; compile observed enum values from actual selected headers, with optional INT8 member detection instead of hardcoded numeric guesses.",
+      "For one first-prefill call, repeated state slots can be assigned safely when every original input value in each exact typed-shape class is byte-identical; this proves permutation invariance for that call only, never recurrent state-layer identity.",
+      "Metadata probes and full prefill use one phone-global lock across model caches; host preparation can run in parallel while actual board actions serialize, and uncertain timeouts retain evidence/locks instead of restarting.",
+      "Leading/trailing singleton ND axes can be compared as exact linear views while feeding original bytes into actual runtime shapes; ambiguous ordinary inputs are permitted only if byte-identical for this one first-prefill call. Inner/nonunit axes and state feedback remain outside this certificate."
     ],
     "executable_checks": [
       "tests/test_full_target_continuation.py",
@@ -258,5 +263,169 @@
     "path_source": "Existing original-target documentation/user-provided host input directory",
     "sequence_length": 64,
     "scope": "Seven small original control/position/scale files and streamed mask statistics only. No embedding/state/weight reads, generated controls or device execution; missing files remain explicit."
+  },
+  "latest_tool_help_user_report": {
+    "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+    "status": "INSPECTED",
+    "tool_sha256": "1e3f201196fdffbba926224f5557afcf65de6d297fbed6bfdf3d40eecb85a3b0",
+    "firmware": "OpenHarmony-6.0.0.43 ",
+    "help_returncode": 1,
+    "help_observation": "HELP_TEXT_OBSERVED",
+    "help_utf8_bytes": 3924,
+    "help_utf8_sha256": "265f2951e1d48bbf167112a8a8b5cb86c1dce256d01cde6c341864a9645b43ea",
+    "prior_inspection_sha256": "6559965d2b53d192f5fc962d3c034832946405a2548cd6773305685149b7f904",
+    "observed_options": [
+      "--modelmanager_itf=V2",
+      "--direct_from_file",
+      "--weight_dir",
+      "--input",
+      "--times",
+      "--input_type",
+      "--output_type",
+      "--input_shape",
+      "--output_shape"
+    ],
+    "times_default": 2,
+    "first_execution_times_required": 1,
+    "runtime_input_order": "NOT_QUERIED",
+    "runtime_tensor_names": "NOT_QUERIED",
+    "model_upload": "NOT_RUN",
+    "model_load": "NOT_RUN",
+    "model_inference": "NOT_RUN"
+  },
+  "latest_original_controls_user_report": {
+    "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+    "status": "INSPECTED",
+    "input_dir": "/home/w00949577/run_35B/chunksize_64_data",
+    "sequence_length": 64,
+    "new_kv_cache_pos": {
+      "values": "0..63",
+      "bytes": 256,
+      "sha256": "fea7b32778ecbdd7adee1941e98c89cf96bbc762f5f1beb0be24e36a456fbbc5"
+    },
+    "position_ids": {
+      "values": "0..63",
+      "bytes": 256,
+      "sha256": "fea7b32778ecbdd7adee1941e98c89cf96bbc762f5f1beb0be24e36a456fbbc5"
+    },
+    "output_pos": {
+      "values": [
+        64
+      ],
+      "bytes": 4,
+      "sha256": "c31425b44a7ed682a3356bf6820141e1584a15c43b6d6793f552e5d4621586f7"
+    },
+    "allQLen": {
+      "values": [
+        64
+      ],
+      "bytes": 8,
+      "sha256": "a06f129fc52abf6085679d7cd71dc41ec7580c7f5f73efef6d02dde22bb00994"
+    },
+    "effective_length": {
+      "values": [
+        64
+      ],
+      "bytes": 2,
+      "sha256": "eec4121f2a07b61aba16414812aa9afc39ab0a136360a5ace2240dc19b0464eb"
+    },
+    "conv_state_pos": {
+      "values": "[64, then127zeros]",
+      "bytes": 512,
+      "sha256": "47d976b3c828a2f607465aa88321010f4c6366aa2932c2e8dee9a6bc72f67c90",
+      "semantics": "UNVERIFIED"
+    },
+    "embed_scale": {
+      "elements": 64,
+      "bytes": 256,
+      "sha256": "409360825fd47ce71f8fa37797a2efdf20041c9666b70c0e689fedbbb95e1cae",
+      "values_omitted": true
+    },
+    "attention_mask": {
+      "elements": 131072,
+      "bytes": 524288,
+      "sha256": "f12a768c853430db9ba652960b6f988e120678e2dda2ae5f7e000db4c9fea8f0",
+      "zero_count": 2080,
+      "negative_infinity_count": 128992,
+      "nan_count": 0,
+      "positive_infinity_count": 0
+    },
+    "runtime_input_slots": "UNVERIFIED",
+    "dtype_binding": "FROM_ORIGINAL_EXPORTER_NOT_COMPILED_ABI",
+    "scope": "Original file values/hashes and mask aggregate statistics only; no generated controls, actual target execution or semantic state mapping proof"
+  },
+  "next_restore_metadata_probe": {
+    "status": "HOST_IMPLEMENTED_AND_FAKE_TESTED_USER_DEVICE_PENDING",
+    "entrypoint": "targets/cpro/scripts/inspect_target_runtime_io.py",
+    "targets": [
+      "target-pytorch-prefill64-tmpdirfix",
+      "target-pytorch-decode1-compile"
+    ],
+    "parallelism": "Two user windows may build/hash in parallel; shared phone metadata restore queries use one owned bounded-wait lock",
+    "model_payload": "Only small original primary OMC plus runner/libraries; no generated weight-file content read/stat/upload. Restored OMC is isolated in a fresh attempt metadata directory, separate from any existing cached sidecars.",
+    "native": "Mandatory --descriptor-stage restore-only: RestoreFromFile then GetInputTensorDescs/GetOutputTensorDescs before any CreateModelManager/Init. Compiled SDK enum tables include optional actual INT8; no Process/Run/caller buffers.",
+    "initialization_reason": "Prior actual external-draft V2 RestoreFromFile passed but Init failed with weightsMemBaseSize16; successful draft used embedded-stream legacy-buffer. External InitWeights contract is not established.",
+    "scope": "Intentional bounded metadata-only experiment. Restore may still need external dependencies; such failures remain failures with no automatic large upload or fallback. No full-load or runtime semantic slot proof.",
+    "outputs": [
+      "target-prefill64-runtime-io",
+      "target-decode1-runtime-io"
+    ],
+    "pass_status": "IO_METADATA_OBSERVED",
+    "pass_counts": {
+      "inputs": 89,
+      "outputs": 82
+    },
+    "manager_init": "NOT_RUN",
+    "failure_policy": "Keep native failure stage/stdout/stderr/exitcode and uncertain locks; no automatic weight upload, model Init or retry"
+  },
+  "next_first_prefill_smoke": {
+    "status": "HOST_IMPLEMENTED_USER_EXECUTION_PENDING",
+    "entrypoint": "targets/cpro/scripts/run_target_prefill_smoke.py",
+    "plan_output": "target-prefill64-smoke-plan",
+    "apply_output": "target-prefill64-smoke",
+    "plan_pass": "PREFILL_SMOKE_PLANNED",
+    "execution_observation": "EXECUTED_UNVALIDATED",
+    "input_mapping": "Actual unique exact HIAI typed shapes for ordinary inputs; ambiguous state classes allowed only when every original candidate has byte-identical input values. No serialized Data.index-to-runtime-slot assumption.",
+    "scope": "One prefill64 invocation only. Permutation-equivalent initial values do not establish state layer identities or feedback.",
+    "source_inputs": "/home/w00949577/run_35B/chunksize_64_data",
+    "tool_contract": "Hash-bound observed help; V2 direct_from_file=true weight_dir=primary.parent times=1 explicit ordered89/82 type/ND format; frozen static model omits flexible shape flags.",
+    "model_transfer": "Existing complete compiler payloads only, source bytes unchanged. Missing files uploaded after plan passes and phone disk budget check; prior cache reused. No model compilation or host weight copies.",
+    "concurrency": "Same phone-global owned queue lock as metadata probes plus per-cache execution lock; known child PID/exit captured, uncertain timeout retains locks and never retries.",
+    "failure_evidence": "Hash-verified stdout/stderr/exitcode/PID; bounded read-only HiLog snapshot when available.",
+    "remaining": [
+      "Actual selected-SDK build and metadata Restore behavior",
+      "Actual external weight loading using existing tool",
+      "Runtime output filename/index association",
+      "All80state output layer identities and64to1handoff",
+      "Real feature output into complete6layerdraft",
+      "Multi-round accuracy/reject/commit/stop and matched performance"
+    ]
+  },
+  "morning_status": {
+    "entrypoint": "targets/cpro/scripts/inspect_target_morning_status.py",
+    "behavior": "Print-only bounded small reports/log tails; no HDC, weights, output payload reads, writes or process control",
+    "next_labels": [
+      "READY_FOR_PREFILL_PLAN",
+      "READY_FOR_PREFILL_EXECUTION",
+      "INSPECT_RETAINED_FAILURE",
+      "PREFILL_OUTPUTS_OBSERVED_DECODE_STATE_AND_FEATURE_MAPPING_PENDING"
+    ],
+    "scope": "Advisory stage summary only; no whole-model completion, correctness or speedup claim"
+  },
+  "next_decode_probe_command": "python3 \"$REPO_DIR/targets/cpro/scripts/inspect_target_runtime_io.py\" --job \"$AI_RUN_DIR/target-pytorch-decode1-compile\" --tool-inspection \"$AI_RUN_DIR/target-board-tool-inspection-writable\" --lock-wait-seconds 1800 --output \"$AI_RUN_DIR/target-decode1-runtime-io\"",
+  "morning_packet_host_verification": {
+    "unique_pytest_cases_passed": 412,
+    "native_ctest_suites_passed": 10,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "run_id": "20261029T133810Z-26479-7df529",
+    "pytest_evidence": [
+      "out/final-morning-tests.xml",
+      "out/final-lock-tests.xml",
+      "out/final-view-tests.xml"
+    ],
+    "native_evidence": "out/final-native-tests.xml",
+    "scope": "Host fake-HDC, exact input/permutation proof, compile/continuation/default board and complete-draft host regressions; native host HIAI doubles and source fixtures. Actual selected-SDK build, real metadata restoration and target inference remain pending."
   }
 }

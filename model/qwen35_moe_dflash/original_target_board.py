@@ -151,7 +151,8 @@ def _hash_lines(text, root):
 
 def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, gear=64,
                         input_dir=None, host_input_dir=None, tool="/data/local/tmp/tools_sysdbg/model_run_tool_internal",
-                        board_model_root="/data/local/tmp/qwen3_5_moe", timeout_seconds=7200, target_features=False):
+                        board_model_root="/data/local/tmp/qwen3_5_moe", timeout_seconds=7200, target_features=False,
+                        runtime_prefill_probe=None, lock_wait_seconds=1800):
     root, out = Path(compilation_dir).resolve(), output_path(output_dir)
     out.mkdir(parents=True, exist_ok=False)
     result = {"schema_version": 1, "artifact_kind": "qwen35-original-target-tool-execution",
@@ -163,6 +164,11 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
     hdc = None
     attempt = None
     attempted = False
+    smoke = runtime_prefill_probe is not None
+    smoke_proof = None
+    global_held = cache_held = uncertain = exit_known = False
+    token = uuid.uuid4().hex
+    global_lock = PurePosixPath("/data/local/tmp/.qwen35-target-model-io-lock")
     def collect(remote, local, label):
         _, text = hdc.shell("sha256sum " + shlex.quote(str(remote)), "hash-" + label)
         hashes = _hash_lines(text, remote.parent)
@@ -190,8 +196,29 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         digest = sha256_file(root / "report.json")
         cache = board_root / ("codex-target-" + digest[:20])
         attempt = cache / ("run-" + uuid.uuid4().hex)
-        plan = tool_plan(contract, profile, gear, str(attempt / "source-inputs") if host_input_dir else input_dir,
-                         target_features=target_features)
+        if smoke:
+            from .existing_air_profile import get_existing_air_profile
+            from .target_prefill_smoke_plan import prepare_prefill_smoke_plan, validate_prefill_smoke_plan
+            if (not host_input_dir or input_dir or gear != 64 or target_features is not True
+                    or profile != get_existing_air_profile("cpro-40block-prefill-64")
+                    or type(lock_wait_seconds) is not int or not 0 <= lock_wait_seconds <= 7200
+                    or type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 7200):
+                raise ValueError("runtime prefill proof requires original host inputs, complete features and frozen static64 only")
+            smoke_proof = prepare_prefill_smoke_plan(root, runtime_prefill_probe, host_input_dir)
+            validate_prefill_smoke_plan(smoke_proof)
+            binding = smoke_proof.get("tool_binding", {})
+            if str(tool) != binding.get("path"):
+                raise ValueError("selected tool differs from the runtime prefill proof")
+            plan = dict(smoke_proof, inputs=[dict(row, host_source=row["source"],
+                source=str(attempt / "source-inputs" / row["source_filename"])) for row in smoke_proof["inputs"]])
+            result.update(execution_scope="SINGLE_PREFILL_ONLY_IDENTICAL_STATE_GROUPS",
+                runtime_prefill_probe=str(Path(runtime_prefill_probe).resolve()),
+                state_input_layer_identity="UNVERIFIED", state_output_layer_identity="UNVERIFIED",
+                board_global_lock=str(global_lock), global_lock_wait_seconds=lock_wait_seconds)
+            save_json(out / "runtime-prefill-proof.json", smoke_proof)
+        else:
+            plan = tool_plan(contract, profile, gear, str(attempt / "source-inputs") if host_input_dir else input_dir,
+                             target_features=target_features)
         result.update(target_features=plan["target_features"], feature_output_evidence=plan["feature_output_evidence"])
         local_inputs = {}
         if host_input_dir:
@@ -222,11 +249,32 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                              + shlex.quote(str(tool)) + " && param get const.ohos.fullname", "device-preflight")
         result["device_probe"] = "ONLINE_TOOL_PRESENT"
         result["device_preflight_observation"] = probe
+        if smoke:
+            expected = smoke_proof["tool_binding"]["sha256"] + "  " + str(tool)
+            if (expected not in probe.splitlines() or not probe.splitlines()
+                    or probe.splitlines()[-1].strip() != smoke_proof["firmware_id"].strip()):
+                raise ValueError("actual board tool/firmware differs from the bound runtime probe")
+            from .target_model_io_probe import _acquire_global
+            validate_prefill_smoke_plan(smoke_proof)
+            uncertain = True
+            _acquire_global(hdc, global_lock, token, lock_wait_seconds)
+            global_held, uncertain = True, False
         result.update(board_model_cache=str(cache), board_attempt=str(attempt), stage="model-cache")
         qcache = shlex.quote(str(cache))
         owner = shlex.quote(str(cache / ".compilation-sha256"))
-        hdc.shell("mkdir -p " + shlex.quote(str(board_root)) + " && if mkdir " + qcache + "; then printf '%s\\n' " + shlex.quote(digest) + " > " + owner
-                  + "; else test -d " + qcache + " && test \"$(cat " + owner + ")\" = " + shlex.quote(digest) + "; fi", "own-model-cache")
+        if smoke:
+            own = ("mkdir -p " + shlex.quote(str(board_root)) + " && if mkdir " + qcache
+                + "; then printf '%s\\n' " + shlex.quote(digest) + " > " + owner
+                + "; else test -d " + qcache + " && test ! -L " + qcache
+                + " && read -r target_cache_owner < " + owner + " && test \"$target_cache_owner\" = " + shlex.quote(digest) + "; fi")
+        else:
+            own = ("mkdir -p " + shlex.quote(str(board_root)) + " && if mkdir " + qcache + "; then printf '%s\\n' " + shlex.quote(digest) + " > " + owner
+                + "; else test -d " + qcache + " && test \"$(cat " + owner + ")\" = " + shlex.quote(digest) + "; fi")
+        hdc.shell(own, "own-model-cache")
+        if smoke:
+            uncertain = True
+            hdc.shell("mkdir " + shlex.quote(str(cache / ".execution-lock")), "acquire-execution-lock")
+            cache_held, uncertain = True, False
         uploads = []
         for row in compiled.get("generated_artifacts", []):
             path = _recorded_file(root, row, "stat")
@@ -250,16 +298,41 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             decisions[match[2]] = match[1]
         if set(decisions) != {str(r) for _, _, r in uploads}:
             raise ValueError("remote model cache inventory does not cover every compiler file")
+        if smoke:
+            from .target_model_io_probe import _space
+            _, disk = hdc.shell("df -Pk " + qcache, "prefill-board-disk", timeout=min(10, timeout_seconds))
+            missing = sum(row["bytes"] for row, _, remote in uploads if decisions[str(remote)] == "SEND")
+            # Uploaded distinct originals and independent per-runtime-slot
+            # copies coexist. Account for both instead of treating89 slots as
+            #89 distinct source files or relying on a previous probe's space.
+            original_bytes = sum(row["bytes"] for row in local_inputs.values())
+            slot_bytes = sum(row["bytes"] for row in plan["inputs"])
+            reserve = (64 << 20) + sum(row["bytes"] for row in plan["outputs"])
+            free = _space(disk)
+            required = missing + original_bytes + slot_bytes + reserve
+            result["board_disk_budget"] = {"free_bytes": free, "missing_model_payload_bytes": missing,
+                "original_input_bytes": original_bytes, "runtime_input_copy_bytes": slot_bytes,
+                "output_and_temporary_reserve_bytes": reserve, "required_bytes": required,
+                "scope": "Observed filesystem space only; no memory-capacity or exact tool temporary-allocation guarantee"}
+            if free < required:
+                raise ValueError(f"prefill board disk budget insufficient: need {required} bytes, available {free}")
+            validate_prefill_smoke_plan(smoke_proof)
         for row, local, remote in uploads:
             if decisions[str(remote)] == "SEND":
                 print("target-board: uploading " + remote.name + " (" + str(row["bytes"]) + " bytes)", flush=True)
+                if smoke:
+                    uncertain = True
                 hdc.send(local, remote)
                 _, hashed = hdc.shell("sha256sum " + shlex.quote(str(remote)), "verify-upload")
                 if _hash_lines(hashed, remote.parent).get(remote.name) != row["sha256"]:
                     raise ValueError("target model upload checksum mismatch")
+                if smoke:
+                    uncertain = False
         result["model_payloads"] = [{"path": str(remote), "sha256": row["sha256"], "bytes": row["bytes"],
                                      "upload": decisions[str(remote)]} for row, _, remote in uploads]
         result["stage"] = "input-snapshot"
+        if smoke:
+            uncertain = True
         hdc.shell("mkdir " + shlex.quote(str(attempt)) + " && mkdir " + shlex.quote(str(attempt / "inputs"))
                   + " " + shlex.quote(str(attempt / "outputs")) + " " + shlex.quote(str(attempt / "source-inputs")), "attempt-directories")
         for row in local_inputs.values():
@@ -291,25 +364,47 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             if local_inputs and before[0] != local_inputs[PurePosixPath(row["source"]).name]["sha256"]:
                 raise ValueError("original host input differs from the uploaded board bytes")
             result["inputs"].append(dict(row, sha256=before[0]))
+        if smoke:
+            uncertain = False
+            validate_prefill_smoke_plan(smoke_proof)
         save_json(out / "input-evidence.json", {"inputs": result["inputs"]})
         primary = cache / "payload" / PurePosixPath(compiled["omc"]["path"]).relative_to("compile-work/generated")
         argv = [str(tool), "--model=" + str(primary), "--input=" + ",".join(str(attempt / row["file"]) for row in plan["inputs"]),
-                "--times=1", "--modelmanager_itf=V2", "--weight_dir=" + str(primary.parent), "--enable_item=1",
-                "--input_shape=" + plan["input_shape"], "--output_shape=" + plan["output_shape"],
-                "--output_dir=" + str(attempt / "outputs")]
+                "--times=1", "--modelmanager_itf=V2", "--weight_dir=" + str(primary.parent), "--enable_item=1"]
+        if smoke:
+            argv.extend(["--direct_from_file=true",
+                "--input_type=" + ",".join(row["tool_input_type"] for row in plan["inputs"]),
+                "--output_type=" + ",".join(row["tool_output_type"] for row in plan["outputs"]),
+                "--input_format=" + ",".join("ND" for _ in plan["inputs"]),
+                "--output_format=" + ",".join("ND" for _ in plan["outputs"])])
+        else:
+            argv.extend(["--input_shape=" + plan["input_shape"], "--output_shape=" + plan["output_shape"]])
+        argv.append("--output_dir=" + str(attempt / "outputs"))
         save_json(out / "command.json", {"argv": argv, "tool_sha256_observation": probe})
-        command = ("cd " + shlex.quote(str(attempt)) + " && LD_LIBRARY_PATH=" + shlex.quote(str(tool.parent))
-                   + " " + shlex.join(argv) + " > tool.stdout 2> tool.stderr; rc=$?; printf '%s\\n' \"$rc\" > "
-                   + shlex.quote(str(attempt / "tool.exitcode")) + "; rmdir "
-                   + shlex.quote(str(cache / ".execution-lock")) + "; exit \"$rc\"")
-        hdc.shell("mkdir " + shlex.quote(str(cache / ".execution-lock")), "acquire-execution-lock")
+        if smoke:
+            # Save the exact child PID before waiting. A transport timeout
+            # leaves both locks in place and never causes an automatic retry.
+            command = ("cd " + shlex.quote(str(attempt)) + " && { LD_LIBRARY_PATH="
+                + shlex.quote(str(tool.parent)) + " " + shlex.join(argv)
+                + " > tool.stdout 2> tool.stderr & tool_pid=$!; printf '%s\\n' \"$tool_pid\" > tool.pid; "
+                + "wait \"$tool_pid\"; rc=$?; printf '%s\\n' \"$rc\" > tool.exitcode; exit \"$rc\"; }")
+        else:
+            command = ("cd " + shlex.quote(str(attempt)) + " && LD_LIBRARY_PATH=" + shlex.quote(str(tool.parent))
+                       + " " + shlex.join(argv) + " > tool.stdout 2> tool.stderr; rc=$?; printf '%s\\n' \"$rc\" > "
+                       + shlex.quote(str(attempt / "tool.exitcode")) + "; rmdir "
+                       + shlex.quote(str(cache / ".execution-lock")) + "; exit \"$rc\"")
+            hdc.shell("mkdir " + shlex.quote(str(cache / ".execution-lock")), "acquire-execution-lock")
         result["remote_execution_lock"] = str(cache / ".execution-lock")
         result["timeout_scope"] = "HDC wait only; remote cancellation unverified. Retained lock prevents automatic overlapping execution."
         result.update(stage="execute", device_execution="ATTEMPTED")
         attempted = True
+        if smoke:
+            uncertain = True
         print(f"target-board: original 40-layer target, gear={gear}, HIAI V2, one tool invocation", flush=True)
         status, _ = hdc.shell(command, "execute-original-target", allow_failure=True)
         result["remote_exitcode"] = status
+        if smoke:
+            uncertain, exit_known = False, True
         if status != 0:
             raise RuntimeError("original target tool exited with status " + str(status))
         result["stage"] = "retrieve-outputs"
@@ -335,7 +430,8 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             result["device_execution"] = "FAILED"
     finally:
         if attempted:
-            for name in ("tool.stdout", "tool.stderr", "tool.exitcode"):
+            names = ("tool.stdout", "tool.stderr", "tool.exitcode", "tool.pid") if smoke else ("tool.stdout", "tool.stderr", "tool.exitcode")
+            for name in names:
                 try:
                     collect(attempt / name, out / name, name.replace(".", "-"))
                 except Exception as error:
@@ -346,8 +442,44 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                     raise ValueError("retrieved target exit code differs from the verified invocation")
                 if result["retrieval_errors"]:
                     raise ValueError("target execution log retrieval is incomplete")
+                if smoke:
+                    pid = (out / "tool.pid").read_text().strip()
+                    if not re.fullmatch(r"[1-9][0-9]{0,9}", pid):
+                        raise ValueError("retrieved target PID is invalid")
+                    result["tool_process_id"] = int(pid)
             except Exception as error:
                 result.update(status="FAILED", device_execution="FAILED", evidence_error=f"{type(error).__name__}: {error}")
+            if smoke and result["status"] == "FAILED":
+                try:
+                    from .draft_board import _receive
+                    from .draft_hilog import capture_draft_hilog
+                    diagnostic = capture_draft_hilog(hdc, attempt, out, receive=_receive,
+                        recorded_pid=result.get("tool_process_id"))
+                    diagnostic["artifact_kind"] = "qwen35-target-prefill-hilog"
+                    result["hilog"] = diagnostic
+                except Exception as error:
+                    result["hilog"] = {"status": "UNAVAILABLE", "error": f"{type(error).__name__}: {error}"}
+        if smoke and smoke_proof is not None:
+            try:
+                from .target_prefill_smoke_plan import validate_prefill_smoke_plan
+                validate_prefill_smoke_plan(smoke_proof)
+                result["source_preservation"] = "UNCHANGED_PREFILL_PLAN_METADATA_AND_ORIGINAL_INPUT_SHA256"
+            except Exception as error:
+                result.update(status="FAILED", source_preservation="FAILED", source_error=f"{type(error).__name__}: {error}")
+        if smoke and global_held and not uncertain and (not attempted or exit_known):
+            try:
+                from .target_model_io_probe import _release_global
+                if cache_held:
+                    hdc.shell("rmdir " + shlex.quote(str(cache / ".execution-lock")), "release-cache-execution-lock",
+                              timeout=min(10, timeout_seconds))
+                    cache_held = False
+                _release_global(hdc, global_lock, token)
+                global_held = False
+            except Exception as error:
+                result["lock_release_error"] = f"{type(error).__name__}: {error}"
+        if smoke:
+            result["lock_state"] = "RETAINED_OR_UNCERTAIN" if global_held or cache_held or uncertain else "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT"
+            result["remote_cancellation"] = "NOT_REQUESTED; uncertain waits retain both locks and never trigger automatic retry"
         result["hdc_invocations"] = hdc.count if hdc else 0
         save_json(out / "result.json", result)
     return result
