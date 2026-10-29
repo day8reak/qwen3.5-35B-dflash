@@ -2224,7 +2224,19 @@
           "selected_hiai_schema": "INCOMPATIBLE_USER_REPORTED",
           "next": "Extract original TorchAir/GE descriptor without importing NPU packages; retain strict wire checks"
         },
-        "schema_support": "EXPLICIT_TORCHAIR_PB2_AST_IMPLEMENTED_ACTUAL_USER_SCHEMA_PENDING"
+        "schema_support": "USER_SERVER_FOUND_TORCHAIR_GE_DESCRIPTOR_ACTUAL_AIR_REDECODE_PENDING",
+        "user_schema_discovery": {
+          "source": "USER_PASTED_REMOTE_DISCOVERY",
+          "selected_pb2": "/root/anaconda3/envs/custom_pypto/lib/python3.11/site-packages/torch_npu/dynamo/torchair/_ge_concrete_graph/ge_ir_by_protoc_3_19_pb2.py",
+          "selected_pb2_bytes": 38500,
+          "selected_pb2_sha256": "ae8124bb5ebb2d8ef86984636b0e9ca15df8de06812b60146121093d22952ec1",
+          "descriptor_bytes": 7381,
+          "descriptor_sha256": "5a1eac27746a7bb5109e819ce6dd7813a3ffcaab04bd0ab2ca3c2cdf1e4084ea",
+          "package": "ge.proto",
+          "same_descriptor_in_3_13_and_3_19": true,
+          "pb2_execution": "NOT_EXECUTED",
+          "air_compatibility": "PENDING_ACTUAL_DECODE"
+        }
       },
       "shared_draft": "full-draft/residual-fix/bundle",
       "acceptance": "Same original40layer quantization/fullvocab/realfeatures and89input80state contract; independent compilation/device evidence; neither lane inherits the other lane pass",

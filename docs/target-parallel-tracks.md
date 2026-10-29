@@ -31,18 +31,16 @@ python3 "$REPO_DIR/targets/cpro/scripts/prepare_target_pytorch.py" \
 
 此处只需已上传的5py+YAML和实际图元数据，不读取其四个权重路径。B入口可直接重新哈希这6个小源文件；不要求在当前服务器运行A的派生源码准备器：
 
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" --find-torchair-schema
-```
-
-若当前机器没有TorchAir，在原机运行同样查找，只取实际生成的`ge_ir_by_protoc_*_pb2.py`小文件。用其真实路径设置`TORCHAIR_GE_PB2`后，在当前服务器执行：
+当前服务器已找到真实TorchAir schema，不需要额外搬文件：protoc3_13与3_19的descriptor均为7381字节、SHA256 `5a1eac27746a7bb5109e819ce6dd7813a3ffcaab04bd0ab2ca3c2cdf1e4084ea`。选择更小的3_19生成文件；版本shim`ge_ir_pb2.py`不用于解析。执行：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
   --air /home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/export.air \
-  --torchair-pb2 "$TORCHAIR_GE_PB2" --full \
-  --output "$AI_RUN_DIR/target-ge-source-air-ge.json"
+  --torchair-pb2 /root/anaconda3/envs/custom_pypto/lib/python3.11/site-packages/torch_npu/dynamo/torchair/_ge_concrete_graph/ge_ir_by_protoc_3_19_pb2.py \
+  --full --output "$AI_RUN_DIR/target-ge-source-air-ge.json"
 ```
+
+这是显式schema选择，仍只解析AST数据，不导入TorchAir/NPU；实际原AIR的全字段/边界匹配仍待本次结果。其他环境可使用`--find-torchair-schema`重新定位实际生成文件。
 
 用户已回传原AIR：6361049字节、SHA256 `57934fc4177929a20c978eadbb121741602cefbfb212027e440fce67b08d32a6`，无IMOD头。当前HIAI schema解raw GraphDef报unknown field7，解raw ModelDef报AttrDef.list_list_float wire mismatch，状态`OPAQUE`。这是schema不兼容观察，不能据此判坏AIR或放宽检查器。新增入口只从显式选中的pb2 AST取descriptor bytes，不执行文件；未知字段/错类型、shim、多个descriptor、外部依赖仍拒绝。默认HIAI检查不变。旧`target-ge-source-air.json`保留，匹配原schema的新报告写到`target-ge-source-air-ge.json`。
 

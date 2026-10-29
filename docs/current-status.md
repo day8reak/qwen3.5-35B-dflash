@@ -16,22 +16,18 @@
 
 用户最新要求两条方案并行，防止GE路线出问题。**A在原权重机器按原PyTorch/TorchAir导出；B在当前服务器对齐原Cpro算子、量化权重和paged/NZ/RefData接口，走直接GE。** 两条均为完整40层、原量化权重、完整248320词表及真实8层features，各自保留独立构建和设备证据，共用上方完整residual-fix draft。
 
-完整命令、边界和状态见[双路线执行](target-parallel-tracks.md)。A原机入口为`prepare_target_pytorch.py`，先只读配置/分片头和小源码准备，缺原参数即停止；资源就绪后才在原机导出。用户已完成B原AIR检查：6361049字节、原文件保持，当前HIAI schema不匹配（`OPAQUE`）；不能重复用同一schema或把它当坏AIR。B当前先只读定位原TorchAir/GE生成的pb2，避免导入NPU包：
+完整命令、边界和状态见[双路线执行](target-parallel-tracks.md)。A原机入口为`prepare_target_pytorch.py`，先只读配置/分片头和小源码准备，缺原参数即停止；资源就绪后才在原机导出。用户已完成B原AIR检查：6361049字节、原文件保持，HIAI schema不匹配（`OPAQUE`）。随后当前服务器已找到两份真正的TorchAir生成文件；两者提取同一7381字节GE descriptor，SHA256为`5a1eac27746a7bb5109e819ce6dd7813a3ffcaab04bd0ab2ca3c2cdf1e4084ea`。选择更小的`3_19`文件继续，不需要从原机再传schema或权重。
 
-```bash
-git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
-  --find-torchair-schema
-```
-
-若当前服务器未找到，在原TorchAir机器运行同一查找命令，只取其实际`ge_ir_by_protoc_*_pb2.py`小文件到当前服务器即可，仍不传权重。`ge_ir_pb2.py`可能只是版本shim，应选择查找结果中可静态提取descriptor的文件。用实际路径设置`TORCHAIR_GE_PB2`后重新只读检查，写入新报告，旧OPAQUE报告保留：
+**当前执行这一条**，使用实际GE schema只读重解析；完整图写到新JSON，终端打印小摘要，旧OPAQUE报告保留：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
   --air /home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/export.air \
-  --torchair-pb2 "$TORCHAIR_GE_PB2" --full \
-  --output "$AI_RUN_DIR/target-ge-source-air-ge.json"
+  --torchair-pb2 /root/anaconda3/envs/custom_pypto/lib/python3.11/site-packages/torch_npu/dynamo/torchair/_ge_concrete_graph/ge_ir_by_protoc_3_19_pb2.py \
+  --full --output "$AI_RUN_DIR/target-ge-source-air-ge.json"
 ```
+
+schema查找已完成，但是否与此AIR全部字段及89/81边界匹配，仍以这次解析结果为准；`FOUND`不代表图已解析或features已绑定。
 
 同名输出若已存在，工具拒绝覆盖；保留已有报告并使用其路径，不删除旧证据。B后续绑定入口为`prepare_original_ge_target.py`；实际图/来源/算子证据不全时保持待绑定，不把现有functional GE target当成原Cpro等价实现。原源码的norm表达式、量化pack/QPARAM、自定义算子及80状态都要逐项核实。
 
