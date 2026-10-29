@@ -127,7 +127,9 @@ def _reference(value):
     return parts[0], parts[1]
 
 
-def _inventory(raw):
+def _inventory(raw, *, sequence_length=64):
+    if type(sequence_length) is not int or sequence_length not in {1, 64}:
+        raise ValueError("inventory inspection requires an explicit sequence length of 1 or 64")
     manifest = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
     if (not isinstance(manifest, dict) or manifest.get("artifact_kind") != "qwen35-target-export-inventory"
             or manifest.get("status") != "INVENTORIED" or manifest.get("weight_identity") != "SHA256_COMPLETE"):
@@ -137,7 +139,7 @@ def _inventory(raw):
         raise ValueError("inventory AIR size/SHA256 is missing or invalid")
     abi = manifest.get("declared_abi", {})
     expected = {"status": "MATCHED_INTERFACE_METADATA", "input_count": 89, "output_count": 82,
-                "feature_output_index": 81, "feature_shape": [1, 64, 16384], "feature_dtype": "DT_FLOAT16"}
+                "feature_output_index": 81, "feature_shape": [1, sequence_length, 16384], "feature_dtype": "DT_FLOAT16"}
     if any(json.dumps(abi.get(key), sort_keys=True) != json.dumps(value, sort_keys=True) for key, value in expected.items()):
         raise ValueError("inventory must declare the full original 89-input/82-output target and real feature interface")
     schema = manifest.get("schema", {})

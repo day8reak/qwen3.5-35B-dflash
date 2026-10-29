@@ -2208,9 +2208,9 @@
         "location": "original_weight_machine",
         "entrypoint": "targets/cpro/scripts/prepare_target_pytorch.py",
         "directory": "target-pytorch",
-        "status": "DECODE1_EXPORT_USER_REPORTED_COMPLETE_STATIC64_OWNED_SNAPSHOT_RETRY_READY",
+        "status": "DECODE1_CANONICAL_EXPORT_READY_USER_REPORTED; THREE_SMALL_FILE_TRANSFER_NEXT; STATIC64_RETRY_AWAITING_RESULT",
         "tests": 14,
-        "next": "On DDK inspect report-bound regular dump_graph and run one explicit static64 attempt reusing verified readonly COPY snapshots; on origin canonicalize/hash the completed decode1 export without re-exporting",
+        "next": "Manually transfer decode1 canonical AIR, inventory and result.json to DDK target-pytorch-decode1-transfer; inspect only those three files and actual Data names. Preserve active static64 retry and all source inode identities; no decode1 staging or compile yet.",
         "user_report": {
           "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
           "original_air_sha256": "3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9",
@@ -2287,7 +2287,7 @@
           "decode_sequence_length": 1,
           "separate_exports_and_compilations": true,
           "prefill_air": "REUSE_EXISTING_NORMALIZED_AIR",
-          "decode_export": "USER_REPORTED_COMPLETE_GLM_EXPORT_AIR_CPRO_40BLOCK_1_QUANT; NORMALIZATION_AND_HASH_INVENTORY_NEXT",
+          "decode_export": "USER_REPORTED_EXPORT_READY_CANONICALIZED_AND_SHA256_COMPLETE; THREE_SMALL_FILE_TRANSFER_AND_METADATA_INSPECTION_NEXT",
           "source_reshape": "Source uses reshape(-1, last_dim); the phase that fixed 64 still requires IR evidence",
           "other_static_branch": "GDN selects its original sequence-length-dependent chunk_size",
           "weight_policy": "Keep original weights and verify SHA before sharing; no new DDK-side large input copy without failed-snapshot reuse proof",
@@ -2328,6 +2328,43 @@
           "entry_kind": "tools/tools_omg/omg wrapper",
           "recorded_dynamic_flag": "--d11ynamic_dims",
           "decision": "Retain as unverified record; do not substitute for actual successful logs or switch the bound compiler"
+        },
+        "decode1_canonical_user_report": {
+          "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+          "status": "EXPORT_READY",
+          "sequence_length": 1,
+          "original_air_sha256": "18403bb8c5485b7d1c912ccb8cac8e37c9a8882656e6828d143a3e9b9076e525",
+          "normalized_air_sha256": "75dc9bd236518db9421532b2791d37e041a9c9e810e588fff19b8d26e155d527",
+          "air_bytes": 5970065,
+          "inventory_sha256": "eb01e38ffe0ea5d40df8d3aac6fc36dea19abe7e5b3046e2aa54a75d3b686556",
+          "schema_descriptor_sha256": "a7cd334beff74bfeb637b1886329a70122842667a257d84ba111c70991695679",
+          "weight_identity": "SHA256_COMPLETE",
+          "unique_reference_count": 1153,
+          "total_weight_bytes": 19459474432,
+          "input_count": 89,
+          "refdata_count": 80,
+          "output_count": 82,
+          "feature_output_index": 81,
+          "original_computation_nodes_byte_identical": 8847,
+          "original_preservation": "UNCHANGED_STAT_AND_SHA256",
+          "validation": "PASS_METADATA_ORDER_ONLY",
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_EVALUATED",
+          "state_continuity": "UNVERIFIED",
+          "scope": "Transcribed canonical result. Feature length1 is the requested boundary contract; actual transferred receipt/Data names have not been read locally or on DDK."
+        },
+        "decode1_transfer_inspection": {
+          "entrypoint": "targets/cpro/scripts/stage_target_export_reuse.py --inspect-transfer --sequence-length 1",
+          "scope": "Three small transferred files only: AIR SHA/size, inventory SHA, schema, normalization length, declared feature ABI and recorded nine Data names/geometries. No source payload paths or import output opened.",
+          "sidecar_access": "NONE",
+          "air_decode": "NOT_PERFORMED_RECEIPT_BOUND_DECLARATIONS_ONLY",
+          "mutation": "NONE",
+          "staging": "NOT_RUN",
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "profile_difference_policy": "Retain observed Data rows; report PROFILE_BINDING_REQUIRED; never infer equal-shaped control roles",
+          "decode_apply_policy": "NOT_ENABLED; source ownership metadata chain must be settled after prefill result"
         }
       },
       "b": {
@@ -2433,6 +2470,14 @@
         "evidence": "20261029T103314Z-18922-30a371/final-retry-tests.xml",
         "final_presentation_recheck": "20261029T103314Z-18922-30a371/retry-output-tests.xml",
         "scope": "Static profiles, failed-snapshot reuse/journal/audit, resumed target validation, board gear guards, dump-file discovery and existing conversion/inventory regressions. Actual static64 OMG and decode1 normalization not run locally"
+      },
+      "transfer_inspection_host_verification": {
+        "tests_passed": 164,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "evidence": "20261029T110926Z-20152-8ddd48/final-tests.xml",
+        "scope": "New metadata-only transfer inspection plus existing staging, input reuse, inventory, canonical export and static retry regressions. Tiny host fixtures only; no real target model compile or device pass."
       }
     }
   },
@@ -2444,14 +2489,14 @@
     "day1_gate": "Correct draft plus usable ordinary target prefill/decode",
     "day2_gate": "Multi-step DFlash token/stop equality and state handling",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
-    "current_target_status": "A old dual-gear compile FAILED; full COPY snapshots retained and stat-matched; explicit static64 retry now host-tested. Decode1 export completed per user; canonicalization pending. B55 backup complete",
+    "current_target_status": "A old dual-gear compile FAILED; explicit static64 retry host-tested, remote result not yet reported. Decode1 canonical EXPORT_READY and all1153 origin weights SHA256_COMPLETE reported. B55 backup complete.",
     "target_gaps": [
       "Original89input80RefData ordered ABI",
       "64/1 gear and persistent state",
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "One static64 retry with --retry-static-prefill-from using old readonly snapshots and no new large payload copy; origin canonicalize/hash completed1-token AIR; no concurrent decode compile or B regeneration",
+    "next_target_action": "Transfer only decode1 canonical AIR/inventory/result triplet, inspect metadata and actual input names on DDK without sidecar access while prefill64 proceeds. No duplicate origin hashing/export or B work; no decode1 hardlinks/compile until source owner receipts are handled.",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone"
   },
   "execution_smoke": {

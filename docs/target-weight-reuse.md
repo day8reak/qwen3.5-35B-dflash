@@ -2,7 +2,13 @@
 
 当前64/1双档OMG编译已失败：`branches1`中的`Reshape`输入为`[1,1,2048]`，目标为`[64,2048]`，元素数不一致。原TorchAir调用使用`dynamic=False`，量化投影原代码写的是`reshape(-1, x.shape[-1])`；需要失败IR确定64在哪一阶段固定，不能只按节点名称推断来源。原GDN还有`seq_len == 1`对应的chunk分支，不能只修一个reshape就宣布decode成立。
 
-现在分开推进64-token prefill和1-token decode：64保留已有AIR，用显式静态profile重试；1已在原权重机的`target-pytorch-decode1`导出成功，下一步只归一其输出顺序并生成SHA清单。后续逐文件SHA相同时再共享参数，不把重复权重搬到DDK机。旧失败任务仍不能直接`--resume`，也不能仅把`--sequence-length`改为64来改变OMG档位；下方第4步的旧双档命令不再运行。
+现在分开推进64-token prefill和1-token decode：64保留已有AIR，用显式静态profile重试；1已在原权重机的`target-pytorch-decode1/canonical-export`完成输出归一和全部参数SHA清单，下一步只传三个小文件，不重复导出或搬运大权重。旧失败任务仍不能直接`--resume`，也不能仅把`--sequence-length`改为64来改变OMG档位；下方第4步的旧双档命令不再运行。
+
+用户回传decode1为`EXPORT_READY`：原AIR SHA `18403bb8c5485b7d1c912ccb8cac8e37c9a8882656e6828d143a3e9b9076e525`，归一AIR为5,970,065字节、SHA `75dc9bd236518db9421532b2791d37e041a9c9e810e588fff19b8d26e155d527`；inventory SHA `eb01e38ffe0ea5d40df8d3aac6fc36dea19abe7e5b3046e2aa54a75d3b686556`。8847个原计算节点逐字节保留，89输入、80 RefData、82输出，特征在81；1153份参数共19,459,474,432字节已在原机实际哈希。这只是输出顺序及参数身份验证，尚无decode1编译、设备或状态连续性通过。
+
+decode1只手动传`canonical-export/export.air`、`canonical-export/inventory/inventory.json`、`canonical-export/result.json`到DDK新目录`target-pytorch-decode1-transfer`，平铺为同名三文件。`stage_target_export_reuse.py --inspect-transfer --sequence-length 1`只实读三小文件，交叉核AIR/清单/归一收据SHA、schema、序列长度与末路FP16`[1,1,16384]`声明，并输出九路Data的原记录名称、shape、dtype、layout和serialized_index；随后重核三文件身份。参数的SHA此时仍是原机声明，没有在DDK重新哈希。AIR内容未在DDK用原机schema重新解码，输入声明来自与该AIR哈希绑定的收据；同shape控制角色及运行时输入顺序仍未证明。
+
+新检查的`TRANSFER_INSPECTED`仅表示三文件检查完成；候选decode1 profile单独报告`MATCHED_EXACT_DATA_NAMES_AND_DECLARED_GEOMETRIES`或`PROFILE_BINDING_REQUIRED`，名称有变化时保留实际九路记录，不按几何自动改名。此模式不访问sidecar路径、不创建目录或链接、不调用OMG，可与prefill64并行。普通stage仍只接受64；decode1的`--apply`未开放，避免链接改变正在使用的prefill源inode的nlink/ctime，或使已完成收据的严格身份复核失效。后续共享参数必须明确处理现有任务的所有权与身份记录。
 
 实际诊断已确认1154份输入全部使用COPY、当前stat均匹配，AIR新算SHA匹配原记录，文件系统空闲44,185,739,264字节；编译输入共19,465,849,776字节。`compile-work/generated/dump_graph`实际是6,443,941字节的普通文件，检查器已按该精确路径和原报告的大小/SHA/stat绑定识别，不再只找同名目录或`.irpb`后缀。记录中的SHA配合stat不是新一轮权重内容验证。
 
