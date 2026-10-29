@@ -6,6 +6,10 @@
 
 ## 用户现在执行什么
 
+最新trace回传：OMG已编译完成，331个精度要求中319项匹配，12项失败全部是11个诊断分组Concat及最终Concat的 `FP32_REQUIRED_EDGE_CHANGED`，实际生产者为 `SubGraph_*_data`。没有缺失节点或dtype/shape错误；仍未打包或上板。检查器此前只支持同一CPU子图的直接连接，现增加严格跨CPUCL分区来源证明：有序Data/NetOutput端口必须与main GraphOp完全对应，逐段FP32、ND、相同shape，并精确追溯回原生产者。额外Cast、NPU、不同来源或不明端口仍失败。
+
+更新后继续下方同一条 `run_draft_trace.py` 命令即可。仅检查/控制代码变化时会复用既有reference、fixture、AIR、OMC，保持旧owner及恢复标记；构建依赖、编译选项、输入和DDK仍校验。重新检查通过后才继续打包及上板。无需删除 `layer-trace` 或重新准备权重。失败时终端直接打印明细；可选 `--inspect-only --include-boundaries` 只读查看已保留的分区接口。
+
 2026-10-29 新回传（PID57427）：`fp32-cpu` 编译检查153/153通过，设备执行及输入回读通过。hidden L2恢复为175.270776（参考175.270586），但相对L2仍为1.389480，Top1为15/15不一致。最终归一化幅度已恢复，完整draft数值仍失败；不能据此确认所有设备运算正确。新OMC SHA256为 `bd9f826bccf2b741a50be8d1afb7e9c95b5ef15aa31e79d3feae42160ae32705`。以下为用户日志证据，原远端文件尚未在本地重新核验。
 
 现在使用一次完整逐层对照，复用固定目录的prepared及原fixture，不重复原生产执行：

@@ -147,7 +147,7 @@ def test_precision_gate_precedes_bundle_and_compile_cache_is_checked(source, mon
         paths = {name: str(prepared / row["path"]) for name, row in plan["weights"].items()}
         emit_cpp(graph, paths, recipe_dir=output / "draft/recipe")
         (output / "draft.air").write_bytes(b"mock AIR; no vendor serializer executed")
-        result = {"status": "EXPORTED", "trace_spec": spec, "graphs": [{"air": "draft.air",
+        result = {"artifact_kind": "qwen35-cpro-draft-air", "status": "EXPORTED", "trace_spec": spec, "graphs": [{"air": "draft.air",
                   "files": [_record(output / "draft.air", output)],
                   "construction_files": [_record(output / "draft/recipe/graph.recipe", output)]}]}
         save_json(output / "manifest.json", result)
@@ -159,7 +159,10 @@ def test_precision_gate_precedes_bundle_and_compile_cache_is_checked(source, mon
         policy = kwargs["cl_customization"].read_bytes()
         (output / "cl.json").write_bytes(policy)
         (output / "model.omc").write_bytes(b"mock OMC; precision decoder mocked")
-        result = {"status": "COMPILED", "omg_sha256": sha256_file(ddk / "tools/tools_omg/master/omg"),
+        result = {"artifact_kind": "qwen35-existing-air-compilation", "status": "COMPILED", "ddk_root": str(selected), "ddk_id": kwargs["ddk_id"],
+                  "requested_options": {"use_origin_format": "true", "weight_data_type": "FP16",
+                                        "limit_partition_size": "false", "save_weights_as_external_data": "true"},
+                  "omg_sha256": sha256_file(ddk / "tools/tools_omg/master/omg"),
                   "cl_customization": _record(output / "cl.json", output), "omc": _record(output / "model.omc", output)}
         save_json(output / "report.json", result)
         calls.append("compile")
@@ -186,6 +189,27 @@ def test_precision_gate_precedes_bundle_and_compile_cache_is_checked(source, mon
     assert calls == ["verify"]
     assert result["status"] == ("COMPILED" if passed else "FAILED")
     assert not (root / "layer-trace/bundle").exists()
+    owner_file = root / "layer-trace/owner.json"
+    owner = json.loads(owner_file.read_text())
+    owner["code"]["draft_trace_job.py"] = "0" * 64
+    owner_file.write_text(json.dumps(owner))
+    before = owner_file.read_bytes()
+    calls.clear()
+    resumed = run_trace(root, ge_root="mock-ge", compile_only=True)
+    assert calls == ["verify"]
+    assert resumed["status"] == ("COMPILED" if passed else "FAILED")
+    assert [row["name"] for row in resumed["control_code_updates"]] == ["draft_trace_job.py"]
+    assert owner_file.read_bytes() == before
+    compiler_folder = root / "layer-trace/compilation"
+    report_file = compiler_folder / "report.json"
+    changed = json.loads(report_file.read_text())
+    changed["requested_options"]["weight_data_type"] = "FP32"
+    report_file.write_text(json.dumps(changed))
+    (root / "layer-trace/completed-compilation.json").write_text(json.dumps(_record(report_file, compiler_folder)))
+    calls.clear()
+    rejected = run_trace(root, ge_root="mock-ge", compile_only=True)
+    assert rejected["status"] == "FAILED" and "options differ" in rejected["error"]
+    assert calls == []
 
 
 @pytest.fixture
@@ -254,3 +278,110 @@ def test_trace_board_rejects_incomplete_or_conflicting_cached_evidence(retained_
     with pytest.raises(ValueError):
         _review_trace_board(bundle, board, execution)
     assert not calls
+
+
+@pytest.fixture
+def old_trace_owner(tmp_path, monkeypatch):
+    """Small source-bound metadata only; no compiler/device evidence."""
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    root = tmp_path / "layer-trace"
+    root.mkdir()
+    owner = {"artifact_kind": "qwen35-draft-layer-trace-job-owner", "job": "/mock/job",
+             "source_job_sha256": "1" * 64, "trace_spec": [{"mock": "unchanged"}],
+             "code": {"draft_trace_job.py": "2" * 64, "draft_compile_precision.py": "3" * 64,
+                      "ge_draft.py": "4" * 64, "draft_reference.py": "5" * 64,
+                      "draft_precision_policy.py": "6" * 64}}
+    save_json(root / "owner.json", owner)
+    stages = {
+        "reference": ("report.json", "qwen35-draft-layer-reference-trace", "REFERENCE_TRACE_COMPLETE"),
+        "fixture": ("report.json", "qwen35-draft-reference", "REFERENCE_COMPLETE"),
+        "air": ("manifest.json", "qwen35-cpro-draft-air", "EXPORTED"),
+        "compilation": ("report.json", "qwen35-existing-air-compilation", "COMPILED"),
+    }
+    for name, (file, kind, status) in stages.items():
+        folder = root / name
+        folder.mkdir()
+        save_json(folder / file, {"artifact_kind": kind, "status": status})
+        save_json(root / ("completed-" + name + ".json"), _record(folder / file, folder))
+    return root, owner
+
+
+@pytest.mark.parametrize("module", ["draft_trace_job.py", "draft_compile_precision.py"])
+def test_completed_trace_accepts_checker_only_update_without_rewriting_owner(old_trace_owner, module):
+    from copy import deepcopy
+    from qwen35_moe_dflash.draft_trace_job import _resume_owner
+    from qwen35_moe_dflash.hashing import sha256_file
+    root, owner = old_trace_owner
+    before = (root / "owner.json").read_bytes()
+    owner_sha = sha256_file(root / "owner.json")
+    save_json(root / "started-bundle.json", {"owner_sha256": owner_sha, "stage": "bundle"})
+    current = deepcopy(owner)
+    current["code"][module] = "a" * 64
+    updates = _resume_owner(root, current)
+    assert updates == [{"name": module, "previous_sha256": owner["code"][module], "current_sha256": "a" * 64}]
+    assert (root / "owner.json").read_bytes() == before
+    assert json.loads((root / "started-bundle.json").read_text())["owner_sha256"] == sha256_file(root / "owner.json")
+
+
+def test_legacy_owner_accepts_only_declared_new_control_dependency(old_trace_owner):
+    from copy import deepcopy
+    from qwen35_moe_dflash.draft_trace_job import _resume_owner
+    root, owner = old_trace_owner
+    current = deepcopy(owner)
+    current["code"]["draft_precision_edges.py"] = "a" * 64
+    before = (root / "owner.json").read_bytes()
+    updates = _resume_owner(root, current)
+    assert updates == [{"name": "draft_precision_edges.py", "previous_sha256": None, "current_sha256": "a" * 64}]
+    assert (root / "owner.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("mutation", ["source", "spec", "builder", "reference_math", "policy", "dependencies",
+                                      "missing_stage", "changed_receipt", "changed_report", "incomplete_stage"])
+def test_checker_only_resume_keeps_artifact_identity_and_completed_stage_gates(old_trace_owner, mutation):
+    from copy import deepcopy
+    from qwen35_moe_dflash.draft_trace_job import _resume_owner
+    root, owner = old_trace_owner
+    current = deepcopy(owner)
+    current["code"]["draft_trace_job.py"] = "a" * 64
+    if mutation == "source":
+        current["source_job_sha256"] = "b" * 64
+    elif mutation == "spec":
+        current["trace_spec"] = [{"mock": "changed"}]
+    elif mutation == "builder":
+        current["code"]["ge_draft.py"] = "b" * 64
+    elif mutation == "reference_math":
+        current["code"]["draft_reference.py"] = "b" * 64
+    elif mutation == "policy":
+        current["code"]["draft_precision_policy.py"] = "b" * 64
+    elif mutation == "dependencies":
+        current["code"]["unknown.py"] = "b" * 64
+    elif mutation == "missing_stage":
+        (root / "completed-compilation.json").unlink()
+    elif mutation == "changed_receipt":
+        row = json.loads((root / "completed-compilation.json").read_text())
+        row["path"] = "wrong.json"
+        (root / "completed-compilation.json").write_text(json.dumps(row))
+    elif mutation == "changed_report":
+        (root / "compilation/report.json").write_text("{}")
+    elif mutation == "incomplete_stage":
+        report = root / "compilation/report.json"
+        report.write_text(json.dumps({"artifact_kind": "qwen35-existing-air-compilation", "status": "FAILED"}))
+        (root / "completed-compilation.json").write_text(json.dumps(_record(report, report.parent)))
+    before = (root / "owner.json").read_bytes()
+    with pytest.raises(ValueError):
+        _resume_owner(root, current)
+    assert (root / "owner.json").read_bytes() == before
+
+
+def test_precision_failure_output_includes_node_errors_without_changing_gate():
+    from qwen35_moe_dflash.draft_trace_job import _precision_failures
+    report = {"status": "FAILED", "required_nodes": 331, "matched_nodes": 319,
+              "nodes": [{"name": "same", "status": "MATCHED"},
+                        {"name": "probe", "source_type": "Reshape", "compiled_type": "Reshape", "status": "MISMATCH", "errors": ["missing CPU producer"]}]}
+    before = json.dumps(report)
+    messages = []
+    _precision_failures(report, messages.append)
+    assert "matched 319/331" in messages[0]
+    assert '"name": "probe"' in messages[1] and "missing CPU producer" in messages[1]
+    assert '"source_type": "Reshape"' in messages[1]
+    assert json.dumps(report) == before

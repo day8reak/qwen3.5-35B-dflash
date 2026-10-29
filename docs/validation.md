@@ -1,5 +1,17 @@
 # 验证范围与保留结论
 
+## trace Concat跨CPU分区连接检查
+
+用户完整诊断图已完成OMG编译，精度要求331项、匹配319项，设备未执行。实际12个未匹配项全部为 `__draft_trace/concat_0/{0,16,...,160}` 和 `draft_trace_values`，错误仅为 `FP32_REQUIRED_EDGE_CHANGED`，实际输入生产者为对应 `SubGraph_*_data`，没有CPU节点缺失及端口dtype/shape错误。该清单排除了先前“重复probe被公共子表达式消除”的猜测；没有为该猜测更改图或门禁。
+
+新增 `draft_precision_edges.py` 解析实际main GraphOp及CPU GraphDef的唯一packed Data/NetOutput接口，按有序端口验证全部接口描述符，再逐段追溯至原required producer及精确输出端口。路径必须全部CPUCL、FP32、ND、相同shape；不同源、NPU、额外Cast、缺失/模糊接口、坏端口、循环均拒绝。原153项生产算术要求、331项trace要求、recipe、图和编译配置不变；这是一项来源证明扩展，不是忽略Data边界或删除失败要求。
+
+本地真实双RMS加FP16 NPU桥的OMC复现同一种错误：旧同区检查12/13，新跨区证明13/13。OMC为71,929字节、SHA256 `ba817745729553f28c0cd8d98c1a34719362c2b54f16682bdb7c4b36cf3118d0`，未重编译而仅更新检查即可通过。证据run `20261029T004826Z-25470-5c600f` 的 `partition-smoke/before-check.json`、`final-check.json`，本地公开DDK静态编译证据不代表用户完整OMC已通过。用户内部DDK原OMC仍需原地重新检查，通过后继续诊断上板。
+
+恢复逻辑只允许明确的控制/检查模块更新，并要求reference/fixture/AIR/compilation四阶段均完整、源job/spec/实际构建依赖及编译profile一致；旧owner字节不改。只读 `--inspect-only` 可在新源码下核验和查看旧失败证据，`--include-boundaries` 额外静态导出接口明细，无需构建、写文件或HDC。
+
+本轮组合回归142项通过（同run `final-tests/tests.xml`）；最终补充进度输出后恢复相关32项再次通过（`final-tests/resume-final.xml`，为前142项子集）。覆盖跨CPU来源证明及负例、原153项精度拒绝规则、旧owner原地恢复、编译选项/DDK绑定及只读检查。未修改任何模型数学表达或数值比较标准。
+
 ## FP32锁定后的完整draft回传与逐层对照
 
 2026-10-29用户回传PID57427：新完整OMC为2,852,155,819字节，SHA256 `bd9f826bccf2b741a50be8d1afb7e9c95b5ef15aa31e79d3feae42160ae32705`；编译精度153/153通过、native EXECUTED、退出0、输入回读一致。hidden参考L2=175.27058602513762，实际175.2707760915955，相对L2=1.3894797648159405，最大绝对误差19.7333984375；Top1差异15/15。范数恢复只说明最终归一化幅度改善，不能证明中间算术、布局或完整模型正确。无性能测量；远端原文件尚未在本地重取核验。

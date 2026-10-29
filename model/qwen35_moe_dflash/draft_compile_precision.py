@@ -208,7 +208,7 @@ def _edges(node, port):
     return {(names[port], indices[port])}
 
 
-def verify_document(plan, cpu_graphs):
+def verify_document(plan, cpu_graphs, *, main_graph=None):
     """Verify decoded CPU graphs using their selected-schema enum metadata.
 
     Each input item must contain ``owner``, ``cl_name='CPUCL'``, ``graph`` (an
@@ -217,6 +217,10 @@ def verify_document(plan, cpu_graphs):
     ``verify_compiled_precision`` performs that preceding ownership check.
     """
     required = _check_plan(plan)
+    resolver = None
+    if main_graph is not None:
+        from .draft_precision_edges import PartitionEdgeResolver
+        resolver = PartitionEdgeResolver(main_graph, cpu_graphs, _observed_desc)
     by_name, owners = {}, set()
     for item in cpu_graphs:
         owner, graph, enums = item["owner"], item["graph"], item["descriptor_enum_fields"]
@@ -283,9 +287,16 @@ def verify_document(plan, cpu_graphs):
                 row["errors"].append({"kind": "FP32_PRODUCER_DESCRIPTOR_DIFFERS", "port": port, "actual": producer})
                 continue
             if expected["producer"] in required_names and (name != expected["producer"] or output != expected["producer_output_index"]):
-                row["errors"].append({"kind": "FP32_REQUIRED_EDGE_CHANGED", "port": port,
-                                      "expected_producer": expected["producer"], "actual_producer": name})
-                continue
+                resolved = (resolver.resolve(owner, name, output, expected) if resolver is not None else None)
+                if resolved is None or resolved.get("status") != "MATCHED":
+                    error = {"kind": "FP32_REQUIRED_EDGE_CHANGED", "port": port,
+                             "expected_producer": expected["producer"], "actual_producer": name}
+                    if resolved is not None:
+                        error["partition_resolution"] = resolved
+                    row["errors"].append(error)
+                    continue
+                edge.update(partition_path=resolved["path"], resolved_producer=resolved["producer"],
+                            resolved_owner=resolved["owner"], resolved_output_port=resolved["output_port"])
             edge["status"] = "MATCHED"
         row["status"] = "MATCHED" if not row["errors"] else "MISMATCH"
         total_errors += len(row["errors"])
@@ -294,7 +305,8 @@ def verify_document(plan, cpu_graphs):
             "status": "PASSED" if matched == len(required) else "FAILED", "recipe": plan["recipe"],
             "plan_sha256": hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest(),
             "required_nodes": len(required), "matched_nodes": matched, "error_count": total_errors,
-            "cpu_graphs": len(owners), "nodes": results, "scope": _SCOPE}
+            "cpu_graphs": len(owners), "nodes": results, "scope": _SCOPE,
+            "cross_partition_edges": sum("partition_path" in edge for row in results for edge in row.get("fp32_input_edges", []))}
 
 
 def verify_compiled_precision(omc, schema_library, plan):
@@ -358,7 +370,7 @@ def verify_compiled_precision(omc, schema_library, plan):
             start = parts[2]["offset"] + task["offset"]
             graph = schema.decode(memoryview(raw)[start:start + task["bytes"]], "GraphDef")
             cpu_graphs.append({"owner": name, "cl_name": "CPUCL", "graph": graph, "descriptor_enum_fields": enums})
-        verified = verify_document(plan, cpu_graphs)
+        verified = verify_document(plan, cpu_graphs, main_graph=graphs[0])
         # Discard every decoded finding on a late identity failure.
         if _identity(omc.stat()) != identity or hashlib.sha256(omc.read_bytes()).hexdigest() != hashlib.sha256(raw).hexdigest():
             raise ValueError("compiled OMC changed during precision verification")

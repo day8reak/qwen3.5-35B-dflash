@@ -101,6 +101,53 @@ def test_cpu_fp32_descriptors_and_actual_producers_pass(case):
     assert all(e["status"] == "MATCHED" for n in report["nodes"] for e in n["fp32_input_edges"])
 
 
+def test_main_graph_context_proves_exact_cpu_partition_edge_without_removing_requirements(case):
+    # A minimal split of two source-required operations exercises the public
+    # verifier integration. Descriptor coincidence alone must still fail when
+    # the main graph points to a different output, even of the same shape.
+    square, mean = _required(case, "Mul"), _required(case, "ReduceMean")
+    assert mean["inputs"][0]["producer"] == square["name"]
+    plan = copy.deepcopy(case["plan"])
+    plan["required_nodes"] = [square, mean]
+    a, b = copy.deepcopy(_node(case, square["name"])), copy.deepcopy(_node(case, mean["name"]))
+    a["input"] = ["a_interface:0", "a_interface:0"]
+    b["input"][0] = "b_interface:0"
+    original, reduced = copy.deepcopy(a["output_desc"][0]), copy.deepcopy(b["output_desc"][0])
+    original["layout"] = reduced["layout"] = "ND"
+
+    def boundary(name, kind, desc, inputs=None):
+        node = {"name": name, "type": kind, "input_desc": [copy.deepcopy(desc)], "output_desc": [copy.deepcopy(desc)]}
+        if inputs is not None:
+            node["input"] = inputs
+        return node
+
+    enums = case["cpu"][0]["descriptor_enum_fields"]
+    cpu = [
+        {"owner": "A", "cl_name": "CPUCL", "descriptor_enum_fields": enums,
+         "graph": {"name": "A", "op": [boundary("a_interface", "Data", original), a,
+                   boundary("a_exit", "NetOutput", original, [a["name"] + ":0"])]}},
+        {"owner": "B", "cl_name": "CPUCL", "descriptor_enum_fields": enums,
+         "graph": {"name": "B", "op": [boundary("b_interface", "Data", original), b,
+                   boundary("b_exit", "NetOutput", reduced, [b["name"] + ":0"])]}}]
+    cl = [{"key": "cl_name", "value": {"s": "CPUCL"}}]
+    main = {"op": [
+        {"name": "A", "type": "GraphOp", "input": ["external:0"], "attr": cl,
+         "input_desc": [original], "output_desc": [original]},
+        {"name": "B", "type": "GraphOp", "input": ["A:0"], "attr": cl,
+         "input_desc": [original], "output_desc": [reduced]}]}
+    assert dp.verify_document(plan, cpu)["status"] == "FAILED"
+    checked = dp.verify_document(plan, cpu, main_graph=main)
+    assert checked["status"] == "PASSED", checked
+    assert checked["required_nodes"] == checked["matched_nodes"] == 2
+    assert checked["cross_partition_edges"] == 1
+    edge = checked["nodes"][1]["fp32_input_edges"][0]
+    assert edge["resolved_producer"] == square["name"] and edge["resolved_owner"] == "A"
+    # Same descriptors, wrong provenance: never accept a Data carrier merely
+    # because it is FP32 or has the expected dimensions.
+    cpu[0]["graph"]["op"][-1]["input"] = ["a_interface:0"]
+    assert dp.verify_document(plan, cpu, main_graph=main)["status"] == "FAILED"
+
+
 @pytest.mark.parametrize("kind,direction", [("Mul", "input_desc"), ("Rsqrt", "output_desc"),
     ("SoftmaxV2", "output_desc"), ("Cos", "output_desc"), ("Power", "input_desc")])
 def test_fp16_compiled_port_blocks_the_policy(case, kind, direction):

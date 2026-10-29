@@ -1786,7 +1786,7 @@
         },
         "layer_trace": {
           "run_id": "20261029T003431Z-23724-5fc0f9",
-          "status": "HOST_AND_LOCAL_COMPILER_VERIFIED_DEVICE_PENDING",
+          "status": "USER_REPORTED_COMPILED_GATE_FAILED_CHECKER_PARTITION_SUPPORT_HOST_VERIFIED",
           "directory": "full-draft/layer-trace",
           "probe_count": 166,
           "packed_output_bytes": 35429052,
@@ -1832,6 +1832,68 @@
             "real_compiler_required": 128,
             "real_compiler_matched": 128,
             "full_device_trace": "NOT_RUN"
+          },
+          "latest_user_compile_report": {
+            "date": "2026-10-29",
+            "source": "USER_PASTED_REPORT",
+            "artifact_hash_verification": "NOT_RECHECKED",
+            "model_compilation": "COMPILED",
+            "required_nodes": 331,
+            "matched_nodes": 319,
+            "failed_nodes": 12,
+            "device_execution": "NOT_RUN",
+            "failures": "11 diagnostic grouped Concats plus final Concat; FP32_REQUIRED_EDGE_CHANGED through SubGraph_*_data; no missing nodes or descriptor errors",
+            "next_action": "Update checker and resume same command, preserving existing reference/fixture/AIR/OMC; exact CPU FP32 provenance must pass before bundling"
+          },
+          "partition_provenance_check": {
+            "run_id": "20261029T004826Z-25470-5c600f",
+            "contract": "CPUCL packed Data/NetOutput positional interface with exact descriptor and source identity checks",
+            "requirements_removed": 0,
+            "production_graph_changes": 0,
+            "cl_customization_changes": 0,
+            "required_path": [
+              "CPUCL",
+              "FP32",
+              "ND",
+              "unchanged shape",
+              "exact original producer/output"
+            ],
+            "local_real_smoke": {
+              "before": "12/13",
+              "after": "13/13",
+              "cross_partition_edges": 1,
+              "omc_sha256": "ba817745729553f28c0cd8d98c1a34719362c2b54f16682bdb7c4b36cf3118d0",
+              "report": "partition-smoke/final-check.json",
+              "scope": "Local public DDK compiled graph, no device run"
+            },
+            "user_full_omc_reverification": "NOT_RUN_BY_ASSISTANT",
+            "experience_audit": {
+              "captured": [
+                "Cross-CPU FP32 interfaces need complete GraphOp/Data/NetOutput provenance, not same-name edges or shape-only acceptance",
+                "Checker-only updates should reuse frozen artifacts without rewriting owner bytes",
+                "Counts alone cannot distinguish CSE from partitioning; actual 12-row evidence rejected CSE"
+              ],
+              "updated_checks": [
+                "test_draft_precision_edges.py",
+                "test_draft_compile_precision.py",
+                "test_draft_trace_job.py",
+                "test_draft_trace_inspect.py"
+              ],
+              "skills_changed": [],
+              "rejected_promotions": [
+                "No relaxed precision gate",
+                "No full device numerical pass"
+              ],
+              "remaining": [
+                "Full user trace OMC recheck and diagnostic board execution"
+              ]
+            },
+            "host_validation": {
+              "passed": 142,
+              "report": "final-tests/tests.xml",
+              "final_resume_subset_passed": 32,
+              "final_resume_subset_report": "final-tests/resume-final.xml"
+            }
           }
         }
       }

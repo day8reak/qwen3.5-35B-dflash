@@ -23,6 +23,21 @@ from .hashing import sha256_file
 KIND = "qwen35-draft-layer-trace-job"
 STAGES = {"reference": "report.json", "fixture": "report.json", "air": "manifest.json",
           "compilation": "report.json", "bundle": "manifest.json", "board": "result.json"}
+# These modules choose stages and evaluate already-bound evidence. They may be
+# updated without changing an existing reference/AIR/OMC. All actual builders,
+# reference arithmetic, lowering, packing and compile policy remain code-bound.
+# Backward-compatible owners keep their original bytes so started-stage receipts
+# continue to refer to the same owner SHA after a checker-only update.
+_CONTROL_ONLY_CODE_FILES = ("draft_trace_job.py", "draft_compile_precision.py", "draft_precision_edges.py")
+_LEGACY_OPTIONAL_CONTROL_CODE_FILES = frozenset({"draft_precision_edges.py"})
+_ARTIFACT_CODE_FILES = (
+    "draft_layer_trace.py", "draft_ge_trace.py", "draft_standalone.py",
+    "draft_reference.py", "graphs.py", "model.py", "ops.py", "config.py",
+    "ge_draft.py", "ge_cpp.py", "ge_ir.py", "ge_type_contracts.py", "ge_recipe.py",
+    "ge_constants.py", "ge_reduction_matmul.py", "ge_scan.py", "ge_matmul.py",
+    "ge_dense_projection.py", "ge_reshape_chains.py", "existing_air.py", "compile.py",
+    "draft_board.py", "draft_precision_policy.py", "omc_container.py",
+    "omc_embed_weights.py", "omc_wire.py", "omc_cpu_inspect.py")
 
 
 def _json(path):
@@ -54,6 +69,74 @@ def _component(job, name):
     directory = Path(row["directory"])
     path = _file(directory, row["manifest"])
     return directory, _json(path)
+
+
+def _resume_owner(root, current):
+    """Allow checker-only updates of fully retained build stages.
+
+    No owner, receipt, or compiled file is migrated or rewritten. Cached payloads
+    are rechecked by the normal stage path, and the current precision policy
+    must still match the retained compiler customization before verification.
+    """
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("layer-trace belongs to a different source/code identity; retained evidence was preserved")
+    previous = _json(root / "owner.json")
+    if previous == current:
+        return []
+    if ({key: value for key, value in previous.items() if key != "code"}
+            != {key: value for key, value in current.items() if key != "code"}):
+        raise ValueError("layer-trace belongs to a different source/code identity; retained evidence was preserved")
+    old_code, new_code = previous.get("code"), current.get("code")
+    if (not isinstance(old_code, dict) or not isinstance(new_code, dict)
+            or set(old_code) - set(new_code)
+            or (set(new_code) - set(old_code)) - _LEGACY_OPTIONAL_CONTROL_CODE_FILES
+            or any(not isinstance(value, str) or not re.fullmatch("[0-9a-f]{64}", value)
+                   for value in (*old_code.values(), *new_code.values()))):
+        raise ValueError("layer-trace has a different code dependency set; retained evidence was preserved")
+    changed = [name for name in sorted(new_code) if old_code.get(name) != new_code[name]]
+    if set(changed) - set(_CONTROL_ONLY_CODE_FILES):
+        raise ValueError("layer-trace has changed artifact-building code: " + ", ".join(changed)
+                         + "; retained evidence was preserved")
+    # The orchestration file also contains fixture assembly. Only accept its
+    # update when that fixture and all downstream compiler inputs already exist;
+    # a failed or missing lower stage must not run under different builder code.
+    expected = {
+        "reference": ("qwen35-draft-layer-reference-trace", "REFERENCE_TRACE_COMPLETE"),
+        "fixture": ("qwen35-draft-reference", "REFERENCE_COMPLETE"),
+        "air": ("qwen35-cpro-draft-air", "EXPORTED"),
+        "compilation": ("qwen35-existing-air-compilation", "COMPILED"),
+    }
+    for name, (kind, status) in expected.items():
+        receipt_path = root / ("completed-" + name + ".json")
+        if not receipt_path.is_file() or receipt_path.is_symlink():
+            raise ValueError("checker-only resume requires completed " + name + "; retained evidence was preserved")
+        receipt = _json(receipt_path)
+        if receipt.get("path") != STAGES[name]:
+            raise ValueError("checker-only resume has an invalid " + name + " receipt")
+        report = _json(_file(root / name, receipt))
+        if report.get("artifact_kind") != kind or report.get("status") != status:
+            raise ValueError("checker-only resume has an incomplete " + name + " stage")
+    return [{"name": name, "previous_sha256": old_code.get(name), "current_sha256": new_code[name]}
+            for name in changed]
+
+
+def _precision_failures(precision, notify):
+    """Expose bounded gate evidence without bypassing or reclassifying it."""
+    if precision.get("reason"):
+        notify("Precision check reason: " + str(precision["reason"])[:4000])
+    failures = [row for row in precision.get("nodes", []) if row.get("status") != "MATCHED"]
+    notify("Compiled precision: " + str(precision.get("status")) + "; matched "
+           + str(precision.get("matched_nodes")) + "/" + str(precision.get("required_nodes")))
+    if precision.get("cross_partition_edges"):
+        notify("Verified FP32 CPU partition paths: " + str(precision["cross_partition_edges"]))
+    for row in failures[:64]:
+        notify("Precision mismatch: " + json.dumps(
+            {"name": row.get("name"), "source_type": row.get("source_type", row.get("type")),
+             "compiled_type": row.get("compiled_type"), "status": row.get("status"),
+             "errors": row.get("errors")}, ensure_ascii=False)[:8000])
+    if len(failures) > 64:
+        notify("Additional precision mismatches: " + str(len(failures) - 64)
+               + "; see layer-trace/precision-check.json")
 
 
 def _fixture(prepared, fixture, reference, trace, spec, output):
@@ -200,19 +283,16 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
         _, _, graph = _graph(prepared["sequence_length"], tiny=prepared["tiny"], draft_config=prepared["draft_config"])
         _, spec = instrument_draft_trace(graph)
         names = [row["name"] for row in spec]
-        code_files = ("draft_trace_job.py", "draft_layer_trace.py", "draft_ge_trace.py", "draft_standalone.py",
-                      "draft_reference.py", "graphs.py", "model.py", "ops.py", "config.py",
-                      "ge_draft.py", "ge_cpp.py", "ge_ir.py", "ge_type_contracts.py", "ge_recipe.py",
-                      "ge_constants.py", "ge_reduction_matmul.py", "ge_scan.py", "ge_matmul.py",
-                      "ge_dense_projection.py", "ge_reshape_chains.py", "existing_air.py", "compile.py",
-                      "draft_board.py", "draft_compile_precision.py", "draft_precision_policy.py",
-                      "omc_container.py", "omc_embed_weights.py", "omc_wire.py", "omc_cpu_inspect.py")
+        code_files = (*_ARTIFACT_CODE_FILES, *_CONTROL_ONLY_CODE_FILES)
         identity = {"artifact_kind": KIND + "-owner", "job": str(job_root),
                     "source_job_sha256": sha256_file(job_root / "result.json"), "trace_spec": spec,
                     "code": {name: sha256_file(Path(__file__).parent / name) for name in code_files}}
         if root.exists():
-            if root.is_symlink() or not root.is_dir() or _json(root / "owner.json") != identity:
-                raise ValueError("layer-trace belongs to a different source/code identity; retained evidence was preserved")
+            control_updates = _resume_owner(root, identity)
+            if control_updates:
+                result["control_code_updates"] = control_updates
+                notify("Reusing bound reference/AIR/compilation after checker-only code updates: "
+                       + ", ".join(row["name"] for row in control_updates))
         else:
             root.mkdir()
             save_json(root / "owner.json", identity)
@@ -290,6 +370,13 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
                     input_layout="air-directory", use_origin_format=True, weight_data_type="FP16",
                     limit_partition_size=False, save_weights_as_external_data=True,
                     cl_customization=policy_path, progress=lambda row: notify(row["message"])))
+                expected_options = {"use_origin_format": "true", "weight_data_type": "FP16",
+                                    "limit_partition_size": "false", "save_weights_as_external_data": "true"}
+                if any(compiled.get("requested_options", {}).get(key) != value
+                       for key, value in expected_options.items()):
+                    raise ValueError("trace compilation options differ from the bound draft profile")
+                if compiled.get("ddk_root") != str(selected_ddk) or compiled.get("ddk_id") != selected_id:
+                    raise ValueError("trace compilation DDK differs from the selected production compiler")
                 snapshot = compiled.get("cl_customization", {})
                 if snapshot.get("sha256") != hashlib.sha256(policy).hexdigest():
                     raise ValueError("trace compilation precision configuration mismatch")
@@ -299,8 +386,9 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
                     raise ValueError("trace compiler changed since compilation")
                 precision = verify_compiled_precision(_file(compilation, compiled["omc"]), schema, plan)
                 _save(root, "precision-check.json", precision)
-                result["compiled_precision"] = {key: precision.get(key) for key in ("status", "required_nodes", "matched_nodes")}
+                result["compiled_precision"] = {key: precision.get(key) for key in ("status", "required_nodes", "matched_nodes", "cross_partition_edges")}
                 if precision.get("status") != "PASSED":
+                    _precision_failures(precision, notify)
                     raise RuntimeError("diagnostic compiled precision did not pass; no bundle or board execution")
                 if compile_only:
                     result.update(status="COMPILED", stage="complete")
