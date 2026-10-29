@@ -21,7 +21,7 @@ from .hashing import sha256_file
 
 
 KIND = "qwen35-draft-layer-trace-job"
-STAGES = {"reference": "report.json", "fixture": "report.json", "air": "manifest.json",
+STAGES = {"reference": "report.json", "fixture": "report.json", "observed-fixture": "report.json", "air": "manifest.json",
           "compilation": "report.json", "bundle": "manifest.json", "board": "result.json"}
 # These modules choose stages and evaluate already-bound evidence. They may be
 # updated without changing an existing reference/AIR/OMC. All actual builders,
@@ -186,15 +186,18 @@ def _fixture(prepared, fixture, reference, trace, spec, output):
     return report
 
 
-def production_equivalence(job_root, trace_root, spec):
+def production_equivalence(job_root, trace_root, spec, *, direct=False):
     """Compare the diagnostic graph's terminal values with the original run."""
     original = _json(job_root / "board/results/result.json")
     diagnostic = _json(trace_root / "board/results/result.json")
     old_hidden = original["outputs"][1]
     new_trace = diagnostic["outputs"][1]
     row = next(row for row in spec if row["name"] == "draft_hidden")
-    packed = np.fromfile(_file(trace_root / "board/results", new_trace), dtype="<f4")
-    hidden = packed[row["offset"]:row["offset"] + row["elements"]].reshape(row["shape"])
+    if direct:
+        hidden = np.fromfile(_file(trace_root / "board/results", new_trace), dtype="<f2").reshape(row["shape"])
+    else:
+        packed = np.fromfile(_file(trace_root / "board/results", new_trace), dtype="<f4")
+        hidden = packed[row["offset"]:row["offset"] + row["elements"]].reshape(row["shape"])
     expected = np.fromfile(_file(job_root / "board/results", old_hidden), dtype="<f2").reshape(row["shape"])
     old_top = np.fromfile(_file(job_root / "board/results", original["outputs"][0]), dtype="<i4")
     new_top = np.fromfile(_file(trace_root / "board/results", diagnostic["outputs"][0]), dtype="<i4")
@@ -252,7 +255,7 @@ def _review_trace_board(bundle, board_root, execution):
 
 def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=None,
               schema_library=None, cxx="c++", cxx11_abi=0, timeout_seconds=3600,
-              prepare_only=False, compile_only=False):
+              prepare_only=False, compile_only=False, direct=False):
     from .draft_workspace import DraftWorkspace
     from .draft_review import review_draft_result
     from .draft_standalone import _graph, export_draft
@@ -264,9 +267,10 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
     from .draft_board import prepare_draft_bundle, execute_draft_bundle
 
     job_root = output_path(job_dir)
-    root = output_path(job_root / "layer-trace")
-    notify = lambda message: print("draft-trace: " + message, flush=True)
-    result = {"schema_version": 1, "artifact_kind": KIND, "status": "FAILED", "stage": "preflight",
+    root = output_path(job_root / ("direct-trace" if direct else "layer-trace"))
+    notify = lambda message: print(("draft-direct: " if direct else "draft-trace: ") + message, flush=True)
+    kind = "qwen35-draft-direct-trace-job" if direct else KIND
+    result = {"schema_version": 1, "artifact_kind": kind, "status": "FAILED", "stage": "preflight",
               "output": str(root), "device_execution": "NOT_RUN", "numerical_validation": "NOT_RUN",
               "scope": "Intermediate diagnostics on the original fixture; no language-quality or speed claim."}
     with DraftWorkspace(job_root):
@@ -290,10 +294,15 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
         if not schema.is_relative_to(selected_ddk):
             raise ValueError("trace schema must belong to the selected compiler DDK")
         _, _, graph = _graph(prepared["sequence_length"], tiny=prepared["tiny"], draft_config=prepared["draft_config"])
-        _, spec = instrument_draft_trace(graph)
+        if direct:
+            from .draft_direct_trace import instrument_draft_direct_outputs
+            _, spec = instrument_draft_direct_outputs(graph)
+        else:
+            _, spec = instrument_draft_trace(graph)
         names = [row["name"] for row in spec]
-        code_files = (*_ARTIFACT_CODE_FILES, *_CONTROL_ONLY_CODE_FILES)
-        identity = {"artifact_kind": KIND + "-owner", "job": str(job_root),
+        code_files = (*_ARTIFACT_CODE_FILES, *_CONTROL_ONLY_CODE_FILES,
+                      *(("draft_direct_trace.py", "draft_direct_job.py", "draft_direct_abi.py") if direct else ()))
+        identity = {"artifact_kind": kind + "-owner", "job": str(job_root),
                     "source_job_sha256": sha256_file(job_root / "result.json"), "trace_spec": spec,
                     "code": {name: sha256_file(Path(__file__).parent / name) for name in code_files}}
         if root.exists():
@@ -344,24 +353,33 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
                     result[field] = report[field]
 
         try:
-            trace_dir, reference = stage("reference", lambda folder: trace_prepared_draft(
-                prepared_dir, fixture_dir, folder, names=names, progress=notify))
-            fixture, fixture_report = stage("fixture", lambda folder: _fixture(
-                prepared_dir, fixture_dir, reference, trace_dir, spec, folder))
+            if direct:
+                from .draft_direct_job import prepare_direct_reference, prepare_direct_fixture
+                trace_dir, reference = stage("reference", lambda folder: prepare_direct_reference(
+                    job_root, prepared_dir, fixture_dir, folder, names=names, progress=notify))
+                fixture, fixture_report = stage("fixture", lambda folder: prepare_direct_fixture(
+                    prepared_dir, fixture_dir, reference, trace_dir, spec, folder))
+            else:
+                trace_dir, reference = stage("reference", lambda folder: trace_prepared_draft(
+                    prepared_dir, fixture_dir, folder, names=names, progress=notify))
+                fixture, fixture_report = stage("fixture", lambda folder: _fixture(
+                    prepared_dir, fixture_dir, reference, trace_dir, spec, folder))
             # Validate every tensor even when the trace reference was reused.
             for row in reference["tensors"]:
                 _file(trace_dir, row)
-            for row in [*fixture_report["inputs"], fixture_report["expected_top1"],
-                        fixture_report["expected_hidden"], fixture_report["expected_trace"]]:
+            expectations = (fixture_report["expected_direct"] if direct else
+                            [fixture_report["expected_top1"], fixture_report["expected_hidden"], fixture_report["expected_trace"]])
+            for row in [*fixture_report["inputs"], *expectations]:
                 _file(fixture, row)
             if prepare_only:
                 result.update(status="PREPARED", stage="complete")
             else:
+                selection = {"direct_names": names} if direct else {"trace_names": names}
                 air, exported = stage("air", lambda folder: export_draft(
                     prepared_dir, folder, ge_root, cxx=cxx, cxx11_abi=cxx11_abi,
-                    timeout_seconds=timeout_seconds, trace_names=names,
+                    timeout_seconds=timeout_seconds, **selection,
                     progress=lambda row: notify(row["message"])))
-                if exported.get("trace_spec") != spec:
+                if exported.get("direct_spec" if direct else "trace_spec") != spec:
                     raise ValueError("diagnostic AIR and reference trace specifications differ")
                 for row in exported["graphs"][0]["files"] + exported["graphs"][0]["construction_files"]:
                     _file(air, row)
@@ -399,12 +417,35 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
                 if precision.get("status") != "PASSED":
                     _precision_failures(precision, notify)
                     raise RuntimeError("diagnostic compiled precision did not pass; no bundle or board execution")
+                binding = None
+                if direct:
+                    from .draft_direct_abi import inspect_direct_output_abi
+                    binding = inspect_direct_output_abi(_file(compilation, compiled["omc"]), schema, spec)
+                    _save(root, "compiled-output-abi.json", binding)
+                    result["source_output_precision"] = ("SOURCE_DTYPES_PRESERVED"
+                        if binding.get("status") == "PASSED" else binding.get("status"))
+                    result["compiled_output_abi"] = {"status": binding.get("status"),
+                        "changes": binding.get("changes", []), "report": str(root / "compiled-output-abi.json")}
+                    if binding.get("status") not in {"PASSED", "SOURCE_DTYPE_CHANGED"}:
+                        raise RuntimeError("compiled direct output ABI could not be established; no board execution")
                 if compile_only:
                     result.update(status="COMPILED", stage="complete")
                 else:
+                    observation = {"trace_spec": spec}
+                    observed_spec = spec
+                    if direct:
+                        from .draft_direct_job import prepare_observed_direct_fixture
+                        observed_spec = binding["observed_spec"]
+                        fixture, physical_fixture = stage("observed-fixture", lambda folder: prepare_observed_direct_fixture(
+                            root / "fixture", folder, binding))
+                        if physical_fixture.get("direct_output_binding") != binding or physical_fixture.get("direct_spec") != observed_spec:
+                            raise ValueError("retained physical fixture differs from the current compiled output ABI")
+                        observation = {"direct_spec": observed_spec, "direct_output_binding": binding}
+                        notify("Compiled direct output ABI: " + binding["status"]
+                               + "; source dtype changes remain an explicit numerical failure")
                     bundle, bundled = stage("bundle", lambda folder: prepare_draft_bundle(
                         compilation, fixture, folder, config=prepared["draft_config"], ddk_id=selected_id,
-                        export_dir=air, weight_storage="embedded-stream", schema_library=schema, trace_spec=spec))
+                        export_dir=air, weight_storage="embedded-stream", schema_library=schema, **observation))
                     for key, path in (("compiler_report_sha256", compilation / "report.json"),
                                       ("fixture_report_sha256", fixture / "report.json"),
                                       ("export_manifest_sha256", air / "manifest.json")):
@@ -418,9 +459,25 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
                     result.update(status=comparison["status"], stage="complete", device_execution=comparison["device_execution"],
                                   numerical_validation=comparison["numerical_validation"],
                                   comparison=str(root / "board/comparison.json"),
-                                  trace_diagnostic=comparison.get("trace_diagnostic"))
+                                  trace_diagnostic=comparison.get("direct_diagnostic" if direct else "trace_diagnostic"))
                     if board.get("device_execution") == "PASSED":
-                        result["production_equivalence"] = production_equivalence(job_root, root, spec)
+                        result["production_equivalence"] = production_equivalence(job_root, root, spec, direct=direct)
+                        from .draft_trace_integrity import evaluate_trace_integrity
+                        native = _json(root / "board/results/result.json")
+                        if direct:
+                            from .draft_direct_job import read_direct_values
+                            values = read_direct_values(root / "board/results", native, observed_spec)
+                        else:
+                            record = native["outputs"][1]
+                            packed = np.fromfile(_file(root / "board/results", record), dtype="<f4")
+                            values = {row["name"]: packed[row["offset"]:row["offset"] + row["elements"]].reshape(row["shape"])
+                                      for row in spec}
+                        native_top = np.fromfile(_file(root / "board/results", native["outputs"][0]), dtype="<i4")
+                        result["trace_integrity"] = evaluate_trace_integrity(values, prepared["draft_config"],
+                            native_top1=None if direct else native_top.reshape(values["draft_top1"].shape),
+                            alias_deduplicated=direct)
+                        if result["trace_integrity"].get("status") == "FAILED":
+                            result.update(status="FAILED", diagnostic_validity="UNRELIABLE_OBSERVATIONS")
                     notify("Trace comparison: " + str(root / "board/comparison.json"))
             if sha256_file(job_root / "result.json") != identity["source_job_sha256"]:
                 raise ValueError("production job changed during diagnostic execution")

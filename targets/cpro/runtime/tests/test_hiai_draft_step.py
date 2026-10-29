@@ -118,3 +118,39 @@ wrong_abi_wire = (root/'step.tsv').read_text().replace('QWEN35_DRAFT_STEP\t1','Q
 proc = subprocess.run(args+['--output',str(root/'trace-wrong-abi')],capture_output=True,text=True)
 assert proc.returncode == 1 and 'explicit ABI kind' in proc.stderr,proc.stderr
 print('Draft trace explicit ABI, packed FP32 transport and production contract isolation passed (host fake only)')
+
+# Raw typed probes have a distinct direct-output ABI. The native adapter keeps
+# all outputs separate and accepts no new layout/padding exception for them.
+(root/'draft-abi.json').write_text(json.dumps({'artifact_kind':'qwen35-standalone-draft-direct-abi'}))
+plan()
+direct_wire=(root/'step.tsv').read_text().replace('QWEN35_DRAFT_STEP\t1','QWEN35_DRAFT_DIRECT_STEP\t1')
+direct_wire+='output\t2\tv41\tfloat16\t1,2\noutput\t3\tlayer_0_scores\tfloat32\t1,1,2,2\noutput\t4\tpositions\tint32\t1,2\n'
+(root/'step.tsv').write_text(direct_wire)
+direct_env=dict(os.environ,FAKE_HIAI_FAILURE='',FAKE_HIAI_DRAFT_DIRECT_OUTPUTS='float16:1,2;float32:1,1,2,2;int32:1,2')
+out=root/'direct-success'
+proc=subprocess.run(args+['--output',str(out)],capture_output=True,text=True,env=direct_env)
+assert proc.returncode==0,proc.stderr
+native=json.loads((out/'result.json').read_text())
+assert len(native['outputs'])==5 and len(native['io_diagnostic']['outputs'])==5
+assert struct.unpack('<2e',(out/'output_0002.bin').read_bytes())==(.5,.5)
+assert struct.unpack('<4f',(out/'output_0003.bin').read_bytes())==(.5,)*4
+assert struct.unpack('<2i',(out/'output_0004.bin').read_bytes())==(7,7)
+for label,wire in [
+    ('production-header',direct_wire.replace('QWEN35_DRAFT_DIRECT_STEP','QWEN35_DRAFT_STEP')),
+    ('packed-header',direct_wire.replace('QWEN35_DRAFT_DIRECT_STEP','QWEN35_DRAFT_TRACE_STEP')),
+    ('wrong-base',direct_wire.replace('draft_hidden\tfloat16','draft_hidden\tfloat32')),
+    ('wrong-extra-dtype',direct_wire.replace('v41\tfloat16','v41\tint64')),
+    ('rank-five',direct_wire.replace('v41\tfloat16\t1,2','v41\tfloat16\t1,1,1,1,2')),
+    ('oversize',direct_wire.replace('v41\tfloat16\t1,2','v41\tfloat16\t33554433')),
+    ('too-many',direct_wire+''.join(f'output\t{i}\tprobe_{i}\tfloat16\t1\n' for i in range(5,17))),
+]:
+    (root/'step.tsv').write_text(wire)
+    proc=subprocess.run(args+['--output',str(root/('direct-'+label))],capture_output=True,text=True,env=direct_env)
+    assert proc.returncode==1,(label,proc.stderr)
+(root/'draft-abi.json').write_text('{}')
+plan()
+wrong_direct=(root/'step.tsv').read_text().replace('QWEN35_DRAFT_STEP\t1','QWEN35_DRAFT_DIRECT_STEP\t1')
+(root/'step.tsv').write_text(wrong_direct)
+proc=subprocess.run(args+['--output',str(root/'direct-wrong-abi')],capture_output=True,text=True)
+assert proc.returncode==1 and 'explicit ABI kind' in proc.stderr,proc.stderr
+print('Raw direct draft outputs preserve typed buffers and bounded separate ABI (host fake only)')

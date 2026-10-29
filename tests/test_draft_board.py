@@ -67,7 +67,7 @@ def native_result(bundle,result_root,*,evidence='host-fake-hiai'):
        'runtime_version':'fake','firmware_id':'fake','evidence_kind':evidence,
        'inputs':m['inputs'],'outputs':outputs,'io_diagnostic':{'enabled':True,'process_called':True,
           'inputs':[{'index':r['index'],'readback_matches_source':True,'readback_sha256':r['sha256']} for r in m['inputs']],
-          'outputs':[{'index':i,'checked_after_process':True,'object_same':True,'buffer_same':True} for i in range(2)]}}
+          'outputs':[{'index':i,'checked_after_process':True,'object_same':True,'buffer_same':True} for i in range(len(m['outputs']))]}}
     write_json(result_root/'result.json',result)
     return result
 
@@ -161,6 +161,188 @@ def test_production_bundle_cannot_smuggle_trace_layout(bundle):
     write_json(root/'manifest.json',manifest)
     with pytest.raises(ValueError,match='separate trace bundle'):
         board._validate_bundle(root)
+
+
+@pytest.fixture
+def direct_bundle(bundle, tmp_path):
+    _, normal = bundle
+    fixture = tmp_path/'fixture'
+    reference = json.loads((fixture/'report.json').read_text())
+    spec = [
+        {'name':'draft_hidden','source':'draft_hidden','shape':[1,15,2048],'dtype':'float16','output_index':1},
+        {'name':'context_fc','source':'v41','shape':[1,2,2],'dtype':'float16','output_index':2},
+        {'name':'context_fc_alias','source':'v41','shape':[1,2,2],'dtype':'float16','output_index':2},
+        {'name':'scores','source':'layer_0_scores','shape':[1,1,2,2],'dtype':'float32','output_index':3},
+        {'name':'positions','source':'positions','shape':[1,2],'dtype':'int32','output_index':4}]
+    outputs = board._io(8, direct_spec=spec)[1]
+    expected = [reference['expected_top1'],reference['expected_hidden']]
+    arrays = [np.arange(4,dtype='<f2').reshape(1,2,2),
+              np.asarray([.5,-np.inf,0.,1.],dtype='<f4').reshape(1,1,2,2),
+              np.asarray([[4,5]],dtype='<i4')]
+    for descriptor,array in zip(outputs[2:],arrays):
+        path=fixture/f"raw_{descriptor['index']}.bin";array.tofile(path)
+        expected.append(record(path,fixture,**descriptor))
+    reference.update(direct_spec=spec,expected_direct=expected)
+    write_json(fixture/'report.json',reference)
+    root=tmp_path/'direct-bundle'
+    manifest=board.prepare_draft_bundle(tmp_path/'compilation',fixture,root,
+        config=normal['draft_config'],ddk_id='fixture',direct_spec=spec)
+    return root,manifest
+
+
+def test_direct_bundle_keeps_raw_dtypes_and_shared_alias_output(direct_bundle):
+    root,manifest=direct_bundle
+    assert manifest['artifact_kind']=='qwen35-standalone-draft-direct-bundle'
+    assert len(manifest['outputs'])==5 and len(manifest['direct_spec'])==5
+    assert [row['dtype'] for row in manifest['outputs']]==['int32','float16','float16','float32','int32']
+    assert manifest['outputs'][2]['name']=='v41'
+    assert (root/'step.tsv').read_text().startswith('QWEN35_DRAFT_DIRECT_STEP\t1\n')
+    assert json.loads((root/'draft-abi.json').read_text())['artifact_kind']=='qwen35-standalone-draft-direct-abi'
+    assert board._validate_bundle(root)[0]==manifest
+
+
+def test_direct_comparison_uses_native_typed_outputs_and_original_gates(direct_bundle,tmp_path):
+    root,_=direct_bundle
+    out=tmp_path/'direct-native'
+    native=native_result(direct_bundle,out)
+    result=board.compare_draft_result(root,out,allow_host_fake=True)
+    assert result['status']=='EXECUTION_COMPLETE' and result['numerical_validation']=='TOP1_MATCHED'
+    nodes=result['direct_diagnostic']['nodes']
+    assert all(node['exact_match'] for node in nodes)
+    assert nodes[1]['output_index']==nodes[2]['output_index']==2
+    assert nodes[3]['matching_infinity_count']==1
+    path=out/'output_0000.bin';np.zeros(15,dtype='<i4').tofile(path)
+    native['outputs'][0].update(record(path,out));write_json(out/'result.json',native)
+    result=board.compare_draft_result(root,out,allow_host_fake=True)
+    assert result['status']=='FAILED' and result['token_mismatches']==15
+
+
+@pytest.mark.parametrize('damage',['gap','alias','same-source','base','dtype','rank','size','count'])
+def test_direct_spec_rejects_ambiguous_or_unbounded_outputs(damage):
+    spec=[{'name':'x','source':'v1','shape':[1,2],'dtype':'float16','output_index':2}]
+    if damage=='gap': spec[0]['output_index']=3
+    elif damage=='alias': spec.append({**spec[0],'name':'alias','source':'v2'})
+    elif damage=='same-source': spec.append({**spec[0],'name':'alias','output_index':3})
+    elif damage=='base': spec[0].update(output_index=1,source='draft_hidden')
+    elif damage=='dtype': spec[0]['dtype']='bool'
+    elif damage=='rank': spec[0]['shape']=[1]*5
+    elif damage=='size': spec[0]['shape']=[2**26]
+    else: spec[0]['output_index']=16
+    with pytest.raises(ValueError): board._direct_outputs(spec)
+
+
+def test_production_and_packed_bundles_cannot_smuggle_direct_spec(bundle,trace_bundle):
+    for root,manifest in (bundle,trace_bundle):
+        manifest['direct_spec']=[];write_json(root/'manifest.json',manifest)
+        with pytest.raises(ValueError,match='separate direct bundle'):
+            board._validate_bundle(root)
+
+
+def test_direct_requires_explicit_spec_and_cannot_mix_packed_mode(direct_bundle):
+    root,manifest=direct_bundle
+    manifest['direct_spec']=None;write_json(root/'manifest.json',manifest)
+    with pytest.raises(ValueError,match='explicit probe specification'):
+        board._validate_bundle(root)
+    with pytest.raises(ValueError,match='mutually exclusive'):
+        board._io(8,[{'name':'x','shape':[1],'dtype':'float32','offset':0,'elements':1}],[])
+
+
+def test_direct_export_spec_must_bind_the_same_raw_outputs(direct_bundle,tmp_path):
+    _,manifest=direct_bundle
+    exported=tmp_path/'direct-air'
+    write_json(exported/'manifest.json',{'artifact_kind':'qwen35-cpro-draft-air','status':'EXPORTED',
+        'direct_spec':[], 'graphs':[{'name':'draft','outputs':[row['name'] for row in manifest['outputs']]}]})
+    out=tmp_path/'wrong-direct-spec'
+    with pytest.raises(ValueError,match='direct AIR specification differs'):
+        board.prepare_draft_bundle(tmp_path/'compilation',tmp_path/'fixture',out,
+            config=manifest['draft_config'],ddk_id='fixture',export_dir=exported,direct_spec=manifest['direct_spec'])
+    assert not out.exists()
+
+
+@pytest.fixture
+def promoted_direct_source(direct_bundle,tmp_path):
+    """Mock inspection metadata tests binding only, never compiler accuracy."""
+    _,normal=direct_bundle
+    declared=json.loads(json.dumps(normal['direct_spec']))
+    observed=json.loads(json.dumps(declared))
+    for row in observed:
+        if row['output_index']==2: row['dtype']='float32'
+    compiler=tmp_path/'compilation'
+    compiled=json.loads((compiler/'report.json').read_text())
+    ddk=tmp_path/'ddk'
+    schema=ddk/'lib/schema.so';schema.parent.mkdir(parents=True);schema.write_bytes(b'mock selected schema')
+    compiled['ddk_root']=str(ddk)
+    write_json(compiler/'report.json',compiled)
+    binding={'artifact_kind':'qwen35-draft-direct-output-abi-inspection','status':'SOURCE_DTYPE_CHANGED',
+        'declared_spec':declared,'observed_spec':observed,
+        'changes':[{'kind':'DIAGNOSTIC_OUTPUT_PROMOTED_FP16_TO_FP32','output_index':2,'source':'v41',
+                    'semantic_names':['context_fc','context_fc_alias'],'declared_dtype':'float16',
+                    'observed_dtype':'float32','shape':[1,2,2]}],
+        'omc':compiled['omc'], 'schema':{'library':str(schema),'library_sha256':sha256_file(schema)},
+        'source_binding':'ORDERED_COMPILED_OUTPUTS_CALLER_MUST_BIND_AIR_AND_DECLARED_SPEC'}
+    fixture=tmp_path/'fixture'
+    reference=json.loads((fixture/'report.json').read_text())
+    row=reference['expected_direct'][2]
+    array=np.fromfile(fixture/row['path'],dtype='<f2').astype('<f4')
+    path=fixture/'promoted_context.bin';array.tofile(path)
+    reference['expected_direct'][2]=record(path,fixture,**board._io(8,direct_spec=observed)[1][2])
+    reference.update(direct_spec=observed,prepared_manifest_sha256='a'*64)
+    write_json(fixture/'report.json',reference)
+    exported=tmp_path/'bound-direct-air';exported.mkdir()
+    air=exported/'draft.air';air.write_bytes(b'mock direct AIR')
+    air_row=record(air,exported)
+    staged=compiler/'compile-work/input/draft.air';staged.parent.mkdir(parents=True);staged.write_bytes(air.read_bytes())
+    compiled['input_snapshots']=[record(staged,compiler,source_relative='draft.air',role='air')]
+    write_json(compiler/'report.json',compiled)
+    write_json(exported/'manifest.json',{'artifact_kind':'qwen35-cpro-draft-air','status':'EXPORTED',
+        'direct_spec':declared,'prepared_manifest_sha256':'a'*64,'graphs':[{'name':'draft','air':'draft.air',
+        'outputs':[row['name'] for row in normal['outputs']],'files':[air_row]}]})
+    return compiler,fixture,exported,normal['draft_config'],declared,observed,binding
+
+
+def test_promoted_direct_output_binding_preserves_declared_precision_and_reads_actual_wire(promoted_direct_source,tmp_path):
+    compiler,fixture,exported,config,declared,observed,binding=promoted_direct_source
+    root=tmp_path/'promoted-direct-bundle'
+    manifest=board.prepare_draft_bundle(compiler,fixture,root,config=config,ddk_id='fixture',
+        export_dir=exported,direct_spec=observed,direct_output_binding=binding)
+    assert manifest['source_output_precision']=='SOURCE_DTYPE_CHANGED'
+    assert manifest['outputs'][2]['dtype']=='float32'
+    assert manifest['direct_output_binding']['declared_spec']==declared
+    assert board._validate_bundle(root)[0]==manifest
+    out=tmp_path/'promoted-native';native_result((root,manifest),out)
+    result=board.compare_draft_result(root,out,allow_host_fake=True)
+    assert result['device_execution']=='PASSED' and result['token_mismatches']==0
+    assert result['status']=='FAILED' and result['numerical_validation']=='FAILED'
+    assert result['source_output_precision']=='SOURCE_DTYPE_CHANGED'
+    assert all(node['exact_match'] for node in result['direct_diagnostic']['nodes'])
+
+
+def test_unchanged_direct_output_binding_is_retained_in_the_bundle(promoted_direct_source,tmp_path):
+    compiler,fixture,exported,config,_,observed,binding=promoted_direct_source
+    binding.update(status='PASSED',declared_spec=observed,changes=[])
+    export=json.loads((exported/'manifest.json').read_text());export['direct_spec']=observed
+    write_json(exported/'manifest.json',export)
+    root=tmp_path/'bound-unchanged-direct'
+    manifest=board.prepare_draft_bundle(compiler,fixture,root,config=config,ddk_id='fixture',
+        export_dir=exported,direct_spec=observed,direct_output_binding=binding)
+    assert manifest['source_output_precision']=='SOURCE_DTYPES_PRESERVED'
+    assert board._validate_bundle(root)[0]['direct_output_binding']==binding
+
+
+@pytest.mark.parametrize('damage',['omc','bytes','status','changes','source','shape','schema','kind'])
+def test_direct_output_binding_rejects_unbound_or_unsupported_changes(promoted_direct_source,tmp_path,damage):
+    compiler,fixture,exported,config,declared,observed,binding=promoted_direct_source
+    if damage=='omc': binding['omc']={**binding['omc'],'sha256':'0'*64}
+    elif damage=='bytes': binding['omc']={**binding['omc'],'bytes':binding['omc']['bytes']+1}
+    elif damage=='status': binding['status']='PASSED'
+    elif damage=='changes': binding['changes']=[]
+    elif damage=='source': binding['declared_spec'][1]['source']='wrong'
+    elif damage=='shape': binding['declared_spec'][1]['shape']=[1,4]
+    elif damage=='schema': binding['schema']['library_sha256']='0'*64
+    else: binding['artifact_kind']='unverified'
+    with pytest.raises(ValueError):
+        board.prepare_draft_bundle(compiler,fixture,tmp_path/('bad-binding-'+damage),config=config,ddk_id='fixture',
+            export_dir=exported,direct_spec=observed,direct_output_binding=binding)
 
 
 def test_single_embedded_omc_bundle_needs_no_external_weight_payload(bundle, tmp_path):
@@ -602,13 +784,15 @@ def execute_with_fake_hdc(bundle,tmp_path,monkeypatch,*,failure_stage=None,fault
            'draft.exitcode':str(rc).encode()+b'\n',
            'results/result.json':(native_dir/'result.json').read_bytes()}
     if not failure_stage:
-        for index in range(2):
+        for index in range(len(manifest['outputs'])):
             name=f'output_{index:04d}.bin'
             files['results/'+name]=(native_dir/name).read_bytes()
     if fault=='missing_stderr':
         files.pop('draft.stderr')
     elif fault=='missing_output':
         files.pop('results/output_0001.bin')
+    elif fault=='missing_extra_output':
+        files.pop('results/output_0002.bin')
     elif fault=='missing_native':
         files.pop('results/result.json')
     elif fault=='exit_mismatch':
@@ -698,6 +882,18 @@ def test_fake_hdc_success_checks_outputs_before_promoting_execution(bundle,tmp_p
     assert result['numerical_validation']=='TOP1_MATCHED' and result['native_status']=='EXECUTED'
     assert {'results/output_0000.bin','results/output_0001.bin'} <= set(requested)
     assert not any(key in result for key in ('error','comparison_error','transport_error'))
+
+
+def test_fake_hdc_direct_collects_every_raw_output(direct_bundle,tmp_path,monkeypatch):
+    result,requested=execute_with_fake_hdc(direct_bundle,tmp_path,monkeypatch)
+    assert result['device_execution']=='PASSED' and result['status']=='EXECUTION_COMPLETE'
+    assert {f'results/output_{index:04d}.bin' for index in range(5)} <= set(requested)
+
+
+def test_fake_hdc_direct_missing_extra_output_never_promotes_execution(direct_bundle,tmp_path,monkeypatch):
+    result,_=execute_with_fake_hdc(direct_bundle,tmp_path,monkeypatch,fault='missing_extra_output')
+    assert result['status']=='FAILED' and result['device_execution']=='UNVERIFIED'
+    assert result.get('transport_error') and result.get('comparison_error')
 
 
 def test_fake_hdc_top1_failure_is_reported_separately_from_transport(bundle,tmp_path,monkeypatch):

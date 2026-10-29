@@ -184,13 +184,15 @@ def prepare_draft(output_dir, sequence_length=64, *, target_path=None, draft_pat
 
 def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
                  timeout_seconds=3600, fp16_reductions="matmul", fp16_row_mul="compact", progress=None,
-                 trace_names=None):
+                 trace_names=None, direct_names=None):
     """Build one real GE exporter and serialize one complete draft AIR."""
     from .ge_cpp import emit_cpp
     if fp16_reductions not in {"native", "matmul"} or fp16_row_mul not in {"native", "compact"}:
         raise ValueError("invalid FP16 lowering policy")
     if cxx11_abi not in (0, 1) or timeout_seconds <= 0:
         raise ValueError("invalid C++ ABI or timeout")
+    if trace_names is not None and direct_names is not None:
+        raise ValueError("packed trace and direct outputs are mutually exclusive")
     prepared = Path(prepared_dir).resolve()
     manifest_path = prepared / "prepared.json"
     plan = json.loads(manifest_path.read_text())
@@ -204,10 +206,16 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
     _, config, graph = _graph(plan["sequence_length"], tiny=plan["tiny"], draft_config=plan["draft_config"],
                              include_hidden=plan["include_hidden"])
     trace_spec = None
+    direct_spec = None
     if trace_names is not None:
         from .draft_ge_trace import instrument_draft_trace
         graph, trace_spec = instrument_draft_trace(graph, names=trace_names)
-    export_contract = CURRENT_DRAFT_EXPORT_CONTRACT + ("-layer-trace-v1" if trace_spec is not None else "")
+    if direct_names is not None:
+        from .draft_direct_trace import instrument_draft_direct_outputs
+        graph, direct_spec = instrument_draft_direct_outputs(graph, names=direct_names)
+    suffix = ("-layer-trace-v1" if trace_spec is not None else
+              "-direct-outputs-v1" if direct_spec is not None else "")
+    export_contract = CURRENT_DRAFT_EXPORT_CONTRACT + suffix
     if set(plan["weights"]) != set(graph.weights):
         raise ValueError("prepared weight set differs from complete draft graph")
     if plan["source"].get("fp16_payload_sha256") != weight_identity(plan["weights"]):
@@ -324,6 +332,9 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
                     "cxx11_abi": cxx11_abi, "fp16_reductions": fp16_reductions, "fp16_row_mul": fp16_row_mul}
         if trace_spec is not None:
             manifest.update(trace_spec=trace_spec, diagnostic_only=True)
+        if direct_spec is not None:
+            manifest.update(direct_spec=direct_spec, diagnostic_only=True,
+                            direct_outputs="ORIGINAL_VALUES_NATIVE_DTYPE_NO_OBSERVER_NODES")
         save_json(root / "manifest.json", manifest)
         return manifest
     except Exception as error:

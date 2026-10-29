@@ -6,6 +6,20 @@
 
 ## 用户现在执行什么
 
+最新PID1611的完整packed trace已通过331/331精度检查、证明140条跨分区路径并完成设备执行，但观察数据内部矛盾：同源 `layer_0_output/layer_1_input` 不同，`context_fc` 显示全零而下游归一化非零，QK探针与其缩放后score不一致。诊断hidden与生产hidden相对L2=1.402770、Top1全不同。因此不能将 `first_nonexact=context_fc` 当原生产图首次错误，也不能把探针的3876个非有限差异直接归因于模型算术。
+
+现在使用原值直接输出入口；它先只读复核已有packed结果，再在固定 `full-draft/direct-trace` 构建一份16端口诊断图。原594个计算节点不增不改，无额外观察Cast/Reshape/Concat；Top1/hidden保留，重点观察FC、首层attention/MLP及第0→1层边界，同源语义共享物理端口。原CPU探针参考校验后复用，不重新准备权重或golden；旧生产及packed产物保留。
+
+```bash
+git pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/run_draft_direct.py" \
+  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
+```
+
+此入口需要新诊断图的一次编译与上板。打包前静态读取实际OMC输出dtype/shape，不按源码猜buffer大小。本地公开DDK小图出现3个附加FP16输出被编成FP32；用户DDK需独立实查。只允许附加端口的这类提升用于明确标记的诊断读取，记录 `SOURCE_DTYPE_CHANGED` 并保持数值验收FAILED，不把它当源混合精度通过。固定Top1/hidden类型、shape或未知类型改变均停止上传。实际数据、比较、一致性及生产端对照报告位于 `direct-trace/board/comparison.json`、`direct-trace/result.json` 和 `compiled-output-abi.json`。
+
+如只需只读复核旧packed数据，可运行 `python3 "$REPO_DIR/targets/cpro/scripts/run_draft_trace_review.py"`；不编译、不写文件、不访问设备。不再重复运行原packed trace入口以定位首次算术错误。
+
 最新接口明细已确认：升级后的检查为320/331，20条跨CPU路径已证明；剩余失败源于检查器还比较了其它端口的描述符。用户回传的可见差异位于四维CPU NetOutput输入，dtype/shape相同，仅CPU标NCHW、main标ND；本次追溯的是三维FP32 flatten探针。现将描述符检查精确限定在所追溯路径的每个端口；CPU归属、唯一Data/NetOutput、全接口端口数量和原生产者身份仍严格检查。所选路径若出现FP16、NCHW、shape或来源变化，仍停止上传。没有把ND/NCHW普遍视为相同。
 
 继续使用下方原命令，复用现成OMC。新版错误会列出具体owner/node/port和两侧描述符，并合并重复原因；完整错误仍保存在 `layer-trace/precision-check.json`。

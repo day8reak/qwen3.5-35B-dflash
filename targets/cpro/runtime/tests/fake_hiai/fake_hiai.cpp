@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 namespace {
 int tensors=0, clients=0;
@@ -16,6 +17,22 @@ std::uint32_t FeatureWidth() {
   return Failure()=="large-features"?1025:Failure()=="capture-limit"?1024:32;
 }
 std::string Layout() { const auto* p=std::getenv("FAKE_HIAI_LAYOUT"); return p?p:""; }
+std::vector<std::pair<std::string, std::vector<std::uint32_t>>> DirectOutputs() {
+  std::vector<std::pair<std::string, std::vector<std::uint32_t>>> result;
+  const auto* value = std::getenv("FAKE_HIAI_DRAFT_DIRECT_OUTPUTS");
+  if (!value) return result;
+  std::stringstream stream(value);
+  for (std::string entry; std::getline(stream, entry, ';');) {
+    const auto colon = entry.find(':');
+    if (colon == std::string::npos) throw std::runtime_error("invalid direct test dimensions");
+    std::stringstream dimensions(entry.substr(colon + 1));
+    std::vector<std::uint32_t> shape;
+    for (std::string dimension; std::getline(dimensions, dimension, ',');)
+      shape.push_back(static_cast<std::uint32_t>(std::stoul(dimension)));
+    result.push_back({entry.substr(0, colon), shape});
+  }
+  return result;
+}
 void Trace(const char* event) {
   if (const auto* path=std::getenv("FAKE_HIAI_TRACE")) std::ofstream(path, std::ios::app) << event << '\n';
 }
@@ -155,6 +172,7 @@ AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vecto
     out={TensorDimension({1,15}),TensorDimension({1,15,2048})};
     if (const auto* elements = std::getenv("FAKE_HIAI_DRAFT_TRACE_ELEMENTS"))
       out[1] = TensorDimension({1,1,static_cast<std::uint32_t>(std::stoul(elements))});
+    for (const auto& spec : DirectOutputs()) out.emplace_back(spec.second);
   }
   else if(n=="qwen35_stateful_target") {
     const bool decode = std::string(static_cast<const char*>(model_buffer_),model_bytes_)=="stateful-decode-fixture";
@@ -244,12 +262,23 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
   if(c.model!=name_ || !timeout || !loaded_ || Failure()=="run") return 1;
   if(name_=="qwen35_standalone_draft") {
     // Transport fixture only; never a numerical DFlash implementation.
-    if(in.size()!=3 || out.size()!=2) return AI_FAILED;
+    const auto direct = DirectOutputs();
+    if(in.size()!=3 || out.size()!=2+direct.size()) return AI_FAILED;
     auto* top=static_cast<std::int32_t*>(out[0]->GetBuffer());
     for(std::int32_t i=0;i<15;++i) top[i]=i+10;
     if (std::getenv("FAKE_HIAI_DRAFT_TRACE_ELEMENTS"))
       std::fill_n(static_cast<float*>(out[1]->GetBuffer()),out[1]->GetSize()/sizeof(float),.5f);
     else std::fill_n(static_cast<std::uint16_t*>(out[1]->GetBuffer()),15*2048,0x3800);
+    for (std::size_t i=0; i<direct.size(); ++i) {
+      auto& tensor = out[i+2];
+      if (direct[i].first == "float16")
+        std::fill_n(static_cast<std::uint16_t*>(tensor->GetBuffer()),tensor->GetSize()/2,0x3800);
+      else if (direct[i].first == "float32")
+        std::fill_n(static_cast<float*>(tensor->GetBuffer()),tensor->GetSize()/4,.5f);
+      else if (direct[i].first == "int32")
+        std::fill_n(static_cast<std::int32_t*>(tensor->GetBuffer()),tensor->GetSize()/4,7);
+      else return AI_FAILED;
+    }
     stamp=1; return AI_SUCCESS;
   }
   if(name_=="qwen35_fused_operator") {

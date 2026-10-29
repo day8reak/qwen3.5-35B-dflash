@@ -71,11 +71,85 @@ def _trace_spec(spec):
     return offset
 
 
-def _io(sequence, trace_spec=None):
+def _direct_outputs(spec):
+    """Validate raw-output probes without casts, packing or duplicate storage."""
+    if not isinstance(spec, list) or len(spec) > 256:
+        raise ValueError('direct specification requires at most 256 semantic probes')
+    outputs = {0: {'index': 0, 'name': 'draft_top1', 'dtype': 'int32', 'shape': [1,15]},
+               1: {'index': 1, 'name': 'draft_hidden', 'dtype': 'float16', 'shape': [1,15,2048]}}
+    names, sources = set(), {'draft_top1': 0, 'draft_hidden': 1}
+    for row in spec:
+        if not isinstance(row, dict) or set(row) != {'name', 'source', 'shape', 'dtype', 'output_index'}:
+            raise ValueError('invalid direct tensor specification')
+        name, source, shape, index = row['name'], row['source'], row['shape'], row['output_index']
+        if (not isinstance(name, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.-]*', name)
+                or name in names or not isinstance(source, str)
+                or len(source) > 256 or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_./-]*', source)
+                or not isinstance(shape, list) or not 1 <= len(shape) <= 4
+                or any(type(value) is not int or value <= 0 for value in shape)
+                or row['dtype'] not in {'float16', 'float32', 'int32'}
+                or type(index) is not int or not 0 <= index < 16):
+            raise ValueError('direct probe has an invalid name, source, shape, dtype or index')
+        descriptor = {'index': index, 'name': source, 'dtype': row['dtype'], 'shape': shape}
+        if index in outputs and outputs[index] != descriptor:
+            raise ValueError('direct aliases must share one exact source descriptor')
+        if source in sources and sources[source] != index:
+            raise ValueError('direct source must use one physical output index')
+        outputs[index], sources[source] = descriptor, index
+        names.add(name)
+    if set(outputs) != set(range(len(outputs))):
+        raise ValueError('direct physical output indices must be contiguous')
+    result = [outputs[index] for index in range(len(outputs))]
+    if sum(math.prod(row['shape']) * (2 if row['dtype'] == 'float16' else 4) for row in result) > 64 << 20:
+        raise ValueError('direct outputs exceed 64 MiB')
+    return result
+
+
+def _direct_output_binding(declared_spec, observed_spec, binding, source_omc):
+    """Check a selected-schema compiled output receipt, without re-decoding OMC."""
+    _direct_outputs(declared_spec)
+    _direct_outputs(observed_spec)
+    if (not isinstance(binding, dict)
+            or binding.get('artifact_kind') != 'qwen35-draft-direct-output-abi-inspection'
+            or binding.get('declared_spec') != declared_spec or binding.get('observed_spec') != observed_spec
+            or binding.get('source_binding') != 'ORDERED_COMPILED_OUTPUTS_CALLER_MUST_BIND_AIR_AND_DECLARED_SPEC'
+            or len(declared_spec) != len(observed_spec)):
+        raise ValueError('direct output binding does not describe the declared and observed specifications')
+    changes = {}
+    for declared, observed in zip(declared_spec, observed_spec):
+        if any(declared[key] != observed[key] for key in ('name', 'source', 'shape', 'output_index')):
+            raise ValueError('compiled direct output changed source, order or shape')
+        if declared['dtype'] != observed['dtype']:
+            if (declared['output_index'] < 2 or declared['dtype'] != 'float16' or observed['dtype'] != 'float32'):
+                raise ValueError('only extra diagnostic FP16-to-FP32 output promotion can be read')
+            item = changes.setdefault(declared['output_index'], {
+                'kind': 'DIAGNOSTIC_OUTPUT_PROMOTED_FP16_TO_FP32', 'output_index': declared['output_index'],
+                'source': declared['source'], 'semantic_names': [], 'declared_dtype': 'float16',
+                'observed_dtype': 'float32', 'shape': declared['shape']})
+            item['semantic_names'].append(declared['name'])
+    expected_changes = [changes[index] for index in sorted(changes)]
+    if binding.get('changes') != expected_changes or binding.get('status') != ('SOURCE_DTYPE_CHANGED' if changes else 'PASSED'):
+        raise ValueError('direct output precision changes differ from the bound inspection')
+    observed_omc = binding.get('omc', {})
+    if (not isinstance(source_omc, dict) or type(source_omc.get('bytes')) is not int or source_omc['bytes'] <= 0
+            or not re.fullmatch('[0-9a-f]{64}', source_omc.get('sha256', ''))
+            or any(observed_omc.get(key) != source_omc.get(key) for key in ('bytes', 'sha256'))):
+        raise ValueError('direct output inspection belongs to a different compiled OMC')
+    schema = binding.get('schema', {})
+    if (not isinstance(schema, dict) or not isinstance(schema.get('library'), str)
+            or not re.fullmatch('[0-9a-f]{64}', schema.get('library_sha256', ''))):
+        raise ValueError('direct output inspection has no bound selected schema')
+    return 'SOURCE_DTYPE_CHANGED' if changes else 'SOURCE_DTYPES_PRESERVED'
+
+
+def _io(sequence, trace_spec=None, direct_spec=None):
+    if trace_spec is not None and direct_spec is not None:
+        raise ValueError('packed and direct diagnostic specifications are mutually exclusive')
     trace_elements = None if trace_spec is None else _trace_spec(trace_spec)
     return ([{'index': 0, 'name': 'target_features', 'dtype': 'float16', 'shape': [1,sequence,16384]},
              {'index': 1, 'name': 'input_ids', 'dtype': 'int32', 'shape': [1,sequence]},
              {'index': 2, 'name': 'attention_mask', 'dtype': 'int32', 'shape': [1,sequence]}],
+            _direct_outputs(direct_spec) if direct_spec is not None else
             [{'index': 0, 'name': 'draft_top1', 'dtype': 'int32', 'shape': [1,15]},
              ({'index': 1, 'name': 'draft_hidden', 'dtype': 'float16', 'shape': [1,15,2048]}
               if trace_elements is None else
@@ -84,7 +158,8 @@ def _io(sequence, trace_spec=None):
 
 def _wire(manifest):
     model, abi = manifest['model'], manifest['draft_abi']
-    header = ('QWEN35_DRAFT_TRACE_STEP\t1' if manifest.get('trace_spec') is not None else 'QWEN35_DRAFT_STEP\t1')
+    header = ('QWEN35_DRAFT_DIRECT_STEP\t1' if manifest.get('direct_spec') is not None else
+              'QWEN35_DRAFT_TRACE_STEP\t1' if manifest.get('trace_spec') is not None else 'QWEN35_DRAFT_STEP\t1')
     lines = [header, f"model\t{model['path']}\t{model['sha256']}",
              f"draft_abi\t{abi['path']}\t{abi['sha256']}", f"tokens\t{manifest['sequence_length']}\t0"]
     for row in manifest['inputs']:
@@ -123,7 +198,8 @@ def _compiler_payload_layout(report):
 
 
 def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, ddk_id, export_dir=None,
-                         weight_storage=None, schema_library=None, trace_spec=None):
+                         weight_storage=None, schema_library=None, trace_spec=None, direct_spec=None,
+                         direct_output_binding=None):
     """Snapshot the existing compiler payloads and fixture; never compile a model.
 
     Pass export_dir to bind compiler AIR snapshots to the exported draft, and
@@ -165,10 +241,13 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
         raise ValueError('draft fixture configuration or status mismatch')
     if trace_spec is not None and (reference.get('trace_spec') != trace_spec or reference.get('expected_trace') is None):
         raise ValueError('trace fixture must bind the packed golden and trace specification')
+    if direct_spec is not None and (reference.get('direct_spec') != direct_spec
+                                   or not isinstance(reference.get('expected_direct'), list)):
+        raise ValueError('direct fixture must bind all raw goldens and the direct specification')
     sequence = reference.get('sequence_length')
     if type(sequence) is not int or not 0 < sequence <= 16384 or sequence + cfg.block_size > cfg.max_position_embeddings:
         raise ValueError('draft sequence exceeds position/input-buffer bounds')
-    expected_inputs, outputs = _io(sequence, trace_spec)
+    expected_inputs, outputs = _io(sequence, trace_spec, direct_spec)
     if len(reference.get('inputs', [])) != 3:
         raise ValueError('draft fixture must provide all three ordered inputs')
     for actual, expected in zip(reference['inputs'], expected_inputs):
@@ -177,6 +256,17 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
         _file(fixture, actual)
     source_identity = 'UNVERIFIED'
     exported_hash = None
+    source_output_precision = 'DECLARED_SOURCE_DTYPES' if direct_spec is not None else None
+    if direct_output_binding is not None:
+        if direct_spec is None or export_dir is None:
+            raise ValueError('direct output inspection requires a bound direct AIR export')
+        declared = direct_output_binding.get('declared_spec') if isinstance(direct_output_binding, dict) else None
+        source_output_precision = _direct_output_binding(declared, direct_spec, direct_output_binding, report['omc'])
+        schema = direct_output_binding['schema']
+        ddk = Path(report['ddk_root']).resolve()
+        library = Path(schema['library']).resolve()
+        if not library.is_relative_to(ddk) or sha256_file(library) != schema['library_sha256']:
+            raise ValueError('direct output inspection schema differs from the selected compiler DDK')
     if export_dir is not None:
         exported = Path(export_dir).resolve()
         exported_manifest = _json(exported/'manifest.json')
@@ -186,6 +276,10 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
                 or exported_manifest['graphs'][0].get('name') != 'draft'):
             raise ValueError('export identity does not describe one complete draft')
         graph = exported_manifest['graphs'][0]
+        if direct_spec is not None:
+            declared = (direct_output_binding['declared_spec'] if direct_output_binding is not None else direct_spec)
+            if exported_manifest.get('direct_spec') != declared:
+                raise ValueError('direct AIR specification differs from the reference fixture')
         if graph.get('outputs') != [row['name'] for row in outputs]:
             raise ValueError('standalone draft export must include pre-head hidden diagnostics')
         air = next((row for row in graph['files'] if row['path'] == graph['air']), None)
@@ -250,8 +344,15 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
         _snapshot(_file(fixture,row),destination)
         inputs.append({**row,**_record(destination,root)})
     expected = []
-    for key, desc in zip(('expected_top1','expected_hidden' if trace_spec is None else 'expected_trace'),outputs):
-        row = reference.get(key)
+    expected_rows = ([reference.get('expected_top1'), reference.get('expected_hidden' if trace_spec is None else 'expected_trace')]
+                     if direct_spec is None else reference['expected_direct'])
+    if len(expected_rows) != len(outputs):
+        raise ValueError('reference output count differs from the selected diagnostic contract')
+    for index, (row, desc) in enumerate(zip(expected_rows, outputs)):
+        key = (('expected_top1', 'expected_hidden' if trace_spec is None else 'expected_trace')[index]
+               if direct_spec is None else f'expected_direct_{index:04d}')
+        if direct_spec is not None and row is None:
+            raise ValueError('direct diagnostics require every raw reference output')
         if row is None:
             expected.append(None)
             continue
@@ -260,14 +361,22 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
         destination=root/(key+'.bin')
         _snapshot(_file(fixture,row),destination)
         expected.append({**row,**_record(destination,root)})
-    abi={'schema_version':1,'artifact_kind':('qwen35-standalone-draft-abi' if trace_spec is None else
-                                          'qwen35-standalone-draft-trace-abi'),'inputs':expected_inputs,'outputs':outputs,
+    abi_kind = ('qwen35-standalone-draft-direct-abi' if direct_spec is not None else
+                'qwen35-standalone-draft-abi' if trace_spec is None else 'qwen35-standalone-draft-trace-abi')
+    bundle_kind = ('qwen35-standalone-draft-direct-bundle' if direct_spec is not None else
+                   'qwen35-standalone-draft-bundle' if trace_spec is None else 'qwen35-standalone-draft-trace-bundle')
+    abi={'schema_version':1,'artifact_kind':abi_kind,'inputs':expected_inputs,'outputs':outputs,
          'draft_config':config,'sequence_length':sequence,'state_policy':'prefix-recompute'}
     if trace_spec is not None:
         abi['trace_spec'] = trace_spec
+    if direct_spec is not None:
+        abi['direct_spec'] = direct_spec
+        abi['source_output_precision'] = source_output_precision
+        if direct_output_binding is not None:
+            abi['direct_output_binding'] = direct_output_binding
+            abi['source_compiled_omc'] = report['omc']
     save_json(root/'draft-abi.json',abi)
-    manifest={'schema_version':1,'artifact_kind':('qwen35-standalone-draft-bundle' if trace_spec is None else
-                                                'qwen35-standalone-draft-trace-bundle'),'status':'PREPARED',
+    manifest={'schema_version':1,'artifact_kind':bundle_kind,'status':'PREPARED',
         'weight_storage':weight_storage,
         'ddk_id':_text(ddk_id,'DDK identity'),'platform':'kirinx90','sequence_length':sequence,'vocab_size':cfg.vocab_size,
         'draft_config':config,'model':model,'model_payloads':payloads,'draft_abi':_record(root/'draft-abi.json',root),
@@ -276,6 +385,12 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
         'export_manifest_sha256':exported_hash,'reference_scope':'Same complete draft and fixed feature inputs; no target execution or acceptance evaluation'}
     if trace_spec is not None:
         manifest['trace_spec'] = trace_spec
+    if direct_spec is not None:
+        manifest['direct_spec'] = direct_spec
+        manifest['source_output_precision'] = source_output_precision
+        if direct_output_binding is not None:
+            manifest['direct_output_binding'] = direct_output_binding
+            manifest['source_compiled_omc'] = report['omc']
     if packing is not None:
         manifest['weight_packing'] = _record(root/'weight-packing.json', root)
     (root/'step.tsv').write_bytes(_wire(manifest))
@@ -287,13 +402,19 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
 def _validate_bundle(root):
     manifest = _json(root/'manifest.json')
     trace = manifest.get('artifact_kind') == 'qwen35-standalone-draft-trace-bundle'
-    if (manifest.get('artifact_kind') not in {'qwen35-standalone-draft-bundle', 'qwen35-standalone-draft-trace-bundle'}
+    direct = manifest.get('artifact_kind') == 'qwen35-standalone-draft-direct-bundle'
+    if (manifest.get('artifact_kind') not in {'qwen35-standalone-draft-bundle', 'qwen35-standalone-draft-trace-bundle',
+                                             'qwen35-standalone-draft-direct-bundle'}
             or manifest.get('status') != 'PREPARED'
             or manifest.get('platform') != 'kirinx90'):
         raise ValueError('expected a prepared standalone draft bundle')
     if trace != ('trace_spec' in manifest):
         raise ValueError('trace specification requires the separate trace bundle kind')
-    inputs,outputs=_io(manifest['sequence_length'], manifest.get('trace_spec'))
+    if direct != ('direct_spec' in manifest):
+        raise ValueError('direct specification requires the separate direct bundle kind')
+    if direct and not isinstance(manifest['direct_spec'], list):
+        raise ValueError('direct bundle requires an explicit probe specification list')
+    inputs,outputs=_io(manifest['sequence_length'], manifest.get('trace_spec'), manifest.get('direct_spec'))
     if manifest['outputs'] != outputs or len(manifest['inputs']) != 3:
         raise ValueError('draft bundle IO contract changed')
     for row,desc in zip(manifest['inputs'],inputs):
@@ -302,11 +423,29 @@ def _validate_bundle(root):
     abi=_json(_file(root,manifest['draft_abi']))
     if abi['inputs']!=inputs or abi['outputs']!=outputs or abi['draft_config']!=manifest['draft_config']:
         raise ValueError('draft ABI differs from bundle')
-    expected_kind = 'qwen35-standalone-draft-trace-abi' if trace else 'qwen35-standalone-draft-abi'
-    if abi.get('artifact_kind') != expected_kind or ('trace_spec' in abi) != trace:
+    expected_kind = ('qwen35-standalone-draft-direct-abi' if direct else
+                     'qwen35-standalone-draft-trace-abi' if trace else 'qwen35-standalone-draft-abi')
+    if abi.get('artifact_kind') != expected_kind or ('trace_spec' in abi) != trace or ('direct_spec' in abi) != direct:
         raise ValueError('draft ABI kind differs from bundle')
     if trace and abi['trace_spec'] != manifest['trace_spec']:
         raise ValueError('trace ABI layout differs from bundle')
+    if direct and abi['direct_spec'] != manifest['direct_spec']:
+        raise ValueError('direct ABI specification differs from bundle')
+    if direct:
+        binding = manifest.get('direct_output_binding')
+        if abi.get('direct_output_binding') != binding or abi.get('source_compiled_omc') != manifest.get('source_compiled_omc'):
+            raise ValueError('direct compiled output binding differs between ABI and bundle')
+        expected_precision = ('DECLARED_SOURCE_DTYPES' if binding is None else _direct_output_binding(
+            binding.get('declared_spec'), manifest['direct_spec'], binding, manifest.get('source_compiled_omc')))
+        if manifest.get('source_output_precision') != expected_precision or abi.get('source_output_precision') != expected_precision:
+            raise ValueError('direct source output precision metadata differs from its binding')
+    if not isinstance(manifest.get('expected'), list) or len(manifest['expected']) != len(outputs):
+        raise ValueError('reference output count differs from the bundle ABI')
+    for desc, expected in zip(outputs, manifest['expected']):
+        if expected is None and not direct:
+            continue
+        if not isinstance(expected, dict) or any(expected.get(key) != value for key, value in desc.items()):
+            raise ValueError('reference output descriptor differs from the bundle ABI')
     if manifest['model'] not in manifest['model_payloads']:
         raise ValueError('model missing from payloads')
     records=[manifest['draft_abi'],manifest['step_plan'],*manifest['inputs'],*manifest['model_payloads']]
@@ -452,7 +591,8 @@ def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False, expec
         return report
     if native.get('status')!='EXECUTED' or native.get('draft_calls')!=1:
         raise ValueError('native result must record exactly one draft execution')
-    if len(native.get('inputs',[]))!=3 or len(native.get('outputs',[]))!=2:
+    output_count = len(manifest['outputs'])
+    if len(native.get('inputs',[]))!=3 or len(native.get('outputs',[]))!=output_count:
         raise ValueError('native draft IO count mismatch')
     for actual,expected in zip(native['inputs'],manifest['inputs']):
         if any(actual.get(k)!=expected[k] for k in ('index','name','dtype','shape','bytes','sha256')):
@@ -465,7 +605,7 @@ def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False, expec
         if (actual.get('index')!=expected['index'] or actual.get('readback_matches_source') is not True
                 or actual.get('readback_sha256')!=expected['sha256']):
             raise ValueError('draft host buffer readback differs from source')
-    if len(diagnostic.get('outputs',[]))!=2 or any(
+    if len(diagnostic.get('outputs',[]))!=output_count or any(
         row.get('index')!=index or row.get('checked_after_process') is not True
         or row.get('object_same') is not True or row.get('buffer_same') is not True
         for index,row in enumerate(diagnostic['outputs'])):
@@ -483,7 +623,7 @@ def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False, expec
     errors=[]
     if np.any(values[0]<0) or np.any(values[0]>=manifest['vocab_size']):
         errors.append('invalid draft token IDs')
-    top_record,hidden_record=manifest['expected']
+    top_record,hidden_record=manifest['expected'][:2]
     if top_record is not None:
         expected=np.fromfile(_file(root,top_record),dtype='<i4').reshape(values[0].shape)
         mismatch=int(np.count_nonzero(expected!=values[0]))
@@ -522,6 +662,28 @@ def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False, expec
                                      'acceptance_threshold':'NOT_DEFINED'}
         if summary['nonfinite_count']:
             errors.append('nonfinite draft hidden output')
+    if manifest.get('direct_spec') is not None:
+        report['source_output_precision'] = manifest['source_output_precision']
+        nodes = []
+        for row in manifest['direct_spec']:
+            index = row['output_index']
+            expected_record = manifest['expected'][index]
+            dtype = np.dtype({'int32': '<i4', 'float16': '<f2', 'float32': '<f4'}[row['dtype']])
+            expected = np.fromfile(_file(root, expected_record), dtype=dtype).reshape(row['shape'])
+            flat_spec = [{'name': row['name'], 'shape': row['shape'], 'dtype': row['dtype'],
+                          'offset': 0, 'elements': math.prod(row['shape'])}]
+            node = _trace_comparison(expected, values[index], flat_spec)['nodes'][0]
+            node.update(source=row['source'], output_index=index)
+            nodes.append(node)
+        nonfinite_mismatches = sum(node['nonfinite_mismatch_count'] for node in nodes)
+        report['direct_diagnostic'] = {'status': 'DIAGNOSTIC_COMPLETE', 'nodes': nodes,
+            'first_nonexact': next((node['name'] for node in nodes if not node['exact_match']), None),
+            'nonfinite_mismatch_count': nonfinite_mismatches, 'acceptance_threshold': 'NOT_DEFINED',
+            'scope': 'Original typed model outputs without diagnostic casts, flattening or concatenation; no new tolerance gate'}
+        if nonfinite_mismatches:
+            errors.append('direct probes contain mismatched nonfinite values')
+        if report['source_output_precision'] == 'SOURCE_DTYPE_CHANGED':
+            errors.append('compiled direct output dtype differs from its source declaration; diagnostic execution is not source-precision validation')
     if errors:
         report.update(status='FAILED',numerical_validation='FAILED',error='; '.join(errors))
     report['accuracy_scope']='Top1 agreement and hidden diagnostics on this fixture only; full numerical accuracy and language quality remain unverified'
@@ -699,7 +861,7 @@ def execute_draft_bundle(bundle_dir,output_dir,*,timeout_seconds=3600,model_load
                 if native.get(runtime_key)!=result['runtime_version'] or native.get('firmware_id')!=result['firmware_id']:
                     raise ValueError('native runtime/firmware differs from this invocation')
                 if native.get('status')=='EXECUTED':
-                    outputs=['results/output_0000.bin','results/output_0001.bin']
+                    outputs=[f"results/output_{row['index']:04d}.bin" for row in manifest['outputs']]
                     required.extend(outputs)
                     collect(outputs)
                     if any(name not in result['retrieved_sha256'] for name in outputs):

@@ -273,8 +273,9 @@ std::vector<std::uint8_t> StepRead(const std::filesystem::path& path, std::uintm
 std::string BytesHash(const std::vector<std::uint8_t>& bytes) {
   return Sha256(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 }
-HiaiTensorSpec StepTensor(const std::vector<std::string>& fields) {
-  if (!std::regex_match(fields[2], std::regex("[A-Za-z_][A-Za-z0-9_]{0,127}")))
+HiaiTensorSpec StepTensor(const std::vector<std::string>& fields, bool raw_source_name = false) {
+  const auto pattern = raw_source_name ? "[A-Za-z_][A-Za-z0-9_./-]{0,255}" : "[A-Za-z_][A-Za-z0-9_]{0,127}";
+  if (!std::regex_match(fields[2], std::regex(pattern)))
     throw std::invalid_argument("invalid stateful tensor name");
   HiaiTensorSpec result{fields[2], fields[3], {}};
   if (!fields[4].empty())
@@ -293,6 +294,7 @@ struct StepPlan {
   std::string model_hash, abi_hash, plan_hash, operator_type;
   std::uint32_t sequence = 0, past = 0;
   bool draft_trace = false;
+  bool draft_direct = false;
   std::vector<StepInput> inputs;
   std::vector<HiaiTensorSpec> outputs;
 };
@@ -379,6 +381,20 @@ void CheckDraftPlan(const StepPlan& plan) {
       throw std::invalid_argument("draft trace requires a positive bounded packed output");
     outputs[1] = {"draft_trace_values", "float32", plan.outputs[1].shape};
   }
+  if (plan.draft_direct) {
+    if (plan.outputs.size() < 2 || plan.outputs.size() > 16)
+      throw std::invalid_argument("direct draft requires two through sixteen outputs");
+    std::uint64_t bytes = 0;
+    for (const auto& spec : plan.outputs) {
+      if (spec.shape.empty() || spec.shape.size() > 4 ||
+          (spec.dtype != "float16" && spec.dtype != "float32" && spec.dtype != "int32"))
+        throw std::invalid_argument("direct draft output requires a supported raw dtype and rank1..4");
+      bytes += HiaiTensorBytes(spec);
+      if (bytes > 64ULL * 1024 * 1024)
+        throw std::invalid_argument("direct draft outputs exceed 64 MiB");
+    }
+    outputs.insert(outputs.end(), plan.outputs.begin() + 2, plan.outputs.end());
+  }
   if (plan.past || plan.inputs.size() != inputs.size() || plan.outputs.size() != outputs.size())
     throw std::invalid_argument("standalone draft requires three inputs, two outputs and prefix recomputation");
   for (bool input : {true, false}) {
@@ -418,13 +434,16 @@ StepPlan ReadStepPlan(const std::filesystem::path& path, bool fused = false, boo
   auto rows = Split(text, '\n');
   if (!rows.empty() && rows.back().empty()) rows.pop_back();
   const bool draft_trace = draft && !rows.empty() && rows[0] == "QWEN35_DRAFT_TRACE_STEP\t1";
-  const std::string header = draft_trace ? "QWEN35_DRAFT_TRACE_STEP\t1" : draft ? "QWEN35_DRAFT_STEP\t1" :
+  const bool draft_direct = draft && !rows.empty() && rows[0] == "QWEN35_DRAFT_DIRECT_STEP\t1";
+  const std::string header = draft_direct ? "QWEN35_DRAFT_DIRECT_STEP\t1" :
+                             draft_trace ? "QWEN35_DRAFT_TRACE_STEP\t1" : draft ? "QWEN35_DRAFT_STEP\t1" :
                              fused ? "QWEN35_FUSED_OP_STEP\t1" : "QWEN35_STATEFUL_STEP\t1";
   if (rows.size() < 7 || rows[0] != header)
     throw std::invalid_argument("step plan header must be " + header);
   const auto root = std::filesystem::absolute(path).lexically_normal().parent_path();
   StepPlan plan;
   plan.draft_trace = draft_trace;
+  plan.draft_direct = draft_direct;
   plan.plan_hash = BytesHash(payload);
   for (std::size_t i = 1; i <= 2; ++i) {
     const auto fields = Split(rows[i], '\t');
@@ -437,7 +456,7 @@ StepPlan ReadStepPlan(const std::filesystem::path& path, bool fused = false, boo
     if (i == 1) { plan.model = file; plan.model_hash = fields[2]; }
     else {
       plan.abi_hash = fields[2];
-      if (draft_trace) {
+      if (draft_trace || draft_direct) {
         // The host validates the complete trace layout. On the board the
         // separate wire header must also bind an explicitly typed trace ABI;
         // it cannot relax the production draft wire contract.
@@ -446,8 +465,10 @@ StepPlan ReadStepPlan(const std::filesystem::path& path, bool fused = false, boo
         const std::regex kind("\\\"artifact_kind\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
         const auto begin = std::sregex_iterator(abi.begin(), abi.end(), kind);
         const auto end = std::sregex_iterator();
-        if (std::distance(begin, end) != 1 || (*begin)[1] != "qwen35-standalone-draft-trace-abi")
-          throw std::invalid_argument("draft trace wire requires its explicit ABI kind");
+        const std::string expected = draft_direct ? "qwen35-standalone-draft-direct-abi" :
+                                                   "qwen35-standalone-draft-trace-abi";
+        if (std::distance(begin, end) != 1 || (*begin)[1] != expected)
+          throw std::invalid_argument("draft diagnostic wire requires its explicit ABI kind");
       }
     }
   }
@@ -475,7 +496,7 @@ StepPlan ReadStepPlan(const std::filesystem::path& path, bool fused = false, boo
     const auto index = StepInteger(fields[1], 1023, true);
     if (index != (input ? plan.inputs.size() : plan.outputs.size()))
       throw std::invalid_argument("stateful tensor indices must be contiguous and ordered");
-    const auto spec = StepTensor(fields);
+    const auto spec = StepTensor(fields, draft_direct && !input);
     total += HiaiTensorBytes(spec);
     if (total > (2ULL << 30)) throw std::invalid_argument("stateful target IO exceeds 2 GiB");
     if (!(input ? input_names : output_names).insert(spec.name).second)

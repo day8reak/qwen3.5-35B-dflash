@@ -1,5 +1,21 @@
 # 验证范围与保留结论
 
+## packed观察矛盾与原值直接输出
+
+用户回传PID1611：完整packed trace编译精度331/331、跨区证明140条、设备执行及回收通过；Top1/hidden仍失败。`first_nonexact=context_fc`，但该观察FC为零，而projected_context相对L2仅0.004969；层0QK相对L2为5.782891，scaled score却仅0.002022。最强矛盾是同一原Graph Value的 `layer_0_output` 和 `layer_1_input` 观察分别为relative L2=3.275297/174.521739，后者多587个非有限差异；其它层边界也类似。语义→源Value映射、spec offsets和切片主机审查未发现确定错误，这批观测无法作为原计算首次偏离证据。
+
+packed诊断hidden与原生产hidden相对L2=1.402769704876514，Top1差异15，`production_equivalence=DIFFERENT`。诊断hidden自身对参考相对L2=1.3912042027820002。3876个非有限差异来自packed观察，不能直接当作原模型中间值非有限。原生产完整draft数值失败仍保留；没有性能结果。远端证据来自用户粘贴，原文件尚未在本地重取核验。
+
+新增只读 `draft_trace_integrity.py`，验证同源观察、独立Top1端口、残差/score/mask和零输入归一化关系。微小算术舍入差异仅为诊断，不新增通过阈值；明确矛盾将阻止首次根因归因。直接输出共享同源端口时标记alias已去重，不伪装成独立快照。
+
+新增direct路径以原Graph Value作为独立输出，不添加观察Cast、reshape、concat或未经证明的Identity复制。完整配置原594节点不变，默认16物理输出/17语义记录，源声明总1,650,748字节。保留原生产、packed图、CPU参考及其板端证据；在 `full-draft/direct-trace` 单独编译与执行，仍需检查输出一致性及生产终端差异。
+
+本地真实两层小图direct AIR/OMG编译成功，61/61个FP32计算要求通过，但编译OMC把index4/11/14附加源FP16端口提升为FP32（layer0input/postattention/output），形状不变。OMC SHA256 `02ade73f971b825c614e9d4322bedaafb9502c096d39dce21debcb8cbb7717ed`，证据run `20261029T011736Z-26760-00e33d/direct-compiler-smoke/smoke-report.json` 和 `physical-output-abi.json`。这是公开同族DDK观察，不证明用户内部DDK同样变化，也不证明它是此前错误的确定根因。
+
+新reader按所选schema读取实际有序输出，绑定小OMC、编译AIR和声明spec。固定Top1/hidden或shape/count改变均拒绝；仅附加FP16→FP32允许用于显式诊断，以真实dtype收回数据、把参考FP16精确转FP32用于读报，并记录 `SOURCE_DTYPE_CHANGED`，整体数值验收仍FAILED。未修改源数学、权重、golden或比较标准。
+
+本轮组合主机回归460项通过（同run `final-tests/tests.xml`），native CTest8/8通过（`direct-board/native/Testing/Temporary/LastTest.log`）。覆盖原生产/packed ABI拒绝规则、原FP32精度门禁、直接图输出原节点保持、参考复用、实际输出dtype检查、观察fixture、运输/别名/格式及离线一致性。公开DDK小图实际编译61/61检查通过，不构成用户完整direct图或设备精度通过。
+
 ## 跨分区来源检查排除无关端口布局标记
 
 用户复用完整trace OMC后为320/331，跨分区精确来源证明20条，仍有11个Concat被拒绝。只读解码进一步显示：返回的差异样例位于CPU NetOutput的 `input_desc`，main与CPU的dtype、shape相同，四维shape包括 `[1,32,16,80]`、`[1,16,32,128]`、`[1,80,8,128]`；main标ND，CPU标NCHW。没有回传Data接口差异，也没有三维flatten探针差异。具体数值dtype编号仅在所选DDK schema内解释，不作通用枚举推断。

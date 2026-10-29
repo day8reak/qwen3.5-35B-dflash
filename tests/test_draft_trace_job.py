@@ -61,6 +61,22 @@ def test_prepare_trace_reuses_original_inputs_goldens_and_exact_reference(source
     assert (root / "layer-trace/reference/report.json").read_text() == json.dumps(reference, indent=2, ensure_ascii=False) + "\n"
 
 
+def test_direct_prepare_preserves_native_dtypes_and_source_fixture(source):
+    root, _ = source
+    original = (root / "fixture/report.json").read_bytes()
+    result = run_trace(root, ge_root=None, prepare_only=True, direct=True)
+    assert result["status"] == "PREPARED", result
+    assert result["artifact_kind"] == "qwen35-draft-direct-trace-job"
+    assert not (root / "layer-trace").exists()
+    fixture = json.loads((root / "direct-trace/fixture/report.json").read_text())
+    assert len(fixture["expected_direct"]) == 16
+    assert {row["dtype"] for row in fixture["expected_direct"]} == {"int32", "float16", "float32"}
+    aliases = {row["name"]: row for row in fixture["direct_spec"]}
+    assert aliases["layer_0_output"]["output_index"] == aliases["layer_1_input"]["output_index"]
+    assert "expected_trace" not in fixture
+    assert (root / "fixture/report.json").read_bytes() == original
+
+
 def test_changed_cached_probe_is_rejected_before_compile(source):
     root, _ = source
     assert run_trace(root, ge_root=None, prepare_only=True)["status"] == "PREPARED"
@@ -131,7 +147,8 @@ def test_terminal_equivalence_distinguishes_trace_partition_changes(tmp_path, mo
 
 
 @pytest.mark.parametrize("passed", [False, True])
-def test_precision_gate_precedes_bundle_and_compile_cache_is_checked(source, monkeypatch, passed):
+@pytest.mark.parametrize("direct", [False, True])
+def test_precision_gate_precedes_bundle_and_compile_cache_is_checked(source, monkeypatch, passed, direct):
     from qwen35_moe_dflash import draft_standalone, draft_compile_precision, existing_air, draft_board
     from qwen35_moe_dflash.ge_cpp import emit_cpp
     from qwen35_moe_dflash.hashing import sha256_file
@@ -142,12 +159,16 @@ def test_precision_gate_precedes_bundle_and_compile_cache_is_checked(source, mon
         output.mkdir()
         from qwen35_moe_dflash.draft_ge_trace import instrument_draft_trace
         graph = draft_standalone._graph(8, tiny=True)[2]
-        graph, spec = instrument_draft_trace(graph, names=kwargs["trace_names"])
+        if direct:
+            from qwen35_moe_dflash.draft_direct_trace import instrument_draft_direct_outputs
+            graph, spec = instrument_draft_direct_outputs(graph, names=kwargs["direct_names"])
+        else:
+            graph, spec = instrument_draft_trace(graph, names=kwargs["trace_names"])
         plan = json.loads((prepared / "prepared.json").read_text())
         paths = {name: str(prepared / row["path"]) for name, row in plan["weights"].items()}
         emit_cpp(graph, paths, recipe_dir=output / "draft/recipe")
         (output / "draft.air").write_bytes(b"mock AIR; no vendor serializer executed")
-        result = {"artifact_kind": "qwen35-cpro-draft-air", "status": "EXPORTED", "trace_spec": spec, "graphs": [{"air": "draft.air",
+        result = {"artifact_kind": "qwen35-cpro-draft-air", "status": "EXPORTED", "direct_spec" if direct else "trace_spec": spec, "graphs": [{"air": "draft.air",
                   "files": [_record(output / "draft.air", output)],
                   "construction_files": [_record(output / "draft/recipe/graph.recipe", output)]}]}
         save_json(output / "manifest.json", result)
@@ -181,33 +202,41 @@ def test_precision_gate_precedes_bundle_and_compile_cache_is_checked(source, mon
     monkeypatch.setattr(existing_air, "compile_existing_air", compile_air)
     monkeypatch.setattr(draft_compile_precision, "verify_compiled_precision", verify)
     monkeypatch.setattr(draft_board, "prepare_draft_bundle", bundle)
-    result = run_trace(root, ge_root="mock-ge", compile_only=True)
+    if direct:
+        from qwen35_moe_dflash import draft_direct_abi
+        def inspect_outputs(omc, schema, spec):
+            calls.append("output-abi")
+            return {"status": "PASSED", "declared_spec": spec, "observed_spec": spec, "changes": []}
+        monkeypatch.setattr(draft_direct_abi, "inspect_direct_output_abi", inspect_outputs)
+    abi_calls = ["output-abi"] if direct and passed else []
+    lane = root / ("direct-trace" if direct else "layer-trace")
+    result = run_trace(root, ge_root="mock-ge", compile_only=True, direct=direct)
     assert result["status"] == ("COMPILED" if passed else "FAILED"), result
-    assert calls == ["export", "compile", "verify"]
+    assert calls == ["export", "compile", "verify"] + abi_calls
     calls.clear()
-    result = run_trace(root, ge_root="mock-ge", compile_only=True)
-    assert calls == ["verify"]
+    result = run_trace(root, ge_root="mock-ge", compile_only=True, direct=direct)
+    assert calls == ["verify"] + abi_calls
     assert result["status"] == ("COMPILED" if passed else "FAILED")
-    assert not (root / "layer-trace/bundle").exists()
-    owner_file = root / "layer-trace/owner.json"
+    assert not (lane / "bundle").exists()
+    owner_file = lane / "owner.json"
     owner = json.loads(owner_file.read_text())
     owner["code"]["draft_trace_job.py"] = "0" * 64
     owner_file.write_text(json.dumps(owner))
     before = owner_file.read_bytes()
     calls.clear()
-    resumed = run_trace(root, ge_root="mock-ge", compile_only=True)
-    assert calls == ["verify"]
+    resumed = run_trace(root, ge_root="mock-ge", compile_only=True, direct=direct)
+    assert calls == ["verify"] + abi_calls
     assert resumed["status"] == ("COMPILED" if passed else "FAILED")
     assert [row["name"] for row in resumed["control_code_updates"]] == ["draft_trace_job.py"]
     assert owner_file.read_bytes() == before
-    compiler_folder = root / "layer-trace/compilation"
+    compiler_folder = lane / "compilation"
     report_file = compiler_folder / "report.json"
     changed = json.loads(report_file.read_text())
     changed["requested_options"]["weight_data_type"] = "FP32"
     report_file.write_text(json.dumps(changed))
-    (root / "layer-trace/completed-compilation.json").write_text(json.dumps(_record(report_file, compiler_folder)))
+    (lane / "completed-compilation.json").write_text(json.dumps(_record(report_file, compiler_folder)))
     calls.clear()
-    rejected = run_trace(root, ge_root="mock-ge", compile_only=True)
+    rejected = run_trace(root, ge_root="mock-ge", compile_only=True, direct=direct)
     assert rejected["status"] == "FAILED" and "options differ" in rejected["error"]
     assert calls == []
 
