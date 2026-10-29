@@ -4,19 +4,22 @@
 
 先比较新导出和当前服务器已有55档sidecar的真实字节身份。完全一致才复用；文件名相同或shape相同均不够。
 
-## 1. 原权重机生成清单
+## 1. 原权重机调整输出顺序并生成清单
 
-保持原`qwen3_5_cpro`环境和原机的`AI_RUN_DIR`。这会流式读取约19.48GB参数算SHA，不复制这些文件、不重新导出：
+用户的接口检查已确认：特征位于物理端口1，FP16 ND `[1,64,16384]`；其后是原80路状态。保持原`qwen3_5_cpro`环境和原机的`AI_RUN_DIR`，生成新的小AIR，将顺序从`[logits,features,80 states]`改为`[logits,80 states,features]`。独立校验器检查固定端口排列和全部计算节点的原始字节保留，随后流式读取约19.48GB原参数算SHA，不复制这些文件、不重新导出：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/inventory_target_export.py" \
+python3 "$REPO_DIR/targets/cpro/scripts/canonicalize_target_export.py" \
   --air /home/w00949577/qwen35-target-pytorch-run/target-pytorch/target-pytorch-source/source/glm_export_air_cpro_40block_64_quant/export.air \
-  --discover-torchair-schema --hash-weights --sequence-length 64 \
-  --output "$AI_RUN_DIR/target-pytorch/export-inventory"
+  --discover-torchair-schema --sequence-length 64 \
+  --hash-weights --resume \
+  --output "$AI_RUN_DIR/target-pytorch/canonical-export"
 ```
 
-返回`INVENTORIED`、`weight_identity=SHA256_COMPLETE`后，清单是`$AI_RUN_DIR/target-pytorch/export-inventory/inventory.json`。schema发现只读pb2 AST，所有可用literal descriptor必须同SHA才自动选取，否则要求显式`--torchair-pb2`；不导入NPU包。
+返回`EXPORT_READY`、`weight_identity=SHA256_COMPLETE`后，新AIR是`$AI_RUN_DIR/target-pytorch/canonical-export/export.air`，清单是`$AI_RUN_DIR/target-pytorch/canonical-export/inventory/inventory.json`。原AIR、全部计算节点及外置参数引用保持原字节；只调整NetOutput端口及其对应元数据。完整清单可在源身份和文件stat均未变时复用，避免重复哈希大参数。已有失败检查目录保留不动。
+
+schema发现只读原机pb2 AST，所有可用literal descriptor必须同SHA才自动选取，否则要求显式`--torchair-pb2`；不导入NPU包。原机schema描述符SHA为`a7cd334beff74bfeb637b1886329a70122842667a257d84ba111c70991695679`，与当前DDK机的schema不同，不能强行替换成DDK机版本。
 
 清单分别记录89输入/82输出及末路FP16`[1,64,16384]`的声明、实际FileConstant路径/shape属性/dtype属性、每个唯一payload的大小和SHA。producer空shape仍单列未解决，不把边界声明或文件哈希当精度/真实特征语义通过。
 
@@ -24,8 +27,8 @@ python3 "$REPO_DIR/targets/cpro/scripts/inventory_target_export.py" \
 
 将以下文件传到当前服务器的`$AI_RUN_DIR/target-pytorch-transfer/`，保持目标文件名：
 
-- 新的`export.air`（约6.4MB）。
-- 上一步`inventory.json`。
+- 上一步`canonical-export/export.air`（约6.4MB），保存为`export.air`。
+- 上一步`canonical-export/inventory/inventory.json`，保存为`inventory.json`。
 - 原机`$AI_RUN_DIR/target-pytorch/target-pytorch-source/receipt.json`，保存为`source-receipt.json`，用于两路线的原源码审计。
 
 此时不传19.48GB sidecar，也不传HF/quant检查点。两台机器的`AI_RUN_DIR`分别使用各自实际值。

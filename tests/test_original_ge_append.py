@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 import runpy
+import ast
 
 import pytest
 
@@ -258,6 +259,79 @@ def test_incomplete_source_root_still_reports_all_expected_files_without_creatin
     assert len(result["source_audit"]["comparison"]) == 6
     actual = next(row for row in result["source_audit"]["comparison"] if row["path"] == "utils.py")
     assert actual["actual_sha256"] and actual["actual_bytes"] == 24
+
+
+@pytest.fixture
+def source_ast_case(tmp_path, monkeypatch):
+    sources = {"models/export_model_wrapper_qwen3_5_moe.py": b"class Qwen3_5MoeForCausalLMCproWrapper:\n    def forward(self, x):\n        return x + 1\n",
+               "utils.py": b"def load_rmsnorm_weight(x):\n    return x + 1\n"}
+    for name in SOURCE_SHA256:
+        raw = sources.get(name, b"value = 0\n")
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        monkeypatch.setitem(SOURCE_SHA256, name, hashlib.sha256(raw).hexdigest())
+    for name, raw in sources.items():
+        tree = ast.parse(raw)
+        definitions = {}
+        def collect(nodes, prefix=""):
+            for node in nodes:
+                if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                    definitions[prefix + node.name] = hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest()
+                    if isinstance(node, ast.ClassDef):
+                        collect(node.body, prefix + node.name + ".")
+        collect(tree.body)
+        monkeypatch.setitem(append._SOURCE_AST_BASELINES, name, {"bytes": len(raw), "lines": len(raw.splitlines()),
+            "ast_sha256": hashlib.sha256(ast.dump(tree, include_attributes=False).encode()).hexdigest(), "definitions": definitions})
+    return tmp_path, sources
+
+
+def test_ast_match_only_identifies_comments_or_whitespace_candidate_and_keeps_raw_sha_blocked(source_ast_case):
+    root, sources = source_ast_case
+    for name, raw in sources.items():
+        (root / name).write_bytes(b"# extra comment and blank line\n\n" + raw)
+    result = append.inspect_original_ge_source(source_root=root, source_ast=True)
+    assert result["status"] == "BLOCKED" and len(result["source_audit"]["different_files"]) == 2
+    summaries = [row["python_ast"] for row in result["source_audit"]["comparison"] if "python_ast" in row]
+    assert len(summaries) == 2
+    assert all(row["status"] == "AST_MATCHED_DIAGNOSTIC_ONLY" and row["matches_expected_ast"] for row in summaries)
+    assert all(row["changed_definitions"] == [] and row["bounded_relevant_ast_excerpts"] == [] for row in summaries)
+
+
+def test_ast_arithmetic_change_reports_exact_definition_and_bounded_excerpt(source_ast_case):
+    root, sources = source_ast_case
+    (root / "utils.py").write_bytes(sources["utils.py"].replace(b"x + 1", b"x + 2"))
+    result = append.inspect_original_ge_source(source_root=root, source_ast=True)
+    assert result["status"] == "BLOCKED"
+    detail = next(row["python_ast"] for row in result["source_audit"]["comparison"] if row["path"] == "utils.py")
+    assert detail["status"] == "AST_DIFFERENT" and detail["changed_definitions"] == ["load_rmsnorm_weight"]
+    assert "+ 2" in detail["bounded_relevant_ast_excerpts"][0]["text"]
+    assert len(detail["bounded_relevant_ast_excerpts"]) <= 2
+    assert all(len(row["text"]) <= 1600 for row in detail["bounded_relevant_ast_excerpts"])
+
+
+def test_ast_unknown_syntax_remains_diagnostic_and_never_executes_source(source_ast_case):
+    root, _ = source_ast_case
+    (root / "utils.py").write_bytes(b"raise RuntimeError('must not execute')\ndef load_rmsnorm_weight(x):\n    return x\n")
+    result = append.inspect_original_ge_source(source_root=root, source_ast=True)
+    assert result["status"] == "BLOCKED"
+    (root / "utils.py").write_bytes(b"this is invalid Python ???\n")
+    result = append.inspect_original_ge_source(source_root=root, source_ast=True)
+    detail = next(row["python_ast"] for row in result["source_audit"]["comparison"] if row["path"] == "utils.py")
+    assert result["status"] == "BLOCKED" and detail["status"] == "AST_UNAVAILABLE"
+
+
+def test_source_ast_cli_is_readonly_and_prints_only_the_two_declared_files(source_ast_case, monkeypatch, capsys):
+    root, sources = source_ast_case
+    monkeypatch.delenv("AI_RUN_DIR", raising=False)
+    (root / "utils.py").write_bytes(b"# comment\n" + sources["utils.py"])
+    script = Path(__file__).resolve().parents[1] / "targets/cpro/scripts/append_original_ge_features.py"
+    module = runpy.run_path(str(script))
+    assert module["main"](["--inspect-source", "--source-ast", "--source-root", str(root)]) == 1
+    result = json.loads(capsys.readouterr().out)
+    names = [row["path"] for row in result["source_audit"]["comparison"] if "python_ast" in row]
+    assert names == list(sources)
+    assert not (root / "target-ge").exists()
 
 
 def test_source_only_retry_archives_exact_previous_evidence_and_reuses_no_native_work(harness):

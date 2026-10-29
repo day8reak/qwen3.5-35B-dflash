@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "model"))
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inspect-source", action="store_true", help="read-only six-file SHA audit; no AIR, output directory or GE required")
+    parser.add_argument("--source-ast", action="store_true", help="with --inspect-source/--source-root, diagnose only wrapper/utils AST fingerprints; raw SHA acceptance is unchanged")
     parser.add_argument("--air")
     parser.add_argument("--torchair-pb2")
     source = parser.add_mutually_exclusive_group(required=True)
@@ -27,6 +28,8 @@ def main(argv=None):
     parser.add_argument("--output", help="new directory below AI_RUN_DIR")
     parser.add_argument("--retry", action="store_true", help="archive and retry only a source-only BLOCKED attempt with empty work")
     args = parser.parse_args(argv)
+    if args.source_ast and (not args.inspect_source or not args.source_root):
+        parser.error("--source-ast requires --inspect-source and --source-root")
     if args.inspect_source and args.retry:
         parser.error("--inspect-source is read-only and cannot use --retry")
     if not args.inspect_source and not all((args.air, args.torchair_pb2, args.gamma_template, args.sequence_length is not None)):
@@ -36,7 +39,7 @@ def main(argv=None):
     try:
         from qwen35_moe_dflash.original_ge_append import append_original_ge_features, inspect_original_ge_source
         if args.inspect_source:
-            result = inspect_original_ge_source(source_root=args.source_root, source_receipt_path=args.source_receipt)
+            result = inspect_original_ge_source(source_root=args.source_root, source_receipt_path=args.source_receipt, source_ast=args.source_ast)
             print(json.dumps(result, ensure_ascii=False))
             return 0 if result["status"] == "SOURCE_AUDIT_MATCHED" else 1
         result = append_original_ge_features(args.air, args.output or Path(os.environ["AI_RUN_DIR"]) / "target-ge/features",
