@@ -741,7 +741,8 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
              fold_constant_arithmetic=True, fp16_reductions="native", reduction_report=None,
              fp16_row_mul="native", row_mul_report=None, fp16_native_reductions=(),
              file_constant_policy="ge-absolute-type", file_constant_root=None,
-             draft_fc_policy="native", draft_fc_report=None):
+             draft_fc_policy="native", draft_fc_report=None,
+             draft_residual_policy="native", draft_residual_report=None):
     """Return a self-contained C++ AIR serializer.
 
     ``weight_paths`` maps canonical graph weight keys to existing raw contiguous
@@ -781,11 +782,21 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     Rank4 BOOL attention masks replicate singleton query/head axes through an
     exact INT32 Gather carrier, replacing the BroadcastTo path that failed
     CPUCL initialization; device support remains to be checked.
+    ``draft_residual_policy="cpu-fp32-add"`` lowers only the two residual
+    sums per draft layer through FP32 operand casts, Add and the original FP16
+    output boundary. The recipe precision gate must verify actual CPUCL Add
+    ownership; requesting this policy alone does not prove placement.
     """
     if draft_fc_policy not in {"native", "conv2d"}:
         raise ValueError("draft_fc_policy must be native or conv2d")
     if draft_fc_report is not None and not isinstance(draft_fc_report, dict):
         raise TypeError("draft_fc_report must be a mutable dictionary")
+    if draft_residual_report is not None and not isinstance(draft_residual_report, dict):
+        raise TypeError("draft_residual_report must be a mutable dictionary")
+    from .ge_residual import residual_selection, emit_residual_add
+    residuals = residual_selection(graph, draft_residual_policy)
+    residual_report = {"mode": draft_residual_policy, "replaced": [],
+                       "compiler_validation": "NOT_RUN", "device_validation": "NOT_RUN"}
     projection_report = {"mode": draft_fc_policy, "replaced": [],
                          "compiler_validation": "NOT_RUN", "device_validation": "NOT_RUN"}
     if reduction_report is not None and not isinstance(reduction_report, dict):
@@ -884,6 +895,9 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
             continue
         if v.name in folded:
             e.constant(folded[v.name], v.dtype, v.name)
+            continue
+        if v.name in residuals:
+            residual_report["replaced"].append(emit_residual_add(e, node, residuals[v.name]))
             continue
         if kind == "where" and (len(ins) != 3 or ins[0].dtype != "bool" or
                                  any(x.dtype != v.dtype for x in ins[1:])):
@@ -1104,6 +1118,11 @@ def emit_cpp(graph, weight_paths=None, *, external_weights=False, recipe_dir=Non
     if draft_fc_report is not None:
         draft_fc_report.clear()
         draft_fc_report.update(projection_report)
+    if len(residual_report["replaced"]) != len(residuals):
+        raise ValueError("draft residual lowering did not retain every selected sum")
+    if draft_residual_report is not None:
+        draft_residual_report.clear()
+        draft_residual_report.update(residual_report)
     # A compact recipe keeps full-model compiler memory independent of node count.
     if recipe_dir is not None:
         from .ge_recipe import emit_recipe_cpp

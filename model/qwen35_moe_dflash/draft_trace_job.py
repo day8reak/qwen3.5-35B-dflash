@@ -338,7 +338,7 @@ def _review_trace_board(bundle, board_root, execution):
 
 def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=None,
               schema_library=None, cxx="c++", cxx11_abi=0, timeout_seconds=3600,
-              prepare_only=False, compile_only=False, direct=False):
+              prepare_only=False, compile_only=False, direct=False, residual_policy="native"):
     from .draft_workspace import DraftWorkspace
     from .draft_review import review_draft_result
     from .draft_standalone import _graph, export_draft
@@ -349,13 +349,21 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
     from .existing_air import compile_existing_air
     from .draft_board import prepare_draft_bundle, execute_draft_bundle
 
+    if residual_policy not in {"native", "cpu-fp32-add"}:
+        raise ValueError("unsupported draft residual policy")
+    candidate = residual_policy != "native"
+    if candidate and not direct:
+        raise ValueError("residual candidate requires direct original-value outputs")
     job_root = output_path(job_dir)
-    root = output_path(job_root / ("direct-trace" if direct else "layer-trace"))
-    notify = lambda message: print(("draft-direct: " if direct else "draft-trace: ") + message, flush=True)
+    root = output_path(job_root / ("residual-fix" if candidate else "direct-trace" if direct else "layer-trace"))
+    prefix = "draft-residual: " if candidate else "draft-direct: " if direct else "draft-trace: "
+    notify = lambda message: print(prefix + message, flush=True)
     kind = "qwen35-draft-direct-trace-job" if direct else KIND
     result = {"schema_version": 1, "artifact_kind": kind, "status": "FAILED", "stage": "preflight",
               "output": str(root), "device_execution": "NOT_RUN", "numerical_validation": "NOT_RUN",
               "scope": "Intermediate diagnostics on the original fixture; no language-quality or speed claim."}
+    if candidate:
+        result["residual_policy"] = residual_policy
     result["runtime_source_identity"] = _runtime_source_identity()
     with DraftWorkspace(job_root):
         notify("Verifying the retained execution and unchanged source receipts")
@@ -380,15 +388,22 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
         _, _, graph = _graph(prepared["sequence_length"], tiny=prepared["tiny"], draft_config=prepared["draft_config"])
         if direct:
             from .draft_direct_trace import instrument_draft_direct_outputs
-            _, spec = instrument_draft_direct_outputs(graph)
+            # The repair candidate exercises the complete six-layer graph with
+            # only its original terminal outputs. Extra observations previously
+            # changed compilation and contradicted internal consumers.
+            selection_names = ("draft_top1", "draft_hidden") if candidate else None
+            _, spec = instrument_draft_direct_outputs(graph, names=selection_names)
         else:
             _, spec = instrument_draft_trace(graph)
         names = [row["name"] for row in spec]
         code_files = (*_ARTIFACT_CODE_FILES, *_CONTROL_ONLY_CODE_FILES,
-                      *(("draft_direct_trace.py", "draft_direct_job.py", "draft_direct_abi.py") if direct else ()))
+                      *(("draft_direct_trace.py", "draft_direct_job.py", "draft_direct_abi.py") if direct else ()),
+                      *(("ge_residual.py",) if candidate else ()))
         identity = {"artifact_kind": kind + "-owner", "job": str(job_root),
                     "source_job_sha256": sha256_file(job_root / "result.json"), "trace_spec": spec,
                     "code": {name: sha256_file(Path(__file__).parent / name) for name in code_files}}
+        if candidate:
+            identity["residual_policy"] = residual_policy
         if root.exists():
             control_updates = _resume_owner(root, identity)
             if control_updates:
@@ -469,15 +484,27 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
                 result.update(status="PREPARED", stage="complete")
             else:
                 selection = {"direct_names": names} if direct else {"trace_names": names}
+                if candidate:
+                    selection["residual_policy"] = residual_policy
                 air, exported = stage("air", lambda folder: export_draft(
                     prepared_dir, folder, ge_root, cxx=cxx, cxx11_abi=cxx11_abi,
                     timeout_seconds=timeout_seconds, **selection,
                     progress=lambda row: notify(row["message"])))
                 if exported.get("direct_spec" if direct else "trace_spec") != spec:
                     raise ValueError("diagnostic AIR and reference trace specifications differ")
+                if candidate and exported.get("residual_policy") != residual_policy:
+                    raise ValueError("candidate AIR does not bind the selected residual policy")
                 for row in exported["graphs"][0]["files"] + exported["graphs"][0]["construction_files"]:
                     _file(air, row)
                 plan = collect_precision_plan(air / "draft/recipe/graph.recipe")
+                if candidate:
+                    from .ge_residual import residual_selection
+                    required_sums = {"__draft_residual/" + name + "/sum"
+                                     for name in residual_selection(graph, residual_policy)}
+                    observed_sums = {node["name"] for node in plan["required_nodes"]
+                                     if node["name"].startswith("__draft_residual/") and node["type"] == "Add"}
+                    if observed_sums != required_sums:
+                        raise ValueError("candidate precision plan does not cover every residual sum")
                 policy = customization_bytes(plan)
                 policy_path = root / "cl-customization.json"
                 if policy_path.exists():

@@ -184,9 +184,12 @@ def prepare_draft(output_dir, sequence_length=64, *, target_path=None, draft_pat
 
 def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
                  timeout_seconds=3600, fp16_reductions="matmul", fp16_row_mul="compact", progress=None,
-                 trace_names=None, direct_names=None):
+                 trace_names=None, direct_names=None, residual_policy="native"):
     """Build one real GE exporter and serialize one complete draft AIR."""
     from .ge_cpp import emit_cpp
+    from .ge_residual import POLICIES, EXPORT_SUFFIX
+    if residual_policy not in POLICIES:
+        raise ValueError("draft residual policy must be native or cpu-fp32-add")
     if fp16_reductions not in {"native", "matmul"} or fp16_row_mul not in {"native", "compact"}:
         raise ValueError("invalid FP16 lowering policy")
     if cxx11_abi not in (0, 1) or timeout_seconds <= 0:
@@ -215,7 +218,7 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
         graph, direct_spec = instrument_draft_direct_outputs(graph, names=direct_names)
     suffix = ("-layer-trace-v1" if trace_spec is not None else
               "-direct-outputs-v1" if direct_spec is not None else "")
-    export_contract = CURRENT_DRAFT_EXPORT_CONTRACT + suffix
+    export_contract = CURRENT_DRAFT_EXPORT_CONTRACT + (EXPORT_SUFFIX if residual_policy != "native" else "") + suffix
     if set(plan["weights"]) != set(graph.weights):
         raise ValueError("prepared weight set differs from complete draft graph")
     if plan["source"].get("fp16_payload_sha256") != weight_identity(plan["weights"]):
@@ -255,13 +258,16 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
         folder = root / "draft"
         folder.mkdir()
         source = folder / "draft.cpp"
-        reduction_report, row_mul_report, projection_report = {}, {}, {}
+        reduction_report, row_mul_report, projection_report, residual_report = {}, {}, {}, {}
         stage = "draft-lowering"
         source.write_text(emit_cpp(graph, paths, external_weights=True, recipe_dir=folder / "recipe",
                                    fp16_reductions=fp16_reductions, reduction_report=reduction_report,
                                    fp16_row_mul=fp16_row_mul, row_mul_report=row_mul_report,
                                    file_constant_policy="cpro-relative-int", file_constant_root=root,
-                                   draft_fc_policy="conv2d", draft_fc_report=projection_report))
+                                   draft_fc_policy="conv2d", draft_fc_report=projection_report,
+                                   draft_residual_policy=residual_policy, draft_residual_report=residual_report))
+        if len(residual_report["replaced"]) != (config.num_hidden_layers * 2 if residual_policy != "native" else 0):
+            raise ValueError("draft residual lowering did not match the complete locked topology")
         expected_replacements = 0 if plan["tiny"] else 1
         if len(projection_report["replaced"]) != expected_replacements:
             raise ValueError("draft.fc Conv2D lowering did not match the locked topology")
@@ -270,6 +276,10 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
         save_json(folder / "reduction-lowering.json", reduction_report)
         save_json(folder / "row-mul-lowering.json", row_mul_report)
         save_json(folder / "projection-lowering.json", projection_report)
+        if residual_policy != "native":
+            save_json(folder / "residual-lowering.json", residual_report)
+            if progress:
+                progress({"stage": stage, "message": "Draft residuals: explicit FP32 Adds with original FP16 result boundaries; compiled CPUCL ownership and numerical validation pending"})
         construction = files_under(folder, root)
         binary, air = folder / "draft_exporter", root / "draft.air"
         command = [compiler, "-std=c++17", f"-D_GLIBCXX_USE_CXX11_ABI={cxx11_abi}", "-I", str(include),
@@ -310,7 +320,7 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
                   "builder_sha256": sha256_file(source), "construction_files": construction,
                   "reduction_lowering": {"mode": reduction_report["mode"], "counts": reduction_report["counts"]},
                   "row_mul_lowering": {"mode": row_mul_report["mode"], "counts": row_mul_report["counts"]},
-                  "projection_lowering": projection_report}
+                  "projection_lowering": projection_report, "residual_lowering": residual_report}
         manifest = {"schema_version": 1, "artifact_kind": "qwen35-cpro-draft-air", "status": "EXPORTED",
                     "export_contract": export_contract,
                     "rms_normalization": "FP32_NORMALIZE_CAST_FP16_THEN_DIRECT_SCALE",
@@ -329,7 +339,8 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
                     "source": plan["source"], "export_root": str(root), "graphs": [record],
                     "external_weights": True, "prepared_manifest_sha256": sha256_file(manifest_path),
                     "ge_root": str(ge), "libgraph_sha256": sha256_file(lib / "libgraph.so"),
-                    "cxx11_abi": cxx11_abi, "fp16_reductions": fp16_reductions, "fp16_row_mul": fp16_row_mul}
+                    "cxx11_abi": cxx11_abi, "fp16_reductions": fp16_reductions, "fp16_row_mul": fp16_row_mul,
+                    "residual_policy": residual_policy}
         if trace_spec is not None:
             manifest.update(trace_spec=trace_spec, diagnostic_only=True)
         if direct_spec is not None:

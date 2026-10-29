@@ -29,3 +29,22 @@ python3 "$REPO_DIR/targets/cpro/scripts/inspect_draft_outputs.py" --math
 所有结果保持诊断性质，没有新增数值通过阈值，没有重写 golden、权重或模型算术。原 direct 输出本身若不可靠，重建关系也可能不可靠；任一假设更接近观察不能单独证明运行时根因。
 
 目前 153/153 检查仅证明锁定的 FP32 CPU 节点、描述符与规定边关系。边界 Cast 被记录但不作为 required arithmetic 检查，不能把该结果当作所有 FP16 输入来源、舍入边界或最终输出快照正确的证明。
+
+## 已取回的数学结果与残差候选
+
+用户已运行上述只读检查。`layer_1_input_norm` 与同一板端 `layer_0_mlp_down` 经原 layer1 gamma/RMS 计算的结果 **32768 个元素逐字节完全一致**；使用完整两次残差和重建时 relative L2 为 `0.45476676183344134`。这是当前 direct 图有效数据路径缺少残差项的强证据，仍不能据此确定原生产图的首个故障位置，因为两图的终端结果已不同。
+
+两处残差输出有 `output_tensor=true`、`reuse_input_index=2`。该序号不是独立的启用标志：[官方接口](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1alpha001/API/basicdataapi/atlasopapi_07_00455.html)与[官方 schema](https://gitee.com/ascend/metadef/blob/cba623c83840fd0ac1e365a6fb80a34b20bd6a2d/proto/ge_ir.proto)另有 `reuse_input` 布尔值。描述符的32字节尾部也符合 [GE 内部内存大小计算](https://gitee.com/ascend/metadef/blob/cba623c83840fd0ac1e365a6fb80a34b20bd6a2d/graph/utils/tensor_utils.cc)，不能单凭这个大小差改宿主分配或 OMC 字段。
+
+针对残差路径新增独立、可恢复的候选：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/run_draft_residual.py" \
+  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
+```
+
+它复用已验证的 prepared 权重、固定输入及两路原 golden；不重新执行 CPU 模型。新 AIR、编译、bundle 和板端结果位于 `full-draft/residual-fix`，原生产、packed 和 direct 文件均保留。候选仅导出原 Top1、hidden 两路，避免再次加入中间观察端口。
+
+仅12处残差 Add 的 GE 发射采用 `FP16 -> FP32` 的两个输入 Cast、FP32 Add、再 Cast 回原 FP16 结果；源图名称、权重、参考与比较判据不变。IEEE RN-even 下有限 FP16 操作数的加法保持相同结果，包括负零及溢出；NaN payload 等价不作断言。附近指数的和可由 FP32 精确表示，距离更远时较小操作数不足以改变 FP16 舍入；单元验证覆盖所有63488个有限值对12个边界锚点、40万随机对及独立 Torch/FP64 参考。
+
+六层 recipe 增加36节点，FP32 CPU要求由153增至165。新导出契约含 `-residual-cpu-fp32-add-v1`，`draft/residual-lowering.json` 记录12处选择。新加法必须全部通过实际 CPUCL 检查，才允许 bundle 和执行；编译或执行失败后重试复用相应已完成阶段。主机等价检查及静态精度检查不是实机数值通过，最终以同输入的 Top1 和 hidden 结果为准，完整语言质量、接受率、状态及速度仍未关闭。

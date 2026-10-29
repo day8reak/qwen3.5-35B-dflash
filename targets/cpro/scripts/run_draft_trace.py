@@ -19,6 +19,8 @@ def main(argv=None):
     parser.add_argument("--tbe-diagnosis", help="reuse existing TBE diagnosis")
     parser.add_argument("--schema-library")
     parser.add_argument("--direct", action="store_true", help="use bounded original-value native outputs in full-draft/direct-trace")
+    parser.add_argument("--residual-policy", choices=("native", "cpu-fp32-add"), default="native",
+                        help="cpu-fp32-add uses an isolated residual-fix direct-output candidate")
     parser.add_argument("--include-boundaries", action="store_true", help="with --inspect-only, decode exact main/CPU boundary metadata from the existing small OMC")
     parser.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
     parser.add_argument("--cxx11-abi", type=int, choices=(0, 1), default=0)
@@ -35,7 +37,7 @@ def main(argv=None):
             raise ValueError("timeout must be positive")
         job = args.job or Path(os.environ["AI_RUN_DIR"]) / "full-draft"
         if args.inspect_only:
-            if args.direct:
+            if args.direct or args.residual_policy != "native":
                 raise ValueError("--inspect-only reads the retained packed trace; do not select --direct")
             from qwen35_moe_dflash.draft_trace_inspect import inspect_retained_trace_precision
             result = inspect_retained_trace_precision(job, include_boundaries=args.include_boundaries,
@@ -43,7 +45,7 @@ def main(argv=None):
         else:
             if args.include_boundaries:
                 raise ValueError("--include-boundaries requires --inspect-only")
-            if args.direct and (Path(job) / "layer-trace/board/result.json").is_file():
+            if args.direct and args.residual_policy == "native" and (Path(job) / "layer-trace/board/result.json").is_file():
                 from qwen35_moe_dflash.draft_trace_integrity import review_trace_integrity
                 retained = review_trace_integrity(job)
                 brief = {key: retained.get(key) for key in ("status", "trace_reliability", "contradiction_count", "contradictions", "model_identity_scope")}
