@@ -2,58 +2,34 @@
 
 <a id="用户现在执行什么"></a>
 
-A（DDK 服务器，另开窗口）：prefill64 已启动，先采两次只读进程状态并查看最后非句点日志，保持当前编译运行。
+A（DDK 服务器，另开窗口）：TBE/TVM 已报错且进程在等待，读取最后三条完整异常和前文，先不重启编译。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 - "$AI_RUN_DIR/target-pytorch-prefill64-compile" <<'PY'
-import json, shutil, subprocess, sys, time
+python3 - "$AI_RUN_DIR/target-pytorch-prefill64-compile/compilation/compile.log" <<'PY'
+import json, sys
 from pathlib import Path
 
-job = Path(sys.argv[1]).resolve()
-comp = job / "compilation"
-command = json.loads((comp / "compile-command.json").read_text())
-exe = command["argv"][0]
-model_arg = next(arg for arg in command["argv"] if arg.startswith("--model="))
-
-def sample():
-    raw = subprocess.run(
-        ["ps", "-ww", "-eo", "pid=,ppid=,stat=,pcpu=,time=,etime=,wchan:28=,args="],
-        capture_output=True, text=True, check=True).stdout
-    rows = {}
-    for line in raw.splitlines():
-        values = line.split(None, 7)
-        if len(values) == 8:
-            rows[int(values[0])] = values
-    roots = {pid for pid, row in rows.items()
-             if row[7].startswith(exe + " ") and model_arg in row[7].split()}
-    selected = set(roots)
-    while True:
-        children = {pid for pid, row in rows.items() if int(row[1]) in selected}
-        added = children - selected
-        if not added:
-            break
-        selected.update(added)
-    return {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "matching_omg_pids": sorted(roots),
-        "columns": ["pid", "ppid", "state", "lifetime_cpu_percent", "cpu_time", "elapsed", "wchan", "args"],
-        "processes": [rows[pid][:-1] + [rows[pid][-1][:320]] for pid in sorted(selected)]}
-
-print(json.dumps({"sample_1": sample()}, ensure_ascii=False), flush=True)
-time.sleep(5)
-print(json.dumps({"sample_2": sample()}, ensure_ascii=False), flush=True)
-log = comp / "compile.log"
-info = log.stat()
+log = Path(sys.argv[1])
+size = log.stat().st_size
+start = max(0, size - 131072)
 with log.open("rb") as stream:
-    stream.seek(max(0, info.st_size - 65536))
-    tail = stream.read(65536).decode("utf-8", errors="replace")
-lines = [line.strip() for line in tail.splitlines()
-         if line.strip() and set(line.strip()) != {"."}]
-print(json.dumps({"log_bytes": info.st_size,
-    "log_idle_seconds": round(max(0, time.time() - info.st_mtime), 1),
-    "tail_read_limit_bytes": 65536, "last_non_dot_lines": [line[:600] for line in lines[-35:]],
-    "disk_free_bytes": shutil.disk_usage(comp).free,
-    "scope": "Read-only samples; CPU percent is a lifetime average. Compare both CPU-time samples and child states; output alone does not prove progress."},
-    ensure_ascii=False), flush=True)
+    stream.seek(start)
+    raw = stream.read(131072)
+# The first line may begin outside this bounded tail; label it separately.
+text = raw.decode("utf-8", errors="replace")
+lines = text.splitlines()
+anchors = [i for i, line in enumerate(lines) if "TVMError:" in line or "EB9999" in line]
+print(json.dumps({"log": str(log), "snapshot_bytes": size, "tail_start_byte": start,
+    "tail_read_bytes": len(raw), "matching_error_lines": len(anchors),
+    "first_tail_line_may_be_partial": start != 0,
+    "scope": "Read-only log tail; full selected lines, no per-line truncation, no model or process control"}, ensure_ascii=False))
+if anchors:
+    for i in anchors[-3:]:
+        print("\n--- complete error and preceding context ---")
+        print("\n".join(lines[max(0, i - 12):i + 2]))
+else:
+    print("\n".join(line for line in lines[-100:] if line.strip() and set(line.strip()) != {"."}))
 PY
 ```
 

@@ -20,6 +20,10 @@ decode1只手动传`canonical-export/export.air`、`canonical-export/inventory/i
 
 当前保留本次编译，另窗口做两次相隔5秒的只读进程树样本，并读取最后64KiB日志中非句点的35行。以实际`compile-command.json`的OMG路径和完整`--model`参数选择进程，再收集所有子进程；父进程等待而子进程CPU时间增长仍可能正常。`ps`的CPU百分比是生命周期均值，必须结合两次累计CPU时间、等待点及后续日志判断。7200秒是已设置超时上限，不是正常耗时保证；不据句点自动终止、重复启动或修改共享快照。实时检查命令只在stdout输出，不写运行中job。
 
+用户随后回传20:38:08/20:38:13两次真实样本：OMG13373累计CPU均`00:04:13`，子进程13398/13399/13405..13412累计CPU也均未增加，主要等待点为`hrtimer_nanosleep`、`futex_wait_queue_me`、`pipe_wait`和`ep_poll`。最后有效日志在19:42:31，`trans_data_negative_target_ntc`经TIK BuildCCE进入TVM CCE代码生成后抛出`TVMError/EB9999`。这证实曾发生编译任务异常并伴随当前等待，尚未取得未截断的内部message或最终OMG退出状态，不能确定布局、工具链或兼容层根因。
+
+上一条实时命令的600字符行上限截断了关键TVMError尾部，当前命令已改为只读最后128KiB，完整输出最后三条异常及各自前12行，不再裁短单行。窗口起始可能是半行，显式标明；没有完整异常时先取得该行，而不是修猜测的编译参数。暂不向用户安排Ctrl+C主脚本或杀进程组：`KeyboardInterrupt`虽会进入finally审计，但会跳过其后的最终report写入，不能宣称它是已验证的干净取消。后续终止必须绑定实际OMG身份、保留完整日志并检查worker清理与主脚本最终审计；本轮只提取证据，不重复编译。
+
 用户另贴的原OMG命令只是记录，是否生成过OMC不确定；其中`--d11ynamic_dims`拼写也未得到实际成功日志确认，因此不作为双档成功基线，不据此切换现有已绑定编译器。
 
 新的只读诊断只检查小元数据、编译日志、失败IR、微小整数shape常量；1153权重快照只stat，不重新读payload。`INSPECTED`表示报告读取完成，`RECORDED_HASH_WITH_CURRENT_STAT`不是新一轮完整SHA验证，也不是重试通过；后续要按实际报告决定怎样保留并复用现有编译输入。源码AIR未提供其原机schema时不猜用另一版TorchAir schema解析，失败dump则使用所选DDK自己的HIAI schema。

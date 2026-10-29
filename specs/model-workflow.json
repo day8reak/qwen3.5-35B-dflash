@@ -2208,9 +2208,9 @@
         "location": "original_weight_machine",
         "entrypoint": "targets/cpro/scripts/prepare_target_pytorch.py",
         "directory": "target-pytorch",
-        "status": "STATIC_PREFILL64_OMG_RUNNING_USER_REPORTED; DECODE1_CANONICAL_EXPORT_READY",
+        "status": "STATIC_PREFILL64_TBE_TVM_EXCEPTION_OBSERVED_WITH_IDLE_PROCESS_SAMPLES; FULL_MESSAGE_PENDING",
         "tests": 14,
-        "next": "Keep the current static64 attempt running; obtain two read-only OMG/descendant CPU-time/wchan samples and last non-dot bounded log tail. Decode1 metadata-only transfer inspection can proceed without hardlinks.",
+        "next": "Read untruncated last TVMError/EB9999 from exact running compile log; preserve task/input evidence before deciding targeted termination and compatibility fix. No duplicate compilation.",
         "user_report": {
           "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
           "original_air_sha256": "3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9",
@@ -2386,6 +2386,38 @@
           "timeout_seconds": 7200,
           "failure_attribution": "NOT_ESTABLISHED",
           "next_evidence": "Two actual compiler-tree CPU-time/state/wchan samples and last non-dot64KiB log tail; no automatic termination or second compilation"
+        },
+        "static_prefill64_wait_diagnosis_user_report": {
+          "source": "USER_PASTED_REMOTE_PROCESS_AND_LOG_SAMPLES_NOT_RETRIEVED_LOCALLY",
+          "sample_times": [
+            "2026-10-29 20:38:08",
+            "2026-10-29 20:38:13"
+          ],
+          "omg_pid": 13373,
+          "omg_cpu_time_both_samples": "00:04:13",
+          "descendant_pids": [
+            13398,
+            13399,
+            13405,
+            13406,
+            13407,
+            13408,
+            13409,
+            13410,
+            13411,
+            13412
+          ],
+          "all_observed_cpu_times_unchanged_between_samples": true,
+          "last_non_dot_log_time": "2026-10-29 19:42:31.758",
+          "exception": "tvm._ffi.base.TVMError: EB9999",
+          "observed_stack": "trans_data_negative_target_ntc -> TIK BuildCCE -> TVM preprocess_module -> CCECodegenImpl/BuildCCE",
+          "full_message": "TRUNCATED_BY_PREVIOUS_600_CHARACTER_DIAGNOSTIC_LIMIT; NEW_COMMAND_NO_LINE_TRUNCATION",
+          "assessment": "COMPILER_TASK_EXCEPTION_WITH_CURRENT_WAIT; STALLED_RESULT_COLLECTION_HYPOTHESIS_NOT_ROOT_CAUSE_VERDICT",
+          "disk_free_bytes": 44094783488,
+          "model_compilation": "NO_SUCCESSFUL_EXIT_REPORTED",
+          "device_execution": "NOT_RUN",
+          "interruption": "NOT_PERFORMED; NO_VERIFIED_CANCELLATION_ENTRYPOINT",
+          "next": "Exact log last128KiB, full last3error lines and12preceding context lines; no source mutation, no compiler rerun"
         }
       },
       "b": {
@@ -2510,14 +2542,14 @@
     "day1_gate": "Correct draft plus usable ordinary target prefill/decode",
     "day2_gate": "Multi-step DFlash token/stop equality and state handling",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
-    "current_target_status": "A staticprefill64 currently inOMG peruser, lastelapsed3060s, mostlydotoutput for48minutes; progressrequiresprocess/lastsubstantivelog evidence. Decode1canonical and originSHAcomplete. B55backupcomplete.",
+    "current_target_status": "A staticprefill64 has observed TBE/TVM codegen EB9999 plus unchanged CPU-time samples; full internal error message and controlled completion still pending. Decode1canonical and originSHAcomplete. B55backupcomplete.",
     "target_gaps": [
       "Original89input80RefData ordered ABI",
       "64/1 gear and persistent state",
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Read-only live diagnosis of currentstatic64 OMG and descendants without altering sharedinput or rerunning compilation; retain timeout7200. Decode1three-small-file metadataonly inspection remains independent.",
+    "next_target_action": "Extract full untruncated TVMError from currentlog before cause attribution, targeted stop or any rerun; preserve sharedreadonlyinput/audit evidence. Decode1metadataonly transfer stays independent.",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone"
   },
   "execution_smoke": {
