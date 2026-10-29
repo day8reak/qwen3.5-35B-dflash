@@ -12,6 +12,7 @@ import sys
 import tempfile
 
 runner = Path(sys.argv[1]).resolve()
+name_field_available = len(sys.argv) < 4 or sys.argv[3] != "no-name-field"
 base = Path(sys.argv[2]); base.mkdir(parents=True, exist_ok=True)
 root = Path(tempfile.mkdtemp(prefix="model-io-", dir=base)).resolve()
 model = root / 'model "quoted"\\name.omc'
@@ -26,12 +27,13 @@ def command(path=model, digest=model_hash, version="FAKE-HIAI-X90"):
             "--firmware-id", 'fake\\firmware']
 
 
-def execute(label, failure="", *, args=None, output=None, layout=""):
+def execute(label, failure="", *, args=None, output=None, layout="", names=""):
     destination = output or root / (label + ".json")
     trace = root / (label + ".trace")
     proc = subprocess.run((args or command()) + ["--output", str(destination)],
         capture_output=True, text=True, cwd=root,
         env=dict(os.environ, FAKE_HIAI_FAILURE=failure, FAKE_HIAI_LAYOUT=layout,
+                 FAKE_HIAI_TENSOR_NAMES=names,
                  FAKE_HIAI_TRACE=str(trace)))
     events = trace.read_text().splitlines() if trace.exists() else []
     assert not any(event in events for event in ("process", "load", "unload", "v2-run", "v2-create-tensor",
@@ -62,7 +64,12 @@ for failure, layout in [("", ""), ("", "padded"), ("", "leading-feature"),
     assert report["model_load_api"] == "file-v2" and report["runtime_version"] == "FAKE-HIAI-X90"
     assert report["runtime_input_order"] == "ORDERED_DESCRIPTOR_INDICES_ONLY"
     assert report["semantic_slot_identity"] == "UNVERIFIED"
-    assert report["runtime_tensor_names"] == "NOT_EXPOSED_BY_SELECTED_ADAPTER"
+    assert report["runtime_tensor_names"] == ("EMPTY" if name_field_available else "FIELD_NOT_AVAILABLE")
+    assert report["tensor_name_field_available"] is name_field_available
+    assert "no semantic slot binding" in report["tensor_name_scope"]
+    assert all(row["tensor_name"] == "" for row in report["inputs"] + report["outputs"])
+    assert all(row["tensor_name_status"] == ("EMPTY" if name_field_available else "FIELD_NOT_AVAILABLE")
+               for row in report["inputs"] + report["outputs"])
     assert report["dtype_enum"] == "hiai::DataType" and report["format_enum"] == "hiai::Format"
     assert report["dtype_enum_values"] == {"FLOAT16": 2, "FLOAT32": 1, "INT32": 3, "INT16": 5, "INT64": 7, "INT8": 4}
     assert report["format_enum_values"] == {"ND": 2}
@@ -78,6 +85,39 @@ for failure, layout in [("", ""), ("", "padded"), ("", "leading-feature"),
     if layout == "leading-feature": expected = [1] + expected
     assert report["inputs"][0]["shape"] == expected
     assert events.index("v2-restore-file") < events.index("v2-built-model-destroy")
+
+
+# The selected SDK may return all, some, or no names. Retain actual values and
+# their descriptor order, including duplicate strings and JSON escapes, without
+# elevating them to a checked graph/state mapping.
+for names in ("all", "partial", "limit"):
+    proc, output, _ = execute("names-" + names, names=names)
+    assert proc.returncode == 0, proc.stderr
+    report = json.loads(output.read_text())
+    assert report["semantic_slot_identity"] == "UNVERIFIED"
+    rows = report["inputs"] + report["outputs"]
+    if not name_field_available:
+        assert report["runtime_tensor_names"] == "FIELD_NOT_AVAILABLE"
+        assert all(row["tensor_name"] == "" for row in rows)
+        continue
+    assert report["runtime_tensor_names"] == ("OBSERVED_PARTIAL" if names == "partial" else "OBSERVED_ALL")
+    for direction in ("inputs", "outputs"):
+        for row in report[direction]:
+            expected_name = direction[:-1] + '"\\\n\t\0same'
+            if names == "partial" and row["index"] != 1:
+                expected_name = ""
+            if names == "limit" and row["index"] == 0:
+                expected_name = "x" * 4096
+            assert row["tensor_name"] == expected_name
+            assert row["tensor_name_status"] == ("OBSERVED" if expected_name else "EMPTY")
+
+proc, output, _ = execute("names-over-limit", names="over-limit")
+report = json.loads(output.read_text())
+if name_field_available:
+    assert proc.returncode == 1 and report["runtime_stage"] == "TENSOR_DESCRIPTORS"
+    assert "limit4096" in report["reason"] and report["runtime_tensor_names"] == "NOT_QUERIED"
+else:
+    assert proc.returncode == 0 and report["runtime_tensor_names"] == "FIELD_NOT_AVAILABLE"
 
 
 # Descriptor observation preserves actual values, including an unknown-to-the-

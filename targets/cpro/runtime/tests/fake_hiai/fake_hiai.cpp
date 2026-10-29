@@ -410,6 +410,23 @@ NDTensorDesc DraftDesc(std::vector<std::int32_t> dims, DataType type) {
   else if (Layout()=="leading-feature" && dims.size()==3) dims.insert(dims.begin(),1);
   return {dims,type,Format::ND};
 }
+void ModelIoNames(std::vector<NDTensorDesc>& descriptors, const std::string& direction) {
+#ifndef QWEN35_FAKE_NO_TENSOR_NAME
+  const auto* mode = std::getenv("FAKE_HIAI_TENSOR_NAMES");
+  if (!mode || !*mode) return;
+  for (std::size_t index = 0; index < descriptors.size(); ++index) {
+    if (std::string(mode) == "partial" && index != 1) continue;
+    // Escaping and duplicate values are deliberately not interpreted as graph
+    // identities. They are independent raw descriptor field observations.
+    descriptors[index].tensorName = direction + "\"\\\n\t" + std::string(1, '\0') + "same";
+  }
+  if (std::string(mode) == "limit") descriptors.front().tensorName = std::string(4096, 'x');
+  if (std::string(mode) == "over-limit") descriptors.front().tensorName = std::string(4097, 'x');
+#else
+  (void)descriptors;
+  (void)direction;
+#endif
+}
 class FakeBuiltModel final : public IBuiltModel {
  public:
   bool restored=false;
@@ -430,11 +447,14 @@ class FakeBuiltModel final : public IBuiltModel {
     if (Failure()=="v2-format") input[0].format=Format::NCHW;
     if (Failure()=="v2-shape") input[0].dims={1,4,32768};
     if (Failure()=="v2-zero-dim") input[0].dims={1,0,16384};
+    ModelIoNames(input, "input");
     return input;
   }
   std::vector<NDTensorDesc> GetOutputTensorDescs() const override {
     if (Failure()=="v2-count") return {};
-    return {DraftDesc({1,15},DataType::INT32),DraftDesc({1,15,2048},DataType::FLOAT16)};
+    auto output = std::vector<NDTensorDesc>{DraftDesc({1,15},DataType::INT32),DraftDesc({1,15,2048},DataType::FLOAT16)};
+    ModelIoNames(output, "output");
+    return output;
   }
 };
 class FakeModelManager final : public IModelManager {

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-29",
+  "updated": "2026-10-30",
   "active_phase": "integration",
   "delivery_status": "FULL_TARGET_PREFILL_AND_DECODE_COMPILED_DEVICE_INTEGRATION_PENDING",
-  "run_id": "20261029T133810Z-26479-7df529",
+  "run_id": "20261029T234826Z-3347-cc807e",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -2250,7 +2250,7 @@
         "directory": "target-pytorch",
         "status": "USER_REPORTED_FULL_TARGET_STATIC_PREFILL64_AND_DECODE1_COMPILED; TARGET_DEVICE_EXECUTION_PENDING",
         "tests": 14,
-        "next": "Run both restore-only metadata probes in two windows; after observed89/82 counts and clean locks, prepare exact first-prefill plan. Only a passing plan permits one explicit existing-tool V2/file/weight_dir prefill call. Summarize retained reports/logs on every branch; state feedback and real-feature filename mapping remain pending.",
+        "next": "Retain successful prefill metadata; retry decode probe with quiet lock contention and raw tensorName capture. First-prefill plan can run independently using the completed prefill probe.",
         "user_report": {
           "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
           "original_air_sha256": "3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9",
@@ -2875,7 +2875,7 @@
           "scope": "Original file values/hashes and mask aggregate statistics only; no generated controls, actual target execution or semantic state mapping proof"
         },
         "restore_metadata_probe_plan": {
-          "status": "HOST_IMPLEMENTED_AND_FAKE_TESTED_USER_DEVICE_PENDING",
+          "status": "PREFILL_OBSERVED_DECODE_RETRY_AFTER_LOCK_PROTOCOL_FIX",
           "entrypoint": "targets/cpro/scripts/inspect_target_runtime_io.py",
           "targets": [
             "target-pytorch-prefill64-tmpdirfix",
@@ -2888,7 +2888,7 @@
           "scope": "Intentional bounded metadata-only experiment. Restore may still need external dependencies; such failures remain failures with no automatic large upload or fallback. No full-load or runtime semantic slot proof.",
           "outputs": [
             "target-prefill64-runtime-io",
-            "target-decode1-runtime-io"
+            "target-decode1-runtime-io-v2"
           ],
           "pass_status": "IO_METADATA_OBSERVED",
           "pass_counts": {
@@ -2920,7 +2920,8 @@
             "Real feature output into complete6layerdraft",
             "Multi-round accuracy/reject/commit/stop and matched performance"
           ],
-          "nd_view_policy": "EDGE_SINGLETON_ND_LINEAR_VIEW_ONLY; unchanged ND element order and bytes, actual runtime descriptors retained; all ambiguous classes require identical original values"
+          "nd_view_policy": "EDGE_SINGLETON_ND_LINEAR_VIEW_ONLY; unchanged ND element order and bytes, actual runtime descriptors retained; all ambiguous classes require identical original values",
+          "probe_dependency": "Successful prefill64 runtime probe only; decode retry can run independently of host-only planning"
         },
         "morning_status": {
           "entrypoint": "targets/cpro/scripts/inspect_target_morning_status.py",
@@ -2947,6 +2948,93 @@
           ],
           "native_evidence": "out/final-native-tests.xml",
           "scope": "Host fake-HDC, exact input/permutation proof, compile/continuation/default board and complete-draft host regressions; native host HIAI doubles and source fixtures. Actual selected-SDK build, real metadata restoration and target inference remain pending."
+        },
+        "prefill_runtime_io_user_report": {
+          "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+          "status": "IO_METADATA_OBSERVED",
+          "job": "target-pytorch-prefill64-tmpdirfix",
+          "probe_output": "target-prefill64-runtime-io",
+          "runtime_version": "800.631.120.010",
+          "ddk_id": "100.520.020.010",
+          "firmware_id": "OpenHarmony-6.0.0.43",
+          "input_count": 89,
+          "output_count": 82,
+          "remote_exitcode": 0,
+          "model_bytes": 15357522,
+          "model_sha256": "91754dd9443959c48447485d99a9c1629e144748a8eb8064794579e8774e66d3",
+          "native_report_sha256": "5cbef0534ce7cc077d0f527fc285f302c83dd05bc306123619f2d8b11d1d66a9",
+          "manager_init": "NOT_RUN",
+          "external_weight_initialization": "NOT_REQUESTED",
+          "model_inference": "NOT_RUN",
+          "runtime_tensor_names": "NOT_EXPOSED_BY_SELECTED_ADAPTER",
+          "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+          "source_preservation": "UNCHANGED_METADATA_AND_SMALL_PRIMARY_SHA256; WEIGHTS_NOT_OPENED",
+          "runtime_dtype_enum_values": {
+            "FLOAT16": 2,
+            "FLOAT32": 1,
+            "INT16": 5,
+            "INT32": 3,
+            "INT64": 7,
+            "INT8": 4
+          },
+          "runtime_format_enum_values": {
+            "ND": 2
+          },
+          "logits_output": {
+            "index": 0,
+            "shape": [
+              1,
+              1,
+              1,
+              248320
+            ],
+            "dtype": "FLOAT32"
+          },
+          "feature_output": {
+            "index": 81,
+            "shape": [
+              1,
+              1,
+              64,
+              16384
+            ],
+            "dtype": "FLOAT16"
+          },
+          "shape_observation": "Actual runtime uses edge singleton ND axes; retain actual shapes and source bytes. Equal-shaped state layers remain unbound.",
+          "sdk_tensor_name_declaration": {
+            "header": "tensor/nd_tensor_desc.h",
+            "sha256": "2eff5af8123229ca091b2ffc68255227f3cfde04f2e77b83563e783c254096bc",
+            "member": "std::string tensorName",
+            "runtime_values": "NOT_YET_CAPTURED_BY_OLD_ADAPTER"
+          },
+          "scope": "RestoreFromFile and ordered raw descriptors only; no external-weight manager Init, full target execution, state continuity or accuracy proof"
+        },
+        "decode_runtime_io_lock_incident": {
+          "source": "USER_PASTED_REMOTE_FAILURE_AND_LOCAL_MERGED_SHELL_REPRODUCTION",
+          "job": "target-pytorch-decode1-compile",
+          "probe_output": "target-decode1-runtime-io",
+          "status": "FAILED",
+          "stage": "wait-board-model-lock",
+          "error": "ValueError: unrecognized global target model-I/O lock response",
+          "model_upload": "NOT_RUN",
+          "model_load": "NOT_RUN",
+          "model_inference": "NOT_RUN",
+          "reproduction": "Existing directory makes mkdir emit File exists before BUSY on merged stdout/stderr; exact token parser rejects it instead of waiting.",
+          "actual_failed_call_log": "REQUESTED_NOT_RETRIEVED; root cause consistent with observed concurrent successful prefill, not independently confirmed from original HDC call",
+          "fix": "Suppress expected mkdir stderr for lock contention; keep completion-marker/status/owner-write/unknown-response failures strict and retain raw unexpected response diagnostics.",
+          "lock_recovery": "NONE; successful prefill released its own lock. Never delete another or uncertain owner lock.",
+          "retry_output": "target-decode1-runtime-io-v2",
+          "scope": "Host lock protocol only; no decode graph, weight or numerical failure established"
+        },
+        "lock_and_name_fix_host_verification": {
+          "run_id": "20261029T234826Z-3347-cc807e",
+          "host_tests_passed": 184,
+          "native_ctest_suites_passed": 11,
+          "failures": 0,
+          "host_evidence": "out/host-tests.xml",
+          "native_evidence": "native-name-final.xml",
+          "actual_prefill_geometry_review": "actual-prefill-view-review-ho3ub_49/review-result.json",
+          "scope": "Host merged-channel shell protocol and native HIAI doubles with/without tensorName only; actual decode SDK rebuild and board retry pending"
         }
       },
       "b": {
@@ -3071,14 +3159,14 @@
     "day1_gate": "Actual ordinary full-target64-prefill to1-decode state handoff, then real target features into the complete draft",
     "day2_gate": "Multi-round DFlash accept/reject/commit/stop correctness and matched full-device baseline/performance measurement",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
-    "current_target_status": "Both full static target OMCs compiled; full draft previously executed. Actual existing tool help and all original64 small controls read. Tomorrow packet prepares both small restore-only metadata probes, exact first-prefill plan, conditional one-call real target execution and print-only failure summary. No target runtime/state/accuracy/performance pass yet.",
+    "current_target_status": "Both static targets compiled; actual prefill restore-only metadata passed89/82, runtime800.631.120.010, no manager.Init/inference, phone lock released. Decode lock contention parser failed before model transfer; fix published for retry. First-prefill host plan is ready independently.",
     "target_gaps": [
       "Original89input80RefData ordered ABI",
       "64/1 gear and persistent state",
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Run both restore-only metadata probes in two windows; after observed89/82 counts and clean locks, prepare exact first-prefill plan. Only a passing plan permits one explicit existing-tool V2/file/weight_dir prefill call. Summarize retained reports/logs on every branch; state feedback and real-feature filename mapping remain pending.",
+    "next_target_action": "Retry decode metadata into target-decode1-runtime-io-v2 while preparing first-prefill plan from successful target-prefill64-runtime-io; proceed to one explicit prefill only after plan passes. No repeated prefill probe or model compilation.",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone",
     "deadline_assessment": "Both target static artifacts now compiled, improving full-execution feasibility. Two days remains a high-risk noncommitted estimate for correctness plus measured2x speed; ordinary target execution and80statehandoff are the next critical gate."
   },

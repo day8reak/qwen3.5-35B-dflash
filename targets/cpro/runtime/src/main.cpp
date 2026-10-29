@@ -81,9 +81,21 @@ void WriteModelIoTensors(std::ostream& output, const std::vector<HiaiModelIoTens
     output << "{\"index\":" << values[i].index << ",\"shape\":";
     WriteTokenIds(output, values[i].shape);
     output << ",\"raw_dtype\":" << values[i].raw_dtype
-           << ",\"raw_format\":" << values[i].raw_format << '}';
+           << ",\"raw_format\":" << values[i].raw_format
+           << ",\"tensor_name\":\"" << JsonEscape(values[i].tensor_name)
+           << "\",\"tensor_name_status\":\"" << values[i].tensor_name_status << "\"}";
   }
   output << ']';
+}
+
+const char* ModelIoNameStatus(const HiaiModelIoProbe& observed) {
+  if (!observed.tensor_name_field_available) return "FIELD_NOT_AVAILABLE";
+  std::size_t total = 0, named = 0;
+  for (const auto* rows : {&observed.inputs, &observed.outputs}) {
+    total += rows->size();
+    for (const auto& row : *rows) if (!row.tensor_name.empty()) ++named;
+  }
+  return named == 0 ? "EMPTY" : named == total ? "OBSERVED_ALL" : "OBSERVED_PARTIAL";
 }
 
 void WriteEnumTable(std::ostream& output, const std::map<std::string, int>& values) {
@@ -989,7 +1001,7 @@ int main(int argc, char** argv) {
              << "\"external_weight_initialization\":\"NOT_REQUESTED\","
              << "\"tensor_allocations_requested\":0,\"numerical_validation\":\"NOT_RUN\","
              << "\"runtime_input_order\":\"ORDERED_DESCRIPTOR_INDICES_ONLY\","
-             << "\"runtime_tensor_names\":\"NOT_EXPOSED_BY_SELECTED_ADAPTER\","
+             << "\"tensor_name_scope\":\"Raw selected-SDK tensorName values only; no semantic slot binding\","
              << "\"semantic_slot_identity\":\"UNVERIFIED\",\"dtype_enum\":\"hiai::DataType\","
              << "\"format_enum\":\"hiai::Format\",\"scope\":\"Explicit restore-only metadata experiment. "
              << "No file-v2 IModelManager creation/initialization, external-weight initialization, input data, caller tensor allocation or inference. "
@@ -1009,6 +1021,8 @@ int main(int argc, char** argv) {
                << "\"restore\":\"PASSED\",\"runtime_version\":\"" << JsonEscape(observed.runtime.version)
                << "\",\"npu_supported\":" << (observed.runtime.npu_supported ? "true" : "false")
                << ",\"model_bytes\":" << observed.model_bytes << ",\"input_count\":" << observed.inputs.size()
+               << ",\"runtime_tensor_names\":\"" << ModelIoNameStatus(observed) << "\""
+               << ",\"tensor_name_field_available\":" << (observed.tensor_name_field_available ? "true" : "false")
                << ",\"output_count\":" << observed.outputs.size() << ",\"inputs\":";
         WriteModelIoTensors(report, observed.inputs);
         report << ",\"outputs\":";
@@ -1021,7 +1035,8 @@ int main(int argc, char** argv) {
                << ((stage == "TENSOR_DESCRIPTORS" || stage == "MODEL_PRESERVATION") ? "PASSED" : "FAILED_OR_NOT_REACHED")
                << "\","
                << "\"runtime_stage\":\"" << JsonEscape(runtime_error ? runtime_error->stage() : "MODEL_IO_PREFLIGHT")
-               << "\",\"reason\":\"" << JsonEscape(error.what()) << "\",\"inputs\":[],\"outputs\":[]";
+               << "\",\"reason\":\"" << JsonEscape(error.what())
+               << "\",\"runtime_tensor_names\":\"NOT_QUERIED\",\"inputs\":[],\"outputs\":[]";
       }
       report << '}';
       AtomicWrite(output, report.str());

@@ -71,6 +71,13 @@ if(BUILD_HOST_TESTS)
   add_test(NAME hiai_model_io_probe
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_model_io_probe.py
       $<TARGET_FILE:hiai_runner_fake> ${CMAKE_CURRENT_BINARY_DIR}/model-io-cases)
+  add_executable(hiai_runner_fake_no_tensor_name src/main.cpp src/hiai_executor.cpp tests/fake_hiai/fake_hiai.cpp)
+  target_include_directories(hiai_runner_fake_no_tensor_name PRIVATE tests/fake_hiai)
+  target_compile_definitions(hiai_runner_fake_no_tensor_name PRIVATE QWEN35_FAKE_HIAI=1 QWEN35_FAKE_NO_TENSOR_NAME=1)
+  target_link_libraries(hiai_runner_fake_no_tensor_name PRIVATE dflash_core)
+  add_test(NAME hiai_model_io_probe_no_tensor_name
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_model_io_probe.py
+      $<TARGET_FILE:hiai_runner_fake_no_tensor_name> ${CMAKE_CURRENT_BINARY_DIR}/model-io-no-name-cases no-name-field)
   add_executable(hiai_optional_enum_tests tests/test_hiai_optional_enum.cpp)
   target_link_libraries(hiai_optional_enum_tests PRIVATE dflash_core)
   add_test(NAME hiai_optional_enum COMMAND hiai_optional_enum_tests)

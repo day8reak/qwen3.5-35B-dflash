@@ -2,18 +2,7 @@
 
 <a id="用户现在执行什么"></a>
 
-A，窗口 1：检查 prefill64 的运行时元数据；通过时输出 `IO_METADATA_OBSERVED`、`input_count=89`、`output_count=82`、`manager_init=NOT_RUN`。
-
-```bash
-git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_runtime_io.py" \
-  --job "$AI_RUN_DIR/target-pytorch-prefill64-tmpdirfix" \
-  --tool-inspection "$AI_RUN_DIR/target-board-tool-inspection-writable" \
-  --lock-wait-seconds 1800 \
-  --output "$AI_RUN_DIR/target-prefill64-runtime-io"
-```
-
-A，窗口 2：并行准备 decode1 探针，板端查询会自动排队；通过时同样输出 `IO_METADATA_OBSERVED` 和 89/82 路计数。
+A，窗口 2：prefill64 探针已通过且锁已释放；更新并修复 decode1 的排队响应后，用新目录重试，预期输出 `IO_METADATA_OBSERVED`、89/82 路计数、`manager_init=NOT_RUN`，同时记录 SDK 实际返回的张量名称。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -21,10 +10,10 @@ python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_runtime_io.py" \
   --job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
   --tool-inspection "$AI_RUN_DIR/target-board-tool-inspection-writable" \
   --lock-wait-seconds 1800 \
-  --output "$AI_RUN_DIR/target-decode1-runtime-io"
+  --output "$AI_RUN_DIR/target-decode1-runtime-io-v2"
 ```
 
-A，两份探针通过后：核对首次 prefill 的实际输入与槽位，通过时输出 `PREFILL_SMOKE_PLANNED`，本步不上传大权重或执行模型。
+A，窗口 1：复用已通过的 prefill64 探针，核对首次 prefill 的实际输入与槽位，可与 decode1 重试并行；通过时输出 `PREFILL_SMOKE_PLANNED`，本步不上传大权重或执行模型。
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/run_target_prefill_smoke.py" \
@@ -48,7 +37,8 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_target_prefill_smoke.py" \
 A，任一步完成或失败后：汇总当前结果、下一步与失败日志；本命令只读取小报告，不重启任务或清理锁。
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_morning_status.py"
+python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_morning_status.py" \
+  --decode-probe "$AI_RUN_DIR/target-decode1-runtime-io-v2"
 ```
 
 B：55 档特征 AIR 保留备份，本轮无待执行命令。

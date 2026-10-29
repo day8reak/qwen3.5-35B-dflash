@@ -385,6 +385,7 @@ HiaiModelIoProbe ProbeHiaiModelIo(const std::filesystem::path& model,
   result.model_path = path.string();
   result.model_bytes = static_cast<std::uint64_t>(before.st_size);
   result.model_sha256 = Sha256File(path);
+  result.tensor_name_field_available = detail::OptionalTensorName<hiai::NDTensorDesc>::available;
   {
     Model loaded;
     loaded.LoadFile(path, expected_runtime_version, 0, 0, true);
@@ -400,6 +401,11 @@ HiaiModelIoProbe ProbeHiaiModelIo(const std::filesystem::path& model,
         item.shape.assign(descriptor.dims.begin(), descriptor.dims.end());
         item.raw_dtype = static_cast<int>(descriptor.dataType);
         item.raw_format = static_cast<int>(descriptor.format);
+        item.tensor_name = detail::OptionalTensorName<hiai::NDTensorDesc>::Read(descriptor);
+        if (item.tensor_name.size() > 4096)
+          throw HiaiRuntimeError("TENSOR_DESCRIPTORS", "runtime tensor name exceeds model IO probe byte limit4096");
+        if (detail::OptionalTensorName<hiai::NDTensorDesc>::available)
+          item.tensor_name_status = item.tensor_name.empty() ? "EMPTY" : "OBSERVED";
         observations.push_back(std::move(item));
       }
       return observations;

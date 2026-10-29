@@ -13,6 +13,7 @@ import pytest
 from qwen35_moe_dflash import target_model_io_probe as probe
 from qwen35_moe_dflash.existing_air import _stat, _conversion_options
 from qwen35_moe_dflash.existing_air_profile import get_existing_air_profile
+from qwen35_moe_dflash.hdc_run import Hdc
 
 
 TOOL = "/data/local/tmp/tools_sysdbg/model_run_tool_internal"
@@ -398,3 +399,100 @@ def test_global_lock_owner_write_failure_cannot_announce_acquisition(tmp_path):
     with pytest.raises(RuntimeError, match="marker could not be written"):
         probe._acquire_global(OwnedShell(), lock, "owned-test-token", 0)
     assert lock.is_dir() and (lock / "owner").is_dir()
+
+
+class MergedPosixHdc(Hdc):
+    """Exercise real Hdc.shell framing with board-style merged output."""
+
+    def __init__(self, output):
+        super().__init__("fixture-hdc", "fixture-device", "fixture:1", output, 10)
+        self.responses = []
+
+    def call(self, arguments, label, *, timeout=None):
+        assert arguments[0] == "shell"
+        self.count += 1
+        result = subprocess.run(["sh", "-c", arguments[1]], stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, timeout=timeout)
+        self.last_call = {"label": label, "returncode": 0, "stdout": result.stdout, "stderr": ""}
+        self.responses.append(result.stdout)
+        # HDC can exit zero even when the remote command fails. Hdc.shell's
+        # unique remote status marker remains the actual success gate.
+        return result.stdout
+
+
+def test_posix_merged_transport_acquires_and_releases_owned_global_lock(tmp_path):
+    hdc = MergedPosixHdc(tmp_path)
+    lock = tmp_path / "model-lock"
+    probe._acquire_global(hdc, lock, "new-owner", 0)
+    assert (lock / "owner").read_text() == "new-owner\n"
+    probe._release_global(hdc, lock, "new-owner")
+    assert not lock.exists()
+
+
+def test_posix_existing_lock_is_busy_despite_merged_mkdir_stderr(tmp_path):
+    hdc = MergedPosixHdc(tmp_path)
+    lock = tmp_path / "model-lock"
+    lock.mkdir()
+    owner = lock / "owner"
+    owner.write_text("other-active-owner\n")
+    with pytest.raises(ValueError, match="BOARD_MODEL_IO_BUSY"):
+        probe._acquire_global(hdc, lock, "waiting-owner", 0)
+    assert owner.read_text() == "other-active-owner\n"
+    assert hdc.responses[0].startswith("BUSY\n")
+    assert "mkdir:" not in hdc.responses[0]
+
+
+def test_posix_busy_wait_acquires_after_other_owner_releases(tmp_path, monkeypatch):
+    hdc = MergedPosixHdc(tmp_path)
+    lock = tmp_path / "model-lock"
+    lock.mkdir()
+    (lock / "owner").write_text("other-active-owner\n")
+    waits = []
+
+    def release_fixture_lock(seconds):
+        waits.append(seconds)
+        assert (lock / "owner").read_text() == "other-active-owner\n"
+        (lock / "owner").unlink()
+        lock.rmdir()
+
+    monkeypatch.setattr(probe.time, "sleep", release_fixture_lock)
+    probe._acquire_global(hdc, lock, "waiting-owner", 2)
+    assert len(waits) == 1 and len(hdc.responses) == 2
+    assert (lock / "owner").read_text() == "waiting-owner\n"
+    probe._release_global(hdc, lock, "waiting-owner")
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink", "missing-parent"])
+def test_posix_non_directory_or_symlink_lock_never_counts_as_contention(tmp_path, kind):
+    hdc = MergedPosixHdc(tmp_path)
+    lock = tmp_path / "model-lock"
+    if kind == "file":
+        lock.write_text("unowned file")
+    elif kind == "symlink":
+        target = tmp_path / "unowned-lock"
+        target.mkdir()
+        (target / "owner").write_text("other-owner\n")
+        lock.symlink_to(target, target_is_directory=True)
+    else:
+        lock = tmp_path / "missing-parent" / "model-lock"
+    with pytest.raises(RuntimeError, match="remote acquire-global-model-io-lock failed"):
+        probe._acquire_global(hdc, lock, "candidate-owner", 0)
+    if kind == "file":
+        assert lock.read_text() == "unowned file"
+    elif kind == "symlink":
+        assert lock.is_symlink() and (target / "owner").read_text() == "other-owner\n"
+    else:
+        assert not lock.parent.exists()
+
+
+def test_unrecognized_global_lock_reply_retains_raw_reply_and_transport_diagnostics(tmp_path):
+    class UnexpectedHdc(MergedPosixHdc):
+        def shell(self, command, label, **options):
+            self.count = 1
+            self.last_call = {"label": label, "returncode": 0, "stdout": "unexpected reply\n", "stderr": "transport detail"}
+            return 0, "unexpected reply"
+
+    with pytest.raises(ValueError) as observed:
+        probe._acquire_global(UnexpectedHdc(tmp_path), tmp_path / "lock", "candidate", 0)
+    assert "'unexpected reply'" in str(observed.value)
+    assert "transport detail" in str(observed.value) and "Full log:" in str(observed.value)

@@ -7,6 +7,7 @@
 #include <string>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace qwen35::dflash {
@@ -39,11 +40,25 @@ struct HiaiModelIoTensor {
   std::size_t index = 0;
   std::vector<std::int64_t> shape;
   int raw_dtype = 0, raw_format = 0;
+  std::string tensor_name, tensor_name_status = "FIELD_NOT_AVAILABLE";
 };
 struct HiaiModelIoEnumTable {
   std::map<std::string, int> dtypes, formats;
 };
 namespace detail {
+// Read only the descriptor's actual public name field when this SDK exposes it.
+// An absent/empty name never establishes a semantic input or state identity.
+template <typename Descriptor, typename = void>
+struct OptionalTensorName {
+  static constexpr bool available = false;
+  static std::string Read(const Descriptor&) { return {}; }
+};
+template <typename Descriptor>
+struct OptionalTensorName<Descriptor,
+    std::void_t<decltype(std::string(std::declval<const Descriptor&>().tensorName))>> {
+  static constexpr bool available = true;
+  static std::string Read(const Descriptor& value) { return std::string(value.tensorName); }
+};
 template <typename Enum, typename = void>
 struct OptionalInt8Enum {
   static constexpr bool available = false;
@@ -64,12 +79,14 @@ struct HiaiModelIoProbe {
   HiaiProbe runtime;
   std::string model_path, model_sha256;
   std::uint64_t model_bytes = 0;
+  bool tensor_name_field_available = false;
   std::vector<HiaiModelIoTensor> inputs, outputs;
 };
 // Restores file-v2 metadata, observes ordered descriptors and releases it.
 // Never creates/initializes a file-v2 IModelManager, requests tensor buffers or calls
 // Process/Run. This bounded experiment does not establish external-weight
-// initialization, tensor names or equal-shaped input semantics.
+// initialization or equal-shaped input semantics. Names are raw SDK observations
+// only when the selected descriptor exposes a nonempty tensorName member.
 HiaiModelIoProbe ProbeHiaiModelIo(const std::filesystem::path& model,
                                 const std::string& expected_runtime_version);
 

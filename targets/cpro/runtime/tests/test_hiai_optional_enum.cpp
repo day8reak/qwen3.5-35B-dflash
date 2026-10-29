@@ -8,8 +8,16 @@ enum class HasInt8 { INT8 = 71 };
 enum class LacksInt8 { OTHER = 4 };
 static_assert(qwen35::dflash::detail::OptionalInt8Enum<HasInt8>::available);
 static_assert(!qwen35::dflash::detail::OptionalInt8Enum<LacksInt8>::available);
+struct HasTensorName { std::string tensorName; };
+struct LacksTensorName { int unrelated; };
+static_assert(qwen35::dflash::detail::OptionalTensorName<HasTensorName>::available);
+static_assert(!qwen35::dflash::detail::OptionalTensorName<LacksTensorName>::available);
 
 int main() {
+  if (qwen35::dflash::detail::OptionalTensorName<HasTensorName>::Read({"exact raw name"}) != "exact raw name"
+      || !qwen35::dflash::detail::OptionalTensorName<HasTensorName>::Read({""}).empty()
+      || !qwen35::dflash::detail::OptionalTensorName<LacksTensorName>::Read({1}).empty())
+    throw std::runtime_error("optional tensorName must preserve actual names and tolerate SDKs without the field");
   std::map<std::string, int> present{{"FLOAT16", 2}};
   qwen35::dflash::detail::OptionalInt8Enum<HasInt8>::Append(present);
   if (present.size() != 2 || present.at("INT8") != 71 || present.at("FLOAT16") != 2)

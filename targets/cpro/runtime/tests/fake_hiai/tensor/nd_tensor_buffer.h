@@ -8,6 +8,9 @@ struct NDTensorDesc {
   std::vector<std::int32_t> dims;
   DataType dataType=DataType::FLOAT32;
   Format format=Format::NCHW;
+#ifndef QWEN35_FAKE_NO_TENSOR_NAME
+  std::string tensorName;
+#endif
 };
 class INDTensorBuffer {
  public:

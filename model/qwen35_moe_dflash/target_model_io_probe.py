@@ -149,14 +149,21 @@ def _space(text):
 def _acquire_global(hdc, lock, token, wait_seconds):
     started, last_update = time.monotonic(), -30.0
     while True:
-        command = ("if mkdir " + shlex.quote(str(lock)) + "; then printf '%s\\n' " + shlex.quote(token)
+        # HDC remote shells merge stderr into their returned stream. An
+        # existing lock is expected contention, so its mkdir diagnostic must
+        # not precede the exact BUSY protocol response.
+        command = ("if mkdir " + shlex.quote(str(lock)) + " 2>/dev/null; then printf '%s\\n' " + shlex.quote(token)
                    + " > " + shlex.quote(str(lock / "owner")) + " && printf 'ACQUIRED\\n'; else test -d "
                    + shlex.quote(str(lock)) + " && test ! -L " + shlex.quote(str(lock)) + " && printf 'BUSY\\n'; fi")
         _, text = hdc.shell(command, "acquire-global-model-io-lock", timeout=min(10, hdc.timeout))
         if text == "ACQUIRED":
             return
         if text != "BUSY":
-            raise ValueError("unrecognized global target model-I/O lock response")
+            detail = ""
+            if callable(getattr(hdc, "_diagnostics", None)) and getattr(hdc, "last_call", None) is not None:
+                detail = hdc._diagnostics()
+            excerpt = repr(text[:2000]) + (" [truncated]" if len(text) > 2000 else "")
+            raise ValueError("unrecognized global target model-I/O lock response: " + excerpt + detail)
         elapsed = time.monotonic() - started
         if elapsed >= wait_seconds:
             raise ValueError("BOARD_MODEL_IO_BUSY: another target probe owns the board; no model upload or loading attempted")
