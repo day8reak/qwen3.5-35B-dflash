@@ -67,6 +67,6 @@ python3 "$REPO_DIR/targets/cpro/scripts/prepare_original_ge_target.py" \
 
 ## 共同验证与空间
 
-两条分别保留源码/图/权重引用、compiler及编译选项、89输入与state文件、实际输出和native结果。比较时采用同输入、同一有效长度和状态基点，检查完整词表logits/Top1、真实8层features和80状态；随后各自验证64→1及多轮DFlash。结构或编译通过不能代替设备精度；一条通过也不能替另一条通过。
+源码准备、导出与接口工作并行；大编译和板端验证按实际磁盘/内存预算排队，板端每次载入一个target和完整draft。两条分别保留源码/图/权重引用、compiler及编译选项、89输入与state文件、实际输出和native结果。比较时采用同输入、同一有效长度和状态基点，检查完整词表logits/Top1、真实8层features和80状态；随后各自验证64→1及多轮DFlash。结构或编译通过不能代替设备精度；一条通过也不能替另一条通过。
 
 执行服务器只需按token查原INT8 embedding及FP32逐词scale，两表约485.95MiB；完整HF与quant目录留原机。新AIR复用源sidecar前须逐项校验，旧OMC编译权重不能直接替换新OMC。原机只有导出环境，当前DDK的大输入快照、scratch/output需要已核实容量的共享挂载/大盘。

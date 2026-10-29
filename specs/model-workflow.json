@@ -2223,11 +2223,17 @@
           "sha256": "57934fc4177929a20c978eadbb121741602cefbfb212027e440fce67b08d32a6",
           "selected_hiai_schema": "INCOMPATIBLE_USER_REPORTED",
           "next": "Extract original TorchAir/GE descriptor without importing NPU packages; retain strict wire checks"
-        }
+        },
+        "schema_support": "EXPLICIT_TORCHAIR_PB2_AST_IMPLEMENTED_ACTUAL_USER_SCHEMA_PENDING"
       },
       "shared_draft": "full-draft/residual-fix/bundle",
       "acceptance": "Same original40layer quantization/fullvocab/realfeatures and89input80state contract; independent compilation/device evidence; neither lane inherits the other lane pass",
-      "docs": "docs/target-parallel-tracks.md"
+      "docs": "docs/target-parallel-tracks.md",
+      "host_verification": {
+        "tests_passed": 410,
+        "scope": "Host preparation/schema/ABI/regression only; no new full target AIR/OMC/device pass",
+        "evidence": "20261029T033717Z-4730-9801d8/final-parallel-target-tests.xml"
+      }
     }
   },
   "delivery_timebox": {

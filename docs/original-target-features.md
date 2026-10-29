@@ -72,7 +72,9 @@ config引用四个外部原始资源，需映射为该服务器真实路径，�
 
 准备器应在原权重机器、路径核对完成后运行，以免准备后修改config造成恢复身份失效。当前服务器使用页首只读AIR检查，不因源码已上传而启动完整检查点导出。
 
-## 派生源码与第82路输出
+## 底层派生源码工具与第82路输出
+
+当前A路线使用双路线页的`prepare_target_pytorch.py --sequence-length 64`。以下底层工具默认55用于原AIR形状对照，后续55目录示例保留作接口说明，不能替代当前A命令或证明64/1支持。
 
 `prepare_original_target_features.py`从用户私有工程只复制5个Python文件和原config。它通过AST检查实际Cpro类、完整decoder循环、post-layer赋值、原状态收集及return，在派生副本中追加：
 
