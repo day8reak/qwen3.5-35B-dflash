@@ -18,16 +18,17 @@
 
 完整命令、边界和状态见[双路线执行](target-parallel-tracks.md)。A原机入口为`prepare_target_pytorch.py`，先只读配置/分片头和小源码准备，缺原参数即停止；资源就绪后才在原机导出。用户已完成B原AIR检查：6361049字节、原文件保持，HIAI schema不匹配（`OPAQUE`）。随后当前服务器已找到两份真正的TorchAir生成文件；两者提取同一7381字节GE descriptor，SHA256为`5a1eac27746a7bb5109e819ce6dd7813a3ffcaab04bd0ab2ca3c2cdf1e4084ea`。选择更小的`3_19`文件继续，不需要从原机再传schema或权重。
 
-**当前执行这一条**，使用实际GE schema只读重解析；完整图写到新JSON，终端打印小摘要，旧OPAQUE报告保留：
+**B当前执行这一条**，更新代码后使用实际GE schema只读重解析；新版分别给出protobuf状态和逐端口描述符差异，完整图写到新JSON，前两份报告保留：
 
 ```bash
+git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
   --air /home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/export.air \
   --torchair-pb2 /root/anaconda3/envs/custom_pypto/lib/python3.11/site-packages/torch_npu/dynamo/torchair/_ge_concrete_graph/ge_ir_by_protoc_3_19_pb2.py \
-  --full --output "$AI_RUN_DIR/target-ge-source-air-ge.json"
+  --full --output "$AI_RUN_DIR/target-ge-source-air-ge-details.json"
 ```
 
-schema查找已完成，但是否与此AIR全部字段及89/81边界匹配，仍以这次解析结果为准；`FOUND`不代表图已解析或features已绑定。
+schema查找已完成。用户随后回传RAW_MODELDEF已到NetOutput边界比较，不再是schema错误；当前需新版报告列出输出与producer的具体差异，继续保留完整图信息，不能把差异当ABI通过。A原机操作的可直接执行步骤见[双路线执行](target-parallel-tracks.md#a在原权重机器准备)。
 
 同名输出若已存在，工具拒绝覆盖；保留已有报告并使用其路径，不删除旧证据。B后续绑定入口为`prepare_original_ge_target.py`；实际图/来源/算子证据不全时保持待绑定，不把现有functional GE target当成原Cpro等价实现。原源码的norm表达式、量化pack/QPARAM、自定义算子及80状态都要逐项核实。
 

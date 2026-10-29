@@ -13,15 +13,26 @@
 
 ## A：在原权重机器准备
 
-原机器仅有PyTorch/TorchAir，完整大检查点留在原位置。将最新小代码放到原机，设置原机独立`AI_RUN_DIR`，使用原机实际工程和config路径：
+原机器仅有PyTorch/TorchAir，完整大检查点留在原位置。先把本仓库最新代码同步到原机，令原机`REPO_DIR`指向该仓库（不是原模型工程），并激活当初导出AIR的环境。然后进入原PyTorch模型工程根目录，执行：
 
 ```bash
+export ORIGINAL_TARGET_SOURCE="$PWD"
+export AI_RUN_DIR="$(dirname "$PWD")/qwen35-target-pytorch-run"
+
 python3 "$REPO_DIR/targets/cpro/scripts/prepare_target_pytorch.py" \
   --source-root "$ORIGINAL_TARGET_SOURCE" \
-  --config "$ORIGINAL_TARGET_CONFIG" \
+  --config "$ORIGINAL_TARGET_SOURCE/config/qwen3_5_moe.yaml" \
   --output "$AI_RUN_DIR/target-pytorch" \
   --sequence-length 64
 ```
+
+返回`SOURCE_READY`后，可直接在原机执行，无需再等待一次确认：
+
+```bash
+bash "$AI_RUN_DIR/target-pytorch/export.sh"
+```
+
+返回`SOURCE_BLOCKED`时保留错误报告，不运行导出脚本。若任务目录已经存在，保留旧证据，用新输出目录重试。HF、quant检查点和两张原embedding表继续使用原机路径；它们不搬到当前10GB服务器。
 
 默认只核对配置、safetensors头与文件尺寸，并准备小型派生源码；不加载权重payload、不运行模型或导出。当前prefill64命令显式使用`--sequence-length 64`，TorchAir仍为静态导出；OMG配置64/1不自动证明图能正确decode，两个档位及状态连续性需实际验证。原loader缺HF参数仅打印Missing，故该入口必须提前硬性拒绝缺参数/错shape/错dtype；不能让随机初始化参数混入“完整模型”。`SOURCE_READY`也不是权重内容或设备精度通过。
 
@@ -37,10 +48,12 @@ python3 "$REPO_DIR/targets/cpro/scripts/prepare_target_pytorch.py" \
 python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
   --air /home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/export.air \
   --torchair-pb2 /root/anaconda3/envs/custom_pypto/lib/python3.11/site-packages/torch_npu/dynamo/torchair/_ge_concrete_graph/ge_ir_by_protoc_3_19_pb2.py \
-  --full --output "$AI_RUN_DIR/target-ge-source-air-ge.json"
+  --full --output "$AI_RUN_DIR/target-ge-source-air-ge-details.json"
 ```
 
 这是显式schema选择，仍只解析AST数据，不导入TorchAir/NPU；实际原AIR的全字段/边界匹配仍待本次结果。其他环境可使用`--find-torchair-schema`重新定位实际生成文件。
+
+最新使用真实GE schema的回传已到达`NetOutput differs from its explicit producer descriptor`，说明RAW_MODELDEF的protobuf解码已进入后续边界检查；旧检查器将两阶段混在一起，笼统打印OPAQUE。新版分别记录`protobuf_decode`与`metadata_inspection`，保留NetOutput每个不匹配端口两侧shape/dtype/layout及origin/storage元数据；ABI差异仍不放行。重读使用新的`target-ge-source-air-ge-details.json`，前两份报告保留。
 
 用户已回传原AIR：6361049字节、SHA256 `57934fc4177929a20c978eadbb121741602cefbfb212027e440fce67b08d32a6`，无IMOD头。当前HIAI schema解raw GraphDef报unknown field7，解raw ModelDef报AttrDef.list_list_float wire mismatch，状态`OPAQUE`。这是schema不兼容观察，不能据此判坏AIR或放宽检查器。新增入口只从显式选中的pb2 AST取descriptor bytes，不执行文件；未知字段/错类型、shim、多个descriptor、外部依赖仍拒绝。默认HIAI检查不变。旧`target-ge-source-air.json`保留，匹配原schema的新报告写到`target-ge-source-air-ge.json`。
 
@@ -54,7 +67,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/prepare_original_ge_target.py" \
-  --air-report "$AI_RUN_DIR/target-ge-source-air-ge.json" \
+  --air-report "$AI_RUN_DIR/target-ge-source-air-ge-details.json" \
   --source-root /home/w00949577/qwen3.5-35B-moe \
   --output "$AI_RUN_DIR/target-ge"
 ```

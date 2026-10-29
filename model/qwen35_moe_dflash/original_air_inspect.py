@@ -70,10 +70,15 @@ def _metadata_desc(value, enum):
     try:
         return _desc(value, enum)
     except (ValueError, TypeError) as error:
-        return {"status": "UNAVAILABLE", "error": str(error)[:256]}
+        row = {"status": "UNAVAILABLE", "error": str(error)[:256]}
+        if isinstance(value, dict):
+            raw = value.get("dtype")
+            row.update(raw_dtype=raw, layout=value.get("layout"),
+                       schema_dtype_names=[key for key, number in enum.items() if type(raw) is int and number == raw])
+        return row
 
 
-def _edge(edge, by_name, enum):
+def _edge_raw_descriptor(edge, by_name):
     if not isinstance(edge, str) or ":" not in edge:
         raise ValueError("output has no explicit producer port")
     name, port = edge.rsplit(":", 1)
@@ -82,7 +87,49 @@ def _edge(edge, by_name, enum):
     node, port = by_name.get(name), int(port)
     if node is None or port >= len(node.get("output_desc", [])):
         raise ValueError("output producer/descriptor does not exist")
-    return _desc(node["output_desc"][port], enum)
+    return node["output_desc"][port]
+
+
+def _edge(edge, by_name, enum):
+    return _metadata_desc(_edge_raw_descriptor(edge, by_name), enum)
+
+
+def _descriptor_metadata(raw):
+    """Bounded origin/storage diagnostics only; never part of ABI equality."""
+    if not isinstance(raw, dict):
+        return {"status": "UNAVAILABLE"}
+    result = {"scope": "DIAGNOSTIC_ONLY_NOT_USED_FOR_DESCRIPTOR_EQUALITY", "basic": {}, "attributes": {}}
+    for key in ("size", "weight_size", "real_dim_cnt", "device_type", "reuse_input", "reuse_input_index",
+                "output_tensor", "input_tensor", "has_out_attr", "data_offset"):
+        value = raw.get(key)
+        if type(value) in (int, bool):
+            result["basic"][key] = value
+        elif isinstance(value, str):
+            result["basic"][key] = value[:128]
+    try:
+        attrs = _attrs(raw)
+    except (ValueError, TypeError) as error:
+        result["attribute_error"] = str(error)[:256]
+        return result
+    for key in ("origin_format", "origin_format_for_int", "format_for_int", "origin_shape_initialized",
+                "storage_shape", "origin_shape", "storage_format", "storage_format_for_int"):
+        if key not in attrs:
+            continue
+        value, selected = attrs[key], {}
+        if isinstance(value, dict):
+            for field in ("i", "b", "s"):
+                item = value.get(field)
+                if type(item) in (int, bool):
+                    selected[field] = item
+                elif isinstance(item, str):
+                    selected[field] = item[:256]
+            integers = value.get("list", {}).get("i") if isinstance(value.get("list"), dict) else None
+            if isinstance(integers, list) and all(type(item) is int for item in integers):
+                selected["list_i"] = integers[:32]
+                if len(integers) > 32:
+                    selected["omitted_items"] = len(integers) - 32
+        result["attributes"][key] = selected or {"status": "UNAVAILABLE_NONSCALAR_OR_BLOB_VALUE"}
+    return result
 
 
 def _file_constant(node, enum):
@@ -116,45 +163,86 @@ def _boundaries(graph, enum):
         if not isinstance(name, str) or not name or len(name) > _MAX_TEXT or name in by_name:
             raise ValueError("root operation name is missing, excessive or duplicated")
         by_name[name] = node
-    inputs = []
+    inputs, errors = [], []
     for node in ops:
         if node.get("type") not in {"Data", "RefData"}:
             continue
         descs = node.get("output_desc", [])
         if len(descs) != 1:
-            raise ValueError("root input must have exactly one descriptor")
+            errors.append("INPUT_DESCRIPTOR_COUNT_DIFFERS:" + node["name"])
         inputs.append({"name": node["name"], "type": node["type"],
-                       "serialized_index": _attrs(node).get("index", {}).get("i"), **_desc(descs[0], enum)})
+                       "serialized_index": _attrs(node).get("index", {}).get("i"),
+                       "descriptor_count": len(descs), **_metadata_desc(descs[0] if len(descs) == 1 else None, enum)})
     netoutputs = [node for node in ops if node.get("type") == "NetOutput"]
-    outputs = []
-    if len(netoutputs) == 1:
-        boundary_kind = "NETOUTPUT_INPUT_REFERENCES"
-        edges = netoutputs[0].get("input", [])
-        descs = netoutputs[0].get("input_desc", [])
-        if not isinstance(edges, list) or not isinstance(descs, list):
-            raise ValueError("NetOutput references/descriptors are not lists")
-        edges = [edge for edge in edges if not (isinstance(edge, str) and edge.endswith(":-1"))]
-        if len(edges) != len(descs) or len(edges) > 512:
-            raise ValueError("NetOutput references and descriptors differ")
-        for index, (edge, raw) in enumerate(zip(edges, descs)):
-            desc = _desc(raw, enum)
-            if desc != _edge(edge, by_name, enum):
-                raise ValueError("NetOutput differs from its explicit producer descriptor")
-            outputs.append({"output_index": index, "producer_reference": _text(edge), **desc})
-    elif not netoutputs:
+    outputs, mismatches = [], []
+    if netoutputs:
+        boundary_kind = "NETOUTPUT_INPUT_REFERENCES" if len(netoutputs) == 1 else "AMBIGUOUS_MULTIPLE_NETOUTPUTS"
+        if len(netoutputs) != 1:
+            errors.append("MULTIPLE_ROOT_NETOUTPUT_NODES")
+        for netoutput in netoutputs:
+            edges, descs = netoutput.get("input", []), netoutput.get("input_desc", [])
+            if not isinstance(edges, list) or not isinstance(descs, list):
+                raise ValueError("NetOutput references/descriptors are not lists")
+            edges = [edge for edge in edges if not (isinstance(edge, str) and edge.endswith(":-1"))]
+            if max(len(edges), len(descs)) > 512 or len(outputs) + max(len(edges), len(descs)) > 512:
+                raise ValueError("NetOutput metadata exceeds output port budget")
+            if len(edges) != len(descs):
+                errors.append("NETOUTPUT_EDGE_DESCRIPTOR_COUNT_DIFFERS:" + netoutput["name"])
+            for index in range(max(len(edges), len(descs))):
+                edge = edges[index] if index < len(edges) else None
+                desc = _metadata_desc(descs[index] if index < len(descs) else None, enum)
+                try:
+                    producer = _edge(edge, by_name, enum)
+                except (ValueError, TypeError) as error:
+                    producer = {"status": "UNAVAILABLE", "error": str(error)[:256]}
+                matched = desc.get("status") != "UNAVAILABLE" and producer.get("status") != "UNAVAILABLE" and desc == producer
+                differences = {key: {"netinput": desc.get(key), "producer": producer.get(key)}
+                               for key in ("shape", "raw_dtype", "schema_dtype_names", "layout") if desc.get(key) != producer.get(key)}
+                row = {"output_index": len(outputs), "netoutput": netoutput["name"], "netoutput_input_index": index,
+                       "producer_reference": _text(edge) if isinstance(edge, str) else None, **desc,
+                       "netinput_descriptor": desc, "producer_descriptor": producer,
+                       "descriptor_match": matched, "descriptor_differences": differences}
+                outputs.append(row)
+                if not matched:
+                    row["netinput_metadata"] = _descriptor_metadata(descs[index] if index < len(descs) else None)
+                    try:
+                        row["producer_metadata"] = _descriptor_metadata(_edge_raw_descriptor(edge, by_name))
+                    except (ValueError, TypeError) as error:
+                        row["producer_metadata"] = {"status": "UNAVAILABLE", "error": str(error)[:256]}
+                    mismatches.append({key: row[key] for key in ("output_index", "netoutput", "netoutput_input_index",
+                        "producer_reference", "netinput_descriptor", "producer_descriptor", "descriptor_differences",
+                        "netinput_metadata", "producer_metadata")})
+    else:
         boundary_kind = "GRAPHDEF_OUTPUT_REFERENCES"
         edges = graph.get("output", [])
         if not isinstance(edges, list) or len(edges) > 512:
             raise ValueError("GraphDef output references are unsupported")
         for index, edge in enumerate(edges):
-            outputs.append({"output_index": index, "producer_reference": _text(edge), **_edge(edge, by_name, enum)})
-    else:
-        raise ValueError("multiple root NetOutput nodes are ambiguous")
+            try:
+                desc = _edge(edge, by_name, enum)
+            except (ValueError, TypeError) as error:
+                desc = {"status": "UNAVAILABLE", "error": str(error)[:256]}
+            outputs.append({"output_index": index, "producer_reference": _text(edge), **desc,
+                            "producer_descriptor": desc, "netinput_descriptor": None,
+                            "descriptor_match": desc.get("status") != "UNAVAILABLE",
+                            "descriptor_comparison": "NO_INDEPENDENT_NETOUTPUT_DESCRIPTOR"})
+            if desc.get("status") == "UNAVAILABLE":
+                try:
+                    metadata = _descriptor_metadata(_edge_raw_descriptor(edge, by_name))
+                except (ValueError, TypeError) as error:
+                    metadata = {"status": "UNAVAILABLE", "error": str(error)[:256]}
+                outputs[-1].update(producer_metadata=metadata, netinput_metadata=None)
+                mismatches.append({"output_index": index, "producer_reference": _text(edge),
+                                   "producer_descriptor": desc, "netinput_descriptor": None,
+                                   "producer_metadata": metadata, "netinput_metadata": None})
     summary = {"graph_name": _text(graph.get("name", "")), "root_op_count": len(ops),
                "root_op_counts": dict(sorted(Counter(node.get("type") for node in ops).items())),
                "input_type_counts": dict(Counter(row["type"] for row in inputs)),
                "input_count": len(inputs), "output_count": len(outputs), "boundary_source": boundary_kind}
-    errors = []
+    summary["output_descriptor_check"] = {"status": "DIFFERENT" if mismatches else "MATCHED_VISIBLE_DESCRIPTORS",
+                                           "mismatch_count": len(mismatches), "mismatches": mismatches}
+    if mismatches:
+        errors.append("OUTPUT_PRODUCER_DESCRIPTOR_DIFFERS_OR_UNRESOLVED")
     if len(inputs) != 89 or summary["input_type_counts"] != {"Data": 9, "RefData": 80}:
         errors.append("REQUIRES_9_DATA_AND_80_REFDATA_INPUTS")
     actual_refs = {row["name"]: row for row in inputs if row["type"] == "RefData"}
@@ -164,19 +252,21 @@ def _boundaries(graph, enum):
         state = actual_refs.get(f"RefData_{index}")
         expected = ([64, 32, 32, 16] if index // 2 % 4 == 3 else
                     [1, 8192, 4] if index % 2 == 0 else [1, 32, 128, 128])
-        if state and (state["shape"] != expected or state["schema_dtype_names"] != ["DT_FLOAT16"]):
+        if state and (state.get("shape") != expected or state.get("schema_dtype_names") != ["DT_FLOAT16"]):
             errors.append(f"REFDATA_{index}_SHAPE_OR_DTYPE_DIFFERS")
-    if any(not row["schema_dtype_names"] for row in inputs):
+    if any(row.get("status") == "UNAVAILABLE" for row in inputs):
+        errors.append("INPUT_DESCRIPTOR_UNRESOLVED")
+    if any(not row.get("schema_dtype_names") for row in inputs):
         errors.append("INPUT_DTYPE_UNRESOLVED")
     if len(outputs) != 81:
         errors.append("REQUIRES_ORIGINAL_81_OUTPUTS")
     else:
-        if (outputs[0]["shape"] != [1, 1, 248320] or not outputs[0]["schema_dtype_names"]
-                or not set(outputs[0]["schema_dtype_names"]) <= {"DT_FLOAT", "DT_FLOAT32", "DT_FLOAT16"}):
+        if (outputs[0].get("shape") != [1, 1, 248320] or not outputs[0].get("schema_dtype_names")
+                or not set(outputs[0].get("schema_dtype_names", [])) <= {"DT_FLOAT", "DT_FLOAT32", "DT_FLOAT16"}):
             errors.append("LOGITS_SHAPE_OR_DTYPE_DIFFERS")
         for index, out in enumerate(outputs[1:]):
             state = actual_refs.get(f"RefData_{index}")
-            if state and any(out[key] != state[key] for key in ("shape", "raw_dtype", "layout")):
+            if state and any(out.get(key) != state.get(key) for key in ("shape", "raw_dtype", "layout")):
                 errors.append(f"OUTPUT_{index + 1}_REFDATA_DESCRIPTOR_DIFFERS")
     summary["original_boundary_check"] = {"status": "MATCHED_COUNTS_SHAPES_DTYPES_ONLY" if not errors else "DIFFERENT",
                                            "errors": errors[:16], "error_count": len(errors)}
@@ -205,6 +295,8 @@ def _candidate(document, kind, enum, full):
     # arg numbers or a matching shape. State descriptors are already checked.
     summary["ordinary_inputs"] = [row for row in inputs if row["type"] == "Data"]
     summary["output_examples"] = outputs[:2] + (outputs[-1:] if len(outputs) > 2 else [])
+    if not full:
+        summary["output_descriptor_check"]["mismatches"] = summary["output_descriptor_check"]["mismatches"][:_EXAMPLES]
     if full:
         summary["inputs"] = inputs
         summary["outputs"] = outputs
@@ -274,20 +366,36 @@ def inspect_original_air(air, ddk_root=None, *, full=False, torchair_pb2=None):
             return result
         enum = schema.enums.get(schema.evidence["schema_package"] + ".DataType", {})
         for label, payload, kind in payloads:
-            row = {"format": label, "message_type": kind, "status": "UNSUPPORTED"}
+            row = {"format": label, "message_type": kind, "status": "UNSUPPORTED",
+                   "protobuf_decode": "NOT_RUN", "metadata_inspection": "NOT_RUN"}
             result["candidates"].append(row)
             try:
-                summary = _candidate(schema.decode(payload, kind), kind, enum, full)
-                row.update(status="STRUCTURE_OBSERVED" if summary["original_boundary_check"]["status"] == "MATCHED_COUNTS_SHAPES_DTYPES_ONLY"
-                           else "DECODED_STRUCTURALLY_DIFFERENT", graph=summary)
+                document = schema.decode(payload, kind)
+                row["protobuf_decode"] = "PASSED"
             except (ValueError, TypeError, KeyError, RecursionError) as error:
-                row["error"] = f"{type(error).__name__}: {str(error)[:256]}"
+                row.update(protobuf_decode="FAILED", error=f"{type(error).__name__}: {str(error)[:256]}")
+                continue
+            try:
+                summary = _candidate(document, kind, enum, full)
+                row.update(status="STRUCTURE_OBSERVED" if summary["original_boundary_check"]["status"] == "MATCHED_COUNTS_SHAPES_DTYPES_ONLY"
+                           else "DECODED_BOUNDARY_DIFFERENT", graph=summary, metadata_inspection="COMPLETE")
+            except (ValueError, TypeError, KeyError, RecursionError) as error:
+                row.update(status="DECODED_METADATA_UNSUPPORTED", metadata_inspection="FAILED",
+                           metadata_error=f"{type(error).__name__}: {str(error)[:256]}")
         recognized = [row for row in result["candidates"] if row["status"] == "STRUCTURE_OBSERVED"]
+        decoded = [row for row in result["candidates"] if row["protobuf_decode"] == "PASSED"]
+        result["protobuf_decode"] = "PASSED" if decoded else "FAILED"
+        if len(decoded) == 1:
+            result["decoded_format"] = decoded[0]["format"]
         if len(recognized) == 1:
             result.update(status="STRUCTURE_OBSERVED", observed_format=recognized[0]["format"],
                           editability="NOT_ESTABLISHED_REQUIRES_LOSSLESS_FORMAT_AND_TAP_PROVENANCE")
         elif recognized:
             result["ambiguity"] = "MULTIPLE_CANDIDATE_STRUCTURES; NO_FORMAT_SELECTED"
+        elif any(row["status"] == "DECODED_BOUNDARY_DIFFERENT" for row in decoded):
+            result["status"] = "DECODED_BOUNDARY_DIFFERENT"
+        elif decoded:
+            result["status"] = "DECODED_METADATA_UNSUPPORTED"
         if _stamp(library) != library_before:
             raise ValueError("selected schema source changed during inspection")
         if len(json.dumps(result, ensure_ascii=True).encode()) > MAX_OUTPUT_BYTES:
@@ -295,10 +403,12 @@ def inspect_original_air(air, ddk_root=None, *, full=False, torchair_pb2=None):
                 "metadata": "OMITTED_OUTPUT_BUDGET"} for row in result["candidates"]]
             result.update(status="OPAQUE", output_limit="Full metadata exceeded 16 MiB; no graph proof retained")
             result.pop("observed_format", None)
+            result.pop("decoded_format", None)
     except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
         result.update(status="ERROR", error=f"{type(error).__name__}: {str(error)[:256]}")
         result["candidates"] = []
         result.pop("observed_format", None)
+        result.pop("decoded_format", None)
     finally:
         if before is not None:
             try:
@@ -309,4 +419,5 @@ def inspect_original_air(air, ddk_root=None, *, full=False, torchair_pb2=None):
             if not unchanged:
                 result.update(status="ERROR", error="AIR changed during inspection; decoded metadata discarded", candidates=[])
                 result.pop("observed_format", None)
+                result.pop("decoded_format", None)
     return result

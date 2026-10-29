@@ -40,13 +40,26 @@ def main():
             stream.write(raw + "\n")
     if args.output:
         summary = {key: result[key] for key in (
-            "schema_version", "artifact_kind", "status", "air", "tap_resolution",
+            "schema_version", "artifact_kind", "status", "protobuf_decode", "air", "tap_resolution",
             "external_weights", "device_execution", "model_compilation") if key in result}
         summary["report"] = str(path)
-        summary["candidates"] = [{"format": row["format"], "status": row["status"],
-                                  "error": row.get("error"),
-                                  "original_boundary_check": row.get("graph", {}).get("original_boundary_check")}
-                                 for row in result.get("candidates", [])]
+        summary["candidates"] = []
+        for row in result.get("candidates", []):
+            graph = row.get("graph", {})
+            candidate = {"format": row["format"], "status": row["status"],
+                         "protobuf_decode": row.get("protobuf_decode"),
+                         "metadata_inspection": row.get("metadata_inspection"),
+                         "error": row.get("error"), "metadata_error": row.get("metadata_error")}
+            for key in ("root_op_count", "root_op_counts", "input_count", "input_type_counts",
+                        "output_count", "original_boundary_check"):
+                if key in graph:
+                    candidate[key] = graph[key]
+            checks = graph.get("output_descriptor_check")
+            if isinstance(checks, dict):
+                candidate["output_descriptor_check"] = {
+                    key: (value[:6] if isinstance(value, list) else value)
+                    for key, value in checks.items()}
+            summary["candidates"].append(candidate)
         for key in ("error", "schema", "source_preservation"):
             if key in result:
                 summary[key] = result[key]

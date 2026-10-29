@@ -281,7 +281,13 @@ def prepare_contract(receipt, air_report=None, *, gamma_template=None, air=None)
             graph = candidates[0]["graph"]
             result["graph_observation"] = {"format": candidates[0]["format"], "input_count": graph.get("input_count"),
                 "output_count": graph.get("output_count"), "original_boundary_check": graph.get("original_boundary_check"),
-                "root_op_counts": graph.get("root_op_counts"), "source_to_air_revision": "UNVERIFIED"}
+                "root_op_counts": graph.get("root_op_counts"), "source_to_air_revision": "UNVERIFIED",
+                "protobuf_decode": candidates[0].get("protobuf_decode"),
+                "output_descriptor_check": graph.get("output_descriptor_check")}
+            if graph.get("original_boundary_check", {}).get("status") != "MATCHED_COUNTS_SHAPES_DTYPES_ONLY":
+                if result["status"] != "PENDING_SOURCE_BINDING":
+                    result["status"] = "PENDING_ORIGINAL_ABI_BINDING"
+                result["pending"].insert(0, "RESOLVE_ORIGINAL_OUTPUT_BOUNDARY_DIFFERENCES")
             result["tap_resolution"] = resolve_taps(graph, gamma_template)
             counts = graph.get("root_op_counts", {})
             for op in operators:
@@ -292,7 +298,17 @@ def prepare_contract(receipt, air_report=None, *, gamma_template=None, air=None)
         else:
             result["graph_observation"] = {"status": "NO_UNAMBIGUOUS_RAW_ORIGINAL_GRAPH", "candidate_count": len(candidates),
                                            "container_graphs": "NOT_TREATED_AS_EDITABLE_RAW_AIR"}
-            if not any(isinstance(row.get("graph"), dict) for row in air_report.get("candidates", [])):
+            decoded = [row for row in air_report.get("candidates", [])
+                       if row.get("protobuf_decode") == "PASSED"]
+            if decoded:
+                if result["status"] != "PENDING_SOURCE_BINDING":
+                    result["status"] = "PENDING_GRAPH_METADATA"
+                result["pending"].insert(0, "RESOLVE_DECODED_GRAPH_METADATA_ERROR")
+                result["metadata_observation"] = {
+                    "formats": [{"format": row.get("format"), "metadata_error": row.get("metadata_error")}
+                                for row in decoded],
+                    "scope": "Protobuf decoded; preserve metadata errors without reclassifying them as a schema mismatch"}
+            elif not any(isinstance(row.get("graph"), dict) for row in air_report.get("candidates", [])):
                 if result["status"] != "PENDING_SOURCE_BINDING":
                     result["status"] = "PENDING_AIR_SCHEMA"
                 result["pending"].insert(0, "MATCH_ORIGINAL_TORCHAIR_GE_SERIALIZED_DESCRIPTOR_WITH_RAW_AIR")
@@ -304,6 +320,10 @@ def prepare_contract(receipt, air_report=None, *, gamma_template=None, air=None)
         "arguments": ["--air", str(air or "ORIGINAL_TARGET_AIR"), "--full"],
         "stdout_destination": "$AI_RUN_DIR/original-target-air-full.json",
         "purpose": "Collect the actual bounded graph metadata without opening weights; rerun this contract audit with --air-report and an explicit exact --gamma-template"}
+    if air_report and air_report.get("schema", {}).get("selection") == "EXPLICIT_TORCHAIR_PB2":
+        pb2 = air_report["schema"].get("pb2")
+        if isinstance(pb2, str) and pb2:
+            result["next_command"]["arguments"].extend(["--torchair-pb2", pb2])
     if "schema_observation" in result:
         result["next_command"].update(status="REQUIRES_MATCHING_TORCHAIR_GE_DESCRIPTOR_INPUT",
             arguments=["--find-torchair-schema"],

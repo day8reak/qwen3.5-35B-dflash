@@ -198,6 +198,32 @@ def test_actual_air_schema_mismatch_requires_original_torchair_descriptor_withou
     assert result["air_generation"] == "NOT_RUN_NO_GRAPH_WRITER_OR_RANDOM_WEIGHTS"
 
 
+def test_decoded_output_difference_is_an_abi_gap_and_keeps_full_graph(tmp_path, selected):
+    air = tmp_path / "boundary.air"
+    air.write_bytes(_blob(7, _graph(mutation="output_producer_desc")))
+    observed = inspect_original_air(air, selected[0], full=True)
+    assert observed["status"] == "DECODED_BOUNDARY_DIFFERENT"
+    result = ge.prepare_contract(receipt(), observed)
+    assert result["status"] == "PENDING_ORIGINAL_ABI_BINDING"
+    assert result["graph_observation"]["output_descriptor_check"]["mismatch_count"] == 1
+    assert "schema_observation" not in result
+    assert result["air_generation"] == "NOT_RUN_NO_GRAPH_WRITER_OR_RANDOM_WEIGHTS"
+
+
+def test_decoded_metadata_failure_never_restarts_schema_search(tmp_path, selected):
+    air = tmp_path / "duplicate.air"
+    air.write_bytes(_blob(7, _graph(mutation="duplicate_op")))
+    observed = inspect_original_air(air, selected[0], full=True)
+    assert observed["status"] == "DECODED_METADATA_UNSUPPORTED"
+    observed["schema"].update(selection="EXPLICIT_TORCHAIR_PB2", pb2="/actual/ge_ir_by_protoc_3_19_pb2.py")
+    result = ge.prepare_contract(receipt(), observed)
+    assert result["status"] == "PENDING_GRAPH_METADATA"
+    assert "schema_observation" not in result
+    assert "RESOLVE_DECODED_GRAPH_METADATA_ERROR" in result["pending"]
+    assert "--find-torchair-schema" not in result["next_command"]["arguments"]
+    assert result["next_command"]["arguments"][-2:] == ["--torchair-pb2", observed["schema"]["pb2"]]
+
+
 def test_cli_canonical_output_directory_contains_only_reviewable_json(tmp_path, monkeypatch, capsys):
     source = tmp_path / "source-receipt.json"
     source.write_text(json.dumps(feature_source_receipt()))

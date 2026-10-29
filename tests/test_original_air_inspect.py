@@ -29,6 +29,19 @@ def selected(tmp_path, monkeypatch):
     new_graph = _message("GraphDef", _field("name", 1, 9), _field("op", 6, 11, True, "OpDef"),
                          _field("output", 5, 9, True))
     original = original.replace(old_graph, new_graph)
+    old_desc = _message("TensorDescriptor", _field("dtype", 2, 14, False, "DataType"),
+        _field("shape", 3, 11, False, "ShapeDef"), _field("layout", 4, 9))
+    new_desc = _message("TensorDescriptor", _field("dtype", 2, 14, False, "DataType"),
+        _field("shape", 3, 11, False, "ShapeDef"), _field("layout", 4, 9),
+        _field("size", 10, 3), _field("real_dim_cnt", 16, 3), _field("device_type", 14, 9),
+        _field("reuse_input_index", 17, 3), _field("output_tensor", 13, 8), _field("attr", 5, 11, True, "AttrEntry"))
+    original = original.replace(old_desc, new_desc)
+    old_attr = _message("AttrDef", _field("i", 3, 3), _field("s", 2, 12),
+        _field("t", 12, 11, False, "TensorDef"), _field("g", 13, 11, False, "GraphDef"))
+    new_attr = _message("AttrDef", _field("i", 3, 3), _field("s", 2, 12),
+        _field("t", 12, 11, False, "TensorDef"), _field("g", 13, 11, False, "GraphDef"),
+        _field("list", 1, 11, False, "ListValue"), _field("b", 5, 8))
+    original = original.replace(old_attr, new_attr) + _message("ListValue", _field("i", 3, 3, True))
     monkeypatch.setattr(fixture, "_schema", lambda: original)
     ddk = tmp_path / "selected-ddk"
     library = ddk / "tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so"
@@ -40,11 +53,12 @@ def selected(tmp_path, monkeypatch):
 
 
 def _node(name, kind, shape, dtype=7, index=None):
-    raw = _blob(1, name) + _blob(2, kind) + _blob(34, _desc(dtype=dtype, shape=shape))
+    desc = _desc(dtype=dtype, shape=shape) if shape is not None else _int(2, dtype) + _blob(4, "ND")
+    raw = _blob(1, name) + _blob(2, kind) + _blob(34, desc)
     return raw if index is None else raw + _attr("index", _int(3, index))
 
 
-def _graph(*, sequence=55, netoutput=True, constants=7, mutation=None):
+def _graph(*, sequence=55, netoutput=True, constants=7, mutation=None, producer_extras=b"", netinput_extras=b""):
     profile = get_existing_air_profile("cpro-40block-64-1")
     nodes, state_descs = [], []
     for index, entry in enumerate(profile["input_shape"].split(";")):
@@ -55,14 +69,15 @@ def _graph(*, sequence=55, netoutput=True, constants=7, mutation=None):
             shape[-1] = 3
         kind = "RefData" if name.startswith("RefData_") else "Data"
         if mutation != "missing_input" or index != 0:
-            nodes.append(_node(name, kind, shape, dtype, index))
+            nodes.append(_node(name, kind, None if mutation == "root_input_shape_absent" and index == 0 else shape, dtype, index))
         if kind == "RefData":
             state_descs.append(_desc(shape=shape))
     logits_shape = [1, 1, 248319 if mutation == "logits_shape" else 248320]
     output_descs = [_desc(dtype=1, shape=logits_shape), *state_descs]
     if mutation == "output_dtype":
         output_descs[1] = _desc(dtype=1, shape=(1, 8192, 4))
-    body = _blob(1, "opaque_body") + _blob(2, "UnverifiedBody") + b"".join(_blob(34, desc) for desc in output_descs)
+    producer_descs = [output_descs[0] + producer_extras, *output_descs[1:]]
+    body = _blob(1, "opaque_body") + _blob(2, "UnverifiedBody") + b"".join(_blob(34, desc) for desc in producer_descs)
     nodes.append(body)
     for index in range(constants):
         nodes.append(_node(f"weight_{index}", "FileConstant", [2048]) +
@@ -70,13 +85,19 @@ def _graph(*, sequence=55, netoutput=True, constants=7, mutation=None):
             _attr("dtype", _int(3, 7)) + _attr("offset", _int(3, index * 4096)) +
             _attr("value", _blob(12, _blob(2, b"PRIVATE_TENSOR_BYTES_MUST_NEVER_BE_PRINTED"))))
     edges = [f"opaque_body:{index}" for index in range(81 if mutation != "missing_output" else 80)]
-    if mutation == "bad_producer":
+    if mutation in {"bad_producer", "bad_producer_netinput_missing"}:
         edges[1] = "does_not_exist:0"
     if netoutput:
         descs = output_descs[:len(edges)]
-        if mutation == "output_producer_desc":
+        if mutation == "bad_producer_netinput_missing":
+            descs = descs[1:]
+        if mutation in {"output_producer_desc", "output_producer_shape", "output_producer_layout"}:
             descs = [*descs]
-            descs[0] = _desc(shape=logits_shape)
+            descs[0] = (_desc(shape=logits_shape) if mutation == "output_producer_desc" else
+                        _desc(dtype=1, shape=(1, 2, 248320)) if mutation == "output_producer_shape" else
+                        _desc(dtype=1, shape=logits_shape).replace(_blob(4, "ND"), _blob(4, "NCHW")))
+        if netinput_extras:
+            descs = [descs[0] + netinput_extras, *descs[1:]]
         nodes.append(_blob(1, "Node_Output") + _blob(2, "NetOutput") +
                      b"".join(_blob(5, edge) for edge in edges) + b"".join(_blob(33, desc) for desc in descs))
     if mutation == "duplicate_op":
@@ -114,6 +135,8 @@ def test_real_wire_candidates_are_distinguished_and_weights_and_taps_remain_unve
     assert result["tap_resolution"]["status"] == "UNRESOLVED"
     assert result["external_weights"] == "NOT_OPENED_NOT_HASHED_NOT_CHECKED"
     candidate = next(row for row in result["candidates"] if row["status"] == "STRUCTURE_OBSERVED")["graph"]
+    assert result["protobuf_decode"] == "PASSED"
+    assert candidate["output_descriptor_check"]["mismatch_count"] == 0
     assert candidate["ordinary_inputs"][0]["shape"] == [1, 55, 2048]
     assert candidate["input_count"] == 89 and candidate["output_count"] == 81
     assert candidate["model_completeness"] == "NOT_ESTABLISHED_BY_BOUNDARY_CHECK"
@@ -134,9 +157,131 @@ def test_parse_success_or_similar_names_cannot_promote_a_different_boundary(tmp_
     air = tmp_path / "export.air"
     air.write_bytes(_blob(7, _graph(mutation=mutation)))
     result = inspect.inspect_original_air(air, ddk)
-    assert result["status"] == "OPAQUE"
+    assert result["status"] == ("DECODED_METADATA_UNSUPPORTED" if mutation == "duplicate_op" else "DECODED_BOUNDARY_DIFFERENT")
     assert all(row["status"] != "STRUCTURE_OBSERVED" for row in result["candidates"])
     assert result["tap_resolution"]["status"] == "UNRESOLVED"
+    decoded = next(row for row in result["candidates"] if row["format"] == "RAW_MODELDEF")
+    assert decoded["protobuf_decode"] == "PASSED"
+    if mutation == "duplicate_op":
+        assert decoded["metadata_inspection"] == "FAILED" and "duplicated" in decoded["metadata_error"]
+        assert "graph" not in decoded
+    else:
+        assert decoded["metadata_inspection"] == "COMPLETE" and decoded["graph"]
+
+
+@pytest.mark.parametrize("mutation,key,netinput,producer", [
+    ("output_producer_desc", "raw_dtype", 7, 1),
+    ("output_producer_shape", "shape", [1, 2, 248320], [1, 1, 248320]),
+    ("output_producer_layout", "layout", "NCHW", "ND"),
+])
+def test_netoutput_mismatches_preserve_exact_ports_both_descriptors_and_full_graph(tmp_path, selected, mutation, key, netinput, producer):
+    air = tmp_path / "original.air"
+    air.write_bytes(_blob(7, _graph(mutation=mutation)))
+    result = inspect.inspect_original_air(air, selected[0], full=True)
+    assert result["status"] == "DECODED_BOUNDARY_DIFFERENT"
+    assert result["decoded_format"] == "RAW_MODELDEF" and "observed_format" not in result
+    raw_graph = next(row for row in result["candidates"] if row["format"] == "RAW_GRAPHDEF")
+    assert raw_graph["protobuf_decode"] == "FAILED" and raw_graph["metadata_inspection"] == "NOT_RUN"
+    decoded = next(row for row in result["candidates"] if row["format"] == "RAW_MODELDEF")
+    assert decoded["protobuf_decode"] == "PASSED" and decoded["metadata_inspection"] == "COMPLETE"
+    graph = decoded["graph"]
+    assert graph["input_count"] == 89 and graph["output_count"] == 81
+    assert len(graph["inputs"]) == 89 and len(graph["outputs"]) == 81 and graph["operations"]
+    assert graph["file_constants"]["shown"] == graph["file_constants"]["count"] == 7
+    assert graph["original_boundary_check"]["status"] == "DIFFERENT"
+    assert graph["output_descriptor_check"]["mismatch_count"] == 1
+    difference = graph["output_descriptor_check"]["mismatches"][0]
+    assert difference["output_index"] == 0 and difference["netoutput"] == "Node_Output"
+    assert difference["producer_reference"] == "opaque_body:0"
+    assert difference["netinput_descriptor"][key] == netinput
+    assert difference["producer_descriptor"][key] == producer
+    assert difference["descriptor_differences"][key] == {"netinput": netinput, "producer": producer}
+    assert graph["outputs"][0]["descriptor_match"] is False
+    assert all(row["descriptor_match"] for row in graph["outputs"][1:])
+
+
+def _origin_metadata(size, origin):
+    def attribute(key, value):
+        return _blob(5, _blob(1, key) + _blob(2, value))
+    return (_int(10, size) + _int(16, 3) + _blob(14, "NPU") + _int(17, 2) + _int(13, 1) +
+            attribute("origin_format", _blob(2, origin)) + attribute("format_for_int", _int(3, 2)) +
+            attribute("origin_shape_initialized", _int(5, 0)) +
+            attribute("storage_shape", _blob(1, b"".join(_int(3, value) for value in (1, 55, 2048)))))
+
+
+def test_only_mismatches_include_bounded_origin_metadata_without_equating_layouts(tmp_path, selected):
+    air = tmp_path / "original.air"
+    air.write_bytes(_blob(7, _graph(mutation="output_producer_layout",
+        producer_extras=_origin_metadata(262176, "NCHW"), netinput_extras=_origin_metadata(262144, "ND"))))
+    result = inspect.inspect_original_air(air, selected[0], full=True)
+    assert result["status"] == "DECODED_BOUNDARY_DIFFERENT"
+    graph = next(row["graph"] for row in result["candidates"] if row["protobuf_decode"] == "PASSED")
+    mismatch = graph["output_descriptor_check"]["mismatches"][0]
+    assert mismatch["descriptor_differences"] == {"layout": {"netinput": "NCHW", "producer": "ND"}}
+    producer, netinput = mismatch["producer_metadata"], mismatch["netinput_metadata"]
+    assert producer["basic"] == {"size": 262176, "real_dim_cnt": 3, "device_type": "NPU", "reuse_input_index": 2, "output_tensor": True}
+    assert netinput["basic"]["size"] == 262144
+    assert producer["attributes"]["origin_format"] == {"s": "NCHW"}
+    assert netinput["attributes"]["origin_format"] == {"s": "ND"}
+    assert producer["attributes"]["storage_shape"] == {"list_i": [1, 55, 2048]}
+    assert producer["attributes"]["format_for_int"] == {"i": 2}
+    assert all("producer_metadata" not in row and "netinput_metadata" not in row for row in graph["outputs"][1:])
+
+
+def test_different_storage_metadata_never_creates_a_canonical_descriptor_mismatch(tmp_path, selected):
+    air = tmp_path / "original.air"
+    air.write_bytes(_blob(7, _graph(producer_extras=_origin_metadata(262176, "NCHW"),
+                                  netinput_extras=_origin_metadata(262144, "ND"))))
+    result = inspect.inspect_original_air(air, selected[0], full=True)
+    assert result["status"] == "STRUCTURE_OBSERVED"
+    graph = next(row["graph"] for row in result["candidates"] if row["status"] == "STRUCTURE_OBSERVED")
+    assert graph["output_descriptor_check"]["mismatch_count"] == 0
+    assert graph["outputs"][0]["descriptor_match"] is True
+    assert "producer_metadata" not in graph["outputs"][0]
+
+
+def test_origin_metadata_never_expands_blob_values_or_unbounded_lists():
+    raw = {"size": 100, "attr": [
+        {"key": "storage_shape", "value": {"list": {"i": list(range(1000))}}},
+        {"key": "origin_format", "value": {"s": "X" * 1000}},
+        {"key": "storage_format", "value": {"t": {"data": "PRIVATE_TENSOR_BYTES"}}},
+        {"key": "unselected_attribute", "value": {"s": "DO_NOT_EXPAND_ME"}}]}
+    result = inspect._descriptor_metadata(raw)
+    assert len(result["attributes"]["storage_shape"]["list_i"]) == 32
+    assert result["attributes"]["storage_shape"]["omitted_items"] == 968
+    assert len(result["attributes"]["origin_format"]["s"]) == 256
+    assert result["attributes"]["storage_format"]["status"] == "UNAVAILABLE_NONSCALAR_OR_BLOB_VALUE"
+    encoded = json.dumps(result)
+    assert "PRIVATE_TENSOR_BYTES" not in encoded and "DO_NOT_EXPAND_ME" not in encoded
+    assert len(encoded) < 1500
+
+
+def test_missing_producer_and_descriptor_count_difference_preserve_available_metadata(tmp_path, selected):
+    air = tmp_path / "original.air"
+    # Keep every reference but omit the logits NetOutput descriptor.
+    air.write_bytes(_blob(7, _graph(mutation="bad_producer_netinput_missing")))
+    result = inspect.inspect_original_air(air, selected[0], full=True)
+    assert result["status"] == "DECODED_BOUNDARY_DIFFERENT"
+    graph = next(row["graph"] for row in result["candidates"] if row["protobuf_decode"] == "PASSED")
+    assert graph["operations"] and len(graph["outputs"]) == 81
+    assert "NETOUTPUT_EDGE_DESCRIPTOR_COUNT_DIFFERS:Node_Output" in graph["original_boundary_check"]["errors"]
+    missing = graph["outputs"][1]
+    assert missing["producer_reference"] == "does_not_exist:0"
+    assert missing["producer_descriptor"]["status"] == "UNAVAILABLE"
+    assert missing["netinput_descriptor"]["shape"] == [1, 32, 128, 128]
+    assert missing["descriptor_match"] is False
+
+
+def test_absent_root_shape_is_boundary_error_without_erasing_graph(tmp_path, selected):
+    air = tmp_path / "original.air"
+    air.write_bytes(_blob(7, _graph(mutation="root_input_shape_absent")))
+    result = inspect.inspect_original_air(air, selected[0], full=True)
+    assert result["status"] == "DECODED_BOUNDARY_DIFFERENT"
+    graph = next(row["graph"] for row in result["candidates"] if row["protobuf_decode"] == "PASSED")
+    assert graph["inputs"][0]["status"] == "UNAVAILABLE"
+    assert graph["inputs"][0]["raw_dtype"] == 7 and graph["inputs"][0]["layout"] == "ND"
+    assert "INPUT_DESCRIPTOR_UNRESOLVED" in graph["original_boundary_check"]["errors"]
+    assert graph["operations"] and graph["file_constants"]["count"] == 7
 
 
 def test_full_metadata_contains_explicit_edges_and_descriptors_without_any_tensor_blob(tmp_path, selected):
@@ -166,6 +311,8 @@ def test_schema_failure_preserves_only_identity_and_opaque_observations(tmp_path
     air.write_bytes(b"OTHER_AIR_CONTAINER\x00\xff\x80")
     result = inspect.inspect_original_air(air, selected[0])
     assert result["status"] == "OPAQUE" and len(result["candidates"]) == 2
+    assert result["protobuf_decode"] == "FAILED"
+    assert all(row["protobuf_decode"] == "FAILED" and row["metadata_inspection"] == "NOT_RUN" for row in result["candidates"])
     assert result["source_preservation"] == "UNCHANGED_BY_STAT"
     absent = inspect.inspect_original_air(air, tmp_path / "missing-ddk")
     assert absent["schema"]["status"] == "UNAVAILABLE" and absent["status"] == "OPAQUE"

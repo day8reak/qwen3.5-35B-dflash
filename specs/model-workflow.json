@@ -2216,7 +2216,7 @@
         "location": "current_ddk_machine_with_large_shared_scratch",
         "entrypoint": "targets/cpro/scripts/prepare_original_ge_target.py",
         "directory": "target-ge",
-        "status": "CONTRACT_HOST_TESTED_PENDING_ORIGINAL_GE_SCHEMA",
+        "status": "PROTOBUF_REACHED_BOUNDARY_OUTPUT_DESCRIPTOR_DIFFERENCE_PENDING",
         "tests": 20,
         "actual_air": {
           "bytes": 6361049,
@@ -2235,7 +2235,13 @@
           "package": "ge.proto",
           "same_descriptor_in_3_13_and_3_19": true,
           "pb2_execution": "NOT_EXECUTED",
-          "air_compatibility": "PENDING_ACTUAL_DECODE"
+          "air_compatibility": "USER_REPORT_RAW_MODELDEF_REACHED_NETOUTPUT_BOUNDARY_COMPARISON"
+        },
+        "boundary_observation": {
+          "source": "USER_PASTED_REMOTE_REPORT",
+          "error": "NetOutput differs from its explicit producer descriptor",
+          "analysis": "Boundary error originates after schema.decode; retain complete metadata and report exact descriptor differences without treating this as schema failure",
+          "next_report": "target-ge-source-air-ge-details.json"
         }
       },
       "shared_draft": "full-draft/residual-fix/bundle",
