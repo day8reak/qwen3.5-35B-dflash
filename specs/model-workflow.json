@@ -2208,9 +2208,9 @@
         "location": "original_weight_machine",
         "entrypoint": "targets/cpro/scripts/prepare_target_pytorch.py",
         "directory": "target-pytorch",
-        "status": "STATIC_PREFILL64_TBE_TVM_EXCEPTION_OBSERVED_WITH_IDLE_PROCESS_SAMPLES; FULL_MESSAGE_PENDING",
+        "status": "CCE_CHECK_TMPDIR_REJECTED_USER_REPORTED; CONTROLLED_STOP_COMMAND_READY_NOT_RUN",
         "tests": 14,
-        "next": "Read untruncated last TVMError/EB9999 from exact running compile log; preserve task/input evidence before deciding targeted termination and compatibility fix. No duplicate compilation.",
+        "next": "Capture exact ccec._check_tmpdir/compile_cce source and bound directory environment, then stop only the exact current OMG tree using pidfd; let driver finish failed-report/input audit. Do not rerun model compilation yet.",
         "user_report": {
           "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
           "original_air_sha256": "3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9",
@@ -2418,6 +2418,36 @@
           "device_execution": "NOT_RUN",
           "interruption": "NOT_PERFORMED; NO_VERIFIED_CANCELLATION_ENTRYPOINT",
           "next": "Exact log last128KiB, full last3error lines and12preceding context lines; no source mutation, no compiler rerun"
+        },
+        "cce_directory_failure_user_report": {
+          "source": "USER_PASTED_COMPLETE_REMOTE_ERROR_NOT_RETRIEVED_LOCALLY",
+          "observed_failure": "ccec._check_tmpdir(dirpath) rejected directory",
+          "message": "dir path is invalid",
+          "error_code": "EB9999",
+          "source_line": 716,
+          "caller": "ccec.compile_cce:877",
+          "actual_dirpath_value": "NOT_YET_OBSERVED",
+          "validator_conditions": "NOT_YET_READ_FROM_EXACT_RUN_SOURCE",
+          "candidate_origins": [
+            "TMPDIR or IPC alias",
+            "kernel_meta/compile output directory"
+          ],
+          "attribution": "DIRECTORY_CHECK_REJECTION_OBSERVED; DOTS_LENGTH_PERMISSION_OR_PROC_ALIAS_CAUSE_NOT_PROVEN",
+          "model_accuracy": "NOT_EVALUATED",
+          "operator_support": "NOT_ESTABLISHED_BY_THIS_DIRECTORY_ERROR"
+        },
+        "controlled_stop": {
+          "entrypoint": "targets/cpro/scripts/stop_target_compile.py",
+          "mode": "EXPLICIT_APPLY",
+          "binding": "Exact full recorded OMG argv and cwd; unique root; all targets starttime checked and Linux pidfds pinned before signals",
+          "signals": "SIGTERM to observed descendants deepest first then OMG; driver untouched; no numericPID/PGID/SIGKILL fallback",
+          "evidence": "New stopreceipt directory with fsynced plan and peraction intent/result journal",
+          "execution": "NOT_RUN_ON_REMOTE",
+          "final_driver_audit": "PENDING_REMOTE_STOP_AND_DRIVER_REPORT",
+          "host_tests_passed": 22,
+          "host_test_skips": 0,
+          "host_evidence": "20261029T121443Z-21578-623dae/stop-tests-v2.xml",
+          "scope": "Stop request helper only; no model retry, input mutation or complete cleanup claim"
         }
       },
       "b": {
@@ -2542,14 +2572,14 @@
     "day1_gate": "Correct draft plus usable ordinary target prefill/decode",
     "day2_gate": "Multi-step DFlash token/stop equality and state handling",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
-    "current_target_status": "A staticprefill64 has observed TBE/TVM codegen EB9999 plus unchanged CPU-time samples; full internal error message and controlled completion still pending. Decode1canonical and originSHAcomplete. B55backupcomplete.",
+    "current_target_status": "Staticprefill64 TBE directory check rejected dirpath. Exact validator and path origin pending. Useraskedstop; boundpidfd stopcommandhosttestedready. No model compile success or new run.",
     "target_gaps": [
       "Original89input80RefData ordered ABI",
       "64/1 gear and persistent state",
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Extract full untruncated TVMError from currentlog before cause attribution, targeted stop or any rerun; preserve sharedreadonlyinput/audit evidence. Decode1metadataonly transfer stays independent.",
+    "next_target_action": "Read exactCCEvalidator/directory environment and apply controlledstop to currentOMGtree; wait for originaldriverfinalaudit/report. Validate directoryfix before rerun; reuse retained model and weights.",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone"
   },
   "execution_smoke": {

@@ -2,35 +2,54 @@
 
 <a id="用户现在执行什么"></a>
 
-A（DDK 服务器，另开窗口）：TBE/TVM 已报错且进程在等待，读取最后三条完整异常和前文，先不重启编译。
+A（DDK 服务器，另开窗口）：先读取目录校验源码和路径，再只结束本次 OMG 进程树，让原窗口继续完成输入审计及失败报告。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 - "$AI_RUN_DIR/target-pytorch-prefill64-compile/compilation/compile.log" <<'PY'
-import json, sys
+python3 - "$AI_RUN_DIR/target-pytorch-prefill64-compile" <<'PY'
+import ast, hashlib, json, os, stat, sys
 from pathlib import Path
 
-log = Path(sys.argv[1])
-size = log.stat().st_size
-start = max(0, size - 131072)
-with log.open("rb") as stream:
-    stream.seek(start)
-    raw = stream.read(131072)
-# The first line may begin outside this bounded tail; label it separately.
-text = raw.decode("utf-8", errors="replace")
+comp = Path(sys.argv[1]).resolve() / "compilation"
+record = json.loads((comp / "omg-environment.json").read_text())
+command = json.loads((comp / "compile-command.json").read_text())
+print(json.dumps({"environment": {key: record.get("environment", {}).get(key) for key in ("TMPDIR", "TMP", "TEMP")},
+    "ipc_temporary_directory": record.get("ipc_temporary_directory"), "compiler_cwd": command.get("cwd")}, ensure_ascii=False))
+paths = [command["cwd"]] + [record.get("ipc_temporary_directory", {}).get(key) for key in ("path", "physical_path")]
+for value in paths:
+    if not value:
+        continue
+    p = Path(value)
+    observed = {"path": value, "path_bytes": len(os.fsencode(value)), "resolved": str(p.resolve())}
+    try:
+        info = p.stat()
+        observed.update(exists=True, mode=oct(stat.S_IMODE(info.st_mode)), uid=info.st_uid, gid=info.st_gid)
+    except OSError as error:
+        observed.update(exists=False, error=str(error))
+    print(json.dumps(observed, ensure_ascii=False))
+p = comp / "tbe-compat/wheel-python/te-0.4.0.data/purelib/tbe/tvm/contrib/ccec.py"
+with p.open("rb") as stream:
+    raw = stream.read(524289)
+if len(raw) > 524288:
+    raise SystemExit("ccec.py exceeds the small-source budget; no vendor code executed")
+text = raw.decode("utf-8")
 lines = text.splitlines()
-anchors = [i for i, line in enumerate(lines) if "TVMError:" in line or "EB9999" in line]
-print(json.dumps({"log": str(log), "snapshot_bytes": size, "tail_start_byte": start,
-    "tail_read_bytes": len(raw), "matching_error_lines": len(anchors),
-    "first_tail_line_may_be_partial": start != 0,
-    "scope": "Read-only log tail; full selected lines, no per-line truncation, no model or process control"}, ensure_ascii=False))
-if anchors:
-    for i in anchors[-3:]:
-        print("\n--- complete error and preceding context ---")
-        print("\n".join(lines[max(0, i - 12):i + 2]))
-else:
-    print("\n".join(line for line in lines[-100:] if line.strip() and set(line.strip()) != {"."}))
+print(json.dumps({"source": str(p), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "vendor_import": "NOT_PERFORMED"}))
+for node in ast.walk(ast.parse(text)):
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name not in {"_check_tmpdir", "compile_cce"}:
+        continue
+    chosen = set(range(node.lineno - 1, min(node.end_lineno, node.lineno + 39)))
+    if node.name == "_check_tmpdir":
+        chosen = set(range(node.lineno - 1, node.end_lineno))
+    else:
+        for i in range(node.lineno - 1, node.end_lineno):
+            if any(word in lines[i] for word in ("dirpath", "tmpdir", "tempfile", "kernel_meta", "work_dir")):
+                chosen.update(range(max(node.lineno - 1, i - 6), min(node.end_lineno, i + 9)))
+    selected = sorted(chosen)[:180]
+    print(json.dumps({"function": node.name, "omitted_selected_lines": max(0, len(chosen) - len(selected)),
+        "source_lines": [str(i + 1) + ": " + lines[i] for i in selected]}, ensure_ascii=False))
 PY
+python3 "$REPO_DIR/targets/cpro/scripts/stop_target_compile.py"   --job "$AI_RUN_DIR/target-pytorch-prefill64-compile" --apply   --output "$AI_RUN_DIR/target-pytorch-prefill64-stop"
 ```
 
 A（原权重机器）：将下面三个小文件手动上传到 DDK 的 `$AI_RUN_DIR/target-pytorch-decode1-transfer/`，平铺保存为 `export.air`、`inventory.json`、`result.json`。

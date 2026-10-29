@@ -24,6 +24,12 @@ decode1只手动传`canonical-export/export.air`、`canonical-export/inventory/i
 
 上一条实时命令的600字符行上限截断了关键TVMError尾部，当前命令已改为只读最后128KiB，完整输出最后三条异常及各自前12行，不再裁短单行。窗口起始可能是半行，显式标明；没有完整异常时先取得该行，而不是修猜测的编译参数。暂不向用户安排Ctrl+C主脚本或杀进程组：`KeyboardInterrupt`虽会进入finally审计，但会跳过其后的最终report写入，不能宣称它是已验证的干净取消。后续终止必须绑定实际OMG身份、保留完整日志并检查worker清理与主脚本最终审计；本轮只提取证据，不重复编译。
 
+完整错误已回传：`ccec.compile_cce()`调用`_check_tmpdir(dirpath)`，在`ccec.py:716`抛`dir path is invalid`，外层包装成TVM `EB9999 / compile cce error`。这是已观察到的目录检查拒绝，尚未看到实际`dirpath`构造与校验条件，不能直接把它归因为TMPDIR、路径中的点号、长度或权限。当前IPC隔离使用短的父进程`/proc/PID/fd/FD/.ipc-*`别名，既有测试仅证明multiprocessing的短socket可用，没有证明同版CCE目录校验接受这些路径；`dirpath`也可能由kernel_meta输出目录构造。下一步读取该任务的实际`_check_tmpdir`/`compile_cce`源码与绑定环境记录，不导入执行vendor代码，不改共享DDK。
+
+用户已询问是否结束当前进程，已建议结束这一轮等待。新增`stop_target_compile.py --job ... --apply --output NEW_DIRECTORY`只对任务收据的完整OMG argv与cwd精确匹配的唯一进程及已观察后代发送SIGTERM；所有目标先核starttime并打开Linux pidfd，避免数字PID复用竞态。它不向外层驱动、进程组或其它任务发送信号，不使用SIGKILL或自动升级。先在本次新目录fsync保存plan与逐项intent，再写信号结果；原job、AIR和权重不写入。`STOP_REQUESTED`仅表示请求已发，最终输入审计和worker退出需由原窗口收尾结果确认；`NOT_RUNNING`也不代表编译成功。没有pidfd则明确拒绝，不回退到宽泛kill。
+
+停止命令的22项主机检查全部通过，包含真正的自有OMG模拟进程及子进程通过pidfd停止、外层测试驱动存活与输入字节不变。当前GitHub命令先读取目录证据，再调用该工具；不要对主驱动Ctrl+C或立即再次编译。任务失败报告、收据与现有大权重快照都保留，后续修复须用实际路径校验和有证据的共享输入重用方案。
+
 用户另贴的原OMG命令只是记录，是否生成过OMC不确定；其中`--d11ynamic_dims`拼写也未得到实际成功日志确认，因此不作为双档成功基线，不据此切换现有已绑定编译器。
 
 新的只读诊断只检查小元数据、编译日志、失败IR、微小整数shape常量；1153权重快照只stat，不重新读payload。`INSPECTED`表示报告读取完成，`RECORDED_HASH_WITH_CURRENT_STAT`不是新一轮完整SHA验证，也不是重试通过；后续要按实际报告决定怎样保留并复用现有编译输入。源码AIR未提供其原机schema时不猜用另一版TorchAir schema解析，失败dump则使用所选DDK自己的HIAI schema。
