@@ -65,6 +65,65 @@ def test_cli_can_select_air_directory_relative_weight_layout(cli, monkeypatch):
     assert seen == [(air, "air-directory")]
 
 
+def _decode_view_argv(cli, monkeypatch, *, extra=()):
+    main, air, output = cli
+    monkeypatch.setattr(sys, "argv", [sys.argv[0], "--air", str(air), "--output", str(output),
+        "--borrow-decode-inputs-from", str(output.parent / "successful-prefill"),
+        "--decode-inventory", str(output.parent / "inventory.json"),
+        "--decode-export-receipt", str(output.parent / "export-result.json"),
+        "--profile", "cpro-40block-decode-1", "--input-layout", "air-directory",
+        "--target-features", "--skip-inspection", *extra])
+    return main, air, output
+
+
+def test_decode_view_passes_explicit_new_input_mode_without_retry_or_resume(cli, monkeypatch):
+    main, air, output = _decode_view_argv(cli, monkeypatch)
+    calls = []
+    def compile_air(source, destination, ddk, **options):
+        assert source == air and options["dynamic_dims"] is None
+        assert "arg1_1:1,1,2048;" in options["input_shape"] and "-1" not in options["input_shape"]
+        assert options["borrowed_decode_job"] == str(output.parent / "successful-prefill")
+        assert options["decode_inventory"] == str(output.parent / "inventory.json")
+        assert options["decode_export_receipt"] == str(output.parent / "export-result.json")
+        assert "reuse_failed_job" not in options
+        calls.append(destination)
+        return {"status": "COMPILED", "model_compilation": "PASSED", "omc": {"path": "generated/model.omc"},
+                "decode_input_view": {"status": "PASSED", "explicit_weight_copy_bytes": 0}}
+    monkeypatch.setattr(existing_air, "compile_existing_air", compile_air)
+    assert main() == 0 and calls == [output / "compilation"]
+    result = json.loads((output / "result.json").read_text())
+    assert result["borrowed_decode_inputs_from"] == str(output.parent / "successful-prefill")
+    assert result["decode_input_view"]["explicit_weight_copy_bytes"] == 0
+    assert result["device_execution"] == "NOT_RUN" and result["device_ready"] is False
+
+
+@pytest.mark.parametrize("remove", ["--air", "--decode-inventory", "--decode-export-receipt", "--borrow-decode-inputs-from"])
+def test_decode_view_requires_complete_triplet_and_owner_before_work(cli, monkeypatch, remove):
+    main, _, output = _decode_view_argv(cli, monkeypatch)
+    argv = list(sys.argv)
+    index = argv.index(remove)
+    del argv[index:index + 2]
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(existing_air, "compile_existing_air", lambda *a, **k: pytest.fail("invalid input mode cannot compile"))
+    with pytest.raises(SystemExit) as failure:
+        main()
+    assert failure.value.code == 2 and not output.exists()
+
+
+@pytest.mark.parametrize("extra", [
+    ["--profile", "cpro-40block-prefill-64"], ["--profile", "cpro-40block-64-1"],
+    ["--input-layout", "export-directory"], ["--resume", "completed"],
+    ["--retry-static-prefill-from", "failed"], ["--inspect-only"],
+    ["--run-board", "--input-dir", "inputs"],
+])
+def test_decode_view_rejects_conflicting_profile_or_mode_before_work(cli, monkeypatch, extra):
+    main, _, output = _decode_view_argv(cli, monkeypatch, extra=extra)
+    monkeypatch.setattr(existing_air, "compile_existing_air", lambda *a, **k: pytest.fail("invalid input mode cannot compile"))
+    with pytest.raises(SystemExit) as failure:
+        main()
+    assert failure.value.code == 2 and not output.exists()
+
+
 def test_compile_failure_retained_and_no_inspection(cli, monkeypatch):
     main, _, output = cli
     monkeypatch.setattr(sys, "argv", sys.argv[:-1])

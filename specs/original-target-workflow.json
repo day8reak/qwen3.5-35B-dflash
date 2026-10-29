@@ -3,11 +3,11 @@
   "updated": "2026-10-29",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "HOST_IMPLEMENTED_INTERNAL_SERVER_EVIDENCE_REQUIRED",
-  "handoff": "20261029T002100Z-22914-8cc9f5/handoff.md#11",
-  "user_state": "User confirmed original AIR and sibling weights present, old target logs deleted, original64 input directory available; no golden",
+  "status": "USER_REPORTED_PREFILL64_COMPILED_DECODE1_AND_RUNTIME_PENDING",
+  "handoff": "20261029T131640Z-24169-f38b9e/handoff.md",
+  "user_state": "Canonical prefill64 compiled with tmpdir fix and zero explicit new weight copies; canonical decode1 AIR/inventory/receipt already transferred and inspected; B55 feature AIR backup retained.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
-  "compile_profile": "cpro-40block-64-1",
+  "compile_profile": "cpro-40block-prefill-64",
   "contract": {
     "layers": 40,
     "declared_inputs": 89,
@@ -19,7 +19,8 @@
     "weight_policy": "REUSE_ORIGINAL_QUANTIZED_AIR_AND_WEIGHTS_NO_REQUANTIZATION",
     "actual_model_abi": "UNVERIFIED",
     "runtime": "HIAI",
-    "hardware_reference_policy": "use"
+    "hardware_reference_policy": "use",
+    "compile_strategy": "Separate original static64 and static1 exports/profiles; dual-gear use of static64 AIR failed Reshape"
   },
   "completed_host_work": [
     "Observe same-source CLI and inventory-bound orphan OMG before starting a new target job; source lock within AI_RUN_DIR",
@@ -46,14 +47,14 @@
     "board_tool_workflow": "HOST_FAKE_BOARD_TESTED; no actual user-device invocation from this assistant"
   },
   "remaining_gates": [
-    "Internal-server original AIR plus relative weight dependency confirmation and completed OMG artifact",
-    "Original export input semantics and actual runtime input slot/descriptor agreement",
-    "Selected-DDK dynamic gear and persistent RefData binding API",
-    "External-weight loading contract on the actual device",
-    "Ordinary 64-prefill then 1-decode output/state numerical comparison",
-    "Integrate DFlash target features, verification, rejection rollback and matched performance"
+    "Original static1 AIR full model compilation with preserved successful prefill input ownership",
+    "Actual runtime input/output descriptor names, slots and original input semantics",
+    "External-weight loading and explicit feedback of all80 states across64-prefill to1-decode",
+    "Real target feature output passed to the existing complete6-layer draft bundle",
+    "Ordinary decode and multi-round DFlash stop/reject/commit behavior",
+    "Matched numerical acceptance and measured end-to-end performance"
   ],
-  "next_command": "python3 \"$TARGET_REPO/targets/cpro/scripts/compile_full_target.py\" --air ORIGINAL_AIR --source-root ORIGINAL_PROJECT --tbe-diagnosis \"$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis\" --output \"$AI_RUN_DIR/full-target\" --run-board --sequence-length 64 --input-dir ORIGINAL_CHUNKSIZE64_HOST_DIRECTORY",
+  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --borrow-decode-inputs-from \"$AI_RUN_DIR/target-pytorch-prefill64-tmpdirfix\" --air \"$AI_RUN_DIR/target-pytorch-decode1-transfer/export.air\" --decode-inventory \"$AI_RUN_DIR/target-pytorch-decode1-transfer/inventory.json\" --decode-export-receipt \"$AI_RUN_DIR/target-pytorch-decode1-transfer/result.json\" --profile cpro-40block-decode-1 --input-layout air-directory --target-features --tbe-diagnosis \"$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis\" --output \"$AI_RUN_DIR/target-pytorch-decode1-compile\"",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -63,7 +64,10 @@
       "The provided runtime script names come from an older export than the provided compiler shape list; use actual compiled names while retaining explicit user positional semantics",
       "The provided ordinary target output contract has no DFlash target features",
       "With no golden and unknown tool internal warmup policy, tool exit0 and retrieved outputs establish execution observations only",
-      "RefData may use a separate serialized index namespace; keep user-declared tool argument order without treating graph indices as validated runtime slots"
+      "RefData may use a separate serialized index namespace; keep user-declared tool argument order without treating graph indices as validated runtime slots",
+      "Complete static64 OMG succeeded after keeping CCE TMPDIR physical and using a short alias only for multiprocessing IPC",
+      "Compilation may lower all80 RefData root inputs to Data while retaining state shapes and explicit outputs; preserve runtime uncertainty without relabeling compiler success",
+      "A further hardlink to retained successful inputs changes nlink/ctime and invalidates owner receipts; decode input reuse uses bounded owned file aliases with fresh source validation instead"
     ],
     "executable_checks": [
       "tests/test_full_target_continuation.py",
@@ -88,7 +92,7 @@
     "external_weights": "--weight_dir; original generated file hierarchy retained",
     "input_source": "USER_PROVIDED_CHUNKSIZE_64_HOST_BINARIES",
     "semantic_mapping": "User positional script, checked against actual compiled name/shape/dtype. Contradictory complete global indices reject; separate RefData indices remain observations, never inferred runtime slots.",
-    "outputs": "logits plus80RefData; target features absent",
+    "outputs": "Compiled prefill observation: logits plus80 state outputs plus actual feature81 FP16[1,64,16384]; runtime slot mapping pending",
     "state_initialization": "Copy exact original files into independent per-slot board inputs; no zero fill or synthesized controls",
     "golden": "NOT_AVAILABLE_PER_USER",
     "warmup_policy": "UNVERIFIED_TOOL_INTERNAL_POLICY"
@@ -119,5 +123,66 @@
     "runtime_semantics": "NOT_VALIDATED",
     "default_81_output_contract": "UNCHANGED",
     "docs": "docs/original-target-features.md"
+  },
+  "latest_user_compilation": {
+    "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+    "date": "2026-10-29",
+    "job": "target-pytorch-prefill64-tmpdirfix",
+    "status": "COMPILED",
+    "model_compilation": "PASSED",
+    "profile": "cpro-40block-prefill-64",
+    "elapsed_seconds_observation": 210,
+    "compilation_report_sha256": "362a2883ca8259b9cf61637f160951b9864d2be52034bce6a77015b391de7ef3",
+    "omc": "compilation/compile-work/generated/model/model.omc",
+    "retry_preflight": "PREFLIGHT_PASSED",
+    "input_snapshot_reuse": "PASSED",
+    "explicit_weight_copy_bytes": 0,
+    "target_contract_inspection": "OBSERVED",
+    "interface_inspection": "UNAVAILABLE",
+    "runtime_sources": "INCOMPLETE",
+    "root_input_count": 89,
+    "root_input_types": {
+      "Data": 89
+    },
+    "original_refdata_lowering": "80 RefData names retain declared shapes/dtypes but compiled root types are Data",
+    "declared_profile_check": "DIFFERENT_VISIBLE_BOUNDARIES",
+    "difference_scope": "RefData-to-Data lowering only in pasted report; runtime slots and persistence are not established",
+    "output_count": 82,
+    "logits": {
+      "index": 0,
+      "shape": [
+        1,
+        1,
+        248320
+      ],
+      "dtype": "DT_FLOAT"
+    },
+    "feature": {
+      "index": 81,
+      "shape": [
+        1,
+        64,
+        16384
+      ],
+      "dtype": "DT_FLOAT16",
+      "producer": "SubGraph_0:51"
+    },
+    "state_outputs": 80,
+    "device_execution": "NOT_RUN",
+    "numerical_validation": "NOT_RUN",
+    "device_ready": false,
+    "full_end_to_end_dflash": "PENDING"
+  },
+  "decode_input_view_host_verification": {
+    "unique_tests_passed": 580,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "evidence": [
+      "out/final-target-tests.xml",
+      "out/final-helper-check.xml"
+    ],
+    "scope": "Host fixtures, mocked selected OMG/HDC, real tiny encoded export and successful-prefill input ownership/continuation; actual decode target compilation and device execution pending.",
+    "run_id": "20261029T131640Z-24169-f38b9e"
   }
 }

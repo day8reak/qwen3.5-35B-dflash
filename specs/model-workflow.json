@@ -2,8 +2,8 @@
   "schema_version": 1,
   "updated": "2026-10-29",
   "active_phase": "integration",
-  "delivery_status": "HOST_IMPLEMENTED_DEVICE_INTEGRATION_PENDING",
-  "run_id": "20261028T235456Z-17998-116042",
+  "delivery_status": "TARGET_PREFILL_COMPILED_DECODE_AND_DEVICE_INTEGRATION_PENDING",
+  "run_id": "20261029T131640Z-24169-f38b9e",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -424,20 +424,20 @@
     },
     "existing_original_air": {
       "implementation": "model/qwen35_moe_dflash/existing_air.py",
-      "status": "CONTINUATION_AND_CONTRACT_HOST_TESTED_INTERNAL_TARGET_EXECUTION_PENDING",
+      "status": "USER_REPORTED_FULL_TARGET_PREFILL64_COMPILED_RUNTIME_PENDING",
       "continuation_evidence": "specs/original-target-workflow.json",
-      "profile": "cpro-40block-64-1",
+      "profile": "cpro-40block-prefill-64",
       "contract_source": "USER_PROVIDED_ORIGINAL_OMG_COMMAND",
       "declared_inputs": 89,
       "declared_refdata_inputs": 80,
-      "declared_dynamic_axes": 5,
-      "dynamic_dims": "64,64,64,64,64;1,1,1,1,1",
+      "declared_dynamic_axes": 0,
+      "dynamic_dims": null,
       "limit_partition_size": false,
       "save_weights_as_external_data": true,
       "platform": "kirinx90",
       "input_dtype_override": null,
-      "entrypoint": "python3 targets/cpro/scripts/compile_full_target.py --air ORIGINAL_TARGET_AIR --tbe-diagnosis EXISTING_DIAGNOSIS",
-      "actual_air_contract": "UNVERIFIED",
+      "entrypoint": "python3 targets/cpro/scripts/compile_full_target.py --borrow-decode-inputs-from SUCCESSFUL_PREFILL_JOB --air CANONICAL_DECODE1_AIR --decode-inventory INVENTORY --decode-export-receipt RESULT --profile cpro-40block-decode-1 --input-layout air-directory --target-features",
+      "actual_air_contract": "USER_REPORTED_89_DATA_INPUTS_82_OUTPUTS; RUNTIME_ABI_UNVERIFIED",
       "existing_project_runner_abi": "UNVERIFIED",
       "model_compilation": "NOT_RUN_LOCALLY",
       "device_execution": "NOT_RUN",
@@ -451,20 +451,57 @@
       },
       "output_basename": "model",
       "latest_user_reported_attempt": {
-        "run": "full-target-compile-e019e4a7ad53",
-        "output_argument": "model",
-        "returncode": 1,
-        "cause": "FILECONSTANT_WEIGHT_MISSING_IN_SNAPSHOT",
+        "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+        "date": "2026-10-29",
+        "job": "target-pytorch-prefill64-tmpdirfix",
+        "status": "COMPILED",
+        "model_compilation": "PASSED",
+        "profile": "cpro-40block-prefill-64",
+        "elapsed_seconds_observation": 210,
+        "compilation_report_sha256": "362a2883ca8259b9cf61637f160951b9864d2be52034bce6a77015b391de7ef3",
+        "omc": "compilation/compile-work/generated/model/model.omc",
+        "retry_preflight": "PREFLIGHT_PASSED",
+        "input_snapshot_reuse": "PASSED",
+        "explicit_weight_copy_bytes": 0,
+        "target_contract_inspection": "OBSERVED",
+        "interface_inspection": "UNAVAILABLE",
+        "runtime_sources": "INCOMPLETE",
+        "root_input_count": 89,
+        "root_input_types": {
+          "Data": 89
+        },
+        "original_refdata_lowering": "80 RefData names retain declared shapes/dtypes but compiled root types are Data",
+        "declared_profile_check": "DIFFERENT_VISIBLE_BOUNDARIES",
+        "difference_scope": "RefData-to-Data lowering only in pasted report; runtime slots and persistence are not established",
+        "output_count": 82,
+        "logits": {
+          "index": 0,
+          "shape": [
+            1,
+            1,
+            248320
+          ],
+          "dtype": "DT_FLOAT"
+        },
+        "feature": {
+          "index": 81,
+          "shape": [
+            1,
+            64,
+            16384
+          ],
+          "dtype": "DT_FLOAT16",
+          "producer": "SubGraph_0:51"
+        },
+        "state_outputs": 80,
         "device_execution": "NOT_RUN",
-        "failed_node": "arg3_1",
-        "missing_relative_path": "./glm_export_air_cpro_40block_55_quant/model_model_layers_0_input_layernorm_weight",
-        "source_weights_location": "USER_CONFIRMED_AIR_SIBLINGS",
-        "graph_stage": "AIR_PARSING",
-        "evidence": "USER_PASTED_LOG_NOT_LOCALLY_REHASHED"
+        "numerical_validation": "NOT_RUN",
+        "device_ready": false,
+        "full_end_to_end_dflash": "PENDING"
       },
       "input_layout": "export-directory",
       "sidecar_selection": "Bounded neighboring known-suffix and nonhidden extensionless regular files; symlinks skipped",
-      "next_action": "Original-target lane runs in a separate user window. Old full-target outputs were deleted per user; confirm source AIR/weights and process state, then compile once with a declared full-target output and source-root. Reuse only complete validated jobs with --resume; close native RefData/gear/external-weight contract before prefill/decode.",
+      "next_action": "Compile the transferred canonical decode1 AIR with its own frozen static1 profile and audited per-file aliases to the successful prefill readonly snapshots; preserve the successful prefill job. In parallel query the existing board tool help and identity without loading a model.",
       "sidecar_staging_validation": {
         "run_id": "20261028T004816Z-16432-ffea8e",
         "passed": 73,
@@ -488,6 +525,11 @@
           ],
           "scope": "Host tests only; no selected DDK execution or diagnosis of the live remote compiler"
         }
+      },
+      "historical_dynamic_profile": {
+        "name": "cpro-40block-64-1",
+        "dynamic_dims": "64,64,64,64,64;1,1,1,1,1",
+        "status": "FAILED_ON_STATIC64_EXPORT_RESHAPE; SEPARATE_STATIC_EXPORTS_SELECTED"
       }
     },
     "original_quantized_target": {
@@ -2208,9 +2250,9 @@
         "location": "original_weight_machine",
         "entrypoint": "targets/cpro/scripts/prepare_target_pytorch.py",
         "directory": "target-pytorch",
-        "status": "USER_STOP_REQUESTED_AND_SOURCE_IPC_PROBE_PASSED; AUDITED_STATIC_SUCCESSOR_RETRY_READY",
+        "status": "USER_REPORTED_FULL_TARGET_STATIC_PREFILL64_COMPILED; DECODE1_COMPILE_AND_RUNTIME_PENDING",
         "tests": 14,
-        "next": "After original driver prints final failed report, run one static64 successor with --tmpdir-probe and --stop-receipt; read-only preflight checks final audit/process exit/probe before shared-input preparation. No duplicate large weight copy.",
+        "next": "Compile the transferred canonical decode1 AIR with its own frozen static1 profile and audited per-file aliases to the successful prefill readonly snapshots; preserve the successful prefill job. In parallel query the existing board tool help and identity without loading a model.",
         "user_report": {
           "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
           "original_air_sha256": "3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9",
@@ -2533,7 +2575,7 @@
           }
         },
         "static_successor_retry": {
-          "status": "HOST_IMPLEMENTED; ACTUAL_FINAL_FAILURE_AND_RUNTIME_RETRY_PENDING",
+          "status": "USER_REPORTED_COMPILED_WITH_PASSED_RETRY_PREFLIGHT_AND_INPUT_AUDIT",
           "entrypoint": "targets/cpro/scripts/compile_full_target.py --retry-static-prefill-from target-pytorch-prefill64-compile",
           "required_gates": [
             "--tmpdir-probe target-pytorch-tmpdir-probe",
@@ -2554,7 +2596,7 @@
             "Deeper recursive successor"
           ],
           "gate_metadata_recheck": "Immediately before compiler call; altered proof preserved and rejected",
-          "scope": "Retry preparation only; actual embedded OMG/CCE/model execution still required"
+          "scope": "Full original 40-layer target prefill64 OMG compilation passed per user report; no target device execution, state persistence or numerical pass."
         },
         "successor_host_verification": {
           "tests_passed": 256,
@@ -2563,6 +2605,99 @@
           "skipped": 0,
           "evidence": "20261029T124747Z-23515-906247/final-tests.xml",
           "scope": "Owner-chain audit/gates, actual tiny inventory/stage/mocked static successor compilation and existing continuation regressions; no real original-target compile/device"
+        },
+        "static_prefill64_compilation_user_report": {
+          "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+          "date": "2026-10-29",
+          "job": "target-pytorch-prefill64-tmpdirfix",
+          "status": "COMPILED",
+          "model_compilation": "PASSED",
+          "profile": "cpro-40block-prefill-64",
+          "elapsed_seconds_observation": 210,
+          "compilation_report_sha256": "362a2883ca8259b9cf61637f160951b9864d2be52034bce6a77015b391de7ef3",
+          "omc": "compilation/compile-work/generated/model/model.omc",
+          "retry_preflight": "PREFLIGHT_PASSED",
+          "input_snapshot_reuse": "PASSED",
+          "explicit_weight_copy_bytes": 0,
+          "target_contract_inspection": "OBSERVED",
+          "interface_inspection": "UNAVAILABLE",
+          "runtime_sources": "INCOMPLETE",
+          "root_input_count": 89,
+          "root_input_types": {
+            "Data": 89
+          },
+          "original_refdata_lowering": "80 RefData names retain declared shapes/dtypes but compiled root types are Data",
+          "declared_profile_check": "DIFFERENT_VISIBLE_BOUNDARIES",
+          "difference_scope": "RefData-to-Data lowering only in pasted report; runtime slots and persistence are not established",
+          "output_count": 82,
+          "logits": {
+            "index": 0,
+            "shape": [
+              1,
+              1,
+              248320
+            ],
+            "dtype": "DT_FLOAT"
+          },
+          "feature": {
+            "index": 81,
+            "shape": [
+              1,
+              64,
+              16384
+            ],
+            "dtype": "DT_FLOAT16",
+            "producer": "SubGraph_0:51"
+          },
+          "state_outputs": 80,
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN",
+          "device_ready": false,
+          "full_end_to_end_dflash": "PENDING"
+        },
+        "decode1_input_view": {
+          "status": "HOST_IMPLEMENTED_REMOTE_COMPILE_PENDING",
+          "entrypoint": "targets/cpro/scripts/compile_full_target.py --borrow-decode-inputs-from target-pytorch-prefill64-tmpdirfix",
+          "profile": "cpro-40block-decode-1",
+          "input_layout": "air-directory",
+          "new_output": "target-pytorch-decode1-compile",
+          "inputs": "Existing transferred canonical decode1 AIR, SHA256-complete inventory and export receipt",
+          "large_weight_copy_bytes": 0,
+          "weight_aliases": "Owned individual symlinks to exact readonly regular successful-prefill input snapshots; never directory symlinks or new source hardlinks",
+          "source_policy": "Successful source report, full selected-input SHA256/stat and original-source metadata remain unchanged; no AIR rewriting",
+          "outputs": "Separate compiler output directory; actual output disk requirement and compiler symlink acceptance still require the next user execution",
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "host_verification": {
+            "unique_tests_passed": 580,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0,
+            "evidence": [
+              "out/final-target-tests.xml",
+              "out/final-helper-check.xml"
+            ],
+            "scope": "Host fixtures, mocked selected OMG/HDC, real tiny encoded export and successful-prefill input ownership/continuation; actual decode target compilation and device execution pending.",
+            "run_id": "20261029T131640Z-24169-f38b9e"
+          }
+        },
+        "runtime_tool_capability_probe": {
+          "entrypoint": "targets/cpro/scripts/inspect_target_board_tool.py",
+          "status": "HOST_TESTED_USER_DEVICE_PENDING",
+          "new_output": "target-board-tool-inspection",
+          "selected_connection": "Existing HDC/SN/BIP environment",
+          "operations": [
+            "Existing tool SHA256 before and after",
+            "Firmware text",
+            "Bounded --help with no model argument"
+          ],
+          "maximum_host_call_timeout_seconds": 10,
+          "model_upload": "NOT_RUN",
+          "model_load": "NOT_RUN",
+          "model_inference": "NOT_RUN",
+          "runtime_input_order": "NOT_QUERIED",
+          "runtime_tensor_names": "NOT_QUERIED",
+          "reason": "Compiled serialized indices and Data-lowered RefData names do not prove HIAI tool slots; existing execution guard retained"
         }
       },
       "b": {
@@ -2597,7 +2732,7 @@
           "analysis": "Boundary error originates after schema.decode; retain complete metadata and report exact descriptor differences without treating this as schema failure",
           "next_report": "target-ge-source-air-ge-details.json"
         },
-        "next": "Retain existing 55-token feature AIR and STAT_ONLY inventory; no repeat append/inventory and no second large compile during A static-gear separation",
+        "next": "Retain completed55-token feature AIR and STAT_ONLY inventory as backup; no new command while A static1 and runtime integration advance.",
         "source_revision_observation": {
           "source": "USER_PASTED_AST_REPORT_AND_LOCAL_PINNED_SOURCE_RECONSTRUCTION",
           "wrapper_sha256": "dd4f45cd0964b144523193bfca847fdeacbb2d49ef8a4665dd607a2e215e6517",
@@ -2687,14 +2822,14 @@
     "day1_gate": "Correct draft plus usable ordinary target prefill/decode",
     "day2_gate": "Multi-step DFlash token/stop equality and state handling",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
-    "current_target_status": "Legacy stop requested and exact-source path/IPC probe PASSED peruser; final driver failure/audit not yet pasted. One receipt-gated shared-snapshot static64 successor ready, runtime stillpending. Decode1transfer matched, B55backupcomplete.",
+    "current_target_status": "Full original target prefill64 COMPILED per user, 89 Data inputs/82 outputs including real feature port81; 80 RefData names lowered to Data, runtime slots and state continuity unverified. Decode1 triplet already transferred; compile with unchanged prefill snapshot aliases next. B55 backup retained.",
     "target_gaps": [
       "Original89input80RefData ordered ABI",
       "64/1 gear and persistent state",
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Run one static64 successor after originaldriver finalFAILED, with boundstop/probegates and verified1to2to3snapshotowners; newoutputsseparate/no19GBinputcopy; awaitactualOMGresult beforedecode1stage.",
+    "next_target_action": "Compile the transferred canonical decode1 AIR with its own frozen static1 profile and audited per-file aliases to the successful prefill readonly snapshots; preserve the successful prefill job. In parallel query the existing board tool help and identity without loading a model.",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone"
   },
   "execution_smoke": {

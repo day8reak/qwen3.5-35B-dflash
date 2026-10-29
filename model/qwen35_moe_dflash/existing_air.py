@@ -1,7 +1,9 @@
 """Compile an existing AIR with its own, still unverified model/runtime ABI.
 
-Inputs are copied or reflinked into an isolated input directory. No source
-directory links, FileConstant rewrites, graph reconstruction, platform diagnosis
+Inputs are copied or reflinked into an isolated input directory by default. An
+explicit, audited decode1 mode references readonly completed prefill snapshots
+through individually owned file symlinks. No source directory links,
+FileConstant rewrites, graph reconstruction, platform diagnosis
 matrix, or device execution is performed. Original AIR defaults do not override
 weight precision or format; callers may explicitly select the FP16 draft profile.
 """
@@ -401,7 +403,9 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                          input_shape=None, dynamic_dims=None, limit_partition_size=None,
                          save_weights_as_external_data=None, progress=None,
                          input_layout="air-directory", use_origin_format=None,
-                         weight_data_type=None, cl_customization=None, reuse_failed_job=None):
+                         weight_data_type=None, cl_customization=None, reuse_failed_job=None,
+                         borrowed_decode_job=None, decode_inventory=None,
+                         decode_export_receipt=None):
     """Return a host compilation report, retaining failures without deployment.
 
     Only inventoried local snapshots are hash bound. Absolute or out-of-tree
@@ -420,6 +424,10 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     independently snapshotted outside the generated-model directory, and the
     option is passed unchanged to the selected OMG. Help may omit this internal
     option; actual compiler validation remains authoritative.
+    ``borrowed_decode_job`` explicitly selects the audited static decode1 input
+    view. It requires the transferred inventory/export receipt and an unchanged
+    completed prefill64 job. Only its independent readonly snapshot files are
+    referenced; the transferred AIR is still independently snapshotted.
     """
     if (not isinstance(ddk_id, str) or not ddk_id.strip()
             or isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
@@ -429,6 +437,12 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         raise ValueError("progress must be callable or None")
     if input_layout not in INPUT_LAYOUTS:
         raise ValueError(f"input_layout must be one of {INPUT_LAYOUTS}")
+    decode_arguments = (borrowed_decode_job, decode_inventory, decode_export_receipt)
+    if any(value is not None for value in decode_arguments):
+        if not all(value is not None for value in decode_arguments):
+            raise ValueError("decode input view requires source job, inventory and export receipt")
+        if reuse_failed_job is not None or input_layout != "air-directory":
+            raise ValueError("decode input view requires air-directory and excludes failed-job reuse")
     options = _conversion_options(input_shape, dynamic_dims, limit_partition_size,
                                   save_weights_as_external_data, use_origin_format, weight_data_type)
     customization = _cl_customization_source(cl_customization)
@@ -467,6 +481,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     data_prefix = Path(air.parent.name) if input_layout == "export-directory" else Path()
 
     def staged_relative(source):
+        if decode_plan is not None:
+            return decode_plan.source_relative(source)
         relative = source.relative_to(air.parent)
         return relative if source == air else data_prefix / relative
 
@@ -498,6 +514,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     compatibility = None
     reuse_binding = {}
     retained_plan = None
+    decode_plan = None
     retained_selection = None
     if tbe_diagnosis is not None:
         compatibility = {"diagnosis": str(Path(tbe_diagnosis).resolve()),
@@ -509,6 +526,22 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     attempted = False
     error = None
     try:
+        if borrowed_decode_job is not None:
+            from .target_decode_inputs import prepare_decode_input_view
+            stage = "decode-input-validation"
+            decode_plan = prepare_decode_input_view(borrowed_decode_job, air=air,
+                inventory=decode_inventory, export_receipt=decode_export_receipt,
+                output=output, ddk_root=ddk, ddk_id=ddk_id, omg_path=omg,
+                omg_sha256=report["omg_sha256"], options=options, input_layout=input_layout)
+            report["decode_input_view"] = decode_plan.evidence
+            save_json(output / "decode-input-view-plan.json", decode_plan.evidence)
+            report["external_weights"].update(
+                status="MANIFEST_BOUND_READONLY_REFERENCE_VIEW",
+                scope="Exact transferred decode1 inventory references select individual owned file aliases to verified readonly prefill snapshots.",
+                limitations="Aliases share source snapshot storage. This input view does not prove compiler dependency completeness, output-space capacity, runtime ABI or numerical correctness.",
+                extensionless_regular_files="MANIFEST_SELECTED_ONLY")
+            retained_selection = (decode_plan.sources, [])
+            notify(stage, "Validated decode1 inventory and readonly completed prefill inputs")
         if reuse_failed_job is not None:
             from .target_snapshot_retry import prepare_failed_prefill_reuse
             stage = "retained-input-validation"
@@ -559,19 +592,24 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                      "physical_copy_reserve_bytes": _COPY_RESERVE_BYTES,
                      "scope": "Selected AIR and neighboring data candidates; not verified AIR dependencies. "
                               "Free space is checked per file only if reflink fails."}
+        if decode_plan is not None:
+            selection["scope"] = ("Transferred decode1 AIR plus exact manifest-selected readonly prefill snapshot references. "
+                                  "Only the AIR is independently copied/reflinked; compiler outputs require separate space.")
         report["input_selection"] = selection
         save_json(output / "input-selection.json", selection)
         notify(stage, f"Snapshotting {selection['file_count']} files, {selection['total_bytes']} bytes selected",
                total=selection["file_count"], total_bytes=selection["total_bytes"])
         notify(stage, f"Input layout {input_layout}; sidecar prefix {data_prefix}")
         for index, source in enumerate(selected):
-            relative = source.relative_to(air.parent)
+            relative = staged_relative(source) if decode_plan is not None else source.relative_to(air.parent)
             snapshot = inputs / staged_relative(source)
-            notify(stage, "Snapshotting input" if retained_plan is None else "Hashing and sharing retained input",
+            notify(stage, ("Hashing readonly decode input references" if decode_plan is not None else
+                           "Snapshotting input" if retained_plan is None else "Hashing and sharing retained input"),
                    completed=index, total=len(selected),
                    source_relative=str(relative), bytes=source.stat().st_size)
-            row = (_snapshot(source, snapshot) if retained_plan is None else
-                   retained_plan.snapshot(source, snapshot, _snapshot))
+            input_plan = decode_plan or retained_plan
+            row = (_snapshot(source, snapshot) if input_plan is None else
+                   input_plan.snapshot(source, snapshot, _snapshot))
             expected = reuse_binding.get("expected_files", {}).get(str(relative))
             if expected is not None and any(row[key] != expected[key] for key in ("bytes", "sha256", "source_stat")):
                 raise ValueError("input snapshot differs from receipt-bound SHA256: " + str(relative))
@@ -714,6 +752,21 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         if log.is_file():
             report["compiler_evidence"] = compile_evidence(log.read_text(errors="replace"))
             report["compile_log_sha256"] = sha256_file(log)
+        if decode_plan is not None:
+            try:
+                audit = decode_plan.audit()
+                report["decode_input_view"] = audit
+                save_json(output / "decode-input-view.json", audit)
+                if audit.get("status") != "PASSED":
+                    report["decode_input_audit_error"] = audit
+                    if error is None:
+                        error = RuntimeError("readonly decode-input audit failed; all evidence retained")
+                        report.update(stage="decode-input-audit", error=str(error))
+            except Exception as exc:
+                report["decode_input_audit_error"] = f"{type(exc).__name__}: {exc}"
+                if error is None:
+                    error = exc
+                    report.update(stage="decode-input-audit", error=str(exc))
     report["status"] = "FAILED" if error is not None else "COMPILED"
     if error is not None:
         save_json(output / "failure.json", report)

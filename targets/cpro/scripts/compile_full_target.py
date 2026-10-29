@@ -62,6 +62,9 @@ def main():
     parser.add_argument("--output", help="new job directory under AI_RUN_DIR")
     parser.add_argument("--resume", help="reuse a completed original-target job after source/DDK/artifact checks; never recompile failed/interrupted jobs")
     parser.add_argument("--retry-static-prefill-from", help="new static64 attempt using a failed dual-gear COPY job or its first audited static64 successor")
+    parser.add_argument("--borrow-decode-inputs-from", help="new static decode1 compilation using an audited successful prefill64 job's readonly weight snapshots")
+    parser.add_argument("--decode-inventory", help="SHA256-complete canonical decode1 inventory for the borrowed-input mode")
+    parser.add_argument("--decode-export-receipt", help="canonical decode1 export result binding the AIR, inventory and typed input profile")
     parser.add_argument("--tmpdir-probe", help="completed source-directory/IPC probe; required for an audited static64 successor retry")
     parser.add_argument("--stop-receipt", help="completed exact-job stop receipt; required for an audited static64 successor retry")
     parser.add_argument("--inspect-only", action="store_true", help="requires --resume; inspect existing compilation without model compilation or board execution")
@@ -79,6 +82,16 @@ def main():
     parser.add_argument("--timeout-seconds", type=int, default=7200, help="OMG compilation timeout")
     parser.add_argument("--skip-inspection", action="store_true", help="skip post-compile OMC-to-JSON inspection")
     args = parser.parse_args()
+    decode_flags = (args.borrow_decode_inputs_from, args.decode_inventory, args.decode_export_receipt)
+    if any(decode_flags):
+        if not all(decode_flags) or not args.air:
+            parser.error("--borrow-decode-inputs-from requires --air, --decode-inventory and --decode-export-receipt")
+        if args.resume or args.inspect_only or args.retry_static_prefill_from:
+            parser.error("borrowed decode inputs create a new compilation and cannot use --resume/--inspect-only/--retry-static-prefill-from")
+        if args.profile != "cpro-40block-decode-1" or args.input_layout != "air-directory":
+            parser.error("borrowed decode inputs require --profile cpro-40block-decode-1 and --input-layout air-directory")
+        if args.run_board and args.sequence_length != 1:
+            parser.error("borrowed decode inputs require --sequence-length 1 for board execution")
     if not args.air and not args.resume and not args.retry_static_prefill_from:
         parser.error("--air is required for a new compilation")
     if args.retry_static_prefill_from and (args.resume or args.inspect_only):
@@ -176,6 +189,8 @@ def main():
                       compilation="compilation/report.json")
         if args.retry_static_prefill_from:
             result["retained_failed_job"] = str(Path(args.retry_static_prefill_from).resolve())
+        if args.borrow_decode_inputs_from:
+            result["borrowed_decode_inputs_from"] = str(Path(args.borrow_decode_inputs_from).resolve())
         if retry_preflight is not None:
             save_json(evidence_root / "retry-preflight.json", retry_preflight)
             result["retry_preflight"] = {"status": retry_preflight["status"],
@@ -213,6 +228,10 @@ def main():
                 save_weights_as_external_data=profile["save_weights_as_external_data"], progress=progress,
                 input_layout=args.input_layout,
                 **({"reuse_failed_job": args.retry_static_prefill_from} if args.retry_static_prefill_from else {}),
+                **({"borrowed_decode_job": args.borrow_decode_inputs_from,
+                    "decode_inventory": args.decode_inventory,
+                    "decode_export_receipt": args.decode_export_receipt}
+                   if args.borrow_decode_inputs_from else {}),
             )
         result["status"] = compiled["status"]
         result["model_compilation"] = compiled["model_compilation"]
@@ -222,6 +241,13 @@ def main():
                 "explicit_weight_copy_bytes": compiled["retained_input_reuse"].get("explicit_weight_copy_bytes"),
                 "report": str(root / "compilation/retained-input-reuse.json"),
                 "scope": "Freshly verified shared readonly snapshot inodes; independent compiler outputs and audits"}
+        if "decode_input_view" in compiled:
+            view = compiled["decode_input_view"]
+            result["decode_input_view"] = {
+                "status": view.get("status"),
+                "explicit_weight_copy_bytes": view.get("explicit_weight_copy_bytes"),
+                "report": str(root / "compilation/decode-input-view.json"),
+                "scope": "Owned file aliases to freshly verified readonly prefill snapshots; separate decode AIR and compiler outputs"}
         if (root / "compilation/report.json").is_file():
             from qwen35_moe_dflash.hashing import sha256_file
             result["compilation_report_sha256"] = sha256_file(root / "compilation/report.json")

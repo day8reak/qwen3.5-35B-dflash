@@ -118,6 +118,7 @@ def validate_compilation(job, *, air, ddk_root, ddk_id, profile, input_layout,
         raise ValueError("target resume AIR/DDK/profile/options/layout differs from completed compilation")
     if (report.get("audit_error") or report.get("artifact_inventory_error")
             or report.get("retained_input_audit_error")
+            or report.get("decode_input_audit_error")
             or report.get("skipped_nonregular_artifacts")
             or report.get("source_preservation", {}).get("status") != "UNCHANGED_BY_STAT"
             or report["source_preservation"].get("changed")):
@@ -138,7 +139,15 @@ def validate_compilation(job, *, air, ddk_root, ddk_id, profile, input_layout,
     if (not isinstance(snapshots, list) or not 1 <= len(snapshots) <= 4096
             or not isinstance(generated, list) or not 1 <= len(generated) <= 8192):
         raise ValueError("target resume requires complete source and generated inventories")
-    selected, _ = _input_inventory(air)
+    # Only the separately audited decode view may contain input file aliases.
+    # Generated outputs and every ordinary input retain the strict path policy.
+    decode_aliases = {}
+    if report.get("decode_input_view") is not None:
+        from .target_decode_inputs import validate_decode_input_view
+        decode_aliases = validate_decode_input_view(root, report)
+        selected = [air, *decode_aliases.values()]
+    else:
+        selected, _ = _input_inventory(air)
     sources = set()
     for row in snapshots:
         source = Path(row["source"])
@@ -148,7 +157,16 @@ def validate_compilation(job, *, air, ddk_root, ddk_id, profile, input_layout,
         if sha256_file(source) != row.get("sha256") or _stat(source) != before:
             raise ValueError("target source weights/AIR hash changed since compilation")
         sources.add(str(source))
-        _recorded_file(root, row, "snapshot_stat")
+        if row.get("path") in decode_aliases:
+            alias = root / row["path"]
+            if (source != decode_aliases[row["path"]] or not alias.is_symlink()
+                    or alias.resolve() != source or _stat(alias) != row.get("snapshot_stat")
+                    or alias.stat().st_size != row.get("bytes")
+                    or sha256_file(alias) != row.get("sha256")
+                    or _stat(alias) != row.get("snapshot_stat")):
+                raise ValueError("audited decode input alias changed since compilation")
+        else:
+            _recorded_file(root, row, "snapshot_stat")
     if sources != {str(p) for p in selected}:
         raise ValueError("target source inventory differs from completed compilation")
     air_rows = [r for r in snapshots if r.get("role") == "air"]
@@ -170,7 +188,7 @@ def validate_compilation(job, *, air, ddk_root, ddk_id, profile, input_layout,
     for folder, dirs, names in os.walk(generated_root, followlinks=False):
         for name in dirs + names:
             path = Path(folder) / name
-            if path.is_symlink():
+            if path.is_symlink() and (name in dirs or path.relative_to(root).as_posix() not in decode_aliases):
                 raise ValueError("target generated directory contains a symlink")
         for name in names:
             path = Path(folder) / name
