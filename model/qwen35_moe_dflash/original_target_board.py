@@ -57,6 +57,11 @@ def tool_plan(contract, profile, gear, input_dir, *, target_features=False):
         raise ValueError("target_features must be an explicit boolean")
     if type(gear) is not int or gear not in {1, 64}:
         raise ValueError("original target gear must be 64 or 1")
+    facts = profile.get("declared_model_facts", {})
+    if "fixed_sequence_length" in facts:
+        fixed = facts["fixed_sequence_length"]
+        if type(fixed) is not int or fixed not in {1, 64} or gear != fixed:
+            raise ValueError(f"static target profile requires gear={fixed}; requested gear={gear}")
     if (contract.get("artifact_kind") != "qwen35-original-target-contract" or contract.get("status") != "OBSERVED"
             or contract.get("boundaries", {}).get("declared_profile_check", {}).get("status") != "MATCHED_VISIBLE_BOUNDARIES"):
         raise ValueError("board execution requires matching actual compiled original-target boundaries")

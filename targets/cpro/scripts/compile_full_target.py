@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the original target AIR using the supplied Cpro 40-block 64/1 profile."""
+"""Compile the original target AIR using an explicitly selected Cpro profile."""
 from __future__ import annotations
 
 import argparse
@@ -61,6 +61,7 @@ def main():
     parser.add_argument("--omg", help="optional actual ELF binary in selected DDK; default tools/tools_omg/master/omg")
     parser.add_argument("--output", help="new job directory under AI_RUN_DIR")
     parser.add_argument("--resume", help="reuse a completed original-target job after source/DDK/artifact checks; never recompile failed/interrupted jobs")
+    parser.add_argument("--retry-static-prefill-from", help="new static64 attempt using only a failed dual-gear job's bound readonly COPY snapshots")
     parser.add_argument("--inspect-only", action="store_true", help="requires --resume; inspect existing compilation without model compilation or board execution")
     parser.add_argument("--hiai-include", default=os.environ.get("HIAI_INCLUDE_DIR"),
                         help="selected HIAI header root; retain dynamic-gear/RefData/load declarations locally")
@@ -76,8 +77,12 @@ def main():
     parser.add_argument("--timeout-seconds", type=int, default=7200, help="OMG compilation timeout")
     parser.add_argument("--skip-inspection", action="store_true", help="skip post-compile OMC-to-JSON inspection")
     args = parser.parse_args()
-    if not args.air and not args.resume:
+    if not args.air and not args.resume and not args.retry_static_prefill_from:
         parser.error("--air is required for a new compilation")
+    if args.retry_static_prefill_from and (args.resume or args.inspect_only):
+        parser.error("--retry-static-prefill-from creates a new attempt and cannot use --resume/--inspect-only")
+    if args.retry_static_prefill_from and (args.profile != "cpro-40block-prefill-64" or args.input_layout != "air-directory"):
+        parser.error("--retry-static-prefill-from requires --profile cpro-40block-prefill-64 and --input-layout air-directory")
     if args.resume and args.output:
         parser.error("--resume and --output cannot be combined")
     if args.inspect_only and (not args.resume or args.skip_inspection):
@@ -107,6 +112,9 @@ def main():
             root = output_path(args.resume)
             prior = read_metadata(root / "result.json")
             args.air = args.air or prior.get("air")
+        if args.retry_static_prefill_from:
+            previous = read_metadata(Path(args.retry_static_prefill_from) / "result.json")
+            args.air = args.air or previous.get("air")
         if not args.air:
             raise ValueError("completed target job does not declare its original AIR")
         air = Path(args.air).resolve()
@@ -144,6 +152,8 @@ def main():
                       input_layout=args.input_layout,
                       target_features_requested=args.target_features,
                       compilation="compilation/report.json")
+        if args.retry_static_prefill_from:
+            result["retained_failed_job"] = str(Path(args.retry_static_prefill_from).resolve())
         if args.hiai_include or args.source_root:
             from qwen35_moe_dflash.original_target_contract import capture_runtime_sources
             try:
@@ -155,7 +165,7 @@ def main():
             except (OSError, ValueError) as error:
                 result.update(runtime_sources="UNAVAILABLE", runtime_sources_error=f"{type(error).__name__}: {error}")
         print(f"full-target: output {root}", flush=True)
-        print("full-target: original AIR; 64/1 dynamic shapes; external weights; kirinx90", flush=True)
+        print(f"full-target: original AIR; profile={args.profile}; external weights; kirinx90", flush=True)
 
         def progress(row):
             if (row["stage"] != "input-snapshot" or "completed" not in row
@@ -170,9 +180,16 @@ def main():
                 limit_partition_size=profile["limit_partition_size"],
                 save_weights_as_external_data=profile["save_weights_as_external_data"], progress=progress,
                 input_layout=args.input_layout,
+                **({"reuse_failed_job": args.retry_static_prefill_from} if args.retry_static_prefill_from else {}),
             )
         result["status"] = compiled["status"]
         result["model_compilation"] = compiled["model_compilation"]
+        if "retained_input_reuse" in compiled:
+            result["input_snapshot_reuse"] = {
+                "status": compiled["retained_input_reuse"].get("status"),
+                "explicit_weight_copy_bytes": compiled["retained_input_reuse"].get("explicit_weight_copy_bytes"),
+                "report": str(root / "compilation/retained-input-reuse.json"),
+                "scope": "Freshly verified shared readonly snapshot inodes; independent compiler outputs and audits"}
         if (root / "compilation/report.json").is_file():
             from qwen35_moe_dflash.hashing import sha256_file
             result["compilation_report_sha256"] = sha256_file(root / "compilation/report.json")
@@ -229,7 +246,7 @@ def main():
             for field in ("returncode", "timeout_seconds"):
                 if field in compiled:
                     result[field] = compiled[field]
-            result["next"] = "Inspect compilation/report.txt and retained compiler diagnostics"
+            result["next"] = "Inspect compilation/report.txt and retained compiler diagnostics; completed source snapshots are preserved"
         result_path = evidence_root / "result.json"
         save_json(result_path, result)
         _print_result(result, result_path=result_path,

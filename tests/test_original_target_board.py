@@ -12,8 +12,8 @@ from qwen35_moe_dflash.existing_air_profile import get_existing_air_profile
 from qwen35_moe_dflash.hashing import sha256_file
 
 
-def contract():
-    profile = get_existing_air_profile("cpro-40block-64-1")
+def contract(profile_name="cpro-40block-64-1"):
+    profile = get_existing_air_profile(profile_name)
     inputs = []
     for index, entry in enumerate(profile["input_shape"].split(";")):
         name, shape = entry.split(":")
@@ -52,6 +52,27 @@ def test_one_gear_resolves_only_dynamic_inputs_and_keeps_full_state_sizes():
     assert decode["inputs"][1]["shape"] == [1, 1, 1, 2048]
     assert decode["inputs"][9]["shape"] == prefill["inputs"][9]["shape"] == [64, 32, 32, 16]
     assert decode["state_continuity"] == "NOT_VALIDATED_SINGLE_TOOL_INVOCATION"
+
+
+@pytest.mark.parametrize("name,gear,wrong", [("cpro-40block-prefill-64", 64, 1), ("cpro-40block-decode-1", 1, 64)])
+def test_static_profile_requires_its_declared_gear_and_keeps_original_full_plan(name, gear, wrong):
+    observed, profile = contract(name)
+    original, dynamic_profile = contract()
+    plan = board.tool_plan(observed, profile, gear, "/board/original")
+    dynamic = board.tool_plan(original, dynamic_profile, gear, "/board/original")
+    assert plan == dynamic
+    assert len(plan["inputs"]) == 89 and len(plan["outputs"]) == 81
+    assert plan["inputs"][0]["shape"] == [1, gear, 2048]
+    assert plan["inputs"][9]["shape"] == [64, 32, 32, 16]
+    with pytest.raises(ValueError, match="static target profile requires gear"):
+        board.tool_plan(observed, profile, wrong, "/board/original")
+
+
+@pytest.mark.parametrize("gear", [1, 64])
+def test_legacy_dynamic_profile_has_no_fixed_gear_restriction(gear):
+    observed, profile = contract()
+    assert "fixed_sequence_length" not in profile["declared_model_facts"]
+    assert board.tool_plan(observed, profile, gear, "/board/original")["gear"] == gear
 
 
 def feature_contract(shape):

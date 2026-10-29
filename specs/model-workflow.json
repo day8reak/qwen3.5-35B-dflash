@@ -2208,9 +2208,9 @@
         "location": "original_weight_machine",
         "entrypoint": "targets/cpro/scripts/prepare_target_pytorch.py",
         "directory": "target-pytorch",
-        "status": "USER_REPORTED_DUAL_GEAR_COMPILE_FAILED_SEPARATE_STATIC_EXPORTS_SELECTED",
+        "status": "DECODE1_EXPORT_USER_REPORTED_COMPLETE_STATIC64_OWNED_SNAPSHOT_RETRY_READY",
         "tests": 14,
-        "next": "Read retained failed compile metadata and tiny Reshape constants on DDK without rebuilding; on original weight machine prepare/export a separate complete sequence-length1 target in target-pytorch-decode1; retain existing sequence64 AIR and inputs",
+        "next": "On DDK inspect report-bound regular dump_graph and run one explicit static64 attempt reusing verified readonly COPY snapshots; on origin canonicalize/hash the completed decode1 export without re-exporting",
         "user_report": {
           "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
           "original_air_sha256": "3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9",
@@ -2287,12 +2287,47 @@
           "decode_sequence_length": 1,
           "separate_exports_and_compilations": true,
           "prefill_air": "REUSE_EXISTING_NORMALIZED_AIR",
-          "decode_export": "NEXT_ON_ORIGINAL_WEIGHT_MACHINE",
+          "decode_export": "USER_REPORTED_COMPLETE_GLM_EXPORT_AIR_CPRO_40BLOCK_1_QUANT; NORMALIZATION_AND_HASH_INVENTORY_NEXT",
           "source_reshape": "Source uses reshape(-1, last_dim); the phase that fixed 64 still requires IR evidence",
           "other_static_branch": "GDN selects its original sequence-length-dependent chunk_size",
           "weight_policy": "Keep original weights and verify SHA before sharing; no new DDK-side large input copy without failed-snapshot reuse proof",
           "decode_original_machine_sidecar_write_bytes_approx": 19459474432,
-          "failed_job_retry_support": "NOT_IMPLEMENTED; completed-only --resume must not be used for this failed compilation"
+          "failed_job_retry_support": "IMPLEMENTED_EXPLICIT_FAILED_DUAL64_1_TO_STATIC64_ONLY; FRESH_PAYLOAD_SHA_BEFORE_AFTER_AND_SHARED_READONLY_INODE_JOURNAL; ACTUAL_RETRY_NOT_RUN",
+          "prefill_profile": "cpro-40block-prefill-64",
+          "decode_profile": "cpro-40block-decode-1"
+        },
+        "failed_snapshot_inspection_user_report": {
+          "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+          "status": "INSPECTED",
+          "snapshot_count": 1154,
+          "logical_bytes": 19465849776,
+          "snapshot_methods": {
+            "COPY": 1154
+          },
+          "current_stat_counts": {
+            "MATCHED": 1154
+          },
+          "recorded_sha256_counts": {
+            "VALID_HEX": 1154
+          },
+          "weight_payload_hash_validation": "RECORDED_HASH_WITH_CURRENT_STAT_NOT_FRESH_CONTENT_VERIFICATION",
+          "air_fresh_sha256": "b48169f46dcd0964501bc27f0d2de42d8dad7991b8d72532ae40e208d407d734",
+          "free_bytes": 44185739264,
+          "regular_dump_graph_bytes": 6443941,
+          "regular_dump_graph_path": "compilation/compile-work/generated/dump_graph",
+          "compiler_graph_discovery": "PREVIOUS_INSPECTOR_MISSED_EXTENSIONLESS_REGULAR_DUMP_FILE_NOW_SUPPORTED",
+          "compile_log_sha256": "8eabc72cb600af005ea7d9db8d9a2a272e8bacc96fca18d422af1ae6ff93a67d",
+          "source_preservation": "UNCHANGED_BY_STAT",
+          "ddk_id": "100.520.020.010",
+          "omg_sha256": "f199b5cdc78eb694d78c952b6a15feada16a6f6196f39358e739670eae932aa0"
+        },
+        "original_command_record": {
+          "source": "USER_PASTED_COMMAND_AND_CLARIFICATION",
+          "execution_success": "UNKNOWN",
+          "is_verified_baseline": false,
+          "entry_kind": "tools/tools_omg/omg wrapper",
+          "recorded_dynamic_flag": "--d11ynamic_dims",
+          "decision": "Retain as unverified record; do not substitute for actual successful logs or switch the bound compiler"
         }
       },
       "b": {
@@ -2391,13 +2426,13 @@
       "acceptance": "Same original40layer quantization/fullvocab/realfeatures and89input80state contract; independent compilation/device evidence; neither lane inherits the other lane pass",
       "docs": "docs/target-parallel-tracks.md",
       "host_verification": {
-        "tests_passed": 132,
+        "tests_passed": 352,
         "failures": 0,
         "errors": 0,
         "skipped": 0,
-        "scope": "Read-only failed-compile receipts/logs, schema-bound tiny Reshape constants, CLI integration and original source preparation regressions; no model export, OMG retry or device execution",
-        "evidence": "20261029T095748Z-17453-463b8f/final-related-tests.xml",
-        "final_cli_recheck": "20261029T095748Z-17453-463b8f/cli-final-tests.xml"
+        "evidence": "20261029T103314Z-18922-30a371/final-retry-tests.xml",
+        "final_presentation_recheck": "20261029T103314Z-18922-30a371/retry-output-tests.xml",
+        "scope": "Static profiles, failed-snapshot reuse/journal/audit, resumed target validation, board gear guards, dump-file discovery and existing conversion/inventory regressions. Actual static64 OMG and decode1 normalization not run locally"
       }
     }
   },
@@ -2409,14 +2444,14 @@
     "day1_gate": "Correct draft plus usable ordinary target prefill/decode",
     "day2_gate": "Multi-step DFlash token/stop equality and state handling",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
-    "current_target_status": "A OMG FAILED at [1,1,2048] to [64,2048] Reshape; no target board execution. B feature AIR/metadata and STAT_ONLY inventory complete",
+    "current_target_status": "A old dual-gear compile FAILED; full COPY snapshots retained and stat-matched; explicit static64 retry now host-tested. Decode1 export completed per user; canonicalization pending. B55 backup complete",
     "target_gaps": [
       "Original89input80RefData ordered ABI",
       "64/1 gear and persistent state",
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Read failed A metadata/IR without rebuilding, independently export complete decode1 on the original weight machine, then add explicit owned-snapshot/static64 compile continuation after evidence validation",
+    "next_target_action": "One static64 retry with --retry-static-prefill-from using old readonly snapshots and no new large payload copy; origin canonicalize/hash completed1-token AIR; no concurrent decode compile or B regeneration",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone"
   },
   "execution_smoke": {

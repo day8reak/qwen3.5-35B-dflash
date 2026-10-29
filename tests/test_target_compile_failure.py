@@ -255,3 +255,67 @@ def test_large_graph_candidate_is_statted_but_not_sent_to_a_small_graph_parser(c
     result = inspect.inspect_target_compile_failure(case["job"])
     assert str(large) not in result["compiler_graph_paths"]
     assert any("64 MiB metadata parser budget" in error for error in result["compiler_graph_discovery_errors"])
+
+
+def _regular_dump_graph(case):
+    case["graph"].unlink()
+    case["graph"].parent.rmdir()
+    dump = case["work"] / "dump_graph"
+    payload = b"Compiler graph candidate; no schema parsing in this inspector"
+    dump.write_bytes(payload)
+    case["retained_graph"].write_bytes(payload)
+    case["report"]["compiler_work_artifacts"] = []
+    row = {"path": "compile-work/generated/dump_graph", "bytes": len(payload),
+           "sha256": hashlib.sha256(payload).hexdigest(), "stat": _stat(dump), "role": "external_data_candidate"}
+    case["report"]["generated_artifacts"].append(row)
+    _write(case["root"] / "report.json", case["report"])
+    _write(case["root"] / "diagnostics/manifest.json", {"files": [{"name": case["retained_graph"].name,
+        "role": "graph-dump", "status": "RETAINED", "bytes": len(payload), "sha256": row["sha256"]}]})
+    outer = json.loads((case["job"] / "result.json").read_text())
+    outer["compilation_report_sha256"] = hashlib.sha256((case["root"] / "report.json").read_bytes()).hexdigest()
+    _write(case["job"] / "result.json", outer)
+    return dump, row
+
+
+def test_report_bound_regular_dump_graph_is_preferred_without_opening_or_duplicate_copy_parse(case, monkeypatch):
+    dump, row = _regular_dump_graph(case)
+    decoy = case["work"] / "model/ordinary_extensionless_weight"
+    decoy.write_bytes(b"not a graph")
+    case["report"]["generated_artifacts"].append({"path": str(decoy.relative_to(case["root"])),
+        "bytes": decoy.stat().st_size, "sha256": "c" * 64, "stat": _stat(decoy), "role": "external_data_candidate"})
+    _write(case["root"] / "report.json", case["report"])
+    original_open, original_os_open = Path.open, inspect.os.open
+    forbidden = {dump, case["retained_graph"], decoy}
+    def guarded(path, *args, **kwargs):
+        assert path not in forbidden, "graph discovery is metadata-only"
+        return original_open(path, *args, **kwargs)
+    def os_guard(path, *args, **kwargs):
+        assert Path(path) not in forbidden, "graph discovery is metadata-only"
+        return original_os_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", guarded)
+    monkeypatch.setattr(inspect.os, "open", os_guard)
+    result = inspect.inspect_target_compile_failure(case["job"])
+    assert result["status"] == "INSPECTED"
+    assert result["compiler_graph_paths"] == [str(dump)]
+    candidate = result["compiler_graph_candidates"][0]
+    assert candidate["kind"] == "REPORT_BOUND_DUMP_GRAPH_FILE"
+    assert candidate["recorded_sha256"] == row["sha256"]
+    assert candidate["content_read"] == "NOT_PERFORMED"
+    assert candidate["same_recorded_identity_aliases"] == [str(case["retained_graph"])]
+    assert "not read or freshly verified" in candidate["deduplication_scope"]
+
+
+@pytest.mark.parametrize("fault", ["missing_sha", "size", "stat", "missing_stat", "unrecorded"])
+def test_regular_dump_graph_requires_the_exact_report_binding(case, fault):
+    dump, row = _regular_dump_graph(case)
+    if fault == "missing_sha": row.pop("sha256")
+    elif fault == "size": row["bytes"] += 1
+    elif fault == "stat": row["stat"][1] += 1
+    elif fault == "missing_stat": row.pop("stat")
+    else: case["report"]["generated_artifacts"].remove(row)
+    _write(case["root"] / "report.json", case["report"])
+    result = inspect.inspect_target_compile_failure(case["job"])
+    assert str(dump) not in result["compiler_graph_paths"]
+    # The ordinary .irpb retained copy remains a candidate. A malformed or
+    # absent special-file receipt must never broaden extensionless scanning.
+    assert str(case["retained_graph"]) in result["compiler_graph_paths"]

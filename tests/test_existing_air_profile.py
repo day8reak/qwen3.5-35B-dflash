@@ -98,7 +98,7 @@ arg18_1:1""".replace("\n", ";")
 
 
 def test_frozen_profile_exact_command_and_user_declared_scope():
-    assert EXISTING_AIR_PROFILE_NAMES == ("cpro-40block-64-1",)
+    assert EXISTING_AIR_PROFILE_NAMES == ("cpro-40block-64-1", "cpro-40block-prefill-64", "cpro-40block-decode-1")
     profile = get_existing_air_profile("cpro-40block-64-1")
     assert profile["input_shape"] == EXPECTED_INPUT_SHAPE
     assert profile["dynamic_dims"] == "64,64,64,64,64;1,1,1,1,1"
@@ -140,6 +140,52 @@ def test_profile_results_are_independent():
     assert fresh["input_shape"] == EXPECTED_INPUT_SHAPE
     assert fresh["declared_model_facts"]["block_pattern"][0] == "linear"
     assert fresh["declared_model_facts"]["dynamic_axis_order"][0]["input_name"] == "arg1_1"
+
+
+@pytest.mark.parametrize("name,sequence", [("cpro-40block-prefill-64", 64), ("cpro-40block-decode-1", 1)])
+def test_static_profiles_replace_only_the_five_declared_axes_and_keep_all_fixed_extents(name, sequence):
+    profile = get_existing_air_profile(name)
+    entries = [(key, tuple(map(int, shape.split(","))))
+               for key, shape in (entry.split(":") for entry in profile["input_shape"].split(";"))]
+    original = [(key, tuple(map(int, shape.split(","))))
+                for key, shape in (entry.split(":") for entry in EXPECTED_INPUT_SHAPE.split(";"))]
+    assert len(entries) == 89 and [key for key, shape in entries] == [key for key, shape in original]
+    changes = []
+    for (key, observed), (expected_key, expected_shape) in zip(entries, original):
+        assert key == expected_key and len(observed) == len(expected_shape)
+        for axis, (before, after) in enumerate(zip(expected_shape, observed)):
+            if before != after:
+                assert before == -1 and after == sequence
+                changes.append((key, axis))
+            else:
+                assert before != -1
+    assert changes == [("arg1_1", 1), ("arg113_1", 2), ("arg107_1", 1), ("arg2_1", 0), ("arg0_1", 1)]
+    assert entries[3:83] == original[3:83]
+    assert entries[-6:] == [("arg2_1", (sequence,)), ("arg1238_1", (1,)), ("arg0_1", (1, sequence, 1)),
+                            ("arg114_1", (1,)), ("arg14_1", (128,)), ("arg18_1", (1,))]
+    assert all(size > 0 for key, shape in entries for size in shape)
+    assert profile["dynamic_dims"] is None
+    assert profile["limit_partition_size"] is False and profile["save_weights_as_external_data"] is True
+    facts = profile["declared_model_facts"]
+    assert facts["profile_mode"] == "STATIC_FIXED_GEAR" and facts["fixed_sequence_length"] == sequence
+    assert facts["dynamic_axis_order"] == []
+    assert facts["resolved_dynamic_axes"] == [{"input_name": key, "axis": axis, "extent": sequence} for key, axis in changes]
+    assert facts["air_validation"] == "NOT_PERFORMED"
+    assert facts["input_count"] == 89 and facts["refdata_count"] == 80 and facts["block_count"] == 40
+    assert "unverified" in facts["scope"]
+
+
+@pytest.mark.parametrize("name", ["cpro-40block-prefill-64", "cpro-40block-decode-1"])
+def test_static_conversion_options_omit_dynamic_dims_and_return_independent_metadata(name):
+    from qwen35_moe_dflash.existing_air import _conversion_options
+    profile = get_existing_air_profile(name)
+    options = _conversion_options(profile["input_shape"], profile["dynamic_dims"],
+                                  profile["limit_partition_size"], profile["save_weights_as_external_data"])
+    assert "dynamic_dims" not in options
+    assert options["input_shape"] == profile["input_shape"]
+    profile["declared_model_facts"]["resolved_dynamic_axes"][0]["input_name"] = "changed"
+    assert get_existing_air_profile(name)["declared_model_facts"]["resolved_dynamic_axes"][0]["input_name"] == "arg1_1"
+    assert get_existing_air_profile("cpro-40block-64-1")["input_shape"] == EXPECTED_INPUT_SHAPE
 
 
 @pytest.mark.parametrize("name", ["", "cpro-40block-64", "CPRO-40BLOCK-64-1", None])

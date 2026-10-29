@@ -401,7 +401,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                          input_shape=None, dynamic_dims=None, limit_partition_size=None,
                          save_weights_as_external_data=None, progress=None,
                          input_layout="air-directory", use_origin_format=None,
-                         weight_data_type=None, cl_customization=None):
+                         weight_data_type=None, cl_customization=None, reuse_failed_job=None):
     """Return a host compilation report, retaining failures without deployment.
 
     Only inventoried local snapshots are hash bound. Absolute or out-of-tree
@@ -497,6 +497,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     }
     compatibility = None
     reuse_binding = {}
+    retained_plan = None
+    retained_selection = None
     if tbe_diagnosis is not None:
         compatibility = {"diagnosis": str(Path(tbe_diagnosis).resolve()),
                          "compiler_invocation": "NOT_ATTEMPTED", "compile": "NOT_RUN",
@@ -507,6 +509,18 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     attempted = False
     error = None
     try:
+        if reuse_failed_job is not None:
+            from .target_snapshot_retry import prepare_failed_prefill_reuse
+            stage = "retained-input-validation"
+            selected, skipped = _input_inventory(air, reuse_binding=reuse_binding)
+            retained_plan = prepare_failed_prefill_reuse(reuse_failed_job, air=air,
+                ddk_root=ddk, ddk_id=ddk_id, omg_path=omg, omg_sha256=report["omg_sha256"],
+                tbe_diagnosis=tbe_diagnosis, input_layout=input_layout, options=options,
+                selected=selected, output=output)
+            report["retained_input_reuse"] = retained_plan.evidence
+            retained_selection = (selected, skipped)
+            notify(stage, "Validated failed-job snapshot receipts; shared readonly payloads will be freshly hashed")
+        stage = "omg-help"
         notify(stage, "Checking selected OMG help before copying AIR or sidecars")
         report["help_check"] = _check_help(omg, env, output, options, timeout_seconds)
         if report["help_check"]["missing"]:
@@ -529,7 +543,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                                                        output / "tbe-compat", inherited=env)
             compatibility.update(metadata=metadata, audit={"status": "NOT_OBSERVED"})
         stage = "input-snapshot"
-        selected, skipped = _input_inventory(air, reuse_binding=reuse_binding)
+        selected, skipped = retained_selection or _input_inventory(air, reuse_binding=reuse_binding)
         if reuse_binding:
             if input_layout != "air-directory":
                 raise ValueError("receipt-bound reused target requires input_layout=air-directory")
@@ -553,9 +567,11 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         for index, source in enumerate(selected):
             relative = source.relative_to(air.parent)
             snapshot = inputs / staged_relative(source)
-            notify(stage, "Snapshotting input", completed=index, total=len(selected),
+            notify(stage, "Snapshotting input" if retained_plan is None else "Hashing and sharing retained input",
+                   completed=index, total=len(selected),
                    source_relative=str(relative), bytes=source.stat().st_size)
-            row = _snapshot(source, snapshot)
+            row = (_snapshot(source, snapshot) if retained_plan is None else
+                   retained_plan.snapshot(source, snapshot, _snapshot))
             expected = reuse_binding.get("expected_files", {}).get(str(relative))
             if expected is not None and any(row[key] != expected[key] for key in ("bytes", "sha256", "source_stat")):
                 raise ValueError("input snapshot differs from receipt-bound SHA256: " + str(relative))
@@ -610,6 +626,21 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         if isinstance(exc, subprocess.TimeoutExpired):
             report["timeout_seconds"] = exc.timeout
     finally:
+        if retained_plan is not None:
+            try:
+                audit = retained_plan.audit()
+                report["retained_input_reuse"] = audit
+                save_json(output / "retained-input-reuse.json", audit)
+                if audit.get("status") != "PASSED":
+                    report["retained_input_audit_error"] = audit
+                    if error is None:
+                        error = RuntimeError("shared retained-input audit failed; old and new evidence retained")
+                        report.update(stage="retained-input-audit", error=str(error))
+            except Exception as exc:
+                report["retained_input_audit_error"] = f"{type(exc).__name__}: {exc}"
+                if error is None:
+                    error = exc
+                    report.update(stage="retained-input-audit", error=str(exc))
         if "help_check" not in report and (output / "help-check.json").is_file():
             report["help_check"] = json.loads((output / "help-check.json").read_text())
         if compatibility is not None:

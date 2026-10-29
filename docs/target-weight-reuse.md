@@ -2,7 +2,15 @@
 
 当前64/1双档OMG编译已失败：`branches1`中的`Reshape`输入为`[1,1,2048]`，目标为`[64,2048]`，元素数不一致。原TorchAir调用使用`dynamic=False`，量化投影原代码写的是`reshape(-1, x.shape[-1])`；需要失败IR确定64在哪一阶段固定，不能只按节点名称推断来源。原GDN还有`seq_len == 1`对应的chunk分支，不能只修一个reshape就宣布decode成立。
 
-现在分开推进64-token prefill和1-token decode：64保留已有AIR，先检查失败编译收据和快照；1在原权重机用全新`target-pytorch-decode1`目录导出。实际原机导出会新写约19.46GB sidecar，后续逐文件SHA相同时再复用DDK现有参数，不把重复权重搬到DDK机。失败任务目前不能直接`--resume`重编译，也不能仅把`--sequence-length`改为64来改变OMG档位。下方第1至3步已完成，第4步的旧双档命令暂不再次运行。
+现在分开推进64-token prefill和1-token decode：64保留已有AIR，用显式静态profile重试；1已在原权重机的`target-pytorch-decode1`导出成功，下一步只归一其输出顺序并生成SHA清单。后续逐文件SHA相同时再共享参数，不把重复权重搬到DDK机。旧失败任务仍不能直接`--resume`，也不能仅把`--sequence-length`改为64来改变OMG档位；下方第4步的旧双档命令不再运行。
+
+实际诊断已确认1154份输入全部使用COPY、当前stat均匹配，AIR新算SHA匹配原记录，文件系统空闲44,185,739,264字节；编译输入共19,465,849,776字节。`compile-work/generated/dump_graph`实际是6,443,941字节的普通文件，检查器已按该精确路径和原报告的大小/SHA/stat绑定识别，不再只找同名目录或`.irpb`后缀。记录中的SHA配合stat不是新一轮权重内容验证。
+
+新增`--retry-static-prefill-from`只接受这类已绑定的双档OMG失败任务和原始独立COPY输入，配合`cpro-40block-prefill-64`将五处动态轴固定64并完全省略`dynamic_dims`。它逐项实际哈希旧只读payload后创建硬链接，小AIR独立复制，原staged源文件不变；新输出、日志、TBE隔离和审计都写入新任务。旧报告字节不改，旧快照inode的nlink/ctime会因本次链接而变化，并记录到新JSONL和审计收据；共享inode不能保证抵御特权写入，编译后会重新核SHA和完整身份，变化即失败、保留现场，不自动修复。该入口不是通用失败恢复，不能再次用旧快照普通stat记录盲重试。
+
+静态profile已有`cpro-40block-prefill-64`和`cpro-40block-decode-1`，保留全部80状态及固定尺寸，不加精度覆盖。board计划会拒绝静态profile与所选gear不一致；profile存在仍不代表实际AIR/设备通过。1档后续staging和物理参数共享还需使用其实际新清单，当前不直接套64档导入命令。
+
+用户另贴的原OMG命令只是记录，是否生成过OMC不确定；其中`--d11ynamic_dims`拼写也未得到实际成功日志确认，因此不作为双档成功基线，不据此切换现有已绑定编译器。
 
 新的只读诊断只检查小元数据、编译日志、失败IR、微小整数shape常量；1153权重快照只stat，不重新读payload。`INSPECTED`表示报告读取完成，`RECORDED_HASH_WITH_CURRENT_STAT`不是新一轮完整SHA验证，也不是重试通过；后续要按实际报告决定怎样保留并复用现有编译输入。源码AIR未提供其原机schema时不猜用另一版TorchAir schema解析，失败dump则使用所选DDK自己的HIAI schema。
 

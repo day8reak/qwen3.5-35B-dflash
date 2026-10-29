@@ -177,7 +177,9 @@ def _partial_summary(compilation, rows, snapshot_paths):
 def _graph_candidates(compilation, report, diagnostics):
     candidates, errors = {}, []
     def add(path, source, recorded=None):
-        if path.suffix.lower() != ".irpb":
+        report_dump = (source == "generated_artifacts"
+                       and path == compilation / "compile-work/generated/dump_graph")
+        if path.suffix.lower() != ".irpb" and not report_dump:
             return
         try:
             path, stamp = _safe(path)
@@ -185,8 +187,17 @@ def _graph_candidates(compilation, report, diagnostics):
                 raise ValueError("graph path escapes compilation")
             if not 0 < stamp[2] <= MAX_AIR_BYTES:
                 raise ValueError("compiler graph is empty or exceeds the 64 MiB metadata parser budget: " + path.name)
+            recorded = recorded or {}
+            recorded_sha = recorded.get("sha256")
+            valid_record = (isinstance(recorded_sha, str) and re.fullmatch(r"[0-9a-f]{64}", recorded_sha)
+                            and recorded.get("bytes") == stamp[2]
+                            and ("stat" not in recorded or recorded["stat"] == stamp))
+            if report_dump and (not valid_record or recorded.get("stat") != stamp):
+                raise ValueError("regular dump_graph requires matching recorded size/SHA256/stat metadata")
             candidates.setdefault(str(path), {"path": str(path), "bytes": stamp[2], "source": source,
-                "recorded_sha256": (recorded or {}).get("sha256"), "content_read": "NOT_PERFORMED"})
+                "kind": "REPORT_BOUND_DUMP_GRAPH_FILE" if report_dump else "IRPB_PATH",
+                "recorded_sha256": recorded_sha, "content_read": "NOT_PERFORMED",
+                "recorded_binding": "RECORDED_SHA256_WITH_CURRENT_STAT_OR_SIZE" if valid_record else "DIFFERENT_OR_UNRECORDED"})
         except (OSError, ValueError) as error:
             if len(errors) < 4:
                 errors.append(str(error)[:180])
@@ -205,6 +216,8 @@ def _graph_candidates(compilation, report, diagnostics):
     # parent run directory or any model/weight subtree recursively.
     for relative in ("diagnostics", "compile-work/generated/dump_graph", "compile-work/dump_graph"):
         folder = compilation / relative
+        if candidates.get(str(folder), {}).get("kind") == "REPORT_BOUND_DUMP_GRAPH_FILE":
+            continue
         try:
             folder, _ = _safe(folder, directory=True)
             with os.scandir(folder) as entries:
@@ -219,9 +232,23 @@ def _graph_candidates(compilation, report, diagnostics):
             if len(errors) < 4: errors.append(str(error)[:180])
     def priority(row):
         name = Path(row["path"]).name.lower()
-        return (0 if "fail" in name else 1 if "after_partition" in name else 2,
+        return (0 if row["kind"] == "REPORT_BOUND_DUMP_GRAPH_FILE" else
+                1 if "fail" in name else 2 if "after_partition" in name else 3,
                 0 if row["source"] == "retained_diagnostics" else 1, row["path"])
-    selected = sorted(candidates.values(), key=priority)[:4]
+    selected, recorded_identities = [], {}
+    for row in sorted(candidates.values(), key=priority):
+        identity = ((row["recorded_sha256"], row["bytes"])
+                    if row["recorded_binding"] != "DIFFERENT_OR_UNRECORDED" else None)
+        if identity is not None and identity in recorded_identities:
+            original = recorded_identities[identity]
+            aliases = original.setdefault("same_recorded_identity_aliases", [])
+            if len(aliases) < 4: aliases.append(row["path"])
+            original["deduplication_scope"] = "Recorded SHA256/size metadata only; graph content was not read or freshly verified"
+            continue
+        if len(selected) >= 4:
+            continue
+        selected.append(row)
+        if identity is not None: recorded_identities[identity] = row
     return selected, errors[:4]
 
 

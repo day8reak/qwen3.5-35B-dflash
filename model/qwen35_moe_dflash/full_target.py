@@ -117,10 +117,15 @@ def validate_compilation(job, *, air, ddk_root, ddk_id, profile, input_layout,
             or read_metadata(job / "compile-profile.json") != profile):
         raise ValueError("target resume AIR/DDK/profile/options/layout differs from completed compilation")
     if (report.get("audit_error") or report.get("artifact_inventory_error")
+            or report.get("retained_input_audit_error")
             or report.get("skipped_nonregular_artifacts")
             or report.get("source_preservation", {}).get("status") != "UNCHANGED_BY_STAT"
             or report["source_preservation"].get("changed")):
         raise ValueError("completed target has failed source/artifact/compatibility audit")
+    retained = report.get("retained_input_reuse")
+    if retained is not None and (not isinstance(retained, dict) or retained.get("status") != "PASSED"
+            or read_metadata(root / "retained-input-reuse.json") != retained):
+        raise ValueError("completed target retained-input audit receipt differs or did not pass")
     omg = Path(report["omg_path"])
     if (ddk not in omg.resolve().parents or not os.access(omg, os.X_OK)
             or (omg_path is not None and omg.resolve() != Path(omg_path).resolve())

@@ -1,7 +1,8 @@
 """User-declared OMG parameter presets; these do not inspect or validate AIR."""
 
 
-EXISTING_AIR_PROFILE_NAMES = ("cpro-40block-64-1",)
+EXISTING_AIR_PROFILE_NAMES = ("cpro-40block-64-1", "cpro-40block-prefill-64", "cpro-40block-decode-1")
+_STATIC_SEQUENCES = {"cpro-40block-prefill-64": 64, "cpro-40block-decode-1": 1}
 
 
 def get_existing_air_profile(name: str) -> dict:
@@ -18,10 +19,15 @@ def get_existing_air_profile(name: str) -> dict:
         entries.extend((f"RefData_{2 * block + index}", shape) for index, shape in enumerate(shapes))
     entries.extend([("arg2_1", (-1,)), ("arg1238_1", (1,)), ("arg0_1", (1, -1, 1)),
                     ("arg114_1", (1,)), ("arg14_1", (128,)), ("arg18_1", (1,))])
-    return {
+    declared_axes = [{"input_name": key, "axis": axis}
+                     for key, shape in entries for axis, size in enumerate(shape) if size == -1]
+    sequence = _STATIC_SEQUENCES.get(name)
+    if sequence is not None:
+        entries = [(key, tuple(sequence if size == -1 else size for size in shape)) for key, shape in entries]
+    profile = {
         "name": name,
         "input_shape": ";".join(key + ":" + ",".join(map(str, shape)) for key, shape in entries),
-        "dynamic_dims": "64,64,64,64,64;1,1,1,1,1",
+        "dynamic_dims": None if sequence is not None else "64,64,64,64,64;1,1,1,1,1",
         "limit_partition_size": False,
         "save_weights_as_external_data": True,
         "declared_model_facts": {
@@ -36,3 +42,9 @@ def get_existing_air_profile(name: str) -> dict:
             "scope": "Shapes, block roles and compiler settings are user declarations, not facts verified from AIR or OMC.",
         },
     }
+    if sequence is not None:
+        profile["declared_model_facts"].update(
+            profile_mode="STATIC_FIXED_GEAR", fixed_sequence_length=sequence,
+            resolved_dynamic_axes=[dict(axis, extent=sequence) for axis in declared_axes],
+            scope="Static fixed-gear shape request only; original 80 states and fixed extents retained. AIR shape compatibility, decode semantics and device execution remain unverified.")
+    return profile

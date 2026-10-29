@@ -147,6 +147,48 @@ def test_bad_environment_does_not_start_work(cli, monkeypatch):
     assert main() == 1 and not output.exists()
 
 
+def test_static_retry_requires_explicit_static64_profile_and_air_layout(cli, monkeypatch):
+    main, _, output = cli
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--retry-static-prefill-from", str(output.parent / "old")])
+    monkeypatch.setattr(existing_air, "compile_existing_air", lambda *a, **k: pytest.fail("must not compile"))
+    with pytest.raises(SystemExit) as failure:
+        main()
+    assert failure.value.code == 2 and not output.exists()
+
+
+def test_static_retry_infers_original_air_and_passes_bound_failure_without_reusing_compile_result(cli, monkeypatch):
+    main, air, output = cli
+    previous = output.parent / "old-failed"
+    previous.mkdir()
+    (previous / "result.json").write_text(json.dumps({"air": str(air), "status": "FAILED"}))
+    script = sys.argv[0]
+    monkeypatch.setattr(sys, "argv", [script, "--retry-static-prefill-from", str(previous),
+        "--profile", "cpro-40block-prefill-64", "--input-layout", "air-directory",
+        "--target-features", "--output", str(output), "--skip-inspection"])
+    calls = []
+    def compile_air(source, destination, ddk, **options):
+        calls.append(source)
+        assert source == air and options["reuse_failed_job"] == str(previous)
+        assert options["dynamic_dims"] is None and "-1" not in options["input_shape"]
+        assert options["input_layout"] == "air-directory"
+        return {"status": "COMPILED", "model_compilation": "PASSED", "omc": {"path": "generated/model.omc"},
+                "retained_input_reuse": {"status": "PASSED"}}
+    monkeypatch.setattr(existing_air, "compile_existing_air", compile_air)
+    assert main() == 0 and calls == [air]
+    result = json.loads((output / "result.json").read_text())
+    assert result["retained_failed_job"] == str(previous)
+    assert result["input_snapshot_reuse"]["status"] == "PASSED"
+    assert result["target_features_requested"] is True and result["device_execution"] == "NOT_RUN"
+
+
+def test_static_retry_cannot_be_confused_with_completed_job_resume(cli, monkeypatch):
+    main, _, output = cli
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--retry-static-prefill-from", "old", "--resume", "complete"])
+    with pytest.raises(SystemExit) as failure:
+        main()
+    assert failure.value.code == 2 and not output.exists()
+
+
 @pytest.mark.parametrize("failure", ["import", "inspection"])
 def test_optional_inspection_cannot_relabel_successful_compile(cli, monkeypatch, failure):
     main, _, output = cli
