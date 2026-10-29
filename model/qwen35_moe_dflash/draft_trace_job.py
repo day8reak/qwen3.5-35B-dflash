@@ -122,6 +122,7 @@ def _resume_owner(root, current):
 
 def _precision_failures(precision, notify):
     """Expose bounded gate evidence without bypassing or reclassifying it."""
+    from .draft_precision_edges import summarize_precision_failures
     if precision.get("reason"):
         notify("Precision check reason: " + str(precision["reason"])[:4000])
     failures = [row for row in precision.get("nodes", []) if row.get("status") != "MATCHED"]
@@ -129,14 +130,22 @@ def _precision_failures(precision, notify):
            + str(precision.get("matched_nodes")) + "/" + str(precision.get("required_nodes")))
     if precision.get("cross_partition_edges"):
         notify("Verified FP32 CPU partition paths: " + str(precision["cross_partition_edges"]))
-    for row in failures[:64]:
+    for row in failures[:8]:
         notify("Precision mismatch: " + json.dumps(
             {"name": row.get("name"), "source_type": row.get("source_type", row.get("type")),
              "compiled_type": row.get("compiled_type"), "status": row.get("status"),
-             "errors": row.get("errors")}, ensure_ascii=False)[:8000])
-    if len(failures) > 64:
-        notify("Additional precision mismatches: " + str(len(failures) - 64)
-               + "; see layer-trace/precision-check.json")
+             "error_count": len(row.get("errors", [])), "errors": row.get("errors", [])[:1]},
+            ensure_ascii=False, allow_nan=False)[:8000])
+    if len(failures) > 8:
+        notify("Additional unmatched nodes: " + str(len(failures) - 8))
+    summary = summarize_precision_failures(precision)
+    notify("Distinct precision causes: " + str(summary["unique_issue_count"]) + "; full findings: layer-trace/precision-check.json")
+    for issue in summary["issues"][:24]:
+        # Keep long lists in the report; the terminal needs the exact failing
+        # port and both descriptors, plus counts of duplicate consequences.
+        compact = {key: issue.get(key) for key in ("kind", "reason", "details", "occurrences")}
+        compact["affected_nodes"] = issue.get("affected_nodes", [])[:4]
+        notify("Precision cause: " + json.dumps(compact, ensure_ascii=False, allow_nan=False)[:8000])
 
 
 def _fixture(prepared, fixture, reference, trace, spec, output):

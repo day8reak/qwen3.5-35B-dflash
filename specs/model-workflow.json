@@ -1847,7 +1847,7 @@
           },
           "partition_provenance_check": {
             "run_id": "20261029T004826Z-25470-5c600f",
-            "contract": "CPUCL packed Data/NetOutput positional interface with exact descriptor and source identity checks",
+            "contract": "CPUCL packed Data/NetOutput ordered interface: global ownership/cardinality, exact selected-port FP32/ND/shape/source proof",
             "requirements_removed": 0,
             "production_graph_changes": 0,
             "cl_customization_changes": 0,
@@ -1871,7 +1871,8 @@
               "captured": [
                 "Cross-CPU FP32 interfaces need complete GraphOp/Data/NetOutput provenance, not same-name edges or shape-only acceptance",
                 "Checker-only updates should reuse frozen artifacts without rewriting owner bytes",
-                "Counts alone cannot distinguish CSE from partitioning; actual 12-row evidence rejected CSE"
+                "Counts alone cannot distinguish CSE from partitioning; actual 12-row evidence rejected CSE",
+                "Unrelated interface-port layout annotations must not invalidate a selected FP32 provenance path; all ports on that path remain strictly checked"
               ],
               "updated_checks": [
                 "test_draft_precision_edges.py",
@@ -1885,7 +1886,7 @@
                 "No full device numerical pass"
               ],
               "remaining": [
-                "Full user trace OMC recheck and diagnostic board execution"
+                "Full user OMC recheck after selected-path scope correction, then 166-probe device comparison"
               ]
             },
             "host_validation": {
@@ -1893,6 +1894,59 @@
               "report": "final-tests/tests.xml",
               "final_resume_subset_passed": 32,
               "final_resume_subset_report": "final-tests/resume-final.xml"
+            },
+            "latest_user_reverification": {
+              "source": "USER_PASTED_REPORT_AND_BOUND_INTERFACE_DIFF",
+              "artifact_hash_verification": "NOT_RECHECKED",
+              "required_nodes": 331,
+              "matched_nodes": 320,
+              "cross_partition_edges": 20,
+              "failed_nodes": 11,
+              "device_execution": "NOT_RUN",
+              "interface_diff": "Only CPU NetOutput input_desc 4D ND(main)/NCHW(CPU) marker differences, dtype/shape equal; no returned 3D flatten or Data descriptor mismatch",
+              "scope_fix": "Validate descriptors of selected provenance ports only; retain all interface cardinality/ownership and exact producer/output checks",
+              "next_action": "Resume unchanged command with retained OMC; every selected FP32 ND path must prove identity before board run"
+            },
+            "selected_path_scope_fix": {
+              "run_id": "20261029T005905Z-26100-cc481a",
+              "status": "HOST_VERIFIED_USER_FULL_OMC_RECHECK_REQUIRED",
+              "host_passed": 176,
+              "host_report": "final-tests/tests.xml",
+              "edge_and_diagnostics_tests": 62,
+              "real_small_omc_recheck": {
+                "required": 13,
+                "matched": 13,
+                "report": "real-partition-recheck.json"
+              },
+              "unchanged": [
+                "source graph",
+                "compiled OMC",
+                "reference",
+                "weights",
+                "compiler customization",
+                "numerical thresholds"
+              ],
+              "scope": "Ignore unrelated interface descriptor annotations when proving a selected edge; retain global ownership/cardinality and strict selected FP32/ND/shape/source checks",
+              "diagnostics": "Structured failed port and both descriptors, grouped repeated causes; full per-node evidence unchanged",
+              "experience_audit": {
+                "captured": [
+                  "All-interface descriptor equality was too broad for a selected provenance proof",
+                  "Use actual DDK descriptor differences to distinguish layout annotations on unrelated 4D ports from precision changes on 3D trace paths",
+                  "Error messages must contain the failing physical interface port and both descriptors before asking for a rerun"
+                ],
+                "updated_checks": [
+                  "test_draft_precision_edges.py",
+                  "test_draft_trace_job.py"
+                ],
+                "skills_changed": [],
+                "rejected_promotions": [
+                  "No universal ND/NCHW equivalence",
+                  "No complete-device numerical pass"
+                ],
+                "remaining": [
+                  "Recheck complete331-node user OMC and execute diagnostic trace"
+                ]
+              }
             }
           }
         }

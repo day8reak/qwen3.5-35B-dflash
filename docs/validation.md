@@ -1,5 +1,15 @@
 # 验证范围与保留结论
 
+## 跨分区来源检查排除无关端口布局标记
+
+用户复用完整trace OMC后为320/331，跨分区精确来源证明20条，仍有11个Concat被拒绝。只读解码进一步显示：返回的差异样例位于CPU NetOutput的 `input_desc`，main与CPU的dtype、shape相同，四维shape包括 `[1,32,16,80]`、`[1,16,32,128]`、`[1,80,8,128]`；main标ND，CPU标NCHW。没有回传Data接口差异，也没有三维flatten探针差异。具体数值dtype编号仅在所选DDK schema内解释，不作通用枚举推断。
+
+上一版 `_interface` 的全端口描述符相等要求，会让与所追溯边无关的四维输出阻断三维FP32探针路径。修复仅删除这一无关范围检查，保留唯一CPUCL归属、唯一packed Data/NetOutput、完整接口端口数量、有序连接和精确源producer/output。对所选路径的Data input/output、GraphOp input/output、NetOutput input/output、最终生产者output逐一要求FP32、ND、相同shape。路径内NCHW/FP16仍拒绝；没有将ND/NCHW普遍等同，也不宣称四维算子或完整设备数值已通过。
+
+新增错误details标明owner、节点、方向、端口、expected/actual及不同字段。终端合并重复原因，完整逐节点错误保留在原报告。更新只影响已绑定OMC的检查和终端输出，不修改AIR、参考、权重、编译配置或数值阈值。
+
+本轮run `20261029T005905Z-26100-cc481a` 组合回归176项通过（`final-tests/tests.xml`），含62项路径/诊断测试。真实四维混合接口几何的回归验证了无关ND/NCHW异标可共存，路径7处各侧的dtype/shape/layout变更仍拒绝；原真实小OMC复核仍为13/13（`real-partition-recheck.json`）。用户完整331项重查及设备逐层结果仍待回传，不能从本地检查宣称完整模型精度通过。
+
 ## trace Concat跨CPU分区连接检查
 
 用户完整诊断图已完成OMG编译，精度要求331项、匹配319项，设备未执行。实际12个未匹配项全部为 `__draft_trace/concat_0/{0,16,...,160}` 和 `draft_trace_values`，错误仅为 `FP32_REQUIRED_EDGE_CHANGED`，实际输入生产者为对应 `SubGraph_*_data`，没有CPU节点缺失及端口dtype/shape错误。该清单排除了先前“重复probe被公共子表达式消除”的猜测；没有为该猜测更改图或门禁。

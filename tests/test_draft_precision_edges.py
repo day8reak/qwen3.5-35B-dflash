@@ -3,7 +3,7 @@ from copy import deepcopy
 
 import pytest
 
-from qwen35_moe_dflash.draft_precision_edges import PartitionEdgeResolver
+from qwen35_moe_dflash.draft_precision_edges import PartitionEdgeResolver, summarize_precision_failures
 
 
 def _desc(shape=(1, 1, 8), dtype=1):
@@ -161,3 +161,141 @@ def test_owned_fp32_path_requires_cpu_library_and_explicit_nd_layout(case, damag
         else:
             desc.pop("layout")
     assert _resolve(case)["status"] == "UNRESOLVED"
+
+
+@pytest.mark.parametrize("unrelated", ["source_other_output", "consumer_other_input", "consumer_result"])
+def test_unrelated_interface_descriptor_does_not_block_a_proven_selected_edge(case, unrelated):
+    # This validates one producer edge, not all arithmetic in the model. Other
+    # edges retain their own independent precision and provenance checks.
+    main, cpu, expected = case
+    if unrelated == "source_other_output":
+        cpu[0]["graph"]["op"][-1]["input_desc"][0] = _desc(dtype=2)
+    elif unrelated == "consumer_other_input":
+        cpu[1]["graph"]["op"][0]["output_desc"][1] = _desc((1, 8, 1))
+    else:
+        desc = _desc((1, 1, 16))
+        desc["layout"] = "NCHW"
+        cpu[1]["graph"]["op"][-1]["output_desc"][0] = desc
+    report = _resolve(case)
+    assert report["status"] == "MATCHED", report
+    assert report["producer"] == "second_flat"
+
+
+@pytest.mark.parametrize("shape", [(1, 32, 16, 80), (1, 16, 32, 128), (1, 80, 8, 128)])
+@pytest.mark.parametrize("dtype", [1, 2])
+def test_nonpath_4d_carrier_layout_does_not_block_flattened_3d_fp32_trace(case, shape, dtype):
+    # These mixed-rank geometries model observed attention interfaces. The
+    # numeric dtype codes here belong only to this fixture's explicit enum.
+    # No interpretation of a vendor dtype number is inferred from this test.
+    main, cpu, expected = case
+    nd = _desc(shape, dtype=dtype)
+    nchw = deepcopy(nd)
+    nchw["layout"] = "NCHW"
+    source = cpu[0]["graph"]["op"]
+    source.insert(-1, _node("other_4d_attention_value", "MatMul", output_desc=[nd]))
+    source[-1]["input"].append("other_4d_attention_value:0")
+    source[-1]["input_desc"].append(nchw)
+    source[-1]["output_desc"].append(nd)
+    main["op"][1]["output_desc"].append(nd)
+    report = _resolve(case)
+    assert report["status"] == "MATCHED", report
+    assert all(point["descriptor"] == {"dtype": "float32", "shape": [1, 1, 8], "layout": "ND"}
+               for point in report["path"])
+
+
+@pytest.mark.parametrize("point", ["data_output", "data_input", "main_input", "main_output",
+                                    "netout_input", "netout_output", "producer_output"])
+@pytest.mark.parametrize("field", ["dtype", "shape", "layout"])
+def test_every_selected_path_descriptor_side_remains_strict_and_reports_both_values(case, point, field):
+    main, cpu, expected = case
+    locations = {
+        "data_output": (cpu[1]["graph"]["op"][0], "output_desc", 0, "CPU_consumer"),
+        "data_input": (cpu[1]["graph"]["op"][0], "input_desc", 0, "CPU_consumer"),
+        "main_input": (main["op"][2], "input_desc", 0, "CPU_consumer"),
+        "main_output": (main["op"][1], "output_desc", 1, "CPU_source"),
+        "netout_input": (cpu[0]["graph"]["op"][-1], "input_desc", 1, "CPU_source"),
+        "netout_output": (cpu[0]["graph"]["op"][-1], "output_desc", 1, "CPU_source"),
+        "producer_output": (cpu[0]["graph"]["op"][2], "output_desc", 0, "CPU_source"),
+    }
+    node, side, port, owner = locations[point]
+    wrong = _desc()
+    if field == "dtype":
+        wrong["dtype"] = 2
+    elif field == "shape":
+        wrong["shape"] = {"dim": [1, 8, 1]}
+    else:
+        wrong["layout"] = "NCHW"
+    node[side][port] = wrong
+    report = _resolve(case)
+    assert report["status"] == "UNRESOLVED", report
+    details = report["details"]
+    assert details["owner"] == owner and details["node"] == node["name"]
+    assert details["port"] == port and details["boundary_type"] == node["type"]
+    assert details["expected"] == {"dtype": "float32", "shape": [1, 1, 8], "layout": "ND"}
+    assert details["actual"] != details["expected"]
+    assert details["differing_fields"] == [field]
+    assert details["relation_to_path"] == "PATH_PORT"
+    assert details["main_direction"] == ("input_desc" if point.startswith("data") or point == "main_input" else "output_desc")
+    assert details["child_direction"] == (None if point.startswith("main") else side)
+
+
+def test_interface_port_count_failure_has_structured_owner_and_both_counts(case):
+    case[1][0]["graph"]["op"][-1]["output_desc"].pop()
+    report = _resolve(case)
+    assert report["status"] == "UNRESOLVED"
+    assert report["details"] == {
+        "owner": "CPU_source", "boundary_type": "NetOutput", "node": "arbitrary_output_name",
+        "main_direction": "output_desc", "child_direction": "output_desc", "port": None,
+        "expected": 2, "actual": 1, "differing_fields": ["port_count"],
+        "relation_to_path": "OTHER_INTERFACE_PORT"}
+
+
+def test_identical_interface_failures_are_grouped_without_losing_affected_nodes(case):
+    case[1][1]["graph"]["op"][0]["output_desc"][0] = _desc(dtype=2)
+    resolution = _resolve(case)
+    other_relation = deepcopy(resolution)
+    other_relation["details"]["relation_to_path"] = "OTHER_INTERFACE_PORT"
+    precision = {"status": "FAILED", "nodes": [
+        {"name": "concat_a", "status": "MISMATCH", "errors": [
+            {"kind": "FP32_REQUIRED_EDGE_CHANGED", "port": 0, "partition_resolution": resolution},
+            {"kind": "FP32_REQUIRED_EDGE_CHANGED", "port": 1, "partition_resolution": resolution}]},
+        {"name": "concat_b", "status": "MISMATCH", "errors": [
+            {"kind": "FP32_REQUIRED_EDGE_CHANGED", "port": 9, "partition_resolution": other_relation}]},
+        {"name": "good", "status": "MATCHED", "errors": []}]}
+    summary = summarize_precision_failures(precision)
+    assert summary["status"] == "FAILED" and summary["failed_node_count"] == 2
+    assert summary["unique_issue_count"] == 1 and summary["error_count"] == 3
+    issue = summary["issues"][0]
+    assert issue["occurrences"] == 3 and issue["affected_nodes"] == ["concat_a", "concat_b"]
+    assert issue["affected_input_ports"] == [{"node": "concat_a", "port": 0}, {"node": "concat_a", "port": 1},
+                                              {"node": "concat_b", "port": 9}]
+    assert issue["relations_to_path"] == ["PATH_PORT", "OTHER_INTERFACE_PORT"]
+
+
+def test_distinct_descriptor_mismatches_never_share_a_summary_group(case):
+    case[1][1]["graph"]["op"][0]["output_desc"][0] = _desc(dtype=2)
+    left = _resolve(case)
+    case[1][1]["graph"]["op"][0]["output_desc"][0] = _desc((1, 8, 1))
+    right = _resolve(case)
+    result = summarize_precision_failures({"status": "FAILED", "nodes": [
+        {"name": "same_concat", "status": "MISMATCH", "errors": [
+            {"kind": "FP32_REQUIRED_EDGE_CHANGED", "port": 0, "partition_resolution": left},
+            {"kind": "FP32_REQUIRED_EDGE_CHANGED", "port": 1, "partition_resolution": right}]}]})
+    assert result["unique_issue_count"] == 2
+    assert result["issues"][0]["details"]["differing_fields"] == ["dtype"]
+    assert result["issues"][1]["details"]["differing_fields"] == ["shape"]
+
+
+def test_legacy_string_errors_and_nonobject_resolution_are_summarized_without_mutating_report():
+    precision = {"status": "FAILED", "nodes": [{"name": "legacy_node", "status": "MISSING", "errors": [
+        "missing CPU producer", "missing CPU producer",
+        {"kind": "FP32_REQUIRED_EDGE_CHANGED", "partition_resolution": "old free-form observation"}]}]}
+    original = deepcopy(precision)
+    summary = summarize_precision_failures(precision)
+    assert precision == original
+    assert summary["status"] == "FAILED" and summary["failed_node_count"] == 1
+    assert summary["error_count"] == 3 and summary["unique_issue_count"] == 2
+    assert summary["issues"][0]["kind"] == "UNSTRUCTURED_ERROR"
+    assert summary["issues"][0]["error"]["message"] == "missing CPU producer"
+    assert summary["issues"][0]["occurrences"] == 2
+    assert summary["issues"][1]["reason"] is None

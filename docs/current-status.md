@@ -6,6 +6,10 @@
 
 ## 用户现在执行什么
 
+最新接口明细已确认：升级后的检查为320/331，20条跨CPU路径已证明；剩余失败源于检查器还比较了其它端口的描述符。用户回传的可见差异位于四维CPU NetOutput输入，dtype/shape相同，仅CPU标NCHW、main标ND；本次追溯的是三维FP32 flatten探针。现将描述符检查精确限定在所追溯路径的每个端口；CPU归属、唯一Data/NetOutput、全接口端口数量和原生产者身份仍严格检查。所选路径若出现FP16、NCHW、shape或来源变化，仍停止上传。没有把ND/NCHW普遍视为相同。
+
+继续使用下方原命令，复用现成OMC。新版错误会列出具体owner/node/port和两侧描述符，并合并重复原因；完整错误仍保存在 `layer-trace/precision-check.json`。
+
 最新trace回传：OMG已编译完成，331个精度要求中319项匹配，12项失败全部是11个诊断分组Concat及最终Concat的 `FP32_REQUIRED_EDGE_CHANGED`，实际生产者为 `SubGraph_*_data`。没有缺失节点或dtype/shape错误；仍未打包或上板。检查器此前只支持同一CPU子图的直接连接，现增加严格跨CPUCL分区来源证明：有序Data/NetOutput端口必须与main GraphOp完全对应，逐段FP32、ND、相同shape，并精确追溯回原生产者。额外Cast、NPU、不同来源或不明端口仍失败。
 
 更新后继续下方同一条 `run_draft_trace.py` 命令即可。仅检查/控制代码变化时会复用既有reference、fixture、AIR、OMC，保持旧owner及恢复标记；构建依赖、编译选项、输入和DDK仍校验。重新检查通过后才继续打包及上板。无需删除 `layer-trace` 或重新准备权重。失败时终端直接打印明细；可选 `--inspect-only --include-boundaries` 只读查看已保留的分区接口。
