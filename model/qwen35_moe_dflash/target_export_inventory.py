@@ -257,4 +257,3 @@ def inventory_target_export(air, out, torchair_pb2=None, discover_schema=False,
                           error="source AIR or payload metadata changed during inventory")
         save_json(out / "inventory.json", result)
     return result
-

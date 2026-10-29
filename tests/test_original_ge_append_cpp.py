@@ -102,4 +102,3 @@ def test_declared_real_ge_template_saves_reloads_and_strictly_decodes_without_we
     assert repeated.returncode != 0
     assert sha256_file(air) == before[0] and receipt.read_bytes() == before[1]
     assert not (root / "retry-native.json").exists()
-

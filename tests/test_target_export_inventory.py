@@ -220,4 +220,3 @@ def test_large_payload_hash_requests_are_bounded_to_one_mib(source, monkeypatch)
     assert result["status"] == "INVENTORIED" and reads.count(1 << 20) == 2
     weight = next(row for row in result["files"] if row["basename"] == "weight0")
     assert weight["sha256"] == hashlib.sha256(payload).hexdigest()
-
