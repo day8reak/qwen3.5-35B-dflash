@@ -2208,9 +2208,9 @@
         "location": "original_weight_machine",
         "entrypoint": "targets/cpro/scripts/prepare_target_pytorch.py",
         "directory": "target-pytorch",
-        "status": "DECODE1_CANONICAL_EXPORT_READY_USER_REPORTED; THREE_SMALL_FILE_TRANSFER_NEXT; STATIC64_RETRY_AWAITING_RESULT",
+        "status": "STATIC_PREFILL64_OMG_RUNNING_USER_REPORTED; DECODE1_CANONICAL_EXPORT_READY",
         "tests": 14,
-        "next": "Manually transfer decode1 canonical AIR, inventory and result.json to DDK target-pytorch-decode1-transfer; inspect only those three files and actual Data names. Preserve active static64 retry and all source inode identities; no decode1 staging or compile yet.",
+        "next": "Keep the current static64 attempt running; obtain two read-only OMG/descendant CPU-time/wchan samples and last non-dot bounded log tail. Decode1 metadata-only transfer inspection can proceed without hardlinks.",
         "user_report": {
           "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
           "original_air_sha256": "3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9",
@@ -2365,6 +2365,27 @@
           "device_execution": "NOT_RUN",
           "profile_difference_policy": "Retain observed Data rows; report PROFILE_BINDING_REQUIRED; never infer equal-shaped control roles",
           "decode_apply_policy": "NOT_ENABLED; source ownership metadata chain must be settled after prefill result"
+        },
+        "static_prefill64_live_user_report": {
+          "source": "USER_PASTED_LIVE_REMOTE_LOG_NOT_RETRIEVED_LOCALLY",
+          "job": "target-pytorch-prefill64-compile",
+          "profile": "cpro-40block-prefill-64",
+          "stage": "OMG_RUNNING",
+          "last_reported_elapsed_seconds": 3060,
+          "snapshot_reuse_preflight": "USER_LOG_VALIDATED_FAILED_JOB_SNAPSHOT_RECEIPTS",
+          "input_stage": "USER_LOG_HASHING_AND_SHARING_RETAINED_INPUT_COMPLETED_BEFORE_OMG",
+          "final_input_reuse_audit": "NOT_YET_REPORTED",
+          "model_compilation": "RUNNING_NOT_PASSED",
+          "reported_omg_pid": 13373,
+          "log_bytes_at_180_seconds": 30550437,
+          "log_bytes_at_3060_seconds": 30550725,
+          "dot_only_interval_seconds_approx": 2880,
+          "dot_growth_bytes": 288,
+          "liveness": "DOT_OUTPUT_OBSERVED_NOT_FORWARD_PROGRESS_PROOF",
+          "python_observer": "READS_LOG_ONLY_DOES_NOT_WRITE_DOTS",
+          "timeout_seconds": 7200,
+          "failure_attribution": "NOT_ESTABLISHED",
+          "next_evidence": "Two actual compiler-tree CPU-time/state/wchan samples and last non-dot64KiB log tail; no automatic termination or second compilation"
         }
       },
       "b": {
@@ -2489,14 +2510,14 @@
     "day1_gate": "Correct draft plus usable ordinary target prefill/decode",
     "day2_gate": "Multi-step DFlash token/stop equality and state handling",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
-    "current_target_status": "A old dual-gear compile FAILED; explicit static64 retry host-tested, remote result not yet reported. Decode1 canonical EXPORT_READY and all1153 origin weights SHA256_COMPLETE reported. B55 backup complete.",
+    "current_target_status": "A staticprefill64 currently inOMG peruser, lastelapsed3060s, mostlydotoutput for48minutes; progressrequiresprocess/lastsubstantivelog evidence. Decode1canonical and originSHAcomplete. B55backupcomplete.",
     "target_gaps": [
       "Original89input80RefData ordered ABI",
       "64/1 gear and persistent state",
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Transfer only decode1 canonical AIR/inventory/result triplet, inspect metadata and actual input names on DDK without sidecar access while prefill64 proceeds. No duplicate origin hashing/export or B work; no decode1 hardlinks/compile until source owner receipts are handled.",
+    "next_target_action": "Read-only live diagnosis of currentstatic64 OMG and descendants without altering sharedinput or rerunning compilation; retain timeout7200. Decode1three-small-file metadataonly inspection remains independent.",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone"
   },
   "execution_smoke": {

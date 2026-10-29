@@ -16,6 +16,10 @@ decode1只手动传`canonical-export/export.air`、`canonical-export/inventory/i
 
 静态profile已有`cpro-40block-prefill-64`和`cpro-40block-decode-1`，保留全部80状态及固定尺寸，不加精度覆盖。board计划会拒绝静态profile与所选gear不一致；profile存在仍不代表实际AIR/设备通过。1档后续staging和物理参数共享还需使用其实际新清单，当前不直接套64档导入命令。
 
+用户已启动静态prefill64重试，旧快照绑定校验与哈希/共享阶段完成后实际进入OMG；当前只收到运行中日志，尚无exitcode或最终输入审计。elapsed3060秒时，约180秒后日志仅每10秒追加一个句点，约48分钟只有约288字节变化。Python等待观察器只读日志，不向`compile.log`写句点；实际日志写入端是OMG及其子进程。因此该现象是存活输出，不能单独证明计算推进，也不足以认定死锁；`UnknownShapeFormat`仍是候选线索，没有最终退出就不视为失败原因。
+
+当前保留本次编译，另窗口做两次相隔5秒的只读进程树样本，并读取最后64KiB日志中非句点的35行。以实际`compile-command.json`的OMG路径和完整`--model`参数选择进程，再收集所有子进程；父进程等待而子进程CPU时间增长仍可能正常。`ps`的CPU百分比是生命周期均值，必须结合两次累计CPU时间、等待点及后续日志判断。7200秒是已设置超时上限，不是正常耗时保证；不据句点自动终止、重复启动或修改共享快照。实时检查命令只在stdout输出，不写运行中job。
+
 用户另贴的原OMG命令只是记录，是否生成过OMC不确定；其中`--d11ynamic_dims`拼写也未得到实际成功日志确认，因此不作为双档成功基线，不据此切换现有已绑定编译器。
 
 新的只读诊断只检查小元数据、编译日志、失败IR、微小整数shape常量；1153权重快照只stat，不重新读payload。`INSPECTED`表示报告读取完成，`RECORDED_HASH_WITH_CURRENT_STAT`不是新一轮完整SHA验证，也不是重试通过；后续要按实际报告决定怎样保留并复用现有编译输入。源码AIR未提供其原机schema时不猜用另一版TorchAir schema解析，失败dump则使用所选DDK自己的HIAI schema。
