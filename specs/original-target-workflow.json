@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "updated": "2026-10-29",
+  "lane": "original_quantized_target",
+  "active_phase": "integration",
+  "status": "HOST_IMPLEMENTED_INTERNAL_SERVER_EVIDENCE_REQUIRED",
+  "handoff": "20261029T002100Z-22914-8cc9f5/handoff.md#11",
+  "user_state": "User confirmed original AIR and sibling weights present, old target logs deleted, original64 input directory available; no golden",
+  "entrypoint": "targets/cpro/scripts/compile_full_target.py",
+  "compile_profile": "cpro-40block-64-1",
+  "contract": {
+    "layers": 40,
+    "declared_inputs": 89,
+    "declared_refdata": 80,
+    "dynamic_gears": [
+      64,
+      1
+    ],
+    "weight_policy": "REUSE_ORIGINAL_QUANTIZED_AIR_AND_WEIGHTS_NO_REQUANTIZATION",
+    "actual_model_abi": "UNVERIFIED",
+    "runtime": "HIAI",
+    "hardware_reference_policy": "use"
+  },
+  "completed_host_work": [
+    "Observe same-source CLI and inventory-bound orphan OMG before starting a new target job; source lock within AI_RUN_DIR",
+    "Resume only complete unchanged original-target jobs; stream original/snapshot/generated/compiler/log hashes without weight copies or model compilation",
+    "Read selected-DDK schema and actual small OMC root input/output boundaries; nested subgraph Data nodes excluded",
+    "Keep serialized indices, dtype enum domains, output producer connections and user-shape differences explicit",
+    "Retain bounded original source and selected HIAI header excerpts locally without imports or transmission",
+    "Drive original HIAI V2 tool with actual compiled descriptors and original host inputs; preserve model cache, per-attempt data and retrieval hashes",
+    "Separate COMPILED generation from board status, and observed execution from numerical/state/performance acceptance"
+  ],
+  "validation": {
+    "run_id": "20261029T020018Z-29986-45c9d2",
+    "targeted_tests_passed": 148,
+    "junit": "target-regression.xml plus target-complete-host-tests.xml (47-case final affected subset)",
+    "real_small_omc_reader": "OBSERVED_EXPECTED_DIFFERENT_VISIBLE_BOUNDARIES",
+    "real_small_omc_reader_report": "real-omc-reader-final/report.json",
+    "real_small_omc_sha256": "14dad3f4e1f3054f598f8ccad8474a19c005d15dff81ad984e9ca5dc56369648",
+    "smoke_scope": "Read retained public-DDK two-RMS OMC with its matching schema; no new conversion and no original target/device evidence",
+    "internal_target_compilation": "NOT_RUN_LOCALLY",
+    "device_probe": "INTERNAL_SERVER_NOT_ACCESSIBLE_FROM_ASSISTANT; no claim that user device is offline",
+    "native_prefill_decode": "NOT_RUN",
+    "numerical_validation": "NOT_RUN",
+    "performance": "NOT_MEASURED",
+    "board_tool_workflow": "HOST_FAKE_BOARD_TESTED; no actual user-device invocation from this assistant"
+  },
+  "remaining_gates": [
+    "Internal-server original AIR plus relative weight dependency confirmation and completed OMG artifact",
+    "Original export input semantics and actual runtime input slot/descriptor agreement",
+    "Selected-DDK dynamic gear and persistent RefData binding API",
+    "External-weight loading contract on the actual device",
+    "Ordinary 64-prefill then 1-decode output/state numerical comparison",
+    "Integrate DFlash target features, verification, rejection rollback and matched performance"
+  ],
+  "next_command": "python3 \"$TARGET_REPO/targets/cpro/scripts/compile_full_target.py\" --air ORIGINAL_AIR --source-root ORIGINAL_PROJECT --tbe-diagnosis \"$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis\" --output \"$AI_RUN_DIR/full-target\" --run-board --sequence-length 64 --input-dir ORIGINAL_CHUNKSIZE64_HOST_DIRECTORY",
+  "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
+  "experience_audit": {
+    "captured": [
+      "Original 89-input/80-RefData target cannot be run through the unrelated explicit-state or standalone-draft ABI",
+      "A same-size generated payload rewrite escaped stat-only checking in the first host regression; continuation now recomputes SHA256 for all payloads",
+      "Root graph boundaries and schema dtype domains can be read without copying external weights or treating nested task inputs as host input slots",
+      "The provided runtime script names come from an older export than the provided compiler shape list; use actual compiled names while retaining explicit user positional semantics",
+      "The provided ordinary target output contract has no DFlash target features",
+      "With no golden and unknown tool internal warmup policy, tool exit0 and retrieved outputs establish execution observations only",
+      "RefData may use a separate serialized index namespace; keep user-declared tool argument order without treating graph indices as validated runtime slots"
+    ],
+    "executable_checks": [
+      "tests/test_full_target_continuation.py",
+      "tests/test_original_target_contract.py",
+      "tests/test_original_target_board.py"
+    ],
+    "skills_changed": [],
+    "promotion_rejected": [
+      "No target model or numerical pass from host test counts or the unrelated small OMC",
+      "No HIAI input-order claim from serialized Data indices",
+      "No RefData persistence, dynamic-gear or external-weight API inferred from declarations alone"
+    ],
+    "remaining_hypotheses": [
+      "Exact original target physical/runtime ABI awaits internal compiled graph and original runtime source evidence"
+    ]
+  },
+  "branch": "target/cpro-dflash-target",
+  "base_revision": "54f9ffd",
+  "runtime_route": {
+    "tool": "User-provided existing model_run_tool_internal on board",
+    "modelmanager_itf": "V2",
+    "external_weights": "--weight_dir; original generated file hierarchy retained",
+    "input_source": "USER_PROVIDED_CHUNKSIZE_64_HOST_BINARIES",
+    "semantic_mapping": "User positional script, checked against actual compiled name/shape/dtype. Contradictory complete global indices reject; separate RefData indices remain observations, never inferred runtime slots.",
+    "outputs": "logits plus80RefData; target features absent",
+    "state_initialization": "Copy exact original files into independent per-slot board inputs; no zero fill or synthesized controls",
+    "golden": "NOT_AVAILABLE_PER_USER",
+    "warmup_policy": "UNVERIFIED_TOOL_INTERNAL_POLICY"
+  },
+  "resume_board_command": "python3 \"$TARGET_REPO/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --run-board --sequence-length 64 --input-dir ORIGINAL_CHUNKSIZE64_HOST_DIRECTORY"
+}

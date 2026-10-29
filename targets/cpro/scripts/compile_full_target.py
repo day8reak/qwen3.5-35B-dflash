@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -48,7 +49,7 @@ def main():
     from qwen35_moe_dflash.existing_air import INPUT_LAYOUTS, compile_existing_air
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--air", required=True, help="original exported AIR; never modified")
+    parser.add_argument("--air", help="original exported AIR; never modified; inferred from --resume if omitted")
     parser.add_argument("--input-layout", choices=INPUT_LAYOUTS, default="export-directory",
                         help="relative weight paths: default retains original export folder prefix; "
                              "air-directory stages data directly beside AIR")
@@ -59,14 +60,38 @@ def main():
     parser.add_argument("--tbe-diagnosis", help="reuse an existing check-tbe-platform --diagnose directory")
     parser.add_argument("--omg", help="optional actual ELF binary in selected DDK; default tools/tools_omg/master/omg")
     parser.add_argument("--output", help="new job directory under AI_RUN_DIR")
+    parser.add_argument("--resume", help="reuse a completed original-target job after source/DDK/artifact checks; never recompile failed/interrupted jobs")
+    parser.add_argument("--inspect-only", action="store_true", help="requires --resume; inspect existing compilation without model compilation or board execution")
+    parser.add_argument("--hiai-include", default=os.environ.get("HIAI_INCLUDE_DIR"),
+                        help="selected HIAI header root; retain dynamic-gear/RefData/load declarations locally")
+    parser.add_argument("--source-root", help="original export/runtime source root; retain bounded input/state construction excerpts locally")
+    parser.add_argument("--run-board", action="store_true", help="after actual contract checks, run the user's existing HIAI V2 model_run_tool_internal once and retrieve outputs")
+    parser.add_argument("--input-dir", help="local directory containing the original chunksize_N_data binary inputs; no synthesized inputs")
+    parser.add_argument("--board-input-dir", help="alternative existing board directory containing the original inputs")
+    parser.add_argument("--sequence-length", choices=(64, 1), type=int, default=64, help="one original target gear; 1 alone does not prove state continuity")
+    parser.add_argument("--board-tool", default=os.environ.get("CPRO_MODEL_RUN_TOOL", "/data/local/tmp/tools_sysdbg/model_run_tool_internal"))
+    parser.add_argument("--board-model-root", default=os.environ.get("CPRO_TARGET_BOARD_ROOT", "/data/local/tmp/qwen3_5_moe"))
     parser.add_argument("--timeout-seconds", type=int, default=7200, help="OMG compilation timeout")
     parser.add_argument("--skip-inspection", action="store_true", help="skip post-compile OMC-to-JSON inspection")
     args = parser.parse_args()
+    if not args.air and not args.resume:
+        parser.error("--air is required for a new compilation")
+    if args.resume and args.output:
+        parser.error("--resume and --output cannot be combined")
+    if args.inspect_only and (not args.resume or args.skip_inspection):
+        parser.error("--inspect-only requires --resume and cannot be combined with --skip-inspection")
+    if args.run_board and (args.inspect_only or args.skip_inspection or bool(args.input_dir) == bool(args.board_input_dir)):
+        parser.error("--run-board requires exactly one of --input-dir/--board-input-dir and actual contract inspection")
 
     from qwen35_moe_dflash.artifacts import output_path, save_json
+    from qwen35_moe_dflash.full_target import (
+        active_target_jobs, read_metadata, target_source_lock, validate_compilation,
+    )
 
     root = None
     owned_root = False
+    continuation = None
+    guards = ExitStack()
     result = {"schema_version": 1, "artifact_kind": "qwen35-original-target-job",
               "status": "PREPARING", "device_execution": "NOT_RUN",
               "numerical_validation": "NOT_RUN", "device_ready": False}
@@ -76,17 +101,56 @@ def main():
             raise ValueError("AI_RUN_DIR, CPRO_DDK_ROOT/DDK_PATH and CPRO_DDK_ID are required; source the DDK and project env.sh")
         if args.timeout_seconds <= 0:
             raise ValueError("--timeout-seconds must be positive")
+        if args.resume:
+            root = output_path(args.resume)
+            prior = read_metadata(root / "result.json")
+            args.air = args.air or prior.get("air")
+        if not args.air:
+            raise ValueError("completed target job does not declare its original AIR")
         air = Path(args.air).resolve()
         if not air.is_file():
             raise ValueError(f"AIR not found: {air}")
-        root = output_path(args.output or Path(run) / ("full-target-compile-" + uuid.uuid4().hex[:12]))
-        root.mkdir(parents=True, exist_ok=False)
-        owned_root = True
         profile = get_existing_air_profile(args.profile)
-        save_json(root / "compile-profile.json", profile)
+        guards.enter_context(target_source_lock(air))
+        active = active_target_jobs(air)
+        if active:
+            raise RuntimeError("original target compiler entry is already running: " + json.dumps(active))
+        if args.resume:
+            print("full-target: verifying retained source, snapshot and external-output SHA256; reading only, no weight copies", flush=True)
+            compiled = validate_compilation(root, air=air, ddk_root=args.ddk_root,
+                ddk_id=args.ddk_id, profile=profile, input_layout=args.input_layout,
+                omg_path=args.omg, tbe_diagnosis=args.tbe_diagnosis)
+            result = dict(prior, resumed_from=str(root), model_compilation="PASSED",
+                          compiler_invocation="NOT_RUN_REUSED_COMPLETE_COMPILE",
+                          reuse_validation="SOURCE_SNAPSHOT_GENERATED_COMPILER_AND_LOG_SHA256",
+                          device_execution="NOT_RUN", numerical_validation="NOT_RUN", device_ready=False)
+            for key in ("interface_error", "interface_report", "target_contract_error", "target_contract_report",
+                        "runtime_sources_error", "board_status", "board_result"):
+                result.pop(key, None)
+            result.pop("board_error", None)
+            result.pop("delivery_status", None)
+            continuation = root / "continuations" / uuid.uuid4().hex[:12]
+            continuation.mkdir(parents=True)
+            print(f"full-target: reusing completed compilation at {root}; no model compilation or weight copies", flush=True)
+        else:
+            root = output_path(args.output or Path(run) / ("full-target-compile-" + uuid.uuid4().hex[:12]))
+            root.mkdir(parents=True, exist_ok=False)
+            owned_root = True
+            save_json(root / "compile-profile.json", profile)
+        evidence_root = continuation or root
         result.update(output=str(root), air=str(air), profile="compile-profile.json",
                       input_layout=args.input_layout,
                       compilation="compilation/report.json")
+        if args.hiai_include or args.source_root:
+            from qwen35_moe_dflash.original_target_contract import capture_runtime_sources
+            try:
+                sources = capture_runtime_sources(evidence_root / "runtime-sources", include=args.hiai_include,
+                                                  source_root=args.source_root)
+                result.update(runtime_sources=sources["status"],
+                              runtime_sources_report=str(evidence_root / "runtime-sources/report.txt"))
+                print("full-target: original input/state and selected HIAI declarations: " + result["runtime_sources_report"], flush=True)
+            except (OSError, ValueError) as error:
+                result.update(runtime_sources="UNAVAILABLE", runtime_sources_error=f"{type(error).__name__}: {error}")
         print(f"full-target: output {root}", flush=True)
         print("full-target: original AIR; 64/1 dynamic shapes; external weights; kirinx90", flush=True)
 
@@ -95,16 +159,20 @@ def main():
                     or row["completed"] in (1, row.get("total")) or row["completed"] % 25 == 0):
                 print("full-target: " + row["message"], flush=True)
 
-        compiled = compile_existing_air(
-            air, root / "compilation", args.ddk_root, ddk_id=args.ddk_id,
-            tbe_diagnosis=args.tbe_diagnosis, timeout_seconds=args.timeout_seconds,
-            omg_path=args.omg, input_shape=profile["input_shape"], dynamic_dims=profile["dynamic_dims"],
-            limit_partition_size=profile["limit_partition_size"],
-            save_weights_as_external_data=profile["save_weights_as_external_data"], progress=progress,
-            input_layout=args.input_layout,
-        )
+        if not args.resume:
+            compiled = compile_existing_air(
+                air, root / "compilation", args.ddk_root, ddk_id=args.ddk_id,
+                tbe_diagnosis=args.tbe_diagnosis, timeout_seconds=args.timeout_seconds,
+                omg_path=args.omg, input_shape=profile["input_shape"], dynamic_dims=profile["dynamic_dims"],
+                limit_partition_size=profile["limit_partition_size"],
+                save_weights_as_external_data=profile["save_weights_as_external_data"], progress=progress,
+                input_layout=args.input_layout,
+            )
         result["status"] = compiled["status"]
         result["model_compilation"] = compiled["model_compilation"]
+        if (root / "compilation/report.json").is_file():
+            from qwen35_moe_dflash.hashing import sha256_file
+            result["compilation_report_sha256"] = sha256_file(root / "compilation/report.json")
         result["compile_log"] = str(root / "compilation/compile.log")
         if compiled["status"] == "COMPILED":
             result["omc"] = str(root / "compilation" / compiled["omc"]["path"])
@@ -113,15 +181,42 @@ def main():
                 print("full-target: inspecting compiled graph interface (no board execution)", flush=True)
                 try:
                     from qwen35_moe_dflash.existing_omc_inspect import inspect_existing_omc
-                    inspected = inspect_existing_omc(root / "compilation", root / "interface", timeout_seconds=120)
+                    inspected = inspect_existing_omc(root / "compilation", evidence_root / "interface", timeout_seconds=120)
                     result["interface_inspection"] = inspected["status"]
-                    result["interface_report"] = str(root / "interface/report.txt")
+                    result["interface_report"] = str(evidence_root / "interface/report.txt")
                 except Exception as error:
                     result["interface_inspection"] = "UNAVAILABLE"
                     result["interface_error"] = f"{type(error).__name__}: {error}"
+                try:
+                    from qwen35_moe_dflash.original_target_contract import boundary_report, inspect_target_contract
+                    contract = inspect_target_contract(root / "compilation", evidence_root / "target-contract", profile)
+                    result["target_contract_inspection"] = contract["status"]
+                    result["target_contract_report"] = str(evidence_root / "target-contract/report.json")
+                    print(boundary_report(contract), end="", flush=True)
+                except Exception as error:
+                    result.update(target_contract_inspection="UNAVAILABLE", target_contract_error=f"{type(error).__name__}: {error}")
             else:
                 result["interface_inspection"] = "NOT_RUN"
+                result["target_contract_inspection"] = "NOT_RUN"
             result["next"] = "Confirm original graph I/O, external weights, dynamic gear and RefData state contract before board execution"
+            if args.run_board:
+                from qwen35_moe_dflash.original_target_board import execute_target_tool
+                board = execute_target_tool(root / "compilation", evidence_root / "target-contract/report.json",
+                    evidence_root / "board", profile=profile, gear=args.sequence_length,
+                    input_dir=args.board_input_dir, host_input_dir=args.input_dir, tool=args.board_tool,
+                    board_model_root=args.board_model_root, timeout_seconds=args.timeout_seconds)
+                result.update(board_status=board["status"], board_result=str(evidence_root / "board/result.json"),
+                              device_execution=board["device_execution"], numerical_validation=board["numerical_validation"],
+                              delivery_status="TARGET_EXECUTION_FAILED" if board["status"] == "FAILED" else "TARGET_EXECUTED_ACCURACY_UNVERIFIED",
+                              next="Review actual retrieved logits/state output mapping; establish same-input reference and 64-prefill to 1-decode state handoff before accuracy/performance claims")
+                if board["status"] == "FAILED":
+                    from qwen35_moe_dflash.tool_logs import log_excerpt
+                    result["board_error"] = board.get("error", board.get("evidence_error", "target execution failed"))
+                    for name in ("tool.stderr", "tool.stdout"):
+                        if (evidence_root / "board" / name).is_file():
+                            excerpt = log_excerpt(evidence_root / "board" / name)
+                            if excerpt:
+                                print("full-target: board diagnostics from " + name + "\n" + excerpt, flush=True)
         else:
             result["error"] = compiled.get("error", "compilation failed")
             result["stage"] = compiled.get("stage", "compilation")
@@ -129,16 +224,20 @@ def main():
                 if field in compiled:
                     result[field] = compiled[field]
             result["next"] = "Inspect compilation/report.txt and retained compiler diagnostics"
-        save_json(root / "result.json", result)
-        _print_result(result, result_path=root / "result.json",
+        result_path = evidence_root / "result.json"
+        save_json(result_path, result)
+        _print_result(result, result_path=result_path,
                       log_paths=(root / "compilation/compile.log", root / "compilation/help.log"))
-        return 0 if result["status"] == "COMPILED" else 1
+        return 0 if result["status"] == "COMPILED" and result.get("board_status") != "FAILED" else 1
     except Exception as error:
         result.update(status="FAILED", error=f"{type(error).__name__}: {error}")
-        if owned_root:
-            save_json(root / "failure.json", result)
-        _print_result(result, result_path=root / "failure.json" if owned_root else None)
+        failure_path = (continuation / "failure.json" if continuation else root / "failure.json" if owned_root else None)
+        if failure_path is not None:
+            save_json(failure_path, result)
+        _print_result(result, result_path=failure_path)
         return 1
+    finally:
+        guards.close()
 
 
 if __name__ == "__main__":

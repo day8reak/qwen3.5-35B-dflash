@@ -2,13 +2,13 @@
 
 [首页](README.md) · [环境配置](environment-setup.md) · [验证记录](validation.md)
 
-更新日期：2026-10-29。当前优先级是独立跑通完整6层DFlash draft，并固定源码声明的混合精度；保留40层target已有工作。最终仍需接通target验证、连续生成与性能比较。
+更新日期：2026-10-29。当前两个窗口并行推进：draft窗口关闭完整6层数值问题；target窗口推进原量化40层模型的编译、HIAI执行与验证。最终仍需接通target features、多步状态及性能比较。
 
 ## 用户现在执行什么
 
 最新direct结果已在用户内部DDK通过153/153计算精度检查，16个实际输出类型均与源码一致（`SOURCE_DTYPES_PRESERVED`），打包完成；runner在Load前错误拒绝ABI。原因是全局regex把嵌套 `direct_output_binding.artifact_kind` 也计入，报 `draft diagnostic wire requires its explicit ABI kind`。现修为只校验JSON顶层kind，重复顶层键/转义重复键/错误JSON仍拒绝。更新后继续下方 `run_draft_direct.py` 命令，复用reference、AIR、OMC、observed-fixture和bundle，只重建runner并重跑板端；失败board证据保留在 `direct-trace/board-attempts/<resultSHA>`。
 
-用户明确本周交付仅剩3天。完整正确性、原target普通解码、DFlash多步状态/接受拒绝与至少2x实测尚未闭环；不能承诺在该时限全部完成。target最近结果为“尚未运行或不确定”，先查已保留报告和活跃进程，不能直接重复启动 `compile_full_target.py`（该入口不支持自动恢复）。原89输入/80RefData、64/1动态档和外置权重还缺原接口native适配，不能直接套现有draft或显式状态runner。
+用户明确本周交付仅剩3天。完整正确性、原target普通解码、DFlash多步状态/接受拒绝与至少2x实测尚未闭环；不能承诺在该时限全部完成。target已安排另一窗口同步推进；用户说明旧full-target产物已删除，按没有已验证产物处理，先确认原AIR、量化权重及活跃进程。入口现支持校验后复用完整任务的 `--resume`，不自动重编译失败/中断任务。原89输入/80RefData、64/1动态档和外置权重还缺原接口native适配，不能直接套现有draft或显式状态runner。
 
 最新PID1611的完整packed trace已通过331/331精度检查、证明140条跨分区路径并完成设备执行，但观察数据内部矛盾：同源 `layer_0_output/layer_1_input` 不同，`context_fc` 显示全零而下游归一化非零，QK探针与其缩放后score不一致。诊断hidden与生产hidden相对L2=1.402770、Top1全不同。因此不能将 `first_nonexact=context_fc` 当原生产图首次错误，也不能把探针的3876个非有限差异直接归因于模型算术。
 
@@ -106,7 +106,47 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 4B和35B draft均为六层DFlash、block16、前五层sliding attention加最后一层full attention，但checkpoint配置不同：hidden为2560/2048，MLP为9216/6144，target feature宽度为20480/16384，embedding/head分别共享/不共享。不能替换35B的训练宽度或权重。使用同一小配置、权重及公共运算测试两套结构，三组prefix的完整六层hidden逐字节相同。4B分支记录20.22 ms/次（310P、C16/C64混合均值），同时标注PASS_WITH_DIFFERENCES；这个速度不证明全部数值一致。合并投影与增量缓存属于后续优化，Cpro性能需重新测量。
 
-## 保留的 target 编译与诊断
+## target 并行窗口：原量化模型生成与验证
+
+target窗口直接推进原40层量化AIR、89输入/80 RefData及64/1动态档，目标是实际普通prefill→decode与数值比较。draft由另一窗口继续。用户已确认原AIR及同级权重仍在、旧日志已删除；64档原始输入位于服务器 `/home/w00949577/run_35B/chunksize_64_data`，目前没有golden。代码在 `target/cpro-dflash-target` 分支，基于 `main` 的 `54f9ffd`；后续与draft分支合并。
+
+更新后的入口在启动前检查同源target入口及有输入清单绑定的OMG进程，并按原AIR路径加锁；不会阻止另一份draft编译。完整编译后从所选DDK的schema静态解码小OMC根图，核对真实Data/RefData名称、形状、类型、序列化index及输出生产者，另保留原工程输入/状态构造与所选HIAI头文件的本地摘录。不会导入原工程、重做量化或传送内部源码/库。
+
+已按用户原运行脚本接入板端 `model_run_tool_internal`，使用HIAI V2、`--weight_dir`、`--times=1` 和实际编译接口。原脚本的部分arg名称来自较早导出（例如`arg112_1/arg106_1`），不能原样套用本次`arg113_1/arg107_1`；先检查实际schema、索引、shape及dtype，再构造参数。原状态模板在板端展开成80份独立输入文件，保留原字节，不清零或改写原文件。
+
+原服务器在已配置环境中执行以下命令；使用独立源码worktree以保留draft窗口当前checkout。若`${REPO_DIR}-target`已经建立，复用它，不重复添加；`full-target`必须是新任务目录。入口发现同源target编译任务会拒绝重复启动：
+
+```bash
+git -C "$REPO_DIR" fetch origin target/cpro-dflash-target
+git -C "$REPO_DIR" worktree add --detach "${REPO_DIR}-target" origin/target/cpro-dflash-target
+python3 "${REPO_DIR}-target/targets/cpro/scripts/compile_full_target.py" \
+  --air /home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/export.air \
+  --source-root /home/l00886453/qwen3_5_moe \
+  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis" \
+  --output "$AI_RUN_DIR/full-target" \
+  --run-board --sequence-length 64 \
+  --input-dir /home/w00949577/run_35B/chunksize_64_data
+```
+
+关键产物为 `full-target/result.json`、`compilation/compile.log`、`target-contract/report.json`、`runtime-sources/report.txt`、`board/result.json`、`board/tool.stdout`、`board/tool.stderr` 和 `board/outputs/`。实际OMC接口或schema不支持时单独报告UNAVAILABLE，编译结果仍独立保留。`MATCHED_VISIBLE_BOUNDARIES`仅表示根图可见名称/类型/形状符合声明；序列化index不等于已验证的HIAI输入顺序，当前源文件也不能单独证明与当初导出AIR同版。板端入口校验输入字节数、dtype/档位及81个输出描述；完整全局index若与用户有序映射矛盾则停止。RefData单独编号或index缺失时保留原观察，使用用户脚本明确给出的有序参数，不将这些序列化index当作HIAI runtime槽位；最终仍需同输入数值参考确认。
+
+上传保留外置权重层级，按编译身份建立模型缓存，只重传哈希不同或缺失的文件；每次执行使用独立目录，保留输出、exitcode和工具日志。状态输入为各槽位独立副本，不推断底层RefData内存绑定已正确。相同模型执行有板端互斥锁；HDC等待超时不代表远端已取消，锁未释放时拒绝重叠执行。没有golden时状态为`EXECUTED_UNVALIDATED / NOT_RUN_NO_REFERENCE`，不会把执行、有限值或输出文件数量当精度通过。工具内部warmup/实际Run次数尚未核验，不作速度结论。
+
+用户原输出契约只有`logits + 80 RefData`，没有8层、宽16384的DFlash target features。该普通target是首轮基线；后续仍需补目标特征导出、同输入数值参考、64→1状态接续及DFlash验证/回滚。
+
+已有**完整COMPILED任务**后，继续检查用下面一条命令。它流式核对原文件、输入快照、全部生成文件、OMG及日志SHA256，保留外置文件层级，不复制权重、不重新编译模型；新增小报告放在 `continuations/`，原报告不覆盖：
+
+```bash
+python3 "${REPO_DIR}-target/targets/cpro/scripts/compile_full_target.py" \
+  --resume "$AI_RUN_DIR/full-target" --inspect-only \
+  --source-root /home/l00886453/qwen3_5_moe
+```
+
+编译完成后只重试板端时，将上面的`--inspect-only`换为`--run-board --sequence-length 64 --input-dir /home/w00949577/run_35B/chunksize_64_data`，仍用`--resume`，不重启整模编译。
+
+失败/中断编译、源权重改变、DDK/参数改变、外置文件缺失/改写/新增均拒绝复用，不自动删除或重编译。不要把残留OMC当成已成功任务。编译成功但板端失败时仍保留COMPILED阶段，`board_status`单独为FAILED、入口退出码1；可复用已验证编译后处理该板端失败。主机验证见 `specs/original-target-workflow.json`；真实公开DDK小OMC读取也通过，并正确识别其不符合89输入声明。这些不是内部DDK整模编译或板端通过证据。target仍待原服务器首轮结果。
+
+以下为保留的历史编译问题与诊断说明：
 
 **已经在编译的任务先保留，用另一个终端观察。** 旧脚本在 `Compiling existing AIR` 后将输出写入 `compilation/compile.log`，直到 OMG 退出才刷新终端；默认7200秒只是超时上限，不是预计完成时间。十几分钟没有终端输出不能单独判定卡死。查看本次目录里的日志尾部、文件更新时间以及 OMG/编译子进程的 CPU 累计耗时、内存和等待状态；日志静默也可能来自缓冲。先定位当前阶段，不重复启动另一个整模编译。
 
@@ -137,7 +177,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_full_target.py" \
 
 同一OMC/输入的GDN输出随预填充值变化。零填充时prefill/decode核心relative L2约为0.00392/0.0564，末态约0.146/0.155；A5填充时核心升至3.44/11.19；5A填充时出现约203.25的误差，与FP16位模式 `0x5A5A` 的值一致。有效token区域已排除padding。当前证据不能区分部分写、输出累加和缓存可见性；清零不是已验证修复，数值验收仍未通过。上述结果来自用户报告，原始远端文件尚未在本地重新核验。
 
-target原定里程碑为OMC编译与一次普通prefill/decode；当前先完成上述独立draft步骤，保留target已有编译及诊断。现成AIR路线绕过当前直接GE的W4A8重建缺口，但不能据此宣称整模已可上板。作为备选，新增加的权重准备器可流式生成完整target的逻辑INT4/INT8/FP16缓存，支持中断后校验复用；其约18.1GB数据尚非I4ZN/QPARAM，也不是板端峰值内存。原量化权重的 PyTorch/GE 路径现已接入，详见[原量化模型接入](original-quantization.md)；真实DDK量化绑定和QPARAM转换仍需实际环境提供。FP16约69.3GB不适合32GB板端。`--expert-dispatch selected`只减少计算，不减少常驻权重。现有自建stateful图的 `past_length` 静态；原AIR的动态状态契约需要独立检查。
+target当前里程碑为OMC编译与一次普通prefill/decode，与独立draft同时推进。现成AIR路线绕过当前直接GE的W4A8重建缺口，但不能据此宣称整模已可上板。作为备选，新增加的权重准备器可流式生成完整target的逻辑INT4/INT8/FP16缓存，支持中断后校验复用；其约18.1GB数据尚非I4ZN/QPARAM，也不是板端峰值内存。原量化权重的 PyTorch/GE 路径现已接入，详见[原量化模型接入](original-quantization.md)；真实DDK量化绑定和QPARAM转换仍需实际环境提供。FP16约69.3GB不适合32GB板端。`--expert-dispatch selected`只减少计算，不减少常驻权重。现有自建stateful图的 `past_length` 静态；原AIR的动态状态契约需要独立检查。
 
 target后续工作：按用户原转换契约完成现有AIR编译、读取实际图接口、接通状态执行；继续分析GDN读写问题。暂不增加Conv/RMS候选、重复平台诊断或新的性能矩阵。需要实机验证时给单一入口命令。
 
