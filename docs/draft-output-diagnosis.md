@@ -39,11 +39,14 @@ python3 "$REPO_DIR/targets/cpro/scripts/inspect_draft_outputs.py" --math
 针对残差路径新增独立、可恢复的候选：
 
 ```bash
+python3 "$REPO_DIR/targets/cpro/scripts/compact_draft_storage.py" --apply
 python3 "$REPO_DIR/targets/cpro/scripts/run_draft_residual.py" \
   --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
 ```
 
 它复用已验证的 prepared 权重、固定输入及两路原 golden；不重新执行 CPU 模型。新 AIR、编译、bundle 和板端结果位于 `full-draft/residual-fix`，原生产、packed 和 direct 文件均保留。候选仅导出原 Top1、hidden 两路，避免再次加入中间观察端口。
+
+服务器当前只剩约10G，所以先合并已验证相同的只读编译输入快照；工具保留路径、权限、内容哈希和清单。首次候选仍需新 AIR/OMC，完成后重试才复用；具体存储预算与限制见[当前执行文档](current-status.md#先节省已有快照空间)。
 
 仅12处残差 Add 的 GE 发射采用 `FP16 -> FP32` 的两个输入 Cast、FP32 Add、再 Cast 回原 FP16 结果；源图名称、权重、参考与比较判据不变。IEEE RN-even 下有限 FP16 操作数的加法保持相同结果，包括负零及溢出；NaN payload 等价不作断言。附近指数的和可由 FP32 精确表示，距离更远时较小操作数不足以改变 FP16 舍入；单元验证覆盖所有63488个有限值对12个边界锚点、40万随机对及独立 Torch/FP64 参考。
 

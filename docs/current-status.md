@@ -2,9 +2,54 @@
 
 [首页](README.md) · [环境配置](environment-setup.md) · [验证记录](validation.md)
 
-更新日期：2026-10-29。当前优先级是独立跑通完整6层DFlash draft，并固定源码声明的混合精度；保留40层target已有工作。最终仍需接通target验证、连续生成与性能比较。
+更新日期：2026-10-29。draft 与原量化40层 target 分窗口并行推进；本页的当前 draft 入口为残差候选 `run_draft_residual.py`。执行入口变化时同步更新本节；下方折叠内容仅为历史证据，不能作为当前命令。
 
 ## 用户现在执行什么
+
+**当前执行残差候选，停止续跑旧 direct/packed 诊断任务。** 代码 `c0463f7` 已推送：用户 direct 图已执行，153/153 精度检查和16路输出类型检查通过，但 Top1 仍失败。只读结果确认 layer1 norm 与仅 MLP down 做 RMS 的32768元素逐字节一致，完整残差和重建 relative L2 为0.454767，形成残差项丢失的强线索。残差候选尚无板端结果，不能宣称数值修复成功。
+
+### 先节省已有快照空间
+
+用户服务器目前只剩约10G。先更新代码并合并已验证相同的只读编译输入权重快照：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/compact_draft_storage.py" --apply
+```
+
+省略 `--apply` 可只查看计划。工具只处理固定 draft 目录中已完成编译、与 prepared 权重大小/SHA匹配的输入快照；在同一文件系统、相同权限/属主的只读快照之间建立硬链接，保留路径、内容哈希和原清单。不删除 AIR、OMC、bundle、参考输出或编译报告，不修改 prepared 权重权限；已共享inode、跨文件系统或身份不符的文件不合并。报告区分逻辑重复字节与文件系统可用空间变化；reflink本来共享物理块时，实际释放可能较少。
+
+### 再执行一次残差候选
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/run_draft_residual.py" \
+  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
+```
+
+固定输出为 `$AI_RUN_DIR/full-draft/residual-fix`，仅返回原 Top1、hidden 两路。它复用 prepared 权重、相同输入、两路原 golden 和缓存 CPU 参考；仅12处残差加法在 GE 发射中采用两个 FP32 输入 Cast、FP32 Add、再回到原 FP16 结果。有限 FP16 操作数在 IEEE RN-even 下保持相同加法结果；完整 recipe 的165项 FP32 CPU要求必须通过实际 CPUCL 检查，才继续打包和上板。详细依据和限制见[残差定位记录](draft-output-diagnosis.md#已取回的数学结果与残差候选)。
+
+### AIR、OMC 是否会重复生成
+
+| 产物 | 当前行为 |
+| --- | --- |
+| prepared、输入、golden、CPU参考 | 直接复用，不重新准备权重或执行 CPU 模型 |
+| residual-fix AIR | 残差计算路径已变，首次必须新生成；该阶段完成后重试复用 |
+| residual-fix OMC | 首次必须根据新 AIR 编译；编译阶段完成后重试复用 |
+| bundle、board | 复用已完成阶段；runner失败重试保留旧证据，按当前恢复逻辑继续 |
+| 旧 direct/packed | 保留证据；不是当前需要继续运行的入口 |
+
+旧 `run_draft_direct.py` 报 `changed artifact-building code` 的那次，在保护检查即退出，没有重新导出 AIR 或编译 OMC。不要通过删除旧目录或修改 owner 绕过该检查。新入口使用独立目录，基线证据保持原样。
+
+磁盘预算：此前完整 draft 的 AIR 权重约2.8GB，外置编译权重约2.85GB，供 legacy-buffer 使用的内嵌 bundle 约2.85GB。AIR 权重在同文件系统优先硬链接；编译输入优先 reflink，否则会复制。候选增量粗估约5.7–8.6GB，**不含编译临时文件和 target 并行任务占用**，所以10G不能作为充足空间的保证。先执行上述快照合并、检查实际可用空间；不重启旧探针，不新增随机任务批次，不直接删除恢复仍依赖的文件。
+
+本周剩余3天的总目标仍包含正确完整模型、多步DFlash接受/拒绝及状态处理、同条件至少2x实测；尚未闭环。用户已说明旧 full-target 产物已删除，target 由另一窗口独立落实编译和普通 prefill/decode；本窗口继续 draft。
+
+## 历史 draft 排障记录（不作为当前执行命令）
+
+<details>
+<summary>展开较早的 direct、packed、精度锁和加载诊断记录</summary>
+
+以下保留当时的观察与命令，时间顺序和“现在执行”等措辞属于历史上下文；当前只执行上方残差候选流程。
 
 最新direct结果已在用户内部DDK通过153/153计算精度检查，16个实际输出类型均与源码一致（`SOURCE_DTYPES_PRESERVED`），打包完成；runner在Load前错误拒绝ABI。原因是全局regex把嵌套 `direct_output_binding.artifact_kind` 也计入，报 `draft diagnostic wire requires its explicit ABI kind`。现修为只校验JSON顶层kind，重复顶层键/转义重复键/错误JSON仍拒绝。更新后继续下方 `run_draft_direct.py` 命令，复用reference、AIR、OMC、observed-fixture和bundle，只重建runner并重跑板端；失败board证据保留在 `direct-trace/board-attempts/<resultSHA>`。
 
@@ -106,7 +151,11 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 4B和35B draft均为六层DFlash、block16、前五层sliding attention加最后一层full attention，但checkpoint配置不同：hidden为2560/2048，MLP为9216/6144，target feature宽度为20480/16384，embedding/head分别共享/不共享。不能替换35B的训练宽度或权重。使用同一小配置、权重及公共运算测试两套结构，三组prefix的完整六层hidden逐字节相同。4B分支记录20.22 ms/次（310P、C16/C64混合均值），同时标注PASS_WITH_DIFFERENCES；这个速度不证明全部数值一致。合并投影与增量缓存属于后续优化，Cpro性能需重新测量。
 
+</details>
+
 ## 保留的 target 编译与诊断
+
+以下为原编译入口及既有诊断的历史记录。用户最新已说明旧 full-target 产物删除，并另开窗口推进 target；不能据本节早期“正在编译”的描述推断当前进程或产物仍在。
 
 **已经在编译的任务先保留，用另一个终端观察。** 旧脚本在 `Compiling existing AIR` 后将输出写入 `compilation/compile.log`，直到 OMG 退出才刷新终端；默认7200秒只是超时上限，不是预计完成时间。十几分钟没有终端输出不能单独判定卡死。查看本次目录里的日志尾部、文件更新时间以及 OMG/编译子进程的 CPU 累计耗时、内存和等待状态；日志静默也可能来自缓冲。先定位当前阶段，不重复启动另一个整模编译。
 
@@ -155,7 +204,8 @@ target后续工作：按用户原转换契约完成现有AIR编译、读取实�
 | GE完整结构 | 原W4量化target完整40层64/1构图；同步 FP32 计算边界与指定位置完整 logits，实际DDK量化绑定和设备验证待完成 |
 | 自定义算子探针 | 当前选择GDN/CacheUpdate/Attention三类6例，用户回传导出、编译、加载及执行通过；原Conv/RMS三例失败保留为可选诊断 |
 | 真实权重AIR导出 | 旧双图支持完整FP16；新GE target支持显式缓存 |
-| 原工程完整AIR | 已进入 AIR 解析；缺失外置权重快照及目录前缀的问题已修复，真实 OMG 重试待执行；未执行设备推理 |
+| 完整 draft | 原 direct 已执行但数值失败；当前 residual-fix 候选待165项CPU检查及板端验证 |
+| 原工程完整AIR | 旧 full-target 产物已删除，另一窗口推进原量化40层编译与普通prefill/decode；尚无本页确认的目标设备数值通过 |
 | 原量化缓存 | 按原YAML读取已有W4及scale，I4ZN逐字节参考对照通过；专家QPARAM缺失时明确报告pending，不重新量化 |
 | 状态执行 | 主机fake prefill→decode接续通过；真实板端待验证 |
 | 尚未完成 | 真实DDK量化契约/目标执行、常驻缓存与native DFlash调度、完整模型设备精度和性能 |
