@@ -15,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 
 from .artifacts import output_path, save_json
@@ -33,6 +34,8 @@ _DATA_DIRECTORIES = frozenset({"weights", "weight", "data", "constants", "extern
 INPUT_LAYOUTS = ("air-directory", "export-directory")
 _MAX_ENTRIES, _MAX_FILES, _MAX_DEPTH = 8192, 4096, 4
 _COPY_RESERVE_BYTES = 64 << 20
+_MAX_CL_CUSTOMIZATION_BYTES = 1 << 20
+_CL_CUSTOMIZATION_OPTION = "../options/cl-customization.json"
 _PRIMARY_OMC_PATHS = (Path("compile-work/generated/model.omc"),
                      Path("compile-work/generated/model/model.omc"))
 
@@ -153,6 +156,33 @@ def _conversion_options(input_shape, dynamic_dims, limit_partition_size, save_we
     return values
 
 
+def _cl_customization_source(value):
+    """Validate one small explicit compiler policy without interpreting its API."""
+    if value is None:
+        return None
+    raw = Path(value).expanduser()
+    if raw.is_symlink() or not stat.S_ISREG(raw.lstat().st_mode):
+        raise ValueError("cl_customization must be a regular non-symlink file")
+    source = raw.resolve()
+    before = _stat(source)
+    if not 0 < before[2] <= _MAX_CL_CUSTOMIZATION_BYTES:
+        raise ValueError("cl_customization must be nonempty and at most 1 MiB")
+    with source.open("rb") as stream:
+        data = stream.read(_MAX_CL_CUSTOMIZATION_BYTES + 1)
+    if len(data) != before[2] or _stat(source) != before:
+        raise ValueError("cl_customization changed during validation")
+    def nonstandard_constant(value):
+        raise ValueError("cl_customization requires standard JSON without " + value)
+    try:
+        decoded = json.loads(data.decode("utf-8"), parse_constant=nonstandard_constant)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("cl_customization must contain valid UTF-8 JSON") from error
+    if not isinstance(decoded, dict):
+        raise ValueError("cl_customization JSON must be an object")
+    return {"source": source, "source_stat": before,
+            "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
 def _check_help(omg, env, output, options, timeout_seconds):
     folder = output / "compile-work/help"
     folder.mkdir()
@@ -255,7 +285,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                          input_shape=None, dynamic_dims=None, limit_partition_size=None,
                          save_weights_as_external_data=None, progress=None,
                          input_layout="air-directory", use_origin_format=None,
-                         weight_data_type=None):
+                         weight_data_type=None, cl_customization=None):
     """Return a host compilation report, retaining failures without deployment.
 
     Only inventoried local snapshots are hash bound. Absolute or out-of-tree
@@ -270,6 +300,10 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     settings. Both default to omitted; the complete FP16 draft uses True/FP16
     to match its previously successful tiny compiler profile. This is not an
     inferred policy for arbitrary or quantized AIR inputs.
+    Optional ``cl_customization`` must be a bounded JSON object. Its bytes are
+    independently snapshotted outside the generated-model directory, and the
+    option is passed unchanged to the selected OMG. Help may omit this internal
+    option; actual compiler validation remains authoritative.
     """
     if (not isinstance(ddk_id, str) or not ddk_id.strip()
             or isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
@@ -281,6 +315,10 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         raise ValueError(f"input_layout must be one of {INPUT_LAYOUTS}")
     options = _conversion_options(input_shape, dynamic_dims, limit_partition_size,
                                   save_weights_as_external_data, use_origin_format, weight_data_type)
+    customization = _cl_customization_source(cl_customization)
+    customization_snapshot = None
+    if customization is not None:
+        options["cl_customization"] = _CL_CUSTOMIZATION_OPTION
 
     def notify(stage, message, **details):
         if progress is not None:
@@ -357,6 +395,17 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         if report["help_check"]["missing"]:
             notify(stage, "Requested options not listed in help; compiler will validate unchanged arguments",
                    options=report["help_check"]["missing"])
+        if customization is not None:
+            stage = "cl-customization-snapshot"
+            snapshot = scratch / "options/cl-customization.json"
+            customization_snapshot = _snapshot(customization["source"], snapshot)
+            if any(customization_snapshot[key] != customization[key]
+                   for key in ("source_stat", "bytes", "sha256")):
+                raise ValueError("cl_customization source changed since validation")
+            report["cl_customization"] = {
+                "path": snapshot.relative_to(output).as_posix(),
+                "bytes": customization_snapshot["bytes"], "sha256": customization_snapshot["sha256"],
+            }
         if compatibility is not None:
             stage = "tbe-compatibility-prepare"
             env, metadata = prepare_tbe_compatibility(ddk, tbe_diagnosis,
@@ -476,7 +525,22 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                     changed.append(row["source_relative"])
             except OSError:
                 changed.append(row["source_relative"])
-        preservation = "CHANGED" if changed else ("UNCHANGED_BY_STAT" if report["input_snapshots"] else "NOT_CHECKED")
+        if customization is not None:
+            try:
+                if (_stat(customization["source"]) != customization["source_stat"]
+                        or sha256_file(customization["source"]) != customization["sha256"]):
+                    changed.append("cl_customization source")
+            except OSError:
+                changed.append("cl_customization source")
+            if customization_snapshot is not None:
+                snapshot = scratch / "options/cl-customization.json"
+                try:
+                    if (_stat(snapshot) != customization_snapshot["snapshot_stat"]
+                            or sha256_file(snapshot) != customization["sha256"]):
+                        changed.append("cl_customization snapshot")
+                except OSError:
+                    changed.append("cl_customization snapshot")
+        preservation = "CHANGED" if changed else ("UNCHANGED_BY_STAT" if report["input_snapshots"] or customization is not None else "NOT_CHECKED")
         report["source_preservation"] = {"status": preservation,
                                          "changed": changed,
                                          "scope": "Hash-bound snapshot plus before/after metadata checks; no original file writes or source directory links."}

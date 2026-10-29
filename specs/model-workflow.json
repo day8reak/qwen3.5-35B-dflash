@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-28",
+  "updated": "2026-10-29",
   "active_phase": "integration",
   "delivery_status": "HOST_IMPLEMENTED_DEVICE_INTEGRATION_PENDING",
-  "run_id": "20261027T130835Z-9607-68b43f",
+  "run_id": "20261028T235456Z-17998-116042",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -1576,7 +1576,7 @@
         ],
         "original_evidence": "UNCHANGED",
         "threshold_changes": "NONE",
-        "next_action": "Run updated --diagnose-numerics once to inspect existing compiled OMC and output byte interpretation; no full compilation/upload",
+        "next_action": "Completed user-reported bound OMC inspection confirms FP16 boundaries inside declared FP32 RMS regions. Run full-draft with fp32-cpu and embedded-stream; reuse prepared/reference/AIR, recompile with strict compiled precision verification, then bundle and execute once.",
         "host_validation": {
           "passed": 212,
           "failed": 0,
@@ -1654,6 +1654,118 @@
             "out/final-precision-tests.xml"
           ],
           "scope": "Host-only retained OMC decoding, output interpretation, identity/log checks, CLI and container/packing regressions; no new device run"
+        },
+        "latest_compiled_boundary_observation": {
+          "source": "USER_PASTED_BOUND_OMC_REPORT",
+          "native_process_id": 54002,
+          "runtime_placement": "UNVERIFIED",
+          "graphop_counts": {
+            "CPUCL": 27,
+            "NPUCL": 26
+          },
+          "reduce_mean_fp32_count": 26,
+          "final_rms": {
+            "square_subgraph": "SubGraph_49",
+            "square_boundary_dtype": "float16",
+            "reduce_mean_subgraph": "SubGraph_50",
+            "reduce_mean_dtype": "float32",
+            "post_mean_subgraph": "SubGraph_51",
+            "post_mean_boundary_dtype": "float16"
+          },
+          "output_hidden_dtype": "float16",
+          "output_hidden_bytes": 61440,
+          "output_buffer_identity": "UNCHANGED",
+          "finding": "COMPILED_BOUNDARIES_DO_NOT_PRESERVE_SOURCE_FP32_REGIONS",
+          "kernel_internal_mechanism": "UNVERIFIED",
+          "numerical_validation": "FAILED"
+        }
+      },
+      "compiled_precision_lock": {
+        "run_id": "20261028T235456Z-17998-116042",
+        "contract": "cpro-fp32-cpu-v1",
+        "policy": "fp32-cpu",
+        "default": "New jobs and old jobs without an explicit recorded policy; existing explicit policy is inherited",
+        "status": "HOST_AND_LOCAL_COMPILER_VERIFIED_DEVICE_ACCURACY_PENDING",
+        "source_contract": "cpro-fileconstant-relative-int-fc-conv2d-mask-gather-air4b-precision-v6",
+        "full_draft_required_nodes": 153,
+        "scope": "Preserve source mixed precision: FP32 arithmetic regions on verified CPUCL, explicit FP16/Cast boundaries unchanged. Kernel internal arithmetic and performance require device validation.",
+        "request": "cl_customization: one npucl_strategy/npucl_graphs/draft group with npucl_implementation 7; all required nodes assigned group_id 0",
+        "selector_qualification": "7 denotes custom_ascendc_lib, not CPU. Local missing implementations cause CPU fallback; selected user DDK must independently satisfy compiled CPUCL verification.",
+        "pre_upload_checks": [
+          "Bound AIR recipe and deterministic private configuration snapshot",
+          "All required CPUCL nodes, dtype/shape and FP32 producer edges match",
+          "Recheck even reused compilation; unsupported container/schema/fusion is not accepted",
+          "Bundle compiler/AIR/fixture manifest hashes match current stages"
+        ],
+        "reuse": [
+          "prepared",
+          "fixture",
+          "air"
+        ],
+        "rebuild": [
+          "compilation",
+          "bundle"
+        ],
+        "threshold_changes": "NONE",
+        "local_compiler_evidence": [
+          {
+            "case": "two RMS with FP16 bridge",
+            "required": 10,
+            "matched": 10,
+            "graphop_counts": {
+              "CPUCL": 2,
+              "NPUCL": 1
+            },
+            "report": "out/precision-two-rms/policy-final-verification.json",
+            "omc_sha256": "14dad3f4e1f3054f598f8ccad8474a19c005d15dff81ad984e9ca5dc56369648"
+          },
+          {
+            "case": "two-layer tiny draft with RMS, attention and RoPE",
+            "required": 61,
+            "matched": 61,
+            "graphop_counts": {
+              "CPUCL": 1
+            },
+            "report": "out/precision-draft-smoke/smoke-report.json",
+            "qualification": "Local public DDK required recorded equivalent Select/ArgMax and weight basename adaptations and omission of unsupported limit_partition_size; production exporter unchanged; not full 35B or device evidence"
+          }
+        ],
+        "host_validation": {
+          "combined_passed": 246,
+          "combined_report": "out/precision-final-tests.xml",
+          "followup_cli_passed": 102,
+          "new_stale_bundle_cases": 3,
+          "unique_passed": 249,
+          "failed": 0,
+          "followup_evidence": "Tool execution session 69787, exit 0, 102 passed in 18.39s; no JUnit file",
+          "followup_command": "PYTHONPATH=model PYTHONDONTWRITEBYTECODE=1 MODEL_PYTHON -m pytest -q -p no:cacheprovider tests/test_full_draft_precision_cli.py tests/test_full_draft_cli.py"
+        },
+        "new_device_execution": "NOT_RUN",
+        "latest_device_numerical_validation": "FAILED",
+        "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_full_draft.py\" --weight-storage embedded-stream --precision-policy fp32-cpu --tbe-diagnosis \"$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis\"",
+        "experience_audit": {
+          "captured": [
+            "Source FP32 Casts do not establish postcompile precision",
+            "A FP32 ReduceMean surrounded by FP16 partition ports does not preserve an FP32 RMS chain",
+            "Vendor selector IDs must be inspected and verified by actual compiled ownership, not assumed to mean CPU",
+            "Precision evidence must bind to the exact bundle that executes"
+          ],
+          "updated_checks": [
+            "test_draft_compile_precision.py",
+            "test_draft_precision_policy.py",
+            "test_existing_air_cl_customization.py",
+            "test_full_draft_precision_cli.py"
+          ],
+          "rejected_promotions": [
+            "Configuration accepted equals precision preserved",
+            "Local compiler smoke equals full device numerical pass",
+            "CPU baseline equals acceptable performance"
+          ],
+          "remaining": [
+            "Selected internal DDK compilation with all 153 required nodes",
+            "Full six-layer board numerical comparison",
+            "Device performance after accuracy closure"
+          ]
         }
       }
     }

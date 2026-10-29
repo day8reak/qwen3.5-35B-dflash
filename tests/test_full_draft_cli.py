@@ -74,7 +74,10 @@ def job(tmp_path, monkeypatch):
         calls.append("bundle")
         assert kwargs["config"] == config and kwargs["export_dir"].name == "air"
         folder.mkdir()
-        save_json(folder / "manifest.json", {"artifact_kind": "qwen35-standalone-draft-bundle", "status": "PREPARED"})
+        save_json(folder / "manifest.json", {"artifact_kind": "qwen35-standalone-draft-bundle", "status": "PREPARED",
+            "compiler_report_sha256": sha256_file(compiled / "report.json"),
+            "export_manifest_sha256": sha256_file(kwargs["export_dir"] / "manifest.json"),
+            "fixture_report_sha256": sha256_file(fixture / "report.json")})
 
     def board(bundle, folder, **kwargs):
         calls.append("board")
@@ -90,7 +93,8 @@ def job(tmp_path, monkeypatch):
     monkeypatch.setattr(draft_board, "prepare_draft_bundle", bundle)
     monkeypatch.setattr(draft_board, "execute_draft_bundle", board)
     main = runpy.run_path(str(Path(__file__).resolve().parents[1] / "targets/cpro/scripts/run_full_draft.py"))["main"]
-    common = ["--ge-root", str(tmp_path / "ge"), "--ddk-root", str(tmp_path / "ddk"), "--ddk-id", "test-ddk"]
+    common = ["--ge-root", str(tmp_path / "ge"), "--ddk-root", str(tmp_path / "ddk"), "--ddk-id", "test-ddk",
+              "--precision-policy", "compiler-default"]
     fresh = ["--target-weights", str(target), "--draft-weights", str(draft), *common]
     return main, fresh, common, calls, failures
 
@@ -784,6 +788,9 @@ def stream_bundle_job(job, tmp_path, monkeypatch):
         (folder / "model.omc").write_bytes(payload)
         save_json(folder / "manifest.json", {
             "artifact_kind": "qwen35-standalone-draft-bundle", "status": "PREPARED",
+            "compiler_report_sha256": sha256_file(compiled / "report.json"),
+            "export_manifest_sha256": sha256_file(kwargs["export_dir"] / "manifest.json"),
+            "fixture_report_sha256": sha256_file(fixture / "report.json"),
             "weight_storage": mode,
             "model": {"path": "model.omc", "bytes": len(payload),
                       "sha256": sha256_file(folder / "model.omc")}})

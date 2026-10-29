@@ -4,6 +4,28 @@
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
+## 编译FP32区域锁定
+
+2026-10-29，正常full-draft入口新增默认 `fp32-cpu`，契约为 `cpro-fp32-cpu-v1`。从已有v6 AIR绑定的recipe收集153个FP32计算节点，逐节点请求编译实现选择，并以实际OMC中的CPUCL归属、端口dtype/shape及FP32生产者连接作为上传前的必过检查。源码指定的FP16与Cast边界、权重、参考和六层结构不变；切换策略只使编译与bundle失效。私有配置快照及其SHA进入编译清单，复用编译也重查；bundle必须绑定当前编译、AIR和fixture清单。
+
+配置使用所选DDK的 `cl_customization` 单组格式。implementation 7实际表示custom AscendC库，不是CPU设备编号；本地该库没有这些普通FP32算子实现，编译器因此采用CPUCL。不同DDK可能具有不同注册，配置被接受不等于锁定成功，必须经过编译产物检查。一个组包含所有受保护节点即可；多组且遗漏其他节点的格式在实际编译中被拒绝，没有纳入最终配置。
+
+本轮run `20261028T235456Z-17998-116042` 的真实本地编译验证：
+
+- 双RMS图：10/10个FP32节点通过严格检查，2个CPUCL区域，中间FP16计算仍位于1个NPUCL子图。证据 `out/precision-two-rms/policy-final-verification.json`，OMC SHA256为 `14dad3f4e1f3054f598f8ccad8474a19c005d15dff81ad984e9ca5dc56369648`。
+- 两层小draft：61/61个受保护节点通过，覆盖10个RMS、2个attention及RoPE。证据 `out/precision-draft-smoke/smoke-report.json`。本地公开DDK需要basename权重路径、Select/ArgMax等价接口适配，并省略其不接受的limit_partition_size参数；全部仅用于此smoke，生产导出器和用户DDK参数未改。该小图全部位于CPUCL，不能作为完整模型的执行位置或速度证据。
+- 组合主机回归246项通过，报告 `out/precision-final-tests.xml`，覆盖策略生成、真实编码OMC验证、类型/边界故障拒绝、配置快照及恢复入口。最后补齐旧bundle来源校验后，两个CLI测试文件合跑102项通过（工具session 69787，退出0，18.39秒，未另存JUnit）；其中新增3项，去重合计249项。
+
+这些结果验证了本地编译控制与检查链，没有新增完整35B板端结果。用户最新的设备数值状态仍为FAILED；下一步是一条正常入口命令完成受控重编译、打包、上板与比较。没有放宽数值门槛，也没有把静态描述符当成核内累加精度或源BF16模型质量的证明。
+
+## v6已执行OMC的FP32边界丢失
+
+用户最新回传的无dump检查已绑定PID54002的AIR、编译OMC和embedded-stream图/任务分区：编译图包含27个CPUCL与26个NPUCL GraphOp。26个ReduceMean均保留FP32描述，但最终RMS的square所在SubGraph_49输出是FP16，经netoutput_cast_64转FP32后进入CPU SubGraph_50；其FP32均值又经graphop_data_cast_41转成FP16，送入执行后半段归一化的NPU SubGraph_51。源图要求整个平方到归一化乘积为FP32，编译后的这些边界与该策略不符。单独看到ReduceMean是FP32不能说明整段RMS保精度。
+
+实际NetOutput的hidden端口为FP16 `[1,15,2048]`；原生分配前后均为61,440字节且buffer身份不变。奇偶半字均有大量大幅值，将同字节解释为FP32得到约1.57e17幅值，不符合“正常FP32归一化结果被当FP16读取”的简单解释。这些证据定位了编译精度边界问题，但不证明±257.75来自哪一种芯片内部机制，也不排除其他数值错误。
+
+后续修正必须覆盖所有FP32计算区域，并在打包/上传前核对编译OMC的算子归属、端口dtype及FP32连接。只有完整板端对比通过后才能更新数值结论；原参考、权重、结构及比较门槛保持原契约。
+
 ## v6完整draft执行成功后的数值失败
 
 用户回传PID54002的v6 AIR/v3参考流程：OMG编译通过，embedded-stream OMC为2,852,358,026字节，SHA256为 `717fc0c43a81a865cac05eb8626601e90ca5863bf15af91df02b1625c9d57a45`；原生EXECUTED、退出码0、输入回读MATCHED。Top1差异12/15；参考hidden L2=175.27058602513762，设备L2=27883.188584137377，相对L2=159.06354720130383。设备全部元素有限，但范围为[-258.75,258.75]，429个元素为零。没有性能测量，实际执行位置未确认。

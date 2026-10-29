@@ -2,16 +2,18 @@
 
 当前优先跑通完整六层 DFlash，不等待40层 target 编译。沿用已经配置的 `env.sh`、主机GE、目标DDK和HDC环境。默认工作目录固定为 `$AI_RUN_DIR/full-draft`，后续自动复用成功阶段并覆盖失败阶段的日志，不再为每次重试生成新目录。
 
-当前v6 AIR/v3参考已完成编译和设备推理，但数值仍失败：15个Top1中12个不一致，设备hidden相对L2=159.063547。现在复用保留产物做一次本地诊断：
+当前v6 AIR/v3参考已完成编译和设备推理，但数值仍失败：15个Top1中12个不一致，设备hidden相对L2=159.063547。保留OMC已确认RMS的FP32均值前后被编译器插入了FP16边界。现在锁定精度后继续完整流程：
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --diagnose-numerics
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
+  --weight-storage embedded-stream --precision-policy fp32-cpu \
+  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
 ```
 
-此命令不重建或执行模型；核验保留文件后，输出各行hidden的RMS、余弦、误差和常见FP16值，同时静态解析所选DDK schema和已保存编译IR。没有IR dump时，从成功编译的小external OMC读取ModelDef和具有明确offset/size归属的CPU GraphDef，通过packing receipt核对其与执行模型的图/任务分区字节一致；不猜测NPU opaque任务内容。还显示模型输出描述、原生分配字节及FP16奇偶半字/FP32假设视图，原FP16比较保持不变。
+默认 `fp32-cpu` 从AIR的recipe生成精度编译配置，保留prepared、当前fixture和AIR，重编译并打包一次。所有源码FP32计算区域必须在编译OMC的CPUCL中保留声明的dtype、shape与FP32连接，源码显式Cast边界保持原样。`compilation/precision-check.json` 未通过就停止打包和上传；复用编译同样重查。上板前还校验bundle对应当前编译、AIR与参考清单，避免执行旧代产物。新增或旧任务未记录策略时默认锁定，已明确指定的策略继续继承；`compiler-default` 仅供显式复现历史编译行为。CPU路径可能影响速度，完整模型的数值和性能仍需实测。
 
-报告固定为 `numerical-diagnostic/report.json`，再次诊断只替换自己的报告，不修改原golden、OMC和板端证据。支持 `--schema-library` 显式选择schema库；不支持的schema、容器和dtype均单独报告。数值仍失败时返回1，INSPECTED不表示精度通过。
+`--diagnose-numerics` 仍是可选的只读诊断：核验现有OMC与执行模型的图/任务分区身份，检查CPU图、GraphOp边界和输出字节解释，固定写入 `numerical-diagnostic/report.json`。它不会重新编译或执行。`--schema-library` 支持显式选择所选DDK内的schema库；无法验证的schema、容器或dtype不能视为精度检查通过。
 
 旧参考重放已确认RMS平方的FP16溢出；当前GE和新参考已对齐4B实际AIR的精度边界。全部26处norm声明在FP32中归一化，再转FP16乘原scale；attention的QK/PV结果边界保持FP16，score/softmax使用FP32、概率转FP16后进入PV；RoPE角度和cos/sin使用FP32、完成后转FP16。35B训练配置、权重和六层结构不变。embedded-stream已完成本次设备执行，当前误差原因仍需定位，不能把导出声明视为设备数值正确的证明。
 

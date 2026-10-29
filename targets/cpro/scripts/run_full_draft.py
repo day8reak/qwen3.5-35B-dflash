@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import hashlib
 import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 import uuid
 
 REPO = Path(__file__).resolve().parents[3]
@@ -37,6 +39,8 @@ def parser():
                    help="external/embedded select OMG storage; embedded-stream reuses external compilation and streams verified weights into the bundle OMC")
     p.add_argument("--model-load-api", choices=("file-v2", "legacy-buffer"),
                    help="board loader only; default file-v2 for external weights, legacy-buffer for embedded weights; does not recompile OMC")
+    p.add_argument("--precision-policy", choices=("fp32-cpu", "compiler-default"),
+                   help="default fp32-cpu locks declared FP32 arithmetic to verified CPUCL FP32; resumes inherit a recorded policy; compiler-default is an explicit reproduction override")
     p.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
     p.add_argument("--cxx11-abi", type=int, choices=(0, 1), default=0)
     p.add_argument("--timeout-seconds", type=int, default=3600)
@@ -71,6 +75,80 @@ def _verify_air(folder, manifest):
         raise ValueError("expected an exported draft-only AIR manifest")
     for row in manifest["graphs"][0]["files"]:
         checked_file(folder, row)
+
+
+def _precision_request(folder, manifest):
+    """Bind the placement request to the exact retained construction recipe."""
+    from qwen35_moe_dflash.artifacts import checked_file
+    from qwen35_moe_dflash.draft_compile_precision import collect_precision_plan
+    from qwen35_moe_dflash.draft_precision_policy import customization_bytes
+    # The pipeline validates the complete AIR/weight inventory before reset
+    # and after export. Read only the small recipe here, avoiding another
+    # multi-gigabyte weight hash pass for each policy derivation.
+    if manifest.get("status") != "EXPORTED" or [g.get("name") for g in manifest.get("graphs", [])] != ["draft"]:
+        raise ValueError("precision policy requires an exported draft-only AIR manifest")
+    records = [row for row in manifest["graphs"][0].get("construction_files", [])
+               if row.get("path") == "draft/recipe/graph.recipe"]
+    if len(records) != 1:
+        raise ValueError("fp32-cpu requires one hash-bound draft/recipe/graph.recipe")
+    recipe = checked_file(folder, records[0])
+    plan = collect_precision_plan(recipe)
+    checked_file(folder, records[0])
+    if any(plan["recipe"].get(key) != records[0].get(key) for key in ("bytes", "sha256")):
+        raise ValueError("precision plan recipe differs from the retained AIR manifest")
+    data = customization_bytes(plan)
+    return plan, data
+
+
+def _precision_snapshot(folder, compiled):
+    from qwen35_moe_dflash.artifacts import checked_file
+    receipt = compiled.get("cl_customization")
+    option = compiled.get("requested_options", {}).get("cl_customization")
+    if receipt is None:
+        if option is not None:
+            raise ValueError("compilation customization option has no snapshot receipt")
+        return None
+    if (not isinstance(receipt, dict) or receipt.get("path") != "compile-work/options/cl-customization.json"
+            or option != "../options/cl-customization.json"):
+        raise ValueError("unsupported compilation customization snapshot")
+    checked_file(folder, receipt)
+    return receipt
+
+
+def _precision_schema(ddk_root, requested=None):
+    if not ddk_root:
+        raise ValueError("fp32-cpu requires the selected compiler DDK schema")
+    ddk = Path(ddk_root).resolve()
+    schema = Path(requested).resolve() if requested else ddk / "tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so"
+    if not schema.is_relative_to(ddk):
+        raise ValueError("precision schema must belong to the selected compiler DDK")
+    if not schema.is_file():
+        raise ValueError("precision schema is missing: " + str(schema))
+    return schema
+
+
+def _save_precision_check(folder, report):
+    """Replace only this derived report; retain the compiler's immutable receipt."""
+    path = folder / "precision-check.json"
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError("precision-check.json must be a regular file")
+    data = (json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode()
+    if len(data) > 16 << 20:
+        raise ValueError("compiled precision report exceeds 16 MiB")
+    with tempfile.NamedTemporaryFile(dir=folder, prefix=".precision-check-", suffix=".tmp", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
 
 
 def _retained_output_candidate(previous, compile_options):
@@ -231,11 +309,14 @@ def _main(args, stack):
     retained_compilation = None
     board_hilog = None
     workspace = None
+    precision_policy = args.precision_policy or "fp32-cpu"
+    precision_plan = precision_data = None
     weight_storage = args.weight_storage or "external"
     model_load_api = args.model_load_api or ("file-v2" if weight_storage == "external" else "legacy-buffer")
     compile_options = {**DRAFT_COMPILE_OPTIONS,
                        "save_weights_as_external_data": "false" if weight_storage == "embedded" else "true"}
-    result.update(weight_storage=weight_storage, compile_options=compile_options, model_load_api=model_load_api)
+    result.update(weight_storage=weight_storage, compile_options=compile_options, model_load_api=model_load_api,
+                  precision_policy=precision_policy)
 
     def progress(row):
         message = row["message"]
@@ -283,8 +364,9 @@ def _main(args, stack):
             option = ("--diagnose-numerics" if args.diagnose_numerics else
                       "--replay-reference" if args.replay_reference else "--compare-only")
             if any(value is not None for value in (args.target_weights, args.draft_weights,
-                    args.sequence_length, args.valid_length, args.weight_storage, args.model_load_api)):
-                raise ValueError(option+" reads the retained execution; do not select changed inputs, storage or loader")
+                    args.sequence_length, args.valid_length, args.weight_storage, args.model_load_api,
+                    args.precision_policy)):
+                raise ValueError(option+" reads the retained execution; do not select changed inputs, storage, loader or precision policy")
             if args.schema_library is not None and not args.diagnose_numerics:
                 raise ValueError(option+" reads the retained execution; do not select changed inputs, storage or loader")
             if args.resume and args.output and Path(args.resume).resolve() != Path(args.output).resolve():
@@ -325,7 +407,7 @@ def _main(args, stack):
                 raise ValueError("--inspect-only requires --resume pointing to the retained full-draft job")
             if any(value is not None for value in (args.target_weights, args.draft_weights,
                                                    args.sequence_length, args.valid_length, args.weight_storage,
-                                                   args.model_load_api)):
+                                                   args.model_load_api, args.precision_policy)):
                 raise ValueError("inspection reads the retained job; do not select new weights, inputs or weight storage")
             from qwen35_moe_dflash.draft_compile_inspect import inspect_draft_compile
             inspection_dir = output_path(args.output or Path(run) / ("full-draft-inspect-" + uuid.uuid4().hex[:12]))
@@ -359,6 +441,10 @@ def _main(args, stack):
                 (prior_result if prior_result.is_file() else previous / "job.json").read_text())
             if old.get("artifact_kind") != result["artifact_kind"]:
                 raise ValueError("--resume requires a previous full-draft job")
+            precision_policy = args.precision_policy or old.get("precision_policy", "fp32-cpu")
+            if precision_policy not in {"fp32-cpu", "compiler-default"}:
+                raise ValueError("resume has an unsupported precision policy")
+            result["precision_policy"] = precision_policy
             settings = old["settings"]
             for key in ("sequence_length", "valid_length"):
                 value = getattr(args, key)
@@ -463,8 +549,39 @@ def _main(args, stack):
             if (workspace is None and not args.prepare_only and "air" in result["components"]
                     and "compilation" not in result["components"] and not result.get("resume_invalidations")):
                 retained_compilation = _retained_output_candidate(previous, compile_options)
-        if args.schema_library and weight_storage != "embedded-stream":
-            raise ValueError("--schema-library requires --inspect-only or --weight-storage embedded-stream")
+        if precision_policy == "fp32-cpu" and weight_storage == "embedded":
+            raise ValueError("fp32-cpu requires external or embedded-stream storage; embedded OMG output cannot be verified by this precision gate")
+        if args.schema_library and weight_storage != "embedded-stream" and precision_policy != "fp32-cpu":
+            raise ValueError("--schema-library requires inspection, embedded-stream or fp32-cpu precision policy")
+
+        # Validate every retained policy input before adoption/reset removes the
+        # previous board attempt. Recipe-policy changes only obsolete OMC/bundle.
+        if not args.prepare_only:
+            if precision_policy == "fp32-cpu" and "air" in result["components"]:
+                policy_air_dir, policy_air = _read_component(result["components"]["air"])
+                precision_plan, precision_data = _precision_request(policy_air_dir, policy_air)
+            prior_customization = None
+            if "compilation" in result["components"]:
+                policy_compile_dir, policy_compiled = _read_component(result["components"]["compilation"])
+                prior_customization = _precision_snapshot(policy_compile_dir, policy_compiled)
+                required_sha = hashlib.sha256(precision_data).hexdigest() if precision_data is not None else None
+                if (prior_customization or {}).get("sha256") != required_sha:
+                    obsolete = {name: result["components"].pop(name)
+                                for name in ("compilation", "bundle") if name in result["components"]}
+                    result.setdefault("resume_invalidations", []).append({
+                        "reason": "DRAFT_PRECISION_POLICY_CHANGED", "required_policy": precision_policy,
+                        "previous_customization_sha256": (prior_customization or {}).get("sha256"),
+                        "required_customization_sha256": required_sha, "components": obsolete,
+                        "preserved": [name for name in ("prepared", "fixture", "air") if name in result["components"]]})
+                    retained_compilation = None
+                    stage("resume", "Updating compiler precision policy; reusing weights, reference and AIR")
+            if precision_policy == "fp32-cpu":
+                selected_ddk = args.ddk_root
+                if "compilation" in result["components"]:
+                    _, policy_compiled = _read_component(result["components"]["compilation"])
+                    selected_ddk = policy_compiled.get("ddk_root")
+                _precision_schema(selected_ddk, args.schema_library)
+                retained_compilation = None
         if settings["sequence_length"] < 2:
             raise ValueError("--sequence-length must be at least 2")
         if settings["valid_length"] is None:
@@ -542,6 +659,17 @@ def _main(args, stack):
                 prepared_dir, folder, args.ge_root, cxx=args.cxx, cxx11_abi=args.cxx11_abi,
                 timeout_seconds=args.timeout_seconds, progress=progress))
             _verify_air(air_dir, exported)
+            if precision_policy == "fp32-cpu":
+                current_plan, current_data = _precision_request(air_dir, exported)
+                if precision_data is not None and current_data != precision_data:
+                    raise ValueError("precision request changed since retained AIR preflight")
+                precision_plan, precision_data = current_plan, current_data
+                result["precision_policy_binding"] = {
+                    "contract": precision_plan["contract"], "recipe": precision_plan["recipe"],
+                    "required_nodes": len(precision_plan["required_nodes"]),
+                    "customization_sha256": hashlib.sha256(precision_data).hexdigest(),
+                    "customization_bytes": len(precision_data)}
+                progress({"message": f"Locking {len(precision_plan['required_nodes'])} declared FP32 operations; compiled CPUCL placement and dtype must pass before bundling"})
             stage("compilation", f"Verifying retained OMG output with {weight_storage} OMC weights; no recompilation"
                   if retained_compilation is not None else
                   f"Compiling draft AIR with {weight_storage} OMC weights: use_origin_format=true, weight_data_type=FP16, "
@@ -557,12 +685,20 @@ def _main(args, stack):
                         ddk_root=args.ddk_root, progress=progress)
                     result["compilation_recovery"] = compiled["recovery"]
                 else:
-                    compiled = compile_existing_air(
-                        air_dir / exported["graphs"][0]["air"], folder, args.ddk_root,
-                        ddk_id=args.ddk_id, tbe_diagnosis=args.tbe_diagnosis,
-                        timeout_seconds=args.timeout_seconds, input_layout="air-directory",
-                        limit_partition_size=False, save_weights_as_external_data=(weight_storage != "embedded"),
-                        use_origin_format=True, weight_data_type="FP16", progress=progress)
+                    with ExitStack() as compile_stack:
+                        policy_options = {}
+                        if precision_data is not None:
+                            policy_file = compile_stack.enter_context(tempfile.NamedTemporaryFile(
+                                dir=root, prefix=".draft-precision-", suffix=".json"))
+                            policy_file.write(precision_data)
+                            policy_file.flush()
+                            policy_options["cl_customization"] = Path(policy_file.name)
+                        compiled = compile_existing_air(
+                            air_dir / exported["graphs"][0]["air"], folder, args.ddk_root,
+                            ddk_id=args.ddk_id, tbe_diagnosis=args.tbe_diagnosis,
+                            timeout_seconds=args.timeout_seconds, input_layout="air-directory",
+                            limit_partition_size=False, save_weights_as_external_data=(weight_storage != "embedded"),
+                            use_origin_format=True, weight_data_type="FP16", progress=progress, **policy_options)
                 _verify_air(air_dir, exported)
                 if compiled.get("status") != "COMPILED":
                     result["compile_log"] = str(folder / "compile.log")
@@ -592,6 +728,38 @@ def _main(args, stack):
                                  + ", ".join(row["path"] for row in observed_weights[:8]))
             if args.ddk_id and compiled["ddk_id"] != args.ddk_id:
                 raise ValueError("selected DDK differs from the reused compilation")
+            if precision_policy == "fp32-cpu":
+                from qwen35_moe_dflash.draft_compile_precision import verify_compiled_precision
+                from qwen35_moe_dflash.hashing import sha256_file
+                snapshot = _precision_snapshot(compilation_dir, compiled)
+                if (snapshot or {}).get("sha256") != hashlib.sha256(precision_data).hexdigest():
+                    raise ValueError("compiled customization does not match the required precision policy")
+                selected_schema = _precision_schema(compiled.get("ddk_root"), args.schema_library)
+                selected_omg = Path(compiled["ddk_root"]) / "tools/tools_omg/master/omg"
+                if sha256_file(selected_omg) != compiled.get("omg_sha256"):
+                    raise ValueError("selected OMG changed since this compilation")
+                stage("precision-check", "Verifying compiled CPUCL ownership, FP32 descriptors and producer edges")
+                precision_check = verify_compiled_precision(model_path, selected_schema, precision_plan)
+                # The verifier reads small external OMC metadata only. Require
+                # its decoded evidence to bind back to the compiler receipt.
+                checked_file(compilation_dir, compiled["omc"])
+                if precision_check.get("status") == "PASSED" and any(
+                        precision_check.get("omc", {}).get(key) != compiled["omc"].get(key)
+                        for key in ("bytes", "sha256")):
+                    precision_check = {**precision_check, "status": "FAILED",
+                                       "reason": "precision verification OMC identity differs from compiler receipt"}
+                precision_path = _save_precision_check(compilation_dir, precision_check)
+                result["compiled_precision"] = {"status": precision_check.get("status"),
+                    "required_nodes": precision_check.get("required_nodes"),
+                    "matched_nodes": precision_check.get("matched_nodes"), "report": str(precision_path)}
+                print(f"full-draft: Compiled precision: {precision_check.get('status')}; report: {precision_path}", flush=True)
+                if precision_check.get("status") != "PASSED":
+                    reasons = ([precision_check["reason"]] if precision_check.get("reason") else [])
+                    reasons += [str(row.get("name")) + ": " + "; ".join(map(str, row.get("errors", [])))
+                                for row in precision_check.get("nodes", []) if row.get("status") != "MATCHED"]
+                    for reason in reasons[:5]:
+                        print("full-draft: Precision mismatch: " + str(reason)[:1500], flush=True)
+                    raise RuntimeError("compiled precision policy did not pass; bundle and board execution were not started")
             result["model_compilation"] = "PASSED"
             if args.compile_only:
                 result.update(status="COMPILED", stage="complete")
@@ -601,6 +769,11 @@ def _main(args, stack):
                 bundle_dir, bundle = component("bundle", "manifest.json", lambda folder: prepare_draft_bundle(
                     compilation_dir, fixture_dir, folder, config=prepared["draft_config"], ddk_id=compiled["ddk_id"],
                     export_dir=air_dir, weight_storage=weight_storage, schema_library=args.schema_library))
+                for binding, owner in (("compiler_report_sha256", "compilation"),
+                                       ("export_manifest_sha256", "air"),
+                                       ("fixture_report_sha256", "fixture")):
+                    if bundle.get(binding) != result["components"][owner]["manifest"]["sha256"]:
+                        raise ValueError(f"bundle {binding} differs from the current verified {owner} component; refusing board execution")
                 if weight_storage == "embedded-stream":
                     result["weight_storage_validation"].update(
                         bundle_model=bundle.get("model"), weight_packing=bundle.get("weight_packing"),

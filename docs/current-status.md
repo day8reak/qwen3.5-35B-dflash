@@ -2,16 +2,24 @@
 
 [首页](README.md) · [环境配置](environment-setup.md) · [验证记录](validation.md)
 
-更新日期：2026-10-28。用户将当前优先级调整为先独立跑通完整6层DFlash draft；保留正在进行的40层target编译。最终仍需接通target验证、连续生成与性能比较。
+更新日期：2026-10-29。当前优先级是独立跑通完整6层DFlash draft，并固定源码声明的混合精度；保留40层target已有工作。最终仍需接通target验证、连续生成与性能比较。
 
 ## 用户现在执行什么
 
-**v6完整draft已完成编译、加载和推理，当前卡在数值一致性。先检查本轮已保留的输出和编译图：**
+**编译后的RMS链出现了源码未要求的FP16边界。现在重新编译时锁定FP32区域，并在上传前检查实际OMC：**
 
 ```bash
 git pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --diagnose-numerics
+python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
+  --weight-storage embedded-stream --precision-policy fp32-cpu \
+  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
 ```
+
+正常入口默认采用 `fp32-cpu`；已有明确策略则继续继承。它从现有AIR的哈希绑定recipe生成逐节点编译配置，保留prepared、fixture与AIR，只重建compilation和bundle。全部RMS的平方、均值、epsilon、rsqrt、归一化乘积，以及attention score/softmax、RoPE的FP32区域，必须在编译后的CPU子图中保持FP32。源码规定的FP16矩阵乘和Cast边界不变。该策略先建立正确性基线；速度需在数值通过后重新测量。
+
+`compilation/precision-check.json` 检查每个受保护算子的CPUCL归属、端口shape/dtype和FP32连线；缺失节点、未识别的融合或额外降精度都会阻止打包/上传。配置使用DDK已存在的分组选择接口排除默认FP16实现，implementation编号7代表custom AscendC，并非CPU编号；最终以OMC实际CPU归属作为硬门槛。若所选DDK没有按该要求编译，不能用配置被接受或OMG退出码0代替检查通过。
+
+本地真实编译已验证两组图：双RMS的10个FP32运算全部通过检查，中间的FP16运算仍保留在NPU；两层小draft的61个受保护节点也全部通过，覆盖RMS、attention和RoPE。小draft为适配本地公开DDK使用了记录在案的等价接口替换，没有修改生产AIR导出器。这些是本地同族DDK的编译检查，尚不是用户服务器完整35B draft的板端数值结果。当前最新设备数值状态仍为FAILED。
 
 用户最新回传的PID54002运行已使用v6 AIR和v3参考，设备退出码0、输入回读一致、输出均有限；15个Top1仍有12个不同。参考hidden L2为175.270586，设备为27883.188584，相对L2为159.063547，设备范围为[-258.75, 258.75]。这是明显数值错误，不能用正常FP16舍入解释。以下远端结果来自用户回传，尚未在本地主机重新核验原文件。
 
@@ -29,9 +37,9 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" --diagnose-numerics
 
 与35B原版的区别已单独核验：[官方固定版本](https://huggingface.co/z-lab/Qwen3.5-35B-A3B-DFlash/blob/52cb554b4995dede3e2e1bdb129cdb1f3529332b/README.md)为BF16、SGLang/FA4；本次是FP16部署候选。RMS/RoPE的计算顺序符合作者参考源码，但不能将显式FP16 QK/PV边界视为SDPA/FA4内部数值复现，源模型质量验证仍需独立完成。
 
-续跑仍使用固定 `full-draft` 目录，保留prepared权重；自动使旧fixture、AIR、编译与bundle失效，重新生成参考和OMC并执行一次板端比较。新输入的字节哈希必须与旧fixture相同。采用已经执行成功的embedded-stream封装，无需原始target checkpoint。旧 `reference-replay` 小报告保留供诊断，但原阶段目录按固定工作区规则替换。
+此前v6源码精度升级会在固定 `full-draft` 目录中保留prepared权重，替换旧fixture、AIR、编译与bundle，并验证输入字节哈希不变。用户已完成该升级；本次编译精度锁只重建编译与bundle，采用已经执行成功的embedded-stream封装，无需原始target checkpoint。旧 `reference-replay` 小报告保留供诊断。
 
-GE导出契约为 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-air4b-precision-v6`，参考契约为 `pytorch-fp16-air4b-precision-v3`。本次实际DDK编译及板端执行已由用户回传成功，数值仍失败；53个子图不单独证明实际执行位置或错误原因。当前先查最终RMS计算链与输出转换，尚未确定具体算子或芯片机制。`--compare-only`仍可复核当前板端结果；`--replay-reference`用于旧FP16参考诊断。
+GE导出契约仍为 `cpro-fileconstant-relative-int-fc-conv2d-mask-gather-air4b-precision-v6`，参考契约仍为 `pytorch-fp16-air4b-precision-v3`；本次只增加编译约束，不重新生成golden。用户回传OMC已确认FP32 ReduceMean前后存在FP16边界，输出hidden的FP16类型和61,440字节分配相符。具体芯片内部饱和机制仍未确认。`--compare-only`仍可复核当前板端结果；`--diagnose-numerics`保留只读诊断功能，不必再重复本轮检查。
 
 [独立 draft 指南](draft-standalone.md)保留完整模型入口。它只读取draft全部权重及target的embedding/LM head，不构造或运行40层target。默认完整6层、block16、248320词表，输出15个候选ID和pre-head hidden诊断值。使用固定合成target features，因此这一步不证明语言质量、接受率或加速。
 
