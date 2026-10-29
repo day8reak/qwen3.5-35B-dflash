@@ -256,6 +256,8 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                 raise ValueError("actual board tool/firmware differs from the bound runtime probe")
             from .target_model_io_probe import _acquire_global
             validate_prefill_smoke_plan(smoke_proof)
+            result.update(stage="wait-board-model-lock", board_lock_token=token,
+                          lock_control_timeout_seconds=min(60, timeout_seconds))
             uncertain = True
             _acquire_global(hdc, global_lock, token, lock_wait_seconds)
             global_held, uncertain = True, False

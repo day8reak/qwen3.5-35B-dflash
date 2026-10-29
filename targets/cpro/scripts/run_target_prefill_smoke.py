@@ -53,12 +53,17 @@ def main(argv=None):
                 timeout_seconds=args.timeout_seconds, lock_wait_seconds=args.lock_wait_seconds)
             result.update(observed, artifact_kind="qwen35-target-prefill-smoke-job", mode="APPLY",
                 board_result=str(out / "board/result.json"), plan=str(out / "plan.json"))
-            result["next"] = "Retain all actual tool outputs and PID/logs; map real filenames to runtime indices before using features or feeding back80states"
+            if observed.get("stage") == "wait-board-model-lock" and observed.get("device_execution") == "NOT_RUN":
+                result["next"] = "Inspect the retained lock request and current board owner before a new-output retry; no model execution or automatic lock cleanup occurred"
+            elif observed.get("device_execution") == "NOT_RUN":
+                result["next"] = "Inspect board/result.json and retained HDC calls at the reported failure stage before retrying; model inference was not reached"
+            else:
+                result["next"] = "Retain all actual tool outputs and PID/logs; map real filenames to runtime indices before using features or feeding back80states"
     except Exception as error:
         result.update(status="BLOCKED", error=f"{type(error).__name__}: {error}")
     if owned:
         save_json(out / "result.json", result)
-    shown = {key: result[key] for key in ("status", "mode", "device_execution", "model_compilation",
+    shown = {key: result[key] for key in ("status", "stage", "mode", "device_execution", "model_compilation",
         "numerical_validation", "state_continuity", "execution_scope", "input_count", "output_count",
         "tool_process_id", "remote_exitcode", "lock_state", "error", "evidence_error", "plan", "board_result", "next") if key in result}
     if owned:

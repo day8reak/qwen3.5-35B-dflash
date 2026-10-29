@@ -173,6 +173,23 @@ def test_phone_global_lock_stops_overlapping_prefill_before_model_or_inputs(case
     assert result["board_global_lock"] == "/data/local/tmp/.qwen35-target-model-io-lock"
 
 
+def test_timed_out_lock_request_is_retained_before_any_payload_or_execution(case, monkeypatch, capsys):
+    monkeypatch.setattr(FakeHdc, "timeout_label", "acquire-global-model-io-lock")
+    assert _main()(["--job", str(case["job"]), "--runtime-probe", str(case["probe"]),
+        "--input-dir", str(case["source"]), "--output", str(case["out"]), "--apply"]) == 1
+    shown = json.loads(capsys.readouterr().out)
+    saved = json.loads((case["out"] / "board/result.json").read_text())
+    assert shown["stage"] == saved["stage"] == "wait-board-model-lock"
+    assert shown["device_execution"] == "NOT_RUN" and shown["lock_state"] == "RETAINED_OR_UNCERTAIN"
+    assert "current board owner" in shown["next"]
+    assert re.fullmatch(r"[0-9a-f]{32}", saved["board_lock_token"])
+    calls = FakeHdc.instances[0].calls
+    lock_calls = [row for row in calls if row[1] == "acquire-global-model-io-lock"]
+    assert len(lock_calls) == 1 and lock_calls[0][2]["timeout"] == 60
+    assert FakeHdc.sends == []
+    assert not any(row[1] in {"execute-original-target", "release-global-model-io-lock"} for row in calls)
+
+
 @pytest.mark.parametrize("fault", ["native", "timeout"])
 def test_failure_keeps_pid_logs_and_never_retries_or_claims_state_continuity(case, monkeypatch, fault):
     if fault == "native": monkeypatch.setattr(FakeHdc, "status", 7)

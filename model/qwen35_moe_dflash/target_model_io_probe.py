@@ -155,7 +155,10 @@ def _acquire_global(hdc, lock, token, wait_seconds):
         command = ("if mkdir " + shlex.quote(str(lock)) + " 2>/dev/null; then printf '%s\\n' " + shlex.quote(token)
                    + " > " + shlex.quote(str(lock / "owner")) + " && printf 'ACQUIRED\\n'; else test -d "
                    + shlex.quote(str(lock)) + " && test ! -L " + shlex.quote(str(lock)) + " && printf 'BUSY\\n'; fi")
-        _, text = hdc.shell(command, "acquire-global-model-io-lock", timeout=min(10, hdc.timeout))
+        # A busy shared HDC server can take longer than ten seconds even for
+        # this small command. A timeout still remains uncertain and is never
+        # replayed automatically; the overall queue budget is separate.
+        _, text = hdc.shell(command, "acquire-global-model-io-lock", timeout=min(60, hdc.timeout))
         if text == "ACQUIRED":
             return
         if text != "BUSY":
@@ -178,7 +181,7 @@ def _release_global(hdc, lock, token):
               + " && read -r probe_lock_owner < " + shlex.quote(str(lock / "owner"))
               + " && test \"$probe_lock_owner\" = " + shlex.quote(token)
               + " && rm " + shlex.quote(str(lock / "owner")) + " && rmdir " + shlex.quote(str(lock)),
-              "release-global-model-io-lock", timeout=min(10, hdc.timeout))
+              "release-global-model-io-lock", timeout=min(60, hdc.timeout))
 
 
 def _selected_headers(out):

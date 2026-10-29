@@ -3,9 +3,9 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "PREFILL_RUNTIME_METADATA_OBSERVED_DECODE_LOCK_RETRY_PENDING",
-  "handoff": "20261029T234826Z-3347-cc807e/handoff.md",
-  "user_state": "Both static full targets compiled. Actual prefill RestoreFromFile metadata query observed89inputs82outputs with manager.Init not run and lock released. Decode metadata probe failed at lock response parsing before any model transfer; quiet contention response fixed for independent retry. Existing SDK exposes tensorName; new adapter captures raw names without inferring state-layer identity.",
+  "status": "BOTH_METADATA_AND_PREFILL_PLAN_PASSED_APPLY_TRANSPORT_RETRY_PENDING",
+  "handoff": "20261029T235619Z-4919-70bfb2/handoff.md",
+  "user_state": "Both restore-only metadata probes passed89/82; decode all tensor names observed and locks released. Actual original first-prefill plan passed. Apply failed at a10secondHDC global-lock query timeout before model execution; subsequent user read-only check returnedLOCK_ABSENT. No cleanup needed;60secondcontroltimeout and explicit stage/token added for new-output retry.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
   "contract": {
@@ -53,7 +53,7 @@
     "Ordinary decode and multi-round DFlash stop/reject/commit behavior",
     "Matched numerical acceptance and measured end-to-end performance"
   ],
-  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/inspect_target_runtime_io.py\" --job \"$AI_RUN_DIR/target-pytorch-decode1-compile\" --tool-inspection \"$AI_RUN_DIR/target-board-tool-inspection-writable\" --lock-wait-seconds 1800 --output \"$AI_RUN_DIR/target-decode1-runtime-io-v2\"",
+  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_target_prefill_smoke.py\" --job \"$AI_RUN_DIR/target-pytorch-prefill64-tmpdirfix\" --runtime-probe \"$AI_RUN_DIR/target-prefill64-runtime-io\" --input-dir /home/w00949577/run_35B/chunksize_64_data --output \"$AI_RUN_DIR/target-prefill64-smoke-v2\" --apply",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -75,7 +75,8 @@
       "Metadata probes and full prefill use one phone-global lock across model caches; host preparation can run in parallel while actual board actions serialize, and uncertain timeouts retain evidence/locks instead of restarting.",
       "Leading/trailing singleton ND axes can be compared as exact linear views while feeding original bytes into actual runtime shapes; ambiguous ordinary inputs are permitted only if byte-identical for this one first-prefill call. Inner/nonunit axes and state feedback remain outside this certificate.",
       "HDC remote shell may merge expected mkdir File-exists stderr into BUSY, so lock queue tests execute generated POSIX shell with merged channels and the real unique exit marker; suppress only expected mkdir diagnostics and retain unknown response details.",
-      "Actual selected SDK NDTensorDesc exposes tensorName; capture optional raw per-tensor member values before deciding names are unavailable. Empty, absent or duplicate names do not establish semantic state bindings."
+      "Actual selected SDK NDTensorDesc exposes tensorName; capture optional raw per-tensor member values before deciding names are unavailable. Empty, absent or duplicate names do not establish semantic state bindings.",
+      "Separate overall lock queue time from one HDC round trip. A10secondcontroltimeout can fail before any model call even when both metadata probes finish successfully; retain uncertain request identity, query actual lock state, and do not delete or replay blindly. LOCK_ABSENT permits a new lock-protected attempt without cleanup; transport latency root cause remains unresolved."
     ],
     "executable_checks": [
       "tests/test_full_target_continuation.py",
@@ -357,7 +358,7 @@
     "scope": "Original file values/hashes and mask aggregate statistics only; no generated controls, actual target execution or semantic state mapping proof"
   },
   "next_restore_metadata_probe": {
-    "status": "PREFILL_OBSERVED_DECODE_RETRY_AFTER_LOCK_PROTOCOL_FIX",
+    "status": "USER_REPORTED_BOTH_STATIC_MODELS_METADATA_OBSERVED",
     "entrypoint": "targets/cpro/scripts/inspect_target_runtime_io.py",
     "targets": [
       "target-pytorch-prefill64-tmpdirfix",
@@ -378,13 +379,14 @@
       "outputs": 82
     },
     "manager_init": "NOT_RUN",
-    "failure_policy": "Keep native failure stage/stdout/stderr/exitcode and uncertain locks; no automatic weight upload, model Init or retry"
+    "failure_policy": "Keep native failure stage/stdout/stderr/exitcode and uncertain locks; no automatic weight upload, model Init or retry",
+    "next": "No repeat probe required; proceed to first-prefill host-only input plan. Exact input-name/output-producer state binding will use retained reports; no semantics inferred from names alone."
   },
   "next_first_prefill_smoke": {
-    "status": "HOST_IMPLEMENTED_USER_EXECUTION_PENDING",
+    "status": "USER_PLAN_PASSED_APPLY_TRANSPORT_RETRY_PENDING",
     "entrypoint": "targets/cpro/scripts/run_target_prefill_smoke.py",
     "plan_output": "target-prefill64-smoke-plan",
-    "apply_output": "target-prefill64-smoke",
+    "apply_output": "target-prefill64-smoke-v2",
     "plan_pass": "PREFILL_SMOKE_PLANNED",
     "execution_observation": "EXECUTED_UNVALIDATED",
     "input_mapping": "Actual unique exact HIAI typed shapes for ordinary inputs; ambiguous state classes allowed only when every original candidate has byte-identical input values. No serialized Data.index-to-runtime-slot assumption.",
@@ -395,7 +397,6 @@
     "concurrency": "Same phone-global owned queue lock as metadata probes plus per-cache execution lock; known child PID/exit captured, uncertain timeout retains locks and never retries.",
     "failure_evidence": "Hash-verified stdout/stderr/exitcode/PID; bounded read-only HiLog snapshot when available.",
     "remaining": [
-      "Actual selected-SDK build and metadata Restore behavior",
       "Actual external weight loading using existing tool",
       "Runtime output filename/index association",
       "All80state output layer identities and64to1handoff",
@@ -506,7 +507,8 @@
     "fix": "Suppress expected mkdir stderr for lock contention; keep completion-marker/status/owner-write/unknown-response failures strict and retain raw unexpected response diagnostics.",
     "lock_recovery": "NONE; successful prefill released its own lock. Never delete another or uncertain owner lock.",
     "retry_output": "target-decode1-runtime-io-v2",
-    "scope": "Host lock protocol only; no decode graph, weight or numerical failure established"
+    "scope": "Host lock protocol only; no decode graph, weight or numerical failure established",
+    "retry_result": "USER_REPORTED_IO_METADATA_OBSERVED; both locks released normally"
   },
   "lock_and_name_fix_host_verification": {
     "run_id": "20261029T234826Z-3347-cc807e",
@@ -517,5 +519,107 @@
     "native_evidence": "native-name-final.xml",
     "actual_prefill_geometry_review": "actual-prefill-view-review-ho3ub_49/review-result.json",
     "scope": "Host merged-channel shell protocol and native HIAI doubles with/without tensorName only; actual decode SDK rebuild and board retry pending"
+  },
+  "decode_runtime_io_user_report": {
+    "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+    "status": "IO_METADATA_OBSERVED",
+    "probe_output": "target-decode1-runtime-io-v2",
+    "job": "target-pytorch-decode1-compile",
+    "input_count": 89,
+    "output_count": 82,
+    "runtime_tensor_names": "OBSERVED_ALL",
+    "runtime_version": "800.631.120.010",
+    "remote_exitcode": 0,
+    "manager_init": "NOT_RUN",
+    "external_weight_initialization": "NOT_REQUESTED",
+    "model_inference": "NOT_RUN",
+    "model_bytes": 15452631,
+    "model_sha256": "5f06fffda851760023e6b63580fdecd8e18ef591f8c7d7be7e48c5bdeae1b626",
+    "native_report_sha256": "90a38e5667778aa2b758ba5df72b8302db30b73538a7d51746b231dc5958ef1b",
+    "compilation_report_sha256": "44099029b59118c4629bdfc48c5304da55dd03d9e84945aa1f3c2df11a0fdead",
+    "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+    "source_preservation": "UNCHANGED_METADATA_AND_SMALL_PRIMARY_SHA256; WEIGHTS_NOT_OPENED",
+    "logits_output": {
+      "index": 0,
+      "tensor_name": "output_0_Cast_900_0",
+      "dtype": "FLOAT32",
+      "shape": [
+        1,
+        1,
+        1,
+        248320
+      ]
+    },
+    "feature_output": {
+      "index": 81,
+      "tensor_name": "output_81_ConcatV2_100_0",
+      "dtype": "FLOAT16",
+      "shape": [
+        1,
+        1,
+        1,
+        16384
+      ]
+    },
+    "state_output_name_observation": "All80state output descriptors have nonempty names, including original producer spellings. Exact source edge/layer/feedback binding remains to be validated; do not infer it from output_N names or equal shapes.",
+    "scope": "Actual successful restore-only metadata and raw name observations; no external weights loaded, manager initialized, target inference, state continuity or accuracy pass",
+    "ordinary_input_slots": {
+      "arg1_1": 0,
+      "arg113_1": 1,
+      "arg107_1": 2,
+      "arg2_1": 83,
+      "arg1238_1": 84,
+      "arg0_1": 85,
+      "arg114_1": 86,
+      "arg14_1": 87,
+      "arg18_1": 88
+    },
+    "state_input_slots": {
+      "names": "RefData_0 through RefData_79",
+      "count": 80,
+      "runtime_indices": "3 through82, ascending",
+      "binding": "All80pairs observed in user raw named descriptors; source-layer semantics not established"
+    }
+  },
+  "documentation_update_verification": {
+    "validation": "JSON parsing and command-block bash syntax checked",
+    "scope": "Documentation/evidence update only; no executable behavior changed or redundant model/device tests run"
+  },
+  "first_prefill_plan_user_report": {
+    "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+    "status": "PREFILL_SMOKE_PLANNED",
+    "mode": "PLAN_ONLY",
+    "input_count": 89,
+    "output_count": 82,
+    "output": "target-prefill64-smoke-plan",
+    "execution_scope": "SINGLE_PREFILL_ONLY_IDENTICAL_STATE_GROUPS",
+    "device_execution": "NOT_RUN",
+    "scope": "Actual original input/metadata planning completed; no inference, numerical or state feedback pass"
+  },
+  "first_prefill_apply_transport_incident": {
+    "source": "USER_PASTED_FAILED_APPLY_AND_READ_ONLY_LOCK_CHECK",
+    "output": "target-prefill64-smoke",
+    "status": "FAILED",
+    "device_execution": "NOT_RUN",
+    "failure_stage": "GLOBAL_LOCK_ACQUISITION_BEFORE_MODEL_PAYLOADS_OR_TOOL_EXECUTION",
+    "exception": "subprocess.TimeoutExpired during acquire-global-model-io-lock after10seconds",
+    "queue_observations_seconds": [
+      3,
+      38
+    ],
+    "lock_request_token": "ce19c547b09349d8a8804788559a4a2d",
+    "later_user_lock_observation": "LOCK_ABSENT",
+    "lock_cleanup": "NOT_NEEDED_NOT_RUN",
+    "underlying_hdc_delay_cause": "UNRESOLVED; no inference/model defect established",
+    "fix": "Single HDC lock acquire/release timeout60seconds, capped by caller timeout. Explicit wait-board-model-lock stage and request token retained; no automatic uncertain replay or cleanup.",
+    "retry_output": "target-prefill64-smoke-v2",
+    "scope": "Transport control failure only. Actual tool/inference was not reached; new execution must use a fresh output directory."
+  },
+  "lock_control_fix_host_verification": {
+    "run_id": "20261029T235619Z-4919-70bfb2",
+    "pytest_cases_passed": 85,
+    "failures": 0,
+    "evidence": "out/lock-stage-tests.xml",
+    "scope": "Host lock/stage/first-prefill transport/morning-summary regressions only; no model or phone inference"
   }
 }
