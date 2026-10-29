@@ -211,3 +211,24 @@ def test_cli_defaults_to_small_stdout_json_without_run_directory_or_generated_fi
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "STRUCTURE_OBSERVED"
     assert before == {path for path in tmp_path.rglob("*")}
+
+
+def test_cli_keeps_full_graph_in_report_and_prints_only_a_summary(tmp_path, selected, monkeypatch, capsys):
+    air = tmp_path / "export.air"
+    air.write_bytes(_blob(7, _graph()))
+    report = tmp_path / "run" / "source-air.json"
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path / "run"))
+    monkeypatch.setenv("CPRO_DDK_ROOT", str(selected[0]))
+    script = Path(__file__).resolve().parents[1] / "targets/cpro/scripts/inspect_original_target_air.py"
+    monkeypatch.setattr(sys, "argv", [str(script), "--air", str(air), "--full", "--output", str(report)])
+    assert runpy.run_path(str(script))["main"]() == 0
+    summary = json.loads(capsys.readouterr().out)
+    full = json.loads(report.read_text())
+    assert summary["status"] == "STRUCTURE_OBSERVED"
+    assert summary["report"] == str(report)
+    assert all("graph" not in row for row in summary["candidates"])
+    graph = next(row["graph"] for row in full["candidates"] if row["status"] == "STRUCTURE_OBSERVED")
+    assert graph["operations"] and len(graph["outputs"]) == 81
+    with pytest.raises(FileExistsError):
+        runpy.run_path(str(script))["main"]()
+    assert json.loads(report.read_text()) == full

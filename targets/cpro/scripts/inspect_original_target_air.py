@@ -30,7 +30,21 @@ def main():
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("x") as stream:
             stream.write(raw + "\n")
-    print(raw)
+    if args.output:
+        summary = {key: result[key] for key in (
+            "schema_version", "artifact_kind", "status", "air", "tap_resolution",
+            "external_weights", "device_execution", "model_compilation") if key in result}
+        summary["report"] = str(path)
+        summary["candidates"] = [{"format": row["format"], "status": row["status"],
+                                  "error": row.get("error"),
+                                  "original_boundary_check": row.get("graph", {}).get("original_boundary_check")}
+                                 for row in result.get("candidates", [])]
+        for key in ("error", "schema", "source_preservation"):
+            if key in result:
+                summary[key] = result[key]
+        print(json.dumps(summary, ensure_ascii=False))
+    else:
+        print(raw)
     return 1 if result["status"] == "ERROR" else 0
 
 
