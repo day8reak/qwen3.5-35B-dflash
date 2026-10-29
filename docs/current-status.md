@@ -17,7 +17,7 @@
 用户已确认：执行服务器没有HF/量化检查点和embedding原表，约剩10GB；原导出机仍能登录且原权重保留。当前服务器已有原AIR和外置权重：
 `/home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/`。
 
-**调整此前方案：HF和量化检查点留在原机器。** 带8层真实features的PyTorch导出优先放原机执行；若可用同版本Cpro DDK，OMG编译和大临时目录也放原机或独立大盘。上传的小源码可用于审查，当前服务器不执行依赖完整检查点的PyTorch导出。原target仍为完整40层量化模型，不用自建FP16 target替代。
+**调整此前方案：HF和量化检查点留在原机器。** 用户进一步确认原机只有PyTorch/TorchAir导出环境。因此带8层真实features的导出放原机；OMG使用当前服务器现有同版本DDK，但输入快照、scratch和输出放独立大盘，或原机提供的共享存储挂载点。上传的小源码可用于审查，当前服务器不执行依赖完整检查点的PyTorch导出。原target仍为完整40层量化模型，不用自建FP16 target替代。
 
 执行服务器后续只需原INT8 embedding和FP32逐词scale两张表，用于连续token输入。按完整248320词表、hidden2048、每词一个scale计算，共约485.95MiB；draft prepared只有FP16表，不能据此恢复原INT8+scale。先确认原文件的实际大小和SHA，再传这两张原表，HF和量化检查点保持原位置。
 

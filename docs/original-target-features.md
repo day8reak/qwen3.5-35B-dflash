@@ -12,7 +12,7 @@ target采用用户原PyTorch量化工程，经原TorchAir入口导出AIR，再�
 
 ## 当前低磁盘安排
 
-执行服务器只有约10GB空闲，用户确认没有原HF/量化检查点，但原导出机仍有这些资源。当前主安排是把需要大检查点的PyTorch导出留在原机；能使用同版本Cpro DDK时，OMG及其大scratch/output也在原机或独立大盘完成。当前服务器保留已有原AIR、外置权重、draft bundle和执行工具。
+执行服务器只有约10GB空闲，用户确认没有原HF/量化检查点，但原导出机仍有这些资源。原机只有PyTorch/TorchAir环境，因此需要大检查点的导出留在原机；OMG继续用当前服务器已配置的DDK，大输入快照、scratch/output放独立大盘或原机提供的共享存储。当前服务器保留已有原AIR、外置权重、draft bundle和执行工具。
 
 | 资源 | 安排 |
 | --- | --- |
@@ -21,13 +21,13 @@ target采用用户原PyTorch量化工程，经原TorchAir入口导出AIR，再�
 | 原INT8 embedding表 | 连续生成需查行；可单独传约485MiB |
 | 原FP32逐词scale表 | 可单独传约0.947MiB |
 | 新feature AIR | 原机导出，附引用和校验清单；复用现有源sidecars须逐项校验 |
-| 新OMC及编译权重 | 重新编译并绑定；scratch/output放有容量的原机/大盘，部署时避免本机再缓存整套副本 |
+| 新OMC及编译权重 | 重新编译并绑定；当前服务器的OMG写入共享挂载/大盘，部署时避免本机再缓存整套副本 |
 
 两张embedding表的量级来自248320词×2048 INT8及每词一个FP32 scale，实际文件仍需核对。当前draft prepared只保留FP16 embedding，不能无损恢复原INT8+scale。完整HF/quant目录不因为上传6份源码而成为当前服务器导出的必需搬运项；改在原机使用它们。
 
 当前服务器原AIR和外置权重在：
 `/home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/`。
-保持该目录内容和旧证据不变。先使用[当前只读命令](current-status.md#用户现在执行什么)核对AIR结构和控制输入，再确定源sidecar复用或新产物部署。原机同版本DDK可用性仍待确认；仅有TorchAir时，需要给OMG另找大scratch/output空间，不能直接在10GB剩余空间中重启整模编译。
+保持该目录内容和旧证据不变。先使用[当前只读命令](current-status.md#用户现在执行什么)核对AIR结构和控制输入，再确定源sidecar复用或新产物部署。原机已确认只有TorchAir，编译器继续使用当前服务器的已验证环境。把共享存储实际挂载在`$AI_RUN_DIR`的子目录后，可将新的`--output`指向该子目录中的任务路径；这只是存储分工，挂载权限、可用容量和吞吐仍需实际核对。没有可用大盘/共享存储时，先解决容量，再编译；10GB不作为整模编译预算。
 
 直接加载原AIR并追加输出也是候选。公开GE有[读取AIR图的接口](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/ascendgraphapi/atlasgeapi_07_0018.html)，但这不证明当前私有Cpro AIR与所选schema/库兼容，也不证明8层hidden可唯一定位。必须先检查实际文件；本轮工具只有只读观察，没有AIR writer，不把OMC容器或解码字典直接写回AIR。
 
@@ -102,7 +102,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_full_target.py" \
   --input-dir /home/w00949577/run_35B/chunksize_64_data
 ```
 
-以上是新target的一次构建命令示例，OMG和输出应放在有容量、同版本DDK的构建机器；`--run-board`只在该机已有可用HDC和实际输入时使用，否则先只编译后另行部署。当前10GB服务器不立即启动该任务。已有完整编译任务时用`--resume "$AI_RUN_DIR/full-target-features"`继续，配合`--target-features --inspect-only`或`--run-board`；不重新编译。默认无`--target-features`的旧81路接口保持严格校验。新接口只接受末路FP16 `[1,T,16384]`；仅该轴为`-1`时按请求档位解析，固定64不会被推断成支持1。
+以上是新target的一次构建命令示例；当前机器保留原DDK，`--output`应改为已核实有容量的共享挂载/大盘内任务目录，输入快照和编译scratch随该目录存放；`--run-board`只在该机已有可用HDC和实际输入时使用，否则先只编译后另行部署。当前10GB服务器不立即启动该任务。已有完整编译任务时用`--resume "$AI_RUN_DIR/full-target-features"`继续，配合`--target-features --inspect-only`或`--run-board`；不重新编译。默认无`--target-features`的旧81路接口保持严格校验。新接口只接受末路FP16 `[1,T,16384]`；仅该轴为`-1`时按请求档位解析，固定64不会被推断成支持1。
 
 ## 连续状态与运行时输入
 

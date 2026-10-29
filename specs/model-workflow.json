@@ -2197,8 +2197,8 @@
       "external_air_weights_present": "USER_CONFIRMED",
       "hf_and_quant_checkpoints": "KEEP_ON_ORIGINAL_WEIGHT_MACHINE",
       "runtime_embedding_tables_mib_approx": 485.947265625,
-      "new_compile_output": "ORIGINAL_MACHINE_OR_INDEPENDENT_LARGE_SCRATCH_NOT_ASSUMED_TO_FIT_10GB",
-      "same_ddk_on_original_machine": "AWAITING_USER",
+      "new_compile_output": "CURRENT_DDK_WRITES_TO_VERIFIED_LARGE_DISK_OR_MOUNTED_SHARED_STORAGE_UNDER_AI_RUN_DIR",
+      "same_ddk_on_original_machine": "USER_CONFIRMED_NOT_AVAILABLE_ONLY_PYTORCH_TORCHAIR",
       "direct_air_extension": "CANDIDATE_ONLY_REQUIRES_ACTUAL_GRAPH_AND_LOSSLESS_EDIT_PROOF"
     }
   },
@@ -2217,7 +2217,7 @@
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Inspect existing AIR and actual controls read-only; perform feature export on original weight machine and place OMG scratch/output on a sufficiently large same-DDK build machine",
+    "next_target_action": "Read-only AIR/control inspection; feature export on original weight machine; current known DDK compilation requires verified large scratch/output storage rather than 10GB local free space",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone"
   },
   "execution_smoke": {
