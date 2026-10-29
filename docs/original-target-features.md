@@ -10,6 +10,43 @@ target采用用户原PyTorch量化工程，经原TorchAir入口导出AIR，再�
 
 原AIR没有draft所需的8层hidden。不能从logits或80个cache状态反推这些特征；本轮需原源码追加输出，生成一份新的target AIR/OMC。
 
+## 上传到执行服务器
+
+用户指定源码目录：`/home/w00949577/qwen3.5-35B-moe`。只需上传原快照的以下6个文件，保持相对目录：
+
+```text
+export_glm_model_qwen3_5_moe.py
+utils.py
+models/export_model_wrapper_qwen3_5_moe.py
+models/modeling_qwen3_5_moe_hiai_cpro.py
+models/modeling_qwen3_5_moe_hiai_nz.py
+config/qwen3_5_moe.yaml
+```
+
+NZ文件仍必需，因为`utils.py`顶层导入其中的量化类；Cpro入口不需要ND分支。源码合计160773字节，本次私有源码压缩包32917字节，另带`SHA256SUMS`。包仅作为私有任务产物提供，不上传GitHub；不包含权重、AIR、OMC、日志或环境。
+
+将压缩包上传到上述目录后，先解压、校验原文件，再调整YAML路径：
+
+```bash
+mkdir -p /home/w00949577/qwen3.5-35B-moe
+tar --keep-old-files -xzf /home/w00949577/qwen3.5-35B-moe/qwen35-original-target-source.tar.gz \
+  -C /home/w00949577/qwen3.5-35B-moe
+(cd /home/w00949577/qwen3.5-35B-moe && sha256sum -c SHA256SUMS)
+```
+
+config引用四个外部原始资源，需映射为该服务器真实路径，权重内容保持原版：
+
+| YAML项 | 原始资源 |
+| --- | --- |
+| `model_file` | HF target目录，含`config.json`及所需`model*.safetensors` |
+| `quanted_pth` | 原量化目录，含`data*.safetensors` |
+| `embedding_weight_path` | 完整词表INT8 embedding bin |
+| `embedding_scale_path` | 完整词表FP32 scale bin |
+
+**先只传小源码包，不重复传大权重或AIR/OMC。** 原loader实际先读HF权重，再覆盖量化参数；仅有量化文件不能推断原target已完整加载。缺少HF参数时原代码仅打印Missing，可能保留初始化值，因此在确认现有权重完整性前不要启动导出。需要保持原定制`torch_npu`/TorchAir环境，源码包不包含这些依赖。
+
+完成路径核对后再按[当前命令](current-status.md#用户现在执行什么)运行准备器，以免准备后修改config造成恢复身份失效。
+
 ## 派生源码与第82路输出
 
 `prepare_original_target_features.py`从用户私有工程只复制5个Python文件和原config。它通过AST检查实际Cpro类、完整decoder循环、post-layer赋值、原状态收集及return，在派生副本中追加：
@@ -20,7 +57,7 @@ target采用用户原PyTorch量化工程，经原TorchAir入口导出AIR，再�
 
 原私有快照不修改，源码不进入GitHub；准备阶段不读或复制权重、AIR、OMC。派生源码、config、导出脚本和原文件SHA记录在任务的`receipt.json`。未知源码结构、已修改的派生源码或部分任务不会被覆盖。
 
-在当前已配置原TorchAir环境的服务器中，先执行[当前命令](current-status.md#用户现在执行什么)的源码准备和控制输入只读检查。原工程路径不同，仅替换`--source-root`；config内权重路径照原值使用。
+在当前已配置原TorchAir环境的服务器中，先执行[当前命令](current-status.md#用户现在执行什么)的源码准备和控制输入只读检查。原工程路径不同，仅替换`--source-root`；config路径先映射到服务器已有的原权重，保持原权重内容不变。
 
 准备产物的`export.sh`会从派生源码目录调用原入口，保持 `mode=export quant_mode=enable num_hidden_layers=40 seq_len=55 topK=16`。这与原AIR的导出形状一致，编译仍选64/1动态档。脚本拒绝覆盖已存在的导出目录；它尚未在本轮实际执行，TorchAir及设备仍待验证。
 

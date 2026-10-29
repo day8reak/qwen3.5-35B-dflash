@@ -18,16 +18,16 @@
 
 本机已找到原工程快照，并确认实际 Cpro wrapper 的decoder loop。新增准备器只复制约162KB的5个源码文件和原config到任务目录，在原loop后捕获层 `(1,6,11,16,22,27,32,37)`，追加第82路 `FP16[1,T,16384]`，原81路顺序保留；原权重、量化和计算语句保留。40层/40组状态/80状态输出不足即拒绝。原快照不修改，私有源码不上传GitHub。
 
-先更新并准备这份小型派生源码，**这一步不复制权重、不导出AIR、不运行OMG**：
+原工程需先上传到 `/home/w00949577/qwen3.5-35B-moe`，最小清单和解压校验见[源码上传](original-target-features.md#上传到执行服务器)。先将YAML四个权重路径映射到服务器现有原始资源，再准备派生源码；准备完成后更改config会被身份检查拒绝。**这一步不复制权重、不导出AIR、不运行OMG**：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/prepare_original_target_features.py" \
-  --source-root /home/l00886453/qwen3_5_moe \
+  --source-root /home/w00949577/qwen3.5-35B-moe \
   --output "$AI_RUN_DIR/original-target-features"
 ```
 
-服务器原工程位置不同时，仅将 `--source-root` 换为实际原导出工程。保留原config中的权重路径；不要指向本项目的HF重建导出器。准备器结构不匹配会在生成前停止，已完成的同源任务可复用，不覆盖变更或失败证据。
+服务器原工程位置不同时，仅将 `--source-root` 换为实际原导出工程。YAML中路径可指向现有原始资源，保持原权重内容和量化版本；不要指向本项目的HF重建导出器。准备器结构不匹配会在生成前停止，已完成的同源任务可复用，不覆盖变更或失败证据。
 
 再只读核对已有实际运行输入中的控制量，便于接通64→1状态推进；若已有真实decode输入目录也用同一入口 `--sequence-length 1` 核对：
 
