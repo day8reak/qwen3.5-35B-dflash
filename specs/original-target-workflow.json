@@ -3,9 +3,9 @@
   "updated": "2026-10-29",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "USER_REPORTED_PREFILL64_COMPILED_DECODE1_AND_RUNTIME_PENDING",
+  "status": "USER_REPORTED_PREFILL64_AND_DECODE1_COMPILED_RUNTIME_PENDING",
   "handoff": "20261029T133810Z-26479-7df529/handoff.md",
-  "user_state": "Canonical prefill64 compiled with tmpdir fix and zero explicit new weight copies; canonical decode1 AIR/inventory/receipt already transferred and inspected; B55 feature AIR backup retained.",
+  "user_state": "Both canonical static target models compiled successfully. Decode1 reference-view audit PASSED with zero weight copies. Board tool identity/firmware observed; help blocked by default output_dir validation. Original64 control input path is documented; native tensor slots and actual target execution remain unverified.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
   "contract": {
@@ -47,14 +47,13 @@
     "board_tool_workflow": "HOST_FAKE_BOARD_TESTED; no actual user-device invocation from this assistant"
   },
   "remaining_gates": [
-    "Original static1 AIR full model compilation with preserved successful prefill input ownership",
     "Actual runtime input/output descriptor names, slots and original input semantics",
     "External-weight loading and explicit feedback of all80 states across64-prefill to1-decode",
     "Real target feature output passed to the existing complete6-layer draft bundle",
     "Ordinary decode and multi-round DFlash stop/reject/commit behavior",
     "Matched numerical acceptance and measured end-to-end performance"
   ],
-  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --borrow-decode-inputs-from \"$AI_RUN_DIR/target-pytorch-prefill64-tmpdirfix\" --air \"$AI_RUN_DIR/target-pytorch-decode1-transfer/export.air\" --decode-inventory \"$AI_RUN_DIR/target-pytorch-decode1-transfer/inventory.json\" --decode-export-receipt \"$AI_RUN_DIR/target-pytorch-decode1-transfer/result.json\" --profile cpro-40block-decode-1 --input-layout air-directory --target-features --tbe-diagnosis \"$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis\" --output \"$AI_RUN_DIR/target-pytorch-decode1-compile\"",
+  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/inspect_target_board_tool.py\" --writable-help-from \"$AI_RUN_DIR/target-board-tool-inspection\" --output \"$AI_RUN_DIR/target-board-tool-inspection-writable\"",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -68,7 +67,8 @@
       "Complete static64 OMG succeeded after keeping CCE TMPDIR physical and using a short alias only for multiprocessing IPC",
       "Compilation may lower all80 RefData root inputs to Data while retaining state shapes and explicit outputs; preserve runtime uncertainty without relabeling compiler success",
       "A further hardlink to retained successful inputs changes nlink/ctime and invalidates owner receipts; decode input reuse uses bounded owned file aliases with fresh source validation instead",
-      "The existing phone tool validates its default output_dir before producing option help; a matched binary/transport report with error-only text is not observed help. Bind prior identity and retry only --help in a fresh writable directory, without model arguments."
+      "The existing phone tool validates its default output_dir before producing option help; a matched binary/transport report with error-only text is not observed help. Bind prior identity and retry only --help in a fresh writable directory, without model arguments.",
+      "Both independently exported static64 and static1 complete target models compiled with feature81; successful decode1 individual-file references passed final source audit without new19GB input copies. This closes compilation only, not target runtime or state continuity."
     ],
     "executable_checks": [
       "tests/test_full_target_continuation.py",
@@ -203,5 +203,60 @@
     "model_inference": "NOT_RUN",
     "runtime_input_order": "NOT_QUERIED",
     "runtime_tensor_names": "NOT_QUERIED"
+  },
+  "latest_user_decode_compilation": {
+    "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+    "date": "2026-10-29",
+    "job": "target-pytorch-decode1-compile",
+    "status": "COMPILED",
+    "model_compilation": "PASSED",
+    "profile": "cpro-40block-decode-1",
+    "elapsed_seconds_observation": 180,
+    "borrowed_decode_inputs_from": "target-pytorch-prefill64-tmpdirfix",
+    "decode_input_view": "PASSED",
+    "explicit_weight_copy_bytes": 0,
+    "compilation_report_sha256": "44099029b59118c4629bdfc48c5304da55dd03d9e84945aa1f3c2df11a0fdead",
+    "omc": "compilation/compile-work/generated/model/model.omc",
+    "target_contract_inspection": "OBSERVED",
+    "interface_inspection": "UNAVAILABLE",
+    "runtime_sources": "INCOMPLETE",
+    "root_input_count": 89,
+    "root_input_types": {
+      "Data": 89
+    },
+    "declared_profile_check": "DIFFERENT_VISIBLE_BOUNDARIES",
+    "difference_scope": "80 original RefData names lowered to Data; visible state shapes/dtypes retained; no runtime-slot or state-persistence proof",
+    "output_count": 82,
+    "logits": {
+      "index": 0,
+      "dtype": "DT_FLOAT",
+      "shape": [
+        1,
+        1,
+        248320
+      ]
+    },
+    "state_outputs": 80,
+    "feature": {
+      "index": 81,
+      "dtype": "DT_FLOAT16",
+      "shape": [
+        1,
+        1,
+        16384
+      ],
+      "producer": "SubGraph_0:51"
+    },
+    "device_execution": "NOT_RUN",
+    "numerical_validation": "NOT_RUN",
+    "device_ready": false
+  },
+  "next_control_inspection": {
+    "status": "READ_ONLY_USER_COMMAND_PENDING",
+    "entrypoint": "targets/cpro/scripts/inspect_original_target_inputs.py",
+    "input_dir": "/home/w00949577/run_35B/chunksize_64_data",
+    "path_source": "Existing original-target documentation/user-provided host input directory",
+    "sequence_length": 64,
+    "scope": "Seven small original control/position/scale files and streamed mask statistics only. No embedding/state/weight reads, generated controls or device execution; missing files remain explicit."
   }
 }
