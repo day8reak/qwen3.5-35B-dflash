@@ -2169,7 +2169,7 @@
       "stateful_decode": "past_length is static; reusable decode/cache contract and deployment orchestration are pending",
       "gdn": "Output depends on output-buffer prefill; accuracy and cause unresolved",
       "cache_attention": "Standalone invocation evidence is not production graph integration",
-      "original_air": "A now exposes canonical82outputs with realfeature declaration and unchanged computation bytes; sidecar staging, selected OMG compilation, actual feature provenance and stateful execution remain pending"
+      "original_air": "A feature AIR normalized and 1153 original sidecars hash-verified/hardlinked; B feature append and actual GE roundtrip passed metadata checks. First A OMG compile, 64/1 runtime controls, state continuity and real-feature DFlash execution still pending"
     },
     "stateful_compile_compatibility": {
       "status": "HOST_TESTED_DEVICE_PENDING",
@@ -2208,9 +2208,9 @@
         "location": "original_weight_machine",
         "entrypoint": "targets/cpro/scripts/prepare_target_pytorch.py",
         "directory": "target-pytorch",
-        "status": "USER_REPORTED_NORMALIZED_AIR_AND_SHA256_INVENTORY_READY",
+        "status": "USER_REPORTED_STAGED_HARDLINKS_READY_FOR_FIRST_FULL_TARGET_COMPILE",
         "tests": 14,
-        "next": "Manually transfer normalized AIR, SHA256 inventory and canonical export result receipt only; validate exact Data names/geometries, then SHA-verify existing DDK sidecars before hardlink staging and one full-target compilation",
+        "next": "Run one compile_full_target.py on target-pytorch-import/export.air with air-directory and target-features; reuse staged sidecars, then inspect actual OMG and 82-output contract results",
         "user_report": {
           "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
           "original_air_sha256": "3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9",
@@ -2234,6 +2234,27 @@
           "model_compilation": "NOT_RUN",
           "device_execution": "NOT_RUN",
           "state_continuity": "UNVERIFIED"
+        },
+        "staging_user_report": {
+          "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+          "status": "STAGED_HARDLINKS",
+          "file_count": 1153,
+          "file_status": "HARDLINKED_AND_REHASHED",
+          "created_link_count": 1153,
+          "transfer_required_count": 0,
+          "explicit_sidecar_copy_bytes": 0,
+          "source_bytes": 19459474432,
+          "source_relative_prefix": "glm_export_air_cpro_40block_64_quant",
+          "required_compile_input_layout": "air-directory",
+          "receipt_sha256": "f5206cbdef5ce496250f52934dca75c7ae5b24c869826547e525ccbfc3cc77f9",
+          "export_profile_check": "MATCHED_EXACT_DATA_NAMES_AND_DECLARED_GEOMETRIES",
+          "disk_free_bytes_after": 63754436608,
+          "disk_observation_point": "AFTER_LINKS_FINAL_HASH_AND_SMALL_COPIES_BEFORE_RECEIPT_WRITE",
+          "disk_scope": "Shared filesystem observation, not isolated physical allocation",
+          "expected_compiler_input_files": 1154,
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_EVALUATED"
         }
       },
       "b": {
@@ -2241,7 +2262,7 @@
         "location": "current_ddk_machine_with_large_shared_scratch",
         "entrypoint": "targets/cpro/scripts/prepare_original_ge_target.py",
         "directory": "target-ge",
-        "status": "KNOWN_DOCUMENTATION_REVISION_IDENTIFIED_APPEND_RETRY_PENDING",
+        "status": "USER_REPORTED_FEATURE_AIR_EXPORTED_AND_GE_METADATA_ROUNDTRIP_PASSED",
         "tests": 20,
         "actual_air": {
           "bytes": 6361049,
@@ -2268,7 +2289,7 @@
           "analysis": "Boundary error originates after schema.decode; retain complete metadata and report exact descriptor differences without treating this as schema failure",
           "next_report": "target-ge-source-air-ge-details.json"
         },
-        "next": "Rehash actual source against the narrowly audited documentation revision, then retry original-GE feature append without copying weights or compiling a second target",
+        "next": "Inventory existing 55-token feature AIR with the original sidecar reference root and default STAT_ONLY; preserve completed append, do not run another large target compilation while A compiles",
         "source_revision_observation": {
           "source": "USER_PASTED_AST_REPORT_AND_LOCAL_PINNED_SOURCE_RECONSTRUCTION",
           "wrapper_sha256": "dd4f45cd0964b144523193bfca847fdeacbb2d49ef8a4665dd607a2e215e6517",
@@ -2279,6 +2300,39 @@
           "source_to_air_revision": "UNVERIFIED",
           "model_compilation": "NOT_RUN",
           "device_execution": "NOT_RUN"
+        },
+        "feature_air_user_report": {
+          "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+          "status": "FEATURE_AIR_EXPORTED",
+          "air_bytes": 6368551,
+          "air_sha256": "924871d84b22ca7c525f722a7b4955f79d92b07072ebb2027ad82fa83856c819",
+          "feature_output_index": 81,
+          "feature_dtype": "float16",
+          "feature_shape": [
+            1,
+            55,
+            16384
+          ],
+          "original_nodes": 9520,
+          "added_nodes": 9,
+          "appended_nodes": 9529,
+          "original_input_count": 89,
+          "original_refdata_count": 80,
+          "original_output_count": 81,
+          "file_constants_matched": 1153,
+          "append_validation": "METADATA_APPEND_VALIDATED",
+          "ge_load_status": 0,
+          "ge_save_status": 0,
+          "roundtrip_metadata_fidelity": "PASSED",
+          "original_preservation": "UNCHANGED_STAT_AND_SHA256",
+          "weight_payload_access": "NONE",
+          "compilation_input": "WEIGHT_REFERENCES_PRESERVED_BUT_PAYLOADS_NOT_STAGED",
+          "source_audit": "MATCHED_AUDITED_SOURCE_RECEIPTS",
+          "source_revision": "original-cpro-known-documentation-revision-v1",
+          "source_to_original_air_revision": "UNVERIFIED",
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_EVALUATED"
         }
       },
       "shared_draft": "full-draft/residual-fix/bundle",
@@ -2302,14 +2356,14 @@
     "day1_gate": "Correct draft plus usable ordinary target prefill/decode",
     "day2_gate": "Multi-step DFlash token/stop equality and state handling",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
-    "current_target_status": "A normalized AIR and 1153-payload hash inventory ready per user report; original full target has not yet compiled or executed in this flow",
+    "current_target_status": "A STAGED_HARDLINKS/Data profile checks passed per user report; B FEATURE_AIR_EXPORTED/GE metadata roundtrip passed. No full target OMG or board execution yet",
     "target_gaps": [
       "Original89input80RefData ordered ABI",
       "64/1 gear and persistent state",
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Transfer small A metadata/AIR only, SHA-verify and hardlink existing sidecars, run one full-target compilation; B metadata-only feature append in parallel",
+    "next_target_action": "One A full-target compilation from the staged air-directory; B default STAT_ONLY sidecar inventory in parallel, no second large compile",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone"
   },
   "execution_smoke": {
