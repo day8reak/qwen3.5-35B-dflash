@@ -2,6 +2,8 @@
 
 用户最新安排为[原PyTorch与直接GE两条路线并行](target-parallel-tracks.md)。下文原机导出属于A路线；B使用实际原AIR与源码绑定原算子、权重及状态接口，独立记录结果。当前命令以[当前更新](current-status.md#用户现在执行什么)为准。
 
+最新回传：A已经成功导出64档AIR和约19.48GB sidecar；当前DDK机已从10GB释放到60GB。按[导出清单与SHA复用](target-weight-reuse.md)安排A编译，B按[GE特征追加](target-ge-feature-append.md)并行小图构建。下方较早的55档准备示例仅供重现，不重跑已成功任务。
+
 当前目标是先让完整40层量化target与完整6层draft在设备上多轮执行。用户接受这一阶段文本乱码，但明确要求真实target特征。最终精度、状态正确性和至少2x实测目标保留，当前不宣称已完成。
 
 ## 模型来源与 verify 范围
@@ -14,7 +16,7 @@ target采用用户原PyTorch量化工程，经原TorchAir入口导出AIR，再�
 
 ## 当前低磁盘安排
 
-执行服务器只有约10GB空闲，用户确认没有原HF/量化检查点，但原导出机仍有这些资源。原机只有PyTorch/TorchAir环境，因此需要大检查点的导出留在原机；OMG继续用当前服务器已配置的DDK，大输入快照、scratch/output放独立大盘或原机提供的共享存储。当前服务器保留已有原AIR、外置权重、draft bundle和执行工具。
+执行服务器现有约60GB空闲，用户删除了下载的官网检查点，保留draft资源；原导出机仍有原HF/quant并已完成A导出。OMG继续用当前服务器已配置的DDK；先按新清单实际SHA复用已有原AIR sidecar，只将需要补传的文件和小AIR部署过来。编译快照、临时文件、输出仍独立计算预算，不把`/data`和根目录的同一60GB重复计算。
 
 | 资源 | 安排 |
 | --- | --- |
@@ -31,7 +33,7 @@ target采用用户原PyTorch量化工程，经原TorchAir入口导出AIR，再�
 `/home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/`。
 保持该目录内容和旧证据不变。先使用[当前只读命令](current-status.md#用户现在执行什么)核对AIR结构和控制输入，再确定源sidecar复用或新产物部署。原机已确认只有TorchAir，编译器继续使用当前服务器的已验证环境。把共享存储实际挂载在`$AI_RUN_DIR`的子目录后，可将新的`--output`指向该子目录中的任务路径；这只是存储分工，挂载权限、可用容量和吞吐仍需实际核对。没有可用大盘/共享存储时，先解决容量，再编译；10GB不作为整模编译预算。
 
-直接加载原AIR并追加输出也是候选。公开GE有[读取AIR图的接口](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/ascendgraphapi/atlasgeapi_07_0018.html)，但这不证明当前私有Cpro AIR与所选schema/库兼容，也不证明8层hidden可唯一定位。必须先检查实际文件；本轮工具只有只读观察，没有AIR writer，不把OMC容器或解码字典直接写回AIR。
+直接GE追加输出的入口现为`append_original_ge_features.py`。主机已验证GE生成9节点特征分支、严格schema字段移植和整图Load/Save保真机制；原计算节点编码保持，原NetOutput仅追加1路。当前用户9520节点原图尚待运行该入口。不能用公开Load接口存在或主机机制测试替代真实tap绑定、完整模型编译或设备结果。
 
 原AIR源sidecar和新OMC的编译权重是两套绑定：追加features可能改变OMG分区和packing，旧OMC的`SubGraph_#.weight`不能直接替换新产物。新AIR在原机导出时也可能重新写整套sidecar；原机应为该输出留容量，或在验证后采用单独的复用流程。目前没有“重导出但自动零复制全部权重”的实现。
 

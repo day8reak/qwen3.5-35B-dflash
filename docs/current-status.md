@@ -16,31 +16,36 @@
 
 用户最新要求两条方案并行，防止GE路线出问题。**A在原权重机器按原PyTorch/TorchAir导出；B在当前服务器对齐原Cpro算子、量化权重和paged/NZ/RefData接口，走直接GE。** 两条均为完整40层、原量化权重、完整248320词表及真实8层features，各自保留独立构建和设备证据，共用上方完整residual-fix draft。
 
-完整命令、边界和状态见[双路线执行](target-parallel-tracks.md)。A原机入口为`prepare_target_pytorch.py`，先只读配置/分片头和小源码准备，缺原参数即停止；资源就绪后才在原机导出。用户已完成B原AIR检查：6361049字节、原文件保持，HIAI schema不匹配（`OPAQUE`）。随后当前服务器已找到两份真正的TorchAir生成文件；两者提取同一7381字节GE descriptor，SHA256为`5a1eac27746a7bb5109e819ce6dd7813a3ffcaab04bd0ab2ca3c2cdf1e4084ea`。选择更小的`3_19`文件继续，不需要从原机再传schema或权重。
+**A已真实导出成功，不再运行准备器或export.sh。** 用户回传AIR为6,375,344字节，SHA256 `3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9`；1155个常规文件总19,478,109,527字节。原机约7.1TB空闲，当前DDK机释放到60GB。
 
-**A当前直接导出**：原机已回传`SOURCE_READY`，且此前NPU可见性为True。保持`qwen3_5_cpro`环境，在原机输出盘有足够空间时执行；不要重复准备已有目录：
-
-```bash
-bash /home/w00949577/qwen35-target-pytorch-run/target-pytorch/export.sh
-```
-
-**B本轮已完成下面的只读解析，不重复执行**。`RAW_MODELDEF`解码PASSED、元数据COMPLETE，9520节点、89输入、81输出；真实算子计数符合40层混合结构的预期。81个输出被报告shape描述符差异，前6例显示NetOutput有完整shape、producer为空维度，而dtype/layout相同。空shape不能直接等同错误scalar或wildcard；完整图与全部差异均在新JSON中。
-
-当前先执行[双路线文档中的已有JSON摘要](target-parallel-tracks.md#b当前服务器先绑定真实图)，回传精确FileConstant路径及norm/Add连接，继续绑定8层真实特征；不读大权重、不编译。已完成的解析命令保留供重现：
+**A当前在原机执行这条清单命令**，流式读参数算SHA，不复制或导出模型：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
-  --air /home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/export.air \
-  --torchair-pb2 /root/anaconda3/envs/custom_pypto/lib/python3.11/site-packages/torch_npu/dynamo/torchair/_ge_concrete_graph/ge_ir_by_protoc_3_19_pb2.py \
-  --full --output "$AI_RUN_DIR/target-ge-source-air-ge-details.json"
+python3 "$REPO_DIR/targets/cpro/scripts/inventory_target_export.py" \
+  --air /home/w00949577/qwen35-target-pytorch-run/target-pytorch/target-pytorch-source/source/glm_export_air_cpro_40block_64_quant/export.air \
+  --discover-torchair-schema --hash-weights --sequence-length 64 \
+  --output "$AI_RUN_DIR/target-pytorch/export-inventory"
 ```
 
-schema查找和详细解析均已完成。B契约仅在完整81个实际端口均符合shape-only差异时细分为`PENDING_PRODUCER_SHAPE_INFERENCE`；这不是ABI通过，不填补producer shape，也不声称已证明未推导。A原机操作与本轮SOURCE_READY结果见[双路线执行](target-parallel-tracks.md#a在原权重机器准备)。原源码专家量化参数转换调用`.npu()`，本轮NPU可见性与资源头预检分别通过，实际完整导出仍待运行。
+返回`INVENTORIED/SHA256_COMPLETE`后，只传小清单、6.4MB AIR和原源码receipt到当前DDK机；逐个实际SHA匹配已有55档sidecar后硬链接复用，不直接复制19.48GB。缺失/不同文件按报告补传。完整传输、复用和后续一次A编译命令见[权重复用流程](target-weight-reuse.md)。导入AIR位于外层，编译必须显式`--input-layout air-directory`，避免重复前缀；完整编译前仍要给输入快照/OMG输出留空间。
 
-同名输出若已存在，工具拒绝覆盖；保留已有报告并使用其路径，不删除旧证据。B后续绑定入口为`prepare_original_ge_target.py`；实际图/来源/算子证据不全时保持待绑定，不把现有functional GE target当成原Cpro等价实现。原源码的norm表达式、量化pack/QPARAM、自定义算子及80状态都要逐项核实。
+**B已收到全部40层精确gamma路径和norm/Add连接，现在进入特征追加。** 原9520节点/89输入/81输出AIR已严格解码。新入口使用40个源绑定锚点、原始字节保持和真实GE生成的9节点分支，追加第82路；不改原描述符、不复制参数、不调用OMG/HDC：
 
-原权重机器目前只有PyTorch/TorchAir，没有同版本Cpro DDK；OMG继续使用当前服务器原环境，大输入快照、scratch和输出放共享挂载或独立大盘。HF和quant检查点留原机，当前服务器仅需约485.95MiB的原INT8 embedding+FP32逐词scale用于连续输入。新AIR复用源sidecar必须逐项核对；新OMC分区/packing权重仍需重新编译，10GB不作为足够空间的保证。[详细空间安排](original-target-features.md#当前低磁盘安排)。
+```bash
+git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/append_original_ge_features.py" \
+  --air /home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/export.air \
+  --torchair-pb2 /root/anaconda3/envs/custom_pypto/lib/python3.11/site-packages/torch_npu/dynamo/torchair/_ge_concrete_graph/ge_ir_by_protoc_3_19_pb2.py \
+  --source-root /home/w00949577/qwen3.5-35B-moe \
+  --gamma-template './glm_export_air_cpro_40block_55_quant/model_model_layers_{layer}_input_layernorm_weight' \
+  --sequence-length 55 --ge-root "$CANN_ROOT" \
+  --output "$AI_RUN_DIR/target-ge/features"
+```
+
+原源码未上传时，可用A准备的原source receipt替换`--source-root`，详情见[B特征追加](target-ge-feature-append.md)。同名任务目录不覆盖；source/tap/GE保真任一步失败都会停止。真实CANN分支及完整接口synthetic图已走通主机全链检查，用户9520节点原图的追加/编译/设备结果仍未回传。source-to-original-AIR revision、精度与多轮状态不从主机机制测试推断。
+
+当前只安排A的一次大编译，B继续小型AIR生成，避免两份完整compiler输出争用60GB。完整draft直接复用。原HF/quant留原机，连续输入还需约485.95MiB原INT8 embedding+FP32逐词scale；它们与OMC编译payload是不同资源。
 
 实际控制输入仍用只读检查器核对，不能用导出dummy值推进连续状态：
 
@@ -53,7 +58,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_inputs.py" \
 
 先采用gear1串行verify：完整draft每轮产生15候选，与target已知下一token逐个比较；只把接受的候选或target纠正token送入target，拒绝候选不进入状态。这样可验证多轮提议、接受/拒绝、80状态接续及真实features历史；本阶段不声称并行verify、回滚或加速已经通过。主机调度器已有回归，真实HIAI适配和连续设备证据尚未完成。
 
-服务器约剩10GB，当前只新增小型源码、接口和报告；不再构建任何新draft模型。需要整理旧编译输入快照时可执行以下已有工具；省略 `--apply` 为只读计划：
+服务器现约剩60GB，不再构建新draft模型。需要整理旧编译输入快照时可执行以下已有工具；省略 `--apply` 为只读计划：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/compact_draft_storage.py" --apply

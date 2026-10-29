@@ -2,18 +2,20 @@
 
 用户于2026-10-29要求两条方案同时推进，防止直接GE target出现问题。两条保留独立产物、来源和设备结果，共用完整`residual-fix` draft；真实8层features、完整40层原量化target、248320词表及最终验证要求相同。
 
+**最新进展覆盖下方准备步骤：A已在原机真实导出成功**，AIR 6,375,344B、SHA `3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9`，目录约19.48GB；DDK服务器已释放到60GB。当前按[A权重核对/复用/编译](target-weight-reuse.md)继续，不重跑A prepare/export。B已收到40层gamma路径及norm/Add连接，按[源绑定特征追加](target-ge-feature-append.md)继续，不重跑旧JSON摘要。大编译当前只安排A，B并行小图构建。
+
 | | A：原PyTorch/TorchAir | B：直接GE |
 | --- | --- | --- |
 | 结构依据 | 用户原Cpro wrapper/model实现 | 同一原Cpro实现及实际AIR算子/权重连接 |
 | 构建位置 | 原权重机器，已有PyTorch/TorchAir | 当前服务器的原DDK；大scratch/output需共享盘或大盘 |
 | 权重 | 原HF非expert参数、原quant数据、原embedding表 | 优先从原AIR引用绑定原外置payload；需精确路径/dtype/shape/layout/extent证据 |
 | 接口 | 原89输入/80state，保留81输出并追加真实features | 对齐原paged/NZ/RefData接口，不套现有functional target |
-| 当前入口 | `prepare_target_pytorch.py` | `prepare_original_ge_target.py` |
+| 当前入口 | `inventory_target_export.py`，随后SHA复用/编译 | `append_original_ge_features.py` |
 | 独立目录 | `$AI_RUN_DIR/target-pytorch`（原机） | `$AI_RUN_DIR/target-ge`（当前服务器） |
 
-## A：在原权重机器准备
+## A：在原权重机器准备（已完成，供重现）
 
-本轮原机已在`qwen3_5_cpro`环境回传`SOURCE_READY`，目录为`/home/w00949577/qwen35-target-pytorch-run/target-pytorch`，实际导出尚未运行。保持该环境，原机导出空间可用时直接执行下条；无需重复准备同名目录：
+原机此前在`qwen3_5_cpro`环境回传`SOURCE_READY`，目录为`/home/w00949577/qwen35-target-pytorch-run/target-pytorch`，随后已执行下条并成功导出；保留命令供重现，不再次执行已有任务：
 
 ```bash
 bash /home/w00949577/qwen35-target-pytorch-run/target-pytorch/export.sh
@@ -62,7 +64,7 @@ bash "$AI_RUN_DIR/target-pytorch/export.sh"
 
 空shape当前不能自动当scalar或任意维度通配，也不能据`origin_shape_initialized=false`宣称未推导。B契约仅在完整81个实际端口都严格满足shape-only条件时细分为`PENDING_PRODUCER_SHAPE_INFERENCE`，ABI仍未通过；tap分析只使用完整内部描述符，不把NetOutput维度填回producer。新版诊断保留shape字段和dim字段是否实际出现，不据序列化推语义。
 
-**当前不重复解析AIR**。先从已有JSON提取精确权重路径和前几个norm/Add连接，供绑定8层真实features；只读小报告，不访问外置权重：
+下面的已有JSON摘要已执行并回传，保留供重现。当前按页首特征追加入口继续，不重复解析AIR或运行本摘要：
 
 ```bash
 python3 - "$AI_RUN_DIR/target-ge-source-air-ge-details.json" <<'PY'
