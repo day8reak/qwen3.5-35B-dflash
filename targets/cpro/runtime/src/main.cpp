@@ -273,6 +273,160 @@ std::vector<std::uint8_t> StepRead(const std::filesystem::path& path, std::uintm
 std::string BytesHash(const std::vector<std::uint8_t>& bytes) {
   return Sha256(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 }
+// Read one top-level member without mistaking nested evidence records for the
+// ABI itself. The wire already bounds this input to 1 MiB. This reader validates
+// JSON syntax with a fixed nesting/token budget and does not build an object
+// tree or interpret the rest of the host-validated ABI schema.
+class AbiJsonKindReader {
+ public:
+  explicit AbiJsonKindReader(const std::string& text) : text_(text) {}
+  std::string Read() {
+    Space();
+    if (Peek() != '{') Fail("top-level value must be an object");
+    Object(0);
+    Space();
+    if (position_ != text_.size()) Fail("trailing data");
+    return kind_;
+  }
+ private:
+  const std::string& text_;
+  std::size_t position_ = 0, tokens_ = 0;
+  std::string kind_;
+  [[noreturn]] void Fail(const char* reason) const {
+    throw std::invalid_argument(std::string("invalid diagnostic ABI JSON: ") + reason);
+  }
+  char Peek() const { return position_ < text_.size() ? text_[position_] : '\0'; }
+  void Space() {
+    while (Peek() == ' ' || Peek() == '\t' || Peek() == '\n' || Peek() == '\r') ++position_;
+  }
+  void Expect(char value) {
+    if (Peek() != value) Fail("unexpected token");
+    ++position_;
+  }
+  void Token(unsigned depth) {
+    if (depth > 32 || ++tokens_ > 262144) Fail("nesting/token budget exceeded");
+  }
+  static bool Digit(char value) { return value >= '0' && value <= '9'; }
+  std::uint32_t Hex4() {
+    std::uint32_t value = 0;
+    for (unsigned i = 0; i < 4; ++i) {
+      const char digit = Peek();
+      if (digit >= '0' && digit <= '9') value = (value << 4) | (digit - '0');
+      else if (digit >= 'a' && digit <= 'f') value = (value << 4) | (digit - 'a' + 10);
+      else if (digit >= 'A' && digit <= 'F') value = (value << 4) | (digit - 'A' + 10);
+      else Fail("invalid Unicode escape");
+      ++position_;
+    }
+    return value;
+  }
+  void Utf8(std::string& result, std::uint32_t value) {
+    if (value <= 0x7f) result.push_back(static_cast<char>(value));
+    else if (value <= 0x7ff) {
+      result.push_back(static_cast<char>(0xc0 | (value >> 6)));
+      result.push_back(static_cast<char>(0x80 | (value & 0x3f)));
+    } else if (value <= 0xffff) {
+      result.push_back(static_cast<char>(0xe0 | (value >> 12)));
+      result.push_back(static_cast<char>(0x80 | ((value >> 6) & 0x3f)));
+      result.push_back(static_cast<char>(0x80 | (value & 0x3f)));
+    } else {
+      result.push_back(static_cast<char>(0xf0 | (value >> 18)));
+      result.push_back(static_cast<char>(0x80 | ((value >> 12) & 0x3f)));
+      result.push_back(static_cast<char>(0x80 | ((value >> 6) & 0x3f)));
+      result.push_back(static_cast<char>(0x80 | (value & 0x3f)));
+    }
+  }
+  std::string String() {
+    Expect('"');
+    std::string result;
+    for (;;) {
+      if (position_ == text_.size()) Fail("unterminated string");
+      const unsigned char value = static_cast<unsigned char>(text_[position_++]);
+      if (value == '"') return result;
+      if (value < 0x20) Fail("unescaped control byte");
+      if (value != '\\') { result.push_back(static_cast<char>(value)); continue; }
+      if (position_ == text_.size()) Fail("unterminated escape");
+      switch (text_[position_++]) {
+        case '"': result.push_back('"'); break;
+        case '\\': result.push_back('\\'); break;
+        case '/': result.push_back('/'); break;
+        case 'b': result.push_back('\b'); break;
+        case 'f': result.push_back('\f'); break;
+        case 'n': result.push_back('\n'); break;
+        case 'r': result.push_back('\r'); break;
+        case 't': result.push_back('\t'); break;
+        case 'u': {
+          auto point = Hex4();
+          if (point >= 0xd800 && point <= 0xdbff) {
+            Expect('\\'); Expect('u');
+            const auto low = Hex4();
+            if (low < 0xdc00 || low > 0xdfff) Fail("invalid Unicode surrogate pair");
+            point = 0x10000 + ((point - 0xd800) << 10) + low - 0xdc00;
+          } else if (point >= 0xdc00 && point <= 0xdfff) Fail("unpaired Unicode surrogate");
+          Utf8(result, point);
+          break;
+        }
+        default: Fail("invalid string escape");
+      }
+    }
+  }
+  void Number() {
+    if (Peek() == '-') ++position_;
+    if (Peek() == '0') ++position_;
+    else {
+      if (Peek() < '1' || Peek() > '9') Fail("invalid number");
+      while (Digit(Peek())) ++position_;
+    }
+    if (Peek() == '.') {
+      ++position_;
+      if (!Digit(Peek())) Fail("invalid fraction");
+      while (Digit(Peek())) ++position_;
+    }
+    if (Peek() == 'e' || Peek() == 'E') {
+      ++position_;
+      if (Peek() == '+' || Peek() == '-') ++position_;
+      if (!Digit(Peek())) Fail("invalid exponent");
+      while (Digit(Peek())) ++position_;
+    }
+  }
+  void Value(unsigned depth) {
+    Token(depth); Space();
+    const char value = Peek();
+    if (value == '{') Object(depth);
+    else if (value == '[') {
+      ++position_; Space();
+      if (Peek() == ']') { ++position_; return; }
+      for (;;) {
+        Value(depth + 1); Space();
+        if (Peek() == ']') { ++position_; return; }
+        Expect(','); Space();
+      }
+    } else if (value == '"') static_cast<void>(String());
+    else if (value == '-' || Digit(value)) Number();
+    else {
+      const char* literal = value == 't' ? "true" : value == 'f' ? "false" : value == 'n' ? "null" : nullptr;
+      if (!literal) Fail("invalid value");
+      for (const char* item = literal; *item; ++item) Expect(*item);
+    }
+  }
+  void Object(unsigned depth) {
+    Token(depth); Expect('{'); Space();
+    std::set<std::string> keys;
+    if (Peek() == '}') { ++position_; return; }
+    for (;;) {
+      if (Peek() != '"') Fail("object key must be a string");
+      const auto key = String();
+      if (!keys.insert(key).second) Fail("duplicate object member");
+      Space(); Expect(':'); Space();
+      if (depth == 0 && key == "artifact_kind") {
+        if (Peek() != '"') Fail("top-level artifact_kind must be a string");
+        kind_ = String();
+      } else Value(depth + 1);
+      Space();
+      if (Peek() == '}') { ++position_; return; }
+      Expect(','); Space();
+    }
+  }
+};
 HiaiTensorSpec StepTensor(const std::vector<std::string>& fields, bool raw_source_name = false) {
   const auto pattern = raw_source_name ? "[A-Za-z_][A-Za-z0-9_./-]{0,255}" : "[A-Za-z_][A-Za-z0-9_]{0,127}";
   if (!std::regex_match(fields[2], std::regex(pattern)))
@@ -462,12 +616,9 @@ StepPlan ReadStepPlan(const std::filesystem::path& path, bool fused = false, boo
         // it cannot relax the production draft wire contract.
         const auto abi_bytes = StepRead(file, 1ULL << 20);
         const std::string abi(abi_bytes.begin(), abi_bytes.end());
-        const std::regex kind("\\\"artifact_kind\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
-        const auto begin = std::sregex_iterator(abi.begin(), abi.end(), kind);
-        const auto end = std::sregex_iterator();
         const std::string expected = draft_direct ? "qwen35-standalone-draft-direct-abi" :
                                                    "qwen35-standalone-draft-trace-abi";
-        if (std::distance(begin, end) != 1 || (*begin)[1] != expected)
+        if (AbiJsonKindReader(abi).Read() != expected)
           throw std::invalid_argument("draft diagnostic wire requires its explicit ABI kind");
       }
     }

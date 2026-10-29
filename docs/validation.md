@@ -1,5 +1,17 @@
 # 验证范围与保留结论
 
+## direct runner 顶层ABI类型解析与原地重试
+
+用户内部DDK的完整direct图编译153/153通过，16个实际输出dtype保持声明，bundle流式打包成功。runner退出1且没有原生结果；stderr为 `qwen35_dflash_hiai: draft diagnostic wire requires its explicit ABI kind`。原正则扫描整个JSON并要求唯一artifact_kind，合法ABI中的嵌套编译输出检查报告也有同名字段，因此在ReadStepPlan阶段、Load/Process之前被错误拒绝。本次未发生新的数值比较，不能据此更新模型精度结论。
+
+改为有界JSON顶层成员读取；保留1MiB上限，深度32、token262144上限，拒绝重复键（含unicode转义后的相同键）、错误JSON、非字符串顶层类型及错误ABI类别。嵌套kind和字符串中的kind文本不影响顶层判断。原native测试只覆盖简化ABI，此次加入完整嵌套direct_output_binding回归。
+
+本地直接使用原 `prepare_draft_bundle` 生成的完整ABI、模型和TSV做旧/新runner对照：ABI SHA256 `f773c126aafd9e3f52892b06d4654a1cce9924a86c0ed821d0cf4ddab0b43257` 不变，旧runner精确复现用户错误，新runner在host fake中EXECUTED并回收全部5个测试端口。证据run `20261029T014455Z-28341-8b01ec/generated-abi/{before,after}.json`。这是生成链路与native适配器的集成回归，不是手机模型数值证据。
+
+控制入口重试只重建runner及board阶段；reference/fixture/AIR/compilation/observed-fixture/bundle均校验后复用。旧失败board先在固定目录内按结果SHA保存，再重试，owner及恢复标记不改。失败终端自动打印SHA已验证的stderr/stdout有界尾部，防止missing result摘要遮蔽真实原因。
+
+本轮组合主机回归263项通过（同run `final-tests/tests.xml`），native CTest8/8通过（`native-json/Testing/Temporary/LastTest.log`）。包含完整direct失败后恢复到board的模拟集成：第二次仅核验编译/输出ABI并重跑board，六个上游manifest字节不变，不导出、不编译、不重打包。用户手机重试及direct数值比较仍待执行。
+
 ## packed观察矛盾与原值直接输出
 
 用户回传PID1611：完整packed trace编译精度331/331、跨区证明140条、设备执行及回收通过；Top1/hidden仍失败。`first_nonexact=context_fc`，但该观察FC为零，而projected_context相对L2仅0.004969；层0QK相对L2为5.782891，scaled score却仅0.002022。最强矛盾是同一原Graph Value的 `layer_0_output` 和 `layer_1_input` 观察分别为relative L2=3.275297/174.521739，后者多587个非有限差异；其它层边界也类似。语义→源Value映射、spec offsets和切片主机审查未发现确定错误，这批观测无法作为原计算首次偏离证据。

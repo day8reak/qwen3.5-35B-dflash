@@ -1,6 +1,7 @@
 """Actual standalone CLI against host HIAI double: transport, never DFlash math."""
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import struct
@@ -154,3 +155,72 @@ wrong_direct=(root/'step.tsv').read_text().replace('QWEN35_DRAFT_STEP\t1','QWEN3
 proc=subprocess.run(args+['--output',str(root/'direct-wrong-abi')],capture_output=True,text=True)
 assert proc.returncode==1 and 'explicit ABI kind' in proc.stderr,proc.stderr
 print('Raw direct draft outputs preserve typed buffers and bounded separate ABI (host fake only)')
+
+# The production host bundle embeds the complete output-ABI inspection. Both
+# records have artifact_kind members, so a document-wide regex is incorrect.
+# Exercise a realistic binding rather than a minimal top-level-only ABI.
+inputs=[{'index':i,'name':name,'dtype':dtype,'shape':shape}
+        for i,(name,dtype,shape) in enumerate([
+            ('target_features','float16',[1,8,16384]),('input_ids','int32',[1,8]),
+            ('attention_mask','int32',[1,8])])]
+outputs=[{'index':i,'name':name,'dtype':dtype,'shape':shape}
+         for i,(name,dtype,shape) in enumerate([
+             ('draft_top1','int32',[1,15]),('draft_hidden','float16',[1,15,2048]),
+             ('v41','float16',[1,2]),('layer_0_scores','float32',[1,1,2,2]),
+             ('positions','int32',[1,2])])]
+direct_spec=[{'name':name,'source':row['name'],'shape':row['shape'],
+              'dtype':row['dtype'],'output_index':row['index']}
+             for name,row in zip(('draft_top1','draft_hidden','context_fc','layer_0_scores_fp32','positions'),outputs)]
+source_omc={'path':'model.omc','bytes':(root/'model.omc').stat().st_size,'sha256':sha(root/'model.omc')}
+binding={'schema_version':1,'artifact_kind':'qwen35-draft-direct-output-abi-inspection','status':'PASSED',
+         'declared_spec':direct_spec,'observed_spec':direct_spec,'changes':[],'omc':source_omc,
+         'schema':{'library':'/selected/ddk/libai_fmk_graph_proto_host.so','library_sha256':'b'*64},
+         'source_binding':'ORDERED_COMPILED_OUTPUTS_CALLER_MUST_BIND_AIR_AND_DECLARED_SPEC',
+         'physical_outputs':outputs,'physical_output_bytes':sum(
+             (2 if row['dtype']=='float16' else 4)*math.prod(row['shape']) for row in outputs)}
+complete_abi={'schema_version':1,'artifact_kind':'qwen35-standalone-draft-direct-abi',
+              'inputs':inputs,'outputs':outputs,'draft_config':{'num_hidden_layers':6,'hidden_size':2048},
+              'sequence_length':8,'state_policy':'prefix-recompute','direct_spec':direct_spec,
+              'source_output_precision':'SOURCE_DTYPES_PRESERVED','source_compiled_omc':source_omc,
+              'direct_output_binding':binding}
+
+def diagnostic_wire():
+    plan()
+    wire=(root/'step.tsv').read_text().replace('QWEN35_DRAFT_STEP\t1','QWEN35_DRAFT_DIRECT_STEP\t1')
+    return wire+'output\t2\tv41\tfloat16\t1,2\noutput\t3\tlayer_0_scores\tfloat32\t1,1,2,2\noutput\t4\tpositions\tint32\t1,2\n'
+
+complete_text=json.dumps(complete_abi,indent=2)
+for label,text in [
+    ('complete-nested-binding',complete_text),
+    ('escaped-top-kind',complete_text.replace('"artifact_kind"','"\\u0061rtifact_kind"',1)),
+    ('kind-like-string',json.dumps({**complete_abi,'description':'"artifact_kind":"not the root"; braces {} [] and escaped \\ paths'})),
+]:
+    (root/'draft-abi.json').write_text(text)
+    (root/'step.tsv').write_text(diagnostic_wire())
+    out=root/label
+    proc=subprocess.run(args+['--output',str(out)],capture_output=True,text=True,env=direct_env)
+    assert proc.returncode==0,(label,proc.stderr)
+    assert len(json.loads((out/'result.json').read_text())['outputs'])==5
+
+for label,text,reason in [
+    ('nested-correct-root-wrong',json.dumps({'artifact_kind':'wrong','nested':complete_abi}),'explicit ABI kind'),
+    ('only-nested-kind',json.dumps({'nested':complete_abi}),'explicit ABI kind'),
+    ('duplicate-root-kind','{"artifact_kind":"qwen35-standalone-draft-direct-abi","artifact_kind":"wrong"}','duplicate object member'),
+    ('escaped-duplicate-root-kind','{"artifact_kind":"qwen35-standalone-draft-direct-abi","\\u0061rtifact_kind":"qwen35-standalone-draft-direct-abi"}','duplicate object member'),
+    ('non-string-root-kind','{"artifact_kind":true}','artifact_kind must be a string'),
+    ('non-object-root',json.dumps([complete_abi]),'top-level value must be an object'),
+    ('trailing-object',complete_text+'{}','trailing data'),
+    ('trailing-comma','{"artifact_kind":"qwen35-standalone-draft-direct-abi",}','object key must be a string'),
+    ('bad-number','{"artifact_kind":"qwen35-standalone-draft-direct-abi","v":01}','unexpected token'),
+    ('bad-string-escape','{"artifact_kind":"qwen35-standalone-draft-direct-abi","v":"\\q"}','invalid string escape'),
+    ('unpaired-surrogate','{"artifact_kind":"qwen35-standalone-draft-direct-abi","v":"\\ud800"}','unexpected token'),
+    ('too-deep','{"artifact_kind":"qwen35-standalone-draft-direct-abi","v":'+'['*33+'0'+']'*33+'}','nesting/token budget'),
+]:
+    (root/'draft-abi.json').write_text(text)
+    (root/'step.tsv').write_text(diagnostic_wire())
+    trace=root/(label+'.trace')
+    proc=subprocess.run(args+['--output',str(root/label)],capture_output=True,text=True,
+        env=dict(direct_env,FAKE_HIAI_TRACE=str(trace)))
+    assert proc.returncode==1 and reason in proc.stderr,(label,proc.stderr)
+    assert not trace.exists(),(label,'invalid ABI reached model Load')
+print('Nested direct binding and bounded top-level JSON ABI-kind validation passed (host fake only)')

@@ -1974,7 +1974,7 @@
           "direct_outputs": {
             "run_id": "20261029T011736Z-26760-00e33d",
             "directory": "full-draft/direct-trace",
-            "status": "HOST_IMPLEMENTED_DEVICE_VALIDATION_PENDING",
+            "status": "USER_COMPILED_DTYPES_PRESERVED_NATIVE_ABI_PARSE_FIXED_HOST_PENDING_RETRY",
             "physical_outputs": 16,
             "semantic_outputs": 17,
             "source_declared_output_bytes": 1650748,
@@ -2028,6 +2028,62 @@
               "report": "final-tests/tests.xml",
               "native_ctest_passed": 8,
               "native_report": "direct-board/native/Testing/Temporary/LastTest.log"
+            },
+            "latest_user_report": {
+              "source": "USER_PASTED_REPORT_AND_STDERR",
+              "artifact_hash_verification": "NOT_RECHECKED",
+              "compiled_required": 153,
+              "compiled_matched": 153,
+              "compiled_output_abi": "PASSED",
+              "source_output_precision": "SOURCE_DTYPES_PRESERVED",
+              "bundle": "PREPARED",
+              "remote_exitcode": 1,
+              "native_result": "NOT_CREATED",
+              "native_failure": "draft diagnostic wire requires its explicit ABI kind",
+              "stage": "PLAN_ABI_PARSE_BEFORE_MODEL_LOAD",
+              "numerical_validation": "NOT_EVALUATED"
+            },
+            "native_abi_parse_fix": {
+              "run_id": "20261029T014455Z-28341-8b01ec",
+              "source_changes": [
+                "top-level JSON kind parser",
+                "nested binding regression",
+                "runner-only retry and retained failure evidence"
+              ],
+              "model_changes": 0,
+              "compiler_changes": 0,
+              "threshold_changes": 0,
+              "generated_abi_reproduction": {
+                "before": "EXIT1_SAME_USER_STDERR",
+                "after": "HOST_FAKE_EXECUTED_5_OUTPUTS",
+                "same_abi_sha256": "f773c126aafd9e3f52892b06d4654a1cce9924a86c0ed821d0cf4ddab0b43257",
+                "report": "generated-abi/after.json"
+              },
+              "experience_audit": {
+                "captured": [
+                  "ABI type must be read at the JSON root; nested compiled-evidence fields are valid",
+                  "Native regression must consume complete generator-style ABI, not only minimal header objects",
+                  "A runner fix must not require recompiling or repacking the model",
+                  "Native stderr must survive absent result.json and be visible with verified identity"
+                ],
+                "updated_checks": [
+                  "runtime/tests/test_hiai_draft_step.py",
+                  "test_draft_trace_job.py"
+                ],
+                "skills_changed": [],
+                "rejected_promotions": [
+                  "No board Process or numerical pass from a plan parser fix"
+                ],
+                "remaining": [
+                  "User board retry and 16 direct output comparison"
+                ]
+              },
+              "host_validation": {
+                "passed": 263,
+                "report": "final-tests/tests.xml",
+                "native_ctest_passed": 8,
+                "native_report": "native-json/Testing/Temporary/LastTest.log"
+              }
             }
           }
         }
@@ -2132,5 +2188,22 @@
       "device_ready": false,
       "scope": "Optional fallback only; preserve raw HF norm weights, validate resumed source/output hashes; no full-model quantized target execution."
     }
+  },
+  "delivery_timebox": {
+    "source": "USER_DIRECTIVE",
+    "remaining_days": 3,
+    "objective": "Correct complete target/draft generation, DFlash accept/reject/state handling, matched-baseline measured speedup>=2x",
+    "assessment": "HIGH_RISK_NOT_COMMITTED",
+    "day1_gate": "Correct draft plus usable ordinary target prefill/decode",
+    "day2_gate": "Multi-step DFlash token/stop equality and state handling",
+    "day3_gate": "Matched real-device performance measurement and bottleneck closure",
+    "current_target_status": "User: not run or uncertain; no validated original-target runner",
+    "target_gaps": [
+      "Original89input80RefData ordered ABI",
+      "64/1 gear and persistent state",
+      "External-weight loading contract",
+      "Ordinary decode baseline"
+    ],
+    "next_target_action": "Read existing original-target job reports and active processes before starting any new compile"
   }
 }

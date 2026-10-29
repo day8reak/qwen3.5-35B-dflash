@@ -414,3 +414,143 @@ def test_precision_failure_output_includes_node_errors_without_changing_gate():
     assert '"name": "probe"' in messages[1] and "missing CPU producer" in messages[1]
     assert '"source_type": "Reshape"' in messages[1]
     assert json.dumps(report) == before
+
+
+def test_board_failure_prints_only_verified_bounded_native_tails(tmp_path):
+    from qwen35_moe_dflash.draft_trace_job import _board_failure_evidence
+    from qwen35_moe_dflash.hashing import sha256_file
+    (tmp_path / "draft.stderr").write_text("prefix\n" * 5000 + "ERROR: direct ABI rejected\n")
+    (tmp_path / "draft.stdout").write_text("unbound stale output must not be printed")
+    messages = []
+    report = {"remote_exitcode": 1, "transport_error": "missing native result",
+              "retrieved_sha256": {"draft.stderr": sha256_file(tmp_path / "draft.stderr")}}
+    evidence = _board_failure_evidence(tmp_path, report, messages.append)
+    assert evidence["metadata"]["remote_exitcode"] == 1
+    assert evidence["logs"]["draft.stderr"]["tail"].endswith("ERROR: direct ABI rejected")
+    assert len(evidence["logs"]["draft.stderr"]["tail"]) <= 4096
+    assert "draft.stdout" not in evidence["logs"]
+    assert "unbound stale" not in "\n".join(messages)
+    assert any("ERROR: direct ABI rejected" in message for message in messages)
+
+
+def test_failed_board_archive_keeps_raw_evidence_and_owner_bytes(tmp_path, monkeypatch):
+    from qwen35_moe_dflash.draft_trace_job import _archive_failed_board
+    from qwen35_moe_dflash.hashing import sha256_file
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    root, folder = tmp_path / "direct-trace", tmp_path / "direct-trace/board"
+    folder.mkdir(parents=True)
+    save_json(root / "owner.json", {"owner": "unchanged"})
+    save_json(folder / "result.json", {"status": "FAILED", "remote_exitcode": 1})
+    (folder / "draft.stderr").write_bytes(b"original error\n")
+    owner = (root / "owner.json").read_bytes()
+    report = (folder / "result.json").read_bytes()
+    report_sha = sha256_file(folder / "result.json")
+    marker = {"owner_sha256": sha256_file(root / "owner.json"), "stage": "board"}
+    archive = _archive_failed_board(root, folder, marker)
+    assert archive == root / "board-attempts" / report_sha
+    assert not folder.exists()
+    assert (archive / "result.json").read_bytes() == report
+    assert (archive / "draft.stderr").read_bytes() == b"original error\n"
+    assert (root / "owner.json").read_bytes() == owner
+    assert json.loads((archive / ".trace-board-archive.json").read_text())["result_sha256"] == report_sha
+    folder.mkdir()
+    with pytest.raises(ValueError, match="workspace owner"):
+        _archive_failed_board(root, folder, {"owner_sha256": "0" * 64, "stage": "board"})
+    assert folder.is_dir()
+
+
+def test_direct_failed_runner_retry_reuses_observed_fixture_and_bundle(source, monkeypatch, tmp_path, capsys):
+    """Only the board stage is rebuilt; all compiler data are host-only mocks."""
+    from qwen35_moe_dflash import draft_standalone, draft_board, draft_compile_precision, draft_direct_abi, existing_air, draft_trace_job
+    from qwen35_moe_dflash.hashing import sha256_file
+    from test_draft_standalone import fake_ge
+    root, ddk = source
+    ge = fake_ge(tmp_path)
+    calls = []
+
+    def logged(command, **kwargs):
+        if "-o" in command:
+            Path(command[command.index("-o") + 1]).write_bytes(b"mock serializer")
+        else:
+            Path(command[1]).write_bytes(b"mock AIR")
+        calls.append("export-tool")
+
+    def compile_air(air, output, selected, **kwargs):
+        calls.append("compile")
+        output.mkdir()
+        (output / "cl.json").write_bytes(kwargs["cl_customization"].read_bytes())
+        (output / "model.omc").write_bytes(b"mock compiled payload; no device evidence")
+        report = {"artifact_kind": "qwen35-existing-air-compilation", "status": "COMPILED",
+                  "ddk_root": str(selected), "ddk_id": kwargs["ddk_id"],
+                  "requested_options": {"use_origin_format": "true", "weight_data_type": "FP16",
+                                        "limit_partition_size": "false", "save_weights_as_external_data": "true"},
+                  "omg_sha256": sha256_file(ddk / "tools/tools_omg/master/omg"),
+                  "cl_customization": _record(output / "cl.json", output), "omc": _record(output / "model.omc", output)}
+        save_json(output / "report.json", report)
+        return report
+
+    def verify(omc, schema, plan):
+        calls.append("verify")
+        return {"status": "PASSED", "required_nodes": len(plan["required_nodes"]), "matched_nodes": len(plan["required_nodes"])}
+
+    def output_abi(omc, schema, spec):
+        calls.append("output-abi")
+        return {"artifact_kind": "qwen35-draft-direct-output-abi-inspection", "status": "PASSED",
+                "declared_spec": spec, "observed_spec": spec, "changes": [],
+                "omc": _record(omc, omc.parent),
+                "schema": {"library": str(schema), "library_sha256": sha256_file(schema)},
+                "source_binding": "ORDERED_COMPILED_OUTPUTS_CALLER_MUST_BIND_AIR_AND_DECLARED_SPEC"}
+
+    def bundle(compilation, fixture, output, **kwargs):
+        calls.append("bundle")
+        output.mkdir()
+        report = {"artifact_kind": "qwen35-standalone-draft-direct-bundle", "status": "PREPARED",
+                  "compiler_report_sha256": sha256_file(compilation / "report.json"),
+                  "fixture_report_sha256": sha256_file(fixture / "report.json"),
+                  "export_manifest_sha256": sha256_file(kwargs["export_dir"] / "manifest.json")}
+        save_json(output / "manifest.json", report)
+        return report
+
+    def board(bundle, output, **kwargs):
+        calls.append("board")
+        output.mkdir()
+        (output / "draft.stderr").write_bytes(b"ERROR: host-mocked runner rejected ABI\n")
+        (output / "draft.stdout").write_bytes(b"")
+        report = {"artifact_kind": "qwen35-standalone-draft-execution", "status": "FAILED",
+                  "device_execution": "UNVERIFIED", "numerical_validation": "NOT_EVALUATED", "remote_exitcode": 1,
+                  "transport_error": "missing verified execution evidence: results/result.json",
+                  "retrieved_sha256": {name: sha256_file(output / name) for name in ("draft.stderr", "draft.stdout")}}
+        save_json(output / "result.json", report)
+        return report
+
+    monkeypatch.setattr(draft_standalone, "_logged", logged)
+    monkeypatch.setattr(existing_air, "compile_existing_air", compile_air)
+    monkeypatch.setattr(draft_compile_precision, "verify_compiled_precision", verify)
+    monkeypatch.setattr(draft_direct_abi, "inspect_direct_output_abi", output_abi)
+    monkeypatch.setattr(draft_board, "prepare_draft_bundle", bundle)
+    monkeypatch.setattr(draft_board, "execute_draft_bundle", board)
+    first = run_trace(root, ge_root=ge, direct=True)
+    assert first["status"] == "FAILED" and first["stage"] == "board", first
+    assert first["native_error_excerpt"].endswith("host-mocked runner rejected ABI")
+    lane = root / "direct-trace"
+    owner = (lane / "owner.json").read_bytes()
+    upstream = {name: (lane / name / file).read_bytes() for name, file in (
+        ("reference", "report.json"), ("fixture", "report.json"), ("air", "manifest.json"),
+        ("compilation", "report.json"), ("observed-fixture", "report.json"), ("bundle", "manifest.json"))}
+    calls.clear()
+    # Simulate a changed control checkout while leaving owner/started-marker
+    # bytes intact, exactly as a real git update behaves.
+    original_sha = draft_trace_job.sha256_file
+    monkeypatch.setattr(draft_trace_job, "sha256_file", lambda path: "0" * 64 if Path(path).name == "draft_trace_job.py" else original_sha(path))
+    second = run_trace(root, ge_root=ge, direct=True)
+    assert second["status"] == "FAILED" and second["stage"] == "board", second
+    assert calls == ["verify", "output-abi", "board"]
+    assert (lane / "owner.json").read_bytes() == owner
+    assert Path(second["previous_board_attempt"]).is_dir()
+    for name, raw in upstream.items():
+        file = "manifest.json" if name in {"air", "bundle"} else "report.json"
+        assert (lane / name / file).read_bytes() == raw
+    output = capsys.readouterr().out
+    assert "Reusing verified observed-fixture" in output and "Reusing verified bundle" in output
+    assert "Verified draft.stderr tail" in output and "host-mocked runner rejected ABI" in output
+    assert "targets/cpro/runtime/src/main.cpp" in second["runtime_source_identity"]["files"]

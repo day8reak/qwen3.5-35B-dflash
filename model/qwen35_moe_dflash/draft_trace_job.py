@@ -71,6 +71,89 @@ def _component(job, name):
     return directory, _json(path)
 
 
+def _runtime_source_identity():
+    """Audit current runner sources without invalidating frozen model payloads.
+
+    Native LINKED/build receipts bind the actual executed binary. These hashes
+    describe the checkout used for this attempt; they never certify an older
+    failed binary or allow a model/bundle builder change to bypass ownership.
+    """
+    from .resources import repository_root
+    repository = repository_root()
+    paths = ("targets/cpro/runtime/CMakeLists.txt", "targets/cpro/scripts/build_hiai.py",
+             "targets/cpro/runtime/src/main.cpp", "targets/cpro/runtime/src/hiai_executor.cpp",
+             "targets/cpro/runtime/src/generation.cpp", "targets/cpro/runtime/src/sha256.cpp",
+             "targets/cpro/runtime/include/qwen35_dflash/hiai_executor.hpp",
+             "targets/cpro/runtime/include/qwen35_dflash/generation.hpp",
+             "targets/cpro/runtime/include/qwen35_dflash/sha256.hpp")
+    return {"scope": "Current runner checkout source audit; native LINKED receipts bind the executed binary",
+            "files": {name: sha256_file(repository / name) for name in paths}}
+
+
+def _board_failure_evidence(folder, report, notify):
+    """Print only bounded, hash-verified current-attempt native log tails."""
+    metadata = {key: report[key] for key in ("native_status", "failure_stage", "runtime_stage", "remote_exitcode",
+                "error", "comparison_error", "transport_error", "retrieval_errors") if key in report}
+    notify("Board failure: " + json.dumps(metadata, ensure_ascii=False, allow_nan=False))
+    logs = {}
+    hashes = report.get("retrieved_sha256", {})
+    for name in ("draft.stderr", "draft.stdout"):
+        path = folder / name
+        digest = hashes.get(name) if isinstance(hashes, dict) else None
+        if not isinstance(digest, str) or not re.fullmatch("[0-9a-f]{64}", digest):
+            continue
+        try:
+            source = _file(folder, {"path": name, "bytes": path.stat().st_size, "sha256": digest})
+            with source.open("rb") as stream:
+                stream.seek(max(0, source.stat().st_size - 8192))
+                tail = "\n".join(stream.read(8192).decode("utf-8", errors="replace").splitlines()[-40:])[-4096:]
+            logs[name] = {"sha256": digest, "bytes": source.stat().st_size, "tail": tail}
+            notify("Verified " + name + " tail:\n" + tail)
+        except (OSError, ValueError) as error:
+            logs[name] = {"error": str(error)}
+            notify("Could not verify " + name + ": " + str(error))
+    return {"metadata": metadata, "logs": logs,
+            "scope": "Current attempt verified logs; missing native result does not hide the runner exception"}
+
+
+def _archive_failed_board(root, folder, marker):
+    """Retain a failed board attempt in place before rebuilding its runner."""
+    if folder.is_symlink() or not folder.is_dir():
+        raise ValueError("failed board attempt must be a real directory")
+    owner_sha = sha256_file(root / "owner.json")
+    if marker != {"owner_sha256": owner_sha, "stage": "board"}:
+        raise ValueError("failed board attempt does not match the workspace owner")
+    archive_root = root / "board-attempts"
+    archive_owner = {"artifact_kind": "qwen35-trace-board-attempts", "owner_sha256": owner_sha}
+    if archive_root.exists():
+        if archive_root.is_symlink() or not archive_root.is_dir() or _json(archive_root / "owner.json") != archive_owner:
+            raise ValueError("board attempt archive has an unknown owner")
+    else:
+        archive_root.mkdir()
+        save_json(archive_root / "owner.json", archive_owner)
+    report_path = folder / "result.json"
+    if report_path.is_symlink():
+        raise ValueError("failed board result must not be a symlink")
+    has_report = report_path.is_file()
+    digest = (sha256_file(report_path) if has_report else
+              hashlib.sha256(("incomplete:" + str(folder.stat().st_mtime_ns)).encode()).hexdigest())
+    destination = archive_root / digest
+    suffix = 1
+    while destination.exists():
+        suffix += 1
+        if suffix > 1000:
+            raise ValueError("board attempt archive exceeds retry bound")
+        destination = archive_root / (digest + "-" + str(suffix))
+    if (folder / ".trace-board-archive.json").exists():
+        raise ValueError("failed board directory already contains an archive marker")
+    folder.rename(destination)
+    save_json(destination / ".trace-board-archive.json", {
+        "artifact_kind": "qwen35-archived-trace-board-attempt", "original_directory": str(folder),
+        "owner_sha256": owner_sha, "result_sha256": digest if has_report else None,
+        "scope": "Directory renamed without changing original evidence bytes; retry uses a fresh board directory"})
+    return destination
+
+
 def _resume_owner(root, current):
     """Allow checker-only updates of fully retained build stages.
 
@@ -273,6 +356,7 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
     result = {"schema_version": 1, "artifact_kind": kind, "status": "FAILED", "stage": "preflight",
               "output": str(root), "device_execution": "NOT_RUN", "numerical_validation": "NOT_RUN",
               "scope": "Intermediate diagnostics on the original fixture; no language-quality or speed claim."}
+    result["runtime_source_identity"] = _runtime_source_identity()
     with DraftWorkspace(job_root):
         notify("Verifying the retained execution and unchanged source receipts")
         review = review_draft_result(job_root)
@@ -330,7 +414,12 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
             if folder.exists():
                 if folder.is_symlink() or not started.exists() or _json(started) != marker:
                     raise ValueError("refusing to replace unowned trace stage: " + name)
-                shutil.rmtree(folder)
+                if name == "board":
+                    archived = _archive_failed_board(root, folder, marker)
+                    result["previous_board_attempt"] = str(archived)
+                    notify("Retained failed board evidence: " + str(archived))
+                else:
+                    shutil.rmtree(folder)
             _save(root, started.name, marker)
             notify("Building " + name)
             report = build(folder)
@@ -351,6 +440,11 @@ def run_trace(job_dir, *, ge_root, ddk_root=None, ddk_id=None, tbe_diagnosis=Non
                           "remote_exitcode", "retrieval_errors", "transport_error", "hilog"):
                 if field in report:
                     result[field] = report[field]
+            if report.get("status") == "FAILED":
+                result["board_failure"] = _board_failure_evidence(folder, report, notify)
+                excerpt = result["board_failure"]["logs"].get("draft.stderr", {}).get("tail")
+                if excerpt:
+                    result["native_error_excerpt"] = excerpt
 
         try:
             if direct:

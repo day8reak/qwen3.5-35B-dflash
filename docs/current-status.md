@@ -6,6 +6,10 @@
 
 ## 用户现在执行什么
 
+最新direct结果已在用户内部DDK通过153/153计算精度检查，16个实际输出类型均与源码一致（`SOURCE_DTYPES_PRESERVED`），打包完成；runner在Load前错误拒绝ABI。原因是全局regex把嵌套 `direct_output_binding.artifact_kind` 也计入，报 `draft diagnostic wire requires its explicit ABI kind`。现修为只校验JSON顶层kind，重复顶层键/转义重复键/错误JSON仍拒绝。更新后继续下方 `run_draft_direct.py` 命令，复用reference、AIR、OMC、observed-fixture和bundle，只重建runner并重跑板端；失败board证据保留在 `direct-trace/board-attempts/<resultSHA>`。
+
+用户明确本周交付仅剩3天。完整正确性、原target普通解码、DFlash多步状态/接受拒绝与至少2x实测尚未闭环；不能承诺在该时限全部完成。target最近结果为“尚未运行或不确定”，先查已保留报告和活跃进程，不能直接重复启动 `compile_full_target.py`（该入口不支持自动恢复）。原89输入/80RefData、64/1动态档和外置权重还缺原接口native适配，不能直接套现有draft或显式状态runner。
+
 最新PID1611的完整packed trace已通过331/331精度检查、证明140条跨分区路径并完成设备执行，但观察数据内部矛盾：同源 `layer_0_output/layer_1_input` 不同，`context_fc` 显示全零而下游归一化非零，QK探针与其缩放后score不一致。诊断hidden与生产hidden相对L2=1.402770、Top1全不同。因此不能将 `first_nonexact=context_fc` 当原生产图首次错误，也不能把探针的3876个非有限差异直接归因于模型算术。
 
 现在使用原值直接输出入口；它先只读复核已有packed结果，再在固定 `full-draft/direct-trace` 构建一份16端口诊断图。原594个计算节点不增不改，无额外观察Cast/Reshape/Concat；Top1/hidden保留，重点观察FC、首层attention/MLP及第0→1层边界，同源语义共享物理端口。原CPU探针参考校验后复用，不重新准备权重或golden；旧生产及packed产物保留。
