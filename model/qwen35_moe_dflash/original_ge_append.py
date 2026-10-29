@@ -6,6 +6,7 @@ The resulting AIR still needs weight staging, actual OMG and HIAI validation.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path, PurePosixPath
 
@@ -16,7 +17,7 @@ from .ge_fused.export import _toolchain
 from .hashing import sha256_file
 from .original_air_inspect import inspect_original_air
 from .original_air_roundtrip import _decode, _proof, _read_air, _stamp, _unavailable_payloads, probe_original_air_roundtrip
-from .original_ge_target import audit_source, read_json, source_receipt
+from .original_ge_target import SOURCE_SHA256, audit_source, read_json, source_receipt
 from .original_ge_append_cpp import emit_feature_branch_cpp
 from .original_ge_append_validation import validate_original_ge_append
 from .original_ge_append_wire import append_feature_branch_wire
@@ -26,14 +27,67 @@ from .original_ge_taps import plan_original_ge_taps
 _OWN_FILES = {"branch.cpp", "branch", "branch.air", "native.json", "build.log", "branch.log", "appended.air"}
 
 
-def _source(root, receipt_path):
-    if bool(root) == bool(receipt_path):
+def inspect_original_ge_source(*, source_root=None, source_receipt_path=None):
+    """Audit only six bounded source files, or their supplied receipt.
+
+    Line-ending normalization is diagnostic evidence, never acceptance. This
+    read-only entry point requires neither AIR nor a GE toolchain/run directory.
+    """
+    if bool(source_root) == bool(source_receipt_path):
         raise ValueError("provide exactly one original source root or source receipt")
-    receipt, digest = (source_receipt(root), None) if root else read_json(receipt_path, 1 << 20)
-    audit = audit_source(receipt)
-    if audit["status"] != "MATCHED_AUDITED_SOURCE_RECEIPTS":
-        raise ValueError("original source audit did not match")
-    return receipt, audit, digest
+    receipt, digest, diagnostics, errors = None, None, {}, []
+    if source_root:
+        root, rows = Path(source_root).expanduser().resolve(), []
+        for name in SOURCE_SHA256:
+            path = root / name
+            try:
+                if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 1 << 20:
+                    raise ValueError("missing, symlinked or excessive original source file")
+                before = _stamp(path)
+                with path.open("rb") as stream:
+                    raw = stream.read((1 << 20) + 1)
+                if len(raw) != before[2] or len(raw) > 1 << 20 or _stamp(path) != before:
+                    raise ValueError("source changed during bounded read")
+                rows.append({"path": name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+                crlf, lf, cr = raw.count(b"\r\n"), raw.count(b"\n"), raw.count(b"\r")
+                normalized = raw.replace(b"\r\n", b"\n")
+                normalized_sha = hashlib.sha256(normalized).hexdigest()
+                diagnostics[name] = {"status": "ACTUAL_BOUNDED_BYTES_READ", "crlf_pairs": crlf,
+                    "bare_lf": lf - crlf, "bare_cr": cr - crlf,
+                    "normalized_lf_sha256": normalized_sha,
+                    "normalized_lf_matches_expected": normalized_sha == SOURCE_SHA256[name],
+                    "scope": "CRLF-to-LF only; diagnostic candidate, never accepted by source policy"}
+            except (OSError, ValueError) as error:
+                errors.append({"path": name, "error": f"{type(error).__name__}: {error}"})
+        receipt = {"source": "READ_ONLY_SIX_SOURCE_FILES", "files": rows}
+    else:
+        try:
+            receipt, digest = read_json(source_receipt_path, 1 << 20)
+        except (OSError, ValueError) as error:
+            errors.append({"path": str(source_receipt_path), "error": f"{type(error).__name__}: {error}"})
+    try:
+        audit = audit_source(receipt or {})
+    except (ValueError, TypeError) as error:
+        audit = {"status": "SOURCE_AUDIT_INPUT_UNAVAILABLE", "error": f"{type(error).__name__}: {error}"}
+    rows = audit.get("files", (receipt or {}).get("files", []))
+    comparison = []
+    for name, expected in SOURCE_SHA256.items():
+        matches = [row for row in rows if isinstance(row, dict) and row.get("path") == name] if isinstance(rows, list) else []
+        actual = matches[0] if len(matches) == 1 else {}
+        comparison.append({"path": name, "role": "COMPUTATION_SOURCE" if name.endswith(".py") else "CONFIGURATION_PROVENANCE_ONLY",
+            "expected_sha256": expected, "actual_sha256": actual.get("sha256"), "actual_bytes": actual.get("bytes"),
+            "matches_expected_bytes_sha256": actual.get("sha256") == expected,
+            "receipt_occurrences": len(matches),
+            "line_endings": diagnostics.get(name, {"status": "NOT_AVAILABLE_FROM_RECEIPT_OR_UNREADABLE_SOURCE"})})
+    audit["comparison"] = comparison
+    audit["input_errors"] = errors
+    if errors and audit["status"] == "MATCHED_AUDITED_SOURCE_RECEIPTS":
+        audit["status"] = "SOURCE_AUDIT_INPUT_UNAVAILABLE"
+    return {"schema_version": 1, "artifact_kind": "qwen35-original-ge-source-inspection",
+        "status": "SOURCE_AUDIT_MATCHED" if audit["status"] == "MATCHED_AUDITED_SOURCE_RECEIPTS" else "BLOCKED",
+        "source_audit": audit, "source_receipt": receipt, "source_receipt_sha256": digest,
+        "actual_source_bytes_rehashed": bool(source_root), "model_compilation": "NOT_RUN", "device_execution": "NOT_RUN",
+        "external_weights": "NOT_OPENED", "scope": "Six named small source/config files only; exact Python SHA policy unchanged"}
 
 
 def _identity(paths):
@@ -41,28 +95,93 @@ def _identity(paths):
                                       "resolved": str(Path(path).resolve())} for path in paths}
 
 
+def _archive_source_failure(out):
+    """Preserve one source-only failed attempt; never reuse graph/native work."""
+    if out.is_symlink() or not out.is_dir():
+        raise ValueError("retry requires a regular existing output directory")
+    lock = out / ".source-retry.lock"
+    with lock.open("x") as stream:
+        stream.write("source-only evidence archive\n")
+    try:
+        allowed = {"result.json", "source-receipt.json", "source-audit.json", "work", "attempts", lock.name}
+        if any(path.name not in allowed or path.is_symlink() for path in out.iterdir()):
+            raise ValueError("retry refuses unknown files or symlinks in previous output")
+        result, _ = read_json(out / "result.json", 1 << 20)
+        advanced = {"original_air", "schema", "original_metadata", "tap_plan", "toolchain", "commands", "branch_native",
+                    "branch_air", "wire_preservation", "append_validation", "ge_roundtrip", "roundtrip_validation", "air", "feature_output"}
+        if (result.get("artifact_kind") != "qwen35-original-ge-feature-append"
+                or result.get("status") != "BLOCKED" or result.get("stage") != "source"
+                or result.get("model_compilation", "NOT_RUN") != "NOT_RUN"
+                or result.get("device_execution", "NOT_RUN") != "NOT_RUN"
+                or result.get("output") != str(out) or advanced & result.keys()):
+            raise ValueError("retry is limited to a BLOCKED source-only attempt with no AIR, binding or native evidence")
+        work = out / "work"
+        if not work.is_dir() or any(work.iterdir()):
+            raise ValueError("retry refuses nonempty or missing native work directory")
+        files = [out / name for name in ("result.json", "source-receipt.json", "source-audit.json") if (out / name).exists()]
+        identities, stamps = {}, {}
+        for path in files:
+            _, digest = read_json(path, 1 << 20)
+            identities[path.name] = {"sha256": digest, "bytes": path.stat().st_size}
+            stamps[path.name] = _stamp(path)
+        attempts = out / "attempts"
+        attempts.mkdir(exist_ok=True)
+        for index in range(1, 10001):
+            archive = attempts / f"source-{index:04d}"
+            try:
+                archive.mkdir()
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise ValueError("source attempt archive count exceeds its bound")
+        save_json(archive / "archive.json", {"schema_version": 1, "artifact_kind": "qwen35-original-ge-source-attempt",
+            "files": identities, "scope": "Preserved source-only blocked attempt; no graph/native evidence reused"})
+        for path in files:
+            if _stamp(path) != stamps[path.name] or sha256_file(path) != identities[path.name]["sha256"]:
+                raise ValueError("previous source evidence changed before archiving")
+            path.rename(archive / path.name)
+        return str(archive)
+    finally:
+        lock.unlink()  # Only the lock created exclusively by this invocation.
+
+
 def append_original_ge_features(air, output, *, torchair_pb2, gamma_template, sequence_length,
                                 source_root=None, source_receipt_path=None, ge_root=None,
-                                cxx="c++", cxx11_abi=0, timeout_seconds=120):
+                                cxx="c++", cxx11_abi=0, timeout_seconds=120, retry=False):
+    if type(retry) is not bool or Path(output).expanduser().is_symlink():
+        raise ValueError("retry must be boolean and output cannot be a symlink")
     out = output_path(output)
-    out.mkdir(parents=True, exist_ok=False)
+    archive = _archive_source_failure(out) if out.exists() and retry else None
+    out.mkdir(parents=True, exist_ok=bool(archive))
     work = out / "work"
-    work.mkdir()
+    work.mkdir(exist_ok=bool(archive))
     result = {"schema_version": 1, "artifact_kind": "qwen35-original-ge-feature-append",
               "status": "BLOCKED", "stage": "source", "output": str(out),
               "model_compilation": "NOT_RUN", "device_execution": "NOT_RUN", "numerical_validation": "NOT_RUN",
               "external_weights": "NOT_OPENED_NOT_COPIED_NOT_REWRITTEN",
               "scope": "Source-anchored original AIR plus auxiliary features only; no full-model accuracy, state continuity or speed pass"}
+    if archive:
+        result["previous_source_attempt"] = archive
     original, original_record, source_bound, identities = None, None, None, {}
     receipt_stamp, receipt_sha, candidate_raw, candidate_record = None, None, None, None
     try:
         if source_receipt_path:
-            receipt_stamp = _stamp(Path(source_receipt_path))
-        receipt, source_audit, receipt_sha = _source(source_root, source_receipt_path)
-        source_bound = receipt
+            try:
+                receipt_stamp = _stamp(Path(source_receipt_path))
+            except OSError:
+                pass  # The structured read-only source audit records this gap.
+        source_inspection = inspect_original_ge_source(source_root=source_root, source_receipt_path=source_receipt_path)
+        receipt, source_audit, receipt_sha = (source_inspection["source_receipt"], source_inspection["source_audit"],
+                                              source_inspection["source_receipt_sha256"])
+        source_bound = receipt if "files" in source_audit else None
         result["source_audit"] = source_audit
         result["source_receipt_sha256"] = receipt_sha
-        save_json(out / "source-receipt.json", receipt)
+        if receipt is not None:
+            save_json(out / "source-receipt.json", receipt)
+        save_json(out / "source-audit.json", source_inspection)
+        if source_audit["status"] != "MATCHED_AUDITED_SOURCE_RECEIPTS":
+            raise ValueError("original source audit did not match; inspect source_audit.comparison for exact byte differences")
         original, original_record = _read_air(air)
         result["original_air"] = original_record
         schema = load_torchair_schema(torchair_pb2)

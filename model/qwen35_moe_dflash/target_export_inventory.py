@@ -101,6 +101,94 @@ def _file_constants(value):
             yield from _file_constants(item)
 
 
+def _read_air(air):
+    source, before = _checked_path(air)
+    if not 0 < before[2] <= MAX_AIR_BYTES:
+        raise ValueError("raw AIR must be nonempty and at most 64 MiB")
+    with source.open("rb") as stream:
+        raw = stream.read(MAX_AIR_BYTES + 1)
+    if len(raw) != before[2] or _checked_path(source)[1] != before:
+        raise ValueError("AIR changed during bounded read")
+    return source, before, raw
+
+
+def _decode_graph(raw, schema):
+    model = schema.decode(raw, "ModelDef")
+    graphs = model.get("graph")
+    if not isinstance(graphs, list) or len(graphs) != 1:
+        raise ValueError("one strict raw ModelDef graph is required")
+    return model, graphs[0]
+
+
+def _shape(descriptor):
+    # An absent ShapeDef is unknown metadata. An explicitly present empty
+    # ShapeDef has no dimensions; its producer may still be unmaterialized.
+    shape = descriptor.get("shape")
+    return shape.get("dim", []) if isinstance(shape, dict) else None
+
+
+def _descriptor_observation(descriptor, types):
+    raw_dtype = descriptor.get("dtype")
+    return {"raw_dtype": raw_dtype,
+            "dtype_names": sorted(name for name, value in types.items() if value == raw_dtype),
+            "shape": _shape(descriptor), "layout": descriptor.get("layout")}
+
+
+def _interface_observation(graph, schema, sequence_length):
+    """Retain actual interface metadata before any expected-ABI gate can fail."""
+    ops = graph.get("op", [])
+    if not isinstance(ops, list) or not 1 <= len(ops) <= 32768:
+        raise ValueError("AIR root operation list is missing or excessive")
+    by_name = {}
+    for node in ops:
+        name = node.get("name")
+        if not isinstance(name, str) or not name or name in by_name:
+            raise ValueError("AIR operation name missing or duplicated")
+        by_name[name] = node
+    outputs = [node for node in ops if node.get("type") == "NetOutput"]
+    package = schema.evidence["schema_package"]
+    enum_name = package + ".DataType"
+    types = schema.enums.get(enum_name, {})
+    observation = {"input_count": sum(node.get("type") in {"Data", "RefData"} for node in ops),
+                   "netoutput_count": len(outputs), "dtype_enum": enum_name,
+                   "expected_feature": {"raw_dtype": types.get("DT_FLOAT16"),
+                       "dtype_name": "DT_FLOAT16", "shape": [1, sequence_length, 16384], "layout": "ND"},
+                   "output_columns": ["index", "producer", "raw_dtype", "shape", "layout"],
+                   "outputs": []}
+    if len(outputs) != 1:
+        return observation
+    net = outputs[0]
+    references = [value for value in net.get("input", []) if not value.endswith(":-1")]
+    descs = net.get("input_desc", [])
+    observation.update(netoutput=net["name"], output_reference_count=len(references),
+                       output_descriptor_count=len(descs))
+    # Compact rows keep a normal 82-port report small without abbreviating or
+    # truncating any producer reference or declared shape.
+    for index in range(max(len(references), len(descs))):
+        descriptor = descs[index] if index < len(descs) else {}
+        observation["outputs"].append([index, references[index] if index < len(references) else None,
+            descriptor.get("dtype"), _shape(descriptor), descriptor.get("layout")])
+    index = 81
+    reference = references[index] if index < len(references) else None
+    descriptor = descs[index] if index < len(descs) else {}
+    tail = {"index": index, "producer": reference,
+            "declared": _descriptor_observation(descriptor, types), "differences": []}
+    expected = observation["expected_feature"]
+    for key in ("raw_dtype", "shape", "layout"):
+        if tail["declared"][key] != expected[key]:
+            tail["differences"].append({"field": key, "expected": expected[key],
+                                        "observed": tail["declared"][key]})
+    if isinstance(reference, str):
+        name, separator, port = reference.rpartition(":")
+        producer = by_name.get(name)
+        if separator and port.isdecimal() and producer is not None:
+            descriptors = producer.get("output_desc", [])
+            if int(port) < len(descriptors):
+                tail["producer_descriptor"] = _descriptor_observation(descriptors[int(port)], types)
+    observation["feature_output"] = tail
+    return observation
+
+
 def _boundary(graph, schema, sequence_length):
     ops = graph.get("op", [])
     if not isinstance(ops, list) or not 1 <= len(ops) <= 32768:
@@ -131,7 +219,10 @@ def _boundary(graph, schema, sequence_length):
     tail = descs[-1]
     if (expected_dtype is None or tail.get("dtype") != expected_dtype
             or tail.get("shape", {}).get("dim") != [1, sequence_length, 16384] or tail.get("layout") != "ND"):
-        raise ValueError(f"feature output must declare FP16 ND [1,{sequence_length},16384]")
+        actual = _descriptor_observation(tail, types)
+        raise ValueError(f"feature output 81 must declare DT_FLOAT16={expected_dtype} ND "
+            f"[1,{sequence_length},16384]; observed raw_dtype={actual['raw_dtype']}, "
+            f"dtype_names={actual['dtype_names']}, shape={actual['shape']}, layout={actual['layout']!r}")
     name, _, port = references[-1].rpartition(":")
     producer = by_name[name]["output_desc"][int(port)]
     shape = producer.get("shape", {}).get("dim", [])
@@ -145,6 +236,50 @@ def _boundary(graph, schema, sequence_length):
             "producer_shape_status": "NOT_MATERIALIZED_OR_SCALAR_AMBIGUOUS" if not shape else "MATCHED",
             "producer_descriptor": producer, "feature_descriptor": tail,
             "execution": "NOT_RUN", "scope": "Declared interface metadata only; no producer shape inference or numerical validation"}
+
+
+def inspect_target_export_interface(air, torchair_pb2=None, discover_schema=False, sequence_length=64):
+    """Return AIR boundary observations without output files or payload access.
+
+    INSPECTED describes completion of this read-only inspection. The separate
+    interface_validation field retains the strict 89/82/FP16-ND ABI result.
+    """
+    result = {"schema_version": 1, "artifact_kind": "qwen35-target-export-interface-inspection",
+              "status": "BLOCKED", "interface_validation": "NOT_EVALUATED",
+              "weight_payload_access": "NONE", "model_execution": "NOT_RUN",
+              "numerical_validation": "NOT_RUN"}
+    source, before = None, None
+    try:
+        if type(sequence_length) is not int or not 1 <= sequence_length <= 64:
+            raise ValueError("sequence_length must be an integer in 1..64")
+        source, before, raw = _read_air(air)
+        result["air"] = {"path": str(source), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        schema = _select_schema(torchair_pb2, discover_schema)
+        result["schema"] = {key: schema.evidence[key] for key in
+                            ("schema_package", "descriptor_sha256", "pb2")}
+        _, graph = _decode_graph(raw, schema)
+        result["interface_observation"] = _interface_observation(graph, schema, sequence_length)
+        try:
+            _boundary(graph, schema, sequence_length)
+        except ValueError as error:
+            result.update(interface_validation="DIFFERENT", reason=str(error))
+        else:
+            result["interface_validation"] = "MATCHED_INTERFACE_METADATA"
+        result["status"] = "INSPECTED"
+    except Exception as error:
+        result["error"] = f"{type(error).__name__}: {error}"
+    finally:
+        if source is not None and "air" in result:
+            try:
+                same = (_checked_path(source)[1] == before
+                        and _hash_file(source, before) == result["air"]["sha256"])
+            except (OSError, ValueError):
+                same = False
+            result["air_preservation"] = "UNCHANGED_STAT_AND_SHA256" if same else "CHANGED"
+            if not same:
+                result.update(status="BLOCKED", interface_validation="NOT_VERIFIED",
+                              error="source AIR changed during inspection")
+    return result
 
 
 def inventory_target_export(air, out, torchair_pb2=None, discover_schema=False,
@@ -161,21 +296,12 @@ def inventory_target_export(air, out, torchair_pb2=None, discover_schema=False,
     try:
         if type(sequence_length) is not int or not 1 <= sequence_length <= 64:
             raise ValueError("sequence_length must be an integer in 1..64")
-        source, source_before = _checked_path(air)
-        if not 0 < source_before[2] <= MAX_AIR_BYTES:
-            raise ValueError("raw AIR must be nonempty and at most 64 MiB")
-        with source.open("rb") as stream:
-            raw = stream.read(MAX_AIR_BYTES + 1)
-        if len(raw) != source_before[2] or _checked_path(source)[1] != source_before:
-            raise ValueError("AIR changed during bounded read")
+        source, source_before, raw = _read_air(air)
         result["air"] = {"path": str(source), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
         schema = _select_schema(torchair_pb2, discover_schema)
         result["schema"] = schema.evidence
-        model = schema.decode(raw, "ModelDef")
-        graphs = model.get("graph")
-        if not isinstance(graphs, list) or len(graphs) != 1:
-            raise ValueError("one strict raw ModelDef graph is required")
-        graph = graphs[0]
+        model, graph = _decode_graph(raw, schema)
+        result["interface_observation"] = _interface_observation(graph, schema, sequence_length)
         result["declared_abi"] = _boundary(graph, schema, sequence_length)
         base, base_before = _checked_path(reference_root or source.parent.parent, directory=True)
         result["reference_root"] = str(base)

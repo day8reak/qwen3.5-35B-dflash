@@ -1,7 +1,9 @@
 """Append coordinator evidence gates; native execution is explicit and bounded."""
 import json
+import hashlib
 import os
 from pathlib import Path
+import runpy
 
 import pytest
 
@@ -148,6 +150,12 @@ def test_failed_gate_blocks_every_dependent_stage_and_publication(harness, monke
         assert harness["calls"] == []
     if gate in {"source", "plan", "native", "wire", "validation"}:
         assert "roundtrip" not in harness["calls"]
+    if gate == "source":
+        assert result["stage"] == "source"
+        changed = [row for row in result["source_audit"]["comparison"] if not row["matches_expected_bytes_sha256"]]
+        assert changed and all(row["expected_sha256"] and row["actual_sha256"] for row in changed)
+        retained = json.loads((harness["tmp"] / "output/source-receipt.json").read_text())
+        assert retained == json.loads(harness["receipt"].read_text())
 
 
 @pytest.mark.parametrize("mutation", ["original", "receipt", "toolchain", "schema"])
@@ -185,6 +193,137 @@ def test_absolute_or_traversing_external_reference_never_reaches_toolchain(harne
     result = harness["run"]()
     assert result["status"] == "BLOCKED" and harness["calls"] == []
     assert "cannot be isolated" in result["error"]
+
+
+def test_readonly_source_inspection_reports_five_code_differences_without_outputs_or_weights(tmp_path, monkeypatch):
+    monkeypatch.delenv("AI_RUN_DIR", raising=False)
+    for name in SOURCE_SHA256:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"unreviewed source\r\nline two\n")
+    payload = tmp_path / "private-checkpoint.bin"
+    payload.write_bytes(b"PRIVATE_PAYLOAD")
+    before = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
+    original_open = Path.open
+    def guarded(path, *args, **kwargs):
+        if path == payload:
+            pytest.fail("source inspection must not open model payloads")
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", guarded)
+    result = append.inspect_original_ge_source(source_root=tmp_path)
+    assert result["status"] == "BLOCKED"
+    assert len(result["source_audit"]["different_files"]) == 5
+    assert len(result["source_audit"]["comparison"]) == 6
+    assert all(row["expected_sha256"] and row["actual_sha256"] and row["actual_bytes"] for row in result["source_audit"]["comparison"])
+    assert all(row["line_endings"]["crlf_pairs"] == 1 and row["line_endings"]["bare_lf"] == 1 for row in result["source_audit"]["comparison"])
+    assert sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*")) == before
+    assert result["external_weights"] == "NOT_OPENED"
+
+
+def test_crlf_only_normalized_hash_is_diagnostic_and_never_accepts_changed_python(tmp_path, monkeypatch):
+    normalized = b"audited synthetic source\nsecond line\n"
+    for name in SOURCE_SHA256:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(normalized.replace(b"\n", b"\r\n") if name == "utils.py" else normalized)
+        # A declared synthetic audited baseline models a known LF receipt.
+        monkeypatch.setitem(SOURCE_SHA256, name, hashlib.sha256(normalized).hexdigest())
+    result = append.inspect_original_ge_source(source_root=tmp_path)
+    assert result["status"] == "BLOCKED"
+    assert result["source_audit"]["different_files"] == ["utils.py"]
+    row = next(row for row in result["source_audit"]["comparison"] if row["path"] == "utils.py")
+    assert row["matches_expected_bytes_sha256"] is False
+    assert row["line_endings"]["normalized_lf_matches_expected"] is True
+    assert row["line_endings"]["normalized_lf_sha256"] == row["expected_sha256"]
+
+
+def test_inspect_source_cli_needs_no_air_schema_sequence_ge_or_run_directory(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("AI_RUN_DIR", raising=False)
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(json.dumps({"files": [{"path": name, "bytes": 100, "sha256": digest} for name, digest in SOURCE_SHA256.items()]}))
+    script = Path(__file__).resolve().parents[1] / "targets/cpro/scripts/append_original_ge_features.py"
+    module = runpy.run_path(str(script))
+    assert module["main"](["--inspect-source", "--source-receipt", str(receipt)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "SOURCE_AUDIT_MATCHED"
+    assert len(result["source_audit"]["comparison"]) == 6
+    assert all(row["expected_sha256"] == row["actual_sha256"] for row in result["source_audit"]["comparison"])
+    assert list(tmp_path.iterdir()) == [receipt]
+
+
+def test_incomplete_source_root_still_reports_all_expected_files_without_creating_output(tmp_path):
+    (tmp_path / "utils.py").write_bytes(b"only this source exists\n")
+    result = append.inspect_original_ge_source(source_root=tmp_path)
+    assert result["status"] == "BLOCKED" and len(result["source_audit"]["input_errors"]) == 5
+    assert len(result["source_audit"]["comparison"]) == 6
+    actual = next(row for row in result["source_audit"]["comparison"] if row["path"] == "utils.py")
+    assert actual["actual_sha256"] and actual["actual_bytes"] == 24
+
+
+def test_source_only_retry_archives_exact_previous_evidence_and_reuses_no_native_work(harness):
+    valid = harness["receipt"].read_bytes()
+    value = json.loads(valid)
+    value["files"][-1]["sha256"] = "f" * 64
+    harness["receipt"].write_text(json.dumps(value))
+    failed = harness["run"]()
+    assert failed["status"] == "BLOCKED" and failed["stage"] == "source"
+    output = harness["tmp"] / "output"
+    previous = {name: (output / name).read_bytes() for name in ["result.json", "source-receipt.json", "source-audit.json"]}
+    harness["receipt"].write_bytes(valid)
+    result = harness["run"](retry=True)
+    assert result["status"] == "FEATURE_AIR_EXPORTED", result
+    archive = Path(result["previous_source_attempt"])
+    assert archive.parent == output / "attempts"
+    assert all((archive / name).read_bytes() == raw for name, raw in previous.items())
+    assert json.loads((archive / "archive.json").read_text())["files"]["result.json"]["sha256"] == hashlib.sha256(previous["result.json"]).hexdigest()
+    assert harness["calls"] == ["toolchain", "build", "branch", "roundtrip"]
+    assert not (output / ".source-retry.lock").exists()
+
+
+def test_legacy_source_only_failure_with_only_result_and_empty_work_is_retryable(harness):
+    output = harness["tmp"] / "output"
+    (output / "work").mkdir(parents=True)
+    previous = {"artifact_kind": "qwen35-original-ge-feature-append", "status": "BLOCKED", "stage": "source", "output": str(output), "error": "original source audit did not match"}
+    (output / "result.json").write_text(json.dumps(previous))
+    result = harness["run"](retry=True)
+    assert result["status"] == "FEATURE_AIR_EXPORTED", result
+    assert json.loads((Path(result["previous_source_attempt"]) / "result.json").read_text()) == previous
+
+
+@pytest.mark.parametrize("kind", ["air_metadata", "native_metadata", "native_file", "unknown_file", "symlink", "active_lock", "unknown_kind", "compile_executed", "device_executed"])
+def test_retry_never_reuses_advanced_unknown_or_locked_artifacts(harness, kind):
+    output = harness["tmp"] / "output"
+    (output / "work").mkdir(parents=True)
+    previous = {"artifact_kind": "qwen35-original-ge-feature-append", "status": "BLOCKED", "stage": "source", "output": str(output)}
+    if kind == "air_metadata":
+        previous["original_air"] = {"sha256": "a" * 64}
+    elif kind == "native_metadata":
+        previous["commands"] = {"build": ["a compiler"]}
+    elif kind == "native_file":
+        (output / "work/branch.air").write_bytes(b"NATIVE_AIR_MUST_NOT_BE_TOUCHED")
+    elif kind == "unknown_file":
+        (output / "unowned.bin").write_bytes(b"UNOWNED")
+    elif kind == "symlink":
+        (output / "source-audit.json").symlink_to(harness["receipt"])
+    elif kind == "active_lock":
+        (output / ".source-retry.lock").write_text("active invocation")
+    elif kind == "unknown_kind":
+        previous["artifact_kind"] = "unowned-other-task"
+    elif kind == "compile_executed":
+        previous["model_compilation"] = "PASSED"
+    elif kind == "device_executed":
+        previous["device_execution"] = "PASSED"
+    (output / "result.json").write_text(json.dumps(previous))
+    before = (output / "result.json").read_bytes()
+    with pytest.raises((ValueError, FileExistsError)):
+        harness["run"](retry=True)
+    assert (output / "result.json").read_bytes() == before
+    assert harness["calls"] == []
+    assert not (output / "attempts").exists()
+    if kind == "active_lock":
+        assert (output / ".source-retry.lock").read_text() == "active invocation"
+    else:
+        assert not (output / ".source-retry.lock").exists()
 
 
 def test_declared_real_ge_full_boundary_and_1153_references_roundtrip_without_payloads(tmp_path, monkeypatch):

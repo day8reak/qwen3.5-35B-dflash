@@ -1,7 +1,10 @@
 """Export inventories read payloads only on explicit hash and never stage files."""
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 import pytest
@@ -220,3 +223,104 @@ def test_large_payload_hash_requests_are_bounded_to_one_mib(source, monkeypatch)
     assert result["status"] == "INVENTORIED" and reads.count(1 << 20) == 2
     weight = next(row for row in result["files"] if row["basename"] == "weight0")
     assert weight["sha256"] == hashlib.sha256(payload).hexdigest()
+
+
+@pytest.mark.parametrize("field,value,names", [
+    ("dtype", 1, ["DT_FLOAT"]), ("shape", [1, 64, 2048], ["DT_FLOAT16"]),
+    ("layout", "NCHW", ["DT_FLOAT16"]),
+])
+def test_failed_interface_retains_all_outputs_and_exact_tail_observation(source, field, value, names):
+    model = source["model_class"].FromString(source["air"].read_bytes())
+    net = next(node for node in model.graph[0].op if node.type == "NetOutput")
+    if field == "shape":
+        net.input_desc[-1].shape.dim[:] = value
+    else:
+        setattr(net.input_desc[-1], field, value)
+    source["air"].write_bytes(model.SerializeToString())
+    before = source["air"].read_bytes()
+    result = inventory.inventory_target_export(source["air"], source["out"],
+        torchair_pb2=source["schema"], hash_weights=True)
+    assert result["status"] == "BLOCKED" and result["weight_identity"] == "NOT_VERIFIED"
+    assert result["files"] == []  # Failure precedes any payload stat/hash.
+    observation = result["interface_observation"]
+    assert len(observation["outputs"]) == 82
+    assert observation["output_columns"] == ["index", "producer", "raw_dtype", "shape", "layout"]
+    tail = observation["feature_output"]
+    assert tail["index"] == 81 and tail["producer"] == "feature:0"
+    assert tail["declared"]["dtype_names"] == names
+    key = "raw_dtype" if field == "dtype" else field
+    assert tail["declared"][key] == value
+    assert tail["differences"] == [{"field": key,
+        "expected": observation["expected_feature"][key], "observed": value}]
+    assert observation["dtype_enum"] == "ge.proto.DataType"
+    assert "observed raw_dtype=" in result["error"] and "layout=" in result["error"]
+    assert source["air"].read_bytes() == before  # No automatic Cast/shape/layout patch.
+
+
+def test_inspect_only_reads_no_payload_or_weight_paths_and_needs_no_run_dir(source, monkeypatch):
+    monkeypatch.delenv("AI_RUN_DIR")
+    for path in source["weights"].values():
+        path.unlink()
+    original = inventory._checked_path
+    def no_payload_paths(path, **kwargs):
+        assert Path(path) == source["air"], "inspection must not inspect sidecars"
+        return original(path, **kwargs)
+    monkeypatch.setattr(inventory, "_checked_path", no_payload_paths)
+    result = inventory.inspect_target_export_interface(source["air"], torchair_pb2=source["schema"])
+    assert result["status"] == "INSPECTED"
+    assert result["interface_validation"] == "MATCHED_INTERFACE_METADATA"
+    assert result["weight_payload_access"] == "NONE"
+    assert result["air_preservation"] == "UNCHANGED_STAT_AND_SHA256"
+    assert result["interface_observation"]["feature_output"]["producer_descriptor"]["shape"] == []
+    assert not source["out"].parent.exists()
+
+
+def test_inspect_cli_prints_compact_actual_metadata_despite_strict_interface_failure(source):
+    model = source["model_class"].FromString(source["air"].read_bytes())
+    net = next(node for node in model.graph[0].op if node.type == "NetOutput")
+    net.input_desc[-1].layout = "NCHW"
+    source["air"].write_bytes(model.SerializeToString())
+    repo = Path(__file__).resolve().parents[1]
+    command = [sys.executable, str(repo / "targets/cpro/scripts/inventory_target_export.py"),
+               "--inspect-only", "--air", str(source["air"]),
+               "--torchair-pb2", str(source["schema"]), "--sequence-length", "64"]
+    environment = {key: value for key, value in os.environ.items() if key != "AI_RUN_DIR"}
+    completed = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["status"] == "INSPECTED" and result["interface_validation"] == "DIFFERENT"
+    assert result["interface_observation"]["feature_output"]["declared"]["layout"] == "NCHW"
+    assert "layout='NCHW'" in result["reason"]
+    assert len(result["interface_observation"]["outputs"]) == 82
+    assert len(completed.stdout.encode()) < 10 << 10
+    assert not source["out"].parent.exists()
+    conflicting = subprocess.run(command + ["--hash-weights"], env=environment,
+                                 capture_output=True, text=True, check=False)
+    assert conflicting.returncode == 2 and "cannot be combined" in conflicting.stderr
+    assert not source["out"].parent.exists()
+
+
+def test_inspection_preserves_missing_shape_as_unknown_and_does_not_infer64(source):
+    model = source["model_class"].FromString(source["air"].read_bytes())
+    net = next(node for node in model.graph[0].op if node.type == "NetOutput")
+    net.input_desc[-1].ClearField("shape")
+    source["air"].write_bytes(model.SerializeToString())
+    result = inventory.inspect_target_export_interface(source["air"], torchair_pb2=source["schema"])
+    assert result["interface_validation"] == "DIFFERENT"
+    tail = result["interface_observation"]["feature_output"]
+    assert tail["declared"]["shape"] is None
+    assert tail["differences"] == [{"field": "shape", "expected": [1, 64, 16384], "observed": None}]
+
+
+def test_inspection_detects_air_mutation_after_metadata_read(source, monkeypatch):
+    # Mutate before the final preservation read; neither a read-only diagnostic
+    # nor an otherwise matching interface may hide changed source bytes.
+    def boundary_then_change(*args):
+        result = original_boundary(*args)
+        source["air"].write_bytes(b"changed AIR")
+        return result
+    original_boundary = inventory._boundary
+    monkeypatch.setattr(inventory, "_boundary", boundary_then_change)
+    result = inventory.inspect_target_export_interface(source["air"], torchair_pb2=source["schema"])
+    assert result["status"] == "BLOCKED" and result["interface_validation"] == "NOT_VERIFIED"
+    assert result["air_preservation"] == "CHANGED"

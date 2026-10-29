@@ -22,7 +22,17 @@ def main(argv=None):
     parser.add_argument("--sequence-length", type=int, default=64, help="declared feature sequence length; A default64, B may explicitly use55")
     parser.add_argument("--hash-weights", action="store_true", help="explicitly stream SHA256 of all unique payloads; no copies")
     parser.add_argument("--output", help="new small manifest directory below AI_RUN_DIR")
+    parser.add_argument("--inspect-only", action="store_true",
+                        help="print actual AIR output metadata only; no task directory or payload access")
     args = parser.parse_args(argv)
+    if args.inspect_only:
+        if args.output or args.hash_weights or args.reference_root:
+            parser.error("--inspect-only cannot be combined with --output, --hash-weights or --reference-root")
+        from qwen35_moe_dflash.target_export_inventory import inspect_target_export_interface
+        result = inspect_target_export_interface(args.air, torchair_pb2=args.torchair_pb2,
+            discover_schema=args.discover_torchair_schema, sequence_length=args.sequence_length)
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+        return 0 if result["status"] == "INSPECTED" else 1
     run = os.environ.get("AI_RUN_DIR")
     if not run:
         parser.error("AI_RUN_DIR is required")
