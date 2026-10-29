@@ -179,6 +179,6 @@
     "rope": "FP32 inverse frequency, positions, angles and trigonometry; cosine/sine cast FP16",
     "deployment_reference": "Pinned4B actualAIR@90186732d915e8b058b2a053d205991d805eae76",
     "upstream_equivalence": "Not established for original35B BF16 with FA4 backend",
-    "device_numerical_validation": "NOT_RUN_FOR_CURRENT_GRAPH"
+    "device_numerical_validation": "FAILED_USER_REPORTED_FP32_LOCKED_FULL_DRAFT_PID57427"
   }
 }

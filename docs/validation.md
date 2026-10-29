@@ -1,5 +1,15 @@
 # 验证范围与保留结论
 
+## FP32锁定后的完整draft回传与逐层对照
+
+2026-10-29用户回传PID57427：新完整OMC为2,852,155,819字节，SHA256 `bd9f826bccf2b741a50be8d1afb7e9c95b5ef15aa31e79d3feae42160ae32705`；编译精度153/153通过、native EXECUTED、退出0、输入回读一致。hidden参考L2=175.27058602513762，实际175.2707760915955，相对L2=1.3894797648159405，最大绝对误差19.7333984375；Top1差异15/15。范数恢复只说明最终归一化幅度改善，不能证明中间算术、布局或完整模型正确。无性能测量；远端原文件尚未在本地重取核验。
+
+新增独立逐层诊断入口 `targets/cpro/scripts/run_draft_trace.py`，固定写入 `full-draft/layer-trace`，不替换生产图或golden。它绑定现有prepared及fixture，先重放v3参考并要求hidden/Top1逐字节复现，再输出166个中间探针并检查诊断OMC的精度。所有原GE节点名称、算术和顺序保留，只添加输出观察。每个探针报告相对L2、余弦和非有限位置；mask score合法的同号-inf单独匹配，未新增数值容忍阈值。
+
+诊断图还必须与原设备运行比较终端hidden及Top1。`production_equivalence=DIFFERENT`表示额外输出改变了执行行为，不能将trace的首次非逐位一致解释为原图首次出错。源码审查尚无确定结构差异；draft.fc的Conv2D展开、KV重复、mask和RoPE在主机数学上匹配，真实设备的首次偏离仍待这轮输出。
+
+本地run `20261029T003431Z-23724-5fc0f9` 的最终组合主机回归314项通过（`final-tests/verified.xml`），native CTest 8/8通过（`trace-board/native/Testing/Temporary/LastTest.log`）。两层小draft真实AIR/OMG编译严格检查128/128通过，含原计算61/61和新增trace节点67/67（`trace-compiler-smoke/smoke-report.json`）；六层小配置166个探针与独立参考在三种prefix长度下对照通过。公开同族DDK smoke仅对派生图记录了Select/ArgMax/权重basename接口适配，没有改生产导出器或原153节点精度门禁。这些均不构成完整35B板端数值通过。
+
 [首页](README.md) · [当前更新](current-status.md) · [项目结构](project-structure.md)
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。

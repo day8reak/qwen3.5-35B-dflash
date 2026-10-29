@@ -153,6 +153,8 @@ AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vecto
   if(n=="qwen35_standalone_draft") {
     in={TensorDimension({1,8,16384}),TensorDimension({1,8}),TensorDimension({1,8})};
     out={TensorDimension({1,15}),TensorDimension({1,15,2048})};
+    if (const auto* elements = std::getenv("FAKE_HIAI_DRAFT_TRACE_ELEMENTS"))
+      out[1] = TensorDimension({1,1,static_cast<std::uint32_t>(std::stoul(elements))});
   }
   else if(n=="qwen35_stateful_target") {
     const bool decode = std::string(static_cast<const char*>(model_buffer_),model_bytes_)=="stateful-decode-fixture";
@@ -245,7 +247,9 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
     if(in.size()!=3 || out.size()!=2) return AI_FAILED;
     auto* top=static_cast<std::int32_t*>(out[0]->GetBuffer());
     for(std::int32_t i=0;i<15;++i) top[i]=i+10;
-    std::fill_n(static_cast<std::uint16_t*>(out[1]->GetBuffer()),15*2048,0x3800);
+    if (std::getenv("FAKE_HIAI_DRAFT_TRACE_ELEMENTS"))
+      std::fill_n(static_cast<float*>(out[1]->GetBuffer()),out[1]->GetSize()/sizeof(float),.5f);
+    else std::fill_n(static_cast<std::uint16_t*>(out[1]->GetBuffer()),15*2048,0x3800);
     stamp=1; return AI_SUCCESS;
   }
   if(name_=="qwen35_fused_operator") {

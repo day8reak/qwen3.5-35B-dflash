@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <regex>
 #include <set>
@@ -291,6 +292,7 @@ struct StepPlan {
   std::filesystem::path model;
   std::string model_hash, abi_hash, plan_hash, operator_type;
   std::uint32_t sequence = 0, past = 0;
+  bool draft_trace = false;
   std::vector<StepInput> inputs;
   std::vector<HiaiTensorSpec> outputs;
 };
@@ -368,8 +370,15 @@ void CheckDraftPlan(const StepPlan& plan) {
   const auto s = plan.sequence;
   const std::vector<HiaiTensorSpec> inputs{{"target_features", "float16", {1,s,16384}},
       {"input_ids", "int32", {1,s}}, {"attention_mask", "int32", {1,s}}};
-  const std::vector<HiaiTensorSpec> outputs{{"draft_top1", "int32", {1,15}},
+  std::vector<HiaiTensorSpec> outputs{{"draft_top1", "int32", {1,15}},
       {"draft_hidden", "float16", {1,15,2048}}};
+  if (plan.draft_trace) {
+    if (plan.outputs.size() != 2 || plan.outputs[1].shape.size() != 3 ||
+        plan.outputs[1].shape[0] != 1 || plan.outputs[1].shape[1] != 1 ||
+        plan.outputs[1].shape[2] == 0 || HiaiTensorBytes(plan.outputs[1]) > 64ULL * 1024 * 1024)
+      throw std::invalid_argument("draft trace requires a positive bounded packed output");
+    outputs[1] = {"draft_trace_values", "float32", plan.outputs[1].shape};
+  }
   if (plan.past || plan.inputs.size() != inputs.size() || plan.outputs.size() != outputs.size())
     throw std::invalid_argument("standalone draft requires three inputs, two outputs and prefix recomputation");
   for (bool input : {true, false}) {
@@ -408,12 +417,14 @@ StepPlan ReadStepPlan(const std::filesystem::path& path, bool fused = false, boo
       throw std::invalid_argument("stateful step plan must contain ASCII fields with LF line endings");
   auto rows = Split(text, '\n');
   if (!rows.empty() && rows.back().empty()) rows.pop_back();
-  const std::string header = draft ? "QWEN35_DRAFT_STEP\t1" :
+  const bool draft_trace = draft && !rows.empty() && rows[0] == "QWEN35_DRAFT_TRACE_STEP\t1";
+  const std::string header = draft_trace ? "QWEN35_DRAFT_TRACE_STEP\t1" : draft ? "QWEN35_DRAFT_STEP\t1" :
                              fused ? "QWEN35_FUSED_OP_STEP\t1" : "QWEN35_STATEFUL_STEP\t1";
   if (rows.size() < 7 || rows[0] != header)
     throw std::invalid_argument("step plan header must be " + header);
   const auto root = std::filesystem::absolute(path).lexically_normal().parent_path();
   StepPlan plan;
+  plan.draft_trace = draft_trace;
   plan.plan_hash = BytesHash(payload);
   for (std::size_t i = 1; i <= 2; ++i) {
     const auto fields = Split(rows[i], '\t');
@@ -424,7 +435,21 @@ StepPlan ReadStepPlan(const std::filesystem::path& path, bool fused = false, boo
     StepFileSize(file, i == 1 ? UINT32_MAX : 1ULL << 20);
     if (Sha256File(file) != fields[2]) throw std::runtime_error("stateful model/state ABI SHA256 mismatch");
     if (i == 1) { plan.model = file; plan.model_hash = fields[2]; }
-    else plan.abi_hash = fields[2];
+    else {
+      plan.abi_hash = fields[2];
+      if (draft_trace) {
+        // The host validates the complete trace layout. On the board the
+        // separate wire header must also bind an explicitly typed trace ABI;
+        // it cannot relax the production draft wire contract.
+        const auto abi_bytes = StepRead(file, 1ULL << 20);
+        const std::string abi(abi_bytes.begin(), abi_bytes.end());
+        const std::regex kind("\\\"artifact_kind\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
+        const auto begin = std::sregex_iterator(abi.begin(), abi.end(), kind);
+        const auto end = std::sregex_iterator();
+        if (std::distance(begin, end) != 1 || (*begin)[1] != "qwen35-standalone-draft-trace-abi")
+          throw std::invalid_argument("draft trace wire requires its explicit ABI kind");
+      }
+    }
   }
   const auto control = Split(rows[3], '\t');
   if (fused) {

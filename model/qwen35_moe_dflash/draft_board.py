@@ -48,17 +48,44 @@ def _record(path, root):
     return {'path': path.relative_to(root).as_posix(), 'bytes': path.stat().st_size, 'sha256': sha256_file(path)}
 
 
-def _io(sequence):
+def _trace_spec(spec):
+    """Validate a bounded, contiguous diagnostic layout without tolerance gates."""
+    if not isinstance(spec, list) or not 1 <= len(spec) <= 256:
+        raise ValueError('trace specification requires 1..256 tensors')
+    offset, names = 0, set()
+    for row in spec:
+        if not isinstance(row, dict) or set(row) != {'name', 'shape', 'dtype', 'offset', 'elements'}:
+            raise ValueError('invalid trace tensor specification')
+        name, shape = row['name'], row['shape']
+        if (not isinstance(name, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.-]*', name)
+                or name in names or not isinstance(shape, list) or len(shape) > 8
+                or any(type(v) is not int or v <= 0 for v in shape)
+                or row['dtype'] not in {'float16', 'float32', 'int32', 'int64', 'bool'}
+                or type(row['offset']) is not int or row['offset'] != offset
+                or type(row['elements']) is not int or row['elements'] != math.prod(shape)):
+            raise ValueError('invalid or noncontiguous trace tensor specification')
+        names.add(name)
+        offset += row['elements']
+        if offset * 4 > 64 * 1024 * 1024:
+            raise ValueError('trace output exceeds 64 MiB')
+    return offset
+
+
+def _io(sequence, trace_spec=None):
+    trace_elements = None if trace_spec is None else _trace_spec(trace_spec)
     return ([{'index': 0, 'name': 'target_features', 'dtype': 'float16', 'shape': [1,sequence,16384]},
              {'index': 1, 'name': 'input_ids', 'dtype': 'int32', 'shape': [1,sequence]},
              {'index': 2, 'name': 'attention_mask', 'dtype': 'int32', 'shape': [1,sequence]}],
             [{'index': 0, 'name': 'draft_top1', 'dtype': 'int32', 'shape': [1,15]},
-             {'index': 1, 'name': 'draft_hidden', 'dtype': 'float16', 'shape': [1,15,2048]}])
+             ({'index': 1, 'name': 'draft_hidden', 'dtype': 'float16', 'shape': [1,15,2048]}
+              if trace_elements is None else
+              {'index': 1, 'name': 'draft_trace_values', 'dtype': 'float32', 'shape': [1,1,trace_elements]})])
 
 
 def _wire(manifest):
     model, abi = manifest['model'], manifest['draft_abi']
-    lines = ['QWEN35_DRAFT_STEP\t1', f"model\t{model['path']}\t{model['sha256']}",
+    header = ('QWEN35_DRAFT_TRACE_STEP\t1' if manifest.get('trace_spec') is not None else 'QWEN35_DRAFT_STEP\t1')
+    lines = [header, f"model\t{model['path']}\t{model['sha256']}",
              f"draft_abi\t{abi['path']}\t{abi['sha256']}", f"tokens\t{manifest['sequence_length']}\t0"]
     for row in manifest['inputs']:
         lines.append('\t'.join(('input', str(row['index']), row['name'], row['dtype'],
@@ -96,7 +123,7 @@ def _compiler_payload_layout(report):
 
 
 def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, ddk_id, export_dir=None,
-                         weight_storage=None, schema_library=None):
+                         weight_storage=None, schema_library=None, trace_spec=None):
     """Snapshot the existing compiler payloads and fixture; never compile a model.
 
     Pass export_dir to bind compiler AIR snapshots to the exported draft, and
@@ -136,10 +163,12 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
             or reference.get('status') not in {'REFERENCE_COMPLETE','INPUTS_PREPARED'}
             or reference.get('draft_config') != config):
         raise ValueError('draft fixture configuration or status mismatch')
+    if trace_spec is not None and (reference.get('trace_spec') != trace_spec or reference.get('expected_trace') is None):
+        raise ValueError('trace fixture must bind the packed golden and trace specification')
     sequence = reference.get('sequence_length')
     if type(sequence) is not int or not 0 < sequence <= 16384 or sequence + cfg.block_size > cfg.max_position_embeddings:
         raise ValueError('draft sequence exceeds position/input-buffer bounds')
-    expected_inputs, outputs = _io(sequence)
+    expected_inputs, outputs = _io(sequence, trace_spec)
     if len(reference.get('inputs', [])) != 3:
         raise ValueError('draft fixture must provide all three ordered inputs')
     for actual, expected in zip(reference['inputs'], expected_inputs):
@@ -157,7 +186,7 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
                 or exported_manifest['graphs'][0].get('name') != 'draft'):
             raise ValueError('export identity does not describe one complete draft')
         graph = exported_manifest['graphs'][0]
-        if graph.get('outputs') != ['draft_top1','draft_hidden']:
+        if graph.get('outputs') != [row['name'] for row in outputs]:
             raise ValueError('standalone draft export must include pre-head hidden diagnostics')
         air = next((row for row in graph['files'] if row['path'] == graph['air']), None)
         if air is None:
@@ -221,7 +250,7 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
         _snapshot(_file(fixture,row),destination)
         inputs.append({**row,**_record(destination,root)})
     expected = []
-    for key, desc in zip(('expected_top1','expected_hidden'),outputs):
+    for key, desc in zip(('expected_top1','expected_hidden' if trace_spec is None else 'expected_trace'),outputs):
         row = reference.get(key)
         if row is None:
             expected.append(None)
@@ -231,16 +260,22 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
         destination=root/(key+'.bin')
         _snapshot(_file(fixture,row),destination)
         expected.append({**row,**_record(destination,root)})
-    abi={'schema_version':1,'artifact_kind':'qwen35-standalone-draft-abi','inputs':expected_inputs,'outputs':outputs,
+    abi={'schema_version':1,'artifact_kind':('qwen35-standalone-draft-abi' if trace_spec is None else
+                                          'qwen35-standalone-draft-trace-abi'),'inputs':expected_inputs,'outputs':outputs,
          'draft_config':config,'sequence_length':sequence,'state_policy':'prefix-recompute'}
+    if trace_spec is not None:
+        abi['trace_spec'] = trace_spec
     save_json(root/'draft-abi.json',abi)
-    manifest={'schema_version':1,'artifact_kind':'qwen35-standalone-draft-bundle','status':'PREPARED',
+    manifest={'schema_version':1,'artifact_kind':('qwen35-standalone-draft-bundle' if trace_spec is None else
+                                                'qwen35-standalone-draft-trace-bundle'),'status':'PREPARED',
         'weight_storage':weight_storage,
         'ddk_id':_text(ddk_id,'DDK identity'),'platform':'kirinx90','sequence_length':sequence,'vocab_size':cfg.vocab_size,
         'draft_config':config,'model':model,'model_payloads':payloads,'draft_abi':_record(root/'draft-abi.json',root),
         'inputs':inputs,'outputs':outputs,'expected':expected,'source_identity':source_identity,
         'compiler_report_sha256':sha256_file(compiler/'report.json'),'fixture_report_sha256':sha256_file(fixture/'report.json'),
         'export_manifest_sha256':exported_hash,'reference_scope':'Same complete draft and fixed feature inputs; no target execution or acceptance evaluation'}
+    if trace_spec is not None:
+        manifest['trace_spec'] = trace_spec
     if packing is not None:
         manifest['weight_packing'] = _record(root/'weight-packing.json', root)
     (root/'step.tsv').write_bytes(_wire(manifest))
@@ -251,10 +286,14 @@ def prepare_draft_bundle(compilation_dir, fixture_dir, output_dir, *, config, dd
 
 def _validate_bundle(root):
     manifest = _json(root/'manifest.json')
-    if (manifest.get('artifact_kind') != 'qwen35-standalone-draft-bundle' or manifest.get('status') != 'PREPARED'
+    trace = manifest.get('artifact_kind') == 'qwen35-standalone-draft-trace-bundle'
+    if (manifest.get('artifact_kind') not in {'qwen35-standalone-draft-bundle', 'qwen35-standalone-draft-trace-bundle'}
+            or manifest.get('status') != 'PREPARED'
             or manifest.get('platform') != 'kirinx90'):
         raise ValueError('expected a prepared standalone draft bundle')
-    inputs,outputs=_io(manifest['sequence_length'])
+    if trace != ('trace_spec' in manifest):
+        raise ValueError('trace specification requires the separate trace bundle kind')
+    inputs,outputs=_io(manifest['sequence_length'], manifest.get('trace_spec'))
     if manifest['outputs'] != outputs or len(manifest['inputs']) != 3:
         raise ValueError('draft bundle IO contract changed')
     for row,desc in zip(manifest['inputs'],inputs):
@@ -263,6 +302,11 @@ def _validate_bundle(root):
     abi=_json(_file(root,manifest['draft_abi']))
     if abi['inputs']!=inputs or abi['outputs']!=outputs or abi['draft_config']!=manifest['draft_config']:
         raise ValueError('draft ABI differs from bundle')
+    expected_kind = 'qwen35-standalone-draft-trace-abi' if trace else 'qwen35-standalone-draft-abi'
+    if abi.get('artifact_kind') != expected_kind or ('trace_spec' in abi) != trace:
+        raise ValueError('draft ABI kind differs from bundle')
+    if trace and abi['trace_spec'] != manifest['trace_spec']:
+        raise ValueError('trace ABI layout differs from bundle')
     if manifest['model'] not in manifest['model_payloads']:
         raise ValueError('model missing from payloads')
     records=[manifest['draft_abi'],manifest['step_plan'],*manifest['inputs'],*manifest['model_payloads']]
@@ -327,6 +371,47 @@ def _hidden_comparison(expected, actual):
     return report
 
 
+def _trace_comparison(expected, actual, spec):
+    """Report node differences, including legal masked-score infinities.
+
+    No error threshold is invented here: a first non-exact value is a
+    diagnostic observation, not proof of a first incorrect operation.
+    """
+    _trace_spec(spec)
+    expected, actual = expected.reshape(-1), actual.reshape(-1)
+    nodes = []
+    for row in spec:
+        start, stop = row['offset'], row['offset'] + row['elements']
+        reference, observed = expected[start:stop].astype(np.float64), actual[start:stop].astype(np.float64)
+        finite = np.isfinite(reference) & np.isfinite(observed)
+        matching_inf = (np.isposinf(reference) & np.isposinf(observed)) | (np.isneginf(reference) & np.isneginf(observed))
+        nonfinite_mismatch = ~(finite | matching_inf)
+        ref_finite, obs_finite = reference[finite], observed[finite]
+        difference = obs_finite - ref_finite
+        norm = float(np.linalg.norm(ref_finite))
+        observed_norm = float(np.linalg.norm(obs_finite))
+        error_norm = float(np.linalg.norm(difference))
+        relative = error_norm / norm if norm else None
+        cosine = float(np.dot(ref_finite, obs_finite) / (norm * observed_norm)) if norm and observed_norm else None
+        def metric(value):
+            return value if value is None or math.isfinite(value) else None
+        exact = bool(np.array_equal(reference, observed))
+        nodes.append({**row, 'exact_match': exact,
+            'finite_pair_count': int(np.count_nonzero(finite)),
+            'matching_infinity_count': int(np.count_nonzero(matching_inf)),
+            'nonfinite_mismatch_count': int(np.count_nonzero(nonfinite_mismatch)),
+            'expected': _hidden_summary(reference), 'actual': _hidden_summary(observed),
+            'max_abs_error': metric(float(np.max(np.abs(difference))) if difference.size else None),
+            'error_l2': metric(error_norm), 'relative_l2': metric(relative), 'cosine': metric(cosine),
+            'metric_scope': 'finite pairs only; matching signed infinities counted separately',
+            'acceptance_threshold': 'NOT_DEFINED'})
+    return {'status': 'DIAGNOSTIC_COMPLETE', 'nodes': nodes,
+        'first_nonexact': next((row['name'] for row in nodes if not row['exact_match']), None),
+        'nonfinite_mismatch_count': sum(row['nonfinite_mismatch_count'] for row in nodes),
+        'acceptance_threshold': 'NOT_DEFINED',
+        'scope': 'First non-exact tensor is not necessarily the first incorrect operation; graph outputs may change compiler partitioning.'}
+
+
 def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False, expected_model_load_api=None):
     """Validate native identity/readback before comparing Top1 and hidden values."""
     root, result_root = Path(bundle_dir).resolve(), Path(result_dir).resolve()
@@ -389,7 +474,7 @@ def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False, expec
     for row,desc in zip(native['outputs'],manifest['outputs']):
         if any(row.get(k)!=v for k,v in desc.items()):
             raise ValueError('native draft output ABI mismatch')
-        dtype=np.dtype('<i4' if row['dtype']=='int32' else '<f2')
+        dtype=np.dtype({'int32': '<i4', 'float16': '<f2', 'float32': '<f4'}[row['dtype']])
         if row.get('bytes') != math.prod(row['shape'])*dtype.itemsize:
             raise ValueError('native output byte count mismatch')
         values.append(np.fromfile(_file(result_root,row),dtype=dtype).reshape(row['shape']))
@@ -406,6 +491,17 @@ def compare_draft_result(bundle_dir, result_dir, *, allow_host_fake=False, expec
                       numerical_validation='TOP1_MATCHED' if mismatch==0 else 'FAILED')
         if mismatch:
             errors.append('draft Top1 differs from PyTorch reference on identical inputs')
+    if manifest.get('trace_spec') is not None:
+        if hidden_record is None:
+            raise ValueError('packed trace reference is required')
+        expected = np.fromfile(_file(root, hidden_record), dtype='<f4').reshape(values[1].shape)
+        report['trace_diagnostic'] = _trace_comparison(expected, values[1], manifest['trace_spec'])
+        if report['trace_diagnostic']['nonfinite_mismatch_count']:
+            errors.append('trace contains mismatched nonfinite values')
+        if errors:
+            report.update(status='FAILED',numerical_validation='FAILED',error='; '.join(errors))
+        report['accuracy_scope'] = 'Top1 equality remains required; intermediate trace errors are diagnostics without new tolerance gates'
+        return report
     actual=values[1].astype(np.float64)
     if hidden_record is not None:
         expected=np.fromfile(_file(root,hidden_record),dtype='<f2').reshape(values[1].shape).astype(np.float64)

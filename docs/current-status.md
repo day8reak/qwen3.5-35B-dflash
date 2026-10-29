@@ -6,6 +6,20 @@
 
 ## 用户现在执行什么
 
+2026-10-29 新回传（PID57427）：`fp32-cpu` 编译检查153/153通过，设备执行及输入回读通过。hidden L2恢复为175.270776（参考175.270586），但相对L2仍为1.389480，Top1为15/15不一致。最终归一化幅度已恢复，完整draft数值仍失败；不能据此确认所有设备运算正确。新OMC SHA256为 `bd9f826bccf2b741a50be8d1afb7e9c95b5ef15aa31e79d3feae42160ae32705`。以下为用户日志证据，原远端文件尚未在本地重新核验。
+
+现在使用一次完整逐层对照，复用固定目录的prepared及原fixture，不重复原生产执行：
+
+```bash
+git pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/run_draft_trace.py" \
+  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
+```
+
+它在固定 `full-draft/layer-trace` 中重放参考、导出及编译一份诊断图、检查编译精度、流式打包并上板一次。166个探针覆盖输入FC/embedding、六层Q/K/V、mask、QK、softmax、PV、残差和MLP，FP32打包输出35,429,052字节。原生产图、golden和board证据保留。参考hidden/Top1必须逐字节复现原golden；编译精度检查失败时停止上传。终端逐节点打印误差，完整结果在 `layer-trace/board/comparison.json` 和 `layer-trace/result.json`。`first_nonexact`仅表示首次非逐位一致；不等于首次数值错误。还会比较诊断图与原生产图设备hidden/Top1，只有 `production_equivalence.status=EXACT` 才能把该trace直接用于解释原运行。输出探针可能改变编译分区，因此诊断本身不能替代生产图精度验收。
+
+以下保留正常生产入口，当前无需再重复这一轮：
+
 **编译后的RMS链出现了源码未要求的FP16边界。现在重新编译时锁定FP32区域，并在上传前检查实际OMC：**
 
 ```bash
@@ -21,7 +35,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_full_draft.py" \
 
 本地真实编译已验证两组图：双RMS的10个FP32运算全部通过检查，中间的FP16运算仍保留在NPU；两层小draft的61个受保护节点也全部通过，覆盖RMS、attention和RoPE。小draft为适配本地公开DDK使用了记录在案的等价接口替换，没有修改生产AIR导出器。这些是本地同族DDK的编译检查，尚不是用户服务器完整35B draft的板端数值结果。当前最新设备数值状态仍为FAILED。
 
-用户最新回传的PID54002运行已使用v6 AIR和v3参考，设备退出码0、输入回读一致、输出均有限；15个Top1仍有12个不同。参考hidden L2为175.270586，设备为27883.188584，相对L2为159.063547，设备范围为[-258.75, 258.75]。这是明显数值错误，不能用正常FP16舍入解释。以下远端结果来自用户回传，尚未在本地主机重新核验原文件。
+此前用户回传的PID54002运行已使用v6 AIR和v3参考，设备退出码0、输入回读一致、输出均有限；15个Top1仍有12个不同。参考hidden L2为175.270586，设备为27883.188584，相对L2为159.063547，设备范围为[-258.75, 258.75]。这是明显数值错误，不能用正常FP16舍入解释。以下远端结果来自用户回传，尚未在本地主机重新核验原文件。
 
 用户随后回传逐行诊断：全部15行RMS约150–162，余弦相似度约-0.026至0.136；±257.75分别出现1019/1031次。执行bundle与AIR/编译报告绑定一致，但没有 `dump_graph`。上一版入口仅查IR dump，未检查现成OMC；现已补上这一缺口，同一条命令改为直接检查已保留的小external OMC的ModelDef、明确归属的CPU GraphDef及模型输出描述。
 

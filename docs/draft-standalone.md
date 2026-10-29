@@ -1,8 +1,10 @@
 # 完整 draft 独立执行
 
+最新（2026-10-29，用户PID57427）：编译精度锁153/153通过，执行成功；hidden范数恢复，但Top1 15/15不一致、hidden相对L2=1.389480，数值仍未通过。下一步使用 `run_draft_trace.py --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"`，在固定 `full-draft/layer-trace` 中一次对照166个中间张量；详见[当前命令](current-status.md#用户现在执行什么)。它保留原prepared、fixture及生产板端证据，参考输出先逐字节复现，再对独立诊断图编译、检查和上板。
+
 当前优先跑通完整六层 DFlash，不等待40层 target 编译。沿用已经配置的 `env.sh`、主机GE、目标DDK和HDC环境。默认工作目录固定为 `$AI_RUN_DIR/full-draft`，后续自动复用成功阶段并覆盖失败阶段的日志，不再为每次重试生成新目录。
 
-当前v6 AIR/v3参考已完成编译和设备推理，但数值仍失败：15个Top1中12个不一致，设备hidden相对L2=159.063547。保留OMC已确认RMS的FP32均值前后被编译器插入了FP16边界。现在锁定精度后继续完整流程：
+精度锁之前的v6 AIR/v3参考已完成编译和设备推理，旧数值结果为：15个Top1中12个不一致，设备hidden相对L2=159.063547。保留OMC已确认RMS的FP32均值前后被编译器插入了FP16边界。现在锁定精度后继续完整流程：
 
 ```bash
 git pull --ff-only

@@ -87,3 +87,34 @@ ids.write_bytes(b'changed')
 proc=subprocess.run(args+['--output',str(root/'tampered')],capture_output=True,text=True)
 assert proc.returncode==1 and 'size' in proc.stderr
 print('Standalone full draft native transport/lifecycle/validation tests passed (host fake only)')
+
+# Packed FP32 traces are a separate diagnostic wire contract. The real CLI
+# must accept its bound ABI and reject production-header and shape bypasses.
+ids.write_bytes(struct.pack('<8i',*range(8)))
+(root/'draft-abi.json').write_text(json.dumps({'artifact_kind':'qwen35-standalone-draft-trace-abi'}))
+plan()
+trace_wire = (root/'step.tsv').read_text().replace('QWEN35_DRAFT_STEP\t1','QWEN35_DRAFT_TRACE_STEP\t1').replace(
+    'draft_hidden\tfloat16\t1,15,2048','draft_trace_values\tfloat32\t1,1,4')
+(root/'step.tsv').write_text(trace_wire)
+out = root/'trace-success'
+proc = subprocess.run(args+['--output',str(out)],capture_output=True,text=True,
+    env=dict(os.environ,FAKE_HIAI_FAILURE='',FAKE_HIAI_DRAFT_TRACE_ELEMENTS='4'))
+assert proc.returncode == 0,proc.stderr
+assert struct.unpack('<4f',(out/'output_0001.bin').read_bytes()) == (.5,)*4
+for label, wire in [
+    ('production-header',trace_wire.replace('QWEN35_DRAFT_TRACE_STEP','QWEN35_DRAFT_STEP')),
+    ('oversize',trace_wire.replace('float32\t1,1,4','float32\t1,1,16777217')),
+    ('wrong-dtype',trace_wire.replace('draft_trace_values\tfloat32','draft_trace_values\tfloat16')),
+]:
+    (root/'step.tsv').write_text(wire)
+    proc = subprocess.run(args+['--output',str(root/('trace-'+label))],capture_output=True,text=True,
+        env=dict(os.environ,FAKE_HIAI_FAILURE='',FAKE_HIAI_DRAFT_TRACE_ELEMENTS='4'))
+    assert proc.returncode == 1,(label,proc.stderr)
+(root/'draft-abi.json').write_text('{}')
+plan()
+wrong_abi_wire = (root/'step.tsv').read_text().replace('QWEN35_DRAFT_STEP\t1','QWEN35_DRAFT_TRACE_STEP\t1').replace(
+    'draft_hidden\tfloat16\t1,15,2048','draft_trace_values\tfloat32\t1,1,4')
+(root/'step.tsv').write_text(wrong_abi_wire)
+proc = subprocess.run(args+['--output',str(root/'trace-wrong-abi')],capture_output=True,text=True)
+assert proc.returncode == 1 and 'explicit ABI kind' in proc.stderr,proc.stderr
+print('Draft trace explicit ABI, packed FP32 transport and production contract isolation passed (host fake only)')

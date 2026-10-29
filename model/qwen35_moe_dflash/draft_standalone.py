@@ -183,7 +183,8 @@ def prepare_draft(output_dir, sequence_length=64, *, target_path=None, draft_pat
 
 
 def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
-                 timeout_seconds=3600, fp16_reductions="matmul", fp16_row_mul="compact", progress=None):
+                 timeout_seconds=3600, fp16_reductions="matmul", fp16_row_mul="compact", progress=None,
+                 trace_names=None):
     """Build one real GE exporter and serialize one complete draft AIR."""
     from .ge_cpp import emit_cpp
     if fp16_reductions not in {"native", "matmul"} or fp16_row_mul not in {"native", "compact"}:
@@ -202,6 +203,11 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
         raise ValueError("prepared draft configuration differs from locked topology")
     _, config, graph = _graph(plan["sequence_length"], tiny=plan["tiny"], draft_config=plan["draft_config"],
                              include_hidden=plan["include_hidden"])
+    trace_spec = None
+    if trace_names is not None:
+        from .draft_ge_trace import instrument_draft_trace
+        graph, trace_spec = instrument_draft_trace(graph, names=trace_names)
+    export_contract = CURRENT_DRAFT_EXPORT_CONTRACT + ("-layer-trace-v1" if trace_spec is not None else "")
     if set(plan["weights"]) != set(graph.weights):
         raise ValueError("prepared weight set differs from complete draft graph")
     if plan["source"].get("fp16_payload_sha256") != weight_identity(plan["weights"]):
@@ -272,7 +278,7 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
             raise RuntimeError("compiler did not produce nonempty draft exporter")
         command = [str(binary), str(air)]
         save_json(folder / "export-command.json", {"argv": command, "cwd": str(root),
-                                                   "export_contract": CURRENT_DRAFT_EXPORT_CONTRACT})
+                                                   "export_contract": export_contract})
         stage = "draft-serialize"
         if progress:
             progress({"stage": stage, "message": f"Serializing full draft AIR; log: {folder / 'export.log'}"})
@@ -298,7 +304,7 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
                   "row_mul_lowering": {"mode": row_mul_report["mode"], "counts": row_mul_report["counts"]},
                   "projection_lowering": projection_report}
         manifest = {"schema_version": 1, "artifact_kind": "qwen35-cpro-draft-air", "status": "EXPORTED",
-                    "export_contract": CURRENT_DRAFT_EXPORT_CONTRACT,
+                    "export_contract": export_contract,
                     "rms_normalization": "FP32_NORMALIZE_CAST_FP16_THEN_DIRECT_SCALE",
                     "attention_precision": "FP16_MATMUL_FP32_SCORES_SOFTMAX_FP16_PROBABILITY",
                     "rope_precision": "FP32_ANGLES_COS_SIN_CAST_FP16",
@@ -316,10 +322,12 @@ def export_draft(prepared_dir, output_dir, ge_root, *, cxx="c++", cxx11_abi=0,
                     "external_weights": True, "prepared_manifest_sha256": sha256_file(manifest_path),
                     "ge_root": str(ge), "libgraph_sha256": sha256_file(lib / "libgraph.so"),
                     "cxx11_abi": cxx11_abi, "fp16_reductions": fp16_reductions, "fp16_row_mul": fp16_row_mul}
+        if trace_spec is not None:
+            manifest.update(trace_spec=trace_spec, diagnostic_only=True)
         save_json(root / "manifest.json", manifest)
         return manifest
     except Exception as error:
         save_json(root / "failure.json", {"status": "FAILED", "stage": stage,
-                                          "export_contract": CURRENT_DRAFT_EXPORT_CONTRACT,
+                                          "export_contract": export_contract,
                                           "device_validation": "NOT_RUN", "error": str(error)})
         raise

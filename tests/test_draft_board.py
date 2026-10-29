@@ -83,6 +83,86 @@ def test_bundle_copies_all_compiler_payloads_and_strict_draft_wire(bundle):
     assert all('target.omc' not in r['remote'] for r in uploads)
 
 
+@pytest.fixture
+def trace_bundle(bundle, tmp_path):
+    _, normal = bundle
+    fixture = tmp_path/'fixture'
+    report = json.loads((fixture/'report.json').read_text())
+    spec = [{'name':'context_fc', 'shape':[1,2], 'dtype':'float16', 'offset':0, 'elements':2},
+            {'name':'scores_fp32', 'shape':[1,2], 'dtype':'float32', 'offset':2, 'elements':2}]
+    values = fixture/'trace.bin'
+    np.asarray([.5, 1., -np.inf, 0.], dtype='<f4').reshape(1,1,4).tofile(values)
+    descriptor = board._io(8,spec)[1][1]
+    report.update(trace_spec=spec, expected_trace=record(values,fixture,**descriptor))
+    write_json(fixture/'report.json',report)
+    root = tmp_path/'trace-bundle'
+    manifest = board.prepare_draft_bundle(tmp_path/'compilation', fixture, root,
+        config=normal['draft_config'], ddk_id='fixture', trace_spec=spec)
+    return root, manifest
+
+
+def test_trace_bundle_has_separate_explicit_wire_and_abi(trace_bundle):
+    root, manifest = trace_bundle
+    assert manifest['artifact_kind'] == 'qwen35-standalone-draft-trace-bundle'
+    assert (root/'step.tsv').read_text().startswith('QWEN35_DRAFT_TRACE_STEP\t1\n')
+    abi = json.loads((root/'draft-abi.json').read_text())
+    assert abi['artifact_kind'] == 'qwen35-standalone-draft-trace-abi'
+    assert board._validate_bundle(root)[0] == manifest
+
+
+def test_trace_comparison_matches_signed_infinities_and_reports_differences(trace_bundle, tmp_path):
+    root, manifest = trace_bundle
+    result = tmp_path/'trace-result'
+    native_result(trace_bundle, result)
+    report = board.compare_draft_result(root,result,allow_host_fake=True)
+    assert report['numerical_validation'] == 'TOP1_MATCHED'
+    diagnostic = report['trace_diagnostic']
+    assert diagnostic['first_nonexact'] is None
+    assert diagnostic['nodes'][1]['matching_infinity_count'] == 1
+    values = np.fromfile(result/'output_0001.bin',dtype='<f4')
+    values[1] = 2.
+    values.tofile(result/'output_0001.bin')
+    native = json.loads((result/'result.json').read_text())
+    native['outputs'][1].update(record(result/'output_0001.bin',result))
+    write_json(result/'result.json',native)
+    report = board.compare_draft_result(root,result,allow_host_fake=True)
+    assert report['trace_diagnostic']['first_nonexact'] == 'context_fc'
+    assert report['trace_diagnostic']['nodes'][0]['relative_l2'] > 0
+    assert report['trace_diagnostic']['nodes'][0]['acceptance_threshold'] == 'NOT_DEFINED'
+
+
+def test_trace_top1_mismatch_still_fails(trace_bundle,tmp_path):
+    root, _ = trace_bundle
+    out = tmp_path/'trace-top1-result'
+    native_result(trace_bundle,out)
+    path = out/'output_0000.bin'
+    np.zeros(15,dtype='<i4').tofile(path)
+    native = json.loads((out/'result.json').read_text())
+    native['outputs'][0].update(record(path,out))
+    write_json(out/'result.json',native)
+    report = board.compare_draft_result(root,out,allow_host_fake=True)
+    assert report['status'] == 'FAILED' and report['token_mismatches'] == 15
+
+
+@pytest.mark.parametrize('change', ['gap','duplicate','size','unknown-dtype','oversize'])
+def test_trace_spec_rejects_malformed_layout(change):
+    spec = [{'name':'x','shape':[2],'dtype':'float16','offset':0,'elements':2}]
+    if change == 'gap': spec[0]['offset'] = 1
+    elif change == 'duplicate': spec += [{**spec[0], 'offset':2}]
+    elif change == 'size': spec[0]['elements'] = 3
+    elif change == 'unknown-dtype': spec[0]['dtype'] = 'float64'
+    else: spec[0].update(shape=[2**25],elements=2**25)
+    with pytest.raises(ValueError): board._trace_spec(spec)
+
+
+def test_production_bundle_cannot_smuggle_trace_layout(bundle):
+    root, manifest = bundle
+    manifest['trace_spec'] = [{'name':'x','shape':[1],'dtype':'float16','offset':0,'elements':1}]
+    write_json(root/'manifest.json',manifest)
+    with pytest.raises(ValueError,match='separate trace bundle'):
+        board._validate_bundle(root)
+
+
 def test_single_embedded_omc_bundle_needs_no_external_weight_payload(bundle, tmp_path):
     _, original = bundle
     compiler = tmp_path/'compilation'
