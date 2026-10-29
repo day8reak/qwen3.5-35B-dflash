@@ -4,7 +4,7 @@
 
 用户已完成本页特征追加：`FEATURE_AIR_EXPORTED`，新AIR为6,368,551字节，SHA为`924871d84b22ca7c525f722a7b4955f79d92b07072ebb2027ad82fa83856c819`，特征位于第81号端口，FP16`[1,55,16384]`。原9520个节点、89输入、80 RefData、81路原输出及1153个FileConstant字段保持；新增9个分支节点。实际GE Load/Save均返回0，完整metadata往返比较通过；编译和设备执行仍未运行。
 
-现在保留该AIR，不再运行下方追加命令；优先编译A，B只为现有AIR生成STAT_ONLY文件清单。使用`--reference-root /home/l00886453/qwen3_5_moe`定位原55前缀参数，不把新features/air目录当原权重目录；不需要重新哈希或复制参数，也不同时启动第二份大编译。
+文件清单也已由用户生成成功：`INVENTORIED`、`STAT_ONLY`，1153份引用文件合计19,459,474,432字节，原55前缀保持。保留AIR和清单，不再重复追加或inventory；当前A在拆分prefill64/decode1，B保持55档备份，不同时启动第二份大编译。清单stat通过不等于新做了权重SHA或数值验证。
 
 新入口不填充或改写原描述符。它以精确FileConstant路径绑定全部40个input norm，要求scalar-one的实际小数据SHA、规范端口、全图有序DAG、40个norm均进入原logits、原embedding/scale真实数据流和残差连接。8个输出对应原post-decoder层`[1,6,11,16,22,27,32,37]`，取下一层input norm的源hidden；不使用层名相似度、arg序号规律或占位数据。
 

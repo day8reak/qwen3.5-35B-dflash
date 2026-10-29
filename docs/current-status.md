@@ -2,25 +2,26 @@
 
 <a id="用户现在执行什么"></a>
 
-A：在 DDK 窗口编译已导入的完整 40 层 target（64/1 档、82 路输出），本轮只启动这一份大编译。
+A（DDK 服务器）：只读检查现有失败编译的快照、Reshape 小常量和 IR，不复制权重或重新编译。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/compile_full_target.py" \
-  --air "$AI_RUN_DIR/target-pytorch-import/export.air" \
-  --input-layout air-directory --target-features \
-  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis" \
-  --output "$AI_RUN_DIR/target-pytorch-compile"
+python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_compile_failure.py" \
+  --job "$AI_RUN_DIR/target-pytorch-compile" \
+  --node Reshape \
+  --output "$AI_RUN_DIR/target-pytorch-compile-diagnosis.json"
 ```
 
-B：在 DDK 窗口为已生成的 55 档特征 AIR 检查文件引用并生成清单，不复制权重或启动第二次大编译。
+A（原权重机器）：沿用原 64 档导出环境和 `ORIGINAL_TARGET_SOURCE`，单独导出完整 1-token decode AIR，新增 sidecar 写在原机。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/inventory_target_export.py" \
-  --air "$AI_RUN_DIR/target-ge/features/air/export.air" \
-  --torchair-pb2 /root/anaconda3/envs/custom_pypto/lib/python3.11/site-packages/torch_npu/dynamo/torchair/_ge_concrete_graph/ge_ir_by_protoc_3_19_pb2.py \
-  --reference-root /home/l00886453/qwen3_5_moe \
-  --sequence-length 55 \
-  --output "$AI_RUN_DIR/target-ge/export-inventory"
+python3 "$REPO_DIR/targets/cpro/scripts/prepare_target_pytorch.py" \
+  --source-root "$ORIGINAL_TARGET_SOURCE" \
+  --config "$ORIGINAL_TARGET_SOURCE/config/qwen3_5_moe.yaml" \
+  --output "$AI_RUN_DIR/target-pytorch-decode1" \
+  --sequence-length 1 &&
+bash "$AI_RUN_DIR/target-pytorch-decode1/export.sh"
 ```
+
+B：55 档特征 AIR 和文件清单已完成，本轮保留备份，无需重复生成或编译。

@@ -1,8 +1,14 @@
 # A 导出后的权重核对与空间复用
 
+当前64/1双档OMG编译已失败：`branches1`中的`Reshape`输入为`[1,1,2048]`，目标为`[64,2048]`，元素数不一致。原TorchAir调用使用`dynamic=False`，量化投影原代码写的是`reshape(-1, x.shape[-1])`；需要失败IR确定64在哪一阶段固定，不能只按节点名称推断来源。原GDN还有`seq_len == 1`对应的chunk分支，不能只修一个reshape就宣布decode成立。
+
+现在分开推进64-token prefill和1-token decode：64保留已有AIR，先检查失败编译收据和快照；1在原权重机用全新`target-pytorch-decode1`目录导出。实际原机导出会新写约19.46GB sidecar，后续逐文件SHA相同时再复用DDK现有参数，不把重复权重搬到DDK机。失败任务目前不能直接`--resume`重编译，也不能仅把`--sequence-length`改为64来改变OMG档位。下方第1至3步已完成，第4步的旧双档命令暂不再次运行。
+
+新的只读诊断只检查小元数据、编译日志、失败IR、微小整数shape常量；1153权重快照只stat，不重新读payload。`INSPECTED`表示报告读取完成，`RECORDED_HASH_WITH_CURRENT_STAT`不是新一轮完整SHA验证，也不是重试通过；后续要按实际报告决定怎样保留并复用现有编译输入。源码AIR未提供其原机schema时不猜用另一版TorchAir schema解析，失败dump则使用所选DDK自己的HIAI schema。
+
 用户已在原权重机导出完整A：AIR为6,375,344字节，SHA256为`3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9`；导出目录1155个常规文件，总19,478,109,527字节。原机剩余约7.1TB，当前DDK机释放到60GB；`/data`与根目录使用同一已占用卷，不是另一块空闲大盘。
 
-用户已完成下方第1至3步：归一`EXPORT_READY`、三小文件传输、1153份参数全部`STAGED_HARDLINKS`。归一AIR仍为6,375,344字节，SHA为`b48169f46dcd0964501bc27f0d2de42d8dad7991b8d72532ae40e208d407d734`；清单SHA为`63f19e8f2291a70a38b0775cfc08abeef2517f3dbab10ba328d34178970eb4d4`。1153个唯一参数文件已实际哈希，总19,459,474,432字节；9537个原计算节点编码逐字节保留，原AIR不变。现在直接执行第4步，不必重复归一、传输或stage。
+用户已完成下方第1至3步：归一`EXPORT_READY`、三小文件传输、1153份参数全部`STAGED_HARDLINKS`。归一AIR仍为6,375,344字节，SHA为`b48169f46dcd0964501bc27f0d2de42d8dad7991b8d72532ae40e208d407d734`；清单SHA为`63f19e8f2291a70a38b0775cfc08abeef2517f3dbab10ba328d34178970eb4d4`。1153个唯一参数文件已实际哈希，总19,459,474,432字节；9537个原计算节点编码逐字节保留，原AIR不变。不必重复归一、传输或stage。
 
 实际staging收据SHA为`f5206cbdef5ce496250f52934dca75c7ae5b24c869826547e525ccbfc3cc77f9`，九个Data名称/形状已匹配编译profile，`transfer_required_count=0`；工具显式复制的sidecar字节为0。收据写入前观测到空闲63,754,436,608字节，不能把此共享文件系统观测当作独立物理占用测量。编译输入扫描应选入1154个文件，即小AIR加1153份已绑定sidecar。
 
@@ -55,7 +61,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/stage_target_export_reuse.py" \
 
 `--export-receipt`先交叉绑定这三个小文件，并核对AIR实读记录的九个Data名称/形状与64/1编译profile一致；发现参数编号或固定形状不同即在读大权重前停止。该检查不据同形状猜控制值含义，也不证明实际OMG支持或状态连续性。
 
-## 4. 优先编译A，暂不同时启动B的大编译
+## 4. 首次双档编译命令记录（已失败，暂不重跑）
 
 导入成功后，仍需给隔离输入快照和OMG输出留空间。外置编译权重的实际大小未知，60GB不能直接视作全流程容量保证。当前先安排A的一次大编译，B继续小图生成/检查。
 
