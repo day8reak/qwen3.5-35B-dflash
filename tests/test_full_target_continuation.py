@@ -69,6 +69,46 @@ def test_repeated_cli_reuses_the_complete_external_artifact_without_a_tool_call(
     assert result["device_ready"] is False
 
 
+def test_feature_board_contract_can_be_selected_on_resume_without_recompiling(target, monkeypatch):
+    from qwen35_moe_dflash import existing_omc_inspect, original_target_board, original_target_contract
+    before = {p.relative_to(target["job"]).as_posix(): p.read_bytes()
+              for p in target["job"].rglob("*") if p.is_file()}
+    count = len(target["calls"])
+    seen = []
+    monkeypatch.setattr(existing_omc_inspect, "inspect_existing_omc", lambda *a, **k: {"status": "INSPECTED"})
+    monkeypatch.setattr(original_target_contract, "inspect_target_contract", lambda *a, **k: {"status": "OBSERVED"})
+    monkeypatch.setattr(original_target_contract, "boundary_report", lambda value: "mock boundary\n")
+    def execute(compilation, contract, destination, **options):
+        assert compilation == target["job"] / "compilation"
+        assert options["target_features"] is True and options["gear"] == 1
+        seen.append(destination)
+        return {"status": "EXECUTED_UNVALIDATED", "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+                "numerical_validation": "NOT_RUN_NO_REFERENCE",
+                "feature_output_evidence": {"status": "EXPOSED_NOT_VALIDATED"}}
+    monkeypatch.setattr(original_target_board, "execute_target_tool", execute)
+    monkeypatch.setattr(sys, "argv", [str(target["script"]), "--resume", str(target["job"]),
+        "--run-board", "--board-input-dir", "/board/original-decode", "--sequence-length", "1", "--target-features"])
+    assert target["main"]() == 0
+    assert len(target["calls"]) == count and len(seen) == 1
+    for name, raw in before.items():
+        assert (target["job"] / name).read_bytes() == raw
+    result = full_target.read_metadata(next((target["job"] / "continuations").glob("*/result.json")))
+    assert result["target_features_requested"] is True
+    assert result["compiler_invocation"] == "NOT_RUN_REUSED_COMPLETE_COMPILE"
+    assert result["feature_output_evidence"]["status"] == "EXPOSED_NOT_VALIDATED"
+    assert result["numerical_validation"] == "NOT_RUN_NO_REFERENCE" and result["device_ready"] is False
+
+
+def test_feature_selection_never_bypasses_existing_compile_integrity(target):
+    report = full_target.validate_compilation(target["job"], **target["options"], target_features=True)
+    assert report["status"] == "COMPILED"
+    with pytest.raises(ValueError, match="boolean"):
+        full_target.validate_compilation(target["job"], **target["options"], target_features=1)
+    target["weight"].write_bytes(b"ALTERED QUANTIZED BYTES!")
+    with pytest.raises(ValueError):
+        full_target.validate_compilation(target["job"], **target["options"], target_features=True)
+
+
 @pytest.mark.parametrize("change", ["source", "staged", "generated", "added", "missing", "compiler", "command", "log", "report"])
 def test_modified_source_tool_or_any_external_artifact_rejects_reuse(target, change):
     job, root = target["job"], target["job"] / "compilation"

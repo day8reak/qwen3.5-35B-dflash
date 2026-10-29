@@ -2,7 +2,7 @@
 
 将 Qwen3.5-MoE 目标模型与 DFlash 草稿模型接到 CPro/X90。支持 **PyTorch 建模导出**和**直接 GE 构图**两条路径，部署使用 `AIR → OMG → OMC → HIAI`。
 
-当前两条线并行：draft 使用 `run_draft_residual.py` 在独立 `full-draft/residual-fix` 验证六层残差候选；target 由另一个窗口推进原量化40层、64/1动态档位模型。最新命令统一见[当前更新与执行命令](current-status.md#用户现在执行什么)。draft 候选仍待实机验证，完整模型的状态执行、设备精度和最终加速尚未验收。
+当前按用户要求先接通两套完整模型的真实端到端流程。六层 `residual-fix` 已在固定fixture通过15/15 Top1，端到端直接复用其bundle；原40层量化target从原PyTorch工程追加8层真实features，接通64→1状态与串行verify。最新命令统一见[当前更新与执行命令](current-status.md#用户现在执行什么)。真实特征多轮精度、语言质量和最终加速仍待验收。
 
 | 从这里开始 | 内容 |
 |---|---|

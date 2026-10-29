@@ -84,13 +84,17 @@ def _recorded_file(root, row, stat_key):
 
 
 def validate_compilation(job, *, air, ddk_root, ddk_id, profile, input_layout,
-                         omg_path=None, tbe_diagnosis=None):
+                         omg_path=None, tbe_diagnosis=None, target_features=False):
     """Reuse only a complete, unchanged original-target compiler invocation.
 
     This does not recover interrupted or failed compilation and never promotes
     a generated OMC found beside a failed report. Payload hashes are streamed
     again without copying weights; stat checks alone cannot establish identity.
+    target_features selects a later board boundary check, not a compiler option;
+    changing that selection never changes or bypasses these compile receipts.
     """
+    if type(target_features) is not bool:
+        raise ValueError("target_features must be an explicit boolean")
     job = Path(job).resolve()
     root = job / "compilation"
     result = read_metadata(job / "result.json")

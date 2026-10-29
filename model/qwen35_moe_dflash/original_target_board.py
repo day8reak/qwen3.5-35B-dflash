@@ -52,7 +52,9 @@ def _width(desc):
     return next(iter(widths))
 
 
-def tool_plan(contract, profile, gear, input_dir):
+def tool_plan(contract, profile, gear, input_dir, *, target_features=False):
+    if type(target_features) is not bool:
+        raise ValueError("target_features must be an explicit boolean")
     if type(gear) is not int or gear not in {1, 64}:
         raise ValueError("original target gear must be 64 or 1")
     if (contract.get("artifact_kind") != "qwen35-original-target-contract" or contract.get("status") != "OBSERVED"
@@ -78,10 +80,12 @@ def tool_plan(contract, profile, gear, input_dir):
                        "bytes": math.prod(shape) * _width(desc), "schema_dtype_names": desc["schema_dtype_names"],
                        "source": str(source_dir / filename), "file": f"inputs/input_{index:03d}.bin"})
     outputs = boundary["outputs"]
-    if len(outputs) != 81 or len({row["netoutput"] for row in outputs}) != 1:
-        raise ValueError("original target requires one 81-port output (logits plus 80 states)")
+    output_count = 82 if target_features else 81
+    if len(outputs) != output_count or len({row["netoutput"] for row in outputs}) != 1:
+        raise ValueError(f"original target requires one {output_count}-port output (logits plus 80 states"
+                         + (" plus target features)" if target_features else ")"))
     planned = []
-    for index, desc in enumerate(outputs):
+    for index, desc in enumerate(outputs[:81]):
         name = "logits" if index == 0 else f"RefData_{index - 1}"
         expected = [1, 1, 248320] if index == 0 else actual[name]["shape"]
         if desc["output_index"] != index or desc["shape"] != expected:
@@ -92,6 +96,25 @@ def tool_plan(contract, profile, gear, input_dir):
             raise ValueError("returned RefData dtype cannot be fed back exactly: " + name)
         planned.append({"index": index, "name": name, "shape": expected, "bytes": math.prod(expected) * _width(desc),
                         "schema_dtype_names": desc["schema_dtype_names"]})
+    feature_evidence = {"status": "NOT_EXPOSED", "semantic_validation": "NOT_RUN"}
+    if target_features:
+        desc = outputs[81]
+        source_shape = desc["shape"]
+        resolved_shape = [1, gear, 16384] if source_shape == [1, -1, 16384] else source_shape
+        if (desc["output_index"] != 81 or resolved_shape != [1, gear, 16384]
+                or desc["schema_dtype_names"] != ["DT_FLOAT16"]):
+            raise ValueError("target features require final FP16 output [1,gear,16384]; only its sequence axis may be dynamic")
+        planned.append({"index": 81, "name": "target_features", "shape": resolved_shape,
+                        "bytes": math.prod(resolved_shape) * _width(desc),
+                        "schema_dtype_names": desc["schema_dtype_names"],
+                        "source_descriptor": dict(desc),
+                        "resolved_descriptor": dict(desc, shape=resolved_shape)})
+        feature_evidence = {"status": "EXPOSED_NOT_VALIDATED", "output_index": 81,
+                            "source_descriptor": dict(desc),
+                            "resolved_descriptor": dict(desc, shape=resolved_shape),
+                            "semantic_validation": "REQUIRES_DERIVED_SOURCE_RECEIPT_AND_RUNTIME_VALIDATION",
+                            "output_mapping": "UNVERIFIED_TOOL_FILENAMES",
+                            "scope": "Compiled boundary only; no real feature provenance, numerical or generation continuity claim"}
     return {"schema_version": 1, "artifact_kind": "qwen35-original-target-tool-plan", "gear": gear,
             "inputs": inputs, "outputs": planned,
             "input_shape": ";".join(r["name"] + ":" + ",".join(map(str, r["shape"])) for r in inputs),
@@ -99,7 +122,9 @@ def tool_plan(contract, profile, gear, input_dir):
             "input_mapping_source": "USER_PROVIDED_SCRIPT_POSITIONAL_MAPPING_WITH_COMPILED_INDEX_SHAPE_DTYPE_CHECKS",
             "serialized_index_check": "MATCHED_GLOBAL_INDICES" if global_indices else "SEPARATE_OR_INCOMPLETE_INDICES_NOT_RUNTIME_SLOTS",
             "runtime_input_order": "USER_DECLARED_UNVERIFIED_BY_DEVICE_REFERENCE",
-            "target_features": "NOT_EXPOSED_BY_USER_81_OUTPUT_CONTRACT",
+            "target_features_requested": target_features,
+            "target_features": "EXPOSED_NOT_VALIDATED" if target_features else "NOT_EXPOSED_BY_USER_81_OUTPUT_CONTRACT",
+            "feature_output_evidence": feature_evidence,
             "state_continuity": "NOT_VALIDATED_SINGLE_TOOL_INVOCATION", "numerical_validation": "NOT_RUN_NO_REFERENCE"}
 
 
@@ -121,13 +146,15 @@ def _hash_lines(text, root):
 
 def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, gear=64,
                         input_dir=None, host_input_dir=None, tool="/data/local/tmp/tools_sysdbg/model_run_tool_internal",
-                        board_model_root="/data/local/tmp/qwen3_5_moe", timeout_seconds=7200):
+                        board_model_root="/data/local/tmp/qwen3_5_moe", timeout_seconds=7200, target_features=False):
     root, out = Path(compilation_dir).resolve(), output_path(output_dir)
     out.mkdir(parents=True, exist_ok=False)
     result = {"schema_version": 1, "artifact_kind": "qwen35-original-target-tool-execution",
               "status": "FAILED", "stage": "contract", "device_execution": "NOT_RUN",
               "numerical_validation": "NOT_RUN_NO_REFERENCE", "state_continuity": "NOT_RUN",
-              "runtime_placement": "UNVERIFIED", "retrieved": {}, "retrieval_errors": []}
+              "runtime_placement": "UNVERIFIED", "retrieved": {}, "retrieval_errors": [],
+              "target_features_requested": target_features,
+              "feature_output_evidence": {"status": "NOT_CHECKED", "semantic_validation": "NOT_RUN"}}
     hdc = None
     attempt = None
     attempted = False
@@ -158,7 +185,9 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         digest = sha256_file(root / "report.json")
         cache = board_root / ("codex-target-" + digest[:20])
         attempt = cache / ("run-" + uuid.uuid4().hex)
-        plan = tool_plan(contract, profile, gear, str(attempt / "source-inputs") if host_input_dir else input_dir)
+        plan = tool_plan(contract, profile, gear, str(attempt / "source-inputs") if host_input_dir else input_dir,
+                         target_features=target_features)
+        result.update(target_features=plan["target_features"], feature_output_evidence=plan["feature_output_evidence"])
         local_inputs = {}
         if host_input_dir:
             source_root = Path(host_input_dir).resolve()
@@ -294,7 +323,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         result.update(status="EXECUTED_UNVALIDATED", device_execution="EXECUTED_OUTPUTS_RETRIEVED",
                       state_continuity="NOT_VALIDATED_SINGLE_TOOL_INVOCATION", output_mapping="UNVERIFIED_TOOL_FILENAMES",
                       native_run_count="UNVERIFIED_TOOL_INTERNAL_WARMUP_POLICY", performance="NOT_MEASURED",
-                      target_features="NOT_EXPOSED_BY_USER_81_OUTPUT_CONTRACT")
+                      target_features=plan["target_features"])
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
         if attempted:

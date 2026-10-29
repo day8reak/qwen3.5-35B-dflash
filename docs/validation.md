@@ -1,3 +1,9 @@
+## 2026-10-29 最新：完整 residual-fix 的单例 Top1 匹配
+
+用户回传完整六层、block16、248320词表draft的 `full-draft/residual-fix` 板端报告：EXECUTED、165/165编译精度匹配，原两路输出dtype保持，15/15 Top1与同输入PyTorch参考完全一致。hidden非有限位置差异为0、relative L2=0.0126796675、cosine=0.999919614、max abs=0.08984375。`production_equivalence=DIFFERENT`指它与旧失败模型的设备输出不同，不是本次参考Top1失败。
+
+证据范围是用户粘贴的远端结果，原远端文件尚未在本地重取核验；输入仍为固定合成target features。该例Top1已匹配，hidden尚非逐位一致；未据此宣布真实特征多轮、语言质量、完整模型数值或速度通过。按用户指示先集成真实完整target和这份draft，保留全部后续验收。以下为此前按时间记录的历史检查。
+
 # 验证范围与保留结论
 
 ## direct runner 顶层ABI类型解析与原地重试

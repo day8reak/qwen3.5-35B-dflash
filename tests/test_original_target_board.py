@@ -54,6 +54,73 @@ def test_one_gear_resolves_only_dynamic_inputs_and_keeps_full_state_sizes():
     assert decode["state_continuity"] == "NOT_VALIDATED_SINGLE_TOOL_INVOCATION"
 
 
+def feature_contract(shape):
+    observed, profile = contract()
+    observed["boundaries"]["outputs"].append({"name": "target_features", "netoutput": "output",
+        "output_index": 81, "shape": shape, "schema_dtype_names": ["DT_FLOAT16"],
+        "producer_reference": "real_feature_concat:0"})
+    return observed, profile
+
+
+@pytest.mark.parametrize("gear,shape", [(64, [1, 64, 16384]), (1, [1, 1, 16384]),
+                                        (64, [1, -1, 16384]), (1, [1, -1, 16384])])
+def test_explicit_feature_plan_keeps_all_original_outputs_and_binds_only_sequence_gear(gear, shape):
+    observed, profile = feature_contract(shape)
+    original, _ = contract()
+    base = board.tool_plan(original, profile, gear, "/board/original")
+    plan = board.tool_plan(observed, profile, gear, "/board/original", target_features=True)
+    assert plan["inputs"] == base["inputs"] and plan["outputs"][:81] == base["outputs"]
+    feature = plan["outputs"][81]
+    assert feature["name"] == "target_features" and feature["shape"] == [1, gear, 16384]
+    assert feature["bytes"] == 2 * gear * 16384
+    assert feature["source_descriptor"]["shape"] == shape
+    assert feature["resolved_descriptor"]["shape"] == [1, gear, 16384]
+    assert observed["boundaries"]["outputs"][-1]["shape"] == shape
+    assert plan["feature_output_evidence"]["status"] == "EXPOSED_NOT_VALIDATED"
+    assert plan["feature_output_evidence"]["output_mapping"] == "UNVERIFIED_TOOL_FILENAMES"
+    assert plan["state_continuity"] == base["state_continuity"]
+    assert plan["numerical_validation"] == "NOT_RUN_NO_REFERENCE"
+
+
+@pytest.mark.parametrize("change", ["implicit_82", "missing_feature", "dtype", "width", "batch", "rank",
+                                    "fixed_64_for_decode", "other_dynamic_axis", "index", "netoutput",
+                                    "original_state_dtype", "original_index", "non_boolean"])
+def test_feature_mode_rejects_ambiguous_or_changed_original_contract(change):
+    observed, profile = feature_contract([1, -1, 16384])
+    feature = observed["boundaries"]["outputs"][-1]
+    options = {"target_features": True}
+    gear = 64
+    if change == "implicit_82":
+        options = {}
+    elif change == "missing_feature":
+        observed["boundaries"]["outputs"].pop()
+    elif change == "dtype":
+        feature["schema_dtype_names"] = ["DT_FLOAT"]
+    elif change == "width":
+        feature["shape"] = [1, -1, 16383]
+    elif change == "batch":
+        feature["shape"] = [2, -1, 16384]
+    elif change == "rank":
+        feature["shape"] = [1, 1, -1, 16384]
+    elif change == "fixed_64_for_decode":
+        feature["shape"], gear = [1, 64, 16384], 1
+    elif change == "other_dynamic_axis":
+        feature["shape"] = [-1, 64, 16384]
+    elif change == "index":
+        feature["output_index"] = 80
+    elif change == "netoutput":
+        feature["netoutput"] = "another_output"
+    elif change == "original_state_dtype":
+        observed["boundaries"]["outputs"][1]["schema_dtype_names"] = ["DT_FLOAT"]
+    elif change == "original_index":
+        observed["boundaries"]["inputs_in_serialized_op_order"][1]["serialized_data_index"] = 2
+        observed["boundaries"]["inputs_in_serialized_op_order"][2]["serialized_data_index"] = 1
+    else:
+        options["target_features"] = 1
+    with pytest.raises(ValueError):
+        board.tool_plan(observed, profile, gear, "/board/original", **options)
+
+
 def test_separate_refdata_indices_are_not_assumed_to_be_hiai_runtime_slots():
     observed, profile = contract()
     for row in observed["boundaries"]["inputs_in_serialized_op_order"]:
@@ -165,10 +232,10 @@ def simulated(tmp_path, monkeypatch):
     return dict(root=root, contract=contract_path, profile=profile, inputs=source, state=state, out=tmp_path / "board")
 
 
-def run(simulated):
+def run(simulated, **options):
     case = simulated
     return board.execute_target_tool(case["root"], case["contract"], case["out"], profile=case["profile"],
-                                      host_input_dir=case["inputs"], tool="/board/tool", board_model_root="/board/models")
+                                      host_input_dir=case["inputs"], tool="/board/tool", board_model_root="/board/models", **options)
 
 
 def test_tool_executes_once_with_original_host_inputs_and_retains_unvalidated_status(simulated):
@@ -183,6 +250,23 @@ def test_tool_executes_once_with_original_host_inputs_and_retains_unvalidated_st
     assert "--modelmanager_itf=V2" in cmd and "--times=1" in cmd
     assert next(a for a in cmd if a.startswith("--weight_dir=")).endswith("/payload/model")
     assert all("mount -o remount" not in c and "rm -rf" not in c for c in simulated["state"]["commands"])
+
+
+def test_feature_tool_plan_reaches_execution_without_claiming_semantics_or_mapped_output(simulated):
+    observed = json.loads(simulated["contract"].read_text())
+    feature, _ = feature_contract([1, -1, 16384])
+    observed["boundaries"] = feature["boundaries"]
+    simulated["contract"].write_text(json.dumps(observed))
+    result = run(simulated, target_features=True)
+    assert result["status"] == "EXECUTED_UNVALIDATED" and simulated["state"]["executions"] == 1
+    assert result["target_features"] == "EXPOSED_NOT_VALIDATED"
+    assert result["feature_output_evidence"]["source_descriptor"]["shape"] == [1, -1, 16384]
+    assert result["feature_output_evidence"]["resolved_descriptor"]["shape"] == [1, 64, 16384]
+    assert result["output_mapping"] == "UNVERIFIED_TOOL_FILENAMES"
+    assert result["state_continuity"] == "NOT_VALIDATED_SINGLE_TOOL_INVOCATION"
+    assert result["numerical_validation"] == "NOT_RUN_NO_REFERENCE"
+    cmd = json.loads((simulated["out"] / "command.json").read_text())["argv"]
+    assert next(a for a in cmd if a.startswith("--output_shape=")).endswith(";target_features:1,64,16384")
 
 
 @pytest.mark.parametrize("failure", ["native", "retrieval", "input_size"])

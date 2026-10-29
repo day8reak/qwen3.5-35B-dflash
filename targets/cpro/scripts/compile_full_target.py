@@ -69,6 +69,8 @@ def main():
     parser.add_argument("--input-dir", help="local directory containing the original chunksize_N_data binary inputs; no synthesized inputs")
     parser.add_argument("--board-input-dir", help="alternative existing board directory containing the original inputs")
     parser.add_argument("--sequence-length", choices=(64, 1), type=int, default=64, help="one original target gear; 1 alone does not prove state continuity")
+    parser.add_argument("--target-features", action="store_true",
+                        help="explicitly require 82 outputs for board execution: original logits/80 states plus FP16 [1,gear,16384]; boundary exposure alone does not validate feature provenance")
     parser.add_argument("--board-tool", default=os.environ.get("CPRO_MODEL_RUN_TOOL", "/data/local/tmp/tools_sysdbg/model_run_tool_internal"))
     parser.add_argument("--board-model-root", default=os.environ.get("CPRO_TARGET_BOARD_ROOT", "/data/local/tmp/qwen3_5_moe"))
     parser.add_argument("--timeout-seconds", type=int, default=7200, help="OMG compilation timeout")
@@ -119,13 +121,13 @@ def main():
             print("full-target: verifying retained source, snapshot and external-output SHA256; reading only, no weight copies", flush=True)
             compiled = validate_compilation(root, air=air, ddk_root=args.ddk_root,
                 ddk_id=args.ddk_id, profile=profile, input_layout=args.input_layout,
-                omg_path=args.omg, tbe_diagnosis=args.tbe_diagnosis)
+                omg_path=args.omg, tbe_diagnosis=args.tbe_diagnosis, target_features=args.target_features)
             result = dict(prior, resumed_from=str(root), model_compilation="PASSED",
                           compiler_invocation="NOT_RUN_REUSED_COMPLETE_COMPILE",
                           reuse_validation="SOURCE_SNAPSHOT_GENERATED_COMPILER_AND_LOG_SHA256",
                           device_execution="NOT_RUN", numerical_validation="NOT_RUN", device_ready=False)
             for key in ("interface_error", "interface_report", "target_contract_error", "target_contract_report",
-                        "runtime_sources_error", "board_status", "board_result"):
+                        "runtime_sources_error", "board_status", "board_result", "feature_output_evidence"):
                 result.pop(key, None)
             result.pop("board_error", None)
             result.pop("delivery_status", None)
@@ -140,6 +142,7 @@ def main():
         evidence_root = continuation or root
         result.update(output=str(root), air=str(air), profile="compile-profile.json",
                       input_layout=args.input_layout,
+                      target_features_requested=args.target_features,
                       compilation="compilation/report.json")
         if args.hiai_include or args.source_root:
             from qwen35_moe_dflash.original_target_contract import capture_runtime_sources
@@ -204,11 +207,14 @@ def main():
                 board = execute_target_tool(root / "compilation", evidence_root / "target-contract/report.json",
                     evidence_root / "board", profile=profile, gear=args.sequence_length,
                     input_dir=args.board_input_dir, host_input_dir=args.input_dir, tool=args.board_tool,
-                    board_model_root=args.board_model_root, timeout_seconds=args.timeout_seconds)
+                    board_model_root=args.board_model_root, timeout_seconds=args.timeout_seconds,
+                    target_features=args.target_features)
                 result.update(board_status=board["status"], board_result=str(evidence_root / "board/result.json"),
                               device_execution=board["device_execution"], numerical_validation=board["numerical_validation"],
                               delivery_status="TARGET_EXECUTION_FAILED" if board["status"] == "FAILED" else "TARGET_EXECUTED_ACCURACY_UNVERIFIED",
                               next="Review actual retrieved logits/state output mapping; establish same-input reference and 64-prefill to 1-decode state handoff before accuracy/performance claims")
+                if "feature_output_evidence" in board:
+                    result["feature_output_evidence"] = board["feature_output_evidence"]
                 if board["status"] == "FAILED":
                     from qwen35_moe_dflash.tool_logs import log_excerpt
                     result["board_error"] = board.get("error", board.get("evidence_error", "target execution failed"))

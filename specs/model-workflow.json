@@ -2147,12 +2147,12 @@
   "probe_policy": "The active model-ops scope is three custom operator types and six prefill/decode cases, explicitly selected by the user. Conv state and RMS use existing base operators. Reuse compiled cases; retain all-ops nine-case records and custom Conv/RMS failures as optional historical diagnostics, not passes. No new Conv/RMS fusion-candidate plan.",
   "evidence": "specs/verification.json",
   "delivery_plan": {
-    "priority": "Urgent: run the complete six-layer draft independently first; retain ongoing full target compile without starting another target compile",
+    "priority": "USER_DIRECTIVE: full original 40-layer quantized target plus complete 6-layer residual-fix draft; real eight-layer features and multi-round execution first; accuracy and performance remain separate gates",
     "parallel_workstreams": [
-      "Complete standalone draft with real weights, PyTorch fixture, GE AIR, OMG OMC and HIAI execution",
-      "Existing original AIR full-target OMG compilation and actual interface inspection",
-      "Original graph dynamic gear, RefData and external weights runtime integration",
-      "GDN writeback investigation from retained three-fill files; no repeat execution"
+      "Reuse already executed complete residual-fix draft bundle; no new draft export/compile/packing",
+      "Derive original private Cpro PyTorch source with eight-layer feature concatenation appended as output82",
+      "Original target AIR/OMC 64/1 gears, real runtime controls, ordered80state feedback and native adaptation",
+      "Real-feature serial verify controller integration; preserve numerical and performance gates"
     ],
     "avoid": [
       "re-running concluded standalone probe batches",
@@ -2161,7 +2161,7 @@
       "claiming an unbound full graph or FP16 conversion diagnostic is a deployable 32GB model"
     ],
     "memory_plan": "specs/device-memory-report.json",
-    "first_device_milestone": "Complete six-layer draft single invocation with identical-input PyTorch Top1 comparison; hidden diagnostics and placement remain separately unverified",
+    "first_device_milestone": "Complete-model multi-round serial DFlash execution with real target features, 80-state continuity and generated token IDs; no accuracy or speedup claim",
     "readiness_gaps": {
       "direct_ge_weights": "Fallback logical INT4/INT8/FP16 cache writer implemented and resumable; I4ZN/QPARAM/GE hardware mapping remains pending. Existing AIR primary route does not require this rebuild.",
       "memory": "Approximately 34.66B text parameters require about 69.3GB in FP16; not a 32GB device deployment",
@@ -2169,7 +2169,7 @@
       "stateful_decode": "past_length is static; reusable decode/cache contract and deployment orchestration are pending",
       "gdn": "Output depends on output-buffer prefill; accuracy and cause unresolved",
       "cache_attention": "Standalone invocation evidence is not production graph integration",
-      "original_air": "Provided user compilation contract remains unverified against actual AIR; full compile, input/output ABI, RefData state, dynamic gear and external weight loading require target evidence."
+      "original_air": "Original81outputs lack real8-layer features; guarded source adapter and explicit82output ABI are host-tested, new target AIR/OMC and device execution pending"
     },
     "stateful_compile_compatibility": {
       "status": "HOST_TESTED_DEVICE_PENDING",
@@ -2178,7 +2178,7 @@
       "platform": "kirinx90",
       "scope": "Run-local TBE argument adapter only; no quantized full model built in this run."
     },
-    "primary_route": "standalone_draft",
+    "primary_route": "original_quantized_target_features_plus_residual_fix_draft",
     "fallback_weight_preparation": {
       "entrypoint": "targets/cpro/scripts/prepare_full_target.py",
       "tensor_count": 693,
@@ -2205,6 +2205,37 @@
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Read existing original-target job reports and active processes before starting any new compile"
+    "next_target_action": "Prepare guarded derived original exporter and inspect actual small runtime-control files before new real-feature AIR/OMC build; preserve any active target task",
+    "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone"
+  },
+  "execution_smoke": {
+    "contract": "specs/dflash-execution-smoke.json",
+    "status": "in_progress",
+    "priority_source": "USER_DIRECTIVE",
+    "allows_garbled_text_at_this_milestone": true,
+    "synthetic_features_allowed": false,
+    "next_command_document": "docs/current-status.md#用户现在执行什么"
+  },
+  "latest_draft_device_evidence": {
+    "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+    "date": "2026-10-29",
+    "job": "full-draft/residual-fix",
+    "model_layers": 6,
+    "vocab_size": 248320,
+    "block_size": 16,
+    "proposal_count": 15,
+    "device_execution": "PASSED",
+    "compiled_precision": {
+      "matched_nodes": 165,
+      "required_nodes": 165
+    },
+    "numerical_validation": "TOP1_MATCHED_ON_SINGLE_SYNTHETIC_FEATURE_FIXTURE",
+    "top1_exact": true,
+    "hidden_relative_l2": 0.012679667512380075,
+    "hidden_cosine": 0.9999196135777132,
+    "hidden_max_abs_error": 0.08984375,
+    "hidden_nonfinite_mismatch_count": 0,
+    "full_accuracy": "NOT_ESTABLISHED",
+    "next": "Reuse this complete bundle for real-feature end-to-end execution; do not repeat draft compilation"
   }
 }

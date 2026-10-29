@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-full-model-execution-smoke-contract",
+  "status": "IMPLEMENTATION_IN_PROGRESS_DEVICE_NOT_RUN",
+  "scope": "User-prioritized execution milestone; final accuracy, correct rollback and speedup>=2x requirements are unchanged",
+  "user_directive": {
+    "real_features_required": true,
+    "garbled_text_acceptable_for_execution_only": true,
+    "complete_models_required": true
+  },
+  "models": {
+    "target": {
+      "source": "original user PyTorch quantized Cpro exporter",
+      "layers": 40,
+      "vocab_size": 248320,
+      "weights": "UNCHANGED_ORIGINAL_QUANTIZED",
+      "input_count": 89,
+      "original_output_count": 81,
+      "extended_output_count": 82,
+      "feature_output_index": 81,
+      "feature_dtype": "float16",
+      "feature_shape": [
+        1,
+        "T",
+        16384
+      ],
+      "post_decoder_layer_ids": [
+        1,
+        6,
+        11,
+        16,
+        22,
+        27,
+        32,
+        37
+      ]
+    },
+    "draft": {
+      "reuse": "full-draft/residual-fix/bundle",
+      "layers": 6,
+      "block_size": 16,
+      "proposal_count": 15,
+      "vocab_size": 248320,
+      "outputs": [
+        "draft_top1",
+        "draft_hidden"
+      ],
+      "latest_fixture_top1": "15/15 MATCHED_USER_REPORTED"
+    }
+  },
+  "verify": "Serial gear1 compare-before-commit; rejected candidates never enter target state",
+  "requirements": [
+    "At least two full draft invocations bound to real target features",
+    "Target64prefill then gear1 decode with per-layer80state feedback",
+    "Every committed token advances target, including the last token",
+    "Prefix token IDs, feature history, model identity and state chain stay bound",
+    "No synthesized feature fallback, layer/expert/vocabulary reduction, or silent ordinary-only fallback"
+  ],
+  "host_implementation": {
+    "source_adapter": "model/qwen35_moe_dflash/original_target_source.py",
+    "control_inspector": "model/qwen35_moe_dflash/original_target_inputs.py",
+    "controller": "model/qwen35_moe_dflash/incremental_smoke.py",
+    "target_board_boundary": "model/qwen35_moe_dflash/original_target_board.py",
+    "device_adapter": "PENDING"
+  },
+  "gaps": [
+    "Selected TorchAir feature export and actual82output target OMC have not run",
+    "conv_state_pos encoding and decode allQLen require original runtime input generator or selectedDDK contract",
+    "80state continuous feedback and output filenames to port mapping need device evidence",
+    "Actual target plus residual-fix draft multi-round execution not yet integrated"
+  ],
+  "commands": "docs/current-status.md#用户现在执行什么",
+  "accuracy": "NOT_EVALUATED_BY_EXECUTION_MILESTONE",
+  "performance": "NOT_EVALUATED_BY_EXECUTION_MILESTONE"
+}

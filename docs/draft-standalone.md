@@ -1,21 +1,12 @@
 # 完整 draft 独立执行
 
-## 当前执行：残差候选
+## 当前集成：复用完整 residual-fix
 
-最新入口（2026-10-29，代码 `c0463f7`）为 `run_draft_residual.py`。用户已完成 direct 实机执行和只读定位：layer1 norm 与仅对 MLP down 做 RMS 的32768个元素逐字节一致，完整残差和重建仍有明显差异。当前验证独立残差候选，命令同步维护在[当前更新与执行命令](current-status.md#用户现在执行什么)。
+最新用户板端结果（2026-10-29）：完整6层、block16、248320词表的 `full-draft/residual-fix` 已执行，165/165编译精度要求通过，15/15 Top1在固定合成特征fixture匹配参考。hidden相对L2=0.0126796675、cosine=0.999919614，尚非全面精度通过。模型只改变12处残差加法的计算路径，FP32计算后回到原FP16结果边界，原权重和模型规模保留。
 
-```bash
-git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/compact_draft_storage.py" --apply
-python3 "$REPO_DIR/targets/cpro/scripts/run_draft_residual.py" \
-  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
-```
+按用户新的执行优先级，端到端复用该bundle，**不再启动新的draft AIR、OMC或打包**。接下来补原target的真实8层features和连续状态接口。当前命令见[当前更新与执行命令](current-status.md#用户现在执行什么)，新接口见[原target真实特征接入](original-target-features.md)。
 
-候选在固定 `full-draft/residual-fix` 中仅导出原 Top1、hidden 两路，复用现有 prepared 权重、输入、golden 和缓存CPU参考；新建候选 AIR、compilation、bundle、board。12处残差加法采用两个 FP32 输入 Cast、FP32 Add、再转回原 FP16 结果边界；源图名称、权重、参考和比较判据保持不变。完整候选的165项 FP32 CPU 要求必须全部通过实际编译检查，才允许打包和上板。**目前尚无该候选的板端结果，不能视为数值已通过。**
-
-磁盘当前仅剩约10G，先运行上述快照合并。它只合并已完成编译、与 prepared 哈希匹配、相同权限/属主的只读输入快照，保留所有路径和报告，不删除模型或证据。省略 `--apply` 可只看计划。新候选首次因计算路径变化必须生成 AIR 和 OMC；后续相同候选重试复用已完成阶段。候选增量粗估5.7–8.6GB，不含编译临时文件及 target 并行任务占用，不能把10G视为充足保证。
-
-旧 `run_draft_direct.py` 属于此前16端口诊断路径。新构图代码更新后，继续调用旧入口可能触发 `changed artifact-building code` 保护；原证据仍保留，当前应执行上面的独立残差入口。保留 `full-draft`、`layer-trace`、`direct-trace` 及原TBE diagnosis；详细证据见[输出定位记录](draft-output-diagnosis.md)。target 在另一个窗口并行推进。
+下文的独立构建流程保留用于首次准备和复现，不是当前需要重复执行的步骤。
 
 ## 首次准备与历史排障记录（当前不续跑）
 

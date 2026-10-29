@@ -93,5 +93,31 @@
     "golden": "NOT_AVAILABLE_PER_USER",
     "warmup_policy": "UNVERIFIED_TOOL_INTERNAL_POLICY"
   },
-  "resume_board_command": "python3 \"$TARGET_REPO/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --run-board --sequence-length 64 --input-dir ORIGINAL_CHUNKSIZE64_HOST_DIRECTORY"
+  "resume_board_command": "python3 \"$TARGET_REPO/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --run-board --sequence-length 64 --input-dir ORIGINAL_CHUNKSIZE64_HOST_DIRECTORY",
+  "real_feature_extension": {
+    "status": "HOST_TESTED_DEVICE_PENDING",
+    "entrypoint": "targets/cpro/scripts/prepare_original_target_features.py",
+    "compile_board_flag": "--target-features",
+    "outputs": 82,
+    "feature_output_index": 81,
+    "feature_shape": [
+      1,
+      "T",
+      16384
+    ],
+    "feature_dtype": "float16",
+    "post_decoder_layer_ids": [
+      1,
+      6,
+      11,
+      16,
+      22,
+      27,
+      32,
+      37
+    ],
+    "runtime_semantics": "NOT_VALIDATED",
+    "default_81_output_contract": "UNCHANGED",
+    "docs": "docs/original-target-features.md"
+  }
 }

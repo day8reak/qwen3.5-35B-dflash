@@ -2,54 +2,63 @@
 
 [首页](README.md) · [环境配置](environment-setup.md) · [验证记录](validation.md)
 
-更新日期：2026-10-29。draft 与原量化40层 target 分窗口并行推进；本页的当前 draft 入口为残差候选 `run_draft_residual.py`。执行入口变化时同步更新本节；下方折叠内容仅为历史证据，不能作为当前命令。
+更新日期：2026-10-29。当前优先级按用户要求调整为：**两套完整模型、真实 target features、多轮 DFlash 端到端执行**。精度和性能另行验收；本页是当前命令的唯一入口，下方折叠命令属于历史。
 
 ## 用户现在执行什么
 
-**当前执行残差候选，停止续跑旧 direct/packed 诊断任务。** 代码 `c0463f7` 已推送：用户 direct 图已执行，153/153 精度检查和16路输出类型检查通过，但 Top1 仍失败。只读结果确认 layer1 norm 与仅 MLP down 做 RMS 的32768元素逐字节一致，完整残差和重建 relative L2 为0.454767，形成残差项丢失的强线索。残差候选尚无板端结果，不能宣称数值修复成功。
+### draft：复用已执行且本例 Top1 全匹配的 residual-fix
 
-### 先节省已有快照空间
+用户最新板端回传：完整六层 `full-draft/residual-fix` 已 EXECUTED，165/165 编译精度检查通过，原 Top1/hidden 两路类型保持，**15/15 Top1 与同输入 PyTorch 参考完全一致**。hidden relative L2=0.0126796675、cosine=0.999919614、max abs=0.08984375，非有限值差异为0。它是完整6层、block16、248320词表模型，输出15候选；12处残差加法在FP32计算后回到原FP16边界，没有裁层或缩词表。
 
-用户服务器目前只剩约10G。先更新代码并合并已验证相同的只读编译输入权重快照：
+这只解决当前固定合成 target-feature fixture 的 Top1，不代表真实特征、多轮或语言质量精度已经通过。`production_equivalence=DIFFERENT` 比较的是旧失败设备模型，不能误读成这次 Top1 失败。保留 `residual-fix/{result.json,compiled-output-abi.json,board/comparison.json,bundle/}`，端到端使用这份模型。**当前不重跑 draft 导出、OMG、打包或残差候选。**
+
+### target：沿用原量化 PyTorch 工程，追加真实特征
+
+目标模型主线是用户原40层量化模型：原 PyTorch/TorchAir 导出 → AIR → OMG → OMC。不是自建GE替代target，也不重新生成69GB FP16 target。现有原AIR含完整词表单位置logits和80状态，能作为逐token串行verify模型，但没有8层features。用户选择本轮补真实特征，不使用占位特征连接。
+
+本机已找到原工程快照，并确认实际 Cpro wrapper 的decoder loop。新增准备器只复制约162KB的5个源码文件和原config到任务目录，在原loop后捕获层 `(1,6,11,16,22,27,32,37)`，追加第82路 `FP16[1,T,16384]`，原81路顺序保留；原权重、量化和计算语句保留。40层/40组状态/80状态输出不足即拒绝。原快照不修改，私有源码不上传GitHub。
+
+先更新并准备这份小型派生源码，**这一步不复制权重、不导出AIR、不运行OMG**：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/prepare_original_target_features.py" \
+  --source-root /home/l00886453/qwen3_5_moe \
+  --output "$AI_RUN_DIR/original-target-features"
+```
+
+服务器原工程位置不同时，仅将 `--source-root` 换为实际原导出工程。保留原config中的权重路径；不要指向本项目的HF重建导出器。准备器结构不匹配会在生成前停止，已完成的同源任务可复用，不覆盖变更或失败证据。
+
+再只读核对已有实际运行输入中的控制量，便于接通64→1状态推进；若已有真实decode输入目录也用同一入口 `--sequence-length 1` 核对：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_inputs.py" \
+  --input-dir /home/w00949577/run_35B/chunksize_64_data \
+  --sequence-length 64
+```
+
+原源码只提供导出dummy输入，`conv_state_pos` 等运行时语义还需实际样本/生成器确认。不能把导出时全零控制量当连续解码默认值。真实特征target的AIR/OMC必须重新导出/编译一次；先完成上述小文件检查和磁盘预算，不重复启动已有target任务。具体后续命令及接口见[原 target 真实特征接入](original-target-features.md)。
+
+### 端到端第一轮的验证范围
+
+先采用gear1串行verify：完整draft每轮产生15候选，与target已知下一token逐个比较；只把接受的候选或target纠正token送入target，拒绝候选不进入状态。这样可验证多轮提议、接受/拒绝、80状态接续及真实features历史；本阶段不声称并行verify、回滚或加速已经通过。主机调度器已有回归，真实HIAI适配和连续设备证据尚未完成。
+
+服务器约剩10GB，当前只新增小型源码、接口和报告；不再构建任何新draft模型。需要整理旧编译输入快照时可执行以下已有工具；省略 `--apply` 为只读计划：
+
+```bash
 python3 "$REPO_DIR/targets/cpro/scripts/compact_draft_storage.py" --apply
 ```
 
-省略 `--apply` 可只查看计划。工具只处理固定 draft 目录中已完成编译、与 prepared 权重大小/SHA匹配的输入快照；在同一文件系统、相同权限/属主的只读快照之间建立硬链接，保留路径、内容哈希和原清单。不删除 AIR、OMC、bundle、参考输出或编译报告，不修改 prepared 权重权限；已共享inode、跨文件系统或身份不符的文件不合并。报告区分逻辑重复字节与文件系统可用空间变化；reflink本来共享物理块时，实际释放可能较少。
+它仅合并同文件系统、大小/SHA/权限/属主均匹配的只读编译输入快照，保留所有路径和报告，不删除AIR/OMC/bundle或修改prepared权限。实际释放空间取决于文件系统共享情况；原target新导出/编译的空间需求仍需独立核对。
 
-### 再执行一次残差候选
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/run_draft_residual.py" \
-  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis"
-```
-
-固定输出为 `$AI_RUN_DIR/full-draft/residual-fix`，仅返回原 Top1、hidden 两路。它复用 prepared 权重、相同输入、两路原 golden 和缓存 CPU 参考；仅12处残差加法在 GE 发射中采用两个 FP32 输入 Cast、FP32 Add、再回到原 FP16 结果。有限 FP16 操作数在 IEEE RN-even 下保持相同加法结果；完整 recipe 的165项 FP32 CPU要求必须通过实际 CPUCL 检查，才继续打包和上板。详细依据和限制见[残差定位记录](draft-output-diagnosis.md#已取回的数学结果与残差候选)。
-
-### AIR、OMC 是否会重复生成
-
-| 产物 | 当前行为 |
-| --- | --- |
-| prepared、输入、golden、CPU参考 | 直接复用，不重新准备权重或执行 CPU 模型 |
-| residual-fix AIR | 残差计算路径已变，首次必须新生成；该阶段完成后重试复用 |
-| residual-fix OMC | 首次必须根据新 AIR 编译；编译阶段完成后重试复用 |
-| bundle、board | 复用已完成阶段；runner失败重试保留旧证据，按当前恢复逻辑继续 |
-| 旧 direct/packed | 保留证据；不是当前需要继续运行的入口 |
-
-旧 `run_draft_direct.py` 报 `changed artifact-building code` 的那次，在保护检查即退出，没有重新导出 AIR 或编译 OMC。不要通过删除旧目录或修改 owner 绕过该检查。新入口使用独立目录，基线证据保持原样。
-
-磁盘预算：此前完整 draft 的 AIR 权重约2.8GB，外置编译权重约2.85GB，供 legacy-buffer 使用的内嵌 bundle 约2.85GB。AIR 权重在同文件系统优先硬链接；编译输入优先 reflink，否则会复制。候选增量粗估约5.7–8.6GB，**不含编译临时文件和 target 并行任务占用**，所以10G不能作为充足空间的保证。先执行上述快照合并、检查实际可用空间；不重启旧探针，不新增随机任务批次，不直接删除恢复仍依赖的文件。
-
-本周剩余3天的总目标仍包含正确完整模型、多步DFlash接受/拒绝及状态处理、同条件至少2x实测；尚未闭环。用户已说明旧 full-target 产物已删除，target 由另一窗口独立落实编译和普通 prefill/decode；本窗口继续 draft。
+本周最终目标仍包括真实输入多轮正确性、状态处理与同条件至少2x实测；没有因本轮“先执行、可乱码”而改成通过。
 
 ## 历史 draft 排障记录（不作为当前执行命令）
 
 <details>
 <summary>展开较早的 direct、packed、精度锁和加载诊断记录</summary>
 
-以下保留当时的观察与命令，时间顺序和“现在执行”等措辞属于历史上下文；当前只执行上方残差候选流程。
+以下保留当时的观察与命令，时间顺序和“现在执行”等措辞属于历史上下文；以页首完整模型端到端计划为准。
 
 最新direct结果已在用户内部DDK通过153/153计算精度检查，16个实际输出类型均与源码一致（`SOURCE_DTYPES_PRESERVED`），打包完成；runner在Load前错误拒绝ABI。原因是全局regex把嵌套 `direct_output_binding.artifact_kind` 也计入，报 `draft diagnostic wire requires its explicit ABI kind`。现修为只校验JSON顶层kind，重复顶层键/转义重复键/错误JSON仍拒绝。更新后继续下方 `run_draft_direct.py` 命令，复用reference、AIR、OMC、observed-fixture和bundle，只重建runner并重跑板端；失败board证据保留在 `direct-trace/board-attempts/<resultSHA>`。
 
