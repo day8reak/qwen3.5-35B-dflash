@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import runpy
+import struct
 import sys
 
 import pytest
@@ -11,7 +12,7 @@ import pytest
 from qwen35_moe_dflash import original_ge_target as ge
 from qwen35_moe_dflash.original_air_inspect import inspect_original_air
 from test_draft_ir_inspect import _attr, _blob, _desc
-from test_original_air_inspect import _graph, _node, selected
+from test_original_air_inspect import _graph, _node, _scalar_node, selected
 
 
 TEMPLATE = "./exact-export/model_model_layers_{layer}_input_layernorm_weight"
@@ -27,8 +28,12 @@ def feature_source_receipt():
         "generated_files": {"source/models/export_model_wrapper_qwen3_5_moe.py": {"sha256": "b" * 64}}}
 
 
-def _tapped_graph(mutation=None):
+def _tapped_graph(mutation=None, *, gamma_one=False, gamma_dtype=7, scalar_dtype=None, scalar_data=None, tensor_dtype="same"):
     graph = _graph(constants=0)
+    scalar_dtype = gamma_dtype if scalar_dtype is None else scalar_dtype
+    scalar_data = (struct.pack("<f" if scalar_dtype == 1 else "<e", 1.0) if scalar_data is None else scalar_data)
+    if gamma_one:
+        graph += _blob(6, _scalar_node("shared_scalar_one", scalar_data, dtype=scalar_dtype, tensor_dtype=tensor_dtype))
     for index, layer in enumerate(ge.LAYER_IDS):
         # Names deliberately have no layer semantics; only the explicit
         # FileConstant path and ordered producer ports can associate the tap.
@@ -46,17 +51,33 @@ def _tapped_graph(mutation=None):
                 norm_type = "AdnRmsNorm"
             elif mutation == "producer_shape":
                 shape[-1] = 2047
-        gamma_wire = (_node(gamma, "FileConstant", gamma_shape) + _attr("file_path", _blob(2, path)))
+        gamma_wire = (_node(gamma, "FileConstant", gamma_shape, dtype=gamma_dtype) + _attr("file_path", _blob(2, path)))
         producer_wire = _node(producer, "UnverifiedPostDecoder", shape, dtype=1)
         gamma_edge = gamma + ":0"
         extra = b""
-        if index == 0 and mutation == "gamma_add":
+        if gamma_one:
+            transform = f"exact_gamma_plus_one_{index}"
+            add_inputs = [gamma_edge, "shared_scalar_one:1" if index == 0 and mutation == "add_const_port" else "shared_scalar_one:0"]
+            add_descs = [_desc(dtype=gamma_dtype, shape=gamma_shape), _desc(dtype=scalar_dtype, shape=())]
+            if index == 0 and mutation == "add_swapped_ports":
+                add_inputs.reverse()
+                add_descs.reverse()
+            if index == 0 and mutation == "add_wrong_desc":
+                add_descs[0] = _desc(dtype=1 if gamma_dtype == 7 else 7, shape=gamma_shape)
+            add_output_dtype = 1 if index == 0 and mutation == "add_wrong_output" and gamma_dtype == 7 else gamma_dtype
+            extra = (_node(transform, "Add", gamma_shape, dtype=add_output_dtype) +
+                     b"".join(_blob(5, edge) for edge in add_inputs) + b"".join(_blob(33, desc) for desc in add_descs))
+            gamma_edge = transform + ":0"
+        if index == 0 and mutation in {"gamma_add", "gamma_cast"}:
             transform = "gamma_add_not_value_proven"
-            extra = (_node(transform, "Add", gamma_shape) + _blob(5, gamma_edge))
+            extra = (_node(transform, "Add" if mutation == "gamma_add" else "Cast", gamma_shape) + _blob(5, gamma_edge))
             gamma_edge = transform + ":0"
         norm_wire = (_node(norm, norm_type, shape, dtype=1) +
                      _blob(5, producer + ":0") + _blob(5, gamma_edge) +
-                     _blob(33, _desc(dtype=1, shape=shape)) + _blob(33, _desc(shape=gamma_shape)))
+                     _blob(33, _desc(dtype=1, shape=shape)) + _blob(33, _desc(dtype=gamma_dtype, shape=gamma_shape)))
+        if index == 0 and mutation == "add_norm_input_port":
+            norm_wire = (_node(norm, norm_type, shape, dtype=1) + _blob(5, gamma_edge) + _blob(5, producer + ":0") +
+                         _blob(33, _desc(dtype=gamma_dtype, shape=gamma_shape)) + _blob(33, _desc(dtype=1, shape=shape)))
         if index == 0 and mutation == "norm_input_desc":
             norm_wire = norm_wire.replace(_blob(33, _desc(dtype=1, shape=shape)), _blob(33, _desc(shape=shape)))
         graph += _blob(6, gamma_wire) + _blob(6, producer_wire) + _blob(6, norm_wire)
@@ -66,12 +87,14 @@ def _tapped_graph(mutation=None):
             graph += _blob(6, _node("same_path_other_fileconstant", "FileConstant", gamma_shape) + _attr("file_path", _blob(2, path)))
         if index == 0 and mutation == "extra_consumer":
             graph += _blob(6, _node("other_consumer", "Identity", gamma_shape) + _blob(5, gamma + ":0"))
+        if index == 0 and mutation == "add_extra_consumer":
+            graph += _blob(6, _node("other_add_consumer", "Identity", gamma_shape, dtype=gamma_dtype) + _blob(5, gamma_edge))
     return graph
 
 
-def report(tmp_path, selected, mutation=None):
+def report(tmp_path, selected, mutation=None, **options):
     air = tmp_path / "source.air"
-    air.write_bytes(_blob(7, _tapped_graph(mutation)))
+    air.write_bytes(_blob(7, _tapped_graph(mutation, **options)))
     result = inspect_original_air(air, selected[0], full=True)
     assert result["status"] == "STRUCTURE_OBSERVED"
     return result
@@ -150,7 +173,8 @@ def test_exact_fileconstant_consumer_edges_identify_only_structural_candidates(t
     ("duplicate_path", "EXACT_FILECONSTANT_PATH_MISSING_OR_AMBIGUOUS"),
     ("gamma_shape", "GAMMA_SHAPE_OR_DTYPE_UNVERIFIED"),
     ("wrong_norm", "GAMMA_TRANSFORM_OR_NORM_CONVERTER_UNVERIFIED"),
-    ("gamma_add", "GAMMA_TRANSFORM_OR_NORM_CONVERTER_UNVERIFIED"),
+    ("gamma_add", "ADD_INTERFACE_UNVERIFIED"),
+    ("gamma_cast", "GAMMA_TRANSFORM_OR_NORM_CONVERTER_UNVERIFIED"),
     ("producer_shape", "NORM_DATA_PORT_SHAPE_OR_PRECISION_UNVERIFIED"),
     ("norm_input_desc", "NORM_DATA_PORT_SHAPE_OR_PRECISION_UNVERIFIED"),
     ("extra_consumer", "GAMMA_CONSUMER_MISSING_OR_AMBIGUOUS"),
@@ -160,6 +184,65 @@ def test_tap_resolution_never_guesses_missing_paths_transforms_or_precision(tmp_
     result = ge.prepare_contract(receipt(), value, gamma_template=TEMPLATE)["tap_resolution"]
     assert result["status"] == "UNRESOLVED"
     assert result["taps"][0]["reason"] == reason
+
+
+@pytest.mark.parametrize("dtype", [1, 7])
+def test_exact_scalar_one_gamma_add_is_only_a_structural_candidate(tmp_path, selected, dtype):
+    value = report(tmp_path, selected, gamma_one=True, gamma_dtype=dtype)
+    result = ge.prepare_contract(receipt(), value, gamma_template=TEMPLATE)
+    assert result["status"] == "PENDING_GRAPH_BINDING"
+    assert result["tap_resolution"]["status"] == "EIGHT_STRUCTURAL_CANDIDATES_SOURCE_BINDING_PENDING"
+    for row in result["tap_resolution"]["taps"]:
+        assert row["status"] == "STRUCTURAL_CANDIDATE_NOT_SOURCE_EQUIVALENCE"
+        assert row["gamma_path"][0]["kind"] == "FILECONSTANT"
+        addition = row["gamma_path"][1]
+        assert addition["kind"] == "ADD_EXACT_SCALAR_ONE"
+        assert addition["gamma_input_port"] == 0 and addition["scalar_input_port"] == 1
+        # A single immutable Const-one is intentionally shared by eight Adds.
+        assert addition["constant_reference"] == "shared_scalar_one:0"
+        assert addition["constant_evidence"]["is_standard_le_one"] is True
+    norm = next(op for op in result["required_operators"] if op["role"] == "norm")
+    assert norm["static_source_vs_functional"]["original_ordinary_gamma"].startswith("HF+2")
+    assert result["air_generation"] == "NOT_RUN_NO_GRAPH_WRITER_OR_RANDOM_WEIGHTS"
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    ("add_swapped_ports", "ADD_GAMMA_INPUT_PORT_UNVERIFIED"),
+    ("add_const_port", "ADD_SCALAR_CONSTANT_PORT_UNVERIFIED"),
+    ("add_wrong_desc", "ADD_GAMMA_OR_OUTPUT_DESCRIPTOR_DIFFERS"),
+    ("add_wrong_output", "ADD_GAMMA_OR_OUTPUT_DESCRIPTOR_DIFFERS"),
+    ("add_extra_consumer", "GAMMA_ADD_OUTPUT_CONSUMER_AMBIGUOUS"),
+    ("extra_consumer", "GAMMA_CONSUMER_MISSING_OR_AMBIGUOUS"),
+    ("add_norm_input_port", "GAMMA_TRANSFORM_OR_NORM_CONVERTER_UNVERIFIED"),
+])
+def test_gamma_one_add_rejects_wrong_ports_descriptors_and_mutable_path_fanout(tmp_path, selected, mutation, reason):
+    value = report(tmp_path, selected, mutation, gamma_one=True)
+    result = ge.prepare_contract(receipt(), value, gamma_template=TEMPLATE)["tap_resolution"]
+    assert result["status"] == "UNRESOLVED"
+    assert result["taps"][0]["reason"] == reason
+
+
+@pytest.mark.parametrize("options", [
+    {"scalar_data": struct.pack("<e", 2.0)},
+    {"scalar_dtype": 1},
+    {"gamma_dtype": 1, "scalar_data": b"RND!"},
+    {"tensor_dtype": None},
+])
+def test_gamma_add_never_accepts_wrong_value_dtype_or_arbitrary_blob_as_one(tmp_path, selected, options):
+    value = report(tmp_path, selected, gamma_one=True, **options)
+    result = ge.prepare_contract(receipt(), value, gamma_template=TEMPLATE)["tap_resolution"]
+    assert result["status"] == "UNRESOLVED"
+    assert result["taps"][0]["reason"] == "ADD_SCALAR_ONE_EVIDENCE_UNVERIFIED"
+
+
+def test_scalar_one_boolean_cannot_override_wrong_payload_sha(tmp_path, selected):
+    value = report(tmp_path, selected, gamma_one=True, scalar_data=struct.pack("<e", 2.0))
+    graph = next(row["graph"] for row in value["candidates"] if "graph" in row)
+    scalar = next(node for node in graph["operations"] if node["name"] == "shared_scalar_one")
+    scalar["scalar_constant"]["is_standard_le_one"] = True
+    result = ge.prepare_contract(receipt(), value, gamma_template=TEMPLATE)["tap_resolution"]
+    assert result["status"] == "UNRESOLVED"
+    assert result["taps"][0]["reason"] == "ADD_SCALAR_ONE_EVIDENCE_UNVERIFIED"
 
 
 def test_summary_report_or_no_template_remains_pending(tmp_path, selected):

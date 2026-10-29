@@ -42,6 +42,8 @@ def selected(tmp_path, monkeypatch):
         _field("t", 12, 11, False, "TensorDef"), _field("g", 13, 11, False, "GraphDef"),
         _field("list", 1, 11, False, "ListValue"), _field("b", 5, 8))
     original = original.replace(old_attr, new_attr) + _message("ListValue", _field("i", 3, 3, True))
+    original = original.replace(_message("TensorDef", _field("data", 2, 12)),
+        _message("TensorDef", _field("desc", 1, 11, False, "TensorDescriptor"), _field("data", 2, 12)))
     monkeypatch.setattr(fixture, "_schema", lambda: original)
     ddk = tmp_path / "selected-ddk"
     library = ddk / "tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so"
@@ -56,6 +58,14 @@ def _node(name, kind, shape, dtype=7, index=None):
     desc = _desc(dtype=dtype, shape=shape) if shape is not None else _int(2, dtype) + _blob(4, "ND")
     raw = _blob(1, name) + _blob(2, kind) + _blob(34, desc)
     return raw if index is None else raw + _attr("index", _int(3, index))
+
+
+def _scalar_node(name, data, dtype=1, shape=(), tensor_dtype="same"):
+    declared_dtype = dtype if tensor_dtype == "same" else tensor_dtype
+    desc = (_desc(dtype=declared_dtype, shape=shape) if declared_dtype is not None else
+            _blob(3, b"".join(_int(1, dim) for dim in shape)) + _blob(4, "ND"))
+    return (_node(name, "Const", shape, dtype=dtype) +
+            _attr("value", _blob(12, _blob(1, desc) + _blob(2, data))))
 
 
 def _graph(*, sequence=55, netoutput=True, constants=7, mutation=None, producer_extras=b"", netinput_extras=b""):
@@ -256,6 +266,46 @@ def test_origin_metadata_never_expands_blob_values_or_unbounded_lists():
     assert len(encoded) < 1500
 
 
+@pytest.mark.parametrize("dtype,data,one", [
+    (1, struct.pack("<f", 1.0), True), (7, struct.pack("<e", 1.0), True),
+    (1, struct.pack("<f", 2.0), False), (7, struct.pack("<e", 2.0), False),
+    (7, struct.pack("<f", 1.0), False), (77, struct.pack("<f", 1.0), False),
+    (1, b"RND!", False),
+])
+def test_scalar_const_one_requires_explicit_dtype_and_exact_small_data_sha(tmp_path, selected, dtype, data, one):
+    air = tmp_path / "scalar.air"
+    air.write_bytes(_blob(7, _graph() + _blob(6, _scalar_node("scalar", data, dtype=dtype))))
+    result = inspect.inspect_original_air(air, selected[0], full=True)
+    assert result["status"] == "STRUCTURE_OBSERVED"
+    graph = next(row["graph"] for row in result["candidates"] if row["status"] == "STRUCTURE_OBSERVED")
+    scalar = graph["operations"][-1]["scalar_constant"]
+    assert scalar["numel"] == 1 and scalar["descriptor"]["raw_dtype"] == dtype
+    assert scalar["data"] == {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    assert scalar["is_standard_le_one"] is one
+    assert all("scalar_constant" not in node for node in graph["operations"][:-1])
+    assert "wire_hex" not in json.dumps(scalar) and "data_hex" not in json.dumps(scalar)
+
+
+@pytest.mark.parametrize("shape,data", [((2,), b"12345678"), ((), b"PRIVATE_DATA_OVER_EIGHT_BYTES")])
+def test_non_scalar_or_large_const_payload_never_gets_scalar_evidence(tmp_path, selected, shape, data):
+    air = tmp_path / "not-scalar.air"
+    air.write_bytes(_blob(7, _graph() + _blob(6, _scalar_node("constant", data, shape=shape))))
+    result = inspect.inspect_original_air(air, selected[0], full=True)
+    graph = next(row["graph"] for row in result["candidates"] if row["status"] == "STRUCTURE_OBSERVED")
+    assert "scalar_constant" not in graph["operations"][-1]
+    assert "PRIVATE_DATA_OVER_EIGHT_BYTES" not in json.dumps(result)
+
+
+def test_missing_scalar_tensor_dtype_cannot_be_defaulted_to_one(tmp_path, selected):
+    air = tmp_path / "missing-dtype.air"
+    air.write_bytes(_blob(7, _graph() + _blob(6, _scalar_node("constant", struct.pack("<f", 1.0), tensor_dtype=None))))
+    result = inspect.inspect_original_air(air, selected[0], full=True)
+    graph = next(row["graph"] for row in result["candidates"] if row["status"] == "STRUCTURE_OBSERVED")
+    evidence = graph["operations"][-1]["scalar_constant"]
+    assert evidence["descriptor"]["raw_dtype"] is None
+    assert evidence["is_standard_le_one"] is False and evidence["dtype_shape_agreement"] is False
+
+
 def test_missing_producer_and_descriptor_count_difference_preserve_available_metadata(tmp_path, selected):
     air = tmp_path / "original.air"
     # Keep every reference but omit the logits NetOutput descriptor.
@@ -304,6 +354,9 @@ def test_metadata_budget_discards_full_proof_instead_of_printing_unbounded_graph
     assert result["status"] == "OPAQUE" and "observed_format" not in result
     assert all("graph" not in row for row in result["candidates"])
     assert result["output_limit"]
+    assert result["protobuf_decode"] == "PASSED"
+    assert any(row["protobuf_decode"] == "PASSED" for row in result["candidates"])
+    assert all(row["metadata_inspection"] == "OMITTED_OUTPUT_BUDGET" for row in result["candidates"])
 
 
 def test_schema_failure_preserves_only_identity_and_opaque_observations(tmp_path, selected):

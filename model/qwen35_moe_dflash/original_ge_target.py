@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
+import struct
 
 
 POLICY = "original-cpro-ge-binding-review-v1"
@@ -158,10 +160,32 @@ def _port(edge):
     return name, int(index)
 
 
-def resolve_taps(graph, gamma_template=None):
-    """Resolve only a unique direct FileConstant -> RmsNorm gamma candidate.
+def _proven_scalar_one(node, dtype_descriptor):
+    """Recheck declared dtype/shape/port and SHA; never trust a one flag."""
+    if node.get("type") != "Const" or len(node.get("output_desc", [])) != 1:
+        return False
+    evidence = node.get("scalar_constant", {})
+    desc, data = evidence.get("descriptor", {}), evidence.get("data", {})
+    port = node["output_desc"][0]
+    shape, names = desc.get("shape"), set(desc.get("schema_dtype_names", []))
+    if (not isinstance(shape, list) or any(type(dim) is not int or dim < 0 for dim in shape) or math.prod(shape) != 1
+            or desc.get("status") == "UNAVAILABLE" or port.get("status") == "UNAVAILABLE"
+            or evidence.get("output_descriptor") != port
+            or any(desc.get(key) != port.get(key) for key in ("shape", "raw_dtype", "schema_dtype_names"))
+            or any(port.get(key) != dtype_descriptor.get(key) for key in ("raw_dtype", "schema_dtype_names"))):
+        return False
+    expected = (struct.pack("<f", 1.0) if names and names <= {"DT_FLOAT", "DT_FLOAT32"} else
+                struct.pack("<e", 1.0) if names == {"DT_FLOAT16"} else None)
+    return (expected is not None and type(data.get("bytes")) is int and data["bytes"] == len(expected)
+            and data.get("sha256") == hashlib.sha256(expected).hexdigest())
 
-    Add/Cast/fused paths require extra, value-bound evidence and are rejected.
+
+def resolve_taps(graph, gamma_template=None):
+    """Resolve a direct gamma or exact scalar-one Add -> RmsNorm candidate.
+
+    Only gamma input0 + proven Const-one input1 is accepted for Add. Cast/fused
+    paths and ambiguous consumers remain unsupported. Immutable Const-one may
+    be shared; the gamma and Add output each require one explicit consumer.
     Even a direct path remains a candidate: the source gamma +1 operation must
     be reconciled before claiming a faithful source-to-GE binding.
     """
@@ -212,6 +236,38 @@ def resolve_taps(graph, gamma_template=None):
             row["reason"] = "GAMMA_CONSUMER_MISSING_OR_AMBIGUOUS"
             continue
         norm, input_index = uses[0]
+        gamma_path = [{"kind": "FILECONSTANT", "reference": gamma["name"] + ":0", "descriptor": gamma_desc}]
+        if norm.get("type") == "Add":
+            add = norm
+            if input_index != 0:
+                row["reason"] = "ADD_GAMMA_INPUT_PORT_UNVERIFIED"
+                continue
+            add_ins, add_descs, add_outs = add.get("input", []), add.get("input_desc", []), add.get("output_desc", [])
+            if len(add_ins) != 2 or len(add_descs) != 2 or len(add_outs) != 1:
+                row["reason"] = "ADD_INTERFACE_UNVERIFIED"
+                continue
+            if add_descs[0] != gamma_desc or add_outs[0] != gamma_desc:
+                row["reason"] = "ADD_GAMMA_OR_OUTPUT_DESCRIPTOR_DIFFERS"
+                continue
+            scalar_name, scalar_port = _port(add_ins[1])
+            scalar = by_name.get(scalar_name)
+            if scalar_port != 0 or scalar is None or scalar.get("type") != "Const" or len(scalar.get("output_desc", [])) != 1:
+                row["reason"] = "ADD_SCALAR_CONSTANT_PORT_UNVERIFIED"
+                continue
+            if add_descs[1] != scalar["output_desc"][0]:
+                row["reason"] = "ADD_SCALAR_INPUT_DESCRIPTOR_DIFFERS"
+                continue
+            if not _proven_scalar_one(scalar, gamma_desc):
+                row["reason"] = "ADD_SCALAR_ONE_EVIDENCE_UNVERIFIED"
+                continue
+            following = consumers.get((add["name"], 0), [])
+            if len(following) != 1:
+                row["reason"] = "GAMMA_ADD_OUTPUT_CONSUMER_AMBIGUOUS"
+                continue
+            gamma_path.append({"kind": "ADD_EXACT_SCALAR_ONE", "reference": add["name"] + ":0",
+                "gamma_input_port": 0, "scalar_input_port": 1, "constant_reference": add_ins[1],
+                "constant_evidence": scalar["scalar_constant"]})
+            norm, input_index = following[0]
         if norm.get("type") != "RmsNorm" or input_index != 1:
             row.update(reason="GAMMA_TRANSFORM_OR_NORM_CONVERTER_UNVERIFIED", actual_consumer=norm["name"],
                        actual_consumer_type=norm.get("type"), actual_input_port=input_index)
@@ -233,7 +289,7 @@ def resolve_taps(graph, gamma_template=None):
             row["reason"] = "NORM_DATA_PORT_SHAPE_OR_PRECISION_UNVERIFIED"
             continue
         row.update(status="STRUCTURAL_CANDIDATE_NOT_SOURCE_EQUIVALENCE", gamma_reference=gamma["name"] + ":0",
-                   norm=norm["name"], producer_reference=ins[0], descriptor=desc,
+                   gamma_path=gamma_path, norm=norm["name"], producer_reference=ins[0], descriptor=desc,
                    remaining="Verify source stored_gamma+1 and next-layer identity against actual original converter; then add only feature-branch FP16 snapshot")
     if all(row["status"] == "STRUCTURAL_CANDIDATE_NOT_SOURCE_EQUIVALENCE" for row in result["taps"]):
         if len({row["producer_reference"] for row in result["taps"]}) == 8:

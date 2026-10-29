@@ -13,7 +13,7 @@
 
 ## A：在原权重机器准备
 
-原机器仅有PyTorch/TorchAir，完整大检查点留在原位置。先把本仓库最新代码同步到原机，令原机`REPO_DIR`指向该仓库（不是原模型工程），并激活当初导出AIR的环境。然后进入原PyTorch模型工程根目录，执行：
+原机器仅有PyTorch/TorchAir，完整大检查点留在原位置。先把本仓库最新代码同步到原机，令原机`REPO_DIR`指向该仓库（不是原模型工程），并激活当初导出AIR的环境。然后进入原PyTorch模型工程根目录。`AI_RUN_DIR`应放原机有足够导出空间的独立目录；下面默认原工程旁，空间不足时先换成大盘路径。执行：
 
 ```bash
 export ORIGINAL_TARGET_SOURCE="$PWD"
@@ -26,7 +26,15 @@ python3 "$REPO_DIR/targets/cpro/scripts/prepare_target_pytorch.py" \
   --sequence-length 64
 ```
 
-返回`SOURCE_READY`后，可直接在原机执行，无需再等待一次确认：
+原源码`utils.py`的专家scale装配实际调用`.npu()`和`npu_trans_quant_param`。激活原导出环境后，先检查原机是否具备该转换所需NPU；这是原源码的依赖，不代表所有TorchAir导出都需要设备：
+
+```bash
+python3 -c 'import torch, torch_npu; print("npu_available:", torch.npu.is_available())'
+```
+
+`SOURCE_READY`只说明资源头/小源码就绪，不检查这一厂商依赖。若上面为False或导入失败，先保留结果，不加载完整模型；应核对原导出环境/原转换资源，不能把失败解释成模型精度问题。
+
+返回`SOURCE_READY`且原导出依赖与输出空间可用后，可直接在原机执行，无需再等待一次确认：
 
 ```bash
 bash "$AI_RUN_DIR/target-pytorch/export.sh"
@@ -61,6 +69,8 @@ python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
 
 直接GE路线需要保留原`AdnFusedInferAttention`的paged/NZ block32接口、CacheUpdate、GDN/convstate、MoE routing/GMM/finalize和80 RefData，并逐项固定FP16/FP32转换。仓库现有`adapt_original_target.py --stage ge`是一条functional状态改写，其ND attention和gather专家路径不能直接视作原Cpro等价实现。
 
+完整图现在为少量Const标量记录声明dtype/shape、最多8字节的数据长度及SHA，不输出tensor值。已审查源代码的`weight+1`路径仅在FP32/FP16标量的字节SHA精确证明为1.0、gamma和Add链唯一且每段描述符一致时，允许作为结构候选；不信报告中的one标记，也不穿过其他变换。
+
 8层tap仅能从实际图的精确权重引用与有序连接证明。可用下一层input norm的数据输入对应上一层post-decoder hidden，但必须验证gamma来源、norm数据端口、dtype/shape和40层锚点；不靠Add名字或节点序号猜。原source的norm表达式和loader赋值都需保留，不能把看似多余的`+1`自动修正掉。
 
 基础绑定命令如下；若已存在同名输出，保留旧报告并使用新任务目录：
@@ -75,6 +85,23 @@ python3 "$REPO_DIR/targets/cpro/scripts/prepare_original_ge_target.py" \
 `--gamma-template`需从实际AIR的FileConstant路径核对后提供，不能直接把猜测的层名模板当作来源证据。
 
 拿到实际图后，`prepare_original_ge_target.py`产出明确的原接口GE契约和绑定状态；证据不足时保留`PENDING_GRAPH_BINDING`，不生成随机权重或冒充可执行AIR。真实GE构建/编译/设备结果必须另行出现后才能推进。
+
+### B的无改图GE往返基础检查
+
+新增`probe_original_air_roundtrip.py`，用于新增features之前验证GE加载/保存能否保留原图。它只把有界AIR复制到独立目录，不放权重文件；FileConstant引用必须能安全留在该目录内，绝对路径、父目录逃逸或未知路径在调用GE前阻断。所选GE头文件、库、编译器和schema身份进入报告。
+
+在GE/CANN环境实际可用、引用可隔离时，可独立执行：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/probe_original_air_roundtrip.py" \
+  --air /home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/export.air \
+  --torchair-pb2 /root/anaconda3/envs/custom_pypto/lib/python3.11/site-packages/torch_npu/dynamo/torchair/_ge_concrete_graph/ge_ir_by_protoc_3_19_pb2.py \
+  --ge-root "$CANN_ROOT" --output "$AI_RUN_DIR/target-ge-roundtrip" --trace-files
+```
+
+该步骤调用GE LoadFromFile/SaveToFile，生成新的AIR副本；不新增features、不运行模型。它比较全部decoded protobuf字段，仅归一map条目顺序；不把二进制序列化顺序变化当计算变化。记录文件syscall供独立审查，不能从未提供权重文件推断opaque库绝无任何访问。
+
+真实两层小CANN AIR已经Load/Save成功并保留decoded metadata，27个FileConstant引用未出现在保留的223行文件syscall记录中；原AIR SHA/stat保留。这不是当前完整target、特征扩展或设备精度通过。当前B仍优先取齐完整target的边界差异报告，A可同时在原机预检/导出。
 
 ## 共同验证与空间
 

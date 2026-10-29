@@ -28,7 +28,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
   --full --output "$AI_RUN_DIR/target-ge-source-air-ge-details.json"
 ```
 
-schema查找已完成。用户随后回传RAW_MODELDEF已到NetOutput边界比较，不再是schema错误；当前需新版报告列出输出与producer的具体差异，继续保留完整图信息，不能把差异当ABI通过。A原机操作的可直接执行步骤见[双路线执行](target-parallel-tracks.md#a在原权重机器准备)。
+schema查找已完成。用户随后回传RAW_MODELDEF已到NetOutput边界比较，不再是schema错误；当前需新版报告列出输出与producer的具体差异，继续保留完整图信息，不能把差异当ABI通过。A原机操作的可直接执行步骤见[双路线执行](target-parallel-tracks.md#a在原权重机器准备)：原环境先检查`torch.npu.is_available()`，运行源码/资源头预检，返回`SOURCE_READY`且原导出依赖与空间可用后执行生成的`export.sh`。原源码专家量化参数转换调用`.npu()`，预检本身不验证该依赖。
 
 同名输出若已存在，工具拒绝覆盖；保留已有报告并使用其路径，不删除旧证据。B后续绑定入口为`prepare_original_ge_target.py`；实际图/来源/算子证据不全时保持待绑定，不把现有functional GE target当成原Cpro等价实现。原源码的norm表达式、量化pack/QPARAM、自定义算子及80状态都要逐项核实。
 

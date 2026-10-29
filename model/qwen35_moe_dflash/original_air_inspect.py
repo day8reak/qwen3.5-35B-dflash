@@ -9,10 +9,12 @@ from __future__ import annotations
 from collections import Counter
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import stat
+import struct
 
 from .omc_container import read_container
 from .omc_wire import load_schema
@@ -151,6 +153,37 @@ def _file_constant(node, enum):
             row[key + "_attribute"] = ({"i": value["i"]} if "i" in value else
                                        {"list_i": value["list"].get("i", [])[:16]})
     return row
+
+
+def _scalar_constant(node, enum):
+    """Expose only tiny declared scalar-data hashes, never tensor payloads."""
+    if node.get("type") != "Const":
+        return None
+    value = _attrs(node).get("value", {})
+    tensor = value.get("t") if isinstance(value, dict) else None
+    if not isinstance(tensor, dict):
+        return None
+    desc, data = _metadata_desc(tensor.get("desc"), enum), tensor.get("data")
+    shape = desc.get("shape")
+    if (not isinstance(shape, list) or any(type(dim) is not int or dim < 0 for dim in shape)
+            or math.prod(shape) != 1 or not isinstance(data, dict)
+            or type(data.get("bytes")) is not int or not 0 < data["bytes"] <= 8
+            or not isinstance(data.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", data["sha256"])):
+        return None
+    outputs = node.get("output_desc", [])
+    output = _metadata_desc(outputs[0], enum) if len(outputs) == 1 else {"status": "UNAVAILABLE"}
+    agrees = (desc.get("status") != "UNAVAILABLE" and output.get("status") != "UNAVAILABLE"
+              and all(desc.get(key) == output.get(key) for key in ("shape", "raw_dtype", "schema_dtype_names")))
+    names = set(desc.get("schema_dtype_names", []))
+    encoding = ("IEEE754_FP32_LE" if names and names <= {"DT_FLOAT", "DT_FLOAT32"} else
+                "IEEE754_FP16_LE" if names == {"DT_FLOAT16"} else None)
+    expected = struct.pack("<f" if encoding == "IEEE754_FP32_LE" else "<e", 1.0) if encoding else None
+    one = (agrees and expected is not None and data["bytes"] == len(expected)
+           and data["sha256"] == hashlib.sha256(expected).hexdigest())
+    return {"status": "DECLARED_SCALAR_DATA_HASH_OBSERVED", "descriptor": desc, "output_descriptor": output,
+            "numel": 1, "data": {"bytes": data["bytes"], "sha256": data["sha256"]},
+            "dtype_shape_agreement": agrees, "is_standard_le_one": one,
+            "encoding": encoding, "scope": "Explicit declared dtype/shape and exact tiny-data SHA only; payload is not printed"}
 
 
 def _boundaries(graph, enum):
@@ -300,11 +333,17 @@ def _candidate(document, kind, enum, full):
     if full:
         summary["inputs"] = inputs
         summary["outputs"] = outputs
-        summary["operations"] = [{"name": node["name"], "type": node.get("type"),
+        summary["operations"] = []
+        for node in graph["op"]:
+            record = {"name": node["name"], "type": node.get("type"),
             "input": [_text(edge) for edge in node.get("input", [])],
             "input_desc": [_metadata_desc(desc, enum) for desc in node.get("input_desc", [])],
             "output_desc": [_metadata_desc(desc, enum) for desc in node.get("output_desc", [])],
-            "attribute_names": [_text(key) for key in _attrs(node)]} for node in graph["op"]]
+            "attribute_names": [_text(key) for key in _attrs(node)]}
+            scalar = _scalar_constant(node, enum)
+            if scalar is not None:
+                record["scalar_constant"] = scalar
+            summary["operations"].append(record)
     return summary
 
 
@@ -400,7 +439,11 @@ def inspect_original_air(air, ddk_root=None, *, full=False, torchair_pb2=None):
             raise ValueError("selected schema source changed during inspection")
         if len(json.dumps(result, ensure_ascii=True).encode()) > MAX_OUTPUT_BYTES:
             result["candidates"] = [{"format": row["format"], "status": row["status"],
-                "metadata": "OMITTED_OUTPUT_BUDGET"} for row in result["candidates"]]
+                "protobuf_decode": row["protobuf_decode"],
+                "metadata_inspection": "OMITTED_OUTPUT_BUDGET",
+                "metadata_error": "Full graph metadata exceeded its output budget",
+                "error": row.get("error"), "metadata": "OMITTED_OUTPUT_BUDGET"}
+                for row in result["candidates"]]
             result.update(status="OPAQUE", output_limit="Full metadata exceeded 16 MiB; no graph proof retained")
             result.pop("observed_format", None)
             result.pop("decoded_format", None)
