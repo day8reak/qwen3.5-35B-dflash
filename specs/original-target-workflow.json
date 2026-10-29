@@ -4,7 +4,7 @@
   "lane": "original_quantized_target",
   "active_phase": "integration",
   "status": "USER_REPORTED_PREFILL64_COMPILED_DECODE1_AND_RUNTIME_PENDING",
-  "handoff": "20261029T131640Z-24169-f38b9e/handoff.md",
+  "handoff": "20261029T133810Z-26479-7df529/handoff.md",
   "user_state": "Canonical prefill64 compiled with tmpdir fix and zero explicit new weight copies; canonical decode1 AIR/inventory/receipt already transferred and inspected; B55 feature AIR backup retained.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
@@ -67,7 +67,8 @@
       "RefData may use a separate serialized index namespace; keep user-declared tool argument order without treating graph indices as validated runtime slots",
       "Complete static64 OMG succeeded after keeping CCE TMPDIR physical and using a short alias only for multiprocessing IPC",
       "Compilation may lower all80 RefData root inputs to Data while retaining state shapes and explicit outputs; preserve runtime uncertainty without relabeling compiler success",
-      "A further hardlink to retained successful inputs changes nlink/ctime and invalidates owner receipts; decode input reuse uses bounded owned file aliases with fresh source validation instead"
+      "A further hardlink to retained successful inputs changes nlink/ctime and invalidates owner receipts; decode input reuse uses bounded owned file aliases with fresh source validation instead",
+      "The existing phone tool validates its default output_dir before producing option help; a matched binary/transport report with error-only text is not observed help. Bind prior identity and retry only --help in a fresh writable directory, without model arguments."
     ],
     "executable_checks": [
       "tests/test_full_target_continuation.py",
@@ -184,5 +185,23 @@
     ],
     "scope": "Host fixtures, mocked selected OMG/HDC, real tiny encoded export and successful-prefill input ownership/continuation; actual decode target compilation and device execution pending.",
     "run_id": "20261029T131640Z-24169-f38b9e"
+  },
+  "runtime_tool_inspection_user_report": {
+    "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+    "status": "INSPECTED",
+    "tool_identity": "SHA256_MATCHED_BEFORE_AND_AFTER",
+    "tool_sha256": "1e3f201196fdffbba926224f5557afcf65de6d297fbed6bfdf3d40eecb85a3b0",
+    "firmware_text": "OpenHarmony-6.0.0.43 ",
+    "help_returncode": 1,
+    "help_utf8_bytes": 219,
+    "help_utf8_sha256": "82cc37b2edee96440c96670d02d5c3f169301c39dfe706538af1833f1a4160f4",
+    "help_observation": "OUTPUT_DIRECTORY_VALIDATION_BLOCKED",
+    "error": "--output_dir default ./. is not writable: Read-only file system",
+    "actual_option_help": "NOT_OBTAINED",
+    "model_upload": "NOT_RUN",
+    "model_load": "NOT_RUN",
+    "model_inference": "NOT_RUN",
+    "runtime_input_order": "NOT_QUERIED",
+    "runtime_tensor_names": "NOT_QUERIED"
   }
 }

@@ -3,7 +3,7 @@
   "updated": "2026-10-29",
   "active_phase": "integration",
   "delivery_status": "TARGET_PREFILL_COMPILED_DECODE_AND_DEVICE_INTEGRATION_PENDING",
-  "run_id": "20261029T131640Z-24169-f38b9e",
+  "run_id": "20261029T133810Z-26479-7df529",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -2683,7 +2683,7 @@
         },
         "runtime_tool_capability_probe": {
           "entrypoint": "targets/cpro/scripts/inspect_target_board_tool.py",
-          "status": "HOST_TESTED_USER_DEVICE_PENDING",
+          "status": "USER_REPORTED_IDENTITY_AND_FIRMWARE_OBSERVED; HELP_BLOCKED_BY_OUTPUT_DIRECTORY_VALIDATION",
           "new_output": "target-board-tool-inspection",
           "selected_connection": "Existing HDC/SN/BIP environment",
           "operations": [
@@ -2697,7 +2697,39 @@
           "model_inference": "NOT_RUN",
           "runtime_input_order": "NOT_QUERIED",
           "runtime_tensor_names": "NOT_QUERIED",
-          "reason": "Compiled serialized indices and Data-lowered RefData names do not prove HIAI tool slots; existing execution guard retained"
+          "reason": "Compiled serialized indices and Data-lowered RefData names do not prove HIAI tool slots; existing execution guard retained",
+          "latest_user_report": {
+            "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+            "status": "INSPECTED",
+            "tool_identity": "SHA256_MATCHED_BEFORE_AND_AFTER",
+            "tool_sha256": "1e3f201196fdffbba926224f5557afcf65de6d297fbed6bfdf3d40eecb85a3b0",
+            "firmware_text": "OpenHarmony-6.0.0.43 ",
+            "help_returncode": 1,
+            "help_utf8_bytes": 219,
+            "help_utf8_sha256": "82cc37b2edee96440c96670d02d5c3f169301c39dfe706538af1833f1a4160f4",
+            "help_observation": "OUTPUT_DIRECTORY_VALIDATION_BLOCKED",
+            "error": "--output_dir default ./. is not writable: Read-only file system",
+            "actual_option_help": "NOT_OBTAINED",
+            "model_upload": "NOT_RUN",
+            "model_load": "NOT_RUN",
+            "model_inference": "NOT_RUN",
+            "runtime_input_order": "NOT_QUERIED",
+            "runtime_tensor_names": "NOT_QUERIED"
+          },
+          "next": "One prior-report/tool-hash-bound --help retry in a new exclusively created writable board directory with explicit --output_dir; no model/input/weight arguments. Do not repeat decode1 compilation if it is already running.",
+          "writable_retry_scope": "One small UUID directory and owner marker retained; remote timeout8s/HDC10s; no shared board modification or cleanup. Error-only output is BLOCKED/HELP_NOT_OBSERVED, never capability proof.",
+          "writable_retry_host_verification": {
+            "unique_tests_passed": 95,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0,
+            "run_id": "20261029T133810Z-26479-7df529",
+            "evidence": [
+              "out/board-tool-final.xml",
+              "out/help-final.xml"
+            ],
+            "scope": "Host fake-HDC help, prior-report binding, exclusive scratch retry, original target board/contract regressions; no user-device invocation"
+          }
         }
       },
       "b": {
@@ -2816,11 +2848,11 @@
   },
   "delivery_timebox": {
     "source": "USER_DIRECTIVE",
-    "remaining_days": 3,
+    "remaining_days": 2,
     "objective": "Correct complete target/draft generation, DFlash accept/reject/state handling, matched-baseline measured speedup>=2x",
-    "assessment": "HIGH_RISK_NOT_COMMITTED",
-    "day1_gate": "Correct draft plus usable ordinary target prefill/decode",
-    "day2_gate": "Multi-step DFlash token/stop equality and state handling",
+    "assessment": "HIGH_RISK_NOT_COMMITTED; COMPLETE_EXECUTION_POSSIBLE_BUT_CORRECTNESS_AND_2X_NOT_ESTABLISHED",
+    "day1_gate": "Actual ordinary full-target64-prefill to1-decode state handoff, then real target features into the complete draft",
+    "day2_gate": "Multi-round DFlash accept/reject/commit/stop correctness and matched full-device baseline/performance measurement",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
     "current_target_status": "Full original target prefill64 COMPILED per user, 89 Data inputs/82 outputs including real feature port81; 80 RefData names lowered to Data, runtime slots and state continuity unverified. Decode1 triplet already transferred; compile with unchanged prefill snapshot aliases next. B55 backup retained.",
     "target_gaps": [
@@ -2830,7 +2862,8 @@
       "Ordinary decode baseline"
     ],
     "next_target_action": "Compile the transferred canonical decode1 AIR with its own frozen static1 profile and audited per-file aliases to the successful prefill readonly snapshots; preserve the successful prefill job. In parallel query the existing board tool help and identity without loading a model.",
-    "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone"
+    "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone",
+    "deadline_assessment": "Two days is not a committed completion estimate. If ordinary target execution/state handoff remains blocked through today, full correctness plus measured2x speedup in the remaining window is unlikely."
   },
   "execution_smoke": {
     "contract": "specs/dflash-execution-smoke.json",
