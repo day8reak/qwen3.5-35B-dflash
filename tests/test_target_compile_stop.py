@@ -12,6 +12,8 @@ import pytest
 
 from qwen35_moe_dflash import target_compile_stop as stop
 
+_REAL_KILL = os.kill
+
 
 def process(case, pid, ppid, *, argv=None, cwd=None, start=None, state="S"):
     folder = case["proc"] / str(pid)
@@ -246,7 +248,9 @@ def test_genuine_pidfds_stop_owned_host_tree_and_preserve_driver_and_input(case)
         poller.register(handles[1], select.POLLIN)
         assert poller.poll(5000), "owned child did not exit after SIGTERM"
         assert owned_input.read_bytes() == b"source must remain unchanged"
-        assert owned_input.stat() == before
+        after = owned_input.stat()
+        assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns, after.st_mode) == (
+            before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns, before.st_mode)
         assert json.loads((case["output"] / "plan.json").read_text())["status"] == "APPLY_READY"
     finally:
         # Handle-pinned cleanup of this test's own two processes only.
@@ -257,3 +261,173 @@ def test_genuine_pidfds_stop_owned_host_tree_and_preserve_driver_and_input(case)
                 pass
             os.close(handle)
         root.wait(timeout=5)
+
+
+def legacy_case(case, *, driver_state="T", equals=False):
+    script = "/same-checkout/targets/cpro/scripts/compile_full_target.py"
+    argv = ["python3", script] + (["--output=" + str(case["job"])] if equals else ["--output", str(case["job"])])
+    process(case, 50, 1, argv=argv, state=driver_state)
+    for pid, ppid in ((100, 50), (110, 100), (111, 100), (112, 110)):
+        process(case, pid, ppid, argv=case["argv"] if pid == 100 else None, state="T")
+
+
+def legacy_signals(case, monkeypatch, *, on_signal=None):
+    calls = []
+    def send(pid, sig):
+        assert (case["output"] / "plan.json").is_file()
+        events = (case["output"] / "events.jsonl").read_text()
+        assert '"SIGNAL_INTENT"' in events
+        calls.append((pid, sig))
+        if on_signal:
+            on_signal(pid, sig)
+    monkeypatch.delattr(signal, "pidfd_send_signal")
+    monkeypatch.setattr(os, "kill", send)
+    return calls
+
+
+@pytest.mark.parametrize("equals", [False, True])
+def test_explicit_legacy_queues_term_then_continues_exact_stopped_tree_and_driver(case, monkeypatch, equals):
+    legacy_case(case, equals=equals)
+    calls = legacy_signals(case, monkeypatch)
+    result = invoke(case, apply=True, output=case["output"], legacy_stopped_tree=True)
+    assert result["status"] == "STOP_REQUESTED", result
+    assert calls == [(pid, signal.SIGTERM) for pid in [112, 110, 111, 100]] + [
+        (pid, signal.SIGCONT) for pid in [112, 110, 111, 100, 50]]
+    assert (50, signal.SIGTERM) not in calls
+    assert "cannot eliminate" in result["numeric_signal_limitation"]
+    assert result["bound_driver"]["argv"][-1].endswith(str(case["job"]))
+
+
+def test_explicit_legacy_does_not_continue_already_awake_bound_driver(case, monkeypatch):
+    legacy_case(case, driver_state="S")
+    calls = legacy_signals(case, monkeypatch)
+    result = invoke(case, apply=True, output=case["output"], legacy_stopped_tree=True)
+    assert result["status"] == "STOP_REQUESTED"
+    assert all(pid != 50 for pid, _ in calls)
+
+
+@pytest.mark.parametrize("kind", ["active_root", "active_child", "unbound_parent", "wrong_output", "duplicate_output"])
+def test_legacy_refuses_any_active_tree_or_unbound_driver_before_receipt_and_signals(case, monkeypatch, kind):
+    legacy_case(case)
+    if kind == "active_root": process(case, 100, 50, argv=case["argv"], state="S")
+    elif kind == "active_child": process(case, 111, 100, state="S")
+    else:
+        argv = ["python3", "/checkout/targets/cpro/scripts/compile_full_target.py", "--output", str(case["job"])]
+        if kind == "unbound_parent": argv[1] = "/other/script.py"
+        elif kind == "wrong_output": argv[-1] += "-other"
+        else: argv += ["--output=" + str(case["job"])]
+        process(case, 50, 1, argv=argv, state="T")
+    calls = legacy_signals(case, monkeypatch)
+    result = invoke(case, apply=True, output=case["output"], legacy_stopped_tree=True)
+    assert result["status"] == "BLOCKED" and calls == []
+    assert not case["output"].exists()
+
+
+def test_legacy_changed_generation_is_not_term_or_cont_signaled(case, monkeypatch):
+    legacy_case(case)
+    def changed(pid, sig):
+        if (pid, sig) == (112, signal.SIGTERM):
+            process(case, 110, 100, start=999999, state="T")
+    calls = legacy_signals(case, monkeypatch, on_signal=changed)
+    result = invoke(case, apply=True, output=case["output"], legacy_stopped_tree=True)
+    assert result["status"] == "STOP_REQUESTED"
+    assert all(pid != 110 for pid, _ in calls)
+    assert any(row["event"] == "IDENTITY_CHANGED_NOT_SIGNALED" for row in result["events"])
+
+
+def test_legacy_rechecks_bound_driver_command_before_continue(case, monkeypatch):
+    legacy_case(case)
+    def changed(pid, sig):
+        if (pid, sig) == (100, signal.SIGCONT):
+            process(case, 50, 1, argv=["python3", "/other/script.py"], state="T")
+    calls = legacy_signals(case, monkeypatch, on_signal=changed)
+    result = invoke(case, apply=True, output=case["output"], legacy_stopped_tree=True)
+    assert result["status"] == "BLOCKED"
+    assert (50, signal.SIGCONT) not in calls and (50, signal.SIGTERM) not in calls
+    assert "driver command changed" in result["error"]
+
+
+def test_modern_pidfds_also_continue_paused_targets_after_term(case, monkeypatch):
+    legacy_case(case, driver_state="S")
+    calls = pinned_signals(case, monkeypatch)
+    result = invoke(case, apply=True, output=case["output"])
+    assert result["status"] == "STOP_REQUESTED"
+    assert calls == [(pid, signal.SIGTERM) for pid in [112, 110, 111, 100]] + [
+        (pid, signal.SIGCONT) for pid in [112, 110, 111, 100]]
+    assert all(pid != 50 for pid, _ in calls)
+
+
+def test_legacy_plan_is_readonly_and_still_requires_stopped_ownership(case, monkeypatch):
+    legacy_case(case)
+    result = invoke(case, legacy_stopped_tree=True)
+    assert result["status"] == "PLAN_READY"
+    assert not case["output"].exists() and result["events"] == []
+
+
+def test_genuine_legacy_stop_resumes_owned_paused_driver_to_write_final_report(case, monkeypatch):
+    """A separate owned wrapper is stopped; the pytest driver never is."""
+    child_record, root_record, audit = (case["run"] / name for name in ("child-pid", "root-pid", "driver-audit"))
+    source = Path(case["cwd"]) / "retained-input.bin"
+    source.write_bytes(b"unchanged retained fixture")
+    before = source.stat()
+    root_code = ("import subprocess,time\nfrom pathlib import Path\n"
+        f"p=subprocess.Popen([{sys.executable!r},'-c','import time; time.sleep(60)'])\n"
+        f"Path({str(child_record)!r}).write_text(str(p.pid))\n"
+        "time.sleep(60)\n")
+    argv = [case["argv"][0], "-c", root_code, *case["argv"][1:]]
+    case["command"].write_text(json.dumps({"argv": argv, "cwd": case["cwd"]}))
+    script = case["run"] / "owned-checkout/targets/cpro/scripts/compile_full_target.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("import json,subprocess,sys\nfrom pathlib import Path\n"
+        f"command=json.loads(Path({str(case['command'])!r}).read_text())\n"
+        "p=subprocess.Popen(command['argv'],executable=sys.executable,cwd=command['cwd'])\n"
+        f"Path({str(root_record)!r}).write_text(str(p.pid))\n"
+        "result=p.wait()\n"
+        f"Path({str(audit)!r}).write_text(str(result))\n")
+    driver = subprocess.Popen([sys.executable, str(script), "--output", str(case["job"])])
+    owned = [driver.pid]
+    stamps = {}
+    calls = []
+    try:
+        deadline = time.monotonic() + 5
+        while not child_record.exists() and driver.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert child_record.exists(), f"owned driver exited early: {driver.poll()}"
+        root_pid, child_pid = int(root_record.read_text()), int(child_record.read_text())
+        owned += [root_pid, child_pid]
+        for pid in owned:
+            stamps[pid] = stop._process(pid, Path('/proc'))
+            _REAL_KILL(pid, signal.SIGSTOP)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if all(stop._process(pid, Path('/proc'))['state'] == 'T' for pid in owned):
+                break
+            time.sleep(0.01)
+        assert all(stop._process(pid, Path('/proc'))['state'] == 'T' for pid in owned)
+        monkeypatch.delattr(signal, 'pidfd_send_signal')
+        def legacy_send(pid, requested):
+            assert pid in owned and not (pid == driver.pid and requested == signal.SIGTERM)
+            calls.append((pid, requested))
+            _REAL_KILL(pid, requested)
+        monkeypatch.setattr(os, 'kill', legacy_send)
+        result = stop.stop_target_compile(case['job'], apply=True, output=case['output'], legacy_stopped_tree=True)
+        assert result['status'] == 'STOP_REQUESTED', result
+        assert driver.wait(timeout=5) == 0
+        assert audit.read_text() == str(-signal.SIGTERM)
+        assert (driver.pid, signal.SIGCONT) in calls and (driver.pid, signal.SIGTERM) not in calls
+        assert calls[:2] == [(child_pid, signal.SIGTERM), (root_pid, signal.SIGTERM)]
+        assert source.read_bytes() == b"unchanged retained fixture"
+        after = source.stat()
+        assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns, after.st_mode) == (
+            before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns, before.st_mode)
+    finally:
+        # Only identities of processes this test created are eligible for cleanup.
+        for pid in reversed(owned):
+            try:
+                current = stop._process(pid, Path('/proc'))
+                if pid in stamps and current['start_ticks'] == stamps[pid]['start_ticks'] and current['state'] != 'Z':
+                    _REAL_KILL(pid, signal.SIGTERM)
+                    _REAL_KILL(pid, signal.SIGCONT)
+            except (FileNotFoundError, ProcessLookupError):
+                pass
+        driver.wait(timeout=5)

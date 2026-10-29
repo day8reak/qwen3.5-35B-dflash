@@ -650,15 +650,77 @@ def _check_tbe_platform_arm(ddk_root, root, interpreter, env, initialize, timeou
     return result
 
 
+_OMG_IPC_MULTIPROCESSING = '''"""Process-local socket path configuration for one OMG invocation."""
+import hashlib as _hashlib
+import importlib.machinery as _machinery
+import importlib.util as _import_util
+import os as _os
+import stat as _stat
+import sys as _sys
+import sysconfig as _sysconfig
+import tempfile as _tempfile
+
+_physical, _short = __QWEN35_IPC_PATHS__
+try:
+    if any(_os.environ.get(key) != _physical for key in ("TMPDIR", "TMP", "TEMP")):
+        raise RuntimeError("compiler temporary-directory environment differs from its bound physical path")
+    if _os.path.realpath(_physical) != _physical or not _os.path.samefile(_short, _physical):
+        raise RuntimeError("compiler IPC alias no longer denotes its bound temporary directory")
+    if len(_os.fsencode(_short + "/listener-xxxxxxxx")) >= 108:
+        raise RuntimeError("compiler multiprocessing socket path exceeds the AF_UNIX budget")
+    if _tempfile.gettempdir() != _physical:
+        raise RuntimeError("compiler temporary directory was initialized outside this invocation")
+    _own_root = _os.path.realpath(_os.path.dirname(_os.path.dirname(__file__)))
+    _search = [path for path in _sys.path if _os.path.realpath(path or _os.getcwd()) != _own_root]
+    _spec = _machinery.PathFinder.find_spec("multiprocessing", _search)
+    _expected = _os.path.realpath(_os.path.join(_sysconfig.get_path("stdlib"), "multiprocessing", "__init__.py"))
+    if (_spec is None or not isinstance(_spec.loader, _machinery.SourceFileLoader)
+            or _os.path.realpath(_spec.origin or "") != _expected
+            or list(_spec.submodule_search_locations or []) != [_os.path.dirname(_spec.origin)]):
+        raise RuntimeError("multiprocessing does not resolve to this interpreter's original stdlib package")
+    _fd = _os.open(_expected, _os.O_RDONLY | _os.O_NOFOLLOW)
+    with _os.fdopen(_fd, "rb") as _source:
+        _before = _os.fstat(_source.fileno())
+        if not _stat.S_ISREG(_before.st_mode) or not 0 < _before.st_size <= 1048576:
+            raise RuntimeError("invalid or oversized stdlib multiprocessing source")
+        _raw = _source.read(1048577)
+        _after = _os.fstat(_source.fileno())
+    _identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    if len(_raw) != _before.st_size or _identity(_before) != _identity(_after) or _identity(_after) != _identity(_os.stat(_expected)):
+        raise RuntimeError("stdlib multiprocessing source changed during inspection")
+    _original = _import_util.module_from_spec(_spec)
+    _sys.modules["multiprocessing"] = _original
+    # Execute the exact hashed source with its original package identity rather
+    # than accepting a timestamp-validated bytecode cache or copying stdlib.
+    exec(compile(_raw, _spec.origin, "exec"), _original.__dict__)
+    if _identity(_os.stat(_expected)) != _identity(_before):
+        raise RuntimeError("stdlib multiprocessing source changed during import")
+    # Only multiprocessing sockets use the short spelling. CCE canonicalizes
+    # paths before validating them against the literal TMPDIR environment.
+    _original.current_process()._config["tempdir"] = _short
+    with open(__file__, "rb") as _overlay:
+        _overlay_raw = _overlay.read(1048577)
+    if len(_overlay_raw) > 1048576:
+        raise RuntimeError("oversized multiprocessing IPC overlay")
+    _original._qwen35_ipc_overlay = {"path": __file__, "sha256": _hashlib.sha256(_overlay_raw).hexdigest(),
+        "stdlib_path": _expected, "stdlib_sha256": _hashlib.sha256(_raw).hexdigest(),
+        "physical_tmpdir": _physical, "multiprocessing_tmpdir": _short}
+except Exception as _error:
+    _sys.stderr.write("qwen35 OMG IPC import rejected: " + str(_error) + "\\n")
+    _sys.stderr.flush()
+    _os._exit(78)
+'''
+
+
 @contextmanager
 def _omg_ipc_environment(scratch, env):
-    """Keep multiprocessing socket names short, with all data inside this run.
+    """Separate canonical CCE temporary paths from short multiprocessing paths.
 
-    CPython adds /pymp-xxxxxxxx/listener-xxxxxxxx to TMPDIR. A deeply nested
-    model run exceeds Linux's AF_UNIX pathname limit. A procfs directory-FD
-    alias keeps the spelling short without creating a shared /tmp directory.
-    Use the *parent* PID: OMG and its workers need not inherit the directory FD.
-    Hold that FD until the synchronous compiler invocation has returned.
+    CCE resolves its directory with realpath and compares that string with
+    literal TMPDIR. Give it the physical owned directory. A run-local Python
+    import overlay assigns only multiprocessing's socket directory to the short
+    parent-proc-FD alias. Hold the FD and overlay through the compiler invocation;
+    no global temporary tree or vendor source is changed.
     """
     with tempfile.TemporaryDirectory(prefix=".ipc-", dir=scratch) as temp:
         physical = Path(temp).resolve()
@@ -680,8 +742,20 @@ def _omg_ipc_environment(scratch, env):
                 raise RuntimeError("OMG IPC temporary path is too long and the parent /proc/PID/fd "
                                    "alias is unavailable. Enable procfs access for the compiler process "
                                    "or use a shorter run/output directory; no shared /tmp fallback was used.")
-            child = dict(env, TMPDIR=selected, TMP=selected, TEMP=selected)
+            startup = physical / "python-ipc"
+            (startup / "multiprocessing").mkdir(parents=True)
+            hook = startup / "multiprocessing/__init__.py"
+            payload = _OMG_IPC_MULTIPROCESSING.replace("__QWEN35_IPC_PATHS__", repr((str(physical), selected)))
+            hook.write_text(payload)
+            child = dict(env, TMPDIR=str(physical), TMP=str(physical), TEMP=str(physical),
+                         PYTHONDONTWRITEBYTECODE="1")
+            child["PYTHONPATH"] = _prepend_paths([startup], env.get("PYTHONPATH", ""))
             yield child, {"mode": mode, "path": selected, "physical_path": str(physical),
+                          "compiler_tmpdir": str(physical), "multiprocessing_tmpdir": selected,
+                          "multiprocessing_overlay": {"path": str(hook), "sha256": sha256_file(hook),
+                              "scope": "Multiprocessing socket directory only; no vendor or numerical changes",
+                              "stdlib_policy": "HASH_BOUND_ORIGINAL_INTERPRETER_SOURCE_ONLY",
+                              "selected_ddk_execution": "NOT_PROVEN_BY_ENVIRONMENT_PREPARATION"},
                           "lifetime": "Only while this OMG invocation is running; not a reusable path."}
         finally:
             os.close(fd)

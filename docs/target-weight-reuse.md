@@ -30,6 +30,16 @@ decode1只手动传`canonical-export/export.air`、`canonical-export/inventory/i
 
 停止命令的22项主机检查全部通过，包含真正的自有OMG模拟进程及子进程通过pidfd停止、外层测试驱动存活与输入字节不变。当前GitHub命令先读取目录证据，再调用该工具；不要对主驱动Ctrl+C或立即再次编译。任务失败报告、收据与现有大权重快照都保留，后续修复须用实际路径校验和有证据的共享输入重用方案。
 
+用户已读到实际目录校验源码，`compile_cce:876`先做`os.path.realpath(dirpath)`，`_check_tmpdir`随后只接受标准临时根或字面量`TMPDIR`前缀。实际TMPDIR是30字节的`/proc/13370/fd/4/.ipc-u6p_8uca`，解析后是本次generated目录下120字节的真实路径；两者均存在、属root且0700，故不能再把失败猜成目录不存在。对位于这棵真实临时目录的CCE文件，canonicalize后无法以字面量proc别名开头，构成已证实的路径契约冲突；当时传入的具体运行时dirpath没有捕获，仍不能宣称所有CCE故障都已关闭。
+
+修复把`TMPDIR/TMP/TEMP`设为本次owned真实路径，另用仅针对stdlib `multiprocessing`的本地导入入口设置它的socket目录为短proc别名。入口加载同一解释器的原始stdlib包、核SourceFileLoader/实际路径及稳定源码SHA，保留其模块名、spec、package路径，再只改multiprocessing的临时目录配置；不复制或改写stdlib、TBE或共享DDK，不关闭CCE目录检查，不接管原有sitecustomize。三种start method的真实IPC与标准启动模块保留均有host回归；实际OMG嵌入式Python是否采用该入口，仍需后续真实编译验证。
+
+新增`probe_tbe_tmpdir.py`读取本任务SHA为`5bef4eba82325b701a544e1644a38e566788de7f1cff5888e36d3ac609fddb6a`的ccec源码，只抽取目录检查函数，在明确固定的非debug/非dump/random配置下验证旧别名反例、新真实路径通过，并在新环境里执行真实stdlib forkserver socket往返。它不导入vendor包、不生成CCE或编译模型；通过状态只叫`SOURCE_PATH_CONTRACT_REPRODUCTION`/`PROBE_PASSED`。探针在`/tmp`等标准白名单根下不能证明旧反例，会明确失败，不假称复现。当前实际DDK probe尚待用户执行。
+
+首次停止请求因服务器缺少pidfd接口而`BLOCKED`，`events=[]`说明没有发信号；新采样的整个OMG树为`T`，表示暂停而不是退出。显式`--legacy-stopped-tree`只接受全部T/t的精确编译树，并绑定父驱动的绝对compile_full_target.py及唯一job输出；持有proc目录句柄并逐项立即复核starttime/ppid，先向整树排队SIGTERM，再对同一身份发SIGCONT，让待处理的终止信号执行。父驱动仅在身份匹配且暂停时收到SIGCONT，从不收到终止信号。该显式兼容方式的数字PID检查仍存在外部并发替换竞态，工具记录这个限制，不宣称等同pidfd；默认模式仍无自动回退。35个控制进程回归已通过，包含真正的自有暂停driver/OMG/child恢复后写出失败审计标记。
+
+用户另已完成decode1的三小文件检查：`TRANSFER_INSPECTED`、`MATCHED_EXACT_DATA_NAMES_AND_DECLARED_GEOMETRIES`，九路实际Data与`cpro-40block-decode-1`一致，feature81 FP16`[1,1,16384]`。归一收据SHA `98ccc4e81f0893e4ae70e47705cf511cf45efa7ea37979db18bfaf87c68ad030`、AIR SHA `75dc9bd236518db9421532b2791d37e041a9c9e810e588fff19b8d26e155d527`、清单SHA `eb01e38ffe0ea5d40df8d3aac6fc36dea19abe7e5b3046e2aa54a75d3b686556`均已实读匹配；没有读DDK大权重、stage或调用OMG。无需再传三文件或重复检查；后续依旧先处理当前停止/最终审计和共享snapshot所有权，避免改动仍受审计的inode。
+
 用户另贴的原OMG命令只是记录，是否生成过OMC不确定；其中`--d11ynamic_dims`拼写也未得到实际成功日志确认，因此不作为双档成功基线，不据此切换现有已绑定编译器。
 
 新的只读诊断只检查小元数据、编译日志、失败IR、微小整数shape常量；1153权重快照只stat，不重新读payload。`INSPECTED`表示报告读取完成，`RECORDED_HASH_WITH_CURRENT_STAT`不是新一轮完整SHA验证，也不是重试通过；后续要按实际报告决定怎样保留并复用现有编译输入。源码AIR未提供其原机schema时不猜用另一版TorchAir schema解析，失败dump则使用所选DDK自己的HIAI schema。

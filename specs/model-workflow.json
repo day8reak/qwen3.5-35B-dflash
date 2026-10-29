@@ -2208,9 +2208,9 @@
         "location": "original_weight_machine",
         "entrypoint": "targets/cpro/scripts/prepare_target_pytorch.py",
         "directory": "target-pytorch",
-        "status": "CCE_CHECK_TMPDIR_REJECTED_USER_REPORTED; CONTROLLED_STOP_COMMAND_READY_NOT_RUN",
+        "status": "CANONICAL_TMPDIR_ALIAS_CONTRACT_REPRODUCED; LEGACY_STOP_AND_IPC_PROBE_READY; DECODE1_TRANSFER_MATCHED",
         "tests": 14,
-        "next": "Capture exact ccec._check_tmpdir/compile_cce source and bound directory environment, then stop only the exact current OMG tree using pidfd; let driver finish failed-report/input audit. Do not rerun model compilation yet.",
+        "next": "Run explicit legacy-stopped-tree termination/continue for current paused OMG and bound driver, collect final driver audit, then run exact-source directory/IPC probe; no new model compilation or repeated decode1 transfer.",
         "user_report": {
           "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
           "original_air_sha256": "3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9",
@@ -2364,7 +2364,31 @@
           "model_compilation": "NOT_RUN",
           "device_execution": "NOT_RUN",
           "profile_difference_policy": "Retain observed Data rows; report PROFILE_BINDING_REQUIRED; never infer equal-shaped control roles",
-          "decode_apply_policy": "NOT_ENABLED; source ownership metadata chain must be settled after prefill result"
+          "decode_apply_policy": "NOT_ENABLED; source ownership metadata chain must be settled after prefill result",
+          "execution": "USER_REPORTED_TRANSFER_INSPECTED",
+          "profile_validation": "MATCHED_EXACT_DATA_NAMES_AND_DECLARED_GEOMETRIES",
+          "profile": "cpro-40block-decode-1",
+          "air_sha256": "75dc9bd236518db9421532b2791d37e041a9c9e810e588fff19b8d26e155d527",
+          "inventory_sha256": "eb01e38ffe0ea5d40df8d3aac6fc36dea19abe7e5b3046e2aa54a75d3b686556",
+          "canonical_receipt_sha256": "98ccc4e81f0893e4ae70e47705cf511cf45efa7ea37979db18bfaf87c68ad030",
+          "observed_data_names": [
+            "arg0_1",
+            "arg1_1",
+            "arg2_1",
+            "arg14_1",
+            "arg18_1",
+            "arg107_1",
+            "arg113_1",
+            "arg114_1",
+            "arg1238_1"
+          ],
+          "observed_feature_shape": [
+            1,
+            1,
+            16384
+          ],
+          "observed_feature_output_index": 81,
+          "next": "Do not repeat transfer/inspection; staging waits for completed stop/owner audits"
         },
         "static_prefill64_live_user_report": {
           "source": "USER_PASTED_LIVE_REMOTE_LOG_NOT_RETRIEVED_LOCALLY",
@@ -2427,14 +2451,19 @@
           "source_line": 716,
           "caller": "ccec.compile_cce:877",
           "actual_dirpath_value": "NOT_YET_OBSERVED",
-          "validator_conditions": "NOT_YET_READ_FROM_EXACT_RUN_SOURCE",
+          "validator_conditions": "compile_cce canonicalizes dirpath; predicate compares standardtmp prefixes or literal TMPDIR",
           "candidate_origins": [
             "TMPDIR or IPC alias",
             "kernel_meta/compile output directory"
           ],
-          "attribution": "DIRECTORY_CHECK_REJECTION_OBSERVED; DOTS_LENGTH_PERMISSION_OR_PROC_ALIAS_CAUSE_NOT_PROVEN",
+          "attribution": "REALPATH_VS_LITERAL_TMPDIR_PREFIX_CONTRACT_CONFLICT_CONFIRMED; EXACT_RUNTIME_DIRPATH_NOT_CAPTURED",
           "model_accuracy": "NOT_EVALUATED",
-          "operator_support": "NOT_ESTABLISHED_BY_THIS_DIRECTORY_ERROR"
+          "operator_support": "NOT_ESTABLISHED_BY_THIS_DIRECTORY_ERROR",
+          "ccec_source_sha256": "5bef4eba82325b701a544e1644a38e566788de7f1cff5888e36d3ac609fddb6a",
+          "ccec_source_bytes": 36089,
+          "observed_tmpdir": "/proc/13370/fd/4/.ipc-u6p_8uca",
+          "observed_physical_tmpdir": "/home/w00949577/qwen3.5-35B-dflash-run/target-pytorch-prefill64-compile/compilation/compile-work/generated/.ipc-u6p_8uca",
+          "observed_tmpdir_and_physical_exist": true
         },
         "controlled_stop": {
           "entrypoint": "targets/cpro/scripts/stop_target_compile.py",
@@ -2442,12 +2471,42 @@
           "binding": "Exact full recorded OMG argv and cwd; unique root; all targets starttime checked and Linux pidfds pinned before signals",
           "signals": "SIGTERM to observed descendants deepest first then OMG; driver untouched; no numericPID/PGID/SIGKILL fallback",
           "evidence": "New stopreceipt directory with fsynced plan and peraction intent/result journal",
-          "execution": "NOT_RUN_ON_REMOTE",
+          "execution": "USER_REPORTED_BLOCKED_NO_EVENTS_PIDFD_UNAVAILABLE",
           "final_driver_audit": "PENDING_REMOTE_STOP_AND_DRIVER_REPORT",
-          "host_tests_passed": 22,
+          "host_tests_passed": 35,
           "host_test_skips": 0,
-          "host_evidence": "20261029T121443Z-21578-623dae/stop-tests-v2.xml",
-          "scope": "Stop request helper only; no model retry, input mutation or complete cleanup claim"
+          "host_evidence": "20261029T122749Z-22112-bb3103/stop-legacy-tests-v2.xml",
+          "scope": "Stop request helper only; no model retry, input mutation or complete cleanup claim",
+          "remote_signals_sent": 0,
+          "remote_omg_and_descendant_states": "ALL_T_IN_LAST_STOP_REPORT",
+          "legacy_mode": "EXPLICIT --legacy-stopped-tree; entire tree must already be T/t; bind driver absolute script and unique output",
+          "legacy_signals": "QueueTERM for observedstoppedtree, thenCONT sameboundtargets; onlyCONT boundpauseddriver",
+          "legacy_identity": "Held proc directory/currentPID stat checks immediately before signals; numeric TOCTOU residual explicitly retained"
+        },
+        "tmpdir_fix": {
+          "status": "HOST_IMPLEMENTED; USER_SOURCE_PROBE_AND_ACTUAL_OMG_PENDING",
+          "compiler_tmpdir": "Resolved owned physical directory for TMPDIR/TMP/TEMP",
+          "multiprocessing_tmpdir": "Separate short parentprocFD alias through processlocal stdlibimport overlay",
+          "stdlib_identity": "Original interpreter package/path/spec retained; sourceSHA and overlayselfSHA recorded; no stdlibcopy/sourceedit",
+          "existing_sitecustomize": "UNCHANGED_AND_PRESERVED",
+          "vendor_source_mutation": "NONE",
+          "shared_ddk_mutation": "NONE",
+          "directory_check_relaxation": "NONE",
+          "scope": "Path normalization contract plus actual stdlibIPC only; no original model semantic or dtype change",
+          "host_related_tests": 120,
+          "host_evidence": "20261029T122749Z-22112-bb3103/ipc-related-tests-v2.xml",
+          "probe_entrypoint": "targets/cpro/scripts/probe_tbe_tmpdir.py",
+          "probe_scope": "Hashbound extractedsource predicate with controlled flags: oldaliasnegative/newphysicalpositive and actualforkserver socket; notnativeTBEbuild or embeddedOMG startup",
+          "host_probe_tests": 14,
+          "host_probe_evidence": "20261029T122749Z-22112-bb3103/probe-tests-v3.xml",
+          "combined_host_verification": {
+            "tests": 169,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0,
+            "evidence": "20261029T122749Z-22112-bb3103/final-tests.xml",
+            "scope": "PhysicalTMPDIR/stdlibIPCoverlay, exactsourcepredicateprobe, modern/legacystoppedcontrol, environment/existingAIR/snapshotreuse/staticretry regressions; no remoteOMG/model/device success"
+          }
         }
       },
       "b": {
@@ -2572,14 +2631,14 @@
     "day1_gate": "Correct draft plus usable ordinary target prefill/decode",
     "day2_gate": "Multi-step DFlash token/stop equality and state handling",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
-    "current_target_status": "Staticprefill64 TBE directory check rejected dirpath. Exact validator and path origin pending. Useraskedstop; boundpidfd stopcommandhosttestedready. No model compile success or new run.",
+    "current_target_status": "CanonicalTMPDIRliteralalias conflict identified; envsplit and legacy pausedstop implementedhostverified. Remoteoldstop sent0signals becausepidfd unavailable; currenttreepaused. Decode1actualtransferprofilematched. No complete targetOMC or devicepass.",
     "target_gaps": [
       "Original89input80RefData ordered ABI",
       "64/1 gear and persistent state",
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Read exactCCEvalidator/directory environment and apply controlledstop to currentOMGtree; wait for originaldriverfinalaudit/report. Validate directoryfix before rerun; reuse retained model and weights.",
+    "next_target_action": "Apply explicitlegacy stop to allTtree and bounddriver, retain finalaudit, run sourcepredicate/IPCprobe before newmodelattempt. Reuse existingAIR/weights; no repeateddecode1transfer or Bwork.",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone"
   },
   "execution_smoke": {
