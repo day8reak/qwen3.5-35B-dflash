@@ -101,6 +101,18 @@ def _descriptor_metadata(raw):
     if not isinstance(raw, dict):
         return {"status": "UNAVAILABLE"}
     result = {"scope": "DIAGNOSTIC_ONLY_NOT_USED_FOR_DESCRIPTOR_EQUALITY", "basic": {}, "attributes": {}}
+    shape = raw.get("shape")
+    representation = {"shape_field_present": "shape" in raw,
+                      "dim_field_present": isinstance(shape, dict) and "dim" in shape,
+                      "semantic_interpretation": "NOT_ESTABLISHED_BY_SERIALIZATION"}
+    if isinstance(shape, dict):
+        representation["shape_fields"] = sorted(str(key)[:64] for key in shape)[:16]
+        dims = shape.get("dim", [])
+        if isinstance(dims, list) and all(type(dim) is int for dim in dims):
+            representation["dimensions"] = dims[:16]
+            if len(dims) > 16:
+                representation["omitted_dimensions"] = len(dims) - 16
+    result["shape_representation"] = representation
     for key in ("size", "weight_size", "real_dim_cnt", "device_type", "reuse_input", "reuse_input_index",
                 "output_tensor", "input_tensor", "has_out_attr", "data_offset"):
         value = raw.get(key)

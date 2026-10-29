@@ -11,6 +11,7 @@ import pytest
 
 from qwen35_moe_dflash import original_ge_target as ge
 from qwen35_moe_dflash.original_air_inspect import inspect_original_air
+from qwen35_moe_dflash.omc_wire import _fields
 from test_draft_ir_inspect import _attr, _blob, _desc
 from test_original_air_inspect import _graph, _node, _scalar_node, selected
 
@@ -291,6 +292,108 @@ def test_decoded_output_difference_is_an_abi_gap_and_keeps_full_graph(tmp_path, 
     assert result["graph_observation"]["output_descriptor_check"]["mismatch_count"] == 1
     assert "schema_observation" not in result
     assert result["air_generation"] == "NOT_RUN_NO_GRAPH_WRITER_OR_RANDOM_WEIGHTS"
+
+
+def _empty_producer_report(tmp_path, selected, mutation=None):
+    # Rebuild only the synthetic test body with explicitly empty producer
+    # ShapeDefs. The NetOutput descriptors retain all original known shapes.
+    rebuilt = []
+    for number, wire, raw in _fields(_tapped_graph(gamma_one=True), [2_000_000]):
+        assert wire == 2
+        value = bytes(raw)
+        if number == 6:
+            names = [bytes(v).decode() for n, w, v in _fields(value, [2_000_000]) if n == 1 and w == 2]
+            if names == ["opaque_body"]:
+                descs = []
+                for index in range(81):
+                    dtype = 1 if index == 0 else 7
+                    shape = (1,) if index == 1 and mutation == "known_producer_shape" else ()
+                    if index == 1 and mutation == "dtype":
+                        dtype = 1
+                    desc = _desc(dtype=dtype, shape=shape)
+                    if index == 1 and mutation == "layout":
+                        desc = desc.replace(_blob(4, "ND"), _blob(4, "NCHW"))
+                    descs.append(_blob(34, desc))
+                value = _blob(1, "opaque_body") + _blob(2, "UnverifiedBody") + b"".join(descs)
+        rebuilt.append(_blob(number, value))
+    air = tmp_path / "empty-producer-shapes.air"
+    air.write_bytes(_blob(7, b"".join(rebuilt)))
+    observed = inspect_original_air(air, selected[0], full=True)
+    assert observed["status"] == "DECODED_BOUNDARY_DIFFERENT"
+    return observed
+
+
+def test_complete_81_empty_producer_shapes_are_unresolved_without_filling_or_passing_abi(tmp_path, selected):
+    observed = _empty_producer_report(tmp_path, selected)
+    original = deepcopy(observed)
+    result = ge.prepare_contract(receipt(), observed, gamma_template=TEMPLATE)
+    assert result["status"] == "PENDING_PRODUCER_SHAPE_INFERENCE"
+    observation = result["graph_observation"]["producer_shape_observation"]
+    assert observation["status"] == "UNRESOLVED" and observation["covered_output_count"] == 81
+    assert observation["shape_semantics"].startswith("UNKNOWN")
+    assert observation["shape_inference"].startswith("NOT_PROVEN")
+    assert observation["producer_shapes_filled"] is False
+    assert observation["abi_validation"] == "NOT_PASSED"
+    assert result["graph_observation"]["original_boundary_check"]["status"] == "DIFFERENT"
+    assert result["tap_resolution"]["status"] == "EIGHT_STRUCTURAL_CANDIDATES_SOURCE_BINDING_PENDING"
+    assert result["device_execution"] == result["model_compilation"] == "NOT_RUN"
+    assert result["air_generation"] == "NOT_RUN_NO_GRAPH_WRITER_OR_RANDOM_WEIGHTS"
+    assert observed == original
+
+
+@pytest.mark.parametrize("mutation", ["dtype", "layout", "known_producer_shape"])
+def test_mixed_descriptor_differences_do_not_get_shape_inference_classification(tmp_path, selected, mutation):
+    result = ge.prepare_contract(receipt(), _empty_producer_report(tmp_path, selected, mutation))
+    assert result["status"] == "PENDING_ORIGINAL_ABI_BINDING"
+    assert "producer_shape_observation" not in result["graph_observation"]
+
+
+@pytest.mark.parametrize("mutation", ["partial", "missing_layout", "missing_dtype", "repeated_index",
+                                      "wrong_reference", "missing_operations", "missing_pair", "other_abi_error",
+                                      "producer_port_inconsistent", "netinput_port_inconsistent"])
+def test_shape_only_classification_requires_explicit_complete_ordered_port_evidence(tmp_path, selected, mutation):
+    observed = _empty_producer_report(tmp_path, selected)
+    graph = next(row["graph"] for row in observed["candidates"] if row.get("graph"))
+    pair = graph["outputs"][1]
+    if mutation == "partial":
+        graph["outputs"].pop()
+    elif mutation == "missing_layout":
+        pair["producer_descriptor"]["layout"] = pair["netinput_descriptor"]["layout"] = None
+    elif mutation == "missing_dtype":
+        pair["producer_descriptor"]["raw_dtype"] = pair["netinput_descriptor"]["raw_dtype"] = None
+    elif mutation == "repeated_index":
+        graph["outputs"][-1]["output_index"] = 79
+    elif mutation == "wrong_reference":
+        pair["producer_reference"] = "opaque_body:2"
+    elif mutation == "missing_operations":
+        del graph["operations"]
+    elif mutation == "missing_pair":
+        del pair["producer_descriptor"]
+    elif mutation == "other_abi_error":
+        graph["original_boundary_check"]["errors"].append("INPUT_DTYPE_UNRESOLVED")
+        graph["original_boundary_check"]["error_count"] += 1
+    elif mutation == "producer_port_inconsistent":
+        next(node for node in graph["operations"] if node["name"] == "opaque_body")["output_desc"][1]["shape"] = [1]
+    else:
+        next(node for node in graph["operations"] if node["type"] == "NetOutput")["input_desc"][1]["shape"] = [1]
+    result = ge.prepare_contract(receipt(), observed)
+    assert result["status"] == "PENDING_ORIGINAL_ABI_BINDING"
+    assert "producer_shape_observation" not in result["graph_observation"]
+
+
+def test_origin_flags_are_diagnostic_and_unsupported_source_still_takes_precedence(tmp_path, selected):
+    observed = _empty_producer_report(tmp_path, selected)
+    graph = next(row["graph"] for row in observed["candidates"] if row.get("graph"))
+    graph["outputs"][0]["producer_metadata"] = {"basic": {"real_dim_cnt": 0},
+        "attributes": {"origin_shape_initialized": {"b": True}}}
+    result = ge.prepare_contract(receipt(), observed)
+    evidence = result["graph_observation"]["producer_shape_observation"]
+    assert result["status"] == "PENDING_PRODUCER_SHAPE_INFERENCE"
+    assert evidence["shape_inference"].startswith("NOT_PROVEN")
+    assert "DIAGNOSTIC_ONLY" in evidence["origin_flags"]
+    changed = receipt()
+    changed["files"][1]["sha256"] = "f" * 64
+    assert ge.prepare_contract(changed, observed)["status"] == "PENDING_SOURCE_BINDING"
 
 
 def test_decoded_metadata_failure_never_restarts_schema_search(tmp_path, selected):

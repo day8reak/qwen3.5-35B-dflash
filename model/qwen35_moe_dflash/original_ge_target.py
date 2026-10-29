@@ -299,6 +299,76 @@ def resolve_taps(graph, gamma_template=None):
     return result
 
 
+def _unresolved_producer_shapes(graph):
+    """Classify one exact 81-port observation without completing any shape."""
+    boundary = graph.get("original_boundary_check", {})
+    if (graph.get("input_count") != 89 or graph.get("output_count") != 81
+            or graph.get("input_type_counts") != {"Data": 9, "RefData": 80}
+            or boundary.get("status") != "DIFFERENT" or boundary.get("error_count") != 1
+            or boundary.get("errors") != ["OUTPUT_PRODUCER_DESCRIPTOR_DIFFERS_OR_UNRESOLVED"]
+            or graph.get("output_descriptor_check", {}).get("mismatch_count") != 81):
+        return None
+    outputs, nodes = graph.get("outputs"), graph.get("operations")
+    if not isinstance(outputs, list) or len(outputs) != 81 or not isinstance(nodes, list) or not 1 <= len(nodes) <= 32768:
+        return None
+    by_name = {}
+    for node in nodes:
+        name = node.get("name") if isinstance(node, dict) else None
+        if not isinstance(name, str) or not name or name in by_name:
+            return None
+        by_name[name] = node
+    netoutputs = [node for node in nodes if node.get("type") == "NetOutput"]
+    if len(netoutputs) != 1:
+        return None
+    netoutput = netoutputs[0]
+    raw_edges = netoutput.get("input", [])
+    descs = netoutput.get("input_desc", [])
+    if not isinstance(raw_edges, list) or not isinstance(descs, list):
+        return None
+    edges = [edge for edge in raw_edges if not (isinstance(edge, str) and edge.endswith(":-1"))]
+    if len(edges) != 81 or len(descs) != 81:
+        return None
+    examples = []
+    for index, row in enumerate(outputs):
+        if (not isinstance(row, dict) or row.get("output_index") != index or row.get("netoutput_input_index") != index
+                or row.get("netoutput") != netoutput["name"] or row.get("descriptor_match") is not False
+                or row.get("producer_reference") != edges[index]):
+            return None
+        producer, netinput = row.get("producer_descriptor", {}), row.get("netinput_descriptor", {})
+        if not isinstance(producer, dict) or not isinstance(netinput, dict):
+            return None
+        shape = netinput.get("shape")
+        if (producer.get("status") == "UNAVAILABLE" or netinput.get("status") == "UNAVAILABLE"
+                or producer.get("shape") != [] or not isinstance(shape, list) or not shape
+                or any(type(dim) is not int or dim <= 0 for dim in shape)
+                or type(producer.get("raw_dtype")) is not int or not producer.get("schema_dtype_names")
+                or any(producer.get(key) != netinput.get(key) for key in ("raw_dtype", "schema_dtype_names", "layout"))
+                or not isinstance(producer.get("layout"), str) or not producer["layout"]
+                or row.get("descriptor_differences") != {"shape": {"netinput": shape, "producer": []}}
+                or netinput != descs[index]):
+            return None
+        try:
+            producer_name, port = _port(edges[index])
+        except ValueError:
+            return None
+        node = by_name.get(producer_name)
+        actual_outputs = node.get("output_desc", []) if node is not None else None
+        if not isinstance(actual_outputs, list) or port >= len(actual_outputs) or actual_outputs[port] != producer:
+            return None
+        if index in {0, 1, 80}:
+            examples.append({"output_index": index, "producer_reference": edges[index],
+                "producer_shape": [], "netinput_shape": shape,
+                "raw_dtype": producer["raw_dtype"], "schema_dtype_names": producer["schema_dtype_names"],
+                "layout": producer["layout"], "producer_metadata": row.get("producer_metadata")})
+    return {"status": "UNRESOLVED", "classification": "EMPTY_PRODUCER_SHAPE_WITH_KNOWN_NETOUTPUT_SHAPE",
+        "covered_output_count": 81, "observation_basis": "Full 81 ordered NetOutput/producer pairs and actual operation ports; only shape differs; dtype and layout explicitly match on every port",
+        "shape_semantics": "UNKNOWN; [] is not filled, treated as a wildcard, or assumed to prove a genuine scalar",
+        "shape_inference": "NOT_PROVEN; SHAPE_NOT_INFERRED is only a possible explanation",
+        "origin_flags": "DIAGNOSTIC_ONLY; origin_shape_initialized/size/real_dim_cnt do not prove current producer-shape semantics",
+        "abi_validation": "NOT_PASSED", "producer_shapes_filled": False, "examples": examples,
+        "tap_analysis": "Retained; uses only actual complete internal descriptors, never substituted NetOutput dimensions"}
+
+
 def prepare_contract(receipt, air_report=None, *, gamma_template=None, air=None):
     source = audit_source(receipt)
     operators = required_operators()
@@ -344,6 +414,12 @@ def prepare_contract(receipt, air_report=None, *, gamma_template=None, air=None)
                 if result["status"] != "PENDING_SOURCE_BINDING":
                     result["status"] = "PENDING_ORIGINAL_ABI_BINDING"
                 result["pending"].insert(0, "RESOLVE_ORIGINAL_OUTPUT_BOUNDARY_DIFFERENCES")
+                shape_observation = _unresolved_producer_shapes(graph)
+                if shape_observation is not None:
+                    result["graph_observation"]["producer_shape_observation"] = shape_observation
+                    if result["status"] != "PENDING_SOURCE_BINDING":
+                        result["status"] = "PENDING_PRODUCER_SHAPE_INFERENCE"
+                    result["pending"].insert(0, "ESTABLISH_PRODUCER_SHAPE_SEMANTICS_WITHOUT_NETOUTPUT_SHAPE_SUBSTITUTION")
             result["tap_resolution"] = resolve_taps(graph, gamma_template)
             counts = graph.get("root_op_counts", {})
             for op in operators:

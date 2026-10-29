@@ -18,7 +18,15 @@
 
 完整命令、边界和状态见[双路线执行](target-parallel-tracks.md)。A原机入口为`prepare_target_pytorch.py`，先只读配置/分片头和小源码准备，缺原参数即停止；资源就绪后才在原机导出。用户已完成B原AIR检查：6361049字节、原文件保持，HIAI schema不匹配（`OPAQUE`）。随后当前服务器已找到两份真正的TorchAir生成文件；两者提取同一7381字节GE descriptor，SHA256为`5a1eac27746a7bb5109e819ce6dd7813a3ffcaab04bd0ab2ca3c2cdf1e4084ea`。选择更小的`3_19`文件继续，不需要从原机再传schema或权重。
 
-**B当前执行这一条**，更新代码后使用实际GE schema只读重解析；新版分别给出protobuf状态和逐端口描述符差异，完整图写到新JSON，前两份报告保留：
+**A当前直接导出**：原机已回传`SOURCE_READY`，且此前NPU可见性为True。保持`qwen3_5_cpro`环境，在原机输出盘有足够空间时执行；不要重复准备已有目录：
+
+```bash
+bash /home/w00949577/qwen35-target-pytorch-run/target-pytorch/export.sh
+```
+
+**B本轮已完成下面的只读解析，不重复执行**。`RAW_MODELDEF`解码PASSED、元数据COMPLETE，9520节点、89输入、81输出；真实算子计数符合40层混合结构的预期。81个输出被报告shape描述符差异，前6例显示NetOutput有完整shape、producer为空维度，而dtype/layout相同。空shape不能直接等同错误scalar或wildcard；完整图与全部差异均在新JSON中。
+
+当前先执行[双路线文档中的已有JSON摘要](target-parallel-tracks.md#b当前服务器先绑定真实图)，回传精确FileConstant路径及norm/Add连接，继续绑定8层真实特征；不读大权重、不编译。已完成的解析命令保留供重现：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -28,7 +36,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
   --full --output "$AI_RUN_DIR/target-ge-source-air-ge-details.json"
 ```
 
-schema查找已完成。用户随后回传RAW_MODELDEF已到NetOutput边界比较，不再是schema错误；当前需新版报告列出输出与producer的具体差异，继续保留完整图信息，不能把差异当ABI通过。A原机操作的可直接执行步骤见[双路线执行](target-parallel-tracks.md#a在原权重机器准备)：原环境先检查`torch.npu.is_available()`，运行源码/资源头预检，返回`SOURCE_READY`且原导出依赖与空间可用后执行生成的`export.sh`。原源码专家量化参数转换调用`.npu()`，预检本身不验证该依赖。
+schema查找和详细解析均已完成。B契约仅在完整81个实际端口均符合shape-only差异时细分为`PENDING_PRODUCER_SHAPE_INFERENCE`；这不是ABI通过，不填补producer shape，也不声称已证明未推导。A原机操作与本轮SOURCE_READY结果见[双路线执行](target-parallel-tracks.md#a在原权重机器准备)。原源码专家量化参数转换调用`.npu()`，本轮NPU可见性与资源头预检分别通过，实际完整导出仍待运行。
 
 同名输出若已存在，工具拒绝覆盖；保留已有报告并使用其路径，不删除旧证据。B后续绑定入口为`prepare_original_ge_target.py`；实际图/来源/算子证据不全时保持待绑定，不把现有functional GE target当成原Cpro等价实现。原源码的norm表达式、量化pack/QPARAM、自定义算子及80状态都要逐项核实。
 

@@ -266,6 +266,21 @@ def test_origin_metadata_never_expands_blob_values_or_unbounded_lists():
     assert len(encoded) < 1500
 
 
+@pytest.mark.parametrize("raw,shape_present,dim_present,dimensions", [
+    ({}, False, False, None),
+    ({"shape": {}}, True, False, []),
+    ({"shape": {"dim": []}}, True, True, []),
+    ({"shape": {"dim": [-2]}}, True, True, [-2]),
+    ({"shape": {"dim": [1, 1, 248320]}}, True, True, [1, 1, 248320]),
+])
+def test_raw_shape_presence_is_retained_without_inventing_shape_semantics(raw, shape_present, dim_present, dimensions):
+    evidence = inspect._descriptor_metadata(raw)["shape_representation"]
+    assert evidence["shape_field_present"] is shape_present
+    assert evidence["dim_field_present"] is dim_present
+    assert evidence.get("dimensions") == dimensions
+    assert evidence["semantic_interpretation"] == "NOT_ESTABLISHED_BY_SERIALIZATION"
+
+
 @pytest.mark.parametrize("dtype,data,one", [
     (1, struct.pack("<f", 1.0), True), (7, struct.pack("<e", 1.0), True),
     (1, struct.pack("<f", 2.0), False), (7, struct.pack("<e", 2.0), False),

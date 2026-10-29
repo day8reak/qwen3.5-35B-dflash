@@ -13,6 +13,14 @@
 
 ## A：在原权重机器准备
 
+本轮原机已在`qwen3_5_cpro`环境回传`SOURCE_READY`，目录为`/home/w00949577/qwen35-target-pytorch-run/target-pytorch`，实际导出尚未运行。保持该环境，原机导出空间可用时直接执行下条；无需重复准备同名目录：
+
+```bash
+bash /home/w00949577/qwen35-target-pytorch-run/target-pytorch/export.sh
+```
+
+此次会生成完整新AIR和外置sidecar；源码准备阶段未复制大检查点，不表示完整导出不需要空间。新AIR预期路径为`target-pytorch/target-pytorch-source/source/glm_export_air_cpro_40block_64_quant/export.air`，以实际导出结果为准。
+
 原机器仅有PyTorch/TorchAir，完整大检查点留在原位置。先把本仓库最新代码同步到原机，令原机`REPO_DIR`指向该仓库（不是原模型工程），并激活当初导出AIR的环境。然后进入原PyTorch模型工程根目录。`AI_RUN_DIR`应放原机有足够导出空间的独立目录；下面默认原工程旁，空间不足时先换成大盘路径。执行：
 
 ```bash
@@ -50,6 +58,27 @@ bash "$AI_RUN_DIR/target-pytorch/export.sh"
 
 ## B：当前服务器先绑定真实图
 
+本轮详细报告已成功严格解码`RAW_MODELDEF`：9520节点、9 Data+80 RefData输入、81输出；GDN/convstate各30、attention10、CacheUpdate20、MoE routing/finalize各40、GMM80。原文件SHA保持。81个输出均报告描述符差异，终端展示的前6个只有shape差异：NetOutput有完整维度，producer显示`[]`，dtype/layout相同。完整81项仍保留在服务器JSON；不能只据前6项宣布全部同类。
+
+空shape当前不能自动当scalar或任意维度通配，也不能据`origin_shape_initialized=false`宣称未推导。B契约仅在完整81个实际端口都严格满足shape-only条件时细分为`PENDING_PRODUCER_SHAPE_INFERENCE`，ABI仍未通过；tap分析只使用完整内部描述符，不把NetOutput维度填回producer。新版诊断保留shape字段和dim字段是否实际出现，不据序列化推语义。
+
+**当前不重复解析AIR**。先从已有JSON提取精确权重路径和前几个norm/Add连接，供绑定8层真实features；只读小报告，不访问外置权重：
+
+```bash
+python3 - "$AI_RUN_DIR/target-ge-source-air-ge-details.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+g = next(c['graph'] for c in r['candidates'] if isinstance(c.get('graph'), dict))
+cs = g['file_constants']['examples']
+selected = [c for c in cs if 'input_layernorm' in str(c.get('file_path', ''))]
+print('input_norm_constants:', json.dumps(selected or cs[:8], ensure_ascii=False))
+print('first_norms:', json.dumps([n for n in g['operations'] if n['type'] == 'RmsNorm'][:4], ensure_ascii=False))
+print('first_adds:', json.dumps([n for n in g['operations'] if n['type'] == 'Add'][:4], ensure_ascii=False))
+PY
+```
+
+路径中的`input_layernorm`只筛选要回传的候选，不构成语义绑定。未改图GE加载/保存检查可与此独立进行，命令和范围见下文；其主机GE根沿用已成功draft导出的`CANN_ROOT`，不是`DDK_PATH`。
+
 此处只需已上传的5py+YAML和实际图元数据，不读取其四个权重路径。B入口可直接重新哈希这6个小源文件；不要求在当前服务器运行A的派生源码准备器：
 
 当前服务器已找到真实TorchAir schema，不需要额外搬文件：protoc3_13与3_19的descriptor均为7381字节、SHA256 `5a1eac27746a7bb5109e819ce6dd7813a3ffcaab04bd0ab2ca3c2cdf1e4084ea`。选择更小的3_19生成文件；版本shim`ge_ir_pb2.py`不用于解析。执行：
@@ -61,7 +90,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_target_air.py" \
   --full --output "$AI_RUN_DIR/target-ge-source-air-ge-details.json"
 ```
 
-这是显式schema选择，仍只解析AST数据，不导入TorchAir/NPU；实际原AIR的全字段/边界匹配仍待本次结果。其他环境可使用`--find-torchair-schema`重新定位实际生成文件。
+这是已执行的显式schema选择，仍只解析AST数据，不导入TorchAir/NPU；本轮结果以上方详细报告为准。其他环境可使用`--find-torchair-schema`重新定位实际生成文件。
 
 最新使用真实GE schema的回传已到达`NetOutput differs from its explicit producer descriptor`，说明RAW_MODELDEF的protobuf解码已进入后续边界检查；旧检查器将两阶段混在一起，笼统打印OPAQUE。新版分别记录`protobuf_decode`与`metadata_inspection`，保留NetOutput每个不匹配端口两侧shape/dtype/layout及origin/storage元数据；ABI差异仍不放行。重读使用新的`target-ge-source-air-ge-details.json`，前两份报告保留。
 
