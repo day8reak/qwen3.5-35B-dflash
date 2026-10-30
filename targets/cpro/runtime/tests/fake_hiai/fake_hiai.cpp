@@ -548,6 +548,8 @@ class FakeModelManager final : public IModelManager {
     if (weights_ || initialized_ || !std::filesystem::path(directory).is_absolute() ||
         !std::filesystem::is_directory(directory)) return 71;
     if (Failure()=="original-init-weights") return 72;
+    if (Failure()=="original-init-weights-throw") throw std::runtime_error("injected InitWeights exception");
+    if (Failure()=="original-init-weights-unknown") throw 123;
     weights_=true;
     return 0;
   }
@@ -555,7 +557,7 @@ class FakeModelManager final : public IModelManager {
     Trace("v2-deinit-weights");
     if (!weights_ || initialized_) { std::cerr << "invalid weights cleanup order\n"; std::abort(); }
     weights_=false;
-    return Failure()=="original-deinit-weights"?73:0;
+    return Failure()=="original-deinit-weights" || Failure()=="original-init-cleanup-failure"?73:0;
   }
   Status Init(const ModelInitOptions& options,const std::shared_ptr<IBuiltModel>& model,
               const std::shared_ptr<IModelManagerListener>& listener) override {
@@ -565,7 +567,8 @@ class FakeModelManager final : public IModelManager {
     if (concrete->original && !weights_) return 74;
     model_=model; initialized_=true; original_=concrete->original; draft64_=concrete->draft64;
     resident_loop_=concrete->resident_loop;draft_loop_=concrete->draft_loop;
-    return Failure()=="v2-init" || Failure()=="original-init" || (draft64_ && Failure()=="resident-draft-init")?32:0;
+    return Failure()=="v2-init" || Failure()=="original-init" || Failure()=="original-init-cleanup-failure" ||
+      Failure()=="original-init-deinit-throw" || (draft64_ && Failure()=="resident-draft-init")?32:0;
   }
   Status Run(const std::vector<std::shared_ptr<INDTensorBuffer>>& inputs,
              std::vector<std::shared_ptr<INDTensorBuffer>>& outputs) override {
@@ -633,6 +636,7 @@ class FakeModelManager final : public IModelManager {
     Trace("v2-deinit");
     if (model_.expired()) { std::cerr << "premature v2 built model release\n"; std::abort(); }
     initialized_=false;
+    if(original_&&Failure()=="original-init-deinit-throw")throw std::runtime_error("injected target DeInit exception after failed Init");
     if(draft64_&&Failure()=="resident-draft-deinit")throw std::runtime_error("injected draft DeInit exception");
   }
  private:

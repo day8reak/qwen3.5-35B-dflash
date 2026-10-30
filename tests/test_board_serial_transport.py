@@ -470,7 +470,7 @@ def _compact_reports(manifest, *, config_sha='c' * 64, failed=False):
         'eos_policy': 'DISABLED_FIXED_BUDGET_SMOKE', 'acceptance_scope': 'CONSIDERED_K_ONLY_NOT_ALL15',
         'numerical_validation': 'NOT_RUN', 'performance': 'NOT_EVALUATED'}
     if failed:
-        loop.update(error='target failed', failed_child_pid=1001, failed_child_exitcode=1)
+        loop.update(error='target failed', stage='target-child', failed_child_pid=1001, failed_child_exitcode=1)
     prompt_calls = min(len(manifest['prompt_token_ids']), counts['target_native_calls'])
     phase_counts = {'prompt_ingest': prompt_calls, 'decode': counts['target_native_calls'] - prompt_calls,
         'draft': counts['draft_native_calls']}
@@ -553,16 +553,40 @@ def test_compact_known_failure_retains_small_error_and_requires_all_waited_child
         transport.validate_retrieved_tokens(manifest, root, _expected_evidence_kind='host-fake-hiai', _remote_exitcode=0)
 
 
-@pytest.mark.parametrize('failed,active', [(False, False), (True, False), (True, True)])
-def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files(prepared_request, tmp_path, monkeypatch, failed, active):
+@pytest.mark.parametrize('failed,fault,resident', [(False, None, False), (True, None, False),
+    (True, 'active-child', False), (True, None, True), (True, 'malformed-error', False)])
+def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files(prepared_request, tmp_path, monkeypatch, capsys, failed, fault, resident):
     root, manifest, FakeHdc, _ = prepared_request; manifest['dump'] = False
+    if resident:
+        _enable_prefill_request(root, manifest, tmp_path)
+        manifest.update(execution_mode='resident-v2', resident_abi=_write(root / 'resident-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n'))
+        old_build = transport._build_payloads
+        monkeypatch.setattr(transport, '_build_payloads', lambda out, timeout, **kwargs: old_build(out, timeout))
     (root / 'manifest.json').write_text(json.dumps(manifest))
     launched = transport.execute_board_serial(root, tmp_path / 'execution', detach=True)
     loop, progress = _compact_reports(manifest, config_sha=launched['config_sha256'], failed=failed)
-    if active:
+    if resident:
+        loop, progress = _resident_compact(manifest)
+        loop.update(status='FAILED', config_sha256=launched['config_sha256'], stage='resident-load',
+            error='EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT: InitWeights failed: 23', generated_tokens=[], full_prefix=manifest['prompt_token_ids'],
+            failed_child_pid=1001, failed_child_exitcode=0, completed_rounds=0)
+        loop['counts'].update(target_native_calls=0, draft_native_calls=0, considered=0, accepted=0, corrections=0, bonuses=0)
+        life = loop['resident_lifecycle']; life.update(session_id=hashlib.sha256((loop['config_sha256'] + ':1000').encode()).hexdigest(),
+            stage='TARGET_LOAD/EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT', status='FAILED', poisoned=True,
+            target_load_attempts=1, target_loads=0, draft_load_attempts=0, draft_loads=0, target_close_calls=0, draft_close_calls=0,
+            target_runs=0, target_run_attempts=0, draft_runs=0, draft_run_attempts=0, target_load_ms=139, draft_load_ms=0,
+            target_run_ms=0, draft_run_ms=0, close_ms=0)
+        for name in ('decode', 'draft'): loop['phase_latency'][name].update(calls=0, total_ms=0, mean_ms=None)
+        loop['acceptance'].update(accepted=0, considered=0, rate=None)
+        loop['supervisor_timing'].update(resident_target_load_ms=139, resident_draft_load_ms=0,
+            resident_target_run_ms=0, resident_draft_run_ms=0, resident_close_ms=0)
+        progress.update(status='FAILED', generated_tokens=[], resident_call_status='FAILED_CLOSED')
+    if fault == 'active-child':
         loop['child_lifecycle']['child_status'] = progress['child_status'] = 'RUNNING'
         loop['child_lifecycle']['active_child_count'] = progress['active_child_count'] = 1
         loop['child_lifecycle']['children'][-1]['exitcode'] = None
+    if fault == 'malformed-error':
+        loop['error'] = {'unverified_error_text': 'must not become a summary error'}
     data = _compact_files(tmp_path / 'native-results', loop, progress)
     remote = {launched['board_attempt'] + '/results/' + name: raw for name, raw in data.items()}
     remote[launched['board_attempt'] + '/results/retrieval-manifest.tsv'] = (tmp_path / 'native-results/retrieval-manifest.tsv').read_bytes()
@@ -592,14 +616,35 @@ def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files
         assert result['generated_token_ids'] == loop['generated_tokens']
     assert result['evidence_scope'] == 'TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY'
     assert result['state_continuity'] == 'NOT_REPLAYED_COMPACT_RESULT' and result['dump'] is False
-    if not active:
+    if not fault:
         assert result['acceptance']['rate'] == (None if failed else 0)
         assert result['phase_latency']['prompt_ingest']['calls'] == (1 if failed else 8)
         assert 'Recover this exact' not in result['next']
+        assert result['counts'] == loop['counts'] and result['generated_token_ids'] == loop['generated_tokens']
+        if failed:
+            expected_stage = 'resident-load' if resident else 'target-child'
+            assert result['stage'] == 'complete' and result['execution_failure_stage'] == expected_stage
+            assert result['error'] == result['execution_error'] == loop['error']
+            if resident:
+                assert result['resident_failure_stage'] == 'TARGET_LOAD/EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT'
+                assert result['counts'] == dict(target_native_calls=0, draft_native_calls=0, prefill_native_calls=1,
+                    considered=0, accepted=0, corrections=0, bonuses=0)
+            import importlib.util
+            script = Path(__file__).parents[1] / 'targets/cpro/scripts/run_board_serial_dflash.py'
+            spec = importlib.util.spec_from_file_location('failed_recovery_cli', script)
+            cli = importlib.util.module_from_spec(spec); spec.loader.exec_module(cli)
+            monkeypatch.setattr(transport, 'recover_board_serial', lambda *a, **k: result)
+            assert cli.main(['--recover', str(tmp_path / 'execution'), '--output', str(tmp_path / 'summary')]) == 1
+            summary = json.loads(capsys.readouterr().out.splitlines()[-1])
+            assert summary['error'] == loop['error'] and summary['execution_failure_stage'] == expected_stage
+            assert summary['stage'] == 'complete' and summary['counts'] == loop['counts']
+            if resident:
+                assert summary['resident_failure_stage'] == result['resident_failure_stage']
     assert len(FakeHdc.instances[-1].receives) == 5
     assert not (tmp_path / 'recovery/supervisor.stdout').exists()
-    if active:
+    if fault:
         assert result['lock_state'] == 'RETAINED_OR_UNCERTAIN' and 'lock_release' not in result
+        assert result['error'] != loop['error'] and 'execution_error' not in result and 'execution_failure_stage' not in result
     else:
         assert result['lock_release'] == 'RELEASED'
 

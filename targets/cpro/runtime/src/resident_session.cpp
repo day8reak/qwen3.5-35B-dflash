@@ -150,8 +150,10 @@ void ResidentSession::Load(const ResidentSessionConfig& config) {
     for(const auto& row:config.target_outputs)impl_->output_sizes.push_back(row.bytes);
     r.stage="TARGET_LOAD";++r.target_load_attempts;auto start=Clock::now();
     try {impl_->target=std::make_unique<HiaiOriginalTargetExecutor>(config.target_model,
-        config.target_weight_directory,config.runtime_version,config.target_inputs,config.target_outputs,r.target_model_name);}
-    catch(...){r.target_load_ms+=Milliseconds(start);throw;}
+        config.target_weight_directory,config.runtime_version,config.target_inputs,config.target_outputs,r.target_model_name,&r.target_lifecycle);}
+    catch(...){r.target_load_ms+=Milliseconds(start);
+      if(!r.target_lifecycle.cleanup_error.empty())r.cleanup_error="target construction: "+r.target_lifecycle.cleanup_error;
+      throw;}
     r.target_load_ms+=Milliseconds(start);++r.target_loads;r.target_lifecycle=impl_->target->lifecycle();
     r.stage="DRAFT_LOAD";++r.draft_load_attempts;start=Clock::now();
     try {impl_->draft=std::make_unique<HiaiStatefulExecutor>(config.draft_model,config.runtime_version,

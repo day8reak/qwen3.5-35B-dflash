@@ -1,6 +1,6 @@
 # 板端统一 HIAI V2 常驻执行
 
-更新：2026-10-30。原 prefill 完整板端闭环已经取得用户实机完成结果；见 [成功基线](board-prefill-first-completion.md)。本次新增 `--resident`，将 decode 和当前内嵌权重 draft 都接到 HIAI V2。**新路径仍需用户在实际 DDK／设备验证，主机替身测试不能证明私有 SDK 兼容性或加速。** 默认入口保留已成功的按次加载方式，旧请求仍按自己的准备记录恢复。
+更新：2026-10-30。原 prefill 完整板端闭环已经取得用户实机完成结果；见 [成功基线](board-prefill-first-completion.md)。本次新增 `--resident`，将 decode 和当前内嵌权重 draft 都接到 HIAI V2。**首次设备请求在 target 的 InitWeights 返回 INVALID_PARAM，draft 尚未加载，常驻未通过。** 正在核对原成功工具的加载实现，详见[失败记录与诊断修复](board-resident-validation.md)。默认入口保留已成功的按次加载方式，旧请求仍按自己的准备记录恢复。
 
 ## 执行方式
 

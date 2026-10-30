@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-resident-v2-failure-reporting-host-validation",
+  "updated": "2026-10-30",
+  "run_id": "20261030T125254Z-27760-8085b3",
+  "source_base_commit": "df49553e59a4766d4717de2c536a6383b2ab34ef",
+  "status": "HOST_DIAGNOSTICS_TESTED_DEVICE_LOADING_FAILURE_UNRESOLVED",
+  "scope": "Constructor failure lifecycle and recovery/CLI error reporting only; InitWeights-before-Init order unchanged; no new device inference",
+  "host_checks": [
+    {
+      "path": "out/failure-summary-final.xml",
+      "sha256": "e61cb37511fb884fad65ca29d7ac16b59bf0bb9d6892eef67cfde6b2c83463cf",
+      "tests": 85,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "out/lifecycle-adapter-tests.xml",
+      "sha256": "92e8d8b993994e8f488332cd9ce0eaca837f83fcfe065883350226a3c3614c85",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "out/lifecycle-json-test-v2.xml",
+      "sha256": "13865fe542aa27f4676bfda399fdf3c4c811165a3077895d06d66ee7f0a0cc77",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "counting_scope": "Groups test different layers; CTest wrappers cover multiple cases; not a count of unique assertions",
+  "source_sha256": {
+    "model/qwen35_moe_dflash/board_serial_transport.py": "2cc20802f53f65345f677e13b32bff9e42006c7d8fe62c2556e7f42b58e75e40",
+    "targets/cpro/runtime/include/qwen35_dflash/hiai_executor.hpp": "203d95be137ef9653bde470ceebfb78dcdc3208ade6335f019e8df80b05a3a35",
+    "targets/cpro/runtime/src/board_serial_main.cpp": "46616fe8a9099c7131750b41d47451c8b08e877a57008ece19e3fc9c3daa6e89",
+    "targets/cpro/runtime/src/hiai_executor.cpp": "a3c66dc6e2c39f9909c6d32f8034fa930ab64b2d7d3234562485701511528138",
+    "targets/cpro/runtime/src/resident_session.cpp": "c3728016a3e1ee3d9ff2d5bbd2560c66f86d918eb5cce0071b1b1dea4582dd57",
+    "targets/cpro/runtime/tests/fake_hiai/fake_hiai.cpp": "151f0727c0903653686191c9d23e167e4b5ac937cfe33a8c48e6c0d71379e075",
+    "targets/cpro/runtime/tests/test_resident_session.cpp": "b14039c48df560ebff63bfd017f1b3a14c0056054425c405463292758afe8882",
+    "targets/cpro/scripts/run_board_serial_dflash.py": "fa90ded3916c6895824a1a4a3bd8cf605a38adf99c3d287d427a5568283e2c92",
+    "tests/test_board_serial_integration.py": "e3a4824f0b3214994ef8ccde82e2ffee5ea4d3868f8f3532337b8e78b65af780",
+    "tests/test_board_serial_transport.py": "9b73ff8a8891ce3096f5564ec5b3011198ed3956a4e3a483f61b7fa7d5877951"
+  },
+  "actual_sdk": "EXPLICIT_FAKE_HIAI_FOR_HOST_TESTS",
+  "local_selected_ddk_build": "NOT_RUN_DECLARED_CPRO_PROFILE_MANIFEST_MISSING",
+  "assistant_hdc_access": "NOT_PERFORMED_USER_REQUEST",
+  "model_compilation": "NOT_RUN",
+  "numerical_validation": "NOT_EVALUATED",
+  "device_failure_record": "specs/resident-v2-first-load-failure.json",
+  "next": "Inspect the successful selected tool loading implementation; do not repeat full inference solely to validate diagnostic fields",
+  "independent_review": "PASS_NO_LOADING_POLICY_OR_LEGACY_SCHEMA_GATE_CHANGE"
+}

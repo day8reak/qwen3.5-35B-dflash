@@ -1,6 +1,14 @@
-# 统一 V2 常驻入口：主机验证与实机待验
+# 统一 V2 常驻入口：主机验证与首次加载失败
 
 更新：2026-10-30。实现入口为 `run_board_serial_dflash.py --resident`，二进制为 `qwen35_board_resident`。完整参数见 [当前执行命令](current-status.md)，生命周期与计时定义见 [常驻方案](resident-runtime-plan.md)。原 prefill P0 成功保存在 [独立记录](board-prefill-first-completion.md)，不能用它证明本次常驻路径已在设备运行。
+
+## 首次设备结果与诊断修复
+
+用户已在实际 DDK／设备执行常驻请求。prefill 完成一次；随后 target 在 `InitWeights` 返回 `3=INVALID_PARAM`，此时尚未调用 manager `Init`，draft 尚未加载。请求失败结果已回收，所持锁已释放。[设备记录](../specs/resident-v2-first-load-failure.json)保留用户回传的阶段、计时与接口声明，未把错误码解释为内存不足。
+
+构造函数抛出异常时，原实现没有把部分生命周期传给 session，导致摘要中的 attempted／cleanup 字段保持默认值。诊断修复在清理后保留实际调用、返回状态、最初失败阶段及清理错误；未调用或异常无返回使用 `null`。普通输出也直接列出执行错误及执行失败阶段，回收的 `stage=complete` 仍仅表示回收完成。
+
+本次修复保持加载顺序不变，不解决 `InitWeights` 参数拒绝。主机验证：85 项传输／摘要回归、4 项实际 adapter CTest、1 项实际 supervisor＋adapter＋FakeHIAI 加载失败 JSON 集成通过。源码和测试产物见[诊断修复记录](../specs/resident-v2-failure-reporting-validation.json)。下一步核对原成功工具的 V2 加载实现；不为验证摘要而重复整轮推理。
 
 ## 本次实现
 
@@ -30,10 +38,10 @@
 
 ## 尚未取得的结果
 
-- 本机所声明 CPro profile manifest 缺失，没有本地实际 OHOS／DDK 链接结果；未修改共享环境。用户 DDK 主机的运行入口会构建实际 native runner。
+- 本机所声明 CPro profile manifest 缺失，没有本地实际 OHOS／DDK 链接结果；未修改共享环境。用户已经构建并运行首个版本，但新增诊断修复尚未取得设备结果。
 - 没有执行设备／HDC 探测，遵守用户“此处连不上，不再检查”的要求。
-- 原 external-weight target 的 InitWeights-before-Init 顺序、当前 embedded draft 的 V2 初始化、两个manager同时驻留及内存余量必须由实际设备验证。
+- 原 external-weight target 的 InitWeights-before-Init 尝试已被拒绝，具体参数／顺序原因待定位；当前 embedded draft 的 V2 初始化、两个manager同时驻留及内存余量尚未验证。
 - 新版多轮 token／state 是否与旧成功运行一致、实际耗时改善、重复请求内存稳定和物理断连尚未验收。FakeHIAI 的运行时长不作性能数据。
 - P1/P2 数值精度及有效接受率未完成；既有完整请求接受 0／7，新运行方式不能自动提升精度。
 
-下一动作只有一次用户侧新请求：按 `current-status.md` 启动 `--resident`，恢复同一 attempt，核对一次加载、多次Run、关闭与最终token／时延。成功才记录设备常驻证据；失败保留精确阶段和锁，不删除目录重跑。
+下一动作是读取所选原成功工具的加载实现，修复加载问题后再使用新目录运行。成功才记录设备常驻证据；失败保留精确阶段和锁，不删除目录重跑。

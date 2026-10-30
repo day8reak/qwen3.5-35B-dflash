@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <memory>
 #include <map>
+#include <optional>
 #include <string>
 #include <stdexcept>
 #include <type_traits>
@@ -181,6 +182,10 @@ struct HiaiOriginalTargetLifecycle {
   bool weights_init_attempted = false, weights_initialized = false;
   bool manager_init_attempted = false, manager_initialized = false;
   bool manager_deinit_called = false, weights_deinit_called = false, closed = false;
+  // No value means the SDK has not returned from this call. In particular a
+  // real signed -1 status is distinct from an exception or an uncalled API.
+  std::optional<std::int64_t> weights_init_status, manager_init_status;
+  std::string failure_stage, cleanup_error;
   std::int64_t weights_deinit_status = -1;
   std::uint64_t run_attempts = 0, successful_runs = 0;
 };
@@ -199,7 +204,8 @@ class HiaiOriginalTargetExecutor final {
                             const std::string& expected_runtime_version,
                             const std::vector<HiaiBoundRuntimeTensor>& inputs,
                             const std::vector<HiaiBoundRuntimeTensor>& outputs,
-                            const std::string& resident_model_name = "");
+                            const std::string& resident_model_name = "",
+                            HiaiOriginalTargetLifecycle* constructor_failure_snapshot = nullptr);
   ~HiaiOriginalTargetExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
   void Execute();

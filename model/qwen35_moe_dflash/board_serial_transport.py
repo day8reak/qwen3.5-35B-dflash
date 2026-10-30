@@ -1370,9 +1370,23 @@ def _retrieve(hdc, out, state, manifest):
         device_execution='EXECUTED_OUTPUTS_RETRIEVED' if state['completion']['remote_exitcode'] == 0 else 'FAILED_OUTPUTS_RETRIEVED',
         completed_native_pids=completed)
     _result_scope(state, manifest)
-    if state['completion']['remote_exitcode'] == 0:
-        state.update(counts=loop['counts'], generated_tokens=loop['generated_tokens'],
-            generated_token_ids=loop['generated_tokens'])
+    # A completed failure is still an actual execution observation. Preserve
+    # its counts and original failure location separately from retrieval's
+    # outer stage (which becomes "complete" after owned-lock release).
+    if 'counts' in loop:
+        state['counts'] = loop['counts']
+    if 'generated_tokens' in loop:
+        state.update(generated_tokens=loop['generated_tokens'], generated_token_ids=loop['generated_tokens'])
+    if state['completion']['remote_exitcode'] != 0:
+        if isinstance(loop.get('error'), str) and loop['error'].strip():
+            state.update(error=loop['error'], execution_error=loop['error'])
+        if isinstance(loop.get('stage'), str) and loop['stage']:
+            state['execution_failure_stage'] = loop['stage']
+        if _resident_mode(manifest):
+            life = loop['resident_lifecycle']
+            native_stage = life.get('failure_stage') or life.get('stage')
+            if isinstance(native_stage, str) and native_stage:
+                state['resident_failure_stage'] = native_stage
     for key in ('acceptance', 'phase_latency', 'supervisor_timing'):
         if key in loop:
             state[key] = loop[key]

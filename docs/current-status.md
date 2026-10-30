@@ -4,7 +4,9 @@
 
 **2026-10-30：P0 原 prefill 端侧完整执行已完成。** 用户回传 prefill 1 次、decode 8 次、draft 7 次，生成 `[4,12,10,8,0,4,32,2]`，接受 0／7，总墙钟 305.788 秒，回收及锁释放完成。见 [实机成功基线](board-prefill-first-completion.md)。这属于执行通过，精度和加速尚未验收。
 
-**当前下一步：测试统一 HIAI V2 的双模型常驻入口。** 新增显式 `--resident`，原 prefill 完成并退出后，同一 native 进程保留 decode 和内嵌 draft 各一个 V2 manager，加载一次、多次 `Run`。旧成功模式 draft 为 `legacy-buffer`；新路径的实际 DDK 编译、V2 初始化及同时驻留仍待用户验证，不能把旧成功结果算到新路径。见 [常驻方案](resident-runtime-plan.md) 和 [主机验证记录](board-resident-validation.md)。
+**当前阻点：首次常驻请求在 target 加载失败，暂不重复同一调用顺序。** 实际 prefill 已完成，`InitWeights` 在 `Init` 之前返回 `3=INVALID_PARAM`；decode／draft 均未 Run，draft 尚未加载。失败请求已回收并释放所持锁，见 [首个常驻加载失败](../specs/resident-v2-first-load-failure.json)。当前先核对原成功工具的 `weight_dir`／V2 加载实现，并修复错误摘要及构造失败快照；未取得证据前不交换调用顺序、不重编模型。
+
+**已实现的常驻入口（下面命令保留作参数参考，待加载修复后换新目录运行）：** 新增显式 `--resident`，原 prefill 完成并退出后，同一 native 进程保留 decode 和内嵌 draft 各一个 V2 manager，加载一次、多次 `Run`。旧成功模式 draft 为 `legacy-buffer`；实际 DDK 编译及 prefill 调用已由本次执行观察到；target V2 初始化失败，同时驻留仍未验证，不能把旧成功结果算到新路径。见 [常驻方案](resident-runtime-plan.md) 和 [主机验证记录](board-resident-validation.md)。
 
 服务器仍只做一次部署、启动和最终回收。循环内的 embedding 查表、draft、decode1 verify、接受／纠正、80 状态及特征反馈都在板端。原三个 OMC 和权重不变，只编译 runner；不要求 S128 AIR 或重编 draft。
 

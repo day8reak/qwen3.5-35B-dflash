@@ -352,6 +352,30 @@ def test_actual_resident_file_v2_session_prefill_and_multiround_loop(tmp_path, r
         assert retained['child_lifecycle']['children'] == [dict(pid=retained['child_lifecycle']['last_child_pid'], exitcode=0)]
 
 
+def test_actual_resident_failed_constructor_retains_lifecycle_snapshot(tmp_path, resident_native_programs):
+    from qwen35_moe_dflash.board_serial_transport import validate_retrieved_tokens
+    case = make_case(tmp_path / 'resident-failed-weight-init', resident_native_programs, dump=False)
+    enable_resident(case)
+    process = execute(case, native_fault='original-init-weights')
+    assert process.returncode == 1, (process.stdout, process.stderr)
+    loop = validate_retrieved_tokens(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
+        _expected_config_sha256=digest(case['config']), _remote_exitcode=1)
+    life = loop['resident_lifecycle']; target = life['target_lifecycle']
+    assert life['stage'] == 'TARGET_LOAD/EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT'
+    assert life['target_load_attempts'] == 1 and life['target_loads'] == life['draft_load_attempts'] == 0
+    assert life['closed'] and life['poisoned'] and life['cleanup_error'] == ''
+    assert target['weights_init_attempted'] and not target['weights_initialized']
+    assert target['weights_init_status'] == 72 and target['manager_init_status'] is None
+    assert not target['manager_init_attempted'] and not target['manager_initialized']
+    assert not target['manager_deinit_called'] and not target['weights_deinit_called']
+    assert target['weights_deinit_status'] == -1 and target['closed']
+    assert target['failure_stage'] == 'EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT'
+    assert target['cleanup_error'] == '' and 'InitWeights failed: 72' in loop['error']
+    assert loop['counts']['prefill_native_calls'] == 1
+    assert loop['counts']['target_native_calls'] == loop['counts']['draft_native_calls'] == 0
+    assert len(loop['child_lifecycle']['children']) == 1  # Only the completed prefill is a child process.
+
+
 @pytest.mark.parametrize('dump', [True, False])
 def test_actual_prefill64_handoff_then_real_draft_and_multiround_decode(tmp_path, native_programs, dump):
     from qwen35_moe_dflash.board_serial_transport import validate_retrieved_loop

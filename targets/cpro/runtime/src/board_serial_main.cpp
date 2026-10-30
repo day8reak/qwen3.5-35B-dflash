@@ -305,6 +305,8 @@ class Supervisor {
     value["closed"]=e.closed;value["poisoned"]=e.poisoned;
     J target=J::Obj();const auto& t=e.target_lifecycle;target["weight_init_policy"]=t.weight_init_policy;target["ordering_validation"]=t.ordering_validation;
     target["weights_init_attempted"]=t.weights_init_attempted;target["weights_initialized"]=t.weights_initialized;target["manager_init_attempted"]=t.manager_init_attempted;target["manager_initialized"]=t.manager_initialized;
+    auto status_value=[](const std::optional<std::int64_t>& status){J value;if(status){value.kind=J::Number;value.s=std::to_string(*status);}return value;};
+    target["weights_init_status"]=status_value(t.weights_init_status);target["manager_init_status"]=status_value(t.manager_init_status);target["failure_stage"]=t.failure_stage;target["cleanup_error"]=t.cleanup_error;
     target["manager_deinit_called"]=t.manager_deinit_called;target["weights_deinit_called"]=t.weights_deinit_called;target["closed"]=t.closed;
     J deinit_status;deinit_status.kind=J::Number;deinit_status.s=std::to_string(t.weights_deinit_status);target["weights_deinit_status"]=deinit_status;target["run_attempts"]=t.run_attempts;target["successful_runs"]=t.successful_runs;value["target_lifecycle"]=target;return value;
   }

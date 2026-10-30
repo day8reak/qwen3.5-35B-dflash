@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-resident-v2-user-reported-load-failure",
+  "updated": "2026-10-30",
+  "source": "USER_PASTED_RECOVERY_SUMMARY_LOOP_ERROR_AND_SELECTED_HEADERS",
+  "assistant_device_access": "NOT_PERFORMED",
+  "execution": "$AI_RUN_DIR/dflash-board-resident8-run",
+  "recovery": "$AI_RUN_DIR/dflash-board-resident8-recovery",
+  "board_attempt": "/data/local/tmp/qwen35_board_serial_e005f47261dc4324bf6af0aff8cace17",
+  "process_id": 64655,
+  "session_id": "f153dc50dc9cb6170592cd169b0556b7aa7abe0bd6cfd0d3da9b4be9e0bf9319",
+  "status": "FAILED_OUTPUTS_RETRIEVED",
+  "recovery_stage": "complete",
+  "execution_failure_stage": "resident-load",
+  "resident_failure_stage": "TARGET_LOAD/EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT",
+  "error": "InitWeights failed: 3",
+  "selected_header_status": {
+    "path": "base/error_types.h",
+    "type": "uint32_t",
+    "value": 3,
+    "name": "INVALID_PARAM",
+    "source_identity": "USER_PASTED_DECLARATION_NOT_LOCALLY_HASH_BOUND"
+  },
+  "selected_build_options": {
+    "path": "model_builder/model_builder_types.h",
+    "weight_directory_field": "NOT_PRESENT_IN_USER_PASTED_MODEL_BUILD_OPTIONS",
+    "call_order_contract": "NOT_ESTABLISHED_BY_DECLARATIONS"
+  },
+  "counts": {
+    "prefill_completed": 1,
+    "target_load_attempts": 1,
+    "target_loads": 0,
+    "draft_load_attempts": 0,
+    "draft_loads": 0,
+    "target_runs": 0,
+    "draft_runs": 0
+  },
+  "timing_ms": {
+    "prefill": 16096,
+    "target_load_attempt": 139,
+    "startup_source_hash": 19916,
+    "total_wall": 38179
+  },
+  "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+  "observed_session": {
+    "closed": true,
+    "poisoned": true
+  },
+  "old_target_lifecycle_snapshot": "DEFAULT_FIELDS_AFTER_CONSTRUCTOR_FAILURE_NOT_PROOF_INITWEIGHTS_WAS_NOT_ATTEMPTED_OR_OWNED_CLEANUP_DID_NOT_RUN",
+  "diagnosis_scope": "pre-Init InitWeights rejected with INVALID_PARAM; exact parameter/order cause unresolved; draftV2 untested",
+  "required_next_evidence": "Selected successful model_run_tool V2 load implementation or equivalent binding of weight_dir to Init/InitWeights",
+  "model_compilation": "NOT_RUN",
+  "numerical_validation": "NOT_EVALUATED",
+  "new_residency_pass": false
+}

@@ -260,7 +260,7 @@
     },
     "resident_v2": {
       "implementation": "SINGLE_PROCESS_TWO_FILE_V2_MANAGERS_WITH_ORIGINAL_PREFILL_CHILD",
-      "status": "HOST_TESTED_DEVICE_PENDING",
+      "status": "USER_REPORTED_TARGET_LOAD_FAILED_INVALID_PARAM_DRAFT_UNTESTED",
       "validation_document": "docs/board-resident-validation.md",
       "model_compilation": "NOT_RUN",
       "device_residency": "NOT_RUN",
@@ -271,7 +271,9 @@
       "zero_copy": "NOT_IMPLEMENTED_PRIVATE_STATE_FILES_AND_OWNED_COPIES_RETAINED",
       "validation_manifest": "specs/resident-v2-host-validation.json",
       "host_python_tests": 101,
-      "actual_adapter_integration_tests": 2
+      "actual_adapter_integration_tests": 2,
+      "first_device_attempt": "specs/resident-v2-first-load-failure.json",
+      "failure_reporting_validation": "specs/resident-v2-failure-reporting-validation.json"
     }
   },
   "next_action": {
@@ -551,8 +553,8 @@
         0.5,
         2
       ],
-      "next_action_type": "implement_and_measure",
-      "next_action": "用户按 docs/current-status.md 启动新 --resident P8/G8 请求并恢复同一attempt；核对1次prefill、各1次load、多次Run、关闭、token对照及RSS/墙钟。主机检查已完成，设备常驻仍待验证。",
+      "next_action_type": "inspect_selected_runtime_contract_and_fix_reporting",
+      "next_action": "核对所选原成功model_run_tool的V2 weight_dir处理和加载顺序；先修复compact错误摘要与失败构造快照。暂不按相同初始化顺序重跑，保留原prefill成功基线。",
       "pass_conditions": [
         "two-model residency feasibility measured",
         "native loop same tokens/state as baseline",
@@ -569,7 +571,7 @@
         "docs/resident-runtime-plan.md",
         "docs/board-resident-validation.md"
       ],
-      "last_error": null,
+      "last_error": "InitWeights failed: 3 (INVALID_PARAM), before manager.Init; prefill1, decode0, draft0; recovery completed, owned locks released.",
       "numerical_acceptance_depends_on": [
         "P1",
         "P2"

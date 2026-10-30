@@ -766,6 +766,7 @@ struct HiaiOriginalTargetExecutor::Impl {
     manager.reset();
     built_model.reset();
     input_ptrs.clear(); output_ptrs.clear(); inputs.clear(); outputs.clear();
+    lifecycle.cleanup_error = cleanup_error;
     Stage(cleanup_error.empty() ? "CLOSED" : "CLEANUP_FAILED");
     if (!cleanup_error.empty()) {
       if (report_error) throw HiaiRuntimeError(stage, cleanup_error);
@@ -778,7 +779,17 @@ struct HiaiOriginalTargetExecutor::Impl {
 HiaiOriginalTargetExecutor::HiaiOriginalTargetExecutor(
     const std::filesystem::path& model, const std::filesystem::path& weight_directory,
     const std::string& expected_version, const std::vector<HiaiBoundRuntimeTensor>& inputs,
-    const std::vector<HiaiBoundRuntimeTensor>& outputs, const std::string& resident_model_name) : impl_(std::make_unique<Impl>()) {
+    const std::vector<HiaiBoundRuntimeTensor>& outputs, const std::string& resident_model_name,
+    HiaiOriginalTargetLifecycle* constructor_failure_snapshot) : impl_(std::make_unique<Impl>()) {
+  auto snapshot_failure = [&](const std::string& original_stage) {
+    impl_->lifecycle.failure_stage = original_stage;
+    // A constructor that throws never yields an executor for the caller to
+    // inspect. Finish exactly the same owned-scope cleanup now, then publish
+    // its factual attempts/statuses before the partial object is destroyed.
+    // Cleanup is idempotent, so the subsequent Impl destructor does not retry.
+    impl_->Cleanup(false);
+    if (constructor_failure_snapshot) *constructor_failure_snapshot = impl_->lifecycle;
+  };
   try {
     if (!model.is_absolute() || !std::filesystem::is_regular_file(model) ||
         !weight_directory.is_absolute() || !std::filesystem::is_directory(weight_directory) ||
@@ -841,6 +852,7 @@ HiaiOriginalTargetExecutor::HiaiOriginalTargetExecutor(
     impl_->Stage("EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT");
     impl_->lifecycle.weights_init_attempted = true;
     status = impl_->manager->InitWeights(weight_directory.string());
+    impl_->lifecycle.weights_init_status = static_cast<std::int64_t>(status);
     if (status != 0) throw std::runtime_error("InitWeights failed: " + std::to_string(status));
     impl_->lifecycle.weights_initialized = true;
     impl_->Stage("MODEL_MANAGER_INIT");
@@ -848,6 +860,7 @@ HiaiOriginalTargetExecutor::HiaiOriginalTargetExecutor(
     options.perfMode = hiai::PerfMode::HIGH;
     impl_->lifecycle.manager_init_attempted = true;
     status = impl_->manager->Init(options, impl_->built_model, nullptr);
+    impl_->lifecycle.manager_init_status = static_cast<std::int64_t>(status);
     if (status != 0) throw std::runtime_error("IModelManager::Init failed: " + std::to_string(status));
     impl_->lifecycle.manager_initialized = true;
     impl_->Stage("TENSOR_DESCRIPTORS");
@@ -907,8 +920,16 @@ HiaiOriginalTargetExecutor::HiaiOriginalTargetExecutor(
     impl_->ready.assign(inputs.size(), false);
     impl_->input_hashes.resize(inputs.size());
     impl_->Stage("READY");
-  } catch (const HiaiRuntimeError&) { throw; }
-  catch (const std::exception& error) { throw HiaiRuntimeError(impl_->stage, error.what()); }
+  } catch (const HiaiRuntimeError& error) { snapshot_failure(error.stage()); throw; }
+  catch (const std::exception& error) {
+    const auto stage = impl_->stage;
+    snapshot_failure(stage);
+    throw HiaiRuntimeError(stage, error.what());
+  } catch (...) {
+    const auto stage = impl_->stage;
+    snapshot_failure(stage);
+    throw HiaiRuntimeError(stage, "unknown original target construction exception");
+  }
 }
 HiaiOriginalTargetExecutor::~HiaiOriginalTargetExecutor() = default;
 void HiaiOriginalTargetExecutor::SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes) {
