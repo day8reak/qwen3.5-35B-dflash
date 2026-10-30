@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 
 from .artifacts import output_path, save_json
+from .air_schema import MAX_PB2_BYTES
 from .draft_ir_inspect import _enum_fields
 from .existing_air_profile import get_existing_air_profile
 from .ge_fused.bindings import _source_record
@@ -23,6 +24,7 @@ from .original_target_contract import _attributes
 from .target_compile_failure import _read_small, _relative, _safe
 from .target_export_reuse import _reject_constant, _unique_object
 from .target_prefill_smoke_plan import _nd_view_key, _runtime_keys
+from .target_source_schema import load_bound_source_schema, tensor_enum_fields
 
 
 _MAX_GRAPH_BYTES = 64 << 20
@@ -413,7 +415,8 @@ def _decode_air(schema, raw):
     return candidates[0]
 
 
-def load_target_graph(job, profile_name, bindings, *, source_capture=None, observations=None):
+def load_target_graph(job, profile_name, bindings, *, source_capture=None, observations=None,
+                      source_torchair_pb2=None):
     """Return bound job metadata, decoded AIR/OMC roots and selected enums.
 
     The returned graph objects stay in memory for bounded caller analysis;
@@ -467,34 +470,53 @@ def load_target_graph(job, profile_name, bindings, *, source_capture=None, obser
             ("artifact_kind", "status", "source_job", "source_binding", "reference_method", "explicit_weight_copy_bytes", "audit_errors")}
     if observations is not None:
         observations.update(metadata)
+    def source_metadata(path, role):
+        value = _metadata(path, bindings, read_attempts=read_attempts, role=role)
+        return value, bindings[-1]
+    def source_pb2(path):
+        _, identity = _audit_read(path, MAX_PB2_BYTES, "source-torchair-pb2",
+            lambda checked: _read_small(checked, MAX_PB2_BYTES), read_attempts)
+        bindings.append(identity)
+        return identity
+    producer = load_bound_source_schema(report, air_id, read_metadata=source_metadata,
+        read_pb2=source_pb2, source_torchair_pb2=source_torchair_pb2)
+    source_schema, source_binding = producer if producer is not None else (schema, {
+        "status": "STRICT_SELECTED_DDK_SCHEMA_LEGACY_SOURCE_WITHOUT_PRODUCER_RECEIPT",
+        "scope": "No producer declaration; same DDK schema is tried strictly, without cross-schema fallback"})
+    enums = _enum_fields(schema)
+    source_enums = tensor_enum_fields(source_schema) if producer is not None else enums
+    metadata.update(source_schema=source_schema.evidence, source_schema_binding=source_binding,
+        source_enum_fields=source_enums)
+    if observations is not None:
+        observations.update(metadata)
     air_payload, air_envelope = air_raw, "RAW_PROTOBUF"
     if air_raw.startswith(b"IMOD"):
         air_container = read_container(air_path)
         air_part = next(row for row in air_container["partitions"] if row["type"] == 0)
         air_payload = air_raw[air_part["offset"]:air_part["offset"] + air_part["bytes"]]
         air_envelope = "IMOD_MODEL_PARTITION"
-    kind, source = _decode_air(schema, air_payload)
+    kind, source = _decode_air(source_schema, air_payload)
     container = read_container(omc_path)
     part = next(row for row in container["partitions"] if row["type"] == 0)
     model_raw = omc_raw[part["offset"]:part["offset"] + part["bytes"]]
     compiled = schema.decode(model_raw, "ModelDef")
-    enums = _enum_fields(schema)
     if source_capture is not None:
-        source_capture.update(schema=schema, raw=air_payload, document=source, kind=kind)
+        source_capture.update(schema=source_schema, raw=air_payload, document=source, kind=kind)
     metadata.update(air_format=kind, air_envelope=air_envelope, air_payload_sha256=hashlib.sha256(air_payload).hexdigest())
     return metadata, source, compiled, enums
 
 
-def load_bound_source_air(job, profile_name, bindings):
+def load_bound_source_air(job, profile_name, bindings, *, source_torchair_pb2=None):
     """Expose the same verified payload for bounded raw scalar-cone readers."""
     capture = {}
-    metadata, _, _, _ = load_target_graph(job, profile_name, bindings, source_capture=capture)
+    metadata, _, _, _ = load_target_graph(job, profile_name, bindings, source_capture=capture,
+        source_torchair_pb2=source_torchair_pb2)
     return metadata, capture["schema"], capture["raw"], capture["document"], capture["kind"]
 
 
 def _job(job, profile_name, bindings, *, observations=None):
     metadata, source, compiled, enums = load_target_graph(job, profile_name, bindings, observations=observations)
-    metadata["source_lineage"] = analyze_state_lineage(source, enums)
+    metadata["source_lineage"] = analyze_state_lineage(source, metadata["source_enum_fields"])
     metadata["compiled_lineage"] = _join_compiled(metadata["source_lineage"], compiled, enums)
     return metadata, enums
 

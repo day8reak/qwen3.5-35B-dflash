@@ -21,16 +21,18 @@ _KIND = "qwen35-target-decode-state-lineage-audit"
 _MAX_REPORT = 4 << 20
 
 
-def _decode_job(job, bindings, observations):
-    metadata, source, compiled, enums = lineage.load_target_graph(job, _PROFILE, bindings, observations=observations)
-    metadata["source_lineage"] = lineage.analyze_state_lineage(source, enums)
+def _decode_job(job, bindings, observations, *, source_torchair_pb2=None):
+    metadata, source, compiled, enums = lineage.load_target_graph(job, _PROFILE, bindings, observations=observations,
+        source_torchair_pb2=source_torchair_pb2)
+    source_enums = metadata["source_enum_fields"]
+    metadata["source_lineage"] = lineage.analyze_state_lineage(source, source_enums)
     joined = lineage._join_compiled(metadata["source_lineage"], compiled, enums)
-    _, _, refs, outputs = lineage._boundary(source, enums, allow_unmaterialized_producer=True)
+    _, _, refs, outputs = lineage._boundary(source, source_enums, allow_unmaterialized_producer=True)
     for row in joined["states"]:
         if row["status"] != "EXPLICIT_FX_TENSOR_IDENTITY_MATCHED":
             continue
         view = outputs[row["source_output_index"]]["view"]
-        source_input = lineage._view(refs[row["source_refdata"]]["output_desc"][0], enums)
+        source_input = lineage._view(refs[row["source_refdata"]]["output_desc"][0], source_enums)
         compiled_views = [lineage._view(row[key], enums) for key in
             ("compiled_descriptor", "compiled_producer_descriptor", "compiled_input_descriptor")]
         row["source_netoutput_view"] = {"dtype": view[0], "shape_without_edge_singletons": list(view[1])}
@@ -148,7 +150,7 @@ def _gaps(job):
     return result
 
 
-def inspect_target_decode_state_lineage(job, runtime_probe, output_inspection, output):
+def inspect_target_decode_state_lineage(job, runtime_probe, output_inspection, output, *, source_torchair_pb2=None):
     """Retain one read-only same-artifact decode ownership audit."""
     out = output_path(output)
     out.mkdir(parents=True, exist_ok=False)
@@ -171,7 +173,7 @@ def inspect_target_decode_state_lineage(job, runtime_probe, output_inspection, o
         result["trial_inputs"] = inspection["trial_inputs"]
         result["stage"] = "read-decode-graphs"
         result["decode"] = {}
-        decoded, enums = _decode_job(job, bindings, result["decode"])
+        decoded, enums = _decode_job(job, bindings, result["decode"], source_torchair_pb2=source_torchair_pb2)
         result["decode"] = decoded
         result["operator_port_contract"] = {"source": lineage._source_record(),
             "pairs": {key: {"input": value[0], "output": value[1]} for key, value in lineage._PAIRS.items()},

@@ -14,12 +14,14 @@ def main(argv=None):
     parser.add_argument("--job", required=True, help="completed static decode1 compile job")
     parser.add_argument("--runtime-probe", required=True, help="saved named metadata probe for this same model")
     parser.add_argument("--output-inspection", required=True, help="successful inspect_target_decode_outputs output directory")
+    parser.add_argument("--source-torchair-pb2", help="optional exact copy of the canonical receipt's producer pb2 literal")
     parser.add_argument("--output", required=True, help="new output below AI_RUN_DIR")
     parser.add_argument("--full", action="store_true", help="print all state mappings and graph evidence")
     args = parser.parse_args(argv)
     from qwen35_moe_dflash.target_decode_state_lineage import inspect_target_decode_state_lineage
     try:
-        report = inspect_target_decode_state_lineage(args.job, args.runtime_probe, args.output_inspection, args.output)
+        report = inspect_target_decode_state_lineage(args.job, args.runtime_probe, args.output_inspection, args.output,
+            source_torchair_pb2=args.source_torchair_pb2)
         shown = report if args.full else {key: report[key] for key in ("status", "stage", "error",
             "device_execution", "model_compilation", "weight_payload_access", "state_feedback", "feedback_ready",
             "state_continuity", "numerical_validation", "same_model_state_mapping", "gap_summary", "next") if key in report}

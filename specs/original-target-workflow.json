@@ -3,7 +3,7 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "DECODE_OUTPUTS_BOUND_STATE_METADATA_FIX_READY_ORIGINAL_TABLES_MISSING",
+  "status": "DECODE_OUTPUTS_BOUND_SOURCE_SCHEMA_COPY_AND_ORIGINAL_ROWS_PENDING",
   "handoff": "20261030T023239Z-14738-f5135c/handoff.md",
   "user_state": "Complete original target prefill64, independent experimental decode1 and exact real-feature full six-layer draft step each executed successfully. Saved decode output binding,80-state ownership/feedback, original next-token embeddings and full multi-round execution remain to verify; no numerical acceptance.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
@@ -53,7 +53,7 @@
     "Ordinary decode and multi-round DFlash stop/reject/commit behavior",
     "Matched numerical acceptance and measured end-to-end performance"
   ],
-  "next_command": "Pull update and rerun inspect_target_decode_state_lineage.py into target-decode1-state-lineage-v2, reusing successful output inventory. Resolve original embedding resource paths before another row lookup. See docs/current-status.md.",
+  "next_command": "Prepare the small original decode row request on DDK host; run copied stdlib extractor on original weight machine and return response plus exact16KB producer pb2. Then run state-lineage-v3 and local row import. See docs/current-status.md.",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -1214,15 +1214,16 @@
     },
     "same_model_state_lineage": {
       "entrypoint": "targets/cpro/scripts/inspect_target_decode_state_lineage.py",
-      "output": "target-decode1-state-lineage-v2",
+      "output": "target-decode1-state-lineage-v3",
       "success_status": "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED",
       "partial_status": "DECODE_STATE_LINEAGE_OBSERVED_WITH_GAPS",
       "checks": "80unique serialized named updater owners, unique explicit source/compiled FX identities, exact typed views, literal native descriptor names, actual logged SHA-bound output files. Source producer missing shapes stay explicit; no profile-based filling.",
       "feedback_ready": false,
       "state_feedback": "NOT_RUN",
       "scope": "Same compiled decode model only; separate prefill/decode RefData labels are not assumed common layer identity.",
-      "status": "HOST_METADATA_LIMIT_FIX_TESTED_USER_RETRY_PENDING",
-      "metadata_json_maximum_bytes": 33554432
+      "status": "HOST_SOURCE_COMPILED_SCHEMA_SPLIT_VERIFIED_SOURCE_PB2_COPY_PENDING",
+      "metadata_json_maximum_bytes": 33554432,
+      "source_pb2_flag": "--source-torchair-pb2"
     },
     "original_decode_embedding_rows": {
       "entrypoint": "targets/cpro/scripts/inspect_original_decode_embeddings.py",
@@ -1235,12 +1236,13 @@
       "logical_history": "UNVERIFIED",
       "runtime_control_recipe": "UNVERIFIED",
       "state_continuity": "NOT_VALIDATED",
-      "status": "HOST_CANDIDATE_MATCHING_READY_ORIGINAL_TABLES_MISSING",
+      "status": "HOST_PORTABLE_ROW_TRANSFER_VERIFIED_SOURCE_EXTRACTION_PENDING",
       "candidate_flag": "--match-source-id-candidates",
       "maximum_candidate_ids": 1024,
       "maximum_candidate_table_read_bytes": 2103300,
       "uniqueness_scope": "EXPLICIT_SOURCE_ID_CANDIDATES_ONLY",
-      "source_id_occurrence_positions": "UNVERIFIED_LOGICAL_POSITION_SEMANTICS"
+      "source_id_occurrence_positions": "UNVERIFIED_LOGICAL_POSITION_SEMANTICS",
+      "portable_entrypoint": "targets/cpro/scripts/transfer_original_decode_rows.py"
     },
     "next": "Actual mapping and row proof enable a separate individually bound80-state continuation planner. A forced supplied-input state experiment is not greedy generation; full loop also needs declared compatible draft context capacity.",
     "device_execution": "NOT_RUN",
@@ -1384,5 +1386,76 @@
       "delegated state agent:53 passed in8.18s;tmp/lineage tests in current run"
     ],
     "scope": "Host bounded-file/schema/graph fixtures and fake execution provenance only; includes exact10,306,827-byte compilation report, large graph payloads, source ID vectors, unique/ambiguous candidate matching and original-row read bounds. No user input/model/phone execution or accuracy/state-continuity claim."
+  },
+  "source_air_schema_incident": {
+    "source": "USER_PASTED_SOURCE_SCHEMA_FIELDS_AND_LOCAL_STAT",
+    "failed_audit": "target-decode1-state-lineage-v2",
+    "stage": "read-decode-graphs",
+    "failure": "Source TorchAir AIR parsed with compiled DDKhiai schema caused AttrDef.list_list_float wire mismatch; rawGraphDef is not an alternate format fix.",
+    "producer_schema": {
+      "package": "ge.proto",
+      "file": "ge_ir.proto",
+      "descriptor_bytes": 3378,
+      "descriptor_sha256": "a7cd334beff74bfeb637b1886329a70122842667a257d84ba111c70991695679",
+      "pb2_bytes": 16543,
+      "pb2_sha256": "76efc97871230bbb4780fa71d9b3de5c3092d8ce0161aa2f83b5e219c7bf4cc0",
+      "recorded_pb2": "/root/anaconda3/envs/qwen3_5_cpro/lib/python3.11/site-packages/torch_npu/dynamo/torchair/_ge_concrete_graph/ge_ir_by_protoc_3_19_pb2.py",
+      "on_current_ddk_host": "MISSING"
+    },
+    "fix": "Hash-bound canonical export receipt selects source pb2 AST literal; source ge.proto schema and enum domains independent from compiled selected-DDKhiai schema. Missing declared source dependency does not select another schema or ignore unknown fields.",
+    "copy_policy": "Only exact16543B producer file copied from source host; --source-torchair-pb2 accepts matching receipt pb2 SHA and descriptor SHA, never executes the generated Python module.",
+    "next_output": "target-decode1-state-lineage-v3",
+    "actual_full_state_mapping": "PENDING_USER_ARTIFACT_AUDIT"
+  },
+  "original_decode_row_transfer": {
+    "status": "HOST_VERIFIED_USER_EXECUTION_PENDING",
+    "entrypoint": "targets/cpro/scripts/transfer_original_decode_rows.py",
+    "subcommands": [
+      "prepare",
+      "extract",
+      "import"
+    ],
+    "prepared_output": "target-decode1-row-request",
+    "request_files_to_source_host": [
+      "request.json",
+      "extract_rows.py"
+    ],
+    "source_host": "USER_CONFIRMED_ORIGINAL_WEIGHT_MACHINE",
+    "original_table_directory": "/home/l00886453/models/Qwen3.5-35B-A3B_quant",
+    "source_output": "target-decode1-row-response",
+    "return_files": [
+      "response.json",
+      "ge_ir_by_protoc_3_19_pb2.py"
+    ],
+    "import_output": "target-decode1-original-rows",
+    "request_maximum_bytes": 65536,
+    "response_maximum_bytes": 1048576,
+    "table_maximum_bytes": 2103300,
+    "maximum_candidate_ids": 1024,
+    "actual_source_candidate_file_bytes": 1024,
+    "next_input_bytes": 2056,
+    "source_machine_runtime": "Copied exact extraction source tested with python -I -S; stdlib only, no repo/PyYAML/Torch/AI_RUN_DIR required for extract.",
+    "binding": "Fresh successful decode/trial/sourceID/inputrow/FP32scale/logits are rebound on local prepare/import. Exact request SHA, extractor SHA, configured table paths, bounded candidate and winner row hashes, unique current row/scale match and next raw bytes are checked. Resource claims are delegated selected rows, not whole table authentication.",
+    "scope": "Original table rows only; no full-table transfer, requantization, inference, state construction, numerical acceptance or history proof."
+  },
+  "source_schema_and_row_transfer_host_verification": {
+    "run_id": "20261030T023239Z-14738-f5135c",
+    "unique_tests_passed": 238,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "evidence": [
+      "out/read-error-tests.xml",
+      "source-schema-release-junit.xml",
+      "out/source-loader-regression.xml",
+      "out/original-decode-candidate-tests.xml",
+      "out/original-decode-candidate-scope-test.xml",
+      "out/original-decode-row-transfer-tests-v2.xml",
+      "out/original-decode-row-transfer-final-tests.xml"
+    ],
+    "source_schema": "Distinct actual-style serialized ge.proto/hiai.proto messages, unequal enum domains, exact canonical receipt/pb2/AIR identities, missing/tampered producer refusal and explicit byte-identical schema copy.",
+    "portable_rows": "Actual local probe/inventory fixtures, stdlib-only isolated copied extractor, bounded sparse original tables, source candidate uniqueness, request/script/response/path/hash/row proof and fresh local import; tests cover complete2056B handoff.",
+    "review": "Read-only cross-agent review closed original configured table path binding; root reviewed source schema selection, raw row preservation and fresh local response verification.",
+    "scope": "Host fixtures/fake execution provenance only; no real phone invocation, numerical accuracy, state continuity or model performance acceptance."
   }
 }

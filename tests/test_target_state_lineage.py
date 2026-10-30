@@ -378,7 +378,7 @@ def test_changed_or_unbound_job_probe_metadata_fails_closed(jobs, fault):
 
 
 def test_actual_size_air_and_primary_over_metadata_limit_keep_graph_budget(jobs):
-    """The reported8.8MiB AIR/15.45MB OMC already fit64MiB graph limits."""
+    """Representative 9MiB AIR and actual 15,452,631B OMC fit 64MiB limits."""
     job = jobs["decode_job"]
     root = job / "compilation"
     report = jobs["decode_report"]
@@ -492,3 +492,191 @@ def test_larger_metadata_budget_preserves_strict_json_validation(tmp_path, raw):
     with pytest.raises(ValueError) as error:
         audit._metadata(path, [])
     assert "metadata read failed" in str(error.value)
+
+
+def attach_torchair_source(jobs):
+    """Attach real ge.proto bytes whose dtype enums differ from the fake DDK."""
+    from test_target_output_order import _schema
+    folder = jobs["tmp"] / "source-producer"
+    folder.mkdir()
+    producer, model_class = _schema(folder)
+    model = model_class(name="host-only source schema fixture")
+    source_graph = model.graph.add(name="source")
+    def attrs(target, values):
+        for raw in values:
+            entry = target.attr.add(key=raw["key"])
+            value = raw["value"]
+            if "s" in value:
+                entry.value.s = value["s"].encode()
+            elif "list" in value:
+                for name, rows in value["list"].items():
+                    getattr(entry.value.list, name).extend([item.encode() for item in rows] if name == "s" else rows)
+            else:
+                raise AssertionError("unsupported fixture attribute")
+    def descriptor(target, raw):
+        target.dtype, target.layout = {77: 7, 78: 1}[raw["dtype"]], raw["layout"]
+        target.shape.SetInParent()
+        target.shape.dim.extend(raw.get("shape", {}).get("dim", []))
+        attrs(target, raw.get("attr", []))
+    for raw in jobs["documents"][b"decode SOURCE"]["graph"][0]["op"]:
+        node = source_graph.op.add(name=raw["name"], type=raw["type"])
+        node.input.extend(raw.get("input", []))
+        attrs(node, raw.get("attr", []))
+        for key in ("input_desc", "output_desc"):
+            for row in raw.get(key, []):
+                descriptor(getattr(node, key).add(), row)
+    job, report = jobs["decode_job"], jobs["decode_report"]
+    root = job / "compilation"
+    air = root / report["input_snapshots"][0]["path"]
+    air.write_bytes(model.SerializeToString())
+    report["input_snapshots"][0] = dict(record(air, root, stat_key="snapshot_stat"), role="air")
+    receipt_path = folder / "result.json"
+    air_id = {"path": str(air), "bytes": air.stat().st_size, "sha256": hashlib.sha256(air.read_bytes()).hexdigest()}
+    receipt = {"artifact_kind": "qwen35-canonical-target-export", "status": "EXPORT_READY", "air": air_id,
+        "schema": producer.evidence, "normalization": {"status": "OUTPUT_ORDER_CANONICALIZED", "sequence_length": 1,
+            "patched_sha256": air_id["sha256"], "schema": producer.evidence}}
+    save(receipt_path, receipt)
+    receipt_id = {"path": str(receipt_path), "bytes": receipt_path.stat().st_size,
+        "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}
+    view = report["decode_input_view"]
+    view.update(decode_export_receipt=str(receipt_path), transfer={"export_receipt": receipt_id,
+        "air": air_id, "schema_descriptor_sha256": producer.evidence["descriptor_sha256"]})
+    save(root / "decode-input-view.json", view)
+    save(root / "input-inventory.json", {"files": report["input_snapshots"]})
+    save(root / "report.json", report)
+    outer = json.loads((job / "result.json").read_text())
+    outer["compilation_report_sha256"] = hashlib.sha256((root / "report.json").read_bytes()).hexdigest()
+    save(job / "result.json", outer)
+    return {"schema": producer, "pb2": Path(producer.evidence["pb2"]), "receipt": receipt_path,
+        "air": air, "report": report, "outer": outer}
+
+
+def test_producer_ast_schema_and_selected_ddk_schema_are_independently_bound(jobs, monkeypatch):
+    import builtins
+    source = attach_torchair_source(jobs)
+    original_import = builtins.__import__
+    def guarded(name, *args, **kwargs):
+        if name.split(".", 1)[0] in {"torch", "torchair", "torch_npu"}:
+            pytest.fail("source pb2 or vendor package was executed")
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", guarded)
+    bindings, capture = [], {}
+    metadata, document, compiled, enums = audit.load_target_graph(jobs["decode_job"],
+        "cpro-40block-decode-1", bindings, source_capture=capture)
+    assert metadata["source_schema"]["schema_package"] == "ge.proto"
+    assert metadata["source_schema"]["descriptor_sha256"] != metadata["schema"]["descriptor_sha256"]
+    assert metadata["source_enum_fields"]["dtype"]["values"]["DT_FLOAT16"] == 7
+    assert enums["dtype"]["values"]["DT_FLOAT16"] == 77
+    assert capture["schema"].package == "ge.proto" and capture["schema"] is not None
+    source_lineage = audit.analyze_state_lineage(document, metadata["source_enum_fields"])
+    assert source_lineage["unique_state_owner_count"] == 80
+    assert audit._join_compiled(source_lineage, compiled, enums)["matched_count"] == 80
+    assert metadata["source_schema_binding"]["status"] == "CANONICAL_EXPORT_RECEIPT_AND_AST_DESCRIPTOR_MATCHED"
+    assert metadata["source_schema_binding"]["pb2_execution"] == "NOT_EXECUTED"
+    assert any(row["path"] == str(source["pb2"]) for row in bindings)
+    bound, schema, raw, _, kind = audit.load_bound_source_air(jobs["decode_job"], "cpro-40block-decode-1", [])
+    assert schema.package == "ge.proto" and kind == "ModelDef" and raw == source["air"].read_bytes()
+    assert bound["source_schema"]["pb2_sha256"] == source["schema"].evidence["pb2_sha256"]
+    metadata, _ = audit._job(jobs["decode_job"], "cpro-40block-decode-1", [])
+    assert metadata["source_lineage"]["unique_state_owner_count"] == 80
+
+
+@pytest.mark.parametrize("fault", ["missing_pb2", "changed_pb2", "changed_receipt", "air_pin", "descriptor_pin", "descriptor_literal"])
+def test_declared_producer_failure_never_falls_back_to_compiler_schema(jobs, fault):
+    source = attach_torchair_source(jobs)
+    if fault == "missing_pb2": source["pb2"].unlink()
+    elif fault == "changed_pb2": source["pb2"].write_text("raise RuntimeError('not executed')\nDESCRIPTOR = p.AddSerializedFile(b'changed')\n")
+    elif fault == "changed_receipt": source["receipt"].write_text("{}")
+    else:
+        # Rebind the receipt so these cases exercise schema/AIR agreement,
+        # independently of the prior receipt hash check.
+        receipt = json.loads(source["receipt"].read_text())
+        if fault == "air_pin": receipt["air"]["sha256"] = "0" * 64
+        else:
+            receipt["schema"]["descriptor_sha256"] = "0" * 64
+            if fault == "descriptor_literal":
+                receipt["normalization"]["schema"]["descriptor_sha256"] = "0" * 64
+                source["report"]["decode_input_view"]["transfer"]["schema_descriptor_sha256"] = "0" * 64
+        save(source["receipt"], receipt)
+        view = source["report"]["decode_input_view"]
+        view["transfer"]["export_receipt"].update(bytes=source["receipt"].stat().st_size,
+            sha256=hashlib.sha256(source["receipt"].read_bytes()).hexdigest())
+        root = jobs["decode_job"] / "compilation"
+        save(root / "decode-input-view.json", view);save(root / "report.json", source["report"])
+        source["outer"]["compilation_report_sha256"] = hashlib.sha256((root / "report.json").read_bytes()).hexdigest()
+        save(jobs["decode_job"] / "result.json", source["outer"])
+    with pytest.raises(ValueError) as error:
+        audit.load_target_graph(jobs["decode_job"], "cpro-40block-decode-1", [])
+    assert "AIR has no unique" not in str(error.value), "declared schema failure must precede all compiler-schema AIR attempts"
+    if fault == "descriptor_literal":
+        assert "AST-extracted producer descriptor differs" in str(error.value)
+
+
+def test_explicit_byte_identical_pb2_copy_is_bound_without_global_discovery(jobs):
+    source = attach_torchair_source(jobs)
+    copy = jobs["tmp"] / "copied-producer-pb2.py"
+    copy.write_bytes(source["pb2"].read_bytes())
+    source["pb2"].unlink()
+    metadata, _, _, _ = audit.load_target_graph(jobs["decode_job"], "cpro-40block-decode-1", [], source_torchair_pb2=copy)
+    binding = metadata["source_schema_binding"]
+    assert binding["selected_pb2"]["path"] == str(copy)
+    assert binding["selection"] == "EXPLICIT_IDENTICAL_PB2_COPY"
+    assert metadata["source_schema"]["pb2_sha256"] == source["schema"].evidence["pb2_sha256"]
+
+
+def test_unbound_explicit_pb2_cannot_select_a_new_source_schema(jobs):
+    with pytest.raises(ValueError, match="hash-bound canonical producer export receipt"):
+        audit.load_target_graph(jobs["decode_job"], "cpro-40block-decode-1", [],
+            source_torchair_pb2=jobs["tmp"] / "unbound-schema.py")
+
+
+def test_source_nested_attr_wire_is_not_interpreted_with_a_different_hiai_descriptor(jobs):
+    from google.protobuf import descriptor_pb2
+    from qwen35_moe_dflash.air_schema import extract_torchair_descriptor
+    from qwen35_moe_dflash.omc_wire import Schema
+    source = attach_torchair_source(jobs)
+    raw, _ = extract_torchair_descriptor(source["pb2"])
+    descriptor = descriptor_pb2.FileDescriptorProto.FromString(raw)
+    descriptor.package = "hiai.proto"
+    def visit(message):
+        for field in message.field:
+            if field.type_name.startswith(".ge.proto."):
+                field.type_name = ".hiai.proto." + field.type_name[len(".ge.proto."):]
+        for child in message.nested_type:
+            visit(child)
+    for message in descriptor.message_type:
+        visit(message)
+        if message.name == "AttrDef":
+            field = next(item for item in message.field if item.name == "list")
+            field.name, field.type = "list_list_float", 2
+            field.ClearField("type_name")
+    wrong = Schema(descriptor.SerializeToString(), expected_file="ge_ir.proto", expected_package="hiai.proto")
+    with pytest.raises(ValueError, match=r"wire type mismatch for hiai.proto.AttrDef.list_list_float"):
+        wrong.decode(source["air"].read_bytes(), "ModelDef")
+    metadata, document, _, _ = audit.load_target_graph(jobs["decode_job"], "cpro-40block-decode-1", [])
+    assert audit.analyze_state_lineage(document, metadata["source_enum_fields"])["unique_state_owner_count"] == 80
+
+
+def test_ambiguous_producer_receipt_is_rejected_without_choosing_one(jobs):
+    source = attach_torchair_source(jobs)
+    view = source["report"]["decode_input_view"]
+    pin = view["transfer"]["export_receipt"]
+    view["transfer"]["export_receipt"] = [pin, pin]
+    root = jobs["decode_job"] / "compilation"
+    save(root / "decode-input-view.json", view);save(root / "report.json", source["report"])
+    source["outer"]["compilation_report_sha256"] = hashlib.sha256((root / "report.json").read_bytes()).hexdigest()
+    save(jobs["decode_job"] / "result.json", source["outer"])
+    with pytest.raises(ValueError, match="exact canonical export receipt identity"):
+        audit.load_target_graph(jobs["decode_job"], "cpro-40block-decode-1", [])
+
+
+def test_missing_binding_for_declared_producer_receipt_never_uses_legacy_schema(jobs):
+    source = attach_torchair_source(jobs)
+    view = source["report"]["decode_input_view"]
+    view.pop("transfer")
+    root = jobs["decode_job"] / "compilation"
+    save(root / "decode-input-view.json", view);save(root / "report.json", source["report"])
+    source["outer"]["compilation_report_sha256"] = hashlib.sha256((root / "report.json").read_bytes()).hexdigest()
+    save(jobs["decode_job"] / "result.json", source["outer"])
+    with pytest.raises(ValueError, match="no schema fallback is permitted"):
+        audit.load_target_graph(jobs["decode_job"], "cpro-40block-decode-1", [])

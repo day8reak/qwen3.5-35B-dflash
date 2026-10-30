@@ -16,7 +16,7 @@ from qwen35_moe_dflash import target_decode_state_lineage as audit
 from qwen35_moe_dflash import target_state_lineage as lineage
 from qwen35_moe_dflash.target_compile_failure import _stamp
 from qwen35_moe_dflash.target_prefill_smoke_plan import _runtime_keys
-from test_target_state_lineage import jobs as graph_jobs, save
+from test_target_state_lineage import attach_torchair_source, jobs as graph_jobs, save
 
 
 @pytest.fixture
@@ -160,8 +160,8 @@ def test_actual_output_execution_must_bind_same_job_probe_and_typed_descriptors(
 
 def test_revalidation_detects_state_output_mutation_during_graph_read(case, monkeypatch):
     original = audit._decode_job
-    def mutate(*args):
-        result = original(*args)
+    def mutate(*args, **kwargs):
+        result = original(*args, **kwargs)
         path = case["execution"] / "board" / case["inspection"]["output_files"][3]["path"]
         with path.open("r+b") as stream:
             stream.write(b"changed")
@@ -196,3 +196,35 @@ def test_cli_is_compact_and_reports_counts_without_dumping80states(case, capsys)
     assert "decode" not in result and result["gap_summary"] == []
     with pytest.raises(FileExistsError):
         inspect(case)
+
+
+def test_decode_typed_views_use_source_and_compiler_enum_domains_separately(case):
+    attach_torchair_source(case)
+    metadata, enums = audit._decode_job(case["decode_job"], [], {})
+    assert metadata["source_enum_fields"]["dtype"]["values"]["DT_FLOAT16"] == 7
+    assert enums["dtype"]["values"]["DT_FLOAT16"] == 77
+    assert metadata["compiled_lineage"]["matched_count"] == 80
+    assert all(row["typed_view_binding"] == "EXPLICIT_SOURCE_NETOUTPUT_OWNER_AND_COMPILED_DESCRIPTORS_MATCHED"
+        for row in metadata["compiled_lineage"]["states"])
+
+
+def test_cli_binds_exact_copied_producer_pb2_through_all80_actual_file_joins(case, capsys):
+    source = attach_torchair_source(case)
+    report_sha = source["outer"]["compilation_report_sha256"]
+    case["probe"]["compilation_report_sha256"] = report_sha
+    save(case["decode_probe"] / "result.json", case["probe"])
+    case["plan"]["compilation_report_sha256"] = report_sha
+    save(case["execution"] / "plan.json", case["plan"])
+    copy = case["tmp"] / "transferred-producer.py"
+    copy.write_bytes(source["pb2"].read_bytes())
+    source["pb2"].unlink()
+    script = Path(__file__).parents[1] / "targets/cpro/scripts/inspect_target_decode_state_lineage.py"
+    cli = runpy.run_path(str(script))
+    assert cli["main"](["--job", str(case["decode_job"]), "--runtime-probe", str(case["decode_probe"]),
+        "--output-inspection", str(case["inspection_dir"]), "--source-torchair-pb2", str(copy),
+        "--output", str(case["out"])]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED" and result["counts"]["bound_state_files"] == 80
+    full = json.loads((case["out"] / "report.json").read_text())
+    assert full["decode"]["source_schema_binding"]["selected_pb2"]["path"] == str(copy)
+    assert full["feedback_ready"] is False and full["state_feedback"] == "NOT_RUN"
