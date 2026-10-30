@@ -2,11 +2,17 @@
 
 <a id="用户现在执行什么"></a>
 
-**当前主线：按用户要求，将 prefill、decode 和 draft 的新执行路径统一为模型管家 V1。** V2 在两次独立加载实验中均 Init／InitWeights成功，但显式DeinitWeights分别返回3和1；原因未定，见[历史观察](../specs/resident-v2-target-cleanup-observed.json)。用户随后提供了官方V2弃用说明，并明确要求全部改V1。此前让用户继续运行V2闭环的指令已经撤回；旧attempt和结果保留用于恢复及对照。
+**当前阻塞：新 V1 请求在 prefill 加载前失败，当前完整命令暂停重跑。** 用户回传 `707d825` 的阶段为 `prefill-v1-load`，错误为 `SetModelBuffer did not preserve exact model path`；SDK Load／Process 均未调用，生成token为0，锁已释放。这次没有进入模型推理，不能据此判断模型精度。
+
+这是实现遗漏已有证据导致的阻塞：此前选定SDK的实机诊断已记录 `SetModelPath` 和 `SetModelBuffer` 互相清除另一字段，新V1实现却要求两者同时保留；主机fake默认允许共存，未反映该实机行为。当前修复范围是恢复内嵌权重draft的buffer-only加载，并让fake默认匹配互斥行为；外置权重target的V1加载合同仍待核对已请求的选定SDK头文件。不能靠交换setter顺序或删除路径检查宣称它可加载。详见[本次失败及证据边界](validation.md#resident-v1-exclusive-setters-failure)。
+
+[华为官方固定版本示例](https://github.com/huaweicodelabs/HiAI-Foundation/blob/83320362c10f2e85a2a1bbb283b3359db204ab2a/app/src/main/jni/classify_sync_jni.cpp#L61-L103)使用builder创建buffer并设置 `ONLINE`；用户提供的4B代码使用path-only和 `OFFLINE`（字面值1）。这两条路径均未证明当前35B外置权重OMC能够按新V1路径加载。
+
+**目标仍是按用户要求，将 prefill、decode 和 draft 统一为模型管家 V1。** V2 在两次独立加载实验中均 Init／InitWeights成功，但显式DeinitWeights分别返回3和1；原因未定，见[历史观察](../specs/resident-v2-target-cleanup-observed.json)。用户随后提供了官方V2弃用说明，并明确要求全部改V1。此前让用户继续运行V2闭环的指令已经撤回；旧attempt和结果保留用于恢复及对照。
 
 **P0 原 prefill 端侧完整执行已完成。** 旧版用户回传 prefill1／decode8／draft7，token为 `[4,12,10,8,0,4,32,2]`，接受0／7，总墙钟305.788秒。它证明原板端执行闭环，不证明新V1常驻、精度或加速，见[旧成功基线](board-prefill-first-completion.md)。
 
-## 新流程与接口约束
+## 保留的 V1 设计与接口约束（尚未实机完成）
 
 一次部署和启动后，板端同一执行线程完成：
 
@@ -19,9 +25,9 @@
 
 三个既有OMC、权重、六层draft S64及15候选不变；只编译native runner。循环内的embedding查表、状态和特征传递、接受判断均在板端，没有逐token服务器交互。
 
-## 在 DDK 主机启动新 V1 请求
+## 历史 V1 请求命令（当前阻塞，勿重跑）
 
-V1改造和主机回归已完成，下一步直接运行以下完整板端命令。`REPO_DIR`、`AI_RUN_DIR`、`BIP`、`SN`和Native SDK沿用现有配置。输出必须使用新目录，旧准备清单不能被重新解释成V1执行。
+以下保留已失败请求的命令用于对照，不是当前执行指令。主机回归覆盖了调度和生命周期，但fake的加载描述符行为与选定SDK不一致，不能用其通过结果证明外置权重target可加载。完成加载合同核对和对应修复前，不再启动这条完整循环。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -41,9 +47,9 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
   --resident --apply --detach
 ```
 
-历史参数路径中的 `v2` 是既有描述符／状态图检查文件的名字，不表示新循环调用V2。V1重新查询实际shape和buffer字节数；无法查询的V1 tensor名称、dtype不得冒充已经由新SDK观察。外置target权重解析和全部V1实机结果均需这次执行验证。
+历史参数路径中的 `v2` 是既有描述符／状态图检查文件的名字，不表示新循环调用V2。设计上V1重新查询实际shape和buffer字节数；无法查询的V1 tensor名称、dtype不得冒充已经由新SDK观察。本次尚未执行Load，因此也没有得到这些V1运行时描述符。
 
-启动响应 `BOARD_SERIAL_DFLASH_STARTED` 只说明已启动。恢复命令只回收同一attempt，不再次推理：
+历史启动响应 `BOARD_SERIAL_DFLASH_STARTED` 只说明已启动。以下恢复命令只用于尚未回收的同一attempt，不再次推理；本次已回传失败结果且锁已释放，无需为此再次恢复或启动：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
@@ -51,9 +57,9 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
   --output "$AI_RUN_DIR/dflash-board-resident-v1-8-recovery"
 ```
 
-恢复不添加resident／dump／模型参数，沿用旧记录。断连或启动响应丢失时保留目录、恢复原请求；不删除锁或重跑未知状态。无需分开启动和回收时可以省略detach；主机只粗粒度查询完成状态，不参与循环。
+恢复不添加resident／dump／模型参数，沿用旧记录。断连或启动响应丢失时保留目录、恢复原请求；不删除锁或重跑未知状态。
 
-## 本次验证内容
+## 解决加载阻塞后的验收目标
 
 - `execution_mode=resident-v1`，prefill1、decode8和至少两次完整六层draft；每次draft输出15个候选，最多考虑前K=2，首个不匹配就纠正。
 - decode/draft各一次Load、多次Process，全部V1调用；prefill也是V1且仅执行一次，没有原工具V2子进程。

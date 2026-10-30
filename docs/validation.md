@@ -1,4 +1,18 @@
-## 2026-10-29 最新：完整 residual-fix 的单例 Top1 匹配
+<a id="resident-v1-exclusive-setters-failure"></a>
+
+## 2026-10-30：V1 prefill 在 SDK Load 前被互斥描述符阻断
+
+用户回传 `707d825` 的完整板端请求在 `prefill-v1-load` 失败，原始错误为 `SetModelBuffer did not preserve exact model path`。SDK Load／Process 调用数均为0，生成token为0，锁已释放。该结果来自用户回传，未由本地重新连接设备核验；它证明加载前检查失败，不构成外置权重加载、推理、数值或常驻成功。旧版原prefill完整闭环的成功记录仍保留，但不能代替新V1验收。
+
+这次遗漏的是已有实机证据，而不是新发现的SDK约束。本页此前的[外置模型加载描述符诊断](#外置模型加载描述符诊断入口)及 `specs/model-workflow.json` 已记录：选定SDK中path→buffer会清空path，buffer→path会清空buffer，四次setter返回值均为0。新V1代码仍要求设置buffer后保留同一绝对path；新增fake默认又允许二者共存，因此主机集成通过未暴露这个必然冲突。已有主机测试对调度、状态字节链和生命周期的覆盖仍有效，但其结果不能证明该SDK的外置权重加载方式可用。
+
+本轮修复限于把内嵌权重draft恢复为buffer-only加载，并将fake默认行为改成互斥；需要模拟双字段的调度测试必须显式标注该假设。外置权重target仍需选定SDK的支持合同，已向用户请求对应头文件；不交换setter碰运气，不删除路径保留检查后直接宣称成功，也不自动切换V2。当前完整V1命令暂停重跑，见[当前执行状态](current-status.md#历史-v1-请求命令当前阻塞勿重跑)。这些修改尚不构成新的实机通过记录。
+
+官方来源对照采用固定提交 `83320362c10f2e85a2a1bbb283b3359db204ab2a`：[Huawei HiAI-Foundation 的 classify_sync_jni.cpp](https://github.com/huaweicodelabs/HiAI-Foundation/blob/83320362c10f2e85a2a1bbb283b3359db204ab2a/app/src/main/jni/classify_sync_jni.cpp#L61-L103)先由 `AiModelBuilder::InputMemBufferCreate(modelPath)` 创建buffer，再使用 `SetModelBuffer` 和 `HIAI_MODELTYPE_ONLINE` 调用Load。它没有示范同时保留path与buffer，也未建立当前35B外置权重OMC的解析合同。用户提供的4B代码则为path-only、`OFFLINE`（字面值1），调用方式不同；没有当前35B在选定SDK上的成功加载证据，不能将任一示例直接当作兼容性结论。
+
+本轮主机验证135项元数据／恢复测试、2项实际C++fake集成以及7组native CTest通过，证据见[描述符回归复核](../specs/resident-v1-descriptor-review.json)。默认测试复现实机互斥setter行为，验证内嵌buffer加载成功及外置target在SDK Load前明确拒绝；显式双字段模拟只覆盖调度，不代表所选SDK支持外置加载。未访问板端、重新编译OMC或变更权重。
+
+## 2026-10-29：完整 residual-fix 的单例 Top1 匹配
 
 用户回传完整六层、block16、248320词表draft的 `full-draft/residual-fix` 板端报告：EXECUTED、165/165编译精度匹配，原两路输出dtype保持，15/15 Top1与同输入PyTorch参考完全一致。hidden非有限位置差异为0、relative L2=0.0126796675、cosine=0.999919614、max abs=0.08984375。`production_equivalence=DIFFERENT`指它与旧失败模型的设备输出不同，不是本次参考Top1失败。
 

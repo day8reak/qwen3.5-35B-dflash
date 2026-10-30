@@ -345,10 +345,12 @@ def enable_resident(case):
 
 
 def enable_resident_v1(case):
-    """Pin the three unchanged-model interfaces; V1 runtime names stay unknown."""
+    """Synthetic scheduling profile; selected SDK dual-source loading is unproven."""
     from qwen35_moe_dflash.board_serial_transport import _full
     enable_resident(case)
     root = case['root']; manifest = case['manifest']
+    manifest['host_fake_sdk_scope'] = 'SCHEDULING_ONLY_DUAL_MODEL_SOURCE_NOT_SELECTED_SDK'
+    case['synthetic_dual_model_source'] = True
     model = Path(manifest['prefill']['model']['path'])
     model.write_bytes(b'original-resident-prefill64-fixture')
     def record(path):
@@ -474,6 +476,28 @@ def test_actual_resident_v1_prefill_and_multiround_loop(tmp_path, resident_v1_na
         assert late_trace.read_text().count('v1-unload:qwen35_resident_target') == 1
         assert late_trace.read_text().count('v1-unload:qwen35_resident_draft') == 1
         assert retained['supervisor_timing']['total_wall_ms'] >= retained['phase_latency']['prefill']['total_ms']
+
+
+def test_selected_default_v1_descriptor_semantics_reject_external_before_load(tmp_path, resident_v1_native_programs):
+    from qwen35_moe_dflash.board_serial_transport import validate_retrieved_tokens
+    case = make_case(tmp_path / 'selected-sdk-exclusive', resident_v1_native_programs, dump=False)
+    enable_resident_v1(case)
+    case['synthetic_dual_model_source'] = False
+    case['manifest']['host_fake_sdk_scope'] = 'SELECTED_DEVICE_SETTER_SEMANTICS_EXTERNAL_LOAD_UNRESOLVED'
+    (case['root'] / 'expected-prepared-manifest.json').write_text(json.dumps(case['manifest'], indent=2))
+    trace = case['root'] / 'v1-sdk.trace'
+    process = execute(case, native_trace=trace)
+    assert process.returncode == 1, (process.stdout, process.stderr)
+    loop = validate_retrieved_tokens(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
+        _expected_config_sha256=digest(case['config']), _remote_exitcode=1)
+    assert 'external-weight loading remains unresolved' in loop['error']
+    life = loop['prefill_lifecycle']
+    assert life['client_initialized'] and life['failure_stage'] == 'LEGACY_MODEL_DESCRIPTION'
+    assert not life['load_attempted'] and life['load_status'] is None and life['process_attempts'] == 0
+    assert loop['counts']['prefill_native_calls'] == loop['counts']['target_native_calls'] == loop['counts']['draft_native_calls'] == 0
+    assert loop['resident_lifecycle']['target_load_attempts'] == loop['resident_lifecycle']['draft_load_attempts'] == 0
+    events = trace.read_text().splitlines()
+    assert 'load' not in events and 'process' not in events
 
 
 
@@ -718,6 +742,9 @@ def _reject_rebound_prefill_claims(case, original):
 
 def execute(case, fault=None, native_fault=None, native_trace=None):
     env = dict(os.environ)
+    # This explicit opt-in retains graph/round/state scheduling coverage only;
+    # the faithful default SDK profile rejects unresolved external loading.
+    env['FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE'] = '1' if case.get('synthetic_dual_model_source') else '0'
     if fault:
         env['QWEN_BOARD_TEST_FAULT'] = fault
     if native_fault:

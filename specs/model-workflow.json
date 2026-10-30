@@ -2,8 +2,8 @@
   "schema_version": 1,
   "updated": "2026-10-30",
   "active_phase": "integration",
-  "delivery_status": "ORIGINAL_PREFILL_BOARD_EXECUTION_PASSED_ALL_V1_RESIDENT_HOST_TESTED_DEVICE_PENDING",
-  "run_id": "20261030T133340Z-32275-390e70",
+  "delivery_status": "ORIGINAL_PREFILL_BOARD_EXECUTION_PASSED_V1_RESIDENT_FAILED_BEFORE_LOAD",
+  "run_id": "20261030T140558Z-5097-27a0b6",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -2160,7 +2160,7 @@
       "evidence": "docs/current-status.md",
       "working_directory": "$AI_RUN_DIR",
       "next_command_document": "docs/current-status.md#用户现在执行什么",
-      "note": "Urgent primary route: compile the provided original AIR with user-declared 89-input 64/1 dynamic profile and external-weight options; inspect the real graph and then implement its state/runtime contract. Current self-built GE W4A8 and static-decode gaps remain fallback limitations; no repeated completed probes."
+      "note": "Original prefill + board-local serial draft/decode loop executed per retained user report. Resident all-V1 migration currently fails before prefill Load due to incompatible descriptor assumptions; external-weight V1 loading remains unresolved. Keep prior execution milestone separate from residency, accuracy and performance."
     },
     {
       "name": "accuracy",
@@ -5440,16 +5440,39 @@
   "execution_state": "specs/dflash-execution-state.json",
   "planning_horizon": "P0 functional loop through P8 accuracy/stability/performance/release; normal10–20workingdays conditional, optimistic7–10, initialloop0.5–1",
   "current_resident_work": {
-    "run_id": "20261030T133340Z-32275-390e70",
+    "run_id": "20261030T140558Z-5097-27a0b6",
     "user_authorized": true,
     "p0_result": "specs/board-prefill-first-completion.json",
-    "scope": "Unchanged OMCs and weights; all new prefill, external-weight decode and embedded six-layer draft execution uses V1. One-thread independent prefill Load/Process/Unload, then two resident clients each Load once and repeated synchronous Process. Complete host checks, then user runs the entire board loop; no extra load-only trial or assistant HDC probes.",
+    "scope": "Unchanged OMCs and weights, requested all-V1 resident execution. Latest whole-board request failed at prefill descriptor setup before Load/Process. Correct embedded-buffer regression and test doubles; external-weight V1 file-loading contract remains unresolved. No assistant HDC probe or automatic V2 fallback.",
     "target_profile_local": "cpro-blue-pending manifest missing; local modelPython and fakeHIAI tests only, selected user DDK builds on user host",
     "numerical_validation": "NOT_RUN",
-    "device_residency": "NOT_RUN",
+    "device_residency": "FAILED_BEFORE_PREFILL_LOAD_NO_RESIDENT_MODEL_LOADED",
     "runtime_api": "legacy-buffer",
     "execution_mode": "resident-v1",
     "current_document": "docs/current-status.md",
-    "host_validation": "specs/resident-v1-host-validation.json"
+    "host_validation": "specs/resident-v1-host-validation.json",
+    "latest_device_observation": {
+      "source": "USER_PASTED_REPORT_NOT_INDEPENDENTLY_RETRIEVED",
+      "run": "dflash-board-resident-v1-8-run",
+      "recovery": "dflash-board-resident-v1-8-recovery",
+      "board_attempt": "/data/local/tmp/qwen35_board_serial_db833519f6e743d88c599fbb7b189974",
+      "execution_failure_stage": "prefill-v1-load",
+      "error": "SetModelBuffer did not preserve exact model path for adjacent sidecars",
+      "prefill_native_calls": 0,
+      "target_native_calls": 0,
+      "draft_native_calls": 0,
+      "generated_token_ids": [],
+      "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+      "conclusion": "Application descriptor guard failed before SDK Load; not an inference or residency failure."
+    },
+    "host_validation_limitation": "Prior success fixtures retained both path and buffer, contradicting previously observed selected-SDK mutually exclusive setters. Prior results do not validate real V1 external-weight loading; scheduling-only evidence must be explicitly synthetic.",
+    "source_comparison": {
+      "official_example": "https://github.com/huaweicodelabs/HiAI-Foundation/blob/83320362c10f2e85a2a1bbb283b3359db204ab2a/app/src/main/jni/classify_sync_jni.cpp",
+      "official_load": "InputMemBufferCreate -> SetModelBuffer -> Load; generic classification example, no external-weight file contract",
+      "user_4b_example": "src/model_runner.cpp provided in conversation: SetModelPath -> Load, descriptor modeltype=1; no successful current-35B execution provided",
+      "selected_sdk_observation": "docs/validation.md#外置模型加载描述符诊断入口",
+      "pending": "Selected DDK compatible/HiAiModelManagerService.h and HiAiModelManagerType.h; question already sent. No assumption that public older SDK source represents this private runtime."
+    },
+    "descriptor_review": "specs/resident-v1-descriptor-review.json"
   }
 }

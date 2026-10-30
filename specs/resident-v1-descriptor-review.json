@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-v1-descriptor-regression-review",
+  "run_id": "20261030T140558Z-5097-27a0b6",
+  "source_base_commit": "707d825",
+  "status": "EMBEDDED_BUFFER_REGRESSION_CORRECTED_EXTERNAL_V1_LOADING_UNRESOLVED",
+  "user_report": "dflash-board-resident-v1-8-recovery",
+  "device_observation_scope": "USER_PASTED_REPORT_NO_ASSISTANT_DEVICE_ACCESS",
+  "failure_stage": "prefill-v1-load",
+  "failure_before_sdk_load": true,
+  "device_inference_calls": 0,
+  "embedded_change": "Buffer-only descriptors no longer require GetModelPath; keep mapped source alive through client teardown. No model/weight changes.",
+  "external_change": "Retain explicit pre-Load external-path guard and diagnostic; no fallback to buffer-only, path-only, V2 or model recompilation.",
+  "fake_correction": "Mutually exclusive setters are the default. FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE=1 is isolated to explicitly synthetic scheduler/ownership tests, never SDK/device compatibility.",
+  "official_example": "https://github.com/huaweicodelabs/HiAI-Foundation/blob/83320362c10f2e85a2a1bbb283b3359db204ab2a/app/src/main/jni/classify_sync_jni.cpp",
+  "next_required_evidence": "Selected DDK compatible V1 declarations/file-loading contract; read-only header request already sent.",
+  "experience_audit": {
+    "captured": "Previously observed selected-runtime behavior must be the default regression fixture, not an optional failure injection.",
+    "owning_check": "targets/cpro/runtime/tests/test_resident_v1.cpp and tests/test_board_serial_integration.py",
+    "rejected_claims": [
+      "All-V1 external-weight load success",
+      "Resident NPU execution",
+      "Numerical or performance pass"
+    ],
+    "remaining_hypothesis": "Whether current V1 implementation supports a file-aware external-weight path and under which API contract."
+  },
+  "source_sha256": {
+    "targets/cpro/runtime/src/hiai_executor.cpp": "24fddeb1a0b5ddd9094ea09377721af82326c13ea76c22442d53f0e15078ff2c",
+    "targets/cpro/runtime/tests/fake_hiai/fake_hiai.cpp": "bf498019e4dbdece94111048a71774490b59abb9f40841b9dd09218a24514978",
+    "targets/cpro/runtime/tests/test_hiai_model_description_probe.py": "4d163bc4ebb73d0322bc84dcd998c56c5aac5206e6458f3514c5d9cad179f2bd",
+    "targets/cpro/runtime/tests/test_hiai_runner.py": "27de9d3a77598bc962e48cb4e08f150a1baa7799a2923bc72d6f914de4e080b1",
+    "targets/cpro/runtime/tests/test_resident_v1.cpp": "f4c8d8ec393fa2cbaee1f5501ffd0b2453160f468a4b61bd0bbebabb43948f0f",
+    "tests/test_board_serial_integration.py": "1db8868316fe77286d5d74d8850030d9f30234946184761d2b9a7122142e4d92"
+  },
+  "host_validation": [
+    {
+      "path": "out/metadata-recovery.xml",
+      "tests": 135,
+      "failures": 0,
+      "sha256": "1c41c0f336b518867d1de9b985a2b9539676177e295f35dac89d5477a280ab29",
+      "scope": "HOST_FAKE_ONLY_NOT_DEVICE_OR_VENDOR_SDK_COMPATIBILITY"
+    },
+    {
+      "path": "out/embedded-buffer-native.xml",
+      "tests": 6,
+      "failures": 0,
+      "sha256": "b8cfb9ea0c8cc4b1721d73206e6acd48fd7f0097f37e2e2b45c29e7a48956c28",
+      "scope": "HOST_FAKE_ONLY_NOT_DEVICE_OR_VENDOR_SDK_COMPATIBILITY"
+    },
+    {
+      "path": "out/embedded-buffer-v1-native.xml",
+      "tests": 1,
+      "failures": 0,
+      "sha256": "e66791f0848ab74ed3c2ed55b7bc9bdcd70f96237e424e5c6379ef8c568c5d2b",
+      "scope": "HOST_FAKE_ONLY_NOT_DEVICE_OR_VENDOR_SDK_COMPATIBILITY"
+    },
+    {
+      "path": "out/embedded-buffer-integration.xml",
+      "tests": 2,
+      "failures": 0,
+      "sha256": "788c364a7afbd26a45ca6bc5f5c21148b797a9e1ff573729b3c93037ad2c9424",
+      "scope": "HOST_FAKE_ONLY_NOT_DEVICE_OR_VENDOR_SDK_COMPATIBILITY"
+    }
+  ]
+}

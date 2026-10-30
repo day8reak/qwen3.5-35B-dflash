@@ -57,6 +57,30 @@ int main(int argc,char** argv){try{
   std::ofstream(root/"target.omc")<<"original-target-fixture";std::ofstream(root/"draft.omc")<<"draft-resident64-fixture";
   ResidentSessionConfig config{root/"target.omc",root,root/"draft.omc","FAKE-HIAI-X90",Contract(true),Contract(false),300000,"legacy-buffer"};
   auto trace=[&](const std::string& name){const auto p=root/(name+".trace");std::ofstream(p).close();setenv("FAKE_HIAI_TRACE",p.c_str(),1);return p;};
+  // Default double matches the selected device's mutually exclusive setters.
+  // Embedded buffer loading works; the external original target must fail
+  // descriptively before SDK Load rather than pretend its sidecars are bound.
+  unsetenv("FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE");Failure("");
+  auto external_trace=trace("selected-default-external");HiaiLegacyLifecycle rejected;
+  std::string external_error;
+  try {HiaiOriginalTargetV1Executor external(config.target_model,root,config.runtime_version,
+      config.target_inputs,config.target_outputs,300000,"qwen35_resident_target",&rejected);}
+  catch(const HiaiRuntimeError& error){external_error=error.what();Require(error.stage()=="LEGACY_MODEL_DESCRIPTION","external wrong failure stage");}
+  Require(external_error.find("external-weight loading remains unresolved")!=std::string::npos,"external buffer-only failure lost its precise cause");
+  Require(rejected.client_initialized&&!rejected.load_attempted&&!rejected.loaded&&rejected.process_attempts==0&&rejected.closed,"external failure fabricated SDK Load or Process");
+  Require(Count(Trace(external_trace),"load")==0&&Count(Trace(external_trace),"process")==0,"unresolved external source reached SDK execution");
+  const auto embedded_trace=trace("selected-default-embedded");{
+    HiaiStatefulExecutor embedded(config.draft_model,config.runtime_version,
+        {{"target_features","float16",{1,64,16384}},{"input_ids","int32",{1,64}},{"attention_mask","int32",{1,64}}},
+        {{"draft_top1","int32",{1,15}},{"draft_hidden","float16",{1,15,2048}}},300000,false,0,true,"legacy-buffer","qwen35_resident_draft");
+    const auto inputs=DraftInputs();for(std::size_t i=0;i<inputs.size();++i)embedded.SetInput(i,inputs[i]);embedded.Execute();
+    Require(embedded.CopyOutput(0).size()==60,"embedded output missing");embedded.Close();
+    Require(embedded.legacy_lifecycle().loaded&&embedded.legacy_lifecycle().successful_processes==1,"embedded buffer-only route failed");
+  }
+  Require(Count(Trace(embedded_trace),"load")==1&&Count(Trace(embedded_trace),"process")==1&&Count(Trace(embedded_trace),"unload")==1,"embedded default lifecycle differs");
+  // This explicit non-SDK profile isolates scheduling/buffer ownership tests.
+  // It must not be reported as selected-device external-weight compatibility.
+  setenv("FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE","1",1);
   setenv("FAKE_HIAI_V1_RESIDENT_TRACE","1",1);Failure("");const auto repeated=trace("v1-alternating");
   {
     ResidentSession session("legacy-buffer");Require(session.evidence().model_load_api=="legacy-buffer"&&session.evidence().target_loads==0,"preload API is not explicit");
@@ -119,6 +143,6 @@ int main(int argc,char** argv){try{
   Failure("");{
     auto bad=config;bad.target_inputs[0].bytes=4096;ResidentSession session("legacy-buffer");Throws([&]{session.Load(bad);});Require(session.evidence().target_v1_lifecycle.process_attempts==0,"bad typed ABI executed");
   }
-  unsetenv("FAKE_HIAI_TRACE");unsetenv("FAKE_HIAI_V1_RESIDENT_TRACE");
-  std::cout<<"PASS actual V1 adapter/session: two clients, Load2 Process6 Unload2, persistent176 tensors, exact89/82 and21 failure/ownership cases; fake SDK only\n";return 0;
+  unsetenv("FAKE_HIAI_TRACE");unsetenv("FAKE_HIAI_V1_RESIDENT_TRACE");unsetenv("FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE");
+  std::cout<<"PASS fake SDK faithful default: embedded buffer succeeds and external target rejects before Load; explicit synthetic dual-source override: two clients, Load2 Process6 Unload2, persistent176 tensors, exact89/82 and21 failure/ownership cases; no device compatibility proof\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

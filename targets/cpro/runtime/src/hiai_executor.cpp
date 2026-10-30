@@ -171,7 +171,8 @@ struct Model {
 
   void Load(const std::filesystem::path& path, const std::string& model_name,
             const std::string& expected_version, std::uint32_t timeout_ms,
-            std::size_t input_count, std::size_t output_count, const char* abi = "ABI v2") {
+            std::size_t input_count, std::size_t output_count, const char* abi = "ABI v2",
+            bool require_external_path = false) {
     name = model_name; timeout = timeout_ms; legacy.model_name=name;
     if(legacy.client_init_attempted)throw std::logic_error("V1 client Init/Load allowed once");
     stage="LEGACY_CLIENT_INIT";legacy.client_init_attempted=true;
@@ -192,7 +193,12 @@ struct Model {
             ", runtime=" + version + "]");
     };
     stage="LEGACY_MODEL_DESCRIPTION";
-    check_load(description->SetModelPath(path.string()), "SetModelPath");
+    // Embedded models use their retained buffer alone. The selected runtime's
+    // two setters clear the other representation, so a path is not an embedded
+    // buffer requirement. Original external targets retain a separate guard:
+    // buffer-only must never be promoted to a sidecar-loading contract.
+    if (require_external_path)
+      check_load(description->SetModelPath(path.string()), "SetModelPath");
     try {
       model_buffer.Open(path);
     } catch (const std::exception& error) {
@@ -200,8 +206,10 @@ struct Model {
                                ", path=" + path.string() + ", runtime=" + version + "]");
     }
     check_load(description->SetModelBuffer(model_buffer.Data(), model_buffer.Size()), "SetModelBuffer");
-    if (description->GetModelPath() != path.string())
-      throw std::runtime_error("SetModelBuffer did not preserve exact model path for adjacent sidecars");
+    if (require_external_path && description->GetModelPath() != path.string())
+      throw std::runtime_error("SetModelBuffer cleared the external model path; selected V1 external-weight "
+                               "loading remains unresolved and SDK Load was not called [model=" + name +
+                               ", path=" + path.string() + ", runtime=" + version + "]");
     if (!description->GetModelBuffer() || description->GetModelNetSize() != model_buffer.Size())
       throw std::runtime_error("HIAI model buffer descriptor is empty or truncated [model=" + name +
                                ", path=" + path.string() + ", runtime=" + version + "]");
@@ -856,7 +864,7 @@ HiaiOriginalTargetV1Executor::HiaiOriginalTargetV1Executor(
       if(bytes!=row.bytes||bytes>kStatefulTotalLimit-total)throw std::invalid_argument("V1 declared shape/dtype byte extent differs");
       total+=bytes;
     }
-    m.Load(path,name,expected_version,timeout,89,82,"original target89/82 V1 declared ABI");
+    m.Load(path,name,expected_version,timeout,89,82,"original target89/82 V1 declared ABI",true);
     for(bool input:{true,false}){
       const auto& rows=input?inputs:outputs;
       for(std::size_t i=0;i<rows.size();++i){

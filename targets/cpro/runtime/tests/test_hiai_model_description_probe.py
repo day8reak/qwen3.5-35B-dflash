@@ -15,19 +15,22 @@ model = root / 'draft "quoted"\\name\n.omc'
 model.write_bytes(b"descriptor-only-fixture")
 
 
-def execute(label, failure="", path=model, extra=()):
+def execute(label, failure="", path=model, extra=(), *, synthetic_dual=False):
     trace = root / (label + ".trace")
     command = [str(runner), "--probe-model-description", str(path), *extra]
     result = subprocess.run(command, capture_output=True, text=True,
-        env=dict(os.environ, FAKE_HIAI_FAILURE=failure, FAKE_HIAI_TRACE=str(trace)))
+        env=dict(os.environ, FAKE_HIAI_FAILURE=failure, FAKE_HIAI_TRACE=str(trace),
+            FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE='1' if synthetic_dual else '0'))
     events = trace.read_text().splitlines() if trace.exists() else []
     assert not events, (label, events, result.stderr)
     assert "LEAK" not in result.stderr, result.stderr
     return result
 
 
-for failure in ("", "descriptor-exclusive", "model-buffer", "path", "load", "no-npu"):
-    result = execute(failure or "preserve", failure)
+for failure, synthetic_dual in [("", False), ("descriptor-exclusive", False), ("model-buffer", False),
+        ("path", False), ("load", False), ("no-npu", False), ("", True)]:
+    result = execute(failure or ("synthetic-dual" if synthetic_dual else "selected-exclusive"), failure,
+        synthetic_dual=synthetic_dual)
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
     assert report["schema_version"] == 1
@@ -54,7 +57,7 @@ for failure in ("", "descriptor-exclusive", "model-buffer", "path", "load", "no-
         failed = (failure == "path" and row["operation"] == "SetModelPath"
                   or failure == "model-buffer" and row["operation"] == "SetModelBuffer")
         assert row["setter_status"] == int(failed), (failure, row)
-    if failure == "descriptor-exclusive":
+    if failure != "model-buffer" and not synthetic_dual:
         assert first[1]["model_path"] == ""
         assert first[1]["buffer_present"] is True and first[1]["buffer_matches_input"] is True
         assert first[1]["model_bytes"] == model.stat().st_size

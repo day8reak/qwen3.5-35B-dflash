@@ -13,6 +13,12 @@ int tensors=0, clients=0;
 std::uint16_t* target_features=nullptr;
 void* diagnostic_query_buffer=nullptr;
 std::string Failure() { const auto* p=std::getenv("FAKE_HIAI_FAILURE"); return p?p:""; }
+bool AllowDualModelSource() {
+  // Synthetic scheduling fixtures only. The selected device has confirmed
+  // mutually exclusive setters; this override is not SDK compatibility proof.
+  const auto* value=std::getenv("FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE");
+  return value && std::string(value)=="1" && Failure()!="descriptor-exclusive";
+}
 std::uint32_t FeatureWidth() {
   return Failure()=="large-features"?1025:Failure()=="capture-limit"?1024:32;
 }
@@ -126,7 +132,7 @@ AiModelDescription::AiModelDescription(const std::string& n,int freq,int framewo
 }
 AIStatus AiModelDescription::SetModelPath(const std::string& p) {
   path=p;
-  if (Failure()=="descriptor-exclusive") { model_buffer_=nullptr; model_bytes_=0; }
+  if (!AllowDualModelSource()) { model_buffer_=nullptr; model_bytes_=0; }
   return Failure()=="path"?1:0;
 }
 AIStatus AiModelDescription::SetModelBuffer(const void* data, std::uint32_t bytes) {
@@ -134,7 +140,7 @@ AIStatus AiModelDescription::SetModelBuffer(const void* data, std::uint32_t byte
   if(name=="qwen35_model_description_probe") {
     if(!data || !bytes) return AI_FAILED;
   } else if(!ModelBytesValid(data, bytes, name)) return AI_FAILED;
-  if(Failure()=="descriptor-exclusive") path.clear();
+  if(!AllowDualModelSource()) path.clear();
   model_buffer_=data; model_bytes_=bytes; return AI_SUCCESS;
 }
 void* AiModelDescription::GetModelBuffer() const {
@@ -164,8 +170,10 @@ AIStatus AiModelMngerClient::Load(std::vector<std::shared_ptr<AiModelDescription
   Trace("load");
   if(load_called_)throw std::runtime_error("same V1 client loaded more than once");
   load_called_=true;
-  if(d.size()!=1 || d[0]->path.empty() ||
+  if(d.size()!=1 ||
      !ModelBytesValid(d[0]->GetModelBuffer(), d[0]->GetModelNetSize(), d[0]->name)) return AI_FAILED;
+  if((d[0]->name=="qwen35_resident_target"||d[0]->name=="qwen35_resident_prefill") &&
+      (!AllowDualModelSource()||d[0]->path.empty()))return AI_FAILED;
   name_=d[0]->name;
   if(name_.rfind("qwen35_resident_",0)==0)Trace(("v1-load:"+name_).c_str());
   model_buffer_=d[0]->GetModelBuffer(); model_bytes_=d[0]->GetModelNetSize();

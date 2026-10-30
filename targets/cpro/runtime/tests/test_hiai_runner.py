@@ -33,7 +33,7 @@ for failure in ["", "corrupt-draft", "init", "version", "no-npu", "incompatible"
     # Process, UnLoadModel and client teardown. The standalone query throws;
     # explicit buffer loading must proceed without querying it.
     assert "compatibility-query" not in trace, (failure, trace, result.stderr)
-    if failure in ("", "corrupt-draft", "compat-query-error"):
+    if failure in ("", "corrupt-draft", "compat-query-error", "path"):
         assert result.returncode == 0, result.stderr
         assert trace.count("load") == trace.count("unload") == 2
         assert "process" in trace
@@ -49,9 +49,6 @@ for failure in ["", "corrupt-draft", "init", "version", "no-npu", "incompatible"
         if failure in ("load", "incompatible", "io-dims"):
             assert ("GetModelIOTensorDim" if failure == "io-dims" else "Load") in result.stderr
             assert trace == ["load", "unload"], (failure, trace)
-        if failure == "path":
-            assert "SetModelPath" in result.stderr
-            assert trace == ["unload"], (failure, trace)
         if failure in ("model-buffer", "model-buffer-null", "model-buffer-size"):
             expected = "SetModelBuffer" if failure == "model-buffer" else "model buffer descriptor"
             assert expected in result.stderr, (failure, result.stderr)
@@ -60,7 +57,7 @@ for failure in ["", "corrupt-draft", "init", "version", "no-npu", "incompatible"
             assert "Load" in result.stderr and "qwen35_draft" in result.stderr
             assert str(draft) in result.stderr
             assert trace == ["load", "load", "unload", "unload"], trace
-        if failure in ("path", "load", "incompatible", "io-dims", "model-buffer",
+        if failure in ("load", "incompatible", "io-dims", "model-buffer",
                        "model-buffer-null", "model-buffer-size"):
             for context in ("qwen35_target", str(target), "FAKE-HIAI-X90"):
                 assert context in result.stderr, (failure, context, result.stderr)
@@ -288,7 +285,7 @@ for layout in ("padded", "leading-feature", "mixed-feature"):
     assert events == ["load", "process", "unload"]
     assert (output / "output_0003.bin").read_bytes() == struct.pack("<8f", *range(1, 9))
 
-for failure in ("init", "version", "no-npu", "path", "load", "model-buffer", "io-dims",
+for failure in ("init", "version", "no-npu", "load", "model-buffer", "io-dims",
                 "shape", "format", "count", "allocation", "short-buffer", "run"):
     result, output, events = stateful_run(prefill, "failure-" + failure, failure=failure)
     assert result.returncode == 1 and not (output / "result.json").exists(), (failure, result.stderr)
@@ -500,7 +497,7 @@ for layout in ("padded", "leading-feature", "mixed-feature"):
     result, output, events = fused_run(gdn, "layout-" + layout, layout=layout)
     assert result.returncode == 0 and events == ["load", "process", "unload"], result.stderr
     assert (output / "output_0001.bin").stat().st_size == 32*128*128*4
-for failure in ("init", "version", "no-npu", "path", "load", "model-buffer", "io-dims",
+for failure in ("init", "version", "no-npu", "load", "model-buffer", "io-dims",
                 "shape", "format", "count", "allocation", "short-buffer", "run"):
     result, output, events = fused_run(gdn, "failure-" + failure, failure=failure)
     assert result.returncode == 1, (failure, result.stderr)
