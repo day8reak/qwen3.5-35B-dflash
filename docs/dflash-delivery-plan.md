@@ -39,7 +39,7 @@
 | row63 prefill试验 | PID28669成功；feature SHA不变，logits argmax由0变6 | 只证明该单变量试验改变了logits，未判定数值根因 |
 | embedding两张原表 | 用户确认已复制完成 | 新入口仍核对文件大小和实际读取行 |
 | 主机多轮调度＋两实机adapter | 旧任务在10次target／1次draft后遇runner复用路径错误；已修复，用户选择新版 | 仅联调工具，**不满足端侧自主P0目标** |
-| 端侧serial调度器＋部署／恢复入口 | 完整dump及compact用户回传成功；compact tokens `[26,18,2,4,6,2,0,2]`，16target／7draft，0／7接受 | 仅serial-prompt子里程碑；原prefill集成与P0整体未完成，物理断连／精度／常驻／配对性能未验收 |
+| 端侧serial调度器＋部署／恢复入口 | 完整dump及compact用户回传成功；compact tokens `[26,18,2,4,6,2,0,2]`，16target／7draft，0／7接受 | 历史 serial-prompt 子里程碑；另有原 prefill 完整 P0 成功结果，物理断连／精度／常驻／配对性能未验收 |
 | 增量draft缓存图 | `ge_incremental_draft.py`及独立主机等价测试已存在 | **没有新增AIR／OMC／实机增量ABI通过结果** |
 | 精度／稳定性／2倍加速 | 待完成 | 不从有限值、exit0或host测试推断通过 |
 
@@ -47,8 +47,8 @@
 
 ## 4. 接手助手的执行规则
 
-1. 只推进状态文件中最前面的未完成阶段，读其依赖、下一动作和证据；阶段内可以并行独立host工作，设备模型调用仍遵守共享锁。
-2. 先复用已成功的源／模型／缓存和当前环境。不要重跑成功的serial请求、row63实验或旧metadata探针。当前按已实现的原prefill短prompt实验合同运行新请求；不把S128当作默认前置条件，不通过截断历史或改manifest冒充新容量。
+1. 推进状态文件的 active_phase，读依赖、下一动作和证据；用户已要求在 P0 完成后优先推进 P5 工程，P1/P2 数值门槛仍保留。可并行独立 host 工作，设备模型调用遵守共享锁。
+2. 先复用已成功的源／模型／缓存和当前环境。不要重跑成功的serial请求、row63实验或旧metadata探针。当前按已成功的原prefill短prompt请求验证新常驻运行方式；不把S128当作默认前置条件，不通过截断历史或改manifest冒充新容量。
 3. 每个动作写清“目的、输入、命令、预期输出”。已有脚本先读 `--help`；下文标为“待实现”的入口不能当作现成CLI调用。
 4. host问题在host检查，只有需要实机结果时才让用户执行一次完整命令。能合并到入口的检查不拆成多轮手工问答。
 5. 修复可解释的路径、大小、JSON字段、schema选择、缓存／输出取回等局部问题后，跑相关检查、提交并推送；不要为了省事忽略失败、改旧receipt或放宽精度阈值。
@@ -64,7 +64,7 @@
 
 **状态：passed（执行范围）。** [最新原prefill闭环](board-prefill-first-completion.md)实际完成prefill1／decode8／draft7，生成8个token，compact回收成功。精度、状态数值语义、常驻与性能另行验收。
 
-主机循环`run_serial_dflash_smoke.py`仍只算联调；现`run_board_serial_dflash.py`已证明serial路径可以全在板端完成。新增`--prefill-feedback`已接入一次真实prefill的板端路径，主机集成通过后由用户执行设备验收。保留旧serial的完整dump与compact成功目录，不要求重复同样的P8/G8。最新compact总墙钟367.791秒，prompt输入8次74.389秒、生成decode8次108.209秒、draft7次137.646秒；包含加载／执行／卸载，非纯NPU时间，且没有主机逐状态回放。
+主机循环 `run_serial_dflash_smoke.py` 仍只算联调。端侧入口新增 `--prefill-feedback` 后，用户已经完成一次真实 prefill 驱动的 P8/G8 请求；最新总墙钟 305.788 秒，prefill 15.802 秒、decode 合计 116.692 秒、draft 合计 137.128 秒，均包含逐次加载／执行／卸载。保留该结果作为常驻改动的对照，不要求重复旧 serial 路线。
 
 本阶段已观察：原prefill实际执行一次，明确其80状态、logits和8层features到decode／draft的身份与字节交接；随后由板端完成提议、串行验证、接受／纠正及多轮生成。prefill／decode是不同模型variant，保留各自SHA，不能按RefData编号或相同shape猜对应关系。功能接入应在P0推进；P3保留同输入的数值／历史一致性验收。
 
@@ -121,7 +121,7 @@
 
 现成工具：`prepare_target_prefill_decode_feedback.py`，参数见其`--help`。它生成80条参数owner→source→compiled FX→native→prefill文件→decode输入映射；**不是已完成的80输入执行器，`feedback_ready=false`也不是精度失败**。cross-model source的RefData编号或相同shape不能代替身份。
 
-后续需实现：根据该映射生成一次真实decode输入、从实际prefill logits查下一token原embedding，并将prefill model与decode model的不同SHA作为同一session的两个明确variant绑定；不能伪装成同一个OMC SHA。
+P0 已实现根据该映射交接实际状态、从本次 prefill logits 查原 embedding，并绑定两个模型 variant 的不同 SHA；本阶段继续验证其数值／历史一致性，不能伪装为同一个 OMC SHA。
 
 核对output_pos的真实最后行、完整prompt embedding、全部80state、newKV／position／allQLen／conv／effective_length／mask控制。把prefill64→decode结果与**同一个完整64-token请求**的逐token普通baseline比较。
 
@@ -156,7 +156,9 @@
 
 P0已经要求端侧自主完整循环；旧主机每步HDC路径仅保留为联调。此阶段优化板端逐次子进程加载和文件交接，不能把这些开销计入DFlash算法收益。先分解模型load／Process／板端状态文件IO／调度／一次部署与最终回收成本。
 
-实现同一native session里的target执行与draft执行、80state／features／draft KV设备内存持有；常规运行只回传token和小摘要，完整tensor dump保留为调试模式。原target是external-weight HIAI V2路线，draft是独立embedded legacy-buffer路线；不能直接把target塞进旧draft的32位modelbuffer或靠`ROMC`开关替代适配。
+新增显式 `--resident`：同一个 native session 内分别使用两个 HIAI V2 manager，原 external-weight decode 与当前 embedded draft 都从文件恢复，各加载一次、多次同步 Run，循环结束关闭。原 prefill 仍是一次独立工具调用，退出后才加载两个常驻模型。旧成功 draft 使用 legacy-buffer；新 V2 的实际兼容性必须单独验证，不能由存储方式推断。主机替身覆盖生命周期，实际 SDK／设备结果待用户执行。
+
+首次常驻版本保留 80 状态私有文件／输出副本、完整 prefix 特征与原 S64 draft；不引入新的 draft KV ABI，也不宣称零拷贝。之后再根据测量优化内存 bank 和文件 I/O。常规只回收 token／小摘要，`--dump` 保留详细证据。加载／Run／关闭时延分开，RSS 不等于专用 NPU 内存。
 
 先实测两模型同时驻留是否可行。target外部权重约18.8GB、draft OMC约2.85GB是文件大小，不能当作实际峰值RAM证明；需测实际加载、峰值内存、缓存bank和OS余量。如果同时驻留失败，先保留证据重新规划，不静默反复卸载重载后宣称已常驻。
 

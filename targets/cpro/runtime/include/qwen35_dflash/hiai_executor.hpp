@@ -116,6 +116,15 @@ struct HiaiIoDiagnostic {
   std::vector<HiaiOutputIoDiagnostic> outputs;
 };
 
+// Process-local ownership observations only. Never serialized as a device
+// identity or used to infer a state slot. ResidentSession rejects overlap and
+// requires these live allocations to remain stable across alternating runs.
+struct HiaiTensorStorage {
+  const void* object = nullptr;
+  const void* data = nullptr;
+  std::size_t bytes = 0;
+};
+
 // Carries the precise failure even when executor construction has not completed.
 class HiaiRuntimeError final : public std::runtime_error {
  public:
@@ -138,14 +147,19 @@ class HiaiStatefulExecutor final {
                       bool fused_operator_probe = false,
                       int diagnostic_output_fill_byte = -1,
                       bool standalone_draft = false,
-                      const std::string& model_load_api = "legacy-buffer");
+                      const std::string& model_load_api = "legacy-buffer",
+                      const std::string& resident_model_name = "");
   ~HiaiStatefulExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
   void Execute();
   std::vector<std::uint8_t> CopyOutput(std::size_t index) const;
+  // Explicit file-v2 shutdown, idempotent even if DeInit reports an exception.
+  // Destructor cleanup is best-effort and never retries this call.
+  void Close();
   const std::string& runtime_version() const noexcept;
   const HiaiIoDiagnostic& io_diagnostic() const noexcept;
   const std::string& runtime_stage() const noexcept;
+  std::vector<HiaiTensorStorage> tensor_storage() const;
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
@@ -184,7 +198,8 @@ class HiaiOriginalTargetExecutor final {
                             const std::filesystem::path& weight_directory,
                             const std::string& expected_runtime_version,
                             const std::vector<HiaiBoundRuntimeTensor>& inputs,
-                            const std::vector<HiaiBoundRuntimeTensor>& outputs);
+                            const std::vector<HiaiBoundRuntimeTensor>& outputs,
+                            const std::string& resident_model_name = "");
   ~HiaiOriginalTargetExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
   void Execute();
@@ -198,6 +213,7 @@ class HiaiOriginalTargetExecutor final {
   const HiaiOriginalTargetLifecycle& lifecycle() const noexcept;
   const std::vector<HiaiBoundRuntimeTensor>& observed_inputs() const noexcept;
   const std::vector<HiaiBoundRuntimeTensor>& observed_outputs() const noexcept;
+  std::vector<HiaiTensorStorage> tensor_storage() const;
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

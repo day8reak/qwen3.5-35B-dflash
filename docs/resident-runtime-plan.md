@@ -1,45 +1,57 @@
-# 板端模型常驻与加载生命周期
+# 板端统一 HIAI V2 常驻执行
 
-2026-10-30，用户要求减少新版端侧执行开销，并优先考虑模型常驻；旧host循环失败后已选择直接跑新版。**本文包含适配器主机检查和后续方案，不是已取得的常驻实机结果。** 保留`121c043`按次加载的板端入口作为回滚；两个OMC、权重、完整词表与状态语义均不变。
+更新：2026-10-30。原 prefill 完整板端闭环已经取得用户实机完成结果；见 [成功基线](board-prefill-first-completion.md)。本次新增 `--resident`，将 decode 和当前内嵌权重 draft 都接到 HIAI V2。**新路径仍需用户在实际 DDK／设备验证，主机替身测试不能证明私有 SDK 兼容性或加速。** 默认入口保留已成功的按次加载方式，旧请求仍按自己的准备记录恢复。
 
-## 当前与目标
+## 执行方式
 
-| 项目 | 当前已发布入口 | 常驻目标 |
+| 阶段 | 已成功的默认模式 | 新 `--resident` 模式 |
 |---|---|---|
-| 调度／查表／接受判断 | 全在板端 | 全在板端 |
-| prompt | 新模式一次原prefill64读入逻辑P8，主机检查通过，实机待运行；旧serial路径保留 | 沿用一次prefill并在完成交接后释放 |
-| target | 每token启动原工具，反复加载 | 一个V2实例，多次Run |
-| draft | 每轮启动原CLI，反复加载／模型SHA | 一个legacy-buffer实例，多次Process |
-| 跨端数据 | 启动前与完整请求结束后 | 同左 |
-| 实机状态 | serial-prompt自主子流程已成功；原prefill完整P0待运行 | 常驻初始化、双模型内存、重复执行待验证 |
+| prefill | 一次原工具 V2 子进程，退出后交接状态 | 保持相同方式，退出后才加载常驻模型 |
+| decode | 每 token 启动工具并加载／卸载 | 一个 V2 manager，加载一次，多次同步 `Run` |
+| draft | 每轮独立 CLI，embedded `legacy-buffer` | 同一进程内另一个 V2 manager，embedded `file-v2`，加载一次、多次 `Run` |
+| 主机参与 | 一次部署、启动、最终回收 | 相同；中途无主机查表、状态传输或接受判断 |
+| 原模型 | 三个既有 OMC／原权重 | 不变；仅编译 native runner，无 AIR／OMC 重编译 |
 
-现有`HiaiStatefulExecutor`在构造时加载模型并分配张量，重复`SetInput → Execute → CopyOutput`不会主动卸载，析构时才释放。因此常驻需要改执行器生命周期，不需要重新导出AIR或重编OMC。原target约15MB主OMC加18.8GB外置权重，必须保留文件／外置权重加载路线；不能按文件总大小推断实际内存占用。
+新二进制为 `qwen35_board_resident`。一个 native session 内保留两个 manager；prefill 完成后先加载原 decode，再加载 draft，然后交替调用。两者使用不同的 built-model 名称。没有两个 worker、板端 IPC 或每轮新进程，也不会在 V2 失败时静默回退 legacy API。
 
-## 先完成哪些适配
+内嵌／外置权重是存储方式，V2／legacy 是运行接口。已经成功的内嵌 draft 原本使用 legacy-buffer；这不能代替新内嵌 draft 的 V2 实机验证。历史外置 draft 的 Init 失败也不能直接判定当前内嵌版本不支持 V2。
 
-独立`HiaiOriginalTargetExecutor`已完成并通过主机检查：89／82实际描述符精确绑定（保留format，支持INT8／INT64）、171个buffer对象及内存区间无重叠、一次初始化后3次Run及80状态回传、失败后停止复用、显式Close及析构清理。Release下8项CTest通过，包括新适配器21种负例和7项既有runner回归；测试使用Require／Throws，不受NDEBUG关闭assert影响。证据保存在工作区run `20261030T105923Z-14268-375427/out/resident-adapter-final.xml`及`original-target-resident-adapter-result.json`。默认CLI和板端调度入口未切换。
+## 生命周期与输入输出
 
-接入者必须在session层绑定并复核OMC、外置权重清单、实际库及锁的身份；适配器只接收路径与已绑定描述符，本身不提供模型SHA清单或worker协议。下一步先实现独立worker、用真实DDK编译，再由用户执行一次有阶段记录的加载实验。InitWeights→Init及DeInit→DeinitWeights的顺序均未在设备验证，不能从替身测试推导私有SDK调用约定。
+原 decode 复用 `HiaiOriginalTargetExecutor`。准备阶段从已绑定的原生 `model-io.json` 导出独立 `resident-abi.tsv`，绑定实际 89 输入／82 输出的名字、维度、类型、raw dtype／format 和字节大小。不能把旧 draft 的 ABI 或原图 shape 推断套给 target。
 
-1. **原target V2实例。** 使用已绑定的89输入／82输出的名字、类型和大小；特别支持INT8 embedding与INT64 allQLen。旧draft的ND形状限制不能直接套用原target的物理描述符。运行前绑定实际描述符，保留80个逐一映射的状态。
-2. **外置权重初始化。** 用户给出的所选DDK头文件有`Status InitWeights(const std::string& weightDir)`和`Status DeinitWeights()`，另有`Init`、同步`Run`、`DeInit`。头文件未说明初始化顺序；第一版独立实验采用RestoreFromFile、创建manager、InitWeights、Init，再多次Run。每阶段失败停止并记录；不自动换顺序重试，不冒称该顺序已经实机通过。
-3. **完整draft实例。** 复用已成功的embedded legacy-buffer路线，绑定一次模型／ABI及其生命周期内身份；每轮只换完整prefix的features／IDs／mask。不得继续每轮建立新模型hardlink后又宣称旧ctime／nlink不变。
-4. **独立session记录。** 常驻worker的PID可以跨调用相同；用session ID、连续call index和请求nonce绑定每次Run返回值，独立记录最终进程退出。不能把单次Run成功写成进程已退出，也不能放宽旧v1“每次新进程”的receipt校验来假装支持常驻。
-5. **全板端调度。** 优先用两个常驻worker隔离target V2与draft legacy库环境，IPC只在板端。INIT后READY；STEP带输入及输出目标；成功响应绑定实际输出记录；完成所有调用后SHUTDOWN。失败停止，不自动重启再advance。主机只部署、启动和最终回收。
+当前外置 target 实验顺序为 `RestoreFromFile → SetName → CreateModelManager → InitWeights → Init`，退出时 `DeInit → DeinitWeights`。用户提供的头文件证明这些接口存在，未证明其顺序满足所选私有实现；每阶段失败记录并停止，不自动换顺序重试。
 
-原80状态私有副本先保留。要进一步消除文件交接，再建立独立输入／输出buffer bank与提交所有权，防止RefData原地修改破坏上一状态或拒绝分支。常驻加载和状态零拷贝是两个改动，不混成一个未验证结论。
+内嵌 draft 复用 `HiaiStatefulExecutor` 的 `file-v2` 路径：`RestoreFromFile → SetName → Init → Run`。保留完整六层原 S64 的 3 输入／2 输出 ABI；每次输入完整 prefix 的 features、IDs 和 mask，每次输出 15 个候选与 hidden。每轮最多考虑的候选数仍由原参数控制，默认 K=2。
 
-## prefill用完卸载及重叠加载
+`ResidentSession` 一次加载并分配两模型的 176 个输入／输出缓冲区；多轮期间复用。输入全部检查后复制，检查实际读回内容，检查输出对象／地址稳定；返回的是独立输出副本。任一失败使 session 停止复用并清理已创建的实例。会检查两模型缓冲区区间不重叠，不能依赖全零内容来判断是否共享内存。
 
-原prefill的功能接入必须在P0完成，P3补数值／历史一致性验收。新P0代码已支持独立prefill子进程，保存80状态、features、logits后退出，再进行decode／draft；实机尚待用户运行。常驻版则在该交接后加载decode一次，并在生成期间保持decode和draft实例，循环结束后统一释放。旧serial模式的8次decode prompt调用不能算成“一次prefill”。
+80 状态仍按逐一绑定的输出→输入关系交接，只推进已提交 token。首次版本保留板端私有文件及字节副本，compact 模式清理已消费的成功 scratch，dump 模式保留详细证据。**常驻模型不等于状态零拷贝**；未来再单独优化状态 bank／内存交接，避免把生命周期改动与状态所有权改动混在一次实验里。
 
-卸载prefill与加载decode可以作为后续重叠实验，**目前没有接口并发及内存证据支持默认开启**。必须满足：无prefill未完成任务；输出不再引用即将释放的内存；runtime允许不同manager并发初始化／销毁；实测prefill未释放、decode正加载及draft驻留时的峰值内存有余量。文件大小不是峰值内存证明。优先收益是取消每token／每轮重复加载；启动交接重叠只优化一次转换，不作为首个闭环的前置条件。
+## 结果和计时
 
-## 验证和交接
+常驻结果独立使用 loop schema 3、逐调用 receipt schema 2，并记录 session ID、同一进程 PID 和连续 call index。单次 `Run` 返回不冒充子进程退出；只有 prefill 有实际子进程记录，整个请求最终仍核对 supervisor 完成及锁归属。
 
-- 主机替身验证：一次InitWeights／Init，多次Run，退出时正确释放；缺输入、错误ABI、输出对象替换和失败后继续调用均拒绝。
-- 真实设备先验原target V2初始化和两次状态接续，再验两模型同时驻留。不得从元数据Restore通过推断外置权重加载通过。
-- 常驻P8/G8按新prefill请求验证1次prefill、8次decode、多轮完整draft、80状态链和最终8token，与相同输入的按次加载版本对照；旧serial模式另保留16次target的回归。P0仍允许数值误差，P1/P2完整数值验收未取消。
-- 记录每模型load count、实例ID、调用次数、加载／卸载／Run墙钟和峰值内存；是否减少总耗时以设备结果为准。Init失败不静默退回逐步加载后报告“常驻成功”。
+普通输出保留 token、接受率和 prefill／decode／draft 时延，并补充：
 
-预计常驻适配与联调0.5–2个有效工作日，私有权重初始化或内存问题另计。工程实现可在P0期间并行；完整数值和性能验收仍依赖P1/P2。当前默认入口的I/O优化可独立使用，不需等常驻完成。
+- `execution_mode=resident-v2`。
+- `resident_lifecycle`：每模型加载次数、执行次数、关闭状态与加载／Run／关闭墙钟。
+- `resident_memory`：加载前、两模型加载后、关闭后进程 VmRSS／VmHWM 与系统 MemAvailable；不可读取时标记缺失。它不等于专用 NPU 内存统计。
+
+prefill 仍是一次子进程墙钟，含加载／执行／卸载。decode／draft 是 session 调用墙钟，排除一次性模型加载／关闭，包含输入复制、读回校验、同步 Run 和输出复制；不是纯 NPU 推理时间。总墙钟另含启动哈希、调度和私有文件 I/O。不能直接把旧子进程均值与新 Run 均值相除宣布算法加速。
+
+完整回收验证逐状态、候选、提交和同一 session 调用顺序；compact 仅回收最终 token 与小型完成摘要，不宣称主机重放了 80 状态链。恢复必须使用原 attempt，不能切换 resident 或 dump 模式后重跑。
+
+## 实机运行与验收
+
+完整启动／恢复命令见 [当前执行入口](current-status.md)。复用已成功的 prefill 请求参数，添加 `--resident` 并使用新 output。该模式要求 `--prefill-feedback`；不把旧 serial prompt 路线作为替代。首次目标为相同 P8/G8、一次 prefill、8 次 decode、至少两轮 draft，以及 decode／draft 各加载一次、正常关闭。
+
+对照原默认模式的相同输入、控制和 OMC，检查 token 是否仍为 `[4,12,10,8,0,4,32,2]`；若不同，先保留新结果并定位 API／状态差异，不能因旧版本本身未达数值精度而忽略运行方式带来的差异。原结果接受 0／7；不能声称已经覆盖实机接受／bonus 分支。
+
+所选 V2 同步 `Run` 接口没有 timeout 参数；当前 CLI 等待时间不是可取消的每次设备 Run 截止时间。未知执行状态时保留进程／锁并恢复查询，不自动重跑。
+
+失败时保留确切阶段、session／PID、attempt 和锁记录；根据完成证据恢复同一请求。不要删 output、删锁、改变 Init 顺序或改用旧 API 后将结果归类为常驻成功。先验证实际 DDK 编译和两个模型初始化，再核对多轮与内存；不根据约 18.8GB 外置 target 权重和约 2.85GB draft 文件大小推断实际峰值 RAM。
+
+prefill 卸载和 decode 加载暂不重叠。它只影响一次转换；先取消每 token／每轮重复加载。只有确认输出独立、runtime 并发生命周期支持、实际峰值内存余量后，再作为独立优化实验。
+
+P5 实现／设备联调预算仍为 0.5–2 个有效工作日，私有 SDK 或内存问题可能增加时间；完整数值与性能验收依赖 P1/P2。主机测试、代码身份和设备待验项目记录在 [常驻验证记录](board-resident-validation.md)。

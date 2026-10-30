@@ -21,6 +21,10 @@ if(BUILD_HIAI_RUNNER OR BUILD_HIAI_OBJECTS)
   add_library(hiai_adapter OBJECT src/hiai_executor.cpp src/main.cpp)
   target_include_directories(hiai_adapter PRIVATE include "${HIAI_INCLUDE_DIR}")
   target_compile_options(hiai_adapter PRIVATE -Wall -Wextra -Wpedantic)
+  add_library(hiai_resident_adapter OBJECT src/board_serial_main.cpp src/resident_session.cpp src/hiai_executor.cpp)
+  target_include_directories(hiai_resident_adapter PRIVATE include "${HIAI_INCLUDE_DIR}")
+  target_compile_definitions(hiai_resident_adapter PRIVATE QWEN35_RESIDENT_V2=1)
+  target_compile_options(hiai_resident_adapter PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 if(BUILD_HIAI_RUNNER)
   if(NOT HIAI_LIBRARIES)
@@ -33,6 +37,8 @@ if(BUILD_HIAI_RUNNER)
   endforeach()
   add_executable(qwen35_dflash_hiai $<TARGET_OBJECTS:hiai_adapter>)
   target_link_libraries(qwen35_dflash_hiai PRIVATE dflash_core ${HIAI_LIBRARIES})
+  add_executable(qwen35_board_resident $<TARGET_OBJECTS:hiai_resident_adapter>)
+  target_link_libraries(qwen35_board_resident PRIVATE dflash_core ${HIAI_LIBRARIES})
 endif()
 if(BUILD_HOST_TESTS)
   enable_testing()
@@ -46,6 +52,9 @@ if(BUILD_HOST_TESTS)
       QWEN35_BOARD_SERIAL_TEST_PRODUCTION=$<TARGET_FILE:qwen35_board_serial>
       ${Python3_EXECUTABLE} -m pytest ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_board_serial.py
       -q -p no:cacheprovider --basetemp=${CMAKE_CURRENT_BINARY_DIR}/board-serial-cases)
+  add_test(NAME board_local_resident_protocol
+    COMMAND ${Python3_EXECUTABLE} -m pytest ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_board_resident.py
+      -q -p no:cacheprovider --basetemp=${CMAKE_CURRENT_BINARY_DIR}/board-resident-cases)
   add_executable(dflash_scheduler_tests tests/test_generation.cpp)
   target_link_libraries(dflash_scheduler_tests PRIVATE dflash_core)
   add_test(NAME scheduler COMMAND dflash_scheduler_tests)
@@ -71,6 +80,17 @@ if(BUILD_HOST_TESTS)
   target_link_libraries(hiai_original_target_tests PRIVATE dflash_core)
   add_test(NAME hiai_original_target_resident_adapter
     COMMAND hiai_original_target_tests ${CMAKE_CURRENT_BINARY_DIR}/original-target-cases)
+  add_executable(hiai_resident_session_tests tests/test_resident_session.cpp
+    src/resident_session.cpp src/hiai_executor.cpp tests/fake_hiai/fake_hiai.cpp)
+  target_include_directories(hiai_resident_session_tests PRIVATE tests/fake_hiai)
+  target_link_libraries(hiai_resident_session_tests PRIVATE dflash_core)
+  add_test(NAME hiai_resident_session
+    COMMAND hiai_resident_session_tests ${CMAKE_CURRENT_BINARY_DIR}/resident-session-cases)
+  add_executable(board_resident_hiai_fake src/board_serial_main.cpp src/resident_session.cpp
+    src/hiai_executor.cpp tests/fake_hiai/fake_hiai.cpp)
+  target_include_directories(board_resident_hiai_fake PRIVATE tests/fake_hiai)
+  target_compile_definitions(board_resident_hiai_fake PRIVATE QWEN35_RESIDENT_V2=1 QWEN35_BOARD_SERIAL_HOST_FAKE=1 QWEN35_FAKE_HIAI=1)
+  target_link_libraries(board_resident_hiai_fake PRIVATE dflash_core)
   add_test(NAME hiai_lifecycle_faults
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_runner.py
       $<TARGET_FILE:hiai_runner_fake> ${CMAKE_CURRENT_BINARY_DIR}/fake-cases)

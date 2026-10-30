@@ -257,6 +257,21 @@
       "model_residency": "NOT_IMPLEMENTED",
       "document": "docs/board-prefill-integration.md",
       "device_evidence": "specs/board-prefill-first-completion.json"
+    },
+    "resident_v2": {
+      "implementation": "SINGLE_PROCESS_TWO_FILE_V2_MANAGERS_WITH_ORIGINAL_PREFILL_CHILD",
+      "status": "HOST_TESTED_DEVICE_PENDING",
+      "validation_document": "docs/board-resident-validation.md",
+      "model_compilation": "NOT_RUN",
+      "device_residency": "NOT_RUN",
+      "device_accuracy": "NOT_EVALUATED",
+      "paired_speedup": "NOT_MEASURED",
+      "legacy_successful_draft_api": "legacy-buffer",
+      "new_draft_api": "file-v2",
+      "zero_copy": "NOT_IMPLEMENTED_PRIVATE_STATE_FILES_AND_OWNED_COPIES_RETAINED",
+      "validation_manifest": "specs/resident-v2-host-validation.json",
+      "host_python_tests": 101,
+      "actual_adapter_integration_tests": 2
     }
   },
   "next_action": {
@@ -350,7 +365,7 @@
     "paired_speedup": "NOT_MEASURED"
   },
   "planned_parallelism": [
-    "P0 autonomous board request on user device; host-only resident worker integration after tested adapter. No assistant board/HDC probes.",
+    "P0 original-prefill baseline passed; P5 unified two-manager V2 residency host implementation then user device execution. No assistant board/HDC probes.",
     "P1 reference preparation while P0 device runs",
     "P2 fixture preparation and P3 static mapping; do not accept accuracy with wrong features",
     "P4 host source/ABI and P5 resident runner after shared interfaces frozen",
@@ -537,7 +552,7 @@
         2
       ],
       "next_action_type": "implement_and_measure",
-      "next_action": "实现一个板端native session，使用两个file-v2 manager常驻原decode与当前内嵌draft。prefill退出后各加载一次，保持原80状态及特征提交。主机验证后交付用户实机验证，失败不静默回退旧API。",
+      "next_action": "用户按 docs/current-status.md 启动新 --resident P8/G8 请求并恢复同一attempt；核对1次prefill、各1次load、多次Run、关闭、token对照及RSS/墙钟。主机检查已完成，设备常驻仍待验证。",
       "pass_conditions": [
         "two-model residency feasibility measured",
         "native loop same tokens/state as baseline",
@@ -550,7 +565,10 @@
         "memory/load/transfer report",
         "matched ordinary baseline"
       ],
-      "evidence": [],
+      "evidence": [
+        "docs/resident-runtime-plan.md",
+        "docs/board-resident-validation.md"
+      ],
       "last_error": null,
       "numerical_acceptance_depends_on": [
         "P1",
@@ -686,6 +704,11 @@
       "date": "2026-10-30",
       "decision": "User clarified the first stage must include original prefill. Restore P0=in_progress; keep successful serial P8/G8 as submilestones. Proceed with an explicit PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL implementation; do not automatically mandate S128 or replace prefill with serial prompt.",
       "scope": "Execution scope correction; no numerical or physical-disconnect pass"
+    },
+    {
+      "date": "2026-10-30",
+      "decision": "采用同一板端进程中的两个 HIAI V2 manager，取代此前两个worker/legacy draft方案；显式 --resident，默认及旧请求恢复保留。原三OMC不变，无S128前置编译。",
+      "scope": "用户要求的运行生命周期改动；主机测试不构成实机常驻、精度或性能通过"
     }
   ],
   "handoff_update_fields": [
@@ -732,7 +755,7 @@
       "sequence_length": 64,
       "valid_prompt_tokens": 8,
       "control_recipe": "PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL",
-      "status": "IMPLEMENTATION_PENDING_DEVICE_NOT_RUN",
+      "status": "USER_REPORTED_EXECUTION_PASSED_NUMERICAL_CONTROLS_UNVALIDATED",
       "draft_capacity_policy": "EXPLICIT_FULL_HISTORY_AND_ANCHOR_CONTRACT_NO_AUTOMATIC_S128_REQUIREMENT"
     },
     "physical_disconnect_validation": "NOT_SPECIFICALLY_TESTED"

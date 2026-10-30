@@ -1,8 +1,8 @@
 """Prepare an autonomous board-local loop using the existing complete OMCs.
 
-The new supervisor moves orchestration, original embedding row lookup, and all
-state/feature feedback onto the board. It still invokes fresh single-model
-processes; it is neither model residency nor a speed/accuracy acceptance gate.
+The supervisor moves orchestration, original embedding row lookup, and all
+state/feature feedback onto the board. Resident file-v2 execution is an explicit
+separate mode; neither mode is a speed/accuracy acceptance gate.
 """
 from __future__ import annotations
 
@@ -21,6 +21,47 @@ from .target_compile_failure import _read_small
 
 KIND = 'qwen35-board-serial-dflash-prepared'
 MAX_MANIFEST_BYTES = 64 << 20
+
+
+def _resident_abi(binding, runtime_probe, output):
+    """Pin actual selected-HIAI descriptors; never infer shapes from byte counts."""
+    from .target_prefill_smoke_plan import _runtime_keys, _WIDTHS, _TOOL_TYPES
+    base = binding['base_plan']; records = {row['path']: row['identity'] for row in binding['active_source_identities']}
+    source = Path(runtime_probe).resolve() / 'model-io.json'
+    raw, observed = _read_small(source, 32 << 20)
+    if records.get(str(source)) != _current(source)[1]:
+        raise ValueError('resident ABI source is not the freshly bound native descriptor file')
+    native = json.loads(raw)
+    if (native.get('artifact_kind') != 'qwen35-hiai-model-io-probe'
+            or native.get('evidence_kind') != 'device-hiai' or native.get('status') != 'IO_DESCRIPTORS_OBSERVED'
+            or native.get('model_sha256') != base['model_sha256']
+            or native.get('model_bytes') != base['primary_model_binding']['bytes']
+            or any(native.get(key) != base[key] for key in ('runtime_version', 'ddk_id', 'firmware_id'))):
+        raise ValueError('resident ABI source differs from the executed target model/runtime')
+    lines = ['QWEN35_RESIDENT_ABI\t1']; descriptors = {}
+    for direction, type_key in (('inputs', 'tool_input_type'), ('outputs', 'tool_output_type')):
+        views = _runtime_keys(native, direction); rows = native[direction]; planned = base[direction]
+        if len(rows) != len(planned):
+            raise ValueError('resident ABI source count differs from the bound interface')
+        result = []
+        for index, (row, (dtype, shape), expected) in enumerate(zip(rows, views, planned)):
+            name = row.get('tensor_name'); actual_name = expected['runtime_tensor_name']
+            elements = 1
+            for dimension in shape: elements *= dimension
+            if (row.get('tensor_name_status') != 'OBSERVED' or name != actual_name
+                    or _TOOL_TYPES[dtype] != expected[type_key]
+                    or elements * _WIDTHS[dtype] != expected['bytes']):
+                raise ValueError('resident ABI literal name/type/extent differs from the bound runtime interface')
+            result.append(dict(index=index, name=name, dtype=dtype, raw_dtype=row['raw_dtype'],
+                raw_format=row['raw_format'], shape=list(shape), bytes=expected['bytes']))
+            lines.append('\t'.join(map(_field, ('target_' + direction[:-1], index, name, dtype,
+                row['raw_dtype'], row['raw_format'], ','.join(map(str, shape)), expected['bytes']))))
+        descriptors[direction] = result
+    if records[str(source)] != _current(source)[1] or observed['sha256'] != sha256_file(source):
+        raise ValueError('resident ABI source changed during serialization')
+    Path(output).write_bytes(('\n'.join(lines) + '\n').encode('ascii'))
+    return {**_hash_source(output), 'descriptor_source': dict(observed, identity=records[str(source)]),
+        'inputs': descriptors['inputs'], 'outputs': descriptors['outputs'], 'scope': 'ACTUAL_NAMED_HIAI_RAW_ENUM_AND_FIXED_SHAPE_DESCRIPTORS'}
 
 
 def _hash_source(path, expected_size=None):
@@ -48,11 +89,13 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         draft_bundle, weight_table, scale_table, prompt_input_ids, output,
         prompt_length=8, max_new_tokens=8, max_proposals_per_round=2,
         minimum_draft_rounds=2, timeout_seconds=7200, lock_wait_seconds=1800,
-        board_model_root='/data/local/tmp/qwen3_5_moe', dump=False, prefill_feedback=None):
+        board_model_root='/data/local/tmp/qwen3_5_moe', dump=False, prefill_feedback=None, resident=False):
     _options(prompt_length, max_new_tokens, max_proposals_per_round, minimum_draft_rounds,
              timeout_seconds, lock_wait_seconds)
-    if type(dump) is not bool:
-        raise ValueError('dump must be an explicit boolean')
+    if type(dump) is not bool or type(resident) is not bool:
+        raise ValueError('dump/resident must be explicit booleans')
+    if resident and prefill_feedback is None:
+        raise ValueError('resident-v2 requires the bound original prefill feedback mapping')
     if (not isinstance(board_model_root, str)
             or not re.fullmatch(r'/[A-Za-z0-9_./-]+', board_model_root)
             or any(part in {'.', '..'} for part in PurePosixPath(board_model_root).parts)):
@@ -68,6 +111,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         source_torchair_pb2=source_torchair_pb2, board_model_root=board_model_root,
         timeout_seconds=timeout_seconds, lock_wait_seconds=lock_wait_seconds)
     target_preflight = target.preflight(prompt)
+    resident_abi = _resident_abi(target.binding, runtime_probe, out / 'resident-abi.tsv') if resident else None
     draft = Draft(draft_bundle, out / 'draft-binding', runtime_version=target.runtime_version,
         firmware_id=target.firmware_id, timeout_seconds=timeout_seconds,
         lock_wait_seconds=lock_wait_seconds)
@@ -123,7 +167,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
             pins[row['path']] = deepcopy(row['identity'])
     for path, identity in draft._source_identities.items():
         pins[path] = deepcopy(identity)
-    for row in [*tables.values(), primary, abi, prompt_source]:
+    for row in [*tables.values(), primary, abi, prompt_source, *([resident_abi] if resident_abi else [])]:
         if row['path'] in pins and pins[row['path']] != row['identity']:
             raise ValueError('source identity changed across board-loop preparation')
         pins[row['path']] = deepcopy(row['identity'])
@@ -153,6 +197,10 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         manifest['initial_state_policy'] = 'PREFILL_ZERO_STATES_THEN_ALL80_EXPLICITLY_MAPPED_PREFILL_OUTPUTS'
     else:
         manifest['prompt_ingestion'] = 'DECODE1_SERIAL_PROMPT_INGESTION'
+    if resident:
+        manifest.update(execution_mode='resident-v2', resident_abi=resident_abi,
+            orchestration='BOARD_LOCAL_SINGLE_PROCESS_FILE_V2_DECODE_AND_DRAFT',
+            model_residency='REQUESTED_FILE_V2_TWO_MANAGERS_ONE_LOAD_EACH_UNVALIDATED')
     save_json(out / 'manifest.json', manifest)
     (out / 'manifest.sha256').write_text(sha256_file(out / 'manifest.json') + '\n')
     return validate_prepared(out)
@@ -177,6 +225,16 @@ def validate_prepared(directory):
     # Recovery never changes a request's original retention/validation policy.
     if type(manifest.get('dump', True)) is not bool:
         raise ValueError('prepared dump mode must be boolean')
+    if manifest.get('execution_mode', 'fresh-process') not in {'fresh-process', 'resident-v2'}:
+        raise ValueError('prepared execution mode is unsupported')
+    if manifest.get('execution_mode') == 'resident-v2':
+        abi = manifest.get('resident_abi', {})
+        if ('prefill' not in manifest or not isinstance(abi, dict) or abi.get('path') != str(root / 'resident-abi.tsv')
+                or _hash_source(abi['path']) != {key: abi[key] for key in ('path', 'bytes', 'sha256', 'identity')}
+                or len(abi.get('inputs', [])) != 89 or len(abi.get('outputs', [])) != 82):
+            raise ValueError('prepared resident ABI changed or is incomplete')
+    elif 'resident_abi' in manifest:
+        raise ValueError('resident ABI cannot be attached to a legacy request')
     for row in manifest['source_bindings']:
         if _current(row['path'])[1] != row['identity']:
             raise ValueError('board-loop source changed after preparation: ' + row['path'])
@@ -203,6 +261,8 @@ def make_config(manifest, remote_paths):
         'weight_table': manifest['tables']['weight'], 'scale_table': manifest['tables']['scale']}
     if 'prefill' in manifest:
         files['prefill_model'] = manifest['prefill']['model']
+    if manifest.get('execution_mode') == 'resident-v2':
+        files['resident_abi'] = manifest['resident_abi']
     for key, record in files.items():
         path = str(remote_paths[key])
         if (not path.startswith('/') or any(part in {'.', '..'} for part in PurePosixPath(path).parts)
@@ -219,6 +279,8 @@ def make_config(manifest, remote_paths):
             'dump': int(dump),
             'timeout_ms': min(manifest['timeout_seconds'] * 1000, 2**32 - 1)}.items():
         lines.append('\t'.join(map(_field, (key, value))))
+    if manifest.get('execution_mode') == 'resident-v2':
+        lines.append('execution_mode\tresident-v2')
     for role, type_key in (('input', 'tool_input_type'), ('output', 'tool_output_type')):
         for row in base[role + 's']:
             name = row['name'] if role == 'input' else row['runtime_tensor_name']
@@ -258,6 +320,8 @@ def run_board_serial_dflash(*, output, apply=False, detach=False, **options):
         result['prepared'] = manifest['output']
         result['dump'] = manifest.get('dump', True)
         result['prompt_ingestion'] = manifest['prompt_ingestion']
+        if manifest.get('execution_mode') == 'resident-v2':
+            result['execution_mode'] = 'resident-v2'
         result['retrieval_mode'] = 'FULL_DEBUG' if result['dump'] else 'FINAL_TOKENS_ONLY'
         if apply:
             from .board_serial_transport import execute_board_serial

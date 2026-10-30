@@ -65,6 +65,31 @@ def native_programs(tmp_path_factory):
     return supervisor, draft
 
 
+@pytest.fixture(scope='module')
+def resident_native_programs(tmp_path_factory):
+    """Actual file-v2 executors/session, with an explicit fake HIAI provider."""
+    existing = os.environ.get('QWEN35_RESIDENT_TEST_BINARY')
+    if existing:
+        binary = Path(existing)
+        assert binary.is_absolute() and binary.is_file() and os.access(binary, os.X_OK)
+        assert digest(binary) == os.environ.get('QWEN35_RESIDENT_TEST_BINARY_SHA256')
+        return binary, binary
+    compiler = shutil.which('g++')
+    if not compiler:
+        pytest.skip('host C++ compiler is unavailable')
+    root = tmp_path_factory.mktemp('board-resident-native-integration-build')
+    binary = root / 'board-resident-actual-session-host-fake'
+    command = [compiler, '-std=c++17', '-O2', '-Wall', '-Wextra',
+        '-DQWEN35_RESIDENT_V2=1', '-DQWEN35_BOARD_SERIAL_HOST_FAKE=1', '-DQWEN35_FAKE_HIAI=1',
+        '-I' + str(RUNTIME / 'include'), '-I' + str(RUNTIME / 'tests/fake_hiai'),
+        *[str(RUNTIME / 'src' / name) for name in ('board_serial_main.cpp', 'resident_session.cpp',
+            'hiai_executor.cpp', 'sha256.cpp', 'generation.cpp')],
+        str(RUNTIME / 'tests/fake_hiai/fake_hiai.cpp'), '-o', str(binary)]
+    compiled = subprocess.run(command, capture_output=True, text=True, timeout=180)
+    assert compiled.returncode == 0, compiled.stderr
+    return binary, binary
+
+
 TARGET_SCRIPT = r'''
 import json, os, struct, sys
 from pathlib import Path
@@ -250,6 +275,83 @@ def enable_prefill(case):
     (root / 'expected-prepared-manifest.json').write_text(json.dumps(case['manifest'], indent=2))
 
 
+def enable_resident(case):
+    """The provider's explicit marker selects original89/82 plus actual draft3/2."""
+    from qwen35_moe_dflash.board_serial_transport import _full
+    enable_prefill(case)
+    root = case['root']; manifest = case['manifest']
+    case['files']['target_model'].write_bytes(b'original-resident-target-fixture')
+    case['files']['draft_model'].write_bytes(b'draft-resident-loop64-fixture')
+    tool = case['files']['target_tool']
+    tool.write_text(tool.read_text().replace("struct.pack('<e', i) * 16384", "struct.pack('<e', 0.5) * 16384"))
+    def record(path):
+        return dict(path=str(path), bytes=path.stat().st_size, sha256=digest(path), identity=_full(path))
+    manifest['target_model'] = record(case['files']['target_model'])
+    manifest['draft']['model_source'] = record(case['files']['draft_model'])
+    enum = {'FP32': ('FLOAT32', 1, 4), 'FP16': ('FLOAT16', 2, 2), 'INT32': ('INT32', 3, 4),
+        'INT8': ('INT8', 4, 1), 'INT16': ('INT16', 5, 2), 'INT64': ('INT64', 7, 8)}
+    def state_shape(ref):
+        return [1, 8192, 4] if ref % 8 in {0, 2, 4} else [1, 32, 128, 128] if ref % 8 in {1, 3, 5} else [64, 32, 32, 16]
+    input_shapes = [[1, 1, 1, 2048], [1, 1, 1, 2048], [1, 1]] + [state_shape(ref) for ref in range(80)] + [[1], [1], [1, 1, 1], [1], [128], [1]]
+    by_output = {row['output_index']: row['ref'] for row in case['states']}
+    output_shapes = [[1, 1, 1, 248320]] + [state_shape(by_output[index]) for index in range(1, 81)] + [[1, 1, 1, 16384]]
+    rows = ['QWEN35_RESIDENT_ABI\t1']
+    for role, values, shapes in [('target_input', case['inputs'], input_shapes), ('target_output', case['outputs'], output_shapes)]:
+        for row, shape in zip(values, shapes):
+            dtype, raw, width = enum[row['type']]
+            size = width
+            for dimension in shape: size *= dimension
+            assert size == row['bytes']
+            rows.append('\t'.join(map(str, (role, row['index'], row['name'], dtype, raw, 2, ','.join(map(str, shape)), size))))
+    path = root / 'resident-abi.tsv'; path.write_text('\n'.join(rows) + '\n')
+    manifest.update(execution_mode='resident-v2', resident_abi=record(path))
+    config = []
+    for line in case['config'].read_text().splitlines():
+        fields = line.split('\t')
+        if fields[0] in {'target_model', 'draft_model', 'target_tool'}:
+            actual = case['files'][fields[0]]; fields[2:] = [digest(actual), str(actual.stat().st_size)]; line = '\t'.join(fields)
+        config.append(line)
+    config += ['execution_mode\tresident-v2', '\t'.join(('resident_abi', str(path), digest(path), str(path.stat().st_size)))]
+    case['config'].write_text('\n'.join(config) + '\n')
+    (root / 'expected-prepared-manifest.json').write_text(json.dumps(manifest, indent=2))
+
+
+@pytest.mark.parametrize('dump', [True, False])
+def test_actual_resident_file_v2_session_prefill_and_multiround_loop(tmp_path, resident_native_programs, dump):
+    from qwen35_moe_dflash.board_serial_transport import validate_retrieved_loop
+    case = make_case(tmp_path / ('resident-debug' if dump else 'resident-compact'), resident_native_programs, dump=dump)
+    enable_resident(case); process = execute(case)
+    assert process.returncode == 0, (process.stdout, process.stderr)
+    loop = validate_retrieved_loop(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
+        _expected_config_sha256=digest(case['config']))
+    assert loop['schema_version'] == 3 and loop['counts']['prefill_native_calls'] == 1
+    life = loop['resident_lifecycle']
+    assert life['target_loads'] == life['draft_loads'] == life['target_close_calls'] == life['draft_close_calls'] == 1
+    assert life['closed'] and not life['poisoned']
+    assert life['target_runs'] == loop['counts']['target_native_calls'] == 8
+    assert life['draft_runs'] == loop['counts']['draft_native_calls'] >= 2
+    assert loop['generated_tokens'] == list(range(9, 17))
+    assert len(loop['child_lifecycle']['children']) == 1
+    assert loop['child_lifecycle']['children'][0]['pid'] != loop['process_id']
+    if dump:
+        calls = [event['call_index'] for kind in ('target_steps', 'draft_steps') for event in loop[kind]]
+        assert sorted(calls) == list(range(8 + life['draft_runs']))
+        assert not any('pid' in event or 'exitcode' in event for kind in ('target_steps', 'draft_steps') for event in loop[kind])
+        _reject_rebound_prefill_claims(case, loop)
+    else:
+        assert not list(case['output'].rglob('*.bin'))
+        failed = make_case(tmp_path / 'resident-failed-run', resident_native_programs, dump=False)
+        enable_resident(failed); failure = execute(failed, native_fault='original-run')
+        assert failure.returncode == 1, (failure.stdout, failure.stderr)
+        from qwen35_moe_dflash.board_serial_transport import validate_retrieved_tokens
+        retained = validate_retrieved_tokens(failed['manifest'], failed['output'], _expected_evidence_kind='host-fake-hiai',
+            _expected_config_sha256=digest(failed['config']), _remote_exitcode=1)
+        assert retained['status'] == 'FAILED' and retained['resident_lifecycle']['closed']
+        assert retained['resident_lifecycle']['poisoned'] and retained['resident_lifecycle']['target_run_attempts'] == 1
+        assert retained['counts']['target_native_calls'] == 0 and retained['counts']['draft_native_calls'] == 0
+        assert retained['child_lifecycle']['children'] == [dict(pid=retained['child_lifecycle']['last_child_pid'], exitcode=0)]
+
+
 @pytest.mark.parametrize('dump', [True, False])
 def test_actual_prefill64_handoff_then_real_draft_and_multiround_decode(tmp_path, native_programs, dump):
     from qwen35_moe_dflash.board_serial_transport import validate_retrieved_loop
@@ -310,10 +412,12 @@ def _reject_rebound_prefill_claims(case, original):
             path.write_bytes(saved); loop_path.write_bytes(saved_loop); inventory.write_bytes(saved_inventory)
 
 
-def execute(case, fault=None):
+def execute(case, fault=None, native_fault=None):
     env = dict(os.environ)
     if fault:
         env['QWEN_BOARD_TEST_FAULT'] = fault
+    if native_fault:
+        env['FAKE_HIAI_FAILURE'] = native_fault
     stdout, stderr = case['root'] / 'supervisor.stdout', case['root'] / 'supervisor.stderr'
     # No live stdin/stdout pipe or callback drives a token after this spawn.
     # This local host test only waits for process exit; all children, control

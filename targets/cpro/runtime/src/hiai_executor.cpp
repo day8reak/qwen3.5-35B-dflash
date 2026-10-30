@@ -113,7 +113,7 @@ struct Model {
   std::shared_ptr<hiai::AiModelDescription> description;
   hiai::AiModelMngerClient client;
   bool initialized = false;
-  bool file_v2 = false, v2_init_attempted = false;
+  bool file_v2 = false, v2_init_attempted = false, v2_closed = false;
   std::string stage = "LEGACY_LOAD";
   std::shared_ptr<hiai::IBuiltModel> built_model;
   std::shared_ptr<hiai::IModelManager> manager;
@@ -131,12 +131,26 @@ struct Model {
   Model() = default;
   Model(const Model&) = delete;
   Model& operator=(const Model&) = delete;
+  void CloseFile(bool report_error) {
+    if (v2_closed) return;
+    v2_closed = true;
+    std::string error;
+    // Mark the attempt before calling the SDK. Neither explicit Close nor the
+    // destructor retries a failed/throwing DeInit with uncertain SDK state.
+    if (manager && v2_init_attempted) {
+      try { manager->DeInit(); }
+      catch (const std::exception& failure) { error = failure.what(); }
+      catch (...) { error = "unknown draft DeInit exception"; }
+    }
+    manager.reset(); built_model.reset();
+    if (!error.empty()) {
+      if (report_error) throw HiaiRuntimeError("MODEL_MANAGER_DEINIT",error);
+      std::cerr << "HIAI file-v2 cleanup error=" << error << std::endl;
+    }
+  }
   ~Model() {
     // Process is synchronous: unload before releasing persistent tensor buffers.
-    if (manager && v2_init_attempted) manager->DeInit();
-    // Release manager while its restored model and tensor storage are alive.
-    manager.reset();
-    built_model.reset();
+    CloseFile(false);
     if (initialized) static_cast<void>(client.UnLoadModel());
   }
   void Load(const std::filesystem::path& path, const std::string& model_name,
@@ -184,7 +198,8 @@ struct Model {
       throw std::runtime_error(std::string("HIAI OMC tensor count differs from ") + abi);
   }
   void LoadFile(const std::filesystem::path& path, const std::string& expected_version,
-                std::size_t input_count, std::size_t output_count, bool descriptor_only = false) {
+                std::size_t input_count, std::size_t output_count, bool descriptor_only = false,
+                const std::string& resident_model_name = "") {
     file_v2 = true;
     name = descriptor_only ? "qwen35_model_io_probe" : "qwen35_standalone_draft";
     try {
@@ -202,6 +217,12 @@ struct Model {
       // the runtime. Do not round-trip through a buffer or legacy descriptor.
       const auto restored = built_model->RestoreFromFile(path.c_str());
       if (restored != 0) throw std::runtime_error("RestoreFromFile failed: " + std::to_string(restored));
+      if (!resident_model_name.empty()) {
+        Stage("SET_RESIDENT_MODEL_NAME");
+        built_model->SetName(resident_model_name);
+        if (built_model->GetName() != resident_model_name)
+          throw std::runtime_error("resident draft built model name differs after SetName");
+      }
       if (descriptor_only) {
         // Explicit restore-only experiment: query the restored object's public
         // metadata before creating or initializing a manager. External-weight
@@ -452,6 +473,7 @@ struct HiaiStatefulExecutor::Impl {
   Model target;
   std::vector<bool> ready;
   bool outputs_available = false;
+  bool closed = false;
   HiaiIoDiagnostic diagnostic;
   std::vector<const void*> output_buffers_before;
   std::vector<std::string> input_source_hashes;
@@ -482,11 +504,13 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
     const std::vector<HiaiTensorSpec>& inputs, const std::vector<HiaiTensorSpec>& outputs,
     std::uint32_t timeout_ms, bool fused_operator_probe,
     int diagnostic_output_fill_byte, bool standalone_draft,
-    const std::string& model_load_api) : impl_(std::make_unique<Impl>()) {
+    const std::string& model_load_api, const std::string& resident_model_name) : impl_(std::make_unique<Impl>()) {
   if (model_load_api != "legacy-buffer" && model_load_api != "file-v2")
     throw std::invalid_argument("model load API must be legacy-buffer or file-v2");
   if (model_load_api == "file-v2" && !standalone_draft)
     throw std::invalid_argument("file-v2 requires the standalone draft ABI");
+  if (!resident_model_name.empty() && model_load_api != "file-v2")
+    throw std::invalid_argument("resident model name requires file-v2");
   if (inputs.empty() || inputs.size() > 1024 || outputs.empty() || outputs.size() > 1024 ||
       expected_version.empty() || !timeout_ms)
     throw std::invalid_argument("stateful target requires bounded ordered IO, runtime identity and timeout");
@@ -508,7 +532,7 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
     }
   }
   if (model_load_api == "file-v2")
-    impl_->target.LoadFile(target, expected_version, inputs.size(), outputs.size());
+    impl_->target.LoadFile(target, expected_version, inputs.size(), outputs.size(),false,resident_model_name);
   else impl_->target.Load(target, standalone_draft ? "qwen35_standalone_draft" :
                      fused_operator_probe ? "qwen35_fused_operator" : "qwen35_stateful_target",
                      expected_version, timeout_ms, inputs.size(), outputs.size(),
@@ -553,6 +577,7 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
 }
 HiaiStatefulExecutor::~HiaiStatefulExecutor() = default;
 void HiaiStatefulExecutor::SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes) {
+  if (impl_->closed) throw HiaiRuntimeError("CLOSED", "stateful executor is closed");
   if (impl_->target.file_v2 && impl_->target.stage != "INPUT_BINDING") impl_->target.Stage("INPUT_BINDING");
   else impl_->target.stage = "INPUT_BINDING";
   impl_->outputs_available = false;
@@ -570,6 +595,7 @@ void HiaiStatefulExecutor::SetInput(std::size_t index, const std::vector<std::ui
   impl_->ready[index] = true;
 }
 void HiaiStatefulExecutor::Execute() {
+  if (impl_->closed) throw HiaiRuntimeError("CLOSED", "stateful executor is closed");
   impl_->outputs_available = false;
   if (!std::all_of(impl_->ready.begin(), impl_->ready.end(), [](bool ready) { return ready; }))
     throw std::logic_error("all explicit stateful inputs must be supplied for each step");
@@ -619,11 +645,19 @@ void HiaiStatefulExecutor::Execute() {
   impl_->outputs_available = true;
 }
 std::vector<std::uint8_t> HiaiStatefulExecutor::CopyOutput(std::size_t index) const {
+  if (impl_->closed) throw HiaiRuntimeError("CLOSED", "stateful executor is closed");
   if (!impl_->outputs_available)
     throw std::logic_error("stateful outputs unavailable before successful Process");
   const auto& tensor = impl_->target.outputs.at(index);
   const auto* data = static_cast<const std::uint8_t*>(tensor.Data());
   return {data, data + tensor.bytes};
+}
+void HiaiStatefulExecutor::Close() {
+  if (impl_->closed) return;
+  if (!impl_->target.file_v2) throw HiaiRuntimeError("CLOSE_API", "explicit Close requires file-v2");
+  impl_->closed = true;
+  impl_->outputs_available = false;
+  impl_->target.CloseFile(true);
 }
 const std::string& HiaiStatefulExecutor::runtime_version() const noexcept {
   return impl_->target.version;
@@ -633,6 +667,22 @@ const std::string& HiaiStatefulExecutor::runtime_stage() const noexcept {
 }
 const HiaiIoDiagnostic& HiaiStatefulExecutor::io_diagnostic() const noexcept {
   return impl_->diagnostic;
+}
+std::vector<HiaiTensorStorage> HiaiStatefulExecutor::tensor_storage() const {
+  if (impl_->closed) throw HiaiRuntimeError("CLOSED", "stateful executor is closed");
+  std::vector<HiaiTensorStorage> result;
+  for (const auto& tensor : impl_->target.inputs)
+    result.push_back({tensor.Object(), tensor.Data(), tensor.Size()});
+  if (impl_->target.OutputCount() != impl_->target.outputs.size())
+    throw HiaiRuntimeError("LIVE_STORAGE", "draft output object count changed");
+  for (std::size_t i = 0; i < impl_->target.outputs.size(); ++i) {
+    const auto current = impl_->target.CurrentOutput(i);
+    const auto& original = impl_->target.outputs[i];
+    if (current.Object() != original.Object() || current.Buffer() != original.Buffer())
+      throw HiaiRuntimeError("LIVE_STORAGE", "draft output object/storage changed");
+    result.push_back({current.Object(), current.Data(), current.Size()});
+  }
+  return result;
 }
 
 struct HiaiOriginalTargetExecutor::Impl {
@@ -728,7 +778,7 @@ struct HiaiOriginalTargetExecutor::Impl {
 HiaiOriginalTargetExecutor::HiaiOriginalTargetExecutor(
     const std::filesystem::path& model, const std::filesystem::path& weight_directory,
     const std::string& expected_version, const std::vector<HiaiBoundRuntimeTensor>& inputs,
-    const std::vector<HiaiBoundRuntimeTensor>& outputs) : impl_(std::make_unique<Impl>()) {
+    const std::vector<HiaiBoundRuntimeTensor>& outputs, const std::string& resident_model_name) : impl_(std::make_unique<Impl>()) {
   try {
     if (!model.is_absolute() || !std::filesystem::is_regular_file(model) ||
         !weight_directory.is_absolute() || !std::filesystem::is_directory(weight_directory) ||
@@ -776,6 +826,12 @@ HiaiOriginalTargetExecutor::HiaiOriginalTargetExecutor(
     impl_->Stage("RESTORE_FROM_FILE");
     auto status = impl_->built_model->RestoreFromFile(model.c_str());
     if (status != 0) throw std::runtime_error("RestoreFromFile failed: " + std::to_string(status));
+    if (!resident_model_name.empty()) {
+      impl_->Stage("SET_RESIDENT_MODEL_NAME");
+      impl_->built_model->SetName(resident_model_name);
+      if (impl_->built_model->GetName() != resident_model_name)
+        throw std::runtime_error("resident target built model name differs after SetName");
+    }
     impl_->Stage("CREATE_MODEL_MANAGER");
     impl_->manager = hiai::CreateModelManager();
     if (!impl_->manager) throw std::runtime_error("CreateModelManager returned null");
@@ -950,6 +1006,15 @@ const HiaiIoDiagnostic& HiaiOriginalTargetExecutor::io_diagnostic() const noexce
 const HiaiOriginalTargetLifecycle& HiaiOriginalTargetExecutor::lifecycle() const noexcept { return impl_->lifecycle; }
 const std::vector<HiaiBoundRuntimeTensor>& HiaiOriginalTargetExecutor::observed_inputs() const noexcept { return impl_->observed_inputs; }
 const std::vector<HiaiBoundRuntimeTensor>& HiaiOriginalTargetExecutor::observed_outputs() const noexcept { return impl_->observed_outputs; }
+std::vector<HiaiTensorStorage> HiaiOriginalTargetExecutor::tensor_storage() const {
+  impl_->RequireLive();
+  impl_->VerifyDisjointBuffers();
+  std::vector<HiaiTensorStorage> result;
+  for (const auto* tensors : {&impl_->inputs, &impl_->outputs})
+    for (const auto& tensor : *tensors)
+      result.push_back({tensor.Object(), tensor.Data(), tensor.Size()});
+  return result;
+}
 
 struct HiaiExecutor::Impl {
   Model target, draft;

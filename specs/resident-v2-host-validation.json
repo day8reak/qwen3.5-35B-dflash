@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-resident-v2-host-validation",
+  "updated": "2026-10-30",
+  "run_id": "20261030T122833Z-23441-5814f9",
+  "status": "HOST_TESTED_DEVICE_PENDING",
+  "source_base_commit": "af0bc6c",
+  "source_identity_policy": "Exact listed file SHA256 in the commit containing this report; no device binaries claimed",
+  "model_compilation": "NOT_RUN",
+  "actual_hiai_device_execution": "NOT_RUN_USER_EXECUTES",
+  "assistant_hdc_access": "NOT_PERFORMED_USER_REQUEST",
+  "local_selected_ddk_build": "NOT_RUN_DECLARED_CPRO_PROFILE_MANIFEST_MISSING",
+  "host_checks": [
+    {
+      "path": "out/resident-python-frozen.xml",
+      "sha256": "779a2e5f7ddcebf8e2328b543f940eb73eb15ab46fdae39c8e316494b872748b",
+      "tests": 101,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "out/resident-native-final.xml",
+      "sha256": "eb363526c8a9697e67385f4f642a264374c969d65fb4db5ee33d50de7581b394",
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "out/resident-native-status.xml",
+      "sha256": "c829db2d955971b5404eefb03d484ffa56fa7dddd52267694902f1f4fd40ef2c",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "out/resident-legacy.xml",
+      "sha256": "d0b28220901ee408b62d72d350341899960e37f320edc1c306cb54c60c5526c3",
+      "tests": 62,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "out/resident-adapter-final.xml",
+      "sha256": "c59188b0e31e04fad4b6f35b2315f8ef997b42db1e2d2365830d3d9bd7d9b233",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "out/resident-integration-final.xml",
+      "sha256": "ed982503ec039f7b023914d97507b413165773a33352a70e1f5bb6598eb3857a",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "out/resident-build-config.xml",
+      "sha256": "7e683cd1438e83d5d67c7cf0737b4f1ff94f62e22afb5ff42c7ddc25337021dc",
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "counting_scope": "Groups overlap; CTest wrappers contain multiple cases; do not sum as unique assertions",
+  "actual_adapter_integration": {
+    "backend": "EXPLICIT_FAKE_HIAI",
+    "session_and_adapters": "REAL_PRODUCTION_SOURCES",
+    "modes": [
+      "full",
+      "compact"
+    ],
+    "successful_requests": 2,
+    "failed_run_requests": 1,
+    "success_counts": {
+      "prefill": 1,
+      "target": 8,
+      "draft": 3
+    },
+    "target_loads_per_request": 1,
+    "draft_loads_per_request": 1,
+    "same_process_v2": true,
+    "true_model_children_per_request": 1,
+    "full_state_replay": "ALL80_PERMUTED_OUTPUTS_FEATURES_PROPOSALS_GREEDY_COMMITS",
+    "failure_scope": "ATTEMPT1_RUNS0_POISONED_CLOSED_NO_FABRICATED_CHILD_EXIT"
+  },
+  "independent_review": "PASS_SUPERVISOR_SESSION_TRANSPORT",
+  "source_sha256": {
+    "model/qwen35_moe_dflash/board_serial_dflash.py": "918a731da3407b22b474af067a08508bbb89a2fa158a184c48639f18d59336f1",
+    "model/qwen35_moe_dflash/board_serial_transport.py": "c8c8d3843d21908500f71458354ad1cbe2092016117a39888e6edeaa13710ddf",
+    "targets/cpro/scripts/run_board_serial_dflash.py": "b01b8ffd4c6c51b389e8cb1ed7ccf959c5b40087e6e6d50f11730e7a8963d969",
+    "targets/cpro/runtime/CMakeLists.txt": "309a95d6fcd31ac9847d662aa28a177ff7e2e0c8a8adabf5fb277a931921ebe3",
+    "targets/cpro/runtime/include/qwen35_dflash/hiai_executor.hpp": "e046b690f02c75aae4aa932c966c952ffabc316807df1530617a13f9dde5d4e1",
+    "targets/cpro/runtime/include/qwen35_dflash/resident_session.hpp": "83b7ae2839143c55b2309176a7d22678d1a06ffb5b856158d5f2b05d1c59d00e",
+    "targets/cpro/runtime/src/hiai_executor.cpp": "08f374da00848d5ae631056f3a671062d647b7d6dd02fa4f6c683dd140d90924",
+    "targets/cpro/runtime/src/resident_session.cpp": "8fed33bc8136eb26b81473581da4feb65aa6c3689dfa7746049a4113a8a21f5a",
+    "targets/cpro/runtime/src/board_serial_main.cpp": "312b6ef2d365c138c9e28a0d44d869c33c4050067187ea675f1d02af7a72449e",
+    "targets/cpro/runtime/tests/fake_hiai/fake_hiai.cpp": "52d6fb4930542301113b9f54a860d022bb41532e93711093bb5d4f27b8f0e734",
+    "targets/cpro/runtime/tests/fake_hiai/model/built_model.h": "536e16faa48299fb2347ecf7f311c3e1198f49a4ae4b56afd3379ceaab9bf7c6",
+    "targets/cpro/runtime/tests/test_resident_session.cpp": "263d79e13d4464e5aaf362b60aa04090eca86a3cfdf91b33d164948b6f124e3e",
+    "targets/cpro/runtime/tests/test_board_resident.py": "6efca159d4f1e065d51d6af7cc3293d54ce1d0db9cd338aea26f83fd260304e3",
+    "tests/test_board_serial_dflash.py": "82a3815cef49f8443a5c42619cd6ce2d8d4c80e4dc350983e4f54f42c6534bfd",
+    "tests/test_board_serial_transport.py": "284800e86059121afe80185bd0b76b338b721952305db89171a96940df842951",
+    "tests/test_board_serial_integration.py": "75362d2f2a52646effe40bf6b032d6994143eda299facd2e38fc3ce88c03be1f"
+  },
+  "device_gates_pending": [
+    "actual OHOS/DDK compilation and V2 model initialization",
+    "external weights InitWeights-before-Init contract",
+    "two-model co-residency and RAM availability",
+    "same-input tokens/state relative to legacy-load baseline",
+    "measured load/run/close wall times and repeated-request stability"
+  ],
+  "next_command_document": "docs/current-status.md"
+}

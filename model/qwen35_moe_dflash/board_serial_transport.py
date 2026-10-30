@@ -46,6 +46,13 @@ def _has_prefill(manifest):
     return True
 
 
+def _resident_mode(manifest):
+    mode = manifest.get('execution_mode', 'fresh-process')
+    if mode not in {'fresh-process', 'resident-v2'}:
+        raise ValueError('unsupported pinned board execution mode')
+    return mode == 'resident-v2'
+
+
 def _dump_mode(manifest):
     # Original prepared/config records predate the flag and retain full audit.
     value = manifest.get('dump', True)
@@ -63,6 +70,8 @@ def _result_scope(state, manifest):
         state['state_continuity'] = 'NOT_REPLAYED_COMPACT_RESULT'
     if _has_prefill(manifest):
         state['prompt_ingestion'] = _PREFILL_RECIPE
+    if _resident_mode(manifest):
+        state['execution_mode'] = 'resident-v2'
 
 
 def _next_action(state):
@@ -90,7 +99,9 @@ def _validate_summaries(loop, manifest, *, required=False):
             or abs(rate - counts['accepted'] / counts['considered']) > 1e-12)):
         raise ValueError('acceptance rate is not the finite accepted/considered ratio')
     latency = loop.get('phase_latency', {}); timing = loop.get('supervisor_timing', {})
-    if (not isinstance(latency, dict) or latency.get('timing_scope') != 'CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD'
+    resident = _resident_mode(manifest)
+    if (not isinstance(latency, dict) or latency.get('timing_scope') != (
+            'RESIDENT_RUN_WALL_EXCLUDES_MODEL_LOAD_AND_CLOSE' if resident else 'CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD')
             or latency.get('inference_only_status', 'NOT_PROVIDED') != 'NOT_PROVIDED'
             or not isinstance(timing, dict) or timing.get('scope') != 'MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE'):
         raise ValueError('phase latency must identify child wall-clock timing, not NPU inference')
@@ -110,6 +121,28 @@ def _validate_summaries(loop, manifest, *, required=False):
             raise ValueError('phase latency mean differs from its finite total/call count')
     if latency['prompt_ingest'].get('mechanism') != (_PREFILL_RECIPE if prefill else 'DECODE1_SERIAL_PROMPT_INGESTION'):
         raise ValueError('serial prompt ingestion cannot be reported as one prefill model call')
+    if resident:
+        life = loop['resident_lifecycle']
+        pairs = {'resident_target_load_ms': 'target_load_ms', 'resident_draft_load_ms': 'draft_load_ms',
+            'resident_target_run_ms': 'target_run_ms', 'resident_draft_run_ms': 'draft_run_ms', 'resident_close_ms': 'close_ms'}
+        if (any(type(timing.get(key)) is not int or timing[key] != life[value] for key, value in pairs.items())
+                or latency['decode']['total_ms'] + (0 if prefill else latency['prompt_ingest']['total_ms']) != life['target_run_ms']
+                or latency['draft']['total_ms'] != life['draft_run_ms']
+                or any(timing.get(key) != 0 for key in ('target_child_process_wall_ms', 'draft_child_process_wall_ms',
+                    'target_child_processes_timed', 'draft_child_processes_timed'))
+                or type(timing.get('total_wall_ms')) is not int
+                or timing['total_wall_ms'] < sum(life[key] for key in ('target_load_ms', 'draft_load_ms', 'target_run_ms', 'draft_run_ms', 'close_ms'))
+                    + (latency['prefill']['total_ms'] if prefill else 0)):
+            raise ValueError('resident Run/load/close wall timing differs from the single-process lifecycle')
+        if prefill and (latency['prompt_ingest']['total_ms'] != latency['prefill']['total_ms']
+                or latency['prompt_ingest'].get('latency_alias') != 'prefill'
+                or timing.get('prefill_child_processes_timed') != prompt_calls
+                or timing.get('prefill_child_process_wall_ms') != latency['prefill']['total_ms']):
+            raise ValueError('resident prefill child timing differs from its distinct phase')
+        if (any(latency[key].get('timing_scope') != 'RESIDENT_RUN_INCLUDES_TENSOR_COPIES_READBACK_HASH_AND_BUFFER_CHECKS_NOT_NPU_ONLY' for key in ('decode', 'draft'))
+                or prefill and any(latency[key].get('timing_scope') != 'CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD' for key in ('prompt_ingest', 'prefill'))):
+            raise ValueError('resident per-phase timing must distinguish Run copies/hash from prefill child load/run/unload')
+        return
     if (any(type(timing.get(key)) is not int or timing[key] < 0 for key in
             ('startup_source_hash_ms', 'target_child_process_wall_ms', 'draft_child_process_wall_ms', 'total_wall_ms'))
             or any(type(timing.get(key)) is not int for key in ('target_child_processes_timed', 'draft_child_processes_timed'))
@@ -126,6 +159,89 @@ def _validate_summaries(loop, manifest, *, required=False):
             or timing['prefill_child_process_wall_ms'] != latency['prefill']['total_ms']
             or timing['total_wall_ms'] < timing['target_child_process_wall_ms'] + timing['draft_child_process_wall_ms'] + timing['prefill_child_process_wall_ms']):
         raise ValueError('prefill phase timing differs from its distinct child process')
+
+
+def _resident_lifecycle(loop, manifest, *, success):
+    life = loop.get('resident_lifecycle', {}); counts = loop['counts']
+    integers = ('target_load_attempts', 'draft_load_attempts', 'target_loads', 'draft_loads', 'target_run_attempts', 'target_runs', 'draft_run_attempts', 'draft_runs',
+        'target_close_calls', 'draft_close_calls', 'target_load_ms', 'draft_load_ms', 'target_run_ms', 'draft_run_ms', 'close_ms')
+    if (not isinstance(life, dict) or life.get('model_load_api') != 'file-v2'
+            or _SHA.fullmatch(str(life.get('session_id'))) is None
+            or type(loop.get('process_id')) is not int or not 0 < loop['process_id'] <= (1 << 31) - 1
+            or type(life.get('process_id')) is not int or life['process_id'] != loop.get('process_id')
+            or life['session_id'] != hashlib.sha256((str(loop.get('config_sha256')) + ':' + str(loop['process_id'])).encode('ascii')).hexdigest()
+            or type(life.get('closed')) is not bool or life['closed'] is not True
+            or type(life.get('poisoned')) is not bool
+            or any(type(life.get(key)) is not int or life[key] < 0 for key in integers)
+            or any(life[key] > 1 for key in ('target_load_attempts', 'draft_load_attempts', 'target_loads', 'draft_loads', 'target_close_calls', 'draft_close_calls'))
+            or any(life[kind + '_close_calls'] != life[kind + '_loads'] for kind in ('target', 'draft'))
+            or life['target_runs'] != counts['target_native_calls'] or life['draft_runs'] != counts['draft_native_calls']
+            or any(life[kind + '_run_attempts'] < life[kind + '_runs'] for kind in ('target', 'draft'))):
+        raise ValueError('resident lifecycle is incomplete, unclosed or inconsistent; locks retained')
+    if success and (life['poisoned'] or life.get('stage') != 'CLOSED' or life.get('status') != 'CLOSED' or life.get('cleanup_error') not in {None, ''}
+            or any(life[key] != 1 for key in ('target_load_attempts', 'draft_load_attempts', 'target_loads', 'draft_loads', 'target_close_calls', 'draft_close_calls'))
+            or any(life[kind + '_run_attempts'] != life[kind + '_runs'] for kind in ('target', 'draft'))):
+        raise ValueError('successful residency requires one load/close per model and no failed or retried Run')
+    if success:
+        target = life.get('target_lifecycle', {})
+        if (any(life.get(kind + '_model_name') != 'qwen35_resident_' + kind
+                    or life.get(kind + '_model_name_scope') != 'SDK_SETNAME_GETNAME_VALIDATED_BEFORE_INIT' for kind in ('target', 'draft'))
+                or target.get('weight_init_policy') != 'EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT_NO_FALLBACK'
+                or target.get('ordering_validation') != 'NOT_VALIDATED_ON_DEVICE'
+                or any(target.get(key) is not True for key in ('weights_init_attempted', 'weights_initialized',
+                    'manager_init_attempted', 'manager_initialized', 'manager_deinit_called', 'weights_deinit_called', 'closed'))
+                or target.get('weights_deinit_status') != 0
+                or target.get('run_attempts') != counts['target_native_calls'] or target.get('successful_runs') != counts['target_native_calls']):
+            raise ValueError('resident model names or external-weight Init/DeInit lifecycle is unverified')
+    memory = loop.get('resident_memory')
+    if memory is not None:
+        if (not isinstance(memory, dict) or memory.get('scope') != 'PROCESS_RSS_NOT_NPU_ALLOCATED_MEMORY'
+                or not isinstance(memory.get('snapshots'), list) or len(memory['snapshots']) > 8):
+            raise ValueError('resident process-memory telemetry is malformed or unbounded')
+        for snapshot in memory['snapshots']:
+            if (not isinstance(snapshot, dict) or snapshot.get('phase') not in {'before-load', 'after-both-load', 'after-close', 'after-failure-close'}
+                    or snapshot.get('status') not in {'OBSERVED', 'UNAVAILABLE'}
+                    or any(type(snapshot[key]) is not int or not 0 <= snapshot[key] <= 1 << 50
+                        for key in ('vm_rss_kib', 'vm_hwm_kib', 'mem_available_kib') if key in snapshot)):
+                raise ValueError('resident memory telemetry requires bounded nonnegative process RSS values')
+    return life
+
+
+def _resident_call(receipt, event, loop, calls, kind, position):
+    expected = {'schema_version': 2, 'execution_mode': 'resident-v2',
+        'session_id': loop['resident_lifecycle']['session_id'], 'process_id': loop['process_id']}
+    index = receipt.get('call_index')
+    if (any(receipt.get(key) != value or event.get(key) != value for key, value in expected.items() if key != 'schema_version')
+            or receipt.get('schema_version') != 2 or type(index) is not int or index < 0
+            or event.get('call_index') != index or index in calls or any(key in receipt or key in event for key in ('pid', 'exitcode'))):
+        raise ValueError('resident call does not bind the exact session/process/unique call index')
+    calls[index] = (position, 0 if kind == 'draft' else 1)
+    return loop['process_id']
+
+
+def _resident_io(diagnostic, inputs, outputs):
+    if (not isinstance(diagnostic, dict) or diagnostic.get('enabled') is not True
+            or diagnostic.get('process_called') is not True or diagnostic.get('output_fill_byte') != 0
+            or diagnostic.get('input_readback_point') != 'AFTER_ALL_INPUT_COPIES_AND_OUTPUT_FILL_BEFORE_PROCESS'
+            or len(diagnostic.get('inputs', [])) != len(inputs) or len(diagnostic.get('outputs', [])) != len(outputs)):
+        raise ValueError('resident actual input/output buffer diagnostics are incomplete')
+    for index, (row, actual) in enumerate(zip(inputs, diagnostic['inputs'])):
+        if (actual.get('index') != index or actual.get('logical_bytes') != row['bytes']
+                or type(actual.get('allocated_bytes')) is not int or actual['allocated_bytes'] < row['bytes']
+                or actual.get('readback_matches_source') is not True or actual.get('readback_sha256') != row['sha256']):
+            raise ValueError('resident actual input buffer differs from the declared file bytes')
+    for index, (row, actual) in enumerate(zip(outputs, diagnostic['outputs'])):
+        if (actual.get('index') != index or actual.get('logical_bytes') != row['bytes']
+                or actual.get('checked_after_process') is not True or actual.get('object_same') is not True
+                or actual.get('buffer_same') is not True):
+            raise ValueError('resident output buffer identity differs through native Run')
+
+
+def _resident_progress(loop, progress, *, success):
+    if (progress.get('status') != loop['status'] or progress.get('supervisor_pid') != loop['process_id']
+            or progress.get('resident_lifecycle') != loop['resident_lifecycle']
+            or progress.get('resident_call_status') != ('RETURNED' if success else 'FAILED_CLOSED')):
+        raise ValueError('resident completion progress is unresolved or differs from its current lifecycle')
 
 
 def _json(path, maximum=64 << 20):
@@ -323,9 +439,9 @@ def _upload_cached(hdc, out, state, rows, decisions, manifest):
         | {'decision': decisions[row['remote']]} for row in rows]
 
 
-def _build_payloads(out, timeout):
+def _build_payloads(out, timeout, *, resident=False):
     runner = _build_runner(out, timeout)
-    supervisor = runner.parent / 'qwen35_board_serial'
+    supervisor = runner.parent / ('qwen35_board_resident' if resident else 'qwen35_board_serial')
     _safe(supervisor); dynamic_info(supervisor)
     uploads = [_file_record(runner, 'draft-runner'), _file_record(supervisor, 'board-serial')]
     paths = list(BOARD_LIBRARY_SEARCH_PATHS)
@@ -652,7 +768,8 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
         if type(token) is not int or not 0 <= token < 248320:
             raise ValueError('supervisor token is outside the complete vocabulary')
     base = manifest['target_binding']['base_plan']
-    expected = {'schema_version': 1, 'artifact_kind': 'qwen35-board-local-serial-dflash',
+    resident = _resident_mode(manifest)
+    expected = {'schema_version': 3 if resident else 1, 'artifact_kind': 'qwen35-board-local-serial-dflash',
         'target_model_sha256': manifest['target_model']['sha256'],
         'draft_model_sha256': manifest['draft']['model_source']['sha256'],
         'draft_abi_sha256': manifest['draft']['abi']['sha256'],
@@ -662,6 +779,16 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
             if has_prefill else 'EXPERIMENTAL_SINGLE_QUERY_ABSOLUTE_POSITION')}
     if any(loop.get(key) != value for key, value in expected.items()):
         raise ValueError('supervisor model, environment, or scheduling identity differs from preparation')
+    if resident:
+        if (loop.get('execution_mode') != 'resident-v2'
+                or loop.get('resident_abi_sha256') != manifest['resident_abi']['sha256']
+                or loop.get('dump') is not True or loop.get('model_compilation') != 'NOT_RUN'
+                or loop.get('numerical_validation') not in {'NOT_RUN', 'NOT_EVALUATED'}
+                or loop.get('performance') != 'NOT_EVALUATED'):
+            raise ValueError('resident result does not bind the selected raw descriptor ABI')
+        _resident_lifecycle(loop, manifest, success=True)
+    elif loop.get('execution_mode') == 'resident-v2' or 'resident_lifecycle' in loop:
+        raise ValueError('legacy request cannot inherit resident execution evidence')
     if (_SHA.fullmatch(str(loop.get('config_sha256'))) is None
             or _expected_config_sha256 is not None and loop['config_sha256'] != _expected_config_sha256):
         raise ValueError('supervisor did not execute this pinned native config')
@@ -698,7 +825,7 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
             or len({row['runtime_input_index'] for row in mapping}) != 80
             or len({row['runtime_output_index'] for row in mapping}) != 80):
         raise ValueError('prepared state mapping is not an80-owner bijection')
-    previous, target_receipts, child_pids, zeros = None, {}, set(), {}
+    previous, target_receipts, child_pids, zeros, resident_calls = None, {}, set(), {}, {}
     all_features, _ = _read_small(root / record(loop['final_features'], actual=True)['path'], 4 << 20)
     if len(all_features) != expected_target * 32768:
         raise ValueError('retained final features do not cover every committed target step')
@@ -714,20 +841,25 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
     for index, event in enumerate(loop['target_steps']):
         position = index + (len(manifest['prompt_token_ids']) if has_prefill else 0)
         receipt = load_record(event['receipt']); pid = event.get('pid')
-        if (type(pid) is not int or not 0 < pid <= (1 << 31) - 1 or pid in child_pids
+        if resident:
+            pid = _resident_call(receipt, event, loop, resident_calls, 'target', position)
+        if ((not resident and (type(pid) is not int or not 0 < pid <= (1 << 31) - 1 or pid in child_pids))
                 or any(receipt.get(key) != value for key, value in {
-                    'schema_version': 1, 'artifact_kind': 'qwen35-board-serial-target-step',
+                    'schema_version': 2 if resident else 1, 'artifact_kind': 'qwen35-board-serial-target-step',
                     'evidence_kind': _expected_evidence_kind, 'status': 'EXECUTED_OUTPUTS_BOUND',
-                    'exitcode': 0, 'pid': pid, 'absolute_position': position,
+                    **({} if resident else {'exitcode': 0, 'pid': pid}), 'absolute_position': position,
                     'model_sha256': manifest['target_model']['sha256'],
                     'token_id': loop['full_prefix'][position], 'next_token_id': event.get('next_token_id'),
                     'control_semantics': 'EXPERIMENTAL_SINGLE_QUERY_ABSOLUTE_POSITION'}.items())
                 or event.get('token_id') != receipt['token_id']):
             raise ValueError('target native step identity/token order is inconsistent')
-        child_pids.add(pid); logs(event['receipt'], pid)
+        if not resident:
+            child_pids.add(pid); logs(event['receipt'], pid)
         inputs, outputs = receipt.get('inputs', []), receipt.get('outputs', [])
         if len(inputs) != 89 or len(outputs) != 82:
             raise ValueError('target native receipt omits ordered89/82 IO')
+        if resident:
+            _resident_io(receipt.get('io_diagnostic'), inputs, outputs)
         for index, (value, descriptor) in enumerate(zip(inputs, base['inputs'])):
             record(value)
             if (value.get('index') != index or value.get('name') != descriptor['name']
@@ -797,12 +929,15 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
             raise ValueError('final80 retained files differ from the proved state-owner outputs')
     for event in loop['draft_steps']:
         receipt = load_record(event['receipt']); pid = event.get('pid')
-        if (type(pid) is not int or not 0 < pid <= (1 << 31) - 1 or pid in child_pids
-                or any(receipt.get(key) != value for key, value in {'schema_version': 1,
+        if resident:
+            pid = _resident_call(receipt, event, loop, resident_calls, 'draft', len(receipt.get('prefix', [])))
+        if ((not resident and (type(pid) is not int or not 0 < pid <= (1 << 31) - 1 or pid in child_pids))
+                or any(receipt.get(key) != value for key, value in {'schema_version': 2 if resident else 1,
                     'artifact_kind': 'qwen35-board-serial-draft-step', 'evidence_kind': _expected_evidence_kind,
-                    'pid': pid, 'exitcode': 0, 'model_sha256': manifest['draft']['model_source']['sha256']}.items())):
+                    **({} if resident else {'pid': pid, 'exitcode': 0}), 'model_sha256': manifest['draft']['model_source']['sha256']}.items())):
             raise ValueError('draft native step identity is inconsistent')
-        child_pids.add(pid); logs(event['receipt'], pid)
+        if not resident:
+            child_pids.add(pid); logs(event['receipt'], pid)
         prefix = receipt.get('prefix', [])
         if not 1 <= len(prefix) <= 64 or prefix != loop['full_prefix'][:len(prefix)]:
             raise ValueError('draft did not receive the complete ordered committed prefix')
@@ -811,13 +946,17 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
             raise ValueError('draft logical feature prefix differs from actual target history')
         native = load_record(receipt['native_receipt'])
         if (native.get('status') != 'EXECUTED' or native.get('evidence_kind') != _expected_evidence_kind
-                or native.get('process_id') != pid or native.get('target_calls') != 0 or native.get('draft_calls') != 1
+                or native.get('process_id') != pid or (not resident and (native.get('target_calls') != 0 or native.get('draft_calls') != 1))
                 or native.get('model_sha256') != manifest['draft']['model_source']['sha256']
                 or native.get('draft_abi_sha256') != manifest['draft']['abi']['sha256']
                 or native.get('runtime_version') != base['runtime_version'] or native.get('sequence_length') != 64
                 or native.get('ddk_id') != base['ddk_id'] or native.get('firmware_id') != base['firmware_id']
-                or native.get('model_load_api') != 'legacy-buffer'):
+                or native.get('model_load_api') != ('file-v2' if resident else 'legacy-buffer')):
             raise ValueError('draft native receipt does not bind this exact full model call')
+        if resident and (native.get('schema_version') != 2 or native.get('artifact_kind') != 'qwen35-resident-draft-call'
+                or native.get('session_id') != receipt['session_id'] or native.get('call_index') != receipt['call_index']
+                or native.get('execution_mode') != 'resident-v2'):
+            raise ValueError('draft buffer evidence differs from its resident call identity')
         expected_inputs = [raw_feature + bytes((64 - len(prefix)) * 32768),
             struct.pack('<64i', *(prefix + [0] * (64 - len(prefix)))),
             struct.pack('<64i', *([1] * len(prefix) + [0] * (64 - len(prefix))))]
@@ -845,7 +984,7 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
                     or value.get('object_same') is not True or value.get('buffer_same') is not True):
                 raise ValueError('draft output buffers changed through native Process')
         step_path = str(PurePosixPath(event['receipt']['path']).parent / 'bundle/step.tsv')
-        if step_path not in by_path or native.get('step_plan_sha256') != by_path[step_path]['sha256']:
+        if not resident and (step_path not in by_path or native.get('step_plan_sha256') != by_path[step_path]['sha256']):
             raise ValueError('draft native step recipe differs from the actual retained invocation')
         native_folder = PurePosixPath(receipt['native_receipt']['path']).parent
         top = native_folder / 'output_0000.bin'; hidden = native_folder / 'output_0001.bin'
@@ -918,6 +1057,20 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
     supervisor = loop.get('process_id')
     if type(supervisor) is not int or not 0 < supervisor <= (1 << 31) - 1 or supervisor in child_pids:
         raise ValueError('native supervisor PID is missing or aliases a child')
+    if resident and (sorted(resident_calls) != list(range(counts['target_native_calls'] + counts['draft_native_calls']))
+            or [resident_calls[index] for index in sorted(resident_calls)] != sorted(resident_calls.values())):
+        raise ValueError('resident call indices do not follow the actual committed-token scheduling order')
+    if resident:
+        progress, _ = _json(root / 'progress.json')
+        _resident_progress(loop, progress, success=True)
+        children = loop.get('child_lifecycle', {}); expected_children = [{'pid': pid, 'exitcode': 0} for pid in child_pids]
+        if (children.get('children') != expected_children or len(expected_children) != 1
+                or any(children.get(key) != 1 or progress.get(key) != 1 for key in ('launched_child_count', 'completed_child_count'))
+                or children.get('active_child_count') != 0 or progress.get('active_child_count') != 0
+                or children.get('child_status') != 'EXITED' or progress.get('child_status') != 'EXITED'
+                or any(children.get(key) != value or progress.get(key) != value for key, value in
+                    {'last_child_pid': expected_children[0]['pid'], 'last_child_exitcode': 0}.items())):
+            raise ValueError('resident full audit must retain exactly the actual exited prefill child')
     _validate_summaries(loop, manifest)
     for path, before in snapshots.items():
         if _full(path) != before:
@@ -949,7 +1102,8 @@ def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='d
     loop, progress = values['loop.json'], values['progress.json']
     base = manifest['target_binding']['base_plan']
     success = _remote_exitcode == 0
-    expected = {'schema_version': 2, 'artifact_kind': 'qwen35-board-local-serial-dflash',
+    resident = _resident_mode(manifest)
+    expected = {'schema_version': 3 if resident else 2, 'artifact_kind': 'qwen35-board-local-serial-dflash',
         'dump': False, 'retrieval_mode': 'FINAL_TOKENS_ONLY', 'evidence_kind': _expected_evidence_kind,
         'model_compilation': 'NOT_RUN',
         'status': 'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED' if success else 'FAILED',
@@ -963,6 +1117,8 @@ def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='d
     if prefill:
         expected.update(prefill_model_sha256=manifest['prefill']['model']['sha256'], prompt_ingestion=_PREFILL_RECIPE,
             control_semantics='EXPERIMENTAL_PADDED_PREFILL_VALID_LENGTH_NOT_NUMERICALLY_VALIDATED')
+    if resident:
+        expected.update(execution_mode='resident-v2', resident_abi_sha256=manifest['resident_abi']['sha256'])
     if (type(_remote_exitcode) is not int or not 0 <= _remote_exitcode <= 255
             or type(loop.get('schema_version')) is not int or type(loop.get('dump')) is not bool
             or any(loop.get(key) != value for key, value in expected.items())
@@ -993,7 +1149,12 @@ def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='d
             or prefill and not 0 <= counts['prefill_native_calls'] <= 1
             or counts['considered'] != counts['accepted'] + counts['corrections']):
         raise ValueError('compact native/acceptance counts are malformed or inconsistent')
-    total = counts['target_native_calls'] + counts['draft_native_calls'] + (counts['prefill_native_calls'] if prefill else 0)
+    if resident:
+        _resident_lifecycle(loop, manifest, success=success)
+        _resident_progress(loop, progress, success=success)
+    elif loop.get('execution_mode') == 'resident-v2' or 'resident_lifecycle' in loop:
+        raise ValueError('legacy compact request cannot inherit resident execution evidence')
+    total = (0 if resident else counts['target_native_calls'] + counts['draft_native_calls']) + (counts['prefill_native_calls'] if prefill else 0)
     lifecycle = loop.get('child_lifecycle', {})
     lifecycle_keys = ('launched_child_count', 'completed_child_count', 'active_child_count',
         'last_child_pid', 'last_child_exitcode', 'child_status')
@@ -1064,6 +1225,9 @@ def _validate_completed_failure(manifest, directory, state):
         'runtime_version': base['runtime_version'], 'ddk_id': base['ddk_id'], 'firmware_id': base['firmware_id']}
     if _has_prefill(manifest):
         expected.update(prefill_model_sha256=manifest['prefill']['model']['sha256'], prompt_ingestion=_PREFILL_RECIPE)
+    resident = _resident_mode(manifest)
+    if resident:
+        expected.update(schema_version=3, execution_mode='resident-v2', resident_abi_sha256=manifest['resident_abi']['sha256'])
     if any(loop.get(key) != value for key, value in expected.items()):
         raise ValueError('failed supervisor lacks the complete bound model/config identity; locks retained')
     raw, _ = _read_small(root / 'retrieval-manifest.tsv', 8 << 20)
@@ -1087,7 +1251,10 @@ def _validate_completed_failure(manifest, directory, state):
         exits[int(pid_text)] = int(exit_text)
     child_present = any(key in progress for key in ('child_status', 'last_child_pid', 'last_child_exitcode'))
     counts = loop.get('counts', {})
-    counted = counts.get('target_native_calls', 0) + counts.get('draft_native_calls', 0) + (
+    if resident:
+        _resident_lifecycle(loop, manifest, success=False)
+        _resident_progress(loop, progress, success=False)
+    counted = (0 if resident else counts.get('target_native_calls', 0) + counts.get('draft_native_calls', 0)) + (
         counts.get('prefill_native_calls', 0) if _has_prefill(manifest) else 0)
     if (progress.get('status') != 'FAILED' or progress.get('supervisor_pid') != loop.get('process_id')
             or counted != len(pids)
@@ -1190,8 +1357,9 @@ def _retrieve(hdc, out, state, manifest):
         completed = [loop['process_id'], *[row['pid'] for row in loop['child_lifecycle']['children']]]
     elif state['completion']['remote_exitcode'] == 0:
         loop = validate_retrieved_loop(manifest, local_results, _expected_config_sha256=state['config_sha256'])
-        completed = [loop['process_id'], *[row['pid'] for row in loop['target_steps']],
-            *[row['pid'] for row in loop['draft_steps']], *[row['pid'] for row in loop.get('prefill_steps', [])]]
+        completed = [loop['process_id'],
+            *([] if _resident_mode(manifest) else [row['pid'] for row in loop['target_steps']] + [row['pid'] for row in loop['draft_steps']]),
+            *[row['pid'] for row in loop.get('prefill_steps', [])]]
     else:
         loop, completed = _validate_completed_failure(manifest, local_results, state)
     if _full(local_results / 'retrieval-manifest.tsv')['bytes'] != inventory_id['bytes'] or sha256_file(
@@ -1208,6 +1376,10 @@ def _retrieve(hdc, out, state, manifest):
     for key in ('acceptance', 'phase_latency', 'supervisor_timing'):
         if key in loop:
             state[key] = loop[key]
+    if _resident_mode(manifest):
+        state['resident_lifecycle'] = loop['resident_lifecycle']
+        if 'resident_memory' in loop:
+            state['resident_memory'] = loop['resident_memory']
     return loop
 
 
@@ -1270,7 +1442,8 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
             tables_cache_sha256=table_digest, runtime_version=base['runtime_version'], firmware_id=base['firmware_id'])
         _checkpoint(out, state, 'host-preflight')
         print('board-serial: building current native supervisor and draft runner; existing OMCs are reused', flush=True)
-        uploads, search, deployment = _build_payloads(out, timeout_seconds)
+        uploads, search, deployment = (_build_payloads(out, timeout_seconds, resident=True)
+            if _resident_mode(manifest) else _build_payloads(out, timeout_seconds))
         state['libraries'] = deployment
         hdc = Hdc(executable, serial, server, out, timeout_seconds)
         tool = _remote(base['tool_binding']['path'])
@@ -1322,6 +1495,9 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
             + ' && test ' + shlex.quote(str(draft_model)) + ' -ef ' + shlex.quote(str(attempt_model)), 'link-cached-draft-model')
         abi = manifest['draft']['abi']; uploads.append({'local': abi['path'], 'remote': 'draft-abi.tsv',
             'bytes': abi['bytes'], 'sha256': abi['sha256']})
+        if _resident_mode(manifest):
+            abi = manifest['resident_abi']; uploads.append({'local': abi['path'], 'remote': 'resident-abi.tsv',
+                'bytes': abi['bytes'], 'sha256': abi['sha256']})
         library_paths = [str(board / 'lib'), *search]
         state['supervisor_library_path'] = ':'.join(library_paths)
         remote_paths = {'attempt': str(board), 'target_model': target_model,
@@ -1336,6 +1512,8 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
         if prefill:
             remote_paths['prefill_model'] = next(row['remote'] for row in rows if row['kind'] == 'prefill'
                 and row['record'] == manifest['prefill']['compiled']['omc'])
+        if _resident_mode(manifest):
+            remote_paths['resident_abi'] = str(board / 'resident-abi.tsv')
         config = make_config(manifest, remote_paths)
         if not isinstance(config, bytes):
             raise TypeError('board serial config serializer must return bytes')
@@ -1426,6 +1604,8 @@ def recover_board_serial(execution_dir, output_dir, *, timeout_seconds=60, poll_
                 or state['launcher'] != _launcher(state)):
             raise ValueError('recovery journal cache/model/launcher identities are inconsistent')
         manifest = validate_prepared(state['prepared'])
+        if _resident_mode(manifest) != (state.get('execution_mode', 'fresh-process') == 'resident-v2'):
+            raise ValueError('recovery cannot change the pinned resident execution mode')
         if _has_prefill(manifest):
             pbase = manifest['prefill']['base_plan']
             expected_cache = str(_remote(manifest['board_model_root']) / ('codex-target-' + pbase['compilation_report_sha256'][:20]))

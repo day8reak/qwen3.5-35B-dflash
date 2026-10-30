@@ -1,0 +1,47 @@
+#pragma once
+#include "qwen35_dflash/hiai_executor.hpp"
+
+namespace qwen35::dflash {
+struct ResidentSessionConfig {
+  std::filesystem::path target_model, target_weight_directory, draft_model;
+  std::string runtime_version;
+  std::vector<HiaiBoundRuntimeTensor> target_inputs, target_outputs;
+  std::uint32_t timeout_ms = 300000;
+};
+struct ResidentRunResult {
+  std::vector<std::vector<std::uint8_t>> outputs;
+  HiaiIoDiagnostic io_diagnostic;
+  std::uint64_t wall_ms = 0;
+};
+struct ResidentSessionEvidence {
+  std::string stage = "NOT_LOADED", status = "NOT_LOADED", model_load_api = "file-v2";
+  std::string target_model_name = "qwen35_resident_target", draft_model_name = "qwen35_resident_draft";
+  std::string cleanup_error;
+  std::uint64_t target_load_attempts = 0, target_loads = 0, draft_load_attempts = 0, draft_loads = 0;
+  std::uint64_t target_run_attempts = 0, target_runs = 0, draft_run_attempts = 0, draft_runs = 0;
+  std::uint64_t target_close_calls = 0, draft_close_calls = 0;
+  std::uint64_t target_load_ms = 0, draft_load_ms = 0, target_run_ms = 0, draft_run_ms = 0, close_ms = 0;
+  bool closed = false, poisoned = false;
+  HiaiOriginalTargetLifecycle target_lifecycle;
+};
+
+// One process owns two immutable V2 models and their persistent tensor storage.
+// The caller supplies hash-bound sources/descriptors, preserves source lifetimes,
+// and advances only committed target states. This class never falls back to a
+// different API, recompiles a model or retries a failed load/run.
+class ResidentSession final {
+ public:
+  ResidentSession();
+  ~ResidentSession();
+  ResidentSession(const ResidentSession&) = delete;
+  ResidentSession& operator=(const ResidentSession&) = delete;
+  void Load(const ResidentSessionConfig& config);
+  ResidentRunResult RunTarget(const std::vector<std::vector<std::uint8_t>>& inputs);
+  ResidentRunResult RunDraft(const std::vector<std::vector<std::uint8_t>>& inputs);
+  void Close();
+  const ResidentSessionEvidence& evidence() const noexcept;
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+}  // namespace qwen35::dflash

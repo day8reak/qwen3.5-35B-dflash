@@ -105,7 +105,7 @@ def test_manifest_pin_and_complete_draft_contract_are_required(sources):
 
 
 @pytest.mark.parametrize('changes', [dict(prompt_length=60, max_new_tokens=8),
-    dict(max_proposals_per_round=16), dict(board_model_root='/data/../escape'), dict(dump=1)])
+    dict(max_proposals_per_round=16), dict(board_model_root='/data/../escape'), dict(dump=1), dict(resident=True)])
 def test_invalid_request_stops_before_loading_models(sources, monkeypatch, changes):
     options, _, _ = sources
     monkeypatch.setattr(job, '_backends', lambda: pytest.fail('invalid request reached models'))
@@ -148,6 +148,9 @@ def test_wire_config_preserves_explicit_nonordinal_state_mapping(tmp_path):
         job.make_config(manifest | {'dump': 'false'}, paths)
     assert b'state\tRefData_9\t0\t47\t65536\n' in wire
     assert b'target_output\t47\tnative:output.47\tFP16\t65536\n' in wire
+    resident = manifest | {'execution_mode': 'resident-v2', 'resident_abi': record}
+    assert b'execution_mode\tresident-v2\n' in job.make_config(resident, paths | {'resident_abi': '/board/raw-abi.tsv'})
+    assert b'resident_abi\t/board/raw-abi.tsv\t' in job.make_config(resident, paths | {'resident_abi': '/board/raw-abi.tsv'})
     paths['target_model'] = '/board/evil\nstate\tRefData_0'
     with pytest.raises(ValueError, match='TSV'):
         job.make_config(manifest, paths)
@@ -170,6 +173,47 @@ def test_cli_recovery_selects_existing_attempt_and_never_applies(tmp_path, monke
         cli.main(['--recover', str(old), '--output', str(tmp_path / 'bad'), '--apply'])
     with pytest.raises(SystemExit):
         cli.main(['--recover', str(old), '--output', str(tmp_path / 'bad'), '--dump'])
+    with pytest.raises(SystemExit):
+        cli.main(['--recover', str(old), '--output', str(tmp_path / 'bad'), '--resident'])
+
+
+def _native_descriptor_binding(tmp_path):
+    enums = dict(FLOAT32=7, FLOAT16=8, INT8=9, INT16=10, INT32=11, INT64=12)
+    native = dict(artifact_kind='qwen35-hiai-model-io-probe', evidence_kind='device-hiai', status='IO_DESCRIPTORS_OBSERVED',
+        model_sha256='a' * 64, model_bytes=17, runtime_version='v', ddk_id='d', firmware_id='f',
+        dtype_enum='hiai::DataType', format_enum='hiai::Format', dtype_enum_values=enums, format_enum_values=dict(ND=13),
+        input_count=89, output_count=82)
+    base = dict(model_sha256='a' * 64, primary_model_binding=dict(bytes=17), runtime_version='v', ddk_id='d', firmware_id='f')
+    for direction, count, type_key in [('inputs', 89, 'tool_input_type'), ('outputs', 82, 'tool_output_type')]:
+        native[direction] = [dict(index=i, tensor_name_status='OBSERVED', tensor_name=direction + str(i),
+            shape=[1, i + 1], raw_dtype=8, raw_format=13) for i in range(count)]
+        base[direction] = [dict(index=i, runtime_tensor_name=direction + str(i), bytes=2 * (i + 1), **{type_key: 'FP16'}) for i in range(count)]
+    probe = tmp_path / 'probe'; path = probe / 'model-io.json'; record = write(path, json.dumps(native).encode())
+    return dict(base_plan=base, active_source_identities=[record]), probe, native
+
+
+def test_resident_descriptor_abi_uses_actual_raw_enums_names_and_shapes(tmp_path):
+    binding, probe, native = _native_descriptor_binding(tmp_path)
+    result = job._resident_abi(binding, probe, tmp_path / 'resident-abi.tsv')
+    wire = Path(result['path']).read_text()
+    assert wire.startswith('QWEN35_RESIDENT_ABI\t1\n')
+    assert 'target_input\t42\tinputs42\tFLOAT16\t8\t13\t1,43\t86\n' in wire
+    assert len(result['inputs']) == 89 and len(result['outputs']) == 82
+    assert result['descriptor_source']['sha256'] == job.sha256_file(probe / 'model-io.json')
+    assert not list(tmp_path.glob('*.omc'))
+
+
+@pytest.mark.parametrize('damage', ['enum', 'shape', 'name', 'changed-source'])
+def test_resident_descriptor_abi_refuses_unbound_or_guessed_descriptor_fields(tmp_path, damage):
+    binding, probe, native = _native_descriptor_binding(tmp_path)
+    if damage == 'enum': native['inputs'][0].pop('raw_format')
+    elif damage == 'shape': native['inputs'][0]['shape'] = [100]
+    elif damage == 'name': native['outputs'][0]['tensor_name'] = 'guessed'
+    path = probe / 'model-io.json'; path.write_text(json.dumps(native) + ('\n' if damage == 'changed-source' else ''))
+    if damage != 'changed-source': binding['active_source_identities'] = [job._hash_source(path)]
+    with pytest.raises(ValueError):
+        job._resident_abi(binding, probe, tmp_path / 'resident-abi.tsv')
+    assert not (tmp_path / 'resident-abi.tsv').exists()
 
 
 def test_debug_mode_is_pinned_and_legacy_manifest_keeps_its_mode(sources):
