@@ -3,7 +3,7 @@
   "updated": "2026-10-30",
   "active_phase": "integration",
   "delivery_status": "PREFILL_TOOL_ARGUMENT_REJECTION_CORRECTED_DEVICE_RETRY_PENDING",
-  "run_id": "20261030T002144Z-5490-cc0fa6",
+  "run_id": "20261030T002731Z-5904-c85a59",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -3348,5 +3348,40 @@
     "hidden_nonfinite_mismatch_count": 0,
     "full_accuracy": "NOT_ESTABLISHED",
     "next": "Reuse this complete bundle for real-feature end-to-end execution; do not repeat draft compilation"
+  },
+  "storage_pressure": {
+    "source": "USER_PASTED_DF_DU_AND_LOCAL_DEPENDENCY_AUDIT",
+    "filesystem_free_human": "5.7G",
+    "filesystem_used_human": "1.1T",
+    "current_run_human": "103G",
+    "full_draft_human": "30G",
+    "target_import_human": "19G",
+    "failed_static_input_tree_human": "19G",
+    "successful_prefill_human": "18G",
+    "successful_decode_human": "18G",
+    "tiny_probe_smoke_observation": "KB to tens ofMB; directory count does not represent major disk use",
+    "active_processes": "UNRESOLVED; initial remote rg command unavailable, use grep-E fallback",
+    "current_prefill_v3": "DIRECTORY_EXISTS; result not yet provided, do not launch duplicate",
+    "target_retention": [
+      "Original source/export and target-pytorch-import staged aliases/receipts",
+      "Shared weight snapshot aliases in faileddual/failedstatic/successfulstatic compiler trees; unlink changes sharedctime/nlink and may reclaim0bytes",
+      "Completed prefill/decode complete generated inventories including dump_graph/cce/json/o, primaryOMCs andexternalweights",
+      "Decode individual symlinks and their successfulprefill targets",
+      "All source/input inventory, owner/link journals and report/log evidence"
+    ],
+    "draft_candidate": {
+      "command": "python3 \"$REPO_DIR/targets/cpro/scripts/compact_draft_storage.py\" --job \"$AI_RUN_DIR/full-draft\"",
+      "default": "PLANNED read-only metadata-only; logical_duplicate_bytes andplanned_changes determine opportunity",
+      "apply": "--apply onlywhen planned_changes>0 and no active draft compilation; existing DraftWorkspace lock andfreshSHA/permission/inode guards",
+      "retained": "All paths andpayloadbytes/modes, prepared/fixture/references, OMCs,bundlesandreceipts",
+      "actual_savings": "UNOBSERVED; logical duplicates notphysicalguarantee, may alreadycompacted",
+      "host_regression": {
+        "tests_passed": 17,
+        "evidence": "20261030T002731Z-5904-c85a59/out/storage-tests.xml",
+        "scope": "Existing compactor hostfixtures only; no realremote mutation"
+      }
+    },
+    "next_read_only_scope": "du1 ofuserhome +du2ofcurrentfull-draft +activeprocesslist +defaultcompactionplan. Do not inspect/delete otherowners data.",
+    "cleanup_actions_executed": "NONE; no remote filesystem access fromassistant"
   }
 }

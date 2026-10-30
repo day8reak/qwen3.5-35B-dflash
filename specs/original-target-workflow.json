@@ -4,7 +4,7 @@
   "lane": "original_quantized_target",
   "active_phase": "integration",
   "status": "PREFILL_TOOL_FORMAT_OVERRIDE_REJECTED_CORRECTED_RETRY_PENDING",
-  "handoff": "20261030T002144Z-5490-cc0fa6/handoff.md",
+  "handoff": "20261030T002731Z-5904-c85a59/handoff.md",
   "user_state": "Both runtime metadata probes and original first-prefill planpassed. First fulltarget toolinvocation exited255 after rejecting V2 format overrides; complete compiledpayloads are cached ondevice and locks released. Corrected V2 call omitsformatflags and retainsmodelND descriptors, dtypes/file/weightdir; new-output retry next.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
@@ -78,7 +78,8 @@
       "Actual selected SDK NDTensorDesc exposes tensorName; capture optional raw per-tensor member values before deciding names are unavailable. Empty, absent or duplicate names do not establish semantic state bindings.",
       "Separate overall lock queue time from one HDC round trip. A10secondcontroltimeout can fail before any model call even when both metadata probes finish successfully; retain uncertain request identity, query actual lock state, and do not delete or replay blindly. LOCK_ABSENT permits a new lock-protected attempt without cleanup; transport latency root cause remains unresolved.",
       "Actual selected model_run_tool_internal V2 rejects explicit input_format/output_format and recommends ROMC; global help availability does not establish per-interface compatibility. V2 first-prefill now inherits observed ND model descriptors and keeps only supported evidence-backed options. A toolpreflight failure is not a model arithmetic or state failure.",
-      "Successful draft embedded-stream legacy-buffer has UINT32 model extent; the18.8GBtargetweight cannot use that same current buffer path. Retain external-weight loading and do not guess SetModelPath/SetModelBuffer ordering or switch interfaces from a format error alone."
+      "Successful draft embedded-stream legacy-buffer has UINT32 model extent; the18.8GBtargetweight cannot use that same current buffer path. Retain external-weight loading and do not guess SetModelPath/SetModelBuffer ordering or switch interfaces from a format error alone.",
+      "Target retry inputs are sharedhardlinks with strictctime/nlink ownerreceipts; removing a failedrun alias can invalidate successfulcontinuation while reclaiming0bytes. Decode symlink targets and every successful generatedartifact remainprotected. Storage cleanup must use observed allocation/dependency evidence, not directorynames orduattributionalone."
     ],
     "executable_checks": [
       "tests/test_full_target_continuation.py",
@@ -673,5 +674,40 @@
       "out/final-execution-tests.xml"
     ],
     "scope": "Host tool-argument rejection and exact first-prefill/oldboard/morning checks plus small cache fixtures. No realtarget inference or numericalpass."
+  },
+  "storage_pressure": {
+    "source": "USER_PASTED_DF_DU_AND_LOCAL_DEPENDENCY_AUDIT",
+    "filesystem_free_human": "5.7G",
+    "filesystem_used_human": "1.1T",
+    "current_run_human": "103G",
+    "full_draft_human": "30G",
+    "target_import_human": "19G",
+    "failed_static_input_tree_human": "19G",
+    "successful_prefill_human": "18G",
+    "successful_decode_human": "18G",
+    "tiny_probe_smoke_observation": "KB to tens ofMB; directory count does not represent major disk use",
+    "active_processes": "UNRESOLVED; initial remote rg command unavailable, use grep-E fallback",
+    "current_prefill_v3": "DIRECTORY_EXISTS; result not yet provided, do not launch duplicate",
+    "target_retention": [
+      "Original source/export and target-pytorch-import staged aliases/receipts",
+      "Shared weight snapshot aliases in faileddual/failedstatic/successfulstatic compiler trees; unlink changes sharedctime/nlink and may reclaim0bytes",
+      "Completed prefill/decode complete generated inventories including dump_graph/cce/json/o, primaryOMCs andexternalweights",
+      "Decode individual symlinks and their successfulprefill targets",
+      "All source/input inventory, owner/link journals and report/log evidence"
+    ],
+    "draft_candidate": {
+      "command": "python3 \"$REPO_DIR/targets/cpro/scripts/compact_draft_storage.py\" --job \"$AI_RUN_DIR/full-draft\"",
+      "default": "PLANNED read-only metadata-only; logical_duplicate_bytes andplanned_changes determine opportunity",
+      "apply": "--apply onlywhen planned_changes>0 and no active draft compilation; existing DraftWorkspace lock andfreshSHA/permission/inode guards",
+      "retained": "All paths andpayloadbytes/modes, prepared/fixture/references, OMCs,bundlesandreceipts",
+      "actual_savings": "UNOBSERVED; logical duplicates notphysicalguarantee, may alreadycompacted",
+      "host_regression": {
+        "tests_passed": 17,
+        "evidence": "20261030T002731Z-5904-c85a59/out/storage-tests.xml",
+        "scope": "Existing compactor hostfixtures only; no realremote mutation"
+      }
+    },
+    "next_read_only_scope": "du1 ofuserhome +du2ofcurrentfull-draft +activeprocesslist +defaultcompactionplan. Do not inspect/delete otherowners data.",
+    "cleanup_actions_executed": "NONE; no remote filesystem access fromassistant"
   }
 }
