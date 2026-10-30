@@ -18,14 +18,18 @@ def main(argv=None):
     parser.add_argument("--input-dir", required=True, help="user-supplied decode inputs; files remain unchanged")
     parser.add_argument("--output", required=True, help="new evidence directory below AI_RUN_DIR")
     parser.add_argument("--apply", action="store_true", help="after input checks, invoke the original V2 tool once")
+    parser.add_argument("--trial-input-receipt", help="explicit manifest.json from prepare_target_decode_trial.py; retains its unverified control assumption")
     parser.add_argument("--board-model-root", default="/data/local/tmp/qwen3_5_moe")
     parser.add_argument("--timeout-seconds", type=int, default=7200)
     parser.add_argument("--lock-wait-seconds", type=int, default=1800)
     args = parser.parse_args(argv)
     from qwen35_moe_dflash.artifacts import output_path, save_json
     from qwen35_moe_dflash.existing_air_profile import get_existing_air_profile
-    from qwen35_moe_dflash.target_decode_smoke_plan import prepare_decode_smoke_plan, validate_decode_smoke_plan
+    from qwen35_moe_dflash.target_decode_smoke_plan import (inspect_decode_input_extents,
+        prepare_decode_smoke_plan, validate_decode_smoke_plan)
+    from qwen35_moe_dflash.target_compile_failure import _read_small
     out, owned = None, False
+    trial, trial_identity, trial_root = None, None, None
     result = {"schema_version": 1, "artifact_kind": "qwen35-target-decode-smoke-job",
         "status": "BLOCKED", "mode": "APPLY" if args.apply else "PLAN_ONLY",
         "model_compilation": "NOT_RUN", "device_execution": "NOT_RUN",
@@ -35,6 +39,20 @@ def main(argv=None):
         out = output_path(args.output)
         out.mkdir(parents=True, exist_ok=False)
         owned = True
+        preflight = inspect_decode_input_extents(args.input_dir)
+        save_json(out / "input-preflight.json", preflight)
+        result["input_preflight"] = {key: preflight[key] for key in ("status", "missing_files", "failed_files")}
+        if args.trial_input_receipt:
+            from qwen35_moe_dflash.target_decode_trial_inputs import validate_decode_trial_inputs
+            receipt = Path(args.trial_input_receipt).absolute()
+            if receipt.name != "manifest.json":
+                raise ValueError("trial input receipt must name the prepared manifest.json")
+            _, trial_identity = _read_small(receipt, 8 << 20)
+            trial_root = receipt.parent
+            trial = validate_decode_trial_inputs(trial_root)
+            if Path(args.input_dir).absolute() != Path(trial["input_dir"]):
+                raise ValueError("input directory differs from the explicit trial receipt")
+            result.update(trial_input_receipt=trial_identity, experimental_input_assumption=trial["assumption"])
         job = Path(args.job).resolve()
         plan = prepare_decode_smoke_plan(job / "compilation", args.runtime_probe, args.input_dir)
         validate_decode_smoke_plan(plan)
@@ -58,11 +76,21 @@ def main(argv=None):
                 "Inspect the recorded stage and retained logs/lock ownership before any new-output retry; no automatic retry")
     except Exception as error:
         result.update(status="BLOCKED", error=f"{type(error).__name__}: {error}")
+    if trial is not None:
+        try:
+            validate_decode_trial_inputs(trial_root)
+            if _read_small(trial_identity["path"], 8 << 20)[1] != trial_identity:
+                raise ValueError("trial input receipt changed during this invocation")
+            result["trial_input_preservation"] = "UNCHANGED_ORIGINALS_DERIVED_INPUTS_AND_EXPLICIT_ASSUMPTION"
+        except Exception as error:
+            result.update(status="FAILED", trial_input_preservation="FAILED",
+                trial_input_error=f"{type(error).__name__}: {error}")
     if owned:
         save_json(out / "result.json", result)
     shown = {key: result[key] for key in ("status", "stage", "mode", "device_execution", "model_compilation",
         "numerical_validation", "state_continuity", "execution_scope", "input_count", "output_count",
-        "tool_process_id", "remote_exitcode", "lock_state", "error", "evidence_error", "plan", "board_result", "next") if key in result}
+        "tool_process_id", "remote_exitcode", "lock_state", "error", "evidence_error", "trial_input_error",
+        "input_preflight", "experimental_input_assumption", "trial_input_preservation", "plan", "board_result", "next") if key in result}
     if not args.apply:
         shown["provided_control_values"] = {Path(row["path"]).name: {"dtype": row["dtype"], "values": row["values"]}
             for row in result.get("control_observations", [])}

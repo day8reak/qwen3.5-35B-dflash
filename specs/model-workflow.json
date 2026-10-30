@@ -2,8 +2,8 @@
   "schema_version": 1,
   "updated": "2026-10-30",
   "active_phase": "integration",
-  "delivery_status": "REAL_TARGET_FEATURE_TO_FULL_DRAFT_SINGLE_STEP_EXECUTED_STATEFUL_DECODE_PENDING",
-  "run_id": "20261030T011558Z-9333-c529b6",
+  "delivery_status": "REAL_FEATURE_DRAFT_EXECUTED_DECODE_INPUT_TRIAL_PENDING",
+  "run_id": "20261030T014024Z-12188-331696",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -3480,7 +3480,7 @@
           "source": "USER_DIRECTIVE_AFTER_REAL_FEATURE_DRAFT_SUCCESS",
           "input_dir": "/home/w00949577/run_35B/decode_data",
           "input_correctness": "UNVERIFIED_USER_SUPPLIED_VALUES_EXPLICITLY_ACCEPTED_FOR_FIRST_TRIAL",
-          "status": "HOST_IMPLEMENTED_ACTUAL_DEVICE_TRIAL_PENDING",
+          "status": "USER_REPORTED_PLAN_BLOCKED_MISSING_CONV_EXPLICIT_DERIVED_TRIAL_READY",
           "entrypoint": "targets/cpro/scripts/run_target_decode_smoke.py",
           "job": "target-pytorch-decode1-compile",
           "runtime_probe": "target-decode1-runtime-io-v2",
@@ -3494,7 +3494,7 @@
           "device_execution": "NOT_RUN",
           "numerical_validation": "NOT_RUN_NO_REFERENCE",
           "state_continuity": "NOT_VALIDATED",
-          "next": "One independent decode trial, then establish continuous ordinary generation state/controls and adapt existing serial DFlash controller; block verify/resident execution are later acceleration stages."
+          "next": "Prepare separate explicit single-query controls andrecordold/newvalues, then runone independently supplieddecode with--trial-input-receipt; no originalfilemutation/feedback/accuracyclaim."
         },
         "runtime_framework_status": {
           "legacy_tiny": "User reported tiny board generation succeeded and ordinary/DFlash matched each other in that test, with host reference mismatch. Legacy route recomputes fullprefix, no80stateincrementaldevice proof.",
@@ -3521,6 +3521,94 @@
           "new_decode_plan_cases": 24,
           "new_decode_execution_cases": 14,
           "scope": "Host generated protobuf/ELF fixtures, sparse embedding tables and fake HDC/model-tool protocol only. Existing target/prefill/cache/model-I/O/schema regressions preserved. Real decode_data payloads and actual decode inference not accessed by assistant."
+        },
+        "independent_decode_input_user_report": {
+          "source": "USER_PASTED_PLAN_FAILURE_DIRECTORY_LIST_AND_READ_ONLY_CONTROL_INSPECTION",
+          "input_dir": "/home/w00949577/run_35B/decode_data",
+          "plan_output": "target-decode1-smoke-plan",
+          "status": "BLOCKED",
+          "mode": "PLAN_ONLY",
+          "device_execution": "NOT_RUN",
+          "missing_file": "conv_state_pos.bin",
+          "required_control_bytes": 512,
+          "observed_controls": {
+            "new_kv_cache_pos": 256,
+            "position_ids": 256,
+            "output_pos": 255,
+            "allQLen": 1224,
+            "effective_length": 256,
+            "embed_scale": 0.0007381889736279845
+          },
+          "mask_statistics": {
+            "elements": 2048,
+            "finite_zero_count": 257,
+            "negative_infinity_count": 1791,
+            "nan_count": 0,
+            "positive_infinity_count": 0
+          },
+          "scope": "User actual control bytes decoded as original declared types. Does not validate source/golden provenance, state history or runtime numerical semantics. Four goldenK/V filenames do not prove model depth."
+        },
+        "experimental_decode_trial_inputs": {
+          "status": "HOST_IMPLEMENTED_USER_EXECUTION_PENDING",
+          "entrypoint": "targets/cpro/scripts/prepare_target_decode_trial.py",
+          "explicit_flag": "--experimental-single-token-controls",
+          "output": "target-decode1-trial-inputs",
+          "source_input_dir": "/home/w00949577/run_35B/decode_data",
+          "manifest": "target-decode1-trial-inputs/manifest.json",
+          "assumption_status": "NOT_A_VALIDATED_KERNEL_CONTRACT",
+          "source_control_missing_required": true,
+          "generated_controls": [
+            {
+              "file": "conv_state_pos.bin",
+              "source_value": "ABSENT",
+              "trial_values": "INT32_LE[128] first1 and127zeros",
+              "reason": "Explicit hypothesis first word is currentquery count, not kernel-contract proof"
+            },
+            {
+              "file": "output_pos.bin",
+              "source_value": 255,
+              "trial_value": 0,
+              "dtype": "INT32",
+              "reason": "Local row0 for declared single-query forward; actual executedAIR numerical validation pending"
+            },
+            {
+              "file": "effective_length.bin",
+              "source_value": 256,
+              "trial_value": 1,
+              "dtype": "INT16",
+              "reason": "Explicit current effective-query-count trial"
+            },
+            {
+              "file": "allQLen.bin",
+              "source_value": 1224,
+              "trial_value": 1,
+              "dtype": "INT64",
+              "reason": "Explicit current Q-length trial; actual kernel contract remains unverified"
+            }
+          ],
+          "generated_control_bytes": 526,
+          "unchanged_copied_files": 9,
+          "source_file_bindings": 12,
+          "preserved": "Original sourcefiles remain untouched; byte-exact copies retain mask, absoluteposition/newKV256, embedding and states. No golden/model copies, links, truncation or datatype conversion.",
+          "receipt_guard": "Explicit --trial-input-receipt validates source SHA/stat, copiedinputs, generatedcontrolbytes/recipe and originalmissing-control absence before/after call; manifestSHA and old/new assumptions retained in outerresult.",
+          "execution_output": "target-decode1-smoke-trial",
+          "execution_scope": "SINGLE_DECODE1_USER_SUPPLIED_INPUTS_NO_PREFILL_FEEDBACK",
+          "numerical_validation": "NOT_RUN_NO_REFERENCE",
+          "state_continuity": "NOT_VALIDATED",
+          "kernel_contract_search": "Read-only original six-source/converter/fake/meta audit and knownprefill[64,0...] do not determineconvx3meaning. Selected-DDK installedsource remains prospective evidence; no semantic proof fabricated.",
+          "stat_preflight": "All13requiredfilenames checked via lstat inone report for missing/nonregular/sizeerrors; fileencoding,readability,numerics remain separate."
+        },
+        "experimental_decode_host_verification": {
+          "run_id": "20261030T014024Z-12188-331696",
+          "unique_tests_passed": 100,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "evidence": "out/final-host-tests.xml",
+          "new_extent_cases": 10,
+          "new_trial_constructor_cases": 32,
+          "new_trial_flow_cases": 5,
+          "scope": "Actual constructor/validator/planner/CLI through fakeHDC, plus existingdecodeplan/execution/prefill/cache regressions. Includes original255/1224/256values,9exactcopies/4generatedcontrols, old/newassumptionreceipt retained, source mutations rejected. No actual model/device/kernel-contract or numerical acceptance."
         }
       },
       "b": {
@@ -3652,7 +3740,7 @@
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Try supplied decode_data as one independent actualnamed-runtime decode1 call; then ordinary stateful generation and existing serial DFlash controller integration. Keep source/state/logit/embedding audits for continuity and numerical closure.",
+    "next_target_action": "Run explicit derivedsingle-query inputtrial for supplieddecode_data aftermissingconv/stale255/256/1224controls; preserveunverifiedcontract labels, then ordinary recurrence/fullDFlash.",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone",
     "deadline_assessment": "Both target static artifacts now compiled, improving full-execution feasibility. Two days remains a high-risk noncommitted estimate for correctness plus measured2x speed; ordinary target execution and80statehandoff are the next critical gate."
   },

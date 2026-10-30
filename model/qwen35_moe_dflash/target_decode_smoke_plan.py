@@ -10,6 +10,7 @@ from collections import Counter
 import math
 from pathlib import Path
 import re
+import stat
 import struct
 
 from .existing_air import _conversion_options
@@ -23,6 +24,85 @@ from .target_prefill_smoke_plan import (_GE_TYPES, _INPUT_TYPES, _ND_VIEW_POLICY
 _KIND = "qwen35-original-decode-smoke-plan"
 _PROFILE = "cpro-40block-decode-1"
 _SCOPE = "SINGLE_DECODE1_USER_SUPPLIED_INPUTS_NO_PREFILL_FEEDBACK"
+
+
+def _decode_expected_files():
+    """Group the frozen declared profile's89 slots into13 source filenames."""
+    profile = get_existing_air_profile(_PROFILE)
+    entries = [entry.split(":", 1) for entry in profile["input_shape"].split(";")]
+    filenames = original_input_files()
+    if len(entries) != 89 or len(filenames) != 89:
+        raise ValueError("decode file preflight requires the frozen89-input profile")
+    grouped = {}
+    for (name, raw_shape), (_, filename) in zip(entries, filenames):
+        shape = list(map(int, raw_shape.split(",")))
+        dtype = "FLOAT16" if name.startswith("RefData_") else _INPUT_TYPES[name]
+        if (not shape or any(dim <= 0 for dim in shape)
+                or not isinstance(filename, str) or not re.fullmatch(r"[A-Za-z0-9_]+\.bin", filename)):
+            raise ValueError("invalid frozen decode source file descriptor")
+        expected = {"file": filename, "expected_dtype": dtype, "expected_shape": shape,
+                    "expected_bytes": math.prod(shape) * _WIDTHS[dtype]}
+        if filename in grouped:
+            if any(grouped[filename][key] != expected[key] for key in expected):
+                raise ValueError("one frozen decode source filename has conflicting descriptors: " + filename)
+        else:
+            grouped[filename] = {**expected, "input_names": []}
+        grouped[filename]["input_names"].append(name)
+    if len(grouped) != 13:
+        raise ValueError("decode file preflight requires exactly13 distinct source filenames")
+    return list(grouped.values())
+
+
+def inspect_decode_input_extents(input_dir):
+    """Observe all required file types and extents without opening payloads.
+
+    This is a declared-profile diagnostic, not runtime-slot, byte encoding,
+    readability or input-value validation. The planner still binds the actual
+    named runtime descriptors and freshly hashes every supplied source file.
+    Extra files, including goldens, are neither enumerated nor opened.
+    """
+    root, _ = _safe(input_dir, directory=True)
+    files = []
+    for expected in _decode_expected_files():
+        path = root / expected["file"]
+        row = {**expected, "path": str(path), "observed_bytes": None}
+        try:
+            info = path.lstat()
+            row["observed_bytes"] = info.st_size
+            if not stat.S_ISREG(info.st_mode):
+                row.update(status="UNSAFE_OR_UNREADABLE",
+                           reason="symlink" if stat.S_ISLNK(info.st_mode) else "nonregular file")
+            elif info.st_size != expected["expected_bytes"]:
+                row.update(status="WRONG_SIZE")
+            else:
+                row.update(status="REGULAR_EXTENT_MATCHED")
+        except FileNotFoundError:
+            row.update(status="MISSING", reason="required input file not found")
+        except OSError as error:
+            row.update(status="UNSAFE_OR_UNREADABLE", reason=f"{type(error).__name__}: {error}")
+        files.append(row)
+    failed = [row for row in files if row["status"] != "REGULAR_EXTENT_MATCHED"]
+    return {"schema_version": 1, "artifact_kind": "qwen35-decode-input-extent-inspection",
+        "status": "DECODE_INPUT_EXTENTS_INCOMPLETE" if failed else "DECODE_INPUT_EXTENTS_MATCHED",
+        "input_dir": str(root), "profile": _PROFILE, "sequence_length": 1,
+        "required_file_count": len(files), "matched_file_count": len(files) - len(failed),
+        "failed_file_count": len(failed), "files": files, "failed_files": failed,
+        "missing_files": [row["file"] for row in files if row["status"] == "MISSING"],
+        "payload_access": "NONE_STAT_ONLY", "encoding_validation": "NOT_PERFORMED",
+        "dtype_binding": "FROZEN_PROFILE_AND_ORIGINAL_EXPORTER_DECLARATIONS_NOT_FILE_ENCODING",
+        "shape_binding": "FROZEN_CPRO_40BLOCK_DECODE1_PROFILE_NOT_RUNTIME_SLOT_VALIDATION",
+        "readability_validation": "NOT_OPENED_NOT_TESTED", "device_execution": "NOT_RUN",
+        "model_compilation": "NOT_RUN", "input_mutation": "NONE",
+        "scope": "lstat of13 required input filenames only; no payload, golden, model or weight reads, default generation or device calls"}
+
+
+def _input_extent_error(report):
+    rows = []
+    for row in report["failed_files"]:
+        observed = "missing" if row["observed_bytes"] is None else str(row["observed_bytes"])
+        reason = " (" + row["reason"] + ")" if row.get("reason") else ""
+        rows.append(f"{row['file']}: {row['status']} expected={row['expected_bytes']} observed={observed}" + reason)
+    return "decode input preflight found missing or invalid files: " + "; ".join(rows)
 
 
 def _bound_probe(compilation, probe_dir, bindings):
@@ -161,6 +241,9 @@ def prepare_decode_smoke_plan(compilation_dir, runtime_probe, input_dir):
     bindings = []
     compiled, contract, probe, native, model = _bound_probe(compilation, probe_dir, bindings)
     tool = _tool_binding(probe, bindings)
+    extents = inspect_decode_input_extents(input_root)
+    if extents["status"] != "DECODE_INPUT_EXTENTS_MATCHED":
+        raise ValueError(_input_extent_error(extents))
     profile = get_existing_air_profile(_PROFILE)
     entries = [entry.split(":", 1) for entry in profile["input_shape"].split(";")]
     input_rows = contract.get("boundaries", {}).get("inputs_in_serialized_op_order")
