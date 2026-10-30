@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare, extract and import bounded original decode embedding rows."""
+"""Prepare, extract, import or diagnose bounded original decode rows."""
 from pathlib import Path
 import sys
 

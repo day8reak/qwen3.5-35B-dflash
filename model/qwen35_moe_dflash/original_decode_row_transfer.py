@@ -6,6 +6,7 @@ run on the resource host without this package, YAML, Torch or a model load.
 from __future__ import annotations
 
 from contextlib import ExitStack
+from array import array
 import base64
 import hashlib
 import json
@@ -354,6 +355,121 @@ def extract_rows(request_path, weight_table, scale_table, output):
     return result
 
 
+def locate_rows(request_path, weight_table, scale_table, output):
+    """Diagnose exact row location without producing an extraction response.
+
+    Search the whole small scale table, reject every scale-matched row whose
+    first four INT8 bytes differ, then read all surviving remainders only when
+    the complete payload fits the original 2,103,300-byte budget. Request IDs
+    are context only; no vector position or logical history is inferred.
+    """
+    out = _new_output(output, require_run=False)
+    budget, chunk_size = _LIMITS["table_payload_maximum_bytes"], 64 << 10
+    result = {"schema_version": 1, "artifact_kind": "qwen35-original-decode-row-location-diagnosis",
+        "status": "FAILED", "output": str(out), "diagnostic_only": True,
+        "import_eligibility": "NOT_AN_EXTRACTION_RESPONSE", "next_token_generation": "NOT_PERFORMED",
+        "source_id_vector_role": "CONTEXT_ONLY_NOT_A_SEARCH_RESTRICTION", "logical_history": "UNVERIFIED",
+        "runtime_control_recipe": "UNVERIFIED", "state_feedback": "UNVERIFIED",
+        "full_embedding_table_hash": "NOT_PERFORMED", "scale_scan_complete": False,
+        "prefix_scan_complete": False, "pair_scan": "NOT_PERFORMED", "uniqueness_scope": "NOT_ESTABLISHED",
+        "scale_scan_bytes": 0, "prefix_read_bytes": 0, "remainder_read_bytes": 0, "table_read_bytes": 0,
+        "maximum_table_read_bytes": budget, "maximum_scale_chunk_bytes": chunk_size,
+        "scale_match_count": 0, "prefix_match_count": 0, "pair_match_count": None,
+        "matching_pair_token_ids": [], "row_components": [], "table_read_scope": "REQUESTED_PREAD_PAYLOAD_BYTES_ONLY"}
+    try:
+        _, script_identity = _read(__file__, 1 << 20)
+        request, request_identity = _json(request_path, _REQUEST_MAX)
+        _, executed_row, executed_scale, source_positions = _request(request)
+        result.update(request_sha256=request_identity["sha256"], binding_digest=request["binding_digest"],
+            diagnostic_script_sha256=script_identity["sha256"], executed_embedding_sha256=_sha(executed_row),
+            executed_scale_sha256=_sha(executed_scale), request_unique_source_id_count=len(source_positions))
+        tables, prefix_ids = [], array("I")
+        result["tables"] = tables
+        scale_ids_hash, prefix_ids_hash, scale_hash = hashlib.sha256(), hashlib.sha256(), hashlib.sha256()
+        scale_examples, prefix_examples = [], []
+        with ExitStack() as stack:
+            for role, path, width in (("weight", weight_table, _HIDDEN), ("scale", scale_table, 4)):
+                path, before = _safe(path)
+                if str(path) != request["table_paths"][role] or before[2] != _VOCAB * width:
+                    raise ValueError("diagnostic table path/extent differs from the original configured table: " + str(path))
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                stack.callback(os.close, fd)
+                if _stamp(os.fstat(fd)) != before:
+                    raise ValueError("diagnostic table changed before read")
+                tables.append({"role": role, "path": str(path), "bytes": before[2], "stat": before,
+                    "row_bytes": width, "fd": fd})
+            def read_payload(fd, size, offset, counter):
+                if result["table_read_bytes"] + size > budget:
+                    raise ValueError("diagnostic table payload budget exceeded")
+                raw = os.pread(fd, size, offset)
+                if len(raw) != size:
+                    raise ValueError("diagnostic table payload was truncated")
+                result["table_read_bytes"] += size
+                result[counter] += size
+                return raw
+            # The entire scale+prefix rejection pass completes before any tail
+            # is read; never inspect only a prefix of the surviving token IDs.
+            for offset in range(0, _VOCAB * 4, chunk_size):
+                count = min(chunk_size, _VOCAB * 4 - offset)
+                chunk = read_payload(tables[1]["fd"], count, offset, "scale_scan_bytes")
+                scale_hash.update(chunk)
+                for local in range(0, count, 4):
+                    if chunk[local:local + 4] != executed_scale:
+                        continue
+                    token = (offset + local) // 4
+                    result["scale_match_count"] += 1
+                    scale_ids_hash.update(struct.pack("<I", token))
+                    if len(scale_examples) < 16: scale_examples.append(token)
+                    prefix = read_payload(tables[0]["fd"], 4, token * _HIDDEN, "prefix_read_bytes")
+                    if prefix != executed_row[:4]:
+                        continue
+                    prefix_ids.append(token)
+                    prefix_ids_hash.update(struct.pack("<I", token))
+                    if len(prefix_examples) < 16: prefix_examples.append(token)
+            result.update(scale_scan_complete=True, prefix_scan_complete=True,
+                prefix_match_count=len(prefix_ids), prefix_mismatch_count=result["scale_match_count"] - len(prefix_ids),
+                scale_table_scan_sha256=scale_hash.hexdigest(), scale_matching_ids_sha256=scale_ids_hash.hexdigest(),
+                prefix_matching_ids_sha256=prefix_ids_hash.hexdigest(), scale_matching_id_examples=scale_examples,
+                prefix_matching_id_examples=prefix_examples, id_digest_encoding="ASCENDING_UINT32_LITTLE_ENDIAN",
+                maximum_candidate_id_storage_bytes=_VOCAB * prefix_ids.itemsize)
+            predicted = result["table_read_bytes"] + len(prefix_ids) * (_HIDDEN - 4)
+            result["predicted_complete_table_read_bytes"] = predicted
+            if predicted > budget:
+                result.update(status="ORIGINAL_DECODE_ROW_LOCATION_BUDGET_CAP",
+                    pair_scan="NOT_PERFORMED_TOTAL_PAYLOAD_BUDGET_EXCEEDED")
+            else:
+                matches, components = [], []
+                for token in prefix_ids:
+                    tail = read_payload(tables[0]["fd"], _HIDDEN - 4, token * _HIDDEN + 4, "remainder_read_bytes")
+                    # All four prefix bytes were read from this original row
+                    # and proved identical before reaching this pass.
+                    pair_matches = tail == executed_row[4:]
+                    components.append({"token_id": token, "weight_sha256": _sha(executed_row[:4] + tail),
+                        "scale_sha256": _sha(executed_scale), "scale_matches": True, "prefix_matches": True,
+                        "embedding_matches": pair_matches, "pair_matches": pair_matches,
+                        "present_in_request_source_ids": token in source_positions})
+                    if pair_matches: matches.append(token)
+                result.update(pair_scan="COMPLETE_EXACT_SCALE_PREFIX_AND_REMAINDER_SEARCH", pair_match_count=len(matches),
+                    matching_pair_token_ids=matches, row_components=components,
+                    uniqueness_scope="COMPLETE_DECLARED_SCALE_MATCH_SET_AND_ALL_SURVIVING_INT8_ROWS",
+                    status="ORIGINAL_DECODE_ROW_LOCATION_UNIQUE" if len(matches) == 1 else
+                        "ORIGINAL_DECODE_ROW_LOCATION_AMBIGUOUS" if matches else "ORIGINAL_DECODE_ROW_LOCATION_NO_MATCH")
+            for table in tables:
+                if _stamp(os.fstat(table["fd"])) != table["stat"] or _safe(table["path"])[1] != table["stat"]:
+                    raise ValueError("original table changed during location diagnosis")
+            for identity, maximum in ((request_identity, _REQUEST_MAX), (script_identity, 1 << 20)):
+                if _read(identity["path"], maximum)[1] != identity:
+                    raise ValueError("diagnostic request/source changed during location diagnosis")
+        result["source_preservation"] = "UNCHANGED_REQUEST_SCRIPT_AND_DECLARED_TABLE_IDENTITIES"
+    except (OSError, ValueError, TypeError, KeyError, IndexError, RecursionError, struct.error) as error:
+        result.update(status="FAILED", error=f"{type(error).__name__}: {error}", uniqueness_scope="NOT_ESTABLISHED_AFTER_ERROR")
+    for table in result.get("tables", []): table.pop("fd", None)
+    if len(_encoded(result)) > _RESPONSE_MAX:
+        raise ValueError("row-location diagnosis exceeds1MiB metadata budget")
+    _save(out, "diagnostic.json", result)
+    return result
+
+
 def _response(value, request, request_identity):
     raw_ids, row, scale, positions = _request(request)
     if (value.get("artifact_kind") != _RESPONSE_KIND or type(value.get("schema_version")) is not int
@@ -482,6 +598,9 @@ def main(argv=None):
     extract = commands.add_parser("extract", help="stdlib-only selected row extraction on the original table host")
     extract.add_argument("--request", required=True); extract.add_argument("--weight-table", required=True)
     extract.add_argument("--scale-table", required=True); extract.add_argument("--output", required=True)
+    locate = commands.add_parser("locate", help="diagnose exact row location using complete scales and bounded raw-byte rejection; no next-token files")
+    locate.add_argument("--request", required=True); locate.add_argument("--weight-table", required=True)
+    locate.add_argument("--scale-table", required=True); locate.add_argument("--output", required=True)
     consume = commands.add_parser("import", help="freshly rebind local evidence and verify a returned response")
     consume.add_argument("--prepared", required=True); consume.add_argument("--response", required=True)
     consume.add_argument("--output", required=True)
@@ -489,13 +608,19 @@ def main(argv=None):
     try:
         if args.command == "prepare": result = prepare_rows(args.inspection, args.config_yaml, args.output)
         elif args.command == "extract": result = extract_rows(args.request, args.weight_table, args.scale_table, args.output)
+        elif args.command == "locate": result = locate_rows(args.request, args.weight_table, args.scale_table, args.output)
         else: result = import_rows(args.prepared, args.response, args.output)
         keys = ("status", "output", "request", "extraction_script", "request_sha256", "binding_digest", "candidate_count",
                 "unique_candidate_count", "matching_token_ids", "matching_positions", "table_read_bytes", "tables",
                 "selected_source_token_id", "selected_next_token_id", "matching_source_positions", "next_token_inputs", "error", "next")
+        if args.command == "locate":
+            keys += ("diagnostic_only", "import_eligibility", "scale_scan_complete", "prefix_scan_complete", "pair_scan",
+                     "scale_match_count", "prefix_match_count", "pair_match_count", "matching_pair_token_ids",
+                     "scale_scan_bytes", "prefix_read_bytes", "remainder_read_bytes", "predicted_complete_table_read_bytes")
         print(json.dumps({key: result[key] for key in keys if key in result}, ensure_ascii=False, allow_nan=False), flush=True)
         return 0 if result["status"] in {"ORIGINAL_DECODE_ROW_TRANSFER_PREPARED", _EXTRACTED,
-            "ORIGINAL_DECODE_TRANSFERRED_ROWS_BOUND_NEXT_TOKEN_PREPARED"} else 1
+            "ORIGINAL_DECODE_TRANSFERRED_ROWS_BOUND_NEXT_TOKEN_PREPARED", "ORIGINAL_DECODE_ROW_LOCATION_UNIQUE",
+            "ORIGINAL_DECODE_ROW_LOCATION_AMBIGUOUS", "ORIGINAL_DECODE_ROW_LOCATION_NO_MATCH", "ORIGINAL_DECODE_ROW_LOCATION_BUDGET_CAP"} else 1
     except Exception as error:
         print(json.dumps({"status": "FAILED", "error": f"{type(error).__name__}: {error}"}), flush=True)
         return 1

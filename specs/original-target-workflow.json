@@ -3,8 +3,8 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "DECODE_OUTPUTS_BOUND_SOURCE_SCHEMA_COPY_AND_ORIGINAL_ROWS_PENDING",
-  "handoff": "20261030T023239Z-14738-f5135c/handoff.md",
+  "status": "DECODE_OUTPUTS_BOUND_QUERY_ROW_LOCATION_IN_PROGRESS_STATE_MAP_PENDING",
+  "handoff": "20261030T030850Z-16489-cfe0d0/handoff.md",
   "user_state": "Complete original target prefill64, independent experimental decode1 and exact real-feature full six-layer draft step each executed successfully. Saved decode output binding,80-state ownership/feedback, original next-token embeddings and full multi-round execution remain to verify; no numerical acceptance.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
@@ -53,7 +53,7 @@
     "Ordinary decode and multi-round DFlash stop/reject/commit behavior",
     "Matched numerical acceptance and measured end-to-end performance"
   ],
-  "next_command": "Prepare the small original decode row request on DDK host; run copied stdlib extractor on original weight machine and return response plus exact16KB producer pb2. Then run state-lineage-v3 and local row import. See docs/current-status.md.",
+  "next_command": "Run the standalone locate command on original weight machine using unchanged request; source pb2/state-lineage-v3 remains independent. See docs/current-status.md.",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -1236,7 +1236,7 @@
       "logical_history": "UNVERIFIED",
       "runtime_control_recipe": "UNVERIFIED",
       "state_continuity": "NOT_VALIDATED",
-      "status": "HOST_PORTABLE_ROW_TRANSFER_VERIFIED_SOURCE_EXTRACTION_PENDING",
+      "status": "USER_CANDIDATE_EXTRACTION_NO_MATCH_HOST_EXACT_ROW_LOCATOR_VERIFIED",
       "candidate_flag": "--match-source-id-candidates",
       "maximum_candidate_ids": 1024,
       "maximum_candidate_table_read_bytes": 2103300,
@@ -1408,7 +1408,7 @@
     "actual_full_state_mapping": "PENDING_USER_ARTIFACT_AUDIT"
   },
   "original_decode_row_transfer": {
-    "status": "HOST_VERIFIED_USER_EXECUTION_PENDING",
+    "status": "USER_REPORTED_NO_MATCH_WITH_SUPPLIED_SOURCE_ID_CANDIDATES",
     "entrypoint": "targets/cpro/scripts/transfer_original_decode_rows.py",
     "subcommands": [
       "prepare",
@@ -1457,5 +1457,96 @@
     "portable_rows": "Actual local probe/inventory fixtures, stdlib-only isolated copied extractor, bounded sparse original tables, source candidate uniqueness, request/script/response/path/hash/row proof and fresh local import; tests cover complete2056B handoff.",
     "review": "Read-only cross-agent review closed original configured table path binding; root reviewed source schema selection, raw row preservation and fresh local response verification.",
     "scope": "Host fixtures/fake execution provenance only; no real phone invocation, numerical accuracy, state continuity or model performance acceptance."
+  },
+  "original_decode_row_extraction_user_report": {
+    "source": "USER_PASTED_ORIGINAL_WEIGHT_MACHINE_EXTRACTION_AND_COMPONENT_HASH_CHECK",
+    "source_working_directory": "/home/w00949577/qwen35-decode1-row-request",
+    "status": "ORIGINAL_DECODE_ROWS_NO_MATCH",
+    "request_sha256": "59cf042440f86a85ddb4a4220ad434218c3460fead5a12ab293dcf56fca55299",
+    "binding_digest": "e824628610d21a73218ac141e71a7991c4e3e6f5f4fead7de021bf12f5cc04ae",
+    "candidate_count": 256,
+    "unique_candidate_count": 7,
+    "table_read_bytes": 14364,
+    "weight_table_bytes": 508559360,
+    "scale_table_bytes": 993280,
+    "executed_scale": 0.0007381889736279845,
+    "component_matches": [
+      {
+        "token_id": 220,
+        "INT8_match": false,
+        "FP32_scale_match": false
+      },
+      {
+        "token_id": 10992,
+        "INT8_match": false,
+        "FP32_scale_match": false
+      },
+      {
+        "token_id": 96144,
+        "INT8_match": false,
+        "FP32_scale_match": false
+      },
+      {
+        "token_id": 96730,
+        "INT8_match": false,
+        "FP32_scale_match": false
+      },
+      {
+        "token_id": 99651,
+        "INT8_match": false,
+        "FP32_scale_match": false
+      },
+      {
+        "token_id": 110598,
+        "INT8_match": false,
+        "FP32_scale_match": false
+      },
+      {
+        "token_id": 122890,
+        "INT8_match": false,
+        "FP32_scale_match": false
+      }
+    ],
+    "next_token_inputs": "NOT_GENERATED",
+    "interpretation": "Only the seven tested IDs are excluded. This does not prove table/input/generator fault or a full-vocabulary mismatch; raw query provenance remains unestablished."
+  },
+  "original_decode_row_location_diagnosis": {
+    "status": "HOST_VERIFIED_ACTUAL_RESOURCE_DIAGNOSIS_PENDING",
+    "entrypoint": "targets/cpro/scripts/transfer_original_decode_rows.py locate",
+    "portable_source": "model/qwen35_moe_dflash/original_decode_row_transfer.py",
+    "copied_diagnostic_basename": "target-decode1-locate.py",
+    "request": "EXISTING_UNCHANGED_target-decode1-row-request/request.json",
+    "source_output": "/home/w00949577/qwen35-decode1-row-request/target-decode1-row-location",
+    "artifact": "diagnostic.json",
+    "algorithm": "Complete993280B FP32-scale byte scan plus exact4B INT8 prefix rejection for all scale matches. Check predicted total993280+4*Nscale+2044*Nprefix before reading every surviving tail; no candidate prefix truncation or numerical transformation.",
+    "maximum_requested_table_payload_bytes": 2103300,
+    "maximum_scale_plus_prefix_payload_bytes": 1986560,
+    "maximum_scale_chunk_bytes": 65536,
+    "status_outcomes": [
+      "ORIGINAL_DECODE_ROW_LOCATION_UNIQUE",
+      "ORIGINAL_DECODE_ROW_LOCATION_AMBIGUOUS",
+      "ORIGINAL_DECODE_ROW_LOCATION_NO_MATCH",
+      "ORIGINAL_DECODE_ROW_LOCATION_BUDGET_CAP"
+    ],
+    "budget_scope": "Requested pread payload bytes; physical filesystem I/O can differ.",
+    "state_history": "UNVERIFIED",
+    "next_token_generation": "NOT_PERFORMED",
+    "import_eligibility": "NOT_AN_EXTRACTION_RESPONSE",
+    "transport": "Copy only the new diagnostic source into the user-owned resource directory; retain original request/extractor/NO_MATCH response.",
+    "next": "Use complete exact-pair location evidence to establish query identity or return to the original preprocessing generator; keep independent schema/state-map work progressing."
+  },
+  "original_decode_row_location_host_verification": {
+    "run_id": "20261030T030850Z-16489-cfe0d0",
+    "unique_tests_passed": 13,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "evidence": [
+      "out/original-decode-location-tests.xml",
+      "out/original-decode-location-portable-tests.xml",
+      "out/transfer-regression.xml"
+    ],
+    "scope": "Host sparse-table and fresh fake decode-request fixtures only. Tests cover complete scale scan, unique row outside source IDs and beyond1024 scale matches, ambiguity/no match, prefix/tail distinction, full budget refusal, mutation, stdlib-only copied locate/extract, unchanged successful handoff and negative extraction. No real user table/model/device calls or accuracy acceptance.",
+    "review": "Independent read-only agent reviewed exact rejection, complete candidate coverage, payload vs physicalI/O scope and non-importability."
   }
 }

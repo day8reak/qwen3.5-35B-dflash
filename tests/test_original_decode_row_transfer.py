@@ -249,3 +249,146 @@ def test_alternate_resource_table_path_cannot_satisfy_original_config_claim(hand
     response = transfer.extract_rows(case["request"], alternate, case["tables"][1], case["extracted"])
     assert response["status"] == "FAILED" and "configuration" in response["error"]
     assert response["table_read_bytes"] == 0 and response["next_token"] is None
+
+
+def locate(case):
+    return transfer.locate_rows(case["request"], *case["tables"], case["extracted"].with_name("resource-location"))
+
+
+def relocate_pair(case, tokens):
+    # Remove the known context-token pair, then place exact original raw bytes
+    # at IDs outside the request's context set. This fixture changes no request.
+    with case["tables"][1].open("r+b") as stream:
+        stream.seek(7 * 4); stream.write(struct.pack("<f", .5))
+        for token in tokens:
+            stream.seek(token * 4); stream.write(case["case"]["scales"][7])
+    with case["tables"][0].open("r+b") as stream:
+        for token in tokens:
+            stream.seek(token * 2048); stream.write(case["case"]["rows"][7])
+
+
+def test_location_diagnosis_can_find_exact_pair_outside_source_ids_without_changing_extract_or_import(handoff, monkeypatch):
+    case = handoff
+    relocate_pair(case, [5432])
+    request_before = case["request"].read_bytes()
+    assert extract(case)["status"] == "ORIGINAL_DECODE_ROWS_NO_MATCH"
+    original, calls = os.pread, []
+    def bounded(fd, size, offset):
+        assert size in {65536, 10240, 4, 2044}
+        calls.append((size, offset))
+        return original(fd, size, offset)
+    monkeypatch.setattr(os, "pread", bounded)
+    result = locate(case)
+    assert result["status"] == "ORIGINAL_DECODE_ROW_LOCATION_UNIQUE", result
+    assert result["scale_scan_complete"] is result["prefix_scan_complete"] is True
+    assert result["scale_scan_bytes"] == 993280
+    assert result["scale_match_count"] == result["prefix_match_count"] == result["pair_match_count"] == 1
+    assert result["matching_pair_token_ids"] == [5432]
+    assert result["prefix_read_bytes"] == 4 and result["remainder_read_bytes"] == 2044
+    assert result["table_read_bytes"] == 995328 == sum(size for size, _ in calls)
+    assert result["row_components"][0]["present_in_request_source_ids"] is False
+    assert result["row_components"][0]["embedding_matches"] is True
+    assert result["executed_embedding_sha256"] == result["row_components"][0]["weight_sha256"]
+    assert case["request"].read_bytes() == request_before
+    assert result["diagnostic_only"] is True and result["import_eligibility"] == "NOT_AN_EXTRACTION_RESPONSE"
+    assert "selected_source_token_id" not in result and "next_token" not in result
+    assert not (case["extracted"].with_name("resource-location") / "response.json").exists()
+    no_next(case, consume(case, case["extracted"].with_name("resource-location") / "diagnostic.json"))
+
+
+def test_location_checks_more_than1024_equal_scales_with_sole_prefix_match_beyond1024(handoff):
+    case = handoff
+    with case["tables"][1].open("r+b") as stream:
+        stream.write(case["case"]["scales"][7] * 4096)
+    with case["tables"][0].open("r+b") as stream:
+        stream.seek(7 * 2048); stream.write(bytes(2048))
+        stream.seek(3000 * 2048); stream.write(case["case"]["rows"][7])
+    result = locate(case)
+    assert result["status"] == "ORIGINAL_DECODE_ROW_LOCATION_UNIQUE", result
+    assert result["scale_match_count"] == 4096 and result["prefix_match_count"] == 1
+    assert result["matching_pair_token_ids"] == [3000]
+    assert result["prefix_read_bytes"] == 4096 * 4
+    assert result["table_read_bytes"] == 993280 + 4096 * 4 + 2044
+    assert result["pair_scan"] == "COMPLETE_EXACT_SCALE_PREFIX_AND_REMAINDER_SEARCH"
+
+
+def test_location_budget_cap_covers_all_scale_and_prefix_candidates_before_reading_any_remainder(handoff, monkeypatch):
+    case = handoff
+    with case["tables"][1].open("r+b") as stream:
+        stream.write(case["case"]["scales"][7] * transfer._VOCAB)
+    with case["tables"][0].open("r+b") as stream:
+        for token in range(100):
+            stream.seek(token * 2048); stream.write(case["case"]["rows"][7][:4])
+    original = os.pread
+    def no_remainders(fd, size, offset):
+        assert size != 2044
+        return original(fd, size, offset)
+    monkeypatch.setattr(os, "pread", no_remainders)
+    result = locate(case)
+    assert result["status"] == "ORIGINAL_DECODE_ROW_LOCATION_BUDGET_CAP", result
+    assert result["scale_scan_complete"] is result["prefix_scan_complete"] is True
+    assert result["scale_match_count"] == transfer._VOCAB and result["prefix_match_count"] == 100
+    assert result["table_read_bytes"] == 1986560 and result["remainder_read_bytes"] == 0
+    assert result["predicted_complete_table_read_bytes"] == 1986560 + 100 * 2044
+    assert result["pair_match_count"] is None and result["matching_pair_token_ids"] == []
+    assert result["pair_scan"] == "NOT_PERFORMED_TOTAL_PAYLOAD_BUDGET_EXCEEDED"
+    assert result["uniqueness_scope"] == "NOT_ESTABLISHED"
+    assert len(result["scale_matching_id_examples"]) == len(result["prefix_matching_id_examples"]) == 16
+
+
+@pytest.mark.parametrize("tokens", [[], [5432, 6655]])
+def test_location_complete_no_match_or_ambiguity_is_only_a_declared_table_representation_claim(handoff, tokens):
+    case = handoff
+    relocate_pair(case, tokens)
+    result = locate(case)
+    assert result["status"] == ("ORIGINAL_DECODE_ROW_LOCATION_AMBIGUOUS" if tokens else "ORIGINAL_DECODE_ROW_LOCATION_NO_MATCH"), result
+    assert result["matching_pair_token_ids"] == tokens
+    assert result["pair_match_count"] == len(tokens)
+    assert result["scale_scan_complete"] is True
+    assert result["logical_history"] == result["runtime_control_recipe"] == "UNVERIFIED"
+    assert result["next_token_generation"] == "NOT_PERFORMED"
+
+
+def test_location_reports_scale_and_prefix_match_but_rejects_full_int8_row_mismatch(handoff):
+    case = handoff
+    with case["tables"][0].open("r+b") as stream:
+        stream.seek(7 * 2048 + 8); stream.write(b"\0")
+    result = locate(case)
+    assert result["status"] == "ORIGINAL_DECODE_ROW_LOCATION_NO_MATCH", result
+    row, = result["row_components"]
+    assert row["scale_matches"] is row["prefix_matches"] is True
+    assert row["embedding_matches"] is row["pair_matches"] is False
+    assert row["weight_sha256"] != result["executed_embedding_sha256"]
+
+
+@pytest.mark.parametrize("changed", ["table", "request"])
+def test_location_rejects_mutation_without_promoting_incomplete_search(handoff, monkeypatch, changed):
+    case = handoff
+    original, mutated = os.pread, False
+    def race(fd, size, offset):
+        nonlocal mutated
+        raw = original(fd, size, offset)
+        if not mutated:
+            mutated = True
+            path = case["tables"][0] if changed == "table" else case["request"]
+            with path.open("r+b") as stream: stream.write(b"x")
+        return raw
+    monkeypatch.setattr(os, "pread", race)
+    result = locate(case)
+    assert result["status"] == "FAILED" and "changed" in result["error"], result
+    assert result["uniqueness_scope"] == "NOT_ESTABLISHED_AFTER_ERROR"
+
+
+def test_copied_locate_command_is_stdlib_only_and_diagnostic_even_when_unique(handoff):
+    case = handoff
+    env = dict(os.environ); env.pop("AI_RUN_DIR", None); env.pop("PYTHONPATH", None)
+    output = case["extracted"].with_name("isolated-location")
+    done = subprocess.run([sys.executable, "-I", "-S", str(case["prepared"] / "extract_rows.py"), "locate",
+        "--request", str(case["request"]), "--weight-table", str(case["tables"][0]),
+        "--scale-table", str(case["tables"][1]), "--output", str(output)],
+        cwd=case["resource"], env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stdout + done.stderr
+    shown = json.loads(done.stdout)
+    assert shown["status"] == "ORIGINAL_DECODE_ROW_LOCATION_UNIQUE"
+    assert shown["diagnostic_only"] is True and shown["import_eligibility"] == "NOT_AN_EXTRACTION_RESPONSE"
+    assert (output / "diagnostic.json").is_file() and not (output / "response.json").exists()
