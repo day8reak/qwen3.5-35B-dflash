@@ -2,8 +2,8 @@
   "schema_version": 1,
   "updated": "2026-10-30",
   "active_phase": "integration",
-  "delivery_status": "REAL_FEATURE_DRAFT_EXECUTED_DECODE_INPUT_TRIAL_PENDING",
-  "run_id": "20261030T014024Z-12188-331696",
+  "delivery_status": "PREFILL_DECODE_REAL_FEATURE_DRAFT_STEPS_EXECUTED_CONTINUITY_PENDING",
+  "run_id": "20261030T021923Z-13036-9e4290",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -3473,28 +3473,30 @@
             "controls": "Original exporter contains dummy placeholders, not a real incremental inference generator. conv_state_pos[128] encoding and actual decode Q length semantics require original generator/sample or selected kernel evidence."
           },
           "remaining_input_question": "ANSWERED: user supplied /home/w00949577/run_35B/decode_data, explicitly says values may be incorrect and requests a first trial. The directory is a test input source, not a validated incremental control recipe.",
-          "decode_execution": "NOT_RUN",
+          "decode_execution": "USER_REPORTED_INDEPENDENT_EXPERIMENTAL_DECODE1_EXECUTED_UNVALIDATED",
           "numerical_validation": "NOT_RUN"
         },
         "independent_decode_smoke": {
           "source": "USER_DIRECTIVE_AFTER_REAL_FEATURE_DRAFT_SUCCESS",
           "input_dir": "/home/w00949577/run_35B/decode_data",
           "input_correctness": "UNVERIFIED_USER_SUPPLIED_VALUES_EXPLICITLY_ACCEPTED_FOR_FIRST_TRIAL",
-          "status": "USER_REPORTED_PLAN_BLOCKED_MISSING_CONV_EXPLICIT_DERIVED_TRIAL_READY",
+          "status": "USER_REPORTED_EXECUTED_UNVALIDATED",
           "entrypoint": "targets/cpro/scripts/run_target_decode_smoke.py",
           "job": "target-pytorch-decode1-compile",
           "runtime_probe": "target-decode1-runtime-io-v2",
           "plan_output": "target-decode1-smoke-plan",
-          "apply_output": "target-decode1-smoke",
+          "apply_output": "target-decode1-smoke-trial",
           "execution_scope": "SINGLE_DECODE1_USER_SUPPLIED_INPUTS_NO_PREFILL_FEEDBACK",
           "plan_gate": "All89 actual literal runtime input names matched to exact compiled inputs, independent dtype enum/ND edge-axis/extents;82 typed output descriptors; metadata/modelstat/tool/runtime identity plus fresh user input SHA before/after.",
-          "values": "User original controls and common four state files reused unchanged for this one independent call. No generated controls/embedding substitution or claim of validated layer/history semantics.",
+          "values": "Nine required input files preserved byte-for-byte; four explicitly experimental controls derived in a separate directory with bound trial receipt. No prefill-state feedback or validated control/history semantics.",
           "route": "Proven original V2 private tool, direct_from_file+weight_dir, explicit89/82dtypes,times1,noformat/flexible-shape options; global/model-cache locks and existing source audits/cache/hilog/PID/retrieval.",
-          "storage": "No host model copy or new compilation; first decode compiled sidecar cache may require about18.8GB phone upload; fresh SHA permits later cache reuse.",
-          "device_execution": "NOT_RUN",
+          "storage": "First decode generated payload upload18824362757bytes completed, including18817991168byte SubGraph_0.weight. Existing SHA-owned cache remains for subsequent reuse; no host model copy/recompile.",
+          "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
           "numerical_validation": "NOT_RUN_NO_REFERENCE",
           "state_continuity": "NOT_VALIDATED",
-          "next": "Prepare separate explicit single-query controls andrecordold/newvalues, then runone independently supplieddecode with--trial-input-receipt; no originalfilemutation/feedback/accuracyclaim."
+          "next": "Inspect saved actual output files/logged slots/typed statistics, then source-to-compiled-to-named-runtime state ownership before a per-slot feedback planner.",
+          "remote_exitcode": 0,
+          "tool_process_id": 29654
         },
         "runtime_framework_status": {
           "legacy_tiny": "User reported tiny board generation succeeded and ordinary/DFlash matched each other in that test, with host reference mismatch. Legacy route recomputes fullprefix, no80stateincrementaldevice proof.",
@@ -3549,7 +3551,7 @@
           "scope": "User actual control bytes decoded as original declared types. Does not validate source/golden provenance, state history or runtime numerical semantics. Four goldenK/V filenames do not prove model depth."
         },
         "experimental_decode_trial_inputs": {
-          "status": "HOST_IMPLEMENTED_USER_EXECUTION_PENDING",
+          "status": "USER_REPORTED_TRIAL_RECEIPT_VALIDATED_DURING_SUCCESSFUL_EXECUTION",
           "entrypoint": "targets/cpro/scripts/prepare_target_decode_trial.py",
           "explicit_flag": "--experimental-single-token-controls",
           "output": "target-decode1-trial-inputs",
@@ -3609,6 +3611,100 @@
           "new_trial_constructor_cases": 32,
           "new_trial_flow_cases": 5,
           "scope": "Actual constructor/validator/planner/CLI through fakeHDC, plus existingdecodeplan/execution/prefill/cache regressions. Includes original255/1224/256values,9exactcopies/4generatedcontrols, old/newassumptionreceipt retained, source mutations rejected. No actual model/device/kernel-contract or numerical acceptance."
+        },
+        "target_decode_execution_user_report": {
+          "source": "USER_PASTED_REMOTE_RESULT_NOT_RETRIEVED_LOCALLY",
+          "date": "2026-10-30",
+          "execution": "target-decode1-smoke-trial",
+          "job": "target-pytorch-decode1-compile",
+          "runtime_probe": "target-decode1-runtime-io-v2",
+          "status": "EXECUTED_UNVALIDATED",
+          "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+          "remote_exitcode": 0,
+          "tool_process_id": 29654,
+          "planned_input_count": 89,
+          "planned_output_count": 82,
+          "actual_output_slot_binding": "PENDING_SAVED_OUTPUT_INSPECTION",
+          "input_preflight": "DECODE_INPUT_EXTENTS_MATCHED",
+          "model_compilation": "NOT_RUN",
+          "first_generated_payload_upload_bytes": 18824362757,
+          "external_weight_bytes": 18817991168,
+          "trial_receipt": "target-decode1-trial-inputs/manifest.json",
+          "trial_input_preservation": "UNCHANGED_ORIGINALS_DERIVED_INPUTS_AND_EXPLICIT_ASSUMPTION",
+          "experimental_controls": {
+            "conv_state_pos": "INT32[128]:1 followed by127experimentalzeros",
+            "output_pos": 0,
+            "effective_length": 1,
+            "allQLen": 1
+          },
+          "preserved_absolute_position": 256,
+          "control_contract": "NOT_A_VALIDATED_KERNEL_CONTRACT",
+          "execution_scope": "SINGLE_DECODE1_USER_SUPPLIED_INPUTS_NO_PREFILL_FEEDBACK",
+          "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+          "numerical_validation": "NOT_RUN_NO_REFERENCE",
+          "state_continuity": "NOT_VALIDATED_SINGLE_TOOL_INVOCATION",
+          "next": "Host-only retained-output inventory and same-artifact decode state ownership; do not repeat this successful call or infer a64to1 handoff."
+        },
+        "next_decode_audits": {
+          "status": "HOST_IMPLEMENTED_ACTUAL_USER_REPORTS_PENDING",
+          "output_inventory": {
+            "entrypoint": "targets/cpro/scripts/inspect_target_decode_outputs.py",
+            "execution": "target-decode1-smoke-trial",
+            "output": "target-decode1-output-inspection",
+            "success_status": "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS",
+            "checks": "Fresh decode plan/trial/source evidence, actual complete logged82 index/path bindings, all output SHA/typed extents, logits/feature and80state typed finite statistics. No same-shaped ordinal fallback.",
+            "numerical_validation": "NOT_RUN_NO_REFERENCE"
+          },
+          "same_model_state_lineage": {
+            "entrypoint": "targets/cpro/scripts/inspect_target_decode_state_lineage.py",
+            "output": "target-decode1-state-lineage",
+            "success_status": "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED",
+            "partial_status": "DECODE_STATE_LINEAGE_OBSERVED_WITH_GAPS",
+            "checks": "80unique serialized named updater owners, unique explicit source/compiled FX identities, exact typed views, literal native descriptor names, actual logged SHA-bound output files. Source producer missing shapes stay explicit; no profile-based filling.",
+            "feedback_ready": false,
+            "state_feedback": "NOT_RUN",
+            "scope": "Same compiled decode model only; separate prefill/decode RefData labels are not assumed common layer identity."
+          },
+          "original_decode_embedding_rows": {
+            "entrypoint": "targets/cpro/scripts/inspect_original_decode_embeddings.py",
+            "output": "target-decode1-embedding-inspection",
+            "success_status": "ORIGINAL_DECODE_EMBEDDING_ROWS_BOUND_NEXT_TOKEN_PREPARED",
+            "checks": "Trial receipt binds original source directory; newly observed input_ids4B must exactly match executed INT8 row2048B and separate FP32scale4B in original configured tables. Fresh finite logits argmax selects next raw row without scale multiplication/requantization.",
+            "maximum_direct_table_read_bytes": 4104,
+            "prepared_next_token_bytes": 2056,
+            "missing_tables": "Explicit configured paths retained; no fallback",
+            "logical_history": "UNVERIFIED",
+            "runtime_control_recipe": "UNVERIFIED",
+            "state_continuity": "NOT_VALIDATED"
+          },
+          "next": "Actual mapping and row proof enable a separate individually bound80-state continuation planner. A forced supplied-input state experiment is not greedy generation; full loop also needs declared compatible draft context capacity.",
+          "device_execution": "NOT_RUN",
+          "new_model_compilation": "NOT_RUN",
+          "large_weight_copy_or_upload": "NONE"
+        },
+        "decode_saved_output_host_verification": {
+          "run_id": "20261030T021923Z-13036-9e4290",
+          "unique_tests_passed": 212,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "cases": {
+            "decode_output_inventory": 35,
+            "same_model_decode_lineage": 15,
+            "original_decode_embedding_rows": 27,
+            "adjacent_regressions": 135
+          },
+          "evidence": [
+            "decode-output-tests.xml",
+            "decode-output-validator-tests.xml (7 final affected cases, subset of35)",
+            "out/decode-adjacent-regression.xml",
+            "delegated final lineage run:15passed in7.82s",
+            "delegated final embedding run:27passed in50.77s",
+            "out/review-checks.json",
+            "out/cli-help-checks.json"
+          ],
+          "scope": "Host graph/ELF fixtures, retained output files, sparse original embedding rows and fake HDC only. Existing prefill/decode/state/embedding/cache regression passed. Source/compiled/runtime mapping and table rows on actual user artifacts remain unobserved locally; no model accuracy/continuity or performance claim.",
+          "independent_review": "Output-inventory author reviewed both consumers against actual saved-plan field conventions; no interface blockers found."
         }
       },
       "b": {
@@ -3733,14 +3829,14 @@
     "day1_gate": "Actual ordinary full-target64-prefill to1-decode state handoff, then real target features into the complete draft",
     "day2_gate": "Multi-round DFlash accept/reject/commit/stop correctness and matched full-device baseline/performance measurement",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
-    "current_target_status": "Full original target prefill64 and complete six-layer real-feature draft step each executed successfully with retrieved outputs. DraftPID17398,15 proposals,all30720 hidden finite.80-state feedback,targetdecode and numerical correctness remain unverified.",
+    "current_target_status": "Full original40layer prefill64 and independent experimental decode1 each executed with retrieved outputs; complete six-layer draft consumed actual prefill features in one step. DecodePID29654 exit0.80-state continuity, numerical correctness and full multi-round DFlash remain unverified.",
     "target_gaps": [
-      "Original89input80RefData ordered ABI",
-      "64/1 gear and persistent state",
-      "External-weight loading contract",
-      "Ordinary decode baseline"
+      "Per-state source/compiled/runtime ownership and individually bound feedback",
+      "Validated controls, original next-token embedding provenance and ordinary decode baseline",
+      "Compatible draft context capacity and full accept/reject/commit/stop execution",
+      "Matched numerical accuracy and measured end-to-end speedup>=2x"
     ],
-    "next_target_action": "Run explicit derivedsingle-query inputtrial for supplieddecode_data aftermissingconv/stale255/256/1224controls; preserveunverifiedcontract labels, then ordinary recurrence/fullDFlash.",
+    "next_target_action": "Inspect saved successful decode outputs, state ownership and bounded original embedding rows before a continuous target baseline and full DFlash loop; reuse existing compiled models and phone caches.",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone",
     "deadline_assessment": "Both target static artifacts now compiled, improving full-execution feasibility. Two days remains a high-risk noncommitted estimate for correctness plus measured2x speed; ordinary target execution and80statehandoff are the next critical gate."
   },
