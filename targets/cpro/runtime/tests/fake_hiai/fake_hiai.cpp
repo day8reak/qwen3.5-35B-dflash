@@ -389,11 +389,14 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
 // restoration or prove that a device supports this route.
 namespace hiai {
 namespace {
+std::weak_ptr<INDTensorBuffer> original_alias_input;
+std::weak_ptr<INDTensorBuffer> original_alias_output;
 class FakeNDTensor final : public INDTensorBuffer {
  public:
   explicit FakeNDTensor(NDTensorDesc desc) : desc_(std::move(desc)) {
     ++tensors;
-    std::size_t size=desc_.dataType==DataType::FLOAT16?2:4;
+    std::size_t size=desc_.dataType==DataType::INT8?1:desc_.dataType==DataType::INT64?8:
+        (desc_.dataType==DataType::FLOAT16 || desc_.dataType==DataType::INT16)?2:4;
     for (auto d:desc_.dims) size*=static_cast<std::size_t>(d);
     data_.resize(size);
   }
@@ -404,6 +407,18 @@ class FakeNDTensor final : public INDTensorBuffer {
  private:
   NDTensorDesc desc_;
   std::vector<std::uint8_t> data_;
+};
+class FakeOffsetNDTensor final : public INDTensorBuffer {
+ public:
+  FakeOffsetNDTensor(NDTensorDesc desc,std::shared_ptr<INDTensorBuffer> owner)
+      : desc_(std::move(desc)),owner_(std::move(owner)) { ++tensors; }
+  ~FakeOffsetNDTensor() override { --tensors; }
+  void* GetData() override { return static_cast<std::uint8_t*>(owner_->GetData())+16; }
+  std::size_t GetSize() const override { return owner_->GetSize(); }
+  const NDTensorDesc& GetTensorDesc() const override { return desc_; }
+ private:
+  NDTensorDesc desc_;
+  std::shared_ptr<INDTensorBuffer> owner_;
 };
 NDTensorDesc DraftDesc(std::vector<std::int32_t> dims, DataType type) {
   if (Layout()=="padded") dims.resize(4,1);
@@ -427,20 +442,58 @@ void ModelIoNames(std::vector<NDTensorDesc>& descriptors, const std::string& dir
   (void)direction;
 #endif
 }
+NDTensorDesc OriginalStateDesc(std::size_t index) {
+  const auto kind=index%8;
+  // A declared non-ND format exercises exact descriptor preservation.
+  return {kind==0 || kind==2 || kind==4 ? std::vector<std::int32_t>{1,8192,4} :
+          kind==1 || kind==3 || kind==5 ? std::vector<std::int32_t>{1,32,128,128} :
+                                       std::vector<std::int32_t>{64,32,32,16},
+          DataType::FLOAT16,Format::NCHW};
+}
+std::vector<NDTensorDesc> OriginalDescriptors(bool input) {
+  std::vector<NDTensorDesc> rows;
+  if (input) rows={{{1,1,1,2048},DataType::INT8,Format::ND},
+                   {{1,1,1,2048},DataType::FLOAT32,Format::ND},
+                   {{1,1},DataType::INT32,Format::ND}};
+  else rows={{{1,1,1,248320},DataType::FLOAT32,Format::ND}};
+  for (std::size_t i=0;i<80;++i) rows.push_back(OriginalStateDesc(i));
+  if (input) {
+    rows.push_back({{1},DataType::INT32,Format::ND});
+    rows.push_back({{1},DataType::INT32,Format::ND});
+    rows.push_back({{1,1,1},DataType::FLOAT32,Format::ND});
+    rows.push_back({{1},DataType::INT64,Format::ND});
+    rows.push_back({{128},DataType::INT32,Format::ND});
+    rows.push_back({{1},DataType::INT16,Format::ND});
+  } else rows.push_back({{1,1,1,16384},DataType::FLOAT16,Format::ND});
+#ifndef QWEN35_FAKE_NO_TENSOR_NAME
+  for (std::size_t i=0;i<rows.size();++i)
+    rows[i].tensorName=std::string(input?"runtime_input_":"runtime_output_")+std::to_string(i);
+#endif
+  if (Failure()=="original-count" && !input) rows.pop_back();
+  if (Failure()=="original-dtype" && input) rows[0].dataType=DataType::INT16;
+  if (Failure()=="original-shape" && input) rows[0].dims={1,1,2,1024};
+  if (Failure()=="original-format" && input) rows[0].format=Format::NCHW;
+#ifndef QWEN35_FAKE_NO_TENSOR_NAME
+  if (Failure()=="original-name" && input) rows[0].tensorName="wrong_runtime_name";
+#endif
+  return rows;
+}
 class FakeBuiltModel final : public IBuiltModel {
  public:
-  bool restored=false;
+  bool restored=false,original=false;
   ~FakeBuiltModel() override { Trace("v2-built-model-destroy"); }
   Status RestoreFromFile(const char* path) override {
     Trace("v2-restore-file");
     if (const auto* trace=std::getenv("FAKE_HIAI_PATH_TRACE")) std::ofstream(trace) << path;
     std::ifstream file(path,std::ios::binary);
     std::string data((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());
-    if (!std::filesystem::path(path).is_absolute() || data!="draft-standalone-fixture") return 2;
+    original=data=="original-target-fixture";
+    if (!std::filesystem::path(path).is_absolute() || (!original && data!="draft-standalone-fixture")) return 2;
     restored=Failure()!="v2-restore";
     return restored?0:31;
   }
   std::vector<NDTensorDesc> GetInputTensorDescs() const override {
+    if (original) return OriginalDescriptors(true);
     auto input=std::vector<NDTensorDesc>{DraftDesc({1,8,16384},DataType::FLOAT16),
         DraftDesc({1,8},DataType::INT32),DraftDesc({1,8},DataType::INT32)};
     if (Failure()=="v2-dtype") input[0].dataType=DataType::FLOAT32;
@@ -451,6 +504,7 @@ class FakeBuiltModel final : public IBuiltModel {
     return input;
   }
   std::vector<NDTensorDesc> GetOutputTensorDescs() const override {
+    if (original) return OriginalDescriptors(false);
     if (Failure()=="v2-count") return {};
     auto output = std::vector<NDTensorDesc>{DraftDesc({1,15},DataType::INT32),DraftDesc({1,15,2048},DataType::FLOAT16)};
     ModelIoNames(output, "output");
@@ -461,20 +515,52 @@ class FakeModelManager final : public IModelManager {
  public:
   FakeModelManager() { ++clients; }
   ~FakeModelManager() override {
-    if (initialized_) { std::cerr << "LEAK v2 model manager\n"; std::abort(); }
+    if (initialized_ || weights_) { std::cerr << "LEAK v2 model manager/weights\n"; std::abort(); }
     Trace("v2-manager-destroy"); --clients;
+  }
+  Status InitWeights(const std::string& directory) override {
+    Trace("v2-init-weights");
+    if (weights_ || initialized_ || !std::filesystem::path(directory).is_absolute() ||
+        !std::filesystem::is_directory(directory)) return 71;
+    if (Failure()=="original-init-weights") return 72;
+    weights_=true;
+    return 0;
+  }
+  Status DeinitWeights() override {
+    Trace("v2-deinit-weights");
+    if (!weights_ || initialized_) { std::cerr << "invalid weights cleanup order\n"; std::abort(); }
+    weights_=false;
+    return Failure()=="original-deinit-weights"?73:0;
   }
   Status Init(const ModelInitOptions& options,const std::shared_ptr<IBuiltModel>& model,
               const std::shared_ptr<IModelManagerListener>& listener) override {
     Trace("v2-init");
     auto concrete=std::dynamic_pointer_cast<FakeBuiltModel>(model);
     if (listener || options.perfMode!=PerfMode::HIGH || !concrete || !concrete->restored) return 4;
-    model_=model; initialized_=true;
-    return Failure()=="v2-init"?32:0;
+    if (concrete->original && !weights_) return 74;
+    model_=model; initialized_=true; original_=concrete->original;
+    return Failure()=="v2-init" || Failure()=="original-init"?32:0;
   }
   Status Run(const std::vector<std::shared_ptr<INDTensorBuffer>>& inputs,
              std::vector<std::shared_ptr<INDTensorBuffer>>& outputs) override {
     Trace("v2-run");
+    if (original_) {
+      if (!initialized_ || !weights_ || model_.expired() || inputs.size()!=89 || outputs.size()!=82) return 75;
+      if (Failure()=="original-run") return 76;
+      if (Failure()=="original-run-unknown-exception") throw 123;
+      if (Failure()=="original-replace-output") outputs[1]=CreateNDTensorBuffer(outputs[1]->GetTensorDesc());
+      ++runs_;
+      for (std::size_t i=0;i<80;++i) {
+        const auto& in=inputs[i+3]; const auto& out=outputs[i+1];
+        if (in->GetSize()!=out->GetSize()) return 77;
+        std::memcpy(out->GetData(),in->GetData(),in->GetSize());
+        ++static_cast<std::uint8_t*>(out->GetData())[0];
+      }
+      std::memset(outputs[0]->GetData(),0,outputs[0]->GetSize());
+      static_cast<float*>(outputs[0]->GetData())[runs_]=static_cast<float>(runs_);
+      std::memset(outputs[81]->GetData(),static_cast<int>(runs_),outputs[81]->GetSize());
+      return 0;
+    }
     if (!initialized_ || model_.expired() || inputs.size()!=3 || outputs.size()!=2) return 5;
     if (Failure()=="v2-run") return 33;
     // Validate all three supplied input payloads before producing test patterns.
@@ -496,14 +582,29 @@ class FakeModelManager final : public IModelManager {
     initialized_=false;
   }
  private:
-  bool initialized_=false;
+  bool initialized_=false,weights_=false,original_=false;
+  std::size_t runs_=0;
   std::weak_ptr<IBuiltModel> model_;
 };
 }
 std::shared_ptr<INDTensorBuffer> CreateNDTensorBuffer(const NDTensorDesc& desc) {
   Trace("v2-create-tensor");
   if (Failure()=="v2-allocation" && tensors==3) return nullptr;
-  return std::make_shared<FakeNDTensor>(desc);
+#ifndef QWEN35_FAKE_NO_TENSOR_NAME
+  if (Failure()=="original-input-partial-alias" && desc.tensorName=="runtime_input_5")
+    return std::make_shared<FakeOffsetNDTensor>(desc,original_alias_input.lock());
+  if (Failure()=="original-output-alias" && desc.tensorName=="runtime_output_3")
+    return original_alias_output.lock();
+  if ((Failure()=="original-input-alias" && desc.tensorName=="runtime_input_5") ||
+      (Failure()=="original-output-input-alias" && desc.tensorName=="runtime_output_1"))
+    return original_alias_input.lock();
+#endif
+  auto tensor=std::make_shared<FakeNDTensor>(desc);
+#ifndef QWEN35_FAKE_NO_TENSOR_NAME
+  if (desc.tensorName=="runtime_input_3") original_alias_input=tensor;
+  if (desc.tensorName=="runtime_output_1") original_alias_output=tensor;
+#endif
+  return tensor;
 }
 std::shared_ptr<IBuiltModel> CreateBuiltModel() {
   Trace("v2-create-built-model");

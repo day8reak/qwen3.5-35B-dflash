@@ -78,7 +78,8 @@
       "real target feature to full draft single step executed",
       "row63 prefill PID28669; samefeature SHA, logits argmax6",
       "original embedding tables copied completely",
-      "host serial loop first target completed, next input staging hit HDC disconnect; stale locks diagnosed; this is not autonomous board-loop evidence"
+      "host serial loop first target completed, next input staging hit HDC disconnect; stale locks diagnosed; this is not autonomous board-loop evidence",
+      "old host serial P8/G8 attempt failed after10 target and1 draft: reused runner library discovery pointed at missing second-call native build directory; user chose new autonomous board entry"
     ],
     "board_autonomous_loop": "HOST_VALIDATED_PENDING_DEVICE_EXECUTION",
     "legacy_host_checks": {
@@ -93,6 +94,25 @@
       "timing": "SUPERVISOR_MONOTONIC_WALL_CLOCK_NOT_NPU_TIME",
       "device_performance": "NOT_MEASURED",
       "validation_run": "20261030T105923Z-14268-375427"
+    },
+    "legacy_runner_reuse_fix": {
+      "status": "HOST_TESTED",
+      "checks_passed": 39,
+      "device_execution": "NOT_RUN",
+      "document": "docs/legacy-draft-runner-reuse-fix.md",
+      "old_run_restart_requested": false
+    },
+    "resident_target_adapter": {
+      "status": "HOST_TESTED_NOT_INTEGRATED",
+      "ctests_passed": 8,
+      "persistent_runs": 3,
+      "negative_scenarios": 21,
+      "source_sha256": "54267a10333c82aa1496d60972a1a3980bfcdf4f11630ef140e09dc20abed8d8",
+      "device_execution": "NOT_RUN",
+      "worker_protocol": "NOT_IMPLEMENTED",
+      "default_loop_change": "NONE",
+      "initialization_order": "EXPERIMENTAL_NOT_DEVICE_VALIDATED",
+      "document": "docs/resident-runtime-plan.md"
     }
   },
   "next_action": {
@@ -100,13 +120,13 @@
     "type": "run_on_device",
     "entrypoint": "targets/cpro/scripts/run_board_serial_dflash.py",
     "command_document": "docs/current-status.md",
-    "new_output": "$AI_RUN_DIR/dflash-board8-run",
+    "new_output": "$AI_RUN_DIR/dflash-board8-run-v2",
     "apply": true,
-    "note": "Use published native board-local entry with --apply --detach, then --recover same attempt; do not interrupt an existing board job or count legacy host orchestration as autonomous success."
+    "note": "User selected the published autonomous board entry after old host loop failure. Launch once with --apply --detach and recover the same attempt; preserve old receipts. If already launched, only recover, never launch again."
   },
   "last_actual_execution": null,
   "planned_parallelism": [
-    "P0 runtime overhead fixes and resident API/lifecycle implementation while the existing host-orchestrated device run continues; no board/HDC probes by assistant",
+    "P0 autonomous board request on user device; host-only resident worker integration after tested adapter. No assistant board/HDC probes.",
     "P1 reference preparation while P0 device runs",
     "P2 fixture preparation and P3 static mapping; do not accept accuracy with wrong features",
     "P4 host source/ABI and P5 resident runner after shared interfaces frozen",
@@ -150,7 +170,7 @@
         "autonomous execution and disconnect/recovery evidence"
       ],
       "evidence": [],
-      "last_error": "Previous host orchestration is a diagnostic only; HDC failed before target step0001. No autonomous-device success has been reported."
+      "last_error": "Old host loop failed after10 target and1 draft at second-call cached runner library discovery; fixed in code, user selected new board entry. Autonomous device result still pending."
     },
     {
       "id": "P1",
@@ -405,6 +425,11 @@
       "decision": "User requests residency/overhead work in parallel. Retain running legacy job. Current default remains fresh-process; selected V2 InitWeights/DeinitWeights headers supplied, target resident adaptation separate. Prefill unload-once after output/state handoff before decode load; overlap only after memory and concurrency verification.",
       "scope": "Implementation priority only; no device residency or performance acceptance",
       "document": "docs/resident-runtime-plan.md"
+    },
+    {
+      "date": "2026-10-30",
+      "decision": "User selected direct new board-loop execution after old host loop failed. Keep old failed directory; no old-loop rerun. Resident target adapter host checks passed but default remains per-call loading; worker integration and device validation pending.",
+      "scope": "No autonomous-device or resident-device success claimed"
     }
   ],
   "handoff_update_fields": [

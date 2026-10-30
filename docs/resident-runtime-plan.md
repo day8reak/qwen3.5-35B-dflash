@@ -1,6 +1,6 @@
 # 板端模型常驻与加载生命周期
 
-2026-10-30，用户要求旧host循环继续运行，同时减少新版端侧执行开销，并优先考虑模型常驻。**本文是实现方案，不是已取得的常驻实机结果。** 保留`56ac4e9`的原工具路径作为回滚；两个OMC、权重、完整词表与状态语义均不变。
+2026-10-30，用户要求减少新版端侧执行开销，并优先考虑模型常驻；旧host循环失败后已选择直接跑新版。**本文包含适配器主机检查和后续方案，不是已取得的常驻实机结果。** 保留`121c043`按次加载的板端入口作为回滚；两个OMC、权重、完整词表与状态语义均不变。
 
 ## 当前与目标
 
@@ -16,6 +16,10 @@
 现有`HiaiStatefulExecutor`在构造时加载模型并分配张量，重复`SetInput → Execute → CopyOutput`不会主动卸载，析构时才释放。因此常驻需要改执行器生命周期，不需要重新导出AIR或重编OMC。原target约15MB主OMC加18.8GB外置权重，必须保留文件／外置权重加载路线；不能按文件总大小推断实际内存占用。
 
 ## 先完成哪些适配
+
+独立`HiaiOriginalTargetExecutor`已完成并通过主机检查：89／82实际描述符精确绑定（保留format，支持INT8／INT64）、171个buffer对象及内存区间无重叠、一次初始化后3次Run及80状态回传、失败后停止复用、显式Close及析构清理。Release下8项CTest通过，包括新适配器21种负例和7项既有runner回归；测试使用Require／Throws，不受NDEBUG关闭assert影响。证据保存在工作区run `20261030T105923Z-14268-375427/out/resident-adapter-final.xml`及`original-target-resident-adapter-result.json`。默认CLI和板端调度入口未切换。
+
+接入者必须在session层绑定并复核OMC、外置权重清单、实际库及锁的身份；适配器只接收路径与已绑定描述符，本身不提供模型SHA清单或worker协议。下一步先实现独立worker、用真实DDK编译，再由用户执行一次有阶段记录的加载实验。InitWeights→Init及DeInit→DeinitWeights的顺序均未在设备验证，不能从替身测试推导私有SDK调用约定。
 
 1. **原target V2实例。** 使用已绑定的89输入／82输出的名字、类型和大小；特别支持INT8 embedding与INT64 allQLen。旧draft的ND形状限制不能直接套用原target的物理描述符。运行前绑定实际描述符，保留80个逐一映射的状态。
 2. **外置权重初始化。** 用户给出的所选DDK头文件有`Status InitWeights(const std::string& weightDir)`和`Status DeinitWeights()`，另有`Init`、同步`Run`、`DeInit`。头文件未说明初始化顺序；第一版独立实验采用RestoreFromFile、创建manager、InitWeights、Init，再多次Run。每阶段失败停止并记录；不自动换顺序重试，不冒称该顺序已经实机通过。

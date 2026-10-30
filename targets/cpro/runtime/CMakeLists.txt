@@ -65,6 +65,12 @@ if(BUILD_HOST_TESTS)
   target_link_libraries(hiai_feature_capture_tests PRIVATE dflash_core)
   add_test(NAME hiai_feature_capture
     COMMAND hiai_feature_capture_tests ${CMAKE_CURRENT_BINARY_DIR}/feature-cases)
+  add_executable(hiai_original_target_tests tests/test_hiai_original_target.cpp
+    src/hiai_executor.cpp tests/fake_hiai/fake_hiai.cpp)
+  target_include_directories(hiai_original_target_tests PRIVATE tests/fake_hiai)
+  target_link_libraries(hiai_original_target_tests PRIVATE dflash_core)
+  add_test(NAME hiai_original_target_resident_adapter
+    COMMAND hiai_original_target_tests ${CMAKE_CURRENT_BINARY_DIR}/original-target-cases)
   add_test(NAME hiai_lifecycle_faults
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_runner.py
       $<TARGET_FILE:hiai_runner_fake> ${CMAKE_CURRENT_BINARY_DIR}/fake-cases)

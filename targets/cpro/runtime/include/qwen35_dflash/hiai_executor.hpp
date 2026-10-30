@@ -151,6 +151,58 @@ class HiaiStatefulExecutor final {
   std::unique_ptr<Impl> impl_;
 };
 
+// Exact ordered descriptors captured from the original target's named V2 probe.
+// These are runtime names and dimensions, not source RefData names or draft ND
+// shapes. The caller separately binds source state owners to these runtime slots.
+struct HiaiBoundRuntimeTensor {
+  HiaiModelIoTensor descriptor;
+  std::string dtype;
+  std::size_t bytes = 0;
+};
+struct HiaiOriginalTargetLifecycle {
+  std::string weight_init_policy = "EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT_NO_FALLBACK";
+  std::string ordering_validation = "NOT_VALIDATED_ON_DEVICE";
+  // Init flags retain historical attempts/successes after Close. They do not
+  // mean resources are live: closed/deinit fields describe shutdown separately.
+  bool weights_init_attempted = false, weights_initialized = false;
+  bool manager_init_attempted = false, manager_initialized = false;
+  bool manager_deinit_called = false, weights_deinit_called = false, closed = false;
+  std::int64_t weights_deinit_status = -1;
+  std::uint64_t run_attempts = 0, successful_runs = 0;
+};
+
+// Original 40-layer target only: one file-v2 model, one explicit external-weight
+// initialization and persistent exact-descriptor tensors. Repeated Run is local
+// to this object's lifetime. The selected headers declare InitWeights but do
+// not establish its ordering; this experimental order never retries/falls back.
+// The session caller must preserve/hash-bind model and external-weight sources
+// for the full object lifetime; this adapter does not attest their provenance.
+// This adapter is not a resident-worker protocol or a device validation claim.
+class HiaiOriginalTargetExecutor final {
+ public:
+  HiaiOriginalTargetExecutor(const std::filesystem::path& model,
+                            const std::filesystem::path& weight_directory,
+                            const std::string& expected_runtime_version,
+                            const std::vector<HiaiBoundRuntimeTensor>& inputs,
+                            const std::vector<HiaiBoundRuntimeTensor>& outputs);
+  ~HiaiOriginalTargetExecutor();
+  void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
+  void Execute();
+  std::vector<std::uint8_t> CopyOutput(std::size_t index) const;
+  // Explicit shutdown makes DeinitWeights' Status inspectable. Idempotent;
+  // failures are reported, never retried by the destructor.
+  void Close();
+  const std::string& runtime_version() const noexcept;
+  const std::string& runtime_stage() const noexcept;
+  const HiaiIoDiagnostic& io_diagnostic() const noexcept;
+  const HiaiOriginalTargetLifecycle& lifecycle() const noexcept;
+  const std::vector<HiaiBoundRuntimeTensor>& observed_inputs() const noexcept;
+  const std::vector<HiaiBoundRuntimeTensor>& observed_outputs() const noexcept;
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
 // Synchronous HIAI, two immutable offline models, persistent tensors.
 class HiaiExecutor final : public GraphExecutor {
  public:

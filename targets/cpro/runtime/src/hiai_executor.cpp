@@ -13,6 +13,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 
@@ -633,6 +634,322 @@ const std::string& HiaiStatefulExecutor::runtime_stage() const noexcept {
 const HiaiIoDiagnostic& HiaiStatefulExecutor::io_diagnostic() const noexcept {
   return impl_->diagnostic;
 }
+
+struct HiaiOriginalTargetExecutor::Impl {
+  std::shared_ptr<hiai::IBuiltModel> built_model;
+  std::shared_ptr<hiai::IModelManager> manager;
+  std::vector<std::shared_ptr<hiai::INDTensorBuffer>> input_ptrs, output_ptrs;
+  std::vector<Tensor> inputs, outputs;
+  std::vector<HiaiBoundRuntimeTensor> observed_inputs, observed_outputs;
+  std::vector<bool> ready;
+  std::vector<std::string> input_hashes;
+  std::vector<const void*> output_buffers;
+  std::string version, stage = "VALIDATE_ORIGINAL_TARGET_CONTRACT";
+  HiaiIoDiagnostic diagnostic;
+  HiaiOriginalTargetLifecycle lifecycle;
+  bool outputs_available = false, poisoned = false;
+
+  void Stage(const char* value) {
+    stage = value;
+    std::cerr << "HIAI original-target-v2 stage=" << stage << std::endl;
+  }
+  void RequireLive() const {
+    if (lifecycle.closed || poisoned || !lifecycle.manager_initialized)
+      throw HiaiRuntimeError(stage, "original target executor is closed, failed or not initialized");
+  }
+  void VerifyDisjointBuffers() const {
+    struct Region { const void* object; std::uintptr_t begin, end; };
+    std::vector<Region> regions;
+    for (const auto* tensors : {&inputs, &outputs}) {
+      for (const auto& tensor : *tensors) {
+        const auto start = reinterpret_cast<std::uintptr_t>(tensor.Data());
+        if (tensor.Size() != tensor.bytes || start > UINTPTR_MAX - tensor.bytes)
+          throw std::runtime_error("original target allocation extent/address is invalid");
+        const Region current{tensor.Object(), start, start + tensor.bytes};
+        for (const auto& previous : regions)
+          if (current.object == previous.object ||
+              (current.begin < previous.end && previous.begin < current.end))
+            throw std::runtime_error("original target live tensor buffers overlap");
+        regions.push_back(current);
+      }
+    }
+  }
+  bool ObserveOutputs() {
+    bool ok = output_ptrs.size() == outputs.size();
+    for (std::size_t i = 0; i < outputs.size(); ++i) {
+      auto& d = diagnostic.outputs.at(i);
+      d.checked_after_process = true;
+      const auto p = i < output_ptrs.size() ? output_ptrs[i] : nullptr;
+      d.allocated_bytes_after = p ? p->GetSize() : 0;
+      d.object_same = p && p.get() == outputs[i].nd_value.get();
+      const auto* buffer = p ? p->GetData() : nullptr;
+      d.buffer_same = buffer && buffer == output_buffers.at(i);
+      d.fill_count_available = false;
+      ok = ok && d.object_same && d.buffer_same && d.allocated_bytes_after == outputs[i].bytes;
+    }
+    return ok;
+  }
+  void Cleanup(bool report_error) {
+    if (lifecycle.closed) return;
+    lifecycle.closed = true;
+    outputs_available = false;
+    std::string cleanup_error;
+    if (manager && lifecycle.manager_init_attempted) {
+      Stage("MODEL_MANAGER_DEINIT");
+      lifecycle.manager_deinit_called = true;
+      try { manager->DeInit(); }
+      catch (const std::exception& e) { cleanup_error = e.what(); }
+      catch (...) { cleanup_error = "unknown DeInit exception"; }
+    }
+    if (manager && lifecycle.weights_initialized) {
+      Stage("EXTERNAL_WEIGHTS_DEINIT");
+      lifecycle.weights_deinit_called = true;
+      try {
+        lifecycle.weights_deinit_status = static_cast<std::int64_t>(manager->DeinitWeights());
+        if (lifecycle.weights_deinit_status != 0)
+          cleanup_error += " DeinitWeights failed: " + std::to_string(lifecycle.weights_deinit_status);
+      } catch (const std::exception& e) { cleanup_error += e.what(); }
+      catch (...) { cleanup_error += " unknown DeinitWeights exception"; }
+    }
+    // Keep restored model and all tensors alive until BOTH cleanup APIs and the
+    // manager destructor have finished, including construction/Run failures.
+    manager.reset();
+    built_model.reset();
+    input_ptrs.clear(); output_ptrs.clear(); inputs.clear(); outputs.clear();
+    Stage(cleanup_error.empty() ? "CLOSED" : "CLEANUP_FAILED");
+    if (!cleanup_error.empty()) {
+      if (report_error) throw HiaiRuntimeError(stage, cleanup_error);
+      std::cerr << "HIAI original-target-v2 cleanup error=" << cleanup_error << std::endl;
+    }
+  }
+  ~Impl() { Cleanup(false); }
+};
+
+HiaiOriginalTargetExecutor::HiaiOriginalTargetExecutor(
+    const std::filesystem::path& model, const std::filesystem::path& weight_directory,
+    const std::string& expected_version, const std::vector<HiaiBoundRuntimeTensor>& inputs,
+    const std::vector<HiaiBoundRuntimeTensor>& outputs) : impl_(std::make_unique<Impl>()) {
+  try {
+    if (!model.is_absolute() || !std::filesystem::is_regular_file(model) ||
+        !weight_directory.is_absolute() || !std::filesystem::is_directory(weight_directory) ||
+        expected_version.empty() || inputs.size() != 89 || outputs.size() != 82)
+      throw std::invalid_argument("original target requires an absolute OMC/weight directory, runtime version and89/82 bound descriptors");
+    if (!detail::OptionalTensorName<hiai::NDTensorDesc>::available)
+      throw std::invalid_argument("selected SDK does not expose original target runtime tensor names");
+    const std::uint16_t endian = 1;
+    if (*reinterpret_cast<const std::uint8_t*>(&endian) != 1)
+      throw std::invalid_argument("original target requires little-endian input buffers");
+    const auto enums = HiaiModelIoEnums();
+    std::uint64_t total = 0;
+    for (const auto* specs : {&inputs, &outputs}) {
+      std::set<std::string> names;
+      for (std::size_t i = 0; i < specs->size(); ++i) {
+        const auto& spec = specs->at(i);
+        const auto& d = spec.descriptor;
+        const auto dtype = enums.dtypes.find(spec.dtype);
+        if (d.index != i || d.tensor_name_status != "OBSERVED" || d.tensor_name.empty() ||
+            d.tensor_name.size() > 4096 || d.tensor_name.find('\0') != std::string::npos ||
+            !names.insert(d.tensor_name).second || d.shape.size() > 8 ||
+            dtype == enums.dtypes.end() || dtype->second != d.raw_dtype ||
+            !spec.bytes || spec.bytes > kStatefulTensorLimit)
+          throw std::invalid_argument("invalid or ambiguous original target named dtype/extent contract");
+        std::size_t bytes = spec.dtype == "INT8" ? 1 : spec.dtype == "INT64" ? 8 :
+                            (spec.dtype == "INT16" || spec.dtype == "FLOAT16") ? 2 : 4;
+        for (const auto dim : d.shape) {
+          if (dim <= 0 || dim > INT32_MAX || bytes > kStatefulTensorLimit / static_cast<std::size_t>(dim))
+            throw std::invalid_argument("original target descriptor has invalid/beyond-budget dimensions");
+          bytes *= static_cast<std::size_t>(dim);
+        }
+        if (bytes != spec.bytes || total > kStatefulTotalLimit - spec.bytes)
+          throw std::invalid_argument("original target descriptor byte extent or total IO budget differs");
+        total += spec.bytes;
+      }
+    }
+    impl_->Stage("RUNTIME_IDENTITY");
+    const auto runtime = ProbeHiai();
+    impl_->version = runtime.version;
+    if (runtime.version != expected_version || !runtime.npu_supported)
+      throw std::runtime_error("original target runtime version/NPU support differs");
+    impl_->Stage("CREATE_BUILT_MODEL");
+    impl_->built_model = hiai::CreateBuiltModel();
+    if (!impl_->built_model) throw std::runtime_error("CreateBuiltModel returned null");
+    impl_->Stage("RESTORE_FROM_FILE");
+    auto status = impl_->built_model->RestoreFromFile(model.c_str());
+    if (status != 0) throw std::runtime_error("RestoreFromFile failed: " + std::to_string(status));
+    impl_->Stage("CREATE_MODEL_MANAGER");
+    impl_->manager = hiai::CreateModelManager();
+    if (!impl_->manager) throw std::runtime_error("CreateModelManager returned null");
+    // The selected private headers declare these calls. They do not validate
+    // ordering or external-weight loading on the device. Exactly one explicit
+    // experiment is permitted here; no automatic alternate order/load path.
+    impl_->Stage("EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT");
+    impl_->lifecycle.weights_init_attempted = true;
+    status = impl_->manager->InitWeights(weight_directory.string());
+    if (status != 0) throw std::runtime_error("InitWeights failed: " + std::to_string(status));
+    impl_->lifecycle.weights_initialized = true;
+    impl_->Stage("MODEL_MANAGER_INIT");
+    hiai::ModelInitOptions options;
+    options.perfMode = hiai::PerfMode::HIGH;
+    impl_->lifecycle.manager_init_attempted = true;
+    status = impl_->manager->Init(options, impl_->built_model, nullptr);
+    if (status != 0) throw std::runtime_error("IModelManager::Init failed: " + std::to_string(status));
+    impl_->lifecycle.manager_initialized = true;
+    impl_->Stage("TENSOR_DESCRIPTORS");
+    const auto in_desc = impl_->built_model->GetInputTensorDescs();
+    const auto out_desc = impl_->built_model->GetOutputTensorDescs();
+    if (in_desc.size() != inputs.size() || out_desc.size() != outputs.size())
+      throw std::runtime_error("original target runtime descriptor count differs from89/82");
+    // Verify EVERY descriptor before any tensor allocation. Pass the exact
+    // returned descriptor to the allocator, including its physical format.
+    for (const bool input : {true, false}) {
+      const auto& descs = input ? in_desc : out_desc;
+      const auto& specs = input ? inputs : outputs;
+      auto& observed = input ? impl_->observed_inputs : impl_->observed_outputs;
+      for (std::size_t i = 0; i < specs.size(); ++i) {
+        const auto& actual = descs[i];
+        const auto& expected = specs[i].descriptor;
+        HiaiBoundRuntimeTensor row = specs[i];
+        row.descriptor.shape.assign(actual.dims.begin(), actual.dims.end());
+        row.descriptor.raw_dtype = static_cast<int>(actual.dataType);
+        row.descriptor.raw_format = static_cast<int>(actual.format);
+        row.descriptor.tensor_name = detail::OptionalTensorName<hiai::NDTensorDesc>::Read(actual);
+        if (row.descriptor.shape != expected.shape || row.descriptor.raw_dtype != expected.raw_dtype ||
+            row.descriptor.raw_format != expected.raw_format || row.descriptor.tensor_name != expected.tensor_name)
+          throw std::runtime_error("original target " + std::string(input ? "input[" : "output[") +
+                                   std::to_string(i) + "] runtime name/dtype/format/dimensions differ");
+        observed.push_back(std::move(row));
+      }
+    }
+    impl_->diagnostic.output_fill_byte = 0;
+    for (const bool input : {true, false}) {
+      impl_->Stage(input ? "INPUT_TENSOR_ALLOCATION" : "OUTPUT_TENSOR_ALLOCATION");
+      const auto& descs = input ? in_desc : out_desc;
+      const auto& specs = input ? inputs : outputs;
+      auto& tensors = input ? impl_->inputs : impl_->outputs;
+      auto& ptrs = input ? impl_->input_ptrs : impl_->output_ptrs;
+      for (std::size_t i = 0; i < specs.size(); ++i) {
+        auto ptr = hiai::CreateNDTensorBuffer(descs[i]);
+        if (!ptr || !ptr->GetData() || ptr->GetSize() != specs[i].bytes)
+          throw std::runtime_error("original target tensor allocation differs from exact bound byte extent");
+        Tensor tensor{nullptr, specs[i].bytes, ptr};
+        tensors.push_back(tensor); ptrs.push_back(std::move(ptr));
+        // Hash equality cannot detect aliasing between all-zero states. Reject
+        // overlapping objects/storage before even the initialization write.
+        impl_->VerifyDisjointBuffers();
+        std::memset(tensor.Data(), 0, tensor.bytes);
+        if (input) {
+          HiaiInputIoDiagnostic row;
+          row.index = i; row.logical_bytes = row.allocated_bytes = tensor.bytes;
+          impl_->diagnostic.inputs.push_back(row);
+        } else {
+          HiaiOutputIoDiagnostic row;
+          row.index = i; row.logical_bytes = tensor.bytes;
+          impl_->diagnostic.outputs.push_back(row);
+        }
+      }
+    }
+    impl_->ready.assign(inputs.size(), false);
+    impl_->input_hashes.resize(inputs.size());
+    impl_->Stage("READY");
+  } catch (const HiaiRuntimeError&) { throw; }
+  catch (const std::exception& error) { throw HiaiRuntimeError(impl_->stage, error.what()); }
+}
+HiaiOriginalTargetExecutor::~HiaiOriginalTargetExecutor() = default;
+void HiaiOriginalTargetExecutor::SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes) {
+  impl_->RequireLive();
+  impl_->Stage("INPUT_BINDING");
+  impl_->outputs_available = false;
+  auto& tensor = impl_->inputs.at(index);
+  impl_->ready.at(index) = false;
+  if (bytes.size() != tensor.bytes || tensor.Size() != tensor.bytes)
+    throw HiaiRuntimeError(impl_->stage, "original target input byte extent differs");
+  std::memcpy(tensor.Data(), bytes.data(), bytes.size());
+  impl_->input_hashes[index] = Sha256(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+  impl_->diagnostic.inputs[index].readback_sha256.clear();
+  impl_->diagnostic.inputs[index].readback_matches_source = false;
+  impl_->ready[index] = true;
+}
+void HiaiOriginalTargetExecutor::Execute() {
+  impl_->RequireLive();
+  impl_->outputs_available = false;
+  impl_->diagnostic.process_called = false;
+  if (!std::all_of(impl_->ready.begin(), impl_->ready.end(), [](bool value) { return value; }))
+    throw HiaiRuntimeError(impl_->stage, "all89 original target inputs must be supplied for every Run");
+  std::fill(impl_->ready.begin(), impl_->ready.end(), false);
+  try {
+    impl_->Stage("INPUT_READBACK_AND_OUTPUT_BINDING");
+    impl_->VerifyDisjointBuffers();
+    impl_->output_buffers.clear();
+    for (std::size_t i = 0; i < impl_->outputs.size(); ++i) {
+      auto& tensor = impl_->outputs[i];
+      auto& row = impl_->diagnostic.outputs[i];
+      row.checked_after_process = row.object_same = row.buffer_same = false;
+      row.allocated_bytes_before = tensor.Size();
+      if (tensor.Size() != tensor.bytes || impl_->output_ptrs.at(i).get() != tensor.nd_value.get())
+        throw std::runtime_error("original target output allocation changed before Run");
+      impl_->output_buffers.push_back(tensor.Data());
+      std::memset(tensor.Data(), 0, tensor.bytes);
+    }
+    for (std::size_t i = 0; i < impl_->inputs.size(); ++i) {
+      const auto& tensor = impl_->inputs[i];
+      auto& row = impl_->diagnostic.inputs[i];
+      row.allocated_bytes = tensor.Size();
+      if (tensor.Size() != tensor.bytes || impl_->input_ptrs.at(i).get() != tensor.nd_value.get())
+        throw std::runtime_error("original target input allocation changed before Run");
+      row.readback_sha256 = Sha256(std::string_view(static_cast<const char*>(tensor.Data()), tensor.bytes));
+      row.readback_matches_source = row.readback_sha256 == impl_->input_hashes[i];
+      if (!row.readback_matches_source) throw std::runtime_error("original target input readback differs before Run");
+    }
+    impl_->Stage("MODEL_MANAGER_RUN");
+    impl_->diagnostic.process_called = true;
+    ++impl_->lifecycle.run_attempts;
+    const auto status = impl_->manager->Run(impl_->input_ptrs, impl_->output_ptrs);
+    impl_->Stage("OUTPUT_VALIDATION");
+    const bool objects_unchanged = impl_->ObserveOutputs();
+    if (status != 0) {
+      impl_->Stage("MODEL_MANAGER_RUN");
+      throw std::runtime_error("original target Run failed: " + std::to_string(status));
+    }
+    if (!objects_unchanged) throw std::runtime_error("original target output object/buffer/extent changed during Run");
+    impl_->VerifyDisjointBuffers();
+    ++impl_->lifecycle.successful_runs;
+    impl_->outputs_available = true;
+    impl_->Stage("EXECUTED");
+  } catch (const std::exception& error) {
+    impl_->poisoned = true;
+    throw HiaiRuntimeError(impl_->stage, error.what());
+  } catch (...) {
+    impl_->poisoned = true;
+    throw HiaiRuntimeError(impl_->stage, "unknown exception during original target Run; executor cannot be reused");
+  }
+}
+std::vector<std::uint8_t> HiaiOriginalTargetExecutor::CopyOutput(std::size_t index) const {
+  impl_->RequireLive();
+  if (!impl_->outputs_available)
+    throw HiaiRuntimeError(impl_->stage, "original target outputs unavailable before successful Run or after new input binding");
+  try { impl_->VerifyDisjointBuffers(); }
+  catch (const std::exception& error) {
+    impl_->poisoned = true;
+    impl_->outputs_available = false;
+    throw HiaiRuntimeError(impl_->stage, error.what());
+  }
+  const auto& tensor = impl_->outputs.at(index);
+  if (impl_->output_ptrs.at(index).get() != tensor.nd_value.get() || tensor.Size() != tensor.bytes ||
+      tensor.Buffer() != impl_->output_buffers.at(index)) {
+    impl_->poisoned = true;
+    impl_->outputs_available = false;
+    throw HiaiRuntimeError(impl_->stage, "original target output allocation changed after Run");
+  }
+  const auto* data = static_cast<const std::uint8_t*>(tensor.Data());
+  return {data, data + tensor.bytes};
+}
+void HiaiOriginalTargetExecutor::Close() { impl_->Cleanup(true); }
+const std::string& HiaiOriginalTargetExecutor::runtime_version() const noexcept { return impl_->version; }
+const std::string& HiaiOriginalTargetExecutor::runtime_stage() const noexcept { return impl_->stage; }
+const HiaiIoDiagnostic& HiaiOriginalTargetExecutor::io_diagnostic() const noexcept { return impl_->diagnostic; }
+const HiaiOriginalTargetLifecycle& HiaiOriginalTargetExecutor::lifecycle() const noexcept { return impl_->lifecycle; }
+const std::vector<HiaiBoundRuntimeTensor>& HiaiOriginalTargetExecutor::observed_inputs() const noexcept { return impl_->observed_inputs; }
+const std::vector<HiaiBoundRuntimeTensor>& HiaiOriginalTargetExecutor::observed_outputs() const noexcept { return impl_->observed_outputs; }
 
 struct HiaiExecutor::Impl {
   Model target, draft;

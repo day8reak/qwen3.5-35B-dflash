@@ -8,6 +8,8 @@ class IModelManagerListener { public: virtual ~IModelManagerListener()=default; 
 class IModelManager {
  public:
   virtual ~IModelManager()=default;
+  virtual Status InitWeights(const std::string& weightDir)=0;
+  virtual Status DeinitWeights()=0;
   virtual Status Init(const ModelInitOptions&, const std::shared_ptr<IBuiltModel>&,
                       const std::shared_ptr<IModelManagerListener>&)=0;
   virtual Status Run(const std::vector<std::shared_ptr<INDTensorBuffer>>&,
