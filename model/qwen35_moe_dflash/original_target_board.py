@@ -152,7 +152,7 @@ def _hash_lines(text, root):
 def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, gear=64,
                         input_dir=None, host_input_dir=None, tool="/data/local/tmp/tools_sysdbg/model_run_tool_internal",
                         board_model_root="/data/local/tmp/qwen3_5_moe", timeout_seconds=7200, target_features=False,
-                        runtime_prefill_probe=None, lock_wait_seconds=1800):
+                        runtime_prefill_probe=None, runtime_decode_probe=None, lock_wait_seconds=1800):
     root, out = Path(compilation_dir).resolve(), output_path(output_dir)
     out.mkdir(parents=True, exist_ok=False)
     result = {"schema_version": 1, "artifact_kind": "qwen35-original-target-tool-execution",
@@ -164,8 +164,10 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
     hdc = None
     attempt = None
     attempted = False
-    smoke = runtime_prefill_probe is not None
+    decode_smoke = runtime_decode_probe is not None
+    smoke = runtime_prefill_probe is not None or decode_smoke
     smoke_proof = None
+    validate_smoke_plan = None
     global_held = cache_held = uncertain = exit_known = False
     token = uuid.uuid4().hex
     global_lock = PurePosixPath("/data/local/tmp/.qwen35-target-model-io-lock")
@@ -181,6 +183,8 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             raise ValueError("retrieved output SHA256 mismatch: " + str(remote))
         result["retrieved"][local.relative_to(out).as_posix()] = {"sha256": digest, "bytes": local.stat().st_size}
     try:
+        if runtime_prefill_probe is not None and runtime_decode_probe is not None:
+            raise ValueError("runtime prefill and decode proofs are mutually exclusive")
         compiled = read_metadata(root / "report.json")
         contract = read_metadata(contract_path)
         if (compiled.get("artifact_kind") != "qwen35-existing-air-compilation" or compiled.get("platform") != "kirinx90"
@@ -198,24 +202,36 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         attempt = cache / ("run-" + uuid.uuid4().hex)
         if smoke:
             from .existing_air_profile import get_existing_air_profile
-            from .target_prefill_smoke_plan import prepare_prefill_smoke_plan, validate_prefill_smoke_plan
-            if (not host_input_dir or input_dir or gear != 64 or target_features is not True
-                    or profile != get_existing_air_profile("cpro-40block-prefill-64")
+            if decode_smoke:
+                from .target_decode_smoke_plan import (prepare_decode_smoke_plan as prepare_smoke_plan,
+                                                       validate_decode_smoke_plan as validate_smoke_plan)
+                expected_gear, flavor, runtime_probe = 1, "decode", runtime_decode_probe
+                expected_profile = "cpro-40block-decode-1"
+            else:
+                from .target_prefill_smoke_plan import (prepare_prefill_smoke_plan as prepare_smoke_plan,
+                                                        validate_prefill_smoke_plan as validate_smoke_plan)
+                expected_gear, flavor, runtime_probe = 64, "prefill", runtime_prefill_probe
+                expected_profile = "cpro-40block-prefill-64"
+            if (not host_input_dir or input_dir or type(gear) is not int or gear != expected_gear or target_features is not True
+                    or profile != get_existing_air_profile(expected_profile)
                     or type(lock_wait_seconds) is not int or not 0 <= lock_wait_seconds <= 7200
                     or type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 7200):
-                raise ValueError("runtime prefill proof requires original host inputs, complete features and frozen static64 only")
-            smoke_proof = prepare_prefill_smoke_plan(root, runtime_prefill_probe, host_input_dir)
-            validate_prefill_smoke_plan(smoke_proof)
+                raise ValueError(f"runtime {flavor} proof requires original host inputs, complete features and frozen static{expected_gear} only")
+            smoke_proof = prepare_smoke_plan(root, runtime_probe, host_input_dir)
+            validate_smoke_plan(smoke_proof)
             binding = smoke_proof.get("tool_binding", {})
             if str(tool) != binding.get("path"):
-                raise ValueError("selected tool differs from the runtime prefill proof")
+                raise ValueError(f"selected tool differs from the runtime {flavor} proof")
             plan = dict(smoke_proof, inputs=[dict(row, host_source=row["source"],
                 source=str(attempt / "source-inputs" / row["source_filename"])) for row in smoke_proof["inputs"]])
-            result.update(execution_scope="SINGLE_PREFILL_ONLY_IDENTICAL_STATE_GROUPS",
-                runtime_prefill_probe=str(Path(runtime_prefill_probe).resolve()),
+            result.update(execution_scope=("SINGLE_DECODE1_USER_SUPPLIED_INPUTS_NO_PREFILL_FEEDBACK" if decode_smoke
+                                          else "SINGLE_PREFILL_ONLY_IDENTICAL_STATE_GROUPS"),
                 state_input_layer_identity="UNVERIFIED", state_output_layer_identity="UNVERIFIED",
                 board_global_lock=str(global_lock), global_lock_wait_seconds=lock_wait_seconds)
-            save_json(out / "runtime-prefill-proof.json", smoke_proof)
+            result["runtime_decode_probe" if decode_smoke else "runtime_prefill_probe"] = str(Path(runtime_probe).resolve())
+            if decode_smoke:
+                result.update(source_semantics="UNVERIFIED_USER_INPUTS", prefill_state_feedback="NOT_RUN")
+            save_json(out / f"runtime-{flavor}-proof.json", smoke_proof)
         else:
             plan = tool_plan(contract, profile, gear, str(attempt / "source-inputs") if host_input_dir else input_dir,
                              target_features=target_features)
@@ -255,7 +271,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                     or probe.splitlines()[-1].strip() != smoke_proof["firmware_id"].strip()):
                 raise ValueError("actual board tool/firmware differs from the bound runtime probe")
             from .target_model_io_probe import _acquire_global
-            validate_prefill_smoke_plan(smoke_proof)
+            validate_smoke_plan(smoke_proof)
             result.update(stage="wait-board-model-lock", board_lock_token=token,
                           lock_control_timeout_seconds=min(60, timeout_seconds))
             uncertain = True
@@ -304,7 +320,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             raise ValueError("remote model cache inventory does not cover every compiler file")
         if smoke:
             from .target_model_io_probe import _space
-            _, disk = hdc.shell("df -Pk " + qcache, "prefill-board-disk", timeout=min(10, timeout_seconds))
+            _, disk = hdc.shell("df -Pk " + qcache, "decode-board-disk" if decode_smoke else "prefill-board-disk", timeout=min(10, timeout_seconds))
             missing = sum(row["bytes"] for row, _, remote in uploads if decisions[str(remote)] == "SEND")
             # Uploaded distinct originals and independent per-runtime-slot
             # copies coexist. Account for both instead of treating89 slots as
@@ -320,8 +336,8 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                 "scope": "Observed filesystem space only; no memory-capacity or exact tool temporary-allocation guarantee"}
             print(f"target-board: cached payloads verified; missing upload={missing} bytes", flush=True)
             if free < required:
-                raise ValueError(f"prefill board disk budget insufficient: need {required} bytes, available {free}")
-            validate_prefill_smoke_plan(smoke_proof)
+                raise ValueError(f"{'decode' if decode_smoke else 'prefill'} board disk budget insufficient: need {required} bytes, available {free}")
+            validate_smoke_plan(smoke_proof)
         for row, local, remote in uploads:
             if decisions[str(remote)] == "SEND":
                 print("target-board: uploading " + remote.name + " (" + str(row["bytes"]) + " bytes)", flush=True)
@@ -371,7 +387,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             result["inputs"].append(dict(row, sha256=before[0]))
         if smoke:
             uncertain = False
-            validate_prefill_smoke_plan(smoke_proof)
+            validate_smoke_plan(smoke_proof)
         save_json(out / "input-evidence.json", {"inputs": result["inputs"]})
         primary = cache / "payload" / PurePosixPath(compiled["omc"]["path"]).relative_to("compile-work/generated")
         argv = [str(tool), "--model=" + str(primary), "--input=" + ",".join(str(attempt / row["file"]) for row in plan["inputs"]),
@@ -461,15 +477,15 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                     from .draft_hilog import capture_draft_hilog
                     diagnostic = capture_draft_hilog(hdc, attempt, out, receive=_receive,
                         recorded_pid=result.get("tool_process_id"))
-                    diagnostic["artifact_kind"] = "qwen35-target-prefill-hilog"
+                    diagnostic["artifact_kind"] = "qwen35-target-decode-hilog" if decode_smoke else "qwen35-target-prefill-hilog"
                     result["hilog"] = diagnostic
                 except Exception as error:
                     result["hilog"] = {"status": "UNAVAILABLE", "error": f"{type(error).__name__}: {error}"}
         if smoke and smoke_proof is not None:
             try:
-                from .target_prefill_smoke_plan import validate_prefill_smoke_plan
-                validate_prefill_smoke_plan(smoke_proof)
-                result["source_preservation"] = "UNCHANGED_PREFILL_PLAN_METADATA_AND_ORIGINAL_INPUT_SHA256"
+                validate_smoke_plan(smoke_proof)
+                result["source_preservation"] = ("UNCHANGED_DECODE_PLAN_METADATA_AND_USER_INPUT_SHA256" if decode_smoke
+                                                  else "UNCHANGED_PREFILL_PLAN_METADATA_AND_ORIGINAL_INPUT_SHA256")
             except Exception as error:
                 result.update(status="FAILED", source_preservation="FAILED", source_error=f"{type(error).__name__}: {error}")
         if smoke and global_held and not uncertain and (not attempted or exit_known):
@@ -483,6 +499,8 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                 global_held = False
             except Exception as error:
                 result["lock_release_error"] = f"{type(error).__name__}: {error}"
+                if decode_smoke:
+                    result["status"] = "FAILED"
         if smoke:
             result["lock_state"] = "RETAINED_OR_UNCERTAIN" if global_held or cache_held or uncertain else "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT"
             result["remote_cancellation"] = "NOT_REQUESTED; uncertain waits retain both locks and never trigger automatic retry"

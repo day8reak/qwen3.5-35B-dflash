@@ -3,9 +3,9 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "USER_REPORTED_PREFILL_OUTPUTS_BOUND_REAL_FEATURE_DRAFT_DEVICE_PENDING",
-  "handoff": "20261030T005504Z-7622-a5b310/handoff.md",
-  "user_state": "User completed full target prefill and exact82 output-file/slot audit. Draft full6layer S64 and original token63=220 observed. Feature extrema +/-65504 and targetargmax0 are unvalidated diagnostics. Old stopped compiler stop requested; parentgone/rootZ. Next separate exact-real-feature draft step.",
+  "status": "USER_REPORTED_REAL_TARGET_FEATURE_FULL_DRAFT_STEP_EXECUTED_DECODE_PENDING",
+  "handoff": "20261030T011558Z-9333-c529b6/handoff.md",
+  "user_state": "Complete original target prefill -> exact real feature -> complete six-layer draft single step executed. Source/compiled/runtime80-state identities and original decode controls/embedding must be established next; numerical correctness not accepted.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
   "contract": {
@@ -53,7 +53,7 @@
     "Ordinary decode and multi-round DFlash stop/reject/commit behavior",
     "Matched numerical acceptance and measured end-to-end performance"
   ],
-  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_real_feature_draft.py\" --inspection \"$AI_RUN_DIR/target-prefill64-output-inspection\" --draft-bundle \"$AI_RUN_DIR/full-draft/residual-fix/bundle\" --output \"$AI_RUN_DIR/real-feature-draft-plan\"",
+  "next_command": "Run run_target_decode_smoke.py against supplied decode_data (plan then separate --apply); exact commands in docs/current-status.md.",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -835,7 +835,7 @@
   "real_feature_draft_bridge_plan": {
     "existing_bundle": "full-draft/residual-fix/bundle",
     "entrypoint": "targets/cpro/scripts/run_real_feature_draft.py",
-    "status": "HOST_IMPLEMENTED_DEVICE_PENDING",
+    "status": "USER_REPORTED_REAL_FEATURE_DRAFT_STEP_EXECUTED_UNVALIDATED",
     "source_contract": "Same full6layer/block16/vocab248320 direct draft OMC and ABI; three new small inputs and two outputs, no model compilation or host model copy.",
     "capacity_status": "USER_OBSERVED_MANIFEST_SEQUENCE_LENGTH_64",
     "anchor_position": 63,
@@ -852,7 +852,7 @@
     "execution_scope": "ONE_REAL_FEATURE_DRAFT_STEP_NO_TARGET_STATE_FEEDBACK",
     "numerical_validation": "NOT_RUN_NO_REFERENCE",
     "state_continuity": "NOT_VALIDATED",
-    "remaining": "Actual real-feature draft execution,80-state lineage/feedback64to1,ordinary decode baseline,multiround reject/commit/stop,numerical closure and measured2x.",
+    "remaining": "80-state source/compiled/runtime identity and feedback64to1, ordinary target decode inputs/baseline, multiround reject/commit/stop, numerical closure and measured2x.",
     "prepared_status": "REAL_FEATURE_DRAFT_STEP_PREPARED",
     "executed_status": "REAL_FEATURE_DRAFT_EXECUTED_UNVALIDATED",
     "board_model_policy": "Original host OMC streamed once to a SHA-owned phone cache; verified regular hardlink into an owned attempt, SHA/extent/inode rechecked after execution. No host model copy or link.",
@@ -946,5 +946,135 @@
     "new_executor_cases": 27,
     "scope": "202 host regression cases plus one actual prepare/validate-to-controller integration with fake HDC/native results. No source model, synthetic golden or host model inode mutation/copy; actual device execution and numerical acceptance remain pending.",
     "integration_cases": 1
+  },
+  "real_feature_draft_execution_user_report": {
+    "source": "USER_PASTED_REMOTE_PREPARATION_AND_EXECUTION_NOT_RETRIEVED_LOCALLY",
+    "prepared": "real-feature-draft-plan",
+    "execution": "real-feature-draft-run",
+    "status": "REAL_FEATURE_DRAFT_EXECUTED_UNVALIDATED",
+    "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+    "execution_scope": "ONE_FULL_DRAFT_STEP_FROM_BOUND_TARGET_PREFILL",
+    "model_compilation": "NOT_RUN",
+    "remote_exitcode": 0,
+    "native_process_id": 17398,
+    "sequence_length": 64,
+    "valid_length": 64,
+    "anchor_position": 63,
+    "anchor_token_id": 220,
+    "model_sha256": "62797c0c4cdd3f228de36232b69de053bec3e83d7e34413cb2ba09f76b19b474",
+    "feature_sha256": "be3c0f2f2e76e2cb4d89ec484b0a31dfde8ed65a89ca5a2ef82ec7905370cbba",
+    "proposal_positions": [
+      64,
+      78
+    ],
+    "draft_top1": [
+      [
+        18,
+        13,
+        13,
+        13,
+        13,
+        12,
+        348,
+        348,
+        11,
+        11,
+        66,
+        66,
+        220,
+        220,
+        220
+      ]
+    ],
+    "hidden_statistics": {
+      "elements": 30720,
+      "finite_count": 30720,
+      "nonfinite_count": 0,
+      "zero_count": 2,
+      "finite_min": -4.79296875,
+      "finite_max": 4.51953125,
+      "l2_norm": 175.27112248089622
+    },
+    "model_cache": {
+      "cache_status": "MISSING",
+      "missing_model_upload_bytes": 2852119022,
+      "host_model_copy_bytes": 0,
+      "board_free_bytes": 328568516608
+    },
+    "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+    "output_numerics": "ALL_FINITE_UNVALIDATED",
+    "numerical_validation": "NOT_RUN_NO_REFERENCE",
+    "state_continuity": "NOT_VALIDATED",
+    "scope": "Actual complete six-layer draft consumed exact actual target-prefill features and original64 IDs in one call and retrieved15 proposals/hidden. This closes that single handoff only; no target verification, recurrent state feedback, text-quality acceptance, acceptance rate or speedup pass."
+  },
+  "target_continuation_inspection": {
+    "status": "HOST_IMPLEMENTED_REAL_ARTIFACT_INSPECTION_PENDING",
+    "entrypoint": "targets/cpro/scripts/inspect_target_continuation.py",
+    "named_prefill_probe": "target-prefill64-runtime-io-named",
+    "output": "target-continuation-inspection",
+    "scope": "Read-only AIR/primary OMC/schema/retained metadata plus bounded original embedding-table row samples; no model compile, inference, source input change or feedback.",
+    "checks": [
+      "Trace source NetOutput state through actual serialized named update ports to RefData owner, then unique literal FX tensor identity to compiled boundary and literal tensor name/type/ND view to runtime. Same shape, output_N prefix or numeric ordinal never substitutes.",
+      "Record per-model state identities independently; identical RefData_i names across separately exported64/1 models do not prove common layer ownership. Cross-model state identity remains UNVERIFIED and feedback_ready=false.",
+      "Trace unique actualAIR GatherV2 logits dependency to arg1238_1 with explicit indices/axis/params ports, integer value-preserving carriers, actual raw embedded axis and serialized extent. Missing information is UNVERIFIED, no profile shape fallback.",
+      "Freshly hash target logits/argmax and original64IDs/INT8 embedding/FP32 scale, sample only needed original table rows, compare every original position byte-for-byte. Only exact matches create2056B next-token inputs; no multiplication/requantization/fulltable hash/copy."
+    ],
+    "private_source_review": {
+      "evidence": "20261030T011558Z-9333-c529b6/out/original-decode-source-review.json",
+      "source_manifest_sha256": "9e731ea3ceb6a6eb6a9b011bd8e12dbac7d46f399bb704818921601b075557c5",
+      "method": "Six retained private source files rehashed; static source only, no import or publication of source content.",
+      "output_pos": "Audited original wrapper directly indexes hidden_states[:,output_pos,:]; originalexportplaceholder seq_len is outside zero-based current sequence. Actual executedAIR control path and extent must still be inspected before correcting a derived input.",
+      "embedding": "Original exporter indexes externalINT8 table and separateFP32 scales by token IDs; multiply once inside target.",
+      "controls": "Original exporter contains dummy placeholders, not a real incremental inference generator. conv_state_pos[128] encoding and actual decode Q length semantics require original generator/sample or selected kernel evidence."
+    },
+    "remaining_input_question": "ANSWERED: user supplied /home/w00949577/run_35B/decode_data, explicitly says values may be incorrect and requests a first trial. The directory is a test input source, not a validated incremental control recipe.",
+    "decode_execution": "NOT_RUN",
+    "numerical_validation": "NOT_RUN"
+  },
+  "independent_decode_smoke": {
+    "source": "USER_DIRECTIVE_AFTER_REAL_FEATURE_DRAFT_SUCCESS",
+    "input_dir": "/home/w00949577/run_35B/decode_data",
+    "input_correctness": "UNVERIFIED_USER_SUPPLIED_VALUES_EXPLICITLY_ACCEPTED_FOR_FIRST_TRIAL",
+    "status": "HOST_IMPLEMENTED_ACTUAL_DEVICE_TRIAL_PENDING",
+    "entrypoint": "targets/cpro/scripts/run_target_decode_smoke.py",
+    "job": "target-pytorch-decode1-compile",
+    "runtime_probe": "target-decode1-runtime-io-v2",
+    "plan_output": "target-decode1-smoke-plan",
+    "apply_output": "target-decode1-smoke",
+    "execution_scope": "SINGLE_DECODE1_USER_SUPPLIED_INPUTS_NO_PREFILL_FEEDBACK",
+    "plan_gate": "All89 actual literal runtime input names matched to exact compiled inputs, independent dtype enum/ND edge-axis/extents;82 typed output descriptors; metadata/modelstat/tool/runtime identity plus fresh user input SHA before/after.",
+    "values": "User original controls and common four state files reused unchanged for this one independent call. No generated controls/embedding substitution or claim of validated layer/history semantics.",
+    "route": "Proven original V2 private tool, direct_from_file+weight_dir, explicit89/82dtypes,times1,noformat/flexible-shape options; global/model-cache locks and existing source audits/cache/hilog/PID/retrieval.",
+    "storage": "No host model copy or new compilation; first decode compiled sidecar cache may require about18.8GB phone upload; fresh SHA permits later cache reuse.",
+    "device_execution": "NOT_RUN",
+    "numerical_validation": "NOT_RUN_NO_REFERENCE",
+    "state_continuity": "NOT_VALIDATED",
+    "next": "One independent decode trial, then establish continuous ordinary generation state/controls and adapt existing serial DFlash controller; block verify/resident execution are later acceleration stages."
+  },
+  "runtime_framework_status": {
+    "legacy_tiny": "User reported tiny board generation succeeded and ordinary/DFlash matched each other in that test, with host reference mismatch. Legacy route recomputes fullprefix, no80stateincrementaldevice proof.",
+    "native_scheduler": "targets/cpro/runtime/src/generation.cpp already implements ordinary/DFlash loop, draft proposals, matching-prefix accept/reject,target correction,EOS/maxlen,counters and paired timing.",
+    "stateful_host": "fused/session.py has cloned state branches/checkpoints/commit; incremental_smoke.py has source-bound realfeatures serial compare-before-commit. Host-tested protocols, no connected original89inputdevice adapter yet.",
+    "first_complete_loop": "Existing gear1 serial verification can establish execution/commit correctness before accelerated block verify. No need to rewrite scheduling from zero.",
+    "remaining": "Original89input/80state device adapter, source controls/embedding/token alignment, ordinary recurrence, draft capacity alignment, actual multi-round execution; resident loading and blockverify for measured acceleration.",
+    "capacity": "Observed existing draft S64 is full for observed64tokenprefix. Multi-round test must use a declared compatible prompt/budget or supported larger gear; no silent prefix truncation or rebasing."
+  },
+  "decode_and_continuation_host_verification": {
+    "run_id": "20261030T011558Z-9333-c529b6",
+    "unique_tests_passed": 352,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "evidence": [
+      "out/audit-host-tests.xml",
+      "out/decode-host-tests.xml",
+      "out/logit-final-tests.xml"
+    ],
+    "new_source_state_cases": 27,
+    "new_logit_cases": 27,
+    "new_embedding_cases": 16,
+    "new_decode_plan_cases": 24,
+    "new_decode_execution_cases": 14,
+    "scope": "Host generated protobuf/ELF fixtures, sparse embedding tables and fake HDC/model-tool protocol only. Existing target/prefill/cache/model-I/O/schema regressions preserved. Real decode_data payloads and actual decode inference not accessed by assistant."
   }
 }

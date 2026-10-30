@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_kind": "qwen35-full-model-execution-smoke-contract",
-  "status": "IMPLEMENTATION_IN_PROGRESS_DEVICE_NOT_RUN",
+  "status": "REAL_TARGET_FEATURE_DRAFT_SINGLE_HANDOFF_EXECUTED_FULL_LOOP_PENDING",
   "scope": "User-prioritized execution milestone; final accuracy, correct rollback and speedup>=2x requirements are unchanged",
   "user_directive": {
     "real_features_required": true,
@@ -61,15 +61,24 @@
     "control_inspector": "model/qwen35_moe_dflash/original_target_inputs.py",
     "controller": "model/qwen35_moe_dflash/incremental_smoke.py",
     "target_board_boundary": "model/qwen35_moe_dflash/original_target_board.py",
-    "device_adapter": "PENDING"
+    "device_adapter": "PENDING",
+    "independent_decode_entrypoint": "targets/cpro/scripts/run_target_decode_smoke.py"
   },
   "gaps": [
-    "Selected TorchAir feature export and actual82output target OMC have not run",
-    "conv_state_pos encoding and decode allQLen require original runtime input generator or selectedDDK contract",
-    "80state continuous feedback and output filenames to port mapping need device evidence",
-    "Actual target plus residual-fix draft multi-round execution not yet integrated"
+    "Standalone decode1 against user-supplied decode_data awaits device execution; source controls remain unvalidated.",
+    "80state continuous feedback needs exact per-model and cross-export identities plus actual recurrence evidence.",
+    "Original target embedding/token/control alignment and numerical output selection remain to be validated.",
+    "Observed draft capacity64 is full for current64tokenprefix; align a declared compatible prompt/token budget or supported larger gear before multi-round execution.",
+    "Connect existing serial gear1 DFlash controller to original target and full draft device adapters; actual multi-round execution not integrated."
   ],
   "commands": "docs/current-status.md#用户现在执行什么",
   "accuracy": "NOT_EVALUATED_BY_EXECUTION_MILESTONE",
-  "performance": "NOT_EVALUATED_BY_EXECUTION_MILESTONE"
+  "performance": "NOT_EVALUATED_BY_EXECUTION_MILESTONE",
+  "user_reported_execution": {
+    "target_prefill": "EXECUTED_UNVALIDATED_PID8985",
+    "real_feature_draft": "REAL_FEATURE_DRAFT_EXECUTED_UNVALIDATED_PID17398",
+    "real_feature_draft_calls": 1,
+    "multi_round_loop": "NOT_RUN"
+  },
+  "first_loop_strategy": "Reuse serial gear1 compare-before-commit for first full execution; block verify and resident model execution follow for measured acceleration."
 }
