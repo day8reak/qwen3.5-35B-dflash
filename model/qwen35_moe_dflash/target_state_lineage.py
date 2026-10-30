@@ -314,7 +314,8 @@ def _identity(raw):
     return value if isinstance(value, str) and 0 < len(value) <= 1024 else None
 
 
-def _boundary(document, enums, *, allow_unmaterialized_producer=False, graph_context="graph"):
+def _boundary(document, enums, *, allow_unmaterialized_producer=False, graph_context="graph",
+              source_boundary_identity=False):
     graph, by_name, net = _graph(document)
     try:
         edges = _inputs(net)
@@ -350,13 +351,26 @@ def _boundary(document, enums, *, allow_unmaterialized_producer=False, graph_con
             raise ValueError("NetOutput shape differs from its actual fixed producer")
         else:
             producer_shape_status = "FIXED_ND_VIEW_MATCHED"
-        identities = {value for value in (_identity(raw), _identity(producer)) if value is not None}
+        boundary_identity, producer_identity = _identity(raw), _identity(producer)
+        if source_boundary_identity:
+            # The source NetOutput descriptor labels the boundary tensor whose
+            # actual data edge is independently traced to a named state owner.
+            # A producer-local FX spelling is a separate namespace; it cannot
+            # replace a missing boundary identity or be text-normalized into it.
+            identity = boundary_identity
+            identity_status = "EXPLICIT_UNIQUE" if identity is not None else "NOT_DECLARED"
+        else:
+            identity = boundary_identity if boundary_identity is not None and boundary_identity == producer_identity else None
+            identity_status = ("EXPLICIT_UNIQUE" if identity is not None else "CONFLICTING"
+                if boundary_identity is not None and producer_identity is not None else "NOT_DECLARED")
         outputs.append({"index": index, "edge": edge, "descriptor": raw,
             "producer_descriptor": producer, "view": view,
             "producer_shape_status": producer_shape_status,
-            "fx_tensor_identity": next(iter(identities)) if len(identities) == 1 else None,
-            "fx_identity_status": "EXPLICIT_UNIQUE" if len(identities) == 1 else
-                "CONFLICTING" if identities else "NOT_DECLARED"})
+            "fx_tensor_identity": identity, "fx_identity_status": identity_status,
+            "boundary_fx_tensor_identity": boundary_identity, "producer_fx_tensor_identity": producer_identity,
+            "fx_identity_policy": "SOURCE_NETOUTPUT_DESCRIPTOR_ONLY" if source_boundary_identity else "COHERENT_COMPILED_BOUNDARY_AND_PRODUCER",
+            "producer_fx_namespace_relation": "SAME_LITERAL_IDENTITY" if boundary_identity == producer_identity else
+                "DIFFERENT_LITERAL_IDENTITIES" if boundary_identity is not None and producer_identity is not None else "INCOMPLETE"})
     return graph, by_name, refs, outputs
 
 
@@ -396,7 +410,8 @@ def _carrier(edge, by_name, *, allow_update):
 
 def analyze_state_lineage(document, enums):
     """Describe same-graph state owners; no output ordinal implies a RefData ID."""
-    graph, by_name, refs, outputs = _boundary(document, enums, allow_unmaterialized_producer=True, graph_context="source-air")
+    graph, by_name, refs, outputs = _boundary(document, enums, allow_unmaterialized_producer=True,
+        graph_context="source-air", source_boundary_identity=True)
     keys = set()
     for node in refs.values():
         descs = node.get("output_desc", [])
@@ -410,13 +425,20 @@ def analyze_state_lineage(document, enums):
         row = {"source_output_index": output["index"], "source_output_edge": output["edge"],
                "producer_shape_status": output["producer_shape_status"],
                "fx_tensor_identity": output["fx_tensor_identity"],
-               "fx_identity_status": output["fx_identity_status"], "status": "UNVERIFIED"}
+               "fx_identity_status": output["fx_identity_status"],
+               "source_boundary_fx_tensor_identity": output["boundary_fx_tensor_identity"],
+               "source_producer_fx_tensor_identity": output["producer_fx_tensor_identity"],
+               "source_fx_namespace_relation": output["producer_fx_namespace_relation"],
+               "source_netoutput_view": {"dtype": output["view"][0], "shape_without_edge_singletons": list(output["view"][1])},
+               "status": "UNVERIFIED"}
         try:
             ref, path, update = _carrier(output["edge"], by_name, allow_update=True)
             if update is None:
                 raise ValueError("direct state identity has no observed updater")
             row.update(status="NAMED_PORT_STATE_LINEAGE_OBSERVED", source_refdata=ref,
                        source_input_fx_tensor_identity=_identity(refs[ref]["output_desc"][0]),
+                       source_input_view={"dtype": _view(refs[ref]["output_desc"][0], enums)[0],
+                           "shape_without_edge_singletons": list(_view(refs[ref]["output_desc"][0], enums)[1])},
                        carrier_path=path, updater=update)
         except (KeyError, TypeError, ValueError) as error:
             row["reason"] = str(error)
@@ -452,8 +474,195 @@ def analyze_state_lineage(document, enums):
         "missing_state_owners": sorted(_STATES - set(owners)),
         "duplicate_state_owners": sorted(key for key, value in Counter(owners).items() if value > 1),
         "states": rows, "updater_diagnostics": diagnostics,
+        "boundary_fx_identity_counts": dict(Counter(row["boundary_fx_tensor_identity"] for row in outputs
+            if row["boundary_fx_tensor_identity"] is not None)),
+        "producer_fx_namespace_relation_counts": dict(Counter(row["producer_fx_namespace_relation"] for row in outputs)),
+        "fx_identity_binding_policy": "SOURCE_NETOUTPUT_DESCRIPTOR_ONLY_NO_PRODUCER_FALLBACK_OR_TEXT_NORMALIZATION",
         "candidate_policy": "Typed shapes select candidates only; ownership uses actual edges and named ports",
         "state_semantics": "PINNED_DOCUMENT_PORT_CONTRACT_AND_SERIALIZED_GRAPH_ONLY_NOT_KERNEL_BEHAVIOR"}
+
+
+def _provenance_value(value, depth=0):
+    """Bound diagnostic values; truncated observations never become join keys."""
+    if value is None or type(value) in {int, float, bool}:
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= 512 else {"kind": "string", "characters": len(value),
+            "prefix": value[:512], "truncated": True}
+    if isinstance(value, list):
+        if depth >= 4:
+            return {"kind": "list", "entries": len(value), "truncated": True}
+        selected = [_provenance_value(row, depth + 1) for row in value[:16]]
+        return selected if len(value) <= 16 else {"kind": "list", "entries": len(value), "first16": selected,
+            "truncated": True}
+    if isinstance(value, dict):
+        if depth >= 4:
+            return {"kind": "object", "keys": sorted(value)[:32], "truncated": True}
+        selected = {key: _provenance_value(value[key], depth + 1) for key in sorted(value)[:32]}
+        return selected if len(value) <= 32 else {"kind": "object", "keys": len(value),
+            "first32": selected, "truncated": True}
+    return {"kind": type(value).__name__, "omitted": True}
+
+
+def _provenance_attributes(node):
+    attrs = _attributes(node)
+    keys = sorted(attrs)
+    selected = [key for key in keys if re.search(r"name|origin|tensor|output|input|subgraph|parent|graph|index|fx", key, re.I)]
+    return {"keys": keys[:256], "key_count": len(keys), "keys_truncated": len(keys) > 256,
+        "selected_values": {key: _provenance_value(attrs[key]) for key in selected[:64]},
+        "selected_value_count": len(selected), "values_truncated": len(selected) > 64}
+
+
+def _provenance_descriptor(raw):
+    return {"name": _provenance_value(raw.get("name")), "dtype": raw.get("dtype"),
+        "layout": raw.get("layout"), "shape": raw.get("shape"), "fields": sorted(raw),
+        "attributes": _provenance_attributes(raw),
+        "alias_fields": {key: _provenance_value(raw[key]) for key in
+            ("reuse_input", "reuse_input_index", "ref_var_src_var_name") if key in raw}}
+
+
+def observe_compiled_state_provenance(source, compiled, source_enums, compiled_enums):
+    """Retain bounded actual identities and graph links without proving a join.
+
+    This diagnostic deliberately does not parse output names or promote an
+    op-level list of original names into a descriptor-specific source owner.
+    """
+    report = {"status": "OBSERVED_ONLY_NO_NEW_STATE_BINDING", "source_air": {}, "compiled_omc": {},
+        "scope": "Actual serialized boundary names, descriptor provenance and root graph link fields only; no name parsing, ordinal inference, nested topology reconstruction or ownership fallback"}
+    for context, document, enums in (("source_air", source, source_enums), ("compiled_omc", compiled, compiled_enums)):
+        graph, nodes, _, outputs = _boundary(document, enums,
+            allow_unmaterialized_producer=context == "source_air", graph_context=context.replace("_", "-"),
+            source_boundary_identity=context == "source_air")
+        selected, producers = [], {}
+        for row in outputs:
+            node, port = _edge(row["edge"], nodes)
+            selected.append({"output_index": row["index"], "edge": row["edge"],
+                "descriptor": _provenance_descriptor(row["descriptor"]),
+                "producer_descriptor": _provenance_descriptor(row["producer_descriptor"]),
+                "producer_node": node["name"], "producer_type": node["type"], "producer_output_port": port})
+            if node["name"] not in producers:
+                try:
+                    edges = _inputs(node)
+                    inputs = {"data_slot_count": len(edges), "first128": edges[:128], "truncated": len(edges) > 128}
+                except ValueError as error:
+                    inputs = {"error": str(error)[:1024]}
+                producers[node["name"]] = {"name": node["name"], "type": node["type"],
+                    "fields": sorted(node), "attributes": _provenance_attributes(node), "inputs": inputs,
+                    "graph_link_fields": {key: _provenance_value(value) for key, value in node.items()
+                        if re.search(r"graph|parent", key, re.I) and key != "attr"}}
+        report[context] = {"graph_name": graph.get("name"), "graph_fields": sorted(graph),
+            "root_operation_count": len(nodes), "root_operation_types": dict(Counter(node["type"] for node in nodes.values())),
+            "graph_attributes": _provenance_attributes(graph), "outputs": selected,
+            "output_producer_nodes": list(producers.values())}
+    encoded = json.dumps(report, ensure_ascii=False, allow_nan=False).encode()
+    if len(encoded) > 512 << 10:
+        # Diagnostics must not invalidate an otherwise complete graph audit.
+        return {"status": "OBSERVATION_OMITTED_DIAGNOSTIC_BUDGET_EXCEEDED", "maximum_bytes": 512 << 10,
+            "observed_serialized_bytes": len(encoded), "scope": report["scope"]}
+    return report
+
+
+def _netoutput_name_map(document):
+    """Read an actual complete input-name table; no output name is generated."""
+    _, _, net = _graph(document)
+    attrs = _attributes(net)
+    if not {"_input_name_key", "_input_name_value"} & attrs.keys():
+        return {"status": "NOT_DECLARED", "names_by_output_index": {}}
+    try:
+        mapping = _port_map(net, "input")
+        count = len(_inputs(net))
+        if len(mapping) != count or set(mapping.values()) != set(range(count)):
+            raise ValueError("NetOutput input-name table must cover every explicit graph data slot exactly once")
+    except (KeyError, TypeError, ValueError) as error:
+        return {"status": "INVALID_EXPLICIT_NETOUTPUT_NAME_MAP", "names_by_output_index": {}, "reason": str(error)[:1024]}
+    return {"status": "COMPLETE_EXPLICIT_NETOUTPUT_INPUT_NAME_MAP", "names_by_output_index": {index: name for name, index in mapping.items()},
+        "scope": "Actual serialized name-to-data-port values; no output ordinal is embedded into or parsed from a tensor name"}
+
+
+def _runtime_label_recipe(document, outputs):
+    """Observe the documented GE IO-label protocol, never graph connectivity."""
+    _, _, net = _graph(document)
+    model_names = _attributes(document).get("attr_model_out_nodes_name")
+    names, ports = net.get("src_name", []), net.get("src_index", [])
+    reference = {"protocol": "GRAPHENGINE_GET_OUTPUT_DESC_INFO_OUTPUT_LABELS_V1",
+        "repository": "https://github.com/Ascend/graphengine",
+        "commit": "d2ab1c2819c90e61d98b5f88699bcd6b6de4423c",
+        "path": "src/ge/graph/load/new_model_manager/davinci_model.cc",
+        "source_sha256": "277094a0e4d751bdee0305a328fdea50480d9dec4502356fbefbc89a622196a8",
+        "source_bytes": 154735,
+        "source_url": "https://github.com/Ascend/graphengine/blob/d2ab1c2819c90e61d98b5f88699bcd6b6de4423c/src/ge/graph/load/new_model_manager/davinci_model.cc",
+        "override_attribute": "attr_model_out_nodes_name",
+        "override_attribute_source_sha256": "f0d0304fde95a0ac3bf34f4fd84b5c7e200e491b33681dc760cc6e7965ff305e",
+        "lines": [664, 1803, 1831], "selected_vendor_runtime_implementation": "NOT_INSPECTED",
+        "scope": "Version-scoped reference IO-label algorithm plus required complete observed82-label/view conformance; src metadata never establishes graph connectivity or state ownership"}
+    result = {"status": "NOT_DECLARED", "reference": reference, "labels": [],
+        "observed_src_name_count": len(names) if isinstance(names, list) else None,
+        "observed_src_index_count": len(ports) if isinstance(ports, list) else None,
+        "src_name_first8": _provenance_value(names[:8] if isinstance(names, list) else names),
+        "src_index_first8": _provenance_value(ports[:8] if isinstance(ports, list) else ports),
+        "model_output_name_override": _provenance_value(model_names)}
+    if not names and not ports and model_names is None:
+        return result
+    result["status"] = "INVALID_DECLARED_RUNTIME_IO_LABEL_METADATA"
+    if (len(outputs) != 82 or not isinstance(names, list) or not isinstance(ports, list)
+            or len(names) != 82 or len(ports) != 82
+            or any(not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9_./-]{1,1024}", name) is None for name in names)
+            or any(type(port) is not int or not 0 <= port <= (1 << 63) - 1 for port in ports)):
+        result["reason"] = "COMPLETE_82_PLAIN_SRC_NAME_AND_NONNEGATIVE_PORT_LABEL_VECTORS_REQUIRED"
+        return result
+    explicit = []
+    if model_names is not None:
+        if (not isinstance(model_names, dict) or not isinstance(model_names.get("list"), dict)
+                or not isinstance(model_names["list"].get("s", []), list)
+                or not set(model_names["list"]) <= {"s", "val_type"}
+                or any(not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9_./:-]{1,1024}", name) is None
+                    for name in model_names["list"].get("s", []))):
+            result["reason"] = "EXPLICIT_MODEL_OUTPUT_NAME_OVERRIDE_METADATA_INVALID"
+            return result
+        explicit = model_names["list"].get("s", [])
+    result["branch"] = "EXPLICIT_MODEL_OUTPUT_NAMES" if len(explicit) == 82 else "LEGACY_NETOUTPUT_SOURCE_LABELS"
+    result["explicit_model_output_name_count"] = len(explicit)
+    labels = [(name if ":" in name else name + ":" + str(ports[index])) for index, name in enumerate(explicit)] if len(explicit) == 82 else [
+        "output_" + str(index) + "_" + name + "_" + str(ports[index]) for index, name in enumerate(names)]
+    if len(set(labels)) != 82:
+        result["reason"] = "DOCUMENTED_OUTPUT_LABELS_ARE_NOT_A_BIJECTION"
+        return result
+    result.update(status="CANDIDATE_REQUIRES_ALL82_NATIVE_LABEL_AND_VIEW_CONFORMANCE", labels=[
+        {"compiled_output_index": row["index"], "name": labels[row["index"]],
+            "view": {"dtype": row["view"][0], "shape_without_edge_singletons": list(row["view"][1])},
+            "src_name_label_metadata": names[row["index"]], "src_index_label_metadata": ports[row["index"]]}
+        for row in outputs])
+    return result
+
+
+def _observe_runtime_label_conformance(recipe, probe, runtime_outputs):
+    result = dict(recipe)
+    result["observed_runtime_identity"] = {key: probe.get(key) for key in
+        ("runtime_version", "firmware_id", "ddk_id", "model_sha256")}
+    if recipe["status"] != "CANDIDATE_REQUIRES_ALL82_NATIVE_LABEL_AND_VIEW_CONFORMANCE":
+        return result
+    native = {}
+    for row in probe["outputs"]:
+        name = row.get("tensor_name")
+        if row.get("tensor_name_status") == "OBSERVED" and isinstance(name, str) and name:
+            native.setdefault(name, []).append(row)
+    expected = recipe["labels"]
+    if (len(probe["outputs"]) != 82 or set(native) != {row["name"] for row in expected}
+            or any(len(rows) != 1 for rows in native.values())):
+        result.update(status="RUNTIME_IO_LABEL_PROTOCOL_NOT_OBSERVED", reason="COMPLETE_82_UNIQUE_NATIVE_LABEL_BIJECTION_REQUIRED")
+        return result
+    mismatches = []
+    for row in expected:
+        actual = native[row["name"]][0]
+        view = row["view"]
+        if _nd_view_key(runtime_outputs[actual["index"]]) != (view["dtype"], tuple(view["shape_without_edge_singletons"])):
+            mismatches.append({"compiled_output_index": row["compiled_output_index"], "runtime_output_index": actual["index"], "name": row["name"]})
+    if mismatches:
+        result.update(status="RUNTIME_IO_LABEL_PROTOCOL_NOT_OBSERVED", reason="ALL82_LABEL_BOUND_TYPED_ND_VIEWS_REQUIRED", examples=mismatches[:3])
+        return result
+    result.update(status="ACTUAL82_OF82_PROTOCOL_CONFORMANCE_OBSERVED", matched_count=82,
+        binding="LITERAL_COMPLETE_NATIVE_NAME_BIJECTION_AND_TYPED_VIEWS_NO_NATIVE_ORDER_ASSUMPTION")
+    return result
 
 
 def _join_compiled(source, document, enums):
@@ -462,7 +671,15 @@ def _join_compiled(source, document, enums):
     for row in outputs:
         if row["fx_tensor_identity"] is not None:
             by_identity.setdefault(row["fx_tensor_identity"], []).append(row)
-    source_counts = Counter(row.get("fx_tensor_identity") for row in source["states"])
+    # A conflicting nonstate row still declares both of its raw identities.
+    # Filtering it out of the coherent join must not make a state identifier
+    # appear globally unique in either compiled descriptor namespace.
+    compiled_boundary_counts = Counter(row["boundary_fx_tensor_identity"] for row in outputs
+        if row["boundary_fx_tensor_identity"] is not None)
+    compiled_producer_counts = Counter(row["producer_fx_tensor_identity"] for row in outputs
+        if row["producer_fx_tensor_identity"] is not None)
+    source_counts = source["boundary_fx_identity_counts"]
+    name_map = _netoutput_name_map(document)
     rows = []
     for state in source["states"]:
         identity = state.get("fx_tensor_identity")
@@ -471,20 +688,38 @@ def _join_compiled(source, document, enums):
                "fx_tensor_identity": identity, "status": "UNVERIFIED"}
         if state["status"] != "NAMED_PORT_STATE_LINEAGE_OBSERVED":
             row["reason"] = "SOURCE_STATE_OWNER_UNVERIFIED"
-        elif identity is None or source_counts[identity] != 1 or len(matches) != 1:
+        elif (identity is None or source_counts.get(identity, 0) != 1 or len(matches) != 1
+                or compiled_boundary_counts[identity] != 1 or compiled_producer_counts[identity] != 1):
             row["reason"] = "MISSING_OR_NONUNIQUE_EXPLICIT_FX_TENSOR_IDENTITY"
         else:
             compiled = matches[0]
+            view = state.get("source_netoutput_view")
+            source_view = (view["dtype"], tuple(view["shape_without_edge_singletons"])) if isinstance(view, dict) else None
+            actual = _view(compiled["descriptor"], enums)
+            input_view = _view(refs[state["source_refdata"]]["output_desc"][0], enums)
+            if source_view != actual or input_view != actual or state.get("source_input_view") != view:
+                row["reason"] = "SOURCE_COMPILED_STATE_TYPED_VIEW_DIFFERS"
+                rows.append(row)
+                continue
             row.update(status="EXPLICIT_FX_TENSOR_IDENTITY_MATCHED", compiled_output_index=compiled["index"],
                 compiled_output_edge=compiled["edge"], compiled_descriptor=compiled["descriptor"],
                 compiled_producer_descriptor=compiled["producer_descriptor"],
+                compiled_boundary_port_name=name_map["names_by_output_index"].get(compiled["index"]),
                 compiled_input_name=state["source_refdata"],
                 compiled_input_descriptor=refs[state["source_refdata"]]["output_desc"][0])
         rows.append(row)
     count = sum(row["status"] == "EXPLICIT_FX_TENSOR_IDENTITY_MATCHED" for row in rows)
     return {"status": "ALL80_EXPLICIT_FX_TENSOR_IDENTITIES_MATCHED" if count == 80 else "COMPILED_IDENTITY_PARTIAL",
         "matched_count": count, "states": rows,
-        "scope": "Explicit declared tensor identity join only; no compiler arithmetic equivalence or task-byte interpretation"}
+        "source_identity_binding_policy": "SOURCE_NETOUTPUT_DESCRIPTOR_ONLY_NO_PRODUCER_FALLBACK_OR_TEXT_NORMALIZATION",
+        "compiled_identity_binding_policy": "EXACT_UNIQUE_BOUNDARY_AND_PRODUCER_FX_COHERENCE",
+        "compiled_netoutput_name_map": name_map,
+        "runtime_output_label_recipe": _runtime_label_recipe(document, outputs),
+        "compiled_output_name_observations": [{"compiled_output_index": row["index"],
+            "descriptor_names": sorted({desc["name"] for desc in (row["descriptor"], row["producer_descriptor"])
+                if isinstance(desc.get("name"), str) and desc["name"]}),
+            "boundary_port_name": name_map["names_by_output_index"].get(row["index"])} for row in outputs],
+        "scope": "Source boundary FX identity joins the exact unique coherent compiled boundary FX identity; producer-local source spellings stay diagnostic. No compiler arithmetic equivalence or task-byte interpretation"}
 
 
 def _runtime_bindings(compiled, probe, enums):
@@ -497,6 +732,17 @@ def _runtime_bindings(compiled, probe, enums):
             name = row.get("tensor_name")
             if isinstance(name, str) and name and row.get("tensor_name_status") == "OBSERVED":
                 names[direction].setdefault(name, []).append(row)
+    name_map = compiled.get("compiled_netoutput_name_map", {"status": "NOT_DECLARED"})
+    label_protocol = _observe_runtime_label_conformance(compiled.get("runtime_output_label_recipe", {"status": "NOT_DECLARED"}), probe, runtime_outputs)
+    protocol_observed = label_protocol["status"] == "ACTUAL82_OF82_PROTOCOL_CONFORMANCE_OBSERVED"
+    protocol_labels = {row["compiled_output_index"]: row["name"] for row in label_protocol.get("labels", [])} if protocol_observed else {}
+    def selected_name(descriptor_names, port_name, protocol_name=None):
+        candidates = {*descriptor_names, *([port_name] if port_name is not None else []), *([protocol_name] if protocol_name is not None else [])}
+        if len(candidates) != 1:
+            return None
+        return next(iter(candidates))
+    compiled_name_counts = Counter(selected_name(row["descriptor_names"], row.get("boundary_port_name"), protocol_labels.get(row["compiled_output_index"]))
+        for row in compiled.get("compiled_output_name_observations", []))
     rows = []
     for state in compiled["states"]:
         row = {key: state.get(key) for key in ("source_output_index", "source_refdata", "compiled_output_index")}
@@ -504,11 +750,19 @@ def _runtime_bindings(compiled, probe, enums):
         if state["status"] != "EXPLICIT_FX_TENSOR_IDENTITY_MATCHED":
             row["reason"] = "COMPILED_TENSOR_IDENTITY_UNVERIFIED"
             rows.append(row); continue
-        declared = {desc.get("name") for desc in (state["compiled_descriptor"], state["compiled_producer_descriptor"])
-                    if isinstance(desc.get("name"), str) and desc["name"]}
-        matches = names["outputs"].get(next(iter(declared)), []) if len(declared) == 1 else []
+        declared = sorted({desc.get("name") for desc in (state["compiled_descriptor"], state["compiled_producer_descriptor"])
+                    if isinstance(desc.get("name"), str) and desc["name"]})
+        protocol_name = protocol_labels.get(state["compiled_output_index"])
+        output_name = selected_name(declared, state.get("compiled_boundary_port_name"), protocol_name)
+        matches = names["outputs"].get(output_name, []) if output_name is not None else []
         inputs = names["inputs"].get(state["compiled_input_name"], [])
-        if len(matches) != 1 or len(inputs) != 1:
+        if label_protocol["status"] not in {"NOT_DECLARED", "ACTUAL82_OF82_PROTOCOL_CONFORMANCE_OBSERVED"}:
+            row["reason"] = "DOCUMENTED_RUNTIME_IO_LABEL_PROTOCOL_NOT_FULLY_OBSERVED"
+        elif name_map["status"] == "INVALID_EXPLICIT_NETOUTPUT_NAME_MAP":
+            row["reason"] = "INVALID_EXPLICIT_COMPILED_NETOUTPUT_NAME_MAP"
+        elif output_name is None and (declared or state.get("compiled_boundary_port_name") is not None or protocol_name is not None):
+            row["reason"] = "CONFLICTING_LITERAL_COMPILED_OUTPUT_NAMES"
+        elif len(matches) != 1 or len(inputs) != 1 or compiled_name_counts[output_name] != 1:
             row["reason"] = "MISSING_OR_NONUNIQUE_LITERAL_COMPILED_AND_RUNTIME_TENSOR_NAMES"
         elif (_nd_view_key(runtime_outputs[matches[0]["index"]]) != _view(state["compiled_descriptor"], enums)
                 or _nd_view_key(runtime_inputs[inputs[0]["index"]]) != _view(state["compiled_input_descriptor"], enums)
@@ -517,12 +771,15 @@ def _runtime_bindings(compiled, probe, enums):
         else:
             row.update(status="EXPLICIT_TENSOR_NAME_AND_DESCRIPTOR_MATCHED",
                 runtime_output_index=matches[0]["index"], runtime_output_name=matches[0]["tensor_name"],
-                runtime_input_index=inputs[0]["index"], runtime_input_name=inputs[0]["tensor_name"])
+                runtime_input_index=inputs[0]["index"], runtime_input_name=inputs[0]["tensor_name"],
+                output_name_binding="OBSERVED_GET_OUTPUT_DESC_INFO_LABEL_PROTOCOL" if protocol_observed else
+                    "EXPLICIT_NETOUTPUT_INPUT_NAME_MAP" if state.get("compiled_boundary_port_name") is not None else "LITERAL_TENSOR_DESCRIPTOR_NAME")
         rows.append(row)
     count = sum(row["status"] == "EXPLICIT_TENSOR_NAME_AND_DESCRIPTOR_MATCHED" for row in rows)
     return {"status": "ALL80_EXPLICIT_RUNTIME_STATE_BINDINGS_OBSERVED" if count == 80 else "RUNTIME_STATE_BINDING_PARTIAL",
             "matched_count": count, "states": rows,
-            "scope": "Literal compiled descriptor name equality and exact typed ND view; no output_N or ordinal fallback"}
+            "runtime_output_label_protocol": label_protocol,
+            "scope": "Literal declared descriptor/name-table labels or the documented source-backed IO-label recipe must match actual native names and typed views. The recipe requires all82 labels/views; native vector order and numeric labels never determine state ownership"}
 
 
 def _decode_air(schema, raw):

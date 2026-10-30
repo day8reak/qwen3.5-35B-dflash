@@ -42,8 +42,8 @@ def extract(case, request=None):
     return transfer.extract_rows(request or case["request"], *case["tables"], case["extracted"])
 
 
-def consume(case, response=None):
-    return transfer.import_rows(case["prepared"], response or case["extracted"] / "response.json", case["imported"])
+def consume(case, response=None, **options):
+    return transfer.import_rows(case["prepared"], response or case["extracted"] / "response.json", case["imported"], **options)
 
 
 def no_next(case, result):
@@ -652,7 +652,10 @@ def test_metadata_ctime_rules_never_apply_to_original_context_ids_or_copied_pyth
     assert extract(case)["status"] == transfer._EXTRACTED
     path = case["case"]["source"] / "input_ids.bin" if changed == "source_ids" else case["prepared"] / "extract_rows.py"
     raw = path.read_bytes()
+    before = path.stat()
+    time.sleep(.01)
     os.chmod(path, path.stat().st_mode & 0o7777)
+    assert path.stat().st_ctime_ns != before.st_ctime_ns
     assert path.read_bytes() == raw
     no_next(case, consume(case))
 
@@ -708,3 +711,86 @@ def test_late_prepare_metadata_ctime_failure_never_reports_a_prepared_packet(que
     assert result["status"] == "FAILED" and "changed" in result["error"], result
     assert json.loads((output / "manifest.json").read_text())["status"] == "FAILED"
     assert "next" not in result and not (output / "next-token").exists()
+
+
+def test_explicit_copied_script_ctime_recovery_reuses_existing_response_after_chmod777_tree(query_handoff, tmp_path):
+    case = query_handoff
+    assert extract(case)["status"] == transfer._EXTRACTED
+    preserved = {path: path.read_bytes() for path in case["prepared"].rglob("*") if path.is_file()}
+    response = case["extracted"] / "response.json"
+    preserved[response] = response.read_bytes()
+    time.sleep(.01)
+    for path in [case["prepared"], *case["prepared"].rglob("*")]: os.chmod(path, 0o777)
+    failed = consume(case)
+    no_next(case, failed)
+    failed_report = (case["imported"] / "report.json").read_bytes()
+    case["imported"] = tmp_path / "explicit-script-recovery-v4"
+    result = consume(case, revalidate_extractor_metadata=True)
+    assert result["status"] == "ORIGINAL_DECODE_TRANSFERRED_ROWS_BOUND_NEXT_TOKEN_PREPARED", result
+    assert result["selected_source_token_id"] == 269 and result["selected_next_token_id"] == 0
+    assert result["copied_extractor_revalidation_count"] == 1
+    event, = result["copied_extractor_revalidation_observations"]
+    assert event["kind"] == "COPIED_EXTRACTOR_CTIME_ONLY_REVALIDATED" and event["status"] == "FULL_SOURCE_SHA256_VERIFIED"
+    assert event["recorded_identity"]["sha256"] == event["current_identity"]["sha256"] == case["manifest"]["extraction_script"]["sha256"]
+    assert event["recorded_identity"]["stat"][:4] == event["current_identity"]["stat"][:4]
+    assert event["recorded_identity"]["stat"][4] != event["current_identity"]["stat"][4]
+    assert event["mode_action"] == "NONE" and "NOT_RECORDED" in event["historical_mode"]
+    assert event["current_full_identity"]["mode"] & 0o7777 == 0o777
+    assert (case["prepared"] / "extract_rows.py").stat().st_mode & 0o7777 == 0o777
+    assert all(path.read_bytes() == raw for path, raw in preserved.items())
+    assert (tmp_path / "explicit-query-imported/report.json").read_bytes() == failed_report
+    assert sum(row["bytes"] for row in result["next_token_inputs"]) == 2056
+
+
+@pytest.mark.parametrize("fault", ["bytes", "inode", "mtime", "recorded_path", "response_source_sha"])
+def test_script_recovery_flag_never_accepts_source_change_or_nonctime_identity_drift(query_handoff, fault):
+    case = query_handoff
+    assert extract(case)["status"] == transfer._EXTRACTED
+    script = case["prepared"] / "extract_rows.py"
+    before, raw = script.stat(), script.read_bytes()
+    if fault == "bytes":
+        with script.open("r+b") as stream: stream.write(b"!")
+        os.utime(script, ns=(before.st_atime_ns, before.st_mtime_ns))
+    elif fault == "inode":
+        other = script.with_name("different-inode.py"); other.write_bytes(raw)
+        os.utime(other, ns=(before.st_atime_ns, before.st_mtime_ns)); other.replace(script)
+    elif fault == "mtime": os.utime(script, ns=(before.st_atime_ns, before.st_mtime_ns + 1))
+    elif fault == "recorded_path":
+        path = case["prepared"] / "manifest.json"
+        value = json.loads(path.read_text()); value["extraction_script"]["path"] = str(case["resource"] / "unrelated.py")
+        save(path, value)
+    else:
+        path = case["extracted"] / "response.json"
+        value = json.loads(path.read_text()); value["extractor_sha256"] = "f" * 64
+        save(path, value)
+    no_next(case, consume(case, revalidate_extractor_metadata=True))
+
+
+def test_script_metadata_recovery_does_not_admit_new_drift_during_import(query_handoff, monkeypatch):
+    case = query_handoff
+    assert extract(case)["status"] == transfer._EXTRACTED
+    script = case["prepared"] / "extract_rows.py"
+    os.chmod(script, 0o777)
+    original = transfer._response
+    def race(*args):
+        result = original(*args)
+        time.sleep(.01)
+        os.chmod(script, 0o644)
+        return result
+    monkeypatch.setattr(transfer, "_response", race)
+    result = consume(case, revalidate_extractor_metadata=True)
+    no_next(case, result)
+    assert result["copied_extractor_revalidation_count"] == 1
+    assert "changed" in result["error"]
+
+
+def test_import_cli_exposes_explicit_copied_script_revalidation(query_handoff, capsys):
+    case = query_handoff
+    assert extract(case)["status"] == transfer._EXTRACTED
+    time.sleep(.01)
+    os.chmod(case["prepared"] / "extract_rows.py", 0o777)
+    assert transfer.main(["import", "--prepared", str(case["prepared"]), "--response", str(case["extracted"] / "response.json"),
+        "--output", str(case["imported"]), "--revalidate-extractor-metadata"]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["copied_extractor_revalidation_count"] == 1
+    assert shown["copied_extractor_identity_revalidation"] == "EXPLICIT_CTIME_ONLY_FULL_SOURCE_SHA256_OLD_RECEIPT_UNCHANGED"

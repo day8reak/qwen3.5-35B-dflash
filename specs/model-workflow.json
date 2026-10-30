@@ -2248,7 +2248,7 @@
         "location": "original_weight_machine",
         "entrypoint": "targets/cpro/scripts/prepare_target_pytorch.py",
         "directory": "target-pytorch",
-        "status": "DECODE_EVIDENCE_CTIME_REPLAY_HOST_VERIFIED_V6_PENDING",
+        "status": "DECODE_V6_SOURCE80_OBSERVED_BOUNDARY_LABEL_FIX_HOST_VERIFIED_V7_PENDING",
         "tests": 14,
         "next": "Inspect retainedsuccessfulprefilloutputs usingexplicitcomplete toolindex/pathlog +fileSHA/typedextent; realfeature/logitsstats/draftcapacity/originalanchorIDs next. Do notrepeatmodelcall orcompile.",
         "user_report": {
@@ -3659,14 +3659,14 @@
           },
           "same_model_state_lineage": {
             "entrypoint": "targets/cpro/scripts/inspect_target_decode_state_lineage.py",
-            "output": "target-decode1-state-lineage-v6",
+            "output": "target-decode1-state-lineage-v7",
             "success_status": "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED",
             "partial_status": "DECODE_STATE_LINEAGE_OBSERVED_WITH_GAPS",
-            "checks": "80unique serialized named updater owners, unique explicit source/compiled FX identities, exact typed views, literal native descriptor names, actual logged SHA-bound output files. Source producer missing shapes stay explicit; no profile-based filling.",
+            "checks": "80 unique owners through authoritative named updater edges; exact unique source NetOutput FX boundary identities joined to coherent compiled boundary/producer FX identities and typed views. Native names bind by explicit descriptors/tables or fixed-source GE output-label protocol only after complete82 label/view conformance, independently of runtime vector order. SHA-bound actual files; no state ordinal or equal-shape inference.",
             "feedback_ready": false,
             "state_feedback": "NOT_RUN",
             "scope": "Same compiled decode model only; separate prefill/decode RefData labels are not assumed common layer identity.",
-            "status": "HOST_BATCH_CTIME_RECOVERY_VERIFIED_RESTORE13_MODES_THEN_USER_V6",
+            "status": "ACTUAL_V6_SOURCE80_UNIQUE_BOUNDARY_FX_FIX_AND_RUNTIME_LABEL_PROTOCOL_HOST_VERIFIED_V7_PENDING",
             "metadata_json_maximum_bytes": 33554432,
             "source_pb2_flag": "--source-torchair-pb2"
           },
@@ -3849,11 +3849,11 @@
           },
           "fix": "Hash-bound canonical export receipt selects source pb2 AST literal; source ge.proto schema and enum domains independent from compiled selected-DDKhiai schema. Missing declared source dependency does not select another schema or ignore unknown fields.",
           "copy_policy": "Only exact16543B producer file copied from source host; --source-torchair-pb2 accepts matching receipt pb2 SHA and descriptor SHA, never executes the generated Python module.",
-          "next_output": "target-decode1-state-lineage-v6",
+          "next_output": "target-decode1-state-lineage-v7",
           "actual_full_state_mapping": "PENDING_USER_ARTIFACT_AUDIT"
         },
         "original_decode_row_transfer": {
-          "status": "QUERY269_LOCATED_VERSION2_EXPLICIT_QUERY_HANDOFF_PREPARED_IN_CODE",
+          "status": "ACTUAL_SCHEMA2_QUERY269_REQUEST_V3_PREPARED_STRICT_IMPORT_REFUSED_AFTER_CHMOD_EXPLICIT_RECOVERY_HOST_VERIFIED",
           "entrypoint": "targets/cpro/scripts/transfer_original_decode_rows.py",
           "subcommands": [
             "prepare",
@@ -3872,7 +3872,7 @@
             "response.json",
             "ge_ir_by_protoc_3_19_pb2.py"
           ],
-          "import_output": "target-decode1-original-rows-v3",
+          "import_output": "target-decode1-original-rows-v4",
           "request_maximum_bytes": 65536,
           "response_maximum_bytes": 1048576,
           "table_maximum_bytes": 2103300,
@@ -3886,7 +3886,9 @@
           "query_token_id": 269,
           "request_schema_version": 2,
           "context_id_role": "UNCHANGED_CONTEXT_ONLY_NO_QUERY_POSITION_INFERENCE",
-          "uniqueness_scope": "EXPLICIT_QUERY_ID_ONLY_BYTE_VALIDATED"
+          "uniqueness_scope": "EXPLICIT_QUERY_ID_ONLY_BYTE_VALIDATED",
+          "copied_extractor_recovery_flag": "--revalidate-extractor-metadata",
+          "copied_extractor_recovery_policy": "Explicit import-only recovery for exact prepared path/full source SHA/bytes/device/inode/mtime with only historical ctime drift. Historical mode was not recorded; current full identity must stay stable. Default strict; original receipts/request/response/source bytes unchanged. No source execution or permission guessing."
         },
         "source_schema_and_row_transfer_host_verification": {
           "run_id": "20261030T023239Z-14738-f5135c",
@@ -4070,8 +4072,8 @@
           "host_graph_tests_passed": 122,
           "actual_mapping": "PENDING_V4_USER_RUN"
         },
-        "next_command": "Pull updates, restore only13 named derivedinput files to recorded0644, then runstate-lineage-v6; existingquery269 row-v2 handoff remainsavailable. See docs/current-status.md.",
-        "user_state": "User-reported original full40layer prefill64 and independent experimental decode1 executed with82 logged/hash-bound outputs; exact real feature fed full6layer draft forone step. Original query raw row/scale located at269. PrimarySHA matched; v4 also observedpermissions0777 differingfromsaved0600 andcorrectly refused. Restoreoneprimarymode beforev5. Same-model80state mapping, feedback/control semantics, next-row import and multiround accuracy/performance remain open.",
+        "next_command": "Pull updates; reuse preparedrequest-v3 and returnedresponse-v3 with import --revalidate-extractor-metadata into original-rows-v4; independently run state-lineage-v7. No chmod, reprepare, reextract or model compilation required. See docs/current-status.md.",
+        "user_state": "User-reported original full40layer prefill64, independent experimental decode1 and exact-real-feature full6layer draft single step executed. V6 revalidated18 metadata/100 small payloads/1 primary OMC and observed80 unique source state owners, but compiled/runtime/file state bindings remained0 due to merged boundary/producer FX namespaces. Query269 schema2 request-v3 prepared; chmod777 changed copied extractor ctime and strict import-v3 refused. New boundary/82-label protocol audit and explicit exact-source extractor metadata recovery are host verified; actual import-v4/state-v7, continuity, accuracy and full DFlash remain pending.",
         "remaining_gates": [
           "Same-model80unique state ownership, compiled/runtime identities and individually bound output feedback",
           "Original query269 and freshargmax next0 row extraction/import with unchanged context ID bytes",
@@ -4207,6 +4209,114 @@
             "sha256": "85a6f073d45e09b14ab3c638cf445df662c9f91a4e8632222344c6172638b512"
           },
           "scope": "Hostfixtures only: role-scoped historicalctime revalidation, strict first4/hash/full9nonctime fields, oldreceipts immutable/currentstatefileIDs, active-read races, raw control/source/log/slot guards, portableprotocolv1/v2 and stdlibresourceextractor. No actualDDK/phone model execution, weightread, accuracy orstate-continuity acceptance."
+        },
+        "handoff": "20261030T060400Z-21745-c46f0d/handoff.md",
+        "decode_state_lineage_v6_user_report": {
+          "status": "DECODE_STATE_LINEAGE_OBSERVED_WITH_GAPS",
+          "output": "target-decode1-state-lineage-v6",
+          "revalidated_artifact_counts": {
+            "metadata": 18,
+            "payload": 100,
+            "primary_omc": 1
+          },
+          "counts": {
+            "source_owners": 80,
+            "unique_source_owners": 80,
+            "compiled_identity_matches": 0,
+            "runtime_name_matches": 0,
+            "bound_state_files": 0
+          },
+          "source_producer_shape_gaps": {
+            "count": 80,
+            "blocking": false
+          },
+          "root_cause": "Source NetOutput copy_-aten.copy_.default boundary identities differ from internal producer copy-aten.copy.default identities; compiled descriptors retain boundary spellings. Old merged-namespace check discarded all80. No textual normalization is authorized.",
+          "actual_name_evidence": {
+            "source_netoutput_map": "82 generic input names;0 exact native matches",
+            "compiled_netoutput_map": "NOT_DECLARED",
+            "compiled_descriptor_names": "NOT_DECLARED",
+            "model_output_name_override": "NOT_DECLARED"
+          },
+          "device_execution": "NOT_RUN",
+          "state_feedback": "NOT_RUN",
+          "state_continuity": "NOT_VALIDATED"
+        },
+        "decode_boundary_runtime_label_policy": {
+          "source_identity": "EXACT_SOURCE_NETOUTPUT_FX_ONLY_NO_PRODUCER_FALLBACK_OR_NORMALIZATION",
+          "compiled_identity": "EXACT_SOURCE_IDENTITY_OCCURS_ONCE_IN_EACH_FULL82_RAW_COMPILED_BOUNDARY_AND_PRODUCER_FX_SEQUENCE_PLUS_COHERENCE_AND_TYPED_VIEWS",
+          "runtime_label_protocol": "GRAPHENGINE_GET_OUTPUT_DESC_INFO_OUTPUT_LABELS_V1",
+          "reference_commit": "d2ab1c2819c90e61d98b5f88699bcd6b6de4423c",
+          "reference_url": "https://github.com/Ascend/graphengine/blob/d2ab1c2819c90e61d98b5f88699bcd6b6de4423c/src/ge/graph/load/new_model_manager/davinci_model.cc#L1803",
+          "reference_sha256": "277094a0e4d751bdee0305a328fdea50480d9dec4502356fbefbc89a622196a8",
+          "legacy_label": "output_<NetOutput data slot>_<retained src_name>_<retained src_index>",
+          "override_priority": "Complete attr_model_out_nodes_name uses explicit names; append retained src_index only if name lacks colon. Other counts use documented legacy branch.",
+          "enablement": "Complete82 valid metadata vectors,82 unique actual native names with exact label bijection and all82 typed ND views on same primary OMC/probe/runtime identity. Resolve native indices by literal name, never vector position.",
+          "selected_vendor_runtime_implementation": "NOT_INSPECTED_REFERENCE_ALGORITHM_REQUIRES_FULL_ACTUAL_CONFORMANCE",
+          "src_metadata_scope": "IO labels only; authoritative graph connectivity remains OpDef.input; no state owner inference from label number, shape or source producer spelling.",
+          "diagnostics": "Bounded512KiB source/compiled provenance and retained aliases only; no origin/nested graph fallback.",
+          "actual_v7_result": "PENDING_USER_EXECUTION"
+        },
+        "original_decode_request_v3_user_report": {
+          "status": "ORIGINAL_DECODE_ROW_TRANSFER_PREPARED",
+          "request_schema_version": 2,
+          "query_token_id": 269,
+          "context_id_count": 256,
+          "effective_candidate_count": 1,
+          "request_bytes": 5698,
+          "request_sha256": "ecafe74c81a259a8020f674b7dd7aae5b286a7987e0d02a2c4479d33fc67b6ed",
+          "extractor_bytes": 54468,
+          "extractor_sha256": "50f79204a1502de6a8688a759d8df29d0ed386ca14a259374acf9b6cf529c5f8",
+          "binding_digest": "1e535687f1c7fc158c2ec197954430e57f97e9ac8433cf2439756c31579c32b6",
+          "post_prepare_action": "USER_CHMOD777_RECURSIVE_PREPARED_DIRECTORY",
+          "import_v3": "FAILED_PREPARED_PORTABLE_EXTRACTION_SOURCE_IDENTITY_CHANGED",
+          "next": "Reuse same request-v3/response-v3; explicit copied-extractor metadata revalidation into a separate rows-v4. Returned response is not yet accepted; import will validate its request/extractor/row bindings."
+        },
+        "boundary_runtime_and_copied_extractor_host_verification": {
+          "run_id": "20261030T060400Z-21745-c46f0d",
+          "state_protocol_suite": {
+            "passed": 130,
+            "junit": "state-runtime-labels-junit.xml",
+            "junit_sha256": "9f5fc4d9b4e9762a85253d67fb5258c887789d689bd9547e5b96df4637fb0c18"
+          },
+          "additional_boundary_missing_producer_fallback_negative": {
+            "passed": 1,
+            "junit": "boundary-no-producer-fallback-junit.xml",
+            "also_included_in_final_suite": true
+          },
+          "extractor_recovery_suite": {
+            "passed": 13,
+            "junit": "out/copied-extractor-ctime-recovery-tests-v2.xml",
+            "junit_sha256": "4b092ae7570f65abd8eb311b7af1f4204677aab043ec23275706986c2d79ba10"
+          },
+          "independent_review": "PASSED",
+          "scope": "Host fixtures: actual-style80 boundary/producer FX namespace differences, permuted compiled ports/native order,82-label and typed-view global guards, override branches, wrong/missing/duplicate evidence refusal including raw boundary/producer FX duplicates on conflicted non-state outputs, all80 distinct output file bindings; wholepreparedtreechmod777 recovery, source/response/path/inode/mtime/SHA and active-change refusal. No actual device calls, weight reads/copies/compilation, continuity or numerical acceptance.",
+          "unique_cases_passed": 143,
+          "final_summary": "out/final-host-verification.json"
+        },
+        "boundary_runtime_experience_audit": {
+          "captured": [
+            "Source boundary FX and internal producer FX are distinct namespaces in this export; preserve exact values and independently trace actual state-owner edges.",
+            "Conflict filtering must not erase duplicate declarations before uniqueness checks; count the complete raw identity domains.",
+            "Retained src_name/src_index label metadata may differ from computational input edges. A fixed-source IO-label algorithm plus complete actual native label/view conformance is scoped evidence, not proof of selected vendor implementation.",
+            "A copied stdlib extractor has only a historical five-stat/hash receipt; recursive chmod cannot be repaired by guessing a missing recorded mode. Explicit exact-source/first-four-stat recovery records the observation without rewriting old receipts."
+          ],
+          "executable_checks": [
+            "Full82 raw FX duplicate counters",
+            "Complete82 runtime label and typed-view protocol gate",
+            "Explicit copied-extractor ctime recovery with unchanged default strict behavior"
+          ],
+          "skill_changes": "NONE_MODEL_SPECIFIC_EXPORT_PROTOCOL_AND_EXISTING_IDENTITY_RULES_SUFFICIENT",
+          "rejected_promotions": [
+            "Treating producer names as normalized boundary aliases",
+            "Treating generic source port names or runtime vector order as state ownership",
+            "Claiming actual80 runtime binding from host fixtures",
+            "Claiming selected HIAI code matches reference implementation"
+          ],
+          "remaining_hypotheses": [
+            "Actual v7 metadata conforms to all82 reference-protocol names/views",
+            "Returned row-response-v3 matches preparedrequest-v3",
+            "Control recipe/history and continuous80-state decode remain unvalidated"
+          ]
         }
       },
       "b": {

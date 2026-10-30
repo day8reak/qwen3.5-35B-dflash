@@ -18,7 +18,8 @@ from qwen35_moe_dflash import target_state_lineage as lineage
 from qwen35_moe_dflash.target_compile_failure import _stamp
 from qwen35_moe_dflash.target_prefill_smoke_plan import _runtime_keys
 from qwen35_moe_dflash.payload_revalidation import payload_identity_matches
-from test_target_state_lineage import attach_torchair_source, jobs as graph_jobs, save
+from test_target_state_lineage import (actual_boundary_pair, documented_runtime_label_probe,
+    attach_torchair_source, jobs as graph_jobs, save)
 
 
 @pytest.fixture
@@ -96,8 +97,47 @@ def test_all80_proven_owner_file_input_joins_follow_reordered_graphs_and_names(c
     assert result["gap_summary"] == []
 
 
+def test_actual_style_boundary_fx_and_observed_runtime_label_recipe_bind_all80_actual_files(case):
+    source, compiled = actual_boundary_pair()
+    observed = documented_runtime_label_probe(compiled)
+    case["documents"][b"decode SOURCE"] = source
+    case["documents"][b"decode COMPILED"] = compiled
+    keys = ("inputs", "outputs", "input_count", "output_count", "dtype_enum", "format_enum", "dtype_enum_values", "format_enum_values")
+    probe_path = case["decode_probe"]
+    native = json.loads((probe_path / "model-io.json").read_text())
+    for key in keys:
+        native[key] = case["probe"][key] = observed[key]
+    save(probe_path / "model-io.json", native)
+    case["probe"]["retrieved_sha256"]["model-io.json"] = hashlib.sha256((probe_path / "model-io.json").read_bytes()).hexdigest()
+    save(probe_path / "result.json", case["probe"])
+    plan = case["plan"]
+    for direction in ("inputs", "outputs"):
+        plan[direction] = [{"index": index, "name": row["tensor_name"], "runtime_tensor_name": row["tensor_name"],
+            "dtype": dtype, "shape": row["shape"], "bytes": math.prod(shape) * {"FLOAT16": 2, "FLOAT32": 4}[dtype]}
+            for index, ((dtype, shape), row) in enumerate(zip(_runtime_keys(case["probe"], direction), case["probe"][direction]))]
+    save(case["execution"] / "plan.json", plan)
+    for row, descriptor in zip(case["inspection"]["output_files"], plan["outputs"]):
+        path = case["execution"] / "board" / row["path"]
+        with path.open("wb") as stream: stream.truncate(descriptor["bytes"])
+        row.update(bytes=descriptor["bytes"], sha256=hashlib.sha256(path.read_bytes()).hexdigest(), stat=_stamp(path.stat()))
+    case["inspection"]["expected_runtime_outputs"] = [{key: row[key] for key in ("index", "shape", "dtype", "bytes")} for row in plan["outputs"]]
+    save(case["inspection_dir"] / "report.json", case["inspection"])
+    result = inspect(case)
+    assert result["status"] == "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED", result
+    decode = result["decode"]
+    assert decode["source_lineage"]["producer_fx_namespace_relation_counts"]["DIFFERENT_LITERAL_IDENTITIES"] == 80
+    assert decode["compiled_lineage"]["matched_count"] == decode["runtime_bindings"]["matched_count"] == 80
+    assert decode["runtime_bindings"]["runtime_output_label_protocol"]["matched_count"] == 82
+    assert decode["state_file_mapping"]["bound_count"] == 80
+    assert all(row["output_file"]["relative_path"].startswith("outputs/unrelated_") for row in decode["state_file_mapping"]["states"])
+    assert result["feedback_ready"] is False and result["state_feedback"] == "NOT_RUN"
+    assert all(not row["blocks_state_mapping"] for row in result["gap_summary"])
+
+
 def test_ctime_revalidated_state_files_use_current_stats_without_changing_old_receipt(case):
+    import time
     saved = (case["inspection_dir"] / "report.json").read_bytes()
+    time.sleep(0.02)
     for row in case["inspection"]["output_files"]:
         path = case["execution"] / "board" / row["path"]
         os.chmod(path, path.stat().st_mode & 0o7777)
@@ -295,7 +335,7 @@ def test_cli_binds_exact_copied_producer_pb2_through_all80_actual_file_joins(cas
     assert full["feedback_ready"] is False and full["state_feedback"] == "NOT_RUN"
 
 
-def test_graph_input_authority_handles_stale_compiled_metadata_and_records_raw_counts(case):
+def test_graph_input_authority_keeps_owners_separate_from_contradictory_runtime_io_labels(case):
     nodes = case["documents"][b"decode COMPILED"]["graph"][0]["op"]
     net = next(row for row in nodes if row["type"] == "NetOutput")
     original = list(net["input"])
@@ -303,7 +343,10 @@ def test_graph_input_authority_handles_stale_compiled_metadata_and_records_raw_c
     net["src_index"] = [int(edge.rsplit(":", 1)[1]) for edge in reversed(original)]
     net["input"].insert(13, "arg0_1:-1")
     result = inspect(case)
-    assert result["status"] == "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED", result
+    assert result["status"] == "DECODE_STATE_LINEAGE_OBSERVED_WITH_GAPS", result
+    assert result["decode"]["compiled_lineage"]["matched_count"] == 80
+    assert result["decode"]["runtime_bindings"]["matched_count"] == 0
+    assert result["decode"]["runtime_bindings"]["runtime_output_label_protocol"]["reason"] == "COMPLETE_82_UNIQUE_NATIVE_LABEL_BIJECTION_REQUIRED"
     observed = result["decode"]["edge_representation_observations"]["compiled_omc"]
     assert observed["counts"]["direct_controls"] == 1
     assert observed["counts"]["raw_input_entries"] == 83

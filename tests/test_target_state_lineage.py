@@ -107,6 +107,225 @@ def runtime_probe(compiled, *, names=True):
     return result
 
 
+def actual_boundary_pair():
+    """Actual TorchAir boundary/producer FX namespaces, with permuted GE ports."""
+    source = graph(1)
+    _, nodes, net = audit._graph(source)
+    for index in range(1, 81):
+        suffix = "" if index == 1 else "_" + str(index - 1)
+        boundary = "copy_" + suffix + "-aten.copy_.default.OUTPUT.0"
+        producer = "copy" + suffix + "-aten.copy.default.OUTPUT.0"
+        net["input_desc"][index]["attr"] = [attr("_fx_tensor_name", {"s": boundary})]
+        node, port = audit._edge(net["input"][index], nodes)
+        node["output_desc"][port]["attr"] = [attr("_fx_tensor_name", {"s": producer})]
+    compiled = compiled_graph(source)
+    body, boundary = compiled["graph"][0]["op"][-2:]
+    order = [52, 21, 0, *[index for index in range(82) if index not in {52, 21, 0}]]
+    boundary["input"] = [body["name"] + ":" + str(port) for port in order]
+    boundary["input_desc"] = [deepcopy(body["output_desc"][port]) for port in order]
+    for index in range(1, 81):
+        node, port = audit._edge(net["input"][index], nodes)
+        node["output_desc"][port]["shape"] = {}
+    return source, compiled
+
+
+def explicit_runtime_name_map(compiled):
+    """Drop TensorDescriptor.name and bind actual arbitrary literals to data ports."""
+    probe = runtime_probe(compiled)
+    _, _, net = audit._graph(compiled)
+    names = {index: "kept/native-boundary-" + str((index * 19 + 7) % 82) for index in range(82)}
+    keys = list(reversed(range(82)))
+    net["attr"] = [attr("_input_name_key", {"list": {"s": [names[index] for index in keys]}}),
+        attr("_input_name_value", {"list": {"i": keys}})]
+    for node in compiled["graph"][0]["op"]:
+        for raw in node.get("input_desc", []) + node.get("output_desc", []):
+            raw.pop("name", None)
+    for row in probe["outputs"]:
+        row["tensor_name"] = names[81 - row["index"]]
+    return probe
+
+
+def documented_runtime_label_probe(compiled, *, explicit=None):
+    """Reference label metadata need not be computational producer edges."""
+    probe = runtime_probe(compiled)
+    _, _, net = audit._graph(compiled)
+    net["src_name"] = ["retained_pre_fusion_" + str((index * 23 + 5) % 82) for index in range(82)]
+    net["src_index"] = [index % 3 for index in range(82)]
+    if explicit is not None:
+        compiled["attr"] = [attr("attr_model_out_nodes_name", {"list": {"s": explicit}})]
+    if explicit is not None and len(explicit) == 82:
+        labels = [name if ":" in name else name + ":" + str(net["src_index"][index]) for index, name in enumerate(explicit)]
+    else:
+        labels = ["output_" + str(index) + "_" + net["src_name"][index] + "_" + str(net["src_index"][index]) for index in range(82)]
+    for node in compiled["graph"][0]["op"]:
+        for raw in node.get("input_desc", []) + node.get("output_desc", []): raw.pop("name", None)
+    for row in probe["outputs"]: row["tensor_name"] = labels[81 - row["index"]]
+    return probe
+
+
+@pytest.mark.parametrize("branch", ["legacy", "explicit", "short_explicit_uses_legacy", "empty_explicit_uses_legacy"])
+def test_documented_runtime_label_recipe_requires_observed_all82_names_and_views_with_permuted_order(branch):
+    source, compiled = actual_boundary_pair()
+    explicit = (["declared_" + str(index) + (":kept" if index % 2 else "") for index in range(82)]
+        if branch == "explicit" else ["unused_" + str(index) for index in range(81)] if branch.startswith("short") else [] if branch.startswith("empty") else None)
+    probe = documented_runtime_label_probe(compiled, explicit=explicit)
+    if branch.startswith("empty"): compiled["attr"][0]["value"]["list"].pop("s")
+    joined = audit._join_compiled(audit.analyze_state_lineage(source, ENUMS), compiled, ENUMS)
+    runtime = audit._runtime_bindings(joined, probe, ENUMS)
+    protocol = runtime["runtime_output_label_protocol"]
+    assert joined["matched_count"] == runtime["matched_count"] == 80
+    assert protocol["status"] == "ACTUAL82_OF82_PROTOCOL_CONFORMANCE_OBSERVED" and protocol["matched_count"] == 82
+    assert protocol["branch"] == ("EXPLICIT_MODEL_OUTPUT_NAMES" if branch == "explicit" else "LEGACY_NETOUTPUT_SOURCE_LABELS")
+    assert protocol["reference"]["selected_vendor_runtime_implementation"] == "NOT_INSPECTED"
+    assert protocol["reference"]["source_sha256"] == "277094a0e4d751bdee0305a328fdea50480d9dec4502356fbefbc89a622196a8"
+    assert all(row["output_name_binding"] == "OBSERVED_GET_OUTPUT_DESC_INFO_LABEL_PROTOCOL" for row in runtime["states"])
+    assert any(row["runtime_output_index"] != row["compiled_output_index"] != row["source_output_index"] for row in runtime["states"])
+    # Retained source labels are not graph nodes; computational owners still
+    # come only from source data edges + named updater ports + coherent FX.
+    assert not set(compiled["graph"][0]["op"][-1]["src_name"]) & {row["name"] for row in compiled["graph"][0]["op"]}
+
+
+@pytest.mark.parametrize("fault", ["partial_names", "partial_ports", "negative_port", "bool_port", "bad_name", "missing_native",
+    "duplicate_native", "wrong_native", "nonstate_dtype", "nonstate_shape", "complete_override_contradicts_legacy",
+    "invalid_override", "descriptor_conflict", "name_map_conflict"])
+def test_documented_runtime_label_recipe_blocks_partial_or_conflicting_evidence_without_name_fallback(fault):
+    source, compiled = actual_boundary_pair()
+    probe = documented_runtime_label_probe(compiled)
+    _, _, net = audit._graph(compiled)
+    if fault == "partial_names": net["src_name"].pop()
+    elif fault == "partial_ports": net["src_index"].pop()
+    elif fault == "negative_port": net["src_index"][0] = -1
+    elif fault == "bool_port": net["src_index"][0] = True
+    elif fault == "bad_name": net["src_name"][0] = "bad label\n"
+    elif fault == "missing_native": probe["outputs"][0].pop("tensor_name_status")
+    elif fault == "duplicate_native": probe["outputs"][0]["tensor_name"] = probe["outputs"][1]["tensor_name"]
+    elif fault == "wrong_native": probe["outputs"][0]["tensor_name"] += "_not_declared"
+    elif fault.startswith("nonstate"):
+        row = next(row for row in probe["outputs"] if row["raw_dtype"] == RUNTIME_TYPES["FLOAT32"])
+        if fault == "nonstate_dtype": row["raw_dtype"] = RUNTIME_TYPES["INT8"]
+        else: row["shape"] = [1, 2, 248320]
+    elif fault == "complete_override_contradicts_legacy":
+        compiled["attr"] = [attr("attr_model_out_nodes_name", {"list": {"s": ["override_" + str(index) for index in range(82)]}})]
+    elif fault == "invalid_override": compiled["attr"] = [attr("attr_model_out_nodes_name", {"i": 82})]
+    elif fault == "descriptor_conflict":
+        for raw in net["input_desc"]: raw["name"] = "contradictory_descriptor_name"
+    else:
+        net["attr"] = [attr("_input_name_key", {"list": {"s": ["contradictory_port_" + str(index) for index in range(82)]}}),
+            attr("_input_name_value", {"list": {"i": list(range(82))}})]
+    joined = audit._join_compiled(audit.analyze_state_lineage(source, ENUMS), compiled, ENUMS)
+    runtime = audit._runtime_bindings(joined, probe, ENUMS)
+    assert joined["matched_count"] == 80 and runtime["matched_count"] == 0
+    assert all(row["status"] == "UNVERIFIED" for row in runtime["states"])
+
+
+def test_actual_source_boundary_fx_namespace_closes_all80_without_producer_normalization():
+    source, compiled = actual_boundary_pair()
+    lineage = audit.analyze_state_lineage(source, ENUMS)
+    assert lineage["observed_state_owner_count"] == lineage["unique_state_owner_count"] == 80
+    assert lineage["fixed_state_output_producer_shape_count"] == 0
+    assert lineage["producer_fx_namespace_relation_counts"]["DIFFERENT_LITERAL_IDENTITIES"] == 80
+    row = lineage["states"][0]
+    assert row["fx_tensor_identity"] == "copy_-aten.copy_.default.OUTPUT.0"
+    assert row["source_producer_fx_tensor_identity"] == "copy-aten.copy.default.OUTPUT.0"
+    joined = audit._join_compiled(lineage, compiled, ENUMS)
+    assert joined["matched_count"] == 80
+    assert any(row["compiled_output_index"] != row["source_output_index"] for row in joined["states"])
+    assert {row["compiled_output_edge"] for row in joined["states"]} != {
+        "opaque-task:" + str(row["source_output_index"]) for row in joined["states"]}
+
+
+@pytest.mark.parametrize("fault", ["missing_source_boundary", "duplicate_source_boundary", "source_boundary_duplicates_feature",
+    "wrong_source_boundary", "compiled_boundary_producer_conflict", "missing_compiled_boundary", "missing_compiled_producer",
+    "duplicate_compiled_boundary", "compiled_state_dtype"])
+def test_boundary_fx_join_refuses_missing_duplicate_conflicting_or_wrong_typed_evidence(fault):
+    source, compiled = actual_boundary_pair()
+    _, _, source_net = audit._graph(source)
+    _, compiled_nodes, compiled_net = audit._graph(compiled)
+    target = next(index for index, raw in enumerate(compiled_net["input_desc"])
+        if audit._identity(raw) == audit._identity(source_net["input_desc"][1]))
+    node, port = audit._edge(compiled_net["input"][target], compiled_nodes)
+    if fault == "missing_source_boundary":
+        _, source_nodes, _ = audit._graph(source)
+        source_node, source_port = audit._edge(source_net["input"][1], source_nodes)
+        source_node["output_desc"][source_port]["attr"] = deepcopy(source_net["input_desc"][1]["attr"])
+        source_net["input_desc"][1].pop("attr")
+    elif fault == "duplicate_source_boundary": source_net["input_desc"][2]["attr"] = deepcopy(source_net["input_desc"][1]["attr"])
+    elif fault == "source_boundary_duplicates_feature": source_net["input_desc"][81]["attr"] = deepcopy(source_net["input_desc"][1]["attr"])
+    elif fault == "wrong_source_boundary": source_net["input_desc"][1]["attr"] = [attr("_fx_tensor_name", {"s": "copy-aten.copy.default.OUTPUT.0"})]
+    elif fault == "compiled_boundary_producer_conflict": node["output_desc"][port]["attr"] = [attr("_fx_tensor_name", {"s": "producer-different"})]
+    elif fault == "missing_compiled_boundary": compiled_net["input_desc"][target].pop("attr")
+    elif fault == "missing_compiled_producer": node["output_desc"][port].pop("attr")
+    elif fault == "duplicate_compiled_boundary":
+        other = (target + 1) % 82
+        other_node, other_port = audit._edge(compiled_net["input"][other], compiled_nodes)
+        for raw in (compiled_net["input_desc"][other], other_node["output_desc"][other_port]):
+            raw["attr"] = deepcopy(compiled_net["input_desc"][target]["attr"])
+    else:
+        compiled_net["input_desc"][target]["dtype"] = node["output_desc"][port]["dtype"] = 78
+    joined = audit._join_compiled(audit.analyze_state_lineage(source, ENUMS), compiled, ENUMS)
+    assert joined["matched_count"] < 80
+
+
+def test_complete_literal_netoutput_name_map_binds_native_names_without_tensor_desc_names():
+    source, compiled = actual_boundary_pair()
+    probe = explicit_runtime_name_map(compiled)
+    joined = audit._join_compiled(audit.analyze_state_lineage(source, ENUMS), compiled, ENUMS)
+    runtime = audit._runtime_bindings(joined, probe, ENUMS)
+    assert joined["matched_count"] == runtime["matched_count"] == 80
+    assert all(row["output_name_binding"] == "EXPLICIT_NETOUTPUT_INPUT_NAME_MAP" for row in runtime["states"])
+    assert any(row["compiled_output_index"] != row["runtime_output_index"] for row in runtime["states"])
+    assert all(row["runtime_output_name"].startswith("kept/native-boundary-") for row in runtime["states"])
+
+
+@pytest.mark.parametrize("nonstate", ["feature", "logits"])
+@pytest.mark.parametrize("duplicated_side", ["boundary", "producer"])
+def test_conflicting_nonstate_row_cannot_hide_a_duplicate_raw_state_fx_identity(nonstate, duplicated_side):
+    source, compiled = actual_boundary_pair()
+    _, _, source_net = audit._graph(source)
+    _, nodes, net = audit._graph(compiled)
+    selected = ("FLOAT32", (248320,)) if nonstate == "logits" else ("FLOAT16", (16384,))
+    raw = next(raw for raw in net["input_desc"] if audit._view(raw, ENUMS) == selected)
+    index = net["input_desc"].index(raw)
+    producer, port = audit._edge(net["input"][index], nodes)
+    state_identity = audit._identity(source_net["input_desc"][1])
+    for side, target in (("boundary", raw), ("producer", producer["output_desc"][port])):
+        target["attr"] = [attr("_fx_tensor_name", {"s": state_identity if side == duplicated_side else "unrelated_nonstate_identity"})]
+    joined = audit._join_compiled(audit.analyze_state_lineage(source, ENUMS), compiled, ENUMS)
+    assert joined["matched_count"] == 79
+    row = next(row for row in joined["states"] if row["source_output_index"] == 1)
+    assert row["status"] == "UNVERIFIED" and row["reason"] == "MISSING_OR_NONUNIQUE_EXPLICIT_FX_TENSOR_IDENTITY"
+
+
+def test_unrelated_nonstate_fx_conflict_does_not_block_unique_state_identities():
+    source, compiled = actual_boundary_pair()
+    _, nodes, net = audit._graph(compiled)
+    index = next(index for index, raw in enumerate(net["input_desc"]) if audit._view(raw, ENUMS) == ("FLOAT16", (16384,)))
+    producer, port = audit._edge(net["input"][index], nodes)
+    net["input_desc"][index]["attr"] = [attr("_fx_tensor_name", {"s": "unrelated_boundary"})]
+    producer["output_desc"][port]["attr"] = [attr("_fx_tensor_name", {"s": "unrelated_producer"})]
+    assert audit._join_compiled(audit.analyze_state_lineage(source, ENUMS), compiled, ENUMS)["matched_count"] == 80
+
+
+@pytest.mark.parametrize("fault", ["absent", "partial", "duplicate_key", "duplicate_port", "outside_port", "native_name", "descriptor_conflict"])
+def test_runtime_name_bridge_refuses_guessed_incomplete_or_conflicting_labels(fault):
+    source, compiled = actual_boundary_pair()
+    probe = explicit_runtime_name_map(compiled)
+    _, _, net = audit._graph(compiled)
+    if fault == "absent": net.pop("attr")
+    elif fault == "partial":
+        for entry in net["attr"]: next(iter(entry["value"]["list"].values())).pop()
+    elif fault == "duplicate_key": net["attr"][0]["value"]["list"]["s"][1] = net["attr"][0]["value"]["list"]["s"][0]
+    elif fault == "duplicate_port": net["attr"][1]["value"]["list"]["i"][1] = net["attr"][1]["value"]["list"]["i"][0]
+    elif fault == "outside_port": net["attr"][1]["value"]["list"]["i"][0] = 82
+    elif fault == "native_name":
+        for row in probe["outputs"]: row["tensor_name"] = "not-declared/" + str(row["index"])
+    else:
+        for raw in net["input_desc"]: raw["name"] = "not-the-declared-port-name"
+    joined = audit._join_compiled(audit.analyze_state_lineage(source, ENUMS), compiled, ENUMS)
+    runtime = audit._runtime_bindings(joined, probe, ENUMS)
+    assert joined["matched_count"] == 80 and runtime["matched_count"] < 80
+
+
 def test_actual_named_edges_override_every_source_compiled_and_runtime_ordinal():
     source = graph()
     lineage = audit.analyze_state_lineage(source, ENUMS)
@@ -123,6 +342,45 @@ def test_actual_named_edges_override_every_source_compiled_and_runtime_ordinal()
     row = runtime["states"][0]
     assert row["runtime_input_name"] == "RefData_79"
     assert row["runtime_output_index"] != row["compiled_output_index"]
+
+
+def test_compiler_provenance_diagnostic_retains_actual_descriptor_and_node_fields_without_binding():
+    source = graph(1)
+    compiled = compiled_graph(source)
+    producer = compiled["graph"][0]["op"][-2]
+    producer["subgraph_name"] = ["inner_task"]
+    producer["attr"] = [attr("_datadump_original_op_names", {"list": {"s": ["update_1", "unrelated"]}})]
+    for raw in (producer["output_desc"][0], compiled["graph"][0]["op"][-1]["input_desc"][0]):
+        raw["reuse_input"] = True
+        raw["reuse_input_index"] = 5
+        raw["attr"] = [attr("_datadump_origin_name", {"s": "state_cast_63"}),
+            attr("_datadump_origin_output_index", {"i": 0})]
+    report = audit.observe_compiled_state_provenance(source, compiled, ENUMS, ENUMS)
+    assert report["status"] == "OBSERVED_ONLY_NO_NEW_STATE_BINDING"
+    assert len(report["source_air"]["outputs"]) == len(report["compiled_omc"]["outputs"]) == 82
+    observed = report["compiled_omc"]["outputs"][0]
+    assert observed["producer_node"] == producer["name"] and observed["producer_output_port"] == 0
+    assert observed["descriptor"]["attributes"]["selected_values"]["_datadump_origin_name"] == {"s": "state_cast_63"}
+    assert observed["descriptor"]["alias_fields"] == {"reuse_input": True, "reuse_input_index": 5}
+    node, = report["compiled_omc"]["output_producer_nodes"]
+    assert node["graph_link_fields"] == {"subgraph_name": ["inner_task"]}
+    assert node["attributes"]["selected_values"]["_datadump_original_op_names"] == {"list": {"s": ["update_1", "unrelated"]}}
+    # The diagnostic never promotes either aggregate names or even observed
+    # descriptor origin attributes without the separate provenance contract.
+    joined = audit._join_compiled(audit.analyze_state_lineage(source, ENUMS), compiled, ENUMS)
+    assert joined["matched_count"] == 79
+
+
+def test_compiler_provenance_diagnostic_marks_truncation_and_never_uses_it_as_identity():
+    source = graph(1)
+    compiled = compiled_graph(source)
+    raw = compiled["graph"][0]["op"][-1]["input_desc"][0]
+    raw["attr"] = [attr("_datadump_origin_name", {"s": "x" * 1025}),
+        attr("_datadump_origin_output_index", {"i": 0})]
+    report = audit.observe_compiled_state_provenance(source, compiled, ENUMS, ENUMS)
+    value = report["compiled_omc"]["outputs"][0]["descriptor"]["attributes"]["selected_values"]["_datadump_origin_name"]["s"]
+    assert value["truncated"] is True and value["characters"] == 1025
+    assert report["status"] == "OBSERVED_ONLY_NO_NEW_STATE_BINDING"
 
 
 def test_metadata_only_src_lists_cannot_establish_a_state_owner():

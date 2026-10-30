@@ -2,95 +2,45 @@
 
 <a id="用户现在执行什么"></a>
 
-A：原版 target prefill64、独立 decode1、真实 feature → 完整六层 draft 单步均已执行。decode 的 82 个输出文件已绑定；精度和连续状态尚未验证。
+A：原版 target prefill64、独立 decode1、真实 feature → 完整六层 draft 单步均已执行。v6 已完成文件复核：18 份元数据、100 份小型 payload、1 份主 OMC 通过重验；原 AIR 的 80 个状态归属均唯一。连续状态、精度和完整 DFlash 循环仍待验证。
 
-原权重机器精确定位到 query ID **269**，整行 INT8 和独立 FP32 scale 都匹配，累计读取 995,392 字节。原 256 个 ID 文件仅保留为 context，不替换、不截取。下一行来自已执行 decode logits 的 argmax 0，这仍不是精度通过。
-
-批量检查已确认：相关元数据、13 份派生输入、82 份输出及 4 份日志内容均未变，仅 ctime 变化；12 份原始输入完全未变。主 OMC 原权限 `0600` 已恢复。13 份派生输入的已记录原权限为 `0644`，当前为 `0777`，也需按下列明确文件名恢复。JSON 和输出日志没有记录原权限，不猜测或批量修改它们的权限。
-
-新版本对历史文件重新读取、核对原 SHA，只接纳已证明的 ctime 差异；当前读取期间发生变化仍会失败。旧编译报告、计划和执行回执保持原样，无需重编译或重跑模型。图连接检查继续采用实际 `OpDef.input`，保留空可选槽位、排除控制边，`src_name/src_index` 单独作为元数据记录。
-
-DDK 主机拉取更新，恢复这 13 份派生输入的原权限，再用新目录检查状态归属；保留 v4、v5 的失败记录：
+当前有两项可独立执行，先在 DDK 主机拉取更新：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-for name in allQLen attention_mask conv_state_pos effective_length \
-  embed_scale inputs_embeds new_kv_cache_pos output_pos past_conv_state \
-  past_k past_recurrent_state past_v position_ids; do
-  chmod 0644 "$AI_RUN_DIR/target-decode1-trial-inputs/inputs/$name.bin"
-done
-python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_decode_state_lineage.py" \
-  --job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
-  --runtime-probe "$AI_RUN_DIR/target-decode1-runtime-io-v2" \
-  --output-inspection "$AI_RUN_DIR/target-decode1-output-inspection" \
-  --source-torchair-pb2 "$AI_RUN_DIR/target-decode1-row-response/ge_ir_by_protoc_3_19_pb2.py" \
-  --output "$AI_RUN_DIR/target-decode1-state-lineage-v6"
 ```
 
-完整绑定应为 `ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED`、`counts.bound_state_files: 80`；缺证据会输出具体 gap。`revalidated_artifact_counts` 显示本次重新验证的文件数，详细旧／当前身份保存在新报告中。状态文件映射记录当前身份，后续反馈不会继承旧 ctime。这只建立同一 decode 模型内的结构映射，尚未执行状态反馈。
+`target-decode1-row-request-v3` 已准备成功。之后的递归 chmod 改变了已记录的 `extract_rows.py` 身份；原清单未记录权限，不能靠猜权限恢复。新参数仅允许完整源码 SHA、路径、inode、大小和 mtime 一致时，对 ctime 变化进行显式重验；默认检查仍严格。现有请求、脚本、响应和旧清单均保留，不需重新提取两行。
 
-原始行提取可独立推进。本次使用新的 `-v3` 目录，保留此前可能生成的 `-v2`；请求协议仍为 `schema_version: 2`。在 DDK 主机准备新请求：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/transfer_original_decode_rows.py" prepare \
-  --inspection "$AI_RUN_DIR/target-decode1-output-inspection" \
-  --config-yaml /home/w00949577/qwen3.5-35B-moe/config/qwen3_5_moe.yaml \
-  --query-token-id 269 \
-  --output "$AI_RUN_DIR/target-decode1-row-request-v3"
-```
-
-应返回 `ORIGINAL_DECODE_ROW_TRANSFER_PREPARED`，`schema_version: 2`、`query_token_id: 269`、`effective_candidate_count: 1`。若失败，保留新目录并贴回错误，不修改旧请求。
-
-把 DDK 主机的这两个新文件：
-
-```text
-/home/w00949577/qwen3.5-35B-dflash-run/target-decode1-row-request-v3/request.json
-/home/w00949577/qwen3.5-35B-dflash-run/target-decode1-row-request-v3/extract_rows.py
-```
-
-复制到原权重机器的这两个位置：
-
-```text
-/home/w00949577/qwen35-decode1-row-request-v3/request.json
-/home/w00949577/qwen35-decode1-row-request-v3/extract_rows.py
-```
-
-在原权重机器执行，仅读原表的 269 和 0 两行，共 4,104 字节：
-
-```bash
-cd /home/w00949577/qwen35-decode1-row-request-v3
-python3 -I -S extract_rows.py extract \
-  --request request.json \
-  --weight-table /home/l00886453/models/Qwen3.5-35B-A3B_quant/qwen3_5_moe_embdedding_weight.bin \
-  --scale-table /home/l00886453/models/Qwen3.5-35B-A3B_quant/qwen3_5_moe_embdedding_scale.bin \
-  --output ./target-decode1-row-response-v3
-```
-
-应返回 `ORIGINAL_DECODE_ROWS_EXTRACTED`、`matching_token_ids: [269]`。不再使用旧的 NO_MATCH 响应，也不把定位用的 `diagnostic.json` 当作提取响应。
-
-把原权重机器的：
-
-```text
-/home/w00949577/qwen35-decode1-row-request-v3/target-decode1-row-response-v3/response.json
-```
-
-复制回 DDK 主机的：
-
-```text
-/home/w00949577/qwen3.5-35B-dflash-run/target-decode1-row-response-v3/response.json
-```
-
-在 DDK 主机导入：
+使用原请求和已取回的响应，在新目录重试导入：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/transfer_original_decode_rows.py" import \
   --prepared "$AI_RUN_DIR/target-decode1-row-request-v3" \
   --response "$AI_RUN_DIR/target-decode1-row-response-v3/response.json" \
-  --output "$AI_RUN_DIR/target-decode1-original-rows-v3"
+  --revalidate-extractor-metadata \
+  --output "$AI_RUN_DIR/target-decode1-original-rows-v4"
 ```
 
-应返回 `ORIGINAL_DECODE_TRANSFERRED_ROWS_BOUND_NEXT_TOKEN_PREPARED`、`selected_source_token_id: 269`、`selected_next_token_id: 0`。只生成原始 INT8 行、独立 FP32 scale 和 INT32 token ID，共 2,056 字节。
+应返回 `ORIGINAL_DECODE_TRANSFERRED_ROWS_BOUND_NEXT_TOKEN_PREPARED`、`selected_source_token_id: 269`、`selected_next_token_id: 0`。`copied_extractor_revalidation_count` 记录本次脚本复核。只生成原始 INT8 行、独立 FP32 scale 和 INT32 token ID，共 2,056 字节。这不是精度通过；原 256 个 ID 继续作为 context 保留。后续若需调整传输权限，请修改单独的传输副本，保留准备目录原状。
 
-状态归属与原始行通过后，下一步是携带 80 份独立状态的连续 decode，再接逐 token verify／DFlash 循环。控制值语义、精度与 draft 长度 64 的上下文容量仍需对齐。
+状态映射方面，v6 的阻塞来自源图 NetOutput 的 `copy_…` 边界身份与内部 producer 的 `copy…` 身份被错误合并。编译图实际保留了前者。新版本分别保留两种身份，严格按完整边界 FX 标识唯一匹配，不修改名称或按输出序号分配状态。
+
+编译描述符没有显式 name；运行时输出名将按 [GE 的输出标签实现](https://github.com/Ascend/graphengine/blob/d2ab1c2819c90e61d98b5f88699bcd6b6de4423c/src/ge/graph/load/new_model_manager/davinci_model.cc#L1803)核验。这是固定版本的参考算法，所选 HIAI 内部实现尚未检查；只有全部 82 个实际标签及类型／形状与同一模型的元数据一致时才启用。`src_name/src_index` 在这里仅解释 I/O 标签，计算连接仍由 `OpDef.input` 确定。
+
+在新目录检查状态归属：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_decode_state_lineage.py" \
+  --job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
+  --runtime-probe "$AI_RUN_DIR/target-decode1-runtime-io-v2" \
+  --output-inspection "$AI_RUN_DIR/target-decode1-output-inspection" \
+  --source-torchair-pb2 "$AI_RUN_DIR/target-decode1-row-response/ge_ir_by_protoc_3_19_pb2.py" \
+  --output "$AI_RUN_DIR/target-decode1-state-lineage-v7"
+```
+
+完整绑定应为 `ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED`、`counts.bound_state_files: 80`；缺少证据仍报告具体 gap。新报告保留身份来源和实际标签核验结果。这只建立同一 decode 模型内的结构映射，不执行模型，不改旧回执，也不证明状态连续性。
+
+这两项通过后，下一步是携带 80 份独立状态的连续 decode，再接逐 token verify／DFlash 循环。控制值语义、精度与 draft 长度 64 的上下文容量仍需对齐。
 
 B：55 档特征 AIR 保留备份，本轮无待执行命令。

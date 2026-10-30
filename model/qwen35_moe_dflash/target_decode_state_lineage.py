@@ -31,8 +31,11 @@ def _decode_job(job, bindings, observations, *, source_torchair_pb2=None):
         "compiled_omc": lineage.observe_edge_representations(compiled, "compiled-omc")}
     observations.update(metadata)
     metadata["source_lineage"] = lineage.analyze_state_lineage(source, source_enums)
+    metadata["compiled_provenance_observation"] = lineage.observe_compiled_state_provenance(
+        source, compiled, source_enums, enums)
     joined = lineage._join_compiled(metadata["source_lineage"], compiled, enums)
-    _, _, refs, outputs = lineage._boundary(source, source_enums, allow_unmaterialized_producer=True, graph_context="source-air")
+    _, _, refs, outputs = lineage._boundary(source, source_enums, allow_unmaterialized_producer=True,
+        graph_context="source-air", source_boundary_identity=True)
     for row in joined["states"]:
         if row["status"] != "EXPLICIT_FX_TENSOR_IDENTITY_MATCHED":
             continue
@@ -211,7 +214,7 @@ def inspect_target_decode_state_lineage(job, runtime_probe, output_inspection, o
         result["decode"] = decoded
         result["operator_port_contract"] = {"source": lineage._source_record(),
             "pairs": {key: {"input": value[0], "output": value[1]} for key, value in lineage._PAIRS.items()},
-            "binding_policy": "Actual serialized named maps, unique FX identities and literal runtime names; no ordinal fallback"}
+            "binding_policy": "Actual source edges and named updater ports; unique source NetOutput FX identities join coherent compiled boundary FX. Literal declared names or a documented IO-label protocol observed across all82 native names/views binds runtime slots. No text normalization, producer-FX fallback, native-order assumption or ordinal state-owner inference"}
         result["stage"] = "bind-named-runtime-descriptors"
         probe_dir, _ = _safe(runtime_probe, directory=True)
         probe = lineage._probe(probe_dir, decoded, bindings)

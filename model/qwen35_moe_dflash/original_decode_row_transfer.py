@@ -235,6 +235,36 @@ def _assert_current_metadata(snapshot):
             raise ValueError("metadata changed within the current transfer invocation: " + identity["path"])
 
 
+def _full_file_identity(path):
+    value = Path(path).stat()
+    return {"device": value.st_dev, "inode": value.st_ino, "bytes": value.st_size,
+        "mtime_ns": value.st_mtime_ns, "ctime_ns": value.st_ctime_ns, "mode": value.st_mode,
+        "uid": value.st_uid, "gid": value.st_gid, "nlink": value.st_nlink}
+
+
+def _copied_extractor(prepared, recorded, *, revalidate_metadata, observations):
+    path = prepared / "extract_rows.py"
+    before = _full_file_identity(path)
+    _, current = _read(path, 1 << 20)
+    if _full_file_identity(path) != before:
+        raise ValueError("prepared portable extraction source changed during its current read")
+    if current == recorded:
+        return current, before
+    if not revalidate_metadata:
+        raise ValueError("prepared portable extraction source identity changed")
+    if (not isinstance(recorded, dict) or set(recorded) != {"path", "bytes", "sha256", "stat"}
+            or recorded["path"] != str(path) or type(recorded["bytes"]) is not int or recorded["bytes"] != current["bytes"]
+            or recorded["sha256"] != current["sha256"] or not isinstance(recorded["stat"], list)
+            or len(recorded["stat"]) != 5 or any(type(item) is not int or item < 0 for item in recorded["stat"])
+            or recorded["stat"][:4] != current["stat"][:4]):
+        raise ValueError("copied extractor recovery requires the exact prepared full-source SHA256 and every nonctime recorded field")
+    observations.append({"kind": "COPIED_EXTRACTOR_CTIME_ONLY_REVALIDATED", "status": "FULL_SOURCE_SHA256_VERIFIED",
+        "recorded_identity": recorded, "current_identity": current, "current_full_identity": before,
+        "scope": "EXACT_PREPARED_EXTRACT_ROWS_PY_ONLY", "receipt_mutation": "NONE", "mode_action": "NONE",
+        "historical_mode": "NOT_RECORDED_OPEN_XB_USES_PROCESS_UMASK", "source_execution": "NOT_PERFORMED"})
+    return current, before
+
+
 def _fresh_local(audit, inspection, config_yaml, *, revalidation_observations=None,
                  metadata_revalidation_observations=None, payload_revalidation_observations=None,
                  active_metadata_identities=None):
@@ -665,14 +695,17 @@ def _response(value, request, request_identity):
     return next_bytes, next_scale, matched, positions[matched]
 
 
-def import_rows(prepared, response_path, output):
+def import_rows(prepared, response_path, output, *, revalidate_extractor_metadata=False):
     out = _new_output(output)
     result = {"schema_version": 1, "artifact_kind": "qwen35-original-decode-row-transfer-import", "status": "FAILED",
         "output": str(out), "next_token_inputs": [], "logical_history": "UNVERIFIED", "runtime_control_recipe": "UNVERIFIED",
         "state_feedback": "UNVERIFIED", "numerical_validation": "NOT_RUN_NO_REFERENCE", "device_execution": "NOT_RUN"}
     revalidations, metadata_revalidations, payload_revalidations = [], [], []
+    extractor_revalidations = []
     active_metadata = {}
     try:
+        if type(revalidate_extractor_metadata) is not bool:
+            raise ValueError("revalidate_extractor_metadata must be an explicit boolean")
         prepared, _ = _safe(prepared, directory=True)
         manifest, manifest_identity = _json(prepared / "manifest.json", _METADATA_MAX)
         _remember_current_metadata(manifest_identity, active_metadata)
@@ -688,13 +721,12 @@ def import_rows(prepared, response_path, output):
             raise ValueError("prepared manifest/request query version or explicit flags differ")
         audit, audit_identity = _json(prepared / "source-audit/report.json", _METADATA_MAX)
         _remember_current_metadata(audit_identity, active_metadata)
-        script_identity = _read(prepared / "extract_rows.py", 1 << 20)[1]
+        script_identity, script_current_full = _copied_extractor(prepared, manifest["extraction_script"],
+            revalidate_metadata=revalidate_extractor_metadata, observations=extractor_revalidations)
         if (not _metadata_matches(manifest["request"], request_identity, "row-transfer-request-metadata", metadata_revalidations)
                 or not _metadata_matches(manifest["source_audit"], audit_identity, "embedding-audit-metadata", metadata_revalidations)
                 or request["source_audit_sha256"] != audit_identity["sha256"]):
             raise ValueError("prepared request/source audit identity changed")
-        if script_identity != manifest["extraction_script"]:
-            raise ValueError("prepared portable extraction source identity changed")
         if request.get("table_paths") != {table["role"]: table["path"] for table in audit["tables"]}:
             raise ValueError("portable request table paths differ from the original configured source audit")
         payloads = _fresh_local(audit, Path(manifest["inspection"]), Path(manifest["config_yaml"]),
@@ -720,6 +752,8 @@ def import_rows(prepared, response_path, output):
             if fresh != identity:
                 raise ValueError("row transfer evidence changed during import")
         _assert_current_metadata(active_metadata)
+        if _full_file_identity(script_identity["path"]) != script_current_full:
+            raise ValueError("copied extractor current full identity changed during import")
         next_dir = out / "next-token"
         next_dir.mkdir()
         files = [_write(next_dir, "inputs_embeds.bin", next_bytes), _write(next_dir, "embed_scale.bin", next_scale),
@@ -747,6 +781,10 @@ def import_rows(prepared, response_path, output):
     if payload_revalidations:
         result["payload_identity_revalidation"] = "CTIME_ONLY_FRESH_PAYLOAD_SHA256_OLD_RECEIPTS_UNCHANGED"
     result["model_payload_access"] = "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY" if revalidations else "NONE"
+    result["copied_extractor_revalidation_observations"] = extractor_revalidations
+    result["copied_extractor_revalidation_count"] = len(extractor_revalidations)
+    if extractor_revalidations:
+        result["copied_extractor_identity_revalidation"] = "EXPLICIT_CTIME_ONLY_FULL_SOURCE_SHA256_OLD_RECEIPT_UNCHANGED"
     _save(out, "report.json", result)
     return result
 
@@ -770,16 +808,20 @@ def main(argv=None):
     consume = commands.add_parser("import", help="freshly rebind local evidence and verify a returned response")
     consume.add_argument("--prepared", required=True); consume.add_argument("--response", required=True)
     consume.add_argument("--output", required=True)
+    consume.add_argument("--revalidate-extractor-metadata", action="store_true",
+        help="explicitly rehash the exact prepared copied Python source and attest only historical ctime drift; never change code or permissions")
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare": result = prepare_rows(args.inspection, args.config_yaml, args.output, query_token_id=args.query_token_id)
         elif args.command == "extract": result = extract_rows(args.request, args.weight_table, args.scale_table, args.output)
         elif args.command == "locate": result = locate_rows(args.request, args.weight_table, args.scale_table, args.output)
-        else: result = import_rows(args.prepared, args.response, args.output)
+        else: result = import_rows(args.prepared, args.response, args.output,
+            revalidate_extractor_metadata=args.revalidate_extractor_metadata)
         keys = ("status", "output", "request", "extraction_script", "request_sha256", "binding_digest", "candidate_count",
                 "unique_candidate_count", "matching_token_ids", "matching_positions", "table_read_bytes", "tables",
                 "selected_source_token_id", "selected_next_token_id", "matching_source_positions", "next_token_inputs", "error", "next",
-                "schema_version", "query_token_id", "context_id_count", "effective_candidate_count", "uniqueness_scope")
+                "schema_version", "query_token_id", "context_id_count", "effective_candidate_count", "uniqueness_scope",
+                "copied_extractor_revalidation_count", "copied_extractor_identity_revalidation")
         if args.command == "locate":
             keys += ("diagnostic_only", "import_eligibility", "scale_scan_complete", "prefix_scan_complete", "pair_scan",
                      "scale_match_count", "prefix_match_count", "pair_match_count", "matching_pair_token_ids",
