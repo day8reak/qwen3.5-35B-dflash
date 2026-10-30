@@ -189,6 +189,12 @@ struct HiaiOriginalTargetLifecycle {
   std::int64_t weights_deinit_status = -1;
   std::uint64_t run_attempts = 0, successful_runs = 0;
 };
+struct HiaiOriginalTargetLoadProbe {
+  bool passed = false;
+  std::string runtime_stage, error, runtime_version;
+  HiaiOriginalTargetLifecycle lifecycle;
+  std::uint64_t elapsed_ms = 0;
+};
 
 // Original 40-layer target only: one file-v2 model, one explicit external-weight
 // initialization and persistent exact-descriptor tensors. Repeated Run is local
@@ -199,6 +205,11 @@ struct HiaiOriginalTargetLifecycle {
 // This adapter is not a resident-worker protocol or a device validation claim.
 class HiaiOriginalTargetExecutor final {
  public:
+  // A separate, single-order experiment. It never constructs tensors or calls
+  // Run, and never changes the production constructor's weights-before-Init.
+  static HiaiOriginalTargetLoadProbe ProbeInitBeforeWeights(
+      const std::filesystem::path& model, const std::filesystem::path& weight_directory,
+      const std::string& expected_runtime_version);
   HiaiOriginalTargetExecutor(const std::filesystem::path& model,
                             const std::filesystem::path& weight_directory,
                             const std::string& expected_runtime_version,

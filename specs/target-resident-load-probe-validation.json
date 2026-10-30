@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-target-load-order-experiment-host-validation",
+  "updated": "2026-10-30",
+  "run_id": "20261030T130352Z-29378-18c252",
+  "source_base_commit": "6caff35da7dcbea2476cb9eaf5178d3bb4221290",
+  "status": "HOST_TESTED_SINGLE_ORDER_EXPERIMENT_DEVICE_PENDING",
+  "hypothesis": "Init binds the built model before InitWeights; selected private SDK ordering is not yet established",
+  "experiment": [
+    "RestoreFromFile",
+    "SetName(qwen35_resident_target)",
+    "CreateModelManager",
+    "Init",
+    "InitWeights",
+    "DeInit",
+    "DeinitWeights"
+  ],
+  "cleanup_scope": "Manager DeInit after any Init attempt; DeinitWeights only after successful InitWeights; cleanup failure remains a failure. Init and cleanup ordering both require device evidence.",
+  "production_resident_default": "UNCHANGED_WEIGHTS_BEFORE_INIT",
+  "native_scope": "One target-only load/close; no descriptor query, caller tensor allocation, Run/Process, draft, prefill or alternate-order retry",
+  "transport_scope": "One existing target-cache SHA inventory check; misses fail without model/weight upload. Only runner/dependencies/script deployed. Recover never relaunches.",
+  "host_checks": [
+    {
+      "path": "out/load-probe-native-tests.xml",
+      "sha256": "5b7a4f94337095859a298778a7eb022372f39c6ace54a7fa88a9892154f0e18e",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "out/load-probe-host-final.xml",
+      "sha256": "17f337ea1e6b9da3f21888d2ed4cdc1a1af027040100329e38644d9287398a73",
+      "tests": 15,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "counting_scope": "CTest wrappers contain multiple native branches; test groups are not unique assertions",
+  "native_host_backend": "EXPLICIT_FAKE_HIAI",
+  "transport_test_backend": "EXPLICIT_FAKE_HDC",
+  "cross_layer_receipts": "Actual compiled native fake runner success, InitWeights failure and cleanup failure consumed by host validator",
+  "independent_review": "PASS_NATIVE_AND_HOST_RECOVERY",
+  "source_sha256": {
+    "model/qwen35_moe_dflash/target_load_probe.py": "dbddaddee906126f51869374a7c93c292227c93a50fc67fcd4679a1a4cb46329",
+    "targets/cpro/scripts/run_target_load_probe.py": "b7aa9a45e6f81dd5e55293be1d00cb1b7a85e850a65ba09d2bbaaa7b68cdb9da",
+    "targets/cpro/runtime/CMakeLists.txt": "e1a2c0586683eac647da20622326ae08be3d5d036ea5237a337207df6e0802c1",
+    "targets/cpro/runtime/include/qwen35_dflash/hiai_executor.hpp": "2f55dcc7829ffc88472d9061817195adfe4c458bae053b82440b01bddc17612e",
+    "targets/cpro/runtime/src/hiai_executor.cpp": "0e5b16058cb91691e47db9765e559d032fae979c2461ba653c9ee82689c2fe22",
+    "targets/cpro/runtime/src/main.cpp": "0816b5c4cd7d9cba36a590622c115aaf6bf795f7cec1fc42d481c011c1bddeed",
+    "targets/cpro/runtime/tests/fake_hiai/fake_hiai.cpp": "10ea3b1f9907121cd79c9bd639462c444b1ee39236a3133ed0269b11d67760f1",
+    "targets/cpro/runtime/tests/test_hiai_target_load_probe.py": "ce5a56decfcb7fb0b7ff09c69d6a9486a66ae7477e4b1133233e2242effb8669",
+    "tests/test_target_load_probe.py": "da13b60fe1e51fff381cee523d6b1fd6053ff6e1b2f3af132b1813159b327ee1"
+  },
+  "assistant_device_access": "NOT_PERFORMED_USER_REQUEST",
+  "local_selected_ddk_build": "NOT_RUN_DECLARED_CPRO_PROFILE_MANIFEST_MISSING",
+  "model_compilation": "NOT_RUN",
+  "numerical_validation": "NOT_EVALUATED",
+  "device_load_order_validated": false,
+  "next_command_document": "docs/target-resident-load-probe.md",
+  "experience_audit": {
+    "captured": "Successful tool binary and unrelated legacy source must not be conflated; partial constructor evidence and cleanup remain visible. Reusable checks added to native/transport regressions.",
+    "hypothesis_not_promoted": "Init-before-weights and DeInit-before-DeinitWeights validity on the selected device",
+    "skill_changes": "NONE_MODEL_SPECIFIC_SDK_EXPERIMENT"
+  }
+}

@@ -273,7 +273,10 @@
       "host_python_tests": 101,
       "actual_adapter_integration_tests": 2,
       "first_device_attempt": "specs/resident-v2-first-load-failure.json",
-      "failure_reporting_validation": "specs/resident-v2-failure-reporting-validation.json"
+      "failure_reporting_validation": "specs/resident-v2-failure-reporting-validation.json",
+      "target_load_probe_document": "docs/target-resident-load-probe.md",
+      "target_load_probe_scope": "EXPLICIT_INIT_BEFORE_WEIGHTS_LOAD_CLOSE_ONLY_NO_RUN_DEVICE_PENDING",
+      "target_load_probe_validation": "specs/target-resident-load-probe-validation.json"
     }
   },
   "next_action": {
@@ -553,8 +556,8 @@
         0.5,
         2
       ],
-      "next_action_type": "inspect_selected_runtime_contract_and_fix_reporting",
-      "next_action": "核对所选原成功model_run_tool的V2 weight_dir处理和加载顺序；先修复compact错误摘要与失败构造快照。暂不按相同初始化顺序重跑，保留原prefill成功基线。",
+      "next_action_type": "target_load_only_experiment",
+      "next_action": "按docs/target-resident-load-probe.md复用首次resident任务prepared和板端缓存，执行一次显式Init→InitWeights加载/关闭实验；不Run、不prefill、不上传大权重。主机测试不证明设备契约；成功后再接入完整resident路线。",
       "pass_conditions": [
         "two-model residency feasibility measured",
         "native loop same tokens/state as baseline",

@@ -6,6 +6,7 @@
 #include <tensor/nd_tensor_buffer.h>
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -703,6 +704,47 @@ struct HiaiOriginalTargetExecutor::Impl {
     stage = value;
     std::cerr << "HIAI original-target-v2 stage=" << stage << std::endl;
   }
+  void RestoreModel(const std::filesystem::path& model, const std::string& expected_version,
+                    const std::string& model_name) {
+    Stage("RUNTIME_IDENTITY");
+    const auto runtime = ProbeHiai();
+    version = runtime.version;
+    if (runtime.version != expected_version || !runtime.npu_supported)
+      throw std::runtime_error("original target runtime version/NPU support differs");
+    Stage("CREATE_BUILT_MODEL");
+    built_model = hiai::CreateBuiltModel();
+    if (!built_model) throw std::runtime_error("CreateBuiltModel returned null");
+    Stage("RESTORE_FROM_FILE");
+    const auto status = built_model->RestoreFromFile(model.c_str());
+    if (status != 0) throw std::runtime_error("RestoreFromFile failed: " + std::to_string(status));
+    if (!model_name.empty()) {
+      Stage("SET_RESIDENT_MODEL_NAME");
+      built_model->SetName(model_name);
+      if (built_model->GetName() != model_name)
+        throw std::runtime_error("resident target built model name differs after SetName");
+    }
+    Stage("CREATE_MODEL_MANAGER");
+    manager = hiai::CreateModelManager();
+    if (!manager) throw std::runtime_error("CreateModelManager returned null");
+  }
+  void InitWeights(const std::filesystem::path& directory, const char* at_stage) {
+    Stage(at_stage);
+    lifecycle.weights_init_attempted = true;
+    const auto status = manager->InitWeights(directory.string());
+    lifecycle.weights_init_status = static_cast<std::int64_t>(status);
+    if (status != 0) throw std::runtime_error("InitWeights failed: " + std::to_string(status));
+    lifecycle.weights_initialized = true;
+  }
+  void InitManager(const char* at_stage) {
+    Stage(at_stage);
+    hiai::ModelInitOptions options;
+    options.perfMode = hiai::PerfMode::HIGH;
+    lifecycle.manager_init_attempted = true;
+    const auto status = manager->Init(options, built_model, nullptr);
+    lifecycle.manager_init_status = static_cast<std::int64_t>(status);
+    if (status != 0) throw std::runtime_error("IModelManager::Init failed: " + std::to_string(status));
+    lifecycle.manager_initialized = true;
+  }
   void RequireLive() const {
     if (lifecycle.closed || poisoned || !lifecycle.manager_initialized)
       throw HiaiRuntimeError(stage, "original target executor is closed, failed or not initialized");
@@ -776,6 +818,44 @@ struct HiaiOriginalTargetExecutor::Impl {
   ~Impl() { Cleanup(false); }
 };
 
+HiaiOriginalTargetLoadProbe HiaiOriginalTargetExecutor::ProbeInitBeforeWeights(
+    const std::filesystem::path& model, const std::filesystem::path& weight_directory,
+    const std::string& expected_version) {
+  const auto start = std::chrono::steady_clock::now();
+  HiaiOriginalTargetLoadProbe result;
+  Impl impl;
+  impl.lifecycle.weight_init_policy = "EXPERIMENTAL_INIT_BEFORE_WEIGHTS_LOAD_PROBE_ONLY_NO_FALLBACK";
+  try {
+    if (!model.is_absolute() || !std::filesystem::is_regular_file(model) ||
+        !weight_directory.is_absolute() || !std::filesystem::is_directory(weight_directory) ||
+        expected_version.empty())
+      throw std::invalid_argument("load-only probe requires absolute model/weight directory and expected runtime");
+    impl.RestoreModel(model, expected_version, "qwen35_resident_target");
+    impl.InitManager("EXPERIMENTAL_MODEL_MANAGER_INIT_BEFORE_WEIGHTS");
+    impl.InitWeights(weight_directory, "EXPERIMENTAL_INIT_WEIGHTS_AFTER_INIT");
+    // No descriptor query, caller tensor allocation, Run or legacy Process.
+    impl.Cleanup(true);
+    result.passed = true;
+    result.runtime_stage = "CLOSED";
+  } catch (const std::exception& error) {
+    const auto* runtime = dynamic_cast<const HiaiRuntimeError*>(&error);
+    result.runtime_stage = runtime ? runtime->stage() : impl.stage;
+    result.error = error.what();
+    impl.lifecycle.failure_stage = result.runtime_stage;
+    impl.Cleanup(false);
+  } catch (...) {
+    result.runtime_stage = impl.stage;
+    result.error = "unknown original target load-only exception";
+    impl.lifecycle.failure_stage = result.runtime_stage;
+    impl.Cleanup(false);
+  }
+  result.runtime_version = impl.version;
+  result.lifecycle = impl.lifecycle;
+  result.elapsed_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start).count());
+  return result;
+}
+
 HiaiOriginalTargetExecutor::HiaiOriginalTargetExecutor(
     const std::filesystem::path& model, const std::filesystem::path& weight_directory,
     const std::string& expected_version, const std::vector<HiaiBoundRuntimeTensor>& inputs,
@@ -826,43 +906,11 @@ HiaiOriginalTargetExecutor::HiaiOriginalTargetExecutor(
         total += spec.bytes;
       }
     }
-    impl_->Stage("RUNTIME_IDENTITY");
-    const auto runtime = ProbeHiai();
-    impl_->version = runtime.version;
-    if (runtime.version != expected_version || !runtime.npu_supported)
-      throw std::runtime_error("original target runtime version/NPU support differs");
-    impl_->Stage("CREATE_BUILT_MODEL");
-    impl_->built_model = hiai::CreateBuiltModel();
-    if (!impl_->built_model) throw std::runtime_error("CreateBuiltModel returned null");
-    impl_->Stage("RESTORE_FROM_FILE");
-    auto status = impl_->built_model->RestoreFromFile(model.c_str());
-    if (status != 0) throw std::runtime_error("RestoreFromFile failed: " + std::to_string(status));
-    if (!resident_model_name.empty()) {
-      impl_->Stage("SET_RESIDENT_MODEL_NAME");
-      impl_->built_model->SetName(resident_model_name);
-      if (impl_->built_model->GetName() != resident_model_name)
-        throw std::runtime_error("resident target built model name differs after SetName");
-    }
-    impl_->Stage("CREATE_MODEL_MANAGER");
-    impl_->manager = hiai::CreateModelManager();
-    if (!impl_->manager) throw std::runtime_error("CreateModelManager returned null");
-    // The selected private headers declare these calls. They do not validate
-    // ordering or external-weight loading on the device. Exactly one explicit
-    // experiment is permitted here; no automatic alternate order/load path.
-    impl_->Stage("EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT");
-    impl_->lifecycle.weights_init_attempted = true;
-    status = impl_->manager->InitWeights(weight_directory.string());
-    impl_->lifecycle.weights_init_status = static_cast<std::int64_t>(status);
-    if (status != 0) throw std::runtime_error("InitWeights failed: " + std::to_string(status));
-    impl_->lifecycle.weights_initialized = true;
-    impl_->Stage("MODEL_MANAGER_INIT");
-    hiai::ModelInitOptions options;
-    options.perfMode = hiai::PerfMode::HIGH;
-    impl_->lifecycle.manager_init_attempted = true;
-    status = impl_->manager->Init(options, impl_->built_model, nullptr);
-    impl_->lifecycle.manager_init_status = static_cast<std::int64_t>(status);
-    if (status != 0) throw std::runtime_error("IModelManager::Init failed: " + std::to_string(status));
-    impl_->lifecycle.manager_initialized = true;
+    impl_->RestoreModel(model, expected_version, resident_model_name);
+    // Production constructor policy remains unchanged. The separate load-only
+    // probe is the sole caller of the reversed experimental sequence.
+    impl_->InitWeights(weight_directory, "EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT");
+    impl_->InitManager("MODEL_MANAGER_INIT");
     impl_->Stage("TENSOR_DESCRIPTORS");
     const auto in_desc = impl_->built_model->GetInputTensorDescs();
     const auto out_desc = impl_->built_model->GetOutputTensorDescs();

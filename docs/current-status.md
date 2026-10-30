@@ -4,7 +4,9 @@
 
 **2026-10-30：P0 原 prefill 端侧完整执行已完成。** 用户回传 prefill 1 次、decode 8 次、draft 7 次，生成 `[4,12,10,8,0,4,32,2]`，接受 0／7，总墙钟 305.788 秒，回收及锁释放完成。见 [实机成功基线](board-prefill-first-completion.md)。这属于执行通过，精度和加速尚未验收。
 
-**当前阻点：首次常驻请求在 target 加载失败，暂不重复同一调用顺序。** 实际 prefill 已完成，`InitWeights` 在 `Init` 之前返回 `3=INVALID_PARAM`；decode／draft 均未 Run，draft 尚未加载。失败请求已回收并释放所持锁，见 [首个常驻加载失败](../specs/resident-v2-first-load-failure.json)。当前先核对原成功工具的 `weight_dir`／V2 加载实现，并修复错误摘要及构造失败快照；未取得证据前不交换调用顺序、不重编模型。
+**当前阻点：首次常驻请求在 target 加载失败。** 实际 prefill 已完成，`InitWeights` 在 `Init` 之前返回 `3=INVALID_PARAM`；decode／draft 均未 Run，draft 尚未加载。失败请求已回收并释放所持锁，见 [首个常驻加载失败](../specs/resident-v2-first-load-failure.json)。错误摘要与构造失败快照已修复。
+
+**现在先运行[独立 target 加载／关闭实验](target-resident-load-probe.md)。** 只试一次显式 `Init → InitWeights`，复用板端缓存，不重跑 prefill 或完整循环。该顺序仍是假设；只有设备加载／关闭成功后才接入完整常驻路线。用户贴出的 `model_run_tool` 加载代码使用旧接口，测试脚本指向4B，不能代替实际成功的 `model_run_tool_internal` V2实现。
 
 **已实现的常驻入口（下面命令保留作参数参考，待加载修复后换新目录运行）：** 新增显式 `--resident`，原 prefill 完成并退出后，同一 native 进程保留 decode 和内嵌 draft 各一个 V2 manager，加载一次、多次 `Run`。旧成功模式 draft 为 `legacy-buffer`；实际 DDK 编译及 prefill 调用已由本次执行观察到；target V2 初始化失败，同时驻留仍未验证，不能把旧成功结果算到新路径。见 [常驻方案](resident-runtime-plan.md) 和 [主机验证记录](board-resident-validation.md)。
 

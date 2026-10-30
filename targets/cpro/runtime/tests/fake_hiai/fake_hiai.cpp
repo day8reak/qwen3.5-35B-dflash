@@ -495,7 +495,7 @@ std::vector<NDTensorDesc> OriginalDescriptors(bool input,bool resident_loop=fals
 }
 class FakeBuiltModel final : public IBuiltModel {
  public:
-  bool restored=false,original=false,draft64=false,resident_loop=false,draft_loop=false;
+  bool restored=false,original=false,draft64=false,resident_loop=false,draft_loop=false,load_probe=false;
   std::string name="graph_1";
   std::string GetName() const override{return name;}
   void SetName(const std::string& value) override {
@@ -509,7 +509,8 @@ class FakeBuiltModel final : public IBuiltModel {
     std::ifstream file(path,std::ios::binary);
     std::string data((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());
     resident_loop=data=="original-resident-target-fixture";
-    original=data=="original-target-fixture" || resident_loop;
+    load_probe=data=="original-target-load-probe-fixture";
+    original=data=="original-target-fixture" || resident_loop || load_probe;
     draft_loop=data=="draft-resident-loop64-fixture";
     draft64=data=="draft-resident64-fixture" || draft_loop;
     if (!std::filesystem::path(path).is_absolute() || (!original && !draft64 && data!="draft-standalone-fixture")) return 2;
@@ -545,7 +546,7 @@ class FakeModelManager final : public IModelManager {
   }
   Status InitWeights(const std::string& directory) override {
     Trace("v2-init-weights");
-    if (weights_ || initialized_ || !std::filesystem::path(directory).is_absolute() ||
+    if (weights_ || (initialized_ && !load_probe_) || !std::filesystem::path(directory).is_absolute() ||
         !std::filesystem::is_directory(directory)) return 71;
     if (Failure()=="original-init-weights") return 72;
     if (Failure()=="original-init-weights-throw") throw std::runtime_error("injected InitWeights exception");
@@ -564,8 +565,9 @@ class FakeModelManager final : public IModelManager {
     Trace("v2-init");
     auto concrete=std::dynamic_pointer_cast<FakeBuiltModel>(model);
     if (listener || options.perfMode!=PerfMode::HIGH || !concrete || !concrete->restored) return 4;
-    if (concrete->original && !weights_) return 74;
+    if (concrete->original && !concrete->load_probe && !weights_) { model_=model; return 74; }
     model_=model; initialized_=true; original_=concrete->original; draft64_=concrete->draft64;
+    load_probe_=concrete->load_probe;
     resident_loop_=concrete->resident_loop;draft_loop_=concrete->draft_loop;
     return Failure()=="v2-init" || Failure()=="original-init" || Failure()=="original-init-cleanup-failure" ||
       Failure()=="original-init-deinit-throw" || (draft64_ && Failure()=="resident-draft-init")?32:0;
@@ -640,7 +642,7 @@ class FakeModelManager final : public IModelManager {
     if(draft64_&&Failure()=="resident-draft-deinit")throw std::runtime_error("injected draft DeInit exception");
   }
  private:
-  bool initialized_=false,weights_=false,original_=false,draft64_=false,resident_loop_=false,draft_loop_=false;
+  bool initialized_=false,weights_=false,original_=false,draft64_=false,resident_loop_=false,draft_loop_=false,load_probe_=false;
   std::size_t runs_=0;
   std::weak_ptr<IBuiltModel> model_;
 };

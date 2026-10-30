@@ -109,6 +109,9 @@ if(BUILD_HOST_TESTS)
   add_test(NAME hiai_model_io_probe
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_model_io_probe.py
       $<TARGET_FILE:hiai_runner_fake> ${CMAKE_CURRENT_BINARY_DIR}/model-io-cases)
+  add_test(NAME hiai_target_load_probe
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hiai_target_load_probe.py
+      $<TARGET_FILE:hiai_runner_fake> ${CMAKE_CURRENT_BINARY_DIR}/target-load-probe-cases)
   add_executable(hiai_runner_fake_no_tensor_name src/main.cpp src/hiai_executor.cpp tests/fake_hiai/fake_hiai.cpp)
   target_include_directories(hiai_runner_fake_no_tensor_name PRIVATE tests/fake_hiai)
   target_compile_definitions(hiai_runner_fake_no_tensor_name PRIVATE QWEN35_FAKE_HIAI=1 QWEN35_FAKE_NO_TENSOR_NAME=1)

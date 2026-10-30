@@ -88,6 +88,27 @@ void WriteModelIoTensors(std::ostream& output, const std::vector<HiaiModelIoTens
   output << ']';
 }
 
+void WriteOriginalTargetLifecycle(std::ostream& out, const HiaiOriginalTargetLifecycle& value) {
+  const auto boolean = [](bool v) { return v ? "true" : "false"; };
+  const auto status = [](const std::optional<std::int64_t>& v) { return v ? std::to_string(*v) : "null"; };
+  out << "{\"weight_init_policy\":\"" << JsonEscape(value.weight_init_policy)
+      << "\",\"ordering_validation\":\"" << JsonEscape(value.ordering_validation)
+      << "\",\"weights_init_attempted\":" << boolean(value.weights_init_attempted)
+      << ",\"weights_initialized\":" << boolean(value.weights_initialized)
+      << ",\"weights_init_status\":" << status(value.weights_init_status)
+      << ",\"manager_init_attempted\":" << boolean(value.manager_init_attempted)
+      << ",\"manager_initialized\":" << boolean(value.manager_initialized)
+      << ",\"manager_init_status\":" << status(value.manager_init_status)
+      << ",\"manager_deinit_called\":" << boolean(value.manager_deinit_called)
+      << ",\"weights_deinit_called\":" << boolean(value.weights_deinit_called)
+      << ",\"weights_deinit_status\":" << value.weights_deinit_status
+      << ",\"closed\":" << boolean(value.closed)
+      << ",\"failure_stage\":\"" << JsonEscape(value.failure_stage)
+      << "\",\"cleanup_error\":\"" << JsonEscape(value.cleanup_error)
+      << "\",\"run_attempts\":" << value.run_attempts
+      << ",\"successful_runs\":" << value.successful_runs << '}';
+}
+
 const char* ModelIoNameStatus(const HiaiModelIoProbe& observed) {
   if (!observed.tensor_name_field_available) return "FIELD_NOT_AVAILABLE";
   std::size_t total = 0, named = 0;
@@ -900,6 +921,9 @@ void Help() {
             << "qwen35_dflash_hiai --probe-model-description MAIN.omc (at most 64 MiB; no Load/Process)\n"
             << "qwen35_dflash_hiai --model-io-only MAIN.omc --descriptor-stage restore-only --model-sha256 SHA256 "
             << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID --output NEW.json\n"
+            << "qwen35_dflash_hiai --target-load-probe MAIN.omc --model-sha256 SHA256 "
+            << "--weight-directory ABS_DIR --load-order init-before-weights "
+            << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID --output NEW.json\n"
             << "qwen35_dflash_hiai --target TARGET.omc --target-sha256 HEX "
             << "--draft DRAFT.omc --draft-sha256 HEX --expected-runtime-version VERSION "
             << "--ddk-id VERSION --firmware-id VERSION "
@@ -971,6 +995,54 @@ int main(int argc, char** argv) {
       }
       std::string value = it->second; args.erase(it); return value;
     };
+    if (args.count("--target-load-probe")) {
+      const std::filesystem::path model = take("--target-load-probe");
+      const auto model_hash = take("--model-sha256"); StepHash(model_hash);
+      const std::filesystem::path weights = take("--weight-directory");
+      const auto order = take("--load-order");
+      const std::filesystem::path output = take("--output");
+      const auto version = take("--expected-runtime-version");
+      const auto ddk = take("--ddk-id"), firmware = take("--firmware-id");
+      if (!model.is_absolute() || !weights.is_absolute() || !output.is_absolute() ||
+          order != "init-before-weights" || version.empty() || ddk.empty() || firmware.empty() || !args.empty())
+        throw std::invalid_argument("target load probe requires absolute paths, explicit init-before-weights, runtime/DDK/firmware and no unrelated options");
+      NoSymlinks(weights); NoSymlinks(output);
+      if (!std::filesystem::is_directory(weights) || std::filesystem::exists(output) ||
+          std::filesystem::exists(output.string() + ".tmp"))
+        throw std::invalid_argument("target load probe requires existing weight directory and new output");
+      const auto model_bytes = StepFileSize(model, 64ULL << 20);
+      if (Sha256File(model) != model_hash)
+        throw std::runtime_error("target load probe main OMC SHA256 differs before load");
+      auto observed = HiaiOriginalTargetExecutor::ProbeInitBeforeWeights(model, weights, version);
+      bool model_unchanged = false;
+      try { model_unchanged = StepFileSize(model, 64ULL << 20) == model_bytes && Sha256File(model) == model_hash; }
+      catch (...) { model_unchanged = false; }
+      if (!model_unchanged && observed.passed) {
+        observed.passed = false; observed.runtime_stage = "MODEL_PRESERVATION";
+        observed.error = "main OMC identity changed during load/close probe";
+      }
+      std::ostringstream report;
+      report << "{\"schema_version\":1,\"artifact_kind\":\"qwen35-hiai-target-load-probe\","
+             << "\"evidence_kind\":\"" << kEvidenceKind << "\",\"status\":\""
+             << (observed.passed ? "TARGET_LOAD_PROBE_PASSED" : "TARGET_LOAD_PROBE_FAILED")
+             << "\",\"runtime_stage\":\"" << JsonEscape(observed.runtime_stage)
+             << "\",\"error\":\"" << JsonEscape(observed.error)
+             << "\",\"model_path\":\"" << JsonEscape(model.string()) << "\",\"model_sha256\":\"" << model_hash
+             << "\",\"model_bytes\":" << model_bytes << ",\"model_content_unchanged\":" << (model_unchanged ? "true" : "false")
+             << ",\"weight_directory\":\"" << JsonEscape(weights.string())
+             << "\",\"weight_payload_validation\":\"CALLER_CACHE_BINDING_ONLY_NO_INDEPENDENT_WEIGHT_HASH_SDK_LOAD_MAY_READ_WEIGHTS\","
+             << "\"expected_runtime_version\":\"" << JsonEscape(version)
+             << "\",\"runtime_version\":\"" << JsonEscape(observed.runtime_version)
+             << "\",\"ddk_id\":\"" << JsonEscape(ddk) << "\",\"firmware_id\":\"" << JsonEscape(firmware)
+             << "\",\"model_name\":\"qwen35_resident_target\",\"load_order\":\"init-before-weights\","
+             << "\"model_load_api\":\"file-v2\",\"process_id\":" << static_cast<long long>(getpid())
+             << ",\"run_called\":false,\"process_called\":false,\"tensor_allocations_requested\":0,"
+             << "\"elapsed_ms\":" << observed.elapsed_ms << ",\"numerical_validation\":\"NOT_RUN\","
+             << "\"scope\":\"One target-only load/close experiment; no inference, fallback, draft load or resident-default change\",\"lifecycle\":";
+      WriteOriginalTargetLifecycle(report, observed.lifecycle); report << '}';
+      AtomicWrite(output, report.str()); std::cout << report.str() << '\n';
+      return observed.passed ? 0 : 1;
+    }
     if (args.count("--model-io-only")) {
       const auto model = std::filesystem::absolute(take("--model-io-only"));
       const auto model_hash = take("--model-sha256");
