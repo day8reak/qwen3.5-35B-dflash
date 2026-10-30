@@ -1,0 +1,397 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-dflash-execution-plan-state",
+  "updated": "2026-10-30",
+  "plan_document": "docs/dflash-delivery-plan.md",
+  "current_commands": "docs/current-status.md",
+  "code_baseline": "4ea1c105c66b5014c2c1260ad9f757a096c38028",
+  "overall_status": "in_progress",
+  "active_phase": "P0",
+  "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
+  "user_priority": "First actual full loop may have garbled text/numerical errors; later accuracy/performance goals remain required",
+  "status_policy": {
+    "allowed": [
+      "pending",
+      "in_progress",
+      "blocked",
+      "passed"
+    ],
+    "advance": "First incomplete phase, verify dependencies/evidence before promotion",
+    "one_active_phase": true,
+    "host_or_plan_is_device_pass": false,
+    "deadline_is_pass": false
+  },
+  "estimates": {
+    "unit": "working day of6–8effective hours with stable device/reference access",
+    "confidence": "conditional_engineering_estimate_not_commitment",
+    "first_loop": [
+      0.5,
+      1
+    ],
+    "optimistic_full_delivery": [
+      7,
+      10
+    ],
+    "normal_full_delivery": [
+      10,
+      20
+    ],
+    "additional_vendor_or_memory_risk": [
+      3,
+      7
+    ],
+    "cumulative": {
+      "P0": [
+        0.5,
+        1
+      ],
+      "P1-P3": [
+        3,
+        7
+      ],
+      "P4-P6": [
+        7,
+        14
+      ],
+      "P7-P8": [
+        10,
+        20
+      ]
+    },
+    "note": "Parallel overlap means phase budgets are not additive. Major kernel/reference/acceptance problems can exceed4weeks;2x remains unproven."
+  },
+  "current_known_evidence": {
+    "host_checks": {
+      "unique_passed": 292,
+      "scope": "host/fake HDC/native boundaries only",
+      "actual_device_full_loop": "NOT_YET_REPORTED"
+    },
+    "user_reported": [
+      "original prefill64 executed",
+      "independent decode1 executed",
+      "all80 same-model state byte continuation observed",
+      "real target feature to full draft single step executed",
+      "row63 prefill PID28669; samefeature SHA, logits argmax6",
+      "original embedding tables copied completely"
+    ]
+  },
+  "next_action": {
+    "phase": "P0",
+    "type": "run_existing",
+    "entrypoint": "targets/cpro/scripts/run_serial_dflash_smoke.py",
+    "command_document": "docs/current-status.md",
+    "new_output": "$AI_RUN_DIR/dflash-serial8-run",
+    "apply": true,
+    "note": "If a real result is already present, inspect that exact attempt first; do not rerun completed model processes."
+  },
+  "last_actual_execution": null,
+  "planned_parallelism": [
+    "P1 reference preparation while P0 device runs",
+    "P2 fixture preparation and P3 static mapping; do not accept accuracy with wrong features",
+    "P4 host source/ABI and P5 resident runner after shared interfaces frozen",
+    "Device model calls and large compiles serialized to measured budgets"
+  ],
+  "replan_triggers": [
+    "Unexplained kernel/control/owner/precision mismatch",
+    "Change beyond frozen model weights/topology/precision/ABI design",
+    "Unknown actual process completion or lock ownership",
+    "Model co-residency OOM or required runtime/toolchain replacement",
+    "Two evidence-based failed fixes without new evidence",
+    "Stage budget exceeded or2x implausible from measured bottlenecks"
+  ],
+  "phases": [
+    {
+      "id": "P0",
+      "title": "现有OMC的真实短提示词多轮执行",
+      "status": "in_progress",
+      "depends_on": [],
+      "local_budget_workdays": [
+        0.5,
+        1
+      ],
+      "next_action_type": "run_existing",
+      "next_action": "运行docs/current-status.md中的run_serial_dflash_smoke.py --apply，P8/G8，verify前2个候选；不新增OMC编译。",
+      "pass_conditions": [
+        "DFLASH_SERIAL_LOOP_EXECUTED_UNVALIDATED",
+        "8 generated tokens",
+        "16 actual target native calls",
+        "at least2 actual full draft calls",
+        "all82 outputs/logs and80state chain bound"
+      ],
+      "expected_deliverables": [
+        "result.json",
+        "loop.json",
+        "target/step_XXXX/*",
+        "draft/call-XXXX/*"
+      ],
+      "evidence": [],
+      "last_error": null
+    },
+    {
+      "id": "P1",
+      "title": "普通target基线与原参考数值收敛",
+      "status": "pending",
+      "depends_on": [
+        "P0"
+      ],
+      "local_budget_workdays": [
+        1,
+        3
+      ],
+      "next_action_type": "implement_and_compare",
+      "next_action": "新增普通target薄driver（不是现有CLI参数），复用OriginalTargetSmokeBackend；取得原量化reference及控制生成逻辑，固定输入/历史后逐层与80状态对照。",
+      "pass_conditions": [
+        "same target/prompt/zero-state ordinary run reproducible",
+        "reference/control identity bound",
+        "numerical gates frozen and passed",
+        "first divergence resolved"
+      ],
+      "expected_deliverables": [
+        "ordinary baseline runner and report",
+        "original reference runner and fixtures",
+        "numerical contract",
+        "logit/8tap/80state comparisons"
+      ],
+      "evidence": [],
+      "last_error": null
+    },
+    {
+      "id": "P2",
+      "title": "完整draft真实feature精度与anchor对齐",
+      "status": "pending",
+      "depends_on": [
+        "P1"
+      ],
+      "local_budget_workdays": [
+        0.5,
+        2
+      ],
+      "next_action_type": "compare_and_fix",
+      "next_action": "相同真实features/prefix/mask/anchor，比较完整六层reference与旧S64 OMC；定位首个误差，维持原权重和舍入策略。",
+      "pass_conditions": [
+        "real-feature suite meets reviewed numerical contract",
+        "full15 candidates and hidden evaluated",
+        "no threshold relaxation or topology change"
+      ],
+      "expected_deliverables": [
+        "real-feature fixtures",
+        "draft comparison report",
+        "precision policy revision"
+      ],
+      "evidence": [],
+      "last_error": null
+    },
+    {
+      "id": "P3",
+      "title": "原prefill64到decode1的真实桥接",
+      "status": "pending",
+      "depends_on": [
+        "P1"
+      ],
+      "local_budget_workdays": [
+        0.5,
+        2
+      ],
+      "next_action_type": "implement_and_compare",
+      "next_action": "现有prepare_target_prefill_decode_feedback.py只生成host映射；实现双OMC variant执行session，绑定80owner与实际state文件，比较同一64token请求的普通串行基线。",
+      "pass_conditions": [
+        "all80 unique cross-export owners and native bindings",
+        "actual prefill output to decode input bytes",
+        "first and multiple continuation steps agree with baseline",
+        "two actual model SHAs retained"
+      ],
+      "expected_deliverables": [
+        "80state cross-export mapping",
+        "dual-variant session adapter",
+        "64to1 multistep comparison"
+      ],
+      "evidence": [],
+      "last_error": null
+    },
+    {
+      "id": "P4",
+      "title": "长上下文增量draft AIR/OMC与native ABI",
+      "status": "pending",
+      "depends_on": [
+        "P2"
+      ],
+      "local_budget_workdays": [
+        1,
+        3
+      ],
+      "next_action_type": "implement_export_compile_validate",
+      "next_action": "沿现ge_incremental_draft.py冻结C16/17in/14out ABI与总容量，先一个gear源导出/OMG/native适配，逐步实机对比；S128不是必做步骤。",
+      "pass_conditions": [
+        "real newAIR andOMC, not metadata relabel",
+        "named17inputs14outputs typed ABI",
+        "12KV exact write interval and unchanged prefix/suffix",
+        "absolute RoPE and anchor exclusion correct",
+        "sameK reference and multiround token gates passed"
+      ],
+      "expected_deliverables": [
+        "incremental AIR/OMC receipts",
+        "native ABI/runner",
+        "cache boundary tests",
+        "multiround reference comparisons"
+      ],
+      "evidence": [],
+      "last_error": null
+    },
+    {
+      "id": "P5",
+      "title": "常驻native session与设备侧状态",
+      "status": "pending",
+      "depends_on": [
+        "P1",
+        "P2"
+      ],
+      "local_budget_workdays": [
+        0.5,
+        2
+      ],
+      "next_action_type": "implement_and_measure",
+      "next_action": "测真实同时驻留和峰值内存；保持target V2 external-weight与draft embedded路线，session复用模型/80state/features，去掉正常路径逐token HDC大dump。",
+      "pass_conditions": [
+        "two-model residency feasibility measured",
+        "native loop same tokens/state as baseline",
+        "load once per session",
+        "debug/normal modes agree",
+        "memory and repeated execution stable"
+      ],
+      "expected_deliverables": [
+        "resident runner/session",
+        "memory/load/transfer report",
+        "matched ordinary baseline"
+      ],
+      "evidence": [],
+      "last_error": null
+    },
+    {
+      "id": "P6",
+      "title": "多位置target verify与80状态恢复提交",
+      "status": "pending",
+      "depends_on": [
+        "P1",
+        "P2",
+        "P4",
+        "P5"
+      ],
+      "local_budget_workdays": [
+        2,
+        5
+      ],
+      "next_action_type": "design_reference_implement_validate",
+      "next_action": "先verify reference逐位置logits；eager-anchor p0用pre-round logits、pi用row i-1；先快照+decode1重放接受前缀，再优化checkpoint/bank。",
+      "pass_conditions": [
+        "per-position logits/features actual output",
+        "all r=0..K accept/reject branches",
+        "all80states restored or correctly replayed",
+        "at least2 subsequent tokens after rejection agree",
+        "token and stop mismatches0"
+      ],
+      "expected_deliverables": [
+        "verify reference/AIR/OMC/native ABI",
+        "snapshot or prefix checkpoint implementation",
+        "r=0..K report",
+        "rejection-followed-by-continuation report"
+      ],
+      "evidence": [],
+      "last_error": null
+    },
+    {
+      "id": "P7",
+      "title": "全模型稳定性与至少2倍配对性能",
+      "status": "pending",
+      "depends_on": [
+        "P3",
+        "P4",
+        "P5",
+        "P6"
+      ],
+      "local_budget_workdays": [
+        1,
+        4
+      ],
+      "next_action_type": "measure_optimize_revalidate",
+      "next_action": "固定同设备/模型/输入/EOS/计时口径，3warmups+10保留测量；按真实瓶颈逐项优化，每次重过完整精度并保留回滚。",
+      "pass_conditions": [
+        "10/10 complete-model numerical/sequence stability",
+        "ordinary-vs-DFlash tokens/stop mismatches0",
+        "matched median decode-loop speedup>=2.0",
+        "prefill+decode and coldload separately reported",
+        "acceptance/nativecalls/thermal/memory evidence retained"
+      ],
+      "expected_deliverables": [
+        "paired10invocation benchmark",
+        "whole-model comparison",
+        "timing distribution/breakdown",
+        "optimization/rollback record"
+      ],
+      "evidence": [],
+      "last_error": null
+    },
+    {
+      "id": "P8",
+      "title": "可复现打包交付",
+      "status": "pending",
+      "depends_on": [
+        "P7"
+      ],
+      "local_budget_workdays": [
+        0.5,
+        1
+      ],
+      "next_action_type": "package_reproduce",
+      "next_action": "锁定source/model/weights/ABI/toolchain/runtime身份，打包一键命令/fixtures/checksums/精度性能报告与限制，在新输出目录复现。",
+      "pass_conditions": [
+        "reproducible clean-output run",
+        "release manifest/checksums",
+        "accuracy/stability/performance statuses explicit",
+        "limitations and rollback included"
+      ],
+      "expected_deliverables": [
+        "release manifest/checksums",
+        "one-command runner",
+        "validation/benchmark evidence",
+        "rollback guide"
+      ],
+      "evidence": [],
+      "last_error": null
+    }
+  ],
+  "decisions": [
+    {
+      "date": "2026-10-30",
+      "decision": "P0 reuses original decode1+S64draft with explicit newshortprompt; serial prompt ingestion avoids blocking on cross-export prefill bridge",
+      "scope": "execution milestone only"
+    },
+    {
+      "date": "2026-10-30",
+      "decision": "No newS128/cached draft compile prerequisite forP0; cached graph retained host-only forP4",
+      "scope": "preserve full history/weights/topology"
+    },
+    {
+      "date": "2026-10-30",
+      "decision": "Sampling/multimodal are outside current strictgreedy delivery lane; EOS disabled only in fixed-budgetP0",
+      "scope": "restore matched stop policy for correctness/performance"
+    }
+  ],
+  "handoff_update_fields": [
+    "commit",
+    "active_phase",
+    "passed gates and evidence hashes",
+    "not_run/failed gates",
+    "actual device calls",
+    "failed attempt/PID/lock",
+    "changes and relevant checks",
+    "one next command or implementation action",
+    "remaining estimate change/reason",
+    "replan needed"
+  ],
+  "contracts": {
+    "current_execution_lane": "specs/dflash-execution-smoke.json",
+    "legacy_abi_v2_preserved": "specs/dflash-contract.json",
+    "full_model_numerical_contract": "PENDING_P1_FREEZE_NOT_TINY_PROBE_TOLERANCES",
+    "future_incremental_and_verify_abi": "VERSION_SEPARATELY_IN_P4_P6_KEEP_ROLLBACK"
+  }
+}

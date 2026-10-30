@@ -5435,5 +5435,8 @@
       "stop_utility_limitation": "Existingstop_target_compile requires jobdirectory and originalcompilecommand receipt; do notfabricate receipt or assume it can stop a removedjob",
       "actions_executed": "NONE"
     }
-  }
+  },
+  "delivery_plan_document": "docs/dflash-delivery-plan.md",
+  "execution_state": "specs/dflash-execution-state.json",
+  "planning_horizon": "P0 functional loop through P8 accuracy/stability/performance/release; normal10–20workingdays conditional, optimistic7–10, initialloop0.5–1"
 }

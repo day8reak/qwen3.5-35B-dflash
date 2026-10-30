@@ -2736,5 +2736,8 @@
     "eos": "DISABLED_FOR_THIS_FIXED_BUDGET_SMOKE",
     "status": "HOST_IMPLEMENTATION_PENDING_DEVICE_RUN"
   },
-  "compile_entrypoint": "targets/cpro/scripts/compile_full_target.py"
+  "compile_entrypoint": "targets/cpro/scripts/compile_full_target.py",
+  "delivery_plan_document": "docs/dflash-delivery-plan.md",
+  "execution_state": "specs/dflash-execution-state.json",
+  "planning_horizon": "P0 functional loop through P8 accuracy/stability/performance/release; normal10–20workingdays conditional, optimistic7–10, initialloop0.5–1"
 }

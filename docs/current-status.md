@@ -2,6 +2,8 @@
 
 <a id="用户现在执行什么"></a>
 
+完整后续阶段、预计天数和换助手交接见 [执行总计划](dflash-delivery-plan.md)；机器可读进度见 [执行状态](../specs/dflash-execution-state.json)。
+
 按用户最新要求，当前只验收完整模型的真实多轮 DFlash 执行，精度随后收敛。主线复用已有40层 target decode1 OMC 和完整六层 `full-draft/residual-fix/bundle`，不重新导出／编译模型。
 
 ## 本次固定范围
