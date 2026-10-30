@@ -3,9 +3,9 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "USER_PREFILL_PATH_V2_BOUND_PARALLEL_ROW_LOOKUP_CAPACITY_EXPORT_AND_ROW63_TRIAL_READY",
+  "status": "USER_ORIGINAL_TABLE_TRANSFER_INCOMPLETE_ROW63_TRIAL_READY_INCREMENTAL_DRAFT_REFERENCE_SELECTED",
   "handoff": "20261030T075543Z-2197-119a93/handoff.md",
-  "user_state": "User path-v2 completed withoutfailedchecks: all89 actual prefill inputs/13 original sources and82 outputs bound,30 generic cross-exportcontext candidates, bothgraphs80sourceowners observed. Unique IndexByTensor_40 consumesarg1238_1 value64 directly atindices0, x=Add_269 declares_meta[1,64,2048], indices_mask[0,1]; runtimekernelrange remainsunverified. User requests finished tools pushed immediately while other work continues. Ready parallel host commands: original64prefix table-row comparison, realS128full6layer AIR export from readonlypreparedroot, independent only-outputpos63 prefill preparation. Apply cachedprefill after row correspondence passes. Cross-state role-specific matching and originalnative loopadapter remainopen.",
+  "user_state": "Actualpath-v2has89input/82outputfilebinding,no failedchecks,30genericcontextcandidates and50depthlimitedroles. UniqueIndexByTensor_40directlyconsumesoutputpos64; sourcePythonlastrow63experiment14fileshaspreparedsuccess. Useroriginalembeddingcheckstoppedbeforepayloadreadbecausecurrentweightfileonly786432Bvsexpected508559360B; awaittransfercompletionandsize/SHAchecks. Userasksimmediatepushofcompletedworkandparallelruns. Row63single-variableprefillexperimentcanrunwhiletablestransfer,withcorrect-generationbaselineacceptancedeferreduntilrowcheckpasses. Userprovided4Bincrementalreference90186732reviewed: C16/C64deltafeatures+12KV+absoluteoffsets,notwholeprefixS128. S128exporttoolremainsoptional/deferred; nextdraftimplementationprioritizesnew35BsixlayercachedABI. Sourceparameterownercontracthost72testspassedbutactualresult/runtimebindingpending.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
   "contract": {
@@ -49,12 +49,12 @@
   "remaining_gates": [
     "Bind original prefill64 outputs to decode1 owners and actual logit selection; validate prefix embedding/control/history and establish ordinary generation baseline",
     "Supply runtime lookup for arbitrary original INT8 embedding rows and separate FP32 scales; current imported query269/next0 receipt is insufficient for dynamic generation",
-    "Provide real draft capacity for prompt64 plus target-next anchor and generation budget, preserving all64 prompt feature rows and original absolute positions",
+    "Implement and validate actual35BsixlayerincrementalDraft: C16/C64deltafeatures+absolutepositions+12KV, explicittotalhistorycapacity, correctexclude-current-anchor alignment; existingS64prefix-recompute artifact preserved as rollback",
     "Integrate full6layer draft with original89input/82output decode1 backend and serial compare-before-advance acceptance/correction/bonus/state commit",
     "Execute multiple complete rounds including rejection then continuation and compare every committed token/state with ordinary baseline",
     "Close numerical acceptance, then batch verify/rollback and measured end-to-end performance"
   ],
-  "next_command": "Pull latest; run inspect_original_embedding_inputs.py after copying original two486MiB tables, export_draft_capacity.py --job full-draft --sequence-length128 --prompt-length64 --max-new-tokens32, and prepare_target_prefill_last_row_trial.py in parallel. After prefix rows MATCHED and trial READY, run existing run_target_prefill_smoke.py once with row63trial/inputs and namedprefill-v2 probe in a new output. Exact paths/commands in docs/current-status.md.",
+  "next_command": "Run existing run_target_prefill_smoke.py once against prepared row63trial/inputs into fresh target-prefill64-last-row63-smoke, inparallelwithcompletingoriginalembeddingtabletransfer. Comparecompletefile sizes/SHA then rowcheck-v2; no validatedgenerationbaselineuntilrowsmatch. Do not rerun trialpreparation. S128wholeprefixexportdeferred; pinned4Bincrementaldraftdesignprioritized. ExistinghostpacketcanlatercollectnewparameterFQNsourceownersinnewoutput.",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -262,6 +262,53 @@
         "Independentrow63prefillobservations",
         "ActualS128GEserializer/AIRexport",
         "Explicitrole/FQN80sourceownercorrespondence andnative loopadapter"
+      ]
+    },
+    "incremental_reference_and_partial_transfer": {
+      "captured": [
+        "WholeprefixS128isacurrentwrappercapacityworkaroundnotDFlashrequirement;4BincrementalC16/C64features+persistentKVseparatesphysicalinputrowsfromhistorycapacity.",
+        "Referencecurrentbranchwaspinnedbyfreshgitclone90186732;GitHubHTMLcachehadoldercontentsoactualsourcefilesdrovearchitectureconclusions.",
+        "Lazy/eageranchoradaptersmustsynconlycontextbeforecurrentanchor;donotappendthealreadycomputedanchorfeaturetwice.",
+        "A768KiBtablefilefailsfixedextentbeforeanyrowread;donotlabelthisanembeddingmismatchoroverwritepossiblyinflightcopy."
+      ],
+      "checks": [
+        "Pinnedread-only4BsourceABI/position/runtimeinspection",
+        "Existingembeddingwrong-extentsfailbeforepreadtests"
+      ],
+      "skill_changes": "NONE_EXISTINGSPECULATIVEDECODE_POSITION_AND_CACHE_RULES_APPLY; MODEL_ROUTE_CORRECTED",
+      "rejected_promotions": [
+        "NoS128wholeprefixalgorithmrequirement",
+        "No35BincrementalfromexistingS64OMCbyparameterchange",
+        "No4Bcheckpoint/runtimebinarysubstitution",
+        "Noaccuracyfailurefromincompletefiletransfer"
+      ],
+      "remaining_hypotheses": [
+        "Completeoriginaltablesand64prefixexactrows",
+        "Actual35BincrementalDraftgraph/runtimecompatibility",
+        "All80compiled/runtime/sourcefeedbackbindingsandordinarybaseline"
+      ]
+    },
+    "role_specific_parameter_owner": {
+      "captured": [
+        "Theactual50genericdepthfailuresincludednearbycompletebeta/v_projlearnedpairs;role-specificsearchkeepsindependentnearestpairwitnessinstead ofraisingagloballimitblindly.",
+        "FilenameFQNcontractcanrecord80sourceownermatchesunderdeclaredmodel-specificruleswithoutclaimingexporterattestationorallowingfeedback.",
+        "FileConstantintegerdtypeattributeandplaceholderTensorDescriptordtypeareseparatedomains;rawattributesequalityisnotnumericaltype/extentproof."
+      ],
+      "checks": [
+        "tests/test_target_parameter_fqn_owner.py",
+        "tests/test_target_state_correspondence.py",
+        "tests/test_target_prefill_decode_path.py"
+      ],
+      "skill_changes": "NONE_MODEL_SPECIFIC_CONTRACT; existingidentityandambiguitychecksstrengthened",
+      "rejected_promotions": [
+        "NoownerfromRefData/shapeordinal",
+        "Nocrossdomainintegerdtypeguess",
+        "Nofeedbackreadyfromsourceowneronly"
+      ],
+      "remaining_hypotheses": [
+        "Actual80source-ownercontractresult",
+        "Same-modelsourcecompiledruntimefilesforprefillanddecode",
+        "Source-to-runtimebridgehistoryandcontrols"
       ]
     }
   },
@@ -2271,7 +2318,7 @@
     "source": "USER_EXPLICIT_2026_10_30_DECODE1_MULTIROUND_VERIFY_FIRST",
     "status": "TARGET_NEXT_ANCHOR_SCHEDULER_HOST_VERIFIED_ORIGINAL_DEVICE_ADAPTER_OPEN",
     "priority": "Complete functional serial verify before batch verify or acceleration claims",
-    "first_anchor": "From a valid prefill last-row logit, commit target-next at absolute position64 and advance it through decode1. Preserve all64 prompt features; a complete feature prefix including anchor is presented to the existing DraftGraph, which excludes the anchor feature from context.",
+    "first_anchor": "Commit validprefillnextatposition64andadvanceitthroughdecode1; hostTargetObservationcontains65feature rows. CachedDraftadapter appends onlypromptrows0..63beforeanchor; laterappendoldanchor+acceptedfeaturedeltafromcachecursoruptobutexcludingcurrentcorrection/bonusanchor. Explicitabsolutepositions/proposalcountand12KV buffersreplacewholeprefixgraphinputs; full sixlayersandweightsretained.",
     "verify": "Compare each draft candidate against current target.next BEFORE any advance. Advance only an accepted candidate or the target correction at first mismatch. Never feed rejected candidates; on full considered-block acceptance append and advance the current target prediction as bonus unless EOS/length stops.",
     "state_commit": "Every committed token including anchor/correction/bonus/final token enters target state and appends exactly its own feature row. Check EOS and token budget at every commit; evidence binds complete prefix, state hash chain and immutable older feature rows.",
     "runtime_gap": "Existing generic prefix-recompute target Top1[S] executor is not the original stateful89input/single-logit target ABI. The current standalone continuation preparer is not a general multiround backend.",
@@ -2304,7 +2351,7 @@
     },
     "capacity_policy": "Current3input draft ABI recomputes complete prefix and derives positions from absolute prefix length; keep full history and RoPE positions. No truncation/rebase, no changing ids63 to the target next token, no manifest-only capacity relabel.",
     "available_actual_artifacts": "TargetS64/targetS1 and full6layer draftS64 executed; no proven reusableS128 draft OMC. S128 source/meta/config is not a compiled model.",
-    "next": "Build and validate genuinely larger full-prefix draft capacity for chosen generation budget or implement an explicitly declared incremental draft ABI; preserve topology/weights.",
+    "next": "Defaultnowadoptscachedincremental35BDraftABIfrompinned4Bsource; totalKVcapacityexplicit, C16/C64contextdeltagears separate. FullprefixS128toolisoptionalcomparisonnotmandatoryDFlashstep.",
     "reference_scope": "Locked generic author DFlash scheduling source supports target-next anchor alignment; it is not checkpoint-specific numerical or vendor-runtime validation."
   },
   "prefill_decode_serial_host_verification": {
@@ -2464,9 +2511,9 @@
     "source": "USER_EXPLICIT_PARALLEL_EFFICIENCY_REQUEST_2026_10_30",
     "status": "IN_PROGRESS",
     "streams": {
-      "prefill_decode": "HOST_READY17trial+56primary+25cachetests: independentoutputpos63 trial and cachecompatibleoriginalprefill; sourcecrossmodel owner matching in parallel",
-      "embedding_lookup": "HOST_READY47tests: dynamicrows+exactS64/S1 comparison CLI; waitinguser486MiBtwooriginaltables and rowcheck",
-      "draft_capacity": "HOST_READY28tests: trueS128sixlayer GE serializer/AIR export CLI no copies/links; actualexport/userresultpending; readonlyOMGview stillopen",
+      "prefill_decode": "Actualrow63trialprepared14filesonecontrolchange; waitrowscorrespondencebeforedeviceapply; sourceownerFQNcontracthostimplementationinparallel",
+      "embedding_lookup": "47hosttests/APIready; realrowcheckstoppedbeforepayloadreadbecausecurrentweight768KiBvs485MiBrequired,awaitingtransfercompletion",
+      "draft_capacity": "DefaultchangesfromwholeprefixS128tocachedincremental35BDraftABI; source4B90186732reviewed,sourceexporttoolretainedoptionalbutnotrequestedtorun",
       "integration": "Original89input single-logit target session adapter and serial DFlash driver; host scheduling implemented but native multiround not yet run"
     },
     "board_concurrency": "Existing phone-global/model locks serialize actual model calls; host coding, prefix-row validation and draft source export can proceed independently",
@@ -2531,7 +2578,7 @@
     "tests": 47
   },
   "draft_capacity_air_export": {
-    "status": "HOST_VERIFIED_ACTUAL_GE_EXPORT_NOT_RUN",
+    "status": "HOST_VERIFIED_OPTIONAL_PREFIX_RECOMPUTE_TOOL_DEFERRED_FROM_DEFAULT_ROUTE",
     "entrypoint": "targets/cpro/scripts/export_draft_capacity.py",
     "source_job": "full-draft",
     "output": "full-draft-capacity128-air",
@@ -2564,7 +2611,7 @@
     "unchanged_target_source_count": 12,
     "source_policy": "Fresh oldprefill file/nameproof; copy independent currentSHA-bound inputs, nohardlinks/oldreceiptmutation. input_ids is auxiliary, not90th target input.",
     "source_index_policy": "Reviewed originalPython last-local-row rule; privateIndexByTensor contract and numericalcause stayunverified",
-    "execution_prerequisite": "Original64prefix row comparison MATCHED, trialpreparedsuccess. ExistingS64job/V2tool/cachedweights reused, new89inputplan for newdirectory.",
+    "execution_prerequisite": "Trialpreparedsuccess andexactexistingS64job/namedV2proof; standaloneone-variabledeviceexperimentmayruninparallelwithtabletransfer. Original64prefixrowsmustMATCHbeforetreatingoutputasvalidatedgenerationseed/baseline.",
     "tests": 17
   },
   "prefill_verified_cache_reuse": {
@@ -2576,5 +2623,105 @@
     "uncertainty": "Malformed/partial/failed remotehash or owner/cache inventory leavesuncertainlocks; no automatic modelretry",
     "guards": "Non-symlink cachemarker/manifest/parent paths, exactallfilecachedecisions, originaltool/firmware/runtimeprobe andglobal/model locks",
     "tests_new": 25
+  },
+  "embedding_row_check_user_report": {
+    "source": "USER_PASTED_REMOTE_RESULT_NOT_RETRIEVED_LOCALLY",
+    "output": "prefill64-embedding-row-check",
+    "status": "FAILED",
+    "weight_table_current_bytes": 786432,
+    "weight_table_expected_bytes": 508559360,
+    "selected_table_read_bytes": 0,
+    "full_table_hash": "NOT_PERFORMED",
+    "diagnosis": "File extent is incomplete orwrongfile; transfer may stillbeongoing. Not a token-row mismatch or accuracy failure; no rowbytesread.",
+    "next": "Waitforcopycompletion; compare source/destination size+SHA, reruninto newoutput; no delete ofpartialfiles or originals."
+  },
+  "prefill_last_row_trial_user_report": {
+    "source": "USER_PASTED_REMOTE_RESULT_NOT_RETRIEVED_LOCALLY",
+    "output": "target-prefill64-last-row63-trial",
+    "status": "TARGET_PREFILL_LAST_ROW_TRIAL_INPUTS_PREPARED",
+    "derived_file_count": 14,
+    "target_input_count": 89,
+    "target_source_file_count": 13,
+    "auxiliary_source_file_count": 1,
+    "changed_target_source_file_count": 1,
+    "old_output_pos": [
+      64
+    ],
+    "new_output_pos": [
+      63
+    ],
+    "old_sha256": "c31425b44a7ed682a3356bf6820141e1584a15c43b6d6793f552e5d4621586f7",
+    "new_sha256": "1b9e0fe7b740b4e583727aa1c9d27ff8c01491f911d2de0747f8c997ef6b3498",
+    "device_execution": "NOT_RUN",
+    "model_compilation": "NOT_RUN"
+  },
+  "incremental_draft_reference_decision": {
+    "source": "USER_REQUESTED_REFERENCE_BRANCH_REVIEW_2026_10_30",
+    "repository": "https://github.com/day8reak/qwen3.5-4B-dflash",
+    "branch": "feature/gdr-chunk-verify",
+    "commit": "90186732d915e8b058b2a053d205991d805eae76",
+    "evidence": "out/four-b-incremental-reference.json",
+    "status": "SOURCE_ABI_REVIEWED_NOT_PORTED_TO35B_YET",
+    "whole_prefix_s128": "NOT_AN_ALGORITHMIC_REQUIREMENT; previousdefault reflectedexistingthree-inputprefixrecomputewrapper, nowdeferred",
+    "reference_interface": {
+      "new_feature_context_gears": [
+        16,
+        64
+      ],
+      "block_rows": 16,
+      "proposal_count_max": 15,
+      "controls": [
+        "start_position",
+        "valid_rows",
+        "anchor",
+        "proposal_count"
+      ],
+      "persistent_state": "TwoFP16K/Vtensorsperdraftlayer; sixlayerpath12buffers",
+      "output": "15draftTop1+updatedcontextKV; temporaryanchor/MASKKVnotpersisted",
+      "absolute_positions": "context=start_position+offset; block=start_position+valid_rows+offset; oldKnotrerotated",
+      "history_capacity": "LogicalNcoverprompt+generationand64aligned; physicalN+64guard separatefromcontextgears"
+    },
+    "state_alignment_with35b_serial": "Serialtargeteageranchorcanbereused: initialcompletefeatures65containsanchorfeature; onlyappendpromptfeatures0..63tocache, thenonlyoldanchor+acceptedbeforelatestanchor. Latestcorrection/bonusfeatureexcludedfromdraftcontext.",
+    "port_limits": "35BexistingS64artifacthasthreeinputs/twooutputsandprefixrecompute; cachedABIrequiresactualnew35BAIR/OMC/nativeIOadapter. Keepfull6layerH2048/I6144/eighttapsF16384weights;4BFP16H2560/F20480andW4/W8five-layerF12800areindependentcheckpointsnotreplacements. Ascend310PATC/ACLbinarynotKirinHIAIV2compatible.",
+    "runtime_validation_scope": "Readsourceonly. 4BdocsrecorduserChunkdevicePASS_WITH_DIFFERENCES(tokenequalitynotpassed), rawreportsnotincludedandnotrerunhere; noassumptioncurrentcommitallpathsorMTPdeviceaccepted."
+  },
+  "model_specific_parameter_owner_contract": {
+    "status": "HOST_VERIFIED_ACTUAL_TWO_EXPORT_RESULT_NOT_RUN",
+    "contract": "QWEN35_CPRO_PARAMETER_FQN_OWNER_V1",
+    "implementation": "model/qwen35_moe_dflash/target_parameter_fqn_owner.py",
+    "entrypoint": "Existinginspect_target_prefill_decode_path.py innewoutput orinspect_target_state_correspondence.py",
+    "exact_branch_rules": {
+      "conv": "LinearAttentionConvstateUpdate.x1 toin_proj_qkv learnedW_q/scale",
+      "recurrent": "ChunkGatedDeltaRule.beta toin_proj_b learnedW_q/scale",
+      "attention_KV": "CacheUpdate.updates tok_proj orv_proj learnedW_q/scale"
+    },
+    "search": "Eachfamilyindependentnearestcompletepair within32depth/1024edges/4096enqueue; actualsameoperatorx2/scaleports; samewholefilebytesSHAandrawshape/dtype/fileid,noslice; bothgraphscomplete80uniquenamedsourceowners and40layerrolelayout. Equal/nearerunexploredfrontier/ambiguousfamily/duplicateFQN/contentreject.",
+    "source_keys": "Exactretainedmodel_model_layers_L_(linear_attn|self_attn)_FAMILY_(W_q|scale)filenamegrammar, notRefData/copy/outputordinal",
+    "old_api": "Generic30candidatefields/status/proven_count0/feedbackfalsestayunchanged; newnestedparameter_fqn_owner_contractseparate",
+    "unavailable_claims": [
+      "PythonFQNtofilenameattestation",
+      "NumericFileConstantint-attrdtype/extentinterpretation(theactualoutdescisplaceholderFLOAT32shape{})",
+      "Compiled/native/filechainmapping",
+      "Numericalaccuracy/statecontinuity"
+    ],
+    "host_verification": {
+      "run_id": "20261030T075543Z-2197-119a93",
+      "unique_cases_passed": 72,
+      "suites": [
+        {
+          "artifact": "out/parameter-fqn-owner.xml",
+          "cases": 64,
+          "sha256": "8e47a6af910cd815890852972beab19c83c4c93b09e9f89e6a219c1f9d89263c"
+        },
+        {
+          "artifact": "out/packet-owner-tests.xml",
+          "cases": 8,
+          "sha256": "f2a6f1ee373584f470c1ae4527147e48ab305a73ec75746ff830c08918b8e0e9"
+        }
+      ],
+      "independent_review": "PASSED",
+      "scope": "Hostsourcegraphfixtures/model-specificfilenamecontractonly; no sourceFQNattestation, integerFileConstantdomaininterpretation, compiled/runtime/filefeedback or actualdeviceclaims"
+    },
+    "feedback_ready": false
   }
 }

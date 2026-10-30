@@ -300,7 +300,7 @@ def analyze_state_correspondence(prefill, decode, prefill_inventory, decode_inve
         "no_unique_common_parameter_context": sum("context" in row and not row["context"]["paths"] for row in model["states"]),
         "ambiguous_context_signatures": sum(len(rows) > 1 for rows in signatures[name].values())}
         for name, model in models.items()}
-    return {"status": "ALL80_UNIQUE_WEIGHT_CONTEXT_CANDIDATES_OBSERVED" if complete else "STATE_CORRESPONDENCE_EVIDENCE_OBSERVED_WITH_GAPS",
+    result = {"status": "ALL80_UNIQUE_WEIGHT_CONTEXT_CANDIDATES_OBSERVED" if complete else "STATE_CORRESPONDENCE_EVIDENCE_OBSERVED_WITH_GAPS",
         "models": models, "common_parameter_content_count": len(common), "unique_common_parameter_content_count": len(unique),
         "gap_summary": gaps,
         "unique_state_context_candidate_count": len(candidates), "state_context_candidates": candidates,
@@ -308,6 +308,9 @@ def analyze_state_correspondence(prefill, decode, prefill_inventory, decode_inve
         "feedback_ready": False, "state_feedback": "NOT_RUN", "weight_payload_access": "NONE",
         "parameter_identity_scope": "WHOLE_SIDECAR_SHA256_AND_BYTES_FROM_BOUND_COMPLETED_EXPORT_INVENTORIES_NOT_TENSOR_CONTENT_OR_FRESH_WEIGHT_READ",
         "next": "Review exact provenance tags and parameter edge contexts; establish a supported stable source-layer/cache-role contract before promoting any candidate or preparing prefill feedback"}
+    from .target_parameter_fqn_owner import analyze_parameter_fqn_owners
+    result['parameter_fqn_owner_contract'] = analyze_parameter_fqn_owners(model_nodes, models, constants, enums)
+    return result
 
 
 def _pair_binding(prefill, decode):

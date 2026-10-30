@@ -102,7 +102,9 @@ def inspect_prefill_decode_path(prefill_job, decode_job, prefill_execution, pref
                 "logit_selection": logits.get("status"),
                 "logit_selection_details": _logit_details(logits),
                 "unique_state_context_candidate_count": states.get("unique_state_context_candidate_count", 0),
-                "proven_cross_model_state_owner_count": states.get("proven_cross_model_state_owner_count", 0)},
+                "proven_cross_model_state_owner_count": states.get("proven_cross_model_state_owner_count", 0),
+                "parameter_fqn_source_owner_status": states.get("parameter_fqn_owner_contract", {}).get("status"),
+                "parameter_fqn_source_owner_count": states.get("parameter_fqn_owner_contract", {}).get("matched_owner_count", 0)},
             reports={name: str(out / folder / "report.json") for name, folder in
                 (("prefill_files", "prefill-files"), ("logit_selection", "logit-selection"), ("state_correspondence", "state-correspondence"))},
             active_source_identities=[{"path": path, "identity": value} for path, value in sorted(baselines.items())])

@@ -6,7 +6,7 @@
 
 实际 AIR 已找到唯一控制路径：`arg1238_1` 直接进入 `IndexByTensor_40.indices0`，x 的导出 `_meta` 为 `[1,64,2048]`，`indices_mask=[0,1]`。当前原文件值64；按已核原 Python 源码的当前序列最后行规则，独立试验改为63。该试验不声称私有 IndexByTensor 的越界行为或数值根因。
 
-以下 A、B、C 的准备可以并行。A 通过后再运行 C 的板端调用。模型调用仍按现有共享锁排队；不需要重跑 metadata 探针或旧 decode 恢复。
+A 的表传输／行检查与 C 的单变量板端实验可以并行；B 的全前缀 S128 导出暂缓，优先参考4B分支的增量 draft 缓存。C 的结果在 A 通过前仅作实验观察，不作为正确生成基线。模型调用仍按现有共享锁排队；不需要重跑 metadata 探针或旧 decode 恢复。
 
 先更新一次：
 
@@ -24,27 +24,26 @@ python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_embedding_inputs.py" \
   --scale-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_scale.bin" \
   --input-dir /home/w00949577/run_35B/chunksize_64_data \
   --sequence-length 64 \
-  --output "$AI_RUN_DIR/prefill64-embedding-row-check"
+  --output "$AI_RUN_DIR/prefill64-embedding-row-check-v2"
 ```
 
-这一步只读必要表行及三个原输入文件，不生成替换输入。预期 `ORIGINAL_EMBEDDING_INPUT_ROWS_MATCHED`、64个位置全部匹配；若 `MISMATCH`，贴回位置摘要，先解决输入对应再做下一次板端 prefill。默认不对整表反复哈希；API 支持任意后续 token 的原 INT8 行与独立 FP32 scale 查表。
+用户首次检查在读表行前停止：DDK上的weight文件只有786,432字节，完整应为508,559,360字节；scale完整应为993,280字节。等待复制完成后，在原权重机器和DDK分别核对这两个文件大小／SHA，再用新输出目录 `prefill64-embedding-row-check-v2` 重跑，保留首次失败目录。row63 trial已准备成功，无需重复准备。
 
-## B：真正导出 S128 完整六层 draft AIR
+这一步只读必要表行及三个原输入文件，不生成替换输入。预期 `ORIGINAL_EMBEDDING_INPUT_ROWS_MATCHED`、64个位置全部匹配；若 `MISMATCH`，贴回位置摘要；单变量 prefill 实验可以继续观察，但输入修复前不接正确生成基线。默认不对整表反复哈希；API 支持任意后续 token 的原 INT8 行与独立 FP32 scale 查表。
 
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/export_draft_capacity.py" \
-  --job "$AI_RUN_DIR/full-draft" \
-  --sequence-length 128 \
-  --prompt-length 64 \
-  --max-new-tokens 32 \
-  --output "$AI_RUN_DIR/full-draft-capacity128-air"
-```
+## B：改为增量 draft，暂缓全前缀 S128 导出
 
-这会构建 GE serializer、重建真实S128 graph/recipe并导出新AIR；直接只读引用原 prepared 权重，零复制、零链接，不改旧manifest或S64模型。只新增小源码、exporter、AIR和日志，预留384MiB。成功应为 `DRAFT_CAPACITY_AIR_EXPORTED`，并明确 `compilation_ready:false`：它尚不是新的可部署OMC。后续OMG需要显式只读输入视图和空间预算；目前不启动可能额外占约8.46GB加临时文件的普通编译路径。
+用户指定的 [4B feature/gdr-chunk-verify](https://github.com/day8reak/qwen3.5-4B-dflash/tree/feature/gdr-chunk-verify) 已按当前commit `90186732d915e8b058b2a053d205991d805eae76` 只读核查。它将新增context行数、提案block和总KV容量分开：每次输入C16/C64新特征、绝对start_position、valid_rows、anchor、proposal_count及每层K/V；query block固定16行。历史留在KV，不必每轮输入整个前缀。[实际图实现](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/framework/python/qwen35_dflash/ascend310p/incremental.py#L643)。
+
+因此不把S128全前缀AIR作为DFlash必做步骤。之前扩容针对本仓库现有三输入、prefix-recompute的35B draft OMC；它没有缓存／位置ABI，不能直接靠运行参数变成增量模型。下一步按参考接口适配实际35B完整六层、8taps/F16384、原权重与舍入边界，重新导出增量draft AIR/OMC。4B是Ascend310P/TorchAir/ATC/AscendCL，不能直接复用其二进制到Kirin HIAI。
+
+总历史KV容量仍要覆盖prompt和生成预算；它与单次C16/C64输入档位不同。4B参考将logical capacity向64对齐并增加64行物理guard。35B的新buffer容量需明确锁定。采用当前eager serial anchor时，每次只向draft缓存追加当前anchor之前尚未同步的已提交特征，排除最新correction/bonus的feature。
+
+`export_draft_capacity.py`已发布并通过主机测试，保留为可选全前缀对照工具；当前先不运行它。旧成功S64 artifact保持保留。4B的FP16六层checkpoint与W4/W8五层checkpoint也不混用，35B继续使用实际六层模型。
 
 ## C：仅修改 output_pos 的独立 prefill 实验
 
-先生成独立输入，可与 A、B 并行：
+该目录已准备成功，不用重做。下面准备命令仅保留作记录：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/prepare_target_prefill_last_row_trial.py" \
@@ -55,7 +54,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/prepare_target_prefill_last_row_trial.py
 
 成功应为 `TARGET_PREFILL_LAST_ROW_TRIAL_INPUTS_PREPARED`。它复制13份实际 target 源文件，仅把 output_pos 的一个INT32字改为63；另外复制 input_ids 作为辅助第14文件，不算target第90输入。原输入、旧执行、模型和权重均不改。
 
-A 的64行全部匹配且 C 准备成功后，运行一次原 prefill：
+C 已准备成功，现在运行一次原 prefill 单变量实验，可与 A 的传输／检查并行：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/run_target_prefill_smoke.py" \
@@ -72,6 +71,6 @@ A、B、C 各自完成就贴回摘要，不需要等全部完成。所有输出�
 
 ## 当前仍在处理的接续项
 
-path-v2 观察到1126种共同参数内容、1123种唯一内容；两图各80个源状态owner完整，但通用上下文追踪仅30个候选，另50个触及深度限制。正在按卷积x1、recurrent beta、K/V updates分别匹配显式层参数名、内容和真实端口；尚未准备跨模型反馈。源状态对应还需接到各自 compiled/runtime/file 绑定，不能用RefData编号或相同形状替代。
+path-v2 观察到1126种共同参数内容、1123种唯一内容；两图各80个源状态owner完整，但通用上下文追踪仅30个候选，另50个触及深度限制。新模型专用参数命名合同已按卷积x1、recurrent beta、K/V updates分别追踪完整W_q/scale对，主机测试覆盖80个重排source owner；实际两图的新合同结果待收集。它只按已保留的层参数文件名、原始属性、内容pin和实际端口配对，不声称Python FQN命名attestation、数值dtype/extent或完整runtime反馈已证明。源状态对应还需接到各自 compiled/runtime/file 绑定，不能用RefData编号或相同形状替代。
 
-标准 DFlash 首轮需保留全部64个prompt feature，并以target下一token作位置64的anchor；旧S64 draft机械单步用了prompt末token220@63，不能当作标准首轮。S128导出保持完整六层和原权重，为后续32-token预算留容量；仍需真正编译、设备执行和89输入target循环adapter联调。最终需要多轮接受／拒绝后继续生成与普通基线对照，再验证精度与性能。
+标准 DFlash 首轮需保留全部64个prompt feature，并以target下一token作位置64的anchor；旧S64 draft机械单步用了prompt末token220@63，不能当作标准首轮。当前优先适配增量缓存ABI，保持完整六层和原权重；仍需新artifact导出、编译、设备执行和89输入target循环adapter联调。最终需要多轮接受／拒绝后继续生成与普通基线对照，再验证精度与性能。
