@@ -57,6 +57,8 @@ def main(argv=None):
                 result["next"] = "Inspect the retained lock request and current board owner before a new-output retry; no model execution or automatic lock cleanup occurred"
             elif observed.get("device_execution") == "NOT_RUN":
                 result["next"] = "Inspect board/result.json and retained HDC calls at the reported failure stage before retrying; model inference was not reached"
+            elif observed.get("status") != "EXECUTED_UNVALIDATED":
+                result["next"] = "Inspect retained tool stdout/stderr/exitcode/PID and HiLog; resolve this failure before mapping feature files or feeding back states"
             else:
                 result["next"] = "Retain all actual tool outputs and PID/logs; map real filenames to runtime indices before using features or feeding back80states"
     except Exception as error:

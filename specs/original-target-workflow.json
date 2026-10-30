@@ -3,9 +3,9 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "BOTH_METADATA_AND_PREFILL_PLAN_PASSED_APPLY_TRANSPORT_RETRY_PENDING",
-  "handoff": "20261029T235619Z-4919-70bfb2/handoff.md",
-  "user_state": "Both restore-only metadata probes passed89/82; decode all tensor names observed and locks released. Actual original first-prefill plan passed. Apply failed at a10secondHDC global-lock query timeout before model execution; subsequent user read-only check returnedLOCK_ABSENT. No cleanup needed;60secondcontroltimeout and explicit stage/token added for new-output retry.",
+  "status": "PREFILL_TOOL_FORMAT_OVERRIDE_REJECTED_CORRECTED_RETRY_PENDING",
+  "handoff": "20261030T002144Z-5490-cc0fa6/handoff.md",
+  "user_state": "Both runtime metadata probes and original first-prefill planpassed. First fulltarget toolinvocation exited255 after rejecting V2 format overrides; complete compiledpayloads are cached ondevice and locks released. Corrected V2 call omitsformatflags and retainsmodelND descriptors, dtypes/file/weightdir; new-output retry next.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
   "contract": {
@@ -53,7 +53,7 @@
     "Ordinary decode and multi-round DFlash stop/reject/commit behavior",
     "Matched numerical acceptance and measured end-to-end performance"
   ],
-  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_target_prefill_smoke.py\" --job \"$AI_RUN_DIR/target-pytorch-prefill64-tmpdirfix\" --runtime-probe \"$AI_RUN_DIR/target-prefill64-runtime-io\" --input-dir /home/w00949577/run_35B/chunksize_64_data --output \"$AI_RUN_DIR/target-prefill64-smoke-v2\" --apply",
+  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_target_prefill_smoke.py\" --job \"$AI_RUN_DIR/target-pytorch-prefill64-tmpdirfix\" --runtime-probe \"$AI_RUN_DIR/target-prefill64-runtime-io\" --input-dir /home/w00949577/run_35B/chunksize_64_data --output \"$AI_RUN_DIR/target-prefill64-smoke-v3\" --apply",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -76,7 +76,9 @@
       "Leading/trailing singleton ND axes can be compared as exact linear views while feeding original bytes into actual runtime shapes; ambiguous ordinary inputs are permitted only if byte-identical for this one first-prefill call. Inner/nonunit axes and state feedback remain outside this certificate.",
       "HDC remote shell may merge expected mkdir File-exists stderr into BUSY, so lock queue tests execute generated POSIX shell with merged channels and the real unique exit marker; suppress only expected mkdir diagnostics and retain unknown response details.",
       "Actual selected SDK NDTensorDesc exposes tensorName; capture optional raw per-tensor member values before deciding names are unavailable. Empty, absent or duplicate names do not establish semantic state bindings.",
-      "Separate overall lock queue time from one HDC round trip. A10secondcontroltimeout can fail before any model call even when both metadata probes finish successfully; retain uncertain request identity, query actual lock state, and do not delete or replay blindly. LOCK_ABSENT permits a new lock-protected attempt without cleanup; transport latency root cause remains unresolved."
+      "Separate overall lock queue time from one HDC round trip. A10secondcontroltimeout can fail before any model call even when both metadata probes finish successfully; retain uncertain request identity, query actual lock state, and do not delete or replay blindly. LOCK_ABSENT permits a new lock-protected attempt without cleanup; transport latency root cause remains unresolved.",
+      "Actual selected model_run_tool_internal V2 rejects explicit input_format/output_format and recommends ROMC; global help availability does not establish per-interface compatibility. V2 first-prefill now inherits observed ND model descriptors and keeps only supported evidence-backed options. A toolpreflight failure is not a model arithmetic or state failure.",
+      "Successful draft embedded-stream legacy-buffer has UINT32 model extent; the18.8GBtargetweight cannot use that same current buffer path. Retain external-weight loading and do not guess SetModelPath/SetModelBuffer ordering or switch interfaces from a format error alone."
     ],
     "executable_checks": [
       "tests/test_full_target_continuation.py",
@@ -383,16 +385,16 @@
     "next": "No repeat probe required; proceed to first-prefill host-only input plan. Exact input-name/output-producer state binding will use retained reports; no semantics inferred from names alone."
   },
   "next_first_prefill_smoke": {
-    "status": "USER_PLAN_PASSED_APPLY_TRANSPORT_RETRY_PENDING",
+    "status": "USER_TOOL_FORMAT_REJECTED_CORRECTED_RETRY_PENDING",
     "entrypoint": "targets/cpro/scripts/run_target_prefill_smoke.py",
     "plan_output": "target-prefill64-smoke-plan",
-    "apply_output": "target-prefill64-smoke-v2",
+    "apply_output": "target-prefill64-smoke-v3",
     "plan_pass": "PREFILL_SMOKE_PLANNED",
     "execution_observation": "EXECUTED_UNVALIDATED",
     "input_mapping": "Actual unique exact HIAI typed shapes for ordinary inputs; ambiguous state classes allowed only when every original candidate has byte-identical input values. No serialized Data.index-to-runtime-slot assumption.",
     "scope": "One prefill64 invocation only. Permutation-equivalent initial values do not establish state layer identities or feedback.",
     "source_inputs": "/home/w00949577/run_35B/chunksize_64_data",
-    "tool_contract": "Hash-bound observed help; V2 direct_from_file=true weight_dir=primary.parent times=1 explicit ordered89/82 type/ND format; frozen static model omits flexible shape flags.",
+    "tool_contract": "Hash-bound observed help;V2 direct_from_file=true weight_dir=primary.parent times=1 explicit ordered89/82types; ND formats come from actual restored descriptors, no format or flexible shape overrides.",
     "model_transfer": "Existing complete compiler payloads only, source bytes unchanged. Missing files uploaded after plan passes and phone disk budget check; prior cache reused. No model compilation or host weight copies.",
     "concurrency": "Same phone-global owned queue lock as metadata probes plus per-cache execution lock; known child PID/exit captured, uncertain timeout retains locks and never retries.",
     "failure_evidence": "Hash-verified stdout/stderr/exitcode/PID; bounded read-only HiLog snapshot when available.",
@@ -621,5 +623,55 @@
     "failures": 0,
     "evidence": "out/lock-stage-tests.xml",
     "scope": "Host lock/stage/first-prefill transport/morning-summary regressions only; no model or phone inference"
+  },
+  "prefill_tool_format_incident": {
+    "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
+    "output": "target-prefill64-smoke-v2",
+    "status": "FAILED",
+    "stage": "execute",
+    "tool_process_id": 6795,
+    "remote_exitcode": 255,
+    "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+    "observed_error": "Specify format is not supported, please set --modelmanager_itf=ROMC",
+    "weights_upload": "USER_REPORTED_COMPLETE_TO_SAME_COMPILE_HASH_BOUND_BOARD_CACHE",
+    "largest_payload": {
+      "path": "SubGraph_0.weight",
+      "bytes": 18817991168
+    },
+    "model_load": "UNVERIFIED; tool rejected explicit format options",
+    "numerical_validation": "NOT_RUN_NO_REFERENCE",
+    "correction": {
+      "interface": "RetainV2 direct_from_file=true andweight_dir",
+      "removed_options": [
+        "--input_format",
+        "--output_format"
+      ],
+      "format_source": "Actual restored HIAIND descriptors only; planner rejects other formats",
+      "retained_options": [
+        "--input_type",
+        "--output_type",
+        "--times=1"
+      ],
+      "cache_policy": "Freshly hash each existing compiled payload; upload only missing/mismatchedfiles. Old failure and source bytes retained."
+    },
+    "draft_route_comparison": {
+      "successful_draft": "embedded-stream pluslegacy-buffer",
+      "current_legacy_model_buffer_extent": "UINT32_MAX bound in modelbuffer/SetModelBuffer path",
+      "target_constraint": "Existing18.8GBexternalweight alone exceeds4GiB, so current successful draft packaging/legacy route cannot be copied as-is",
+      "unsupported_claims": "No V2 external-weight load success or failure inferred from early format rejection; no ROMC transition based on help alone"
+    },
+    "retry_output": "target-prefill64-smoke-v3",
+    "scope": "Tool argument/interface incompatibility. No target model numerical/state pass or computational failure established."
+  },
+  "format_correction_host_verification": {
+    "run_id": "20261030T002144Z-5490-cc0fa6",
+    "unique_pytest_cases_passed": 140,
+    "failures": 0,
+    "evidence": [
+      "out/format-tests.xml",
+      "out/cache-retry-tests.xml",
+      "out/final-execution-tests.xml"
+    ],
+    "scope": "Host tool-argument rejection and exact first-prefill/oldboard/morning checks plus small cache fixtures. No realtarget inference or numericalpass."
   }
 }

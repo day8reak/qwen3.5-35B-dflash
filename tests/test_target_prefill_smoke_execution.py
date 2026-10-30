@@ -49,8 +49,9 @@ class FakeHdc:
         if label == "acquire-global-model-io-lock":
             return 0, "BUSY" if self.busy else "ACQUIRED"
         if label == "inspect-model-cache":
-            manifest = next(value.decode() for key, value in self.remote.items() if key.endswith("model-files.tsv"))
-            return 0, "\n".join("SEND " + line.split(" ", 1)[1] for line in manifest.splitlines())
+            manifest = self.remote[shlex.split(command.rsplit("<", 1)[1].strip())[0]].decode()
+            return 0, "\n".join(("OK " if path in self.remote and hashlib.sha256(self.remote[path]).hexdigest() == digest else "SEND ") + path
+                for digest, path in (line.split(" ", 1) for line in manifest.splitlines()))
         if label == "prefill-board-disk":
             return 0, f"Filesystem 1024-blocks Used Available Capacity Mounted on\nfixture 9999999 1 {self.available_kb} 1% /data"
         if label == "verify-upload" or label.startswith("hash-tool-"):
@@ -66,16 +67,19 @@ class FakeHdc:
                     result.append(hashed(shlex.split(line)[1]))
             return 0, "\n".join(result)
         if label == "execute-original-target":
-            path = next(key for key in self.remote if key.endswith("prepare-inputs.sh"))
-            attempt = str(PurePosixPath(path).parent)
+            attempt = shlex.split(command)[1]
             self.attempt = attempt
-            self.remote[attempt + "/tool.stdout"] = b"fixture one tool invocation; no target inference"
-            self.remote[attempt + "/tool.stderr"] = b"ERROR: fixture external weight initialization failed" if self.status else b""
-            self.remote[attempt + "/tool.exitcode"] = str(self.status).encode() + b"\n"
+            # Reproduce the real selected tool's format/interface rejection.
+            format_rejected = "--modelmanager_itf=V2" in command and any(flag in command for flag in ("--input_format=", "--output_format="))
+            status = 255 if format_rejected else self.status
+            self.remote[attempt + "/tool.stdout"] = (b"[ERROR] Specify format is not supported, please set --modelmanager_itf=ROMC\n"
+                if format_rejected else b"fixture one tool invocation; no target inference")
+            self.remote[attempt + "/tool.stderr"] = b"ERROR: fixture external weight initialization failed" if status and not format_rejected else b""
+            self.remote[attempt + "/tool.exitcode"] = str(status).encode() + b"\n"
             self.remote[attempt + "/tool.pid"] = b"1337\n"
             for index in range(82):
                 self.remote[attempt + f"/outputs/vendor_{index:03d}.bin"] = b"opaque fixture output"
-            return self.status, ""
+            return status, ""
         if label == "output-inventory":
             return 0, "\n".join(hashed(path) for path in self.remote if path.startswith(self.attempt + "/outputs/"))
         return 0, ""
@@ -128,11 +132,11 @@ def test_one_prefill_executes_only_from_runtime_value_class_proof_and_preserves_
     argv = json.loads((case["out"] / "command.json").read_text())["argv"]
     assert "--direct_from_file=true" in argv and "--modelmanager_itf=V2" in argv and "--times=1" in argv
     assert "--enable_item=1" in argv and "--enable_item=2" not in argv
-    for option, count in (("input_type", 89), ("output_type", 82), ("input_format", 89), ("output_format", 82)):
+    for option, count in (("input_type", 89), ("output_type", 82)):
         values = next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--" + option + "="))
         assert len(values.split(",")) == count
-        if option.endswith("format"): assert set(values.split(",")) == {"ND"}
-    assert not any(arg.startswith(("--input_shape", "--output_shape")) for arg in argv)
+    assert not any(arg.startswith(("--input_shape", "--output_shape", "--input_format", "--output_format")) for arg in argv)
+    assert result["inputs"] == json.loads((case["out"] / "input-evidence.json").read_text())["inputs"]
     command = next(command for command, label, _ in FakeHdc.instances[0].calls if label == "execute-original-target")
     assert "tool_pid=$!" in command and 'wait "$tool_pid"' in command
 

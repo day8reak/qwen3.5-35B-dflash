@@ -150,7 +150,7 @@ def _tool_binding(probe, bindings):
     tool, identity = tools[0]
     help_row = tool.get("help", {})
     text = help_row.get("text")
-    required = ("model", "input", "output_dir", "modelmanager_itf", "direct_from_file", "weight_dir", "times", "input_type", "output_type", "input_format", "output_format")
+    required = ("model", "input", "output_dir", "modelmanager_itf", "direct_from_file", "weight_dir", "times", "input_type", "output_type")
     if (tool.get("status") != "INSPECTED" or tool.get("tool_identity") != "SHA256_MATCHED_BEFORE_AND_AFTER"
             or not re.fullmatch(r"[0-9a-f]{64}", str(tool.get("tool_sha256_before", "")))
             or tool.get("tool_sha256_before") != tool.get("tool_sha256_after")
@@ -382,7 +382,8 @@ def prepare_prefill_smoke_plan(compilation_dir, runtime_probe_dir, input_dir):
         "inputs": inputs, "outputs": outputs, "input_shape": None, "output_shape": None,
         "input_type": ",".join(row["tool_input_type"] for row in inputs),
         "output_type": ",".join(row["tool_output_type"] for row in outputs),
-        "input_format": ",".join("ND" for _ in inputs), "output_format": ",".join("ND" for _ in outputs),
+        "input_format": None, "output_format": None,
+        "format_policy": "RESTORED_MODEL_ND_DESCRIPTORS_NO_TOOL_OVERRIDE",
         "permutation_equivalence": certificates, "input_mapping_source": "RUNTIME_TYPED_ND_VIEWS_AND_IDENTICAL_SOURCE_BYTES",
         "runtime_input_order": "UNIQUE_TYPED_ND_VIEWS_AND_IDENTICAL_INPUT_VALUE_CLASSES", "nd_view_policy": _ND_VIEW_POLICY,
         "execution_scope": "SINGLE_PREFILL_ONLY_IDENTICAL_STATE_GROUPS", "state_continuity": "NOT_RUN",

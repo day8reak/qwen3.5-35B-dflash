@@ -133,6 +133,8 @@ def test_permuted_runtime_indices_and_same_byte_states_plan_only_one_call(case):
     assert plan["outputs"][0]["bytes"] == 2097152  # Same byte count as KV; exact rank distinguishes it.
     assert plan["state_input_layer_identity"] == plan["state_output_layer_identity"] == "UNVERIFIED"
     assert plan["state_continuity"] == "NOT_RUN" and plan["input_shape"] is plan["output_shape"] is None
+    assert plan["input_format"] is plan["output_format"] is None
+    assert plan["format_policy"] == "RESTORED_MODEL_ND_DESCRIPTORS_NO_TOOL_OVERRIDE"
     # KV positions[64] and position_ids[1,64] are the same ND view and contain
     # identical original bytes. Their semantic identities remain unclaimed.
     assert len(plan["source_inputs"]) == 13 and len(plan["permutation_equivalence"]) == 11

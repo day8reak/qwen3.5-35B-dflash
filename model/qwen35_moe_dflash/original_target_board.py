@@ -290,6 +290,8 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         manifest = out / "model-files.tsv"
         manifest.write_text("".join(row["sha256"] + " " + str(remote) + "\n" for row, _, remote in uploads))
         hdc.send(manifest, cache / "model-files.tsv")
+        if smoke:
+            print("target-board: checking cached payload SHA256; matching files will be reused", flush=True)
         _, text = hdc.shell("while read -r expected path; do if test -f \"$path\" && test \"$(sha256sum \"$path\" | cut -d ' ' -f 1)\" = \"$expected\"; then printf 'OK %s\\n' \"$path\"; else printf 'SEND %s\\n' \"$path\"; fi; done < "
                             + shlex.quote(str(cache / "model-files.tsv")), "inspect-model-cache")
         decisions = {}
@@ -316,6 +318,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                 "original_input_bytes": original_bytes, "runtime_input_copy_bytes": slot_bytes,
                 "output_and_temporary_reserve_bytes": reserve, "required_bytes": required,
                 "scope": "Observed filesystem space only; no memory-capacity or exact tool temporary-allocation guarantee"}
+            print(f"target-board: cached payloads verified; missing upload={missing} bytes", flush=True)
             if free < required:
                 raise ValueError(f"prefill board disk budget insufficient: need {required} bytes, available {free}")
             validate_prefill_smoke_plan(smoke_proof)
@@ -374,11 +377,12 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         argv = [str(tool), "--model=" + str(primary), "--input=" + ",".join(str(attempt / row["file"]) for row in plan["inputs"]),
                 "--times=1", "--modelmanager_itf=V2", "--weight_dir=" + str(primary.parent), "--enable_item=1"]
         if smoke:
+            # This tool accepts explicit format overrides only through ROMC.
+            # V2 uses the restored model's descriptors; the smoke proof already
+            # requires every actual runtime input/output to be ND.
             argv.extend(["--direct_from_file=true",
                 "--input_type=" + ",".join(row["tool_input_type"] for row in plan["inputs"]),
-                "--output_type=" + ",".join(row["tool_output_type"] for row in plan["outputs"]),
-                "--input_format=" + ",".join("ND" for _ in plan["inputs"]),
-                "--output_format=" + ",".join("ND" for _ in plan["outputs"])])
+                "--output_type=" + ",".join(row["tool_output_type"] for row in plan["outputs"])])
         else:
             argv.extend(["--input_shape=" + plan["input_shape"], "--output_shape=" + plan["output_shape"]])
         argv.append("--output_dir=" + str(attempt / "outputs"))
