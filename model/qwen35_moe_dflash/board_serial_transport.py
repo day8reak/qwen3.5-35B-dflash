@@ -34,6 +34,16 @@ _TOKEN = re.compile(r'[0-9a-f]{32}')
 _ATTEMPT_LOGS = ('supervisor.stdout', 'supervisor.stderr', 'tool.pid', 'tool.exitcode', 'run.sh')
 _MAX_FILE = 128 << 20
 _MAX_TOTAL = 2 << 30
+_PREFILL_RECIPE = 'PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL'
+
+
+def _has_prefill(manifest):
+    value = manifest.get('prefill')
+    if value is None:
+        return False
+    if not isinstance(value, dict) or value.get('control_recipe') != _PREFILL_RECIPE:
+        raise ValueError('prefill requires the explicit padded-short-prompt experimental contract')
+    return True
 
 
 def _dump_mode(manifest):
@@ -51,6 +61,8 @@ def _result_scope(state, manifest):
         else 'TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY'))
     if not dump:
         state['state_continuity'] = 'NOT_REPLAYED_COMPACT_RESULT'
+    if _has_prefill(manifest):
+        state['prompt_ingestion'] = _PREFILL_RECIPE
 
 
 def _next_action(state):
@@ -82,9 +94,10 @@ def _validate_summaries(loop, manifest, *, required=False):
             or latency.get('inference_only_status', 'NOT_PROVIDED') != 'NOT_PROVIDED'
             or not isinstance(timing, dict) or timing.get('scope') != 'MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE'):
         raise ValueError('phase latency must identify child wall-clock timing, not NPU inference')
-    prompt_calls = min(len(manifest['prompt_token_ids']), counts['target_native_calls'])
-    expected = {'prompt_ingest': prompt_calls, 'decode': counts['target_native_calls'] - prompt_calls,
-        'draft': counts['draft_native_calls']}
+    prefill = _has_prefill(manifest)
+    prompt_calls = counts['prefill_native_calls'] if prefill else min(len(manifest['prompt_token_ids']), counts['target_native_calls'])
+    expected = {'prompt_ingest': prompt_calls, 'decode': counts['target_native_calls'] - (0 if prefill else prompt_calls),
+        'draft': counts['draft_native_calls'], **({'prefill': prompt_calls} if prefill else {})}
     for name, calls in expected.items():
         row = latency.get(name, {})
         if (not isinstance(row, dict) or type(row.get('calls')) is not int or row['calls'] != calls
@@ -95,17 +108,24 @@ def _validate_summaries(loop, manifest, *, required=False):
                 type(mean) not in {int, float} or not math.isfinite(mean)
                 or abs(mean - row['total_ms'] / calls) > max(1e-9, abs(mean) * 1e-12))):
             raise ValueError('phase latency mean differs from its finite total/call count')
-    if latency['prompt_ingest'].get('mechanism') != 'DECODE1_SERIAL_PROMPT_INGESTION':
+    if latency['prompt_ingest'].get('mechanism') != (_PREFILL_RECIPE if prefill else 'DECODE1_SERIAL_PROMPT_INGESTION'):
         raise ValueError('serial prompt ingestion cannot be reported as one prefill model call')
     if (any(type(timing.get(key)) is not int or timing[key] < 0 for key in
             ('startup_source_hash_ms', 'target_child_process_wall_ms', 'draft_child_process_wall_ms', 'total_wall_ms'))
             or any(type(timing.get(key)) is not int for key in ('target_child_processes_timed', 'draft_child_processes_timed'))
             or timing.get('target_child_processes_timed') != counts['target_native_calls']
             or timing.get('draft_child_processes_timed') != counts['draft_native_calls']
-            or latency['prompt_ingest']['total_ms'] + latency['decode']['total_ms'] != timing['target_child_process_wall_ms']
+            or (0 if prefill else latency['prompt_ingest']['total_ms']) + latency['decode']['total_ms'] != timing['target_child_process_wall_ms']
             or latency['draft']['total_ms'] != timing['draft_child_process_wall_ms']
             or timing['total_wall_ms'] < timing['target_child_process_wall_ms'] + timing['draft_child_process_wall_ms']):
         raise ValueError('phase timing does not reconcile with supervisor monotonic totals')
+    if prefill and (latency['prompt_ingest']['total_ms'] != latency['prefill']['total_ms']
+            or latency['prompt_ingest'].get('latency_alias') != 'prefill'
+            or type(timing.get('prefill_child_process_wall_ms')) is not int
+            or timing.get('prefill_child_processes_timed') != prompt_calls
+            or timing['prefill_child_process_wall_ms'] != latency['prefill']['total_ms']
+            or timing['total_wall_ms'] < timing['target_child_process_wall_ms'] + timing['draft_child_process_wall_ms'] + timing['prefill_child_process_wall_ms']):
+        raise ValueError('prefill phase timing differs from its distinct child process')
 
 
 def _json(path, maximum=64 << 20):
@@ -247,10 +267,11 @@ def _cache_inventory(hdc, rows):
 
 
 def _local_upload(row, manifest):
-    if row['kind'] == 'target':
+    if row['kind'] in {'target', 'prefill'}:
         from .original_target_board import _recorded_board_payload
-        return _recorded_board_payload(Path(manifest['target_binding']['base_plan']['compilation']),
-            row['record'], manifest['target_compiled'], smoke_proof=manifest['target_binding']['base_plan'])
+        base = manifest['prefill']['base_plan'] if row['kind'] == 'prefill' else manifest['target_binding']['base_plan']
+        compiled = manifest['prefill']['compiled'] if row['kind'] == 'prefill' else manifest['target_compiled']
+        return _recorded_board_payload(Path(base['compilation']), row['record'], compiled, smoke_proof=base)
     source = Path(row['local'])
     before = _full(source)
     if row.get('identity') is not None and before != row['identity']:
@@ -266,12 +287,15 @@ def _upload_cached(hdc, out, state, rows, decisions, manifest):
     missing = sum(row['bytes'] for row in rows if decisions[row['remote']] == 'SEND')
     free = _space(disk)
     # Final states plus intermediate per-step files coexist until successful retrieval.
-    steps = len(manifest['prompt_token_ids']) + manifest['max_new_tokens']
+    steps = manifest['max_new_tokens'] + (0 if _has_prefill(manifest) else len(manifest['prompt_token_ids']))
     output_bytes = sum(row['bytes'] for row in manifest['target_binding']['base_plan']['outputs'])
     input_bytes = sum(row['bytes'] for row in manifest['target_binding']['base_plan'].get('inputs', []))
     draft_bytes = manifest['max_new_tokens'] * ((2 << 20) + 61440 + (1 << 20))
     feature_bytes = steps * 32768
     reserve = (128 << 20) + output_bytes * (steps + 1) + input_bytes * steps + draft_bytes + feature_bytes
+    if _has_prefill(manifest):
+        reserve += sum(row['bytes'] for direction in ('inputs', 'outputs') for row in manifest['prefill']['base_plan'][direction])
+        reserve += len(manifest['prompt_token_ids']) * 32768
     state['board_disk_budget'] = {'free_bytes': free, 'missing_upload_bytes': missing,
         'retained_target_input_bytes': input_bytes * steps, 'retained_target_output_bytes': output_bytes * steps,
         'draft_input_output_metadata_reserve_bytes': draft_bytes, 'final_feature_bytes': feature_bytes,
@@ -334,12 +358,18 @@ def _build_payloads(out, timeout):
         'dependencies': dependencies, 'backend_selection': 'UNVERIFIED'}
 
 
-def _static_rows(manifest, target_cache, draft_cache, table_cache):
+def _static_rows(manifest, target_cache, draft_cache, table_cache, prefill_cache=None):
     rows = []
     for row in manifest['target_payloads']:
         relative = _relative(row['remote'])
         rows.append({'local': row['local'], 'remote': str(target_cache / 'payload' / relative),
             'bytes': row['bytes'], 'sha256': row['sha256'], 'record': row['record'], 'kind': 'target'})
+    if _has_prefill(manifest):
+        if prefill_cache is None:
+            raise ValueError('prefill payloads require their separately owned compiled cache')
+        for row in manifest['prefill']['payloads']:
+            rows.append({'local': row['local'], 'remote': str(prefill_cache / 'payload' / _relative(row['remote'])),
+                'bytes': row['bytes'], 'sha256': row['sha256'], 'record': row['record'], 'kind': 'prefill'})
     model = manifest['draft']['model_source']
     rows.append({'local': model['path'], 'remote': str(draft_cache / 'model/model.omc'),
         'bytes': model['bytes'], 'sha256': model['sha256'], 'identity': model.get('identity'), 'kind': 'draft'})
@@ -347,7 +377,7 @@ def _static_rows(manifest, target_cache, draft_cache, table_cache):
         source = manifest['tables'][name]
         rows.append({'local': source['path'], 'remote': str(table_cache / (name + '.bin')),
             'bytes': source['bytes'], 'sha256': source['sha256'], 'identity': source['identity'], 'kind': 'embedding-' + name})
-    if (not rows or len(rows) > 8192 or len({row['remote'] for row in rows}) != len(rows)
+    if (not rows or len(rows) > 16384 or len({row['remote'] for row in rows}) != len(rows)
             or any(type(row['bytes']) is not int or row['bytes'] <= 0 or _SHA.fullmatch(row['sha256']) is None for row in rows)):
         raise ValueError('whole-loop static payload inventory is invalid or ambiguous')
     return rows
@@ -396,8 +426,9 @@ def _lock_checks(hdc, state, *, release=False):
     target, draft = PurePosixPath(state['target_cache']), PurePosixPath(state['draft_cache'])
     board, token = PurePosixPath(state['board_attempt']), state['board_lock_token']
     target_lock, draft_lock = target / '.execution-lock', draft / '.execution-lock'
-    both_absent = ' && '.join('test ! -e ' + shlex.quote(str(path)) + ' && test ! -L ' + shlex.quote(str(path))
-        for path in (_GLOBAL, target_lock, draft_lock))
+    prefill = PurePosixPath(state['prefill_cache']) if state.get('prefill_cache') else None
+    locks = [_GLOBAL, target_lock, draft_lock, *([prefill / '.execution-lock'] if prefill else [])]
+    both_absent = ' && '.join('test ! -e ' + shlex.quote(str(path)) + ' && test ! -L ' + shlex.quote(str(path)) for path in locks)
     owned = (_owner_guard(_GLOBAL, 'owner', token) + ' && '
         + _owner_guard(target, '.compilation-sha256', state['compilation_report_sha256']) + ' && '
         + _owner_guard(draft, '.model-sha256', state['draft_model_sha256']) + ' && '
@@ -409,6 +440,14 @@ def _lock_checks(hdc, state, *, release=False):
         + ' && test "$(find ' + shlex.quote(str(target_lock)) + ' | wc -l)" -eq 1'
         + ' && test "$(find ' + shlex.quote(str(_GLOBAL)) + ' | wc -l)" -eq 2'
         + ' && test "$(find ' + shlex.quote(str(draft_lock)) + ' | wc -l)" -eq 2')
+    if prefill:
+        plock = prefill / '.execution-lock'
+        owned += (' && ' + _owner_guard(prefill, '.compilation-sha256', state['prefill_compilation_report_sha256'])
+            + ' && ' + _regular_guard(board / 'prefill-lock.owner', size=33)
+            + ' && read -r serial_prefill_token < ' + shlex.quote(str(board / 'prefill-lock.owner'))
+            + ' && test "$serial_prefill_token" = ' + shlex.quote(token)
+            + ' && test -d ' + shlex.quote(str(plock)) + ' && test ! -L ' + shlex.quote(str(plock))
+            + ' && test "$(find ' + shlex.quote(str(plock)) + ' | wc -l)" -eq 1')
     if release:
         completion = _completion(hdc, state)
         if completion is None or completion != state.get('completion'):
@@ -425,7 +464,8 @@ def _lock_checks(hdc, state, *, release=False):
             if type(pid) is not int or not 0 < pid <= (1 << 31) - 1:
                 raise ValueError('invalid completed native PID before lock release')
             owned += ' && test ! -d /proc/' + str(pid)
-        action = ('rmdir ' + shlex.quote(str(target_lock)) + ' && rm ' + shlex.quote(str(draft_lock / 'owner'))
+        action = (('rmdir ' + shlex.quote(str(prefill / '.execution-lock')) + ' && ' if prefill else '')
+            + 'rmdir ' + shlex.quote(str(target_lock)) + ' && rm ' + shlex.quote(str(draft_lock / 'owner'))
             + ' && rmdir ' + shlex.quote(str(draft_lock)) + ' && rm ' + shlex.quote(str(_GLOBAL / 'owner'))
             + ' && rmdir ' + shlex.quote(str(_GLOBAL)) + ' && printf \'RELEASED\\n\'')
     else:
@@ -459,6 +499,115 @@ def _inventory(raw):
     return rows
 
 
+def _table_rows(table, tokens, width):
+    before = _full(table['path'])
+    if before != table['identity']:
+        raise ValueError('original embedding table changed after preparation')
+    descriptor = os.open(table['path'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if _identity(os.fstat(descriptor)) != before:
+            raise ValueError('original embedding table changed before row read')
+        rows = [os.pread(descriptor, width, token * width) for token in tokens]
+        if any(len(row) != width for row in rows) or _identity(os.fstat(descriptor)) != before or _full(table['path']) != before:
+            raise ValueError('original embedding table changed during row read')
+    finally:
+        os.close(descriptor)
+    return b''.join(rows)
+
+
+def _prefill_controls(manifest):
+    tokens = manifest['prompt_token_ids']; length = len(tokens)
+    if not 1 <= length <= 63:
+        raise ValueError('padded prefill needs1..63 original prompt tokens')
+    positions = struct.pack('<64i', *range(64)); negative = struct.pack('<f', float('-inf'))
+    mask = b''.join(bytes(4 * (query + 1 if query < length else 1))
+        + negative * (2048 - (query + 1 if query < length else 1)) for query in range(64))
+    return {'arg1_1': _table_rows(manifest['tables']['weight'], tokens, 2048) + bytes((64 - length) * 2048),
+        'arg0_1': _table_rows(manifest['tables']['scale'], tokens, 4) + bytes((64 - length) * 4),
+        'arg107_1': positions, 'arg2_1': positions, 'arg1238_1': struct.pack('<i', length - 1),
+        'arg114_1': struct.pack('<q', length), 'arg18_1': struct.pack('<h', length),
+        'arg14_1': struct.pack('<128i', length, *([0] * 127)), 'arg113_1': mask}
+
+
+def _validate_prefill_seed(manifest, root, loop, record, load_record, logs, zeros, all_features, evidence):
+    """Bind the actual prefill's original inputs,80owners and valid feature rows."""
+    declaration = manifest['prefill']; base = declaration['base_plan']; length = len(manifest['prompt_token_ids'])
+    events = loop.get('prefill_steps', [])
+    if len(events) != 1:
+        raise ValueError('full prefill audit requires exactly one actual prefill receipt')
+    event = events[0]; receipt = load_record(event['receipt']); pid = event.get('pid')
+    expected = {'schema_version': 1, 'artifact_kind': 'qwen35-board-serial-prefill-step',
+        'pid': pid, 'exitcode': 0, 'status': 'EXECUTED_OUTPUTS_BOUND', 'evidence_kind': evidence,
+        'model_sha256': declaration['model']['sha256'], 'prompt_token_ids': manifest['prompt_token_ids'],
+        'logical_prompt_length': length, 'physical_sequence_length': 64, 'selected_output_pos': length - 1,
+        'control_semantics': 'EXPERIMENTAL_PADDED_PREFILL_VALID_LENGTH_NOT_NUMERICALLY_VALIDATED'}
+    if (type(pid) is not int or not 0 < pid <= (1 << 31) - 1
+            or any(receipt.get(key) != value for key, value in expected.items())
+            or event.get('prompt_length') != length or event.get('next_token_id') != receipt.get('next_token_id')):
+        raise ValueError('prefill invocation does not bind this original model, prompt and experimental controls')
+    logs(event['receipt'], pid)
+    inputs, outputs = receipt.get('inputs', []), receipt.get('outputs', [])
+    if len(inputs) != 89 or len(outputs) != 82 or len(base['inputs']) != 89 or len(base['outputs']) != 82:
+        raise ValueError('prefill receipt omits its complete89/82 native interface')
+    controls = _prefill_controls(manifest)
+    for index, (value, desc) in enumerate(zip(inputs, base['inputs'])):
+        record(value)
+        if (value.get('index') != index or value.get('name') != desc['name']
+                or value['bytes'] != desc['bytes'] or value.get('tool_type') != desc['tool_input_type']):
+            raise ValueError('prefill input differs from its named typed compiled interface')
+        if value['name'] in controls and value['sha256'] != hashlib.sha256(controls[value['name']]).hexdigest():
+            raise ValueError('prefill original-table embedding, padding or declared query controls differ')
+    for index, (value, desc) in enumerate(zip(outputs, base['outputs'])):
+        record(value, actual=True)
+        if (value.get('index') != index or value.get('runtime_name') != desc['runtime_tensor_name']
+                or value['bytes'] != desc['bytes'] or value.get('tool_type') != desc['tool_output_type']):
+            raise ValueError('prefill output differs from its named typed compiled interface')
+    mapped = receipt.get('state_mapping', [])
+    by_decode = {row.get('decode_source_refdata'): row for row in mapped}
+    if len(mapped) != 80 or len(by_decode) != 80 or len(declaration['state_mapping']) != 80:
+        raise ValueError('prefill-to-decode owner map is incomplete or duplicated')
+    owners = declaration['state_mapping']; decoded = {row['source_refdata']: row for row in manifest['target_binding']['state_mapping']}
+    if (len({row['decode']['source_refdata'] for row in owners}) != 80
+            or len({row['prefill']['source_refdata'] for row in owners}) != 80
+            or len({row['prefill']['runtime_input_index'] for row in owners}) != 80
+            or len({row['prefill']['runtime_output_index'] for row in owners}) != 80):
+        raise ValueError('bound cross-model prefill owner mapping is not a bijection')
+    for owner in declaration['state_mapping']:
+        decode, prefill = owner['decode'], owner['prefill']; row = by_decode.get(decode['source_refdata'], {})
+        old = decoded.get(decode['source_refdata'], {})
+        if any(old.get(key) != decode[key] for key in ('runtime_input_index', 'runtime_output_index')):
+            raise ValueError('prefill cross-model owner differs from active decode state identity')
+        keys = {'decode_source_refdata': decode['source_refdata'], 'decode_runtime_input_index': decode['runtime_input_index'],
+            'decode_runtime_output_index': decode['runtime_output_index'], 'prefill_source_refdata': prefill['source_refdata'],
+            'prefill_runtime_input_index': prefill['runtime_input_index'], 'prefill_runtime_output_index': prefill['runtime_output_index'],
+            'bytes': owner['bytes'], 'initialization': 'ZERO_FP16'}
+        if any(row.get(key) != value for key, value in keys.items()):
+            raise ValueError('actual prefill state owner differs from the bound cross-model map')
+        source = inputs[prefill['runtime_input_index']]; output = outputs[prefill['runtime_output_index']]
+        if source['bytes'] not in zeros:
+            zeros[source['bytes']] = hashlib.sha256(bytes(source['bytes'])).hexdigest()
+        if (source['bytes'] != owner['bytes'] or output['bytes'] != owner['bytes']
+                or manifest['target_binding']['base_plan']['inputs'][decode['runtime_input_index']]['bytes'] != owner['bytes']
+                or source['sha256'] != zeros[source['bytes']] or source['name'] != prefill['source_refdata']
+                or record(row.get('prefill_output'), actual=True) != record(output, actual=True)):
+            raise ValueError('prefill zero initialization or actual state output bytes differ')
+    feature = receipt.get('feature_prefix', {})
+    raw, _ = _read_small(root / record(outputs[81], actual=True)['path'], 4 << 20)
+    valid = raw[:length * 32768]
+    if (record(feature.get('source'), actual=True) != record(outputs[81], actual=True)
+            or feature.get('row_start') != 0 or feature.get('row_count') != length or feature.get('bytes') != len(valid)
+            or len(raw) != 64 * 32768 or feature.get('sha256') != hashlib.sha256(valid).hexdigest()
+            or all_features[:len(valid)] != valid):
+        raise ValueError('actual prefill valid feature rows are not the cumulative draft prefix')
+    logits, _ = _read_small(root / record(outputs[0], actual=True)['path'], 2 << 20)
+    values = [value[0] for value in struct.iter_unpack('<f', logits)]
+    if len(values) != 248320 or not all(math.isfinite(value) for value in values):
+        raise ValueError('prefill logits are not the complete finite vocabulary')
+    if receipt.get('next_token_id') != max(range(len(values)), key=values.__getitem__):
+        raise ValueError('prefill anchor differs from actual full-vocabulary greedy logits')
+    return receipt, outputs
+
+
 def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='device-hiai',
                             _expected_config_sha256=None):
     """Select the pinned compact or complete native-evidence validation contract."""
@@ -487,10 +636,15 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
         raise ValueError('supervisor loop is not this complete real request')
     counts = loop.get('counts', {})
     expected_target = len(manifest['prompt_token_ids']) + manifest['max_new_tokens']
-    if (counts.get('target_native_calls') != expected_target
+    has_prefill = _has_prefill(manifest)
+    expected_decode = manifest['max_new_tokens'] if has_prefill else expected_target
+    if (counts.get('target_native_calls') != expected_decode
+            or has_prefill and (counts.get('prefill_native_calls') != 1
+                or loop.get('prefill_model_sha256') != manifest['prefill']['model']['sha256']
+                or loop.get('prompt_ingestion') != _PREFILL_RECIPE)
             or type(counts.get('draft_native_calls')) is not int
             or counts['draft_native_calls'] < manifest['minimum_draft_rounds']
-            or len(loop.get('target_steps', [])) != expected_target
+            or len(loop.get('target_steps', [])) != expected_decode
             or len(loop.get('draft_steps', [])) != counts['draft_native_calls']
             or len(loop.get('final_state_files', [])) != 80 or len(loop.get('final_target_outputs', [])) != 82):
         raise ValueError('supervisor did not retain all actual calls, states, and outputs')
@@ -504,7 +658,8 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
         'draft_abi_sha256': manifest['draft']['abi']['sha256'],
         'runtime_version': base['runtime_version'], 'ddk_id': base['ddk_id'], 'firmware_id': base['firmware_id'],
         'state_policy': 'ADVANCE_ONLY_COMMITTED_TOKENS_NO_SPECULATIVE_STATE',
-        'control_semantics': 'EXPERIMENTAL_SINGLE_QUERY_ABSOLUTE_POSITION'}
+        'control_semantics': ('EXPERIMENTAL_PADDED_PREFILL_VALID_LENGTH_NOT_NUMERICALLY_VALIDATED'
+            if has_prefill else 'EXPERIMENTAL_SINGLE_QUERY_ABSOLUTE_POSITION')}
     if any(loop.get(key) != value for key, value in expected.items()):
         raise ValueError('supervisor model, environment, or scheduling identity differs from preparation')
     if (_SHA.fullmatch(str(loop.get('config_sha256'))) is None
@@ -543,11 +698,21 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
             or len({row['runtime_input_index'] for row in mapping}) != 80
             or len({row['runtime_output_index'] for row in mapping}) != 80):
         raise ValueError('prepared state mapping is not an80-owner bijection')
-    previous, target_receipts, child_pids, zeros = None, [], set(), {}
+    previous, target_receipts, child_pids, zeros = None, {}, set(), {}
     all_features, _ = _read_small(root / record(loop['final_features'], actual=True)['path'], 4 << 20)
     if len(all_features) != expected_target * 32768:
         raise ValueError('retained final features do not cover every committed target step')
-    for position, event in enumerate(loop['target_steps']):
+    if has_prefill:
+        seed, source_outputs = _validate_prefill_seed(manifest, root, loop, record, load_record, logs, zeros,
+            all_features, _expected_evidence_kind)
+        child_pids.add(seed['pid']); target_receipts[len(manifest['prompt_token_ids']) - 1] = seed
+        previous = [None] * 82
+        for owner in manifest['prefill']['state_mapping']:
+            previous[owner['decode']['runtime_output_index']] = source_outputs[owner['prefill']['runtime_output_index']]
+    elif loop.get('prefill_steps') or loop.get('prefill_model_sha256'):
+        raise ValueError('serial request cannot inherit unrequested prefill evidence')
+    for index, event in enumerate(loop['target_steps']):
+        position = index + (len(manifest['prompt_token_ids']) if has_prefill else 0)
         receipt = load_record(event['receipt']); pid = event.get('pid')
         if (type(pid) is not int or not 0 < pid <= (1 << 31) - 1 or pid in child_pids
                 or any(receipt.get(key) != value for key, value in {
@@ -615,10 +780,10 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
         feature = all_features[position * 32768:(position + 1) * 32768]
         if outputs[81]['sha256'] != hashlib.sha256(feature).hexdigest():
             raise ValueError('draft cumulative features differ from an actual target output chunk')
-        if position and receipt['token_id'] != target_receipts[-1]['next_token_id']:
+        if position and receipt['token_id'] != target_receipts[position - 1]['next_token_id']:
             if position >= len(manifest['prompt_token_ids']):
                 raise ValueError('a committed generated token differs from current target greedy logits')
-        previous = outputs; target_receipts.append(receipt)
+        previous = outputs; target_receipts[position] = receipt
     if [record(row, actual=True) for row in loop['final_target_outputs']] != [record(row) for row in previous]:
         raise ValueError('final82 retained outputs differ from the final native step')
     final_states = {row.get('source_refdata'): row for row in loop['final_state_files']}
@@ -701,7 +866,7 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
         raise ValueError('generated-token commit evidence is incomplete')
     for index, row in enumerate(loop['commits']):
         position = len(manifest['prompt_token_ids']) + index
-        if (row.get('position') != position or row.get('target_step_index') != position
+        if (row.get('position') != position or row.get('target_step_index') != (index if has_prefill else position)
                 or row.get('token_id') != loop['generated_tokens'][index]
                 or row.get('role') != target_receipts[position]['role']):
             raise ValueError('generated-token commits differ from actual target calls')
@@ -794,6 +959,10 @@ def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='d
         'runtime_version': base['runtime_version'], 'ddk_id': base['ddk_id'], 'firmware_id': base['firmware_id'],
         'state_policy': 'ADVANCE_ONLY_COMMITTED_TOKENS_NO_SPECULATIVE_STATE',
         'control_semantics': 'EXPERIMENTAL_SINGLE_QUERY_ABSOLUTE_POSITION'}
+    prefill = _has_prefill(manifest)
+    if prefill:
+        expected.update(prefill_model_sha256=manifest['prefill']['model']['sha256'], prompt_ingestion=_PREFILL_RECIPE,
+            control_semantics='EXPERIMENTAL_PADDED_PREFILL_VALID_LENGTH_NOT_NUMERICALLY_VALIDATED')
     if (type(_remote_exitcode) is not int or not 0 <= _remote_exitcode <= 255
             or type(loop.get('schema_version')) is not int or type(loop.get('dump')) is not bool
             or any(loop.get(key) != value for key, value in expected.items())
@@ -801,7 +970,7 @@ def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='d
             or _expected_config_sha256 is not None and loop['config_sha256'] != _expected_config_sha256):
         raise ValueError('compact result does not bind this exact config/model/runtime and completed exit')
     if (set(loop) & {'target_steps', 'draft_steps', 'rounds', 'commits', 'final_state_files',
-            'final_target_outputs', 'final_features'}
+            'final_target_outputs', 'final_features', 'prefill_steps'}
             or loop.get('numerical_validation') not in {'NOT_RUN', 'NOT_EVALUATED'}
             or loop.get('performance') != 'NOT_EVALUATED'):
         raise ValueError('compact tokens-only report contains full-audit or unsupported accuracy/performance claims')
@@ -814,12 +983,17 @@ def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='d
         raise ValueError('compact token history differs from the pinned prompt and ordered request')
     counts = loop.get('counts', {})
     keys = ('target_native_calls', 'draft_native_calls', 'considered', 'accepted', 'corrections', 'bonuses')
+    if prefill:
+        keys = (*keys, 'prefill_native_calls')
+    elif counts.get('prefill_native_calls', 0) or loop.get('prefill_model_sha256') or loop.get('prompt_ingestion') == _PREFILL_RECIPE:
+        raise ValueError('serial request cannot inherit an unrequested prefill variant')
     if (not isinstance(counts, dict) or any(type(counts.get(key)) is not int or counts[key] < 0 for key in keys)
             or counts['target_native_calls'] > len(prompt) + manifest['max_new_tokens']
             or counts['draft_native_calls'] > manifest['max_new_tokens']
+            or prefill and not 0 <= counts['prefill_native_calls'] <= 1
             or counts['considered'] != counts['accepted'] + counts['corrections']):
         raise ValueError('compact native/acceptance counts are malformed or inconsistent')
-    total = counts['target_native_calls'] + counts['draft_native_calls']
+    total = counts['target_native_calls'] + counts['draft_native_calls'] + (counts['prefill_native_calls'] if prefill else 0)
     lifecycle = loop.get('child_lifecycle', {})
     lifecycle_keys = ('launched_child_count', 'completed_child_count', 'active_child_count',
         'last_child_pid', 'last_child_exitcode', 'child_status')
@@ -855,7 +1029,8 @@ def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='d
             or progress.get('supervisor_timing') != loop.get('supervisor_timing')):
         raise ValueError('compact progress differs from its completed supervisor result')
     if success and (len(generated) != manifest['max_new_tokens'] or prefix != prompt + generated
-            or counts['target_native_calls'] != len(prompt) + len(generated)
+            or counts['target_native_calls'] != (len(generated) if prefill else len(prompt) + len(generated))
+            or prefill and counts['prefill_native_calls'] != 1
             or not manifest['minimum_draft_rounds'] <= counts['draft_native_calls'] <= counts['considered']
             or counts['considered'] > counts['draft_native_calls'] * manifest['max_proposals_per_round']
             or counts['corrections'] > counts['draft_native_calls'] or counts['bonuses'] > counts['draft_native_calls']
@@ -887,6 +1062,8 @@ def _validate_completed_failure(manifest, directory, state):
         'draft_model_sha256': manifest['draft']['model_source']['sha256'],
         'draft_abi_sha256': manifest['draft']['abi']['sha256'],
         'runtime_version': base['runtime_version'], 'ddk_id': base['ddk_id'], 'firmware_id': base['firmware_id']}
+    if _has_prefill(manifest):
+        expected.update(prefill_model_sha256=manifest['prefill']['model']['sha256'], prompt_ingestion=_PREFILL_RECIPE)
     if any(loop.get(key) != value for key, value in expected.items()):
         raise ValueError('failed supervisor lacks the complete bound model/config identity; locks retained')
     raw, _ = _read_small(root / 'retrieval-manifest.tsv', 8 << 20)
@@ -910,7 +1087,8 @@ def _validate_completed_failure(manifest, directory, state):
         exits[int(pid_text)] = int(exit_text)
     child_present = any(key in progress for key in ('child_status', 'last_child_pid', 'last_child_exitcode'))
     counts = loop.get('counts', {})
-    counted = counts.get('target_native_calls', 0) + counts.get('draft_native_calls', 0)
+    counted = counts.get('target_native_calls', 0) + counts.get('draft_native_calls', 0) + (
+        counts.get('prefill_native_calls', 0) if _has_prefill(manifest) else 0)
     if (progress.get('status') != 'FAILED' or progress.get('supervisor_pid') != loop.get('process_id')
             or counted != len(pids)
             or child_present and (progress.get('child_status') != 'EXITED'
@@ -1013,7 +1191,7 @@ def _retrieve(hdc, out, state, manifest):
     elif state['completion']['remote_exitcode'] == 0:
         loop = validate_retrieved_loop(manifest, local_results, _expected_config_sha256=state['config_sha256'])
         completed = [loop['process_id'], *[row['pid'] for row in loop['target_steps']],
-            *[row['pid'] for row in loop['draft_steps']]]
+            *[row['pid'] for row in loop['draft_steps']], *[row['pid'] for row in loop.get('prefill_steps', [])]]
     else:
         loop, completed = _validate_completed_failure(manifest, local_results, state)
     if _full(local_results / 'retrieval-manifest.tsv')['bytes'] != inventory_id['bytes'] or sha256_file(
@@ -1063,7 +1241,7 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
         'output': str(out), 'device_execution': 'NOT_RUN', 'model_compilation': 'NOT_RUN',
         'numerical_validation': 'NOT_EVALUATED', 'state_continuity': 'BYTE_CHAIN_ONLY_EXPERIMENTAL_CONTROLS',
         'board_lock_token': uuid.uuid4().hex, 'global_lock': str(_GLOBAL), 'global_held': False,
-        'target_lock_held': False, 'draft_lock_held': False, 'launch_requested': False, 'uncertain': False,
+        'target_lock_held': False, 'prefill_lock_held': False, 'draft_lock_held': False, 'launch_requested': False, 'uncertain': False,
         'automatic_model_retry': 'FORBIDDEN', 'intertoken_hdc_calls': 0}
     hdc = None
     try:
@@ -1074,6 +1252,14 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
         executable, serial, server = _environment()
         token = state['board_lock_token']; digest = base['compilation_report_sha256']
         target = _remote(manifest['board_model_root']) / ('codex-target-' + digest[:20])
+        prefill = None
+        if _has_prefill(manifest):
+            pdigest = manifest['prefill']['base_plan']['compilation_report_sha256']
+            prefill = _remote(manifest['board_model_root']) / ('codex-target-' + pdigest[:20])
+            if prefill == target:
+                raise ValueError('prefill and decode require distinct compiled variant caches')
+            state.update(prefill_cache=str(prefill), prefill_compilation_report_sha256=pdigest,
+                prefill_model_sha256=manifest['prefill']['model']['sha256'])
         draft = PurePosixPath('/data/local/tmp/qwen35_real_draft_' + manifest['draft']['model_source']['sha256'])
         table_digest = hashlib.sha256((manifest['tables']['weight']['sha256'] + manifest['tables']['scale']['sha256']).encode()).hexdigest()
         tables = PurePosixPath('/data/local/tmp/qwen35_embedding_' + table_digest)
@@ -1109,13 +1295,19 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
             + ' && printf \'%s\\n\' ' + shlex.quote(token) + ' > ' + shlex.quote(str(board / 'target-lock.owner')),
             'acquire-target-cache-lock')
         _checkpoint(out, state, 'target-cache-locked', target_lock_held=True)
+        if prefill:
+            _owned_directory(hdc, out, state, prefill, '.compilation-sha256', state['prefill_compilation_report_sha256'], 'own-prefill-cache')
+            _mutate(hdc, out, state, 'mkdir ' + shlex.quote(str(prefill / '.execution-lock'))
+                + ' && printf \'%s\\n\' ' + shlex.quote(token) + ' > ' + shlex.quote(str(board / 'prefill-lock.owner')),
+                'acquire-prefill-cache-lock')
+            _checkpoint(out, state, 'prefill-cache-locked', prefill_lock_held=True)
         _owned_directory(hdc, out, state, draft, '.model-sha256', state['draft_model_sha256'], 'own-draft-cache')
         _checkpoint(out, state, 'acquire-draft-cache-lock-requested', uncertain=True)
         _acquire_global(hdc, draft / '.execution-lock', token, 0)
         _checkpoint(out, state, 'draft-cache-locked', draft_lock_held=True, uncertain=False)
         _owned_directory(hdc, out, state, tables, '.tables-sha256', table_digest, 'own-embedding-cache')
-        rows = _static_rows(manifest, target, draft, tables)
-        for cache in (target, draft, tables):
+        rows = _static_rows(manifest, target, draft, tables, prefill)
+        for cache in (target, draft, tables, *([prefill] if prefill else [])):
             _directories(hdc, out, state, cache, [PurePosixPath(row['remote']).parent for row in rows
                 if cache in PurePosixPath(row['remote']).parents], 'create-static-cache-directories')
         _checkpoint(out, state, 'inspect-static-cache-requested', uncertain=True)
@@ -1141,6 +1333,9 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
             'scale_table': str(tables / 'scale.bin'), 'draft_abi': str(board / 'draft-abi.tsv'),
             'config': str(board / 'config.tsv'), 'results': str(board / 'results'),
             'target_library_path': str(tool.parent), 'draft_library_path': ':'.join(library_paths)}
+        if prefill:
+            remote_paths['prefill_model'] = next(row['remote'] for row in rows if row['kind'] == 'prefill'
+                and row['record'] == manifest['prefill']['compiled']['omc'])
         config = make_config(manifest, remote_paths)
         if not isinstance(config, bytes):
             raise TypeError('board serial config serializer must return bytes')
@@ -1189,13 +1384,13 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
             _checkpoint(out, state, 'release-locks-requested', uncertain=True)
             state['lock_release'] = _lock_checks(hdc, state, release=True)
             state.update(status='BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED' if completion['remote_exitcode'] == 0 else 'FAILED', stage='complete',
-                global_held=False, target_lock_held=False, draft_lock_held=False, uncertain=False)
+                global_held=False, target_lock_held=False, prefill_lock_held=False, draft_lock_held=False, uncertain=False)
     except BaseException as error:
         state.update(error=f'{type(error).__name__}: {error}', stage=state.get('phase', 'preflight'))
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             state['interruption'] = 'LOCAL_CONTROLLER_INTERRUPTED; NO_REMOTE_CANCELLATION_OR_RELAUNCH'
     finally:
-        state['lock_state'] = ('RETAINED_OR_UNCERTAIN' if state['global_held'] or state['target_lock_held']
+        state['lock_state'] = ('RETAINED_OR_UNCERTAIN' if state['global_held'] or state['target_lock_held'] or state.get('prefill_lock_held')
             or state['draft_lock_held'] or state['uncertain'] else 'NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT')
         state['hdc_invocations'] = hdc.count if hdc else 0
         state['next'] = _next_action(state)
@@ -1231,6 +1426,15 @@ def recover_board_serial(execution_dir, output_dir, *, timeout_seconds=60, poll_
                 or state['launcher'] != _launcher(state)):
             raise ValueError('recovery journal cache/model/launcher identities are inconsistent')
         manifest = validate_prepared(state['prepared'])
+        if _has_prefill(manifest):
+            pbase = manifest['prefill']['base_plan']
+            expected_cache = str(_remote(manifest['board_model_root']) / ('codex-target-' + pbase['compilation_report_sha256'][:20]))
+            if (state.get('prefill_cache') != expected_cache
+                    or state.get('prefill_compilation_report_sha256') != pbase['compilation_report_sha256']
+                    or state.get('prefill_model_sha256') != manifest['prefill']['model']['sha256']):
+                raise ValueError('recovery prefill cache/model differs from the pinned request')
+        elif state.get('prefill_cache'):
+            raise ValueError('recovery cannot add a prefill variant to a serial request')
         if state.get('dump', True) != _dump_mode(manifest):
             raise ValueError('recovery cannot change the pinned dump/config mode')
         _result_scope(state, manifest)
@@ -1257,11 +1461,11 @@ def recover_board_serial(execution_dir, output_dir, *, timeout_seconds=60, poll_
             _checkpoint(out, state, 'release-locks-requested', uncertain=True)
             state['lock_release'] = _lock_checks(hdc, state, release=True)
             state.update(status='BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED' if completion['remote_exitcode'] == 0 else 'FAILED', stage='complete',
-                global_held=False, target_lock_held=False, draft_lock_held=False, uncertain=False)
+                global_held=False, target_lock_held=False, prefill_lock_held=False, draft_lock_held=False, uncertain=False)
     except BaseException as error:
         state.update(error=f'{type(error).__name__}: {error}', stage=state.get('phase', 'recovery-preflight'))
     finally:
-        state['lock_state'] = ('RETAINED_OR_UNCERTAIN' if state.get('global_held') or state.get('target_lock_held')
+        state['lock_state'] = ('RETAINED_OR_UNCERTAIN' if state.get('global_held') or state.get('target_lock_held') or state.get('prefill_lock_held')
             or state.get('draft_lock_held') or state.get('uncertain') else 'NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT')
         state['hdc_invocations'] = hdc.count if hdc else 0
         state['next'] = _next_action(state)

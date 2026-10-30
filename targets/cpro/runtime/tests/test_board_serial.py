@@ -67,7 +67,48 @@ if '--draft-step' not in args:
     a=dict(s[2:].split('=',1) for s in args)
     paths=list(map(Path,a['input'].split(',')))
     assert len(paths)==89 and a['modelmanager_itf']=='V2' and a['direct_from_file']=='true'
+    if Path(a['model']).read_bytes()==b'prefill-static64-fixture':
+        valid=struct.unpack('<q',paths[86].read_bytes())[0]
+        assert 1<=valid<64 and paths[88].read_bytes()==struct.pack('<h',valid)
+        assert paths[87].read_bytes()==struct.pack('<128i',valid,*([0]*127))
+        assert paths[84].read_bytes()==struct.pack('<i',valid-1)
+        assert paths[2].read_bytes()==paths[83].read_bytes()==struct.pack('<64i',*range(64))
+        embeds=paths[0].read_bytes();scales=paths[85].read_bytes()
+        assert len(embeds)==64*2048 and embeds[valid*2048:]==bytes((64-valid)*2048)
+        assert scales==struct.pack('<f',.25)*valid+bytes((64-valid)*4)
+        ids=[struct.unpack('<I',embeds[i*2048:i*2048+4])[0] for i in range(valid)]
+        assert ids==list(range(1,valid+1))
+        mask=paths[1].read_bytes();assert len(mask)==64*8192
+        for q in range(64):
+            n=q+1 if q<valid else 1
+            assert mask[q*8192:(q+1)*8192]==bytes(n*4)+struct.pack('<f',float('-inf'))*(2048-n)
+        for path in paths[3:83]:assert path.read_bytes()==bytes(2)
+        if mode=='prefill-fail':sys.exit(6)
+        if mode=='prefill-input-change':paths[0].write_bytes(paths[0].read_bytes())
+        out=Path(a['output_dir'])
+        for i in range(82):
+            if mode=='prefill-missing-output' and i==10:continue
+            file=out/f'prefill_actual_{81-i:03d}'
+            if i==0:
+                raw=bytearray(V*4);raw[(ids[-1]+1)*4:(ids[-1]+2)*4]=struct.pack('<f',2.)
+            elif i==81:
+                # Poison physical padding feature rows. The real draft must
+                # receive only the validP rows followed by its own zero pad.
+                raw=struct.pack('<H',0x3800)*(valid*16384)+struct.pack('<H',0x7e00)*((64-valid)*16384)
+            else:
+                ref=((i-1)*23)%80  # inverse of7 modulo80
+                owner=(ref-7)%80
+                raw=struct.pack('<H',valid+owner*256)
+            file.write_bytes(raw);print(f'output[{i}] :{file}')
+        print('Execute result :Success');sys.exit(0)
+    bridged=(Path.cwd().parent.parent/'prefill').is_dir()
     p=struct.unpack('<i',paths[2].read_bytes())[0]
+    if os.environ.get('BOARD_SERIAL_PREFILL_TRACE'):
+        previous=Path.cwd().parent.parent/'prefill/step_0000'
+        if p==8:assert len(list((previous/'outputs').iterdir()))==82
+        else:assert not previous.exists()
+        assert len(list(Path.cwd().parent.glob('step_*')))==(1 if p==8 else 2)
+        with open(os.environ['BOARD_SERIAL_PREFILL_TRACE'],'a') as log:log.write(str(p)+'\n')
     if os.environ.get('BOARD_SERIAL_SCRATCH_TRACE'):
         steps=sorted(Path.cwd().parent.glob('step_*'))
         assert len(steps)==(1 if p==0 else 2), (p,steps)
@@ -86,7 +127,8 @@ if '--draft-step' not in args:
     assert paths[85].read_bytes()==struct.pack('<f',.25)
     for i in range(80):
         raw=paths[3+i].read_bytes()
-        assert raw==struct.pack('<H',p), (p,i,raw)
+        assert raw==struct.pack('<H',p+(i*256 if bridged else 0)), (p,i,raw)
+    if mode=='first-decode-fail' and bridged:sys.exit(9)
     if mode=='target-fail' and p==3: sys.exit(7)
     if mode=='past-receipt-change' and p==3:
         old=Path.cwd().parent/'step_0000/receipt.json';old.write_text(old.read_text()+' ')
@@ -100,7 +142,7 @@ if '--draft-step' not in args:
             raw=bytearray(V*4);raw[(token+1)*4:(token+2)*4]=struct.pack('<f',2.)
             if mode=='nan-logits':raw[:4]=struct.pack('<f',float('nan'))
         elif i==81: raw=struct.pack('<H',0x3800)*16384
-        else: raw=struct.pack('<H',p+1)
+        else: raw=struct.pack('<H',p+1+((i-1)*256 if bridged else 0))
         file.write_bytes(raw)
         if mode=='bad-extent' and i==10:file.write_bytes(b'x')
         print(f'output[{i}]      :{file}')
@@ -180,6 +222,95 @@ def execute(binaries, case, mode='accept', fake=True):
 
 def report(case):
     return json.loads((case['out']/'loop.json').read_text())
+
+
+def with_prefill(case,dump):
+    model=case['root']/'prefill.omc';model.write_bytes(b'prefill-static64-fixture')
+    rows=case['rows']+[f'prefill_model\t{model}\t{sha(model)}\t{model.stat().st_size}',f'dump\t{int(dump)}']
+    for row in case['rows']:
+        if row.startswith('target_input\t'):
+            fields=row.split('\t');fields[0]='prefill_input'
+            if fields[2] in ('arg1_1','arg113_1','arg107_1','arg2_1','arg0_1'):fields[4]=str(int(fields[4])*64)
+            rows.append('\t'.join(fields))
+        elif row.startswith('target_output\t'):
+            fields=row.split('\t');fields[0]='prefill_output'
+            if fields[1]=='81':fields[4]=str(64*32768)
+            rows.append('\t'.join(fields))
+    for owner in range(80):
+        ref=(owner+7)%80;index=1+(ref*7)%80
+        rows.append(f'prefill_state\tRefData_{owner}\tRefData_{ref}\t{ref+3}\t{index}\t2')
+    case['config'].write_text('\n'.join(rows)+'\n')
+    return rows
+
+
+@pytest.mark.parametrize('dump',[False,True])
+@pytest.mark.parametrize('mode',['accept','reject','mixed'])
+def test_original_prefill_once_then_same_loop(binaries,case,dump,mode,monkeypatch):
+    with_prefill(case,dump)
+    if not dump:monkeypatch.setenv('BOARD_SERIAL_PREFILL_TRACE',str(case['root']/'prefill-bridge-trace'))
+    run=execute(binaries,case,mode);assert run.returncode==0,run.stderr
+    result=report(case)
+    assert result['generated_tokens']==list(range(9,17)) and result['full_prefix']==list(range(1,17))
+    assert result['prompt_ingestion']=='PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL'
+    assert result['control_semantics']=='EXPERIMENTAL_PADDED_PREFILL_VALID_LENGTH_NOT_NUMERICALLY_VALIDATED'
+    assert result['counts']['prefill_native_calls']==1 and result['counts']['target_native_calls']==8
+    assert result['prefill_model_sha256']==sha(case['root']/'prefill.omc')
+    phases=result['phase_latency'];timing=result['supervisor_timing']
+    assert phases['prefill']['calls']==phases['prompt_ingest']['calls']==1
+    assert phases['prompt_ingest']['latency_alias']=='prefill'
+    assert phases['prefill']['total_ms']==phases['prompt_ingest']['total_ms']==timing['prefill_child_process_wall_ms']
+    assert phases['decode']['calls']==8 and phases['decode']['total_ms']==timing['target_child_process_wall_ms']
+    assert timing['prefill_child_processes_timed']==1 and timing['target_child_processes_timed']==8
+    if dump:
+        assert len(result['prefill_steps'])==1 and len(result['target_steps'])==8
+        pre=json.loads((case['out']/result['prefill_steps'][0]['receipt']['path']).read_text())
+        first=json.loads((case['out']/result['target_steps'][0]['receipt']['path']).read_text())
+        assert pre['physical_sequence_length']==64 and pre['logical_prompt_length']==8 and pre['selected_output_pos']==7
+        assert pre['feature_prefix']['bytes']==8*32768 and pre['feature_prefix']['row_count']==8
+        assert first['token_id']==9 and first['absolute_position']==8 and len(first['state_feedback'])==80
+        for i,row in enumerate(first['state_feedback']):
+            mapped=pre['state_mapping'][i]
+            assert row['source_refdata']==mapped['decode_source_refdata']
+            assert row['parent_output']==mapped['prefill_output'] and row['input']['sha256']==mapped['prefill_output']['sha256']
+        assert len(pre['inputs'])==89 and len(pre['outputs'])==82
+        manifest=(case['out']/'retrieval-manifest.tsv').read_text()
+        assert all(row['path'] in manifest for row in pre['outputs'])
+        final=case['out']/result['final_features']['path']
+        assert final.read_bytes()==struct.pack('<H',0x3800)*(16*16384)
+    else:
+        assert_compact_inventory(case)
+        assert list(map(int,(case['root']/'prefill-bridge-trace').read_text().splitlines()))==list(range(8,16))
+        assert not list(case['out'].rglob('*.bin')) and not list(case['out'].rglob('tool.stdout'))
+        assert 'prefill_steps' not in result
+        life=result['child_lifecycle']
+        assert life['completed_child_count']==9+result['counts']['draft_native_calls']
+
+
+@pytest.mark.parametrize('mode',['prefill-fail','prefill-missing-output','prefill-input-change','first-decode-fail'])
+def test_prefill_failure_retains_seed_and_never_restarts(binaries,case,mode):
+    with_prefill(case,False);run=execute(binaries,case,mode);assert run.returncode==1
+    result=report(case);assert result['status']=='FAILED' and result['counts']['prefill_native_calls']==1
+    assert result['counts']['target_native_calls']==(1 if mode=='first-decode-fail' else 0)
+    assert result['counts']['draft_native_calls']==0 and result['generated_tokens']==[]
+    assert (case['out']/'prefill/step_0000').is_dir()
+    if mode=='first-decode-fail':
+        assert len(list((case['out']/'prefill/step_0000/outputs').iterdir()))==82
+        assert len(list((case['out']/'target/step_0000/inputs').iterdir()))==89
+    else:assert (case['out']/'prefill/step_0000/inputs').is_dir()
+    assert_compact_inventory(case)
+
+
+@pytest.mark.parametrize('fault',['partial','duplicate-owner','duplicate-port','wrong-extent'])
+def test_prefill_configuration_rejects_partial_or_ambiguous_bridge(binaries,case,fault):
+    rows=with_prefill(case,False);positions=[i for i,row in enumerate(rows) if row.startswith('prefill_state\t')]
+    if fault=='partial':rows.pop(positions[-1])
+    else:
+        fields=rows[positions[-1]].split('\t');first=rows[positions[0]].split('\t')
+        fields[1 if fault=='duplicate-owner' else 4 if fault=='duplicate-port' else 5]=first[1] if fault=='duplicate-owner' else first[4] if fault=='duplicate-port' else '4'
+        rows[positions[-1]]='\t'.join(fields)
+    case['config'].write_text('\n'.join(rows)+'\n');run=execute(binaries,case)
+    assert run.returncode==1 and report(case)['stage']=='validate-config-and-source-hashes'
+    assert not list(case['out'].rglob('tool.pid'))
 
 
 @pytest.mark.parametrize('mode', ['accept','reject','mixed'])

@@ -48,7 +48,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         draft_bundle, weight_table, scale_table, prompt_input_ids, output,
         prompt_length=8, max_new_tokens=8, max_proposals_per_round=2,
         minimum_draft_rounds=2, timeout_seconds=7200, lock_wait_seconds=1800,
-        board_model_root='/data/local/tmp/qwen3_5_moe', dump=False):
+        board_model_root='/data/local/tmp/qwen3_5_moe', dump=False, prefill_feedback=None):
     _options(prompt_length, max_new_tokens, max_proposals_per_round, minimum_draft_rounds,
              timeout_seconds, lock_wait_seconds)
     if type(dump) is not bool:
@@ -73,6 +73,11 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         lock_wait_seconds=lock_wait_seconds)
     draft_preflight = draft.preflight()
     base = target.binding['base_plan']
+    prefill = None
+    if prefill_feedback is not None:
+        from .board_prefill_binding import prepare_prefill_binding
+        prefill = prepare_prefill_binding(prefill_feedback, target.binding, source_torchair_pb2,
+            prompt_length, out / 'prefill-binding')
     if (draft._source['ddk_id'] != base['ddk_id']
             or draft._source['outputs'] != [
                 {'index': 0, 'name': 'draft_top1', 'dtype': 'int32', 'shape': [1, 15]},
@@ -111,6 +116,11 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
     pins = {}
     for row in target.binding['active_source_identities']:
         pins[row['path']] = deepcopy(row['identity'])
+    if prefill is not None:
+        for row in prefill['source_bindings']:
+            if row['path'] in pins and pins[row['path']] != row['identity']:
+                raise ValueError('prefill/decode source identity differs during request preparation')
+            pins[row['path']] = deepcopy(row['identity'])
     for path, identity in draft._source_identities.items():
         pins[path] = deepcopy(identity)
     for row in [*tables.values(), primary, abi, prompt_source]:
@@ -137,6 +147,12 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         'embedding_authenticity': 'FULL_CURRENT_BYTES_BOUND_ORIGINAL_PROVENANCE_NOT_ATTESTED',
         'compiled_weight_access': 'DECLARED_CACHE_HASHES_ONLY_LOCAL_SEND_REQUIRES_FRESH_VALIDATION',
         'model_residency': 'NOT_IMPLEMENTED_FRESH_TARGET_OR_DRAFT_PROCESS_PER_CALL'}
+    if prefill is not None:
+        manifest['prefill'] = prefill
+        manifest['prompt_ingestion'] = prefill['control_recipe']
+        manifest['initial_state_policy'] = 'PREFILL_ZERO_STATES_THEN_ALL80_EXPLICITLY_MAPPED_PREFILL_OUTPUTS'
+    else:
+        manifest['prompt_ingestion'] = 'DECODE1_SERIAL_PROMPT_INGESTION'
     save_json(out / 'manifest.json', manifest)
     (out / 'manifest.sha256').write_text(sha256_file(out / 'manifest.json') + '\n')
     return validate_prepared(out)
@@ -185,6 +201,8 @@ def make_config(manifest, remote_paths):
         'draft_abi': manifest['draft']['abi'], 'target_tool': remote_paths['target_tool_record'],
         'draft_runner': remote_paths['draft_runner_record'],
         'weight_table': manifest['tables']['weight'], 'scale_table': manifest['tables']['scale']}
+    if 'prefill' in manifest:
+        files['prefill_model'] = manifest['prefill']['model']
     for key, record in files.items():
         path = str(remote_paths[key])
         if (not path.startswith('/') or any(part in {'.', '..'} for part in PurePosixPath(path).parts)
@@ -209,6 +227,20 @@ def make_config(manifest, remote_paths):
         size = base['inputs'][row['runtime_input_index']]['bytes']
         lines.append('\t'.join(map(_field, ('state', row['source_refdata'], row['runtime_input_index'],
                                             row['runtime_output_index'], size))))
+    if 'prefill' in manifest:
+        prefill = manifest['prefill']
+        from .board_prefill_binding import RECIPE, control_assumption
+        if (prefill.get('control_recipe') != RECIPE
+                or prefill.get('experimental_control_assumption') != control_assumption(len(manifest['prompt_token_ids']))):
+            raise ValueError('prepared padded prefill controls differ from the explicit native recipe')
+        for role, type_key in (('input', 'tool_input_type'), ('output', 'tool_output_type')):
+            for row in prefill['base_plan'][role + 's']:
+                name = row['name'] if role == 'input' else row['runtime_tensor_name']
+                lines.append('\t'.join(map(_field, ('prefill_' + role, row['index'], name, row[type_key], row['bytes']))))
+        for row in prefill['state_mapping']:
+            lines.append('\t'.join(map(_field, ('prefill_state', row['decode']['source_refdata'],
+                row['prefill']['source_refdata'], row['prefill']['runtime_input_index'],
+                row['prefill']['runtime_output_index'], row['bytes']))))
     return ('\n'.join(lines) + '\n').encode('utf-8')
 
 
@@ -225,6 +257,7 @@ def run_board_serial_dflash(*, output, apply=False, detach=False, **options):
         manifest = prepare_board_serial(output=out / 'prepared', **options)
         result['prepared'] = manifest['output']
         result['dump'] = manifest.get('dump', True)
+        result['prompt_ingestion'] = manifest['prompt_ingestion']
         result['retrieval_mode'] = 'FULL_DEBUG' if result['dump'] else 'FINAL_TOKENS_ONLY'
         if apply:
             from .board_serial_transport import execute_board_serial

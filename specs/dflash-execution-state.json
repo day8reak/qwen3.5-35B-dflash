@@ -217,14 +217,52 @@
       "path": "$AI_RUN_DIR/target-prefill64-decode1-feedback-plan-v2/manifest.json",
       "state_feedback": "NOT_RUN",
       "numerical_validation": "NOT_RUN"
+    },
+    "prefill_board_integration": {
+      "status": "HOST_VALIDATED_DEVICE_EXECUTION_PENDING",
+      "validation_run": "20261030T115722Z-20143-364305",
+      "checks_passed": 126,
+      "checks": {
+        "prefill-binding-tests.xml": 26,
+        "native-prefill.xml": 14,
+        "native-prefill-legacy.xml": 12,
+        "prefill-transport-final.xml": 72,
+        "prefill-integration-final.xml": 2
+      },
+      "prior_feedback_gear_fix_checks": 36,
+      "independent_review": "PASS",
+      "actual_cpp_supervisor_and_draft_cli": "BOTH_DUMP_MODES_HOST_FAKE_HIAI",
+      "host_fixture_counts": {
+        "prefill_native_calls": 1,
+        "target_native_calls": 8,
+        "draft_native_calls": 5
+      },
+      "fresh_hash_semantic_tamper_cases_rejected": [
+        "prefill_output_pos",
+        "cross_owner_state_binding",
+        "consumed_feature_prefix",
+        "first_decode_parent_bytes"
+      ],
+      "source_sha256": {
+        "model/qwen35_moe_dflash/board_prefill_binding.py": "1c28b6bf2973a8d51f9095e3f923a3045ee5ac8f6e68233e014da2ed68e5c47e",
+        "model/qwen35_moe_dflash/board_serial_dflash.py": "d81d3be285e438efa2dc1b3e7a7b22dbf8f40c02e250a6b7edf2519a61544f1f",
+        "model/qwen35_moe_dflash/board_serial_transport.py": "9ba330b5ae97dbe55a301d5e12b8e567d6846c490c42563dae1f45044a2d0968",
+        "targets/cpro/runtime/src/board_serial_main.cpp": "bc15237844e0bc24d5a3a0fb616b3c9cf302bf58dc9928a0e7f77820de38a8d2",
+        "targets/cpro/scripts/run_board_serial_dflash.py": "328d390caa6eaeb161b79f8c8b57ab778cc143006a26f1f4735c9083f3fe7e30"
+      },
+      "device_execution": "NOT_RUN",
+      "numerical_validation": "NOT_RUN",
+      "models_recompiled": false,
+      "model_residency": "NOT_IMPLEMENTED",
+      "document": "docs/board-prefill-integration.md"
     }
   },
   "next_action": {
     "phase": "P0",
-    "type": "implement_prefill_integration",
+    "type": "run_prefill_integration_on_user_device",
     "entrypoint": "targets/cpro/scripts/run_board_serial_dflash.py",
     "command_document": "docs/current-status.md",
-    "note": "Implement original prefill64 padded-short-prompt experiment, bind its80states/logits/features into draft and serial verify, then run multi-round generation. Existing entry currently implements serial prompt only; do not rerun that successful submilestone or assume new prefill flags already exist. S128 is not an automatic requirement."
+    "note": "Run the documented --prefill-feedback P8/G8 request once, then recover that same attempt. Host implementation and126 checks passed; device original-prefill multi-round completion is still unobserved. Reuse all3 unchanged OMCs; no S128 required."
   },
   "last_actual_execution": {
     "source": "USER_PROVIDED_COMPACT_RESULT_SUMMARY",
@@ -294,8 +332,8 @@
         0.5,
         1
       ],
-      "next_action_type": "implement_and_run_prefill_integration",
-      "next_action": "保留已成功的serial P8/G8 full/compact子流程；接入原prefill64的P8 padding实验，严格绑定80状态、features/logits、anchor与后续draft/serialverify，多轮生成后单独验收。不得假设当前CLI已有该模式或默认要求S128。",
+      "next_action_type": "run_and_recover_prefill_integration",
+      "next_action": "用户执行 docs/current-status.md 的 --prefill-feedback 新请求：一次原prefill、8次decode和多轮完整draft全部在板端；恢复相同attempt后按P0条件验收。代码及126项主机检查已通过，当前不是设备PASS。",
       "pass_conditions": [
         "Actual original prefill executes in the same board-local request before draft/serial verify and multi-round generation",
         "Prefill and decode model variants retain distinct SHA identities and all80 cross-model state bindings",
@@ -311,7 +349,9 @@
         "Mode-appropriate completion and debug evidence"
       ],
       "evidence": [
-        "docs/board-first-completion.md"
+        "docs/board-first-completion.md",
+        "docs/board-prefill-integration.md",
+        "docs/board-serial-validation.md"
       ],
       "last_error": null,
       "submilestones": [

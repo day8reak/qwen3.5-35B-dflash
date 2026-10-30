@@ -18,7 +18,7 @@
 
 | 到达的结果 | 顺利时的累计工作日 | 说明 |
 |---|---:|---|
-| P0：原prefill驱动的端侧自主多轮闭环，允许精度误差 | 进行中，路线确认后重估 | serial P8/G8已成功；原prefill集成尚未运行 |
+| P0：原prefill驱动的端侧自主多轮闭环，允许精度误差 | 代码及主机检查完成，设备联调预留0.5–1天 | serial P8/G8已成功；原prefill集成待用户实机运行 |
 | P1–P3：可对照的普通基线、精度收敛、prefill→decode数值验收 | 3–7天 | 前提是原参考与控制实现可取得；底层算子是主要风险 |
 | P4–P6：长上下文、常驻执行、批量verify及正确回滚 | 7–14天 | 含新增artifact编译与实机联调；允许部分并行 |
 | P7–P8：稳定性、配对性能、优化迭代与交付 | 10–20天 | 按2–4个工作周安排；达到2倍取决于接受率和实测瓶颈 |
@@ -41,12 +41,12 @@
 | 增量draft缓存图 | `ge_incremental_draft.py`及独立主机等价测试已存在 | **没有新增AIR／OMC／实机增量ABI通过结果** |
 | 精度／稳定性／2倍加速 | 待完成 | 不从有限值、exit0或host测试推断通过 |
 
-旧64-token prompt把现draft S64的输入容量用满；标准下一token anchor需要第65行。已成功的serial子流程采用明确的新8-token请求，完整历史保留，复用旧OMC。它不是裁掉旧64-token请求后冒称等价，也不能替代当前P0要求的原prefill路径。原prefill的有效长度、anchor及draft容量如何接续仍须明确，不自动指定S128。
+旧64-token prompt把现draft S64的输入容量用满；标准下一token anchor需要第65行。当前采用独立8-token请求，完整历史保留，复用旧OMC。新prefill路径将8个有效token填充到物理64行，首个anchor推进decode后使用完整9行历史；合同已实现并通过主机检查，私有算子的有效长度语义仍待数值验证。它不是裁掉旧64-token请求后冒称等价，不自动指定S128。
 
 ## 4. 接手助手的执行规则
 
 1. 只推进状态文件中最前面的未完成阶段，读其依赖、下一动作和证据；阶段内可以并行独立host工作，设备模型调用仍遵守共享锁。
-2. 先复用已成功的源／模型／缓存和当前环境。不要重跑成功的serial请求、row63实验或旧metadata探针。原prefill接续先确定有效长度、anchor和容量合同；不把S128当作默认前置条件，不通过截断历史或改manifest冒充新容量。
+2. 先复用已成功的源／模型／缓存和当前环境。不要重跑成功的serial请求、row63实验或旧metadata探针。当前按已实现的原prefill短prompt实验合同运行新请求；不把S128当作默认前置条件，不通过截断历史或改manifest冒充新容量。
 3. 每个动作写清“目的、输入、命令、预期输出”。已有脚本先读 `--help`；下文标为“待实现”的入口不能当作现成CLI调用。
 4. host问题在host检查，只有需要实机结果时才让用户执行一次完整命令。能合并到入口的检查不拆成多轮手工问答。
 5. 修复可解释的路径、大小、JSON字段、schema选择、缓存／输出取回等局部问题后，跑相关检查、提交并推送；不要为了省事忽略失败、改旧receipt或放宽精度阈值。
@@ -62,11 +62,11 @@
 
 **状态：in_progress。** [已完成实机子里程碑](board-first-completion.md)是decode1串行输入prompt后运行draft／serialverify；原prefill→draft／serialverify→多轮generation尚未运行，不能验收整个P0。精度暂不阻塞执行里程碑，准确性与性能目标不取消。
 
-主机循环`run_serial_dflash_smoke.py`仍只算联调；现`run_board_serial_dflash.py`已证明serial路径可以全在板端完成。它不是原prefill集成入口。保留其完整dump与compact成功目录，不要求重复同样的P8/G8。最新compact总墙钟367.791秒，prompt输入8次74.389秒、生成decode8次108.209秒、draft7次137.646秒；包含加载／执行／卸载，非纯NPU时间，且没有主机逐状态回放。
+主机循环`run_serial_dflash_smoke.py`仍只算联调；现`run_board_serial_dflash.py`已证明serial路径可以全在板端完成。新增`--prefill-feedback`已接入一次真实prefill的板端路径，主机集成通过后由用户执行设备验收。保留旧serial的完整dump与compact成功目录，不要求重复同样的P8/G8。最新compact总墙钟367.791秒，prompt输入8次74.389秒、生成decode8次108.209秒、draft7次137.646秒；包含加载／执行／卸载，非纯NPU时间，且没有主机逐状态回放。
 
 本阶段待完成：原prefill实际执行一次，明确其80状态、logits和8层features到decode／draft的身份与字节交接；随后由板端完成提议、串行验证、接受／纠正及多轮生成。prefill／decode是不同模型variant，保留各自SHA，不能按RefData编号或相同shape猜对应关系。功能接入应在P0推进；P3保留同输入的数值／历史一致性验收。
 
-当前准备实现`PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL`：8个有效prompt token右padding到原prefill64。它尚未执行，必须先确定控制配方、首轮与后续anchor、完整feature历史及draft容量，再给出准确集成命令。旧S64容量边界不能被静默越过。当前不指定S128为必做步骤，也不默认裁历史、重置位置或用串行prompt替代原prefill。尚未实现的接口不能写成现成CLI。
+当前实现`PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL`：8个有效prompt token右padding到原prefill64，使用显式控制配方和80状态映射；首个anchor在位置8推进decode后，完整9行历史进入原S64 draft。代码及主机检查不等于实机验收；设备命令见[current-status.md](current-status.md)，合同细节见[board-prefill-integration.md](board-prefill-integration.md)。原私有算子的短有效长度语义仍待数值验证。不裁真实历史、不重置位置，P＋G不得超过64，当前不需S128编译。
 
 通过条件：
 
@@ -111,7 +111,7 @@
 
 产物：真实feature fixture集合、reference／device对比、误差首发层、固定精度策略与版本。没有明确输入或算子证据，不重编整个draft。
 
-## P3. 接通原prefill64→decode1，替换串行prompt输入
+## P3. 验证原prefill64→decode1的数值与历史一致性
 
 **局部预算：0.5–2天。依赖：P1；可与P2部分并行。**
 
@@ -245,7 +245,7 @@ decode1串行verify仍对每个已提交token运行target，主要是正确性�
 
 可直接复制给后续模型：
 
-> 请先读取 docs/dflash-delivery-plan.md、specs/dflash-execution-state.json 和 docs/current-status.md。沿P0继续原prefill→draft／串行verify→多轮generation。decode1串行prompt的P8/G8已成功，只是子里程碑，不要求重复；先明确prefill有效长度、anchor、80状态和draft容量合同，再实现准确入口。不要自动指定S128，也不要裁历史或以串行prompt替代原prefill。按计划完成常规实现、验证、提交／推送和远端命令交付，保持旧成功产物。禁止用host测试或有限值冒称设备精度／加速通过。每次结束更新阶段状态、证据和一条下一动作；遇到计划第7节情况，保留最小复现，向用户汇报以便重新规划。
+> 请先读取 docs/dflash-delivery-plan.md、specs/dflash-execution-state.json 和 docs/current-status.md。沿P0执行新增 --prefill-feedback 路径，完成原prefill→draft／串行verify→多轮generation的实机验收。短prompt填充、anchor、80状态和容量合同已实现并通过主机检查；decode1串行prompt的P8/G8实机成功只是子里程碑，不要求重复。不要自动指定S128，也不要裁历史或以串行prompt替代原prefill。按计划完成常规修复、验证、提交／推送和远端命令交付，保持旧成功产物。禁止用host测试或有限值冒称设备精度／加速通过。每次结束更新阶段状态、证据和一条下一动作；遇到计划第7节情况，保留最小复现，向用户汇报以便重新规划。
 
 每次交接更新状态JSON，并用以下格式简报：
 

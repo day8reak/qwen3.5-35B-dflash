@@ -7,7 +7,7 @@
 | 项目 | 当前已发布入口 | 常驻目标 |
 |---|---|---|
 | 调度／查表／接受判断 | 全在板端 | 全在板端 |
-| prompt | decode1逐token读入P8 | 先沿用；P3桥接后用一次prefill |
+| prompt | 新模式一次原prefill64读入逻辑P8，主机检查通过，实机待运行；旧serial路径保留 | 沿用一次prefill并在完成交接后释放 |
 | target | 每token启动原工具，反复加载 | 一个V2实例，多次Run |
 | draft | 每轮启动原CLI，反复加载／模型SHA | 一个legacy-buffer实例，多次Process |
 | 跨端数据 | 启动前与完整请求结束后 | 同左 |
@@ -31,7 +31,7 @@
 
 ## prefill用完卸载及重叠加载
 
-原prefill的功能接入必须在P0完成，P3补数值／历史一致性验收。接续成立后，单个请求先加载prefill并运行；等待同步Run完成，把80状态、features、logits复制到session持有的存储，再卸载prefill。随后加载decode一次，并在生成期间保持decode和draft实例。循环结束后统一释放。P0当前没有独立prefill加载，不能把其中8次decode prompt调用算成“一次prefill”。
+原prefill的功能接入必须在P0完成，P3补数值／历史一致性验收。新P0代码已支持独立prefill子进程，保存80状态、features、logits后退出，再进行decode／draft；实机尚待用户运行。常驻版则在该交接后加载decode一次，并在生成期间保持decode和draft实例，循环结束后统一释放。旧serial模式的8次decode prompt调用不能算成“一次prefill”。
 
 卸载prefill与加载decode可以作为后续重叠实验，**目前没有接口并发及内存证据支持默认开启**。必须满足：无prefill未完成任务；输出不再引用即将释放的内存；runtime允许不同manager并发初始化／销毁；实测prefill未释放、decode正加载及draft驻留时的峰值内存有余量。文件大小不是峰值内存证明。优先收益是取消每token／每轮重复加载；启动交接重叠只优化一次转换，不作为首个闭环的前置条件。
 
@@ -39,7 +39,7 @@
 
 - 主机替身验证：一次InitWeights／Init，多次Run，退出时正确释放；缺输入、错误ABI、输出对象替换和失败后继续调用均拒绝。
 - 真实设备先验原target V2初始化和两次状态接续，再验两模型同时驻留。不得从元数据Restore通过推断外置权重加载通过。
-- 常驻P8/G8按原完整请求验证16次target执行、多轮完整draft、80状态链和最终8token；原旧工具结果作为同输入对照。P0仍允许数值误差，P1/P2完整数值验收未取消。
+- 常驻P8/G8按新prefill请求验证1次prefill、8次decode、多轮完整draft、80状态链和最终8token，与相同输入的按次加载版本对照；旧serial模式另保留16次target的回归。P0仍允许数值误差，P1/P2完整数值验收未取消。
 - 记录每模型load count、实例ID、调用次数、加载／卸载／Run墙钟和峰值内存；是否减少总耗时以设备结果为准。Init失败不静默退回逐步加载后报告“常驻成功”。
 
 预计常驻适配与联调0.5–2个有效工作日，私有权重初始化或内存问题另计。工程实现可在P0期间并行；完整数值和性能验收仍依赖P1/P2。当前默认入口的I/O优化可独立使用，不需等常驻完成。

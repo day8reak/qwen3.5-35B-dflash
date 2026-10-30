@@ -301,7 +301,8 @@ def test_failed_supervisor_unknown_child_exit_cannot_release(prepared_request, t
         transport._validate_completed_failure(manifest, root, state)
 
 
-@pytest.mark.parametrize('fault', [None, 'foreign', 'extra', 'active-child', 'owner-symlink'])
+@pytest.mark.parametrize('fault', [None, 'foreign', 'extra', 'active-child', 'owner-symlink',
+    'prefill', 'prefill-foreign', 'prefill-extra'])
 def test_real_shell_release_guards_exact_owner_empty_target_and_all_child_exits(tmp_path, monkeypatch, fault):
     token = 'a' * 32; global_lock = PurePosixPath(str(tmp_path / 'global'))
     target = tmp_path / 'target'; draft = tmp_path / 'draft'; board = tmp_path / 'attempt'
@@ -328,10 +329,19 @@ def test_real_shell_release_guards_exact_owner_empty_target_and_all_child_exits(
     state = {'board_attempt': str(board), 'target_cache': str(target), 'draft_cache': str(draft),
         'board_lock_token': token, 'compilation_report_sha256': 'b' * 64, 'draft_model_sha256': 'c' * 64,
         'completed_native_pids': [os.getpid()] if fault == 'active-child' else [2147483646]}
+    if fault and fault.startswith('prefill'):
+        prefill = tmp_path / 'prefill'; (prefill / '.execution-lock').mkdir(parents=True)
+        (prefill / '.compilation-sha256').write_text('d' * 64 + '\n')
+        (board / 'prefill-lock.owner').write_text(('f' * 32 if fault == 'prefill-foreign' else token) + '\n')
+        if fault == 'prefill-extra':
+            (prefill / '.execution-lock/foreign').write_text('foreign')
+        state.update(prefill_cache=str(prefill), prefill_compilation_report_sha256='d' * 64)
     state['completion'] = transport._completion(Shell(), state)
-    if fault is None:
+    if fault in {None, 'prefill'}:
         assert transport._lock_checks(Shell(), state, release=True) == 'RELEASED'
         assert not Path(global_lock).exists() and not (target / '.execution-lock').exists()
+        if fault == 'prefill':
+            assert not (prefill / '.execution-lock').exists()
     else:
         with pytest.raises(RuntimeError, match='refused'):
             transport._lock_checks(Shell(), state, release=True)
@@ -619,3 +629,64 @@ def test_recovery_cannot_override_mode_pinned_by_original_preparation(prepared_r
     result = transport.recover_board_serial(tmp_path / 'execution', tmp_path / 'recovery')
     assert result['status'] == 'FAILED' and 'cannot change the pinned dump/config mode' in result['error']
     assert len(FakeHdc.instances) == 1 and result['lock_state'] == 'RETAINED_OR_UNCERTAIN'
+
+
+def _enable_prefill_request(root, manifest, tmp_path):
+    model = _write(tmp_path / 'prefill/model.omc', b'original-prefill')
+    row = {'path': 'compile-work/generated/model/model.omc', 'bytes': model['bytes'], 'sha256': model['sha256']}
+    base = deepcopy(manifest['target_binding']['base_plan'])
+    base.update(compilation=str(tmp_path / 'prefill'), compilation_report_sha256='d' * 64, inputs=[])
+    manifest['prefill'] = {'model': model, 'base_plan': base, 'compiled': {'omc': row},
+        'control_recipe': transport._PREFILL_RECIPE, 'state_mapping': [],
+        'payloads': [{'local': model['path'], 'remote': 'model/model.omc', 'bytes': model['bytes'],
+            'sha256': model['sha256'], 'record': row}]}
+    (root / 'manifest.json').write_text(json.dumps(manifest))
+
+
+def test_prefill_cache_is_independent_owned_locked_and_recovered_without_relaunch(prepared_request, tmp_path, monkeypatch):
+    root, manifest, FakeHdc, inventories = prepared_request
+    _enable_prefill_request(root, manifest, tmp_path)
+    original = preparation.make_config
+    def config(value, paths):
+        assert paths['prefill_model'].startswith('/data/local/tmp/qwen3_5_moe/codex-target-' + 'd' * 20)
+        assert paths['prefill_model'] != paths['target_model']
+        return original(value, paths)
+    monkeypatch.setattr(preparation, 'make_config', config)
+    launched = transport.execute_board_serial(root, tmp_path / 'execution', detach=True)
+    assert launched['status'] == 'BOARD_SERIAL_DFLASH_STARTED', launched.get('error')
+    assert launched['prefill_lock_held'] and launched['prefill_cache'] != launched['target_cache']
+    assert [row['kind'] for row in inventories[0]].count('prefill') == 1
+    assert any(label == 'acquire-prefill-cache-lock' and 'prefill-lock.owner' in command
+        for label, command in FakeHdc.instances[0].calls)
+    monkeypatch.setattr(transport, '_retrieve', lambda hdc, out, state, value: state.update(completed_native_pids=[12346]))
+    recovered = transport.recover_board_serial(tmp_path / 'execution', tmp_path / 'recovery')
+    assert recovered['status'] == 'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED', recovered.get('error')
+    assert not recovered['prefill_lock_held']
+    assert recovered['prompt_ingestion'] == transport._PREFILL_RECIPE
+    release = next(command for label, command in FakeHdc.instances[-1].calls if label == 'release-whole-loop-locks')
+    assert 'prefill-lock.owner' in release and launched['prefill_cache'] + '/.execution-lock' in release
+    assert not any('launch' in label or 'acquire' in label for label, _ in FakeHdc.instances[-1].calls)
+
+
+@pytest.mark.parametrize('label', ['own-prefill-cache', 'acquire-prefill-cache-lock'])
+def test_prefill_cache_mutation_failure_retains_exact_lock_journal(prepared_request, tmp_path, label):
+    root, manifest, FakeHdc, _ = prepared_request
+    _enable_prefill_request(root, manifest, tmp_path); FakeHdc.fail_stage = label
+    result = transport.execute_board_serial(root, tmp_path / 'execution', detach=True)
+    assert result['status'] == 'FAILED' and result['phase'] == label + '-requested'
+    assert result['lock_state'] == 'RETAINED_OR_UNCERTAIN' and not result['launch_requested']
+    assert result['target_lock_held'] and result['global_held']
+    assert not any('launch' in name or 'release' in name for name, _ in FakeHdc.instances[0].calls)
+
+
+def test_prefill_cache_miss_uses_strict_prefill_compiler_record(prepared_request, tmp_path, monkeypatch):
+    root, manifest, _, _ = prepared_request; _enable_prefill_request(root, manifest, tmp_path)
+    from qwen35_moe_dflash import original_target_board
+    captured = []
+    monkeypatch.setattr(original_target_board, '_recorded_board_payload', lambda directory, row, compiled, **kwargs:
+        captured.append((directory, row, compiled, kwargs)) or Path('strictly-validated'))
+    rows = transport._static_rows(manifest, PurePosixPath('/target'), PurePosixPath('/draft'), PurePosixPath('/tables'), PurePosixPath('/prefill'))
+    row = next(row for row in rows if row['kind'] == 'prefill')
+    assert transport._local_upload(row, manifest) == Path('strictly-validated')
+    assert captured == [(Path(manifest['prefill']['base_plan']['compilation']), row['record'],
+        manifest['prefill']['compiled'], {'smoke_proof': manifest['prefill']['base_plan']})]

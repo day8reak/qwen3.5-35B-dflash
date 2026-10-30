@@ -15,6 +15,7 @@ def main(argv=None):
                 'draft-bundle', 'weight-table', 'scale-table', 'prompt-input-ids')
     for name in required:
         parser.add_argument('--' + name)
+    parser.add_argument('--prefill-feedback', help='Completed all80 prefill/decode mapping directory; enables one actual prefill64 call with explicit short-prompt padding controls')
     parser.add_argument('--output', required=True)
     parser.add_argument('--recover', help='Existing board-loop job or its board execution directory; never launches inference')
     parser.add_argument('--prompt-length', type=int, default=8)
@@ -30,7 +31,7 @@ def main(argv=None):
         help='Retain debug tensors/receipts on board and retrieve detailed evidence; default returns final tokens/status only')
     args = parser.parse_args(argv)
     if args.recover:
-        if args.apply or args.detach or args.dump is not None or any(getattr(args, name.replace('-', '_')) is not None for name in required):
+        if args.apply or args.detach or args.dump is not None or args.prefill_feedback is not None or any(getattr(args, name.replace('-', '_')) is not None for name in required):
             parser.error('--recover uses the original prepared dump mode; omit --dump, --apply and model arguments')
     elif any(getattr(args, name.replace('-', '_')) is None for name in required):
         parser.error('new runs require ' + ', '.join('--' + name for name in required))
@@ -53,7 +54,7 @@ def main(argv=None):
     keys = ('status', 'stage', 'output', 'mode', 'device_execution', 'model_compilation',
             'numerical_validation', 'performance', 'generated_token_ids', 'counts', 'board_attempt',
             'lock_state', 'error', 'next', 'prepared', 'board_result')
-    keys += ('dump', 'retrieval_mode', 'evidence_scope', 'acceptance', 'phase_latency', 'supervisor_timing')
+    keys += ('dump', 'retrieval_mode', 'evidence_scope', 'acceptance', 'phase_latency', 'supervisor_timing', 'prompt_ingestion')
     print(json.dumps({key: result[key] for key in keys if key in result}, ensure_ascii=False, allow_nan=False), flush=True)
     return 0 if result.get('status') in {'BOARD_SERIAL_DFLASH_PLANNED', 'BOARD_SERIAL_DFLASH_STARTED',
         'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED', 'BOARD_SERIAL_DFLASH_RECOVERED_UNVALIDATED'} else 1

@@ -78,8 +78,8 @@
     "role": "LEGACY_DIAGNOSTIC_ONLY_NOT_AUTONOMOUS_P0"
   },
   "gaps": [
-    "Implement and execute original prefill -> draft/serial verify -> multi-round generation; this full path has not run",
-    "Freeze the padded-short-prompt prefill controls,80state/feature/logit handoff and anchor/capacity contract before claiming integration",
+    "Execute and recover the implemented original prefill -> draft/serial verify -> multi-round board request; this version has no device completion result",
+    "Padded-short-prompt controls and80state/feature/logit handoff are explicit and host-tested; private-kernel effective-length semantics remain numerically unvalidated",
     "Compact tokens/completion evidence does not replay the80state chain on host; physical-disconnect experiment remains unobserved",
     "Validate experimental controls, numerical accuracy and ordinary-baseline equality after the execution milestone",
     "Resident execution, batch verification and paired speedup remain unvalidated"
@@ -129,7 +129,7 @@
       "physical_disconnect": "NOT_SPECIFICALLY_TESTED"
     }
   },
-  "first_loop_strategy": "Pending original prefill64 padded-short-prompt experiment -> exact80state/logit/feature handoff -> original full draft and serial gear1 verification -> multi-round generation on board. Prior serial-P8/G8 route is a completed submilestone only. Preserve full history; no automatic S128 requirement.",
+  "first_loop_strategy": "Implemented original prefill64 with logical P8 and explicit zero padding -> exact80state/logit/valid-feature handoff -> anchor committed at position8 -> original full S64 draft and serial gear1 verification -> multi-round board generation. Host tests passed; user device execution pending. Preserve full history and P+G<=64; no S128 requirement.",
   "deferred": [
     "Whole-prefix S128 export",
     "Incremental draft KV AIR/OMC",
@@ -145,8 +145,9 @@
     "per_token_server_calls": 0,
     "model_residency": "NOT_IMPLEMENTED",
     "startup_ack_is_completion": false,
-    "current_prompt_path": "DECODE1_SERIAL_PROMPT_ONLY_ORIGINAL_PREFILL_INTEGRATION_PENDING",
-    "prefill_experiment": "PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL_PENDING_DEVICE_EXECUTION"
+    "current_prompt_path": "OPTIONAL_PREFILL_FEEDBACK_ONE_PREFILL64_WITH_LOGICAL_SHORT_PROMPT_LEGACY_SERIAL_MODE_RETAINED",
+    "prefill_experiment": "PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL_PENDING_DEVICE_EXECUTION",
+    "prefill_binding": "model/qwen35_moe_dflash/board_prefill_binding.py"
   },
   "retention_policy": {
     "new_requests": "DEFAULT_COMPACT_FINAL_TOKENS_AND_STATUS",
@@ -154,9 +155,47 @@
     "legacy_recovery": "PRESERVE_ORIGINAL_MODE",
     "normal_metrics": [
       "acceptance",
-      "prompt_ingest/decode/draft child wall latency"
+      "prefill/decode/draft child wall latency; prompt_ingest aliases prefill in new mode"
     ],
     "normal_evidence_scope": "FINAL_REPORT_AND_COMPLETION_NOT_HOST_STATE_REPLAY",
     "scratch": "FILE_ABI_REQUIRED_CONSUMED_SUCCESSFUL_SCRATCH_PRUNED"
+  },
+  "host_prefill_validation": {
+    "status": "HOST_VALIDATED_DEVICE_EXECUTION_PENDING",
+    "validation_run": "20261030T115722Z-20143-364305",
+    "checks_passed": 126,
+    "checks": {
+      "prefill-binding-tests.xml": 26,
+      "native-prefill.xml": 14,
+      "native-prefill-legacy.xml": 12,
+      "prefill-transport-final.xml": 72,
+      "prefill-integration-final.xml": 2
+    },
+    "prior_feedback_gear_fix_checks": 36,
+    "independent_review": "PASS",
+    "actual_cpp_supervisor_and_draft_cli": "BOTH_DUMP_MODES_HOST_FAKE_HIAI",
+    "host_fixture_counts": {
+      "prefill_native_calls": 1,
+      "target_native_calls": 8,
+      "draft_native_calls": 5
+    },
+    "fresh_hash_semantic_tamper_cases_rejected": [
+      "prefill_output_pos",
+      "cross_owner_state_binding",
+      "consumed_feature_prefix",
+      "first_decode_parent_bytes"
+    ],
+    "source_sha256": {
+      "model/qwen35_moe_dflash/board_prefill_binding.py": "1c28b6bf2973a8d51f9095e3f923a3045ee5ac8f6e68233e014da2ed68e5c47e",
+      "model/qwen35_moe_dflash/board_serial_dflash.py": "d81d3be285e438efa2dc1b3e7a7b22dbf8f40c02e250a6b7edf2519a61544f1f",
+      "model/qwen35_moe_dflash/board_serial_transport.py": "9ba330b5ae97dbe55a301d5e12b8e567d6846c490c42563dae1f45044a2d0968",
+      "targets/cpro/runtime/src/board_serial_main.cpp": "bc15237844e0bc24d5a3a0fb616b3c9cf302bf58dc9928a0e7f77820de38a8d2",
+      "targets/cpro/scripts/run_board_serial_dflash.py": "328d390caa6eaeb161b79f8c8b57ab778cc143006a26f1f4735c9083f3fe7e30"
+    },
+    "device_execution": "NOT_RUN",
+    "numerical_validation": "NOT_RUN",
+    "models_recompiled": false,
+    "model_residency": "NOT_IMPLEMENTED",
+    "document": "docs/board-prefill-integration.md"
   }
 }

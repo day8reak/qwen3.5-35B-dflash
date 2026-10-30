@@ -73,26 +73,43 @@ fixture = json.loads(Path(__file__).with_suffix('.json').read_text())
 args = dict(item[2:].split('=', 1) for item in sys.argv[1:])
 assert args['times'] == '1' and args['modelmanager_itf'] == 'V2'
 assert args['direct_from_file'] == 'true'
-assert args['input_type'].split(',') == [row['type'] for row in fixture['inputs']]
-assert args['output_type'].split(',') == [row['type'] for row in fixture['outputs']]
+
 paths = [Path(value) for value in args['input'].split(',')]
 assert len(paths) == 89 and len(set(paths)) == 89
+prefill = Path(args['model']).name == 'prefill.omc'
+if prefill:
+    fixture = fixture['prefill']
 inputs = {row['name']: path for row, path in zip(fixture['inputs'], paths)}
 for row, path in zip(fixture['inputs'], paths):
     assert path.stat().st_size == row['bytes'], (row, path)
-token = inputs['arg1_1'].read_bytes()[0]
-assert inputs['arg1_1'].read_bytes() == bytes([token]) * 2048
-assert inputs['arg0_1'].read_bytes() == struct.pack('<f', (token + 1) / 1000)
-position, = struct.unpack('<i', inputs['arg107_1'].read_bytes())
-assert inputs['arg2_1'].read_bytes() == struct.pack('<i', position)
-assert inputs['arg1238_1'].read_bytes() == struct.pack('<i', 0)
-assert inputs['arg114_1'].read_bytes() == struct.pack('<q', 1)
-assert inputs['arg14_1'].read_bytes() == struct.pack('<128i', 1, *([0] * 127))
-assert inputs['arg18_1'].read_bytes() == struct.pack('<h', 1)
-assert inputs['arg113_1'].read_bytes() == bytes(4 * (position + 1)) + struct.pack('<f', float('-inf')) * (2047 - position)
+if prefill:
+    length, = struct.unpack('<q', inputs['arg114_1'].read_bytes())
+    rows = inputs['arg1_1'].read_bytes(); token = rows[(length - 1) * 2048]
+    assert rows[:length * 2048] == b''.join(bytes([i]) * 2048 for i in range(1, length + 1))
+    assert rows[length * 2048:] == bytes((64 - length) * 2048)
+    assert inputs['arg0_1'].read_bytes() == b''.join(struct.pack('<f', (i + 1) / 1000) for i in range(1, length + 1)) + bytes((64 - length) * 4)
+    assert inputs['arg107_1'].read_bytes() == inputs['arg2_1'].read_bytes() == struct.pack('<64i', *range(64))
+    assert inputs['arg1238_1'].read_bytes() == struct.pack('<i', length - 1)
+    assert inputs['arg14_1'].read_bytes() == struct.pack('<128i', length, *([0] * 127))
+    assert inputs['arg18_1'].read_bytes() == struct.pack('<h', length)
+    mask = b''.join(bytes((q + 1 if q < length else 1) * 4) + struct.pack('<f', float('-inf')) * (2048 - (q + 1 if q < length else 1)) for q in range(64))
+    assert inputs['arg113_1'].read_bytes() == mask
+    position = 0; history = length
+else:
+    token = inputs['arg1_1'].read_bytes()[0]
+    assert inputs['arg1_1'].read_bytes() == bytes([token]) * 2048
+    assert inputs['arg0_1'].read_bytes() == struct.pack('<f', (token + 1) / 1000)
+    position, = struct.unpack('<i', inputs['arg107_1'].read_bytes())
+    assert inputs['arg2_1'].read_bytes() == struct.pack('<i', position)
+    assert inputs['arg1238_1'].read_bytes() == struct.pack('<i', 0)
+    assert inputs['arg114_1'].read_bytes() == struct.pack('<q', 1)
+    assert inputs['arg14_1'].read_bytes() == struct.pack('<128i', 1, *([0] * 127))
+    assert inputs['arg18_1'].read_bytes() == struct.pack('<h', 1)
+    assert inputs['arg113_1'].read_bytes() == bytes(4 * (position + 1)) + struct.pack('<f', float('-inf')) * (2047 - position)
+    history = position + 1
 for state in fixture['states']:
     raw = paths[state['input_index']].read_bytes()
-    expected = bytes(state['bytes']) if position == 0 else struct.pack('<ii', state['ref'], position) + bytes(state['bytes'] - 8)
+    expected = bytes(state['bytes']) if prefill or position == 0 else struct.pack('<ii', state['ref'], position) + bytes(state['bytes'] - 8)
     assert raw == expected, ('wrong parent state', state['ref'], position)
 
 output = Path(args['output_dir']); output.mkdir(parents=True, exist_ok=True)
@@ -110,9 +127,9 @@ for row in fixture['outputs']:
             if fault == 'nan-logit':
                 stream.seek(0); stream.write(struct.pack('<f', float('nan')))
         elif index == 81:
-            stream.write(struct.pack('<e', token) * 16384)
+            stream.write(b''.join(struct.pack('<e', i) * 16384 for i in range(1, length + 1)) + bytes((64 - length) * 32768) if prefill else struct.pack('<e', token) * 16384)
         else:
-            stream.write(struct.pack('<ii', state_by_output[index]['ref'], position + 1))
+            stream.write(struct.pack('<ii', state_by_output[index]['ref'], history))
     lines.append('output[%d] :%s' % (index, path))
 if fault == 'duplicate-output-slot':
     lines.append(lines[0])
@@ -197,6 +214,100 @@ def verifier_manifest(case):
             state_mapping=[dict(source_refdata='RefData_' + str(row['ref']),
                 runtime_input_index=row['input_index'], runtime_output_index=row['output_index'])
                 for row in case['states']]))
+
+
+def enable_prefill(case):
+    """Distinct model, state references and output ports; never ordinal join."""
+    from qwen35_moe_dflash.board_serial_transport import _full
+    root = case['root']; model = root / 'prefill.omc'; model.write_bytes(b'original-prefill-host-fixture')
+    sizes = {'arg1_1': 64 * 2048, 'arg113_1': 64 * 8192, 'arg107_1': 256,
+        'arg2_1': 256, 'arg0_1': 256}
+    inputs = [dict(row, bytes=sizes.get(row['name'], row['bytes'])) for row in case['inputs']]
+    states, mapping = [], []
+    for row in case['states']:
+        ref = row['ref']; pref_ref = ref * 7 % 80; inp = 3 + pref_ref; out = 1 + pref_ref * 13 % 80
+        inputs[inp] = dict(index=inp, name='RefData_' + str(pref_ref), type='FP16', bytes=row['bytes'])
+        states.append(dict(row, input_index=inp, output_index=out))
+        mapping.append({'owner_key': 'fixture-layer-owner-' + str(ref), 'bytes': row['bytes'],
+            'decode': {'source_refdata': 'RefData_' + str(ref), 'runtime_input_index': row['input_index'], 'runtime_output_index': row['output_index']},
+            'prefill': {'source_refdata': 'RefData_' + str(pref_ref), 'runtime_input_index': inp, 'runtime_output_index': out}})
+    by_output = {row['output_index']: row for row in states}
+    outputs = [dict(index=i, name='prefill-native-' + str(i), type='FP32' if i == 0 else 'FP16',
+        bytes=993280 if i == 0 else 64 * 32768 if i == 81 else by_output[i]['bytes']) for i in range(82)]
+    fixture_path = case['files']['target_tool'].with_suffix('.json'); fixture = json.loads(fixture_path.read_text())
+    fixture['prefill'] = dict(inputs=inputs, outputs=outputs, states=states); fixture_path.write_text(json.dumps(fixture))
+    base = {'inputs': [dict(index=row['index'], name=row['name'], bytes=row['bytes'], tool_input_type=row['type']) for row in inputs],
+        'outputs': [dict(index=row['index'], runtime_tensor_name=row['name'], bytes=row['bytes'], tool_output_type=row['type']) for row in outputs]}
+    case['manifest']['prefill'] = {'control_recipe': 'PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL',
+        'model': dict(path=str(model), bytes=model.stat().st_size, sha256=digest(model), identity=_full(model)),
+        'base_plan': base, 'state_mapping': mapping}
+    rows = ['\t'.join(('prefill_model', str(model), digest(model), str(model.stat().st_size)))]
+    rows += ['\t'.join(('prefill_input', str(row['index']), row['name'], row['type'], str(row['bytes']))) for row in inputs]
+    rows += ['\t'.join(('prefill_output', str(row['index']), row['name'], row['type'], str(row['bytes']))) for row in outputs]
+    rows += ['\t'.join(('prefill_state', row['decode']['source_refdata'], row['prefill']['source_refdata'],
+        str(row['prefill']['runtime_input_index']), str(row['prefill']['runtime_output_index']), str(row['bytes']))) for row in mapping]
+    with case['config'].open('a') as stream: stream.write('\n'.join(rows) + '\n')
+    (root / 'expected-prepared-manifest.json').write_text(json.dumps(case['manifest'], indent=2))
+
+
+@pytest.mark.parametrize('dump', [True, False])
+def test_actual_prefill64_handoff_then_real_draft_and_multiround_decode(tmp_path, native_programs, dump):
+    from qwen35_moe_dflash.board_serial_transport import validate_retrieved_loop
+    case = make_case(tmp_path / ('prefill-debug' if dump else 'prefill-compact'), native_programs, dump=dump)
+    enable_prefill(case)
+    process = execute(case)
+    assert process.returncode == 0, (process.stdout, process.stderr)
+    report = validate_retrieved_loop(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
+        _expected_config_sha256=digest(case['config']))
+    assert report['counts']['prefill_native_calls'] == 1 and report['counts']['target_native_calls'] == 8
+    assert report['counts']['draft_native_calls'] >= 2
+    assert report['generated_tokens'] == list(range(9, 17))
+    assert report['phase_latency']['prefill']['calls'] == 1 and report['phase_latency']['decode']['calls'] == 8
+    if dump:
+        receipt = json.loads((case['output'] / report['prefill_steps'][0]['receipt']['path']).read_text())
+        first = json.loads((case['output'] / report['target_steps'][0]['receipt']['path']).read_text())
+        assert first['absolute_position'] == 8 and first['token_id'] == receipt['next_token_id']
+        assert len(first['state_feedback']) == 80 and len(receipt['state_mapping']) == 80
+        _reject_rebound_prefill_claims(case, report)
+    else:
+        assert {p.relative_to(case['output']).as_posix() for p in case['output'].rglob('*') if p.is_file()} == {'loop.json', 'progress.json', 'retrieval-manifest.tsv'}
+
+
+def _reject_rebound_prefill_claims(case, original):
+    """Fresh inventory hashes cannot bless wrong controls, owners or byte parents."""
+    from copy import deepcopy
+    from qwen35_moe_dflash.board_serial_transport import validate_retrieved_loop
+    root = case['output']; loop_path = root / 'loop.json'; inventory = root / 'retrieval-manifest.tsv'
+    saved_loop, saved_inventory = loop_path.read_bytes(), inventory.read_bytes()
+    failures = [('prefill_steps', 'control', 'query controls'), ('prefill_steps', 'owner', 'cross-model map'),
+        ('prefill_steps', 'feature', 'feature rows'), ('target_steps', 'parent', 'preceding80 outputs')]
+    for kind, damage, reason in failures:
+        loop = deepcopy(original); reference = loop[kind][0]['receipt']; path = root / reference['path']; saved = path.read_bytes()
+        receipt = json.loads(saved)
+        if damage == 'control':
+            next(row for row in receipt['inputs'] if row['name'] == 'arg1238_1')['sha256'] = '0' * 64
+        elif damage == 'owner':
+            receipt['state_mapping'][0]['prefill_runtime_output_index'] = receipt['state_mapping'][1]['prefill_runtime_output_index']
+        elif damage == 'feature':
+            receipt['feature_prefix']['sha256'] = '0' * 64
+        else:
+            receipt['state_feedback'][0]['parent_output']['sha256'] = '0' * 64
+        try:
+            path.write_text(json.dumps(receipt)); reference.update(bytes=path.stat().st_size, sha256=digest(path))
+            loop_path.write_text(json.dumps(loop))
+            lines = []
+            for line in saved_inventory.decode().splitlines():
+                fields = line.split('\t')
+                if len(fields) == 4 and fields[1] in {reference['path'], 'loop.json'}:
+                    changed = root / fields[1]; fields[2:] = [digest(changed), str(changed.stat().st_size)]
+                    line = '\t'.join(fields)
+                lines.append(line)
+            inventory.write_text('\n'.join(lines) + '\n')
+            with pytest.raises(ValueError, match=reason):
+                validate_retrieved_loop(case['manifest'], root, _expected_evidence_kind='host-fake-hiai',
+                    _expected_config_sha256=digest(case['config']))
+        finally:
+            path.write_bytes(saved); loop_path.write_bytes(saved_loop); inventory.write_bytes(saved_inventory)
 
 
 def execute(case, fault=None):
