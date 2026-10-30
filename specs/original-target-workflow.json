@@ -3,8 +3,8 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "USER_REPORTED_STANDALONE_DECODE_EXECUTED_OUTPUT_AUDIT_READY",
-  "handoff": "20261030T021923Z-13036-9e4290/handoff.md",
+  "status": "DECODE_OUTPUTS_BOUND_STATE_METADATA_FIX_READY_ORIGINAL_TABLES_MISSING",
+  "handoff": "20261030T023239Z-14738-f5135c/handoff.md",
   "user_state": "Complete original target prefill64, independent experimental decode1 and exact real-feature full six-layer draft step each executed successfully. Saved decode output binding,80-state ownership/feedback, original next-token embeddings and full multi-round execution remain to verify; no numerical acceptance.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
@@ -53,7 +53,7 @@
     "Ordinary decode and multi-round DFlash stop/reject/commit behavior",
     "Matched numerical acceptance and measured end-to-end performance"
   ],
-  "next_command": "Inspect retained target-decode1-smoke-trial outputs and same-model state lineage; no repeat decode, new compilation or weight upload. See docs/current-status.md.",
+  "next_command": "Pull update and rerun inspect_target_decode_state_lineage.py into target-decode1-state-lineage-v2, reusing successful output inventory. Resolve original embedding resource paths before another row lookup. See docs/current-status.md.",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -1179,7 +1179,7 @@
     "tool_process_id": 29654,
     "planned_input_count": 89,
     "planned_output_count": 82,
-    "actual_output_slot_binding": "PENDING_SAVED_OUTPUT_INSPECTION",
+    "actual_output_slot_binding": "USER_REPORTED_EXPLICIT_COMPLETE_TOOL_LOG_AND_VERIFIED_BYTES",
     "input_preflight": "DECODE_INPUT_EXTENTS_MATCHED",
     "model_compilation": "NOT_RUN",
     "first_generated_payload_upload_bytes": 18824362757,
@@ -1198,27 +1198,31 @@
     "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
     "numerical_validation": "NOT_RUN_NO_REFERENCE",
     "state_continuity": "NOT_VALIDATED_SINGLE_TOOL_INVOCATION",
-    "next": "Host-only retained-output inventory and same-artifact decode state ownership; do not repeat this successful call or infer a64to1 handoff."
+    "next": "Rerun host state lineage after metadata limit correction; resolve original embedding table locations.",
+    "actual_output_file_count": 82
   },
   "next_decode_audits": {
-    "status": "HOST_IMPLEMENTED_ACTUAL_USER_REPORTS_PENDING",
+    "status": "OUTPUTS_USER_VERIFIED_STATE_LIMIT_FIXED_TABLE_LOCATION_PENDING",
     "output_inventory": {
       "entrypoint": "targets/cpro/scripts/inspect_target_decode_outputs.py",
       "execution": "target-decode1-smoke-trial",
       "output": "target-decode1-output-inspection",
       "success_status": "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS",
       "checks": "Fresh decode plan/trial/source evidence, actual complete logged82 index/path bindings, all output SHA/typed extents, logits/feature and80state typed finite statistics. No same-shaped ordinal fallback.",
-      "numerical_validation": "NOT_RUN_NO_REFERENCE"
+      "numerical_validation": "NOT_RUN_NO_REFERENCE",
+      "status": "USER_REPORTED_DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS"
     },
     "same_model_state_lineage": {
       "entrypoint": "targets/cpro/scripts/inspect_target_decode_state_lineage.py",
-      "output": "target-decode1-state-lineage",
+      "output": "target-decode1-state-lineage-v2",
       "success_status": "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED",
       "partial_status": "DECODE_STATE_LINEAGE_OBSERVED_WITH_GAPS",
       "checks": "80unique serialized named updater owners, unique explicit source/compiled FX identities, exact typed views, literal native descriptor names, actual logged SHA-bound output files. Source producer missing shapes stay explicit; no profile-based filling.",
       "feedback_ready": false,
       "state_feedback": "NOT_RUN",
-      "scope": "Same compiled decode model only; separate prefill/decode RefData labels are not assumed common layer identity."
+      "scope": "Same compiled decode model only; separate prefill/decode RefData labels are not assumed common layer identity.",
+      "status": "HOST_METADATA_LIMIT_FIX_TESTED_USER_RETRY_PENDING",
+      "metadata_json_maximum_bytes": 33554432
     },
     "original_decode_embedding_rows": {
       "entrypoint": "targets/cpro/scripts/inspect_original_decode_embeddings.py",
@@ -1230,7 +1234,13 @@
       "missing_tables": "Explicit configured paths retained; no fallback",
       "logical_history": "UNVERIFIED",
       "runtime_control_recipe": "UNVERIFIED",
-      "state_continuity": "NOT_VALIDATED"
+      "state_continuity": "NOT_VALIDATED",
+      "status": "HOST_CANDIDATE_MATCHING_READY_ORIGINAL_TABLES_MISSING",
+      "candidate_flag": "--match-source-id-candidates",
+      "maximum_candidate_ids": 1024,
+      "maximum_candidate_table_read_bytes": 2103300,
+      "uniqueness_scope": "EXPLICIT_SOURCE_ID_CANDIDATES_ONLY",
+      "source_id_occurrence_positions": "UNVERIFIED_LOGICAL_POSITION_SEMANTICS"
     },
     "next": "Actual mapping and row proof enable a separate individually bound80-state continuation planner. A forced supplied-input state experiment is not greedy generation; full loop also needs declared compatible draft context capacity.",
     "device_execution": "NOT_RUN",
@@ -1260,5 +1270,119 @@
     ],
     "scope": "Host graph/ELF fixtures, retained output files, sparse original embedding rows and fake HDC only. Existing prefill/decode/state/embedding/cache regression passed. Source/compiled/runtime mapping and table rows on actual user artifacts remain unobserved locally; no model accuracy/continuity or performance claim.",
     "independent_review": "Output-inventory author reviewed both consumers against actual saved-plan field conventions; no interface blockers found."
+  },
+  "target_decode_output_inspection_user_report": {
+    "source": "USER_PASTED_REMOTE_OUTPUT_INSPECTION_NOT_RETRIEVED_LOCALLY",
+    "output": "target-decode1-output-inspection",
+    "status": "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS",
+    "actual_retrieved_output_file_count": 82,
+    "slot_binding": "EXPLICIT_COMPLETE_TOOL_LOG_AND_VERIFIED_BYTES",
+    "feature": {
+      "runtime_index": 81,
+      "bytes": 32768,
+      "sha256": "a34b7d02d4ffcda3aadc8372f7db89a972a396ba1914b420251430f666297e78",
+      "dtype": "FLOAT16",
+      "shape": [
+        1,
+        1,
+        1,
+        16384
+      ],
+      "elements": 16384,
+      "finite_count": 16384,
+      "zero_count": 0,
+      "min": -65504.0,
+      "max": 65504.0
+    },
+    "logits": {
+      "runtime_index": 0,
+      "bytes": 993280,
+      "sha256": "b1e1d75b552eb1ccf30a879f37f83fbb785f7fc27fb29b80c8544bf3eae4e9ad",
+      "dtype": "FLOAT32",
+      "elements": 248320,
+      "finite_count": 248320,
+      "zero_count": 6440,
+      "min": -3004.0,
+      "max": 3004.0,
+      "argmax_token_id": 0,
+      "argmax_value": 3004.0
+    },
+    "state_statistics": {
+      "tensor_count": 80,
+      "elements": 37683200,
+      "finite_count": 37683200,
+      "nonfinite_count": 0,
+      "zero_count": 23503009,
+      "min": -12744.0,
+      "max": 12744.0
+    },
+    "trial_manifest_sha256": "ab88d0e39d10afc61385dd5c02a7110daf33378b20b848beb27a3c13ee8020ca",
+    "numerical_validation": "NOT_RUN_NO_REFERENCE",
+    "state_layer_binding": "UNVERIFIED",
+    "state_feedback": "NOT_PERFORMED",
+    "scope": "All actual output files bound and finite; extreme features and argmax0 remain numerical concerns, not acceptance evidence."
+  },
+  "decode_audit_input_extent_incident": {
+    "source": "USER_PASTED_FAILURES_AND_READ_ONLY_FILE_STATS",
+    "state_audit": {
+      "output": "target-decode1-state-lineage",
+      "status": "FAILED",
+      "stage": "read-decode-graphs",
+      "cause": "10,306,827-byte compilation report exceeded8MiB JSON reader; existing successful planner uses32MiB",
+      "fix": "Strict JSON metadata reader32MiB; AIR/primary OMC64MiB and schema256MiB unchanged; role/path/extent/budget retained on failure.",
+      "retry_output": "target-decode1-state-lineage-v2"
+    },
+    "embedding_audit": {
+      "output": "target-decode1-embedding-inspection",
+      "status": "FAILED",
+      "stage": "bind-executed-decode",
+      "cause": "Original source input_ids.bin1024B contains256INT32 IDs; previous single-query row probe assumed4B.",
+      "fix": "Explicit --match-source-id-candidates matches exact original INT8 row AND separate FP32 scale across a bounded unique-ID candidate set; zero/multiple matching token IDs produce no next inputs. Source positions remain unverified.",
+      "default_mode": "STRICT_SINGLE_ID_UNCHANGED",
+      "maximum_candidate_ids": 1024,
+      "maximum_candidate_id_bytes": 4096,
+      "maximum_candidate_table_bytes": 2103300,
+      "next_token_payload_bytes": 2056
+    },
+    "observed_file_sizes": {
+      "job_result": 1966,
+      "compilation_report": 10306827,
+      "input_inventory": 2032272,
+      "decode_output_inventory_report": 205690,
+      "source_input_ids": 1024
+    },
+    "original_tables": {
+      "config_exists": true,
+      "config_bytes": 957,
+      "configured_weight_path": "/home/l00886453/models/Qwen3.5-35B-A3B_quant/qwen3_5_moe_embdedding_weight.bin",
+      "configured_scale_path": "/home/l00886453/models/Qwen3.5-35B-A3B_quant/qwen3_5_moe_embdedding_scale.bin",
+      "configured_paths_on_current_host": "USER_REPORTED_NOT_PRESENT",
+      "actual_resource_host_and_paths": "USER_CONFIRMED_ORIGINAL_WEIGHT_MACHINE:/home/l00886453/models/Qwen3.5-35B-A3B_quant",
+      "policy": "Use original quantized table bytes; prepare only needed original rows after resource identity/location is established."
+    },
+    "device_execution": "NOT_RUN",
+    "state_feedback": "NOT_RUN",
+    "scope": "Host reader assumptions and missing resource location only; no repeated inference, numerical repair or input mutation."
+  },
+  "decode_audit_fix_host_verification": {
+    "run_id": "20261030T023239Z-14738-f5135c",
+    "unique_tests_passed": 174,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "case_counts": {
+      "read-error-tests.xml": 32,
+      "loader-regression.xml": 42,
+      "original-decode-candidate-tests.xml": 47,
+      "delegated_state_and_decode_lineage": 53
+    },
+    "evidence": [
+      "out/read-error-tests.xml",
+      "out/loader-regression.xml",
+      "out/original-decode-candidate-tests.xml",
+      "out/original-decode-candidate-scope-test.xml (one final affected subset case)",
+      "delegated state agent:53 passed in8.18s;tmp/lineage tests in current run"
+    ],
+    "scope": "Host bounded-file/schema/graph fixtures and fake execution provenance only; includes exact10,306,827-byte compilation report, large graph payloads, source ID vectors, unique/ambiguous candidate matching and original-row read bounds. No user input/model/phone execution or accuracy/state-continuity claim."
   }
 }

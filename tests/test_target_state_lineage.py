@@ -375,3 +375,120 @@ def test_changed_or_unbound_job_probe_metadata_fails_closed(jobs, fault):
     report = run(jobs)
     assert report["status"] == "FAILED" and report["error"]
     assert report["device_execution"] == "NOT_RUN"
+
+
+def test_actual_size_air_and_primary_over_metadata_limit_keep_graph_budget(jobs):
+    """The reported8.8MiB AIR/15.45MB OMC already fit64MiB graph limits."""
+    job = jobs["decode_job"]
+    root = job / "compilation"
+    report = jobs["decode_report"]
+    air = root / report["input_snapshots"][0]["path"]
+    original_source = jobs["documents"][b"decode SOURCE"]
+    air_bytes = b"decode SOURCE" + b"\0" * ((9 << 20) - len(b"decode SOURCE"))
+    air.write_bytes(air_bytes)
+    jobs["documents"][air_bytes] = original_source
+    report["input_snapshots"][0] = dict(record(air, root, stat_key="snapshot_stat"), role="air")
+    original_compiled = jobs["documents"][b"decode COMPILED"]
+    model_bytes = b"decode COMPILED" + b"\0" * ((9 << 20) - len(b"decode COMPILED"))
+    jobs["documents"][model_bytes] = original_compiled
+    primary_bytes = 15_452_631
+    task = b"\0" * (primary_bytes - 256 - 28 - len(model_bytes))
+    content = struct.pack("<I", 2) + struct.pack("<III", 0, 0, len(model_bytes)) + struct.pack("<III", 2, 0, len(task)) + model_bytes + task
+    header = bytearray(256);header[:4] = b"IMOD";struct.pack_into("<I", header, 0x4C, len(content))
+    omc = root / report["omc"]["path"]
+    omc.write_bytes(header + content)
+    report["omc"] = record(omc, root)
+    report["generated_artifacts"] = [report["omc"]]
+    save(root / "report.json", report)
+    save(root / "input-inventory.json", {"files": report["input_snapshots"]})
+    outer = json.loads((job / "result.json").read_text())
+    outer["compilation_report_sha256"] = hashlib.sha256((root / "report.json").read_bytes()).hexdigest()
+    save(job / "result.json", outer)
+    bindings = []
+    metadata, source, compiled, enums = audit.load_target_graph(job, "cpro-40block-decode-1", bindings)
+    assert metadata["model_bytes"] == primary_bytes
+    assert metadata["air"]["bytes"] == 9 << 20
+    assert audit.analyze_state_lineage(source, enums)["unique_state_owner_count"] == 80
+    assert audit._join_compiled(audit.analyze_state_lineage(source, enums), compiled, enums)["matched_count"] == 80
+    reads = {row["role"]: row for row in metadata["evidence_read_attempts"]}
+    for role, width in (("source-air", 9 << 20), ("primary-omc", primary_bytes)):
+        assert reads[role]["status"] == "READ" and reads[role]["observed_bytes"] == width
+        assert reads[role]["maximum_bytes"] == 64 << 20
+    assert reads["source-air"]["recorded_role"] == "air"
+
+
+@pytest.mark.parametrize("width", [0, (64 << 20) + 1])
+def test_graph_budget_failure_has_role_path_actual_size_and_limit_before_open(tmp_path, monkeypatch, width):
+    path = tmp_path / "export.air"
+    with path.open("wb") as stream:
+        stream.truncate(width)
+    monkeypatch.setattr(audit, "_read_small", lambda *a, **k: pytest.fail("rejected graph was opened"))
+    reads = []
+    with pytest.raises(ValueError) as error:
+        audit._bound_file(tmp_path, {"path": path.name, "role": "air"}, [],
+            read_attempts=reads, role="source-air")
+    text = str(error.value)
+    assert "source-air read failed" in text and str(path) in text
+    assert f"observed_bytes={width}" in text and f"maximum_bytes={64 << 20}" in text
+    assert reads[-1]["status"] == "FAILED" and reads[-1]["recorded_role"] == "air"
+
+
+@pytest.mark.parametrize("filename,role", [("input-inventory.json", "input-inventory"),
+                                           ("decode-input-view.json", "decode-input-view")])
+def test_metadata_budget_stops_at32mib_and_records_exact_file(tmp_path, monkeypatch, filename, role):
+    path = tmp_path / filename
+    with path.open("wb") as stream:
+        stream.truncate((32 << 20) + 1)
+    monkeypatch.setattr(audit, "_read_small", lambda *a, **k: pytest.fail("rejected metadata was opened"))
+    reads = []
+    with pytest.raises(ValueError) as error:
+        audit._metadata(path, [], read_attempts=reads, role=role)
+    assert role + " read failed" in str(error.value) and str(path) in str(error.value)
+    assert reads == [{"role": role, "path": str(path), "observed_bytes": (32 << 20) + 1,
+        "maximum_bytes": 32 << 20, "status": "FAILED",
+        "error": "ValueError: evidence must be nonempty and within its role-specific byte budget"}]
+
+
+def test_failed_graph_metadata_read_retains_partial_observations_for_decode_cli(jobs):
+    path = jobs["decode_job"] / "compilation/input-inventory.json"
+    path.write_bytes(b"")
+    observations = {}
+    with pytest.raises(ValueError) as error:
+        audit.load_target_graph(jobs["decode_job"], "cpro-40block-decode-1", [], observations=observations)
+    assert "input-inventory" in str(error.value) and str(path) in str(error.value)
+    attempt = observations["evidence_read_attempts"][-1]
+    assert attempt["role"] == "input-inventory" and attempt["observed_bytes"] == 0
+    assert attempt["status"] == "FAILED" and attempt["maximum_bytes"] == 32 << 20
+
+
+def test_observed10306827byte_compilation_json_loads_with_fresh_outer_hash(jobs):
+    """Reproduce the actual report size using valid JSON trailing whitespace."""
+    job = jobs["decode_job"]
+    path = job / "compilation/report.json"
+    original = path.read_bytes()
+    exact_bytes = 10_306_827
+    assert len(original) < 8 << 20 < exact_bytes < 32 << 20
+    path.write_bytes(original + b" " * (exact_bytes - len(original)))
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    outer = json.loads((job / "result.json").read_text())
+    outer["compilation_report_sha256"] = digest
+    save(job / "result.json", outer)
+    bindings, observations = [], {}
+    metadata, source, compiled, enums = audit.load_target_graph(job, "cpro-40block-decode-1", bindings,
+        observations=observations)
+    assert metadata["compilation_report_sha256"] == digest
+    report_identity = next(row for row in bindings if row["path"] == str(path))
+    assert report_identity["bytes"] == exact_bytes and report_identity["sha256"] == digest
+    attempt = next(row for row in metadata["evidence_read_attempts"] if row["role"] == "compilation-report")
+    assert attempt["status"] == "READ" and attempt["observed_bytes"] == exact_bytes
+    assert attempt["maximum_bytes"] == 32 << 20
+    assert audit._join_compiled(audit.analyze_state_lineage(source, enums), compiled, enums)["matched_count"] == 80
+
+
+@pytest.mark.parametrize("raw", [b'{"x":1,"x":2}', b'{"x":NaN}', b'{"x":1e9999}', b'[]'])
+def test_larger_metadata_budget_preserves_strict_json_validation(tmp_path, raw):
+    path = tmp_path / "report.json"
+    path.write_bytes(raw)
+    with pytest.raises(ValueError) as error:
+        audit._metadata(path, [])
+    assert "metadata read failed" in str(error.value)

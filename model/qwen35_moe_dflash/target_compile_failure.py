@@ -52,7 +52,8 @@ def _relative(root, text):
 def _read_small(path, maximum):
     path, before = _safe(path)
     if not 0 < before[2] <= maximum:
-        raise ValueError("small evidence file is empty or exceeds its byte budget")
+        raise ValueError("small evidence file is empty or exceeds its byte budget: "
+                         f"path={path}; bytes={before[2]}; maximum_bytes={maximum}")
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     digest, chunks, remaining = hashlib.sha256(), [], before[2]
     with os.fdopen(fd, "rb") as stream:

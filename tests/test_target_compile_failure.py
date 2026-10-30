@@ -10,6 +10,18 @@ from qwen35_moe_dflash import target_compile_failure as inspect
 from qwen35_moe_dflash.existing_air_profile import get_existing_air_profile
 
 
+@pytest.mark.parametrize("size", [0, 9])
+def test_small_evidence_size_failure_names_file_extent_and_budget_before_open(tmp_path, monkeypatch, size):
+    path = tmp_path / "retained-evidence.json"
+    path.write_bytes(b"x" * size)
+    monkeypatch.setattr(inspect.os, "open", lambda *a, **k: pytest.fail("rejected evidence was opened"))
+    with pytest.raises(ValueError) as error:
+        inspect._read_small(path, 8)
+    assert str(path) in str(error.value)
+    assert f"bytes={size}" in str(error.value)
+    assert "maximum_bytes=8" in str(error.value)
+
+
 def _stat(path):
     value = path.stat()
     return [value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns]

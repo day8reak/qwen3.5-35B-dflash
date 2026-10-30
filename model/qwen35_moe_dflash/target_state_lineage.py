@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 
@@ -17,15 +18,17 @@ from .draft_ir_inspect import _enum_fields
 from .existing_air_profile import get_existing_air_profile
 from .ge_fused.bindings import _source_record
 from .omc_container import read_container
-from .omc_wire import load_schema
+from .omc_wire import _MAX_LIBRARY, load_schema
 from .original_target_contract import _attributes
 from .target_compile_failure import _read_small, _relative, _safe
-from .target_prefill_output_inventory import _json
+from .target_export_reuse import _reject_constant, _unique_object
 from .target_prefill_smoke_plan import _nd_view_key, _runtime_keys
 
 
 _MAX_GRAPH_BYTES = 64 << 20
-_MAX_METADATA = 8 << 20
+# The successful original decode compilation report is 10,306,827 bytes. Use
+# the same bounded 32MiB JSON budget as its original smoke-plan validator.
+_MAX_METADATA = 32 << 20
 _STATES = {f"RefData_{i}" for i in range(80)}
 _INPUT_NAMES = {item.split(":", 1)[0] for item in get_existing_air_profile("cpro-40block-prefill-64")["input_shape"].split(";")}
 _PAIRS = {
@@ -37,15 +40,52 @@ _DTYPES = {"DT_FLOAT16": "FLOAT16", "DT_FLOAT": "FLOAT32", "DT_FLOAT32": "FLOAT3
            "DT_INT8": "INT8", "DT_INT16": "INT16", "DT_INT32": "INT32", "DT_INT64": "INT64"}
 
 
-def _metadata(path, bindings):
-    return _json(path, bindings)
+def _audit_read(path, maximum, role, reader, read_attempts=None, *, recorded_role=None):
+    """Keep bounded read failures attributable without opening larger payloads."""
+    attempt = {"role": role, "path": str(path), "observed_bytes": None,
+        "maximum_bytes": maximum, "status": "PENDING"}
+    if recorded_role is not None:
+        attempt["recorded_role"] = recorded_role
+    if read_attempts is not None:
+        read_attempts.append(attempt)
+    try:
+        checked, stamp = _safe(path)
+        attempt.update(path=str(checked), observed_bytes=stamp[2])
+        if not 0 < stamp[2] <= maximum:
+            raise ValueError("evidence must be nonempty and within its role-specific byte budget")
+        value = reader(checked)
+        attempt["status"] = "READ"
+        return value
+    except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+        attempt.update(status="FAILED", error=f"{type(error).__name__}: {error}")
+        raise ValueError(f"{role} read failed: path={attempt['path']}; observed_bytes={attempt['observed_bytes']}; "
+            f"maximum_bytes={maximum}; cause={type(error).__name__}: {error}") from error
 
 
-def _bound_file(root, row, bindings, *, maximum=_MAX_GRAPH_BYTES, stat_key="stat"):
+def _metadata(path, bindings, *, read_attempts=None, role="metadata"):
+    def read(checked):
+        raw, identity = _read_small(checked, _MAX_METADATA)
+        def finite_float(text):
+            value = float(text)
+            if not math.isfinite(value):
+                raise ValueError("nonfinite metadata number")
+            return value
+        value = json.loads(raw, object_pairs_hook=_unique_object,
+            parse_constant=_reject_constant, parse_float=finite_float)
+        if not isinstance(value, dict):
+            raise ValueError("state lineage metadata must be an object")
+        bindings.append(identity)
+        return value
+    return _audit_read(path, _MAX_METADATA, role, read, read_attempts)
+
+
+def _bound_file(root, row, bindings, *, maximum=_MAX_GRAPH_BYTES, stat_key="stat",
+                read_attempts=None, role="graph-payload"):
     if not isinstance(row, dict):
         raise ValueError("recorded metadata payload must be an object")
     path = _relative(root, row.get("path"))
-    raw, identity = _read_small(path, maximum)
+    raw, identity = _audit_read(path, maximum, role, lambda checked: _read_small(checked, maximum),
+        read_attempts, recorded_role=row.get("role"))
     if any(identity[key] != row.get(key) for key in ("bytes", "sha256")):
         raise ValueError("recorded payload hash/size changed: " + str(path))
     if stat_key in row and row[stat_key] != identity["stat"]:
@@ -381,12 +421,15 @@ def load_target_graph(job, profile_name, bindings, *, source_capture=None, obser
     """
     job, _ = _safe(job, directory=True)
     compilation = job / "compilation"
-    outer = _metadata(job / "result.json", bindings)
+    read_attempts = []
+    if observations is not None:
+        observations["evidence_read_attempts"] = read_attempts
+    outer = _metadata(job / "result.json", bindings, read_attempts=read_attempts, role="job-result")
     outer_id = bindings[-1]
-    report = _metadata(compilation / "report.json", bindings)
+    report = _metadata(compilation / "report.json", bindings, read_attempts=read_attempts, role="compilation-report")
     report_id = bindings[-1]
-    profile = _metadata(job / "compile-profile.json", bindings)
-    inventory = _metadata(compilation / "input-inventory.json", bindings)
+    profile = _metadata(job / "compile-profile.json", bindings, read_attempts=read_attempts, role="compile-profile")
+    inventory = _metadata(compilation / "input-inventory.json", bindings, read_attempts=read_attempts, role="input-inventory")
     if (outer.get("artifact_kind") != "qwen35-original-target-job" or outer.get("status") != "COMPILED"
             or outer.get("compilation_report_sha256") != report_id["sha256"] or outer.get("output") != str(job)
             or report.get("artifact_kind") != "qwen35-existing-air-compilation" or report.get("status") != "COMPILED"
@@ -399,21 +442,25 @@ def load_target_graph(job, profile_name, bindings, *, source_capture=None, obser
     airs = [row for row in report["input_snapshots"] if isinstance(row, dict) and row.get("role") == "air"]
     if len(airs) != 1:
         raise ValueError("completed job must contain one bound small AIR snapshot")
-    air_path, air_raw, air_id = _bound_file(compilation, airs[0], bindings, stat_key="snapshot_stat")
+    air_path, air_raw, air_id = _bound_file(compilation, airs[0], bindings, stat_key="snapshot_stat",
+        read_attempts=read_attempts, role="source-air")
     omc_row = report.get("omc")
     if omc_row not in report.get("generated_artifacts", []):
         raise ValueError("primary OMC is not in the successful generated inventory")
-    omc_path, omc_raw, omc_id = _bound_file(compilation, omc_row, bindings)
+    omc_path, omc_raw, omc_id = _bound_file(compilation, omc_row, bindings,
+        read_attempts=read_attempts, role="primary-omc")
     library = Path(report["ddk_root"]) / "tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so"
     library, library_stat = _safe(library)
-    schema = load_schema(library)
+    schema = _audit_read(library, _MAX_LIBRARY, "selected-schema-library", load_schema, read_attempts)
     bindings.append({"path": str(library), "bytes": library_stat[2], "sha256": schema.evidence["library_sha256"], "stat": library_stat})
     metadata = {"job": str(job), "profile": profile_name, "source_result_sha256": outer_id["sha256"],
         "compilation_report_sha256": report_id["sha256"],
         "model_sha256": omc_id["sha256"], "model_bytes": omc_id["bytes"], "ddk_id": report.get("ddk_id"),
-        "air": air_id, "model": omc_id, "schema": schema.evidence, "weight_payload_access": "NONE"}
+        "air": air_id, "model": omc_id, "schema": schema.evidence, "weight_payload_access": "NONE",
+        "evidence_read_attempts": read_attempts}
     if report.get("decode_input_view") is not None:
-        borrowed = _metadata(compilation / "decode-input-view.json", bindings)
+        borrowed = _metadata(compilation / "decode-input-view.json", bindings,
+            read_attempts=read_attempts, role="decode-input-view")
         if borrowed != report["decode_input_view"]:
             raise ValueError("decode input view differs from its successful compilation receipt")
         metadata["borrowed_prefill_inputs"] = {key: borrowed.get(key) for key in
