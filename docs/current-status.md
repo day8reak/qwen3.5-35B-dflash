@@ -6,18 +6,19 @@ A：原版 target prefill64、独立 decode1、真实 feature → 完整六层 d
 
 原权重机器精确定位到 query ID **269**，整行 INT8 和独立 FP32 scale 都匹配，累计读取 995,392 字节。原 256 个 ID 文件仅保留为 context，不替换、不截取。下一行来自已执行 decode logits 的 argmax 0，这仍不是精度通过。
 
-最新 OMC 检查确认 SHA256、inode、大小、mtime 均不变，仅 ctime 变化。新检查仅对此情况重哈希小主 OMC，并保留当前身份与复核记录；不修改编译报告和旧执行回执，不重编译。图连接检查也已修正：采用实际 `OpDef.input`，保留空可选槽位、排除控制边，将 `src_name/src_index` 单独作为元数据记录。
+OMC 的 SHA256、inode、大小、mtime 均不变。v4 的完整身份检查进一步发现权限从原 `0600`（mode 33152）变成了 `0777`（mode 33279），因此尚未进入图解析。先仅恢复这个主 OMC 的原权限；现有代码会对剩余的 ctime 变化重哈希复核，不修改编译报告和旧执行回执，无需重编译。图连接检查也已修正：采用实际 `OpDef.input`，保留空可选槽位、排除控制边，将 `src_name/src_index` 单独作为元数据记录。
 
-DDK 主机先拉取更新，再用新目录检查状态归属：
+DDK 主机先拉取更新，恢复选定主文件权限，再用新目录检查状态归属；保留 v4 的失败记录：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
+chmod 0600 "$AI_RUN_DIR/target-pytorch-decode1-compile/compilation/compile-work/generated/model/model.omc"
 python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_decode_state_lineage.py" \
   --job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
   --runtime-probe "$AI_RUN_DIR/target-decode1-runtime-io-v2" \
   --output-inspection "$AI_RUN_DIR/target-decode1-output-inspection" \
   --source-torchair-pb2 "$AI_RUN_DIR/target-decode1-row-response/ge_ir_by_protoc_3_19_pb2.py" \
-  --output "$AI_RUN_DIR/target-decode1-state-lineage-v4"
+  --output "$AI_RUN_DIR/target-decode1-state-lineage-v5"
 ```
 
 完整绑定应为 `ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED`、`counts.bound_state_files: 80`；缺证据会输出具体 gap。这只建立同一 decode 模型内的结构映射，尚未执行状态反馈。

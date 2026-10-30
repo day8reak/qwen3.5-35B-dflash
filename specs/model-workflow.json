@@ -3,7 +3,7 @@
   "updated": "2026-10-30",
   "active_phase": "integration",
   "delivery_status": "QUERY269_LOCATED_CTIME_FIX_HOST_VERIFIED_STATE_MAP_PENDING",
-  "run_id": "20261030T030850Z-16489-cfe0d0",
+  "run_id": "20261030T034826Z-19080-cf9efd",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -3659,14 +3659,14 @@
           },
           "same_model_state_lineage": {
             "entrypoint": "targets/cpro/scripts/inspect_target_decode_state_lineage.py",
-            "output": "target-decode1-state-lineage-v4",
+            "output": "target-decode1-state-lineage-v5",
             "success_status": "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED",
             "partial_status": "DECODE_STATE_LINEAGE_OBSERVED_WITH_GAPS",
             "checks": "80unique serialized named updater owners, unique explicit source/compiled FX identities, exact typed views, literal native descriptor names, actual logged SHA-bound output files. Source producer missing shapes stay explicit; no profile-based filling.",
             "feedback_ready": false,
             "state_feedback": "NOT_RUN",
             "scope": "Same compiled decode model only; separate prefill/decode RefData labels are not assumed common layer identity.",
-            "status": "HOST_GRAPH_INPUT_POLICY_AND_CTIME_REVALIDATION_VERIFIED_ACTUAL_MAPPING_PENDING",
+            "status": "USER_V4_REFUSED_PRIMARY_MODE0777_VS_SAVED0600_RESTORE_SINGLE_FILE_THEN_REVALIDATE",
             "metadata_json_maximum_bytes": 33554432,
             "source_pb2_flag": "--source-torchair-pb2"
           },
@@ -3849,7 +3849,7 @@
           },
           "fix": "Hash-bound canonical export receipt selects source pb2 AST literal; source ge.proto schema and enum domains independent from compiled selected-DDKhiai schema. Missing declared source dependency does not select another schema or ignore unknown fields.",
           "copy_policy": "Only exact16543B producer file copied from source host; --source-torchair-pb2 accepts matching receipt pb2 SHA and descriptor SHA, never executes the generated Python module.",
-          "next_output": "target-decode1-state-lineage-v4",
+          "next_output": "target-decode1-state-lineage-v5",
           "actual_full_state_mapping": "PENDING_USER_ARTIFACT_AUDIT"
         },
         "original_decode_row_transfer": {
@@ -4040,9 +4040,22 @@
           ],
           "recorded_and_fresh_sha256": "5f06fffda851760023e6b63580fdecd8e18ef591f8c7d7be7e48c5bdeae1b626",
           "content_match": true,
-          "changed_field": "ctime_ns",
+          "changed_field": "ctime_ns_AND_mode",
           "cause_of_ctime_change": "NOT_ESTABLISHED",
-          "repair_policy": "Onlysamefirstfourstat fields plusfreshstableboundedprimarySHA allowctime reconciliation; allotherplan/fullidentityfields unchanged. Oldreports/receipts preserved. No weightstat relaxation."
+          "repair_policy": "Onlysamefirstfourstat fields plusfreshstableboundedprimarySHA allowctime reconciliation; allotherplan/fullidentityfields unchanged. Oldreports/receipts preserved. No weightstat relaxation.",
+          "latest_audit": "target-decode1-state-lineage-v4",
+          "latest_saved_plan_identity_differences": {
+            "mode": {
+              "current": 33279,
+              "recorded": 33152
+            }
+          },
+          "permission_modes": {
+            "current": "0777",
+            "recorded": "0600"
+          },
+          "recovery": "chmod0600 onexact selectedsmallprimarymodel.omc only; no recursivechange, receiptedit, codegate relaxation ormodelrecompile. Rerun withnewv5 output; existing boundedSHA handlesremainingctime drift.",
+          "actual_recovery_execution": "NOT_YET_REPORTED"
         },
         "decode_graph_input_policy_fix": {
           "prior_user_error": "conflicting input and src_name/src_index edge representations",
@@ -4055,8 +4068,8 @@
           "host_graph_tests_passed": 122,
           "actual_mapping": "PENDING_V4_USER_RUN"
         },
-        "next_command": "Pull update; rerun same-model state lineage in new v4 output and prepare version2 query269 row request. See docs/current-status.md.",
-        "user_state": "User-reported original full40layer prefill64 and independent experimental decode1 executed with82 logged/hash-bound outputs; exact real feature fed full6layer draft forone step. Original query raw row/scale located at269. Onlyprimaryctime changed while freshSHA matched. Same-model80state mapping, feedback/control semantics, next-row import and multiround accuracy/performance remain open.",
+        "next_command": "Restore only the selected primary OMC mode0600 and run same-model state-lineage-v5; query269 row handoff remains independent. See docs/current-status.md.",
+        "user_state": "User-reported original full40layer prefill64 and independent experimental decode1 executed with82 logged/hash-bound outputs; exact real feature fed full6layer draft forone step. Original query raw row/scale located at269. PrimarySHA matched; v4 also observedpermissions0777 differingfromsaved0600 andcorrectly refused. Restoreoneprimarymode beforev5. Same-model80state mapping, feedback/control semantics, next-row import and multiround accuracy/performance remain open.",
         "remaining_gates": [
           "Same-model80unique state ownership, compiled/runtime identities and individually bound output feedback",
           "Original query269 and freshargmax next0 row extraction/import with unchanged context ID bytes",
