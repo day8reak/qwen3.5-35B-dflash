@@ -224,7 +224,11 @@ def execute_real_feature_draft(prepared_dir, output_dir, *, timeout_seconds=1800
         if private:
             result["libraries"] = {"mode": "existing-board-directory", "path": private, "compatibility": "UNVERIFIED"}
         else:
-            discovery = discover_libraries(runner, out / "native")
+            build_directory = (_existing_smoke_session.runner_build_directory
+                if _existing_smoke_session is not None else out / "native")
+            discovery = discover_libraries(runner, build_directory)
+            if _existing_smoke_session is not None:
+                _existing_smoke_session.pin_runner_libraries(discovery)
             libraries = [_file_record(path.resolve(), "lib/" + str(_relative(path.name))) for path in discovery["libraries"]]
             dependencies = [{"name": PurePosixPath(row["remote"]).name,
                 "kind": "runner" if row["remote"] == "runner" else "library",

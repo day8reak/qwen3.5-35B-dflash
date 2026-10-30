@@ -19,6 +19,7 @@ import numpy as np
 
 from .artifacts import output_path, save_json
 from .draft_board import _io, _wire
+from .hashing import sha256_file
 from .incremental_smoke import (ModelIdentity, CallEvidence, DraftObservation,
     _ids, feature_sha256, prefix_sha256)
 from .real_feature_draft import _bundle, _write
@@ -92,9 +93,9 @@ class ExistingDraftSmokeBackend:
             if _current(path)[1] != identity:
                 raise ValueError('pinned original draft source changed: ' + path)
         if self._runner is not None:
-            for row in self._runner['pins']:
+            for row in [*self._runner['pins'], *self._runner.get('library_pins', [])]:
                 if _current(row['path'])[1] != row['identity']:
-                    raise ValueError('pinned linked runner changed during the draft session')
+                    raise ValueError('pinned linked runner or library changed during the draft session')
 
     def preflight(self):
         """Host-only model/ABI pin summary; runner builds lazily on first call."""
@@ -111,6 +112,14 @@ class ExistingDraftSmokeBackend:
     def runner_is_pinned(self):
         return self._runner is not None
 
+    @property
+    def runner_build_directory(self):
+        """The original LINKED build; later attempts never relabel its receipts."""
+        self._check_sources()
+        if self._runner is None:
+            raise ValueError('draft runner has not been built and pinned')
+        return Path(self._runner['build_directory'])
+
     def runner_for_attempt(self, output, timeout, builder):
         self._check_sources()
         if self._runner is None:
@@ -122,12 +131,43 @@ class ExistingDraftSmokeBackend:
             report = Path(output) / 'native/result.json'
             raw, report_id = _small(report)
             linked = json.loads(raw)
-            if linked.get('status') != 'LINKED' or linked.get('binary_sha256') != digest:
+            command = report.parent / 'command.json'
+            _, command_id = _small(command)
+            if (linked.get('status') != 'LINKED' or linked.get('binary_sha256') != digest
+                    or linked.get('command_sha256') != command_id['sha256']):
                 raise ValueError('existing-draft session requires the actual LINKED runner build receipt')
-            self._runner = {'path': str(path), 'sha256': digest,
-                'pins': [{'path': str(path), 'identity': identity}, {'path': str(report), 'identity': report_id['identity']}]}
+            self._runner = {'path': str(path), 'sha256': digest, 'build_directory': str(report.parent),
+                'build_result': report_id, 'build_command': command_id,
+                'pins': [{'path': str(path), 'identity': identity}, {'path': str(report), 'identity': report_id['identity']},
+                    {'path': str(command), 'identity': command_id['identity']}]}
         self._check_sources()
         return Path(self._runner['path'])
+
+    def pin_runner_libraries(self, discovery):
+        """Keep the first actual discovery tied to that immutable build and SOs."""
+        self._check_sources()
+        if (self._runner is None or Path(discovery['build_dir']).resolve() != self.runner_build_directory.resolve()
+                or discovery['metadata'].get('command_sha256') != self._runner['build_command']['sha256']):
+            raise ValueError('draft library discovery differs from the pinned original runner build')
+        rows, pins = [], []
+        metadata = {row['name']: row for row in discovery['metadata']['libraries']}
+        for selected in discovery['libraries']:
+            selected = Path(selected)
+            source, identity = _current(selected.resolve(strict=True))
+            proof = metadata.get(selected.name, {})
+            if (Path(proof.get('path', '')).absolute() != selected.absolute()
+                    or sha256_file(source) != proof.get('sha256') or _current(source)[1] != identity):
+                raise ValueError('draft library differs from its fresh discovery SHA or identity')
+            rows.append({'name': selected.name, 'selected_path': str(selected.absolute()),
+                'path': str(source), 'sha256': proof['sha256'], 'identity': identity})
+            pins.append({'path': str(source), 'identity': identity})
+        rows.sort(key=lambda row: row['name'])
+        if len(rows) != len(metadata) or len({row['name'] for row in rows}) != len(rows):
+            raise ValueError('draft library discovery is incomplete or ambiguous')
+        if 'libraries' in self._runner and rows != self._runner['libraries']:
+            raise ValueError('draft library selection changed after the first runner build')
+        self._runner['libraries'], self._runner['library_pins'] = rows, pins
+        self._check_sources()
 
     def _prepare(self, prefix, features, out):
         out.mkdir(parents=True, exist_ok=False)

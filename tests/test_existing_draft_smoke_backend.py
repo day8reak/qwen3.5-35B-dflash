@@ -57,7 +57,9 @@ def case(tmp_path, monkeypatch):
         builds.append(out)
         binary = out / 'native/build/qwen35_dflash_hiai'; binary.parent.mkdir(parents=True)
         binary.write_bytes(b'HOST_FAKE_LINKED_RUNNER')
-        save(out / 'native/result.json', {'status': 'LINKED', 'binary_sha256': sha256_file(binary)})
+        save(out / 'native/command.json', {'argv': ['host-test-build'], 'libraries': []})
+        save(out / 'native/result.json', {'status': 'LINKED', 'binary_sha256': sha256_file(binary),
+            'command_sha256': sha256_file(out / 'native/command.json')})
         return binary
     monkeypatch.setattr(board, '_build_runner', build)
     session = adapter.ExistingDraftSmokeBackend(root, tmp_path / 'draft-session', runtime_version='fixture-runtime',
@@ -67,6 +69,93 @@ def case(tmp_path, monkeypatch):
 
 def features(length):
     return ((np.arange(length * 16384, dtype=np.float32) % 101) / 100).reshape(1, length, 16384).astype('<f2')
+
+
+def _automatic_discovery(case, tmp_path, monkeypatch):
+    """Use real build-record/discovery logic; only ELF/device are host doubles."""
+    from qwen35_moe_dflash import hiai_deployment
+    monkeypatch.delenv('BOARD_HIAI_LIB_DIR')
+    monkeypatch.setattr(hiai_deployment, '_elf', lambda *args, **kwargs: None)
+    monkeypatch.setattr(board, 'dynamic_info', lambda path: {'needed': [], 'soname': None})
+    directory = tmp_path / 'original-linked-libraries'; directory.mkdir()
+    libraries = [directory / name for name in ('libhiai-fixture.so', 'libc++_shared.so')]
+    for index, path in enumerate(libraries):
+        path.write_bytes(b'HOST_ONLY_LIBRARY_' + str(index).encode())
+    original_builder = board._build_runner
+    def build(out, timeout):
+        binary = original_builder(out, timeout)
+        save(out / 'native/command.json', {'argv': ['host-test-build'], 'libraries': [
+            {'path': str(path), 'sha256': sha256_file(path)} for path in libraries]})
+        save(out / 'native/result.json', {'status': 'LINKED', 'binary_sha256': sha256_file(binary),
+            'command_sha256': sha256_file(out / 'native/command.json')})
+        return binary
+    monkeypatch.setattr(board, '_build_runner', build)
+    original_discovery = board.discover_libraries
+    observed = []
+    def discover(runner, build_dir):
+        # The real regression: the second attempt owns no native build at all.
+        assert Path(build_dir) == Path(runner).parent.parent
+        assert (Path(build_dir) / 'result.json').is_file()
+        assert (Path(build_dir) / 'command.json').is_file()
+        observed.append(Path(build_dir))
+        return original_discovery(runner, build_dir)
+    monkeypatch.setattr(board, 'discover_libraries', discover)
+    return libraries, observed
+
+
+def test_automatic_library_discovery_reuses_exact_original_build_records_across_calls(case, tmp_path, monkeypatch):
+    libraries, observed = _automatic_discovery(case, tmp_path, monkeypatch)
+    session = case['session']
+    session.propose((4, 5, 6), features(3))
+    original = session.out / 'call-0001/execution/native'
+    records = {name: ((original / name).read_bytes(), adapter._current(original / name)[1])
+        for name in ('result.json', 'command.json')}
+    library_pins = {str(path): adapter._current(path)[1] for path in libraries}
+    session.propose((4, 5, 6, 7), features(4))
+    assert observed == [original, original] and len(case['builds']) == 1
+    assert session.runner_build_directory == original
+    assert not (session.out / 'call-0002/execution/native').exists()
+    for name, (raw, identity) in records.items():
+        assert (original / name).read_bytes() == raw and adapter._current(original / name)[1] == identity
+    for path in libraries:
+        assert adapter._current(path)[1] == library_pins[str(path)]
+    for instance in case['hdc'].instances:
+        assert {Path(local).name for local, remote in instance.sends if '/lib/' in remote} == {path.name for path in libraries}
+    reports = [json.loads((session.out / name / 'execution/result.json').read_text())
+        for name in ('call-0001', 'call-0002')]
+    assert all(row['libraries']['discovery']['build_dir'] == str(original) for row in reports)
+    assert all(row['libraries']['discovery']['command_sha256'] == sha256_file(original / 'command.json') for row in reports)
+    assert session.execution_summary()['native_calls'] == 2
+
+
+@pytest.mark.parametrize('damage', ['command', 'result', 'library'])
+def test_reused_runner_rejects_changed_original_build_or_library_before_second_device_attempt(case, tmp_path, monkeypatch, damage):
+    libraries, _ = _automatic_discovery(case, tmp_path, monkeypatch)
+    session = case['session']; session.propose((4, 5), features(2))
+    original = session.runner_build_directory
+    path = libraries[0] if damage == 'library' else original / (damage + '.json')
+    # Even a same-byte rewrite changes the first build's full identity.
+    path.write_bytes(path.read_bytes())
+    with pytest.raises(ValueError, match='pinned linked runner or library changed'):
+        session.propose((4, 5, 6), features(3))
+    assert len(case['hdc'].instances) == 1 and len(case['builds']) == 1
+    assert session.execution_summary()['validated_native_calls'] is False
+
+
+def test_first_runner_build_must_bind_actual_command_sha(case, monkeypatch):
+    original = board._build_runner
+    def unbound(out, timeout):
+        binary = original(out, timeout)
+        record_path = out / 'native/result.json'
+        result = json.loads(record_path.read_text()); result['command_sha256'] = '0' * 64
+        save(record_path, result)
+        return binary
+    monkeypatch.setattr(board, '_build_runner', unbound)
+    with pytest.raises(ValueError, match='not completely validated'):
+        case['session'].propose((4, 5), features(2))
+    assert case['session'].execution_summary()['native_calls'] == 0
+    assert not any(label == 'execute-real-feature-draft' for instance in case['hdc'].instances
+        for label, _ in instance.commands)
 
 
 def test_partial_prefix_native_roundtrip_has_exact_right_padding_no_modelcopy_and_one_runner_build(case, capsys):
