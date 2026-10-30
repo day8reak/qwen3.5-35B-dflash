@@ -176,7 +176,7 @@ def prepared_case(tmp_path, monkeypatch):
     path = Path(logits['actual_file']['path'])
     with path.open('r+b') as stream: stream.seek(17 * 4); stream.write(struct.pack('<f', 2.5))
     logits['actual_file'].update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), stat=_stamp(path.stat()))
-    plan = {'compilation': str(tmp_path / 'prefill-job/compilation'), 'sequence_length': 64,
+    plan = {'compilation': str(tmp_path / 'prefill-job/compilation'), 'gear': 64,
         'input_dir': str(inputs), 'compilation_report_sha256': 'a' * 64, 'model_sha256': 'b' * 64,
         'outputs': output_desc, 'logits_runtime_output_index': logits['runtime_index']}
     save(execution / 'plan.json', plan)
@@ -249,6 +249,26 @@ def test_old_output_pos64_is_recorded_but_never_accepted_as_last_row_seed(prepar
     assert result['status'] == feedback._STATUS, result
     assert result['next_seed']['executed_output_pos'] == 64 and not result['next_seed']['seed_accepted']
     assert result['next_seed']['trial_use'] == 'NOT_AN_ACCEPTED_LAST_ROW_SEED'
+
+
+@pytest.mark.parametrize('declarations,accepted', [
+    ({'gear': 64}, True), ({'sequence_length': 64}, True),
+    ({'gear': 64, 'sequence_length': 64}, True),
+    ({'gear': 64, 'sequence_length': 1}, False),
+    ({'gear': 1, 'sequence_length': 64}, False),
+    ({'gear': '64'}, False), ({'gear': 64.0}, False), ({}, False)])
+def test_actual_prefill_gear_schema_and_legacy_length_must_agree(prepared_case, declarations, accepted):
+    case = prepared_case
+    plan = dict(case['plan'])
+    plan.pop('gear', None)
+    plan.pop('sequence_length', None)
+    plan.update(declarations)
+    save(case['execution'] / 'plan.json', plan)
+    result = feedback.prepare_prefill_decode_feedback(**case['kwargs'])
+    assert (result['status'] == feedback._STATUS) is accepted, result
+    if not accepted:
+        assert result['stage'] == 'bind-source-compiled-runtime-graphs'
+        assert 'exact static64 job' in result['error']
 
 
 @pytest.mark.parametrize('fault', ['missing', 'truncated', 'invalid_token'])

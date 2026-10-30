@@ -214,8 +214,13 @@ def prepare_prefill_decode_feedback(prefill_job, decode_job, prefill_execution, 
         for key in ('compilation_report_sha256', 'model_sha256'):
             if plan.get(key) != jobs['prefill'][key]:
                 raise ValueError('retained prefill execution differs from the bound prefill graph: ' + key)
+        # The actual prefill smoke planner records `gear`; some earlier
+        # fixtures/receipts also carried `sequence_length`. Require every
+        # supplied declaration to agree, instead of rejecting the real schema
+        # or allowing a contradictory alias to hide a different model length.
+        lengths = [plan[key] for key in ('gear', 'sequence_length') if key in plan]
         if (plan.get('compilation') != str(Path(jobs['prefill']['job']) / 'compilation')
-                or plan.get('sequence_length') != 64):
+                or not lengths or any(type(value) is not int or value != 64 for value in lengths)):
             raise ValueError('retained prefill execution must bind the exact static64 job')
         result['stage'] = 'join-parameter-contract-state-files'
         correspondence = analyze_state_correspondence(documents['prefill'], documents['decode'], inventories['prefill'], inventories['decode'],
