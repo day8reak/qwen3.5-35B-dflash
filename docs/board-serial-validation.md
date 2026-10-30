@@ -1,6 +1,18 @@
 # 端侧自主调度器发布检查
 
-日期：2026-10-30。当前结论：**实现与主机检查通过，真实板端完整请求待执行。** 这些检查不证明模型精度、物理断连后的设备完成或性能收益。实机命令见 [current-status.md](current-status.md)。
+日期：2026-10-30。用户已回传旧完整dump入口的首次实机完成结果：16次target、7次draft，完整回收成功、锁已释放，见[首次实机结果](board-first-completion.md)。下列主机记录和新增代码不能自动继承该实机通过结果；模型精度、专门物理断连实验和性能收益仍未验收。命令见 [current-status.md](current-status.md)。
+
+## 默认精简结果与可选dump
+
+工作区run `20261030T113250Z-17949-689ad3`增加`--dump`，新请求默认关闭，旧prepared未记录dump时维持原完整模式。普通回收只接收tool.pid、tool.exitcode、retrieval-manifest.tsv、loop.json、progress.json五个小文件。精简schema2验证最终token、模型／配置身份和已结束子进程记录，不冒充schema1的逐候选／80状态主机重放。恢复不能切换原请求模式。
+
+板端执行保留全部真实输入／输出和状态消费校验；原工具文件ABI仍需临时写盘。已消费的target输入及旧父输出、已验证的draft调用文件在子进程明确退出后清理；最后成功时不保留tensor、receipt或final-features.bin。失败或未知执行的scratch保留，精简回收只带小型失败信息。只清理当前attempt，draft的自身hardlink解除后严格更新预期nlink／ctime，原模型内容不变。
+
+两个模式均输出accepted／considered／rate，以及prompt_ingest、decode、draft的calls／total_ms／mean_ms。prompt_ingest明确为decode1逐token输入prompt；时间为子进程墙钟，含加载／Run／卸载，纯NPU时间未提供。正常输出还包含最终token和supervisor总墙钟。
+
+本轮共129项主机检查通过：native48项（`native-dump-tests.xml`，包括旧模式、三种接受分支、失败与未知child）、传输65项（`board-serial-transport.xml`）、真实C++调度器＋真实draft CLI的替身集成4项和prepared／CLI12项（`dump-integration.xml`）。完整对照两种模式生成相同的8个token，16次target、5次draft、2接受／4纠正／1bonus均相同；精简模式结束后无中间文件，模型hardlink数量恢复。该fixture的回收清单从231文件／78,999,820字节降至2文件／3,602字节，另有3个小型进程／清单文件；此处文件数量与大小是主机fixture观察，不是实机时延或加速比。native源码SHA256：`5e465d464ce7f5cfdf8fe2ee9804c2d68a1d636316b71acd0a2dd98af4b8998f`。
+
+经验审计：临时工作文件与调试dump必须分开；不能把当前80状态提前删除。复用旧prepared恢复时不能静默改变模式。常驻PID／完成状态和精度证据不能因精简回收而混为一谈。以上约束固化在native清理／未知子进程测试、transport模式／小清单测试和真实CLI对照测试中；没有新增通用硬件规律或修改共享技能。新增模式尚未上板，不能继承此前P0实机通过。
 
 ## 同日运行开销修复
 

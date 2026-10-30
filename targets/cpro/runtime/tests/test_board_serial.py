@@ -68,6 +68,14 @@ if '--draft-step' not in args:
     paths=list(map(Path,a['input'].split(',')))
     assert len(paths)==89 and a['modelmanager_itf']=='V2' and a['direct_from_file']=='true'
     p=struct.unpack('<i',paths[2].read_bytes())[0]
+    if os.environ.get('BOARD_SERIAL_SCRATCH_TRACE'):
+        steps=sorted(Path.cwd().parent.glob('step_*'))
+        assert len(steps)==(1 if p==0 else 2), (p,steps)
+        if p:
+            parent=Path.cwd().parent/f'step_{p-1:04d}'
+            assert not (parent/'inputs').exists() and len(list((parent/'outputs').iterdir()))==82
+        with open(os.environ['BOARD_SERIAL_SCRATCH_TRACE'],'a') as log:
+            log.write(json.dumps(dict(position=p,target_steps=len(steps)))+'\n')
     token=struct.unpack('<I',paths[0].read_bytes()[:4])[0]
     assert struct.unpack('<i',paths[83].read_bytes())[0]==p
     assert paths[84].read_bytes()==struct.pack('<i',0)
@@ -100,6 +108,8 @@ if '--draft-step' not in args:
     print('Execute result :Success')
 else:
     a=dict(zip(args[::2],args[1::2]));plan=Path(a['--draft-step']);base=plan.parent
+    if os.environ.get('BOARD_SERIAL_SCRATCH_TRACE'):
+        assert len(list(Path.cwd().parent.glob('call-*')))==1
     lines=[r.split('\t') for r in plan.read_text().splitlines()]
     assert lines[0]==['QWEN35_DRAFT_DIRECT_STEP','1']
     assert (base/lines[1][1]).stat().st_ino==Path(os.environ['DRAFT_SOURCE']).stat().st_ino
@@ -210,6 +220,94 @@ def test_complete_serial_loop(binaries,case,mode):
     assert all(item['path'] in '\n'.join(lines) for item in result['final_target_outputs'])
 
 
+def assert_compact_inventory(case):
+    lines=(case['out']/'retrieval-manifest.tsv').read_text().splitlines()
+    assert lines[0]=='QWEN35_BOARD_SERIAL_RETRIEVAL\t1'
+    rows=[line.split('\t') for line in lines[1:]]
+    assert {row[1] for row in rows}=={'loop.json','progress.json'} and len(rows)==2
+    for kind,path,digest,size in rows:
+        file=case['out']/path
+        assert kind=='file' and file.stat().st_size==int(size) and sha(file)==digest
+
+
+@pytest.mark.parametrize('mode',['accept','reject','mixed'])
+def test_compact_same_tokens_counts_and_bounded_scratch(binaries,case,mode,monkeypatch):
+    # Legacy missing dump keeps schema1. A second run explicitly asks for the
+    # compact wire, against exactly the same model bytes and input configuration.
+    debug=execute(binaries,case,mode);assert debug.returncode==0,debug.stderr
+    old=report(case);assert old['schema_version']==1
+    case['out']=case['root']/'compact-results'
+    case['config'].write_text('\n'.join(case['rows']+['dump\t0'])+'\n')
+    trace=case['root']/'scratch-trace.jsonl';monkeypatch.setenv('BOARD_SERIAL_SCRATCH_TRACE',str(trace))
+    source_before=case['draft'].stat();source_hash=sha(case['draft'])
+    run=execute(binaries,case,mode);assert run.returncode==0,run.stderr
+    result=report(case);progress=json.loads((case['out']/'progress.json').read_text())
+    assert result['schema_version']==2 and result['dump'] is False and result['retrieval_mode']=='FINAL_TOKENS_ONLY'
+    for key in ['generated_tokens','full_prefix','prompt','counts']:
+        assert result[key]==old[key]
+    assert result['completed_rounds']==result['counts']['draft_native_calls']
+    for key in ['target_steps','draft_steps','rounds','commits','final_features','final_state_files','final_target_outputs','generated_token_ids']:
+        assert key not in result
+    assert_compact_inventory(case)
+    assert {p.relative_to(case['out']).as_posix() for p in case['out'].rglob('*') if p.is_file()}=={'loop.json','progress.json','retrieval-manifest.tsv'}
+    life=result['child_lifecycle'];total=sum(result['counts'][key] for key in ['target_native_calls','draft_native_calls'])
+    assert life['launched_child_count']==life['completed_child_count']==len(life['children'])==total
+    assert life['active_child_count']==0 and life['child_status']=='EXITED' and life['last_child_exitcode']==0
+    assert len({row['pid'] for row in life['children']})==total and all(row['exitcode']==0 for row in life['children'])
+    for key in ['launched_child_count','completed_child_count','active_child_count','last_child_pid','last_child_exitcode','child_status']:
+        assert progress[key]==life[key]
+    assert len(trace.read_text().splitlines())==16
+    source_after=case['draft'].stat()
+    assert source_after.st_ino==source_before.st_ino and source_after.st_nlink==source_before.st_nlink
+    assert source_after.st_mtime_ns==source_before.st_mtime_ns and sha(case['draft'])==source_hash
+    acceptance=result['acceptance'];assert acceptance['accepted']==result['counts']['accepted']
+    assert acceptance['considered']==result['counts']['considered']
+    assert acceptance['rate']==pytest.approx(acceptance['accepted']/acceptance['considered'])
+    phases=result['phase_latency'];assert phases['timing_scope']=='CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD'
+    assert phases['inference_only_status']=='NOT_PROVIDED'
+    assert phases['prompt_ingest']['mechanism']=='DECODE1_SERIAL_PROMPT_INGESTION'
+    assert phases['prompt_ingest']['calls']==8 and phases['decode']['calls']==8
+    assert phases['draft']['calls']==result['counts']['draft_native_calls']
+    for key in ['prompt_ingest','decode','draft']:
+        assert phases[key]['mean_ms']==pytest.approx(phases[key]['total_ms']/phases[key]['calls'])
+    assert phases['prompt_ingest']['total_ms']+phases['decode']['total_ms']==result['supervisor_timing']['target_child_process_wall_ms']
+
+
+@pytest.mark.parametrize('mode',['target-fail','missing-output','target-input-same-bytes','draft-fail','bad-output-hash'])
+def test_compact_failure_retains_current_scratch_only_small_envelope(binaries,case,mode):
+    case['config'].write_text('\n'.join(case['rows']+['dump\t0'])+'\n')
+    run=execute(binaries,case,mode);assert run.returncode==1
+    result=report(case);assert result['schema_version']==2 and result['status']=='FAILED'
+    assert_compact_inventory(case)
+    assert len(list((case['out']/'target').glob('step_*'))) in (1,2)
+    assert list(case['out'].rglob('input_*.bin'))  # failed work was not swept
+    assert not (case['out']/'final-features.bin').exists()
+    assert not list(case['out'].rglob('receipt.json'))
+    assert all(name not in result for name in ['target_steps','draft_steps','rounds','commits','final_state_files'])
+    life=result['child_lifecycle']
+    assert life['active_child_count']==0 and life['completed_child_count']==life['launched_child_count']
+    assert life['child_status']=='EXITED' and life['last_child_pid']==result['failed_child_pid']
+    if mode=='target-fail':
+        assert (case['out']/'target/step_0002/outputs').is_dir()
+        assert (case['out']/'target/step_0003/inputs').is_dir()
+
+
+@pytest.mark.parametrize('rows',[['dump\t2'],['dump\tfalse'],['dump\t0','dump\t1']])
+def test_dump_option_strict_singleton(binaries,case,rows):
+    case['config'].write_text('\n'.join(case['rows']+rows)+'\n')
+    run=execute(binaries,case);assert run.returncode==1
+    assert 'dump must be one explicit0/1 singleton' in report(case)['error']
+
+
+def test_explicit_dump_one_retains_full_schema1(binaries,case):
+    case['config'].write_text('\n'.join(case['rows']+['dump\t1'])+'\n')
+    run=execute(binaries,case);assert run.returncode==0,run.stderr
+    result=report(case)
+    assert result['schema_version']==1 and result['generated_tokens']==list(range(9,17))
+    assert len(result['target_steps'])==16 and len(result['final_state_files'])==80
+    assert (case['out']/'final-features.bin').is_file()
+
+
 @pytest.mark.parametrize('mode,error', [
     ('target-fail','target child failed'),('draft-fail','draft child failed'),
     ('past-receipt-change','pinned file changed'),
@@ -280,7 +378,8 @@ def test_hangup_after_start_does_not_stop_board_loop(binaries,case):
     assert result['evidence_kind']=='host-fake-hiai'
 
 
-def test_pid_publication_failure_keeps_current_child_uncertain(case,tmp_path):
+@pytest.mark.parametrize('dump',[False,True])
+def test_pid_publication_failure_keeps_current_child_uncertain(case,tmp_path,dump):
     # Force the actual parent open(tool.pid) to fail after fork. The real
     # production source, rather than a mock Run(), must publish uncertainty.
     shim=tmp_path/'open_failure.cpp'
@@ -299,6 +398,7 @@ extern "C" int __wrap_open(const char* path,int flags,...) {
 }
 ''')
     binary=tmp_path/'pid-write-failure'
+    case['config'].write_text('\n'.join(case['rows']+[f'dump\t{int(dump)}'])+'\n')
     subprocess.run(['g++','-O2','-std=c++17','-DQWEN35_BOARD_SERIAL_HOST_FAKE=1',
         '-I',str(RUNTIME/'include'),str(RUNTIME/'src/board_serial_main.cpp'),
         str(RUNTIME/'src/sha256.cpp'),str(shim),'-Wl,--wrap=open','-o',str(binary)],check=True,capture_output=True,text=True)
@@ -313,3 +413,9 @@ extern "C" int __wrap_open(const char* path,int flags,...) {
     assert not (case['out']/'target/step_0000/tool.pid').exists()
     assert not (case['out']/'target/step_0000/tool.exitcode').exists()
     assert failed['counts']['target_native_calls']==0 and failed['generated_tokens']==[]
+    if not dump:
+        assert_compact_inventory(case)
+        assert len(list((case['out']/'target/step_0000/inputs').glob('input_*.bin')))==89
+        life=failed['child_lifecycle']
+        assert life['active_child_count']==1 and life['launched_child_count']==1 and life['completed_child_count']==0
+        assert life['children']==[dict(pid=failed['failed_child_pid'],exitcode=None)]

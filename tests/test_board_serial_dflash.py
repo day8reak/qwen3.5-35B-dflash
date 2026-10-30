@@ -81,6 +81,8 @@ def test_preparation_binds_tables_and_sources_without_transport(sources, monkeyp
     assert manifest['target_payloads'][0]['local'] == model['path']
     assert manifest['tables']['weight']['bytes'] == 508559360
     assert manifest['model_residency'].startswith('NOT_IMPLEMENTED')
+    assert manifest['dump'] is False
+    assert result['retrieval_mode'] == 'FINAL_TOKENS_ONLY'
     assert not list(options['output'].rglob('*.omc'))
     # Permissions/metadata are not silently reset or ignored by preparation.
     options['prompt_input_ids'].chmod(0o600)
@@ -103,7 +105,7 @@ def test_manifest_pin_and_complete_draft_contract_are_required(sources):
 
 
 @pytest.mark.parametrize('changes', [dict(prompt_length=60, max_new_tokens=8),
-    dict(max_proposals_per_round=16), dict(board_model_root='/data/../escape')])
+    dict(max_proposals_per_round=16), dict(board_model_root='/data/../escape'), dict(dump=1)])
 def test_invalid_request_stops_before_loading_models(sources, monkeypatch, changes):
     options, _, _ = sources
     monkeypatch.setattr(job, '_backends', lambda: pytest.fail('invalid request reached models'))
@@ -139,6 +141,11 @@ def test_wire_config_preserves_explicit_nonordinal_state_mapping(tmp_path):
     paths.update(target_tool_record=record, draft_runner_record=record,
         target_library_path='/system/lib64', draft_library_path='/board/lib')
     wire = job.make_config(manifest, paths)
+    assert b'dump\t1\n' in wire  # old prepared manifests preserve debug behavior
+    assert b'dump\t0\n' in job.make_config(manifest | {'dump': False}, paths)
+    assert b'dump\t1\n' in job.make_config(manifest | {'dump': True}, paths)
+    with pytest.raises(ValueError, match='dump mode'):
+        job.make_config(manifest | {'dump': 'false'}, paths)
     assert b'state\tRefData_9\t0\t47\t65536\n' in wire
     assert b'target_output\t47\tnative:output.47\tFP16\t65536\n' in wire
     paths['target_model'] = '/board/evil\nstate\tRefData_0'
@@ -161,3 +168,48 @@ def test_cli_recovery_selects_existing_attempt_and_never_applies(tmp_path, monke
     assert calls[0][0] == old / 'board'
     with pytest.raises(SystemExit):
         cli.main(['--recover', str(old), '--output', str(tmp_path / 'bad'), '--apply'])
+    with pytest.raises(SystemExit):
+        cli.main(['--recover', str(old), '--output', str(tmp_path / 'bad'), '--dump'])
+
+
+def test_debug_mode_is_pinned_and_legacy_manifest_keeps_its_mode(sources):
+    options, _, _ = sources
+    result = job.run_board_serial_dflash(**options, dump=True)
+    manifest = job.validate_prepared(result['prepared'])
+    assert manifest['dump'] is True and result['retrieval_mode'] == 'FULL_DEBUG'
+    path = Path(result['prepared']) / 'manifest.json'
+    manifest.pop('dump')
+    path.write_text(json.dumps(manifest))
+    path.with_suffix('.sha256').write_text(job.sha256_file(path) + '\n')
+    assert 'dump' not in job.validate_prepared(path.parent)
+    manifest['dump'] = 0
+    path.write_text(json.dumps(manifest))
+    path.with_suffix('.sha256').write_text(job.sha256_file(path) + '\n')
+    with pytest.raises(ValueError, match='dump mode'):
+        job.validate_prepared(path.parent)
+
+
+@pytest.mark.parametrize('flag,expected', [([], False), (['--dump'], True)])
+def test_cli_pins_dump_mode_for_new_attempts(tmp_path, monkeypatch, capsys, flag, expected):
+    script = Path(__file__).parents[1] / 'targets/cpro/scripts/run_board_serial_dflash.py'
+    spec = importlib.util.spec_from_file_location('board_serial_dump_cli_test', script)
+    cli = importlib.util.module_from_spec(spec); spec.loader.exec_module(cli)
+    calls = []
+    def run(**options):
+        calls.append(options)
+        return dict(status='BOARD_SERIAL_DFLASH_PLANNED', dump=options['dump'],
+            generated_token_ids=[6, 7], acceptance={'accepted': 1, 'considered': 2, 'rate': 0.5},
+            phase_latency={'prompt_ingest': {'calls': 8, 'total_ms': 80, 'mean_ms': 10}},
+            supervisor_timing={'total_wall_ms': 100}, internal_payload={'not_a_summary': True})
+    monkeypatch.setattr(job, 'run_board_serial_dflash', run)
+    argv = ['--output', str(tmp_path / 'new')]
+    for name in ('decode-job', 'runtime-probe', 'state-lineage', 'source-torchair-pb2',
+                 'draft-bundle', 'weight-table', 'scale-table', 'prompt-input-ids'):
+        argv += ['--' + name, str(tmp_path / name)]
+    assert cli.main(argv + flag) == 0
+    assert len(calls) == 1 and calls[0]['dump'] is expected
+    summary = json.loads(capsys.readouterr().out)
+    assert summary['generated_token_ids'] == [6, 7] and summary['acceptance']['rate'] == 0.5
+    assert summary['phase_latency']['prompt_ingest']['mean_ms'] == 10
+    assert summary['supervisor_timing']['total_wall_ms'] == 100
+    assert 'internal_payload' not in summary

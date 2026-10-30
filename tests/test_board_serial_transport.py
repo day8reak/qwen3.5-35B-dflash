@@ -430,3 +430,192 @@ def test_inventory_bound_receive_rejects_mid_read_identity_change(tmp_path, monk
     monkeypatch.setattr(transport, '_identity', changed)
     with pytest.raises(ValueError, match='changed'):
         transport._receive_verified_inventory_file(Device(), PurePosixPath('/remote'), tmp_path, row)
+
+
+def _compact_reports(manifest, *, config_sha='c' * 64, failed=False):
+    base = manifest['target_binding']['base_plan']
+    counts = {'target_native_calls': 16, 'draft_native_calls': 7, 'considered': 7,
+        'accepted': 0, 'corrections': 7, 'bonuses': 0}
+    children = [{'pid': 1001 + index, 'exitcode': 0} for index in range(23)]
+    if failed:
+        counts = {key: 0 for key in counts}; counts['target_native_calls'] = 1
+        children = [{'pid': 1001, 'exitcode': 1}]
+    lifecycle = {'launched_child_count': len(children), 'completed_child_count': len(children),
+        'active_child_count': 0, 'last_child_pid': children[-1]['pid'], 'last_child_exitcode': children[-1]['exitcode'],
+        'child_status': 'EXITED', 'children': children}
+    generated = [] if failed else [2] * manifest['max_new_tokens']
+    loop = {'schema_version': 2, 'artifact_kind': 'qwen35-board-local-serial-dflash',
+        'dump': False, 'retrieval_mode': 'FINAL_TOKENS_ONLY', 'evidence_kind': 'host-fake-hiai',
+        'model_compilation': 'NOT_RUN',
+        'status': 'FAILED' if failed else 'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED',
+        'config_sha256': config_sha, 'target_model_sha256': manifest['target_model']['sha256'],
+        'draft_model_sha256': manifest['draft']['model_source']['sha256'],
+        'draft_abi_sha256': manifest['draft']['abi']['sha256'], 'runtime_version': base['runtime_version'],
+        'ddk_id': base['ddk_id'], 'firmware_id': base['firmware_id'], 'process_id': 1000,
+        'state_policy': 'ADVANCE_ONLY_COMMITTED_TOKENS_NO_SPECULATIVE_STATE',
+        'control_semantics': 'EXPERIMENTAL_SINGLE_QUERY_ABSOLUTE_POSITION',
+        'prompt': manifest['prompt_token_ids'], 'generated_tokens': generated,
+        'full_prefix': [] if failed else manifest['prompt_token_ids'] + generated,
+        'counts': counts, 'completed_rounds': counts['draft_native_calls'], 'child_lifecycle': lifecycle,
+        'eos_policy': 'DISABLED_FIXED_BUDGET_SMOKE', 'acceptance_scope': 'CONSIDERED_K_ONLY_NOT_ALL15',
+        'numerical_validation': 'NOT_RUN', 'performance': 'NOT_EVALUATED'}
+    if failed:
+        loop.update(error='target failed', failed_child_pid=1001, failed_child_exitcode=1)
+    prompt_calls = min(len(manifest['prompt_token_ids']), counts['target_native_calls'])
+    phase_counts = {'prompt_ingest': prompt_calls, 'decode': counts['target_native_calls'] - prompt_calls,
+        'draft': counts['draft_native_calls']}
+    loop['phase_latency'] = {'timing_scope': 'CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD', **{
+        key: {'calls': calls, 'total_ms': calls * 10, 'mean_ms': 10.0 if calls else None}
+        for key, calls in phase_counts.items()}}
+    loop['phase_latency']['prompt_ingest']['mechanism'] = 'DECODE1_SERIAL_PROMPT_INGESTION'
+    loop['acceptance'] = {'accepted': counts['accepted'], 'considered': counts['considered'],
+        'rate': counts['accepted'] / counts['considered'] if counts['considered'] else None}
+    loop['supervisor_timing'] = {'scope': 'MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE',
+        'startup_source_hash_ms': 10, 'total_wall_ms': 1000,
+        'target_child_process_wall_ms': counts['target_native_calls'] * 10,
+        'draft_child_process_wall_ms': counts['draft_native_calls'] * 10,
+        'target_child_processes_timed': counts['target_native_calls'], 'draft_child_processes_timed': counts['draft_native_calls']}
+    progress = {'status': loop['status'], 'supervisor_pid': loop['process_id'], 'counts': counts,
+        'supervisor_timing': loop['supervisor_timing'],
+        'generated_tokens': generated, **{key: value for key, value in lifecycle.items() if key != 'children'}}
+    return loop, progress
+
+
+def _compact_files(root, loop, progress, *, extra=False):
+    root.mkdir(parents=True, exist_ok=True)
+    data = {'loop.json': json.dumps(loop).encode(), 'progress.json': json.dumps(progress).encode()}
+    if extra:
+        data['old/output_0.bin'] = b'unexpected-tensor'
+    for name, raw in data.items():
+        _write(root / name, raw)
+    (root / 'retrieval-manifest.tsv').write_text('QWEN35_BOARD_SERIAL_RETRIEVAL\t1\n' + ''.join(
+        'file\t' + name + '\t' + hashlib.sha256(raw).hexdigest() + '\t' + str(len(raw)) + '\n'
+        for name, raw in data.items()))
+    return data
+
+
+def test_compact_token_validation_is_explicit_and_does_not_claim_full_state_chain(prepared_request, tmp_path):
+    _, manifest, _, _ = prepared_request; manifest['dump'] = False
+    loop, progress = _compact_reports(manifest); root = tmp_path / 'compact'
+    _compact_files(root, loop, progress)
+    assert transport.validate_retrieved_loop(manifest, root, _expected_evidence_kind='host-fake-hiai',
+        _expected_config_sha256='c' * 64) == loop
+    with pytest.raises(ValueError, match='exact config/model/runtime'):
+        transport.validate_retrieved_tokens(manifest, root)  # Production rejects fake evidence.
+    with pytest.raises(ValueError):
+        transport.validate_retrieved_loop({**manifest, 'dump': True}, root, _expected_evidence_kind='host-fake-hiai')
+    assert transport._dump_mode({}) is True
+
+
+@pytest.mark.parametrize('damage', ['extra-file', 'schema', 'model', 'config', 'tokens', 'counts', 'state-claim',
+    'integer-dump', 'float-schema', 'bool-prompt',
+    'active', 'starting', 'unknown-exit', 'duplicate-pid', 'progress', 'missing-ledger'])
+def test_compact_mode_rejects_wrong_scope_identity_and_uncertain_completion(prepared_request, tmp_path, damage):
+    _, manifest, _, _ = prepared_request; manifest['dump'] = False
+    loop, progress = _compact_reports(manifest)
+    if damage == 'schema': loop['schema_version'] = 1
+    if damage == 'integer-dump': loop['dump'] = 0
+    if damage == 'float-schema': loop['schema_version'] = 2.0
+    if damage == 'bool-prompt': loop['prompt'] = [True] * len(loop['prompt'])
+    if damage == 'model': loop['target_model_sha256'] = 'd' * 64
+    if damage == 'config': loop['config_sha256'] = 'd' * 64
+    if damage == 'tokens': loop['full_prefix'][0] = 7
+    if damage == 'counts': loop['counts']['considered'] = 6
+    if damage == 'state-claim': loop['final_state_files'] = []
+    if damage in {'active', 'starting'}:
+        loop['child_lifecycle']['child_status'] = progress['child_status'] = 'RUNNING' if damage == 'active' else 'STARTING'
+    if damage == 'unknown-exit': loop['child_lifecycle']['children'][-1]['exitcode'] = None
+    if damage == 'duplicate-pid': loop['child_lifecycle']['children'][-1]['pid'] = 1001
+    if damage == 'progress': progress['supervisor_pid'] = 999
+    if damage == 'missing-ledger': del loop['child_lifecycle']['children']
+    root = tmp_path / 'compact'; _compact_files(root, loop, progress, extra=damage == 'extra-file')
+    with pytest.raises(ValueError):
+        transport.validate_retrieved_tokens(manifest, root, _expected_evidence_kind='host-fake-hiai', _expected_config_sha256='c' * 64)
+
+
+def test_compact_known_failure_retains_small_error_and_requires_all_waited_children(prepared_request, tmp_path):
+    _, manifest, _, _ = prepared_request; manifest['dump'] = False
+    loop, progress = _compact_reports(manifest, failed=True); root = tmp_path / 'compact'
+    _compact_files(root, loop, progress)
+    assert transport.validate_retrieved_tokens(manifest, root, _expected_evidence_kind='host-fake-hiai',
+        _expected_config_sha256='c' * 64, _remote_exitcode=1)['status'] == 'FAILED'
+    with pytest.raises(ValueError):
+        transport.validate_retrieved_tokens(manifest, root, _expected_evidence_kind='host-fake-hiai', _remote_exitcode=0)
+
+
+@pytest.mark.parametrize('failed,active', [(False, False), (True, False), (True, True)])
+def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files(prepared_request, tmp_path, monkeypatch, failed, active):
+    root, manifest, FakeHdc, _ = prepared_request; manifest['dump'] = False
+    (root / 'manifest.json').write_text(json.dumps(manifest))
+    launched = transport.execute_board_serial(root, tmp_path / 'execution', detach=True)
+    loop, progress = _compact_reports(manifest, config_sha=launched['config_sha256'], failed=failed)
+    if active:
+        loop['child_lifecycle']['child_status'] = progress['child_status'] = 'RUNNING'
+        loop['child_lifecycle']['active_child_count'] = progress['active_child_count'] = 1
+        loop['child_lifecycle']['children'][-1]['exitcode'] = None
+    data = _compact_files(tmp_path / 'native-results', loop, progress)
+    remote = {launched['board_attempt'] + '/results/' + name: raw for name, raw in data.items()}
+    remote[launched['board_attempt'] + '/results/retrieval-manifest.tsv'] = (tmp_path / 'native-results/retrieval-manifest.tsv').read_bytes()
+    remote.update({launched['board_attempt'] + '/tool.pid': b'12345\n',
+        launched['board_attempt'] + '/tool.exitcode': b'1\n' if failed else b'0\n'})
+    original = FakeHdc.shell
+    def shell(self, command, label, **kwargs):
+        result = original(self, command, label, **kwargs)
+        if label == 'poll-whole-loop-completion' and failed:
+            return 0, 'EXIT=1\nPID=12345\nPROCESS_ABSENT'
+        if label == 'hash-result':
+            path = re.search(r'if test -f ([^;]+); then', command)[1]
+            assert path in remote, 'compact retrieval must not request logs or tensors'
+            return 0, hashlib.sha256(remote[path]).hexdigest() + '  ' + path
+        return result
+    def receive(self, source, destination, **kwargs):
+        self.count += 1; self.receives.append((str(source), str(destination)))
+        assert str(source) in remote
+        Path(destination).parent.mkdir(parents=True, exist_ok=True); Path(destination).write_bytes(remote[str(source)])
+    monkeypatch.setattr(FakeHdc, 'shell', shell); monkeypatch.setattr(FakeHdc, 'receive', receive)
+    actual = transport.validate_retrieved_tokens
+    monkeypatch.setattr(transport, 'validate_retrieved_tokens', lambda *args, **kwargs:
+        actual(*args, **kwargs, _expected_evidence_kind='host-fake-hiai'))
+    result = transport.recover_board_serial(tmp_path / 'execution', tmp_path / 'recovery')
+    assert result['status'] == ('FAILED' if failed else 'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED'), result.get('error')
+    if not failed:
+        assert result['generated_token_ids'] == loop['generated_tokens']
+    assert result['evidence_scope'] == 'TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY'
+    assert result['state_continuity'] == 'NOT_REPLAYED_COMPACT_RESULT' and result['dump'] is False
+    if not active:
+        assert result['acceptance']['rate'] == (None if failed else 0)
+        assert result['phase_latency']['prompt_ingest']['calls'] == (1 if failed else 8)
+        assert 'Recover this exact' not in result['next']
+    assert len(FakeHdc.instances[-1].receives) == 5
+    assert not (tmp_path / 'recovery/supervisor.stdout').exists()
+    if active:
+        assert result['lock_state'] == 'RETAINED_OR_UNCERTAIN' and 'lock_release' not in result
+    else:
+        assert result['lock_release'] == 'RELEASED'
+
+
+@pytest.mark.parametrize('damage', ['rate', 'nan', 'mean', 'phase-count', 'prefill-label', 'npu-label', 'phase-sum'])
+def test_summary_rate_and_phase_latency_cannot_misstate_counts_or_timing_scope(prepared_request, tmp_path, damage):
+    _, manifest, _, _ = prepared_request; manifest['dump'] = False
+    loop, progress = _compact_reports(manifest)
+    if damage == 'rate': loop['acceptance']['rate'] = .5
+    if damage == 'nan': loop['acceptance']['rate'] = float('nan')
+    if damage == 'mean': loop['phase_latency']['decode']['mean_ms'] = 9
+    if damage == 'phase-count': loop['phase_latency']['prompt_ingest']['calls'] = 1
+    if damage == 'prefill-label': loop['phase_latency']['prompt_ingest']['mechanism'] = 'PREFILL_MODEL'
+    if damage == 'npu-label': loop['phase_latency']['timing_scope'] = 'NPU_INFERENCE'
+    if damage == 'phase-sum': loop['supervisor_timing']['target_child_process_wall_ms'] += 1
+    root = tmp_path / 'compact'; _compact_files(root, loop, progress)
+    with pytest.raises(ValueError):
+        transport.validate_retrieved_tokens(manifest, root, _expected_evidence_kind='host-fake-hiai')
+
+
+def test_recovery_cannot_override_mode_pinned_by_original_preparation(prepared_request, tmp_path):
+    root, manifest, FakeHdc, _ = prepared_request; manifest['dump'] = False
+    (root / 'manifest.json').write_text(json.dumps(manifest))
+    transport.execute_board_serial(root, tmp_path / 'execution', detach=True)
+    path = tmp_path / 'execution/checkpoint.json'; checkpoint = json.loads(path.read_text())
+    checkpoint['dump'] = True; path.write_text(json.dumps(checkpoint))
+    result = transport.recover_board_serial(tmp_path / 'execution', tmp_path / 'recovery')
+    assert result['status'] == 'FAILED' and 'cannot change the pinned dump/config mode' in result['error']
+    assert len(FakeHdc.instances) == 1 and result['lock_state'] == 'RETAINED_OR_UNCERTAIN'

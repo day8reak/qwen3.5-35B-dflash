@@ -121,7 +121,7 @@ print('Execute result :Success')
 '''
 
 
-def make_case(root, native_programs):
+def make_case(root, native_programs, dump=None):
     supervisor, draft_runner = native_programs
     root.mkdir()
     target_model = root / 'target.omc'; target_model.write_bytes(b'original-target-tool-host-fixture')
@@ -162,6 +162,8 @@ def make_case(root, native_programs):
     strings = dict(target_library_path=str(root), draft_library_path=str(root), runtime_version='FAKE-HIAI-X90',
         ddk_id='host-fixture', firmware_id='host-fixture', prompt=','.join(map(str, range(1, 9))),
         max_new_tokens='8', max_proposals='2', min_draft_rounds='2', timeout_ms='60000')
+    if dump is not None:
+        strings['dump'] = '1' if dump else '0'
     rows += ['\t'.join((key, value)) for key, value in strings.items()]
     rows += ['\t'.join(('target_input', str(row['index']), row['name'], row['type'], str(row['bytes']))) for row in inputs]
     rows += ['\t'.join(('target_output', str(row['index']), row['name'], row['type'], str(row['bytes']))) for row in outputs]
@@ -170,6 +172,8 @@ def make_case(root, native_programs):
     case = dict(root=root, config=config, files=files, inputs=inputs, outputs=outputs, states=states,
         supervisor=supervisor, output=root / 'result')
     case['manifest'] = verifier_manifest(case)
+    if dump is not None:
+        case['manifest']['dump'] = dump
     (root / 'expected-prepared-manifest.json').write_text(json.dumps(case['manifest'], indent=2))
     return case
 
@@ -235,6 +239,33 @@ def test_actual_cpp_supervisor_and_original_draft_cli_run_all16_target_steps(tmp
     checked = validate_retrieved_loop(case['manifest'], case['output'],
         _expected_evidence_kind='host-fake-hiai', _expected_config_sha256=digest(case['config']))
     assert checked == report
+
+
+def test_compact_actual_draft_cli_matches_debug_tokens_and_removes_consumed_scratch(tmp_path, native_programs):
+    reports = []
+    from qwen35_moe_dflash.board_serial_transport import validate_retrieved_loop
+    for dump in (True, False):
+        case = make_case(tmp_path / ('debug' if dump else 'compact'), native_programs, dump=dump)
+        model = case['files']['draft_model']
+        model_sha = digest(model)
+        nlink = model.stat().st_nlink
+        process = execute(case)
+        assert process.returncode == 0, (process.stdout, process.stderr)
+        report = validate_retrieved_loop(case['manifest'], case['output'],
+            _expected_evidence_kind='host-fake-hiai', _expected_config_sha256=digest(case['config']))
+        reports.append(report)
+        assert digest(model) == model_sha
+        if not dump:
+            assert report['schema_version'] == 2
+            assert report['dump'] is False and report['retrieval_mode'] == 'FINAL_TOKENS_ONLY'
+            assert model.stat().st_nlink == nlink
+            assert {p.relative_to(case['output']).as_posix() for p in case['output'].rglob('*') if p.is_file()} == {
+                'loop.json', 'progress.json', 'retrieval-manifest.tsv'}
+            assert (case['output'] / 'loop.json').stat().st_size < 65536
+            assert not any(key in report for key in ('target_steps', 'draft_steps', 'rounds', 'commits',
+                'final_features', 'final_state_files', 'final_target_outputs'))
+    assert reports[0]['generated_tokens'] == reports[1]['generated_tokens'] == list(range(9, 17))
+    assert reports[0]['counts'] == reports[1]['counts']
 
 
 @pytest.mark.parametrize('fault,reason', [('nan-logit', 'nonfinite target logits'),

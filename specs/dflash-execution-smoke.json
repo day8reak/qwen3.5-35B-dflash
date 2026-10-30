@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_kind": "qwen35-full-model-execution-smoke-contract",
-  "status": "BOARD_LOCAL_SUPERVISOR_HOST_VALIDATED_PENDING_REAL_DEVICE",
+  "status": "USER_REPORTED_BOARD_LOCAL_FULL_LOOP_COMPLETED_UNVALIDATED",
   "scope": "User-prioritized execution milestone; final accuracy, correct rollback and speedup>=2x requirements are unchanged",
   "user_directive": {
     "real_features_required": true,
@@ -75,7 +75,7 @@
     "role": "LEGACY_DIAGNOSTIC_ONLY_NOT_AUTONOMOUS_P0"
   },
   "gaps": [
-    "Run actual autonomous complete-model multi-round loop and verify disconnected completion on user device with unchanged OMCs",
+    "Validate new dump/timing changes independently; preserve original completed device request and obtain dedicated physical-disconnect evidence if required",
     "Validate experimental target controls, numerical accuracy and ordinary-baseline equality after the execution milestone",
     "Optimize resident execution and block verification only after functional integration"
   ],
@@ -86,8 +86,9 @@
     "target_prefill": "EXECUTED_UNVALIDATED_PID8985",
     "real_feature_draft": "REAL_FEATURE_DRAFT_EXECUTED_UNVALIDATED_PID17398",
     "real_feature_draft_calls": 1,
-    "multi_round_loop": "NOT_RUN",
-    "last_row63_prefill": "EXECUTED_UNVALIDATED_PID28669_FEATURE_SHA_UNCHANGED_LOGITS_ARGMAX6"
+    "multi_round_loop": "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED_TARGET16_DRAFT7_ACCEPTED0_CORRECTIONS7",
+    "last_row63_prefill": "EXECUTED_UNVALIDATED_PID28669_FEATURE_SHA_UNCHANGED_LOGITS_ARGMAX6",
+    "multi_round_evidence": "docs/board-first-completion.md"
   },
   "first_loop_strategy": "Explicit new8token prompt +8 generated; BOARD-LOCAL original decode1 ingests prompt serially fromzero80states; original3input S64 draft recomputes full prefix,15 candidates; board verifies first2, compare-before-commit; no OMC compilation or cross-prefill export prerequisite",
   "deferred": [
@@ -105,5 +106,16 @@
     "per_token_server_calls": 0,
     "model_residency": "NOT_IMPLEMENTED",
     "startup_ack_is_completion": false
+  },
+  "retention_policy": {
+    "new_requests": "DEFAULT_COMPACT_FINAL_TOKENS_AND_STATUS",
+    "debug_option": "--dump",
+    "legacy_recovery": "PRESERVE_ORIGINAL_MODE",
+    "normal_metrics": [
+      "acceptance",
+      "prompt_ingest/decode/draft child wall latency"
+    ],
+    "normal_evidence_scope": "FINAL_REPORT_AND_COMPLETION_NOT_HOST_STATE_REPLAY",
+    "scratch": "FILE_ABI_REQUIRED_CONSUMED_SUCCESSFUL_SCRATCH_PRUNED"
   }
 }

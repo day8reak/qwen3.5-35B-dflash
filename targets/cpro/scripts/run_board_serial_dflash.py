@@ -26,10 +26,12 @@ def main(argv=None):
     parser.add_argument('--board-model-root', default='/data/local/tmp/qwen3_5_moe')
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--detach', action='store_true', help='Return after launch; the board finishes autonomously, then use --recover')
+    parser.add_argument('--dump', action='store_true', default=None,
+        help='Retain debug tensors/receipts on board and retrieve detailed evidence; default returns final tokens/status only')
     args = parser.parse_args(argv)
     if args.recover:
-        if args.apply or args.detach or any(getattr(args, name.replace('-', '_')) is not None for name in required):
-            parser.error('--recover is a separate completion/retrieval operation; omit --apply and model arguments')
+        if args.apply or args.detach or args.dump is not None or any(getattr(args, name.replace('-', '_')) is not None for name in required):
+            parser.error('--recover uses the original prepared dump mode; omit --dump, --apply and model arguments')
     elif any(getattr(args, name.replace('-', '_')) is None for name in required):
         parser.error('new runs require ' + ', '.join('--' + name for name in required))
     elif args.detach and not args.apply:
@@ -44,12 +46,14 @@ def main(argv=None):
         else:
             from qwen35_moe_dflash.board_serial_dflash import run_board_serial_dflash
             options = vars(args).copy(); options.pop('recover')
+            options['dump'] = bool(args.dump)
             result = run_board_serial_dflash(**options)
     except Exception as error:
         result = {'status': 'FAILED', 'error': f'{type(error).__name__}: {error}'}
     keys = ('status', 'stage', 'output', 'mode', 'device_execution', 'model_compilation',
             'numerical_validation', 'performance', 'generated_token_ids', 'counts', 'board_attempt',
             'lock_state', 'error', 'next', 'prepared', 'board_result')
+    keys += ('dump', 'retrieval_mode', 'evidence_scope', 'acceptance', 'phase_latency', 'supervisor_timing')
     print(json.dumps({key: result[key] for key in keys if key in result}, ensure_ascii=False, allow_nan=False), flush=True)
     return 0 if result.get('status') in {'BOARD_SERIAL_DFLASH_PLANNED', 'BOARD_SERIAL_DFLASH_STARTED',
         'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED', 'BOARD_SERIAL_DFLASH_RECOVERED_UNVALIDATED'} else 1

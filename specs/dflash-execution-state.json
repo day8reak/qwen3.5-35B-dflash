@@ -5,7 +5,7 @@
   "plan_document": "docs/dflash-delivery-plan.md",
   "current_commands": "docs/current-status.md",
   "overall_status": "in_progress",
-  "active_phase": "P0",
+  "active_phase": "P1",
   "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
   "user_priority": "2026-10-30: Today deliver autonomous ON-DEVICE end-to-end original40layer target + full6layer draft. No per-token host data or decisions after launch. Accuracy deferred for P0 only.",
   "status_policy": {
@@ -65,10 +65,10 @@
       "unique_passed": 109,
       "new_board_lane_checks": 82,
       "existing_host_serial_regressions": 11,
-      "scope": "host C++/fake HIAI and fake HDC only; no actual device calls",
+      "scope": "Prior board I/O optimization revision109checks; current dump revision129checks recorded under dump_mode; all host-only. Historical device result recorded separately.",
       "validation_document": "docs/board-serial-validation.md",
       "native_source_sha256": "4a7304b5bf2fb8dd743d2c7a759926654ee57e88586df417e304f7dc5f9d856b",
-      "actual_device_full_loop": "NOT_YET_REPORTED",
+      "actual_device_full_loop": "USER_REPORTED_COMPLETED_PRIOR_REVISION_NEW_DUMP_CHANGE_NOT_DEVICE_VALIDATED",
       "native_build_configuration_checks": 16
     },
     "user_reported": [
@@ -79,9 +79,10 @@
       "row63 prefill PID28669; samefeature SHA, logits argmax6",
       "original embedding tables copied completely",
       "host serial loop first target completed, next input staging hit HDC disconnect; stale locks diagnosed; this is not autonomous board-loop evidence",
-      "old host serial P8/G8 attempt failed after10 target and1 draft: reused runner library discovery pointed at missing second-call native build directory; user chose new autonomous board entry"
+      "old host serial P8/G8 attempt failed after10 target and1 draft: reused runner library discovery pointed at missing second-call native build directory; user chose new autonomous board entry",
+      "Autonomous board P8/G8 completed and recovered: target16 draft7 accepted0 considered7 corrections7 bonuses0; BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED; lock released. See docs/board-first-completion.md."
     ],
-    "board_autonomous_loop": "HOST_VALIDATED_PENDING_DEVICE_EXECUTION",
+    "board_autonomous_loop": "USER_REPORTED_DEVICE_COMPLETION_FULL_DEBUG_VALIDATOR_PASSED",
     "legacy_host_checks": {
       "unique_passed": 292,
       "scope": "host/fake HDC/native boundaries only",
@@ -113,18 +114,63 @@
       "default_loop_change": "NONE",
       "initialization_order": "EXPERIMENTAL_NOT_DEVICE_VALIDATED",
       "document": "docs/resident-runtime-plan.md"
+    },
+    "dump_mode": {
+      "status": "HOST_VALIDATED_PENDING_NEW_DEVICE_RUN",
+      "default": "FINAL_TOKENS_ONLY",
+      "debug_flag": "--dump",
+      "legacy_missing_dump": "FULL_DEBUG",
+      "normal_summaries": [
+        "generated_token_ids",
+        "acceptance",
+        "phase_latency",
+        "supervisor_timing"
+      ],
+      "phase_latency_scope": "CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD",
+      "prompt_mechanism": "DECODE1_SERIAL_PROMPT_INGESTION",
+      "device_execution": "NOT_RUN_FOR_THIS_CHANGE",
+      "validation_run": "20261030T113250Z-17949-689ad3",
+      "unique_checks_passed": 129,
+      "checks": {
+        "native-dump-tests.xml": 48,
+        "board-serial-transport.xml": 65,
+        "dump-integration.xml": 16
+      },
+      "source_sha256": {
+        "targets/cpro/runtime/src/board_serial_main.cpp": "5e465d464ce7f5cfdf8fe2ee9804c2d68a1d636316b71acd0a2dd98af4b8998f",
+        "model/qwen35_moe_dflash/board_serial_transport.py": "fac960eb31a6d618f7a2ffd7aa70e16ba654be32f4dc732d35f2518226d07f1e",
+        "model/qwen35_moe_dflash/board_serial_dflash.py": "f7b1fe6a53fa595080023d6850dcc1a8fcf0d430eeab451b4aa2ba61473fb164",
+        "targets/cpro/scripts/run_board_serial_dflash.py": "1a51ba8516026fb8b93d212a51bda18af6a8ffa9ea8d1008cedac848fd50c908"
+      },
+      "independent_review": "PASS"
     }
   },
   "next_action": {
-    "phase": "P0",
-    "type": "run_on_device",
+    "phase": "P1",
+    "type": "implement_and_compare",
     "entrypoint": "targets/cpro/scripts/run_board_serial_dflash.py",
     "command_document": "docs/current-status.md",
-    "new_output": "$AI_RUN_DIR/dflash-board8-run-v2",
-    "apply": true,
-    "note": "User selected the published autonomous board entry after old host loop failure. Launch once with --apply --detach and recover the same attempt; preserve old receipts. If already launched, only recover, never launch again."
+    "note": "P0 user-reported complete. Current authorized runtime task adds default compact results with opt-in --dump; then implement ordinary target baseline for numerical diagnosis. No automatic rerun of the successful attempt."
   },
-  "last_actual_execution": null,
+  "last_actual_execution": {
+    "source": "USER_PROVIDED_RECOVERY_SUMMARY",
+    "status": "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED",
+    "execution": "$AI_RUN_DIR/dflash-board8-run",
+    "recovery": "$AI_RUN_DIR/dflash-board8-recovery",
+    "board_attempt": "/data/local/tmp/qwen35_board_serial_1056ef4d658548d5ba16ee7c505a34d7",
+    "counts": {
+      "target_native_calls": 16,
+      "draft_native_calls": 7,
+      "accepted": 0,
+      "considered": 7,
+      "corrections": 7,
+      "bonuses": 0
+    },
+    "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+    "numerical_validation": "NOT_EVALUATED",
+    "evidence_document": "docs/board-first-completion.md",
+    "new_dump_revision_validation": "NOT_RUN_ON_DEVICE"
+  },
   "planned_parallelism": [
     "P0 autonomous board request on user device; host-only resident worker integration after tested adapter. No assistant board/HDC probes.",
     "P1 reference preparation while P0 device runs",
@@ -144,14 +190,14 @@
     {
       "id": "P0",
       "title": "端侧自主端到端DFlash多轮执行",
-      "status": "in_progress",
+      "status": "passed",
       "depends_on": [],
       "local_budget_workdays": [
         0.5,
         1
       ],
       "next_action_type": "run_on_device",
-      "next_action": "按 docs/current-status.md 部署并 detached 启动板端 P8/G8；主机退出后板端独立完成，恢复同一 attempt 并校验16target/至少2draft及80状态链。",
+      "next_action": "保留首次完整实机成功目录；不重复旧P0请求。新增dump模式独立验证，不把历史实机结果继承给新二进制。",
       "pass_conditions": [
         "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED or recovered equivalent with actual complete board receipts",
         "8 generated tokens and16 actual target native calls",
@@ -169,13 +215,15 @@
         "board-retained intermediate tensors and retrieved final state/features",
         "autonomous execution and disconnect/recovery evidence"
       ],
-      "evidence": [],
-      "last_error": "Old host loop failed after10 target and1 draft at second-call cached runner library discovery; fixed in code, user selected new board entry. Autonomous device result still pending."
+      "evidence": [
+        "docs/board-first-completion.md"
+      ],
+      "last_error": null
     },
     {
       "id": "P1",
       "title": "普通target基线与原参考数值收敛",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P0"
       ],
@@ -430,6 +478,11 @@
       "date": "2026-10-30",
       "decision": "User selected direct new board-loop execution after old host loop failed. Keep old failed directory; no old-loop rerun. Resident target adapter host checks passed but default remains per-call loading; worker integration and device validation pending.",
       "scope": "No autonomous-device or resident-device success claimed"
+    },
+    {
+      "date": "2026-10-30",
+      "decision": "P0 autonomous full loop user-reported complete; zero accepted proposals is execution success only. New runs default dump=false; explicit --dump preserves debug evidence. Legacy recovery keeps originally prepared mode. Temporary file ABI remains until resident workers are integrated.",
+      "scope": "New retention policy authorized by user; no model semantic change or numerical pass"
     }
   ],
   "handoff_update_fields": [

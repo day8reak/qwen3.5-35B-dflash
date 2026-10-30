@@ -48,9 +48,11 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         draft_bundle, weight_table, scale_table, prompt_input_ids, output,
         prompt_length=8, max_new_tokens=8, max_proposals_per_round=2,
         minimum_draft_rounds=2, timeout_seconds=7200, lock_wait_seconds=1800,
-        board_model_root='/data/local/tmp/qwen3_5_moe'):
+        board_model_root='/data/local/tmp/qwen3_5_moe', dump=False):
     _options(prompt_length, max_new_tokens, max_proposals_per_round, minimum_draft_rounds,
              timeout_seconds, lock_wait_seconds)
+    if type(dump) is not bool:
+        raise ValueError('dump must be an explicit boolean')
     if (not isinstance(board_model_root, str)
             or not re.fullmatch(r'/[A-Za-z0-9_./-]+', board_model_root)
             or any(part in {'.', '..'} for part in PurePosixPath(board_model_root).parts)):
@@ -119,6 +121,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         'output': str(out), 'prompt_token_ids': prompt, 'input_snapshot': prompt_source,
         'max_new_tokens': max_new_tokens, 'max_proposals_per_round': max_proposals_per_round,
         'minimum_draft_rounds': minimum_draft_rounds, 'timeout_seconds': timeout_seconds,
+        'dump': dump,
         'lock_wait_seconds': lock_wait_seconds, 'board_model_root': board_model_root,
         'target_binding': target.binding, 'target_preflight': target_preflight,
         'target_compiled': compiled, 'target_payloads': payloads, 'target_model': primary,
@@ -154,6 +157,10 @@ def validate_prepared(directory):
         raise ValueError('prepared prompt IDs are invalid')
     _options(len(prompt), manifest['max_new_tokens'], manifest['max_proposals_per_round'],
              manifest['minimum_draft_rounds'], manifest['timeout_seconds'], manifest['lock_wait_seconds'])
+    # Existing prepared requests predate the switch and retain their full dump.
+    # Recovery never changes a request's original retention/validation policy.
+    if type(manifest.get('dump', True)) is not bool:
+        raise ValueError('prepared dump mode must be boolean')
     for row in manifest['source_bindings']:
         if _current(row['path'])[1] != row['identity']:
             raise ValueError('board-loop source changed after preparation: ' + row['path'])
@@ -170,6 +177,9 @@ def _field(value):
 def make_config(manifest, remote_paths):
     """Serialize only explicit validated native ABI rows, never inferred order."""
     base = manifest['target_binding']['base_plan']
+    dump = manifest.get('dump', True)
+    if type(dump) is not bool:
+        raise ValueError('prepared dump mode must be boolean')
     lines = ['QWEN35_BOARD_SERIAL\t1']
     files = {'target_model': manifest['target_model'], 'draft_model': manifest['draft']['model_source'],
         'draft_abi': manifest['draft']['abi'], 'target_tool': remote_paths['target_tool_record'],
@@ -188,6 +198,7 @@ def make_config(manifest, remote_paths):
             'firmware_id': base['firmware_id'], 'prompt': ','.join(map(str, manifest['prompt_token_ids'])),
             'max_new_tokens': manifest['max_new_tokens'], 'max_proposals': manifest['max_proposals_per_round'],
             'min_draft_rounds': manifest['minimum_draft_rounds'],
+            'dump': int(dump),
             'timeout_ms': min(manifest['timeout_seconds'] * 1000, 2**32 - 1)}.items():
         lines.append('\t'.join(map(_field, (key, value))))
     for role, type_key in (('input', 'tool_input_type'), ('output', 'tool_output_type')):
@@ -213,6 +224,8 @@ def run_board_serial_dflash(*, output, apply=False, detach=False, **options):
     try:
         manifest = prepare_board_serial(output=out / 'prepared', **options)
         result['prepared'] = manifest['output']
+        result['dump'] = manifest.get('dump', True)
+        result['retrieval_mode'] = 'FULL_DEBUG' if result['dump'] else 'FINAL_TOKENS_ONLY'
         if apply:
             from .board_serial_transport import execute_board_serial
             result['stage'] = 'board-local-loop'

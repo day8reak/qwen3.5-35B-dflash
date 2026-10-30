@@ -36,6 +36,78 @@ _MAX_FILE = 128 << 20
 _MAX_TOTAL = 2 << 30
 
 
+def _dump_mode(manifest):
+    # Original prepared/config records predate the flag and retain full audit.
+    value = manifest.get('dump', True)
+    if type(value) is not bool:
+        raise ValueError('prepared dump mode must be an explicit boolean')
+    return value
+
+
+def _result_scope(state, manifest):
+    dump = _dump_mode(manifest)
+    state.update(dump=dump, retrieval_mode='FULL_DEBUG' if dump else 'FINAL_TOKENS_ONLY',
+        evidence_scope=('FULL_RETRIEVED_NATIVE_IO_AND80_STATE_BYTE_CHAIN' if dump
+        else 'TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY'))
+    if not dump:
+        state['state_continuity'] = 'NOT_REPLAYED_COMPACT_RESULT'
+
+
+def _next_action(state):
+    if state.get('status') == 'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED':
+        return 'Completed request recovered and owned locks released; retain this result. Numerical accuracy and performance remain unvalidated.'
+    if state.get('stage') == 'complete' and state.get('completion', {}).get('remote_exitcode', 0) != 0:
+        return 'Completed failed request retained and owned locks released; inspect its failure evidence before a separate corrected request.'
+    if state.get('launch_requested'):
+        return 'Recover this exact execution directory; never relaunch or delete uncertain locks'
+    return 'Inspect the retained deployment phase and original command completion before any retry or lock cleanup'
+
+
+def _validate_summaries(loop, manifest, *, required=False):
+    """Acceptance arithmetic and wall-clock phases are summaries, not accuracy gates."""
+    if not required and 'acceptance' not in loop and 'phase_latency' not in loop:
+        return
+    counts = loop['counts']; acceptance = loop.get('acceptance', {})
+    if (not isinstance(acceptance, dict) or any(type(acceptance.get(key)) is not int for key in ('accepted', 'considered'))
+            or acceptance.get('accepted') != counts['accepted']
+            or acceptance.get('considered') != counts['considered']):
+        raise ValueError('acceptance summary differs from considered-only counts')
+    rate = acceptance.get('rate')
+    if (counts['considered'] == 0 and rate is not None or counts['considered'] > 0 and (
+            type(rate) not in {int, float} or not math.isfinite(rate)
+            or abs(rate - counts['accepted'] / counts['considered']) > 1e-12)):
+        raise ValueError('acceptance rate is not the finite accepted/considered ratio')
+    latency = loop.get('phase_latency', {}); timing = loop.get('supervisor_timing', {})
+    if (not isinstance(latency, dict) or latency.get('timing_scope') != 'CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD'
+            or latency.get('inference_only_status', 'NOT_PROVIDED') != 'NOT_PROVIDED'
+            or not isinstance(timing, dict) or timing.get('scope') != 'MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE'):
+        raise ValueError('phase latency must identify child wall-clock timing, not NPU inference')
+    prompt_calls = min(len(manifest['prompt_token_ids']), counts['target_native_calls'])
+    expected = {'prompt_ingest': prompt_calls, 'decode': counts['target_native_calls'] - prompt_calls,
+        'draft': counts['draft_native_calls']}
+    for name, calls in expected.items():
+        row = latency.get(name, {})
+        if (not isinstance(row, dict) or type(row.get('calls')) is not int or row['calls'] != calls
+                or type(row.get('total_ms')) is not int or row['total_ms'] < 0):
+            raise ValueError('phase latency calls or milliseconds differ from actual child counts')
+        mean = row.get('mean_ms')
+        if (calls == 0 and mean is not None or calls > 0 and (
+                type(mean) not in {int, float} or not math.isfinite(mean)
+                or abs(mean - row['total_ms'] / calls) > max(1e-9, abs(mean) * 1e-12))):
+            raise ValueError('phase latency mean differs from its finite total/call count')
+    if latency['prompt_ingest'].get('mechanism') != 'DECODE1_SERIAL_PROMPT_INGESTION':
+        raise ValueError('serial prompt ingestion cannot be reported as one prefill model call')
+    if (any(type(timing.get(key)) is not int or timing[key] < 0 for key in
+            ('startup_source_hash_ms', 'target_child_process_wall_ms', 'draft_child_process_wall_ms', 'total_wall_ms'))
+            or any(type(timing.get(key)) is not int for key in ('target_child_processes_timed', 'draft_child_processes_timed'))
+            or timing.get('target_child_processes_timed') != counts['target_native_calls']
+            or timing.get('draft_child_processes_timed') != counts['draft_native_calls']
+            or latency['prompt_ingest']['total_ms'] + latency['decode']['total_ms'] != timing['target_child_process_wall_ms']
+            or latency['draft']['total_ms'] != timing['draft_child_process_wall_ms']
+            or timing['total_wall_ms'] < timing['target_child_process_wall_ms'] + timing['draft_child_process_wall_ms']):
+        raise ValueError('phase timing does not reconcile with supervisor monotonic totals')
+
+
 def _json(path, maximum=64 << 20):
     raw, identity = _read_small(path, maximum)
     value = json.loads(raw)
@@ -389,7 +461,10 @@ def _inventory(raw):
 
 def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='device-hiai',
                             _expected_config_sha256=None):
-    """Verify actual retained supervisor bytes and the request's native evidence."""
+    """Select the pinned compact or complete native-evidence validation contract."""
+    if not _dump_mode(manifest):
+        return validate_retrieved_tokens(manifest, directory, _expected_evidence_kind=_expected_evidence_kind,
+            _expected_config_sha256=_expected_config_sha256)
     root = Path(directory)
     inventory_before = _full(root / 'retrieval-manifest.tsv')
     raw, _ = _read_small(root / 'retrieval-manifest.tsv', 8 << 20)
@@ -678,11 +753,128 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
     supervisor = loop.get('process_id')
     if type(supervisor) is not int or not 0 < supervisor <= (1 << 31) - 1 or supervisor in child_pids:
         raise ValueError('native supervisor PID is missing or aliases a child')
+    _validate_summaries(loop, manifest)
     for path, before in snapshots.items():
         if _full(path) != before:
             raise ValueError('retrieved native evidence changed during the final audit')
     if _full(root / 'retrieval-manifest.tsv') != inventory_before:
         raise ValueError('retrieval inventory changed during the final audit')
+    return loop
+
+
+def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='device-hiai',
+                              _expected_config_sha256=None, _remote_exitcode=0):
+    """Check compact token/completion evidence, without replaying state or proposals."""
+    if _dump_mode(manifest):
+        raise ValueError('compact token validation requires the pinned dump=false mode')
+    root = Path(directory)
+    inventory_path = root / 'retrieval-manifest.tsv'; baseline = _full(inventory_path)
+    raw, _ = _read_small(inventory_path, 8 << 20); rows = _inventory(raw)
+    if {row['path'] for row in rows} != {'loop.json', 'progress.json'} or len(rows) != 2:
+        raise ValueError('compact retrieval must contain only loop.json and progress.json')
+    pins = {str(root / row['path']): _full(root / row['path']) for row in rows}
+    values = {}
+    for row in rows:
+        if not 0 < row['bytes'] <= 1 << 20:
+            raise ValueError('compact token/status report exceeds its small metadata budget')
+        value, identity = _json(root / row['path'], 1 << 20)
+        if any(identity[key] != row[key] for key in ('bytes', 'sha256')):
+            raise ValueError('compact report differs from its completed inventory SHA/extent')
+        values[row['path']] = value
+    loop, progress = values['loop.json'], values['progress.json']
+    base = manifest['target_binding']['base_plan']
+    success = _remote_exitcode == 0
+    expected = {'schema_version': 2, 'artifact_kind': 'qwen35-board-local-serial-dflash',
+        'dump': False, 'retrieval_mode': 'FINAL_TOKENS_ONLY', 'evidence_kind': _expected_evidence_kind,
+        'model_compilation': 'NOT_RUN',
+        'status': 'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED' if success else 'FAILED',
+        'target_model_sha256': manifest['target_model']['sha256'],
+        'draft_model_sha256': manifest['draft']['model_source']['sha256'],
+        'draft_abi_sha256': manifest['draft']['abi']['sha256'],
+        'runtime_version': base['runtime_version'], 'ddk_id': base['ddk_id'], 'firmware_id': base['firmware_id'],
+        'state_policy': 'ADVANCE_ONLY_COMMITTED_TOKENS_NO_SPECULATIVE_STATE',
+        'control_semantics': 'EXPERIMENTAL_SINGLE_QUERY_ABSOLUTE_POSITION'}
+    if (type(_remote_exitcode) is not int or not 0 <= _remote_exitcode <= 255
+            or type(loop.get('schema_version')) is not int or type(loop.get('dump')) is not bool
+            or any(loop.get(key) != value for key, value in expected.items())
+            or _SHA.fullmatch(str(loop.get('config_sha256'))) is None
+            or _expected_config_sha256 is not None and loop['config_sha256'] != _expected_config_sha256):
+        raise ValueError('compact result does not bind this exact config/model/runtime and completed exit')
+    if (set(loop) & {'target_steps', 'draft_steps', 'rounds', 'commits', 'final_state_files',
+            'final_target_outputs', 'final_features'}
+            or loop.get('numerical_validation') not in {'NOT_RUN', 'NOT_EVALUATED'}
+            or loop.get('performance') != 'NOT_EVALUATED'):
+        raise ValueError('compact tokens-only report contains full-audit or unsupported accuracy/performance claims')
+    prompt, generated, prefix = loop.get('prompt'), loop.get('generated_tokens'), loop.get('full_prefix')
+    if (not isinstance(prompt, list) or prompt != manifest['prompt_token_ids'] or not isinstance(generated, list) or not isinstance(prefix, list)
+            or len(generated) > manifest['max_new_tokens']
+            or any(type(token) is not int or not 0 <= token < 248320 for token in [*prompt, *generated, *prefix])
+            or prefix[:len(prompt)] != prompt[:len(prefix)]
+            or (generated != prefix[len(prompt):] if len(prefix) >= len(prompt) else bool(generated))):
+        raise ValueError('compact token history differs from the pinned prompt and ordered request')
+    counts = loop.get('counts', {})
+    keys = ('target_native_calls', 'draft_native_calls', 'considered', 'accepted', 'corrections', 'bonuses')
+    if (not isinstance(counts, dict) or any(type(counts.get(key)) is not int or counts[key] < 0 for key in keys)
+            or counts['target_native_calls'] > len(prompt) + manifest['max_new_tokens']
+            or counts['draft_native_calls'] > manifest['max_new_tokens']
+            or counts['considered'] != counts['accepted'] + counts['corrections']):
+        raise ValueError('compact native/acceptance counts are malformed or inconsistent')
+    total = counts['target_native_calls'] + counts['draft_native_calls']
+    lifecycle = loop.get('child_lifecycle', {})
+    lifecycle_keys = ('launched_child_count', 'completed_child_count', 'active_child_count',
+        'last_child_pid', 'last_child_exitcode', 'child_status')
+    if (not isinstance(lifecycle, dict) or any(progress.get(key) != lifecycle.get(key)
+                or type(progress.get(key)) is not type(lifecycle.get(key)) for key in lifecycle_keys)
+            or any(type(lifecycle.get(key)) is not int or lifecycle[key] < 0
+                for key in lifecycle_keys[:3])
+            or lifecycle['launched_child_count'] != total or lifecycle['completed_child_count'] != total
+            or lifecycle['active_child_count'] != 0 or lifecycle.get('child_status') in {'STARTING', 'RUNNING'}):
+        raise ValueError('compact supervisor has active or unverified child completion; locks retained')
+    children = lifecycle.get('children')
+    if not isinstance(children, list) or len(children) != total or total > 128:
+        raise ValueError('compact result omits its bounded child PID/exit completion ledger')
+    pids = set()
+    for child in children:
+        pid, status = child.get('pid'), child.get('exitcode')
+        if (type(pid) is not int or not 0 < pid <= (1 << 31) - 1 or pid in pids
+                or type(status) is not int or not 0 <= status <= 255 or success and status != 0):
+            raise ValueError('compact child PID/exit ledger is incomplete or inconsistent')
+        pids.add(pid)
+    if children:
+        if (lifecycle.get('child_status') != 'EXITED'
+                or lifecycle.get('last_child_pid') != children[-1]['pid']
+                or lifecycle.get('last_child_exitcode') != children[-1]['exitcode']):
+            raise ValueError('compact final child is not proven exited')
+    elif lifecycle.get('last_child_pid') is not None or lifecycle.get('last_child_exitcode') is not None:
+        raise ValueError('compact no-child result contains an unbound process')
+    supervisor = loop.get('process_id')
+    if (type(supervisor) is not int or not 0 < supervisor <= (1 << 31) - 1 or supervisor in pids
+            or type(progress.get('supervisor_pid')) is not int or progress.get('supervisor_pid') != supervisor or progress.get('status') != loop['status']
+            or progress.get('counts') != counts or any(type(progress.get('counts', {}).get(key)) is not int for key in keys)
+            or progress.get('generated_tokens') != generated
+            or progress.get('supervisor_timing') != loop.get('supervisor_timing')):
+        raise ValueError('compact progress differs from its completed supervisor result')
+    if success and (len(generated) != manifest['max_new_tokens'] or prefix != prompt + generated
+            or counts['target_native_calls'] != len(prompt) + len(generated)
+            or not manifest['minimum_draft_rounds'] <= counts['draft_native_calls'] <= counts['considered']
+            or counts['considered'] > counts['draft_native_calls'] * manifest['max_proposals_per_round']
+            or counts['corrections'] > counts['draft_native_calls'] or counts['bonuses'] > counts['draft_native_calls']
+            or len(generated) != 1 + counts['considered'] + counts['bonuses']
+            or type(loop.get('completed_rounds')) is not int or loop.get('completed_rounds') != counts['draft_native_calls']
+            or loop.get('eos_policy') != 'DISABLED_FIXED_BUDGET_SMOKE'
+            or loop.get('acceptance_scope') != 'CONSIDERED_K_ONLY_NOT_ALL15'):
+        raise ValueError('compact fixed-budget request or considered-only accounting is incomplete')
+    if not success and (not isinstance(loop.get('error'), str) or not loop['error'].strip()
+            or loop.get('failed_child_pid') is not None and (not children
+                or loop['failed_child_pid'] != children[-1]['pid']
+                or loop.get('failed_child_exitcode') != children[-1]['exitcode'])):
+        raise ValueError('compact failure lacks its bound error/last-child exit evidence')
+    _validate_summaries(loop, manifest, required=True)
+    for path, before in pins.items():
+        if _full(path) != before:
+            raise ValueError('compact result changed during validation')
+    if _full(inventory_path) != baseline:
+        raise ValueError('compact inventory changed during validation')
     return loop
 
 
@@ -776,12 +968,13 @@ def _receive_verified_inventory_file(hdc, remote_root, local_root, row):
 
 def _retrieve(hdc, out, state, manifest):
     board = PurePosixPath(state['board_attempt'])
+    dump = _dump_mode(manifest)
     state['stage'] = 'retrieve-completed-loop'
-    print('board-serial: supervisor completed; retrieving retained outputs and receipts once', flush=True)
-    for name in _ATTEMPT_LOGS:
+    print('board-serial: supervisor completed; retrieving ' + ('full debug evidence' if dump else 'tokens and small completion status'), flush=True)
+    for name in (_ATTEMPT_LOGS if dump else ('tool.pid', 'tool.exitcode')):
         if _receive(hdc, board, out, name) is None:
             raise ValueError('completed supervisor attempt is missing ' + name)
-    if (out / 'run.sh').read_text() != state['launcher']:
+    if dump and (out / 'run.sh').read_text() != state['launcher']:
         raise ValueError('retained launcher differs from this one recorded launch')
     if (out / 'tool.pid').read_text() != str(state['completion']['launcher_process_id']) + '\n' or (
             out / 'tool.exitcode').read_text() != str(state['completion']['remote_exitcode']) + '\n':
@@ -791,6 +984,8 @@ def _retrieve(hdc, out, state, manifest):
         raise ValueError('completed supervisor has no retrieval inventory')
     raw, inventory_id = _read_small(local_results / 'retrieval-manifest.tsv', 8 << 20)
     rows = _inventory(raw)
+    if not dump and ({row['path'] for row in rows} != {'loop.json', 'progress.json'} or len(rows) != 2):
+        raise ValueError('compact request returned unexpected per-step or tensor artifacts')
     # Independently compare the entire declared final inventory on the board.
     checks = []
     for row in rows:
@@ -811,7 +1006,11 @@ def _retrieve(hdc, out, state, manifest):
         state['retrieval_transport']['file_receive_requests'] += 1
         state['retrieval_transport']['duplicate_per_file_remote_hash_queries_avoided'] += 1
         _receive_verified_inventory_file(hdc, remote_results, local_results, row)
-    if state['completion']['remote_exitcode'] == 0:
+    if not dump:
+        loop = validate_retrieved_tokens(manifest, local_results, _expected_config_sha256=state['config_sha256'],
+            _remote_exitcode=state['completion']['remote_exitcode'])
+        completed = [loop['process_id'], *[row['pid'] for row in loop['child_lifecycle']['children']]]
+    elif state['completion']['remote_exitcode'] == 0:
         loop = validate_retrieved_loop(manifest, local_results, _expected_config_sha256=state['config_sha256'])
         completed = [loop['process_id'], *[row['pid'] for row in loop['target_steps']],
             *[row['pid'] for row in loop['draft_steps']]]
@@ -824,8 +1023,13 @@ def _retrieve(hdc, out, state, manifest):
         retrieval_inventory=inventory_id,
         device_execution='EXECUTED_OUTPUTS_RETRIEVED' if state['completion']['remote_exitcode'] == 0 else 'FAILED_OUTPUTS_RETRIEVED',
         completed_native_pids=completed)
+    _result_scope(state, manifest)
     if state['completion']['remote_exitcode'] == 0:
-        state.update(counts=loop['counts'], generated_tokens=loop['generated_tokens'])
+        state.update(counts=loop['counts'], generated_tokens=loop['generated_tokens'],
+            generated_token_ids=loop['generated_tokens'])
+    for key in ('acceptance', 'phase_latency', 'supervisor_timing'):
+        if key in loop:
+            state[key] = loop[key]
     return loop
 
 
@@ -864,6 +1068,7 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
     hdc = None
     try:
         manifest = validate_prepared(prepared)
+        _result_scope(state, manifest)
         _, prep_id = _json(prepared / 'manifest.json')
         base = manifest['target_binding']['base_plan']
         executable, serial, server = _environment()
@@ -993,9 +1198,7 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
         state['lock_state'] = ('RETAINED_OR_UNCERTAIN' if state['global_held'] or state['target_lock_held']
             or state['draft_lock_held'] or state['uncertain'] else 'NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT')
         state['hdc_invocations'] = hdc.count if hdc else 0
-        state['next'] = ('Recover this exact execution directory; never relaunch or delete uncertain locks'
-            if state['launch_requested'] and state['status'] != 'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED'
-            else 'Retain complete native evidence; numerical accuracy and performance remain unvalidated')
+        state['next'] = _next_action(state)
         _checkpoint(out, state, state.get('phase', 'failed'))
         save_json(out / 'result.json', state)
     return state
@@ -1028,6 +1231,9 @@ def recover_board_serial(execution_dir, output_dir, *, timeout_seconds=60, poll_
                 or state['launcher'] != _launcher(state)):
             raise ValueError('recovery journal cache/model/launcher identities are inconsistent')
         manifest = validate_prepared(state['prepared'])
+        if state.get('dump', True) != _dump_mode(manifest):
+            raise ValueError('recovery cannot change the pinned dump/config mode')
+        _result_scope(state, manifest)
         base = manifest['target_binding']['base_plan']
         if (state['compilation_report_sha256'] != base['compilation_report_sha256']
                 or state['draft_model_sha256'] != manifest['draft']['model_source']['sha256']
@@ -1058,6 +1264,7 @@ def recover_board_serial(execution_dir, output_dir, *, timeout_seconds=60, poll_
         state['lock_state'] = ('RETAINED_OR_UNCERTAIN' if state.get('global_held') or state.get('target_lock_held')
             or state.get('draft_lock_held') or state.get('uncertain') else 'NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT')
         state['hdc_invocations'] = hdc.count if hdc else 0
+        state['next'] = _next_action(state)
         _checkpoint(out, state, state.get('phase', 'recovery-failed'))
         save_json(out / 'result.json', state)
     return state
