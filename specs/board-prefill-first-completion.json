@@ -1,0 +1,83 @@
+{
+  "source": "USER_PROVIDED_RECOVERY_SUMMARY",
+  "assistant_device_access": "NOT_PERFORMED_USER_REQUEST",
+  "status": "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED",
+  "stage": "complete",
+  "output": "$AI_RUN_DIR/dflash-board-prefill8-recovery",
+  "execution": "$AI_RUN_DIR/dflash-board-prefill8-run",
+  "prepared": "$AI_RUN_DIR/dflash-board-prefill8-run/prepared",
+  "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+  "model_compilation": "NOT_RUN",
+  "numerical_validation": "NOT_EVALUATED",
+  "generated_token_ids": [
+    4,
+    12,
+    10,
+    8,
+    0,
+    4,
+    32,
+    2
+  ],
+  "counts": {
+    "accepted": 0,
+    "bonuses": 0,
+    "considered": 7,
+    "corrections": 7,
+    "draft_native_calls": 7,
+    "prefill_native_calls": 1,
+    "target_native_calls": 8
+  },
+  "board_attempt": "/data/local/tmp/qwen35_board_serial_07858071594b4747bc36207cf8038278",
+  "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+  "dump": false,
+  "retrieval_mode": "FINAL_TOKENS_ONLY",
+  "evidence_scope": "TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY",
+  "acceptance": {
+    "accepted": 0,
+    "considered": 7,
+    "rate": 0
+  },
+  "phase_latency": {
+    "decode": {
+      "calls": 8,
+      "mean_ms": 14586.5,
+      "total_ms": 116692
+    },
+    "draft": {
+      "calls": 7,
+      "mean_ms": 19589.714285714286,
+      "total_ms": 137128
+    },
+    "inference_only_status": "NOT_PROVIDED",
+    "prefill": {
+      "calls": 1,
+      "mean_ms": 15802,
+      "total_ms": 15802
+    },
+    "prompt_ingest": {
+      "calls": 1,
+      "latency_alias": "prefill",
+      "mean_ms": 15802,
+      "mechanism": "PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL",
+      "total_ms": 15802
+    },
+    "timing_scope": "CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD"
+  },
+  "supervisor_timing": {
+    "draft_child_process_wall_ms": 137128,
+    "draft_child_processes_timed": 7,
+    "prefill_child_process_wall_ms": 15802,
+    "prefill_child_processes_timed": 1,
+    "scope": "MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE",
+    "startup_source_hash_ms": 19754,
+    "target_child_process_wall_ms": 116692,
+    "target_child_processes_timed": 8,
+    "total_wall_ms": 305788
+  },
+  "prompt_ingestion": "PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL",
+  "physical_disconnect": "NOT_SPECIFICALLY_TESTED",
+  "state_chain_host_replay": "NOT_RUN_COMPACT_SCOPE",
+  "numerical_control_semantics": "UNVALIDATED",
+  "paired_speedup": "NOT_MEASURED"
+}

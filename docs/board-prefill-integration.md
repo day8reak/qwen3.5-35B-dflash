@@ -1,6 +1,6 @@
 # 原prefill进入板端DFlash请求
 
-本次实现复用原40层prefill64、原40层decode1和完整6层S64 draft三个OMC。服务器一次提供prompt token IDs、准备配置并启动；查原始embedding表、prefill、draft、逐token验证、状态推进及停止都在板端进行。这里只记录功能接入与主机验证，尚无这版代码的实机完成结果，P0保持进行中。
+本次实现复用原40层prefill64、原40层decode1和完整6层S64 draft三个OMC。服务器一次提供prompt token IDs、准备配置并启动；查原始embedding表、prefill、draft、逐token验证、状态推进及停止都在板端进行。功能接入已通过主机检查，随后用户回传一次prefill、8次decode、7次draft的完整板端请求成功；P0执行通过，详见[首次原prefill闭环](board-prefill-first-completion.md)。精度仍未验收。
 
 ## 请求与状态流
 

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_kind": "qwen35-full-model-execution-smoke-contract",
-  "status": "IN_PROGRESS_ORIGINAL_PREFILL_INTEGRATION_REQUIRED",
+  "status": "USER_REPORTED_ORIGINAL_PREFILL_BOARD_P0_EXECUTION_PASSED",
   "scope": "First-stage execution requires original prefill -> full draft/serial verify -> multi-round generation; successful decode1 serial-prompt runs are retained submilestones. Final numerical/rollback/speed goals unchanged.",
   "user_directive": {
     "real_features_required": true,
@@ -78,7 +78,6 @@
     "role": "LEGACY_DIAGNOSTIC_ONLY_NOT_AUTONOMOUS_P0"
   },
   "gaps": [
-    "Execute and recover the implemented original prefill -> draft/serial verify -> multi-round board request; this version has no device completion result",
     "Padded-short-prompt controls and80state/feature/logit handoff are explicit and host-tested; private-kernel effective-length semantics remain numerically unvalidated",
     "Compact tokens/completion evidence does not replay the80state chain on host; physical-disconnect experiment remains unobserved",
     "Validate experimental controls, numerical accuracy and ordinary-baseline equality after the execution milestone",
@@ -94,7 +93,7 @@
     "multi_round_loop": "SERIAL_PROMPT_SUBMILESTONE_BOARD_LOCAL_TARGET16_DRAFT7_ACCEPTED0_CORRECTIONS7",
     "last_row63_prefill": "EXECUTED_UNVALIDATED_PID28669_FEATURE_SHA_UNCHANGED_LOGITS_ARGMAX6",
     "multi_round_evidence": "docs/board-first-completion.md",
-    "original_prefill_integrated_multiround": "NOT_RUN",
+    "original_prefill_integrated_multiround": "EXECUTED_OUTPUTS_RETRIEVED_COMPACT_PREFILL1_DECODE8_DRAFT7",
     "latest_compact_serial_prompt": {
       "generated_token_ids": [
         26,
@@ -127,7 +126,8 @@
       "timing_scope": "CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD_NOT_NPU_INFERENCE",
       "host_state_chain_replay": "NOT_RUN_COMPACT_SCOPE",
       "physical_disconnect": "NOT_SPECIFICALLY_TESTED"
-    }
+    },
+    "latest_original_prefill": "specs/board-prefill-first-completion.json"
   },
   "first_loop_strategy": "Implemented original prefill64 with logical P8 and explicit zero padding -> exact80state/logit/valid-feature handoff -> anchor committed at position8 -> original full S64 draft and serial gear1 verification -> multi-round board generation. Host tests passed; user device execution pending. Preserve full history and P+G<=64; no S128 requirement.",
   "deferred": [
@@ -192,7 +192,7 @@
       "targets/cpro/runtime/src/board_serial_main.cpp": "bc15237844e0bc24d5a3a0fb616b3c9cf302bf58dc9928a0e7f77820de38a8d2",
       "targets/cpro/scripts/run_board_serial_dflash.py": "328d390caa6eaeb161b79f8c8b57ab778cc143006a26f1f4735c9083f3fe7e30"
     },
-    "device_execution": "NOT_RUN",
+    "device_execution": "USER_REPORTED_PREFILL_P8_G8_COMPLETED_COMPACT",
     "numerical_validation": "NOT_RUN",
     "models_recompiled": false,
     "model_residency": "NOT_IMPLEMENTED",

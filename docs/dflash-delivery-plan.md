@@ -18,7 +18,7 @@
 
 | 到达的结果 | 顺利时的累计工作日 | 说明 |
 |---|---:|---|
-| P0：原prefill驱动的端侧自主多轮闭环，允许精度误差 | 代码及主机检查完成，设备联调预留0.5–1天 | serial P8/G8已成功；原prefill集成待用户实机运行 |
+| P0：原prefill驱动的端侧自主多轮闭环，允许精度误差 | 已完成执行 | 用户回传prefill1／decode8／draft7成功，精度未验收 |
 | P1–P3：可对照的普通基线、精度收敛、prefill→decode数值验收 | 3–7天 | 前提是原参考与控制实现可取得；底层算子是主要风险 |
 | P4–P6：长上下文、常驻执行、批量verify及正确回滚 | 7–14天 | 含新增artifact编译与实机联调；允许部分并行 |
 | P7–P8：稳定性、配对性能、优化迭代与交付 | 10–20天 | 按2–4个工作周安排；达到2倍取决于接受率和实测瓶颈 |
@@ -26,6 +26,8 @@
 若参考资料齐备、数值问题较轻且设备联调顺利，完整交付最快约7–10个工作日。常规按10–20天预算；如果需要返工私有GDR／量化算子、处理两模型无法同时驻留，或draft接受率持续很低，另留3–7个工作日甚至更久，整体可能超过4周。不能到了预估日期就把未通过项改成通过。只想拿到首次闭环，预算看第一行；要可靠、可用且有2倍收益，看最后一行。
 
 下面各阶段工时是局部估计，有重叠，**不要把它们再加到累计时间上**。每次完成一个阶段，应按实际耗时和新发现更新剩余估计。
+
+用户最新调整：P0执行已完成，先推进P5的V2统一与常驻工程，再完成P1/P2精度验收；这不提前宣布性能收益或取消后续依赖。
 
 ## 3. 当前真实进展
 
@@ -60,13 +62,13 @@
 
 ## P0. 完成原prefill驱动的端侧自主多轮循环
 
-**状态：in_progress。** [已完成实机子里程碑](board-first-completion.md)是decode1串行输入prompt后运行draft／serialverify；原prefill→draft／serialverify→多轮generation尚未运行，不能验收整个P0。精度暂不阻塞执行里程碑，准确性与性能目标不取消。
+**状态：passed（执行范围）。** [最新原prefill闭环](board-prefill-first-completion.md)实际完成prefill1／decode8／draft7，生成8个token，compact回收成功。精度、状态数值语义、常驻与性能另行验收。
 
 主机循环`run_serial_dflash_smoke.py`仍只算联调；现`run_board_serial_dflash.py`已证明serial路径可以全在板端完成。新增`--prefill-feedback`已接入一次真实prefill的板端路径，主机集成通过后由用户执行设备验收。保留旧serial的完整dump与compact成功目录，不要求重复同样的P8/G8。最新compact总墙钟367.791秒，prompt输入8次74.389秒、生成decode8次108.209秒、draft7次137.646秒；包含加载／执行／卸载，非纯NPU时间，且没有主机逐状态回放。
 
-本阶段待完成：原prefill实际执行一次，明确其80状态、logits和8层features到decode／draft的身份与字节交接；随后由板端完成提议、串行验证、接受／纠正及多轮生成。prefill／decode是不同模型variant，保留各自SHA，不能按RefData编号或相同shape猜对应关系。功能接入应在P0推进；P3保留同输入的数值／历史一致性验收。
+本阶段已观察：原prefill实际执行一次，明确其80状态、logits和8层features到decode／draft的身份与字节交接；随后由板端完成提议、串行验证、接受／纠正及多轮生成。prefill／decode是不同模型variant，保留各自SHA，不能按RefData编号或相同shape猜对应关系。功能接入应在P0推进；P3保留同输入的数值／历史一致性验收。
 
-当前实现`PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL`：8个有效prompt token右padding到原prefill64，使用显式控制配方和80状态映射；首个anchor在位置8推进decode后，完整9行历史进入原S64 draft。代码及主机检查不等于实机验收；设备命令见[current-status.md](current-status.md)，合同细节见[board-prefill-integration.md](board-prefill-integration.md)。原私有算子的短有效长度语义仍待数值验证。不裁真实历史、不重置位置，P＋G不得超过64，当前不需S128编译。
+当前实现`PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL`：8个有效prompt token右padding到原prefill64，使用显式控制配方和80状态映射；首个anchor在位置8推进decode后，完整9行历史进入原S64 draft。用户已回传该路径的compact实机完成摘要；复现命令见[current-status.md](current-status.md)，合同细节见[board-prefill-integration.md](board-prefill-integration.md)。原私有算子的短有效长度语义仍待数值验证。不裁真实历史、不重置位置，P＋G不得超过64，当前不需S128编译。
 
 通过条件：
 
@@ -245,7 +247,7 @@ decode1串行verify仍对每个已提交token运行target，主要是正确性�
 
 可直接复制给后续模型：
 
-> 请先读取 docs/dflash-delivery-plan.md、specs/dflash-execution-state.json 和 docs/current-status.md。沿P0执行新增 --prefill-feedback 路径，完成原prefill→draft／串行verify→多轮generation的实机验收。短prompt填充、anchor、80状态和容量合同已实现并通过主机检查；decode1串行prompt的P8/G8实机成功只是子里程碑，不要求重复。不要自动指定S128，也不要裁历史或以串行prompt替代原prefill。按计划完成常规修复、验证、提交／推送和远端命令交付，保持旧成功产物。禁止用host测试或有限值冒称设备精度／加速通过。每次结束更新阶段状态、证据和一条下一动作；遇到计划第7节情况，保留最小复现，向用户汇报以便重新规划。
+> 请先读取 docs/dflash-delivery-plan.md、specs/dflash-execution-state.json 和 docs/current-status.md。P0原prefill→draft／串行verify→多轮generation已由用户实机完成。当前按用户要求推进P5统一V2常驻；P1/P2精度仍待验收，不要求重复已经成功的逐次加载请求。不要自动指定S128，也不要裁历史或以串行prompt替代原prefill。按计划完成常规修复、验证、提交／推送和远端命令交付，保持旧成功产物。禁止用host测试或有限值冒称设备精度／加速通过。每次结束更新阶段状态、证据和一条下一动作；遇到计划第7节情况，保留最小复现，向用户汇报以便重新规划。
 
 每次交接更新状态JSON，并用以下格式简报：
 

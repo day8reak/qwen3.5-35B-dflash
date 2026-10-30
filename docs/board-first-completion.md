@@ -1,6 +1,6 @@
 # 已完成子里程碑：decode1串行prompt的端侧自主循环
 
-2026-10-30，用户已回传端侧serial流程的完整dump及compact成功结果。它们证明板端自主执行的子流程可完成；**P0整体仍为in_progress**。用户明确第一阶段还必须包含原prefill→draft／串行verify→多轮generation，这条集成路径尚未运行。助手未连接设备，以下依据用户终端回传，未在本地重新读取其完整文件。
+2026-10-30，用户先回传以下serial流程的完整dump及compact成功结果。这两项本身只是子里程碑；随后原prefill驱动的完整请求也已成功，P0执行通过见[独立原prefill记录](board-prefill-first-completion.md)。助手未连接设备，以下依据用户终端回传。
 
 ## 原完整dump回传
 
@@ -31,11 +31,11 @@
 
 compact只回收tokens、小型时延／计数报告和进程完成证据；**没有在主机重放逐候选或80状态字节链**，不能继承完整dump的证据范围。它仍是同一serial子流程，不是原prefill集成通过。
 
-## 尚未完成
+## 当时尚未完成及后续结果
 
 - 原prefill输出的80状态、logits及8层features接入draft／serialverify，并完成后续多轮生成。
 - 同一请求的prefill／decode variant身份、anchor和draft容量处理；路线仍在确定，S128不是自动前置条件。
 - 真实接受或bonus分支覆盖：本次自然出现的是全拒绝／target纠正。
 - 物理断连后的专门实测、数值精度、普通baseline一致性、模型常驻及配对性能验收。
 
-保留全部成功目录，不要求重跑已经成功的serial请求。后续工作沿原prefill集成推进，旧结果继续作为可回滚的子里程碑证据。
+上述前两项随后由原prefill请求完成执行闭环，数值语义仍未验收；其余项继续独立验收。保留全部成功目录，当前沿统一V2常驻推进。

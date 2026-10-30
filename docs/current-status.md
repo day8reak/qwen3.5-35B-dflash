@@ -2,11 +2,13 @@
 
 <a id="用户现在执行什么"></a>
 
-**2026-10-30：P0仍在进行。用户明确第一阶段必须包含原prefill→draft／串行verify→多轮generation。** 已成功的是decode1串行输入8-token prompt的端侧自主子流程，不等于原prefill接入完成。最新compact回传tokens为`[26,18,2,4,6,2,0,2]`，16次target、7次draft，接受0／考虑7；总墙钟367.791秒。原prefill驱动的完整循环尚未运行，精度与加速仍未验收。详见[已完成子里程碑](board-first-completion.md)。保留成功目录，不要求重复已成功的serial请求。
+**2026-10-30：P0原prefill端侧完整执行阶段已完成。** 用户最新回传1次prefill、8次decode、7次draft，生成`[4,12,10,8,0,4,32,2]`，接受0／7；总墙钟305.788秒，完成回收且锁已释放。见[原prefill首次闭环](board-prefill-first-completion.md)。compact未做主机逐状态回放，精度和加速未验收。
+
+**当前按用户要求优先推进P5常驻实现。** 目标是prefill完成后退出，同一native进程内使用两个HIAI V2 manager，让decode和当前内嵌draft各加载一次、多次Run。已有成功draft实际为legacy-buffer；V2常驻是新路径，尚未实机验证。新入口完成前不要求重复下面已经成功的请求。
 
 服务器只负责一次部署、启动和最终结果回收。请求启动后，embedding查表、prompt输入、draft、decode1 verify、接受／拒绝、80状态与特征反馈和停止都在板端完成。连接中断后已经启动的端侧请求仍应自行完成，重连回收同一attempt，不重新推理。
 
-## 现在运行：一次原prefill＋板端多轮draft／decode
+## 已成功基线：一次原prefill＋板端多轮draft／decode
 
 - 板端C++调度器先运行一次原prefill64，将80个状态交给原decode1，并用真实特征运行完整S64 draft，P8/G8，每轮最多考虑2个候选。每次draft实际输出15个候选。
 - 三个既有OMC保持不变；本次只构建runner，不导出AIR或编译模型。原prefill物理长度64，逻辑prompt为8；8行原表embedding／scale后补零，logits选择第7行。128项conv控制、有效长度和mask均在准备清单中明确记录，padding状态语义仍是实验，精度待验证。
@@ -65,6 +67,6 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
 
 完整dump和compact的serial子流程均已收到用户实机成功回传；compact只核对最终报告与完成记录，不在主机重放80状态链。最新分段墙钟：prompt输入8次共74.389秒、生成阶段decode 8次共108.209秒、draft 7次共137.646秒；都包含加载／执行／卸载，不是纯NPU推理时间。没有配对普通baseline，也未专门实测物理断连。
 
-**当前下一步是执行上面的原prefill板端请求并回收结果，P0尚未实机完成。** `--prefill-feedback`启用`PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL`；缺省不加它仍是旧serial入口，不能据此验收P0。prompt来自既有token ID文件，文本分词和token转文字尚未包含在板端程序。普通基线／精度、常驻和后续批verify分别验收。
+**上面的请求已经成功；当前下一步是实现并验证统一V2的常驻入口。** `--prefill-feedback`启用`PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL`；缺省不加它仍是旧serial入口，不能据此验收P0。prompt来自既有token ID文件，文本分词和token转文字尚未包含在板端程序。普通基线／精度、常驻和后续批verify分别验收。
 
 完整后续阶段、预计天数和换助手交接见 [执行总计划](dflash-delivery-plan.md)，机器可读进度见 [执行状态](../specs/dflash-execution-state.json)。

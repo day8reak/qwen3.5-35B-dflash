@@ -5,9 +5,9 @@
   "plan_document": "docs/dflash-delivery-plan.md",
   "current_commands": "docs/current-status.md",
   "overall_status": "in_progress",
-  "active_phase": "P0",
+  "active_phase": "P5",
   "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
-  "user_priority": "First stage requires original prefill -> full draft/serial verify -> multi-round generation autonomously on board. Decode1 serial-prompt success is a retained submilestone only; numerical accuracy remains deferred for this execution stage.",
+  "user_priority": "P0 execution passed from user-reported original-prefill board loop. User now requests unified HIAI V2 and resident decode/draft; implement P5 early, without claiming P1/P2 accuracy or speedup.",
   "status_policy": {
     "allowed": [
       "pending",
@@ -15,7 +15,7 @@
       "blocked",
       "passed"
     ],
-    "advance": "First incomplete phase, verify dependencies/evidence before promotion",
+    "advance": "User-directed P5 runtime implementation proceeds after P0 execution; P1/P2 remain required for numerical/performance acceptance",
     "one_active_phase": true,
     "host_or_plan_is_device_pass": false,
     "deadline_is_pass": false,
@@ -83,9 +83,10 @@
       "host serial loop first target completed, next input staging hit HDC disconnect; stale locks diagnosed; this is not autonomous board-loop evidence",
       "old host serial P8/G8 attempt failed after10 target and1 draft: reused runner library discovery pointed at missing second-call native build directory; user chose new autonomous board entry",
       "Autonomous decode1-serial-prompt P8/G8 submilestone completed and recovered: target16 draft7 accepted0 considered7 corrections7 bonuses0; BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED; lock released. See docs/board-first-completion.md.",
-      "Compact serial-prompt submilestone user-reported successful: tokens[26,18,2,4,6,2,0,2],target16,draft7,accepted0/considered7,total wall367791ms; original-prefill integrated loop not run; physical disconnect not specifically tested."
+      "Compact serial-prompt submilestone user-reported successful: tokens[26,18,2,4,6,2,0,2],target16,draft7,accepted0/considered7,total wall367791ms; original-prefill integrated loop not run; physical disconnect not specifically tested.",
+      "Original-prefill autonomous P8/G8 completed: prefill1/decode8/draft7, tokens[4,12,10,8,0,4,32,2], accepted0/7,305788ms totalwall; compact recovery and owned locks release succeeded. P0 execution passed, not numerical/performance acceptance."
     ],
-    "board_autonomous_loop": "USER_REPORTED_SERIAL_PROMPT_SUBMILESTONE_COMPLETE_P0_PREFILL_PATH_NOT_RUN",
+    "board_autonomous_loop": "USER_REPORTED_ORIGINAL_PREFILL_MULTIRound_P0_EXECUTION_PASSED",
     "legacy_host_checks": {
       "unique_passed": 292,
       "scope": "host/fake HDC/native boundaries only",
@@ -250,62 +251,103 @@
         "targets/cpro/runtime/src/board_serial_main.cpp": "bc15237844e0bc24d5a3a0fb616b3c9cf302bf58dc9928a0e7f77820de38a8d2",
         "targets/cpro/scripts/run_board_serial_dflash.py": "328d390caa6eaeb161b79f8c8b57ab778cc143006a26f1f4735c9083f3fe7e30"
       },
-      "device_execution": "NOT_RUN",
+      "device_execution": "USER_REPORTED_PREFILL_P8_G8_COMPLETED_COMPACT",
       "numerical_validation": "NOT_RUN",
       "models_recompiled": false,
       "model_residency": "NOT_IMPLEMENTED",
-      "document": "docs/board-prefill-integration.md"
+      "document": "docs/board-prefill-integration.md",
+      "device_evidence": "specs/board-prefill-first-completion.json"
     }
   },
   "next_action": {
-    "phase": "P0",
-    "type": "run_prefill_integration_on_user_device",
+    "phase": "P5",
+    "type": "implement_unified_v2_resident_session",
     "entrypoint": "targets/cpro/scripts/run_board_serial_dflash.py",
     "command_document": "docs/current-status.md",
-    "note": "Run the documented --prefill-feedback P8/G8 request once, then recover that same attempt. Host implementation and126 checks passed; device original-prefill multi-round completion is still unobserved. Reuse all3 unchanged OMCs; no S128 required."
+    "note": "实现一个板端native session，使用两个file-v2 manager常驻原decode与当前内嵌draft。prefill退出后各加载一次，保持原80状态及特征提交。主机验证后交付用户实机验证，失败不静默回退旧API。"
   },
   "last_actual_execution": {
-    "source": "USER_PROVIDED_COMPACT_RESULT_SUMMARY",
+    "source": "USER_PROVIDED_RECOVERY_SUMMARY",
+    "assistant_device_access": "NOT_PERFORMED_USER_REQUEST",
     "status": "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED",
+    "stage": "complete",
+    "output": "$AI_RUN_DIR/dflash-board-prefill8-recovery",
+    "execution": "$AI_RUN_DIR/dflash-board-prefill8-run",
+    "prepared": "$AI_RUN_DIR/dflash-board-prefill8-run/prepared",
+    "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+    "model_compilation": "NOT_RUN",
+    "numerical_validation": "NOT_EVALUATED",
     "generated_token_ids": [
-      26,
-      18,
-      2,
       4,
-      6,
-      2,
+      12,
+      10,
+      8,
       0,
+      4,
+      32,
       2
     ],
     "counts": {
-      "target_native_calls": 16,
-      "draft_native_calls": 7,
       "accepted": 0,
+      "bonuses": 0,
       "considered": 7,
       "corrections": 7,
-      "bonuses": 0
+      "draft_native_calls": 7,
+      "prefill_native_calls": 1,
+      "target_native_calls": 8
     },
-    "wall_clock_ms": {
-      "total": 367791,
-      "prompt_ingest_calls": 8,
-      "prompt_ingest_total": 74389,
-      "decode_calls": 8,
-      "decode_total": 108209,
-      "draft_calls": 7,
-      "draft_total": 137646
-    },
-    "timing_scope": "CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD_TOTAL_ALSO_INCLUDES_SOURCE_CHECKS_AND_SCHEDULING_IO",
-    "prompt_mechanism": "DECODE1_SERIAL_PROMPT_INGESTION",
+    "board_attempt": "/data/local/tmp/qwen35_board_serial_07858071594b4747bc36207cf8038278",
+    "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+    "dump": false,
+    "retrieval_mode": "FINAL_TOKENS_ONLY",
     "evidence_scope": "TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY",
+    "acceptance": {
+      "accepted": 0,
+      "considered": 7,
+      "rate": 0
+    },
+    "phase_latency": {
+      "decode": {
+        "calls": 8,
+        "mean_ms": 14586.5,
+        "total_ms": 116692
+      },
+      "draft": {
+        "calls": 7,
+        "mean_ms": 19589.714285714286,
+        "total_ms": 137128
+      },
+      "inference_only_status": "NOT_PROVIDED",
+      "prefill": {
+        "calls": 1,
+        "mean_ms": 15802,
+        "total_ms": 15802
+      },
+      "prompt_ingest": {
+        "calls": 1,
+        "latency_alias": "prefill",
+        "mean_ms": 15802,
+        "mechanism": "PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL",
+        "total_ms": 15802
+      },
+      "timing_scope": "CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD"
+    },
+    "supervisor_timing": {
+      "draft_child_process_wall_ms": 137128,
+      "draft_child_processes_timed": 7,
+      "prefill_child_process_wall_ms": 15802,
+      "prefill_child_processes_timed": 1,
+      "scope": "MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE",
+      "startup_source_hash_ms": 19754,
+      "target_child_process_wall_ms": 116692,
+      "target_child_processes_timed": 8,
+      "total_wall_ms": 305788
+    },
+    "prompt_ingestion": "PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL",
     "physical_disconnect": "NOT_SPECIFICALLY_TESTED",
-    "numerical_validation": "NOT_EVALUATED",
-    "paired_speedup": "NOT_MEASURED",
-    "p0_overall_status": "in_progress",
-    "original_prefill_integration": "NOT_RUN",
-    "execution": "$AI_RUN_DIR/dflash-board8-compact-run",
-    "recovery": "$AI_RUN_DIR/dflash-board8-compact-recovery",
-    "board_attempt": "/data/local/tmp/qwen35_board_serial_270d0cab40cb475da088eef153f21ee5",
-    "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT"
+    "state_chain_host_replay": "NOT_RUN_COMPACT_SCOPE",
+    "numerical_control_semantics": "UNVALIDATED",
+    "paired_speedup": "NOT_MEASURED"
   },
   "planned_parallelism": [
     "P0 autonomous board request on user device; host-only resident worker integration after tested adapter. No assistant board/HDC probes.",
@@ -326,14 +368,14 @@
     {
       "id": "P0",
       "title": "原prefill驱动的端侧自主DFlash多轮执行",
-      "status": "in_progress",
+      "status": "passed",
       "depends_on": [],
       "local_budget_workdays": [
         0.5,
         1
       ],
-      "next_action_type": "run_and_recover_prefill_integration",
-      "next_action": "用户执行 docs/current-status.md 的 --prefill-feedback 新请求：一次原prefill、8次decode和多轮完整draft全部在板端；恢复相同attempt后按P0条件验收。代码及126项主机检查已通过，当前不是设备PASS。",
+      "next_action_type": "retain_baseline",
+      "next_action": "保留 dflash-board-prefill8-run/recovery 作为原prefill板端完整执行基线；精度、接受分支、物理断连和性能另验。",
       "pass_conditions": [
         "Actual original prefill executes in the same board-local request before draft/serial verify and multi-round generation",
         "Prefill and decode model variants retain distinct SHA identities and all80 cross-model state bindings",
@@ -351,7 +393,8 @@
       "evidence": [
         "docs/board-first-completion.md",
         "docs/board-prefill-integration.md",
-        "docs/board-serial-validation.md"
+        "docs/board-serial-validation.md",
+        "docs/board-prefill-first-completion.md"
       ],
       "last_error": null,
       "submilestones": [
@@ -367,8 +410,8 @@
         },
         {
           "id": "original_prefill_draft_multiround",
-          "status": "in_progress",
-          "device_execution": "NOT_RUN"
+          "status": "passed",
+          "device_execution": "USER_REPORTED_EXECUTED_OUTPUTS_RETRIEVED_COMPACT"
         }
       ]
     },
@@ -485,17 +528,16 @@
     {
       "id": "P5",
       "title": "端侧模型常驻、内存与重复加载优化",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
-        "P1",
-        "P2"
+        "P0"
       ],
       "local_budget_workdays": [
         0.5,
         2
       ],
       "next_action_type": "implement_and_measure",
-      "next_action": "测真实同时驻留和峰值内存；保持target V2 external-weight与draft embedded路线，session复用模型/80state/features，减少逐步重复加载、hash和板端大张量落盘；保持P0已实现的无逐token服务器交互。",
+      "next_action": "实现一个板端native session，使用两个file-v2 manager常驻原decode与当前内嵌draft。prefill退出后各加载一次，保持原80状态及特征提交。主机验证后交付用户实机验证，失败不静默回退旧API。",
       "pass_conditions": [
         "two-model residency feasibility measured",
         "native loop same tokens/state as baseline",
@@ -509,7 +551,11 @@
         "matched ordinary baseline"
       ],
       "evidence": [],
-      "last_error": null
+      "last_error": null,
+      "numerical_acceptance_depends_on": [
+        "P1",
+        "P2"
+      ]
     },
     {
       "id": "P6",
@@ -692,5 +738,11 @@
     "physical_disconnect_validation": "NOT_SPECIFICALLY_TESTED"
   },
   "legacy_code_baseline": "4ea1c105c66b5014c2c1260ad9f757a096c38028",
-  "code_baseline_policy": "Use the Git commit containing this state file; native source SHA is recorded in current_known_evidence."
+  "code_baseline_policy": "Use the Git commit containing this state file; native source SHA is recorded in current_known_evidence.",
+  "user_decisions": [
+    {
+      "date": "2026-10-30",
+      "decision": "用户明确要求推进常驻并询问统一draft HIAI V2；当前选择单进程两个file-v2实例，原三个OMC和权重不变。P5工程提前，准确性与性能门槛不取消。"
+    }
+  ]
 }
