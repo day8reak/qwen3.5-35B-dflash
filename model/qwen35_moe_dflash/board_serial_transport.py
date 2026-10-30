@@ -53,6 +53,15 @@ def _resident_mode(manifest):
     return mode == 'resident-v2'
 
 
+def _new_target_policy(manifest):
+    value = manifest.get('target_lifecycle_policy')
+    if value is None:
+        return False
+    if value != 'init-before-weights-close-weights-first-v1' or not _resident_mode(manifest):
+        raise ValueError('unsupported pinned target lifecycle policy')
+    return True
+
+
 def _dump_mode(manifest):
     # Original prepared/config records predate the flag and retain full audit.
     value = manifest.get('dump', True)
@@ -72,6 +81,8 @@ def _result_scope(state, manifest):
         state['prompt_ingestion'] = _PREFILL_RECIPE
     if _resident_mode(manifest):
         state['execution_mode'] = 'resident-v2'
+        if _new_target_policy(manifest):
+            state['target_lifecycle_policy'] = manifest['target_lifecycle_policy']
 
 
 def _next_action(state):
@@ -186,13 +197,25 @@ def _resident_lifecycle(loop, manifest, *, success):
         target = life.get('target_lifecycle', {})
         if (any(life.get(kind + '_model_name') != 'qwen35_resident_' + kind
                     or life.get(kind + '_model_name_scope') != 'SDK_SETNAME_GETNAME_VALIDATED_BEFORE_INIT' for kind in ('target', 'draft'))
-                or target.get('weight_init_policy') != 'EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT_NO_FALLBACK'
+                or target.get('weight_init_policy') != ('INIT_BEFORE_WEIGHTS_NO_FALLBACK' if _new_target_policy(manifest)
+                    else 'EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT_NO_FALLBACK')
+                or (_new_target_policy(manifest) and target.get('weight_cleanup_policy') != 'DEINIT_WEIGHTS_BEFORE_DEINIT')
                 or target.get('ordering_validation') != 'NOT_VALIDATED_ON_DEVICE'
                 or any(target.get(key) is not True for key in ('weights_init_attempted', 'weights_initialized',
                     'manager_init_attempted', 'manager_initialized', 'manager_deinit_called', 'weights_deinit_called', 'closed'))
                 or target.get('weights_deinit_status') != 0
                 or target.get('run_attempts') != counts['target_native_calls'] or target.get('successful_runs') != counts['target_native_calls']):
             raise ValueError('resident model names or external-weight Init/DeInit lifecycle is unverified')
+    target = life.get('target_lifecycle', {})
+    if _new_target_policy(manifest):
+        if (loop.get('target_lifecycle_policy') != manifest['target_lifecycle_policy']
+                or target.get('weight_init_policy') != 'INIT_BEFORE_WEIGHTS_NO_FALLBACK'
+                or target.get('weight_cleanup_policy') != 'DEINIT_WEIGHTS_BEFORE_DEINIT'):
+            raise ValueError('resident lifecycle differs from the explicitly prepared Init/cleanup policy')
+    elif (loop.get('target_lifecycle_policy') is not None
+            or target.get('weight_init_policy') != 'EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT_NO_FALLBACK'
+            or target.get('weight_cleanup_policy') is not None):
+        raise ValueError('historical resident preparation cannot adopt a new target lifecycle policy')
     memory = loop.get('resident_memory')
     if memory is not None:
         if (not isinstance(memory, dict) or memory.get('scope') != 'PROCESS_RSS_NOT_NPU_ALLOCATED_MEMORY'
@@ -1432,6 +1455,8 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
     hdc = None
     try:
         manifest = validate_prepared(prepared)
+        if _resident_mode(manifest) and not _new_target_policy(manifest):
+            raise ValueError('historical resident preparation is recover-only; prepare a new explicit target lifecycle policy')
         _result_scope(state, manifest)
         _, prep_id = _json(prepared / 'manifest.json')
         base = manifest['target_binding']['base_plan']
@@ -1620,6 +1645,8 @@ def recover_board_serial(execution_dir, output_dir, *, timeout_seconds=60, poll_
         manifest = validate_prepared(state['prepared'])
         if _resident_mode(manifest) != (state.get('execution_mode', 'fresh-process') == 'resident-v2'):
             raise ValueError('recovery cannot change the pinned resident execution mode')
+        if state.get('target_lifecycle_policy') != manifest.get('target_lifecycle_policy'):
+            raise ValueError('recovery cannot change the pinned target lifecycle policy')
         if _has_prefill(manifest):
             pbase = manifest['prefill']['base_plan']
             expected_cache = str(_remote(manifest['board_model_root']) / ('codex-target-' + pbase['compilation_report_sha256'][:20]))

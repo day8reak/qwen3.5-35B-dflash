@@ -15,10 +15,10 @@ model.write_bytes(b'original-target-load-probe-fixture')
 weights = root / 'weight "directory"'; weights.mkdir()
 
 
-def command(path=model, order='init-before-weights', version='FAKE-HIAI-X90'):
+def command(path=model, order='init-before-weights', cleanup='weights-before-manager', version='FAKE-HIAI-X90'):
     return [str(runner), '--target-load-probe', str(path), '--model-sha256',
             hashlib.sha256(path.read_bytes()).hexdigest(), '--weight-directory', str(weights),
-            '--load-order', order, '--expected-runtime-version', version,
+            '--load-order', order, '--cleanup-order', cleanup, '--expected-runtime-version', version,
             '--ddk-id', 'fake "ddk"', '--firmware-id', 'fake\\firmware']
 
 
@@ -42,19 +42,20 @@ def report(process, output):
     assert value['evidence_kind'] == 'host-fake-hiai'
     assert value['model_name'] == 'qwen35_resident_target'
     assert value['load_order'] == 'init-before-weights' and value['model_load_api'] == 'file-v2'
+    assert value['cleanup_order'] == 'weights-before-manager'
     assert value['run_called'] is False and value['process_called'] is False
     assert value['tensor_allocations_requested'] == 0 and value['numerical_validation'] == 'NOT_RUN'
     assert value['lifecycle']['run_attempts'] == value['lifecycle']['successful_runs'] == 0
     assert value['lifecycle']['closed'] is True
     assert value['lifecycle']['weight_init_policy'] == 'EXPERIMENTAL_INIT_BEFORE_WEIGHTS_LOAD_PROBE_ONLY_NO_FALLBACK'
+    assert value['lifecycle']['weight_cleanup_policy'] == 'DEINIT_WEIGHTS_BEFORE_DEINIT'
     assert value['lifecycle']['ordering_validation'] == 'NOT_VALIDATED_ON_DEVICE'
     assert value['model_content_unchanged'] is True and value['elapsed_ms'] >= 0
     assert value['weight_directory'] == str(weights) and value['process_id'] > 0
     return value
 
 
-# A dedicated provider marker supports this experimental order only. It does
-# not relax the existing production adapter provider's required order.
+# Both the production fixture and dedicated probe fixture require Init first.
 for fault in ('', 'v2-run', 'v2-allocation', 'v2-shape'):
     process, output, events = execute('success-' + (fault or 'normal'), fault)
     assert process.returncode == 0, process.stderr
@@ -65,7 +66,7 @@ for fault in ('', 'v2-run', 'v2-allocation', 'v2-shape'):
     assert all(life[key] for key in ('manager_init_attempted', 'manager_initialized', 'weights_init_attempted',
                                    'weights_initialized', 'manager_deinit_called', 'weights_deinit_called'))
     sequence = ['v2-restore-file', 'v2-set-name:qwen35_resident_target', 'v2-create-manager',
-                'v2-init', 'v2-init-weights', 'v2-deinit', 'v2-deinit-weights', 'v2-manager-destroy', 'v2-built-model-destroy']
+                'v2-init', 'v2-init-weights', 'v2-deinit-weights', 'v2-deinit', 'v2-manager-destroy', 'v2-built-model-destroy']
     assert [events.index(event) for event in sequence] == sorted(events.index(event) for event in sequence)
 
 
@@ -93,23 +94,27 @@ for fault in ('original-init-weights', 'original-init-weights-throw', 'original-
     assert 'v2-deinit-weights' not in events
 
 
-process, output, events = execute('cleanup-error', 'original-deinit-weights')
-assert process.returncode == 1
-value = report(process, output); life = value['lifecycle']
-assert value['runtime_stage'] == life['failure_stage'] == 'CLEANUP_FAILED'
-assert life['manager_initialized'] and life['weights_initialized']
-assert life['manager_init_status'] == life['weights_init_status'] == 0
-assert life['manager_deinit_called'] and life['weights_deinit_called'] and life['weights_deinit_status'] == 73
-assert life['cleanup_error'] and 'DeinitWeights failed: 73' in value['error']
+for fault in ('original-deinit-weights', 'original-deinit-weights-throw', 'original-deinit-weights-unknown', 'original-both-cleanup-failures'):
+    process, output, events = execute(fault, fault)
+    assert process.returncode == 1
+    value = report(process, output); life = value['lifecycle']
+    assert value['runtime_stage'] == life['failure_stage'] == 'CLEANUP_FAILED'
+    assert life['manager_initialized'] and life['weights_initialized']
+    assert life['manager_init_status'] == life['weights_init_status'] == 0
+    returned = fault in ('original-deinit-weights', 'original-both-cleanup-failures')
+    assert life['manager_deinit_called'] and life['weights_deinit_called'] and life['weights_deinit_status'] == (73 if returned else -1)
+    assert life['cleanup_error'] and life['cleanup_error'] in value['error']
+    assert events.index('v2-deinit-weights') < events.index('v2-deinit')
+    if fault == 'original-both-cleanup-failures':
+        assert life['cleanup_error'].startswith('DeinitWeights failed: 73; injected target DeInit exception')
 
 
-# Ordinary adapter fixture rejects Init before InitWeights: this probe reports
-# that first failure and must never attempt the resident/default ordering.
+# An unsuccessful Init must stop here without trying weights first or retrying.
 old_model = root / 'unchanged-original-fixture.omc'; old_model.write_bytes(b'original-target-fixture')
-process, output, events = execute('no-fallback', args=command(old_model))
+process, output, events = execute('no-fallback', 'original-init', args=command(old_model))
 assert process.returncode == 1
 value = report(process, output)
-assert value['lifecycle']['manager_init_status'] == 74 and 'v2-init-weights' not in events
+assert value['lifecycle']['manager_init_status'] == 32 and 'v2-init-weights' not in events
 
 
 process, output, events = execute('wrong-runtime', args=command(version='OTHER'))
@@ -120,6 +125,8 @@ assert not value['lifecycle']['manager_init_attempted'] and not value['lifecycle
 assert 'v2-create-built-model' not in events
 
 for label, args in [('wrong-order', command(order='weights-before-init')),
+                    ('wrong-cleanup-order', command(cleanup='manager-before-weights')),
+                    ('missing-cleanup-order', [arg for arg in command() if arg not in ('--cleanup-order', 'weights-before-manager')]),
                     ('extra-mode', command() + ['--model-io-only', str(model)]),
                     ('wrong-sha', [arg if arg != hashlib.sha256(model.read_bytes()).hexdigest() else '0' * 64 for arg in command()])]:
     process, output, events = execute(label, args=args)

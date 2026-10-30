@@ -119,18 +119,20 @@ int main(int argc,char** argv) {
       Throws([&]{executor.CopyOutput(81);}); Throws([&]{executor.Execute();});
       executor.Close(); executor.Close();
       Require(executor.lifecycle().closed && executor.lifecycle().weights_deinit_status==0,"explicit cleanup missing");
+      Require(executor.lifecycle().weight_init_policy=="INIT_BEFORE_WEIGHTS_NO_FALLBACK"&&
+              executor.lifecycle().weight_cleanup_policy=="DEINIT_WEIGHTS_BEFORE_DEINIT","explicit lifecycle policies missing");
       Throws([&]{executor.SetInput(0,std::vector<std::uint8_t>(in[0].bytes));});
     }
     auto events=Trace(repeated);
     for(const auto* one:{"v2-restore-file","v2-create-manager","v2-init-weights","v2-init","v2-deinit","v2-deinit-weights","v2-manager-destroy","v2-built-model-destroy"})
       Require(Count(events,one)==1,std::string("expected exactly one lifecycle event: ")+one);
     Require(Count(events,"v2-run")==3,"expected exactly3 resident Run calls");
-    Order(events,"v2-restore-file","v2-init-weights"); Order(events,"v2-init-weights","v2-init");
-    Order(events,"v2-deinit","v2-deinit-weights"); Order(events,"v2-deinit-weights","v2-manager-destroy");
+    Order(events,"v2-restore-file","v2-init"); Order(events,"v2-init","v2-init-weights");
+    Order(events,"v2-deinit-weights","v2-deinit"); Order(events,"v2-deinit","v2-manager-destroy");
     Order(events,"v2-manager-destroy","v2-built-model-destroy");
 
     const std::vector<std::pair<std::string,std::string>> construction_faults={
-      {"original-init-weights","EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT"},
+      {"original-init-weights","INIT_WEIGHTS_AFTER_INIT"},
       {"original-init","MODEL_MANAGER_INIT"},{"original-name","TENSOR_DESCRIPTORS"},
       {"original-dtype","TENSOR_DESCRIPTORS"},{"original-format","TENSOR_DESCRIPTORS"},
       {"original-shape","TENSOR_DESCRIPTORS"},{"original-count","TENSOR_DESCRIPTORS"},
@@ -144,12 +146,14 @@ int main(int argc,char** argv) {
     for(const auto& fault:construction_faults) {
       Failure(fault.first.c_str()); const auto trace=trace_case(fault.first);
       Require(Throws([&]{HiaiOriginalTargetExecutor executor(model,weights,"FAKE-HIAI-X90",in,out);})==fault.second,"construction failure stage differs: "+fault.first);
-      events=Trace(trace); Require(Count(events,"v2-init-weights")==1 && Count(events,"v2-run")==0,"constructor retried or ran model");
-      if(fault.first=="original-init-weights") {
-        Require(Count(events,"v2-init")==0 && Count(events,"v2-deinit")==0 && Count(events,"v2-deinit-weights")==0,"failed weights init cleaned unowned scope");
+      events=Trace(trace); Require(Count(events,"v2-init")==1 && Count(events,"v2-run")==0,"constructor retried or ran model");
+      if(fault.first=="original-init-weights" || fault.first=="original-init") {
+        Require(Count(events,"v2-init-weights")==static_cast<std::size_t>(fault.first=="original-init-weights") &&
+                Count(events,"v2-deinit")==1 && Count(events,"v2-deinit-weights")==0,"failed initialization cleaned unowned weights or leaked manager");
       } else {
+        Require(Count(events,"v2-init-weights")==1,"weights initialization omitted");
         Require(Count(events,"v2-deinit")==1 && Count(events,"v2-deinit-weights")==1,"successful weights scope not released exactly once");
-        Order(events,"v2-deinit","v2-deinit-weights");
+        Order(events,"v2-deinit-weights","v2-deinit");
       }
     }
     for(const auto* fault:{"original-run","original-replace-output","original-run-unknown-exception"}) {
@@ -177,15 +181,21 @@ int main(int argc,char** argv) {
       Throws([&]{executor.SetInput(0,std::vector<std::uint8_t>(in[0].bytes));});
     }
     Require(Count(Trace(late),"v2-run")==1,"late output mutation caused retry");
-    const auto cleanup=trace_case("cleanup-failure");
-    {
+    for(const auto* fault:{"original-deinit-weights","original-deinit-weights-throw","original-deinit-weights-unknown","original-both-cleanup-failures"}) {
+      Failure(""); const auto cleanup=trace_case(fault);
       HiaiOriginalTargetExecutor executor(model,weights,"FAKE-HIAI-X90",in,out);
-      Failure("original-deinit-weights");
+      Failure(fault);
       Require(Throws([&]{executor.Close();})=="CLEANUP_FAILED","cleanup error not reported");
-      Require(executor.lifecycle().weights_deinit_status==73,"cleanup Status lost");
+      const auto returned=std::string(fault)=="original-deinit-weights"||std::string(fault)=="original-both-cleanup-failures";
+      Require(executor.lifecycle().weights_deinit_status==(returned?73:-1),"cleanup Status lost or fabricated");
+      Require(executor.lifecycle().manager_deinit_called && executor.lifecycle().closed,"weights failure skipped manager cleanup");
+      if(std::string(fault)=="original-both-cleanup-failures")
+        Require(executor.lifecycle().cleanup_error.find("DeinitWeights failed: 73; injected target DeInit exception")==0,"first cleanup error overwritten");
       executor.Close();
+      const auto cleanup_events=Trace(cleanup);
+      Require(Count(cleanup_events,"v2-deinit-weights")==1&&Count(cleanup_events,"v2-deinit")==1,"failed cleanup retried or skipped manager");
+      Order(cleanup_events,"v2-deinit-weights","v2-deinit");
     }
-    Require(Count(Trace(cleanup),"v2-deinit-weights")==1,"failed cleanup retried");
     Failure("");
     for(const auto* fault:{"declared-raw-dtype","declared-extent","duplicate-name"}) {
       auto bad=in;
@@ -197,7 +207,7 @@ int main(int argc,char** argv) {
       Require(Count(Trace(trace),"v2-restore-file")==0,"invalid contract loaded model");
     }
     unsetenv("FAKE_HIAI_TRACE");
-    std::cout<<"PASS original target adapter: repeated3 Run, full89/82 extents, exact cleanup and21 failure cases; host fake only\n";
+    std::cout<<"PASS original target adapter: repeated3 Run, full89/82 extents, exact cleanup and24 failure cases; host fake only\n";
     return 0;
   } catch(const std::exception& error) { std::cerr<<error.what()<<'\n'; return 1; }
 }

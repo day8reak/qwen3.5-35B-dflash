@@ -94,7 +94,7 @@ int main(int argc,char** argv){try{
   Require(std::count(events.begin(),first_close,"v2-run")==6,"manager unloaded between alternating runs");
 
   for(const auto& fault:std::vector<std::string>{"original-init-weights","original-init-weights-throw","original-init-weights-unknown",
-      "original-init","original-init-cleanup-failure","original-init-deinit-throw",
+      "original-init","original-init-deinit-throw",
       "resident-draft-init","v2-shape","resident-name","resident-cross-alias"}){
     Failure(fault);const auto path=trace(fault);ResidentSession session;
     const auto stage=Throws([&]{session.Load(config);});const auto& e=session.evidence();
@@ -104,29 +104,29 @@ int main(int argc,char** argv){try{
     if(fault.rfind("original-init-weights",0)==0){
       const auto& t=e.target_lifecycle;
       Require(e.target_loads==0&&e.draft_load_attempts==0&&t.weights_init_attempted&&!t.weights_initialized&&
-        !t.manager_init_attempted&&!t.manager_init_status.has_value()&&!t.manager_deinit_called&&!t.weights_deinit_called&&t.closed,
+        t.manager_init_attempted&&t.manager_initialized&&t.manager_init_status==0&&t.manager_deinit_called&&!t.weights_deinit_called&&t.closed,
         "InitWeights constructor failure lost its actual attempt/cleanup snapshot");
-      Require(t.failure_stage=="EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT"&&stage=="TARGET_LOAD/"+t.failure_stage,
+      Require(t.failure_stage=="INIT_WEIGHTS_AFTER_INIT"&&stage=="TARGET_LOAD/"+t.failure_stage,
         "first InitWeights failure stage was overwritten by cleanup");
       if(fault=="original-init-weights")Require(t.weights_init_status==72,"returned InitWeights status lost");
       else Require(!t.weights_init_status.has_value(),"throwing InitWeights invented a return status");
     }
-    if(fault=="original-init"||fault=="original-init-cleanup-failure"||fault=="original-init-deinit-throw"){
+    if(fault=="original-init"||fault=="original-init-deinit-throw"){
       const auto& t=e.target_lifecycle;
-      Require(e.target_loads==0&&e.draft_load_attempts==0&&t.weights_init_attempted&&t.weights_initialized&&t.weights_init_status==0&&
-        t.manager_init_attempted&&!t.manager_initialized&&t.manager_init_status==32&&t.manager_deinit_called&&t.weights_deinit_called&&t.closed,
+      Require(e.target_loads==0&&e.draft_load_attempts==0&&!t.weights_init_attempted&&!t.weights_initialized&&!t.weights_init_status.has_value()&&
+        t.manager_init_attempted&&!t.manager_initialized&&t.manager_init_status==32&&t.manager_deinit_called&&!t.weights_deinit_called&&t.closed,
         "failed Init partial ownership and cleanup were not copied out of constructor");
       Require(t.failure_stage=="MODEL_MANAGER_INIT"&&stage=="TARGET_LOAD/MODEL_MANAGER_INIT","cleanup hid the first Init failure");
-      Require(t.weights_deinit_status==(fault=="original-init-cleanup-failure"?73:0),"partial cleanup return status lost");
+      Require(t.weights_deinit_status==-1,"partial cleanup fabricated uncalled weights status");
       Require(t.cleanup_error.empty()==(fault=="original-init"),"partial cleanup error lost or fabricated");
       Require(e.cleanup_error.empty()==t.cleanup_error.empty(),"session hid partial-constructor cleanup error");
     }
     Failure("");Throws([&]{session.Load(config);});Throws([&]{session.RunDraft(DraftInputs());});
     events=Trace(path);Require(Count(events,"v2-run")==0,"load failure launched a run");
     if(e.target_loads)Require(Count(events,"v2-deinit-weights")==1,"partial load leaked target weights");
-    if(fault.rfind("original-init-weights",0)==0)Require(Count(events,"v2-init-weights")==1&&Count(events,"v2-init")==0&&Count(events,"v2-deinit-weights")==0,"failed weights init retried or cleaned unowned scope");
-    if(fault=="original-init"||fault=="original-init-cleanup-failure"||fault=="original-init-deinit-throw")
-      Require(Count(events,"v2-init")==1&&Count(events,"v2-deinit")==1&&Count(events,"v2-deinit-weights")==1,"partial Init cleanup retried or omitted");
+    if(fault.rfind("original-init-weights",0)==0)Require(Count(events,"v2-init-weights")==1&&Count(events,"v2-init")==1&&Count(events,"v2-deinit")==1&&Count(events,"v2-deinit-weights")==0,"failed weights init retried or cleaned unowned scope");
+    if(fault=="original-init"||fault=="original-init-deinit-throw")
+      Require(Count(events,"v2-init")==1&&Count(events,"v2-deinit")==1&&Count(events,"v2-init-weights")==0&&Count(events,"v2-deinit-weights")==0,"partial Init cleanup retried or omitted");
   }
   for(const auto& fault:std::vector<std::string>{"original-run","original-run-unknown-exception","v2-run","v2-replace-output","v2-short-buffer"}){
     Failure("");const auto path=trace(fault);ResidentSession session;session.Load(config);Failure(fault);
@@ -141,12 +141,15 @@ int main(int argc,char** argv){try{
     ResidentSession session;session.Load(config);auto short_input=DraftInputs();short_input.pop_back();Throws([&]{session.RunDraft(short_input);});
     Require(session.evidence().closed&&session.evidence().draft_runs==0,"incomplete input accepted");
   }Require(Count(Trace(invalid),"v2-run")==0,"incomplete input called HIAI Run");
-  Failure("");const auto close=trace("cleanup-failure");{
-    ResidentSession session;session.Load(config);Failure("original-deinit-weights");
+  for(const auto& fault:std::vector<std::string>{"original-deinit-weights","original-deinit-weights-throw","original-deinit-weights-unknown","original-both-cleanup-failures"}){
+    Failure("");const auto close=trace(fault);ResidentSession session;session.Load(config);Failure(fault);
     Require(Throws([&]{session.Close();})=="SESSION_CLEANUP","cleanup failure lost");
-    const auto& e=session.evidence();Require(e.poisoned&&e.closed&&e.target_lifecycle.weights_deinit_status==73,"cleanup Status not retained");
+    const auto& e=session.evidence();const bool returned=fault=="original-deinit-weights"||fault=="original-both-cleanup-failures";
+    Require(e.poisoned&&e.closed&&e.target_lifecycle.weights_deinit_status==(returned?73:-1)&&e.target_lifecycle.manager_deinit_called,"cleanup Status not retained or manager cleanup skipped");
+    if(fault=="original-both-cleanup-failures")Require(e.target_lifecycle.cleanup_error.find("DeinitWeights failed: 73; injected target DeInit exception")==0,"first cleanup failure lost");
     session.Close();
-  }Require(Count(Trace(close),"v2-deinit-weights")==1,"failed cleanup retried");
+    Require(Count(Trace(close),"v2-deinit-weights")==1&&Count(Trace(close),"v2-deinit")==2,"failed cleanup retried or peer skipped");
+  }
   Failure("");const auto draft_close=trace("draft-cleanup-failure");{
     ResidentSession session;session.Load(config);Failure("resident-draft-deinit");
     Require(Throws([&]{session.Close();})=="SESSION_CLEANUP","throwing draft cleanup not reported");
@@ -156,6 +159,6 @@ int main(int argc,char** argv){try{
     session.Close();Throws([&]{session.RunDraft(DraftInputs());});
   }Require(Count(Trace(draft_close),"v2-deinit")==2&&Count(Trace(draft_close),"v2-deinit-weights")==1,"throwing cleanup retried or leaked peer");
   Failure("");unsetenv("FAKE_HIAI_TRACE");
-  std::cout<<"PASS resident session: two distinct file-v2 managers, alternating3+3 Run, persistent176 buffers, owned output copies and18 failure cases; host fake only\n";
+  std::cout<<"PASS resident session: two distinct file-v2 managers, alternating3+3 Run, persistent176 buffers, owned output copies and20 failure cases; host fake only\n";
   return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

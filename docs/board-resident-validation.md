@@ -2,13 +2,19 @@
 
 更新：2026-10-30。实现入口为 `run_board_serial_dflash.py --resident`，二进制为 `qwen35_board_resident`。完整参数见 [当前执行命令](current-status.md)，生命周期与计时定义见 [常驻方案](resident-runtime-plan.md)。原 prefill P0 成功保存在 [独立记录](board-prefill-first-completion.md)，不能用它证明本次常驻路径已在设备运行。
 
+## 最新：初始化通过，关闭顺序待验
+
+用户的 `target-resident-load-probe-v1` 已观察到 target `Init=0`、`InitWeights=0`。旧关闭顺序先DeInit、后DeinitWeights，后者返回3，因此报告 `CLEANUP_FAILED`；10568ms包含加载和关闭，没有Run／draft调用。任务已退出并释放锁，见[本次设备记录](../specs/resident-v2-target-init-observed.json)。
+
+当前修复把正式target和独立probe统一为 `Init → InitWeights`，关闭为 `DeinitWeights → DeInit`。即使权重清理失败也继续关闭manager，分别保留错误。新resident清单及配置绑定 `target_lifecycle_policy=init-before-weights-close-weights-first-v1`；旧清单回收保持旧策略。主机验证见[当前生命周期修复记录](../specs/resident-v2-lifecycle-repair-validation.json)。先运行[probe v2](target-resident-load-probe.md)，通过后可直接按当前命令运行常驻，关闭／draftV2／双模型驻留尚需设备验证。
+
 ## 首次设备结果与诊断修复
 
 用户已在实际 DDK／设备执行常驻请求。prefill 完成一次；随后 target 在 `InitWeights` 返回 `3=INVALID_PARAM`，此时尚未调用 manager `Init`，draft 尚未加载。请求失败结果已回收，所持锁已释放。[设备记录](../specs/resident-v2-first-load-failure.json)保留用户回传的阶段、计时与接口声明，未把错误码解释为内存不足。
 
 构造函数抛出异常时，原实现没有把部分生命周期传给 session，导致摘要中的 attempted／cleanup 字段保持默认值。诊断修复在清理后保留实际调用、返回状态、最初失败阶段及清理错误；未调用或异常无返回使用 `null`。普通输出也直接列出执行错误及执行失败阶段，回收的 `stage=complete` 仍仅表示回收完成。
 
-本次修复保持加载顺序不变，不解决 `InitWeights` 参数拒绝。主机验证：85 项传输／摘要回归、4 项实际 adapter CTest、1 项实际 supervisor＋adapter＋FakeHIAI 加载失败 JSON 集成通过。源码和测试产物见[诊断修复记录](../specs/resident-v2-failure-reporting-validation.json)。下一步核对原成功工具的 V2 加载实现；不为验证摘要而重复整轮推理。
+当时的诊断修复保持加载顺序不变。其主机验证：85 项传输／摘要回归、4 项实际 adapter CTest、1 项实际 supervisor＋adapter＋FakeHIAI 加载失败 JSON 集成通过。源码和测试产物见[历史诊断修复记录](../specs/resident-v2-failure-reporting-validation.json)；后续初始化实验及当前修复见上节。
 
 ## 本次实现
 
@@ -40,8 +46,8 @@
 
 - 本机所声明 CPro profile manifest 缺失，没有本地实际 OHOS／DDK 链接结果；未修改共享环境。用户已经构建并运行首个版本，但新增诊断修复尚未取得设备结果。
 - 没有执行设备／HDC 探测，遵守用户“此处连不上，不再检查”的要求。
-- 原 external-weight target 的 InitWeights-before-Init 尝试已被拒绝，具体参数／顺序原因待定位；当前 embedded draft 的 V2 初始化、两个manager同时驻留及内存余量尚未验证。
+- 原 external-weight target 的 Init-before-InitWeights已有一次设备成功观察；当前权重先关闭的修复、embedded draft 的 V2 初始化、两个manager同时驻留及内存余量尚未验证。
 - 新版多轮 token／state 是否与旧成功运行一致、实际耗时改善、重复请求内存稳定和物理断连尚未验收。FakeHIAI 的运行时长不作性能数据。
 - P1/P2 数值精度及有效接受率未完成；既有完整请求接受 0／7，新运行方式不能自动提升精度。
 
-下一动作是[独立 target 加载／关闭实验](target-resident-load-probe.md)，只尝试一次显式 Init-before-weights，复用缓存且不调用 Run。实际成功工具的 V2 源码仍未取得，用户提供的另一份源码片段走旧接口；不能据此推断 V2 契约。实验通过后才接入完整常驻路线并使用新目录运行。
+下一动作是[独立 target 加载／关闭实验v2](target-resident-load-probe.md)，复用缓存且不调用Run。初始化保持已观察到的顺序，只验证权重先关闭的修复；通过后可直接运行已同步修复的完整常驻路线，并使用新目录。

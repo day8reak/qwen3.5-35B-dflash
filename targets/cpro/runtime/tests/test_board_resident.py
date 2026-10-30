@@ -94,7 +94,8 @@ def enable_resident(case, dump=True):
             dtype, raw, width = types[tooltype]
             abi.append('\t'.join((role, index, name, dtype, str(raw), '2', str(int(size) // width), size)))
     path = case['root'] / 'resident-abi.tsv'; path.write_text('\n'.join(abi) + '\n')
-    rows += ['execution_mode\tresident-v2', f'resident_abi\t{path}\t{sha(path)}\t{path.stat().st_size}']
+    rows += ['execution_mode\tresident-v2', 'target_lifecycle_policy\tinit-before-weights-close-weights-first-v1',
+        f'resident_abi\t{path}\t{sha(path)}\t{path.stat().st_size}']
     case['config'].write_text('\n'.join(rows) + '\n')
     return path
 
@@ -113,6 +114,9 @@ def test_prefill_then_two_resident_managers_all_commits(resident_binary, case, d
     assert process.returncode == 0, process.stderr
     value = report(case); life = value['resident_lifecycle']
     assert value['schema_version'] == 3 and value['execution_mode'] == 'resident-v2'
+    assert value['target_lifecycle_policy'] == 'init-before-weights-close-weights-first-v1'
+    assert life['target_lifecycle']['weight_init_policy'] == 'INIT_BEFORE_WEIGHTS_NO_FALLBACK'
+    assert life['target_lifecycle']['weight_cleanup_policy'] == 'DEINIT_WEIGHTS_BEFORE_DEINIT'
     assert value['evidence_kind'] == 'host-fake-hiai'
     assert value['generated_tokens'] == list(range(9, 17)) and value['full_prefix'] == list(range(1, 17))
     assert life['target_loads'] == life['draft_loads'] == 1 and life['closed'] and not life['poisoned']
@@ -180,4 +184,16 @@ def test_resident_binary_never_falls_back_without_explicit_mode(resident_binary,
     case['config'].write_text(case['config'].read_text().replace('execution_mode\tresident-v2\n', ''))
     process = run(resident_binary, case)
     assert process.returncode == 1 and 'requires explicit resident-v2' in process.stderr
+    assert not list(case['out'].rglob('tool.pid'))
+
+
+@pytest.mark.parametrize('fault', ['missing', 'old-policy', 'duplicate'])
+def test_new_resident_binary_rejects_unbound_or_old_lifecycle_contract(resident_binary, case, fault):
+    enable_resident(case)
+    line = 'target_lifecycle_policy\tinit-before-weights-close-weights-first-v1\n'
+    text = case['config'].read_text()
+    text = text.replace(line, '') if fault == 'missing' else text.replace(line, 'target_lifecycle_policy\tweights-before-init-v0\n') if fault == 'old-policy' else text + line
+    case['config'].write_text(text)
+    process = run(resident_binary, case)
+    assert process.returncode == 1 and report(case)['stage'] == 'validate-config-and-source-hashes'
     assert not list(case['out'].rglob('tool.pid'))

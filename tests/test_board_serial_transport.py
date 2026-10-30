@@ -559,7 +559,8 @@ def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files
     root, manifest, FakeHdc, _ = prepared_request; manifest['dump'] = False
     if resident:
         _enable_prefill_request(root, manifest, tmp_path)
-        manifest.update(execution_mode='resident-v2', resident_abi=_write(root / 'resident-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n'))
+        manifest.update(execution_mode='resident-v2', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+            resident_abi=_write(root / 'resident-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n'))
         old_build = transport._build_payloads
         monkeypatch.setattr(transport, '_build_payloads', lambda out, timeout, **kwargs: old_build(out, timeout))
     (root / 'manifest.json').write_text(json.dumps(manifest))
@@ -568,11 +569,11 @@ def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files
     if resident:
         loop, progress = _resident_compact(manifest)
         loop.update(status='FAILED', config_sha256=launched['config_sha256'], stage='resident-load',
-            error='EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT: InitWeights failed: 23', generated_tokens=[], full_prefix=manifest['prompt_token_ids'],
+            error='INIT_WEIGHTS_AFTER_INIT: InitWeights failed: 23', generated_tokens=[], full_prefix=manifest['prompt_token_ids'],
             failed_child_pid=1001, failed_child_exitcode=0, completed_rounds=0)
         loop['counts'].update(target_native_calls=0, draft_native_calls=0, considered=0, accepted=0, corrections=0, bonuses=0)
         life = loop['resident_lifecycle']; life.update(session_id=hashlib.sha256((loop['config_sha256'] + ':1000').encode()).hexdigest(),
-            stage='TARGET_LOAD/EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT', status='FAILED', poisoned=True,
+            stage='TARGET_LOAD/INIT_WEIGHTS_AFTER_INIT', status='FAILED', poisoned=True,
             target_load_attempts=1, target_loads=0, draft_load_attempts=0, draft_loads=0, target_close_calls=0, draft_close_calls=0,
             target_runs=0, target_run_attempts=0, draft_runs=0, draft_run_attempts=0, target_load_ms=139, draft_load_ms=0,
             target_run_ms=0, draft_run_ms=0, close_ms=0)
@@ -626,7 +627,7 @@ def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files
             assert result['stage'] == 'complete' and result['execution_failure_stage'] == expected_stage
             assert result['error'] == result['execution_error'] == loop['error']
             if resident:
-                assert result['resident_failure_stage'] == 'TARGET_LOAD/EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT'
+                assert result['resident_failure_stage'] == 'TARGET_LOAD/INIT_WEIGHTS_AFTER_INIT'
                 assert result['counts'] == dict(target_native_calls=0, draft_native_calls=0, prefill_native_calls=1,
                     considered=0, accepted=0, corrections=0, bonuses=0)
             import importlib.util
@@ -740,7 +741,7 @@ def test_prefill_cache_miss_uses_strict_prefill_compiler_record(prepared_request
 def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_relaunches(prepared_request, tmp_path, monkeypatch):
     root, manifest, FakeHdc, _ = prepared_request
     abi = _write(root / 'resident-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n')
-    manifest.update(execution_mode='resident-v2', resident_abi=abi)
+    manifest.update(execution_mode='resident-v2', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY, resident_abi=abi)
     (root / 'manifest.json').write_text(json.dumps(manifest))
     old = transport._build_payloads; selected = []
     def build(out, timeout, *, resident=False):
@@ -777,6 +778,10 @@ def _resident_compact(manifest):
         target_lifecycle=dict(weight_init_policy='EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT_NO_FALLBACK', ordering_validation='NOT_VALIDATED_ON_DEVICE',
             **{key: True for key in ('weights_init_attempted', 'weights_initialized', 'manager_init_attempted', 'manager_initialized',
                 'manager_deinit_called', 'weights_deinit_called', 'closed')}, weights_deinit_status=0, run_attempts=8, successful_runs=8))
+    if manifest.get('target_lifecycle_policy'):
+        loop['target_lifecycle_policy'] = manifest['target_lifecycle_policy']
+        life['target_lifecycle'].update(weight_init_policy='INIT_BEFORE_WEIGHTS_NO_FALLBACK',
+            weight_cleanup_policy='DEINIT_WEIGHTS_BEFORE_DEINIT')
     loop['resident_lifecycle'] = life
     progress.update(resident_lifecycle=life, resident_call_status='RETURNED')
     child = dict(launched_child_count=1, completed_child_count=1, active_child_count=0,
@@ -819,3 +824,19 @@ def test_resident_compact_distinguishes_calls_loads_and_real_prefill_child(prepa
     else:
         checked = transport.validate_retrieved_loop(manifest, out, _expected_evidence_kind='host-fake-hiai')
         assert checked['resident_lifecycle']['closed'] and checked['child_lifecycle']['children'] == [dict(pid=1001, exitcode=0)]
+
+
+@pytest.mark.parametrize('prepared_new,observed_new', [(False, False), (False, True), (True, False), (True, True)])
+def test_resident_recovery_policies_cannot_be_silently_substituted(prepared_request, tmp_path, prepared_new, observed_new):
+    root, manifest, _, _ = prepared_request; _enable_prefill_request(root, manifest, tmp_path)
+    manifest.update(dump=False, execution_mode='resident-v2', resident_abi=dict(sha256='e' * 64))
+    if prepared_new: manifest['target_lifecycle_policy'] = preparation.TARGET_LIFECYCLE_POLICY
+    observed = deepcopy(manifest)
+    if observed_new: observed['target_lifecycle_policy'] = preparation.TARGET_LIFECYCLE_POLICY
+    else: observed.pop('target_lifecycle_policy', None)
+    loop, progress = _resident_compact(observed); out = tmp_path / 'policy-evidence'; _compact_files(out, loop, progress)
+    if prepared_new == observed_new:
+        assert transport.validate_retrieved_loop(manifest, out, _expected_evidence_kind='host-fake-hiai') == loop
+    else:
+        with pytest.raises(ValueError, match='policy|lifecycle'):
+            transport.validate_retrieved_loop(manifest, out, _expected_evidence_kind='host-fake-hiai')

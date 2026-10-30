@@ -304,14 +304,16 @@ def enable_resident(case):
             assert size == row['bytes']
             rows.append('\t'.join(map(str, (role, row['index'], row['name'], dtype, raw, 2, ','.join(map(str, shape)), size))))
     path = root / 'resident-abi.tsv'; path.write_text('\n'.join(rows) + '\n')
-    manifest.update(execution_mode='resident-v2', resident_abi=record(path))
+    manifest.update(execution_mode='resident-v2', resident_abi=record(path),
+        target_lifecycle_policy='init-before-weights-close-weights-first-v1')
     config = []
     for line in case['config'].read_text().splitlines():
         fields = line.split('\t')
         if fields[0] in {'target_model', 'draft_model', 'target_tool'}:
             actual = case['files'][fields[0]]; fields[2:] = [digest(actual), str(actual.stat().st_size)]; line = '\t'.join(fields)
         config.append(line)
-    config += ['execution_mode\tresident-v2', '\t'.join(('resident_abi', str(path), digest(path), str(path.stat().st_size)))]
+    config += ['execution_mode\tresident-v2', 'target_lifecycle_policy\tinit-before-weights-close-weights-first-v1',
+        '\t'.join(('resident_abi', str(path), digest(path), str(path.stat().st_size)))]
     case['config'].write_text('\n'.join(config) + '\n')
     (root / 'expected-prepared-manifest.json').write_text(json.dumps(manifest, indent=2))
 
@@ -320,19 +322,30 @@ def enable_resident(case):
 def test_actual_resident_file_v2_session_prefill_and_multiround_loop(tmp_path, resident_native_programs, dump):
     from qwen35_moe_dflash.board_serial_transport import validate_retrieved_loop
     case = make_case(tmp_path / ('resident-debug' if dump else 'resident-compact'), resident_native_programs, dump=dump)
-    enable_resident(case); process = execute(case)
+    enable_resident(case); trace = case['root'] / 'resident-sdk.trace'
+    process = execute(case, native_trace=trace)
     assert process.returncode == 0, (process.stdout, process.stderr)
     loop = validate_retrieved_loop(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
         _expected_config_sha256=digest(case['config']))
     assert loop['schema_version'] == 3 and loop['counts']['prefill_native_calls'] == 1
+    assert loop['target_lifecycle_policy'] == 'init-before-weights-close-weights-first-v1'
     life = loop['resident_lifecycle']
     assert life['target_loads'] == life['draft_loads'] == life['target_close_calls'] == life['draft_close_calls'] == 1
     assert life['closed'] and not life['poisoned']
+    assert life['target_lifecycle']['weight_init_policy'] == 'INIT_BEFORE_WEIGHTS_NO_FALLBACK'
+    assert life['target_lifecycle']['weight_cleanup_policy'] == 'DEINIT_WEIGHTS_BEFORE_DEINIT'
     assert life['target_runs'] == loop['counts']['target_native_calls'] == 8
     assert life['draft_runs'] == loop['counts']['draft_native_calls'] >= 2
     assert loop['generated_tokens'] == list(range(9, 17))
     assert len(loop['child_lifecycle']['children']) == 1
     assert loop['child_lifecycle']['children'][0]['pid'] != loop['process_id']
+    assert process.stdout.index('child-end') < process.stdout.index('resident-load-start')
+    events = trace.read_text().splitlines()
+    assert [event for event in events if event in {'v2-init', 'v2-init-weights'}] == ['v2-init', 'v2-init-weights', 'v2-init']
+    assert [event for event in events if event in {'v2-deinit', 'v2-deinit-weights'}] == ['v2-deinit', 'v2-deinit-weights', 'v2-deinit']
+    assert events.count('v2-create-tensor') == 176
+    assert events.count('v2-run') == 8 + life['draft_runs']
+    assert all(event not in events for event in ('load', 'process', 'unload'))
     if dump:
         calls = [event['call_index'] for kind in ('target_steps', 'draft_steps') for event in loop[kind]]
         assert sorted(calls) == list(range(8 + life['draft_runs']))
@@ -361,15 +374,15 @@ def test_actual_resident_failed_constructor_retains_lifecycle_snapshot(tmp_path,
     loop = validate_retrieved_tokens(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
         _expected_config_sha256=digest(case['config']), _remote_exitcode=1)
     life = loop['resident_lifecycle']; target = life['target_lifecycle']
-    assert life['stage'] == 'TARGET_LOAD/EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT'
+    assert life['stage'] == 'TARGET_LOAD/INIT_WEIGHTS_AFTER_INIT'
     assert life['target_load_attempts'] == 1 and life['target_loads'] == life['draft_load_attempts'] == 0
     assert life['closed'] and life['poisoned'] and life['cleanup_error'] == ''
     assert target['weights_init_attempted'] and not target['weights_initialized']
-    assert target['weights_init_status'] == 72 and target['manager_init_status'] is None
-    assert not target['manager_init_attempted'] and not target['manager_initialized']
-    assert not target['manager_deinit_called'] and not target['weights_deinit_called']
+    assert target['weights_init_status'] == 72 and target['manager_init_status'] == 0
+    assert target['manager_init_attempted'] and target['manager_initialized']
+    assert target['manager_deinit_called'] and not target['weights_deinit_called']
     assert target['weights_deinit_status'] == -1 and target['closed']
-    assert target['failure_stage'] == 'EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT'
+    assert target['failure_stage'] == 'INIT_WEIGHTS_AFTER_INIT'
     assert target['cleanup_error'] == '' and 'InitWeights failed: 72' in loop['error']
     assert loop['counts']['prefill_native_calls'] == 1
     assert loop['counts']['target_native_calls'] == loop['counts']['draft_native_calls'] == 0
@@ -436,12 +449,14 @@ def _reject_rebound_prefill_claims(case, original):
             path.write_bytes(saved); loop_path.write_bytes(saved_loop); inventory.write_bytes(saved_inventory)
 
 
-def execute(case, fault=None, native_fault=None):
+def execute(case, fault=None, native_fault=None, native_trace=None):
     env = dict(os.environ)
     if fault:
         env['QWEN_BOARD_TEST_FAULT'] = fault
     if native_fault:
         env['FAKE_HIAI_FAILURE'] = native_fault
+    if native_trace is not None:
+        env['FAKE_HIAI_TRACE'] = str(native_trace)
     stdout, stderr = case['root'] / 'supervisor.stdout', case['root'] / 'supervisor.stderr'
     # No live stdin/stdout pipe or callback drives a token after this spawn.
     # This local host test only waits for process exit; all children, control

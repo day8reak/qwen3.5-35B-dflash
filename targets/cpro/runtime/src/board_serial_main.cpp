@@ -39,6 +39,9 @@ constexpr const char* kEvidence = "host-fake-hiai";
 constexpr const char* kEvidence = "device-hiai";
 #endif
 constexpr std::size_t kVocab=248320, kWidth=16384, kFeatureBytes=32768;
+#ifdef QWEN35_RESIDENT_V2
+constexpr const char* kTargetLifecyclePolicy="init-before-weights-close-weights-first-v1";
+#endif
 using Bytes=std::vector<std::uint8_t>;
 using Clock=std::chrono::steady_clock;
 std::uint64_t ElapsedMs(Clock::time_point start) {
@@ -190,7 +193,7 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
   std::set<std::string> filekeys={"target_model","prefill_model","draft_model","draft_abi","target_tool","draft_runner","weight_table","scale_table"};
   std::set<std::string> strkeys={"target_library_path","draft_library_path","runtime_version","ddk_id","firmware_id","prompt","max_new_tokens","max_proposals","min_draft_rounds","timeout_ms"};
 #ifdef QWEN35_RESIDENT_V2
-  filekeys.insert("resident_abi");strkeys.insert("execution_mode");
+  filekeys.insert("resident_abi");strkeys.insert("execution_mode");strkeys.insert("target_lifecycle_policy");
 #endif
   for(std::size_t n=1;n<lines.size();++n){auto f=Split(lines[n],'\t');Require(!f[0].empty(),"empty config row");
     if(filekeys.count(f[0])){Require(f.size()==4&&!c.files.count(f[0]),"file row malformed/duplicate");HashSyntax(f[2]);auto bytes=Integer(f[3],32ULL<<30,false);auto p=Absolute(f[1]);
@@ -215,6 +218,7 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
   c.prefill=c.files.count("prefill_model")!=0;
 #ifdef QWEN35_RESIDENT_V2
   Require(c.prefill&&c.strings.count("execution_mode")&&c.strings.at("execution_mode")=="resident-v2","resident binary requires explicit resident-v2 mode and one original prefill");
+  Require(c.strings.count("target_lifecycle_policy")&&c.strings.at("target_lifecycle_policy")==kTargetLifecyclePolicy,"resident binary requires explicit current target lifecycle policy");
 #endif
   Require(c.files.size()==filekeys.size()-1+static_cast<std::size_t>(c.prefill)&&c.strings.size()==strkeys.size()+c.strings.count("dump"),"config fields missing");
   Require(c.prefill?(c.prefill_inputs.size()==89&&c.prefill_outputs.size()==82&&c.prefill_states.size()==80):(c.prefill_inputs.empty()&&c.prefill_outputs.empty()&&c.prefill_states.empty()),"prefill config must be complete89/82/80 or entirely absent");
@@ -303,7 +307,7 @@ class Supervisor {
     value["draft_run_attempts"]=e.draft_run_attempts;value["draft_runs"]=e.draft_runs;value["target_close_calls"]=e.target_close_calls;value["draft_close_calls"]=e.draft_close_calls;
     value["target_load_ms"]=e.target_load_ms;value["draft_load_ms"]=e.draft_load_ms;value["target_run_ms"]=e.target_run_ms;value["draft_run_ms"]=e.draft_run_ms;value["close_ms"]=e.close_ms;
     value["closed"]=e.closed;value["poisoned"]=e.poisoned;
-    J target=J::Obj();const auto& t=e.target_lifecycle;target["weight_init_policy"]=t.weight_init_policy;target["ordering_validation"]=t.ordering_validation;
+    J target=J::Obj();const auto& t=e.target_lifecycle;target["weight_init_policy"]=t.weight_init_policy;target["weight_cleanup_policy"]=t.weight_cleanup_policy;target["ordering_validation"]=t.ordering_validation;
     target["weights_init_attempted"]=t.weights_init_attempted;target["weights_initialized"]=t.weights_initialized;target["manager_init_attempted"]=t.manager_init_attempted;target["manager_initialized"]=t.manager_initialized;
     auto status_value=[](const std::optional<std::int64_t>& status){J value;if(status){value.kind=J::Number;value.s=std::to_string(*status);}return value;};
     target["weights_init_status"]=status_value(t.weights_init_status);target["manager_init_status"]=status_value(t.manager_init_status);target["failure_stage"]=t.failure_stage;target["cleanup_error"]=t.cleanup_error;
@@ -312,6 +316,7 @@ class Supervisor {
   }
   void ResidentCounts() {
     const auto& e=session.evidence();loop["schema_version"]=3;loop["dump"]=c.dump;loop["execution_mode"]="resident-v2";loop["resident_lifecycle"]=ResidentEvidence();
+    loop["target_lifecycle_policy"]=c.strings.at("target_lifecycle_policy");
     loop["resident_memory"]=J::Obj();loop["resident_memory"]["scope"]="PROCESS_RSS_NOT_NPU_ALLOCATED_MEMORY";loop["resident_memory"]["snapshots"]=resident_memory;
     loop["resident_abi_sha256"]=c.files.at("resident_abi").hash;loop["model_residency"]="TWO_PERSISTENT_FILE_V2_MANAGERS_AFTER_PREFILL";
     auto& timing=loop["supervisor_timing"];timing["target_child_process_wall_ms"]=0;timing["draft_child_process_wall_ms"]=0;timing["target_child_processes_timed"]=0;timing["draft_child_processes_timed"]=0;

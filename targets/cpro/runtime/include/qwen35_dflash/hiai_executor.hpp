@@ -175,7 +175,8 @@ struct HiaiBoundRuntimeTensor {
   std::size_t bytes = 0;
 };
 struct HiaiOriginalTargetLifecycle {
-  std::string weight_init_policy = "EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT_NO_FALLBACK";
+  std::string weight_init_policy = "INIT_BEFORE_WEIGHTS_NO_FALLBACK";
+  std::string weight_cleanup_policy = "DEINIT_WEIGHTS_BEFORE_DEINIT";
   std::string ordering_validation = "NOT_VALIDATED_ON_DEVICE";
   // Init flags retain historical attempts/successes after Close. They do not
   // mean resources are live: closed/deinit fields describe shutdown separately.
@@ -205,8 +206,8 @@ struct HiaiOriginalTargetLoadProbe {
 // This adapter is not a resident-worker protocol or a device validation claim.
 class HiaiOriginalTargetExecutor final {
  public:
-  // A separate, single-order experiment. It never constructs tensors or calls
-  // Run, and never changes the production constructor's weights-before-Init.
+  // A separate, single-order load/close experiment. It never constructs
+  // tensors or calls Run. The complete lifecycle remains to be device-tested.
   static HiaiOriginalTargetLoadProbe ProbeInitBeforeWeights(
       const std::filesystem::path& model, const std::filesystem::path& weight_directory,
       const std::string& expected_runtime_version);

@@ -151,6 +151,9 @@ def test_wire_config_preserves_explicit_nonordinal_state_mapping(tmp_path):
     resident = manifest | {'execution_mode': 'resident-v2', 'resident_abi': record}
     assert b'execution_mode\tresident-v2\n' in job.make_config(resident, paths | {'resident_abi': '/board/raw-abi.tsv'})
     assert b'resident_abi\t/board/raw-abi.tsv\t' in job.make_config(resident, paths | {'resident_abi': '/board/raw-abi.tsv'})
+    assert b'target_lifecycle_policy\t' not in job.make_config(resident, paths | {'resident_abi': '/board/raw-abi.tsv'})
+    assert b'target_lifecycle_policy\tinit-before-weights-close-weights-first-v1\n' in job.make_config(
+        resident | {'target_lifecycle_policy': job.TARGET_LIFECYCLE_POLICY}, paths | {'resident_abi': '/board/raw-abi.tsv'})
     paths['target_model'] = '/board/evil\nstate\tRefData_0'
     with pytest.raises(ValueError, match='TSV'):
         job.make_config(manifest, paths)

@@ -1,6 +1,6 @@
 # 板端统一 HIAI V2 常驻执行
 
-更新：2026-10-30。原 prefill 完整板端闭环已经取得用户实机完成结果；见 [成功基线](board-prefill-first-completion.md)。本次新增 `--resident`，将 decode 和当前内嵌权重 draft 都接到 HIAI V2。**首次设备请求在 target 的 InitWeights 返回 INVALID_PARAM，draft 尚未加载，常驻未通过。** 正在核对原成功工具的加载实现，详见[失败记录与诊断修复](board-resident-validation.md)。默认入口保留已成功的按次加载方式，旧请求仍按自己的准备记录恢复。
+更新：2026-10-30。原 prefill 完整板端闭环已经取得用户实机完成结果；见 [成功基线](board-prefill-first-completion.md)。`--resident` 将 decode 和当前内嵌权重 draft 都接到 HIAI V2。**独立设备实验已观察到 target 的 Init→InitWeights均返回0；旧关闭顺序失败，正在验证权重先关闭的修复。draft尚未加载，常驻多轮未通过。** 详见[设备进展与验证](board-resident-validation.md)。默认入口保留已成功的按次加载方式，旧请求仍按自己的准备记录恢复。
 
 ## 执行方式
 
@@ -20,7 +20,7 @@
 
 原 decode 复用 `HiaiOriginalTargetExecutor`。准备阶段从已绑定的原生 `model-io.json` 导出独立 `resident-abi.tsv`，绑定实际 89 输入／82 输出的名字、维度、类型、raw dtype／format 和字节大小。不能把旧 draft 的 ABI 或原图 shape 推断套给 target。
 
-当前外置 target 实验顺序为 `RestoreFromFile → SetName → CreateModelManager → InitWeights → Init`，退出时 `DeInit → DeinitWeights`。用户提供的头文件证明这些接口存在，未证明其顺序满足所选私有实现；每阶段失败记录并停止，不自动换顺序重试。
+当前外置 target 顺序为 `RestoreFromFile → SetName → CreateModelManager → Init → InitWeights`，退出时 `DeinitWeights → DeInit`。初始化已有该target一次设备成功观察，关闭顺序修复尚待实机验证；每阶段失败记录并停止，不自动换顺序重试。即使DeinitWeights失败，也继续DeInit并保留清理错误，不重复关闭。新准备清单和native配置显式绑定 `target_lifecycle_policy=init-before-weights-close-weights-first-v1`，旧请求回收保持历史策略。
 
 内嵌 draft 复用 `HiaiStatefulExecutor` 的 `file-v2` 路径：`RestoreFromFile → SetName → Init → Run`。保留完整六层原 S64 的 3 输入／2 输出 ABI；每次输入完整 prefix 的 features、IDs 和 mask，每次输出 15 个候选与 hidden。每轮最多考虑的候选数仍由原参数控制，默认 K=2。
 

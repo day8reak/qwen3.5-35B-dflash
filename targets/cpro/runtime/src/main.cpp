@@ -92,6 +92,7 @@ void WriteOriginalTargetLifecycle(std::ostream& out, const HiaiOriginalTargetLif
   const auto boolean = [](bool v) { return v ? "true" : "false"; };
   const auto status = [](const std::optional<std::int64_t>& v) { return v ? std::to_string(*v) : "null"; };
   out << "{\"weight_init_policy\":\"" << JsonEscape(value.weight_init_policy)
+      << "\",\"weight_cleanup_policy\":\"" << JsonEscape(value.weight_cleanup_policy)
       << "\",\"ordering_validation\":\"" << JsonEscape(value.ordering_validation)
       << "\",\"weights_init_attempted\":" << boolean(value.weights_init_attempted)
       << ",\"weights_initialized\":" << boolean(value.weights_initialized)
@@ -922,7 +923,7 @@ void Help() {
             << "qwen35_dflash_hiai --model-io-only MAIN.omc --descriptor-stage restore-only --model-sha256 SHA256 "
             << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID --output NEW.json\n"
             << "qwen35_dflash_hiai --target-load-probe MAIN.omc --model-sha256 SHA256 "
-            << "--weight-directory ABS_DIR --load-order init-before-weights "
+            << "--weight-directory ABS_DIR --load-order init-before-weights --cleanup-order weights-before-manager "
             << "--expected-runtime-version VERSION --ddk-id ID --firmware-id ID --output NEW.json\n"
             << "qwen35_dflash_hiai --target TARGET.omc --target-sha256 HEX "
             << "--draft DRAFT.omc --draft-sha256 HEX --expected-runtime-version VERSION "
@@ -1000,12 +1001,14 @@ int main(int argc, char** argv) {
       const auto model_hash = take("--model-sha256"); StepHash(model_hash);
       const std::filesystem::path weights = take("--weight-directory");
       const auto order = take("--load-order");
+      const auto cleanup_order = take("--cleanup-order");
       const std::filesystem::path output = take("--output");
       const auto version = take("--expected-runtime-version");
       const auto ddk = take("--ddk-id"), firmware = take("--firmware-id");
       if (!model.is_absolute() || !weights.is_absolute() || !output.is_absolute() ||
-          order != "init-before-weights" || version.empty() || ddk.empty() || firmware.empty() || !args.empty())
-        throw std::invalid_argument("target load probe requires absolute paths, explicit init-before-weights, runtime/DDK/firmware and no unrelated options");
+          order != "init-before-weights" || cleanup_order != "weights-before-manager" ||
+          version.empty() || ddk.empty() || firmware.empty() || !args.empty())
+        throw std::invalid_argument("target load probe requires absolute paths, init-before-weights, weights-before-manager, runtime/DDK/firmware and no unrelated options");
       NoSymlinks(weights); NoSymlinks(output);
       if (!std::filesystem::is_directory(weights) || std::filesystem::exists(output) ||
           std::filesystem::exists(output.string() + ".tmp"))
@@ -1035,6 +1038,7 @@ int main(int argc, char** argv) {
              << "\",\"runtime_version\":\"" << JsonEscape(observed.runtime_version)
              << "\",\"ddk_id\":\"" << JsonEscape(ddk) << "\",\"firmware_id\":\"" << JsonEscape(firmware)
              << "\",\"model_name\":\"qwen35_resident_target\",\"load_order\":\"init-before-weights\","
+             << "\"cleanup_order\":\"weights-before-manager\","
              << "\"model_load_api\":\"file-v2\",\"process_id\":" << static_cast<long long>(getpid())
              << ",\"run_called\":false,\"process_called\":false,\"tensor_allocations_requested\":0,"
              << "\"elapsed_ms\":" << observed.elapsed_ms << ",\"numerical_validation\":\"NOT_RUN\","

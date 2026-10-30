@@ -786,22 +786,28 @@ struct HiaiOriginalTargetExecutor::Impl {
     lifecycle.closed = true;
     outputs_available = false;
     std::string cleanup_error;
-    if (manager && lifecycle.manager_init_attempted) {
-      Stage("MODEL_MANAGER_DEINIT");
-      lifecycle.manager_deinit_called = true;
-      try { manager->DeInit(); }
-      catch (const std::exception& e) { cleanup_error = e.what(); }
-      catch (...) { cleanup_error = "unknown DeInit exception"; }
-    }
+    const auto append_error = [&](const std::string& message) {
+      if (!cleanup_error.empty()) cleanup_error += "; ";
+      cleanup_error += message;
+    };
     if (manager && lifecycle.weights_initialized) {
       Stage("EXTERNAL_WEIGHTS_DEINIT");
       lifecycle.weights_deinit_called = true;
       try {
         lifecycle.weights_deinit_status = static_cast<std::int64_t>(manager->DeinitWeights());
         if (lifecycle.weights_deinit_status != 0)
-          cleanup_error += " DeinitWeights failed: " + std::to_string(lifecycle.weights_deinit_status);
-      } catch (const std::exception& e) { cleanup_error += e.what(); }
-      catch (...) { cleanup_error += " unknown DeinitWeights exception"; }
+          append_error("DeinitWeights failed: " + std::to_string(lifecycle.weights_deinit_status));
+      } catch (const std::exception& e) { append_error(e.what()); }
+      catch (...) { append_error("unknown DeinitWeights exception"); }
+    }
+    // Always close the manager even when weights cleanup fails or throws.
+    // These flags are historical: neither failed call is retried later.
+    if (manager && lifecycle.manager_init_attempted) {
+      Stage("MODEL_MANAGER_DEINIT");
+      lifecycle.manager_deinit_called = true;
+      try { manager->DeInit(); }
+      catch (const std::exception& e) { append_error(e.what()); }
+      catch (...) { append_error("unknown DeInit exception"); }
     }
     // Keep restored model and all tensors alive until BOTH cleanup APIs and the
     // manager destructor have finished, including construction/Run failures.
@@ -907,10 +913,10 @@ HiaiOriginalTargetExecutor::HiaiOriginalTargetExecutor(
       }
     }
     impl_->RestoreModel(model, expected_version, resident_model_name);
-    // Production constructor policy remains unchanged. The separate load-only
-    // probe is the sole caller of the reversed experimental sequence.
-    impl_->InitWeights(weight_directory, "EXPERIMENTAL_INIT_WEIGHTS_BEFORE_INIT");
+    // A target-only device probe observed Init=0 then InitWeights=0. The full
+    // load/Run/close contract remains unvalidated; never retry another order.
     impl_->InitManager("MODEL_MANAGER_INIT");
+    impl_->InitWeights(weight_directory, "INIT_WEIGHTS_AFTER_INIT");
     impl_->Stage("TENSOR_DESCRIPTORS");
     const auto in_desc = impl_->built_model->GetInputTensorDescs();
     const auto out_desc = impl_->built_model->GetOutputTensorDescs();

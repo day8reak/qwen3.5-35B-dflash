@@ -546,7 +546,7 @@ class FakeModelManager final : public IModelManager {
   }
   Status InitWeights(const std::string& directory) override {
     Trace("v2-init-weights");
-    if (weights_ || (initialized_ && !load_probe_) || !std::filesystem::path(directory).is_absolute() ||
+    if (weights_ || !initialized_ || !std::filesystem::path(directory).is_absolute() ||
         !std::filesystem::is_directory(directory)) return 71;
     if (Failure()=="original-init-weights") return 72;
     if (Failure()=="original-init-weights-throw") throw std::runtime_error("injected InitWeights exception");
@@ -556,20 +556,22 @@ class FakeModelManager final : public IModelManager {
   }
   Status DeinitWeights() override {
     Trace("v2-deinit-weights");
-    if (!weights_ || initialized_) { std::cerr << "invalid weights cleanup order\n"; std::abort(); }
+    if (!weights_ || !initialized_) { std::cerr << "invalid weights cleanup order\n"; std::abort(); }
     weights_=false;
-    return Failure()=="original-deinit-weights" || Failure()=="original-init-cleanup-failure"?73:0;
+    if (Failure()=="original-deinit-weights-throw") throw std::runtime_error("injected DeinitWeights exception");
+    if (Failure()=="original-deinit-weights-unknown") throw 123;
+    return Failure()=="original-deinit-weights" || Failure()=="original-both-cleanup-failures"?73:0;
   }
   Status Init(const ModelInitOptions& options,const std::shared_ptr<IBuiltModel>& model,
               const std::shared_ptr<IModelManagerListener>& listener) override {
     Trace("v2-init");
     auto concrete=std::dynamic_pointer_cast<FakeBuiltModel>(model);
     if (listener || options.perfMode!=PerfMode::HIGH || !concrete || !concrete->restored) return 4;
-    if (concrete->original && !concrete->load_probe && !weights_) { model_=model; return 74; }
+    if (concrete->original && weights_) { model_=model; return 74; }
     model_=model; initialized_=true; original_=concrete->original; draft64_=concrete->draft64;
     load_probe_=concrete->load_probe;
     resident_loop_=concrete->resident_loop;draft_loop_=concrete->draft_loop;
-    return Failure()=="v2-init" || Failure()=="original-init" || Failure()=="original-init-cleanup-failure" ||
+    return Failure()=="v2-init" || Failure()=="original-init" ||
       Failure()=="original-init-deinit-throw" || (draft64_ && Failure()=="resident-draft-init")?32:0;
   }
   Status Run(const std::vector<std::shared_ptr<INDTensorBuffer>>& inputs,
@@ -638,7 +640,7 @@ class FakeModelManager final : public IModelManager {
     Trace("v2-deinit");
     if (model_.expired()) { std::cerr << "premature v2 built model release\n"; std::abort(); }
     initialized_=false;
-    if(original_&&Failure()=="original-init-deinit-throw")throw std::runtime_error("injected target DeInit exception after failed Init");
+    if(original_&&(Failure()=="original-init-deinit-throw"||Failure()=="original-both-cleanup-failures"))throw std::runtime_error("injected target DeInit exception");
     if(draft64_&&Failure()=="resident-draft-deinit")throw std::runtime_error("injected draft DeInit exception");
   }
  private:

@@ -15,6 +15,7 @@ from .target_compile_failure import _read_small
 
 KIND = 'qwen35-target-load-probe-execution'
 POLICY = 'init-before-weights'
+CLEANUP_ORDER = 'weights-before-manager'
 _FILES = ('probe.json', 'tool.stdout', 'tool.stderr', 'tool.pid', 'tool.exitcode', 'run.sh')
 
 
@@ -57,11 +58,16 @@ def _launcher(state):
         + "printf '%s\\n' \"$probe_status\" > tool.exitcode\nexit \"$probe_status\"\n")
 
 
-def _argv(manifest, board, primary):
+def _argv(manifest, board, primary, *, cleanup_order=None):
     base = manifest['target_binding']['base_plan']
-    return [str(board / 'runner'), '--target-load-probe', primary, '--model-sha256', manifest['target_model']['sha256'],
+    result = [str(board / 'runner'), '--target-load-probe', primary, '--model-sha256', manifest['target_model']['sha256'],
         '--weight-directory', str(PurePosixPath(primary).parent), '--load-order', POLICY, '--expected-runtime-version', base['runtime_version'],
         '--ddk-id', base['ddk_id'], '--firmware-id', base['firmware_id'], '--output', str(board / 'probe.json')]
+    if cleanup_order is not None:
+        if cleanup_order != CLEANUP_ORDER:
+            raise ValueError('unsupported target load-probe cleanup order')
+        result += ['--cleanup-order', cleanup_order]
+    return result
 
 
 def _release_unlaunched(hdc, out, state):
@@ -147,6 +153,12 @@ def validate_load_receipt(value, manifest, state, *, _expected_evidence_kind='de
             or type(life.get('weights_deinit_status')) is not int
             or not isinstance(life.get('cleanup_error'), str)):
         raise ValueError('load-only lifecycle is unclosed or claims model execution')
+    if 'cleanup_order' in state:
+        if (state['cleanup_order'] != CLEANUP_ORDER or value.get('cleanup_order') != CLEANUP_ORDER
+                or life.get('weight_cleanup_policy') != 'DEINIT_WEIGHTS_BEFORE_DEINIT'):
+            raise ValueError('load-only receipt differs from the pinned weights-first cleanup experiment')
+    elif 'cleanup_order' in value or 'weight_cleanup_policy' in life:
+        raise ValueError('historical load-only receipt cannot silently adopt a new cleanup order')
     for prefix in ('manager', 'weights'):
         attempted, initialized, status = life.get(prefix + '_init_attempted'), life.get(prefix + '_initialized'), life.get(prefix + '_init_status')
         if (type(attempted) is not bool or type(initialized) is not bool or initialized and (not attempted or type(status) is not int or status != 0)
@@ -215,6 +227,7 @@ def run_target_load_probe(prepared, output, *, apply=False, detach=False, timeou
     out.mkdir(parents=True, exist_ok=False)
     state = dict(schema_version=1, artifact_kind=KIND, status='FAILED', output=str(out), model_compilation='NOT_RUN',
         device_execution='NOT_RUN', model_inference='NOT_RUN', numerical_validation='NOT_EVALUATED', load_order=POLICY,
+        cleanup_order=CLEANUP_ORDER,
         board_lock_token=uuid.uuid4().hex, global_lock=str(transport._GLOBAL), global_held=False, cache_held=False,
         uncertain=False, launch_requested=False, automatic_model_retry='FORBIDDEN')
     hdc = None
@@ -255,7 +268,7 @@ def run_target_load_probe(prepared, output, *, apply=False, detach=False, timeou
         if state['cache_missing_bytes']:
             raise ValueError('cache-hit-only load probe requires every original target payload; no model upload attempted')
         state['cache_inventory'] = [{key: row[key] for key in ('remote', 'bytes', 'sha256')} for row in rows]
-        state['native_argv'] = _argv(manifest, board, primary)
+        state['native_argv'] = _argv(manifest, board, primary, cleanup_order=state['cleanup_order'])
         state['launcher'] = _launcher(state); (out / 'run.sh').write_text(state['launcher'])
         uploads.append(_file_record(out / 'run.sh', 'run.sh'))
         transport._directories(hdc, out, state, board, [board / 'lib'], 'create-load-probe-library-directory')
@@ -316,7 +329,8 @@ def recover_target_load_probe(execution, output, *, timeout_seconds=60):
         _, primary = _rows(manifest, cache)
         if (state['target_cache'] != str(cache) or state['model_path'] != primary or state['load_order'] != POLICY
                 or state['compilation_report_sha256'] != base['compilation_report_sha256']
-                or state['prepared_manifest'] != prepared_id or state['native_argv'] != _argv(manifest, PurePosixPath(state['board_attempt']), primary)
+                or state['prepared_manifest'] != prepared_id or state['native_argv'] != _argv(manifest, PurePosixPath(state['board_attempt']), primary,
+                    cleanup_order=state.get('cleanup_order'))
                 or state['launcher'] != _launcher(state)):
             raise ValueError('recovery model/cache/order differs from the original pinned experiment')
         executable, serial, server = transport._environment()

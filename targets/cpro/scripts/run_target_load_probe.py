@@ -33,7 +33,7 @@ def main(argv=None):
                 timeout_seconds=args.timeout_seconds, lock_wait_seconds=args.lock_wait_seconds)
     except Exception as error:
         result = dict(status='FAILED', error=f'{type(error).__name__}: {error}')
-    keys = ('status', 'stage', 'output', 'device_execution', 'model_compilation', 'model_inference', 'load_order',
+    keys = ('status', 'stage', 'output', 'device_execution', 'model_compilation', 'model_inference', 'load_order', 'cleanup_order',
         'runtime_stage', 'lifecycle', 'elapsed_ms', 'counts', 'error', 'execution_failure_stage', 'board_attempt', 'lock_state', 'next')
     print(json.dumps({key: result[key] for key in keys if key in result}, ensure_ascii=False, allow_nan=False), flush=True)
     return 0 if result.get('status') in {'TARGET_LOAD_PROBE_PLANNED', 'TARGET_LOAD_PROBE_PASSED', 'TARGET_LOAD_PROBE_STARTED'} else 1

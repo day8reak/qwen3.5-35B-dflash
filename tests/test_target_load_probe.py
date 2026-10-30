@@ -26,7 +26,7 @@ def _receipt(manifest, state, failure=False):
         manager_init_status=0, weights_init_attempted=True, weights_initialized=not failure, weights_init_status=3 if failure else 0,
         manager_deinit_called=True, weights_deinit_called=not failure, weights_deinit_status=-1 if failure else 0,
         closed=True, failure_stage='EXPERIMENTAL_INIT_WEIGHTS_AFTER_INIT' if failure else '', cleanup_error='', run_attempts=0, successful_runs=0)
-    return dict(schema_version=1, artifact_kind='qwen35-hiai-target-load-probe', evidence_kind='device-hiai',
+    result = dict(schema_version=1, artifact_kind='qwen35-hiai-target-load-probe', evidence_kind='device-hiai',
         status='TARGET_LOAD_PROBE_FAILED' if failure else 'TARGET_LOAD_PROBE_PASSED',
         model_path=state['model_path'], model_sha256=manifest['target_model']['sha256'], model_bytes=manifest['target_model']['bytes'],
         weight_directory=str(Path(state['model_path']).parent), load_order='init-before-weights', model_load_api='file-v2',
@@ -35,6 +35,9 @@ def _receipt(manifest, state, failure=False):
         process_id=12346, elapsed_ms=139, run_called=False, process_called=False, tensor_allocations_requested=0,
         numerical_validation='NOT_RUN',
         error='InitWeights failed: 3' if failure else '', runtime_stage='EXPERIMENTAL_INIT_WEIGHTS_AFTER_INIT' if failure else 'CLOSED', lifecycle=life)
+    if 'cleanup_order' in state:
+        result['cleanup_order'] = state['cleanup_order']; life['weight_cleanup_policy'] = 'DEINIT_WEIGHTS_BEFORE_DEINIT'
+    return result
 
 
 @pytest.fixture
@@ -150,7 +153,27 @@ def test_lost_launch_response_recovery_reads_same_attempt_and_never_restarts(loa
     assert not Fake.instances[-1].sends and not any('launch' in label or 'acquire' in label for label, _ in Fake.instances[-1].calls)
 
 
-@pytest.mark.parametrize('damage', ['foreign', 'missing', 'run-claim', 'bool-zero'])
+def test_old_failed_probe_recovers_its_old_argv_and_receipt_without_cleanup_override(load_request, tmp_path):
+    root, manifest, Fake, _ = load_request
+    current = probe.run_target_load_probe(root, tmp_path / 'started', apply=True, detach=True)
+    state = json.loads((tmp_path / 'started/checkpoint.json').read_text()); state.pop('cleanup_order')
+    board = Path(state['board_attempt']); state['native_argv'] = probe._argv(manifest, board, state['model_path'])
+    state['launcher'] = probe._launcher(state)
+    previous = tmp_path / 'historical'; previous.mkdir(); (previous / 'checkpoint.json').write_text(json.dumps(state))
+    value = _receipt(manifest, state, True); value.update(error='DeinitWeights failed: 3', runtime_stage='CLEANUP_FAILED')
+    value['lifecycle'].update(weights_initialized=True, weights_init_status=0, weights_deinit_called=True, weights_deinit_status=3,
+        cleanup_error='DeinitWeights failed: 3', failure_stage='CLEANUP_FAILED')
+    Fake.failure = True; Fake.remote[str(board / 'probe.json')] = json.dumps(value).encode()
+    Fake.remote[str(board / 'run.sh')] = state['launcher'].encode(); Fake.remote[str(board / 'tool.exitcode')] = b'1\n'
+    before = (previous / 'checkpoint.json').read_bytes()
+    result = probe.recover_target_load_probe(previous, tmp_path / 'old-recovered')
+    assert result['status'] == 'FAILED' and result['stage'] == 'complete', result.get('error')
+    assert result['error'] == 'DeinitWeights failed: 3' and 'cleanup_order' not in result
+    assert '--cleanup-order' not in result['native_argv'] and (previous / 'checkpoint.json').read_bytes() == before
+    assert not Fake.instances[-1].sends and not any('launch' in label for label, _ in Fake.instances[-1].calls)
+
+
+@pytest.mark.parametrize('damage', ['foreign', 'missing', 'run-claim', 'bool-zero', 'cleanup-policy'])
 def test_uncertain_or_malformed_completion_cannot_release(load_request, tmp_path, damage):
     root, _, Fake, _ = load_request
     value = probe.run_target_load_probe(root, tmp_path / 'started', apply=True, detach=True)
@@ -159,7 +182,9 @@ def test_uncertain_or_malformed_completion_cannot_release(load_request, tmp_path
     if damage == 'foreign': Fake.foreign = True
     elif damage == 'missing': del Fake.remote[key]
     else:
-        record = json.loads(Fake.remote[key]); record['run_called' if damage == 'run-claim' else 'tensor_allocations_requested'] = True if damage == 'run-claim' else False
+        record = json.loads(Fake.remote[key])
+        if damage == 'cleanup-policy': record['cleanup_order'] = 'manager-before-weights'
+        else: record['run_called' if damage == 'run-claim' else 'tensor_allocations_requested'] = True if damage == 'run-claim' else False
         Fake.remote[key] = json.dumps(record).encode()
     failed = probe.recover_target_load_probe(tmp_path / 'started', tmp_path / 'failed')
     assert failed['status'] == 'FAILED' and failed['lock_state'] == 'RETAINED_OR_UNCERTAIN'
@@ -174,14 +199,15 @@ def test_actual_native_fake_sdk_json_matches_host_receipt_contract(tmp_path, fau
     manifest = dict(target_model=model, target_binding=dict(base_plan=dict(runtime_version='FAKE-HIAI-X90', ddk_id='ddk', firmware_id='firmware')))
     output = tmp_path / 'probe.json'; trace = tmp_path / 'trace'
     argv = [selected, '--target-load-probe', model['path'], '--model-sha256', model['sha256'], '--weight-directory', str(tmp_path),
-        '--load-order', probe.POLICY, '--expected-runtime-version', 'FAKE-HIAI-X90', '--ddk-id', 'ddk', '--firmware-id', 'firmware', '--output', str(output)]
+        '--load-order', probe.POLICY, '--cleanup-order', probe.CLEANUP_ORDER, '--expected-runtime-version', 'FAKE-HIAI-X90', '--ddk-id', 'ddk', '--firmware-id', 'firmware', '--output', str(output)]
     completed = subprocess.run(argv, capture_output=True, text=True, timeout=20,
         env=dict(os.environ, FAKE_HIAI_FAILURE=fault, FAKE_HIAI_TRACE=str(trace)))
     assert completed.returncode == (1 if fault else 0), completed.stderr
-    value = json.loads(output.read_text()); state = dict(model_path=model['path'], completion=dict(remote_exitcode=completed.returncode))
+    value = json.loads(output.read_text()); state = dict(model_path=model['path'], completion=dict(remote_exitcode=completed.returncode), cleanup_order=probe.CLEANUP_ORDER)
     assert probe.validate_load_receipt(value, manifest, state, _expected_evidence_kind='host-fake-hiai') == value
     events = trace.read_text().splitlines()
     assert events.index('v2-init') < events.index('v2-init-weights')
+    if 'v2-deinit-weights' in events: assert events.index('v2-deinit-weights') < events.index('v2-deinit')
     assert not any(event in events for event in ('v2-run', 'process', 'v2-create-tensor'))
     with pytest.raises(ValueError): probe.validate_load_receipt(value, manifest, state)
 

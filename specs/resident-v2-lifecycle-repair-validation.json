@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-resident-v2-target-lifecycle-repair-validation",
+  "updated": "2026-10-30",
+  "run_id": "20261030T132015Z-30826-6cb60b",
+  "source_base_commit": "bced375634930b8cc2f4dbeaae7079ac3d30eddf",
+  "status": "HOST_TESTED_INIT_OBSERVED_ON_DEVICE_COMPLETE_LIFECYCLE_DEVICE_PENDING",
+  "device_observation": "specs/resident-v2-target-init-observed.json",
+  "target_lifecycle_policy": "init-before-weights-close-weights-first-v1",
+  "initialization": [
+    "RestoreFromFile",
+    "SetName",
+    "CreateModelManager",
+    "Init",
+    "InitWeights"
+  ],
+  "cleanup": [
+    "DeinitWeights",
+    "DeInit"
+  ],
+  "cleanup_scope": "DeinitWeights only after successful InitWeights; manager DeInit after any Init attempt, including weights cleanup error/exception; errors retained and no cleanup retry.",
+  "new_probe_cleanup_order": "weights-before-manager",
+  "historical_compatibility": "Old probe recovery pins original argv and receipt without cleanup-order flag; old resident preparation is recover-only. No relaunch or reinterpretation under new policy.",
+  "host_checks": [
+    {
+      "path": "out/host-policy.xml",
+      "sha256": "0c3ffd81e7f31d99be85e13d8919d86b604b6a0528a269d89ba76ed617cce8ee",
+      "tests": 121,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "out/native-probe-v2.xml",
+      "sha256": "420522fa413b7308f5783319e4be8e23057f221b8af7d884ab9636fd19eb3b68",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "out/resident-policy-native.xml",
+      "sha256": "a79e2e8055a06323e6d6ed49ab714c41e0c17374a2bb13bdfa5d467fafc0dc51",
+      "tests": 19,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "out/resident-policy-integration.xml",
+      "sha256": "9b038c5dd353ca6848db5edb3b495c748bf87288932c9d7abf16241c73b1c3d7",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "out/weight-order-native-tests.xml",
+      "sha256": "e847fa6b165052ddbf9c2df4f68ea695ddc4ea2b09020fbb03242509b031121f",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "counting_scope": "146 pytest cases and 6 CTest groups; CTest groups contain multiple scenarios and are not individual assertions.",
+  "integration_scope": [
+    "Actual C++ adapter with explicit fake HIAI, full and compact modes",
+    "Prefill exit before target Init -> InitWeights -> draft Init",
+    "One allocation of 176 caller tensor buffers; decode8 and repeated draft Run",
+    "All80 state bytes, feature and anchor scheduling unchanged",
+    "Draft DeInit -> target DeinitWeights -> target DeInit",
+    "InitWeights failure after successful manager Init; Run failure; cleanup errors preserve completion evidence"
+  ],
+  "independent_review": "PASS_NATIVE_HOST_RECOVERY_POLICY_AND_DOCS",
+  "source_sha256": {
+    "model/qwen35_moe_dflash/board_serial_dflash.py": "cb69f0880f3da03f1f1b6a2abb6de178e980144fdce6e0eec3b14b0dfcdee3c4",
+    "model/qwen35_moe_dflash/board_serial_transport.py": "68c8895f4ea9f3a4d9ba98d1bd699dd6ac110ed6400a49735eba95fd659461ca",
+    "model/qwen35_moe_dflash/target_load_probe.py": "6c0de3b3473586cce065b797cb18cac68652e702662d78f8ec2706ddb654be2f",
+    "targets/cpro/runtime/include/qwen35_dflash/hiai_executor.hpp": "965f26292701f65d73d0b0b08fe8bc563e58032384382d014ea644a8667168f7",
+    "targets/cpro/runtime/src/board_serial_main.cpp": "ceaa66c63c19588dd14b4373c9fcc8ff4b06ae48b9460a4b22925de936bf9ab8",
+    "targets/cpro/runtime/src/hiai_executor.cpp": "255712d0032f118b1862097f1133d8b5e8d5b830f3d9fa23d2d2c91a65c74c4f",
+    "targets/cpro/runtime/src/main.cpp": "767a017d45a59218df9d97542bcf2e4f63ed4e92074d74620123a0991af3242c",
+    "targets/cpro/runtime/tests/fake_hiai/fake_hiai.cpp": "39edae5b7a5ed01a02d12d2453046144ff70ad2ab9f0703bc9ec5319bfa44bb3",
+    "targets/cpro/runtime/tests/test_board_resident.py": "1608491e229875e8e76f5b670951b7bae4e39ae812315e80df050d7f7dd020fc",
+    "targets/cpro/runtime/tests/test_hiai_original_target.cpp": "f324fe7a5b4917e49f8e525e30581c4228727c99ccbe66796655bdc0811dc148",
+    "targets/cpro/runtime/tests/test_hiai_target_load_probe.py": "e2783841717f164e0e2c2a8fa096f0418e2229d5164cbfb135d63f910761eb4e",
+    "targets/cpro/runtime/tests/test_resident_session.cpp": "1f167131cd950a65262341dff13ae484322015668819fb76ba75ef963fd2d02d",
+    "targets/cpro/scripts/run_board_serial_dflash.py": "d23c593c8a10940e30126b2cdaded4afcf2ad967b1ee83eaf6f9b142ebbb7f17",
+    "targets/cpro/scripts/run_target_load_probe.py": "cc04eafe5a8a549be634a8672b548b9e2cabfa4d75f550dfb5421971cc164a95",
+    "tests/test_board_serial_dflash.py": "21bf27c23401f32c2106c5b111a60c9dcc34e722062b553f56341d824cb48083",
+    "tests/test_board_serial_integration.py": "1d0375becf82bf158fa285bef4e27da20b704a18486f73cd21b81ac47911dae2",
+    "tests/test_board_serial_transport.py": "253019cd1ddb5d076a0e50f66329e2e7f74f48b97a166fef10bce877830c01bf",
+    "tests/test_target_load_probe.py": "027dd708389cbaf5fba631ed5545a23fd1b9fa0fe1995e7118cff948f8969fbe"
+  },
+  "assistant_device_access": "NOT_PERFORMED_USER_REQUEST",
+  "native_host_backend": "EXPLICIT_FAKE_HIAI",
+  "transport_test_backend": "EXPLICIT_FAKE_HDC",
+  "local_selected_ddk_build": "NOT_RUN_DECLARED_CPRO_PROFILE_MANIFEST_MISSING",
+  "model_compilation": "NOT_RUN",
+  "numerical_validation": "NOT_EVALUATED",
+  "device_load_order_observation": "USER_REPORTED_INIT_0_INITWEIGHTS_0_SINGLE_TARGET_NO_RUN",
+  "device_new_cleanup_validated": false,
+  "device_draft_v2_validated": false,
+  "device_two_model_residency_validated": false,
+  "next_command_document": "docs/target-resident-load-probe.md",
+  "experience_audit": {
+    "captured": "Separate successful initialization from cleanup failure. Preserve old failed receipts; pin new lifecycle policy across prepare, config and loop. Failure of weights cleanup must not prevent manager cleanup.",
+    "skill_changes": "NONE_SELECTED_SDK_SEQUENCE_REQUIRES_DEVICE_VALIDATION"
+  }
+}

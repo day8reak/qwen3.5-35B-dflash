@@ -260,7 +260,7 @@
     },
     "resident_v2": {
       "implementation": "SINGLE_PROCESS_TWO_FILE_V2_MANAGERS_WITH_ORIGINAL_PREFILL_CHILD",
-      "status": "USER_REPORTED_TARGET_LOAD_FAILED_INVALID_PARAM_DRAFT_UNTESTED",
+      "status": "USER_REPORTED_TARGET_INIT_SUCCESS_CLEANUP_FAILED_DRAFT_UNTESTED",
       "validation_document": "docs/board-resident-validation.md",
       "model_compilation": "NOT_RUN",
       "device_residency": "NOT_RUN",
@@ -275,8 +275,11 @@
       "first_device_attempt": "specs/resident-v2-first-load-failure.json",
       "failure_reporting_validation": "specs/resident-v2-failure-reporting-validation.json",
       "target_load_probe_document": "docs/target-resident-load-probe.md",
-      "target_load_probe_scope": "EXPLICIT_INIT_BEFORE_WEIGHTS_LOAD_CLOSE_ONLY_NO_RUN_DEVICE_PENDING",
-      "target_load_probe_validation": "specs/target-resident-load-probe-validation.json"
+      "target_load_probe_scope": "INIT_ORDER_OBSERVED_CLEANUP_WEIGHTS_FIRST_REPAIR_DEVICE_PENDING",
+      "target_load_probe_validation": "specs/target-resident-load-probe-validation.json",
+      "target_initialization_observation": "specs/resident-v2-target-init-observed.json",
+      "target_lifecycle_policy": "init-before-weights-close-weights-first-v1",
+      "lifecycle_repair_validation": "specs/resident-v2-lifecycle-repair-validation.json"
     }
   },
   "next_action": {
@@ -556,8 +559,8 @@
         0.5,
         2
       ],
-      "next_action_type": "target_load_only_experiment",
-      "next_action": "按docs/target-resident-load-probe.md复用首次resident任务prepared和板端缓存，执行一次显式Init→InitWeights加载/关闭实验；不Run、不prefill、不上传大权重。主机测试不证明设备契约；成功后再接入完整resident路线。",
+      "next_action_type": "validate_weights_first_cleanup_then_resident_loop",
+      "next_action": "先运行target-resident-load-probe-v2确认DeinitWeights→DeInit关闭成功；Init→InitWeights已由v1实机观察。v2通过后直接按docs/current-status.md运行新resident8-v2请求，模型不重编，旧请求只恢复不重启。",
       "pass_conditions": [
         "two-model residency feasibility measured",
         "native loop same tokens/state as baseline",
@@ -574,7 +577,7 @@
         "docs/resident-runtime-plan.md",
         "docs/board-resident-validation.md"
       ],
-      "last_error": "InitWeights failed: 3 (INVALID_PARAM), before manager.Init; prefill1, decode0, draft0; recovery completed, owned locks released.",
+      "last_error": "Init=0 and InitWeights=0; DeinitWeights after DeInit returned3 at CLEANUP_FAILED, 10568ms; no Run or draft load; locks released.",
       "numerical_acceptance_depends_on": [
         "P1",
         "P2"

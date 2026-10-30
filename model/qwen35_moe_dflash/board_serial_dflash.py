@@ -21,6 +21,7 @@ from .target_compile_failure import _read_small
 
 KIND = 'qwen35-board-serial-dflash-prepared'
 MAX_MANIFEST_BYTES = 64 << 20
+TARGET_LIFECYCLE_POLICY = 'init-before-weights-close-weights-first-v1'
 
 
 def _resident_abi(binding, runtime_probe, output):
@@ -199,6 +200,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         manifest['prompt_ingestion'] = 'DECODE1_SERIAL_PROMPT_INGESTION'
     if resident:
         manifest.update(execution_mode='resident-v2', resident_abi=resident_abi,
+            target_lifecycle_policy=TARGET_LIFECYCLE_POLICY,
             orchestration='BOARD_LOCAL_SINGLE_PROCESS_FILE_V2_DECODE_AND_DRAFT',
             model_residency='REQUESTED_FILE_V2_TWO_MANAGERS_ONE_LOAD_EACH_UNVALIDATED')
     save_json(out / 'manifest.json', manifest)
@@ -228,6 +230,8 @@ def validate_prepared(directory):
     if manifest.get('execution_mode', 'fresh-process') not in {'fresh-process', 'resident-v2'}:
         raise ValueError('prepared execution mode is unsupported')
     if manifest.get('execution_mode') == 'resident-v2':
+        if manifest.get('target_lifecycle_policy', TARGET_LIFECYCLE_POLICY) != TARGET_LIFECYCLE_POLICY:
+            raise ValueError('prepared resident target lifecycle policy is unsupported')
         abi = manifest.get('resident_abi', {})
         if ('prefill' not in manifest or not isinstance(abi, dict) or abi.get('path') != str(root / 'resident-abi.tsv')
                 or _hash_source(abi['path']) != {key: abi[key] for key in ('path', 'bytes', 'sha256', 'identity')}
@@ -235,6 +239,8 @@ def validate_prepared(directory):
             raise ValueError('prepared resident ABI changed or is incomplete')
     elif 'resident_abi' in manifest:
         raise ValueError('resident ABI cannot be attached to a legacy request')
+    if 'target_lifecycle_policy' in manifest and manifest.get('execution_mode') != 'resident-v2':
+        raise ValueError('target lifecycle policy belongs only to an explicit resident request')
     for row in manifest['source_bindings']:
         if _current(row['path'])[1] != row['identity']:
             raise ValueError('board-loop source changed after preparation: ' + row['path'])
@@ -281,6 +287,10 @@ def make_config(manifest, remote_paths):
         lines.append('\t'.join(map(_field, (key, value))))
     if manifest.get('execution_mode') == 'resident-v2':
         lines.append('execution_mode\tresident-v2')
+        if 'target_lifecycle_policy' in manifest:
+            if manifest['target_lifecycle_policy'] != TARGET_LIFECYCLE_POLICY:
+                raise ValueError('unsupported resident target lifecycle policy')
+            lines.append('target_lifecycle_policy\t' + TARGET_LIFECYCLE_POLICY)
     for role, type_key in (('input', 'tool_input_type'), ('output', 'tool_output_type')):
         for row in base[role + 's']:
             name = row['name'] if role == 'input' else row['runtime_tensor_name']
