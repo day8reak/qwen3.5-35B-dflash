@@ -24,6 +24,7 @@ _REQUEST_KIND = "qwen35-original-decode-row-request"
 _RESPONSE_KIND = "qwen35-original-decode-row-response"
 _PREPARED_KIND = "qwen35-original-decode-row-transfer-prepared"
 _EXTRACTED = "ORIGINAL_DECODE_ROWS_EXTRACTED"
+_QUERY_METHOD = "EXPLICIT_QUERY_ID_ONLY_BYTE_VALIDATED"
 _LIMITS = {"source_ids_maximum_bytes": 4096, "source_candidate_limit": 1024,
            "table_payload_maximum_bytes": 2103300}
 
@@ -144,21 +145,29 @@ def _unblob(value, dtype, shape, size):
 
 
 def _binding(request):
-    return _sha(_encoded({"source_audit_sha256": request["source_audit_sha256"],
+    value = {"source_audit_sha256": request["source_audit_sha256"],
         "source_ids_sha256": request["source_token_ids"]["sha256"],
         "executed_embedding_sha256": request["executed_embedding"]["sha256"],
         "executed_scale_sha256": request["executed_scale"]["sha256"],
         "bound_logits_sha256": request["bound_logits_sha256"], "next_token_id": request["next_token_id"],
-        "table_paths": request["table_paths"]}))
+        "table_paths": request["table_paths"]}
+    if request.get("schema_version") == 2:
+        value.update(schema_version=2, query_token_id=request["query_token_id"], binding_method=request["binding_method"])
+    return _sha(_encoded(value))
 
 
 def _request(value):
-    if (set(value) != {"schema_version", "artifact_kind", "vocab_size", "hidden_size", "limits", "source_audit_sha256",
+    keys = {"schema_version", "artifact_kind", "vocab_size", "hidden_size", "limits", "source_audit_sha256",
             "source_token_ids", "executed_embedding", "executed_scale", "next_token_id", "bound_logits_sha256", "binding_digest", "table_paths"}
-            or type(value["schema_version"]) is not int or value["schema_version"] != 1 or value["artifact_kind"] != _REQUEST_KIND
+    version = value.get("schema_version")
+    if version == 2: keys |= {"query_token_id", "binding_method"}
+    if (set(value) != keys or type(version) is not int or version not in {1, 2} or value["artifact_kind"] != _REQUEST_KIND
             or type(value["vocab_size"]) is not int or value["vocab_size"] != _VOCAB
             or type(value["hidden_size"]) is not int or value["hidden_size"] != _HIDDEN or value["limits"] != _LIMITS):
         raise ValueError("unexpected original row request schema or frozen limits")
+    if version == 2 and (type(value["query_token_id"]) is not int or not 0 <= value["query_token_id"] < _VOCAB
+                         or value["binding_method"] != _QUERY_METHOD):
+        raise ValueError("version2 requires one explicit in-vocabulary INT32 query ID and exact byte-validation method")
     paths = value["table_paths"]
     if (not isinstance(paths, dict) or set(paths) != {"weight", "scale"}
             or any(not isinstance(path, str) or not path or "\0" in path or not Path(path).is_absolute() for path in paths.values())
@@ -190,7 +199,18 @@ def _request(value):
     return raw_ids, row, scale, positions
 
 
-def _fresh_local(audit, inspection, config_yaml):
+def _effective_positions(request, context_positions):
+    if request["schema_version"] == 2:
+        token = request["query_token_id"]
+        return {token: context_positions.get(token, [])}
+    return context_positions
+
+
+def _matching_positions(positions, matches):
+    return [{"token_id": token, "positions": positions[token]} for token in matches if positions[token]]
+
+
+def _fresh_local(audit, inspection, config_yaml, *, revalidation_observations=None):
     # These imports are never executed by the portable extract command.
     from .original_decode_embedding_probe import _input
     from .original_embedding_probe import _bound_bytes
@@ -202,7 +222,10 @@ def _fresh_local(audit, inspection, config_yaml):
             or audit.get("logical_history") != "UNVERIFIED" or audit.get("runtime_control_recipe") != "UNVERIFIED"
             or audit.get("next_token_inputs") != [] or audit.get("source_preservation") != "UNCHANGED_DECODE_METADATA_SOURCE_IDS_INPUT_ROWS_LOGITS_AND_SELECTED_TABLE_IDENTITIES"):
         raise ValueError("portable preparation requires an untouched bound source audit with original tables unavailable")
-    current = validate_target_decode_output_inventory(inspection)
+    observations = [] if revalidation_observations is None else revalidation_observations
+    if not isinstance(observations, list):
+        raise ValueError("revalidation_observations must be a list or None")
+    current = validate_target_decode_output_inventory(inspection, revalidation_observations=observations)
     report_identity = _read(inspection / "report.json", _METADATA_MAX)[1]
     config_identity = _read(config_yaml, 1 << 20)[1]
     allowed = [*current["evidence_bindings"], report_identity, config_identity]
@@ -235,16 +258,21 @@ def _fresh_local(audit, inspection, config_yaml):
     return raw_ids, embedding, scale, stats["argmax"]["token_id"]
 
 
-def prepare_rows(inspection, config_yaml, output):
+def prepare_rows(inspection, config_yaml, output, *, query_token_id=None):
     from .original_decode_embedding_probe import inspect_original_decode_embeddings
 
     out = _new_output(output)
     result = {"schema_version": 1, "artifact_kind": _PREPARED_KIND, "status": "FAILED", "output": str(out)}
+    revalidations = []
     try:
+        if query_token_id is not None and (type(query_token_id) is not int or not 0 <= query_token_id < _VOCAB):
+            raise ValueError("query_token_id must be an explicit in-vocabulary integer, never a boolean")
         inspection, _ = _safe(inspection, directory=True)
         config_yaml, _ = _safe(config_yaml)
-        audit = inspect_original_decode_embeddings(inspection, config_yaml, out / "source-audit", match_source_id_candidates=True)
-        raw_ids, embedding, scale, next_token = _fresh_local(audit, inspection, config_yaml)
+        audit = inspect_original_decode_embeddings(inspection, config_yaml, out / "source-audit", match_source_id_candidates=True,
+            revalidation_observations=revalidations)
+        raw_ids, embedding, scale, next_token = _fresh_local(audit, inspection, config_yaml,
+            revalidation_observations=revalidations)
         audit_identity = _read(out / "source-audit/report.json", _METADATA_MAX)[1]
         request = {"schema_version": 1, "artifact_kind": _REQUEST_KIND, "vocab_size": _VOCAB, "hidden_size": _HIDDEN,
             "limits": dict(_LIMITS), "source_audit_sha256": audit_identity["sha256"],
@@ -253,6 +281,8 @@ def prepare_rows(inspection, config_yaml, output):
             "executed_scale": _blob(scale, "FLOAT32", [1, 1, 1]), "next_token_id": next_token,
             "bound_logits_sha256": audit["bound_logits"]["sha256"],
             "table_paths": {table["role"]: table["path"] for table in audit["tables"]}}
+        if query_token_id is not None:
+            request.update(schema_version=2, query_token_id=query_token_id, binding_method=_QUERY_METHOD)
         request["binding_digest"] = _binding(request)
         _request(request)
         request_raw = _encoded(request)
@@ -267,8 +297,13 @@ def prepare_rows(inspection, config_yaml, output):
             logical_history="UNVERIFIED", runtime_control_recipe="UNVERIFIED", state_feedback="UNVERIFIED",
             model_execution="NOT_RUN", model_payload_access="NONE", whole_table_copy="NOT_PERFORMED",
             next="Transfer only request.json and extract_rows.py to the original table host; return its response.json")
+        if query_token_id is not None:
+            result.update(schema_version=2, query_token_id=query_token_id, binding_method=_QUERY_METHOD,
+                context_id_count=len(raw_ids) // 4, effective_candidate_count=1, source_id_vector_role="UNCHANGED_CONTEXT_ONLY")
     except (OSError, ValueError, TypeError, KeyError, IndexError, RecursionError, struct.error) as error:
         result["error"] = f"{type(error).__name__}: {error}"
+    result["primary_omc_revalidation_observations"] = revalidations
+    result["model_payload_access"] = "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY" if revalidations else "NONE"
     _save(out, "manifest.json", result)
     return result
 
@@ -283,11 +318,18 @@ def extract_rows(request_path, weight_table, scale_table, output):
         _, extractor_identity = _read(__file__, 1 << 20)
         result["extractor_sha256"] = extractor_identity["sha256"]
         request, identity = _json(request_path, _REQUEST_MAX)
-        raw_ids, executed_row, executed_scale, positions = _request(request)
+        raw_ids, executed_row, executed_scale, context_positions = _request(request)
+        positions = _effective_positions(request, context_positions)
+        query_mode = request["schema_version"] == 2
+        result["schema_version"] = request["schema_version"]
         result.update(request_sha256=identity["sha256"], binding_digest=request["binding_digest"],
-            source_id_sha256=_sha(raw_ids), candidate_count=len(raw_ids) // 4, unique_candidate_count=len(positions),
+            source_id_sha256=_sha(raw_ids), candidate_count=1 if query_mode else len(raw_ids) // 4, unique_candidate_count=len(positions),
             maximum_table_read_bytes=(len(positions) + 1) * (_HIDDEN + 4),
-            uniqueness_scope="EXPLICIT_SOURCE_ID_CANDIDATES_ONLY", position_index_base=0)
+            uniqueness_scope=_QUERY_METHOD if query_mode else "EXPLICIT_SOURCE_ID_CANDIDATES_ONLY", position_index_base=0)
+        if query_mode:
+            result.update(query_token_id=request["query_token_id"], binding_method=_QUERY_METHOD,
+                context_id_count=len(raw_ids) // 4, context_unique_id_count=len(context_positions), effective_candidate_count=1,
+                source_id_vector_role="UNCHANGED_CONTEXT_ONLY", matching_position_semantics="CONTEXT_OCCURRENCES_ONLY_LOGICAL_HISTORY_UNVERIFIED")
         tables, rows = [], {}
         result["tables"] = tables
         with ExitStack() as stack:
@@ -321,7 +363,7 @@ def extract_rows(request_path, weight_table, scale_table, output):
                 read_row(token)
             matches = [token for token in sorted(positions) if rows[token] == [executed_row, executed_scale]]
             result["matching_token_ids"] = matches
-            result["matching_positions"] = [{"token_id": token, "positions": positions[token]} for token in matches]
+            result["matching_positions"] = _matching_positions(positions, matches)
             if len(matches) == 1:
                 source = matches[0]
                 next_token = request["next_token_id"]
@@ -471,15 +513,30 @@ def locate_rows(request_path, weight_table, scale_table, output):
 
 
 def _response(value, request, request_identity):
-    raw_ids, row, scale, positions = _request(request)
+    raw_ids, row, scale, context_positions = _request(request)
+    positions = _effective_positions(request, context_positions)
+    query_mode = request["schema_version"] == 2
     if (value.get("artifact_kind") != _RESPONSE_KIND or type(value.get("schema_version")) is not int
-            or value["schema_version"] != 1 or value.get("status") != _EXTRACTED
+            or value["schema_version"] != request["schema_version"] or value.get("status") != _EXTRACTED
             or value.get("request_sha256") != request_identity["sha256"] or value.get("binding_digest") != request["binding_digest"]
             or value.get("source_id_sha256") != _sha(raw_ids) or value.get("source_preservation") != "UNCHANGED_REQUEST_AND_SELECTED_TABLE_IDENTITIES"
             or any(value.get(key) != "UNVERIFIED" for key in ("logical_history", "runtime_control_recipe", "state_feedback"))
             or value.get("full_table_hash") != "NOT_PERFORMED" or value.get("table_authenticity") != "EXPLICIT_RESOURCE_PATHS_SELECTED_ROWS_ONLY"
-            or value.get("uniqueness_scope") != "EXPLICIT_SOURCE_ID_CANDIDATES_ONLY" or value.get("position_index_base") != 0):
+            or value.get("uniqueness_scope") != (_QUERY_METHOD if query_mode else "EXPLICIT_SOURCE_ID_CANDIDATES_ONLY")
+            or value.get("position_index_base") != 0):
         raise ValueError("response is not the successful exact-request selected-row extraction")
+    query_fields = {"query_token_id", "binding_method", "context_id_count", "context_unique_id_count", "effective_candidate_count",
+                    "source_id_vector_role", "matching_position_semantics"}
+    if query_mode:
+        if (not query_fields <= set(value) or type(value["query_token_id"]) is not int or value["query_token_id"] != request["query_token_id"]
+                or value["binding_method"] != _QUERY_METHOD or type(value["context_id_count"]) is not int
+                or value["context_id_count"] != len(raw_ids) // 4 or type(value["context_unique_id_count"]) is not int
+                or value["context_unique_id_count"] != len(context_positions) or type(value["effective_candidate_count"]) is not int
+                or value["effective_candidate_count"] != 1 or value["source_id_vector_role"] != "UNCHANGED_CONTEXT_ONLY"
+                or value["matching_position_semantics"] != "CONTEXT_OCCURRENCES_ONLY_LOGICAL_HISTORY_UNVERIFIED"):
+            raise ValueError("version2 response does not bind the explicit query and unchanged context scope")
+    elif query_fields & set(value):
+        raise ValueError("version1 response cannot introduce explicit query fields")
     expected_tokens = sorted(set(positions) | {request["next_token_id"]})
     rows = value.get("selected_rows")
     if (not isinstance(rows, list) or len(rows) != len(expected_tokens)
@@ -491,13 +548,14 @@ def _response(value, request, request_identity):
     for item in rows:
         _digest(item["weight_sha256"]); _digest(item["scale_sha256"])
     matches = [token for token in sorted(positions) if (by_token[token]["weight_sha256"], by_token[token]["scale_sha256"]) == (_sha(row), _sha(scale))]
-    if len(matches) != 1 or value.get("matching_token_ids") != matches:
+    if (len(matches) != 1 or value.get("matching_token_ids") != matches
+            or any(type(token) is not int for token in value["matching_token_ids"])):
         raise ValueError("response does not establish exactly one distinct candidate row/scale match")
     matched = matches[0]
-    expected_positions = [{"token_id": matched, "positions": positions[matched]}]
+    expected_positions = _matching_positions(positions, matches)
     if (value.get("matching_positions") != expected_positions or type(value.get("candidate_count")) is not int
             or type(value.get("unique_candidate_count")) is not int or type(value.get("maximum_table_read_bytes")) is not int
-            or value.get("candidate_count") != len(raw_ids) // 4
+            or value.get("candidate_count") != (1 if query_mode else len(raw_ids) // 4)
             or value.get("unique_candidate_count") != len(positions)
             or value.get("maximum_table_read_bytes") != (len(positions) + 1) * (_HIDDEN + 4)
             or type(value.get("table_read_bytes")) is not int or value["table_read_bytes"] != len(rows) * (_HIDDEN + 4)):
@@ -537,6 +595,7 @@ def import_rows(prepared, response_path, output):
     result = {"schema_version": 1, "artifact_kind": "qwen35-original-decode-row-transfer-import", "status": "FAILED",
         "output": str(out), "next_token_inputs": [], "logical_history": "UNVERIFIED", "runtime_control_recipe": "UNVERIFIED",
         "state_feedback": "UNVERIFIED", "numerical_validation": "NOT_RUN_NO_REFERENCE", "device_execution": "NOT_RUN"}
+    revalidations = []
     try:
         prepared, _ = _safe(prepared, directory=True)
         manifest, manifest_identity = _json(prepared / "manifest.json", _METADATA_MAX)
@@ -544,6 +603,11 @@ def import_rows(prepared, response_path, output):
                 or manifest.get("output") != str(prepared)):
             raise ValueError("expected the successful owned original row transfer preparation")
         request, request_identity = _json(prepared / "request.json", _REQUEST_MAX)
+        if (type(manifest.get("schema_version")) is not int or manifest["schema_version"] != request.get("schema_version")
+                or (request.get("schema_version") == 2 and (manifest.get("query_token_id") != request.get("query_token_id")
+                    or type(manifest.get("query_token_id")) is not int or manifest.get("binding_method") != _QUERY_METHOD))
+                or (request.get("schema_version") == 1 and any(key in manifest for key in ("query_token_id", "binding_method")))):
+            raise ValueError("prepared manifest/request query version or explicit flags differ")
         audit, audit_identity = _json(prepared / "source-audit/report.json", _METADATA_MAX)
         script_identity = _read(prepared / "extract_rows.py", 1 << 20)[1]
         if request_identity != manifest["request"] or audit_identity != manifest["source_audit"] or request["source_audit_sha256"] != audit_identity["sha256"]:
@@ -552,7 +616,8 @@ def import_rows(prepared, response_path, output):
             raise ValueError("prepared portable extraction source identity changed")
         if request.get("table_paths") != {table["role"]: table["path"] for table in audit["tables"]}:
             raise ValueError("portable request table paths differ from the original configured source audit")
-        payloads = _fresh_local(audit, Path(manifest["inspection"]), Path(manifest["config_yaml"]))
+        payloads = _fresh_local(audit, Path(manifest["inspection"]), Path(manifest["config_yaml"]),
+            revalidation_observations=revalidations)
         raw_ids, row, scale, _ = _request(request)
         if payloads != (raw_ids, row, scale, request["next_token_id"]) or request["binding_digest"] != manifest["binding_digest"]:
             raise ValueError("portable request no longer matches current actual decode input/logits bytes")
@@ -562,7 +627,8 @@ def import_rows(prepared, response_path, output):
         next_bytes, next_scale, source, positions = _response(response, request, request_identity)
         # Rebind again before any next-token file exists; source rows and logits
         # are small and the complete output inventory remains read-only.
-        if _fresh_local(audit, Path(manifest["inspection"]), Path(manifest["config_yaml"])) != payloads:
+        if _fresh_local(audit, Path(manifest["inspection"]), Path(manifest["config_yaml"]),
+                revalidation_observations=revalidations) != payloads:
             raise ValueError("local decode source changed during response verification")
         for identity, maximum in ((manifest_identity, _METADATA_MAX), (request_identity, _REQUEST_MAX),
                                   (audit_identity, _METADATA_MAX), (script_identity, 1 << 20), (response_identity, _RESPONSE_MAX)):
@@ -577,12 +643,18 @@ def import_rows(prepared, response_path, output):
         result.update(status="ORIGINAL_DECODE_TRANSFERRED_ROWS_BOUND_NEXT_TOKEN_PREPARED", prepared=str(prepared),
             request=request_identity, response=response_identity, source_audit=audit_identity, next_token_inputs=files,
             selected_source_token_id=source, matching_source_positions=positions, selected_next_token_id=request["next_token_id"],
-            uniqueness_scope="EXPLICIT_SOURCE_ID_CANDIDATES_ONLY", resource_table_provenance=response["tables"],
+            uniqueness_scope=response["uniqueness_scope"], resource_table_provenance=response["tables"],
             selected_row_provenance=response["selected_rows"], table_authenticity="DELEGATED_RESOURCE_READER_SELECTED_ROWS_ONLY_NO_FULL_TABLE_AUTHENTICATION",
             source_preservation="FRESH_LOCAL_DECODE_EVIDENCE_AND_EXACT_REQUEST_RESPONSE_SHA256_BOUND",
             next="Retain the exact original INT8 row and separate FP32 scale; logical history, controls and all80 state edges remain unverified")
+        if request["schema_version"] == 2:
+            result.update(schema_version=2, query_token_id=request["query_token_id"], binding_method=_QUERY_METHOD,
+                context_id_count=request["source_token_ids"]["shape"][1], effective_candidate_count=1,
+                source_id_vector_role="UNCHANGED_CONTEXT_ONLY", matching_position_semantics="CONTEXT_OCCURRENCES_ONLY_LOGICAL_HISTORY_UNVERIFIED")
     except (OSError, ValueError, TypeError, KeyError, IndexError, RecursionError, struct.error) as error:
         result["error"] = f"{type(error).__name__}: {error}"
+    result["primary_omc_revalidation_observations"] = revalidations
+    result["model_payload_access"] = "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY" if revalidations else "NONE"
     _save(out, "report.json", result)
     return result
 
@@ -595,6 +667,8 @@ def main(argv=None):
     prepare = commands.add_parser("prepare", help="bind local decode evidence and write only a small portable request")
     prepare.add_argument("--inspection", required=True); prepare.add_argument("--config-yaml", required=True)
     prepare.add_argument("--output", required=True)
+    prepare.add_argument("--query-token-id", type=int,
+        help="explicitly validate this original row ID in a version2 request; retain source IDs unchanged as context")
     extract = commands.add_parser("extract", help="stdlib-only selected row extraction on the original table host")
     extract.add_argument("--request", required=True); extract.add_argument("--weight-table", required=True)
     extract.add_argument("--scale-table", required=True); extract.add_argument("--output", required=True)
@@ -606,13 +680,14 @@ def main(argv=None):
     consume.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == "prepare": result = prepare_rows(args.inspection, args.config_yaml, args.output)
+        if args.command == "prepare": result = prepare_rows(args.inspection, args.config_yaml, args.output, query_token_id=args.query_token_id)
         elif args.command == "extract": result = extract_rows(args.request, args.weight_table, args.scale_table, args.output)
         elif args.command == "locate": result = locate_rows(args.request, args.weight_table, args.scale_table, args.output)
         else: result = import_rows(args.prepared, args.response, args.output)
         keys = ("status", "output", "request", "extraction_script", "request_sha256", "binding_digest", "candidate_count",
                 "unique_candidate_count", "matching_token_ids", "matching_positions", "table_read_bytes", "tables",
-                "selected_source_token_id", "selected_next_token_id", "matching_source_positions", "next_token_inputs", "error", "next")
+                "selected_source_token_id", "selected_next_token_id", "matching_source_positions", "next_token_inputs", "error", "next",
+                "schema_version", "query_token_id", "context_id_count", "effective_candidate_count", "uniqueness_scope")
         if args.command == "locate":
             keys += ("diagnostic_only", "import_eligibility", "scale_scan_complete", "prefix_scan_complete", "pair_scan",
                      "scale_match_count", "prefix_match_count", "pair_match_count", "matching_pair_token_ids",

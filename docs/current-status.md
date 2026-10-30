@@ -2,70 +2,88 @@
 
 <a id="用户现在执行什么"></a>
 
-A：prefill64、独立 decode1、真实 feature → 完整六层 draft 单步均已执行；decode 的 82 个文件已绑定且均无 NaN/Inf。精度和连续状态仍待验证。
+A：原版 target prefill64、独立 decode1、真实 feature → 完整六层 draft 单步均已执行。decode 的 82 个输出文件已绑定；精度和连续状态尚未验证。
 
-原权重机器的提取返回 `ORIGINAL_DECODE_ROWS_NO_MATCH`：256 个 ID 去重后的 7 个候选中，INT8 行和 FP32 scale 均不对应实际 query。这只说明候选对应关系未建立，不能据此判定表错误。现在复用原请求做精确定位，不重复准备请求或导入旧的 NO_MATCH 响应。
+原权重机器精确定位到 query ID **269**，整行 INT8 和独立 FP32 scale 都匹配，累计读取 995,392 字节。原 256 个 ID 文件仅保留为 context，不替换、不截取。下一行来自已执行 decode logits 的 argmax 0，这仍不是精度通过。
 
-先在 DDK 主机拉取更新，并复制独立定位脚本：
+最新 OMC 检查确认 SHA256、inode、大小、mtime 均不变，仅 ctime 变化。新检查仅对此情况重哈希小主 OMC，并保留当前身份与复核记录；不修改编译报告和旧执行回执，不重编译。图连接检查也已修正：采用实际 `OpDef.input`，保留空可选槽位、排除控制边，将 `src_name/src_index` 单独作为元数据记录。
+
+DDK 主机先拉取更新，再用新目录检查状态归属：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-cp -n "$REPO_DIR/model/qwen35_moe_dflash/original_decode_row_transfer.py" \
-  "$AI_RUN_DIR/target-decode1-locate.py"
-```
-
-把 DDK 主机这个文件：
-
-```text
-/home/w00949577/qwen3.5-35B-dflash-run/target-decode1-locate.py
-```
-
-复制到原权重机器的这个位置：
-
-```text
-/home/w00949577/qwen35-decode1-row-request/target-decode1-locate.py
-```
-
-在原权重机器执行，继续使用已经存在的 `request.json`：
-
-```bash
-cd /home/w00949577/qwen35-decode1-row-request
-python3 -I -S target-decode1-locate.py locate \
-  --request request.json \
-  --weight-table /home/l00886453/models/Qwen3.5-35B-A3B_quant/qwen3_5_moe_embdedding_weight.bin \
-  --scale-table /home/l00886453/models/Qwen3.5-35B-A3B_quant/qwen3_5_moe_embdedding_scale.bin \
-  --output ./target-decode1-row-location
-```
-
-定位会完整读取约 1 MB 的 scale 表，对所有 scale 精确匹配项比较 INT8 字节前缀，再核对剩余字节。用户态请求的数据总量上限为 2,103,300 字节；预算不足时不截取部分候选来宣称唯一性。结果保存在 `/home/w00949577/qwen35-decode1-row-request/target-decode1-row-location/diagnostic.json`。
-
-- `ORIGINAL_DECODE_ROW_LOCATION_UNIQUE`：原表中找到唯一精确行，`matching_pair_token_ids` 给出实际 query 的候选 ID。
-- `ORIGINAL_DECODE_ROW_LOCATION_AMBIGUOUS`：多个 ID 的整行与 scale 都相同，需要原生成流程进一步确认 ID。
-- `ORIGINAL_DECODE_ROW_LOCATION_NO_MATCH`：完整检查后，实际行与 scale 的组合不在所声明表中；应回查原输入生成流程。
-- `ORIGINAL_DECODE_ROW_LOCATION_BUDGET_CAP`：未完成所有整行比较，保留候选数量及预算信息。
-
-这一步只输出定位报告，不生成下一 token 文件。唯一行定位通过后，再准备带有明确来源的下一 token 输入。
-
-pb2 复制和状态归属检查可并行推进，不依赖这次行匹配。在原权重机器执行：
-
-```bash
-cp -n /root/anaconda3/envs/qwen3_5_cpro/lib/python3.11/site-packages/torch_npu/dynamo/torchair/_ge_concrete_graph/ge_ir_by_protoc_3_19_pb2.py \
-  /home/w00949577/qwen35-decode1-row-request/target-decode1-row-response/ge_ir_by_protoc_3_19_pb2.py
-```
-
-把这个 pb2 文件带回 DDK 主机的 `/home/w00949577/qwen3.5-35B-dflash-run/target-decode1-row-response/`，然后执行尚未运行的状态检查：
-
-```bash
 python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_decode_state_lineage.py" \
   --job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
   --runtime-probe "$AI_RUN_DIR/target-decode1-runtime-io-v2" \
   --output-inspection "$AI_RUN_DIR/target-decode1-output-inspection" \
   --source-torchair-pb2 "$AI_RUN_DIR/target-decode1-row-response/ge_ir_by_protoc_3_19_pb2.py" \
-  --output "$AI_RUN_DIR/target-decode1-state-lineage-v3"
+  --output "$AI_RUN_DIR/target-decode1-state-lineage-v4"
 ```
 
-预期完整绑定为 `ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED`、`counts.bound_state_files: 80`，缺证据则报告具体原因。若已运行过该目录，保留并贴回已有结果。
+完整绑定应为 `ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED`、`counts.bound_state_files: 80`；缺证据会输出具体 gap。这只建立同一 decode 模型内的结构映射，尚未执行状态反馈。
 
-状态归属与原始行通过后，下一步是连续 decode，再接逐 token verify／DFlash 循环；现有 draft 长度 64 的上下文容量仍需对齐。
+原始行提取可独立推进。在 DDK 主机准备新请求：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/transfer_original_decode_rows.py" prepare \
+  --inspection "$AI_RUN_DIR/target-decode1-output-inspection" \
+  --config-yaml /home/w00949577/qwen3.5-35B-moe/config/qwen3_5_moe.yaml \
+  --query-token-id 269 \
+  --output "$AI_RUN_DIR/target-decode1-row-request-v2"
+```
+
+应返回 `ORIGINAL_DECODE_ROW_TRANSFER_PREPARED`，`schema_version: 2`、`query_token_id: 269`、`effective_candidate_count: 1`。若失败，保留新目录并贴回错误，不修改旧请求。
+
+把 DDK 主机的这两个新文件：
+
+```text
+/home/w00949577/qwen3.5-35B-dflash-run/target-decode1-row-request-v2/request.json
+/home/w00949577/qwen3.5-35B-dflash-run/target-decode1-row-request-v2/extract_rows.py
+```
+
+复制到原权重机器的这两个位置：
+
+```text
+/home/w00949577/qwen35-decode1-row-request-v2/request.json
+/home/w00949577/qwen35-decode1-row-request-v2/extract_rows.py
+```
+
+在原权重机器执行，仅读原表的 269 和 0 两行，共 4,104 字节：
+
+```bash
+cd /home/w00949577/qwen35-decode1-row-request-v2
+python3 -I -S extract_rows.py extract \
+  --request request.json \
+  --weight-table /home/l00886453/models/Qwen3.5-35B-A3B_quant/qwen3_5_moe_embdedding_weight.bin \
+  --scale-table /home/l00886453/models/Qwen3.5-35B-A3B_quant/qwen3_5_moe_embdedding_scale.bin \
+  --output ./target-decode1-row-response-v2
+```
+
+应返回 `ORIGINAL_DECODE_ROWS_EXTRACTED`、`matching_token_ids: [269]`。不再使用旧的 NO_MATCH 响应，也不把定位用的 `diagnostic.json` 当作提取响应。
+
+把原权重机器的：
+
+```text
+/home/w00949577/qwen35-decode1-row-request-v2/target-decode1-row-response-v2/response.json
+```
+
+复制回 DDK 主机的：
+
+```text
+/home/w00949577/qwen3.5-35B-dflash-run/target-decode1-row-response-v2/response.json
+```
+
+在 DDK 主机导入：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/transfer_original_decode_rows.py" import \
+  --prepared "$AI_RUN_DIR/target-decode1-row-request-v2" \
+  --response "$AI_RUN_DIR/target-decode1-row-response-v2/response.json" \
+  --output "$AI_RUN_DIR/target-decode1-original-rows-v2"
+```
+
+应返回 `ORIGINAL_DECODE_TRANSFERRED_ROWS_BOUND_NEXT_TOKEN_PREPARED`、`selected_source_token_id: 269`、`selected_next_token_id: 0`。只生成原始 INT8 行、独立 FP32 scale 和 INT32 token ID，共 2,056 字节。
+
+状态归属与原始行通过后，下一步是携带 80 份独立状态的连续 decode，再接逐 token verify／DFlash 循环。控制值语义、精度与 draft 长度 64 的上下文容量仍需对齐。
 
 B：55 档特征 AIR 保留备份，本轮无待执行命令。

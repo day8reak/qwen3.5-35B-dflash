@@ -7,7 +7,11 @@ the controls, and token/embedding correspondence remain unverified.
 from __future__ import annotations
 
 from collections import Counter
+from copy import deepcopy
+import hashlib
+import json
 import math
+import os
 from pathlib import Path
 import re
 import stat
@@ -24,6 +28,96 @@ from .target_prefill_smoke_plan import (_GE_TYPES, _INPUT_TYPES, _ND_VIEW_POLICY
 _KIND = "qwen35-original-decode-smoke-plan"
 _PROFILE = "cpro-40block-decode-1"
 _SCOPE = "SINGLE_DECODE1_USER_SUPPLIED_INPUTS_NO_PREFILL_FEEDBACK"
+_PRIMARY_STAT_SCOPE = "DECLARED_SHA_AND_CURRENT_STAT_ONLY_MODEL_NOT_OPENED"
+_PRIMARY_REVALIDATED_SCOPE = "FRESH_SHA256_VERIFIED_CTIME_ONLY_PRIMARY_OMC_RECONCILIATION"
+_PRIMARY_REVALIDATED_ACCESS = "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY_RECONCILIATION"
+_PLAN_SCOPE = "One independent decode1 invocation with user-supplied input values. Exact runtime input names bind named compiled slots and byte extents; common state-file history, scalar meanings, numerical accuracy and continuation are unverified. No controls generated, token repair, prefill-state feedback, draft invocation, model/weight read, device call or compiler invocation."
+_PLAN_REVALIDATED_SCOPE = _PLAN_SCOPE.replace("model/weight read", "weight read") + " The small primary OMC was freshly hashed only for ctime-only reconciliation."
+
+
+def bind_primary_omc(path, primary, *, expected_identity=None, revalidation_observations=None):
+    """Bind primary metadata; fresh-hash only an otherwise identical ctime drift."""
+    if revalidation_observations is not None and not isinstance(revalidation_observations, list):
+        raise ValueError("primary revalidation observations must be a list")
+    if Path(path).name != "model.omc" or not isinstance(primary, dict):
+        raise ValueError("ctime-only reconciliation requires the selected primary model.omc record")
+    model_path, stamp = _safe(path)
+    current_identity = _identity(model_path.stat())
+    if [current_identity[key] for key in ("device", "inode", "bytes", "mtime_ns", "ctime_ns")] != stamp:
+        raise ValueError("primary OMC identity changed before metadata validation")
+    reasons = []
+    recorded_bytes, recorded_stat = primary.get("bytes"), primary.get("stat")
+    if type(recorded_bytes) is not int:
+        reasons.append("INVALID_RECORDED_BYTE_COUNT")
+    elif not 0 < recorded_bytes <= 64 << 20:
+        reasons.append("RECORDED_BYTE_COUNT_OUTSIDE_64MIB_BUDGET")
+    if stamp != recorded_stat:
+        reasons.append("FIVE_STAT_IDENTITY_DIFFERS")
+    if stamp[2] != recorded_bytes:
+        reasons.append("BYTE_COUNT_DIFFERS")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(primary.get("sha256", ""))):
+        reasons.append("INVALID_RECORDED_SHA256_DECLARATION")
+    saved_differences = {}
+    if expected_identity is not None:
+        if not isinstance(expected_identity, dict) or set(expected_identity) != set(current_identity):
+            reasons.append("SAVED_PLAN_PRIMARY_IDENTITY_FIELDS_DIFFER")
+        else:
+            saved_differences = {key: {"recorded": expected_identity[key], "current": value}
+                for key, value in current_identity.items() if key != "ctime_ns" and expected_identity[key] != value}
+            if saved_differences:
+                reasons.append("SAVED_PLAN_PRIMARY_IDENTITY_DIFFERS_BEYOND_CTIME")
+    ctime_only = (reasons in ([], ["FIVE_STAT_IDENTITY_DIFFERS"])
+        and isinstance(recorded_stat, list) and len(recorded_stat) == 5
+        and recorded_stat[:4] == stamp[:4]
+        and (recorded_stat[4] != stamp[4] or isinstance(expected_identity, dict)
+             and expected_identity.get("ctime_ns") != current_identity["ctime_ns"]))
+    if reasons and not ctime_only:
+        fields = ("device", "inode", "bytes", "mtime_ns", "ctime_ns")
+        differences = ({name: {"recorded": old, "current": current}
+            for name, old, current in zip(fields, recorded_stat, stamp) if old != current}
+            if isinstance(recorded_stat, list) and len(recorded_stat) == 5 else {})
+        diagnostic = {"path": str(model_path), "recorded_bytes": recorded_bytes, "current_bytes": stamp[2],
+            "recorded_stat": recorded_stat, "current_stat": stamp, "stat_fields": list(fields),
+            "stat_differences": differences, "saved_plan_identity_differences": saved_differences,
+            "reasons": reasons, "payload_read": "NOT_OPENED", "content_sha256_comparison": "NOT_PERFORMED"}
+        raise ValueError("recorded primary OMC extent or current identity changed: "
+            + json.dumps(diagnostic, ensure_ascii=False, sort_keys=True))
+    scope = _PRIMARY_STAT_SCOPE
+    if ctime_only:
+        digest, remaining = hashlib.sha256(), recorded_bytes
+        observation = {"kind": "PRIMARY_OMC_CTIME_ONLY_REVALIDATION", "status": "READ_REQUESTED",
+            "path": str(model_path), "recorded_stat": recorded_stat, "current_stat": stamp,
+            "current_identity": current_identity, "saved_plan_identity": expected_identity,
+            "bytes": recorded_bytes, "expected_sha256": primary["sha256"], "read_bytes": 0,
+            "hash_scope": "BOUNDED_PRIMARY_ONLY_MAXIMUM_64MIB_FULL_IDENTITY_STABLE_BEFORE_AFTER",
+            "receipt_mutation": "NONE", "weight_payload_access": "NONE"}
+        if revalidation_observations is not None:
+            revalidation_observations.append(observation)
+        try:
+            fd = os.open(model_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as stream:
+                if _identity(os.fstat(stream.fileno())) != current_identity:
+                    raise ValueError("primary OMC changed before ctime-only hash revalidation")
+                while remaining:
+                    raw = stream.read(min(1 << 20, remaining))
+                    if not raw:
+                        raise ValueError("primary OMC truncated during ctime-only hash revalidation")
+                    remaining -= len(raw)
+                    observation["read_bytes"] += len(raw)
+                    digest.update(raw)
+                if (stream.read(1) or _identity(os.fstat(stream.fileno())) != current_identity
+                        or _identity(model_path.stat()) != current_identity):
+                    raise ValueError("primary OMC changed during ctime-only hash revalidation")
+            if digest.hexdigest() != primary["sha256"]:
+                observation["observed_sha256"] = digest.hexdigest()
+                raise ValueError("primary OMC ctime-only revalidation SHA256 differs from the compiled record: " + str(model_path))
+            observation.update(kind="PRIMARY_OMC_CTIME_ONLY_REVALIDATED", status="SHA256_VERIFIED", sha256=digest.hexdigest())
+        except Exception as error:
+            observation.update(status="FAILED", error=f"{type(error).__name__}: {error}")
+            raise
+        scope = _PRIMARY_REVALIDATED_SCOPE
+    return {"path": str(model_path), "bytes": recorded_bytes, "sha256": primary["sha256"],
+        "identity": current_identity, "scope": scope}
 
 
 def _decode_expected_files():
@@ -105,8 +199,8 @@ def _input_extent_error(report):
     return "decode input preflight found missing or invalid files: " + "; ".join(rows)
 
 
-def _bound_probe(compilation, probe_dir, bindings):
-    """Bind saved metadata and model stats without opening any OMC or weight."""
+def _bound_probe(compilation, probe_dir, bindings, *, expected_primary_identity=None, revalidation_observations=None):
+    """Bind metadata; permit only hash-verified primary OMC ctime drift."""
     job = compilation.parent
     outer = _json(job / "result.json", bindings)
     compiled = _json(compilation / "report.json", bindings)
@@ -139,13 +233,8 @@ def _bound_probe(compilation, probe_dir, bindings):
     relative = primary.get("path")
     if relative not in {"compile-work/generated/model.omc", "compile-work/generated/model/model.omc"}:
         raise ValueError("unsupported primary OMC path")
-    model_path, stamp = _safe(compilation / relative)
-    if (type(primary.get("bytes")) is not int or not 0 < primary["bytes"] <= 64 << 20
-            or stamp != primary.get("stat") or stamp[2] != primary["bytes"]
-            or not re.fullmatch(r"[0-9a-f]{64}", str(primary.get("sha256", "")))):
-        raise ValueError("recorded primary OMC extent or current identity changed")
-    model = {"path": str(model_path), "bytes": primary["bytes"], "sha256": primary["sha256"],
-        "identity": _identity(model_path.stat()), "scope": "DECLARED_SHA_AND_CURRENT_STAT_ONLY_MODEL_NOT_OPENED"}
+    model = bind_primary_omc(compilation / relative, primary, expected_identity=expected_primary_identity,
+        revalidation_observations=revalidation_observations)
     if (probe.get("artifact_kind") != "qwen35-target-model-io-probe" or probe.get("status") != "IO_METADATA_OBSERVED"
             or probe.get("job") != str(job) or probe.get("profile") != _PROFILE or probe.get("sequence_length") != 1
             or probe.get("compilation_report_sha256") != compiled_sha
@@ -233,13 +322,17 @@ def _control_observations(input_root, sources):
     return controls, warnings
 
 
-def prepare_decode_smoke_plan(compilation_dir, runtime_probe, input_dir):
+def prepare_decode_smoke_plan(compilation_dir, runtime_probe, input_dir, *, revalidation_observations=None,
+                               _saved_primary_identity=None):
     """Return one independently supplied decode trial plan; no device calls."""
+    if revalidation_observations is not None and not isinstance(revalidation_observations, list):
+        raise ValueError("primary revalidation observations must be a list")
     compilation, _ = _safe(compilation_dir, directory=True)
     probe_dir, _ = _safe(runtime_probe, directory=True)
     input_root, _ = _safe(input_dir, directory=True)
     bindings = []
-    compiled, contract, probe, native, model = _bound_probe(compilation, probe_dir, bindings)
+    compiled, contract, probe, native, model = _bound_probe(compilation, probe_dir, bindings,
+        expected_primary_identity=_saved_primary_identity, revalidation_observations=revalidation_observations)
     tool = _tool_binding(probe, bindings)
     extents = inspect_decode_input_extents(input_root)
     if extents["status"] != "DECODE_INPUT_EXTENTS_MATCHED":
@@ -338,7 +431,8 @@ def prepare_decode_smoke_plan(compilation_dir, runtime_probe, input_dir):
         "source_semantics": "UNVERIFIED_USER_INPUTS", "state_input_layer_identity": "NAMES_OBSERVED_SOURCE_HISTORY_UNVERIFIED",
         "state_output_layer_identity": "UNVERIFIED", "execution_scope": _SCOPE,
         "state_continuity": "NOT_VALIDATED", "state_feedback": "NOT_RUN", "numerical_validation": "NOT_RUN_NO_REFERENCE",
-        "model_compilation": "NOT_RUN", "device_execution": "NOT_RUN", "model_payload_access": "NONE",
+        "model_compilation": "NOT_RUN", "device_execution": "NOT_RUN",
+        "model_payload_access": _PRIMARY_REVALIDATED_ACCESS if model["scope"] == _PRIMARY_REVALIDATED_SCOPE else "NONE",
         "weight_payload_access": "NONE", "target_features_requested": True, "target_features": "EXPOSED_NOT_VALIDATED",
         "feature_output_evidence": {"status": "EXPOSED_NOT_VALIDATED", "compiled_output_index": 81,
             "runtime_output_index": features[0], "shape": outputs[features[0]]["shape"], "dtype": "FLOAT16",
@@ -347,16 +441,39 @@ def prepare_decode_smoke_plan(compilation_dir, runtime_probe, input_dir):
         "logits_runtime_output_index": logits[0], "control_observations": controls, "warnings": warnings,
         "logical_input_bytes": sum(row["bytes"] for row in inputs), "output_bytes": sum(row["bytes"] for row in outputs),
         "unique_source_input_bytes": sum(row["bytes"] for row in sources.values()),
-        "scope": "One independent decode1 invocation with user-supplied input values. Exact runtime input names bind named compiled slots and byte extents; common state-file history, scalar meanings, numerical accuracy and continuation are unverified. No controls generated, token repair, prefill-state feedback, draft invocation, model/weight read, device call or compiler invocation."}
+        "scope": _PLAN_REVALIDATED_SCOPE if model["scope"] == _PRIMARY_REVALIDATED_SCOPE else _PLAN_SCOPE}
 
 
-def validate_decode_smoke_plan(plan):
+def validate_decode_smoke_plan(plan, *, revalidation_observations=None):
     """Rehash all supplied input files and bound metadata without writing them."""
+    if revalidation_observations is not None and not isinstance(revalidation_observations, list):
+        raise ValueError("primary revalidation observations must be a list")
     if (not isinstance(plan, dict) or plan.get("artifact_kind") != _KIND
             or plan.get("status") != "DECODE_SMOKE_PLANNED" or plan.get("execution_scope") != _SCOPE
             or any(not isinstance(plan.get(key), str) for key in ("compilation", "runtime_probe", "input_dir"))):
         raise ValueError("expected an exact independent decode1 smoke plan")
-    current = prepare_decode_smoke_plan(plan["compilation"], plan["runtime_probe"], plan["input_dir"])
-    if current != plan:
-        raise ValueError("decode smoke metadata or supplied input identity changed after planning")
-    return current
+    old_binding = plan.get("primary_model_binding", {})
+    if not isinstance(old_binding, dict) or not isinstance(old_binding.get("identity"), dict):
+        raise ValueError("saved decode plan requires its complete primary identity")
+    observations = []
+    try:
+        current = prepare_decode_smoke_plan(plan["compilation"], plan["runtime_probe"], plan["input_dir"],
+            _saved_primary_identity=old_binding["identity"], revalidation_observations=observations)
+        if current != plan:
+            compared = deepcopy(current)
+            allowed_annotations = (any(row.get("status") == "SHA256_VERIFIED" for row in observations)
+                and current["primary_model_binding"]["scope"] == _PRIMARY_REVALIDATED_SCOPE
+                and old_binding.get("scope") in {_PRIMARY_STAT_SCOPE, _PRIMARY_REVALIDATED_SCOPE}
+                and plan.get("model_payload_access") in {"NONE", _PRIMARY_REVALIDATED_ACCESS}
+                and plan.get("scope") in {_PLAN_SCOPE, _PLAN_REVALIDATED_SCOPE})
+            if allowed_annotations:
+                compared["primary_model_binding"]["identity"]["ctime_ns"] = old_binding["identity"]["ctime_ns"]
+                compared["primary_model_binding"]["scope"] = old_binding["scope"]
+                compared["model_payload_access"] = plan["model_payload_access"]
+                compared["scope"] = plan["scope"]
+            if compared != plan:
+                raise ValueError("decode smoke metadata or supplied input identity changed after planning")
+        return current
+    finally:
+        if revalidation_observations is not None:
+            revalidation_observations.extend(observations)

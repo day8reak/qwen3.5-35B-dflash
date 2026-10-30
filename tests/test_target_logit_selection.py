@@ -35,7 +35,8 @@ def named_ports(names=("x", "indices", "axis"), values=(0, 1, 2)):
 
 def graph(*, axis=1, axis_dtype=42, axis_shape=(), source_shape=(1, 64, 2048),
           consumer_shape="same", passthrough=None, external_axis=False, axis_data=None,
-          named=True, duplicate=False, output_control="arg1238_1", optional_ancestor=False):
+          named=True, duplicate=False, output_control="arg1238_1", optional_ancestor=False,
+          src_metadata=None, src_only=False, control_edge=False, const_src_metadata=False):
     desc = _desc(dtype=1, shape=source_shape)
     control_desc = _desc(dtype=42, shape=(1,))
     axis_desc = _desc(dtype=axis_dtype, shape=axis_shape)
@@ -61,9 +62,16 @@ def graph(*, axis=1, axis_dtype=42, axis_shape=(), source_shape=(1, 64, 2048),
         raw = axis_data if axis_data is not None else struct.pack("<i" if axis_dtype == 42 else "<q", axis)
         nodes.append(_node("axis", "Const", axis_shape, dtype=axis_dtype)
                      + _attr("value", _blob(12, _blob(1, axis_desc) + _blob(2, raw))))
+        if const_src_metadata:
+            nodes[-1] += _blob(24, "stale_const_metadata") + _int(25, 0)
     consumer = desc if consumer_shape == "same" else _desc(dtype=1, shape=consumer_shape)
-    gather = op("select_row", "GatherV2", ["hidden:0", index, "axis:0"],
+    references = ["hidden:0", index, "axis:0"]
+    gather = op("select_row", "GatherV2", [] if src_only else references + (["other_control:-1"] if control_edge else []),
                 [consumer, control_desc, axis_desc], [selected_desc])
+    if src_metadata is not None or src_only:
+        for reference in (src_metadata if src_metadata is not None else references):
+            name, port = reference.rsplit(":", 1)
+            gather += _blob(24, name) + _int(25, int(port))
     nodes.append(gather + (named_ports() if named else b""))
     if duplicate:
         nodes.append(op("select_row_again", "GatherV2", ["hidden:0", index, "axis:0"],
@@ -90,6 +98,29 @@ def test_optional_input_holes_keep_port_positions_without_becoming_dependencies(
     report = analyze(schemas, graph(optional_ancestor=True))
     assert report["status"] == "LOGIT_INDEX_OUT_OF_RANGE_OBSERVED", report
     assert audit._inputs({"input": ["other_control:0", ""]}) == ["other_control:0", ""]
+
+
+def test_stale_src_metadata_cannot_redirect_the_actual_logit_control_dependency(schemas):
+    report = analyze(schemas, graph(src_metadata=["hidden:0", "other_control:0", "axis:0"], control_edge=True))
+    assert report["status"] == "LOGIT_INDEX_OUT_OF_RANGE_OBSERVED", report
+    candidate, = report["candidates"]
+    assert candidate["index_path"][-1]["node"] == "arg1238_1"
+    assert candidate["serialized_input_ports"]["indices"] == 1
+    assert report["graph_edge_policy"]["policy"] == "OPDEF_INPUT_AUTHORITATIVE_GRAPH_CONNECTIVITY"
+
+
+def test_src_metadata_without_explicit_graph_edges_cannot_prove_logit_selection(schemas):
+    result = analyze(schemas, graph(src_only=True))
+    assert result["status"] == "LOGIT_SELECTION_UNVERIFIED"
+    assert result["control_gather_candidate_count"] == 0
+    assert "exactly params,indices,axis operands" in result["other_gathers"][0]["reason"]
+
+
+def test_serialized_zero_input_axis_const_ignores_stored_src_metadata(schemas):
+    result = analyze(schemas, graph(const_src_metadata=True))
+    assert result["status"] == "LOGIT_INDEX_OUT_OF_RANGE_OBSERVED", result
+    assert result["candidates"][0]["axis"]["value"] == 1
+    assert result["control_gather_candidate_count"] == 1
 
 
 @pytest.mark.parametrize("axis_dtype,axis_shape", [(42, ()), (42, (1,)), (91, ())])

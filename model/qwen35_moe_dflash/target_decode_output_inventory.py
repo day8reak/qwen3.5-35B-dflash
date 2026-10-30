@@ -26,7 +26,7 @@ _SCOPE = "SINGLE_DECODE1_USER_SUPPLIED_INPUTS_NO_PREFILL_FEEDBACK"
 _PRESERVED = "UNCHANGED_DECODE_PLAN_METADATA_AND_USER_INPUT_SHA256"
 
 
-def _bound_execution(execution, bindings):
+def _bound_execution(execution, bindings, *, revalidation_observations=None):
     outer = _json(execution / "result.json", bindings)
     board = _json(execution / "board/result.json", bindings)
     if (outer.get("artifact_kind") != "qwen35-target-decode-smoke-job" or outer.get("mode") != "APPLY"
@@ -97,7 +97,7 @@ def _bound_execution(execution, bindings):
               and row.get("path") == flags.get("model") and row.get("sha256") == plan.get("model_sha256")]
     if len(models) != 1 or flags.get("weight_dir") != str(Path(flags.get("model", "")).parent):
         raise ValueError("saved decode command model/weight directory is not bound to the recorded compiled payload")
-    validate_decode_smoke_plan(proof)
+    validate_decode_smoke_plan(proof, revalidation_observations=revalidation_observations)
     return outer, board, plan, proof
 
 
@@ -192,12 +192,14 @@ def inspect_target_decode_outputs(execution, output, *, include_state_statistics
               "model_payload_access": "NONE", "slot_binding": "UNVERIFIED", "feature_selection": "NOT_PERFORMED",
               "state_layer_binding": "UNVERIFIED", "state_feedback": "NOT_PERFORMED",
               "state_continuity": "NOT_VALIDATED", "numerical_validation": "NOT_RUN_NO_REFERENCE"}
+    revalidations = []
+    result["primary_omc_revalidation_observations"] = revalidations
     try:
         if type(include_state_statistics) is not bool:
             raise ValueError("include_state_statistics must be an explicit boolean")
         execution, _ = _safe(execution, directory=True)
         bindings = []
-        outer, board, plan, proof = _bound_execution(execution, bindings)
+        outer, board, plan, proof = _bound_execution(execution, bindings, revalidation_observations=revalidations)
         trial = _trial(outer, plan, bindings)
         descriptors = _descriptors(plan)
         retrieved = board.get("retrieved")
@@ -240,7 +242,7 @@ def inspect_target_decode_outputs(execution, output, *, include_state_statistics
             by_path = {row["path"]: row for row in mapping["entries"]}
             for row in rows:
                 row.update(runtime_index=by_path[row["path"]]["runtime_index"], slot_binding="EXPLICIT_TOOL_LOG_PATH_AND_DESCRIPTOR_EXTENT")
-        validate_decode_smoke_plan(proof)
+        validate_decode_smoke_plan(proof, revalidation_observations=revalidations)
         if _trial(outer, plan, []) != trial:
             raise ValueError("decode trial provenance changed during output inspection")
         for identity in bindings:
@@ -267,11 +269,15 @@ def inspect_target_decode_outputs(execution, output, *, include_state_statistics
                 feature_selection="BOUND_FILE_DESCRIBED_ONLY_NO_COPY_OR_EXECUTION")
     except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
         result["error"] = f"{type(error).__name__}: {error}"
+    if revalidations:
+        result["model_payload_access"] = "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY"
+        if result.get("source_validation"):
+            result["source_validation"] = "FRESH_DECODE_PLAN_METADATA_AND_USER_INPUT_SHA256_WITH_CTIME_ONLY_PRIMARY_REHASH"
     save_json(out / "report.json", result)
     return result
 
 
-def validate_target_decode_output_inventory(inspection):
+def validate_target_decode_output_inventory(inspection, *, revalidation_observations=None):
     """Rebind a successful saved inventory without writing or repeating stats.
 
     This freshly verifies its source plan/trial, metadata, all 82 output hashes,
@@ -284,18 +290,21 @@ def validate_target_decode_output_inventory(inspection):
     if (report.get("artifact_kind") != _KIND or report.get("status") != "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS"
             or report.get("output") != str(root) or report.get("execution_scope") != _SCOPE
             or report.get("slot_binding") != "EXPLICIT_COMPLETE_TOOL_LOG_AND_VERIFIED_BYTES"
-            or report.get("source_validation") != "FRESH_DECODE_PLAN_METADATA_AND_USER_INPUT_SHA256_NO_MODEL_READ"
+            or (report.get("source_validation"), report.get("model_payload_access")) not in {
+                ("FRESH_DECODE_PLAN_METADATA_AND_USER_INPUT_SHA256_NO_MODEL_READ", "NONE"),
+                ("FRESH_DECODE_PLAN_METADATA_AND_USER_INPUT_SHA256_WITH_CTIME_ONLY_PRIMARY_REHASH",
+                    "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY")}
             or report.get("plan_output_count") != 82 or report.get("actual_retrieved_output_file_count") != 82
             or report.get("state_layer_binding") != "UNVERIFIED" or report.get("state_feedback") != "NOT_PERFORMED"
             or report.get("state_continuity") != "NOT_VALIDATED"
             or report.get("numerical_validation") != "NOT_RUN_NO_REFERENCE"
-            or report.get("model_payload_access") != "NONE" or report.get("weight_payload_access") != "NONE"
+            or report.get("weight_payload_access") != "NONE"
             or report.get("device_calls") != "NONE" or report.get("model_execution") != "NOT_RUN"
             or report.get("error")):
         raise ValueError("expected a successful untouched independent decode output inventory")
     execution, _ = _safe(report["execution"], directory=True)
     bindings = []
-    outer, board, plan, proof = _bound_execution(execution, bindings)
+    outer, board, plan, proof = _bound_execution(execution, bindings, revalidation_observations=revalidation_observations)
     trial = _trial(outer, plan, bindings)
     if (trial != report.get("trial_inputs") or bindings != report.get("evidence_bindings")
             or report.get("tool_process_id") != board["tool_process_id"] or report.get("remote_exitcode") != 0):
@@ -347,7 +356,7 @@ def validate_target_decode_output_inventory(inspection):
         if (bound.get("runtime_index") != index or bound.get("path") != name
                 or any(bound.get(key) != observations[name][key] for key in ("bytes", "sha256", "stat"))):
             raise ValueError("decode inventory feature/logits file binding changed")
-    validate_decode_smoke_plan(proof)
+    validate_decode_smoke_plan(proof, revalidation_observations=revalidation_observations)
     if _trial(outer, plan, []) != trial:
         raise ValueError("decode trial provenance changed during inventory validation")
     for identity in [*report_bindings, *bindings]:

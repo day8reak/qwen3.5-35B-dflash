@@ -50,7 +50,7 @@ def case(tmp_path, monkeypatch):
         "expected_runtime_outputs": [{key: row[key] for key in ("index", "shape", "dtype", "bytes")} for row in plan["outputs"]]}
     save(inspection_dir / "report.json", report)
 
-    def validate(directory):
+    def validate(directory, **kwargs):
         value = json.loads((Path(directory) / "report.json").read_text())
         if value["status"] != "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS":
             raise ValueError("saved output inventory is not bound")
@@ -228,3 +228,35 @@ def test_cli_binds_exact_copied_producer_pb2_through_all80_actual_file_joins(cas
     full = json.loads((case["out"] / "report.json").read_text())
     assert full["decode"]["source_schema_binding"]["selected_pb2"]["path"] == str(copy)
     assert full["feedback_ready"] is False and full["state_feedback"] == "NOT_RUN"
+
+
+def test_graph_input_authority_handles_stale_compiled_metadata_and_records_raw_counts(case):
+    nodes = case["documents"][b"decode COMPILED"]["graph"][0]["op"]
+    net = next(row for row in nodes if row["type"] == "NetOutput")
+    original = list(net["input"])
+    net["src_name"] = [edge.rsplit(":", 1)[0] for edge in reversed(original)]
+    net["src_index"] = [int(edge.rsplit(":", 1)[1]) for edge in reversed(original)]
+    net["input"].insert(13, "arg0_1:-1")
+    result = inspect(case)
+    assert result["status"] == "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED", result
+    observed = result["decode"]["edge_representation_observations"]["compiled_omc"]
+    assert observed["counts"]["direct_controls"] == 1
+    assert observed["counts"]["raw_input_entries"] == 83
+    assert observed["counts"]["raw_src_entries"] == 82
+    assert observed["counts"]["src_metadata_differences"] == 1
+    assert result["graph_edge_policy"]["selected_vendor_serializer"] == "NOT_INSPECTED"
+    assert len(net["input"]) == 83, "saved graph objects remain unchanged"
+
+
+def test_unresolved_actual_compiled_graph_edge_fails_with_context_without_metadata_rescue(case):
+    nodes = case["documents"][b"decode COMPILED"]["graph"][0]["op"]
+    net = next(row for row in nodes if row["type"] == "NetOutput")
+    net["src_name"] = [edge.rsplit(":", 1)[0] for edge in net["input"]]
+    net["src_index"] = [int(edge.rsplit(":", 1)[1]) for edge in net["input"]]
+    net["input"][0] = "missing_actual_compiled_producer:0"
+    result = inspect(case)
+    assert result["status"] == "FAILED" and result["stage"] == "read-decode-graphs"
+    assert '"graph_context": "compiled-omc"' in result["error"]
+    assert '"node": "NetOutput"' in result["error"] and '"selected_data_slot": 0' in result["error"]
+    assert "missing_actual_compiled_producer" in result["error"]
+    assert result["graph_edge_policy"]["policy"] == "OPDEF_INPUT_AUTHORITATIVE_GRAPH_CONNECTIVITY"

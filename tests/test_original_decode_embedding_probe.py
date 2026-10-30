@@ -440,8 +440,8 @@ def test_concurrent_source_or_table_changes_are_detected(embedding_case, monkeyp
 def test_plan_changed_after_inventory_revalidation_cannot_replace_execution_provenance(embedding_case, monkeypatch):
     case = embedding_case
     original = probe.validate_target_decode_output_inventory
-    def replace_plan(path):
-        result = original(path)
+    def replace_plan(path, **options):
+        result = original(path, **options)
         plan_path = case["case"]["execution"] / "plan.json"
         with plan_path.open("a") as stream: stream.write("\n")
         return result

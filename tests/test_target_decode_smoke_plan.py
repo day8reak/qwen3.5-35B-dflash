@@ -1,5 +1,8 @@
 """Named decode1 planning uses tiny metadata models and no vendor/device calls."""
 import math
+import json
+from copy import deepcopy
+import os
 from pathlib import Path
 import struct
 
@@ -112,6 +115,143 @@ def test_planning_does_not_open_omc_or_weight_payloads(case, monkeypatch):
         return original_path_open(path, *args, **kwargs)
     monkeypatch.setattr(Path, "open", guarded_path)
     assert prepare(case)["status"] == "DECODE_SMOKE_PLANNED"
+
+
+@pytest.mark.parametrize("changed_field", ["mtime_ns", "ctime_ns"])
+def test_stat_only_primary_change_reports_exact_metadata_without_opening_model(case, monkeypatch, changed_field):
+    import os
+    import stat
+    path = case["model"]
+    plan = prepare(case)
+    before = path.stat()
+    if changed_field == "mtime_ns":
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+    else:
+        os.chmod(path, stat.S_IMODE(before.st_mode) ^ stat.S_IXUSR)
+    current = path.stat()
+    assert current.st_size == before.st_size and current.st_ino == before.st_ino
+    assert getattr(current, "st_" + changed_field) != getattr(before, "st_" + changed_field)
+    original_open, original_path_open = os.open, Path.open
+    def guarded_open(filename, *args, **kwargs):
+        if str(filename).endswith((".omc", ".weight")):
+            pytest.fail("stat diagnosis opened a model or weight payload")
+        return original_open(filename, *args, **kwargs)
+    def guarded_path(filename, *args, **kwargs):
+        if filename.suffix in {".omc", ".weight"}:
+            pytest.fail("stat diagnosis opened a model or weight payload")
+        return original_path_open(filename, *args, **kwargs)
+    monkeypatch.setattr(os, "open", guarded_open)
+    monkeypatch.setattr(Path, "open", guarded_path)
+    with pytest.raises(ValueError) as error:
+        planner.validate_decode_smoke_plan(plan)
+    prefix, raw = str(error.value).split(": ", 1)
+    assert prefix == "recorded primary OMC extent or current identity changed"
+    diagnostic = json.loads(raw)
+    assert diagnostic["path"] == str(path)
+    assert diagnostic["recorded_bytes"] == diagnostic["current_bytes"] == before.st_size
+    assert "FIVE_STAT_IDENTITY_DIFFERS" in diagnostic["reasons"]
+    assert changed_field in diagnostic["stat_differences"]
+    assert diagnostic["stat_differences"][changed_field] == {
+        "recorded": getattr(before, "st_" + changed_field), "current": getattr(current, "st_" + changed_field)}
+    assert len(diagnostic["recorded_stat"]) == len(diagnostic["current_stat"]) == 5
+    assert diagnostic["payload_read"] == "NOT_OPENED" and diagnostic["content_sha256_comparison"] == "NOT_PERFORMED"
+
+
+def ctime_only(path):
+    before = path.stat()
+    os.chmod(path, before.st_mode & 0o7777)
+    after = path.stat()
+    assert (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) == (
+        after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    assert before.st_ctime_ns != after.st_ctime_ns
+
+
+def test_ctime_only_primary_revalidation_returns_current_identity_without_rewriting_receipts(case, monkeypatch):
+    plan = prepare(case)
+    original = deepcopy(plan)
+    receipts = {path: path.read_bytes() for path in (
+        case["job"] / "result.json", case["compilation"] / "report.json", case["probe"] / "result.json")}
+    ctime_only(case["model"])
+    actual_open = os.open
+    opened = []
+    def guarded(path, *args, **kwargs):
+        if str(path).endswith(".weight"):
+            pytest.fail("ctime reconciliation opened external weights")
+        if str(path).endswith(".omc"):
+            opened.append(str(path))
+        return actual_open(path, *args, **kwargs)
+    monkeypatch.setattr(os, "open", guarded)
+    observations = []
+    current = planner.validate_decode_smoke_plan(plan, revalidation_observations=observations)
+    assert opened == [str(case["model"])]
+    assert plan == original and {path: path.read_bytes() for path in receipts} == receipts
+    assert current["primary_model_binding"]["identity"]["ctime_ns"] == case["model"].stat().st_ctime_ns
+    assert current["primary_model_binding"]["identity"]["ctime_ns"] != plan["primary_model_binding"]["identity"]["ctime_ns"]
+    assert current["primary_model_binding"]["scope"] == planner._PRIMARY_REVALIDATED_SCOPE
+    assert current["model_payload_access"] == planner._PRIMARY_REVALIDATED_ACCESS
+    assert observations[0]["status"] == "SHA256_VERIFIED" and observations[0]["receipt_mutation"] == "NONE"
+    assert observations[0]["sha256"] == plan["model_sha256"]
+    assert observations[0]["read_bytes"] == case["model"].stat().st_size
+
+
+def test_changed_bytes_with_restored_mtime_fail_revalidation_and_retain_failed_read_observation(case):
+    plan = prepare(case)
+    path = case["model"]
+    before, raw = path.stat(), path.read_bytes()
+    path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    observations = []
+    with pytest.raises(ValueError, match="SHA256 differs"):
+        planner.validate_decode_smoke_plan(plan, revalidation_observations=observations)
+    assert len(observations) == 1 and observations[0]["status"] == "FAILED"
+    assert observations[0]["read_bytes"] == len(raw)
+    assert observations[0]["observed_sha256"] != observations[0]["expected_sha256"]
+    assert "sha256" not in observations[0], "a failed digest must never be labeled verified"
+
+
+@pytest.mark.parametrize("change", ["mtime", "inode", "bytes", "mode", "nlink"])
+def test_other_primary_identity_changes_are_refused_before_any_model_hash(case, monkeypatch, change):
+    plan = prepare(case)
+    path, before = case["model"], case["model"].stat()
+    if change == "mtime": os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000))
+    elif change == "inode":
+        replacement = path.with_name("replacement")
+        replacement.write_bytes(path.read_bytes())
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        os.replace(replacement, path)
+    elif change == "bytes": path.write_bytes(path.read_bytes() + b"x")
+    elif change == "mode": os.chmod(path, (before.st_mode & 0o7777) ^ 0o100)
+    else: os.link(path, path.with_name("extra-link"))
+    actual_open = os.open
+    def guarded(filename, *args, **kwargs):
+        if str(filename).endswith((".omc", ".weight")):
+            pytest.fail("non-ctime drift opened a payload")
+        return actual_open(filename, *args, **kwargs)
+    monkeypatch.setattr(os, "open", guarded)
+    observations = []
+    with pytest.raises(ValueError, match="current identity changed"):
+        planner.validate_decode_smoke_plan(plan, revalidation_observations=observations)
+    assert observations == []
+
+
+def test_ctime_reconciliation_never_normalizes_changed_controls_or_other_plan_fields(case):
+    plan = prepare(case)
+    ctime_only(case["model"])
+    plan["control_observations"][0]["values"] = [999]
+    with pytest.raises(ValueError, match="metadata or supplied input identity changed"):
+        planner.validate_decode_smoke_plan(plan)
+
+
+def test_primary_revalidation_64mib_budget_and_invalid_collector_fail_before_open(tmp_path, monkeypatch):
+    path = tmp_path / "model.omc"
+    with path.open("wb") as stream:
+        stream.truncate((64 << 20) + 1)
+    row = {"bytes": path.stat().st_size, "sha256": "0" * 64, "stat": _stat(path)}
+    monkeypatch.setattr(os, "open", lambda *a, **k: pytest.fail("over-budget primary was opened"))
+    with pytest.raises(ValueError, match="OUTSIDE_64MIB_BUDGET"):
+        planner.bind_primary_omc(path, row)
+    with pytest.raises(ValueError, match="observations must be a list"):
+        planner.bind_primary_omc(path, row, revalidation_observations={})
 
 
 @pytest.mark.parametrize("fault", ["missing", "duplicate", "wrong_name", "unobserved", "anonymous_output", "type", "shape", "interior_singleton"])

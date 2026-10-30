@@ -14,7 +14,7 @@ import shlex
 import uuid
 
 from .artifacts import output_path, save_json
-from .full_target import _recorded_file, read_metadata
+from .full_target import _file, _recorded_file, read_metadata
 from .existing_air import _stat
 from .hashing import sha256_file
 from .hdc_run import Hdc
@@ -42,6 +42,43 @@ def original_input_files():
     rows.extend((name, name + ".bin") for name in
                 ("new_kv_cache_pos", "output_pos", "embed_scale", "allQLen", "conv_state_pos", "effective_length"))
     return rows
+
+
+def _recorded_board_payload(root, row, compiled, *, smoke_proof=None, primary_revalidations=None):
+    """Keep payload checks strict; reconcile only the small primary's ctime.
+
+    The shared primary binder rehashes a ctime-only change against the recorded
+    SHA and checks the current full identity against the saved smoke proof.
+    External weights and other compiler files retain the original validator.
+    """
+    if (not isinstance(row, dict) or row != compiled.get("omc")
+            or row.get("path") not in {"compile-work/generated/model.omc", "compile-work/generated/model/model.omc"}
+            or type(row.get("bytes")) is not int or not 0 < row["bytes"] <= 64 << 20
+            or not isinstance(row.get("stat"), list) or len(row["stat"]) != 5
+            or any(type(value) is not int for value in row["stat"])):
+        return _recorded_file(root, row, "stat")
+    path = _file(root, row["path"])
+    expected = None
+    if smoke_proof is not None:
+        saved = smoke_proof.get("primary_model_binding")
+        if (not isinstance(saved, dict) or saved.get("path") != str(path)
+                or any(saved.get(key) != row.get(key) for key in ("bytes", "sha256"))
+                or not isinstance(saved.get("identity"), dict)):
+            raise ValueError("board primary payload differs from its saved smoke model binding")
+        expected = saved["identity"]
+    # Local import avoids a module cycle: the decode planner imports this
+    # module's declared input filenames while building its frozen ABI.
+    from .target_decode_smoke_plan import bind_primary_omc
+    observations = []
+    try:
+        current = bind_primary_omc(path, row, expected_identity=expected,
+            revalidation_observations=observations)
+    finally:
+        if primary_revalidations is not None:
+            primary_revalidations.extend(observations)
+    if observations:
+        return Path(current["path"])
+    return _recorded_file(root, row, "stat")
 
 
 def _width(desc):
@@ -159,6 +196,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
               "status": "FAILED", "stage": "contract", "device_execution": "NOT_RUN",
               "numerical_validation": "NOT_RUN_NO_REFERENCE", "state_continuity": "NOT_RUN",
               "runtime_placement": "UNVERIFIED", "retrieved": {}, "retrieval_errors": [],
+              "primary_revalidations": [],
               "target_features_requested": target_features,
               "feature_output_evidence": {"status": "NOT_CHECKED", "semantic_validation": "NOT_RUN"}}
     hdc = None
@@ -295,7 +333,8 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             cache_held, uncertain = True, False
         uploads = []
         for row in compiled.get("generated_artifacts", []):
-            path = _recorded_file(root, row, "stat")
+            path = _recorded_board_payload(root, row, compiled, smoke_proof=smoke_proof,
+                primary_revalidations=result["primary_revalidations"])
             relative = PurePosixPath(row["path"]).relative_to("compile-work/generated")
             remote = cache / "payload" / relative
             _board_path(str(remote))

@@ -19,29 +19,13 @@ from .target_compile_failure import _read_small, _safe
 from .target_prefill_output_inventory import _bound_execution, _json
 from .target_prefill_smoke_plan import _source
 from .target_reshape_metadata import _children
-from .target_state_lineage import load_bound_source_air, _graph
+from .target_state_lineage import load_bound_source_air, _graph, _inputs, graph_edge_policy
 
 
 _PROFILE = "cpro-40block-prefill-64"
 _CONTROL = "arg1238_1"
 _MAX_NODES, _MAX_EDGES = 32768, 262144
 _PRESERVE = {"Identity", "Squeeze", "Unsqueeze", "Cast"}
-
-
-def _inputs(node):
-    direct = node.get("input", [])
-    names, ports = node.get("src_name", []), node.get("src_index", [])
-    if not isinstance(direct, list) or len(direct) > 1024 or any(not isinstance(x, str) for x in direct):
-        raise ValueError("invalid operation input list")
-    if names or ports:
-        if (not isinstance(names, list) or not isinstance(ports, list) or len(names) != len(ports)
-                or any(not isinstance(n, str) or type(p) is not int for n, p in zip(names, ports))):
-            raise ValueError("invalid alternate operation input references")
-        alternate = [f"{n}:{p}" for n, p in zip(names, ports)]
-        if direct and direct != alternate:
-            raise ValueError("input and src_name/src_index references disagree")
-        direct = direct or alternate
-    return [edge for edge in direct if not edge.endswith(":-1")]
 
 
 def _edge(text, by_name):
@@ -250,6 +234,7 @@ def analyze_logit_selection(graph, raw_graph, schema, selected_index):
             row["reason"] = str(error)[:512]
         nearby.append(row)
     result = {"status": "LOGIT_SELECTION_UNVERIFIED", "logits_output_index": 0,
+        "graph_edge_policy": graph_edge_policy(),
         "logits_reference": edges[0], "observed_control_value": selected_index,
         "logit_ancestor_count": len(visited), "ancestor_gather_count": len(gathers),
         "control_gather_candidate_count": len(candidates), "candidates": candidates[:8],
@@ -301,6 +286,7 @@ def inspect_target_logit_selection(job_dir, execution_dir, output_dir):
         "status": "FAILED", "output": str(out), "device_execution": "NOT_RUN", "model_compilation": "NOT_RUN",
         "input_mutation": "NONE", "weight_payload_access": "NONE", "numerical_validation": "NOT_RUN",
         "source_bindings": bindings}
+    result["graph_edge_policy"] = graph_edge_policy()
     try:
         job, schema, raw, document, kind = load_bound_source_air(job_dir, _PROFILE, bindings)
         result["job"] = job

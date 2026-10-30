@@ -3,9 +3,9 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "DECODE_OUTPUTS_BOUND_QUERY_ROW_LOCATION_IN_PROGRESS_STATE_MAP_PENDING",
+  "status": "QUERY269_LOCATED_CTIME_FIX_HOST_VERIFIED_STATE_MAP_PENDING",
   "handoff": "20261030T030850Z-16489-cfe0d0/handoff.md",
-  "user_state": "Complete original target prefill64, independent experimental decode1 and exact real-feature full six-layer draft step each executed successfully. Saved decode output binding,80-state ownership/feedback, original next-token embeddings and full multi-round execution remain to verify; no numerical acceptance.",
+  "user_state": "User-reported original full40layer prefill64 and independent experimental decode1 executed with82 logged/hash-bound outputs; exact real feature fed full6layer draft forone step. Original query raw row/scale located at269. Onlyprimaryctime changed while freshSHA matched. Same-model80state mapping, feedback/control semantics, next-row import and multiround accuracy/performance remain open.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
   "contract": {
@@ -47,13 +47,13 @@
     "board_tool_workflow": "HOST_FAKE_BOARD_TESTED; no actual user-device invocation from this assistant"
   },
   "remaining_gates": [
-    "Actual runtime input/output descriptor names, slots and original input semantics",
-    "External-weight loading and explicit feedback of all80 states across64-prefill to1-decode",
-    "Real target feature output passed to the existing complete6-layer draft bundle",
-    "Ordinary decode and multi-round DFlash stop/reject/commit behavior",
+    "Same-model80unique state ownership, compiled/runtime identities and individually bound output feedback",
+    "Original query269 and freshargmax next0 row extraction/import with unchanged context ID bytes",
+    "Declared control semantics and genuine continuous decode history",
+    "Complete target/draft verify, stop/reject/commit and compatible draft context capacity",
     "Matched numerical acceptance and measured end-to-end performance"
   ],
-  "next_command": "Run the standalone locate command on original weight machine using unchanged request; source pb2/state-lineage-v3 remains independent. See docs/current-status.md.",
+  "next_command": "Pull update; rerun same-model state lineage in new v4 output and prepare version2 query269 row request. See docs/current-status.md.",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -1202,7 +1202,7 @@
     "actual_output_file_count": 82
   },
   "next_decode_audits": {
-    "status": "OUTPUTS_USER_VERIFIED_STATE_LIMIT_FIXED_TABLE_LOCATION_PENDING",
+    "status": "USER_DECODE_OUTPUTS_BOUND_QUERY_ROW269_LOCATED_STATE_MAPPING_PENDING",
     "output_inventory": {
       "entrypoint": "targets/cpro/scripts/inspect_target_decode_outputs.py",
       "execution": "target-decode1-smoke-trial",
@@ -1214,14 +1214,14 @@
     },
     "same_model_state_lineage": {
       "entrypoint": "targets/cpro/scripts/inspect_target_decode_state_lineage.py",
-      "output": "target-decode1-state-lineage-v3",
+      "output": "target-decode1-state-lineage-v4",
       "success_status": "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED",
       "partial_status": "DECODE_STATE_LINEAGE_OBSERVED_WITH_GAPS",
       "checks": "80unique serialized named updater owners, unique explicit source/compiled FX identities, exact typed views, literal native descriptor names, actual logged SHA-bound output files. Source producer missing shapes stay explicit; no profile-based filling.",
       "feedback_ready": false,
       "state_feedback": "NOT_RUN",
       "scope": "Same compiled decode model only; separate prefill/decode RefData labels are not assumed common layer identity.",
-      "status": "HOST_SOURCE_COMPILED_SCHEMA_SPLIT_VERIFIED_SOURCE_PB2_COPY_PENDING",
+      "status": "HOST_GRAPH_INPUT_POLICY_AND_CTIME_REVALIDATION_VERIFIED_ACTUAL_MAPPING_PENDING",
       "metadata_json_maximum_bytes": 33554432,
       "source_pb2_flag": "--source-torchair-pb2"
     },
@@ -1236,7 +1236,7 @@
       "logical_history": "UNVERIFIED",
       "runtime_control_recipe": "UNVERIFIED",
       "state_continuity": "NOT_VALIDATED",
-      "status": "USER_CANDIDATE_EXTRACTION_NO_MATCH_HOST_EXACT_ROW_LOCATOR_VERIFIED",
+      "status": "QUERY269_EXACT_ROW_LOCATED_VERSION2_TRANSFER_HOST_IMPLEMENTED",
       "candidate_flag": "--match-source-id-candidates",
       "maximum_candidate_ids": 1024,
       "maximum_candidate_table_read_bytes": 2103300,
@@ -1400,34 +1400,34 @@
       "pb2_bytes": 16543,
       "pb2_sha256": "76efc97871230bbb4780fa71d9b3de5c3092d8ce0161aa2f83b5e219c7bf4cc0",
       "recorded_pb2": "/root/anaconda3/envs/qwen3_5_cpro/lib/python3.11/site-packages/torch_npu/dynamo/torchair/_ge_concrete_graph/ge_ir_by_protoc_3_19_pb2.py",
-      "on_current_ddk_host": "MISSING"
+      "on_current_ddk_host": "USER_COPIED_MATCHING_SOURCE_PB2_ACCEPTED_BY_V3_PARSE"
     },
     "fix": "Hash-bound canonical export receipt selects source pb2 AST literal; source ge.proto schema and enum domains independent from compiled selected-DDKhiai schema. Missing declared source dependency does not select another schema or ignore unknown fields.",
     "copy_policy": "Only exact16543B producer file copied from source host; --source-torchair-pb2 accepts matching receipt pb2 SHA and descriptor SHA, never executes the generated Python module.",
-    "next_output": "target-decode1-state-lineage-v3",
+    "next_output": "target-decode1-state-lineage-v4",
     "actual_full_state_mapping": "PENDING_USER_ARTIFACT_AUDIT"
   },
   "original_decode_row_transfer": {
-    "status": "USER_REPORTED_NO_MATCH_WITH_SUPPLIED_SOURCE_ID_CANDIDATES",
+    "status": "QUERY269_LOCATED_VERSION2_EXPLICIT_QUERY_HANDOFF_PREPARED_IN_CODE",
     "entrypoint": "targets/cpro/scripts/transfer_original_decode_rows.py",
     "subcommands": [
       "prepare",
       "extract",
       "import"
     ],
-    "prepared_output": "target-decode1-row-request",
+    "prepared_output": "target-decode1-row-request-v2",
     "request_files_to_source_host": [
       "request.json",
       "extract_rows.py"
     ],
     "source_host": "USER_CONFIRMED_ORIGINAL_WEIGHT_MACHINE",
     "original_table_directory": "/home/l00886453/models/Qwen3.5-35B-A3B_quant",
-    "source_output": "target-decode1-row-response",
+    "source_output": "target-decode1-row-response-v2",
     "return_files": [
       "response.json",
       "ge_ir_by_protoc_3_19_pb2.py"
     ],
-    "import_output": "target-decode1-original-rows",
+    "import_output": "target-decode1-original-rows-v2",
     "request_maximum_bytes": 65536,
     "response_maximum_bytes": 1048576,
     "table_maximum_bytes": 2103300,
@@ -1436,7 +1436,12 @@
     "next_input_bytes": 2056,
     "source_machine_runtime": "Copied exact extraction source tested with python -I -S; stdlib only, no repo/PyYAML/Torch/AI_RUN_DIR required for extract.",
     "binding": "Fresh successful decode/trial/sourceID/inputrow/FP32scale/logits are rebound on local prepare/import. Exact request SHA, extractor SHA, configured table paths, bounded candidate and winner row hashes, unique current row/scale match and next raw bytes are checked. Resource claims are delegated selected rows, not whole table authentication.",
-    "scope": "Original table rows only; no full-table transfer, requantization, inference, state construction, numerical acceptance or history proof."
+    "scope": "Original table rows only; no full-table transfer, requantization, inference, state construction, numerical acceptance or history proof.",
+    "explicit_query_flag": "--query-token-id",
+    "query_token_id": 269,
+    "request_schema_version": 2,
+    "context_id_role": "UNCHANGED_CONTEXT_ONLY_NO_QUERY_POSITION_INFERENCE",
+    "uniqueness_scope": "EXPLICIT_QUERY_ID_ONLY_BYTE_VALIDATED"
   },
   "source_schema_and_row_transfer_host_verification": {
     "run_id": "20261030T023239Z-14738-f5135c",
@@ -1511,7 +1516,7 @@
     "interpretation": "Only the seven tested IDs are excluded. This does not prove table/input/generator fault or a full-vocabulary mismatch; raw query provenance remains unestablished."
   },
   "original_decode_row_location_diagnosis": {
-    "status": "HOST_VERIFIED_ACTUAL_RESOURCE_DIAGNOSIS_PENDING",
+    "status": "USER_REPORTED_ORIGINAL_DECODE_ROW_LOCATION_UNIQUE",
     "entrypoint": "targets/cpro/scripts/transfer_original_decode_rows.py locate",
     "portable_source": "model/qwen35_moe_dflash/original_decode_row_transfer.py",
     "copied_diagnostic_basename": "target-decode1-locate.py",
@@ -1533,7 +1538,7 @@
     "next_token_generation": "NOT_PERFORMED",
     "import_eligibility": "NOT_AN_EXTRACTION_RESPONSE",
     "transport": "Copy only the new diagnostic source into the user-owned resource directory; retain original request/extractor/NO_MATCH response.",
-    "next": "Use complete exact-pair location evidence to establish query identity or return to the original preprocessing generator; keep independent schema/state-map work progressing."
+    "next": "Prepare newversion2 explicitquery269 request; original context ID bytes remain unchanged; only validated extraction response may be imported."
   },
   "original_decode_row_location_host_verification": {
     "run_id": "20261030T030850Z-16489-cfe0d0",
@@ -1548,5 +1553,96 @@
     ],
     "scope": "Host sparse-table and fresh fake decode-request fixtures only. Tests cover complete scale scan, unique row outside source IDs and beyond1024 scale matches, ambiguity/no match, prefix/tail distinction, full budget refusal, mutation, stdlib-only copied locate/extract, unchanged successful handoff and negative extraction. No real user table/model/device calls or accuracy acceptance.",
     "review": "Independent read-only agent reviewed exact rejection, complete candidate coverage, payload vs physicalI/O scope and non-importability."
+  },
+  "original_decode_row_location_user_report": {
+    "source": "USER_PASTED_ORIGINAL_WEIGHT_MACHINE_LOCATE_OUTPUT",
+    "status": "ORIGINAL_DECODE_ROW_LOCATION_UNIQUE",
+    "request_sha256": "59cf042440f86a85ddb4a4220ad434218c3460fead5a12ab293dcf56fca55299",
+    "binding_digest": "e824628610d21a73218ac141e71a7991c4e3e6f5f4fead7de021bf12f5cc04ae",
+    "matching_pair_token_ids": [
+      269
+    ],
+    "scale_scan_complete": true,
+    "prefix_scan_complete": true,
+    "pair_scan": "COMPLETE_EXACT_SCALE_PREFIX_AND_REMAINDER_SEARCH",
+    "scale_match_count": 17,
+    "prefix_match_count": 1,
+    "pair_match_count": 1,
+    "table_read_bytes": 995392,
+    "scale_scan_bytes": 993280,
+    "prefix_read_bytes": 68,
+    "remainder_read_bytes": 2044,
+    "diagnostic_only": true,
+    "next_row_payloads": "NOT_YET_EXTRACTED_OR_IMPORTED",
+    "logical_history": "UNVERIFIED"
+  },
+  "decode_primary_ctime_user_report": {
+    "source": "USER_PASTED_READ_ONLY_STAT_AND_PRIMARY_SHA256",
+    "failed_stage": "validate-output-inspection",
+    "recorded_stat": [
+      64768,
+      1593056,
+      15452631,
+      1793283139466605345,
+      1793283139466605345
+    ],
+    "current_stat": [
+      64768,
+      1593056,
+      15452631,
+      1793283139466605345,
+      1793332550650240811
+    ],
+    "recorded_and_fresh_sha256": "5f06fffda851760023e6b63580fdecd8e18ef591f8c7d7be7e48c5bdeae1b626",
+    "content_match": true,
+    "changed_field": "ctime_ns",
+    "cause_of_ctime_change": "NOT_ESTABLISHED",
+    "repair_policy": "Onlysamefirstfourstat fields plusfreshstableboundedprimarySHA allowctime reconciliation; allotherplan/fullidentityfields unchanged. Oldreports/receipts preserved. No weightstat relaxation."
+  },
+  "decode_graph_input_policy_fix": {
+    "prior_user_error": "conflicting input and src_name/src_index edge representations",
+    "policy": "OPDEF_INPUT_AUTHORITATIVE_GRAPH_CONNECTIVITY",
+    "optional_holes": "PRESERVED_DESTINATION_DATA_SLOTS",
+    "control_edges": "NAMED_MINUS_ONE_EXCLUDED_FROM_DATA_PORTS",
+    "src_metadata": "BOUNDED_DIAGNOSTIC_ONLY_NEVER_GRAPH_FALLBACK",
+    "official_metadef_commit": "cba623c83840fd0ac1e365a6fb80a34b20bd6a2d",
+    "selected_vendor_serializer": "NOT_INSPECTED",
+    "host_graph_tests_passed": 122,
+    "actual_mapping": "PENDING_V4_USER_RUN"
+  },
+  "query269_and_ctime_host_verification": {
+    "run_id": "20261030T030850Z-16489-cfe0d0",
+    "unique_tests_passed": 343,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "evidence": [
+      {
+        "artifact": "primary-ctime-junit.xml",
+        "tests": 141,
+        "sha256": "580523221f6a43227ed361c587af859df5bc5dc0f12068de16620833334b1d3e"
+      },
+      {
+        "artifact": "out/ctime-consumers.xml",
+        "tests": 56,
+        "sha256": "544a9e38cd327ce66c9179f0cd3b4a5d0ece42d1879724e0c3bd939e0a488451"
+      },
+      {
+        "artifact": "out/original-decode-query-release.xml",
+        "tests": 63,
+        "sha256": "cf8809e22d36281babdf61ff20a51663fe7ee681ce47dac74835b6b48f11c8d6"
+      },
+      {
+        "artifact": "out/original-decode-row-ctime-tests.xml",
+        "tests": 7,
+        "sha256": "c1a45c6eaad5baaac05af2d12a34f7dfa48b07c8882ae484b8337356ac844be8"
+      },
+      {
+        "artifact": "out/primary-board-tests.xml",
+        "tests": 80,
+        "sha256": "f3facc66159a559a0bb22077475394a6014af246fd951629f0bc3044f43aa709"
+      }
+    ],
+    "scope": "Hostfixtures only: authoritative graph inputs, request-v2 explicitquery269 with unchanged256contextIDs, ctime-only small-primary rehash plus immutable savedreceipts, real retained-output fixture validators and fakeHDC cachedreuse. No actualmodel/device/accuracy/state-continuity/performance acceptance."
   }
 }

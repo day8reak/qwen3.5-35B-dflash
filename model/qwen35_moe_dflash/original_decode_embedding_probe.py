@@ -50,7 +50,8 @@ def _unchanged(bindings, payloads, tables):
             raise ValueError("original embedding table changed during selected-row inspection")
 
 
-def inspect_original_decode_embeddings(inspection_dir, config_yaml, output_dir, *, match_source_id_candidates=False):
+def inspect_original_decode_embeddings(inspection_dir, config_yaml, output_dir, *, match_source_id_candidates=False,
+                                       revalidation_observations=None):
     """Compare one executed source row, then retain an exact original next row.
 
     Source IDs are freshly read from the trial manifest's original directory.
@@ -72,7 +73,11 @@ def inspect_original_decode_embeddings(inspection_dir, config_yaml, output_dir, 
             "scope": "Direct row-proof reads; the inventory validator separately rehashes its retained input/output evidence"},
         "scope": "Selected original INT8 row and separate FP32 scale lookup only. No requantization, multiplication, controls, state construction, history or generation-readiness proof."}
     bindings, payloads, tables = [], [], []
+    observations = [] if revalidation_observations is None else revalidation_observations
+    observation_start = len(observations) if isinstance(observations, list) else 0
     try:
+        if not isinstance(observations, list):
+            raise ValueError("revalidation_observations must be a list or None")
         if type(match_source_id_candidates) is not bool:
             raise ValueError("match_source_id_candidates must be an explicit boolean")
         maximum_ids = _MAX_CANDIDATE_IDS if match_source_id_candidates else 1
@@ -84,7 +89,7 @@ def inspect_original_decode_embeddings(inspection_dir, config_yaml, output_dir, 
         inspection, _ = _safe(inspection_dir, directory=True)
         prior = _json(inspection / "report.json", bindings)
         report["stage"] = "validate-decode-output-inspection"
-        if validate_target_decode_output_inventory(inspection) != prior:
+        if validate_target_decode_output_inventory(inspection, revalidation_observations=observations) != prior:
             raise ValueError("selected decode inspection changed during fresh validation")
         bindings.extend(prior["evidence_bindings"])
         report["stage"] = "read-executed-decode-plan"
@@ -286,6 +291,10 @@ def inspect_original_decode_embeddings(inspection_dir, config_yaml, output_dir, 
         report["stage"] = "complete"
     except (OSError, ValueError, TypeError, KeyError, IndexError, RecursionError, struct.error) as error:
         report["error"] = f"{type(error).__name__}: {error}"
+    current_observations = observations[observation_start:] if isinstance(observations, list) else []
+    report["primary_omc_revalidation_observations"] = current_observations
+    if current_observations:
+        report["model_payload_access"] = "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY"
     report["source_bindings"] = bindings
     save_json(out / "report.json", report)
     return report

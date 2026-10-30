@@ -42,6 +42,21 @@ _DTYPES = {"DT_FLOAT16": "FLOAT16", "DT_FLOAT": "FLOAT32", "DT_FLOAT32": "FLOAT3
            "DT_INT8": "INT8", "DT_INT16": "INT16", "DT_INT32": "INT32", "DT_INT64": "INT64"}
 
 
+def graph_edge_policy():
+    return {"policy": "OPDEF_INPUT_AUTHORITATIVE_GRAPH_CONNECTIVITY",
+        "optional_inputs": "EMPTY_INPUT_STRINGS_PRESERVE_DESTINATION_DATA_PORTS",
+        "control_inputs": "EXPLICIT_NAMED_MINUS_ONE_REFERENCES_DO_NOT_CONSUME_DATA_PORTS",
+        "src_name_src_index": "RETAINED_OPDESC_METADATA_NOT_SUBSTITUTED_FOR_GRAPH_EDGES",
+        "evidence": {"repository": "Ascend/metadef", "commit": "cba623c83840fd0ac1e365a6fb80a34b20bd6a2d",
+            "serializer": "https://gitee.com/ascend/metadef/blob/cba623c83840fd0ac1e365a6fb80a34b20bd6a2d/graph/serialization/model_serialize.cc",
+            "serializer_sha256": "2b05a27358a31d5739810b51495cc27a4ec65ae630eca1f1969506464108a164",
+            "opdesc_metadata": "https://gitee.com/ascend/metadef/blob/cba623c83840fd0ac1e365a6fb80a34b20bd6a2d/graph/normal_graph/op_desc.cc",
+            "opdesc_metadata_sha256": "7df6ef58d3303f8adb7add6301c9281553a575b613aa63199eed9e4e9618739a",
+            "functions": ["ModelSerializeImp::SerializeEdge", "ModelSerializeImp::UnserializeNode"]},
+        "selected_vendor_serializer": "NOT_INSPECTED",
+        "scope": "Source-backed graph field interpretation; no compiler equivalence, control scheduling or numerical state validation"}
+
+
 def _audit_read(path, maximum, role, reader, read_attempts=None, *, recorded_role=None):
     """Keep bounded read failures attributable without opening larger payloads."""
     attempt = {"role": role, "path": str(path), "observed_bytes": None,
@@ -91,7 +106,18 @@ def _bound_file(root, row, bindings, *, maximum=_MAX_GRAPH_BYTES, stat_key="stat
     if any(identity[key] != row.get(key) for key in ("bytes", "sha256")):
         raise ValueError("recorded payload hash/size changed: " + str(path))
     if stat_key in row and row[stat_key] != identity["stat"]:
-        raise ValueError("recorded payload identity changed: " + str(path))
+        recorded = row[stat_key]
+        ctime_only = (role == "primary-omc" and stat_key == "stat" and maximum <= _MAX_GRAPH_BYTES
+            and path.name == "model.omc" and isinstance(recorded, list) and len(recorded) == 5
+            and recorded[:4] == identity["stat"][:4])
+        if not ctime_only:
+            raise ValueError("recorded payload identity changed: " + str(path))
+        if read_attempts is not None:
+            read_attempts[-1]["primary_omc_ctime_revalidation"] = {
+                "kind": "PRIMARY_OMC_CTIME_ONLY_REVALIDATED", "status": "SHA256_VERIFIED", "path": str(path), "recorded_stat": recorded,
+                "current_stat": identity["stat"], "bytes": identity["bytes"], "sha256": identity["sha256"],
+                "hash_scope": "PRIMARY_OMC_ALREADY_FRESHLY_HASHED_MAXIMUM_64MIB_FIVE_STAT_STABLE_BEFORE_AFTER",
+                "receipt_mutation": "NONE", "weight_payload_access": "NONE"}
     bindings.append(identity)
     return path, raw, identity
 
@@ -133,29 +159,103 @@ def _edge(text, by_name):
     return node, port
 
 
+class _EdgeRepresentationError(ValueError):
+    def __init__(self, reason, diagnostic):
+        self.diagnostic = dict(diagnostic, reason=reason)
+        super().__init__(reason + "; " + json.dumps(self.diagnostic, ensure_ascii=False, sort_keys=True))
+
+
+def _input_representation(node):
+    values, names, ports = node.get("input", []), node.get("src_name", []), node.get("src_index", [])
+    def sample(value):
+        if not isinstance(value, list):
+            return {"unsupported_type": type(value).__name__}
+        return [item[:160] if isinstance(item, str) else item if type(item) in {int, bool} else
+            {"unsupported_type": type(item).__name__} for item in value[:8]]
+    diagnostic = {"node": node.get("name"), "node_type": node.get("type"),
+        "raw_input_count": len(values) if isinstance(values, list) else None,
+        "raw_src_name_count": len(names) if isinstance(names, list) else None,
+        "raw_src_index_count": len(ports) if isinstance(ports, list) else None,
+        "raw_input_first8": sample(values), "raw_src_name_first8": sample(names), "raw_src_index_first8": sample(ports)}
+    def fail(reason):
+        raise _EdgeRepresentationError(reason, diagnostic)
+    if (not isinstance(values, list) or len(values) > 1024
+            or any(not isinstance(value, str) or len(value) > 1152 for value in values)):
+        fail("unsupported operation input list/reference")
+    alternate_supported = not (not isinstance(names, list) or not isinstance(ports, list) or len(names) != len(ports)
+            or len(names) > 1024 or any(not isinstance(name, str) or len(name) > 1024 for name in names)
+            or any(type(port) is not int or not -1 <= port <= 1023 for port in ports)
+            or any(not name and port != -1 for name, port in zip(names, ports)))
+    alternate = [name + ":" + str(port) if name else "" for name, port in zip(names, ports)] if alternate_supported else []
+    def split(rows):
+        slots, controls, raw_indices = [], [], []
+        for index, value in enumerate(rows):
+            if value.endswith(":-1"):
+                if not value[:-3]:
+                    fail("control edge must name an explicit producer")
+                controls.append(value)
+            else:
+                # Empty optional inputs are real destination-port holes.
+                # They never become dependencies or disappear from indices.
+                slots.append(value)
+                raw_indices.append(index)
+        return slots, controls, raw_indices
+    direct, direct_controls, direct_indices = split(values)
+    alt, alt_controls, alt_indices = split(alternate)
+    diagnostic.update(input_data_slot_count=len(direct), alternate_data_slot_count=len(alt),
+        input_optional_hole_count=direct.count(""), alternate_optional_hole_count=alt.count(""),
+        input_control_count=len(direct_controls), alternate_control_count=len(alt_controls))
+    if values and alternate and direct != alt:
+        index = next(index for index in range(max(len(direct), len(alt)))
+            if index >= len(direct) or index >= len(alt) or direct[index] != alt[index])
+        diagnostic.update(metadata_difference_data_slot=index,
+            input_at_conflict={"raw_index": direct_indices[index], "value": direct[index][:160]} if index < len(direct) else None,
+            alternate_at_conflict={"raw_index": alt_indices[index], "value": alt[index][:160]} if index < len(alt) else None)
+    diagnostic.update(status="EMPTY_GRAPH_INPUT_SRC_METADATA_IGNORED" if not values and (names or ports)
+        else "EXPLICIT_GRAPH_INPUT_USED", selected_data_slot_count=len(direct),
+        selected_optional_hole_count=direct.count(""),
+        src_metadata_relation=("UNSUPPORTED_RETAINED_WITHOUT_INTERPRETATION" if not alternate_supported else
+            "DIFFERENT_FROM_GRAPH_DATA_SLOTS" if alternate and direct != alt else
+            "MATCHED_GRAPH_DATA_SLOTS" if alternate else "ABSENT_OR_EMPTY"),
+        input_controls_first8=direct_controls[:8], alternate_controls_first8=alt_controls[:8],
+        normalization="OPDEF_INPUT_CONTROLS_EXCLUDED_EMPTY_OPTIONAL_SLOTS_PRESERVED")
+    return direct, diagnostic
+
+
 def _inputs(node):
-    values = node.get("input", [])
-    if not isinstance(values, list) or len(values) > 1024:
-        raise ValueError("unsupported operation input list")
-    alternate = []
-    if "src_name" in node or "src_index" in node:
-        names, ports = node.get("src_name", []), node.get("src_index", [])
-        if (not isinstance(names, list) or not isinstance(ports, list) or len(names) != len(ports)
-                or len(names) > 1024 or any(not isinstance(name, str) or not name or len(name) > 1024 for name in names)
-                or any(type(port) is not int or not -1 <= port <= 1023 for port in ports)):
-            raise ValueError("unsupported alternate src_name/src_index input list")
-        alternate = [name + ":" + str(port) for name, port in zip(names, ports)]
-    if values and alternate and values != alternate:
-        raise ValueError("conflicting input and src_name/src_index edge representations")
-    values = values or alternate
-    result = []
-    for value in values:
-        if isinstance(value, str) and value.endswith(":-1"):
+    return _input_representation(node)[0]
+
+
+def observe_edge_representations(document, context):
+    """Retain bounded facts about actual root boundary/updater edge encodings."""
+    graph, _, _ = _graph(document)
+    counts, examples = Counter(), []
+    for node in graph["op"]:
+        if node["type"] not in {"NetOutput", "Cast", "Identity", *_PAIRS}:
             continue
-        if not isinstance(value, str) or len(value) > 1152:
-            raise ValueError("unsupported operation input reference")
-        result.append(value)
-    return result
+        counts["examined_nodes"] += 1
+        try:
+            _, row = _input_representation(node)
+            counts["raw_input_entries"] += row["raw_input_count"]
+            counts["raw_src_entries"] += row["raw_src_name_count"] or 0
+            counts["data_slots"] += row["selected_data_slot_count"]
+            counts["optional_holes"] += row["selected_optional_hole_count"]
+            counts["direct_controls"] += row["input_control_count"]
+            counts["alternate_controls"] += row["alternate_control_count"]
+            if row["raw_input_count"] and row["raw_src_name_count"]:
+                counts["dual_representations"] += 1
+            if row["src_metadata_relation"] in {"DIFFERENT_FROM_GRAPH_DATA_SLOTS", "UNSUPPORTED_RETAINED_WITHOUT_INTERPRETATION"}:
+                counts["src_metadata_differences"] += 1
+            interesting = (row["selected_optional_hole_count"] or row["input_control_count"]
+                or row["alternate_control_count"] or row["src_metadata_relation"] in
+                    {"DIFFERENT_FROM_GRAPH_DATA_SLOTS", "UNSUPPORTED_RETAINED_WITHOUT_INTERPRETATION"})
+        except _EdgeRepresentationError as error:
+            row, interesting = error.diagnostic, True
+            counts["unresolved_graph_inputs"] += 1
+        if interesting and len(examples) < 8:
+            examples.append(dict(row, graph_context=context))
+    return {"graph_context": context, "counts": dict(counts), "examples": examples,
+        "example_limit": 8, "scope": "Input representation diagnostics only; controls and optional holes never determine state ownership"}
 
 
 def _port_map(node, direction):
@@ -165,6 +265,9 @@ def _port_map(node, direction):
         raise ValueError("missing explicit serialized " + direction + " port-name map")
     keys, values = keys.get("list", {}).get("s"), values.get("list", {}).get("i")
     limit = len(_inputs(node)) if direction == "input" else len(node.get("output_desc", []))
+    if direction == "input" and limit == 0 and isinstance(keys, list) and keys:
+        _, diagnostic = _input_representation(node)
+        raise _EdgeRepresentationError("no graph data slots for required named input ports", diagnostic)
     if (not isinstance(keys, list) or not isinstance(values, list) or len(keys) != len(values)
             or not 1 <= len(keys) <= 1024 or any(not isinstance(k, str) or not k or len(k) > 128 for k in keys)
             or len(set(keys)) != len(keys) or len(set(values)) != len(values)
@@ -199,11 +302,18 @@ def _identity(raw):
     return value if isinstance(value, str) and 0 < len(value) <= 1024 else None
 
 
-def _boundary(document, enums, *, allow_unmaterialized_producer=False):
+def _boundary(document, enums, *, allow_unmaterialized_producer=False, graph_context="graph"):
     graph, by_name, net = _graph(document)
-    edges, descs = _inputs(net), net.get("input_desc")
+    try:
+        edges = _inputs(net)
+    except ValueError as error:
+        raise ValueError(graph_context + " NetOutput boundary: " + str(error)) from error
+    descs = net.get("input_desc")
     if not isinstance(descs, list) or len(edges) != len(descs) or len(edges) != 82:
-        raise ValueError("complete original feature target requires82 NetOutput descriptors and data edges")
+        _, diagnostic = _input_representation(net)
+        raise _EdgeRepresentationError("complete original feature target requires82 NetOutput descriptors and data edges",
+            dict(diagnostic, graph_context=graph_context, netoutput_data_slot_count=len(edges),
+                netoutput_descriptor_count=len(descs) if isinstance(descs, list) else None))
     refs = {name: node for name, node in by_name.items() if name in _STATES}
     if set(refs) != _STATES or any(node["type"] not in {"Data", "RefData"} for node in refs.values()):
         raise ValueError("root must expose all80 exact RefData names as Data/RefData inputs")
@@ -211,7 +321,12 @@ def _boundary(document, enums, *, allow_unmaterialized_producer=False):
         raise ValueError("root must expose the exact89 original target input names")
     outputs = []
     for index, (edge, raw) in enumerate(zip(edges, descs)):
-        node, port = _edge(edge, by_name)
+        try:
+            node, port = _edge(edge, by_name)
+        except ValueError as error:
+            _, diagnostic = _input_representation(net)
+            raise _EdgeRepresentationError(str(error), dict(diagnostic, graph_context=graph_context,
+                selected_data_slot=index, selected_edge=edge)) from error
         producer = node["output_desc"][port]
         view = _view(raw, enums)
         if _dtype(producer, enums) != view[0]:
@@ -269,7 +384,7 @@ def _carrier(edge, by_name, *, allow_update):
 
 def analyze_state_lineage(document, enums):
     """Describe same-graph state owners; no output ordinal implies a RefData ID."""
-    graph, by_name, refs, outputs = _boundary(document, enums, allow_unmaterialized_producer=True)
+    graph, by_name, refs, outputs = _boundary(document, enums, allow_unmaterialized_producer=True, graph_context="source-air")
     keys = set()
     for node in refs.values():
         descs = node.get("output_desc", [])
@@ -330,7 +445,7 @@ def analyze_state_lineage(document, enums):
 
 
 def _join_compiled(source, document, enums):
-    _, _, refs, outputs = _boundary(document, enums)
+    _, _, refs, outputs = _boundary(document, enums, graph_context="compiled-omc")
     by_identity = {}
     for row in outputs:
         if row["fx_tensor_identity"] is not None:
@@ -460,6 +575,9 @@ def load_target_graph(job, profile_name, bindings, *, source_capture=None, obser
         "compilation_report_sha256": report_id["sha256"],
         "model_sha256": omc_id["sha256"], "model_bytes": omc_id["bytes"], "ddk_id": report.get("ddk_id"),
         "air": air_id, "model": omc_id, "schema": schema.evidence, "weight_payload_access": "NONE",
+        "graph_edge_policy": graph_edge_policy(),
+        "primary_omc_revalidation_observations": [entry["primary_omc_ctime_revalidation"]
+            for entry in read_attempts if "primary_omc_ctime_revalidation" in entry],
         "evidence_read_attempts": read_attempts}
     if report.get("decode_input_view") is not None:
         borrowed = _metadata(compilation / "decode-input-view.json", bindings,
@@ -516,6 +634,10 @@ def load_bound_source_air(job, profile_name, bindings, *, source_torchair_pb2=No
 
 def _job(job, profile_name, bindings, *, observations=None):
     metadata, source, compiled, enums = load_target_graph(job, profile_name, bindings, observations=observations)
+    metadata["edge_representation_observations"] = {"source_air": observe_edge_representations(source, "source-air"),
+        "compiled_omc": observe_edge_representations(compiled, "compiled-omc")}
+    if observations is not None:
+        observations.update(metadata)
     metadata["source_lineage"] = analyze_state_lineage(source, metadata["source_enum_fields"])
     metadata["compiled_lineage"] = _join_compiled(metadata["source_lineage"], compiled, enums)
     return metadata, enums
@@ -587,6 +709,7 @@ def inspect_target_state_lineage(prefill_job, decode_job, prefill_execution, dec
         "status": "FAILED", "output": str(out), "device_execution": "NOT_RUN", "model_compilation": "NOT_RUN",
         "weight_payload_access": "NONE", "state_feedback": "NOT_RUN", "state_continuity": "NOT_VALIDATED",
         "cross_model_state_identity": "UNVERIFIED", "feedback_ready": False,
+        "graph_edge_policy": graph_edge_policy(),
         "numerical_validation": "NOT_RUN", "source_bindings": bindings,
         "scope": "Structural graph and declared tensor identities only. No state feedback, native inference, kernel correctness or numerical acceptance."}
     try:

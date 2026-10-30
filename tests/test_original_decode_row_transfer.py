@@ -13,6 +13,7 @@ import yaml
 from qwen35_moe_dflash import original_decode_row_transfer as transfer
 from test_original_decode_embedding_probe import embedding_case, set_candidates, stamp
 from test_target_decode_output_inventory import case as retained_case
+from test_target_decode_output_inventory import inspect as inspect_outputs, record, refresh
 
 
 @pytest.fixture
@@ -392,3 +393,187 @@ def test_copied_locate_command_is_stdlib_only_and_diagnostic_even_when_unique(ha
     assert shown["status"] == "ORIGINAL_DECODE_ROW_LOCATION_UNIQUE"
     assert shown["diagnostic_only"] is True and shown["import_eligibility"] == "NOT_AN_EXTRACTION_RESPONSE"
     assert (output / "diagnostic.json").is_file() and not (output / "response.json").exists()
+
+
+@pytest.fixture
+def query_handoff(embedding_case, tmp_path, request):
+    case = embedding_case
+    query_id = getattr(request, "param", 269)
+    ids = [3, 4, 7, 8, 9, 10, 11] * 36 + [3, 4, 7, 8]
+    context = set_candidates(case, ids)
+    retained = case["case"]
+    logits = retained["board"] / retained["paths"][retained["proof"]["logits_runtime_output_index"]]
+    with logits.open("r+b") as stream:
+        stream.seek(101 * 4); stream.write(struct.pack("<f", 0))
+        stream.seek(0); stream.write(struct.pack("<f", 3))
+    retained["report"]["retrieved"][str(logits.relative_to(retained["board"]))] = record(logits)
+    refresh(retained)
+    retained["out"] = tmp_path / "query-decode-inspection"
+    assert inspect_outputs(retained)["status"] == "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS"
+    resource = tmp_path / "query-resource-host"
+    tables = (resource / "original-int8.bin", resource / "original-scale.bin")
+    case["config"].write_text(yaml.safe_dump({"embedding_weight_path": str(tables[0]), "embedding_scale_path": str(tables[1])}))
+    prepared = tmp_path / "explicit-query-prepared"
+    manifest = transfer.prepare_rows(retained["out"], case["config"], prepared, query_token_id=query_id)
+    assert manifest["status"] == "ORIGINAL_DECODE_ROW_TRANSFER_PREPARED", manifest
+    resource.mkdir()
+    for original, target in zip(case["tables"], tables): original.rename(target)
+    actual_id = 0 if query_id == 0 else 269
+    next_row = case["rows"][7] if actual_id == 0 else bytes((13 + offset) % 256 for offset in range(2048))
+    next_scale = case["scales"][7] if actual_id == 0 else struct.pack("<f", .002)
+    with tables[0].open("r+b") as stream:
+        stream.seek(0); stream.write(next_row)
+        stream.seek(actual_id * 2048); stream.write(case["rows"][7])
+    with tables[1].open("r+b") as stream:
+        stream.seek(0); stream.write(next_scale)
+        stream.seek(actual_id * 4); stream.write(case["scales"][7])
+        stream.seek(7 * 4); stream.write(struct.pack("<f", .9))
+    return {"case": case, "prepared": prepared, "manifest": manifest, "tables": tables,
+        "request": prepared / "request.json", "resource": resource, "context": context, "query_id": query_id,
+        "expected_next_row": next_row, "expected_next_scale": next_scale,
+        "extracted": tmp_path / "explicit-query-extracted", "imported": tmp_path / "explicit-query-imported"}
+
+
+@pytest.mark.parametrize("query_handoff", [0, 269], indirect=True)
+def test_v2_explicit_query_keeps256_context_ids_and_reads_only_query_and_next_rows(query_handoff, monkeypatch):
+    case = query_handoff
+    request = json.loads(case["request"].read_text())
+    assert request["schema_version"] == 2 and request["query_token_id"] == case["query_id"]
+    assert request["binding_method"] == transfer._QUERY_METHOD
+    assert request["source_token_ids"]["shape"] == [1, 256]
+    assert request["source_token_ids"]["sha256"] == hashlib.sha256(case["context"]).hexdigest()
+    assert request["source_token_ids"]["bytes"] == 1024
+    assert case["manifest"]["source_id_vector_role"] == "UNCHANGED_CONTEXT_ONLY"
+    assert case["manifest"]["context_id_count"] == 256 and case["manifest"]["effective_candidate_count"] == 1
+    original, reads = os.pread, []
+    def exact_rows(fd, size, offset):
+        assert size in {2048, 4}
+        reads.append((size, offset))
+        return original(fd, size, offset)
+    monkeypatch.setattr(os, "pread", exact_rows)
+    response = extract(case)
+    assert response["status"] == transfer._EXTRACTED, response
+    assert response["schema_version"] == 2 and response["query_token_id"] == case["query_id"]
+    assert response["context_id_count"] == 256 and response["context_unique_id_count"] == 7
+    assert response["candidate_count"] == response["effective_candidate_count"] == response["unique_candidate_count"] == 1
+    assert response["matching_positions"] == [] and response["source_match"]["positions"] == []
+    assert response["uniqueness_scope"] == transfer._QUERY_METHOD
+    assert response["table_read_bytes"] == sum(size for size, _ in reads) == (2052 if case["query_id"] == 0 else 4104)
+    result = consume(case)
+    assert result["status"] == "ORIGINAL_DECODE_TRANSFERRED_ROWS_BOUND_NEXT_TOKEN_PREPARED", result
+    assert result["schema_version"] == 2 and result["selected_source_token_id"] == case["query_id"]
+    assert result["matching_source_positions"] == [] and result["selected_next_token_id"] == 0
+    assert result["uniqueness_scope"] == transfer._QUERY_METHOD
+    assert result["logical_history"] == result["state_feedback"] == "UNVERIFIED"
+    assert (case["imported"] / "next-token/inputs_embeds.bin").read_bytes() == case["expected_next_row"]
+    assert (case["imported"] / "next-token/embed_scale.bin").read_bytes() == case["expected_next_scale"]
+    assert sum(item["bytes"] for item in result["next_token_inputs"]) == 2056
+    assert (case["case"]["source"] / "input_ids.bin").read_bytes() == case["context"]
+
+
+@pytest.mark.parametrize("query_handoff", [268], indirect=True)
+def test_v2_wrong_explicit_query_cannot_reuse_matching_context_or_prepare_next_bytes(query_handoff):
+    case = query_handoff
+    response = extract(case)
+    assert response["status"] == "ORIGINAL_DECODE_ROWS_NO_MATCH", response
+    assert response["matching_token_ids"] == [] and response["next_token"] is None
+    assert response["table_read_bytes"] == 2052
+    no_next(case, consume(case))
+
+
+@pytest.mark.parametrize("fault", ["version1", "wrong_query", "bool_query", "context_count", "scope", "invented_position"])
+def test_v2_response_cannot_downgrade_change_query_or_invent_context_positions(query_handoff, fault):
+    case = query_handoff
+    response = extract(case)
+    assert response["status"] == transfer._EXTRACTED
+    if fault == "version1": response["schema_version"] = 1
+    elif fault == "wrong_query": response["query_token_id"] = 268
+    elif fault == "bool_query": response["query_token_id"] = True
+    elif fault == "context_count": response["context_id_count"] = 1
+    elif fault == "scope": response["uniqueness_scope"] = "EXPLICIT_SOURCE_ID_CANDIDATES_ONLY"
+    else: response["matching_positions"] = [{"token_id": 269, "positions": [255]}]
+    save(case["extracted"] / "response.json", response)
+    no_next(case, consume(case))
+
+
+@pytest.mark.parametrize("fault", ["downgrade", "bool_query", "method", "query_hash"])
+def test_v2_request_flags_and_query_are_sha_bound_and_version_checked(query_handoff, fault):
+    case = query_handoff
+    request = json.loads(case["request"].read_text())
+    if fault == "downgrade": request["schema_version"] = 1
+    elif fault == "bool_query": request["query_token_id"] = True
+    elif fault == "method": request["binding_method"] = "USE_LAST_CONTEXT_ID"
+    else: request["query_token_id"] = 268
+    invalid = case["resource"] / "invalid-query.json"; save(invalid, request)
+    response = extract(case, invalid)
+    assert response["status"] == "FAILED" and response["table_read_bytes"] == 0, response
+    assert response["next_token"] is None
+
+
+def test_v2_import_keeps_context_hash_a_live_binding(query_handoff):
+    case = query_handoff
+    assert extract(case)["status"] == transfer._EXTRACTED
+    raw = bytearray(case["context"]); raw[-4:] = struct.pack("<i", 12)
+    (case["case"]["source"] / "input_ids.bin").write_bytes(raw)
+    no_next(case, consume(case))
+
+
+@pytest.mark.parametrize("query", [True, False, -1, 248320, 269.0])
+def test_prepare_query_api_rejects_boolean_noninteger_and_out_of_range_flags(embedding_case, tmp_path, query):
+    result = transfer.prepare_rows(embedding_case["inspection"], embedding_case["config"], tmp_path / "invalid-query", query_token_id=query)
+    assert result["status"] == "FAILED" and "integer" in result["error"]
+    assert not (tmp_path / "invalid-query/source-audit").exists()
+
+
+def test_v1_request_does_not_silently_accept_query_flags(handoff):
+    case = handoff
+    request = json.loads(case["request"].read_text())
+    request.update(query_token_id=269, binding_method=transfer._QUERY_METHOD)
+    invalid = case["resource"] / "invalid-v1-query.json"; save(invalid, request)
+    response = extract(case, invalid)
+    assert response["status"] == "FAILED" and response["table_read_bytes"] == 0
+
+
+def test_ctime_only_primary_revalidation_is_visible_in_new_query_prepare_and_import_without_rewriting_old_evidence(query_handoff, tmp_path):
+    case = query_handoff
+    retained = case["case"]["case"]
+    primary = Path(retained["proof"]["primary_model_binding"]["path"])
+    original_stat = primary.stat()
+    original_sha = hashlib.sha256(primary.read_bytes()).hexdigest()
+    old_audit = case["prepared"] / "source-audit/report.json"
+    historical_paths = [old_audit, case["prepared"] / "manifest.json", case["request"],
+        retained["execution"] / "plan.json", retained["execution"] / "result.json",
+        retained["sources"]["compilation"] / "report.json", Path(case["manifest"]["inspection"]) / "report.json"]
+    historical_bytes = {path: path.read_bytes() for path in historical_paths}
+    assert json.loads(historical_bytes[old_audit])["model_payload_access"] == "NONE"
+    # chmod of the existing exact file changes ctime without changing its
+    # inode, extent, mtime, permissions or bytes. No receipt is rewritten.
+    os.chmod(primary, original_stat.st_mode & 0o7777)
+    current = primary.stat()
+    assert (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) == (
+        original_stat.st_dev, original_stat.st_ino, original_stat.st_size, original_stat.st_mtime_ns)
+    assert current.st_ctime_ns != original_stat.st_ctime_ns
+    assert hashlib.sha256(primary.read_bytes()).hexdigest() == original_sha
+    hidden = []
+    for path in case["tables"]:
+        held = path.with_suffix(".resource-only")
+        path.rename(held); hidden.append((held, path))
+    prepared = tmp_path / "ctime-query-prepared"
+    try:
+        manifest = transfer.prepare_rows(case["manifest"]["inspection"], case["case"]["config"], prepared, query_token_id=269)
+    finally:
+        for held, path in hidden: held.rename(path)
+    assert manifest["status"] == "ORIGINAL_DECODE_ROW_TRANSFER_PREPARED", manifest
+    assert manifest["model_payload_access"] == "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY"
+    assert manifest["primary_omc_revalidation_observations"]
+    current_audit = json.loads((prepared / "source-audit/report.json").read_text())
+    assert current_audit["model_payload_access"] == "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY"
+    assert current_audit["primary_omc_revalidation_observations"]
+    case.update(prepared=prepared, request=prepared / "request.json", manifest=manifest)
+    assert extract(case)["status"] == transfer._EXTRACTED
+    result = consume(case)
+    assert result["status"] == "ORIGINAL_DECODE_TRANSFERRED_ROWS_BOUND_NEXT_TOKEN_PREPARED", result
+    assert result["model_payload_access"] == "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY"
+    assert result["primary_omc_revalidation_observations"]
+    assert all(path.read_bytes() == raw for path, raw in historical_bytes.items())
+    assert sum(row["bytes"] for row in result["next_token_inputs"]) == 2056

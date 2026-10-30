@@ -115,6 +115,44 @@ def test_decode_unique32768byte_feature_and_logits_follow_explicit_log_not_filen
         {"bytes": 2097152, "expected": 20, "observed": 20, "missing": 0, "excess": 0}]
 
 
+def _change_only_primary_ctime(case):
+    path = case["sources"]["model"]
+    before = path.stat()
+    os.chmod(path, before.st_mode ^ 0o100)
+    os.chmod(path, before.st_mode)
+    after = path.stat()
+    assert (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) == (
+        after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    assert before.st_ctime_ns != after.st_ctime_ns
+    return path
+
+
+def test_saved_inventory_remains_untouched_when_primary_ctime_is_revalidated(case):
+    saved = inspect(case)
+    assert saved["status"] == "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS"
+    evidence = [case["out"] / "report.json", case["execution"] / "plan.json",
+        case["board"] / "runtime-decode-proof.json", case["sources"]["compilation"] / "report.json"]
+    before = {path: path.read_bytes() for path in evidence}
+    model = _change_only_primary_ctime(case)
+    observations = []
+    assert inventory.validate_target_decode_output_inventory(case["out"], revalidation_observations=observations) == saved
+    assert observations, "the new validation must retain its small-primary hash observation"
+    assert all(path.read_bytes() == raw for path, raw in before.items())
+    assert saved["model_payload_access"] == "NONE"
+    assert any(str(model) in json.dumps(row) for row in observations)
+
+
+def test_new_inventory_reports_small_primary_rehash_after_ctime_change(case):
+    _change_only_primary_ctime(case)
+    result = inspect(case)
+    assert result["status"] == "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS", result
+    assert result["model_payload_access"] == "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY"
+    assert result["weight_payload_access"] == "NONE"
+    assert result["source_validation"] == "FRESH_DECODE_PLAN_METADATA_AND_USER_INPUT_SHA256_WITH_CTIME_ONLY_PRIMARY_REHASH"
+    assert result["primary_omc_revalidation_observations"]
+    assert inventory.validate_target_decode_output_inventory(case["out"]) == result
+
+
 def test_typed_all80state_nonfinite_summary_and_logit_ties_are_not_accuracy(case):
     state = next(row for row in case["proof"]["outputs"] if row["index"] not in {0, 81})
     for index, raw in ((state["index"], struct.pack("<4e", float("nan"), float("inf"), -float("inf"), -7)),

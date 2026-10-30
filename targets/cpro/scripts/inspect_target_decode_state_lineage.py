@@ -26,6 +26,7 @@ def main(argv=None):
             "device_execution", "model_compilation", "weight_payload_access", "state_feedback", "feedback_ready",
             "state_continuity", "numerical_validation", "same_model_state_mapping", "gap_summary", "next") if key in report}
         if not args.full:
+            shown["graph_edge_policy"] = report["graph_edge_policy"]["policy"]
             decoded = report.get("decode", {})
             shown["counts"] = {"source_owners": decoded.get("source_lineage", {}).get("observed_state_owner_count", 0),
                 "unique_source_owners": decoded.get("source_lineage", {}).get("unique_state_owner_count", 0),

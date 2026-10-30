@@ -25,9 +25,13 @@ def _decode_job(job, bindings, observations, *, source_torchair_pb2=None):
     metadata, source, compiled, enums = lineage.load_target_graph(job, _PROFILE, bindings, observations=observations,
         source_torchair_pb2=source_torchair_pb2)
     source_enums = metadata["source_enum_fields"]
+    metadata["edge_representation_observations"] = {
+        "source_air": lineage.observe_edge_representations(source, "source-air"),
+        "compiled_omc": lineage.observe_edge_representations(compiled, "compiled-omc")}
+    observations.update(metadata)
     metadata["source_lineage"] = lineage.analyze_state_lineage(source, source_enums)
     joined = lineage._join_compiled(metadata["source_lineage"], compiled, enums)
-    _, _, refs, outputs = lineage._boundary(source, source_enums, allow_unmaterialized_producer=True)
+    _, _, refs, outputs = lineage._boundary(source, source_enums, allow_unmaterialized_producer=True, graph_context="source-air")
     for row in joined["states"]:
         if row["status"] != "EXPLICIT_FX_TENSOR_IDENTITY_MATCHED":
             continue
@@ -154,18 +158,20 @@ def inspect_target_decode_state_lineage(job, runtime_probe, output_inspection, o
     """Retain one read-only same-artifact decode ownership audit."""
     out = output_path(output)
     out.mkdir(parents=True, exist_ok=False)
-    bindings = []
+    bindings, revalidations = [], []
     result = {"schema_version": 1, "artifact_kind": _KIND, "status": "FAILED", "output": str(out),
         "stage": "validate-output-inspection", "device_execution": "NOT_RUN", "device_calls": "NONE",
         "model_compilation": "NOT_RUN", "model_payload_access": "SMALL_BOUND_AIR_AND_PRIMARY_OMC_GRAPH_ONLY",
         "weight_payload_access": "NONE", "state_feedback": "NOT_RUN", "feedback_ready": False,
         "state_continuity": "NOT_VALIDATED", "numerical_validation": "NOT_RUN", "source_bindings": bindings,
         "cross_model_state_identity": "NOT_EVALUATED_SAME_MODEL_ONLY", "same_model_state_mapping": "UNVERIFIED",
+        "graph_edge_policy": lineage.graph_edge_policy(),
+        "primary_omc_revalidation_observations": revalidations,
         "scope": "Same-model structural state identity and actual logged file bytes only; no feedback inputs, inference, control contract, greedy generation or accuracy acceptance"}
     try:
         inspection_dir, _ = _safe(output_inspection, directory=True)
         saved = _json(inspection_dir / "report.json", bindings)
-        inspection = validate_target_decode_output_inventory(inspection_dir)
+        inspection = validate_target_decode_output_inventory(inspection_dir, revalidation_observations=revalidations)
         if inspection != saved:
             raise ValueError("output inspection changed during fresh validation")
         result["output_inspection"] = bindings[-1]
@@ -201,7 +207,7 @@ def inspect_target_decode_state_lineage(job, runtime_probe, output_inspection, o
         result["next"] = ("Prepare a separate same-model continuation with all 80 individually bound states, proven original embedding bytes and declared control assumptions; then verify the actual state chain"
             if complete else "Review retained gap reasons and examples; obtain missing literal graph/runtime identities without ordinal or equal-shape substitutions")
         result["stage"] = "verify-source-preservation"
-        if validate_target_decode_output_inventory(inspection_dir) != inspection:
+        if validate_target_decode_output_inventory(inspection_dir, revalidation_observations=revalidations) != inspection:
             raise ValueError("output inspection changed during state lineage audit")
         _bind_files(inspection, execution)
         for identity in bindings:

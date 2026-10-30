@@ -125,27 +125,96 @@ def test_actual_named_edges_override_every_source_compiled_and_runtime_ordinal()
     assert row["runtime_output_index"] != row["compiled_output_index"]
 
 
-def test_alternate_explicit_source_edges_are_supported_without_order_guessing():
+def test_metadata_only_src_lists_cannot_establish_a_state_owner():
     source = graph()
-    for node in source["graph"][0]["op"]:
-        if "input" not in node:
-            continue
-        edges = node.pop("input")
-        node["src_name"] = [edge.rsplit(":", 1)[0] for edge in edges]
-        node["src_index"] = [int(edge.rsplit(":", 1)[1]) for edge in edges]
+    node = next(row for row in source["graph"][0]["op"] if row["name"] == "update_0")
+    edges = node.pop("input")
+    node["src_name"] = [edge.rsplit(":", 1)[0] for edge in edges]
+    node["src_index"] = [int(edge.rsplit(":", 1)[1]) for edge in edges]
     report = audit.analyze_state_lineage(source, ENUMS)
-    assert report["status"] == "ALL80_NAMED_PORT_STATE_LINEAGES_OBSERVED"
+    assert report["status"] == "STATE_LINEAGE_PARTIAL"
+    row = next(row for row in report["states"] if row["source_output_edge"] == "state_cast_0:0")
+    assert row["status"] == "UNVERIFIED" and "no graph data slots for required named input ports" in row["reason"]
+    assert audit._inputs(node) == []
 
 
-def test_conflicting_dual_edge_representations_do_not_prove_state_owner():
+def test_stale_src_metadata_is_retained_without_overriding_actual_input_edges():
     source = graph()
     update = next(node for node in source["graph"][0]["op"] if node["name"] == "update_0")
     update["src_name"] = [update["input"][0].rsplit(":", 1)[0], "RefData_2"]
     update["src_index"] = [0, 0]
     report = audit.analyze_state_lineage(source, ENUMS)
-    assert report["status"] == "STATE_LINEAGE_PARTIAL"
+    assert report["status"] == "ALL80_NAMED_PORT_STATE_LINEAGES_OBSERVED"
     row = next(row for row in report["states"] if row["source_output_edge"] == "state_cast_0:0")
-    assert "conflicting input" in row["reason"] and row["status"] == "UNVERIFIED"
+    assert row["source_refdata"] == "RefData_0"
+    observed = audit.observe_edge_representations(source, "source-air")
+    example = next(row for row in observed["examples"] if row["node"] == "update_0")
+    assert example["src_metadata_relation"] == "DIFFERENT_FROM_GRAPH_DATA_SLOTS"
+    assert example["metadata_difference_data_slot"] == 1
+    assert example["input_at_conflict"]["value"] == "RefData_0:0"
+    assert example["alternate_at_conflict"]["value"] == "RefData_2:0"
+
+
+@pytest.mark.parametrize("control_side", ["input", "metadata", "both"])
+def test_explicit_control_edges_do_not_consume_data_port_indices(control_side):
+    node = {"name": "example", "type": "Example", "input": ["query:0", "state:0"],
+        "src_name": ["query", "state"], "src_index": [0, 0]}
+    if control_side in {"input", "both"}:
+        node["input"].insert(1, "controller:-1")
+    if control_side in {"metadata", "both"}:
+        node["src_name"].append("controller");node["src_index"].append(-1)
+    slots, row = audit._input_representation(node)
+    assert slots == ["query:0", "state:0"] and row["selected_data_slot_count"] == 2
+    assert row["input_control_count"] == (control_side in {"input", "both"})
+    assert row["alternate_control_count"] == (control_side in {"metadata", "both"})
+
+
+def test_optional_input_holes_preserve_named_state_port_with_interspersed_controls():
+    source = graph()
+    node = next(row for row in source["graph"][0]["op"] if row["name"] == "update_0")
+    query = node["input"][0]
+    node["input"] = [query, "arg0_1:-1", "", "RefData_0:0"]
+    named(node, {"query": 0, "optional": 1, "x2": 2}, {"y1": 0})
+    node["src_name"] = [query.rsplit(":", 1)[0], "", "RefData_0", "arg0_1"]
+    node["src_index"] = [0, -1, 0, -1]
+    assert audit._inputs(node) == [query, "", "RefData_0:0"]
+    assert audit._port_map(node, "input")["x2"] == 2
+    report = audit.analyze_state_lineage(source, ENUMS)
+    assert report["status"] == "ALL80_NAMED_PORT_STATE_LINEAGES_OBSERVED"
+    row = next(row for row in report["states"] if row["source_refdata"] == "RefData_0")
+    assert row["updater"]["input_port_index"] == 2
+    assert node["input"][2] == "", "normalization must not mutate the source graph"
+
+
+def test_invalid_actual_state_input_is_never_repaired_from_src_metadata():
+    source = graph()
+    node = next(row for row in source["graph"][0]["op"] if row["name"] == "update_0")
+    node["src_name"] = [node["input"][0].rsplit(":", 1)[0], "RefData_0"]
+    node["src_index"] = [0, 0]
+    node["input"][1] = "missing_actual_producer:0"
+    report = audit.analyze_state_lineage(source, ENUMS)
+    assert report["status"] == "STATE_LINEAGE_PARTIAL" and "RefData_0" in report["missing_state_owners"]
+
+
+def test_metadata_only_netoutput_reports_source_graph_context_and_bounded_raw_slots():
+    source = graph()
+    node = next(row for row in source["graph"][0]["op"] if row["type"] == "NetOutput")
+    edges = node.pop("input")
+    node["src_name"] = [edge.rsplit(":", 1)[0] for edge in edges]
+    node["src_index"] = [int(edge.rsplit(":", 1)[1]) for edge in edges]
+    with pytest.raises(ValueError) as error:
+        audit.analyze_state_lineage(source, ENUMS)
+    text = str(error.value)
+    assert '"graph_context": "source-air"' in text and '"node": "NetOutput"' in text
+    assert '"raw_src_name_count": 82' in text and '"raw_input_count": 0' in text
+    assert '"netoutput_data_slot_count": 0' in text and '"netoutput_descriptor_count": 82' in text
+
+
+def test_zero_input_constants_ignore_stored_src_metadata_without_creating_dependencies():
+    node = {"name": "axis", "type": "Const", "src_name": ["old_metadata"], "src_index": [0]}
+    slots, diagnostic = audit._input_representation(node)
+    assert slots == [] and diagnostic["status"] == "EMPTY_GRAPH_INPUT_SRC_METADATA_IGNORED"
+    assert diagnostic["raw_src_name_count"] == 1 and diagnostic["selected_data_slot_count"] == 0
 
 
 @pytest.mark.parametrize("producer", ["features", "state_cast_0"])
@@ -357,6 +426,49 @@ def test_complete_per_model_edges_do_not_prove_same_source_layer_across_exports(
     assert report["prefill"]["runtime_bindings"]["matched_count"] == report["decode"]["runtime_bindings"]["matched_count"] == 80
     assert report["cross_model_state_identity"] == "UNVERIFIED"
     assert report["feedback_ready"] is False and report["state_feedback"] == "NOT_RUN"
+
+
+def test_graph_reader_revalidates_only_primary_ctime_after_exact_hash_without_receipt_edits(jobs):
+    import os
+    job, report = jobs["decode_job"], jobs["decode_report"]
+    root = job / "compilation"
+    path = root / report["omc"]["path"]
+    receipts = {file: file.read_bytes() for file in (job / "result.json", root / "report.json", root / "input-inventory.json")}
+    before = path.stat()
+    os.chmod(path, before.st_mode & 0o7777)
+    current = _stamp(path.stat())
+    assert current[:4] == report["omc"]["stat"][:4] and current[4] != report["omc"]["stat"][4]
+    bindings = []
+    metadata, _, _, _ = audit.load_target_graph(job, "cpro-40block-decode-1", bindings)
+    assert metadata["model"]["stat"] == current
+    observed, = metadata["primary_omc_revalidation_observations"]
+    assert observed["status"] == "SHA256_VERIFIED" and observed["sha256"] == report["omc"]["sha256"]
+    assert observed["recorded_stat"] == report["omc"]["stat"]
+    assert {file: file.read_bytes() for file in receipts} == receipts
+    assert next(row for row in bindings if row["path"] == str(path))["stat"] == current
+
+
+def test_graph_reader_refuses_changed_primary_bytes_even_when_original_mtime_is_restored(jobs):
+    import os
+    job, report = jobs["decode_job"], jobs["decode_report"]
+    path = job / "compilation" / report["omc"]["path"]
+    before, raw = path.stat(), path.read_bytes()
+    path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert _stamp(path.stat())[:4] == report["omc"]["stat"][:4]
+    with pytest.raises(ValueError, match="recorded payload hash/size changed"):
+        audit.load_target_graph(job, "cpro-40block-decode-1", [])
+
+
+def test_graph_reader_keeps_air_snapshot_ctime_binding_strict(jobs):
+    import os
+    job, report = jobs["decode_job"], jobs["decode_report"]
+    path = job / "compilation" / report["input_snapshots"][0]["path"]
+    before = path.stat()
+    os.chmod(path, before.st_mode & 0o7777)
+    assert _stamp(path.stat())[:4] == report["input_snapshots"][0]["snapshot_stat"][:4]
+    with pytest.raises(ValueError, match="recorded payload identity changed"):
+        audit.load_target_graph(job, "cpro-40block-decode-1", [])
 
 
 @pytest.mark.parametrize("fault", ["air_bytes", "primary_bytes", "compile_binding", "native_hash", "other_model_probe", "runtime_pair"])
