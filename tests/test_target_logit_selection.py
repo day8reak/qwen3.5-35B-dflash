@@ -300,8 +300,8 @@ def producer_case(tmp_path, schemas, monkeypatch):
     control.write_bytes(struct.pack("<i", 64))
     def save(path, value):
         path.write_text(json.dumps(value))
-    def build(**graph_options):
-        body = graph(**graph_options)
+    def build(*, raw_graph=None, **graph_options):
+        body = graph(**graph_options) if raw_graph is None else raw_graph
         body += b"".join(_blob(6, _node(f"RefData_{index}", "RefData", [1, 8192, 4], dtype=7)) for index in range(80))
         air.write_bytes(_blob(7, body))
         compiled = _blob(7, graph())
@@ -400,3 +400,152 @@ def test_cli_forwards_exact_source_schema_and_receipt_options(tmp_path, monkeypa
     assert calls == [(("job", "execution", str(tmp_path / "out")),
         {"source_torchair_pb2": "copied.py", "source_export_receipt": "producer.json"})]
     assert json.loads(capsys.readouterr().out)["device_execution"] == "NOT_RUN"
+
+
+def indexed_graph(*, gathers=0, unrelated_indices=0, controlled_indices=1, carrier="Cast",
+                  carrier_depth=1, named=True, root_shape=(1,), control_in_x=False,
+                  optional_hole=False, stale_metadata=False, mask=(0, 1, 0), shape=(1, 64, 2048),
+                  extra_attributes=0):
+    hidden, i32, i64 = _desc(dtype=1, shape=shape), _desc(dtype=42, shape=(1,)), _desc(dtype=91, shape=(1,))
+    axis_desc = _desc(dtype=42, shape=())
+    nodes = [_node("arg1238_1", "Data", root_shape, dtype=42), _node("hidden", "Data", shape, dtype=1),
+        _node("constant_index", "Const", [1], dtype=42) + _attr("value", _blob(12, _blob(1, i32) + _blob(2, struct.pack("<i", 0)))),
+        _node("axis", "Const", (), dtype=42) + _attr("value", _blob(12, _blob(1, axis_desc) + _blob(2, struct.pack("<i", 1))))]
+    previous = "hidden:0"
+    for index in range(gathers):
+        name = f"unrelated_gather_{index}"
+        nodes.append(op(name, "GatherV2", [previous, "constant_index:0", "axis:0"], [hidden, i32, axis_desc], [hidden]) + named_ports())
+        previous = name + ":0"
+    for index in range(unrelated_indices):
+        name = f"unrelated_index_{index}"
+        raw = op(name, "IndexByTensor", [previous, "constant_index:0"], [hidden, i32], [hidden])
+        if stale_metadata:
+            raw += _blob(24, "hidden") + _blob(24, "arg1238_1") + _int(25, 0) + _int(25, 0)
+        nodes.append(raw + named_ports(("x", "indices0"), (0, 1)))
+        previous = name + ":0"
+    control, control_desc = "arg1238_1:0", i32
+    for index in range(carrier_depth):
+        name = f"control_carrier_{index}"
+        output = i64 if carrier == "Cast" else i32
+        references = [control, "constant_index:0"] if carrier == "Sub" else [control]
+        nodes.append(op(name, carrier, references, [control_desc] * len(references), [output]))
+        control, control_desc = name + ":0", output
+    if control_in_x:
+        nodes.append(op("control_into_x", "Add", [previous, control], [hidden, control_desc], [hidden]))
+        previous, control = "control_into_x:0", "constant_index:0"
+    for index in range(controlled_indices):
+        references, descriptors, names = [previous, control], [hidden, control_desc], ("x", "indices0")
+        if optional_hole:
+            references, descriptors, names = [previous, "", control, "constant_index:-1"], [hidden, i32, control_desc], ("x", "unused", "indices0")
+        name = f"selected_index_{index}"
+        raw = op(name, "IndexByTensor", references, descriptors, [hidden])
+        if named:
+            raw += named_ports(names, tuple(range(len(names))))
+        raw += _attr("indices_mask", _blob(1, b"".join(_int(3, value) for value in mask)))
+        raw += _attr("axis", _int(3, 1))
+        for extra in range(extra_attributes):
+            raw += _attr(f"axes_diagnostic_{extra}", _int(3, extra))
+        nodes.append(raw)
+        previous = name + ":0"
+    logits = _desc(dtype=1, shape=(1, 1, 248320))
+    nodes.extend([op("head", "MatMul", [previous], [hidden], [logits]),
+                  op("NetOutput", "NetOutput", ["head:0"], [logits], [])])
+    return _blob(1, "literal-indexing-fixture") + b"".join(_blob(6, row) for row in nodes)
+
+
+def test_actual_style_control_indexing_survives80_unrelated_gathers_and40_other_index_nodes(schemas):
+    result = analyze(schemas, indexed_graph(gathers=80, unrelated_indices=40))
+    assert result["status"] == "LOGIT_SELECTION_UNVERIFIED" and result["control_gather_candidate_count"] == 0
+    assert result["ancestor_gather_count"] == 80
+    observed = result["control_dependent_indexing"]
+    assert observed["ancestor_index_by_tensor_count"] == 41 and observed["index_by_tensor_candidate_count"] == 1
+    candidate, = observed["candidates"]
+    assert candidate["node"]["name"] == "selected_index_0"
+    assert candidate["literal_input_name_map"] == {"x": 0, "indices0": 1}
+    assert candidate["indexing_attributes"]["indices_mask"] == {"list": {"i": [0, 1, 0]}}
+    assert candidate["indexing_attributes"]["axis"] == {"i": 1}
+    assert candidate["control_dependent_input_indices"] == [1]
+    assert [row["node"] for row in candidate["control_dependency_path"]["nodes"]] == [
+        "arg1238_1", "control_carrier_0", "selected_index_0"]
+    assert [row["node"]["name"] for row in candidate["logits_dependency_path"]["nodes"]] == ["head", "selected_index_0"]
+    connection = next(row for row in candidate["input_connections"] if row["input_index"] == 1)
+    assert connection["literal_input_name"] == "indices0" and connection["reference"] == "control_carrier_0:0"
+    assert connection["producer"]["output_descriptor"]["dtype"] == connection["consumer_descriptor"]["dtype"] == 91
+    assert candidate["index_value_paths"][0]["status"] == "SIGNED_INTEGER_VALUE_PRESERVING_PATH_TO_EXACT_CONTROL"
+    assert observed["observed_control_value"] == 64 and "params_shape" not in candidate
+    assert observed["range_evaluation"].startswith("UNVERIFIED")
+    assert observed["reference_converter"]["selected_operator_contract"] == "NOT_BOUND"
+
+
+@pytest.mark.parametrize("options,reason", [({"carrier": "Sub"}, "unproved value transform"),
+    ({"root_shape": None}, "exact INT32 Data")])
+def test_arithmetic_or_missing_control_shape_still_reports_literal_indexing_without_value_claim(schemas, options, reason):
+    result = analyze(schemas, indexed_graph(**options))
+    candidate, = result["control_dependent_indexing"]["candidates"]
+    assert candidate["range_evaluation"].startswith("UNVERIFIED")
+    assert reason in candidate["index_value_paths"][0]["reason"]
+    assert candidate["control_dependency_path"]["nodes"][0]["node"] == "arg1238_1"
+    assert result["status"] == "LOGIT_SELECTION_UNVERIFIED"
+
+
+def test_control_in_literal_x_is_not_relabelled_as_an_index_operand(schemas):
+    observed = analyze(schemas, indexed_graph(control_in_x=True))["control_dependent_indexing"]
+    candidate, = observed["candidates"]
+    assert candidate["control_dependent_input_indices"] == [0]
+    connection = next(row for row in candidate["input_connections"] if row["input_index"] == 0)
+    assert connection["literal_input_name"] == "x" and connection["producer"]["name"] == "control_into_x"
+    assert candidate["index_value_paths"][0]["status"] == "UNVERIFIED"
+    assert observed["range_evaluation"].startswith("UNVERIFIED")
+
+
+def test_indexing_diagnostics_keep_optional_input_slots_and_exclude_controls(schemas):
+    candidate, = analyze(schemas, indexed_graph(optional_hole=True))["control_dependent_indexing"]["candidates"]
+    assert candidate["input_count"] == 3 and candidate["control_dependent_input_indices"] == [2]
+    hole = next(row for row in candidate["input_connections"] if row["input_index"] == 1)
+    assert hole["reference"] == "" and "producer" not in hole
+    assert candidate["literal_input_name_map"]["indices0"] == 2
+    assert candidate["control_dependency_path"]["nodes"][-1]["input_index"] == 2
+
+
+def test_missing_indexing_name_map_retains_raw_connections_without_ordinal_role_guess(schemas):
+    candidate, = analyze(schemas, indexed_graph(named=False))["control_dependent_indexing"]["candidates"]
+    assert "missing explicit" in candidate["literal_input_name_map_error"]
+    assert "literal_input_name_map" not in candidate
+    assert all(row["literal_input_name"] is None for row in candidate["input_connections"])
+    assert candidate["control_dependent_input_indices"] == [1]
+    assert candidate["range_evaluation"].startswith("UNVERIFIED")
+
+
+def test_stale_src_metadata_cannot_create_an_indexing_control_path(schemas):
+    observed = analyze(schemas, indexed_graph(unrelated_indices=1, controlled_indices=0, stale_metadata=True))["control_dependent_indexing"]
+    assert observed["ancestor_index_by_tensor_count"] == 1
+    assert not observed["control_is_logit_ancestor"] and observed["index_by_tensor_candidate_count"] == 0
+
+
+def test_control_indexing_candidate_path_and_attribute_limits_are_explicit(schemas):
+    observed = analyze(schemas, indexed_graph(controlled_indices=12, carrier="Identity", carrier_depth=40,
+        extra_attributes=24))["control_dependent_indexing"]
+    assert observed["index_by_tensor_candidate_count"] == 12 and len(observed["candidates"]) == 8
+    assert observed["candidate_rows_truncated"]
+    candidate = observed["candidates"][0]
+    assert candidate["control_dependency_path"]["truncated"]
+    assert len(candidate["control_dependency_path"]["nodes"]) == 32
+    assert candidate["indexing_attributes_truncated"] and len(candidate["indexing_attributes"]) == 16
+    assert candidate["indexing_attribute_count"] == 26
+    index_path = next(row for row in candidate["index_value_paths"] if row["input_index"] == 1)
+    assert "32-node" in index_path["reason"]
+    assert observed["range_evaluation"].startswith("UNVERIFIED")
+
+
+def test_bound_static64_inspector_retains_actual_indexing_diagnostic_without_range_promotion(producer_case, tmp_path):
+    case = producer_case(raw_graph=indexed_graph(gathers=80, unrelated_indices=40))
+    report = audit.inspect_target_logit_selection(case["job"], case["execution"], tmp_path / "audit",
+        source_torchair_pb2=case["copied_pb2"], source_export_receipt=case["receipt"])
+    assert report["status"] == "LOGIT_SELECTION_UNVERIFIED" and report["stage"] == "complete", report
+    assert report["selection"]["control_dependent_indexing"]["index_by_tensor_candidate_count"] == 1
+    assert report["control"]["value"] == 64
+    assert "IndexByTensor" in report["next"] and "before evaluating bounds" in report["next"]
+    assert report["source_preservation"].startswith("UNCHANGED_BOUND_METADATA")
+    assert report["device_execution"] == report["model_compilation"] == report["numerical_validation"] == "NOT_RUN"
+    saved = json.loads((tmp_path / "audit/report.json").read_text())
+    assert saved == report and len((tmp_path / "audit/report.json").read_bytes()) < 2 << 20

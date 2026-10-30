@@ -8,6 +8,32 @@ from .target_compile_failure import _safe
 from .target_prefill_smoke_plan import _identity
 
 
+def _logit_details(report):
+    selection = report.get("selection", {})
+    details = {key: selection[key] for key in ("observed_control_value", "logits_reference",
+        "logit_ancestor_count", "ancestor_gather_count", "control_gather_candidate_count") if key in selection}
+    details["gathers"] = [{"group": group, "node": str(row.get("node", {}).get("name", ""))[:192],
+        **{key: row[key] for key in ("status", "reason", "selected_index", "params_shape", "normalized_axis", "index_range") if key in row}}
+        for group in ("candidates", "other_gathers") for row in selection.get(group, [])[:8]]
+    indexing = selection.get("control_dependent_indexing", {})
+    if indexing:
+        details["control_dependent_indexing"] = {key: indexing[key] for key in ("status", "control_root", "observed_control_value",
+            "control_is_logit_ancestor", "ancestor_index_by_tensor_count", "index_by_tensor_candidate_count",
+            "candidate_rows_truncated", "range_evaluation") if key in indexing}
+        details["control_dependent_indexing"]["candidates"] = [{
+            "node": {key: row.get("node", {}).get(key) for key in ("name", "type", "input")},
+            **{key: row[key] for key in ("status", "literal_input_name_map", "literal_input_name_map_error",
+                "literal_named_input_attributes", "indexing_attributes", "control_dependent_input_indices",
+                "input_connections_truncated", "range_evaluation") if key in row},
+            "input_connections": row.get("input_connections", [])[:4],
+            "summary_input_connections_truncated": len(row.get("input_connections", [])) > 4,
+            "index_value_paths": row.get("index_value_paths", [])[:4],
+            "summary_index_value_paths_truncated": len(row.get("index_value_paths", [])) > 4,
+            "control_dependency_path": row.get("control_dependency_path"),
+        } for row in indexing.get("candidates", [])[:8]]
+    return details
+
+
 def _capture(report, baselines):
     for row in report.get("source_bindings", []):
         path, stamp = _safe(row["path"])
@@ -74,6 +100,7 @@ def inspect_prefill_decode_path(prefill_job, decode_job, prefill_execution, pref
                 "bound_prefill_output_count": len(files.get("retained_outputs", [])),
                 "executed_prefill_input_binding": files.get("executed_input_byte_binding"),
                 "logit_selection": logits.get("status"),
+                "logit_selection_details": _logit_details(logits),
                 "unique_state_context_candidate_count": states.get("unique_state_context_candidate_count", 0),
                 "proven_cross_model_state_owner_count": states.get("proven_cross_model_state_owner_count", 0)},
             reports={name: str(out / folder / "report.json") for name, folder in

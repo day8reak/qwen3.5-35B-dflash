@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import struct
 
 from .artifacts import output_path, save_json
@@ -19,13 +20,22 @@ from .target_compile_failure import _read_small, _safe
 from .target_prefill_output_inventory import _bound_execution, _json
 from .target_prefill_smoke_plan import _source
 from .target_reshape_metadata import _children
-from .target_state_lineage import load_bound_source_air, _graph, _inputs, graph_edge_policy
+from .target_state_lineage import (load_bound_source_air, _graph, _inputs, _port_map,
+                                   _provenance_value, graph_edge_policy)
 
 
 _PROFILE = "cpro-40block-prefill-64"
 _CONTROL = "arg1238_1"
 _MAX_NODES, _MAX_EDGES = 32768, 262144
 _PRESERVE = {"Identity", "Squeeze", "Unsqueeze", "Cast"}
+_INDEX_BY_TENSOR_REFERENCE = {
+    "repository": "Ascend/torchair", "commit": "e1118e8b0fc1b95190ab53b732c0872989550e20",
+    "path": "python/torchair/_ge_concrete_graph/ge_converter/aten/index.py",
+    "url": "https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/ge_converter/aten/index.py",
+    "sha256": "4b12497646eb5274a11cf3ee452dc301921db9b8cdee278e8dfc3b76a650eee6",
+    "observed_reference_behavior": "aten.index.Tensor converts non-None indices to INT64 and supplies an indices_mask to IndexByTensor",
+    "selected_producer_converter_revision": "UNVERIFIED", "selected_operator_contract": "NOT_BOUND",
+    "scope": "Primary reference converter only; not a selected vendor operator definition or proof of this AIR's axis, bounds or numerical behavior"}
 
 
 def _edge(text, by_name):
@@ -73,19 +83,145 @@ def _gather_ports(node):
     return {"params": mapping[params], "indices": mapping["indices"], "axis": mapping["axis"]}
 
 
+def _descriptor(raw):
+    if not isinstance(raw, dict):
+        return None
+    attrs = _attrs(raw)
+    meta = attrs.get("_meta", {}).get("s")
+    fx = attrs.get("_fx_tensor_name", {}).get("s")
+    return {"shape": raw.get("shape"), "dtype": raw.get("dtype"), "layout": raw.get("layout"),
+            "declared_meta": meta[:512] if isinstance(meta, str) else None,
+            "declared_meta_truncated": isinstance(meta, str) and len(meta) > 512,
+            "fx_tensor_name": fx[:512] if isinstance(fx, str) else None,
+            "fx_tensor_name_truncated": isinstance(fx, str) and len(fx) > 512}
+
+
 def _compact(node):
-    def descriptor(raw):
-        attrs = _attrs(raw) if isinstance(raw, dict) else {}
-        meta = attrs.get("_meta", {}).get("s")
-        fx = attrs.get("_fx_tensor_name", {}).get("s")
-        return {"shape": raw.get("shape"), "dtype": raw.get("dtype"), "layout": raw.get("layout"),
-                "declared_meta": meta[:512] if isinstance(meta, str) else None,
-                "declared_meta_truncated": isinstance(meta, str) and len(meta) > 512,
-                "fx_tensor_name": fx[:512] if isinstance(fx, str) else None,
-                "fx_tensor_name_truncated": isinstance(fx, str) and len(fx) > 512}
     return {"name": node["name"], "type": node["type"], "input": _inputs(node)[:16],
-        "input_desc": [descriptor(row) for row in node.get("input_desc", [])[:3]],
-        "output_desc": [descriptor(row) for row in node.get("output_desc", [])[:2]]}
+        "input_desc": [_descriptor(row) for row in node.get("input_desc", [])[:3]],
+        "output_desc": [_descriptor(row) for row in node.get("output_desc", [])[:2]]}
+
+
+def _literal_attributes(attrs):
+    result = {}
+    for key, value in list(attrs.items())[:16]:
+        observed = _provenance_value(value)
+        raw = json.dumps(observed, ensure_ascii=False, sort_keys=True, allow_nan=False).encode()
+        result[key[:128]] = observed if len(raw) <= 768 else {
+            "bounded_observation_bytes": len(raw), "bounded_observation_sha256": hashlib.sha256(raw).hexdigest(),
+            "bounded_observation_prefix": raw[:384].decode("utf-8", errors="replace"), "truncated": True}
+    return result
+
+
+def _control_indexing(by_name, ancestors, consumers, enum, selected_index, logits_path):
+    """Follow literal data edges; never infer IndexByTensor input/axis semantics."""
+    control = (_CONTROL, 0)
+    parents, pending = {}, deque()
+    if control in ancestors:
+        parents[control] = None
+        pending.append(control)
+    edge_count = 0
+    while pending:
+        key = pending.popleft()
+        for consumer, input_index in consumers.get(key, []):
+            edge_count += 1
+            if edge_count > _MAX_EDGES:
+                raise ValueError("control dependency edge budget exceeded")
+            if consumer not in parents:
+                parents[consumer] = (key, input_index)
+                pending.append(consumer)
+                if len(parents) > _MAX_NODES:
+                    raise ValueError("control dependency node budget exceeded")
+
+    def control_path(key):
+        path = []
+        while key is not None and len(path) < 32:
+            name, port = key
+            step = {"node": name, "type": by_name[name]["type"], "output_port": port,
+                "output_descriptor": _descriptor(by_name[name]["output_desc"][port])}
+            previous = parents[key]
+            if previous is not None:
+                source, input_index = previous
+                step.update(input_index=input_index, input_reference=_inputs(by_name[name])[input_index])
+                descs = by_name[name].get("input_desc", [])
+                step["input_descriptor"] = _descriptor(descs[input_index]) if input_index < len(descs) else None
+                key = source
+            else:
+                key = None
+            path.append(step)
+        return {"direction": "CONTROL_TOWARD_INDEX_BY_TENSOR", "nodes": list(reversed(path)),
+            "truncated": key is not None, "semantics": "DATA_DEPENDENCY_ONLY_NOT_VALUE_PRESERVATION_OR_AXIS_PROOF"}
+
+    keys = []
+    seen_names = set()
+    for key in parents:
+        if by_name[key[0]]["type"] == "IndexByTensor" and key[0] not in seen_names:
+            seen_names.add(key[0]); keys.append(key)
+    candidates = []
+    for key in keys[:8]:
+        node = by_name[key[0]]
+        inputs, attrs = _inputs(node), _attrs(node)
+        indexing_attrs = {name: value for name, value in attrs.items() if re.search(r"axis|axes|dim|indic|mask", name, re.I)}
+        row = {"node": _compact(node), "status": "INDEX_BY_TENSOR_CONTROL_DATA_DEPENDENCY_OBSERVED_UNVERIFIED",
+            "control_dependency_path": control_path(key), "logits_dependency_path": logits_path(key),
+            "attribute_keys": [name[:128] for name in list(attrs)[:64]], "attribute_count": len(attrs),
+            "indexing_attributes": _literal_attributes(indexing_attrs), "indexing_attribute_count": len(indexing_attrs),
+            "indexing_attributes_truncated": len(indexing_attrs) > 16,
+            "literal_named_input_attributes": _literal_attributes({name: attrs[name] for name in
+                ("_input_name_key", "_input_name_value") if name in attrs}),
+            "input_count": len(inputs), "input_connections": [], "index_value_paths": [],
+            "range_evaluation": "UNVERIFIED_NO_SELECTED_INDEX_BY_TENSOR_OPERATOR_CONTRACT"}
+        try:
+            names = _port_map(node, "input")
+            row["literal_input_name_map"] = dict(list(names.items())[:16])
+            row["literal_input_name_map_count"] = len(names)
+            row["literal_input_name_map_truncated"] = len(names) > 16
+        except ValueError as error:
+            names = {}
+            row["literal_input_name_map_error"] = str(error)[:384]
+        by_index = {index: name for name, index in names.items()}
+        dependent = []
+        for index, reference in enumerate(inputs):
+            if reference:
+                producer, port = _edge(reference, by_name)
+                if (producer["name"], port) in parents:
+                    dependent.append(index)
+        row["control_dependent_input_indices"] = dependent[:16]
+        row["control_dependent_input_count"] = len(dependent)
+        # Prefer the actual control-dependent operands before bounded nearby
+        # operands, so a large dynamic input list cannot hide the control edge.
+        selected = list(dict.fromkeys([*dependent, *range(len(inputs))]))[:16]
+        for index in selected:
+            reference = inputs[index]
+            descs = node.get("input_desc", [])
+            connection = {"input_index": index, "literal_input_name": by_index.get(index), "reference": reference,
+                "consumer_descriptor": _descriptor(descs[index]) if index < len(descs) else None,
+                "control_data_dependency": index in dependent}
+            if reference:
+                producer, port = _edge(reference, by_name)
+                connection["producer"] = {"name": producer["name"], "type": producer["type"], "output_port": port,
+                    "output_descriptor": _descriptor(producer["output_desc"][port])}
+            row["input_connections"].append(connection)
+            if index in dependent:
+                value_path = {"input_index": index, "status": "UNVERIFIED"}
+                try:
+                    value_path.update(path=_index_path(reference, by_name, enum, selected_index),
+                        status="SIGNED_INTEGER_VALUE_PRESERVING_PATH_TO_EXACT_CONTROL")
+                except (ValueError, TypeError, KeyError) as error:
+                    value_path["reason"] = str(error)[:384]
+                row["index_value_paths"].append(value_path)
+        row["input_connections_truncated"] = len(selected) != len(inputs)
+        candidates.append(row)
+    return {"status": "LITERAL_CONTROL_TO_INDEX_BY_TENSOR_PATHS_OBSERVED" if keys else "NO_INDEX_BY_TENSOR_CONTROL_PATH_OBSERVED",
+        "control_root": _compact(by_name[_CONTROL]) if _CONTROL in by_name else None,
+        "observed_control_value": selected_index, "control_is_logit_ancestor": control in ancestors,
+        "ancestor_index_by_tensor_count": len({name for name, _ in ancestors if by_name[name]["type"] == "IndexByTensor"}),
+        "control_reachable_ancestor_count": len(parents), "traversed_dependency_edges": edge_count,
+        "index_by_tensor_candidate_count": len(keys), "candidates": candidates, "candidate_rows_truncated": len(keys) > 8,
+        "reference_converter": dict(_INDEX_BY_TENSOR_REFERENCE),
+        "range_evaluation": "UNVERIFIED_NO_SELECTED_INDEX_BY_TENSOR_OPERATOR_CONTRACT",
+        "next": "Review the actual control operands, named input map, indices_mask/axis attributes and descriptors before binding an indexing contract; no profile extent is substituted",
+        "scope": "Literal graph data dependencies and metadata only; no IndexByTensor axis, value transformation, bound, runtime out-of-range behavior or numerical root cause is inferred"}
 
 
 def _constant(schema, node, raw_node, enum):
@@ -162,7 +298,7 @@ def _index_path(reference, by_name, enum, value):
 
 
 def analyze_logit_selection(graph, raw_graph, schema, selected_index):
-    """Trace a unique GatherV2 on the serialized logits0 dependency cone."""
+    """Inspect Gather bounds and literal indexing paths on the logits0 cone."""
     if type(selected_index) is not int or not -(1 << 31) <= selected_index < 1 << 31:
         raise ValueError("observed control must be one signed INT32 value")
     _, by_name, net = _graph(graph)
@@ -178,7 +314,7 @@ def analyze_logit_selection(graph, raw_graph, schema, selected_index):
     if dtype_field is None:
         raise ValueError("selected schema lacks TensorDescriptor.dtype")
     enum = schema.enums.get(dtype_field.type_name, {})
-    pending, visited, gathers, parents, edge_count = deque([(edges[0], None)]), set(), [], {}, 0
+    pending, visited, gathers, parents, consumers, edge_count = deque([(edges[0], None)]), set(), [], {}, {}, 0
     while pending:
         edge, parent = pending.popleft()
         node, port = _edge(edge, by_name)
@@ -197,7 +333,11 @@ def analyze_logit_selection(graph, raw_graph, schema, selected_index):
             gathers.append((node, port))
         # Empty optional operands preserve named-port positions but carry no
         # dependency. Keep their slots in _inputs; skip only this traversal.
-        pending.extend((reference, key) for reference in inputs if reference)
+        for input_index, reference in enumerate(inputs):
+            if reference:
+                producer, producer_port = _edge(reference, by_name)
+                consumers.setdefault((producer["name"], producer_port), []).append((key, input_index))
+                pending.append((reference, key))
     def dependency_path(key):
         path = []
         while key is not None and len(path) < 32:
@@ -259,6 +399,7 @@ def analyze_logit_selection(graph, raw_graph, schema, selected_index):
         "control_gather_candidate_count": len(candidates), "candidates": candidates[:8],
         "other_gathers": [row for row in nearby if row not in candidates][:8],
         "candidate_rows_truncated": len(candidates) > 8 or len(nearby) - len(candidates) > 8,
+        "control_dependent_indexing": _control_indexing(by_name, visited, consumers, enum, selected_index, dependency_path),
         "scope": "Serialized source graph dependency and integer bounds only; no runtime out-of-range behavior, numerical root cause or correction acceptance is inferred."}
     if len(candidates) == 1 and candidates[0]["status"] == "SOURCE_CONTROL_GATHER_DEPENDENCY_OBSERVED":
         bounds = candidates[0]["index_range"]
@@ -339,9 +480,12 @@ def inspect_target_logit_selection(job_dir, execution_dir, output_dir, *,
                 raise ValueError("source evidence identity changed during logit audit")
         result["source_preservation"] = "UNCHANGED_BOUND_METADATA_AIR_PRIMARY_OMC_SCHEMA_AND_ORIGINAL_CONTROL"
         result["stage"] = "complete"
-        result["next"] = ("Review the exact graph/control mismatch before preparing a separate corrected-input experiment; no source control was changed"
-            if result["status"] == "LOGIT_INDEX_OUT_OF_RANGE_OBSERVED" else
-            "Review exact index path, axis constant and serialized params dimensions; unresolved metadata is not a numerical or semantic pass")
+        if result["status"] == "LOGIT_INDEX_OUT_OF_RANGE_OBSERVED":
+            result["next"] = "Review the exact graph/control mismatch before preparing a separate corrected-input experiment; no source control was changed"
+        elif result["selection"]["control_dependent_indexing"]["index_by_tensor_candidate_count"]:
+            result["next"] = "Review actual IndexByTensor operands, indices_mask/axis metadata and descriptors; bind a selected operator contract before evaluating bounds or preparing a control change"
+        else:
+            result["next"] = "Review exact index path, axis constant and serialized params dimensions; unresolved metadata is not a numerical or semantic pass"
     except (OSError, ValueError, TypeError, KeyError, StopIteration, RecursionError, struct.error) as error:
         result.update(status="FAILED", error=f"{type(error).__name__}: {error}"[:1024])
     if len(json.dumps(result, ensure_ascii=False).encode()) > 2 << 20:

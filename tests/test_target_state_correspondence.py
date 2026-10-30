@@ -301,3 +301,96 @@ def test_inspect_rejects_unbound_or_actively_changed_metadata(saved_pair, tmp_pa
     result = audit.inspect_target_state_correspondence(tmp_path / 'prefill', tmp_path / 'decode', tmp_path / 'result')
     assert result['status'] == 'FAILED' and not result['feedback_ready']
     assert 'error' in result and (tmp_path / 'result/report.json').is_file()
+
+
+@pytest.fixture
+def relocated_decode_inventory(saved_pair, tmp_path):
+    records, _ = saved_pair
+    metadata = records[str(tmp_path / 'decode')][0]
+    local = metadata['source_schema_binding'].pop('inventory')
+    original_pin = {'path': str(tmp_path / 'missing-origin/qwen35-target-pytorch-run/export/inventory/inventory.json'),
+        'sha256': local['sha256'], 'status': 'INVENTORIED'}
+    receipt = save(tmp_path / 'decode-transfer/result.json', {'inventory': original_pin})
+    metadata['source_schema_binding']['receipt'] = receipt
+    report_path = tmp_path / 'decode/compilation/report.json'
+    report = json.loads(report_path.read_text())
+    report['decode_input_view'] = {'transfer': {'inventory': local, 'export_receipt': receipt}}
+    metadata['compilation_report_sha256'] = save(report_path, report)['sha256']
+    return {'metadata': metadata, 'local': local, 'original': original_pin,
+        'receipt': receipt, 'report': report, 'report_path': report_path, 'records': records}
+
+
+def test_relocated_inventory_uses_exact_compiler_transfer_pin_without_opening_missing_origin_or_changing_old_receipts(relocated_decode_inventory, tmp_path, monkeypatch):
+    case = relocated_decode_inventory
+    assert not Path(case['original']['path']).exists()
+    watched = [Path(case['local']['path']), Path(case['receipt']['path']), case['report_path']]
+    before = {path: (path.read_bytes(), path.stat().st_ctime_ns) for path in watched}
+    old_binding = deepcopy(case['metadata']['source_schema_binding'])
+    actual = audit._read_small
+    def guarded(path, maximum):
+        assert str(path) != case['original']['path'] and Path(path).suffix != '.weight'
+        return actual(path, maximum)
+    monkeypatch.setattr(audit, '_read_small', guarded)
+    result = audit.inspect_target_state_correspondence(tmp_path / 'prefill', tmp_path / 'decode', tmp_path / 'result')
+    assert result['stage'] == 'complete' and result['unique_state_context_candidate_count'] == 80, result
+    assert result['decode']['inventory']['path'] == case['local']['path']
+    resolution = result['decode']['inventory_resolution']
+    assert resolution['status'] == 'PINNED_LOCAL_TRANSFER_CONTENT_MATCH'
+    assert resolution['original_producer_inventory_pin'] == case['original']
+    assert resolution['selected_transfer_inventory_pin'] == case['local']
+    assert resolution['origin_path_access'] == 'NOT_ATTEMPTED' and resolution['root_rebasing'] == 'NOT_PERFORMED'
+    assert case['metadata']['source_schema_binding'] == old_binding
+    assert before == {path: (path.read_bytes(), path.stat().st_ctime_ns) for path in watched}
+    assert not result['feedback_ready'] and result['proven_cross_model_state_owner_count'] == 0
+
+
+@pytest.mark.parametrize('fault', ['local_bytes', 'local_hash', 'pin_sha', 'pin_bytes', 'pin_bool', 'null_pin',
+    'relative_pin', 'canonical_sha', 'canonical_bytes', 'canonical_path', 'receipt_pin', 'compiler_sha',
+    'rebound_wrong_air', 'rebound_wrong_schema', 'rebound_wrong_abi', 'rebound_wrong_snapshot',
+    'missing_inventory', 'empty_transfer', 'null_transfer'])
+def test_declared_local_inventory_faults_never_probe_origin_or_fall_back(relocated_decode_inventory, tmp_path, monkeypatch, fault):
+    case = relocated_decode_inventory
+    report, meta = case['report'], case['metadata']
+    transfer = report['decode_input_view']['transfer']
+    if fault == 'missing_inventory': transfer.pop('inventory')
+    elif fault == 'empty_transfer': report['decode_input_view']['transfer'] = {}
+    elif fault == 'null_transfer': report['decode_input_view']['transfer'] = None
+    elif fault in {'local_bytes', 'local_hash'}:
+        path = Path(case['local']['path'])
+        if fault == 'local_bytes': path.write_bytes(path.read_bytes() + b' ')
+        else:
+            raw = bytearray(path.read_bytes()); raw[5] = ord('x'); path.write_bytes(raw)
+    elif fault == 'pin_sha': transfer['inventory']['sha256'] = 'f' * 64
+    elif fault == 'pin_bytes': transfer['inventory']['bytes'] += 1
+    elif fault == 'pin_bool': transfer['inventory']['bytes'] = True
+    elif fault == 'null_pin': transfer['inventory'] = None
+    elif fault == 'relative_pin': transfer['inventory']['path'] = 'inventory.json'
+    elif fault == 'receipt_pin': transfer['export_receipt']['sha256'] = 'f' * 64
+    elif fault.startswith('canonical_'):
+        receipt_value = json.loads(Path(case['receipt']['path']).read_text())
+        receipt_value['inventory'][fault.removeprefix('canonical_')] = None if fault.endswith('path') else ('f' * 64 if fault.endswith('sha') else 1)
+        if fault == 'canonical_sha':
+            receipt_value['inventory']['sha256'] = receipt_value['inventory'].pop('sha')
+        receipt_id = save(Path(case['receipt']['path']), receipt_value)
+        meta['source_schema_binding']['receipt'] = receipt_id
+        transfer['export_receipt'] = receipt_id
+    elif fault.startswith('rebound_'):
+        path = Path(case['local']['path']); value = json.loads(path.read_text())
+        if fault == 'rebound_wrong_air': value['air']['sha256'] = 'f' * 64
+        elif fault == 'rebound_wrong_schema': value['schema']['descriptor_sha256'] = 'f' * 64
+        elif fault == 'rebound_wrong_abi': value['declared_abi']['feature_shape'] = [1, 64, 16384]
+        else: report['input_snapshots'][0]['sha256'] = 'f' * 64
+        transfer['inventory'] = save(path, value)
+        receipt_value = json.loads(Path(case['receipt']['path']).read_text())
+        receipt_value['inventory']['sha256'] = transfer['inventory']['sha256']
+        transfer['export_receipt'] = save(Path(case['receipt']['path']), receipt_value)
+        meta['source_schema_binding']['receipt'] = transfer['export_receipt']
+    current_report_id = save(case['report_path'], report)
+    meta['compilation_report_sha256'] = 'f' * 64 if fault == 'compiler_sha' else current_report_id['sha256']
+    actual = audit._read_small
+    def guarded(path, maximum):
+        assert str(path) != case['original']['path'] and Path(path).suffix != '.weight'
+        return actual(path, maximum)
+    monkeypatch.setattr(audit, '_read_small', guarded)
+    result = audit.inspect_target_state_correspondence(tmp_path / 'prefill', tmp_path / 'decode', tmp_path / 'result')
+    assert result['status'] == 'FAILED' and result['error'] and not result['feedback_ready'], result

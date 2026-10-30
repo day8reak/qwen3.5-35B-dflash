@@ -3,9 +3,9 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "USER80_STATE_BYTE_CHAIN_RECOVERED_PREFILL_TO_DECODE_AND_SERIAL_VERIFY_INTEGRATION_OPEN",
-  "handoff": "20261030T072129Z-31222-985a49/handoff.md",
-  "user_state": "User recovered the exact original continuation attempt after HDC reconnect: PID10457, all82 child outputs retrieved, all80 parent-output bytes bound to actual child inputs, locks absent/released. Recovery made no new inference or upload. Same-model experimental pos256->257 byte chain is observed. Full DFlash has not executed. User explicitly selects decode1 serial multi-round verify first; ordinary prefill history, source controls, dynamic original embeddings, draft target-next anchor/capacity, and integrating adapters remain open.",
+  "status": "USER_PREFILL89_INPUT82_OUTPUT_BINDINGS_PASSED_SERIAL_DFLASH_INTEGRATION_OPEN",
+  "handoff": "20261030T075543Z-2197-119a93/handoff.md",
+  "user_state": "User named restore-only prefill-v2 probe observed all89/82 names and released locks with0payload upload. Actual combined packet bound new names to all89 saved executed inputs/current13 original source files and82 outputs. State-correspondence failed because the checker followed canonical exporter-machine inventory path /home/w00949577/qwen35-target-pytorch-run instead of the successful compiler pinned local transfer.inventory. Logit check found80Const-index GatherV2 and0control Gather candidates, so output_pos64 remains unresolved; no bound or numerical conclusion. Same-model80bytechain remains previously recovered. User requests parallel progress; source lookup, draft capacity export and target session work proceed independently, with board calls serialized by existing lock.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
   "contract": {
@@ -54,7 +54,7 @@
     "Execute multiple complete rounds including rejection then continuation and compare every committed token/state with ordinary baseline",
     "Close numerical acceptance, then batch verify/rollback and measured end-to-end performance"
   ],
-  "next_command": "Pull updates; query named restore-only prefill metadata with inspect_target_runtime_io.py --summary-only into target-prefill64-runtime-io-v2, then inspect_target_prefill_decode_path.py using original prefill/decode jobs, retained prefill-v3 and the copied producer pb2. No model inference or compilation in these two steps.",
+  "next_command": "Pull current source and rerun only inspect_target_prefill_decode_path.py using existing named target-prefill64-runtime-io-v2 into target-prefill-decode-path-v2; metadata board probe need not repeat. In parallel copy original embedding two tables509552640bytes to AI_RUN_DIR/original-embedding-tables.",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -205,6 +205,33 @@
         "Stable reviewed cross-export state owners",
         "Correct original control/history/embedding contract",
         "Larger draft capacity and complete native adapter execution"
+      ]
+    },
+    "prefill_inventory_and_indexing_diagnosis": {
+      "captured": [
+        "Canonical receipt may retain unavailable exporter-machine inventory path while compiler already binds an exact local transferred inventory. Select that explicit local pin by fresh report/canonical content agreement, preserving old receipt identities; do not rebase paths.",
+        "Output selection used Tensor advanced indexing in originalsource; Gather-only search can observe80unrelated Const gathers while missing IndexByTensor. Keep exact actual control cone and literal ports/mask/descriptors; do not infer64out-of-range from profile64.",
+        "Independent resource and code preparation should overlap target data checks; actual board models still serialize.",
+        "Adding hardlinks to retainedpreparedweights changesnlink/ctime and can invalidate prior evidence; larger capacity export must reference originalpreparedroot read-only."
+      ],
+      "checks": [
+        "tests/test_target_transferred_inventory.py",
+        "tests/test_target_state_correspondence.py",
+        "tests/test_target_logit_selection.py",
+        "tests/test_target_prefill_decode_path.py"
+      ],
+      "skill_changes": "NONE_MODEL_SPECIFIC_TRANSFER_AND_LOWERING; executable checks strengthened existing strictbinding/workspace rules",
+      "rejected_promotions": [
+        "No primary-reference converter compatibility claim for private selectedDDK",
+        "No range/crossowner/feedback pass from diagnostic gathering",
+        "No unchanged-model claim from capacitymanifestonly",
+        "No guaranteed storage safety from per-file snapshot reserve"
+      ],
+      "remaining_hypotheses": [
+        "Actual control IndexByTensor ports/indicesmask/params dimensions",
+        "Reviewed cross-export80state ownership",
+        "Original64prefix row correspondence",
+        "True largerdraft artifact and originalnative loopadapter"
       ]
     }
   },
@@ -2191,15 +2218,15 @@
     "summary": "out/final-host-verification.json"
   },
   "prefill_decode_path_evidence": {
-    "status": "HOST_VERIFIED_ACTUAL_NAMED_PREFILL_PROBE_AND_PACKET_NOT_RUN",
+    "status": "USER_PREFILL_FILES_BOUND_LOCAL_INVENTORY_PATH_FIX_HOST_VERIFIED_ACTUAL_RECHECK_PENDING",
     "entrypoint": "targets/cpro/scripts/inspect_target_prefill_decode_path.py",
     "named_metadata_probe_output": "target-prefill64-runtime-io-v2",
-    "packet_output": "target-prefill-decode-path",
+    "packet_output": "target-prefill-decode-path-v2",
     "success_status": "PREFILL_DECODE_PATH_EVIDENCE_OBSERVED_WITH_GAPS",
     "source_schema": "S64 source AIR decoded only with its producer ge.proto descriptor, AST-extracted from exact copied pb2 and bound through completed export inventory plus compiler input snapshots; optional explicit source-export receipt must also agree. Compiled small OMC retains independent selected HIAI schema. Existing S1 receipt path stays strict.",
     "name_witness": "POST_HOC_SAME_MODEL_ORDERED_DESCRIPTOR_NAMES_BOUND only after exact same OMC SHA/bytes, compiler report, firmware/runtime/DDK, all89 input and82 output ordered raw dtype/format/shapes; old unnamed probe and execution remain unchanged.",
     "old_execution_binding": "Fresh all13 original sources, all89 saved actual private input SHA values, all82 data outputs and4 raw logs; complete explicit output[index]-path log mapping. Equal-value original sources can explain deduplicated original paths for this first prefill only.",
-    "logit_selection": "Trace actual logits-to-Gather path, named index/axis ports, constant axis and actual producer/consumer shape evidence. Missing producer shapes stay missing; output_pos64 is not assumed valid or adjusted by convention.",
+    "logit_selection": "Retain original Gather diagnostics; additionally intersect actual logits ancestry with arg1238_1 data descendants, recording bounded IndexByTensor named maps, indices_mask/axis attributes, actual operand/producer/consumer descriptors and explicit paths. No selected private IndexByTensor operator/converter contract is bound; no axis/range promotion from generic upstream reference.",
     "cross_state_mapping": "Actual named update edges plus completed inventory FileConstant reference/size/SHA and compiler snapshot pins provide bounded common parameter-context candidates only. Even80 unique candidates remain owner_count0 and feedback_readyfalse until reviewed stable state-specific cross-export ownership is established; no ordinal/shape/RefData/copy-ID substitution.",
     "active_identity": "Capture all child transitive current full9 identities; preserve shared baselines strictly across child checks, including five-stat-to-full9 capture boundary. Failed child report is retained while independent checks may continue.",
     "primary_ctime": "New metadata probe may revalidate historical ctime-only drift of bounded small primary OMC by full SHA using existing purpose-scoped binder, retaining old receipts and a strict current full9 baseline. Header-only path remains strict. No large-weight exception.",
@@ -2207,7 +2234,8 @@
     "device_execution": "NOT_RUN_PACKET_HOST_ONLY",
     "weight_payload_access": "NONE",
     "model_compilation": "NOT_RUN",
-    "numerical_validation": "NOT_RUN"
+    "numerical_validation": "NOT_RUN",
+    "local_inventory_selection": "Successful compiler decode_input_view.transfer.inventory is the only explicit relocated copy: fresh compiler-report SHA, canonical export receipt content pin, local bytes/SHA, sequence1 ABI/AIR/producer schema/all compiler snapshots must agree. Any declared malformed/missing local inventory pin fails without original-path fallback. Historical absolute path is declaration-only, never rebased or opened; existing source_schema_binding fields and all old receipts unchanged."
   },
   "serial_decode1_dflash_plan": {
     "source": "USER_EXPLICIT_2026_10_30_DECODE1_MULTIROUND_VERIFY_FIRST",
@@ -2292,5 +2320,86 @@
     ],
     "scope": "Host fixtures and scheduling tests only; no new actual phone/model inference, original weight reads, numerical acceptance or full DFlash execution",
     "independent_review": "PASSED_PREFILL_COMPONENTS_PACKET_AND_SERIAL_SCHEDULER"
+  },
+  "prefill_named_probe_and_path_user_report": {
+    "source": "USER_PASTED_REMOTE_JSON_NOT_RETRIEVED_LOCALLY",
+    "named_probe": {
+      "output": "target-prefill64-runtime-io-v2",
+      "status": "IO_METADATA_OBSERVED",
+      "model_restore": "PASSED",
+      "runtime_tensor_names": "OBSERVED_ALL",
+      "input_count": 89,
+      "output_count": 82,
+      "missing_payload_upload_bytes": 0,
+      "board_free_bytes": 306540302336,
+      "model_inference": "NOT_RUN",
+      "model_compilation": "NOT_RUN",
+      "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT"
+    },
+    "packet": {
+      "output": "target-prefill-decode-path",
+      "status": "PREFILL_DECODE_PATH_EVIDENCE_FAILED",
+      "prefill_named_probe_witness": "POST_HOC_SAME_MODEL_ORDERED_DESCRIPTOR_NAMES_BOUND",
+      "bound_prefill_output_count": 82,
+      "executed_prefill_input_binding": "ALL89_SAVED_PRIVATE_SLOT_SHA256_MATCHED_CURRENT13_ORIGINAL_SOURCES",
+      "failed_checks": [
+        "state_correspondence"
+      ],
+      "failed_stage": "read-bound-models",
+      "missing_historical_origin": "/home/w00949577/qwen35-target-pytorch-run",
+      "feedback_prepared": false
+    },
+    "logit_selection": {
+      "status": "LOGIT_SELECTION_UNVERIFIED",
+      "logits_reference": "Cast_900:0",
+      "observed_control_value": 64,
+      "logit_ancestor_count": 10110,
+      "ancestor_gather_count": 80,
+      "control_gather_candidate_count": 0,
+      "displayed_gather_index_sources": "All8displayed index operands areConst, notarg1238_1",
+      "candidate_rows_truncated": true,
+      "range_inference": "NOT_PERFORMED"
+    },
+    "actual_index_by_tensor_control_path": "NOT_QUERIED_YET_NEW_DIAGNOSTIC_REQUIRED"
+  },
+  "prefill_path_fix_host_verification": {
+    "run_id": "20261030T075543Z-2197-119a93",
+    "unique_cases_passed": 251,
+    "suites": [
+      {
+        "artifact": "out/inventory-transfer-final.xml",
+        "cases": 190,
+        "sha256": "aa1c2468cb51f9262b0b3818eb50305b50a1ed5f5f296ee98788a473dc990fca"
+      },
+      {
+        "artifact": "out/inventory-transfer-tail.xml",
+        "cases": 49,
+        "sha256": "5490979e8032f104be529b9d909327f9ffdc75095c1859f7133911b7349787ee"
+      },
+      {
+        "artifact": "out/index-diagnostic-full-tests.xml",
+        "cases": 50,
+        "sha256": "5673b680eba089b528f949b2a3a9ead3ee7c1e5aacc11f15a748c7abc604b9c4"
+      },
+      {
+        "artifact": "out/packet-final-tests.xml",
+        "cases": 8,
+        "sha256": "3c3d7e437dd9eb40cf24070944d09bfc0d44431636b2932e3910afbd1fbcf468"
+      }
+    ],
+    "independent_review": "PASSED",
+    "scope": "Host graph/schema/metadata fixtures only; no new model/weight/device execution and no indexing/state correctness promotion"
+  },
+  "parallel_integration_work": {
+    "source": "USER_EXPLICIT_PARALLEL_EFFICIENCY_REQUEST_2026_10_30",
+    "status": "IN_PROGRESS",
+    "streams": {
+      "prefill_decode": "Pinned local inventory correction and actual control-dependent indexing diagnosis; real cross-export owners and validseed remain open",
+      "embedding_lookup": "Implement direct originalINT8/FP32 table row lookup and independent64prefix byte comparison; copy two original tables486MiB toDDK in parallel",
+      "draft_capacity": "True full6layerS128 graph/recipe/AIR export against read-only existing prepared weights; no hardlink/manifest-only relabel. Generic compiler read-only view and disk peak budget remain separate before OMG",
+      "integration": "Original89input single-logit target session adapter and serial DFlash driver; host scheduling implemented but native multiround not yet run"
+    },
+    "board_concurrency": "Existing phone-global/model locks serialize actual model calls; host coding, prefix-row validation and draft source export can proceed independently",
+    "draft_compilation_budget": "No-reflink conservative baseline8464218606bytes plus temporary/log/reserve, based on2x2806049792byte prepared/compiled weights +2852119022byte packedmodel; current8.3GiB has insufficient known margin. No unconditional OMG build command."
   }
 }

@@ -8,6 +8,7 @@ itself a proven cross-model state owner or permission to feed a state back.
 from __future__ import annotations
 
 from collections import Counter, defaultdict, deque
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -37,11 +38,47 @@ def _same_pin(pin, identity):
 def _bound_inventory(metadata, bindings, sequence):
     binding = metadata.get("source_schema_binding", {})
     pin = binding.get("inventory")
-    if pin is None and isinstance(binding.get("receipt"), dict):
+    producer_pin, receipt_identity = pin, None
+    if isinstance(binding.get("receipt"), dict):
         receipt = _metadata(binding["receipt"]["path"], bindings)
-        if not _same_pin(binding["receipt"], bindings[-1]):
+        receipt_identity = bindings[-1]
+        if not _same_pin(binding["receipt"], receipt_identity):
             raise ValueError("source export receipt changed before cross-state inventory binding")
-        pin = receipt.get("inventory")
+        producer_pin = receipt.get("inventory")
+        if pin is None:
+            pin = producer_pin
+    # Read only the exact current compiler report before selecting a relocated
+    # metadata copy. Its explicit transfer pin, never a rebased origin path,
+    # is the same local inventory already validated during decode compilation.
+    report = _metadata(Path(metadata["job"]) / "compilation/report.json", bindings)
+    if bindings[-1]["sha256"] != metadata["compilation_report_sha256"]:
+        raise ValueError("compilation report changed during cross-state metadata binding")
+    view = report.get("decode_input_view")
+    transfer = view.get("transfer") if isinstance(view, dict) else None
+    if isinstance(view, dict) and "transfer" in view and not isinstance(transfer, dict):
+        raise ValueError("declared decode inventory transfer must be an object; no origin-path fallback")
+    if isinstance(transfer, dict) and "inventory" not in transfer:
+        raise ValueError("declared decode inventory transfer lacks inventory; no origin-path fallback")
+    local_transfer = isinstance(transfer, dict) and "inventory" in transfer
+    if local_transfer:
+        local_pin = transfer["inventory"]
+        if (sequence != 1 or receipt_identity is None
+                or not isinstance(local_pin, dict) or not isinstance(local_pin.get("path"), str)
+                or not Path(local_pin["path"]).is_absolute()
+                or type(local_pin.get("bytes")) is not int or not 0 < local_pin["bytes"] <= 32 << 20
+                or re.fullmatch(r"[0-9a-f]{64}", str(local_pin.get("sha256", ""))) is None
+                or not isinstance(producer_pin, dict) or not isinstance(producer_pin.get("path"), str)
+                or not Path(producer_pin["path"]).is_absolute()
+                or local_pin["sha256"] != producer_pin.get("sha256")
+                or ("bytes" in producer_pin and (type(producer_pin["bytes"]) is not int
+                    or producer_pin["bytes"] != local_pin["bytes"]))
+                or ("export_receipt" in transfer and not _same_pin(transfer["export_receipt"], receipt_identity))):
+            raise ValueError("declared local decode inventory transfer differs from its canonical producer pin; no origin-path fallback")
+        if pin is not None and (not isinstance(pin, dict)
+                or pin.get("sha256") != local_pin["sha256"]
+                or ("bytes" in pin and pin["bytes"] != local_pin["bytes"])):
+            raise ValueError("source-schema inventory and explicit local transfer inventory disagree")
+        pin = local_pin
     if not isinstance(pin, dict) or not isinstance(pin.get("path"), str):
         raise ValueError("cross-state parameter context requires a producer-bound complete export inventory")
     raw, identity = _read_small(pin["path"], 32 << 20)
@@ -52,9 +89,6 @@ def _bound_inventory(metadata, bindings, sequence):
     if (any(manifest["air"].get(key) != metadata["air"][key] for key in ("bytes", "sha256"))
             or manifest["schema"].get("descriptor_sha256") != metadata["source_schema"]["descriptor_sha256"]):
         raise ValueError("inventory does not bind this exact source AIR and producer schema")
-    report = _metadata(Path(metadata["job"]) / "compilation/report.json", bindings)
-    if bindings[-1]["sha256"] != metadata["compilation_report_sha256"]:
-        raise ValueError("compilation report changed during cross-state metadata binding")
     snapshots = defaultdict(list)
     for row in report.get("input_snapshots", []):
         if isinstance(row, dict) and isinstance(row.get("source_relative"), str):
@@ -63,6 +97,13 @@ def _bound_inventory(metadata, bindings, sequence):
         selected = snapshots[row["relative_path"]]
         if len(selected) != 1 or any(selected[0].get(key) != row[key] for key in ("bytes", "sha256")):
             raise ValueError("inventory parameter reference is not in the bound compiler input snapshots: " + row["relative_path"])
+    if local_transfer:
+        metadata["inventory_resolution"] = {"status": "PINNED_LOCAL_TRANSFER_CONTENT_MATCH",
+            "original_producer_inventory_pin": deepcopy(producer_pin), "selected_transfer_inventory_pin": deepcopy(pin),
+            "current_inventory": identity, "canonical_receipt": receipt_identity,
+            "compilation_report_sha256": metadata["compilation_report_sha256"],
+            "origin_path_access": "NOT_ATTEMPTED", "root_rebasing": "NOT_PERFORMED",
+            "source_receipt_mutation": "NONE", "weight_payload_access": "NONE"}
     return manifest, identity
 
 
@@ -298,6 +339,8 @@ def inspect_target_state_correspondence(prefill_job, decode_job, output, *, pref
             inventories[name], pin = _bound_inventory(meta, bindings, sequence)
             result[name] = {"job": meta["job"], "air": meta["air"], "model": meta["model"],
                 "compilation_report_sha256": meta["compilation_report_sha256"], "source_schema_binding": meta["source_schema_binding"], "inventory": pin}
+            if "inventory_resolution" in meta:
+                result[name]["inventory_resolution"] = meta["inventory_resolution"]
         result["stage"] = "trace-source-state-parameter-contexts"
         result["target_pair_binding"] = _pair_binding(metadata["prefill"], metadata["decode"])
         result.update(analyze_state_correspondence(documents["prefill"], documents["decode"], inventories["prefill"], inventories["decode"],
