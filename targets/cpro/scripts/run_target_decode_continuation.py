@@ -28,6 +28,7 @@ def main(argv=None):
     shown = {key: result[key] for key in ("status", "stage", "mode", "device_execution", "model_compilation",
         "numerical_validation", "state_continuity", "state_feedback", "execution_scope", "input_count", "output_count",
         "feedback_input_count", "bound_child_output_count", "tool_process_id", "remote_exitcode", "lock_state",
+        "model_process_status", "output_retrieval_status",
         "error", "evidence_error", "source_error", "prepared", "plan", "board_result", "state_chain", "next") if key in result}
     if "output" in result:
         shown["result"] = str(Path(result["output"]) / "result.json")

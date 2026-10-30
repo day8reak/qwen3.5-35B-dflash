@@ -15,6 +15,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
+import stat
 import struct
 import subprocess
 import sys
@@ -486,9 +487,128 @@ class Hdc:
         return self.call(["file", "send", str(local), str(remote)], label)
 
     def receive(self, remote, local, *, timeout=None):
-        self.call(["file", "recv", str(remote), str(local)], "receive", timeout=timeout)
-        if not local.is_file():
-            raise RuntimeError(f"HDC reported success without retrieving {remote}")
+        """Retrieve one new file; a zero client exit alone proves no transfer.
+
+        Only a missing artifact after a zero exit is retried, at most three
+        times. Every attempt has a private destination. Existing final paths
+        are never passed to HDC or overwritten; callers still verify the
+        independently obtained remote checksum after this method returns.
+        """
+        local = Path(os.path.abspath(os.fspath(local)))
+        token = uuid.uuid4().hex
+        receipt_path = self.output / "receives" / (token + ".json")
+        receipt = {"schema_version": 1, "artifact_kind": "qwen35-hdc-file-receive",
+            "status": "FAILED", "remote": str(remote), "local": str(local), "attempts": [],
+            "maximum_attempts": 3, "operation": "READ_ONLY_FILE_RECV_ONLY",
+            "model_execution": "NOT_RUN", "remote_mutation": "NONE_REQUESTED",
+            "checksum_validation": "CALLER_MUST_VERIFY_INDEPENDENT_REMOTE_SHA256",
+            "staging_retention": "FAILED_AND_LATE_ATTEMPT_ARTIFACTS_RETAINED"}
+        initial_count = self.count
+        try:
+            _receive_parent(local)
+            if os.path.lexists(local):
+                raise FileExistsError("HDC receive destination already exists and will not be changed: " + str(local))
+            staging = local.parent / (".hdc-receive-" + token)
+            staging.mkdir(mode=0o700)
+            receipt["staging"] = str(staging)
+            for number in range(1, 4):
+                directory = staging / ("attempt-" + str(number))
+                directory.mkdir(mode=0o700)
+                candidate = directory / "payload"
+                attempt = {"attempt": number, "destination": str(candidate), "status": "REQUESTED"}
+                receipt["attempts"].append(attempt)
+                try:
+                    self.call(["file", "recv", str(remote), str(candidate)], "receive", timeout=timeout)
+                except Exception as error:
+                    attempt.update(status="HDC_CALL_FAILED", error=f"{type(error).__name__}: {error}")
+                    raise
+                finally:
+                    attempt["call_log"] = str(self.output / "calls" / f"{self.count:04d}-receive.json")
+                before = _wait_received_file(candidate)
+                if before is None:
+                    attempt["status"] = "ZERO_EXIT_WITHOUT_LOCAL_ARTIFACT"
+                    if number < 3:
+                        continue
+                    raise RuntimeError("HDC file recv returned zero without creating a local file after three read-only attempts"
+                        + self._diagnostics() + "\nReceive audit: " + str(receipt_path))
+                attempt.update(status="STABLE_REGULAR_FILE_OBSERVED", file_identity=before)
+                _receive_parent(local)
+                _receive_parent(candidate)
+                # link() is an atomic no-clobber publication on the same
+                # filesystem. A concurrent final destination causes EEXIST.
+                fd = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(fd, "rb") as stream:
+                    if _receive_identity(os.fstat(stream.fileno())) != before:
+                        raise RuntimeError("HDC receive artifact changed before publication")
+                    os.link(candidate, local, follow_symlinks=False)
+                    current = _receive_identity(local.lstat())
+                    if (not stat.S_ISREG(current["mode"]) or current["nlink"] != 2
+                            or any(current[key] != before[key] for key in
+                                ("device", "inode", "bytes", "mtime_ns", "mode", "uid", "gid"))
+                            or _receive_identity(candidate.lstat()) != current
+                            or _receive_identity(os.fstat(stream.fileno())) != current):
+                        raise RuntimeError("HDC receive artifact changed during no-clobber publication")
+                    candidate.unlink()
+                    _receive_parent(local)
+                    published = _receive_identity(local.lstat())
+                    if (not stat.S_ISREG(published["mode"]) or published["nlink"] != 1
+                            or any(published[key] != before[key] for key in
+                                ("device", "inode", "bytes", "mtime_ns", "mode", "uid", "gid"))):
+                        raise RuntimeError("HDC receive final artifact changed during publication")
+                receipt.update(status="RECEIVED_NEW_REGULAR_FILE", local_file_identity=published)
+                attempt["status"] = "PUBLISHED_WITHOUT_OVERWRITE"
+                break
+        except Exception as error:
+            receipt["error"] = f"{type(error).__name__}: {error}"
+            if receipt["attempts"] and receipt["attempts"][-1]["status"] == "REQUESTED":
+                receipt["attempts"][-1].update(status="ARTIFACT_VALIDATION_FAILED", error=receipt["error"])
+            try:
+                save_json(receipt_path, receipt)
+            except Exception as audit_error:
+                raise RuntimeError(f"HDC receive failed: {error}; receive audit could not be saved: {audit_error}") from error
+            if self.count > initial_count and "HDC stdout:" not in str(error):
+                raise RuntimeError("HDC receive failed: " + str(error) + self._diagnostics()
+                    + "\nReceive audit: " + str(receipt_path)) from error
+            raise
+        save_json(receipt_path, receipt)
+
+
+def _receive_identity(info):
+    return {"device": info.st_dev, "inode": info.st_ino, "bytes": info.st_size,
+        "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns, "mode": info.st_mode,
+        "uid": info.st_uid, "gid": info.st_gid, "nlink": info.st_nlink}
+
+
+def _receive_parent(local):
+    """Require existing ordinary parents without following a symlink."""
+    current = Path(local.anchor)
+    for part in local.parent.parts[1:]:
+        current /= part
+        info = current.lstat()
+        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise ValueError("HDC receive requires ordinary destination parents: " + str(current))
+
+
+def _wait_received_file(path):
+    """Allow bounded late materialization, then require an unchanged file."""
+    deadline, previous = time.monotonic() + 0.5, None
+    while True:
+        _receive_parent(path)
+        try:
+            current = _receive_identity(path.lstat())
+        except FileNotFoundError:
+            current = None
+        if current is not None:
+            if not stat.S_ISREG(current["mode"]) or current["nlink"] != 1:
+                raise RuntimeError("HDC receive produced a nonregular or shared artifact: " + str(path))
+            if current == previous:
+                return current
+        if time.monotonic() >= deadline:
+            if current is not None:
+                raise RuntimeError("HDC receive artifact did not become stable within the bounded observation window")
+            return None
+        previous = current
+        time.sleep(0.05)
 
 
 def _script(board, argv, stdout, stderr, exitcode, *, pidfile=None):

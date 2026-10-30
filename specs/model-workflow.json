@@ -2248,7 +2248,7 @@
         "location": "original_weight_machine",
         "entrypoint": "targets/cpro/scripts/prepare_target_pytorch.py",
         "directory": "target-pytorch",
-        "status": "USER_ROWS_V4_AND_ALL80_STATE_V7_PASSED_CONTINUATION_HOST_VERIFIED_AWAITING_DEVICE_STEP",
+        "status": "USER_CONTINUATION_TOOL_EXIT0_HDC_DISCONNECTED_RECOVERY_HOST_VERIFIED",
         "tests": 14,
         "next": "Inspect retainedsuccessfulprefilloutputs usingexplicitcomplete toolindex/pathlog +fileSHA/typedextent; realfeature/logitsstats/draftcapacity/originalanchorIDs next. Do notrepeatmodelcall orcompile.",
         "user_report": {
@@ -4072,8 +4072,8 @@
           "host_graph_tests_passed": 122,
           "actual_mapping": "PENDING_V4_USER_RUN"
         },
-        "next_command": "Pull updates; prepare same-model continuation from state-lineage-v7 and original-rows-v4 with explicit single-query-absolute-position-plus-one assumption, then run that prepared plan in a new output with --apply. See docs/current-status.md.",
-        "user_state": "Original full40layer prefill64 and independent experimental decode1 executed; real feature drove full6layer draft one step. User now reports rows-v4 exact original query269/next0 inputs prepared, and state-lineage-v7 all80 source/compiled/runtime/file identities bound. Same-model experimental continuation is being integrated; control semantics/history, prefill-to-decode continuity, numerical accuracy and full DFlash remain open.",
+        "next_command": "Pull updates; recover_target_decode_continuation.py --execution AI_RUN_DIR/target-decode1-continuation-run --output AI_RUN_DIR/target-decode1-continuation-recovery. Preserve old run and locks; no model reapply.",
+        "user_state": "Original target/draft single steps, original next0 row and all80 state bindings previously passed. User continuation invoked the original40layer decode1 once with89 inputs and cached payload missing0; remote tool returned0. HDC then disconnected while receiving output10;4 logs and cache lock release failed despite HDC client rc0. User confirms connection restored. Recover only that exact completed attempt; no second inference, input or weight upload. Byte-chain/control/history/accuracy acceptance remains open until recovery and later validation.",
         "remaining_gates": [
           "Execute same-model continuation with all80 independently bound state files and the original next-token row",
           "Validate original control semantics and prefill-to-decode history against an ordinary generation baseline",
@@ -4211,7 +4211,7 @@
           },
           "scope": "Hostfixtures only: role-scoped historicalctime revalidation, strict first4/hash/full9nonctime fields, oldreceipts immutable/currentstatefileIDs, active-read races, raw control/source/log/slot guards, portableprotocolv1/v2 and stdlibresourceextractor. No actualDDK/phone model execution, weightread, accuracy orstate-continuity acceptance."
         },
-        "handoff": "20261030T062938Z-23544-594e88/handoff.md",
+        "handoff": "20261030T070254Z-25569-f02f6e/handoff.md",
         "decode_state_lineage_v6_user_report": {
           "status": "DECODE_STATE_LINEAGE_OBSERVED_WITH_GAPS",
           "output": "target-decode1-state-lineage-v6",
@@ -4384,7 +4384,7 @@
           "logical_history": "UNVERIFIED"
         },
         "same_model_decode_continuation": {
-          "status": "HOST_VERIFIED_ACTUAL_CONTINUATION_NOT_RUN",
+          "status": "USER_TOOL_EXIT0_RETRIEVAL_TRANSPORT_FAILED_AWAITING_RECOVERY",
           "prepare_entrypoint": "targets/cpro/scripts/prepare_target_decode_continuation.py",
           "execute_entrypoint": "targets/cpro/scripts/run_target_decode_continuation.py",
           "state_lineage": "target-decode1-state-lineage-v7",
@@ -4497,6 +4497,111 @@
             "Original control semantics and prefill-to-decode history",
             "Arbitrary candidate original embedding lookup and larger draft context capacity",
             "Multi-round serial verify before batch verify and accuracy/performance closure"
+          ]
+        },
+        "continuation_retrieval_incident_user_report": {
+          "execution": "target-decode1-continuation-run",
+          "status": "FAILED",
+          "stage": "retrieve-outputs",
+          "remote_exitcode": 0,
+          "missing_model_payload_upload_bytes": 0,
+          "input_count": 89,
+          "output_count": 82,
+          "board_attempt": "/data/local/tmp/qwen3_5_moe/codex-target-44099029b59118c4629b/run-428e80ed80fc4af89e162a1e4d0cb524",
+          "board_lock_token": "ff555736fad04ee69854cb4e47657f31",
+          "missing_local_file": "outputs/output_10",
+          "retrieval_errors": [
+            "tool.stdout",
+            "tool.stderr",
+            "tool.exitcode",
+            "tool.pid"
+          ],
+          "client_error_response": "[Fail]Device not founded or connected; occasionally [Fail]ExecuteCommand need connect-key?",
+          "hdc_client_returncode": 0,
+          "lock_release_failed_call": "0122-release-cache-execution-lock.json",
+          "lock_state": "RETAINED_OR_UNCERTAIN",
+          "connection_restored": "USER_CONFIRMED",
+          "classification": "REMOTE_TOOL_EXIT0_OBSERVED_OUTPUT_RETRIEVAL_INCOMPLETE; NOT_NUMERICAL_OR_STATE_CONTINUITY_ACCEPTANCE"
+        },
+        "continuation_output_recovery": {
+          "status": "HOST_VERIFIED_ACTUAL_RECOVERY_NOT_RUN",
+          "entrypoint": "targets/cpro/scripts/recover_target_decode_continuation.py",
+          "execution": "target-decode1-continuation-run",
+          "output": "target-decode1-continuation-recovery",
+          "success_status": "DECODE_CONTINUATION_OUTPUTS_RECOVERED_UNVALIDATED",
+          "model_inference": "NOT_RUN_RECOVERY_ONLY",
+          "model_upload": "NOT_RUN",
+          "input_upload": "NOT_RUN",
+          "proof": "Fresh prepared89 source proof and immutable old outer/board/plan/command/input-evidence; old execute/acquire/cache/inventory call ledgers parsed offline with exact argv/payload/unique completion marker0; fresh same-device/cached-model/attempt exit0/PIDabsent; all82 original SHA values preserved;86 retrieved files hashed and remote rehashed; complete80 byte chain before owned lock release.",
+          "lock_policy": "No new lock acquired. Bothabsent -> no mutation. Original32hex owner and compiler-cache marker plus old successful acquireledger and exitedprocess may release only empty owned locks after full retrieval/chain. Foreign/orphan/live/uncertain/symlink/nonempty locks stop and retain. Recheck lengths/token/cache/exit/PID in release shell; verify bothabsent before success.",
+          "receipt_policy": "Failed original directory and prepared evidence remain unchanged; recovered outputs, raw calls and state-chain report are written only under new output."
+        },
+        "hdc_receive_artifact_policy": {
+          "status": "HOST_VERIFIED",
+          "scope": "FILE_RECV_ONLY; no model, send or remote shell replay",
+          "client_exitcode": "ZERO_IS_NOT_TRANSFER_PROOF",
+          "destination": "Exclusive0700 same-filesystem staging; stable ordinary nlink1 file; no-clobber atomic publication; reject existing final targets, symlinks/directories/nonregular/shared artifacts",
+          "retry": "At most3 distinct private targets only when rc0 created no file; late old attempt cannot satisfy new attempt. Timeout/nonzero/nonregular stops; failed staging retained.",
+          "evidence": "Original calls stdout/stderr unchanged; receives/UUID.json records each target and final identity; error includes actual raw HDC response.",
+          "provenance": "out/official-hdc-receive/receipt.json locks official OpenHarmony HDC source/README semantics; actual incident diagnosis is user-supplied connection-error output, not inferred destination behavior."
+        },
+        "continuation_recovery_host_verification": {
+          "run_id": "20261030T070254Z-25569-f02f6e",
+          "unique_cases_passed": 242,
+          "suites": [
+            {
+              "artifact": "out/hdc-receive-tests.xml",
+              "passed": 20,
+              "sha256": "4821a7389698e706664a1300bb327145b3622b9e1307c4294f4db909a267cddf"
+            },
+            {
+              "artifact": "out/hdc-receive-integration-tests.xml",
+              "passed": 127,
+              "sha256": "06c61522c46711145c6396cd431ac0da87795f43eade424c128d42342aca66ba"
+            },
+            {
+              "artifact": "out/transport-status.xml",
+              "passed": 68,
+              "sha256": "f256812db97f2691dad031ff7e2d2e7c4c831564b93589a39b9a5502ce0502ad"
+            },
+            {
+              "artifact": "out/recovery-current.xml",
+              "passed": 27,
+              "sha256": "35902ddbd3b3753af239d0a138f1c515938bf9aa7ba9862338162c378f33394a"
+            },
+            {
+              "artifact": "recovery-lock-review-junit.xml",
+              "passed": 9,
+              "sha256": "20346daeacc5663d57ffd783f47028ef949d9a17081c3d86117976cc9f7e0f7e"
+            }
+          ],
+          "scope": "Host fixtures and actual local POSIX scripts; no actual user HDC/model calls, no real weight reads.",
+          "independent_review": "PASSED",
+          "summary": "out/final-host-verification.json"
+        },
+        "continuation_transport_recovery_experience_audit": {
+          "captured": [
+            "HDC may return client0 with a connection failure during both shell and file recv; shell requires its nonce marker and file recv requires a new verified artifact.",
+            "A waited remote tool exit0 and missing output retrieval are separate observations; keep overallfailure but do not describe completed process as a kernel failure.",
+            "Recover retained immutable outputs from the exact original post-exit inventory before considering new inference; replaying old HDC shell ledgers is forbidden.",
+            "Validate complete bytes and state-chain before releasing original locks; the cache lock has no token, so ownership also requires the original globaltoken and successful acquisition ledger."
+          ],
+          "executable_checks": [
+            "Fresh no-clobber HDC receive and bounded read-only retry",
+            "Exact completed-attempt recovery with old/current SHA and input proof",
+            "Owned retained-lock read-only local chain verification gate, exact release scripts and absent-lock confirmation",
+            "Explicit future failure status and recovery-only next action"
+          ],
+          "skill_changes": "NONE_EXISTING_TRANSPORT_HASH_AND_OWNERSHIP_RULES_REINFORCED_IN_EXECUTABLE_CHECKS",
+          "rejected_promotions": [
+            "Treating HDCclient0 as successful transfer",
+            "Treating tool0 as complete continuity/accuracy",
+            "Running inference again after retrieval failure",
+            "Clearing locks by path alone"
+          ],
+          "remaining_hypotheses": [
+            "Actual recovered outputs retain all original hashes",
+            "Experimental controls yield semantically correct state transitions; not established by bytechain"
           ]
         }
       },

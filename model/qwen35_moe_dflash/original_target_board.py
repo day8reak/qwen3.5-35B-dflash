@@ -197,6 +197,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
               "status": "FAILED", "stage": "contract", "device_execution": "NOT_RUN",
               "numerical_validation": "NOT_RUN_NO_REFERENCE", "state_continuity": "NOT_RUN",
               "runtime_placement": "UNVERIFIED", "retrieved": {}, "retrieval_errors": [],
+              "model_process_status": "NOT_STARTED", "output_retrieval_status": "NOT_STARTED",
               "primary_revalidations": [],
               "target_features_requested": target_features,
               "feature_output_evidence": {"status": "NOT_CHECKED", "semantic_validation": "NOT_RUN"}}
@@ -525,21 +526,29 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         result["remote_execution_lock"] = str(cache / ".execution-lock")
         result["timeout_scope"] = "HDC wait only; remote cancellation unverified. Retained lock prevents automatic overlapping execution."
         result.update(stage="execute", device_execution="ATTEMPTED")
+        result["model_process_status"] = "RUN_REQUESTED_COMPLETION_UNKNOWN"
         attempted = True
         if smoke:
             uncertain = True
         print(f"target-board: original 40-layer target, gear={gear}, HIAI V2, one tool invocation", flush=True)
         status, _ = hdc.shell(command, "execute-original-target", allow_failure=True)
         result["remote_exitcode"] = status
+        result["model_process_status"] = "EXITED_ZERO" if status == 0 else "EXITED_NONZERO"
+        result["process_completion_evidence"] = "UNIQUE_HDC_REMOTE_WAIT_EXIT_MARKER_OBSERVED"
         if smoke:
             uncertain, exit_known = False, True
         if status != 0:
             raise RuntimeError("original target tool exited with status " + str(status))
         result["stage"] = "retrieve-outputs"
+        result["output_retrieval_status"] = "IN_PROGRESS"
         _, inventory = hdc.shell("find " + shlex.quote(str(attempt / "outputs")) + " -type f -exec sha256sum {} \\;", "output-inventory")
         hashes = _hash_lines(inventory, attempt / "outputs")
         if not hashes or len(hashes) > 1024:
             raise ValueError("target tool produced no outputs or exceeded the retrieval budget")
+        inventory_path = out / "output-inventory.json"
+        save_json(inventory_path, {"board_attempt": str(attempt), "outputs": hashes,
+            "scope": "Complete original post-exit remote output SHA inventory; no filename-to-slot inference"})
+        result["output_inventory"] = {"path": str(inventory_path), "sha256": sha256_file(inventory_path)}
         for relative, digest in hashes.items():
             remote = attempt / "outputs" / relative
             local = out / "outputs" / relative
@@ -555,7 +564,10 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
         if attempted:
-            result["device_execution"] = "FAILED"
+            result["device_execution"] = ("TOOL_EXITED_ZERO_OUTPUTS_UNVERIFIED"
+                if result.get("model_process_status") == "EXITED_ZERO" else "FAILED")
+            if result.get("model_process_status") == "EXITED_ZERO":
+                result["output_retrieval_status"] = "INCOMPLETE"
     finally:
         if attempted:
             names = ("tool.stdout", "tool.stderr", "tool.exitcode", "tool.pid") if smoke else ("tool.stdout", "tool.stderr", "tool.exitcode")
@@ -576,7 +588,9 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                         raise ValueError("retrieved target PID is invalid")
                     result["tool_process_id"] = int(pid)
             except Exception as error:
-                result.update(status="FAILED", device_execution="FAILED", evidence_error=f"{type(error).__name__}: {error}")
+                result.update(status="FAILED", device_execution=("TOOL_EXITED_ZERO_OUTPUTS_UNVERIFIED"
+                    if result.get("model_process_status") == "EXITED_ZERO" else "FAILED"),
+                    output_retrieval_status="INCOMPLETE", evidence_error=f"{type(error).__name__}: {error}")
             if smoke and result["status"] == "FAILED":
                 try:
                     from .draft_board import _receive
@@ -613,5 +627,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             result["lock_state"] = "RETAINED_OR_UNCERTAIN" if global_held or cache_held or uncertain else "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT"
             result["remote_cancellation"] = "NOT_REQUESTED; uncertain waits retain both locks and never trigger automatic retry"
         result["hdc_invocations"] = hdc.count if hdc else 0
+        if result["status"] == "EXECUTED_UNVALIDATED":
+            result["output_retrieval_status"] = "COMPLETE_HASH_VERIFIED"
         save_json(out / "result.json", result)
     return result

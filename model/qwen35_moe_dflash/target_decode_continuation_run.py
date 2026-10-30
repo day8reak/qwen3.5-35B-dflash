@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from .artifacts import output_path, save_json
 from .existing_air_profile import get_existing_air_profile
@@ -10,13 +11,29 @@ from .target_decode_output_inventory import _descriptors
 from .target_prefill_output_inventory import _hash_retrieved, _logged_slots, _numerical
 
 
-def inspect_continuation_outputs(plan, board_root, observed):
+def inspect_continuation_outputs(plan, board_root, observed, *, allow_retained_completed_lock=False):
     """Bind the executed input hashes and all explicitly logged child outputs."""
     root = Path(board_root)
+    if type(allow_retained_completed_lock) is not bool:
+        raise ValueError("retained-lock inspection must be an explicit boolean")
+    released = observed.get("lock_state") == "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT"
+    retained = False
+    if allow_retained_completed_lock and not released:
+        proof = observed.get("recovery_completion", {})
+        retained = (observed.get("lock_state") == "OWNED_COMPLETED_LOCKS_RETAINED_FOR_RECOVERY"
+            and observed.get("recovery_only") == "NO_MODEL_RERUN_NO_INPUT_OR_WEIGHT_UPLOAD"
+            and type(proof.get("exitcode")) is int and proof["exitcode"] == 0
+            and type(proof.get("pid")) is int and proof["pid"] > 0
+            and proof["pid"] == observed.get("tool_process_id") and proof.get("pid_absent") is True
+            and proof.get("global_owner_verified") is True and proof.get("cache_owner_verified") is True
+            and re.fullmatch(r"[0-9a-f]{32}", str(proof.get("original_owner_token", ""))) is not None
+            and proof["original_owner_token"] == observed.get("board_lock_token")
+            and proof.get("compilation_report_sha256") == plan.get("compilation_report_sha256")
+            and proof.get("board_attempt") == observed.get("board_attempt"))
     if (observed.get("status") != "EXECUTED_UNVALIDATED" or observed.get("remote_exitcode") != 0
             or observed.get("device_execution") != "EXECUTED_OUTPUTS_RETRIEVED"
             or observed.get("retrieval_errors") != []
-            or observed.get("lock_state") != "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT"
+            or not (released or retained)
             or observed.get("source_preservation") != "UNCHANGED_CONTINUATION_PROOF_AND_ALL89_PREPARED_INPUT_SHA256"):
         raise ValueError("child decode requires a complete successful locked V2 execution receipt")
     actual = observed.get("inputs")
@@ -87,6 +104,7 @@ def inspect_continuation_outputs(plan, board_root, observed):
         "feedback_input_count": 80, "bound_child_output_count": 82,
         "changed_state_output_count": sum(row["child_bytes_changed"] for row in chain),
         "states": chain, "logged_slot_mapping": mapping, "bound_tensors": tensors,
+        "lock_inspection_scope": "READ_ONLY_UNDER_VERIFIED_ORIGINAL_COMPLETED_LOCKS" if retained else "LOCKS_ALREADY_RELEASED_OR_ABSENT",
         "state_continuity": "BYTE_CHAIN_OBSERVED_CONTROL_SEMANTICS_AND_NUMERICAL_CONTINUITY_NOT_VALIDATED",
         "numerical_validation": "NOT_RUN_NO_REFERENCE",
         "scope": "One same-model parent-output to executed-child-input byte chain; changed hashes and finite tensors do not establish correct control semantics, logical history, greedy sequence correctness or accuracy"}
@@ -120,7 +138,12 @@ def run_decode_continuation(prepared, output, *, apply=False, board_model_root="
                 mode="APPLY", prepared=str(Path(prepared).resolve()), plan=str(out / "plan.json"),
                 board_result=str(out / "board/result.json"))
             if observed["status"] != "EXECUTED_UNVALIDATED":
-                raise RuntimeError(observed.get("error", "child decode did not complete"))
+                result["next"] = (
+                    "Recover this exact retained attempt with recover_target_decode_continuation.py in a new output; do not rerun the model"
+                    if observed.get("remote_exitcode") == 0 else
+                    "Inspect the retained execution, PID and lock evidence before any action; no automatic model retry")
+                save_json(out / "result.json", result)
+                return result
             result["stage"] = "bind-child-state-chain"
             chain = inspect_continuation_outputs(plan, out / "board", observed)
             save_json(out / "state-chain.json", chain)
@@ -133,6 +156,7 @@ def run_decode_continuation(prepared, output, *, apply=False, board_model_root="
                 logits=chain["bound_tensors"]["logits"]["statistics"], feature=chain["bound_tensors"]["feature"]["statistics"],
                 next="Retain this experimental byte-chain observation; validate original control semantics and ordinary decode history before numerical or multi-round DFlash acceptance")
     except Exception as error:
-        result.update(status="FAILED", error=f"{type(error).__name__}: {error}")
+        result.update(status="FAILED", error=f"{type(error).__name__}: {error}",
+            next="Preserve this output and the original lock/PID evidence; inspect the failed stage before any retry")
     save_json(out / "result.json", result)
     return result
