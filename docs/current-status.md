@@ -2,21 +2,28 @@
 
 <a id="用户现在执行什么"></a>
 
-A，去重已完成：71 个文件合并，实际可用空间增加约 2.81GB、现余约 8.3G；只读检查旧停止进程 4906 及父进程 4904 是否持有已删除文件，本步不结束进程或删除文件。
+A，窗口 1：完整 target 首次 prefill 已执行成功；更新后只读核对已取回文件、日志中的槽位映射、feature/logits 数值统计、draft 固定容量和原始 token 文件，预期 `OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS`；不重新执行模型或复制权重。
 
 ```bash
-ps -p 4904,4906 -o pid,ppid,stat,etime,args
-readlink /proc/4904/cwd /proc/4906/cwd
-ls -l /proc/4904/fd /proc/4906/fd 2>/dev/null | grep ' (deleted)$'
-grep ' (deleted)$' /proc/4904/maps /proc/4906/maps 2>/dev/null | head -60
+git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_prefill_outputs.py" \
+  --execution "$AI_RUN_DIR/target-prefill64-smoke-v3" \
+  --draft-bundle "$AI_RUN_DIR/full-draft/residual-fix/bundle" \
+  --input-dir /home/w00949577/run_35B/chunksize_64_data \
+  --output "$AI_RUN_DIR/target-prefill64-output-inspection"
 ```
 
-A，prefill-v3 已创建，查看现有执行结果，不重复启动模型或清理板端锁。
+A，窗口 2：收尾工作目录已删除且已停止的旧编译进程 4906、其绑定父进程和停止的子进程；仅身份完全匹配时发送 TERM 后 CONT，预期 `STOP_REQUESTED`；该状态不表示已退出或已释放空间。
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_morning_status.py" \
-  --decode-probe "$AI_RUN_DIR/target-decode1-runtime-io-v2" \
-  --prefill-smoke "$AI_RUN_DIR/target-prefill64-smoke-v3"
+git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/stop_deleted_target_compile.py" \
+  --pid 4906 \
+  --job "$AI_RUN_DIR/full-target-compile-0491abfcd79b" \
+  --apply --legacy-stopped-tree \
+  --output "$AI_RUN_DIR/deleted-target-compile-stop"
+ps -p 4904,4906 -o pid,ppid,stat,etime,args
+df -h "$AI_RUN_DIR"
 ```
 
 B：55 档特征 AIR 保留备份，本轮无待执行命令。

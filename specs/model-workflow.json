@@ -2,8 +2,8 @@
   "schema_version": 1,
   "updated": "2026-10-30",
   "active_phase": "integration",
-  "delivery_status": "PREFILL_TOOL_ARGUMENT_REJECTION_CORRECTED_DEVICE_RETRY_PENDING",
-  "run_id": "20261030T003353Z-6432-3eefb1",
+  "delivery_status": "FULL_ORIGINAL_TARGET_PREFILL_EXECUTED_REAL_FEATURE_DRAFT_INTEGRATION_PENDING",
+  "run_id": "20261030T003719Z-6566-d802b7",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -2250,7 +2250,7 @@
         "directory": "target-pytorch",
         "status": "USER_REPORTED_FULL_TARGET_STATIC_PREFILL64_AND_DECODE1_COMPILED; TARGET_DEVICE_EXECUTION_PENDING",
         "tests": 14,
-        "next": "Retry existingcachedfulltarget once withV2 model-defaultND and noformatflags, newoutputtarget-prefill64-smoke-v3; no modelcompilation or unchangedweightreupload.",
+        "next": "Inspect retainedsuccessfulprefilloutputs usingexplicitcomplete toolindex/pathlog +fileSHA/typedextent; realfeature/logitsstats/draftcapacity/originalanchorIDs next. Do notrepeatmodelcall orcompile.",
         "user_report": {
           "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
           "original_air_sha256": "3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9",
@@ -2899,7 +2899,7 @@
           "failure_policy": "Keep native failure stage/stdout/stderr/exitcode and uncertain locks; no automatic weight upload, model Init or retry"
         },
         "first_prefill_smoke": {
-          "status": "USER_TOOL_FORMAT_REJECTED_CORRECTED_RETRY_PENDING",
+          "status": "USER_REPORTED_EXECUTED_UNVALIDATED_NO_REPEAT",
           "entrypoint": "targets/cpro/scripts/run_target_prefill_smoke.py",
           "plan_output": "target-prefill64-smoke-plan",
           "apply_output": "target-prefill64-smoke-v3",
@@ -3184,6 +3184,96 @@
             "out/final-execution-tests.xml"
           ],
           "scope": "Host tool-argument rejection and exact first-prefill/oldboard/morning checks plus small cache fixtures. No realtarget inference or numericalpass."
+        },
+        "target_prefill_execution_user_report": {
+          "source": "USER_PASTED_REMOTE_EXECUTION_AND_TOOL_STDOUT_NOT_RETRIEVED_LOCALLY",
+          "execution": "target-prefill64-smoke-v3",
+          "status": "EXECUTED_UNVALIDATED",
+          "remote_exitcode": 0,
+          "tool_process_id": 8985,
+          "model_compilation": "NOT_RUN_REUSED_EXISTING_COMPILED_TARGET",
+          "cache_missing_upload_bytes": 0,
+          "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+          "planned_input_count": 89,
+          "planned_output_count": 82,
+          "actual_retrieved_output_file_count": 82,
+          "log_evidence": {
+            "V2_model_load": "SUCCEEDED",
+            "input_tensor_fill": "SUCCEEDED",
+            "requested_times": 1,
+            "execute_result": "Success",
+            "logged_output_index_path_pairs": 82,
+            "logged_output_range": "0through81",
+            "logged_output_path_pattern": "Thisactualattempt explicitlyprinted output[i]→.../outputs/output_i, not inferred fromfilenames",
+            "load_time_us": 9249359.0,
+            "infer_time_us": 438004.0,
+            "profiling_enabled": true,
+            "timing_scope": "One tool-reported invocation withprofiling; not standalone benchmark/distribution orspeedup"
+          },
+          "numerical_validation": "NOT_RUN_NO_REFERENCE",
+          "state_continuity": "NOT_VALIDATED_SINGLE_TOOL_INVOCATION",
+          "next": "Hash-check actualoutputfiles andcompleteindex/pathlogmapping; inspectfeature/logits stats, actualdraftbundlecapacity andoriginalinput_ids beforederivedrealdraftstep",
+          "scope": "Userreportedfulloriginal40layer targetload/inference success only. Planned82 count doesnotprove actualdatafilecompleteness, correctfeaturecontent/statefeedback orwholeDFlash.",
+          "reported_output_extent_counts": {
+            "65536": 30,
+            "1048576": 30,
+            "2097152": 21,
+            "993280": 1
+          },
+          "reported_output_total_bytes": 78456832,
+          "reported_feature_file": {
+            "path": "outputs/output_81",
+            "bytes": 2097152,
+            "sha256": "be3c0f2f2e76e2cb4d89ec484b0a31dfde8ed65a89ca5a2ef82ec7905370cbba",
+            "binding": "Useractualcomplete tooloutput[81]path plus recordedruntimefeatureindex; freshserverhash/statistics pending"
+          },
+          "reported_logits_file": {
+            "path": "outputs/output_0",
+            "bytes": 993280,
+            "sha256": "fd28bc57ee24097bd26a6b90ded1844599007ffea08eff087db022450aba6586"
+          },
+          "reported_tool_stdout": {
+            "bytes": 27664,
+            "sha256": "2a131fae6f381a6c500b3cb17d014431f06ba637c07b7aa43648b2518f417abe"
+          }
+        },
+        "deleted_job_cleanup_plan": {
+          "entrypoint": "targets/cpro/scripts/stop_deleted_target_compile.py",
+          "mode": "Read-onlyplanbydefault; --apply --legacy-stopped-tree explicitlyqueuesTERMthenCONT foronlyboundstoppedoldtree/driver",
+          "pid": 4906,
+          "driver_pid": 4904,
+          "job_basename": "full-target-compile-0491abfcd79b",
+          "actual_cwd_deleted": true,
+          "actual_fd_observation": "fd1/fd2 bothreference the same deletedcompile.log; retainedbytesunknown until metadatainspection",
+          "identity_binding": "ExactOMGcmodel/cwddeleted +stoppedcanonicalparent output orautogeneratedjob/runenv +start_ticks/ppid/heldprocdirs; allselectedworkersstopped. Noothermodeltasks/processgroups/files touched.",
+          "signal_race": "Explicitlegacy heldprocdirectory is notpidfd-equivalent; numericrace remainsreported, noautomaticfallback",
+          "no_claims": [
+            "NoSIGKILL/processgroups/escalation/filedeletion",
+            "STOP_REQUESTED is notexitproof orfree-spaceproof",
+            "MappingswithoutopenFDs andotherprocessholders excluded fromdeletedFDbyteobservation"
+          ],
+          "remote_execution": "NOT_RUN_BY_ASSISTANT"
+        },
+        "real_feature_draft_bridge_plan": {
+          "existing_bundle": "full-draft/residual-fix/bundle",
+          "source_contract": "Full6layer/block16/vocab248320 draft has3inputs targetfeaturesFP16[1,S,16384],inputIDsINT32[1,S],maskINT32[1,S]; embedding/headalreadyembedded",
+          "anchor_alignment": "anchor=valid_length-1; originalprefix64requireslastINPUTtoken63. Targetprefilllogitsargmaxisnexttoken64 andcannotbesubstitutedat63.",
+          "capacity_status": "Mustreadactualmanifest; sourcedefault64andoldattentionK80suggest64butnotdirectcurrentbundleproof",
+          "next_observations": [
+            "Actualboundfeaturefile/logits stats",
+            "Draftmanifestsequence_length/IO/modelrecord only",
+            "Originalinput_ids.bin256B64INT32ifpresent, hash/range/anchor"
+          ],
+          "immutability": "Do notoverwrite oldsyntheticfixture/goldens orsuccessfulbundle. Newexecution-onlystep/controllerrequired forrealfeatures; existingfull-draft compare assumes syntheticgoldens.",
+          "native_ability": "Existing --draft-step canconsume newhashbound3inputstep withsameOMC/ABI; no modelrecompile needed onceallbindings established",
+          "remaining": "Realfeaturehandoff/native draft invocation, fullstatehandoff and multiroundaccept/reject/accuracy/performance"
+        },
+        "post_prefill_host_verification": {
+          "run_id": "20261030T003719Z-6566-d802b7",
+          "tests_passed": 109,
+          "failures": 0,
+          "evidence": "out/final-host-tests.xml",
+          "scope": "New retained-output audit and deleted-job stop tests plus existing stopped-compile andprefill-execution regressions. Fakeproc/signals/filefixtures only; actualuser outputinspection/oldprocessstop notperformed byassistant."
         }
       },
       "b": {
@@ -3308,14 +3398,14 @@
     "day1_gate": "Actual ordinary full-target64-prefill to1-decode state handoff, then real target features into the complete draft",
     "day2_gate": "Multi-round DFlash accept/reject/commit/stop correctness and matched full-device baseline/performance measurement",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
-    "current_target_status": "Both metadata probes and original first-prefill planpassed. ToolPID6795 exited255 onV2 format override validation after completepayloadupload; lockreleased. Omitformatflags and reuseSHA-matchedboardcache for retry; actual model loading/inference/stateaccuracy remainunverified.",
+    "current_target_status": "Actualfulloriginal40layertargetprefill load+inference succeededexit0PID8985,0cacheupload; complete82stdoutoutputindexpathsobserved,actualfilebinding/integrityandnumericsnext. Existingfull6draft remainsreadyforrealfeaturehandoffoncecapacity/anchorIDsobserved.",
     "target_gaps": [
       "Original89input80RefData ordered ABI",
       "64/1 gear and persistent state",
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Update and executeoneprefill into target-prefill64-smoke-v3;retainV2 file/weightdir andactualND descriptors withoutformat overrides. No repeatprobe/plan/compile; cachecheck reusesunchangedpayloads.",
+    "next_target_action": "Runreadonly successfulprefilloutputaudit withactualdraftmanifest/originalinputIDs; inparallel optionallyterminateonlyboundalready-stoppeddeletedoldcompiler. Thenprepareseparaterealfeaturefull-draftstep; no repeatprefill/targetdraftcompile.",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone",
     "deadline_assessment": "Both target static artifacts now compiled, improving full-execution feasibility. Two days remains a high-risk noncommitted estimate for correctness plus measured2x speed; ordinary target execution and80statehandoff are the next critical gate."
   },

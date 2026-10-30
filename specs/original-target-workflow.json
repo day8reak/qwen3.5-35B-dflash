@@ -3,9 +3,9 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "PREFILL_TOOL_FORMAT_OVERRIDE_REJECTED_CORRECTED_RETRY_PENDING",
-  "handoff": "20261030T003353Z-6432-3eefb1/handoff.md",
-  "user_state": "Both runtime metadata probes and original first-prefill planpassed. First fulltarget toolinvocation exited255 after rejecting V2 format overrides; complete compiledpayloads are cached ondevice and locks released. Corrected V2 call omitsformatflags and retainsmodelND descriptors, dtypes/file/weightdir; new-output retry next.",
+  "status": "USER_REPORTED_TARGET_PREFILL_EXECUTED_OUTPUT_BINDING_PENDING",
+  "handoff": "20261030T003719Z-6566-d802b7/handoff.md",
+  "user_state": "Original40layer targetprefillV2loadandoneinference succeeded,exit0PID8985,matchingcacheupload0; outputfilesretrieved. Explicitstdout82index/pathrowsobserved; freshfilecompleteSHA/typedextentbindingnext. Numerical/state/DFlash remainsopen.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
   "contract": {
@@ -53,7 +53,7 @@
     "Ordinary decode and multi-round DFlash stop/reject/commit behavior",
     "Matched numerical acceptance and measured end-to-end performance"
   ],
-  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/run_target_prefill_smoke.py\" --job \"$AI_RUN_DIR/target-pytorch-prefill64-tmpdirfix\" --runtime-probe \"$AI_RUN_DIR/target-prefill64-runtime-io\" --input-dir /home/w00949577/run_35B/chunksize_64_data --output \"$AI_RUN_DIR/target-prefill64-smoke-v3\" --apply",
+  "next_command": "python3 \"$REPO_DIR/targets/cpro/scripts/inspect_target_prefill_outputs.py\" --execution \"$AI_RUN_DIR/target-prefill64-smoke-v3\" --draft-bundle \"$AI_RUN_DIR/full-draft/residual-fix/bundle\" --input-dir /home/w00949577/run_35B/chunksize_64_data --output \"$AI_RUN_DIR/target-prefill64-output-inspection\"",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -79,7 +79,8 @@
       "Separate overall lock queue time from one HDC round trip. A10secondcontroltimeout can fail before any model call even when both metadata probes finish successfully; retain uncertain request identity, query actual lock state, and do not delete or replay blindly. LOCK_ABSENT permits a new lock-protected attempt without cleanup; transport latency root cause remains unresolved.",
       "Actual selected model_run_tool_internal V2 rejects explicit input_format/output_format and recommends ROMC; global help availability does not establish per-interface compatibility. V2 first-prefill now inherits observed ND model descriptors and keeps only supported evidence-backed options. A toolpreflight failure is not a model arithmetic or state failure.",
       "Successful draft embedded-stream legacy-buffer has UINT32 model extent; the18.8GBtargetweight cannot use that same current buffer path. Retain external-weight loading and do not guess SetModelPath/SetModelBuffer ordering or switch interfaces from a format error alone.",
-      "Target retry inputs are sharedhardlinks with strictctime/nlink ownerreceipts; removing a failedrun alias can invalidate successfulcontinuation while reclaiming0bytes. Decode symlink targets and every successful generatedartifact remainprotected. Storage cleanup must use observed allocation/dependency evidence, not directorynames orduattributionalone."
+      "Target retry inputs are sharedhardlinks with strictctime/nlink ownerreceipts; removing a failedrun alias can invalidate successfulcontinuation while reclaiming0bytes. Decode symlink targets and every successful generatedartifact remainprotected. Storage cleanup must use observed allocation/dependency evidence, not directorynames orduattributionalone.",
+      "Tool exit0withnonemptyretrieval establishes execution, but plan output_count82 isnot actualdatafilecount. Bind complete SHAverifiedstdoutoutput[index]paths tofilehash/typedextent beforefeatureselection; feature2MiB equalsKV2MiB, so numericfilenames/sizes alone do notestablishslotidentity."
     ],
     "executable_checks": [
       "tests/test_full_target_continuation.py",
@@ -386,7 +387,7 @@
     "next": "No repeat probe required; proceed to first-prefill host-only input plan. Exact input-name/output-producer state binding will use retained reports; no semantics inferred from names alone."
   },
   "next_first_prefill_smoke": {
-    "status": "USER_TOOL_FORMAT_REJECTED_CORRECTED_RETRY_PENDING",
+    "status": "USER_REPORTED_EXECUTED_UNVALIDATED_NO_REPEAT",
     "entrypoint": "targets/cpro/scripts/run_target_prefill_smoke.py",
     "plan_output": "target-prefill64-smoke-plan",
     "apply_output": "target-prefill64-smoke-v3",
@@ -738,5 +739,95 @@
       "stop_utility_limitation": "Existingstop_target_compile requires jobdirectory and originalcompilecommand receipt; do notfabricate receipt or assume it can stop a removedjob",
       "actions_executed": "NONE"
     }
+  },
+  "target_prefill_execution_user_report": {
+    "source": "USER_PASTED_REMOTE_EXECUTION_AND_TOOL_STDOUT_NOT_RETRIEVED_LOCALLY",
+    "execution": "target-prefill64-smoke-v3",
+    "status": "EXECUTED_UNVALIDATED",
+    "remote_exitcode": 0,
+    "tool_process_id": 8985,
+    "model_compilation": "NOT_RUN_REUSED_EXISTING_COMPILED_TARGET",
+    "cache_missing_upload_bytes": 0,
+    "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+    "planned_input_count": 89,
+    "planned_output_count": 82,
+    "actual_retrieved_output_file_count": 82,
+    "log_evidence": {
+      "V2_model_load": "SUCCEEDED",
+      "input_tensor_fill": "SUCCEEDED",
+      "requested_times": 1,
+      "execute_result": "Success",
+      "logged_output_index_path_pairs": 82,
+      "logged_output_range": "0through81",
+      "logged_output_path_pattern": "Thisactualattempt explicitlyprinted output[i]→.../outputs/output_i, not inferred fromfilenames",
+      "load_time_us": 9249359.0,
+      "infer_time_us": 438004.0,
+      "profiling_enabled": true,
+      "timing_scope": "One tool-reported invocation withprofiling; not standalone benchmark/distribution orspeedup"
+    },
+    "numerical_validation": "NOT_RUN_NO_REFERENCE",
+    "state_continuity": "NOT_VALIDATED_SINGLE_TOOL_INVOCATION",
+    "next": "Hash-check actualoutputfiles andcompleteindex/pathlogmapping; inspectfeature/logits stats, actualdraftbundlecapacity andoriginalinput_ids beforederivedrealdraftstep",
+    "scope": "Userreportedfulloriginal40layer targetload/inference success only. Planned82 count doesnotprove actualdatafilecompleteness, correctfeaturecontent/statefeedback orwholeDFlash.",
+    "reported_output_extent_counts": {
+      "65536": 30,
+      "1048576": 30,
+      "2097152": 21,
+      "993280": 1
+    },
+    "reported_output_total_bytes": 78456832,
+    "reported_feature_file": {
+      "path": "outputs/output_81",
+      "bytes": 2097152,
+      "sha256": "be3c0f2f2e76e2cb4d89ec484b0a31dfde8ed65a89ca5a2ef82ec7905370cbba",
+      "binding": "Useractualcomplete tooloutput[81]path plus recordedruntimefeatureindex; freshserverhash/statistics pending"
+    },
+    "reported_logits_file": {
+      "path": "outputs/output_0",
+      "bytes": 993280,
+      "sha256": "fd28bc57ee24097bd26a6b90ded1844599007ffea08eff087db022450aba6586"
+    },
+    "reported_tool_stdout": {
+      "bytes": 27664,
+      "sha256": "2a131fae6f381a6c500b3cb17d014431f06ba637c07b7aa43648b2518f417abe"
+    }
+  },
+  "deleted_job_cleanup_plan": {
+    "entrypoint": "targets/cpro/scripts/stop_deleted_target_compile.py",
+    "mode": "Read-onlyplanbydefault; --apply --legacy-stopped-tree explicitlyqueuesTERMthenCONT foronlyboundstoppedoldtree/driver",
+    "pid": 4906,
+    "driver_pid": 4904,
+    "job_basename": "full-target-compile-0491abfcd79b",
+    "actual_cwd_deleted": true,
+    "actual_fd_observation": "fd1/fd2 bothreference the same deletedcompile.log; retainedbytesunknown until metadatainspection",
+    "identity_binding": "ExactOMGcmodel/cwddeleted +stoppedcanonicalparent output orautogeneratedjob/runenv +start_ticks/ppid/heldprocdirs; allselectedworkersstopped. Noothermodeltasks/processgroups/files touched.",
+    "signal_race": "Explicitlegacy heldprocdirectory is notpidfd-equivalent; numericrace remainsreported, noautomaticfallback",
+    "no_claims": [
+      "NoSIGKILL/processgroups/escalation/filedeletion",
+      "STOP_REQUESTED is notexitproof orfree-spaceproof",
+      "MappingswithoutopenFDs andotherprocessholders excluded fromdeletedFDbyteobservation"
+    ],
+    "remote_execution": "NOT_RUN_BY_ASSISTANT"
+  },
+  "real_feature_draft_bridge_plan": {
+    "existing_bundle": "full-draft/residual-fix/bundle",
+    "source_contract": "Full6layer/block16/vocab248320 draft has3inputs targetfeaturesFP16[1,S,16384],inputIDsINT32[1,S],maskINT32[1,S]; embedding/headalreadyembedded",
+    "anchor_alignment": "anchor=valid_length-1; originalprefix64requireslastINPUTtoken63. Targetprefilllogitsargmaxisnexttoken64 andcannotbesubstitutedat63.",
+    "capacity_status": "Mustreadactualmanifest; sourcedefault64andoldattentionK80suggest64butnotdirectcurrentbundleproof",
+    "next_observations": [
+      "Actualboundfeaturefile/logits stats",
+      "Draftmanifestsequence_length/IO/modelrecord only",
+      "Originalinput_ids.bin256B64INT32ifpresent, hash/range/anchor"
+    ],
+    "immutability": "Do notoverwrite oldsyntheticfixture/goldens orsuccessfulbundle. Newexecution-onlystep/controllerrequired forrealfeatures; existingfull-draft compare assumes syntheticgoldens.",
+    "native_ability": "Existing --draft-step canconsume newhashbound3inputstep withsameOMC/ABI; no modelrecompile needed onceallbindings established",
+    "remaining": "Realfeaturehandoff/native draft invocation, fullstatehandoff and multiroundaccept/reject/accuracy/performance"
+  },
+  "post_prefill_host_verification": {
+    "run_id": "20261030T003719Z-6566-d802b7",
+    "tests_passed": 109,
+    "failures": 0,
+    "evidence": "out/final-host-tests.xml",
+    "scope": "New retained-output audit and deleted-job stop tests plus existing stopped-compile andprefill-execution regressions. Fakeproc/signals/filefixtures only; actualuser outputinspection/oldprocessstop notperformed byassistant."
   }
 }
