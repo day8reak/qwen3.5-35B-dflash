@@ -2,45 +2,43 @@
 
 <a id="用户现在执行什么"></a>
 
-A：原版 target prefill64、独立 decode1、真实 feature → 完整六层 draft 单步均已执行。v6 已完成文件复核：18 份元数据、100 份小型 payload、1 份主 OMC 通过重验；原 AIR 的 80 个状态归属均唯一。连续状态、精度和完整 DFlash 循环仍待验证。
+A：原版 40 层 target prefill64、独立 decode1、真实 feature → 完整六层 draft 单步均已执行。用户返回的 v7 已完成全部 80 个源状态归属、编译身份、运行时名称和实际文件绑定；rows-v4 已绑定原始 query token 269，并准备好下一 token 0 的原始 INT8 行及独立 FP32 scale。
 
-当前有两项可独立执行，先在 DDK 主机拉取更新：
+当前进入同一个 decode 模型的单次状态续接。该实验从已有绝对位置 256 推进到 257：逐份使用上一次的 80 个状态输出，接入 token 0，将 mask 的索引 257（从 0 计数）从负无穷改为 0，其余 mask 字节保留。output_pos=0、allQLen=1、effective_length=1、conv_state_pos=[1,0×127] 保留已执行的试验值。控制语义与原始历史仍未验证；这一步通过后才继续接 prefill → decode 和普通生成基线。
+
+在 DDK 主机拉取更新，然后准备新输入：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
+
+python3 "$REPO_DIR/targets/cpro/scripts/prepare_target_decode_continuation.py" \
+  --state-lineage "$AI_RUN_DIR/target-decode1-state-lineage-v7" \
+  --original-rows "$AI_RUN_DIR/target-decode1-original-rows-v4" \
+  --assumption single-query-absolute-position-plus-one \
+  --output "$AI_RUN_DIR/target-decode1-continuation-prepared"
 ```
 
-`target-decode1-row-request-v3` 已准备成功。之后的递归 chmod 改变了已记录的 `extract_rows.py` 身份；原清单未记录权限，不能靠猜权限恢复。新参数仅允许完整源码 SHA、路径、inode、大小和 mtime 一致时，对 ctime 变化进行显式重验；默认检查仍严格。现有请求、脚本、响应和旧清单均保留，不需重新提取两行。
+准备成功应返回 `SAME_MODEL_DECODE_CONTINUATION_PREPARED`、`independent_state_file_count: 80`、`continuation_token_id: 0`、`next_absolute_position: 257`。
 
-使用原请求和已取回的响应，在新目录重试导入：
+准备过程重新核对已有状态归属和原始行证据，并生成 89 个独立输入文件，其中 80 个状态逐份复制，不改变旧文件的内容或链接数。准备阶段不调用设备、不读取外置权重、不编译模型。
+
+准备通过后执行一次续跑：
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/scripts/transfer_original_decode_rows.py" import \
-  --prepared "$AI_RUN_DIR/target-decode1-row-request-v3" \
-  --response "$AI_RUN_DIR/target-decode1-row-response-v3/response.json" \
-  --revalidate-extractor-metadata \
-  --output "$AI_RUN_DIR/target-decode1-original-rows-v4"
+python3 "$REPO_DIR/targets/cpro/scripts/run_target_decode_continuation.py" \
+  --prepared "$AI_RUN_DIR/target-decode1-continuation-prepared" \
+  --output "$AI_RUN_DIR/target-decode1-continuation-run" \
+  --apply
 ```
 
-应返回 `ORIGINAL_DECODE_TRANSFERRED_ROWS_BOUND_NEXT_TOKEN_PREPARED`、`selected_source_token_id: 269`、`selected_next_token_id: 0`。`copied_extractor_revalidation_count` 记录本次脚本复核。只生成原始 INT8 行、独立 FP32 scale 和 INT32 token ID，共 2,056 字节。这不是精度通过；原 256 个 ID 继续作为 context 保留。后续若需调整传输权限，请修改单独的传输副本，保留准备目录原状。
+成功应返回 `DECODE_CONTINUATION_EXECUTED_UNVALIDATED`、`feedback_input_count: 80`、`bound_child_output_count: 82`。`state-chain.json` 保存父状态输出 → 实际续跑输入 → 子状态输出的逐文件字节链，以及 logits／feature 统计。输出仍按完整工具日志绑定，不按文件名推测。
 
-状态映射方面，v6 的阻塞来自源图 NetOutput 的 `copy_…` 边界身份与内部 producer 的 `copy…` 身份被错误合并。编译图实际保留了前者。新版本分别保留两种身份，严格按完整边界 FX 标识唯一匹配，不修改名称或按输出序号分配状态。
+执行沿用已成功的 HIAI V2 工具及全局锁。已有模型缓存逐文件核对板端 SHA，匹配后复用；缺失文件仍通过原编译清单的严格本地检查再上传。超时保留锁、PID 和日志，不自动重试。
 
-编译描述符没有显式 name；运行时输出名将按 [GE 的输出标签实现](https://github.com/Ascend/graphengine/blob/d2ab1c2819c90e61d98b5f88699bcd6b6de4423c/src/ge/graph/load/new_model_manager/davinci_model.cc#L1803)核验。这是固定版本的参考算法，所选 HIAI 内部实现尚未检查；只有全部 82 个实际标签及类型／形状与同一模型的元数据一致时才启用。`src_name/src_index` 在这里仅解释 I/O 标签，计算连接仍由 `OpDef.input` 确定。
+当前进展：
 
-在新目录检查状态归属：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_decode_state_lineage.py" \
-  --job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
-  --runtime-probe "$AI_RUN_DIR/target-decode1-runtime-io-v2" \
-  --output-inspection "$AI_RUN_DIR/target-decode1-output-inspection" \
-  --source-torchair-pb2 "$AI_RUN_DIR/target-decode1-row-response/ge_ir_by_protoc_3_19_pb2.py" \
-  --output "$AI_RUN_DIR/target-decode1-state-lineage-v7"
-```
-
-完整绑定应为 `ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED`、`counts.bound_state_files: 80`；缺少证据仍报告具体 gap。新报告保留身份来源和实际标签核验结果。这只建立同一 decode 模型内的结构映射，不执行模型，不改旧回执，也不证明状态连续性。
-
-这两项通过后，下一步是携带 80 份独立状态的连续 decode，再接逐 token verify／DFlash 循环。控制值语义、精度与 draft 长度 64 的上下文容量仍需对齐。
+- 已完成：真实 target／draft 单步执行、80 状态结构映射、原始下一 token 输入绑定。
+- 正在验证：同一 decode 模型的实验性状态续接。
+- 后续：prefill → decode、普通生成基线、任意候选 token 的原始 embedding 查表、draft 上下文容量、逐 token verify 和多轮接受／拒绝／提交，再做批量 verify、精度与性能验证。
 
 B：55 档特征 AIR 保留备份，本轮无待执行命令。

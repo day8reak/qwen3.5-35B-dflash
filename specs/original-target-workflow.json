@@ -3,9 +3,9 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "DECODE_V6_SOURCE80_OBSERVED_BOUNDARY_LABEL_FIX_HOST_VERIFIED_V7_PENDING",
-  "handoff": "20261030T060400Z-21745-c46f0d/handoff.md",
-  "user_state": "User-reported original full40layer prefill64, independent experimental decode1 and exact-real-feature full6layer draft single step executed. V6 revalidated18 metadata/100 small payloads/1 primary OMC and observed80 unique source state owners, but compiled/runtime/file state bindings remained0 due to merged boundary/producer FX namespaces. Query269 schema2 request-v3 prepared; chmod777 changed copied extractor ctime and strict import-v3 refused. New boundary/82-label protocol audit and explicit exact-source extractor metadata recovery are host verified; actual import-v4/state-v7, continuity, accuracy and full DFlash remain pending.",
+  "status": "USER_ROWS_V4_AND_ALL80_STATE_V7_PASSED_CONTINUATION_HOST_VERIFIED_AWAITING_DEVICE_STEP",
+  "handoff": "20261030T062938Z-23544-594e88/handoff.md",
+  "user_state": "Original full40layer prefill64 and independent experimental decode1 executed; real feature drove full6layer draft one step. User now reports rows-v4 exact original query269/next0 inputs prepared, and state-lineage-v7 all80 source/compiled/runtime/file identities bound. Same-model experimental continuation is being integrated; control semantics/history, prefill-to-decode continuity, numerical accuracy and full DFlash remain open.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
   "contract": {
@@ -47,13 +47,14 @@
     "board_tool_workflow": "HOST_FAKE_BOARD_TESTED; no actual user-device invocation from this assistant"
   },
   "remaining_gates": [
-    "Same-model80unique state ownership, compiled/runtime identities and individually bound output feedback",
-    "Original query269 and freshargmax next0 row extraction/import with unchanged context ID bytes",
-    "Declared control semantics and genuine continuous decode history",
-    "Complete target/draft verify, stop/reject/commit and compatible draft context capacity",
-    "Matched numerical acceptance and measured end-to-end performance"
+    "Execute same-model continuation with all80 independently bound state files and the original next-token row",
+    "Validate original control semantics and prefill-to-decode history against an ordinary generation baseline",
+    "Provide original quantized embedding/scale lookup for arbitrary draft/target candidate tokens; current imported rows cover query269 and next0 only",
+    "Resolve full-prefix draft context capacity and per-token proposal/feature alignment",
+    "Implement serial verify acceptance/rejection/commit and multiround loop, then batch verify/rollback",
+    "Close numerical acceptance and measured end-to-end performance"
   ],
-  "next_command": "Pull updates; reuse preparedrequest-v3 and returnedresponse-v3 with import --revalidate-extractor-metadata into original-rows-v4; independently run state-lineage-v7. No chmod, reprepare, reextract or model compilation required. See docs/current-status.md.",
+  "next_command": "Pull updates; prepare same-model continuation from state-lineage-v7 and original-rows-v4 with explicit single-query-absolute-position-plus-one assumption, then run that prepared plan in a new output with --apply. See docs/current-status.md.",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -119,6 +120,34 @@
         "Actual v7 metadata conforms to all82 reference-protocol names/views",
         "Returned row-response-v3 matches preparedrequest-v3",
         "Control recipe/history and continuous80-state decode remain unvalidated"
+      ]
+    },
+    "same_model_continuation": {
+      "captured": [
+        "The standalone decode planner intentionally repeats4 common states; recurrence needs a separate proof path with80 independently bound filenames.",
+        "A nested validator must pass its source stability guarantee to the outer preparation: snapshot transitive payload/graph/log identities before reading and keep them until return.",
+        "Count/shape/scalar metadata must be compared with strict JSON types; False cannot substitute for index0.",
+        "Owned board cache SHA can establish reuse directly from the bound compiler manifest without opening local cached weights; only SEND uses strict local artifact validation. Cache symlinks must fail before writes.",
+        "A newly owned preparation manifest needs a failure path after final stability checks; shared exclusive-create output helpers cannot reopen an already-written READY receipt."
+      ],
+      "executable_checks": [
+        "Read-only whole-lineage validator with current identities and immutable old receipts",
+        "89 independently owned input identity/read-size/ABI guards and exact-byte source proofs",
+        "Transitive active source snapshots plus final safe-path checks",
+        "Actual generated cache shell tests and complete80 input/output byte-chain checks"
+      ],
+      "skill_changes": "NONE_EXISTING_LIFECYCLE_AND_ACTIVE_IDENTITY_RULES_APPLY; MODEL_SPECIFIC_EXECUTABLE_CHECKS_STRENGTHENED",
+      "rejected_promotions": [
+        "Treating a mechanically executed byte chain as validated control/history semantics",
+        "Treating all-finite logits/features as accuracy",
+        "Reusing prefill/decode state labels across separate models without a mapping",
+        "Adding a large-weight ctime exception"
+      ],
+      "remaining_hypotheses": [
+        "Actual device accepts the prepared absolute-position-plus-one control experiment",
+        "Original control semantics and prefill-to-decode history",
+        "Arbitrary candidate original embedding lookup and larger draft context capacity",
+        "Multi-round serial verify before batch verify and accuracy/performance closure"
       ]
     }
   },
@@ -1227,7 +1256,7 @@
     "actual_output_file_count": 82
   },
   "next_decode_audits": {
-    "status": "USER_DECODE_OUTPUTS_BOUND_QUERY_ROW269_LOCATED_STATE_MAPPING_PENDING",
+    "status": "USER_ALL80_STATE_V7_AND_ORIGINAL_ROWS_V4_PASSED",
     "output_inventory": {
       "entrypoint": "targets/cpro/scripts/inspect_target_decode_outputs.py",
       "execution": "target-decode1-smoke-trial",
@@ -1246,7 +1275,7 @@
       "feedback_ready": false,
       "state_feedback": "NOT_RUN",
       "scope": "Same compiled decode model only; separate prefill/decode RefData labels are not assumed common layer identity.",
-      "status": "ACTUAL_V6_SOURCE80_UNIQUE_BOUNDARY_FX_FIX_AND_RUNTIME_LABEL_PROTOCOL_HOST_VERIFIED_V7_PENDING",
+      "status": "USER_REPORTED_ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED",
       "metadata_json_maximum_bytes": 33554432,
       "source_pb2_flag": "--source-torchair-pb2"
     },
@@ -1261,7 +1290,7 @@
       "logical_history": "UNVERIFIED",
       "runtime_control_recipe": "UNVERIFIED",
       "state_continuity": "NOT_VALIDATED",
-      "status": "QUERY269_EXACT_ROW_LOCATED_VERSION2_TRANSFER_HOST_IMPLEMENTED",
+      "status": "USER_REPORTED_TRANSFERRED_ORIGINAL_QUERY269_AND_NEXT0_BOUND",
       "candidate_flag": "--match-source-id-candidates",
       "maximum_candidate_ids": 1024,
       "maximum_candidate_table_read_bytes": 2103300,
@@ -1433,7 +1462,7 @@
     "actual_full_state_mapping": "PENDING_USER_ARTIFACT_AUDIT"
   },
   "original_decode_row_transfer": {
-    "status": "ACTUAL_SCHEMA2_QUERY269_REQUEST_V3_PREPARED_STRICT_IMPORT_REFUSED_AFTER_CHMOD_EXPLICIT_RECOVERY_HOST_VERIFIED",
+    "status": "USER_REPORTED_ROWS_V4_BOUND_NEXT_TOKEN_PREPARED",
     "entrypoint": "targets/cpro/scripts/transfer_original_decode_rows.py",
     "subcommands": [
       "prepare",
@@ -1824,7 +1853,7 @@
     "selected_vendor_runtime_implementation": "NOT_INSPECTED_REFERENCE_ALGORITHM_REQUIRES_FULL_ACTUAL_CONFORMANCE",
     "src_metadata_scope": "IO labels only; authoritative graph connectivity remains OpDef.input; no state owner inference from label number, shape or source producer spelling.",
     "diagnostics": "Bounded512KiB source/compiled provenance and retained aliases only; no origin/nested graph fallback.",
-    "actual_v7_result": "PENDING_USER_EXECUTION"
+    "actual_v7_result": "USER_REPORTED_ALL80_SOURCE_COMPILED_RUNTIME_AND_FILE_BINDINGS_OBSERVED"
   },
   "original_decode_request_v3_user_report": {
     "status": "ORIGINAL_DECODE_ROW_TRANSFER_PREPARED",
@@ -1862,5 +1891,157 @@
     "scope": "Host fixtures: actual-style80 boundary/producer FX namespace differences, permuted compiled ports/native order,82-label and typed-view global guards, override branches, wrong/missing/duplicate evidence refusal including raw boundary/producer FX duplicates on conflicted non-state outputs, all80 distinct output file bindings; wholepreparedtreechmod777 recovery, source/response/path/inode/mtime/SHA and active-change refusal. No actual device calls, weight reads/copies/compilation, continuity or numerical acceptance.",
     "unique_cases_passed": 143,
     "final_summary": "out/final-host-verification.json"
+  },
+  "decode_state_lineage_v7_user_report": {
+    "status": "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED",
+    "stage": "complete",
+    "output": "target-decode1-state-lineage-v7",
+    "same_model_state_mapping": "ALL80_SAME_MODEL_STATE_FILES_BOUND",
+    "counts": {
+      "source_owners": 80,
+      "unique_source_owners": 80,
+      "compiled_identity_matches": 80,
+      "runtime_name_matches": 80,
+      "bound_state_files": 80
+    },
+    "nonblocking_gaps": [
+      {
+        "reason": "SOURCE_PRODUCER_SHAPE_UNMATERIALIZED",
+        "count": 80,
+        "blocks_state_mapping": false
+      }
+    ],
+    "revalidated_artifact_counts": {
+      "metadata": 18,
+      "payload": 100,
+      "primary_omc": 1
+    },
+    "state_feedback": "NOT_RUN",
+    "feedback_ready": false,
+    "state_continuity": "NOT_VALIDATED",
+    "numerical_validation": "NOT_RUN",
+    "device_execution": "NOT_RUN"
+  },
+  "original_decode_rows_v4_user_report": {
+    "status": "ORIGINAL_DECODE_TRANSFERRED_ROWS_BOUND_NEXT_TOKEN_PREPARED",
+    "output": "target-decode1-original-rows-v4",
+    "schema_version": 2,
+    "selected_source_token_id": 269,
+    "selected_next_token_id": 0,
+    "context_id_count": 256,
+    "request_sha256": "ecafe74c81a259a8020f674b7dd7aae5b286a7987e0d02a2c4479d33fc67b6ed",
+    "matching_source_positions": [],
+    "uniqueness_scope": "EXPLICIT_QUERY_ID_ONLY_BYTE_VALIDATED",
+    "next_token_inputs": [
+      {
+        "file": "inputs_embeds.bin",
+        "bytes": 2048,
+        "dtype": "INT8",
+        "sha256": "1e3a2888b60db287caacaca0e64dae11d3fd30a88ea11566da14e0d3d02c2db6"
+      },
+      {
+        "file": "embed_scale.bin",
+        "bytes": 4,
+        "dtype": "FLOAT32",
+        "sha256": "10af3287489bf17fcd5bc1b751ea11783b82b9e80d0ed0d0f35b98dac9519926"
+      },
+      {
+        "file": "input_ids.bin",
+        "bytes": 4,
+        "dtype": "INT32",
+        "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119"
+      }
+    ],
+    "copied_extractor_revalidation_count": 1,
+    "numerical_validation": "NOT_RUN_NO_REFERENCE",
+    "logical_history": "UNVERIFIED"
+  },
+  "same_model_decode_continuation": {
+    "status": "HOST_VERIFIED_ACTUAL_CONTINUATION_NOT_RUN",
+    "prepare_entrypoint": "targets/cpro/scripts/prepare_target_decode_continuation.py",
+    "execute_entrypoint": "targets/cpro/scripts/run_target_decode_continuation.py",
+    "state_lineage": "target-decode1-state-lineage-v7",
+    "original_rows": "target-decode1-original-rows-v4",
+    "prepared_output": "target-decode1-continuation-prepared",
+    "execution_output": "target-decode1-continuation-run",
+    "assumption": "single-query-absolute-position-plus-one",
+    "inputs": "89 independent owned regular files,80 individually mapped parent state copies and9 original-row/control inputs; no hardlinks or common-state substitution",
+    "controls": {
+      "old_absolute_position": 256,
+      "next_absolute_position": 257,
+      "mask_old_visible_prefix": 257,
+      "mask_next_visible_prefix": 258,
+      "mask_change": "Only FP32 mask index257 changes from negative infinity to positive zero; all other bytes unchanged",
+      "preserved_experimental_controls": {
+        "output_pos": 0,
+        "allQLen": 1,
+        "effective_length": 1,
+        "conv_state_pos": "[1,0x127]"
+      }
+    },
+    "board_path": "Existing V2 direct_from_file/weight_dir with explicit runtime types and one tool invocation; same phone-global and model-cache locks",
+    "cache_policy": "Continuation-only: original compiler inventory plus actual owned remote SHA proves cache hits without local nonprimary reads; SEND requires original strict local stat/fullSHA. No large-weight ctime exception.",
+    "execution_success_status": "DECODE_CONTINUATION_EXECUTED_UNVALIDATED",
+    "chain_success_status": "ALL80_PARENT_OUTPUT_BYTES_USED_BY_CHILD_INPUTS",
+    "scope": "One same-model experimental state byte chain at absolute pos256->257; not prefill64 continuation, validated kernel-control contract, accuracy, complete generation or DFlash acceptance.",
+    "source_mask_sha256": "f78f2ebfe546d086519b913b02b59c5f529811c76253541bdb1d43505cc52f8f",
+    "next_mask_sha256": "beb599c43abb9b3a86a9713787f2b65bda66b1802416c31ae5cbcfaf49433cd5",
+    "mask_recipe_scope": "Exact constructed source-mask hash matches user-reported original bytes; kernel-control semantics remain experimental.",
+    "prepare_success_status": "SAME_MODEL_DECODE_CONTINUATION_PREPARED",
+    "read_only_validation": "Fresh source/compiled/runtime/file lineage, exact original request/response/source/copy identities and fresh greedy token; all transitive inputs/82outputs/4logs/smallgraph metadata baselined before nested validation and checked strictly through the full call. Prepared89 full9 identities/nlink1/inodes exact; bounded frozen ABI checked before payload reads. Historical ctime uses only existing purpose-scoped fresh SHA rules.",
+    "failure_receipt": "New manifest exclusively created and held by current preparation; final stability failure records FAILED through the same owned descriptor. Existing receipts are never reopened for overwrite."
+  },
+  "continuation_host_verification": {
+    "run_id": "20261030T062938Z-23544-594e88",
+    "unique_cases_passed": 362,
+    "final_case_statuses": "ALL_PASS",
+    "summary": "out/final-host-verification.json",
+    "suites": [
+      {
+        "artifact": "lineage-validation-junit.xml",
+        "cases": 189,
+        "sha256": "805824c453b7347eee8fff012288f6d59cdb0ce4651fcf225a6018e06399205b"
+      },
+      {
+        "artifact": "lineage-validation-types-junit.xml",
+        "cases": 1,
+        "sha256": "a230b95391e2137462ba27495153f89e2e951c9cffa09498300b5de35ff18d32"
+      },
+      {
+        "artifact": "out/board-regression.xml",
+        "cases": 80,
+        "sha256": "dffda96fb21ca1712c9f12d26c4e2046572b1a0fccd2a3900c4a544b7b7e0904"
+      },
+      {
+        "artifact": "out/continuation-board-shell-tests.xml",
+        "cases": 28,
+        "sha256": "a9d4afe0c0370ede3cd32ad4a82048e5ff3d0c7fa663c253429c132284fea380"
+      },
+      {
+        "artifact": "out/continuation-run-tests.xml",
+        "cases": 29,
+        "sha256": "8d9fc8338705d7d0a0bca0658b9aab37dad60fcecf8bd8ba82de1291548576af"
+      },
+      {
+        "artifact": "out/continuation-final.xml",
+        "cases": 35,
+        "sha256": "860a01955623aac36dca88c74a42a6cf62d9605bd7c3cd2cb164c8a8095948b1"
+      },
+      {
+        "artifact": "out/continuation-tail.xml",
+        "cases": 2,
+        "sha256": "4b5df7d81afd9c14495948f0165c759b1aa474d44d8b353c29309f77fc25bf9d"
+      }
+    ],
+    "prepare_case_coverage": "35 unique cases; final full run had34 passes and one assertion-message mismatch after correct production refusal; corrected assertion and reran that negative plus full host positive, both passed. Production source unchanged.",
+    "independent_review": "PASSED",
+    "coverage": [
+      "Actual-style host request/extract/import with copied-script recovery, real output inventory and source/compiled/runtime lineage through89 independent input prepare/read-only validate; only tiny synthetic protobuf decoding is substituted",
+      "All80 unique state markers at correct HDC input slots; complete V2 arguments, cache/SEND, input proof changes and uncertain lock policies",
+      "Generated production POSIX cache scripts executed locally: real SHA hit and owner reuse; payload parent/file/manifest/owner symlinks reject without touching targets",
+      "All82 explicit output log bindings and hashes; real logits/feature numerical statistics;80 parent-output/executed-input/child-output byte chains and final file/log stability",
+      "No-write old V7 report validation, fixed source schema/copy selection, changed owner/FX/name/file/ABI/scalar-type rejection, pre-read active source baselines and purpose-scoped historical ctime handling"
+    ],
+    "scope": "Host fixtures only; no actual continuation/device call, true model execution, real weight read/copy, numerical correctness or full DFlash acceptance."
   }
 }

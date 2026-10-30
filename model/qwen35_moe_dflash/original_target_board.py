@@ -189,7 +189,8 @@ def _hash_lines(text, root):
 def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, gear=64,
                         input_dir=None, host_input_dir=None, tool="/data/local/tmp/tools_sysdbg/model_run_tool_internal",
                         board_model_root="/data/local/tmp/qwen3_5_moe", timeout_seconds=7200, target_features=False,
-                        runtime_prefill_probe=None, runtime_decode_probe=None, lock_wait_seconds=1800):
+                        runtime_prefill_probe=None, runtime_decode_probe=None, lock_wait_seconds=1800,
+                        runtime_continuation_prepared=None):
     root, out = Path(compilation_dir).resolve(), output_path(output_dir)
     out.mkdir(parents=True, exist_ok=False)
     result = {"schema_version": 1, "artifact_kind": "qwen35-original-target-tool-execution",
@@ -202,7 +203,8 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
     hdc = None
     attempt = None
     attempted = False
-    decode_smoke = runtime_decode_probe is not None
+    continuation = runtime_continuation_prepared is not None
+    decode_smoke = runtime_decode_probe is not None or continuation
     smoke = runtime_prefill_probe is not None or decode_smoke
     smoke_proof = None
     validate_smoke_plan = None
@@ -221,8 +223,9 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             raise ValueError("retrieved output SHA256 mismatch: " + str(remote))
         result["retrieved"][local.relative_to(out).as_posix()] = {"sha256": digest, "bytes": local.stat().st_size}
     try:
-        if runtime_prefill_probe is not None and runtime_decode_probe is not None:
-            raise ValueError("runtime prefill and decode proofs are mutually exclusive")
+        if sum(value is not None for value in
+                (runtime_prefill_probe, runtime_decode_probe, runtime_continuation_prepared)) > 1:
+            raise ValueError("runtime prefill, decode and continuation proofs are mutually exclusive")
         compiled = read_metadata(root / "report.json")
         contract = read_metadata(contract_path)
         if (compiled.get("artifact_kind") != "qwen35-existing-air-compilation" or compiled.get("platform") != "kirinx90"
@@ -240,7 +243,15 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         attempt = cache / ("run-" + uuid.uuid4().hex)
         if smoke:
             from .existing_air_profile import get_existing_air_profile
-            if decode_smoke:
+            if continuation:
+                from .target_decode_continuation import validate_decode_continuation
+                smoke_proof = validate_decode_continuation(runtime_continuation_prepared)
+                def validate_smoke_plan(saved):
+                    if validate_decode_continuation(runtime_continuation_prepared) != saved:
+                        raise ValueError("continuation evidence changed during the current board invocation")
+                expected_gear, flavor, runtime_probe = 1, "continuation", smoke_proof["runtime_probe"]
+                expected_profile = "cpro-40block-decode-1"
+            elif decode_smoke:
                 from .target_decode_smoke_plan import (prepare_decode_smoke_plan as prepare_smoke_plan,
                                                        validate_decode_smoke_plan as validate_smoke_plan)
                 expected_gear, flavor, runtime_probe = 1, "decode", runtime_decode_probe
@@ -255,7 +266,19 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                     or type(lock_wait_seconds) is not int or not 0 <= lock_wait_seconds <= 7200
                     or type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 7200):
                 raise ValueError(f"runtime {flavor} proof requires original host inputs, complete features and frozen static{expected_gear} only")
-            smoke_proof = prepare_smoke_plan(root, runtime_probe, host_input_dir)
+            if not continuation:
+                smoke_proof = prepare_smoke_plan(root, runtime_probe, host_input_dir)
+            elif (smoke_proof.get("compilation") != str(root)
+                    or smoke_proof.get("input_dir") != str(Path(host_input_dir).resolve())
+                    or smoke_proof.get("compilation_report_sha256") != digest
+                    or len(smoke_proof.get("inputs", [])) != 89
+                    or len(smoke_proof.get("outputs", [])) != 82
+                    or len({row.get("source_filename") for row in smoke_proof["inputs"]}) != 89
+                    or any(not isinstance(row.get("source_filename"), str)
+                        or re.fullmatch(r"[A-Za-z0-9_]+\.bin", row["source_filename"]) is None
+                        or row.get("source") != str(Path(host_input_dir).resolve() / row["source_filename"])
+                        for row in smoke_proof["inputs"])):
+                raise ValueError("continuation requires89 distinct owned source files and this exact compiled decode model")
             validate_smoke_plan(smoke_proof)
             binding = smoke_proof.get("tool_binding", {})
             if str(tool) != binding.get("path"):
@@ -269,6 +292,12 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             result["runtime_decode_probe" if decode_smoke else "runtime_prefill_probe"] = str(Path(runtime_probe).resolve())
             if decode_smoke:
                 result.update(source_semantics="UNVERIFIED_USER_INPUTS", prefill_state_feedback="NOT_RUN")
+            if continuation:
+                result.update(execution_scope=smoke_proof["execution_scope"],
+                    state_input_layer_identity="ALL80_SAME_MODEL_STATE_FILES_BOUND",
+                    state_output_layer_identity="SAME_COMPILED_MODEL_OUTPUT_ABI",
+                    source_semantics="PROVEN_ORIGINAL_ROW_AND_BOUND_PARENT_STATES_EXPERIMENTAL_CONTROLS",
+                    runtime_continuation_prepared=str(Path(runtime_continuation_prepared).resolve()))
             save_json(out / f"runtime-{flavor}-proof.json", smoke_proof)
         else:
             plan = tool_plan(contract, profile, gear, str(attempt / "source-inputs") if host_input_dir else input_dir,
@@ -319,10 +348,11 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         qcache = shlex.quote(str(cache))
         owner = shlex.quote(str(cache / ".compilation-sha256"))
         if smoke:
+            owner_guard = " && test ! -L " + owner if continuation else ""
             own = ("mkdir -p " + shlex.quote(str(board_root)) + " && if mkdir " + qcache
                 + "; then printf '%s\\n' " + shlex.quote(digest) + " > " + owner
                 + "; else test -d " + qcache + " && test ! -L " + qcache
-                + " && read -r target_cache_owner < " + owner + " && test \"$target_cache_owner\" = " + shlex.quote(digest) + "; fi")
+                + owner_guard + " && read -r target_cache_owner < " + owner + " && test \"$target_cache_owner\" = " + shlex.quote(digest) + "; fi")
         else:
             own = ("mkdir -p " + shlex.quote(str(board_root)) + " && if mkdir " + qcache + "; then printf '%s\\n' " + shlex.quote(digest) + " > " + owner
                 + "; else test -d " + qcache + " && test \"$(cat " + owner + ")\" = " + shlex.quote(digest) + "; fi")
@@ -333,21 +363,52 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             cache_held, uncertain = True, False
         uploads = []
         for row in compiled.get("generated_artifacts", []):
-            path = _recorded_board_payload(root, row, compiled, smoke_proof=smoke_proof,
-                primary_revalidations=result["primary_revalidations"])
+            if continuation and row != compiled.get("omc"):
+                # Cache hits are proved by the owned board cache's actual SHA,
+                # not by historical local permissions/timestamps. A cache miss
+                # still requires the original strict local artifact validator.
+                if (not isinstance(row, dict) or type(row.get("bytes")) is not int or row["bytes"] < 0
+                        or not re.fullmatch(r"[0-9a-f]{64}", str(row.get("sha256", "")))
+                        or not isinstance(row.get("path"), str)
+                        or not row["path"].startswith("compile-work/generated/")
+                        or any(part in {"", ".", ".."} for part in row["path"].split("/"))):
+                    raise ValueError("invalid continuation cached payload declaration")
+                path = None
+            else:
+                path = _recorded_board_payload(root, row, compiled, smoke_proof=smoke_proof,
+                    primary_revalidations=result["primary_revalidations"])
             relative = PurePosixPath(row["path"]).relative_to("compile-work/generated")
             remote = cache / "payload" / relative
             _board_path(str(remote))
             uploads.append((row, path, remote))
-        if not uploads or len(uploads) > 8192:
+        if (not uploads or len(uploads) > 8192 or len({str(remote) for _, _, remote in uploads}) != len(uploads)
+                or continuation and sum(row == compiled.get("omc") for row, _, _ in uploads) != 1):
             raise ValueError("target generated payload inventory is missing or excessive")
-        hdc.shell("mkdir -p " + " ".join(shlex.quote(str(p)) for p in sorted({r.parent for _, _, r in uploads})), "model-directories")
+        if continuation:
+            directories = set()
+            for _, _, remote in uploads:
+                parent = remote.parent
+                while parent != cache:
+                    directories.add(parent)
+                    parent = parent.parent
+            # Never follow an existing cache symlink when checking or sending
+            # payloads. Descendants are created one level at a time.
+            commands = []
+            for parent in sorted(directories, key=lambda value: (len(value.parts), str(value))):
+                quoted = shlex.quote(str(parent))
+                commands.append("test ! -L " + quoted + " && if test -e " + quoted
+                    + "; then test -d " + quoted + "; else mkdir " + quoted + "; fi")
+            commands.append("test ! -L " + shlex.quote(str(cache / "model-files.tsv")))
+            hdc.shell(" && ".join(commands), "model-directories")
+        else:
+            hdc.shell("mkdir -p " + " ".join(shlex.quote(str(p)) for p in sorted({r.parent for _, _, r in uploads})), "model-directories")
         manifest = out / "model-files.tsv"
         manifest.write_text("".join(row["sha256"] + " " + str(remote) + "\n" for row, _, remote in uploads))
         hdc.send(manifest, cache / "model-files.tsv")
         if smoke:
             print("target-board: checking cached payload SHA256; matching files will be reused", flush=True)
-        _, text = hdc.shell("while read -r expected path; do if test -f \"$path\" && test \"$(sha256sum \"$path\" | cut -d ' ' -f 1)\" = \"$expected\"; then printf 'OK %s\\n' \"$path\"; else printf 'SEND %s\\n' \"$path\"; fi; done < "
+        cache_guard = "test ! -L \"$path\" || exit 1; " if continuation else ""
+        _, text = hdc.shell("while read -r expected path; do " + cache_guard + "if test -f \"$path\" && test \"$(sha256sum \"$path\" | cut -d ' ' -f 1)\" = \"$expected\"; then printf 'OK %s\\n' \"$path\"; else printf 'SEND %s\\n' \"$path\"; fi; done < "
                             + shlex.quote(str(cache / "model-files.tsv")), "inspect-model-cache")
         decisions = {}
         for line in text.splitlines():
@@ -379,6 +440,9 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             validate_smoke_plan(smoke_proof)
         for row, local, remote in uploads:
             if decisions[str(remote)] == "SEND":
+                if local is None:
+                    local = _recorded_board_payload(root, row, compiled, smoke_proof=smoke_proof,
+                        primary_revalidations=result["primary_revalidations"])
                 print("target-board: uploading " + remote.name + " (" + str(row["bytes"]) + " bytes)", flush=True)
                 if smoke:
                     uncertain = True
@@ -390,6 +454,9 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                     uncertain = False
         result["model_payloads"] = [{"path": str(remote), "sha256": row["sha256"], "bytes": row["bytes"],
                                      "upload": decisions[str(remote)]} for row, _, remote in uploads]
+        if continuation:
+            result["model_cache_validation"] = "BOUND_COMPILER_SHA_MATCHED_ON_OWNED_BOARD_CACHE; SEND_REQUIRES_STRICT_LOCAL_VALIDATION"
+            result["local_cached_payload_access"] = "NONPRIMARY_CACHE_HITS_NOT_OPENED; REMOTE_SHA_MATCHED"
         result["stage"] = "input-snapshot"
         if smoke:
             uncertain = True
@@ -525,6 +592,8 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                 validate_smoke_plan(smoke_proof)
                 result["source_preservation"] = ("UNCHANGED_DECODE_PLAN_METADATA_AND_USER_INPUT_SHA256" if decode_smoke
                                                   else "UNCHANGED_PREFILL_PLAN_METADATA_AND_ORIGINAL_INPUT_SHA256")
+                if continuation:
+                    result["source_preservation"] = "UNCHANGED_CONTINUATION_PROOF_AND_ALL89_PREPARED_INPUT_SHA256"
             except Exception as error:
                 result.update(status="FAILED", source_preservation="FAILED", source_error=f"{type(error).__name__}: {error}")
         if smoke and global_held and not uncertain and (not attempted or exit_known):

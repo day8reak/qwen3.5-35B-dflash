@@ -21,6 +21,8 @@ ROLES = {
     "row-transfer-request-metadata": "request.json",
     "row-transfer-response-metadata": "response.json",
     "row-transfer-prepared-manifest-metadata": "manifest.json",
+    "decode-state-lineage-metadata": "input-inventory.json",
+    "decode-continuation-source-metadata": "report.json",
 }
 
 

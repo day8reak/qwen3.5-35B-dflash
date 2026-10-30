@@ -28,6 +28,8 @@ _ROLE_NAMES = {
     "row-transfer-request-metadata": frozenset({"request.json"}),
     "row-transfer-response-metadata": frozenset({"response.json"}),
     "row-transfer-prepared-manifest-metadata": frozenset({"manifest.json"}),
+    "decode-state-lineage-metadata": _PROBE_NAMES | _EXECUTION_NAMES | {"manifest.json", "input-inventory.json", "decode-input-view.json"},
+    "decode-continuation-source-metadata": frozenset({"report.json", "plan.json", "manifest.json"}),
 }
 
 
