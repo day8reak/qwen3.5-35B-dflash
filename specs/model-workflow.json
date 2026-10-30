@@ -2,8 +2,8 @@
   "schema_version": 1,
   "updated": "2026-10-30",
   "active_phase": "integration",
-  "delivery_status": "DECODE_EVIDENCE_CTIME_REPLAY_HOST_VERIFIED_V6_PENDING",
-  "run_id": "20261030T042950Z-19586-63014b",
+  "delivery_status": "SHORT_PROMPT_EXISTING_MODELS_SERIAL_DFLASH_LOOP_PRIORITIZED",
+  "run_id": "20261030T075543Z-2197-119a93",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -2248,7 +2248,7 @@
         "location": "original_weight_machine",
         "entrypoint": "targets/cpro/scripts/prepare_target_pytorch.py",
         "directory": "target-pytorch",
-        "status": "USER_ORIGINAL_TABLE_TRANSFER_INCOMPLETE_ROW63_TRIAL_READY_INCREMENTAL_DRAFT_REFERENCE_SELECTED",
+        "status": "SHORT_PROMPT_EXISTING_MODELS_SERIAL_DFLASH_LOOP_PRIORITIZED",
         "tests": 14,
         "next": "Run existing run_target_prefill_smoke.py once against prepared row63trial/inputs into fresh target-prefill64-last-row63-smoke, inparallelwithcompletingoriginalembeddingtabletransfer. Comparecompletefile sizes/SHA then rowcheck-v2; no validatedgenerationbaselineuntilrowsmatch. Do not rerun trialpreparation. S128wholeprefixexportdeferred; pinned4Bincrementaldraftdesignprioritized. ExistinghostpacketcanlatercollectnewparameterFQNsourceownersinnewoutput.",
         "user_report": {
@@ -4072,15 +4072,13 @@
           "host_graph_tests_passed": 122,
           "actual_mapping": "PENDING_V4_USER_RUN"
         },
-        "next_command": "Run existing run_target_prefill_smoke.py once against prepared row63trial/inputs into fresh target-prefill64-last-row63-smoke, inparallelwithcompletingoriginalembeddingtabletransfer. Comparecompletefile sizes/SHA then rowcheck-v2; no validatedgenerationbaselineuntilrowsmatch. Do not rerun trialpreparation. S128wholeprefixexportdeferred; pinned4Bincrementaldraftdesignprioritized. ExistinghostpacketcanlatercollectnewparameterFQNsourceownersinnewoutput.",
-        "user_state": "Actualpath-v2has89input/82outputfilebinding,no failedchecks,30genericcontextcandidates and50depthlimitedroles. UniqueIndexByTensor_40directlyconsumesoutputpos64; sourcePythonlastrow63experiment14fileshaspreparedsuccess. Useroriginalembeddingcheckstoppedbeforepayloadreadbecausecurrentweightfileonly786432Bvsexpected508559360B; awaittransfercompletionandsize/SHAchecks. Userasksimmediatepushofcompletedworkandparallelruns. Row63single-variableprefillexperimentcanrunwhiletablestransfer,withcorrect-generationbaselineacceptancedeferreduntilrowcheckpasses. Userprovided4Bincrementalreference90186732reviewed: C16/C64deltafeatures+12KV+absoluteoffsets,notwholeprefixS128. S128exporttoolremainsoptional/deferred; nextdraftimplementationprioritizesnew35BsixlayercachedABI. Sourceparameterownercontracthost72testspassedbutactualresult/runtimebindingpending.",
+        "next_command": "docs/current-status.md: one run_serial_dflash_smoke.py --apply command; fresh output, no obligatory intermediate audit commands",
+        "user_state": "User prioritizes complete real DFlash multi-round execution today, defers accuracy and new model compilation. Original embedding tables reported copied completely. Row63 prefill PID28669 retrieved82 outputs, feature hash unchanged, logits argmax6. First loop uses original decode1 fromzero80states for a NEW8token prompt and8 generated tokens, existing full six-layer S64 draft, complete feature/token history, serial verify first2of15 candidates per round. This avoids the64prompt+next-anchor65 capacity limit and cross-export prefill-state mapping for this milestone.",
         "remaining_gates": [
-          "Bind original prefill64 outputs to decode1 owners and actual logit selection; validate prefix embedding/control/history and establish ordinary generation baseline",
-          "Supply runtime lookup for arbitrary original INT8 embedding rows and separate FP32 scales; current imported query269/next0 receipt is insufficient for dynamic generation",
-          "Implement and validate actual35BsixlayerincrementalDraft: C16/C64deltafeatures+absolutepositions+12KV, explicittotalhistorycapacity, correctexclude-current-anchor alignment; existingS64prefix-recompute artifact preserved as rollback",
-          "Integrate full6layer draft with original89input/82output decode1 backend and serial compare-before-advance acceptance/correction/bonus/state commit",
-          "Execute multiple complete rounds including rejection then continuation and compare every committed token/state with ordinary baseline",
-          "Close numerical acceptance, then batch verify/rollback and measured end-to-end performance"
+          "Execute unchanged complete-model short-prompt serial DFlash loop with at least2 actual draft invocations",
+          "Review actual accepted/rejected/bonus and full80state committed-token chain; zero acceptance is permitted for this milestone",
+          "Then establish accurate ordinary baseline and original prefill64-to-decode1 bridge",
+          "Only then optimize incremental draft/cache, block verify/rollback, resident runtime and measure performance"
         ],
         "query269_and_ctime_host_verification": {
           "run_id": "20261030T030850Z-16489-cfe0d0",
@@ -4636,16 +4634,16 @@
         "serial_decode1_dflash_plan": {
           "source": "USER_EXPLICIT_2026_10_30_DECODE1_MULTIROUND_VERIFY_FIRST",
           "status": "TARGET_NEXT_ANCHOR_SCHEDULER_HOST_VERIFIED_ORIGINAL_DEVICE_ADAPTER_OPEN",
-          "priority": "Complete functional serial verify before batch verify or acceleration claims",
-          "first_anchor": "Commit validprefillnextatposition64andadvanceitthroughdecode1; hostTargetObservationcontains65feature rows. CachedDraftadapter appends onlypromptrows0..63beforeanchor; laterappendoldanchor+acceptedfeaturedeltafromcachecursoruptobutexcludingcurrentcorrection/bonusanchor. Explicitabsolutepositions/proposalcountand12KV buffersreplacewholeprefixgraphinputs; full sixlayersandweightsretained.",
+          "priority": "User urgent existing-model functional loop first; numerical accuracy and new-model compilation deferred",
+          "first_anchor": "Newshortprompt8ingestedsequentiallybydecode1from80zeros; commit target-nextat8thenadvance, draft receives9rowswithcompletehistory and excludes anchorfeature. Subsequentprefix<=16fitsoldS64. No cropping or positionalrebase.",
           "verify": "Compare each draft candidate against current target.next BEFORE any advance. Advance only an accepted candidate or the target correction at first mismatch. Never feed rejected candidates; on full considered-block acceptance append and advance the current target prediction as bonus unless EOS/length stops.",
           "state_commit": "Every committed token including anchor/correction/bonus/final token enters target state and appends exactly its own feature row. Check EOS and token budget at every commit; evidence binds complete prefix, state hash chain and immutable older feature rows.",
-          "runtime_gap": "Existing generic prefix-recompute target Top1[S] executor is not the original stateful89input/single-logit target ABI. The current standalone continuation preparer is not a general multiround backend.",
-          "embedding_lookup_gap": "Two original tables total509552640bytes (about486MiB); local original-table lookup or equivalent bounded row service is needed for dynamic token IDs. Existing request/query-token-id flow only binds an already-executed query and its observed next token.",
+          "runtime_gap": "New original target and existing draft backend adapters integrate89/82 same-model feedback and3/2 S64draft; actual complete device run pending",
+          "embedding_lookup_gap": "User reports full original INT8/FP32 tables copied; loop validatesfixedextent and performs exactdynamicrowlookup",
           "three_integration_gates": [
-            "Real prefill-to-decode ordinary baseline",
-            "One complete draft-to-serial-verify round",
-            "Multiple rounds including rejection-followed-by-continuation and ordinary comparison"
+            "One command host preflight",
+            "Actual short-prompt full-model serial DFlash multi-round loop",
+            "Then numerical ordinary baseline and performance work"
           ],
           "completion_claim": "NOT_EXECUTED_FULL_DFLASH; no guaranteed calendar completion and no acceleration claim from serial verification",
           "scheduler_entrypoint": "model/qwen35_moe_dflash/incremental_smoke.py:run_incremental_smoke(target_next_anchor=True)",
@@ -4670,7 +4668,7 @@
           },
           "capacity_policy": "Current3input draft ABI recomputes complete prefix and derives positions from absolute prefix length; keep full history and RoPE positions. No truncation/rebase, no changing ids63 to the target next token, no manifest-only capacity relabel.",
           "available_actual_artifacts": "TargetS64/targetS1 and full6layer draftS64 executed; no proven reusableS128 draft OMC. S128 source/meta/config is not a compiled model.",
-          "next": "Defaultnowadoptscachedincremental35BDraftABIfrompinned4Bsource; totalKVcapacityexplicit, C16/C64contextdeltagears separate. FullprefixS128toolisoptionalcomparisonnotmandatoryDFlashstep.",
+          "next": "Use explicitnewshortprompt8 +generation8 with originalS64 artifact. Cachedincremental and S128are deferred, not execution prerequisites.",
           "reference_scope": "Locked generic author DFlash scheduling source supports target-next anchor alignment; it is not checkpoint-specific numerical or vendor-runtime validation."
         },
         "prefill_decode_serial_alignment_experience_audit": {
@@ -5178,6 +5176,20 @@
             "Same-modelsourcecompiledruntimefilesforprefillanddecode",
             "Source-to-runtimebridgehistoryandcontrols"
           ]
+        },
+        "current_execution_plan": {
+          "source": "USER_EXPLICIT_2026_10_30_URGENT_EXECUTION_IGNORE_ACCURACY",
+          "prompt_length": 8,
+          "max_new_tokens": 8,
+          "max_proposals_per_round": 2,
+          "draft_native_candidates": 15,
+          "draft_capacity": 64,
+          "target_prefill": "same_decode1_from80zero_states_one_actual_call_per_prompt_token",
+          "target_native_calls_if_complete": 16,
+          "draft_omc_recompilation": "NOT_REQUIRED",
+          "accuracy": "DEFERRED_NOT_ACCEPTED",
+          "eos": "DISABLED_FOR_THIS_FIXED_BUDGET_SMOKE",
+          "status": "HOST_IMPLEMENTATION_PENDING_DEVICE_RUN"
         }
       },
       "b": {
@@ -5292,7 +5304,9 @@
         "evidence": "20261029T110926Z-20152-8ddd48/final-tests.xml",
         "scope": "New metadata-only transfer inspection plus existing staging, input reuse, inventory, canonical export and static retry regressions. Tiny host fixtures only; no real target model compile or device pass."
       }
-    }
+    },
+    "current_target_status": "User reported full original prefill64, experimental decode1, all80 same-model state byte continuation, and one real-feature full draft call executed. Row63 prefill PID28669 observed logits argmax6 and unchanged feature SHA. Full multi-round device loop remains pending; urgent mainline reuses decode1+draftS64 with explicit newshortprompt8 fromzero80states, no model compilation.",
+    "next_target_action": "Run one unified run_serial_dflash_smoke.py --apply after host adapter tests/push; P8/G8, exact original embedding lookup, serial verify first2of15. Precision/64to1 cross-export bridge and cached draft compilation follow the execution milestone."
   },
   "delivery_timebox": {
     "source": "USER_DIRECTIVE",
@@ -5315,11 +5329,26 @@
   },
   "execution_smoke": {
     "contract": "specs/dflash-execution-smoke.json",
-    "status": "in_progress",
+    "status": "adapters_integration_device_pending",
     "priority_source": "USER_DIRECTIVE",
     "allows_garbled_text_at_this_milestone": true,
     "synthetic_features_allowed": false,
-    "next_command_document": "docs/current-status.md#用户现在执行什么"
+    "next_command_document": "docs/current-status.md#用户现在执行什么",
+    "current_plan": {
+      "source": "USER_EXPLICIT_2026_10_30_URGENT_EXECUTION_IGNORE_ACCURACY",
+      "prompt_length": 8,
+      "max_new_tokens": 8,
+      "max_proposals_per_round": 2,
+      "draft_native_candidates": 15,
+      "draft_capacity": 64,
+      "target_prefill": "same_decode1_from80zero_states_one_actual_call_per_prompt_token",
+      "target_native_calls_if_complete": 16,
+      "draft_omc_recompilation": "NOT_REQUIRED",
+      "accuracy": "DEFERRED_NOT_ACCEPTED",
+      "eos": "DISABLED_FOR_THIS_FIXED_BUDGET_SMOKE",
+      "status": "HOST_IMPLEMENTATION_PENDING_DEVICE_RUN"
+    },
+    "entrypoint": "targets/cpro/scripts/run_serial_dflash_smoke.py"
   },
   "latest_draft_device_evidence": {
     "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",

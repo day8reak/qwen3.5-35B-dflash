@@ -190,7 +190,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                         input_dir=None, host_input_dir=None, tool="/data/local/tmp/tools_sysdbg/model_run_tool_internal",
                         board_model_root="/data/local/tmp/qwen3_5_moe", timeout_seconds=7200, target_features=False,
                         runtime_prefill_probe=None, runtime_decode_probe=None, lock_wait_seconds=1800,
-                        runtime_continuation_prepared=None):
+                        runtime_continuation_prepared=None, runtime_smoke_backend_prepared=None):
     root, out = Path(compilation_dir).resolve(), output_path(output_dir)
     out.mkdir(parents=True, exist_ok=False)
     result = {"schema_version": 1, "artifact_kind": "qwen35-original-target-tool-execution",
@@ -205,7 +205,9 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
     attempt = None
     attempted = False
     continuation = runtime_continuation_prepared is not None
-    decode_smoke = runtime_decode_probe is not None or continuation
+    backend_smoke = runtime_smoke_backend_prepared is not None
+    owned_decode = continuation or backend_smoke
+    decode_smoke = runtime_decode_probe is not None or owned_decode
     smoke = runtime_prefill_probe is not None or decode_smoke
     smoke_proof = None
     validate_smoke_plan = None
@@ -226,8 +228,9 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         result["retrieved"][local.relative_to(out).as_posix()] = {"sha256": digest, "bytes": local.stat().st_size}
     try:
         if sum(value is not None for value in
-                (runtime_prefill_probe, runtime_decode_probe, runtime_continuation_prepared)) > 1:
-            raise ValueError("runtime prefill, decode and continuation proofs are mutually exclusive")
+                (runtime_prefill_probe, runtime_decode_probe, runtime_continuation_prepared,
+                 runtime_smoke_backend_prepared)) > 1:
+            raise ValueError("runtime prefill, decode, continuation and backend proofs are mutually exclusive")
         compiled = read_metadata(root / "report.json")
         contract = read_metadata(contract_path)
         if (compiled.get("artifact_kind") != "qwen35-existing-air-compilation" or compiled.get("platform") != "kirinx90"
@@ -245,7 +248,15 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         attempt = cache / ("run-" + uuid.uuid4().hex)
         if smoke:
             from .existing_air_profile import get_existing_air_profile
-            if continuation:
+            if backend_smoke:
+                from .original_target_smoke_backend import validate_smoke_backend_step
+                smoke_proof = validate_smoke_backend_step(runtime_smoke_backend_prepared)
+                def validate_smoke_plan(saved):
+                    if validate_smoke_backend_step(runtime_smoke_backend_prepared) != saved:
+                        raise ValueError("backend evidence changed during the current board invocation")
+                expected_gear, flavor, runtime_probe = 1, "backend", smoke_proof["runtime_probe"]
+                expected_profile = "cpro-40block-decode-1"
+            elif continuation:
                 from .target_decode_continuation import validate_decode_continuation
                 smoke_proof = validate_decode_continuation(runtime_continuation_prepared)
                 def validate_smoke_plan(saved):
@@ -268,7 +279,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                     or type(lock_wait_seconds) is not int or not 0 <= lock_wait_seconds <= 7200
                     or type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 7200):
                 raise ValueError(f"runtime {flavor} proof requires original host inputs, complete features and frozen static{expected_gear} only")
-            if not continuation:
+            if not owned_decode:
                 smoke_proof = prepare_smoke_plan(root, runtime_probe, host_input_dir)
             elif (smoke_proof.get("compilation") != str(root)
                     or smoke_proof.get("input_dir") != str(Path(host_input_dir).resolve())
@@ -285,7 +296,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             # Both paths have now established their exact runtime proof.
             # Ordinary decode and generic legacy execution keep the original
             # strict local-payload-first behavior.
-            cache_identity_first = continuation or runtime_prefill_probe is not None
+            cache_identity_first = owned_decode or runtime_prefill_probe is not None
             binding = smoke_proof.get("tool_binding", {})
             if str(tool) != binding.get("path"):
                 raise ValueError(f"selected tool differs from the runtime {flavor} proof")
@@ -304,6 +315,12 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                     state_output_layer_identity="SAME_COMPILED_MODEL_OUTPUT_ABI",
                     source_semantics="PROVEN_ORIGINAL_ROW_AND_BOUND_PARENT_STATES_EXPERIMENTAL_CONTROLS",
                     runtime_continuation_prepared=str(Path(runtime_continuation_prepared).resolve()))
+            if backend_smoke:
+                result.update(execution_scope=smoke_proof["execution_scope"],
+                    state_input_layer_identity="ALL80_SAME_MODEL_STATE_SLOTS_BOUND",
+                    state_output_layer_identity="SAME_COMPILED_MODEL_OUTPUT_ABI",
+                    source_semantics="ORIGINAL_EMBEDDING_ROWS_ZERO_BOOTSTRAP_OR_COMMITTED_STATES_EXPERIMENTAL_CONTROLS",
+                    runtime_smoke_backend_prepared=str(Path(runtime_smoke_backend_prepared).resolve()))
             save_json(out / f"runtime-{flavor}-proof.json", smoke_proof)
         else:
             plan = tool_plan(contract, profile, gear, str(attempt / "source-inputs") if host_input_dir else input_dir,
@@ -631,6 +648,8 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                                                   else "UNCHANGED_PREFILL_PLAN_METADATA_AND_ORIGINAL_INPUT_SHA256")
                 if continuation:
                     result["source_preservation"] = "UNCHANGED_CONTINUATION_PROOF_AND_ALL89_PREPARED_INPUT_SHA256"
+                if backend_smoke:
+                    result["source_preservation"] = "UNCHANGED_SMOKE_BACKEND_PROOF_AND_ALL89_PREPARED_INPUT_SHA256"
             except Exception as error:
                 result.update(status="FAILED", source_preservation="FAILED", source_error=f"{type(error).__name__}: {error}")
         if smoke and global_held and not uncertain and (not attempted or exit_known):

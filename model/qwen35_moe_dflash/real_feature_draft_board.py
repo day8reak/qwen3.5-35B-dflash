@@ -137,13 +137,19 @@ def _cache_model(hdc, cache, source, out, *, extra_bytes=0):
                    "host_model_copy_bytes": 0, "model_source": source["path"]}
 
 
-def execute_real_feature_draft(prepared_dir, output_dir, *, timeout_seconds=1800, lock_wait_seconds=1800):
+def execute_real_feature_draft(prepared_dir, output_dir, *, timeout_seconds=1800, lock_wait_seconds=1800,
+                               _existing_smoke_session=None):
     """Build the current runner and execute one real-feature full-draft step."""
     if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
             or not math.isfinite(timeout_seconds) or timeout_seconds < .001
             or type(lock_wait_seconds) is not int or lock_wait_seconds < 0):
         raise ValueError("execution timeout must be finite/positive and lock wait a nonnegative integer")
-    from .real_feature_draft import validate_real_feature_draft
+    if _existing_smoke_session is None:
+        from .real_feature_draft import validate_real_feature_draft as validate_prepared
+    else:
+        from .existing_draft_smoke_backend import validate_existing_draft_smoke_step
+        def validate_prepared(path):
+            return validate_existing_draft_smoke_step(path, _existing_smoke_session)
     root, out = Path(prepared_dir).resolve(), output_path(output_dir)
     if root == out or root in out.parents:
         raise ValueError("execution output must be outside the immutable prepared step")
@@ -172,10 +178,11 @@ def execute_real_feature_draft(prepared_dir, output_dir, *, timeout_seconds=1800
                 result["retrieval_errors"].append({"path": name, "error": f"{type(error).__name__}: {error}"})
 
     try:
-        manifest = validate_real_feature_draft(root)
+        manifest = validate_prepared(root)
         result["prepared_manifest_sha256"] = sha256_file(root / "manifest.json")
         result.update(sequence_length=manifest["sequence_length"],
-                      execution_scope="ONE_FULL_DRAFT_STEP_FROM_BOUND_TARGET_PREFILL",
+                      execution_scope=("ONE_EXISTING_S64_DRAFT_STEP_FROM_CONTROLLER_FULL_PREFIX" if _existing_smoke_session is not None
+                          else "ONE_FULL_DRAFT_STEP_FROM_BOUND_TARGET_PREFILL"),
                       token_provenance=manifest.get("token_provenance", {}),
                       feature_provenance=manifest.get("feature_provenance", {}))
         ddk, runtime, firmware = (manifest[key] for key in ("ddk_id", "runtime_version", "firmware_id"))
@@ -207,8 +214,12 @@ def execute_real_feature_draft(prepared_dir, output_dir, *, timeout_seconds=1800
         result.update(serial=sn, hdc_server=bip, ddk_id=ddk, runtime_version=runtime, firmware_id=firmware,
                       board_model_cache=str(cache), board_attempt=str(board), board_global_lock=str(global_lock))
         result["stage"] = "build-runner"
-        print("real-draft: building current runner; existing full draft OMC is reused", flush=True)
-        runner = _build_runner(out, timeout_seconds)
+        if _existing_smoke_session is not None and _existing_smoke_session.runner_is_pinned:
+            print("real-draft: reusing pinned runner; existing full draft OMC is reused", flush=True)
+        else:
+            print("real-draft: building current runner; existing full draft OMC is reused", flush=True)
+        runner = (_existing_smoke_session.runner_for_attempt(out, timeout_seconds, _build_runner)
+            if _existing_smoke_session is not None else _build_runner(out, timeout_seconds))
         uploads = [_file_record(runner, "runner")]
         if private:
             result["libraries"] = {"mode": "existing-board-directory", "path": private, "compatibility": "UNVERIFIED"}
@@ -227,7 +238,7 @@ def execute_real_feature_draft(prepared_dir, output_dir, *, timeout_seconds=1800
                 "dependencies": dependencies, "backend_selection": "UNVERIFIED"}
         uploads.extend({"local": row["local_path"], "remote": "bundle/" + str(_relative(row["path"])),
                         "bytes": row["bytes"], "sha256": row["sha256"]} for row in manifest["upload_payloads"])
-        validate_real_feature_draft(root)
+        validate_prepared(root)
         from .target_model_io_probe import _acquire_global, _release_global
         result["stage"] = "wait-board-model-lock"
         uncertain = True
@@ -287,7 +298,7 @@ def execute_real_feature_draft(prepared_dir, output_dir, *, timeout_seconds=1800
         if (probe_status != 0 or (out / "runtime.exitcode").read_text().strip() != "0"
                 or probe.get("npu_supported") is not True or probe.get("runtime_version") != runtime):
             raise ValueError("actual runtime capability/version differs from the source target")
-        validate_real_feature_draft(root)
+        validate_prepared(root)
         native_timeout = min(int(timeout_seconds * 1000), 2**32 - 1)
         argv = [str(board / "runner"), "--draft-step", str(board / "bundle/step.tsv"),
             "--output", str(board / "results"), "--expected-runtime-version", runtime,
@@ -347,7 +358,7 @@ def execute_real_feature_draft(prepared_dir, output_dir, *, timeout_seconds=1800
                     result["hilog"] = {"status": "UNAVAILABLE", "error": f"{type(error).__name__}: {error}"}
         if manifest is not None:
             try:
-                validate_real_feature_draft(root)
+                validate_prepared(root)
                 if sha256_file(root / "manifest.json") != result["prepared_manifest_sha256"]:
                     raise ValueError("prepared manifest changed during execution")
                 result["source_preservation"] = "UNCHANGED_BOUND_SOURCES_AND_PREPARED_INPUT_BYTES"
@@ -388,3 +399,9 @@ def execute_real_feature_draft(prepared_dir, output_dir, *, timeout_seconds=1800
         result["hdc_invocations"] = hdc.count if hdc else 0
         save_json(out / "result.json", result)
     return result
+
+
+def execute_existing_draft_smoke(prepared_dir, output_dir, *, session, timeout_seconds=1800, lock_wait_seconds=1800):
+    """Explicit controller-only preparation schema; original execution default stays unchanged."""
+    return execute_real_feature_draft(prepared_dir, output_dir, timeout_seconds=timeout_seconds,
+        lock_wait_seconds=lock_wait_seconds, _existing_smoke_session=session)

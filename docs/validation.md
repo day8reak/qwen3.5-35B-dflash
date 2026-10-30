@@ -574,3 +574,14 @@ export TEST_RUN="$(mktemp -d "$AI_RUN_DIR/tests-XXXXXXXX")"
 ```
 
 本地运行记录和归档定位见 [specs/verification.json](../specs/verification.json)。源码仓库只保留当前结论与必要生产回归。
+
+
+## 2026-10-30：复用现有 OMC 的短提示词执行主线
+
+用户要求优先在当天接通真实完整 DFlash，当前里程碑允许精度误差／乱码。执行入口统一为 `run_serial_dflash_smoke.py`：新8-token提示词由同一原40层decode1从80个FP16零态逐token输入，随后生成8个token；原完整六层S64 draft以完整前缀右padding输入，每次15候选，host先验证前2。target-next anchor、首错纠正、全接受bonus及每个最终token的state advance沿用已有调度器。没有新AIR/OMG/OMC，没有裁剪context或重置RoPE。实验控制语义仍未验证。
+
+真实执行验收需要至少两次完整draft调用、16次实际target decode1调用及所有输入／输出日志哈希。协议调度器prefill汇总为1次观察，不能误写成1次native调用；新backend保存全部8次prompt调用的组合receipt。只比较已考虑候选的匹配率，不把丢弃的未验证候选计作接受。EOS仅在固定预算执行实验中关闭。接受率0也允许完成执行里程碑；数值精度、普通基线等价、最终语言质量和性能仍保持未通过。
+
+本轮主机验证覆盖真实89/82 extent、80state显式槽位、原INT8/FP32行查表、current metadata身份、native receipt与buffer回读、短prefix右padding、runner复用、不复制模型和失败停止。HDC/实际模型输出由明确的host doubles模拟；主机通过不是实机PASS。设备执行仍由用户在原DDK／手机环境运行。
+
+row63独立prefill已由用户回传PID28669成功：82输出齐全，feature SHA `be3c0f2f2e76e2cb4d89ec484b0a31dfde8ed65a89ca5a2ef82ec7905370cbba` 与旧row64一致；logits SHA `c1701fb48439921032d481139c4a2284b9f402cad4e49e6f57236ca37e67bdfa`，argmax6。此单变量观察不作精度修复结论，也不成为短提示词新请求的历史状态。

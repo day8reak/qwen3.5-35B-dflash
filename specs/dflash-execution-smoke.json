@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_kind": "qwen35-full-model-execution-smoke-contract",
-  "status": "REAL_TARGET_FEATURE_DRAFT_SINGLE_HANDOFF_EXECUTED_FULL_LOOP_PENDING",
+  "status": "EXISTING_S64_DRAFT_AND_DECODE1_SHORT_PROMPT_LOOP_ADAPTERS_HOST_INTEGRATION",
   "scope": "User-prioritized execution milestone; final accuracy, correct rollback and speedup>=2x requirements are unchanged",
   "user_directive": {
     "real_features_required": true,
@@ -51,7 +51,7 @@
   "verify": "Serial gear1 compare-before-commit; rejected candidates never enter target state",
   "requirements": [
     "At least two full draft invocations bound to real target features",
-    "Target64prefill then gear1 decode with per-layer80state feedback",
+    "Single original decode1 model ingests explicit short prompt from80zero states, then advances every committed token with same-model80state feedback",
     "Every committed token advances target, including the last token",
     "Prefix token IDs, feature history, model identity and state chain stay bound",
     "No synthesized feature fallback, layer/expert/vocabulary reduction, or silent ordinary-only fallback"
@@ -61,15 +61,17 @@
     "control_inspector": "model/qwen35_moe_dflash/original_target_inputs.py",
     "controller": "model/qwen35_moe_dflash/incremental_smoke.py",
     "target_board_boundary": "model/qwen35_moe_dflash/original_target_board.py",
-    "device_adapter": "PENDING",
+    "device_adapter": {
+      "target": "model/qwen35_moe_dflash/original_target_smoke_backend.py",
+      "draft": "model/qwen35_moe_dflash/existing_draft_smoke_backend.py",
+      "entrypoint": "targets/cpro/scripts/run_serial_dflash_smoke.py"
+    },
     "independent_decode_entrypoint": "targets/cpro/scripts/run_target_decode_smoke.py"
   },
   "gaps": [
-    "Standalone decode1 against user-supplied decode_data awaits device execution; source controls remain unvalidated.",
-    "80state continuous feedback needs exact per-model and cross-export identities plus actual recurrence evidence.",
-    "Original target embedding/token/control alignment and numerical output selection remain to be validated.",
-    "Observed draft capacity64 is full for current64tokenprefix; align a declared compatible prompt/token budget or supported larger gear before multi-round execution.",
-    "Connect existing serial gear1 DFlash controller to original target and full draft device adapters; actual multi-round execution not integrated."
+    "Run actual complete-model multi-round loop on user device with unchanged artifacts",
+    "Validate experimental target controls, numerical accuracy and ordinary-baseline equality after the execution milestone",
+    "Optimize resident execution and block verification only after functional integration"
   ],
   "commands": "docs/current-status.md#用户现在执行什么",
   "accuracy": "NOT_EVALUATED_BY_EXECUTION_MILESTONE",
@@ -78,7 +80,14 @@
     "target_prefill": "EXECUTED_UNVALIDATED_PID8985",
     "real_feature_draft": "REAL_FEATURE_DRAFT_EXECUTED_UNVALIDATED_PID17398",
     "real_feature_draft_calls": 1,
-    "multi_round_loop": "NOT_RUN"
+    "multi_round_loop": "NOT_RUN",
+    "last_row63_prefill": "EXECUTED_UNVALIDATED_PID28669_FEATURE_SHA_UNCHANGED_LOGITS_ARGMAX6"
   },
-  "first_loop_strategy": "Reuse serial gear1 compare-before-commit for first full execution; block verify and resident model execution follow for measured acceleration."
+  "first_loop_strategy": "Explicit new8token prompt +8 generated; original decode1 ingests prompt serially fromzero80states; original3input S64 draft recomputes full prefix,15 candidates; hostverify first2, compare-before-commit; no OMC compilation or cross-prefill export prerequisite",
+  "deferred": [
+    "Whole-prefix S128 export",
+    "Incremental draft KV AIR/OMC",
+    "Cross-export prefill64-to-decode1 ordinary baseline",
+    "Precision/quality/performance acceptance"
+  ]
 }

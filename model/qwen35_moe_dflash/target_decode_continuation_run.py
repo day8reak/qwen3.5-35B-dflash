@@ -11,9 +11,14 @@ from .target_decode_output_inventory import _descriptors
 from .target_prefill_output_inventory import _hash_retrieved, _logged_slots, _numerical
 
 
-def inspect_continuation_outputs(plan, board_root, observed, *, allow_retained_completed_lock=False):
+def inspect_continuation_outputs(plan, board_root, observed, *, allow_retained_completed_lock=False,
+        expected_source_preservation="UNCHANGED_CONTINUATION_PROOF_AND_ALL89_PREPARED_INPUT_SHA256"):
     """Bind the executed input hashes and all explicitly logged child outputs."""
     root = Path(board_root)
+    if expected_source_preservation not in {
+            "UNCHANGED_CONTINUATION_PROOF_AND_ALL89_PREPARED_INPUT_SHA256",
+            "UNCHANGED_SMOKE_BACKEND_PROOF_AND_ALL89_PREPARED_INPUT_SHA256"}:
+        raise ValueError("unrecognized continuation source preservation contract")
     if type(allow_retained_completed_lock) is not bool:
         raise ValueError("retained-lock inspection must be an explicit boolean")
     released = observed.get("lock_state") == "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT"
@@ -34,7 +39,7 @@ def inspect_continuation_outputs(plan, board_root, observed, *, allow_retained_c
             or observed.get("device_execution") != "EXECUTED_OUTPUTS_RETRIEVED"
             or observed.get("retrieval_errors") != []
             or not (released or retained)
-            or observed.get("source_preservation") != "UNCHANGED_CONTINUATION_PROOF_AND_ALL89_PREPARED_INPUT_SHA256"):
+            or observed.get("source_preservation") != expected_source_preservation):
         raise ValueError("child decode requires a complete successful locked V2 execution receipt")
     actual = observed.get("inputs")
     if not isinstance(actual, list) or len(actual) != 89 or len(plan["inputs"]) != 89:
