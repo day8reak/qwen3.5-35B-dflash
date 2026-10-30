@@ -172,7 +172,7 @@ def _tool_binding(probe, bindings, metadata_revalidation_observations=None):
     return {"path": tool["tool"], "sha256": tool["tool_sha256_before"], "inspection": identity}
 
 
-def _bound_probe(compilation, probe_dir, bindings):
+def _bound_probe(compilation, probe_dir, bindings, *, primary_revalidations=None):
     job = compilation.parent
     outer = _json(job / "result.json", bindings)
     compiled = _json(compilation / "report.json", bindings)
@@ -205,9 +205,11 @@ def _bound_probe(compilation, probe_dir, bindings):
     relative = primary.get("path")
     if not isinstance(relative, str) or relative not in {"compile-work/generated/model.omc", "compile-work/generated/model/model.omc"}:
         raise ValueError("unsupported primary OMC path")
+    from .target_decode_smoke_plan import bind_primary_omc
+    current_primary = bind_primary_omc(compilation / relative, primary,
+        revalidation_observations=primary_revalidations)
     model = _source(compilation / relative, primary.get("bytes"))
-    if (model["sha256"] != primary.get("sha256") or primary.get("stat") != [model["identity"][key]
-            for key in ("device", "inode", "bytes", "mtime_ns", "ctime_ns")]):
+    if model["sha256"] != primary.get("sha256") or model["identity"] != current_primary["identity"]:
         raise ValueError("original compiled OMC content changed")
     if (probe.get("artifact_kind") != "qwen35-target-model-io-probe" or probe.get("status") != "IO_METADATA_OBSERVED"
             or probe.get("job") != str(job) or probe.get("profile") != _PROFILE or probe.get("sequence_length") != 64
@@ -278,7 +280,9 @@ def prepare_prefill_smoke_plan(compilation_dir, runtime_probe_dir, input_dir):
     probe_dir, _ = _safe(runtime_probe_dir, directory=True)
     input_root, _ = _safe(input_dir, directory=True)
     bindings = []
-    compiled, contract, probe, native, model = _bound_probe(compilation, probe_dir, bindings)
+    primary_revalidations = []
+    compiled, contract, probe, native, model = _bound_probe(compilation, probe_dir, bindings,
+        primary_revalidations=primary_revalidations)
     tool = _tool_binding(probe, bindings)
     profile = get_existing_air_profile(_PROFILE)
     entries = [entry.split(":", 1) for entry in profile["input_shape"].split(";")]
@@ -377,7 +381,7 @@ def prepare_prefill_smoke_plan(compilation_dir, runtime_probe_dir, input_dir):
             raise ValueError("bound prefill/runtime metadata changed while constructing the plan")
     if _source(model["path"], model["bytes"]) != model:
         raise ValueError("compiled primary OMC changed while constructing the plan")
-    return {"schema_version": 1, "artifact_kind": _KIND, "status": "PREFILL_SMOKE_PLANNED", "gear": 64,
+    plan = {"schema_version": 1, "artifact_kind": _KIND, "status": "PREFILL_SMOKE_PLANNED", "gear": 64,
         "profile": _PROFILE, "compilation": str(compilation), "runtime_probe": str(probe_dir), "input_dir": str(input_root),
         "compilation_report_sha256": probe["compilation_report_sha256"], "model_sha256": model["sha256"],
         "runtime_version": probe["runtime_version"], "firmware_id": probe["firmware_id"], "ddk_id": compiled["ddk_id"],
@@ -400,6 +404,9 @@ def prepare_prefill_smoke_plan(compilation_dir, runtime_probe_dir, input_dir):
             "semantic_validation": "NOT_RUN", "source_provenance": "COMPILED_BRANCH_SOURCE_RECEIPT_NOT_REESTABLISHED_BY_THIS_PLANNER"},
         "logits_runtime_output_index": logits[0], "feature_runtime_output_index": features[0],
         "scope": "One prefill call only. Only leading/trailing singleton ND axes are byte-equivalent views; actual runtime shapes are retained without changing files or graphs. Every ambiguous class requires identical source bytes. This never proves semantic slot/layer mapping, feedback, accuracy or feature filenames; serialized indices are not runtime-order evidence."}
+    if primary_revalidations:
+        plan["primary_omc_revalidation_observations"] = primary_revalidations
+    return plan
 
 
 def validate_prefill_smoke_plan(plan):

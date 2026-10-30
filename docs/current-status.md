@@ -2,38 +2,76 @@
 
 <a id="用户现在执行什么"></a>
 
-A：用户已完成 `target-decode1-continuation-recovery`。同一次原工具执行 PID 10457 的 82 个输出已恢复，全部 80 份父输出与子输入的字节链通过，两把锁均已释放或不存在。恢复没有重跑模型、上传输入或权重。原 prefill64、独立 decode1、真实 feature → 完整六层 draft 单步也已执行。
+原 target prefill64、独立 decode1、真实 feature→完整六层 draft 单步，以及同模型 decode 的全部80状态字节链已执行。prefill-v2 名字探针和 path-v2 的89输入／82输出文件绑定均通过。完整 DFlash 多轮仍未执行；当前采用 decode1 串行 verify，主机调度器已补齐 target-next anchor、逐 token 接受／纠正和全接受 bonus。
 
-完整 DFlash 尚未跑通。当前路线采用 `decode1` 逐 token 串行 verify，先验证多轮接受／拒绝／状态提交；批量 verify 和性能优化后续处理。仍有三个联调关口：真实 prefill→decode 与普通生成基线、完整 draft→串行 verify 单轮、连续多轮与拒绝后继续生成对照。它们不是保证三次命令即可完成。
+实际 AIR 已找到唯一控制路径：`arg1238_1` 直接进入 `IndexByTensor_40.indices0`，x 的导出 `_meta` 为 `[1,64,2048]`，`indices_mask=[0,1]`。当前原文件值64；按已核原 Python 源码的当前序列最后行规则，独立试验改为63。该试验不声称私有 IndexByTensor 的越界行为或数值根因。
 
-主机调度器已补上显式 `target_next_anchor=True`：先提交 target 首 token；每个候选先与当前 target 预测比较，再执行接受 token 或纠正 token；全接受且预算允许时提交 bonus。被拒候选不进入 target 状态。65 项调度测试及独立审查通过，包含多轮与普通 oracle 对照、拒绝位置、EOS、预算、状态链和旧行为兼容。实际 89 输入 target／完整六层 draft 的设备 adapter 尚未接通，不能将这些主机测试称为板端完整流程。
+以下 A、B、C 的准备可以并行。A 通过后再运行 C 的板端调用。模型调用仍按现有共享锁排队；不需要重跑 metadata 探针或旧 decode 恢复。
 
-本次用户结果已确认：`target-prefill64-runtime-io-v2` 观察到全部 89 输入／82 输出的名字；`target-prefill-decode-path` 已把新名字与旧 prefill 全部实际输入／输出绑定。新的 metadata 探针无需重跑。
-
-主机检查还有两项待处理：状态检查错误地访问了导出机旧路径 `/home/w00949577/qwen35-target-pytorch-run`；logits 检查只遍历 GatherV2，找到的 80 个 Gather 的 index 都是 Const，并未找到 `output_pos`。后者不能证明 64 越界。原源码使用 Tensor 高级索引，需要跟踪实际 `IndexByTensor` 控制路径。
-
-路径修复会使用成功编译报告中明确记录的本地 `transfer.inventory`，同时核对原 canonical 清单 pin、实际 bytes/SHA、AIR、schema、ABI 和所有编译 snapshot。不会猜路径、修改旧 receipt 或重新传权重。下一次摘要会保留具体索引算子的控制路径与未确定原因。
-
-拉取本次更新后，只在 DDK 主机重跑主机检查，保留原失败目录：
+先更新一次：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-
-python3 "$REPO_DIR/targets/cpro/scripts/inspect_target_prefill_decode_path.py" \
-  --prefill-job "$AI_RUN_DIR/target-pytorch-prefill64-tmpdirfix" \
-  --decode-job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
-  --prefill-execution "$AI_RUN_DIR/target-prefill64-smoke-v3" \
-  --prefill-runtime-probe "$AI_RUN_DIR/target-prefill64-runtime-io-v2" \
-  --source-torchair-pb2 "$AI_RUN_DIR/target-decode1-row-response/ge_ir_by_protoc_3_19_pb2.py" \
-  --output "$AI_RUN_DIR/target-prefill-decode-path-v2"
 ```
 
-这一步不调用设备、不运行模型、不编译或读取权重。请贴回摘要；`WITH_GAPS` 表示证据已收集，仍不生成反馈输入。跨导出的参数上下文匹配只作候选；同名 RefData、相同形状或 copy 编号均不直接证明同一层状态。旧 prefill 的 `output_pos=64` 必须结合实际索引路径判断，尚不能把其 argmax 0 当作正确的下一 token。还需证明 64 个原始 token 与实际 embedding／scale 的对应，并准备正确下一 token 的原始表行。
+## A：原始 embedding 行对应检查
 
-之前 draft 单步的 anchor 是 prompt 最末 token 220、位置 63，因此它证明真实 feature 能进入完整六层 draft。标准首轮需要保留全部 64 个 prompt feature，并以 target 下一 token 作位置 64 的 anchor；现有 S64 前缀 ABI 容量不足。不能简单替换 `ids[63]`、截断上下文或重定位 RoPE。需为生成预算扩容或补增量 ABI，保持完整六层拓扑与权重。当前只有 target 的 S64／S1 及 draft S64 已有实际执行证据。
+先把原权重机器 `/home/l00886453/models/Qwen3.5-35B-A3B_quant/` 中的 `qwen3_5_moe_embdedding_weight.bin`、`qwen3_5_moe_embdedding_scale.bin` 复制到 DDK 的 `$AI_RUN_DIR/original-embedding-tables/`，保留原始字节和文件名。两表合计509,552,640字节，约486MiB。
 
-同模型 decode 续跑的控制值仍是明确实验：绝对位置 256→257、mask 多开放一项、本地 query 控制沿用已执行试验值。字节链通过不等于这些控制语义、数值精度或 prefill64 历史连续性通过。后续串行 verify 必须处理正确 anchor、原始 embedding 查表、80 状态提交、被拒绝候选不污染状态，以及普通基线对照。
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/inspect_original_embedding_inputs.py" \
+  --weight-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_weight.bin" \
+  --scale-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_scale.bin" \
+  --input-dir /home/w00949577/run_35B/chunksize_64_data \
+  --sequence-length 64 \
+  --output "$AI_RUN_DIR/prefill64-embedding-row-check"
+```
 
-多轮动态查表还需要两张原始 embedding 表，共 509,552,640 字节（约 486 MiB）。源在原权重机器 `/home/l00886453/models/Qwen3.5-35B-A3B_quant/` 下的 `qwen3_5_moe_embdedding_weight.bin` 和 `qwen3_5_moe_embdedding_scale.bin`；执行机可放到 `$AI_RUN_DIR/original-embedding-tables/`，保留原文件名和原始字节。当前 query269／next0 行包仅覆盖那一次已执行 decode，不能提供任意后续 token 的查表。
+这一步只读必要表行及三个原输入文件，不生成替换输入。预期 `ORIGINAL_EMBEDDING_INPUT_ROWS_MATCHED`、64个位置全部匹配；若 `MISMATCH`，贴回位置摘要，先解决输入对应再做下一次板端 prefill。默认不对整表反复哈希；API 支持任意后续 token 的原 INT8 行与独立 FP32 scale 查表。
 
-B：55 档特征 AIR 保留备份，本轮无待执行命令。
+## B：真正导出 S128 完整六层 draft AIR
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/export_draft_capacity.py" \
+  --job "$AI_RUN_DIR/full-draft" \
+  --sequence-length 128 \
+  --prompt-length 64 \
+  --max-new-tokens 32 \
+  --output "$AI_RUN_DIR/full-draft-capacity128-air"
+```
+
+这会构建 GE serializer、重建真实S128 graph/recipe并导出新AIR；直接只读引用原 prepared 权重，零复制、零链接，不改旧manifest或S64模型。只新增小源码、exporter、AIR和日志，预留384MiB。成功应为 `DRAFT_CAPACITY_AIR_EXPORTED`，并明确 `compilation_ready:false`：它尚不是新的可部署OMC。后续OMG需要显式只读输入视图和空间预算；目前不启动可能额外占约8.46GB加临时文件的普通编译路径。
+
+## C：仅修改 output_pos 的独立 prefill 实验
+
+先生成独立输入，可与 A、B 并行：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/prepare_target_prefill_last_row_trial.py" \
+  --execution "$AI_RUN_DIR/target-prefill64-smoke-v3" \
+  --named-runtime-probe "$AI_RUN_DIR/target-prefill64-runtime-io-v2" \
+  --output "$AI_RUN_DIR/target-prefill64-last-row63-trial"
+```
+
+成功应为 `TARGET_PREFILL_LAST_ROW_TRIAL_INPUTS_PREPARED`。它复制13份实际 target 源文件，仅把 output_pos 的一个INT32字改为63；另外复制 input_ids 作为辅助第14文件，不算target第90输入。原输入、旧执行、模型和权重均不改。
+
+A 的64行全部匹配且 C 准备成功后，运行一次原 prefill：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/run_target_prefill_smoke.py" \
+  --job "$AI_RUN_DIR/target-pytorch-prefill64-tmpdirfix" \
+  --runtime-probe "$AI_RUN_DIR/target-prefill64-runtime-io-v2" \
+  --input-dir "$AI_RUN_DIR/target-prefill64-last-row63-trial/inputs" \
+  --output "$AI_RUN_DIR/target-prefill64-last-row63-smoke" \
+  --apply
+```
+
+沿用原40层S64模型和已验证 V2 工具路径。已绑定 runtime proof 的 prefill 现在先核 owned board cache 的实际SHA：匹配的 sidecar 不访问本地旧stat；需要 SEND 时仍严格验证本地文件。小 primary OMC 的历史ctime漂移只在完整SHA相同后接纳，并维持本次当前身份检查。缓存或连接不确定时保留证据和锁，不自动重跑模型。
+
+A、B、C 各自完成就贴回摘要，不需要等全部完成。所有输出目录都需是新目录。
+
+## 当前仍在处理的接续项
+
+path-v2 观察到1126种共同参数内容、1123种唯一内容；两图各80个源状态owner完整，但通用上下文追踪仅30个候选，另50个触及深度限制。正在按卷积x1、recurrent beta、K/V updates分别匹配显式层参数名、内容和真实端口；尚未准备跨模型反馈。源状态对应还需接到各自 compiled/runtime/file 绑定，不能用RefData编号或相同形状替代。
+
+标准 DFlash 首轮需保留全部64个prompt feature，并以target下一token作位置64的anchor；旧S64 draft机械单步用了prompt末token220@63，不能当作标准首轮。S128导出保持完整六层和原权重，为后续32-token预算留容量；仍需真正编译、设备执行和89输入target循环adapter联调。最终需要多轮接受／拒绝后继续生成与普通基线对照，再验证精度与性能。

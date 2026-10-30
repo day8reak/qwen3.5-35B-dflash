@@ -3,9 +3,9 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "USER_PREFILL89_INPUT82_OUTPUT_BINDINGS_PASSED_SERIAL_DFLASH_INTEGRATION_OPEN",
+  "status": "USER_PREFILL_PATH_V2_BOUND_PARALLEL_ROW_LOOKUP_CAPACITY_EXPORT_AND_ROW63_TRIAL_READY",
   "handoff": "20261030T075543Z-2197-119a93/handoff.md",
-  "user_state": "User named restore-only prefill-v2 probe observed all89/82 names and released locks with0payload upload. Actual combined packet bound new names to all89 saved executed inputs/current13 original source files and82 outputs. State-correspondence failed because the checker followed canonical exporter-machine inventory path /home/w00949577/qwen35-target-pytorch-run instead of the successful compiler pinned local transfer.inventory. Logit check found80Const-index GatherV2 and0control Gather candidates, so output_pos64 remains unresolved; no bound or numerical conclusion. Same-model80bytechain remains previously recovered. User requests parallel progress; source lookup, draft capacity export and target session work proceed independently, with board calls serialized by existing lock.",
+  "user_state": "User path-v2 completed withoutfailedchecks: all89 actual prefill inputs/13 original sources and82 outputs bound,30 generic cross-exportcontext candidates, bothgraphs80sourceowners observed. Unique IndexByTensor_40 consumesarg1238_1 value64 directly atindices0, x=Add_269 declares_meta[1,64,2048], indices_mask[0,1]; runtimekernelrange remainsunverified. User requests finished tools pushed immediately while other work continues. Ready parallel host commands: original64prefix table-row comparison, realS128full6layer AIR export from readonlypreparedroot, independent only-outputpos63 prefill preparation. Apply cachedprefill after row correspondence passes. Cross-state role-specific matching and originalnative loopadapter remainopen.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
   "contract": {
@@ -54,7 +54,7 @@
     "Execute multiple complete rounds including rejection then continuation and compare every committed token/state with ordinary baseline",
     "Close numerical acceptance, then batch verify/rollback and measured end-to-end performance"
   ],
-  "next_command": "Pull current source and rerun only inspect_target_prefill_decode_path.py using existing named target-prefill64-runtime-io-v2 into target-prefill-decode-path-v2; metadata board probe need not repeat. In parallel copy original embedding two tables509552640bytes to AI_RUN_DIR/original-embedding-tables.",
+  "next_command": "Pull latest; run inspect_original_embedding_inputs.py after copying original two486MiB tables, export_draft_capacity.py --job full-draft --sequence-length128 --prompt-length64 --max-new-tokens32, and prepare_target_prefill_last_row_trial.py in parallel. After prefix rows MATCHED and trial READY, run existing run_target_prefill_smoke.py once with row63trial/inputs and namedprefill-v2 probe in a new output. Exact paths/commands in docs/current-status.md.",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -232,6 +232,36 @@
         "Reviewed cross-export80state ownership",
         "Original64prefix row correspondence",
         "True largerdraft artifact and originalnative loopadapter"
+      ]
+    },
+    "parallel_preparation": {
+      "captured": [
+        "Use independent originaltable row comparison, largerdraft sourceexport and targetcontrol experiment concurrently; actualtargetmodelcalls remainserialized.",
+        "The current source index path is IndexByTensor, notGather. A sourcePython-last-row63 experiment may be prepared without claiming privatekernel64out-of-range or numericalrootcause.",
+        "Only complete learnedparameter branch matching should diagnose the50depthlimitedcrossstatecontexts; a deep unrelatedcontrol/queryrole must noterase nearerbeta/v_proj evidence.",
+        "A largerdraft capacity sourcegraph can be genuinely re-emitted from readonly originalpreparedweights without hardlink/copy/manifestrelabelling; modelcompile stillrequiresitsowninputview/budget.",
+        "Verifiedruntimeprefill can reuseactualownedboardcache SHA likecontinuation; cachemiss retainsstrictlocalchecks and unknownhash never meansmiss."
+      ],
+      "checks": [
+        "tests/test_original_embedding_lookup.py",
+        "tests/test_draft_capacity_export.py",
+        "tests/test_target_prefill_last_row_trial.py",
+        "tests/test_target_prefill_primary_revalidation.py",
+        "tests/test_target_prefill_cache_identity_first.py"
+      ],
+      "skill_changes": "NONE_EXISTING_EXACT_SOURCE_STATE_AND_RUNTIME_IDENTITY_RULES_APPLY; MODEL_SPECIFIC_EXECUTABLE_CHECKS_ADDED",
+      "rejected_promotions": [
+        "NoactualS128artifact/devicePASSfrommockedhostserializer",
+        "Nooriginaltableauthenticityfromcallerpaths/rowcheckalone",
+        "NoactualkernelboundsornumericalcausefromsourceMETA",
+        "Noall80crossownerbindingfrom30genericcandidates",
+        "Nostoragecapacityclaimfromonly64MiBperfilesnapshotreserve"
+      ],
+      "remaining_hypotheses": [
+        "Actualprefixrowsmatchtheoriginaltables",
+        "Independentrow63prefillobservations",
+        "ActualS128GEserializer/AIRexport",
+        "Explicitrole/FQN80sourceownercorrespondence andnative loopadapter"
       ]
     }
   },
@@ -2218,7 +2248,7 @@
     "summary": "out/final-host-verification.json"
   },
   "prefill_decode_path_evidence": {
-    "status": "USER_PREFILL_FILES_BOUND_LOCAL_INVENTORY_PATH_FIX_HOST_VERIFIED_ACTUAL_RECHECK_PENDING",
+    "status": "USER_PREFILL_PATH_V2_OBSERVED_INDEXING_AND30CONTEXTS_REMAINING_ROLE_MATCH_OPEN",
     "entrypoint": "targets/cpro/scripts/inspect_target_prefill_decode_path.py",
     "named_metadata_probe_output": "target-prefill64-runtime-io-v2",
     "packet_output": "target-prefill-decode-path-v2",
@@ -2360,7 +2390,47 @@
       "candidate_rows_truncated": true,
       "range_inference": "NOT_PERFORMED"
     },
-    "actual_index_by_tensor_control_path": "NOT_QUERIED_YET_NEW_DIAGNOSTIC_REQUIRED"
+    "actual_index_by_tensor_control_path": {
+      "source": "USER_PASTED_REMOTE_V2_SUMMARY",
+      "node": "IndexByTensor_40",
+      "inputs": [
+        "Add_269:0",
+        "arg1238_1:0"
+      ],
+      "literal_input_name_map": {
+        "indices0": 1,
+        "x": 0
+      },
+      "indices_mask": [
+        0,
+        1
+      ],
+      "observed_control_value": 64,
+      "control_path": "DIRECT_INT32_DATA_ARG1238_1_NO_VALUE_TRANSFORM",
+      "params_descriptor_shape": "UNMATERIALIZED_EMPTY",
+      "params_producer_and_consumer_meta": "Tensor(dtype=torch.float32, shape=torch.Size([1, 64, 2048])",
+      "output_meta": "Tensor(dtype=torch.float32, shape=torch.Size([1, 2048])",
+      "private_operator_range": "UNVERIFIED",
+      "experiment_basis": "Reviewed originalPython current-call sequence last-row selection selects63 for64rows; independent one-control change trial only, not a kernel-out-of-range or numerical-root-cause acceptance."
+    },
+    "packet_v2": {
+      "output": "target-prefill-decode-path-v2",
+      "status": "PREFILL_DECODE_PATH_EVIDENCE_OBSERVED_WITH_GAPS",
+      "failed_checks": [],
+      "bound_prefill_output_count": 82,
+      "executed_prefill_input_binding": "ALL89_SAVED_PRIVATE_SLOT_SHA256_MATCHED_CURRENT13_ORIGINAL_SOURCES",
+      "unique_state_context_candidate_count": 30,
+      "proven_cross_model_state_owner_count": 0,
+      "feedback_prepared": false,
+      "common_parameter_content_count": 1126,
+      "unique_common_parameter_content_count": 1123,
+      "both_graphs": {
+        "source_owner_unverified": 0,
+        "context_budget_exhausted": 50,
+        "no_unique_common_parameter_context": 10,
+        "ambiguous_context_signatures": 0
+      }
+    }
   },
   "prefill_path_fix_host_verification": {
     "run_id": "20261030T075543Z-2197-119a93",
@@ -2394,12 +2464,117 @@
     "source": "USER_EXPLICIT_PARALLEL_EFFICIENCY_REQUEST_2026_10_30",
     "status": "IN_PROGRESS",
     "streams": {
-      "prefill_decode": "Pinned local inventory correction and actual control-dependent indexing diagnosis; real cross-export owners and validseed remain open",
-      "embedding_lookup": "Implement direct originalINT8/FP32 table row lookup and independent64prefix byte comparison; copy two original tables486MiB toDDK in parallel",
-      "draft_capacity": "True full6layerS128 graph/recipe/AIR export against read-only existing prepared weights; no hardlink/manifest-only relabel. Generic compiler read-only view and disk peak budget remain separate before OMG",
+      "prefill_decode": "HOST_READY17trial+56primary+25cachetests: independentoutputpos63 trial and cachecompatibleoriginalprefill; sourcecrossmodel owner matching in parallel",
+      "embedding_lookup": "HOST_READY47tests: dynamicrows+exactS64/S1 comparison CLI; waitinguser486MiBtwooriginaltables and rowcheck",
+      "draft_capacity": "HOST_READY28tests: trueS128sixlayer GE serializer/AIR export CLI no copies/links; actualexport/userresultpending; readonlyOMGview stillopen",
       "integration": "Original89input single-logit target session adapter and serial DFlash driver; host scheduling implemented but native multiround not yet run"
     },
     "board_concurrency": "Existing phone-global/model locks serialize actual model calls; host coding, prefix-row validation and draft source export can proceed independently",
     "draft_compilation_budget": "No-reflink conservative baseline8464218606bytes plus temporary/log/reserve, based on2x2806049792byte prepared/compiled weights +2852119022byte packedmodel; current8.3GiB has insufficient known margin. No unconditional OMG build command."
+  },
+  "parallel_preparation_host_verification": {
+    "run_id": "20261030T075543Z-2197-119a93",
+    "unique_final_cases_passed": 283,
+    "suites": [
+      {
+        "artifact": "out/embedding-lookup-final.xml",
+        "cases": 47,
+        "sha256": "53c238bd80a2e13dd1da8e8556a2d267390930ac60b5b0e85956f155e7bed1fe"
+      },
+      {
+        "artifact": "out/draft-capacity.xml",
+        "cases": 28,
+        "sha256": "3762631dbda73b33d55a345268180e6cfc962a3c8d4f3d0ff2d0993c3c6a477e"
+      },
+      {
+        "artifact": "out/prefill-last-row-trial-final-tests.xml",
+        "cases": 17,
+        "sha256": "22adf44484e247fed6146cd868d6a884e13b15041597e4e2d811e4755a765a3e"
+      },
+      {
+        "artifact": "out/prefill-primary-tests.xml",
+        "cases": 56,
+        "sha256": "06606ce13f0c85ed6da755d06ed24c517fd373f682f7fa17b8621d961be3edec"
+      },
+      {
+        "artifact": "out/prefill-cache-first.xml",
+        "cases": 25,
+        "sha256": "f79abbef351d1a90e891140b1d3293e0e9ea2f38ea515884af26841b9855cd3f"
+      },
+      {
+        "artifact": "out/prefill-cache-regressions.xml",
+        "cases": 135,
+        "sha256": "99bd1d213f87c3d4d78d2a8e1eaf3374a48ba3836b609b078acb95e0fa50a9f2"
+      },
+      {
+        "artifact": "out/prefill-cache-regression-tail.xml",
+        "cases": 3,
+        "sha256": "749ba8ac4a38708411e534f21034a518f5066511c841304df0397918017cd7cb"
+      }
+    ],
+    "final_case_statuses": "ALL_PASS",
+    "independent_review": "PASSED_LOOKUP_CAPACITY_PREFILL_TRIAL_AND_CACHE; ROOT_PRIMARY56PASS",
+    "resolved_test_assertion": "One pre-existing board test still expected FAILED for known tool exit0 plus retrieval failure. Updated only its retrieval expectation to the already-implemented TOOL_EXITED_ZERO_OUTPUTS_UNVERIFIED classification; native failure remainsFAILED. All3parameter cases rerun passed; raw prior failure retained.",
+    "scope": "Host fixtures only; no actual source weight/table reads, native GE build, AIR/OMG model compile, HDC call or device inference by assistant."
+  },
+  "dynamic_original_embedding_lookup": {
+    "status": "HOST_VERIFIED_ACTUAL_TABLE_ROW_CHECK_NOT_RUN",
+    "api": "model/qwen35_moe_dflash/original_embedding_lookup.py:OriginalEmbeddingLookup.lookup",
+    "entrypoint": "targets/cpro/scripts/inspect_original_embedding_inputs.py",
+    "vocab_size": 248320,
+    "hidden_size": 2048,
+    "table_bytes": 509552640,
+    "row_layout": "Original INT8 embedding bytes and separate original FP32 little-endian scales; preserve token order/duplicates without requantization or scale multiplication",
+    "default_access": "Only unique selected rows; default initialization reads0payloadbytes. Optional explicit expected tableSHA requests one full-table initialization verification, never pertoken. Currentpath+FDfull9 checks span each call.",
+    "input_check": "Given sourceS1/S64 input_ids,inputs_embeds,embed_scale exactbyte row correspondence only; no replacement inputs or origin/model/history/accuracy acceptance",
+    "success_status": "ORIGINAL_EMBEDDING_INPUT_ROWS_MATCHED",
+    "tests": 47
+  },
+  "draft_capacity_air_export": {
+    "status": "HOST_VERIFIED_ACTUAL_GE_EXPORT_NOT_RUN",
+    "entrypoint": "targets/cpro/scripts/export_draft_capacity.py",
+    "source_job": "full-draft",
+    "output": "full-draft-capacity128-air",
+    "sequence_length": 128,
+    "prompt_length": 64,
+    "max_new_tokens": 32,
+    "draft_layers": 6,
+    "proposal_count": 15,
+    "source_weight_bytes": 2806049792,
+    "source_policy": "Bind immutable prepared/residual-fix AIR and embeddedbundle metadata plus GE librarySHA/ABI/lowering; rebuild realS128graph/recipe/newAIR using originalprepared-root FileConstants. Allweights freshSHA and currentfull9 stable; no copies/links/source manifest rewrite.",
+    "new_small_output_budget_bytes": 268435456,
+    "reserve_bytes": 134217728,
+    "actual_process": "Build native GE serializer and export newAIR only; no OMG/newOMC/board invocation",
+    "success_status": "DRAFT_CAPACITY_AIR_EXPORTED",
+    "compilation_ready": false,
+    "remaining": "Explicit readonly compiler input-view and storage-safe realOMG/packedOMC build; no manifest-only capacity relabel",
+    "tests": 28
+  },
+  "prefill_last_row_control_trial": {
+    "status": "HOST_VERIFIED_ACTUAL_PREPARATION_AND_EXECUTION_NOT_RUN",
+    "entrypoint": "targets/cpro/scripts/prepare_target_prefill_last_row_trial.py",
+    "source_execution": "target-prefill64-smoke-v3",
+    "named_runtime_probe": "target-prefill64-runtime-io-v2",
+    "output": "target-prefill64-last-row63-trial",
+    "new_execution": "target-prefill64-last-row63-smoke",
+    "target_source_files": 13,
+    "auxiliary_id_files": 1,
+    "independent_output_files": 14,
+    "only_changed_target_source": "output_pos.bin INT32[64]->INT32[63]",
+    "unchanged_target_source_count": 12,
+    "source_policy": "Fresh oldprefill file/nameproof; copy independent currentSHA-bound inputs, nohardlinks/oldreceiptmutation. input_ids is auxiliary, not90th target input.",
+    "source_index_policy": "Reviewed originalPython last-local-row rule; privateIndexByTensor contract and numericalcause stayunverified",
+    "execution_prerequisite": "Original64prefix row comparison MATCHED, trialpreparedsuccess. ExistingS64job/V2tool/cachedweights reused, new89inputplan for newdirectory.",
+    "tests": 17
+  },
+  "prefill_verified_cache_reuse": {
+    "status": "HOST_VERIFIED_ACTUAL_ROW63_BOARD_RUN_NOT_RUN",
+    "scope": "Only successfully validated runtime_prefill_probe and previouscontinuation paths; ordinarydecode/generic execution unchanged",
+    "primary": "Existing bounded shared binder admits historicalctime-only smallprimary onlyafterfullSHA, takescurrentfull9baseline and verifiesfullcontents; no weight exception",
+    "nonprimary_hit": "Fresh owned boardcache actualSHA matched compiler manifest; no local largepayload stat/hash read onhit",
+    "miss": "Original strict local recorded payload stat/SHA verification beforeSEND, no bypass",
+    "uncertainty": "Malformed/partial/failed remotehash or owner/cache inventory leavesuncertainlocks; no automatic modelretry",
+    "guards": "Non-symlink cachemarker/manifest/parent paths, exactallfilecachedecisions, originaltool/firmware/runtimeprobe andglobal/model locks",
+    "tests_new": 25
   }
 }

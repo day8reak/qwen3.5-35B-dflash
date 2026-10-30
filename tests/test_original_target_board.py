@@ -302,5 +302,5 @@ def test_device_or_input_failure_is_not_retried_or_relabelled_as_accuracy(simula
     assert result["status"] == "FAILED" and result["numerical_validation"] == "NOT_RUN_NO_REFERENCE"
     assert simulated["state"]["executions"] == (0 if failure == "input_size" else 1)
     if failure != "input_size":
-        assert result["device_execution"] == "FAILED"
+        assert result["device_execution"] == ("TOOL_EXITED_ZERO_OUTPUTS_UNVERIFIED" if failure == "retrieval" else "FAILED")
         assert (simulated["out"] / "tool.exitcode").is_file()

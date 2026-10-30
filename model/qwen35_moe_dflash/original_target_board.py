@@ -209,6 +209,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
     smoke = runtime_prefill_probe is not None or decode_smoke
     smoke_proof = None
     validate_smoke_plan = None
+    cache_identity_first = False
     global_held = cache_held = uncertain = exit_known = False
     token = uuid.uuid4().hex
     global_lock = PurePosixPath("/data/local/tmp/.qwen35-target-model-io-lock")
@@ -281,6 +282,10 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                         for row in smoke_proof["inputs"])):
                 raise ValueError("continuation requires89 distinct owned source files and this exact compiled decode model")
             validate_smoke_plan(smoke_proof)
+            # Both paths have now established their exact runtime proof.
+            # Ordinary decode and generic legacy execution keep the original
+            # strict local-payload-first behavior.
+            cache_identity_first = continuation or runtime_prefill_probe is not None
             binding = smoke_proof.get("tool_binding", {})
             if str(tool) != binding.get("path"):
                 raise ValueError(f"selected tool differs from the runtime {flavor} proof")
@@ -349,7 +354,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         qcache = shlex.quote(str(cache))
         owner = shlex.quote(str(cache / ".compilation-sha256"))
         if smoke:
-            owner_guard = " && test ! -L " + owner if continuation else ""
+            owner_guard = " && test ! -L " + owner if cache_identity_first else ""
             own = ("mkdir -p " + shlex.quote(str(board_root)) + " && if mkdir " + qcache
                 + "; then printf '%s\\n' " + shlex.quote(digest) + " > " + owner
                 + "; else test -d " + qcache + " && test ! -L " + qcache
@@ -357,14 +362,18 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         else:
             own = ("mkdir -p " + shlex.quote(str(board_root)) + " && if mkdir " + qcache + "; then printf '%s\\n' " + shlex.quote(digest) + " > " + owner
                 + "; else test -d " + qcache + " && test \"$(cat " + owner + ")\" = " + shlex.quote(digest) + "; fi")
+        if cache_identity_first:
+            uncertain = True
         hdc.shell(own, "own-model-cache")
+        if cache_identity_first:
+            uncertain = False
         if smoke:
             uncertain = True
             hdc.shell("mkdir " + shlex.quote(str(cache / ".execution-lock")), "acquire-execution-lock")
             cache_held, uncertain = True, False
         uploads = []
         for row in compiled.get("generated_artifacts", []):
-            if continuation and row != compiled.get("omc"):
+            if cache_identity_first and row != compiled.get("omc"):
                 # Cache hits are proved by the owned board cache's actual SHA,
                 # not by historical local permissions/timestamps. A cache miss
                 # still requires the original strict local artifact validator.
@@ -373,7 +382,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                         or not isinstance(row.get("path"), str)
                         or not row["path"].startswith("compile-work/generated/")
                         or any(part in {"", ".", ".."} for part in row["path"].split("/"))):
-                    raise ValueError("invalid continuation cached payload declaration")
+                    raise ValueError("invalid runtime-proof cached payload declaration")
                 path = None
             else:
                 path = _recorded_board_payload(root, row, compiled, smoke_proof=smoke_proof,
@@ -383,9 +392,9 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             _board_path(str(remote))
             uploads.append((row, path, remote))
         if (not uploads or len(uploads) > 8192 or len({str(remote) for _, _, remote in uploads}) != len(uploads)
-                or continuation and sum(row == compiled.get("omc") for row, _, _ in uploads) != 1):
+                or cache_identity_first and sum(row == compiled.get("omc") for row, _, _ in uploads) != 1):
             raise ValueError("target generated payload inventory is missing or excessive")
-        if continuation:
+        if cache_identity_first:
             directories = set()
             for _, _, remote in uploads:
                 parent = remote.parent
@@ -400,6 +409,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                 commands.append("test ! -L " + quoted + " && if test -e " + quoted
                     + "; then test -d " + quoted + "; else mkdir " + quoted + "; fi")
             commands.append("test ! -L " + shlex.quote(str(cache / "model-files.tsv")))
+            uncertain = True
             hdc.shell(" && ".join(commands), "model-directories")
         else:
             hdc.shell("mkdir -p " + " ".join(shlex.quote(str(p)) for p in sorted({r.parent for _, _, r in uploads})), "model-directories")
@@ -408,9 +418,20 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
         hdc.send(manifest, cache / "model-files.tsv")
         if smoke:
             print("target-board: checking cached payload SHA256; matching files will be reused", flush=True)
-        cache_guard = "test ! -L \"$path\" || exit 1; " if continuation else ""
-        _, text = hdc.shell("while read -r expected path; do " + cache_guard + "if test -f \"$path\" && test \"$(sha256sum \"$path\" | cut -d ' ' -f 1)\" = \"$expected\"; then printf 'OK %s\\n' \"$path\"; else printf 'SEND %s\\n' \"$path\"; fi; done < "
-                            + shlex.quote(str(cache / "model-files.tsv")), "inspect-model-cache")
+        if cache_identity_first:
+            # A failed or malformed remote hash is uncertainty, not a cache
+            # miss. Never overwrite an unsafe existing cache entry.
+            inspection = ("while read -r expected path; do test ! -L \"$path\" || exit 1; "
+                + "if test -e \"$path\"; then test -f \"$path\" || exit 1; "
+                + "target_cache_hash=$(sha256sum \"$path\") || exit 1; target_cache_hash=${target_cache_hash%% *}; "
+                + "test \"${#target_cache_hash}\" -eq 64 || exit 1; "
+                + "case \"$target_cache_hash\" in *[!0-9a-f]*) exit 1;; esac; "
+                + "if test \"$target_cache_hash\" = \"$expected\"; then printf 'OK %s\\n' \"$path\"; "
+                + "else printf 'SEND %s\\n' \"$path\"; fi; else printf 'SEND %s\\n' \"$path\"; fi; done < ")
+        else:
+            inspection = ("while read -r expected path; do if test -f \"$path\" && test \"$(sha256sum \"$path\" | cut -d ' ' -f 1)\" = \"$expected\"; "
+                + "then printf 'OK %s\\n' \"$path\"; else printf 'SEND %s\\n' \"$path\"; fi; done < ")
+        _, text = hdc.shell(inspection + shlex.quote(str(cache / "model-files.tsv")), "inspect-model-cache")
         decisions = {}
         for line in text.splitlines():
             match = re.fullmatch(r"(OK|SEND) (/[A-Za-z0-9_./-]+)", line.strip())
@@ -419,6 +440,8 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
             decisions[match[2]] = match[1]
         if set(decisions) != {str(r) for _, _, r in uploads}:
             raise ValueError("remote model cache inventory does not cover every compiler file")
+        if cache_identity_first:
+            uncertain = False
         if smoke:
             from .target_model_io_probe import _space
             _, disk = hdc.shell("df -Pk " + qcache, "decode-board-disk" if decode_smoke else "prefill-board-disk", timeout=min(10, timeout_seconds))
@@ -455,7 +478,7 @@ def execute_target_tool(compilation_dir, contract_path, output_dir, *, profile, 
                     uncertain = False
         result["model_payloads"] = [{"path": str(remote), "sha256": row["sha256"], "bytes": row["bytes"],
                                      "upload": decisions[str(remote)]} for row, _, remote in uploads]
-        if continuation:
+        if cache_identity_first:
             result["model_cache_validation"] = "BOUND_COMPILER_SHA_MATCHED_ON_OWNED_BOARD_CACHE; SEND_REQUIRES_STRICT_LOCAL_VALIDATION"
             result["local_cached_payload_access"] = "NONPRIMARY_CACHE_HITS_NOT_OPENED; REMOTE_SHA_MATCHED"
         result["stage"] = "input-snapshot"
