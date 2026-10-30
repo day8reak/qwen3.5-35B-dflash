@@ -430,11 +430,13 @@ def test_complete_per_model_edges_do_not_prove_same_source_layer_across_exports(
 
 def test_graph_reader_revalidates_only_primary_ctime_after_exact_hash_without_receipt_edits(jobs):
     import os
+    import time
     job, report = jobs["decode_job"], jobs["decode_report"]
     root = job / "compilation"
     path = root / report["omc"]["path"]
     receipts = {file: file.read_bytes() for file in (job / "result.json", root / "report.json", root / "input-inventory.json")}
     before = path.stat()
+    time.sleep(0.02)
     os.chmod(path, before.st_mode & 0o7777)
     current = _stamp(path.stat())
     assert current[:4] == report["omc"]["stat"][:4] and current[4] != report["omc"]["stat"][4]
@@ -460,14 +462,41 @@ def test_graph_reader_refuses_changed_primary_bytes_even_when_original_mtime_is_
         audit.load_target_graph(job, "cpro-40block-decode-1", [])
 
 
-def test_graph_reader_keeps_air_snapshot_ctime_binding_strict(jobs):
+def test_graph_reader_revalidates_bound_air_ctime_only_after_fresh_exact_sha(jobs):
     import os
+    import time
     job, report = jobs["decode_job"], jobs["decode_report"]
     path = job / "compilation" / report["input_snapshots"][0]["path"]
     before = path.stat()
+    time.sleep(0.02)
     os.chmod(path, before.st_mode & 0o7777)
     assert _stamp(path.stat())[:4] == report["input_snapshots"][0]["snapshot_stat"][:4]
-    with pytest.raises(ValueError, match="recorded payload identity changed"):
+    receipts = {file: file.read_bytes() for file in (job / "result.json", job / "compilation/report.json",
+        job / "compilation/input-inventory.json")}
+    metadata, _, _, _ = audit.load_target_graph(job, "cpro-40block-decode-1", [])
+    event, = metadata["source_air_revalidation_observations"]
+    assert event["role"] == "source-air" and event["status"] == "SHA256_VERIFIED"
+    assert event["sha256"] == report["input_snapshots"][0]["sha256"]
+    assert metadata["air"]["stat"] == _stamp(path.stat())
+    assert receipts == {file: file.read_bytes() for file in receipts}
+
+
+@pytest.mark.parametrize("fault", ["bytes", "mtime", "inode"])
+def test_graph_reader_air_reconciliation_refuses_non_ctime_drift(jobs, fault):
+    import os
+    job, report = jobs["decode_job"], jobs["decode_report"]
+    path = job / "compilation" / report["input_snapshots"][0]["path"]
+    before, raw = path.stat(), path.read_bytes()
+    if fault == "bytes":
+        path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    elif fault == "mtime": os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1000))
+    else:
+        replacement = path.with_suffix(".replacement")
+        replacement.write_bytes(raw)
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        replacement.replace(path)
+    with pytest.raises(ValueError, match="recorded payload"):
         audit.load_target_graph(job, "cpro-40block-decode-1", [])
 
 

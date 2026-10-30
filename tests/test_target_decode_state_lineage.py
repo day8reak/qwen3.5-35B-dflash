@@ -7,6 +7,7 @@ these fixtures; its returned output files are freshly hashed on every call.
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import runpy
 
@@ -16,6 +17,7 @@ from qwen35_moe_dflash import target_decode_state_lineage as audit
 from qwen35_moe_dflash import target_state_lineage as lineage
 from qwen35_moe_dflash.target_compile_failure import _stamp
 from qwen35_moe_dflash.target_prefill_smoke_plan import _runtime_keys
+from qwen35_moe_dflash.payload_revalidation import payload_identity_matches
 from test_target_state_lineage import attach_torchair_source, jobs as graph_jobs, save
 
 
@@ -56,7 +58,11 @@ def case(tmp_path, monkeypatch):
             raise ValueError("saved output inventory is not bound")
         for row in value["output_files"]:
             path = execution / "board" / row["path"]
-            if hashlib.sha256(path.read_bytes()).hexdigest() != row["sha256"] or _stamp(path.stat()) != row["stat"]:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            old = {"path": str(path), **{key: row[key] for key in ("bytes", "sha256", "stat")}}
+            current = {"path": str(path), "bytes": path.stat().st_size, "sha256": digest, "stat": _stamp(path.stat())}
+            if not payload_identity_matches(old, current, role="decode-output",
+                    observations=kwargs.get("payload_revalidation_observations")):
                 raise ValueError("fresh output inventory hash or stat changed")
         return value
 
@@ -88,6 +94,65 @@ def test_all80_proven_owner_file_input_joins_follow_reordered_graphs_and_names(c
     assert result["state_continuity"] == "NOT_VALIDATED" and result["numerical_validation"] == "NOT_RUN"
     assert result["cross_model_state_identity"] == "NOT_EVALUATED_SAME_MODEL_ONLY"
     assert result["gap_summary"] == []
+
+
+def test_ctime_revalidated_state_files_use_current_stats_without_changing_old_receipt(case):
+    saved = (case["inspection_dir"] / "report.json").read_bytes()
+    for row in case["inspection"]["output_files"]:
+        path = case["execution"] / "board" / row["path"]
+        os.chmod(path, path.stat().st_mode & 0o7777)
+        assert _stamp(path.stat())[:4] == row["stat"][:4]
+        assert _stamp(path.stat())[4] != row["stat"][4]
+    result = inspect(case)
+    assert result["status"] == "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED", result
+    assert result["payload_revalidation_observations"]
+    for row in result["decode"]["state_file_mapping"]["states"]:
+        actual = row["output_file"]
+        assert actual["stat"] == _stamp(Path(actual["path"]).stat())
+    assert (case["inspection_dir"] / "report.json").read_bytes() == saved
+
+
+def test_bound_air_ctime_revalidation_is_in_compact_artifact_observations(case):
+    row = next(row for row in case["decode_report"]["input_snapshots"] if row["role"] == "air")
+    path = case["decode_job"] / "compilation" / row["path"]
+    os.chmod(path, path.stat().st_mode & 0o7777)
+    assert _stamp(path.stat())[4] != row["snapshot_stat"][4]
+    result = inspect(case)
+    assert result["status"] == "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED", result
+    observed, = [item for item in result["payload_revalidation_observations"] if item["role"] == "source-air"]
+    assert observed["path"] == str(path) and observed["sha256"] == row["sha256"]
+
+
+def test_ctime_change_during_active_state_audit_is_rejected(case, monkeypatch):
+    validate, calls = case["validate"], 0
+    def changed(directory, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            path = case["execution"] / "board" / case["inspection"]["output_files"][3]["path"]
+            os.chmod(path, path.stat().st_mode & 0o7777)
+        return validate(directory, **kwargs)
+    monkeypatch.setattr(audit, "validate_target_decode_output_inventory", changed)
+    result = inspect(case)
+    assert result["status"] == "FAILED", result
+    assert "changed during state lineage audit" in result["error"]
+
+
+def test_derived_input_ctime_change_during_graph_analysis_is_rejected(case, monkeypatch):
+    path = case["execution"] / "source-inputs/position_ids.bin"
+    path.parent.mkdir()
+    path.write_bytes(b"\0" * 4)
+    case["plan"]["source_inputs"] = [{"path": str(path)}]
+    save(case["execution"] / "plan.json", case["plan"])
+    original = audit._decode_job
+    def changed(*args, **kwargs):
+        result = original(*args, **kwargs)
+        os.chmod(path, path.stat().st_mode & 0o7777)
+        return result
+    monkeypatch.setattr(audit, "_decode_job", changed)
+    result = inspect(case)
+    assert result["status"] == "FAILED", result
+    assert "decode source input changed during state lineage audit" in result["error"]
 
 
 @pytest.mark.parametrize("fault,reason", [

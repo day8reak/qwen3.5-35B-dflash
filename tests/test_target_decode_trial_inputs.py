@@ -1,7 +1,10 @@
 """Explicit experimental control inputs preserve all original bytes/identities."""
 import json
+import os
 from pathlib import Path
+import stat
 import struct
+import time
 
 import pytest
 
@@ -224,3 +227,84 @@ def test_single_token_validator_reconstructs_full_recipe_and_old_source_values(c
     with pytest.raises((OSError, ValueError)):
         trial.validate_decode_trial_inputs(case["out"])
     assert (case["out"] / "manifest.json").read_bytes() == before
+
+
+def touch_ctime(path):
+    old = path.stat()
+    time.sleep(.02)
+    mode = stat.S_IMODE(old.st_mode)
+    path.chmod(mode ^ stat.S_IXUSR)
+    path.chmod(mode)
+    new = path.stat()
+    assert (old.st_dev, old.st_ino, old.st_size, old.st_mtime_ns) == (
+        new.st_dev, new.st_ino, new.st_size, new.st_mtime_ns)
+    assert old.st_ctime_ns != new.st_ctime_ns
+
+
+def test_all13_derived_ctime_changes_revalidate_without_mutating_originals_manifest_or_recipe(case):
+    manifest = trial.prepare_decode_trial_inputs(case["source"], case["out"], experimental_single_token_controls=True)
+    before = snapshot(case["source"])
+    raw_manifest = (case["out"] / "manifest.json").read_bytes()
+    inputs = [case["out"] / row["path"] for row in manifest["copied_inputs"] + manifest["generated_controls"]]
+    assert len(inputs) == 13
+    for path in inputs:
+        touch_ctime(path)
+    observations = []
+    assert trial.validate_decode_trial_inputs(case["out"], payload_revalidation_observations=observations) == manifest
+    assert len(observations) == 13
+    assert {row["path"] for row in observations} == {str(path) for path in inputs}
+    assert sum(row["role"] == "decode-trial-copied" for row in observations) == 9
+    assert sum(row["role"] == "decode-trial-generated" for row in observations) == 4
+    assert all(row["kind"] == "PAYLOAD_CTIME_ONLY_REVALIDATED" and row["status"] == "SHA256_VERIFIED" for row in observations)
+    assert (case["out"] / "manifest.json").read_bytes() == raw_manifest
+    unchanged(case["source"], before)
+
+
+@pytest.mark.parametrize("kind", ["copy", "generated"])
+@pytest.mark.parametrize("change", ["mtime", "inode", "content", "hardlink"])
+def test_derived_payload_revalidation_never_accepts_other_identity_or_recipe_drift(case, kind, change):
+    manifest = trial.prepare_decode_trial_inputs(case["source"], case["out"], experimental_single_token_controls=True)
+    path = case["out"] / (manifest["copied_inputs"][0] if kind == "copy" else manifest["generated_controls"][0])["path"]
+    before, raw = path.stat(), path.read_bytes()
+    if change == "mtime":
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1))
+    elif change == "inode":
+        other = case["out"] / "replacement"
+        other.write_bytes(raw)
+        os.utime(other, ns=(before.st_atime_ns, before.st_mtime_ns))
+        other.replace(path)
+    elif change == "content":
+        path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    else:
+        os.link(path, case["out"] / "extra-link")
+    with pytest.raises((ValueError, OSError)):
+        trial.validate_decode_trial_inputs(case["out"], payload_revalidation_observations=[])
+
+
+def test_original_source_ctime_stays_strict_when_derived_reconciliation_is_enabled(case):
+    prepare(case)
+    touch_ctime(case["source"] / "position_ids.bin")
+    with pytest.raises(ValueError, match="original.*identit"):
+        trial.validate_decode_trial_inputs(case["out"], payload_revalidation_observations=[])
+
+
+def test_derived_change_after_fresh_hash_is_rejected_at_final_stability_gate(case, monkeypatch):
+    prepare(case)
+    original, changed = trial._hash, False
+    def mutate(path, **options):
+        nonlocal changed
+        result = original(path, **options)
+        if not changed and Path(path).parent == case["out"] / "inputs":
+            changed = True
+            touch_ctime(Path(path))
+        return result
+    monkeypatch.setattr(trial, "_hash", mutate)
+    with pytest.raises(ValueError, match="changed after fresh hash"):
+        trial.validate_decode_trial_inputs(case["out"], payload_revalidation_observations=[])
+
+
+def test_payload_revalidation_collector_type_is_explicit(case):
+    prepare(case)
+    with pytest.raises(ValueError, match="must be a list"):
+        trial.validate_decode_trial_inputs(case["out"], payload_revalidation_observations={})

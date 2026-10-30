@@ -12,8 +12,9 @@ from .artifacts import output_path, save_json
 from . import target_state_lineage as lineage
 from .target_compile_failure import _relative, _safe
 from .target_decode_output_inventory import validate_target_decode_output_inventory
-from .target_prefill_output_inventory import _json
-from .target_prefill_smoke_plan import _nd_view_key, _runtime_keys
+from .target_prefill_output_inventory import _hash_retrieved, _json
+from .target_prefill_smoke_plan import _identity, _nd_view_key, _runtime_keys
+from .payload_revalidation import payload_identity_matches
 
 
 _PROFILE = "cpro-40block-decode-1"
@@ -77,7 +78,7 @@ def _bind_execution(inspection, job, probe_dir, probe, bindings):
     return execution, plan
 
 
-def _bind_files(inspection, execution):
+def _bind_files(inspection, execution, *, payload_revalidation_observations=None, expected_current=None):
     """Use the validator's explicit log binding; never parse output_N names."""
     rows = inspection.get("output_files")
     if (not isinstance(rows, list) or len(rows) != 82 or any(not isinstance(row, dict) for row in rows)
@@ -85,16 +86,33 @@ def _bind_files(inspection, execution):
             or {row["runtime_index"] for row in rows} != set(range(82))
             or len({row.get("path") for row in rows}) != 82):
         raise ValueError("output inventory must bind82 distinct runtime slots and actual file paths")
+    current = {}
     for row in rows:
         if row.get("slot_binding") != "EXPLICIT_TOOL_LOG_PATH_AND_DESCRIPTOR_EXTENT":
             raise ValueError("state output file has no complete explicit tool log binding")
-        if _safe(_relative(execution / "board", row["path"]))[1] != row.get("stat"):
-            raise ValueError("decode output file changed after fresh inventory validation")
-    return {row["runtime_index"]: row for row in rows}
+        path = _relative(execution / "board", row["path"])
+        stamp = _safe(path)[1]
+        if expected_current is not None:
+            if stamp != expected_current[row["runtime_index"]]["stat"]:
+                raise ValueError("decode output file changed during state lineage audit")
+            current[row["runtime_index"]] = expected_current[row["runtime_index"]]
+        elif stamp == row.get("stat"):
+            current[row["runtime_index"]] = dict(row)
+        else:
+            try:
+                identity, _ = _hash_retrieved(path, row)
+            except ValueError as error:
+                raise ValueError("decode output file changed after fresh inventory validation: " + str(error)) from error
+            old = {"path": str(path), **{key: row[key] for key in ("bytes", "sha256", "stat")}}
+            fresh = {"path": str(path), **identity}
+            if not payload_identity_matches(old, fresh, role="decode-output",
+                    observations=payload_revalidation_observations):
+                raise ValueError("decode output file changed after fresh inventory validation")
+            current[row["runtime_index"]] = dict(row, **identity)
+    return current
 
 
-def _file_mapping(job, inspection, execution, plan):
-    files = _bind_files(inspection, execution)
+def _file_mapping(job, inspection, execution, plan, files):
     rows = []
     for state in job["runtime_bindings"]["states"]:
         row = {key: state.get(key) for key in ("source_refdata", "source_output_index", "compiled_output_index")}
@@ -158,7 +176,7 @@ def inspect_target_decode_state_lineage(job, runtime_probe, output_inspection, o
     """Retain one read-only same-artifact decode ownership audit."""
     out = output_path(output)
     out.mkdir(parents=True, exist_ok=False)
-    bindings, revalidations = [], []
+    bindings, revalidations, metadata_revalidations, payload_revalidations = [], [], [], []
     result = {"schema_version": 1, "artifact_kind": _KIND, "status": "FAILED", "output": str(out),
         "stage": "validate-output-inspection", "device_execution": "NOT_RUN", "device_calls": "NONE",
         "model_compilation": "NOT_RUN", "model_payload_access": "SMALL_BOUND_AIR_AND_PRIMARY_OMC_GRAPH_ONLY",
@@ -167,16 +185,26 @@ def inspect_target_decode_state_lineage(job, runtime_probe, output_inspection, o
         "cross_model_state_identity": "NOT_EVALUATED_SAME_MODEL_ONLY", "same_model_state_mapping": "UNVERIFIED",
         "graph_edge_policy": lineage.graph_edge_policy(),
         "primary_omc_revalidation_observations": revalidations,
+        "metadata_revalidation_observations": metadata_revalidations,
+        "payload_revalidation_observations": payload_revalidations,
         "scope": "Same-model structural state identity and actual logged file bytes only; no feedback inputs, inference, control contract, greedy generation or accuracy acceptance"}
     try:
         inspection_dir, _ = _safe(output_inspection, directory=True)
         saved = _json(inspection_dir / "report.json", bindings)
-        inspection = validate_target_decode_output_inventory(inspection_dir, revalidation_observations=revalidations)
+        inspection = validate_target_decode_output_inventory(inspection_dir, revalidation_observations=revalidations,
+            metadata_revalidation_observations=metadata_revalidations,
+            payload_revalidation_observations=payload_revalidations)
         if inspection != saved:
             raise ValueError("output inspection changed during fresh validation")
         result["output_inspection"] = bindings[-1]
         result["execution"] = inspection["execution"]
         result["trial_inputs"] = inspection["trial_inputs"]
+        initial_plan = _json(Path(inspection["execution"]) / "plan.json", bindings)
+        input_baselines = []
+        for row in initial_plan.get("source_inputs", []):
+            path, _ = _safe(row["path"])
+            input_baselines.append({"path": str(path), "identity": _identity(path.stat())})
+        result["source_input_current_identities"] = input_baselines
         result["stage"] = "read-decode-graphs"
         result["decode"] = {}
         decoded, enums = _decode_job(job, bindings, result["decode"], source_torchair_pb2=source_torchair_pb2)
@@ -191,7 +219,8 @@ def inspect_target_decode_state_lineage(job, runtime_probe, output_inspection, o
         result["runtime_identity"] = {key: probe[key] for key in ("runtime_version", "firmware_id", "ddk_id")}
         result["stage"] = "bind-executed-state-files"
         execution, plan = _bind_execution(inspection, decoded, probe_dir, probe, bindings)
-        decoded["state_file_mapping"] = _file_mapping(decoded, inspection, execution, plan)
+        files = _bind_files(inspection, execution, payload_revalidation_observations=payload_revalidations)
+        decoded["state_file_mapping"] = _file_mapping(decoded, inspection, execution, plan, files)
         result["gap_summary"] = _gaps(decoded)
         result["same_model_state_mapping"] = decoded["state_file_mapping"]["status"]
         source_rows = decoded["source_lineage"]["states"]
@@ -207,9 +236,15 @@ def inspect_target_decode_state_lineage(job, runtime_probe, output_inspection, o
         result["next"] = ("Prepare a separate same-model continuation with all 80 individually bound states, proven original embedding bytes and declared control assumptions; then verify the actual state chain"
             if complete else "Review retained gap reasons and examples; obtain missing literal graph/runtime identities without ordinal or equal-shape substitutions")
         result["stage"] = "verify-source-preservation"
-        if validate_target_decode_output_inventory(inspection_dir, revalidation_observations=revalidations) != inspection:
+        if validate_target_decode_output_inventory(inspection_dir, revalidation_observations=revalidations,
+                metadata_revalidation_observations=metadata_revalidations,
+                payload_revalidation_observations=payload_revalidations) != inspection:
             raise ValueError("output inspection changed during state lineage audit")
-        _bind_files(inspection, execution)
+        _bind_files(inspection, execution, expected_current=files)
+        for row in input_baselines:
+            path, _ = _safe(row["path"])
+            if _identity(path.stat()) != row["identity"]:
+                raise ValueError("decode source input changed during state lineage audit: " + str(path))
         for identity in bindings:
             if _safe(identity["path"])[1] != identity["stat"]:
                 raise ValueError("bound graph/runtime evidence changed during state lineage audit")
@@ -220,6 +255,10 @@ def inspect_target_decode_state_lineage(job, runtime_probe, output_inspection, o
             error=f"{type(error).__name__}: {error}")
         result["gap_summary"] = _gaps(result.get("decode", {}))
         result["next"] = "Review the retained failing stage and exact evidence error; no feedback mapping is executable"
+    for attempt in result.get("decode", {}).get("evidence_read_attempts", []):
+        observed = attempt.get("source_air_ctime_revalidation")
+        if observed is not None and observed not in payload_revalidations:
+            payload_revalidations.append(observed)
     if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) > _MAX_REPORT:
         raise ValueError("decode state lineage report exceeds4MiB budget")
     save_json(out / "report.json", result)

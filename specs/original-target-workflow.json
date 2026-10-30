@@ -3,8 +3,8 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "QUERY269_LOCATED_CTIME_FIX_HOST_VERIFIED_STATE_MAP_PENDING",
-  "handoff": "20261030T034826Z-19080-cf9efd/handoff.md",
+  "status": "DECODE_EVIDENCE_CTIME_REPLAY_HOST_VERIFIED_V6_PENDING",
+  "handoff": "20261030T042950Z-19586-63014b/handoff.md",
   "user_state": "User-reported original full40layer prefill64 and independent experimental decode1 executed with82 logged/hash-bound outputs; exact real feature fed full6layer draft forone step. Original query raw row/scale located at269. PrimarySHA matched; v4 also observedpermissions0777 differingfromsaved0600 andcorrectly refused. Restoreoneprimarymode beforev5. Same-model80state mapping, feedback/control semantics, next-row import and multiround accuracy/performance remain open.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
@@ -53,7 +53,7 @@
     "Complete target/draft verify, stop/reject/commit and compatible draft context capacity",
     "Matched numerical acceptance and measured end-to-end performance"
   ],
-  "next_command": "Restore only the selected primary OMC mode0600 and run same-model state-lineage-v5; query269 row handoff remains independent. See docs/current-status.md.",
+  "next_command": "Pull updates, restore only13 named derivedinput files to recorded0644, then runstate-lineage-v6; existingquery269 row-v2 handoff remainsavailable. See docs/current-status.md.",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -1214,14 +1214,14 @@
     },
     "same_model_state_lineage": {
       "entrypoint": "targets/cpro/scripts/inspect_target_decode_state_lineage.py",
-      "output": "target-decode1-state-lineage-v5",
+      "output": "target-decode1-state-lineage-v6",
       "success_status": "ALL80_SAME_MODEL_STATE_BINDINGS_OBSERVED",
       "partial_status": "DECODE_STATE_LINEAGE_OBSERVED_WITH_GAPS",
       "checks": "80unique serialized named updater owners, unique explicit source/compiled FX identities, exact typed views, literal native descriptor names, actual logged SHA-bound output files. Source producer missing shapes stay explicit; no profile-based filling.",
       "feedback_ready": false,
       "state_feedback": "NOT_RUN",
       "scope": "Same compiled decode model only; separate prefill/decode RefData labels are not assumed common layer identity.",
-      "status": "USER_V4_REFUSED_PRIMARY_MODE0777_VS_SAVED0600_RESTORE_SINGLE_FILE_THEN_REVALIDATE",
+      "status": "HOST_BATCH_CTIME_RECOVERY_VERIFIED_RESTORE13_MODES_THEN_USER_V6",
       "metadata_json_maximum_bytes": 33554432,
       "source_pb2_flag": "--source-torchair-pb2"
     },
@@ -1404,7 +1404,7 @@
     },
     "fix": "Hash-bound canonical export receipt selects source pb2 AST literal; source ge.proto schema and enum domains independent from compiled selected-DDKhiai schema. Missing declared source dependency does not select another schema or ignore unknown fields.",
     "copy_policy": "Only exact16543B producer file copied from source host; --source-torchair-pb2 accepts matching receipt pb2 SHA and descriptor SHA, never executes the generated Python module.",
-    "next_output": "target-decode1-state-lineage-v5",
+    "next_output": "target-decode1-state-lineage-v6",
     "actual_full_state_mapping": "PENDING_USER_ARTIFACT_AUDIT"
   },
   "original_decode_row_transfer": {
@@ -1415,19 +1415,19 @@
       "extract",
       "import"
     ],
-    "prepared_output": "target-decode1-row-request-v2",
+    "prepared_output": "target-decode1-row-request-v3",
     "request_files_to_source_host": [
       "request.json",
       "extract_rows.py"
     ],
     "source_host": "USER_CONFIRMED_ORIGINAL_WEIGHT_MACHINE",
     "original_table_directory": "/home/l00886453/models/Qwen3.5-35B-A3B_quant",
-    "source_output": "target-decode1-row-response-v2",
+    "source_output": "target-decode1-row-response-v3",
     "return_files": [
       "response.json",
       "ge_ir_by_protoc_3_19_pb2.py"
     ],
-    "import_output": "target-decode1-original-rows-v2",
+    "import_output": "target-decode1-original-rows-v3",
     "request_maximum_bytes": 65536,
     "response_maximum_bytes": 1048576,
     "table_maximum_bytes": 2103300,
@@ -1598,7 +1598,7 @@
     "changed_field": "ctime_ns_AND_mode",
     "cause_of_ctime_change": "NOT_ESTABLISHED",
     "repair_policy": "Onlysamefirstfourstat fields plusfreshstableboundedprimarySHA allowctime reconciliation; allotherplan/fullidentityfields unchanged. Oldreports/receipts preserved. No weightstat relaxation.",
-    "latest_audit": "target-decode1-state-lineage-v4",
+    "latest_audit": "target-decode1-state-lineage-v5",
     "latest_saved_plan_identity_differences": {
       "mode": {
         "current": 33279,
@@ -1610,7 +1610,9 @@
       "recorded": "0600"
     },
     "recovery": "chmod0600 onexact selectedsmallprimarymodel.omc only; no recursivechange, receiptedit, codegate relaxation ormodelrecompile. Rerun withnewv5 output; existing boundedSHA handlesremainingctime drift.",
-    "actual_recovery_execution": "NOT_YET_REPORTED"
+    "actual_recovery_execution": "USER_EXECUTED_CHMOD0600_BEFORE_V5",
+    "latest_audit_failure": "runtime probe source/help identity changed",
+    "primary_gate_after_mode_restore": "PASSED_TO_METADATA_VALIDATION"
   },
   "decode_graph_input_policy_fix": {
     "prior_user_error": "conflicting input and src_name/src_index edge representations",
@@ -1657,5 +1659,99 @@
       }
     ],
     "scope": "Hostfixtures only: authoritative graph inputs, request-v2 explicitquery269 with unchanged256contextIDs, ctime-only small-primary rehash plus immutable savedreceipts, real retained-output fixture validators and fakeHDC cachedreuse. No actualmodel/device/accuracy/state-continuity/performance acceptance."
+  },
+  "runtime_evidence_ctime_user_report": {
+    "source": "USER_PASTED_BATCH_READ_ONLY_METADATA_AND_SMALL_PAYLOAD_STAT_SHA_RESULTS",
+    "metadata_groups": {
+      "probe_records": 5,
+      "plan_records": 11,
+      "inspection_records": 7,
+      "unique_files": 18
+    },
+    "metadata_content_match": "ALL_REPORTED_TRUE",
+    "metadata_identity_delta": "CTIME_ONLY_PATH_DEVICE_INODE_BYTES_MTIME_UNCHANGED",
+    "payload_groups": {
+      "planned_input_ctime_only": 13,
+      "original_input_unchanged": 12,
+      "trial_input_ctime_only": 13,
+      "output_ctime_only": 82,
+      "log_ctime_only": 4
+    },
+    "derived_input_modes": {
+      "recorded": "0644",
+      "current": "0777",
+      "files": [
+        "allQLen.bin",
+        "attention_mask.bin",
+        "conv_state_pos.bin",
+        "effective_length.bin",
+        "embed_scale.bin",
+        "inputs_embeds.bin",
+        "new_kv_cache_pos.bin",
+        "output_pos.bin",
+        "past_conv_state.bin",
+        "past_k.bin",
+        "past_recurrent_state.bin",
+        "past_v.bin",
+        "position_ids.bin"
+      ]
+    },
+    "payload_content_match": "ALL_REPORTED_TRUE",
+    "mode_restore_execution": "PENDING_USER_EXACT13_CHMOD0644",
+    "original_inputs": "ALL12_UNCHANGED_KEEP_STRICT",
+    "next_model_inference": "NOT_REQUESTED_BY_THIS_AUDIT"
+  },
+  "historical_evidence_revalidation_policy": {
+    "scope": "Explicit role-bound smallmetadata/retaineddecodeinputs/outputs/logs and selectedsourceAIR only; originalreceipts immutable",
+    "metadata_maximum_bytes": 33554432,
+    "small_payload_maximum_bytes": 8388608,
+    "selected_graph_maximum_bytes": 67108864,
+    "comparison": "Fresh stable boundedSHA mustmatch; exactpath/device/inode/size/mtime; historicalctime alonecanreconcile. Existingfull9 nonctimeinput/primaryfieldsincludingmodeuidgidnlink stayexact. No tensorordinal/stateowner inference.",
+    "roles": "JSON+native-status metadata;13 derivedtrial files;82 explicitlylogged outputs;4 explicitlynamedtool logs;selectedboundsourceAIR",
+    "current_identity": "Newstatefilemapping storescurrentstats. Newresult metadata/payload/primary collectorsretainold/current identities andSHA. Within-invocation currentbaselinesremainstrict.",
+    "new_compile_or_device_call": "NONE",
+    "weight_revalidation": "UNCHANGED_NO_LARGE_WEIGHT_READ_OR_CTIME_EXCEPTION",
+    "actual_all80_mapping": "PENDING_USER_V6",
+    "numerical_validation": "NOT_RUN"
+  },
+  "evidence_ctime_revalidation_host_verification": {
+    "run_id": "20261030T042950Z-19586-63014b",
+    "unique_tests_passed": 522,
+    "failures_remaining": 0,
+    "coverage_missing": 0,
+    "evidence": [
+      {
+        "artifact": "revalidation-junit.xml",
+        "tests": 222,
+        "sha256": "313f893ba3746f79d4a097cf55dbef2dead4a975340c26bf830bb9b8a66101a7"
+      },
+      {
+        "artifact": "out/decode-metadata-payload-tests-final.xml",
+        "tests": 108,
+        "sha256": "f9c5d88cad192abbab768345cae21dd45607c3f51eebbbd49ef20f149f17bf2c"
+      },
+      {
+        "artifact": "out/decode-wrapper-release.xml",
+        "tests": 22,
+        "sha256": "9bf82fcccf3699265fbe1393d47a68c667dcb441ce90fb2aa7c647d62b38052b"
+      },
+      {
+        "artifact": "out/decode-wrapper-observations.xml",
+        "tests": 2,
+        "sha256": "37833cfb2fdd199ef28947fa80154731bfbae1fbd075fde075deca75084cb93a"
+      },
+      {
+        "artifact": "out/adjacent-release.xml",
+        "tests": 49,
+        "sha256": "d38884660d939e65638ec22d1d4c4e8258034abde413c45f0d77a3888cc80f18"
+      }
+    ],
+    "portable_embedding_coverage": {
+      "artifact": "out/row-final-coverage.json",
+      "collected": 120,
+      "passed": 120,
+      "sha256": "85a6f073d45e09b14ab3c638cf445df662c9f91a4e8632222344c6172638b512"
+    },
+    "scope": "Hostfixtures only: role-scoped historicalctime revalidation, strict first4/hash/full9nonctime fields, oldreceipts immutable/currentstatefileIDs, active-read races, raw control/source/log/slot guards, portableprotocolv1/v2 and stdlibresourceextractor. No actualDDK/phone model execution, weightread, accuracy orstate-continuity acceptance."
   }
 }

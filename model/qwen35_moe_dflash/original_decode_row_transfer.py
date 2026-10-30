@@ -210,12 +210,39 @@ def _matching_positions(positions, matches):
     return [{"token_id": token, "positions": positions[token]} for token in matches if positions[token]]
 
 
-def _fresh_local(audit, inspection, config_yaml, *, revalidation_observations=None):
+def _metadata_matches(recorded, current, role, observations):
+    # Local historical metadata only. Portable extract/locate never call this
+    # package helper; Python source and every tensor payload stay strict.
+    from .metadata_revalidation import metadata_identity_matches
+    return metadata_identity_matches(recorded, current, role=role, observations=observations)
+
+
+def _payload_matches(recorded, current, role, observations):
+    from .payload_revalidation import payload_identity_matches
+    return recorded == current or payload_identity_matches(recorded, current, role=role, observations=observations)
+
+
+def _remember_current_metadata(identity, snapshot):
+    previous = snapshot.get(identity["path"])
+    if previous is not None and previous != identity:
+        raise ValueError("metadata changed after its first current read: " + identity["path"])
+    snapshot[identity["path"]] = identity
+
+
+def _assert_current_metadata(snapshot):
+    for identity in snapshot.values():
+        if _read(identity["path"], _METADATA_MAX)[1] != identity:
+            raise ValueError("metadata changed within the current transfer invocation: " + identity["path"])
+
+
+def _fresh_local(audit, inspection, config_yaml, *, revalidation_observations=None,
+                 metadata_revalidation_observations=None, payload_revalidation_observations=None,
+                 active_metadata_identities=None):
     # These imports are never executed by the portable extract command.
     from .original_decode_embedding_probe import _input
     from .original_embedding_probe import _bound_bytes
     from .target_decode_output_inventory import validate_target_decode_output_inventory
-    from .target_prefill_output_inventory import _numerical
+    from .target_prefill_output_inventory import _hash_retrieved, _numerical
 
     if (audit.get("artifact_kind") != "qwen35-original-decode-embedding-row-probe"
             or audit.get("status") != "ORIGINAL_EMBEDDING_TABLES_UNAVAILABLE" or audit.get("inspection") != str(inspection)
@@ -223,38 +250,70 @@ def _fresh_local(audit, inspection, config_yaml, *, revalidation_observations=No
             or audit.get("next_token_inputs") != [] or audit.get("source_preservation") != "UNCHANGED_DECODE_METADATA_SOURCE_IDS_INPUT_ROWS_LOGITS_AND_SELECTED_TABLE_IDENTITIES"):
         raise ValueError("portable preparation requires an untouched bound source audit with original tables unavailable")
     observations = [] if revalidation_observations is None else revalidation_observations
+    metadata_observations = [] if metadata_revalidation_observations is None else metadata_revalidation_observations
+    payload_observations = [] if payload_revalidation_observations is None else payload_revalidation_observations
+    active_metadata = {} if active_metadata_identities is None else active_metadata_identities
+    if not isinstance(active_metadata, dict):
+        raise ValueError("active_metadata_identities must be a dictionary or None")
+    def read_metadata(path, maximum):
+        raw, identity = _read(path, maximum)
+        _remember_current_metadata(identity, active_metadata)
+        return raw, identity
     if not isinstance(observations, list):
         raise ValueError("revalidation_observations must be a list or None")
-    current = validate_target_decode_output_inventory(inspection, revalidation_observations=observations)
-    report_identity = _read(inspection / "report.json", _METADATA_MAX)[1]
-    config_identity = _read(config_yaml, 1 << 20)[1]
+    if not isinstance(metadata_observations, list):
+        raise ValueError("metadata_revalidation_observations must be a list or None")
+    if not isinstance(payload_observations, list):
+        raise ValueError("payload_revalidation_observations must be a list or None")
+    current = validate_target_decode_output_inventory(inspection, revalidation_observations=observations,
+        metadata_revalidation_observations=metadata_observations, payload_revalidation_observations=payload_observations)
+    report_identity = read_metadata(inspection / "report.json", _METADATA_MAX)[1]
+    config_identity = read_metadata(config_yaml, 1 << 20)[1]
     allowed = [*current["evidence_bindings"], report_identity, config_identity]
     for identity in audit["source_bindings"]:
-        if identity not in allowed or _read(identity["path"], _METADATA_MAX)[1] != identity:
+        matches = [row for row in allowed if row.get("path") == identity["path"]]
+        if not matches:
             raise ValueError("local source audit metadata changed or is not in the fresh decode proof")
-    if config_identity != audit["original_config"]:
+        fresh = read_metadata(identity["path"], _METADATA_MAX)[1]
+        role = "embedding-config-metadata" if Path(identity["path"]).suffix.lower() in {".yaml", ".yml"} else "embedding-audit-metadata"
+        if (not any(_metadata_matches(row, fresh, role, metadata_observations) for row in matches)
+                or not _metadata_matches(identity, fresh, role, metadata_observations)):
+            raise ValueError("local source audit metadata changed or is not in the fresh decode proof")
+    if not _metadata_matches(audit["original_config"], config_identity, "embedding-config-metadata", metadata_observations):
         raise ValueError("original table configuration changed after source audit")
     execution = Path(current["execution"])
-    plan, _ = _json(execution / "plan.json", _METADATA_MAX)
+    plan, plan_identity = _json(execution / "plan.json", _METADATA_MAX)
+    _remember_current_metadata(plan_identity, active_metadata)
     trial_binding = current["trial_inputs"]["manifest"]
     trial, trial_identity = _json(trial_binding["path"], _METADATA_MAX)
-    if trial_identity != trial_binding or str(execution) != audit["execution"]:
+    _remember_current_metadata(trial_identity, active_metadata)
+    if (not _metadata_matches(trial_binding, trial_identity, "decode-trial-manifest", metadata_observations)
+            or str(execution) != audit["execution"]):
         raise ValueError("executed trial no longer matches the local source audit")
     ids_path = Path(trial["source_input_dir"]) / "input_ids.bin"
     raw_ids, ids_identity = _bound_bytes(ids_path, audit["original_input_ids"], 4096)
-    embedding, embedding_identity = _input(plan, Path(plan["input_dir"]), "arg1_1", "inputs_embeds", "INT8", _HIDDEN)
-    scale, scale_identity = _input(plan, Path(plan["input_dir"]), "arg0_1", "embed_scale", "FLOAT32", 4)
-    if embedding_identity != audit["executed_embedding"] or scale_identity != audit["executed_scale"]:
+    embedding, embedding_identity = _input(plan, Path(plan["input_dir"]), "arg1_1", "inputs_embeds", "INT8", _HIDDEN,
+        payload_revalidation_observations=payload_observations)
+    scale, scale_identity = _input(plan, Path(plan["input_dir"]), "arg0_1", "embed_scale", "FLOAT32", 4,
+        payload_revalidation_observations=payload_observations)
+    if (not _payload_matches(audit["executed_embedding"], embedding_identity, "decode-trial-copied", payload_observations)
+            or not _payload_matches(audit["executed_scale"], scale_identity, "decode-trial-copied", payload_observations)):
         raise ValueError("actual executed row/scale identity changed after local source audit")
     logits = current["bound_tensors"]["logits"]
     logit_path = execution / "board" / logits["path"]
     logit_identity = {"path": str(logit_path), **{key: logits[key] for key in ("bytes", "sha256", "stat")}}
-    if logit_identity != audit["bound_logits"]:
+    fresh_logits = logit_identity
+    if _safe(logit_path)[1] != logits["stat"] or logit_identity != audit["bound_logits"]:
+        fresh, _ = _hash_retrieved(logit_path, logits)
+        fresh_logits = {"path": str(logit_path), **fresh}
+    if (not _payload_matches(logit_identity, fresh_logits, "decode-output", payload_observations)
+            or not _payload_matches(audit["bound_logits"], fresh_logits, "decode-output", payload_observations)):
         raise ValueError("actual decode logits binding changed after local source audit")
-    stats = _numerical(logit_path, current["expected_runtime_outputs"][logits["runtime_index"]], logits)
+    stats = _numerical(logit_path, current["expected_runtime_outputs"][logits["runtime_index"]], fresh_logits)
     if (stats != logits["statistics"] or stats.get("argmax", {}).get("status") != "OBSERVED_ALL_FINITE"
             or stats["argmax"]["token_id"] != audit["selected_next_token_id"]):
         raise ValueError("fresh decode logits no longer bind the selected greedy token")
+    _assert_current_metadata(active_metadata)
     return raw_ids, embedding, scale, stats["argmax"]["token_id"]
 
 
@@ -263,17 +322,25 @@ def prepare_rows(inspection, config_yaml, output, *, query_token_id=None):
 
     out = _new_output(output)
     result = {"schema_version": 1, "artifact_kind": _PREPARED_KIND, "status": "FAILED", "output": str(out)}
-    revalidations = []
+    revalidations, metadata_revalidations, payload_revalidations = [], [], []
+    active_metadata = {}
     try:
         if query_token_id is not None and (type(query_token_id) is not int or not 0 <= query_token_id < _VOCAB):
             raise ValueError("query_token_id must be an explicit in-vocabulary integer, never a boolean")
         inspection, _ = _safe(inspection, directory=True)
         config_yaml, _ = _safe(config_yaml)
         audit = inspect_original_decode_embeddings(inspection, config_yaml, out / "source-audit", match_source_id_candidates=True,
-            revalidation_observations=revalidations)
+            revalidation_observations=revalidations, metadata_revalidation_observations=metadata_revalidations,
+            payload_revalidation_observations=payload_revalidations)
+        for identity in audit.get("source_bindings", []):
+            _remember_current_metadata(identity, active_metadata)
+        audit_saved, audit_identity = _json(out / "source-audit/report.json", _METADATA_MAX)
+        if audit_saved != audit:
+            raise ValueError("new source audit changed before transfer preparation")
+        _remember_current_metadata(audit_identity, active_metadata)
         raw_ids, embedding, scale, next_token = _fresh_local(audit, inspection, config_yaml,
-            revalidation_observations=revalidations)
-        audit_identity = _read(out / "source-audit/report.json", _METADATA_MAX)[1]
+            revalidation_observations=revalidations, metadata_revalidation_observations=metadata_revalidations,
+            payload_revalidation_observations=payload_revalidations, active_metadata_identities=active_metadata)
         request = {"schema_version": 1, "artifact_kind": _REQUEST_KIND, "vocab_size": _VOCAB, "hidden_size": _HIDDEN,
             "limits": dict(_LIMITS), "source_audit_sha256": audit_identity["sha256"],
             "source_token_ids": _blob(raw_ids, "INT32", [1, len(raw_ids) // 4]),
@@ -289,8 +356,10 @@ def prepare_rows(inspection, config_yaml, output, *, query_token_id=None):
         if len(request_raw) > _REQUEST_MAX:
             raise ValueError("portable request exceeds64KiB budget")
         request_identity = _write(out, "request.json", request_raw)
+        _remember_current_metadata(request_identity, active_metadata)
         script_raw, _ = _read(__file__, 1 << 20)
         script_identity = _write(out, "extract_rows.py", script_raw)
+        _assert_current_metadata(active_metadata)
         result.update(status="ORIGINAL_DECODE_ROW_TRANSFER_PREPARED", inspection=str(inspection), config_yaml=str(config_yaml),
             source_audit=audit_identity, request=request_identity, extraction_script=script_identity,
             binding_digest=request["binding_digest"], next_token_id=next_token,
@@ -301,8 +370,14 @@ def prepare_rows(inspection, config_yaml, output, *, query_token_id=None):
             result.update(schema_version=2, query_token_id=query_token_id, binding_method=_QUERY_METHOD,
                 context_id_count=len(raw_ids) // 4, effective_candidate_count=1, source_id_vector_role="UNCHANGED_CONTEXT_ONLY")
     except (OSError, ValueError, TypeError, KeyError, IndexError, RecursionError, struct.error) as error:
-        result["error"] = f"{type(error).__name__}: {error}"
+        result.update(status="FAILED", error=f"{type(error).__name__}: {error}")
     result["primary_omc_revalidation_observations"] = revalidations
+    result["metadata_revalidation_observations"] = metadata_revalidations
+    if metadata_revalidations:
+        result["metadata_identity_revalidation"] = "CTIME_ONLY_FRESH_METADATA_SHA256_OLD_RECEIPTS_UNCHANGED"
+    result["payload_revalidation_observations"] = payload_revalidations
+    if payload_revalidations:
+        result["payload_identity_revalidation"] = "CTIME_ONLY_FRESH_PAYLOAD_SHA256_OLD_RECEIPTS_UNCHANGED"
     result["model_payload_access"] = "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY" if revalidations else "NONE"
     _save(out, "manifest.json", result)
     return result
@@ -595,45 +670,56 @@ def import_rows(prepared, response_path, output):
     result = {"schema_version": 1, "artifact_kind": "qwen35-original-decode-row-transfer-import", "status": "FAILED",
         "output": str(out), "next_token_inputs": [], "logical_history": "UNVERIFIED", "runtime_control_recipe": "UNVERIFIED",
         "state_feedback": "UNVERIFIED", "numerical_validation": "NOT_RUN_NO_REFERENCE", "device_execution": "NOT_RUN"}
-    revalidations = []
+    revalidations, metadata_revalidations, payload_revalidations = [], [], []
+    active_metadata = {}
     try:
         prepared, _ = _safe(prepared, directory=True)
         manifest, manifest_identity = _json(prepared / "manifest.json", _METADATA_MAX)
+        _remember_current_metadata(manifest_identity, active_metadata)
         if (manifest.get("artifact_kind") != _PREPARED_KIND or manifest.get("status") != "ORIGINAL_DECODE_ROW_TRANSFER_PREPARED"
                 or manifest.get("output") != str(prepared)):
             raise ValueError("expected the successful owned original row transfer preparation")
         request, request_identity = _json(prepared / "request.json", _REQUEST_MAX)
+        _remember_current_metadata(request_identity, active_metadata)
         if (type(manifest.get("schema_version")) is not int or manifest["schema_version"] != request.get("schema_version")
                 or (request.get("schema_version") == 2 and (manifest.get("query_token_id") != request.get("query_token_id")
                     or type(manifest.get("query_token_id")) is not int or manifest.get("binding_method") != _QUERY_METHOD))
                 or (request.get("schema_version") == 1 and any(key in manifest for key in ("query_token_id", "binding_method")))):
             raise ValueError("prepared manifest/request query version or explicit flags differ")
         audit, audit_identity = _json(prepared / "source-audit/report.json", _METADATA_MAX)
+        _remember_current_metadata(audit_identity, active_metadata)
         script_identity = _read(prepared / "extract_rows.py", 1 << 20)[1]
-        if request_identity != manifest["request"] or audit_identity != manifest["source_audit"] or request["source_audit_sha256"] != audit_identity["sha256"]:
+        if (not _metadata_matches(manifest["request"], request_identity, "row-transfer-request-metadata", metadata_revalidations)
+                or not _metadata_matches(manifest["source_audit"], audit_identity, "embedding-audit-metadata", metadata_revalidations)
+                or request["source_audit_sha256"] != audit_identity["sha256"]):
             raise ValueError("prepared request/source audit identity changed")
         if script_identity != manifest["extraction_script"]:
             raise ValueError("prepared portable extraction source identity changed")
         if request.get("table_paths") != {table["role"]: table["path"] for table in audit["tables"]}:
             raise ValueError("portable request table paths differ from the original configured source audit")
         payloads = _fresh_local(audit, Path(manifest["inspection"]), Path(manifest["config_yaml"]),
-            revalidation_observations=revalidations)
+            revalidation_observations=revalidations, metadata_revalidation_observations=metadata_revalidations,
+            payload_revalidation_observations=payload_revalidations, active_metadata_identities=active_metadata)
         raw_ids, row, scale, _ = _request(request)
         if payloads != (raw_ids, row, scale, request["next_token_id"]) or request["binding_digest"] != manifest["binding_digest"]:
             raise ValueError("portable request no longer matches current actual decode input/logits bytes")
         response, response_identity = _json(response_path, _RESPONSE_MAX)
+        _remember_current_metadata(response_identity, active_metadata)
         if response.get("extractor_sha256") != manifest["extraction_script"]["sha256"]:
             raise ValueError("resource extractor SHA256 differs from the exact prepared extraction source")
         next_bytes, next_scale, source, positions = _response(response, request, request_identity)
         # Rebind again before any next-token file exists; source rows and logits
         # are small and the complete output inventory remains read-only.
         if _fresh_local(audit, Path(manifest["inspection"]), Path(manifest["config_yaml"]),
-                revalidation_observations=revalidations) != payloads:
+                revalidation_observations=revalidations, metadata_revalidation_observations=metadata_revalidations,
+                payload_revalidation_observations=payload_revalidations, active_metadata_identities=active_metadata) != payloads:
             raise ValueError("local decode source changed during response verification")
         for identity, maximum in ((manifest_identity, _METADATA_MAX), (request_identity, _REQUEST_MAX),
                                   (audit_identity, _METADATA_MAX), (script_identity, 1 << 20), (response_identity, _RESPONSE_MAX)):
-            if _read(identity["path"], maximum)[1] != identity:
+            fresh = _read(identity["path"], maximum)[1]
+            if fresh != identity:
                 raise ValueError("row transfer evidence changed during import")
+        _assert_current_metadata(active_metadata)
         next_dir = out / "next-token"
         next_dir.mkdir()
         files = [_write(next_dir, "inputs_embeds.bin", next_bytes), _write(next_dir, "embed_scale.bin", next_scale),
@@ -652,8 +738,14 @@ def import_rows(prepared, response_path, output):
                 context_id_count=request["source_token_ids"]["shape"][1], effective_candidate_count=1,
                 source_id_vector_role="UNCHANGED_CONTEXT_ONLY", matching_position_semantics="CONTEXT_OCCURRENCES_ONLY_LOGICAL_HISTORY_UNVERIFIED")
     except (OSError, ValueError, TypeError, KeyError, IndexError, RecursionError, struct.error) as error:
-        result["error"] = f"{type(error).__name__}: {error}"
+        result.update(status="FAILED", error=f"{type(error).__name__}: {error}")
     result["primary_omc_revalidation_observations"] = revalidations
+    result["metadata_revalidation_observations"] = metadata_revalidations
+    if metadata_revalidations:
+        result["metadata_identity_revalidation"] = "CTIME_ONLY_FRESH_METADATA_SHA256_OLD_RECEIPTS_UNCHANGED"
+    result["payload_revalidation_observations"] = payload_revalidations
+    if payload_revalidations:
+        result["payload_identity_revalidation"] = "CTIME_ONLY_FRESH_PAYLOAD_SHA256_OLD_RECEIPTS_UNCHANGED"
     result["model_payload_access"] = "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY" if revalidations else "NONE"
     _save(out, "report.json", result)
     return result

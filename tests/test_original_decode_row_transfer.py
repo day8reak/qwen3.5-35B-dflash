@@ -6,6 +6,7 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+import time
 
 import pytest
 import yaml
@@ -577,3 +578,133 @@ def test_ctime_only_primary_revalidation_is_visible_in_new_query_prepare_and_imp
     assert result["primary_omc_revalidation_observations"]
     assert all(path.read_bytes() == raw for path, raw in historical_bytes.items())
     assert sum(row["bytes"] for row in result["next_token_inputs"]) == 2056
+
+
+def test_historical_metadata_and_restored_payload_ctimes_rebind_end_to_end_without_changing_old_receipt_bytes(query_handoff, tmp_path):
+    case = query_handoff
+    retained = case["case"]["case"]
+    inspection_path = Path(case["manifest"]["inspection"]) / "report.json"
+    inspection = json.loads(inspection_path.read_text())
+    audit_path = case["prepared"] / "source-audit/report.json"
+    audit = json.loads(audit_path.read_text())
+    identities = [*inspection["evidence_bindings"], *audit["source_bindings"],
+        *retained["proof"]["metadata_bindings"], *retained["sources"]["outer"]["source_bindings"]]
+    metadata_paths = {Path(row["path"]) for row in identities}
+    metadata_paths |= {inspection_path, audit_path, case["prepared"] / "manifest.json", case["request"], case["case"]["config"]}
+    assert all(path.suffix in {".json", ".yaml", ".yml", ".exitcode"} for path in metadata_paths)
+    old_metadata = {path: path.read_bytes() for path in metadata_paths}
+    originals = {path: stamp(path) for path in case["case"]["source"].iterdir()}
+    for path in metadata_paths:
+        before = path.stat()
+        os.chmod(path, before.st_mode & 0o7777)
+        assert stamp(path)[:4] == (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        assert path.read_bytes() == old_metadata[path]
+    derived = list((case["case"]["trial"] / "inputs").iterdir())
+    assert len(derived) == 13
+    payload_paths = [*derived, *[retained["board"] / name for name in retained["report"]["retrieved"]]]
+    old_payload_sha = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in payload_paths}
+    for path in derived:
+        before = path.stat()
+        assert before.st_mode & 0o7777 == 0o644
+        os.chmod(path, 0o777)
+        os.chmod(path, 0o644)
+        assert stamp(path)[:4] == (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+    for path in payload_paths[len(derived):]:
+        os.chmod(path, path.stat().st_mode & 0o7777)
+    hidden = []
+    for path in case["tables"]:
+        held = path.with_suffix(".held-on-resource")
+        path.rename(held); hidden.append((held, path))
+    prepared = tmp_path / "all-ctime-query-prepared"
+    try:
+        manifest = transfer.prepare_rows(case["manifest"]["inspection"], case["case"]["config"], prepared, query_token_id=269)
+    finally:
+        for held, path in hidden: held.rename(path)
+    assert manifest["status"] == "ORIGINAL_DECODE_ROW_TRANSFER_PREPARED", manifest
+    assert manifest["metadata_revalidation_observations"] and manifest["payload_revalidation_observations"]
+    assert manifest["model_payload_access"] == "NONE"
+    current_audit = json.loads((prepared / "source-audit/report.json").read_text())
+    assert current_audit["metadata_revalidation_observations"] and current_audit["payload_revalidation_observations"]
+    assert current_audit["bound_logits"] == audit["bound_logits"]
+    assert current_audit["bound_logits_current_read"]["stat"] != audit["bound_logits"]["stat"]
+    assert current_audit["observed_payload_reads"]["bound_logits_bytes"] == 2 * 993280
+    # A returned packet may also acquire historical metadata ctime drift. Its
+    # JSON bytes stay exact; the copied Python extractor remains untouched.
+    packet_paths = [prepared / "manifest.json", prepared / "request.json", prepared / "source-audit/report.json"]
+    packet_bytes = {path: path.read_bytes() for path in packet_paths}
+    for path in packet_paths: os.chmod(path, path.stat().st_mode & 0o7777)
+    case.update(prepared=prepared, request=prepared / "request.json", manifest=manifest)
+    assert extract(case)["status"] == transfer._EXTRACTED
+    result = consume(case)
+    assert result["status"] == "ORIGINAL_DECODE_TRANSFERRED_ROWS_BOUND_NEXT_TOKEN_PREPARED", result
+    assert result["metadata_revalidation_observations"] and result["payload_revalidation_observations"]
+    assert result["metadata_identity_revalidation"] == "CTIME_ONLY_FRESH_METADATA_SHA256_OLD_RECEIPTS_UNCHANGED"
+    assert result["payload_identity_revalidation"] == "CTIME_ONLY_FRESH_PAYLOAD_SHA256_OLD_RECEIPTS_UNCHANGED"
+    assert result["matching_source_positions"] == [] and result["selected_source_token_id"] == 269
+    assert all(path.read_bytes() == raw for path, raw in {**old_metadata, **packet_bytes}.items())
+    assert all(hashlib.sha256(path.read_bytes()).hexdigest() == digest for path, digest in old_payload_sha.items())
+    assert all(stamp(path) == identity for path, identity in originals.items())
+
+
+@pytest.mark.parametrize("changed", ["source_ids", "extractor_code"])
+def test_metadata_ctime_rules_never_apply_to_original_context_ids_or_copied_python(query_handoff, changed):
+    case = query_handoff
+    assert extract(case)["status"] == transfer._EXTRACTED
+    path = case["case"]["source"] / "input_ids.bin" if changed == "source_ids" else case["prepared"] / "extract_rows.py"
+    raw = path.read_bytes()
+    os.chmod(path, path.stat().st_mode & 0o7777)
+    assert path.read_bytes() == raw
+    no_next(case, consume(case))
+
+
+def test_payload_ctime_rule_never_accepts_unrestored_derived_input_permissions(query_handoff):
+    case = query_handoff
+    assert extract(case)["status"] == transfer._EXTRACTED
+    os.chmod(case["case"]["trial"] / "inputs/inputs_embeds.bin", 0o777)
+    no_next(case, consume(case))
+
+
+@pytest.mark.parametrize("which", ["request", "plan", "inspection"])
+def test_active_import_metadata_ctime_change_is_refused_after_first_current_snapshot(query_handoff, monkeypatch, which):
+    case = query_handoff
+    assert extract(case)["status"] == transfer._EXTRACTED
+    path = (case["request"] if which == "request" else
+            case["case"]["case"]["execution"] / "plan.json" if which == "plan" else
+            Path(case["manifest"]["inspection"]) / "report.json")
+    original, body = transfer._response, path.read_bytes()
+    def race(*args):
+        result = original(*args)
+        os.chmod(path, path.stat().st_mode & 0o7777)
+        assert path.read_bytes() == body
+        return result
+    monkeypatch.setattr(transfer, "_response", race)
+    result = consume(case)
+    no_next(case, result)
+    assert "changed" in result["error"]
+
+
+def test_late_prepare_metadata_ctime_failure_never_reports_a_prepared_packet(query_handoff, tmp_path, monkeypatch):
+    case = query_handoff
+    original = transfer._assert_current_metadata
+    def race(snapshot):
+        packets = [Path(path) for path in snapshot if Path(path).name == "request.json"]
+        if packets:
+            path = packets[-1]
+            before = path.stat()
+            time.sleep(.01)
+            os.chmod(path, path.stat().st_mode & 0o7777)
+            assert path.stat().st_ctime_ns != before.st_ctime_ns
+        return original(snapshot)
+    monkeypatch.setattr(transfer, "_assert_current_metadata", race)
+    hidden = []
+    for path in case["tables"]:
+        held = path.with_suffix(".held-for-late-prepare")
+        path.rename(held); hidden.append((held, path))
+    output = tmp_path / "late-prepare-race"
+    try:
+        result = transfer.prepare_rows(case["manifest"]["inspection"], case["case"]["config"], output, query_token_id=269)
+    finally:
+        for held, path in hidden: held.rename(path)
+    assert result["status"] == "FAILED" and "changed" in result["error"], result
+    assert json.loads((output / "manifest.json").read_text())["status"] == "FAILED"
+    assert "next" not in result and not (output / "next-token").exists()

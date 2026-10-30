@@ -14,6 +14,7 @@ import re
 import struct
 
 from .artifacts import output_path, save_json
+from .payload_revalidation import payload_identity_matches
 from .target_compile_failure import _read_small, _safe, _stamp
 from .target_prefill_output_inventory import _json
 
@@ -231,8 +232,10 @@ def prepare_decode_trial_inputs(input_dir, output_dir, *, experimental_conv_curr
     return manifest
 
 
-def validate_decode_trial_inputs(prepared_dir):
+def validate_decode_trial_inputs(prepared_dir, *, payload_revalidation_observations=None):
     """Read-only validation before/after using an explicitly selected trial."""
+    if payload_revalidation_observations is not None and not isinstance(payload_revalidation_observations, list):
+        raise ValueError("payload_revalidation_observations must be a list or None")
     root, _ = _safe(prepared_dir, directory=True)
     bindings = []
     manifest = _json(root / "manifest.json", bindings)
@@ -264,6 +267,7 @@ def validate_decode_trial_inputs(prepared_dir):
     observed = _source_rows(source, manifest["source_directory_identity"], originals)
     if observed != originals:
         raise ValueError("original source binding inventory changed")
+    verified_payloads = list(observed)
     recipe = _recipe(single_token)
     if manifest.get("assumption") != _assumption(single_token, source, originals):
         raise ValueError("experimental control assumptions differ from the current original values and explicit recipe")
@@ -281,11 +285,14 @@ def validate_decode_trial_inputs(prepared_dir):
                 or len(row["stat"]) != 5 or any(type(value) is not int for value in row["stat"])):
             raise ValueError("experimental copied input does not match its exact original source")
         path = inputs / row["file"]
-        actual = _hash(path, expected_bytes=row["bytes"], expected_stat=row["stat"])
+        actual = _hash(path, expected_bytes=row["bytes"])
+        recorded = {"path": str(path), **{key: row[key] for key in ("bytes", "sha256", "stat")}}
         info = path.stat()
-        if (actual["sha256"] != row["sha256"] or info.st_nlink != 1
+        if (not payload_identity_matches(recorded, actual, role="decode-trial-copied",
+                observations=payload_revalidation_observations) or info.st_nlink != 1
                 or (info.st_dev, info.st_ino) == tuple(original["stat"][:2])):
             raise ValueError("experimental copied bytes changed or are linked to another file")
+        verified_payloads.append(actual)
     generated_controls = manifest.get("generated_controls", [])
     if (not isinstance(generated_controls, list) or len(generated_controls) != len(recipe)
             or manifest.get("generated_control") != generated_controls[0]):
@@ -299,9 +306,13 @@ def validate_decode_trial_inputs(prepared_dir):
                 or generated.get("sha256") != hashlib.sha256(selected["raw"]).hexdigest()):
             raise ValueError("generated control differs from its explicit experimental single-query recipe")
         raw, identity = _read_small(inputs / selected["file"], len(selected["raw"]))
-        if (raw != selected["raw"] or identity["stat"] != generated.get("stat")
+        recorded = {"path": str(inputs / selected["file"]),
+            **{key: generated.get(key) for key in ("bytes", "sha256", "stat")}}
+        if (raw != selected["raw"] or not payload_identity_matches(recorded, identity,
+                role="decode-trial-generated", observations=payload_revalidation_observations)
                 or (inputs / selected["file"]).stat().st_nlink != 1):
             raise ValueError("experimental control bytes or identity changed")
+        verified_payloads.append(identity)
     if (manifest.get("explicit_copy_bytes") != sum(row["bytes"] for row in copies)
             or manifest.get("generated_control_bytes") != sum(len(row["raw"]) for row in recipe)
             or manifest.get("source_preservation") != "UNCHANGED_REQUIRED_ORIGINAL_INPUT_SHA256_AND_FILE_IDENTITIES"
@@ -310,4 +321,7 @@ def validate_decode_trial_inputs(prepared_dir):
         raise ValueError("experimental preservation or execution-scope declarations changed")
     if _read_small(root / "manifest.json", 8 << 20)[1] != bindings[0]:
         raise ValueError("experimental manifest changed during validation")
+    for identity in verified_payloads:
+        if _safe(identity["path"])[1] != identity["stat"]:
+            raise ValueError("decode trial payload changed after fresh hash verification")
     return manifest

@@ -158,12 +158,136 @@ def test_stat_only_primary_change_reports_exact_metadata_without_opening_model(c
 
 
 def ctime_only(path):
+    import time
     before = path.stat()
+    time.sleep(0.02)
     os.chmod(path, before.st_mode & 0o7777)
     after = path.stat()
     assert (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) == (
         after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
     assert before.st_ctime_ns != after.st_ctime_ns
+
+
+def test_all_eleven_metadata_ctimes_revalidate_current_plan_without_model_reads_or_receipt_rewrites(case, monkeypatch):
+    plan = prepare(case)
+    preserved = deepcopy(plan)
+    assert len(plan["metadata_bindings"]) == 11
+    receipts = {Path(row["path"]): Path(row["path"]).read_bytes() for row in plan["metadata_bindings"]}
+    for path in receipts:
+        ctime_only(path)
+    actual_open = os.open
+    def guarded(path, *args, **kwargs):
+        if str(path).endswith((".omc", ".weight")):
+            pytest.fail("metadata reconciliation opened a model or weight")
+        return actual_open(path, *args, **kwargs)
+    monkeypatch.setattr(os, "open", guarded)
+    events, primary_events = [], []
+    current = planner.validate_decode_smoke_plan(plan,
+        metadata_revalidation_observations=events, revalidation_observations=primary_events)
+    assert plan == preserved and {path: path.read_bytes() for path in receipts} == receipts
+    assert primary_events == [] and current["primary_model_binding"] == plan["primary_model_binding"]
+    assert current["model_payload_access"] == "NONE"
+    assert {row["path"] for row in events} == set(map(str, receipts))
+    assert all(row["kind"] == "METADATA_CTIME_ONLY_REVALIDATED" for row in events)
+    assert all(row["stat"] == _stat(Path(row["path"])) for row in current["metadata_bindings"])
+    assert all(new["stat"][:4] == old["stat"][:4] and new["stat"][4] != old["stat"][4]
+        for old, new in zip(plan["metadata_bindings"], current["metadata_bindings"]))
+    assert current["tool_binding"]["inspection"]["stat"] == _stat(case["help_report"])
+
+
+def test_all_thirteen_supplied_input_ctimes_revalidate_only_after_mode_restoration(case):
+    plan = prepare(case)
+    preserved = deepcopy(plan)
+    selected = [Path(row["path"]) for row in plan["source_inputs"]]
+    raw = {path: path.read_bytes() for path in selected}
+    original_modes = {path: path.stat().st_mode & 0o7777 for path in selected}
+    assert len(selected) == 13 and all("identity" not in row for row in plan["inputs"])
+    for path in selected: os.chmod(path, 0o777)
+    with pytest.raises(ValueError, match="metadata or supplied input identity changed"):
+        planner.validate_decode_smoke_plan(plan, payload_revalidation_observations=[])
+    for path, mode in original_modes.items(): os.chmod(path, mode)
+    events = []
+    current = planner.validate_decode_smoke_plan(plan, payload_revalidation_observations=events)
+    assert len(events) == 13 and {row["path"] for row in events} == set(map(str, selected))
+    assert all(row["role"] == "decode-input" and row["status"] == "SHA256_VERIFIED" for row in events)
+    assert all(old["identity"]["mode"] == new["identity"]["mode"] for old, new in zip(plan["source_inputs"], current["source_inputs"]))
+    assert current["inputs"] == plan["inputs"] and current["source_inputs"] != plan["source_inputs"]
+    assert plan == preserved and raw == {path: path.read_bytes() for path in selected}
+
+
+@pytest.mark.parametrize("fault", ["content", "inode", "mtime", "nlink"])
+def test_supplied_input_revalidation_refuses_every_other_actual_identity_change(case, fault):
+    plan = prepare(case)
+    path = case["source"] / "embed_scale.bin"
+    before, raw = path.stat(), path.read_bytes()
+    if fault == "content":
+        path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    elif fault == "inode":
+        other = path.with_name("replacement.bin")
+        other.write_bytes(raw)
+        os.chmod(other, before.st_mode & 0o7777)
+        os.utime(other, ns=(before.st_atime_ns, before.st_mtime_ns))
+        other.replace(path)
+    elif fault == "nlink": os.link(path, path.with_name("unexpected-link.bin"))
+    else: os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1000))
+    with pytest.raises(ValueError, match="metadata or supplied input identity changed"):
+        planner.validate_decode_smoke_plan(plan, payload_revalidation_observations=[])
+
+
+@pytest.mark.parametrize("fault", ["content", "inode", "mtime", "size"])
+def test_historical_help_metadata_reconciliation_refuses_other_drift(case, fault):
+    plan = prepare(case)
+    path = case["help_report"]
+    before, raw = path.stat(), path.read_bytes()
+    if fault == "content":
+        path.write_bytes(raw.replace(b"Usage:", b"usage:"))
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    elif fault == "inode":
+        replacement = path.with_name("replacement.json")
+        replacement.write_bytes(raw)
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        replacement.replace(path)
+    elif fault == "mtime": os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000))
+    else: path.write_bytes(raw + b" ")
+    with pytest.raises(ValueError, match="source/help identity changed"):
+        planner.validate_decode_smoke_plan(plan, metadata_revalidation_observations=[])
+
+
+def test_native_status_metadata_content_change_is_not_ctime_recovery(case):
+    plan = prepare(case)
+    path = case["probe"] / "runtime.exitcode"
+    before = path.stat()
+    path.write_bytes(b"1\n")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with pytest.raises(ValueError):
+        planner.validate_decode_smoke_plan(plan, metadata_revalidation_observations=[])
+
+
+def test_metadata_change_during_same_plan_construction_remains_strict(case, monkeypatch):
+    from qwen35_moe_dflash import target_prefill_smoke_plan as prefill
+    actual = prefill._read_small
+    selected = case["help_report"]
+    changed = False
+    def alter_after_bound_read(path, maximum):
+        nonlocal changed
+        result = actual(path, maximum)
+        if Path(path) == selected and not changed:
+            ctime_only(selected)
+            changed = True
+        return result
+    monkeypatch.setattr(prefill, "_read_small", alter_after_bound_read)
+    with pytest.raises(ValueError, match="metadata changed while constructing"):
+        prepare(case)
+
+
+def test_invalid_metadata_collector_fails_before_reading_any_evidence(case, monkeypatch):
+    def no_read(*args, **kwargs):
+        pytest.fail("invalid collector performed an evidence read")
+    monkeypatch.setattr(planner, "_safe", no_read)
+    with pytest.raises(ValueError, match="metadata revalidation observations must be a list"):
+        planner.prepare_decode_smoke_plan(case["compilation"], case["probe"], case["source"],
+            metadata_revalidation_observations={})
 
 
 def test_ctime_only_primary_revalidation_returns_current_identity_without_rewriting_receipts(case, monkeypatch):

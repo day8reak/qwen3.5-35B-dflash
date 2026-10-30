@@ -21,6 +21,7 @@ from .ge_fused.bindings import _source_record
 from .omc_container import read_container
 from .omc_wire import _MAX_LIBRARY, load_schema
 from .original_target_contract import _attributes
+from .payload_revalidation import payload_identity_matches
 from .target_compile_failure import _read_small, _relative, _safe
 from .target_export_reuse import _reject_constant, _unique_object
 from .target_prefill_smoke_plan import _nd_view_key, _runtime_keys
@@ -107,6 +108,17 @@ def _bound_file(root, row, bindings, *, maximum=_MAX_GRAPH_BYTES, stat_key="stat
         raise ValueError("recorded payload hash/size changed: " + str(path))
     if stat_key in row and row[stat_key] != identity["stat"]:
         recorded = row[stat_key]
+        if (role == "source-air" and stat_key == "snapshot_stat" and row.get("role") == "air"
+                and maximum <= _MAX_GRAPH_BYTES and payload_identity_matches(
+                    {"path": str(path), "bytes": row["bytes"], "sha256": row["sha256"], "stat": recorded},
+                    identity, role="source-air")):
+            if read_attempts is not None:
+                events = []
+                payload_identity_matches({"path": str(path), "bytes": row["bytes"],
+                    "sha256": row["sha256"], "stat": recorded}, identity, role="source-air", observations=events)
+                read_attempts[-1]["source_air_ctime_revalidation"] = events[0]
+            bindings.append(identity)
+            return path, raw, identity
         ctime_only = (role == "primary-omc" and stat_key == "stat" and maximum <= _MAX_GRAPH_BYTES
             and path.name == "model.omc" and isinstance(recorded, list) and len(recorded) == 5
             and recorded[:4] == identity["stat"][:4])
@@ -578,6 +590,8 @@ def load_target_graph(job, profile_name, bindings, *, source_capture=None, obser
         "graph_edge_policy": graph_edge_policy(),
         "primary_omc_revalidation_observations": [entry["primary_omc_ctime_revalidation"]
             for entry in read_attempts if "primary_omc_ctime_revalidation" in entry],
+        "source_air_revalidation_observations": [entry["source_air_ctime_revalidation"]
+            for entry in read_attempts if "source_air_ctime_revalidation" in entry],
         "evidence_read_attempts": read_attempts}
     if report.get("decode_input_view") is not None:
         borrowed = _metadata(compilation / "decode-input-view.json", bindings,

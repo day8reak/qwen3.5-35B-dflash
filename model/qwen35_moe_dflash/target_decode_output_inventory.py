@@ -1,8 +1,9 @@
 """Bind retained independent decode1 output files to explicitly logged slots.
 
-Only saved metadata, decode input provenance and retrieved outputs are read.
-No model/weight payload, device call, state feedback or numerical reference is
-used. A successful inventory is not a decode continuation or accuracy pass.
+Saved metadata, decode input provenance and retrieved outputs are read. A
+ctime-only primary identity recheck may hash the selected small OMC; weights,
+device calls, state feedback and numerical references are never used. A
+successful inventory is not a decode continuation or accuracy pass.
 """
 from __future__ import annotations
 
@@ -11,10 +12,13 @@ import math
 from pathlib import Path
 
 from .artifacts import output_path, save_json
+from .metadata_revalidation import metadata_identity_matches, metadata_sequence_matches
 from .original_target_board import _board_path
+from .payload_revalidation import payload_identity_matches
 from .target_compile_failure import _read_small, _relative, _safe
 from .target_decode_smoke_plan import validate_decode_smoke_plan
 from .target_decode_trial_inputs import validate_decode_trial_inputs
+from .target_prefill_smoke_plan import _identity
 from .target_prefill_output_inventory import (
     _LOGS, _MAX_METADATA, _MAX_TOTAL, _WIDTHS, _hash_retrieved, _json,
     _log_display, _logged_slots, _numerical,
@@ -26,7 +30,9 @@ _SCOPE = "SINGLE_DECODE1_USER_SUPPLIED_INPUTS_NO_PREFILL_FEEDBACK"
 _PRESERVED = "UNCHANGED_DECODE_PLAN_METADATA_AND_USER_INPUT_SHA256"
 
 
-def _bound_execution(execution, bindings, *, revalidation_observations=None):
+def _bound_execution(execution, bindings, *, revalidation_observations=None,
+                     metadata_revalidation_observations=None, payload_revalidation_observations=None,
+                     current_plans=None):
     outer = _json(execution / "result.json", bindings)
     board = _json(execution / "board/result.json", bindings)
     if (outer.get("artifact_kind") != "qwen35-target-decode-smoke-job" or outer.get("mode") != "APPLY"
@@ -97,7 +103,11 @@ def _bound_execution(execution, bindings, *, revalidation_observations=None):
               and row.get("path") == flags.get("model") and row.get("sha256") == plan.get("model_sha256")]
     if len(models) != 1 or flags.get("weight_dir") != str(Path(flags.get("model", "")).parent):
         raise ValueError("saved decode command model/weight directory is not bound to the recorded compiled payload")
-    validate_decode_smoke_plan(proof, revalidation_observations=revalidation_observations)
+    current = validate_decode_smoke_plan(proof, revalidation_observations=revalidation_observations,
+        metadata_revalidation_observations=metadata_revalidation_observations,
+        payload_revalidation_observations=payload_revalidation_observations)
+    if current_plans is not None:
+        current_plans.append(current)
     return outer, board, plan, proof
 
 
@@ -138,7 +148,8 @@ def _descriptors(plan):
     return result
 
 
-def _trial(outer, plan, bindings):
+def _trial(outer, plan, bindings, *, metadata_revalidation_observations=None,
+           payload_revalidation_observations=None, original_bindings=None):
     receipt = outer.get("trial_input_receipt")
     if receipt is None:
         if any(key in outer for key in ("experimental_input_assumption", "trial_input_preservation")):
@@ -149,9 +160,13 @@ def _trial(outer, plan, bindings):
             or outer.get("trial_input_preservation") != "UNCHANGED_ORIGINALS_DERIVED_INPUTS_AND_EXPLICIT_ASSUMPTION"):
         raise ValueError("decode trial receipt or preservation binding is incomplete")
     _json(receipt["path"], bindings)
-    if bindings[-1] != receipt:
+    if not metadata_identity_matches(receipt, bindings[-1], role="decode-trial-manifest",
+            observations=metadata_revalidation_observations):
         raise ValueError("decode trial manifest identity differs from the execution receipt")
-    trial = validate_decode_trial_inputs(Path(receipt["path"]).parent)
+    trial = validate_decode_trial_inputs(Path(receipt["path"]).parent,
+        payload_revalidation_observations=payload_revalidation_observations)
+    if original_bindings is not None:
+        original_bindings.extend(trial["source_bindings"])
     if trial["input_dir"] != plan.get("input_dir") or trial["assumption"] != outer.get("experimental_input_assumption"):
         raise ValueError("decode trial directory or explicit assumptions differ from the execution")
     return {"status": "FRESHLY_REVALIDATED_UNVERIFIED_EXPERIMENT", "manifest": receipt,
@@ -184,7 +199,28 @@ def _states(execution, indexed, observations, descriptors, excluded):
             "scope": "Typed statistics of 80 explicitly logged runtime state slots; no layer ownership, source history, accuracy or continuity proof"}
 
 
-def inspect_target_decode_outputs(execution, output, *, include_state_statistics=True):
+def _retained_payload_matches(path, recorded, current, *, role, observations):
+    """Compare historical identity only after the caller freshly hashed bytes."""
+    prior = {key: recorded.get(key) for key in ("bytes", "sha256", "stat")}
+    if prior == current:
+        return True
+    return payload_identity_matches({"path": str(path), **prior}, {"path": str(path), **current},
+        role=role, observations=observations)
+
+
+def _current_sources_unchanged(current_plan, originals):
+    """Historical ctime replay never permits drift within this invocation."""
+    for row in [*current_plan["source_inputs"], current_plan["primary_model_binding"]]:
+        path, _ = _safe(row["path"])
+        if _identity(path.stat()) != row["identity"]:
+            raise ValueError("decode source changed during output inventory validation")
+    for row in [*current_plan["metadata_bindings"], *originals]:
+        if _safe(row["path"])[1] != row["stat"]:
+            raise ValueError("decode source evidence changed during output inventory validation")
+
+
+def inspect_target_decode_outputs(execution, output, *, include_state_statistics=True,
+                                  metadata_revalidation_observations=None, payload_revalidation_observations=None):
     out = output_path(output)
     out.mkdir(parents=True, exist_ok=False)
     result = {"schema_version": 1, "artifact_kind": _KIND, "status": "FAILED", "output": str(out),
@@ -194,13 +230,24 @@ def inspect_target_decode_outputs(execution, output, *, include_state_statistics
               "state_continuity": "NOT_VALIDATED", "numerical_validation": "NOT_RUN_NO_REFERENCE"}
     revalidations = []
     result["primary_omc_revalidation_observations"] = revalidations
+    metadata_revalidations = []
+    result["metadata_revalidation_observations"] = metadata_revalidations
+    payload_revalidations = []
+    result["payload_revalidation_observations"] = payload_revalidations
     try:
         if type(include_state_statistics) is not bool:
             raise ValueError("include_state_statistics must be an explicit boolean")
+        if metadata_revalidation_observations is not None and not isinstance(metadata_revalidation_observations, list):
+            raise ValueError("metadata_revalidation_observations must be a list or None")
+        if payload_revalidation_observations is not None and not isinstance(payload_revalidation_observations, list):
+            raise ValueError("payload_revalidation_observations must be a list or None")
         execution, _ = _safe(execution, directory=True)
-        bindings = []
-        outer, board, plan, proof = _bound_execution(execution, bindings, revalidation_observations=revalidations)
-        trial = _trial(outer, plan, bindings)
+        bindings, current_plans, original_bindings = [], [], []
+        outer, board, plan, proof = _bound_execution(execution, bindings, revalidation_observations=revalidations,
+            metadata_revalidation_observations=metadata_revalidations,
+            payload_revalidation_observations=payload_revalidations, current_plans=current_plans)
+        trial = _trial(outer, plan, bindings, metadata_revalidation_observations=metadata_revalidations,
+            payload_revalidation_observations=payload_revalidations, original_bindings=original_bindings)
         descriptors = _descriptors(plan)
         retrieved = board.get("retrieved")
         if not isinstance(retrieved, dict) or not 5 <= len(retrieved) <= 1028:
@@ -242,8 +289,13 @@ def inspect_target_decode_outputs(execution, output, *, include_state_statistics
             by_path = {row["path"]: row for row in mapping["entries"]}
             for row in rows:
                 row.update(runtime_index=by_path[row["path"]]["runtime_index"], slot_binding="EXPLICIT_TOOL_LOG_PATH_AND_DESCRIPTOR_EXTENT")
-        validate_decode_smoke_plan(proof, revalidation_observations=revalidations)
-        if _trial(outer, plan, []) != trial:
+        final_plan = validate_decode_smoke_plan(proof, revalidation_observations=revalidations,
+            metadata_revalidation_observations=metadata_revalidations,
+            payload_revalidation_observations=payload_revalidations)
+        if final_plan != current_plans[0]:
+            raise ValueError("decode source changed during output inspection")
+        if _trial(outer, plan, [], metadata_revalidation_observations=metadata_revalidations,
+                payload_revalidation_observations=payload_revalidations) != trial:
             raise ValueError("decode trial provenance changed during output inspection")
         for identity in bindings:
             if _read_small(identity["path"], _MAX_METADATA)[1] != identity:
@@ -251,6 +303,7 @@ def inspect_target_decode_outputs(execution, output, *, include_state_statistics
         for name, identity in observations.items():
             if _safe(_relative(execution / "board", name))[1] != identity["stat"]:
                 raise ValueError("retrieved decode file changed after hash verification")
+        _current_sources_unchanged(current_plans[0], original_bindings)
         expected, observed = Counter(row["bytes"] for row in descriptors), Counter(row["bytes"] for row in rows)
         result.update(status="DECODE_OUTPUT_FILES_INSPECTED_SLOT_BINDING_UNVERIFIED", execution=str(execution),
             execution_scope=_SCOPE, evidence_bindings=bindings, plan_output_count=82,
@@ -273,17 +326,41 @@ def inspect_target_decode_outputs(execution, output, *, include_state_statistics
         result["model_payload_access"] = "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY"
         if result.get("source_validation"):
             result["source_validation"] = "FRESH_DECODE_PLAN_METADATA_AND_USER_INPUT_SHA256_WITH_CTIME_ONLY_PRIMARY_REHASH"
+        if result.get("scope"):
+            result["scope"] = result["scope"].replace("no model/weight reads", "no weight reads")
+            result["scope"] += " The selected small primary OMC was freshly hashed for ctime-only reconciliation."
+    if metadata_revalidations:
+        result["metadata_identity_revalidation"] = "CTIME_ONLY_FRESH_METADATA_SHA256_OLD_RECEIPTS_UNCHANGED"
+        result["metadata_revalidation_scope"] = (
+            "Bounded recorded metadata was freshly hashed; only historical ctime changes were reconciled. "
+            "Raw payloads use a separate bounded identity policy; no saved receipt was rewritten.")
+        if result.get("scope"):
+            result["scope"] += " Historical metadata ctime-only differences were reconciled against freshly verified bytes; saved receipts remain unchanged."
+    if isinstance(metadata_revalidation_observations, list):
+        metadata_revalidation_observations.extend(metadata_revalidations)
+    if payload_revalidations:
+        result["payload_identity_revalidation"] = "CTIME_ONLY_FRESH_PAYLOAD_SHA256_OLD_RECEIPTS_UNCHANGED"
+        result["payload_revalidation_scope"] = (
+            "Only recorded derived decode inputs and explicitly logged outputs/logs admit historical ctime drift "
+            "after fresh stable SHA verification; original sources and every nonctime identity field remain strict.")
+    if isinstance(payload_revalidation_observations, list):
+        payload_revalidation_observations.extend(payload_revalidations)
     save_json(out / "report.json", result)
     return result
 
 
-def validate_target_decode_output_inventory(inspection, *, revalidation_observations=None):
+def validate_target_decode_output_inventory(inspection, *, revalidation_observations=None,
+                                            metadata_revalidation_observations=None, payload_revalidation_observations=None):
     """Rebind a successful saved inventory without writing or repeating stats.
 
     This freshly verifies its source plan/trial, metadata, all 82 output hashes,
     logs and explicit index/path mapping. Descriptive numerical summaries are
     not an accuracy contract and are not recomputed by this read-only helper.
     """
+    if metadata_revalidation_observations is not None and not isinstance(metadata_revalidation_observations, list):
+        raise ValueError("metadata_revalidation_observations must be a list or None")
+    if payload_revalidation_observations is not None and not isinstance(payload_revalidation_observations, list):
+        raise ValueError("payload_revalidation_observations must be a list or None")
     root, _ = _safe(inspection, directory=True)
     report_bindings = []
     report = _json(root / "report.json", report_bindings)
@@ -303,10 +380,14 @@ def validate_target_decode_output_inventory(inspection, *, revalidation_observat
             or report.get("error")):
         raise ValueError("expected a successful untouched independent decode output inventory")
     execution, _ = _safe(report["execution"], directory=True)
-    bindings = []
-    outer, board, plan, proof = _bound_execution(execution, bindings, revalidation_observations=revalidation_observations)
-    trial = _trial(outer, plan, bindings)
-    if (trial != report.get("trial_inputs") or bindings != report.get("evidence_bindings")
+    bindings, current_plans, original_bindings = [], [], []
+    outer, board, plan, proof = _bound_execution(execution, bindings, revalidation_observations=revalidation_observations,
+        metadata_revalidation_observations=metadata_revalidation_observations,
+        payload_revalidation_observations=payload_revalidation_observations, current_plans=current_plans)
+    trial = _trial(outer, plan, bindings, metadata_revalidation_observations=metadata_revalidation_observations,
+        payload_revalidation_observations=payload_revalidation_observations, original_bindings=original_bindings)
+    if (trial != report.get("trial_inputs") or not metadata_sequence_matches(report.get("evidence_bindings"), bindings,
+            role="decode-output-inventory-metadata", observations=metadata_revalidation_observations)
             or report.get("tool_process_id") != board["tool_process_id"] or report.get("remote_exitcode") != 0):
         raise ValueError("decode inventory metadata or explicit trial evidence changed")
     descriptors = _descriptors(plan)
@@ -325,14 +406,19 @@ def validate_target_decode_output_inventory(inspection, *, revalidation_observat
         if any(row.get(key) != retrieved[row["path"]].get(key) for key in ("bytes", "sha256")):
             raise ValueError("decode inventory output extent/hash differs from its execution")
         identity, _ = _hash_retrieved(_relative(execution / "board", row["path"]), row)
-        if identity != {key: row.get(key) for key in ("bytes", "sha256", "stat")}:
+        if not _retained_payload_matches(_relative(execution / "board", row["path"]), row, identity,
+                role="decode-output", observations=payload_revalidation_observations):
             raise ValueError("decode inventory output identity changed")
         observations[row["path"]] = identity
     raw_stdout = None
     for name in _LOGS:
         identity, raw = _hash_retrieved(_relative(execution / "board", name), retrieved[name], capture=True)
         observations[name] = identity
-        if _log_display(raw, identity) != report.get("tool_logs", {}).get(name):
+        display, saved_log = _log_display(raw, identity), report.get("tool_logs", {}).get(name)
+        if (not isinstance(saved_log, dict)
+                or dict(display, stat=saved_log.get("stat")) != saved_log
+                or not _retained_payload_matches(_relative(execution / "board", name), saved_log, identity,
+                    role="decode-log", observations=payload_revalidation_observations)):
             raise ValueError("decode inventory retained tool log identity or display changed")
         if name == "tool.exitcode" and raw.strip() != b"0":
             raise ValueError("decode inventory tool exitcode differs from the successful execution")
@@ -354,10 +440,16 @@ def validate_target_decode_output_inventory(inspection, *, revalidation_observat
         bound = report.get("bound_tensors", {}).get(label, {})
         name = by_index[index]["path"]
         if (bound.get("runtime_index") != index or bound.get("path") != name
-                or any(bound.get(key) != observations[name][key] for key in ("bytes", "sha256", "stat"))):
+                or not _retained_payload_matches(_relative(execution / "board", name), bound, observations[name],
+                    role="decode-output", observations=payload_revalidation_observations)):
             raise ValueError("decode inventory feature/logits file binding changed")
-    validate_decode_smoke_plan(proof, revalidation_observations=revalidation_observations)
-    if _trial(outer, plan, []) != trial:
+    final_plan = validate_decode_smoke_plan(proof, revalidation_observations=revalidation_observations,
+        metadata_revalidation_observations=metadata_revalidation_observations,
+        payload_revalidation_observations=payload_revalidation_observations)
+    if final_plan != current_plans[0]:
+        raise ValueError("decode source changed during inventory validation")
+    if _trial(outer, plan, [], metadata_revalidation_observations=metadata_revalidation_observations,
+            payload_revalidation_observations=payload_revalidation_observations) != trial:
         raise ValueError("decode trial provenance changed during inventory validation")
     for identity in [*report_bindings, *bindings]:
         if _read_small(identity["path"], _MAX_METADATA)[1] != identity:
@@ -365,4 +457,5 @@ def validate_target_decode_output_inventory(inspection, *, revalidation_observat
     for name, identity in observations.items():
         if _safe(_relative(execution / "board", name))[1] != identity["stat"]:
             raise ValueError("decode output changed during inventory validation")
+    _current_sources_unchanged(current_plans[0], original_bindings)
     return report

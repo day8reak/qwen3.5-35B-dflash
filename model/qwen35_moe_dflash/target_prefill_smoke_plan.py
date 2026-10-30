@@ -19,6 +19,7 @@ import stat
 from .existing_air import _conversion_options
 from .existing_air_profile import get_existing_air_profile
 from .original_target_board import original_input_files
+from .metadata_revalidation import metadata_identity_matches
 from .target_compile_failure import _read_small, _safe
 from .target_export_reuse import _reject_constant, _unique_object
 
@@ -125,7 +126,9 @@ def _runtime_keys(native, direction):
     return result
 
 
-def _tool_binding(probe, bindings):
+def _tool_binding(probe, bindings, metadata_revalidation_observations=None):
+    if metadata_revalidation_observations is not None and not isinstance(metadata_revalidation_observations, list):
+        raise ValueError("metadata revalidation observations must be a list")
     rows = probe.get("source_bindings")
     if not isinstance(rows, list) or not 1 <= len(rows) <= 16:
         raise ValueError("runtime probe must retain its exact source/help metadata bindings")
@@ -143,7 +146,8 @@ def _tool_binding(probe, bindings):
             if value.get("artifact_kind") != "qwen35-target-board-tool-inspection":
                 raise ValueError("unexpected runtime probe source outside the compiled job/help receipt")
             tools.append((value, identity))
-        if any(row.get(key) != identity[key] for key in ("path", "stat", "sha256")):
+        if not metadata_identity_matches(row, identity, role="runtime-probe-source-metadata",
+                observations=metadata_revalidation_observations):
             raise ValueError("runtime probe source/help identity changed")
     if len(tools) != 1 or not {row["path"] for row in bindings[:4]} <= seen:
         raise ValueError("one exact previously observed tool-help receipt is required")

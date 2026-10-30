@@ -20,6 +20,8 @@ import struct
 from .existing_air import _conversion_options
 from .existing_air_profile import get_existing_air_profile
 from .original_target_board import original_input_files
+from .metadata_revalidation import metadata_identity_matches, metadata_sequence_matches
+from .payload_revalidation import payload_sequence_matches
 from .target_compile_failure import _read_small, _safe
 from .target_prefill_smoke_plan import (_GE_TYPES, _INPUT_TYPES, _ND_VIEW_POLICY, _TOOL_TYPES, _WIDTHS,
     _ge_key, _identity, _json, _nd_view_key, _runtime_keys, _source, _tool_binding)
@@ -323,17 +325,20 @@ def _control_observations(input_root, sources):
 
 
 def prepare_decode_smoke_plan(compilation_dir, runtime_probe, input_dir, *, revalidation_observations=None,
+        metadata_revalidation_observations=None,
                                _saved_primary_identity=None):
     """Return one independently supplied decode trial plan; no device calls."""
     if revalidation_observations is not None and not isinstance(revalidation_observations, list):
         raise ValueError("primary revalidation observations must be a list")
+    if metadata_revalidation_observations is not None and not isinstance(metadata_revalidation_observations, list):
+        raise ValueError("metadata revalidation observations must be a list")
     compilation, _ = _safe(compilation_dir, directory=True)
     probe_dir, _ = _safe(runtime_probe, directory=True)
     input_root, _ = _safe(input_dir, directory=True)
     bindings = []
     compiled, contract, probe, native, model = _bound_probe(compilation, probe_dir, bindings,
         expected_primary_identity=_saved_primary_identity, revalidation_observations=revalidation_observations)
-    tool = _tool_binding(probe, bindings)
+    tool = _tool_binding(probe, bindings, metadata_revalidation_observations=metadata_revalidation_observations)
     extents = inspect_decode_input_extents(input_root)
     if extents["status"] != "DECODE_INPUT_EXTENTS_MATCHED":
         raise ValueError(_input_extent_error(extents))
@@ -444,10 +449,15 @@ def prepare_decode_smoke_plan(compilation_dir, runtime_probe, input_dir, *, reva
         "scope": _PLAN_REVALIDATED_SCOPE if model["scope"] == _PRIMARY_REVALIDATED_SCOPE else _PLAN_SCOPE}
 
 
-def validate_decode_smoke_plan(plan, *, revalidation_observations=None):
+def validate_decode_smoke_plan(plan, *, revalidation_observations=None, metadata_revalidation_observations=None,
+        payload_revalidation_observations=None):
     """Rehash all supplied input files and bound metadata without writing them."""
     if revalidation_observations is not None and not isinstance(revalidation_observations, list):
         raise ValueError("primary revalidation observations must be a list")
+    if metadata_revalidation_observations is not None and not isinstance(metadata_revalidation_observations, list):
+        raise ValueError("metadata revalidation observations must be a list")
+    if payload_revalidation_observations is not None and not isinstance(payload_revalidation_observations, list):
+        raise ValueError("payload revalidation observations must be a list")
     if (not isinstance(plan, dict) or plan.get("artifact_kind") != _KIND
             or plan.get("status") != "DECODE_SMOKE_PLANNED" or plan.get("execution_scope") != _SCOPE
             or any(not isinstance(plan.get(key), str) for key in ("compilation", "runtime_probe", "input_dir"))):
@@ -455,12 +465,26 @@ def validate_decode_smoke_plan(plan, *, revalidation_observations=None):
     old_binding = plan.get("primary_model_binding", {})
     if not isinstance(old_binding, dict) or not isinstance(old_binding.get("identity"), dict):
         raise ValueError("saved decode plan requires its complete primary identity")
-    observations = []
+    observations, metadata_observations, payload_observations = [], [], []
     try:
         current = prepare_decode_smoke_plan(plan["compilation"], plan["runtime_probe"], plan["input_dir"],
-            _saved_primary_identity=old_binding["identity"], revalidation_observations=observations)
+            _saved_primary_identity=old_binding["identity"], revalidation_observations=observations,
+            metadata_revalidation_observations=metadata_observations)
         if current != plan:
             compared = deepcopy(current)
+            if payload_sequence_matches(plan.get("source_inputs"), current.get("source_inputs"),
+                    role="decode-input", observations=payload_observations):
+                # Only the identity ctime is projected for comparison. All source
+                # annotations and the89 named input rows remain exact checks.
+                for old, new in zip(plan["source_inputs"], compared["source_inputs"]):
+                    new["identity"]["ctime_ns"] = old["identity"]["ctime_ns"]
+            if metadata_sequence_matches(plan.get("metadata_bindings"), current.get("metadata_bindings"),
+                    role="decode-plan-metadata", observations=metadata_observations):
+                compared["metadata_bindings"] = deepcopy(plan["metadata_bindings"])
+            if metadata_identity_matches(plan.get("tool_binding", {}).get("inspection"),
+                    current.get("tool_binding", {}).get("inspection"), role="runtime-probe-source-metadata",
+                    observations=metadata_observations):
+                compared["tool_binding"]["inspection"] = deepcopy(plan["tool_binding"]["inspection"])
             allowed_annotations = (any(row.get("status") == "SHA256_VERIFIED" for row in observations)
                 and current["primary_model_binding"]["scope"] == _PRIMARY_REVALIDATED_SCOPE
                 and old_binding.get("scope") in {_PRIMARY_STAT_SCOPE, _PRIMARY_REVALIDATED_SCOPE}
@@ -477,3 +501,7 @@ def validate_decode_smoke_plan(plan, *, revalidation_observations=None):
     finally:
         if revalidation_observations is not None:
             revalidation_observations.extend(observations)
+        if metadata_revalidation_observations is not None:
+            metadata_revalidation_observations.extend(metadata_observations)
+        if payload_revalidation_observations is not None:
+            payload_revalidation_observations.extend(payload_observations)

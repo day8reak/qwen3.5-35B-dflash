@@ -117,6 +117,27 @@ def prepare(case):
     return planner.prepare_prefill_smoke_plan(case["compilation"], case["probe"], case["source"])
 
 
+def test_tool_help_binding_reconciles_all_five_fresh_metadata_ctimes_only(case):
+    import os
+    import time
+    recorded = deepcopy(case["outer"]["source_bindings"])
+    receipts = {Path(row["path"]): Path(row["path"]).read_bytes() for row in recorded}
+    bindings = []
+    time.sleep(0.02)
+    for path in receipts:
+        before = path.stat()
+        os.chmod(path, before.st_mode & 0o7777)
+        assert [before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns] == _stat(path)[:4]
+        if path != case["help_report"]:
+            planner._json(path, bindings)
+    events = []
+    tool = planner._tool_binding(case["outer"], bindings, metadata_revalidation_observations=events)
+    assert len(events) == 5 and {row["path"] for row in events} == set(map(str, receipts))
+    assert tool["inspection"]["stat"] == _stat(case["help_report"])
+    assert recorded == case["outer"]["source_bindings"]
+    assert receipts == {path: path.read_bytes() for path in receipts}
+
+
 def rewrite_native(case):
     save(case["probe"] / "model-io.json", case["native"])
     case["outer"]["retrieved_sha256"]["model-io.json"] = sha(case["probe"] / "model-io.json")

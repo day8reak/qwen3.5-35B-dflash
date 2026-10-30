@@ -447,7 +447,7 @@ def test_plan_changed_after_inventory_revalidation_cannot_replace_execution_prov
         return result
     monkeypatch.setattr(probe, "validate_target_decode_output_inventory", replace_plan)
     result = run(case)
-    assert result["status"] == "FAILED" and "changed after" in result["error"], result
+    assert result["status"] == "FAILED" and any(text in result["error"] for text in ("changed after", "metadata differs")), result
     no_next(case, result)
 
 
@@ -459,6 +459,23 @@ def test_truncated_selected_row_read_never_prepares_partial_next_inputs(embeddin
     monkeypatch.setattr(os, "pread", truncated)
     result = run(case)
     assert result["status"] == "FAILED" and "truncated" in result["error"], result
+    no_next(case, result)
+
+
+def test_metadata_ctime_change_after_first_current_read_is_not_a_historical_exception(embedding_case, monkeypatch):
+    case = embedding_case
+    path = case["case"]["execution"] / "plan.json"
+    original, changed = os.pread, False
+    def race(fd, size, offset):
+        nonlocal changed
+        raw = original(fd, size, offset)
+        if not changed:
+            changed = True
+            os.chmod(path, path.stat().st_mode & 0o7777)
+        return raw
+    monkeypatch.setattr(os, "pread", race)
+    result = run(case)
+    assert result["status"] == "FAILED" and "changed" in result["error"], result
     no_next(case, result)
 
 

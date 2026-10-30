@@ -5,7 +5,9 @@ import json
 import os
 from pathlib import Path
 import runpy
+import stat
 import struct
+import time
 
 import pytest
 
@@ -334,3 +336,220 @@ def test_public_validator_rejects_rebound_inventory_or_source_changes(case, tmp_
         save(case["out"] / "report.json", report)
     with pytest.raises((ValueError, OSError)):
         inventory.validate_target_decode_output_inventory(case["out"])
+
+
+def chmod_ctime(path):
+    before = path.stat()
+    time.sleep(.02)
+    mode = stat.S_IMODE(before.st_mode)
+    path.chmod(mode ^ stat.S_IXUSR)
+    path.chmod(mode)
+    after = path.stat()
+    assert (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) == (
+        after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    assert before.st_ctime_ns != after.st_ctime_ns
+
+
+def metadata_paths(case, report):
+    records = [*case["sources"]["outer"]["source_bindings"], *case["proof"]["metadata_bindings"],
+               *report["evidence_bindings"]]
+    return {Path(row["path"]) for row in records} | {case["out"] / "report.json"}
+
+
+def test_all_historical_metadata_ctime_changes_replay_without_rewriting_receipts_or_payloads(case, tmp_path, monkeypatch):
+    attach_trial(case, tmp_path)
+    report = inspect(case)
+    assert report["status"] == "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS", report
+    paths = metadata_paths(case, report)
+    original_bytes = {path: path.read_bytes() for path in paths}
+    for path in sorted(paths):
+        chmod_ctime(path)
+    from qwen35_moe_dflash import original_target_board
+    monkeypatch.setattr(original_target_board, "Hdc", lambda *a: pytest.fail("metadata recovery must not contact a device"))
+    original_open = os.open
+    def no_models(path, *args, **options):
+        if str(path).endswith((".omc", ".weight")):
+            pytest.fail("metadata ctime replay must not open model or weight payloads")
+        return original_open(path, *args, **options)
+    monkeypatch.setattr(os, "open", no_models)
+    observations = []
+    assert inventory.validate_target_decode_output_inventory(case["out"],
+        metadata_revalidation_observations=observations) == report
+    assert observations and all(row["kind"] == "METADATA_CTIME_ONLY_REVALIDATED" for row in observations)
+    assert all(row["status"] == "SHA256_VERIFIED" for row in observations)
+    assert any(row["path"] == case["trial"]["trial_input_receipt"]["path"] for row in observations)
+    assert all(path.read_bytes() == raw for path, raw in original_bytes.items())
+    emitted = []
+    newer = inventory.inspect_target_decode_outputs(case["execution"], tmp_path / "new-metadata-inventory",
+        include_state_statistics=False, metadata_revalidation_observations=emitted)
+    assert newer["status"] == "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS", newer
+    assert newer["metadata_revalidation_observations"] == emitted and emitted
+    assert newer["metadata_identity_revalidation"] == "CTIME_ONLY_FRESH_METADATA_SHA256_OLD_RECEIPTS_UNCHANGED"
+    assert newer["trial_inputs"]["manifest"] == report["trial_inputs"]["manifest"]
+    assert newer["model_payload_access"] == newer["weight_payload_access"] == "NONE"
+    assert all(path.read_bytes() == raw for path, raw in original_bytes.items())
+
+
+@pytest.mark.parametrize("change", ["content", "mtime", "inode"])
+def test_historical_metadata_recovery_rejects_other_changes(case, change):
+    report = inspect(case)
+    assert report["status"] == "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS", report
+    path = case["sources"]["help_report"]
+    original = path.stat()
+    raw = path.read_bytes()
+    if change == "content":
+        # Valid JSON with unchanged parsed values still violates recorded SHA.
+        path.write_bytes(raw + b"\n")
+    elif change == "mtime":
+        os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns + 1))
+    else:
+        alternate = path.with_name("replacement-help.json")
+        alternate.write_bytes(raw)
+        os.utime(alternate, ns=(original.st_atime_ns, original.st_mtime_ns))
+        alternate.replace(path)
+    with pytest.raises((ValueError, OSError)):
+        inventory.validate_target_decode_output_inventory(case["out"], metadata_revalidation_observations=[])
+
+
+def test_original_input_ctime_remains_strict_under_metadata_and_derived_payload_recovery(case, tmp_path):
+    attach_trial(case, tmp_path)
+    report = inspect(case)
+    assert report["status"] == "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS", report
+    chmod_ctime(case["sources"]["source"] / "position_ids.bin")
+    with pytest.raises((ValueError, OSError)):
+        inventory.validate_target_decode_output_inventory(case["out"], metadata_revalidation_observations=[],
+            payload_revalidation_observations=[])
+
+
+def test_all_approved_payloads_and_metadata_replay_after_input_modes_are_restored(case, tmp_path):
+    trial = attach_trial(case, tmp_path)
+    report = inspect(case)
+    assert report["status"] == "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS", report
+    paths = metadata_paths(case, report)
+    originals = {path: path.read_bytes() for path in paths}
+    derived = [Path(row["path"]) for row in case["proof"]["source_inputs"]]
+    assert len(derived) == 13
+    for path in derived:
+        path.chmod(0o777)
+    with pytest.raises((ValueError, OSError)):
+        inventory.validate_target_decode_output_inventory(case["out"], payload_revalidation_observations=[])
+    for source in case["proof"]["source_inputs"]:
+        Path(source["path"]).chmod(stat.S_IMODE(source["identity"]["mode"]))
+    output_paths = [case["board"] / name for name in case["paths"]]
+    log_paths = [case["board"] / name for name in inventory._LOGS]
+    for path in [*sorted(paths), *derived, *output_paths, *log_paths]:
+        chmod_ctime(path)
+    metadata_observations, payload_observations = [], []
+    current = inventory.validate_target_decode_output_inventory(case["out"],
+        metadata_revalidation_observations=metadata_observations,
+        payload_revalidation_observations=payload_observations)
+    assert current == report
+    assert metadata_observations and payload_observations
+    assert all(row["kind"] == "PAYLOAD_CTIME_ONLY_REVALIDATED" for row in payload_observations)
+    observed = {row["path"] for row in payload_observations}
+    assert observed == {str(path) for path in [*derived, *output_paths, *log_paths]}
+    assert all(path.read_bytes() == raw for path, raw in originals.items())
+    emitted = []
+    newer = inventory.inspect_target_decode_outputs(case["execution"], tmp_path / "payload-replayed-inventory",
+        include_state_statistics=False, payload_revalidation_observations=emitted)
+    assert newer["status"] == "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS", newer
+    assert newer["payload_revalidation_observations"] == emitted and emitted
+    assert newer["payload_identity_revalidation"] == "CTIME_ONLY_FRESH_PAYLOAD_SHA256_OLD_RECEIPTS_UNCHANGED"
+    assert newer["trial_inputs"]["manifest"] == report["trial_inputs"]["manifest"]
+    assert all(path.read_bytes() == raw for path, raw in originals.items())
+
+
+@pytest.mark.parametrize("payload", ["copy", "control", "output", "log"])
+@pytest.mark.parametrize("change", ["content", "mtime", "inode"])
+def test_approved_payload_ctime_policy_rejects_every_other_identity_or_content_change(case, tmp_path, payload, change):
+    trial = attach_trial(case, tmp_path)
+    report = inspect(case)
+    assert report["status"] == "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS", report
+    selected = {"copy": trial / "inputs/inputs_embeds.bin", "control": trial / "inputs/conv_state_pos.bin",
+                "output": case["board"] / case["paths"][0], "log": case["board"] / "tool.stdout"}[payload]
+    before, raw = selected.stat(), selected.read_bytes()
+    if change == "content":
+        selected.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+        os.utime(selected, ns=(before.st_atime_ns, before.st_mtime_ns))
+    elif change == "mtime":
+        os.utime(selected, ns=(before.st_atime_ns, before.st_mtime_ns + 1))
+    else:
+        alternate = selected.with_name("temporary-replacement")
+        alternate.write_bytes(raw)
+        os.utime(alternate, ns=(before.st_atime_ns, before.st_mtime_ns))
+        alternate.replace(selected)
+    with pytest.raises((ValueError, OSError)):
+        inventory.validate_target_decode_output_inventory(case["out"], payload_revalidation_observations=[])
+
+
+def test_output_ctime_change_after_fresh_hash_stays_a_stability_failure(case, monkeypatch):
+    assert inspect(case)["status"] == "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS"
+    original, changed = inventory._hash_retrieved, False
+    def mutate(path, row, **options):
+        nonlocal changed
+        result = original(path, row, **options)
+        if not changed:
+            changed = True
+            chmod_ctime(Path(path))
+        return result
+    monkeypatch.setattr(inventory, "_hash_retrieved", mutate)
+    with pytest.raises(ValueError, match="changed during"):
+        inventory.validate_target_decode_output_inventory(case["out"], payload_revalidation_observations=[])
+
+
+def test_metadata_change_after_fresh_initial_read_stays_a_stability_failure(case, monkeypatch):
+    original, changed = inventory._hash_retrieved, False
+    def mutate(path, row, **options):
+        nonlocal changed
+        result = original(path, row, **options)
+        if not changed:
+            changed = True
+            chmod_ctime(case["execution"] / "plan.json")
+        return result
+    monkeypatch.setattr(inventory, "_hash_retrieved", mutate)
+    result = inspect(case, metadata_revalidation_observations=[])
+    assert result["status"] == "FAILED" and "changed during" in result["error"], result
+
+
+def test_metadata_collector_type_is_explicit_and_does_not_weaken_saved_inventory(case):
+    report = inspect(case)
+    with pytest.raises(ValueError, match="must be a list"):
+        inventory.validate_target_decode_output_inventory(case["out"], metadata_revalidation_observations={})
+    assert json.loads((case["out"] / "report.json").read_text()) == report
+
+
+@pytest.mark.parametrize("mode", ["inspect", "validate"])
+@pytest.mark.parametrize("change", ["input_between_passes", "metadata_between_passes", "input_after_final_trial"])
+def test_historical_revalidation_never_accepts_source_drift_within_outer_inventory(case, tmp_path, monkeypatch, mode, change):
+    trial = attach_trial(case, tmp_path)
+    if mode == "validate":
+        assert inspect(case)["status"] == "DECODE_OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS"
+    if change.endswith("between_passes"):
+        original, changed = inventory._hash_retrieved, False
+        selected = (trial / "inputs/inputs_embeds.bin" if change.startswith("input")
+                    else case["sources"]["help_report"])
+        def mutate(path, row, **options):
+            nonlocal changed
+            result = original(path, row, **options)
+            if not changed:
+                changed = True
+                chmod_ctime(selected)
+            return result
+        monkeypatch.setattr(inventory, "_hash_retrieved", mutate)
+    else:
+        original, calls = inventory._trial, 0
+        def mutate(*args, **options):
+            nonlocal calls
+            result = original(*args, **options)
+            calls += 1
+            if calls == 2:
+                chmod_ctime(trial / "inputs/conv_state_pos.bin")
+            return result
+        monkeypatch.setattr(inventory, "_trial", mutate)
+    if mode == "validate":
+        with pytest.raises(ValueError, match="changed during"):
+            inventory.validate_target_decode_output_inventory(case["out"],
+                metadata_revalidation_observations=[], payload_revalidation_observations=[])
+    else:
+        result = inspect(case, metadata_revalidation_observations=[], payload_revalidation_observations=[])
+        assert result["status"] == "FAILED" and "changed during" in result["error"], result

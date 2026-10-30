@@ -27,6 +27,9 @@ def main(argv=None):
             "state_continuity", "numerical_validation", "same_model_state_mapping", "gap_summary", "next") if key in report}
         if not args.full:
             shown["graph_edge_policy"] = report["graph_edge_policy"]["policy"]
+            shown["revalidated_artifact_counts"] = {name: len({row["path"] for row in report.get(key, [])})
+                for name, key in (("metadata", "metadata_revalidation_observations"),
+                    ("payload", "payload_revalidation_observations"), ("primary_omc", "primary_omc_revalidation_observations"))}
             decoded = report.get("decode", {})
             shown["counts"] = {"source_owners": decoded.get("source_lineage", {}).get("observed_state_owner_count", 0),
                 "unique_source_owners": decoded.get("source_lineage", {}).get("unique_state_owner_count", 0),

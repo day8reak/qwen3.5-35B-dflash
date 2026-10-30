@@ -14,10 +14,13 @@ from pathlib import Path
 import struct
 
 from .artifacts import output_path, save_json
+from .metadata_revalidation import metadata_identity_matches
+from .payload_revalidation import payload_identity_matches
 from .original_embedding_probe import _bound_bytes, _config, _HIDDEN, _TABLES, _VOCAB, _write
 from .target_compile_failure import _read_small, _relative, _safe, _stamp
 from .target_decode_output_inventory import validate_target_decode_output_inventory
-from .target_prefill_output_inventory import _json, _numerical
+from .target_prefill_output_inventory import _hash_retrieved, _json, _numerical
+from .target_prefill_smoke_plan import _identity
 
 
 _READY = "ORIGINAL_DECODE_EMBEDDING_ROWS_BOUND_NEXT_TOKEN_PREPARED"
@@ -25,7 +28,7 @@ _PRESERVED = "UNCHANGED_DECODE_METADATA_SOURCE_IDS_INPUT_ROWS_LOGITS_AND_SELECTE
 _MAX_CANDIDATE_IDS = 1024
 
 
-def _input(plan, root, name, semantic, dtype, size):
+def _input(plan, root, name, semantic, dtype, size, *, payload_revalidation_observations=None):
     path = root / (semantic + ".bin")
     rows = [row for row in plan["inputs"] if isinstance(row, dict) and row.get("name") == name]
     sources = [row for row in plan.get("source_inputs", []) if isinstance(row, dict)
@@ -35,7 +38,22 @@ def _input(plan, root, name, semantic, dtype, size):
             or rows[0].get("source") != str(path) or rows[0].get("source_filename") != path.name
             or rows[0].get("bytes") != size or rows[0].get("sha256") != sources[0].get("sha256")):
         raise ValueError("missing unique executed decode input binding: " + semantic)
-    return _bound_bytes(path, sources[0], size)
+    before = _identity(path.stat())
+    raw, identity = _read_small(path, size)
+    if _identity(path.stat()) != before:
+        raise ValueError("executed decode input identity changed during bounded read")
+    current = {"path": str(path), "bytes": len(raw), "sha256": identity["sha256"], "identity": before}
+    if not payload_identity_matches(sources[0], current, role="decode-input", observations=payload_revalidation_observations):
+        raise ValueError("executed decode input differs in content or nonctime identity fields")
+    return raw, identity
+
+
+def _check_current_metadata_bindings(bindings):
+    current = {}
+    for row in bindings:
+        if row["path"] in current and current[row["path"]] != row:
+            raise ValueError("metadata changed after its first current read: " + row["path"])
+        current[row["path"]] = row
 
 
 def _unchanged(bindings, payloads, tables):
@@ -51,7 +69,8 @@ def _unchanged(bindings, payloads, tables):
 
 
 def inspect_original_decode_embeddings(inspection_dir, config_yaml, output_dir, *, match_source_id_candidates=False,
-                                       revalidation_observations=None):
+                                       revalidation_observations=None, metadata_revalidation_observations=None,
+                                       payload_revalidation_observations=None):
     """Compare one executed source row, then retain an exact original next row.
 
     Source IDs are freshly read from the trial manifest's original directory.
@@ -75,9 +94,17 @@ def inspect_original_decode_embeddings(inspection_dir, config_yaml, output_dir, 
     bindings, payloads, tables = [], [], []
     observations = [] if revalidation_observations is None else revalidation_observations
     observation_start = len(observations) if isinstance(observations, list) else 0
+    metadata_observations = [] if metadata_revalidation_observations is None else metadata_revalidation_observations
+    metadata_start = len(metadata_observations) if isinstance(metadata_observations, list) else 0
+    payload_observations = [] if payload_revalidation_observations is None else payload_revalidation_observations
+    payload_start = len(payload_observations) if isinstance(payload_observations, list) else 0
     try:
         if not isinstance(observations, list):
             raise ValueError("revalidation_observations must be a list or None")
+        if not isinstance(metadata_observations, list):
+            raise ValueError("metadata_revalidation_observations must be a list or None")
+        if not isinstance(payload_observations, list):
+            raise ValueError("payload_revalidation_observations must be a list or None")
         if type(match_source_id_candidates) is not bool:
             raise ValueError("match_source_id_candidates must be an explicit boolean")
         maximum_ids = _MAX_CANDIDATE_IDS if match_source_id_candidates else 1
@@ -89,13 +116,22 @@ def inspect_original_decode_embeddings(inspection_dir, config_yaml, output_dir, 
         inspection, _ = _safe(inspection_dir, directory=True)
         prior = _json(inspection / "report.json", bindings)
         report["stage"] = "validate-decode-output-inspection"
-        if validate_target_decode_output_inventory(inspection, revalidation_observations=observations) != prior:
+        if validate_target_decode_output_inventory(inspection, revalidation_observations=observations,
+                metadata_revalidation_observations=metadata_observations,
+                payload_revalidation_observations=payload_observations) != prior:
             raise ValueError("selected decode inspection changed during fresh validation")
-        bindings.extend(prior["evidence_bindings"])
+        for recorded in prior["evidence_bindings"]:
+            fresh = _read_small(recorded["path"], 32 << 20)[1]
+            if not metadata_identity_matches(recorded, fresh, role="embedding-audit-metadata", observations=metadata_observations):
+                raise ValueError("historical decode metadata differs beyond freshly verified ctime")
+            bindings.append(fresh)
+        _check_current_metadata_bindings(bindings)
         report["stage"] = "read-executed-decode-plan"
         execution, _ = _safe(prior["execution"], directory=True)
         plan = _json(execution / "plan.json", bindings)
-        if bindings[-1] not in prior["evidence_bindings"]:
+        _check_current_metadata_bindings(bindings)
+        if not any(metadata_identity_matches(row, bindings[-1], role="decode-execution-metadata", observations=metadata_observations)
+                for row in prior["evidence_bindings"] if row.get("path") == bindings[-1]["path"]):
             raise ValueError("decode plan changed after fresh inventory validation")
         input_root, _ = _safe(plan["input_dir"], directory=True)
         trial_binding = prior.get("trial_inputs", {})
@@ -105,7 +141,9 @@ def inspect_original_decode_embeddings(inspection_dir, config_yaml, output_dir, 
             raise ValueError("retained decode trial manifest is required to bind the original source token directory")
         report["stage"] = "read-executed-trial-manifest"
         trial = _json(receipt["path"], bindings)
-        if bindings[-1] != receipt or trial.get("input_dir") != str(input_root):
+        _check_current_metadata_bindings(bindings)
+        if (not metadata_identity_matches(receipt, bindings[-1], role="decode-trial-manifest", observations=metadata_observations)
+                or trial.get("input_dir") != str(input_root)):
             raise ValueError("decode trial manifest/input directory differs from the executed source")
         report["stage"] = "inspect-original-source-id-extent"
         source_root, _ = _safe(trial["source_input_dir"], directory=True)
@@ -142,9 +180,11 @@ def inspect_original_decode_embeddings(inspection_dir, config_yaml, output_dir, 
         report["read_budgets"]["table_payload_maximum_bytes"] = (len(positions) + 1) * (_HIDDEN + 4)
         source_token = ids[0] if len(ids) == 1 else None
         report["stage"] = "read-executed-embedding-row"
-        embedding, embedding_identity = _input(plan, input_root, "arg1_1", "inputs_embeds", "INT8", _HIDDEN)
+        embedding, embedding_identity = _input(plan, input_root, "arg1_1", "inputs_embeds", "INT8", _HIDDEN,
+            payload_revalidation_observations=payload_observations)
         report["stage"] = "read-executed-embedding-scale"
-        scales, scale_identity = _input(plan, input_root, "arg0_1", "embed_scale", "FLOAT32", 4)
+        scales, scale_identity = _input(plan, input_root, "arg0_1", "embed_scale", "FLOAT32", 4,
+            payload_revalidation_observations=payload_observations)
         payloads.extend((ids_identity, embedding_identity, scale_identity))
         # These are the unchanged original files copied into the actual trial.
         original_inputs = []
@@ -172,14 +212,22 @@ def inspect_original_decode_embeddings(inspection_dir, config_yaml, output_dir, 
             raise ValueError("selected bound decode logits do not match the executed output descriptor")
         logits_path = _relative(execution / "board", logits["path"])
         report["stage"] = "read-bound-decode-logits"
-        observed = _numerical(logits_path, desc, logits)
+        historical_logits = {"path": str(logits_path), **{key: logits[key] for key in ("bytes", "sha256", "stat")}}
+        current_logits, logit_passes = historical_logits, 1
+        if _safe(logits_path)[1] != logits["stat"]:
+            fresh, _ = _hash_retrieved(logits_path, logits)
+            current_logits = {"path": str(logits_path), **fresh}
+            if not payload_identity_matches(historical_logits, current_logits, role="decode-output", observations=payload_observations):
+                raise ValueError("bound decode logits differ beyond freshly verified historical ctime")
+            logit_passes = 2
+        observed = _numerical(logits_path, desc, current_logits)
         greedy = observed.get("argmax", {})
         if observed != logits.get("statistics") or greedy.get("status") != "OBSERVED_ALL_FINITE":
             raise ValueError("fresh finite bound decode logits and argmax differ from the selected inspection")
         next_token = greedy.get("token_id")
         if type(next_token) is not int or not 0 <= next_token < _VOCAB:
             raise ValueError("bound decode greedy token is outside the original embedding vocabulary")
-        payloads.append({"path": str(logits_path), **{key: logits[key] for key in ("bytes", "sha256", "stat")}})
+        payloads.append(current_logits)
         report.update(inspection=str(inspection), execution=str(execution), trial_input_receipt=receipt,
             experimental_input_assumption=trial_binding["assumption"],
             selected_next_token_id=next_token, token_selection="FRESH_SHA_BOUND_ALL_FINITE_DECODE_LOGITS_ARGMAX_FIRST_INDEX",
@@ -192,8 +240,10 @@ def inspect_original_decode_embeddings(inspection_dir, config_yaml, output_dir, 
                 "uniqueness_scope": "EXPLICIT_SOURCE_ID_CANDIDATES_ONLY", "position_index_base": 0,
                 "logical_position_semantics": "UNVERIFIED"},
             executed_embedding=embedding_identity, executed_scale=scale_identity, original_trial_inputs=original_inputs,
-            bound_logits=payloads[-1], observed_payload_reads={"bound_logits_bytes": _VOCAB * 4,
+            bound_logits=historical_logits, bound_logits_current_read=current_logits,
+            observed_payload_reads={"bound_logits_bytes": logit_passes * _VOCAB * 4,
                 "source_input_bytes": len(ids_raw) + 2 * (len(embedding) + len(scales)), "table_bytes": 0})
+        report["read_budgets"]["bound_logits_maximum_bytes"] = logit_passes * _VOCAB * 4
         report["stage"] = "open-original-embedding-tables"
         paths, config_identity = _config(config_yaml, bindings)
         report.update(original_config=config_identity, tables=tables)
@@ -295,6 +345,14 @@ def inspect_original_decode_embeddings(inspection_dir, config_yaml, output_dir, 
     report["primary_omc_revalidation_observations"] = current_observations
     if current_observations:
         report["model_payload_access"] = "SMALL_PRIMARY_OMC_REHASHED_FOR_CTIME_ONLY"
+    current_metadata = metadata_observations[metadata_start:] if isinstance(metadata_observations, list) else []
+    report["metadata_revalidation_observations"] = current_metadata
+    if current_metadata:
+        report["metadata_identity_revalidation"] = "CTIME_ONLY_FRESH_METADATA_SHA256_OLD_RECEIPTS_UNCHANGED"
+    current_payload = payload_observations[payload_start:] if isinstance(payload_observations, list) else []
+    report["payload_revalidation_observations"] = current_payload
+    if current_payload:
+        report["payload_identity_revalidation"] = "CTIME_ONLY_FRESH_PAYLOAD_SHA256_OLD_RECEIPTS_UNCHANGED"
     report["source_bindings"] = bindings
     save_json(out / "report.json", report)
     return report
