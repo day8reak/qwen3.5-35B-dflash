@@ -734,6 +734,46 @@ def _validate_completed_failure(manifest, directory, state):
     return loop, [supervisor, *pids]
 
 
+def _receive_verified_inventory_file(hdc, remote_root, local_root, row):
+    """Receive against the completed inventory already checked in remote batches.
+
+    This deliberately sends no additional per-file remote hash query.  A file
+    changed after the batch check must still match the original inventory's
+    exact bytes/SHA when received. Hdc.receive separately verifies publication
+    of a new regular file, including zero-exit-without-artifact failures.
+    """
+    relative = _relative(row['path'])
+    if (type(row.get('bytes')) is not int or not 0 <= row['bytes'] <= _MAX_FILE
+            or _SHA.fullmatch(str(row.get('sha256'))) is None):
+        raise ValueError('invalid bound retrieval-inventory file')
+    local = Path(local_root) / relative
+    local.parent.mkdir(parents=True, exist_ok=True)
+    _safe(local.parent, directory=True)
+    if os.path.lexists(local):
+        raise FileExistsError('completed-loop retrieval never overwrites a local artifact: ' + str(local))
+    hdc.receive(PurePosixPath(remote_root) / relative, local, timeout=min(30, hdc.timeout))
+    before = _full(local)
+    if before['bytes'] != row['bytes']:
+        raise ValueError('retrieved loop file extent differs from the completed supervisor inventory: ' + row['path'])
+    descriptor = os.open(local, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    digest = hashlib.sha256()
+    with os.fdopen(descriptor, 'rb') as stream:
+        if _identity(os.fstat(stream.fileno())) != before:
+            raise ValueError('retrieved loop file changed before its bounded SHA256 read')
+        remaining = row['bytes']
+        while remaining:
+            block = stream.read(min(1 << 20, remaining))
+            if not block:
+                raise ValueError('retrieved loop file truncated during SHA256 verification')
+            digest.update(block); remaining -= len(block)
+        if (stream.read(1) or _identity(os.fstat(stream.fileno())) != before
+                or _full(local) != before):
+            raise ValueError('retrieved loop file changed during SHA256 verification')
+    if digest.hexdigest() != row['sha256']:
+        raise ValueError('retrieved loop file SHA differs from the completed supervisor inventory: ' + row['path'])
+    return before
+
+
 def _retrieve(hdc, out, state, manifest):
     board = PurePosixPath(state['board_attempt'])
     state['stage'] = 'retrieve-completed-loop'
@@ -758,11 +798,19 @@ def _retrieve(hdc, out, state, manifest):
         checks.append(_regular_guard(path, size=row['bytes']) + ' && serial_hash=$(sha256sum '
             + shlex.quote(str(path)) + ') && serial_hash=${serial_hash%% *} && test "$serial_hash" = '
             + shlex.quote(row['sha256']))
+    hash_batches = 0
     for batch in _batches(checks):
         hdc.shell(' && '.join(batch), 'verify-final-loop-inventory', timeout=hdc.timeout)
+        hash_batches += 1
+    state['retrieval_transport'] = {'inventory_files': len(rows), 'bounded_remote_hash_batches': hash_batches,
+        'duplicate_per_file_remote_hash_queries_avoided': 0, 'file_receive_requests': 0,
+        'inventory_payload_bytes': sum(row['bytes'] for row in rows),
+        'hash_binding': 'COMPLETED_SUPERVISOR_INVENTORY_AND_BATCHED_REMOTE_SHA256_THEN_STABLE_LOCAL_SHA256',
+        'scope': 'Final-result transport only; native execution and model residency are unchanged. Receive retries remain read-only.'}
     for row in rows:
-        if _receive(hdc, remote_results, local_results, row['path']) != row['sha256']:
-            raise ValueError('retrieved loop file SHA differs from the completed supervisor inventory')
+        state['retrieval_transport']['file_receive_requests'] += 1
+        state['retrieval_transport']['duplicate_per_file_remote_hash_queries_avoided'] += 1
+        _receive_verified_inventory_file(hdc, remote_results, local_results, row)
     if state['completion']['remote_exitcode'] == 0:
         loop = validate_retrieved_loop(manifest, local_results, _expected_config_sha256=state['config_sha256'])
         completed = [loop['process_id'], *[row['pid'] for row in loop['target_steps']],

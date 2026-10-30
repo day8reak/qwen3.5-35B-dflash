@@ -66,15 +66,19 @@ def test_sdk_default_is_preserved_and_explicit_api_is_forwarded(build_case, api)
     assert [argument for argument in configure if argument.startswith(prefix)] == (
         [] if api is None else [prefix + api])
     assert "-DCMAKE_TOOLCHAIN_FILE=" + str(case["toolchain"]) in configure
+    assert "-DCMAKE_BUILD_TYPE=Release" in configure
     assert "-DBUILD_HIAI_RUNNER=OFF" in configure
     assert build[:2] == ["cmake", "--build"]
+    assert build[build.index("--config") + 1] == "Release"
     command = json.loads((case["output"] / "command.json").read_text())
     assert command["argv"] == configure and command["headers_only"] is True
+    assert command["native_build_type"] == "Release" and command["model_compilation"] == "NOT_RUN"
     assert command["compatible_sdk_version_requested"] == (None if api is None else int(api))
     assert command["sdk_api_policy"] == ("sdk_default" if api is None else "explicit")
     assert command["sdk_toolchain_sha256"] == hashlib.sha256(case["toolchain"].read_bytes()).hexdigest()
     result = json.loads((case["output"] / "result.json").read_text())
     assert result["status"] == "HEADERS_COMPILED" and result["device_validation"] == "PENDING"
+    assert result["native_build_type"] == "Release" and result["model_compilation"] == "NOT_RUN"
 
 
 @pytest.mark.parametrize("api", ["0", "-1", "2.5", "21suffix", ""])

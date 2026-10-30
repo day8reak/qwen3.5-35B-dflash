@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import subprocess
 
 import pytest
@@ -335,3 +336,97 @@ def test_real_shell_release_guards_exact_owner_empty_target_and_all_child_exits(
         with pytest.raises(RuntimeError, match='refused'):
             transport._lock_checks(Shell(), state, release=True)
         assert Path(global_lock).exists() and (target / '.execution-lock').exists()
+
+
+def _retained_transport_fixture(FakeHdc, state, monkeypatch, *, fault=None):
+    """Fake only transport; semantic native validation has independent C++ tests."""
+    loop = {'counts': {'target_native_calls': 16, 'draft_native_calls': 2},
+        'generated_tokens': [2] * 8, 'process_id': 12346, 'target_steps': [], 'draft_steps': []}
+    result_data = {'loop.json': json.dumps(loop).encode(), 'progress.json': b'{"status":"complete"}',
+        'target/final/payload.bin': b'actual-retained-state', 'target/final/empty.stderr': b''}
+    inventory = 'QWEN35_BOARD_SERIAL_RETRIEVAL\t1\n' + ''.join('file\t' + name + '\t'
+        + hashlib.sha256(raw).hexdigest() + '\t' + str(len(raw)) + '\n' for name, raw in result_data.items())
+    attempt = state['board_attempt']
+    remote = {attempt + '/' + name: raw for name, raw in {
+        'supervisor.stdout': b'supervisor finished', 'supervisor.stderr': b'', 'tool.pid': b'12345\n',
+        'tool.exitcode': b'0\n', 'run.sh': state['launcher'].encode()}.items()}
+    remote.update({attempt + '/results/' + name: raw for name, raw in result_data.items()})
+    remote[attempt + '/results/retrieval-manifest.tsv'] = inventory.encode()
+    original_shell = FakeHdc.shell
+    def shell(self, command, label, **kwargs):
+        response = original_shell(self, command, label, **kwargs)
+        if label == 'hash-result':
+            path = re.search(r'if test -f ([^;]+); then', command)[1]
+            if path not in remote:
+                return 0, '__MISSING__'
+            return 0, hashlib.sha256(remote[path]).hexdigest() + '  ' + path
+        return response
+    def receive(self, remote_path, local, **kwargs):
+        self.count += 1; self.receives.append((str(remote_path), str(local)))
+        raw = remote[str(remote_path)]
+        if str(remote_path).endswith('/payload.bin'):
+            if fault == 'missing':
+                return ''  # A zero client exit is insufficient without an artifact.
+            if fault == 'changed':
+                raw = b'X' * len(raw)  # Changed after successful batch remote SHA.
+            if fault == 'truncated':
+                raw = raw[:-1]
+        Path(local).parent.mkdir(parents=True, exist_ok=True); Path(local).write_bytes(raw)
+        return ''
+    monkeypatch.setattr(FakeHdc, 'shell', shell)
+    monkeypatch.setattr(FakeHdc, 'receive', receive)
+    monkeypatch.setattr(transport, 'validate_retrieved_loop', lambda *args, **kwargs: loop)
+    return result_data
+
+
+def test_completed_inventory_receives_remove_duplicate_per_file_hash_rpcs(prepared_request, tmp_path, monkeypatch):
+    root, _, FakeHdc, _ = prepared_request
+    launched = transport.execute_board_serial(root, tmp_path / 'execution', detach=True)
+    data = _retained_transport_fixture(FakeHdc, launched, monkeypatch)
+    result = transport.recover_board_serial(tmp_path / 'execution', tmp_path / 'recovery')
+    assert result['status'] == 'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED', result.get('error')
+    hdc = FakeHdc.instances[-1]
+    # Only five launcher artifacts and the inventory itself use _receive's hash
+    # RPC. Every inventory member is hashed remotely in the bounded batch once.
+    assert sum(label == 'hash-result' for label, _ in hdc.calls) == len(transport._ATTEMPT_LOGS) + 1
+    assert sum(label == 'verify-final-loop-inventory' for label, _ in hdc.calls) == 1
+    assert len(hdc.receives) == len(transport._ATTEMPT_LOGS) + 1 + len(data)
+    summary = result['retrieval_transport']
+    assert summary['duplicate_per_file_remote_hash_queries_avoided'] == len(data)
+    assert summary['file_receive_requests'] == len(data)
+    assert summary['inventory_payload_bytes'] == sum(map(len, data.values()))
+    assert (tmp_path / 'recovery/results/target/final/empty.stderr').read_bytes() == b''
+    assert result['lock_release'] == 'RELEASED' and not hdc.sends
+
+
+@pytest.mark.parametrize('fault,reason', [('changed', 'SHA differs'), ('truncated', 'extent differs'),
+    ('missing', 'FileNotFoundError')])
+def test_bad_receive_after_batch_hash_keeps_exact_attempt_locks(prepared_request, tmp_path, monkeypatch, fault, reason):
+    root, _, FakeHdc, _ = prepared_request
+    launched = transport.execute_board_serial(root, tmp_path / 'execution', detach=True)
+    _retained_transport_fixture(FakeHdc, launched, monkeypatch, fault=fault)
+    result = transport.recover_board_serial(tmp_path / 'execution', tmp_path / 'recovery')
+    assert result['status'] == 'FAILED' and reason in result['error']
+    assert result['lock_state'] == 'RETAINED_OR_UNCERTAIN'
+    hdc = FakeHdc.instances[-1]
+    assert not any('release' in label or 'launch' in label for label, _ in hdc.calls)
+    assert not hdc.sends
+
+
+def test_inventory_bound_receive_rejects_mid_read_identity_change(tmp_path, monkeypatch):
+    payload = b'actual state bytes'
+    row = {'path': 'nested/state.bin', 'bytes': len(payload), 'sha256': hashlib.sha256(payload).hexdigest()}
+    class Device:
+        timeout = 60
+        def receive(self, remote, local, **kwargs):
+            Path(local).write_bytes(payload)
+    original = transport._identity; calls = 0
+    def changed(info):
+        nonlocal calls
+        value = original(info); calls += 1
+        if calls >= 3:
+            value['ctime_ns'] += 1
+        return value
+    monkeypatch.setattr(transport, '_identity', changed)
+    with pytest.raises(ValueError, match='changed'):
+        transport._receive_verified_inventory_file(Device(), PurePosixPath('/remote'), tmp_path, row)

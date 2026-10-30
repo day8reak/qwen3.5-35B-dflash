@@ -73,6 +73,7 @@ def main():
     out = output_path(args.output); out.mkdir(parents=True, exist_ok=False)
     command = ["cmake", "-S", str(ROOT/"targets/cpro/runtime"), "-B", str(out/"build"),
         "-DCMAKE_TOOLCHAIN_FILE="+str(toolchain),
+        "-DCMAKE_BUILD_TYPE=Release",
         "-DOHOS_ARCH=arm64-v8a", "-DOHOS_PLATFORM=OHOS", "-DOHOS_STL=c++_shared",
         "-DBUILD_HOST_TESTS=OFF", "-DHIAI_INCLUDE_DIR="+str(include),
         "-DBUILD_HIAI_OBJECTS=ON", "-DBUILD_HIAI_RUNNER="+("OFF" if args.headers_only else "ON"),
@@ -81,6 +82,7 @@ def main():
         command.append("-DOHOS_COMPATIBLE_SDK_VERSION="+str(args.compatible_sdk_version))
     api_headers = record_v2_headers(include, out)
     save_json(out/"command.json", {"argv": command, "headers_only": args.headers_only,
+        "native_build_type": "Release", "model_compilation": "NOT_RUN",
         "compatible_sdk_version_requested": args.compatible_sdk_version,
         "sdk_api_policy": "explicit" if args.compatible_sdk_version is not None else "sdk_default",
         "sdk_toolchain_sha256": sha256_file(toolchain),
@@ -90,7 +92,7 @@ def main():
     try:
         with (out/"build.log").open("w") as log:
             subprocess.run(command, cwd=out, stdout=log, stderr=subprocess.STDOUT, check=True)
-            subprocess.run(["cmake", "--build", str(out/"build"), "-j", "4"], cwd=out, stdout=log, stderr=subprocess.STDOUT, check=True)
+            subprocess.run(["cmake", "--build", str(out/"build"), "--config", "Release", "-j", "4"], cwd=out, stdout=log, stderr=subprocess.STDOUT, check=True)
     except subprocess.CalledProcessError:
         from qwen35_moe_dflash.tool_logs import log_excerpt
         print("Native build failed; compiler diagnostics:\n" + log_excerpt(out / "build.log"), file=sys.stderr)
@@ -105,6 +107,7 @@ def main():
         raise
     binary = out/"build/qwen35_dflash_hiai"
     save_json(out/"result.json", {"status": "HEADERS_COMPILED" if args.headers_only else "LINKED",
+        "native_build_type": "Release", "model_compilation": "NOT_RUN",
         "device_validation": "PENDING", "binary_sha256": sha256_file(binary) if binary.is_file() else None,
         "command_sha256": sha256_file(out/"command.json")})
     print(out)

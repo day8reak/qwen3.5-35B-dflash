@@ -5,6 +5,7 @@
 #include <array>
 #include <cerrno>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -36,6 +37,13 @@ constexpr const char* kEvidence = "device-hiai";
 #endif
 constexpr std::size_t kVocab=248320, kWidth=16384, kFeatureBytes=32768;
 using Bytes=std::vector<std::uint8_t>;
+using Clock=std::chrono::steady_clock;
+std::uint64_t ElapsedMs(Clock::time_point start) {
+  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-start).count());
+}
+void Lifecycle(const std::string& phase,const std::string& detail) {
+  std::cout<<"board-serial: "<<phase<<' '<<detail<<'\n'<<std::flush;
+}
 [[noreturn]] void Fail(const std::string& text) { throw std::runtime_error(text); }
 void Require(bool ok,const std::string& text) { if(!ok) Fail(text); }
 std::vector<std::string> Split(const std::string& s,char delim) {
@@ -132,11 +140,22 @@ struct File {fs::path path;std::string hash;std::uint64_t bytes;Stamp stamp;};
 File Observe(const fs::path& p,std::uint64_t expected,const std::string& hash="") {auto before=Stat(p);Require(before.size==expected,"file extent mismatch: "+p.string());
   auto actual=Sha256File(p);Require(Stat(p)==before,"file changed during hash: "+p.string());if(!hash.empty())Require(actual==hash,"file SHA256 mismatch: "+p.string());return {p,actual,expected,before};}
 void Stable(const File& f) {Require(Stat(f.path)==f.stamp,"pinned file changed: "+f.path.string());}
+// One stable file read supplies both its SHA observation and consumed bytes.
+// Keep the pre-read baseline through hashing; a later read cannot silently
+// establish a new identity after a read/hash gap.
+struct FileBytes { File file; Bytes bytes; };
+FileBytes ReadObserved(const fs::path& p,std::uint64_t expected,const std::string& hash="") {
+  auto before=Stat(p);Require(before.size==expected,"file extent mismatch: "+p.string());
+  auto bytes=Read(p,expected);Require(Stat(p)==before,"file changed during observed read: "+p.string());
+  auto actual=Hash(bytes);Require(Stat(p)==before,"file changed during observed hash: "+p.string());
+  if(!hash.empty())Require(actual==hash,"file SHA256 mismatch: "+p.string());
+  return {{p,actual,expected,before},std::move(bytes)};
+}
 J Record(const File& f,const fs::path& root){J j=J::Obj();j["path"]=fs::relative(f.path,root).generic_string();j["bytes"]=f.bytes;j["sha256"]=f.hash;return j;}
 struct Tensor {std::uint32_t index;std::string name,type;std::uint64_t bytes;};
 struct State {std::string ref;std::uint32_t in,out;std::uint64_t bytes;};
-struct Config {std::map<std::string,File> files;std::map<std::string,std::string> strings;std::vector<Tensor> inputs,outputs;std::vector<State> states;std::vector<std::uint32_t> prompt;std::uint32_t maxnew=0,k=0,minrounds=0,timeout=0;File config;};
-Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Require(configsize<=65536,"config exceeds64KiB");c.config=Observe(path,configsize);auto text=Text(path,65536);
+struct Config {std::map<std::string,File> files;std::map<std::string,std::string> strings;std::vector<Tensor> inputs,outputs;std::vector<State> states;std::vector<std::uint32_t> prompt;std::uint32_t maxnew=0,k=0,minrounds=0,timeout=0;std::uint64_t startup_hash_ms=0;File config;};
+Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Require(configsize<=65536,"config exceeds64KiB");auto configdata=ReadObserved(path,configsize);c.config=configdata.file;std::string text(configdata.bytes.begin(),configdata.bytes.end());
   for(unsigned char x:text)Require((x>=32&&x<=126)||x=='\n'||x=='\t',"TSV must be ASCII LF");
   auto lines=Split(text,'\n');Require(lines.back().empty(),"config needs final LF");lines.pop_back();
   Require(!lines.empty()&&lines[0]=="QWEN35_BOARD_SERIAL\t1","config header mismatch");
@@ -150,7 +169,10 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
       else if(f[0]=="draft_abi")Require(bytes<=1ULL<<20,"draft ABI exceeds budget");
       else Require(bytes<=64ULL<<20,"model/tool exceeds budget");
       // Full table/model hashes occur once at initialization, never per token.
-      c.files.emplace(f[0],Observe(p,bytes,f[2]));}
+      Lifecycle("startup-hash-begin","role="+f[0]+" bytes="+std::to_string(bytes));
+      auto hash_begin=Clock::now();c.files.emplace(f[0],Observe(p,bytes,f[2]));
+      auto hash_ms=ElapsedMs(hash_begin);c.startup_hash_ms+=hash_ms;
+      Lifecycle("startup-hash-end","role="+f[0]+" wall_ms="+std::to_string(hash_ms));}
     else if(strkeys.count(f[0])){Require(f.size()==2&&!f[1].empty()&&!c.strings.count(f[0]),"singleton row malformed/duplicate");c.strings.emplace(f[0],f[1]);}
     else if(f[0]=="target_input"||f[0]=="target_output"){Require(f.size()==5,"tensor row malformed");auto& v=f[0]=="target_input"?c.inputs:c.outputs;
       auto index=Integer(f[1],100);Require(index==v.size(),"tensor indices must be ordered/contiguous");if(f[0]=="target_input")Name(f[2]);else Require(!f[2].empty()&&f[2].size()<=256,"runtime output name exceeds budget");Require(std::set<std::string>{"FP16","FP32","INT8","INT16","INT32","INT64"}.count(f[3]),"tooltype invalid");
@@ -182,26 +204,34 @@ void FiniteHalf(const Bytes& b){Require(b.size()%2==0,"FP16 extent");for(std::si
 std::uint32_t Argmax(const Bytes& b){Require(b.size()==kVocab*4,"logits extent");float best=0;std::uint32_t index=0;for(std::uint32_t i=0;i<kVocab;++i){std::uint32_t bits=0;for(int n=0;n<4;++n)bits|=std::uint32_t(b[4*i+n])<<(8*n);float v;std::memcpy(&v,&bits,4);Require(std::isfinite(v),"nonfinite target logits");if(i==0||v>best){best=v;index=i;}}return index;}
 Bytes TableRow(const File& f,std::uint32_t token,std::size_t width){Stable(f);int fd=::open(f.path.c_str(),O_RDONLY|O_NOFOLLOW|O_NONBLOCK);Require(fd>=0,"table open failed");struct stat s{};bool okay=::fstat(fd,&s)==0&&FromStat(s)==f.stamp;Bytes b(width);std::size_t done=0;
   while(okay&&done<width){auto got=::pread(fd,b.data()+done,width-done,static_cast<off_t>(token)*width+done);if(got<0&&errno==EINTR)continue;if(got<=0){okay=false;break;}done+=got;}okay=okay&&::fstat(fd,&s)==0&&FromStat(s)==f.stamp;::close(fd);Require(okay,"table identity/read failed");Stable(f);return b;}
-struct Child {std::uint64_t pid;int exitcode;};
+struct Child {std::uint64_t pid;int exitcode;std::uint64_t wall_ms;};
 Child Run(const std::vector<std::string>& args,const fs::path& cwd,const std::string& libraries,const fs::path& logs,J& progress,const fs::path& out){
   J argv=J::Arr();for(const auto& a:args)argv.a.emplace_back(a);J cmd=J::Obj();cmd["argv"]=argv;cmd["cwd"]=cwd.string();cmd["LD_LIBRARY_PATH"]=libraries;Write(logs/"command.json",Dump(cmd)+"\n");
   progress["last_child_pid"]=J();progress["last_child_exitcode"]=J();progress["child_status"]="STARTING";Atomic(out/"progress.json",progress);
+  auto child_begin=Clock::now();
   pid_t pid=::fork();Require(pid>=0,"fork failed");if(pid==0){int a=::open((logs/"tool.stdout").c_str(),O_WRONLY|O_CREAT|O_EXCL,0600),b=::open((logs/"tool.stderr").c_str(),O_WRONLY|O_CREAT|O_EXCL,0600);
     if(a<0||b<0||::dup2(a,STDOUT_FILENO)<0||::dup2(b,STDERR_FILENO)<0||::chdir(cwd.c_str())!=0||::setenv("LD_LIBRARY_PATH",libraries.c_str(),1)!=0)_exit(126);
     ::close(a);::close(b);std::vector<char*> v;for(const auto& s:args)v.push_back(const_cast<char*>(s.c_str()));v.push_back(nullptr);::execv(v[0],v.data());_exit(127);}
   progress["last_child_pid"]=static_cast<std::uint64_t>(pid);progress["last_child_exitcode"]=J();progress["child_status"]="RUNNING";
+  Lifecycle("child-start","pid="+std::to_string(pid)+" executable="+args[0]);
   Write(logs/"tool.pid",std::to_string(pid)+"\n");Atomic(out/"progress.json",progress);
   int status=0;pid_t waited;do{waited=::waitpid(pid,&status,0);}while(waited<0&&errno==EINTR);Require(waited==pid,"waitpid failed; completion unknown");int rc=WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
-  Write(logs/"tool.exitcode",std::to_string(rc)+"\n");progress["last_child_exitcode"]=rc;progress["child_status"]="EXITED";Atomic(out/"progress.json",progress);return {static_cast<std::uint64_t>(pid),rc};
+  auto wall_ms=ElapsedMs(child_begin);Lifecycle("child-end","pid="+std::to_string(pid)+" exitcode="+std::to_string(rc)+" wall_ms="+std::to_string(wall_ms));
+  Write(logs/"tool.exitcode",std::to_string(rc)+"\n");progress["last_child_exitcode"]=rc;progress["child_status"]="EXITED";Atomic(out/"progress.json",progress);return {static_cast<std::uint64_t>(pid),rc,wall_ms};
 }
 std::string Numbered(const std::string& prefix,std::size_t n){std::ostringstream s;s<<prefix<<std::setfill('0')<<std::setw(4)<<n;return s.str();}
 class Supervisor {
-  Config c;fs::path out;J loop=J::Obj(),progress=J::Obj();std::vector<File> sources,inputs,outputs,states;std::vector<std::uint32_t> prefix,generated;Bytes features;std::uint32_t next=0;std::set<std::string> retrieve;std::map<std::string,File> kept;std::size_t targets=0,drafts=0,considered=0,accepted=0,corrections=0,bonuses=0;std::string stage="initialize";
+  Config c;fs::path out;J loop=J::Obj(),progress=J::Obj();std::vector<File> sources,inputs,outputs,states;std::vector<std::uint32_t> prefix,generated;Bytes features;std::uint32_t next=0;std::set<std::string> retrieve;std::map<std::string,File> kept;std::size_t targets=0,drafts=0,considered=0,accepted=0,corrections=0,bonuses=0;std::uint64_t target_child_ms=0,draft_child_ms=0;std::map<std::uint64_t,std::string> zero_hashes;std::string stage="initialize";
   void Pins(){for(const auto& x:c.files)Stable(x.second);Stable(c.config);for(const auto& x:kept)Stable(x.second);}
-  void Keep(const fs::path& p){auto rel=fs::relative(p,out).generic_string();if(kept.count(rel)){Stable(kept.at(rel));return;}auto f=Observe(p,Stat(p).size);kept.emplace(rel,f);retrieve.insert(rel);}
+  void Keep(const File& f){
+    Stable(f);auto rel=fs::relative(f.path,out).generic_string();
+    if(kept.count(rel)){const auto& old=kept.at(rel);Require(old.stamp==f.stamp&&old.hash==f.hash&&old.bytes==f.bytes,"retained observation differs: "+f.path.string());Stable(old);return;}
+    kept.emplace(rel,f);retrieve.insert(rel);
+  }
+  void Keep(const fs::path& p){auto rel=fs::relative(p,out).generic_string();if(kept.count(rel)){Stable(kept.at(rel));return;}Keep(Observe(p,Stat(p).size));}
   void KeepLogs(const fs::path& p){for(auto name:{"tool.stdout","tool.stderr","tool.pid","tool.exitcode","command.json"})if(fs::exists(p/name))Keep(p/name);}
-  void Counts(){J n=J::Obj();n["target_native_calls"]=targets;n["draft_native_calls"]=drafts;n["considered"]=considered;n["accepted"]=accepted;n["corrections"]=corrections;n["bonuses"]=bonuses;loop["counts"]=n;loop["prompt"]=Array(c.prompt);loop["generated_tokens"]=Array(generated);loop["full_prefix"]=Array(prefix);loop["prompt_token_ids"]=Array(c.prompt);loop["generated_token_ids"]=Array(generated);loop["full_prefix_token_ids"]=Array(prefix);}
-  void Progress(){Counts();progress["stage"]=stage;progress["committed_prefix_length"]=prefix.size();progress["generated_tokens"]=Array(generated);progress["counts"]=loop["counts"];Atomic(out/"progress.json",progress);}
+  void Counts(){J n=J::Obj();n["target_native_calls"]=targets;n["draft_native_calls"]=drafts;n["considered"]=considered;n["accepted"]=accepted;n["corrections"]=corrections;n["bonuses"]=bonuses;loop["counts"]=n;loop["prompt"]=Array(c.prompt);loop["generated_tokens"]=Array(generated);loop["full_prefix"]=Array(prefix);loop["prompt_token_ids"]=Array(c.prompt);loop["generated_token_ids"]=Array(generated);loop["full_prefix_token_ids"]=Array(prefix);J timing=J::Obj();timing["scope"]="MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE";timing["startup_source_hash_ms"]=c.startup_hash_ms;timing["target_child_process_wall_ms"]=target_child_ms;timing["draft_child_process_wall_ms"]=draft_child_ms;timing["target_child_processes_timed"]=targets;timing["draft_child_processes_timed"]=drafts;loop["supervisor_timing"]=timing;}
+  void Progress(){Counts();progress["stage"]=stage;progress["committed_prefix_length"]=prefix.size();progress["generated_tokens"]=Array(generated);progress["counts"]=loop["counts"];progress["supervisor_timing"]=loop["supervisor_timing"];Atomic(out/"progress.json",progress);}
   void Manifest(){std::string t="QWEN35_BOARD_SERIAL_RETRIEVAL\t1\n";for(const auto& s:retrieve){auto p=out/s;const auto& old=kept.at(s);Stable(old);auto f=Observe(p,old.bytes,old.hash);Require(f.stamp==old.stamp,"retrieval source changed");t+="file\t"+s+"\t"+f.hash+"\t"+std::to_string(f.bytes)+"\n";}auto tmp=out/"retrieval-manifest.tsv.new";Write(tmp,t);Require(::rename(tmp.c_str(),(out/"retrieval-manifest.tsv").c_str())==0,"manifest rename failed");}
   void Target(std::uint32_t token,const std::string& role){stage="target-inputs";Pins();for(const auto& f:states)Stable(f);auto step=out/"target"/Numbered("step_",targets);NewDir(step);NewDir(step/"inputs");NewDir(step/"outputs");auto oldstates=states;inputs.clear();
     Bytes row=TableRow(c.files.at("weight_table"),token,2048),scale=TableRow(c.files.at("scale_table"),token,4);std::uint32_t sb=0;for(int i=0;i<4;++i)sb|=std::uint32_t(scale[i])<<(8*i);float sf;std::memcpy(&sf,&sb,4);Require(std::isfinite(sf)&&sf>=0,"invalid original embedding scale");
@@ -210,25 +240,33 @@ class Supervisor {
     std::map<unsigned,std::size_t> byinput;for(std::size_t i=0;i<c.states.size();++i)byinput[c.states[i].in]=i;
     J inputrows=J::Arr(),feedback=J::Arr();std::string paths,types,outtypes;
     for(const auto& t:c.inputs){auto path=step/"inputs"/(Numbered("input_",t.index)+".bin");Bytes b;auto found=byinput.find(t.index);if(found==byinput.end())b=control.at(t.name);else if(oldstates.empty())b=Bytes(t.bytes,0);else b=Read(oldstates[found->second].path,t.bytes);
-      Require(b.size()==t.bytes,"target input extent mismatch");Write(path,b);auto f=Observe(path,t.bytes,Hash(b));inputs.push_back(f);J r=Record(f,out);r["index"]=t.index;r["name"]=t.name;r["tool_type"]=t.type;inputrows.a.push_back(r);
+      Require(b.size()==t.bytes,"target input extent mismatch");
+      std::string expected_hash;
+      if(found==byinput.end())expected_hash=Hash(b);
+      else if(!oldstates.empty()){Stable(oldstates[found->second]);expected_hash=oldstates[found->second].hash;}
+      else {auto known=zero_hashes.find(t.bytes);if(known==zero_hashes.end())known=zero_hashes.emplace(t.bytes,Hash(b)).first;expected_hash=known->second;}
+      Write(path,b);auto f=Observe(path,t.bytes,expected_hash);inputs.push_back(f);J r=Record(f,out);r["index"]=t.index;r["name"]=t.name;r["tool_type"]=t.type;inputrows.a.push_back(r);
       if(found!=byinput.end()){J state=J::Obj();state["source_refdata"]=c.states[found->second].ref;state["runtime_input_index"]=t.index;state["runtime_output_index"]=c.states[found->second].out;state["input"]=r;if(!oldstates.empty()){Stable(oldstates[found->second]);Require(f.hash==oldstates[found->second].hash,"state input differs from committed parent");state["parent_output"]=Record(oldstates[found->second],out);}else state["initialization"]="ZERO_FP16";feedback.a.push_back(state);}
       if(!paths.empty()){paths+=',';types+=',';}paths+=path.string();types+=t.type;}
     for(const auto& t:c.outputs){if(!outtypes.empty())outtypes+=',';outtypes+=t.type;}
     for(const auto& f:inputs)Stable(f);
     Pins();stage="target-child";Progress();
     std::vector<std::string> args={c.files.at("target_tool").path.string(),"--model="+c.files.at("target_model").path.string(),"--input="+paths,"--times=1","--modelmanager_itf=V2","--weight_dir="+c.files.at("target_model").path.parent_path().string(),"--enable_item=1","--direct_from_file=true","--input_type="+types,"--output_type="+outtypes,"--output_dir="+(step/"outputs").string()};
-    auto child=Run(args,step,c.strings.at("target_library_path"),step,progress,out);++targets;KeepLogs(step);Require(child.exitcode==0,"target child failed; no retry");
+    auto child=Run(args,step,c.strings.at("target_library_path"),step,progress,out);++targets;target_child_ms+=child.wall_ms;KeepLogs(step);Require(child.exitcode==0,"target child failed; no retry");
     for(const auto& f:inputs){Stable(f);Require(Observe(f.path,f.bytes).hash==f.hash,"target changed private input bytes");}for(const auto& f:oldstates)Stable(f);Pins();
     stage="target-bind-outputs";auto log=Text(step/"tool.stdout",1<<20);std::map<unsigned,fs::path> mapping;std::istringstream ls(log);std::string line;
     std::regex pattern("^output\\[([0-9]+)\\][ \\t]*:[ \\t]*(/[^ \\t\\r]+)[ \\t\\r]*$");
     while(std::getline(ls,line)){std::smatch m;if(std::regex_match(line,m,pattern)){auto index=Integer(m[1],81);Require(!mapping.count(index),"duplicate logged target output");auto p=Absolute(m[2]);Require(p.parent_path()==step/"outputs","logged output outside owned attempt");mapping.emplace(index,p);}else if(line.find("output[")!=std::string::npos)Fail("malformed target output log mapping");}
     Require(mapping.size()==82&&log.find("Execute result :Success")!=std::string::npos,"target log missing complete explicit output mapping/success");
     std::set<fs::path> actual;for(const auto& e:fs::directory_iterator(step/"outputs")){Safe(e.path());actual.insert(e.path());}Require(actual.size()==82,"target output directory count differs");outputs.clear();J outputrows=J::Arr();std::set<fs::path> selected;
-    for(const auto& t:c.outputs){auto p=mapping.at(t.index);Require(actual.count(p)&&selected.insert(p).second,"duplicate or absent target file mapping");auto f=Observe(p,t.bytes);outputs.push_back(f);J r=Record(f,out);r["index"]=t.index;r["runtime_name"]=t.name;r["tool_type"]=t.type;outputrows.a.push_back(r);}
-    next=Argmax(Read(outputs[0].path,outputs[0].bytes));auto chunk=Read(outputs[81].path,kFeatureBytes);FiniteHalf(chunk);
+    Bytes logits,chunk;
+    for(const auto& t:c.outputs){auto p=mapping.at(t.index);Require(actual.count(p)&&selected.insert(p).second,"duplicate or absent target file mapping");File f;
+      if(t.index==0||t.index==81){auto observed=ReadObserved(p,t.bytes);f=observed.file;(t.index==0?logits:chunk)=std::move(observed.bytes);}else f=Observe(p,t.bytes);
+      outputs.push_back(f);J r=Record(f,out);r["index"]=t.index;r["runtime_name"]=t.name;r["tool_type"]=t.type;outputrows.a.push_back(r);}
+    next=Argmax(logits);FiniteHalf(chunk);
     J receipt=J::Obj();receipt["schema_version"]=1;receipt["artifact_kind"]="qwen35-board-serial-target-step";receipt["evidence_kind"]=kEvidence;receipt["status"]="EXECUTED_OUTPUTS_BOUND";receipt["pid"]=child.pid;receipt["exitcode"]=0;receipt["token_id"]=token;receipt["absolute_position"]=prefix.size();receipt["role"]=role;receipt["model_sha256"]=c.files.at("target_model").hash;receipt["inputs"]=inputrows;receipt["outputs"]=outputrows;receipt["state_feedback"]=feedback;receipt["next_token_id"]=next;receipt["control_semantics"]="EXPERIMENTAL_SINGLE_QUERY_ABSOLUTE_POSITION";
-    Write(step/"receipt.json",Dump(receipt)+"\n");Keep(step/"receipt.json");for(const auto& f:outputs)Stable(f);for(const auto& f:inputs)Stable(f);Pins();
-    states.clear();for(const auto& s:c.states)states.push_back(outputs[s.out]);features.insert(features.end(),chunk.begin(),chunk.end());prefix.push_back(token);J event=J::Obj();event["receipt"]=Record(Observe(step/"receipt.json",Stat(step/"receipt.json").size),out);event["pid"]=child.pid;event["token_id"]=token;event["next_token_id"]=next;loop["target_steps"].a.push_back(event);stage="target-committed";Progress();
+    Write(step/"receipt.json",Dump(receipt)+"\n");auto receiptfile=Observe(step/"receipt.json",Stat(step/"receipt.json").size);Keep(receiptfile);for(const auto& f:outputs)Stable(f);for(const auto& f:inputs)Stable(f);Pins();
+    states.clear();for(const auto& s:c.states)states.push_back(outputs[s.out]);features.insert(features.end(),chunk.begin(),chunk.end());prefix.push_back(token);J event=J::Obj();event["receipt"]=Record(receiptfile,out);event["pid"]=child.pid;event["token_id"]=token;event["next_token_id"]=next;loop["target_steps"].a.push_back(event);stage="target-committed";Progress();
   }
   std::vector<std::uint32_t> Draft(){stage="draft-inputs";Pins();Require(!prefix.empty()&&prefix.size()<=64&&features.size()==prefix.size()*kFeatureBytes,"draft prefix/features mismatch");auto call=out/"draft"/Numbered("call-",drafts);NewDir(call);auto bundle=call/"bundle";NewDir(bundle);NewDir(bundle/"model");
     auto& model=c.files.at("draft_model");Stable(model);auto before=model.stamp;auto linked=bundle/"model/model.omc";Require(::link(model.path.c_str(),linked.c_str())==0,"board-local draft model hardlink failed");auto after=Stat(model.path);auto linkstat=Stat(linked);
@@ -239,17 +277,17 @@ class Supervisor {
     for(std::size_t i=0;i<3;++i){auto name=Numbered("input_",i)+".bin";Write(bundle/name,data[i]);auto f=Observe(bundle/name,data[i].size(),Hash(data[i]));pins.push_back(f);wire+="input\t"+std::to_string(i)+"\t"+names[i]+"\t"+types[i]+"\t"+shapes[i]+"\t"+name+"\t"+f.hash+"\n";J r=Record(f,out);r["index"]=i;r["name"]=names[i];inputrows.a.push_back(r);}
     wire+="output\t0\tdraft_top1\tint32\t1,15\noutput\t1\tdraft_hidden\tfloat16\t1,15,2048\n";Write(bundle/"step.tsv",wire);auto plan=Observe(bundle/"step.tsv",wire.size());pins.push_back(plan);pins.push_back(Observe(bundle/"draft-abi.json",abi.size(),c.files.at("draft_abi").hash));
     std::vector<std::string> args={c.files.at("draft_runner").path.string(),"--draft-step",(bundle/"step.tsv").string(),"--output",(call/"results").string(),"--expected-runtime-version",c.strings.at("runtime_version"),"--ddk-id",c.strings.at("ddk_id"),"--firmware-id",c.strings.at("firmware_id"),"--timeout-ms",std::to_string(c.timeout),"--model-load-api","legacy-buffer"};
-    stage="draft-child";Progress();auto child=Run(args,call,c.strings.at("draft_library_path"),call,progress,out);++drafts;KeepLogs(call);Require(child.exitcode==0,"draft child failed; no retry");for(const auto& f:pins){Stable(f);Require(Observe(f.path,f.bytes).hash==f.hash,"draft changed input or step bytes");}Pins();
-    auto resultbytes=Stat(call/"results/result.json").size;Require(resultbytes<=1<<20,"draft receipt exceeds budget");auto resultfile=Observe(call/"results/result.json",resultbytes);auto text=Text(resultfile.path,1<<20);J native=Parser{text}.parse();
+    stage="draft-child";Progress();auto child=Run(args,call,c.strings.at("draft_library_path"),call,progress,out);++drafts;draft_child_ms+=child.wall_ms;KeepLogs(call);Require(child.exitcode==0,"draft child failed; no retry");for(const auto& f:pins){Stable(f);Require(Observe(f.path,f.bytes).hash==f.hash,"draft changed input or step bytes");}Pins();
+    auto resultbytes=Stat(call/"results/result.json").size;Require(resultbytes<=1<<20,"draft receipt exceeds budget");auto observed_result=ReadObserved(call/"results/result.json",resultbytes);auto resultfile=observed_result.file;std::string text(observed_result.bytes.begin(),observed_result.bytes.end());J native=Parser{text}.parse();
     Require(native.at("schema_version").num()==1&&native.at("state_policy").str()=="prefix-recompute"&&native.at("status").str()=="EXECUTED"&&native.at("scope").str()=="standalone-draft-step"&&native.at("evidence_kind").str()==kEvidence&&native.at("process_id").num()==child.pid&&native.at("target_calls").num()==0&&native.at("draft_calls").num()==1,"draft receipt execution identity mismatch");
     Require(native.at("model_sha256").str()==model.hash&&native.at("draft_abi_sha256").str()==c.files.at("draft_abi").hash&&native.at("step_plan_sha256").str()==plan.hash&&native.at("runtime_version").str()==c.strings.at("runtime_version")&&native.at("ddk_id").str()==c.strings.at("ddk_id")&&native.at("firmware_id").str()==c.strings.at("firmware_id")&&native.at("model_load_api").str()=="legacy-buffer"&&native.at("sequence_length").num()==64,"draft receipt model/ABI/environment mismatch");
     const auto& ni=native.at("inputs");const auto& no=native.at("outputs");Require(ni.kind==J::Array&&ni.a.size()==3&&no.kind==J::Array&&no.a.size()==2,"draft receipt incomplete IO");
     for(std::size_t i=0;i<3;++i){const auto& r=ni.a[i];Require(r.at("index").num()==i&&r.at("name").str()==names[i]&&r.at("dtype").str()==types[i]&&Shape(r.at("shape"),i==0?std::vector<std::uint64_t>{1,64,16384}:std::vector<std::uint64_t>{1,64})&&r.at("bytes").num()==data[i].size()&&r.at("path").str()==pins[i].path.filename().string()&&r.at("sha256").str()==pins[i].hash,"draft receipt input differs from actual prefix bytes");}
     const auto& diag=native.at("io_diagnostic");Require(diag.at("enabled").kind==J::Bool&&diag.at("enabled").b&&diag.at("process_called").kind==J::Bool&&diag.at("process_called").b,"draft native input readback missing");Require(diag.at("output_fill_byte").num()==0&&diag.at("input_readback_point").str()=="AFTER_ALL_INPUT_COPIES_AND_OUTPUT_FILL_BEFORE_PROCESS","draft native readback point/fill mismatch");const auto& outputdiag=diag.at("outputs");Require(outputdiag.kind==J::Array&&outputdiag.a.size()==2,"draft output identity diagnostics incomplete");for(std::size_t i=0;i<2;++i){const auto& r=outputdiag.a[i];Require(r.at("index").num()==i&&r.at("checked_after_process").kind==J::Bool&&r.at("checked_after_process").b&&r.at("object_same").kind==J::Bool&&r.at("object_same").b&&r.at("buffer_same").kind==J::Bool&&r.at("buffer_same").b,"draft output buffer identity changed");}const auto& readback=diag.at("inputs");Require(readback.kind==J::Array&&readback.a.size()==3,"draft readback incomplete");
     for(std::size_t i=0;i<3;++i){auto& r=readback.a[i];Require(r.at("index").num()==i&&r.at("logical_bytes").num()==pins[i].bytes&&r.at("readback_sha256").str()==pins[i].hash&&r.at("readback_matches_source").kind==J::Bool&&r.at("readback_matches_source").b,"draft actual copied input differs");}
-    std::vector<File> actual;for(std::size_t i=0;i<2;++i){const auto& r=no.a[i];auto name=Numbered("output_",i)+".bin";auto size=i==0?60ULL:61440ULL;Require(r.at("index").num()==i&&r.at("name").str()==(i==0?"draft_top1":"draft_hidden")&&r.at("dtype").str()==(i==0?"int32":"float16")&&Shape(r.at("shape"),i==0?std::vector<std::uint64_t>{1,15}:std::vector<std::uint64_t>{1,15,2048})&&r.at("path").str()==name&&r.at("bytes").num()==size,"draft output ABI differs");HashSyntax(r.at("sha256").str());actual.push_back(Observe(call/"results"/name,size,r.at("sha256").str()));Keep(actual.back().path);}
-    auto bytes=Read(actual[0].path,60);FiniteHalf(Read(actual[1].path,61440));std::vector<std::uint32_t> proposals;for(std::size_t i=0;i<15;++i){std::uint32_t token=0;for(int j=0;j<4;++j)token|=std::uint32_t(bytes[4*i+j])<<(8*j);Require(token<kVocab,"draft token outside full vocabulary");proposals.push_back(token);}
-    J receipt=J::Obj();receipt["schema_version"]=1;receipt["artifact_kind"]="qwen35-board-serial-draft-step";receipt["evidence_kind"]=kEvidence;receipt["pid"]=child.pid;receipt["exitcode"]=0;receipt["model_sha256"]=model.hash;receipt["prefix"]=Array(prefix);receipt["feature_prefix_sha256"]=Hash(features);receipt["inputs"]=inputrows;receipt["native_receipt"]=Record(resultfile,out);receipt["proposals"]=Array(proposals);Write(call/"receipt.json",Dump(receipt)+"\n");Keep(call/"receipt.json");Keep(resultfile.path);Keep(bundle/"step.tsv");for(const auto& f:actual)Stable(f);for(const auto& f:pins)Stable(f);Stable(resultfile);Pins();J event=J::Obj();event["receipt"]=Record(Observe(call/"receipt.json",Stat(call/"receipt.json").size),out);event["pid"]=child.pid;event["proposals"]=Array(proposals);loop["draft_steps"].a.push_back(event);return proposals;
+    std::vector<File> actual;std::array<Bytes,2> outputbytes;for(std::size_t i=0;i<2;++i){const auto& r=no.a[i];auto name=Numbered("output_",i)+".bin";auto size=i==0?60ULL:61440ULL;Require(r.at("index").num()==i&&r.at("name").str()==(i==0?"draft_top1":"draft_hidden")&&r.at("dtype").str()==(i==0?"int32":"float16")&&Shape(r.at("shape"),i==0?std::vector<std::uint64_t>{1,15}:std::vector<std::uint64_t>{1,15,2048})&&r.at("path").str()==name&&r.at("bytes").num()==size,"draft output ABI differs");HashSyntax(r.at("sha256").str());auto observed=ReadObserved(call/"results"/name,size,r.at("sha256").str());actual.push_back(observed.file);outputbytes[i]=std::move(observed.bytes);Keep(actual.back());}
+    const auto& bytes=outputbytes[0];FiniteHalf(outputbytes[1]);std::vector<std::uint32_t> proposals;for(std::size_t i=0;i<15;++i){std::uint32_t token=0;for(int j=0;j<4;++j)token|=std::uint32_t(bytes[4*i+j])<<(8*j);Require(token<kVocab,"draft token outside full vocabulary");proposals.push_back(token);}
+    J receipt=J::Obj();receipt["schema_version"]=1;receipt["artifact_kind"]="qwen35-board-serial-draft-step";receipt["evidence_kind"]=kEvidence;receipt["pid"]=child.pid;receipt["exitcode"]=0;receipt["model_sha256"]=model.hash;receipt["prefix"]=Array(prefix);receipt["feature_prefix_sha256"]=Hash(features);receipt["inputs"]=inputrows;receipt["native_receipt"]=Record(resultfile,out);receipt["proposals"]=Array(proposals);Write(call/"receipt.json",Dump(receipt)+"\n");auto receiptfile=Observe(call/"receipt.json",Stat(call/"receipt.json").size);Keep(receiptfile);Keep(resultfile);Keep(plan);for(const auto& f:actual)Stable(f);for(const auto& f:pins)Stable(f);Stable(resultfile);Pins();J event=J::Obj();event["receipt"]=Record(receiptfile,out);event["pid"]=child.pid;event["proposals"]=Array(proposals);loop["draft_steps"].a.push_back(event);return proposals;
   }
   void Commit(std::uint32_t token,const std::string& role){Target(token,role);generated.push_back(token);J event=J::Obj();event["token_id"]=token;event["position"]=prefix.size()-1;event["role"]=role;event["target_step_index"]=targets-1;loop["commits"].a.push_back(event);Progress();}
  public:
@@ -260,7 +298,7 @@ class Supervisor {
       if(!mismatch&&used==limit&&generated.size()<c.maxnew){auto bonus=next;++bonuses;Commit(bonus,"all_considered_accepted_bonus");round["bonus_token_id"]=bonus;round["committed"].a.emplace_back(static_cast<std::uint64_t>(bonus));}
       round["considered"]=used;round["accepted"]=matched;round["discarded_unverified"]=15-used;round["prefix_after"]=Array(prefix);loop["rounds"].a.push_back(round);stage="round-complete";Progress();}
     Require(loop["rounds"].a.size()>=c.minrounds,"minimum draft rounds not observed");Require(targets==c.prompt.size()+c.maxnew&&generated.size()==c.maxnew,"native target commit count mismatch");Pins();
-    Write(out/"final-features.bin",features);auto final=Observe(out/"final-features.bin",features.size(),Hash(features));Keep(final.path);loop["final_features"]=Record(final,out);loop["final_features"]["dtype"]="float16";loop["final_features"]["shape"]=Array({1,static_cast<std::uint32_t>(prefix.size()),16384});loop["final_target_outputs"]=J::Arr();for(std::size_t i=0;i<outputs.size();++i){const auto& f=outputs[i];Stable(f);Keep(f.path);J row=Record(f,out);row["index"]=i;row["runtime_name"]=c.outputs[i].name;row["tool_type"]=c.outputs[i].type;loop["final_target_outputs"].a.push_back(row);}loop["final_state_files"]=J::Arr();for(std::size_t i=0;i<states.size();++i){Stable(states[i]);J r=Record(states[i],out);r["source_refdata"]=c.states[i].ref;r["runtime_input_index"]=c.states[i].in;r["runtime_output_index"]=c.states[i].out;loop["final_state_files"].a.push_back(r);}
+    Write(out/"final-features.bin",features);auto final=Observe(out/"final-features.bin",features.size(),Hash(features));Keep(final);loop["final_features"]=Record(final,out);loop["final_features"]["dtype"]="float16";loop["final_features"]["shape"]=Array({1,static_cast<std::uint32_t>(prefix.size()),16384});loop["final_target_outputs"]=J::Arr();for(std::size_t i=0;i<outputs.size();++i){const auto& f=outputs[i];Stable(f);Keep(f);J row=Record(f,out);row["index"]=i;row["runtime_name"]=c.outputs[i].name;row["tool_type"]=c.outputs[i].type;loop["final_target_outputs"].a.push_back(row);}loop["final_state_files"]=J::Arr();for(std::size_t i=0;i<states.size();++i){Stable(states[i]);J r=Record(states[i],out);r["source_refdata"]=c.states[i].ref;r["runtime_input_index"]=c.states[i].in;r["runtime_output_index"]=c.states[i].out;loop["final_state_files"].a.push_back(r);}
     loop["status"]="BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED";loop["device_execution"]=std::string(kEvidence)=="device-hiai"?"EXECUTED_BOARD_LOCAL_OUTPUTS_RETAINED":"HOST_FAKE_EXECUTED";loop["eos_policy"]="DISABLED_FIXED_BUDGET_SMOKE";loop["acceptance_scope"]="CONSIDERED_K_ONLY_NOT_ALL15";loop["retrieval_manifest"]="retrieval-manifest.tsv";stage="complete";progress["status"]=loop["status"];Progress();Atomic(out/"loop.json",loop);Keep(out/"loop.json");Keep(out/"progress.json");Manifest();return 0;
   }catch(const std::exception& e){loop["status"]="FAILED";loop["error"]=e.what();loop["stage"]=stage;loop["failed_child_pid"]=progress.o.count("last_child_pid")?progress.at("last_child_pid"):J();loop["failed_child_exitcode"]=progress.o.count("last_child_exitcode")?progress.at("last_child_exitcode"):J();progress["status"]="FAILED";Counts();try{Progress();Atomic(out/"loop.json",loop);Keep(out/"loop.json");Keep(out/"progress.json");Manifest();}catch(const std::exception& save){std::cerr<<"failure evidence incomplete: "<<save.what()<<'\n';}std::cerr<<e.what()<<'\n';return 1;}}
 };

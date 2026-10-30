@@ -83,6 +83,7 @@ if '--draft-step' not in args:
     if mode=='past-receipt-change' and p==3:
         old=Path.cwd().parent/'step_0000/receipt.json';old.write_text(old.read_text()+' ')
     if mode=='target-input-change': paths[0].write_bytes(bytes(2048))
+    if mode=='target-input-same-bytes': paths[0].write_bytes(paths[0].read_bytes())
     out=Path(a['output_dir'])
     for i in range(82):
         if mode=='missing-output' and i==10: continue
@@ -132,6 +133,9 @@ else:
     if mode=='bad-output-identity':result['io_diagnostic']['outputs'][0]['buffer_same']=False
     if mode=='bad-readback-point':result['io_diagnostic']['input_readback_point']='BEFORE_COPIES'
     if mode=='bad-native-schema':result['schema_version']=True
+    if mode=='bad-output-hash':result['outputs'][0]['sha256']='0'*64
+    if mode=='draft-input-same-bytes':
+        source=base/ins[0]['path'];source.write_bytes(source.read_bytes())
     (dest/'result.json').write_text(json.dumps(result))
 '''.replace('V*4', '248320*4')
 
@@ -178,6 +182,15 @@ def test_complete_serial_loop(binaries,case,mode):
     assert result['full_prefix']==list(range(1,17))
     assert result['counts']['target_native_calls']==16 and result['counts']['draft_native_calls']>=2
     assert len(result['commits'])==8 and result['commits'][-1]['target_step_index']==15
+    timing=result['supervisor_timing']
+    assert timing['scope']=='MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE'
+    assert timing['target_child_processes_timed']==16
+    assert timing['draft_child_processes_timed']==result['counts']['draft_native_calls']
+    assert all(type(timing[key]) is int and timing[key]>=0 for key in ('startup_source_hash_ms','target_child_process_wall_ms','draft_child_process_wall_ms'))
+    assert run.stdout.count('startup-hash-begin')==7 and run.stdout.count('startup-hash-end')==7
+    assert run.stdout.count('child-start')==16+result['counts']['draft_native_calls']
+    assert run.stdout.count('child-end')==16+result['counts']['draft_native_calls']
+    assert result['performance']=='NOT_EVALUATED'
     if mode=='accept':assert result['counts']['bonuses']>0 and result['counts']['corrections']==0
     if mode=='reject':assert result['counts']['accepted']==0 and result['counts']['corrections']==7
     if mode=='mixed':assert result['counts']['accepted']>0 and result['counts']['corrections']>0
@@ -201,7 +214,8 @@ def test_complete_serial_loop(binaries,case,mode):
     ('target-fail','target child failed'),('draft-fail','draft child failed'),
     ('past-receipt-change','pinned file changed'),
     ('missing-output','complete explicit'),('duplicate-log','duplicate logged'),('bad-extent','extent mismatch'),
-    ('target-input-change','pinned file changed'),('nan-logits','nonfinite target logits'),
+    ('target-input-change','pinned file changed'),('target-input-same-bytes','pinned file changed'),
+    ('draft-input-same-bytes','pinned file changed'),('bad-output-hash','SHA256 mismatch'),('nan-logits','nonfinite target logits'),
     ('bad-token','draft token outside'),('bad-receipt','model/ABI/environment'),
     ('wrong-native-kind','execution identity'),('bad-readback','actual copied input'),('bad-shape','output ABI'),
     ('bad-output-identity','output buffer identity'),('bad-readback-point','readback point/fill'),('bad-native-schema','JSON integer')])

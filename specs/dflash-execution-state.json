@@ -62,13 +62,14 @@
   },
   "current_known_evidence": {
     "host_checks": {
-      "unique_passed": 85,
-      "new_board_lane_checks": 74,
+      "unique_passed": 109,
+      "new_board_lane_checks": 82,
       "existing_host_serial_regressions": 11,
       "scope": "host C++/fake HIAI and fake HDC only; no actual device calls",
       "validation_document": "docs/board-serial-validation.md",
-      "native_source_sha256": "d6010e64c8638d770238f4d8028cb7e3023301943c049efcd7fce3083121b09f",
-      "actual_device_full_loop": "NOT_YET_REPORTED"
+      "native_source_sha256": "4a7304b5bf2fb8dd743d2c7a759926654ee57e88586df417e304f7dc5f9d856b",
+      "actual_device_full_loop": "NOT_YET_REPORTED",
+      "native_build_configuration_checks": 16
     },
     "user_reported": [
       "original prefill64 executed",
@@ -84,6 +85,14 @@
       "unique_passed": 292,
       "scope": "host/fake HDC/native boundaries only",
       "actual_device_full_loop": "NOT_YET_REPORTED"
+    },
+    "runtime_efficiency": {
+      "native_build": "EXPLICIT_RELEASE_NO_OMC_RECOMPILATION",
+      "native_io": "DEDUPLICATED_OBSERVATION_READS_PRIVATE80_INPUTS_AND_POST_CHILD_HASHES_RETAINED",
+      "retrieval": "N_DUPLICATE_PER_FILE_REMOTE_SHA_RPCS_REMOVED_N_FILE_RECEIVES_REMAIN",
+      "timing": "SUPERVISOR_MONOTONIC_WALL_CLOCK_NOT_NPU_TIME",
+      "device_performance": "NOT_MEASURED",
+      "validation_run": "20261030T105923Z-14268-375427"
     }
   },
   "next_action": {
@@ -97,6 +106,7 @@
   },
   "last_actual_execution": null,
   "planned_parallelism": [
+    "P0 runtime overhead fixes and resident API/lifecycle implementation while the existing host-orchestrated device run continues; no board/HDC probes by assistant",
     "P1 reference preparation while P0 device runs",
     "P2 fixture preparation and P3 static mapping; do not accept accuracy with wrong features",
     "P4 host source/ABI and P5 resident runner after shared interfaces frozen",
@@ -389,6 +399,12 @@
       "date": "2026-10-30",
       "decision": "Sampling/multimodal are outside current strictgreedy delivery lane; EOS disabled only in fixed-budgetP0",
       "scope": "restore matched stop policy for correctness/performance"
+    },
+    {
+      "date": "2026-10-30",
+      "decision": "User requests residency/overhead work in parallel. Retain running legacy job. Current default remains fresh-process; selected V2 InitWeights/DeinitWeights headers supplied, target resident adaptation separate. Prefill unload-once after output/state handoff before decode load; overlap only after memory and concurrency verification.",
+      "scope": "Implementation priority only; no device residency or performance acceptance",
+      "document": "docs/resident-runtime-plan.md"
     }
   ],
   "handoff_update_fields": [
