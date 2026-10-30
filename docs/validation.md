@@ -1,3 +1,15 @@
+<a id="resident-v1-file-target-candidate"></a>
+
+## 2026-10-30：显式 FILE_ONLY target／prefill 与 BUFFER_ONLY draft 候选
+
+用户授权在不修改三个OMC及权重的条件下直接继续完整板端实验，不再插入load-only试验。本次依据其提供的4B V1 `model_run_tool` 源码，将原版外置权重target／prefill显式选择为FILE_ONLY：只设置并检查完整绝对模型路径，再调用V1 Load；embedded draft显式选择为BUFFER_ONLY，保留完整模型buffer及其生命周期。各分支只验证对应表示，不再要求path和buffer共存。失败停止，不换setter顺序、不自动改用buffer或V2、不重新编译模型。新配置策略为 `legacy-v1-file-target-buffer-draft-v1`，session API记为 `legacy-v1-mixed`；prefill／target分别记为 `legacy-file`，draft记为 `legacy-buffer`。FILE_ONLY要求getter中的path精确、buffer为空、长度0；不把这些描述符条件当成SDK加载通过。
+
+这是一条已获授权但尚未实机验证的加载候选。历史 `bf545c2` 属于10月23日tiny target／draft bring-up，其path-only HCL空buffer错误不能直接证明当前原版40层prefill／decode OMC的同一结果；现有记录不足以断言两次运行库身份相同或不同。用户提供的path-only、OFFLINE（字面值1）代码支持选择这条实验路径，并不构成35B外置权重Load／Process成功证据。选定SDK头文件／实现可继续帮助解释失败，但不是开展本次完整实验的必要前置。
+
+官方HiAI-Foundation的旧buffer示例、用户提供的V1工具，以及公开4B项目必须分开：后者在固定提交 `90186732d915e8b058b2a053d205991d805eae76` 的[README](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/README.md#L3)明确使用Ascend310P；其[实际C++加载器](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/framework/runtime/cpp/src/acl_executor.cpp#L146)调用AscendCL `aclmdlLoadFromFile`，没有建立所选Kirin SDK的V1外置权重加载合同。
+
+新请求使用 `dflash-board-resident-v1-file8-run`，回收使用 `dflash-board-resident-v1-file8-recovery`；旧707d825／50184b4失败与测试记录不覆盖。按[当前命令](current-status.md#用户现在执行什么)一次启动完整循环，由板端完成prefill、常驻decode／draft和串行verify。实际SDK加载、89／82运行时接口、完整状态链与Process结果决定执行结论；未回传结果前不标记Load PASS、数值通过或性能收益。
+
 <a id="resident-v1-exclusive-setters-failure"></a>
 
 ## 2026-10-30：V1 prefill 在 SDK Load 前被互斥描述符阻断
@@ -6,11 +18,13 @@
 
 这次遗漏的是已有实机证据，而不是新发现的SDK约束。本页此前的[外置模型加载描述符诊断](#外置模型加载描述符诊断入口)及 `specs/model-workflow.json` 已记录：选定SDK中path→buffer会清空path，buffer→path会清空buffer，四次setter返回值均为0。新V1代码仍要求设置buffer后保留同一绝对path；新增fake默认又允许二者共存，因此主机集成通过未暴露这个必然冲突。已有主机测试对调度、状态字节链和生命周期的覆盖仍有效，但其结果不能证明该SDK的外置权重加载方式可用。
 
-本轮修复限于把内嵌权重draft恢复为buffer-only加载，并将fake默认行为改成互斥；需要模拟双字段的调度测试必须显式标注该假设。外置权重target仍需选定SDK的支持合同，已向用户请求对应头文件；不交换setter碰运气，不删除路径保留检查后直接宣称成功，也不自动切换V2。当前完整V1命令暂停重跑，见[当前执行状态](current-status.md#历史-v1-请求命令当前阻塞勿重跑)。这些修改尚不构成新的实机通过记录。
+`50184b4` 的修复范围是把内嵌权重draft恢复为buffer-only加载，并将fake默认行为改成互斥；需要模拟双字段的调度测试必须显式标注该假设。该版本仍保留外置target的路径保留检查，当时完整V1命令暂停，未形成新的实机通过记录。后续用户授权的显式FILE_ONLY候选见本页首节；旧失败、旧attempt和该版本测试记录保持。
 
 官方来源对照采用固定提交 `83320362c10f2e85a2a1bbb283b3359db204ab2a`：[Huawei HiAI-Foundation 的 classify_sync_jni.cpp](https://github.com/huaweicodelabs/HiAI-Foundation/blob/83320362c10f2e85a2a1bbb283b3359db204ab2a/app/src/main/jni/classify_sync_jni.cpp#L61-L103)先由 `AiModelBuilder::InputMemBufferCreate(modelPath)` 创建buffer，再使用 `SetModelBuffer` 和 `HIAI_MODELTYPE_ONLINE` 调用Load。它没有示范同时保留path与buffer，也未建立当前35B外置权重OMC的解析合同。用户提供的4B代码则为path-only、`OFFLINE`（字面值1），调用方式不同；没有当前35B在选定SDK上的成功加载证据，不能将任一示例直接当作兼容性结论。
 
-本轮主机验证135项元数据／恢复测试、2项实际C++fake集成以及7组native CTest通过，证据见[描述符回归复核](../specs/resident-v1-descriptor-review.json)。默认测试复现实机互斥setter行为，验证内嵌buffer加载成功及外置target在SDK Load前明确拒绝；显式双字段模拟只覆盖调度，不代表所选SDK支持外置加载。未访问板端、重新编译OMC或变更权重。
+`50184b4` 主机验证135项元数据／恢复测试、2项实际C++fake集成以及7组native CTest通过，证据见[描述符回归复核](../specs/resident-v1-descriptor-review.json)。默认测试复现实机互斥setter行为，验证内嵌buffer加载成功及外置target在SDK Load前明确拒绝；显式双字段模拟只覆盖调度，不代表所选SDK支持外置加载。未访问板端、重新编译OMC或变更权重。
+
+文件／buffer分流候选完成主机验证：191项Python测试（158项准备恢复、24项构建/API、9项实际C++fake集成）及13组native CTest通过。完整debug和compact循环、文件Load失败、描述符路径丢失、旧策略恢复与禁止重启均覆盖；没有真实设备执行或模型重编译。源哈希和JUnit记录见[当前候选验证](../specs/resident-v1-file-buffer-candidate.json)。
 
 ## 2026-10-29：完整 residual-fix 的单例 Top1 匹配
 
@@ -206,7 +220,7 @@ RMS公式核对依据是[Transformers v5.7.0 Qwen3RMSNorm](https://github.com/hu
 
 这份用户粘贴报告绑定主OMC SHA256 `cc9a70f56639bf96b74b773f31cf5213c8fba65c63f46d3d8d6abd574bed9132`、大小2,905,990字节，回收 `probe.json` SHA256为 `3b79e966c46f9d934d0845fe5df28d7d3eba080d8bab1bbf94c1ce343fda1ebf`，远端退出0，传输错误为空。本地未重新获取原始文件独立复核；证据范围是用户回传的所选设备诊断。没有调用Load/Process，不能把 `INSPECTED` 当作外置权重加载、模型执行或数值正确。
 
-该观察确认现有“路径→buffer”加载代码最终失去路径，但不能单独证明NPU所收权重16字节的全部原因。历史提交 `bf545c2` 记录过只设置路径后HCL `CreateLocalBuffer` 因 `data != nullptr && size > 0` 失败；因此不盲目改回路径模式，也不重复两种setter顺序。732的Load失败与6599的embedded序列化失败仍未解决。
+该观察确认现有“路径→buffer”加载代码最终失去路径，但不能单独证明NPU所收权重16字节的全部原因。历史提交 `bf545c2` 在tiny target／draft bring-up中记录过只设置路径后HCL `CreateLocalBuffer` 因 `data != nullptr && size > 0` 失败；该记录不覆盖当前原版40层OMC。该轮决定不盲目换setter顺序仍保留；后续显式FILE_ONLY完整实验见[新候选](#resident-v1-file-target-candidate)，并非自动fallback。732的Load失败与6599的embedded序列化失败仍未解决。
 
 结果集中在 `full-draft/load-diagnostic`，设备诊断复用固定工作目录锁，重试只替换该入口已识别的旧诊断目录，不清理模型阶段。主机端验证回收结果的模型身份、两种调用顺序和未执行Load/Process声明，完整观察才标为 `INSPECTED`；原生非零退出或传输/身份错误不得升级为成功。随后 `probe_draft_load.py --inspect-api` 从已有 `native/command.json` 收集所选头文件声明和动态符号，写入 `api-report.json`、`api-report.txt`；不调用HDC、不读取模型或权重、不重跑或重置设备诊断。本轮本地缺少 `cpro-blue-pending` 配置，实际文件恢复/外置权重加载路线尚未验证。
 
@@ -234,7 +248,7 @@ RMS公式核对依据是[Transformers v5.7.0 Qwen3RMSNorm](https://github.com/hu
 
 本轮 `20261028T063649Z-28459-d40778` 进行了源码只读审查：`existing_air._generated_inventory` 按完整相对路径枚举并记录大小/SHA256；`draft_board` 保留目录与文件名，按路径字典选取OMC，不依赖子图编号排序；`retained_air` 恢复同一路径后重新核验；上传前检查本地SHA256，并在运行前执行远端 `sha256sum -c`。这未发现脚本层的索引或basename错配，但既不是远端文件复核，也不证明HIAI实际打开了已上传的sidecar路径。
 
-当前runner先 `SetModelPath` 再 `SetModelBuffer`；较旧的[Huawei署名公开源码镜像](https://github.com/946166920/hiai_ddk/blob/42142161fb414a8d53973b0d5ccbd0de7872d5d9/src/framework/model_manager/compatible/AiModelDescription.cpp#L113-L131)提供清空路径线索。所选DDK的相同行为现已由上节用户回传getter观察确认，反向setter也清空buffer；原先头文件声明本身不提供这项证据。路径丢失仍不能单独解释16字节来源。此前成功tiny未启用外置权重，不验证当前加载契约；实际外置文件选择和文件恢复接口仍待核对。
+该轮runner先 `SetModelPath` 再 `SetModelBuffer`；较旧的[Huawei署名公开源码镜像](https://github.com/946166920/hiai_ddk/blob/42142161fb414a8d53973b0d5ccbd0de7872d5d9/src/framework/model_manager/compatible/AiModelDescription.cpp#L113-L131)提供清空路径线索。所选DDK的相同行为现已由上节用户回传getter观察确认，反向setter也清空buffer；原先头文件声明本身不提供这项证据。路径丢失仍不能单独解释16字节来源。此前成功tiny未启用外置权重，不验证当前加载契约；实际外置文件选择和文件恢复接口仍待核对。
 
 用户随后要求尝试将权重与模型一起编入OMC。新增显式 `--weight-storage embedded` 将 `save_weights_as_external_data` 改为false，从732复用v4 AIR及d7 prepared/fixture，只重建compilation/bundle；新任务默认仍为external，未指定模式的续跑继承原模式。原732外置产物和失败证据保留，模型图、权重内容、参考、量化和输出ABI不变，HIAI加载调用也不变。这是装载方式兼容候选，不是已确认根因或已验证设备修复。
 

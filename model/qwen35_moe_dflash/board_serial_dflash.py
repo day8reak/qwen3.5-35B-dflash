@@ -21,8 +21,26 @@ from .target_compile_failure import _read_small
 
 KIND = 'qwen35-board-serial-dflash-prepared'
 MAX_MANIFEST_BYTES = 64 << 20
-TARGET_LIFECYCLE_POLICY = 'legacy-v1-load-process-unload-v1'
+TARGET_LIFECYCLE_POLICY = 'legacy-v1-file-target-buffer-draft-v1'
+HISTORICAL_V1_LIFECYCLE_POLICY = 'legacy-v1-load-process-unload-v1'
+V1_MODEL_LOAD_API = 'legacy-v1-mixed'
+V1_MODEL_LOAD_APIS = {'prefill': 'legacy-file', 'target': 'legacy-file', 'draft': 'legacy-buffer'}
 V2_TARGET_LIFECYCLE_POLICY = 'init-before-weights-close-weights-first-v1'
+
+
+def v1_load_contract(manifest):
+    """Bind source representation to preparation, including exact old recovery."""
+    if manifest.get('execution_mode') != 'resident-v1':
+        raise ValueError('V1 model source contract belongs only to resident-v1')
+    policy = manifest.get('target_lifecycle_policy')
+    if policy == HISTORICAL_V1_LIFECYCLE_POLICY:
+        if 'model_load_api' in manifest or 'model_load_apis' in manifest:
+            raise ValueError('historical V1 preparation cannot adopt a new model source representation')
+        return 'legacy-buffer', dict.fromkeys(('prefill', 'target', 'draft'), 'legacy-buffer')
+    if (policy != TARGET_LIFECYCLE_POLICY or manifest.get('model_load_api') != V1_MODEL_LOAD_API
+            or manifest.get('model_load_apis') != V1_MODEL_LOAD_APIS):
+        raise ValueError('prepared V1 model source policy requires exact file target and buffer draft bindings')
+    return V1_MODEL_LOAD_API, dict(V1_MODEL_LOAD_APIS)
 
 
 def _resident_abi(binding, runtime_probe, output, *, prefix='target'):
@@ -211,6 +229,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
     if resident:
         manifest.update(execution_mode='resident-v1', resident_abi=resident_abi, prefill_abi=prefill_abi,
             target_lifecycle_policy=TARGET_LIFECYCLE_POLICY,
+            model_load_api=V1_MODEL_LOAD_API, model_load_apis=dict(V1_MODEL_LOAD_APIS),
             orchestration='BOARD_LOCAL_SINGLE_PROCESS_LEGACY_V1_PREFILL_DECODE_AND_DRAFT',
             model_residency='REQUESTED_LEGACY_V1_PREFILL_ONCE_DECODE_AND_DRAFT_LOADED_ONCE_UNVALIDATED')
     save_json(out / 'manifest.json', manifest)
@@ -241,8 +260,9 @@ def validate_prepared(directory):
     if mode not in {'fresh-process', 'resident-v2', 'resident-v1'}:
         raise ValueError('prepared execution mode is unsupported')
     if mode in {'resident-v2', 'resident-v1'}:
-        expected_policy = TARGET_LIFECYCLE_POLICY if mode == 'resident-v1' else V2_TARGET_LIFECYCLE_POLICY
-        if manifest.get('target_lifecycle_policy', expected_policy) != expected_policy:
+        if mode == 'resident-v1':
+            v1_load_contract(manifest)
+        elif manifest.get('target_lifecycle_policy', V2_TARGET_LIFECYCLE_POLICY) != V2_TARGET_LIFECYCLE_POLICY:
             raise ValueError('prepared resident target lifecycle policy is unsupported')
         abi = manifest.get('resident_abi', {})
         if ('prefill' not in manifest or not isinstance(abi, dict) or abi.get('path') != str(root / 'resident-abi.tsv')
@@ -251,8 +271,7 @@ def validate_prepared(directory):
             raise ValueError('prepared resident ABI changed or is incomplete')
         if mode == 'resident-v1':
             abi = manifest.get('prefill_abi', {})
-            if (manifest.get('target_lifecycle_policy') != TARGET_LIFECYCLE_POLICY
-                    or abi.get('path') != str(root / 'prefill-abi.tsv')
+            if (abi.get('path') != str(root / 'prefill-abi.tsv')
                     or _hash_source(abi['path']) != {key: abi[key] for key in ('path', 'bytes', 'sha256', 'identity')}
                     or len(abi.get('inputs', [])) != 89 or len(abi.get('outputs', [])) != 82):
                 raise ValueError('prepared V1 prefill ABI changed or is incomplete')
@@ -262,6 +281,8 @@ def validate_prepared(directory):
         raise ValueError('V1 prefill ABI cannot be attached to a historical request')
     if 'target_lifecycle_policy' in manifest and mode not in {'resident-v2', 'resident-v1'}:
         raise ValueError('target lifecycle policy belongs only to an explicit resident request')
+    if mode != 'resident-v1' and any(key in manifest for key in ('model_load_api', 'model_load_apis')):
+        raise ValueError('V1 model source representation cannot be attached to another execution mode')
     for row in manifest['source_bindings']:
         if _current(row['path'])[1] != row['identity']:
             raise ValueError('board-loop source changed after preparation: ' + row['path'])
@@ -313,8 +334,10 @@ def make_config(manifest, remote_paths):
     if resident:
         lines.append('execution_mode\t' + manifest['execution_mode'])
         if 'target_lifecycle_policy' in manifest:
-            policy = TARGET_LIFECYCLE_POLICY if manifest['execution_mode'] == 'resident-v1' else V2_TARGET_LIFECYCLE_POLICY
-            if manifest['target_lifecycle_policy'] != policy:
+            policy = manifest['target_lifecycle_policy']
+            if manifest['execution_mode'] == 'resident-v1':
+                v1_load_contract(manifest)
+            elif policy != V2_TARGET_LIFECYCLE_POLICY:
                 raise ValueError('unsupported resident target lifecycle policy')
             lines.append('target_lifecycle_policy\t' + policy)
     for role, type_key in (('input', 'tool_input_type'), ('output', 'tool_output_type')):
@@ -358,6 +381,9 @@ def run_board_serial_dflash(*, output, apply=False, detach=False, **options):
         result['prompt_ingestion'] = manifest['prompt_ingestion']
         if manifest.get('execution_mode') in {'resident-v2', 'resident-v1'}:
             result['execution_mode'] = manifest['execution_mode']
+        if manifest.get('execution_mode') == 'resident-v1':
+            result['target_lifecycle_policy'] = manifest['target_lifecycle_policy']
+            result['model_load_api'], result['model_load_apis'] = v1_load_contract(manifest)
         result['retrieval_mode'] = 'FULL_DEBUG' if result['dump'] else 'FINAL_TOKENS_ONLY'
         if apply:
             from .board_serial_transport import execute_board_serial

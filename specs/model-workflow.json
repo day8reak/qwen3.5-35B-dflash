@@ -2,7 +2,7 @@
   "schema_version": 1,
   "updated": "2026-10-30",
   "active_phase": "integration",
-  "delivery_status": "ORIGINAL_PREFILL_BOARD_EXECUTION_PASSED_V1_RESIDENT_FAILED_BEFORE_LOAD",
+  "delivery_status": "ORIGINAL_PREFILL_BOARD_EXECUTION_PASSED_V1_FILE_BUFFER_HOST_TESTED_DEVICE_PENDING",
   "run_id": "20261030T140558Z-5097-27a0b6",
   "navigation": {
     "home": "docs/README.md",
@@ -2160,7 +2160,7 @@
       "evidence": "docs/current-status.md",
       "working_directory": "$AI_RUN_DIR",
       "next_command_document": "docs/current-status.md#用户现在执行什么",
-      "note": "Original prefill + board-local serial draft/decode loop executed per retained user report. Resident all-V1 migration currently fails before prefill Load due to incompatible descriptor assumptions; external-weight V1 loading remains unresolved. Keep prior execution milestone separate from residency, accuracy and performance."
+      "note": "Original prefill + board-local draft/decode loop executed previously. Previous all-V1 request failed before Load due to conflicting descriptor assumptions. Current candidate separates file-only original targets from buffer-only embedded draft; actual V1 external loading, resident full-loop execution, accuracy and performance await user device results."
     },
     {
       "name": "accuracy",
@@ -5443,14 +5443,14 @@
     "run_id": "20261030T140558Z-5097-27a0b6",
     "user_authorized": true,
     "p0_result": "specs/board-prefill-first-completion.json",
-    "scope": "Unchanged OMCs and weights, requested all-V1 resident execution. Latest whole-board request failed at prefill descriptor setup before Load/Process. Correct embedded-buffer regression and test doubles; external-weight V1 file-loading contract remains unresolved. No assistant HDC probe or automatic V2 fallback.",
+    "scope": "Unchanged OMCs and weights. Explicit all-V1 candidate: original prefill/decode use SetModelPath only; embedded six-layer draft uses SetModelBuffer only. Prefill Load/Process/Unload once, then decode/draft clients stay resident for repeated synchronous Process. User executes full board request after host checks; no load-only probe or automatic fallback.",
     "target_profile_local": "cpro-blue-pending manifest missing; local modelPython and fakeHIAI tests only, selected user DDK builds on user host",
     "numerical_validation": "NOT_RUN",
-    "device_residency": "FAILED_BEFORE_PREFILL_LOAD_NO_RESIDENT_MODEL_LOADED",
-    "runtime_api": "legacy-buffer",
+    "device_residency": "CURRENT_FILE_ONLY_CANDIDATE_NOT_RUN_PREVIOUS_DUAL_DESCRIPTOR_REQUEST_FAILED",
+    "runtime_api": "legacy-v1-mixed",
     "execution_mode": "resident-v1",
     "current_document": "docs/current-status.md",
-    "host_validation": "specs/resident-v1-host-validation.json",
+    "host_validation": "specs/resident-v1-file-buffer-candidate.json",
     "latest_device_observation": {
       "source": "USER_PASTED_REPORT_NOT_INDEPENDENTLY_RETRIEVED",
       "run": "dflash-board-resident-v1-8-run",
@@ -5471,8 +5471,19 @@
       "official_load": "InputMemBufferCreate -> SetModelBuffer -> Load; generic classification example, no external-weight file contract",
       "user_4b_example": "src/model_runner.cpp provided in conversation: SetModelPath -> Load, descriptor modeltype=1; no successful current-35B execution provided",
       "selected_sdk_observation": "docs/validation.md#外置模型加载描述符诊断入口",
-      "pending": "Selected DDK compatible/HiAiModelManagerService.h and HiAiModelManagerType.h; question already sent. No assumption that public older SDK source represents this private runtime."
+      "pending": "Current original40 V1 file-only Load/ABI/Process device result. Requested selected headers can refine API understanding but are not required authorization or a blocker to this explicit experiment.",
+      "decision": "User-provided V1 4B path-only example supports an explicit full-loop experiment. Historical bf545c2 path-only failure concerned tiny bring-up, not the current original40 artifacts; it neither validates nor rules out this candidate."
     },
-    "descriptor_review": "specs/resident-v1-descriptor-review.json"
+    "descriptor_review": "specs/resident-v1-descriptor-review.json",
+    "model_load_apis": {
+      "prefill": "legacy-file",
+      "target": "legacy-file",
+      "draft": "legacy-buffer"
+    },
+    "target_lifecycle_policy": "legacy-v1-file-target-buffer-draft-v1",
+    "next_full_request": "dflash-board-resident-v1-file8-run",
+    "next_recovery": "dflash-board-resident-v1-file8-recovery",
+    "current_candidate": "specs/resident-v1-file-buffer-candidate.json",
+    "prior_host_validation": "specs/resident-v1-host-validation.json"
   }
 }

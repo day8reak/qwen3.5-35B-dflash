@@ -42,8 +42,8 @@ constexpr std::size_t kVocab=248320, kWidth=16384, kFeatureBytes=32768;
 #if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
 #ifdef QWEN35_RESIDENT_V1
 constexpr const char* kResidentMode="resident-v1";
-constexpr const char* kTargetLifecyclePolicy="legacy-v1-load-process-unload-v1";
-constexpr const char* kResidentLoadApi="legacy-buffer";
+constexpr const char* kTargetLifecyclePolicy="legacy-v1-file-target-buffer-draft-v1";
+constexpr const char* kResidentLoadApi="legacy-v1-mixed";
 #else
 constexpr const char* kResidentMode="resident-v2";
 constexpr const char* kTargetLifecyclePolicy="init-before-weights-close-weights-first-v1";
@@ -374,6 +374,7 @@ class Supervisor {
     loop["resident_abi_sha256"]=c.files.at("resident_abi").hash;
 #ifdef QWEN35_RESIDENT_V1
     loop["prefill_abi_sha256"]=c.files.at("prefill_abi").hash;loop["prefill_lifecycle"]=LegacyLifecycle(prefill_lifecycle);loop["model_residency"]="TWO_PERSISTENT_V1_CLIENTS_AFTER_PREFILL_CLIENT_UNLOAD";
+    loop["model_load_api"]="legacy-v1-mixed";loop["model_load_apis"]=J::Obj();loop["model_load_apis"]["prefill"]="legacy-file";loop["model_load_apis"]["target"]="legacy-file";loop["model_load_apis"]["draft"]="legacy-buffer";
 #else
     loop["model_residency"]="TWO_PERSISTENT_FILE_V2_MANAGERS_AFTER_PREFILL";
 #endif
@@ -623,7 +624,7 @@ class Supervisor {
     FiniteHalf(actual.outputs[1]);std::vector<std::uint32_t> proposals;
     for(std::size_t i=0;i<15;++i){std::uint32_t token=0;for(int n=0;n<4;++n)token|=std::uint32_t(actual.outputs[0][i*4+n])<<(8*n);Require(token<kVocab,"resident draft token outside full vocabulary");proposals.push_back(token);}
     if(c.dump){J native=J::Obj();native["schema_version"]=2;native["artifact_kind"]="qwen35-resident-draft-call";native["status"]="EXECUTED";native["evidence_kind"]=kEvidence;ResidentIdentity(native,index);native["model_sha256"]=c.files.at("draft_model").hash;native["draft_abi_sha256"]=c.files.at("draft_abi").hash;
-      native["runtime_version"]=c.strings.at("runtime_version");native["ddk_id"]=c.strings.at("ddk_id");native["firmware_id"]=c.strings.at("firmware_id");native["model_load_api"]=kResidentLoadApi;native["sequence_length"]=64;native["target_calls"]=0;native["draft_calls"]=1;native["inputs"]=native_inputs;native["outputs"]=native_outputs;native["io_diagnostic"]=IoEvidence(actual.io_diagnostic);
+      native["runtime_version"]=c.strings.at("runtime_version");native["ddk_id"]=c.strings.at("ddk_id");native["firmware_id"]=c.strings.at("firmware_id");native["model_load_api"]=std::string(kResidentLoadApi)=="legacy-v1-mixed"?"legacy-buffer":kResidentLoadApi;native["sequence_length"]=64;native["target_calls"]=0;native["draft_calls"]=1;native["inputs"]=native_inputs;native["outputs"]=native_outputs;native["io_diagnostic"]=IoEvidence(actual.io_diagnostic);
 #ifdef QWEN35_RESIDENT_V1
       LegacyAbiEvidence(native,session.evidence().draft_v1_lifecycle);
 #endif
@@ -666,7 +667,7 @@ class Supervisor {
 #if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
     const auto seed=c.config.hash+":"+std::to_string(::getpid());session_id=Sha256(seed);progress["resident_call_status"]="NOT_STARTED";
 #ifdef QWEN35_RESIDENT_V1
-    progress["child_status"]="NONE";prefill_lifecycle.model_name="qwen35_resident_prefill";
+    progress["child_status"]="NONE";prefill_lifecycle.model_name="qwen35_resident_prefill";prefill_lifecycle.model_load_api="legacy-file";
 #endif
 #endif
     Progress();}

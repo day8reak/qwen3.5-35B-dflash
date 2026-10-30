@@ -61,5 +61,7 @@
       "sha256": "788c364a7afbd26a45ca6bc5f5c21148b797a9e1ff573729b3c93037ad2c9424",
       "scope": "HOST_FAKE_ONLY_NOT_DEVICE_OR_VENDOR_SDK_COMPATIBILITY"
     }
-  ]
+  ],
+  "next_candidate": "specs/resident-v1-file-buffer-candidate.json",
+  "followup_decision": "This historical review does not block the explicit file-only original-target experiment. User-provided 4B code is its basis; older tiny failure is retained as a risk, not a proof that original40 cannot load. See current candidate for next command."
 }

@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-v1-file-buffer-candidate",
+  "run_id": "20261030T140558Z-5097-27a0b6",
+  "source_base_commit": "50184b4",
+  "status": "HOST_TESTED_FULL_V1_FILE_BUFFER_CANDIDATE_DEVICE_NOT_RUN",
+  "model_load_api": "legacy-v1-mixed",
+  "model_load_apis": {
+    "prefill": "legacy-file",
+    "target": "legacy-file",
+    "draft": "legacy-buffer"
+  },
+  "target_lifecycle_policy": "legacy-v1-file-target-buffer-draft-v1",
+  "execution_mode": "resident-v1",
+  "basis": {
+    "external_target": "User-pasted V1 model_run_tool/src/model_runner.cpp uses SetModelPath only, OFFLINE model type, Load/Process/UnLoadModel. This supports an explicit experiment but is not evidence for current original40 OMC compatibility.",
+    "embedded_draft": "Previously executed legacy buffer path plus official buffer-only classification sample.",
+    "official_source": "https://github.com/huaweicodelabs/HiAI-Foundation/blob/83320362c10f2e85a2a1bbb283b3359db204ab2a/app/src/main/jni/classify_sync_jni.cpp",
+    "historical_path_only_failure": "bf545c2 belongs to earlier tiny target/draft bring-up, not proven to involve current original40 artifacts or identical runtime identity."
+  },
+  "changes": [
+    "File-only original prefill/decode: exact model path retained, descriptor buffer empty, no mapped buffer or fallback.",
+    "Buffer-only embedded draft: retained mapped model bytes, one setter, no file-path requirement.",
+    "Prefill Load/Process/Unload once, then resident decode and draft each Load once and repeated synchronous Process.",
+    "New preparations bind mixed session policy and per-model source APIs; historical preparations remain recover-only with original representation."
+  ],
+  "preserved": [
+    "Original OMC and weight bytes",
+    "Original source and state bindings",
+    "Single-thread synchronous execution",
+    "Compact final-token/latency reporting and optional dump"
+  ],
+  "device_execution": "NOT_RUN_BY_ASSISTANT_USER_FULL_REQUEST_REQUIRED",
+  "model_compilation": "NOT_RUN",
+  "accuracy": "NOT_EVALUATED",
+  "performance": "NOT_EVALUATED",
+  "old_observation": "specs/resident-v1-descriptor-review.json",
+  "next_command_document": "docs/current-status.md#用户现在执行什么",
+  "new_run": "dflash-board-resident-v1-file8-run",
+  "new_recovery": "dflash-board-resident-v1-file8-recovery",
+  "source_sha256": {
+    "targets/cpro/runtime/src/hiai_executor.cpp": "72e2eb461d9fc44aff8afe1f8f72194d6bba4df632c7f6c057bee634d93a2aab",
+    "targets/cpro/runtime/src/resident_session.cpp": "0fb6df1df05ff1f92ca6a16569311bdabc10d47268cc9982f0020c1225cde8d0",
+    "targets/cpro/runtime/src/board_serial_main.cpp": "1ef217d6d15860549d30e5a97dc346d35648c18cac9a0c5f92358f3687560be4",
+    "model/qwen35_moe_dflash/board_serial_dflash.py": "1113a6b40a1bd671c1ca4ae00f1b34658533bca441c509bc0329048cc92429e0",
+    "model/qwen35_moe_dflash/board_serial_transport.py": "dac7c89b6d383b583231235418f7305126c04ce97455694a5a680e6f01be28fa",
+    "targets/cpro/scripts/run_board_serial_dflash.py": "0ae6c5015b417cb7f91f032f9fc287bb8782435c1339040f0ab537d5115ab2a0",
+    "targets/cpro/runtime/include/qwen35_dflash/hiai_executor.hpp": "e168f02cd838c5be94e4fe37a187027811899c774e748ca99c7ccd0e0f2770ac",
+    "targets/cpro/runtime/include/qwen35_dflash/resident_session.hpp": "06694f537b2db7b3e6877ba19d7f72018049a412d7bc4a8580655e51358d3f71",
+    "targets/cpro/runtime/tests/fake_hiai/HiAiModelManagerService.h": "86541fb04aa0b6dcdc9e28c879fb16a260d42a36cf11ebcd99511cf0661ce475",
+    "targets/cpro/runtime/tests/fake_hiai/fake_hiai.cpp": "2882fb433e2a85d19dd770b7a1d123ae16f33b2988d3eae3dd84166b301525f3",
+    "targets/cpro/runtime/tests/test_resident_v1.cpp": "4ecc1aba41c1ae5776b14f65d7c6668420a117b2dbd7033c75675d3e317b7d75",
+    "tests/test_board_serial_integration.py": "bf18d1dae3ff3b2bc08838f9c6ae78d91268a5676bc04e274fe7282fa02fb705",
+    "tests/test_board_serial_dflash.py": "e026e0aadd23933db778815eef917d20579a2f6a9df92aa97fb377df20a1e4c0",
+    "tests/test_board_serial_transport.py": "afa593fdd5c86aeb8460d7bd9c88cf1d24e717935987f0fcc6d3e4ccfa56a9dc"
+  },
+  "experience_audit": {
+    "captured": "Distinguish evidence required to claim compatibility from sufficient authorization and source basis for a bounded experiment. A historical failure on tiny artifacts does not prove a current original-target route impossible.",
+    "guardrails": "No mixed setters, silent API fallback, automatic retry, or device pass inferred from fake SDK.",
+    "remaining_validation": "Actual original40 file-only Load/ABI/Process, complete resident request, then accuracy and performance."
+  },
+  "host_validation": [
+    {
+      "path": "out/v1-file-python-final.xml",
+      "tests": 158,
+      "failures": 0,
+      "sha256": "1cd55f27abfc3e4578e4c5eb475b8a74e63d17c322205037f9e7dde78783eb68",
+      "scope": "HOST_ONLY_FAKE_SDK_NOT_ACTUAL_DEVICE_COMPATIBILITY"
+    },
+    {
+      "path": "out/v1-file-build-config.xml",
+      "tests": 24,
+      "failures": 0,
+      "sha256": "aecca62577430bcaab7cb2d752ea867d9f12c5b250e5ff9ef4f4074fb9da6900",
+      "scope": "HOST_ONLY_FAKE_SDK_NOT_ACTUAL_DEVICE_COMPATIBILITY"
+    },
+    {
+      "path": "out/v1-file-native.xml",
+      "tests": 13,
+      "failures": 0,
+      "sha256": "4054efd52c37842b75d297bf7096e3e4864736c36ec3dec155ff1e2017f1f811",
+      "scope": "HOST_ONLY_FAKE_SDK_NOT_ACTUAL_DEVICE_COMPATIBILITY"
+    },
+    {
+      "path": "out/v1-file-integration.xml",
+      "tests": 9,
+      "failures": 0,
+      "sha256": "f54cc8229a36a78e62399156c44d744972c871d59794437e7e4edc89e828052c",
+      "scope": "HOST_ONLY_FAKE_SDK_NOT_ACTUAL_DEVICE_COMPATIBILITY"
+    }
+  ]
+}

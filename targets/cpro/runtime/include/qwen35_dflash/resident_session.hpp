@@ -27,8 +27,9 @@ struct ResidentSessionEvidence {
   HiaiLegacyLifecycle target_v1_lifecycle, draft_v1_lifecycle;
 };
 
-// One process owns two immutable models through one explicitly selected API.
-// V1 clients and V2 managers retain their persistent tensor storage.
+// One process owns two immutable models through one explicit policy. V1 uses
+// file-only target and buffer-only embedded draft; V2 is a separate policy.
+// Clients/managers retain their persistent tensor storage.
 // The caller supplies hash-bound sources/descriptors, preserves source lifetimes,
 // and advances only committed target states. This class never falls back to a
 // different API, recompiles a model or retries a failed load/run.

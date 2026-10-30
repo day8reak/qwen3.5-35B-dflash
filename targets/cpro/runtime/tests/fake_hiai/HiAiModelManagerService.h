@@ -74,5 +74,6 @@ class AiModelMngerClient {
   std::string name_;
   const void* model_buffer_=nullptr;
   std::uint32_t model_bytes_=0;
+  std::vector<std::uint8_t> file_model_bytes_;
 };
 }

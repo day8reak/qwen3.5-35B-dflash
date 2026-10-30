@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 namespace {
@@ -133,6 +134,8 @@ AiModelDescription::AiModelDescription(const std::string& n,int freq,int framewo
 AIStatus AiModelDescription::SetModelPath(const std::string& p) {
   path=p;
   if (!AllowDualModelSource()) { model_buffer_=nullptr; model_bytes_=0; }
+  if(Failure()=="file-path-loss")path.clear();
+  if(Failure()=="file-buffer-present") {static const char marker=0;model_buffer_=&marker;model_bytes_=1;}
   return Failure()=="path"?1:0;
 }
 AIStatus AiModelDescription::SetModelBuffer(const void* data, std::uint32_t bytes) {
@@ -170,13 +173,26 @@ AIStatus AiModelMngerClient::Load(std::vector<std::shared_ptr<AiModelDescription
   Trace("load");
   if(load_called_)throw std::runtime_error("same V1 client loaded more than once");
   load_called_=true;
-  if(d.size()!=1 ||
-     !ModelBytesValid(d[0]->GetModelBuffer(), d[0]->GetModelNetSize(), d[0]->name)) return AI_FAILED;
-  if((d[0]->name=="qwen35_resident_target"||d[0]->name=="qwen35_resident_prefill") &&
-      (!AllowDualModelSource()||d[0]->path.empty()))return AI_FAILED;
+  if(d.size()!=1)return AI_FAILED;
+  const bool external=d[0]->name=="qwen35_resident_target"||d[0]->name=="qwen35_resident_prefill";
+  const bool file_only=!d[0]->path.empty()&&!d[0]->GetModelBuffer()&&d[0]->GetModelNetSize()==0;
+  if(file_only) {
+    // Explicit unvalidated FILE_ONLY fixture branch, not proof that the
+    // selected device resolves external OMC sidecars. Only known tiny markers
+    // are read, and the fake SDK owns their bytes through Process/Unload.
+    if(!external||!std::filesystem::is_regular_file(d[0]->path)||std::filesystem::file_size(d[0]->path)>4096)return AI_FAILED;
+    std::ifstream input(d[0]->path,std::ios::binary);
+    file_model_bytes_.assign(std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>());
+    if(!input.eof()&&input.fail())return AI_FAILED;
+    if(!ModelBytesValid(file_model_bytes_.data(),static_cast<std::uint32_t>(file_model_bytes_.size()),d[0]->name))return AI_FAILED;
+    model_buffer_=file_model_bytes_.data();model_bytes_=static_cast<std::uint32_t>(file_model_bytes_.size());
+  } else {
+    if(external||!d[0]->path.empty()||!ModelBytesValid(d[0]->GetModelBuffer(),d[0]->GetModelNetSize(),d[0]->name))return AI_FAILED;
+    model_buffer_=d[0]->GetModelBuffer();model_bytes_=d[0]->GetModelNetSize();
+  }
   name_=d[0]->name;
   if(name_.rfind("qwen35_resident_",0)==0)Trace(("v1-load:"+name_).c_str());
-  model_buffer_=d[0]->GetModelBuffer(); model_bytes_=d[0]->GetModelNetSize();
+  if(name_.rfind("qwen35_resident_",0)==0)Trace(("v1-model-source:"+name_+(file_only?":file-only":":buffer-only")).c_str());
   loaded_=true; // partial target or draft load failure must still unload.
   return Failure()=="load" || Failure()=="incompatible" ||
          (Failure()=="draft-load" && name_=="qwen35_draft") ||

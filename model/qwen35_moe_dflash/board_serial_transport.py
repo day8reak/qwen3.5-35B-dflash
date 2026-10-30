@@ -62,8 +62,11 @@ def _new_target_policy(manifest):
     value = manifest.get('target_lifecycle_policy')
     if value is None:
         return False
-    expected = ('legacy-v1-load-process-unload-v1' if _v1_mode(manifest)
-        else 'init-before-weights-close-weights-first-v1')
+    if _v1_mode(manifest):
+        from .board_serial_dflash import v1_load_contract
+        v1_load_contract(manifest)
+        return True
+    expected = 'init-before-weights-close-weights-first-v1'
     if value != expected or not _resident_mode(manifest):
         raise ValueError('unsupported pinned target lifecycle policy')
     return True
@@ -90,6 +93,9 @@ def _result_scope(state, manifest):
         state['execution_mode'] = manifest['execution_mode']
         if _new_target_policy(manifest):
             state['target_lifecycle_policy'] = manifest['target_lifecycle_policy']
+        if _v1_mode(manifest):
+            from .board_serial_dflash import v1_load_contract
+            state['model_load_api'], state['model_load_apis'] = v1_load_contract(manifest)
 
 
 def _next_action(state):
@@ -190,11 +196,12 @@ def _validate_summaries(loop, manifest, *, required=False):
         raise ValueError('prefill phase timing differs from its distinct child process')
 
 
-def _legacy_v1_lifecycle(value, *, name, processes, success):
+def _legacy_v1_lifecycle(value, *, name, processes, success, model_load_api='legacy-buffer'):
     """Validate V1 facts without importing V2 InitWeights or SDK-name claims."""
     flags = ('client_init_attempted', 'client_initialized', 'load_attempted', 'loaded', 'unload_called', 'closed')
     statuses = ('client_init_status', 'load_status', 'unload_status')
-    if (not isinstance(value, dict) or value.get('model_load_api') != 'legacy-buffer'
+    if (model_load_api not in {'legacy-file', 'legacy-buffer'}
+            or not isinstance(value, dict) or value.get('model_load_api') != model_load_api
             or value.get('lifecycle_policy') != 'legacy-v1-load-process-unload-v1'
             or value.get('model_name') != name
             or value.get('runtime_tensor_names') != 'NOT_QUERIED_V1_SAVED_NAMED_ABI_ONLY'
@@ -228,12 +235,22 @@ def _resident_lifecycle(loop, manifest, *, success):
     integers = ('target_load_attempts', 'draft_load_attempts', 'target_loads', 'draft_loads', 'target_run_attempts', 'target_runs', 'draft_run_attempts', 'draft_runs',
         'target_close_calls', 'draft_close_calls', 'target_load_ms', 'draft_load_ms', 'target_run_ms', 'draft_run_ms', 'close_ms')
     v1 = _v1_mode(manifest)
+    if v1:
+        from .board_serial_dflash import v1_load_contract, TARGET_LIFECYCLE_POLICY
+        session_api, model_apis = v1_load_contract(manifest)
+        if ((manifest['target_lifecycle_policy'] == TARGET_LIFECYCLE_POLICY
+                and loop.get('model_load_apis') != model_apis)
+                or manifest['target_lifecycle_policy'] != TARGET_LIFECYCLE_POLICY
+                and 'model_load_apis' in loop):
+            raise ValueError('resident V1 per-model source APIs differ from the original prepared policy')
+    else:
+        session_api, model_apis = 'file-v2', {}
     if v1 and (any(type(counts.get(key)) is not int or counts[key] < 0 for key in
             ('target_native_calls', 'draft_native_calls', 'prefill_native_calls', 'accepted', 'considered', 'corrections', 'bonuses'))
             or counts['prefill_native_calls'] > 1
             or counts['considered'] != counts['accepted'] + counts['corrections']):
         raise ValueError('V1 completed-call counts require exact bounded integer observations')
-    if (not isinstance(life, dict) or life.get('model_load_api') != ('legacy-buffer' if v1 else 'file-v2')
+    if (not isinstance(life, dict) or life.get('model_load_api') != session_api
             or _SHA.fullmatch(str(life.get('session_id'))) is None
             or type(loop.get('process_id')) is not int or not 0 < loop['process_id'] <= (1 << 31) - 1
             or type(life.get('process_id')) is not int or life['process_id'] != loop.get('process_id')
@@ -251,8 +268,7 @@ def _resident_lifecycle(loop, manifest, *, success):
             or any(life[kind + '_run_attempts'] != life[kind + '_runs'] for kind in ('target', 'draft'))):
         raise ValueError('successful residency requires one load/close per model and no failed or retried Run')
     if v1:
-        if (loop.get('target_lifecycle_policy') != 'legacy-v1-load-process-unload-v1'
-                or loop.get('target_lifecycle_policy') != manifest.get('target_lifecycle_policy')
+        if (loop.get('target_lifecycle_policy') != manifest.get('target_lifecycle_policy')
                 or 'target_lifecycle' in life
                 or any(life.get(kind + '_model_name') != 'qwen35_resident_' + kind
                     or life.get(kind + '_model_name_scope') != 'V1_MODEL_DESCRIPTION_LABEL_NOT_RUNTIME_TENSOR_NAME'
@@ -261,7 +277,7 @@ def _resident_lifecycle(loop, manifest, *, success):
         for kind in ('target', 'draft'):
             observed = _legacy_v1_lifecycle(life.get(kind + '_v1_lifecycle'),
                 name='qwen35_resident_' + kind, processes=counts[kind + '_native_calls'],
-                success=success)
+                success=success, model_load_api=model_apis[kind])
             if (life[kind + '_load_attempts'] < int(observed['client_init_attempted'])
                     or life[kind + '_loads'] > int(observed['loaded'])
                     or success and life[kind + '_loads'] != int(observed['loaded'])
@@ -269,7 +285,7 @@ def _resident_lifecycle(loop, manifest, *, success):
                     or success and life[kind + '_run_attempts'] != observed['process_attempts']):
                 raise ValueError('resident V1 model counters differ from actual Load/Process lifecycle')
         _legacy_v1_lifecycle(loop.get('prefill_lifecycle'), name='qwen35_resident_prefill',
-            processes=counts['prefill_native_calls'], success=success)
+            processes=counts['prefill_native_calls'], success=success, model_load_api=model_apis['prefill'])
     elif any(key in life for key in ('target_v1_lifecycle', 'draft_v1_lifecycle')) or 'prefill_lifecycle' in loop:
         raise ValueError('historical resident V2 cannot inherit V1 lifecycle evidence')
     if success and not v1:
@@ -1588,7 +1604,7 @@ def _wait(hdc, out, state, timeout_seconds, poll_seconds):
 def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock_wait_seconds=1800,
                          poll_seconds=15, detach=False):
     """Stage once, detach once, and retrieve once; disconnects retain the journal."""
-    from .board_serial_dflash import validate_prepared, make_config
+    from .board_serial_dflash import validate_prepared, make_config, TARGET_LIFECYCLE_POLICY
     if (type(timeout_seconds) not in {int, float} or not math.isfinite(timeout_seconds) or timeout_seconds <= 0
             or type(lock_wait_seconds) is not int or lock_wait_seconds < 0
             or type(poll_seconds) not in {int, float} or not 0 < poll_seconds <= 60 or type(detach) is not bool):
@@ -1608,8 +1624,9 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
         manifest = validate_prepared(prepared)
         if manifest.get('execution_mode') == 'resident-v2':
             raise ValueError('historical resident-v2 preparation is recover-only; prepare a new explicit all-V1 request')
-        if _v1_mode(manifest) and not _new_target_policy(manifest):
-            raise ValueError('resident-v1 requires its explicit legacy lifecycle policy')
+        if _v1_mode(manifest) and (not _new_target_policy(manifest)
+                or manifest.get('target_lifecycle_policy') != TARGET_LIFECYCLE_POLICY):
+            raise ValueError('historical resident-v1 preparation is recover-only; prepare an explicit file-target/buffer-draft request')
         _result_scope(state, manifest)
         _, prep_id = _json(prepared / 'manifest.json')
         base = manifest['target_binding']['base_plan']
@@ -1812,6 +1829,14 @@ def recover_board_serial(execution_dir, output_dir, *, timeout_seconds=60, poll_
             raise ValueError('recovery cannot change the pinned resident execution mode')
         if state.get('target_lifecycle_policy') != manifest.get('target_lifecycle_policy'):
             raise ValueError('recovery cannot change the pinned target lifecycle policy')
+        if _v1_mode(manifest):
+            from .board_serial_dflash import v1_load_contract, TARGET_LIFECYCLE_POLICY
+            session_api, model_apis = v1_load_contract(manifest)
+            if ((manifest['target_lifecycle_policy'] == TARGET_LIFECYCLE_POLICY
+                    and (state.get('model_load_api') != session_api or state.get('model_load_apis') != model_apis))
+                    or any(key in state and state[key] != expected for key, expected in
+                        (('model_load_api', session_api), ('model_load_apis', model_apis)))):
+                raise ValueError('recovery cannot change the pinned V1 model source representations')
         if _has_prefill(manifest):
             pbase = manifest['prefill']['base_plan']
             expected_cache = str(_remote(manifest['board_model_root']) / ('codex-target-' + pbase['compilation_report_sha256'][:20]))

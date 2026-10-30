@@ -345,12 +345,11 @@ def enable_resident(case):
 
 
 def enable_resident_v1(case):
-    """Synthetic scheduling profile; selected SDK dual-source loading is unproven."""
+    """Experimental file-only fixture; selected-device sidecar loading is unproven."""
     from qwen35_moe_dflash.board_serial_transport import _full
     enable_resident(case)
     root = case['root']; manifest = case['manifest']
-    manifest['host_fake_sdk_scope'] = 'SCHEDULING_ONLY_DUAL_MODEL_SOURCE_NOT_SELECTED_SDK'
-    case['synthetic_dual_model_source'] = True
+    manifest['host_fake_sdk_scope'] = 'UNVALIDATED_FILE_API_FIXTURE_NOT_SELECTED_DEVICE_SIDECAR_PROOF'
     model = Path(manifest['prefill']['model']['path'])
     model.write_bytes(b'original-resident-prefill64-fixture')
     def record(path):
@@ -388,7 +387,8 @@ def enable_resident_v1(case):
             str(index), item['name'], row[3], row[4], row[5], ','.join(map(str, shape)), str(item['bytes'])]))
     pref_abi = root / 'prefill-abi.tsv'; pref_abi.write_text('\n'.join(pref_rows) + '\n')
     manifest['resident_abi'].update(resident_desc)
-    manifest.update(execution_mode='resident-v1', target_lifecycle_policy='legacy-v1-load-process-unload-v1',
+    manifest.update(execution_mode='resident-v1', target_lifecycle_policy='legacy-v1-file-target-buffer-draft-v1',
+        model_load_api='legacy-v1-mixed', model_load_apis={'prefill':'legacy-file','target':'legacy-file','draft':'legacy-buffer'},
         prefill_abi=dict(record(pref_abi), **prefill_desc))
     config = []
     for line in case['config'].read_text().splitlines():
@@ -397,7 +397,7 @@ def enable_resident_v1(case):
                 'prefill_input', 'prefill_output', 'prefill_state'}: continue
         if fields[0] == 'prefill_model': line = '\t'.join(('prefill_model', str(model), digest(model), str(model.stat().st_size)))
         config.append(line)
-    config += ['execution_mode\tresident-v1', 'target_lifecycle_policy\tlegacy-v1-load-process-unload-v1',
+    config += ['execution_mode\tresident-v1', 'target_lifecycle_policy\tlegacy-v1-file-target-buffer-draft-v1',
         '\t'.join(('prefill_abi', str(pref_abi), digest(pref_abi), str(pref_abi.stat().st_size)))]
     config += ['\t'.join(('prefill_input', str(row['index']), row['name'], row['type'], str(row['bytes']))) for row in inputs]
     config += ['\t'.join(('prefill_output', str(row['index']), row['name'], row['type'], str(row['bytes']))) for row in outputs]
@@ -419,10 +419,14 @@ def test_actual_resident_v1_prefill_and_multiround_loop(tmp_path, resident_v1_na
     assert process.returncode == 0, (process.stdout, process.stderr)
     loop = validate_retrieved_loop(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
         _expected_config_sha256=digest(case['config']))
-    assert loop['execution_mode'] == 'resident-v1' and loop['target_lifecycle_policy'] == 'legacy-v1-load-process-unload-v1'
+    assert loop['execution_mode'] == 'resident-v1' and loop['target_lifecycle_policy'] == 'legacy-v1-file-target-buffer-draft-v1'
     assert loop['generated_tokens'] == list(range(9, 17))
     assert loop['counts']['prefill_native_calls'] == 1 and loop['counts']['target_native_calls'] == 8
-    life = loop['resident_lifecycle']; assert life['model_load_api'] == 'legacy-buffer'
+    life = loop['resident_lifecycle']; assert life['model_load_api'] == 'legacy-v1-mixed'
+    assert loop['model_load_api'] == 'legacy-v1-mixed'
+    assert loop['model_load_apis'] == dict(prefill='legacy-file', target='legacy-file', draft='legacy-buffer')
+    assert loop['prefill_lifecycle']['model_load_api'] == life['target_v1_lifecycle']['model_load_api'] == 'legacy-file'
+    assert life['draft_v1_lifecycle']['model_load_api'] == 'legacy-buffer'
     assert life['target_loads'] == life['draft_loads'] == life['target_close_calls'] == life['draft_close_calls'] == 1
     assert life['target_runs'] == 8 and life['draft_runs'] == loop['counts']['draft_native_calls'] >= 2
     assert life['closed'] and not life['poisoned'] and 'target_lifecycle' not in life
@@ -434,6 +438,7 @@ def test_actual_resident_v1_prefill_and_multiround_loop(tmp_path, resident_v1_na
     for name in ('prefill', 'target', 'draft'):
         assert events.count('v1-load:qwen35_resident_' + name) == 1
         assert events.count('v1-unload:qwen35_resident_' + name) == 1
+        assert events.count('v1-model-source:qwen35_resident_' + name + (':buffer-only' if name == 'draft' else ':file-only')) == 1
     assert events.index('v1-unload:qwen35_resident_prefill') < events.index('v1-load:qwen35_resident_target') < events.index('v1-load:qwen35_resident_draft')
     assert events.count('v1-process:qwen35_resident_prefill') == 1
     assert events.count('v1-process:qwen35_resident_target') == 8
@@ -454,7 +459,7 @@ def test_actual_resident_v1_prefill_and_multiround_loop(tmp_path, resident_v1_na
         assert failed.returncode == 1, (failed.stdout, failed.stderr)
         retained = validate_retrieved_tokens(early['manifest'], early['output'], _expected_evidence_kind='host-fake-hiai',
             _expected_config_sha256=digest(early['config']), _remote_exitcode=1)
-        assert retained['resident_lifecycle']['model_load_api'] == 'legacy-buffer'
+        assert retained['resident_lifecycle']['model_load_api'] == 'legacy-v1-mixed'
         assert retained['counts']['prefill_native_calls'] == retained['counts']['target_native_calls'] == retained['counts']['draft_native_calls'] == 0
         assert retained['prefill_lifecycle']['process_attempts'] == 1 and retained['prefill_lifecycle']['closed']
         assert not any('v1-load:qwen35_resident_' + name in early_trace.read_text() for name in ('target', 'draft'))
@@ -478,19 +483,18 @@ def test_actual_resident_v1_prefill_and_multiround_loop(tmp_path, resident_v1_na
         assert retained['supervisor_timing']['total_wall_ms'] >= retained['phase_latency']['prefill']['total_ms']
 
 
-def test_selected_default_v1_descriptor_semantics_reject_external_before_load(tmp_path, resident_v1_native_programs):
+def test_v1_file_descriptor_validation_rejects_path_loss_before_load(tmp_path, resident_v1_native_programs):
     from qwen35_moe_dflash.board_serial_transport import validate_retrieved_tokens
     case = make_case(tmp_path / 'selected-sdk-exclusive', resident_v1_native_programs, dump=False)
     enable_resident_v1(case)
-    case['synthetic_dual_model_source'] = False
-    case['manifest']['host_fake_sdk_scope'] = 'SELECTED_DEVICE_SETTER_SEMANTICS_EXTERNAL_LOAD_UNRESOLVED'
+    case['manifest']['host_fake_sdk_scope'] = 'FILE_DESCRIPTOR_VALIDATION_NEGATIVE_NOT_DEVICE_COMPATIBILITY'
     (case['root'] / 'expected-prepared-manifest.json').write_text(json.dumps(case['manifest'], indent=2))
     trace = case['root'] / 'v1-sdk.trace'
-    process = execute(case, native_trace=trace)
+    process = execute(case, native_fault='file-path-loss', native_trace=trace)
     assert process.returncode == 1, (process.stdout, process.stderr)
     loop = validate_retrieved_tokens(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
         _expected_config_sha256=digest(case['config']), _remote_exitcode=1)
-    assert 'external-weight loading remains unresolved' in loop['error']
+    assert 'file-only descriptor must retain the exact model path with an empty buffer' in loop['error']
     life = loop['prefill_lifecycle']
     assert life['client_initialized'] and life['failure_stage'] == 'LEGACY_MODEL_DESCRIPTION'
     assert not life['load_attempted'] and life['load_status'] is None and life['process_attempts'] == 0
@@ -511,7 +515,7 @@ def test_actual_resident_v1_prefill_failure_never_loads_pair(tmp_path, resident_
     loop = validate_retrieved_tokens(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
         _expected_config_sha256=digest(case['config']), _remote_exitcode=1)
     assert loop['status'] == 'FAILED' and loop['execution_mode'] == 'resident-v1'
-    assert loop['resident_lifecycle']['model_load_api'] == 'legacy-buffer'
+    assert loop['resident_lifecycle']['model_load_api'] == 'legacy-v1-mixed'
     assert loop['resident_lifecycle']['target_loads'] == loop['resident_lifecycle']['draft_loads'] == 0
     assert loop['counts']['prefill_native_calls'] == processes
     assert loop['counts']['target_native_calls'] == loop['counts']['draft_native_calls'] == 0
@@ -525,13 +529,14 @@ def test_actual_resident_v1_prefill_failure_never_loads_pair(tmp_path, resident_
         for key in ('prefill_model_load_ms', 'prefill_process_ms', 'prefill_model_unload_ms'))
 
 
-@pytest.mark.parametrize('bad', ['missing-policy', 'v2-policy', 'missing-prefill-abi', 'v2-tool'])
+@pytest.mark.parametrize('bad', ['missing-policy', 'v2-policy', 'old-v1-buffer-policy', 'missing-prefill-abi', 'v2-tool'])
 def test_actual_resident_v1_rejects_incomplete_or_v2_wire_before_sdk(tmp_path, resident_v1_native_programs, bad):
     case = make_case(tmp_path / ('v1-wire-' + bad), resident_v1_native_programs, dump=False)
     enable_resident_v1(case); trace = case['root'] / 'v1-sdk.trace'
     lines = case['config'].read_text().splitlines()
     if bad == 'missing-policy': lines = [line for line in lines if not line.startswith('target_lifecycle_policy\t')]
-    elif bad == 'v2-policy': lines = [line.replace('legacy-v1-load-process-unload-v1', 'init-before-weights-close-weights-first-v1') for line in lines]
+    elif bad == 'v2-policy': lines = [line.replace('legacy-v1-file-target-buffer-draft-v1', 'init-before-weights-close-weights-first-v1') for line in lines]
+    elif bad == 'old-v1-buffer-policy': lines = [line.replace('legacy-v1-file-target-buffer-draft-v1', 'legacy-v1-load-process-unload-v1') for line in lines]
     elif bad == 'missing-prefill-abi': lines = [line for line in lines if not line.startswith('prefill_abi\t')]
     else:
         path = case['files']['target_tool']; lines.append('\t'.join(('target_tool', str(path), digest(path), str(path.stat().st_size))))
@@ -742,9 +747,9 @@ def _reject_rebound_prefill_claims(case, original):
 
 def execute(case, fault=None, native_fault=None, native_trace=None):
     env = dict(os.environ)
-    # This explicit opt-in retains graph/round/state scheduling coverage only;
-    # the faithful default SDK profile rejects unresolved external loading.
-    env['FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE'] = '1' if case.get('synthetic_dual_model_source') else '0'
+    # Setters remain mutually exclusive. The fake's file-only branch exercises
+    # this explicit experiment; it cannot prove selected-device sidecar support.
+    env['FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE'] = '0'
     if fault:
         env['QWEN_BOARD_TEST_FAULT'] = fault
     if native_fault:

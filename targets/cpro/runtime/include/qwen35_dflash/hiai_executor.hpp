@@ -201,8 +201,8 @@ struct HiaiBoundRuntimeTensor {
   std::size_t bytes = 0;
 };
 // Exact89/82 original target ABI, V1 synchronous Load/Process/UnLoadModel.
-// A separate instance can serve static64 prefill once. Sidecar loading from the
-// preserved main-model path is an explicit, not device-validated assumption.
+// A separate instance can serve static64 prefill once. This uses SetModelPath
+// only; sidecar resolution is an explicit experimental device-validation item.
 class HiaiOriginalTargetV1Executor final {
  public:
   HiaiOriginalTargetV1Executor(const std::filesystem::path& model,

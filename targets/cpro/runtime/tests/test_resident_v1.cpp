@@ -55,20 +55,23 @@ void Diagnostic(const ResidentRunResult& r,std::size_t count){
 int main(int argc,char** argv){try{
   Require(argc==2,"expected output directory");const auto root=fs::absolute(argv[1]);fs::create_directories(root);
   std::ofstream(root/"target.omc")<<"original-target-fixture";std::ofstream(root/"draft.omc")<<"draft-resident64-fixture";
-  ResidentSessionConfig config{root/"target.omc",root,root/"draft.omc","FAKE-HIAI-X90",Contract(true),Contract(false),300000,"legacy-buffer"};
+  ResidentSessionConfig config{root/"target.omc",root,root/"draft.omc","FAKE-HIAI-X90",Contract(true),Contract(false),300000,"legacy-v1-mixed"};
   auto trace=[&](const std::string& name){const auto p=root/(name+".trace");std::ofstream(p).close();setenv("FAKE_HIAI_TRACE",p.c_str(),1);return p;};
-  // Default double matches the selected device's mutually exclusive setters.
-  // Embedded buffer loading works; the external original target must fail
-  // descriptively before SDK Load rather than pretend its sidecars are bound.
-  unsetenv("FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE");Failure("");
-  auto external_trace=trace("selected-default-external");HiaiLegacyLifecycle rejected;
-  std::string external_error;
-  try {HiaiOriginalTargetV1Executor external(config.target_model,root,config.runtime_version,
-      config.target_inputs,config.target_outputs,300000,"qwen35_resident_target",&rejected);}
-  catch(const HiaiRuntimeError& error){external_error=error.what();Require(error.stage()=="LEGACY_MODEL_DESCRIPTION","external wrong failure stage");}
-  Require(external_error.find("external-weight loading remains unresolved")!=std::string::npos,"external buffer-only failure lost its precise cause");
-  Require(rejected.client_initialized&&!rejected.load_attempted&&!rejected.loaded&&rejected.process_attempts==0&&rejected.closed,"external failure fabricated SDK Load or Process");
-  Require(Count(Trace(external_trace),"load")==0&&Count(Trace(external_trace),"process")==0,"unresolved external source reached SDK execution");
+  // Mutually exclusive setters stay the default. This file-only fixture tests
+  // an experimental SDK branch; it does not validate selected-device sidecars.
+  unsetenv("FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE");Failure("model-buffer");
+  const auto external_trace=trace("file-only-external");{
+    HiaiOriginalTargetV1Executor external(config.target_model,root,config.runtime_version,
+        config.target_inputs,config.target_outputs);
+    Require(external.lifecycle().model_load_api=="legacy-file"&&external.lifecycle().loaded,"file-only target did not load without SetModelBuffer");
+    external.Close();
+  }
+  Require(Count(Trace(external_trace),"load")==1&&Count(Trace(external_trace),"process")==0,"file-only source called unexpected Process");
+  const auto empty=root/"empty.omc";std::ofstream(empty).close();HiaiLegacyLifecycle empty_life;
+  Require(Throws([&]{HiaiOriginalTargetV1Executor invalid(empty,root,config.runtime_version,
+      config.target_inputs,config.target_outputs,300000,"qwen35_resident_target",&empty_life);})=="VALIDATE_V1_ORIGINAL_CONTRACT","empty file accepted");
+  Require(empty_life.model_load_api=="legacy-file"&&!empty_life.client_init_attempted&&!empty_life.load_attempted,"empty file fabricated SDK initialization");
+  Failure("path");
   const auto embedded_trace=trace("selected-default-embedded");{
     HiaiStatefulExecutor embedded(config.draft_model,config.runtime_version,
         {{"target_features","float16",{1,64,16384}},{"input_ids","int32",{1,64}},{"attention_mask","int32",{1,64}}},
@@ -78,12 +81,9 @@ int main(int argc,char** argv){try{
     Require(embedded.legacy_lifecycle().loaded&&embedded.legacy_lifecycle().successful_processes==1,"embedded buffer-only route failed");
   }
   Require(Count(Trace(embedded_trace),"load")==1&&Count(Trace(embedded_trace),"process")==1&&Count(Trace(embedded_trace),"unload")==1,"embedded default lifecycle differs");
-  // This explicit non-SDK profile isolates scheduling/buffer ownership tests.
-  // It must not be reported as selected-device external-weight compatibility.
-  setenv("FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE","1",1);
   setenv("FAKE_HIAI_V1_RESIDENT_TRACE","1",1);Failure("");const auto repeated=trace("v1-alternating");
   {
-    ResidentSession session("legacy-buffer");Require(session.evidence().model_load_api=="legacy-buffer"&&session.evidence().target_loads==0,"preload API is not explicit");
+    ResidentSession session("legacy-v1-mixed");Require(session.evidence().model_load_api=="legacy-v1-mixed"&&session.evidence().target_loads==0,"preload API is not explicit");
     session.Load(config);Throws([&]{session.Load(config);});auto inputs=TargetInputs(config);
     ResidentRunResult first,firstdraft;
     for(std::size_t round=1;round<=3;++round){
@@ -100,6 +100,7 @@ int main(int argc,char** argv){try{
       Require(life->process_attempts==3&&life->successful_processes==3,"V1 Process lifecycle counters differ");
       Require(life->runtime_tensor_names=="NOT_QUERIED_V1_SAVED_NAMED_ABI_ONLY"&&life->runtime_dtypes=="DECLARED_BOUND_ABI_NOT_QUERIED","V1 introspection fabricated");
     }
+    Require(e.target_v1_lifecycle.model_load_api=="legacy-file"&&e.draft_v1_lifecycle.model_load_api=="legacy-buffer","per-model loading API mislabeled");
     Require(e.target_v1_lifecycle.observed_inputs.size()==89&&e.target_v1_lifecycle.observed_outputs.size()==82&&e.draft_v1_lifecycle.observed_inputs.size()==3,"actual V1 dimensions not retained");
     Require(e.target_v1_lifecycle.observed_inputs[0].bytes==2048&&e.target_v1_lifecycle.observed_inputs[86].bytes==8&&e.target_v1_lifecycle.observed_inputs[88].bytes==2,"V1 typed INT8/INT64/INT16 byte widths wrong");
     Throws([&]{session.RunTarget(inputs);});
@@ -108,8 +109,8 @@ int main(int argc,char** argv){try{
   Require(Count(events,"load")==2&&Count(events,"process")==6&&Count(events,"unload")==2&&Count(events,"v1-create-tensor")==176,"V1 models/tensors did not remain resident");
   for(const auto& event:events)Require(event.rfind("v2-",0)!=0,"V1 path called V2 SDK");
   Require(Count(events,"v1-load:qwen35_resident_target")==1&&Count(events,"v1-load:qwen35_resident_draft")==1,"separate V1 client model names missing");
-  for(const auto& fault:std::vector<std::string>{"init","v1-target-load","v1-draft-load","original-shape","original-format","original-count","descriptor-exclusive","model-buffer-null","short-buffer","gdn-input-alias","v1-cross-alias"}){
-    Failure(fault);auto path=trace(fault);ResidentSession session("legacy-buffer");Throws([&]{session.Load(config);});const auto& e=session.evidence();
+  for(const auto& fault:std::vector<std::string>{"init","v1-target-load","v1-draft-load","original-shape","original-format","original-count","path","file-path-loss","file-buffer-present","model-buffer-size","model-buffer-null","short-buffer","gdn-input-alias","v1-cross-alias"}){
+    Failure(fault);auto path=trace(fault);ResidentSession session("legacy-v1-mixed");Throws([&]{session.Load(config);});const auto& e=session.evidence();
     Require(e.closed&&e.poisoned&&e.target_runs==0&&e.draft_runs==0,"failed V1 construction accepted or left live");
     if(fault=="init")Require(e.target_v1_lifecycle.client_init_attempted&&e.target_v1_lifecycle.client_init_status==1&&!e.target_v1_lifecycle.load_attempted&&!e.target_v1_lifecycle.unload_called,"failed Init snapshot fabricated Load or Unload");
     if(fault=="v1-target-load")Require(e.target_v1_lifecycle.load_attempted&&e.target_v1_lifecycle.load_status==1&&e.target_v1_lifecycle.unload_called&&e.target_v1_lifecycle.failure_stage=="LEGACY_LOAD","target failed-constructor status lost");
@@ -118,14 +119,14 @@ int main(int argc,char** argv){try{
     for(const auto& event:events)Require(event.rfind("v2-",0)!=0,"failed V1 load fell back to V2");
   }
   for(const auto& fault:std::vector<std::string>{"v1-process","v1-process-unknown","v1-replace-output","v1-draft-process"}){
-    Failure("");auto path=trace(fault);ResidentSession session("legacy-buffer");session.Load(config);Failure(fault);
+    Failure("");auto path=trace(fault);ResidentSession session("legacy-v1-mixed");session.Load(config);Failure(fault);
     Throws([&]{if(fault=="v1-draft-process")session.RunDraft(DraftInputs());else session.RunTarget(TargetInputs(config));});
     const auto& e=session.evidence();Require(e.closed&&e.poisoned&&e.target_runs==0&&e.draft_runs==0,"failed Process result promoted");
     Failure("");Throws([&]{session.RunTarget(TargetInputs(config));});Throws([&]{session.RunDraft(DraftInputs());});session.Close();
     events=Trace(path);Require(Count(events,"process")==1&&Count(events,"unload")==2,"failed Process retried or skipped peer cleanup");
   }
   for(const auto& fault:std::vector<std::string>{"v1-unload","v1-unload-throw","v1-unload-unknown","v1-draft-unload"}){
-    Failure("");auto path=trace(fault);ResidentSession session("legacy-buffer");session.Load(config);auto result=session.RunTarget(TargetInputs(config));Failure(fault);
+    Failure("");auto path=trace(fault);ResidentSession session("legacy-v1-mixed");session.Load(config);auto result=session.RunTarget(TargetInputs(config));Failure(fault);
     Require(Throws([&]{session.Close();})=="SESSION_CLEANUP","Unload failure not reported");const auto& e=session.evidence();
     Require(e.target_runs==1&&e.closed&&e.poisoned&&!e.cleanup_error.empty()&&e.target_v1_lifecycle.unload_called&&e.draft_v1_lifecycle.unload_called,"Unload failure erased run or skipped peer");
     if(fault=="v1-unload")Require(e.target_v1_lifecycle.unload_status==81&&e.draft_v1_lifecycle.unload_status==81,"returned Unload status lost");
@@ -141,8 +142,8 @@ int main(int argc,char** argv){try{
   }Require(Count(Trace(peers),"load")==2&&Count(Trace(peers),"unload")==2,"peer lifetime counts wrong");
   // Validate input bytes before any new Process; unsupported source contracts fail closed.
   Failure("");{
-    auto bad=config;bad.target_inputs[0].bytes=4096;ResidentSession session("legacy-buffer");Throws([&]{session.Load(bad);});Require(session.evidence().target_v1_lifecycle.process_attempts==0,"bad typed ABI executed");
+    auto bad=config;bad.target_inputs[0].bytes=4096;ResidentSession session("legacy-v1-mixed");Throws([&]{session.Load(bad);});Require(session.evidence().target_v1_lifecycle.process_attempts==0,"bad typed ABI executed");
   }
   unsetenv("FAKE_HIAI_TRACE");unsetenv("FAKE_HIAI_V1_RESIDENT_TRACE");unsetenv("FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE");
-  std::cout<<"PASS fake SDK faithful default: embedded buffer succeeds and external target rejects before Load; explicit synthetic dual-source override: two clients, Load2 Process6 Unload2, persistent176 tensors, exact89/82 and21 failure/ownership cases; no device compatibility proof\n";return 0;
+  std::cout<<"PASS fake SDK mutually exclusive setters: experimental file-only target and buffer-only draft; two clients, Load2 Process6 Unload2, persistent176 tensors, exact89/82 and file-descriptor failure/ownership cases; no device compatibility proof\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

@@ -68,7 +68,7 @@ struct ResidentSession::Impl {
       try {draft->Close();}
       catch(const std::exception& error){record.cleanup_error="draft: "+std::string(error.what());}
       catch(...){record.cleanup_error="draft: unknown cleanup exception";}
-      if(record.model_load_api=="legacy-buffer")record.draft_v1_lifecycle=draft->legacy_lifecycle();
+      if(record.model_load_api=="legacy-v1-mixed")record.draft_v1_lifecycle=draft->legacy_lifecycle();
       draft.reset();
     }
     if(target_v1) {
@@ -137,7 +137,7 @@ struct ResidentSession::Impl {
           throw std::runtime_error("resident output storage identity differs");
       result.wall_ms=Milliseconds(begin);total+=result.wall_ms;
       if(is_target){++record.target_runs;if(target_v1)record.target_v1_lifecycle=target_v1->lifecycle();else record.target_lifecycle=target->lifecycle();}
-      else {++record.draft_runs;if(record.model_load_api=="legacy-buffer")record.draft_v1_lifecycle=draft->legacy_lifecycle();}
+      else {++record.draft_runs;if(record.model_load_api=="legacy-v1-mixed")record.draft_v1_lifecycle=draft->legacy_lifecycle();}
       record.stage="READY";return result;
     } catch(const std::exception& error) {
       total+=Milliseconds(begin);Fail(ErrorStage(error,record.stage),error.what());
@@ -146,9 +146,10 @@ struct ResidentSession::Impl {
 };
 
 ResidentSession::ResidentSession(const std::string& api):impl_(std::make_unique<Impl>()) {
-  if(api!="file-v2"&&api!="legacy-buffer")throw std::invalid_argument("resident model API must be explicit V1 or V2");
+  if(api!="file-v2"&&api!="legacy-v1-mixed")throw std::invalid_argument("resident model API must be explicit V1 or V2");
   impl_->record.model_load_api=api;
   impl_->record.target_v1_lifecycle.model_name=impl_->record.target_model_name;
+  impl_->record.target_v1_lifecycle.model_load_api="legacy-file";
   impl_->record.draft_v1_lifecycle.model_name=impl_->record.draft_model_name;
 }
 ResidentSession::~ResidentSession(){impl_->Cleanup(false);}
@@ -165,23 +166,23 @@ void ResidentSession::Load(const ResidentSessionConfig& config) {
     for(const auto& row:config.target_outputs)impl_->output_sizes.push_back(row.bytes);
     r.stage="TARGET_LOAD";++r.target_load_attempts;auto start=Clock::now();
     try {
-      if(r.model_load_api=="legacy-buffer")impl_->target_v1=std::make_unique<HiaiOriginalTargetV1Executor>(config.target_model,
+      if(r.model_load_api=="legacy-v1-mixed")impl_->target_v1=std::make_unique<HiaiOriginalTargetV1Executor>(config.target_model,
         config.target_weight_directory,config.runtime_version,config.target_inputs,config.target_outputs,config.timeout_ms,r.target_model_name,&r.target_v1_lifecycle);
       else impl_->target=std::make_unique<HiaiOriginalTargetExecutor>(config.target_model,
         config.target_weight_directory,config.runtime_version,config.target_inputs,config.target_outputs,r.target_model_name,&r.target_lifecycle);
     } catch(...){r.target_load_ms+=Milliseconds(start);
-      const auto& error=r.model_load_api=="legacy-buffer"?r.target_v1_lifecycle.cleanup_error:r.target_lifecycle.cleanup_error;
+      const auto& error=r.model_load_api=="legacy-v1-mixed"?r.target_v1_lifecycle.cleanup_error:r.target_lifecycle.cleanup_error;
       if(!error.empty())r.cleanup_error="target construction: "+error;
       throw;}
     r.target_load_ms+=Milliseconds(start);++r.target_loads;
     if(impl_->target_v1)r.target_v1_lifecycle=impl_->target_v1->lifecycle();else r.target_lifecycle=impl_->target->lifecycle();
     r.stage="DRAFT_LOAD";++r.draft_load_attempts;start=Clock::now();
     try {impl_->draft=std::make_unique<HiaiStatefulExecutor>(config.draft_model,config.runtime_version,
-        kDraftInputs,kDraftOutputs,config.timeout_ms,false,0,true,r.model_load_api,r.draft_model_name,&r.draft_v1_lifecycle,
+        kDraftInputs,kDraftOutputs,config.timeout_ms,false,0,true,r.model_load_api=="legacy-v1-mixed"?"legacy-buffer":"file-v2",r.draft_model_name,&r.draft_v1_lifecycle,
         impl_->target_v1?impl_->target_v1->tensor_storage():impl_->target->tensor_storage());}
     catch(...){r.draft_load_ms+=Milliseconds(start);if(!r.draft_v1_lifecycle.cleanup_error.empty())r.cleanup_error+=" draft construction: "+r.draft_v1_lifecycle.cleanup_error;throw;}
     r.draft_load_ms+=Milliseconds(start);++r.draft_loads;
-    if(r.model_load_api=="legacy-buffer")r.draft_v1_lifecycle=impl_->draft->legacy_lifecycle();
+    if(r.model_load_api=="legacy-v1-mixed")r.draft_v1_lifecycle=impl_->draft->legacy_lifecycle();
     r.stage="VALIDATE_LIVE_STORAGE";impl_->VerifyStorage(true);
     r.status="READY";r.stage="READY";
   } catch(const std::exception& error){impl_->Fail(ErrorStage(error,r.stage),error.what());}

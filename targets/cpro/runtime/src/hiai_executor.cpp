@@ -172,8 +172,9 @@ struct Model {
   void Load(const std::filesystem::path& path, const std::string& model_name,
             const std::string& expected_version, std::uint32_t timeout_ms,
             std::size_t input_count, std::size_t output_count, const char* abi = "ABI v2",
-            bool require_external_path = false) {
+            bool file_only = false) {
     name = model_name; timeout = timeout_ms; legacy.model_name=name;
+    legacy.model_load_api=file_only?"legacy-file":"legacy-buffer";
     if(legacy.client_init_attempted)throw std::logic_error("V1 client Init/Load allowed once");
     stage="LEGACY_CLIENT_INIT";legacy.client_init_attempted=true;
     legacy.client_init_status=static_cast<std::int64_t>(client.Init(nullptr));
@@ -193,26 +194,27 @@ struct Model {
             ", runtime=" + version + "]");
     };
     stage="LEGACY_MODEL_DESCRIPTION";
-    // Embedded models use their retained buffer alone. The selected runtime's
-    // two setters clear the other representation, so a path is not an embedded
-    // buffer requirement. Original external targets retain a separate guard:
-    // buffer-only must never be promoted to a sidecar-loading contract.
-    if (require_external_path)
+    // Source selection is explicit and never retried with the other setter.
+    // File-only is an experimental V1 route for original external targets;
+    // embedded models keep their mapped buffer alive through client teardown.
+    if (file_only) {
       check_load(description->SetModelPath(path.string()), "SetModelPath");
-    try {
-      model_buffer.Open(path);
-    } catch (const std::exception& error) {
-      throw std::runtime_error(std::string(error.what()) + " [model=" + name +
-                               ", path=" + path.string() + ", runtime=" + version + "]");
+      if (description->GetModelPath()!=path.string() || description->GetModelBuffer()!=nullptr ||
+          description->GetModelNetSize()!=0)
+        throw std::runtime_error("V1 file-only descriptor must retain the exact model path with an empty buffer [model=" +
+                                 name + ", path=" + path.string() + ", runtime=" + version + "]");
+    } else {
+      try {
+        model_buffer.Open(path);
+      } catch (const std::exception& error) {
+        throw std::runtime_error(std::string(error.what()) + " [model=" + name +
+                                 ", path=" + path.string() + ", runtime=" + version + "]");
+      }
+      check_load(description->SetModelBuffer(model_buffer.Data(), model_buffer.Size()), "SetModelBuffer");
+      if (!description->GetModelBuffer() || description->GetModelNetSize() != model_buffer.Size())
+        throw std::runtime_error("HIAI model buffer descriptor is empty or truncated [model=" + name +
+                                 ", path=" + path.string() + ", runtime=" + version + "]");
     }
-    check_load(description->SetModelBuffer(model_buffer.Data(), model_buffer.Size()), "SetModelBuffer");
-    if (require_external_path && description->GetModelPath() != path.string())
-      throw std::runtime_error("SetModelBuffer cleared the external model path; selected V1 external-weight "
-                               "loading remains unresolved and SDK Load was not called [model=" + name +
-                               ", path=" + path.string() + ", runtime=" + version + "]");
-    if (!description->GetModelBuffer() || description->GetModelNetSize() != model_buffer.Size())
-      throw std::runtime_error("HIAI model buffer descriptor is empty or truncated [model=" + name +
-                               ", path=" + path.string() + ", runtime=" + version + "]");
     // Load still decides compatibility; no bypass or model type change.
     std::vector<std::shared_ptr<hiai::AiModelDescription>> descriptions{description};
     stage="LEGACY_LOAD";legacy.load_attempted=true;
@@ -846,13 +848,13 @@ HiaiOriginalTargetV1Executor::HiaiOriginalTargetV1Executor(
     const std::string& expected_version,const std::vector<HiaiBoundRuntimeTensor>& inputs,
     const std::vector<HiaiBoundRuntimeTensor>& outputs,std::uint32_t timeout,
     const std::string& name,HiaiLegacyLifecycle* snapshot):impl_(std::make_unique<Impl>()) {
-  auto& m=impl_->model;m.legacy.model_name=name;
+  auto& m=impl_->model;m.legacy.model_name=name;m.legacy.model_load_api="legacy-file";
   try {
     m.stage="VALIDATE_V1_ORIGINAL_CONTRACT";
     if(inputs.size()!=89||outputs.size()!=82||!timeout||expected_version.empty()||name.empty()||
         !path.is_absolute()||!weight_directory.is_absolute()||path.parent_path().lexically_normal()!=weight_directory.lexically_normal()||
-        !std::filesystem::is_regular_file(path)||!std::filesystem::is_directory(weight_directory))
-      throw std::invalid_argument("V1 original target requires exact89/82, absolute OMC and its adjacent weight directory");
+        !std::filesystem::is_regular_file(path)||std::filesystem::file_size(path)==0||!std::filesystem::is_directory(weight_directory))
+      throw std::invalid_argument("V1 original target requires exact89/82, nonempty absolute OMC and its adjacent weight directory");
     const std::uint16_t endian=1;if(*reinterpret_cast<const std::uint8_t*>(&endian)!=1)throw std::invalid_argument("little endian required");
     std::uint64_t total=0;
     for(const auto* rows:{&inputs,&outputs})for(std::size_t i=0;i<rows->size();++i){

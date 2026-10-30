@@ -233,7 +233,9 @@ def test_new_resident_preparation_pins_both_v1_abis_and_keeps_source_models_read
     manifest = job.prepare_board_serial(**options, resident=True, prefill_feedback=options['state_lineage'])
     assert selected == ['target', 'prefill']
     assert manifest['execution_mode'] == 'resident-v1'
-    assert manifest['target_lifecycle_policy'] == 'legacy-v1-load-process-unload-v1'
+    assert manifest['target_lifecycle_policy'] == 'legacy-v1-file-target-buffer-draft-v1'
+    assert manifest['model_load_api'] == 'legacy-v1-mixed'
+    assert manifest['model_load_apis'] == {'prefill': 'legacy-file', 'target': 'legacy-file', 'draft': 'legacy-buffer'}
     assert manifest['prefill_abi']['path'].endswith('/prefill-abi.tsv')
     assert job._current(model['path'])[1] == before
     assert not list(options['output'].rglob('*.omc'))
@@ -244,6 +246,7 @@ def test_v1_wire_uses_native_abi_and_no_v2_tool_or_legacy_child_runner(tmp_path)
     manifest = dict(target_model=record, draft=dict(model_source=record, abi=record),
         tables=dict(weight=record, scale=record), resident_abi=record, prefill_abi=record,
         execution_mode='resident-v1', target_lifecycle_policy=job.TARGET_LIFECYCLE_POLICY,
+        model_load_api=job.V1_MODEL_LOAD_API, model_load_apis=dict(job.V1_MODEL_LOAD_APIS),
         prompt_token_ids=[1, 2], max_new_tokens=8, max_proposals_per_round=2, minimum_draft_rounds=2,
         timeout_seconds=120, target_binding=dict(base_plan=dict(runtime_version='v', ddk_id='d', firmware_id='f',
             inputs=[], outputs=[]), state_mapping=[]))
@@ -252,9 +255,30 @@ def test_v1_wire_uses_native_abi_and_no_v2_tool_or_legacy_child_runner(tmp_path)
     paths.update(target_library_path='/board/lib', draft_library_path='/board/lib')
     wire = job.make_config(manifest, paths)
     assert b'execution_mode\tresident-v1\n' in wire
-    assert b'target_lifecycle_policy\tlegacy-v1-load-process-unload-v1\n' in wire
+    assert b'target_lifecycle_policy\tlegacy-v1-file-target-buffer-draft-v1\n' in wire
     assert b'prefill_abi\t/board/prefill_abi\t' in wire
     assert b'target_tool\t' not in wire and b'draft_runner\t' not in wire
+    old = dict(manifest, target_lifecycle_policy=job.HISTORICAL_V1_LIFECYCLE_POLICY)
+    for key in ('model_load_api', 'model_load_apis'): old.pop(key)
+    historical = job.make_config(old, paths)
+    assert b'target_lifecycle_policy\tlegacy-v1-load-process-unload-v1\n' in historical
+    assert b'legacy-v1-file-target-buffer-draft-v1' not in historical
+
+
+@pytest.mark.parametrize('damage', ['missing-map', 'missing-api', 'prefill-buffer', 'target-buffer',
+    'draft-file', 'unknown-policy', 'old-policy-new-map'])
+def test_v1_prepared_source_contract_rejects_mixed_or_implicit_modes(damage):
+    manifest = dict(execution_mode='resident-v1', target_lifecycle_policy=job.TARGET_LIFECYCLE_POLICY,
+        model_load_api=job.V1_MODEL_LOAD_API, model_load_apis=dict(job.V1_MODEL_LOAD_APIS))
+    if damage == 'missing-map': manifest.pop('model_load_apis')
+    elif damage == 'missing-api': manifest.pop('model_load_api')
+    elif damage == 'prefill-buffer': manifest['model_load_apis']['prefill'] = 'legacy-buffer'
+    elif damage == 'target-buffer': manifest['model_load_apis']['target'] = 'legacy-buffer'
+    elif damage == 'draft-file': manifest['model_load_apis']['draft'] = 'legacy-file'
+    elif damage == 'unknown-policy': manifest['target_lifecycle_policy'] = 'unbound-v1-policy'
+    elif damage == 'old-policy-new-map': manifest['target_lifecycle_policy'] = job.HISTORICAL_V1_LIFECYCLE_POLICY
+    with pytest.raises(ValueError, match='source|representation'):
+        job.v1_load_contract(manifest)
 
 
 @pytest.mark.parametrize('damage', ['enum', 'shape', 'name', 'changed-source'])
