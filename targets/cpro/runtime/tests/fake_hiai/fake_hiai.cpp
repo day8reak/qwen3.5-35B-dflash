@@ -37,6 +37,13 @@ void Trace(const char* event) {
   if (const auto* path=std::getenv("FAKE_HIAI_TRACE")) std::ofstream(path, std::ios::app) << event << '\n';
 }
 bool ModelBytesValid(const void* buffer, std::uint32_t bytes, const std::string& name) {
+  if(name=="qwen35_resident_target"||name=="qwen35_resident_prefill"||name=="qwen35_resident_draft") {
+    const std::vector<std::string> markers=name=="qwen35_resident_target"?std::vector<std::string>{"original-target-fixture","original-resident-target-fixture"}:
+      name=="qwen35_resident_prefill"?std::vector<std::string>{"original-resident-prefill64-fixture"}:
+      std::vector<std::string>{"draft-resident64-fixture","draft-resident-loop64-fixture"};
+    for(const auto& m:markers)if(buffer&&bytes==m.size()&&!std::memcmp(buffer,m.data(),bytes))return true;
+    return false;
+  }
   if (name=="qwen35_standalone_draft") {
     const char* expected="draft-standalone-fixture";
     return buffer && bytes==std::strlen(expected) && std::memcmp(buffer,expected,bytes)==0;
@@ -73,9 +80,11 @@ struct CheckLeaks {
 } check_leaks;
 }
 namespace hiai {
+namespace {std::vector<NDTensorDesc> OriginalDescriptors(bool input,bool resident_loop);}
 AiTensor::AiTensor() : ordinal_(++tensors) {}
 AiTensor::~AiTensor() { --tensors; }
 AIStatus AiTensor::Init(const TensorDimension* dim, HIAI_DataType type) {
+  if(std::getenv("FAKE_HIAI_V1_RESIDENT_TRACE"))Trace("v1-create-tensor");
   if (const auto* path=std::getenv("FAKE_HIAI_INIT_TRACE")) {
     std::ofstream trace(path, std::ios::app);
     trace << "format=" << static_cast<int>(dim->GetFormat()) << ";shape=";
@@ -86,16 +95,17 @@ AIStatus AiTensor::Init(const TensorDimension* dim, HIAI_DataType type) {
   if (Failure()=="allocation" && tensors==5) return AI_FAILED;
   if (const auto* path=std::getenv("FAKE_HIAI_DTYPE_TRACE"))
     std::ofstream(path,std::ios::app) << static_cast<int>(type) << '\n';
-  if (type!=HIAI_DATATYPE_INT32 && type!=HIAI_DATATYPE_INT16 && type!=HIAI_DATATYPE_INT64 &&
+  if (type!=HIAI_DATATYPE_INT8 && type!=HIAI_DATATYPE_INT32 && type!=HIAI_DATATYPE_INT16 && type!=HIAI_DATATYPE_INT64 &&
       type!=HIAI_DATATYPE_FLOAT16 && type!=HIAI_DATATYPE_FLOAT32) return AI_FAILED;
   if (dim->GetDims().size()==3 && type!=HIAI_DATATYPE_FLOAT16 && type!=HIAI_DATATYPE_FLOAT32) return AI_FAILED;
   std::size_t n=1; for(auto d:dim->GetDims()) n*=d;
-  bytes_=n*(type==HIAI_DATATYPE_INT64?8:type==HIAI_DATATYPE_FLOAT16 || type==HIAI_DATATYPE_INT16?2:4);
+  bytes_=n*(type==HIAI_DATATYPE_INT8?1:type==HIAI_DATATYPE_INT64?8:type==HIAI_DATATYPE_FLOAT16 || type==HIAI_DATATYPE_INT16?2:4);
   data_.resize((bytes_+3)/4); return AI_SUCCESS;
 }
 void* AiTensor::GetBuffer() const {
   auto* data = const_cast<std::int32_t*>(data_.data());
   if (ordinal_==1) diagnostic_query_buffer=data;
+  if (Failure()=="v1-cross-alias" && ordinal_==172) return diagnostic_query_buffer;
   if ((Failure()=="gdn-input-alias" && ordinal_==2) ||
       (Failure()=="gdn-output-alias" && ordinal_==8)) return diagnostic_query_buffer;
   // Init validation and zeroing read this pointer four times; SetInput reads
@@ -152,22 +162,50 @@ AIStatus AiModelMngerClient::CheckModelCompatibility(AiModelDescription&,bool&){
 }
 AIStatus AiModelMngerClient::Load(std::vector<std::shared_ptr<AiModelDescription>>& d){
   Trace("load");
+  if(load_called_)throw std::runtime_error("same V1 client loaded more than once");
+  load_called_=true;
   if(d.size()!=1 || d[0]->path.empty() ||
      !ModelBytesValid(d[0]->GetModelBuffer(), d[0]->GetModelNetSize(), d[0]->name)) return AI_FAILED;
   name_=d[0]->name;
+  if(name_.rfind("qwen35_resident_",0)==0)Trace(("v1-load:"+name_).c_str());
   model_buffer_=d[0]->GetModelBuffer(); model_bytes_=d[0]->GetModelNetSize();
   loaded_=true; // partial target or draft load failure must still unload.
   return Failure()=="load" || Failure()=="incompatible" ||
-         (Failure()=="draft-load" && name_=="qwen35_draft")?1:0;
+         (Failure()=="draft-load" && name_=="qwen35_draft") ||
+         (Failure()=="v1-target-load"&&name_=="qwen35_resident_target") ||
+         (Failure()=="v1-draft-load"&&name_=="qwen35_resident_draft")?1:0;
 }
 AIStatus AiModelMngerClient::UnLoadModel(){
   RequireModelBytes(model_buffer_, model_bytes_, name_);
-  Trace("unload"); loaded_=false; return 0;
+  Trace("unload"); loaded_=false;
+  if(name_.rfind("qwen35_resident_",0)==0) {
+    Trace(("v1-unload:"+name_).c_str());
+    if(Failure()=="v1-unload-throw")throw std::runtime_error("injected V1 UnLoadModel exception");
+    if(Failure()=="v1-unload-unknown")throw 19;
+    if(Failure()=="v1-unload"||(Failure()=="v1-draft-unload"&&name_=="qwen35_resident_draft"))return 81;
+  }
+  return 0;
 }
 AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vector<TensorDimension>& in,std::vector<TensorDimension>& out){
   if(n!=name_ || !loaded_ || Failure()=="io-dims") return 1;
   TensorDimension ids({1,32}), features({1,32,FeatureWidth()});
-  if(n=="qwen35_standalone_draft") {
+  if(n=="qwen35_resident_target"||n=="qwen35_resident_prefill") {
+    const std::string marker(static_cast<const char*>(model_buffer_),model_bytes_);
+    const bool loop=marker!="original-target-fixture",prefill=n=="qwen35_resident_prefill";
+    for(bool input:{true,false}) {
+      auto rows=OriginalDescriptors(input,loop);
+      if(prefill) {
+        if(input) {rows[0].dims={1,1,64,2048};rows[1].dims={1,1,64,2048};rows[2].dims={1,64};rows[83].dims={64};rows[85].dims={1,64,1};}
+        else rows[81].dims={1,1,64,16384};
+      }
+      for(const auto& row:rows){std::vector<std::uint32_t> dims;for(auto d:row.dims)dims.push_back(d);(input?in:out).emplace_back(dims,row.format);}
+    }
+  }
+  else if(n=="qwen35_resident_draft") {
+    in={TensorDimension({1,64,16384}),TensorDimension({1,64}),TensorDimension({1,64})};
+    out={TensorDimension({1,15}),TensorDimension({1,15,2048})};
+  }
+  else if(n=="qwen35_standalone_draft") {
     in={TensorDimension({1,8,16384}),TensorDimension({1,8}),TensorDimension({1,8})};
     out={TensorDimension({1,15}),TensorDimension({1,15,2048})};
     if (const auto* elements = std::getenv("FAKE_HIAI_DRAFT_TRACE_ELEMENTS"))
@@ -260,6 +298,47 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
   Trace("process");
   RequireModelBytes(model_buffer_, model_bytes_, name_);
   if(c.model!=name_ || !timeout || !loaded_ || Failure()=="run") return 1;
+  if(name_.rfind("qwen35_resident_",0)==0) {
+    Trace(("v1-process:"+name_).c_str());
+    if(Failure()=="v1-process-unknown")throw 17;
+    if(Failure()=="v1-process"||(Failure()=="v1-draft-process"&&name_=="qwen35_resident_draft"))return 82;
+    const std::string marker(static_cast<const char*>(model_buffer_),model_bytes_);
+    if(name_=="qwen35_resident_draft") {
+      if(in.size()!=3||out.size()!=2)return 83;
+      const auto* ids=static_cast<const std::int32_t*>(in[1]->GetBuffer());
+      const auto* mask=static_cast<const std::int32_t*>(in[2]->GetBuffer());
+      const auto* features=static_cast<const std::uint16_t*>(in[0]->GetBuffer());
+      const bool loop=marker=="draft-resident-loop64-fixture";std::size_t valid=0;
+      while(valid<64&&mask[valid]==1)++valid;if(!valid)return 84;
+      for(std::size_t i=0;i<64;++i) {
+        if(ids[i]!=(loop?(i<valid?static_cast<std::int32_t>(i+1):0):static_cast<std::int32_t>(i))||mask[i]!=(i<valid?1:0))return 85;
+        if(!std::all_of(features+i*16384,features+(i+1)*16384,[&](auto x){return x==(loop&&i>=valid?0:0x3800);}))return 86;
+      }
+      for(int i=0;i<15;++i)static_cast<std::int32_t*>(out[0]->GetBuffer())[i]=loop?ids[valid-1]+1+i:10+static_cast<int>(runs_)+i;
+      std::fill_n(static_cast<std::uint16_t*>(out[1]->GetBuffer()),15*2048,0x3800);
+    } else {
+      if(in.size()!=89||out.size()!=82)return 87;
+      const bool prefill=name_=="qwen35_resident_prefill",loop=marker!="original-target-fixture";
+      const auto position=prefill?*static_cast<const std::int16_t*>(in[88]->GetBuffer()):*static_cast<const std::int32_t*>(in[2]->GetBuffer());
+      if(prefill&&(position<1||position>64))return 88;
+      for(std::size_t ref=0;ref<80;++ref) {
+        const auto idx=loop?1+ref*37%80:1+ref;
+        if(in[ref+3]->GetSize()!=out[idx]->GetSize())return 89;
+        std::memcpy(out[idx]->GetBuffer(),in[ref+3]->GetBuffer(),in[ref+3]->GetSize());
+        if(loop) {
+          const auto* old=static_cast<const std::int32_t*>(in[ref+3]->GetBuffer());
+          if(!prefill&&(old[0]!=static_cast<std::int32_t>(ref)||old[1]!=position))return 90;
+          auto* next=static_cast<std::int32_t*>(out[idx]->GetBuffer());next[0]=ref;next[1]=prefill?position:position+1;
+        } else ++static_cast<std::uint8_t*>(out[idx]->GetBuffer())[0];
+      }
+      std::memset(out[0]->GetBuffer(),0,out[0]->GetSize());
+      auto token=loop?static_cast<const std::uint8_t*>(in[0]->GetBuffer())[(prefill?position-1:0)*2048]+1:static_cast<int>(runs_+1);
+      static_cast<float*>(out[0]->GetBuffer())[token]=10;
+      std::fill_n(static_cast<std::uint16_t*>(out[81]->GetBuffer()),out[81]->GetSize()/2,0x3800);
+    }
+    if(Failure()=="v1-replace-output")out[0]->ReplaceBufferForTest();
+    ++runs_;stamp=static_cast<std::int32_t>(runs_);return 0;
+  }
   if(name_=="qwen35_standalone_draft") {
     // Transport fixture only; never a numerical DFlash implementation.
     const auto direct = DirectOutputs();

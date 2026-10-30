@@ -1,4 +1,4 @@
-# Target V2 加载顺序的小型实验
+# 历史 Target V2 加载顺序实验
 
 首次常驻请求的 prefill 已完成，随后新 runner 在 `InitWeights` 返回 `3=INVALID_PARAM`，尚未调用 manager `Init`，draft 未加载。既有完整板端成功结果使用 `/data/local/tmp/tools_sysdbg/model_run_tool_internal --modelmanager_itf=V2` 加载 target；它的内部实现尚未取得。
 
@@ -6,9 +6,9 @@
 
 用户的 v1 实验已经观察到 `Init(options, builtModel, listener)` 和随后 `InitWeights(weight_directory)` 都返回0。失败发生在关闭阶段：先 `DeInit` 后 `DeinitWeights`，后者返回3。总加载／关闭墙钟10568ms，没有 Run 或 draft 调用，任务已退出并释放锁，见[设备观察](../specs/resident-v2-target-init-observed.json)。
 
-当前 v2 保留已成功的初始化顺序，把关闭改成 `DeinitWeights → DeInit`。这项关闭修复还需要实机验证。完整 resident 入口也已同步采用同一实现并写入显式策略；v2通过后即可直接运行[新常驻请求](current-status.md)，无需再等代码修改。
+用户的 v2 已返回：`Init=0`、`InitWeights=0`、`DeinitWeights=1`，随后仍调用 `DeInit`；总墙钟10435ms，无Run，锁已释放。见[第二次关闭观察](../specs/resident-v2-target-cleanup-observed.json)。两种关闭顺序均未成功，不能将问题认定为单纯顺序错误，也不能忽略返回码。随后用户要求新运行接口全部V1；当前不继续换V2顺序、删掉关闭调用或启动新V2闭环，转到[V1主线](current-status.md)。这份加载实验保留为历史诊断入口，不再是推理实验的前置门禁。
 
-## 在 DDK 主机运行
+## 历史加载实验命令（当前不要求重跑）
 
 复用首次 resident 任务的 prepared 和已存在的板端 target 缓存。命令只构建／发送当前 native runner 及其运行依赖；缓存缺失或哈希不符即停止，不重新上传大模型或权重。不使用 embedding 表、prompt、prefill 或 draft，不调用模型 `Run`，不创建输入／输出 tensor buffer。
 
@@ -37,9 +37,9 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_target_load_probe.py" \
 
 - `Init` 失败：保留其返回码，`InitWeights` 应显示未调用；继续排查模型恢复、运行选项及原工具的加载方式。
 - `Init` 成功、`InitWeights` 失败：检查权重目录与该 API 的具体契约，不能仅凭错误码断言缺文件或内存不足。
-- 两项成功并完成清理：只证明该 target 的一次加载／关闭实验成功。下一步直接运行已修复的 resident runner，验证 embedded draft V2、双模型同时驻留、多轮执行和旧基线 token。
+- 两项成功并完成清理：只证明该 target 的一次加载／关闭实验成功。此项仅为历史probe解释；当前新运行主线已改V1。
 
-关闭采用 `DeinitWeights → DeInit`，报告分别保留尝试与状态；该关闭顺序属于本次待验范围。仅 `InitWeights` 成功后才调用 `DeinitWeights`；即使它失败，仍继续对已尝试 Init 的 manager 调用 `DeInit`。最初失败和清理错误分别保留，不重试同一清理 API。成功加载但清理失败仍报告失败，不计作常驻成功。
+关闭采用 `DeinitWeights → DeInit`，报告分别保留尝试与状态；该关闭顺序已实测返回1，原因尚未确定。仅 `InitWeights` 成功后才调用 `DeinitWeights`；即使它失败，仍继续对已尝试 Init 的 manager 调用 `DeInit`。最初失败和清理错误分别保留，不重试同一清理 API。成功加载但清理失败仍报告失败，不计作常驻成功。
 
 本实验不产生 token，不证明推理、精度、加速或两模型常驻；它用于缩短加载故障的定位周期。
 

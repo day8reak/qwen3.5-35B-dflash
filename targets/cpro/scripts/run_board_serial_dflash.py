@@ -30,13 +30,15 @@ def main(argv=None):
     parser.add_argument('--dump', action='store_true', default=None,
         help='Retain debug tensors/receipts on board and retrieve detailed evidence; default returns final tokens/status only')
     parser.add_argument('--resident', action='store_true', default=None,
-        help='Explicit file-v2 same-process decode+draft residency; prefill remains a single original-tool call')
+        help='Required for new runs: V1 prefill once, then same-thread V1 decode+draft residency; historical V2 requests are recover-only')
     args = parser.parse_args(argv)
     if args.recover:
         if args.apply or args.detach or args.dump is not None or args.resident is not None or args.prefill_feedback is not None or any(getattr(args, name.replace('-', '_')) is not None for name in required):
             parser.error('--recover uses the original prepared dump mode; omit --dump, --apply and model arguments')
     elif any(getattr(args, name.replace('-', '_')) is None for name in required):
         parser.error('new runs require ' + ', '.join('--' + name for name in required))
+    elif not args.resident:
+        parser.error('new runs require --resident for the explicit all-V1 runtime; old modes support historical --recover only')
     elif args.detach and not args.apply:
         parser.error('--detach requires --apply')
     try:

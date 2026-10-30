@@ -2,8 +2,8 @@
   "schema_version": 1,
   "updated": "2026-10-30",
   "active_phase": "integration",
-  "delivery_status": "ORIGINAL_PREFILL_BOARD_EXECUTION_PASSED_TARGET_V2_INIT_OBSERVED_CLEANUP_PENDING",
-  "run_id": "20261030T132015Z-30826-6cb60b",
+  "delivery_status": "ORIGINAL_PREFILL_BOARD_EXECUTION_PASSED_ALL_V1_RESIDENT_HOST_TESTED_DEVICE_PENDING",
+  "run_id": "20261030T133340Z-32275-390e70",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -5440,12 +5440,16 @@
   "execution_state": "specs/dflash-execution-state.json",
   "planning_horizon": "P0 functional loop through P8 accuracy/stability/performance/release; normal10–20workingdays conditional, optimistic7–10, initialloop0.5–1",
   "current_resident_work": {
-    "run_id": "20261030T122833Z-23441-5814f9",
+    "run_id": "20261030T133340Z-32275-390e70",
     "user_authorized": true,
     "p0_result": "specs/board-prefill-first-completion.json",
-    "scope": "Unchanged OMCs, unify current embedded draft and external-weight decode on file-v2 in one persistent native session; host tests then user device run; no assistant HDC probes",
+    "scope": "Unchanged OMCs and weights; all new prefill, external-weight decode and embedded six-layer draft execution uses V1. One-thread independent prefill Load/Process/Unload, then two resident clients each Load once and repeated synchronous Process. Complete host checks, then user runs the entire board loop; no extra load-only trial or assistant HDC probes.",
     "target_profile_local": "cpro-blue-pending manifest missing; local modelPython and fakeHIAI tests only, selected user DDK builds on user host",
     "numerical_validation": "NOT_RUN",
-    "device_residency": "NOT_RUN"
+    "device_residency": "NOT_RUN",
+    "runtime_api": "legacy-buffer",
+    "execution_mode": "resident-v1",
+    "current_document": "docs/current-status.md",
+    "host_validation": "specs/resident-v1-host-validation.json"
   }
 }

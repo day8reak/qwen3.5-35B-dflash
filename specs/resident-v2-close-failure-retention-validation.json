@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-historical-resident-v2-cleanup-failure-retention-validation",
+  "run_id": "20261030T133340Z-32275-390e70",
+  "status": "HOST_TESTED",
+  "runtime_source_base_commit": "76a5651",
+  "product_code_change": "NONE_FOR_THIS_HISTORICAL_REGRESSION",
+  "test": {
+    "path": "out/resident-cleanup-regression.xml",
+    "sha256": "a7a720f5784511f8c4a1d3c8357d5e751686095cd8e6f210038d94f02c3f6b1d",
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "scope": "Explicit fake SDK completed8 generated tokens and8decode plus draft calls then DeinitWeights failed. Compact receipt retains outputs and timing, staysFAILED; exact owned-lock release permitted only after PID exit. Does not validate realV2cleanup or anyV1execution.",
+  "source_sha256_at_test": "5a6a0cef693c15097dc428cbe27c82ebf8e05c15049a4b525564468b1568203c",
+  "source_file": "tests/test_board_serial_integration.py",
+  "superseding_direction": "User explicitly requested all new runtime interfaces V1; preserve this evidence for historical failure recovery.",
+  "assistant_device_access": "NOT_PERFORMED_USER_REQUEST"
+}

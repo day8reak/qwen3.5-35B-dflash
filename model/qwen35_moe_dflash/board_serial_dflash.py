@@ -1,7 +1,7 @@
 """Prepare an autonomous board-local loop using the existing complete OMCs.
 
 The supervisor moves orchestration, original embedding row lookup, and all
-state/feature feedback onto the board. Resident file-v2 execution is an explicit
+state/feature feedback onto the board. Resident legacy-V1 execution is an explicit
 separate mode; neither mode is a speed/accuracy acceptance gate.
 """
 from __future__ import annotations
@@ -21,10 +21,11 @@ from .target_compile_failure import _read_small
 
 KIND = 'qwen35-board-serial-dflash-prepared'
 MAX_MANIFEST_BYTES = 64 << 20
-TARGET_LIFECYCLE_POLICY = 'init-before-weights-close-weights-first-v1'
+TARGET_LIFECYCLE_POLICY = 'legacy-v1-load-process-unload-v1'
+V2_TARGET_LIFECYCLE_POLICY = 'init-before-weights-close-weights-first-v1'
 
 
-def _resident_abi(binding, runtime_probe, output):
+def _resident_abi(binding, runtime_probe, output, *, prefix='target'):
     """Pin actual selected-HIAI descriptors; never infer shapes from byte counts."""
     from .target_prefill_smoke_plan import _runtime_keys, _WIDTHS, _TOOL_TYPES
     base = binding['base_plan']; records = {row['path']: row['identity'] for row in binding['active_source_identities']}
@@ -55,14 +56,17 @@ def _resident_abi(binding, runtime_probe, output):
                 raise ValueError('resident ABI literal name/type/extent differs from the bound runtime interface')
             result.append(dict(index=index, name=name, dtype=dtype, raw_dtype=row['raw_dtype'],
                 raw_format=row['raw_format'], shape=list(shape), bytes=expected['bytes']))
-            lines.append('\t'.join(map(_field, ('target_' + direction[:-1], index, name, dtype,
+            lines.append('\t'.join(map(_field, (prefix + '_' + direction[:-1], index, name, dtype,
                 row['raw_dtype'], row['raw_format'], ','.join(map(str, shape)), expected['bytes']))))
         descriptors[direction] = result
     if records[str(source)] != _current(source)[1] or observed['sha256'] != sha256_file(source):
         raise ValueError('resident ABI source changed during serialization')
     Path(output).write_bytes(('\n'.join(lines) + '\n').encode('ascii'))
     return {**_hash_source(output), 'descriptor_source': dict(observed, identity=records[str(source)]),
-        'inputs': descriptors['inputs'], 'outputs': descriptors['outputs'], 'scope': 'ACTUAL_NAMED_HIAI_RAW_ENUM_AND_FIXED_SHAPE_DESCRIPTORS'}
+        'inputs': descriptors['inputs'], 'outputs': descriptors['outputs'],
+        'descriptor_provenance': 'HISTORICAL_FILE_V2_NAMED_MODEL_IO_PROBE',
+        'runtime_validation': 'V1_SLOT_SHAPE_AND_BYTE_EXTENT_REQUIRED_NO_SDK_TENSOR_NAME_CLAIM',
+        'scope': 'ACTUAL_NAMED_HIAI_RAW_ENUM_AND_FIXED_SHAPE_DESCRIPTORS'}
 
 
 def _hash_source(path, expected_size=None):
@@ -96,7 +100,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
     if type(dump) is not bool or type(resident) is not bool:
         raise ValueError('dump/resident must be explicit booleans')
     if resident and prefill_feedback is None:
-        raise ValueError('resident-v2 requires the bound original prefill feedback mapping')
+        raise ValueError('resident-v1 requires the bound original prefill feedback mapping')
     if (not isinstance(board_model_root, str)
             or not re.fullmatch(r'/[A-Za-z0-9_./-]+', board_model_root)
             or any(part in {'.', '..'} for part in PurePosixPath(board_model_root).parts)):
@@ -123,6 +127,11 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         from .board_prefill_binding import prepare_prefill_binding
         prefill = prepare_prefill_binding(prefill_feedback, target.binding, source_torchair_pb2,
             prompt_length, out / 'prefill-binding')
+    prefill_abi = None
+    if resident:
+        prefill_abi = _resident_abi({'base_plan': prefill['base_plan'],
+            'active_source_identities': prefill['source_bindings']},
+            prefill['base_plan']['runtime_probe'], out / 'prefill-abi.tsv', prefix='prefill')
     if (draft._source['ddk_id'] != base['ddk_id']
             or draft._source['outputs'] != [
                 {'index': 0, 'name': 'draft_top1', 'dtype': 'int32', 'shape': [1, 15]},
@@ -168,7 +177,8 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
             pins[row['path']] = deepcopy(row['identity'])
     for path, identity in draft._source_identities.items():
         pins[path] = deepcopy(identity)
-    for row in [*tables.values(), primary, abi, prompt_source, *([resident_abi] if resident_abi else [])]:
+    for row in [*tables.values(), primary, abi, prompt_source,
+            *([resident_abi, prefill_abi] if resident_abi else [])]:
         if row['path'] in pins and pins[row['path']] != row['identity']:
             raise ValueError('source identity changed across board-loop preparation')
         pins[row['path']] = deepcopy(row['identity'])
@@ -199,10 +209,10 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
     else:
         manifest['prompt_ingestion'] = 'DECODE1_SERIAL_PROMPT_INGESTION'
     if resident:
-        manifest.update(execution_mode='resident-v2', resident_abi=resident_abi,
+        manifest.update(execution_mode='resident-v1', resident_abi=resident_abi, prefill_abi=prefill_abi,
             target_lifecycle_policy=TARGET_LIFECYCLE_POLICY,
-            orchestration='BOARD_LOCAL_SINGLE_PROCESS_FILE_V2_DECODE_AND_DRAFT',
-            model_residency='REQUESTED_FILE_V2_TWO_MANAGERS_ONE_LOAD_EACH_UNVALIDATED')
+            orchestration='BOARD_LOCAL_SINGLE_PROCESS_LEGACY_V1_PREFILL_DECODE_AND_DRAFT',
+            model_residency='REQUESTED_LEGACY_V1_PREFILL_ONCE_DECODE_AND_DRAFT_LOADED_ONCE_UNVALIDATED')
     save_json(out / 'manifest.json', manifest)
     (out / 'manifest.sha256').write_text(sha256_file(out / 'manifest.json') + '\n')
     return validate_prepared(out)
@@ -227,19 +237,30 @@ def validate_prepared(directory):
     # Recovery never changes a request's original retention/validation policy.
     if type(manifest.get('dump', True)) is not bool:
         raise ValueError('prepared dump mode must be boolean')
-    if manifest.get('execution_mode', 'fresh-process') not in {'fresh-process', 'resident-v2'}:
+    mode = manifest.get('execution_mode', 'fresh-process')
+    if mode not in {'fresh-process', 'resident-v2', 'resident-v1'}:
         raise ValueError('prepared execution mode is unsupported')
-    if manifest.get('execution_mode') == 'resident-v2':
-        if manifest.get('target_lifecycle_policy', TARGET_LIFECYCLE_POLICY) != TARGET_LIFECYCLE_POLICY:
+    if mode in {'resident-v2', 'resident-v1'}:
+        expected_policy = TARGET_LIFECYCLE_POLICY if mode == 'resident-v1' else V2_TARGET_LIFECYCLE_POLICY
+        if manifest.get('target_lifecycle_policy', expected_policy) != expected_policy:
             raise ValueError('prepared resident target lifecycle policy is unsupported')
         abi = manifest.get('resident_abi', {})
         if ('prefill' not in manifest or not isinstance(abi, dict) or abi.get('path') != str(root / 'resident-abi.tsv')
                 or _hash_source(abi['path']) != {key: abi[key] for key in ('path', 'bytes', 'sha256', 'identity')}
                 or len(abi.get('inputs', [])) != 89 or len(abi.get('outputs', [])) != 82):
             raise ValueError('prepared resident ABI changed or is incomplete')
+        if mode == 'resident-v1':
+            abi = manifest.get('prefill_abi', {})
+            if (manifest.get('target_lifecycle_policy') != TARGET_LIFECYCLE_POLICY
+                    or abi.get('path') != str(root / 'prefill-abi.tsv')
+                    or _hash_source(abi['path']) != {key: abi[key] for key in ('path', 'bytes', 'sha256', 'identity')}
+                    or len(abi.get('inputs', [])) != 89 or len(abi.get('outputs', [])) != 82):
+                raise ValueError('prepared V1 prefill ABI changed or is incomplete')
     elif 'resident_abi' in manifest:
         raise ValueError('resident ABI cannot be attached to a legacy request')
-    if 'target_lifecycle_policy' in manifest and manifest.get('execution_mode') != 'resident-v2':
+    if 'prefill_abi' in manifest and mode != 'resident-v1':
+        raise ValueError('V1 prefill ABI cannot be attached to a historical request')
+    if 'target_lifecycle_policy' in manifest and mode not in {'resident-v2', 'resident-v1'}:
         raise ValueError('target lifecycle policy belongs only to an explicit resident request')
     for row in manifest['source_bindings']:
         if _current(row['path'])[1] != row['identity']:
@@ -262,13 +283,17 @@ def make_config(manifest, remote_paths):
         raise ValueError('prepared dump mode must be boolean')
     lines = ['QWEN35_BOARD_SERIAL\t1']
     files = {'target_model': manifest['target_model'], 'draft_model': manifest['draft']['model_source'],
-        'draft_abi': manifest['draft']['abi'], 'target_tool': remote_paths['target_tool_record'],
-        'draft_runner': remote_paths['draft_runner_record'],
+        'draft_abi': manifest['draft']['abi'],
         'weight_table': manifest['tables']['weight'], 'scale_table': manifest['tables']['scale']}
+    if manifest.get('execution_mode') != 'resident-v1':
+        files.update(target_tool=remote_paths['target_tool_record'], draft_runner=remote_paths['draft_runner_record'])
     if 'prefill' in manifest:
         files['prefill_model'] = manifest['prefill']['model']
-    if manifest.get('execution_mode') == 'resident-v2':
+    resident = manifest.get('execution_mode') in {'resident-v2', 'resident-v1'}
+    if resident:
         files['resident_abi'] = manifest['resident_abi']
+    if manifest.get('execution_mode') == 'resident-v1':
+        files['prefill_abi'] = manifest['prefill_abi']
     for key, record in files.items():
         path = str(remote_paths[key])
         if (not path.startswith('/') or any(part in {'.', '..'} for part in PurePosixPath(path).parts)
@@ -285,12 +310,13 @@ def make_config(manifest, remote_paths):
             'dump': int(dump),
             'timeout_ms': min(manifest['timeout_seconds'] * 1000, 2**32 - 1)}.items():
         lines.append('\t'.join(map(_field, (key, value))))
-    if manifest.get('execution_mode') == 'resident-v2':
-        lines.append('execution_mode\tresident-v2')
+    if resident:
+        lines.append('execution_mode\t' + manifest['execution_mode'])
         if 'target_lifecycle_policy' in manifest:
-            if manifest['target_lifecycle_policy'] != TARGET_LIFECYCLE_POLICY:
+            policy = TARGET_LIFECYCLE_POLICY if manifest['execution_mode'] == 'resident-v1' else V2_TARGET_LIFECYCLE_POLICY
+            if manifest['target_lifecycle_policy'] != policy:
                 raise ValueError('unsupported resident target lifecycle policy')
-            lines.append('target_lifecycle_policy\t' + TARGET_LIFECYCLE_POLICY)
+            lines.append('target_lifecycle_policy\t' + policy)
     for role, type_key in (('input', 'tool_input_type'), ('output', 'tool_output_type')):
         for row in base[role + 's']:
             name = row['name'] if role == 'input' else row['runtime_tensor_name']
@@ -330,8 +356,8 @@ def run_board_serial_dflash(*, output, apply=False, detach=False, **options):
         result['prepared'] = manifest['output']
         result['dump'] = manifest.get('dump', True)
         result['prompt_ingestion'] = manifest['prompt_ingestion']
-        if manifest.get('execution_mode') == 'resident-v2':
-            result['execution_mode'] = 'resident-v2'
+        if manifest.get('execution_mode') in {'resident-v2', 'resident-v1'}:
+            result['execution_mode'] = manifest['execution_mode']
         result['retrieval_mode'] = 'FULL_DEBUG' if result['dump'] else 'FINAL_TOKENS_ONLY'
         if apply:
             from .board_serial_transport import execute_board_serial

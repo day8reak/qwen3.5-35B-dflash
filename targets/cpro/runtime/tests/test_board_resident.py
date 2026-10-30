@@ -26,7 +26,7 @@ static std::string Mode(){const char* s=std::getenv("BOARD_RESIDENT_FAULT");retu
 static void Check(bool ok,const char* why){if(!ok)throw std::runtime_error(why);}
 static unsigned Word(const B& b){unsigned v=0;for(unsigned i=0;i<4;++i)v|=unsigned(b.at(i))<<(8*i);return v;}
 struct ResidentSession::Impl {ResidentSessionEvidence e;ResidentSessionConfig c;bool loaded=false;};
-ResidentSession::ResidentSession():impl_(new Impl){}
+ResidentSession::ResidentSession(const std::string& api):impl_(new Impl){impl_->e.model_load_api=api;}
 ResidentSession::~ResidentSession()=default;
 const ResidentSessionEvidence& ResidentSession::evidence()const noexcept{return impl_->e;}
 void ResidentSession::Close(){auto& e=impl_->e;if(e.closed)return;e.closed=true;

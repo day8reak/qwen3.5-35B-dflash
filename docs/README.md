@@ -2,7 +2,7 @@
 
 将 Qwen3.5-MoE 目标模型与 DFlash 草稿模型接到 CPro/X90。支持 **PyTorch 建模导出**和**直接 GE 构图**两条路径，部署使用 `AIR → OMG → OMC → HIAI`。
 
-当前主线复用原40层 target prefill64／decode1 与完整六层 `residual-fix` draft S64，不重编译模型。用户已完成原 prefill 驱动的板端自主 P8/G8 闭环：prefill1／decode8／draft7，8个最终 token，接受0／7；这是执行通过，精度与加速未验收。当前推进统一 HIAI V2 双模型常驻；独立设备实验已观察target的Init→InitWeights成功，现验证权重先关闭的修复，draft V2与同时驻留仍待验。先读[执行总计划与交接](dflash-delivery-plan.md)，当前命令见[当前执行入口](current-status.md#用户现在执行什么)。旧[PyTorch／直接GE转换路线](target-parallel-tracks.md)仅用于回溯，不另开大编译。
+当前主线复用原40层target prefill64／decode1与完整六层draft S64，不重编模型。原prefill驱动的板端P8/G8闭环已经执行通过，精度与加速未验收。用户现要求所有新执行接口统一V1：单线程prefill一次，随后decode和draft各Load一次常驻、多次Process。V2实验与失败只保留为历史证据。当前命令见[执行入口](current-status.md)，总阶段及天数见[交接计划](dflash-delivery-plan.md)。
 
 | 从这里开始 | 内容 |
 |---|---|

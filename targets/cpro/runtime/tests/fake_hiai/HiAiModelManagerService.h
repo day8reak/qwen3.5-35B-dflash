@@ -8,7 +8,7 @@ namespace hiai {
 using AIStatus = std::int32_t;
 constexpr AIStatus AI_SUCCESS=0, AI_FAILED=1;
 enum HIAI_DataType { HIAI_DATATYPE_FLOAT32=1, HIAI_DATATYPE_FLOAT16=2,
-                     HIAI_DATATYPE_INT32=3, HIAI_DATATYPE_INT16=5, HIAI_DATATYPE_INT64=7 };
+                     HIAI_DATATYPE_INT32=3, HIAI_DATATYPE_INT8=4, HIAI_DATATYPE_INT16=5, HIAI_DATATYPE_INT64=7 };
 enum class Format { NCHW=0, NHWC=1, ND=2 };
 constexpr int AiModelDescription_Frequency_HIGH=3, HIAI_FRAMEWORK_NONE=0,
               HIAI_MODELTYPE_OFFLINE=1, AiModelDescription_DeviceType_NPU=0;
@@ -69,7 +69,8 @@ class AiModelMngerClient {
                    std::vector<std::shared_ptr<AiTensor>>&, std::uint32_t, std::int32_t&);
   AIStatus UnLoadModel();
  private:
-  bool loaded_=false;
+  bool loaded_=false,load_called_=false;
+  std::size_t runs_=0;
   std::string name_;
   const void* model_buffer_=nullptr;
   std::uint32_t model_bytes_=0;

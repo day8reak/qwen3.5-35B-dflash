@@ -7,6 +7,7 @@ struct ResidentSessionConfig {
   std::string runtime_version;
   std::vector<HiaiBoundRuntimeTensor> target_inputs, target_outputs;
   std::uint32_t timeout_ms = 300000;
+  std::string model_load_api = "file-v2";
 };
 struct ResidentRunResult {
   std::vector<std::vector<std::uint8_t>> outputs;
@@ -23,15 +24,17 @@ struct ResidentSessionEvidence {
   std::uint64_t target_load_ms = 0, draft_load_ms = 0, target_run_ms = 0, draft_run_ms = 0, close_ms = 0;
   bool closed = false, poisoned = false;
   HiaiOriginalTargetLifecycle target_lifecycle;
+  HiaiLegacyLifecycle target_v1_lifecycle, draft_v1_lifecycle;
 };
 
-// One process owns two immutable V2 models and their persistent tensor storage.
+// One process owns two immutable models through one explicitly selected API.
+// V1 clients and V2 managers retain their persistent tensor storage.
 // The caller supplies hash-bound sources/descriptors, preserves source lifetimes,
 // and advances only committed target states. This class never falls back to a
 // different API, recompiles a model or retries a failed load/run.
 class ResidentSession final {
  public:
-  ResidentSession();
+  explicit ResidentSession(const std::string& model_load_api="file-v2");
   ~ResidentSession();
   ResidentSession(const ResidentSession&) = delete;
   ResidentSession& operator=(const ResidentSession&) = delete;

@@ -114,6 +114,7 @@ struct Model {
   std::shared_ptr<hiai::AiModelDescription> description;
   hiai::AiModelMngerClient client;
   bool initialized = false;
+  HiaiLegacyLifecycle legacy;
   bool file_v2 = false, v2_init_attempted = false, v2_closed = false;
   std::string stage = "LEGACY_LOAD";
   std::shared_ptr<hiai::IBuiltModel> built_model;
@@ -149,16 +150,34 @@ struct Model {
       std::cerr << "HIAI file-v2 cleanup error=" << error << std::endl;
     }
   }
-  ~Model() {
-    // Process is synchronous: unload before releasing persistent tensor buffers.
-    CloseFile(false);
-    if (initialized) static_cast<void>(client.UnLoadModel());
+  void CloseLegacy(bool report_error) {
+    if (legacy.closed) return;
+    legacy.closed=true;
+    if (initialized) {
+      legacy.unload_called=true;
+      try {
+        legacy.unload_status=static_cast<std::int64_t>(client.UnLoadModel());
+        if (*legacy.unload_status!=0) legacy.cleanup_error="UnLoadModel failed: "+std::to_string(*legacy.unload_status);
+      } catch(const std::exception& e) {legacy.cleanup_error=e.what();}
+      catch(...) {legacy.cleanup_error="unknown UnLoadModel exception";}
+    }
+    if (!legacy.cleanup_error.empty()) {
+      if (legacy.failure_stage.empty()) legacy.failure_stage="LEGACY_UNLOAD";
+      if(report_error)throw HiaiRuntimeError("LEGACY_UNLOAD",legacy.cleanup_error);
+      std::cerr<<"HIAI V1 cleanup error="<<legacy.cleanup_error<<std::endl;
+    }
   }
+  ~Model() { CloseFile(false); CloseLegacy(false); }
+
   void Load(const std::filesystem::path& path, const std::string& model_name,
             const std::string& expected_version, std::uint32_t timeout_ms,
             std::size_t input_count, std::size_t output_count, const char* abi = "ABI v2") {
-    name = model_name; timeout = timeout_ms;
-    Check(client.Init(nullptr), "Init(sync)"); initialized = true;
+    name = model_name; timeout = timeout_ms; legacy.model_name=name;
+    if(legacy.client_init_attempted)throw std::logic_error("V1 client Init/Load allowed once");
+    stage="LEGACY_CLIENT_INIT";legacy.client_init_attempted=true;
+    legacy.client_init_status=static_cast<std::int64_t>(client.Init(nullptr));
+    Check(static_cast<hiai::AIStatus>(*legacy.client_init_status), "Init(sync)");
+    initialized=true;legacy.client_initialized=true;stage="LEGACY_RUNTIME_IDENTITY";
     version = Version(client);
     if (version != expected_version)
       throw std::runtime_error("HIAI version differs from --expected-runtime-version");
@@ -172,6 +191,7 @@ struct Model {
             std::to_string(status) + " [model=" + name + ", path=" + path.string() +
             ", runtime=" + version + "]");
     };
+    stage="LEGACY_MODEL_DESCRIPTION";
     check_load(description->SetModelPath(path.string()), "SetModelPath");
     try {
       model_buffer.Open(path);
@@ -180,12 +200,17 @@ struct Model {
                                ", path=" + path.string() + ", runtime=" + version + "]");
     }
     check_load(description->SetModelBuffer(model_buffer.Data(), model_buffer.Size()), "SetModelBuffer");
+    if (description->GetModelPath() != path.string())
+      throw std::runtime_error("SetModelBuffer did not preserve exact model path for adjacent sidecars");
     if (!description->GetModelBuffer() || description->GetModelNetSize() != model_buffer.Size())
       throw std::runtime_error("HIAI model buffer descriptor is empty or truncated [model=" + name +
                                ", path=" + path.string() + ", runtime=" + version + "]");
     // Load still decides compatibility; no bypass or model type change.
     std::vector<std::shared_ptr<hiai::AiModelDescription>> descriptions{description};
-    check_load(client.Load(descriptions), "Load");
+    stage="LEGACY_LOAD";legacy.load_attempted=true;
+    legacy.load_status=static_cast<std::int64_t>(client.Load(descriptions));
+    check_load(static_cast<hiai::AIStatus>(*legacy.load_status), "Load");legacy.loaded=true;
+    stage="LEGACY_TENSOR_DESCRIPTORS";
     check_load(client.GetModelIOTensorDim(name, input_dims, output_dims), "GetModelIOTensorDim");
     for (bool input : {true, false}) {
       const auto& dims = input ? input_dims : output_dims;
@@ -333,6 +358,10 @@ struct Model {
     // AIR/OMC manifest and model SHA256; do not claim dtype introspection here.
     Check(t.value->Init(&dim, dtype), "AiTensor::Init");
     static_cast<void>(t.Data());
+    HiaiLegacyRuntimeTensor observed;observed.index=index;observed.bytes=t.Size();
+    observed.raw_format=static_cast<std::int64_t>(dim.GetFormat());
+    for(auto n:actual)observed.shape.push_back(n);
+    (input?legacy.observed_inputs:legacy.observed_outputs).push_back(std::move(observed));
     (input ? input_ptrs : output_ptrs).push_back(t.value);
     (input ? inputs : outputs).push_back(std::move(t));
   }
@@ -349,7 +378,9 @@ struct Model {
     hiai::AiContext context;
     context.AddPara("model_name", name);
     std::int32_t stamp = 0;
+    ++legacy.process_attempts;
     Check(client.Process(context, input_ptrs, output_ptrs, timeout, stamp), "Process(sync)");
+    ++legacy.successful_processes;
     stage = "OUTPUT_VALIDATION";
   }
 };
@@ -474,9 +505,10 @@ struct HiaiStatefulExecutor::Impl {
   Model target;
   std::vector<bool> ready;
   bool outputs_available = false;
-  bool closed = false;
+  bool closed = false, poisoned = false;
   HiaiIoDiagnostic diagnostic;
   std::vector<const void*> output_buffers_before;
+  std::vector<HiaiTensorStorage> resident_storage;
   std::vector<std::string> input_source_hashes;
 
   bool ObserveDiagnosticOutputs() {
@@ -505,13 +537,14 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
     const std::vector<HiaiTensorSpec>& inputs, const std::vector<HiaiTensorSpec>& outputs,
     std::uint32_t timeout_ms, bool fused_operator_probe,
     int diagnostic_output_fill_byte, bool standalone_draft,
-    const std::string& model_load_api, const std::string& resident_model_name) : impl_(std::make_unique<Impl>()) {
+    const std::string& model_load_api, const std::string& resident_model_name,
+    HiaiLegacyLifecycle* constructor_failure_snapshot,
+    const std::vector<HiaiTensorStorage>& disjoint_from) : impl_(std::make_unique<Impl>()) {
+  try {
   if (model_load_api != "legacy-buffer" && model_load_api != "file-v2")
     throw std::invalid_argument("model load API must be legacy-buffer or file-v2");
   if (model_load_api == "file-v2" && !standalone_draft)
     throw std::invalid_argument("file-v2 requires the standalone draft ABI");
-  if (!resident_model_name.empty() && model_load_api != "file-v2")
-    throw std::invalid_argument("resident model name requires file-v2");
   if (inputs.empty() || inputs.size() > 1024 || outputs.empty() || outputs.size() > 1024 ||
       expected_version.empty() || !timeout_ms)
     throw std::invalid_argument("stateful target requires bounded ordered IO, runtime identity and timeout");
@@ -534,7 +567,7 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
   }
   if (model_load_api == "file-v2")
     impl_->target.LoadFile(target, expected_version, inputs.size(), outputs.size(),false,resident_model_name);
-  else impl_->target.Load(target, standalone_draft ? "qwen35_standalone_draft" :
+  else impl_->target.Load(target, !resident_model_name.empty()?resident_model_name:standalone_draft ? "qwen35_standalone_draft" :
                      fused_operator_probe ? "qwen35_fused_operator" : "qwen35_stateful_target",
                      expected_version, timeout_ms, inputs.size(), outputs.size(),
                      standalone_draft ? "standalone full draft ABI" :
@@ -558,6 +591,22 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
         throw std::runtime_error("stateful runtime tensor buffers exceed bounded IO allocation");
       }
       allocated += allocated_bytes;
+      // A resident peer already owns live storage. Validate every region before
+      // the first write, not after constructor memset could corrupt its buffer.
+      if(!resident_model_name.empty() || !disjoint_from.empty()) {
+        auto regions=disjoint_from;
+        for(const auto* current:{&impl_->target.inputs,&impl_->target.outputs})
+          for(const auto& t:*current)regions.push_back({t.Object(),t.Data(),t.Size()});
+        for(std::size_t a=0;a<regions.size();++a){
+          const auto& first=regions[a];const auto begin=reinterpret_cast<std::uintptr_t>(first.data);
+          if(!first.object||!first.data||!first.bytes||begin>UINTPTR_MAX-first.bytes)
+            throw HiaiRuntimeError("LIVE_STORAGE","invalid resident allocation before initialization");
+          for(std::size_t b=0;b<a;++b){const auto& other=regions[b];const auto next=reinterpret_cast<std::uintptr_t>(other.data);
+            if(first.object==other.object||(begin<next+other.bytes&&next<begin+first.bytes))
+              throw HiaiRuntimeError("LIVE_STORAGE","resident buffers overlap before initialization");
+          }
+        }
+      }
       // Extra runtime allocation is not interpreted as physical row padding.
       std::memset(tensor.Data(), 0, tensor.bytes);
       if (diagnostic_output_fill_byte >= 0) {
@@ -573,12 +622,31 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
       }
     }
   }
+  if(!resident_model_name.empty()||!disjoint_from.empty())
+    for(const auto* tensors:{&impl_->target.inputs,&impl_->target.outputs})for(const auto& t:*tensors)
+      impl_->resident_storage.push_back({t.Object(),t.Data(),t.Size()});
   impl_->ready.assign(inputs.size(), false);
   if (diagnostic_output_fill_byte >= 0) impl_->input_source_hashes.resize(inputs.size());
+  } catch(const std::exception& e) {
+    if(model_load_api=="legacy-buffer") {
+      const auto* precise=dynamic_cast<const HiaiRuntimeError*>(&e);
+      const auto stage=precise?precise->stage():impl_->target.stage;impl_->target.legacy.failure_stage=stage;
+      impl_->target.CloseLegacy(false);if(constructor_failure_snapshot)*constructor_failure_snapshot=impl_->target.legacy;
+      throw HiaiRuntimeError(stage,e.what());
+    }
+    throw;
+  } catch(...) {
+    if(model_load_api=="legacy-buffer") {
+      const auto stage=impl_->target.stage;impl_->target.legacy.failure_stage=stage;
+      impl_->target.CloseLegacy(false);if(constructor_failure_snapshot)*constructor_failure_snapshot=impl_->target.legacy;
+      throw HiaiRuntimeError(stage,"unknown V1 draft construction exception");
+    }
+    throw;
+  }
 }
 HiaiStatefulExecutor::~HiaiStatefulExecutor() = default;
 void HiaiStatefulExecutor::SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes) {
-  if (impl_->closed) throw HiaiRuntimeError("CLOSED", "stateful executor is closed");
+  if (impl_->closed || impl_->poisoned) throw HiaiRuntimeError("CLOSED", "stateful executor is closed or failed");
   if (impl_->target.file_v2 && impl_->target.stage != "INPUT_BINDING") impl_->target.Stage("INPUT_BINDING");
   else impl_->target.stage = "INPUT_BINDING";
   impl_->outputs_available = false;
@@ -586,7 +654,19 @@ void HiaiStatefulExecutor::SetInput(std::size_t index, const std::vector<std::ui
   impl_->ready.at(index) = false;
   if (bytes.size() != tensor.bytes)
     throw std::invalid_argument("stateful input byte count differs from declared shape/dtype");
-  std::memcpy(tensor.Data(), bytes.data(), bytes.size());
+  void* destination=tensor.Data();
+  if(!impl_->resident_storage.empty()) {
+    std::size_t at=0;
+    for(const auto* tensors:{&impl_->target.inputs,&impl_->target.outputs})for(const auto& current:*tensors){
+      const auto& old=impl_->resident_storage.at(at++);
+      if(current.Object()!=old.object||current.Buffer()!=old.data||current.Size()!=old.bytes){
+        impl_->poisoned=true;impl_->target.legacy.failure_stage="LIVE_STORAGE";
+        throw HiaiRuntimeError("LIVE_STORAGE","resident draft storage changed before input copy");
+      }
+    }
+    destination=const_cast<void*>(impl_->resident_storage.at(index).data);
+  }
+  std::memcpy(destination, bytes.data(), bytes.size());
   if (impl_->diagnostic.output_fill_byte >= 0) {
     impl_->input_source_hashes.at(index) = Sha256(std::string_view(
         reinterpret_cast<const char*>(bytes.data()), bytes.size()));
@@ -596,7 +676,8 @@ void HiaiStatefulExecutor::SetInput(std::size_t index, const std::vector<std::ui
   impl_->ready[index] = true;
 }
 void HiaiStatefulExecutor::Execute() {
-  if (impl_->closed) throw HiaiRuntimeError("CLOSED", "stateful executor is closed");
+  if (impl_->closed || impl_->poisoned) throw HiaiRuntimeError("CLOSED", "stateful executor is closed or failed");
+  try {
   impl_->outputs_available = false;
   if (!std::all_of(impl_->ready.begin(), impl_->ready.end(), [](bool ready) { return ready; }))
     throw std::logic_error("all explicit stateful inputs must be supplied for each step");
@@ -643,10 +724,16 @@ void HiaiStatefulExecutor::Execute() {
   }
   if (impl_->target.file_v2) impl_->target.Stage("EXECUTED");
   else impl_->target.stage = "EXECUTED";
-  impl_->outputs_available = true;
+  impl_->outputs_available = true;  }catch(const std::exception& e){
+    if(!impl_->target.file_v2){impl_->target.legacy.failure_stage=impl_->target.stage;impl_->poisoned=true;throw HiaiRuntimeError(impl_->target.stage,e.what());}
+    throw;
+  }catch(...){
+    if(!impl_->target.file_v2){impl_->target.legacy.failure_stage=impl_->target.stage;impl_->poisoned=true;throw HiaiRuntimeError(impl_->target.stage,"unknown V1 draft Process exception");}
+    throw;
+  }
 }
 std::vector<std::uint8_t> HiaiStatefulExecutor::CopyOutput(std::size_t index) const {
-  if (impl_->closed) throw HiaiRuntimeError("CLOSED", "stateful executor is closed");
+  if (impl_->closed || impl_->poisoned) throw HiaiRuntimeError("CLOSED", "stateful executor is closed or failed");
   if (!impl_->outputs_available)
     throw std::logic_error("stateful outputs unavailable before successful Process");
   const auto& tensor = impl_->target.outputs.at(index);
@@ -655,11 +742,11 @@ std::vector<std::uint8_t> HiaiStatefulExecutor::CopyOutput(std::size_t index) co
 }
 void HiaiStatefulExecutor::Close() {
   if (impl_->closed) return;
-  if (!impl_->target.file_v2) throw HiaiRuntimeError("CLOSE_API", "explicit Close requires file-v2");
   impl_->closed = true;
   impl_->outputs_available = false;
-  impl_->target.CloseFile(true);
+  if(impl_->target.file_v2)impl_->target.CloseFile(true);else impl_->target.CloseLegacy(true);
 }
+const HiaiLegacyLifecycle& HiaiStatefulExecutor::legacy_lifecycle() const noexcept {return impl_->target.legacy;}
 const std::string& HiaiStatefulExecutor::runtime_version() const noexcept {
   return impl_->target.version;
 }
@@ -670,7 +757,7 @@ const HiaiIoDiagnostic& HiaiStatefulExecutor::io_diagnostic() const noexcept {
   return impl_->diagnostic;
 }
 std::vector<HiaiTensorStorage> HiaiStatefulExecutor::tensor_storage() const {
-  if (impl_->closed) throw HiaiRuntimeError("CLOSED", "stateful executor is closed");
+  if (impl_->closed || impl_->poisoned) throw HiaiRuntimeError("CLOSED", "stateful executor is closed or failed");
   std::vector<HiaiTensorStorage> result;
   for (const auto& tensor : impl_->target.inputs)
     result.push_back({tensor.Object(), tensor.Data(), tensor.Size()});
@@ -685,6 +772,147 @@ std::vector<HiaiTensorStorage> HiaiStatefulExecutor::tensor_storage() const {
   }
   return result;
 }
+
+
+namespace {
+// Saved V2 format integers are comparable only when this exact selected SDK
+// exposes the identical enum type for its V1 and V2 tensor descriptors.
+static_assert(std::is_same_v<std::decay_t<decltype(std::declval<hiai::TensorDimension>().GetFormat())>,
+                             std::decay_t<decltype(std::declval<hiai::NDTensorDesc>().format)>>,
+              "V1 and V2 format enums differ; a named semantic mapping is required");
+template<class Enum,class=void>struct LegacyInt8 {
+  static Enum Get(){throw std::runtime_error("selected V1 headers do not declare HIAI_DATATYPE_INT8");}
+};
+template<class Enum>struct LegacyInt8<Enum,std::void_t<decltype(Enum::HIAI_DATATYPE_INT8)>> {
+  static Enum Get(){return Enum::HIAI_DATATYPE_INT8;}
+};
+std::pair<hiai::HIAI_DataType,std::size_t> LegacyType(const std::string& name) {
+  if(name=="INT8")return {LegacyInt8<hiai::HIAI_DataType>::Get(),1};
+  if(name=="INT16")return {hiai::HIAI_DATATYPE_INT16,2};
+  if(name=="INT32")return {hiai::HIAI_DATATYPE_INT32,4};
+  if(name=="INT64")return {hiai::HIAI_DATATYPE_INT64,8};
+  if(name=="FLOAT16")return {hiai::HIAI_DATATYPE_FLOAT16,2};
+  if(name=="FLOAT32")return {hiai::HIAI_DATATYPE_FLOAT32,4};
+  throw std::invalid_argument("unsupported bound V1 original-target dtype");
+}
+}
+struct HiaiOriginalTargetV1Executor::Impl {
+  Model model;
+  HiaiIoDiagnostic diagnostic;
+  std::vector<bool> ready;
+  std::vector<std::string> input_hashes;
+  std::vector<HiaiTensorStorage> storage;
+  bool poisoned=false,outputs_available=false;
+  void RequireLive()const {
+    if(poisoned||model.legacy.closed||!model.legacy.loaded)
+      throw HiaiRuntimeError(model.stage,"V1 original target is closed, failed or not loaded");
+  }
+  std::vector<HiaiTensorStorage> Storage()const {
+    std::vector<HiaiTensorStorage> rows;
+    for(const auto& t:model.inputs)rows.push_back({t.Object(),t.Data(),t.Size()});
+    if(model.OutputCount()!=model.outputs.size())throw std::runtime_error("V1 output count changed");
+    for(std::size_t i=0;i<model.outputs.size();++i){const auto t=model.CurrentOutput(i);rows.push_back({t.Object(),t.Data(),t.Size()});}
+    return rows;
+  }
+  void Verify(bool first=false) {
+    auto current=Storage();
+    if(current.size()!=171||(!first&&current.size()!=storage.size()))throw std::runtime_error("V1 live tensor count changed");
+    for(std::size_t i=0;i<current.size();++i){
+      const auto& a=current[i];const auto begin=reinterpret_cast<std::uintptr_t>(a.data);
+      const auto expected=i<89?model.inputs[i].bytes:model.outputs[i-89].bytes;
+      if(!a.object||!a.data||a.bytes!=expected||begin>UINTPTR_MAX-a.bytes)throw std::runtime_error("V1 exact live tensor extent invalid");
+      for(std::size_t j=0;j<i;++j){const auto& b=current[j];const auto other=reinterpret_cast<std::uintptr_t>(b.data);
+        if(a.object==b.object||(begin<other+b.bytes&&other<begin+a.bytes))throw std::runtime_error("V1 live tensor storage overlaps");}
+      if(!first&&(a.object!=storage[i].object||a.data!=storage[i].data||a.bytes!=storage[i].bytes))throw std::runtime_error("V1 tensor storage changed");
+    }
+    if(first)storage=std::move(current);
+  }
+  [[noreturn]]void Fail(const std::string& message) {
+    poisoned=true;outputs_available=false;
+    if(model.legacy.failure_stage.empty())model.legacy.failure_stage=model.stage;
+    throw HiaiRuntimeError(model.stage,message);
+  }
+};
+HiaiOriginalTargetV1Executor::HiaiOriginalTargetV1Executor(
+    const std::filesystem::path& path,const std::filesystem::path& weight_directory,
+    const std::string& expected_version,const std::vector<HiaiBoundRuntimeTensor>& inputs,
+    const std::vector<HiaiBoundRuntimeTensor>& outputs,std::uint32_t timeout,
+    const std::string& name,HiaiLegacyLifecycle* snapshot):impl_(std::make_unique<Impl>()) {
+  auto& m=impl_->model;m.legacy.model_name=name;
+  try {
+    m.stage="VALIDATE_V1_ORIGINAL_CONTRACT";
+    if(inputs.size()!=89||outputs.size()!=82||!timeout||expected_version.empty()||name.empty()||
+        !path.is_absolute()||!weight_directory.is_absolute()||path.parent_path().lexically_normal()!=weight_directory.lexically_normal()||
+        !std::filesystem::is_regular_file(path)||!std::filesystem::is_directory(weight_directory))
+      throw std::invalid_argument("V1 original target requires exact89/82, absolute OMC and its adjacent weight directory");
+    const std::uint16_t endian=1;if(*reinterpret_cast<const std::uint8_t*>(&endian)!=1)throw std::invalid_argument("little endian required");
+    std::uint64_t total=0;
+    for(const auto* rows:{&inputs,&outputs})for(std::size_t i=0;i<rows->size();++i){
+      const auto& row=rows->at(i);auto bytes=static_cast<std::uint64_t>(LegacyType(row.dtype).second);
+      if(row.descriptor.index!=i||row.descriptor.shape.empty()||row.descriptor.shape.size()>8||!row.bytes)
+        throw std::invalid_argument("invalid ordered V1 declared tensor");
+      for(auto d:row.descriptor.shape){if(d<=0||static_cast<std::uint64_t>(d)>UINT32_MAX||bytes>kStatefulTensorLimit/static_cast<std::uint64_t>(d))
+          throw std::invalid_argument("V1 declared shape is nonpositive or exceeds tensor limit");bytes*=d;}
+      if(bytes!=row.bytes||bytes>kStatefulTotalLimit-total)throw std::invalid_argument("V1 declared shape/dtype byte extent differs");
+      total+=bytes;
+    }
+    m.Load(path,name,expected_version,timeout,89,82,"original target89/82 V1 declared ABI");
+    for(bool input:{true,false}){
+      const auto& rows=input?inputs:outputs;
+      for(std::size_t i=0;i<rows.size();++i){
+        m.stage=input?"LEGACY_INPUT_ALLOCATION":"LEGACY_OUTPUT_ALLOCATION";
+        const auto& row=rows[i];const auto& dim=(input?m.input_dims:m.output_dims)[i];const auto actual=dim.GetDims();
+        std::vector<std::uint32_t> declared;for(auto d:row.descriptor.shape)declared.push_back(static_cast<std::uint32_t>(d));
+        if(static_cast<std::int64_t>(dim.GetFormat())!=row.descriptor.raw_format||
+            (actual!=declared&&!IsTrailingOnePadding(declared,actual)&&!IsLeadingOnePadding(declared,actual)))
+          throw std::runtime_error("V1 original tensor shape/format differs from bound ABI at "+std::to_string(i));
+        Tensor tensor{std::make_shared<hiai::AiTensor>(),row.bytes,nullptr};
+        Check(tensor.value->Init(&dim,LegacyType(row.dtype).first),"original AiTensor::Init");
+        if(tensor.Size()!=row.bytes)throw std::runtime_error("V1 allocated tensor extent differs from bound typed bytes");
+        static_cast<void>(tensor.Data());
+        HiaiLegacyRuntimeTensor observed;observed.index=i;observed.raw_format=static_cast<std::int64_t>(dim.GetFormat());observed.bytes=tensor.Size();
+        for(auto n:actual)observed.shape.push_back(n);
+        (input?m.legacy.observed_inputs:m.legacy.observed_outputs).push_back(std::move(observed));
+        (input?m.input_ptrs:m.output_ptrs).push_back(tensor.value);(input?m.inputs:m.outputs).push_back(std::move(tensor));
+        if(input){HiaiInputIoDiagnostic d;d.index=i;d.logical_bytes=row.bytes;d.allocated_bytes=row.bytes;impl_->diagnostic.inputs.push_back(d);}
+        else {HiaiOutputIoDiagnostic d;d.index=i;d.logical_bytes=row.bytes;impl_->diagnostic.outputs.push_back(d);}
+      }
+    }
+    impl_->Verify(true);
+    for(auto* tensors:{&m.inputs,&m.outputs})for(const auto& t:*tensors)std::memset(t.Data(),0,t.bytes);
+    impl_->ready.assign(89,false);impl_->input_hashes.resize(89);impl_->diagnostic.output_fill_byte=0;m.stage="READY";
+  }catch(const std::exception& e){const auto stage=m.stage;m.legacy.failure_stage=stage;m.CloseLegacy(false);if(snapshot)*snapshot=m.legacy;throw HiaiRuntimeError(stage,e.what());}
+  catch(...){const auto stage=m.stage;m.legacy.failure_stage=stage;m.CloseLegacy(false);if(snapshot)*snapshot=m.legacy;throw HiaiRuntimeError(stage,"unknown V1 target constructor exception");}
+}
+HiaiOriginalTargetV1Executor::~HiaiOriginalTargetV1Executor()=default;
+void HiaiOriginalTargetV1Executor::SetInput(std::size_t index,const std::vector<std::uint8_t>& bytes){
+  impl_->RequireLive();impl_->model.stage="INPUT_BINDING";impl_->outputs_available=false;
+  try{impl_->Verify();auto& t=impl_->model.inputs.at(index);impl_->ready.at(index)=false;
+    if(bytes.size()!=t.bytes)throw std::invalid_argument("V1 input byte extent differs");
+    std::memcpy(const_cast<void*>(impl_->storage.at(index).data),bytes.data(),bytes.size());impl_->input_hashes[index]=Sha256(std::string_view(reinterpret_cast<const char*>(bytes.data()),bytes.size()));impl_->ready[index]=true;
+  }catch(const std::exception& e){impl_->Fail(e.what());}catch(...){impl_->Fail("unknown V1 input binding exception");}
+}
+void HiaiOriginalTargetV1Executor::Execute(){
+  impl_->RequireLive();auto& m=impl_->model;impl_->outputs_available=false;impl_->diagnostic.process_called=false;m.stage="INPUT_VALIDATION";
+  try{
+    if(!std::all_of(impl_->ready.begin(),impl_->ready.end(),[](bool v){return v;}))throw std::runtime_error("all89 V1 inputs required each Process");
+    std::fill(impl_->ready.begin(),impl_->ready.end(),false);impl_->Verify();
+    for(std::size_t i=0;i<m.outputs.size();++i){const auto& t=m.outputs[i];auto& d=impl_->diagnostic.outputs[i];d.allocated_bytes_before=t.Size();d.checked_after_process=d.object_same=d.buffer_same=false;std::memset(t.Data(),0,t.bytes);}
+    for(std::size_t i=0;i<m.inputs.size();++i){const auto& t=m.inputs[i];auto& d=impl_->diagnostic.inputs[i];d.readback_sha256=Sha256(std::string_view(static_cast<const char*>(t.Data()),t.bytes));d.readback_matches_source=d.readback_sha256==impl_->input_hashes[i];if(!d.readback_matches_source)throw std::runtime_error("V1 input readback changed");}
+    impl_->diagnostic.process_called=true;m.Run();impl_->Verify();
+    for(std::size_t i=0;i<m.outputs.size();++i){auto& d=impl_->diagnostic.outputs[i];d.allocated_bytes_after=m.outputs[i].Size();d.checked_after_process=d.object_same=d.buffer_same=true;}
+    m.stage="EXECUTED";impl_->outputs_available=true;
+  }catch(const std::exception& e){impl_->Fail(e.what());}catch(...){impl_->Fail("unknown V1 Process exception");}
+}
+std::vector<std::uint8_t> HiaiOriginalTargetV1Executor::CopyOutput(std::size_t index)const {
+  impl_->RequireLive();if(!impl_->outputs_available)throw HiaiRuntimeError("OUTPUT_UNAVAILABLE","V1 output unavailable");
+  try{impl_->Verify();const auto& t=impl_->model.outputs.at(index);const auto* p=static_cast<const std::uint8_t*>(t.Data());return {p,p+t.bytes};}
+  catch(const std::exception& e){impl_->Fail(e.what());}catch(...){impl_->Fail("unknown V1 output copy exception");}
+}
+void HiaiOriginalTargetV1Executor::Close(){impl_->outputs_available=false;impl_->model.CloseLegacy(true);}
+const HiaiIoDiagnostic& HiaiOriginalTargetV1Executor::io_diagnostic()const noexcept{return impl_->diagnostic;}
+const HiaiLegacyLifecycle& HiaiOriginalTargetV1Executor::lifecycle()const noexcept{return impl_->model.legacy;}
+std::vector<HiaiTensorStorage> HiaiOriginalTargetV1Executor::tensor_storage()const{impl_->RequireLive();impl_->Verify();return impl_->storage;}
 
 struct HiaiOriginalTargetExecutor::Impl {
   std::shared_ptr<hiai::IBuiltModel> built_model;

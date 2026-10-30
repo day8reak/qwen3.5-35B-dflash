@@ -7,7 +7,7 @@
   "overall_status": "in_progress",
   "active_phase": "P5",
   "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
-  "user_priority": "P0 execution passed from user-reported original-prefill board loop. User now requests unified HIAI V2 and resident decode/draft; implement P5 early, without claiming P1/P2 accuracy or speedup.",
+  "user_priority": "User explicitly requests all new execution interfaces V1 after supplying V2 deprecation notice and V1 lifecycle constraints. Preserve original OMCs, one-shot V1 prefill then resident V1 decode+draft, historical recovery only for old requests.",
   "status_policy": {
     "allowed": [
       "pending",
@@ -275,19 +275,37 @@
       "first_device_attempt": "specs/resident-v2-first-load-failure.json",
       "failure_reporting_validation": "specs/resident-v2-failure-reporting-validation.json",
       "target_load_probe_document": "docs/target-resident-load-probe.md",
-      "target_load_probe_scope": "INIT_ORDER_OBSERVED_CLEANUP_WEIGHTS_FIRST_REPAIR_DEVICE_PENDING",
+      "target_load_probe_scope": "INIT_SUCCEEDED_TWICE_BOTH_EXPLICIT_WEIGHT_CLOSE_ORDERS_FAILED",
       "target_load_probe_validation": "specs/target-resident-load-probe-validation.json",
       "target_initialization_observation": "specs/resident-v2-target-init-observed.json",
       "target_lifecycle_policy": "init-before-weights-close-weights-first-v1",
-      "lifecycle_repair_validation": "specs/resident-v2-lifecycle-repair-validation.json"
+      "lifecycle_repair_validation": "specs/resident-v2-lifecycle-repair-validation.json",
+      "target_cleanup_observation": "specs/resident-v2-target-cleanup-observed.json",
+      "next_inference_experiment": "WITHDRAWN_SUPERSEDED_BY_USER_AUTHORIZED_ALL_V1_RESIDENT_LOOP"
+    },
+    "resident_v1": {
+      "status": "HOST_TESTED_ALL_V1_COMPLETE_DEVICE_LOOP_PENDING",
+      "user_authorization": "ALL_MODEL_MANAGER_INTERFACES_V1",
+      "target_lifecycle_policy": "legacy-v1-load-process-unload-v1",
+      "prefill": "ONE_V1_INSTANCE_LOAD_PROCESS_UNLOAD_BEFORE_RESIDENT_PAIR",
+      "decode_draft": "TWO_DISTINCT_V1_CLIENTS_ONE_LOAD_EACH_REPEATED_SYNCHRONOUS_PROCESS",
+      "threading": "ONE_EXECUTION_THREAD_NO_SHARED_MANAGER_ACROSS_THREADS",
+      "source_constraints": "USER_QUOTED_OFFICIAL_V1_DOCS:oneLoadPerInstance,max256InstancesPerApp,max63ModelsSync,max31ModelsAsync,asyncQueue512",
+      "async": "NOT_USED",
+      "model_compilation": "NOT_REQUESTED",
+      "fallback_to_v2": "FORBIDDEN",
+      "historical_runtime": "specs/resident-v2-target-cleanup-observed.json",
+      "next_device_action": "FULL_PREFILL_DECODE_DRAFT_V1_LOOP_AFTER_HOST_CHECKS_NO_LOAD_ONLY_PROBE",
+      "validation_manifest": "specs/resident-v1-host-validation.json",
+      "validation_document": "docs/resident-v1-validation.md"
     }
   },
   "next_action": {
     "phase": "P5",
-    "type": "implement_unified_v2_resident_session",
+    "type": "run_complete_all_v1_resident_board_loop",
     "entrypoint": "targets/cpro/scripts/run_board_serial_dflash.py",
     "command_document": "docs/current-status.md",
-    "note": "实现一个板端native session，使用两个file-v2 manager常驻原decode与当前内嵌draft。prefill退出后各加载一次，保持原80状态及特征提交。主机验证后交付用户实机验证，失败不静默回退旧API。"
+    "note": "全V1实现与主机回归已完成；用户按docs/current-status.md直接运行完整板端prefill→常驻decode/draft，不增加load-only试跑。保留原OMC、80状态和实验控制；核对token、每client一次Load及分阶段时延。"
   },
   "last_actual_execution": {
     "source": "USER_PROVIDED_RECOVERY_SUMMARY",
@@ -373,7 +391,7 @@
     "paired_speedup": "NOT_MEASURED"
   },
   "planned_parallelism": [
-    "P0 original-prefill baseline passed; P5 unified two-manager V2 residency host implementation then user device execution. No assistant board/HDC probes.",
+    "P0 original-prefill baseline passed; parallel V1 core/session, supervisor and host recovery implementation/tests. Then user runs complete V1 board loop; no assistant HDC probes or additional load-only trial.",
     "P1 reference preparation while P0 device runs",
     "P2 fixture preparation and P3 static mapping; do not accept accuracy with wrong features",
     "P4 host source/ABI and P5 resident runner after shared interfaces frozen",
@@ -559,8 +577,8 @@
         0.5,
         2
       ],
-      "next_action_type": "validate_weights_first_cleanup_then_resident_loop",
-      "next_action": "先运行target-resident-load-probe-v2确认DeinitWeights→DeInit关闭成功；Init→InitWeights已由v1实机观察。v2通过后直接按docs/current-status.md运行新resident8-v2请求，模型不重编，旧请求只恢复不重启。",
+      "next_action_type": "run_complete_all_v1_resident_board_loop",
+      "next_action": "全V1实现与主机回归已完成；用户按docs/current-status.md直接运行完整板端prefill→常驻decode/draft，不增加load-only试跑。保留原OMC、80状态和实验控制；核对token、每client一次Load及分阶段时延。",
       "pass_conditions": [
         "two-model residency feasibility measured",
         "native loop same tokens/state as baseline",
@@ -575,9 +593,10 @@
       ],
       "evidence": [
         "docs/resident-runtime-plan.md",
-        "docs/board-resident-validation.md"
+        "docs/board-resident-validation.md",
+        "specs/resident-v1-host-validation.json"
       ],
-      "last_error": "Init=0 and InitWeights=0; DeinitWeights after DeInit returned3 at CLEANUP_FAILED, 10568ms; no Run or draft load; locks released.",
+      "last_error": "Probe v2 Init=0 InitWeights=0; DeinitWeights before DeInit returned1 at CLEANUP_FAILED, 10435ms; no Run/draft, locks released. Both attempted cleanup orders failed; cause unresolved.",
       "numerical_acceptance_depends_on": [
         "P1",
         "P2"
@@ -717,6 +736,10 @@
       "date": "2026-10-30",
       "decision": "采用同一板端进程中的两个 HIAI V2 manager，取代此前两个worker/legacy draft方案；显式 --resident，默认及旧请求恢复保留。原三OMC不变，无S128前置编译。",
       "scope": "用户要求的运行生命周期改动；主机测试不构成实机常驻、精度或性能通过"
+    },
+    {
+      "date": "2026-10-30",
+      "decision": "用户随后提供V2弃用说明和V1线程/一次Load限制，明确将全部新执行改V1。prefill独立实例执行一次并释放，decode/draft独立常驻实例各Load一次，同一线程同步Process；主机检查后直接完整板端DFlash验证。此决定取代先前V2新运行方案，旧证据保留，不重编原OMC。"
     }
   ],
   "handoff_update_fields": [
@@ -756,7 +779,7 @@
     ],
     "disconnect_policy": "Started board request must continue without host/HDC connection; recover retrieves the same attempt, never relaunches it",
     "accuracy_gate": "DEFERRED_FOR_P0",
-    "residency_gate": "NOT_REQUIRED_FOR_P0_SEQUENTIAL_BOARD_CHILD_PROCESSES_ALLOWED",
+    "residency_gate": "CURRENT_P5_TARGET_REQUIRES_V1_DECODE_AND_DRAFT_RESIDENCY_P0_HISTORICAL_GATE_UNCHANGED",
     "original_prefill_required": true,
     "serial_prompt_is_submilestone_only": true,
     "prefill_experiment": {
@@ -766,7 +789,8 @@
       "status": "USER_REPORTED_EXECUTION_PASSED_NUMERICAL_CONTROLS_UNVALIDATED",
       "draft_capacity_policy": "EXPLICIT_FULL_HISTORY_AND_ANCHOR_CONTRACT_NO_AUTOMATIC_S128_REQUIREMENT"
     },
-    "physical_disconnect_validation": "NOT_SPECIFICALLY_TESTED"
+    "physical_disconnect_validation": "NOT_SPECIFICALLY_TESTED",
+    "runtime_api": "V1_ALL_NEW_PREFILL_DECODE_DRAFT_EXECUTION"
   },
   "legacy_code_baseline": "4ea1c105c66b5014c2c1260ad9f757a096c38028",
   "code_baseline_policy": "Use the Git commit containing this state file; native source SHA is recorded in current_known_evidence.",
@@ -774,6 +798,10 @@
     {
       "date": "2026-10-30",
       "decision": "用户明确要求推进常驻并询问统一draft HIAI V2；当前选择单进程两个file-v2实例，原三个OMC和权重不变。P5工程提前，准确性与性能门槛不取消。"
+    },
+    {
+      "date": "2026-10-30",
+      "decision": "用户随后提供V2弃用说明和V1线程/一次Load限制，明确将全部新执行改V1。prefill独立实例执行一次并释放，decode/draft独立常驻实例各Load一次，同一线程同步Process；主机检查后直接完整板端DFlash验证。此决定取代先前V2新运行方案，旧证据保留，不重编原OMC。"
     }
   ]
 }

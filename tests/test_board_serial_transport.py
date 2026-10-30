@@ -45,8 +45,12 @@ def prepared_request(tmp_path, monkeypatch):
     (root / 'manifest.json').write_text(json.dumps(manifest))
     monkeypatch.setattr(preparation, 'validate_prepared', lambda path: deepcopy(manifest))
     def config(value, paths):
-        assert paths['target_tool_record'] == {'bytes': 1048576, 'sha256': 'b' * 64}
-        assert paths['draft_runner_record']['sha256']
+        if value.get('execution_mode') == 'resident-v1':
+            assert 'target_tool_record' not in paths
+            assert 'draft_runner_record' not in paths
+        else:
+            assert paths['target_tool_record'] == {'bytes': 1048576, 'sha256': 'b' * 64}
+            assert paths['draft_runner_record']['sha256']
         return b'QWEN35_BOARD_SERIAL\t1\n'
     monkeypatch.setattr(preparation, 'make_config', config)
     monkeypatch.setenv('SN', 'serial0'); monkeypatch.setenv('BIP', '127.0.0.1:8790')
@@ -72,7 +76,7 @@ def prepared_request(tmp_path, monkeypatch):
             if self.fail_stage == label:
                 raise RuntimeError('deliberate HDC failure at ' + label)
             if label == 'whole-loop-device-preflight':
-                return 0, 'firmware-v\nTOOL_BYTES=1048576'
+                return 0, 'firmware-v' + ('\nTOOL_BYTES=1048576' if 'TOOL_BYTES' in command else '')
             if label == 'acquire-global-model-io-lock':
                 return 0, 'ACQUIRED'
             if label == 'whole-loop-board-disk':
@@ -554,19 +558,40 @@ def test_compact_known_failure_retains_small_error_and_requires_all_waited_child
 
 
 @pytest.mark.parametrize('failed,fault,resident', [(False, None, False), (True, None, False),
-    (True, 'active-child', False), (True, None, True), (True, 'malformed-error', False)])
+    (True, 'active-child', False), (True, None, True), (True, 'malformed-error', False), (True, None, 'v1')])
 def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files(prepared_request, tmp_path, monkeypatch, capsys, failed, fault, resident):
     root, manifest, FakeHdc, _ = prepared_request; manifest['dump'] = False
     if resident:
         _enable_prefill_request(root, manifest, tmp_path)
-        manifest.update(execution_mode='resident-v2', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
-            resident_abi=_write(root / 'resident-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n'))
+    if resident == 'v1':
+        manifest.update(execution_mode='resident-v1', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+            resident_abi=_write(root / 'resident-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n'),
+            prefill_abi=_write(root / 'prefill-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n'))
         old_build = transport._build_payloads
         monkeypatch.setattr(transport, '_build_payloads', lambda out, timeout, **kwargs: old_build(out, timeout))
     (root / 'manifest.json').write_text(json.dumps(manifest))
     launched = transport.execute_board_serial(root, tmp_path / 'execution', detach=True)
+    if resident is True:
+        # A retained historical V2 journal is constructed as test evidence;
+        # new execution of this mode is now forbidden before transport setup.
+        manifest.update(execution_mode='resident-v2', target_lifecycle_policy=preparation.V2_TARGET_LIFECYCLE_POLICY,
+            resident_abi=_write(root / 'resident-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n'))
+        (root / 'manifest.json').write_text(json.dumps(manifest))
+        checkpoint = tmp_path / 'execution/checkpoint.json'
+        old = json.loads(checkpoint.read_text())
+        old.update(execution_mode='resident-v2', target_lifecycle_policy=preparation.V2_TARGET_LIFECYCLE_POLICY,
+            prepared_manifest=transport._json(root / 'manifest.json')[1])
+        checkpoint.write_text(json.dumps(old))
     loop, progress = _compact_reports(manifest, config_sha=launched['config_sha256'], failed=failed)
-    if resident:
+    if resident == 'v1':
+        loop, progress = _v1_compact(manifest)
+        loop.update(status='FAILED', config_sha256=launched['config_sha256'], stage='resident-close', error='V1 UnLoadModel returned1')
+        life = loop['resident_lifecycle']
+        life.update(session_id=hashlib.sha256((loop['config_sha256'] + ':1000').encode()).hexdigest(),
+            stage='SESSION_CLEANUP', status='FAILED', poisoned=True, cleanup_error=loop['error'])
+        life['target_v1_lifecycle'].update(unload_status=1, failure_stage='UNLOAD', cleanup_error=loop['error'])
+        progress.update(status='FAILED', resident_call_status='FAILED_CLOSED')
+    elif resident:
         loop, progress = _resident_compact(manifest)
         loop.update(status='FAILED', config_sha256=launched['config_sha256'], stage='resident-load',
             error='INIT_WEIGHTS_AFTER_INIT: InitWeights failed: 23', generated_tokens=[], full_prefix=manifest['prompt_token_ids'],
@@ -618,15 +643,20 @@ def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files
     assert result['evidence_scope'] == 'TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY'
     assert result['state_continuity'] == 'NOT_REPLAYED_COMPACT_RESULT' and result['dump'] is False
     if not fault:
-        assert result['acceptance']['rate'] == (None if failed else 0)
+        assert result['acceptance']['rate'] == (None if failed and resident != 'v1' else 0)
         assert result['phase_latency']['prompt_ingest']['calls'] == (1 if failed else 8)
         assert 'Recover this exact' not in result['next']
         assert result['counts'] == loop['counts'] and result['generated_token_ids'] == loop['generated_tokens']
         if failed:
-            expected_stage = 'resident-load' if resident else 'target-child'
+            expected_stage = 'resident-close' if resident == 'v1' else 'resident-load' if resident else 'target-child'
             assert result['stage'] == 'complete' and result['execution_failure_stage'] == expected_stage
             assert result['error'] == result['execution_error'] == loop['error']
-            if resident:
+            if resident == 'v1':
+                assert result['resident_failure_stage'] == 'SESSION_CLEANUP'
+                assert result['counts']['target_native_calls'] == 8 and result['counts']['draft_native_calls'] == 7
+                assert result['generated_token_ids'] == loop['generated_tokens']
+                assert result['completed_native_pids'] == [1000]
+            elif resident:
                 assert result['resident_failure_stage'] == 'TARGET_LOAD/INIT_WEIGHTS_AFTER_INIT'
                 assert result['counts'] == dict(target_native_calls=0, draft_native_calls=0, prefill_native_calls=1,
                     considered=0, accepted=0, corrections=0, bonuses=0)
@@ -740,8 +770,11 @@ def test_prefill_cache_miss_uses_strict_prefill_compiler_record(prepared_request
 
 def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_relaunches(prepared_request, tmp_path, monkeypatch):
     root, manifest, FakeHdc, _ = prepared_request
+    _enable_prefill_request(root, manifest, tmp_path)
     abi = _write(root / 'resident-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n')
-    manifest.update(execution_mode='resident-v2', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY, resident_abi=abi)
+    prefill_abi = _write(root / 'prefill-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\nprefill_input\t0\targ1_1\tINT8\t1\t0\t1,64,2048\t131072\n')
+    manifest.update(execution_mode='resident-v1', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+        resident_abi=abi, prefill_abi=prefill_abi)
     (root / 'manifest.json').write_text(json.dumps(manifest))
     old = transport._build_payloads; selected = []
     def build(out, timeout, *, resident=False):
@@ -751,12 +784,16 @@ def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_rela
     old_config = preparation.make_config
     def config(value, paths):
         assert paths['resident_abi'].endswith('/resident-abi.tsv')
+        assert paths['prefill_abi'].endswith('/prefill-abi.tsv')
         return old_config(value, paths)
     monkeypatch.setattr(preparation, 'make_config', config)
     started = transport.execute_board_serial(root, tmp_path / 'execution', detach=True)
     assert started['status'] == 'BOARD_SERIAL_DFLASH_STARTED', started.get('error')
-    assert selected == [True] and started['execution_mode'] == 'resident-v2'
+    assert selected == ['resident-v1'] and started['execution_mode'] == 'resident-v1'
     assert any(local == abi['path'] and remote.endswith('/resident-abi.tsv') for local, remote in FakeHdc.instances[0].sends)
+    assert any(local == prefill_abi['path'] and remote.endswith('/prefill-abi.tsv') for local, remote in FakeHdc.instances[0].sends)
+    assert not any('TOOL_BYTES' in command or 'sha256sum /data/local/tmp/tools/tool' in command
+        for _, command in FakeHdc.instances[0].calls)
     monkeypatch.setattr(transport, '_retrieve', lambda hdc, out, state, value: state.update(completed_native_pids=[12346]))
     recovered = transport.recover_board_serial(tmp_path / 'execution', tmp_path / 'recovered')
     assert recovered['status'] == 'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED', recovered.get('error')
@@ -830,9 +867,9 @@ def test_resident_compact_distinguishes_calls_loads_and_real_prefill_child(prepa
 def test_resident_recovery_policies_cannot_be_silently_substituted(prepared_request, tmp_path, prepared_new, observed_new):
     root, manifest, _, _ = prepared_request; _enable_prefill_request(root, manifest, tmp_path)
     manifest.update(dump=False, execution_mode='resident-v2', resident_abi=dict(sha256='e' * 64))
-    if prepared_new: manifest['target_lifecycle_policy'] = preparation.TARGET_LIFECYCLE_POLICY
+    if prepared_new: manifest['target_lifecycle_policy'] = preparation.V2_TARGET_LIFECYCLE_POLICY
     observed = deepcopy(manifest)
-    if observed_new: observed['target_lifecycle_policy'] = preparation.TARGET_LIFECYCLE_POLICY
+    if observed_new: observed['target_lifecycle_policy'] = preparation.V2_TARGET_LIFECYCLE_POLICY
     else: observed.pop('target_lifecycle_policy', None)
     loop, progress = _resident_compact(observed); out = tmp_path / 'policy-evidence'; _compact_files(out, loop, progress)
     if prepared_new == observed_new:
@@ -840,3 +877,181 @@ def test_resident_recovery_policies_cannot_be_silently_substituted(prepared_requ
     else:
         with pytest.raises(ValueError, match='policy|lifecycle'):
             transport.validate_retrieved_loop(manifest, out, _expected_evidence_kind='host-fake-hiai')
+
+
+def _v1_life(name, processes, *, attempted=True):
+    return dict(model_load_api='legacy-buffer', lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+        model_name='qwen35_resident_' + name,
+        runtime_tensor_names='NOT_QUERIED_V1_SAVED_NAMED_ABI_ONLY',
+        runtime_dtypes='DECLARED_BOUND_ABI_NOT_QUERIED',
+        external_weight_resolution='MODEL_PATH_PARENT_SIDECARS_UNVALIDATED_ON_DEVICE',
+        client_init_attempted=attempted, client_initialized=attempted, load_attempted=attempted,
+        loaded=attempted, unload_called=attempted, closed=attempted,
+        client_init_status=0 if attempted else None, load_status=0 if attempted else None,
+        unload_status=0 if attempted else None, process_attempts=processes,
+        successful_processes=processes, failure_stage='', cleanup_error='')
+
+
+def _v1_compact(manifest):
+    loop, progress = _resident_compact(manifest)
+    loop.update(execution_mode='resident-v1', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+        prefill_abi_sha256=manifest['prefill_abi']['sha256'], prefill_lifecycle=_v1_life('prefill', 1))
+    life = loop['resident_lifecycle']; life.pop('target_lifecycle')
+    life.update(model_load_api='legacy-buffer', target_v1_lifecycle=_v1_life('target', 8),
+        draft_v1_lifecycle=_v1_life('draft', 7))
+    for kind in ('target', 'draft'):
+        life[kind + '_model_name_scope'] = 'V1_MODEL_DESCRIPTION_LABEL_NOT_RUNTIME_TENSOR_NAME'
+    child = dict(launched_child_count=0, completed_child_count=0, active_child_count=0,
+        last_child_pid=None, last_child_exitcode=None, child_status='NONE', children=[])
+    loop['child_lifecycle'] = child
+    progress.update({key: value for key, value in child.items() if key != 'children'})
+    phases = loop['phase_latency']
+    for kind in ('prefill', 'prompt_ingest'):
+        phases[kind]['timing_scope'] = 'PREFILL_V1_LOAD_PROCESS_UNLOAD_WALL'
+    for kind in ('decode', 'draft'):
+        phases[kind]['native_api'] = 'Process'
+    loop['supervisor_timing'].update(prefill_child_processes_timed=0, prefill_child_process_wall_ms=0,
+        prefill_model_load_ms=1, prefill_process_ms=8, prefill_model_unload_ms=1, prefill_v1_total_ms=10)
+    return loop, progress
+
+
+@pytest.mark.parametrize('damage', [None, 'v2-api', 'v2-policy', 'fake-child', 'wrong-prefill-abi',
+    'missing-prefill', 'bool-status', 'process-count', 'unclosed-prefill'])
+def test_all_v1_compact_is_explicit_without_v2_weight_or_child_evidence(prepared_request, tmp_path, damage):
+    root, manifest, _, _ = prepared_request; _enable_prefill_request(root, manifest, tmp_path)
+    manifest.update(dump=False, execution_mode='resident-v1', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+        resident_abi=dict(sha256='e' * 64), prefill_abi=dict(sha256='f' * 64))
+    loop, progress = _v1_compact(manifest)
+    life = loop['resident_lifecycle']
+    if damage == 'v2-api': life['model_load_api'] = 'file-v2'
+    elif damage == 'v2-policy': loop['target_lifecycle_policy'] = preparation.V2_TARGET_LIFECYCLE_POLICY
+    elif damage == 'fake-child': loop['child_lifecycle']['children'] = [dict(pid=1001, exitcode=0)]
+    elif damage == 'wrong-prefill-abi': loop['prefill_abi_sha256'] = '0' * 64
+    elif damage == 'missing-prefill': loop.pop('prefill_lifecycle')
+    elif damage == 'bool-status': life['target_v1_lifecycle']['load_status'] = False
+    elif damage == 'process-count': life['target_v1_lifecycle']['successful_processes'] = 7
+    elif damage == 'unclosed-prefill': loop['prefill_lifecycle']['closed'] = False
+    out = tmp_path / 'v1-evidence'; _compact_files(out, loop, progress)
+    if damage:
+        with pytest.raises(ValueError):
+            transport.validate_retrieved_loop(manifest, out, _expected_evidence_kind='host-fake-hiai')
+    else:
+        assert transport.validate_retrieved_loop(manifest, out, _expected_evidence_kind='host-fake-hiai') == loop
+        assert not loop['child_lifecycle']['children']
+        assert 'weights_init_attempted' not in life['target_v1_lifecycle']
+
+
+def test_old_resident_preparation_cannot_start_new_execution(prepared_request, tmp_path):
+    root, manifest, FakeHdc, _ = prepared_request
+    manifest.update(execution_mode='resident-v2', target_lifecycle_policy=preparation.V2_TARGET_LIFECYCLE_POLICY)
+    (root / 'manifest.json').write_text(json.dumps(manifest))
+    result = transport.execute_board_serial(root, tmp_path / 'must-not-launch', detach=True)
+    assert result['status'] == 'FAILED' and 'recover-only' in result['error']
+    assert not FakeHdc.instances
+
+
+@pytest.mark.parametrize('after_load', [False, True])
+def test_v1_prefill_init_or_descriptor_failure_before_resident_load_is_recoverable(prepared_request, tmp_path, after_load):
+    root, manifest, _, _ = prepared_request; _enable_prefill_request(root, manifest, tmp_path)
+    manifest.update(dump=False, execution_mode='resident-v1', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+        resident_abi=dict(sha256='e' * 64), prefill_abi=dict(sha256='f' * 64))
+    loop, progress = _v1_compact(manifest)
+    error = 'V1 descriptor shape mismatch after Load0' if after_load else 'V1 client Init returned7'
+    loop.update(status='FAILED', stage='prefill-load', error=error, generated_tokens=[], full_prefix=[], completed_rounds=0)
+    loop['counts'] = {key: 0 for key in loop['counts']}
+    life = loop['resident_lifecycle']
+    for key, value in list(life.items()):
+        if type(value) is int: life[key] = 0 if key != 'process_id' else 1000
+    life.update(stage='NOT_LOADED', status='CLOSED', target_v1_lifecycle=_v1_life('target', 0, attempted=False),
+        draft_v1_lifecycle=_v1_life('draft', 0, attempted=False))
+    prefill = _v1_life('prefill', 0, attempted=after_load)
+    if after_load:
+        prefill['failure_stage'] = 'LEGACY_TENSOR_DESCRIPTORS'
+    else:
+        prefill.update(client_init_attempted=True, client_init_status=7, failure_stage='CLIENT_INIT', closed=True)
+    loop['prefill_lifecycle'] = prefill
+    loop['acceptance'] = dict(accepted=0, considered=0, rate=None)
+    for kind in ('prompt_ingest', 'prefill', 'decode', 'draft'):
+        loop['phase_latency'][kind].update(calls=0, total_ms=10 if kind in {'prompt_ingest', 'prefill'} else 0, mean_ms=None)
+    loop['supervisor_timing'].update({key: 0 for key in loop['supervisor_timing']})
+    loop['supervisor_timing'].update(scope='MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE',
+        prefill_model_load_ms=10, prefill_v1_total_ms=10, total_wall_ms=20)
+    progress.update(status='FAILED', generated_tokens=[], counts=loop['counts'], resident_call_status='FAILED_CLOSED',
+        supervisor_timing=loop['supervisor_timing'])
+    out = tmp_path / 'failed-before-session'; _compact_files(out, loop, progress)
+    checked = transport.validate_retrieved_tokens(manifest, out, _expected_evidence_kind='host-fake-hiai', _remote_exitcode=1)
+    assert checked['error'] == error
+    assert checked['counts']['target_native_calls'] == 0
+    assert checked['resident_lifecycle']['target_load_attempts'] == 0
+    assert checked['child_lifecycle']['children'] == []
+
+
+@pytest.mark.parametrize('kind', ['target', 'draft'])
+def test_failed_v1_constructor_preserves_successful_sdk_load_before_shape_failure(prepared_request, tmp_path, kind):
+    root, manifest, _, _ = prepared_request; _enable_prefill_request(root, manifest, tmp_path)
+    manifest.update(dump=False, execution_mode='resident-v1', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+        resident_abi=dict(sha256='e' * 64), prefill_abi=dict(sha256='f' * 64))
+    loop, _ = _v1_compact(manifest); life = loop['resident_lifecycle']
+    loop['counts'].update(target_native_calls=0, draft_native_calls=0, considered=0, accepted=0, corrections=0, bonuses=0)
+    for model in ('target', 'draft'):
+        constructed = kind == 'draft' and model == 'target'
+        attempted = constructed or model == kind
+        life.update({model + '_load_attempts': int(attempted), model + '_loads': int(constructed),
+            model + '_close_calls': int(constructed), model + '_runs': 0, model + '_run_attempts': 0,
+            model + '_v1_lifecycle': _v1_life(model, 0, attempted=attempted)})
+    life.update(poisoned=True, stage=kind.upper() + '_LOAD/LEGACY_TENSOR_DESCRIPTORS', status='FAILED')
+    observed = life[kind + '_v1_lifecycle']; observed['failure_stage'] = 'LEGACY_TENSOR_DESCRIPTORS'
+    checked = transport._resident_lifecycle(loop, manifest, success=False)
+    assert checked[kind + '_loads'] == 0 and observed['loaded'] is True
+    assert checked[kind + '_close_calls'] == 0 and observed['unload_called'] is True
+    with pytest.raises(ValueError):
+        transport._resident_lifecycle(loop, manifest, success=True)
+
+
+def test_build_selects_v1_supervisor_and_does_not_stage_unused_v2_runner(tmp_path, monkeypatch):
+    runner = tmp_path / 'native/build/qwen35_dflash_hiai'
+    _write(runner, b'old-runner-only-build-anchor')
+    v1 = runner.with_name('qwen35_board_resident_v1'); _write(v1, b'new-all-v1-runtime')
+    monkeypatch.setattr(transport, '_build_runner', lambda *args: runner)
+    monkeypatch.setattr(transport, 'dynamic_info', lambda path: {})
+    monkeypatch.setenv('BOARD_HIAI_LIB_DIR', '/system/lib64')
+    uploads, _, _ = transport._build_payloads(tmp_path, 10, resident='resident-v1')
+    assert [(row['local'], row['remote']) for row in uploads] == [(str(v1), 'board-serial')]
+    assert uploads[0]['sha256'] == hashlib.sha256(v1.read_bytes()).hexdigest()
+
+
+def test_failed_v1_io_validation_preserves_sdk_process_success_without_promoting_verified_call():
+    observed = _v1_life('target', 1)
+    observed.update(failure_stage='OUTPUT_BUFFER_CHECK', cleanup_error='')
+    assert transport._legacy_v1_lifecycle(observed, name='qwen35_resident_target', processes=0, success=False)['successful_processes'] == 1
+    with pytest.raises(ValueError):
+        transport._legacy_v1_lifecycle(observed, name='qwen35_resident_target', processes=0, success=True)
+    observed['successful_processes'] = 2
+    with pytest.raises(ValueError):
+        transport._legacy_v1_lifecycle(observed, name='qwen35_resident_target', processes=0, success=False)
+
+
+@pytest.mark.parametrize('actual,accepted', [([1, 64, 2048], True), ([1, 1, 64, 2048], True),
+    ([64, 2048, 1, 1], False), ([1, 2048, 64], False)])
+def test_v1_actual_shape_is_checked_without_sdk_tensor_name_claims(actual, accepted):
+    row = dict(index=0, shape=actual, raw_format=17, bytes=131072)
+    receipt = dict(runtime_tensor_names='NOT_QUERIED_V1_SAVED_NAMED_ABI_ONLY',
+        runtime_dtypes='DECLARED_BOUND_ABI_NOT_QUERIED', runtime_abi_observed_on_load=dict(inputs=[row], outputs=[row]))
+    declaration = dict(inputs=[dict(shape=[1, 64, 2048], bytes=131072)], outputs=[dict(shape=[1, 64, 2048], bytes=131072)])
+    if accepted:
+        transport._v1_observed_abi(receipt, declaration)
+    else:
+        with pytest.raises(ValueError, match='shape/extent'):
+            transport._v1_observed_abi(receipt, declaration)
+
+
+def test_v1_target_and_prefill_format_must_match_bound_raw_enum():
+    row = dict(index=0, shape=[1, 2, 3, 4], raw_format=17, bytes=48)
+    receipt = dict(runtime_tensor_names='NOT_QUERIED_V1_SAVED_NAMED_ABI_ONLY',
+        runtime_dtypes='DECLARED_BOUND_ABI_NOT_QUERIED', runtime_abi_observed_on_load=dict(inputs=[row], outputs=[row]))
+    desc = dict(shape=[1, 2, 3, 4], bytes=48, raw_format=17)
+    declaration = dict(inputs=[desc], outputs=[desc])
+    transport._v1_observed_abi(receipt, declaration)
+    declaration['inputs'] = [dict(desc, raw_format=9)]
+    with pytest.raises(ValueError, match='shape/extent'):
+        transport._v1_observed_abi(receipt, declaration)

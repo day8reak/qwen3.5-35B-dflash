@@ -1,12 +1,14 @@
-# 统一 V2 常驻入口：主机验证与首次加载失败
+# 历史 V2 常驻入口：主机验证与设备失败
 
-更新：2026-10-30。实现入口为 `run_board_serial_dflash.py --resident`，二进制为 `qwen35_board_resident`。完整参数见 [当前执行命令](current-status.md)，生命周期与计时定义见 [常驻方案](resident-runtime-plan.md)。原 prefill P0 成功保存在 [独立记录](board-prefill-first-completion.md)，不能用它证明本次常驻路径已在设备运行。
+**当前主线已按用户要求迁移V1；本页保留V2历史证据，不作为新运行指令。** 见[V1验证](resident-v1-validation.md)及[当前命令](current-status.md)。
 
-## 最新：初始化通过，关闭顺序待验
+更新：2026-10-30。历史实现入口为 `run_board_serial_dflash.py --resident`，二进制为 `qwen35_board_resident`。完整参数见 [当前执行命令](current-status.md)，生命周期与计时定义见 [常驻方案](resident-runtime-plan.md)。原 prefill P0 成功保存在 [独立记录](board-prefill-first-completion.md)，不能用它证明本次常驻路径已在设备运行。
+
+## 最新：初始化通过，两种关闭顺序均失败
 
 用户的 `target-resident-load-probe-v1` 已观察到 target `Init=0`、`InitWeights=0`。旧关闭顺序先DeInit、后DeinitWeights，后者返回3，因此报告 `CLEANUP_FAILED`；10568ms包含加载和关闭，没有Run／draft调用。任务已退出并释放锁，见[本次设备记录](../specs/resident-v2-target-init-observed.json)。
 
-当前修复把正式target和独立probe统一为 `Init → InitWeights`，关闭为 `DeinitWeights → DeInit`。即使权重清理失败也继续关闭manager，分别保留错误。新resident清单及配置绑定 `target_lifecycle_policy=init-before-weights-close-weights-first-v1`；旧清单回收保持旧策略。主机验证见[当前生命周期修复记录](../specs/resident-v2-lifecycle-repair-validation.json)。先运行[probe v2](target-resident-load-probe.md)，通过后可直接按当前命令运行常驻，关闭／draftV2／双模型驻留尚需设备验证。
+当前修复把正式target和独立probe统一为 `Init → InitWeights`，关闭为 `DeinitWeights → DeInit`。即使权重清理失败也继续关闭manager，分别保留错误。新resident清单及配置绑定 `target_lifecycle_policy=init-before-weights-close-weights-first-v1`；旧清单回收保持旧策略。主机验证见[当前生命周期修复记录](../specs/resident-v2-lifecycle-repair-validation.json)。用户v2已经实测Init／InitWeights均0，DeinitWeights返回1，之后仍DeInit，10435ms、零Run、锁已释放，见[新设备记录](../specs/resident-v2-target-cleanup-observed.json)。随后用户要求全部接口改V1，此V2推理实验建议已撤回；关闭错误仍保留。
 
 ## 首次设备结果与诊断修复
 
@@ -46,8 +48,8 @@
 
 - 本机所声明 CPro profile manifest 缺失，没有本地实际 OHOS／DDK 链接结果；未修改共享环境。用户已经构建并运行首个版本，但新增诊断修复尚未取得设备结果。
 - 没有执行设备／HDC 探测，遵守用户“此处连不上，不再检查”的要求。
-- 原 external-weight target 的 Init-before-InitWeights已有一次设备成功观察；当前权重先关闭的修复、embedded draft 的 V2 初始化、两个manager同时驻留及内存余量尚未验证。
+- 原 external-weight target 的 Init-before-InitWeights已有两次设备成功观察；显式DeinitWeights两种顺序分别失败3和1，原因尚未确定。embedded draft 的 V2 初始化、两个manager同时驻留及内存余量尚未验证。
 - 新版多轮 token／state 是否与旧成功运行一致、实际耗时改善、重复请求内存稳定和物理断连尚未验收。FakeHIAI 的运行时长不作性能数据。
 - P1/P2 数值精度及有效接受率未完成；既有完整请求接受 0／7，新运行方式不能自动提升精度。
 
-下一动作是[独立 target 加载／关闭实验v2](target-resident-load-probe.md)，复用缓存且不调用Run。初始化保持已观察到的顺序，只验证权重先关闭的修复；通过后可直接运行已同步修复的完整常驻路线，并使用新目录。
+后续主线见[V1迁移](current-status.md)，不再启动新的V2请求。历史产品代码76a5651的关闭失败仍保留全部已完成调用及token，总状态仍失败。当前主机回归专门覆盖完整生成后的关闭失败，见[验证记录](../specs/resident-v2-close-failure-retention-validation.json)。

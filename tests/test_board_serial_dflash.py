@@ -153,7 +153,7 @@ def test_wire_config_preserves_explicit_nonordinal_state_mapping(tmp_path):
     assert b'resident_abi\t/board/raw-abi.tsv\t' in job.make_config(resident, paths | {'resident_abi': '/board/raw-abi.tsv'})
     assert b'target_lifecycle_policy\t' not in job.make_config(resident, paths | {'resident_abi': '/board/raw-abi.tsv'})
     assert b'target_lifecycle_policy\tinit-before-weights-close-weights-first-v1\n' in job.make_config(
-        resident | {'target_lifecycle_policy': job.TARGET_LIFECYCLE_POLICY}, paths | {'resident_abi': '/board/raw-abi.tsv'})
+        resident | {'target_lifecycle_policy': job.V2_TARGET_LIFECYCLE_POLICY}, paths | {'resident_abi': '/board/raw-abi.tsv'})
     paths['target_model'] = '/board/evil\nstate\tRefData_0'
     with pytest.raises(ValueError, match='TSV'):
         job.make_config(manifest, paths)
@@ -206,6 +206,57 @@ def test_resident_descriptor_abi_uses_actual_raw_enums_names_and_shapes(tmp_path
     assert not list(tmp_path.glob('*.omc'))
 
 
+def test_prefill_v1_abi_retains_v2_descriptor_provenance_without_invented_sdk_names(tmp_path):
+    binding, probe, _ = _native_descriptor_binding(tmp_path)
+    result = job._resident_abi(binding, probe, tmp_path / 'prefill-abi.tsv', prefix='prefill')
+    wire = Path(result['path']).read_text()
+    assert 'prefill_input\t42\tinputs42\tFLOAT16\t8\t13\t1,43\t86\n' in wire
+    assert 'target_input\t' not in wire
+    assert result['descriptor_provenance'] == 'HISTORICAL_FILE_V2_NAMED_MODEL_IO_PROBE'
+    assert result['runtime_validation'] == 'V1_SLOT_SHAPE_AND_BYTE_EXTENT_REQUIRED_NO_SDK_TENSOR_NAME_CLAIM'
+
+
+def test_new_resident_preparation_pins_both_v1_abis_and_keeps_source_models_read_only(sources, monkeypatch):
+    options, _, model = sources
+    from qwen35_moe_dflash import board_prefill_binding
+    before = job._current(model['path'])[1]
+    monkeypatch.setattr(board_prefill_binding, 'prepare_prefill_binding', lambda *args: dict(model=model,
+        base_plan=dict(runtime_probe=str(options['runtime_probe'])), source_bindings=[],
+        control_recipe=board_prefill_binding.RECIPE))
+    selected = []
+    def abi(binding, probe, output, *, prefix='target'):
+        selected.append(prefix)
+        record = write(Path(output), ('QWEN35_RESIDENT_ABI\t1\n' + prefix + '_input\tfixture\n').encode())
+        return dict(record, inputs=[{}] * 89, outputs=[{}] * 82,
+            descriptor_provenance='HISTORICAL_FILE_V2_NAMED_MODEL_IO_PROBE')
+    monkeypatch.setattr(job, '_resident_abi', abi)
+    manifest = job.prepare_board_serial(**options, resident=True, prefill_feedback=options['state_lineage'])
+    assert selected == ['target', 'prefill']
+    assert manifest['execution_mode'] == 'resident-v1'
+    assert manifest['target_lifecycle_policy'] == 'legacy-v1-load-process-unload-v1'
+    assert manifest['prefill_abi']['path'].endswith('/prefill-abi.tsv')
+    assert job._current(model['path'])[1] == before
+    assert not list(options['output'].rglob('*.omc'))
+
+
+def test_v1_wire_uses_native_abi_and_no_v2_tool_or_legacy_child_runner(tmp_path):
+    record = dict(bytes=1, sha256='a' * 64)
+    manifest = dict(target_model=record, draft=dict(model_source=record, abi=record),
+        tables=dict(weight=record, scale=record), resident_abi=record, prefill_abi=record,
+        execution_mode='resident-v1', target_lifecycle_policy=job.TARGET_LIFECYCLE_POLICY,
+        prompt_token_ids=[1, 2], max_new_tokens=8, max_proposals_per_round=2, minimum_draft_rounds=2,
+        timeout_seconds=120, target_binding=dict(base_plan=dict(runtime_version='v', ddk_id='d', firmware_id='f',
+            inputs=[], outputs=[]), state_mapping=[]))
+    paths = {key: '/board/' + key for key in ('target_model', 'draft_model', 'draft_abi', 'weight_table',
+        'scale_table', 'resident_abi', 'prefill_abi')}
+    paths.update(target_library_path='/board/lib', draft_library_path='/board/lib')
+    wire = job.make_config(manifest, paths)
+    assert b'execution_mode\tresident-v1\n' in wire
+    assert b'target_lifecycle_policy\tlegacy-v1-load-process-unload-v1\n' in wire
+    assert b'prefill_abi\t/board/prefill_abi\t' in wire
+    assert b'target_tool\t' not in wire and b'draft_runner\t' not in wire
+
+
 @pytest.mark.parametrize('damage', ['enum', 'shape', 'name', 'changed-source'])
 def test_resident_descriptor_abi_refuses_unbound_or_guessed_descriptor_fields(tmp_path, damage):
     binding, probe, native = _native_descriptor_binding(tmp_path)
@@ -249,10 +300,14 @@ def test_cli_pins_dump_mode_for_new_attempts(tmp_path, monkeypatch, capsys, flag
             phase_latency={'prompt_ingest': {'calls': 8, 'total_ms': 80, 'mean_ms': 10}},
             supervisor_timing={'total_wall_ms': 100}, internal_payload={'not_a_summary': True})
     monkeypatch.setattr(job, 'run_board_serial_dflash', run)
-    argv = ['--output', str(tmp_path / 'new')]
+    argv = ['--output', str(tmp_path / 'new'), '--resident']
     for name in ('decode-job', 'runtime-probe', 'state-lineage', 'source-torchair-pb2',
                  'draft-bundle', 'weight-table', 'scale-table', 'prompt-input-ids'):
         argv += ['--' + name, str(tmp_path / name)]
+    with pytest.raises(SystemExit):
+        cli.main([value for value in argv if value != '--resident'] + flag)
+    assert not calls
+    assert 'all-V1' in capsys.readouterr().err
     assert cli.main(argv + flag) == 0
     assert len(calls) == 1 and calls[0]['dump'] is expected
     summary = json.loads(capsys.readouterr().out)

@@ -136,6 +136,29 @@ class HiaiRuntimeError final : public std::runtime_error {
   std::string stage_;
 };
 
+// V1 gives ordered dimensions/format, not SDK names or dtype introspection.
+// Flags are historical; closed means shutdown was attempted exactly once.
+struct HiaiLegacyRuntimeTensor {
+  std::size_t index=0;
+  std::vector<std::int64_t> shape;
+  std::int64_t raw_format=0;
+  std::size_t bytes=0;
+};
+struct HiaiLegacyLifecycle {
+  std::string model_load_api = "legacy-buffer";
+  std::string lifecycle_policy = "legacy-v1-load-process-unload-v1";
+  std::string model_name;
+  std::string runtime_tensor_names = "NOT_QUERIED_V1_SAVED_NAMED_ABI_ONLY";
+  std::string runtime_dtypes = "DECLARED_BOUND_ABI_NOT_QUERIED";
+  std::string external_weight_resolution = "MODEL_PATH_PARENT_SIDECARS_UNVALIDATED_ON_DEVICE";
+  bool client_init_attempted=false, client_initialized=false, load_attempted=false, loaded=false;
+  bool unload_called=false, closed=false;
+  std::optional<std::int64_t> client_init_status, load_status, unload_status;
+  std::uint64_t process_attempts=0, successful_processes=0;
+  std::string failure_stage, cleanup_error;
+  std::vector<HiaiLegacyRuntimeTensor> observed_inputs, observed_outputs;
+};
+
 // One immutable graph, synchronous execution, caller-owned ordered tensor flow.
 // The caller enforces the stateful target, standalone draft or fused-op ABI.
 class HiaiStatefulExecutor final {
@@ -149,17 +172,20 @@ class HiaiStatefulExecutor final {
                       int diagnostic_output_fill_byte = -1,
                       bool standalone_draft = false,
                       const std::string& model_load_api = "legacy-buffer",
-                      const std::string& resident_model_name = "");
+                      const std::string& resident_model_name = "",
+                      HiaiLegacyLifecycle* constructor_failure_snapshot = nullptr,
+                      const std::vector<HiaiTensorStorage>& disjoint_from = {});
   ~HiaiStatefulExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
   void Execute();
   std::vector<std::uint8_t> CopyOutput(std::size_t index) const;
-  // Explicit file-v2 shutdown, idempotent even if DeInit reports an exception.
+  // Explicit API-specific shutdown; idempotent even on SDK failure.
   // Destructor cleanup is best-effort and never retries this call.
   void Close();
   const std::string& runtime_version() const noexcept;
   const HiaiIoDiagnostic& io_diagnostic() const noexcept;
   const std::string& runtime_stage() const noexcept;
+  const HiaiLegacyLifecycle& legacy_lifecycle() const noexcept;
   std::vector<HiaiTensorStorage> tensor_storage() const;
  private:
   struct Impl;
@@ -174,6 +200,30 @@ struct HiaiBoundRuntimeTensor {
   std::string dtype;
   std::size_t bytes = 0;
 };
+// Exact89/82 original target ABI, V1 synchronous Load/Process/UnLoadModel.
+// A separate instance can serve static64 prefill once. Sidecar loading from the
+// preserved main-model path is an explicit, not device-validated assumption.
+class HiaiOriginalTargetV1Executor final {
+ public:
+  HiaiOriginalTargetV1Executor(const std::filesystem::path& model,
+      const std::filesystem::path& weight_directory, const std::string& expected_runtime_version,
+      const std::vector<HiaiBoundRuntimeTensor>& inputs,
+      const std::vector<HiaiBoundRuntimeTensor>& outputs, std::uint32_t timeout_ms=300000,
+      const std::string& model_name="qwen35_resident_target",
+      HiaiLegacyLifecycle* constructor_failure_snapshot=nullptr);
+  ~HiaiOriginalTargetV1Executor();
+  void SetInput(std::size_t index,const std::vector<std::uint8_t>& bytes);
+  void Execute();
+  std::vector<std::uint8_t> CopyOutput(std::size_t index) const;
+  void Close();
+  const HiaiIoDiagnostic& io_diagnostic() const noexcept;
+  const HiaiLegacyLifecycle& lifecycle() const noexcept;
+  std::vector<HiaiTensorStorage> tensor_storage() const;
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
 struct HiaiOriginalTargetLifecycle {
   std::string weight_init_policy = "INIT_BEFORE_WEIGHTS_NO_FALLBACK";
   std::string weight_cleanup_policy = "DEINIT_WEIGHTS_BEFORE_DEINIT";

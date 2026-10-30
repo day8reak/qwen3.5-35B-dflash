@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import struct
 import subprocess
@@ -81,6 +81,31 @@ def resident_native_programs(tmp_path_factory):
     binary = root / 'board-resident-actual-session-host-fake'
     command = [compiler, '-std=c++17', '-O2', '-Wall', '-Wextra',
         '-DQWEN35_RESIDENT_V2=1', '-DQWEN35_BOARD_SERIAL_HOST_FAKE=1', '-DQWEN35_FAKE_HIAI=1',
+        '-I' + str(RUNTIME / 'include'), '-I' + str(RUNTIME / 'tests/fake_hiai'),
+        *[str(RUNTIME / 'src' / name) for name in ('board_serial_main.cpp', 'resident_session.cpp',
+            'hiai_executor.cpp', 'sha256.cpp', 'generation.cpp')],
+        str(RUNTIME / 'tests/fake_hiai/fake_hiai.cpp'), '-o', str(binary)]
+    compiled = subprocess.run(command, capture_output=True, text=True, timeout=180)
+    assert compiled.returncode == 0, compiled.stderr
+    return binary, binary
+
+
+@pytest.fixture(scope='module')
+def resident_v1_native_programs(tmp_path_factory):
+    """Actual V1 Load/Process/Unload executors, never a V2 target child."""
+    existing = os.environ.get('QWEN35_RESIDENT_V1_TEST_BINARY')
+    if existing:
+        binary = Path(existing)
+        assert binary.is_absolute() and binary.is_file() and os.access(binary, os.X_OK)
+        assert digest(binary) == os.environ.get('QWEN35_RESIDENT_V1_TEST_BINARY_SHA256')
+        return binary, binary
+    compiler = shutil.which('g++')
+    if not compiler:
+        pytest.skip('host C++ compiler is unavailable')
+    root = tmp_path_factory.mktemp('board-resident-v1-native-integration-build')
+    binary = root / 'board-resident-v1-actual-session-host-fake'
+    command = [compiler, '-std=c++17', '-O2', '-Wall', '-Wextra',
+        '-DQWEN35_RESIDENT_V1=1', '-DQWEN35_BOARD_SERIAL_HOST_FAKE=1', '-DQWEN35_FAKE_HIAI=1',
         '-I' + str(RUNTIME / 'include'), '-I' + str(RUNTIME / 'tests/fake_hiai'),
         *[str(RUNTIME / 'src' / name) for name in ('board_serial_main.cpp', 'resident_session.cpp',
             'hiai_executor.cpp', 'sha256.cpp', 'generation.cpp')],
@@ -318,6 +343,181 @@ def enable_resident(case):
     (root / 'expected-prepared-manifest.json').write_text(json.dumps(manifest, indent=2))
 
 
+
+def enable_resident_v1(case):
+    """Pin the three unchanged-model interfaces; V1 runtime names stay unknown."""
+    from qwen35_moe_dflash.board_serial_transport import _full
+    enable_resident(case)
+    root = case['root']; manifest = case['manifest']
+    model = Path(manifest['prefill']['model']['path'])
+    model.write_bytes(b'original-resident-prefill64-fixture')
+    def record(path):
+        return dict(path=str(path), bytes=path.stat().st_size, sha256=digest(path), identity=_full(path))
+    sizes = {'arg1_1': 64 * 2048, 'arg113_1': 64 * 8192, 'arg107_1': 256,
+        'arg2_1': 256, 'arg0_1': 256}
+    inputs = [dict(row, bytes=sizes.get(row['name'], row['bytes'])) for row in case['inputs']]
+    outputs = [dict(row, name='prefill-native-' + str(row['index']),
+        bytes=64 * 32768 if row['index'] == 81 else row['bytes']) for row in case['outputs']]
+    mapping = [dict(owner_key='fixture-layer-owner-' + str(row['ref']), bytes=row['bytes'],
+        decode=dict(source_refdata='RefData_' + str(row['ref']), runtime_input_index=row['input_index'],
+            runtime_output_index=row['output_index']),
+        prefill=dict(source_refdata='RefData_' + str(row['ref']), runtime_input_index=row['input_index'],
+            runtime_output_index=row['output_index'])) for row in case['states']]
+    manifest['prefill'].update(model=record(model), state_mapping=mapping, base_plan=dict(
+        inputs=[dict(index=row['index'], name=row['name'], bytes=row['bytes'], tool_input_type=row['type']) for row in inputs],
+        outputs=[dict(index=row['index'], runtime_tensor_name=row['name'], bytes=row['bytes'], tool_output_type=row['type']) for row in outputs]))
+    # Copy source named descriptors as provenance, not V1 SDK-name observations.
+    target_file = Path(manifest['resident_abi']['path'])
+    target_rows = [line.split('\t') for line in target_file.read_text().splitlines()[1:]]
+    resident_desc = {'inputs': [], 'outputs': []}; prefill_desc = {'inputs': [], 'outputs': []}
+    pref_rows = ['QWEN35_RESIDENT_ABI\t1']
+    for row in target_rows:
+        direction = 'inputs' if row[0] == 'target_input' else 'outputs'
+        index = int(row[1]); shape = list(map(int, row[6].split(',')))
+        resident_desc[direction].append(dict(index=index, shape=list(shape), bytes=int(row[7])))
+        item = (inputs if direction == 'inputs' else outputs)[index]
+        if direction == 'inputs':
+            if item['name'] in {'arg1_1', 'arg113_1'}: shape[2] = 64
+            elif item['name'] in {'arg107_1', 'arg2_1'}: shape = [1, 64] if item['name'] == 'arg107_1' else [64]
+            elif item['name'] == 'arg0_1': shape = [1, 64, 1]
+        elif index == 81: shape = [1, 1, 64, 16384]
+        prefill_desc[direction].append(dict(index=index, shape=shape, bytes=item['bytes']))
+        pref_rows.append('\t'.join(['prefill_input' if direction == 'inputs' else 'prefill_output',
+            str(index), item['name'], row[3], row[4], row[5], ','.join(map(str, shape)), str(item['bytes'])]))
+    pref_abi = root / 'prefill-abi.tsv'; pref_abi.write_text('\n'.join(pref_rows) + '\n')
+    manifest['resident_abi'].update(resident_desc)
+    manifest.update(execution_mode='resident-v1', target_lifecycle_policy='legacy-v1-load-process-unload-v1',
+        prefill_abi=dict(record(pref_abi), **prefill_desc))
+    config = []
+    for line in case['config'].read_text().splitlines():
+        fields = line.split('\t')
+        if fields[0] in {'target_tool', 'draft_runner', 'execution_mode', 'target_lifecycle_policy',
+                'prefill_input', 'prefill_output', 'prefill_state'}: continue
+        if fields[0] == 'prefill_model': line = '\t'.join(('prefill_model', str(model), digest(model), str(model.stat().st_size)))
+        config.append(line)
+    config += ['execution_mode\tresident-v1', 'target_lifecycle_policy\tlegacy-v1-load-process-unload-v1',
+        '\t'.join(('prefill_abi', str(pref_abi), digest(pref_abi), str(pref_abi.stat().st_size)))]
+    config += ['\t'.join(('prefill_input', str(row['index']), row['name'], row['type'], str(row['bytes']))) for row in inputs]
+    config += ['\t'.join(('prefill_output', str(row['index']), row['name'], row['type'], str(row['bytes']))) for row in outputs]
+    config += ['\t'.join(('prefill_state', row['decode']['source_refdata'], row['prefill']['source_refdata'],
+        str(row['prefill']['runtime_input_index']), str(row['prefill']['runtime_output_index']), str(row['bytes']))) for row in mapping]
+    case['config'].write_text('\n'.join(config) + '\n')
+    (root / 'expected-prepared-manifest.json').write_text(json.dumps(manifest, indent=2))
+
+
+@pytest.mark.parametrize('dump', [True, False])
+def test_actual_resident_v1_prefill_and_multiround_loop(tmp_path, resident_v1_native_programs, dump):
+    from qwen35_moe_dflash.board_serial_transport import validate_retrieved_loop, validate_retrieved_tokens
+    case = make_case(tmp_path / ('v1-debug' if dump else 'v1-compact'), resident_v1_native_programs, dump=dump)
+    enable_resident_v1(case); trace = case['root'] / 'v1-sdk.trace'
+    # These V2 child tools are deliberately not present in the V1 wire.
+    assert not any(line.startswith(('target_tool\t', 'draft_runner\t')) for line in case['config'].read_text().splitlines())
+    case['files']['target_tool'].unlink()
+    process = execute(case, native_trace=trace)
+    assert process.returncode == 0, (process.stdout, process.stderr)
+    loop = validate_retrieved_loop(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
+        _expected_config_sha256=digest(case['config']))
+    assert loop['execution_mode'] == 'resident-v1' and loop['target_lifecycle_policy'] == 'legacy-v1-load-process-unload-v1'
+    assert loop['generated_tokens'] == list(range(9, 17))
+    assert loop['counts']['prefill_native_calls'] == 1 and loop['counts']['target_native_calls'] == 8
+    life = loop['resident_lifecycle']; assert life['model_load_api'] == 'legacy-buffer'
+    assert life['target_loads'] == life['draft_loads'] == life['target_close_calls'] == life['draft_close_calls'] == 1
+    assert life['target_runs'] == 8 and life['draft_runs'] == loop['counts']['draft_native_calls'] >= 2
+    assert life['closed'] and not life['poisoned'] and 'target_lifecycle' not in life
+    assert loop['prefill_lifecycle']['successful_processes'] == 1 and loop['prefill_lifecycle']['closed']
+    assert loop['child_lifecycle'] == dict(children=[], launched_child_count=0, completed_child_count=0,
+        active_child_count=0, last_child_pid=None, last_child_exitcode=None, child_status='NONE')
+    events = trace.read_text().splitlines()
+    assert not any(value.startswith('v2-') for value in events)
+    for name in ('prefill', 'target', 'draft'):
+        assert events.count('v1-load:qwen35_resident_' + name) == 1
+        assert events.count('v1-unload:qwen35_resident_' + name) == 1
+    assert events.index('v1-unload:qwen35_resident_prefill') < events.index('v1-load:qwen35_resident_target') < events.index('v1-load:qwen35_resident_draft')
+    assert events.count('v1-process:qwen35_resident_prefill') == 1
+    assert events.count('v1-process:qwen35_resident_target') == 8
+    assert events.count('v1-process:qwen35_resident_draft') == life['draft_runs']
+    for key in ('prefill', 'prompt_ingest'):
+        assert loop['phase_latency'][key]['timing_scope'] == 'PREFILL_V1_LOAD_PROCESS_UNLOAD_WALL'
+    if dump:
+        calls = [event['call_index'] for kind in ('prefill_steps', 'target_steps', 'draft_steps') for event in loop[kind]]
+        assert sorted(calls) == list(range(1 + 8 + life['draft_runs']))
+        assert not any('pid' in event or 'exitcode' in event for kind in ('prefill_steps', 'target_steps', 'draft_steps') for event in loop[kind])
+    else:
+        assert not list(case['output'].rglob('*.bin'))
+        # Failure before resident initialization still records V1 policy, no
+        # target/draft loads or invented child evidence, and closed prefill.
+        early = make_case(tmp_path / 'v1-prefill-failed', resident_v1_native_programs, dump=False)
+        enable_resident_v1(early); early_trace = early['root'] / 'v1-sdk.trace'
+        failed = execute(early, native_fault='v1-process', native_trace=early_trace)
+        assert failed.returncode == 1, (failed.stdout, failed.stderr)
+        retained = validate_retrieved_tokens(early['manifest'], early['output'], _expected_evidence_kind='host-fake-hiai',
+            _expected_config_sha256=digest(early['config']), _remote_exitcode=1)
+        assert retained['resident_lifecycle']['model_load_api'] == 'legacy-buffer'
+        assert retained['counts']['prefill_native_calls'] == retained['counts']['target_native_calls'] == retained['counts']['draft_native_calls'] == 0
+        assert retained['prefill_lifecycle']['process_attempts'] == 1 and retained['prefill_lifecycle']['closed']
+        assert not any('v1-load:qwen35_resident_' + name in early_trace.read_text() for name in ('target', 'draft'))
+
+        late = make_case(tmp_path / 'v1-final-unload-failed', resident_v1_native_programs, dump=False)
+        enable_resident_v1(late); late_trace = late['root'] / 'v1-sdk.trace'
+        completed = execute(late, native_fault='v1-draft-unload', native_trace=late_trace)
+        assert completed.returncode == 1, (completed.stdout, completed.stderr)
+        retained = validate_retrieved_tokens(late['manifest'], late['output'], _expected_evidence_kind='host-fake-hiai',
+            _expected_config_sha256=digest(late['config']), _remote_exitcode=1)
+        assert retained['stage'] == 'resident-close' and retained['resident_lifecycle']['stage'] == 'SESSION_CLEANUP'
+        assert 'UnLoadModel failed: 81' in retained['error']
+        assert retained['generated_tokens'] == list(range(9, 17)) and retained['counts']['prefill_native_calls'] == 1
+        assert retained['counts']['target_native_calls'] == 8 and retained['counts']['draft_native_calls'] >= 2
+        assert retained['resident_lifecycle']['closed'] and retained['resident_lifecycle']['poisoned']
+        assert retained['resident_lifecycle']['draft_v1_lifecycle']['unload_status'] == 81
+        assert retained['resident_lifecycle']['target_v1_lifecycle']['unload_status'] == 0
+        assert not any(event.startswith('v2-') for event in late_trace.read_text().splitlines())
+        assert late_trace.read_text().count('v1-unload:qwen35_resident_target') == 1
+        assert late_trace.read_text().count('v1-unload:qwen35_resident_draft') == 1
+        assert retained['supervisor_timing']['total_wall_ms'] >= retained['phase_latency']['prefill']['total_ms']
+
+
+
+@pytest.mark.parametrize('fault,processes', [('load', 0), ('v1-unload', 1)])
+def test_actual_resident_v1_prefill_failure_never_loads_pair(tmp_path, resident_v1_native_programs, fault, processes):
+    from qwen35_moe_dflash.board_serial_transport import validate_retrieved_tokens
+    case = make_case(tmp_path / ('v1-prefill-' + fault), resident_v1_native_programs, dump=False)
+    enable_resident_v1(case); trace = case['root'] / 'v1-sdk.trace'
+    process = execute(case, native_fault=fault, native_trace=trace)
+    assert process.returncode == 1, (process.stdout, process.stderr)
+    loop = validate_retrieved_tokens(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
+        _expected_config_sha256=digest(case['config']), _remote_exitcode=1)
+    assert loop['status'] == 'FAILED' and loop['execution_mode'] == 'resident-v1'
+    assert loop['resident_lifecycle']['model_load_api'] == 'legacy-buffer'
+    assert loop['resident_lifecycle']['target_loads'] == loop['resident_lifecycle']['draft_loads'] == 0
+    assert loop['counts']['prefill_native_calls'] == processes
+    assert loop['counts']['target_native_calls'] == loop['counts']['draft_native_calls'] == 0
+    life = loop['prefill_lifecycle']; assert life['closed'] and life['load_attempted']
+    assert life['successful_processes'] == processes
+    assert (life['load_status'] != 0) if not processes else (life['unload_called'] and life['unload_status'] != 0)
+    assert not list(case['output'].glob('target/step_*')) and not list(case['output'].glob('draft/call-*'))
+    assert not any(event.startswith('v2-') for event in trace.read_text().splitlines())
+    assert not any('v1-load:qwen35_resident_' + name in trace.read_text() for name in ('target', 'draft'))
+    assert loop['supervisor_timing']['prefill_v1_total_ms'] >= sum(loop['supervisor_timing'][key]
+        for key in ('prefill_model_load_ms', 'prefill_process_ms', 'prefill_model_unload_ms'))
+
+
+@pytest.mark.parametrize('bad', ['missing-policy', 'v2-policy', 'missing-prefill-abi', 'v2-tool'])
+def test_actual_resident_v1_rejects_incomplete_or_v2_wire_before_sdk(tmp_path, resident_v1_native_programs, bad):
+    case = make_case(tmp_path / ('v1-wire-' + bad), resident_v1_native_programs, dump=False)
+    enable_resident_v1(case); trace = case['root'] / 'v1-sdk.trace'
+    lines = case['config'].read_text().splitlines()
+    if bad == 'missing-policy': lines = [line for line in lines if not line.startswith('target_lifecycle_policy\t')]
+    elif bad == 'v2-policy': lines = [line.replace('legacy-v1-load-process-unload-v1', 'init-before-weights-close-weights-first-v1') for line in lines]
+    elif bad == 'missing-prefill-abi': lines = [line for line in lines if not line.startswith('prefill_abi\t')]
+    else:
+        path = case['files']['target_tool']; lines.append('\t'.join(('target_tool', str(path), digest(path), str(path.stat().st_size))))
+    case['config'].write_text('\n'.join(lines) + '\n')
+    process = execute(case, native_trace=trace)
+    assert process.returncode == 1 and not trace.exists(), (process.stdout, process.stderr)
+    loop = json.loads((case['output'] / 'loop.json').read_text())
+    assert loop['status'] == 'FAILED' and loop['stage'] == 'validate-config-and-source-hashes'
+
+
 @pytest.mark.parametrize('dump', [True, False])
 def test_actual_resident_file_v2_session_prefill_and_multiround_loop(tmp_path, resident_native_programs, dump):
     from qwen35_moe_dflash.board_serial_transport import validate_retrieved_loop
@@ -387,6 +587,73 @@ def test_actual_resident_failed_constructor_retains_lifecycle_snapshot(tmp_path,
     assert loop['counts']['prefill_native_calls'] == 1
     assert loop['counts']['target_native_calls'] == loop['counts']['draft_native_calls'] == 0
     assert len(loop['child_lifecycle']['children']) == 1  # Only the completed prefill is a child process.
+
+
+def test_actual_resident_cleanup_failure_preserves_completed_generation_and_can_release_owned_locks(
+        tmp_path, resident_native_programs, monkeypatch):
+    from qwen35_moe_dflash import board_serial_transport as transport
+    case = make_case(tmp_path / 'resident-cleanup-failure', resident_native_programs, dump=False)
+    enable_resident(case)
+    trace = case['root'] / 'cleanup-sdk.trace'
+    process = execute(case, native_fault='original-deinit-weights', native_trace=trace)
+    assert process.returncode == 1, (process.stdout, process.stderr)
+    loop = transport.validate_retrieved_tokens(case['manifest'], case['output'],
+        _expected_evidence_kind='host-fake-hiai', _expected_config_sha256=digest(case['config']), _remote_exitcode=1)
+    life = loop['resident_lifecycle']; target = life['target_lifecycle']
+    assert loop['status'] == 'FAILED' and loop['stage'] == 'resident-close'
+    assert life['stage'] == 'SESSION_CLEANUP' and life['closed'] and life['poisoned']
+    assert loop['generated_tokens'] == list(range(9, 17)) and loop['full_prefix'] == list(range(1, 17))
+    assert loop['counts']['prefill_native_calls'] == 1 and loop['counts']['target_native_calls'] == 8
+    assert loop['counts']['draft_native_calls'] == life['draft_runs'] >= 2
+    assert life['target_runs'] == life['target_run_attempts'] == 8
+    assert target['manager_init_status'] == target['weights_init_status'] == 0
+    assert target['weights_deinit_status'] == 73 and target['manager_deinit_called'] and target['closed']
+    assert 'DeinitWeights failed: 73' in life['cleanup_error'] and 'DeinitWeights failed: 73' in loop['error']
+    assert life['target_close_calls'] == life['draft_close_calls'] == 1
+    assert loop['phase_latency']['decode']['calls'] == 8
+    assert loop['phase_latency']['decode']['total_ms'] == life['target_run_ms']
+    assert loop['phase_latency']['draft']['total_ms'] == life['draft_run_ms']
+    assert loop['supervisor_timing']['resident_close_ms'] == life['close_ms']
+    assert len(loop['child_lifecycle']['children']) == 1
+    assert loop['child_lifecycle']['active_child_count'] == 0
+    assert loop['child_lifecycle']['children'][0]['exitcode'] == 0
+    events = trace.read_text().splitlines()
+    assert events.count('v2-run') == 8 + life['draft_runs']
+    assert [event for event in events if event in {'v2-deinit', 'v2-deinit-weights'}] == [
+        'v2-deinit', 'v2-deinit-weights', 'v2-deinit']
+    # Known process termination permits the existing exact-owner guard to
+    # release this host fixture's locks. A failed SDK cleanup stays FAILED;
+    # neither this local shell check nor the explicit fake provider is a
+    # device execution or an accuracy claim.
+    token = 'a' * 32; global_lock = tmp_path / 'global-lock'
+    global_lock.mkdir(); (global_lock / 'owner').write_text(token + '\n')
+    target_cache, prefill_cache, draft_cache, board = [tmp_path / name for name in
+        ('target-cache', 'prefill-cache', 'draft-cache', 'attempt-proof')]
+    for cache in (target_cache, prefill_cache, draft_cache): (cache / '.execution-lock').mkdir(parents=True)
+    board.mkdir()
+    (target_cache / '.compilation-sha256').write_text('b' * 64 + '\n')
+    (prefill_cache / '.compilation-sha256').write_text('c' * 64 + '\n')
+    (draft_cache / '.model-sha256').write_text(case['manifest']['draft']['model_source']['sha256'] + '\n')
+    (draft_cache / '.execution-lock/owner').write_text(token + '\n')
+    for name in ('target-lock.owner', 'prefill-lock.owner'): (board / name).write_text(token + '\n')
+    (board / 'tool.pid').write_text(str(loop['process_id']) + '\n')
+    (board / 'tool.exitcode').write_text('1\n')
+    class LocalShell:
+        timeout = 10
+        def shell(self, command, label, **kwargs):
+            result = subprocess.run(['sh', '-c', command], capture_output=True, text=True, timeout=10)
+            assert result.returncode == 0, (label, result.stdout, result.stderr)
+            return 0, result.stdout.strip()
+    monkeypatch.setattr(transport, '_GLOBAL', PurePosixPath(global_lock))
+    state = dict(board_attempt=str(board), target_cache=str(target_cache), prefill_cache=str(prefill_cache),
+        draft_cache=str(draft_cache), board_lock_token=token, compilation_report_sha256='b' * 64,
+        prefill_compilation_report_sha256='c' * 64, draft_model_sha256=case['manifest']['draft']['model_source']['sha256'],
+        completed_native_pids=[loop['process_id'], loop['child_lifecycle']['children'][0]['pid']])
+    state['completion'] = transport._completion(LocalShell(), state)
+    assert state['completion']['remote_exitcode'] == 1
+    assert transport._lock_checks(LocalShell(), state, release=True) == 'RELEASED'
+    assert not global_lock.exists() and all(not (cache / '.execution-lock').exists()
+        for cache in (target_cache, prefill_cache, draft_cache))
 
 
 @pytest.mark.parametrize('dump', [True, False])
