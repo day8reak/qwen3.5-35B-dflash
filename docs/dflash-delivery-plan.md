@@ -1,6 +1,6 @@
 # Qwen3.5-35B DFlash 后续执行计划与交接
 
-更新：2026-10-30。代码基线：`4ea1c105c66b5014c2c1260ad9f757a096c38028`。
+更新：2026-10-30。旧主机联调基线：`4ea1c105c66b5014c2c1260ad9f757a096c38028`；当前端侧自主实现见本提交。
 
 本文件是后续执行助手的总计划。机器可读进度见 [dflash-execution-state.json](../specs/dflash-execution-state.json)，立即可运行的命令见 [current-status.md](current-status.md)。每次接手先读这三份；旧验证记录用于查证，不按历史记录重新跑一遍。
 
@@ -8,7 +8,7 @@
 
 最终交付：原40层量化 target＋完整训练六层 draft，真实特征、正确的提议／验证／接受／拒绝／状态提交，支持实际提示词与多轮生成；通过精度和稳定性后，在相同条件下实测 DFlash decode-loop 中位延迟至少优于普通 decode **2倍**，同时报告包含 prefill 的总延迟。2倍仍是目标，尚无实测保证。
 
-用户最新优先级：先把真实完整循环运行起来，允许当前阶段乱码／数值误差；之后逐步修精度和速度。该放宽只适用于 P0 执行里程碑，不永久取消最终精度、语言质量或性能要求。
+用户最新优先级：**今天在端侧自主完成真实完整DFlash多轮端到端流程**。服务器只部署、启动与结束后回收；请求启动后，embedding查表、prompt输入、draft、verify、接受／拒绝、80状态与特征反馈以及停止都在端侧完成。中断主机连接不能成为板端停止生成的原因。主机调度循环只算联调，不能验收P0。允许当前阶段乱码／数值误差；之后逐步修精度和速度。该放宽只适用于 P0 执行里程碑，不永久取消最终精度、语言质量或性能要求。
 
 固定模型边界：target40层、原量化权重；draft6层、hidden2048、intermediate6144、block16、15候选、完整248320词表；target第 `[1,6,11,16,22,27,32,37]` 层特征拼接为16384。不能用 tiny 结果替代完整模型，不减层、不缩词表、不悄悄换权重。4B仓库只作接口／调度参考，不能复制其模型尺寸、5层量化checkpoint或310P二进制。
 
@@ -18,7 +18,7 @@
 
 | 到达的结果 | 顺利时的累计工作日 | 说明 |
 |---|---:|---|
-| P0：短提示词真实多轮闭环，允许精度误差 | 0.5–1天 | 今天争取完成，必要时顺延到下一个工作日 |
+| P0：端侧自主短提示词多轮闭环，允许精度误差 | 0.5–1天 | 今天争取完成，必要时顺延到下一个工作日 |
 | P1–P3：可对照的普通基线、精度收敛、prefill→decode接续 | 3–7天 | 前提是原参考与控制实现可取得；底层算子是主要风险 |
 | P4–P6：长上下文、常驻执行、批量verify及正确回滚 | 7–14天 | 含新增artifact编译与实机联调；允许部分并行 |
 | P7–P8：稳定性、配对性能、优化迭代与交付 | 10–20天 | 按2–4个工作周安排；达到2倍取决于接受率和实测瓶颈 |
@@ -36,7 +36,8 @@
 | 完整六层draft | 已运行，固定fixture报告Top1 15/15；也运行过真实target特征单步 | 不代表真实多轮接受率／精度已通过 |
 | row63 prefill试验 | PID28669成功；feature SHA不变，logits argmax由0变6 | 只证明该单变量试验改变了logits，未判定数值根因 |
 | embedding两张原表 | 用户确认已复制完成 | 新入口仍核对文件大小和实际读取行 |
-| 多轮调度＋两实机adapter | 已实现并推送，292项去重主机检查通过 | 包含模拟HDC/native输出；**实际完整闭环仍待用户运行** |
+| 主机多轮调度＋两实机adapter | 已实现并推送，292项去重主机检查通过；用户运行中遇HDC断线 | 仅联调工具，**不满足端侧自主P0目标** |
+| 端侧自主调度器＋部署／恢复入口 | C++完整循环与部署／恢复的主机模拟检查通过 | 未取得真实端侧多轮及断连恢复结果 |
 | 增量draft缓存图 | `ge_incremental_draft.py`及独立主机等价测试已存在 | **没有新增AIR／OMC／实机增量ABI通过结果** |
 | 精度／稳定性／2倍加速 | 待完成 | 不从有限值、exit0或host测试推断通过 |
 
@@ -57,46 +58,31 @@
 
 开发workspace存在时使用其声明的工具和run目录；用户DDK主机当前是`custom_pypto`环境，沿用已配置的`REPO_DIR/AI_RUN_DIR/HDC/SN/BIP`，不要要求它安装开发workspace或新建一套环境。不要改共享DDK／plugin。
 
-## P0. 先运行现有模型的完整短提示词循环
+## P0. 今天完成端侧自主端到端多轮循环
 
-**局部预算：0.5–1天。依赖：现有两个OMC、原embedding两表和HDC连接。当前唯一主线。**
+**目标日期：2026-10-30；局部预算仍为0.5–1个有效工作日，目标不等于已承诺完成。当前唯一主线。**
 
-操作：新请求取原input_ids前8个token；同一个decode1从80个FP16零态逐token读提示词，然后生成8个新token。先提交target-next anchor；旧S64 draft接完整feature／ID历史并右padding，每次输出15候选，host先考虑前2个；逐token比较，首错纠正，全接受可加bonus。只把已提交token送入target，当前不需要投机状态回滚。EOS在这次固定预算实验中关闭。
+主机循环 `run_serial_dflash_smoke.py` 保留作联调，不满足本阶段验收。不得再把端侧自主调度推到P5之后。P0先用板端调度程序逐次启动现有target工具和draft runner；模型仍可逐次加载、状态可通过板端文件交接。P5再处理内存常驻和加载优化，两者分开验收。
 
-唯一运行命令：
+请求：原input_ids前8个token作为新prompt，从80个FP16零态开始，同一个decode1逐token读入并生成8个token。端侧通过完整原embedding两表查行，生成实验控制值、保存所有状态和特征。target-next作为anchor，旧S64 draft完整历史右padding，每次输出15候选，端侧先考虑前2个；首错纠正、全接受可加bonus，仅提交token进入target。EOS暂关闭。没有模型编译，没有S128前置条件。
 
-```bash
-git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_serial_dflash_smoke.py" \
-  --decode-job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
-  --runtime-probe "$AI_RUN_DIR/target-decode1-runtime-io-v2" \
-  --state-lineage "$AI_RUN_DIR/target-decode1-state-lineage-v7" \
-  --source-torchair-pb2 "$AI_RUN_DIR/target-decode1-row-response/ge_ir_by_protoc_3_19_pb2.py" \
-  --draft-bundle "$AI_RUN_DIR/full-draft/residual-fix/bundle" \
-  --weight-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_weight.bin" \
-  --scale-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_scale.bin" \
-  --prompt-input-ids /home/w00949577/run_35B/chunksize_64_data/input_ids.bin \
-  --prompt-length 8 --max-new-tokens 8 --max-proposals-per-round 2 \
-  --output "$AI_RUN_DIR/dflash-serial8-run" \
-  --apply
-```
-
-输出目录必须新建。仅准备可不加`--apply`，但这不是额外必做步骤；实际运行另选新目录。源文件不动，模型命中板端所属SHA缓存时复用；draft runner每session至多构建一次，**runner构建不等于OMC重编译**。
+新入口：`targets/cpro/scripts/run_board_serial_dflash.py`。主机检查通过后发布，使用 [current-status.md](current-status.md) 的 detached 启动和同 attempt 回收命令。启动确认仅代表已发起，实机完整结果才验收。
 
 通过条件：
 
-- `status=DFLASH_SERIAL_LOOP_EXECUTED_UNVALIDATED`，`device_execution=EXECUTED_OUTPUTS_RETRIEVED`。
-- 实际target native调用16次，draft至少2次；8个生成token，每步82输出和日志齐全，80状态接续完整。
-- `counts.target_calls=9`是协议观察次数（prompt8次被汇总为1），真实次数见`native_call_counts.target`或结果文件`native_executions.target.native_calls`。
-- `loop.json`保留提案、已考虑候选、接受／纠正／bonus、每次前后状态与feature哈希。匹配率允许为0；没有自然出现某类分支时如实记“未观察”，不能伪造候选来冒称真实分支通过。
+- 实际板端 `BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED`，或同一已完成attempt的恢复结果；完整调用结果和最终文件通过回收校验。
+- 16次真实target native调用、至少2次真实完整draft调用、8个生成token；每步输入／输出槽位和80状态链有绑定记录。
+- 查表、prompt输入、提议、验证、接受／拒绝、状态／特征反馈和循环终止全部由板端程序执行。服务器不提供逐token输入或决策。
+- 请求以脱离HDC会话的方式启动；主机或HDC连接中断后端侧仍可完成。重连只能回收同一attempt，不重新推理或把中断后的重跑冒称恢复。
+- 保存提案、考虑候选、纠正／bonus、每次前后状态及feature哈希。接受率允许0，乱码不阻塞；没有自然出现的分支不伪称已实机覆盖。
 
-产物：`dflash-serial8-run/plan.json`、`result.json`、`loop.json`，以及`target/step_XXXX/`和`draft/call-XXXX/`全部证据。失败按第6节处理。P0不需要先证明文本可读或与原始BF16精确一致。
+产物：主机prepared manifest、部署checkpoint、最终result；板端完整每步日志／receipt／中间张量；结束后取回日志、receipt、最终82输出与feature历史。模型常驻、精度、长上下文和2倍加速均未由此通过。
 
 ## P1. 建立可信的普通target基线并定位精度问题
 
 **局部预算：1–3天；底层算子返工另加3–7天以上。依赖：P0执行链可用。**
 
-先做普通decode，暂不让draft影响生成。**当前没有`--ordinary-only`命令，需新增薄driver**：复用`OriginalTargetSmokeBackend`，读相同prompt和原始embedding行，从相同80零态开始，每次提交当前target argmax，保存token、logits、8层features、80state和控制值。第一版仍用decode1逐token读prompt，避免把跨导出映射混进数值诊断。
+先做普通decode，暂不让draft影响生成。**当前没有`--ordinary-only`命令，需在板端调度器新增普通target模式**：复用其target调用与80状态反馈，读相同prompt和原始embedding行，从相同80零态开始，每次提交当前target argmax，保存token、logits、8层features、80state和控制值。主机参考比较可以独立运行，端侧生成不得退回主机逐token调度。第一版仍用decode1逐token读prompt，避免把跨导出映射混进数值诊断。
 
 接着建立原量化PyTorch／原工程的同输入reference runner。现`original_target_source.py`是源码扩展／准备模块，不是已存在的数值reference运行器；旧`decode_data/golden_logits.bin`历史／控制不同，不能直接当P0新请求黄金。
 
@@ -160,11 +146,11 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_serial_dflash_smoke.py" \
 
 通过条件：新AIR／OMC、实际17/14 ABI、缓存读写与位置、完整draft数值、端到端tokens均过对应合同；旧S64成功版本保留可回滚。全新算子或模型语义变更需先明确方案并重新规划。
 
-## P5. 减少搬运和重复加载，建立常驻运行框架
+## P5. 在板端自主循环基础上建立模型常驻
 
 **局部预算：0.5–2天。依赖：正确普通baseline；可与P4在独立代码边界并行。**
 
-现P0以“每步工具调用＋HDC取回82输出”优先实现可观察执行，不能用其耗时判断DFlash收益。首先记录实际模型load／Process／host等待／输入上传／输出回收各自成本。
+P0已经要求端侧自主完整循环；旧主机每步HDC路径仅保留为联调。此阶段优化板端逐次子进程加载和文件交接，不能把这些开销计入DFlash算法收益。先分解模型load／Process／板端状态文件IO／调度／一次部署与最终回收成本。
 
 实现同一native session里的target执行与draft执行、80state／features／draft KV设备内存持有；常规运行只回传token和小摘要，完整tensor dump保留为调试模式。原target是external-weight HIAI V2路线，draft是独立embedded legacy-buffer路线；不能直接把target塞进旧draft的32位modelbuffer或靠`ROMC`开关替代适配。
 
@@ -257,7 +243,7 @@ decode1串行verify仍对每个已提交token运行target，主要是正确性�
 
 可直接复制给后续模型：
 
-> 请先读取 docs/dflash-delivery-plan.md、specs/dflash-execution-state.json 和 docs/current-status.md。沿状态文件最前面的未完成阶段继续；当前优先复用已有原target decode1和完整draft S64，执行新8-token prompt＋8-token生成的真实多轮循环，不把增量draft或S128编译当作P0前置条件。按计划完成常规实现、验证、提交／推送和远端命令交付，保持旧成功产物。禁止用host测试或有限值冒称设备精度／加速通过。每次结束更新阶段状态、证据和一条下一动作；遇到计划第7节情况，保留最小复现，向用户汇报以便重新规划。
+> 请先读取 docs/dflash-delivery-plan.md、specs/dflash-execution-state.json 和 docs/current-status.md。沿状态文件最前面的未完成阶段继续；当前优先复用已有原target decode1和完整draft S64，执行新8-token prompt＋8-token生成的端侧自主多轮循环；主机调度循环不算P0通过，不把增量draft或S128编译当作P0前置条件。按计划完成常规实现、验证、提交／推送和远端命令交付，保持旧成功产物。禁止用host测试或有限值冒称设备精度／加速通过。每次结束更新阶段状态、证据和一条下一动作；遇到计划第7节情况，保留最小复现，向用户汇报以便重新规划。
 
 每次交接更新状态JSON，并用以下格式简报：
 

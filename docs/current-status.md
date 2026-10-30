@@ -2,27 +2,24 @@
 
 <a id="用户现在执行什么"></a>
 
-完整后续阶段、预计天数和换助手交接见 [执行总计划](dflash-delivery-plan.md)；机器可读进度见 [执行状态](../specs/dflash-execution-state.json)。
+**2026-10-30最新目标：今天在端侧自主完成原40层target＋完整六层draft的多轮端到端DFlash。** 精度暂不作为P0通过条件，端侧自主性必须通过。
 
-按用户最新要求，当前只验收完整模型的真实多轮 DFlash 执行，精度随后收敛。主线复用已有40层 target decode1 OMC 和完整六层 `full-draft/residual-fix/bundle`，不重新导出／编译模型。
+服务器只负责一次部署、启动和最终结果回收。请求启动后，embedding查表、prompt输入、draft、decode1 verify、接受／拒绝、80状态与特征反馈和停止都在板端完成。连接中断后已经启动的端侧请求仍应自行完成，重连回收同一attempt，不重新推理。
 
-## 本次固定范围
+## 新执行入口
 
-- 新请求取原 input_ids 文件的前8个 token 作短提示词，生成8个新 token；完整历史最多16行，始终装得下旧 draft S64。
-- 同一个 target decode1 从80个零状态开始，逐 token 读入提示词。每次通过原 INT8 embedding 表和独立 FP32 scale 查当前 token；不使用旧64-token prefill 的状态或裁剪其输出。
-- target 首个预测先提交为 anchor；draft 接收完整真实 feature 历史，右侧补零到64，原图排除当前 anchor 的 feature，每轮仍生成完整15个候选。
-- host 每轮先验证最多2个候选：匹配则提交，首个不匹配处提交 target 纠正；考虑的候选全部匹配时可提交 bonus。只有提交的 token 进入 target，因此串行路径不用回滚投机状态。
-- 每次记录全部80状态接续、原始输入／输出、native PID／日志和哈希；至少观察两次真实完整 draft 调用。EOS 在这次固定预算实验中关闭。
+- 新板端C++调度器复用原decode1工具及完整S64 draft runner，P8/G8，每轮考虑2个候选。
+- 两个OMC保持不变；runner构建不等于模型重新编译。不需要S128导出。
+- 一次准备embedding表／ABI／runner并复用模型缓存；端侧每步保留日志、输入输出哈希、80状态链与完整feature历史。
+- detached启动、持久checkpoint以及只回收不重跑的恢复入口。
+- 主机模拟已覆盖接受／纠正／bonus、状态槽位重排、子进程失败与断连恢复。独立集成使用实际C++调度器和实际draft CLI、模拟HIAI／target，完成16次target与5次draft；这不是实机通过。
 
-原模型权重、层数和词表均保持。短提示词是明确的新请求，不冒称原64-token请求的等价接续。控制值 `output_pos=0 / allQLen=1 / effective_length=1 / conv_state_pos=[1,0×127]`、绝对位置与 mask 仍是声明过的实验配方，执行成功不代表数值语义通过。
-
-## 现在运行
-
-embedding 两表已由用户确认复制完成；入口会核对完整文件大小，并直接读取每个实际 token 的原始行，不再往返抽行。一次命令先做 host 预检并保存计划，再执行循环：
+在DDK主机沿用已经配置好的`REPO_DIR`、`AI_RUN_DIR`、`BIP`、`SN`及Native SDK环境。等旧任务正常结束后运行；如果共享板端锁仍被占用，新任务会等待，不能通过删除主机output清锁。`--output`必须是新目录。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/run_serial_dflash_smoke.py" \
+
+python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
   --decode-job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
   --runtime-probe "$AI_RUN_DIR/target-decode1-runtime-io-v2" \
   --state-lineage "$AI_RUN_DIR/target-decode1-state-lineage-v7" \
@@ -32,18 +29,28 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_serial_dflash_smoke.py" \
   --scale-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_scale.bin" \
   --prompt-input-ids /home/w00949577/run_35B/chunksize_64_data/input_ids.bin \
   --prompt-length 8 --max-new-tokens 8 --max-proposals-per-round 2 \
-  --output "$AI_RUN_DIR/dflash-serial8-run" \
-  --apply
+  --output "$AI_RUN_DIR/dflash-board8-run" \
+  --apply --detach
 ```
 
-输出目录必须是新目录。去掉 `--apply` 可只准备，实际执行另用新目录；没有额外必做的 prepare／inspect 命令。runtime probe 和旧 lineage 的当前字节仍会在入口核对，读取原权重表行时保留本次身份。模型命中 SHA 所属板端缓存时复用；target 的19GB sidecar 不反复本地哈希／复制。draft 模型只在 session 初始化绑定一次，runner 可在本次 session 复用；必要的 runner 构建不是模型重编译。
+`BOARD_SERIAL_DFLASH_STARTED`只表示请求已发起，**不是完整流程通过**。这条命令返回后没有主机控制器继续驱动token；板端程序自行运行。可以退出这条主机进程／终端，之后用下面命令等待并取回同一请求：
 
-成功目标是 `DFLASH_SERIAL_LOOP_EXECUTED_UNVALIDATED`：至少两轮 draft、8个新 token、16次真实 target decode1 调用，全部步骤实际输出取回。`counts.target_calls` 为协议观察次数（串行 prompt 汇总算1次）；`native_executions.target.native_calls` 才是包含8次提示词输入的真实调用数。接受率可以为0，乱码不阻塞本里程碑。接受／拒绝按真实输出记录，不能为了凑分支而伪造候选或报告。
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
+  --recover "$AI_RUN_DIR/dflash-board8-run" \
+  --output "$AI_RUN_DIR/dflash-board8-recovery"
+```
 
-如果某步失败，入口停止，保留同一 attempt、日志及锁状态，不自动重复模型调用。先看失败步骤的具体错误；不要清锁、重复整个命令或覆盖旧结果。
+恢复只查询完成状态、回收与校验文件，绝不再发起模型推理。若想验证物理断连后的自主性，在收到`STARTED`后断开HDC连接，恢复连接后再执行回收命令；保留此次操作及时间记录。无需断电或重启设备。若不需要分开启动／回收，第一条命令可省略`--detach`，主机仅定期查询请求是否结束，也不会参与逐token计算。
 
-## 已完成和后续
+预期成功：`BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED`或恢复等价状态，生成8个token、16次target、至少2次draft，最终82输出、80状态反馈和每轮日志通过校验。实际是否经过接受／拒绝分支以实机记录为准，不能把主机模拟分支覆盖当成实机覆盖。
 
-用户实机已执行原 prefill64、独立 decode1、80状态同模型接续及真实 feature→完整 draft 单步。最新 row63 prefill PID28669 成功取回82输出：feature SHA 与旧 row64 完全相同；logits SHA 改变，argmax 从0变为6。这是单变量输出观察，尚未判为精度修复。
+结果：部署记录在`dflash-board8-run/board/checkpoint.json`；恢复后的汇总在`dflash-board8-recovery/result.json`，端侧循环及日志在其`results/`。中间输入输出保留在checkpoint记录的板端`board_attempt`；最终回收不复制模型权重，也不逐token往返传输大张量。
 
-今天闭环执行之后再处理：原 prefill64→decode1 的跨模型映射／普通基线、控制和 embedding 对齐精度、增量 draft KV、block verify 与状态回滚、常驻模型和实测加速。S128 全前缀导出和新增缓存 draft 编译均不在本次前置条件。已完成的缓存图源码／主机等价测试保留为后续优化，不启动新模型编译。
+若HDC断连导致启动响应丢失，保留原目录，优先对原请求执行`--recover`。若失败发生在部署阶段、尚未记录启动请求，需根据checkpoint和原调用日志核对锁与远端命令完成状态；不要直接删锁、删output或重新发起。若板端子进程挂住，本版本保留PID并等待，不自动kill或重跑。模型按次加载及板端完整张量落盘仍有开销，性能优化留到后续。
+
+用户已经运行的旧host任务可继续产生联调证据。旧 `run_serial_dflash_smoke.py` 即使完成，也不计为今天端侧自主目标通过。
+
+当前仍未收到端侧自主完整流程的实机成功结果。P0成功后再处理普通基线／精度、跨导出prefill桥接、长上下文、模型常驻、批量verify／回滚与实测加速。
+
+完整后续阶段、预计天数和换助手交接见 [执行总计划](dflash-delivery-plan.md)，机器可读进度见 [执行状态](../specs/dflash-execution-state.json)。

@@ -4,11 +4,10 @@
   "updated": "2026-10-30",
   "plan_document": "docs/dflash-delivery-plan.md",
   "current_commands": "docs/current-status.md",
-  "code_baseline": "4ea1c105c66b5014c2c1260ad9f757a096c38028",
   "overall_status": "in_progress",
   "active_phase": "P0",
   "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
-  "user_priority": "First actual full loop may have garbled text/numerical errors; later accuracy/performance goals remain required",
+  "user_priority": "2026-10-30: Today deliver autonomous ON-DEVICE end-to-end original40layer target + full6layer draft. No per-token host data or decisions after launch. Accuracy deferred for P0 only.",
   "status_policy": {
     "allowed": [
       "pending",
@@ -19,7 +18,8 @@
     "advance": "First incomplete phase, verify dependencies/evidence before promotion",
     "one_active_phase": true,
     "host_or_plan_is_device_pass": false,
-    "deadline_is_pass": false
+    "deadline_is_pass": false,
+    "host_orchestrated_full_loop_is_P0_pass": false
   },
   "estimates": {
     "unit": "working day of6–8effective hours with stable device/reference access",
@@ -62,8 +62,12 @@
   },
   "current_known_evidence": {
     "host_checks": {
-      "unique_passed": 292,
-      "scope": "host/fake HDC/native boundaries only",
+      "unique_passed": 85,
+      "new_board_lane_checks": 74,
+      "existing_host_serial_regressions": 11,
+      "scope": "host C++/fake HIAI and fake HDC only; no actual device calls",
+      "validation_document": "docs/board-serial-validation.md",
+      "native_source_sha256": "d6010e64c8638d770238f4d8028cb7e3023301943c049efcd7fce3083121b09f",
       "actual_device_full_loop": "NOT_YET_REPORTED"
     },
     "user_reported": [
@@ -72,17 +76,24 @@
       "all80 same-model state byte continuation observed",
       "real target feature to full draft single step executed",
       "row63 prefill PID28669; samefeature SHA, logits argmax6",
-      "original embedding tables copied completely"
-    ]
+      "original embedding tables copied completely",
+      "host serial loop first target completed, next input staging hit HDC disconnect; stale locks diagnosed; this is not autonomous board-loop evidence"
+    ],
+    "board_autonomous_loop": "HOST_VALIDATED_PENDING_DEVICE_EXECUTION",
+    "legacy_host_checks": {
+      "unique_passed": 292,
+      "scope": "host/fake HDC/native boundaries only",
+      "actual_device_full_loop": "NOT_YET_REPORTED"
+    }
   },
   "next_action": {
     "phase": "P0",
-    "type": "run_existing",
-    "entrypoint": "targets/cpro/scripts/run_serial_dflash_smoke.py",
+    "type": "run_on_device",
+    "entrypoint": "targets/cpro/scripts/run_board_serial_dflash.py",
     "command_document": "docs/current-status.md",
-    "new_output": "$AI_RUN_DIR/dflash-serial8-run",
+    "new_output": "$AI_RUN_DIR/dflash-board8-run",
     "apply": true,
-    "note": "If a real result is already present, inspect that exact attempt first; do not rerun completed model processes."
+    "note": "Use published native board-local entry with --apply --detach, then --recover same attempt; do not interrupt an existing board job or count legacy host orchestration as autonomous success."
   },
   "last_actual_execution": null,
   "planned_parallelism": [
@@ -102,30 +113,34 @@
   "phases": [
     {
       "id": "P0",
-      "title": "现有OMC的真实短提示词多轮执行",
+      "title": "端侧自主端到端DFlash多轮执行",
       "status": "in_progress",
       "depends_on": [],
       "local_budget_workdays": [
         0.5,
         1
       ],
-      "next_action_type": "run_existing",
-      "next_action": "运行docs/current-status.md中的run_serial_dflash_smoke.py --apply，P8/G8，verify前2个候选；不新增OMC编译。",
+      "next_action_type": "run_on_device",
+      "next_action": "按 docs/current-status.md 部署并 detached 启动板端 P8/G8；主机退出后板端独立完成，恢复同一 attempt 并校验16target/至少2draft及80状态链。",
       "pass_conditions": [
-        "DFLASH_SERIAL_LOOP_EXECUTED_UNVALIDATED",
-        "8 generated tokens",
-        "16 actual target native calls",
-        "at least2 actual full draft calls",
-        "all82 outputs/logs and80state chain bound"
+        "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED or recovered equivalent with actual complete board receipts",
+        "8 generated tokens and16 actual target native calls",
+        "at least2 actual full six-layer draft calls",
+        "all80 state transitions and actual logged82 output slots bound",
+        "embedding lookup, prompt ingestion, draft/verify, acceptance/rejection and generation loop entirely on board",
+        "no host dependency after detached launch; completed result remains recoverable after transport disconnect",
+        "host-fake or host-orchestrated loop is not accepted as this milestone"
       ],
       "expected_deliverables": [
-        "result.json",
-        "loop.json",
-        "target/step_XXXX/*",
-        "draft/call-XXXX/*"
+        "prepared/manifest.json",
+        "board/checkpoint.json",
+        "board/result.json",
+        "retrieved loop.json and per-call receipts/logs",
+        "board-retained intermediate tensors and retrieved final state/features",
+        "autonomous execution and disconnect/recovery evidence"
       ],
       "evidence": [],
-      "last_error": null
+      "last_error": "Previous host orchestration is a diagnostic only; HDC failed before target step0001. No autonomous-device success has been reported."
     },
     {
       "id": "P1",
@@ -139,7 +154,7 @@
         3
       ],
       "next_action_type": "implement_and_compare",
-      "next_action": "新增普通target薄driver（不是现有CLI参数），复用OriginalTargetSmokeBackend；取得原量化reference及控制生成逻辑，固定输入/历史后逐层与80状态对照。",
+      "next_action": "在板端调度器新增普通target模式（当前未实现），与P0使用相同prompt/初态/控制；取得原量化reference与控制实现，逐层及80状态对照。主机可跑参考比较，板端生成仍自主。",
       "pass_conditions": [
         "same target/prompt/zero-state ordinary run reproducible",
         "reference/control identity bound",
@@ -239,7 +254,7 @@
     },
     {
       "id": "P5",
-      "title": "常驻native session与设备侧状态",
+      "title": "端侧模型常驻、内存与重复加载优化",
       "status": "pending",
       "depends_on": [
         "P1",
@@ -250,7 +265,7 @@
         2
       ],
       "next_action_type": "implement_and_measure",
-      "next_action": "测真实同时驻留和峰值内存；保持target V2 external-weight与draft embedded路线，session复用模型/80state/features，去掉正常路径逐token HDC大dump。",
+      "next_action": "测真实同时驻留和峰值内存；保持target V2 external-weight与draft embedded路线，session复用模型/80state/features，减少逐步重复加载、hash和板端大张量落盘；保持P0已实现的无逐token服务器交互。",
       "pass_conditions": [
         "two-model residency feasibility measured",
         "native loop same tokens/state as baseline",
@@ -393,5 +408,28 @@
     "legacy_abi_v2_preserved": "specs/dflash-contract.json",
     "full_model_numerical_contract": "PENDING_P1_FREEZE_NOT_TINY_PROBE_TOLERANCES",
     "future_incremental_and_verify_abi": "VERSION_SEPARATELY_IN_P4_P6_KEEP_ROLLBACK"
-  }
+  },
+  "today_goal": {
+    "orchestration": "BOARD_LOCAL_AUTONOMOUS",
+    "prompt_tokens": 8,
+    "generated_tokens": 8,
+    "minimum_draft_rounds": 2,
+    "allowed_host_roles": [
+      "deploy once",
+      "launch detached request",
+      "optional read-only status",
+      "retrieve completed result"
+    ],
+    "forbidden_hot_path": [
+      "host embedding lookup",
+      "host state/feature roundtrip",
+      "host accept/reject decision",
+      "host command per target/draft call"
+    ],
+    "disconnect_policy": "Started board request must continue without host/HDC connection; recover retrieves the same attempt, never relaunches it",
+    "accuracy_gate": "DEFERRED_FOR_P0",
+    "residency_gate": "NOT_REQUIRED_FOR_P0_SEQUENTIAL_BOARD_CHILD_PROCESSES_ALLOWED"
+  },
+  "legacy_code_baseline": "4ea1c105c66b5014c2c1260ad9f757a096c38028",
+  "code_baseline_policy": "Use the Git commit containing this state file; native source SHA is recorded in current_known_evidence."
 }

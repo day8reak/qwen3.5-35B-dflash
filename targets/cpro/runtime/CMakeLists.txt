@@ -11,6 +11,9 @@ set(HIAI_LIBRARIES "" CACHE STRING "Absolute paths to internal HarmonyOS ARM64 H
 add_library(dflash_core STATIC src/generation.cpp src/sha256.cpp)
 target_include_directories(dflash_core PUBLIC include)
 target_compile_options(dflash_core PRIVATE -Wall -Wextra -Wpedantic)
+add_executable(qwen35_board_serial src/board_serial_main.cpp)
+target_link_libraries(qwen35_board_serial PRIVATE dflash_core)
+target_compile_options(qwen35_board_serial PRIVATE -Wall -Wextra -Wpedantic)
 if(BUILD_HIAI_RUNNER OR BUILD_HIAI_OBJECTS)
   if(NOT EXISTS "${HIAI_INCLUDE_DIR}/HiAiModelManagerService.h")
     message(FATAL_ERROR "Set HIAI_INCLUDE_DIR to the matching DDK headers")
@@ -34,6 +37,15 @@ endif()
 if(BUILD_HOST_TESTS)
   enable_testing()
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_executable(board_serial_fake src/board_serial_main.cpp)
+  target_compile_definitions(board_serial_fake PRIVATE QWEN35_BOARD_SERIAL_HOST_FAKE=1)
+  target_link_libraries(board_serial_fake PRIVATE dflash_core)
+  add_test(NAME board_local_serial
+    COMMAND ${CMAKE_COMMAND} -E env
+      QWEN35_BOARD_SERIAL_TEST_FAKE=$<TARGET_FILE:board_serial_fake>
+      QWEN35_BOARD_SERIAL_TEST_PRODUCTION=$<TARGET_FILE:qwen35_board_serial>
+      ${Python3_EXECUTABLE} -m pytest ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_board_serial.py
+      -q -p no:cacheprovider --basetemp=${CMAKE_CURRENT_BINARY_DIR}/board-serial-cases)
   add_executable(dflash_scheduler_tests tests/test_generation.cpp)
   target_link_libraries(dflash_scheduler_tests PRIVATE dflash_core)
   add_test(NAME scheduler COMMAND dflash_scheduler_tests)

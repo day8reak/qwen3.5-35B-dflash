@@ -1,12 +1,14 @@
 {
   "schema_version": 1,
   "artifact_kind": "qwen35-full-model-execution-smoke-contract",
-  "status": "EXISTING_S64_DRAFT_AND_DECODE1_SHORT_PROMPT_LOOP_ADAPTERS_HOST_INTEGRATION",
+  "status": "BOARD_LOCAL_SUPERVISOR_HOST_VALIDATED_PENDING_REAL_DEVICE",
   "scope": "User-prioritized execution milestone; final accuracy, correct rollback and speedup>=2x requirements are unchanged",
   "user_directive": {
     "real_features_required": true,
     "garbled_text_acceptable_for_execution_only": true,
-    "complete_models_required": true
+    "complete_models_required": true,
+    "autonomous_on_device_required": true,
+    "host_per_token_dependency_allowed": false
   },
   "models": {
     "target": {
@@ -54,7 +56,10 @@
     "Single original decode1 model ingests explicit short prompt from80zero states, then advances every committed token with same-model80state feedback",
     "Every committed token advances target, including the last token",
     "Prefix token IDs, feature history, model identity and state chain stay bound",
-    "No synthesized feature fallback, layer/expert/vocabulary reduction, or silent ordinary-only fallback"
+    "No synthesized feature fallback, layer/expert/vocabulary reduction, or silent ordinary-only fallback",
+    "All embedding lookup, prompt ingestion, draft/verify, acceptance and state/feature feedback execute on board after detached launch",
+    "Host orchestration or host-fake execution cannot satisfy the autonomous P0 gate",
+    "A disconnected started request completes on board; recovery retrieves that same attempt without inference relaunch"
   ],
   "host_implementation": {
     "source_adapter": "model/qwen35_moe_dflash/original_target_source.py",
@@ -66,10 +71,11 @@
       "draft": "model/qwen35_moe_dflash/existing_draft_smoke_backend.py",
       "entrypoint": "targets/cpro/scripts/run_serial_dflash_smoke.py"
     },
-    "independent_decode_entrypoint": "targets/cpro/scripts/run_target_decode_smoke.py"
+    "independent_decode_entrypoint": "targets/cpro/scripts/run_target_decode_smoke.py",
+    "role": "LEGACY_DIAGNOSTIC_ONLY_NOT_AUTONOMOUS_P0"
   },
   "gaps": [
-    "Run actual complete-model multi-round loop on user device with unchanged artifacts",
+    "Run actual autonomous complete-model multi-round loop and verify disconnected completion on user device with unchanged OMCs",
     "Validate experimental target controls, numerical accuracy and ordinary-baseline equality after the execution milestone",
     "Optimize resident execution and block verification only after functional integration"
   ],
@@ -83,11 +89,21 @@
     "multi_round_loop": "NOT_RUN",
     "last_row63_prefill": "EXECUTED_UNVALIDATED_PID28669_FEATURE_SHA_UNCHANGED_LOGITS_ARGMAX6"
   },
-  "first_loop_strategy": "Explicit new8token prompt +8 generated; original decode1 ingests prompt serially fromzero80states; original3input S64 draft recomputes full prefix,15 candidates; hostverify first2, compare-before-commit; no OMC compilation or cross-prefill export prerequisite",
+  "first_loop_strategy": "Explicit new8token prompt +8 generated; BOARD-LOCAL original decode1 ingests prompt serially fromzero80states; original3input S64 draft recomputes full prefix,15 candidates; board verifies first2, compare-before-commit; no OMC compilation or cross-prefill export prerequisite",
   "deferred": [
     "Whole-prefix S128 export",
     "Incremental draft KV AIR/OMC",
     "Cross-export prefill64-to-decode1 ordinary baseline",
     "Precision/quality/performance acceptance"
-  ]
+  ],
+  "board_implementation": {
+    "supervisor": "targets/cpro/runtime/src/board_serial_main.cpp",
+    "deployment_and_recovery": "model/qwen35_moe_dflash/board_serial_transport.py",
+    "preparation": "model/qwen35_moe_dflash/board_serial_dflash.py",
+    "entrypoint": "targets/cpro/scripts/run_board_serial_dflash.py",
+    "runtime": "NATIVE_CPP_SUPERVISOR_WITH_SEQUENTIAL_TARGET_AND_DRAFT_CHILDREN",
+    "per_token_server_calls": 0,
+    "model_residency": "NOT_IMPLEMENTED",
+    "startup_ack_is_completion": false
+  }
 }
