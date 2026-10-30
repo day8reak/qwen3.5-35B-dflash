@@ -2,8 +2,8 @@
   "schema_version": 1,
   "updated": "2026-10-30",
   "active_phase": "integration",
-  "delivery_status": "FULL_ORIGINAL_TARGET_PREFILL_EXECUTED_REAL_FEATURE_DRAFT_INTEGRATION_PENDING",
-  "run_id": "20261030T003719Z-6566-d802b7",
+  "delivery_status": "REAL_TARGET_PREFILL_OUTPUTS_BOUND_REAL_FEATURE_DRAFT_STEP_DEVICE_PENDING",
+  "run_id": "20261030T005504Z-7622-a5b310",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -3212,8 +3212,8 @@
           },
           "numerical_validation": "NOT_RUN_NO_REFERENCE",
           "state_continuity": "NOT_VALIDATED_SINGLE_TOOL_INVOCATION",
-          "next": "Hash-check actualoutputfiles andcompleteindex/pathlogmapping; inspectfeature/logits stats, actualdraftbundlecapacity andoriginalinput_ids beforederivedrealdraftstep",
-          "scope": "Userreportedfulloriginal40layer targetload/inference success only. Planned82 count doesnotprove actualdatafilecompleteness, correctfeaturecontent/statefeedback orwholeDFlash.",
+          "next": "Completed saved-output audit; prepare separate real-feature full-draft single-step inputs and run once without old synthetic golden comparison.",
+          "scope": "User reported complete original40layer target load/inference and82 actual files bound to logged runtime slots; state feedback, numerical correctness and complete DFlash remain unverified.",
           "reported_output_extent_counts": {
             "65536": 30,
             "1048576": 30,
@@ -3225,7 +3225,7 @@
             "path": "outputs/output_81",
             "bytes": 2097152,
             "sha256": "be3c0f2f2e76e2cb4d89ec484b0a31dfde8ed65a89ca5a2ef82ec7905370cbba",
-            "binding": "Useractualcomplete tooloutput[81]path plus recordedruntimefeatureindex; freshserverhash/statistics pending"
+            "binding": "User completed output inspector: complete explicit tool slot log plus fresh SHA/stat/typed-extent checks; allfinite with extrema +/-65504, not numerical acceptance."
           },
           "reported_logits_file": {
             "path": "outputs/output_0",
@@ -3252,21 +3252,56 @@
             "STOP_REQUESTED is notexitproof orfree-spaceproof",
             "MappingswithoutopenFDs andotherprocessholders excluded fromdeletedFDbyteobservation"
           ],
-          "remote_execution": "NOT_RUN_BY_ASSISTANT"
+          "remote_execution": "NOT_RUN_BY_ASSISTANT",
+          "user_execution": {
+            "source": "USER_PASTED_STOP_RECEIPT_PS_AND_DF",
+            "status": "STOP_REQUESTED",
+            "selected_process_count": 12,
+            "driver_pid": 4904,
+            "omg_pid": 4906,
+            "signals": "TERM_THEN_CONT_EXACT_BOUND_STOPPED_TREE",
+            "post_signal_ps": {
+              "driver_4904": "ABSENT",
+              "omg_4906": {
+                "ppid": 1,
+                "state": "Zl",
+                "description": "defunct"
+              }
+            },
+            "deleted_open_file_unique_inodes": 9,
+            "deleted_open_file_logical_bytes": 38377456,
+            "deleted_open_file_allocated_bytes": 38379520,
+            "df_available_human": "8.3G",
+            "all_worker_exit_validation": "NOT_PROVIDED",
+            "reclaimed_bytes": "NOT_INFERRED",
+            "next": "No automatic escalation or repeated stop; preserved receipt. No PID1 signal or additional filesystem deletion."
+          }
         },
         "real_feature_draft_bridge_plan": {
           "existing_bundle": "full-draft/residual-fix/bundle",
-          "source_contract": "Full6layer/block16/vocab248320 draft has3inputs targetfeaturesFP16[1,S,16384],inputIDsINT32[1,S],maskINT32[1,S]; embedding/headalreadyembedded",
-          "anchor_alignment": "anchor=valid_length-1; originalprefix64requireslastINPUTtoken63. Targetprefilllogitsargmaxisnexttoken64 andcannotbesubstitutedat63.",
-          "capacity_status": "Mustreadactualmanifest; sourcedefault64andoldattentionK80suggest64butnotdirectcurrentbundleproof",
-          "next_observations": [
-            "Actualboundfeaturefile/logits stats",
-            "Draftmanifestsequence_length/IO/modelrecord only",
-            "Originalinput_ids.bin256B64INT32ifpresent, hash/range/anchor"
+          "entrypoint": "targets/cpro/scripts/run_real_feature_draft.py",
+          "status": "HOST_IMPLEMENTED_DEVICE_PENDING",
+          "source_contract": "Same full6layer/block16/vocab248320 direct draft OMC and ABI; three new small inputs and two outputs, no model compilation or host model copy.",
+          "capacity_status": "USER_OBSERVED_MANIFEST_SEQUENCE_LENGTH_64",
+          "anchor_position": 63,
+          "anchor_token_id": 220,
+          "proposal_positions": [
+            64,
+            78
           ],
-          "immutability": "Do notoverwrite oldsyntheticfixture/goldens orsuccessfulbundle. Newexecution-onlystep/controllerrequired forrealfeatures; existingfull-draft compare assumes syntheticgoldens.",
-          "native_ability": "Existing --draft-step canconsume newhashbound3inputstep withsameOMC/ABI; no modelrecompile needed onceallbindings established",
-          "remaining": "Realfeaturehandoff/native draft invocation, fullstatehandoff and multiroundaccept/reject/accuracy/performance"
+          "anchor_alignment": "valid_length64 -> anchor63 uses original last INPUT ID220; target logits argmax0 describes next token64 and is not substituted at63.",
+          "feature_view": "Exact same FP16 bytes; only leading singleton removed [1,1,64,16384] -> [1,64,16384]. Context mask uses rows<63; anchor feature row63 remains unchanged in input.",
+          "mask": "64 INT32 ones derived only after original source-bound effective_length/allQLen/output_pos controls each freshly verify64.",
+          "immutability": "Existing bundle/fixtures/goldens untouched; new inputs, ABI and wire step below a new run output. Original existing2.85GB OMC streamed to owned board cache only if its SHA is absent.",
+          "source_preservation": "Preparation and apply recheck source inspection, exact feature/IDs/controls, model/ABI and generated payload identities. No synthetic reference comparison.",
+          "execution_scope": "ONE_REAL_FEATURE_DRAFT_STEP_NO_TARGET_STATE_FEEDBACK",
+          "numerical_validation": "NOT_RUN_NO_REFERENCE",
+          "state_continuity": "NOT_VALIDATED",
+          "remaining": "Actual real-feature draft execution,80-state lineage/feedback64to1,ordinary decode baseline,multiround reject/commit/stop,numerical closure and measured2x.",
+          "prepared_status": "REAL_FEATURE_DRAFT_STEP_PREPARED",
+          "executed_status": "REAL_FEATURE_DRAFT_EXECUTED_UNVALIDATED",
+          "board_model_policy": "Original host OMC streamed once to a SHA-owned phone cache; verified regular hardlink into an owned attempt, SHA/extent/inode rechecked after execution. No host model copy or link.",
+          "locks": "Same global target-model-I/O lock plus owned draft-cache lock across upload/runtime/one Process/retrieval; uncertain waits retain locks, no automatic retry or process escalation."
         },
         "post_prefill_host_verification": {
           "run_id": "20261030T003719Z-6566-d802b7",
@@ -3274,6 +3309,88 @@
           "failures": 0,
           "evidence": "out/final-host-tests.xml",
           "scope": "New retained-output audit and deleted-job stop tests plus existing stopped-compile andprefill-execution regressions. Fakeproc/signals/filefixtures only; actualuser outputinspection/oldprocessstop notperformed byassistant."
+        },
+        "target_prefill_output_inspection_user_report": {
+          "source": "USER_PASTED_REMOTE_INSPECTION_NOT_RETRIEVED_LOCALLY",
+          "output": "target-prefill64-output-inspection",
+          "status": "OUTPUT_FILES_BOUND_TO_LOGGED_SLOTS",
+          "slot_binding": "EXPLICIT_COMPLETE_TOOL_LOG_AND_VERIFIED_BYTES",
+          "actual_retrieved_output_file_count": 82,
+          "feature": {
+            "runtime_index": 81,
+            "path": "outputs/output_81",
+            "bytes": 2097152,
+            "sha256": "be3c0f2f2e76e2cb4d89ec484b0a31dfde8ed65a89ca5a2ef82ec7905370cbba",
+            "dtype": "FLOAT16",
+            "shape": [
+              1,
+              1,
+              64,
+              16384
+            ],
+            "finite_count": 1048576,
+            "nan_count": 0,
+            "infinity_count": 0,
+            "zero_count": 97,
+            "min": -65504.0,
+            "max": 65504.0
+          },
+          "logits": {
+            "runtime_index": 0,
+            "path": "outputs/output_0",
+            "bytes": 993280,
+            "sha256": "fd28bc57ee24097bd26a6b90ded1844599007ffea08eff087db022450aba6586",
+            "dtype": "FLOAT32",
+            "finite_count": 248320,
+            "zero_count": 6500,
+            "min": -2872.0,
+            "max": 2872.0,
+            "argmax_token_id": 0,
+            "argmax_value": 2872.0
+          },
+          "draft_bundle": {
+            "sequence_length": 64,
+            "model_bytes": 2852119022,
+            "model_sha256": "62797c0c4cdd3f228de36232b69de053bec3e83d7e34413cb2ba09f76b19b474",
+            "manifest_sha256": "f2348981f79fab95c5c91963c14f4bd918521235ba3339cf00e405db1c0c3c49",
+            "inputs": 3,
+            "outputs": 2,
+            "layers": 6,
+            "block_size": 16,
+            "vocab_size": 248320
+          },
+          "original_input_ids": {
+            "file": "input_ids.bin",
+            "dtype": "int32",
+            "shape": [
+              1,
+              64
+            ],
+            "bytes": 256,
+            "sha256": "fafd07f2c8a5832fe978744c6042c3ec6ff3bb83b1df8076d9af46d0f20919fe",
+            "last_input_position": 63,
+            "last_input_token_id": 220,
+            "matches_planned_input_dir": true,
+            "embedding_equivalence": "UNVERIFIED"
+          },
+          "numerical_validation": "NOT_RUN_NO_REFERENCE",
+          "state_layer_binding": "UNVERIFIED",
+          "numerical_observation": "All finite is not numerical acceptance. FP16 extrema at +/-65504 and logits argmax0 remain suspicious diagnostics; exact original features retained without clamping or replacement."
+        },
+        "real_feature_bridge_host_verification": {
+          "run_id": "20261030T005504Z-7622-a5b310",
+          "tests_passed": 203,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "evidence": [
+            "out/final-host-tests.xml",
+            "out/integration-tests.xml"
+          ],
+          "new_preparation_cases": 19,
+          "new_executor_cases": 27,
+          "scope": "202 host regression cases plus one actual prepare/validate-to-controller integration with fake HDC/native results. No source model, synthetic golden or host model inode mutation/copy; actual device execution and numerical acceptance remain pending.",
+          "integration_cases": 1
         }
       },
       "b": {
@@ -3398,14 +3515,14 @@
     "day1_gate": "Actual ordinary full-target64-prefill to1-decode state handoff, then real target features into the complete draft",
     "day2_gate": "Multi-round DFlash accept/reject/commit/stop correctness and matched full-device baseline/performance measurement",
     "day3_gate": "Matched real-device performance measurement and bottleneck closure",
-    "current_target_status": "Actualfulloriginal40layertargetprefill load+inference succeededexit0PID8985,0cacheupload; complete82stdoutoutputindexpathsobserved,actualfilebinding/integrityandnumericsnext. Existingfull6draft remainsreadyforrealfeaturehandoffoncecapacity/anchorIDsobserved.",
+    "current_target_status": "Original40layer target prefill executed once; all82 actual files hash-bound to explicit logged slots. Actual full6layer draft S64, originalIDs64 and anchor220 observed. Numerical extrema suspicious; real-feature draft step next.",
     "target_gaps": [
       "Original89input80RefData ordered ABI",
       "64/1 gear and persistent state",
       "External-weight loading contract",
       "Ordinary decode baseline"
     ],
-    "next_target_action": "Runreadonly successfulprefilloutputaudit withactualdraftmanifest/originalinputIDs; inparallel optionallyterminateonlyboundalready-stoppeddeletedoldcompiler. Thenprepareseparaterealfeaturefull-draftstep; no repeatprefill/targetdraftcompile.",
+    "next_target_action": "Prepare new real-feature draft step, then serialize one full6layer native draft execution using existing OMC. Do not repeat successful target prefill, output inspection or obsolete compiler stop.",
     "immediate_user_milestone": "Complete target+draft end-to-end execution with real hidden features; garbage text acceptable only for this smoke milestone",
     "deadline_assessment": "Both target static artifacts now compiled, improving full-execution feasibility. Two days remains a high-risk noncommitted estimate for correctness plus measured2x speed; ordinary target execution and80statehandoff are the next critical gate."
   },
