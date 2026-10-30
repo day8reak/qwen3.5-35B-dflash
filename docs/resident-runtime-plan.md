@@ -11,7 +11,7 @@
 | target | 每token启动原工具，反复加载 | 一个V2实例，多次Run |
 | draft | 每轮启动原CLI，反复加载／模型SHA | 一个legacy-buffer实例，多次Process |
 | 跨端数据 | 启动前与完整请求结束后 | 同左 |
-| 实机状态 | 单模型曾运行；自主完整请求待结果 | 常驻初始化、双模型内存、重复执行待验证 |
+| 实机状态 | serial-prompt自主子流程已成功；原prefill完整P0待运行 | 常驻初始化、双模型内存、重复执行待验证 |
 
 现有`HiaiStatefulExecutor`在构造时加载模型并分配张量，重复`SetInput → Execute → CopyOutput`不会主动卸载，析构时才释放。因此常驻需要改执行器生命周期，不需要重新导出AIR或重编OMC。原target约15MB主OMC加18.8GB外置权重，必须保留文件／外置权重加载路线；不能按文件总大小推断实际内存占用。
 
@@ -31,7 +31,7 @@
 
 ## prefill用完卸载及重叠加载
 
-P3跨导出桥接成立后，单个请求先加载prefill并运行；等待同步Run完成，把80状态、features、logits复制到session持有的存储，再卸载prefill。随后加载decode一次，并在生成期间保持decode和draft实例。循环结束后统一释放。P0当前没有独立prefill加载，不能把其中8次decode prompt调用算成“一次prefill”。
+原prefill的功能接入必须在P0完成，P3补数值／历史一致性验收。接续成立后，单个请求先加载prefill并运行；等待同步Run完成，把80状态、features、logits复制到session持有的存储，再卸载prefill。随后加载decode一次，并在生成期间保持decode和draft实例。循环结束后统一释放。P0当前没有独立prefill加载，不能把其中8次decode prompt调用算成“一次prefill”。
 
 卸载prefill与加载decode可以作为后续重叠实验，**目前没有接口并发及内存证据支持默认开启**。必须满足：无prefill未完成任务；输出不再引用即将释放的内存；runtime允许不同manager并发初始化／销毁；实测prefill未释放、decode正加载及draft驻留时的峰值内存有余量。文件大小不是峰值内存证明。优先收益是取消每token／每轮重复加载；启动交接重叠只优化一次转换，不作为首个闭环的前置条件。
 

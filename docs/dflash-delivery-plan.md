@@ -8,7 +8,7 @@
 
 最终交付：原40层量化 target＋完整训练六层 draft，真实特征、正确的提议／验证／接受／拒绝／状态提交，支持实际提示词与多轮生成；通过精度和稳定性后，在相同条件下实测 DFlash decode-loop 中位延迟至少优于普通 decode **2倍**，同时报告包含 prefill 的总延迟。2倍仍是目标，尚无实测保证。
 
-用户最新优先级：**今天在端侧自主完成真实完整DFlash多轮端到端流程**。服务器只部署、启动与结束后回收；请求启动后，embedding查表、prompt输入、draft、verify、接受／拒绝、80状态与特征反馈以及停止都在端侧完成。中断主机连接不能成为板端停止生成的原因。主机调度循环只算联调，不能验收P0。允许当前阶段乱码／数值误差；之后逐步修精度和速度。该放宽只适用于 P0 执行里程碑，不永久取消最终精度、语言质量或性能要求。
+用户最新优先级：**第一阶段必须在端侧自主完成原prefill→draft／串行verify→多轮generation**。decode1串行输入prompt的成功只算子里程碑，不能替代原prefill。服务器只部署、启动与结束后回收；请求启动后，embedding查表、prompt输入、draft、verify、接受／拒绝、80状态与特征反馈以及停止都在端侧完成。中断主机连接不能成为板端停止生成的原因。主机调度循环只算联调，不能验收P0。允许当前阶段乱码／数值误差；之后逐步修精度和速度。该放宽只适用于 P0 执行里程碑，不永久取消最终精度、语言质量或性能要求。
 
 固定模型边界：target40层、原量化权重；draft6层、hidden2048、intermediate6144、block16、15候选、完整248320词表；target第 `[1,6,11,16,22,27,32,37]` 层特征拼接为16384。不能用 tiny 结果替代完整模型，不减层、不缩词表、不悄悄换权重。4B仓库只作接口／调度参考，不能复制其模型尺寸、5层量化checkpoint或310P二进制。
 
@@ -18,8 +18,8 @@
 
 | 到达的结果 | 顺利时的累计工作日 | 说明 |
 |---|---:|---|
-| P0：端侧自主短提示词多轮闭环，允许精度误差 | 已完成 | 用户回传16次target／7次draft的完整回收结果，见首次实机记录 |
-| P1–P3：可对照的普通基线、精度收敛、prefill→decode接续 | 3–7天 | 前提是原参考与控制实现可取得；底层算子是主要风险 |
+| P0：原prefill驱动的端侧自主多轮闭环，允许精度误差 | 进行中，路线确认后重估 | serial P8/G8已成功；原prefill集成尚未运行 |
+| P1–P3：可对照的普通基线、精度收敛、prefill→decode数值验收 | 3–7天 | 前提是原参考与控制实现可取得；底层算子是主要风险 |
 | P4–P6：长上下文、常驻执行、批量verify及正确回滚 | 7–14天 | 含新增artifact编译与实机联调；允许部分并行 |
 | P7–P8：稳定性、配对性能、优化迭代与交付 | 10–20天 | 按2–4个工作周安排；达到2倍取决于接受率和实测瓶颈 |
 
@@ -37,16 +37,16 @@
 | row63 prefill试验 | PID28669成功；feature SHA不变，logits argmax由0变6 | 只证明该单变量试验改变了logits，未判定数值根因 |
 | embedding两张原表 | 用户确认已复制完成 | 新入口仍核对文件大小和实际读取行 |
 | 主机多轮调度＋两实机adapter | 旧任务在10次target／1次draft后遇runner复用路径错误；已修复，用户选择新版 | 仅联调工具，**不满足端侧自主P0目标** |
-| 端侧自主调度器＋部署／恢复入口 | 用户回传完整实机回收成功：16次target、7次draft、0接受／7纠正，锁已释放 | P0执行完成；未提供专门物理断连实验记录，精度／常驻／性能未验收 |
+| 端侧serial调度器＋部署／恢复入口 | 完整dump及compact用户回传成功；compact tokens `[26,18,2,4,6,2,0,2]`，16target／7draft，0／7接受 | 仅serial-prompt子里程碑；原prefill集成与P0整体未完成，物理断连／精度／常驻／配对性能未验收 |
 | 增量draft缓存图 | `ge_incremental_draft.py`及独立主机等价测试已存在 | **没有新增AIR／OMC／实机增量ABI通过结果** |
 | 精度／稳定性／2倍加速 | 待完成 | 不从有限值、exit0或host测试推断通过 |
 
-旧64-token prompt把现draft S64的输入容量用满；标准下一token anchor需要第65行。P0改为明确的新8-token请求，完整历史保留，复用旧OMC。它不是裁掉旧64-token请求的一半后冒称等价。
+旧64-token prompt把现draft S64的输入容量用满；标准下一token anchor需要第65行。已成功的serial子流程采用明确的新8-token请求，完整历史保留，复用旧OMC。它不是裁掉旧64-token请求后冒称等价，也不能替代当前P0要求的原prefill路径。原prefill的有效长度、anchor及draft容量如何接续仍须明确，不自动指定S128。
 
 ## 4. 接手助手的执行规则
 
 1. 只推进状态文件中最前面的未完成阶段，读其依赖、下一动作和证据；阶段内可以并行独立host工作，设备模型调用仍遵守共享锁。
-2. 先复用已成功的源／模型／缓存和当前环境。P0不重编target或draft，不跑S128导出，不再重复row63实验或旧metadata探针。
+2. 先复用已成功的源／模型／缓存和当前环境。不要重跑成功的serial请求、row63实验或旧metadata探针。原prefill接续先确定有效长度、anchor和容量合同；不把S128当作默认前置条件，不通过截断历史或改manifest冒充新容量。
 3. 每个动作写清“目的、输入、命令、预期输出”。已有脚本先读 `--help`；下文标为“待实现”的入口不能当作现成CLI调用。
 4. host问题在host检查，只有需要实机结果时才让用户执行一次完整命令。能合并到入口的检查不拆成多轮手工问答。
 5. 修复可解释的路径、大小、JSON字段、schema选择、缓存／输出取回等局部问题后，跑相关检查、提交并推送；不要为了省事忽略失败、改旧receipt或放宽精度阈值。
@@ -58,25 +58,25 @@
 
 开发workspace存在时使用其声明的工具和run目录；用户DDK主机当前是`custom_pypto`环境，沿用已配置的`REPO_DIR/AI_RUN_DIR/HDC/SN/BIP`，不要要求它安装开发workspace或新建一套环境。不要改共享DDK／plugin。
 
-## P0. 今天完成端侧自主端到端多轮循环
+## P0. 完成原prefill驱动的端侧自主多轮循环
 
-**2026-10-30用户回传P0完整执行成功，证据见[首次实机结果](board-first-completion.md)。保留成功请求，不按旧计划重复运行。** 新增dump开关和时延统计单独验证；普通基线与精度进入P1。
+**状态：in_progress。** [已完成实机子里程碑](board-first-completion.md)是decode1串行输入prompt后运行draft／serialverify；原prefill→draft／serialverify→多轮generation尚未运行，不能验收整个P0。精度暂不阻塞执行里程碑，准确性与性能目标不取消。
 
-主机循环 `run_serial_dflash_smoke.py` 保留作联调，不满足本阶段验收。不得再把端侧自主调度推到P5之后。P0已实现板端调度程序逐次启动现有target工具和draft runner；模型仍按次加载、状态通过板端文件交接。用户随后要求并行减少耗时并考虑常驻：先发布独立I/O修复，同时开始P5的接口／生命周期适配；端侧自主闭环和模型常驻分别验收，不能把新设计当作实机已通过。
+主机循环`run_serial_dflash_smoke.py`仍只算联调；现`run_board_serial_dflash.py`已证明serial路径可以全在板端完成。它不是原prefill集成入口。保留其完整dump与compact成功目录，不要求重复同样的P8/G8。最新compact总墙钟367.791秒，prompt输入8次74.389秒、生成decode8次108.209秒、draft7次137.646秒；包含加载／执行／卸载，非纯NPU时间，且没有主机逐状态回放。
 
-请求：原input_ids前8个token作为新prompt，从80个FP16零态开始，同一个decode1逐token读入并生成8个token。端侧通过完整原embedding两表查行，生成实验控制值、保存所有状态和特征。target-next作为anchor，旧S64 draft完整历史右padding，每次输出15候选，端侧先考虑前2个；首错纠正、全接受可加bonus，仅提交token进入target。EOS暂关闭。没有模型编译，没有S128前置条件。
+本阶段待完成：原prefill实际执行一次，明确其80状态、logits和8层features到decode／draft的身份与字节交接；随后由板端完成提议、串行验证、接受／纠正及多轮生成。prefill／decode是不同模型variant，保留各自SHA，不能按RefData编号或相同shape猜对应关系。功能接入应在P0推进；P3保留同输入的数值／历史一致性验收。
 
-新入口：`targets/cpro/scripts/run_board_serial_dflash.py`。主机检查通过后发布，使用 [current-status.md](current-status.md) 的 detached 启动和同 attempt 回收命令。启动确认仅代表已发起，实机完整结果才验收。
+当前准备实现`PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL`：8个有效prompt token右padding到原prefill64。它尚未执行，必须先确定控制配方、首轮与后续anchor、完整feature历史及draft容量，再给出准确集成命令。旧S64容量边界不能被静默越过。当前不指定S128为必做步骤，也不默认裁历史、重置位置或用串行prompt替代原prefill。尚未实现的接口不能写成现成CLI。
 
 通过条件：
 
-- 实际板端 `BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED`，或同一已完成attempt的恢复结果；完整调用结果和最终文件通过回收校验。
-- 16次真实target native调用、至少2次真实完整draft调用、8个生成token；每步输入／输出槽位和80状态链有绑定记录。
-- 查表、prompt输入、提议、验证、接受／拒绝、状态／特征反馈和循环终止全部由板端程序执行。服务器不提供逐token输入或决策。
-- 请求以脱离HDC会话的方式启动；主机或HDC连接中断后端侧仍可完成。重连只能回收同一attempt，不重新推理或把中断后的重跑冒称恢复。
-- 保存提案、考虑候选、纠正／bonus、每次前后状态及feature哈希。接受率允许0，乱码不阻塞；没有自然出现的分支不伪称已实机覆盖。
+- 实际运行原prefill，并将同一次请求的80状态、logits／features接入后续decode和完整六层draft。
+- 完成至少两轮真实draft及串行verify／generation，保留实际调用数、token、接受／纠正／bonus和模型variant身份；不能用原serial请求的16次target计数替代。
+- 查表、prefill、提议、验证、接受／拒绝、状态／特征反馈及循环终止全部在板端；服务器不提供逐token数据或决策。
+- 回收同一已完成attempt，保留完成进程及锁证据。compact报告只验tokens和完成状态；逐状态／数值诊断走`--dump`的对应证据合同。
+- 物理断连实测当前未提供，单独保留状态；不把设计上的detached能力写成已观察到的断连结果。
 
-首次通过请求的产物：主机prepared manifest、部署checkpoint、最终result；板端完整每步日志／receipt／中间张量；结束后取回日志、receipt、最终82输出与feature历史。后续正常运行默认关闭dump，只回收最终token、接受率、分阶段时延及完成状态；精度／逐状态诊断用新请求的`--dump`。精简报告不能替代完整数值／状态证据。模型常驻、精度、长上下文和2倍加速均未由此通过。
+验收允许零接受率或乱码，但不能因此取消原prefill或缩减模型。常驻适配可独立并行，不等于P0已经完成，也不能以先完成性能工作为由推迟这条功能路径。
 
 ## P1. 建立可信的普通target基线并定位精度问题
 
@@ -115,7 +115,7 @@
 
 **局部预算：0.5–2天。依赖：P1；可与P2部分并行。**
 
-目的：把P0为了省时间采用的逐token prompt输入，换成原prefill模型；模型语义与生成历史必须一致。仍不要把旧S64 draft容量问题混入状态映射验收：可以先单独验证prefill64→若干decode1，draft长上下文由P4解决。
+原prefill的功能接入已列为P0的必需内容，不能继续作为后续可选优化。本阶段在其基础上补同一完整请求的数值／历史一致性验收。可分别验证prefill64→若干decode1与draft容量，但完整P0仍须将prefill、draft／serialverify和多轮生成接在一起；不能仅凭单步桥接宣布完成。
 
 现成工具：`prepare_target_prefill_decode_feedback.py`，参数见其`--help`。它生成80条参数owner→source→compiled FX→native→prefill文件→decode输入映射；**不是已完成的80输入执行器，`feedback_ready=false`也不是精度失败**。cross-model source的RefData编号或相同shape不能代替身份。
 
@@ -245,7 +245,7 @@ decode1串行verify仍对每个已提交token运行target，主要是正确性�
 
 可直接复制给后续模型：
 
-> 请先读取 docs/dflash-delivery-plan.md、specs/dflash-execution-state.json 和 docs/current-status.md。沿状态文件最前面的未完成阶段继续；当前优先复用已有原target decode1和完整draft S64，执行新8-token prompt＋8-token生成的端侧自主多轮循环；主机调度循环不算P0通过，不把增量draft或S128编译当作P0前置条件。按计划完成常规实现、验证、提交／推送和远端命令交付，保持旧成功产物。禁止用host测试或有限值冒称设备精度／加速通过。每次结束更新阶段状态、证据和一条下一动作；遇到计划第7节情况，保留最小复现，向用户汇报以便重新规划。
+> 请先读取 docs/dflash-delivery-plan.md、specs/dflash-execution-state.json 和 docs/current-status.md。沿P0继续原prefill→draft／串行verify→多轮generation。decode1串行prompt的P8/G8已成功，只是子里程碑，不要求重复；先明确prefill有效长度、anchor、80状态和draft容量合同，再实现准确入口。不要自动指定S128，也不要裁历史或以串行prompt替代原prefill。按计划完成常规实现、验证、提交／推送和远端命令交付，保持旧成功产物。禁止用host测试或有限值冒称设备精度／加速通过。每次结束更新阶段状态、证据和一条下一动作；遇到计划第7节情况，保留最小复现，向用户汇报以便重新规划。
 
 每次交接更新状态JSON，并用以下格式简报：
 

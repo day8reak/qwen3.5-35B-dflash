@@ -1,14 +1,16 @@
 {
   "schema_version": 1,
   "artifact_kind": "qwen35-full-model-execution-smoke-contract",
-  "status": "USER_REPORTED_BOARD_LOCAL_FULL_LOOP_COMPLETED_UNVALIDATED",
-  "scope": "User-prioritized execution milestone; final accuracy, correct rollback and speedup>=2x requirements are unchanged",
+  "status": "IN_PROGRESS_ORIGINAL_PREFILL_INTEGRATION_REQUIRED",
+  "scope": "First-stage execution requires original prefill -> full draft/serial verify -> multi-round generation; successful decode1 serial-prompt runs are retained submilestones. Final numerical/rollback/speed goals unchanged.",
   "user_directive": {
     "real_features_required": true,
     "garbled_text_acceptable_for_execution_only": true,
     "complete_models_required": true,
     "autonomous_on_device_required": true,
-    "host_per_token_dependency_allowed": false
+    "host_per_token_dependency_allowed": false,
+    "original_prefill_required": true,
+    "serial_prompt_success_is_complete_stage": false
   },
   "models": {
     "target": {
@@ -53,13 +55,14 @@
   "verify": "Serial gear1 compare-before-commit; rejected candidates never enter target state",
   "requirements": [
     "At least two full draft invocations bound to real target features",
-    "Single original decode1 model ingests explicit short prompt from80zero states, then advances every committed token with same-model80state feedback",
+    "Original prefill executes once and hands its80 states, logits and real features to decode/draft in the same autonomous multi-round request",
     "Every committed token advances target, including the last token",
     "Prefix token IDs, feature history, model identity and state chain stay bound",
     "No synthesized feature fallback, layer/expert/vocabulary reduction, or silent ordinary-only fallback",
     "All embedding lookup, prompt ingestion, draft/verify, acceptance and state/feature feedback execute on board after detached launch",
     "Host orchestration or host-fake execution cannot satisfy the autonomous P0 gate",
-    "A disconnected started request completes on board; recovery retrieves that same attempt without inference relaunch"
+    "A disconnected started request completes on board; recovery retrieves that same attempt without inference relaunch",
+    "Original prefill/decode variant identities and complete-history/anchor capacity must be explicit; serial prompt cannot substitute for prefill and S128 is not automatically required"
   ],
   "host_implementation": {
     "source_adapter": "model/qwen35_moe_dflash/original_target_source.py",
@@ -75,9 +78,11 @@
     "role": "LEGACY_DIAGNOSTIC_ONLY_NOT_AUTONOMOUS_P0"
   },
   "gaps": [
-    "Validate new dump/timing changes independently; preserve original completed device request and obtain dedicated physical-disconnect evidence if required",
-    "Validate experimental target controls, numerical accuracy and ordinary-baseline equality after the execution milestone",
-    "Optimize resident execution and block verification only after functional integration"
+    "Implement and execute original prefill -> draft/serial verify -> multi-round generation; this full path has not run",
+    "Freeze the padded-short-prompt prefill controls,80state/feature/logit handoff and anchor/capacity contract before claiming integration",
+    "Compact tokens/completion evidence does not replay the80state chain on host; physical-disconnect experiment remains unobserved",
+    "Validate experimental controls, numerical accuracy and ordinary-baseline equality after the execution milestone",
+    "Resident execution, batch verification and paired speedup remain unvalidated"
   ],
   "commands": "docs/current-status.md#用户现在执行什么",
   "accuracy": "NOT_EVALUATED_BY_EXECUTION_MILESTONE",
@@ -86,16 +91,50 @@
     "target_prefill": "EXECUTED_UNVALIDATED_PID8985",
     "real_feature_draft": "REAL_FEATURE_DRAFT_EXECUTED_UNVALIDATED_PID17398",
     "real_feature_draft_calls": 1,
-    "multi_round_loop": "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED_TARGET16_DRAFT7_ACCEPTED0_CORRECTIONS7",
+    "multi_round_loop": "SERIAL_PROMPT_SUBMILESTONE_BOARD_LOCAL_TARGET16_DRAFT7_ACCEPTED0_CORRECTIONS7",
     "last_row63_prefill": "EXECUTED_UNVALIDATED_PID28669_FEATURE_SHA_UNCHANGED_LOGITS_ARGMAX6",
-    "multi_round_evidence": "docs/board-first-completion.md"
+    "multi_round_evidence": "docs/board-first-completion.md",
+    "original_prefill_integrated_multiround": "NOT_RUN",
+    "latest_compact_serial_prompt": {
+      "generated_token_ids": [
+        26,
+        18,
+        2,
+        4,
+        6,
+        2,
+        0,
+        2
+      ],
+      "target_native_calls": 16,
+      "draft_native_calls": 7,
+      "accepted": 0,
+      "considered": 7,
+      "total_wall_ms": 367791,
+      "prompt_ingest": {
+        "calls": 8,
+        "total_ms": 74389,
+        "mechanism": "DECODE1_SERIAL_PROMPT_INGESTION"
+      },
+      "decode": {
+        "calls": 8,
+        "total_ms": 108209
+      },
+      "draft": {
+        "calls": 7,
+        "total_ms": 137646
+      },
+      "timing_scope": "CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD_NOT_NPU_INFERENCE",
+      "host_state_chain_replay": "NOT_RUN_COMPACT_SCOPE",
+      "physical_disconnect": "NOT_SPECIFICALLY_TESTED"
+    }
   },
-  "first_loop_strategy": "Explicit new8token prompt +8 generated; BOARD-LOCAL original decode1 ingests prompt serially fromzero80states; original3input S64 draft recomputes full prefix,15 candidates; board verifies first2, compare-before-commit; no OMC compilation or cross-prefill export prerequisite",
+  "first_loop_strategy": "Pending original prefill64 padded-short-prompt experiment -> exact80state/logit/feature handoff -> original full draft and serial gear1 verification -> multi-round generation on board. Prior serial-P8/G8 route is a completed submilestone only. Preserve full history; no automatic S128 requirement.",
   "deferred": [
     "Whole-prefix S128 export",
     "Incremental draft KV AIR/OMC",
-    "Cross-export prefill64-to-decode1 ordinary baseline",
-    "Precision/quality/performance acceptance"
+    "Precision/quality/performance acceptance",
+    "Prefill/decode numerical/history comparison after functional P0 integration; prefill functionality itself is not deferred"
   ],
   "board_implementation": {
     "supervisor": "targets/cpro/runtime/src/board_serial_main.cpp",
@@ -105,7 +144,9 @@
     "runtime": "NATIVE_CPP_SUPERVISOR_WITH_SEQUENTIAL_TARGET_AND_DRAFT_CHILDREN",
     "per_token_server_calls": 0,
     "model_residency": "NOT_IMPLEMENTED",
-    "startup_ack_is_completion": false
+    "startup_ack_is_completion": false,
+    "current_prompt_path": "DECODE1_SERIAL_PROMPT_ONLY_ORIGINAL_PREFILL_INTEGRATION_PENDING",
+    "prefill_experiment": "PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL_PENDING_DEVICE_EXECUTION"
   },
   "retention_policy": {
     "new_requests": "DEFAULT_COMPACT_FINAL_TOKENS_AND_STATUS",

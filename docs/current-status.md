@@ -2,19 +2,21 @@
 
 <a id="用户现在执行什么"></a>
 
-**2026-10-30：用户已回传首次端侧自主多轮完成结果。** 原请求`dflash-board8-run`共16次target、7次draft，考虑7个候选、接受0个、纠正7个；回收成功且锁已释放。P0执行里程碑完成，精度与加速仍未验收。详见[首次实机结果](board-first-completion.md)。成功目录保留，不要求重复运行。
+**2026-10-30：P0仍在进行。用户明确第一阶段必须包含原prefill→draft／串行verify→多轮generation。** 已成功的是decode1串行输入8-token prompt的端侧自主子流程，不等于原prefill接入完成。最新compact回传tokens为`[26,18,2,4,6,2,0,2]`，16次target、7次draft，接受0／考虑7；总墙钟367.791秒。原prefill驱动的完整循环尚未运行，精度与加速仍未验收。详见[已完成子里程碑](board-first-completion.md)。保留成功目录，不要求重复已成功的serial请求。
 
 服务器只负责一次部署、启动和最终结果回收。请求启动后，embedding查表、prompt输入、draft、decode1 verify、接受／拒绝、80状态与特征反馈和停止都在板端完成。连接中断后已经启动的端侧请求仍应自行完成，重连回收同一attempt，不重新推理。
 
-## 新执行入口
+## 已成功的serial子流程入口（不是完整P0）
 
 - 新板端C++调度器复用原decode1工具及完整S64 draft runner，P8/G8，每轮考虑2个候选。
-- 两个OMC保持不变；runner构建不等于模型重新编译。不需要S128导出。
+- 下面serial子流程复用两个既有OMC；runner构建不等于模型重新编译。原prefill接续的容量与anchor方案仍在确认，不自动要求S128。
 - 一次准备embedding表／ABI／runner并复用模型缓存；端侧执行仍检查真实输出和80状态交接。新请求默认精简模式，只回收最终token及小型状态／时延摘要；`--dump`开启详细调试数据保留与回收。
 - detached启动、持久checkpoint以及只回收不重跑的恢复入口。
 - runner显式采用Release构建；板端合并重复文件读取／哈希，最终回收去掉每个文件重复的远端SHA查询。模型、80状态副本和校验规则保持不变。
 - `supervisor.stdout`记录启动哈希和每个子进程开始／结束；`loop.json`的`supervisor_timing`记录墙钟耗时，包含加载／执行／卸载，不是NPU纯推理时间。
 - 主机模拟已覆盖接受／纠正／bonus、状态槽位重排、子进程失败与断连恢复。独立集成使用实际C++调度器和实际draft CLI、模拟HIAI／target，完成16次target与5次draft；这不是实机通过。
+
+以下命令仅保留为已验证serial子流程的入口示例，**当前不要求重复执行**；原prefill模式的准确命令待功能接入后补充。
 
 在DDK主机沿用已经配置好的`REPO_DIR`、`AI_RUN_DIR`、`BIP`、`SN`及Native SDK环境。旧host任务已在第二次draft的依赖库发现处失败，用户选择直接运行新版；保留旧目录，不重跑旧host循环。如果共享板端锁仍被占用，新任务会等待，不能通过删除主机output清锁。`--output`必须是新目录。
 
@@ -51,14 +53,16 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
 
 如需定位精度或状态问题，在**新请求启动命令**加`--dump`。恢复命令不接受该选项，沿用原请求的模式；旧请求未记录dump字段时按原完整模式恢复，不因升级代码丢弃证据。详细模式仍按旧策略回收日志、receipt和最终张量，中间工作文件保留在板端。
 
-普通输出也包含`acceptance`（accepted／considered／rate，分母为实际考虑的候选数）和`phase_latency`。`prompt_ingest`是当前prefill阶段，由decode1逐token输入prompt，标记`DECODE1_SERIAL_PROMPT_INGESTION`；`decode`仅统计生成阶段target调用；`draft`统计draft调用。各项提供calls、total_ms、mean_ms。时延口径为子进程墙钟，含加载、执行、卸载，未提供纯NPU推理时间；`supervisor_timing.total_wall_ms`还包含源检查和调度I/O，不含主机部署／回收。
+普通输出也包含`acceptance`（accepted／considered／rate，分母为实际考虑的候选数）和`phase_latency`。`prompt_ingest`是decode1逐token输入prompt的串行阶段，标记`DECODE1_SERIAL_PROMPT_INGESTION`，不是原prefill模型调用；`decode`仅统计生成阶段target调用；`draft`统计draft调用。各项提供calls、total_ms、mean_ms。时延口径为子进程墙钟，含加载、执行、卸载，未提供纯NPU推理时间；`supervisor_timing.total_wall_ms`还包含源检查和调度I/O，不含主机部署／回收。
 
-若HDC断连导致启动响应丢失，保留原目录，优先对原请求执行`--recover`。若失败发生在部署阶段、尚未记录启动请求，需根据checkpoint和原调用日志核对锁与远端命令完成状态；不要直接删锁、删output或重新发起。若板端子进程挂住，本版本保留PID并等待，不自动kill或重跑。当前入口仍按次加载模型，板端保留完整中间张量；本次I/O优化没有实现模型常驻，也没有实机加速比。
+若HDC断连导致启动响应丢失，保留原目录，优先对原请求执行`--recover`。若失败发生在部署阶段、尚未记录启动请求，需根据checkpoint和原调用日志核对锁与远端命令完成状态；不要直接删锁、删output或重新发起。若板端子进程挂住，本版本保留PID并等待，不自动kill或重跑。当前入口仍按次加载模型；compact模式清理已消费的成功scratch，dump模式保留详细中间产物。本次I/O优化没有实现模型常驻，也没有实机配对加速比。
 
 旧host任务记录为10次target、1次draft后失败，路径问题已修复并通过39项主机检查，详见[旧runner复用修复](legacy-draft-runner-reuse-fix.md)。旧 `run_serial_dflash_smoke.py` 即使完成，也不计为今天端侧自主目标通过。
 
-用户要求并行减少运行耗时并考虑模型常驻。独立`HiaiOriginalTargetExecutor`已实现，依据所选DDK实际V2声明绑定89／82接口；主机替身连续3次Run、80状态回传及21种失败情形通过，连同既有runner回归共8项CTest通过。它尚未接入worker协议或默认循环，也未在实际DDK／设备验证初始化顺序；当前入口仍按次加载。当前P8流程没有独立prefill模型，8个prompt token仍由decode1输入；未来prefill桥接完成后，采用prefill一次运行并卸载、decode与draft常驻的生命周期。并发卸载／加载必须在状态交接和峰值内存可行后单独验证。见[常驻执行方案](resident-runtime-plan.md)。
+用户要求并行减少运行耗时并考虑模型常驻。独立`HiaiOriginalTargetExecutor`已实现，依据所选DDK实际V2声明绑定89／82接口；主机替身连续3次Run、80状态回传及21种失败情形通过，连同既有runner回归共8项CTest通过。它尚未接入worker协议或默认循环，也未在实际DDK／设备验证初始化顺序；当前入口仍按次加载。当前P8子流程没有独立prefill模型，8个prompt token仍由decode1输入；原prefill接入属于本轮P0待完成内容。接续和生命周期落实后，再验证prefill一次运行并卸载、decode与draft常驻。并发卸载／加载必须在状态交接和峰值内存可行后单独验证。见[常驻执行方案](resident-runtime-plan.md)。
 
-首次完整dump实机结果已收到；新增精简模式与时延摘要需独立验证，不能直接继承旧二进制的实机结果。接下来处理普通基线／精度，继续并行完成常驻，再推进跨导出prefill桥接、长上下文、批量verify／回滚与实测加速。
+完整dump和compact的serial子流程均已收到用户实机成功回传；compact只核对最终报告与完成记录，不在主机重放80状态链。最新分段墙钟：prompt输入8次共74.389秒、生成阶段decode 8次共108.209秒、draft 7次共137.646秒；都包含加载／执行／卸载，不是纯NPU推理时间。没有配对普通baseline，也未专门实测物理断连。
+
+**当前下一步是实现并运行原prefill→draft／串行verify→多轮generation。** 原prefill／decode的80状态、logits／features、anchor及draft容量必须接入同一请求；serial成功不能替代它。当前准备实现P8有效prompt右padding到原prefill64的实验合同，尚未实机运行；控制值、80状态映射、anchor与容量必须明确，不默认导出S128，不裁历史或重置位置。普通基线／精度、常驻和后续批verify按各自阶段独立验收。
 
 完整后续阶段、预计天数和换助手交接见 [执行总计划](dflash-delivery-plan.md)，机器可读进度见 [执行状态](../specs/dflash-execution-state.json)。

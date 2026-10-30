@@ -48,4 +48,6 @@ CMake Release构建`qwen35_board_serial`通过。这里使用主机编译器；�
 
 执行限制：完整prefix≤64；P0固定P8/G8、关闭EOS、使用实验控制值；模型按次加载并在板端保留中间张量，尚未实现模型常驻。板端子进程挂住时保留PID并等待，不自动kill／重试。部署阶段远端操作完成状态不明时保留锁，需要检查原调用记录；恢复不会猜测清锁。发布检查没有调用真实设备，也没有停止用户正在运行的任务。
 
-后续助手应以真实设备的`loop.json`、取回校验及断连／恢复记录推进P0状态。`STARTED`、主机测试、历史主机调度循环、单个模型exit0均不能把P0改为通过。
+后续助手应继续实现并运行原prefill→draft／串行verify→多轮generation。已完成的serial子里程碑见[实机记录](board-first-completion.md)：compact tokens `[26,18,2,4,6,2,0,2]`，16target／7draft，接受0／考虑7，总墙钟367.791秒；prompt输入74.389秒、decode108.209秒、draft137.646秒。此为包含加载／执行／卸载的墙钟，不是NPU纯推理或配对性能。compact没有主机逐状态回放，物理断连未专门实测。
+
+P0整体保持`in_progress`。`STARTED`、主机测试、历史host循环、单模型exit0或已经成功的serial-prompt流程，都不能替代原prefill驱动的完整阶段验收。
