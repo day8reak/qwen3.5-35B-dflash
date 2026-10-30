@@ -24,6 +24,7 @@ from .hashing import sha256_file
 from .hdc_run import Hdc, _file_record, _upload
 from .hiai_deployment import BOARD_LIBRARY_SEARCH_PATHS, DDK_HCL_EXCLUDED, candidate_blockers, discover_libraries
 from .original_target_board import _board_path
+from .target_prefill_smoke_plan import _identity
 
 
 _KIND = "qwen35-target-model-io-probe"
@@ -48,9 +49,11 @@ def _unchanged(bindings, payloads):
     for row, path in payloads:
         if (_stat(path) != row.get("stat") or sha256_file(path) != row["sha256"] or _stat(path) != row.get("stat")):
             raise ValueError("target compiler payload metadata changed during probe: " + str(path))
+        if row.get("active_identity") is not None and _identity(path.stat()) != row["active_identity"]:
+            raise ValueError("target primary full identity changed during probe: " + str(path))
 
 
-def _bound_inputs(job, inspection, *, verify_primary=True):
+def _bound_inputs(job, inspection, *, verify_primary=True, primary_revalidation_observations=None):
     job = Path(job).resolve()
     root = job / "compilation"
     bindings = []
@@ -113,10 +116,27 @@ def _bound_inputs(job, inspection, *, verify_primary=True):
         if row == report["omc"]:
             if not 0 < row["bytes"] <= 64 << 20:
                 raise ValueError("restore metadata probe accepts only a small primary OMC at most64MiB; no large-model fallback")
-            path = _recorded_file(root, row, "stat") if verify_primary else _file(root, row.get("path"))
+            if verify_primary:
+                # A prior permission change may alter historical ctime. Reuse
+                # the bounded primary-only binder; no sidecar is opened and
+                # the compiler receipt remains unchanged.
+                from .target_decode_smoke_plan import bind_primary_omc
+                path = _file(root, row.get("path"))
+                current = bind_primary_omc(path, row,
+                    revalidation_observations=primary_revalidation_observations)
+                # The binder hashes historical ctime drift. A stat-identical
+                # primary still needs its original complete content check.
+                if current["scope"] == "DECLARED_SHA_AND_CURRENT_STAT_ONLY_MODEL_NOT_OPENED":
+                    _recorded_file(root, row, "stat")
+                active = dict(row, stat=_stat(path), active_identity=_identity(path.stat()))
+                if active["active_identity"] != current["identity"]:
+                    raise ValueError("primary changed between historical revalidation and probe baseline")
+            else:
+                path = _file(root, row.get("path"))
+                active = row
             if not verify_primary and (_stat(path) != row.get("stat") or path.stat().st_size != row.get("bytes")):
                 raise ValueError("primary OMC metadata differs before header inspection")
-            payloads.append((row, path))
+            payloads.append((active, path))
     boundary = contract.get("boundaries", {})
     if (len(boundary.get("inputs_in_serialized_op_order", [])) != 89 or len(boundary.get("outputs", [])) != 82):
         raise ValueError("target probe requires the complete89-input82-output feature target")
@@ -235,6 +255,7 @@ def inspect_target_runtime_io(job, tool_inspection, output_dir, *, timeout_secon
         "model_upload": "NOT_RUN", "model_load": "NOT_RUN",
         "descriptor_stage": "restore-only", "manager_init": "NOT_RUN", "external_weight_initialization": "NOT_REQUESTED",
         "weight_payload_access": "NONE; compiler sidecar declarations only, no fresh weight hash or upload",
+        "primary_omc_revalidation_observations": [],
         "retrieval_errors": [], "board_cleanup": "OWNED_CACHE_AND_ATTEMPT_RETAINED", "output": str(out)}
     hdc = board = global_lock = cache = None
     global_held = cache_held = attempted = exit_known = uncertain = False
@@ -257,7 +278,8 @@ def inspect_target_runtime_io(job, tool_inspection, output_dir, *, timeout_secon
             raise ValueError("probe timeout must be1..7200seconds and lock wait0..7200seconds")
         if type(headers_only) is not bool:
             raise ValueError("headers_only must be boolean")
-        job, root, outer, compiled, profile, tool, firmware, bindings, payloads = _bound_inputs(job, tool_inspection, verify_primary=not headers_only)
+        job, root, outer, compiled, profile, tool, firmware, bindings, payloads = _bound_inputs(job, tool_inspection,
+            verify_primary=not headers_only, primary_revalidation_observations=result["primary_omc_revalidation_observations"])
         digest, ddk = sha256_file(root / "report.json"), compiled.get("ddk_id")
         if not isinstance(ddk, str) or not ddk or (os.environ.get("CPRO_DDK_ID") and os.environ["CPRO_DDK_ID"] != ddk):
             raise ValueError("selected DDK differs from this compiled target")

@@ -254,3 +254,165 @@ def test_invalid_capacity_and_token_options_fail_before_execution(backends, kwar
     with pytest.raises(ValueError):
         run_incremental_smoke(target, draft, [2, 3], contract=contract, **kwargs)
     assert target.calls == draft.calls == 0
+
+
+def _ordinary_oracle(prompt, budget, vocab, eos=()):
+    # Independent ordinary sequence for this fixture's last-token+1 target;
+    # no draft proposals, controller result or target observations are reused.
+    values = [(prompt[-1] + index + 1) % vocab for index in range(budget)]
+    end = next((index + 1 for index, token in enumerate(values) if token in eos), len(values))
+    return values[:end]
+
+
+def _anchored(backends, **options):
+    contract, target, draft = backends
+    return run_incremental_smoke(target, draft, [2, 3], contract=contract,
+        target_next_anchor=True, **options)
+
+
+@pytest.mark.parametrize("mismatch_at", [None, 0, 1, 2])
+def test_target_next_anchor_serial_verify_matches_independent_ordinary_oracle(backends, mismatch_at):
+    contract, target, _ = backends
+    draft = Draft(contract, mismatch_at=mismatch_at)
+    result = _anchored((contract, target, draft), max_new_tokens=9, max_proposals_per_round=3)
+    expected = _ordinary_oracle([2, 3], 9, contract.vocab_size)
+    assert result["generated_token_ids"] == target.advanced == expected
+    assert target.prefix == [2, 3, *expected]
+    assert result["anchor_mode"] == "TARGET_NEXT_ANCHOR"
+    assert result["initial_anchor"]["token_id"] == 4 and result["initial_anchor"]["position"] == 2
+    assert result["initial_anchor"]["target_call_id"] == "target-1"
+    assert result["counts"]["target_calls"] == len(expected) + 1
+    assert result["counts"]["initial_anchor_tokens"] == 1
+    assert result["counts"]["committed_tokens"] == (
+        1 + result["counts"]["accepted_proposals"] + result["counts"]["mismatched_proposals"]
+        + result["counts"]["bonus_tokens"])
+    assert result["multi_round_observed"] and result["status"] == "EXECUTION_COMPLETE"
+    assert result["final_state_sha256"] == target.state
+    assert result["final_prefix_sha256"] == prefix_sha256(target.prefix)
+    assert result["final_feature_prefix_sha256"] == feature_sha256(target.features)
+    assert result["device_execution"] == "UNVERIFIED" and result["numerical_validation"] == "NOT_EVALUATED"
+    assert [prefix for prefix, _ in draft.seen][0] == (2, 3, 4)
+    for (prefix, features), event in zip(draft.seen, result["rounds"]):
+        np.testing.assert_array_equal(features[0, :, 0], prefix)
+        assert features.shape == (1, len(prefix), contract.feature_width)
+        assert event["anchor"]["token_id"] == prefix[-1]
+        assert event["anchor"]["position"] == len(prefix) - 1
+        assert event["draft_context_contract"] == "EXCLUDE_COMMITTED_ANCHOR_FEATURE_ROW"
+        assert len(event["target_call_ids"]) == len(event["committed"])
+        start = len(prefix) - 2
+        assert event["committed"] == expected[start:start + len(event["committed"])]
+        if event["correction"] is not None:
+            correction = event["correction"]
+            assert correction["rejected_token_id"] != correction["token_id"]
+            assert correction["token_id"] == event["committed"][-1]
+            assert correction["rejected_token_id"] not in event["committed"]
+            assert event["accepted"] == correction["proposal_index"]
+            assert event["bonus"] is None
+        elif event["bonus"] is not None:
+            assert event["bonus"]["token_id"] == event["committed"][-1]
+            assert len(event["committed"]) == event["accepted"] + 1
+    json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize("limit", [1, 2, 3])
+def test_target_next_anchor_effective_proposal_limit_all_accepts_and_bonus(backends, limit):
+    result = _anchored(backends, max_new_tokens=8, max_proposals_per_round=limit)
+    assert result["generated_token_ids"] == _ordinary_oracle([2, 3], 8, backends[0].vocab_size)
+    for event in result["rounds"]:
+        assert event["considered"] <= event["proposal_limit"] <= limit
+        assert event["accepted"] == event["considered"]
+        assert event["correction"] is None
+        assert event["discarded_unverified"] == backends[0].draft_width - event["considered"]
+    assert result["counts"]["bonus_tokens"] == sum(event["bonus"] is not None for event in result["rounds"])
+    assert result["counts"]["bonus_tokens"] > 0
+
+
+@pytest.mark.parametrize("budget", [1, 2, 3, 4])
+def test_target_next_anchor_checks_budget_at_initial_anchor_proposals_and_bonus(backends, budget):
+    result = _anchored(backends, max_new_tokens=budget, max_proposals_per_round=1)
+    assert result["generated_token_ids"] == _ordinary_oracle([2, 3], budget, backends[0].vocab_size)
+    assert len(backends[1].advanced) == budget and result["stop_reason"] == "length"
+    assert result["counts"]["target_calls"] == budget + 1
+    assert sum(len(event["committed"]) for event in result["rounds"]) == budget - 1
+    if budget == 1:
+        assert backends[2].calls == 0 and result["rounds"] == []
+
+
+@pytest.mark.parametrize("kind,eos,mismatch", [("anchor", 4, None), ("proposal", 5, None),
+    ("correction", 5, 0), ("bonus", 6, None)])
+def test_target_next_anchor_checks_eos_on_every_commit(backends, kind, eos, mismatch):
+    contract, target, _ = backends
+    draft = Draft(contract, mismatch_at=mismatch)
+    result = _anchored((contract, target, draft), max_new_tokens=8, max_proposals_per_round=1, eos_token_ids=[eos])
+    assert result["generated_token_ids"] == target.advanced == _ordinary_oracle([2, 3], 8, contract.vocab_size, [eos])
+    assert result["stop_reason"] == "eos" and target.prefix[-1] == eos
+    assert result["counts"]["target_calls"] == len(target.advanced) + 1
+    if kind == "anchor":
+        assert not result["rounds"] and draft.calls == 0
+    elif kind == "bonus":
+        assert result["rounds"][-1]["bonus"]["token_id"] == eos
+    elif kind == "correction":
+        assert result["rounds"][-1]["correction"]["token_id"] == eos
+        assert target.advanced == [4, 5]
+    else:
+        assert result["rounds"][-1]["bonus"] is None
+
+
+def test_target_next_anchor_vocabulary_wrap_and_mismatch_remain_ordinary(backends):
+    contract, target, _ = backends
+    draft = Draft(contract, mismatch_at=1)
+    result = run_incremental_smoke(target, draft, [29, 30], contract=contract,
+        max_new_tokens=7, max_proposals_per_round=3, target_next_anchor=True)
+    assert result["generated_token_ids"] == target.advanced == _ordinary_oracle([29, 30], 7, contract.vocab_size)
+    assert result["generated_token_ids"][:3] == [31, 0, 1]
+
+
+@pytest.mark.parametrize("fault", ["input_state", "old_features", "reused_call"])
+def test_target_next_anchor_warmup_retains_state_history_and_receipt_validation(backends, fault):
+    contract, target, draft = backends
+    original = target.advance
+    def bad(token):
+        observation = original(token)
+        if fault == "old_features":
+            observation.features[0, 0, 0] += 1
+            return observation
+        return replace(observation, evidence=replace(observation.evidence, **(
+            {"input_state_sha256": _hash("wrong parent")} if fault == "input_state" else {"call_id": "target-0"})))
+    target.advance = bad
+    with pytest.raises(ValueError):
+        _anchored(backends, max_new_tokens=4)
+    assert target.advanced == [4] and draft.calls == 0
+
+
+@pytest.mark.parametrize("fault", ["prefix", "features", "receipt", "count"])
+def test_target_next_anchor_bad_draft_cannot_advance_any_proposal_after_anchor(backends, fault):
+    contract, target, draft = backends
+    original = draft.propose
+    def bad(prefix, features):
+        observation = original(prefix, features)
+        changes = {"prefix": {"prefix_sha256": _hash("another prefix")},
+            "features": {"feature_input_sha256": _hash("another feature")}, "count": {"token_ids": [5]},
+            "receipt": {"evidence": replace(observation.evidence, receipt_sha256="not-a-sha")}}[fault]
+        return replace(observation, **changes)
+    draft.propose = bad
+    with pytest.raises(ValueError):
+        _anchored(backends, max_new_tokens=4)
+    assert target.advanced == [4]
+
+
+@pytest.mark.parametrize("value", [1, "true", None])
+def test_target_next_anchor_mode_requires_explicit_boolean_before_execution(backends, value):
+    contract, target, draft = backends
+    with pytest.raises(ValueError, match="explicit boolean"):
+        run_incremental_smoke(target, draft, [2, 3], contract=contract, target_next_anchor=value)
+    assert target.calls == draft.calls == 0
+
+
+def test_target_next_anchor_does_not_relax_full_model_or_s64_capacity():
+    contract = SmokeContract()
+    target, draft = Target(contract), Draft(contract)
+    with pytest.raises(ValueError, match="capacity"):
+        run_incremental_smoke(target, draft, [3] * 64, max_new_tokens=1, target_next_anchor=True)
+    assert target.calls == draft.calls == 0
+    with pytest.raises(ValueError):
+        SmokeContract(sequence_capacity=128)

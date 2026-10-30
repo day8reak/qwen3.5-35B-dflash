@@ -77,8 +77,12 @@ def _compact(node):
     def descriptor(raw):
         attrs = _attrs(raw) if isinstance(raw, dict) else {}
         meta = attrs.get("_meta", {}).get("s")
+        fx = attrs.get("_fx_tensor_name", {}).get("s")
         return {"shape": raw.get("shape"), "dtype": raw.get("dtype"), "layout": raw.get("layout"),
-                "declared_meta": meta[:512] if isinstance(meta, str) else None}
+                "declared_meta": meta[:512] if isinstance(meta, str) else None,
+                "declared_meta_truncated": isinstance(meta, str) and len(meta) > 512,
+                "fx_tensor_name": fx[:512] if isinstance(fx, str) else None,
+                "fx_tensor_name_truncated": isinstance(fx, str) and len(fx) > 512}
     return {"name": node["name"], "type": node["type"], "input": _inputs(node)[:16],
         "input_desc": [descriptor(row) for row in node.get("input_desc", [])[:3]],
         "output_desc": [descriptor(row) for row in node.get("output_desc", [])[:2]]}
@@ -174,14 +178,15 @@ def analyze_logit_selection(graph, raw_graph, schema, selected_index):
     if dtype_field is None:
         raise ValueError("selected schema lacks TensorDescriptor.dtype")
     enum = schema.enums.get(dtype_field.type_name, {})
-    pending, visited, gathers, edge_count = deque([edges[0]]), set(), [], 0
+    pending, visited, gathers, parents, edge_count = deque([(edges[0], None)]), set(), [], {}, 0
     while pending:
-        edge = pending.popleft()
+        edge, parent = pending.popleft()
         node, port = _edge(edge, by_name)
         key = (node["name"], port)
         if key in visited:
             continue
         visited.add(key)
+        parents[key] = parent
         if len(visited) > _MAX_NODES:
             raise ValueError("logit dependency node budget exceeded")
         inputs = _inputs(node)
@@ -189,12 +194,21 @@ def analyze_logit_selection(graph, raw_graph, schema, selected_index):
         if edge_count > _MAX_EDGES:
             raise ValueError("logit dependency edge budget exceeded")
         if node["type"] == "GatherV2":
-            gathers.append(node)
+            gathers.append((node, port))
         # Empty optional operands preserve named-port positions but carry no
         # dependency. Keep their slots in _inputs; skip only this traversal.
-        pending.extend(reference for reference in inputs if reference)
+        pending.extend((reference, key) for reference in inputs if reference)
+    def dependency_path(key):
+        path = []
+        while key is not None and len(path) < 32:
+            name, port = key
+            path.append({"output_port": port, "node": _compact(by_name[name])})
+            key = parents[key]
+        return {"direction": "LOGITS_PRODUCER_TOWARD_GATHER", "nodes": list(reversed(path)),
+                "truncated": key is not None, "selection": "ONE_EXPLICIT_SHORTEST_DATA_DEPENDENCY_PATH",
+                "scope": "Literal serialized edges and descriptors only; no layout conversion or operation semantics are inferred"}
     candidates, nearby = [], []
-    for gather in gathers:
+    for gather, gather_port in gathers:
         inputs = _inputs(gather)
         row = {"node": _compact(gather), "status": "UNVERIFIED"}
         try:
@@ -204,6 +218,7 @@ def analyze_logit_selection(graph, raw_graph, schema, selected_index):
             row["serialized_input_ports"] = ports
             row["index_path"] = _index_path(inputs[ports["indices"]], by_name, enum, selected_index)
             row["index_source"] = _CONTROL
+            row["logits_dependency_path"] = dependency_path((gather["name"], gather_port))
             candidates.append(row)
             axis_node, axis_port = _edge(inputs[ports["axis"]], by_name)
             if axis_port != 0:
@@ -211,12 +226,14 @@ def analyze_logit_selection(graph, raw_graph, schema, selected_index):
             row["axis"] = _constant(schema, axis_node, raw_nodes[axis_node["name"]], enum)
             param, port = _edge(inputs[ports["params"]], by_name)
             row["params_producer"] = _compact(param)
+            row["params_output_port"] = port
+            row["params_consumer_descriptor_index"] = ports["params"]
             consumer = gather.get("input_desc", [])
-            shape = _dimensions(consumer[ports["params"]]) if len(consumer) > ports["params"] else None
+            consumer_shape = _dimensions(consumer[ports["params"]]) if len(consumer) > ports["params"] else None
             producer_shape = _dimensions(param["output_desc"][port])
-            if shape and producer_shape and shape != producer_shape:
+            if consumer_shape and producer_shape and consumer_shape != producer_shape:
                 raise ValueError("GatherV2 params consumer/producer dimensions disagree")
-            shape = shape or producer_shape
+            shape = consumer_shape or producer_shape
             if shape is None:
                 raise ValueError("GatherV2 params dimensions are absent/dynamic; profile dimensions are not substituted")
             axis = row["axis"]["value"]
@@ -225,6 +242,8 @@ def analyze_logit_selection(graph, raw_graph, schema, selected_index):
             axis %= len(shape)
             extent = shape[axis]
             row.update(status="SOURCE_CONTROL_GATHER_DEPENDENCY_OBSERVED", params_shape=shape,
+                params_shape_evidence=("BOTH_SERIALIZED_CONSUMER_AND_PRODUCER" if consumer_shape and producer_shape else
+                    "SERIALIZED_CONSUMER_ONLY" if consumer_shape else "SERIALIZED_PRODUCER_ONLY"),
                 normalized_axis=axis, serialized_axis_extent=extent, selected_index=selected_index,
                 nonnegative_valid_index_range=[0, extent - 1],
                 index_range=("OUTSIDE_SERIALIZED_AXIS_EXTENT" if selected_index >= extent else
@@ -278,7 +297,8 @@ def _observed_control(execution, job, bindings):
         "source_input_name": _CONTROL, "semantic_source": "SAVED_SUCCESSFUL_PREFILL_PLAN_UNIQUE_TYPED_CONTROL_FILE"}
 
 
-def inspect_target_logit_selection(job_dir, execution_dir, output_dir):
+def inspect_target_logit_selection(job_dir, execution_dir, output_dir, *,
+                                   source_torchair_pb2=None, source_export_receipt=None):
     out = output_path(output_dir)
     out.mkdir(parents=True, exist_ok=False)
     bindings = []
@@ -287,9 +307,19 @@ def inspect_target_logit_selection(job_dir, execution_dir, output_dir):
         "input_mutation": "NONE", "weight_payload_access": "NONE", "numerical_validation": "NOT_RUN",
         "source_bindings": bindings}
     result["graph_edge_policy"] = graph_edge_policy()
+    result["source_schema_request"] = {"source_torchair_pb2": str(source_torchair_pb2) if source_torchair_pb2 is not None else None,
+        "source_export_receipt": str(source_export_receipt) if source_export_receipt is not None else None,
+        "pb2_execution": "NOT_EXECUTED", "schema_fallback": "NOT_PERMITTED"}
     try:
-        job, schema, raw, document, kind = load_bound_source_air(job_dir, _PROFILE, bindings)
+        result["stage"] = "read-bound-source-air"
+        options = {}
+        if source_torchair_pb2 is not None:
+            options["source_torchair_pb2"] = source_torchair_pb2
+        if source_export_receipt is not None:
+            options["source_export_receipt"] = source_export_receipt
+        job, schema, raw, document, kind = load_bound_source_air(job_dir, _PROFILE, bindings, **options)
         result["job"] = job
+        result["stage"] = "read-observed-control"
         control = _observed_control(execution_dir, job, bindings)
         result["control"] = control
         if kind == "ModelDef":
@@ -301,12 +331,14 @@ def inspect_target_logit_selection(job_dir, execution_dir, output_dir):
             graph, graph_raw = document, raw
         else:
             raise ValueError("unsupported bound source AIR format")
+        result["stage"] = "analyze-source-gather"
         result["selection"] = analyze_logit_selection(graph, graph_raw, schema, control["value"])
         result["status"] = result["selection"]["status"]
         for identity in bindings:
             if _safe(identity["path"])[1] != identity["stat"]:
                 raise ValueError("source evidence identity changed during logit audit")
         result["source_preservation"] = "UNCHANGED_BOUND_METADATA_AIR_PRIMARY_OMC_SCHEMA_AND_ORIGINAL_CONTROL"
+        result["stage"] = "complete"
         result["next"] = ("Review the exact graph/control mismatch before preparing a separate corrected-input experiment; no source control was changed"
             if result["status"] == "LOGIT_INDEX_OUT_OF_RANGE_OBSERVED" else
             "Review exact index path, axis constant and serialized params dimensions; unresolved metadata is not a numerical or semantic pass")

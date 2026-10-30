@@ -3,9 +3,9 @@
   "updated": "2026-10-30",
   "lane": "original_quantized_target",
   "active_phase": "integration",
-  "status": "USER_CONTINUATION_TOOL_EXIT0_HDC_DISCONNECTED_RECOVERY_HOST_VERIFIED",
-  "handoff": "20261030T070254Z-25569-f02f6e/handoff.md",
-  "user_state": "Original target/draft single steps, original next0 row and all80 state bindings previously passed. User continuation invoked the original40layer decode1 once with89 inputs and cached payload missing0; remote tool returned0. HDC then disconnected while receiving output10;4 logs and cache lock release failed despite HDC client rc0. User confirms connection restored. Recover only that exact completed attempt; no second inference, input or weight upload. Byte-chain/control/history/accuracy acceptance remains open until recovery and later validation.",
+  "status": "USER80_STATE_BYTE_CHAIN_RECOVERED_PREFILL_TO_DECODE_AND_SERIAL_VERIFY_INTEGRATION_OPEN",
+  "handoff": "20261030T072129Z-31222-985a49/handoff.md",
+  "user_state": "User recovered the exact original continuation attempt after HDC reconnect: PID10457, all82 child outputs retrieved, all80 parent-output bytes bound to actual child inputs, locks absent/released. Recovery made no new inference or upload. Same-model experimental pos256->257 byte chain is observed. Full DFlash has not executed. User explicitly selects decode1 serial multi-round verify first; ordinary prefill history, source controls, dynamic original embeddings, draft target-next anchor/capacity, and integrating adapters remain open.",
   "entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "compile_profile": "cpro-40block-prefill-64",
   "contract": {
@@ -47,14 +47,14 @@
     "board_tool_workflow": "HOST_FAKE_BOARD_TESTED; no actual user-device invocation from this assistant"
   },
   "remaining_gates": [
-    "Execute same-model continuation with all80 independently bound state files and the original next-token row",
-    "Validate original control semantics and prefill-to-decode history against an ordinary generation baseline",
-    "Provide original quantized embedding/scale lookup for arbitrary draft/target candidate tokens; current imported rows cover query269 and next0 only",
-    "Resolve full-prefix draft context capacity and per-token proposal/feature alignment",
-    "Implement serial verify acceptance/rejection/commit and multiround loop, then batch verify/rollback",
-    "Close numerical acceptance and measured end-to-end performance"
+    "Bind original prefill64 outputs to decode1 owners and actual logit selection; validate prefix embedding/control/history and establish ordinary generation baseline",
+    "Supply runtime lookup for arbitrary original INT8 embedding rows and separate FP32 scales; current imported query269/next0 receipt is insufficient for dynamic generation",
+    "Provide real draft capacity for prompt64 plus target-next anchor and generation budget, preserving all64 prompt feature rows and original absolute positions",
+    "Integrate full6layer draft with original89input/82output decode1 backend and serial compare-before-advance acceptance/correction/bonus/state commit",
+    "Execute multiple complete rounds including rejection then continuation and compare every committed token/state with ordinary baseline",
+    "Close numerical acceptance, then batch verify/rollback and measured end-to-end performance"
   ],
-  "next_command": "Pull updates; recover_target_decode_continuation.py --execution AI_RUN_DIR/target-decode1-continuation-run --output AI_RUN_DIR/target-decode1-continuation-recovery. Preserve old run and locks; no model reapply.",
+  "next_command": "Pull updates; query named restore-only prefill metadata with inspect_target_runtime_io.py --summary-only into target-prefill64-runtime-io-v2, then inspect_target_prefill_decode_path.py using original prefill/decode jobs, retained prefill-v3 and the copied producer pb2. No model inference or compilation in these two steps.",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -173,6 +173,38 @@
       "remaining_hypotheses": [
         "Actual recovered outputs retain all original hashes",
         "Experimental controls yield semantically correct state transitions; not established by bytechain"
+      ]
+    },
+    "prefill_decode_and_serial_alignment": {
+      "captured": [
+        "Recovered same-model80state byte chain closes transport/byte feedback observation only; historical kernel-control and prefill history semantics remain open.",
+        "Prefill source schema must come from the completed exporter, independently of compiled HIAI schema. Compiler reuse-binding inventory can anchor canonicalS64 AIR without inventing the S1 transfer path.",
+        "A later named metadata probe can witness exact same-model ordered descriptors without rewriting the old unnamed execution; all old actual input/output hashes still matter.",
+        "Whole-sidecar content identity plus unique neighboring parameter context is only a cross-export state-owner candidate, not per-tensor identity or a feedback license.",
+        "The real-feature bridge used a prompt-token anchor; standard DFlash first round needs target-next plus every prompt feature, exposing the full-prefixS64 capacity limit.",
+        "Serial compare-before-advance avoids speculative target rollback but still requires correct first anchor, all-accepted bonus, per-token EOS/budget and state-chain validation."
+      ],
+      "checks": [
+        "tests/test_target_prefill_source_schema.py",
+        "tests/test_target_metadata_probe_revalidation.py",
+        "tests/test_target_prefill_decode_bridge.py",
+        "tests/test_target_logit_selection.py",
+        "tests/test_target_state_correspondence.py",
+        "tests/test_target_prefill_decode_path.py",
+        "tests/test_incremental_smoke.py"
+      ],
+      "skill_changes": "NONE_MODEL_SPECIFIC_EVIDENCE_AND_ALIGNMENT; existing skills already require exact prefix, rejection, source binding and device gates",
+      "rejected_promotions": [
+        "No cross-export owner fromRefData/copy ordinals or equal shape",
+        "No generic generatedpb2 execution or mismatched schema fallback",
+        "No standard DFlash first round claim fromoldanchor220bridge",
+        "No actual runtime/accuracy/multiround PASS from host scheduler tests"
+      ],
+      "remaining_hypotheses": [
+        "Actual valid prefill logit row",
+        "Stable reviewed cross-export state owners",
+        "Correct original control/history/embedding contract",
+        "Larger draft capacity and complete native adapter execution"
       ]
     }
   },
@@ -1982,7 +2014,7 @@
     "logical_history": "UNVERIFIED"
   },
   "same_model_decode_continuation": {
-    "status": "USER_TOOL_EXIT0_RETRIEVAL_TRANSPORT_FAILED_AWAITING_RECOVERY",
+    "status": "USER_RECOVERED_ALL80_STATE_BYTE_CHAIN_OBSERVED_CONTROLS_UNVALIDATED",
     "prepare_entrypoint": "targets/cpro/scripts/prepare_target_decode_continuation.py",
     "execute_entrypoint": "targets/cpro/scripts/run_target_decode_continuation.py",
     "state_lineage": "target-decode1-state-lineage-v7",
@@ -2014,7 +2046,8 @@
     "mask_recipe_scope": "Exact constructed source-mask hash matches user-reported original bytes; kernel-control semantics remain experimental.",
     "prepare_success_status": "SAME_MODEL_DECODE_CONTINUATION_PREPARED",
     "read_only_validation": "Fresh source/compiled/runtime/file lineage, exact original request/response/source/copy identities and fresh greedy token; all transitive inputs/82outputs/4logs/smallgraph metadata baselined before nested validation and checked strictly through the full call. Prepared89 full9 identities/nlink1/inodes exact; bounded frozen ABI checked before payload reads. Historical ctime uses only existing purpose-scoped fresh SHA rules.",
-    "failure_receipt": "New manifest exclusively created and held by current preparation; final stability failure records FAILED through the same owned descriptor. Existing receipts are never reopened for overwrite."
+    "failure_receipt": "New manifest exclusively created and held by current preparation; final stability failure records FAILED through the same owned descriptor. Existing receipts are never reopened for overwrite.",
+    "recovery_output": "target-decode1-continuation-recovery"
   },
   "continuation_host_verification": {
     "run_id": "20261030T062938Z-23544-594e88",
@@ -2094,7 +2127,7 @@
     "classification": "REMOTE_TOOL_EXIT0_OBSERVED_OUTPUT_RETRIEVAL_INCOMPLETE; NOT_NUMERICAL_OR_STATE_CONTINUITY_ACCEPTANCE"
   },
   "continuation_output_recovery": {
-    "status": "HOST_VERIFIED_ACTUAL_RECOVERY_NOT_RUN",
+    "status": "USER_REPORTED_RECOVERED_ALL82_OUTPUTS_AND80_BYTE_CHAIN",
     "entrypoint": "targets/cpro/scripts/recover_target_decode_continuation.py",
     "execution": "target-decode1-continuation-run",
     "output": "target-decode1-continuation-recovery",
@@ -2104,7 +2137,15 @@
     "input_upload": "NOT_RUN",
     "proof": "Fresh prepared89 source proof and immutable old outer/board/plan/command/input-evidence; old execute/acquire/cache/inventory call ledgers parsed offline with exact argv/payload/unique completion marker0; fresh same-device/cached-model/attempt exit0/PIDabsent; all82 original SHA values preserved;86 retrieved files hashed and remote rehashed; complete80 byte chain before owned lock release.",
     "lock_policy": "No new lock acquired. Bothabsent -> no mutation. Original32hex owner and compiler-cache marker plus old successful acquireledger and exitedprocess may release only empty owned locks after full retrieval/chain. Foreign/orphan/live/uncertain/symlink/nonempty locks stop and retain. Recheck lengths/token/cache/exit/PID in release shell; verify bothabsent before success.",
-    "receipt_policy": "Failed original directory and prepared evidence remain unchanged; recovered outputs, raw calls and state-chain report are written only under new output."
+    "receipt_policy": "Failed original directory and prepared evidence remain unchanged; recovered outputs, raw calls and state-chain report are written only under new output.",
+    "tool_process_id": 10457,
+    "feedback_input_count": 80,
+    "bound_child_output_count": 82,
+    "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+    "state_feedback": "ALL80_PARENT_OUTPUT_BYTES_USED_BY_CHILD_INPUTS",
+    "state_continuity": "BYTE_CHAIN_OBSERVED_CONTROL_SEMANTICS_AND_NUMERICAL_CONTINUITY_NOT_VALIDATED",
+    "numerical_validation": "NOT_RUN_NO_REFERENCE",
+    "source": "USER_PASTED_REMOTE_RESULT_NOT_RETRIEVED_LOCALLY"
   },
   "hdc_receive_artifact_policy": {
     "status": "HOST_VERIFIED",
@@ -2148,5 +2189,108 @@
     "scope": "Host fixtures and actual local POSIX scripts; no actual user HDC/model calls, no real weight reads.",
     "independent_review": "PASSED",
     "summary": "out/final-host-verification.json"
+  },
+  "prefill_decode_path_evidence": {
+    "status": "HOST_VERIFIED_ACTUAL_NAMED_PREFILL_PROBE_AND_PACKET_NOT_RUN",
+    "entrypoint": "targets/cpro/scripts/inspect_target_prefill_decode_path.py",
+    "named_metadata_probe_output": "target-prefill64-runtime-io-v2",
+    "packet_output": "target-prefill-decode-path",
+    "success_status": "PREFILL_DECODE_PATH_EVIDENCE_OBSERVED_WITH_GAPS",
+    "source_schema": "S64 source AIR decoded only with its producer ge.proto descriptor, AST-extracted from exact copied pb2 and bound through completed export inventory plus compiler input snapshots; optional explicit source-export receipt must also agree. Compiled small OMC retains independent selected HIAI schema. Existing S1 receipt path stays strict.",
+    "name_witness": "POST_HOC_SAME_MODEL_ORDERED_DESCRIPTOR_NAMES_BOUND only after exact same OMC SHA/bytes, compiler report, firmware/runtime/DDK, all89 input and82 output ordered raw dtype/format/shapes; old unnamed probe and execution remain unchanged.",
+    "old_execution_binding": "Fresh all13 original sources, all89 saved actual private input SHA values, all82 data outputs and4 raw logs; complete explicit output[index]-path log mapping. Equal-value original sources can explain deduplicated original paths for this first prefill only.",
+    "logit_selection": "Trace actual logits-to-Gather path, named index/axis ports, constant axis and actual producer/consumer shape evidence. Missing producer shapes stay missing; output_pos64 is not assumed valid or adjusted by convention.",
+    "cross_state_mapping": "Actual named update edges plus completed inventory FileConstant reference/size/SHA and compiler snapshot pins provide bounded common parameter-context candidates only. Even80 unique candidates remain owner_count0 and feedback_readyfalse until reviewed stable state-specific cross-export ownership is established; no ordinal/shape/RefData/copy-ID substitution.",
+    "active_identity": "Capture all child transitive current full9 identities; preserve shared baselines strictly across child checks, including five-stat-to-full9 capture boundary. Failed child report is retained while independent checks may continue.",
+    "primary_ctime": "New metadata probe may revalidate historical ctime-only drift of bounded small primary OMC by full SHA using existing purpose-scoped binder, retaining old receipts and a strict current full9 baseline. Header-only path remains strict. No large-weight exception.",
+    "feedback_prepared": false,
+    "device_execution": "NOT_RUN_PACKET_HOST_ONLY",
+    "weight_payload_access": "NONE",
+    "model_compilation": "NOT_RUN",
+    "numerical_validation": "NOT_RUN"
+  },
+  "serial_decode1_dflash_plan": {
+    "source": "USER_EXPLICIT_2026_10_30_DECODE1_MULTIROUND_VERIFY_FIRST",
+    "status": "TARGET_NEXT_ANCHOR_SCHEDULER_HOST_VERIFIED_ORIGINAL_DEVICE_ADAPTER_OPEN",
+    "priority": "Complete functional serial verify before batch verify or acceleration claims",
+    "first_anchor": "From a valid prefill last-row logit, commit target-next at absolute position64 and advance it through decode1. Preserve all64 prompt features; a complete feature prefix including anchor is presented to the existing DraftGraph, which excludes the anchor feature from context.",
+    "verify": "Compare each draft candidate against current target.next BEFORE any advance. Advance only an accepted candidate or the target correction at first mismatch. Never feed rejected candidates; on full considered-block acceptance append and advance the current target prediction as bonus unless EOS/length stops.",
+    "state_commit": "Every committed token including anchor/correction/bonus/final token enters target state and appends exactly its own feature row. Check EOS and token budget at every commit; evidence binds complete prefix, state hash chain and immutable older feature rows.",
+    "runtime_gap": "Existing generic prefix-recompute target Top1[S] executor is not the original stateful89input/single-logit target ABI. The current standalone continuation preparer is not a general multiround backend.",
+    "embedding_lookup_gap": "Two original tables total509552640bytes (about486MiB); local original-table lookup or equivalent bounded row service is needed for dynamic token IDs. Existing request/query-token-id flow only binds an already-executed query and its observed next token.",
+    "three_integration_gates": [
+      "Real prefill-to-decode ordinary baseline",
+      "One complete draft-to-serial-verify round",
+      "Multiple rounds including rejection-followed-by-continuation and ordinary comparison"
+    ],
+    "completion_claim": "NOT_EXECUTED_FULL_DFLASH; no guaranteed calendar completion and no acceleration claim from serial verification",
+    "scheduler_entrypoint": "model/qwen35_moe_dflash/incremental_smoke.py:run_incremental_smoke(target_next_anchor=True)",
+    "scheduler_host_cases_passed": 65,
+    "scheduler_scope": "Existing default smoke remains compatible; explicit target-next-anchor/compare-before-advance/correction/all-accepted-bonus implementation passed independent ordinary oracle, multi-round, every EOS/length boundary and state/feature/native-receipt tests. Original production40/6layer,S64 identity guards remain unchanged; new capacity must be separately built and integrated.",
+    "independent_review": "PASSED"
+  },
+  "draft_anchor_capacity_observation": {
+    "status": "SOURCE_PATH_OBSERVED_DEVICE_ALIGNMENT_NOT_VALIDATED",
+    "old_real_feature_bridge": {
+      "anchor_position": 63,
+      "anchor_token_id": 220,
+      "context_feature_rows": "0..62",
+      "proposal_positions": "64..78",
+      "scope": "Full6layer mechanical execution with real features; not standard first DFlash round"
+    },
+    "required_standard_first_round": {
+      "prompt_feature_rows": "0..63",
+      "target_next_anchor_position": 64,
+      "proposal_positions": "65..79",
+      "minimum_prefix_capacity": 65
+    },
+    "capacity_policy": "Current3input draft ABI recomputes complete prefix and derives positions from absolute prefix length; keep full history and RoPE positions. No truncation/rebase, no changing ids63 to the target next token, no manifest-only capacity relabel.",
+    "available_actual_artifacts": "TargetS64/targetS1 and full6layer draftS64 executed; no proven reusableS128 draft OMC. S128 source/meta/config is not a compiled model.",
+    "next": "Build and validate genuinely larger full-prefix draft capacity for chosen generation budget or implement an explicitly declared incremental draft ABI; preserve topology/weights.",
+    "reference_scope": "Locked generic author DFlash scheduling source supports target-next anchor alignment; it is not checkpoint-specific numerical or vendor-runtime validation."
+  },
+  "prefill_decode_serial_host_verification": {
+    "run_id": "20261030T072129Z-31222-985a49",
+    "unique_cases_passed": 336,
+    "final_case_statuses": "ALL_PASS",
+    "suites": [
+      {
+        "artifact": "out/prefill-source-current.xml",
+        "cases": 144,
+        "sha256": "54ae8cb0f79b0cfeff64c62b6ad7704e1842700b1cec3f61c86198f2252c2ecd"
+      },
+      {
+        "artifact": "out/probe-revalidation.xml",
+        "cases": 37,
+        "sha256": "68aa9b99dc38ed48d583f67ada40fd97fd20699cdf0004c5e3dec98ea492920d"
+      },
+      {
+        "artifact": "out/prefill-bridge-final.xml",
+        "cases": 13,
+        "sha256": "83e8083d3821fe1b63786ee220d21b08b41a2437f7993132718e625fb1352913"
+      },
+      {
+        "artifact": "out/logit-final-tests.xml",
+        "cases": 41,
+        "sha256": "746996860461c67af247eb7960b602219ffe9b486ab028dd3907738092d90126"
+      },
+      {
+        "artifact": "state-correspondence.xml",
+        "cases": 28,
+        "sha256": "c4cc7e3772a0b4f3350e2f4ad42ccf4de43014330a6f1c2cf937f8efeabf6744"
+      },
+      {
+        "artifact": "out/packet-tests-final.xml",
+        "cases": 8,
+        "sha256": "297aca9a742a6147e574b136a6e2dad1219845482f0bfeb9892b89b629e5bfbb"
+      },
+      {
+        "artifact": "out/target-next-anchor-tests.xml",
+        "cases": 65,
+        "sha256": "ed76ca23a00585df7084cf9a3d5192a6a858ba0d0d2cbe9d7ed5698167f6d6d9"
+      }
+    ],
+    "scope": "Host fixtures and scheduling tests only; no new actual phone/model inference, original weight reads, numerical acceptance or full DFlash execution",
+    "independent_review": "PASSED_PREFILL_COMPONENTS_PACKET_AND_SERIAL_SCHEDULER"
   }
 }

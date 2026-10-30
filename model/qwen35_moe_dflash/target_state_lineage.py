@@ -800,12 +800,14 @@ def _decode_air(schema, raw):
 
 
 def load_target_graph(job, profile_name, bindings, *, source_capture=None, observations=None,
-                      source_torchair_pb2=None):
+                      source_torchair_pb2=None, source_export_receipt=None):
     """Return bound job metadata, decoded AIR/OMC roots and selected enums.
 
     The returned graph objects stay in memory for bounded caller analysis;
     model tensor blobs have already been replaced with hashes by Schema.
     """
+    if source_export_receipt is not None and profile_name != "cpro-40block-prefill-64":
+        raise ValueError("an explicit source export receipt is supported only for the static64 prefill source")
     job, _ = _safe(job, directory=True)
     compilation = job / "compilation"
     read_attempts = []
@@ -868,7 +870,7 @@ def load_target_graph(job, profile_name, bindings, *, source_capture=None, obser
         bindings.append(identity)
         return identity
     producer = load_bound_source_schema(report, air_id, read_metadata=source_metadata,
-        read_pb2=source_pb2, source_torchair_pb2=source_torchair_pb2)
+        read_pb2=source_pb2, source_torchair_pb2=source_torchair_pb2, source_export_receipt=source_export_receipt)
     source_schema, source_binding = producer if producer is not None else (schema, {
         "status": "STRICT_SELECTED_DDK_SCHEMA_LEGACY_SOURCE_WITHOUT_PRODUCER_RECEIPT",
         "scope": "No producer declaration; same DDK schema is tried strictly, without cross-schema fallback"})
@@ -895,11 +897,11 @@ def load_target_graph(job, profile_name, bindings, *, source_capture=None, obser
     return metadata, source, compiled, enums
 
 
-def load_bound_source_air(job, profile_name, bindings, *, source_torchair_pb2=None):
+def load_bound_source_air(job, profile_name, bindings, *, source_torchair_pb2=None, source_export_receipt=None):
     """Expose the same verified payload for bounded raw scalar-cone readers."""
     capture = {}
     metadata, _, _, _ = load_target_graph(job, profile_name, bindings, source_capture=capture,
-        source_torchair_pb2=source_torchair_pb2)
+        source_torchair_pb2=source_torchair_pb2, source_export_receipt=source_export_receipt)
     return metadata, capture["schema"], capture["raw"], capture["document"], capture["kind"]
 
 

@@ -154,7 +154,7 @@ def _identity(identity, role, contract):
 
 def run_incremental_smoke(target: TargetBackend, draft: DraftBackend, prompt, *,
                           contract=None, max_new_tokens=8, max_proposals_per_round=2,
-                          minimum_draft_rounds=2, eos_token_ids=None):
+                          minimum_draft_rounds=2, eos_token_ids=None, target_next_anchor=False):
     """Run bounded serial verification without ordinary/golden equality gates.
 
     Target prefill returns features for the whole prompt. Each advance returns
@@ -163,12 +163,21 @@ def run_incremental_smoke(target: TargetBackend, draft: DraftBackend, prompt, *,
     Every committed token, including the final one, is advanced into target
     state, so the final state and feature prefix include all generated tokens.
 
+    Explicit target-next-anchor mode first commits and advances the prefill's
+    next token. Draft then receives the complete prefix including this anchor
+    and its feature row; the draft ABI must exclude the anchor feature from its
+    context. A rejected proposal is replaced before target.advance, and a fully
+    accepted considered block receives one target bonus when budget permits.
+    The default preserves the earlier compare-before-advance smoke protocol.
+
     A complete protocol result is not a device PASS: artifact retrieval and
     native receipt authenticity remain the integrating adapter's responsibility.
     """
     contract = contract or SmokeContract()
     if not isinstance(contract, SmokeContract):
         raise ValueError("explicit smoke contract required")
+    if type(target_next_anchor) is not bool:
+        raise ValueError("target_next_anchor must be an explicit boolean")
     _identity(target.identity, "target", contract)
     _identity(draft.identity, "draft", contract)
     prefix = _ids(prompt, contract.vocab_size, "prompt")
@@ -232,6 +241,26 @@ def run_incremental_smoke(target: TargetBackend, draft: DraftBackend, prompt, *,
     accepted = mismatched = discarded = 0
     target_calls = 1
     stopped = False
+    initial_anchor = None
+
+    def commit(token, event=None):
+        nonlocal current, target_calls, stopped
+        generated.append(token)
+        prefix.append(token)
+        current = observe(target.advance(token), current)
+        target_calls += 1
+        stopped = token in eos
+        if event is not None:
+            event["committed"].append(token)
+            event["target_call_ids"].append(current.evidence.call_id)
+
+    if target_next_anchor:
+        initial_anchor = {"token_id": current.next_token_id, "position": len(prefix),
+            "source": "PREFILL_NEXT_TOKEN", "prefill_call_id": current.evidence.call_id,
+            "state_before_sha256": current.state_sha256, "prefix_before_sha256": prefix_sha256(prefix)}
+        commit(current.next_token_id)
+        initial_anchor.update(target_call_id=current.evidence.call_id, state_after_sha256=current.state_sha256,
+            prefix_after_sha256=prefix_sha256(prefix), feature_prefix_sha256=feature_sha256(current.features))
     while not stopped and len(generated) < max_new_tokens:
         feature_digest, base = feature_sha256(current.features), len(prefix)
         proposed = draft.propose(tuple(prefix), current.features)
@@ -251,8 +280,14 @@ def run_incremental_smoke(target: TargetBackend, draft: DraftBackend, prompt, *,
                  "feature_prefix_sha256": feature_digest, "draft_call_id": proposed.evidence.call_id,
                  "proposals": tokens, "committed": [], "accepted": 0, "mismatch_index": None,
                  "state_before_sha256": current.state_sha256, "target_call_ids": []}
+        limit = min(max_proposals_per_round, max_new_tokens - len(generated))
+        if target_next_anchor:
+            event.update(anchor={"token_id": prefix[-1], "position": base - 1,
+                "source": "LAST_COMMITTED_TARGET_TOKEN", "target_call_id": current.evidence.call_id},
+                draft_context_contract="EXCLUDE_COMMITTED_ANCHOR_FEATURE_ROW", proposal_limit=limit,
+                correction=None, bonus=None)
         considered = 0
-        for index, proposal in enumerate(tokens[:min(max_proposals_per_round, max_new_tokens - len(generated))]):
+        for index, proposal in enumerate(tokens[:limit]):
             expected = current.next_token_id
             matches = proposal == expected
             considered += 1
@@ -262,23 +297,25 @@ def run_incremental_smoke(target: TargetBackend, draft: DraftBackend, prompt, *,
             else:
                 mismatched += 1
                 event["mismatch_index"] = index
+                if target_next_anchor:
+                    event["correction"] = {"proposal_index": index, "rejected_token_id": proposal,
+                        "token_id": expected, "position": len(prefix)}
             # Rejected proposal IDs are never passed to the stateful target.
-            generated.append(expected)
-            prefix.append(expected)
-            event["committed"].append(expected)
-            current = observe(target.advance(expected), current)
-            target_calls += 1
-            event["target_call_ids"].append(current.evidence.call_id)
-            stopped = expected in eos
+            commit(expected, event)
             if stopped or not matches:
                 break
+        if (target_next_anchor and event["mismatch_index"] is None and considered == limit
+                and not stopped and len(generated) < max_new_tokens):
+            event["bonus"] = {"token_id": current.next_token_id, "position": len(prefix),
+                "source": "TARGET_NEXT_AFTER_ACCEPTED_CONSIDERED_BLOCK"}
+            commit(current.next_token_id, event)
         discarded += len(tokens) - considered
         event.update(considered=considered, discarded_unverified=len(tokens) - considered,
                      state_after_sha256=current.state_sha256)
         rounds.append(event)
     multi_round = len(rounds) >= minimum_draft_rounds
     kinds = {row["evidence_kind"] for row in evidence}
-    return {"schema_version": 1, "artifact_kind": "qwen35-incremental-dflash-execution-smoke",
+    result = {"schema_version": 1, "artifact_kind": "qwen35-incremental-dflash-execution-smoke",
             "status": "EXECUTION_COMPLETE" if multi_round else "INCOMPLETE_MILESTONE",
             "scope": "host-test" if contract.test_only else "complete-model-serial-verification-smoke",
             "device_execution": "UNVERIFIED", "evidence_kinds": sorted(kinds),
@@ -297,3 +334,8 @@ def run_incremental_smoke(target: TargetBackend, draft: DraftBackend, prompt, *,
             "minimum_draft_rounds": minimum_draft_rounds, "multi_round_observed": multi_round,
             "state_policy": "ADVANCE_ONLY_COMMITTED_TARGET_TOKENS_NO_SPECULATIVE_STATE",
             "rounds": rounds, "call_evidence": evidence}
+    if target_next_anchor:
+        result.update(anchor_mode="TARGET_NEXT_ANCHOR", initial_anchor=initial_anchor,
+            draft_context_contract="COMPLETE_PREFIX_FEATURES_WITH_COMMITTED_ANCHOR_ROW_EXCLUDED_BY_DRAFT_ABI")
+        result["counts"].update(initial_anchor_tokens=1, bonus_tokens=sum(row["bonus"] is not None for row in rounds))
+    return result
