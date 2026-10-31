@@ -92,7 +92,7 @@
     "real_feature_draft_calls": 1,
     "multi_round_loop": "SERIAL_PROMPT_SUBMILESTONE_BOARD_LOCAL_TARGET16_DRAFT7_ACCEPTED0_CORRECTIONS7",
     "last_row63_prefill": "EXECUTED_UNVALIDATED_PID28669_FEATURE_SHA_UNCHANGED_LOGITS_ARGMAX6",
-    "multi_round_evidence": "docs/board-first-completion.md",
+    "multi_round_evidence": "docs/history/board-first-completion.md",
     "original_prefill_integrated_multiround": "EXECUTED_OUTPUTS_RETRIEVED_COMPACT_PREFILL1_DECODE8_DRAFT7",
     "latest_compact_serial_prompt": {
       "generated_token_ids": [
@@ -196,6 +196,6 @@
     "numerical_validation": "NOT_RUN",
     "models_recompiled": false,
     "model_residency": "NOT_IMPLEMENTED",
-    "document": "docs/board-prefill-integration.md"
+    "document": "docs/history/board-prefill-integration.md"
   }
 }

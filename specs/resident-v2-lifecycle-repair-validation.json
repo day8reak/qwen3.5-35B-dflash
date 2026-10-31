@@ -103,7 +103,7 @@
   "device_new_cleanup_validated": false,
   "device_draft_v2_validated": false,
   "device_two_model_residency_validated": false,
-  "next_command_document": "docs/target-resident-load-probe.md",
+  "next_command_document": "docs/history/target-resident-load-probe.md",
   "experience_audit": {
     "captured": "Separate successful initialization from cleanup failure. Preserve old failed receipts; pin new lifecycle policy across prepare, config and loop. Failure of weights cleanup must not prevent manager cleanup.",
     "skill_changes": "NONE_SELECTED_SDK_SEQUENCE_REQUIRES_DEVICE_VALIDATION"

@@ -99,7 +99,7 @@
     "SDK input/output copies and output zero initialization remain; this is not zero-copy.",
     "Prior resident/nonresident numerical divergence and independent external weight release remain unresolved."
   ],
-  "command_document": "docs/board-resident-fast-path.md",
+  "command_document": "docs/reference/board-resident-fast-path.md",
   "next_device_request": "dflash-board-resident-fast8-run",
   "next_recovery": "dflash-board-resident-fast8-recovery"
 }

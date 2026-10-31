@@ -1,6 +1,6 @@
 # 权重准备
 
-[首页](README.md) · [环境配置](environment-setup.md)
+[首页](../README.md) · [环境配置](environment-setup.md)
 
 ## 权重来源
 
@@ -11,7 +11,7 @@ DFlash 官方代码：[z-lab/dflash（GitHub）](https://github.com/z-lab/dflash
 | 目标模型 | [Qwen/Qwen3.5-35B-A3B](https://huggingface.co/Qwen/Qwen3.5-35B-A3B/tree/59d61f3ce65a6d9863b86d2e96597125219dc754) | `59d61f3` |
 | DFlash 草稿模型 | [z-lab/Qwen3.5-35B-A3B-DFlash](https://huggingface.co/z-lab/Qwen3.5-35B-A3B-DFlash/tree/52cb554b4995dede3e2e1bdb129cdb1f3529332b) | `52cb554` |
 
-完整 revision 和已核对配置/索引的哈希见 [upstream.lock.json](../specs/upstream.lock.json)。完整权重需另行下载，本仓库不包含权重或量化成品；当前开发环境仅下载并核对了配置/索引，完整 35B 权重验证仍待完成。
+完整 revision 和已核对配置/索引的哈希见 [upstream.lock.json](../../specs/upstream.lock.json)。完整权重需另行下载，本仓库不包含权重或量化成品；当前开发环境仅下载并核对了配置/索引，完整 35B 权重验证仍待完成。
 
 ### 在服务器下载
 

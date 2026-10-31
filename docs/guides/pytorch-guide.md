@@ -1,6 +1,9 @@
 # PyTorch 构图、参考与导出
 
-[首页](README.md) · [环境配置](environment-setup.md) · [GE 路径](ge-guide.md)
+> 开发指南：本页涉及其他导出／ABI路径。当前原40层模型的文字＋预读运行入口在[这里](../board-text-input-output.md)。
+
+
+[首页](../README.md) · [环境配置](environment-setup.md) · [GE 路径](ge-guide.md)
 
 先按[环境配置](environment-setup.md)激活 `custom_pypto` 并加载项目配置，以下使用当前环境的 `python3`。以下完整模型使用 40 层 target、6 层 DFlash、hidden 2048、词表 248320；`sequence-length` 只控制输入长度。
 
@@ -75,7 +78,7 @@ PY
 
 ## 接口参考
 
-基础适配模块须声明 `FUSED_OPS_ABI=1`、非空 `BACKEND_ID`，提供以下逻辑操作；具体签名见 [fused/ops.py](../model/qwen35_moe_dflash/fused/ops.py)。
+基础适配模块须声明 `FUSED_OPS_ABI=1`、非空 `BACKEND_ID`，提供以下逻辑操作；具体签名见 [fused/ops.py](../../model/qwen35_moe_dflash/fused/ops.py)。
 
 | 函数 | 作用 |
 |---|---|
@@ -89,7 +92,7 @@ PY
 
 验证提案使用 `branch=session.verify(proposals)`、`branch.commit(branch.max_accepted_prefix)`，随后 `session.step(session.next_token)` 消费修正或 bonus token；`branch.abort()` 丢弃分支。当前实现逐 token 验证并复制状态，完整 draft 特征上下文由调用方维护。
 
-量化路径保留 `quant-plan → quantize → reference → export-air`；DOPT 仿真检查点通过 `--quantized-checkpoint` 传入，不等于文档 W4A8/group256/I4ZN 压缩部署模型。验证范围见 [validation.md](validation.md)。
+量化路径保留 `quant-plan → quantize → reference → export-air`；DOPT 仿真检查点通过 `--quantized-checkpoint` 传入，不等于文档 W4A8/group256/I4ZN 压缩部署模型。验证范围见 [validation.md](../history/validation.md)。
 
 ## tiny 回归
 

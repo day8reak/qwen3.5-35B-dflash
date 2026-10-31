@@ -1,8 +1,24 @@
 # 项目结构与端到端流程
 
-[首页](README.md) · [模型结构](model-architecture.md) · [当前更新](current-status.md)
+[首页](../README.md) · [模型结构](model-architecture.md) · [当前更新](../current-status.md)
 
-本项目包含目标模型、DFlash 草稿模型、两种构图方式，以及共用的编译和 HIAI 执行链。原始 ABI v2 双图只需选择 **PyTorch 或 GE 入口**，然后使用同一个板端入口；不用逐个调用内部模块。
+当前实机主线是原40层prefill64／decode1与完整六层draft的混合接口常驻循环。主机负责准备与一次下发，板端负责文字编码、原表查embedding、prefill、draft/verify循环和最终文字解码，主机最后一次回收。PyTorch／GE导出与旧ABI双图仍保留为独立研发路径。
+
+## 当前主线的代码入口
+
+| 路径 | 职责 |
+|---|---|
+| `targets/cpro/scripts/prepare_board_tokenizer.py` | 原词表准备；`--source-dir`使用本地三个文件，无网络访问 |
+| `targets/cpro/scripts/run_board_serial_dflash.py` | 文字或token请求、显式预读、启动与原attempt恢复 |
+| `model/qwen35_moe_dflash/board_tokenizer.py` | 词表校验、便携bundle、主机编码准入与最终文本对照 |
+| `model/qwen35_moe_dflash/board_serial_dflash.py` | 绑定模型／状态映射，生成一次请求的配置 |
+| `model/qwen35_moe_dflash/board_serial_transport.py` | 一次下发和启动、完成后回收；不逐token调用服务器 |
+| `targets/cpro/runtime/src/board_serial_main.cpp` | 板端原prefill、embedding查表、状态反馈、draft/verify与文本结果 |
+| `targets/cpro/runtime/src/tokenizer.cpp` | 原tokenizer的板端文字编码和解码 |
+| `targets/cpro/runtime/src/resident_session.cpp` | 常驻V2 target＋V1 draft的加载、交替调用和关闭 |
+| `targets/cpro/runtime/src/hiai_executor.cpp` | HIAI适配、tensor存储、同步API和一次性加载计时／预读 |
+
+以下目录和导出内容覆盖项目的其他研发路线；不能据此替换当前成功的原模型请求。
 
 ## 目录与入口
 
@@ -68,7 +84,7 @@ tests/                        Python 模型、状态、导出与执行回归
 | `ge_fused/export.py`、`ge_fused/__init__.py` | 完整无权重target/draft构图、新状态图AIR及单步输入产物编排 |
 | `ge_fused/probes.py` | GDN、卷积状态更新、RMS、CacheUpdate和分页Attention五类算子的9例独立调用；生产模型接入另行验证 |
 
-`--fused-ops none` 使用展开图，`gdn,conv_state,rms` 可按角色选择。绑定文件把逻辑角色映射到黄区算子的真实 GE 端口；它不会安装或实现 kernel。用法集中在 [GE 指南](ge-guide.md)。
+`--fused-ops none` 使用展开图，`gdn,conv_state,rms` 可按角色选择。绑定文件把逻辑角色映射到黄区算子的真实 GE 端口；它不会安装或实现 kernel。用法集中在 [GE 指南](../guides/ge-guide.md)。
 
 ## 执行与公共框架
 
@@ -87,7 +103,7 @@ tests/                        Python 模型、状态、导出与执行回归
 
 `reference/` 只负责主机对照；`tests/` 验证行为。测试中的 fake HIAI 只用于主机回归，不能当成板端执行结果。
 
-## 端到端如何运行
+## 原始ABI v2研发链（独立于当前原40层执行主线）
 
 ```mermaid
 flowchart TD
@@ -106,13 +122,13 @@ flowchart TD
 
 这条已实现的共同执行链针对**原始 ABI v2 双图**。逐步操作如下：
 
-1. **配置环境和权重**：按[环境配置](environment-setup.md)设置模型 Python、主机 GE/导出栈、目标 DDK 与 HIAI 资源。完整权重版本由 `upstream.lock.json` 锁定；tiny 使用固定的小模型配置。
-2. **选构图方式**：按 [PyTorch 指南](pytorch-guide.md)或 [GE 指南](ge-guide.md)生成 target 和 draft。GE 先输出 prepared，再导出 AIR；PyTorch 由 TorchAir 捕获并转换。
+1. **配置环境和权重**：按[环境配置](../guides/environment-setup.md)设置模型 Python、主机 GE/导出栈、目标 DDK 与 HIAI 资源。完整权重版本由 `upstream.lock.json` 锁定；tiny 使用固定的小模型配置。
+2. **选构图方式**：按 [PyTorch 指南](../guides/pytorch-guide.md)或 [GE 指南](../guides/ge-guide.md)生成 target 和 draft。GE 先输出 prepared，再导出 AIR；PyTorch 由 TorchAir 捕获并转换。
 3. **准备参考并编译**：参考必须来自本次对应权重、精度和接口。OMG 将两个 AIR 编译为 OMC。保留整套目录、外部权重及清单，不只复制一个 `.air` 文件。
-4. **运行板端程序**：按[板端指南](board-guide.md)构建或复用 runner。上传 OMC、输入和配套运行库；板端不需要 PyTorch、TorchAir 或 CANN 编译工具。
+4. **运行板端程序**：按[板端指南](../guides/board-guide.md)构建或复用 runner。上传 OMC、输入和配套运行库；板端不需要 PyTorch、TorchAir 或 CANN 编译工具。
 5. **生成 token**：target 先处理 prompt，并产生下一 token 与选定层特征。draft 接收这些特征、已知 token 和 mask，提议后续 token；target 验证，调度器接受匹配前缀，在首个拒绝位置使用 target token，再进入下一轮。
 6. **比较与计时**：回收 token、停止原因、调用计数和耗时，与同源参考比较。普通/DFlash 一致性和模型相对源模型的质量分别验证；精度通过后才评估配对条件下的加速。
 
-旧 ABI v2 用固定长度 ND 输入和前缀重算维持语义，尚不消费新的显式缓存。新 `fused/` 已有主机会话和状态事务；新 `ge_fused/` 可导出带状态的 target AIR，独立编译与打包后由同一runner的 `--stateful-step` 模式执行，按文件接续prefill/decode。**常驻模型的状态bank和native DFlash调度尚待接通**；自动 `run_hdc.py` 仍只支持旧双图。单步进程重载模型，不代表最终解码性能。
+旧 ABI v2 用固定长度 ND 输入和前缀重算维持语义，尚不消费新的显式缓存。新 `fused/` 已有主机会话和状态事务；新 `ge_fused/` 可导出带状态的 target AIR，独立编译与打包后由同一runner的 `--stateful-step` 模式执行，按文件接续prefill/decode。**该新fused ABI路线的常驻状态bank和native调度尚待接通；原40层混合接口常驻循环已另行跑通**；自动 `run_hdc.py` 仍只支持旧双图。单步进程重载模型，不代表最终解码性能。
 
-在新实现中，prefill 的 conv/recurrent/KV 输出接下一步输入；DFlash 若只接受部分提案，提交状态必须对应接受前缀，不能使用整段验证后的末态。这里是后续端到端集成的关键，当前进展以[状态页](current-status.md)为准。
+在新实现中，prefill 的 conv/recurrent/KV 输出接下一步输入；DFlash 若只接受部分提案，提交状态必须对应接受前缀，不能使用整段验证后的末态。这里是后续端到端集成的关键，当前进展以[状态页](../current-status.md)为准。

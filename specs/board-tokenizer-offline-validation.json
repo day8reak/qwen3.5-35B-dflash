@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "status": "HOST_OFFLINE_PREPARATION_VALIDATED_BOARD_TEXT_EXECUTION_PENDING",
+  "run": "20261031T014457Z-30553-67759a",
+  "document": "docs/tokenizer-offline.md",
+  "device_calls_by_assistant": 0,
+  "models_recompiled": false,
+  "production_runtime_changed": false,
+  "host_test": {
+    "name": "test_offline_prepare_cli_never_downloads",
+    "passed": 1,
+    "evidence": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T014457Z-30553-67759a/offline-prepare.xml",
+    "input_source": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T014457Z-30553-67759a/offline-unpack/source",
+    "network_guards": [
+      "tokenizer acquire forbidden",
+      "urllib.request.urlopen forbidden",
+      "socket.socket.connect forbidden"
+    ],
+    "checked": [
+      "actual offline CLI",
+      "exact pinned source identities",
+      "generated bundle equals existing builder output",
+      "reported source directory retained"
+    ]
+  },
+  "offline_package": {
+    "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T014457Z-30553-67759a/export/qwen35-tokenizer-offline.tar.gz",
+    "sha256": "68e5346d7072a6aba9e684678f74c2626053cdd2a080ac3adefa4f3de6b28b6e",
+    "bytes": 3521447,
+    "source": {
+      "repo": "Qwen/Qwen3.5-35B-A3B",
+      "revision": "59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "files": {
+        "chat_template.jinja": {
+          "sha256": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+          "bytes": 7756
+        },
+        "tokenizer.json": {
+          "sha256": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42",
+          "bytes": 12807982
+        },
+        "tokenizer_config.json": {
+          "sha256": "316230d6a809701f4db5ea8f8fc862bc3a6f3229c937c174e674ff3ca0a64ac8",
+          "bytes": 16710
+        }
+      }
+    },
+    "members": [
+      "source/chat_template.jinja",
+      "source/tokenizer.json",
+      "source/tokenizer_config.json",
+      "tokenizer.lock.json",
+      "SHA256SUMS",
+      "README.txt"
+    ]
+  },
+  "documentation": {
+    "moved_documents": 30,
+    "entry": "docs/README.md",
+    "categories": [
+      "current commands and status",
+      "guides",
+      "reference",
+      "history"
+    ],
+    "link_check": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T014457Z-30553-67759a/doc-link-check.json"
+  },
+  "source_sha256": {
+    "targets/cpro/scripts/prepare_board_tokenizer.py": "865058463469605335b6d1c81237cf105fa138c28599b12ee37752733bc19387",
+    "model/qwen35_moe_dflash/board_tokenizer.py": "a9da2dd77a3bd5779d46a64900bb38688c4034f6f2d40614b53955980b613b7d",
+    "tests/test_board_tokenizer.py": "e52875b5c1ea313a3b1aad4f653a1afdcce11360169c7f8e612219d1b863f5e5",
+    "specs/tokenizer.lock.json": "f215daa687fab42e7d66b9ea0647aa0ef76b390fb5a9f3bc4e49203e6b837fb1"
+  },
+  "scope": "No Internet is needed on the DDK server for tokenizer preparation from local locked files. Text admission/recovery needs a local tokenizers Python package; separate matching-platform wheelhouse instructions are documented. Combined board text execution remains pending."
+}

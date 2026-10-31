@@ -1,6 +1,9 @@
 # 板端混合接口常驻执行
 
-更新：2026-10-31。用户已明确允许prefill／decode用V2、完整六层embedded draft用V1，优先推进常驻。全V1候选的HCL空buffer失败保留，当前命令见[current-status.md](current-status.md)。
+> 历史记录：保留当时的观察、失败和候选命令。当前操作请从[文档首页](../README.md)或[当前状态](../current-status.md)进入；不要直接重复本页旧请求。
+
+
+更新：2026-10-31。用户已明确允许prefill／decode用V2、完整六层embedded draft用V1，优先推进常驻。全V1候选的HCL空buffer失败保留，当前命令见[current-status.md](../current-status.md)。
 
 **实机进展：** 用户已完成混合常驻完整请求，prefill1／decode8／draft7、各resident模型加载1次且正常关闭，总墙钟88.680秒。见[首次结果](board-resident-mixed-first-completion.md)。[compact-memory-v1首次实机](board-resident-fast-first-completion.md)也已完成：decode包装195.75ms、Run111.64ms，draft加载202.958秒使整轮230.735秒。先定位加载阶段，再处理首decode差异、重复稳定性和独立权重释放。
 

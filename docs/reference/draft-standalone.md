@@ -4,7 +4,7 @@
 
 最新用户板端结果（2026-10-29）：完整6层、block16、248320词表的 `full-draft/residual-fix` 已执行，165/165编译精度要求通过，15/15 Top1在固定合成特征fixture匹配参考。hidden相对L2=0.0126796675、cosine=0.999919614，尚非全面精度通过。模型只改变12处残差加法的计算路径，FP32计算后回到原FP16结果边界，原权重和模型规模保留。
 
-按用户新的执行优先级，端到端复用该bundle，**不再启动新的draft AIR、OMC或打包**。接下来补原target的真实8层features和连续状态接口。当前命令见[当前更新与执行命令](current-status.md#用户现在执行什么)，新接口见[原target真实特征接入](original-target-features.md)。
+按用户新的执行优先级，端到端复用该bundle，**不再启动新的draft AIR、OMC或打包**。接下来补原target的真实8层features和连续状态接口。当前命令见[当前更新与执行命令](../current-status.md#用户现在执行什么)，新接口见[原target真实特征接入](../history/original-target-features.md)。
 
 下文的独立构建流程保留用于首次准备和复现，不是当前需要重复执行的步骤。
 

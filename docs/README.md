@@ -1,19 +1,25 @@
-# Qwen3.5-35B-A3B · DFlash / CPro X90
+# Qwen3.5-35B-A3B · 端侧 DFlash
 
-将 Qwen3.5-MoE 目标模型与 DFlash 草稿模型接到 CPro/X90。支持 **PyTorch 建模导出**和**直接 GE 构图**两条路径，部署使用 `AIR → OMG → OMC → HIAI`。
+当前主线复用原40层target（prefill64、decode1）和完整六层draft S64，在板端自主完成prefill、草稿提议、逐token验证和状态反馈。decode与draft常驻；默认关闭中间张量dump，最后一次回收结果。
 
-当前主线复用原40层target prefill64／decode1与完整六层draft S64，不重编模型。原prefill驱动的板端P8/G8闭环已经执行通过，精度与加速未验收。用户已允许混合接口推进常驻：V2 prefill一次后关闭，随后V2 decode与V1 draft各加载一次、在板端交替Run／Process。新混合常驻完整请求已由用户实机跑通：prefill1／decode8／draft7，各resident模型加载1次，总墙钟88.680秒。[常驻内存快速模式](board-resident-fast-first-completion.md)也已执行通过：decode包装195.75ms／Run111.64ms，但draft加载202.958秒使总耗时增至230.735秒。当前定位该加载问题，随后定位与旧版第2个token起的差异；精度、重复稳定性和独立权重释放仍待验收。当前命令见[执行入口](current-status.md)，总阶段及天数见[交接计划](dflash-delivery-plan.md)。
+最新token输入请求已完成：prefill1／decode8／draft7，开启顺序预读后总墙钟31.455秒、draft加载3.883秒。接受率0/7，数值正确性与稳定加速尚未验收。文字接口已通过主机验证，下一次将tokenizer与预读放进同一板端请求。
 
-| 从这里开始 | 内容 |
+## 现在运行：只按这三步
+
+1. **[离线准备 tokenizer](tokenizer-offline.md)**：服务器不需要联网或证书；使用锁定的三个本地文件。
+2. **[文字＋预读完整命令](board-text-input-output.md)**：设置问题，启动同一个自主板端进程，再回收文字和时延。
+3. **[当前状态与下一动作](current-status.md)**：查看最新证据、当前限制及后续精度任务。
+
+已有匹配的模型、权重和板端缓存时，沿用当前产物；上面的入口会构建当前runner。新请求使用新的输出目录，恢复继续指向原执行目录。
+
+## 查阅导航
+
+| 要做什么 | 入口 |
 |---|---|
-| [模型结构](model-architecture.md) | 混合注意力、MoE、DFlash 与三类缓存 |
-| [当前更新与待执行命令](current-status.md) | 已完成什么、现在需要运行什么 |
-| [DFlash执行总计划与交接](dflash-delivery-plan.md) | 从当前闭环到精度／长上下文／批量verify／2倍性能／交付，含天数、失败分支和后续助手提示词 |
-| [机器可读执行状态](../specs/dflash-execution-state.json) | 当前阶段、依赖、通过条件、证据与唯一下一动作 |
-| [环境配置](environment-setup.md#docker-重进后的配置恢复) | 按顺序source已有环境、补七项export、保存配置、执行全新算子探针 |
-| [PyTorch 执行](pytorch-guide.md) | 参考推理、TorchAir 导出、独立融合模型 |
-| [GE 构图执行](ge-guide.md) | 准备权重、基础双图、可选融合与状态图 |
-| [板端执行与对比](board-guide.md) | 编译 runner、上传 OMC、运行、回收与比较 |
-| [项目结构与端到端流程](project-structure.md) | 主要代码文件的职责及数据如何流转 |
+| 交接、阶段顺序、估计天数 | [执行总计划](dflash-delivery-plan.md) · [机器可读状态](../specs/dflash-execution-state.json) |
+| 查看预读为什么有效、计时口径 | [加载与预读记录](board-resident-load-timing.md) |
+| 配环境、开发或导出其他模型路径 | [开发指南](guides/README.md) |
+| 查模型结构、接口和代码职责 | [技术参考](reference/README.md) |
+| 查以前的失败、探针和首次跑通记录 | [历史索引](history/README.md) |
 
-补充资料：[权重下载](weights.md) · [验证范围](validation.md) · [算子接口原文](qwen35-moe-operators-and-quantization-analysis.md)。已有结论的探针和旧排障过程已归档到仓库外，本仓库保留生产实现与必要回归。
+`guides/`中的旧ABI双图／新状态图是独立研发路径。当前实机操作以本文三步及当前状态为准，历史记录保留当时结论。

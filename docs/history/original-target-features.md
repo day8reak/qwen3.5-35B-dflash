@@ -1,8 +1,11 @@
 # 原 target 的真实 DFlash 特征接口
 
-用户最新安排为[原PyTorch与直接GE两条路线并行](target-parallel-tracks.md)。下文原机导出属于A路线；B使用实际原AIR与源码绑定原算子、权重及状态接口，独立记录结果。当前命令以[当前更新](current-status.md#用户现在执行什么)为准。
+> 历史记录：保留当时的观察、失败和候选命令。当前操作请从[文档首页](../README.md)或[当前状态](../current-status.md)进入；不要直接重复本页旧请求。
 
-最新回传：A已经成功导出64档AIR和约19.48GB sidecar；当前DDK机已从10GB释放到60GB。按[导出清单与SHA复用](target-weight-reuse.md)安排A编译，B按[GE特征追加](target-ge-feature-append.md)并行小图构建。下方较早的55档准备示例仅供重现，不重跑已成功任务。
+
+用户最新安排为[原PyTorch与直接GE两条路线并行](target-parallel-tracks.md)。下文原机导出属于A路线；B使用实际原AIR与源码绑定原算子、权重及状态接口，独立记录结果。当前命令以[当前更新](../current-status.md#用户现在执行什么)为准。
+
+最新回传：A已经成功导出64档AIR和约19.48GB sidecar；当前DDK机已从10GB释放到60GB。按[导出清单与SHA复用](../reference/target-weight-reuse.md)安排A编译，B按[GE特征追加](target-ge-feature-append.md)并行小图构建。下方较早的55档准备示例仅供重现，不重跑已成功任务。
 
 当前目标是先让完整40层量化target与完整6层draft在设备上多轮执行。用户接受这一阶段文本乱码，但明确要求真实target特征。最终精度、状态正确性和至少2x实测目标保留，当前不宣称已完成。
 
@@ -31,7 +34,7 @@ target采用用户原PyTorch量化工程，经原TorchAir入口导出AIR，再�
 
 当前服务器原AIR和外置权重在：
 `/home/l00886453/qwen3_5_moe/glm_export_air_cpro_40block_55_quant/`。
-保持该目录内容和旧证据不变。先使用[当前只读命令](current-status.md#用户现在执行什么)核对AIR结构和控制输入，再确定源sidecar复用或新产物部署。原机已确认只有TorchAir，编译器继续使用当前服务器的已验证环境。把共享存储实际挂载在`$AI_RUN_DIR`的子目录后，可将新的`--output`指向该子目录中的任务路径；这只是存储分工，挂载权限、可用容量和吞吐仍需实际核对。没有可用大盘/共享存储时，先解决容量，再编译；10GB不作为整模编译预算。
+保持该目录内容和旧证据不变。先使用[当前只读命令](../current-status.md#用户现在执行什么)核对AIR结构和控制输入，再确定源sidecar复用或新产物部署。原机已确认只有TorchAir，编译器继续使用当前服务器的已验证环境。把共享存储实际挂载在`$AI_RUN_DIR`的子目录后，可将新的`--output`指向该子目录中的任务路径；这只是存储分工，挂载权限、可用容量和吞吐仍需实际核对。没有可用大盘/共享存储时，先解决容量，再编译；10GB不作为整模编译预算。
 
 直接GE追加输出的入口现为`append_original_ge_features.py`。主机已验证GE生成9节点特征分支、严格schema字段移植和整图Load/Save保真机制；原计算节点编码保持，原NetOutput仅追加1路。当前用户9520节点原图尚待运行该入口。不能用公开Load接口存在或主机机制测试替代真实tap绑定、完整模型编译或设备结果。
 

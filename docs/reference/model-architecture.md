@@ -3,10 +3,10 @@
 本工程的目标模型是 **Qwen3.5-35B-A3B 的文本主干**，搭配独立的 DFlash draft。
 目标模型负责最终 token 判定；draft 利用目标模型的中间特征提出候选 token。
 多模态视觉编码器和 checkpoint 中的 MTP 层不属于当前这条文本 DFlash 集成路径。
-当前完成范围见[项目状态](current-status.md)，操作入口见[文档首页](README.md)。
+当前完成范围见[项目状态](../current-status.md)，操作入口见[文档首页](../README.md)。
 
-以下参数来自本地锁定的 [target 配置](../specs/target-config.json)、
-[draft 配置](../specs/draft-config.json)和[上游版本记录](../specs/upstream.lock.json)。
+以下参数来自本地锁定的 [target 配置](../../specs/target-config.json)、
+[draft 配置](../../specs/draft-config.json)和[上游版本记录](../../specs/upstream.lock.json)。
 板端 tiny 探针使用缩小配置，不能把其张量尺寸当成完整模型尺寸。
 
 ## Target：40 层混合注意力 MoE
@@ -64,7 +64,7 @@ Q/K/V + g/beta + recurrent state
 所以文档的 core 输入为 `[B,S,32,128]`。开启 kernel 内 Q/K L2 时，外部不重复归一化。
 
 直接 GE 版本可独立开关 `gdn`、`conv_state`、`rms` 三种融合角色。
-具体端口与限制见[GE 实现说明](ge-guide.md)及用户提供的
+具体端口与限制见[GE 实现说明](../guides/ge-guide.md)及用户提供的
 [算子与量化分析 §4.6](qwen35-moe-operators-and-quantization-analysis.md#46-ge-端口信息速查custom_op-注册口径)。
 用户文档面向 `Ascend310P3`，端口描述本身不证明当前目标 DDK 已安装兼容 kernel。
 
@@ -89,8 +89,8 @@ flowchart LR
     C --> T
 ```
 
-采集合同见 [target_features.py](../model/qwen35_moe_dflash/target_features.py)，
-draft 形状定义见 [config.py](../model/qwen35_moe_dflash/config.py)。
+采集合同见 [target_features.py](../../model/qwen35_moe_dflash/target_features.py)，
+draft 形状定义见 [config.py](../../model/qwen35_moe_dflash/config.py)。
 
 ## 三类 target 缓存与接受前缀
 
@@ -118,6 +118,6 @@ KV 可以按时间轴管理，GDN recurrent state 没有可供截断的 token �
 | 独立直接 GE `ge_fused/` | 显式缓存输入/输出，按静态 S/T 构图；文档派生的三个融合角色端口已接线，尚未完成真实导出/编译/板端验证及 native DFlash 状态调度 |
 
 后两项是新实现的两个入口。PyTorch session 是状态语义参考，不能直接当作 GE/HIAI 运行时。
-详细说明见[独立缓存模型](pytorch-guide.md)；主机数学参考位于
-[reference/fused_ops.py](../reference/fused_ops.py)。当前新路径使用未量化 FP16 prepared 权重；
+详细说明见[独立缓存模型](../guides/pytorch-guide.md)；主机数学参考位于
+[reference/fused_ops.py](../../reference/fused_ops.py)。当前新路径使用未量化 FP16 prepared 权重；
 用户文档的 W4A8/I4ZN 方案另需量化权重与算子适配，不在本页展开。

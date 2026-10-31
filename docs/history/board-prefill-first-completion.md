@@ -1,5 +1,8 @@
 # 原prefill驱动的端侧DFlash首次闭环
 
+> 历史记录：保留当时的观察、失败和候选命令。当前操作请从[文档首页](../README.md)或[当前状态](../current-status.md)进入；不要直接重复本页旧请求。
+
+
 2026-10-30，用户回传 `dflash-board-prefill8-recovery` 成功结果。**P0执行阶段完成**：一次原prefill、8次decode、7次完整draft在同一板端请求中完成，生成8个token，完成后回收小型结果并释放本请求锁。助手未连接板子，证据来源为用户终端摘要，原文件仍由用户保留。
 
 - execution：`$AI_RUN_DIR/dflash-board-prefill8-run`
@@ -22,4 +25,4 @@
 
 本次为compact模式，仅回收最终tokens、计数／时延和进程完成记录；没有在主机重放完整80状态链。精度、私有算子有效长度语义、真实接受／bonus分支和物理断连实测仍未验收。P0通过不表示这些后续阶段通过。
 
-保留本次成功目录作为常驻改造的回滚基线。用户已要求下一步统一V2、让decode和draft各加载一次后重复运行；常驻方案见[resident-runtime-plan.md](resident-runtime-plan.md)。机器可读用户摘要见[board-prefill-first-completion.json](../specs/board-prefill-first-completion.json)。
+保留本次成功目录作为常驻改造的回滚基线。用户已要求下一步统一V2、让decode和draft各加载一次后重复运行；常驻方案见[resident-runtime-plan.md](resident-runtime-plan.md)。机器可读用户摘要见[board-prefill-first-completion.json](../../specs/board-prefill-first-completion.json)。

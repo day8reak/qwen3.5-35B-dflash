@@ -7,12 +7,12 @@
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
-    "structure": "docs/project-structure.md",
-    "environment": "docs/environment-setup.md",
-    "pytorch": "docs/pytorch-guide.md",
-    "ge": "docs/ge-guide.md",
-    "board": "docs/board-guide.md",
-    "validation": "docs/validation.md"
+    "structure": "docs/reference/project-structure.md",
+    "environment": "docs/guides/environment-setup.md",
+    "pytorch": "docs/guides/pytorch-guide.md",
+    "ge": "docs/guides/ge-guide.md",
+    "board": "docs/guides/board-guide.md",
+    "validation": "docs/history/validation.md"
   },
   "paths": {
     "legacy_pair": {
@@ -2150,7 +2150,7 @@
       "name": "adaptation",
       "status": "pending",
       "owner": "model-workflow",
-      "evidence": "docs/ge-guide.md",
+      "evidence": "docs/guides/ge-guide.md",
       "note": "User selected GDN/CacheUpdate/Attention six cases, which completed export/compile/load/process in the fresh report. Conv state and RMS use existing base operators; original custom Conv/AdnRmsNorm failures remain optional historical diagnostics. Numerical correctness and placement are unverified."
     },
     {
@@ -2166,7 +2166,7 @@
       "name": "accuracy",
       "status": "pending",
       "owner": "model-workflow",
-      "evidence": "docs/validation.md",
+      "evidence": "docs/history/validation.md",
       "note": "Three-fill GDN diagnosis completed per user report: output depends on fill pattern despite matching host input hashes. Zero-fill core relative L2 is 0.00392/0.0564 and state 0.146/0.155; no acceptance or root-cause conclusion. CacheUpdate/Attention remain shape-only diagnostics. Full-model quality and state continuity remain pending."
     },
     {
@@ -5286,7 +5286,7 @@
       },
       "shared_draft": "full-draft/residual-fix/bundle",
       "acceptance": "Same original40layer quantization/fullvocab/realfeatures and89input80state contract; independent compilation/device evidence; neither lane inherits the other lane pass",
-      "docs": "docs/target-parallel-tracks.md",
+      "docs": "docs/history/target-parallel-tracks.md",
       "host_verification": {
         "tests_passed": 352,
         "failures": 0,
@@ -5683,7 +5683,7 @@
       "official_example": "https://github.com/huaweicodelabs/HiAI-Foundation/blob/83320362c10f2e85a2a1bbb283b3359db204ab2a/app/src/main/jni/classify_sync_jni.cpp",
       "official_load": "InputMemBufferCreate -> SetModelBuffer -> Load; generic classification example, no external-weight file contract",
       "user_4b_example": "src/model_runner.cpp provided in conversation: SetModelPath -> Load, descriptor modeltype=1; no successful current-35B execution provided",
-      "selected_sdk_observation": "docs/validation.md#外置模型加载描述符诊断入口",
+      "selected_sdk_observation": "docs/history/validation.md#外置模型加载描述符诊断入口",
       "pending": "Host mixed integration then actual full device request; DeInit-only weight release and co-residency remain experimental.",
       "decision": "User explicitly permits mixed APIs; all-V1 external-weight route is no longer the immediate runtime blocker."
     },
@@ -5720,7 +5720,7 @@
     "compact_memory_task": {
       "runtime_profile": "compact-memory-v1",
       "device_validation": "USER_REPORTED_EXECUTED_UNVALIDATED",
-      "document": "docs/board-resident-fast-path.md",
+      "document": "docs/reference/board-resident-fast-path.md",
       "user_request": "Remove dump=false diagnostics, intermediate tensor files, repeated payload hashes; report isolated SDK timings",
       "numerical_divergence": "REMAINS_UNRESOLVED",
       "host_validation": "specs/board-resident-fast-host-validation.json",

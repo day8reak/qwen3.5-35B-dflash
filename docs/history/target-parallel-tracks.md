@@ -1,8 +1,11 @@
 # 两条完整 target 路线并行
 
+> 历史记录：保留当时的观察、失败和候选命令。当前操作请从[文档首页](../README.md)或[当前状态](../current-status.md)进入；不要直接重复本页旧请求。
+
+
 用户于2026-10-29要求两条方案同时推进，防止直接GE target出现问题。两条保留独立产物、来源和设备结果，共用完整`residual-fix` draft；真实8层features、完整40层原量化target、248320词表及最终验证要求相同。
 
-**最新进展覆盖下方准备步骤：A已在原机真实导出成功**，AIR 6,375,344B、SHA `3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9`，目录约19.48GB；DDK服务器已释放到60GB。当前按[A权重核对/复用/编译](target-weight-reuse.md)继续，不重跑A prepare/export。B已收到40层gamma路径及norm/Add连接，按[源绑定特征追加](target-ge-feature-append.md)继续，不重跑旧JSON摘要。大编译当前只安排A，B并行小图构建。
+**最新进展覆盖下方准备步骤：A已在原机真实导出成功**，AIR 6,375,344B、SHA `3474492f31d3de05ddbc843daa6cbd75e52b641f277f684442dde6d4385f26d9`，目录约19.48GB；DDK服务器已释放到60GB。当前按[A权重核对/复用/编译](../reference/target-weight-reuse.md)继续，不重跑A prepare/export。B已收到40层gamma路径及norm/Add连接，按[源绑定特征追加](target-ge-feature-append.md)继续，不重跑旧JSON摘要。大编译当前只安排A，B并行小图构建。
 
 | | A：原PyTorch/TorchAir | B：直接GE |
 | --- | --- | --- |

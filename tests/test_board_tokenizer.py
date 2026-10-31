@@ -108,6 +108,26 @@ def test_bundle_tamper_and_malformed_utf8(assets, tmp_path):
     assert result.returncode != 0 and 'UTF-8' in result.stderr
 
 
+def test_offline_prepare_cli_never_downloads(assets, tmp_path, monkeypatch, capsys):
+    import runpy
+    import socket
+    import sys
+    def network_forbidden(*args, **kwargs):
+        pytest.fail('offline tokenizer preparation attempted network access')
+    monkeypatch.setattr(tok, 'acquire', network_forbidden)
+    monkeypatch.setattr(tok.urllib.request, 'urlopen', network_forbidden)
+    monkeypatch.setattr(socket.socket, 'connect', network_forbidden)
+    script=Path(__file__).parents[1]/'targets/cpro/scripts/prepare_board_tokenizer.py'
+    output=tmp_path/'offline-prepared'
+    monkeypatch.setattr(sys, 'argv', [str(script),'--source-dir',str(assets[0]),'--output',str(output)])
+    runpy.run_path(str(script),run_name='__main__')
+    result=json.loads(capsys.readouterr().out)
+    assert result['status']=='BOARD_TOKENIZER_PREPARED'
+    assert result['source_dir']==str(assets[0].resolve())
+    assert (output/'tokenizer.bin').read_bytes()==assets[2].read_bytes()
+    assert result['source']==json.loads(tok.LOCK.read_text())
+
+
 @pytest.mark.parametrize('mode', ['chat', 'raw'])
 @pytest.mark.parametrize('preread', [False, True])
 def test_text_enters_actual_native_prefill_loop_and_recovers(assets, tmp_path, monkeypatch, mode, preread):

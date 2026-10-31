@@ -40,7 +40,7 @@
   "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
   "scope": "One original target Init and InitWeights both returned SUCCESS; old cleanup sequence returned INVALID_PARAM at DeinitWeights. No Run, draft load, co-residency, accuracy or performance pass.",
   "next_hypothesis": "DeinitWeights while manager is initialized, then DeInit; no automatic retry or alternate sequence",
-  "next_command_document": "docs/target-resident-load-probe.md",
+  "next_command_document": "docs/history/target-resident-load-probe.md",
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_RUN"
 }

@@ -1,6 +1,6 @@
 # 环境准备
 
-[首页](README.md) · [PyTorch 指南](pytorch-guide.md) · [GE 指南](ge-guide.md) · [板端指南](board-guide.md)
+[首页](../README.md) · [PyTorch 指南](pytorch-guide.md) · [GE 指南](ge-guide.md) · [板端指南](board-guide.md)
 
 沿用已安装的模型环境和工具链，只配置本次所需阶段；无需替换已有 PyTorch 或共享 DDK。
 
@@ -172,7 +172,7 @@ source targets/cpro/scripts/env.sh
 
 | 阶段 | 依赖 / 资源 |
 |---|---|
-| 完整 PyTorch 结构（meta） | 现有 Torch、Transformers 等[模型依赖](../model/requirements-reference.txt)，不需权重 |
+| 完整 PyTorch 结构（meta） | 现有 Torch、Transformers 等[模型依赖](../../model/requirements-reference.txt)，不需权重 |
 | 完整 GE 结构、文档 bindings | Python/NumPy，不需权重、CANN、DDK 或设备 |
 | 完整参考 / 权重准备 | 两套锁定检查点；PyTorch 参考另需足够内存/显存 |
 | 直接 GE → AIR | C++ 编译器、主机 GE 头文件与 `libgraph.so` |
@@ -189,7 +189,7 @@ test -f "$REPO_DIR/project.yaml"
 python3 -c 'import sys, numpy; print(sys.executable); print("NumPy:", numpy.__version__)'
 ```
 
-资源默认读取 [specs/resources.json](../specs/resources.json) 并展开环境变量；已有私有清单时设置 `QWEN35_RESOURCES=/实际路径/resources.json`。完整权重路径与锁定版本见[权重准备](weights.md)，每次命令使用新的输出目录。
+资源默认读取 [specs/resources.json](../../specs/resources.json) 并展开环境变量；已有私有清单时设置 `QWEN35_RESOURCES=/实际路径/resources.json`。完整权重路径与锁定版本见[权重准备](weights.md)，每次命令使用新的输出目录。
 
 ## 2. PyTorch 环境
 
@@ -254,7 +254,7 @@ cmake --version
 
 ## 内存预算：文档 W4A8 + DFlash
 
-完整未量化 FP16 target+draft 去重权重约 **65.28 GiB**；不要以 32GB 板端容量运行它。文档 W4A8 + FP16 draft 的规划权重约 20 GiB，激活、缓存、HIAI workspace 和加载副本另计，真实峰值尚未验证；假设见[内存记录](../specs/device-memory-report.json)。
+完整未量化 FP16 target+draft 去重权重约 **65.28 GiB**；不要以 32GB 板端容量运行它。文档 W4A8 + FP16 draft 的规划权重约 20 GiB，激活、缓存、HIAI workspace 和加载副本另计，真实峰值尚未验证；假设见[内存记录](../../specs/device-memory-report.json)。
 
 ## tiny 回归
 

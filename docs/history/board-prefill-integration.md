@@ -1,5 +1,8 @@
 # 原prefill进入板端DFlash请求
 
+> 历史记录：保留当时的观察、失败和候选命令。当前操作请从[文档首页](../README.md)或[当前状态](../current-status.md)进入；不要直接重复本页旧请求。
+
+
 本次实现复用原40层prefill64、原40层decode1和完整6层S64 draft三个OMC。服务器一次提供prompt token IDs、准备配置并启动；查原始embedding表、prefill、draft、逐token验证、状态推进及停止都在板端进行。功能接入已通过主机检查，随后用户回传一次prefill、8次decode、7次draft的完整板端请求成功；P0执行通过，详见[首次原prefill闭环](board-prefill-first-completion.md)。精度仍未验收。
 
 ## 请求与状态流
@@ -30,7 +33,7 @@ prefill与decode保留各自的模型、编译清单、缓存锁和权重目录�
 
 默认compact仅回收token、小型完成记录、接受率和prefill／decode／draft时延。`--dump`还校验原表输入与全部控制、prefill零初态、80状态交接、完整有效特征历史和候选提交链。compact在下一步确实消费且验证成功后清理本次临时文件；失败保留现场。时延是包含加载／执行／卸载的子进程墙钟，`prompt_ingest`为`prefill`别名，不可再次相加。
 
-命令见[current-status.md](current-status.md)。主机替身覆盖与真实C++集成记录见[board-serial-validation.md](board-serial-validation.md)。原始用户成功的serial请求保留为[独立子里程碑](board-first-completion.md)，不能替代本路径的设备验收。
+命令见[current-status.md](../current-status.md)。主机替身覆盖与真实C++集成记录见[board-serial-validation.md](board-serial-validation.md)。原始用户成功的serial请求保留为[独立子里程碑](board-first-completion.md)，不能替代本路径的设备验收。
 
 ## 本轮经验记录
 

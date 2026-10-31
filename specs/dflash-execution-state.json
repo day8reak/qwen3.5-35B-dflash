@@ -7,7 +7,7 @@
   "overall_status": "in_progress",
   "active_phase": "P5",
   "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
-  "user_priority": "Add board-local original-tokenizer text input/output to the successful mixed resident compact loop, retaining load diagnosis and all original model weights; user runs device.",
+  "user_priority": "Combine board-local original tokenizer text input/output and measured draft preread in one autonomous resident request; prepare tokenizer fully offline on certificate-constrained DDK server; keep current commands separate from historical docs.",
   "status_policy": {
     "allowed": [
       "pending",
@@ -68,7 +68,7 @@
       "new_board_lane_checks": 82,
       "existing_host_serial_regressions": 11,
       "scope": "Prior board I/O optimization revision109checks; current dump revision129checks recorded under dump_mode; all host-only. Historical device result recorded separately.",
-      "validation_document": "docs/board-serial-validation.md",
+      "validation_document": "docs/history/board-serial-validation.md",
       "native_source_sha256": "4a7304b5bf2fb8dd743d2c7a759926654ee57e88586df417e304f7dc5f9d856b",
       "actual_device_full_loop": "SERIAL_PROMPT_SUBMILESTONE_PASSED_ORIGINAL_PREFILL_INTEGRATION_NOT_RUN",
       "native_build_configuration_checks": 16
@@ -82,7 +82,7 @@
       "original embedding tables copied completely",
       "host serial loop first target completed, next input staging hit HDC disconnect; stale locks diagnosed; this is not autonomous board-loop evidence",
       "old host serial P8/G8 attempt failed after10 target and1 draft: reused runner library discovery pointed at missing second-call native build directory; user chose new autonomous board entry",
-      "Autonomous decode1-serial-prompt P8/G8 submilestone completed and recovered: target16 draft7 accepted0 considered7 corrections7 bonuses0; BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED; lock released. See docs/board-first-completion.md.",
+      "Autonomous decode1-serial-prompt P8/G8 submilestone completed and recovered: target16 draft7 accepted0 considered7 corrections7 bonuses0; BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED; lock released. See docs/history/board-first-completion.md.",
       "Compact serial-prompt submilestone user-reported successful: tokens[26,18,2,4,6,2,0,2],target16,draft7,accepted0/considered7,total wall367791ms; original-prefill integrated loop not run; physical disconnect not specifically tested.",
       "Original-prefill autonomous P8/G8 completed: prefill1/decode8/draft7, tokens[4,12,10,8,0,4,32,2], accepted0/7,305788ms totalwall; compact recovery and owned locks release succeeded. P0 execution passed, not numerical/performance acceptance."
     ],
@@ -104,7 +104,7 @@
       "status": "HOST_TESTED",
       "checks_passed": 39,
       "device_execution": "NOT_RUN",
-      "document": "docs/legacy-draft-runner-reuse-fix.md",
+      "document": "docs/history/legacy-draft-runner-reuse-fix.md",
       "old_run_restart_requested": false
     },
     "resident_target_adapter": {
@@ -117,7 +117,7 @@
       "worker_protocol": "NOT_IMPLEMENTED",
       "default_loop_change": "NONE",
       "initialization_order": "EXPERIMENTAL_NOT_DEVICE_VALIDATED",
-      "document": "docs/resident-runtime-plan.md"
+      "document": "docs/history/resident-runtime-plan.md"
     },
     "dump_mode": {
       "status": "USER_REPORTED_COMPACT_SERIAL_PROMPT_SUBMILESTONE_COMPLETED",
@@ -166,7 +166,7 @@
         },
         "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
         "numerical_validation": "NOT_EVALUATED",
-        "evidence_document": "docs/board-first-completion.md",
+        "evidence_document": "docs/history/board-first-completion.md",
         "new_dump_revision_validation": "NOT_RUN_ON_DEVICE"
       },
       "compact": {
@@ -255,13 +255,13 @@
       "numerical_validation": "NOT_RUN",
       "models_recompiled": false,
       "model_residency": "NOT_IMPLEMENTED",
-      "document": "docs/board-prefill-integration.md",
+      "document": "docs/history/board-prefill-integration.md",
       "device_evidence": "specs/board-prefill-first-completion.json"
     },
     "resident_v2": {
       "implementation": "SINGLE_PROCESS_TWO_FILE_V2_MANAGERS_WITH_ORIGINAL_PREFILL_CHILD",
       "status": "USER_REPORTED_TARGET_INIT_SUCCESS_CLEANUP_FAILED_DRAFT_UNTESTED",
-      "validation_document": "docs/board-resident-validation.md",
+      "validation_document": "docs/history/board-resident-validation.md",
       "model_compilation": "NOT_RUN",
       "device_residency": "NOT_RUN",
       "device_accuracy": "NOT_EVALUATED",
@@ -274,7 +274,7 @@
       "actual_adapter_integration_tests": 2,
       "first_device_attempt": "specs/resident-v2-first-load-failure.json",
       "failure_reporting_validation": "specs/resident-v2-failure-reporting-validation.json",
-      "target_load_probe_document": "docs/target-resident-load-probe.md",
+      "target_load_probe_document": "docs/history/target-resident-load-probe.md",
       "target_load_probe_scope": "INIT_SUCCEEDED_TWICE_BOTH_EXPLICIT_WEIGHT_CLOSE_ORDERS_FAILED",
       "target_load_probe_validation": "specs/target-resident-load-probe-validation.json",
       "target_initialization_observation": "specs/resident-v2-target-init-observed.json",
@@ -297,7 +297,7 @@
       "historical_runtime": "specs/resident-v2-target-cleanup-observed.json",
       "next_device_action": "SUPERSEDED_BY_USER_AUTHORIZED_MIXED_API_CANDIDATE",
       "validation_manifest": "specs/resident-v1-host-validation.json",
-      "validation_document": "docs/resident-v1-validation.md",
+      "validation_document": "docs/history/resident-v1-validation.md",
       "latest_observation": "specs/resident-v1-hcl-load-failure.json",
       "authorization_scope": "HISTORICAL_SUPERSEDED_BY_EXPLICIT_MIXED_API_AUTHORIZATION_2026_10_31"
     },
@@ -333,7 +333,8 @@
     "type": "run_combined_board_text_preread",
     "implementation_required": false,
     "command_document": "docs/board-text-input-output.md",
-    "note": "User explicitly requested merging tokenizer text input/output with measured draft preread in one autonomous board request. Numerical closure follows."
+    "note": "Prepare the three pinned original tokenizer files with local --source-dir, set TOKENIZER_DIR, then execute --text and --draft-preread together using the current command document. No server Internet is required after offline assets/dependencies/code are transferred. Numerical closure follows.",
+    "preparation_document": "docs/tokenizer-offline.md"
   },
   "last_actual_execution": {
     "schema_version": 1,
@@ -540,22 +541,22 @@
         "Mode-appropriate completion and debug evidence"
       ],
       "evidence": [
-        "docs/board-first-completion.md",
-        "docs/board-prefill-integration.md",
-        "docs/board-serial-validation.md",
-        "docs/board-prefill-first-completion.md"
+        "docs/history/board-first-completion.md",
+        "docs/history/board-prefill-integration.md",
+        "docs/history/board-serial-validation.md",
+        "docs/history/board-prefill-first-completion.md"
       ],
       "last_error": null,
       "submilestones": [
         {
           "id": "serial_prompt_full_debug",
           "status": "passed",
-          "evidence": "docs/board-first-completion.md"
+          "evidence": "docs/history/board-first-completion.md"
         },
         {
           "id": "serial_prompt_compact",
           "status": "passed",
-          "evidence": "docs/board-first-completion.md"
+          "evidence": "docs/history/board-first-completion.md"
         },
         {
           "id": "original_prefill_draft_multiround",
@@ -700,12 +701,12 @@
         "matched ordinary baseline"
       ],
       "evidence": [
-        "docs/resident-runtime-plan.md",
-        "docs/board-resident-validation.md",
+        "docs/history/resident-runtime-plan.md",
+        "docs/history/board-resident-validation.md",
         "specs/resident-v1-host-validation.json",
         "specs/resident-mixed-host-validation.json",
         "specs/board-resident-mixed-first-completion.json",
-        "docs/board-resident-fast-path.md",
+        "docs/reference/board-resident-fast-path.md",
         "specs/board-resident-fast-host-validation.json",
         "specs/board-resident-fast-first-completion.json"
       ],
@@ -851,7 +852,7 @@
       "date": "2026-10-30",
       "decision": "User requests residency/overhead work in parallel. Retain running legacy job. Current default remains fresh-process; selected V2 InitWeights/DeinitWeights headers supplied, target resident adaptation separate. Prefill unload-once after output/state handoff before decode load; overlap only after memory and concurrency verification.",
       "scope": "Implementation priority only; no device residency or performance acceptance",
-      "document": "docs/resident-runtime-plan.md"
+      "document": "docs/history/resident-runtime-plan.md"
     },
     {
       "date": "2026-10-30",
@@ -975,8 +976,10 @@
     "goal": "Board-local original tokenizer encode/decode and autonomous full model loop",
     "validation": "specs/board-text-host-validation.json",
     "document": "docs/board-text-input-output.md",
-    "next": "Run docs/board-text-input-output.md with --text and --draft-preread together; use dflash-board-text-preread8-run/recovery. Tokenizer preparation is once only.",
-    "combined_validation": "specs/board-text-preread-validation.json"
+    "next": "Offline prepare with --source-dir and set TOKENIZER_DIR; run docs/board-text-input-output.md with --text and --draft-preread together using new dflash-board-text-preread8-run/recovery directories.",
+    "combined_validation": "specs/board-text-preread-validation.json",
+    "offline_document": "docs/tokenizer-offline.md",
+    "offline_validation": "specs/board-tokenizer-offline-validation.json"
   },
   "draft_load_task": {
     "status": "USER_REPORTED_PREREAD_STARTUP_IMPROVEMENT_SINGLE_RUN",
@@ -987,5 +990,14 @@
     "default_enabled": false,
     "device_calls_by_assistant": 0,
     "baseline_observation": "specs/board-resident-load-observation.json"
+  },
+  "documentation": {
+    "entry": "docs/README.md",
+    "current_commands": "docs/board-text-input-output.md",
+    "offline_tokenizer": "docs/tokenizer-offline.md",
+    "developer_guides": "docs/guides/README.md",
+    "technical_reference": "docs/reference/README.md",
+    "historical_evidence": "docs/history/README.md",
+    "policy": "Current entry and last_actual_execution take precedence for next actions; historical records retain their observed version and scope."
   }
 }

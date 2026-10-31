@@ -53,7 +53,7 @@
       "native_norm_stages_failed_output": "normalized_key"
     },
     "placement": "UNVERIFIED",
-    "conclusions": "docs/validation.md"
+    "conclusions": "docs/history/validation.md"
   },
   "not_validated": [
     "new fused kernel installation/target support",
@@ -209,7 +209,7 @@
     "documentation": "Full-model commands first; concise parameter notes; tiny commands last; standalone five-case batch instructions included",
     "experience_audit": {
       "captured_in": [
-        "docs/validation.md",
+        "docs/history/validation.md",
         "docs/current-status.md"
       ],
       "lessons": [
@@ -262,7 +262,7 @@
       ],
       "updated": [
         "docs/current-status.md",
-        "docs/ge-guide.md",
+        "docs/guides/ge-guide.md",
         "specs/model-workflow.json",
         "stateful compiler and regression tests"
       ],

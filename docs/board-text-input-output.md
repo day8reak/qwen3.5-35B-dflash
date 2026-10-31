@@ -8,26 +8,24 @@
 
 这是文字接口的实现；原模型数值、接受率、控制语义仍未验收。模型目前可能输出标点或无意义文本，不能通过 tokenizer 修复。
 
-## 1. 准备原 tokenizer（只做一次）
+## 1. 准备原 tokenizer（只做一次，服务器可离线）
 
-已经准备好`$AI_RUN_DIR/original-tokenizer/source`时直接执行第2步，保留现有词表目录。
+先按[离线准备指南](tokenizer-offline.md)在联网电脑下载／打包固定版本的三个文件，传到服务器后使用`--source-dir`校验。该模式不访问网络，不需要服务器证书。
+
+已有离线词表时只设置本次shell中的路径：
 
 ```bash
-git -C "$REPO_DIR" pull --ff-only
-
-python3 "$REPO_DIR/targets/cpro/scripts/prepare_board_tokenizer.py" \
-  --output "$AI_RUN_DIR/original-tokenizer"
+export TOKENIZER_DIR="$AI_RUN_DIR/tokenizer-offline/source"
+python3 -c 'import tokenizers; print(tokenizers.__version__)'
 ```
 
-该命令只下载三个公开文本配置文件，约12.8MB，不下载模型权重。来源固定为仓库原模型的revision `59d61f3ce65a6d9863b86d2e96597125219dc754`，每个文件校验见 `specs/tokenizer.lock.json`。生成约5.8MB的板端二进制词表。命令输出的 `source_dir` 即下一步 `--tokenizer-dir`。
-
-如果DDK主机不能访问Hugging Face，把同revision的 `tokenizer.json`、`tokenizer_config.json`、`chat_template.jinja` 三个文件放到一个目录，通过 `--source-dir /实际目录` 指定；此时下一步也使用这个实际目录。不要使用4B或其他模型的词表替代。
-
-准备和最终结果对照需要主机当前Python环境可导入 `tokenizers`（本次对照版本0.22.2）。不需要在板端安装它。原有token文件请求和历史恢复无需这个包。
+如果此前已成功在线准备，路径通常是`$AI_RUN_DIR/original-tokenizer/source`；把上面的值换成该现有目录即可。缺少Python包时按离线指南传输wheel及依赖。原词表准备完成后进入下一步，不重复下载、覆盖已有目录或重新编模型。
 
 ## 2. 运行文字版完整闭环
 
 本条命令把板端tokenizer与已跑通的draft预读放在同一次请求中：`--text`启用文字入口，`--draft-preread`在常驻draft的Load之前顺序读取原OMC。预读耗时计入draft总加载，仍只在最终回收一次文字和时延。此前token输入实测总请求31.455秒，不能据此预先承诺新文字请求相同耗时。
+
+先同步本次代码。服务器可访问GitHub时使用`git -C "$REPO_DIR" pull --ff-only`；完全离线时，在联网电脑更新后传输代码目录，保留`targets/cpro/runtime/third_party/`。以下运行命令不下载tokenizer或构建依赖。
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
@@ -39,7 +37,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
   --weight-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_weight.bin" \
   --scale-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_scale.bin" \
   --prefill-feedback "$AI_RUN_DIR/target-prefill64-decode1-feedback-plan-v2" \
-  --tokenizer-dir "$AI_RUN_DIR/original-tokenizer/source" \
+  --tokenizer-dir "$TOKENIZER_DIR" \
   --text '你好，请介绍一下自己。' \
   --max-new-tokens 8 --max-proposals-per-round 2 \
   --resident --draft-preread --apply --detach \

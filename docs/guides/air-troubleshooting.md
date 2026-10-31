@@ -25,4 +25,4 @@ python3 -m pip check
 
 `preflight` 区分自然 Torch/AIR 导入与隔离后的 CPU 参考导入。参考可用而 AIR 不可用是有效结果，不能用参考通过代替导出通过。导出使用新进程，避免沿用参考进程的后端隔离。
 
-只有确实使用 PyTorch 导出时才检查 TorchNPU/TorchAir；直接 GE 的源码生成不依赖它们。具体检查命令统一在[环境配置](environment-setup.md)，当前已知结果统一在[当前更新](current-status.md)。
+只有确实使用 PyTorch 导出时才检查 TorchNPU/TorchAir；直接 GE 的源码生成不依赖它们。具体检查命令统一在[环境配置](environment-setup.md)，当前已知结果统一在[当前更新](../current-status.md)。

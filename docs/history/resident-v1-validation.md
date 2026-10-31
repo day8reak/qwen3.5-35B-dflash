@@ -1,6 +1,9 @@
 # 全 V1 常驻路线验证
 
-当前新执行入口为 `run_board_serial_dflash.py --resident`，显式准备 `execution_mode=resident-v1`。它与历史V2请求分开，完整命令见[当前入口](current-status.md)，流程见[常驻方案](resident-runtime-plan.md)。
+> 历史记录：保留当时的观察、失败和候选命令。当前操作请从[文档首页](../README.md)或[当前状态](../current-status.md)进入；不要直接重复本页旧请求。
+
+
+当前新执行入口为 `run_board_serial_dflash.py --resident`，显式准备 `execution_mode=resident-v1`。它与历史V2请求分开，完整命令见[当前入口](../current-status.md)，流程见[常驻方案](resident-runtime-plan.md)。
 
 ## 路线选择与证据
 
@@ -19,9 +22,9 @@
 
 ## 主机检查
 
-本次工作区run为 `20261030T133340Z-32275-390e70`。新增V1生命周期、协议、完整调度和历史恢复回归均只使用明确标识的FakeHIAI/FakeHDC；逐项结果、最终源码与产物哈希见[主机验证记录](../specs/resident-v1-host-validation.json)。所选覆盖为159个独立pytest用例及5个CTest组；初轮失败及定向复验均保留，已修正缓冲区写入前检查和构造后段失败回收。最终native实际适配器在full/compact模式均完成prefill1、decode8、draft3，零V2调用及零子进程；这组token来自fake模型。主机测试不属于真实设备执行或性能数据。
+本次工作区run为 `20261030T133340Z-32275-390e70`。新增V1生命周期、协议、完整调度和历史恢复回归均只使用明确标识的FakeHIAI/FakeHDC；逐项结果、最终源码与产物哈希见[主机验证记录](../../specs/resident-v1-host-validation.json)。所选覆盖为159个独立pytest用例及5个CTest组；初轮失败及定向复验均保留，已修正缓冲区写入前检查和构造后段失败回收。最终native实际适配器在full/compact模式均完成prefill1、decode8、draft3，零V2调用及零子进程；这组token来自fake模型。主机测试不属于真实设备执行或性能数据。
 
-V2关闭失败回归的单项测试已完成，证据在[历史记录](../specs/resident-v2-close-failure-retention-validation.json)；它只能证明已完成的生成在关闭失败后仍保留，不能计为V1通过。
+V2关闭失败回归的单项测试已完成，证据在[历史记录](../../specs/resident-v2-close-failure-retention-validation.json)；它只能证明已完成的生成在关闭失败后仍保留，不能计为V1通过。
 
 ## 实机验收
 

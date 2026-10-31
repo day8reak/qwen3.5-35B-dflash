@@ -1,6 +1,9 @@
 # 常驻内存模式：首次实机结果与加载问题
 
-2026-10-31，用户回传 `dflash-board-resident-fast8-recovery`：原 prefill 1 次、decode 8 次、完整 draft 7 次，两个 resident 模型各加载和关闭 1 次；全部完成，锁已释放。候选为 `3042e63`。助手没有连接设备或独立验证远端源码身份；来源是用户粘贴的 compact 摘要，结构化选录见[实机记录](../specs/board-resident-fast-first-completion.json)。
+> 历史记录：保留当时的观察、失败和候选命令。当前操作请从[文档首页](../README.md)或[当前状态](../current-status.md)进入；不要直接重复本页旧请求。
+
+
+2026-10-31，用户回传 `dflash-board-resident-fast8-recovery`：原 prefill 1 次、decode 8 次、完整 draft 7 次，两个 resident 模型各加载和关闭 1 次；全部完成，锁已释放。候选为 `3042e63`。助手没有连接设备或独立验证远端源码身份；来源是用户粘贴的 compact 摘要，结构化选录见[实机记录](../../specs/board-resident-fast-first-completion.json)。
 
 `runtime_profile=compact-memory-v1`、`intermediate_tensor_io=NONE_MEMORY_ONLY`，逐 token 张量诊断关闭。生成 `[4,2,24,2,4,22,0,2]`，接受 0／7。执行里程碑通过，数值等价和算法加速仍未验收。
 
@@ -31,7 +34,7 @@ draft 加载占本次总墙钟约88%。剔除这个观测项，其他全部阶�
 
 ## 后续加载诊断（已更新）
 
-下面的首次日志提取已完成，用户补回的加载记录仍不足以拆分203秒。当前下一动作见[加载计时版](board-resident-load-timing.md)。保留当时的只读命令供追溯（无需rg）：
+下面的首次日志提取已完成，用户补回的加载记录仍不足以拆分203秒。当前下一动作见[加载计时版](../board-resident-load-timing.md)。保留当时的只读命令供追溯（无需rg）：
 
 ```bash
 "${HDC:-/usr/bin/hdc}" -s "$BIP" -t "$SN" shell 'hilog -x -P 12858' |

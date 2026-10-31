@@ -1,12 +1,15 @@
 # 历史 Target V2 加载顺序实验
 
+> 历史记录：保留当时的观察、失败和候选命令。当前操作请从[文档首页](../README.md)或[当前状态](../current-status.md)进入；不要直接重复本页旧请求。
+
+
 首次常驻请求的 prefill 已完成，随后新 runner 在 `InitWeights` 返回 `3=INVALID_PARAM`，尚未调用 manager `Init`，draft 未加载。既有完整板端成功结果使用 `/data/local/tmp/tools_sysdbg/model_run_tool_internal --modelmanager_itf=V2` 加载 target；它的内部实现尚未取得。
 
 用户随后提供的 `/home/w00949577/model_run_tool/src/model_runner.cpp` 使用 `AiModelMngerClient::Load/Process`，相邻测试脚本是 4B 的 72 输入／66 输出模型。这份源码不能用来推断当前 35B 工具的 V2 权重加载顺序。旧接口和 V2 的存在，也不能证明两者初始化契约相同。
 
-用户的 v1 实验已经观察到 `Init(options, builtModel, listener)` 和随后 `InitWeights(weight_directory)` 都返回0。失败发生在关闭阶段：先 `DeInit` 后 `DeinitWeights`，后者返回3。总加载／关闭墙钟10568ms，没有 Run 或 draft 调用，任务已退出并释放锁，见[设备观察](../specs/resident-v2-target-init-observed.json)。
+用户的 v1 实验已经观察到 `Init(options, builtModel, listener)` 和随后 `InitWeights(weight_directory)` 都返回0。失败发生在关闭阶段：先 `DeInit` 后 `DeinitWeights`，后者返回3。总加载／关闭墙钟10568ms，没有 Run 或 draft 调用，任务已退出并释放锁，见[设备观察](../../specs/resident-v2-target-init-observed.json)。
 
-用户的 v2 已返回：`Init=0`、`InitWeights=0`、`DeinitWeights=1`，随后仍调用 `DeInit`；总墙钟10435ms，无Run，锁已释放。见[第二次关闭观察](../specs/resident-v2-target-cleanup-observed.json)。两种关闭顺序均未成功，不能将问题认定为单纯顺序错误，也不能忽略返回码。随后用户要求新运行接口全部V1；当前不继续换V2顺序、删掉关闭调用或启动新V2闭环，转到[V1主线](current-status.md)。这份加载实验保留为历史诊断入口，不再是推理实验的前置门禁。
+用户的 v2 已返回：`Init=0`、`InitWeights=0`、`DeinitWeights=1`，随后仍调用 `DeInit`；总墙钟10435ms，无Run，锁已释放。见[第二次关闭观察](../../specs/resident-v2-target-cleanup-observed.json)。两种关闭顺序均未成功，不能将问题认定为单纯顺序错误，也不能忽略返回码。随后用户要求新运行接口全部V1；当前不继续换V2顺序、删掉关闭调用或启动新V2闭环，转到[V1主线](../current-status.md)。这份加载实验保留为历史诊断入口，不再是推理实验的前置门禁。
 
 ## 历史加载实验命令（当前不要求重跑）
 
@@ -51,4 +54,4 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_target_load_probe.py" \
 
 ## 主机验证
 
-v1的主机测试保存在[历史验证记录](../specs/target-resident-load-probe-validation.json)。v2关闭修复及完整常驻策略的主机检查见[当前验证记录](../specs/resident-v2-lifecycle-repair-validation.json)。底层 HIAI／HDC 是明确的 host fake，未在此处连接用户设备；主机通过不代替设备初始化／关闭或双模型运行结果。
+v1的主机测试保存在[历史验证记录](../../specs/target-resident-load-probe-validation.json)。v2关闭修复及完整常驻策略的主机检查见[当前验证记录](../../specs/resident-v2-lifecycle-repair-validation.json)。底层 HIAI／HDC 是明确的 host fake，未在此处连接用户设备；主机通过不代替设备初始化／关闭或双模型运行结果。

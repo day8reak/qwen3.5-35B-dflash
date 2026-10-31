@@ -1,6 +1,9 @@
 # 端侧自主调度器发布检查
 
-日期：2026-10-30。用户已回传旧完整dump入口的首次实机完成结果：16次target、7次draft，完整回收成功、锁已释放，见[首次实机结果](board-first-completion.md)。下列主机记录和新增代码不能自动继承该实机通过结果；模型精度、专门物理断连实验和性能收益仍未验收。命令见 [current-status.md](current-status.md)。
+> 历史记录：保留当时的观察、失败和候选命令。当前操作请从[文档首页](../README.md)或[当前状态](../current-status.md)进入；不要直接重复本页旧请求。
+
+
+日期：2026-10-30。用户已回传旧完整dump入口的首次实机完成结果：16次target、7次draft，完整回收成功、锁已释放，见[首次实机结果](board-first-completion.md)。下列主机记录和新增代码不能自动继承该实机通过结果；模型精度、专门物理断连实验和性能收益仍未验收。命令见 [current-status.md](../current-status.md)。
 
 ## 原prefill接入：主机检查通过，设备待运行
 
@@ -10,7 +13,7 @@
 
 两种模式使用模拟HIAI／target，均完成1次prefill、8次decode、5次draft并生成tokens9至16；完整模式还拒绝重新计算SHA后篡改的logits选行、跨owner映射、有效feature前缀和首次decode父状态四种反例。验证覆盖独立prefill缓存和精确锁所有权、失败保留、同请求恢复、compact时延别名不重复计数。早期失败XML保留，最终通过以带`final`的上述两份运输／集成报告为准。
 
-native源码SHA256：`bc15237844e0bc24d5a3a0fb616b3c9cf302bf58dc9928a0e7f77820de38a8d2`；transport源码SHA256：`9ba330b5ae97dbe55a301d5e12b8e567d6846c490c42563dae1f45044a2d0968`。其余源码hash见[执行状态](../specs/dflash-execution-state.json)的`prefill_board_integration`。
+native源码SHA256：`bc15237844e0bc24d5a3a0fb616b3c9cf302bf58dc9928a0e7f77820de38a8d2`；transport源码SHA256：`9ba330b5ae97dbe55a301d5e12b8e567d6846c490c42563dae1f45044a2d0968`。其余源码hash见[执行状态](../../specs/dflash-execution-state.json)的`prefill_board_integration`。
 
 没有调用设备；OHOS编译及真实prefill多轮执行由用户运行入口验证。P0仍为进行中。完整dump可以在主机复核输入、80状态与特征链，compact只校验小型完成结果；均不证明私有kernel控制语义、精度或加速。以下为既有serial模式的历史验证，不能替代本版本实机结果。
 

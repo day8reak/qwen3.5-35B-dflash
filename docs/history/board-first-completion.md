@@ -1,5 +1,8 @@
 # 已完成子里程碑：decode1串行prompt的端侧自主循环
 
+> 历史记录：保留当时的观察、失败和候选命令。当前操作请从[文档首页](../README.md)或[当前状态](../current-status.md)进入；不要直接重复本页旧请求。
+
+
 2026-10-30，用户先回传以下serial流程的完整dump及compact成功结果。这两项本身只是子里程碑；随后原prefill驱动的完整请求也已成功，P0执行通过见[独立原prefill记录](board-prefill-first-completion.md)。助手未连接设备，以下依据用户终端回传。
 
 ## 原完整dump回传

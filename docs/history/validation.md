@@ -1,10 +1,13 @@
 <a id="resident-mixed-first-device-completion"></a>
 
+> 历史记录：保留当时的观察、失败和候选命令。当前操作请从[文档首页](../README.md)或[当前状态](../current-status.md)进入；不要直接重复本页旧请求。
+
+
 ## 2026-10-31：混合接口常驻完整板端请求执行成功
 
 用户回传 `dflash-board-resident-mixed8-recovery`，PID5008、prefill1／decode8／draft7、target/draft各加载一次并正常关闭、锁释放，token为 `[4,0,28,18,2,2,2,0]`，接受0／7，总墙钟88.680秒。单次功能及常驻执行通过；源码/模型原始artifact未由助手连接设备重取，compact不包含完整状态链重放。精度、重复稳定性、独立权重释放和配对算法性能未验收。
 
-与旧逐次加载总墙钟305.788秒的单次记录比为3.448，但phase计时范围及token路径不同，不作为DFlash算法加速结论。新旧第2个token为0／12；源码调度证明该值在首次draft Process之前由首decode算出，优先隔离prefill输出/首decode输入与target执行差异。draft已加载，共存影响仍可能需要单独对照。详情及原始内存遥测限制见[结果](board-resident-mixed-first-completion.md)和[结构化观察](../specs/board-resident-mixed-first-completion.json)。
+与旧逐次加载总墙钟305.788秒的单次记录比为3.448，但phase计时范围及token路径不同，不作为DFlash算法加速结论。新旧第2个token为0／12；源码调度证明该值在首次draft Process之前由首decode算出，优先隔离prefill输出/首decode输入与target执行差异。draft已加载，共存影响仍可能需要单独对照。详情及原始内存遥测限制见[结果](board-resident-mixed-first-completion.md)和[结构化观察](../../specs/board-resident-mixed-first-completion.json)。
 
 <a id="resident-mixed-candidate"></a>
 
@@ -14,7 +17,7 @@
 
 V2初始化保持已有设备Init→InitWeights均返回0的顺序。新请求在加载前固定 `ManagerDeinitOnly` 关闭策略，DeInit后销毁manager，再释放built model和tensor；它不调用单独DeinitWeights，不将未调用的返回码伪造成0，也不吞掉历史1／3错误。DeInit的called／returned分别记录；异常仍清理并失败，不重复关闭。官方[V2模型管家索引](https://developer.huawei.com/consumer/cn/doc/hiai-References/model-manager-class-0000001139115907)只确认DeInit是公开接口，未取得证明私有InitWeights资源所有权的正文。因此保留 `external_weight_release=NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY`，不宣称外置权重释放已修复或实机验证。
 
-新native目标和每模型API随manifest／config／返回摘要绑定；compact及dump均校验实际API计数和关闭事实。新增prefill加载前后及关闭后的RSS/HWM／MemAvailable快照，均不是专用NPU显存或释放证明。主机fake验证持有期、调度、跨模型buffer重叠拒绝和失败传播，不能证明实际DDK加载、模型数值或性能。具体测试及源码快照见[混合候选验证](../specs/resident-mixed-host-validation.json)。
+新native目标和每模型API随manifest／config／返回摘要绑定；compact及dump均校验实际API计数和关闭事实。新增prefill加载前后及关闭后的RSS/HWM／MemAvailable快照，均不是专用NPU显存或释放证明。主机fake验证持有期、调度、跨模型buffer重叠拒绝和失败传播，不能证明实际DDK加载、模型数值或性能。具体测试及源码快照见[混合候选验证](../../specs/resident-mixed-host-validation.json)。
 
 本轮186项Python单元测试通过，18组native CTest通过；完整C++ mixed runner生成的7个唯一场景已通过主机验证。首次联测有两项在新增恢复测试夹具中缺AI_RUN_DIR，补齐后仅补跑对应两个场景并通过，原5通过／2失败的XML与补跑2通过的XML均保留。两项恢复实际执行本地文件系统上的shell锁／PID／哈希检查，未使用设备HDC；成功回收及生成完成后关闭失败均不重启或上传。实际内部SDK编译、加载和双模型常驻留待用户完整板端请求。
 
@@ -30,7 +33,7 @@ V2初始化保持已有设备Init→InitWeights均返回0的顺序。新请求�
 
 本轮修正恢复摘要，直接输出验证后的 `prefill_lifecycle`／`prefill_failure_stage`；未加载resident会话的正常 `CLOSED` 不再冒充失败阶段，真实resident失败和清理错误继续保留。新增独立只读日志脚本，绑定同一已完成失败请求及其原设备、配置和退出回执，收集stdout／stderr末尾各64KiB，可选当前PID过滤HiLog快照；不加载模型、不改锁、不读权重。HiLog允许轮转和PID复用，只作诊断快照。本次HiLog已经足够，无需用户再采集。
 
-132项transport测试和26项日志收集测试通过，包含真实shell的tail失败传播检查；均为主机测试，没有实机加载／推理、模型编译或新精度结论。源哈希、JUnit及本次设备观察见[本轮记录](../specs/resident-v1-hcl-load-failure.json)。旧板端原prefill完整循环成功继续保留，V1常驻仍未通过。
+132项transport测试和26项日志收集测试通过，包含真实shell的tail失败传播检查；均为主机测试，没有实机加载／推理、模型编译或新精度结论。源哈希、JUnit及本次设备观察见[本轮记录](../../specs/resident-v1-hcl-load-failure.json)。旧板端原prefill完整循环成功继续保留，V1常驻仍未通过。
 
 <a id="resident-v1-file-target-candidate"></a>
 
@@ -44,7 +47,7 @@ V2初始化保持已有设备Init→InitWeights均返回0的顺序。新请求�
 
 官方HiAI-Foundation的旧buffer示例、用户提供的V1工具，以及公开4B项目必须分开：后者在固定提交 `90186732d915e8b058b2a053d205991d805eae76` 的[README](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/README.md#L3)明确使用Ascend310P；其[实际C++加载器](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/framework/runtime/cpp/src/acl_executor.cpp#L146)调用AscendCL `aclmdlLoadFromFile`，没有建立所选Kirin SDK的V1外置权重加载合同。
 
-新请求使用 `dflash-board-resident-v1-file8-run`，回收使用 `dflash-board-resident-v1-file8-recovery`；旧707d825／50184b4失败与测试记录不覆盖。按[当前命令](current-status.md#用户现在执行什么)一次启动完整循环，由板端完成prefill、常驻decode／draft和串行verify。实际SDK加载、89／82运行时接口、完整状态链与Process结果决定执行结论；未回传结果前不标记Load PASS、数值通过或性能收益。
+新请求使用 `dflash-board-resident-v1-file8-run`，回收使用 `dflash-board-resident-v1-file8-recovery`；旧707d825／50184b4失败与测试记录不覆盖。按[当前命令](../current-status.md#用户现在执行什么)一次启动完整循环，由板端完成prefill、常驻decode／draft和串行verify。实际SDK加载、89／82运行时接口、完整状态链与Process结果决定执行结论；未回传结果前不标记Load PASS、数值通过或性能收益。
 
 <a id="resident-v1-exclusive-setters-failure"></a>
 
@@ -58,9 +61,9 @@ V2初始化保持已有设备Init→InitWeights均返回0的顺序。新请求�
 
 官方来源对照采用固定提交 `83320362c10f2e85a2a1bbb283b3359db204ab2a`：[Huawei HiAI-Foundation 的 classify_sync_jni.cpp](https://github.com/huaweicodelabs/HiAI-Foundation/blob/83320362c10f2e85a2a1bbb283b3359db204ab2a/app/src/main/jni/classify_sync_jni.cpp#L61-L103)先由 `AiModelBuilder::InputMemBufferCreate(modelPath)` 创建buffer，再使用 `SetModelBuffer` 和 `HIAI_MODELTYPE_ONLINE` 调用Load。它没有示范同时保留path与buffer，也未建立当前35B外置权重OMC的解析合同。用户提供的4B代码则为path-only、`OFFLINE`（字面值1），调用方式不同；没有当前35B在选定SDK上的成功加载证据，不能将任一示例直接当作兼容性结论。
 
-`50184b4` 主机验证135项元数据／恢复测试、2项实际C++fake集成以及7组native CTest通过，证据见[描述符回归复核](../specs/resident-v1-descriptor-review.json)。默认测试复现实机互斥setter行为，验证内嵌buffer加载成功及外置target在SDK Load前明确拒绝；显式双字段模拟只覆盖调度，不代表所选SDK支持外置加载。未访问板端、重新编译OMC或变更权重。
+`50184b4` 主机验证135项元数据／恢复测试、2项实际C++fake集成以及7组native CTest通过，证据见[描述符回归复核](../../specs/resident-v1-descriptor-review.json)。默认测试复现实机互斥setter行为，验证内嵌buffer加载成功及外置target在SDK Load前明确拒绝；显式双字段模拟只覆盖调度，不代表所选SDK支持外置加载。未访问板端、重新编译OMC或变更权重。
 
-文件／buffer分流候选完成主机验证：191项Python测试（158项准备恢复、24项构建/API、9项实际C++fake集成）及13组native CTest通过。完整debug和compact循环、文件Load失败、描述符路径丢失、旧策略恢复与禁止重启均覆盖；没有真实设备执行或模型重编译。源哈希和JUnit记录见[当前候选验证](../specs/resident-v1-file-buffer-candidate.json)。
+文件／buffer分流候选完成主机验证：191项Python测试（158项准备恢复、24项构建/API、9项实际C++fake集成）及13组native CTest通过。完整debug和compact循环、文件Load失败、描述符路径丢失、旧策略恢复与禁止重启均覆盖；没有真实设备执行或模型重编译。源哈希和JUnit记录见[当前候选验证](../../specs/resident-v1-file-buffer-candidate.json)。
 
 ## 2026-10-29：完整 residual-fix 的单例 Top1 匹配
 
@@ -130,7 +133,7 @@ packed诊断hidden与原生产hidden相对L2=1.402769704876514，Top1差异15，
 
 本地run `20261029T003431Z-23724-5fc0f9` 的最终组合主机回归314项通过（`final-tests/verified.xml`），native CTest 8/8通过（`trace-board/native/Testing/Temporary/LastTest.log`）。两层小draft真实AIR/OMG编译严格检查128/128通过，含原计算61/61和新增trace节点67/67（`trace-compiler-smoke/smoke-report.json`）；六层小配置166个探针与独立参考在三种prefix长度下对照通过。公开同族DDK smoke仅对派生图记录了Select/ArgMax/权重basename接口适配，没有改生产导出器或原153节点精度门禁。这些均不构成完整35B板端数值通过。
 
-[首页](README.md) · [当前更新](current-status.md) · [项目结构](project-structure.md)
+[首页](../README.md) · [当前更新](../current-status.md) · [项目结构](../reference/project-structure.md)
 
 本页记录当前实现能证明什么。安装、编译、加载、执行、数值一致、实际执行位置和性能是不同检查；主机测试不作为设备通过记录。
 
@@ -270,7 +273,7 @@ RMS公式核对依据是[Transformers v5.7.0 Qwen3RMSNorm](https://github.com/hu
 
 本次首选使用 `--resume "$AI_RUN_DIR/full-draft-732b26335347" --prepare-only`，将d7 prepared/fixture与732 v4 AIR、成功external compilation、bundle迁入固定目录，不调用OMG或设备。从732继承external模式，以保留当前已有的成功编译结果；这不证明external Load故障已修复。6599仍是最新embedded失败记录；从它迁移也有效，但只有prepared/fixture/AIR，不能一并保留732的成功编译，故不是首选。迁移采用同一文件系统内目录重命名，无大权重副本；保留组件清单原字节及哈希，仅改顶层组件目录。原prepared/export根路径作为历史来源保留，实际payload使用组件内相对路径。旧批次根目录不自动整目录删除；迁入完成且当前组件不再引用旧目录后，用户可清理旧批次。下文“保留旧目录/新目录恢复”是当时流程的历史记录，不是当前永久保留要求。
 
-固定目录只改变本地工作目录和重试管理，不改变模型图、参考、权重、量化、HIAI加载调用或设备结论；本轮本地未运行所选DDK或真实设备。后续按[独立draft指南](draft-standalone.md)使用固定目录，待保存模型故障定位后再执行需要的编译步骤。
+固定目录只改变本地工作目录和重试管理，不改变模型图、参考、权重、量化、HIAI加载调用或设备结论；本轮本地未运行所选DDK或真实设备。后续按[独立draft指南](../reference/draft-standalone.md)使用固定目录，待保存模型故障定位后再执行需要的编译步骤。
 
 本轮 `20261028T070549Z-29814-248e1c/fixed-combined.xml` 记录227项主机回归通过，用时16.18秒，覆盖CLI、工作目录迁移/锁/中断恢复、已有AIR编译与产物恢复、bundle及只读检查。首次 `fixed-first.xml` 的65项通过、13项失败来自模拟夹具缺少 `artifact_kind`，修正后通过上述最终组合测试；原失败记录保留。这些测试未执行所选DDK或真实设备，不是6599序列化故障或732加载故障已修复的证据。
 
@@ -288,7 +291,7 @@ RMS公式核对依据是[Transformers v5.7.0 Qwen3RMSNorm](https://github.com/hu
 
 用户随后要求尝试将权重与模型一起编入OMC。新增显式 `--weight-storage embedded` 将 `save_weights_as_external_data` 改为false，从732复用v4 AIR及d7 prepared/fixture，只重建compilation/bundle；新任务默认仍为external，未指定模式的续跑继承原模式。原732外置产物和失败证据保留，模型图、权重内容、参考、量化和输出ABI不变，HIAI加载调用也不变。这是装载方式兼容候选，不是已确认根因或已验证设备修复。
 
-所列15份外置权重合计2,849,468,580字节，小于runner UINT32长度上限4,294,967,295字节；该合计不是新OMC长度的保证。打包前与原生加载按实际OMC文件大小检查；当时尚待验证的内嵌保存步骤，随后在6599批次失败，见上节；Load和数值仍未验证。当前先迁移固定目录，命令见[独立draft指南](draft-standalone.md)。
+所列15份外置权重合计2,849,468,580字节，小于runner UINT32长度上限4,294,967,295字节；该合计不是新OMC长度的保证。打包前与原生加载按实际OMC文件大小检查；当时尚待验证的内嵌保存步骤，随后在6599批次失败，见上节；Load和数值仍未验证。当前先迁移固定目录，命令见[独立draft指南](../reference/draft-standalone.md)。
 
 本轮 `20261028T063649Z-28459-d40778/embedded-regression.xml` 记录203项主机回归通过，用时8.68秒。覆盖模式选择与续跑继承、只重建编译/bundle、模拟OMG收到false参数及相应元数据，以及无sidecar的单OMC bundle校验和上传计划；并回归既有AIR编译、产物恢复和只读检查。OMG与板端路径使用模拟环境，未在本地执行所选DDK或真实设备，不能作为内嵌OMC实际编译、Load或数值通过证据。
 
@@ -396,7 +399,7 @@ RMS公式核对依据是[Transformers v5.7.0 Qwen3RMSNorm](https://github.com/hu
 
 用户回传 `full-target-compile-771648b65da5` 的完整日志后，确认失败发生于 `CheckOutputPathValid` 的 `--output` 参数校验，尚未进入图编译。没有证据把这次错误归因于缺失权重或算子。入口已改用隔离工作目录内的 `--output=model`，输入快照和外置输出保持在同一目录；主机覆盖长路径、空格路径和源文件名冲突。实际 OMG 重试待用户环境执行。
 
-原六份文件保存于当前 run 的私有参考区，AST 检查通过，未执行、未纳入 Git。2026-10-28，用户另行授权发布本轮代码和文档更新，六份原件继续保留在仓库外。新增[原量化模型接入](original-quantization.md)：按 YAML 原路径读取 HF 基础参数、原 W4/scale、独立 INT8 embedding 及 FP32 scale；PyTorch 与 GE 都接入量化权重。I4ZN 与原件纯函数在四组跨 tile 的普通/专家输入上逐字节相同；没有猜测专家 QPARAM 编码。
+原六份文件保存于当前 run 的私有参考区，AST 检查通过，未执行、未纳入 Git。2026-10-28，用户另行授权发布本轮代码和文档更新，六份原件继续保留在仓库外。新增[原量化模型接入](../reference/original-quantization.md)：按 YAML 原路径读取 HF 基础参数、原 W4/scale、独立 INT8 embedding 及 FP32 scale；PyTorch 与 GE 都接入量化权重。I4ZN 与原件纯函数在四组跨 tile 的普通/专家输入上逐字节相同；没有猜测专家 QPARAM 编码。
 
 当前 run `20261027T130835Z-9607-68b43f` 保留 230 项不同主机用例的通过记录：YAML/加载器/失败边界、独立 CPU 量化 Linear/专家参考、小模型状态接续、完整40层64/1构图、typed recipe、完整端口表及准备权重→GE源码集成。汇总为 `local-adaptation-evidence.json`，其中记录各批次 JUnit 与去重数量。GE 测试使用明确的合成 schema，QPARAM 测试使用哨兵值；它们都不是实际厂商转换、AIR/OMC 或设备通过证据。真实量化绑定、QPARAM、整模执行/精度和性能仍待验证。
 
@@ -520,7 +523,7 @@ GDN诊断及原编排共63项主机测试通过（初轮62项，增加有效前�
 | `gdn_prefill` | PASSED / PASSED / PASSED | APPLIED 1次，拒绝0次 | NOT_RUN / NOT_RUN / NOT_RUN | UNVERIFIED |
 | `gdn_decode` | PASSED / PASSED / PASSED | APPLIED 1次，拒绝0次 | NOT_RUN / NOT_RUN / NOT_RUN | UNVERIFIED |
 
-来源为用户粘贴报告，本次未取得原始产物重新核对SHA256。该结果不覆盖完整模型、设备执行或数值验收；conv/RMS仍保留此前未通过的结论。下一步复用这两例编译产物，执行[当前更新首节的上板命令](current-status.md#用户现在执行什么)，不重复编译或扩展探针。
+来源为用户粘贴报告，本次未取得原始产物重新核对SHA256。该结果不覆盖完整模型、设备执行或数值验收；conv/RMS仍保留此前未通过的结论。下一步复用这两例编译产物，执行[当前更新首节的上板命令](../current-status.md#用户现在执行什么)，不重复编译或扩展探针。
 
 上板前发现runner仍硬编码FP32末态，已改为接受绑定中显式声明的FP16/FP32，保留FP16初态→FP32末态兼容；更新测试替身按对应字节数写出，避免FP16缓冲区越界。主机CMake构建及CTest 5/5通过，探针/回收比较23项通过，覆盖prefill和decode的FP16末态及三种状态dtype组合。无需重编OMC，只重建runner；未修改数值阈值，真实设备结果仍为NOT_RUN。
 
@@ -530,7 +533,7 @@ GDN诊断及原编排共63项主机测试通过（初轮62项，增加有效前�
 
 2026-10-27，用户回传DDK `100.520.020.010` 的5例结果：构图与AIR导出通过，OMC编译均失败，未上板。conv维推明确要求 `x2=[1,8192,4]`，与文档绑定的3不符；RMS当前注册表找不到 `AdnRmsNorm` 维推函数；GDN进入 `chunk_gated_delta_rule.py` 编译入口后子进程退出。GDN编译日志的末态是FP16，导出绑定为FP32，尚不能断定变化原因。`Ascend310B1` 内部日志及缺库提示也不能单独证明目标选错或崩溃根因。
 
-本轮修复编译工作目录被删除的问题，新增只读 `inspect-fused-probes`，读取现有日志与匹配的安装接口文本；7项主机测试通过。没有修改文档绑定、生产缓存语义或共享DDK，也没有重新执行真实编译。下一步命令见[当前更新](current-status.md#用户现在执行什么)。
+本轮修复编译工作目录被删除的问题，新增只读 `inspect-fused-probes`，读取现有日志与匹配的安装接口文本；7项主机测试通过。没有修改文档绑定、生产缓存语义或共享DDK，也没有重新执行真实编译。下一步命令见[当前更新](../current-status.md#用户现在执行什么)。
 
 随后用户回传只读检查结果：两例GDN都在TBE `platform_info.py` 的 `te_update_version()` 抛出 `RuntimeError`，说明本次直接失败点是编译子进程的平台设置；尚不能判定参数、包版本或配置文件中的哪一项不匹配。路径位于Conda的 `site-packages` 不足以证明环境混用，`Ascend310B1` 与 `kirinx90` 的日志也不足以证明需要切换目标。安装目录确有GDN的Python编译入口及C++源码；仅凭通用 `DTYPE_MAP` 不能确认状态dtype支持范围。
 
@@ -568,7 +571,7 @@ TBE源码显示：包装函数调用 `cce.te_update_version("kirinx90", "AiCore"
 
 主机联调已贯通接口绑定、生成、打包、批量脚本、native runner、回收及比较，5例均通过接口校验；GE/OMG 和 HIAI 使用测试替身。CTest 5/5、真实 DDK 头文件编译通过。GDN 检查有效前缀及 FP32 末态，conv 的 `y1` 顺序未定义，只记录形状与非有限值；数值误差仅作诊断，没有设验收阈值。
 
-此后的真实GE导出和目标编译回传见本页首节；融合算子板端调用尚未执行。命令见[融合探针](ge-guide.md#融合算子调用探针)，主机证据见 [specs/verification.json](../specs/verification.json) 的 `latest_full_graph_and_fused_probe`。
+此后的真实GE导出和目标编译回传见本页首节；融合算子板端调用尚未执行。命令见[融合探针](../guides/ge-guide.md#融合算子调用探针)，主机证据见 [specs/verification.json](../../specs/verification.json) 的 `latest_full_graph_and_fused_probe`。
 
 ## 状态执行与融合接口接入
 
@@ -584,7 +587,7 @@ TBE源码显示：包装函数调用 `cce.te_update_version("kirinx90", "AiCore"
 
 跨模块验证只替换外部 GE/OMG 运行产物和 HIAI 实现为明确标记的测试替身，保留真实的图构造、产物校验、打包和 native 执行流程。它证明主机接口与状态传递接通，**不证明真实融合 kernel、OMC 编译或板端精度通过**。常驻状态管理及 native DFlash 调度仍未接通。当前环境也未取得可用的目标资源清单，真实设备联调待完成。
 
-命令见 [GE 指南](ge-guide.md#状态图编译和输入打包)和[板端单步执行](board-guide.md#6-新状态图的单步执行)，证据定位见 [specs/verification.json](../specs/verification.json) 的 `latest_integration`。
+命令见 [GE 指南](../guides/ge-guide.md#状态图编译和输入打包)和[板端单步执行](../guides/board-guide.md#6-新状态图的单步执行)，证据定位见 [specs/verification.json](../../specs/verification.json) 的 `latest_integration`。
 
 ## 本次代码整理的验证
 
@@ -601,7 +604,7 @@ TBE源码显示：包装函数调用 `cce.te_update_version("kirinx90", "AiCore"
 
 移动代码的定义与入口保留情况另做 AST 对照；整理验证没有执行真实 GE 库、OMG、融合 kernel 或板端程序。新代码的 host/reference/fake 测试覆盖接口和行为，不证明黄区 kernel 已安装或新 ABI 已在真实设备接通。
 
-需修改模型或接口时，可在[环境配置](environment-setup.md)后执行对应回归；仅使用项目不必重跑：
+需修改模型或接口时，可在[环境配置](../guides/environment-setup.md)后执行对应回归；仅使用项目不必重跑：
 
 ```bash
 export TEST_RUN="$(mktemp -d "$AI_RUN_DIR/tests-XXXXXXXX")"
@@ -637,7 +640,7 @@ export TEST_RUN="$(mktemp -d "$AI_RUN_DIR/tests-XXXXXXXX")"
 4269cccd3b3a57f04a15e8b520fb81f248a77a441593fa8a3b2d4ba0651071c3
 ```
 
-本地运行记录和归档定位见 [specs/verification.json](../specs/verification.json)。源码仓库只保留当前结论与必要生产回归。
+本地运行记录和归档定位见 [specs/verification.json](../../specs/verification.json)。源码仓库只保留当前结论与必要生产回归。
 
 
 ## 2026-10-30：复用现有 OMC 的短提示词执行主线

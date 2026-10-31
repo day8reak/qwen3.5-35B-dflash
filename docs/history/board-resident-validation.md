@@ -1,22 +1,25 @@
 # 历史 V2 常驻入口：主机验证与设备失败
 
-**当前主线已按用户要求迁移V1；本页保留V2历史证据，不作为新运行指令。** 见[V1验证](resident-v1-validation.md)及[当前命令](current-status.md)。
+> 历史记录：保留当时的观察、失败和候选命令。当前操作请从[文档首页](../README.md)或[当前状态](../current-status.md)进入；不要直接重复本页旧请求。
 
-更新：2026-10-30。历史实现入口为 `run_board_serial_dflash.py --resident`，二进制为 `qwen35_board_resident`。完整参数见 [当前执行命令](current-status.md)，生命周期与计时定义见 [常驻方案](resident-runtime-plan.md)。原 prefill P0 成功保存在 [独立记录](board-prefill-first-completion.md)，不能用它证明本次常驻路径已在设备运行。
+
+**当前主线已按用户要求迁移V1；本页保留V2历史证据，不作为新运行指令。** 见[V1验证](resident-v1-validation.md)及[当前命令](../current-status.md)。
+
+更新：2026-10-30。历史实现入口为 `run_board_serial_dflash.py --resident`，二进制为 `qwen35_board_resident`。完整参数见 [当前执行命令](../current-status.md)，生命周期与计时定义见 [常驻方案](resident-runtime-plan.md)。原 prefill P0 成功保存在 [独立记录](board-prefill-first-completion.md)，不能用它证明本次常驻路径已在设备运行。
 
 ## 最新：初始化通过，两种关闭顺序均失败
 
-用户的 `target-resident-load-probe-v1` 已观察到 target `Init=0`、`InitWeights=0`。旧关闭顺序先DeInit、后DeinitWeights，后者返回3，因此报告 `CLEANUP_FAILED`；10568ms包含加载和关闭，没有Run／draft调用。任务已退出并释放锁，见[本次设备记录](../specs/resident-v2-target-init-observed.json)。
+用户的 `target-resident-load-probe-v1` 已观察到 target `Init=0`、`InitWeights=0`。旧关闭顺序先DeInit、后DeinitWeights，后者返回3，因此报告 `CLEANUP_FAILED`；10568ms包含加载和关闭，没有Run／draft调用。任务已退出并释放锁，见[本次设备记录](../../specs/resident-v2-target-init-observed.json)。
 
-当前修复把正式target和独立probe统一为 `Init → InitWeights`，关闭为 `DeinitWeights → DeInit`。即使权重清理失败也继续关闭manager，分别保留错误。新resident清单及配置绑定 `target_lifecycle_policy=init-before-weights-close-weights-first-v1`；旧清单回收保持旧策略。主机验证见[当前生命周期修复记录](../specs/resident-v2-lifecycle-repair-validation.json)。用户v2已经实测Init／InitWeights均0，DeinitWeights返回1，之后仍DeInit，10435ms、零Run、锁已释放，见[新设备记录](../specs/resident-v2-target-cleanup-observed.json)。随后用户要求全部接口改V1，此V2推理实验建议已撤回；关闭错误仍保留。
+当前修复把正式target和独立probe统一为 `Init → InitWeights`，关闭为 `DeinitWeights → DeInit`。即使权重清理失败也继续关闭manager，分别保留错误。新resident清单及配置绑定 `target_lifecycle_policy=init-before-weights-close-weights-first-v1`；旧清单回收保持旧策略。主机验证见[当前生命周期修复记录](../../specs/resident-v2-lifecycle-repair-validation.json)。用户v2已经实测Init／InitWeights均0，DeinitWeights返回1，之后仍DeInit，10435ms、零Run、锁已释放，见[新设备记录](../../specs/resident-v2-target-cleanup-observed.json)。随后用户要求全部接口改V1，此V2推理实验建议已撤回；关闭错误仍保留。
 
 ## 首次设备结果与诊断修复
 
-用户已在实际 DDK／设备执行常驻请求。prefill 完成一次；随后 target 在 `InitWeights` 返回 `3=INVALID_PARAM`，此时尚未调用 manager `Init`，draft 尚未加载。请求失败结果已回收，所持锁已释放。[设备记录](../specs/resident-v2-first-load-failure.json)保留用户回传的阶段、计时与接口声明，未把错误码解释为内存不足。
+用户已在实际 DDK／设备执行常驻请求。prefill 完成一次；随后 target 在 `InitWeights` 返回 `3=INVALID_PARAM`，此时尚未调用 manager `Init`，draft 尚未加载。请求失败结果已回收，所持锁已释放。[设备记录](../../specs/resident-v2-first-load-failure.json)保留用户回传的阶段、计时与接口声明，未把错误码解释为内存不足。
 
 构造函数抛出异常时，原实现没有把部分生命周期传给 session，导致摘要中的 attempted／cleanup 字段保持默认值。诊断修复在清理后保留实际调用、返回状态、最初失败阶段及清理错误；未调用或异常无返回使用 `null`。普通输出也直接列出执行错误及执行失败阶段，回收的 `stage=complete` 仍仅表示回收完成。
 
-当时的诊断修复保持加载顺序不变。其主机验证：85 项传输／摘要回归、4 项实际 adapter CTest、1 项实际 supervisor＋adapter＋FakeHIAI 加载失败 JSON 集成通过。源码和测试产物见[历史诊断修复记录](../specs/resident-v2-failure-reporting-validation.json)；后续初始化实验及当前修复见上节。
+当时的诊断修复保持加载顺序不变。其主机验证：85 项传输／摘要回归、4 项实际 adapter CTest、1 项实际 supervisor＋adapter＋FakeHIAI 加载失败 JSON 集成通过。源码和测试产物见[历史诊断修复记录](../../specs/resident-v2-failure-reporting-validation.json)；后续初始化实验及当前修复见上节。
 
 ## 本次实现
 
@@ -29,7 +32,7 @@
 
 ## 验证范围
 
-工作区 run：`20261030T122833Z-23441-5814f9`。日志／测试产物都在该 run 的 `out/`；源码与结果文件哈希见 [机器可读验证记录](../specs/resident-v2-host-validation.json)。以下各组有回归和定向复验重叠，不将次数相加冒充独立测试数量。
+工作区 run：`20261030T122833Z-23441-5814f9`。日志／测试产物都在该 run 的 `out/`；源码与结果文件哈希见 [机器可读验证记录](../../specs/resident-v2-host-validation.json)。以下各组有回归和定向复验重叠，不将次数相加冒充独立测试数量。
 
 | 检查 | 结果及范围 |
 |---|---|
@@ -52,4 +55,4 @@
 - 新版多轮 token／state 是否与旧成功运行一致、实际耗时改善、重复请求内存稳定和物理断连尚未验收。FakeHIAI 的运行时长不作性能数据。
 - P1/P2 数值精度及有效接受率未完成；既有完整请求接受 0／7，新运行方式不能自动提升精度。
 
-后续主线见[V1迁移](current-status.md)，不再启动新的V2请求。历史产品代码76a5651的关闭失败仍保留全部已完成调用及token，总状态仍失败。当前主机回归专门覆盖完整生成后的关闭失败，见[验证记录](../specs/resident-v2-close-failure-retention-validation.json)。
+后续主线见[V1迁移](../current-status.md)，不再启动新的V2请求。历史产品代码76a5651的关闭失败仍保留全部已完成调用及token，总状态仍失败。当前主机回归专门覆盖完整生成后的关闭失败，见[验证记录](../../specs/resident-v2-close-failure-retention-validation.json)。

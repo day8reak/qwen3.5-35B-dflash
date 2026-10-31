@@ -348,7 +348,7 @@
     ],
     "runtime_semantics": "NOT_VALIDATED",
     "default_81_output_contract": "UNCHANGED",
-    "docs": "docs/original-target-features.md"
+    "docs": "docs/history/original-target-features.md"
   },
   "latest_user_compilation": {
     "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",

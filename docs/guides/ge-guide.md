@@ -1,10 +1,13 @@
 # 直接 GE 构图与执行
 
-[首页](README.md) · [环境配置](environment-setup.md) · [板端执行](board-guide.md)
+> 开发指南：本页涉及其他导出／ABI路径。当前原40层模型的文字＋预读运行入口在[这里](../board-text-input-output.md)。
+
+
+[首页](../README.md) · [环境配置](environment-setup.md) · [板端执行](board-guide.md)
 
 本路径使用 Python/NumPy 描述图，生成 C++ 并调用 GE 保存 AIR，不经过 PyTorch/TorchAir。先按[环境配置](environment-setup.md)激活 `custom_pypto` 并加载项目配置；以下使用当前环境的 `python3`。
 
-当前优先复用用户已导出的完整AIR及64/1动态档位，使用 [当前整模编译命令](current-status.md#用户现在执行什么) 中的 `compile_full_target.py`。该入口保留量化图及外置权重选项，复用已完成TBE诊断；不重建权重、不运行探针，不假定原AIR满足本仓库runner ABI。默认从当前DDK的实际 `master/omg` 编译并尝试提取真实图接口。
+当前优先复用用户已导出的完整AIR及64/1动态档位，使用 [当前整模编译命令](../current-status.md#用户现在执行什么) 中的 `compile_full_target.py`。该入口保留量化图及外置权重选项，复用已完成TBE诊断；不重建权重、不运行探针，不假定原AIR满足本仓库runner ABI。默认从当前DDK的实际 `master/omg` 编译并尝试提取真实图接口。
 
 下方自建GE入口覆盖完整构图和FP16转换诊断，尚未实现32GB板端所需的完整W4A8映射。近期里程碑是target普通prefill/decode，再接DFlash；下面的FP16命令是接口参考，不是已可上板的量化整模流程。`prepare_full_target.py` 为备用流式逻辑INT4/INT8缓存准备器，支持 `--resume` 校验复用，但尚未完成I4ZN/QPARAM硬件打包；有原AIR时不需先执行它。
 
@@ -119,7 +122,7 @@ python3 "$GE_MODEL_TOOL" compile \
 
 新状态图只接 `compile-stateful` 和 runner 的 `--stateful-step`，不能传给旧 `compile/run_hdc.py`。`CacheUpdate`、`AdnFusedInferAttention` 尚未在此 GE 路径启用；DFlash 部分接受必须提交接受前缀的状态。
 
-`inspect-compile`、`inspect-omc`、`inspect-omc-cpu`、`compare-target-features` 可读取已有资料；当前不要求重跑旧探针。验证范围见 [validation.md](validation.md)。
+`inspect-compile`、`inspect-omc`、`inspect-omc-cpu`、`compare-target-features` 可读取已有资料；当前不要求重跑旧探针。验证范围见 [validation.md](../history/validation.md)。
 
 ## 融合算子调用探针
 

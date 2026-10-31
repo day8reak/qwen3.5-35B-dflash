@@ -1,6 +1,9 @@
 # 板端执行与参考比较
 
-[首页](README.md) · [环境配置](environment-setup.md) · [GE 指南](ge-guide.md)
+> 开发指南：本页涉及其他导出／ABI路径。当前原40层模型的文字＋预读运行入口在[这里](../board-text-input-output.md)。
+
+
+[首页](../README.md) · [环境配置](environment-setup.md) · [GE 指南](ge-guide.md)
 
 新缓存图使用 runner 的 `--stateful-step`；原始 ABI v2 target/draft 双图使用 `run_hdc.py`。完整 FP16 模型约 65 GiB 权重，以下执行接口不代表它已能部署到 32GB 板端。
 
@@ -85,7 +88,7 @@ python3 -m qwen35_moe_dflash.cli compare \
 | `benchmark.stdout` / `.stderr` / `.exitcode` | 板端日志和实际退出码 |
 | `calls/` / `failure.json` | HDC 调用记录 / 失败原因 |
 
-默认成功回传并完成检查后清理本次板端目录，失败保留；加 `--board-cleanup none` 可保留全部内容，服务器结果始终保留。编译分区、能力查询和 Process 成功均不能单独证明实际 NPU 运行位置；验证范围见 [validation.md](validation.md)。
+默认成功回传并完成检查后清理本次板端目录，失败保留；加 `--board-cleanup none` 可保留全部内容，服务器结果始终保留。编译分区、能力查询和 Process 成功均不能单独证明实际 NPU 运行位置；验证范围见 [validation.md](../history/validation.md)。
 
 ## 融合算子调用探针
 

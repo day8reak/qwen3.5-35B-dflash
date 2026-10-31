@@ -58,7 +58,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "device_load_order_validated": false,
-  "next_command_document": "docs/target-resident-load-probe.md",
+  "next_command_document": "docs/history/target-resident-load-probe.md",
   "experience_audit": {
     "captured": "Successful tool binary and unrelated legacy source must not be conflated; partial constructor evidence and cleanup remain visible. Reusable checks added to native/transport regressions.",
     "hypothesis_not_promoted": "Init-before-weights and DeInit-before-DeinitWeights validity on the selected device",

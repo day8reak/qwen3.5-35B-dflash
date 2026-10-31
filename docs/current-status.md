@@ -13,11 +13,11 @@
 | decode同步Run均值 | 112.819ms | 110.890ms |
 | draft同步Process均值 | 739.192ms | 733.126ms |
 
-主要收益在启动阶段。完整请求本轮减少86.6%；不能据此认定数值等价后的推测解码加速或重复稳定性。详细[加载记录](board-resident-load-timing.md)与[结构化结果](../specs/board-resident-preread-observation.json)保留；先前fast/mixed结果分别在[fast记录](board-resident-fast-first-completion.md)、[mixed记录](board-resident-mixed-first-completion.md)。
+主要收益在启动阶段。完整请求本轮减少86.6%；不能据此认定数值等价后的推测解码加速或重复稳定性。详细[加载记录](board-resident-load-timing.md)与[结构化结果](../specs/board-resident-preread-observation.json)保留；先前fast/mixed结果分别在[fast记录](history/board-resident-fast-first-completion.md)、[mixed记录](history/board-resident-mixed-first-completion.md)。
 
 ## 用户下一条操作：文字输入输出＋draft预读合并请求
 
-按[完整命令](board-text-input-output.md)执行：已有原tokenizer目录时跳过准备步骤，同一条启动命令同时给 `--text` 和 `--draft-preread`，新输出目录为 `dflash-board-text-preread8-run`，完成后恢复到 `dflash-board-text-preread8-recovery`。
+按[离线准备指南](tokenizer-offline.md)传入三个原词表文件并设置`TOKENIZER_DIR`，再按[完整命令](board-text-input-output.md)执行。已有原tokenizer目录时跳过准备步骤；同一条启动命令同时给 `--text` 和 `--draft-preread`，新输出目录为 `dflash-board-text-preread8-run`，完成后恢复到 `dflash-board-text-preread8-recovery`。
 
 板端同一进程完成文字编码→原prefill一次→加载decode与预读后的draft→常驻验证循环→文字解码，最终一次回传文字、token ID和时延。CLI预读仍显式开启；历史请求保持原策略。模型OMC和权重复用。
 

@@ -1,5 +1,8 @@
 # B：保留原图并追加8层真实特征
 
+> 历史记录：保留当时的观察、失败和候选命令。当前操作请从[文档首页](../README.md)或[当前状态](../current-status.md)进入；不要直接重复本页旧请求。
+
+
 原AIR已经严格解码：9520节点、89输入、80 RefData、81输出、1153 FileConstant。用户回传了全部40层input norm的精确权重路径，以及`FileConstant → Add(1) → RmsNorm`连接；FileConstant属性和Add输入明确声明gamma宽2048，而多个内部输出shape仍为空。
 
 用户已完成本页特征追加：`FEATURE_AIR_EXPORTED`，新AIR为6,368,551字节，SHA为`924871d84b22ca7c525f722a7b4955f79d92b07072ebb2027ad82fa83856c819`，特征位于第81号端口，FP16`[1,55,16384]`。原9520个节点、89输入、80 RefData、81路原输出及1153个FileConstant字段保持；新增9个分支节点。实际GE Load/Save均返回0，完整metadata往返比较通过；编译和设备执行仍未运行。
