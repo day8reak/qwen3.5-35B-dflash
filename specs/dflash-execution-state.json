@@ -331,14 +331,15 @@
       "status": "USER_REPORTED_EXECUTED_UNVALIDATED",
       "evidence": "specs/board-text-preread-observation.json",
       "scope": "Board-local text encode/decode and full resident loop completed; numerical correctness unvalidated"
-    }
+    },
+    "incremental_air": "User reported DRAFT_INCREMENTAL_AIR_EXPORTED: C16/cap192/K15, 17 inputs/14 outputs, six layers, 4718592-byte KV bank; no original weight copies. New OMG/native execution remains pending."
   },
   "next_action": {
     "phase": "P4",
-    "type": "export_incremental_draft_air_on_ddk",
+    "type": "compile_incremental_draft_on_ddk",
     "implementation_required": false,
     "command_document": "docs/current-status.md",
-    "note": "Pull main and retry C16/cache192/K15 export into v2 directory. SDK include/lib64 and versioned .so links are resolved with the original library hash still checked. New AIR and OMC remain pending."
+    "note": "User reported successful C16/cache192/K15 AIR export in air-v1. Pull main and run the new compile_incremental_draft.py against that exact export; do not re-export or pass it to the old S64 runner."
   },
   "last_actual_execution": {
     "schema_version": 1,
@@ -589,7 +590,7 @@
         3
       ],
       "next_action_type": "implement_export_compile_validate",
-      "next_action": "Run export_incremental_draft.py on DDK host for C16/cache192/K15; then bind actual AIR/OMG output and implement named17/14 native KV runner. Candidate gears 15/7/3/1 use static block lengths16/8/4/2; old S64 bundle remains unchanged.",
+      "next_action": "Compile the successfully exported air-v1 using the new original-weight reference view; inspect compiled precision and full17/14 ABI, then implement native KV adapter and run a new full board-local smoke. No new batch verify development.",
       "pass_conditions": [
         "real newAIR andOMC, not metadata relabel",
         "named17inputs14outputs typed ABI",
@@ -607,7 +608,9 @@
       "evidence": [
         "specs/incremental-draft-export-host-validation.json",
         "specs/incremental-draft-reference-review.json",
-        "specs/incremental-draft-sdk-link-fix.json"
+        "specs/incremental-draft-sdk-link-fix.json",
+        "specs/incremental-draft-air-observation.json",
+        "specs/incremental-draft-compile-host-validation.json"
       ],
       "last_error": null,
       "numerical_acceptance_depends_on": [
@@ -962,7 +965,7 @@
     "maintenance_policy": "Homepage contains only a brief introduction and six direct links. Keep each primary page self-contained; operational pages contain short instructions and complete command blocks. Detailed development and historical evidence remain outside primary navigation."
   },
   "incremental_draft_task": {
-    "status": "HOST_GRAPH_EXPORTER_AND_SCHEDULE_VALIDATED_DEVICE_PENDING",
+    "status": "USER_REPORTED_AIR_EXPORTED_COMPILER_ENTRY_HOST_TESTED_DDK_PENDING",
     "context_gears": [
       16,
       64
@@ -978,9 +981,11 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "UNCHANGED_S64_PREFIX_RECOMPUTE",
-    "next_command": "targets/cpro/scripts/export_incremental_draft.py --job \"$AI_RUN_DIR/full-draft\" --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 --output \"$AI_RUN_DIR/draft-kv-c16-cap192-k15-air-v2\"",
+    "next_command": "targets/cpro/scripts/compile_incremental_draft.py --air-export \"$AI_RUN_DIR/draft-kv-c16-cap192-k15-air-v1\" --output \"$AI_RUN_DIR/draft-kv-c16-cap192-k15-compiled-v1\"",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
-    "selected_ddk_attempt": "FAILED_SDK_SYMLINK_BINDING_HOST_FIX_PASSED_RETRY_PENDING"
+    "selected_ddk_attempt": "USER_REPORTED_INCREMENTAL_AIR_EXPORT_SUCCEEDED_OMG_NOT_RUN",
+    "air_export_observation": "specs/incremental-draft-air-observation.json",
+    "compile_host_validation": "specs/incremental-draft-compile-host-validation.json"
   },
   "draft_milestone_e2e_gate": {
     "policy": "EVERY_EXECUTABLE_DRAFT_MILESTONE_REQUIRES_BOARD_LOCAL_FULL_LOOP_SMOKE",

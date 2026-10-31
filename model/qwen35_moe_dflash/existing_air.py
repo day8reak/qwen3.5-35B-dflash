@@ -2,7 +2,9 @@
 
 Inputs are copied or reflinked into an isolated input directory by default. An
 explicit, audited decode1 mode references readonly completed prefill snapshots
-through individually owned file symlinks. No source directory links,
+through individually owned file symlinks. The incremental Draft mode binds every
+recipe FileConstant to its original prepared file and audits source preservation.
+No source directory links,
 FileConstant rewrites, graph reconstruction, platform diagnosis
 matrix, or device execution is performed. Original AIR defaults do not override
 weight precision or format; callers may explicitly select the FP16 draft profile.
@@ -405,7 +407,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                          input_layout="air-directory", use_origin_format=None,
                          weight_data_type=None, cl_customization=None, reuse_failed_job=None,
                          borrowed_decode_job=None, decode_inventory=None,
-                         decode_export_receipt=None):
+                         decode_export_receipt=None, incremental_draft_export=None):
     """Return a host compilation report, retaining failures without deployment.
 
     Only inventoried local snapshots are hash bound. Absolute or out-of-tree
@@ -428,6 +430,9 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     view. It requires the transferred inventory/export receipt and an unchanged
     completed prefill64 job. Only its independent readonly snapshot files are
     referenced; the transferred AIR is still independently snapshotted.
+    ``incremental_draft_export`` selects the separate complete 17/14 cached-Draft
+    export contract. Exact per-file aliases reference original weights; fresh
+    hashes and full identities are audited without source chmod or hardlinks.
     """
     if (not isinstance(ddk_id, str) or not ddk_id.strip()
             or isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
@@ -438,6 +443,10 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     if input_layout not in INPUT_LAYOUTS:
         raise ValueError(f"input_layout must be one of {INPUT_LAYOUTS}")
     decode_arguments = (borrowed_decode_job, decode_inventory, decode_export_receipt)
+    if incremental_draft_export is not None and (
+            any(value is not None for value in decode_arguments) or reuse_failed_job is not None
+            or input_layout != "air-directory"):
+        raise ValueError("incremental Draft input view excludes other reuse modes and requires air-directory")
     if any(value is not None for value in decode_arguments):
         if not all(value is not None for value in decode_arguments):
             raise ValueError("decode input view requires source job, inventory and export receipt")
@@ -515,6 +524,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     reuse_binding = {}
     retained_plan = None
     decode_plan = None
+    input_view_key = "incremental_input_view" if incremental_draft_export is not None else "decode_input_view"
+    input_view_file = "incremental-input-view" if incremental_draft_export is not None else "decode-input-view"
     retained_selection = None
     if tbe_diagnosis is not None:
         compatibility = {"diagnosis": str(Path(tbe_diagnosis).resolve()),
@@ -526,6 +537,18 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     attempted = False
     error = None
     try:
+        if incremental_draft_export is not None:
+            from .incremental_draft_inputs import prepare_incremental_input_view
+            stage = "incremental-input-validation"
+            decode_plan = prepare_incremental_input_view(incremental_draft_export, air=air, output=output)
+            report[input_view_key] = decode_plan.evidence
+            save_json(output / (input_view_file + "-plan.json"), decode_plan.evidence)
+            report["external_weights"].update(
+                status="INCREMENTAL_RECIPE_BOUND_REFERENCE_VIEW",
+                scope="All FileConstants in the retained incremental recipe bind exact original prepared weights; no payload copies or hardlinks.",
+                limitations="Compiler read-only use is audited by pre/post SHA256 and full identity; file aliases do not enforce OS write protection.")
+            retained_selection = (decode_plan.sources, [])
+            notify(stage, "Bound incremental Draft AIR and original weight references without copying weights")
         if borrowed_decode_job is not None:
             from .target_decode_inputs import prepare_decode_input_view
             stage = "decode-input-validation"
@@ -593,7 +616,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                      "scope": "Selected AIR and neighboring data candidates; not verified AIR dependencies. "
                               "Free space is checked per file only if reflink fails."}
         if decode_plan is not None:
-            selection["scope"] = ("Transferred decode1 AIR plus exact manifest-selected readonly prefill snapshot references. "
+            selection["scope"] = ("Bound AIR plus exact manifest-selected original input references. "
                                   "Only the AIR is independently copied/reflinked; compiler outputs require separate space.")
         report["input_selection"] = selection
         save_json(output / "input-selection.json", selection)
@@ -603,7 +626,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         for index, source in enumerate(selected):
             relative = staged_relative(source) if decode_plan is not None else source.relative_to(air.parent)
             snapshot = inputs / staged_relative(source)
-            notify(stage, ("Hashing readonly decode input references" if decode_plan is not None else
+            notify(stage, ("Binding original input references" if decode_plan is not None else
                            "Snapshotting input" if retained_plan is None else "Hashing and sharing retained input"),
                    completed=index, total=len(selected),
                    source_relative=str(relative), bytes=source.stat().st_size)
@@ -755,18 +778,18 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         if decode_plan is not None:
             try:
                 audit = decode_plan.audit()
-                report["decode_input_view"] = audit
-                save_json(output / "decode-input-view.json", audit)
+                report[input_view_key] = audit
+                save_json(output / (input_view_file + ".json"), audit)
                 if audit.get("status") != "PASSED":
                     report["decode_input_audit_error"] = audit
                     if error is None:
-                        error = RuntimeError("readonly decode-input audit failed; all evidence retained")
-                        report.update(stage="decode-input-audit", error=str(error))
+                        error = RuntimeError("original input reference audit failed; all evidence retained")
+                        report.update(stage=input_view_file + "-audit", error=str(error))
             except Exception as exc:
                 report["decode_input_audit_error"] = f"{type(exc).__name__}: {exc}"
                 if error is None:
                     error = exc
-                    report.update(stage="decode-input-audit", error=str(exc))
+                    report.update(stage=input_view_file + "-audit", error=str(exc))
     report["status"] = "FAILED" if error is not None else "COMPILED"
     if error is not None:
         save_json(output / "failure.json", report)

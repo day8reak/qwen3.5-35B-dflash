@@ -137,7 +137,7 @@ P0 已实现根据该映射交接实际状态、从本次 prefill logits 查原 
 
 旧S64只能接受完整prefix≤64。跨过容量前，不能截断历史、重置RoPE、篡改manifest尺寸或循环旧features。S128全前缀可作独立对照方案，**不是DFlash算法必需步骤**，不与增量路线同时开两条大编译主线。
 
-已实现：`ge_incremental_draft.py`，C16／C64新feature块、4个INT32控制（start_position／valid_rows／anchor／proposal_count）、12个FP16 K/V输入；包含hidden时14输出（Top1、hidden、12缓存）。主机结构与独立完整前缀oracle已测。新增export_incremental_draft.py导出入口、只读71权重绑定、四档真实计算形状和分块追赶调度；主机检查通过，DDK导出／OMG编译／上板待执行。
+已实现：`ge_incremental_draft.py`，C16／C64新feature块、4个INT32控制（start_position／valid_rows／anchor／proposal_count）、12个FP16 K/V输入；包含hidden时14输出（Top1、hidden、12缓存）。主机结构与独立完整前缀oracle已测。新增export_incremental_draft.py导出入口、只读71权重绑定、四档真实计算形状和分块追赶调度；主机检查通过；用户已回传C16／cap192／K15的DDK AIR导出成功（air-v1）。新增compile_incremental_draft.py：逐文件引用原权重、沿用成功DDK／编译配置、检查FP32计算与17／14接口，再打包新OMC。OMG实编和板端接入待执行。
 
 需要依次完成：
 

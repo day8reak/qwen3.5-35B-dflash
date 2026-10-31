@@ -43,6 +43,6 @@
 | Tokenizer主机与板端输入ID | 本次一致 |
 | 数值正确性、语言质量、重复稳定性 | 未验收 |
 | 相对普通Decode的配对加速 | 未测得 |
-| 增量Draft KV／15、7、3、1计算档位 | 主机检查通过，新AIR／OMC与板端接入待执行 |
+| 增量Draft KV／15、7、3、1计算档位 | C16／cap192／K15 AIR已导出；OMG与板端接入待执行 |
 
 记录保留在`specs/board-text-preread-observation.json`。当前优先Draft增量缓存、固定特征独立精度和单模型性能；Target精度由用户另行调试，verify后置。未将乱码或零接受率视为精度通过。
