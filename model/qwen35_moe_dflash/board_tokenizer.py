@@ -40,8 +40,9 @@ def checked_sources(directory):
     return lock
 
 
-def reference(directory):
-    checked_sources(directory)
+def reference(directory, *, verify_sources=True):
+    if verify_sources:
+        checked_sources(directory)
     try:
         from tokenizers import Tokenizer
     except ImportError as error:
@@ -59,8 +60,8 @@ def _byte_decoder():
     return {chr(c): b for b, c in zip(bs, chars)}
 
 
-def build_bundle(directory, output):
-    lock = checked_sources(directory)
+def build_bundle(directory, output, *, verify_sources=True):
+    lock = checked_sources(directory) if verify_sources else None
     data = json.loads((Path(directory) / 'tokenizer.json').read_text())
     model = data['model']; vocab = model['vocab']; decode = _byte_decoder()
     if (data['normalizer'] != {'type': 'NFC'} or model['type'] != 'BPE'
@@ -106,16 +107,18 @@ def acquire(directory):
     checked_sources(directory)
 
 
-def prepare_text(directory, text, mode, out):
+def prepare_text(directory, text, mode, out, *, verify_sources=True):
     from .board_serial_dflash import _hash_source
+    if not verify_sources:
+        from .runtime_config import file_record as _hash_source
     formatted = render(text, mode)
-    tokenizer = reference(directory)
+    tokenizer = reference(directory, verify_sources=verify_sources)
     ids = tokenizer.encode(formatted, add_special_tokens=False).ids
     if not 1 <= len(ids) <= 63:
         raise ValueError(f'text with template contains {len(ids)} tokens; current S64 draft requires 1..63 before generation')
     out = Path(out)
     prompt = out / 'prompt.txt'; prompt.write_bytes(text.encode('utf-8'))
-    bundle = out / 'tokenizer.bin'; build_bundle(directory, bundle)
+    bundle = out / 'tokenizer.bin'; build_bundle(directory, bundle, verify_sources=verify_sources)
     shadow = out / 'prompt-admission-ids.bin'; shadow.write_bytes(struct.pack('<' + 'i'*len(ids), *ids))
     return ids, _hash_source(shadow), {'bundle': _hash_source(bundle), 'prompt': _hash_source(prompt),
         'prompt_format': mode, 'source_directory': str(Path(directory).resolve()),

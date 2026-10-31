@@ -160,10 +160,10 @@ void Atomic(const fs::path& p,const J& j) {auto tmp=p;tmp+=".new";Write(tmp,Dump
 bool Shape(const J& a,const std::vector<std::uint64_t>& shape){if(a.kind!=J::Array||a.a.size()!=shape.size())return false;for(std::size_t i=0;i<shape.size();++i)if(a.a[i].num()!=shape[i])return false;return true;}
 J Array(const std::vector<std::uint32_t>& v){J a=J::Arr();for(auto n:v)a.a.emplace_back(static_cast<std::uint64_t>(n));return a;}
 J Ratio(std::uint64_t numerator,std::uint64_t denominator){if(!denominator)return J();J value;value.kind=J::Number;std::ostringstream out;out<<std::setprecision(17)<<static_cast<double>(numerator)/static_cast<double>(denominator);value.s=out.str();return value;}
-struct File {fs::path path;std::string hash;std::uint64_t bytes;Stamp stamp;};
+struct File {fs::path path;std::string hash;std::uint64_t bytes;Stamp stamp;bool size_only=false;};
 File Observe(const fs::path& p,std::uint64_t expected,const std::string& hash="") {auto before=Stat(p);Require(before.size==expected,"file extent mismatch: "+p.string());
   auto actual=Sha256File(p);Require(Stat(p)==before,"file changed during hash: "+p.string());if(!hash.empty())Require(actual==hash,"file SHA256 mismatch: "+p.string());return {p,actual,expected,before};}
-void Stable(const File& f) {Require(Stat(f.path)==f.stamp,"pinned file changed: "+f.path.string());}
+void Stable(const File& f) {if(f.size_only){Require(Stat(f.path).size==f.bytes,"file extent changed: "+f.path.string());return;}Require(Stat(f.path)==f.stamp,"pinned file changed: "+f.path.string());}
 // One stable file read supplies both its SHA observation and consumed bytes.
 // Keep the pre-read baseline through hashing; a later read cannot silently
 // establish a new identity after a read/hash gap.
@@ -179,7 +179,7 @@ J Record(const File& f,const fs::path& root){J j=J::Obj();j["path"]=fs::relative
 struct Tensor {std::uint32_t index;std::string name,type;std::uint64_t bytes;};
 struct State {std::string ref;std::uint32_t in,out;std::uint64_t bytes;};
 struct PrefillState {std::string decode_ref,ref;std::uint32_t in,out;std::uint64_t bytes;};
-struct Config {std::map<std::string,File> files;std::map<std::string,std::string> strings;std::vector<Tensor> inputs,outputs,prefill_inputs,prefill_outputs;std::vector<State> states;std::vector<PrefillState> prefill_states;std::vector<std::uint32_t> prompt;std::uint32_t maxnew=0,k=0,minrounds=0,timeout=0;std::uint64_t startup_hash_ms=0;bool dump=true,prefill=false,fast=false,draft_preread=false,incremental=false;Clock::time_point started=Clock::now();File config;
+struct Config {std::map<std::string,File> files;std::map<std::string,std::string> strings;std::vector<Tensor> inputs,outputs,prefill_inputs,prefill_outputs;std::vector<State> states;std::vector<PrefillState> prefill_states;std::vector<std::uint32_t> prompt;std::uint32_t maxnew=0,k=0,minrounds=0,timeout=0;std::uint64_t startup_hash_ms=0;bool dump=true,prefill=false,fast=false,draft_preread=false,incremental=false,size_only=false;Clock::time_point started=Clock::now();File config;
 #ifdef QWEN35_TEXT_TOKENIZER
   std::shared_ptr<qwen35::dflash::TextTokenizer> tokenizer;
   std::uint64_t text_setup_us=0;
@@ -222,6 +222,8 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
     Fail("compact-memory-v1 requires the mixed resident binary");
 #endif
   }
+  c.size_only=std::find(lines.begin(),lines.end(),"file_validation\tsize-and-abi-only")!=lines.end();
+  Require(!c.size_only||c.fast,"size-only files require compact resident runtime");c.config.size_only=c.size_only;
   std::set<std::string> filekeys={"target_model","prefill_model","draft_model","draft_abi","target_tool","draft_runner","weight_table","scale_table"};
   std::set<std::string> strkeys={"target_library_path","draft_library_path","runtime_version","ddk_id","firmware_id","prompt","max_new_tokens","max_proposals","min_draft_rounds","timeout_ms"};
 #if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
@@ -255,6 +257,7 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
 #endif
     }
     if(f[0]=="runtime_profile"){Require(n==1&&c.fast,"runtime profile must be first and supported");continue;}
+    if(f[0]=="file_validation"){Require(n==2&&c.size_only&&f.size()==2,"file validation must follow runtime profile");continue;}
     if(filekeys.count(f[0])){Require(f.size()==4&&!c.files.count(f[0]),"file row malformed/duplicate");HashSyntax(f[2]);auto bytes=Integer(f[3],32ULL<<30,false);auto p=Absolute(f[1]);
       if(f[0]=="weight_table")Require(bytes==kVocab*2048ULL,"weight table extent mismatch");
       else if(f[0]=="scale_table")Require(bytes==kVocab*4ULL,"scale table extent mismatch");
@@ -267,7 +270,7 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
       Lifecycle(c.fast?"startup-bind-begin":"startup-hash-begin","role="+f[0]+" bytes="+std::to_string(bytes));
       auto hash_begin=Clock::now();
       const bool metadata=f[0]=="tokenizer_bundle"||f[0]=="prompt_text"||f[0]=="draft_abi"||f[0]=="resident_abi"||f[0]=="prefill_abi";
-      if(c.fast&&!metadata){auto stamp=Stat(p);Require(stamp.size==bytes,"deployment payload extent differs");c.files.emplace(f[0],File{p,f[2],bytes,stamp});}
+      if(c.size_only||(c.fast&&!metadata)){auto stamp=Stat(p);Require(stamp.size==bytes,"deployment payload extent differs");c.files.emplace(f[0],File{p,f[2],bytes,stamp,c.size_only});}
       else c.files.emplace(f[0],Observe(p,bytes,f[2]));
       auto hash_ms=ElapsedMs(hash_begin);c.startup_hash_ms+=hash_ms;
       Lifecycle(c.fast?"startup-bind-end":"startup-hash-end","role="+f[0]+" wall_ms="+std::to_string(hash_ms));}
@@ -386,7 +389,7 @@ class MappedTable {
  public:
   explicit MappedTable(const File& f):bytes(f.bytes){
     int fd=::open(f.path.c_str(),O_RDONLY|O_NOFOLLOW);Require(fd>=0,"embedding table open failed");
-    struct stat st{};if(::fstat(fd,&st)!=0||!(FromStat(st)==f.stamp)){::close(fd);Fail("embedding table changed before mapping");}
+    struct stat st{};if(::fstat(fd,&st)!=0||(f.size_only?static_cast<std::uint64_t>(st.st_size)!=f.bytes:!(FromStat(st)==f.stamp))){::close(fd);Fail("embedding table differs before mapping");}
     data=::mmap(nullptr,bytes,PROT_READ,MAP_PRIVATE,fd,0);::close(fd);Require(data!=MAP_FAILED,"embedding table mmap failed");
   }
   ~MappedTable(){if(data!=MAP_FAILED)::munmap(data,bytes);}
@@ -538,7 +541,7 @@ class Supervisor {
       loop["runtime_profile"]="compact-memory-v1";
       loop["diagnostics"]="DISABLED_TENSOR_HASH_READBACK_AND_FP16_SCANS";
       loop["intermediate_tensor_io"]="NONE_MEMORY_ONLY";
-      loop["startup_payload_validation"]="OWNED_CACHE_EXTENTS_NEW_UPLOAD_SHA256";
+      loop["startup_payload_validation"]=c.size_only?"SIZE_AND_ABI_ONLY":"OWNED_CACHE_EXTENTS_NEW_UPLOAD_SHA256";
       for(auto key:{"decode","draft"})phases[key]["timing_scope"]="RESIDENT_MEMORY_RUN_WITH_TENSOR_COPIES_NO_HASH_OR_FILE_IO";
     }
 #ifdef QWEN35_RESIDENT_MIXED

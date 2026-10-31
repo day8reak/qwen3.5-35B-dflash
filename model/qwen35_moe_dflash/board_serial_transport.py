@@ -37,6 +37,10 @@ _MAX_TOTAL = 2 << 30
 _PREFILL_RECIPE = 'PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL'
 
 
+def _size_only(manifest):
+    return manifest.get('file_validation') == 'size-and-abi-only'
+
+
 def _has_prefill(manifest):
     value = manifest.get('prefill')
     if value is None:
@@ -95,6 +99,8 @@ def _dump_mode(manifest):
 
 def _result_scope(state, manifest):
     dump = _dump_mode(manifest)
+    if _size_only(manifest):
+        state['file_validation'] = 'size-and-abi-only'
     from .board_serial_dflash import compact_memory_mode
     if compact_memory_mode(manifest):
         state['runtime_profile'] = manifest['runtime_profile']
@@ -154,7 +160,8 @@ def _validate_summaries(loop, manifest, *, required=False):
     if fast and any(loop.get(key) != value for key, value in {
             'diagnostics': 'DISABLED_TENSOR_HASH_READBACK_AND_FP16_SCANS',
             'intermediate_tensor_io': 'NONE_MEMORY_ONLY',
-            'startup_payload_validation': 'OWNED_CACHE_EXTENTS_NEW_UPLOAD_SHA256'}.items()):
+            'startup_payload_validation': ('SIZE_AND_ABI_ONLY' if _size_only(manifest)
+                else 'OWNED_CACHE_EXTENTS_NEW_UPLOAD_SHA256')}.items()):
         raise ValueError('compact memory report lacks its execution scope')
     counts = loop['counts']; acceptance = loop.get('acceptance', {})
     if (not isinstance(acceptance, dict) or any(type(acceptance.get(key)) is not int for key in ('accepted', 'considered'))
@@ -667,6 +674,9 @@ def _cache_inventory(hdc, rows, *, verify_sha256=True):
 
 
 def _local_upload(row, manifest):
+    if _size_only(manifest):
+        from .runtime_config import file_record
+        return Path(file_record(row['local'], size=row['bytes'])['path'])
     if row['kind'] in {'target', 'prefill'}:
         from .original_target_board import _recorded_board_payload
         base = manifest['prefill']['base_plan'] if row['kind'] == 'prefill' else manifest['target_binding']['base_plan']
@@ -717,9 +727,11 @@ def _upload_cached(hdc, out, state, rows, decisions, manifest):
         _checkpoint(out, state, 'send-static-payload-requested', uncertain=True,
             pending_payload={'remote': str(remote), 'bytes': row['bytes'], 'sha256': row['sha256']})
         hdc.send(local, partial)
-        _mutate(hdc, out, state, _regular_guard(partial, size=row['bytes'])
-            + ' && serial_hash=$(sha256sum ' + shlex.quote(str(partial)) + ') && serial_hash=${serial_hash%% *}'
-            + ' && test "$serial_hash" = ' + shlex.quote(row['sha256'])
+        checksum = ('' if _size_only(manifest) else
+            ' && serial_hash=$(sha256sum ' + shlex.quote(str(partial)) + ') && serial_hash=${serial_hash%% *}'
+            + ' && test "$serial_hash" = ' + shlex.quote(row['sha256']))
+        _mutate(hdc, out, state, _regular_guard(partial, size=row['bytes'], metadata_only=_size_only(manifest))
+            + checksum
             + ' && test ! -e ' + shlex.quote(str(remote)) + ' && test ! -L ' + shlex.quote(str(remote))
             + ' && mv ' + shlex.quote(str(partial)) + ' ' + shlex.quote(str(remote)), 'publish-static-payload',
             timeout=hdc.timeout)
@@ -1446,7 +1458,7 @@ def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='d
         if not 0 < row['bytes'] <= 1 << 20:
             raise ValueError('compact token/status report exceeds its small metadata budget')
         value, identity = _json(root / row['path'], 1 << 20)
-        if any(identity[key] != row[key] for key in ('bytes', 'sha256')):
+        if any(identity[key] != row[key] for key in (('bytes',) if _size_only(manifest) else ('bytes', 'sha256'))):
             raise ValueError('compact report differs from its completed inventory SHA/extent')
         values[row['path']] = value
     loop, progress = values['loop.json'], values['progress.json']
@@ -1471,6 +1483,9 @@ def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='d
         expected.update(execution_mode=manifest['execution_mode'], resident_abi_sha256=manifest['resident_abi']['sha256'])
         if _inline_prefill(manifest):
             expected['prefill_abi_sha256'] = manifest['prefill_abi']['sha256']
+    if _size_only(manifest):
+        expected = {key: value for key, value in expected.items() if not key.endswith('_sha256')}
+        _expected_config_sha256 = None
     if (type(_remote_exitcode) is not int or not 0 <= _remote_exitcode <= 255
             or type(loop.get('schema_version')) is not int or type(loop.get('dump')) is not bool
             or any(loop.get(key) != value for key, value in expected.items())
@@ -1562,10 +1577,10 @@ def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='d
                 or loop.get('failed_child_exitcode') != children[-1]['exitcode'])):
         raise ValueError('compact failure lacks its bound error/last-child exit evidence')
     _validate_summaries(loop, manifest, required=True)
-    for path, before in pins.items():
+    for path, before in ({} if _size_only(manifest) else pins).items():
         if _full(path) != before:
             raise ValueError('compact result changed during validation')
-    if _full(inventory_path) != baseline:
+    if not _size_only(manifest) and _full(inventory_path) != baseline:
         raise ValueError('compact inventory changed during validation')
     return loop
 
@@ -1633,7 +1648,7 @@ def _validate_completed_failure(manifest, directory, state):
     return loop, [supervisor, *pids]
 
 
-def _receive_verified_inventory_file(hdc, remote_root, local_root, row):
+def _receive_verified_inventory_file(hdc, remote_root, local_root, row, *, verify=True):
     """Receive against the completed inventory already checked in remote batches.
 
     This deliberately sends no additional per-file remote hash query.  A file
@@ -1654,6 +1669,8 @@ def _receive_verified_inventory_file(hdc, remote_root, local_root, row):
     before = _full(local)
     if before['bytes'] != row['bytes']:
         raise ValueError('retrieved loop file extent differs from the completed supervisor inventory: ' + row['path'])
+    if not verify:
+        return before
     descriptor = os.open(local, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     digest = hashlib.sha256()
     with os.fdopen(descriptor, 'rb') as stream:
@@ -1673,6 +1690,19 @@ def _receive_verified_inventory_file(hdc, remote_root, local_root, row):
     return before
 
 
+def _receive_small_result(hdc, remote_root, local_root, name, manifest):
+    if not _size_only(manifest):
+        return _receive(hdc, remote_root, local_root, name)
+    remote = PurePosixPath(remote_root) / _relative(name)
+    hdc.shell(_regular_guard(remote, metadata_only=True), 'check-result-file')
+    destination = Path(local_root) / name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    hdc.receive(remote, destination, timeout=min(30, hdc.timeout))
+    if not destination.is_file() or not 0 < destination.stat().st_size <= 8 << 20:
+        raise ValueError('missing or oversized result: ' + name)
+    return True
+
+
 def _retrieve(hdc, out, state, manifest):
     board = PurePosixPath(state['board_attempt'])
     dump = _dump_mode(manifest)
@@ -1683,7 +1713,7 @@ def _retrieve(hdc, out, state, manifest):
         state.pop(key, None)
     print('board-serial: supervisor completed; retrieving ' + ('full debug evidence' if dump else 'tokens and small completion status'), flush=True)
     for name in (_ATTEMPT_LOGS if dump else ('tool.pid', 'tool.exitcode')):
-        if _receive(hdc, board, out, name) is None:
+        if _receive_small_result(hdc, board, out, name, manifest) is None:
             raise ValueError('completed supervisor attempt is missing ' + name)
     if dump and (out / 'run.sh').read_text() != state['launcher']:
         raise ValueError('retained launcher differs from this one recorded launch')
@@ -1691,7 +1721,7 @@ def _retrieve(hdc, out, state, manifest):
             out / 'tool.exitcode').read_text() != str(state['completion']['remote_exitcode']) + '\n':
         raise ValueError('retrieved completion files differ from the read-only process proof')
     remote_results = board / 'results'; local_results = out / 'results'
-    if _receive(hdc, remote_results, local_results, 'retrieval-manifest.tsv') is None:
+    if _receive_small_result(hdc, remote_results, local_results, 'retrieval-manifest.tsv', manifest) is None:
         raise ValueError('completed supervisor has no retrieval inventory')
     raw, inventory_id = _read_small(local_results / 'retrieval-manifest.tsv', 8 << 20)
     rows = _inventory(raw)
@@ -1701,9 +1731,9 @@ def _retrieve(hdc, out, state, manifest):
     checks = []
     for row in rows:
         path = remote_results / row['path']
-        checks.append(_regular_guard(path, size=row['bytes']) + ' && serial_hash=$(sha256sum '
+        checks.append(_regular_guard(path, size=row['bytes'], metadata_only=_size_only(manifest)) + ('' if _size_only(manifest) else ' && serial_hash=$(sha256sum '
             + shlex.quote(str(path)) + ') && serial_hash=${serial_hash%% *} && test "$serial_hash" = '
-            + shlex.quote(row['sha256']))
+            + shlex.quote(row['sha256'])))
     hash_batches = 0
     for batch in _batches(checks):
         hdc.shell(' && '.join(batch), 'verify-final-loop-inventory', timeout=hdc.timeout)
@@ -1711,12 +1741,13 @@ def _retrieve(hdc, out, state, manifest):
     state['retrieval_transport'] = {'inventory_files': len(rows), 'bounded_remote_hash_batches': hash_batches,
         'duplicate_per_file_remote_hash_queries_avoided': 0, 'file_receive_requests': 0,
         'inventory_payload_bytes': sum(row['bytes'] for row in rows),
-        'hash_binding': 'COMPLETED_SUPERVISOR_INVENTORY_AND_BATCHED_REMOTE_SHA256_THEN_STABLE_LOCAL_SHA256',
+        'hash_binding': ('DISABLED_SIZE_AND_ABI_ONLY' if _size_only(manifest) else
+            'COMPLETED_SUPERVISOR_INVENTORY_AND_BATCHED_REMOTE_SHA256_THEN_STABLE_LOCAL_SHA256'),
         'scope': 'Final-result transport only; native execution and model residency are unchanged. Receive retries remain read-only.'}
     for row in rows:
         state['retrieval_transport']['file_receive_requests'] += 1
         state['retrieval_transport']['duplicate_per_file_remote_hash_queries_avoided'] += 1
-        _receive_verified_inventory_file(hdc, remote_results, local_results, row)
+        _receive_verified_inventory_file(hdc, remote_results, local_results, row, verify=not _size_only(manifest))
     if not dump:
         loop = validate_retrieved_tokens(manifest, local_results, _expected_config_sha256=state['config_sha256'],
             _remote_exitcode=state['completion']['remote_exitcode'])
@@ -1728,12 +1759,13 @@ def _retrieve(hdc, out, state, manifest):
             *([] if _inline_prefill(manifest) else [row['pid'] for row in loop.get('prefill_steps', [])])]
     else:
         loop, completed = _validate_completed_failure(manifest, local_results, state)
-    if _full(local_results / 'retrieval-manifest.tsv')['bytes'] != inventory_id['bytes'] or sha256_file(
-            local_results / 'retrieval-manifest.tsv') != inventory_id['sha256']:
+    if not _size_only(manifest) and (_full(local_results / 'retrieval-manifest.tsv')['bytes'] != inventory_id['bytes'] or sha256_file(
+            local_results / 'retrieval-manifest.tsv') != inventory_id['sha256']):
         raise ValueError('retrieval inventory changed during verification')
     if 'text_io' in manifest:
         from .board_tokenizer import validate_text_result
-        validate_text_result(manifest, loop)
+        if not _size_only(manifest):
+            validate_text_result(manifest, loop)
         for key in ('generated_text', 'generated_text_with_special_tokens', 'text_io', 'text_latency'):
             if key in loop: state[key] = loop[key]
     state.update(loop_report=str(local_results / 'loop.json'), loop=loop,
@@ -1848,7 +1880,9 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
         tool = _remote(base['tool_binding']['path'])
         from .board_serial_dflash import compact_memory_mode
         fast = compact_memory_mode(manifest)
-        preflight = ('command -v stat >/dev/null && ' if fast else '') + 'command -v sha256sum >/dev/null && command -v nohup >/dev/null && command -v find >/dev/null && '
+        preflight = (('command -v stat >/dev/null && ' if fast else '')
+            + ('' if _size_only(manifest) else 'command -v sha256sum >/dev/null && ')
+            + 'command -v nohup >/dev/null && command -v find >/dev/null && ')
         if not _inline_prefill(manifest):
             preflight += (_regular_guard(tool) + ' && serial_hash=$(sha256sum ' + shlex.quote(str(tool))
                 + ') && serial_hash=${serial_hash%% *} && test "$serial_hash" = ' + shlex.quote(base['tool_binding']['sha256']) + ' && ')
@@ -1893,6 +1927,8 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
         state['static_cache_validation'] = 'OWNED_CACHE_EXTENT_ONLY_NEW_UPLOAD_SHA256' if fast else 'FULL_SHA256'
 
         _checkpoint(out, state, 'static-cache-inspected', uncertain=False)
+        if _size_only(manifest):
+            state['static_cache_validation'] = 'SIZE_AND_ABI_ONLY'
         _upload_cached(hdc, out, state, rows, decisions, manifest)
         target_model = next(row['remote'] for row in rows if row['kind'] == 'target' and row['record'] == manifest['target_compiled']['omc'])
         draft_model = draft / 'model/model.omc'; attempt_model = board / 'draft-model.omc'
@@ -1947,20 +1983,29 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
             if PurePosixPath(row['remote']).parent != PurePosixPath('.')]], 'create-whole-loop-upload-directories')
         _checkpoint(out, state, 'upload-runtime-requested', uncertain=True, runtime_uploads=uploads)
         for entry in uploads:
-            _check_local(entry)
+            if _size_only(manifest):
+                from .runtime_config import file_record
+                file_record(entry['local'], size=entry['bytes'])
+            else:
+                _check_local(entry)
             _checkpoint(out, state, 'upload-runtime-requested', uncertain=True, pending_runtime_payload=entry)
             hdc.send(entry['local'], board / entry['remote'])
-        checksum = out / 'payloads.sha256'
-        checksum.write_text(''.join(entry['sha256'] + '  ' + entry['remote'] + '\n' for entry in uploads))
-        _checkpoint(out, state, 'upload-runtime-requested', uncertain=True, pending_runtime_payload={'path': str(checksum)})
-        hdc.send(checksum, board / checksum.name, 'send-checksums')
-        hdc.shell('cd ' + shlex.quote(str(board)) + ' && sha256sum -c ' + shlex.quote(checksum.name), 'verify-checksums')
+        if not _size_only(manifest):
+            checksum = out / 'payloads.sha256'
+            checksum.write_text(''.join(entry['sha256'] + '  ' + entry['remote'] + '\n' for entry in uploads))
+            _checkpoint(out, state, 'upload-runtime-requested', uncertain=True, pending_runtime_payload={'path': str(checksum)})
+            hdc.send(checksum, board / checksum.name, 'send-checksums')
+            hdc.shell('cd ' + shlex.quote(str(board)) + ' && sha256sum -c ' + shlex.quote(checksum.name), 'verify-checksums')
+        else:
+            guards = [_regular_guard(board / e['remote'], size=e['bytes'], metadata_only=True) for e in uploads]
+            for batch in _batches(guards):
+                hdc.shell(' && '.join(batch), 'check-runtime-extents')
         _checkpoint(out, state, 'runtime-uploaded', uncertain=False)
         executables = [board / 'board-serial', board / 'run.sh']
         if not _inline_prefill(manifest):
             executables.insert(0, board / 'draft-runner')
         _mutate(hdc, out, state, 'chmod 755 ' + ' '.join(shlex.quote(str(path)) for path in executables), 'set-runtime-permissions')
-        if validate_prepared(prepared) != manifest:
+        if not _size_only(manifest) and validate_prepared(prepared) != manifest:
             raise ValueError('immutable preparation changed before the one launch')
         command = ('cd ' + shlex.quote(str(board)) + ' && test ! -e tool.pid && test ! -L tool.pid'
             + ' && test ! -e tool.exitcode && test ! -L tool.exitcode && test ! -e launch.guard && test ! -L launch.guard'
@@ -2006,8 +2051,10 @@ def recover_board_serial(execution_dir, output_dir, *, timeout_seconds=60, poll_
         raise ValueError('positive finite request recovery timeout and bounded poll interval required')
     execution, _ = _safe(execution_dir, directory=True)
     out = output_path(output_dir)
-    if execution == out or execution in out.parents:
+    if execution == out or execution in out.parents or out in execution.parents:
         raise ValueError('recovery output must be a separate new directory')
+    from .run_layout import reuse_test_output
+    reuse_test_output(out, recovery_source=execution)
     out.mkdir(parents=True, exist_ok=False)
     state, identity = _json(execution / 'checkpoint.json')
     state = dict(state, recovery_source=str(execution), recovery_source_identity=identity, output=str(out),
@@ -2024,6 +2071,11 @@ def recover_board_serial(execution_dir, output_dir, *, timeout_seconds=60, poll_
                 or state['draft_cache'] != '/data/local/tmp/qwen35_real_draft_' + state['draft_model_sha256']
                 or state['launcher'] != _launcher(state)):
             raise ValueError('recovery journal cache/model/launcher identities are inconsistent')
+        # The generated preparation travels with its execution directory.
+        # Historical requests retain their old recovery path as a fallback.
+        sibling = execution.parent / 'prepared'
+        if (sibling / 'manifest.json').is_file() and _json(sibling / 'manifest.json')[0].get('file_validation') == 'size-and-abi-only':
+            state['prepared'] = str(sibling)
         manifest = validate_prepared(state['prepared'])
         if manifest.get('execution_mode', 'fresh-process') != state.get('execution_mode', 'fresh-process'):
             raise ValueError('recovery cannot change the pinned resident execution mode')
@@ -2060,7 +2112,7 @@ def recover_board_serial(execution_dir, output_dir, *, timeout_seconds=60, poll_
                 or state['runtime_version'] != base['runtime_version'] or state['firmware_id'] != base['firmware_id']):
             raise ValueError('recovery checkpoint differs from the exact prepared model and environment identities')
         _, current = _json(Path(state['prepared']) / 'manifest.json')
-        if current != state['prepared_manifest']:
+        if not _size_only(manifest) and current != state['prepared_manifest']:
             raise ValueError('immutable preparation changed after the original launch')
         executable, serial, server = _environment()
         if (serial, server) != (state['serial'], state['hdc_server']):

@@ -304,6 +304,11 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
 
 def validate_prepared(directory):
     root = Path(directory).resolve()
+    from .runtime_config import read_json, POLICY
+    candidate = read_json(root / 'manifest.json')
+    if candidate.get('file_validation') == POLICY:
+        from .runtime_config import validate_prepared_config
+        return validate_prepared_config(root, candidate)
     raw, record = _read_small(root / 'manifest.json', MAX_MANIFEST_BYTES)
     pin, _ = _read_small(root / 'manifest.sha256', 65)
     if pin != (record['sha256'] + '\n').encode('ascii'):
@@ -410,6 +415,8 @@ def make_config(manifest, remote_paths):
     lines = ['QWEN35_BOARD_SERIAL\t1']
     if compact_memory_mode(manifest):
         lines.append('runtime_profile\tcompact-memory-v1')
+    if manifest.get('file_validation') == 'size-and-abi-only':
+        lines.append('file_validation\tsize-and-abi-only')
     if manifest['draft'].get('variant'):
         lines.append('draft_variant\t' + manifest['draft']['variant'])
     if draft_preread_mode(manifest):
@@ -488,14 +495,24 @@ def run_board_serial_dflash(*, output, apply=False, detach=False, **options):
     if type(apply) is not bool or type(detach) is not bool or detach and not apply:
         raise ValueError('apply/detach must be explicit booleans; detach requires apply')
     out = output_path(output)
+    if options.get('config'):
+        from .run_layout import reuse_test_output
+        reuse_test_output(out, config=options['config'])
     out.mkdir(parents=True, exist_ok=False)
     result = {'schema_version': 1, 'artifact_kind': 'qwen35-board-serial-dflash-job',
         'status': 'FAILED', 'stage': 'host-preflight', 'output': str(out),
         'mode': 'APPLY' if apply else 'PLAN_ONLY', 'model_compilation': 'NOT_RUN',
         'device_execution': 'NOT_RUN', 'numerical_validation': 'NOT_EVALUATED', 'performance': 'NOT_EVALUATED'}
     try:
-        manifest = prepare_board_serial(output=out / 'prepared', **options)
+        config = options.pop('config', None)
+        if config is not None:
+            from .runtime_config import prepare_config
+            manifest = prepare_config(config, output=out / 'prepared', **options)
+        else:
+            manifest = prepare_board_serial(output=out / 'prepared', **options)
         result['prepared'] = manifest['output']
+        if manifest.get('file_validation'):
+            result['file_validation'] = manifest['file_validation']
         result['dump'] = manifest.get('dump', True)
         if draft_preread_mode(manifest):
             result['draft_preread'] = manifest['draft_preread']

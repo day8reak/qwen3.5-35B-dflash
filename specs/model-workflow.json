@@ -5767,5 +5767,23 @@
     "default_enabled": false,
     "device_calls_by_assistant": 0,
     "baseline_observation": "specs/board-resident-load-observation.json"
+  },
+  "runtime_directory_policy": {
+    "status": "HOST_TESTED_DEVICE_RUN_PENDING",
+    "config": "runtime.json + runtime-assets.json; relative asset paths",
+    "layout": [
+      "prefill",
+      "decode",
+      "draft",
+      "common",
+      "work",
+      "results"
+    ],
+    "normal_runtime_validation": "FILE_EXTENT_AND_TENSOR_ABI_ONLY_NO_HISTORICAL_PATH_HASH_OR_TIMESTAMP_GATES",
+    "test_retention": "Reuse the same named test directory after confirmed exit; retain latest compact result and requested CSV. Active or uncertain requests remain recoverable.",
+    "migration": "Physical rename with resumable journal; imported runtime is independent of historical test reports",
+    "host_validation": "278 passed, 14 asset-dependent tokenizer tests skipped; additional cleanup recovery tests recorded separately",
+    "device_execution": "NOT_RUN_BY_THIS_CHANGE_USER_OWNS_BOARD_EXECUTION",
+    "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   }
 }

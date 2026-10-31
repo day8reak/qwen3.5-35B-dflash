@@ -13,11 +13,12 @@ from .hashing import sha256_file
 from .incremental_draft_abi import inspect_incremental_abi
 from .incremental_draft_inputs import bind_incremental_export, _payload
 from .omc_embed_weights import embed_external_weights
+from .run_layout import relocated_path
 
 
 def _compiler_source(bound):
     manifest, bindings = bound['manifest'], bound['bindings']
-    bundle, bundle_id = _metadata(manifest['source_bundle_manifest']['path'], bindings)
+    bundle, bundle_id = _metadata(relocated_path(manifest['source_bundle_manifest']['path'], bound['root']), bindings)
     if any(bundle_id[k] != manifest['source_bundle_manifest'].get(k) for k in ('bytes', 'sha256', 'full_identity')):
         raise ValueError('original successful bundle metadata changed')
     previous = Path(bundle_id['path']).parent.parent / 'compilation/report.json'
@@ -50,9 +51,9 @@ def compile_incremental_draft(export_dir, output, *, timeout_seconds=7200, tbe_d
         raise ValueError('timeout_seconds must be a positive integer')
     # Check protected source directories before creating any output directory.
     exported_meta, _ = _metadata(export / 'manifest.json', [])
-    protected_roots = [Path(exported_meta['source_prepared_root'])]
+    protected_roots = [relocated_path(exported_meta['source_prepared_root'], export)]
     if exported_meta.get('source_job', {}).get('path'):
-        protected_roots.append(Path(exported_meta['source_job']['path']).parent)
+        protected_roots.append(relocated_path(exported_meta['source_job']['path'], export).parent)
     for protected in protected_roots:
         if root == protected or protected in root.parents:
             raise ValueError('compile output must be outside the original source job/preparation')
@@ -96,6 +97,8 @@ def compile_incremental_draft(export_dir, output, *, timeout_seconds=7200, tbe_d
         notify('Compiling new incremental AIR with the successful Draft DDK/options')
         compile_root = root / 'compilation'
         selected_diagnosis = tbe_diagnosis or previous.get('tbe_compatibility', {}).get('diagnosis')
+        if selected_diagnosis:
+            selected_diagnosis = relocated_path(selected_diagnosis, export)
         compiled = compile_existing_air(bound['air'], compile_root, ddk, ddk_id=previous['ddk_id'],
             omg_path=omg, tbe_diagnosis=selected_diagnosis, timeout_seconds=timeout_seconds,
             use_origin_format=True, weight_data_type='FP16', limit_partition_size=False,

@@ -107,6 +107,21 @@ def test_exact_original_weight_view_no_copy_hardlink_or_source_mutation(exported
     assert result['device_execution'] == 'NOT_RUN'
 
 
+def test_moved_air_and_weight_root_resolve_without_rewriting_receipts(exported, tmp_path):
+    source, export, manifest = exported
+    before = (export / 'manifest.json').read_bytes()
+    draft = tmp_path / 'draft'; draft.mkdir()
+    moved_source, moved_export = draft / source.name, draft / export.name
+    source.rename(moved_source); export.rename(moved_export)
+    (tmp_path / '.run-layout.json').write_text(json.dumps(dict(original_root=str(tmp_path),
+        moves=[dict(source=source.name, destination='draft/' + source.name),
+               dict(source=export.name, destination='draft/' + export.name)])))
+    bound = inputs.bind_incremental_export(moved_export)
+    assert bound['air'] == moved_export / 'draft.air'
+    assert len(bound['rows']) == 72
+    assert (moved_export / 'manifest.json').read_bytes() == before
+
+
 @pytest.mark.parametrize('tamper', ['source', 'alias', 'air', 'fail'])
 def test_compiler_failure_or_input_mutation_never_passes(exported, tmp_path, monkeypatch, tamper):
     out, result, calls = _compile(exported, tmp_path, monkeypatch, tamper)

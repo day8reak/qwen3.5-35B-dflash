@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', help='Portable runtime.json; replaces historical job/probe/lineage arguments')
     required = ('decode-job', 'runtime-probe', 'state-lineage', 'source-torchair-pb2',
                 'weight-table', 'scale-table')
     for name in required:
@@ -24,16 +25,16 @@ def main(argv=None):
     prompt.add_argument('--text', help='UTF-8 user text; encoded on board with the original tokenizer')
     prompt.add_argument('--text-file', help='UTF-8 text file, useful for multiline prompts')
     parser.add_argument('--tokenizer-dir', help='Pinned original tokenizer source directory (prepare_board_tokenizer.py output/source)')
-    parser.add_argument('--prompt-format', choices=('chat', 'raw'), default='chat', help='chat: single user, thinking disabled; raw: no template')
+    parser.add_argument('--prompt-format', choices=('chat', 'raw'), help='chat: single user, thinking disabled; raw: no template')
     parser.add_argument('--prefill-feedback', help='Completed all80 prefill/decode mapping directory; enables one actual prefill64 call with explicit short-prompt padding controls')
     parser.add_argument('--output', required=True)
     parser.add_argument('--recover', help='Existing board-loop job or its board execution directory; never launches inference')
     parser.add_argument('--prompt-length', type=int, help='Token-file prefix length, default8; text length is derived automatically')
-    parser.add_argument('--max-new-tokens', type=int, default=8)
-    parser.add_argument('--max-proposals-per-round', type=int, default=2)
-    parser.add_argument('--minimum-draft-rounds', type=int, default=2)
-    parser.add_argument('--timeout-seconds', type=int, default=7200)
-    parser.add_argument('--lock-wait-seconds', type=int, default=1800)
+    parser.add_argument('--max-new-tokens', type=int)
+    parser.add_argument('--max-proposals-per-round', type=int)
+    parser.add_argument('--minimum-draft-rounds', type=int)
+    parser.add_argument('--timeout-seconds', type=int)
+    parser.add_argument('--lock-wait-seconds', type=int)
     parser.add_argument('--board-model-root', default='/data/local/tmp/qwen3_5_moe')
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--detach', action='store_true', help='Return after launch; the board finishes autonomously, then use --recover')
@@ -44,18 +45,23 @@ def main(argv=None):
     parser.add_argument('--draft-preread', action='store_true', default=None,
         help='Startup experiment: sequentially read the mapped draft OMC with a 1MiB buffer before Load; time is included in total load latency')
     args = parser.parse_args(argv)
+    if args.config and args.recover:
+        parser.error('--recover uses the saved request; omit --config')
+    if args.config and (args.draft_bundle or args.prefill_feedback or args.tokenizer_dir or args.dump
+            or any(getattr(args, n.replace('-', '_')) is not None for n in required)):
+        parser.error('--config replaces legacy model paths and uses the compact in-memory runtime')
     if args.recover:
-        if any(v is not None for v in (args.text, args.text_file, args.prompt_input_ids, args.tokenizer_dir, args.draft_preread, args.draft_bundle, args.incremental_draft, args.max_draft_tokens)) or args.prompt_format != 'chat' or args.apply or args.detach or args.dump is not None or args.resident is not None or args.prefill_feedback is not None or any(getattr(args, name.replace('-', '_')) is not None for name in required):
+        if any(v is not None for v in (args.text, args.text_file, args.prompt_input_ids, args.tokenizer_dir, args.draft_preread, args.draft_bundle, args.incremental_draft, args.max_draft_tokens, args.prompt_format)) or args.apply or args.detach or args.dump is not None or args.resident is not None or args.prefill_feedback is not None or any(getattr(args, name.replace('-', '_')) is not None for name in required):
             parser.error('--recover uses the original prepared dump mode; omit --dump, --apply and model arguments')
-    elif any(getattr(args, name.replace('-', '_')) is None for name in required):
+    elif not args.config and any(getattr(args, name.replace('-', '_')) is None for name in required):
         parser.error('new runs require ' + ', '.join('--' + name for name in required))
-    elif args.draft_bundle is None and args.incremental_draft is None:
+    elif not args.config and args.draft_bundle is None and args.incremental_draft is None:
         parser.error('provide --draft-bundle or --incremental-draft')
     elif all(v is None for v in (args.text, args.text_file, args.prompt_input_ids)):
         parser.error('provide --text, --text-file, or --prompt-input-ids')
     elif (args.text is not None or args.text_file is not None) and args.prompt_length is not None:
         parser.error('--prompt-length is for token files; text uses its full encoded length')
-    elif not args.resident:
+    elif not args.config and not args.resident:
         parser.error('new runs require --resident for explicit mixed-API residency; old modes support historical --recover only')
     elif args.detach and not args.apply:
         parser.error('--detach requires --apply')
@@ -65,13 +71,25 @@ def main(argv=None):
             selected = Path(args.recover)
             if (selected / 'board').is_dir():
                 selected /= 'board'
-            result = recover_board_serial(selected, args.output, timeout_seconds=args.timeout_seconds)
+            result = recover_board_serial(selected, args.output, timeout_seconds=args.timeout_seconds or 7200)
         else:
             from qwen35_moe_dflash.board_serial_dflash import run_board_serial_dflash
             options = vars(args).copy(); options.pop('recover')
-            options['dump'] = bool(args.dump)
-            options['resident'] = bool(args.resident)
-            options['draft_preread'] = bool(args.draft_preread)
+            if args.config:
+                for name in (*required, 'draft-bundle', 'prefill-feedback', 'tokenizer-dir',
+                             'dump', 'resident', 'board-model-root'):
+                    options.pop(name.replace('-', '_'))
+                # The configuration owns defaults; None means no override.
+            else:
+                options.pop('config')
+                for key, default in dict(max_new_tokens=8, max_proposals_per_round=2,
+                        minimum_draft_rounds=2, timeout_seconds=7200, lock_wait_seconds=1800).items():
+                    if options[key] is None:
+                        options[key] = default
+                options['prompt_format'] = args.prompt_format or 'chat'
+                options['dump'] = bool(args.dump)
+                options['resident'] = bool(args.resident)
+                options['draft_preread'] = bool(args.draft_preread)
             result = run_board_serial_dflash(**options)
     except Exception as error:
         result = {'status': 'FAILED', 'error': f'{type(error).__name__}: {error}'}
@@ -83,7 +101,7 @@ def main(argv=None):
     keys += ('external_weight_release', 'runtime_profile', 'native_api_latency',
              'diagnostics', 'intermediate_tensor_io', 'startup_payload_validation')
     keys += ('generated_text', 'generated_text_with_special_tokens', 'text_io', 'text_latency')
-    keys += ('draft_preread', 'draft_kv')
+    keys += ('draft_preread', 'draft_kv', 'file_validation')
     keys += ('execution_failure_stage', 'resident_failure_stage', 'prefill_failure_stage', 'prefill_lifecycle')
     print(json.dumps({key: result[key] for key in keys if key in result}, ensure_ascii=False, allow_nan=False), flush=True)
     return 0 if result.get('status') in {'BOARD_SERIAL_DFLASH_PLANNED', 'BOARD_SERIAL_DFLASH_STARTED',

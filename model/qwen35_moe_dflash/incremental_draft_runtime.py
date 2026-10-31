@@ -40,12 +40,16 @@ def validate_abi(value):
     return {key: value[key] for key in GEOMETRY}
 
 
-def bind_compiled(directory, output, *, ddk_id, max_draft_tokens, max_proposals, total_tokens):
+def bind_compiled(directory, output, *, ddk_id, max_draft_tokens, max_proposals, total_tokens,
+                  verify_sources=True):
     # Import here to keep preparation's helpers as the one identity policy.
     from .board_serial_dflash import _hash_source
     root = Path(directory).resolve()
     pins = {}
     def read(path, declared=None):
+        if not verify_sources:
+            from .runtime_config import read_json, file_record
+            return read_json(path, 4 << 20), file_record(path)
         raw, observed = _read_small(path, 4 << 20)
         record = _hash_source(path)
         if any(record[k] != observed[k] for k in ('sha256', 'bytes')) or declared and any(record[k] != declared[k] for k in ('sha256', 'bytes')):
@@ -73,21 +77,27 @@ def bind_compiled(directory, output, *, ddk_id, max_draft_tokens, max_proposals,
     packing, _ = read(child(source['weight_packing']), source['weight_packing'])
     if (abi.get('status') != 'PASSED' or any(abi.get(key) != source[key] for key in (*GEOMETRY, 'inputs', 'outputs'))
             or packing.get('status') != 'EMBEDDED'
-            or packing.get('source', {}).get('sha256') != abi.get('omc', {}).get('sha256')
-            or any(packing.get('output', {}).get(key) != source['model'][key] for key in ('bytes', 'sha256'))):
+            or verify_sources and packing.get('source', {}).get('sha256') != abi.get('omc', {}).get('sha256')
+            or any(packing.get('output', {}).get(key) != source['model'][key]
+                   for key in (('bytes', 'sha256') if verify_sources else ('bytes',)))):
         raise ValueError('incremental ABI/packing/model receipts disagree')
-    model = _hash_source(child(source['model']))
-    if any(model[key] != source['model'][key] for key in ('sha256', 'bytes')):
+    if verify_sources:
+        model = _hash_source(child(source['model']))
+    else:
+        from .runtime_config import file_record
+        model = file_record(child(source['model']), size=source['model']['bytes'],
+                            cache_key=source['model']['sha256'])
+    if verify_sources and any(model[key] != source['model'][key] for key in ('sha256', 'bytes')):
         raise ValueError('incremental packed model changed')
     pins[model['path']] = model['identity']
     native = dict(schema_version=1, variant=VARIANT, model_sha256=model['sha256'],
                   inputs=source['inputs'], outputs=source['outputs'], **geometry)
     native_path = Path(output) / 'incremental-draft-abi.json'
     save_json(native_path, native)
-    record = _hash_source(native_path)
+    record = _hash_source(native_path) if verify_sources else file_record(native_path)
     # Recheck metadata identities after reading the complete model payload.
     from .original_embedding_lookup import _current
-    if any(_current(path)[1] != identity for path, identity in pins.items()):
+    if verify_sources and any(_current(path)[1] != identity for path, identity in pins.items()):
         raise ValueError('incremental source changed during binding')
     return (dict(model_source=model, abi=record, source_bundle=str(root), variant=VARIANT,
                  inputs=source['inputs'], outputs=source['outputs'], ddk_id=ddk_id,

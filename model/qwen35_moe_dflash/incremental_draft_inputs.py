@@ -19,6 +19,7 @@ from .ge_recipe_read import read_recipe
 from .ge_residual import EXPORT_SUFFIX
 from .hashing import sha256_file
 from .target_compile_failure import _safe
+from .run_layout import relocated_path
 
 
 def _five(identity):
@@ -54,10 +55,11 @@ def bind_incremental_export(folder):
         expected = [{'name': r.name, 'shape': list(r.shape), 'dtype': r.dtype} for r in getattr(graph, kind)]
         if manifest.get(kind) != expected:
             raise ValueError('incremental ' + kind + ' differ from the selected graph')
-    prepared_root, _ = _safe(manifest['source_prepared_root'], directory=True)
-    if manifest.get('file_constant_root') != str(prepared_root):
+    locate = lambda path: relocated_path(path, root)
+    prepared_root, _ = _safe(locate(manifest['source_prepared_root']), directory=True)
+    if locate(manifest['file_constant_root']) != prepared_root:
         raise ValueError('FileConstant root differs from original preparation')
-    prepared, prepared_id = _metadata(manifest['source_prepared']['path'], bindings)
+    prepared, prepared_id = _metadata(locate(manifest['source_prepared']['path']), bindings)
     if (Path(prepared_id['path']).parent != prepared_root
             or any(prepared_id[k] != manifest['source_prepared'].get(k) for k in ('bytes', 'sha256', 'full_identity'))
             or prepared.get('status') != 'PREPARED' or prepared.get('draft_config') != manifest['draft_config']
@@ -70,12 +72,12 @@ def bind_incremental_export(folder):
     if not isinstance(guards, list) or not guards:
         raise ValueError('incremental export lacks original metadata bindings')
     for row in guards:
-        _, actual = _metadata(row['path'], bindings)
+        _, actual = _metadata(locate(row['path']), bindings)
         if any(actual[k] != row.get(k) for k in ('bytes', 'sha256', 'full_identity')):
             raise ValueError('original export metadata changed: ' + row['path'])
     rows = {}
     retained = manifest.get('source_weight_identities', [])
-    retained_ids = {row['path']: row['identity'] for row in retained}
+    retained_ids = {str(locate(row['path'])): row['identity'] for row in retained}
     if len(retained_ids) != len(graph.weights) or len(retained) != len(retained_ids):
         raise ValueError('incomplete or duplicate original weight identities')
     for key, tensor in graph.weights.items():

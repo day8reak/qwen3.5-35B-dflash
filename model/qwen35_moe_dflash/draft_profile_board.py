@@ -79,6 +79,8 @@ def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
     source = Path(prepared).absolute()
     if source == out or source in out.parents or out in source.parents:
         raise ValueError('profile output must be separate from retained prepared inputs')
+    from .run_layout import reuse_test_output
+    reuse_test_output(out)
     out.mkdir(parents=True, exist_ok=False)
     result = {'artifact_kind': KIND, 'status': 'FAILED', 'stage': 'bind-inputs', 'output': str(out),
         'model_compilation': 'NOT_RUN', 'device_execution': 'NOT_RUN', 'numerical_validation': 'NOT_EVALUATED'}
@@ -216,6 +218,8 @@ def recover_profile(execution, output):
     out = output_path(output)
     if root == out or root in out.parents or out in root.parents:
         raise ValueError('recovery needs a separate new output directory')
+    from .run_layout import reuse_test_output
+    reuse_test_output(out)
     out.mkdir(parents=True, exist_ok=False)
     result = {'artifact_kind': KIND, 'status': 'FAILED', 'stage': 'recover', 'output': str(out),
         'model_compilation': 'NOT_RUN', 'model_relaunch': 'NONE', 'numerical_validation': 'NOT_EVALUATED',

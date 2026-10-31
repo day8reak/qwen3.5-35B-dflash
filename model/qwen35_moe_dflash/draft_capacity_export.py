@@ -238,7 +238,7 @@ def _bind_source_job(job, ge_root=None):
     bindings = []
     source, source_id = _metadata(job / 'result.json', bindings)
     component = source.get('components', {}).get('prepared', {})
-    if source.get('artifact_kind') != 'qwen35-full-draft-job' or component.get('directory') != str(job / 'prepared'):
+    if source.get('artifact_kind') != 'qwen35-full-draft-job' or not component.get('manifest'):
         raise ValueError('capacity export requires the original full-draft prepared component')
     prepared_root = job / 'prepared'
     prepared, prepared_id = _bound(prepared_root, component.get('manifest'), bindings)
