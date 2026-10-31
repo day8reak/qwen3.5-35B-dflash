@@ -70,7 +70,10 @@ def _identity_guard(path, row):
 
 def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
                   timeout_seconds=600, lock_wait_seconds=1800, accuracy=None,
+                  allow_numerical_failure=False,
                   model_tool="/data/local/tmp/tools_sysdbg/model_run_tool_internal"):
+    if allow_numerical_failure and not accuracy:
+        raise ValueError('--allow-numerical-failure requires --accuracy')
     if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 7200:
         raise ValueError('timeout must be 1..7200 seconds')
     if type(lock_wait_seconds) is not int or not 0 <= lock_wait_seconds <= 7200:
@@ -91,8 +94,10 @@ def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
     acquiring = False
     token = uuid.uuid4().hex
     try:
-        plan = (bind_accuracy_profile(accuracy, model_tool) if accuracy else
+        plan = (bind_accuracy_profile(accuracy, model_tool,
+                    allow_numerical_failure=allow_numerical_failure) if accuracy else
                 bind_profile(prepared, inspection, refresh_output=out / 'input-revalidation'))
+        result.update({k:plan[k] for k in ('source_numerical_validation','profiling_scope') if k in plan})
         if plan.get('input_revalidation'):
             result['input_revalidation'] = {key: plan['input_revalidation'][key]
                 for key in ('status', 'identity_change_count', 'prepared')}
@@ -242,6 +247,7 @@ def recover_profile(execution, output):
     try:
         raw, identity = _read_small(root / 'request.json', 4 << 20)
         plan = json.loads(raw)
+        result.update({k:plan[k] for k in ('source_numerical_validation','profiling_scope') if k in plan})
         token = plan['token']
         if (plan.get('artifact_kind') != KIND or re.fullmatch('[0-9a-f]{32}', token) is None
                 or plan['board_attempt'] != PREFIX + token

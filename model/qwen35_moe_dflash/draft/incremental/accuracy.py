@@ -194,7 +194,7 @@ def compare(fixture, native):
     report = read_json(native / 'result.json')
     if report.get('status') != 'EXECUTED' or report.get('evidence_kind') != 'device-hiai':
         raise ValueError('a completed real HIAI run is required for device accuracy')
-    rows, timings = [], report['calls']
+    rows, timings, repeats = [], report['calls'], []
     expected_keys = {(mode, s['index']) for mode in ('isolated', 'feedback') for s in meta['cases']}
     if len(timings) != len(expected_keys) or {(r['mode'], r['index']) for r in timings} != expected_keys:
         raise ValueError('native calls do not cover both complete validation sequences')
@@ -229,8 +229,19 @@ def compare(fixture, native):
                 outside = np.ones(got.shape[2], dtype=bool); outside[start:start+valid] = False
                 unchanged = bool(np.array_equal(got.view('<u2')[:,:,outside], old.view('<u2')[:,:,outside]))
                 row = dict(name=spec['name'], **metrics(got,golden,atol,rtol), preserved=unchanged)
+                # Whole-bank errors can be diluted by zeros or golden history.
+                # Additional regions describe the error; the frozen gate is unchanged.
+                row['regions'] = dict(
+                    appended=(metrics(got[:,:,start:start+valid],golden[:,:,start:start+valid],atol,rtol)
+                              if valid else None),
+                    committed=(metrics(got[:,:,:start+valid],golden[:,:,:start+valid],atol,rtol)
+                               if start+valid else None))
                 row['passed'] &= unchanged
                 result['tensors'].append(row); result['passed'] &= row['passed']
+            if mode == 'feedback' and previous is not None and step['label'] in ('identical-repeat','full-cache-repeat'):
+                repeats.append(dict(index=i, label=step['label'],
+                    scope='SAME_COMMITTED_CONTEXT_AND_PROPOSALS_ZERO_APPEND_FEEDBACK_ONLY',
+                    outputs_bitwise_equal=all(a.tobytes()==b.tobytes() for a,b in zip(values,previous))))
             rows.append(result)
             previous = values
     passed = all(r['passed'] for r in rows)
@@ -239,6 +250,7 @@ def compare(fixture, native):
         scope=meta['reference_scope'], reference_contract=CONTRACT, cases=rows,
         first_failure=next((dict(mode=r['mode'],index=r['index'],label=r['label']) for r in rows if not r['passed']),None),
         native_calls=timings, native_api_latency=latency_summary(timings,meta['cases']),
+        feedback_repeats=repeats,
         performance='DIAGNOSTIC_CALL_TIMINGS_NOT_PRODUCTION_BENCHMARK')
 
 
@@ -269,15 +281,64 @@ def summarize_result(result):
     summary['case_counts'] = {}
     for mode in ('isolated','feedback'):
         selected = [r for r in rows if r['mode']==mode]
+        count = sum(len(r.get('expected_top1', [])) for r in selected)
+        mismatches = sum(r.get('top1_mismatches',0) for r in selected)
         summary['case_counts'][mode] = dict(
             total=len(selected), passed=sum(r['passed'] is True for r in selected),
+            top1_tokens=count, top1_matches=count-mismatches,
             top1_failed=sum(r.get('top1_mismatches',0)>0 for r in selected),
             hidden_failed=sum(any(t['name']=='draft_hidden' and not t['passed'] for t in r['tensors']) for r in selected),
             kv_failed=sum(any(t['name'].startswith('present_') and not t['passed'] for t in r['tensors']) for r in selected),
             preservation_failed=sum(any(t.get('preserved') is False for t in r['tensors']) for r in selected))
+    summary['top1_differences'] = [dict(mode=r['mode'],index=r['index'],position=p,
+        actual=a,expected=e) for r in rows for p,(a,e) in
+        enumerate(zip(r.get('actual_top1',[]),r.get('expected_top1',[]))) if a!=e]
+    summary['relative_l2_ranges'] = {}
+    for mode in ('isolated','feedback'):
+        tensors = [t for r in rows if r['mode']==mode for t in r['tensors']]
+        groups = {'hidden':[t for t in tensors if t['name']=='draft_hidden'],
+                  'kv_whole_bank':[t for t in tensors if t['name'].startswith('present_')]}
+        for region in ('appended','committed'):
+            groups['kv_'+region] = [t['regions'][region] for t in tensors
+                if t.get('regions',{}).get(region) is not None]
+        summary['relative_l2_ranges'][mode] = {}
+        for name, group in groups.items():
+            values = [t['relative_l2_error'] for t in group if t.get('relative_l2_error') is not None]
+            summary['relative_l2_ranges'][mode][name] = dict(
+                compared_tensors=len(group), nonfinite_tensors=sum(t.get('nonfinite',False) for t in group),
+                finite_zero_reference_norm=sum(not t.get('nonfinite') and t.get('relative_l2_error') is None for t in group),
+                minimum=min(values) if values else None, maximum=max(values) if values else None)
+    summary['relative_l2_definition'] = 'norm(actual-reference)/norm(reference); 0.01 means 1%; no L2 acceptance gate'
+    if 'feedback_repeats' in result:
+        summary['feedback_repeats'] = result['feedback_repeats']
     first = next((r for r in rows if not r['passed']), None)
     if first:
         summary['first_failure'] = {k:first[k] for k in
             ('mode','index','label','top1_mismatches','actual_top1','expected_top1') if k in first}
         summary['first_failure']['bad_tensors'] = [t for t in first['tensors'] if not t['passed']]
+    return summary
+
+
+def analyze_result(path):
+    """Recompute diagnostics from retained host tensors; never rewrite acceptance."""
+    path = Path(path)
+    path = path/'result.json' if path.is_dir() else path
+    result = read_json(path, 4 << 20)
+    if (result.get('artifact_kind') != KIND or result.get('stage') != 'complete'
+            or result.get('status') not in ('PASSED','NUMERICAL_FAILED')
+            or result.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED'):
+        raise ValueError('offline analysis requires a completed, retrieved accuracy result')
+    fixture = Path(result['fixture'])
+    if not fixture.is_absolute():
+        fixture = path.parent/fixture
+    if sha256_file(fixture/'manifest.json') != result['fixture_sha256']:
+        raise ValueError('accuracy fixture changed after comparison')
+    updated = compare(fixture, path.parent/'native')
+    # This command cannot silently reinterpret a changed reference or result.
+    if (updated['status'] != result['status'] or updated['comparison'] != result['comparison']
+            or [(r['mode'],r['index'],r['passed'],r.get('top1_mismatches')) for r in updated['cases']]
+            != [(r['mode'],r['index'],r['passed'],r.get('top1_mismatches')) for r in result['cases']]):
+        raise ValueError('retained tensors no longer reproduce the original comparison')
+    summary = summarize_result(dict(result, **updated))
+    summary['analysis_scope'] = 'HOST_RETAINED_TENSORS_NO_BOARD_RUN_NO_GATE_CHANGE'
     return summary

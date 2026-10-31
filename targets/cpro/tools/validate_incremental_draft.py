@@ -14,18 +14,25 @@ def main():
     parser.add_argument('--compiled')
     parser.add_argument('--source',help='prepared FP16 weights directory containing prepared.json')
     parser.add_argument('--air-export')
-    parser.add_argument('--recover')
-    parser.add_argument('--inspect',help='print existing comparison details locally; no board access')
+    mode=parser.add_mutually_exclusive_group()
+    mode.add_argument('--recover')
+    mode.add_argument('--inspect',help='print existing comparison details locally; no board access')
+    mode.add_argument('--analyze',help='recompute new-KV and repeat diagnostics from retained host tensors')
     parser.add_argument('--output')
     parser.add_argument('--apply',action='store_true')
-    parser.add_argument('--atol',type=float,default=0.01)
-    parser.add_argument('--rtol',type=float,default=0.01)
+    parser.add_argument('--atol',type=float)
+    parser.add_argument('--rtol',type=float)
     parser.add_argument('--timeout-seconds',type=int,default=1800)
     args=parser.parse_args()
     from qwen35_moe_dflash.draft.incremental.accuracy import summarize_result
-    if args.inspect:
-        if args.apply or any((args.config,args.compiled,args.source,args.air_export,args.recover,args.output)):
-            parser.error('--inspect only reads the existing result directory or result.json')
+    if args.inspect or args.analyze:
+        if (args.apply or any((args.config,args.compiled,args.source,args.air_export,args.output))
+                or args.atol is not None or args.rtol is not None):
+            parser.error('--inspect/--analyze only read existing results; comparison gates cannot be changed')
+        if args.analyze:
+            from qwen35_moe_dflash.draft.incremental.accuracy import analyze_result
+            print(json.dumps(analyze_result(args.analyze),ensure_ascii=False))
+            return 0
         from qwen35_moe_dflash.execution.runtime_config import read_json
         path=Path(args.inspect)
         result=read_json(path/'result.json' if path.is_dir() else path, 4 << 20)
@@ -44,7 +51,8 @@ def main():
         if not all((args.config,args.compiled,args.source,args.air_export)):
             parser.error('preparation requires --config, --compiled, --source and --air-export')
         result=start(args.config,args.compiled,args.source,args.air_export,args.output,
-                     apply=args.apply,atol=args.atol,rtol=args.rtol,timeout_seconds=args.timeout_seconds)
+                     apply=args.apply,atol=0.01 if args.atol is None else args.atol,
+                     rtol=0.01 if args.rtol is None else args.rtol,timeout_seconds=args.timeout_seconds)
     print(json.dumps(summarize_result(result),ensure_ascii=False))
     return 1 if result['status'] in ('FAILED','NUMERICAL_FAILED') else 0
 

@@ -91,17 +91,21 @@ def check_model_help(text):
         raise ValueError('selected model tool help does not establish the V1 profiling CLI')
 
 
-def bind_accuracy_profile(accuracy, model_tool):
+def bind_accuracy_profile(accuracy, model_tool, *, allow_numerical_failure=False):
     from qwen35_moe_dflash.common.hashing import sha256_file
     from qwen35_moe_dflash.execution.runtime_config import read_json
     from qwen35_moe_dflash.draft.incremental.runtime import validate_abi
     from qwen35_moe_dflash.draft.incremental.accuracy import KIND as ACCURACY_KIND
     root = Path(accuracy).resolve()
     result = read_json(root/'result.json', 4 << 20)
-    if (result.get('artifact_kind') != ACCURACY_KIND or result.get('status') != 'PASSED'
-            or result.get('numerical_validation') != 'PASSED'
+    passed = (result.get('status'), result.get('numerical_validation')) == ('PASSED', 'PASSED')
+    diagnostic = allow_numerical_failure and (
+        result.get('status'), result.get('numerical_validation')) == ('NUMERICAL_FAILED', 'FAILED')
+    if (result.get('artifact_kind') != ACCURACY_KIND or not (passed or diagnostic)
+            or result.get('stage') != 'complete'
             or result.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED'):
-        raise ValueError('profiling requires a passed standalone incremental accuracy result')
+        raise ValueError('profiling requires completed accuracy; use --allow-numerical-failure '
+                         'only for a retrieved NUMERICAL_FAILED diagnostic')
     fixture = Path(result['fixture'])
     if sha256_file(fixture/'manifest.json') != result['fixture_sha256']:
         raise ValueError('accuracy fixture changed after numerical comparison')
@@ -126,8 +130,11 @@ def bind_accuracy_profile(accuracy, model_tool):
         tool={'path':_tool_path(model_tool),'sha256':None}, model=meta['model'],
         inputs=inputs,outputs=meta['outputs'],ddk_id=meta['ddk_id'],
         firmware_id=result['runtime']['firmware_id'],source_runtime_version=result['runtime']['runtime_version'],
-        input_scope='PASSED_INCREMENTAL_ACCURACY_FIXTURE_WITH_REFERENCE_KV',
+        input_scope=('PASSED_INCREMENTAL_ACCURACY_FIXTURE_WITH_REFERENCE_KV' if passed else
+                     'NUMERICAL_FAILED_INCREMENTAL_ACCURACY_FIXTURE_WITH_REFERENCE_KV'),
         input_provenance={'accuracy':str(root),'case':step},
-        model_compilation='NOT_RUN',numerical_validation='PASSED_STANDALONE_REFERENCE_CASES',
+        model_compilation='NOT_RUN',numerical_validation='NOT_EVALUATED',
+        source_numerical_validation=result['numerical_validation'],
+        profiling_scope=('PASSED_REFERENCE_BASELINE' if passed else 'DIAGNOSTIC_NUMERICAL_FAILURE_ALLOWED'),
         model_manager_interface='V1',times=1,warmup=0,
         timing_scope='ONE_FRESH_VENDOR_TOOL_PROFILED_INFERENCE_NOT_RESIDENT_LATENCY_DISTRIBUTION')

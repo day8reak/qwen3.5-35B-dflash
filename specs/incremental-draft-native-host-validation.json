@@ -23,7 +23,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "Inspect retained report; distinguish token, hidden and KV failures before graph changes.",
+  "next": "Profile the current incremental OMC with --allow-numerical-failure; retain original accuracy results. Offline region analysis is optional.",
   "latest_user_board_observation": {
     "source": "USER_PASTED_RECOVERY_JSON",
     "independently_retrieved": false,
@@ -83,7 +83,7 @@
     "local_test_sources": "NOT_PUBLISHED"
   },
   "latest_standalone_accuracy_observation": {
-    "source": "USER_PASTED_RECOVERY_SUMMARY_NOT_RAW_TENSORS",
+    "source": "USER_PASTED_RECOVERY_AND_38_CASE_COMPARISONS_NOT_RAW_TENSORS",
     "status": "NUMERICAL_FAILED",
     "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
     "numerical_validation": "FAILED",
@@ -95,7 +95,7 @@
       "index": 0,
       "label": "empty-context"
     },
-    "per_tensor_and_top1_details": "PENDING_USER_RESULT",
+    "per_tensor_and_top1_details": "USER_REPORTED",
     "native_api_mean_ms": {
       "isolated_catchup": 548.3963636363636,
       "isolated_proposal": 548.296375,
@@ -103,6 +103,50 @@
       "feedback_proposal": 543.051375
     },
     "precision_gate": "UNCHANGED_ATOL_0.01_RTOL_0.01_EXACT_TOP1_BITWISE_CACHE_PRESERVATION",
-    "next": "Inspect retained report; distinguish token, hidden and KV failures before graph changes."
+    "next": "Profile the current incremental OMC with --allow-numerical-failure; retain original accuracy results. Offline region analysis is optional.",
+    "top1_agreement": {
+      "scope": "ACTIVE_PROPOSALS_FROM_C16_CAP192_K15_SCHEDULE_NOT_DFLASH_ACCEPTANCE",
+      "isolated": {
+        "matched": 84,
+        "total": 86,
+        "mismatch_cases": [
+          6,
+          17
+        ]
+      },
+      "feedback": {
+        "matched": 86,
+        "total": 86
+      }
+    },
+    "hidden_relative_l2_range": [
+      0.01090234496968205,
+      0.015924065678151616
+    ],
+    "feedback_kv_relative_l2_approx_range": [
+      0.00436,
+      0.00539
+    ],
+    "cache_preservation": "ALL_REPORTED_BANKS_PRESERVED_TRUE",
+    "repeat_observation": "FEEDBACK_REPEATED_METRICS_EQUAL; RAW_BITWISE_REPEAT_CHECK_NOT_YET_RETRIEVED",
+    "interpretation": "Stable feedback KV relative error; whole-bank isolated errors can be diluted by golden history. Primitive root cause not established.",
+    "engineering_decision": "USER_ACCEPTS_AROUND_ONE_PERCENT_ERROR_AS_INTERIM_BASELINE_FOR_PERFORMANCE_DIAGNOSIS; NO_RELEASE_OR_LANGUAGE_QUALITY_PASS"
+  },
+  "diagnostic_profile_host_validation": {
+    "status": "HOST_CHECKS_PASSED",
+    "checks": 18,
+    "scope": "SYNTHETIC_HOST_FIXTURES_AND_MOCKED_TRANSPORT; NO_DEVICE_EXECUTION",
+    "coverage": [
+      "active proposal denominator and mismatch positions",
+      "appended versus whole-bank KV error",
+      "zero-append feedback repeat bytes",
+      "read-only reanalysis and unchanged original gates",
+      "legacy reports without region metrics",
+      "explicit completed numerical-failure profiling option",
+      "pending/runtime-failed requests remain rejected",
+      "unchanged 17/14 input binding and corrupted input rejection",
+      "source numerical status survives launch and recovery"
+    ],
+    "local_test_sources": "NOT_PUBLISHED"
   }
 }
