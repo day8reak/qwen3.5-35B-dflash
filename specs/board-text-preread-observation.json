@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-board-text-preread-user-observation",
+  "recorded": "2026-10-31",
+  "source": "USER_PASTED_RECOVERY_SUMMARY_NOT_INDEPENDENTLY_RETRIEVED",
+  "assistant_device_access": "NOT_PERFORMED_USER_REQUEST",
+  "status": "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED",
+  "execution": "dflash-board-text-preread8-run",
+  "recovery": "dflash-board-text-preread8-recovery",
+  "board_attempt": "/data/local/tmp/qwen35_board_serial_4427ad691b114c9eb6d21660db6f3e5b",
+  "process_id": 30213,
+  "session_id": "644960aa98fb297df7a4b2ed4288d2d374b64616c5aa773ee7af59afe8592b9b",
+  "generated_token_ids": [
+    28,
+    18,
+    36,
+    6,
+    0,
+    2,
+    16,
+    18
+  ],
+  "generated_text": "=3E'!#13",
+  "counts": {
+    "prefill_native_calls": 1,
+    "target_native_calls": 8,
+    "draft_native_calls": 7,
+    "accepted": 0,
+    "considered": 7,
+    "corrections": 7,
+    "bonuses": 0
+  },
+  "model_loads": {
+    "target": 1,
+    "draft": 1
+  },
+  "execution_mode": "resident-mixed",
+  "dump": false,
+  "draft_preread": "sequential-1m-v1",
+  "model_compilation": "NOT_RUN",
+  "numerical_validation": "NOT_EVALUATED",
+  "closed": true,
+  "poisoned": false,
+  "cleanup_error": "",
+  "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+  "timing_ms": {
+    "total_wall": 31513,
+    "prefill_load": 9608,
+    "prefill_load_run_close": 10606,
+    "prefill_run": 539,
+    "prefill_close": 456,
+    "target_load": 9634,
+    "draft_load": 3529,
+    "resident_close": 382,
+    "startup_hash": 60,
+    "decode_total": 1568,
+    "draft_total": 5084
+  },
+  "native_api_mean_ms": {
+    "prefill": 468.492,
+    "decode": 111.54975,
+    "draft": 726.8385714285714
+  },
+  "phase_mean_ms": {
+    "decode": 196,
+    "draft": 726.2857142857143
+  },
+  "text_io": {
+    "execution": "BOARD_LOCAL_ENCODE_AND_DECODE",
+    "host_admission_ids_matched": true,
+    "prompt_format": "chat",
+    "prompt_token_count": 18,
+    "prompt_sha256": "c5620cfbf2dd4608621b50314dcb845d8d2f317d8150e81708d110dc03b89530",
+    "tokenizer_sha256": "3f50fe76d43ff64ed47c9cd1cc27d194bbd9fcad06bf84065df8a4812c348bc1",
+    "unmapped_generated_token_ids": []
+  },
+  "text_latency_us": {
+    "load_and_encode": 90640,
+    "decode": 48
+  },
+  "load_phases_us": {
+    "MODEL_PREREAD": 1307278,
+    "MODEL_LOAD": 2211020
+  },
+  "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
+  "acceptance_rate": 0,
+  "scope": "Execution and pasted timings only; language quality, numerical correctness, paired speedup and physical disconnection not validated"
+}

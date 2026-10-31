@@ -13,6 +13,8 @@ CPUCL ownership and runtime arithmetic must still pass the normal gates.
 """
 from __future__ import annotations
 
+import re
+
 from .ge_ir import Value
 from .ge_type_contracts import GE_DTYPE_IDS
 
@@ -29,8 +31,33 @@ def residual_selection(graph, policy):
         return {}
     if graph.name != "draft":
         raise ValueError("CPU residual lowering is restricted to the draft")
-    from .draft_ge_trace import _trace_points
-    points, layers = _trace_points(graph)
+    # Resolve just the residual chain. Cached drafts have separate context
+    # and block RoPE/K norm paths, unlike the full-prefix diagnostic tracer.
+    def one(kind, *, weight=None, inputs=None, source=None):
+        found = [node.output for node in graph.nodes if node.kind == kind
+                 and (weight is None or any(v.name == weight for v in node.inputs))
+                 and (inputs is None or node.inputs == tuple(inputs))
+                 and (source is None or source in node.inputs)]
+        if len(found) != 1:
+            raise ValueError('residual chain requires one unambiguous ' + kind + ' producer')
+        return found[0]
+
+    layer_ids = sorted({int(match.group(1)) for key in graph.weights
+                        if (match := re.fullmatch(r'draft\.layers\.(\d+)\.input_layernorm\.weight', key))})
+    if not layer_ids or layer_ids != list(range(len(layer_ids))):
+        raise ValueError('residual chain requires contiguous complete draft layers')
+    layers = len(layer_ids)
+    embedding = one('gather', weight='target.embed_tokens.weight')
+    hidden = one('scalar_mul', source=embedding)
+    points = {}
+    for layer in layer_ids:
+        prefix = f'draft.layers.{layer}.'
+        attention = one('matmul', weight=prefix + 'self_attn.o_proj.weight')
+        hidden = one('add', inputs=(hidden, attention))
+        points[f'layer_{layer}_post_attention'] = hidden
+        mlp = one('matmul', weight=prefix + 'mlp.down_proj.weight')
+        hidden = one('add', inputs=(hidden, mlp))
+        points[f'layer_{layer}_output'] = hidden
     by_name = {node.output.name: node for node in graph.nodes}
     selected = {}
     for layer in range(layers):

@@ -85,8 +85,9 @@ def run_cached(case, graph, state, new_features, start, anchor, count):
     inputs.update({value.name: raw for value, raw in zip(graph.inputs[5:], state)})
     before = [raw.copy() for raw in state]
     output = evaluate(graph, inputs, case['weights'])
-    assert len(output) == 14 and output[0].shape == (1, 15)
-    assert output[1].shape == (1, 15, case['config'].hidden_size)
+    width = graph.outputs[0].shape[1]
+    assert len(output) == 14 and output[0].shape == (1, width)
+    assert output[1].shape == (1, width, case['config'].hidden_size)
     for old, raw in zip(before, state): np.testing.assert_array_equal(old.view(np.uint16), raw.view(np.uint16))
     return output[0], output[1], output[2:]
 
@@ -225,3 +226,28 @@ def test_last_legal_context_write_and_unused_tail_sentinels_are_preserved(case):
     graph, state = cached_graph(case, rows=16, capacity=24), zero_state(case, 24, sentinel=True)
     _, _, state = compare_round(case, graph, state, case['features'], 0, 16, 3, 1)
     compare_round(case, graph, state, case['features'], 16, 8, 3, 1)
+
+
+@pytest.mark.parametrize('width', [15, 7, 3, 1])
+def test_physical_candidate_gears_and_chunked_history_over64_match_original_reference(case, width):
+    from qwen35_moe_dflash.ge_incremental_draft import build_incremental_draft
+    from qwen35_moe_dflash.incremental_draft_schedule import plan_incremental_round
+    config = case['config']
+    graph = build_incremental_draft(config, 16, 96, max_draft_tokens=width)
+    assert graph._values['block_positions'].shape == (1, width + 1)
+    assert graph._values['draft_logits'].shape == (1, width, config.vocab_size)
+    state, cursor = zero_state(case, 96, sentinel=True), 0
+    # First prompt catch-up, then rejection and full-acceptance continuations.
+    for committed, anchor in [(66, 3), (67, 11), (67 + width + 1, 17)]:
+        calls = plan_incremental_round(config, cached_rows=cursor, committed_tokens=committed,
+            anchor=anchor, context_rows=16, cache_capacity=96, max_draft_tokens=width)
+        for call in calls[:-1]:
+            _, _, state = run_cached(case, graph, state,
+                case['features'][:, call.start_position:call.context_end],
+                call.start_position, anchor, 0)
+            cursor = call.context_end
+        last = calls[-1]
+        _, _, state = compare_round(case, graph, state, case['features'], cursor,
+            last.valid_rows, anchor, width)
+        cursor = last.context_end
+    compare_round(case, graph, state, case['features'], cursor, 0, 19, width)

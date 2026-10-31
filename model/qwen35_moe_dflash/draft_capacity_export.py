@@ -69,8 +69,9 @@ def _stable(bindings, sources):
 
 
 def _export_source(prepared, plan, output, ge_root, *, sequence_length, residual_policy,
-                   cxx='c++', cxx11_abi=0, timeout_seconds=3600, progress=None, _invocation_token=None):
-    """Actual exporter core; tiny six-layer fixtures are explicitly labelled."""
+                   cxx='c++', cxx11_abi=0, timeout_seconds=3600, progress=None, _invocation_token=None,
+                   _incremental_options=None):
+    """Shared readonly-weight exporter; cached graphs retain all twelve KV outputs."""
     from .ge_cpp import emit_cpp
     from .draft_direct_trace import instrument_draft_direct_outputs
     from .ge_residual import EXPORT_SUFFIX
@@ -79,7 +80,8 @@ def _export_source(prepared, plan, output, ge_root, *, sequence_length, residual
         raise ValueError('capacity output must be outside the original prepared root')
     if root.exists():
         raise FileExistsError('capacity output already exists: ' + str(root))
-    if type(sequence_length) is not int or not plan['sequence_length'] < sequence_length <= 16384:
+    incremental = _incremental_options is not None
+    if not incremental and (type(sequence_length) is not int or not plan['sequence_length'] < sequence_length <= 16384):
         raise ValueError('new capacity must exceed the original capacity and fit the native 16384-token bound')
     if type(cxx11_abi) is not int or cxx11_abi not in (0, 1) or type(timeout_seconds) is not int or timeout_seconds <= 0:
         raise ValueError('invalid exporter ABI or timeout')
@@ -89,10 +91,17 @@ def _export_source(prepared, plan, output, ge_root, *, sequence_length, residual
             or plan.get('external_weights') is not True or plan.get('include_hidden') is not True
             or plan.get('draft_config') != configurations(tiny=plan.get('tiny'))[1]):
         raise ValueError('capacity export requires the unchanged locked draft preparation')
-    _, config, graph = _graph(sequence_length, tiny=plan['tiny'], draft_config=plan['draft_config'])
+    if incremental:
+        from .config import Qwen35DFlashConfig
+        from .ge_incremental_draft import build_incremental_draft, incremental_draft_abi
+        config = Qwen35DFlashConfig.from_dict(plan['draft_config'])
+        graph = build_incremental_draft(config, context_rows=sequence_length, **_incremental_options)
+        spec = incremental_draft_abi(config, context_rows=sequence_length, **_incremental_options)
+    else:
+        _, config, graph = _graph(sequence_length, tiny=plan['tiny'], draft_config=plan['draft_config'])
+        graph, spec = instrument_draft_direct_outputs(graph, names=('draft_top1', 'draft_hidden'))
     if config.num_hidden_layers != 6:
         raise ValueError('capacity export requires all six draft layers')
-    graph, spec = instrument_draft_direct_outputs(graph, names=('draft_top1', 'draft_hidden'))
     if set(graph.weights) != set(plan.get('weights', {})) or plan['source'].get('fp16_payload_sha256') != weight_identity(plan['weights']):
         raise ValueError('prepared weights do not bind the complete capacity graph')
     sources, paths = {}, {}
@@ -115,9 +124,10 @@ def _export_source(prepared, plan, output, ge_root, *, sequence_length, residual
     if compiler is None:
         raise FileNotFoundError('C++ compiler is unavailable: ' + cxx)
     root.mkdir(parents=True, exist_ok=False)
-    save_json(root / 'export-request.json', {'artifact_kind': 'qwen35-draft-capacity-export-request',
+    save_json(root / 'export-request.json', {'artifact_kind': 'qwen35-draft-incremental-export-request' if incremental else 'qwen35-draft-capacity-export-request',
         'invocation_token': _invocation_token,
         'sequence_length': sequence_length, 'source_sequence_length': plan['sequence_length'],
+        'incremental_options': _incremental_options,
         'source_prepared_root': str(prepared), 'weight_files_copied': 0, 'weight_links_created': 0,
         'model_compilation': 'NOT_RUN', 'device_execution': 'NOT_RUN'})
     if shutil.disk_usage(root).free < _SMALL_OUTPUT_BUDGET + _RESERVE:
@@ -142,13 +152,13 @@ def _export_source(prepared, plan, output, ge_root, *, sequence_length, residual
     build += ['-o', str(binary)]
     env = dict(os.environ, LD_LIBRARY_PATH=os.pathsep.join(filter(None, (str(lib), os.environ.get('LD_LIBRARY_PATH', '')))))
     save_json(folder / 'build-command.json', {'argv': build})
-    if progress: progress('Building the new six-layer capacity GE serializer; no OMG compilation')
+    if progress: progress('Building the new six-layer GE serializer; no OMG compilation')
     _logged(build, folder=folder, env=env, log=folder / 'build.log', timeout=timeout_seconds)
     _safe(binary)
     export = [str(binary), str(air)]
     save_json(folder / 'export-command.json', {'argv': export, 'cwd': str(prepared),
         'file_constant_root': str(prepared), 'scope': 'Original weight files are read only; output AIR is a new absolute path'})
-    if progress: progress('Serializing the real capacity AIR from the unchanged prepared weight root')
+    if progress: progress('Serializing the new AIR from the unchanged prepared weight root')
     _logged(export, folder=Path(prepared), env=env, log=folder / 'export.log', timeout=timeout_seconds)
     _, air_stat = _safe(air)
     if not 0 < air_stat[2] <= 64 << 20:
@@ -162,9 +172,10 @@ def _export_source(prepared, plan, output, ge_root, *, sequence_length, residual
     observed = sum(row['bytes'] for row in generated)
     if observed > _SMALL_OUTPUT_BUDGET:
         raise ValueError('capacity source/AIR/exporter exceeded its 256 MiB small-output budget')
-    return {'status': 'HOST_FIXTURE_CAPACITY_AIR_EXPORTED' if plan['tiny'] else 'DRAFT_CAPACITY_AIR_EXPORTED',
+    status = ('HOST_FIXTURE_' if plan['tiny'] else 'DRAFT_') + ('INCREMENTAL' if incremental else 'CAPACITY') + '_AIR_EXPORTED'
+    result = {'status': status,
         'sequence_length': sequence_length, 'original_sequence_length': plan['sequence_length'],
-        'draft_layers': 6, 'draft_width': config.block_size - 1, 'feature_width': config.feature_size,
+        'draft_layers': 6, 'draft_width': graph.outputs[0].shape[1], 'feature_width': config.feature_size,
         'inputs': [{'name': value.name, 'shape': list(value.shape), 'dtype': value.dtype} for value in graph.inputs],
         'outputs': [{'name': value.name, 'shape': list(value.shape), 'dtype': value.dtype} for value in graph.outputs],
         'direct_spec': spec, 'source_export_contract': CURRENT_DRAFT_EXPORT_CONTRACT + EXPORT_SUFFIX + '-direct-outputs-v1',
@@ -178,18 +189,19 @@ def _export_source(prepared, plan, output, ge_root, *, sequence_length, residual
         'compilation_ready': False, 'model_compilation': 'NOT_RUN', 'device_execution': 'NOT_RUN',
         'numerical_validation': 'NOT_RUN_NEW_CAPACITY', 'residual_policy': residual_policy,
         'next': 'Bind an explicit readonly compiler input view for these original-root FileConstants and budget a new OMG/packed OMC; this AIR is not an air-directory deployment bundle'}
+    if incremental:
+        result.pop('sequence_length')
+        result.pop('direct_spec')
+        result.update(context_rows=sequence_length, **_incremental_options,
+            incremental_abi=spec, export_contract=CURRENT_DRAFT_EXPORT_CONTRACT + EXPORT_SUFFIX + '-context-kv-v2',
+            numerical_validation='NOT_RUN_INCREMENTAL_DEVICE',
+            runtime_integration='PENDING_NEW_COMPILED_NAMED_ABI_NOT_OLD_S64_BUNDLE',
+            cache_bank_bytes=12 * math.prod(graph.inputs[5].shape) * 2)
+    return result
 
 
-def export_draft_capacity(job, output, *, sequence_length=128, prompt_length=64, max_new_tokens=32,
-                          ge_root=None, cxx='c++', timeout_seconds=3600, progress=None):
-    """Bind the successful residual-fix lane, then export only a new capacity AIR."""
-    if (any(type(value) is not int or value <= 0 for value in (sequence_length, prompt_length, max_new_tokens))
-            or sequence_length > 16384 or prompt_length + max_new_tokens > sequence_length):
-        raise ValueError('capacity must cover the complete prompt plus the generation budget')
-    job, _ = _safe(job, directory=True)
-    destination = output_path(output)
-    if destination == job or job in destination.parents:
-        raise ValueError('capacity output must be outside the retained full-draft job')
+def _bind_source_job(job, ge_root=None):
+    """Bind a complete original preparation, successful recipe and selected GE library."""
     bindings = []
     source, source_id = _metadata(job / 'result.json', bindings)
     component = source.get('components', {}).get('prepared', {})
@@ -216,6 +228,26 @@ def export_draft_capacity(job, output, *, sequence_length=128, prompt_length=64,
     library, library_id = _current(selected_library)
     if sha256_file(library) != original.get('libgraph_sha256') or _current(library)[1] != library_id:
         raise ValueError('selected GE library differs from the successful source exporter')
+    return dict(bindings=bindings, source_id=source_id, prepared_root=prepared_root,
+        prepared=prepared, prepared_id=prepared_id, original=original, original_id=original_id,
+        bundle_id=bundle_id, selected_ge=selected_ge, library=library, library_id=library_id)
+
+
+def export_draft_capacity(job, output, *, sequence_length=128, prompt_length=64, max_new_tokens=32,
+                          ge_root=None, cxx='c++', timeout_seconds=3600, progress=None):
+    """Bind the successful residual-fix lane, then export only a new capacity AIR."""
+    if (any(type(value) is not int or value <= 0 for value in (sequence_length, prompt_length, max_new_tokens))
+            or sequence_length > 16384 or prompt_length + max_new_tokens > sequence_length):
+        raise ValueError('capacity must cover the complete prompt plus the generation budget')
+    job, _ = _safe(job, directory=True)
+    destination = output_path(output)
+    if destination == job or job in destination.parents:
+        raise ValueError('capacity output must be outside the retained full-draft job')
+    bound = _bind_source_job(job, ge_root)
+    bindings, source_id = bound['bindings'], bound['source_id']
+    prepared_root, prepared, prepared_id = bound['prepared_root'], bound['prepared'], bound['prepared_id']
+    original, original_id, bundle_id = bound['original'], bound['original_id'], bound['bundle_id']
+    selected_ge, library, library_id = bound['selected_ge'], bound['library'], bound['library_id']
     invocation = uuid.uuid4().hex
     try:
         result = _export_source(prepared_root, prepared, output, selected_ge, sequence_length=sequence_length,

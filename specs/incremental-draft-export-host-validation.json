@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-incremental-draft-export-host-validation",
+  "status": "HOST_CHECKS_PASSED_DEVICE_PENDING",
+  "recorded": "2026-10-31",
+  "run": "20261031T022618Z-31547-293ce8",
+  "tests_passed": 149,
+  "test_report": {
+    "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T022618Z-31547-293ce8/out/final-tests.xml",
+    "sha256": "a362d5980a67e439bf9f73c9c289c87480faf775539a56743931293a61f7c0ee"
+  },
+  "checks": [
+    "17 inputs / 14 outputs; original71 weights and six layers/eight taps",
+    "static candidate widths15/7/3/1 including full35B GE construction",
+    "independent original PyTorch and complete-prefix semantic references across64 tokens",
+    "valid_rows0, rejection/full acceptance catch-up, absolute RoPE and exact unchanged KV regions",
+    "readonly old source weights/receipts, selected GE pins and failed output ownership",
+    "old capacity exporter and residual/direct-output regressions",
+    "CLI help, shell command syntax, Python syntax and sole active phase P4"
+  ],
+  "new_device_calls": 0,
+  "model_compilation": "NOT_RUN",
+  "actual_selected_ddk_export": "NOT_RUN_USER_EXECUTES_COMMAND",
+  "host_fixture_export_scope": "REAL_GRAPH_RECIPE_AND_WEIGHT_BINDING_WITH_MOCKED_EXPORTER_SUBPROCESS_NOT_REAL_AIR",
+  "numerical_scope": "SYNTHETIC_SIX_LAYER_HOST_SEMANTICS_ONLY_NOT_FULL_CHECKPOINT_DEVICE_PRECISION",
+  "native_kv_execution": "NOT_IMPLEMENTED_PENDING_COMPILED_TYPED_ABI",
+  "target_verify_development": "DEFERRED_UNTIL_TARGET_ACCURACY_READY_BY_USER",
+  "sources": {
+    "model/qwen35_moe_dflash/ge_incremental_draft.py": "836d51a797851bd9641bd3aeceec8f0102325bf37cfb6c32833e8505ed33e095",
+    "model/qwen35_moe_dflash/ge_residual.py": "fcaa230e60162f9d73e14987a7f702d09d3ca596b68ece7cb50579cd4fe73c62",
+    "model/qwen35_moe_dflash/draft_capacity_export.py": "459d734d96743f353e282282ccbae1fd363ba337d9584986228b6ae77392aa3c",
+    "model/qwen35_moe_dflash/incremental_draft_export.py": "60094f27944b0ffe476d843781d06897a0894e8aaf92453cf1df9a061722aedf",
+    "model/qwen35_moe_dflash/incremental_draft_schedule.py": "76c1ae99618a16c0796549a4b88e47437afb29b9af42338a05439fe0d4de02b7",
+    "targets/cpro/scripts/export_incremental_draft.py": "353150ca16469115201ccc9b22ea9a0a17360090970c39fe155d25914167e613",
+    "tests/test_incremental_draft_export.py": "4456f08f75eafe4c9087fab4102536cb2b98fc4d3f4b00138c041dbfb57732e8",
+    "tests/test_incremental_draft_schedule.py": "54b8f4f3545628553104696f5429598403574823190681a9d375de1f082f154f",
+    "tests/test_incremental_draft_equivalence.py": "fd5101c5529866130b951e8e4bc99771b23e870dacd215fb275ff54dcbd87ca0"
+  },
+  "reference_review": "specs/incremental-draft-reference-review.json"
+}

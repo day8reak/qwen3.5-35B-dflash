@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-incremental-draft-reference-review",
+  "repository": "https://github.com/day8reak/qwen3.5-4B-dflash",
+  "branch": "feature/gdr-chunk-verify",
+  "commit": "90186732d915e8b058b2a053d205991d805eae76",
+  "source_access": "READ_ONLY_PUBLIC_GIT_CHECKOUT_IN_ACTIVE_RUN_NO_REMOTE_DEVICE_ACCESS",
+  "files": [
+    {
+      "path": "framework/python/qwen35_dflash/ascend310p/incremental.py",
+      "sha256": "2500bb080c9319595868486c00fcd9b19fd5ac259b1536e8781e479c655af85c"
+    },
+    {
+      "path": "framework/python/qwen35_dflash/ascend310p/incremental_plan.py",
+      "sha256": "c34571ff8c0aa83a7058c1084e3f41075ecafc17b4f3864639a118dd8da980bf"
+    },
+    {
+      "path": "framework/python/qwen35_dflash/ascend310p/draft_gears.py",
+      "sha256": "f7000548ab8e08e4bef535458034fe9834531b843e88711774eb95ccf50ca41b"
+    },
+    {
+      "path": "framework/runtime/cpp/src/chunk.cpp",
+      "sha256": "f96d53f77d5c315c806be5a956b8421c483411f4ffc6d386dbcbd9a0b6553ce0"
+    },
+    {
+      "path": "framework/runtime/cpp/src/acl_chunk.cpp",
+      "sha256": "afba85a552bdb289b45838df63fc338886b0a5f07570d10b6d869884c5539232"
+    }
+  ],
+  "adopted_concepts": [
+    "separate context chunk rows and total KV capacity",
+    "append committed target features only; temporary anchor/noise KV never persisted",
+    "mask runtime proposal_count tail in every attention layer including final bidirectional layer",
+    "swap complete draft KV bank and advance cursor only after successful execution"
+  ],
+  "differences_retained": [
+    "35B uses six layers/eight taps/71 original weights and 12 FP16 KV buffers",
+    "35B source controls are explicit INT32; do not reuse Ascend310P INT64/INT16 or ACL ABI",
+    "current35B target already consumed anchor; exclude newest anchor feature from Draft context",
+    "4B chunk Verify consumes anchor plus proposals; its target commit arithmetic is not transplanted",
+    "35B Where cache writes preserve every row outside valid interval; 4B padded scratch-row updates are not copied",
+    "new35B physical proposal gears15/7/3/1 differ from fixed16 block plus runtime mask; no output-only truncation"
+  ],
+  "deferred": [
+    "packed K/V and gate/up projections require separate weight/layout validation",
+    "target verify/rollback development waits for corrected Target per user"
+  ],
+  "copying": "Design comparison only; no 4B implementation or model payload copied into this repository"
+}

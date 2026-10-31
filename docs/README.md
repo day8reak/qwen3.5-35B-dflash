@@ -1,6 +1,6 @@
 # Qwen3.5-35B-A3B · DFlash
 
-原40层量化Target与完整六层Draft，在端侧完成Prefill、草稿生成、验证和多轮输出。已跑通常驻闭环与预读；文字接口待实机验证，精度与加速效果仍在完善。
+原40层量化Target与完整六层Draft，已在端侧完成文字输入、Prefill、常驻草稿／验证循环和文字输出。当前优先Draft增量KV、15／7／3／1候选档位、独立精度与性能；Target精度就绪后再开发批量verify。
 
 - [模型结构](model-architecture.md)
 - [端到端执行流程](end-to-end-flow.md)

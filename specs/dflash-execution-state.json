@@ -5,9 +5,9 @@
   "plan_document": "docs/reference/dflash-delivery-plan.md",
   "current_commands": "docs/current-status.md",
   "overall_status": "in_progress",
-  "active_phase": "P5",
+  "active_phase": "P4",
   "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
-  "user_priority": "Combine board-local original tokenizer text input/output and measured draft preread in one autonomous resident request; prepare tokenizer fully offline on certificate-constrained DDK server; keep current commands separate from historical docs.",
+  "user_priority": "Prioritize Draft implementation, independent numerical correctness and standalone performance with longer contexts, KV cache and max-draft-tokens15/7/3/1. Target accuracy is being debugged separately; verify development and tuning wait for Target correctness.",
   "status_policy": {
     "allowed": [
       "pending",
@@ -15,7 +15,7 @@
       "blocked",
       "passed"
     ],
-    "advance": "User-directed P5 runtime implementation proceeds after P0 execution; P1/P2 remain required for numerical/performance acceptance",
+    "advance": "User-directed Draft-only implementation, independent fixed-feature precision and standalone performance proceed now. Target numerical work is external; target verify/rollback waits for Target correctness. No whole-model accuracy or speedup pass inferred.",
     "one_active_phase": true,
     "host_or_plan_is_device_pass": false,
     "deadline_is_pass": false,
@@ -326,178 +326,107 @@
       "status": "USER_REPORTED_EXECUTED_UNVALIDATED",
       "evidence": "specs/board-resident-fast-first-completion.json",
       "scope": "One compact-memory request; load stall and numerical equivalence unresolved"
+    },
+    "board_text_preread": {
+      "status": "USER_REPORTED_EXECUTED_UNVALIDATED",
+      "evidence": "specs/board-text-preread-observation.json",
+      "scope": "Board-local text encode/decode and full resident loop completed; numerical correctness unvalidated"
     }
   },
   "next_action": {
-    "phase": "P5",
-    "type": "run_combined_board_text_preread",
+    "phase": "P4",
+    "type": "export_incremental_draft_air_on_ddk",
     "implementation_required": false,
     "command_document": "docs/current-status.md",
-    "note": "Use the standalone environment setup page to prepare the downloadable offline tokenizer; then copy the complete text+preread request and recovery commands from the current-stage page. No sub-document traversal or extra device probe is required.",
-    "preparation_document": "docs/environment-setup.md"
+    "note": "Run one C16/cache192/K15 incremental Draft AIR export from the immutable successful prepared weights. Continue Draft-only compile/runtime, fixed-feature reference comparisons, then per-stage performance. Do not start Target verify while its accuracy is unresolved."
   },
   "last_actual_execution": {
     "schema_version": 1,
-    "artifact_kind": "qwen35-board-preread-user-observation",
+    "artifact_kind": "qwen35-board-text-preread-user-observation",
     "recorded": "2026-10-31",
     "source": "USER_PASTED_RECOVERY_SUMMARY_NOT_INDEPENDENTLY_RETRIEVED",
-    "candidate_commit": "3c270a7",
-    "executed_source_identity": "NOT_INDEPENDENTLY_RECHECKED_FROM_USER_ARTIFACTS",
     "assistant_device_access": "NOT_PERFORMED_USER_REQUEST",
     "status": "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED",
-    "stage": "complete",
-    "execution": "dflash-board-resident-preread8-run",
-    "recovery": "dflash-board-resident-preread8-recovery",
-    "board_attempt": "/data/local/tmp/qwen35_board_serial_6e8d32e015a8436f9ede01bb2ac36335",
-    "process_id": 21363,
-    "session_id": "705d1f5ab9cd82f5ccaac459170b8ceb2be0bc7c698bc754ca26ba8205e5b349",
+    "execution": "dflash-board-text-preread8-run",
+    "recovery": "dflash-board-text-preread8-recovery",
+    "board_attempt": "/data/local/tmp/qwen35_board_serial_4427ad691b114c9eb6d21660db6f3e5b",
+    "process_id": 30213,
+    "session_id": "644960aa98fb297df7a4b2ed4288d2d374b64616c5aa773ee7af59afe8592b9b",
     "generated_token_ids": [
-      4,
-      0,
-      4,
+      28,
+      18,
+      36,
+      6,
       0,
       2,
-      28,
-      8,
-      0
+      16,
+      18
     ],
+    "generated_text": "=3E'!#13",
     "counts": {
       "prefill_native_calls": 1,
       "target_native_calls": 8,
       "draft_native_calls": 7,
       "accepted": 0,
       "considered": 7,
-      "bonuses": 0,
-      "corrections": 7
+      "corrections": 7,
+      "bonuses": 0
     },
     "model_loads": {
       "target": 1,
       "draft": 1
     },
     "execution_mode": "resident-mixed",
-    "runtime_profile": "compact-memory-v1",
     "dump": false,
     "draft_preread": "sequential-1m-v1",
     "model_compilation": "NOT_RUN",
     "numerical_validation": "NOT_EVALUATED",
-    "cleanup_error": "",
     "closed": true,
     "poisoned": false,
+    "cleanup_error": "",
     "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
     "timing_ms": {
-      "total_wall": 31455,
-      "draft_load": 3883,
-      "target_load": 9692,
-      "prefill_load_run_close": 10164,
-      "prefill_load": 9174,
-      "prefill_run": 581,
-      "prefill_close": 405,
-      "resident_close": 398,
-      "startup_hash": 1,
-      "decode_total": 1589,
-      "draft_total": 5129
+      "total_wall": 31513,
+      "prefill_load": 9608,
+      "prefill_load_run_close": 10606,
+      "prefill_run": 539,
+      "prefill_close": 456,
+      "target_load": 9634,
+      "draft_load": 3529,
+      "resident_close": 382,
+      "startup_hash": 60,
+      "decode_total": 1568,
+      "draft_total": 5084
     },
     "native_api_mean_ms": {
-      "decode": 110.8895,
-      "draft": 733.1262857142857,
-      "prefill": 483.99
+      "prefill": 468.492,
+      "decode": 111.54975,
+      "draft": 726.8385714285714
     },
     "phase_mean_ms": {
-      "decode": 198.625,
-      "draft": 732.7142857142857
+      "decode": 196,
+      "draft": 726.2857142857143
     },
-    "preread_bytes": 2852119022,
-    "preread_scratch_limit_bytes": 1048576,
-    "load_phases": [
-      {
-        "phase": "CLIENT_INIT",
-        "wall_us": 0,
-        "major_faults": 0,
-        "minor_faults": 3,
-        "read_bytes": 0,
-        "read_chars": 402,
-        "completed": true
-      },
-      {
-        "phase": "RUNTIME_QUERY_AND_DESCRIPTION",
-        "wall_us": 4,
-        "major_faults": 0,
-        "minor_faults": 3,
-        "read_bytes": 0,
-        "read_chars": 402,
-        "completed": true
-      },
-      {
-        "phase": "MODEL_MMAP",
-        "wall_us": 95,
-        "major_faults": 0,
-        "minor_faults": 4,
-        "read_bytes": 0,
-        "read_chars": 402,
-        "completed": true
-      },
-      {
-        "phase": "MODEL_PREREAD",
-        "wall_us": 1621012,
-        "major_faults": 0,
-        "minor_faults": 263,
-        "read_bytes": 2679566336,
-        "read_chars": 2852119424,
-        "completed": true
-      },
-      {
-        "phase": "SET_MODEL_BUFFER",
-        "wall_us": 2,
-        "major_faults": 0,
-        "minor_faults": 3,
-        "read_bytes": 0,
-        "read_chars": 402,
-        "completed": true
-      },
-      {
-        "phase": "MODEL_LOAD",
-        "wall_us": 2250744,
-        "major_faults": 44297,
-        "minor_faults": 3149,
-        "read_bytes": 0,
-        "read_chars": 12813,
-        "completed": true
-      },
-      {
-        "phase": "IO_DESCRIPTORS",
-        "wall_us": 344,
-        "major_faults": 0,
-        "minor_faults": 3,
-        "read_bytes": 0,
-        "read_chars": 405,
-        "completed": true
-      },
-      {
-        "phase": "TENSOR_SETUP",
-        "wall_us": 7928,
-        "major_faults": 10,
-        "minor_faults": 13,
-        "read_bytes": 0,
-        "read_chars": 405,
-        "completed": true
-      }
-    ],
-    "comparison": {
-      "baseline": "specs/board-resident-load-observation.json",
-      "draft_load_ratio": 53.21658511460211,
-      "total_wall_ratio": 7.455285328246702,
-      "total_wall_saved_ms": 203051,
-      "total_wall_reduction_percent": 86.58669714207738,
-      "scope": "TWO_USER_REPORTED_REQUESTS_NOT_REPEATED_CONTROLLED_PERFORMANCE_ACCEPTANCE"
+    "text_io": {
+      "execution": "BOARD_LOCAL_ENCODE_AND_DECODE",
+      "host_admission_ids_matched": true,
+      "prompt_format": "chat",
+      "prompt_token_count": 18,
+      "prompt_sha256": "c5620cfbf2dd4608621b50314dcb845d8d2f317d8150e81708d110dc03b89530",
+      "tokenizer_sha256": "3f50fe76d43ff64ed47c9cd1cc27d194bbd9fcad06bf84065df8a4812c348bc1",
+      "unmapped_generated_token_ids": []
     },
-    "conclusion": "One preread-enabled full loop completed. Draft startup including preread fell from206640ms to3883ms; whole request fell from234506ms to31455ms. Most observed saving is startup.",
-    "limits": [
-      "Single preread observation; cache state and device load were not controlled",
-      "SDK Load still reports44297 major faults; no address-level/storage/root-cause attribution",
-      "Numerical validation absent; acceptance0/7 and output differences remain",
-      "Manager-only external weight release not independently validated"
-    ],
-    "next": "Keep explicit --draft-preread in the combined board-local text request; frontend device verification next, numerical closure afterward."
+    "text_latency_us": {
+      "load_and_encode": 90640,
+      "decode": 48
+    },
+    "load_phases_us": {
+      "MODEL_PREREAD": 1307278,
+      "MODEL_LOAD": 2211020
+    },
+    "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
+    "acceptance_rate": 0,
+    "scope": "Execution and pasted timings only; language quality, numerical correctness, paired speedup and physical disconnection not validated"
   },
   "planned_parallelism": [
     "P0 original-prefill baseline passed. User permits mixed runtime APIs. Parallel native session/supervisor and host preparation/recovery integration; test full mixed flow with fake SDK, then user runs actual device request.",
@@ -577,7 +506,7 @@
         3
       ],
       "next_action_type": "implement_first_decode_comparison_and_target_baseline",
-      "next_action": "混合常驻执行已由用户实机完成。先绑定旧/新prepared身份并隔离prefill状态及首decode89输入/82输出差异；补有界捕获与普通target-only同runner基线。旧/新第二token12/0，第一次draft Process尚未发生；不改模型或先改draft精度。P5数值等价、重复稳定性和内存验收仍待完成。",
+      "next_action": "Target精度由用户继续调试；当前助手不主动开展Target精度修复。完成后提交可复现reference与控制／状态合同，作为verify前置条件。",
       "pass_conditions": [
         "same target/prompt/zero-state ordinary run reproducible",
         "reference/control identity bound",
@@ -591,7 +520,8 @@
         "logit/8tap/80state comparisons"
       ],
       "evidence": [],
-      "last_error": null
+      "last_error": null,
+      "work_owner": "USER_TARGET_ACCURACY_WORKSTREAM"
     },
     {
       "id": "P2",
@@ -617,7 +547,8 @@
         "precision policy revision"
       ],
       "evidence": [],
-      "last_error": null
+      "last_error": null,
+      "engineering_dependency_note": "固定特征输入的Draft独立精度可现在开展；真实Target特征及端到端接受率验收仍依赖Target正确。"
     },
     {
       "id": "P3",
@@ -648,17 +579,17 @@
     },
     {
       "id": "P4",
-      "title": "长上下文增量draft AIR/OMC与native ABI",
-      "status": "pending",
+      "title": "增量Draft实现、独立精度和单模型性能",
+      "status": "in_progress",
       "depends_on": [
-        "P2"
+        "P0"
       ],
       "local_budget_workdays": [
         1,
         3
       ],
       "next_action_type": "implement_export_compile_validate",
-      "next_action": "沿现ge_incremental_draft.py冻结C16/17in/14out ABI与总容量，先一个gear源导出/OMG/native适配，逐步实机对比；S128不是必做步骤。",
+      "next_action": "Run export_incremental_draft.py on DDK host for C16/cache192/K15; then bind actual AIR/OMG output and implement named17/14 native KV runner. Candidate gears 15/7/3/1 use static block lengths16/8/4/2; old S64 bundle remains unchanged.",
       "pass_conditions": [
         "real newAIR andOMC, not metadata relabel",
         "named17inputs14outputs typed ABI",
@@ -672,13 +603,26 @@
         "cache boundary tests",
         "multiround reference comparisons"
       ],
-      "evidence": [],
-      "last_error": null
+      "evidence": [
+        "specs/incremental-draft-export-host-validation.json",
+        "specs/incremental-draft-reference-review.json"
+      ],
+      "last_error": null,
+      "numerical_acceptance_depends_on": [
+        "P2"
+      ],
+      "draft_only_sequence": [
+        "cached AIR export",
+        "OMG and actual named ABI",
+        "resident KV append execution",
+        "fixed-feature original six-layer reference vs each candidate gear",
+        "Draft-only stable latency/memory measurements and measured optimization"
+      ]
     },
     {
       "id": "P5",
       "title": "端侧模型常驻、内存与重复加载优化",
-      "status": "in_progress",
+      "status": "pending",
       "depends_on": [
         "P0"
       ],
@@ -686,8 +630,8 @@
         0.5,
         2
       ],
-      "next_action_type": "diagnose_draft_load_latency",
-      "next_action": "Fast resident execution completed. Inspect retained PID12858 load logs, then add bounded load subphase timing if needed; do not recompile models or claim paired speedup. Numerical divergence remains pending.",
+      "next_action_type": "deferred_remaining_acceptance",
+      "next_action": "Residency, memory-only and preread execution complete; defer remaining repeated stability/numerical acceptance while P4 is active.",
       "pass_conditions": [
         "two-model residency feasibility measured",
         "native loop same tokens/state as baseline",
@@ -708,7 +652,8 @@
         "specs/board-resident-mixed-first-completion.json",
         "docs/reference/board-resident-fast-path.md",
         "specs/board-resident-fast-host-validation.json",
-        "specs/board-resident-fast-first-completion.json"
+        "specs/board-resident-fast-first-completion.json",
+        "specs/board-text-preread-observation.json"
       ],
       "last_error": null,
       "numerical_acceptance_depends_on": [
@@ -754,7 +699,7 @@
         5
       ],
       "next_action_type": "design_reference_implement_validate",
-      "next_action": "先verify reference逐位置logits；eager-anchor p0用pre-round logits、pi用row i-1；先快照+decode1重放接受前缀，再优化checkpoint/bank。",
+      "next_action": "等待Target精度工作完成且Draft独立实现／精度稳定后，再开发与调优target verify和80状态恢复提交；当前不进入此阶段。",
       "pass_conditions": [
         "per-position logits/features actual output",
         "all r=0..K accept/reject branches",
@@ -947,6 +892,14 @@
     {
       "date": "2026-10-31",
       "decision": "用户明确回复允许混合接口，优先推进常驻。prefill/decode用V2，完整embedded draft保留V1，模型不重编。manager-only关闭是未实机验证的显式实验，不吞旧DeinitWeights失败。"
+    },
+    {
+      "date": "2026-10-31",
+      "decision": "用户暂缓精度，先推进Draft更多token输入和KV cache；明确要求max-draft-tokens为15/7/3/1，可借鉴4B feature/gdr-chunk-verify分支。工程推进不取消最终数值验收。"
+    },
+    {
+      "date": "2026-10-31",
+      "decision": "用户进一步明确：当前优先Draft实现、精度和性能；Target另行调试精度，等其完成后再做verify开发和调优。Draft固定特征独立数值验证不以Target正确为前提。"
     }
   ],
   "load_timing_candidate": {
@@ -972,21 +925,22 @@
     "device_observation": "specs/board-resident-load-observation.json"
   },
   "text_interface_task": {
-    "status": "HOST_VALIDATED_BOARD_EXECUTION_PENDING",
+    "status": "USER_REPORTED_BOARD_TEXT_EXECUTION_COMPLETE_NUMERICAL_UNVALIDATED",
     "goal": "Board-local original tokenizer encode/decode and autonomous full model loop",
     "validation": "specs/board-text-host-validation.json",
     "document": "docs/run-end-to-end.md",
-    "next": "Run the complete commands in docs/current-status.md after offline preparation. Original tokenizer text input/output and explicit draft preread share one board request.",
+    "next": "Retain successful board-local text/preread lane as rollback while implementing P4.",
     "combined_validation": "specs/board-text-preread-validation.json",
     "offline_document": "docs/environment-setup.md",
-    "offline_validation": "specs/board-tokenizer-offline-validation.json"
+    "offline_validation": "specs/board-tokenizer-offline-validation.json",
+    "observation": "specs/board-text-preread-observation.json"
   },
   "draft_load_task": {
     "status": "USER_REPORTED_PREREAD_STARTUP_IMPROVEMENT_SINGLE_RUN",
     "observation": "specs/board-resident-preread-observation.json",
     "document": "docs/results.md",
     "validation": "specs/board-resident-preread-validation.json",
-    "next": "Retain explicit --draft-preread in the same request as --text; run board-text-preread8 and recover once. Repeated controlled performance and numerical acceptance remain pending.",
+    "next": "Retain explicit sequential preread. Latest text request draft load=3.529s; no further startup investigation now.",
     "default_enabled": false,
     "device_calls_by_assistant": 0,
     "baseline_observation": "specs/board-resident-load-observation.json"
@@ -1000,5 +954,24 @@
     "full_execution": "docs/run-end-to-end.md",
     "current_stage_commands": "docs/current-status.md",
     "maintenance_policy": "Homepage contains only a brief introduction and six direct links. Keep each primary page self-contained; operational pages contain short instructions and complete command blocks. Detailed development and historical evidence remain outside primary navigation."
+  },
+  "incremental_draft_task": {
+    "status": "HOST_GRAPH_EXPORTER_AND_SCHEDULE_VALIDATED_DEVICE_PENDING",
+    "context_gears": [
+      16,
+      64
+    ],
+    "initial_cache_capacity": 192,
+    "max_draft_token_choices": [
+      15,
+      7,
+      3,
+      1
+    ],
+    "new_graph_inputs": 17,
+    "new_graph_outputs": 14,
+    "new_weight_payload_copies": 0,
+    "current_native_bundle": "UNCHANGED_S64_PREFIX_RECOMPUTE",
+    "next_command": "targets/cpro/scripts/export_incremental_draft.py --job \"$AI_RUN_DIR/full-draft\" --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 --output \"$AI_RUN_DIR/draft-kv-c16-cap192-k15-air-v1\""
   }
 }

@@ -13,9 +13,10 @@ from .ge_draft import _DraftBuilder, _fp32
 
 _INT32_MAX = (1 << 31) - 1
 _LAYERS = ('sliding_attention',) * 5 + ('full_attention',)
+MAX_DRAFT_TOKEN_CHOICES = (15, 7, 3, 1)
 
 
-def _validate(config, context_rows, cache_capacity, include_hidden):
+def _validate(config, context_rows, cache_capacity, include_hidden, max_draft_tokens=15):
     if not isinstance(config, Qwen35DFlashConfig):
         raise TypeError('an explicit Qwen35DFlashConfig is required')
     config.validate()
@@ -24,9 +25,11 @@ def _validate(config, context_rows, cache_capacity, include_hidden):
         raise ValueError('incremental35B draft requires six layers, eight target taps, block16 and the original five-sliding/one-full topology')
     if type(context_rows) is not int or context_rows not in {16, 64}:
         raise ValueError('context_rows must select one static C16 or C64 gear')
+    if type(max_draft_tokens) is not int or max_draft_tokens not in MAX_DRAFT_TOKEN_CHOICES:
+        raise ValueError('max_draft_tokens must select one static 15, 7, 3 or 1 candidate gear')
     if type(cache_capacity) is not int or cache_capacity < context_rows:
         raise ValueError('cache_capacity must be an explicit integer covering one complete context gear')
-    if cache_capacity + max(context_rows, config.block_size) > min(_INT32_MAX, config.max_position_embeddings):
+    if cache_capacity + max(context_rows, max_draft_tokens + 1) > min(_INT32_MAX, config.max_position_embeddings):
         raise ValueError('cache/context/block positions exceed the declared RoPE or INT32 range')
     if config.head_dim % 2:
         raise ValueError('standard DFlash RoPE requires an even head dimension')
@@ -35,33 +38,34 @@ def _validate(config, context_rows, cache_capacity, include_hidden):
 
 
 def validate_incremental_draft_controls(config, *, start_position, valid_rows, anchor, proposal_count,
-                                      context_rows=16, cache_capacity=192):
+                                      context_rows=16, cache_capacity=192, max_draft_tokens=15):
     """Validate plain host integers before constructing the INT32 wire inputs.
 
     The caller additionally owns cache lineage/finite initialization and must
     supply all committed feature rows in order, excluding the latest anchor.
     """
-    _validate(config, context_rows, cache_capacity, True)
+    _validate(config, context_rows, cache_capacity, True, max_draft_tokens)
     values = (start_position, valid_rows, anchor, proposal_count)
     if any(type(value) is not int or not 0 <= value <= _INT32_MAX for value in values):
         raise ValueError('incremental controls must be nonnegative explicit INT32-range integers')
     if (valid_rows > context_rows or start_position + valid_rows > cache_capacity
             or start_position > cache_capacity or anchor >= config.vocab_size
-            or proposal_count > config.block_size - 1):
+            or proposal_count > max_draft_tokens):
         raise ValueError('incremental controls exceed context/cache/token/proposal bounds')
     if (start_position + context_rows > config.max_position_embeddings
-            or start_position + valid_rows + config.block_size > config.max_position_embeddings
-            or start_position + max(context_rows, valid_rows + config.block_size) > _INT32_MAX):
+            or start_position + valid_rows + max_draft_tokens + 1 > config.max_position_embeddings
+            or start_position + max(context_rows, valid_rows + max_draft_tokens + 1) > _INT32_MAX):
         raise ValueError('absolute computed context/block RoPE positions overflow their declared range')
     return {'start_position': start_position, 'valid_rows': valid_rows, 'anchor': anchor,
         'proposal_count': proposal_count, 'context_end': start_position + valid_rows}
 
 
 class _IncrementalBuilder(_DraftBuilder):
-    def __init__(self, config, context_rows, cache_capacity):
+    def __init__(self, config, context_rows, cache_capacity, max_draft_tokens=15):
         super().__init__(config, context_rows)
         self.capacity = cache_capacity
-        self.k = cache_capacity + config.block_size
+        self.b = max_draft_tokens + 1
+        self.k = cache_capacity + self.b
 
     def _rope(self, positions, rows, name):
         c, g = self.c, self.g
@@ -220,19 +224,22 @@ class _IncrementalBuilder(_DraftBuilder):
         return g.validate()
 
 
-def build_incremental_draft(config, context_rows=16, cache_capacity=192, include_hidden=True):
+def build_incremental_draft(config, context_rows=16, cache_capacity=192, include_hidden=True, *, max_draft_tokens=15):
     """Construct one static C16/C64 cached context-delta graph, with 12 KV IOs."""
-    _validate(config, context_rows, cache_capacity, include_hidden)
-    return _IncrementalBuilder(config, context_rows, cache_capacity).build(include_hidden)
+    _validate(config, context_rows, cache_capacity, include_hidden, max_draft_tokens)
+    return _IncrementalBuilder(config, context_rows, cache_capacity, max_draft_tokens).build(include_hidden)
 
 
-def incremental_draft_abi(config, context_rows=16, cache_capacity=192, include_hidden=True):
+def incremental_draft_abi(config, context_rows=16, cache_capacity=192, include_hidden=True, *, max_draft_tokens=15):
     """Describe the host graph contract; actual compiled/native IO is pending."""
-    graph = build_incremental_draft(config, context_rows, cache_capacity, include_hidden)
+    graph = build_incremental_draft(config, context_rows, cache_capacity, include_hidden, max_draft_tokens=max_draft_tokens)
     metadata = graph.manifest()
-    return {'schema_version': 1, 'artifact_kind': 'qwen35-incremental-draft-host-graph-abi',
+    return {'schema_version': 2, 'artifact_kind': 'qwen35-incremental-draft-host-graph-abi',
         'variant': 'SIX_LAYER_CONTEXT_KV_CACHED', 'context_rows': context_rows, 'cache_capacity': cache_capacity,
-        'block_rows': 16, 'proposal_count_range': [0, 15], 'graph': metadata,
+        'block_rows': max_draft_tokens + 1, 'max_draft_tokens': max_draft_tokens,
+        'trained_block_rows': config.block_size, 'proposal_count_range': [0, max_draft_tokens], 'graph': metadata,
+        'candidate_gear_policy': 'STATIC_GRAPH_COMPUTE_WIDTH_NOT_OUTPUT_TRUNCATION',
+        'verify_limit': 'SEPARATE_HOST_POLICY_NO_LARGER_THAN_MAX_DRAFT_TOKENS',
         'control_dtype': 'INT32', 'control_shape': [1], 'context_features': 'NEW_COMMITTED_ROWS_BEFORE_LATEST_ANCHOR_ONLY',
         'cache_layout': [1, config.num_key_value_heads, cache_capacity, config.head_dim],
         'cache_initialization': 'ZERO_INITIALIZE_ALL12_BUFFERS; VALID_CACHE_VALUES_MUST_BE_FINITE',

@@ -27,7 +27,7 @@
 
 下面各阶段工时是局部估计，有重叠，**不要把它们再加到累计时间上**。每次完成一个阶段，应按实际耗时和新发现更新剩余估计。
 
-最新进展：P0与P5混合常驻、无诊断内存模式及顺序预读均已有用户实机执行结果。最新请求31.455秒，prefill1／decode8／draft7，target/draft各加载1次；draft总加载3.883秒（包含预读1.621秒），不再处于202秒加载问题的初始排查阶段。下一次先合并离线tokenizer与预读，验证板端文字输入输出，再回到P1首decode差异隔离。P5完整验收仍需数值等价、重复稳定性与内存检查。总预算维持3–7天精度／10–20天完整交付的估计，不以单次执行成功替代验收。
+最新进展：板端文字闭环已执行（prompt18、生成8，总31.513秒；Draft加载3.529秒）。当前主线由用户调整为**Draft实现→Draft独立精度→Draft性能**，支持更多token、KV cache和15／7／3／1档；Target精度由用户另行调试，verify开发与调优等Target精度就绪后再开始。固定特征输入的Draft数值对照现在就做，不将Target输出不正确作为其前置阻塞。
 
 ## 3. 当前真实进展
 
@@ -49,7 +49,7 @@
 
 ## 4. 接手助手的执行规则
 
-1. 推进状态文件的 active_phase，读依赖、下一动作和证据；用户已要求在 P0 完成后优先推进 P5 工程，P1/P2 数值门槛仍保留。可并行独立 host 工作，设备模型调用遵守共享锁。
+1. 推进状态文件的 active_phase，读依赖、下一动作和证据；用户已要求先推进 P4 工程，暂缓精度，P1/P2 数值门槛仍保留。可并行独立 host 工作，设备模型调用遵守共享锁。
 2. 先复用已成功的源／模型／缓存和当前环境。不要重跑成功的serial请求、row63实验或旧metadata探针。当前直接按文字指南合并离线tokenizer与预读，沿用已成功的常驻运行方式；不把S128当作默认前置条件，不通过截断历史或改manifest冒充新容量。
 3. 每个动作写清“目的、输入、命令、预期输出”。已有脚本先读 `--help`；下文标为“待实现”的入口不能当作现成CLI调用。
 4. host问题在host检查，只有需要实机结果时才让用户执行一次完整命令。能合并到入口的检查不拆成多轮手工问答。
@@ -133,22 +133,31 @@ P0 已实现根据该映射交接实际状态、从本次 prefill logits 查原 
 
 ## P4. 支持长上下文：增量draft缓存与明确容量
 
-**局部预算：1–3天。依赖：P2，正确target features；P3与此阶段可在host侧并行。这里才引入新draft编译。**
+**局部预算：1–3天（DDK和板端可用、编译无新增算子阻塞时）。用户已授权先做本阶段工程；最终数值验收仍依赖P2。这里引入新draft编译，保留旧S64。**
 
 旧S64只能接受完整prefix≤64。跨过容量前，不能截断历史、重置RoPE、篡改manifest尺寸或循环旧features。S128全前缀可作独立对照方案，**不是DFlash算法必需步骤**，不与增量路线同时开两条大编译主线。
 
-已实现：`ge_incremental_draft.py`，C16／C64新feature块、4个INT32控制（start_position／valid_rows／anchor／proposal_count）、12个FP16 K/V输入；包含hidden时14输出（Top1、hidden、12缓存）。主机结构与独立完整前缀oracle已测，尚未导出／编译／上板。
+已实现：`ge_incremental_draft.py`，C16／C64新feature块、4个INT32控制（start_position／valid_rows／anchor／proposal_count）、12个FP16 K/V输入；包含hidden时14输出（Top1、hidden、12缓存）。主机结构与独立完整前缀oracle已测。新增export_incremental_draft.py导出入口、只读71权重绑定、四档真实计算形状和分块追赶调度；主机检查通过，DDK导出／OMG编译／上板待执行。
 
 需要依次完成：
 
 1. 冻结实际35B ABI、完整权重与舍入边界、logical history容量和physical buffer容量，记录越界处理。C16／C64是每次新输入行数，不是总历史容量。
-2. 写原prepared权重只读引用的增量AIR导出与专用native ABI；不让旧“只留Top1／hidden”的direct-output改写删掉12缓存输出。
+2. 执行已实现的增量AIR导出（原prepared权重只读引用，保留14输出）；max-draft-tokens选择15／7／3／1，与验证上限分离。读取实际新图和编译runtime名字后接专用native ABI。
 3. 先只编译一个gear，预算磁盘／内存后运行；不要默认重拷2.8GB权重或19GB target权重。新17输入含多个同shape标量／缓存，必须按实际native名字和typed view绑定。
 4. 实机对比：多次append超过一个gear、跨64边界、valid_rows=0、首尾cache边界、K=1／短K／15、拒绝后追赶、未写前后缀逐位不变；prompt64之后标准anchor@64不重复计入context。
 
 关键不变量：当前anchor之前的新已提交feature才进入draft缓存；anchor／MASK临时KV不能持久化；历史K已经旋转，不能再次RoPE。当前eager target状态包含anchor feature，但draft context必须排除最新anchor。旧S64始终生成15候选后只验证前K，与新图把inactive候选mask掉不是同一个数值oracle，末层双向attention尤其如此。
 
 通过条件：新AIR／OMC、实际17/14 ABI、缓存读写与位置、完整draft数值、端到端tokens均过对应合同；旧S64成功版本保留可回滚。全新算子或模型语义变更需先明确方案并重新规划。
+
+Draft当前交接顺序（DDK/板端可用时约2–5个工作日，编译兼容问题另计）：
+
+1. **实现，约1–2天**：先执行当前C16/cache192导出，完成OMG和真实17/14绑定；板端保存12份KV，按已提交特征追赶，支持四档候选与容量越界报告。C64是后续减少长prompt追赶调用次数的可选gear。原S64保留回退。
+2. **独立精度，约0.5–2天**：固定同一套特征和原权重，对照原六层PyTorch与完整前缀reference；覆盖15/7/3/1、跨64行、多次append、空增量、拒绝后的已提交前缀、KV未写区域逐位不变。主机小模型容差不能直接当全权重板端门槛；精度合同先按参考精度冻结。此阶段检验Draft计算，不要求Target生成文字正确，不据此宣称接受率达标。
+3. **单模型性能，约0.5–1天**：正确输入固定后，分开记录加载、纯API、feature投影、KV追加、候选块、词表头、张量复制和内存；同条件比较原S64与新缓存路径。先测再优化，候选档位之间按不同工作量单独报告。精度回归通过才保留性能改动。
+4. **等待Target精度就绪**：再做真实特征联调与端到端接受率，之后进入P6 verify。已有候选accept/reject主机用例继续用于Draft缓存边界，不扩展Target批量verify。
+
+4B分支对照已固定到commit 90186732d915e8b058b2a053d205991d805eae76；实现来源与差异记录在specs/incremental-draft-reference-review.json。沿用其增量KV和候选mask设计思路，保留35B的六层、8taps、INT32控制与eager-anchor约定，不照搬310P ACL接口或Target提交计数。
 
 ## P5. 完善已运行的模型常驻与内存循环
 
@@ -211,7 +220,7 @@ decode1串行verify仍对每个已提交token运行target，主要是正确性�
 ## 5. 可并行和必须串行的工作
 
 - P0运行期间：可并行准备reference fixture、读源码、检查已有ABI、写普通driver；不并发载入大模型、不争抢板端锁、不同时启动多个大编译。
-- P1普通数值是关键路径；P2 reference准备和P3静态映射可并行，但不能拿错误target features关闭draft精度。
+- 最终验收仍需要P1普通数值；当前用户授权先推进P4工程。P2 reference准备和P3静态映射可并行，但不能拿错误target features关闭draft精度。
 - P4增量draft与P5常驻runner可由不同助手负责，先冻结接口和状态所有权。能力不足的单助手按P4→P5顺序做，不同时重构多个公共模块。
 - P6每个候选位的state对照、最终普通／spec全流程和P7配对性能按冻结版本串行验收。
 

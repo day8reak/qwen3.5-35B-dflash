@@ -2,44 +2,40 @@
 
 <a id="用户现在执行什么"></a>
 
-本轮验证“离线原词表＋文字输入输出＋Draft预读”在同一次板端请求中完成。原token输入、常驻与预读已实机跑通；本轮保持8个生成token、每轮最多验证2个候选，不重编OMC。
+文字输入、原Prefill和常驻Draft／Decode循环已跑通。当前优先Draft实现、独立精度和性能，Target由用户另行调试，批量verify后置。本轮先生成增量Draft AIR：C16新特征块、192行KV容量，支持15／7／3／1候选档位。此命令复用原六层71份权重，生成新的图，不调用板端。
 
-## 1. 启动本轮测试
+## 导出一个候选档位
 
-沿用已加载的项目环境和准备好的本地词表。若此请求已经启动，直接执行第2段；新一轮测试改用新的运行和回收目录。
+在原DDK主机沿用项目环境。先导出15档；需要其他档位时将变量改为7、3或1，并使用新的输出目录。四档是不同计算形状，不能只修改旧OMC的manifest。
 
 ```bash
-export TOKENIZER_DIR="${TOKENIZER_DIR:-$AI_RUN_DIR/tokenizer-offline/source}"
-export RUN_DIR="$AI_RUN_DIR/dflash-board-text-preread8-run"
-export RECOVERY_DIR="$AI_RUN_DIR/dflash-board-text-preread8-recovery"
-export PROMPT='你好，请介绍一下自己。'
-python3 -c 'import tokenizers; print(tokenizers.__version__)'
+git -C "$REPO_DIR" pull --ff-only
+export MAX_DRAFT_TOKENS=15
+export INCREMENTAL_AIR="$AI_RUN_DIR/draft-kv-c16-cap192-k${MAX_DRAFT_TOKENS}-air-v1"
 
-python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
-  --decode-job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
-  --runtime-probe "$AI_RUN_DIR/target-decode1-runtime-io-v2" \
-  --state-lineage "$AI_RUN_DIR/target-decode1-state-lineage-v7" \
-  --source-torchair-pb2 "$AI_RUN_DIR/target-decode1-row-response/ge_ir_by_protoc_3_19_pb2.py" \
-  --draft-bundle "$AI_RUN_DIR/full-draft/residual-fix/bundle" \
-  --weight-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_weight.bin" \
-  --scale-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_scale.bin" \
-  --prefill-feedback "$AI_RUN_DIR/target-prefill64-decode1-feedback-plan-v2" \
-  --tokenizer-dir "$TOKENIZER_DIR" \
-  --text "$PROMPT" \
-  --max-new-tokens 8 --max-proposals-per-round 2 \
-  --resident --draft-preread --apply --detach \
-  --output "$RUN_DIR"
+PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
+  --job "$AI_RUN_DIR/full-draft" \
+  --context-rows 16 \
+  --cache-capacity 192 \
+  --max-draft-tokens "$MAX_DRAFT_TOKENS" \
+  --output "$INCREMENTAL_AIR"
 ```
 
-## 2. 回收并贴出摘要
+预期摘要为`DRAFT_INCREMENTAL_AIR_EXPORTED`、17输入、14输出。首次会只读校验约2.8GB原权重，并编译GE导出器；不复制权重、不编译OMC、不运行模型。保留并回传摘要；失败时同目录保留日志，下次使用新目录。
 
-本轮关注板端文字编码／解码、一次Prefill、后续Draft/Decode调用，以及预读和三阶段时延。接受率与语言质量继续如实记录，本轮完成不代表精度通过。
+## 查看导出结果
+
+成功后进入OMG编译与实际runtime ABI绑定，再接入板端12份缓存。当前`run_board_serial_dflash.py`仍使用旧S64；不要把新AIR目录传给`--draft-bundle`。Draft缓存扩容也不代表Target的长prompt接入已经完成。
 
 ```bash
-export RUN_DIR="$AI_RUN_DIR/dflash-board-text-preread8-run"
-export RECOVERY_DIR="$AI_RUN_DIR/dflash-board-text-preread8-recovery"
-
-python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
-  --recover "$RUN_DIR" \
-  --output "$RECOVERY_DIR"
+python3 - <<'PYCODE'
+import json, os
+from pathlib import Path
+p = Path(os.environ["INCREMENTAL_AIR"]) / "manifest.json"
+d = json.loads(p.read_text())
+keys = ("status", "context_rows", "cache_capacity", "max_draft_tokens",
+        "model_compilation", "device_execution", "runtime_integration", "error")
+print(json.dumps({k: d.get(k) for k in keys}, ensure_ascii=False, indent=2))
+print("manifest:", p)
+PYCODE
 ```
