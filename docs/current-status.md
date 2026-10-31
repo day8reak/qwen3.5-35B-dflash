@@ -23,10 +23,12 @@ python3 "$REPO_DIR/targets/cpro/scripts/profile_draft.py" \
   --recover "$AI_RUN_DIR/draft-s64-profile-v2" \
   --output "$AI_RUN_DIR/draft-s64-profile-recovery-v2"
 
-cat "$AI_RUN_DIR/draft-s64-profile-recovery-v2/summary/report.md"
+find "$AI_RUN_DIR/draft-s64-profile-recovery-v2/prof_data" -type f -name '*.csv' -print
 ```
 
-回收目录保留原始`prof_data`、工具日志、PID和退出码；`summary/operators.csv`包含按耗时排序的全部算子，`operator-types.csv`和`devices.csv`分别按类型、原始设备标签汇总。首次采集需核对厂商导出的CSV是否混入历史模型记录，因此状态标为`DRAFT_PROFILE_CAPTURED_REQUIRES_ATTRIBUTION_REVIEW`，不能把所有导出行自动当成Draft热点。
+回收目录保留原始`prof_data/*_op.csv`、`*_model.csv`、工具日志、PID和退出码。脚本只回收CSV，不自动解析或汇总；完成后打印CSV目录及文件列表，可直接查看`total time(us)`列。厂商CSV可能含历史模型记录，需核对模型归属，因此状态为`DRAFT_PROFILE_CAPTURED_REQUIRES_ATTRIBUTION_REVIEW`。
+
+本次`draft-s64-profile-recovery-v2`已回收到CSV，模型和厂商转换工具退出码均为0。旧脚本仅因模型CSV多出`model name`、`model id`列而报错，已有CSV可直接使用，无需重跑或重新回收。
 
 这是新工具进程中的一次profiling诊断，输入是已有64行真实特征，不是18-token文字请求中的同一次Draft调用；也不是稳定时延分布或精度验收。算子耗时总和可能含重叠、嵌套执行；不能据此直接推算50ms。工具使用方法参考[官方示例](https://developer.huawei.com/consumer/jp/doc/hiai-Guides/examples-0000001053605660)，实际参数以本机internal工具帮助为准。
 

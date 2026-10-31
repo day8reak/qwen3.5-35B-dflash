@@ -48,7 +48,9 @@ class FakeHdc:
             raw = self.remote.get(path)
             return 0, '__MISSING__' if raw is None else hashlib.sha256(raw).hexdigest() + '  ' + path
         if label == 'profile-file-inventory':
-            return 0, '  91 ./prof_data/fixture_op.csv'
+            root = re.search(board.PREFIX + r'[a-f0-9]{32}', command).group()
+            return 0, '\n'.join(f'  {len(raw)} ./{path[len(root) + 1:]}'
+                for path, raw in sorted(self.remote.items()) if path.startswith(root + '/prof_data/'))
         if label == 'profile-recovery-lock-owner':
             return 0, 'OTHER' if self.foreign else 'OWNED'
         return 0, ''
@@ -127,16 +129,56 @@ def test_recover_pending_does_not_rerun_or_release(case):
     assert [label for label, _ in FakeHdc.calls] == ['profile-completion']
 
 
-def test_completed_recovery_writes_tables_without_claiming_unbound_rows_are_draft(case):
+def test_completed_recovery_delivers_unchanged_csv_without_parsing_or_rerun(case):
     start(case)
-    complete(case)
+    root = complete(case)
     FakeHdc.calls.clear()
     result = board.recover_profile(case['execution'], case['root'] / 'recovery')
     assert result['status'] == 'DRAFT_PROFILE_CAPTURED_REQUIRES_ATTRIBUTION_REVIEW', result
-    assert result['operator_count'] == 2
+    assert result['csv_count'] == 1
+    assert result['csv_analysis'] == 'NOT_REQUESTED_RAW_FILES_ONLY'
+    assert not (case['root'] / 'recovery/summary').exists()
+    row, = result['csv_files']
+    raw = FakeHdc.remote[root + '/prof_data/fixture_op.csv']
+    assert Path(row['path']).read_bytes() == raw
+    assert row['bytes'] == len(raw) and row['sha256'] == hashlib.sha256(raw).hexdigest()
+    assert result['csv_directory'] == str(Path(row['path']).parent)
+    assert 'operator_count' not in result and 'summary' not in result
     assert result['lock_state'] == 'NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION'
-    report = json.loads((case['root'] / 'recovery/summary/report.json').read_text())
-    assert 'REQUIRE_REVIEW' in report['capture']['attribution_status']
+    assert 'REQUIRE_REVIEW' in result['capture']['attribution_status']
+    assert all(label != 'profile-launch' for label, _ in FakeHdc.calls)
+
+
+def test_vendor_model_identity_columns_do_not_fail_capture(case):
+    start(case)
+    root = complete(case)
+    # Header observed on the user's board; the row below is synthetic.
+    raw = (b'model name,model id,item event,enter time,total time(us)\n'
+           b'fixture-model,7,inference end,opaque,12\n')
+    FakeHdc.remote[root + '/prof_data/fixture_model.csv'] = raw
+    FakeHdc.calls.clear()
+    result = board.recover_profile(case['execution'], case['root'] / 'vendor-schema')
+    assert result['status'] == 'DRAFT_PROFILE_CAPTURED_REQUIRES_ATTRIBUTION_REVIEW', result
+    assert result['csv_count'] == 2
+    assert (case['root'] / 'vendor-schema/prof_data/fixture_model.csv').read_bytes() == raw
+    assert all(label != 'profile-launch' for label, _ in FakeHdc.calls)
+
+
+@pytest.mark.parametrize('empty_file', [False, True])
+def test_recovery_without_nonempty_csv_retains_logs_and_reports_failure(case, empty_file):
+    start(case)
+    root = complete(case)
+    path = root + '/prof_data/fixture_op.csv'
+    if empty_file:
+        FakeHdc.remote[path] = b''
+    else:
+        del FakeHdc.remote[path]
+    FakeHdc.calls.clear()
+    result = board.recover_profile(case['execution'], case['root'] / 'no-csv')
+    assert result['status'] == 'FAILED'
+    assert 'no nonempty profiling CSV' in result['error']
+    assert result['lock_state'] == 'NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION'
+    assert (case['root'] / 'no-csv/parser.stdout').read_bytes() == b'fixture-log'
     assert all(label != 'profile-launch' for label, _ in FakeHdc.calls)
 
 
@@ -170,14 +212,15 @@ def test_recovery_preserves_foreign_new_owner(case, monkeypatch):
     FakeHdc.calls.clear()
     monkeypatch.setattr(FakeHdc, 'foreign', True)
     result = board.recover_profile(case['execution'], case['root'] / 'recovery')
-    assert result['operator_count'] == 2, result
+    assert result['csv_count'] == 1, result
     assert not any(label == 'release-global-model-io-lock' for label, _ in FakeHdc.calls)
 
 
-def test_completed_model_failure_retains_logs_and_does_not_rerun(case):
+@pytest.mark.parametrize('failed_tool', ['model', 'parser'])
+def test_completed_tool_failure_retains_logs_and_does_not_rerun(case, failed_tool):
     start(case)
     root = complete(case)
-    FakeHdc.remote[root + '/model.exitcode'] = b'1\n'
+    FakeHdc.remote[root + '/' + failed_tool + '.exitcode'] = b'1\n'
     FakeHdc.calls.clear()
     result = board.recover_profile(case['execution'], case['root'] / 'failed-model')
     assert result['status'] == 'FAILED'

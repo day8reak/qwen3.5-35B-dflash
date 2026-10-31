@@ -16,7 +16,6 @@ import uuid
 from .artifacts import output_path, save_json
 from .board_serial_transport import _environment
 from .draft_board import _receive
-from .draft_profile_csv import parse_profile, write_tables
 from .draft_profile_plan import KIND, bind_profile, model_argv
 from .hashing import sha256_file
 from .hdc_run import Hdc
@@ -274,19 +273,20 @@ def recover_profile(execution, output):
             result['retrieved'][row['path']] = digest
         if result['model_exitcode'] != 0 or result['parser_exitcode'] != 0:
             raise ValueError('model or profiling converter failed; raw logs/artifacts retained')
-        csvs = [out / row['path'] for row in inventory if row['path'].endswith('.csv')]
-        report = parse_profile(csvs)
-        report['capture'] = {'request': identity, 'model': plan['model'], 'model_process_id': int(pid),
+        csvs = [{'path': str(out / row['path']), 'bytes': row['bytes'],
+                 'sha256': result['retrieved'][row['path']]}
+                for row in inventory if row['path'].lower().endswith('.csv')]
+        if not any(row['bytes'] > 0 for row in csvs):
+            raise ValueError('no nonempty profiling CSV retrieved; raw logs/artifacts retained')
+        # Deliver vendor CSVs unchanged. Host-side schema interpretation is not
+        # part of capture success and must not trigger another model invocation.
+        result['capture'] = {'request': identity, 'model': plan['model'], 'model_process_id': int(pid),
             'input_scope': plan['input_scope'], 'timing_scope': plan['timing_scope'],
-            'attribution_status': 'VENDOR_SERVICE_EXPORT_HISTORY_AND_MODEL_MEMBERSHIP_REQUIRE_REVIEW',
-            'artifact_hashes': result['retrieved']}
-        write_tables(report, out / 'summary')
+            'attribution_status': 'VENDOR_SERVICE_EXPORT_HISTORY_AND_MODEL_MEMBERSHIP_REQUIRE_REVIEW'}
         result.update(status='DRAFT_PROFILE_CAPTURED_REQUIRES_ATTRIBUTION_REVIEW', stage='complete',
-            device_execution='ONE_VENDOR_TOOL_CALL_COMPLETED', operator_count=report['operator_count'],
-            by_operator_type=report['by_operator_type'], by_device_type=report['by_device_type'],
-            model_profiles=report['model_profiles'], summary=str(out / 'summary/report.json'),
-            table=str(out / 'summary/operators.csv'),
-            next='Review source CSV model/PID attribution before treating exported rows as Draft hotspots; no accuracy or 50ms claim')
+            device_execution='ONE_VENDOR_TOOL_CALL_COMPLETED', csv_directory=str(out / 'prof_data'),
+            csv_count=len(csvs), csv_files=csvs, csv_analysis='NOT_REQUESTED_RAW_FILES_ONLY',
+            next='Open the original CSVs in csv_directory; model membership requires review. No model rerun needed.')
     except Exception as error:
         result['error'] = f'{type(error).__name__}: {error}'
     finally:

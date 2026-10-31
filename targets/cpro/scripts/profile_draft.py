@@ -34,8 +34,9 @@ def main(argv=None):
                 parser_tool=args.data_proc_tool, timeout_seconds=args.timeout_seconds,
                 lock_wait_seconds=args.lock_wait_seconds)
         keys = ('status', 'stage', 'device_execution', 'model_compilation', 'numerical_validation',
-            'board_attempt', 'model_process_id', 'model_exitcode', 'parser_exitcode', 'operator_count',
-            'model_profiles', 'summary', 'table', 'input_revalidation', 'lock_state', 'error', 'lock_release_errors', 'next')
+            'board_attempt', 'model_process_id', 'model_exitcode', 'parser_exitcode',
+            'csv_directory', 'csv_count', 'csv_files', 'csv_analysis', 'input_revalidation',
+            'lock_state', 'error', 'lock_release_errors', 'next')
         print(json.dumps({k: result[k] for k in keys if k in result}, ensure_ascii=False, allow_nan=False), flush=True)
         return 1 if result['status'] == 'FAILED' else 0
     except Exception as error:
