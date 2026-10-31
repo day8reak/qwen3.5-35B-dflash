@@ -340,8 +340,15 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
       const auto* features=static_cast<const std::uint16_t*>(in[0]->GetBuffer());
       const bool loop=marker=="draft-resident-loop64-fixture";std::size_t valid=0;
       while(valid<64&&mask[valid]==1)++valid;if(!valid)return 84;
+      std::vector<std::int32_t> text_prompt;
+      if(const auto* value=std::getenv("FAKE_HIAI_TEXT_PROMPT_IDS")) {
+        std::istringstream words(value);std::string word;
+        while(std::getline(words,word,','))text_prompt.push_back(std::stoi(word));
+      }
       for(std::size_t i=0;i<64;++i) {
-        if(ids[i]!=(loop?(i<valid?static_cast<std::int32_t>(i+1):0):static_cast<std::int32_t>(i))||mask[i]!=(i<valid?1:0))return 85;
+        const auto expected=loop?(i<valid?static_cast<std::int32_t>(i+1):0):static_cast<std::int32_t>(i);
+        const auto text_expected=i<text_prompt.size()?text_prompt[i]:static_cast<std::int32_t>(i-text_prompt.size()+1);
+        if(ids[i]!=(!text_prompt.empty()&&loop?(i<valid?text_expected:0):expected)||mask[i]!=(i<valid?1:0))return 85;
         if(!std::all_of(features+i*16384,features+(i+1)*16384,[&](auto x){return x==(loop&&i>=valid?0:0x3800);}))return 86;
       }
       for(int i=0;i<15;++i)static_cast<std::int32_t*>(out[0]->GetBuffer())[i]=loop?ids[valid-1]+1+i:10+static_cast<int>(runs_)+i;

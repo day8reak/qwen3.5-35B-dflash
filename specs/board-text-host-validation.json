@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "status": "HOST_VALIDATED_BOARD_EXECUTION_PENDING",
+  "run": "20261031T011114Z-24876-645bba",
+  "document": "docs/board-text-input-output.md",
+  "device_access": "NOT_ATTEMPTED_USER_RUNS_DEVICE",
+  "native_build": "RELEASE_HOST_C_AND_CPP_REAL_TOKENIZER_FAKE_HIAI",
+  "model_compilation": "NOT_RUN",
+  "numerical_validation": "NOT_EVALUATED",
+  "upstream": "specs/tokenizer.lock.json",
+  "third_party": "targets/cpro/runtime/third_party/sources.lock.json",
+  "native_tokenizer_bundle_sha256": "3f50fe76d43ff64ed47c9cd1cc27d194bbd9fcad06bf84065df8a4812c348bc1",
+  "sources": {
+    "model/qwen35_moe_dflash/board_tokenizer.py": "a9da2dd77a3bd5779d46a64900bb38688c4034f6f2d40614b53955980b613b7d",
+    "model/qwen35_moe_dflash/board_serial_dflash.py": "111da2c77b5772469932183e0f1e51cade0cedbb3721897d19993b1122f8005a",
+    "model/qwen35_moe_dflash/board_serial_transport.py": "bf529165f780beaa88aafc276187ba862a80db370300d5755afd1001d173d33d",
+    "targets/cpro/runtime/src/tokenizer.cpp": "68fc816bd3d99c3c83be5fb550999e61cbb59eb3024dbdb8efbb12e49f66f2ef",
+    "targets/cpro/runtime/src/board_serial_main.cpp": "8402f9830e6ec8df59dffeb048bae818945a5fcf8124f7bf3d9dfffffab856cf",
+    "targets/cpro/runtime/CMakeLists.txt": "982acc9756802de9611f70baa4add2ab037d72d81d8f26b824c91acc747fbcdf"
+  },
+  "test_groups": {
+    "original_preparation_transport": {
+      "tests": 176,
+      "failures": 0,
+      "errors": 0,
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T011114Z-24876-645bba/text-regressions.xml"
+    },
+    "text_native_and_legacy_compact": {
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T011114Z-24876-645bba/text-reviewed.xml"
+    },
+    "expanded_text_staging": {
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T011114Z-24876-645bba/text-staging.xml"
+    }
+  },
+  "test_group_overlap": "Expanded staging4 includes2 earlier transport cases and2 added text variants; counts are not an additive unique total.",
+  "differential": {
+    "reference": "tokenizers0.22.2 with exact locked original tokenizer.json",
+    "encoding_cases": 2670,
+    "decoding_cases": 6066,
+    "mismatches": 0,
+    "additional_checks": [
+      "locked single-user Jinja template",
+      "invalid UTF-8",
+      "malformed bundle",
+      "special tokens",
+      "unmapped padded vocabulary IDs",
+      "text/template plus generation overflow",
+      "board admission mismatch before SDK load",
+      "chat/raw full loop and final-text recovery with fake HIAI"
+    ]
+  },
+  "limits": [
+    "S64 full prefix budget",
+    "single-user nonthinking chat or raw text",
+    "fixed output-token budget; no EOS early stop",
+    "model accuracy and original target/draft divergence unresolved",
+    "OHOS selected SDK build and actual device text run pending"
+  ]
+}

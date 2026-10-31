@@ -5751,7 +5751,10 @@
     "next": "Run one fresh loadtiming request; measure before choosing a loading change."
   },
   "text_interface_task": {
-    "status": "IN_PROGRESS",
-    "goal": "Board-local UTF-8 text encoding, autonomous existing model loop, decoded generated text; original tokenizer pinned; no inter-token server dependency."
+    "status": "HOST_VALIDATED_BOARD_EXECUTION_PENDING",
+    "goal": "Board-local original tokenizer encode/decode and autonomous full model loop",
+    "validation": "specs/board-text-host-validation.json",
+    "document": "docs/board-text-input-output.md",
+    "next": "User runs dflash-board-text8-run then recovers dflash-board-text8-recovery; same run also includes draft load phase timing. Continue numerical closure after frontend/load observation."
   }
 }

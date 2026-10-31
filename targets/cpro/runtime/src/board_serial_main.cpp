@@ -1,3 +1,6 @@
+#ifdef QWEN35_TEXT_TOKENIZER
+#include "qwen35_dflash/tokenizer.hpp"
+#endif
 // Board-local original40 / full6 serial DFlash execution smoke.
 // No network, model compilation, speculative state, or numerical acceptance.
 #include "qwen35_dflash/sha256.hpp"
@@ -177,6 +180,10 @@ struct Tensor {std::uint32_t index;std::string name,type;std::uint64_t bytes;};
 struct State {std::string ref;std::uint32_t in,out;std::uint64_t bytes;};
 struct PrefillState {std::string decode_ref,ref;std::uint32_t in,out;std::uint64_t bytes;};
 struct Config {std::map<std::string,File> files;std::map<std::string,std::string> strings;std::vector<Tensor> inputs,outputs,prefill_inputs,prefill_outputs;std::vector<State> states;std::vector<PrefillState> prefill_states;std::vector<std::uint32_t> prompt;std::uint32_t maxnew=0,k=0,minrounds=0,timeout=0;std::uint64_t startup_hash_ms=0;bool dump=true,prefill=false,fast=false;Clock::time_point started=Clock::now();File config;
+#ifdef QWEN35_TEXT_TOKENIZER
+  std::shared_ptr<qwen35::dflash::TextTokenizer> tokenizer;
+  std::uint64_t text_setup_us=0;
+#endif
 #if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
   std::vector<qwen35::dflash::HiaiBoundRuntimeTensor> resident_inputs,resident_outputs,prefill_bound_inputs,prefill_bound_outputs;
 #endif
@@ -223,18 +230,28 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
 #endif
   strkeys.insert("execution_mode");strkeys.insert("target_lifecycle_policy");
 #endif
+  const bool text_mode=std::find(lines.begin(),lines.end(),"text_io\tqwen35-text-v1")!=lines.end();
+  if(text_mode){
+#ifdef QWEN35_TEXT_TOKENIZER
+    filekeys.insert("tokenizer_bundle");filekeys.insert("prompt_text");strkeys.insert("text_io");strkeys.insert("prompt_format");
+#else
+    Fail("text I/O requires the current mixed resident binary");
+#endif
+  }
   for(std::size_t n=1;n<lines.size();++n){auto f=Split(lines[n],'\t');Require(!f[0].empty(),"empty config row");
     if(f[0]=="runtime_profile"){Require(n==1&&c.fast,"runtime profile must be first and supported");continue;}
     if(filekeys.count(f[0])){Require(f.size()==4&&!c.files.count(f[0]),"file row malformed/duplicate");HashSyntax(f[2]);auto bytes=Integer(f[3],32ULL<<30,false);auto p=Absolute(f[1]);
       if(f[0]=="weight_table")Require(bytes==kVocab*2048ULL,"weight table extent mismatch");
       else if(f[0]=="scale_table")Require(bytes==kVocab*4ULL,"scale table extent mismatch");
+      else if(f[0]=="prompt_text")Require(bytes<=16384,"text prompt exceeds16KiB");
+      else if(f[0]=="tokenizer_bundle")Require(bytes<=16ULL<<20,"tokenizer bundle exceeds16MiB");
       else if(f[0]=="draft_model")Require(bytes<=UINT32_MAX,"draft model exceeds legacy32-bit extent");
       else if(f[0]=="draft_abi"||f[0]=="resident_abi"||f[0]=="prefill_abi")Require(bytes<=1ULL<<20,"draft/resident ABI exceeds budget");
       else Require(bytes<=64ULL<<20,"model/tool exceeds budget");
       // Full table/model hashes occur once at initialization, never per token.
       Lifecycle(c.fast?"startup-bind-begin":"startup-hash-begin","role="+f[0]+" bytes="+std::to_string(bytes));
       auto hash_begin=Clock::now();
-      const bool metadata=f[0]=="draft_abi"||f[0]=="resident_abi"||f[0]=="prefill_abi";
+      const bool metadata=f[0]=="tokenizer_bundle"||f[0]=="prompt_text"||f[0]=="draft_abi"||f[0]=="resident_abi"||f[0]=="prefill_abi";
       if(c.fast&&!metadata){auto stamp=Stat(p);Require(stamp.size==bytes,"deployment payload extent differs");c.files.emplace(f[0],File{p,f[2],bytes,stamp});}
       else c.files.emplace(f[0],Observe(p,bytes,f[2]));
       auto hash_ms=ElapsedMs(hash_begin);c.startup_hash_ms+=hash_ms;
@@ -262,6 +279,16 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
   for(auto key:{"target_tool","draft_runner"})Require(::access(c.files.at(key).path.c_str(),X_OK)==0,"child executable is not executable");
 #endif
   for(const auto& s:Split(c.strings.at("prompt"),','))c.prompt.push_back(static_cast<std::uint32_t>(Integer(s,kVocab-1)));
+#ifdef QWEN35_TEXT_TOKENIZER
+  if(text_mode){
+    auto start=Clock::now();const auto& file=c.files.at("prompt_text");auto bytes=Read(file.path,file.bytes);Stable(file);
+    c.tokenizer=std::make_shared<qwen35::dflash::TextTokenizer>(c.files.at("tokenizer_bundle").path.string());
+    auto encoded=c.tokenizer->Encode(std::string(bytes.begin(),bytes.end()),c.strings.at("prompt_format"));
+    Require(encoded==c.prompt,"board tokenizer differs from original tokenizer admission IDs; no model launched");
+    c.prompt=std::move(encoded);c.text_setup_us=std::chrono::duration_cast<std::chrono::microseconds>(Clock::now()-start).count();
+    Lifecycle("text-encoded","tokens="+std::to_string(c.prompt.size())+" wall_us="+std::to_string(c.text_setup_us));
+  }
+#endif
   c.maxnew=Integer(c.strings.at("max_new_tokens"),63,false);c.k=Integer(c.strings.at("max_proposals"),15,false);c.minrounds=Integer(c.strings.at("min_draft_rounds"),63,false);Require(c.minrounds>=2&&c.minrounds<=c.maxnew-1,"minimum draft rounds must be at least2 and no more than generation budget minus anchor");c.timeout=Integer(c.strings.at("timeout_ms"),7200000,false);
   Require(!c.prompt.empty()&&c.prompt.size()<=63&&c.prompt.size()+c.maxnew<=64&&c.inputs.size()==89&&c.outputs.size()==82&&c.states.size()==80,"requires complete bounded S64/89input/82output/80state contract");
   std::map<std::string,std::pair<std::string,std::uint64_t>> controls={{"arg1_1",{"INT8",2048}},{"arg113_1",{"FP32",8192}},{"arg107_1",{"INT32",4}},{"arg2_1",{"INT32",4}},{"arg1238_1",{"INT32",4}},{"arg0_1",{"FP32",4}},{"arg114_1",{"INT64",8}},{"arg14_1",{"INT32",512}},{"arg18_1",{"INT16",2}}};
@@ -807,6 +834,22 @@ class Supervisor {
     for(const auto& f:actual){Stable(f);}for(const auto& f:pins){Stable(f);}Stable(resultfile);Pins();if(!c.dump)PruneDraft(call,linked);return proposals;
 #endif
   }
+  void TextResult(){
+#ifdef QWEN35_TEXT_TOKENIZER
+    if(!c.tokenizer)return;auto start=Clock::now();
+    loop["generated_text"]=c.tokenizer->Decode(generated,true);
+    loop["generated_text_with_special_tokens"]=c.tokenizer->Decode(generated,false);
+    J info=J::Obj();info["execution"]="BOARD_LOCAL_ENCODE_AND_DECODE";info["prompt_format"]=c.strings.at("prompt_format");
+    info["tokenizer_sha256"]=c.files.at("tokenizer_bundle").hash;info["prompt_sha256"]=c.files.at("prompt_text").hash;
+    info["prompt_token_count"]=c.prompt.size();info["host_admission_ids_matched"]=true;
+    info["unmapped_generated_token_ids"]=Array(c.tokenizer->Unmapped(generated));
+    info["invalid_utf8_policy"]="REPLACE_INVALID_OR_INCOMPLETE_SEQUENCES_WITH_U_FFFD";
+    info["unmapped_token_policy"]="U_FFFD_WITH_EXPLICIT_ID_LIST";loop["text_io"]=info;
+    J timing=J::Obj();timing["load_and_encode_us"]=c.text_setup_us;
+    timing["decode_us"]=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now()-start).count());
+    timing["scope"]="BOARD_CPU_TOKENIZER_WALL";loop["text_latency"]=timing;
+#endif
+  }
   void Commit(std::uint32_t token,const std::string& role){Target(token,role);generated.push_back(token);if(c.dump){J event=J::Obj();event["token_id"]=token;event["position"]=prefix.size()-1;event["role"]=role;event["target_step_index"]=targets-1;loop["commits"].a.push_back(event);}Progress();}
  public:
   Supervisor(Config config,fs::path directory):c(std::move(config)),out(std::move(directory)){Safe(out,true);if(c.fast){weight_mapping=std::make_unique<MappedTable>(c.files.at("weight_table"));scale_mapping=std::make_unique<MappedTable>(c.files.at("scale_table"));memory_states.resize(89);features.reserve(64*kFeatureBytes);}else{NewDir(out/"target");NewDir(out/"draft");if(c.prefill)NewDir(out/"prefill");}loop["schema_version"]=1;loop["artifact_kind"]="qwen35-board-local-serial-dflash";loop["evidence_kind"]=kEvidence;loop["status"]="RUNNING";loop["device_execution"]="ATTEMPTED";loop["model_compilation"]="NOT_RUN";loop["numerical_validation"]="NOT_RUN";loop["performance"]="NOT_EVALUATED";loop["state_policy"]="ADVANCE_ONLY_COMMITTED_TOKENS_NO_SPECULATIVE_STATE";loop["control_semantics"]="EXPERIMENTAL_SINGLE_QUERY_ABSOLUTE_POSITION";loop["target_steps"]=J::Arr();loop["draft_steps"]=J::Arr();loop["rounds"]=J::Arr();loop["commits"]=J::Arr();loop["models"]=J::Obj();loop["models"]["target_sha256"]=c.files.at("target_model").hash;loop["models"]["draft_sha256"]=c.files.at("draft_model").hash;loop["config_sha256"]=c.config.hash;loop["target_model_sha256"]=c.files.at("target_model").hash;loop["draft_model_sha256"]=c.files.at("draft_model").hash;loop["draft_abi_sha256"]=c.files.at("draft_abi").hash;loop["runtime_version"]=c.strings.at("runtime_version");loop["ddk_id"]=c.strings.at("ddk_id");loop["firmware_id"]=c.strings.at("firmware_id");loop["process_id"]=static_cast<std::uint64_t>(::getpid());progress["status"]="RUNNING";progress["supervisor_pid"]=static_cast<std::uint64_t>(::getpid());progress["launched_child_count"]=0;progress["completed_child_count"]=0;progress["active_child_count"]=0;progress["last_child_pid"]=J();progress["last_child_exitcode"]=J();progress["child_status"]="NOT_STARTED";if(!c.dump){loop["schema_version"]=2;loop["dump"]=false;loop["retrieval_mode"]="FINAL_TOKENS_ONLY";for(auto key:{"target_steps","draft_steps","rounds","commits"})loop.o.erase(key);}if(c.prefill){loop["prompt_ingestion"]="PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL";loop["prefill_model_sha256"]=c.files.at("prefill_model").hash;loop["models"]["prefill_sha256"]=c.files.at("prefill_model").hash;loop["control_semantics"]="EXPERIMENTAL_PADDED_PREFILL_VALID_LENGTH_NOT_NUMERICALLY_VALIDATED";if(c.dump)loop["prefill_steps"]=J::Arr();}
@@ -833,7 +876,7 @@ class Supervisor {
     stage="resident-close";Progress();Lifecycle("resident-close-start","session="+session_id);session.Close();MemorySnapshot("after-close");Require(session.evidence().closed&&!session.evidence().poisoned,"resident session did not close successfully");Pins();Lifecycle("resident-close-end","session="+session_id);
 #endif
     if(c.dump){Write(out/"final-features.bin",features);auto final=Observe(out/"final-features.bin",features.size(),Hash(features));Keep(final);loop["final_features"]=Record(final,out);loop["final_features"]["dtype"]="float16";loop["final_features"]["shape"]=Array({1,static_cast<std::uint32_t>(prefix.size()),16384});loop["final_target_outputs"]=J::Arr();for(std::size_t i=0;i<outputs.size();++i){const auto& f=outputs[i];Stable(f);Keep(f);J row=Record(f,out);row["index"]=i;row["runtime_name"]=c.outputs[i].name;row["tool_type"]=c.outputs[i].type;loop["final_target_outputs"].a.push_back(row);}loop["final_state_files"]=J::Arr();for(std::size_t i=0;i<states.size();++i){Stable(states[i]);J r=Record(states[i],out);r["source_refdata"]=c.states[i].ref;r["runtime_input_index"]=c.states[i].in;r["runtime_output_index"]=c.states[i].out;loop["final_state_files"].a.push_back(r);}}else if(!c.fast){for(const auto& f:outputs)Stable(f);for(const auto& f:states)Stable(f);PruneOwned(last_target_step);outputs.clear();states.clear();last_target_step.clear();Pins();}
-    loop["status"]="BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED";loop["device_execution"]=std::string(kEvidence)=="device-hiai"?(c.dump?"EXECUTED_BOARD_LOCAL_OUTPUTS_RETAINED":"EXECUTED_BOARD_LOCAL_FINAL_TOKENS_ONLY"):"HOST_FAKE_EXECUTED";loop["eos_policy"]="DISABLED_FIXED_BUDGET_SMOKE";loop["acceptance_scope"]="CONSIDERED_K_ONLY_NOT_ALL15";loop["retrieval_manifest"]="retrieval-manifest.tsv";stage="complete";progress["status"]=loop["status"];Progress();Atomic(out/"loop.json",loop);Keep(out/"loop.json");Keep(out/"progress.json");Manifest();return 0;
+    TextResult();loop["status"]="BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED";loop["device_execution"]=std::string(kEvidence)=="device-hiai"?(c.dump?"EXECUTED_BOARD_LOCAL_OUTPUTS_RETAINED":"EXECUTED_BOARD_LOCAL_FINAL_TOKENS_ONLY"):"HOST_FAKE_EXECUTED";loop["eos_policy"]="DISABLED_FIXED_BUDGET_SMOKE";loop["acceptance_scope"]="CONSIDERED_K_ONLY_NOT_ALL15";loop["retrieval_manifest"]="retrieval-manifest.tsv";stage="complete";progress["status"]=loop["status"];Progress();Atomic(out/"loop.json",loop);Keep(out/"loop.json");Keep(out/"progress.json");Manifest();return 0;
   }catch(const std::exception& e){
 #if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
 #if defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
@@ -842,7 +885,7 @@ class Supervisor {
     try{session.Close();}catch(const std::exception& cleanup){loop["resident_cleanup_error"]=cleanup.what();}
     MemorySnapshot("after-failure-close");progress["resident_call_status"]=session.evidence().closed?"FAILED_CLOSED":"UNRESOLVED";
 #endif
-    loop["status"]="FAILED";loop["error"]=e.what();loop["stage"]=stage;loop["failed_child_pid"]=progress.o.count("last_child_pid")?progress.at("last_child_pid"):J();loop["failed_child_exitcode"]=progress.o.count("last_child_exitcode")?progress.at("last_child_exitcode"):J();progress["status"]="FAILED";Counts();try{Progress();Atomic(out/"loop.json",loop);Keep(out/"loop.json");Keep(out/"progress.json");Manifest();}catch(const std::exception& save){std::cerr<<"failure evidence incomplete: "<<save.what()<<'\n';}std::cerr<<e.what()<<'\n';return 1;}}
+    TextResult();loop["status"]="FAILED";loop["error"]=e.what();loop["stage"]=stage;loop["failed_child_pid"]=progress.o.count("last_child_pid")?progress.at("last_child_pid"):J();loop["failed_child_exitcode"]=progress.o.count("last_child_exitcode")?progress.at("last_child_exitcode"):J();progress["status"]="FAILED";Counts();try{Progress();Atomic(out/"loop.json",loop);Keep(out/"loop.json");Keep(out/"progress.json");Manifest();}catch(const std::exception& save){std::cerr<<"failure evidence incomplete: "<<save.what()<<'\n';}std::cerr<<e.what()<<'\n';return 1;}}
 };
 } // namespace
 int main(int argc,char** argv){

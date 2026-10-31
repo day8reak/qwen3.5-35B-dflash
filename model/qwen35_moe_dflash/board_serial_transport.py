@@ -1688,6 +1688,11 @@ def _retrieve(hdc, out, state, manifest):
     if _full(local_results / 'retrieval-manifest.tsv')['bytes'] != inventory_id['bytes'] or sha256_file(
             local_results / 'retrieval-manifest.tsv') != inventory_id['sha256']:
         raise ValueError('retrieval inventory changed during verification')
+    if 'text_io' in manifest:
+        from .board_tokenizer import validate_text_result
+        validate_text_result(manifest, loop)
+        for key in ('generated_text', 'generated_text_with_special_tokens', 'text_io', 'text_latency'):
+            if key in loop: state[key] = loop[key]
     state.update(loop_report=str(local_results / 'loop.json'), loop=loop,
         retrieval_inventory=inventory_id,
         device_execution='EXECUTED_OUTPUTS_RETRIEVED' if state['completion']['remote_exitcode'] == 0 else 'FAILED_OUTPUTS_RETRIEVED',
@@ -1880,6 +1885,11 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
             remote_paths['resident_abi'] = str(board / 'resident-abi.tsv')
         if _inline_prefill(manifest):
             remote_paths['prefill_abi'] = str(board / 'prefill-abi.tsv')
+        if 'text_io' in manifest:
+            for key, field, name in (('bundle', 'tokenizer_bundle', 'tokenizer.bin'), ('prompt', 'prompt_text', 'prompt.txt')):
+                record = manifest['text_io'][key]
+                uploads.append({'local': record['path'], 'remote': name, 'bytes': record['bytes'], 'sha256': record['sha256']})
+                remote_paths[field] = str(board / name)
         config = make_config(manifest, remote_paths)
         if not isinstance(config, bytes):
             raise TypeError('board serial config serializer must return bytes')

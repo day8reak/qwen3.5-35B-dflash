@@ -836,7 +836,8 @@ def test_prefill_cache_miss_uses_strict_prefill_compiler_record(prepared_request
 
 
 @pytest.mark.parametrize("fast", [False, True])
-def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_relaunches(prepared_request, tmp_path, monkeypatch, fast):
+@pytest.mark.parametrize('text_io', [False, True])
+def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_relaunches(prepared_request, tmp_path, monkeypatch, fast, text_io):
     root, manifest, FakeHdc, _ = prepared_request
     _enable_prefill_request(root, manifest, tmp_path)
     abi = _write(root / 'resident-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n')
@@ -845,6 +846,9 @@ def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_rela
         model_load_api=preparation.MIXED_MODEL_LOAD_API, model_load_apis=dict(preparation.MIXED_MODEL_LOAD_APIS),
         resident_abi=abi, prefill_abi=prefill_abi)
     if fast: manifest.update(dump=False, runtime_profile='compact-memory-v1')
+    if text_io:
+        manifest['text_io'] = {'bundle': _write(root / 'tokenizer.bin', b'transport-only-tokenizer-fixture'),
+            'prompt': _write(root / 'prompt.txt', '你好\n'.encode()), 'prompt_format': 'chat'}
     (root / 'manifest.json').write_text(json.dumps(manifest))
     old = transport._build_payloads; selected = []
     def build(out, timeout, *, resident=False):
@@ -855,6 +859,9 @@ def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_rela
     def config(value, paths):
         assert paths['resident_abi'].endswith('/resident-abi.tsv')
         assert paths['prefill_abi'].endswith('/prefill-abi.tsv')
+        if text_io:
+            assert paths['tokenizer_bundle'].endswith('/tokenizer.bin')
+            assert paths['prompt_text'].endswith('/prompt.txt')
         return old_config(value, paths)
     monkeypatch.setattr(preparation, 'make_config', config)
     started = transport.execute_board_serial(root, tmp_path / 'execution', detach=True)
@@ -867,6 +874,9 @@ def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_rela
         assert started['board_disk_budget']['retained_target_output_bytes'] == 0
     assert any(local == abi['path'] and remote.endswith('/resident-abi.tsv') for local, remote in FakeHdc.instances[0].sends)
     assert any(local == prefill_abi['path'] and remote.endswith('/prefill-abi.tsv') for local, remote in FakeHdc.instances[0].sends)
+    if text_io:
+        for name in ('tokenizer.bin', 'prompt.txt'):
+            assert sum(remote.endswith('/' + name) for local, remote in FakeHdc.instances[0].sends) == 1
     assert not any('TOOL_BYTES' in command or 'sha256sum /data/local/tmp/tools/tool' in command
         for _, command in FakeHdc.instances[0].calls)
     monkeypatch.setattr(transport, '_retrieve', lambda hdc, out, state, value: state.update(completed_native_pids=[12346]))

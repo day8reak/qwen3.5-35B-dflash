@@ -122,11 +122,22 @@ def _options(prompt_length, max_new_tokens, max_proposals_per_round, minimum_dra
 
 
 def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_torchair_pb2,
-        draft_bundle, weight_table, scale_table, prompt_input_ids, output,
+        draft_bundle, weight_table, scale_table, output, prompt_input_ids=None,
         prompt_length=8, max_new_tokens=8, max_proposals_per_round=2,
         minimum_draft_rounds=2, timeout_seconds=7200, lock_wait_seconds=1800,
-        board_model_root='/data/local/tmp/qwen3_5_moe', dump=False, prefill_feedback=None, resident=False):
-    _options(prompt_length, max_new_tokens, max_proposals_per_round, minimum_draft_rounds,
+        board_model_root='/data/local/tmp/qwen3_5_moe', dump=False, prefill_feedback=None, resident=False,
+        text=None, text_file=None, tokenizer_dir=None, prompt_format='chat'):
+    text_requested = text is not None or text_file is not None
+    if text_requested:
+        if (text is not None and text_file is not None or prompt_input_ids is not None or not tokenizer_dir or not resident):
+            raise ValueError('text requires --resident, --tokenizer-dir, and exactly one of --text/--text-file/--prompt-input-ids')
+        if text_file is not None:
+            raw, _ = _read_small(Path(text_file), 16384)
+            text = raw.decode('utf-8', errors='strict')
+    elif tokenizer_dir is not None or prompt_format != 'chat':
+        raise ValueError('tokenizer options require a text prompt')
+    prompt_length = 8 if prompt_length is None else prompt_length
+    _options(1 if text_requested else prompt_length, max_new_tokens, max_proposals_per_round, minimum_draft_rounds,
              timeout_seconds, lock_wait_seconds)
     if type(dump) is not bool or type(resident) is not bool:
         raise ValueError('dump/resident must be explicit booleans')
@@ -140,7 +151,16 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
     out.mkdir(parents=True, exist_ok=False)
     if shutil.disk_usage(out).free < 512 << 20:
         raise ValueError('at least512MiB free host space is required for preparation and final evidence')
-    prompt, prompt_source = _prompt(prompt_input_ids, prompt_length)
+    text_io = None
+    if text_requested:
+        from .board_tokenizer import prepare_text
+        prompt, prompt_source, text_io = prepare_text(tokenizer_dir, text, prompt_format, out)
+        prompt_length = len(prompt)
+        if prompt_length + max_new_tokens > 64:
+            raise ValueError(f"text/template contains {prompt_length} tokens + generation {max_new_tokens} exceeds the current S64 limit; shorten the prompt or generation budget")
+        _options(prompt_length, max_new_tokens, max_proposals_per_round, minimum_draft_rounds, timeout_seconds, lock_wait_seconds)
+    else:
+        prompt, prompt_source = _prompt(prompt_input_ids, prompt_length)
     lookup = OriginalEmbeddingLookup(weight_table, scale_table)
     Target, Draft = _backends()
     target = Target(decode_job, runtime_probe, state_lineage, lookup, out / 'target-binding',
@@ -209,7 +229,8 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
     for path, identity in draft._source_identities.items():
         pins[path] = deepcopy(identity)
     for row in [*tables.values(), primary, abi, prompt_source,
-            *([resident_abi, prefill_abi] if resident_abi else [])]:
+            *([resident_abi, prefill_abi] if resident_abi else []),
+            *([text_io['bundle'], text_io['prompt']] if text_io else [])]:
         if row['path'] in pins and pins[row['path']] != row['identity']:
             raise ValueError('source identity changed across board-loop preparation')
         pins[row['path']] = deepcopy(row['identity'])
@@ -233,6 +254,8 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         'embedding_authenticity': 'FULL_CURRENT_BYTES_BOUND_ORIGINAL_PROVENANCE_NOT_ATTESTED',
         'compiled_weight_access': 'DECLARED_CACHE_HASHES_ONLY_LOCAL_SEND_REQUIRES_FRESH_VALIDATION',
         'model_residency': 'NOT_IMPLEMENTED_FRESH_TARGET_OR_DRAFT_PROCESS_PER_CALL'}
+    if text_io is not None:
+        manifest['text_io'] = text_io
     if prefill is not None:
         manifest['prefill'] = prefill
         manifest['prompt_ingestion'] = prefill['control_recipe']
@@ -269,6 +292,15 @@ def validate_prepared(directory):
     _options(len(prompt), manifest['max_new_tokens'], manifest['max_proposals_per_round'],
              manifest['minimum_draft_rounds'], manifest['timeout_seconds'], manifest['lock_wait_seconds'])
     compact_memory_mode(manifest)
+    if 'text_io' in manifest:
+        info = manifest['text_io']
+        if (manifest.get('execution_mode') != 'resident-mixed' or info.get('prompt_format') not in {'chat', 'raw'}
+                or info.get('execution') != 'BOARD_LOCAL_ENCODE_AND_DECODE'):
+            raise ValueError('unsupported prepared board text mode')
+        for key in ('bundle', 'prompt'):
+            record = info[key]
+            if _hash_source(record['path']) != record:
+                raise ValueError('prepared tokenizer/text bytes changed')
     # Existing prepared requests predate the switch and retain their full dump.
     # Recovery never changes a request's original retention/validation policy.
     if type(manifest.get('dump', True)) is not bool:
@@ -334,9 +366,13 @@ def make_config(manifest, remote_paths):
     lines = ['QWEN35_BOARD_SERIAL\t1']
     if compact_memory_mode(manifest):
         lines.append('runtime_profile\tcompact-memory-v1')
+    if 'text_io' in manifest:
+        lines.append('text_io\tqwen35-text-v1')
     files = {'target_model': manifest['target_model'], 'draft_model': manifest['draft']['model_source'],
         'draft_abi': manifest['draft']['abi'],
         'weight_table': manifest['tables']['weight'], 'scale_table': manifest['tables']['scale']}
+    if 'text_io' in manifest:
+        files.update(tokenizer_bundle=manifest['text_io']['bundle'], prompt_text=manifest['text_io']['prompt'])
     if manifest.get('execution_mode') not in {'resident-v1', 'resident-mixed'}:
         files.update(target_tool=remote_paths['target_tool_record'], draft_runner=remote_paths['draft_runner_record'])
     if 'prefill' in manifest:
@@ -362,6 +398,8 @@ def make_config(manifest, remote_paths):
             'dump': int(dump),
             'timeout_ms': min(manifest['timeout_seconds'] * 1000, 2**32 - 1)}.items():
         lines.append('\t'.join(map(_field, (key, value))))
+    if 'text_io' in manifest:
+        lines.append('prompt_format\t' + manifest['text_io']['prompt_format'])
     if resident:
         lines.append('execution_mode\t' + manifest['execution_mode'])
         if 'target_lifecycle_policy' in manifest:

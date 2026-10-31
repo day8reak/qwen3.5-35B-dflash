@@ -269,3 +269,7 @@ decode1串行verify仍对每个已提交token运行target，主要是正确性�
 ```
 
 文档中的未来阶段不是已实现功能；只有产物和真实证据满足该阶段条件后，才能把对应status从pending／in_progress改为passed。
+
+## 文字入口补充（2026-10-31）
+
+原mixed resident快速模式已由用户运行完成。新增板端原tokenizer文字编码／解码已通过主机对照与fake HIAI全循环，实机待运行。执行[文字版命令](board-text-input-output.md)，同时收集七段draft加载计时；不要另编S128、draft或target模型。保持S64预算、单条user聊天模板和固定生成长度的当前边界。后续产品化单独完善EOS早停、多轮会话及更长上下文；数值差异和接受率仍按P1/P2优先收敛。

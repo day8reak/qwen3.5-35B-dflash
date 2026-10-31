@@ -12,13 +12,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     required = ('decode-job', 'runtime-probe', 'state-lineage', 'source-torchair-pb2',
-                'draft-bundle', 'weight-table', 'scale-table', 'prompt-input-ids')
+                'draft-bundle', 'weight-table', 'scale-table')
     for name in required:
         parser.add_argument('--' + name)
+    prompt = parser.add_mutually_exclusive_group()
+    prompt.add_argument('--prompt-input-ids')
+    prompt.add_argument('--text', help='UTF-8 user text; encoded on board with the original tokenizer')
+    prompt.add_argument('--text-file', help='UTF-8 text file, useful for multiline prompts')
+    parser.add_argument('--tokenizer-dir', help='Pinned original tokenizer source directory (prepare_board_tokenizer.py output/source)')
+    parser.add_argument('--prompt-format', choices=('chat', 'raw'), default='chat', help='chat: single user, thinking disabled; raw: no template')
     parser.add_argument('--prefill-feedback', help='Completed all80 prefill/decode mapping directory; enables one actual prefill64 call with explicit short-prompt padding controls')
     parser.add_argument('--output', required=True)
     parser.add_argument('--recover', help='Existing board-loop job or its board execution directory; never launches inference')
-    parser.add_argument('--prompt-length', type=int, default=8)
+    parser.add_argument('--prompt-length', type=int, help='Token-file prefix length, default8; text length is derived automatically')
     parser.add_argument('--max-new-tokens', type=int, default=8)
     parser.add_argument('--max-proposals-per-round', type=int, default=2)
     parser.add_argument('--minimum-draft-rounds', type=int, default=2)
@@ -33,10 +39,14 @@ def main(argv=None):
         help='Required for new runs: V2 prefill once, resident V2 decode and V1 embedded draft; historical policies are recover-only')
     args = parser.parse_args(argv)
     if args.recover:
-        if args.apply or args.detach or args.dump is not None or args.resident is not None or args.prefill_feedback is not None or any(getattr(args, name.replace('-', '_')) is not None for name in required):
+        if any(v is not None for v in (args.text, args.text_file, args.prompt_input_ids, args.tokenizer_dir)) or args.prompt_format != 'chat' or args.apply or args.detach or args.dump is not None or args.resident is not None or args.prefill_feedback is not None or any(getattr(args, name.replace('-', '_')) is not None for name in required):
             parser.error('--recover uses the original prepared dump mode; omit --dump, --apply and model arguments')
     elif any(getattr(args, name.replace('-', '_')) is None for name in required):
         parser.error('new runs require ' + ', '.join('--' + name for name in required))
+    elif all(v is None for v in (args.text, args.text_file, args.prompt_input_ids)):
+        parser.error('provide --text, --text-file, or --prompt-input-ids')
+    elif (args.text is not None or args.text_file is not None) and args.prompt_length is not None:
+        parser.error('--prompt-length is for token files; text uses its full encoded length')
     elif not args.resident:
         parser.error('new runs require --resident for explicit mixed-API residency; old modes support historical --recover only')
     elif args.detach and not args.apply:
@@ -63,6 +73,7 @@ def main(argv=None):
     keys += ('execution_mode', 'model_load_api', 'model_load_apis', 'resident_lifecycle', 'resident_memory', 'target_lifecycle_policy')
     keys += ('external_weight_release', 'runtime_profile', 'native_api_latency',
              'diagnostics', 'intermediate_tensor_io', 'startup_payload_validation')
+    keys += ('generated_text', 'generated_text_with_special_tokens', 'text_io', 'text_latency')
     keys += ('execution_failure_stage', 'resident_failure_stage', 'prefill_failure_stage', 'prefill_lifecycle')
     print(json.dumps({key: result[key] for key in keys if key in result}, ensure_ascii=False, allow_nan=False), flush=True)
     return 0 if result.get('status') in {'BOARD_SERIAL_DFLASH_PLANNED', 'BOARD_SERIAL_DFLASH_STARTED',

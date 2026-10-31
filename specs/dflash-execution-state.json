@@ -7,7 +7,7 @@
   "overall_status": "in_progress",
   "active_phase": "P5",
   "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
-  "user_priority": "User explicitly requests dump=false disable tensor validation and intermediate board file IO for practical speed. New mixed-resident fast requests use memory feedback, extent-only owned-cache reuse, and isolated synchronous Run/Process timing; no model or weight changes.",
+  "user_priority": "Add board-local original-tokenizer text input/output to the successful mixed resident compact loop, retaining load diagnosis and all original model weights; user runs device.",
   "status_policy": {
     "allowed": [
       "pending",
@@ -1034,7 +1034,10 @@
     "next": "Run one fresh loadtiming request; measure before choosing a loading change."
   },
   "text_interface_task": {
-    "status": "IN_PROGRESS",
-    "goal": "Board-local UTF-8 text encoding, autonomous existing model loop, decoded generated text; original tokenizer pinned; no inter-token server dependency."
+    "status": "HOST_VALIDATED_BOARD_EXECUTION_PENDING",
+    "goal": "Board-local original tokenizer encode/decode and autonomous full model loop",
+    "validation": "specs/board-text-host-validation.json",
+    "document": "docs/board-text-input-output.md",
+    "next": "User runs dflash-board-text8-run then recovers dflash-board-text8-recovery; same run also includes draft load phase timing. Continue numerical closure after frontend/load observation."
   }
 }
