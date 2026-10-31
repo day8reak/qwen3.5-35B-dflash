@@ -61,9 +61,9 @@ def compile_incremental_draft(export_dir, output, *, timeout_seconds=7200, tbe_d
         'status': 'FAILED', 'stage': 'bind-export', 'output': str(root),
         'model_compilation': 'NOT_RUN', 'device_execution': 'NOT_RUN',
         'numerical_validation': 'NOT_RUN_INCREMENTAL_DEVICE',
-        'runtime_integration': 'PENDING_INCREMENTAL_NATIVE_ADAPTER_AND_RUNTIME_DESCRIPTOR_CHECK',
+        'runtime_integration': 'PENDING_COMPILED_MODEL_AND_DEVICE_RUNTIME_CHECK',
         'full_loop_smoke': 'NOT_RUN_NEW_INCREMENTAL_MODEL', 'weight_files_copied': 0,
-        'next': 'Retain the exact compiled model and ABI; next implement 12-KV native integration and run a separate full board-local smoke'}
+        'next': 'Complete compilation/ABI/packing before running the incremental board-local smoke'}
     bound = None
     notify = progress or (lambda message: None)
     try:
@@ -142,7 +142,9 @@ def compile_incremental_draft(export_dir, output, *, timeout_seconds=7200, tbe_d
         result.update(model=model, weight_storage='embedded-stream',
             inputs=abi['inputs'], outputs=abi['outputs'], compiled_abi_file=_record(root / 'compiled-abi.json', root),
             weight_packing=_record(root / 'weight-packing.json', root),
-            status='DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND', stage='complete')
+            status='DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND', stage='complete',
+            runtime_integration='READY_FOR_INCREMENTAL_RESIDENT_ADAPTER_DEVICE_NOT_RUN',
+            next='Use run_board_serial_dflash.py --incremental-draft with this directory and its exact --max-draft-tokens gear; retain the original S64 bundle')
     except Exception as error:
         result['error'] = f'{type(error).__name__}: {error}'
     finally:

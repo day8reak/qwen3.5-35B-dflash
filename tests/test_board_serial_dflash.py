@@ -386,3 +386,34 @@ def test_fast_profile_cannot_silently_change_historical_execution(manifest):
 
 def test_historical_compact_remains_diagnostic():
     assert job.compact_memory_mode(dict(dump=False, execution_mode='resident-mixed')) is False
+
+
+def test_incremental_preparation_reuses_target_and_binds_new_model(sources, monkeypatch):
+    from qwen35_moe_dflash import board_prefill_binding
+    from test_incremental_draft_runtime import compiled_fixture
+    options, _, model = sources
+    compiled = options['output'].parent / 'incremental-compiled'
+    source = compiled_fixture(compiled)
+    source['ddk_id'] = 'fixture-ddk'
+    (compiled / 'manifest.json').write_text(json.dumps(source))
+    monkeypatch.setattr(board_prefill_binding, 'prepare_prefill_binding', lambda *args: dict(model=model,
+        base_plan=dict(runtime_probe=str(options['runtime_probe'])), source_bindings=[],
+        control_recipe=board_prefill_binding.RECIPE))
+    def abi(binding, probe, output, **kwargs):
+        return dict(write(Path(output), b'HOST NAMED TARGET ABI FIXTURE'), inputs=[{}]*89, outputs=[{}]*82)
+    monkeypatch.setattr(job, '_resident_abi', abi)
+    Target, _ = job._backends()
+    class ForbiddenOldDraft:
+        def __init__(self, *a, **k):
+            pytest.fail('incremental preparation must not instantiate the old S64 Draft')
+    monkeypatch.setattr(job, '_backends', lambda: (Target, ForbiddenOldDraft))
+    options.pop('draft_bundle')
+    result = job.run_board_serial_dflash(**options, incremental_draft=compiled, max_draft_tokens=15,
+        resident=True, prefill_feedback=options['state_lineage'], draft_preread=True)
+    assert result['status'] == 'BOARD_SERIAL_DFLASH_PLANNED', result
+    manifest = job.validate_prepared(result['prepared'])
+    assert manifest['draft']['variant'] == 'incremental-context-kv-v1'
+    assert manifest['draft']['model_source']['path'] == str(compiled/'model/model.omc')
+    assert manifest['draft']['abi']['path'].endswith('incremental-draft-abi.json')
+    assert len(manifest['draft']['inputs']) == 17 and len(manifest['draft']['outputs']) == 14
+    assert not list(options['output'].rglob('*.omc'))

@@ -27,7 +27,8 @@ struct ResidentSession::Impl {
   ResidentSessionEvidence record;
   std::vector<std::size_t> input_sizes,output_sizes;
   std::vector<HiaiTensorStorage> storage;
-  bool load_attempted=false, diagnostics=true;
+  bool load_attempted=false, diagnostics=true, incremental=false;
+  std::vector<HiaiTensorSpec> draft_inputs=kDraftInputs,draft_outputs=kDraftOutputs;
 
   std::vector<HiaiTensorStorage> CurrentStorage() const {
     auto result=target_v1?target_v1->tensor_storage():target->tensor_storage();
@@ -37,7 +38,7 @@ struct ResidentSession::Impl {
   }
   void VerifyStorage(bool first=false) {
     const auto current=CurrentStorage();
-    if(current.size()!=89+82+3+2 || (!first && current.size()!=storage.size()))
+    if(current.size()!=input_sizes.size()+output_sizes.size()+draft_inputs.size()+draft_outputs.size() || (!first && current.size()!=storage.size()))
       throw HiaiRuntimeError("LIVE_STORAGE","resident tensor count changed");
     for(std::size_t i=0;i<current.size();++i) {
       const auto& row=current[i];
@@ -104,11 +105,11 @@ struct ResidentSession::Impl {
     auto& total=is_target?record.target_run_ms:record.draft_run_ms;
     ++attempts;
     try {
-      const auto count=is_target?input_sizes.size():kDraftInputs.size();
+      const auto count=is_target?input_sizes.size():draft_inputs.size();
       if(inputs.size()!=count)throw std::invalid_argument("resident call must supply every ordered input");
       // Validate the complete list before modifying any live tensor.
       for(std::size_t i=0;i<count;++i)
-        if(inputs[i].size()!=(is_target?input_sizes[i]:HiaiTensorBytes(kDraftInputs[i])))
+        if(inputs[i].size()!=(is_target?input_sizes[i]:HiaiTensorBytes(draft_inputs[i])))
           throw std::invalid_argument("resident input differs from exact bound byte extent");
       if(diagnostics)VerifyStorage();
       for(std::size_t i=0;i<count;++i) {
@@ -118,10 +119,10 @@ struct ResidentSession::Impl {
       if(is_target){if(target_v1)target_v1->Execute();else target->Execute();}else draft->Execute();
       if(diagnostics)VerifyStorage();
       ResidentRunResult result;
-      const auto outputs=is_target?output_sizes.size():(diagnostics?kDraftOutputs.size():1);
+      const auto outputs=is_target?output_sizes.size():((diagnostics||incremental)?draft_outputs.size():1);
       for(std::size_t i=0;i<outputs;++i) {
         auto bytes=is_target?(target_v1?target_v1->CopyOutput(i):target->CopyOutput(i)):draft->CopyOutput(i);
-        if(bytes.size()!=(is_target?output_sizes[i]:HiaiTensorBytes(kDraftOutputs[i])))
+        if(bytes.size()!=(is_target?output_sizes[i]:HiaiTensorBytes(draft_outputs[i])))
           throw std::runtime_error("resident copied output extent changed");
         result.outputs.push_back(std::move(bytes));
       }
@@ -164,6 +165,11 @@ void ResidentSession::Load(const ResidentSessionConfig& config) {
   impl_->load_attempted=true;auto& r=impl_->record;r.status="LOADING";r.stage="VALIDATE_SESSION";
   try {
     impl_->diagnostics=config.diagnostics;
+    if(config.incremental_draft.enabled()) {
+      config.incremental_draft.Validate();
+      if(config.model_load_api!="target-v2-draft-v1")throw std::invalid_argument("incremental Draft requires mixed residency");
+      impl_->incremental=true;impl_->draft_inputs=config.incremental_draft.inputs;impl_->draft_outputs=config.incremental_draft.outputs;
+    }
     if(config.draft_preread && r.model_load_api!="target-v2-draft-v1")
       throw std::invalid_argument("draft preread requires mixed runtime");
     if(!config.diagnostics && r.model_load_api!="target-v2-draft-v1")throw std::invalid_argument("compact memory requires mixed runtime");
@@ -188,7 +194,7 @@ void ResidentSession::Load(const ResidentSessionConfig& config) {
     if(impl_->target_v1)r.target_v1_lifecycle=impl_->target_v1->lifecycle();else r.target_lifecycle=impl_->target->lifecycle();
     r.stage="DRAFT_LOAD";++r.draft_load_attempts;start=Clock::now();
     try {impl_->draft=std::make_unique<HiaiStatefulExecutor>(config.draft_model,config.runtime_version,
-        kDraftInputs,kDraftOutputs,config.timeout_ms,false,0,true,r.model_load_api=="file-v2"?"file-v2":"legacy-buffer",r.draft_model_name,&r.draft_v1_lifecycle,
+        impl_->draft_inputs,impl_->draft_outputs,config.timeout_ms,false,0,true,r.model_load_api=="file-v2"?"file-v2":"legacy-buffer",r.draft_model_name,&r.draft_v1_lifecycle,
         impl_->target_v1?impl_->target_v1->tensor_storage():impl_->target->tensor_storage(),config.diagnostics,config.draft_preread);}
     catch(...){r.draft_load_ms+=Milliseconds(start);if(!r.draft_v1_lifecycle.cleanup_error.empty())r.cleanup_error+=" draft construction: "+r.draft_v1_lifecycle.cleanup_error;throw;}
     r.draft_load_ms+=Milliseconds(start);++r.draft_loads;

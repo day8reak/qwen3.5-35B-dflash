@@ -234,6 +234,13 @@ AIStatus AiModelMngerClient::GetModelIOTensorDim(const std::string& n,std::vecto
   else if(n=="qwen35_resident_draft") {
     in={TensorDimension({1,64,16384}),TensorDimension({1,64}),TensorDimension({1,64})};
     out={TensorDimension({1,15}),TensorDimension({1,15,2048})};
+    if(const auto* gear=std::getenv("FAKE_HIAI_INCREMENTAL_K")) {
+      const auto k=static_cast<std::uint32_t>(std::stoul(gear));
+      in={TensorDimension({1,16,16384}),TensorDimension({1}),TensorDimension({1}),TensorDimension({1}),TensorDimension({1})};
+      out={TensorDimension({1,k}),TensorDimension({1,k,2048})};
+      for(unsigned i=0;i<12;++i){in.emplace_back(std::vector<std::uint32_t>{1,8,192,128});out.emplace_back(std::vector<std::uint32_t>{1,8,192,128});}
+      if(std::getenv("FAKE_HIAI_INCREMENTAL_REVERSE"))std::reverse(in.begin(),in.end());
+    }
   }
   else if(n=="qwen35_standalone_draft") {
     in={TensorDimension({1,8,16384}),TensorDimension({1,8}),TensorDimension({1,8})};
@@ -333,7 +340,33 @@ AIStatus AiModelMngerClient::Process(AiContext& c,std::vector<std::shared_ptr<Ai
     if(Failure()=="v1-process-unknown")throw 17;
     if(Failure()=="v1-process"||(Failure()=="v1-draft-process"&&name_=="qwen35_resident_draft"))return 82;
     const std::string marker(static_cast<const char*>(model_buffer_),model_bytes_);
-    if(name_=="qwen35_resident_draft") {
+    if(name_=="qwen35_resident_draft"&&std::getenv("FAKE_HIAI_INCREMENTAL_K")) {
+      // Byte-transport/cache sentinel fixture, NOT the Draft attention math.
+      if(in.size()!=17||out.size()!=14)return 101;
+      auto tensor=[&](unsigned i){return in[std::getenv("FAKE_HIAI_INCREMENTAL_REVERSE")?16-i:i];};
+      auto scalar=[&](unsigned i){return *static_cast<const std::uint32_t*>(tensor(i)->GetBuffer());};
+      const auto start=scalar(1),valid=scalar(2),anchor=scalar(3),count=scalar(4);
+      const auto k=static_cast<unsigned>(std::stoul(std::getenv("FAKE_HIAI_INCREMENTAL_K")));
+      if(start+valid>192||valid>16||(count!=0&&count!=k))return 102;
+      const auto* features=static_cast<const std::uint16_t*>(tensor(0)->GetBuffer());
+      for(unsigned row=0;row<16;++row)for(unsigned col=0;col<16384;++col)
+        if(features[row*16384+col]!=(row<valid?0x3800:0))return 103;
+      for(unsigned bank=0;bank<12;++bank) {
+        const auto* old=static_cast<const std::uint16_t*>(tensor(5+bank)->GetBuffer());
+        auto* next=static_cast<std::uint16_t*>(out[2+bank]->GetBuffer());
+        for(unsigned head=0;head<8;++head)for(unsigned row=0;row<192;++row)for(unsigned col=0;col<128;++col) {
+          const auto idx=(head*192+row)*128+col;
+          const auto sentinel=std::uint16_t(0x3000+bank*64+row);
+          if(old[idx]!=(row<start?sentinel:0))return 104;
+          next[idx]=row<start+valid?sentinel:0;
+        }
+      }
+      const bool reject=std::getenv("FAKE_HIAI_INCREMENTAL_REJECT")!=nullptr;
+      for(unsigned i=0;i<k;++i)static_cast<std::uint32_t*>(out[0]->GetBuffer())[i]=anchor+1+i+(reject?1:0);
+      std::memset(out[1]->GetBuffer(),0,out[1]->GetSize());
+      Trace(("incremental:"+std::to_string(start)+":"+std::to_string(valid)+":"+std::to_string(count)).c_str());
+      if(Failure()=="incremental-invalid-token")static_cast<std::uint32_t*>(out[0]->GetBuffer())[0]=248320;
+    } else if(name_=="qwen35_resident_draft") {
       if(in.size()!=3||out.size()!=2)return 83;
       const auto* ids=static_cast<const std::int32_t*>(in[1]->GetBuffer());
       const auto* mask=static_cast<const std::int32_t*>(in[2]->GetBuffer());

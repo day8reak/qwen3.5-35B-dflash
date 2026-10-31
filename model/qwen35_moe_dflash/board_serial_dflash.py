@@ -122,11 +122,18 @@ def _options(prompt_length, max_new_tokens, max_proposals_per_round, minimum_dra
 
 
 def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_torchair_pb2,
-        draft_bundle, weight_table, scale_table, output, prompt_input_ids=None,
+        weight_table, scale_table, output, draft_bundle=None, incremental_draft=None,
+        max_draft_tokens=None, prompt_input_ids=None,
         prompt_length=8, max_new_tokens=8, max_proposals_per_round=2,
         minimum_draft_rounds=2, timeout_seconds=7200, lock_wait_seconds=1800,
         board_model_root='/data/local/tmp/qwen3_5_moe', dump=False, prefill_feedback=None, resident=False,
         text=None, text_file=None, tokenizer_dir=None, prompt_format='chat', draft_preread=False):
+    if (draft_bundle is None) == (incremental_draft is None):
+        raise ValueError('select exactly one --draft-bundle or --incremental-draft')
+    if incremental_draft is not None and (not resident or dump or type(max_draft_tokens) is not int or max_draft_tokens not in (1, 3, 7, 15)):
+        raise ValueError('incremental Draft requires --resident, dump=false and explicit --max-draft-tokens 1/3/7/15')
+    if incremental_draft is None and max_draft_tokens is not None:
+        raise ValueError('--max-draft-tokens belongs to the new incremental compiled gear')
     text_requested = text is not None or text_file is not None
     if text_requested:
         if (text is not None and text_file is not None or prompt_input_ids is not None or not tokenizer_dir or not resident):
@@ -170,10 +177,20 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         timeout_seconds=timeout_seconds, lock_wait_seconds=lock_wait_seconds)
     target_preflight = target.preflight(prompt)
     resident_abi = _resident_abi(target.binding, runtime_probe, out / 'resident-abi.tsv', runtime_api='file-v2') if resident else None
-    draft = Draft(draft_bundle, out / 'draft-binding', runtime_version=target.runtime_version,
-        firmware_id=target.firmware_id, timeout_seconds=timeout_seconds,
-        lock_wait_seconds=lock_wait_seconds)
-    draft_preflight = draft.preflight()
+    draft = None
+    incremental_binding = None
+    draft_pins = {}
+    if incremental_draft is not None:
+        from .incremental_draft_runtime import bind_compiled
+        incremental_binding, draft_pins = bind_compiled(incremental_draft, out,
+            ddk_id=target.binding['base_plan']['ddk_id'], max_draft_tokens=max_draft_tokens,
+            max_proposals=max_proposals_per_round, total_tokens=prompt_length + max_new_tokens)
+    else:
+        draft = Draft(draft_bundle, out / 'draft-binding', runtime_version=target.runtime_version,
+            firmware_id=target.firmware_id, timeout_seconds=timeout_seconds,
+            lock_wait_seconds=lock_wait_seconds)
+        draft_preflight = draft.preflight()
+        draft_pins = draft._source_identities
     base = target.binding['base_plan']
     prefill = None
     if prefill_feedback is not None:
@@ -185,7 +202,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         prefill_abi = _resident_abi({'base_plan': prefill['base_plan'],
             'active_source_identities': prefill['source_bindings']},
             prefill['base_plan']['runtime_probe'], out / 'prefill-abi.tsv', prefix='prefill', runtime_api='file-v2')
-    if (draft._source['ddk_id'] != base['ddk_id']
+    if draft is not None and (draft._source['ddk_id'] != base['ddk_id']
             or draft._source['outputs'] != [
                 {'index': 0, 'name': 'draft_top1', 'dtype': 'int32', 'shape': [1, 15]},
                 {'index': 1, 'name': 'draft_hidden', 'dtype': 'float16', 'shape': [1, 15, 2048]}]):
@@ -213,10 +230,17 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         raise ValueError('target payload inventory must contain one unique primary OMC')
     tables = {'weight': _hash_source(weight_table, 508559360),
               'scale': _hash_source(scale_table, 993280)}
-    model = draft_preflight['model_source']
-    abi = _hash_source(Path(draft_bundle) / draft._source['draft_abi']['path'])
-    if abi['sha256'] != draft._source['draft_abi']['sha256']:
-        raise ValueError('draft ABI changed after the complete source-bundle validation')
+    if incremental_binding is not None:
+        model, abi = incremental_binding['model_source'], incremental_binding['abi']
+        draft_binding = incremental_binding
+    else:
+        model = draft_preflight['model_source']
+        abi = _hash_source(Path(draft_bundle) / draft._source['draft_abi']['path'])
+        if abi['sha256'] != draft._source['draft_abi']['sha256']:
+            raise ValueError('draft ABI changed after the complete source-bundle validation')
+        draft_binding = {'model_source': model, 'abi': abi, 'source_bundle': str(Path(draft_bundle).resolve()),
+            'outputs': deepcopy(draft._source['outputs']), 'direct_spec': deepcopy(draft._source.get('direct_spec')),
+            'ddk_id': draft._source['ddk_id']}
     primary = _hash_source(base['primary_model_binding']['path'], base['primary_model_binding']['bytes'])
     if primary['sha256'] != base['model_sha256']:
         raise ValueError('actual target primary differs from the executed same-model SHA')
@@ -228,7 +252,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
             if row['path'] in pins and pins[row['path']] != row['identity']:
                 raise ValueError('prefill/decode source identity differs during request preparation')
             pins[row['path']] = deepcopy(row['identity'])
-    for path, identity in draft._source_identities.items():
+    for path, identity in draft_pins.items():
         pins[path] = deepcopy(identity)
     for row in [*tables.values(), primary, abi, prompt_source,
             *([resident_abi, prefill_abi] if resident_abi else []),
@@ -244,9 +268,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         'lock_wait_seconds': lock_wait_seconds, 'board_model_root': board_model_root,
         'target_binding': target.binding, 'target_preflight': target_preflight,
         'target_compiled': compiled, 'target_payloads': payloads, 'target_model': primary,
-        'draft': {'model_source': model, 'abi': abi, 'source_bundle': str(Path(draft_bundle).resolve()),
-            'outputs': deepcopy(draft._source['outputs']), 'direct_spec': deepcopy(draft._source.get('direct_spec')),
-            'ddk_id': draft._source['ddk_id']},
+        'draft': draft_binding,
         'tables': tables, 'source_bindings': [{'path': path, 'identity': identity} for path, identity in sorted(pins.items())],
         'model_compilation': 'NOT_RUN', 'device_execution': 'NOT_RUN',
         'numerical_validation': 'NOT_EVALUATED', 'performance': 'NOT_EVALUATED',
@@ -295,6 +317,14 @@ def validate_prepared(directory):
         raise ValueError('prepared prompt IDs are invalid')
     _options(len(prompt), manifest['max_new_tokens'], manifest['max_proposals_per_round'],
              manifest['minimum_draft_rounds'], manifest['timeout_seconds'], manifest['lock_wait_seconds'])
+    if manifest['draft'].get('variant'):
+        from .incremental_draft_runtime import VARIANT, validate_abi
+        spec = manifest['draft']
+        validate_abi(spec)
+        if (spec['variant'] != VARIANT or manifest.get('execution_mode') != 'resident-mixed'
+                or manifest.get('dump') is not False or manifest['max_proposals_per_round'] > spec['max_draft_tokens']
+                or len(prompt) + manifest['max_new_tokens'] - 1 > spec['cache_capacity']):
+            raise ValueError('invalid incremental resident request')
     compact_memory_mode(manifest)
     draft_preread_mode(manifest)
     if 'text_io' in manifest:
@@ -380,6 +410,8 @@ def make_config(manifest, remote_paths):
     lines = ['QWEN35_BOARD_SERIAL\t1']
     if compact_memory_mode(manifest):
         lines.append('runtime_profile\tcompact-memory-v1')
+    if manifest['draft'].get('variant'):
+        lines.append('draft_variant\t' + manifest['draft']['variant'])
     if draft_preread_mode(manifest):
         lines.append('draft_preread\tsequential-1m-v1')
     if 'text_io' in manifest:

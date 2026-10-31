@@ -1,5 +1,6 @@
 #pragma once
 #include "qwen35_dflash/hiai_executor.hpp"
+#include "qwen35_dflash/incremental_draft.hpp"
 
 namespace qwen35::dflash {
 struct ResidentSessionConfig {
@@ -8,6 +9,7 @@ struct ResidentSessionConfig {
   std::vector<HiaiBoundRuntimeTensor> target_inputs, target_outputs;
   std::uint32_t timeout_ms = 300000;
   std::string model_load_api = "file-v2";
+  IncrementalDraftAbi incremental_draft;
   bool diagnostics = true;
   bool draft_preread = false;
 };

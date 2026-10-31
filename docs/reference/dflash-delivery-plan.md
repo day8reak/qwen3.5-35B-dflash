@@ -40,7 +40,7 @@
 | 原prefill＋混合接口常驻闭环 | 用户实机prefill1／decode8／draft7；target/draft各Load1，循环在板端完成 | 物理断连、数值等价、重复稳定性与独立权重释放仍待验收 |
 | 内存循环与draft预读 | 默认不dump时无中间张量文件I/O；显式预读后总请求31.455秒、draft加载3.883秒 | 单次运行观察，不能作为DFlash算法加速或重复性能验收 |
 | tokenizer文字接口及离线准备 | 原词表与板端编码／解码已通过主机对照；离线准备在禁止网络调用下通过 | 文字＋预读合并请求尚待用户实机运行 |
-| 增量draft缓存图 | `ge_incremental_draft.py`及独立主机等价测试已存在 | **没有新增AIR／OMC／实机增量ABI通过结果** |
+| 增量draft缓存图与运行器 | C16／cap192／K15 AIR已导出，17／14常驻适配与四档主机模拟已通过 | 新OMC实编结果、实机增量ABI与独立精度待回传 |
 | 精度／稳定性／2倍加速 | 待完成 | 不从有限值、exit0或host测试推断通过 |
 
 主机逐步调度、row63试验、serial-prompt子里程碑及旧加载接口失败见[历史索引](../history/README.md)，不再作为当前复现入口。
@@ -137,7 +137,7 @@ P0 已实现根据该映射交接实际状态、从本次 prefill logits 查原 
 
 旧S64只能接受完整prefix≤64。跨过容量前，不能截断历史、重置RoPE、篡改manifest尺寸或循环旧features。S128全前缀可作独立对照方案，**不是DFlash算法必需步骤**，不与增量路线同时开两条大编译主线。
 
-已实现：`ge_incremental_draft.py`，C16／C64新feature块、4个INT32控制（start_position／valid_rows／anchor／proposal_count）、12个FP16 K/V输入；包含hidden时14输出（Top1、hidden、12缓存）。主机结构与独立完整前缀oracle已测。新增export_incremental_draft.py导出入口、只读71权重绑定、四档真实计算形状和分块追赶调度；主机检查通过；用户已回传C16／cap192／K15的DDK AIR导出成功（air-v1）。新增compile_incremental_draft.py：逐文件引用原权重、沿用成功DDK／编译配置、检查FP32计算与17／14接口，再打包新OMC。OMG实编和板端接入待执行。
+已实现：`ge_incremental_draft.py`，C16／C64新feature块、4个INT32控制（start_position／valid_rows／anchor／proposal_count）、12个FP16 K/V输入；包含hidden时14输出（Top1、hidden、12缓存）。主机结构与独立完整前缀oracle已测。新增export_incremental_draft.py导出入口、只读71权重绑定、四档真实计算形状和分块追赶调度；主机检查通过；用户已回传C16／cap192／K15的DDK AIR导出成功（air-v1）。新增compile_incremental_draft.py：逐文件引用原权重、沿用成功DDK／编译配置、检查FP32计算与17／14接口，再打包新OMC。新增17／14常驻适配：板端12路KV、C16分块追赶、缓存输出完整检查后提交、提案与追赶分别计数；四档主机模拟已覆盖。OMG实编结果及新KV模型完整板端保通待回传。首次保通总prefix仍≤64，后续再扩展Target请求控制。
 
 需要依次完成：
 

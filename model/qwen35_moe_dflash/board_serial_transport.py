@@ -1403,6 +1403,33 @@ def validate_retrieved_loop(manifest, directory, *, _expected_evidence_kind='dev
     return loop
 
 
+def _incremental_counts(manifest, loop, counts, prefix, *, success):
+    spec = manifest['draft']
+    if not spec.get('variant'):
+        if 'draft_kv' in loop:
+            raise ValueError('S64 request cannot inherit incremental KV evidence')
+        return counts['draft_native_calls']
+    from .incremental_draft_runtime import VARIANT, GEOMETRY
+    kv = loop.get('draft_kv', {})
+    names = ('cached_context_rows', 'cache_updates', 'catchup_calls', 'proposal_calls')
+    if (kv.get('variant') != VARIANT or any(kv.get(k) != spec[k] for k in GEOMETRY)
+            or any(type(kv.get(k)) is not int or kv[k] < 0 for k in names)
+            or kv.get('cache_policy') != 'COMMITTED_CONTEXT_ONLY_ANCHOR_AND_PROPOSALS_EXCLUDED'
+            or kv.get('state_storage') != 'TWELVE_BOARD_MEMORY_BANKS'
+            or kv.get('numerical_validation') != 'NOT_EVALUATED'
+            or kv['cache_updates'] != kv['catchup_calls'] + kv['proposal_calls']
+            or kv['cache_updates'] > counts['draft_native_calls']
+            or counts['draft_native_calls'] - kv['cache_updates'] > (0 if success else 1)
+            or kv['cached_context_rows'] > min(spec['cache_capacity'], max(0, len(prefix)-1))
+            or kv['cached_context_rows'] > kv['cache_updates'] * spec['context_rows']):
+        raise ValueError('incremental KV geometry/call/cursor accounting differs')
+    if success and (kv['proposal_calls'] != loop.get('completed_rounds')
+            or kv['cached_context_rows'] < len(manifest['prompt_token_ids'])
+            or not 1 <= len(prefix)-1-kv['cached_context_rows'] <= manifest['max_proposals_per_round']+1):
+        raise ValueError('incremental KV final cursor does not match the last proposal round')
+    return kv['proposal_calls']
+
+
 def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='device-hiai',
                               _expected_config_sha256=None, _remote_exitcode=0):
     """Check compact token/completion evidence, without replaying state or proposals."""
@@ -1470,10 +1497,11 @@ def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='d
         raise ValueError('serial request cannot inherit an unrequested prefill variant')
     if (not isinstance(counts, dict) or any(type(counts.get(key)) is not int or counts[key] < 0 for key in keys)
             or counts['target_native_calls'] > len(prompt) + manifest['max_new_tokens']
-            or counts['draft_native_calls'] > manifest['max_new_tokens']
+            or counts['draft_native_calls'] > manifest['max_new_tokens'] + (64 if manifest['draft'].get('variant') else 0)
             or prefill and not 0 <= counts['prefill_native_calls'] <= 1
             or counts['considered'] != counts['accepted'] + counts['corrections']):
         raise ValueError('compact native/acceptance counts are malformed or inconsistent')
+    proposal_calls = _incremental_counts(manifest, loop, counts, prefix, success=success)
     if resident:
         _resident_lifecycle(loop, manifest, success=success)
         _resident_progress(loop, progress, success=success)
@@ -1520,13 +1548,13 @@ def validate_retrieved_tokens(manifest, directory, *, _expected_evidence_kind='d
     if success and (len(generated) != manifest['max_new_tokens'] or prefix != prompt + generated
             or counts['target_native_calls'] != (len(generated) if prefill else len(prompt) + len(generated))
             or prefill and counts['prefill_native_calls'] != 1
-            or not manifest['minimum_draft_rounds'] <= counts['draft_native_calls'] <= counts['considered']
-            or counts['considered'] > counts['draft_native_calls'] * manifest['max_proposals_per_round']
-            or counts['corrections'] > counts['draft_native_calls'] or counts['bonuses'] > counts['draft_native_calls']
+            or not manifest['minimum_draft_rounds'] <= proposal_calls <= counts['considered']
+            or counts['considered'] > proposal_calls * manifest['max_proposals_per_round']
+            or counts['corrections'] > proposal_calls or counts['bonuses'] > proposal_calls
             or len(generated) != 1 + counts['considered'] + counts['bonuses']
-            or type(loop.get('completed_rounds')) is not int or loop.get('completed_rounds') != counts['draft_native_calls']
+            or type(loop.get('completed_rounds')) is not int or loop.get('completed_rounds') != proposal_calls
             or loop.get('eos_policy') != 'DISABLED_FIXED_BUDGET_SMOKE'
-            or loop.get('acceptance_scope') != 'CONSIDERED_K_ONLY_NOT_ALL15'):
+            or loop.get('acceptance_scope') != ('CONSIDERED_PROPOSALS_ONLY' if manifest['draft'].get('variant') else 'CONSIDERED_K_ONLY_NOT_ALL15')):
         raise ValueError('compact fixed-budget request or considered-only accounting is incomplete')
     if not success and (not isinstance(loop.get('error'), str) or not loop['error'].strip()
             or loop.get('failed_child_pid') is not None and (not children
@@ -1739,7 +1767,7 @@ def _retrieve(hdc, out, state, manifest):
             if isinstance(prefill_stage, str) and prefill_stage:
                 state['prefill_failure_stage'] = prefill_stage
     for key in ('acceptance', 'phase_latency', 'supervisor_timing', 'native_api_latency',
-                'runtime_profile', 'diagnostics', 'intermediate_tensor_io', 'startup_payload_validation'):
+                'runtime_profile', 'diagnostics', 'intermediate_tensor_io', 'startup_payload_validation', 'draft_kv'):
         if key in loop:
             state[key] = loop[key]
     if _resident_mode(manifest):

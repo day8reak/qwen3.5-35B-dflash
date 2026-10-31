@@ -1,6 +1,6 @@
 # 当前阶段测试命令
 
-增量Draft的C16／缓存192／K15 AIR已在DDK主机导出成功：17输入、14输出、六层12份KV缓存，不复制原权重。当前执行下一步OMG编译、接口检查和内嵌权重打包。Target精度继续独立调试，新批量verify暂不开发。
+增量Draft的C16／缓存192／K15 AIR已在DDK主机导出成功：17输入、14输出、六层12份KV缓存，不复制原权重。新增17／14接口的常驻运行适配：12路KV保存在板端内存，按已提交上下文分块追加。主机模拟已覆盖四档候选；新OMC的实编结果与板端接通仍待回传。Target精度继续独立调试，新批量verify暂不开发。
 
 ## 采集当前S64 Draft算子耗时
 
@@ -51,9 +51,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/targets/cpro/scripts/compile_increm
 
 预期`DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND`，包含17输入、14输出。编译后检查FP32计算路径及KV形状／类型，再生成新`model/model.omc`。每30秒显示编译等待状态，完整日志保留在`compilation/compile.log`。失败时保留目录，不覆盖重试。
 
-## 查看并回传结果
+## 检查编译结果
 
-这一步不运行板端，也不表示新KV版本已接通。拿到实际编译接口后接入12路缓存，再跑完整板端文字→Prefill→Draft／decode1串行验证→文字闭环。整体保通暂不按精度或接受率验收；Draft独立精度另测。当前新编译目录不能直接传给旧流程的`--draft-bundle`。
+编译成功后执行下面的新KV闭环。使用`--incremental-draft`绑定新目录，不能传给旧S64的`--draft-bundle`；运行时按编译后的实际输入槽位加载，检查SDK返回的形状和字节数。
 
 ```bash
 python3 - <<'PYCODE'
@@ -68,3 +68,42 @@ print(json.dumps({k: d.get(k) for k in keys}, ensure_ascii=False, indent=2))
 print("manifest:", p)
 PYCODE
 ```
+
+## 新KV Draft完整文字闭环
+
+前提是上面的编译状态成功。若编译成功目录实际叫`compiled-v1`，把`INCREMENTAL_COMPILED`改为那个目录。第一次保通继续使用prompt＋生成≤64，先不扩展Target控制；Draft缓存容量为192。`max-draft-tokens`必须等于所编译档位，`max-proposals-per-round`仅限制本次串行验证数量。其他档位须分别导出并编译。
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+export MAX_DRAFT_TOKENS=15
+export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft-kv-c16-cap192-k15-compiled-v2"
+export TOKENIZER_DIR="${TOKENIZER_DIR:-$AI_RUN_DIR/tokenizer-offline/source}"
+export RUN_DIR="$AI_RUN_DIR/dflash-kv-c16-k15-text8-run"
+export RECOVERY_DIR="$AI_RUN_DIR/dflash-kv-c16-k15-text8-recovery"
+
+python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
+  --decode-job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
+  --runtime-probe "$AI_RUN_DIR/target-decode1-runtime-io-v2" \
+  --state-lineage "$AI_RUN_DIR/target-decode1-state-lineage-v7" \
+  --source-torchair-pb2 "$AI_RUN_DIR/target-decode1-row-response/ge_ir_by_protoc_3_19_pb2.py" \
+  --incremental-draft "$INCREMENTAL_COMPILED" \
+  --max-draft-tokens "$MAX_DRAFT_TOKENS" \
+  --weight-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_weight.bin" \
+  --scale-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_scale.bin" \
+  --prefill-feedback "$AI_RUN_DIR/target-prefill64-decode1-feedback-plan-v2" \
+  --tokenizer-dir "$TOKENIZER_DIR" --text '你好，请介绍一下自己。' \
+  --max-new-tokens 8 --max-proposals-per-round 2 \
+  --resident --draft-preread --apply --detach \
+  --output "$RUN_DIR"
+```
+
+等待完成后回收同一次请求。新模型首次需要上传；原Prefill／Decode及权重缓存复用，只构建新版运行程序。中途不与服务器交换token或KV，不开启dump。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
+  --recover "$RUN_DIR" --output "$RECOVERY_DIR"
+```
+
+结果新增`draft_kv`：`cached_context_rows`为已经写入的上下文行数，`catchup_calls`为只补上下文的调用数，`proposal_calls`为生成候选的调用数。18-token prompt的首轮会执行16＋2两块，其中第一块不计提案轮次；后续只补新增已提交特征。`phase_latency.draft`统计所有原生调用，含追赶，不能直接当成稳定提案时延。最新anchor和未接受候选不写入持久KV。末轮提交的token不需要再给Draft提案，因此最终游标会落后于最终prefix。
+
+本阶段通过标准：原Prefill一次、Decode与新Draft各加载一次、至少两轮提案、12路缓存持续推进、最终返回文字／tokens和时延。接受率可以为0；不代表Draft独立精度通过，也不宣称已加速。当前仍复制KV输入／输出，尚非零拷贝。
