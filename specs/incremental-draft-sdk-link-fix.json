@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-incremental-draft-sdk-link-fix",
+  "date": "2026-10-31",
+  "status": "HOST_REGRESSION_PASSED_DDK_RETRY_PENDING",
+  "user_observation": {
+    "status": "FAILED",
+    "error": "ValueError: symlink is unsupported: /home/w00949577/ascend/cann-9.1.0/lib64",
+    "stage": "SDK_LIBRARY_BINDING_BEFORE_OUTPUT_CREATION",
+    "model_compilation": "NOT_RUN",
+    "device_execution": "NOT_RUN"
+  },
+  "cause": "Artifact/weight no-symlink helper was incorrectly applied to SDK installation lib64/header/library paths.",
+  "fix": "Resolve SDK directory and versioned file links before regular-file checks; preserve original libgraph SHA256 pin and track resolved SDK paths through export. Model artifacts and prepared weight paths retain original strict checks.",
+  "host_tests_passed": 50,
+  "checks": [
+    "include/lib64 directory links and graph header link",
+    "versioned libgraph.so and optional libgraph_base.so",
+    "resolved compiler include/link/rpath and exporter library path",
+    "original library hash rejection for changed contents",
+    "dangling SDK link rejection",
+    "link retarget during exporter execution rejection even for identical bytes",
+    "prepared weight symlink remains rejected",
+    "existing incremental and capacity export regressions"
+  ],
+  "test_report": {
+    "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T024308Z-32635-7354bd/out/tests.xml",
+    "sha256": "577ce40aed121dd442fcb4345014cc5a23f8c80c1a5825bb81f3628a682ee53e"
+  },
+  "sources": {
+    "model/qwen35_moe_dflash/draft_capacity_export.py": "e7f3fb29c828edb67ebdc01607ae0b95cd7a8f5d4c655212f8cc6b8a7fae77c6",
+    "model/qwen35_moe_dflash/incremental_draft_export.py": "7f9ea8794f6b282f7d30abb9389b3040d4a44d90c6c6062a24b0b2dd50cc2fbb",
+    "tests/test_incremental_draft_export.py": "ce06e248fe31f9f2a6a41c95c726942e3395f71c9f0bed5ebc67cc4d4404791b"
+  },
+  "assistant_device_calls": 0,
+  "shared_sdk_mutation": "NONE",
+  "actual_selected_ddk_retry": "NOT_RUN_USER_EXECUTES",
+  "next": "Pull main and rerun incremental AIR export in a fresh v2 output directory."
+}

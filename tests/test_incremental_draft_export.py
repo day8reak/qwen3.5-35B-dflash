@@ -114,3 +114,90 @@ def test_full35b_geometry_keeps_fc_compatibility_and_six_residual_pairs(tmp_path
     assert len(projection['replaced']) == 1 and len(residual['replaced']) == 12
     assert all(row['shape'] == [1, width + 1, 2048] for row in residual['replaced'])
     assert graph.outputs[0].shape == (1, width)
+
+
+def linked_sdk(ge):
+    """Typical toolkit layout: include/lib64 aliases plus versioned .so."""
+    arch = ge / 'arch'; arch.mkdir()
+    for name in ('include', 'lib64'):
+        (ge / name).rename(arch / name)
+        (ge / name).symlink_to('arch/' + name, target_is_directory=True)
+    library = arch / 'lib64/libgraph.so'
+    library.rename(library.with_name('libgraph.so.1'))
+    library.symlink_to('libgraph.so.1')
+    base = arch / 'lib64/libgraph_base.so.1'; base.write_bytes(b'fixture graph base')
+    base.with_name('libgraph_base.so').symlink_to(base.name)
+    header = arch / 'include/graph/graph.h'
+    header.rename(header.with_name('graph-v1.h'))
+    header.symlink_to('graph-v1.h')
+    return arch
+
+
+def test_incremental_recipe_build_uses_resolved_sdk_directories_and_accepts_versioned_library(prepared, tmp_path, monkeypatch):
+    root, plan = prepared
+    before = snapshot(root)
+    ge = fake_ge(tmp_path); arch = linked_sdk(ge)
+    calls = tools(monkeypatch)
+    result = cap._export_source(root, plan, tmp_path / 'out', ge, sequence_length=16,
+        residual_policy='cpu-fp32-add', _incremental_options={'cache_capacity': 192, 'max_draft_tokens': 3})
+    assert result['status'] == 'HOST_FIXTURE_INCREMENTAL_AIR_EXPORTED'
+    argv = calls[0][0]
+    assert argv[argv.index('-I') + 1] == str(arch / 'include')
+    assert argv[argv.index('-L') + 1] == str(arch / 'lib64')
+    assert '-lgraph_base' in argv
+    assert calls[1][1]['env']['LD_LIBRARY_PATH'].split(':')[0] == str(arch / 'lib64')
+    assert result['sdk_path_bindings'][str(ge / 'lib64/libgraph.so')]['resolved'] == str(arch / 'lib64/libgraph.so.1')
+    assert len(result['outputs']) == 14 and before == snapshot(root)
+
+
+def test_public_export_still_matches_original_library_hash_through_sdk_links(bound_job, tmp_path, monkeypatch):
+    job, ge, _ = bound_job
+    linked_sdk(ge)
+    def export(prepared, plan, output, sdk, **options):
+        output.mkdir()
+        return {'source_weight_identities': [], 'status': 'HOST_FIXTURE_INCREMENTAL_AIR_EXPORTED'}
+    monkeypatch.setattr(inc, '_export_source', export)
+    result = inc.export_incremental_draft(job, tmp_path / 'out')
+    assert result['libgraph_sha256'] == cap.sha256_file(ge / 'lib64/libgraph.so')
+    assert (ge / 'lib64').is_symlink()
+
+
+@pytest.mark.parametrize('fault', ['changed_library', 'dangling_library'])
+def test_sdk_link_support_does_not_bypass_original_library_content_pin(bound_job, tmp_path, monkeypatch, fault):
+    job, ge, _ = bound_job
+    arch = linked_sdk(ge)
+    payload = arch / 'lib64/libgraph.so.1'
+    if fault == 'changed_library':
+        payload.write_bytes(b'other SDK')
+    else:
+        payload.unlink()
+    monkeypatch.setattr(inc, '_export_source', lambda *a, **kw: pytest.fail('invalid SDK must fail before build'))
+    with pytest.raises((ValueError, FileNotFoundError)):
+        inc.export_incremental_draft(job, tmp_path / 'out')
+    assert not (tmp_path / 'out').exists()
+
+
+def test_sdk_link_retarget_during_export_is_rejected_even_with_identical_bytes(prepared, tmp_path, monkeypatch):
+    root, plan = prepared
+    ge = fake_ge(tmp_path); arch = linked_sdk(ge)
+    link = arch / 'lib64/libgraph.so'
+    other = arch / 'lib64/libgraph.so.2'
+    other.write_bytes(link.read_bytes())
+    def retarget():
+        link.unlink()
+        link.symlink_to(other.name)
+    tools(monkeypatch, during_export=retarget)
+    with pytest.raises(ValueError, match='SDK path changed'):
+        cap._export_source(root, plan, tmp_path / 'out', ge, sequence_length=16,
+            residual_policy='cpu-fp32-add', _incremental_options={'cache_capacity': 192, 'max_draft_tokens': 3})
+
+
+def test_sdk_link_support_does_not_relax_prepared_weight_path_checks(prepared, tmp_path, monkeypatch):
+    root, plan = prepared
+    weight = root / next(iter(plan['weights'].values()))['path']
+    payload = weight.with_suffix('.payload'); weight.rename(payload)
+    weight.symlink_to(payload.name)
+    monkeypatch.setattr(cap, '_logged', lambda *a, **kw: pytest.fail('must reject weight link before build'))
+    with pytest.raises(ValueError, match='symlink is unsupported'):
+        cap._export_source(root, plan, tmp_path / 'out', fake_ge(tmp_path), sequence_length=16,
+            residual_policy='cpu-fp32-add', _incremental_options={'cache_capacity': 192, 'max_draft_tokens': 3})

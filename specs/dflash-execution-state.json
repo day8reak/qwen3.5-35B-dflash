@@ -338,7 +338,7 @@
     "type": "export_incremental_draft_air_on_ddk",
     "implementation_required": false,
     "command_document": "docs/current-status.md",
-    "note": "Run one C16/cache192/K15 incremental Draft AIR export from the immutable successful prepared weights. Continue Draft-only compile/runtime, fixed-feature reference comparisons, then per-stage performance. Do not start Target verify while its accuracy is unresolved."
+    "note": "Pull main and retry C16/cache192/K15 export into v2 directory. SDK include/lib64 and versioned .so links are resolved with the original library hash still checked. New AIR and OMC remain pending."
   },
   "last_actual_execution": {
     "schema_version": 1,
@@ -606,7 +606,8 @@
       ],
       "evidence": [
         "specs/incremental-draft-export-host-validation.json",
-        "specs/incremental-draft-reference-review.json"
+        "specs/incremental-draft-reference-review.json",
+        "specs/incremental-draft-sdk-link-fix.json"
       ],
       "last_error": null,
       "numerical_acceptance_depends_on": [
@@ -977,7 +978,9 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "UNCHANGED_S64_PREFIX_RECOMPUTE",
-    "next_command": "targets/cpro/scripts/export_incremental_draft.py --job \"$AI_RUN_DIR/full-draft\" --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 --output \"$AI_RUN_DIR/draft-kv-c16-cap192-k15-air-v1\""
+    "next_command": "targets/cpro/scripts/export_incremental_draft.py --job \"$AI_RUN_DIR/full-draft\" --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 --output \"$AI_RUN_DIR/draft-kv-c16-cap192-k15-air-v2\"",
+    "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
+    "selected_ddk_attempt": "FAILED_SDK_SYMLINK_BINDING_HOST_FIX_PASSED_RETRY_PENDING"
   },
   "draft_milestone_e2e_gate": {
     "policy": "EVERY_EXECUTABLE_DRAFT_MILESTONE_REQUIRES_BOARD_LOCAL_FULL_LOOP_SMOKE",

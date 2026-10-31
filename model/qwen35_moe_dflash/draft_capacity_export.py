@@ -26,6 +26,37 @@ _SMALL_OUTPUT_BUDGET = 256 << 20
 _RESERVE = 128 << 20
 
 
+def _sdk_path(path, *, directory=False):
+    """Resolve SDK installation links only; artifact/weight checks stay strict."""
+    resolved = Path(path).expanduser().resolve(strict=True)
+    return _safe(resolved, directory=directory)[0]
+
+
+def _sdk_layout(ge_root):
+    ge = _sdk_path(ge_root, directory=True)
+    include = _sdk_path(ge / 'include', directory=True)
+    lib = _sdk_path(ge / 'lib64', directory=True)
+    references = [ge / 'include', ge / 'lib64',
+                  ge / 'include/graph/graph.h', ge / 'include/graph/operator.h',
+                  ge / 'lib64/libgraph.so']
+    base = ge / 'lib64/libgraph_base.so'
+    if base.exists() or base.is_symlink():
+        references.append(base)
+    paths, files = {}, {}
+    for index, reference in enumerate(references):
+        resolved = _sdk_path(reference, directory=index < 2)
+        paths[str(reference)] = {'resolved': str(resolved), 'directory': index < 2}
+        if index >= 2:
+            files[str(resolved)] = _current(resolved)[1]
+    return include, lib, paths, files
+
+
+def _stable_sdk_paths(paths):
+    for reference, row in paths.items():
+        if str(_sdk_path(reference, directory=row['directory'])) != row['resolved']:
+            raise ValueError('selected GE SDK path changed during export: ' + reference)
+
+
 def _current(path):
     path, stamp = _safe(path)
     current = _identity(path.stat())
@@ -116,10 +147,7 @@ def _export_source(prepared, plan, output, ge_root, *, sequence_length, residual
         if identity['bytes'] != row['bytes'] or sha256_file(path) != row['sha256'] or _current(path)[1] != identity:
             raise ValueError('prepared weight bytes or active identity changed: ' + key)
         paths[key], sources[str(path)] = str(path), identity
-    ge, _ = _safe(ge_root, directory=True)
-    include, lib = ge / 'include', ge / 'lib64'
-    for path in (include / 'graph/graph.h', include / 'graph/operator.h', lib / 'libgraph.so'):
-        _safe(path)
+    include, lib, sdk_paths, sdk_files = _sdk_layout(ge_root)
     compiler = shutil.which(cxx)
     if compiler is None:
         raise FileNotFoundError('C++ compiler is unavailable: ' + cxx)
@@ -164,6 +192,10 @@ def _export_source(prepared, plan, output, ge_root, *, sequence_length, residual
     if not 0 < air_stat[2] <= 64 << 20:
         raise ValueError('capacity AIR must be nonempty bounded external-weight metadata')
     _stable([], sources)
+    _stable_sdk_paths(sdk_paths)
+    for path, identity in sdk_files.items():
+        if _current(path)[1] != identity:
+            raise ValueError('selected GE SDK file changed during export: ' + path)
     for row in construction:
         path = root / row['path']
         if path.stat().st_size != row['bytes'] or sha256_file(path) != row['sha256']:
@@ -178,7 +210,8 @@ def _export_source(prepared, plan, output, ge_root, *, sequence_length, residual
         'draft_layers': 6, 'draft_width': graph.outputs[0].shape[1], 'feature_width': config.feature_size,
         'inputs': [{'name': value.name, 'shape': list(value.shape), 'dtype': value.dtype} for value in graph.inputs],
         'outputs': [{'name': value.name, 'shape': list(value.shape), 'dtype': value.dtype} for value in graph.outputs],
-        'direct_spec': spec, 'source_export_contract': CURRENT_DRAFT_EXPORT_CONTRACT + EXPORT_SUFFIX + '-direct-outputs-v1',
+        'direct_spec': spec, 'sdk_path_bindings': sdk_paths,
+        'source_export_contract': CURRENT_DRAFT_EXPORT_CONTRACT + EXPORT_SUFFIX + '-direct-outputs-v1',
         'source_prepared_root': str(prepared), 'file_constant_root': str(prepared), 'file_constant_policy': 'cpro-relative-int',
         'file_constant_path_base': 'ORIGINAL_PREPARED_ROOT_EXPLICIT_REFERENCE',
         'source_weight_bytes': sum(row['bytes'] for row in plan['weights'].values()), 'weight_files_copied': 0,
@@ -223,9 +256,9 @@ def _bind_source_job(job, ge_root=None):
             or bundle.get('draft_config') != prepared.get('draft_config') or bundle.get('sequence_length') != prepared.get('sequence_length')
             or bundle.get('export_manifest_sha256') != original_id['sha256'] or bundle.get('weight_storage') != 'embedded-stream'):
         raise ValueError('source residual-fix AIR and embedded bundle do not bind this complete preparation')
-    selected_ge = Path(ge_root or original['ge_root']).expanduser().resolve()
+    selected_ge = _sdk_path(ge_root or original['ge_root'], directory=True)
     selected_library = selected_ge / 'lib64/libgraph.so'
-    library, library_id = _current(selected_library)
+    library, library_id = _current(_sdk_path(selected_library))
     if sha256_file(library) != original.get('libgraph_sha256') or _current(library)[1] != library_id:
         raise ValueError('selected GE library differs from the successful source exporter')
     return dict(bindings=bindings, source_id=source_id, prepared_root=prepared_root,
@@ -256,6 +289,8 @@ def export_draft_capacity(job, output, *, sequence_length=128, prompt_length=64,
         original_sources = {row['path']: row['identity'] for row in result['source_weight_identities']}
         original_sources[str(library)] = library_id
         _stable(bindings, original_sources)
+        if _sdk_path(selected_ge / 'lib64/libgraph.so') != library:
+            raise ValueError('selected GE library link changed during export')
         result.update(schema_version=1, artifact_kind='qwen35-draft-capacity-air', output=str(destination),
             invocation_token=invocation, source_job=source_id, source_prepared=prepared_id,
             source_air_manifest=original_id, source_bundle_manifest=bundle_id,

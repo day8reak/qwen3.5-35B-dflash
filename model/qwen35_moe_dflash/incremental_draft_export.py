@@ -6,7 +6,7 @@ import uuid
 
 from .artifacts import output_path, save_json
 from .config import Qwen35DFlashConfig
-from .draft_capacity_export import _bind_source_job, _export_source, _stable
+from .draft_capacity_export import _bind_source_job, _export_source, _stable, _sdk_path
 from .ge_export import configurations
 from .ge_incremental_draft import _validate
 from .target_compile_failure import _read_small, _safe
@@ -35,6 +35,8 @@ def export_incremental_draft(job, output, *, context_rows=16, cache_capacity=192
         sources = {row['path']: row['identity'] for row in result['source_weight_identities']}
         sources[str(bound['library'])] = bound['library_id']
         _stable(bound['bindings'], sources)
+        if _sdk_path(bound['selected_ge'] / 'lib64/libgraph.so') != bound['library']:
+            raise ValueError('selected GE library link changed during export')
         result.update(schema_version=1, artifact_kind='qwen35-incremental-draft-air',
             output=str(destination), invocation_token=invocation,
             source_job=bound['source_id'], source_prepared=bound['prepared_id'],

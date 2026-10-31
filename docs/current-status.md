@@ -6,12 +6,12 @@
 
 ## 导出一个候选档位
 
-在原DDK主机沿用项目环境。先导出15档；需要其他档位时将变量改为7、3或1，并使用新的输出目录。四档是不同计算形状，不能只修改旧OMC的manifest。
+已修复SDK的include/lib64目录与版本化库符号链接兼容问题，无需改动SDK或重新复制权重。在原DDK主机沿用项目环境。先导出15档；需要其他档位时将变量改为7、3或1，并使用新的输出目录。四档是不同计算形状，不能只修改旧OMC的manifest。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 export MAX_DRAFT_TOKENS=15
-export INCREMENTAL_AIR="$AI_RUN_DIR/draft-kv-c16-cap192-k${MAX_DRAFT_TOKENS}-air-v1"
+export INCREMENTAL_AIR="$AI_RUN_DIR/draft-kv-c16-cap192-k${MAX_DRAFT_TOKENS}-air-v2"
 
 PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
   --job "$AI_RUN_DIR/full-draft" \
