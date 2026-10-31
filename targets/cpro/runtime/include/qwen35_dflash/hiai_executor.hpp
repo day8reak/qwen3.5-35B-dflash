@@ -165,6 +165,8 @@ struct HiaiLegacyLifecycle {
   std::string failure_stage, cleanup_error;
   std::vector<HiaiLegacyRuntimeTensor> observed_inputs, observed_outputs;
   std::vector<HiaiLoadPhase> load_phases;
+  bool preread_requested=false;
+  std::uint64_t preread_bytes=0;
 };
 
 // One immutable graph, synchronous execution, caller-owned ordered tensor flow.
@@ -183,7 +185,7 @@ class HiaiStatefulExecutor final {
                       const std::string& resident_model_name = "",
                       HiaiLegacyLifecycle* constructor_failure_snapshot = nullptr,
                       const std::vector<HiaiTensorStorage>& disjoint_from = {},
-                      bool diagnostics = true);
+                      bool diagnostics = true, bool model_preread = false);
   ~HiaiStatefulExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
   void Execute();

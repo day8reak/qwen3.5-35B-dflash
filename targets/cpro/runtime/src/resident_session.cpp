@@ -164,6 +164,8 @@ void ResidentSession::Load(const ResidentSessionConfig& config) {
   impl_->load_attempted=true;auto& r=impl_->record;r.status="LOADING";r.stage="VALIDATE_SESSION";
   try {
     impl_->diagnostics=config.diagnostics;
+    if(config.draft_preread && r.model_load_api!="target-v2-draft-v1")
+      throw std::invalid_argument("draft preread requires mixed runtime");
     if(!config.diagnostics && r.model_load_api!="target-v2-draft-v1")throw std::invalid_argument("compact memory requires mixed runtime");
     if(config.model_load_api!=r.model_load_api)throw std::invalid_argument("resident configured API differs from session policy");
     if(config.target_inputs.size()!=89 || config.target_outputs.size()!=82 || !config.timeout_ms ||
@@ -187,7 +189,7 @@ void ResidentSession::Load(const ResidentSessionConfig& config) {
     r.stage="DRAFT_LOAD";++r.draft_load_attempts;start=Clock::now();
     try {impl_->draft=std::make_unique<HiaiStatefulExecutor>(config.draft_model,config.runtime_version,
         kDraftInputs,kDraftOutputs,config.timeout_ms,false,0,true,r.model_load_api=="file-v2"?"file-v2":"legacy-buffer",r.draft_model_name,&r.draft_v1_lifecycle,
-        impl_->target_v1?impl_->target_v1->tensor_storage():impl_->target->tensor_storage(),config.diagnostics);}
+        impl_->target_v1?impl_->target_v1->tensor_storage():impl_->target->tensor_storage(),config.diagnostics,config.draft_preread);}
     catch(...){r.draft_load_ms+=Milliseconds(start);if(!r.draft_v1_lifecycle.cleanup_error.empty())r.cleanup_error+=" draft construction: "+r.draft_v1_lifecycle.cleanup_error;throw;}
     r.draft_load_ms+=Milliseconds(start);++r.draft_loads;
     if(r.model_load_api!="file-v2")r.draft_v1_lifecycle=impl_->draft->legacy_lifecycle();

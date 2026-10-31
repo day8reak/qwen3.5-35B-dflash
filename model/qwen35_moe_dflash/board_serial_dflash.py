@@ -126,7 +126,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         prompt_length=8, max_new_tokens=8, max_proposals_per_round=2,
         minimum_draft_rounds=2, timeout_seconds=7200, lock_wait_seconds=1800,
         board_model_root='/data/local/tmp/qwen3_5_moe', dump=False, prefill_feedback=None, resident=False,
-        text=None, text_file=None, tokenizer_dir=None, prompt_format='chat'):
+        text=None, text_file=None, tokenizer_dir=None, prompt_format='chat', draft_preread=False):
     text_requested = text is not None or text_file is not None
     if text_requested:
         if (text is not None and text_file is not None or prompt_input_ids is not None or not tokenizer_dir or not resident):
@@ -141,6 +141,8 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
              timeout_seconds, lock_wait_seconds)
     if type(dump) is not bool or type(resident) is not bool:
         raise ValueError('dump/resident must be explicit booleans')
+    if type(draft_preread) is not bool or draft_preread and not resident:
+        raise ValueError('draft_preread must be boolean and requires mixed residency')
     if resident and prefill_feedback is None:
         raise ValueError('resident-mixed requires the bound original prefill feedback mapping')
     if (not isinstance(board_model_root, str)
@@ -271,6 +273,8 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
             model_residency='REQUESTED_V2_PREFILL_ONCE_V2_DECODE_AND_V1_DRAFT_LOADED_ONCE_UNVALIDATED')
     if resident and not dump:
         manifest['runtime_profile'] = 'compact-memory-v1'
+    if draft_preread:
+        manifest['draft_preread'] = 'sequential-1m-v1'
     save_json(out / 'manifest.json', manifest)
     (out / 'manifest.sha256').write_text(sha256_file(out / 'manifest.json') + '\n')
     return validate_prepared(out)
@@ -292,6 +296,7 @@ def validate_prepared(directory):
     _options(len(prompt), manifest['max_new_tokens'], manifest['max_proposals_per_round'],
              manifest['minimum_draft_rounds'], manifest['timeout_seconds'], manifest['lock_wait_seconds'])
     compact_memory_mode(manifest)
+    draft_preread_mode(manifest)
     if 'text_io' in manifest:
         info = manifest['text_io']
         if (manifest.get('execution_mode') != 'resident-mixed' or info.get('prompt_format') not in {'chat', 'raw'}
@@ -357,6 +362,15 @@ def compact_memory_mode(manifest):
     return True
 
 
+def draft_preread_mode(manifest):
+    if 'draft_preread' not in manifest:
+        return False  # Preserve prior requests and their load measurements.
+    if (manifest['draft_preread'] != 'sequential-1m-v1'
+            or manifest.get('execution_mode') != 'resident-mixed'):
+        raise ValueError('unsupported prepared draft preread policy')
+    return True
+
+
 def make_config(manifest, remote_paths):
     """Serialize only explicit validated native ABI rows, never inferred order."""
     base = manifest['target_binding']['base_plan']
@@ -366,6 +380,8 @@ def make_config(manifest, remote_paths):
     lines = ['QWEN35_BOARD_SERIAL\t1']
     if compact_memory_mode(manifest):
         lines.append('runtime_profile\tcompact-memory-v1')
+    if draft_preread_mode(manifest):
+        lines.append('draft_preread\tsequential-1m-v1')
     if 'text_io' in manifest:
         lines.append('text_io\tqwen35-text-v1')
     files = {'target_model': manifest['target_model'], 'draft_model': manifest['draft']['model_source'],
@@ -449,6 +465,8 @@ def run_board_serial_dflash(*, output, apply=False, detach=False, **options):
         manifest = prepare_board_serial(output=out / 'prepared', **options)
         result['prepared'] = manifest['output']
         result['dump'] = manifest.get('dump', True)
+        if draft_preread_mode(manifest):
+            result['draft_preread'] = manifest['draft_preread']
         if compact_memory_mode(manifest):
             result['runtime_profile'] = manifest['runtime_profile']
         result['prompt_ingestion'] = manifest['prompt_ingestion']

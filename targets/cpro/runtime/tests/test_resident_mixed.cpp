@@ -1,4 +1,6 @@
 #include "qwen35_dflash/resident_session.hpp"
+#include "qwen35_dflash/model_preread.hpp"
+#include <fcntl.h>
 #include <tensor/nd_tensor_buffer.h>
 #include <algorithm>
 #include <cstdlib>
@@ -53,6 +55,21 @@ void Diagnostic(const ResidentRunResult& r,std::size_t count){
 }
 int main(int argc,char** argv){try{
   Require(argc==2,"expected output directory");const auto root=fs::absolute(argv[1]);fs::create_directories(root/"weights");
+  {
+    const auto p=root/"preread-fixture";
+    const std::string bytes((2U<<20)+17,'x');std::ofstream(p,std::ios::binary).write(bytes.data(),bytes.size());
+    const int fd=open(p.c_str(),O_RDONLY);Require(fd>=0,"fixture open failed");
+    lseek(fd,7,SEEK_SET);std::uint64_t count=0;
+    detail::SequentialModelPreread(fd,bytes.size(),count);
+    Require(count==bytes.size()&&lseek(fd,0,SEEK_CUR)==7,"preread lost tail bytes or changed descriptor position");
+    std::ifstream in(p,std::ios::binary);Require(std::string(std::istreambuf_iterator<char>(in),{})==bytes,"preread mutated bytes");
+    count=0;bool failed=false;
+    try{detail::SequentialModelPreread(fd,bytes.size()+1,count);}catch(const std::runtime_error&){failed=true;}
+    Require(failed&&count==bytes.size(),"short file preread was accepted or partial count lost");close(fd);
+    count=0;failed=false;
+    try{detail::SequentialModelPreread(-1,1,count);}catch(const std::runtime_error&){failed=true;}
+    Require(failed&&count==0,"read failure ignored");
+  }
   std::ofstream(root/"target.omc")<<"original-target-fixture";
   std::ofstream(root/"draft.omc")<<"draft-resident64-fixture";
   ResidentSessionConfig config{root/"target.omc",root/"weights",root/"draft.omc","FAKE-HIAI-X90",Contract(true),Contract(false),300000,"target-v2-draft-v1"};
@@ -120,9 +137,13 @@ int main(int argc,char** argv){try{
     Require(e.target_lifecycle.manager_deinit_returned==(fault!="original-deinit"),"void DeInit return was fabricated");
     session.Close();events=Trace(path);Require(Count(events,"v2-deinit")==1&&Count(events,"unload")==1&&Count(events,"v2-deinit-weights")==0,"failed cleanup retried");
   }
-  Failure("");config.diagnostics=false;
+  Failure("");config.diagnostics=false;config.draft_preread=true;
   {
     const auto path=trace("compact-memory");ResidentSession session("target-v2-draft-v1");session.Load(config);
+    const auto& load=session.evidence().draft_v1_lifecycle;
+    Require(load.preread_requested&&load.preread_bytes==fs::file_size(config.draft_model),"preread extent missing");
+    Require(load.load_phases.size()==8&&load.load_phases[3].phase=="MODEL_PREREAD"&&load.load_phases[3].completed,
+      "preread not measured before SDK Load");
     auto inputs=TargetInputs(config);
     for(std::size_t step=0;step<3;++step){
       auto target=session.RunTarget(inputs);

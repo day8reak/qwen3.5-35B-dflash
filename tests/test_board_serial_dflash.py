@@ -218,7 +218,8 @@ def test_prefill_v1_abi_retains_v2_descriptor_provenance_without_invented_sdk_na
     assert mixed['runtime_validation'] == 'V2_NAMED_RAW_DESCRIPTOR_AND_BYTE_EXTENT_REQUIRED'
 
 
-def test_new_mixed_preparation_pins_named_abis_and_keeps_source_models_read_only(sources, monkeypatch):
+@pytest.mark.parametrize('preread', [False, True])
+def test_new_mixed_preparation_pins_named_abis_and_keeps_source_models_read_only(sources, monkeypatch, preread):
     options, _, model = sources
     from qwen35_moe_dflash import board_prefill_binding
     before = job._current(model['path'])[1]
@@ -232,11 +233,13 @@ def test_new_mixed_preparation_pins_named_abis_and_keeps_source_models_read_only
         return dict(record, inputs=[{}] * 89, outputs=[{}] * 82,
             descriptor_provenance='HISTORICAL_FILE_V2_NAMED_MODEL_IO_PROBE')
     monkeypatch.setattr(job, '_resident_abi', abi)
-    result = job.run_board_serial_dflash(**options, resident=True, prefill_feedback=options['state_lineage'])
+    result = job.run_board_serial_dflash(**options, resident=True, prefill_feedback=options['state_lineage'], draft_preread=preread)
     assert result['status'] == 'BOARD_SERIAL_DFLASH_PLANNED', result
     manifest = json.loads((Path(result['prepared']) / 'manifest.json').read_text())
     assert selected == [('target', 'file-v2'), ('prefill', 'file-v2')]
     assert manifest['runtime_profile'] == 'compact-memory-v1'
+    assert job.draft_preread_mode(manifest) is preread
+    assert result.get('draft_preread') == manifest.get('draft_preread')
     assert manifest['execution_mode'] == 'resident-mixed'
     assert manifest['target_lifecycle_policy'] == 'v2-target-v1-draft-resident-v1'
     assert manifest['model_load_api'] == 'target-v2-draft-v1'
@@ -268,6 +271,8 @@ def test_v1_wire_uses_native_abi_and_no_v2_tool_or_legacy_child_runner(tmp_path)
     mixed = dict(manifest, execution_mode='resident-mixed', target_lifecycle_policy=job.TARGET_LIFECYCLE_POLICY,
         model_load_api=job.MIXED_MODEL_LOAD_API, model_load_apis=dict(job.MIXED_MODEL_LOAD_APIS))
     new_wire = job.make_config(mixed, paths)
+    assert b'draft_preread' not in new_wire
+    assert b'draft_preread\tsequential-1m-v1\n' in job.make_config(dict(mixed, draft_preread='sequential-1m-v1'), paths)
     assert b'execution_mode\tresident-mixed\n' in new_wire
     fast_wire = job.make_config(dict(mixed, dump=False, runtime_profile='compact-memory-v1'), paths)
     assert fast_wire.startswith(b'QWEN35_BOARD_SERIAL\t1\nruntime_profile\tcompact-memory-v1\n')
@@ -326,8 +331,9 @@ def test_debug_mode_is_pinned_and_legacy_manifest_keeps_its_mode(sources):
         job.validate_prepared(path.parent)
 
 
+@pytest.mark.parametrize('preread', [False, True])
 @pytest.mark.parametrize('flag,expected', [([], False), (['--dump'], True)])
-def test_cli_pins_dump_mode_for_new_attempts(tmp_path, monkeypatch, capsys, flag, expected):
+def test_cli_pins_dump_mode_for_new_attempts(tmp_path, monkeypatch, capsys, flag, expected, preread):
     script = Path(__file__).parents[1] / 'targets/cpro/scripts/run_board_serial_dflash.py'
     spec = importlib.util.spec_from_file_location('board_serial_dump_cli_test', script)
     cli = importlib.util.module_from_spec(spec); spec.loader.exec_module(cli)
@@ -340,6 +346,7 @@ def test_cli_pins_dump_mode_for_new_attempts(tmp_path, monkeypatch, capsys, flag
             supervisor_timing={'total_wall_ms': 100}, internal_payload={'not_a_summary': True})
     monkeypatch.setattr(job, 'run_board_serial_dflash', run)
     argv = ['--output', str(tmp_path / 'new'), '--resident']
+    if preread: argv.append('--draft-preread')
     for name in ('decode-job', 'runtime-probe', 'state-lineage', 'source-torchair-pb2',
                  'draft-bundle', 'weight-table', 'scale-table', 'prompt-input-ids'):
         argv += ['--' + name, str(tmp_path / name)]
@@ -349,11 +356,22 @@ def test_cli_pins_dump_mode_for_new_attempts(tmp_path, monkeypatch, capsys, flag
     assert 'mixed-API' in capsys.readouterr().err
     assert cli.main(argv + flag) == 0
     assert len(calls) == 1 and calls[0]['dump'] is expected
+    assert calls[0]['draft_preread'] is preread
     summary = json.loads(capsys.readouterr().out)
     assert summary['generated_token_ids'] == [6, 7] and summary['acceptance']['rate'] == 0.5
     assert summary['phase_latency']['prompt_ingest']['mean_ms'] == 10
     assert summary['supervisor_timing']['total_wall_ms'] == 100
     assert 'internal_payload' not in summary
+    with pytest.raises(SystemExit):
+        cli.main(['--recover', str(tmp_path / 'old'), '--output', str(tmp_path / 'recovered'), '--draft-preread'])
+
+
+@pytest.mark.parametrize('manifest', [dict(draft_preread=True, execution_mode='resident-mixed'),
+    dict(draft_preread='sequential-1m-v1', execution_mode='resident-v1'),
+    dict(draft_preread=None, execution_mode='resident-mixed')])
+def test_preread_rejects_unknown_or_historical_policy(manifest):
+    with pytest.raises(ValueError, match='preread'):
+        job.draft_preread_mode(manifest)
 
 
 @pytest.mark.parametrize('manifest', [

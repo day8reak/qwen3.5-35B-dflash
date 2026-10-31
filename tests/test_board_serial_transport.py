@@ -1040,6 +1040,29 @@ def _mixed_v2_life(runs, *, attempted=True):
         weights_deinit_status=-1, closed=attempted, run_attempts=runs, successful_runs=runs, failure_stage='', cleanup_error='')
 
 
+@pytest.mark.parametrize('damage', [None, 'policy', 'bytes', 'incomplete', 'duplicate', 'missing'])
+def test_preread_recovery_requires_original_policy_and_complete_read(prepared_request, tmp_path, damage):
+    root, manifest, _, _ = prepared_request; _enable_prefill_request(root, manifest, tmp_path)
+    manifest.update(dump=False, execution_mode='resident-mixed', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+        model_load_api=preparation.MIXED_MODEL_LOAD_API, model_load_apis=dict(preparation.MIXED_MODEL_LOAD_APIS),
+        draft_preread='sequential-1m-v1')
+    manifest.update(resident_abi=dict(sha256='e' * 64), prefill_abi=dict(sha256='f' * 64))
+    loop, _ = _mixed_compact(manifest)
+    loop['draft_preread'] = manifest['draft_preread']
+    profile = dict(preread_policy='sequential-1m-v1', preread_bytes=manifest['draft']['model_source']['bytes'],
+        phases=[dict(phase='MODEL_PREREAD', completed=True, wall_us=100)])
+    loop['resident_lifecycle']['draft_v1_lifecycle']['load_profile'] = profile
+    if damage == 'policy': loop['draft_preread'] = 'other'
+    elif damage == 'bytes': profile['preread_bytes'] -= 1
+    elif damage == 'incomplete': profile['phases'][0]['completed'] = False
+    elif damage == 'duplicate': profile['phases'] *= 2
+    elif damage == 'missing': profile['phases'] = []
+    if damage:
+        with pytest.raises(ValueError, match='preread'): transport._validate_summaries(loop, manifest, required=True)
+    else:
+        transport._validate_summaries(loop, manifest, required=True)
+
+
 def _mixed_compact(manifest):
     old = deepcopy(manifest)
     old.update(execution_mode='resident-v1', target_lifecycle_policy=preparation.V1_TARGET_LIFECYCLE_POLICY,

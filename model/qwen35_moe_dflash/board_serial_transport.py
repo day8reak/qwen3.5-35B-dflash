@@ -98,6 +98,9 @@ def _result_scope(state, manifest):
     from .board_serial_dflash import compact_memory_mode
     if compact_memory_mode(manifest):
         state['runtime_profile'] = manifest['runtime_profile']
+    from .board_serial_dflash import draft_preread_mode
+    if draft_preread_mode(manifest):
+        state['draft_preread'] = manifest['draft_preread']
     state.update(dump=dump, retrieval_mode='FULL_DEBUG' if dump else 'FINAL_TOKENS_ONLY',
         evidence_scope=('FULL_RETRIEVED_NATIVE_IO_AND80_STATE_BYTE_CHAIN' if dump
         else 'TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY'))
@@ -134,6 +137,18 @@ def _validate_summaries(loop, manifest, *, required=False):
         return
     from .board_serial_dflash import compact_memory_mode
     fast = compact_memory_mode(manifest)
+    from .board_serial_dflash import draft_preread_mode
+    preread = draft_preread_mode(manifest)
+    if loop.get('draft_preread') != manifest.get('draft_preread'):
+        raise ValueError('draft preread policy differs from prepared request')
+    if preread and loop.get('status') == 'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED':
+        profile = loop.get('resident_lifecycle', {}).get('draft_v1_lifecycle', {}).get('load_profile', {})
+        phases = profile.get('phases', [])
+        reads = [row for row in phases if row.get('phase') == 'MODEL_PREREAD']
+        if (profile.get('preread_policy') != manifest['draft_preread']
+                or profile.get('preread_bytes') != manifest['draft']['model_source']['bytes']
+                or len(reads) != 1 or reads[0].get('completed') is not True):
+            raise ValueError('completed draft preread lacks full extent/startup phase evidence')
     if loop.get('runtime_profile') != manifest.get('runtime_profile'):
         raise ValueError('runtime profile differs from prepared request')
     if fast and any(loop.get(key) != value for key, value in {

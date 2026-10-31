@@ -330,10 +330,10 @@
   },
   "next_action": {
     "phase": "P5",
-    "type": "diagnose_draft_load_latency",
-    "implementation_required": true,
-    "command_document": "docs/current-status.md",
-    "note": "Fast resident execution completed. Inspect retained PID12858 load logs, then add bounded load subphase timing if needed; do not recompile models or claim paired speedup. Numerical divergence remains pending."
+    "type": "compare_sequential_draft_preread",
+    "implementation_required": false,
+    "command_document": "docs/board-resident-load-timing.md",
+    "note": "SDK Load206.630s with128122 major faults. Explicit measured preread experiment; preserve numerical gaps and prior results."
   },
   "last_actual_execution": {
     "schema_version": 1,
@@ -1014,7 +1014,7 @@
   ],
   "load_timing_candidate": {
     "schema_version": 1,
-    "status": "HOST_TESTED_DEVICE_NOT_RUN",
+    "status": "USER_REPORTED_DEVICE_OBSERVED_SDK_LOAD_DOMINANT",
     "document": "docs/board-resident-load-timing.md",
     "run": "20261031T011114Z-24876-645bba",
     "native_ctest_groups_passed": 2,
@@ -1031,7 +1031,8 @@
       "integration": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T011114Z-24876-645bba/integration.xml",
       "ctest": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T011114Z-24876-645bba/ctest.log"
     },
-    "next": "Run one fresh loadtiming request; measure before choosing a loading change."
+    "next": "Load-stage observation received; compare explicit sequential preread startup, preserve full startup cost.",
+    "device_observation": "specs/board-resident-load-observation.json"
   },
   "text_interface_task": {
     "status": "HOST_VALIDATED_BOARD_EXECUTION_PENDING",
@@ -1039,5 +1040,14 @@
     "validation": "specs/board-text-host-validation.json",
     "document": "docs/board-text-input-output.md",
     "next": "User runs dflash-board-text8-run then recovers dflash-board-text8-recovery; same run also includes draft load phase timing. Continue numerical closure after frontend/load observation."
+  },
+  "draft_load_task": {
+    "status": "HOST_VALIDATED_BOARD_PREREAD_COMPARISON_PENDING",
+    "observation": "specs/board-resident-load-observation.json",
+    "document": "docs/board-resident-load-timing.md",
+    "validation": "specs/board-resident-preread-validation.json",
+    "next": "User runs unchanged P8/G8 with --draft-preread in fresh preread8-run; compare total startup including preread, not only SDK Load. Board effect pending.",
+    "default_enabled": false,
+    "device_calls_by_assistant": 0
   }
 }

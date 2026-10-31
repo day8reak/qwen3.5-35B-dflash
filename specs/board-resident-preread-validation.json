@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "status": "HOST_VALIDATED_BOARD_COMPARISON_PENDING",
+  "run": "20261031T012833Z-27999-eb405f",
+  "model_compilation": "NOT_RUN",
+  "device_calls": 0,
+  "numerical_validation": "NOT_RUN",
+  "performance": "NOT_MEASURED_ON_DEVICE",
+  "policy": "sequential-1m-v1",
+  "default_enabled": false,
+  "document": "docs/board-resident-load-timing.md",
+  "baseline_observation": "specs/board-resident-load-observation.json",
+  "host_validation": {
+    "unique_preparation_transport_cases_passed": 190,
+    "initial_run_passed": 184,
+    "initial_fixture_failures": 6,
+    "corrected_fixture_retest_passed": 6,
+    "fixture_fix": "Supply resident/prefill ABI records to the new recovery fixture; no production change after this failure.",
+    "actual_cpp_fake_sdk_integration_cases_passed": 14,
+    "native_ctest_groups_passed": 1
+  },
+  "sources": {
+    "model/qwen35_moe_dflash/board_serial_dflash.py": "acdfc1e8ece2de8dac18b4c9e716b4ba6661499074975a81b5fa097926911ff6",
+    "model/qwen35_moe_dflash/board_serial_transport.py": "04890efa1cf9418fd7e16a9d1ca8a9080a4793b8d6a2d0160fac24521e9d11d1",
+    "targets/cpro/scripts/run_board_serial_dflash.py": "b0ff68865b0d8bfb7a8346b9049ed8b3a1fa1f6472713242fe45583b6320e1ad",
+    "targets/cpro/runtime/include/qwen35_dflash/model_preread.hpp": "13cfe70ed98b758e26bd4e3d0c8277f9e1179e90b824ac3141ed187023bfc186",
+    "targets/cpro/runtime/include/qwen35_dflash/hiai_executor.hpp": "e519f4554223a3267f46be327b6b0443549502000c077623aaeb0f7ba048dc20",
+    "targets/cpro/runtime/include/qwen35_dflash/resident_session.hpp": "f7811e9abf1e4343c1c36c9a7e13ac062b382e4c199e91715c836b14d75791de",
+    "targets/cpro/runtime/src/hiai_executor.cpp": "40b42e3f6b3f228f6c7c1769c66244ce11ad72031b08e05d86c6f8abf4cd43a6",
+    "targets/cpro/runtime/src/resident_session.cpp": "c8918585dcc2cc7aa4822ef36b73b19cbce9dbd61fa0acbf89a621ccda9b2f82",
+    "targets/cpro/runtime/src/board_serial_main.cpp": "c86e10569d6086fa0b6abe72edf3c2231b85d30f2238fd69f903a49a1ee0bab7",
+    "targets/cpro/runtime/tests/test_resident_mixed.cpp": "a997592627ebef5575c68689ec78bcb84fedadee1714eeec874478afb4d2c407",
+    "tests/test_board_serial_dflash.py": "2a67c777ef0ba83bcb054e2233f62eff8ddbce0a6c22b73b382f675a4a53e460",
+    "tests/test_board_serial_transport.py": "2613547c99b3985c180e2826343e2b527557f3918429688b027ed6e3bf057b12",
+    "tests/test_board_serial_integration.py": "98a8c9d68a7f7327ed340ae88de658b1500ebcf06ecea4874dfd866ee6942200"
+  },
+  "evidence": {
+    "build.log": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T012833Z-27999-eb405f/build.log",
+    "unit.xml": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T012833Z-27999-eb405f/unit.xml",
+    "recovery-fix.xml": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T012833Z-27999-eb405f/recovery-fix.xml",
+    "integration.xml": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T012833Z-27999-eb405f/integration.xml",
+    "ctest.log": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T012833Z-27999-eb405f/ctest.log"
+  },
+  "coverage": [
+    "Bounded sequential pread including >2MiB and tail; no content or descriptor-position mutation",
+    "Early EOF and invalid descriptor fail with exact partial byte count",
+    "Default retains seven phases; requested preread measured once before SDK Load",
+    "One prefill and one load each for decode/draft with autonomous repeated calls",
+    "Original policy and complete-read evidence enforced on recovery; CLI recovery cannot change policy",
+    "SDK failure propagation, compact paths, state chaining and manager cleanup retained"
+  ],
+  "limits": [
+    "Host compiler and fake SDK only; selected OHOS build/device effect pending",
+    "No speedup, numeric quality, stable page cache residency or global I/O claim",
+    "User-private DDK/HDC not contacted"
+  ]
+}

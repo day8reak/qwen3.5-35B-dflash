@@ -469,13 +469,16 @@ def enable_compact_memory(case):
         'QWEN35_BOARD_SERIAL\t1\nruntime_profile\tcompact-memory-v1\n', 1))
 
 
-@pytest.mark.parametrize('profile', ['debug', 'historical-compact', 'compact-memory'])
+@pytest.mark.parametrize('profile', ['debug', 'historical-compact', 'compact-memory', 'compact-preread'])
 def test_actual_mixed_resident_prefill_and_complete_generation(tmp_path, mixed_native_programs, profile, monkeypatch):
     dump = profile == 'debug'
     from qwen35_moe_dflash.board_serial_transport import validate_retrieved_loop
     case = make_case(tmp_path / ('mixed-debug' if dump else 'mixed-compact'), mixed_native_programs, dump=dump)
     enable_resident_mixed(case)
-    if profile == 'compact-memory': enable_compact_memory(case)
+    if profile in {'compact-memory', 'compact-preread'}: enable_compact_memory(case)
+    if profile == 'compact-preread':
+        case['manifest']['draft_preread'] = 'sequential-1m-v1'
+        with case['config'].open('a') as f: f.write('draft_preread\tsequential-1m-v1\n')
     trace = case['root'] / 'sdk.trace'
     process = execute(case, native_trace=trace)
     assert process.returncode == 0, (process.stdout, process.stderr)
@@ -494,8 +497,15 @@ def test_actual_mixed_resident_prefill_and_complete_generation(tmp_path, mixed_n
     load_profile = life['draft_v1_lifecycle']['load_profile']
     assert load_profile['scope'] == 'LOAD_PHASE_WALL_AND_PROCESS_COUNTER_DELTAS_NOT_NPU_OR_SYSTEM_IO'
     phases = load_profile['phases']
-    assert [row['phase'] for row in phases] == ['CLIENT_INIT', 'RUNTIME_QUERY_AND_DESCRIPTION',
-        'MODEL_MMAP', 'SET_MODEL_BUFFER', 'MODEL_LOAD', 'IO_DESCRIPTORS', 'TENSOR_SETUP']
+    expected = ['CLIENT_INIT', 'RUNTIME_QUERY_AND_DESCRIPTION', 'MODEL_MMAP',
+        'SET_MODEL_BUFFER', 'MODEL_LOAD', 'IO_DESCRIPTORS', 'TENSOR_SETUP']
+    if profile == 'compact-preread':
+        expected.insert(3, 'MODEL_PREREAD')
+        assert load_profile['preread_bytes'] == case['manifest']['draft']['model_source']['bytes']
+        assert loop['draft_preread'] == 'sequential-1m-v1'
+    else:
+        assert 'preread_bytes' not in load_profile and 'draft_preread' not in loop
+    assert [row['phase'] for row in phases] == expected
     assert all(row['completed'] is True and row['wall_us'] >= 0 for row in phases)
     assert sum(row['wall_us'] for row in phases) <= (life['draft_load_ms'] + 1) * 1000
     events = trace.read_text().splitlines()
@@ -505,7 +515,7 @@ def test_actual_mixed_resident_prefill_and_complete_generation(tmp_path, mixed_n
     assert not any('deinit-weights' in event for event in events)
     assert loop['phase_latency']['prefill']['native_api'] == loop['phase_latency']['decode']['native_api'] == 'Run'
     assert loop['phase_latency']['draft']['native_api'] == 'Process'
-    if profile == 'compact-memory':
+    if profile in {'compact-memory', 'compact-preread'}:
         assert set(p.name for p in case['output'].iterdir()) == {'loop.json', 'progress.json', 'retrieval-manifest.tsv'}
         assert loop['intermediate_tensor_io'] == 'NONE_MEMORY_ONLY'
         assert loop['runtime_profile'] == 'compact-memory-v1'

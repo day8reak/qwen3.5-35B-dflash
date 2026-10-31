@@ -9,6 +9,7 @@ struct ResidentSessionConfig {
   std::uint32_t timeout_ms = 300000;
   std::string model_load_api = "file-v2";
   bool diagnostics = true;
+  bool draft_preread = false;
 };
 struct ResidentRunResult {
   std::vector<std::vector<std::uint8_t>> outputs;

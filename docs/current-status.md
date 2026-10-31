@@ -8,7 +8,12 @@
 
 上次含诊断的resident请求88.680秒，本次**230.735秒**；主要问题是draft一次加载**202.958秒**（上次8.380秒）。decode包装下降约83%，但总耗时并未改善。不同请求的token路径不同，不是配对性能验收。详情见[快速模式首次结果](board-resident-fast-first-completion.md)及[结构化记录](../specs/board-resident-fast-first-completion.json)；[上次常驻结果](board-resident-mixed-first-completion.md)保留。
 
-## 当前下一动作：文字输入输出与加载计时
+## 当前下一动作：draft顺序预读对照，文字入口可用
+
+最新 `dflash-board-resident-loadtiming8-recovery` 已完成：总234.506秒，draft加载206.640秒，**SDK Load本身206.630秒、major fault 128,122次**；mmap59µs、SetModelBuffer1µs。decode Run112.819ms，draft Process739.192ms；接受0/7。观察已记录在[结构化结果](../specs/board-resident-load-observation.json)，不代表数值验收。
+
+已准备可选 `--draft-preread`：在SDK Load前通过最多1MiB缓冲区顺序读取完整draft OMC，保留同一只读映射，分别计预读和Load时间。完整启动时间包含预读。使用[新请求与恢复命令](board-resident-load-timing.md#ddk主机下一次完整请求)，新目录为 `dflash-board-resident-preread8-run/recovery`。默认关闭，待用户设备对照；不改OMC，不改加载API，不清系统缓存。
+
 
 用户要求增加真正的文字入口。新版 `--text` / `--text-file` 在同一板端进程中执行原tokenizer编码和最终文本解码，完整命令见[板端文字输入输出](board-text-input-output.md)。默认原单user聊天模板、thinking关闭，原三OMC和权重复用，服务器只在请求准备与最终回收做一次参考对照。文字请求同时包含以下加载分段计时，无需为两项功能各跑一次。
 
@@ -18,7 +23,7 @@
 
 用户要求先移除 `dump=false` 的校验和临时文件开销。本版新请求默认使用 `compact-memory-v1`：80 状态与特征在内存反馈，不写中间张量，移除逐步哈希／读回诊断／重复重叠扫描／细粒度日志，已有权重缓存不重新哈希，原表只读 mmap。独立 `native_api_latency` 给出同步 Run／Process 时间，与外层包装时延分开。
 
-用户已补回加载日志，筛选记录将长间隔定位到00:29:38.476—00:33:10.682，但仍缺少buffer设置与Load的边界。新版已增加七段一次性加载计时及可选进程I/O／缺页计数，逐token快速路径不变。下一次完整运行使用[加载计时版命令](board-resident-load-timing.md#ddk主机下一次完整请求)，目录为dflash-board-resident-loadtiming8-run/recovery。首次fast请求已完成，不覆盖原目录。
+加载边界现已取得：SDK Load占据几乎全部draft构造时间。全量哈希曾提前读过模型，关闭哈希与慢Load同时出现，但尚未建立因果。顺序预读对照先保持原P8/G8 token输入；文字请求可另跑。不得仅因Load时间下降就宣布改善，需比较包含预读的完整启动时间。
 
 ## 随后的精度工作：定位首decode差异
 
@@ -35,7 +40,8 @@
 
 ## 保留的请求与运行方式
 
-- 最新成功：`$AI_RUN_DIR/dflash-board-resident-fast8-run`，恢复目录 `$AI_RUN_DIR/dflash-board-resident-fast8-recovery`。
+- 最新加载定位：`$AI_RUN_DIR/dflash-board-resident-loadtiming8-run`，恢复目录 `$AI_RUN_DIR/dflash-board-resident-loadtiming8-recovery`。
+- 首次快速模式：`$AI_RUN_DIR/dflash-board-resident-fast8-run`，恢复目录 `$AI_RUN_DIR/dflash-board-resident-fast8-recovery`。
 - 上次常驻：`$AI_RUN_DIR/dflash-board-resident-mixed8-run`，恢复目录 `$AI_RUN_DIR/dflash-board-resident-mixed8-recovery`。
 - 旧成功：`$AI_RUN_DIR/dflash-board-prefill8-run`，恢复目录 `$AI_RUN_DIR/dflash-board-prefill8-recovery`。
 - 本次fast候选：`3042e63`，上次mixed候选：`060ea26`。显式 `--resident`，prefill/decode为file-v2，embedded draft为legacy-buffer。同一板端进程和线程；prefill一次后关闭，decode/draft各加载一次并多轮运行。

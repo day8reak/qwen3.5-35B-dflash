@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "source": "USER_PASTED_RECOVERY_SUMMARY_NOT_INDEPENDENTLY_RETRIEVED",
+  "recorded": "2026-10-31",
+  "status": "EXECUTED_UNVALIDATED",
+  "execution": "dflash-board-resident-loadtiming8-run",
+  "recovery": "dflash-board-resident-loadtiming8-recovery",
+  "board_attempt": "/data/local/tmp/qwen35_board_serial_ef766fb3f16e4a898371260e64af95d0",
+  "process_id": 17495,
+  "session_id": "ebcb8e4eec15ac21366313ce4d8af03e95cce6f728c229698d7d0504e30f3005",
+  "generated_token_ids": [
+    4,
+    0,
+    6,
+    2,
+    2,
+    24,
+    2,
+    0
+  ],
+  "counts": {
+    "prefill": 1,
+    "decode": 8,
+    "draft": 7,
+    "accepted": 0,
+    "considered": 7
+  },
+  "model_loads": {
+    "target": 1,
+    "draft": 1
+  },
+  "execution_mode": "resident-mixed",
+  "runtime_profile": "compact-memory-v1",
+  "dump": false,
+  "model_compilation": "NOT_RUN",
+  "numerical_validation": "NOT_EVALUATED",
+  "cleanup_error": "",
+  "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+  "timing_ms": {
+    "total_wall": 234506,
+    "draft_load": 206640,
+    "target_load": 9670,
+    "prefill_load_run_close": 10459,
+    "prefill_load": 9479,
+    "prefill_run": 545,
+    "prefill_close": 432,
+    "resident_close": 381,
+    "startup_hash": 1,
+    "decode_total": 1584,
+    "draft_total": 5172
+  },
+  "native_api_mean_ms": {
+    "decode": 112.818625,
+    "draft": 739.1921428571428,
+    "prefill": 468.473
+  },
+  "load_phases": [
+    {
+      "phase": "CLIENT_INIT",
+      "wall_us": 0,
+      "major_faults": 0,
+      "minor_faults": 3,
+      "read_bytes": 0,
+      "read_chars": 401,
+      "completed": true
+    },
+    {
+      "phase": "RUNTIME_QUERY_AND_DESCRIPTION",
+      "wall_us": 2,
+      "major_faults": 0,
+      "minor_faults": 3,
+      "read_bytes": 0,
+      "read_chars": 401,
+      "completed": true
+    },
+    {
+      "phase": "MODEL_MMAP",
+      "wall_us": 59,
+      "major_faults": 0,
+      "minor_faults": 3,
+      "read_bytes": 0,
+      "read_chars": 401,
+      "completed": true
+    },
+    {
+      "phase": "SET_MODEL_BUFFER",
+      "wall_us": 1,
+      "major_faults": 0,
+      "minor_faults": 3,
+      "read_bytes": 0,
+      "read_chars": 401,
+      "completed": true
+    },
+    {
+      "phase": "MODEL_LOAD",
+      "wall_us": 206630436,
+      "major_faults": 128122,
+      "minor_faults": 2964,
+      "read_bytes": 0,
+      "read_chars": 12816,
+      "completed": true
+    },
+    {
+      "phase": "IO_DESCRIPTORS",
+      "wall_us": 311,
+      "major_faults": 0,
+      "minor_faults": 4,
+      "read_bytes": 0,
+      "read_chars": 409,
+      "completed": true
+    },
+    {
+      "phase": "TENSOR_SETUP",
+      "wall_us": 6973,
+      "major_faults": 10,
+      "minor_faults": 24,
+      "read_bytes": 0,
+      "read_chars": 409,
+      "completed": true
+    }
+  ],
+  "conclusion": "SDK Load dominates draft startup; mapped-file demand paging is a hypothesis to test, not an established root cause.",
+  "limits": [
+    "No independently retrieved artifacts or raw address-level fault trace",
+    "Process counters do not locate faulting mappings or measure system I/O",
+    "Zero read_bytes does not establish absence of storage I/O on this device",
+    "No paired numerical/performance acceptance",
+    "Manager-only external weight release remains independently unvalidated"
+  ],
+  "next": "Opt-in sequential-1m-v1 preread; compare preread plus Load and complete request time under unchanged prompt/model controls"
+}

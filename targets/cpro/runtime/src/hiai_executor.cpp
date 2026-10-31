@@ -1,4 +1,5 @@
 #include "qwen35_dflash/hiai_executor.hpp"
+#include "qwen35_dflash/model_preread.hpp"
 #include "qwen35_dflash/sha256.hpp"
 #include <HiAiModelManagerService.h>
 #include <model/built_model.h>
@@ -126,16 +127,31 @@ class ModelBuffer {
       throw std::runtime_error("OMC exceeds SetModelBuffer uint32 size limit (UINT32_MAX bytes); "
                                "a validated large-model loading route is required");
     bytes_ = static_cast<std::uint32_t>(info.st_size);
+    opened_ = info;
     data_ = mmap(nullptr, bytes_, PROT_READ, MAP_PRIVATE, fd_, 0);
     if (data_ == MAP_FAILED)
       throw std::runtime_error(std::string("mmap OMC: ") + std::strerror(errno));
   }
   const void* Data() const { return data_ == MAP_FAILED ? nullptr : data_; }
   std::uint32_t Size() const { return bytes_; }
+  void Preread(std::uint64_t& bytes_read) const {
+    auto stable = [&] {
+      struct stat now {};
+      if (fstat(fd_, &now) != 0 || now.st_dev != opened_.st_dev || now.st_ino != opened_.st_ino ||
+          now.st_size != opened_.st_size || now.st_mtim.tv_sec != opened_.st_mtim.tv_sec ||
+          now.st_mtim.tv_nsec != opened_.st_mtim.tv_nsec || now.st_ctim.tv_sec != opened_.st_ctim.tv_sec ||
+          now.st_ctim.tv_nsec != opened_.st_ctim.tv_nsec)
+        throw std::runtime_error("OMC metadata changed during preread");
+    };
+    stable();
+    detail::SequentialModelPreread(fd_, bytes_, bytes_read);
+    stable();
+  }
  private:
   int fd_ = -1;
   void* data_ = MAP_FAILED;
   std::uint32_t bytes_ = 0;
+  struct stat opened_ {};
 };
 struct Model {
   std::uint64_t last_api_us = 0;
@@ -258,12 +274,18 @@ struct Model {
         throw std::runtime_error("V1 file-only descriptor must retain the exact model path with an empty buffer [model=" +
                                  name + ", path=" + path.string() + ", runtime=" + version + "]");
     } else {
+      stage="LEGACY_MODEL_MMAP";
       try {
         LoadStep("MODEL_MMAP",[&]{model_buffer.Open(path);});
       } catch (const std::exception& error) {
         throw std::runtime_error(std::string(error.what()) + " [model=" + name +
                                  ", path=" + path.string() + ", runtime=" + version + "]");
       }
+      if (legacy.preread_requested) {
+        stage="LEGACY_MODEL_PREREAD";
+        LoadStep("MODEL_PREREAD",[&]{model_buffer.Preread(legacy.preread_bytes);});
+      }
+      stage="LEGACY_MODEL_DESCRIPTION";
       LoadStep("SET_MODEL_BUFFER",[&]{
       check_load(description->SetModelBuffer(model_buffer.Data(), model_buffer.Size()), "SetModelBuffer");
       if (!description->GetModelBuffer() || description->GetModelNetSize() != model_buffer.Size())
@@ -615,10 +637,13 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
     int diagnostic_output_fill_byte, bool standalone_draft,
     const std::string& model_load_api, const std::string& resident_model_name,
     HiaiLegacyLifecycle* constructor_failure_snapshot,
-    const std::vector<HiaiTensorStorage>& disjoint_from, bool diagnostics) : impl_(std::make_unique<Impl>()) {
+    const std::vector<HiaiTensorStorage>& disjoint_from, bool diagnostics, bool model_preread) : impl_(std::make_unique<Impl>()) {
   impl_->diagnostics = diagnostics;
   impl_->target.profile_load=standalone_draft&&!resident_model_name.empty()&&model_load_api=="legacy-buffer";
   try {
+  if (model_preread && !impl_->target.profile_load)
+    throw std::invalid_argument("preread requires a resident legacy-buffer draft");
+  impl_->target.legacy.preread_requested=model_preread;
   if (model_load_api != "legacy-buffer" && model_load_api != "file-v2")
     throw std::invalid_argument("model load API must be legacy-buffer or file-v2");
   if (model_load_api == "file-v2" && !standalone_draft)

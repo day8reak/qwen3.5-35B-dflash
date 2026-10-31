@@ -37,9 +37,11 @@ def main(argv=None):
         help='Retain debug tensors/receipts on board and retrieve detailed evidence; default uses in-memory state feedback without tensor diagnostics and returns final tokens/timing only')
     parser.add_argument('--resident', action='store_true', default=None,
         help='Required for new runs: V2 prefill once, resident V2 decode and V1 embedded draft; historical policies are recover-only')
+    parser.add_argument('--draft-preread', action='store_true', default=None,
+        help='Startup experiment: sequentially read the mapped draft OMC with a 1MiB buffer before Load; time is included in total load latency')
     args = parser.parse_args(argv)
     if args.recover:
-        if any(v is not None for v in (args.text, args.text_file, args.prompt_input_ids, args.tokenizer_dir)) or args.prompt_format != 'chat' or args.apply or args.detach or args.dump is not None or args.resident is not None or args.prefill_feedback is not None or any(getattr(args, name.replace('-', '_')) is not None for name in required):
+        if any(v is not None for v in (args.text, args.text_file, args.prompt_input_ids, args.tokenizer_dir, args.draft_preread)) or args.prompt_format != 'chat' or args.apply or args.detach or args.dump is not None or args.resident is not None or args.prefill_feedback is not None or any(getattr(args, name.replace('-', '_')) is not None for name in required):
             parser.error('--recover uses the original prepared dump mode; omit --dump, --apply and model arguments')
     elif any(getattr(args, name.replace('-', '_')) is None for name in required):
         parser.error('new runs require ' + ', '.join('--' + name for name in required))
@@ -63,6 +65,7 @@ def main(argv=None):
             options = vars(args).copy(); options.pop('recover')
             options['dump'] = bool(args.dump)
             options['resident'] = bool(args.resident)
+            options['draft_preread'] = bool(args.draft_preread)
             result = run_board_serial_dflash(**options)
     except Exception as error:
         result = {'status': 'FAILED', 'error': f'{type(error).__name__}: {error}'}
@@ -74,6 +77,7 @@ def main(argv=None):
     keys += ('external_weight_release', 'runtime_profile', 'native_api_latency',
              'diagnostics', 'intermediate_tensor_io', 'startup_payload_validation')
     keys += ('generated_text', 'generated_text_with_special_tokens', 'text_io', 'text_latency')
+    keys += ('draft_preread',)
     keys += ('execution_failure_stage', 'resident_failure_stage', 'prefill_failure_stage', 'prefill_lifecycle')
     print(json.dumps({key: result[key] for key in keys if key in result}, ensure_ascii=False, allow_nan=False), flush=True)
     return 0 if result.get('status') in {'BOARD_SERIAL_DFLASH_PLANNED', 'BOARD_SERIAL_DFLASH_STARTED',

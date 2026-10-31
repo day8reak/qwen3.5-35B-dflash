@@ -179,7 +179,7 @@ J Record(const File& f,const fs::path& root){J j=J::Obj();j["path"]=fs::relative
 struct Tensor {std::uint32_t index;std::string name,type;std::uint64_t bytes;};
 struct State {std::string ref;std::uint32_t in,out;std::uint64_t bytes;};
 struct PrefillState {std::string decode_ref,ref;std::uint32_t in,out;std::uint64_t bytes;};
-struct Config {std::map<std::string,File> files;std::map<std::string,std::string> strings;std::vector<Tensor> inputs,outputs,prefill_inputs,prefill_outputs;std::vector<State> states;std::vector<PrefillState> prefill_states;std::vector<std::uint32_t> prompt;std::uint32_t maxnew=0,k=0,minrounds=0,timeout=0;std::uint64_t startup_hash_ms=0;bool dump=true,prefill=false,fast=false;Clock::time_point started=Clock::now();File config;
+struct Config {std::map<std::string,File> files;std::map<std::string,std::string> strings;std::vector<Tensor> inputs,outputs,prefill_inputs,prefill_outputs;std::vector<State> states;std::vector<PrefillState> prefill_states;std::vector<std::uint32_t> prompt;std::uint32_t maxnew=0,k=0,minrounds=0,timeout=0;std::uint64_t startup_hash_ms=0;bool dump=true,prefill=false,fast=false,draft_preread=false;Clock::time_point started=Clock::now();File config;
 #ifdef QWEN35_TEXT_TOKENIZER
   std::shared_ptr<qwen35::dflash::TextTokenizer> tokenizer;
   std::uint64_t text_setup_us=0;
@@ -239,6 +239,13 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
 #endif
   }
   for(std::size_t n=1;n<lines.size();++n){auto f=Split(lines[n],'\t');Require(!f[0].empty(),"empty config row");
+    if(f[0]=="draft_preread"){
+#ifdef QWEN35_RESIDENT_MIXED
+      Require(f.size()==2&&f[1]=="sequential-1m-v1"&&!c.draft_preread,"unsupported/duplicate draft preread");c.draft_preread=true;continue;
+#else
+      Fail("draft preread requires mixed residency");
+#endif
+    }
     if(f[0]=="runtime_profile"){Require(n==1&&c.fast,"runtime profile must be first and supported");continue;}
     if(filekeys.count(f[0])){Require(f.size()==4&&!c.files.count(f[0]),"file row malformed/duplicate");HashSyntax(f[2]);auto bytes=Integer(f[3],32ULL<<30,false);auto p=Absolute(f[1]);
       if(f[0]=="weight_table")Require(bytes==kVocab*2048ULL,"weight table extent mismatch");
@@ -391,6 +398,7 @@ class Supervisor {
     value["client_init_status"]=status(e.client_init_status);value["load_status"]=status(e.load_status);value["unload_status"]=status(e.unload_status);value["process_attempts"]=e.process_attempts;value["successful_processes"]=e.successful_processes;value["failure_stage"]=e.failure_stage;value["cleanup_error"]=e.cleanup_error;
     if(!e.load_phases.empty()){
       J profile=J::Obj();profile["scope"]="LOAD_PHASE_WALL_AND_PROCESS_COUNTER_DELTAS_NOT_NPU_OR_SYSTEM_IO";profile["phases"]=J::Arr();
+      if(e.preread_requested){profile["preread_policy"]="sequential-1m-v1";profile["preread_bytes"]=e.preread_bytes;profile["preread_scratch_limit_bytes"]=1048576;}
       auto counter=[](const std::optional<std::uint64_t>& v){return v?J(*v):J();};
       for(const auto& p:e.load_phases){J row=J::Obj();row["phase"]=p.phase;row["wall_us"]=p.wall_us;row["completed"]=p.completed;
         row["minor_faults"]=counter(p.minor_faults);row["major_faults"]=counter(p.major_faults);row["read_bytes"]=counter(p.read_bytes);row["read_chars"]=counter(p.read_chars);profile["phases"].a.push_back(row);}
@@ -504,6 +512,7 @@ class Supervisor {
       for(auto key:{"decode","draft"})phases[key]["timing_scope"]="RESIDENT_MEMORY_RUN_WITH_TENSOR_COPIES_NO_HASH_OR_FILE_IO";
     }
 #ifdef QWEN35_RESIDENT_MIXED
+    if(c.draft_preread)loop["draft_preread"]="sequential-1m-v1";
     J api=J::Obj();api["timing_scope"]="SYNCHRONOUS_API_WALL_NOT_NPU_ONLY";
     auto api_phase=[](std::uint64_t calls,std::uint64_t us,const char* name){J p=J::Obj();p["calls"]=calls;p["total_us"]=us;p["mean_ms"]=calls?Ratio(us,calls*1000):J();p["native_api"]=name;return p;};
     api["prefill"]=api_phase(prefills,prefill_api_us,"Run");api["decode"]=api_phase(e.target_runs,e.target_api_us,"Run");api["draft"]=api_phase(e.draft_runs,e.draft_api_us,"Process");loop["native_api_latency"]=api;
@@ -518,6 +527,7 @@ class Supervisor {
     Require(prefills==1&&targets==0&&drafts==0,"resident managers must load after the sole prefill completes");Pins();stage="resident-load";Progress();Lifecycle("resident-load-start","session="+session_id);
     qwen35::dflash::ResidentSessionConfig config;config.target_model=c.files.at("target_model").path;config.target_weight_directory=config.target_model.parent_path();config.draft_model=c.files.at("draft_model").path;
     config.runtime_version=c.strings.at("runtime_version");config.target_inputs=c.resident_inputs;config.target_outputs=c.resident_outputs;config.timeout_ms=c.timeout;config.model_load_api=kResidentLoadApi;config.diagnostics=!c.fast;
+    config.draft_preread=c.draft_preread;
     MemorySnapshot("before-load");session.Load(config);MemorySnapshot("after-both-load");Pins();Lifecycle("resident-load-end","session="+session_id);stage="resident-ready";Progress();
   }
   std::uint64_t BeginResidentCall(const std::string& kind) {
