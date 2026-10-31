@@ -1,6 +1,18 @@
 # 当前阶段测试命令
 
-C16／cap192／K15增量Draft已接通完整板端循环：1次补齐、7次proposal，Draft同步API均值608.155ms。现在验证Draft独立精度，再采集同一OMC的算子CSV；Target精度与verify暂不推进。已有`draft/air`、`draft/omc`、`draft/source/prepared`和`runtime`直接复用，不重编模型。
+C16／cap192／K15增量Draft已接通完整板端循环。首次独立验证的38次调用全部执行完成，但数值比较失败，首个失败是`isolated / 0 / empty-context`。当前先读取已回收的错误明细；模型、容差保持原样，暂不重跑或进入profiling。Target精度与verify继续独立处理。
+
+## 当前：读取失败明细
+
+更新Python入口即可，无需重建运行器。下面只读已有结果，不访问板端、不下载张量。输出包含两组失败分类、首个失败的Top1及张量误差，便于区分候选错误、hidden超差和KV保持问题。
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --inspect "$AI_RUN_DIR/draft/tests/accuracy-result"
+```
+
+保留`draft/tests/accuracy`与`accuracy-result`用于定位。下面为修复后的复测流程，现有`draft/air`、`draft/omc`、`draft/source/prepared`和`runtime`可复用。
 
 ## 1. 更新共享运行器
 

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_kind": "qwen35-incremental-draft-native-host-validation",
-  "status": "HOST_CHECKS_PASSED_BOARD_LOOP_USER_REPORTED_ACCURACY_PENDING",
+  "status": "HOST_CHECKS_PASSED_BOARD_ACCURACY_USER_REPORTED_FAILED",
   "change": "Keep twelve KV banks in SDK input tensors; copy only appended context rows after successful output validation",
   "validation": {
     "python_and_native_integration_tests": 16,
@@ -23,7 +23,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "Run standalone incremental accuracy with existing OMC; profile the same passed fixture, then select a measured optimization.",
+  "next": "Inspect retained report; distinguish token, hidden and KV failures before graph changes.",
   "latest_user_board_observation": {
     "source": "USER_PASTED_RECOVERY_JSON",
     "independently_retrieved": false,
@@ -81,5 +81,28 @@
       "17/14 vendor-tool launch and incompatible help rejection"
     ],
     "local_test_sources": "NOT_PUBLISHED"
+  },
+  "latest_standalone_accuracy_observation": {
+    "source": "USER_PASTED_RECOVERY_SUMMARY_NOT_RAW_TENSORS",
+    "status": "NUMERICAL_FAILED",
+    "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+    "numerical_validation": "FAILED",
+    "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_34642828c04c4e9eb2069300ffddbe42",
+    "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+    "calls": 38,
+    "first_failure": {
+      "mode": "isolated",
+      "index": 0,
+      "label": "empty-context"
+    },
+    "per_tensor_and_top1_details": "PENDING_USER_RESULT",
+    "native_api_mean_ms": {
+      "isolated_catchup": 548.3963636363636,
+      "isolated_proposal": 548.296375,
+      "feedback_catchup": 539.1756363636364,
+      "feedback_proposal": 543.051375
+    },
+    "precision_gate": "UNCHANGED_ATOL_0.01_RTOL_0.01_EXACT_TOP1_BITWISE_CACHE_PRESERVATION",
+    "next": "Inspect retained report; distinguish token, hidden and KV failures before graph changes."
   }
 }

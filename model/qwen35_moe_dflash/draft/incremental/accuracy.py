@@ -254,3 +254,30 @@ def latency_summary(calls, schedule):
                 min_ms=min(values)/1000 if values else None,
                 max_ms=max(values)/1000 if values else None)
     return result
+
+
+def summarize_result(result):
+    """Expose existing comparisons without rereading tensors or changing gates."""
+    keys=('status','stage','device_execution','model_compilation','numerical_validation',
+          'first_failure','native_api_latency','board_attempt','lock_state','error',
+          'lock_release_errors','next')
+    summary = {k:result[k] for k in keys if k in result}
+    rows = result.get('cases', [])
+    if not rows:
+        return summary
+    summary['comparison'] = result['comparison']
+    summary['case_counts'] = {}
+    for mode in ('isolated','feedback'):
+        selected = [r for r in rows if r['mode']==mode]
+        summary['case_counts'][mode] = dict(
+            total=len(selected), passed=sum(r['passed'] is True for r in selected),
+            top1_failed=sum(r.get('top1_mismatches',0)>0 for r in selected),
+            hidden_failed=sum(any(t['name']=='draft_hidden' and not t['passed'] for t in r['tensors']) for r in selected),
+            kv_failed=sum(any(t['name'].startswith('present_') and not t['passed'] for t in r['tensors']) for r in selected),
+            preservation_failed=sum(any(t.get('preserved') is False for t in r['tensors']) for r in selected))
+    first = next((r for r in rows if not r['passed']), None)
+    if first:
+        summary['first_failure'] = {k:first[k] for k in
+            ('mode','index','label','top1_mismatches','actual_top1','expected_top1') if k in first}
+        summary['first_failure']['bad_tensors'] = [t for t in first['tensors'] if not t['passed']]
+    return summary

@@ -5802,11 +5802,11 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "STANDALONE_ACCURACY_AND_PROFILE_ENTRY_HOST_TESTED",
+    "status": "STANDALONE_ACCURACY_FAILED_DETAILS_PENDING",
     "entry": "targets/cpro/tools/validate_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
-    "device_numerics": "PENDING",
-    "next": "User runs independent accuracy; use the passed fixture for new operator profiling."
+    "device_numerics": "USER_REPORTED_FAILED",
+    "next": "Inspect retained report; distinguish token, hidden and KV failures before graph changes."
   }
 }
