@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "status": "HOST_VALIDATED_COMBINED_TEXT_PREREAD_BOARD_EXECUTION_PENDING",
+  "run": "20261031T014052Z-30071-063f8d",
+  "document": "docs/board-text-input-output.md",
+  "device_calls_by_assistant": 0,
+  "models_recompiled": false,
+  "production_runtime_changed": false,
+  "host_cases": 4,
+  "matrix": {
+    "prompt_format": [
+      "chat",
+      "raw"
+    ],
+    "draft_preread": [
+      false,
+      true
+    ]
+  },
+  "coverage": [
+    "Actual original tokenizer assets and production C++ tokenizer",
+    "Same request contains board-local text encoding,one prefill,resident target/draft loop,and final text decoding",
+    "Preread occurs once,reads the complete fixture OMC,and is included in draft load timing",
+    "Final compact recovery preserves both generated_text and draft_preread",
+    "Host fake SDK validates lifecycle and scheduler,not device model accuracy"
+  ],
+  "evidence": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T014052Z-30071-063f8d/combined-text-preread.xml",
+  "native_binary": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T012833Z-27999-eb405f/build/board_resident_mixed_hiai_fake",
+  "native_binary_sha256": "d628d8fb70375a8bc09bcbf00a4906a6b6b674f341defe94f7633b59666691dd",
+  "sources": {
+    "tests/test_board_tokenizer.py": "3a74abe5a5662f7ccf2a42d0337e75e90192c4e853effd18274e288a4638d951",
+    "model/qwen35_moe_dflash/board_serial_dflash.py": "acdfc1e8ece2de8dac18b4c9e716b4ba6661499074975a81b5fa097926911ff6",
+    "model/qwen35_moe_dflash/board_serial_transport.py": "04890efa1cf9418fd7e16a9d1ca8a9080a4793b8d6a2d0160fac24521e9d11d1",
+    "targets/cpro/runtime/src/board_serial_main.cpp": "c86e10569d6086fa0b6abe72edf3c2231b85d30f2238fd69f903a49a1ee0bab7",
+    "targets/cpro/runtime/src/tokenizer.cpp": "68fc816bd3d99c3c83be5fb550999e61cbb59eb3024dbdb8efbb12e49f66f2ef",
+    "targets/cpro/runtime/src/hiai_executor.cpp": "40b42e3f6b3f228f6c7c1769c66244ce11ad72031b08e05d86c6f8abf4cd43a6",
+    "targets/cpro/runtime/include/qwen35_dflash/model_preread.hpp": "13cfe70ed98b758e26bd4e3d0c8277f9e1179e90b824ac3141ed187023bfc186"
+  },
+  "separate_device_preread_observation": "specs/board-resident-preread-observation.json",
+  "limits": [
+    "Combined text request has not yet run on user board",
+    "Single token-input preread device observation does not establish repeated performance or numerical equivalence"
+  ]
+}

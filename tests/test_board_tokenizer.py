@@ -109,7 +109,8 @@ def test_bundle_tamper_and_malformed_utf8(assets, tmp_path):
 
 
 @pytest.mark.parametrize('mode', ['chat', 'raw'])
-def test_text_enters_actual_native_prefill_loop_and_recovers(assets, tmp_path, monkeypatch, mode):
+@pytest.mark.parametrize('preread', [False, True])
+def test_text_enters_actual_native_prefill_loop_and_recovers(assets, tmp_path, monkeypatch, mode, preread):
     from test_board_serial_integration import make_case, enable_resident_mixed, enable_compact_memory, execute, _recover_actual_mixed_case
     from qwen35_moe_dflash.board_serial_dflash import make_config
     binary = os.environ.get('QWEN35_RESIDENT_MIXED_TEST_BINARY')
@@ -119,6 +120,7 @@ def test_text_enters_actual_native_prefill_loop_and_recovers(assets, tmp_path, m
     enable_resident_mixed(case); enable_compact_memory(case)
     ids, _, info = tok.prepare_text(assets[0], '你好，请介绍自己。', mode, case['root'])
     manifest = case['manifest']; manifest['text_io']=info;manifest['prompt_token_ids']=ids
+    if preread: manifest['draft_preread']='sequential-1m-v1'
     manifest['timeout_seconds'] = 60
     from qwen35_moe_dflash.board_prefill_binding import control_assumption
     manifest['prefill']['experimental_control_assumption']=control_assumption(len(ids))
@@ -136,10 +138,18 @@ def test_text_enters_actual_native_prefill_loop_and_recovers(assets, tmp_path, m
     assert loop['text_io']['execution']=='BOARD_LOCAL_ENCODE_AND_DECODE'
     assert loop['text_io']['host_admission_ids_matched'] is True
     assert loop['text_latency']['load_and_encode_us']>0
+    if preread:
+        load=loop['resident_lifecycle']['draft_v1_lifecycle']['load_profile']
+        assert load['preread_bytes']==manifest['draft']['model_source']['bytes']
+        assert [row['phase'] for row in load['phases']].count('MODEL_PREREAD')==1
+        assert all(row['completed'] for row in load['phases'])
+        assert sum(row['wall_us'] for row in load['phases']) <= (loop['resident_lifecycle']['draft_load_ms']+1)*1000
+        assert loop['resident_lifecycle']['draft_loads']==loop['resident_lifecycle']['target_loads']==1
     tok.validate_text_result(manifest, loop)
     _recover_actual_mixed_case(case, loop, 0, monkeypatch)
     recovered=json.loads((case['root']/'recovered/result.json').read_text())
     assert recovered['generated_text']==loop['generated_text']
+    assert recovered.get('draft_preread')==manifest.get('draft_preread')
     assert set(p.name for p in case['output'].iterdir())=={'loop.json','progress.json','retrieval-manifest.tsv'}
     loop['generated_text']='corrupted'
     with pytest.raises(ValueError,match='decode differs'):tok.validate_text_result(manifest,loop)

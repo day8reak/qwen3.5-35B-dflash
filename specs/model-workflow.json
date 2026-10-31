@@ -5748,7 +5748,7 @@
       "integration": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T011114Z-24876-645bba/integration.xml",
       "ctest": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T011114Z-24876-645bba/ctest.log"
     },
-    "next": "Load-stage observation received; compare explicit sequential preread startup, preserve full startup cost.",
+    "next": "SDK Load slow stage identified; one sequential-preread full request improved total startup. See the new user observation.",
     "device_observation": "specs/board-resident-load-observation.json"
   },
   "text_interface_task": {
@@ -5756,15 +5756,17 @@
     "goal": "Board-local original tokenizer encode/decode and autonomous full model loop",
     "validation": "specs/board-text-host-validation.json",
     "document": "docs/board-text-input-output.md",
-    "next": "User runs dflash-board-text8-run then recovers dflash-board-text8-recovery; same run also includes draft load phase timing. Continue numerical closure after frontend/load observation."
+    "next": "Run docs/board-text-input-output.md with --text and --draft-preread together; use dflash-board-text-preread8-run/recovery. Tokenizer preparation is once only.",
+    "combined_validation": "specs/board-text-preread-validation.json"
   },
   "draft_load_task": {
-    "status": "HOST_VALIDATED_BOARD_PREREAD_COMPARISON_PENDING",
-    "observation": "specs/board-resident-load-observation.json",
+    "status": "USER_REPORTED_PREREAD_STARTUP_IMPROVEMENT_SINGLE_RUN",
+    "observation": "specs/board-resident-preread-observation.json",
     "document": "docs/board-resident-load-timing.md",
     "validation": "specs/board-resident-preread-validation.json",
-    "next": "User runs unchanged P8/G8 with --draft-preread in fresh preread8-run; compare total startup including preread, not only SDK Load. Board effect pending.",
+    "next": "Retain explicit --draft-preread in the same request as --text; run board-text-preread8 and recover once. Repeated controlled performance and numerical acceptance remain pending.",
     "default_enabled": false,
-    "device_calls_by_assistant": 0
+    "device_calls_by_assistant": 0,
+    "baseline_observation": "specs/board-resident-load-observation.json"
   }
 }

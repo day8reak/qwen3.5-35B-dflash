@@ -1,6 +1,23 @@
 # draft加载阶段计时与顺序预读对照
 
-## 最新实机结果：慢在SDK Load
+## 最新实机结果：包含预读的draft加载降到3.883秒
+
+用户回传 `dflash-board-resident-preread8-recovery`（PID21363）：prefill1／decode8／draft7，两个常驻模型各加载一次、正常关闭，接受0/7。完整结果来自用户摘要，助手未连接设备。[结构化记录](../specs/board-resident-preread-observation.json)保留计数与边界。
+
+| 指标 | 无预读PID17495 | 开启预读PID21363 |
+|---|---:|---:|
+| 顺序预读 | 未执行 | 1.621秒，完整2,852,119,022字节 |
+| SDK Load | 206.630秒 | 2.251秒 |
+| draft总加载（含预读） | 206.640秒 | 3.883秒 |
+| 完整请求墙钟 | 234.506秒 | 31.455秒 |
+| decode同步Run均值 | 112.819ms | 110.890ms |
+| draft同步Process均值 | 739.192ms | 733.126ms |
+
+本轮draft总加载约缩短53.2倍、完整请求墙钟减少86.6%，收益主要来自启动。预读耗时已计入，不是仅把等待移出Load。此结果支持提前顺序读取有益于加载的解释；仍有44,297次Load major fault，无法断言缺页已清零、具体存储／回收根因或重复稳定性。不同请求生成的token不同，以上不是数值等价后的推测解码加速比。
+
+下一步按用户要求与[文字版完整请求](board-text-input-output.md#2-运行文字版完整闭环)合并；文档命令已带`--draft-preread`。CLI仍显式开启，不改变历史请求策略。
+
+## 上轮加载定位：慢在SDK Load
 
 用户回传 `dflash-board-resident-loadtiming8-recovery`（PID17495）已完成prefill1／decode8／draft7、接受0/7，正常关闭。总耗时234.506秒，draft一次加载206.640秒，其中 **MODEL_LOAD占206.630436秒**。mmap仅59µs，SetModelBuffer仅1µs。Load阶段记录128,122次major fault，其他阶段仅TENSOR_SETUP另有10次。完整关键字段见[用户观察](../specs/board-resident-load-observation.json)。助手没有连接设备，以上来自用户粘贴的摘要。
 
@@ -12,9 +29,9 @@
 
 默认不开启。开启时沿用同一个只读文件描述符，mmap之后、SetModelBuffer／Load之前，用最多1MiB暂存缓冲区顺序pread完整draft OMC。保留原映射和模型字节、API、prefill→decode→draft加载顺序；不分配第二份整模型副本、不锁页、不清缓存、不加逐token磁盘操作。文件元数据前后变化、读失败或提前EOF会报错；不自动重试SDK Load或换接口。
 
-新增 `MODEL_PREREAD` 独立计时及缺页计数，`load_profile.preread_bytes`须等于该draft OMC大小（当前2,852,119,022字节）。原 `resident_draft_load_ms` 和 `total_wall_ms` **包含预读耗时**。预读可能改善、无效或变慢，操作系统仍可回收文件页；在实测之前不设为默认。
+新增 `MODEL_PREREAD` 独立计时及缺页计数，`load_profile.preread_bytes`须等于该draft OMC大小（当前2,852,119,022字节）。原 `resident_draft_load_ms` 和 `total_wall_ms` **包含预读耗时**。本轮实机已观察到改善；不同缓存和设备负载下仍需复测，CLI维持显式开启。
 
-保持P8/G8、候选上限2与原token文件不变，先测这个单变量。文字接口已实现，可另行使用[文字命令](board-text-input-output.md)，避免把prompt变化混入本次加载对照。
+P8/G8单变量首轮已完成。下一次合并文字入口与预读；若专门复测加载，仍保持P8/G8原token文件，使用下面独立repeat目录。
 
 ## 历史定位
 
@@ -45,7 +62,7 @@
 
 ## DDK主机下一次完整请求
 
-沿用原prompt与生成配置，只编新版runner，默认dump=false。使用独立目录：
+当前优先执行[文字＋预读命令](board-text-input-output.md#2-运行文字版完整闭环)。下面保留token输入的重复测量命令：沿用原prompt与生成配置，默认dump=false，使用独立repeat目录。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -62,15 +79,15 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
   --prefill-feedback "$AI_RUN_DIR/target-prefill64-decode1-feedback-plan-v2" \
   --prompt-length 8 --max-new-tokens 8 --max-proposals-per-round 2 \
   --resident --draft-preread --apply --detach \
-  --output "$AI_RUN_DIR/dflash-board-resident-preread8-run"
+  --output "$AI_RUN_DIR/dflash-board-resident-preread8-repeat-run"
 ```
 
 回收同一请求：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
-  --recover "$AI_RUN_DIR/dflash-board-resident-preread8-run" \
-  --output "$AI_RUN_DIR/dflash-board-resident-preread8-recovery"
+  --recover "$AI_RUN_DIR/dflash-board-resident-preread8-repeat-run" \
+  --output "$AI_RUN_DIR/dflash-board-resident-preread8-repeat-recovery"
 ```
 
 比较以下四项：

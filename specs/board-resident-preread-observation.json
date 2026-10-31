@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-board-preread-user-observation",
+  "recorded": "2026-10-31",
+  "source": "USER_PASTED_RECOVERY_SUMMARY_NOT_INDEPENDENTLY_RETRIEVED",
+  "candidate_commit": "3c270a7",
+  "executed_source_identity": "NOT_INDEPENDENTLY_RECHECKED_FROM_USER_ARTIFACTS",
+  "assistant_device_access": "NOT_PERFORMED_USER_REQUEST",
+  "status": "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED",
+  "stage": "complete",
+  "execution": "dflash-board-resident-preread8-run",
+  "recovery": "dflash-board-resident-preread8-recovery",
+  "board_attempt": "/data/local/tmp/qwen35_board_serial_6e8d32e015a8436f9ede01bb2ac36335",
+  "process_id": 21363,
+  "session_id": "705d1f5ab9cd82f5ccaac459170b8ceb2be0bc7c698bc754ca26ba8205e5b349",
+  "generated_token_ids": [
+    4,
+    0,
+    4,
+    0,
+    2,
+    28,
+    8,
+    0
+  ],
+  "counts": {
+    "prefill_native_calls": 1,
+    "target_native_calls": 8,
+    "draft_native_calls": 7,
+    "accepted": 0,
+    "considered": 7,
+    "bonuses": 0,
+    "corrections": 7
+  },
+  "model_loads": {
+    "target": 1,
+    "draft": 1
+  },
+  "execution_mode": "resident-mixed",
+  "runtime_profile": "compact-memory-v1",
+  "dump": false,
+  "draft_preread": "sequential-1m-v1",
+  "model_compilation": "NOT_RUN",
+  "numerical_validation": "NOT_EVALUATED",
+  "cleanup_error": "",
+  "closed": true,
+  "poisoned": false,
+  "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+  "timing_ms": {
+    "total_wall": 31455,
+    "draft_load": 3883,
+    "target_load": 9692,
+    "prefill_load_run_close": 10164,
+    "prefill_load": 9174,
+    "prefill_run": 581,
+    "prefill_close": 405,
+    "resident_close": 398,
+    "startup_hash": 1,
+    "decode_total": 1589,
+    "draft_total": 5129
+  },
+  "native_api_mean_ms": {
+    "decode": 110.8895,
+    "draft": 733.1262857142857,
+    "prefill": 483.99
+  },
+  "phase_mean_ms": {
+    "decode": 198.625,
+    "draft": 732.7142857142857
+  },
+  "preread_bytes": 2852119022,
+  "preread_scratch_limit_bytes": 1048576,
+  "load_phases": [
+    {
+      "phase": "CLIENT_INIT",
+      "wall_us": 0,
+      "major_faults": 0,
+      "minor_faults": 3,
+      "read_bytes": 0,
+      "read_chars": 402,
+      "completed": true
+    },
+    {
+      "phase": "RUNTIME_QUERY_AND_DESCRIPTION",
+      "wall_us": 4,
+      "major_faults": 0,
+      "minor_faults": 3,
+      "read_bytes": 0,
+      "read_chars": 402,
+      "completed": true
+    },
+    {
+      "phase": "MODEL_MMAP",
+      "wall_us": 95,
+      "major_faults": 0,
+      "minor_faults": 4,
+      "read_bytes": 0,
+      "read_chars": 402,
+      "completed": true
+    },
+    {
+      "phase": "MODEL_PREREAD",
+      "wall_us": 1621012,
+      "major_faults": 0,
+      "minor_faults": 263,
+      "read_bytes": 2679566336,
+      "read_chars": 2852119424,
+      "completed": true
+    },
+    {
+      "phase": "SET_MODEL_BUFFER",
+      "wall_us": 2,
+      "major_faults": 0,
+      "minor_faults": 3,
+      "read_bytes": 0,
+      "read_chars": 402,
+      "completed": true
+    },
+    {
+      "phase": "MODEL_LOAD",
+      "wall_us": 2250744,
+      "major_faults": 44297,
+      "minor_faults": 3149,
+      "read_bytes": 0,
+      "read_chars": 12813,
+      "completed": true
+    },
+    {
+      "phase": "IO_DESCRIPTORS",
+      "wall_us": 344,
+      "major_faults": 0,
+      "minor_faults": 3,
+      "read_bytes": 0,
+      "read_chars": 405,
+      "completed": true
+    },
+    {
+      "phase": "TENSOR_SETUP",
+      "wall_us": 7928,
+      "major_faults": 10,
+      "minor_faults": 13,
+      "read_bytes": 0,
+      "read_chars": 405,
+      "completed": true
+    }
+  ],
+  "comparison": {
+    "baseline": "specs/board-resident-load-observation.json",
+    "draft_load_ratio": 53.21658511460211,
+    "total_wall_ratio": 7.455285328246702,
+    "total_wall_saved_ms": 203051,
+    "total_wall_reduction_percent": 86.58669714207738,
+    "scope": "TWO_USER_REPORTED_REQUESTS_NOT_REPEATED_CONTROLLED_PERFORMANCE_ACCEPTANCE"
+  },
+  "conclusion": "One preread-enabled full loop completed. Draft startup including preread fell from206640ms to3883ms; whole request fell from234506ms to31455ms. Most observed saving is startup.",
+  "limits": [
+    "Single preread observation; cache state and device load were not controlled",
+    "SDK Load still reports44297 major faults; no address-level/storage/root-cause attribution",
+    "Numerical validation absent; acceptance0/7 and output differences remain",
+    "Manager-only external weight release not independently validated"
+  ],
+  "next": "Keep explicit --draft-preread in the combined board-local text request; frontend device verification next, numerical closure afterward."
+}

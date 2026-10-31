@@ -10,6 +10,8 @@
 
 ## 1. 准备原 tokenizer（只做一次）
 
+已经准备好`$AI_RUN_DIR/original-tokenizer/source`时直接执行第2步，保留现有词表目录。
+
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 
@@ -25,6 +27,8 @@ python3 "$REPO_DIR/targets/cpro/scripts/prepare_board_tokenizer.py" \
 
 ## 2. 运行文字版完整闭环
 
+本条命令把板端tokenizer与已跑通的draft预读放在同一次请求中：`--text`启用文字入口，`--draft-preread`在常驻draft的Load之前顺序读取原OMC。预读耗时计入draft总加载，仍只在最终回收一次文字和时延。此前token输入实测总请求31.455秒，不能据此预先承诺新文字请求相同耗时。
+
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
   --decode-job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
@@ -38,8 +42,8 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
   --tokenizer-dir "$AI_RUN_DIR/original-tokenizer/source" \
   --text '你好，请介绍一下自己。' \
   --max-new-tokens 8 --max-proposals-per-round 2 \
-  --resident --apply --detach \
-  --output "$AI_RUN_DIR/dflash-board-text8-run"
+  --resident --draft-preread --apply --detach \
+  --output "$AI_RUN_DIR/dflash-board-text-preread8-run"
 ```
 
 原有OMC和模型权重直接复用；自动重编的是包含tokenizer的板端C/C++程序。默认 `dump=false`，中间张量仍在内存中，回收最终文字、token ID、接受率、prefill/decode/draft时延及加载分段计时。新词表和prompt在启动前一次下发，不增加逐token文件I/O或HDC调用。
@@ -54,8 +58,8 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
-  --recover "$AI_RUN_DIR/dflash-board-text8-run" \
-  --output "$AI_RUN_DIR/dflash-board-text8-recovery"
+  --recover "$AI_RUN_DIR/dflash-board-text-preread8-run" \
+  --output "$AI_RUN_DIR/dflash-board-text-preread8-recovery"
 ```
 
 摘要增加：
@@ -76,3 +80,5 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
 主机复验需要设置 `QWEN35_TOKENIZER_SOURCE_DIR`、`QWEN35_TOKENIZER_TEST_BINARY`，以及混合fixture二进制路径 `QWEN35_RESIDENT_MIXED_TEST_BINARY` 和其 `QWEN35_RESIDENT_MIXED_TEST_BINARY_SHA256`；运行 `pytest tests/test_board_tokenizer.py`。不设置这些显式路径时资源测试跳过，不自动下载或触碰设备。
 
 验证记录见[结构化主机验证](../specs/board-text-host-validation.json)：2670组编码、6066组解码对照无差异；原准备／传输176项回归通过，文字及原生循环16项通过，扩展文字下发4项通过（其中2项与前者传输回归重叠）。实机文字流程待用户运行。
+
+文字＋预读组合另经4项实际C++／fake HIAI用例通过（chat/raw × 预读开/关），同一请求验证编码、一次prefill、常驻循环、预读完整字节与含预读的总计时、文本解码和最终回收。[组合验证记录](../specs/board-text-preread-validation.json)。这部分是主机验证，合并文字请求的实机结果待回传。

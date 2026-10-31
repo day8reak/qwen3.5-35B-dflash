@@ -330,237 +330,173 @@
   },
   "next_action": {
     "phase": "P5",
-    "type": "compare_sequential_draft_preread",
+    "type": "run_combined_board_text_preread",
     "implementation_required": false,
-    "command_document": "docs/board-resident-load-timing.md",
-    "note": "SDK Load206.630s with128122 major faults. Explicit measured preread experiment; preserve numerical gaps and prior results."
+    "command_document": "docs/board-text-input-output.md",
+    "note": "User explicitly requested merging tokenizer text input/output with measured draft preread in one autonomous board request. Numerical closure follows."
   },
   "last_actual_execution": {
     "schema_version": 1,
-    "artifact_kind": "qwen35-board-resident-fast-first-completion",
-    "recorded_date": "2026-10-31",
-    "run_id": "20261031T010820Z-24717-0642a2",
-    "source": "USER_PASTED_COMPACT_RECOVERY_SUMMARY",
-    "candidate_commit": "3042e633a4a1faf52c2285f1e81e82c3c06fe767",
+    "artifact_kind": "qwen35-board-preread-user-observation",
+    "recorded": "2026-10-31",
+    "source": "USER_PASTED_RECOVERY_SUMMARY_NOT_INDEPENDENTLY_RETRIEVED",
+    "candidate_commit": "3c270a7",
     "executed_source_identity": "NOT_INDEPENDENTLY_RECHECKED_FROM_USER_ARTIFACTS",
     "assistant_device_access": "NOT_PERFORMED_USER_REQUEST",
     "status": "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED",
     "stage": "complete",
-    "execution": "$AI_RUN_DIR/dflash-board-resident-fast8-run",
-    "output": "$AI_RUN_DIR/dflash-board-resident-fast8-recovery",
-    "prepared": "$AI_RUN_DIR/dflash-board-resident-fast8-run/prepared",
-    "board_attempt": "/data/local/tmp/qwen35_board_serial_e5406ec6e21241259be1769fbb2e3faa",
-    "process_id": 12858,
-    "session_id": "a0f953c4d348877fd7a84e8a7ffa3f7b81414ef41a427c2342ff0c8b2487f16e",
-    "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
-    "model_compilation": "NOT_RUN",
-    "numerical_validation": "NOT_EVALUATED",
+    "execution": "dflash-board-resident-preread8-run",
+    "recovery": "dflash-board-resident-preread8-recovery",
+    "board_attempt": "/data/local/tmp/qwen35_board_serial_6e8d32e015a8436f9ede01bb2ac36335",
+    "process_id": 21363,
+    "session_id": "705d1f5ab9cd82f5ccaac459170b8ceb2be0bc7c698bc754ca26ba8205e5b349",
     "generated_token_ids": [
       4,
-      2,
-      24,
-      2,
-      4,
-      22,
       0,
-      2
+      4,
+      0,
+      2,
+      28,
+      8,
+      0
     ],
     "counts": {
-      "accepted": 0,
-      "bonuses": 0,
-      "considered": 7,
-      "corrections": 7,
-      "draft_native_calls": 7,
       "prefill_native_calls": 1,
-      "target_native_calls": 8
-    },
-    "acceptance": {
+      "target_native_calls": 8,
+      "draft_native_calls": 7,
       "accepted": 0,
       "considered": 7,
-      "rate": 0
+      "bonuses": 0,
+      "corrections": 7
     },
-    "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
-    "dump": false,
-    "runtime_profile": "compact-memory-v1",
+    "model_loads": {
+      "target": 1,
+      "draft": 1
+    },
     "execution_mode": "resident-mixed",
-    "model_load_api": "target-v2-draft-v1",
-    "model_load_apis": {
-      "prefill": "file-v2",
-      "target": "file-v2",
-      "draft": "legacy-buffer"
+    "runtime_profile": "compact-memory-v1",
+    "dump": false,
+    "draft_preread": "sequential-1m-v1",
+    "model_compilation": "NOT_RUN",
+    "numerical_validation": "NOT_EVALUATED",
+    "cleanup_error": "",
+    "closed": true,
+    "poisoned": false,
+    "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+    "timing_ms": {
+      "total_wall": 31455,
+      "draft_load": 3883,
+      "target_load": 9692,
+      "prefill_load_run_close": 10164,
+      "prefill_load": 9174,
+      "prefill_run": 581,
+      "prefill_close": 405,
+      "resident_close": 398,
+      "startup_hash": 1,
+      "decode_total": 1589,
+      "draft_total": 5129
     },
-    "retrieval_mode": "FINAL_TOKENS_ONLY",
-    "evidence_scope": "TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY",
-    "diagnostics": "DISABLED_TENSOR_HASH_READBACK_AND_FP16_SCANS",
-    "intermediate_tensor_io": "NONE_MEMORY_ONLY",
-    "startup_payload_validation": "OWNED_CACHE_EXTENTS_NEW_UPLOAD_SHA256",
-    "prompt_ingestion": "PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL",
-    "phase_latency": {
-      "decode": {
-        "calls": 8,
-        "total_ms": 1566,
-        "mean_ms": 195.75,
-        "native_api": "Run",
-        "timing_scope": "RESIDENT_MEMORY_RUN_WITH_TENSOR_COPIES_NO_HASH_OR_FILE_IO"
-      },
-      "draft": {
-        "calls": 7,
-        "total_ms": 5185,
-        "mean_ms": 740.7142857142857,
-        "native_api": "Process",
-        "timing_scope": "RESIDENT_MEMORY_RUN_WITH_TENSOR_COPIES_NO_HASH_OR_FILE_IO"
-      },
-      "prefill": {
-        "calls": 1,
-        "total_ms": 10285,
-        "mean_ms": 10285,
-        "native_api": "Run",
-        "timing_scope": "PREFILL_V2_LOAD_RUN_CLOSE_WALL"
-      },
-      "timing_scope": "RESIDENT_RUN_WALL_EXCLUDES_MODEL_LOAD_AND_CLOSE",
-      "inference_only_status": "NOT_PROVIDED"
+    "native_api_mean_ms": {
+      "decode": 110.8895,
+      "draft": 733.1262857142857,
+      "prefill": 483.99
     },
-    "native_api_latency": {
-      "decode": {
-        "calls": 8,
-        "total_us": 893120,
-        "mean_ms": 111.64,
-        "native_api": "Run"
+    "phase_mean_ms": {
+      "decode": 198.625,
+      "draft": 732.7142857142857
+    },
+    "preread_bytes": 2852119022,
+    "preread_scratch_limit_bytes": 1048576,
+    "load_phases": [
+      {
+        "phase": "CLIENT_INIT",
+        "wall_us": 0,
+        "major_faults": 0,
+        "minor_faults": 3,
+        "read_bytes": 0,
+        "read_chars": 402,
+        "completed": true
       },
-      "draft": {
-        "calls": 7,
-        "total_us": 5187738,
-        "mean_ms": 741.1054285714285,
-        "native_api": "Process"
+      {
+        "phase": "RUNTIME_QUERY_AND_DESCRIPTION",
+        "wall_us": 4,
+        "major_faults": 0,
+        "minor_faults": 3,
+        "read_bytes": 0,
+        "read_chars": 402,
+        "completed": true
       },
-      "prefill": {
-        "calls": 1,
-        "total_us": 484542,
-        "mean_ms": 484.542,
-        "native_api": "Run"
+      {
+        "phase": "MODEL_MMAP",
+        "wall_us": 95,
+        "major_faults": 0,
+        "minor_faults": 4,
+        "read_bytes": 0,
+        "read_chars": 402,
+        "completed": true
       },
-      "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY"
-    },
-    "supervisor_timing": {
-      "prefill_model_load_ms": 9264,
-      "prefill_model_unload_ms": 438,
-      "prefill_process_ms": 579,
-      "prefill_v2_total_ms": 10285,
-      "resident_close_ms": 377,
-      "resident_draft_load_ms": 202958,
-      "resident_draft_run_ms": 5185,
-      "resident_target_load_ms": 9793,
-      "resident_target_run_ms": 1566,
-      "startup_source_hash_ms": 1,
-      "total_wall_ms": 230735,
-      "scope": "MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE"
-    },
-    "resident_lifecycle_summary": {
-      "target_load_attempts": 1,
-      "target_loads": 1,
-      "target_runs": 8,
-      "target_close_calls": 1,
-      "draft_load_attempts": 1,
-      "draft_loads": 1,
-      "draft_runs": 7,
-      "draft_close_calls": 1,
-      "closed": true,
-      "poisoned": false,
-      "cleanup_error": ""
-    },
-    "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
-    "resident_memory": {
-      "scope": "PROCESS_RSS_NOT_NPU_ALLOCATED_MEMORY",
-      "snapshots": [
-        {
-          "phase": "before-prefill-load",
-          "mem_available_kib": 26352640,
-          "vm_rss_kib": 87476,
-          "vm_hwm_kib": 87476,
-          "status": "OBSERVED"
-        },
-        {
-          "phase": "after-prefill-load",
-          "mem_available_kib": 7981056,
-          "vm_rss_kib": 130484,
-          "vm_hwm_kib": 130484,
-          "status": "OBSERVED"
-        },
-        {
-          "phase": "after-prefill-close",
-          "mem_available_kib": 8738816,
-          "vm_rss_kib": 215512,
-          "vm_hwm_kib": 215512,
-          "status": "OBSERVED"
-        },
-        {
-          "phase": "before-load",
-          "mem_available_kib": 9430016,
-          "vm_rss_kib": 139320,
-          "vm_hwm_kib": 139320,
-          "status": "OBSERVED"
-        },
-        {
-          "phase": "after-both-load",
-          "mem_available_kib": 4871168,
-          "vm_rss_kib": 2916504,
-          "vm_hwm_kib": 2916504,
-          "status": "OBSERVED"
-        },
-        {
-          "phase": "after-close",
-          "mem_available_kib": 5856256,
-          "vm_rss_kib": 139680,
-          "vm_hwm_kib": 139680,
-          "status": "OBSERVED"
-        }
-      ]
-    },
-    "record_scope": "SELECTED_FIELDS_FROM_USER_SUMMARY_WITH_SEPARATELY_LABELLED_ANALYSIS_NOT_RAW_ARTIFACT_COPY",
+      {
+        "phase": "MODEL_PREREAD",
+        "wall_us": 1621012,
+        "major_faults": 0,
+        "minor_faults": 263,
+        "read_bytes": 2679566336,
+        "read_chars": 2852119424,
+        "completed": true
+      },
+      {
+        "phase": "SET_MODEL_BUFFER",
+        "wall_us": 2,
+        "major_faults": 0,
+        "minor_faults": 3,
+        "read_bytes": 0,
+        "read_chars": 402,
+        "completed": true
+      },
+      {
+        "phase": "MODEL_LOAD",
+        "wall_us": 2250744,
+        "major_faults": 44297,
+        "minor_faults": 3149,
+        "read_bytes": 0,
+        "read_chars": 12813,
+        "completed": true
+      },
+      {
+        "phase": "IO_DESCRIPTORS",
+        "wall_us": 344,
+        "major_faults": 0,
+        "minor_faults": 3,
+        "read_bytes": 0,
+        "read_chars": 405,
+        "completed": true
+      },
+      {
+        "phase": "TENSOR_SETUP",
+        "wall_us": 7928,
+        "major_faults": 10,
+        "minor_faults": 13,
+        "read_bytes": 0,
+        "read_chars": 405,
+        "completed": true
+      }
+    ],
     "comparison": {
-      "previous": "specs/board-resident-mixed-first-completion.json",
-      "scope": "SINGLE_REQUEST_OBSERVATIONS_DIFFERENT_TOKEN_PATHS_NOT_PAIRED_ALGORITHM_SPEEDUP",
-      "previous_generated_token_ids": [
-        4,
-        0,
-        28,
-        18,
-        2,
-        2,
-        2,
-        0
-      ],
-      "first_different_generated_index": 1,
-      "decode_wrapper_old_ms": 1149.25,
-      "decode_wrapper_new_ms": 195.75,
-      "decode_wrapper_ratio": 5.871008939974457,
-      "decode_wrapper_reduction_percent": 82.96715249075484,
-      "decode_api_reciprocal_tokens_per_s": 8.957362952346829,
-      "meeting_11_tokens_per_s_equivalent_ms": 90.9090909090909,
-      "meeting_scope": "USER_REPORTED_BASELINE_MODEL_CONTEXT_AND_TIMING_NOT_BOUND",
-      "decode_wrapper_minus_api_ms": 84.11,
-      "draft_load_old_ms": 8380,
-      "draft_load_new_ms": 202958,
-      "draft_load_share_of_total_percent": 87.96151429128653,
-      "total_without_draft_load_ms": 27777,
-      "generation_run_wrappers_total_ms": 6751,
-      "draft_share_of_generation_run_wrappers": 0.7680343652792179,
-      "total_wall_old_ms": 88680,
-      "total_wall_new_ms": 230735
+      "baseline": "specs/board-resident-load-observation.json",
+      "draft_load_ratio": 53.21658511460211,
+      "total_wall_ratio": 7.455285328246702,
+      "total_wall_saved_ms": 203051,
+      "total_wall_reduction_percent": 86.58669714207738,
+      "scope": "TWO_USER_REPORTED_REQUESTS_NOT_REPEATED_CONTROLLED_PERFORMANCE_ACCEPTANCE"
     },
-    "diagnosis": {
-      "draft_load_scope": "ResidentSession::Load times full HiaiStatefulExecutor construction: live target storage acquisition, V1 client Init/version/support, mmap model, SetModelBuffer, Load, IO descriptors, allocations/initialization. No subphase duration retained.",
-      "draft_load_cause": "UNRESOLVED_NOT_PROVEN_SDK_LOAD_OR_IO_OR_MEMORY_PRESSURE",
-      "hypotheses": [
-        "Removing full payload hash may change cache warmth before demand-mapped buffer is consumed.",
-        "Different available memory or SDK/device conditions may affect load wall time."
-      ],
-      "memory_limit": "RSS/MemAvailable cannot isolate NPU allocation or prove leak; HWM observations decrease with phase and remain unverified.",
-      "rounding": "Wrapper totals sum per-call integer milliseconds; API totals sum microseconds. Draft API exceeds wrapper by2.738ms over7calls, within millisecond truncation; do not interpret as negative copy time.",
-      "numerical_gap": "Second generated token is2 versus prior resident0 and nonresident12; exact prepared input identities and intermediate states not rechecked. First decode precedes first draft Process, but draft is already loaded.",
-      "acceptance_gap": "0/7 accepted. Existing decode1 serial verify still performs one target advance per committed token; no measured target-call reduction or speculative algorithm speedup.",
-      "next": "Load phase timing implemented and host-tested; run docs/board-resident-load-timing.md once while board-local text tokenizer work proceeds. Preserve first-decode divergence investigation."
-    }
+    "conclusion": "One preread-enabled full loop completed. Draft startup including preread fell from206640ms to3883ms; whole request fell from234506ms to31455ms. Most observed saving is startup.",
+    "limits": [
+      "Single preread observation; cache state and device load were not controlled",
+      "SDK Load still reports44297 major faults; no address-level/storage/root-cause attribution",
+      "Numerical validation absent; acceptance0/7 and output differences remain",
+      "Manager-only external weight release not independently validated"
+    ],
+    "next": "Keep explicit --draft-preread in the combined board-local text request; frontend device verification next, numerical closure afterward."
   },
   "planned_parallelism": [
     "P0 original-prefill baseline passed. User permits mixed runtime APIs. Parallel native session/supervisor and host preparation/recovery integration; test full mixed flow with fake SDK, then user runs actual device request.",
@@ -1031,7 +967,7 @@
       "integration": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T011114Z-24876-645bba/integration.xml",
       "ctest": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T011114Z-24876-645bba/ctest.log"
     },
-    "next": "Load-stage observation received; compare explicit sequential preread startup, preserve full startup cost.",
+    "next": "SDK Load slow stage identified; one sequential-preread full request improved total startup. See the new user observation.",
     "device_observation": "specs/board-resident-load-observation.json"
   },
   "text_interface_task": {
@@ -1039,15 +975,17 @@
     "goal": "Board-local original tokenizer encode/decode and autonomous full model loop",
     "validation": "specs/board-text-host-validation.json",
     "document": "docs/board-text-input-output.md",
-    "next": "User runs dflash-board-text8-run then recovers dflash-board-text8-recovery; same run also includes draft load phase timing. Continue numerical closure after frontend/load observation."
+    "next": "Run docs/board-text-input-output.md with --text and --draft-preread together; use dflash-board-text-preread8-run/recovery. Tokenizer preparation is once only.",
+    "combined_validation": "specs/board-text-preread-validation.json"
   },
   "draft_load_task": {
-    "status": "HOST_VALIDATED_BOARD_PREREAD_COMPARISON_PENDING",
-    "observation": "specs/board-resident-load-observation.json",
+    "status": "USER_REPORTED_PREREAD_STARTUP_IMPROVEMENT_SINGLE_RUN",
+    "observation": "specs/board-resident-preread-observation.json",
     "document": "docs/board-resident-load-timing.md",
     "validation": "specs/board-resident-preread-validation.json",
-    "next": "User runs unchanged P8/G8 with --draft-preread in fresh preread8-run; compare total startup including preread, not only SDK Load. Board effect pending.",
+    "next": "Retain explicit --draft-preread in the same request as --text; run board-text-preread8 and recover once. Repeated controlled performance and numerical acceptance remain pending.",
     "default_enabled": false,
-    "device_calls_by_assistant": 0
+    "device_calls_by_assistant": 0,
+    "baseline_observation": "specs/board-resident-load-observation.json"
   }
 }
