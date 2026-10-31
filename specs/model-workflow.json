@@ -2,8 +2,8 @@
   "schema_version": 1,
   "updated": "2026-10-31",
   "active_phase": "integration",
-  "delivery_status": "ORIGINAL_PREFILL_BOARD_EXECUTION_PASSED_MIXED_RESIDENCY_HOST_TESTED_DEVICE_PENDING",
-  "run_id": "20261031T000519Z-15193-5dccde",
+  "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
+  "run_id": "20261031T003112Z-20154-6e73a8",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -2160,7 +2160,7 @@
       "evidence": "docs/current-status.md",
       "working_directory": "$AI_RUN_DIR",
       "next_command_document": "docs/current-status.md#用户现在执行什么",
-      "note": "Original autonomous prefill+draft/decode loop completed. User authorizes V2 prefill/decode + V1 embedded draft residency. Mixed host validation passed:186 Python units,7 unique actual-C++/recovery scenarios,18 native CTest groups. User full-device request is next; cleanup, co-residency, accuracy and performance remain unvalidated."
+      "note": "User reports original prefill + mixed V2 decode/V1 draft resident board loop completed:1/8/7 calls,target/draft eachLoad1,88.680s,normalclose. Acceptance0/7 and second-token divergence versus old run require first-decode/P1 investigation. Single request does not pass repeated memory stability or paired algorithm performance."
     },
     {
       "name": "accuracy",
@@ -5440,107 +5440,294 @@
   "execution_state": "specs/dflash-execution-state.json",
   "planning_horizon": "P0 functional loop through P8 accuracy/stability/performance/release; normal10–20workingdays conditional, optimistic7–10, initialloop0.5–1",
   "current_resident_work": {
-    "run_id": "20261031T000519Z-15193-5dccde",
+    "run_id": "20261031T003112Z-20154-6e73a8",
     "user_authorized": true,
     "p0_result": "specs/board-prefill-first-completion.json",
-    "scope": "User authorizes V2 original prefill/decode + V1 embedded six-layer draft. Implement new resident-mixed lane; prefill once then close, resident decode+draft each load once. New preselected manager-only V2 close remains unvalidated on device. No model recompile or automatic API fallback.",
+    "scope": "User-reported complete single-request mixed residency succeeded with unchanged original models. Prefill once then close, resident V2 decode and V1 draft each load once. Next isolate first-decode divergence and add ordinary target baseline; repeated stability, independent release, numerical accuracy and algorithm performance remain pending.",
     "target_profile_local": "cpro-blue-pending manifest missing; local modelPython and fakeHIAI tests only, selected user DDK builds on user host",
-    "numerical_validation": "NOT_RUN",
-    "device_residency": "HOST_VALIDATED_MIXED_CANDIDATE_DEVICE_NOT_RUN",
+    "numerical_validation": "NOT_EVALUATED_DIFFERENT_TOKEN_SEQUENCE",
+    "device_residency": "USER_REPORTED_SINGLE_REQUEST_TARGET_DRAFT_RESIDENCY_PASSED",
     "runtime_api": "target-v2-draft-v1",
     "execution_mode": "resident-mixed",
     "current_document": "docs/current-status.md",
     "host_validation": "specs/resident-mixed-host-validation.json",
     "latest_device_observation": {
       "schema_version": 1,
-      "artifact_kind": "qwen35-resident-v1-hcl-load-failure",
-      "run_id": "20261030T235619Z-13818-340217",
-      "source_base_commit": "2fa9d7d",
-      "status": "DEVICE_FILE_ONLY_CANDIDATE_FAILED_BEFORE_MODEL_PARSE",
-      "observation_source": "USER_PASTED_RECOVERY_AND_PID_FILTERED_HILOG_NOT_INDEPENDENTLY_RETRIEVED",
-      "run": "dflash-board-resident-v1-file8-run",
-      "recovery": "dflash-board-resident-v1-file8-recovery",
-      "board_attempt": "/data/local/tmp/qwen35_board_serial_60724b33b72e47aab3558ae0b1ec2d09",
-      "native_process_id": 63072,
-      "runtime_version": "800.631.120.010",
-      "selected_pipe": "HCL",
-      "execution_failure_stage": "prefill-v1-load",
-      "sdk_load_status": 1,
-      "error": "HIAI Load failed: 1 [model=qwen35_resident_prefill, path=/data/local/tmp/qwen3_5_moe/codex-target-362a2883ca8259b9cf61/payload/model/model.omc, runtime=800.631.120.010]",
-      "hilog_evidence": [
-        "model_manager_impl.cpp CreateModelManager(530): DDK pipe is HCL.",
-        "local_buffer.cpp CreateLocalBuffer(40): data != nullptr && size > 0 false, return nullptr.",
-        "AiModelManagerClientImpl.cpp Load(266): CreateLocalBuffer return null, load failed"
-      ],
-      "observed_device_clock": "03-13 23:21:58.211; retained as user supplied, not normalized to host date",
-      "counts": {
-        "prefill_native_calls": 0,
-        "target_native_calls": 0,
-        "draft_native_calls": 0
-      },
-      "generated_token_ids": [],
-      "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
-      "conclusion": "Current selected HCL V1 Load rejects the path-only descriptor's empty model buffer before OMC restoration or inference. Does not prove all V1 implementations lack external-weight support.",
-      "unsupported_conclusions": [
-        "Missing libffrt_acc.so caused this Load failure",
-        "Weights, masks or state feedback caused this pre-parse rejection",
-        "Adding AiModelBuilder switches backend",
-        "A guessed environment variable selects a compatible backend"
-      ],
-      "next": "Inspect actual selected compatible API declarations for a supported external-weight route; no repeat path-only request, automatic fallback or model recompilation.",
+      "artifact_kind": "qwen35-board-resident-mixed-first-completion",
+      "recorded_date": "2026-10-31",
+      "run_id": "20261031T003112Z-20154-6e73a8",
+      "source": "USER_PASTED_COMPACT_RECOVERY_SUMMARY",
+      "assistant_device_access": "NOT_PERFORMED_USER_REQUEST",
+      "candidate_commit": "060ea2619db0f0c623c92642e5188d7f9502d718",
+      "executed_source_identity": "NOT_INDEPENDENTLY_RECHECKED_FROM_USER_ARTIFACTS",
+      "status": "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED",
+      "stage": "complete",
+      "execution": "$AI_RUN_DIR/dflash-board-resident-mixed8-run",
+      "output": "$AI_RUN_DIR/dflash-board-resident-mixed8-recovery",
+      "prepared": "$AI_RUN_DIR/dflash-board-resident-mixed8-run/prepared",
+      "board_attempt": "/data/local/tmp/qwen35_board_serial_1a8537eaa0954c1a87ecb6a2e0c7e474",
+      "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
       "model_compilation": "NOT_RUN",
-      "assistant_device_access": "NONE",
-      "numerical_validation": "NOT_RUN",
-      "changes": [
-        "Expose validated prefill_lifecycle and prefill_failure_stage in recovery/CLI summary; do not mislabel a never-loaded resident session CLOSED as failure.",
-        "Independent read-only completed-failure collector: stdout/stderr tails <=64KiB each, optional diagnostic PID-filtered HiLog, original attempt/device/config/exit binding, no models/uploads/lock operations.",
-        "Retain original model runtime code and historical evidence; remove failed candidate launch from current instructions."
+      "numerical_validation": "NOT_EVALUATED",
+      "generated_token_ids": [
+        4,
+        0,
+        28,
+        18,
+        2,
+        2,
+        2,
+        0
       ],
-      "experience_audit": "A generic V1 API sample or accepting fake SDK cannot establish the selected runtime backend's source representation. Preserve precise SDK failure before trying further loading routes.",
-      "scope": "Host diagnostic/reporting changes only; no new loading fix or device inference pass.",
-      "host_validation": [
-        {
-          "path": "out/prefill-summary-transport.xml",
-          "tests": 132,
-          "failures": 0,
-          "sha256": "51f08cbece30dfb1a8032c068a3ef3b60da5aaef90fd598d18abb272e2e9c632",
-          "scope": "HOST_ONLY_NO_DEVICE"
+      "counts": {
+        "accepted": 0,
+        "bonuses": 0,
+        "considered": 7,
+        "corrections": 7,
+        "draft_native_calls": 7,
+        "prefill_native_calls": 1,
+        "target_native_calls": 8
+      },
+      "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+      "dump": false,
+      "retrieval_mode": "FINAL_TOKENS_ONLY",
+      "evidence_scope": "TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY",
+      "acceptance": {
+        "accepted": 0,
+        "considered": 7,
+        "rate": 0
+      },
+      "phase_latency": {
+        "decode": {
+          "calls": 8,
+          "mean_ms": 1149.25,
+          "total_ms": 9194,
+          "native_api": "Run",
+          "timing_scope": "RESIDENT_RUN_INCLUDES_TENSOR_COPIES_READBACK_HASH_AND_BUFFER_CHECKS_NOT_NPU_ONLY"
         },
-        {
-          "path": "out/failure-log-frozen.xml",
-          "tests": 26,
-          "failures": 0,
-          "sha256": "efb10a86ee2c3d9fadb4dbb3dae20c68e06303609d0fd720cfec845a4f3725c7",
-          "scope": "HOST_ONLY_NO_DEVICE"
+        "draft": {
+          "calls": 7,
+          "mean_ms": 747.5714285714286,
+          "total_ms": 5233,
+          "native_api": "Process",
+          "timing_scope": "RESIDENT_RUN_INCLUDES_TENSOR_COPIES_READBACK_HASH_AND_BUFFER_CHECKS_NOT_NPU_ONLY"
+        },
+        "prefill": {
+          "calls": 1,
+          "mean_ms": 13833,
+          "total_ms": 13833,
+          "native_api": "Run",
+          "timing_scope": "PREFILL_V2_LOAD_RUN_CLOSE_WALL"
+        },
+        "inference_only_status": "NOT_PROVIDED",
+        "timing_scope": "RESIDENT_RUN_WALL_EXCLUDES_MODEL_LOAD_AND_CLOSE"
+      },
+      "supervisor_timing": {
+        "startup_source_hash_ms": 19899,
+        "prefill_model_load_ms": 11435,
+        "prefill_model_unload_ms": 462,
+        "prefill_process_ms": 1931,
+        "prefill_v2_total_ms": 13833,
+        "resident_target_load_ms": 8885,
+        "resident_draft_load_ms": 8380,
+        "resident_target_run_ms": 9194,
+        "resident_draft_run_ms": 5233,
+        "resident_close_ms": 420,
+        "total_wall_ms": 88680,
+        "scope": "MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE"
+      },
+      "prompt_ingestion": "PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL",
+      "execution_mode": "resident-mixed",
+      "model_load_api": "target-v2-draft-v1",
+      "model_load_apis": {
+        "prefill": "file-v2",
+        "target": "file-v2",
+        "draft": "legacy-buffer"
+      },
+      "target_lifecycle_policy": "v2-target-v1-draft-resident-v1",
+      "resident_lifecycle": {
+        "cleanup_error": "",
+        "close_ms": 420,
+        "closed": true,
+        "draft_close_calls": 1,
+        "draft_load_attempts": 1,
+        "draft_load_ms": 8380,
+        "draft_loads": 1,
+        "draft_run_attempts": 7,
+        "draft_run_ms": 5233,
+        "draft_runs": 7,
+        "target_close_calls": 1,
+        "target_load_attempts": 1,
+        "target_load_ms": 8885,
+        "target_loads": 1,
+        "target_run_attempts": 8,
+        "target_run_ms": 9194,
+        "target_runs": 8,
+        "model_load_api": "target-v2-draft-v1",
+        "poisoned": false,
+        "process_id": 5008,
+        "session_id": "dd9e45a8211c80f74e10630f0c8b2c1fcb26b40cc6eafd388d80aac03518ebd9",
+        "stage": "CLOSED",
+        "status": "CLOSED",
+        "target_lifecycle": {
+          "cleanup_error": "",
+          "closed": true,
+          "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
+          "failure_stage": "",
+          "manager_deinit_called": true,
+          "manager_deinit_returned": true,
+          "manager_init_attempted": true,
+          "manager_init_status": 0,
+          "manager_initialized": true,
+          "ordering_validation": "NOT_VALIDATED_ON_DEVICE",
+          "weight_cleanup_policy": "MANAGER_DEINIT_ONLY_NO_SEPARATE_WEIGHT_UNLOAD",
+          "weight_init_policy": "INIT_BEFORE_WEIGHTS_NO_FALLBACK",
+          "weights_deinit_called": false,
+          "weights_deinit_status": -1,
+          "weights_init_attempted": true,
+          "weights_init_status": 0,
+          "weights_initialized": true,
+          "run_attempts": 8,
+          "successful_runs": 8
+        },
+        "draft_v1_lifecycle": {
+          "cleanup_error": "",
+          "client_init_attempted": true,
+          "client_init_status": 0,
+          "client_initialized": true,
+          "closed": true,
+          "failure_stage": "",
+          "load_attempted": true,
+          "load_status": 0,
+          "loaded": true,
+          "model_load_api": "legacy-buffer",
+          "process_attempts": 7,
+          "successful_processes": 7,
+          "unload_called": true,
+          "unload_status": 0
         }
-      ],
-      "source_sha256": {
-        "model/qwen35_moe_dflash/board_serial_transport.py": "00514183ef8337105572f7397b4302ee018fe2fa4f7629bcb3ed1e29c405ce8d",
-        "model/qwen35_moe_dflash/board_serial_failure_logs.py": "62ad21744639fa0436f6fcf5a2d4fb095226b6fe41ed129208bd0ce95bedb809",
-        "targets/cpro/scripts/run_board_serial_dflash.py": "4b0df18f3756fb8d1f61b17e17c2a5ea691c75158f02d66c26ace1b382d9da50",
-        "targets/cpro/scripts/collect_board_serial_failure_logs.py": "94c9e62a4d7716a5f9736177b078c874505da649ff70c13c1ebdc42f30cf88cd",
-        "tests/test_board_serial_transport.py": "6cbc97fa225203ecdfacca166824818f77339011d62bcbed2ca9391d4f68eed9",
-        "tests/test_board_serial_failure_logs.py": "6f92202436e0978342f2eac47c7bcc3bb16fc180790f67dd79fbaa24a6f2b766"
       },
-      "user_tool_header_observation": {
-        "directory": "/home/w00949577/model_run_tool/inc/compatible",
-        "source": "USER_PASTED_GREP_NOT_SELECTED_RUNNER_HEADER_IDENTITY",
-        "declarations": [
-          "void* GetModelBuffer() const",
-          "AIStatus SetModelBuffer(const void* data, uint32_t size)",
-          "AIStatus SetModelPath(const std::string& modelPath)",
-          "const std::string& GetModelPath() const",
-          "uint32_t GetModelNetSize() const",
-          "AIStatus Load(std::vector<std::shared_ptr<AiModelDescription>>& pmodelDesc)",
-          "AIStatus UnLoadModel()"
+      "prefill_lifecycle": {
+        "cleanup_error": "",
+        "closed": true,
+        "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
+        "failure_stage": "",
+        "manager_deinit_called": true,
+        "manager_deinit_returned": true,
+        "manager_init_attempted": true,
+        "manager_init_status": 0,
+        "manager_initialized": true,
+        "ordering_validation": "NOT_VALIDATED_ON_DEVICE",
+        "weight_cleanup_policy": "MANAGER_DEINIT_ONLY_NO_SEPARATE_WEIGHT_UNLOAD",
+        "weight_init_policy": "INIT_BEFORE_WEIGHTS_NO_FALLBACK",
+        "weights_deinit_called": false,
+        "weights_deinit_status": -1,
+        "weights_init_attempted": true,
+        "weights_init_status": 0,
+        "weights_initialized": true,
+        "run_attempts": 1,
+        "successful_runs": 1
+      },
+      "resident_memory": {
+        "scope": "PROCESS_RSS_NOT_NPU_ALLOCATED_MEMORY",
+        "snapshots": [
+          {
+            "phase": "before-prefill-load",
+            "mem_available_kib": 23740416,
+            "vm_hwm_kib": 86924,
+            "vm_rss_kib": 86924,
+            "status": "OBSERVED"
+          },
+          {
+            "phase": "after-prefill-load",
+            "mem_available_kib": 7961600,
+            "vm_hwm_kib": 43416,
+            "vm_rss_kib": 43416,
+            "status": "OBSERVED"
+          },
+          {
+            "phase": "after-prefill-close",
+            "mem_available_kib": 8271872,
+            "vm_hwm_kib": 136172,
+            "vm_rss_kib": 136172,
+            "status": "OBSERVED"
+          },
+          {
+            "phase": "before-load",
+            "mem_available_kib": 18048000,
+            "vm_hwm_kib": 63928,
+            "vm_rss_kib": 63928,
+            "status": "OBSERVED"
+          },
+          {
+            "phase": "after-both-load",
+            "mem_available_kib": 4941824,
+            "vm_hwm_kib": 2867028,
+            "vm_rss_kib": 2867028,
+            "status": "OBSERVED"
+          },
+          {
+            "phase": "after-close",
+            "mem_available_kib": 6544384,
+            "vm_hwm_kib": 59736,
+            "vm_rss_kib": 59736,
+            "status": "OBSERVED"
+          }
+        ]
+      },
+      "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
+      "physical_disconnect_validation": "NOT_SPECIFICALLY_TESTED",
+      "state_chain_host_replay": "NOT_RUN_COMPACT_SCOPE",
+      "repeated_request_stability": "NOT_TESTED",
+      "paired_algorithm_speedup": "NOT_MEASURED",
+      "milestones": {
+        "original_prefill_autonomous_loop": "USER_REPORTED_PASSED",
+        "mixed_target_draft_single_load_residency": "USER_REPORTED_PASSED_SINGLE_REQUEST",
+        "api_close": "NORMAL_RETURN_OBSERVED_NO_CLEANUP_ERROR",
+        "numerical_equivalence": "NOT_VALIDATED_GENERATED_SEQUENCE_DIFFERS",
+        "independent_weight_release": "NOT_VALIDATED",
+        "full_P5_acceptance": "PENDING_EQUIVALENCE_REPEAT_STABILITY_AND_MEMORY"
+      },
+      "comparison_with_old_nonresident": {
+        "source": "specs/board-prefill-first-completion.json",
+        "old_token_ids": [
+          4,
+          12,
+          10,
+          8,
+          0,
+          4,
+          32,
+          2
         ],
-        "explicit_weight_entry": "NOT_PRESENT_IN_RETURNED_MATCHES",
-        "scope": "No explicit external-weight load entry in these returned declarations; not proof that the selected private SDK lacks every extension."
+        "new_token_ids": [
+          4,
+          0,
+          28,
+          18,
+          2,
+          2,
+          2,
+          0
+        ],
+        "first_different_generated_index": 1,
+        "old_token_at_first_difference": 12,
+        "new_token_at_first_difference": 0,
+        "old_total_wall_ms": 305788,
+        "new_total_wall_ms": 88680,
+        "total_wall_ratio": 3.4482183130356336,
+        "wall_reduction_percent": 70.99951600455216,
+        "scope": "TWO_USER_REPORTED_SINGLE_REQUESTS_DIFFERENT_TOKEN_PATHS_NOT_PAIRED_ALGORITHM_OR_NPU_SPEEDUP",
+        "phase_comparability": "OLD_CHILD_PHASES_INCLUDE_LOAD_RUN_UNLOAD_NEW_RESIDENT_PHASES_EXCLUDE_LOAD_CLOSE_INCLUDE_COPIES_HASH_CHECKS"
       },
-      "route_choice_pending": {
-        "reason": "User previously explicitly required all V1; no silent fallback.",
-        "proposed": "If user permits, investigate original external prefill/decode V2 plus embedded draft V1 residency. Known Init/InitWeights success does not settle DeinitWeights failures or joint residency.",
-        "alternative": "Continue all-V1 using vendor-supported external-weight loading contract; current path-only candidate must not be repeated."
+      "diagnosis": {
+        "first_difference": "Second generated token is determined by first decode(anchor token4 at position8), before first draft Process; draft model Load has already occurred.",
+        "code_reference": "targets/cpro/runtime/src/board_serial_main.cpp:737-743",
+        "prefill_top1_caveat": "Same first token4 does not prove matching prefill logits,80states or8tap features.",
+        "next": "Bind both prepared model/prompt/table/control identities; compare prefill states and first decode89inputs/82outputs. Compact does not retain tensor payloads; implement bounded capture and ordinary target-only comparison without model recompilation.",
+        "memory_caveat": "Reported VmHWM decreases and equals VmRSS in all snapshots. Preserve raw values; cannot treat as proven lifetime peak, dedicated NPU allocation or leak-free release.",
+        "unattributed_wall_ms": 22836,
+        "unattributed_wall_scope": "Remainder after named hash,prefill,total model loads,resident runs,andclose; do not attribute all to disk IO without measurement."
       }
     },
     "host_validation_limitation": "Host fake SDK validates lifecycle/scheduling/reporting only. Selected-device mixed loading, joint residency and external-weight reclamation remain unvalidated.",
@@ -5576,12 +5763,11 @@
       "conclusion": "Application descriptor guard failed before SDK Load; not an inference or residency failure."
     },
     "latest_diagnostics": "specs/resident-v1-hcl-load-failure.json",
-    "last_full_request": "dflash-board-resident-v1-file8-run",
-    "last_recovery": "dflash-board-resident-v1-file8-recovery",
+    "last_full_request": "dflash-board-resident-mixed8-run",
+    "last_recovery": "dflash-board-resident-mixed8-recovery",
     "user_authorization": "2026-10-31 async reply: 允许混合接口，优先推进常驻（推荐）",
     "prior_candidate": "specs/resident-v1-file-buffer-candidate.json",
     "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
-    "next_full_request": "dflash-board-resident-mixed8-run",
-    "next_recovery": "dflash-board-resident-mixed8-recovery"
+    "next_action": "Isolate prefill and first decode differences; implement bounded capture and ordinary target baseline. Repeat stability and independent weight release remain pending."
   }
 }

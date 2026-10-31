@@ -1,3 +1,11 @@
+<a id="resident-mixed-first-device-completion"></a>
+
+## 2026-10-31：混合接口常驻完整板端请求执行成功
+
+用户回传 `dflash-board-resident-mixed8-recovery`，PID5008、prefill1／decode8／draft7、target/draft各加载一次并正常关闭、锁释放，token为 `[4,0,28,18,2,2,2,0]`，接受0／7，总墙钟88.680秒。单次功能及常驻执行通过；源码/模型原始artifact未由助手连接设备重取，compact不包含完整状态链重放。精度、重复稳定性、独立权重释放和配对算法性能未验收。
+
+与旧逐次加载总墙钟305.788秒的单次记录比为3.448，但phase计时范围及token路径不同，不作为DFlash算法加速结论。新旧第2个token为0／12；源码调度证明该值在首次draft Process之前由首decode算出，优先隔离prefill输出/首decode输入与target执行差异。draft已加载，共存影响仍可能需要单独对照。详情及原始内存遥测限制见[结果](board-resident-mixed-first-completion.md)和[结构化观察](../specs/board-resident-mixed-first-completion.json)。
+
 <a id="resident-mixed-candidate"></a>
 
 ## 2026-10-31：用户授权 V2 target／V1 draft 混合常驻候选

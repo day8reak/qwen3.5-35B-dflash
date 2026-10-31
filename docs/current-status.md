@@ -2,63 +2,37 @@
 
 <a id="用户现在执行什么"></a>
 
-**用户已同意优先推进混合接口常驻：prefill／decode 使用 V2，内嵌权重的完整六层 draft 使用 V1。** 这取代此前全部V1的要求；三个OMC及权重不变，只重建native runner。当前为待实机验证的新候选，不宣称加载、清理或双模型常驻已经成功。
+**混合接口常驻的完整板端闭环已经由用户实机跑通。** `dflash-board-resident-mixed8-run/recovery` 完成原prefill1次、decode8次、完整六层draft7次，decode和draft各加载1次，正常关闭并释放所持锁。原三OMC及权重没有重编。本次是用户回传compact摘要，助手没有连接设备重取原artifact。
 
-一次部署和启动后，板端同一线程执行：
+结果：`[4,0,28,18,2,2,2,0]`，接受0／7，总墙钟**88.680秒**。decode调用平均1.149秒，draft平均0.748秒；均包含复制、读回、哈希／buffer检查，非纯NPU时间。prefill加载／运行／关闭合计13.833秒，其中运行包装1.931秒。
 
-1. V2恢复原prefill64，Init后InitWeights，执行一次，关闭并释放该实例。
-2. V2恢复decode1并初始化外置权重；V1从完整embedded buffer加载draft。两个实例各加载一次。
-3. 板端查原embedding表，交替decode Run和draft Process，执行串行verify、接受／纠正及80状态反馈。
-4. 关闭两个实例，只回传最终token、接受率、分阶段时延及内存摘要。循环期间没有逐token服务器交互。
+与旧逐次加载版本305.788秒相比，单次总耗时减少约71%。这是框架常驻改进的观察，两个版本的token路径和phase计时范围不同，不作为DFlash算法加速或最终性能验收。详情见[首次常驻实机结果](board-resident-mixed-first-completion.md)及[结构化记录](../specs/board-resident-mixed-first-completion.json)。
 
-prefill卸载与decode加载仍顺序执行，调度上不主动重叠加载两份约18.8GB的target权重；实际释放情况仍需板端观察。draft保持S64、每次15候选，当前最多考虑前K=2；首个不匹配即纠正。输入仍是token ID文件，板端分词和文字解码尚未包含。
+## 当前下一动作：定位首decode差异，再收敛精度
 
-## 新请求与恢复
+旧输出 `[4,12,10,8,0,4,32,2]` 与新输出第2项起不同。prefill给出首token4后，调度器先执行decode(anchor4)，再执行第一次draft Process；因此第二token的新0／旧12在draft提议之前已经算出。draft此时已加载，共存影响仍需保留为待隔离因素。
 
-本轮主机验证已通过：186项Python单元测试、7个完整C++循环／恢复场景和18组native CTest。7个场景中两项恢复测试曾缺少测试环境变量，修正后同名补跑通过，原失败记录保留。均为主机fake验证，实机结果待回传。DDK主机拉取更新后使用以下新目录。
+后续执行助手按以下顺序推进：
 
-```bash
-git -C "$REPO_DIR" pull --ff-only
+1. 离线对照两个保留prepared请求的prompt、模型、embedding表、控制与80状态映射身份。相同首token不证明prefill状态和features相同。
+2. 补充有界的prefill＋首decode捕获和比较，绑定完整89输入／82输出，在首个差异处定位；两个compact结果无法补出已经没有保留的中间张量。
+3. 在同一runner实现普通target-only基线，对照target-only与pair已加载但未调用draft Process的首步输出和重复性。该功能尚未有可运行CLI，新命令在实现和主机验证后提供。
+4. 先完成target参考与控制语义校验，再处理完整draft真实feature/anchor精度与接受率。之后验重复请求的内存、稳定性和同条件普通decode对比。
 
-python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
-  --decode-job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
-  --runtime-probe "$AI_RUN_DIR/target-decode1-runtime-io-v2" \
-  --state-lineage "$AI_RUN_DIR/target-decode1-state-lineage-v7" \
-  --prefill-feedback "$AI_RUN_DIR/target-prefill64-decode1-feedback-plan-v2" \
-  --source-torchair-pb2 "$AI_RUN_DIR/target-decode1-row-response/ge_ir_by_protoc_3_19_pb2.py" \
-  --draft-bundle "$AI_RUN_DIR/full-draft/residual-fix/bundle" \
-  --weight-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_weight.bin" \
-  --scale-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_scale.bin" \
-  --prompt-input-ids /home/w00949577/run_35B/chunksize_64_data/input_ids.bin \
-  --prompt-length 8 --max-new-tokens 8 --max-proposals-per-round 2 \
-  --output "$AI_RUN_DIR/dflash-board-resident-mixed8-run" \
-  --resident --apply --detach
-```
+当前无需重复已成功的整条混合请求，也无需编译S128或修改原模型。主线进入P1；P5的单次常驻执行子项已完成，P5完整验收继续等待数值等价、重复稳定性及内存观察。阶段、依赖和预计天数见[总计划](dflash-delivery-plan.md)。
 
-等待板端完成后回收同一请求，不重新启动推理：
+## 保留的请求与运行方式
 
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
-  --recover "$AI_RUN_DIR/dflash-board-resident-mixed8-run" \
-  --output "$AI_RUN_DIR/dflash-board-resident-mixed8-recovery"
-```
+- 新成功：`$AI_RUN_DIR/dflash-board-resident-mixed8-run`，恢复目录 `$AI_RUN_DIR/dflash-board-resident-mixed8-recovery`。
+- 旧成功：`$AI_RUN_DIR/dflash-board-prefill8-run`，恢复目录 `$AI_RUN_DIR/dflash-board-prefill8-recovery`。
+- 当前实现：`060ea26`，显式 `--resident`，prefill/decode为file-v2，embedded draft为legacy-buffer。同一板端进程和线程；prefill一次后关闭，decode/draft各加载一次并多轮运行。
+- 输入是token ID文件；物理S64、逻辑8的prefill控制仍是实验，尚未包含板端分词／文字解码。draft每次15候选，本次最多考虑前2个，实际每轮首候选都未接受。
+- 默认compact回收最终token和小摘要；独立新请求的`--dump`保留详细证据。旧请求按其原配置恢复。
 
-启动状态 `BOARD_SERIAL_DFLASH_STARTED` 不等于推理成功。断连时保留原请求并恢复，不删除锁或重启未知状态的进程。恢复沿用原dump/API配置；旧V1/V2收据仍按其历史配置核验。
+此前主机186项单元、7个唯一C++循环／恢复场景和18组native CTest通过，见[主机验证](../specs/resident-mixed-host-validation.json)；与本次用户实机观察分别记录。
 
-## 清理策略的具体范围
+## 清理与内存的准确结论
 
-新mixed请求在加载之前明确选择 `MANAGER_DEINIT_ONLY_NO_SEPARATE_WEIGHT_UNLOAD`：调用V2 `DeInit`，记录是否正常返回，再销毁manager、built model和tensor对象。它不会先调用失败的DeinitWeights再忽略错误；该API在新策略下未调用，记录called=false、status=-1。DeInit返回void，不伪造status0；若抛异常仍记录清理失败，不重试。
+本次V2 `Init → InitWeights → Run → DeInit` 具体调用已成功执行，DeInit正常返回、无清理异常。新策略不单独调用DeinitWeights，历史两种显式卸载顺序返回3／1的结果保留。
 
-此前Init→InitWeights均成功；单独DeinitWeights在两种顺序下返回3或1的观察全部保留。官方V2索引列有DeInit，但没有取得证明私有InitWeights资源所有权的正文。因此新策略是显式实验，报告保留 `external_weight_release=NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY`。正常调用返回和销毁对象不能独立证明板端外置权重内存已释放。
-
-新请求绑定 `execution_mode=resident-mixed`、`model_load_api=target-v2-draft-v1`，三模型API分别为file-v2／file-v2／legacy-buffer；策略为 `v2-target-v1-draft-resident-v1`。失败不自动切换加载方式、不重编模型。Host fake只验证框架调度和错误处理，不验证所选SDK兼容性。
-
-## 保留的结果与验收要求
-
-**P0原prefill板端完整执行已完成。** 旧版prefill1／decode8／draft7，token为 `[4,12,10,8,0,4,32,2]`，接受0／7，总墙钟305.788秒，见[旧成功基线](board-prefill-first-completion.md)。它不证明新常驻、精度或加速。
-
-全V1的file8请求在prefill SDK Load返回1；PID63072 HiLog显示所选HCL拒绝path-only描述符的空buffer，尚未进入OMC恢复、权重解析或Process，见[失败记录](validation.md#resident-v1-hcl-file-load-failure)。旧请求已退出且锁释放，不重复运行。用户工具的V1头文件未显示独立外置权重入口，这不证明所有私有V1扩展均不可用。
-
-新候选验收要看到prefill一次、decode和draft各单次加载及多次调用、全部在板端完成。先对照旧同输入token序列及80状态传递，再解释差异；P0允许不验精度不等于可以忽略API迁移引入的新错误。默认不dump中间张量；时延分别标明加载、运行、关闭，运行包含复制/读回/校验，不称纯NPU时间。内存仅为RSS/HWM及MemAvailable，不称独立NPU显存。
-
-prefill仍是物理64、逻辑8的实验控制。精度、有效接受率、稳定性、长上下文与配对性能按[总计划](dflash-delivery-plan.md)继续。若未来compact请求失败，可用 `collect_board_serial_failure_logs.py --recovery 已完成的失败恢复目录 --output 新诊断目录 --hilog` 只读收集日志；本次旧V1日志已足够，无需再采集。
+报告中的 `external_weight_release=NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY` 仍成立：API关闭和对象释放不独立证明全部外权重立即回收。VmHWM报告值随阶段下降且始终等于VmRSS，暂不能用作真实累计峰值；RSS和MemAvailable也不等于专用NPU显存。下一阶段以重复运行和可解释的资源观测验收，不从单次正常退出推断无泄漏。
