@@ -595,7 +595,8 @@
         "named17inputs14outputs typed ABI",
         "12KV exact write interval and unchanged prefix/suffix",
         "absolute RoPE and anchor exclusion correct",
-        "sameK reference and multiround token gates passed"
+        "sameK reference and multiround token gates passed",
+        "every executable Draft milestone passes full board loop smoke with numerical acceptance reported separately"
       ],
       "expected_deliverables": [
         "incremental AIR/OMC receipts",
@@ -613,10 +614,10 @@
       ],
       "draft_only_sequence": [
         "cached AIR export",
-        "OMG and actual named ABI",
-        "resident KV append execution",
-        "fixed-feature original six-layer reference vs each candidate gear",
-        "Draft-only stable latency/memory measurements and measured optimization"
+        "OMG and actual named ABI plus resident KV adapter -> full-loop execution smoke",
+        "candidate gear and longer-context integration -> full-loop execution smoke",
+        "fixed-feature original six-layer reference comparisons -> full-loop execution smoke",
+        "Draft-only measured optimization with precision regression -> full-loop execution smoke"
       ]
     },
     {
@@ -900,6 +901,10 @@
     {
       "date": "2026-10-31",
       "decision": "用户进一步明确：当前优先Draft实现、精度和性能；Target另行调试精度，等其完成后再做verify开发和调优。Draft固定特征独立数值验证不以Target正确为前提。"
+    },
+    {
+      "date": "2026-10-31",
+      "decision": "用户要求Draft每个可执行阶段完成后都接完整板端DFlash进行保通测试；整体流程暂不看精度。保留现有decode1串行verify作为集成工具，新增verify开发继续等待Target精度就绪。Draft独立精度门槛不被整体保通替代。"
     }
   ],
   "load_timing_candidate": {
@@ -973,5 +978,43 @@
     "new_weight_payload_copies": 0,
     "current_native_bundle": "UNCHANGED_S64_PREFIX_RECOMPUTE",
     "next_command": "targets/cpro/scripts/export_incremental_draft.py --job \"$AI_RUN_DIR/full-draft\" --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 --output \"$AI_RUN_DIR/draft-kv-c16-cap192-k15-air-v1\""
+  },
+  "draft_milestone_e2e_gate": {
+    "policy": "EVERY_EXECUTABLE_DRAFT_MILESTONE_REQUIRES_BOARD_LOCAL_FULL_LOOP_SMOKE",
+    "flow": [
+      "board tokenizer encode",
+      "original prefill once",
+      "current Draft with KV",
+      "existing decode1 serial verification",
+      "multiple generation rounds",
+      "board tokenizer decode",
+      "retrieve final tokens/text and timings"
+    ],
+    "target_verify_development": "DEFERRED; existing decode1 serial verifier remains the integration harness",
+    "execution_pass_conditions": [
+      "exact newly built Draft OMC and typed ABI recorded, no silent S64 fallback",
+      "request completes and returns requested token count or declared stop condition",
+      "at least two proposal rounds; cache-primer-only calls do not count as proposal rounds",
+      "selected15/7/3/1 candidate gear and cache cursor advancement are reported",
+      "state/feature inputs and outputs match runtime shapes and dtypes",
+      "no runtime failure, illegal token index, buffer error or unresolved owned lock",
+      "prefill/decode/draft call counts and timings retained"
+    ],
+    "not_execution_pass_conditions": [
+      "readable or correct answer",
+      "minimum acceptance rate",
+      "matching Target numerical reference",
+      "speedup"
+    ],
+    "independent_draft_precision": "Still compare fixed identical feature inputs and original six-layer reference; a successful full-loop smoke cannot replace this gate",
+    "export_only_stage": "If no executable new OMC/native adapter exists, mark NEW_DRAFT_E2E=NOT_RUN. An old S64 run is regression evidence only.",
+    "defaults": {
+      "generated_tokens": 8,
+      "minimum_proposal_rounds": 2,
+      "dump": false,
+      "resident": true,
+      "draft_preread": true
+    },
+    "failure_action": "Retain failed attempt and version; fix this Draft integration before progressing to the next executable stage; do not divert to Target accuracy without evidence."
   }
 }
