@@ -30,6 +30,8 @@ find "$AI_RUN_DIR/draft-s64-profile-recovery-v2/prof_data" -type f -name '*.csv'
 
 本次`draft-s64-profile-recovery-v2`已回收到CSV，模型和厂商转换工具退出码均为0。旧脚本仅因模型CSV多出`model name`、`model id`列而报错，已有CSV可直接使用，无需重跑或重新回收。
 
+用户回传的最大耗时记录为入口`draft.fc`卷积投影282.430ms，其次为logits MatMul 19.912ms、CPU Top1 13.058ms。下一步优先评估投影替代实现并继续增量KV接入；当前C16 AIR仍使用同一卷积表达，减少候选数不会消除这一投影。
+
 这是新工具进程中的一次profiling诊断，输入是已有64行真实特征，不是18-token文字请求中的同一次Draft调用；也不是稳定时延分布或精度验收。算子耗时总和可能含重叠、嵌套执行；不能据此直接推算50ms。工具使用方法参考[官方示例](https://developer.huawei.com/consumer/jp/doc/hiai-Guides/examples-0000001053605660)，实际参数以本机internal工具帮助为准。
 
 ## 编译已经导出的K15
