@@ -2,14 +2,27 @@
 
 当前优先增量Draft：六层12份KV、17输入／14输出，候选档位15／7／3／1。Target精度独立调试，暂不开发批量verify。每个Draft阶段通过完整板端流程检查接通，不以整体接受率作为Draft独立精度结论。
 
-## 当前K15编译状态
+## 重新编译K15
 
-下面使用已整理的目录和已有`compiled-v2`产物，不重复编译。若实际成功产物名称不同，修改此变量。
+上次AIR已生成，编译因空间不足停止，尚无可用的增量OMC。清理空间后直接复用AIR，不需要重新导出或复制原权重。以下使用整理后的目录，编译产物固定放在`draft/kv-c16-cap192-k15`。当前预检至少需要6,685,841,408字节（约6.23GiB）；编译临时文件还可能占用额外空间。
 
 ```bash
-export MAX_DRAFT_TOKENS=15
-export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft/draft-kv-c16-cap192-k15-compiled-v2"
+git -C "$REPO_DIR" pull --ff-only
 
+export MAX_DRAFT_TOKENS=15
+export INCREMENTAL_AIR="$AI_RUN_DIR/draft/draft-kv-c16-cap192-k15-air-v1"
+export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft/kv-c16-cap192-k15"
+
+df -h "$AI_RUN_DIR"
+
+PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
+  --air-export "$INCREMENTAL_AIR" \
+  --output "$INCREMENTAL_COMPILED"
+```
+
+编译完成后检查结果：
+
+```bash
 python3 - <<'PYCODE'
 import json, os
 from pathlib import Path
@@ -21,15 +34,7 @@ print(json.dumps({k: d.get(k) for k in keys}, ensure_ascii=False, indent=2))
 PYCODE
 ```
 
-需要`DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND`、`compiled_precision=PASSED`和`compiled_abi=PASSED`才继续。若尚未编译成功，复用已有AIR编译到固定的模型产物目录；该目录是后续运行依赖，不能当作临时测试删除。
-
-```bash
-export INCREMENTAL_AIR="$AI_RUN_DIR/draft/draft-kv-c16-cap192-k15-air-v1"
-export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft/kv-c16-cap192-k15"
-
-PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
-  --air-export "$INCREMENTAL_AIR" --output "$INCREMENTAL_COMPILED"
-```
+需要`DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND`、`compiled_precision=PASSED`和`compiled_abi=PASSED`才继续。成功后复用此目录，不再编译；它是后续运行依赖，不能当作临时测试删除。
 
 ## 新KV Draft完整文字闭环
 
