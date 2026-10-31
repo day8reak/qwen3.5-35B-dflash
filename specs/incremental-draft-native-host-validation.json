@@ -23,7 +23,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "Compile five weight-free FP32 region probes with probe_draft_vector.py on the selected X90 DDK; inspect placement, then validate device numerics before full Draft integration. See docs/current-status.md.",
+  "next": "Run validate_draft_vector.py on the five existing OMCs: one load, 3 warmup and 10 measured calls per case; compare every output before full Draft integration. See docs/current-status.md.",
   "latest_user_board_observation": {
     "source": "USER_PASTED_RECOVERY_JSON",
     "independently_retrieved": false,
@@ -178,7 +178,7 @@
     "gap_attribution": "UNRESOLVED_RUNTIME_DISPATCH_SYNCHRONIZATION_AND_INTERNAL_TRANSFERS_ARE_HYPOTHESES",
     "timestamp_caveat": "SAME_STREAM_CONV_AND_DEPENDENT_RESHAPE_STARTS_DIFFER_BY_2_US_WITH_CONV_DURATION_70968_US; DO_NOT_CONSTRUCT_DEVICE_TIMELINE_WITHOUT_CLOCK_SCOPE",
     "static_work": "C16_CONTEXT_PROJECTION_EXECUTES_FOR_PARTIAL_OR_ZERO_VALID_ROWS",
-    "next": "Compile five weight-free FP32 region probes with probe_draft_vector.py on the selected X90 DDK; inspect placement, then validate device numerics before full Draft integration. See docs/current-status.md."
+    "next": "Run validate_draft_vector.py on the five existing OMCs: one load, 3 warmup and 10 measured calls per case; compare every output before full Draft integration. See docs/current-status.md."
   },
   "compiled_partition_observation": {
     "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
@@ -220,6 +220,62 @@
     "selected_ddk_compilation": "NOT_RUN_LOCAL_PROFILE_MISSING",
     "device_execution": "NOT_RUN",
     "local_test_sources": "NOT_PUBLISHED",
+    "main_draft_model_changed": false,
+    "production_precision_policy_changed": false
+  },
+  "fp32_probe_compile_observation": {
+    "source": "USER_PASTED_PROBE_COMPILATION_SUMMARY",
+    "independently_retrieved": false,
+    "status": "COMPILED",
+    "platform": "kirinx90",
+    "device_execution": "NOT_RUN",
+    "numerical_validation": "NOT_RUN",
+    "full_draft_changed": false,
+    "cases": {
+      "rms_primitive_hidden": {
+        "NPUCL": 2,
+        "CPUCL": 1
+      },
+      "rms_builtin_hidden": {
+        "NPUCL": 1,
+        "CPUCL": 0
+      },
+      "rms_builtin_heads": {
+        "NPUCL": 1,
+        "CPUCL": 0
+      },
+      "softmax_fp32": {
+        "NPUCL": 1,
+        "CPUCL": 0
+      },
+      "residual_fp32": {
+        "NPUCL": 1,
+        "CPUCL": 0
+      }
+    },
+    "meaning": "COMPILED_PLACEMENT_ONLY_NOT_DEVICE_NUMERICS_INTERNAL_FP32_PROOF_OR_SPEEDUP"
+  },
+  "fp32_probe_device_validation_host_checks": {
+    "status": "HOST_CHECKS_PASSED_DEVICE_PENDING",
+    "checks": 16,
+    "scope": "HOST_FIXTURES_FAKE_EXECUTOR_AND_MOCKED_TRANSPORT",
+    "tool": "targets/cpro/tools/validate_draft_vector.py",
+    "selected_sdk_native_build": "NOT_RUN_LOCAL_PROFILE_MISSING",
+    "device_execution": "NOT_RUN",
+    "local_test_sources": "NOT_PUBLISHED",
+    "warmup": 3,
+    "repetitions": 10,
+    "atol": 1e-05,
+    "rtol": 0.0001,
+    "coverage": [
+      "compiled input indices and ordered output descriptors",
+      "all ten output snapshots and nonfinite/corruption rejection",
+      "one load and close with input reuse",
+      "incomplete or linked archives rejected",
+      "completed recovery never relaunches and releases only owned lock",
+      "launch uncertainty retains lock",
+      "actual shell stops after first failed child"
+    ],
     "main_draft_model_changed": false,
     "production_precision_policy_changed": false
   }

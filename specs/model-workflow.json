@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "FP32_NPU_REGION_PROBES_READY_SELECTED_DDK_PENDING",
-    "entry": "targets/cpro/tools/probe_draft_vector.py",
+    "status": "FP32_PROBES_USER_COMPILED_DEVICE_VALIDATION_READY",
+    "entry": "targets/cpro/tools/validate_draft_vector.py",
     "commands": "docs/current-status.md",
     "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Compile five weight-free FP32 region probes with probe_draft_vector.py on the selected X90 DDK; inspect placement, then validate device numerics before full Draft integration. See docs/current-status.md.",
+    "next": "Run validate_draft_vector.py on the five existing OMCs: one load, 3 warmup and 10 measured calls per case; compare every output before full Draft integration. See docs/current-status.md.",
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
       "independently_retrieved": false,
@@ -5839,6 +5839,38 @@
         "initial_context_catchup"
       ],
       "comparison": "SAME_INPUTS_CACHE_LENGTH_REQUESTED_FREQUENCY; EXISTING_518990_US_IS_ONE_PROFILE_NOT_WARM_BASELINE"
+    },
+    "fp32_probe_observation": {
+      "source": "USER_PASTED_PROBE_COMPILATION_SUMMARY",
+      "independently_retrieved": false,
+      "status": "COMPILED",
+      "platform": "kirinx90",
+      "device_execution": "NOT_RUN",
+      "numerical_validation": "NOT_RUN",
+      "full_draft_changed": false,
+      "cases": {
+        "rms_primitive_hidden": {
+          "NPUCL": 2,
+          "CPUCL": 1
+        },
+        "rms_builtin_hidden": {
+          "NPUCL": 1,
+          "CPUCL": 0
+        },
+        "rms_builtin_heads": {
+          "NPUCL": 1,
+          "CPUCL": 0
+        },
+        "softmax_fp32": {
+          "NPUCL": 1,
+          "CPUCL": 0
+        },
+        "residual_fp32": {
+          "NPUCL": 1,
+          "CPUCL": 0
+        }
+      },
+      "meaning": "COMPILED_PLACEMENT_ONLY_NOT_DEVICE_NUMERICS_INTERNAL_FP32_PROOF_OR_SPEEDUP"
     }
   }
 }

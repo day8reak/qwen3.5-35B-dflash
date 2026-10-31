@@ -2,23 +2,36 @@
 
 目标：C16／cap192／K15，模型常驻并预热后，单次Draft proposal的同步`Process`平均时延≤50ms，包含API内部调度、同步和搬运。加载与初始KV补齐单独统计。当前整模型profiling为518.990ms，尚未达标；最终用相同输入、缓存长度和频率配置，3次预热后测10次，报告均值与最大值。
 
-## 1. 编译FP32小图，检查NPU支持
+## 1. 复用FP32小图，上板验证精度与时延
 
-已收到现有OMC的27个CPUCL／26个NPUCL子图报告。先编译RMS原语链、内置RmsNorm（hidden与head形状）、Softmax和残差Add五个小图，保留FP32输入输出，不指定CPU策略。测试不需要模型权重，不启动板端任务；当前Draft AIR／OMC保持可运行。
+用户已回传5个小图全部编译成功。内置RmsNorm（hidden与head形状）、Softmax、残差Add均为1个NPUCL；RMS原语链为2个NPUCL＋1个CPUCL。下一步复用这些OMC，对每个小图加载一次，预热3次，再测10次同步`Process`并比较全部输出。原语RMS作为分段路径的对照。
 
 在已加载项目环境的DDK服务器执行：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/tools/probe_draft_vector.py" \
-  --ge-root "$CANN_ROOT" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$AI_RUN_DIR/draft/tests/vector" --replace
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$AI_RUN_DIR/runtime/native" --replace
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$AI_RUN_DIR/draft/tests/vector" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --output "$AI_RUN_DIR/draft/tests/vector-run" --apply
 ```
 
-汇总在`draft/tests/vector/result.json`，每项的`placement.json`记录CPU/NPU归属及边界dtype。`COMPILED`表示小图编译和归属读取完成；`NPU_GRAPH_PRESENT`只表示存在NPU子图，仍需确认其覆盖范围，并上板比较数值、测耗时。它不证明内部FP32运算或Vector指令已经验证。
+看到`VECTOR_VALIDATION_STARTED`后回收同一任务：
 
-失败日志保存在对应小图的`build.log`、`export.log`或`omc/`内；修复后复用同一个`vector`目录。`--replace`仅替换该工具已结束的测试，不清理正在运行的任务。此脚本已完成本地CPU与CLI验证，所选DDK编译等待本轮回传。
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$AI_RUN_DIR/draft/tests/vector-run" \
+  --output "$AI_RUN_DIR/draft/tests/vector-result"
+```
+
+若返回`VECTOR_VALIDATION_PENDING`，稍后重复回收命令。结果保存在`vector-result/result.json`：每项包含数值结果、10次API耗时、均值、最大值及输出逐字节重复性。失败看对应`<case>.stderr`；已确认结束后可复用相同测试目录。只重建runner，不重编小图或完整Draft。
+
+小图预设逐元素容差为`atol=1e-5, rtol=1e-4`，检查有限值；输入含零行、大值、小值、Softmax掩码及残差抵消。每个实测调用都保留快照，文件写入与外部输出拷贝不计入API耗时。这是小图诊断时延，不能相加预测完整Draft时延。编译归属和输出一致也不单独证明内部指令精度。
+
+验证工具已通过16项本地检查，包括参考绑定、全部输出比较、native连续调用、归档与恢复；本地使用假执行器及模拟传输，所选OHOS SDK构建与板端验证等待上述命令回传。完整Draft的原精度阈值保持不变。
 
 ## 2. 后续接入顺序
 

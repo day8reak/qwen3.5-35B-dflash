@@ -126,9 +126,11 @@ def main():
         if path.is_file():
             resident_binaries[name] = {"path": str(path), "bytes": path.stat().st_size,
                 "sha256": sha256_file(path)}
-    accuracy_binary = out / "build/qwen35_draft_accuracy"
-    diagnostic_binaries = ({accuracy_binary.name: {"bytes":accuracy_binary.stat().st_size,
-        "sha256":sha256_file(accuracy_binary)}} if accuracy_binary.is_file() else {})
+    diagnostic_binaries = {}
+    for name in ("qwen35_draft_accuracy", "qwen35_tensor_probe"):
+        binary_path = out / 'build' / name
+        if binary_path.is_file():
+            diagnostic_binaries[name] = {"bytes": binary_path.stat().st_size, "sha256": sha256_file(binary_path)}
     save_json(out/"result.json", {"diagnostic_binaries":diagnostic_binaries, "status": "HEADERS_COMPILED" if args.headers_only else "LINKED",
         "native_build_type": "Release", "model_compilation": "NOT_RUN",
         "device_validation": "PENDING", "binary_sha256": sha256_file(binary) if binary.is_file() else None,

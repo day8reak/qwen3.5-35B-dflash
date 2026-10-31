@@ -178,7 +178,7 @@ def reuse_test_output(output, *, config=None, recovery_source=None):
     rows = list(_reports(path))
     if not rows or any(r.get('artifact_kind') not in {None, 'qwen35-board-serial-dflash-job',
             'qwen35-board-serial-dflash-execution', 'qwen35-draft-operator-profile',
-            'qwen35-incremental-draft-accuracy'} for r in rows):
+            'qwen35-incremental-draft-accuracy', 'qwen35-draft-vector-validation'} for r in rows):
         raise ValueError('output is not a recognized test request; retained: ' + str(path))
     protected = _runtime_paths(Path(config).resolve()) if config else []
     if any(p == path or path in p.parents for p in protected):

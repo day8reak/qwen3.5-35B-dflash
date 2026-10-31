@@ -46,7 +46,19 @@ Conv2D占算子合计约49.8%，其时长相当于整模型推理的13.7%。518.
 
 用户进一步回传编译报告：**27个CPUCL、26个NPUCL子图，200个精度检查节点全部匹配**。这表示旧精度策略的编译检查通过，不是设备数值通过；节点列表只覆盖策略要求的节点。每层可见Q/K RMS、score／Softmax、两组残差加RMS四类CPU计算区域，矩阵乘位于NPU，解释了反复分段的结构来源。静态子图数量不等于实测切换次数，尚未量出各次切换耗时。
 
-FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitcode.com/api/SIMD-API/adv_api/normalization/RmsNorm.html)列出Kirin X90与float类型支持，但当前公开接口不证明用户安装的DDK已为GE节点提供相同实现。新小图分别检查FP32原语RMS、内置`RmsNorm`、Softmax和Add的编译归属；此前`AdnRmsNorm`的infershape失败不能直接用于判定另一算子`RmsNorm`。NPU归属、内部精度、设备数值与耗时分开验证。
+FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitcode.com/api/SIMD-API/adv_api/normalization/RmsNorm.html)列出Kirin X90与float类型支持，但当前公开接口不证明用户安装的DDK已为GE节点提供相同实现。此前`AdnRmsNorm`的infershape失败不能直接用于判定另一算子`RmsNorm`。NPU归属、内部精度、设备数值与耗时分开验证。
+
+用户最新回传5个FP32小图全部编译成功，未执行设备验证：
+
+| 小图 | NPUCL | CPUCL |
+|---|---:|---:|
+| RMS原语链，hidden形状 | 2 | 1 |
+| 内置RmsNorm，hidden形状 | 1 | 0 |
+| 内置RmsNorm，head形状 | 1 | 0 |
+| Softmax FP32 | 1 | 0 |
+| 残差Add FP32 | 1 | 0 |
+
+这为减少原27个CPUCL提供了可验证的替换路径，尚不是整模型加速结果。`validate_draft_vector.py`复用这些OMC，分别预热3次、执行10次并逐次比较输出；命令见[当前阶段](current-status.md)。完整Draft尚未改图，设备精度及小图时延待回传。
 
 当前图固定计算16行context投影，即使只追加2行，或某轮`valid_rows=0`，掩码也不会删除这段计算。当前脚本默认profiling样本为case2、追加2行；尚未独立读取本轮request确认。下一步先验证FP32区域的NPU编译路径，同时评估投影表达与有效行计算量；优化收益以同一输入的整模型墙钟确认。入口使用Conv2D是因为此前选定OMG拒绝K=16384的MatMul，不能直接换回原MatMul就宣称可用。
 
