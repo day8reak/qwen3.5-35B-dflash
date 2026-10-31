@@ -20,6 +20,8 @@ python3 "$REPO_DIR/targets/cpro/scripts/organize_run_directory.py" \
   --clean-completed --confirm-idle --apply
 ```
 
+已分到`prefill/`、`decode/`、`draft/`的旧目录可直接执行以上命令。脚本通过上次迁移记录定位旧路径，包括编译输入中仍指向旧目录的权重软链接；不需要搬回目录或手改配置。预览失败不会移动、删除文件，更新代码后重跑即可。
+
 如果尚未执行上一轮分类，`--draft-air`使用根目录下的同名AIR目录。若列出`retained`，这些项未删除；未知文件和未选定的成功增量构建不会按旧版本猜测删除。
 
 ```text

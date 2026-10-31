@@ -22,7 +22,7 @@ def _save(path, value):
     temporary.replace(path)
 
 
-def relocated_path(path, anchor):
+def relocated_path(path, anchor, *, include_missing=False):
     """Resolve old build references through a move journal, without editing AIR metadata."""
     original = Path(path)
     for root in (Path(anchor).absolute(), *Path(anchor).absolute().parents):
@@ -34,14 +34,17 @@ def relocated_path(path, anchor):
         try:
             relative = original.relative_to(old)
         except ValueError:
-            return original
+            try:
+                relative = original.relative_to(root)
+            except ValueError:
+                return original
         for row in layout['moves']:
             try:
                 tail = relative.relative_to(row['source'])
             except ValueError:
                 continue
             destination = root / row['destination'] / tail
-            return destination if destination.exists() else original
+            return destination if include_missing or destination.exists() else original
         return root / relative
     return original
 

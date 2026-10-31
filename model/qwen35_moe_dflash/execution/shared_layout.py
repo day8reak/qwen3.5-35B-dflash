@@ -13,6 +13,34 @@ ROLES = ('prefill', 'decode', 'draft')
 RESERVED = {'air', 'omc', 'tests', 'source', 'results'}
 
 
+def _source_path(path, root):
+    """Read old aliases through the previous move journal, without retargeting them.
+
+    resolve(strict=True) cannot follow a borrowed weight link after its source
+    job moved. Relocate each link target before resolving the next component.
+    Only recorded moves are used; a similar basename is never a substitute.
+    """
+    path = Path(os.path.abspath(path))
+    seen = set()
+    for _ in range(64):
+        if path in seen:
+            raise ValueError('cyclic artifact reference: ' + str(path))
+        seen.add(path)
+        if not path.exists():
+            moved = relocated_path(path, root, include_missing=True)
+            if moved != path:
+                path = moved
+                continue
+        for component in (*reversed(path.parents), path):
+            if component.is_symlink():
+                target = component.parent / os.readlink(component)
+                path = Path(os.path.abspath(target / path.relative_to(component)))
+                break
+        else:
+            return path.resolve(strict=True)
+    raise ValueError('too many artifact link/move redirects: ' + str(path))
+
+
 def _relative(path, root):
     path = Path(path).absolute()
     if path == root or not path.is_relative_to(root):
@@ -44,9 +72,9 @@ def plan(root, config_path, *, draft_air=None, clean_completed=False, confirm_id
     root = Path(root).resolve()
     if _active_processes(root):
         raise ValueError('finish active local model jobs before reorganizing')
-    config_path = Path(config_path).resolve()
+    config_path = _source_path(config_path, root)
     config = read_json(config_path)
-    asset_file = (config_path.parent / config['assets']).resolve()
+    asset_file = _source_path(config_path.parent / config['assets'], root)
     assets = read_json(asset_file)
     validate_assets(assets)
     moves, files, writes, retained = [], {}, [], []
@@ -59,7 +87,7 @@ def plan(root, config_path, *, draft_air=None, clean_completed=False, confirm_id
     def select(source, destination):
         # Existing compiler input aliases are resolved once. Only the owned
         # source file moves; old aliases disappear with the retired build job.
-        source = Path(source).resolve(strict=True)
+        source = _source_path(source, root)
         src, dst = _relative(source, root), str(destination)
         _check_path(root, dst)
         selected.add(src)
@@ -78,14 +106,15 @@ def plan(root, config_path, *, draft_air=None, clean_completed=False, confirm_id
 
     for role in ('prefill', 'decode'):
         model = config['models'][role]
-        old_root = (config_path.parent / model['directory']).resolve()
+        old_root = _source_path(config_path.parent / model['directory'], root)
         destination = Path(role) / 'omc/current'
         for row in assets[role]['payloads']:
             relative = Path(row['path'])
             if relative.is_absolute() or '..' in relative.parts:
                 raise ValueError('invalid model payload path')
-            file_record(old_root / relative, size=row['bytes'])
-            select(old_root / relative, destination / relative)
+            source = _source_path(old_root / relative, root)
+            file_record(source, size=row['bytes'])
+            select(source, destination / relative)
         new_config['models'][role]['directory'] = '../' + str(destination)
         # Keep only the AIR and source files actually selected for this model.
         receipt = _compiler_report(old_root)
@@ -106,17 +135,17 @@ def plan(root, config_path, *, draft_air=None, clean_completed=False, confirm_id
         elif not (root / role / 'air').exists():
             retained.append(dict(path=role + '/air', reason='current AIR source not found; OMC remains runnable'))
 
-    old_draft = (config_path.parent / config['models']['draft']['path']).resolve()
+    old_draft = _source_path(config_path.parent / config['models']['draft']['path'], root)
     select(old_draft, 'draft/omc/current/model.omc')
     new_config['models']['draft']['path'] = '../draft/omc/current/model.omc'
     for key, row in config['embedding'].items():
-        source = (config_path.parent / row['path']).resolve()
+        source = _source_path(config_path.parent / row['path'], root)
         destination = Path('common/embedding') / source.name
         file_record(source, size=row['bytes'])
         select(source, destination)
         new_config['embedding'][key]['path'] = '../' + str(destination)
     if config.get('tokenizer'):
-        source = (config_path.parent / config['tokenizer']['directory']).resolve()
+        source = _source_path(config_path.parent / config['tokenizer']['directory'], root)
         # Runtime preparation accepts original local tokenizer assets. Keep
         # only this selected source directory, not old generated bundles.
         select(source, 'common/tokenizer')
@@ -124,7 +153,7 @@ def plan(root, config_path, *, draft_air=None, clean_completed=False, confirm_id
 
     if draft_air:
         from qwen35_moe_dflash.draft.incremental.inputs import bind_incremental_export
-        bound = bind_incremental_export(draft_air)
+        bound = bind_incremental_export(_source_path(draft_air, root))
         meta = deepcopy(bound['manifest'])
         air_root = Path('draft/air') / ('kv-c%d-cap%d-k%d' % tuple(meta[k] for k in
             ('context_rows', 'cache_capacity', 'max_draft_tokens')))
