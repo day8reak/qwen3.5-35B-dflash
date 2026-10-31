@@ -1505,6 +1505,10 @@ def _retrieve(hdc, out, state, manifest):
     board = PurePosixPath(state['board_attempt'])
     dump = _dump_mode(manifest)
     state['stage'] = 'retrieve-completed-loop'
+    # Recompute these summaries only from this call's verified native reports.
+    # A recovery journal can contain an older CLOSED session summary.
+    for key in ('prefill_lifecycle', 'prefill_failure_stage', 'resident_failure_stage'):
+        state.pop(key, None)
     print('board-serial: supervisor completed; retrieving ' + ('full debug evidence' if dump else 'tokens and small completion status'), flush=True)
     for name in (_ATTEMPT_LOGS if dump else ('tool.pid', 'tool.exitcode')):
         if _receive(hdc, board, out, name) is None:
@@ -1567,6 +1571,8 @@ def _retrieve(hdc, out, state, manifest):
         state['counts'] = loop['counts']
     if 'generated_tokens' in loop:
         state.update(generated_tokens=loop['generated_tokens'], generated_token_ids=loop['generated_tokens'])
+    if _v1_mode(manifest):
+        state['prefill_lifecycle'] = loop['prefill_lifecycle']
     if state['completion']['remote_exitcode'] != 0:
         if isinstance(loop.get('error'), str) and loop['error'].strip():
             state.update(error=loop['error'], execution_error=loop['error'])
@@ -1574,9 +1580,15 @@ def _retrieve(hdc, out, state, manifest):
             state['execution_failure_stage'] = loop['stage']
         if _resident_mode(manifest):
             life = loop['resident_lifecycle']
-            native_stage = life.get('failure_stage') or life.get('stage')
+            native_stage = life.get('failure_stage')
+            if not native_stage and (life.get('status') == 'FAILED' or life.get('poisoned') is True):
+                native_stage = life.get('stage')
             if isinstance(native_stage, str) and native_stage:
                 state['resident_failure_stage'] = native_stage
+        if _v1_mode(manifest):
+            prefill_stage = loop['prefill_lifecycle'].get('failure_stage')
+            if isinstance(prefill_stage, str) and prefill_stage:
+                state['prefill_failure_stage'] = prefill_stage
     for key in ('acceptance', 'phase_latency', 'supervisor_timing'):
         if key in loop:
             state[key] = loop[key]

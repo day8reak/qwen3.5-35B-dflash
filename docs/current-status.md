@@ -2,19 +2,19 @@
 
 <a id="用户现在执行什么"></a>
 
-**下一步：直接运行显式 V1 文件加载候选的完整板端 DFlash；这条候选尚未实机通过。** 原版外置权重 prefill／decode 采用 `FILE_ONLY`：只调用 `SetModelPath`，验证绝对路径，再由 SDK Load 决定兼容性。内嵌权重 draft 采用 `BUFFER_ONLY`：只调用 `SetModelBuffer`，验证完整buffer和生命周期。两条路径不再要求互斥字段同时保留，不交换setter顺序，也不在失败后自动尝试另一加载方式。
+**当前结论：原板端闭环已跑通；新 V1 常驻版本在 prefill 的 SDK Load 阶段失败，尚未开始推理。不要重复运行同一 path-only 候选。**
 
-用户回传旧 `707d825` 请求在 `prefill-v1-load` 报 `SetModelBuffer did not preserve exact model path`；SDK Load／Process均未调用，生成token为0，锁已释放。该实现遗漏了已有实机互斥setter证据，fake默认双字段共存又掩盖了冲突。`50184b4` 随后恢复embedded draft的buffer-only加载并修正fake默认行为；707d825失败与50184b4主机验证记录保留，不能作为本次文件加载候选的设备PASS，详见[验证记录](validation.md#resident-v1-exclusive-setters-failure)。旧运行目录不覆盖。
+用户回传 `dflash-board-resident-v1-file8-run`／`dflash-board-resident-v1-file8-recovery`，运行库 `800.631.120.010`，进程63072。HiLog显示 `DDK pipe is HCL`，随后 `CreateLocalBuffer` 拒绝空buffer／零长度，V1 Load返回1。只设置模型路径的描述符在OMC恢复、权重解析及Process之前被拒绝。全部推理调用计数0，token为空，已知退出后锁已释放。`libffrt_acc.so` warning不是日志直接报出的失败点。证据来自用户粘贴，未由助手重新连接设备核验，见[本次记录](validation.md#resident-v1-hcl-file-load-failure)。
 
-本次外置模型候选依据是用户提供的4B `model_run_tool` V1源码：path-only、`OFFLINE`（字面值1），随后Load。它支持开展用户已授权的完整实验，尚不证明当前35B的外置权重解析正确。历史 `bf545c2` 的path-only HCL空buffer失败属于10月23日tiny target／draft bring-up，未证明是当前原版40层prefill／decode OMC，也不能断言运行库身份完全相同。选定SDK头文件和加载实现仍有诊断价值，但不再作为这次完整实验的前置阻塞；不新增load-only试验。
+**下一步是确认所选SDK可用的V1外置权重入口。** 4B工具的 `SetModelPath → Load` 支持开展此前实验，但当前35B已经实机失败。官方旧buffer示例没有建立外置权重合同；不能添加builder、交换setter顺序或猜测环境开关后再试。已观察到path／buffer setter互斥，18.8GB旁置权重也不能塞入现有UINT32长度的单模型buffer；此长度限制本身不证明所有V1扩展均不可用。
 
-[华为官方固定示例](https://github.com/huaweicodelabs/HiAI-Foundation/blob/83320362c10f2e85a2a1bbb283b3359db204ab2a/app/src/main/jni/classify_sync_jni.cpp#L85-L107)使用builder创建buffer和 `ONLINE`，并非用户的path-only代码。用户另提的[公开4B分支](https://github.com/day8reak/qwen3.5-4B-dflash/tree/90186732d915e8b058b2a053d205991d805eae76)当前使用Ascend310P／AscendCL，也不提供所选Kirin SDK的V1外置加载证明。
+用户主机此前确认存在的工具头文件目录是 `/home/w00949577/model_run_tool/inc/compatible/`，不能假定DDK也有相同子目录。工具头文件、runner选中头文件和实际运行库分别记录。用户随后贴出的工具头文件有SetModelPath／SetModelBuffer／Load，未显示显式外置权重入口；它不等同于runner选中头文件的完整身份。当前不重新运行模型或load-only探针。已向用户提出路线选择：坚持全V1并确认厂商外置权重合同，或允许prefill／decode暂用V2、embedded draft保留V1继续推进常驻。后者仍需解决已记录的V2清理报错和双模型常驻，尚未获准或验证；不静默切回V2。
 
 **目标仍是按用户要求，将 prefill、decode 和 draft 统一为模型管家 V1。** V2 在两次独立加载实验中均 Init／InitWeights成功，但显式DeinitWeights分别返回3和1；原因未定，见[历史观察](../specs/resident-v2-target-cleanup-observed.json)。用户随后提供了官方V2弃用说明，并明确要求全部改V1。此前让用户继续运行V2闭环的指令已经撤回；旧attempt和结果保留用于恢复及对照。
 
 **P0 原 prefill 端侧完整执行已完成。** 旧版用户回传 prefill1／decode8／draft7，token为 `[4,12,10,8,0,4,32,2]`，接受0／7，总墙钟305.788秒。它证明原板端执行闭环，不证明新V1常驻、精度或加速，见[旧成功基线](board-prefill-first-completion.md)。
 
-本次候选191项Python测试及13组native CTest通过，其中9项集成测试使用实际C++运行框架和fake SDK，覆盖完整debug／compact循环及文件加载失败；这些不代替实机加载与推理。证据见[当前候选验证](../specs/resident-v1-file-buffer-candidate.json)。
+历史候选191项Python测试及13组native CTest通过，其中9项使用实际C++框架和fake SDK；实际HCL拒绝文件描述符，说明替身测试没有验证SDK兼容性。原记录见[候选验证](../specs/resident-v1-file-buffer-candidate.json)。本轮仅改失败摘要与日志采集，132项transport及26项日志采集测试通过，无设备执行或模型编译，见[本轮记录](../specs/resident-v1-hcl-load-failure.json)。
 
 ## V1 候选设计与接口约束（尚未实机完成）
 
@@ -31,45 +31,24 @@
 
 新请求明确绑定 `target_lifecycle_policy=legacy-v1-file-target-buffer-draft-v1`；session摘要为 `model_load_api=legacy-v1-mixed`，prefill／target为 `legacy-file`，draft为 `legacy-buffer`。FILE_ONLY检查path精确且buffer为空、长度0；这些检查与SDK加载成功是不同结论。旧请求恢复仍使用其原配置。
 
-## 当前完整 V1 候选命令
+## 当前失败诊断与历史请求
 
-更新到包含显式文件加载候选的版本后，使用新output启动。复用三个现有OMC、权重和绑定，只构建native runner；不运行OMG、不重新编译模型。主机调度／加载替身测试不代表本候选已在所选SDK加载成功。
+`2fa9d7d` 的FILE_ONLY候选已实机失败，启动命令撤下，不再重复运行。`dflash-board-resident-v1-file8-run`／`dflash-board-resident-v1-file8-recovery` 均保留；旧707d825／50184b4记录也不覆盖。
 
-```bash
-git -C "$REPO_DIR" pull --ff-only
+摘要现在带出 `prefill_lifecycle` 和 `prefill_failure_stage`，不再把未加载的decode／draft会话正常 `CLOSED` 当作失败原因。底层加载路线未改变。
 
-python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
-  --decode-job "$AI_RUN_DIR/target-pytorch-decode1-compile" \
-  --runtime-probe "$AI_RUN_DIR/target-decode1-runtime-io-v2" \
-  --state-lineage "$AI_RUN_DIR/target-decode1-state-lineage-v7" \
-  --prefill-feedback "$AI_RUN_DIR/target-prefill64-decode1-feedback-plan-v2" \
-  --source-torchair-pb2 "$AI_RUN_DIR/target-decode1-row-response/ge_ir_by_protoc_3_19_pb2.py" \
-  --draft-bundle "$AI_RUN_DIR/full-draft/residual-fix/bundle" \
-  --weight-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_weight.bin" \
-  --scale-table "$AI_RUN_DIR/original-embedding-tables/qwen3_5_moe_embdedding_scale.bin" \
-  --prompt-input-ids /home/w00949577/run_35B/chunksize_64_data/input_ids.bin \
-  --prompt-length 8 --max-new-tokens 8 --max-proposals-per-round 2 \
-  --output "$AI_RUN_DIR/dflash-board-resident-v1-file8-run" \
-  --resident --apply --detach
-```
+新增 `collect_board_serial_failure_logs.py`：用于未来compact请求失败后，只读收集同一已完成attempt的stdout／stderr末尾各64KiB，可选PID过滤的HiLog快照；不启动模型、不改锁、不读模型或权重。HiLog可能轮转或PID复用，不视为严格的同attempt证据。本次已有足够HiLog，**无需再次采集、恢复或重跑**。
 
-参数路径中的 `v2` 是既有描述符／状态图检查文件的名字，不表示新循环调用V2。设计上V1重新查询实际shape和buffer字节数；无法查询的V1 tensor名称、dtype不得冒充已经由新SDK观察。实际Load后才查询和验证这些V1运行时描述符；目前尚无本候选的设备结果。
-
-启动响应 `BOARD_SERIAL_DFLASH_STARTED` 只说明板端进程已启动，不代表生成成功。首次命令使用 `--apply --detach` 后，板端自主运行；等待完成再用以下命令回收同一attempt，不重新启动推理：
+未来另一请求需要时使用以下模板，替换目录名，output必须新建：
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
-  --recover "$AI_RUN_DIR/dflash-board-resident-v1-file8-run" \
-  --output "$AI_RUN_DIR/dflash-board-resident-v1-file8-recovery"
+python3 "$REPO_DIR/targets/cpro/scripts/collect_board_serial_failure_logs.py" \
+  --recovery "$AI_RUN_DIR/已完成的失败恢复目录" \
+  --output "$AI_RUN_DIR/新的诊断目录" \
+  --hilog
 ```
 
-恢复不添加resident／dump／模型参数，沿用该请求记录。断连或启动响应丢失时保留目录、恢复原请求；不删除锁或重跑未知状态。设计上不依赖运行期间的服务器连接，物理断连完成性仍需实际观察。
-
-<a id="历史-v1-请求命令当前阻塞勿重跑"></a>
-
-旧 `dflash-board-resident-v1-8-run`／`dflash-board-resident-v1-8-recovery` 保留为707d825历史请求；其已回传失败且锁已释放，无需再次启动或恢复。新候选使用上述 `file8` 目录，不能用新配置覆盖旧请求。
-
-## 本次候选的验收目标
+## 后续新加载方案的验收目标
 
 - `execution_mode=resident-v1`，prefill1、decode8和至少两次完整六层draft；每次draft输出15个候选，最多考虑前K=2，首个不匹配就纠正。
 - decode/draft各一次Load、多次Process，全部V1调用；prefill也是V1且仅执行一次，没有原工具V2子进程。

@@ -1,6 +1,22 @@
+<a id="resident-v1-hcl-file-load-failure"></a>
+
+## 2026-10-31：原40层 V1 FILE_ONLY 在 HCL Load 被空buffer拒绝
+
+用户回传 `dflash-board-resident-v1-file8-recovery`：运行库 `800.631.120.010`、PID63072、阶段 `prefill-v1-load`、SDK Load返回1；prefill／decode／draft Process计数全0，token为空，锁已释放。板端attempt为 `/data/local/tmp/qwen35_board_serial_60724b33b72e47aab3558ae0b1ec2d09`。进程stdout显示主OMC启动哈希已完成，随后进入prefill加载；HiLog显示 `DDK pipe is HCL`，`CreateLocalBuffer` 要求 `data != nullptr && size > 0`，随后报 `CreateLocalBuffer return null, load failed`。
+
+因此，本次选定HCL分支确实拒绝了path-only描述符的空buffer／零长度，失败发生在OMC恢复、外置权重解析与推理之前。不能归因为输入mask、80状态、精度或常驻内存不足；`libffrt_acc.so` warning不是直接报出的失败点。此结论仅针对本次运行库分支，不宣称所有V1实现均不支持文件或外置权重。设备日志时钟为用户原样提供的03-13，不改写为主机记录日期。证据为用户粘贴，助手未连接设备独立重取。
+
+此前4B path-only示例和可接受文件描述符的fake SDK只能支持实验和调度测试，不能替代所选运行库验证。官方旧buffer示例不包含当前外置权重合同；当前没有证据支持通过添加builder、交换互斥setter或猜测后端开关修复。需要核对实际选中头文件／受支持入口。原18.8GB旁置权重不能直接塞进现有UINT32长度的主模型buffer，但这个限制本身不证明所有V1扩展均不可用。失败候选命令已从当前计划撤下，模型加载代码尚未改动。
+
+本轮修正恢复摘要，直接输出验证后的 `prefill_lifecycle`／`prefill_failure_stage`；未加载resident会话的正常 `CLOSED` 不再冒充失败阶段，真实resident失败和清理错误继续保留。新增独立只读日志脚本，绑定同一已完成失败请求及其原设备、配置和退出回执，收集stdout／stderr末尾各64KiB，可选当前PID过滤HiLog快照；不加载模型、不改锁、不读权重。HiLog允许轮转和PID复用，只作诊断快照。本次HiLog已经足够，无需用户再采集。
+
+132项transport测试和26项日志收集测试通过，包含真实shell的tail失败传播检查；均为主机测试，没有实机加载／推理、模型编译或新精度结论。源哈希、JUnit及本次设备观察见[本轮记录](../specs/resident-v1-hcl-load-failure.json)。旧板端原prefill完整循环成功继续保留，V1常驻仍未通过。
+
 <a id="resident-v1-file-target-candidate"></a>
 
 ## 2026-10-30：显式 FILE_ONLY target／prefill 与 BUFFER_ONLY draft 候选
+
+以下为实验前的历史决策；该候选已由上方2026-10-31用户回传判为失败，不再作为当前执行命令。
 
 用户授权在不修改三个OMC及权重的条件下直接继续完整板端实验，不再插入load-only试验。本次依据其提供的4B V1 `model_run_tool` 源码，将原版外置权重target／prefill显式选择为FILE_ONLY：只设置并检查完整绝对模型路径，再调用V1 Load；embedded draft显式选择为BUFFER_ONLY，保留完整模型buffer及其生命周期。各分支只验证对应表示，不再要求path和buffer共存。失败停止，不换setter顺序、不自动改用buffer或V2、不重新编译模型。新配置策略为 `legacy-v1-file-target-buffer-draft-v1`，session API记为 `legacy-v1-mixed`；prefill／target分别记为 `legacy-file`，draft记为 `legacy-buffer`。FILE_ONLY要求getter中的path精确、buffer为空、长度0；不把这些描述符条件当成SDK加载通过。
 

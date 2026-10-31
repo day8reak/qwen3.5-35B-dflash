@@ -559,12 +559,13 @@ def test_compact_known_failure_retains_small_error_and_requires_all_waited_child
 
 @pytest.mark.parametrize('failed,fault,resident', [(False, None, False), (True, None, False),
     (True, 'active-child', False), (True, None, True), (True, 'malformed-error', False),
-    (True, None, 'v1'), (True, None, 'v1-historical')])
+    (True, None, 'v1'), (True, None, 'v1-historical'), (True, None, 'v1-prefill'),
+    (True, 'malformed-prefill', 'v1-prefill')])
 def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files(prepared_request, tmp_path, monkeypatch, capsys, failed, fault, resident):
     root, manifest, FakeHdc, _ = prepared_request; manifest['dump'] = False
     if resident:
         _enable_prefill_request(root, manifest, tmp_path)
-    v1 = resident in {'v1', 'v1-historical'}
+    v1 = resident in {'v1', 'v1-historical', 'v1-prefill'}
     if v1:
         manifest.update(execution_mode='resident-v1', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
             model_load_api=preparation.V1_MODEL_LOAD_API, model_load_apis=dict(preparation.V1_MODEL_LOAD_APIS),
@@ -605,6 +606,31 @@ def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files
             stage='SESSION_CLEANUP', status='FAILED', poisoned=True, cleanup_error=loop['error'])
         life['target_v1_lifecycle'].update(unload_status=1, failure_stage='UNLOAD', cleanup_error=loop['error'])
         progress.update(status='FAILED', resident_call_status='FAILED_CLOSED')
+        if resident == 'v1-prefill':
+            loop.update(stage='prefill-v1-load', error='HIAI Load failed: 1 [model=qwen35_resident_prefill]',
+                generated_tokens=[], full_prefix=[], completed_rounds=0)
+            loop['counts'] = {key: 0 for key in loop['counts']}
+            for key, value in list(life.items()):
+                if type(value) is int: life[key] = 0 if key != 'process_id' else 1000
+            life.update(stage='CLOSED', status='CLOSED', poisoned=False, cleanup_error='')
+            for kind in ('target', 'draft'):
+                life[kind + '_v1_lifecycle'] = _v1_life(kind, 0, attempted=False,
+                    model_load_api=manifest['model_load_apis'][kind])
+            prefill = _v1_life('prefill', 0, model_load_api='legacy-file')
+            prefill.update(loaded=False, load_status=1, failure_stage='LEGACY_LOAD')
+            loop['prefill_lifecycle'] = prefill
+            loop['acceptance'] = dict(accepted=0, considered=0, rate=None)
+            for kind in ('prompt_ingest', 'prefill', 'decode', 'draft'):
+                loop['phase_latency'][kind].update(calls=0, total_ms=1 if kind in {'prompt_ingest', 'prefill'} else 0,
+                    mean_ms=None)
+            timing = loop['supervisor_timing']
+            timing.update({key: 0 for key, value in timing.items() if type(value) is int})
+            timing.update(prefill_model_load_ms=1, prefill_v1_total_ms=1, total_wall_ms=20)
+            progress.update(generated_tokens=[], counts=loop['counts'], supervisor_timing=timing)
+            # A previous recovery journal may retain the old misleading summary.
+            checkpoint = tmp_path / 'execution/checkpoint.json'; stale = json.loads(checkpoint.read_text())
+            stale.update(resident_failure_stage='CLOSED', prefill_failure_stage='STALE_STAGE')
+            checkpoint.write_text(json.dumps(stale))
     elif resident:
         loop, progress = _resident_compact(manifest)
         loop.update(status='FAILED', config_sha256=launched['config_sha256'], stage='resident-load',
@@ -627,6 +653,8 @@ def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files
         loop['child_lifecycle']['children'][-1]['exitcode'] = None
     if fault == 'malformed-error':
         loop['error'] = {'unverified_error_text': 'must not become a summary error'}
+    if fault == 'malformed-prefill':
+        loop['prefill_lifecycle']['load_status'] = True
     data = _compact_files(tmp_path / 'native-results', loop, progress)
     remote = {launched['board_attempt'] + '/results/' + name: raw for name, raw in data.items()}
     remote[launched['board_attempt'] + '/results/retrieval-manifest.tsv'] = (tmp_path / 'native-results/retrieval-manifest.tsv').read_bytes()
@@ -657,15 +685,23 @@ def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files
     assert result['evidence_scope'] == 'TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY'
     assert result['state_continuity'] == 'NOT_REPLAYED_COMPACT_RESULT' and result['dump'] is False
     if not fault:
-        assert result['acceptance']['rate'] == (None if failed and not v1 else 0)
-        assert result['phase_latency']['prompt_ingest']['calls'] == (1 if failed else 8)
+        assert result['acceptance']['rate'] == (None if failed and (not v1 or resident == 'v1-prefill') else 0)
+        assert result['phase_latency']['prompt_ingest']['calls'] == (0 if resident == 'v1-prefill' else 1 if failed else 8)
         assert 'Recover this exact' not in result['next']
         assert result['counts'] == loop['counts'] and result['generated_token_ids'] == loop['generated_tokens']
         if failed:
-            expected_stage = 'resident-close' if v1 else 'resident-load' if resident else 'target-child'
+            expected_stage = 'prefill-v1-load' if resident == 'v1-prefill' else 'resident-close' if v1 else 'resident-load' if resident else 'target-child'
             assert result['stage'] == 'complete' and result['execution_failure_stage'] == expected_stage
             assert result['error'] == result['execution_error'] == loop['error']
-            if v1:
+            if resident == 'v1-prefill':
+                assert result['prefill_lifecycle'] == loop['prefill_lifecycle']
+                assert result['prefill_failure_stage'] == 'LEGACY_LOAD'
+                assert result['prefill_lifecycle']['load_status'] == 1
+                assert 'resident_failure_stage' not in result
+                assert result['resident_lifecycle']['stage'] == 'CLOSED'
+                assert result['counts']['prefill_native_calls'] == result['counts']['target_native_calls'] == result['counts']['draft_native_calls'] == 0
+                assert result['generated_token_ids'] == [] and result['completed_native_pids'] == [1000]
+            elif v1:
                 assert result['resident_failure_stage'] == 'SESSION_CLEANUP'
                 assert result['counts']['target_native_calls'] == 8 and result['counts']['draft_native_calls'] == 7
                 assert result['generated_token_ids'] == loop['generated_tokens']
@@ -686,13 +722,19 @@ def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files
             summary = json.loads(capsys.readouterr().out.splitlines()[-1])
             assert summary['error'] == loop['error'] and summary['execution_failure_stage'] == expected_stage
             assert summary['stage'] == 'complete' and summary['counts'] == loop['counts']
-            if resident:
+            if resident == 'v1-prefill':
+                assert summary['prefill_lifecycle'] == result['prefill_lifecycle']
+                assert summary['prefill_failure_stage'] == 'LEGACY_LOAD'
+                assert 'resident_failure_stage' not in summary
+            elif resident:
                 assert summary['resident_failure_stage'] == result['resident_failure_stage']
     assert len(FakeHdc.instances[-1].receives) == 5
     assert not (tmp_path / 'recovery/supervisor.stdout').exists()
     if fault:
         assert result['lock_state'] == 'RETAINED_OR_UNCERTAIN' and 'lock_release' not in result
         assert result['error'] != loop['error'] and 'execution_error' not in result and 'execution_failure_stage' not in result
+        if fault == 'malformed-prefill':
+            assert 'prefill_lifecycle' not in result and 'prefill_failure_stage' not in result
     else:
         assert result['lock_release'] == 'RELEASED'
 

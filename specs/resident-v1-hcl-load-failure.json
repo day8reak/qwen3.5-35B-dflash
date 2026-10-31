@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-resident-v1-hcl-load-failure",
+  "run_id": "20261030T235619Z-13818-340217",
+  "source_base_commit": "2fa9d7d",
+  "status": "DEVICE_FILE_ONLY_CANDIDATE_FAILED_BEFORE_MODEL_PARSE",
+  "observation_source": "USER_PASTED_RECOVERY_AND_PID_FILTERED_HILOG_NOT_INDEPENDENTLY_RETRIEVED",
+  "run": "dflash-board-resident-v1-file8-run",
+  "recovery": "dflash-board-resident-v1-file8-recovery",
+  "board_attempt": "/data/local/tmp/qwen35_board_serial_60724b33b72e47aab3558ae0b1ec2d09",
+  "native_process_id": 63072,
+  "runtime_version": "800.631.120.010",
+  "selected_pipe": "HCL",
+  "execution_failure_stage": "prefill-v1-load",
+  "sdk_load_status": 1,
+  "error": "HIAI Load failed: 1 [model=qwen35_resident_prefill, path=/data/local/tmp/qwen3_5_moe/codex-target-362a2883ca8259b9cf61/payload/model/model.omc, runtime=800.631.120.010]",
+  "hilog_evidence": [
+    "model_manager_impl.cpp CreateModelManager(530): DDK pipe is HCL.",
+    "local_buffer.cpp CreateLocalBuffer(40): data != nullptr && size > 0 false, return nullptr.",
+    "AiModelManagerClientImpl.cpp Load(266): CreateLocalBuffer return null, load failed"
+  ],
+  "observed_device_clock": "03-13 23:21:58.211; retained as user supplied, not normalized to host date",
+  "counts": {
+    "prefill_native_calls": 0,
+    "target_native_calls": 0,
+    "draft_native_calls": 0
+  },
+  "generated_token_ids": [],
+  "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+  "conclusion": "Current selected HCL V1 Load rejects the path-only descriptor's empty model buffer before OMC restoration or inference. Does not prove all V1 implementations lack external-weight support.",
+  "unsupported_conclusions": [
+    "Missing libffrt_acc.so caused this Load failure",
+    "Weights, masks or state feedback caused this pre-parse rejection",
+    "Adding AiModelBuilder switches backend",
+    "A guessed environment variable selects a compatible backend"
+  ],
+  "next": "Inspect actual selected compatible API declarations for a supported external-weight route; no repeat path-only request, automatic fallback or model recompilation.",
+  "model_compilation": "NOT_RUN",
+  "assistant_device_access": "NONE",
+  "numerical_validation": "NOT_RUN",
+  "changes": [
+    "Expose validated prefill_lifecycle and prefill_failure_stage in recovery/CLI summary; do not mislabel a never-loaded resident session CLOSED as failure.",
+    "Independent read-only completed-failure collector: stdout/stderr tails <=64KiB each, optional diagnostic PID-filtered HiLog, original attempt/device/config/exit binding, no models/uploads/lock operations.",
+    "Retain original model runtime code and historical evidence; remove failed candidate launch from current instructions."
+  ],
+  "experience_audit": "A generic V1 API sample or accepting fake SDK cannot establish the selected runtime backend's source representation. Preserve precise SDK failure before trying further loading routes.",
+  "scope": "Host diagnostic/reporting changes only; no new loading fix or device inference pass.",
+  "host_validation": [
+    {
+      "path": "out/prefill-summary-transport.xml",
+      "tests": 132,
+      "failures": 0,
+      "sha256": "51f08cbece30dfb1a8032c068a3ef3b60da5aaef90fd598d18abb272e2e9c632",
+      "scope": "HOST_ONLY_NO_DEVICE"
+    },
+    {
+      "path": "out/failure-log-frozen.xml",
+      "tests": 26,
+      "failures": 0,
+      "sha256": "efb10a86ee2c3d9fadb4dbb3dae20c68e06303609d0fd720cfec845a4f3725c7",
+      "scope": "HOST_ONLY_NO_DEVICE"
+    }
+  ],
+  "source_sha256": {
+    "model/qwen35_moe_dflash/board_serial_transport.py": "00514183ef8337105572f7397b4302ee018fe2fa4f7629bcb3ed1e29c405ce8d",
+    "model/qwen35_moe_dflash/board_serial_failure_logs.py": "62ad21744639fa0436f6fcf5a2d4fb095226b6fe41ed129208bd0ce95bedb809",
+    "targets/cpro/scripts/run_board_serial_dflash.py": "4b0df18f3756fb8d1f61b17e17c2a5ea691c75158f02d66c26ace1b382d9da50",
+    "targets/cpro/scripts/collect_board_serial_failure_logs.py": "94c9e62a4d7716a5f9736177b078c874505da649ff70c13c1ebdc42f30cf88cd",
+    "tests/test_board_serial_transport.py": "6cbc97fa225203ecdfacca166824818f77339011d62bcbed2ca9391d4f68eed9",
+    "tests/test_board_serial_failure_logs.py": "6f92202436e0978342f2eac47c7bcc3bb16fc180790f67dd79fbaa24a6f2b766"
+  },
+  "user_tool_header_observation": {
+    "directory": "/home/w00949577/model_run_tool/inc/compatible",
+    "source": "USER_PASTED_GREP_NOT_SELECTED_RUNNER_HEADER_IDENTITY",
+    "declarations": [
+      "void* GetModelBuffer() const",
+      "AIStatus SetModelBuffer(const void* data, uint32_t size)",
+      "AIStatus SetModelPath(const std::string& modelPath)",
+      "const std::string& GetModelPath() const",
+      "uint32_t GetModelNetSize() const",
+      "AIStatus Load(std::vector<std::shared_ptr<AiModelDescription>>& pmodelDesc)",
+      "AIStatus UnLoadModel()"
+    ],
+    "explicit_weight_entry": "NOT_PRESENT_IN_RETURNED_MATCHES",
+    "scope": "No explicit external-weight load entry in these returned declarations; not proof that the selected private SDK lacks every extension."
+  },
+  "route_choice_pending": {
+    "reason": "User previously explicitly required all V1; no silent fallback.",
+    "proposed": "If user permits, investigate original external prefill/decode V2 plus embedded draft V1 residency. Known Init/InitWeights success does not settle DeinitWeights failures or joint residency.",
+    "alternative": "Continue all-V1 using vendor-supported external-weight loading contract; current path-only candidate must not be repeated."
+  }
+}

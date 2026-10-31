@@ -61,7 +61,7 @@ def main(argv=None):
             'lock_state', 'error', 'next', 'prepared', 'board_result')
     keys += ('dump', 'retrieval_mode', 'evidence_scope', 'acceptance', 'phase_latency', 'supervisor_timing', 'prompt_ingestion')
     keys += ('execution_mode', 'model_load_api', 'model_load_apis', 'resident_lifecycle', 'resident_memory', 'target_lifecycle_policy')
-    keys += ('execution_failure_stage', 'resident_failure_stage')
+    keys += ('execution_failure_stage', 'resident_failure_stage', 'prefill_failure_stage', 'prefill_lifecycle')
     print(json.dumps({key: result[key] for key in keys if key in result}, ensure_ascii=False, allow_nan=False), flush=True)
     return 0 if result.get('status') in {'BOARD_SERIAL_DFLASH_PLANNED', 'BOARD_SERIAL_DFLASH_STARTED',
         'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED', 'BOARD_SERIAL_DFLASH_RECOVERED_UNVALIDATED'} else 1

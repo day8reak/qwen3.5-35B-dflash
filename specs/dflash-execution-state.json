@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_kind": "qwen35-dflash-execution-plan-state",
-  "updated": "2026-10-30",
+  "updated": "2026-10-31",
   "plan_document": "docs/dflash-delivery-plan.md",
   "current_commands": "docs/current-status.md",
   "overall_status": "in_progress",
@@ -284,9 +284,9 @@
       "next_inference_experiment": "WITHDRAWN_SUPERSEDED_BY_USER_AUTHORIZED_ALL_V1_RESIDENT_LOOP"
     },
     "resident_v1": {
-      "status": "HOST_TESTED_ALL_V1_COMPLETE_DEVICE_LOOP_PENDING",
+      "status": "CURRENT_PATH_ONLY_CANDIDATE_FAILED_HCL_EMPTY_BUFFER_BEFORE_PARSE",
       "user_authorization": "ALL_MODEL_MANAGER_INTERFACES_V1",
-      "target_lifecycle_policy": "legacy-v1-load-process-unload-v1",
+      "target_lifecycle_policy": "legacy-v1-file-target-buffer-draft-v1",
       "prefill": "ONE_V1_INSTANCE_LOAD_PROCESS_UNLOAD_BEFORE_RESIDENT_PAIR",
       "decode_draft": "TWO_DISTINCT_V1_CLIENTS_ONE_LOAD_EACH_REPEATED_SYNCHRONOUS_PROCESS",
       "threading": "ONE_EXECUTION_THREAD_NO_SHARED_MANAGER_ACROSS_THREADS",
@@ -295,17 +295,18 @@
       "model_compilation": "NOT_REQUESTED",
       "fallback_to_v2": "FORBIDDEN",
       "historical_runtime": "specs/resident-v2-target-cleanup-observed.json",
-      "next_device_action": "FULL_PREFILL_DECODE_DRAFT_V1_LOOP_AFTER_HOST_CHECKS_NO_LOAD_ONLY_PROBE",
+      "next_device_action": "NO_REPEAT_MODEL_RUN_IDENTIFY_SUPPORTED_V1_EXTERNAL_WEIGHT_ENTRY",
       "validation_manifest": "specs/resident-v1-host-validation.json",
-      "validation_document": "docs/resident-v1-validation.md"
+      "validation_document": "docs/resident-v1-validation.md",
+      "latest_observation": "specs/resident-v1-hcl-load-failure.json"
     }
   },
   "next_action": {
     "phase": "P5",
-    "type": "run_complete_all_v1_resident_board_loop",
+    "type": "inspect_selected_v1_external_weight_interface",
     "entrypoint": "targets/cpro/scripts/run_board_serial_dflash.py",
     "command_document": "docs/current-status.md",
-    "note": "全V1实现与主机回归已完成；用户按docs/current-status.md直接运行完整板端prefill→常驻decode/draft，不增加load-only试跑。保留原OMC、80状态和实验控制；核对token、每client一次Load及分阶段时延。"
+    "note": "当前HCL V1 Load拒绝path-only描述符空buffer，0次Process；先核对实际SDK的受支持外置权重入口。原板端闭环成功保留，不重复启动失败候选、不静默切V2或重编模型。"
   },
   "last_actual_execution": {
     "source": "USER_PROVIDED_RECOVERY_SUMMARY",
@@ -391,7 +392,7 @@
     "paired_speedup": "NOT_MEASURED"
   },
   "planned_parallelism": [
-    "P0 original-prefill baseline passed; parallel V1 core/session, supervisor and host recovery implementation/tests. Then user runs complete V1 board loop; no assistant HDC probes or additional load-only trial.",
+    "P0 original-prefill baseline passed. Current V1 path-only request failed before model parse; investigate actual supported external-weight API while host reporting/diagnostic work proceeds. No repeated device request or automatic fallback.",
     "P1 reference preparation while P0 device runs",
     "P2 fixture preparation and P3 static mapping; do not accept accuracy with wrong features",
     "P4 host source/ABI and P5 resident runner after shared interfaces frozen",
@@ -577,8 +578,8 @@
         0.5,
         2
       ],
-      "next_action_type": "run_complete_all_v1_resident_board_loop",
-      "next_action": "全V1实现与主机回归已完成；用户按docs/current-status.md直接运行完整板端prefill→常驻decode/draft，不增加load-only试跑。保留原OMC、80状态和实验控制；核对token、每client一次Load及分阶段时延。",
+      "next_action_type": "inspect_selected_v1_external_weight_interface",
+      "next_action": "当前HCL V1 Load拒绝path-only描述符空buffer，0次Process；先核对实际SDK的受支持外置权重入口。原板端闭环成功保留，不重复启动失败候选、不静默切V2或重编模型。",
       "pass_conditions": [
         "two-model residency feasibility measured",
         "native loop same tokens/state as baseline",
