@@ -16,9 +16,14 @@ FLAGS = ('model', 'input', 'output_dir', 'modelmanager_itf', 'enable_item', 'tim
          'input_type', 'output_type', 'dev_perf', 'priority', 'async')
 
 
-def bind_profile(prepared, inspection):
+def bind_profile(prepared, inspection, *, refresh_output=None):
     root = Path(prepared).absolute()
-    manifest = validate_real_feature_draft(root)
+    rebound = None
+    if refresh_output is not None:
+        from .draft_profile_inputs import refresh_profile_inputs
+        root, manifest, rebound = refresh_profile_inputs(root, refresh_output)
+    else:
+        manifest = validate_real_feature_draft(root)
     path = Path(inspection)
     if path.is_dir():
         path /= 'report.json'
@@ -48,6 +53,7 @@ def bind_profile(prepared, inspection):
         inputs.append(dict(record, index=index, dtype=row['dtype'], shape=row['shape']))
     _, prepared_record = _read_small(root / 'manifest.json', 4 << 20)
     return {'schema_version': 1, 'artifact_kind': KIND, 'prepared': prepared_record,
+        'input_revalidation': rebound,
         'tool': {'path': _tool_path(tool['tool']), 'sha256': tool['tool_sha256_before'], 'inspection': identity},
         'model': manifest['model_source'], 'inputs': inputs, 'outputs': manifest['outputs'],
         'ddk_id': manifest['ddk_id'], 'firmware_id': manifest['firmware_id'],

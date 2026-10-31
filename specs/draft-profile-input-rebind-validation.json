@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "status": "HOST_VALIDATED_DEVICE_RETRY_PENDING",
+  "incident": {
+    "user_report": "profile_draft.py failed at bind-inputs: source identity changed: full-draft/residual-fix/bundle/manifest.json",
+    "device_execution": "NOT_RUN",
+    "interpretation": "real_feature_draft._same_file checks bytes/SHA before physical stat. This reported branch followed matching manifest bytes but differing recorded physical identity; no model corruption inference."
+  },
+  "change": {
+    "policy": "Always build a fresh profile input preparation before any HDC call",
+    "content_gate": "Original metadata, retained target outputs, prepared inputs and ABI byte lengths/SHA remain mandatory. Fresh bundle validation rehashes the OMC and enforces the original model SHA.",
+    "identity_policy": "Historical stat drift is recorded, never rewritten in old receipts. Fresh observations must remain unchanged during preparation.",
+    "new_artifacts": "input-revalidation/inspection, input-revalidation/prepared, input-revalidation/report.json",
+    "model_copy_bytes": 0,
+    "model_compilation": "NOT_RUN"
+  },
+  "tests": {
+    "existing_profile_tests_passed": 26,
+    "new_rebind_tests_passed": 7,
+    "total_distinct_tests_passed": 33,
+    "existing_suite_report": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T033302Z-2183-acfba6/out/profile-refresh.xml",
+    "existing_suite_note": "Combined initial run: 32 passed, one new identity-change-count assertion failed. Final helper fixed accounting; all seven new tests rerun passed.",
+    "final_rebind_report": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T033302Z-2183-acfba6/out/profile-refresh-final.xml",
+    "coverage": [
+      "same-content bundle-manifest inode replacement",
+      "same-content model and input replacement",
+      "changed bundle manifest rejection",
+      "changed input/source feature/model rejection",
+      "source change during refresh rejection",
+      "unchanged historical receipts and no model copy"
+    ]
+  },
+  "source_files": [
+    {
+      "path": "model/qwen35_moe_dflash/draft_profile_inputs.py",
+      "sha256": "a0fd99d9f62194e21e52216e0a2194e4d1b06cf9213e56dba752e356fd3318b1"
+    },
+    {
+      "path": "model/qwen35_moe_dflash/draft_profile_plan.py",
+      "sha256": "79b869d8bc3fcf1a92d679eab72988b4fc70eb0c5be45f7b3524aef51eeb7333"
+    },
+    {
+      "path": "model/qwen35_moe_dflash/draft_profile_board.py",
+      "sha256": "195de04f35e3ade04d20b4650224831e44b31fd93f7c36bb94f28a21b5edd3c6"
+    },
+    {
+      "path": "targets/cpro/scripts/profile_draft.py",
+      "sha256": "417d5a717f68b03887af543e8880c853459603c150c781cc908925c218077940"
+    }
+  ],
+  "device_status": "User must rerun profile start into draft-s64-profile-v2; no board connection by agent",
+  "experience_audit": "Scoped executable fix and regression tests added. Historical identity is not evidence of current corruption; validate content and write a new receipt instead of mutating historical ones. No general skill changes."
+}

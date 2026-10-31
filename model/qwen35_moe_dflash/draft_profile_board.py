@@ -89,7 +89,10 @@ def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
     acquiring = False
     token = uuid.uuid4().hex
     try:
-        plan = bind_profile(prepared, inspection)
+        plan = bind_profile(prepared, inspection, refresh_output=out / 'input-revalidation')
+        if plan.get('input_revalidation'):
+            result['input_revalidation'] = {key: plan['input_revalidation'][key]
+                for key in ('status', 'identity_change_count', 'prepared')}
         executable, serial, server = _environment()
         hdc = Hdc(executable, serial, server, out, 60)
         board = PurePosixPath(PREFIX + token)

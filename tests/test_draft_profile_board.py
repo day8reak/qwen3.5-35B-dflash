@@ -76,7 +76,7 @@ def case(tmp_path, monkeypatch):
     plan = {'artifact_kind': board.KIND, 'model': {'path': '/unused/fixture.omc', 'bytes': 32, 'sha256': HASH},
         'tool': {'path': TOOL, 'sha256': HASH}, 'inputs': inputs, 'firmware_id': 'fixture-firmware',
         'input_scope': 'SYNTHETIC_TEST_ONLY', 'timing_scope': 'FAKE_TRANSPORT_NO_DEVICE'}
-    monkeypatch.setattr(board, 'bind_profile', lambda *args: dict(plan))
+    monkeypatch.setattr(board, 'bind_profile', lambda *args, **kwargs: dict(plan))
     monkeypatch.setattr(board, 'Hdc', FakeHdc)
     for key, value in dict(remote={}, calls=[], fail=None, busy=False, foreign=False,
             parser_help='--result_path       Profiling & Dump data output directory.').items():
