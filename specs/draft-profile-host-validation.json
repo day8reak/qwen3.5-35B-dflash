@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "status": "HOST_TESTED_DEVICE_PROFILE_NOT_COLLECTED",
+  "scope": "Current six-layer S64 embedded Draft diagnostic profiling; no model conversion or optimization",
+  "model_sha256": "62797c0c4cdd3f228de36232b69de053bec3e83d7e34413cb2ba09f76b19b474",
+  "source_files": [
+    {
+      "path": "model/qwen35_moe_dflash/draft_profile_board.py",
+      "sha256": "bdf867b610a8245af668d5f2bbd436028eda94dbc259bb4b2d79de5d21fba06b"
+    },
+    {
+      "path": "model/qwen35_moe_dflash/draft_profile_plan.py",
+      "sha256": "9aeccfe2eba2267dd967cb876d5afef12f3f95f9829eede765b43a25e35ba33a"
+    },
+    {
+      "path": "model/qwen35_moe_dflash/draft_profile_csv.py",
+      "sha256": "36f1d7ba4ce92da22c854d2d50738746ec64393e4919165bb67ecbd8f60e8078"
+    },
+    {
+      "path": "targets/cpro/scripts/profile_draft.py",
+      "sha256": "534d93ecf459642359981c94f86927e0e4d387cac573d19141b1a4c3c4a66b60"
+    },
+    {
+      "path": "targets/cpro/scripts/summarize_draft_profile.py",
+      "sha256": "f594d469eae84ba8bc2678a2151296d296b7a80119e9add96cca0fc51e2e0a6f"
+    }
+  ],
+  "tests": {
+    "suite": "tests/test_draft_profile_{board,csv,plan}.py",
+    "passed": 26,
+    "report": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T031445Z-1123-5649b8/out/profile-final.xml",
+    "final_help_directory_change": {
+      "passed": 1,
+      "report": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T031445Z-1123-5649b8/out/profile-final-path.xml"
+    },
+    "native_shell_syntax": "sh -n passed on generated supervisor"
+  },
+  "device_execution": "NOT_RUN_BY_AGENT_USER_RUN_REQUIRED",
+  "numerical_validation": "NOT_EVALUATED",
+  "performance_acceptance": "NOT_EVALUATED",
+  "selected_tool_evidence": {
+    "source": "User-provided board directory listing and actual complete tool help",
+    "model_tool": "/data/local/tmp/tools_sysdbg/model_run_tool_internal",
+    "model_help_sha256": "265f2951e1d48bbf167112a8a8b5cb86c1dce256d01cde6c341864a9645b43ea",
+    "model_options": "V1; --times=1; --enable_item=1 (numeric actual help value)",
+    "parser_tool": "/data/local/tmp/tools_sysdbg/data_proc_tool_internal",
+    "parser_option": "--result_path",
+    "help_directory": "A fresh writable directory returned help after the default cwd reported another instance or some error; no stale lock was deleted"
+  },
+  "collection": {
+    "input": "Existing real-feature-draft-plan, 64 valid rows; not exact latest text-loop input",
+    "model_upload": "NONE_MATCH_EXISTING_SHA256_CACHE",
+    "orchestration": "ONE_DETACHED_VENDOR_TOOL_CALL_THEN_PARSER",
+    "recovery": "NO_MODEL_RELAUNCH_EXACT_ATTEMPT_OWNER_AND_REQUEST_HASH",
+    "locks": "Shared global model lock plus exact model-cache execution lock",
+    "raw_artifacts": "Retained in owned result_path, bounded SHA-verified retrieval",
+    "attribution": "Vendor service may export historical model records. Report retains source CSV membership and requires attribution review."
+  },
+  "reference": {
+    "public_example": "https://developer.huawei.com/consumer/jp/doc/hiai-Guides/examples-0000001053605660",
+    "public_scope": "Public overview excludes HarmonyOS NEXT; no claim that public package is qualified for this board",
+    "csv_contract": "run-kirin9030-operator-on-board/references/profiling-contract.md; only exact supported CSV headers accepted"
+  },
+  "experience": {
+    "observed": "Internal model tool V1 profiling and parser result_path options returned by actual help; parser help requires writable invocation directory on this setup",
+    "captured_in": "draft_profile_plan.py, draft_profile_board.py, docs/current-status.md",
+    "unproven": [
+      "Actual runtime profiling activation and complete artifacts",
+      "Which exported CSV records belong to this Draft call",
+      "Hot operator durations, execution placement and any 50 ms target"
+    ],
+    "skill_change": "None: these internal-tool observations are model/profile scoped"
+  }
+}
