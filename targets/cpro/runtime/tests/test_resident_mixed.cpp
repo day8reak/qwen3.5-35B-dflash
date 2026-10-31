@@ -109,6 +109,23 @@ int main(int argc,char** argv){try{
     Require(e.target_lifecycle.manager_deinit_returned==(fault!="original-deinit"),"void DeInit return was fabricated");
     session.Close();events=Trace(path);Require(Count(events,"v2-deinit")==1&&Count(events,"unload")==1&&Count(events,"v2-deinit-weights")==0,"failed cleanup retried");
   }
+  Failure("");config.diagnostics=false;
+  {
+    const auto path=trace("compact-memory");ResidentSession session("target-v2-draft-v1");session.Load(config);
+    auto inputs=TargetInputs(config);
+    for(std::size_t step=0;step<3;++step){
+      auto target=session.RunTarget(inputs);
+      Require(target.outputs.size()==82&&target.io_diagnostic.inputs.empty(),"compact target emitted diagnostics");
+      for(std::size_t i=0;i<80;++i){Require(target.outputs[i+1][0]==step+1,"compact state feedback differs");inputs[i+3]=std::move(target.outputs[i+1]);}
+      auto draft=session.RunDraft(DraftInputs());
+      Require(draft.outputs.size()==1&&draft.io_diagnostic.inputs.empty()&&Top(draft)==static_cast<int>(10+step),"compact draft top1/hidden-readback policy differs");
+    }
+    Require(session.evidence().target_api_us>0&&session.evidence().draft_api_us>0,"API timing missing");
+    Failure("original-run");Throws([&]{session.RunTarget(inputs);});
+    Require(session.evidence().closed&&session.evidence().poisoned&&session.evidence().target_runs==3,"compact failure committed/reused state");
+    Failure("");session.Close();
+    const auto events=Trace(path);Require(Count(events,"v2-init")==1&&Count(events,"load")==1&&Count(events,"v2-deinit")==1&&Count(events,"unload")==1,"compact mode reloaded or skipped close");
+  }
   Failure("");unsetenv("FAKE_HIAI_TRACE");unsetenv("FAKE_HIAI_V1_RESIDENT_TRACE");
   std::cout<<"PASS mixed session: V2 target + V1 draft, 3+3 alternating calls, 176 persistent buffers, output ownership, 12 failure cases; host fake only\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

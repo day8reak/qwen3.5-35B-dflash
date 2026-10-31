@@ -108,6 +108,7 @@ class ModelBuffer {
   std::uint32_t bytes_ = 0;
 };
 struct Model {
+  std::uint64_t last_api_us = 0;
   // Reverse destruction order keeps mapped bytes and descriptor alive through
   // UnLoadModel AND the client destructor, including partial-load failures.
   ModelBuffer model_buffer;
@@ -378,7 +379,9 @@ struct Model {
   void Run() {
     if (file_v2) {
       Stage("MODEL_MANAGER_RUN");
+      const auto api_begin = std::chrono::steady_clock::now();
       const auto status = manager->Run(nd_input_ptrs, nd_output_ptrs);
+      last_api_us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-api_begin).count();
       if (status != 0)
         throw HiaiRuntimeError(stage, "IModelManager::Run failed: " + std::to_string(status));
       Stage("OUTPUT_VALIDATION");
@@ -389,7 +392,10 @@ struct Model {
     context.AddPara("model_name", name);
     std::int32_t stamp = 0;
     ++legacy.process_attempts;
-    Check(client.Process(context, input_ptrs, output_ptrs, timeout, stamp), "Process(sync)");
+    const auto api_begin = std::chrono::steady_clock::now();
+    const auto status = client.Process(context, input_ptrs, output_ptrs, timeout, stamp);
+    last_api_us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-api_begin).count();
+    Check(status, "Process(sync)");
     ++legacy.successful_processes;
     stage = "OUTPUT_VALIDATION";
   }
@@ -512,6 +518,7 @@ std::size_t HiaiTensorBytes(const HiaiTensorSpec& spec) {
 }
 
 struct HiaiStatefulExecutor::Impl {
+  bool diagnostics = true;
   Model target;
   std::vector<bool> ready;
   bool outputs_available = false;
@@ -549,7 +556,8 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
     int diagnostic_output_fill_byte, bool standalone_draft,
     const std::string& model_load_api, const std::string& resident_model_name,
     HiaiLegacyLifecycle* constructor_failure_snapshot,
-    const std::vector<HiaiTensorStorage>& disjoint_from) : impl_(std::make_unique<Impl>()) {
+    const std::vector<HiaiTensorStorage>& disjoint_from, bool diagnostics) : impl_(std::make_unique<Impl>()) {
+  impl_->diagnostics = diagnostics;
   try {
   if (model_load_api != "legacy-buffer" && model_load_api != "file-v2")
     throw std::invalid_argument("model load API must be legacy-buffer or file-v2");
@@ -665,7 +673,7 @@ void HiaiStatefulExecutor::SetInput(std::size_t index, const std::vector<std::ui
   if (bytes.size() != tensor.bytes)
     throw std::invalid_argument("stateful input byte count differs from declared shape/dtype");
   void* destination=tensor.Data();
-  if(!impl_->resident_storage.empty()) {
+  if(impl_->diagnostics && !impl_->resident_storage.empty()) {
     std::size_t at=0;
     for(const auto* tensors:{&impl_->target.inputs,&impl_->target.outputs})for(const auto& current:*tensors){
       const auto& old=impl_->resident_storage.at(at++);
@@ -677,7 +685,7 @@ void HiaiStatefulExecutor::SetInput(std::size_t index, const std::vector<std::ui
     destination=const_cast<void*>(impl_->resident_storage.at(index).data);
   }
   std::memcpy(destination, bytes.data(), bytes.size());
-  if (impl_->diagnostic.output_fill_byte >= 0) {
+  if (impl_->diagnostics && impl_->diagnostic.output_fill_byte >= 0) {
     impl_->input_source_hashes.at(index) = Sha256(std::string_view(
         reinterpret_cast<const char*>(bytes.data()), bytes.size()));
     impl_->diagnostic.inputs.at(index).readback_sha256.clear();
@@ -692,7 +700,7 @@ void HiaiStatefulExecutor::Execute() {
   if (!std::all_of(impl_->ready.begin(), impl_->ready.end(), [](bool ready) { return ready; }))
     throw std::logic_error("all explicit stateful inputs must be supplied for each step");
   std::fill(impl_->ready.begin(), impl_->ready.end(), false);
-  if (impl_->diagnostic.output_fill_byte >= 0) {
+  if (impl_->diagnostics && impl_->diagnostic.output_fill_byte >= 0) {
     impl_->diagnostic.process_called = false;
     impl_->output_buffers_before.clear();
     for (std::size_t i = 0; i < impl_->target.outputs.size(); ++i) {
@@ -730,7 +738,16 @@ void HiaiStatefulExecutor::Execute() {
       throw std::runtime_error("diagnostic output object, buffer or size changed during Process; "
                                "refusing to read the original output tensor");
   } else {
+    if (impl_->diagnostic.output_fill_byte >= 0)
+      for (const auto& t : impl_->target.outputs) std::memset(t.Data(), impl_->diagnostic.output_fill_byte, t.bytes);
     impl_->target.Run();
+    // Cheap output extent/pointer checks remain; no readback hash or fill scan.
+    if(!impl_->resident_storage.empty())for(std::size_t i=0;i<impl_->target.outputs.size();++i){
+      const auto& t=impl_->target.outputs[i];
+      const auto& old=impl_->resident_storage.at(impl_->target.inputs.size()+i);
+      if(t.Object()!=old.object||t.Buffer()!=old.data||t.Size()!=old.bytes)
+        throw HiaiRuntimeError("OUTPUT_VALIDATION","draft output storage changed during Process");
+    }
   }
   if (impl_->target.file_v2) impl_->target.Stage("EXECUTED");
   else impl_->target.stage = "EXECUTED";
@@ -756,6 +773,7 @@ void HiaiStatefulExecutor::Close() {
   impl_->outputs_available = false;
   if(impl_->target.file_v2)impl_->target.CloseFile(true);else impl_->target.CloseLegacy(true);
 }
+std::uint64_t HiaiStatefulExecutor::last_api_us() const noexcept { return impl_->target.last_api_us; }
 const HiaiLegacyLifecycle& HiaiStatefulExecutor::legacy_lifecycle() const noexcept {return impl_->target.legacy;}
 const std::string& HiaiStatefulExecutor::runtime_version() const noexcept {
   return impl_->target.version;
@@ -925,6 +943,8 @@ const HiaiLegacyLifecycle& HiaiOriginalTargetV1Executor::lifecycle()const noexce
 std::vector<HiaiTensorStorage> HiaiOriginalTargetV1Executor::tensor_storage()const{impl_->RequireLive();impl_->Verify();return impl_->storage;}
 
 struct HiaiOriginalTargetExecutor::Impl {
+  bool diagnostics = true;
+  std::uint64_t last_api_us = 0;
   std::shared_ptr<hiai::IBuiltModel> built_model;
   std::shared_ptr<hiai::IModelManager> manager;
   std::vector<std::shared_ptr<hiai::INDTensorBuffer>> input_ptrs, output_ptrs;
@@ -942,7 +962,7 @@ struct HiaiOriginalTargetExecutor::Impl {
 
   void Stage(const char* value) {
     stage = value;
-    std::cerr << "HIAI original-target-v2 stage=" << stage << std::endl;
+    if (diagnostics) std::cerr << "HIAI original-target-v2 stage=" << stage << std::endl;
   }
   void RestoreModel(const std::filesystem::path& model, const std::string& expected_version,
                     const std::string& model_name) {
@@ -1108,7 +1128,8 @@ HiaiOriginalTargetExecutor::HiaiOriginalTargetExecutor(
     const std::string& expected_version, const std::vector<HiaiBoundRuntimeTensor>& inputs,
     const std::vector<HiaiBoundRuntimeTensor>& outputs, const std::string& resident_model_name,
     HiaiOriginalTargetLifecycle* constructor_failure_snapshot,
-    HiaiOriginalTargetCleanupPolicy cleanup_policy) : impl_(std::make_unique<Impl>()) {
+    HiaiOriginalTargetCleanupPolicy cleanup_policy, bool diagnostics) : impl_(std::make_unique<Impl>()) {
+  impl_->diagnostics = diagnostics;
   if (cleanup_policy != HiaiOriginalTargetCleanupPolicy::ExplicitWeightsBeforeManager &&
       cleanup_policy != HiaiOriginalTargetCleanupPolicy::ManagerDeinitOnly)
     throw std::invalid_argument("unknown original target cleanup policy");
@@ -1243,7 +1264,7 @@ void HiaiOriginalTargetExecutor::SetInput(std::size_t index, const std::vector<s
   if (bytes.size() != tensor.bytes || tensor.Size() != tensor.bytes)
     throw HiaiRuntimeError(impl_->stage, "original target input byte extent differs");
   std::memcpy(tensor.Data(), bytes.data(), bytes.size());
-  impl_->input_hashes[index] = Sha256(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+  if (impl_->diagnostics) impl_->input_hashes[index] = Sha256(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
   impl_->diagnostic.inputs[index].readback_sha256.clear();
   impl_->diagnostic.inputs[index].readback_matches_source = false;
   impl_->ready[index] = true;
@@ -1257,7 +1278,7 @@ void HiaiOriginalTargetExecutor::Execute() {
   std::fill(impl_->ready.begin(), impl_->ready.end(), false);
   try {
     impl_->Stage("INPUT_READBACK_AND_OUTPUT_BINDING");
-    impl_->VerifyDisjointBuffers();
+    if (impl_->diagnostics) impl_->VerifyDisjointBuffers();
     impl_->output_buffers.clear();
     for (std::size_t i = 0; i < impl_->outputs.size(); ++i) {
       auto& tensor = impl_->outputs[i];
@@ -1269,7 +1290,7 @@ void HiaiOriginalTargetExecutor::Execute() {
       impl_->output_buffers.push_back(tensor.Data());
       std::memset(tensor.Data(), 0, tensor.bytes);
     }
-    for (std::size_t i = 0; i < impl_->inputs.size(); ++i) {
+    if (impl_->diagnostics) for (std::size_t i = 0; i < impl_->inputs.size(); ++i) {
       const auto& tensor = impl_->inputs[i];
       auto& row = impl_->diagnostic.inputs[i];
       row.allocated_bytes = tensor.Size();
@@ -1282,7 +1303,9 @@ void HiaiOriginalTargetExecutor::Execute() {
     impl_->Stage("MODEL_MANAGER_RUN");
     impl_->diagnostic.process_called = true;
     ++impl_->lifecycle.run_attempts;
+    const auto api_begin = std::chrono::steady_clock::now();
     const auto status = impl_->manager->Run(impl_->input_ptrs, impl_->output_ptrs);
+    impl_->last_api_us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-api_begin).count();
     impl_->Stage("OUTPUT_VALIDATION");
     const bool objects_unchanged = impl_->ObserveOutputs();
     if (status != 0) {
@@ -1290,7 +1313,7 @@ void HiaiOriginalTargetExecutor::Execute() {
       throw std::runtime_error("original target Run failed: " + std::to_string(status));
     }
     if (!objects_unchanged) throw std::runtime_error("original target output object/buffer/extent changed during Run");
-    impl_->VerifyDisjointBuffers();
+    if (impl_->diagnostics) impl_->VerifyDisjointBuffers();
     ++impl_->lifecycle.successful_runs;
     impl_->outputs_available = true;
     impl_->Stage("EXECUTED");
@@ -1306,7 +1329,7 @@ std::vector<std::uint8_t> HiaiOriginalTargetExecutor::CopyOutput(std::size_t ind
   impl_->RequireLive();
   if (!impl_->outputs_available)
     throw HiaiRuntimeError(impl_->stage, "original target outputs unavailable before successful Run or after new input binding");
-  try { impl_->VerifyDisjointBuffers(); }
+  try { if (impl_->diagnostics) impl_->VerifyDisjointBuffers(); }
   catch (const std::exception& error) {
     impl_->poisoned = true;
     impl_->outputs_available = false;
@@ -1322,6 +1345,7 @@ std::vector<std::uint8_t> HiaiOriginalTargetExecutor::CopyOutput(std::size_t ind
   const auto* data = static_cast<const std::uint8_t*>(tensor.Data());
   return {data, data + tensor.bytes};
 }
+std::uint64_t HiaiOriginalTargetExecutor::last_api_us() const noexcept { return impl_->last_api_us; }
 void HiaiOriginalTargetExecutor::Close() { impl_->Cleanup(true); }
 const std::string& HiaiOriginalTargetExecutor::runtime_version() const noexcept { return impl_->version; }
 const std::string& HiaiOriginalTargetExecutor::runtime_stage() const noexcept { return impl_->stage; }

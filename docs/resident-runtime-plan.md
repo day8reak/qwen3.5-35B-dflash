@@ -2,7 +2,7 @@
 
 更新：2026-10-31。用户已明确允许prefill／decode用V2、完整六层embedded draft用V1，优先推进常驻。全V1候选的HCL空buffer失败保留，当前命令见[current-status.md](current-status.md)。
 
-**实机进展：** 用户已完成混合常驻完整请求，prefill1／decode8／draft7、各resident模型加载1次且正常关闭，总墙钟88.680秒。见[首次结果](board-resident-mixed-first-completion.md)。后续先定位首decode差异，再验重复稳定性和独立权重释放。
+**实机进展：** 用户已完成混合常驻完整请求，prefill1／decode8／draft7、各resident模型加载1次且正常关闭，总墙钟88.680秒。见[首次结果](board-resident-mixed-first-completion.md)。用户最新要求先移除诊断和文件I/O，已接入 [compact-memory-v1](board-resident-fast-path.md)，设备测速待执行；随后定位首decode差异，再验重复稳定性和独立权重释放。
 
 ## 单线程生命周期
 
@@ -32,6 +32,6 @@ prefill加载前／加载后／关闭后，以及常驻pair加载前／加载后
 
 ## 报告与验证
 
-`execution_mode=resident-mixed`，`model_load_api=target-v2-draft-v1`，三模型source API分别file-v2／file-v2／legacy-buffer。真实manager调用与wrapper计数分别保留；prefill是本进程一次调用，无虚构子进程PID。普通输出仍为最终token、接受率和prefill/decode/draft时延；运行时间包含复制、读回、哈希检查，排除常驻模型的一次性加载/关闭，不能称纯NPU推理时间。
+`execution_mode=resident-mixed`，`model_load_api=target-v2-draft-v1`，三模型source API分别file-v2／file-v2／legacy-buffer。真实manager调用与wrapper计数分别保留；prefill是本进程一次调用，无虚构子进程PID。普通输出仍为最终token、接受率和prefill/decode/draft时延；历史运行时间包含复制、读回、哈希检查；新快速模式移除哈希及临时文件，另给同步API时间。两者都不能称纯NPU推理时间。
 
 主机测试验证调度、持有期及错误处理，随后用户直接跑完整板端候选，对照旧同输入token与调用计数，再验重复请求内存和性能。首次实机闭环已回传成功，仅确立单次功能与常驻执行；不升级为精度、重复稳定性、独立资源释放或算法加速验收。旧请求仍按原schema和配置恢复，原成功P0基线见[记录](board-prefill-first-completion.md)。

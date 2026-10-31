@@ -95,6 +95,9 @@ def _dump_mode(manifest):
 
 def _result_scope(state, manifest):
     dump = _dump_mode(manifest)
+    from .board_serial_dflash import compact_memory_mode
+    if compact_memory_mode(manifest):
+        state['runtime_profile'] = manifest['runtime_profile']
     state.update(dump=dump, retrieval_mode='FULL_DEBUG' if dump else 'FINAL_TOKENS_ONLY',
         evidence_scope=('FULL_RETRIEVED_NATIVE_IO_AND80_STATE_BYTE_CHAIN' if dump
         else 'TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY'))
@@ -129,6 +132,15 @@ def _validate_summaries(loop, manifest, *, required=False):
     """Acceptance arithmetic and wall-clock phases are summaries, not accuracy gates."""
     if not required and 'acceptance' not in loop and 'phase_latency' not in loop:
         return
+    from .board_serial_dflash import compact_memory_mode
+    fast = compact_memory_mode(manifest)
+    if loop.get('runtime_profile') != manifest.get('runtime_profile'):
+        raise ValueError('runtime profile differs from prepared request')
+    if fast and any(loop.get(key) != value for key, value in {
+            'diagnostics': 'DISABLED_TENSOR_HASH_READBACK_AND_FP16_SCANS',
+            'intermediate_tensor_io': 'NONE_MEMORY_ONLY',
+            'startup_payload_validation': 'OWNED_CACHE_EXTENTS_NEW_UPLOAD_SHA256'}.items()):
+        raise ValueError('compact memory report lacks its execution scope')
     counts = loop['counts']; acceptance = loop.get('acceptance', {})
     if (not isinstance(acceptance, dict) or any(type(acceptance.get(key)) is not int for key in ('accepted', 'considered'))
             or acceptance.get('accepted') != counts['accepted']
@@ -193,11 +205,26 @@ def _validate_summaries(loop, manifest, *, required=False):
         elif prefill and (timing.get('prefill_child_processes_timed') != prompt_calls
                 or timing.get('prefill_child_process_wall_ms') != latency['prefill']['total_ms']):
             raise ValueError('resident prefill child timing differs from its distinct phase')
-        if (any(latency[key].get('timing_scope') != 'RESIDENT_RUN_INCLUDES_TENSOR_COPIES_READBACK_HASH_AND_BUFFER_CHECKS_NOT_NPU_ONLY' for key in ('decode', 'draft'))
+        if (any(latency[key].get('timing_scope') != ('RESIDENT_MEMORY_RUN_WITH_TENSOR_COPIES_NO_HASH_OR_FILE_IO' if fast else 'RESIDENT_RUN_INCLUDES_TENSOR_COPIES_READBACK_HASH_AND_BUFFER_CHECKS_NOT_NPU_ONLY') for key in ('decode', 'draft'))
                 or prefill and any(latency[key].get('timing_scope') != ('PREFILL_V2_LOAD_RUN_CLOSE_WALL' if _mixed_mode(manifest)
                     else 'PREFILL_V1_LOAD_PROCESS_UNLOAD_WALL' if _v1_mode(manifest)
                     else 'CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD') for key in ('prompt_ingest', 'prefill'))):
             raise ValueError('resident per-phase timing must distinguish Run copies/hash from prefill child load/run/unload')
+        api = loop.get('native_api_latency')
+        if fast or api is not None:
+            if not isinstance(api, dict) or api.get('timing_scope') != 'SYNCHRONOUS_API_WALL_NOT_NPU_ONLY':
+                raise ValueError('native API latency must state synchronous wall scope')
+            for name in ('prefill', 'decode', 'draft'):
+                row = api.get(name, {}); calls = expected[name]
+                us = row.get('total_us'); mean = row.get('mean_ms')
+                if (type(row.get('calls')) is not int or row['calls'] != calls
+                        or type(us) is not int or us < 0 or (not calls and us != 0)
+                        or row.get('native_api') != ('Process' if name == 'draft' else 'Run')
+                        or us > (latency[name]['total_ms'] + calls + 1) * 1000
+                        or (not calls and mean is not None)
+                        or (calls and (type(mean) not in {int, float} or not math.isfinite(mean)
+                            or abs(mean - us / calls / 1000) > max(1e-9, abs(mean) * 1e-12)))):
+                    raise ValueError('native API latency differs from successful calls or wrapper timing')
         return
     if (any(type(timing.get(key)) is not int or timing[key] < 0 for key in
             ('startup_source_hash_ms', 'target_child_process_wall_ms', 'draft_child_process_wall_ms', 'total_wall_ms'))
@@ -522,11 +549,12 @@ def _remote(value):
     return path
 
 
-def _regular_guard(path, *, size=None):
+def _regular_guard(path, *, size=None, metadata_only=False):
     quoted = shlex.quote(str(path))
     guard = 'test -f ' + quoted + ' && test ! -L ' + quoted
     if size is not None:
-        guard += ' && test "$(wc -c < ' + quoted + ')" -eq ' + str(size)
+        extent = '$(stat -c %s ' + quoted + ')' if metadata_only else '$(wc -c < ' + quoted + ')'
+        guard += ' && test "' + extent + '" -eq ' + str(size)
     return guard
 
 
@@ -591,18 +619,22 @@ def _directories(hdc, out, state, root, paths, label):
         _mutate(hdc, out, state, ' && '.join(command), label)
 
 
-def _cache_inventory(hdc, rows):
-    """One actual remote SHA pass over the whole request's static payloads."""
+def _cache_inventory(hdc, rows, *, verify_sha256=True):
+    """Debug rehashes cached payloads; fast mode checks owned-cache extents only."""
     commands = []
     for row in rows:
         path = shlex.quote(row['remote'])
-        commands.append('test ! -L ' + path + ' || exit 1; if test -e ' + path + '; then '
-            + 'test -f ' + path + ' || exit 1; serial_hash=$(sha256sum ' + path + ') || exit 1; '
+        content_check = (
+            'serial_hash=$(sha256sum ' + path + ') || exit 1; '
             + 'serial_hash=${serial_hash%% *}; test "${#serial_hash}" -eq 64 || exit 1; '
             + 'case "$serial_hash" in *[!0-9a-f]*) exit 1;; esac; '
             + 'test "$serial_hash" = ' + shlex.quote(row['sha256']) + ' || exit 1; '
-            + 'test "$(wc -c < ' + path + ')" -eq ' + str(row['bytes']) + ' || exit 1; '
-            + 'printf \'OK %s\\n\' ' + path + '; else printf \'SEND %s\\n\' ' + path + '; fi')
+        ) if verify_sha256 else ''
+        extent = ('$(wc -c < ' + path + ')' if verify_sha256 else '$(stat -c %s ' + path + ')')
+        commands.append('test ! -L ' + path + ' || exit 1; if test -e ' + path + '; then '
+            + 'test -f ' + path + ' || exit 1; ' + content_check
+            + 'test "' + extent + '" -eq ' + str(row['bytes']) + ' || exit 1; '
+            + "printf 'OK %s\\n' " + path + "; else printf 'SEND %s\\n' " + path + '; fi')
     responses = []
     for batch in _batches(commands):
         _, text = hdc.shell('\n'.join(batch), 'inspect-whole-loop-cache', timeout=hdc.timeout)
@@ -649,11 +681,15 @@ def _upload_cached(hdc, out, state, rows, decisions, manifest):
     if _has_prefill(manifest):
         reserve += sum(row['bytes'] for direction in ('inputs', 'outputs') for row in manifest['prefill']['base_plan'][direction])
         reserve += len(manifest['prompt_token_ids']) * 32768
+    from .board_serial_dflash import compact_memory_mode
+    if compact_memory_mode(manifest):
+        input_bytes = output_bytes = draft_bytes = feature_bytes = 0
+        reserve = 128 << 20  # runner/libraries + small completion records; no tensor files
     state['board_disk_budget'] = {'free_bytes': free, 'missing_upload_bytes': missing,
         'retained_target_input_bytes': input_bytes * steps, 'retained_target_output_bytes': output_bytes * steps,
         'draft_input_output_metadata_reserve_bytes': draft_bytes, 'final_feature_bytes': feature_bytes,
         'retained_output_reserve_bytes': reserve, 'required_bytes': missing + reserve}
-    print(f'board-serial: whole-request cache verified; missing upload={missing} bytes; retained-data reserve={reserve} bytes', flush=True)
+    print(f'board-serial: whole-request cache inspected; missing upload={missing} bytes; retained-data reserve={reserve} bytes', flush=True)
     if free < missing + reserve:
         raise ValueError('board disk budget is insufficient for static payloads and retained loop outputs')
     for row in rows:
@@ -1682,7 +1718,8 @@ def _retrieve(hdc, out, state, manifest):
             prefill_stage = loop['prefill_lifecycle'].get('failure_stage')
             if isinstance(prefill_stage, str) and prefill_stage:
                 state['prefill_failure_stage'] = prefill_stage
-    for key in ('acceptance', 'phase_latency', 'supervisor_timing'):
+    for key in ('acceptance', 'phase_latency', 'supervisor_timing', 'native_api_latency',
+                'runtime_profile', 'diagnostics', 'intermediate_tensor_io', 'startup_payload_validation'):
         if key in loop:
             state[key] = loop[key]
     if _resident_mode(manifest):
@@ -1761,7 +1798,9 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
         state['libraries'] = deployment
         hdc = Hdc(executable, serial, server, out, timeout_seconds)
         tool = _remote(base['tool_binding']['path'])
-        preflight = 'command -v sha256sum >/dev/null && command -v nohup >/dev/null && command -v find >/dev/null && '
+        from .board_serial_dflash import compact_memory_mode
+        fast = compact_memory_mode(manifest)
+        preflight = ('command -v stat >/dev/null && ' if fast else '') + 'command -v sha256sum >/dev/null && command -v nohup >/dev/null && command -v find >/dev/null && '
         if not _inline_prefill(manifest):
             preflight += (_regular_guard(tool) + ' && serial_hash=$(sha256sum ' + shlex.quote(str(tool))
                 + ') && serial_hash=${serial_hash%% *} && test "$serial_hash" = ' + shlex.quote(base['tool_binding']['sha256']) + ' && ')
@@ -1800,13 +1839,16 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
             _directories(hdc, out, state, cache, [PurePosixPath(row['remote']).parent for row in rows
                 if cache in PurePosixPath(row['remote']).parents], 'create-static-cache-directories')
         _checkpoint(out, state, 'inspect-static-cache-requested', uncertain=True)
-        print('board-serial: checking target, draft and embedding cache SHA256 once for the whole request', flush=True)
-        decisions = _cache_inventory(hdc, rows)
+        print('board-serial: ' + ('reusing owned cache by extent; cached payload SHA256 is disabled'
+            if fast else 'checking target, draft and embedding cache SHA256 once for the whole request'), flush=True)
+        decisions = _cache_inventory(hdc, rows, verify_sha256=False) if fast else _cache_inventory(hdc, rows)
+        state['static_cache_validation'] = 'OWNED_CACHE_EXTENT_ONLY_NEW_UPLOAD_SHA256' if fast else 'FULL_SHA256'
+
         _checkpoint(out, state, 'static-cache-inspected', uncertain=False)
         _upload_cached(hdc, out, state, rows, decisions, manifest)
         target_model = next(row['remote'] for row in rows if row['kind'] == 'target' and row['record'] == manifest['target_compiled']['omc'])
         draft_model = draft / 'model/model.omc'; attempt_model = board / 'draft-model.omc'
-        _mutate(hdc, out, state, _regular_guard(draft_model, size=manifest['draft']['model_source']['bytes'])
+        _mutate(hdc, out, state, _regular_guard(draft_model, size=manifest['draft']['model_source']['bytes'], metadata_only=fast)
             + ' && ln ' + shlex.quote(str(draft_model)) + ' ' + shlex.quote(str(attempt_model))
             + ' && test ' + shlex.quote(str(draft_model)) + ' -ef ' + shlex.quote(str(attempt_model)), 'link-cached-draft-model')
         abi = manifest['draft']['abi']; uploads.append({'local': abi['path'], 'remote': 'draft-abi.tsv',

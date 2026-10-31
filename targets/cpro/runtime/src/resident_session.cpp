@@ -27,7 +27,7 @@ struct ResidentSession::Impl {
   ResidentSessionEvidence record;
   std::vector<std::size_t> input_sizes,output_sizes;
   std::vector<HiaiTensorStorage> storage;
-  bool load_attempted=false;
+  bool load_attempted=false, diagnostics=true;
 
   std::vector<HiaiTensorStorage> CurrentStorage() const {
     auto result=target_v1?target_v1->tensor_storage():target->tensor_storage();
@@ -110,31 +110,35 @@ struct ResidentSession::Impl {
       for(std::size_t i=0;i<count;++i)
         if(inputs[i].size()!=(is_target?input_sizes[i]:HiaiTensorBytes(kDraftInputs[i])))
           throw std::invalid_argument("resident input differs from exact bound byte extent");
-      VerifyStorage();
+      if(diagnostics)VerifyStorage();
       for(std::size_t i=0;i<count;++i) {
         if(is_target){if(target_v1)target_v1->SetInput(i,inputs[i]);else target->SetInput(i,inputs[i]);}else draft->SetInput(i,inputs[i]);
       }
-      VerifyStorage();
+      if(diagnostics)VerifyStorage();
       if(is_target){if(target_v1)target_v1->Execute();else target->Execute();}else draft->Execute();
-      VerifyStorage();
+      if(diagnostics)VerifyStorage();
       ResidentRunResult result;
-      const auto outputs=is_target?output_sizes.size():kDraftOutputs.size();
+      const auto outputs=is_target?output_sizes.size():(diagnostics?kDraftOutputs.size():1);
       for(std::size_t i=0;i<outputs;++i) {
         auto bytes=is_target?(target_v1?target_v1->CopyOutput(i):target->CopyOutput(i)):draft->CopyOutput(i);
         if(bytes.size()!=(is_target?output_sizes[i]:HiaiTensorBytes(kDraftOutputs[i])))
           throw std::runtime_error("resident copied output extent changed");
         result.outputs.push_back(std::move(bytes));
       }
-      VerifyStorage();
-      result.io_diagnostic=is_target?(target_v1?target_v1->io_diagnostic():target->io_diagnostic()):draft->io_diagnostic();
-      if(!result.io_diagnostic.process_called || result.io_diagnostic.inputs.size()!=count ||
-          result.io_diagnostic.outputs.size()!=outputs)
-        throw std::runtime_error("resident copied IO diagnostic is incomplete");
-      for(const auto& d:result.io_diagnostic.inputs)
-        if(!d.readback_matches_source)throw std::runtime_error("resident input readback differs");
-      for(const auto& d:result.io_diagnostic.outputs)
-        if(!d.checked_after_process || !d.object_same || !d.buffer_same)
-          throw std::runtime_error("resident output storage identity differs");
+      if(diagnostics)VerifyStorage();
+      if(diagnostics) {
+        result.io_diagnostic=is_target?(target_v1?target_v1->io_diagnostic():target->io_diagnostic()):draft->io_diagnostic();
+        if(!result.io_diagnostic.process_called || result.io_diagnostic.inputs.size()!=count ||
+            result.io_diagnostic.outputs.size()!=outputs)
+          throw std::runtime_error("resident copied IO diagnostic is incomplete");
+        for(const auto& d:result.io_diagnostic.inputs)
+          if(!d.readback_matches_source)throw std::runtime_error("resident input readback differs");
+        for(const auto& d:result.io_diagnostic.outputs)
+          if(!d.checked_after_process || !d.object_same || !d.buffer_same)
+            throw std::runtime_error("resident output storage identity differs");
+      }
+      result.api_us=is_target?(target?target->last_api_us():0):draft->last_api_us();
+      (is_target?record.target_api_us:record.draft_api_us)+=result.api_us;
       result.wall_ms=Milliseconds(begin);total+=result.wall_ms;
       if(is_target){++record.target_runs;if(target_v1)record.target_v1_lifecycle=target_v1->lifecycle();else record.target_lifecycle=target->lifecycle();}
       else {++record.draft_runs;if(record.model_load_api!="file-v2")record.draft_v1_lifecycle=draft->legacy_lifecycle();}
@@ -159,6 +163,8 @@ void ResidentSession::Load(const ResidentSessionConfig& config) {
     throw HiaiRuntimeError(impl_->record.stage,"resident session Load is allowed exactly once");
   impl_->load_attempted=true;auto& r=impl_->record;r.status="LOADING";r.stage="VALIDATE_SESSION";
   try {
+    impl_->diagnostics=config.diagnostics;
+    if(!config.diagnostics && r.model_load_api!="target-v2-draft-v1")throw std::invalid_argument("compact memory requires mixed runtime");
     if(config.model_load_api!=r.model_load_api)throw std::invalid_argument("resident configured API differs from session policy");
     if(config.target_inputs.size()!=89 || config.target_outputs.size()!=82 || !config.timeout_ms ||
         !config.target_model.is_absolute() || !config.draft_model.is_absolute() || config.runtime_version.empty())
@@ -171,7 +177,7 @@ void ResidentSession::Load(const ResidentSessionConfig& config) {
         config.target_weight_directory,config.runtime_version,config.target_inputs,config.target_outputs,config.timeout_ms,r.target_model_name,&r.target_v1_lifecycle);
       else impl_->target=std::make_unique<HiaiOriginalTargetExecutor>(config.target_model,
         config.target_weight_directory,config.runtime_version,config.target_inputs,config.target_outputs,r.target_model_name,&r.target_lifecycle,
-        r.model_load_api=="target-v2-draft-v1"?HiaiOriginalTargetCleanupPolicy::ManagerDeinitOnly:HiaiOriginalTargetCleanupPolicy::ExplicitWeightsBeforeManager);
+        r.model_load_api=="target-v2-draft-v1"?HiaiOriginalTargetCleanupPolicy::ManagerDeinitOnly:HiaiOriginalTargetCleanupPolicy::ExplicitWeightsBeforeManager,config.diagnostics);
     } catch(...){r.target_load_ms+=Milliseconds(start);
       const auto& error=r.model_load_api=="legacy-v1-mixed"?r.target_v1_lifecycle.cleanup_error:r.target_lifecycle.cleanup_error;
       if(!error.empty())r.cleanup_error="target construction: "+error;
@@ -181,7 +187,7 @@ void ResidentSession::Load(const ResidentSessionConfig& config) {
     r.stage="DRAFT_LOAD";++r.draft_load_attempts;start=Clock::now();
     try {impl_->draft=std::make_unique<HiaiStatefulExecutor>(config.draft_model,config.runtime_version,
         kDraftInputs,kDraftOutputs,config.timeout_ms,false,0,true,r.model_load_api=="file-v2"?"file-v2":"legacy-buffer",r.draft_model_name,&r.draft_v1_lifecycle,
-        impl_->target_v1?impl_->target_v1->tensor_storage():impl_->target->tensor_storage());}
+        impl_->target_v1?impl_->target_v1->tensor_storage():impl_->target->tensor_storage(),config.diagnostics);}
     catch(...){r.draft_load_ms+=Milliseconds(start);if(!r.draft_v1_lifecycle.cleanup_error.empty())r.cleanup_error+=" draft construction: "+r.draft_v1_lifecycle.cleanup_error;throw;}
     r.draft_load_ms+=Milliseconds(start);++r.draft_loads;
     if(r.model_load_api!="file-v2")r.draft_v1_lifecycle=impl_->draft->legacy_lifecycle();

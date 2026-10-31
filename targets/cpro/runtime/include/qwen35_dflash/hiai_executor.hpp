@@ -174,7 +174,8 @@ class HiaiStatefulExecutor final {
                       const std::string& model_load_api = "legacy-buffer",
                       const std::string& resident_model_name = "",
                       HiaiLegacyLifecycle* constructor_failure_snapshot = nullptr,
-                      const std::vector<HiaiTensorStorage>& disjoint_from = {});
+                      const std::vector<HiaiTensorStorage>& disjoint_from = {},
+                      bool diagnostics = true);
   ~HiaiStatefulExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
   void Execute();
@@ -182,6 +183,7 @@ class HiaiStatefulExecutor final {
   // Explicit API-specific shutdown; idempotent even on SDK failure.
   // Destructor cleanup is best-effort and never retries this call.
   void Close();
+  std::uint64_t last_api_us() const noexcept;
   const std::string& runtime_version() const noexcept;
   const HiaiIoDiagnostic& io_diagnostic() const noexcept;
   const std::string& runtime_stage() const noexcept;
@@ -280,7 +282,8 @@ class HiaiOriginalTargetExecutor final {
                             const std::string& resident_model_name = "",
                             HiaiOriginalTargetLifecycle* constructor_failure_snapshot = nullptr,
                             HiaiOriginalTargetCleanupPolicy cleanup_policy =
-                                HiaiOriginalTargetCleanupPolicy::ExplicitWeightsBeforeManager);
+                                HiaiOriginalTargetCleanupPolicy::ExplicitWeightsBeforeManager,
+                            bool diagnostics = true);
   ~HiaiOriginalTargetExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
   void Execute();
@@ -289,6 +292,7 @@ class HiaiOriginalTargetExecutor final {
   // unload keeps called=false/status=-1; manager DeInit has no return Status.
   // Exceptions and returned failures are reported, never retried.
   void Close();
+  std::uint64_t last_api_us() const noexcept;
   const std::string& runtime_version() const noexcept;
   const std::string& runtime_stage() const noexcept;
   const HiaiIoDiagnostic& io_diagnostic() const noexcept;

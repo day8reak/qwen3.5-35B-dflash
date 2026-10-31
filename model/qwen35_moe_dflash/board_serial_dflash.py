@@ -246,6 +246,8 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
             external_weight_release='NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY',
             orchestration='BOARD_LOCAL_SINGLE_PROCESS_V2_PREFILL_TARGET_V1_DRAFT',
             model_residency='REQUESTED_V2_PREFILL_ONCE_V2_DECODE_AND_V1_DRAFT_LOADED_ONCE_UNVALIDATED')
+    if resident and not dump:
+        manifest['runtime_profile'] = 'compact-memory-v1'
     save_json(out / 'manifest.json', manifest)
     (out / 'manifest.sha256').write_text(sha256_file(out / 'manifest.json') + '\n')
     return validate_prepared(out)
@@ -266,6 +268,7 @@ def validate_prepared(directory):
         raise ValueError('prepared prompt IDs are invalid')
     _options(len(prompt), manifest['max_new_tokens'], manifest['max_proposals_per_round'],
              manifest['minimum_draft_rounds'], manifest['timeout_seconds'], manifest['lock_wait_seconds'])
+    compact_memory_mode(manifest)
     # Existing prepared requests predate the switch and retain their full dump.
     # Recovery never changes a request's original retention/validation policy.
     if type(manifest.get('dump', True)) is not bool:
@@ -312,6 +315,16 @@ def _field(value):
     return value
 
 
+def compact_memory_mode(manifest):
+    profile = manifest.get('runtime_profile')
+    if profile is None:
+        return False  # Historical requests keep their original diagnostics and recovery scope.
+    if (profile != 'compact-memory-v1' or manifest.get('dump') is not False
+            or manifest.get('execution_mode') != 'resident-mixed'):
+        raise ValueError('compact-memory-v1 requires explicit mixed residency and dump=false')
+    return True
+
+
 def make_config(manifest, remote_paths):
     """Serialize only explicit validated native ABI rows, never inferred order."""
     base = manifest['target_binding']['base_plan']
@@ -319,6 +332,8 @@ def make_config(manifest, remote_paths):
     if type(dump) is not bool:
         raise ValueError('prepared dump mode must be boolean')
     lines = ['QWEN35_BOARD_SERIAL\t1']
+    if compact_memory_mode(manifest):
+        lines.append('runtime_profile\tcompact-memory-v1')
     files = {'target_model': manifest['target_model'], 'draft_model': manifest['draft']['model_source'],
         'draft_abi': manifest['draft']['abi'],
         'weight_table': manifest['tables']['weight'], 'scale_table': manifest['tables']['scale']}
@@ -396,6 +411,8 @@ def run_board_serial_dflash(*, output, apply=False, detach=False, **options):
         manifest = prepare_board_serial(output=out / 'prepared', **options)
         result['prepared'] = manifest['output']
         result['dump'] = manifest.get('dump', True)
+        if compact_memory_mode(manifest):
+            result['runtime_profile'] = manifest['runtime_profile']
         result['prompt_ingestion'] = manifest['prompt_ingestion']
         if manifest.get('execution_mode') in {'resident-v2', 'resident-v1', 'resident-mixed'}:
             result['execution_mode'] = manifest['execution_mode']

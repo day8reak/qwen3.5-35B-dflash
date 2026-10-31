@@ -28,7 +28,7 @@ def main(argv=None):
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--detach', action='store_true', help='Return after launch; the board finishes autonomously, then use --recover')
     parser.add_argument('--dump', action='store_true', default=None,
-        help='Retain debug tensors/receipts on board and retrieve detailed evidence; default returns final tokens/status only')
+        help='Retain debug tensors/receipts on board and retrieve detailed evidence; default uses in-memory state feedback without tensor diagnostics and returns final tokens/timing only')
     parser.add_argument('--resident', action='store_true', default=None,
         help='Required for new runs: V2 prefill once, resident V2 decode and V1 embedded draft; historical policies are recover-only')
     args = parser.parse_args(argv)
@@ -61,7 +61,8 @@ def main(argv=None):
             'lock_state', 'error', 'next', 'prepared', 'board_result')
     keys += ('dump', 'retrieval_mode', 'evidence_scope', 'acceptance', 'phase_latency', 'supervisor_timing', 'prompt_ingestion')
     keys += ('execution_mode', 'model_load_api', 'model_load_apis', 'resident_lifecycle', 'resident_memory', 'target_lifecycle_policy')
-    keys += ('external_weight_release',)
+    keys += ('external_weight_release', 'runtime_profile', 'native_api_latency',
+             'diagnostics', 'intermediate_tensor_io', 'startup_payload_validation')
     keys += ('execution_failure_stage', 'resident_failure_stage', 'prefill_failure_stage', 'prefill_lifecycle')
     print(json.dumps({key: result[key] for key in keys if key in result}, ensure_ascii=False, allow_nan=False), flush=True)
     return 0 if result.get('status') in {'BOARD_SERIAL_DFLASH_PLANNED', 'BOARD_SERIAL_DFLASH_STARTED',

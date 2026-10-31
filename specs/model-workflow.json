@@ -3,7 +3,7 @@
   "updated": "2026-10-31",
   "active_phase": "integration",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
-  "run_id": "20261031T003112Z-20154-6e73a8",
+  "run_id": "20261031T004021Z-20576-9a76bb",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -5768,6 +5768,14 @@
     "user_authorization": "2026-10-31 async reply: 允许混合接口，优先推进常驻（推荐）",
     "prior_candidate": "specs/resident-v1-file-buffer-candidate.json",
     "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
-    "next_action": "Isolate prefill and first decode differences; implement bounded capture and ordinary target baseline. Repeat stability and independent weight release remain pending."
+    "next_action": "Run compact-memory-v1 after host validation per docs/board-resident-fast-path.md, then return to first-decode numerical divergence and repeat stability.",
+    "compact_memory_task": {
+      "runtime_profile": "compact-memory-v1",
+      "device_validation": "PENDING_USER_RUN",
+      "document": "docs/board-resident-fast-path.md",
+      "user_request": "Remove dump=false diagnostics, intermediate tensor files, repeated payload hashes; report isolated SDK timings",
+      "numerical_divergence": "REMAINS_UNRESOLVED",
+      "host_validation": "specs/board-resident-fast-host-validation.json"
+    }
   }
 }

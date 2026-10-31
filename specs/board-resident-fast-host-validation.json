@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-board-resident-fast-host-validation",
+  "updated": "2026-10-31",
+  "run_id": "20261031T004021Z-20576-9a76bb",
+  "source_base_commit": "91d581c2b81cb4048ccd73261779d9b2701b5ce2",
+  "status": "HOST_VALIDATED_COMPACT_MEMORY_DEVICE_PENDING",
+  "runtime_profile": "compact-memory-v1",
+  "execution_mode": "resident-mixed",
+  "model_load_api": "target-v2-draft-v1",
+  "model_compilation": "NOT_RUN",
+  "assistant_device_access": "NONE_USER_REQUEST",
+  "device_performance": "NOT_RUN",
+  "numerical_validation": "NOT_RUN",
+  "original_models_and_weights": "UNCHANGED_FULL40_TARGET_FULL6_DRAFT",
+  "changes": [
+    "80 state tensors and features stay in memory across prefill/decode; no intermediate tensor files.",
+    "Skip source/readback SHA256, repeated storage-overlap scans, FP16 diagnostics and per-token receipts/logging.",
+    "Map embedding tables once; only read back draft top1, retaining original model output allocation and zero initialization.",
+    "Reuse owned caches by type/extent; no full cached payload hash. Newly uploaded data still validated once.",
+    "Report isolated synchronous Run/Process wall time separately from wrapper/load/close wall time."
+  ],
+  "validation": [
+    {
+      "path": "unit-final.xml",
+      "sha256": "866f64fe43f0926cdaa2e8d1ed4006071549d020a9b324759503ca9948fd0211",
+      "passed": 191,
+      "note": "191 unit scenarios before adding fast deployment variant"
+    },
+    {
+      "path": "deployment.xml",
+      "sha256": "e372a5e484a93ec1d7aa2e9e19ca05bf6c740e6a2aa3050e3894a7b4487f1021",
+      "passed": 3,
+      "note": "3 deployment scenarios, including the added variant; 2 repeated checks"
+    },
+    {
+      "path": "fast-final.xml",
+      "sha256": "e32b1f3191feb6949a76982e19eb35d7a5720d48270226686f3ef5960a05e141",
+      "passed": 6,
+      "note": "6 final fast-path scenarios before explicit memory header include"
+    },
+    {
+      "path": "fast-include-final.xml",
+      "sha256": "69c72188a115d38a829a583cb4d8ed1bf416cd1699f0905f84caafffeca728ea",
+      "passed": 6,
+      "note": "6 final fast-path scenarios after include-only rebuild"
+    },
+    {
+      "path": "integration.log",
+      "sha256": "9da6247d28f867604fe263abc2b3add3e86a88c3d948b54133190e689ead7d8c",
+      "passed": 13
+    },
+    {
+      "path": "ctest.log",
+      "sha256": "1f44bdcf414a95d9b31d1712e66e8b1f7c5a66d495223920f44fa814984ba168",
+      "passed": 18
+    },
+    {
+      "path": "build-final.log",
+      "sha256": "6b2193d96fcd320793131d5e56e503164bbf3e9ba49f9839d105520196f347c9",
+      "passed": null
+    }
+  ],
+  "unique_unit_scenarios_passed": 192,
+  "unique_mixed_integration_scenarios_passed": 13,
+  "native_ctest_groups_passed": 18,
+  "counting_policy": "Unit191 plus one newly added fast deployment variant; other deployment and final fast checks are reruns. Native18 groups include62 serial and19 protocol subcases, not additional independent groups.",
+  "final_include_change": "Explicit <memory> include added after native18 regression. Mixed runner rebuilt; all6 compact scenarios passed again. No behavior changed.",
+  "final_source_sha256": {
+    "model/qwen35_moe_dflash/board_serial_dflash.py": "544bc12491960b6c6338cd5f37886c2cf1a74be650f8207633b5d76cd57bb5bb",
+    "model/qwen35_moe_dflash/board_serial_transport.py": "af75540adee308227311ce2cd96d3774cdabd17a130d439b5fbc0386b9c50104",
+    "targets/cpro/runtime/include/qwen35_dflash/hiai_executor.hpp": "9cad92c6c15767c13c0495ee6993fcc16799f52f14d4ab6f5a818a824213e18d",
+    "targets/cpro/runtime/include/qwen35_dflash/resident_session.hpp": "7260407fc53226d4d3e751bdc1c6702242b3e5dbb9d4ba4831e3e40b8053a9e3",
+    "targets/cpro/runtime/src/board_serial_main.cpp": "01f7ca59070185c3b8dda1ed571830b7bf739912df6529816b153f78932481eb",
+    "targets/cpro/runtime/src/hiai_executor.cpp": "57432bbd9190b0e67ffe4195eb0f7fcdb8ddbc844b5fd32912b69d08cc227fbb",
+    "targets/cpro/runtime/src/resident_session.cpp": "20ee87ac8b89039d63cbab85b03cf1e9936896f040c8386d307364c9018f1b81",
+    "targets/cpro/runtime/tests/test_resident_mixed.cpp": "8a3998d7b71c6252009a625128a28ed1286c20e6bd0b7421bc0fed24b26d576b",
+    "targets/cpro/scripts/run_board_serial_dflash.py": "7f40d17c563ecbd33f4492b193873804f4151c281df6bbd99d8be5b4fd481b33",
+    "tests/test_board_serial_dflash.py": "3ac750407952cf18c3687b773eecc583666c1a1e44c4b9c26897ea770e2f59e9",
+    "tests/test_board_serial_integration.py": "4e748e63d4ec3f28cc308ab87301185e04971578c69c0b85643d100252fa55c5",
+    "tests/test_board_serial_transport.py": "279de8a131bdce80b9539aad402111c8c8c6ba556fcec37055e84cd9b6529c21"
+  },
+  "host_fake_binary": {
+    "path": "out/fast-build/board_resident_mixed_hiai_fake",
+    "sha256": "b8fc0e6198fc1d93d37cb3629b6f77d84a452c2924ed63b65b55da6160cf6497",
+    "scope": "HOST_FAKE_SDK_NOT_OHOS_SELECTED_SDK"
+  },
+  "coverage": [
+    "actual C++ supervisor + resident session + SDK adapters; permuted output slots exercise all80 mapped state owners",
+    "debug, historical compact and new memory compact produce the same deterministic fake-model tokens",
+    "new memory path leaves only loop.json, progress.json and retrieval-manifest.tsv",
+    "prefill load/run/close and target weight load/close failures retain real outcomes; direct session adds fast Run failure",
+    "final token recovery through local filesystem HDC double validates same attempt with no relaunch",
+    "actual POSIX extent-only cache check accepts correct extent without SHA read and rejects wrong extent"
+  ],
+  "limitations": [
+    "No actual device access, selected DDK compile/link or performance claim.",
+    "Same-length mutation of existing cached payloads is intentionally not detected in fast mode.",
+    "SDK input/output copies and output zero initialization remain; this is not zero-copy.",
+    "Prior resident/nonresident numerical divergence and independent external weight release remain unresolved."
+  ],
+  "command_document": "docs/board-resident-fast-path.md",
+  "next_device_request": "dflash-board-resident-fast8-run",
+  "next_recovery": "dflash-board-resident-fast8-recovery"
+}

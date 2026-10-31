@@ -461,11 +461,22 @@ def enable_resident_mixed(case):
     (case['root'] / 'expected-prepared-manifest.json').write_text(json.dumps(manifest, indent=2))
 
 
-@pytest.mark.parametrize('dump', [True, False])
-def test_actual_mixed_resident_prefill_and_complete_generation(tmp_path, mixed_native_programs, dump, monkeypatch):
+def enable_compact_memory(case):
+    assert case['manifest']['dump'] is False
+    case['manifest']['runtime_profile'] = 'compact-memory-v1'
+    text = case['config'].read_text()
+    case['config'].write_text(text.replace('QWEN35_BOARD_SERIAL\t1\n',
+        'QWEN35_BOARD_SERIAL\t1\nruntime_profile\tcompact-memory-v1\n', 1))
+
+
+@pytest.mark.parametrize('profile', ['debug', 'historical-compact', 'compact-memory'])
+def test_actual_mixed_resident_prefill_and_complete_generation(tmp_path, mixed_native_programs, profile, monkeypatch):
+    dump = profile == 'debug'
     from qwen35_moe_dflash.board_serial_transport import validate_retrieved_loop
     case = make_case(tmp_path / ('mixed-debug' if dump else 'mixed-compact'), mixed_native_programs, dump=dump)
-    enable_resident_mixed(case); trace = case['root'] / 'sdk.trace'
+    enable_resident_mixed(case)
+    if profile == 'compact-memory': enable_compact_memory(case)
+    trace = case['root'] / 'sdk.trace'
     process = execute(case, native_trace=trace)
     assert process.returncode == 0, (process.stdout, process.stderr)
     loop = validate_retrieved_loop(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
@@ -487,15 +498,28 @@ def test_actual_mixed_resident_prefill_and_complete_generation(tmp_path, mixed_n
     assert not any('deinit-weights' in event for event in events)
     assert loop['phase_latency']['prefill']['native_api'] == loop['phase_latency']['decode']['native_api'] == 'Run'
     assert loop['phase_latency']['draft']['native_api'] == 'Process'
+    if profile == 'compact-memory':
+        assert set(p.name for p in case['output'].iterdir()) == {'loop.json', 'progress.json', 'retrieval-manifest.tsv'}
+        assert loop['intermediate_tensor_io'] == 'NONE_MEMORY_ONLY'
+        assert loop['runtime_profile'] == 'compact-memory-v1'
+        assert 'startup-hash-begin' not in process.stdout
+        assert 'resident-run-start' not in process.stdout
+        assert 'INPUT_BINDING' not in process.stderr
+    assert loop['native_api_latency']['timing_scope'] == 'SYNCHRONOUS_API_WALL_NOT_NPU_ONLY'
+    for name, calls in [('prefill', 1), ('decode', 8), ('draft', loop['counts']['draft_native_calls'])]:
+        assert loop['native_api_latency'][name]['calls'] == calls
+        assert loop['native_api_latency'][name]['total_us'] > 0
     if not dump:
         _recover_actual_mixed_case(case, loop, 0, monkeypatch)
 
 
+@pytest.mark.parametrize('fast', [False, True])
 @pytest.mark.parametrize('fault,expected_prefill', [('v2-prefill-init', 0), ('v2-prefill-run', 0),
     ('v2-prefill-deinit', 1), ('v2-target-init-weights', 1), ('v2-target-deinit', 1)])
-def test_actual_mixed_failure_preserves_lifecycle_and_commits(tmp_path, mixed_native_programs, fault, expected_prefill, monkeypatch):
+def test_actual_mixed_failure_preserves_lifecycle_and_commits(tmp_path, mixed_native_programs, fault, expected_prefill, monkeypatch, fast):
     from qwen35_moe_dflash.board_serial_transport import validate_retrieved_tokens
     case = make_case(tmp_path / fault, mixed_native_programs, dump=False); enable_resident_mixed(case)
+    if fast: enable_compact_memory(case)
     process = execute(case, native_fault=fault)
     assert process.returncode == 1, (process.stdout, process.stderr)
     loop = validate_retrieved_tokens(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',

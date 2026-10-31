@@ -5,9 +5,9 @@
   "plan_document": "docs/dflash-delivery-plan.md",
   "current_commands": "docs/current-status.md",
   "overall_status": "in_progress",
-  "active_phase": "P1",
+  "active_phase": "P5",
   "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
-  "user_priority": "User explicitly authorizes mixed APIs to prioritize residency: original prefill/decode V2, embedded full-six-layer draft V1. All loops remain board-local; unchanged OMCs and weights. New manager-only V2 cleanup is an explicit unvalidated experiment, not a suppressed error.",
+  "user_priority": "User explicitly requests dump=false disable tensor validation and intermediate board file IO for practical speed. New mixed-resident fast requests use memory feedback, extent-only owned-cache reuse, and isolated synchronous Run/Process timing; no model or weight changes.",
   "status_policy": {
     "allowed": [
       "pending",
@@ -324,11 +324,11 @@
     }
   },
   "next_action": {
-    "phase": "P1",
-    "type": "implement_first_decode_comparison_and_target_baseline",
-    "implementation_required": true,
-    "command_document": "docs/current-status.md",
-    "note": "混合常驻执行已由用户实机完成。先绑定旧/新prepared身份并隔离prefill状态及首decode89输入/82输出差异；补有界捕获与普通target-only同runner基线。旧/新第二token12/0，第一次draft Process尚未发生；不改模型或先改draft精度。P5数值等价、重复稳定性和内存验收仍待完成。"
+    "phase": "P5",
+    "type": "user_run_compact_memory_candidate",
+    "implementation_required": false,
+    "command_document": "docs/board-resident-fast-path.md",
+    "note": "User-prioritized runtime change; user runs dflash-board-resident-fast8-run/recovery, compares isolated synchronous API, wrapper and total timing; then return to unresolved first-decode numerical divergence."
   },
   "last_actual_execution": {
     "schema_version": 1,
@@ -678,7 +678,7 @@
     {
       "id": "P1",
       "title": "普通target基线与原参考数值收敛",
-      "status": "in_progress",
+      "status": "pending",
       "depends_on": [
         "P0"
       ],
@@ -796,8 +796,8 @@
         0.5,
         2
       ],
-      "next_action_type": "validate_first_decode_equivalence_then_repeat_stability",
-      "next_action": "单次各加载一次的常驻闭环已完成。与P1并行追首decode差异；再完成同输入token/状态对照、重复执行和释放稳定性。",
+      "next_action_type": "user_run_compact_memory_candidate",
+      "next_action": "Run the host-tested compact-memory-v1 candidate on device; retain numerical equivalence, repeat stability and independent weight-release gaps.",
       "pass_conditions": [
         "two-model residency feasibility measured",
         "native loop same tokens/state as baseline",
@@ -815,7 +815,9 @@
         "docs/board-resident-validation.md",
         "specs/resident-v1-host-validation.json",
         "specs/resident-mixed-host-validation.json",
-        "specs/board-resident-mixed-first-completion.json"
+        "specs/board-resident-mixed-first-completion.json",
+        "docs/board-resident-fast-path.md",
+        "specs/board-resident-fast-host-validation.json"
       ],
       "last_error": null,
       "numerical_acceptance_depends_on": [

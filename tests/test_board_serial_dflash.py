@@ -236,6 +236,7 @@ def test_new_mixed_preparation_pins_named_abis_and_keeps_source_models_read_only
     assert result['status'] == 'BOARD_SERIAL_DFLASH_PLANNED', result
     manifest = json.loads((Path(result['prepared']) / 'manifest.json').read_text())
     assert selected == [('target', 'file-v2'), ('prefill', 'file-v2')]
+    assert manifest['runtime_profile'] == 'compact-memory-v1'
     assert manifest['execution_mode'] == 'resident-mixed'
     assert manifest['target_lifecycle_policy'] == 'v2-target-v1-draft-resident-v1'
     assert manifest['model_load_api'] == 'target-v2-draft-v1'
@@ -268,6 +269,8 @@ def test_v1_wire_uses_native_abi_and_no_v2_tool_or_legacy_child_runner(tmp_path)
         model_load_api=job.MIXED_MODEL_LOAD_API, model_load_apis=dict(job.MIXED_MODEL_LOAD_APIS))
     new_wire = job.make_config(mixed, paths)
     assert b'execution_mode\tresident-mixed\n' in new_wire
+    fast_wire = job.make_config(dict(mixed, dump=False, runtime_profile='compact-memory-v1'), paths)
+    assert fast_wire.startswith(b'QWEN35_BOARD_SERIAL\t1\nruntime_profile\tcompact-memory-v1\n')
     assert b'target_lifecycle_policy\tv2-target-v1-draft-resident-v1\n' in new_wire
     assert b'target_tool\t' not in new_wire and b'draft_runner\t' not in new_wire
     old = dict(manifest, target_lifecycle_policy=job.HISTORICAL_V1_LIFECYCLE_POLICY)
@@ -351,3 +354,17 @@ def test_cli_pins_dump_mode_for_new_attempts(tmp_path, monkeypatch, capsys, flag
     assert summary['phase_latency']['prompt_ingest']['mean_ms'] == 10
     assert summary['supervisor_timing']['total_wall_ms'] == 100
     assert 'internal_payload' not in summary
+
+
+@pytest.mark.parametrize('manifest', [
+    dict(runtime_profile='unknown', dump=False, execution_mode='resident-mixed'),
+    dict(runtime_profile='compact-memory-v1', dump=True, execution_mode='resident-mixed'),
+    dict(runtime_profile='compact-memory-v1', dump=False, execution_mode='resident-v2'),
+])
+def test_fast_profile_cannot_silently_change_historical_execution(manifest):
+    with pytest.raises(ValueError, match='compact-memory-v1'):
+        job.compact_memory_mode(manifest)
+
+
+def test_historical_compact_remains_diagnostic():
+    assert job.compact_memory_mode(dict(dump=False, execution_mode='resident-mixed')) is False

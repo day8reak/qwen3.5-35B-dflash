@@ -103,7 +103,7 @@ def prepared_request(tmp_path, monkeypatch):
             raise AssertionError('this test does not retrieve payloads')
     monkeypatch.setattr(transport, 'Hdc', FakeHdc)
     observed_inventory = []
-    def cached(hdc, rows):
+    def cached(hdc, rows, **kwargs):
         observed_inventory.append(deepcopy(rows))
         return {row['remote']: 'OK' for row in rows}
     monkeypatch.setattr(transport, '_cache_inventory', cached)
@@ -835,7 +835,8 @@ def test_prefill_cache_miss_uses_strict_prefill_compiler_record(prepared_request
         manifest['prefill']['compiled'], {'smoke_proof': manifest['prefill']['base_plan']})]
 
 
-def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_relaunches(prepared_request, tmp_path, monkeypatch):
+@pytest.mark.parametrize("fast", [False, True])
+def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_relaunches(prepared_request, tmp_path, monkeypatch, fast):
     root, manifest, FakeHdc, _ = prepared_request
     _enable_prefill_request(root, manifest, tmp_path)
     abi = _write(root / 'resident-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n')
@@ -843,6 +844,7 @@ def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_rela
     manifest.update(execution_mode='resident-mixed', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
         model_load_api=preparation.MIXED_MODEL_LOAD_API, model_load_apis=dict(preparation.MIXED_MODEL_LOAD_APIS),
         resident_abi=abi, prefill_abi=prefill_abi)
+    if fast: manifest.update(dump=False, runtime_profile='compact-memory-v1')
     (root / 'manifest.json').write_text(json.dumps(manifest))
     old = transport._build_payloads; selected = []
     def build(out, timeout, *, resident=False):
@@ -858,6 +860,11 @@ def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_rela
     started = transport.execute_board_serial(root, tmp_path / 'execution', detach=True)
     assert started['status'] == 'BOARD_SERIAL_DFLASH_STARTED', started.get('error')
     assert selected == ['resident-mixed'] and started['execution_mode'] == 'resident-mixed'
+    if fast:
+        assert started['runtime_profile'] == 'compact-memory-v1'
+        assert started['static_cache_validation'] == 'OWNED_CACHE_EXTENT_ONLY_NEW_UPLOAD_SHA256'
+        assert started['board_disk_budget']['retained_target_input_bytes'] == 0
+        assert started['board_disk_budget']['retained_target_output_bytes'] == 0
     assert any(local == abi['path'] and remote.endswith('/resident-abi.tsv') for local, remote in FakeHdc.instances[0].sends)
     assert any(local == prefill_abi['path'] and remote.endswith('/prefill-abi.tsv') for local, remote in FakeHdc.instances[0].sends)
     assert not any('TOOL_BYTES' in command or 'sha256sum /data/local/tmp/tools/tool' in command
@@ -1255,3 +1262,20 @@ def test_v1_target_and_prefill_format_must_match_bound_raw_enum():
     declaration['inputs'] = [dict(desc, raw_format=9)]
     with pytest.raises(ValueError, match='shape/extent'):
         transport._v1_observed_abi(receipt, declaration)
+
+
+def test_fast_cache_does_not_read_payloads_but_rejects_wrong_extents(tmp_path):
+    payload = tmp_path / 'payload.bin'
+    payload.write_bytes(b'content')
+    row = {'remote': str(payload), 'bytes': 7, 'sha256': '0' * 64}
+    class LocalShell:
+        timeout = 30
+        def shell(self, command, label, **kwargs):
+            assert 'sha256sum' not in command
+            result = subprocess.run(['sh', '-c', command], capture_output=True, text=True)
+            if result.returncode: raise ValueError('cache extent/type failure')
+            return 0, result.stdout
+    assert transport._cache_inventory(LocalShell(), [row], verify_sha256=False) == {str(payload): 'OK'}
+    payload.write_bytes(b'changed-size')
+    with pytest.raises(ValueError, match='extent/type'):
+        transport._cache_inventory(LocalShell(), [row], verify_sha256=False)

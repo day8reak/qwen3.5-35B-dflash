@@ -8,11 +8,12 @@ struct ResidentSessionConfig {
   std::vector<HiaiBoundRuntimeTensor> target_inputs, target_outputs;
   std::uint32_t timeout_ms = 300000;
   std::string model_load_api = "file-v2";
+  bool diagnostics = true;
 };
 struct ResidentRunResult {
   std::vector<std::vector<std::uint8_t>> outputs;
   HiaiIoDiagnostic io_diagnostic;
-  std::uint64_t wall_ms = 0;
+  std::uint64_t wall_ms = 0, api_us = 0;
 };
 struct ResidentSessionEvidence {
   std::string stage = "NOT_LOADED", status = "NOT_LOADED", model_load_api = "file-v2";
@@ -22,6 +23,7 @@ struct ResidentSessionEvidence {
   std::uint64_t target_run_attempts = 0, target_runs = 0, draft_run_attempts = 0, draft_runs = 0;
   std::uint64_t target_close_calls = 0, draft_close_calls = 0;
   std::uint64_t target_load_ms = 0, draft_load_ms = 0, target_run_ms = 0, draft_run_ms = 0, close_ms = 0;
+  std::uint64_t target_api_us = 0, draft_api_us = 0;
   bool closed = false, poisoned = false;
   HiaiOriginalTargetLifecycle target_lifecycle;
   HiaiLegacyLifecycle target_v1_lifecycle, draft_v1_lifecycle;
