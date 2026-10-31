@@ -132,7 +132,7 @@ def _active_processes(root):
         # Ignore editors and this organizer; model runners/compilers retain their inputs.
         scripts = [v.decode(errors='replace') for v in args[:3]]
         if not any(('targets/cpro/scripts/' in a or 'targets/cpro/tools/' in a) and Path(a).name.startswith(
-                ('run_', 'compile_', 'export_', 'profile_', 'prepare_', 'build_')) for a in scripts):
+                ('run_', 'compile_', 'export_', 'profile_', 'prepare_', 'build_', 'validate_')) for a in scripts):
             continue
         if any(str(root).encode() in a for a in args):
             found.append(int(path.parent.name))
@@ -177,7 +177,8 @@ def reuse_test_output(output, *, config=None, recovery_source=None):
         raise ValueError('another local model job is running; output retained')
     rows = list(_reports(path))
     if not rows or any(r.get('artifact_kind') not in {None, 'qwen35-board-serial-dflash-job',
-            'qwen35-board-serial-dflash-execution', 'qwen35-draft-operator-profile'} for r in rows):
+            'qwen35-board-serial-dflash-execution', 'qwen35-draft-operator-profile',
+            'qwen35-incremental-draft-accuracy'} for r in rows):
         raise ValueError('output is not a recognized test request; retained: ' + str(path))
     protected = _runtime_paths(Path(config).resolve()) if config else []
     if any(p == path or path in p.parents for p in protected):

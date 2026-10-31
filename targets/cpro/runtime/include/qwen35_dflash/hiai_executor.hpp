@@ -198,6 +198,8 @@ class HiaiStatefulExecutor final {
   std::size_t CommitInputSlices(const std::vector<HiaiInputSlice>& slices);
   void Execute();
   std::vector<std::uint8_t> CopyOutput(std::size_t index) const;
+  // Explicit accuracy diagnostics only; never called in the generation loop.
+  std::vector<std::uint8_t> CopyInput(std::size_t index) const;
   // Explicit API-specific shutdown; idempotent even on SDK failure.
   // Destructor cleanup is best-effort and never retries this call.
   void Close();

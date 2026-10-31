@@ -16,7 +16,7 @@ import uuid
 from qwen35_moe_dflash.common.artifacts import output_path, save_json
 from qwen35_moe_dflash.execution.serial_transport import _environment
 from qwen35_moe_dflash.draft.board import _receive
-from qwen35_moe_dflash.draft.profile_plan import KIND, bind_profile, model_argv
+from qwen35_moe_dflash.draft.profile_plan import KIND, bind_profile, model_argv, bind_accuracy_profile, check_model_help
 from qwen35_moe_dflash.common.hashing import sha256_file
 from qwen35_moe_dflash.execution.hdc_run import Hdc
 from qwen35_moe_dflash.target.board_tool_inspect import _shell_result, _tool_hash, _tool_path
@@ -69,14 +69,15 @@ def _identity_guard(path, row):
 
 
 def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
-                  timeout_seconds=600, lock_wait_seconds=1800):
+                  timeout_seconds=600, lock_wait_seconds=1800, accuracy=None,
+                  model_tool="/data/local/tmp/tools_sysdbg/model_run_tool_internal"):
     if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 7200:
         raise ValueError('timeout must be 1..7200 seconds')
     if type(lock_wait_seconds) is not int or not 0 <= lock_wait_seconds <= 7200:
         raise ValueError('lock wait must be 0..7200 seconds')
     parser_tool = _tool_path(parser_tool)
     out = output_path(output)
-    source = Path(prepared).absolute()
+    source = Path(accuracy or prepared).absolute()
     if source == out or source in out.parents or out in source.parents:
         raise ValueError('profile output must be separate from retained prepared inputs')
     from qwen35_moe_dflash.execution.run_layout import reuse_test_output
@@ -90,7 +91,8 @@ def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
     acquiring = False
     token = uuid.uuid4().hex
     try:
-        plan = bind_profile(prepared, inspection, refresh_output=out / 'input-revalidation')
+        plan = (bind_accuracy_profile(accuracy, model_tool) if accuracy else
+                bind_profile(prepared, inspection, refresh_output=out / 'input-revalidation'))
         if plan.get('input_revalidation'):
             result['input_revalidation'] = {key: plan['input_revalidation'][key]
                 for key in ('status', 'identity_change_count', 'prepared')}
@@ -114,7 +116,7 @@ def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
             _, text = hdc.shell('test -x ' + q(path) + ' && test ! -L ' + q(path) + ' && sha256sum ' + q(path),
                                'profile-' + name + '-tool-identity')
             digest = _tool_hash(text, path)
-            if name == 'model' and digest != plan['tool']['sha256']:
+            if name == 'model' and plan['tool']['sha256'] is not None and digest != plan['tool']['sha256']:
                 raise ValueError('model profiling tool changed since its help inspection')
             plan[name + '_tool_sha256'] = digest
         hdc.shell('command -v timeout >/dev/null && command -v nohup >/dev/null && command -v sha256sum >/dev/null',
@@ -146,19 +148,29 @@ def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
         plan['cache_validation'] = 'FULL_SHA256_MATCHED_CACHE_WARMED_BEFORE_DIAGNOSTIC_LOAD'
         hdc.shell('umask 077 && mkdir ' + q(str(board)) + ' && printf "%s\\n" ' + q(token)
             + ' > ' + q(str(board / 'owner')) + ' && mkdir ' + q(str(board / 'outputs'))
-            + ' ' + q(str(board / 'prof_data')) + ' ' + q(str(board / 'help')), 'profile-create-attempt')
+            + ' ' + q(str(board / 'prof_data')) + ' ' + q(str(board / 'help'))
+            + ' ' + q(str(board / 'help/model')) + ' ' + q(str(board / 'help/parser')), 'profile-create-attempt')
+        if accuracy:
+            status, text = _shell_result(hdc, 'cd '+q(str(board/'help/model'))
+                +' && timeout -k 1 15 env LD_LIBRARY_PATH='+q(library_path)
+                +' '+q(plan['tool']['path'])+' --help', 'profile-model-help', 25)
+            save_json(out/'model-help.json', {'returncode':status,'text':text})
+            if status >= 128:
+                raise ValueError('model tool help failed before inference')
+            check_model_help(text)
+            plan['tool']['sha256'] = plan['model_tool_sha256']
         result['stage'] = 'parser-help'
-        status, text = _shell_result(hdc, 'cd ' + q(str(board / 'help')) + ' && timeout -k 1 15 env LD_LIBRARY_PATH='
+        status, text = _shell_result(hdc, 'cd ' + q(str(board / 'help/parser')) + ' && timeout -k 1 15 env LD_LIBRARY_PATH='
             + q(library_path) + ' ' + q(parser_tool) + ' --help', 'profile-parser-help', 25)
         save_json(out / 'parser-help.json', {'returncode': status, 'text': text})
         if status >= 128 or not re.search(r'--result_path\s+Profiling\s*&\s*Dump data output directory', text):
             raise ValueError('parser help did not establish --result_path; see parser-help.json (no model run)')
         plan['parser_help_sha256'] = hashlib.sha256(text.encode()).hexdigest()
-        result['stage'] = 'upload-three-inputs'
+        result['stage'] = 'upload-inputs'
         for row in plan['inputs']:
             path = Path(row['path'])
             _, current = _read_small(path, 3 << 20)
-            if any(current[k] != row[k] for k in ('bytes', 'sha256', 'stat')):
+            if any(current[k] != row[k] for k in ('bytes', 'sha256')):
                 raise ValueError('input changed before transfer: ' + str(path))
             remote = board / f"input_{row['index']}.bin"
             hdc.send(path, remote)
@@ -219,9 +231,10 @@ def recover_profile(execution, output):
     if root == out or root in out.parents or out in root.parents:
         raise ValueError('recovery needs a separate new output directory')
     from qwen35_moe_dflash.execution.run_layout import reuse_test_output
-    reuse_test_output(out)
+    reuse_test_output(out, recovery_source=root)
     out.mkdir(parents=True, exist_ok=False)
-    result = {'artifact_kind': KIND, 'status': 'FAILED', 'stage': 'recover', 'output': str(out),
+    result = {'artifact_kind': KIND, 'recovery_model_execution':'FORBIDDEN',
+        'recovery_source':str(root), 'status': 'FAILED', 'stage': 'recover', 'output': str(out),
         'model_compilation': 'NOT_RUN', 'model_relaunch': 'NONE', 'numerical_validation': 'NOT_EVALUATED',
         'retrieved': {}, 'lock_state': 'RETAINED_OR_UNCERTAIN'}
     hdc = plan = None
@@ -246,7 +259,7 @@ def recover_profile(execution, output):
             + q(str(board / 'complete')) + '; else printf "PENDING\\n"; fi', 'profile-completion')
         if text == 'PENDING':
             result.update(status='DRAFT_OPERATOR_PROFILE_PENDING', stage='running',
-                next='Recover the same execution into another new output after completion; no model relaunch')
+                next='Recover the same execution into the same result slot after completion; no model relaunch')
             return result
         if text != token:
             raise ValueError('completion token differs from this retained profile attempt')

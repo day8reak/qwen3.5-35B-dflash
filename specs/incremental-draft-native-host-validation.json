@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_kind": "qwen35-incremental-draft-native-host-validation",
-  "status": "HOST_CHECKS_PASSED_DEVICE_NOT_RUN",
+  "status": "HOST_CHECKS_PASSED_BOARD_LOOP_USER_REPORTED_ACCURACY_PENDING",
   "change": "Keep twelve KV banks in SDK input tensors; copy only appended context rows after successful output validation",
   "validation": {
     "python_and_native_integration_tests": 16,
@@ -23,5 +23,63 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "Compile the existing incremental AIR, then run the documented complete board-local smoke; evaluate Draft accuracy independently"
+  "next": "Run standalone incremental accuracy with existing OMC; profile the same passed fixture, then select a measured optimization.",
+  "latest_user_board_observation": {
+    "source": "USER_PASTED_RECOVERY_JSON",
+    "independently_retrieved": false,
+    "status": "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED",
+    "model_compilation": "USER_REPORTED_PASSED",
+    "context_rows": 16,
+    "cache_capacity": 192,
+    "max_draft_tokens": 15,
+    "inputs": 17,
+    "outputs": 14,
+    "board_attempt": "/data/local/tmp/qwen35_board_serial_e49523bf39c64d1198a2b5b510a66054",
+    "process_id": 34211,
+    "prompt_tokens": 18,
+    "generated_tokens": 8,
+    "accepted": 0,
+    "considered": 7,
+    "native_api_mean_ms": {
+      "prefill": 450.087,
+      "decode": 109.61725,
+      "draft": 608.15525
+    },
+    "draft_calls": {
+      "catchup": 1,
+      "proposal": 7
+    },
+    "cache_commit_bytes": 589824,
+    "cache_commit_us": 303,
+    "committed_rows": 24,
+    "cache_host_staging_bytes": 0,
+    "hidden_readback_bytes": 0,
+    "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY",
+    "numerical_validation": "NOT_EVALUATED",
+    "performance": "BASELINE_OBSERVATION_NOT_PAIRED_SPEEDUP"
+  },
+  "standalone_accuracy_validation": {
+    "status": "HOST_CHECKS_PASSED_DEVICE_PENDING",
+    "checks": 33,
+    "failures": 0,
+    "native_runner": "CXX17_FAKE_EXECUTOR_PROTOCOL_AND_INPUT_COMMIT_READBACK",
+    "reference": "FOUR_GEARS_TORCH_PREFIX_RECOMPUTE_VS_INDEPENDENT_INCREMENTAL_IR_ON_REDUCED_DIMENSIONS",
+    "scope": "NO_SELECTED_DDK_BUILD_OR_BOARD_EXECUTION",
+    "cases": [
+      "permuted input ABI",
+      "KV feedback",
+      "top1/hidden/KV/nonfinite corruption",
+      "unchanged cache rows",
+      "capacity boundary",
+      "candidate rejection",
+      "missing calls and truncated snapshots",
+      "archive extraction",
+      "launch uncertainty preserves locks",
+      "recovery never relaunches",
+      "fixed recovery slot reuse",
+      "accuracy-to-profiling binding",
+      "17/14 vendor-tool launch and incompatible help rejection"
+    ],
+    "local_test_sources": "NOT_PUBLISHED"
+  }
 }

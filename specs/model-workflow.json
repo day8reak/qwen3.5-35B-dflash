@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "updated": "2026-10-31",
-  "active_phase": "integration",
+  "active_phase": "validation",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
-  "run_id": "20261031T010820Z-24717-0642a2",
+  "run_id": "20261031T082522Z-15435-7304bd",
   "navigation": {
     "home": "docs/README.md",
     "model": "docs/model-architecture.md",
@@ -5350,26 +5350,41 @@
     "entrypoint": "targets/cpro/scripts/run_serial_dflash_smoke.py"
   },
   "latest_draft_device_evidence": {
-    "source": "USER_PASTED_REMOTE_REPORT_NOT_RETRIEVED_LOCALLY",
-    "date": "2026-10-29",
-    "job": "full-draft/residual-fix",
-    "model_layers": 6,
-    "vocab_size": 248320,
-    "block_size": 16,
-    "proposal_count": 15,
-    "device_execution": "PASSED",
-    "compiled_precision": {
-      "matched_nodes": 165,
-      "required_nodes": 165
-    },
-    "numerical_validation": "TOP1_MATCHED_ON_SINGLE_SYNTHETIC_FEATURE_FIXTURE",
-    "top1_exact": true,
-    "hidden_relative_l2": 0.012679667512380075,
-    "hidden_cosine": 0.9999196135777132,
-    "hidden_max_abs_error": 0.08984375,
-    "hidden_nonfinite_mismatch_count": 0,
-    "full_accuracy": "NOT_ESTABLISHED",
-    "next": "Reuse this complete bundle for real-feature end-to-end execution; do not repeat draft compilation"
+    "summary": "specs/incremental-draft-native-host-validation.json",
+    "observation": {
+      "source": "USER_PASTED_RECOVERY_JSON",
+      "independently_retrieved": false,
+      "status": "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED",
+      "model_compilation": "USER_REPORTED_PASSED",
+      "context_rows": 16,
+      "cache_capacity": 192,
+      "max_draft_tokens": 15,
+      "inputs": 17,
+      "outputs": 14,
+      "board_attempt": "/data/local/tmp/qwen35_board_serial_e49523bf39c64d1198a2b5b510a66054",
+      "process_id": 34211,
+      "prompt_tokens": 18,
+      "generated_tokens": 8,
+      "accepted": 0,
+      "considered": 7,
+      "native_api_mean_ms": {
+        "prefill": 450.087,
+        "decode": 109.61725,
+        "draft": 608.15525
+      },
+      "draft_calls": {
+        "catchup": 1,
+        "proposal": 7
+      },
+      "cache_commit_bytes": 589824,
+      "cache_commit_us": 303,
+      "committed_rows": 24,
+      "cache_host_staging_bytes": 0,
+      "hidden_readback_bytes": 0,
+      "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY",
+      "numerical_validation": "NOT_EVALUATED",
+      "performance": "BASELINE_OBSERVATION_NOT_PAIRED_SPEEDUP"
+    }
   },
   "storage_pressure": {
     "source": "USER_PASTED_DF_DU_AND_LOCAL_DEPENDENCY_AUDIT",
@@ -5785,5 +5800,13 @@
     "host_validation": "278 passed, 14 asset-dependent tokenizer tests skipped; additional cleanup recovery tests recorded separately",
     "device_execution": "NOT_RUN_BY_THIS_CHANGE_USER_OWNS_BOARD_EXECUTION",
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
+  },
+  "current_draft_work": {
+    "status": "STANDALONE_ACCURACY_AND_PROFILE_ENTRY_HOST_TESTED",
+    "entry": "targets/cpro/tools/validate_incremental_draft.py",
+    "commands": "docs/current-status.md",
+    "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
+    "device_numerics": "PENDING",
+    "next": "User runs independent accuracy; use the passed fixture for new operator profiling."
   }
 }

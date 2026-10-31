@@ -73,7 +73,61 @@ def bind_profile(prepared, inspection, *, refresh_output=None):
 def model_argv(plan, board, model):
     board = PurePosixPath(board)
     return [plan['tool']['path'], '--model=' + str(model),
-        '--input=' + ','.join(str(board / f'input_{i}.bin') for i in range(3)),
+        '--input=' + ','.join(str(board / f'input_{i}.bin') for i in range(len(plan['inputs']))),
         '--output_dir=' + str(board / 'outputs'), '--modelmanager_itf=V1', '--enable_item=1',
         '--times=1', '--async=false', '--dev_perf=3', '--priority=7',
-        '--input_type=FP16,INT32,INT32', '--output_type=INT32,FP16']
+        '--input_type=' + ','.join(_tool_dtype(r['dtype']) for r in plan['inputs']),
+        '--output_type=' + ','.join(_tool_dtype(r['dtype']) for r in plan['outputs'])]
+
+
+def _tool_dtype(dtype):
+    return {'float16': 'FP16', 'int32': 'INT32', 'float32': 'FP32'}[dtype]
+
+
+def check_model_help(text):
+    if (any(not re.search(r'--'+flag+r'\b', text) for flag in FLAGS)
+            or not re.search(r'V1\s*;\s*V2', text)
+            or not re.search(r'1\s*:\s*Enable profiling', text, re.I)):
+        raise ValueError('selected model tool help does not establish the V1 profiling CLI')
+
+
+def bind_accuracy_profile(accuracy, model_tool):
+    from qwen35_moe_dflash.common.hashing import sha256_file
+    from qwen35_moe_dflash.execution.runtime_config import read_json
+    from qwen35_moe_dflash.draft.incremental.runtime import validate_abi
+    from qwen35_moe_dflash.draft.incremental.accuracy import KIND as ACCURACY_KIND
+    root = Path(accuracy).resolve()
+    result = read_json(root/'result.json', 4 << 20)
+    if (result.get('artifact_kind') != ACCURACY_KIND or result.get('status') != 'PASSED'
+            or result.get('numerical_validation') != 'PASSED'
+            or result.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED'):
+        raise ValueError('profiling requires a passed standalone incremental accuracy result')
+    fixture = Path(result['fixture'])
+    if sha256_file(fixture/'manifest.json') != result['fixture_sha256']:
+        raise ValueError('accuracy fixture changed after numerical comparison')
+    meta = read_json(fixture/'manifest.json', 4 << 20)
+    validate_abi(meta)
+    if meta['model'] != result['model']:
+        raise ValueError('accuracy model and fixture differ')
+    step = meta['cases'][meta['profile_case']]
+    if step['proposals'] < 1:
+        raise ValueError('profile case must contain active proposals')
+    inputs = []
+    for spec in meta['inputs']:
+        row = next(r for r in meta['input_files'] if r['case']==step['index'] and r['index']==spec['index'])
+        relative = Path(row['path'])
+        if relative.is_absolute() or '..' in relative.parts:
+            raise ValueError('profile input must be a fixture member')
+        _, observed = _read_small(fixture/relative, 3 << 20)
+        if any(observed[k] != row[k] for k in ('bytes','sha256')):
+            raise ValueError('profile input changed since accuracy execution')
+        inputs.append(dict(observed,index=spec['index'],dtype=spec['dtype'],shape=spec['shape']))
+    return dict(schema_version=1,artifact_kind=KIND,
+        tool={'path':_tool_path(model_tool),'sha256':None}, model=meta['model'],
+        inputs=inputs,outputs=meta['outputs'],ddk_id=meta['ddk_id'],
+        firmware_id=result['runtime']['firmware_id'],source_runtime_version=result['runtime']['runtime_version'],
+        input_scope='PASSED_INCREMENTAL_ACCURACY_FIXTURE_WITH_REFERENCE_KV',
+        input_provenance={'accuracy':str(root),'case':step},
+        model_compilation='NOT_RUN',numerical_validation='PASSED_STANDALONE_REFERENCE_CASES',
+        model_manager_interface='V1',times=1,warmup=0,
+        timing_scope='ONE_FRESH_VENDOR_TOOL_PROFILED_INFERENCE_NOT_RESIDENT_LATENCY_DISTRIBUTION')

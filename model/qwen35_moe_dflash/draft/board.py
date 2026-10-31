@@ -711,7 +711,7 @@ def _receive(hdc,board,out,name,*,timeout_seconds=None):
         if (isinstance(timeout_seconds,bool) or not isinstance(timeout_seconds,(int,float))
                 or not math.isfinite(timeout_seconds) or timeout_seconds<=0):
             raise ValueError('receive timeout_seconds must be finite and positive')
-        timeout=min(timeout,timeout_seconds)
+        timeout=min(hdc.timeout,timeout_seconds)
     remote=shlex.quote(str(board/name))
     _,text=hdc.shell(f"if test -f {remote}; then sha256sum {remote}; else printf '__MISSING__\\n'; fi",'hash-result',timeout=timeout)
     if text=='__MISSING__':

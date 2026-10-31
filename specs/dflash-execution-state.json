@@ -589,8 +589,8 @@
         1,
         3
       ],
-      "next_action_type": "implement_export_compile_validate",
-      "next_action": "Compile the successfully exported air-v1 using the new original-weight reference view; inspect compiled precision and full17/14 ABI, then implement native KV adapter and run a new full board-local smoke. No new batch verify development.",
+      "next_action_type": "standalone_accuracy_then_profile",
+      "next_action": "Incremental OMC and complete board loop succeeded per user report. Compare independent CPU prefix reference against isolated and feedback KV sequences; profile the same passed model/inputs. Defer Target verify.",
       "pass_conditions": [
         "real newAIR andOMC, not metadata relabel",
         "named17inputs14outputs typed ABI",
@@ -613,16 +613,15 @@
         "specs/incremental-draft-compile-host-validation.json"
       ],
       "last_error": null,
-      "numerical_acceptance_depends_on": [
-        "P2"
-      ],
+      "numerical_acceptance_depends_on": [],
       "draft_only_sequence": [
         "cached AIR export",
         "OMG and actual named ABI plus resident KV adapter -> full-loop execution smoke",
         "candidate gear and longer-context integration -> full-loop execution smoke",
         "fixed-feature original six-layer reference comparisons -> full-loop execution smoke",
         "Draft-only measured optimization with precision regression -> full-loop execution smoke"
-      ]
+      ],
+      "numerical_scope": "Standalone Draft synthetic-feature computation can proceed independently of Target accuracy; whole-model acceptance remains separate."
     },
     {
       "id": "P5",
@@ -965,7 +964,7 @@
     "maintenance_policy": "Homepage contains only a brief introduction and six direct links. Keep each primary page self-contained; operational pages contain short instructions and complete command blocks. Detailed development and historical evidence remain outside primary navigation."
   },
   "incremental_draft_task": {
-    "status": "USER_REPORTED_AIR_EXPORTED_COMPILER_ENTRY_HOST_TESTED_DDK_PENDING",
+    "status": "USER_REPORTED_COMPILED_AND_BOARD_LOOP_PASSED_STANDALONE_ACCURACY_PENDING",
     "context_gears": [
       16,
       64
@@ -980,12 +979,37 @@
     "new_graph_inputs": 17,
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
-    "current_native_bundle": "UNCHANGED_S64_PREFIX_RECOMPUTE",
-    "next_command": "targets/cpro/scripts/compile_incremental_draft.py --air-export \"$AI_RUN_DIR/draft-kv-c16-cap192-k15-air-v1\" --output \"$AI_RUN_DIR/draft-kv-c16-cap192-k15-compiled-v1\"",
+    "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
+    "next_command": "Follow docs/current-status.md: validate_incremental_draft.py then profile_draft.py --accuracy",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
-    "selected_ddk_attempt": "USER_REPORTED_INCREMENTAL_AIR_EXPORT_SUCCEEDED_OMG_NOT_RUN",
+    "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
-    "compile_host_validation": "specs/incremental-draft-compile-host-validation.json"
+    "compile_host_validation": "specs/incremental-draft-compile-host-validation.json",
+    "standalone_accuracy": {
+      "status": "HOST_CHECKS_PASSED_DEVICE_PENDING",
+      "checks": 33,
+      "failures": 0,
+      "native_runner": "CXX17_FAKE_EXECUTOR_PROTOCOL_AND_INPUT_COMMIT_READBACK",
+      "reference": "FOUR_GEARS_TORCH_PREFIX_RECOMPUTE_VS_INDEPENDENT_INCREMENTAL_IR_ON_REDUCED_DIMENSIONS",
+      "scope": "NO_SELECTED_DDK_BUILD_OR_BOARD_EXECUTION",
+      "cases": [
+        "permuted input ABI",
+        "KV feedback",
+        "top1/hidden/KV/nonfinite corruption",
+        "unchanged cache rows",
+        "capacity boundary",
+        "candidate rejection",
+        "missing calls and truncated snapshots",
+        "archive extraction",
+        "launch uncertainty preserves locks",
+        "recovery never relaunches",
+        "fixed recovery slot reuse",
+        "accuracy-to-profiling binding",
+        "17/14 vendor-tool launch and incompatible help rejection"
+      ],
+      "local_test_sources": "NOT_PUBLISHED"
+    },
+    "latest_observation": "specs/incremental-draft-native-host-validation.json"
   },
   "draft_milestone_e2e_gate": {
     "policy": "EVERY_EXECUTABLE_DRAFT_MILESTONE_REQUIRES_BOARD_LOCAL_FULL_LOOP_SMOKE",

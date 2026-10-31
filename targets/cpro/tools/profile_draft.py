@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect one S64 Draft operator profile using the existing board vendor tools."""
+"""Collect one Draft operator profile using the existing board vendor tools."""
 import argparse
 import json
 from pathlib import Path
@@ -13,8 +13,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--prepared', help='existing real-feature-draft-plan; unchanged S64 OMC')
+    source.add_argument('--accuracy', help='passed incremental accuracy recovery directory')
     source.add_argument('--recover', help='same retained profiling execution, no model relaunch')
     parser.add_argument('--tool-inspection', help='existing target-board-tool-inspection-writable')
+    parser.add_argument('--model-tool', default='/data/local/tmp/tools_sysdbg/model_run_tool_internal')
     parser.add_argument('--data-proc-tool', default='/data/local/tmp/tools_sysdbg/data_proc_tool_internal')
     parser.add_argument('--output', required=True, help='separate new directory below AI_RUN_DIR')
     parser.add_argument('--apply', action='store_true', help='start one detached profiling invocation')
@@ -23,6 +25,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.prepared and (not args.apply or not args.tool_inspection):
         parser.error('--prepared requires --apply and --tool-inspection')
+    if args.accuracy and (not args.apply or args.tool_inspection):
+        parser.error('--accuracy requires --apply; help is inspected directly on the selected board')
     if args.recover and (args.apply or args.tool_inspection):
         parser.error('--recover does not accept --apply or --tool-inspection')
     from qwen35_moe_dflash.draft.profile_board import start_profile, recover_profile
@@ -32,7 +36,7 @@ def main(argv=None):
         else:
             result = start_profile(args.prepared, args.tool_inspection, args.output,
                 parser_tool=args.data_proc_tool, timeout_seconds=args.timeout_seconds,
-                lock_wait_seconds=args.lock_wait_seconds)
+                lock_wait_seconds=args.lock_wait_seconds,accuracy=args.accuracy,model_tool=args.model_tool)
         keys = ('status', 'stage', 'device_execution', 'model_compilation', 'numerical_validation',
             'board_attempt', 'model_process_id', 'model_exitcode', 'parser_exitcode',
             'csv_directory', 'csv_count', 'csv_files', 'csv_analysis', 'input_revalidation',

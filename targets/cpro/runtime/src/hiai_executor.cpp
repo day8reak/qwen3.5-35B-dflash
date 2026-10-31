@@ -896,6 +896,13 @@ void HiaiStatefulExecutor::Execute() {
     throw;
   }
 }
+std::vector<std::uint8_t> HiaiStatefulExecutor::CopyInput(std::size_t index) const {
+  if(impl_->closed||impl_->poisoned||!impl_->initialized.at(index))
+    throw HiaiRuntimeError("INPUT_READBACK","input is not available for diagnostic readback");
+  const auto& tensor=impl_->target.inputs.at(index);
+  const auto* data=static_cast<const std::uint8_t*>(tensor.Data());
+  return {data,data+tensor.bytes};
+}
 std::vector<std::uint8_t> HiaiStatefulExecutor::CopyOutput(std::size_t index) const {
   if (impl_->closed || impl_->poisoned) throw HiaiRuntimeError("CLOSED", "stateful executor is closed or failed");
   if (!impl_->outputs_available)
