@@ -1427,7 +1427,7 @@ def _incremental_counts(manifest, loop, counts, prefix, *, success):
     if (kv.get('variant') != VARIANT or any(kv.get(k) != spec[k] for k in GEOMETRY)
             or any(type(kv.get(k)) is not int or kv[k] < 0 for k in names)
             or kv.get('cache_policy') != 'COMMITTED_CONTEXT_ONLY_ANCHOR_AND_PROPOSALS_EXCLUDED'
-            or kv.get('state_storage') != 'TWELVE_BOARD_MEMORY_BANKS'
+            or kv.get('state_storage') not in ('TWELVE_BOARD_MEMORY_BANKS', 'SDK_INPUT_TENSORS_DELTA_WRITEBACK')
             or kv.get('numerical_validation') != 'NOT_EVALUATED'
             or kv['cache_updates'] != kv['catchup_calls'] + kv['proposal_calls']
             or kv['cache_updates'] > counts['draft_native_calls']
@@ -1435,6 +1435,13 @@ def _incremental_counts(manifest, loop, counts, prefix, *, success):
             or kv['cached_context_rows'] > min(spec['cache_capacity'], max(0, len(prefix)-1))
             or kv['cached_context_rows'] > kv['cache_updates'] * spec['context_rows']):
         raise ValueError('incremental KV geometry/call/cursor accounting differs')
+    if kv.get('state_storage') == 'SDK_INPUT_TENSORS_DELTA_WRITEBACK':
+        if (kv.get('cache_commits') != kv['cache_updates']
+                or kv.get('committed_rows') != kv['cached_context_rows']
+                or kv.get('cache_commit_bytes') != kv['cached_context_rows'] * 12 * 8 * 128 * 2
+                or type(kv.get('cache_commit_us')) is not int or kv['cache_commit_us'] < 0
+                or kv.get('cache_host_staging_bytes') != 0 or kv.get('hidden_readback_bytes') != 0):
+            raise ValueError('incremental SDK cache slice accounting differs')
     if success and (kv['proposal_calls'] != loop.get('completed_rounds')
             or kv['cached_context_rows'] < len(manifest['prompt_token_ids'])
             or not 1 <= len(prefix)-1-kv['cached_context_rows'] <= manifest['max_proposals_per_round']+1):

@@ -27,6 +27,7 @@ struct ResidentSessionEvidence {
   std::uint64_t target_close_calls = 0, draft_close_calls = 0;
   std::uint64_t target_load_ms = 0, draft_load_ms = 0, target_run_ms = 0, draft_run_ms = 0, close_ms = 0;
   std::uint64_t target_api_us = 0, draft_api_us = 0;
+  std::uint64_t draft_kv_commit_bytes=0, draft_kv_commit_us=0, draft_kv_commits=0, draft_kv_rows=0;
   bool closed = false, poisoned = false;
   HiaiOriginalTargetLifecycle target_lifecycle;
   HiaiLegacyLifecycle target_v1_lifecycle, draft_v1_lifecycle;
@@ -48,6 +49,9 @@ class ResidentSession final {
   void Load(const ResidentSessionConfig& config);
   ResidentRunResult RunTarget(const std::vector<std::vector<std::uint8_t>>& inputs);
   ResidentRunResult RunDraft(const std::vector<std::vector<std::uint8_t>>& inputs);
+  ResidentRunResult RunIncrementalDraft(const IncrementalDraftStep& step);
+  // Call only after validating returned candidate IDs; next run requires commit.
+  void CommitIncrementalDraft();
   void Close();
   const ResidentSessionEvidence& evidence() const noexcept;
  private:

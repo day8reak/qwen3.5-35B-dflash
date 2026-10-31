@@ -600,7 +600,11 @@ class Supervisor {
       kv["catchup_calls"]=draft_cache?draft_cache->catchup_calls():0;
       kv["proposal_calls"]=draft_cache?draft_cache->rounds():0;
       kv["cache_policy"]="COMMITTED_CONTEXT_ONLY_ANCHOR_AND_PROPOSALS_EXCLUDED";
-      kv["state_storage"]="TWELVE_BOARD_MEMORY_BANKS";
+      kv["state_storage"]="SDK_INPUT_TENSORS_DELTA_WRITEBACK";
+      const auto& evidence=session.evidence();
+      kv["cache_commit_bytes"]=evidence.draft_kv_commit_bytes;kv["cache_commit_us"]=evidence.draft_kv_commit_us;
+      kv["cache_commits"]=evidence.draft_kv_commits;kv["committed_rows"]=evidence.draft_kv_rows;
+      kv["cache_host_staging_bytes"]=0;kv["hidden_readback_bytes"]=0;
       kv["numerical_validation"]="NOT_EVALUATED";loop["draft_kv"]=kv;
     }
 #endif
@@ -840,9 +844,9 @@ class Supervisor {
     std::vector<std::uint32_t> proposals;
     do {
       auto inputs=draft_cache->Prepare(features,prefix.size(),prefix.back());
-      const auto index=BeginResidentCall("draft");auto actual=session.RunDraft(inputs);
+      const auto index=BeginResidentCall("draft");auto actual=session.RunIncrementalDraft(inputs);
       EndResidentCall("draft",index,actual.wall_ms);++drafts;
-      proposals=draft_cache->Complete(std::move(actual.outputs));
+      proposals=draft_cache->Complete(actual.outputs.at(0),[&]{session.CommitIncrementalDraft();});
     } while(proposals.empty());
     return proposals;
   }

@@ -43,6 +43,8 @@ PYCODE
 ```bash
 export RUN_DIR="$AI_RUN_DIR/work/dflash-kv"
 export RECOVERY_DIR="$AI_RUN_DIR/work/dflash-kv-result"
+export MAX_DRAFT_TOKENS=15
+export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft/kv-c16-cap192-k15"
 
 python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
   --config "$AI_RUN_DIR/runtime.json" \
@@ -61,6 +63,8 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
 ```
 
 通过条件：Prefill一次、Decode与Draft各加载一次、至少两轮提案、12路KV持续推进、返回文字／tokens和时延。接受率可以为0，不代表Draft精度或加速通过。`catchup_calls`只补上下文，`proposal_calls`生成候选；最新anchor和未接受候选不写入持久KV。
+
+新版运行器将12路KV保留在SDK输入张量中，只回填新增上下文行，跳过hidden回读和每轮KV输出清零；无需为此重编OMC。回收结果的`draft_kv.state_storage`应为`SDK_INPUT_TENSORS_DELTA_WRITEBACK`，`cache_commit_bytes = cached_context_rows × 24576`，`cache_host_staging_bytes`与`hidden_readback_bytes`均为0。`cache_commit_us`单独记录回填墙钟，不包含在`native_api_latency.draft`中。这里减少的是运行器拷贝，图内仍输出完整KV；板端精度和时延待本次测试。
 
 ## 查看已有profiling CSV
 

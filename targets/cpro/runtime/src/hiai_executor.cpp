@@ -602,6 +602,7 @@ struct HiaiStatefulExecutor::Impl {
   bool diagnostics = true;
   Model target;
   std::vector<bool> ready;
+  std::vector<bool> initialized;
   bool outputs_available = false;
   bool closed = false, poisoned = false;
   HiaiIoDiagnostic diagnostic;
@@ -730,6 +731,7 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
     for(const auto* tensors:{&impl_->target.inputs,&impl_->target.outputs})for(const auto& t:*tensors)
       impl_->resident_storage.push_back({t.Object(),t.Data(),t.Size()});
   impl_->ready.assign(inputs.size(), false);
+  impl_->initialized.assign(inputs.size(), true); // Constructor zeroed each input.
   if (diagnostic_output_fill_byte >= 0) impl_->input_source_hashes.resize(inputs.size());
   });
   } catch(const std::exception& e) {
@@ -779,6 +781,54 @@ void HiaiStatefulExecutor::SetInput(std::size_t index, const std::vector<std::ui
     impl_->diagnostic.inputs.at(index).readback_matches_source = false;
   }
   impl_->ready[index] = true;
+  impl_->initialized[index] = true;
+}
+void HiaiStatefulExecutor::ReuseInput(std::size_t index) {
+  if(impl_->closed||impl_->poisoned||impl_->diagnostics)
+    throw HiaiRuntimeError("INPUT_REUSE","input reuse requires a live compact executor");
+  if(index>=impl_->initialized.size()||!impl_->initialized[index])
+    throw HiaiRuntimeError("INPUT_REUSE","input has not been initialized");
+  const auto& tensor=impl_->target.inputs.at(index);
+  const auto& saved=impl_->resident_storage.at(index);
+  if(tensor.Object()!=saved.object||tensor.Buffer()!=saved.data||tensor.Size()!=saved.bytes)
+    throw HiaiRuntimeError("INPUT_REUSE","retained input storage changed");
+  impl_->outputs_available=false;impl_->ready.at(index)=true;
+}
+std::size_t HiaiStatefulExecutor::CommitInputSlices(const std::vector<HiaiInputSlice>& slices) {
+  if(impl_->closed||impl_->poisoned||impl_->diagnostics||!impl_->outputs_available)
+    throw HiaiRuntimeError("CACHE_COMMIT","cache commit requires a successful compact execution");
+  // Validate the entire batch before touching any cache byte. Storage is disjoint
+  // and stable; no SDK calls or throwing allocations occur in the copy loop.
+  const auto storage=tensor_storage();
+  if(storage.size()!=impl_->resident_storage.size())
+    throw HiaiRuntimeError("CACHE_COMMIT","tensor count changed");
+  for(std::size_t i=0;i<storage.size();++i) {
+    const auto& old=impl_->resident_storage[i];const auto& now=storage[i];
+    if(now.object!=old.object||now.data!=old.data||now.bytes!=old.bytes)
+      throw HiaiRuntimeError("CACHE_COMMIT","tensor storage changed");
+  }
+  std::size_t copied=0;
+  std::vector<std::pair<std::uint8_t*,const std::uint8_t*>> pointers;
+  std::vector<bool> destinations(impl_->target.inputs.size(),false);
+  for(const auto& s:slices) {
+    const auto& input=impl_->target.inputs.at(s.input);
+    const auto& output=impl_->target.outputs.at(s.output);
+    if(destinations.at(s.input)||input.bytes!=output.bytes||!s.count||!s.bytes||s.stride<s.bytes||
+       s.offset>input.bytes||s.bytes>input.bytes-s.offset||
+       s.count-1>(input.bytes-s.offset-s.bytes)/s.stride||
+       s.count>(std::numeric_limits<std::size_t>::max()-copied)/s.bytes)
+      throw HiaiRuntimeError("CACHE_COMMIT","cache slice exceeds bound tensor extent or repeats an input");
+    destinations[s.input]=true;copied+=s.count*s.bytes;
+    pointers.emplace_back(static_cast<std::uint8_t*>(input.Data()),static_cast<const std::uint8_t*>(output.Data()));
+  }
+  for(std::size_t i=0;i<slices.size();++i) {
+    const auto& s=slices[i];
+    for(std::size_t block=0;block<s.count;++block) {
+      const auto offset=s.offset+block*s.stride;
+      std::memcpy(pointers[i].first+offset,pointers[i].second+offset,s.bytes);
+    }
+  }
+  return copied;
 }
 void HiaiStatefulExecutor::Execute() {
   if (impl_->closed || impl_->poisoned) throw HiaiRuntimeError("CLOSED", "stateful executor is closed or failed");

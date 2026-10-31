@@ -42,43 +42,43 @@ struct IncrementalDraftAbi {
   }
 };
 
+struct IncrementalDraftStep {
+  std::vector<std::uint8_t> features;
+  std::uint32_t start=0, valid=0, anchor=0, proposals=0;
+};
+
+// Scheduling only: the resident executor owns all twelve persistent KV inputs.
 class IncrementalDraftCache {
  public:
   using Bytes=std::vector<std::uint8_t>;
   explicit IncrementalDraftCache(IncrementalDraftAbi abi):abi_(std::move(abi)) {
-    abi_.Validate();banks_.assign(12,Bytes(abi_.bank_bytes(),0));
+    abi_.Validate();
   }
-  std::vector<Bytes> Prepare(const Bytes& features,std::size_t committed,std::uint32_t anchor) {
+  IncrementalDraftStep Prepare(const Bytes& features,std::size_t committed,std::uint32_t anchor) {
     if(pending_||!committed||committed-1>abi_.capacity||cursor_>committed-1||
        features.size()!=committed*32768||anchor>=248320)
       throw std::invalid_argument("incremental Draft committed prefix/cache mismatch");
     valid_=std::min<std::size_t>(abi_.context_rows,committed-1-cursor_);
     final_=cursor_+valid_==committed-1;
-    std::map<std::string,Bytes> values;
     Bytes context(std::size_t(abi_.context_rows)*32768,0);
     std::copy_n(features.begin()+cursor_*32768,valid_*32768,context.begin());
-    values.emplace("target_features",std::move(context));
-    values.emplace("start_position",Scalar(cursor_));values.emplace("valid_rows",Scalar(valid_));
-    values.emplace("anchor",Scalar(anchor));values.emplace("proposal_count",Scalar(final_?abi_.candidates:0));
-    for(unsigned i=0;i<12;++i)values.emplace("past_"+std::string(i%2?"v_":"k_")+std::to_string(i/2),banks_[i]);
-    std::vector<Bytes> ordered;for(const auto& spec:abi_.inputs)ordered.push_back(std::move(values.at(spec.name)));
-    pending_=true;return ordered;
+    pending_=true;
+    return {std::move(context),static_cast<std::uint32_t>(cursor_),static_cast<std::uint32_t>(valid_),
+            anchor,final_?abi_.candidates:0};
   }
-  // Validate the entire result before changing any bank or the cursor.
-  // A malformed result is fatal for this request, never partially committed.
-  std::vector<std::uint32_t> Complete(std::vector<Bytes> outputs) {
-    if(!pending_||outputs.size()!=14)throw std::invalid_argument("incremental Draft result count/pending call differs");
-    for(std::size_t i=0;i<outputs.size();++i) {
-      const auto bytes=i==0?std::size_t(abi_.candidates)*4:i==1?std::size_t(abi_.candidates)*2048*2:abi_.bank_bytes();
-      if(outputs[i].size()!=bytes)throw std::invalid_argument("incremental Draft result extent differs");
-    }
+  // Validate tokens first, commit the SDK cache slices, then advance the cursor.
+  // A failed call or malformed token never changes either persistent state.
+  template<class Commit>
+  std::vector<std::uint32_t> Complete(const Bytes& top1,Commit commit) {
+    if(!pending_||top1.size()!=std::size_t(abi_.candidates)*4)
+      throw std::invalid_argument("incremental Draft result extent/pending call differs");
     std::vector<std::uint32_t> tokens;
     if(final_)for(unsigned i=0;i<abi_.candidates;++i) {
-      std::uint32_t token=0;for(unsigned b=0;b<4;++b)token|=std::uint32_t(outputs[0][i*4+b])<<(8*b);
+      std::uint32_t token=0;for(unsigned b=0;b<4;++b)token|=std::uint32_t(top1[i*4+b])<<(8*b);
       if(token>=248320)throw std::invalid_argument("incremental Draft token outside vocabulary");
       tokens.push_back(token);
     }
-    for(unsigned i=0;i<12;++i)banks_[i].swap(outputs[i+2]);
+    commit();
     cursor_+=valid_;++calls_;if(final_)++rounds_;else ++catchup_;
     pending_=false;return tokens;
   }
@@ -87,9 +87,7 @@ class IncrementalDraftCache {
   std::size_t rounds()const{return rounds_;}
   std::size_t catchup_calls()const{return catchup_;}
  private:
-  static Bytes Scalar(std::uint32_t v){Bytes bytes(4);for(unsigned b=0;b<4;++b)bytes[b]=(v>>(8*b))&255;return bytes;}
   IncrementalDraftAbi abi_;
-  std::vector<Bytes> banks_;
   std::size_t cursor_=0,valid_=0,calls_=0,rounds_=0,catchup_=0;
   bool pending_=false,final_=false;
 };

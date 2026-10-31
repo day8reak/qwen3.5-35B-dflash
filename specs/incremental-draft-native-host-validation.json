@@ -1,67 +1,27 @@
 {
   "schema_version": 1,
-  "status": "HOST_CHECKS_PASSED_DEVICE_NOT_RUN",
   "artifact_kind": "qwen35-incremental-draft-native-host-validation",
-  "run": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T034830Z-3078-d94fa9",
-  "reports": [
-    {
-      "name": "kv-checks",
-      "tests": 219,
-      "failures": 0,
-      "errors": 0,
-      "skipped": 0,
-      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T034830Z-3078-d94fa9/out/kv-checks.xml",
-      "sha256": "cfd89ef1a813e1d915bb5701468b29fe43f67cb40e0b7b41e345e59ecc02f929"
-    },
-    {
-      "name": "kv-regression",
-      "tests": 16,
-      "failures": 0,
-      "errors": 0,
-      "skipped": 0,
-      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T034830Z-3078-d94fa9/out/kv-regression.xml",
-      "sha256": "4c00c803e631d6a40e6c54d8780f8ee5ced9a1a167f573708fcf8f350a466f90"
-    },
-    {
-      "name": "kv-final",
-      "tests": 2,
-      "failures": 0,
-      "errors": 0,
-      "skipped": 0,
-      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T034830Z-3078-d94fa9/out/kv-final.xml",
-      "sha256": "28572bd2fb8055f1aa4d8558617c4ff1709b9f72464ef0407d195aa56430af45"
-    },
-    {
-      "name": "kv-long",
-      "tests": 1,
-      "failures": 0,
-      "errors": 0,
-      "skipped": 0,
-      "path": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T034830Z-3078-d94fa9/out/kv-long.xml",
-      "sha256": "287e3965d078bf153c04b3714c3d3b77cdeb86a43ddfc0bdcaa98419c58424ba"
-    }
-  ],
-  "source_sha256": {
-    "model/qwen35_moe_dflash/incremental_draft_runtime.py": "8b1fbe55a5934b350c668e3b3a89310ce4a75f01509975dc389d0d0b5871bcbb",
-    "model/qwen35_moe_dflash/board_serial_dflash.py": "b0e1e53480fb6a415e8e818005c7e66f30b97c2ddfc2bb84263eac71aad87604",
-    "model/qwen35_moe_dflash/board_serial_transport.py": "7470a35fcb408ce9cb2a3e4bf6bbbf7d26400910cdbbdac5d499f96070ac9cbe",
-    "model/qwen35_moe_dflash/incremental_draft_compile.py": "177cf34bf89ec6fda3cbc5258b2950ef3dfb7a6fd6b3faded0e2f9e4e054f064",
-    "targets/cpro/runtime/src/board_serial_main.cpp": "0ad39974a3bf74f6248e3df6ee0b936fb64d2eaaa6ba36a208fbcd55cf7a264f",
-    "targets/cpro/runtime/src/resident_session.cpp": "d08958d8d13765aa9ddaf0598c95ca8b9556dcaa41d2c7a3895d7fe7ae970f89",
-    "targets/cpro/runtime/include/qwen35_dflash/incremental_draft.hpp": "8154fce195f245dab5786bcf143c4efc369904de109c387e46fe48ddd11cbea6",
-    "targets/cpro/runtime/include/qwen35_dflash/resident_session.hpp": "bc9dee9d2a8c966d90bafda43bf856d4984e758e0d02baa3c5cdec20199c1abc"
+  "status": "HOST_CHECKS_PASSED_DEVICE_NOT_RUN",
+  "change": "Keep twelve KV banks in SDK input tensors; copy only appended context rows after successful output validation",
+  "validation": {
+    "python_and_native_integration_tests": 16,
+    "failures": 0,
+    "native_cache_slice_commit_check": "PASSED",
+    "tools": "Host g++ and fake HIAI; local test sources and binaries are not published"
   },
   "coverage": [
-    "Four gears 15/7/3/1 with actual native supervisor and host HIAI doubles",
-    "Compiled input slot permutation, all twelve distinct cache banks, accepted and rejected proposals",
-    "C16 context catchup separated from proposal calls, including49 prompt tokens and10 native draft calls",
-    "Capacity boundary, zero-delta call,96-token cache transport, malformed output preserves prior cursor/banks",
-    "Packed model and compiled ABI identity binding; old S64 mixed resident success/failure regression"
+    "Candidate gears 15/7/3/1, accepted/rejected proposals and multi-block context catchup",
+    "All twelve banks, permuted named input ABI and zero-context-delta calls",
+    "Poisoned non-appended output regions do not overwrite history or unused input rows",
+    "Malformed last slice, duplicate destinations and overflow reject the whole commit before any copy",
+    "Invalid candidate or failed commit does not advance the context cursor",
+    "Existing S64 compact-memory and preread end-to-end host regressions"
   ],
+  "graph_or_model_changes": "NONE",
+  "cache_bytes_per_appended_token": 24576,
   "device_execution": "NOT_RUN",
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
-  "toolchain_scope": "HOST_GXX_AND_FAKE_HIAI_NOT_SELECTED_OHOS_DDK",
-  "board_scope": "Short complete request remains <=64 tokens; new Draft C16/cache192 smoke awaits user execution",
-  "next": "Run documented --incremental-draft text/prefill/resident smoke after successful compilation; then independent Draft numerical comparison and performance"
+  "performance": "NOT_MEASURED_ON_DEVICE",
+  "next": "Compile the existing incremental AIR, then run the documented complete board-local smoke; evaluate Draft accuracy independently"
 }

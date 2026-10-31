@@ -126,6 +126,11 @@ struct HiaiTensorStorage {
   std::size_t bytes = 0;
 };
 
+// Same-layout strided byte slices, copied from one output into one retained input.
+struct HiaiInputSlice {
+  std::size_t input=0, output=0, offset=0, bytes=0, stride=0, count=0;
+};
+
 // Carries the precise failure even when executor construction has not completed.
 class HiaiRuntimeError final : public std::runtime_error {
  public:
@@ -188,6 +193,9 @@ class HiaiStatefulExecutor final {
                       bool diagnostics = true, bool model_preread = false);
   ~HiaiStatefulExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
+  // Compact mode only. No buffer aliasing or device allocation is introduced.
+  void ReuseInput(std::size_t index);
+  std::size_t CommitInputSlices(const std::vector<HiaiInputSlice>& slices);
   void Execute();
   std::vector<std::uint8_t> CopyOutput(std::size_t index) const;
   // Explicit API-specific shutdown; idempotent even on SDK failure.
