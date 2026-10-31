@@ -287,19 +287,32 @@ def prepare_config(config_file, output, *, text=None, text_file=None, prompt_inp
         compiled = dict(generated_artifacts=[r['record'] for r in payloads], omc=primary[0]['record'])
         bound[role] = dict(base_plan=base, model=file, payloads=payloads, compiled=compiled,
                            state_mapping=spec['state_mapping'], source_bindings=[])
-    draft = deepcopy(assets['draft'])
     draft_model = config['models']['draft']
-    draft['model_source'] = file_record(parent / draft_model['path'], cache_key=draft_model['cache_key'])
-    draft['ddk_id'] = assets['environment']['ddk_id']
-    abi_path = out / 'draft-abi.json'; write_json(abi_path, draft.pop('abi'))
-    draft['abi'] = file_record(abi_path)
+    configured_model = (parent / draft_model['path']).resolve()
+    # A published incremental bundle carries its own ABI. Never pair a newly
+    # replaced model.omc with the former S64 ABI retained in runtime-assets.
+    adjacent = configured_model.parent / 'manifest.json'
+    if incremental_draft is None and adjacent.is_file():
+        meta = read_json(adjacent)
+        if meta.get('artifact_kind') == 'qwen35-incremental-draft-compiled':
+            if (adjacent.parent / meta['model']['path']).resolve() != configured_model:
+                raise ValueError('configured Draft path differs from its compiled manifest')
+            incremental_draft = adjacent.parent
     if incremental_draft is not None:
         from qwen35_moe_dflash.draft.incremental.runtime import bind_compiled
+        if max_draft_tokens is None:
+            max_draft_tokens = read_json(Path(incremental_draft) / 'manifest.json')['max_draft_tokens']
         draft, _ = bind_compiled(incremental_draft, out, ddk_id=assets['environment']['ddk_id'],
             max_draft_tokens=max_draft_tokens, max_proposals=options['max_proposals_per_round'],
             total_tokens=len(prompt) + options['max_new_tokens'], verify_sources=False)
-    elif max_draft_tokens is not None and max_draft_tokens != draft.get('max_draft_tokens', 15):
-        raise ValueError('candidate gear differs from configured Draft model')
+    else:
+        draft = deepcopy(assets['draft'])
+        draft['model_source'] = file_record(configured_model, cache_key=draft_model['cache_key'])
+        draft['ddk_id'] = assets['environment']['ddk_id']
+        abi_path = out / 'draft-abi.json'; write_json(abi_path, draft.pop('abi'))
+        draft['abi'] = file_record(abi_path)
+        if max_draft_tokens is not None and max_draft_tokens != draft.get('max_draft_tokens', 15):
+            raise ValueError('candidate gear differs from configured Draft model')
     tables = {k: file_record(parent / r['path'], size=r['bytes'], cache_key=r['cache_key'])
               for k, r in config['embedding'].items()}
     if {k: r['bytes'] for k, r in tables.items()} != {'weight': 508559360, 'scale': 993280}:

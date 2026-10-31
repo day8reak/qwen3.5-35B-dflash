@@ -77,7 +77,7 @@ def plan(root, config_path, *, draft_air=None, clean_completed=False, confirm_id
     asset_file = _source_path(config_path.parent / config['assets'], root)
     assets = read_json(asset_file)
     validate_assets(assets)
-    moves, files, writes, retained = [], {}, [], []
+    moves, files, writes, retained, wrappers = [], {}, [], [], []
     selected = set()
     new_config = deepcopy(config)
     new_config['assets'] = 'runtime-assets.json'
@@ -104,10 +104,19 @@ def plan(root, config_path, *, draft_air=None, clean_completed=False, confirm_id
     def small(path, value):
         writes.append(dict(path=str(path), value=value))
 
+    def flatten(source, destination):
+        """Move contents out of an old wrapper without nesting it again."""
+        source = _source_path(source, root)
+        if source == root / destination:
+            return
+        for child in sorted(source.iterdir()):
+            select(child, destination / child.name)
+        wrappers.append(_relative(source, root))
+
     for role in ('prefill', 'decode'):
         model = config['models'][role]
         old_root = _source_path(config_path.parent / model['directory'], root)
-        destination = Path(role) / 'omc/current'
+        destination = Path(role) / 'omc'
         for row in assets[role]['payloads']:
             relative = Path(row['path'])
             if relative.is_absolute() or '..' in relative.parts:
@@ -116,11 +125,15 @@ def plan(root, config_path, *, draft_air=None, clean_completed=False, confirm_id
             file_record(source, size=row['bytes'])
             select(source, destination / relative)
         new_config['models'][role]['directory'] = '../' + str(destination)
+        if old_root == root / role / 'omc/current':
+            wrappers.append(_relative(old_root, root))
         # Keep only the AIR and source files actually selected for this model.
         receipt = _compiler_report(old_root)
-        if receipt:
+        if (root / role / 'air/current').is_dir():
+            flatten(root / role / 'air/current', Path(role) / 'air')
+        elif receipt:
             report = read_json(receipt)
-            air_root = Path(role) / 'air/current'
+            air_root = Path(role) / 'air'
             snapshots = report.get('input_snapshots', [])
             primary = [r for r in snapshots if r.get('role') == 'air']
             if len(primary) != 1:
@@ -136,8 +149,10 @@ def plan(root, config_path, *, draft_air=None, clean_completed=False, confirm_id
             retained.append(dict(path=role + '/air', reason='current AIR source not found; OMC remains runnable'))
 
     old_draft = _source_path(config_path.parent / config['models']['draft']['path'], root)
-    select(old_draft, 'draft/omc/current/model.omc')
-    new_config['models']['draft']['path'] = '../draft/omc/current/model.omc'
+    select(old_draft, 'draft/omc/model.omc')
+    new_config['models']['draft']['path'] = '../draft/omc/model.omc'
+    if old_draft.parent == root / 'draft/omc/current':
+        wrappers.append('draft/omc/current')
     for key, row in config['embedding'].items():
         source = _source_path(config_path.parent / row['path'], root)
         destination = Path('common/embedding') / source.name
@@ -155,15 +170,17 @@ def plan(root, config_path, *, draft_air=None, clean_completed=False, confirm_id
         from qwen35_moe_dflash.draft.incremental.inputs import bind_incremental_export
         bound = bind_incremental_export(_source_path(draft_air, root))
         meta = deepcopy(bound['manifest'])
-        air_root = Path('draft/air') / ('kv-c%d-cap%d-k%d' % tuple(meta[k] for k in
-            ('context_rows', 'cache_capacity', 'max_draft_tokens')))
+        air_root = Path('draft/air')
         prepared_root = root / 'draft/source/prepared'
         if meta.get('source_policy') == 'portable-prepared-weights-v1':
             original_prepared = (bound['root'] / meta['source_prepared_root']).resolve()
         else:
             original_prepared = relocated_path(meta['source_prepared_root'], bound['root'])
         select(original_prepared, 'draft/source/prepared')
-        select(bound['root'], air_root)
+        if (root / air_root).exists():
+            flatten(bound['root'], air_root)
+        else:
+            select(bound['root'], air_root)
         prepared = read_json(original_prepared / 'prepared.json')
         # The portable AIR depends on its weights, never on a former S64 run.
         source_record = {k: meta['source_prepared'][k] for k in ('bytes', 'sha256')}
@@ -257,8 +274,9 @@ def plan(root, config_path, *, draft_air=None, clean_completed=False, confirm_id
     # Moving a selected directory must not swallow another selected asset.
     # Sort by depth so individual OMC files are extracted before a prepared root.
     moves.sort(key=lambda r: (r['action'] == 'link', -len(Path(r['source']).parts)))
-    return dict(schema_version=2, original_root=str(root), status='PLANNED',
+    return dict(schema_version=3, original_root=str(root), status='PLANNED',
         moves=moves, writes=writes, delete=delete, keep=retained,
+        empty_wrappers=wrappers,
         config='runtime/runtime.json', draft_air=str(air_root) if draft_air else None,
         cleanup_attempts={name: sorted({r['board_attempt'] for r in _reports(root / name)
                                       if r.get('board_attempt')}) for name in delete},
@@ -270,11 +288,22 @@ def organize_shared(root, config_path, *, apply=False, draft_air=None, clean_com
     root = Path(root).resolve()
     journal = root / JOURNAL
     saved = read_json(journal) if journal.is_file() else None
+    if not draft_air:
+        # Only select a unique exported AIR; never guess between model gears.
+        candidates = [p.parent for p in (root / 'draft/air').glob('*/manifest.json')
+                      if read_json(p).get('status') == 'DRAFT_INCREMENTAL_AIR_EXPORTED']
+        if (root / 'draft/air/manifest.json').is_file():
+            candidates.append(root / 'draft/air')
+        if len(candidates) > 1:
+            raise ValueError('multiple Draft AIRs; select one with --draft-air')
+        draft_air = candidates[0] if candidates else None
     if saved and draft_air and not Path(draft_air).exists():
         old = _relative(Path(draft_air), root)
         for row in saved['moves']:
-            if row['source'] == old and row['destination'] == saved.get('draft_air'):
-                draft_air = root / row['destination']
+            if (row['source'] == old and row['destination'] == saved.get('draft_air')
+                    or str(Path(row['source']).parent) == old
+                    and str(Path(row['destination']).parent) == saved.get('draft_air')):
+                draft_air = root / saved['draft_air']
                 break
     if saved and saved['status'] == 'MOVING':
         result = saved
@@ -361,7 +390,23 @@ def organize_shared(root, config_path, *, apply=False, draft_air=None, clean_com
         path = root / zone
         if path.is_dir() and not any(path.iterdir()):
             path.rmdir()
+    for relative in result.get('empty_wrappers', []):
+        path = _check_path(root, relative)
+        if path.is_dir():
+            for child in sorted(path.rglob('*'), key=lambda p: len(p.parts), reverse=True):
+                if child.is_dir() and not child.is_symlink() and not any(child.iterdir()):
+                    child.rmdir()
+            if not any(path.iterdir()):
+                path.rmdir()
+            else:
+                result['keep'].append(dict(path=relative, reason='unselected files remain in old wrapper'))
     result['status'] = 'PARTIAL' if result['keep'] else 'COMPLETE'
     _save(journal, result)
+    if result.get('schema_version', 2) < 3:
+        # Finish an interrupted older migration first, then remove its wrappers
+        # in the same invocation instead of requiring another user retry.
+        return organize_shared(root, root / result['config'], apply=True,
+            draft_air=root / result['draft_air'] if result.get('draft_air') else None,
+            clean_completed=clean_completed, confirm_idle=confirm_idle, closed_attempts=closed_attempts)
     return result
 

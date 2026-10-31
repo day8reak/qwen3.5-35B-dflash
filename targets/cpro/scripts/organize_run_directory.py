@@ -29,6 +29,16 @@ def main():
         result = organize_shared(args.root, config, draft_air=args.draft_air,
                           apply=args.apply, clean_completed=args.clean_completed,
                           closed_attempts=args.closed_attempt, confirm_idle=args.confirm_idle)
+        if args.apply:
+            from qwen35_moe_dflash.target.air_weights import normalize_air_weights
+            folders = [root / role / 'air' for role in ('prefill', 'decode')
+                       if (root / role / 'air/build.json').is_file()]
+            # Both graphs are checked before either weight directory is renamed.
+            for folder in folders:
+                normalize_air_weights(folder)
+            air_weights = [normalize_air_weights(folder, apply=True) for folder in folders]
+        else:
+            air_weights = 'PENDING_SHARED_ASSET_MOVES'
         result = {k: v for k, v in result.items() if k != 'writes'}
         if not args.details:
             result = dict(status=result['status'],
@@ -37,6 +47,7 @@ def main():
                 retained=result['keep'], unresolved_board_attempts=result['unresolved_board_attempts'],
                 config=str(root / 'runtime/runtime.json'),
                 journal=str(root / '.shared-layout.json') if args.apply else None)
+        result['air_weights'] = air_weights
     except Exception as error:
         result = dict(status='FAILED', error=f'{type(error).__name__}: {error}')
     print(json.dumps(result, ensure_ascii=False, indent=2))

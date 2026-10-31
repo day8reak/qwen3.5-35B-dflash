@@ -1,0 +1,8 @@
+{
+  "source": "https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/proto/ge_ir.proto",
+  "format": "google.protobuf.FileDescriptorProto",
+  "file": "ge_ir.proto",
+  "package": "ge.proto",
+  "source_sha256": "ae830d086742356333d2d8e2c44b5837eb26a860a829fa074eda8fd4ce5ae5a6",
+  "usage": "Offline structural AIR path rewriting; no generated Python or NPU package execution"
+}

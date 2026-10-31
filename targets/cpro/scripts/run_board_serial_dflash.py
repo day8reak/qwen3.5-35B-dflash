@@ -93,6 +93,12 @@ def main(argv=None):
             result = run_board_serial_dflash(**options)
     except Exception as error:
         result = {'status': 'FAILED', 'error': f'{type(error).__name__}: {error}'}
+    if result.get('status') == 'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED':
+        from qwen35_moe_dflash.draft.incremental.storage import retire_previous_after_smoke
+        try:
+            retire_previous_after_smoke(result)
+        except (OSError, ValueError, KeyError) as error:
+            result['draft_artifact_cleanup'] = 'RETAINED: ' + str(error)
     keys = ('status', 'stage', 'output', 'mode', 'device_execution', 'model_compilation',
             'numerical_validation', 'performance', 'generated_token_ids', 'counts', 'board_attempt',
             'lock_state', 'error', 'next', 'prepared', 'board_result')
@@ -101,7 +107,7 @@ def main(argv=None):
     keys += ('external_weight_release', 'runtime_profile', 'native_api_latency',
              'diagnostics', 'intermediate_tensor_io', 'startup_payload_validation')
     keys += ('generated_text', 'generated_text_with_special_tokens', 'text_io', 'text_latency')
-    keys += ('draft_preread', 'draft_kv', 'file_validation')
+    keys += ('draft_preread', 'draft_kv', 'file_validation', 'draft_artifact_cleanup')
     keys += ('execution_failure_stage', 'resident_failure_stage', 'prefill_failure_stage', 'prefill_lifecycle')
     print(json.dumps({key: result[key] for key in keys if key in result}, ensure_ascii=False, allow_nan=False), flush=True)
     return 0 if result.get('status') in {'BOARD_SERIAL_DFLASH_PLANNED', 'BOARD_SERIAL_DFLASH_STARTED',

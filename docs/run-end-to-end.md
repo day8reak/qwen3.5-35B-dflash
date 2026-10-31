@@ -14,17 +14,17 @@ export TARGET_SOURCE='/实际路径/原始Cpro导出工程'
 export TARGET_YAML='/实际路径/原始量化配置.yaml'
 export MAX_DRAFT_TOKENS=15
 
-mkdir -p "$AI_RUN_DIR"/{draft,prefill,decode}/{air,omc,tests}
+mkdir -p "$AI_RUN_DIR"/{draft,prefill,decode}/tests
 mkdir -p "$AI_RUN_DIR"/{common,runtime,fused}
-export INCREMENTAL_AIR="$AI_RUN_DIR/draft/air/kv-c16-cap192-k$MAX_DRAFT_TOKENS"
-export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft/omc/kv-c16-cap192-k$MAX_DRAFT_TOKENS"
+export INCREMENTAL_AIR="$AI_RUN_DIR/draft/air"
+export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft/omc"
 ```
 
 Target YAML包含有效的model_file、quanted_pth、embedding_weight_path、embedding_scale_path。导出主机与DDK服务器不同时，传输整个AIR输入目录及引用权重，不能只传AIR。
 
 ## 2. Draft权重 → AIR → OMC
 
-准备六层Draft的71份FP16权重，只读取Target的embedding和LM head。K支持15／7／3／1；新导出不依赖旧S64 AIR或OMC。编译预检至少需要6.23GiB空闲，编译器临时文件可能额外占用空间。
+准备六层Draft的71份FP16权重，只读取Target的embedding和LM head。K支持15／7／3／1，当前档位写在manifest中，不增加目录层级；新导出不依赖旧S64 AIR或OMC。编译预检至少需要6.23GiB空闲，编译器临时文件可能额外占用空间。
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/prepare_draft.py" \
@@ -42,11 +42,11 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
   --replace-failed --output "$INCREMENTAL_COMPILED"
 ```
 
-需要DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND、compiled_precision和compiled_abi均PASSED。当前新增量模型的实机结果待补，不能把主机测试写成板端精度通过。
+编译临时文件在`draft/tests/compile/`，成功后将模型和必要元数据发布到`draft/omc/`并删除临时构建；失败不替换当前模型。替换已有模型时，只保留一份临时回退至新模型的板端闭环成功回收，随后自动删除。需要DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND、compiled_precision和compiled_abi均PASSED。当前新增量模型的实机结果待补，不能把主机测试写成板端精度通过。
 
 ## 3. Target源工程 → Prefill64／Decode1 AIR → OMC
 
-分别导出40层静态64和静态1，将输出规范化为logits、80路状态和Target features。原始导出使用TorchAir，编译使用指定DDK。cp优先reflink，不支持时会复制权重，须预留磁盘空间。
+分别导出40层静态64和静态1，将输出规范化为logits、80路状态和Target features。原始导出使用TorchAir，编译使用指定DDK。公共AIR目录统一为`air/export.air`＋`air/weight/`；同步改写AIR的权重路径，同盘移动导出产物，不再复制一份大权重。
 
 ```bash
 (
@@ -55,29 +55,35 @@ for role in prefill decode; do
   if test "$role" = prefill; then sequence=64; else sequence=1; fi
   export_job="$AI_RUN_DIR/$role/source/export"
   canonical="$AI_RUN_DIR/$role/source/canonical"
-  prefix="glm_export_air_cpro_40block_${sequence}_quant"
+  air_bundle="$AI_RUN_DIR/$role/air"
+  test ! -e "$air_bundle"
 
   python3 "$REPO_DIR/targets/cpro/scripts/prepare_target_pytorch.py" \
     --source-root "$TARGET_SOURCE" --config "$TARGET_YAML" \
     --sequence-length "$sequence" --output "$export_job"
   bash "$export_job/export.sh"
 
-  original="$export_job/target-pytorch-source/source/$prefix"
+  original=$(python3 - "$export_job/target-pytorch-source/receipt.json" <<'PY'
+import json, sys
+from pathlib import Path
+print(Path(json.loads(Path(sys.argv[1]).read_text())['expected_air']).parent)
+PY
+)
   python3 "$REPO_DIR/targets/cpro/scripts/canonicalize_target_export.py" \
     --air "$original/export.air" --discover-torchair-schema \
     --sequence-length "$sequence" --hash-weights --output "$canonical"
 
-  # 保持FileConstant引用的原目录前缀。
-  test ! -e "$AI_RUN_DIR/$role/air/$prefix"
-  cp -a --reflink=auto "$original" "$AI_RUN_DIR/$role/air/$prefix"
-  cp "$canonical/export.air" "$AI_RUN_DIR/$role/air/$prefix/export.air"
+  cp "$canonical/export.air" "$original/export.air"
+  python3 "$REPO_DIR/targets/cpro/scripts/normalize_target_air.py" \
+    --air-dir "$original" --apply
+  mv "$original" "$air_bundle"
 
   python3 "$REPO_DIR/targets/cpro/scripts/compile_full_target.py" \
-    --air "$AI_RUN_DIR/$role/air/$prefix/export.air" \
-    --input-layout export-directory --profile "cpro-40block-$role-$sequence" \
+    --air "$air_bundle/export.air" \
+    --input-layout air-directory --profile "cpro-40block-$role-$sequence" \
     --sequence-length "$sequence" --target-features \
     --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-    --output "$AI_RUN_DIR/$role/omc/current"
+    --output "$AI_RUN_DIR/$role/omc"
 done
 )
 ```

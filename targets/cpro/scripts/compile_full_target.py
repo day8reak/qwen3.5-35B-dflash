@@ -48,9 +48,9 @@ def main():
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--air", help="original exported AIR; never modified; inferred from --resume if omitted")
-    parser.add_argument("--input-layout", choices=INPUT_LAYOUTS, default="export-directory",
-                        help="relative weight paths: default retains original export folder prefix; "
-                             "air-directory stages data directly beside AIR")
+    parser.add_argument("--input-layout", choices=INPUT_LAYOUTS,
+                        help="default uses air-directory for normalized weight/ bundles, "
+                             "otherwise export-directory for original exports")
     parser.add_argument("--profile", choices=EXISTING_AIR_PROFILE_NAMES,
                         default="cpro-40block-64-1", help="user-provided input names and dynamic shapes")
     parser.add_argument("--ddk-root", default=os.environ.get("CPRO_DDK_ROOT") or os.environ.get("DDK_PATH"))
@@ -80,6 +80,14 @@ def main():
     parser.add_argument("--timeout-seconds", type=int, default=7200, help="OMG compilation timeout")
     parser.add_argument("--skip-inspection", action="store_true", help="skip post-compile OMC-to-JSON inspection")
     args = parser.parse_args()
+    if args.air:
+        build_path = Path(args.air).parent / 'build.json'
+        build = json.loads(build_path.read_text()) if build_path.is_file() else {}
+        if build.get('air') == Path(args.air).name and build.get('weight_directory') == 'weight':
+            if args.input_layout not in (None, 'air-directory'):
+                parser.error('normalized weight/ bundles require --input-layout air-directory')
+            args.input_layout = 'air-directory'
+    args.input_layout = args.input_layout or 'export-directory'
     decode_flags = (args.borrow_decode_inputs_from, args.decode_inventory, args.decode_export_receipt)
     if any(decode_flags):
         if not all(decode_flags) or not args.air:

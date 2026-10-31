@@ -4,50 +4,43 @@
 
 ## 整理为公共产物
 
-只保留runtime配置引用的可运行模型、当前增量AIR及其准备权重。旧编译目录和已结束测试会清理；已有profiling CSV集中保存在`draft/results/profiling/`。执行前确认板端空闲。整个过程同盘移动，先验证新引用再删除旧目录；中断后重复同一命令。
+已有公共目录可直接执行下面命令。脚本自动选择唯一的增量AIR，去掉三类模型的`current/`和Draft档位目录，更新运行配置；Prefill、Decode的权重统一为`weight/`，同步改写AIR内部引用。只同盘移动，不复制大权重或重编OMC。执行前确认板端空闲；中断后重复同一命令。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 
 python3 "$REPO_DIR/targets/cpro/scripts/organize_run_directory.py" \
-  --root "$AI_RUN_DIR" \
-  --draft-air "$AI_RUN_DIR/draft/draft-kv-c16-cap192-k15-air-v1" \
-  --clean-completed --confirm-idle --details
-
-python3 "$REPO_DIR/targets/cpro/scripts/organize_run_directory.py" \
-  --root "$AI_RUN_DIR" \
-  --draft-air "$AI_RUN_DIR/draft/draft-kv-c16-cap192-k15-air-v1" \
-  --clean-completed --confirm-idle --apply
+  --root "$AI_RUN_DIR" --clean-completed --confirm-idle --apply
 ```
 
-已分到`prefill/`、`decode/`、`draft/`的旧目录可直接执行以上命令。脚本通过上次迁移记录定位旧路径，包括编译输入中仍指向旧目录的权重软链接；不需要搬回目录或手改配置。预览失败不会移动、删除文件，更新代码后重跑即可。
-
-如果尚未执行上一轮分类，`--draft-air`使用根目录下的同名AIR目录。若列出`retained`，这些项未删除；未知文件和未选定的成功增量构建不会按旧版本猜测删除。
+尚未迁入公共目录时，加`--draft-air /实际路径/增量AIR目录`。存在多个AIR时也需明确选择。未选定的成功构建和未知文件不会自动删除。
 
 ```text
 $AI_RUN_DIR/
-  prefill/air/  prefill/omc/  prefill/tests/
-  decode/air/   decode/omc/   decode/tests/
-  draft/air/    draft/omc/    draft/tests/
-  draft/source/prepared/     # 新AIR继续编译所需的71份权重
-  draft/results/profiling/   # 已采集CSV
+  prefill/air/{export.air,weight/}   prefill/omc/   prefill/tests/
+  decode/air/{export.air,weight/}    decode/omc/    decode/tests/
+  draft/air/{draft.air,manifest.json,draft/}
+  draft/omc/{model.omc,manifest.json,...}
+  draft/source/prepared/          # 后续构建所需权重
+  draft/tests/compile/            # 固定编译临时目录，成功发布后删除
+  draft/results/profiling/        # 已采集CSV
   common/embedding/  common/tokenizer/
-  runtime/                  # runtime.json、runtime-assets.json、native/
-  fused/                    # 整体流程run/result固定目录
+  runtime/                       # runtime.json、runtime-assets.json、native/
+  fused/                         # 整体流程run/result固定目录
 ```
 
-当前已跑通S64 Draft暂放`draft/omc/current/`，增量Draft通过板端测试并切换配置后再替换它。
+档位保存在manifest中，不另建目录。`draft/air/draft/`保存生成AIR所需的图配方和序列化代码，属于产物内容。已有S64模型暂在`draft/omc/model.omc`；新模型编译、精度策略和ABI检查成功后发布，编译失败不替换它。首次新模型板端闭环成功回收前，保留唯一临时回退`.omc-previous/`；成功回收后自动删除。编译检查不代表板端数值精度通过。
 
 ## 重新编译K15
 
-上次AIR已生成，编译因空间不足停止，尚无可用的增量OMC。清理空间后直接复用AIR，不需要重新导出或复制原权重。以下使用整理后的目录，编译产物固定放在`draft/omc/kv-c16-cap192-k15`。当前预检至少需要6,685,841,408字节（约6.23GiB）；编译临时文件还可能占用额外空间。
+上次AIR已生成，编译因空间不足停止，尚无可用的增量OMC。清理空间后直接复用AIR，不需要重新导出或复制原权重。以下使用整理后的目录，编译产物固定放在`draft/omc`。当前预检至少需要6,685,841,408字节（约6.23GiB）；编译临时文件还可能占用额外空间。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 
 export MAX_DRAFT_TOKENS=15
-export INCREMENTAL_AIR="$AI_RUN_DIR/draft/air/kv-c16-cap192-k15"
-export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft/omc/kv-c16-cap192-k15"
+export INCREMENTAL_AIR="$AI_RUN_DIR/draft/air"
+export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft/omc"
 
 df -h "$AI_RUN_DIR"
 
@@ -56,7 +49,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/targets/cpro/scripts/compile_increm
   --replace-failed --output "$INCREMENTAL_COMPILED"
 ```
 
-编译完成后检查结果：
+失败信息保存在`draft/tests/compile/manifest.json`，用同一条命令加`--replace-failed`重试，不创建版本目录。成功后只保留公共OMC和必要元数据，临时编译目录删除。
+
+编译成功后检查公共产物：
 
 ```bash
 python3 - <<'PYCODE'
@@ -70,7 +65,7 @@ print(json.dumps({k: d.get(k) for k in keys}, ensure_ascii=False, indent=2))
 PYCODE
 ```
 
-需要`DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND`、`compiled_precision=PASSED`和`compiled_abi=PASSED`才继续。成功后复用此目录，不再编译；它是后续运行依赖，不能当作临时测试删除。
+需要`DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND`、`compiled_precision=PASSED`和`compiled_abi=PASSED`才继续。运行入口从同目录manifest读取当前档位、模型缓存标识和新ABI，不再套用旧S64 ABI。成功后测试直接复用公共产物。
 
 ## 更新共享运行器
 
@@ -89,7 +84,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
 export RUN_DIR="$AI_RUN_DIR/fused/run"
 export RECOVERY_DIR="$AI_RUN_DIR/fused/result"
 export MAX_DRAFT_TOKENS=15
-export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft/omc/kv-c16-cap192-k15"
+export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft/omc"
 
 python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
   --config "$AI_RUN_DIR/runtime/runtime.json" \
