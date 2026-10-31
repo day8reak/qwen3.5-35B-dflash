@@ -5802,11 +5802,43 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PROFILE_MODEL_INFERENCE_518990_US_RUNTIME_GAP_UNATTRIBUTED",
-    "entry": "targets/cpro/tools/profile_draft.py",
+    "status": "FP32_NPU_REGION_PROBES_READY_SELECTED_DDK_PENDING",
+    "entry": "targets/cpro/tools/probe_draft_vector.py",
     "commands": "docs/current-status.md",
     "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Inspect existing compiled-precision.json partition counts; isolate runtime overhead and evaluate projection/physical context rows without changing the numerical baseline."
+    "next": "Compile five weight-free FP32 region probes with probe_draft_vector.py on the selected X90 DDK; inspect placement, then validate device numerics before full Draft integration. See docs/current-status.md.",
+    "compiled_partition_observation": {
+      "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
+      "independently_retrieved": false,
+      "graphop_counts": {
+        "CPUCL": 27,
+        "NPUCL": 26
+      },
+      "required_nodes": 200,
+      "matched_nodes": 200,
+      "meaning": "COMPILED_FP32_POLICY_MATCH_NOT_NUMERICAL_PASS_OR_MEASURED_SWITCH_COUNT",
+      "cpu_pattern": "PER_LAYER_Q_K_RMS_SCORE_SOFTMAX_AND_TWO_RESIDUAL_RMS_REGIONS",
+      "node_list_scope": "REQUIRED_PRECISION_POLICY_NODES_ONLY_NOT_ALL_CPU_NODES"
+    },
+    "performance_target": {
+      "mean_ms": 50,
+      "status": "NOT_ACHIEVED",
+      "context_rows": 16,
+      "cache_capacity": 192,
+      "max_draft_tokens": 15,
+      "scope": "RESIDENT_WARM_SYNCHRONOUS_PROCESS_PROPOSAL_INCLUDING_INTERNAL_DISPATCH_SYNC_TRANSFERS",
+      "warmup_calls": 3,
+      "measured_calls": 10,
+      "report": [
+        "mean_ms",
+        "max_ms"
+      ],
+      "exclude": [
+        "model_load",
+        "initial_context_catchup"
+      ],
+      "comparison": "SAME_INPUTS_CACHE_LENGTH_REQUESTED_FREQUENCY; EXISTING_518990_US_IS_ONE_PROFILE_NOT_WARM_BASELINE"
+    }
   }
 }

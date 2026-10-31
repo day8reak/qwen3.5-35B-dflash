@@ -964,7 +964,7 @@
     "maintenance_policy": "Homepage contains only a brief introduction and six direct links. Keep each primary page self-contained; operational pages contain short instructions and complete command blocks. Detailed development and historical evidence remain outside primary navigation."
   },
   "incremental_draft_task": {
-    "status": "USER_REPORTED_INCREMENTAL_MODEL_INFERENCE_518990_US",
+    "status": "FP32_NPU_REGION_PROBES_READY_SELECTED_DDK_PENDING",
     "context_gears": [
       16,
       64
@@ -980,7 +980,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "Inspect existing draft/omc/compiled-precision.json; see docs/current-status.md",
+    "next_command": "Compile five weight-free FP32 region probes with probe_draft_vector.py on the selected X90 DDK; inspect placement, then validate device numerics before full Draft integration. See docs/current-status.md.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -1010,7 +1010,39 @@
       "local_test_sources": "NOT_PUBLISHED"
     },
     "latest_observation": "specs/incremental-draft-native-host-validation.json",
-    "latest_accuracy_observation": "specs/incremental-draft-native-host-validation.json"
+    "latest_accuracy_observation": "specs/incremental-draft-native-host-validation.json",
+    "performance_target": {
+      "mean_ms": 50,
+      "status": "NOT_ACHIEVED",
+      "context_rows": 16,
+      "cache_capacity": 192,
+      "max_draft_tokens": 15,
+      "scope": "RESIDENT_WARM_SYNCHRONOUS_PROCESS_PROPOSAL_INCLUDING_INTERNAL_DISPATCH_SYNC_TRANSFERS",
+      "warmup_calls": 3,
+      "measured_calls": 10,
+      "report": [
+        "mean_ms",
+        "max_ms"
+      ],
+      "exclude": [
+        "model_load",
+        "initial_context_catchup"
+      ],
+      "comparison": "SAME_INPUTS_CACHE_LENGTH_REQUESTED_FREQUENCY; EXISTING_518990_US_IS_ONE_PROFILE_NOT_WARM_BASELINE"
+    },
+    "compiled_partition_observation": {
+      "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
+      "independently_retrieved": false,
+      "graphop_counts": {
+        "CPUCL": 27,
+        "NPUCL": 26
+      },
+      "required_nodes": 200,
+      "matched_nodes": 200,
+      "meaning": "COMPILED_FP32_POLICY_MATCH_NOT_NUMERICAL_PASS_OR_MEASURED_SWITCH_COUNT",
+      "cpu_pattern": "PER_LAYER_Q_K_RMS_SCORE_SOFTMAX_AND_TWO_RESIDUAL_RMS_REGIONS",
+      "node_list_scope": "REQUIRED_PRECISION_POLICY_NODES_ONLY_NOT_ALL_CPU_NODES"
+    }
   },
   "draft_milestone_e2e_gate": {
     "policy": "EVERY_EXECUTABLE_DRAFT_MILESTONE_REQUIRES_BOARD_LOCAL_FULL_LOOP_SMOKE",

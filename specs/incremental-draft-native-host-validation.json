@@ -23,7 +23,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "Read existing compiled-precision.json partition counts; isolate runtime partition overhead and evaluate fixed-row projection work before a controlled optimization.",
+  "next": "Compile five weight-free FP32 region probes with probe_draft_vector.py on the selected X90 DDK; inspect placement, then validate device numerics before full Draft integration. See docs/current-status.md.",
   "latest_user_board_observation": {
     "source": "USER_PASTED_RECOVERY_JSON",
     "independently_retrieved": false,
@@ -178,6 +178,49 @@
     "gap_attribution": "UNRESOLVED_RUNTIME_DISPATCH_SYNCHRONIZATION_AND_INTERNAL_TRANSFERS_ARE_HYPOTHESES",
     "timestamp_caveat": "SAME_STREAM_CONV_AND_DEPENDENT_RESHAPE_STARTS_DIFFER_BY_2_US_WITH_CONV_DURATION_70968_US; DO_NOT_CONSTRUCT_DEVICE_TIMELINE_WITHOUT_CLOCK_SCOPE",
     "static_work": "C16_CONTEXT_PROJECTION_EXECUTES_FOR_PARTIAL_OR_ZERO_VALID_ROWS",
-    "next": "Inspect existing compiled CPU/NPU partitions. Keep baseline precision and raw CSV; compare changed graphs on the same inputs using whole-model wall time."
+    "next": "Compile five weight-free FP32 region probes with probe_draft_vector.py on the selected X90 DDK; inspect placement, then validate device numerics before full Draft integration. See docs/current-status.md."
+  },
+  "compiled_partition_observation": {
+    "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
+    "independently_retrieved": false,
+    "graphop_counts": {
+      "CPUCL": 27,
+      "NPUCL": 26
+    },
+    "required_nodes": 200,
+    "matched_nodes": 200,
+    "meaning": "COMPILED_FP32_POLICY_MATCH_NOT_NUMERICAL_PASS_OR_MEASURED_SWITCH_COUNT",
+    "cpu_pattern": "PER_LAYER_Q_K_RMS_SCORE_SOFTMAX_AND_TWO_RESIDUAL_RMS_REGIONS",
+    "node_list_scope": "REQUIRED_PRECISION_POLICY_NODES_ONLY_NOT_ALL_CPU_NODES"
+  },
+  "performance_target": {
+    "mean_ms": 50,
+    "status": "NOT_ACHIEVED",
+    "context_rows": 16,
+    "cache_capacity": 192,
+    "max_draft_tokens": 15,
+    "scope": "RESIDENT_WARM_SYNCHRONOUS_PROCESS_PROPOSAL_INCLUDING_INTERNAL_DISPATCH_SYNC_TRANSFERS",
+    "warmup_calls": 3,
+    "measured_calls": 10,
+    "report": [
+      "mean_ms",
+      "max_ms"
+    ],
+    "exclude": [
+      "model_load",
+      "initial_context_catchup"
+    ],
+    "comparison": "SAME_INPUTS_CACHE_LENGTH_REQUESTED_FREQUENCY; EXISTING_518990_US_IS_ONE_PROFILE_NOT_WARM_BASELINE"
+  },
+  "fp32_probe_host_validation": {
+    "status": "PASSED",
+    "checks": 10,
+    "scope": "LOCAL_CPU_TORCH_COMPARISON_GRAPH_CONTRACT_AND_CLI_SLOT_REUSE_ONLY",
+    "tool": "targets/cpro/tools/probe_draft_vector.py",
+    "selected_ddk_compilation": "NOT_RUN_LOCAL_PROFILE_MISSING",
+    "device_execution": "NOT_RUN",
+    "local_test_sources": "NOT_PUBLISHED",
+    "main_draft_model_changed": false,
+    "production_precision_policy_changed": false
   }
 }
