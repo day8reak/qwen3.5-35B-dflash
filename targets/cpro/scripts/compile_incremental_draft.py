@@ -16,7 +16,7 @@ def main(argv=None):
     parser.add_argument('--timeout-seconds', type=int, default=7200)
     parser.add_argument('--tbe-diagnosis', help='optional existing selected-DDK TBE compatibility diagnosis')
     args = parser.parse_args(argv)
-    from qwen35_moe_dflash.incremental_draft_compile import compile_incremental_draft
+    from qwen35_moe_dflash.draft.incremental.compile import compile_incremental_draft
     try:
         result = compile_incremental_draft(args.air_export, args.output, timeout_seconds=args.timeout_seconds,
             tbe_diagnosis=args.tbe_diagnosis, progress=lambda value: print('incremental-draft: ' + value, flush=True))

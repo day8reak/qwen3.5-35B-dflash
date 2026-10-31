@@ -20,7 +20,7 @@ def _print_result(result, *, result_path=None, log_paths=()):
     The on-disk result retains the full exception. This is only a bounded
     console presentation, and does not infer the cause of a compiler failure.
     """
-    from qwen35_moe_dflash.tool_logs import log_excerpt
+    from qwen35_moe_dflash.common.tool_logs import log_excerpt
 
     console = dict(result)
     if result.get("status") == "FAILED":
@@ -43,10 +43,8 @@ def _print_result(result, *, result_path=None, log_paths=()):
 
 
 def main():
-    from qwen35_moe_dflash.existing_air_profile import (
-        EXISTING_AIR_PROFILE_NAMES, get_existing_air_profile,
-    )
-    from qwen35_moe_dflash.existing_air import INPUT_LAYOUTS, compile_existing_air
+    from qwen35_moe_dflash.toolchain.existing_air_profile import EXISTING_AIR_PROFILE_NAMES, get_existing_air_profile
+    from qwen35_moe_dflash.toolchain.existing_air import INPUT_LAYOUTS, compile_existing_air
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--air", help="original exported AIR; never modified; inferred from --resume if omitted")
@@ -109,10 +107,8 @@ def main():
     if args.run_board and (args.inspect_only or args.skip_inspection or bool(args.input_dir) == bool(args.board_input_dir)):
         parser.error("--run-board requires exactly one of --input-dir/--board-input-dir and actual contract inspection")
 
-    from qwen35_moe_dflash.artifacts import output_path, save_json
-    from qwen35_moe_dflash.full_target import (
-        active_target_jobs, read_metadata, target_source_lock, validate_compilation,
-    )
+    from qwen35_moe_dflash.common.artifacts import output_path, save_json
+    from qwen35_moe_dflash.toolchain.full_target import active_target_jobs, read_metadata, target_source_lock, validate_compilation
 
     root = None
     owned_root = False
@@ -142,7 +138,7 @@ def main():
             if successor:
                 if not args.tmpdir_probe or not args.stop_receipt:
                     raise ValueError("an audited static64 successor retry requires --tmpdir-probe and --stop-receipt")
-                from qwen35_moe_dflash.target_retry_gate import validate_static_retry_gate
+                from qwen35_moe_dflash.target.retry_gate import validate_static_retry_gate
                 retry_preflight = validate_static_retry_gate(predecessor,
                     tmpdir_probe=args.tmpdir_probe, stop_receipt=args.stop_receipt)
                 if retry_preflight.get("status") != "PREFLIGHT_PASSED":
@@ -197,7 +193,7 @@ def main():
                 "report": str(evidence_root / "retry-preflight.json"),
                 "scope": "Final failed-job/process/probe gates only; no model execution or accuracy pass"}
         if args.hiai_include or args.source_root:
-            from qwen35_moe_dflash.original_target_contract import capture_runtime_sources
+            from qwen35_moe_dflash.target.original_target_contract import capture_runtime_sources
             try:
                 sources = capture_runtime_sources(evidence_root / "runtime-sources", include=args.hiai_include,
                                                   source_root=args.source_root)
@@ -216,7 +212,7 @@ def main():
 
         if not args.resume:
             if retry_preflight is not None:
-                from qwen35_moe_dflash.target_export_reuse import _absolute, _read_small
+                from qwen35_moe_dflash.target.source_inventory import _absolute, _read_small
                 for identity in retry_preflight.get("metadata_bindings", []):
                     if _read_small(_absolute(identity["path"]), 16 << 20)[1] != identity:
                         raise ValueError("static64 retry preflight metadata changed before compilation")
@@ -249,7 +245,7 @@ def main():
                 "report": str(root / "compilation/decode-input-view.json"),
                 "scope": "Owned file aliases to freshly verified readonly prefill snapshots; separate decode AIR and compiler outputs"}
         if (root / "compilation/report.json").is_file():
-            from qwen35_moe_dflash.hashing import sha256_file
+            from qwen35_moe_dflash.common.hashing import sha256_file
             result["compilation_report_sha256"] = sha256_file(root / "compilation/report.json")
         result["compile_log"] = str(root / "compilation/compile.log")
         if compiled["status"] == "COMPILED":
@@ -258,7 +254,7 @@ def main():
             if not args.skip_inspection:
                 print("full-target: inspecting compiled graph interface (no board execution)", flush=True)
                 try:
-                    from qwen35_moe_dflash.existing_omc_inspect import inspect_existing_omc
+                    from qwen35_moe_dflash.toolchain.existing_omc_inspect import inspect_existing_omc
                     inspected = inspect_existing_omc(root / "compilation", evidence_root / "interface", timeout_seconds=120)
                     result["interface_inspection"] = inspected["status"]
                     result["interface_report"] = str(evidence_root / "interface/report.txt")
@@ -266,7 +262,7 @@ def main():
                     result["interface_inspection"] = "UNAVAILABLE"
                     result["interface_error"] = f"{type(error).__name__}: {error}"
                 try:
-                    from qwen35_moe_dflash.original_target_contract import boundary_report, inspect_target_contract
+                    from qwen35_moe_dflash.target.original_target_contract import boundary_report, inspect_target_contract
                     contract = inspect_target_contract(root / "compilation", evidence_root / "target-contract", profile)
                     result["target_contract_inspection"] = contract["status"]
                     result["target_contract_report"] = str(evidence_root / "target-contract/report.json")
@@ -278,7 +274,7 @@ def main():
                 result["target_contract_inspection"] = "NOT_RUN"
             result["next"] = "Confirm original graph I/O, external weights, dynamic gear and RefData state contract before board execution"
             if args.run_board:
-                from qwen35_moe_dflash.original_target_board import execute_target_tool
+                from qwen35_moe_dflash.target.original_target_board import execute_target_tool
                 board = execute_target_tool(root / "compilation", evidence_root / "target-contract/report.json",
                     evidence_root / "board", profile=profile, gear=args.sequence_length,
                     input_dir=args.board_input_dir, host_input_dir=args.input_dir, tool=args.board_tool,
@@ -291,7 +287,7 @@ def main():
                 if "feature_output_evidence" in board:
                     result["feature_output_evidence"] = board["feature_output_evidence"]
                 if board["status"] == "FAILED":
-                    from qwen35_moe_dflash.tool_logs import log_excerpt
+                    from qwen35_moe_dflash.common.tool_logs import log_excerpt
                     result["board_error"] = board.get("error", board.get("evidence_error", "target execution failed"))
                     for name in ("tool.stderr", "tool.stdout"):
                         if (evidence_root / "board" / name).is_file():

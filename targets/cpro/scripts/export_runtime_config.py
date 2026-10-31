@@ -14,8 +14,8 @@ def main():
     parser.add_argument('--prepared', required=True, help='Existing resident-mixed prepared directory')
     parser.add_argument('--output', required=True, help='Destination runtime.json')
     args = parser.parse_args()
-    from qwen35_moe_dflash.runtime_config import export_config
-    from qwen35_moe_dflash.artifacts import output_path
+    from qwen35_moe_dflash.execution.runtime_config import export_config
+    from qwen35_moe_dflash.common.artifacts import output_path
     try:
         export_config(args.prepared, output_path(args.output))
         result = dict(status='RUNTIME_CONFIG_EXPORTED', config=str(Path(args.output).resolve()),

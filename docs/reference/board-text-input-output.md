@@ -75,7 +75,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
 
 测试使用真实原词表和主机编译的同一C++ tokenizer，对照HF编码、解码和原Jinja模板。C++完整prefill/draft/decode/回收测试使用fake HIAI，只验证接口与调度，不宣称实机推理、语言质量或NPU性能通过。不同Unicode实现版本的边界由每次板端编码与原版admission ID的相等检查覆盖；不相等时在模型加载前失败。
 
-主机复验需要设置 `QWEN35_TOKENIZER_SOURCE_DIR`、`QWEN35_TOKENIZER_TEST_BINARY`，以及混合fixture二进制路径 `QWEN35_RESIDENT_MIXED_TEST_BINARY` 和其 `QWEN35_RESIDENT_MIXED_TEST_BINARY_SHA256`；运行 `pytest tests/test_board_tokenizer.py`。不设置这些显式路径时资源测试跳过，不自动下载或触碰设备。
+本地词表回归与模拟HIAI测试在仓库外维护，不随发布代码提供；这些检查不代表板端数值精度通过。
 
 验证记录见[结构化主机验证](../../specs/board-text-host-validation.json)：2670组编码、6066组解码对照无差异；原准备／传输176项回归通过，文字及原生循环16项通过，扩展文字下发4项通过（其中2项与前者传输回归重叠）。实机文字流程待用户运行。
 

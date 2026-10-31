@@ -56,21 +56,21 @@ def parser():
 
 
 def _record(folder, filename):
-    from qwen35_moe_dflash.hashing import sha256_file
+    from qwen35_moe_dflash.common.hashing import sha256_file
     path = folder / filename
     return {"directory": str(folder.resolve()), "manifest": {
         "path": filename, "bytes": path.stat().st_size, "sha256": sha256_file(path)}}
 
 
 def _read_component(record):
-    from qwen35_moe_dflash.artifacts import checked_file
+    from qwen35_moe_dflash.common.artifacts import checked_file
     folder = Path(record["directory"]).resolve()
     path = checked_file(folder, record["manifest"])
     return folder, json.loads(path.read_text())
 
 
 def _verify_air(folder, manifest):
-    from qwen35_moe_dflash.artifacts import checked_file
+    from qwen35_moe_dflash.common.artifacts import checked_file
     if manifest.get("status") != "EXPORTED" or [g["name"] for g in manifest.get("graphs", [])] != ["draft"]:
         raise ValueError("expected an exported draft-only AIR manifest")
     for row in manifest["graphs"][0]["files"]:
@@ -79,9 +79,9 @@ def _verify_air(folder, manifest):
 
 def _precision_request(folder, manifest):
     """Bind the placement request to the exact retained construction recipe."""
-    from qwen35_moe_dflash.artifacts import checked_file
-    from qwen35_moe_dflash.draft_compile_precision import collect_precision_plan
-    from qwen35_moe_dflash.draft_precision_policy import customization_bytes
+    from qwen35_moe_dflash.common.artifacts import checked_file
+    from qwen35_moe_dflash.draft.compile_precision import collect_precision_plan
+    from qwen35_moe_dflash.draft.precision_policy import customization_bytes
     # The pipeline validates the complete AIR/weight inventory before reset
     # and after export. Read only the small recipe here, avoiding another
     # multi-gigabyte weight hash pass for each policy derivation.
@@ -101,7 +101,7 @@ def _precision_request(folder, manifest):
 
 
 def _precision_snapshot(folder, compiled):
-    from qwen35_moe_dflash.artifacts import checked_file
+    from qwen35_moe_dflash.common.artifacts import checked_file
     receipt = compiled.get("cl_customization")
     option = compiled.get("requested_options", {}).get("cl_customization")
     if receipt is None:
@@ -153,7 +153,7 @@ def _save_precision_check(folder, report):
 
 def _retained_output_candidate(previous, compile_options):
     """Identify the old post-OMG path error; recovery still verifies every file."""
-    from qwen35_moe_dflash.retained_air import LEGACY_OUTPUT_ERROR
+    from qwen35_moe_dflash.toolchain.retained_air import LEGACY_OUTPUT_ERROR
     folder = previous / "compilation"
     path = folder / "report.json"
     if not path.is_file():
@@ -184,7 +184,7 @@ def _external_weight_candidates(compiled):
 
 
 def _weight_path(explicit, key):
-    from qwen35_moe_dflash.resources import load_resources, resource_path
+    from qwen35_moe_dflash.common.resources import load_resources, resource_path
     if explicit:
         return resource_path({key: explicit}, key, directory=True)
     resources, _ = load_resources()
@@ -253,7 +253,7 @@ def _console_result(result):
 
 def _print_board_failure(result, hilog=None):
     """Show retained execution and comparison failures without another invocation."""
-    from qwen35_moe_dflash.tool_logs import log_excerpt
+    from qwen35_moe_dflash.common.tool_logs import log_excerpt
     folder = Path(result["board"])
     print(f"full-draft: Board failure evidence: {folder / 'result.json'}", flush=True)
     _print_retained_comparison(folder)
@@ -297,7 +297,7 @@ def main(argv=None):
 
 
 def _main(args, stack):
-    from qwen35_moe_dflash.artifacts import checked_file, output_path, save_json
+    from qwen35_moe_dflash.common.artifacts import checked_file, output_path, save_json
 
     result = {"schema_version": 1, "artifact_kind": "qwen35-full-draft-job",
               "status": "PREPARING", "stage": "preflight", "components": {},
@@ -371,8 +371,8 @@ def _main(args, stack):
                 raise ValueError(option+" reads the retained execution; do not select changed inputs, storage or loader")
             if args.resume and args.output and Path(args.resume).resolve() != Path(args.output).resolve():
                 raise ValueError(option+" does not migrate jobs; select one existing job directory")
-            from qwen35_moe_dflash.draft_review import review_draft_result
-            from qwen35_moe_dflash.draft_workspace import DraftWorkspace
+            from qwen35_moe_dflash.draft.review import review_draft_result
+            from qwen35_moe_dflash.draft.workspace import DraftWorkspace
             selected = Path(args.resume or args.output or Path(run)/"full-draft")
             if not selected.is_dir() or selected.is_symlink():
                 raise ValueError(option+" needs an existing real draft job directory")
@@ -385,13 +385,13 @@ def _main(args, stack):
                 if review_workspace.load_pending() is not None:
                     raise ValueError("finish the pending workspace migration before comparing retained outputs")
                 if args.diagnose_numerics:
-                    from qwen35_moe_dflash.draft_numerics import diagnose_draft_numerics
+                    from qwen35_moe_dflash.draft.numerics import diagnose_draft_numerics
                     reviewed = diagnose_draft_numerics(selected, schema_library=args.schema_library)
                     print(json.dumps(reviewed.get("summary", reviewed), ensure_ascii=False, allow_nan=False), flush=True)
                     print(f"full-draft: Numerical diagnostic: {selected / 'numerical-diagnostic/report.json'}", flush=True)
                     return 0 if reviewed.get("numerical_validation") == "TOP1_MATCHED" else 1
                 if args.replay_reference:
-                    from qwen35_moe_dflash.draft_reference_replay import replay_reference
+                    from qwen35_moe_dflash.draft.reference_replay import replay_reference
                     reviewed = replay_reference(selected, selected/"reference-replay",
                         progress=lambda message: print("draft-reference: "+message, flush=True))
                     print(json.dumps(reviewed, ensure_ascii=False, allow_nan=False), flush=True)
@@ -409,7 +409,7 @@ def _main(args, stack):
                                                    args.sequence_length, args.valid_length, args.weight_storage,
                                                    args.model_load_api, args.precision_policy)):
                 raise ValueError("inspection reads the retained job; do not select new weights, inputs or weight storage")
-            from qwen35_moe_dflash.draft_compile_inspect import inspect_draft_compile
+            from qwen35_moe_dflash.draft.compile_inspect import inspect_draft_compile
             inspection_dir = output_path(args.output or Path(run) / ("full-draft-inspect-" + uuid.uuid4().hex[:12]))
             inspected = inspect_draft_compile(args.resume, inspection_dir, schema_library=args.schema_library)
             print(json.dumps({"status": inspected["status"], "output": str(inspection_dir),
@@ -423,7 +423,7 @@ def _main(args, stack):
         pending = None
         previous = Path(args.resume).resolve() if args.resume else None
         if not args.output or destination == Path(run).resolve() / "full-draft" or destination.exists():
-            from qwen35_moe_dflash.draft_workspace import DraftWorkspace
+            from qwen35_moe_dflash.draft.workspace import DraftWorkspace
             workspace = stack.enter_context(DraftWorkspace(destination))
             pending = workspace.load_pending()
             if pending is not None:
@@ -488,7 +488,7 @@ def _main(args, stack):
             if old.get("reference_input_identity"):
                 result["reference_input_identity"] = old["reference_input_identity"]
             if "fixture" in result["components"]:
-                from qwen35_moe_dflash.draft_reference import DRAFT_REFERENCE_CONTRACT
+                from qwen35_moe_dflash.draft.reference import DRAFT_REFERENCE_CONTRACT
                 _, prior_fixture = _read_component(result["components"]["fixture"])
                 if prior_fixture.get("reference_contract") != DRAFT_REFERENCE_CONTRACT:
                     if prior_fixture.get("inputs"):
@@ -504,7 +504,7 @@ def _main(args, stack):
                         "scope": "Rebuild the CPU reference with 4B AIR-aligned precision and verify unchanged fixed inputs."})
                     stage("resume", "Previous reference precision contract is obsolete; rebuilding with 4B AIR-aligned RMS, attention and RoPE")
             if "air" in result["components"]:
-                from qwen35_moe_dflash.draft_standalone import CURRENT_DRAFT_EXPORT_CONTRACT
+                from qwen35_moe_dflash.draft.standalone import CURRENT_DRAFT_EXPORT_CONTRACT
                 # Verify the immutable old receipt before deciding to rebuild.
                 # Reference arithmetic is versioned separately above.
                 _, prior_air = _read_component(result["components"]["air"])
@@ -590,8 +590,8 @@ def _main(args, stack):
             raise ValueError("--valid-length must be within the context capacity")
         result["settings"] = settings
 
-        from qwen35_moe_dflash.draft_standalone import prepare_draft, export_draft
-        from qwen35_moe_dflash.draft_reference import prepare_draft_reference
+        from qwen35_moe_dflash.draft.standalone import prepare_draft, export_draft
+        from qwen35_moe_dflash.draft.reference import prepare_draft_reference
 
         if "prepared" not in result["components"]:
             paths = result.get("weight_paths", {})
@@ -644,7 +644,7 @@ def _main(args, stack):
                 if identities(refreshed.get("inputs", [])) != identities(result["reference_input_identity"]):
                     raise ValueError("rebuilt reference input bytes differ from retained fixture")
         fixture_dir, fixture = component("fixture", "report.json", build_reference)
-        from qwen35_moe_dflash.draft_reference import DRAFT_REFERENCE_CONTRACT
+        from qwen35_moe_dflash.draft.reference import DRAFT_REFERENCE_CONTRACT
         if fixture.get("reference_contract") != DRAFT_REFERENCE_CONTRACT:
             raise ValueError("draft reference is missing the current 4B AIR precision contract")
         if (fixture.get("status") != "REFERENCE_COMPLETE" or not fixture.get("expected_top1")
@@ -674,10 +674,10 @@ def _main(args, stack):
                   if retained_compilation is not None else
                   f"Compiling draft AIR with {weight_storage} OMC weights: use_origin_format=true, weight_data_type=FP16, "
                   f"save_weights_as_external_data={compile_options['save_weights_as_external_data']}")
-            from qwen35_moe_dflash.existing_air import compile_existing_air
+            from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
             def compile_draft(folder):
                 if retained_compilation is not None:
-                    from qwen35_moe_dflash.retained_air import recover_retained_air
+                    from qwen35_moe_dflash.toolchain.retained_air import recover_retained_air
                     # Any failed recovery check is terminal; do not silently run OMG.
                     compiled = recover_retained_air(
                         retained_compilation, folder, export_dir=air_dir,
@@ -729,8 +729,8 @@ def _main(args, stack):
             if args.ddk_id and compiled["ddk_id"] != args.ddk_id:
                 raise ValueError("selected DDK differs from the reused compilation")
             if precision_policy == "fp32-cpu":
-                from qwen35_moe_dflash.draft_compile_precision import verify_compiled_precision
-                from qwen35_moe_dflash.hashing import sha256_file
+                from qwen35_moe_dflash.draft.compile_precision import verify_compiled_precision
+                from qwen35_moe_dflash.common.hashing import sha256_file
                 snapshot = _precision_snapshot(compilation_dir, compiled)
                 if (snapshot or {}).get("sha256") != hashlib.sha256(precision_data).hexdigest():
                     raise ValueError("compiled customization does not match the required precision policy")
@@ -764,7 +764,7 @@ def _main(args, stack):
             if args.compile_only:
                 result.update(status="COMPILED", stage="complete")
             else:
-                from qwen35_moe_dflash.draft_board import prepare_draft_bundle, execute_draft_bundle
+                from qwen35_moe_dflash.draft.board import prepare_draft_bundle, execute_draft_bundle
                 stage("bundle", "Preparing hash-bound draft inputs and compiled payloads")
                 bundle_dir, bundle = component("bundle", "manifest.json", lambda folder: prepare_draft_bundle(
                     compilation_dir, fixture_dir, folder, config=prepared["draft_config"], ddk_id=compiled["ddk_id"],
@@ -804,7 +804,7 @@ def _main(args, stack):
         save_job("result.json", result)
     print(json.dumps(_console_result(result), ensure_ascii=False), flush=True)
     if result.get("compile_log"):
-        from qwen35_moe_dflash.tool_logs import log_excerpt
+        from qwen35_moe_dflash.common.tool_logs import log_excerpt
         print(log_excerpt(Path(result["compile_log"])), flush=True)
     if result.get("board") and result["status"] == "FAILED":
         _print_board_failure(result, board_hilog)

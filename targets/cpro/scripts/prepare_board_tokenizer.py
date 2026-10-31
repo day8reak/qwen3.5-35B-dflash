@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
-from qwen35_moe_dflash.board_tokenizer import acquire, build_bundle
+from qwen35_moe_dflash.execution.tokenizer import acquire, build_bundle
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)

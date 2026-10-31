@@ -10,8 +10,8 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from .model import FusedTargetModel, FusedTargetOutput
-from .session import TargetState
+from qwen35_moe_dflash.fused.model import FusedTargetModel, FusedTargetOutput
+from qwen35_moe_dflash.fused.session import TargetState
 
 
 class OriginalCproTargetWrapper(nn.Module):

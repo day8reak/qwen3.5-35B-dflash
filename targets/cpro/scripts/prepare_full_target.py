@@ -22,13 +22,12 @@ def main():
     parser.add_argument("--hiai-include", default=os.environ.get("HIAI_INCLUDE_DIR"))
     parser.add_argument("--output", help="new directory under AI_RUN_DIR; defaults to full-target-<unique ID>")
     parser.add_argument("--resume", help="previous full-target job (or its weights subdirectory); verify and reuse completed tensors")
-    parser.add_argument("--gdn-diagnostic", help="completed three-fill diagnosis; summarize retained files without board execution")
     parser.add_argument("--inspect-only", action="store_true", help="only full weight plan and selected-DDK source evidence; no weight conversion")
     args = parser.parse_args()
-    from qwen35_moe_dflash.artifacts import output_path, save_json
-    from qwen35_moe_dflash.ge_quant_interface import inspect_quant_interfaces
-    from qwen35_moe_dflash.ge_quant_plan import target_quantization_plan
-    from qwen35_moe_dflash.ge_quant_prepare import prepare_target_weights
+    from qwen35_moe_dflash.common.artifacts import output_path, save_json
+    from qwen35_moe_dflash.graph.quant_interface import inspect_quant_interfaces
+    from qwen35_moe_dflash.graph.quant_plan import target_quantization_plan
+    from qwen35_moe_dflash.graph.quant_prepare import prepare_target_weights
 
     root = None
     owned_root = False
@@ -65,20 +64,6 @@ def main():
                                  hiai_include=args.hiai_include)
         result["interface_report"] = "interfaces/report.txt"
         print((root / "interfaces/report.txt").read_text(), end="", flush=True)
-        if args.gdn_diagnostic:
-            stage = "retained-gdn-evidence"
-            print("full-target: summarizing retained GDN outputs and source (no board execution)", flush=True)
-            from qwen35_moe_dflash.ge_fused.gdn_diagnostics import summarize_retained_diagnosis
-            try:
-                summarize_retained_diagnosis(args.gdn_diagnostic, root / "gdn-retained")
-                result["gdn_report"] = "gdn-retained/report.txt"
-                print((root / "gdn-retained/report.txt").read_text(), end="", flush=True)
-            except Exception as error:
-                # Retained diagnostic inspection is independent of offline
-                # weights; its failure must not restart or block conversion.
-                result["gdn_summary_error"] = f"{type(error).__name__}: {error}"
-                save_json(root / "gdn-summary-failure.json", {"status": "FAILED", "error": result["gdn_summary_error"]})
-                print(json.dumps({"gdn_summary": "FAILED", "error": result["gdn_summary_error"]}), flush=True)
         if not args.inspect_only:
             stage = "target-weights"
             print("full-target: streaming BF16 target to logical INT4/INT8/FP16 weight cache", flush=True)

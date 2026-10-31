@@ -18,11 +18,11 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
-from ..artifacts import checked_file
-from ..ge_export import weight_identity
-from ..target_weight_shapes import required_weight_shapes
-from .ops import ModuleFusedOps, SelectiveFusedOps
-from .session import LayerState, TargetState
+from qwen35_moe_dflash.common.artifacts import checked_file
+from qwen35_moe_dflash.graph.export import weight_identity
+from qwen35_moe_dflash.target.weight_shapes import required_weight_shapes
+from qwen35_moe_dflash.fused.ops import ModuleFusedOps, SelectiveFusedOps
+from qwen35_moe_dflash.fused.session import LayerState, TargetState
 
 
 @dataclass(frozen=True)
@@ -108,7 +108,7 @@ class FusedTargetModel(nn.Module):
         self.quantization = quantization
         shapes = required_weight_shapes(self.config)
         if quantization is not None:
-            from .quantization import OriginalQuantizedWeights
+            from qwen35_moe_dflash.fused.quantization import OriginalQuantizedWeights
             if not isinstance(quantization, OriginalQuantizedWeights):
                 raise TypeError("quantization must be an OriginalQuantizedWeights adapter")
             quantization.validate_shapes(shapes)

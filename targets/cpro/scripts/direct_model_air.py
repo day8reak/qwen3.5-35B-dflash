@@ -24,28 +24,6 @@ def _add_stateful_commands(sub):
                         help="run up to 12 isolated package/library/platform-argument checks; never changes the OMG target")
     platform.add_argument("--jobs", type=int, choices=range(1, 5), default=4,
                           help="parallel children for --diagnose (default: 4)")
-    inspect = sub.add_parser("inspect-fused-probes", help="read existing failures and installed interface text without recompiling or importing DDK code")
-    inspect.add_argument("--probe-run", required=True)
-    inspect.add_argument("--ddk-root", required=True)
-    inspect.add_argument("--output", required=True)
-    probe = sub.add_parser("probe-fused-ops", help="build selected calls to five documented custom operators; no model checkpoint")
-    probe.add_argument("--output", required=True)
-    probe.add_argument("--bindings", required=True)
-    probe.add_argument("--ge-root", help="serialize real AIR; omit for source generation only")
-    probe.add_argument("--ddk-root", help="compile each AIR with the selected target DDK")
-    probe.add_argument("--ddk-id")
-    probe.add_argument("--cases", help="comma-separated case names or all for all nine; default: original five GDN/conv/RMS cases")
-    probe.add_argument("--conv-history-width", type=int, choices=(3, 4), default=3,
-                       help="3 uses document binding; 4 is an installed-shape invocation candidate without a semantic reference")
-    probe.add_argument("--tbe-diagnosis", help="completed TBE diagnosis directory; enable an evidence-bound, run-local platform-name adapter")
-    probe.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
-    probe.add_argument("--cxx11-abi", choices=(0, 1), type=int, default=0)
-    probe.add_argument("--timeout-seconds", type=int, default=3600)
-    compare = sub.add_parser("compare-fused-probes", help="verify returned probe files and report numerical diagnostics")
-    compare.add_argument("--probe-run", required=True)
-    compare.add_argument("--board-run", required=True)
-    compare.add_argument("--output", required=True)
-    compare.add_argument("--allow-host-fake", action="store_true", help="permit fake HIAI for host plumbing checks only")
     full = sub.add_parser("build-full-structure", help="write complete 40-layer target and 6-layer draft GE construction without checkpoint data")
     full.add_argument("--output", required=True)
     full.add_argument("--sequence-length", type=int, default=8, help="static valid token count; model dimensions remain full size")
@@ -96,7 +74,7 @@ def _add_stateful_commands(sub):
 
 
 def _run_stateful(args):
-    from qwen35_moe_dflash.ge_fused.export import export_target, plan_target, selected_fusion
+    from qwen35_moe_dflash.graph.fused.export import export_target, plan_target, selected_fusion
 
     options = dict(sequence_length=args.sequence_length, past_length=args.past_length,
                    fused_ops=selected_fusion(args.fused_ops), bindings_path=args.bindings,
@@ -189,30 +167,15 @@ def main():
     _add_stateful_commands(sub)
     args = parser.parse_args()
     try:
-        from qwen35_moe_dflash.resources import load_resources, resource_path
+        from qwen35_moe_dflash.common.resources import load_resources, resource_path
         if args.command == "check-tbe-platform":
-            from qwen35_moe_dflash.compile import check_tbe_platform
+            from qwen35_moe_dflash.toolchain.compile import check_tbe_platform
             result = check_tbe_platform(args.ddk_root, args.output, python=args.python,
                                         timeout_seconds=args.timeout_seconds,
                                         compare_libraries=args.compare_libraries,
                                         diagnose=args.diagnose, jobs=args.jobs)
-        elif args.command == "inspect-fused-probes":
-            from qwen35_moe_dflash.ge_fused.probes import inspect_fused_probes
-            result = inspect_fused_probes(args.probe_run, args.ddk_root, args.output)
-        elif args.command == "probe-fused-ops":
-            from qwen35_moe_dflash.ge_fused.probes import build_fused_probes
-            result = build_fused_probes(
-                args.output, args.bindings, ge_root=args.ge_root, ddk_root=args.ddk_root,
-                ddk_id=args.ddk_id, cxx=args.cxx, cxx11_abi=args.cxx11_abi,
-                timeout_seconds=args.timeout_seconds,
-                cases="all" if args.cases == "all" else tuple(name.strip() for name in args.cases.split(",")) if args.cases is not None else None,
-                tbe_diagnosis=args.tbe_diagnosis, conv_history_width=args.conv_history_width)
-        elif args.command == "compare-fused-probes":
-            from qwen35_moe_dflash.ge_fused.probes import compare_fused_probes
-            result = compare_fused_probes(args.probe_run, args.board_run, args.output,
-                                          allow_host_fake=args.allow_host_fake)
         elif args.command == "build-full-structure":
-            from qwen35_moe_dflash.ge_fused.export import build_full_structure, selected_fusion
+            from qwen35_moe_dflash.graph.fused.export import build_full_structure, selected_fusion
             result = build_full_structure(
                 args.output, args.sequence_length, past_length=args.past_length,
                 fused_ops=selected_fusion(args.fused_ops), bindings_path=args.bindings,
@@ -220,7 +183,7 @@ def main():
                 expert_dispatch=args.expert_dispatch, fp16_reductions=args.fp16_reductions,
                 fp16_row_mul=args.fp16_row_mul, gdn_indexed_copy=args.gdn_indexed_copy)
         elif args.command == "bindings-from-document":
-            from qwen35_moe_dflash.ge_fused.bindings import write_document_bindings
+            from qwen35_moe_dflash.graph.fused.bindings import write_document_bindings
             result = write_document_bindings(args.output, target=args.target, ddk_id=args.ddk_id,
                                              gdn_initial_state_dtype=args.gdn_initial_state_dtype,
                                              gdn_state_source=args.gdn_state_source)
@@ -230,16 +193,16 @@ def main():
             result = _run_stateful(args)
             args.output = str(Path(args.output).resolve())
         elif args.command == "prepare-stateful-step":
-            from qwen35_moe_dflash.ge_fused.export import prepare_stateful_step
+            from qwen35_moe_dflash.graph.fused.export import prepare_stateful_step
             result = prepare_stateful_step(args.omc, args.output, [int(token) for token in args.token_ids.split(",")],
                                            previous_step=args.previous_step, previous_result=args.previous_result,
                                            allow_host_fake=args.allow_host_fake)
         elif args.command == "plan":
-            from qwen35_moe_dflash.ge_export import plan_pair
+            from qwen35_moe_dflash.graph.export import plan_pair
             result = plan_pair(args.output, args.sequence_length, tiny=args.tiny,
                                expert_dispatch=args.expert_dispatch)
         elif args.command == "prepare":
-            from qwen35_moe_dflash.ge_export import prepare_pair
+            from qwen35_moe_dflash.graph.export import prepare_pair
             target, draft = args.target_weights, args.draft_weights
             if args.full:
                 if not args.float_baseline:
@@ -253,7 +216,7 @@ def main():
                                   float_baseline=args.float_baseline, external_weights=args.external_weights,
                                   expert_dispatch=args.expert_dispatch)
         elif args.command == "export":
-            from qwen35_moe_dflash.ge_export import export_pair
+            from qwen35_moe_dflash.graph.export import export_pair
             ge = args.ge_root
             if not ge and args.resources:
                 resources, _ = load_resources(args.resources)
@@ -267,7 +230,7 @@ def main():
                                  fp16_reductions=args.fp16_reductions, fp16_row_mul=args.fp16_row_mul,
                                  gdn_indexed_copy=args.gdn_indexed_copy)
         elif args.command in {"compile", "compile-stateful"}:
-            from qwen35_moe_dflash.compile import compile_air, compile_stateful_air
+            from qwen35_moe_dflash.toolchain.compile import compile_air, compile_stateful_air
             resources = {}
             if not args.ddk_root or not args.ddk_id:
                 resources, _ = load_resources(args.resources)
@@ -280,25 +243,25 @@ def main():
                                 reject_cpu_fallback=args.reject_cpu_fallback,
                                 **({"tbe_diagnosis": args.tbe_diagnosis} if args.command == "compile-stateful" else {}))
         elif args.command == "inspect-compile":
-            from qwen35_moe_dflash.compile_inspect import inspect_compile
+            from qwen35_moe_dflash.toolchain.compile_inspect import inspect_compile
             result = inspect_compile(args.air, args.omc, args.output, graph=args.graph)
             print((Path(args.output) / "report.txt").read_text())
         elif args.command == "inspect-omc":
-            from qwen35_moe_dflash.omc_inspect import inspect_omc
+            from qwen35_moe_dflash.toolchain.omc_inspect import inspect_omc
             result = inspect_omc(args.omc, args.output, args.ddk_root, ddk_id=args.ddk_id,
                                  timeout_seconds=args.timeout_seconds, max_json_bytes=args.max_json_bytes)
             print((Path(args.output) / "report.txt").read_text())
         elif args.command == "inspect-omc-cpu":
-            from qwen35_moe_dflash.omc_cpu_inspect import inspect_omc_cpu
+            from qwen35_moe_dflash.toolchain.omc_cpu_inspect import inspect_omc_cpu
             result = inspect_omc_cpu(args.omc, args.inspection, args.output, args.ddk_root,
                                      ddk_id=args.ddk_id, max_partition_bytes=args.max_partition_bytes)
             print((Path(args.output) / "report.txt").read_text())
         elif args.command == "compare-target-features":
-            from qwen35_moe_dflash.ge_target_features import compare_target_features
+            from qwen35_moe_dflash.graph.target_features import compare_target_features
             result = compare_target_features(args.prepared, args.omc, args.board_run, args.reference, args.output)
             print((Path(args.output) / "report.txt").read_text())
         else:
-            from qwen35_moe_dflash.ge_reference import reference_tiny
+            from qwen35_moe_dflash.graph.reference import reference_tiny
             result = reference_tiny(args.prepared, args.output,
                                     prompt=tuple(int(t) for t in args.prompt_token_ids.split(",")),
                                     max_new_tokens=args.max_new_tokens)
@@ -308,10 +271,6 @@ def main():
     print(json.dumps({"status": result["status"], "output": args.output}, ensure_ascii=False))
     if args.command == "check-tbe-platform":
         return int(result["status"] not in {"RAW_UPDATE_SUCCEEDED", "COMPARISON_COMPLETE", "DIAGNOSIS_COMPLETE"})
-    if args.command == "probe-fused-ops":
-        return int(result["status"] in {"FAILED", "PARTIAL"})
-    if args.command == "compare-fused-probes":
-        return int(any(case["process"] != "PASSED" for case in result["cases"]))
     return 0
 
 

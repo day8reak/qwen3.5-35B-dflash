@@ -25,13 +25,13 @@ def _qparam_converter(module_name):
 
 
 def _build_ge(args, config, output):
-    from qwen35_moe_dflash.artifacts import checked_file, save_json
+    from qwen35_moe_dflash.common.artifacts import checked_file, save_json
     from qwen35_moe_dflash.config import Qwen35DFlashConfig
-    from qwen35_moe_dflash.ge_fused.bindings import OperatorBindings
-    from qwen35_moe_dflash.ge_fused.export import _structure_graph
-    from qwen35_moe_dflash.ge_fused.quant_bindings import QuantOperatorBindings
-    from qwen35_moe_dflash.ge_fused.quant_target import build_quantized_target, emit_quantized_cpp
-    from qwen35_moe_dflash.hashing import sha256_file
+    from qwen35_moe_dflash.graph.fused.bindings import OperatorBindings
+    from qwen35_moe_dflash.graph.fused.export import _structure_graph
+    from qwen35_moe_dflash.graph.fused.quant_bindings import QuantOperatorBindings
+    from qwen35_moe_dflash.graph.fused.quant_target import build_quantized_target, emit_quantized_cpp
+    from qwen35_moe_dflash.common.hashing import sha256_file
 
     if not args.prepared or not args.quant_bindings:
         raise ValueError("GE construction requires --prepared and --quant-bindings")
@@ -93,8 +93,8 @@ def main(argv=None):
     parser.add_argument("--full-logits", action="store_true",
                         help="append full-vocabulary FP32 logits for selected positions")
     args = parser.parse_args(argv)
-    from qwen35_moe_dflash.artifacts import output_path
-    from qwen35_moe_dflash.original_model_config import OriginalModelConfig
+    from qwen35_moe_dflash.common.artifacts import output_path
+    from qwen35_moe_dflash.target.original_model_config import OriginalModelConfig
 
     try:
         run = os.environ.get("AI_RUN_DIR")
@@ -109,7 +109,7 @@ def main(argv=None):
         else:
             if args.stage == "inspect" and args.qparam_module:
                 raise ValueError("inspection does not load or execute a QPARAM converter")
-            from qwen35_moe_dflash.original_quant_prepare import prepare_original_target
+            from qwen35_moe_dflash.target.original_quant_prepare import prepare_original_target
             report = prepare_original_target(args.config, output,
                 qparam_converter=_qparam_converter(args.qparam_module), inspect_only=args.stage == "inspect",
                 progress=lambda row: print(json.dumps(row, ensure_ascii=False), flush=True))

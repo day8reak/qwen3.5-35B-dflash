@@ -9,20 +9,24 @@
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 
-python3 "$REPO_DIR/targets/cpro/scripts/export_runtime_config.py" \
-  --prepared "$AI_RUN_DIR/dflash-board-text-preread8-run/prepared" \
-  --output "$AI_RUN_DIR/runtime.json"
+if ! test -f "$AI_RUN_DIR/runtime.json"; then
+  python3 "$REPO_DIR/targets/cpro/scripts/export_runtime_config.py" \
+    --prepared "$AI_RUN_DIR/dflash-board-text-preread8-run/prepared" \
+    --output "$AI_RUN_DIR/runtime.json"
+fi
 
-# 预览移动、删除和保留项
+# 确认所有旧任务已结束、板端空闲后，预览整理
 python3 "$REPO_DIR/targets/cpro/scripts/organize_run_directory.py" \
-  --root "$AI_RUN_DIR" --clean-completed
+  --root "$AI_RUN_DIR" --clean-completed --confirm-idle --details
 
 # 实际移动并清掉已确认结束的旧测试
 python3 "$REPO_DIR/targets/cpro/scripts/organize_run_directory.py" \
-  --root "$AI_RUN_DIR" --clean-completed --apply
+  --root "$AI_RUN_DIR" --clean-completed --confirm-idle --apply
 ```
 
-整理后按`prefill/`、`decode/`、`draft/`、`common/`存放依赖，`work/`放当前测试，`results/`保留简短结果及profiling CSV。实际同盘移动，不复制大权重；配置路径自动更新。用途不明或退出状态不明的目录保留，见命令输出的`keep`。中断后重新执行同一整理命令即可继续。
+整理后按`prefill/`、`decode/`、`draft/`、`common/`存放依赖，`work/`放当前测试，`results/`保留简短结果及profiling CSV。实际同盘移动，不复制大权重；配置路径自动更新。中断后重新执行同一整理命令即可继续。
+
+`--confirm-idle`使用操作者对旧任务已经结束的确认，清理陈旧的本地执行记录，不操作板端锁或进程。无法确认时去掉该参数：仅保留未结束请求及其依赖，其余目录继续归类。尚有保留项时显示`PARTIAL`和`retained`，详细记录写入`.run-layout.json`。
 
 `runtime.json`使用相对路径，可以编辑模型、词表位置和默认参数；`runtime-assets.json`保存必要ABI与状态映射。模型/权重内容替换后，须更换对应`cache_key`，避免复用旧板端缓存。它是部署版本标识，不表示内容已校验。生成新标识：
 

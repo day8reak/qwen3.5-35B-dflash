@@ -37,7 +37,7 @@ def main(argv=None):
     if not args.inspect_source and not os.environ.get("AI_RUN_DIR"):
         parser.error("AI_RUN_DIR is required")
     try:
-        from qwen35_moe_dflash.original_ge_append import append_original_ge_features, inspect_original_ge_source
+        from qwen35_moe_dflash.target.original_ge_append import append_original_ge_features, inspect_original_ge_source
         if args.inspect_source:
             result = inspect_original_ge_source(source_root=args.source_root, source_receipt_path=args.source_receipt, source_ast=args.source_ast)
             print(json.dumps(result, ensure_ascii=False))

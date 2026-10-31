@@ -21,7 +21,7 @@ def main(argv=None):
     parser.add_argument('--timeout-seconds', type=int, default=3600)
     parser.add_argument('--output', required=True)
     args = parser.parse_args(argv)
-    from qwen35_moe_dflash.draft_capacity_export import export_draft_capacity
+    from qwen35_moe_dflash.draft.capacity_export import export_draft_capacity
     try:
         result = export_draft_capacity(args.job, args.output, sequence_length=args.sequence_length,
             prompt_length=args.prompt_length, max_new_tokens=args.max_new_tokens, ge_root=args.ge_root,

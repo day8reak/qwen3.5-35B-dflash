@@ -19,7 +19,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not args.job and not os.environ.get("AI_RUN_DIR"):
         parser.error("--job or AI_RUN_DIR is required")
-    from qwen35_moe_dflash.draft_storage import compact_draft_storage
+    from qwen35_moe_dflash.draft.storage import compact_draft_storage
     try:
         report = compact_draft_storage(args.job or Path(os.environ["AI_RUN_DIR"]) / "full-draft", apply=args.apply)
     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:

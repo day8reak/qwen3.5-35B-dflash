@@ -21,7 +21,7 @@ def main(argv=None):
     if not run:
         parser.error("AI_RUN_DIR is required")
     try:
-        from qwen35_moe_dflash.original_target_origin import prepare_target_pytorch
+        from qwen35_moe_dflash.target.original_target_origin import prepare_target_pytorch
         result = prepare_target_pytorch(args.source_root, args.config,
             args.output or Path(run) / "target-pytorch", sequence_length=args.sequence_length)
         print(json.dumps({key: result.get(key) for key in

@@ -14,8 +14,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from ..ge_quant_plan import target_tensor_quantization
-from ..ge_weights import SafeTensorFiles, checkpoint_key
+from qwen35_moe_dflash.graph.quant_plan import target_tensor_quantization
+from qwen35_moe_dflash.graph.weights import SafeTensorFiles, checkpoint_key
 
 
 class OriginalQuantOps:
@@ -224,8 +224,8 @@ def load_original_quantized_target(config, *, model_file, quanted_pth,
         embedding_weight_path, embedding_scale_path, feature_layers, ops,
         quant_ops: OriginalQuantOps, device="cpu", recurrent_dtype=torch.float16):
     """Executable loader; paths come from caller/YAML, with no machine defaults."""
-    from ..original_quant import OriginalQuantWeights, load_embedding
-    from .model import FusedTargetModel, _configuration, required_weight_shapes
+    from qwen35_moe_dflash.target.original_quant import OriginalQuantWeights, load_embedding
+    from qwen35_moe_dflash.fused.model import FusedTargetModel, _configuration, required_weight_shapes
     normalized = _configuration(config, tuple(feature_layers))
     if not isinstance(quant_ops, OriginalQuantOps):
         raise TypeError("quant_ops must be an explicit OriginalQuantOps binding")

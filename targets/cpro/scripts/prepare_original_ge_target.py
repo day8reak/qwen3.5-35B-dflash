@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "model"))
 
 
 def main():
-    from qwen35_moe_dflash.original_ge_target import prepare_contract, read_json, source_receipt
+    from qwen35_moe_dflash.target.original_ge_target import prepare_contract, read_json, source_receipt
 
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
@@ -31,7 +31,7 @@ def main():
                                     "actual_source_bytes_rehashed": bool(args.source_root)}
     raw = json.dumps(result, ensure_ascii=False)
     if args.output:
-        from qwen35_moe_dflash.artifacts import output_path
+        from qwen35_moe_dflash.common.artifacts import output_path
         path = output_path(args.output)
         path.mkdir(parents=True, exist_ok=False)
         with (path / "contract.json").open("x") as stream:

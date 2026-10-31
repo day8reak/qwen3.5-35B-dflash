@@ -25,7 +25,7 @@ def main(argv=None):
     if not os.environ.get("AI_RUN_DIR"):
         parser.error("AI_RUN_DIR is required")
     try:
-        from qwen35_moe_dflash.canonical_target_export import canonicalize_target_export
+        from qwen35_moe_dflash.target.canonical_target_export import canonicalize_target_export
         last = [None]
         def progress(row):
             now = time.monotonic()

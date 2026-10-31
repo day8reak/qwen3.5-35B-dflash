@@ -11,7 +11,7 @@ sys.path.insert(0, str(REPO / "model"))
 
 
 def main():
-    from qwen35_moe_dflash.original_target_source import prepare_original_target_source
+    from qwen35_moe_dflash.target.original_target_source import prepare_original_target_source
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", required=True, help="original private PyTorch export project")

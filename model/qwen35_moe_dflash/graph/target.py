@@ -1,0 +1,486 @@
+"""Direct graph definition of the FP16 Qwen3.5 MoE text target.
+
+This module does not import PyTorch or TorchAir. It retains the recompute ABI
+and chunk-64 Gated DeltaNet evaluation order. The static all-expert baseline
+and an opt-in selected-expert Gather/BatchMatMul path share the same weights.
+Canonical checkpoint names are ``target.layers.*`` etc.; the bundle writer
+maps these to the checkpoint's ``model.language_model.*`` namespace.
+"""
+from __future__ import annotations
+
+import math
+import numpy as np
+
+from qwen35_moe_dflash.graph.ir import Graph
+
+
+class _Builder:
+    def __init__(self, graph, *, gdn_indexed_copy="native", gdn_copy_report=None):
+        if not isinstance(gdn_indexed_copy, str) or gdn_indexed_copy not in {"native", "gather"}:
+            raise ValueError("gdn_indexed_copy must be native or gather")
+        if gdn_copy_report is not None and not isinstance(gdn_copy_report, dict):
+            raise ValueError("gdn_copy_report must be a dictionary")
+        self.g = graph
+        self.gdn_indexed_copy = gdn_indexed_copy
+        self.gdn_copy_report = {} if gdn_copy_report is None else gdn_copy_report
+        self.gdn_copy_report.clear()
+        self.gdn_copy_report.update({"schema_version": 1, "graph": graph.name, "mode": gdn_indexed_copy,
+                                     "counts": {"total": 0, "replaced": 0, "retained": 0,
+                                                "mask_replaced": 0, "sub_replaced": 0}, "entries": []})
+
+    def gdn_copy_strategy(self, kind, *inputs):
+        if self.gdn_indexed_copy == "native":
+            return "native", "native_policy"
+        shapes = {"triangular_mask": ((2, 1, 64, 64),),
+                  "outer_sub": ((2, 1, 64, 1), (2, 1, 1, 64))}
+        if (tuple(value.shape for value in inputs) == shapes[kind]
+                and all(value.dtype == "float16" for value in inputs)):
+            return "gather", "tested_shape"
+        return "native", "outside_tested_shape"
+
+    def record_gdn_copy(self, kind, inputs, result, strategy, reason, **details):
+        counts = self.gdn_copy_report["counts"]
+        counts["total"] += 1
+        counts["replaced" if strategy == "gather" else "retained"] += 1
+        if strategy == "gather":
+            counts["mask_replaced" if kind == "triangular_mask" else "sub_replaced"] += 1
+        self.gdn_copy_report["entries"].append({
+            "kind": kind, "node": result.name, "inputs": [value.name for value in inputs],
+            "input_shapes": [list(value.shape) for value in inputs],
+            "input_dtypes": [value.dtype for value in inputs], "shape": list(result.shape),
+            "dtype": result.dtype, "strategy": strategy, "reason": reason, **details})
+        return result
+
+    def constant(self, value, dtype="float16"):
+        return self.g.const(np.asarray(value, dtype=dtype), dtype=dtype)
+
+    def op(self, kind, *values, shape=None, dtype="float16", **attrs):
+        return self.g.op(kind, *values, shape=tuple(shape or values[0].shape),
+                         dtype=dtype, attrs=attrs)
+
+    def view(self, x, shape):
+        return self.g.op("reshape", x, shape=tuple(shape), dtype=x.dtype,
+                         attrs={"shape": list(shape)})
+
+    def permute(self, x, perm):
+        return self.op("transpose", x, shape=[x.shape[p] for p in perm],
+                       dtype=x.dtype, perm=list(perm))
+
+    def slice(self, x, axis, start, size):
+        axis %= len(x.shape)
+        starts = [0] * len(x.shape)
+        sizes = list(x.shape)
+        starts[axis], sizes[axis] = start, size
+        return self.op("slice", x, shape=sizes, dtype=x.dtype, starts=starts, sizes=sizes)
+
+    def cat(self, values, axis):
+        values = list(values)
+        if len(values) == 1:
+            return values[0]
+        shape = list(values[0].shape)
+        axis %= len(shape)
+        shape[axis] = sum(v.shape[axis] for v in values)
+        return self.op("concat", *values, shape=shape, dtype=values[0].dtype, axis=axis)
+
+    def reduce(self, kind, x, axis, keep=True):
+        axis %= len(x.shape)
+        shape = list(x.shape)
+        if keep:
+            shape[axis] = 1
+        else:
+            shape.pop(axis)
+        return self.op(kind, x, shape=shape, dtype=x.dtype, axes=[axis], keepdims=keep)
+
+    def linear(self, x, key, width, weight=None):
+        weight = self.g.weight(key, (width, x.shape[-1])) if weight is None else weight
+        return self.op("matmul", x, weight, shape=(*x.shape[:-1], width),
+                       transpose_a=False, transpose_b=True)
+
+    def rms(self, x, key, eps, offset=True):
+        square = self.op("mul", x, x)
+        mean = self.reduce("reduce_mean", square, -1)
+        scale = self.op("rsqrt", self.op("scalar_add", mean, value=eps))
+        result = self.op("mul", x, scale)
+        weight = self.g.weight(key, (x.shape[-1],))
+        if offset:
+            # The internal OMG CPUCL constant Add rejected this scalar/weight
+            # pair despite both serialized descriptors being FP16. Express the
+            # exact +1 offset through the existing Power scalar lowering, which
+            # avoids that binary constant-fold path without changing dtype.
+            weight = self.op("scalar_add", weight, value=1.0)
+        return self.op("mul", result, weight)
+
+    def l2(self, x):
+        norm = self.reduce("reduce_sum", self.op("mul", x, x), -1)
+        return self.op("mul", x, self.op("rsqrt", self.op("scalar_add", norm, value=1e-6)))
+
+    def repeat_heads(self, x, axis, factor):
+        if factor == 1:
+            return x
+        ids = self.constant(np.repeat(np.arange(x.shape[axis]), factor), "int32")
+        shape = list(x.shape)
+        shape[axis] *= factor
+        return self.op("gather", x, ids, shape=shape, axis=axis)
+
+    def rotary(self, x, cos, sin):
+        width = cos.shape[-1]
+        rotated = self.slice(x, -1, 0, width)
+        first = self.slice(rotated, -1, 0, width // 2)
+        second = self.slice(rotated, -1, width // 2, width // 2)
+        turned = self.cat([self.op("neg", second), first], -1)
+        result = self.op("add", self.op("mul", rotated, cos), self.op("mul", turned, sin))
+        if width < x.shape[-1]:
+            result = self.cat([result, self.slice(x, -1, width, x.shape[-1] - width)], -1)
+        return result
+
+
+def _full_attention(b, x, prefix, c, mask, rotary):
+    s, h, heads, kv, d = x.shape[1], c["hidden_size"], c["num_attention_heads"], c["num_key_value_heads"], c["head_dim"]
+    qgate = b.view(b.linear(x, prefix + ".q_proj.weight", heads*d*2), (1, s, heads, d*2))
+    q = b.slice(qgate, -1, 0, d)
+    gate = b.view(b.slice(qgate, -1, d, d), (1, s, heads*d))
+    q = b.permute(b.rms(q, prefix + ".q_norm.weight", c["rms_norm_eps"]), (0, 2, 1, 3))
+    k = b.view(b.linear(x, prefix + ".k_proj.weight", kv*d), (1, s, kv, d))
+    k = b.permute(b.rms(k, prefix + ".k_norm.weight", c["rms_norm_eps"]), (0, 2, 1, 3))
+    v = b.permute(b.view(b.linear(x, prefix + ".v_proj.weight", kv*d), (1, s, kv, d)), (0, 2, 1, 3))
+    q, k = [b.rotary(t, *rotary) for t in (q, k)]
+    k = b.repeat_heads(k, 1, heads // kv)
+    v = b.repeat_heads(v, 1, heads // kv)
+    scores = b.op("matmul", q, k, shape=(1, heads, s, s), transpose_a=False, transpose_b=True)
+    scores = b.op("add", b.op("scalar_mul", scores, value=d**-0.5), mask)
+    probs = b.op("softmax", scores, axis=-1)
+    mixed = b.op("matmul", probs, v, shape=(1, heads, s, d), transpose_a=False, transpose_b=False)
+    mixed = b.view(b.permute(mixed, (0, 2, 1, 3)), (1, s, heads*d))
+    return b.linear(b.op("mul", mixed, b.op("sigmoid", gate)), prefix + ".o_proj.weight", h)
+
+
+def _observe_gdn(diagnostics, name, value):
+    """Record an existing value without adding graph nodes or output edges."""
+    if diagnostics is not None:
+        if not isinstance(diagnostics, dict):
+            raise ValueError("GDN diagnostics must be a dictionary")
+        if name in diagnostics:
+            raise ValueError(f"duplicate GDN diagnostic: {name}")
+        diagnostics[name] = value
+
+
+def _chunk_gdn(b, query, key, value, decay, beta, *, state_outputs=None, diagnostics=None):
+    """The installed Transformers torch_chunk_gated_delta_rule, FP16-lowered.
+
+    Keep padding and reduction widths of 64 even for tiny sequences: replacing
+    this with a token recurrence changes FP16 accumulation and requires a new
+    accuracy audit. No data-dependent routing or Python loops are introduced.
+    Opt-in indexed copies change only the tested static triangular masks and
+    outer subtraction; their floating-point arithmetic boundaries stay intact.
+    The target ABI has batch=1: drop only that singleton in chunk carriers so
+    elementwise/slice operations stay at rank four, not just the lowered BMMs.
+    An optional diagnostic list observes each chunk's updated recurrent state,
+    including the otherwise unused final update; the default graph is unchanged.
+    The optional diagnostics dictionary records existing intermediate values;
+    it adds neither computation nor graph outputs.
+    """
+    if diagnostics is not None and not isinstance(diagnostics, dict):
+        raise ValueError("GDN diagnostics must be a dictionary")
+    if any(x.shape[0] != 1 for x in (query, key, value, decay, beta)):
+        raise ValueError("direct GDN chunk carriers require batch=1")
+    sequence, heads, kdim, vdim = query.shape[1], query.shape[2], query.shape[3], value.shape[3]
+    chunk = 64
+    count = (sequence + chunk - 1) // chunk
+    padded = count * chunk
+    query, key = b.l2(query), b.l2(key)
+    _observe_gdn(diagnostics, "normalized_query", query)
+    _observe_gdn(diagnostics, "normalized_key", key)
+    tensors = []
+    for x in (query, key, value, beta, decay):
+        x = b.permute(x, (0, 2, 1, 3) if len(x.shape) == 4 else (0, 2, 1))
+        if sequence < padded:
+            zeros_shape = list(x.shape)
+            zeros_shape[2] = padded - sequence
+            x = b.cat([x, b.constant(np.zeros(zeros_shape, dtype=np.float16))], 2)
+        tensors.append(x)
+    query, key, value, beta, decay = tensors
+    query = b.op("scalar_mul", query, value=kdim**-0.5)
+    _observe_gdn(diagnostics, "scaled_query", query)
+    v_beta = b.op("mul", value, b.view(beta, (1, heads, padded, 1)))
+    _observe_gdn(diagnostics, "weighted_value", v_beta)
+    k_beta = b.op("mul", key, b.view(beta, (1, heads, padded, 1)))
+    query, key, value, k_beta, v_beta = [b.view(x, (heads, count, chunk, x.shape[-1])) for x in (query, key, value, k_beta, v_beta)]
+    # This scan sums -exp(A_log) * softplus(a + dt_bias), hence nonpositive
+    # values. Mark the domain for the bounded FP16 prefix-reduction lowering.
+    decay = b.op("cumsum", b.view(decay, (heads, count, chunk)), axis=-1,
+                 scope="gdn_nonpositive")
+    _observe_gdn(diagnostics, "decay_prefix", decay)
+    zero_row = b.constant(np.zeros((heads, count, 1, chunk), dtype=np.float16))
+
+    def triangular_mask(x, *, strict=False, site):
+        strategy, reason = b.gdn_copy_strategy("triangular_mask", x)
+        if strategy == "gather":
+            from qwen35_moe_dflash.graph.indexed_copy import triangular_mask_gather
+            name = f"__gdn_copy/mask_{b.gdn_copy_report['counts']['total']}"
+            result = triangular_mask_gather(b.g, x, strict=strict, name=name)
+            return b.record_gdn_copy("triangular_mask", (x,), result, strategy, reason,
+                                     strict=strict, site=site)
+        # These masks are compile-time lower triangles. Slice and concatenate
+        # retained values with positive zeros, preserving NaN/Inf and signed
+        # zero semantics without a BOOL Select/CastT path or arithmetic masking.
+        rows = []
+        for row in range(chunk):
+            kept = row if strict else row + 1
+            if kept == 0:
+                rows.append(zero_row)
+                continue
+            parts = [b.slice(b.slice(x, -2, row, 1), -1, 0, kept)]
+            if kept < chunk:
+                parts.append(b.slice(zero_row, -1, 0, chunk - kept))
+            rows.append(b.cat(parts, -1))
+        return b.record_gdn_copy("triangular_mask", (x,), b.cat(rows, -2), strategy, reason,
+                                 strict=strict, site=site)
+
+    left = b.view(decay, (heads, count, chunk, 1))
+    right = b.view(decay, (heads, count, 1, chunk))
+    strategy, reason = b.gdn_copy_strategy("outer_sub", left, right)
+    if strategy == "gather":
+        from qwen35_moe_dflash.graph.indexed_copy import outer_sub_gather
+        diff = outer_sub_gather(b.g, left, right,
+                               name=f"__gdn_copy/outer_sub_{b.gdn_copy_report['counts']['total']}")
+    else:
+        diff = b.op("sub", left, right, shape=(heads, count, chunk, chunk))
+    b.record_gdn_copy("outer_sub", (left, right), diff, strategy, reason)
+    decay_mask = triangular_mask(diff, site="before_exp")
+    decay_mask = triangular_mask(b.op("exp", decay_mask), site="after_exp")
+    _observe_gdn(diagnostics, "decay_mask", decay_mask)
+    attn = b.op("matmul", k_beta, key, shape=diff.shape, transpose_a=False, transpose_b=True)
+    attn = b.op("neg", triangular_mask(b.op("mul", attn, decay_mask), strict=True, site="before_neg"))
+    for i in range(1, chunk):
+        row = b.slice(b.slice(attn, -2, i, 1), -1, 0, i)
+        sub = b.slice(b.slice(attn, -2, 0, i), -1, 0, i)
+        row_flat = b.view(row, (heads, count, i))
+        product = b.op("mul", b.view(row_flat, (heads, count, i, 1)), sub, shape=sub.shape)
+        fixed = b.op("add", row_flat, b.reduce("reduce_sum", product, -2, False))
+        fixed = b.view(fixed, (heads, count, 1, i))
+        full_row = b.cat([fixed, b.slice(b.slice(attn, -2, i, 1), -1, i, chunk-i)], -1)
+        rows = [b.slice(attn, -2, 0, i), full_row]
+        if i + 1 < chunk:
+            rows.append(b.slice(attn, -2, i+1, chunk-i-1))
+        attn = b.cat(rows, -2)
+    attn = b.op("add", attn, b.constant(np.eye(chunk, dtype=np.float16)))
+    _observe_gdn(diagnostics, "triangular_transform", attn)
+    value = b.op("matmul", attn, v_beta, shape=(heads, count, chunk, vdim), transpose_a=False, transpose_b=False)
+    _observe_gdn(diagnostics, "transformed_value", value)
+    exp_decay = b.view(b.op("exp", decay), (heads, count, chunk, 1))
+    k_cum = b.op("matmul", attn, b.op("mul", k_beta, exp_decay),
+                 shape=(heads, count, chunk, kdim), transpose_a=False, transpose_b=False)
+    state = b.constant(np.zeros((1, heads, kdim, vdim), dtype=np.float16))
+    out = []
+    for i in range(count):
+        take = lambda x: b.view(b.slice(x, 1, i, 1), (1, heads, *x.shape[2:]))
+        q_i, k_i, v_i = [take(x) for x in (query, key, value)]
+        dec_i = take(decay_mask)
+        scores = b.op("matmul", q_i, k_i, shape=(1, heads, chunk, chunk), transpose_a=False, transpose_b=True)
+        scores = b.op("mul", scores, dec_i)
+        _observe_gdn(diagnostics, f"chunk_{i}_scores", scores)
+        old_value = b.op("matmul", take(k_cum), state, shape=(1, heads, chunk, vdim), transpose_a=False, transpose_b=False)
+        new_value = b.op("sub", v_i, old_value)
+        _observe_gdn(diagnostics, f"chunk_{i}_new_value", new_value)
+        g_i = take(decay)
+        exp_i = b.view(b.op("exp", g_i), (1, heads, chunk, 1))
+        inter = b.op("matmul", b.op("mul", q_i, exp_i), state,
+                     shape=(1, heads, chunk, vdim), transpose_a=False, transpose_b=False)
+        intra = b.op("matmul", scores, new_value,
+                     shape=(1, heads, chunk, vdim), transpose_a=False, transpose_b=False)
+        _observe_gdn(diagnostics, f"chunk_{i}_intra", intra)
+        out.append(b.op("add", inter, intra))
+        _observe_gdn(diagnostics, f"chunk_{i}_padded_output", out[-1])
+        if i + 1 < count or state_outputs is not None:
+            final = b.slice(g_i, -1, chunk-1, 1)
+            factor = b.view(b.op("exp", b.op("sub", final, g_i, shape=g_i.shape)), (1, heads, chunk, 1))
+            carry = b.op("mul", state, b.view(b.op("exp", final), (1, heads, 1, 1)))
+            update = b.op("matmul", b.op("mul", k_i, factor), new_value,
+                          shape=state.shape, transpose_a=True, transpose_b=False)
+            state = b.op("add", carry, update)
+            if state_outputs is not None:
+                state_outputs.append(state)
+    result = b.cat(out, 2)
+    _observe_gdn(diagnostics, "padded_core", result)
+    if padded > sequence:
+        result = b.slice(result, 2, 0, sequence)
+    _observe_gdn(diagnostics, "cropped_core", result)
+    result = b.permute(result, (0, 2, 1, 3))
+    _observe_gdn(diagnostics, "chunk_core", result)
+    return result
+
+
+def _linear_attention(b, x, prefix, c, *, diagnostics=None):
+    # The pinned upstream helper masks only batch > 1. This ABI has batch=1;
+    # padded GDN rows remain present, matching prepare_fp16_pair exactly.
+    if diagnostics is not None and not isinstance(diagnostics, dict):
+        raise ValueError("GDN diagnostics must be a dictionary")
+    s, h = x.shape[1], c["hidden_size"]
+    kh, vh = c["linear_num_key_heads"], c["linear_num_value_heads"]
+    kd, vd, kernel = c["linear_key_head_dim"], c["linear_value_head_dim"], c["linear_conv_kernel_dim"]
+    kw, vw = kh*kd, vh*vd
+    width = kw*2 + vw
+    projected = b.linear(x, prefix + ".in_proj_qkv.weight", width)
+    _observe_gdn(diagnostics, "projected_qkv", projected)
+    mixed = b.permute(projected, (0, 2, 1))
+    conv = b.g.weight(prefix + ".conv1d.weight", (width, 1, kernel))
+    # Conv1d cross-correlation: weight[tap] consumes t-(K-1)+tap.
+    padded = b.cat([b.constant(np.zeros((1, width, kernel-1), dtype=np.float16)), mixed], -1)
+    windows = b.cat([b.view(b.slice(padded, -1, tap, s), (width, s, 1)) for tap in range(kernel)], -1)
+    # One matmul reduction avoids rounding each individual tap product to FP16.
+    convolved = b.op("matmul", windows, b.view(conv, (width, kernel, 1)),
+                     shape=(width, s, 1), transpose_a=False, transpose_b=False)
+    _observe_gdn(diagnostics, "convolved_qkv", convolved)
+    mixed = b.permute(b.op("silu", b.view(convolved, (1, width, s))), (0, 2, 1))
+    _observe_gdn(diagnostics, "activated_qkv", mixed)
+    query = b.view(b.slice(mixed, -1, 0, kw), (1, s, kh, kd))
+    key = b.view(b.slice(mixed, -1, kw, kw), (1, s, kh, kd))
+    value = b.view(b.slice(mixed, -1, kw*2, vw), (1, s, vh, vd))
+    query, key = [b.repeat_heads(t, 2, vh // kh) for t in (query, key)]
+    _observe_gdn(diagnostics, "query_input", query)
+    _observe_gdn(diagnostics, "key_input", key)
+    _observe_gdn(diagnostics, "value_input", value)
+    beta = b.op("sigmoid", b.linear(x, prefix + ".in_proj_b.weight", vh))
+    _observe_gdn(diagnostics, "beta_input", beta)
+    a = b.linear(x, prefix + ".in_proj_a.weight", vh)
+    dt = b.g.weight(prefix + ".dt_bias", (vh,))
+    a = b.op("softplus", b.op("add", a, dt), beta=1.0, threshold=20.0)
+    decay = b.op("mul", b.op("neg", b.op("exp", b.g.weight(prefix + ".A_log", (vh,)))), a, shape=a.shape)
+    _observe_gdn(diagnostics, "decay_input", decay)
+    core = _chunk_gdn(b, query, key, value, decay, beta, diagnostics=diagnostics)
+    z = b.view(b.linear(x, prefix + ".in_proj_z.weight", vw), (1, s, vh, vd))
+    core = b.rms(core, prefix + ".norm.weight", c["rms_norm_eps"], offset=False)
+    core = b.op("mul", core, b.op("silu", z))
+    return b.linear(b.view(core, (1, s, vw)), prefix + ".out_proj.weight", h)
+
+
+def _moe(b, x, prefix, c, expert_dispatch="static"):
+    s, h, experts, topk = x.shape[1], c["hidden_size"], c["num_experts"], c["num_experts_per_tok"]
+    middle, shared = c["moe_intermediate_size"], c["shared_expert_intermediate_size"]
+    flat = b.view(x, (s, h))
+    logits = b.linear(flat, prefix + ".gate.weight", experts)
+    probs = b.op("softmax", logits, axis=-1)
+    values = b.op("topk_values", probs, shape=(s, topk), axis=-1, k=topk)
+    indices = b.op("topk_indices", probs, shape=(s, topk), dtype="int32", axis=-1, k=topk)
+    weights = b.op("div", values, b.reduce("reduce_sum", values, -1))
+    gate_up = b.g.weight(prefix + ".experts.gate_up_proj", (experts, middle*2, h))
+    down = b.g.weight(prefix + ".experts.down_proj", (experts, h, middle))
+    if expert_dispatch == "selected":
+        from qwen35_moe_dflash.graph.moe import selected_experts
+        result = selected_experts(b, flat, indices, weights, gate_up, down, middle)
+    else:
+        result = b.constant(np.zeros((s, h), dtype=np.float16))
+        for e in range(experts):
+            selected = b.op("eq", indices, b.constant(e, "int32"), dtype="bool")
+            route = b.op("where", selected, weights, b.constant(0), shape=weights.shape)
+            scale = b.reduce("reduce_sum", route, -1)
+            gate_weight = b.view(b.slice(gate_up, 0, e, 1), (middle*2, h))
+            expert_down = b.view(b.slice(down, 0, e, 1), (h, middle))
+            mixed = b.linear(flat, None, middle*2, weight=gate_weight)
+            gate, up = b.slice(mixed, -1, 0, middle), b.slice(mixed, -1, middle, middle)
+            expert = b.linear(b.op("mul", b.op("silu", gate), up), None, h, weight=expert_down)
+            contribution = b.op("mul", expert, scale)
+            active = b.op("gt", b.reduce("reduce_sum", b.op("cast", selected, dtype="int32"), -1), b.constant(0, "int32"), dtype="bool")
+            contribution = b.op("where", active, contribution, b.constant(0), shape=contribution.shape)
+            result = b.op("add", result, contribution)
+    gate = b.linear(flat, prefix + ".shared_expert.gate_proj.weight", shared)
+    up = b.linear(flat, prefix + ".shared_expert.up_proj.weight", shared)
+    shared_out = b.linear(b.op("mul", b.op("silu", gate), up), prefix + ".shared_expert.down_proj.weight", h)
+    shared_gate = b.op("sigmoid", b.linear(flat, prefix + ".shared_expert_gate.weight", 1))
+    return b.view(b.op("add", result, b.op("mul", shared_out, shared_gate)), (1, s, h))
+
+
+def _config(config, draft, sequence_length):
+    c = dict(config.get("text_config", config))
+    integer_keys = ("hidden_size", "num_hidden_layers", "vocab_size", "num_attention_heads", "num_key_value_heads",
+                    "linear_num_key_heads", "linear_num_value_heads", "linear_key_head_dim", "linear_value_head_dim",
+                    "linear_conv_kernel_dim", "num_experts", "num_experts_per_tok", "moe_intermediate_size",
+                    "shared_expert_intermediate_size")
+    for key in integer_keys:
+        if key not in c or isinstance(c[key], bool) or int(c[key]) != c[key] or int(c[key]) <= 0:
+            raise ValueError(f"target {key} must be a positive integer")
+        c[key] = int(c[key])
+    c["head_dim"] = int(c.get("head_dim", c["hidden_size"] // c["num_attention_heads"]))
+    c["rms_norm_eps"] = float(c.get("rms_norm_eps", 1e-6))
+    c["layer_types"] = list(c["layer_types"])
+    if len(c["layer_types"]) != c["num_hidden_layers"] or set(c["layer_types"]) - {"linear_attention", "full_attention"}:
+        raise ValueError("target layer_types must declare every full/linear attention layer")
+    for key, expected in (("hidden_size", draft.hidden_size), ("vocab_size", draft.vocab_size), ("num_hidden_layers", draft.num_target_layers)):
+        if c[key] != expected:
+            raise ValueError(f"target/draft {key} mismatch")
+    if c.get("attention_bias", False) or float(c.get("attention_dropout", 0)) != 0 or c.get("hidden_act", "silu") != "silu":
+        raise ValueError("direct target requires bias-free, zero-dropout SiLU inference")
+    if c["num_attention_heads"] % c["num_key_value_heads"] or c["linear_num_value_heads"] % c["linear_num_key_heads"]:
+        raise ValueError("target query/value head counts must divide their KV/key head counts")
+    if c["num_experts_per_tok"] > c["num_experts"]:
+        raise ValueError("target top-k exceeds expert count")
+    if not math.isfinite(c["rms_norm_eps"]) or c["rms_norm_eps"] <= 0:
+        raise ValueError("target rms_norm_eps must be finite and positive")
+    if isinstance(sequence_length, bool) or not isinstance(sequence_length, int) or sequence_length < 2:
+        raise ValueError("sequence_length must be an integer >= 2")
+    rope = dict(c.get("rope_parameters", {}))
+    if rope.get("rope_type", "default") != "default":
+        raise ValueError("direct target supports default text RoPE only")
+    c["rotary_dim"] = int(c["head_dim"] * float(rope.get("partial_rotary_factor", c.get("partial_rotary_factor", 0.25))))
+    c["rope_theta"] = float(rope.get("rope_theta", c.get("rope_theta", 10000.0)))
+    if not 0 < c["rotary_dim"] <= c["head_dim"] or c["rotary_dim"] % 2 or not math.isfinite(c["rope_theta"]) or c["rope_theta"] <= 0:
+        raise ValueError("target default RoPE requires a positive even rotary width and finite positive theta")
+    if sequence_length > int(c.get("max_position_embeddings", sequence_length)):
+        raise ValueError("sequence_length exceeds target position limit")
+    draft.validate()
+    return c
+
+
+def build_target(config, draft_config, sequence_length, *, head_chunk_rows=16, expert_dispatch="static",
+                 gdn_indexed_copy="native", gdn_copy_report=None):
+    """Construct both target ABI outputs without importing a tensor framework."""
+    if not isinstance(gdn_indexed_copy, str) or gdn_indexed_copy not in {"native", "gather"}:
+        raise ValueError("gdn_indexed_copy must be native or gather")
+    c = _config(config, draft_config, sequence_length)
+    if expert_dispatch not in {"static", "selected"}:
+        raise ValueError("direct GE expert_dispatch must be static or selected")
+    if expert_dispatch == "selected" and c["num_experts"] > 2048:
+        raise ValueError("selected expert dispatch requires at most 2048 experts for exact FP16 ID ordering")
+    if isinstance(head_chunk_rows, bool) or not isinstance(head_chunk_rows, int) or head_chunk_rows < 1:
+        raise ValueError("head_chunk_rows must be a positive integer")
+    s, h = sequence_length, c["hidden_size"]
+    graph = Graph("target")
+    b = _Builder(graph, gdn_indexed_copy=gdn_indexed_copy, gdn_copy_report=gdn_copy_report)
+    ids = graph.input("input_ids", (1, s), "int32")
+    attention = graph.input("attention_mask", (1, s), "int32")
+    table = graph.weight("target.embed_tokens.weight", (c["vocab_size"], h))
+    hidden = b.op("gather", table, ids, shape=(1, s, h), axis=0)
+    valid = b.op("cast", attention, dtype="bool")
+    causal = b.constant(np.tril(np.ones((1, 1, s, s), dtype=bool)), "bool")
+    visible = b.op("logical_and", causal, b.view(valid, (1, 1, 1, s)), shape=(1, 1, s, s), dtype="bool")
+    full_mask = b.op("where", visible, b.constant(0), b.constant(np.finfo(np.float16).min), shape=(1, 1, s, s))
+    # The upstream RoPE buffer is computed in FP32 then explicitly cast by the
+    # deployment precision pass. Keep that stored-buffer conversion here.
+    inv = (1.0 / (np.float32(c["rope_theta"]) ** (np.arange(0, c["rotary_dim"], 2, dtype=np.float32) / c["rotary_dim"]))).astype(np.float16)
+    frequency = b.op("matmul", b.constant(inv.reshape(1, -1, 1)), b.constant(np.arange(s, dtype=np.float16).reshape(1, 1, s)),
+                     shape=(1, len(inv), s), transpose_a=False, transpose_b=False)
+    frequency = b.permute(frequency, (0, 2, 1))
+    angles = b.cat([frequency, frequency], -1)
+    rotary = tuple(b.view(b.op(kind, angles), (1, 1, s, c["rotary_dim"])) for kind in ("cos", "sin"))
+    captures = {}
+    for index, kind in enumerate(c["layer_types"]):
+        prefix = f"target.layers.{index}"
+        normed = b.rms(hidden, prefix + ".input_layernorm.weight", c["rms_norm_eps"])
+        mixed = (_full_attention(b, normed, prefix + ".self_attn", c, full_mask, rotary)
+                 if kind == "full_attention" else _linear_attention(b, normed, prefix + ".linear_attn", c))
+        hidden = b.op("add", hidden, mixed)
+        normalized = b.rms(hidden, prefix + ".post_attention_layernorm.weight", c["rms_norm_eps"])
+        hidden = b.op("add", hidden, _moe(b, normalized, prefix + ".mlp", c, expert_dispatch))
+        if index in draft_config.target_layer_ids:
+            captures[index] = hidden
+    hidden = b.rms(hidden, "target.norm.weight", c["rms_norm_eps"])
+    if c["num_hidden_layers"] - 1 in captures:
+        captures[c["num_hidden_layers"] - 1] = hidden
+    features = b.cat([captures[i] for i in draft_config.target_layer_ids], -1)
+    top1 = []
+    for start in range(0, s, head_chunk_rows):
+        rows = b.slice(hidden, 1, start, min(head_chunk_rows, s-start))
+        logits = b.linear(rows, "target.lm_head.weight", c["vocab_size"])
+        top1.append(b.op("argmax", logits, shape=logits.shape[:-1], dtype="int32", axis=-1, keepdims=False))
+    graph.outputs = [b.cat(top1, 1), features]
+    return graph

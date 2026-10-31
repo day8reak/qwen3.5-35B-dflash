@@ -7,9 +7,9 @@ import subprocess
 import sys
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT/"model"))
-from qwen35_moe_dflash.artifacts import output_path, save_json
-from qwen35_moe_dflash.resources import load_resources, resource_path
-from qwen35_moe_dflash.hashing import sha256_file
+from qwen35_moe_dflash.common.artifacts import output_path, save_json
+from qwen35_moe_dflash.common.resources import load_resources, resource_path
+from qwen35_moe_dflash.common.hashing import sha256_file
 
 
 _V2_HEADERS = ("model/built_model.h", "model_manager/model_manager.h",
@@ -75,7 +75,7 @@ def main():
         "-DCMAKE_TOOLCHAIN_FILE="+str(toolchain),
         "-DCMAKE_BUILD_TYPE=Release",
         "-DOHOS_ARCH=arm64-v8a", "-DOHOS_PLATFORM=OHOS", "-DOHOS_STL=c++_shared",
-        "-DBUILD_HOST_TESTS=OFF", "-DHIAI_INCLUDE_DIR="+str(include),
+        "-DHIAI_INCLUDE_DIR="+str(include),
         "-DBUILD_HIAI_OBJECTS=ON", "-DBUILD_HIAI_RUNNER="+("OFF" if args.headers_only else "ON"),
         "-DHIAI_LIBRARIES="+";".join(libraries)]
     if args.compatible_sdk_version is not None:
@@ -94,7 +94,7 @@ def main():
             subprocess.run(command, cwd=out, stdout=log, stderr=subprocess.STDOUT, check=True)
             subprocess.run(["cmake", "--build", str(out/"build"), "--config", "Release", "-j", "4"], cwd=out, stdout=log, stderr=subprocess.STDOUT, check=True)
     except subprocess.CalledProcessError:
-        from qwen35_moe_dflash.tool_logs import log_excerpt
+        from qwen35_moe_dflash.common.tool_logs import log_excerpt
         print("Native build failed; compiler diagnostics:\n" + log_excerpt(out / "build.log"), file=sys.stderr)
         # Include the previously unobserved ND declarations automatically so a
         # selected-SDK difference does not need a second manual header query.

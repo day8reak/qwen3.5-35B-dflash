@@ -5,7 +5,7 @@ import torch
 from transformers import Qwen3_5MoeTextConfig, Qwen3_5MoeForCausalLM
 from qwen35_moe_dflash.config import Qwen35DFlashConfig
 from qwen35_moe_dflash.model import DFlashDraftModel
-from qwen35_moe_dflash.graphs import TargetGraph, DraftGraph
+from qwen35_moe_dflash.reference.graphs import TargetGraph, DraftGraph
 
 
 def create(seed=17, *, quantization_aligned=False):

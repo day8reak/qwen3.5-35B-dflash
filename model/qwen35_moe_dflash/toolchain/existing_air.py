@@ -1,0 +1,818 @@
+"""Compile an existing AIR with its own, still unverified model/runtime ABI.
+
+Inputs are copied or reflinked into an isolated input directory by default. An
+explicit, audited decode1 mode references readonly completed prefill snapshots
+through individually owned file symlinks. The incremental Draft mode binds every
+recipe FileConstant to its original prepared file and audits source preservation.
+No source directory links,
+FileConstant rewrites, graph reconstruction, platform diagnosis
+matrix, or device execution is performed. Original AIR defaults do not override
+weight precision or format; callers may explicitly select the FP16 draft profile.
+"""
+from __future__ import annotations
+
+import errno
+import fcntl
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+
+from qwen35_moe_dflash.common.artifacts import output_path, save_json
+from qwen35_moe_dflash.toolchain.compile import omg_environment, _environment_record, _omg_ipc_environment, _retain_compiler_diagnostics, prepare_tbe_compatibility, verify_tbe_compatibility
+from qwen35_moe_dflash.toolchain.compiler_evidence import compile_evidence
+from qwen35_moe_dflash.toolchain.compile_progress import compiler_heartbeat
+from qwen35_moe_dflash.common.hashing import sha256_file
+from qwen35_moe_dflash.common.tool_logs import log_excerpt
+
+
+_DATA_SUFFIXES = frozenset({".bin", ".data", ".dat", ".weights", ".weight",
+                            ".npy", ".npz", ".safetensors"})
+_DATA_DIRECTORIES = frozenset({"weights", "weight", "data", "constants", "external_data"})
+INPUT_LAYOUTS = ("air-directory", "export-directory")
+_MAX_ENTRIES, _MAX_FILES, _MAX_DEPTH = 8192, 4096, 4
+_COPY_RESERVE_BYTES = 64 << 20
+_MAX_CL_CUSTOMIZATION_BYTES = 1 << 20
+_CL_CUSTOMIZATION_OPTION = "../options/cl-customization.json"
+_PRIMARY_OMC_PATHS = (Path("compile-work/generated/model.omc"),
+                     Path("compile-work/generated/model/model.omc"))
+
+
+def _stat(path):
+    s = path.stat()
+    return [s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns]
+
+
+def _snapshot(source, destination):
+    """Make an independent snapshot; reflink avoids duplicating large files."""
+    before = _stat(source)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    method = "REFLINK"
+    with source.open("rb") as src, destination.open("xb+") as dst:
+        try:
+            fcntl.ioctl(dst.fileno(), 0x40049409, src.fileno())  # Linux FICLONE
+        except OSError as clone_error:
+            method = "COPY"
+            dst.seek(0)
+            dst.truncate()
+            space = os.fstatvfs(dst.fileno())
+            available = space.f_bavail * space.f_frsize
+            required = before[2] + _COPY_RESERVE_BYTES
+            if available < required:
+                raise OSError(errno.ENOSPC,
+                    f"Cannot snapshot {source.name}: reflink is unavailable and physical copy "
+                    f"needs {required} bytes ({before[2]} source + {_COPY_RESERVE_BYTES} reserve), "
+                    f"but destination filesystem has {available} bytes available. "
+                    "Free disk space or choose AI_RUN_DIR on a filesystem with sufficient space "
+                    "or reflink support. Source is unchanged; the empty destination is retained.") from clone_error
+            while data := src.read(8 << 20):
+                dst.write(data)
+                digest.update(data)
+        dst.flush()
+    if _stat(source) != before or destination.stat().st_size != before[2]:
+        raise ValueError(f"source changed during input snapshot: {source.name}")
+    digest_text = sha256_file(destination) if method == "REFLINK" else digest.hexdigest()
+    destination.chmod(0o444)
+    return {"source": str(source), "bytes": before[2], "sha256": digest_text,
+            "snapshot_method": method, "source_stat": before,
+            "snapshot_stat": _stat(destination)}
+
+
+def _reuse_input_inventory(air):
+    """Select exactly the sidecars bound by a completed local reuse receipt.
+
+    Only small AIR/JSON metadata is hashed here. Payload hashes are checked
+    against the existing independent snapshot hash, avoiding a second complete
+    pre-snapshot read of the weights.
+    """
+    marker = air.parent / "reuse-receipt.json"
+    if not os.path.lexists(marker):
+        return None
+    from qwen35_moe_dflash.target.source_inventory import _directory, _inventory, _named_stat, _read_small, _reject_constant, _unique_object
+    raw, receipt_identity = _read_small(marker, 32 << 20)
+    receipt = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+    if (not isinstance(receipt, dict) or receipt.get("artifact_kind") != "qwen35-target-export-reuse"
+            or receipt.get("status") != "STAGED_HARDLINKS" or receipt.get("mode") != "APPLY"
+            or receipt.get("required_compile_input_layout") != "air-directory"
+            or receipt.get("weight_payload_validation") != "INITIAL_AND_FINAL_STREAMED_SHA256_MATCHED"
+            or receipt.get("output") != str(air.parent) or receipt.get("staged_air") != str(air)
+            or air.name != "export.air"):
+        raise ValueError("adjacent reuse receipt does not bind this completed local AIR staging task")
+    manifest_path = air.parent / "inventory.json"
+    raw_inventory, inventory_identity = _read_small(manifest_path, 32 << 20)
+    if any(inventory_identity[key] != receipt.get("inventory", {}).get(key) for key in ("bytes", "sha256")):
+        raise ValueError("staged inventory differs from the reuse receipt")
+    manifest, planned, prefix = _inventory(raw_inventory)
+    if prefix != receipt.get("source_relative_prefix") or len(planned) + 1 > _MAX_FILES:
+        raise ValueError("reuse receipt sidecar prefix/count differs from its inventory")
+    _, air_identity = _read_small(air, 64 << 20)
+    if any(air_identity[key] != expected.get(key) for expected in (manifest["air"], receipt.get("air", {}))
+           for key in ("bytes", "sha256")):
+        raise ValueError("staged AIR differs from the reuse receipt/inventory")
+    rows = receipt.get("files")
+    if not isinstance(rows, list) or len(rows) != len(planned):
+        raise ValueError("reuse receipt sidecar list is incomplete")
+    recorded = {}
+    for row in rows:
+        relative = row.get("relative_path") if isinstance(row, dict) else None
+        if not isinstance(relative, str) or relative in recorded:
+            raise ValueError("reuse receipt has ambiguous sidecar paths")
+        recorded[relative] = row
+    def identity_stat(identity):
+        return [identity[key] for key in ("device", "inode", "bytes", "mtime_ns", "ctime_ns")]
+    expected_files = {air.name: {"bytes": air_identity["bytes"], "sha256": air_identity["sha256"],
+                                 "source_stat": identity_stat(air_identity["stat"])}}
+    files = [air]
+    folder = air.parent / prefix
+    with _directory(folder) as descriptor:
+        actual_names = set()
+        with os.scandir(descriptor) as entries:
+            for entry in entries:
+                if len(actual_names) >= _MAX_ENTRIES:
+                    raise ValueError("reuse sidecar directory exceeds bounded entry limit")
+                if not entry.is_file(follow_symlinks=False) or entry.is_symlink():
+                    raise ValueError("reuse sidecar directory must contain only direct regular non-symlink files")
+                actual_names.add(entry.name)
+        if actual_names != {row["basename"] for row in planned}:
+            raise ValueError("reuse sidecar directory has missing or unrecorded files")
+        for row in planned:
+            relative = row["relative_path"]
+            saved = recorded.get(relative, {})
+            if (saved.get("status") != "HARDLINKED_AND_REHASHED"
+                    or any(saved.get(key) != row[key] for key in ("basename", "bytes", "sha256"))
+                    or saved.get("final_sha256") != row["sha256"]
+                    or _named_stat(descriptor, row["basename"]) != saved.get("staged_stat")):
+                raise ValueError("reuse sidecar identity differs from its completed receipt: " + row["basename"])
+            path = air.parent / relative
+            files.append(path)
+            expected_files[relative] = {"bytes": row["bytes"], "sha256": row["sha256"],
+                                        "source_stat": identity_stat(saved["staged_stat"])}
+    if set(recorded) != set(expected_files) - {air.name}:
+        raise ValueError("reuse receipt contains unrecorded sidecar paths")
+    guards = []
+    for path, identity in ((marker, receipt_identity), (manifest_path, inventory_identity)):
+        guards.append({"path": str(path), "sha256": identity["sha256"],
+                       "source_stat": identity_stat(identity["stat"])})
+    binding = {"status": "RECEIPT_BOUND_SELECTION", "source_relative_prefix": prefix,
+               "receipt": receipt_identity, "inventory": inventory_identity,
+               "expected_files": expected_files, "metadata_guards": guards,
+               "sidecar_directory": {"path": str(folder), "source_stat": _stat(folder)},
+               "payload_verification": "REQUIRES_EXISTING_SNAPSHOT_SHA256_MATCH_NO_EXTRA_PAYLOAD_HASH",
+               "schema_scope": "Inventory selected-schema identity retained; no schema is inferred or loaded by this scanner"}
+    if _recheck_reuse_binding(binding):
+        raise ValueError("reuse receipt/inventory identity changed during selection")
+    return [air, *sorted(path for path in files if path != air)], [], binding
+
+
+def _recheck_reuse_binding(binding):
+    changed = []
+    for row in binding.get("metadata_guards", []):
+        path = Path(row["path"])
+        try:
+            same = (not path.is_symlink() and _stat(path) == row["source_stat"]
+                    and sha256_file(path) == row["sha256"])
+        except OSError:
+            same = False
+        if not same:
+            changed.append(path.name)
+    directory = binding.get("sidecar_directory")
+    if directory:
+        path = Path(directory["path"])
+        try:
+            same = not path.is_symlink() and _stat(path) == directory["source_stat"]
+        except OSError:
+            same = False
+        if not same:
+            changed.append("reuse sidecar directory")
+    return changed
+
+
+def _input_inventory(air, *, reuse_binding=None):
+    """Include extensionless TorchAir weights within bounded sibling/data roots."""
+    reused = _reuse_input_inventory(air)
+    if reused is not None:
+        files, skipped, binding = reused
+        if reuse_binding is not None:
+            reuse_binding.update(binding)
+        return files, skipped
+    parent = air.parent
+    files, skipped, visited = [air], [], 0
+    directories = _DATA_DIRECTORIES | {air.name + ".data", air.stem + "_weights", air.stem + "_data"}
+
+    def walk(folder, depth):
+        nonlocal visited
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                visited += 1
+                if visited > _MAX_ENTRIES:
+                    raise ValueError("AIR sidecar inventory exceeds bounded entry limit")
+                path = Path(entry.path)
+                relative = str(path.relative_to(parent))
+                if path == air:
+                    continue
+                if entry.is_symlink():
+                    skipped.append({"path": relative, "reason": "SYMLINK_NOT_FOLLOWED"})
+                elif entry.is_dir(follow_symlinks=False):
+                    if depth == 0 and entry.name not in directories:
+                        skipped.append({"path": relative, "reason": "UNSELECTED_DIRECTORY"})
+                    elif depth >= _MAX_DEPTH:
+                        skipped.append({"path": relative, "reason": "DEPTH_LIMIT"})
+                    else:
+                        walk(path, depth + 1)
+                elif entry.is_file(follow_symlinks=False) and (
+                        path.suffix.lower() in _DATA_SUFFIXES
+                        or (not path.suffix and not entry.name.startswith("."))):
+                    files.append(path)
+                    if len(files) > _MAX_FILES:
+                        raise ValueError("AIR sidecar inventory exceeds bounded file limit")
+                else:
+                    skipped.append({"path": relative, "reason": "NOT_SELECTED_DATA_FILE"})
+
+    walk(parent, 0)
+    return [air, *sorted(path for path in files if path != air)], skipped
+
+
+def _conversion_options(input_shape, dynamic_dims, limit_partition_size, save_weights_as_external_data,
+                        use_origin_format=None, weight_data_type=None):
+    values = {}
+    for name, value in (("input_shape", input_shape), ("dynamic_dims", dynamic_dims)):
+        if value is not None:
+            if not isinstance(value, str) or not value or any(ord(c) < 32 or ord(c) == 127 for c in value):
+                raise ValueError(f"{name} must be nonempty text without control characters")
+            values[name] = value
+    if input_shape is not None:
+        names = []
+        for entry in input_shape.split(";"):
+            match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_./-]*):(-1|[1-9][0-9]*)(,(-1|[1-9][0-9]*))*", entry)
+            if match is None:
+                raise ValueError("input_shape requires unique name:dimension[,dimension] entries separated by semicolons")
+            names.append(match.group(1))
+        if len(set(names)) != len(names):
+            raise ValueError("input_shape names must be unique")
+    if dynamic_dims is not None:
+        if input_shape is None:
+            raise ValueError("dynamic_dims requires input_shape")
+        if re.fullmatch(r"[1-9][0-9]*(,[1-9][0-9]*)*(;[1-9][0-9]*(,[1-9][0-9]*)*)*", dynamic_dims) is None:
+            raise ValueError("dynamic_dims requires positive comma-separated dimensions and semicolon-separated gears")
+    for name, value in (("limit_partition_size", limit_partition_size),
+                        ("save_weights_as_external_data", save_weights_as_external_data),
+                        ("use_origin_format", use_origin_format)):
+        if value is not None:
+            if type(value) is not bool:
+                raise ValueError(f"{name} must be bool or None")
+            values[name] = "true" if value else "false"
+    if weight_data_type is not None:
+        if not isinstance(weight_data_type, str) or weight_data_type != "FP16":
+            raise ValueError("weight_data_type must be FP16 or None")
+        values["weight_data_type"] = weight_data_type
+    return values
+
+
+def _cl_customization_source(value):
+    """Validate one small explicit compiler policy without interpreting its API."""
+    if value is None:
+        return None
+    raw = Path(value).expanduser()
+    if raw.is_symlink() or not stat.S_ISREG(raw.lstat().st_mode):
+        raise ValueError("cl_customization must be a regular non-symlink file")
+    source = raw.resolve()
+    before = _stat(source)
+    if not 0 < before[2] <= _MAX_CL_CUSTOMIZATION_BYTES:
+        raise ValueError("cl_customization must be nonempty and at most 1 MiB")
+    with source.open("rb") as stream:
+        data = stream.read(_MAX_CL_CUSTOMIZATION_BYTES + 1)
+    if len(data) != before[2] or _stat(source) != before:
+        raise ValueError("cl_customization changed during validation")
+    def nonstandard_constant(value):
+        raise ValueError("cl_customization requires standard JSON without " + value)
+    try:
+        decoded = json.loads(data.decode("utf-8"), parse_constant=nonstandard_constant)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("cl_customization must contain valid UTF-8 JSON") from error
+    if not isinstance(decoded, dict):
+        raise ValueError("cl_customization JSON must be an object")
+    return {"source": source, "source_stat": before,
+            "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def _check_help(omg, env, output, options, timeout_seconds):
+    folder = output / "compile-work/help"
+    folder.mkdir()
+    command = [str(omg), "--help"]
+    save_json(output / "help-command.json", {"argv": command, "cwd": str(folder)})
+    log = output / "help.log"
+    with _omg_ipc_environment(folder, env) as (local_env, ipc), log.open("x") as stream:
+        record = _environment_record(env["DDK_PATH"], local_env)
+        record["ipc_temporary_directory"] = ipc
+        save_json(output / "help-environment.json", record)
+        result = subprocess.run(command, cwd=folder, env=local_env, stdout=stream,
+                                stderr=subprocess.STDOUT, check=False, timeout=min(timeout_seconds, 60))
+    text = log.read_text(errors="replace")
+    advertised = {name: re.search(r"(?<![A-Za-z0-9_])--" + re.escape(name) + r"(?![A-Za-z0-9_])", text) is not None
+                  for name in options}
+    missing = [name for name, present in advertised.items() if not present]
+    recognizable_help = bool(options and not missing) or bool(
+        re.search(r"(?i)\b(?:usage|options|parameters|flags)\b", text)
+        and re.search(r"(?<![A-Za-z0-9_])--[a-z][a-z0-9_]*", text))
+    status = ("EMPTY_HELP" if not text.strip() else "INVALID_HELP_RESPONSE" if not recognizable_help else
+              "OPTIONS_NOT_ADVERTISED" if missing else "OPTIONS_ADVERTISED")
+    record = {"status": status,
+              "returncode": result.returncode, "requested": options, "advertised": advertised,
+              "missing": missing, "log": "help.log", "sha256": sha256_file(log),
+              "scope": "Help may omit internal options. Requested arguments are preserved for actual compiler validation; help absence is not proof of unsupported options. Some tools return nonzero for help."}
+    save_json(output / "help-check.json", record)
+    # An empty/failing help response is not evidence even when no extra options
+    # were requested. Nonzero usage exits with actual help text remain recorded.
+    if not text.strip():
+        raise ValueError("selected OMG --help emitted no help text")
+    if not recognizable_help:
+        raise ValueError("selected OMG --help did not emit recognizable option help; inspect help.log for loader/runtime errors")
+    return record
+
+
+def select_primary_omc(compilation_dir, *, required=True):
+    """Select the unique main output from the two observed OMG layouts.
+
+    With external weights, the same ``--output=model`` can produce
+    ``model/model.omc`` next to ``model/SubGraph_N.weight``. Do not flatten that
+    hierarchy or guess among arbitrary OMC files. This validates paths only;
+    compiler success and hash binding remain separate requirements.
+    """
+    root = Path(compilation_dir).resolve()
+    generated = root / "compile-work/generated"
+    for ancestor in (root / "compile-work", generated, generated / "model"):
+        if ancestor.is_symlink():
+            raise ValueError(f"primary OMC path contains a symlink: {ancestor.relative_to(root)}")
+    candidates = [root / relative for relative in _PRIMARY_OMC_PATHS
+                  if (root / relative).exists() or (root / relative).is_symlink()]
+    if len(candidates) > 1:
+        raise ValueError("ambiguous primary OMC outputs: both model.omc and model/model.omc exist")
+    if not candidates:
+        if required:
+            raise ValueError("OMG succeeded without a nonempty regular model.omc at either supported output path: "
+                             "compile-work/generated/model.omc or compile-work/generated/model/model.omc")
+        return None
+    candidate = candidates[0]
+    if candidate.is_symlink() or not candidate.is_file() or not candidate.stat().st_size:
+        raise ValueError(f"primary OMC must be a nonempty regular non-symlink file: {candidate.relative_to(root)}")
+    return candidate
+
+
+def _generated_inventory(output, snapshots):
+    """Hash all retained compiler files, excluding independently staged inputs."""
+    primary = select_primary_omc(output, required=False)
+    excluded = {row["path"] for row in snapshots}
+    generated, context, skipped = [], [], []
+    work = output / "compile-work"
+    for directory, subdirs, names in os.walk(work, followlinks=False):
+        base = Path(directory)
+        for name in list(subdirs):
+            path = base / name
+            if path.is_symlink():
+                skipped.append(str(path.relative_to(output)))
+                subdirs.remove(name)
+        for name in names:
+            path = base / name
+            relative = str(path.relative_to(output))
+            if relative in excluded:
+                continue
+            if path.is_symlink() or not path.is_file():
+                skipped.append(relative)
+                continue
+            before = _stat(path)
+            digest = sha256_file(path)
+            if _stat(path) != before:
+                raise ValueError(f"compiler artifact changed while hashing: {relative}")
+            in_generated = (work / "generated") in path.parents
+            role = ("primary_omc" if path == primary else
+                    "external_data_candidate" if in_generated else "compiler_context")
+            row = {"path": relative, "bytes": before[2], "sha256": digest,
+                   "stat": before, "role": role}
+            (generated if in_generated else context).append(row)
+    return sorted(generated, key=lambda row: row["path"]), sorted(context, key=lambda row: row["path"]), skipped
+
+
+def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
+                         tbe_diagnosis=None, timeout_seconds=7200, omg_path=None,
+                         input_shape=None, dynamic_dims=None, limit_partition_size=None,
+                         save_weights_as_external_data=None, progress=None,
+                         input_layout="air-directory", use_origin_format=None,
+                         weight_data_type=None, cl_customization=None, reuse_failed_job=None,
+                         borrowed_decode_job=None, decode_inventory=None,
+                         decode_export_receipt=None, incremental_draft_export=None):
+    """Return a host compilation report, retaining failures without deployment.
+
+    Only inventoried local snapshots are hash bound. Absolute or out-of-tree
+    FileConstant references are not discovered or rewritten, so their identity
+    and the original model's tensor ABI remain explicitly unverified.
+
+    air-directory retains neighboring data paths relative to the AIR directory.
+    export-directory prefixes data paths with the original export folder name,
+    matching TorchAir references such as ./export_folder/parameter_weight.
+    The staged AIR and compiler cwd coincide in both modes.
+    ``use_origin_format`` and ``weight_data_type`` are explicit optional compiler
+    settings. Both default to omitted; the complete FP16 draft uses True/FP16
+    to match its previously successful tiny compiler profile. This is not an
+    inferred policy for arbitrary or quantized AIR inputs.
+    Optional ``cl_customization`` must be a bounded JSON object. Its bytes are
+    independently snapshotted outside the generated-model directory, and the
+    option is passed unchanged to the selected OMG. Help may omit this internal
+    option; actual compiler validation remains authoritative.
+    ``borrowed_decode_job`` explicitly selects the audited static decode1 input
+    view. It requires the transferred inventory/export receipt and an unchanged
+    completed prefill64 job. Only its independent readonly snapshot files are
+    referenced; the transferred AIR is still independently snapshotted.
+    ``incremental_draft_export`` selects the separate complete 17/14 cached-Draft
+    export contract. Exact per-file aliases reference original weights; fresh
+    hashes and full identities are audited without source chmod or hardlinks.
+    """
+    if (not isinstance(ddk_id, str) or not ddk_id.strip()
+            or isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+        raise ValueError("declare a nonempty ddk_id and finite positive timeout_seconds")
+    if progress is not None and not callable(progress):
+        raise ValueError("progress must be callable or None")
+    if input_layout not in INPUT_LAYOUTS:
+        raise ValueError(f"input_layout must be one of {INPUT_LAYOUTS}")
+    decode_arguments = (borrowed_decode_job, decode_inventory, decode_export_receipt)
+    if incremental_draft_export is not None and (
+            any(value is not None for value in decode_arguments) or reuse_failed_job is not None
+            or input_layout != "air-directory"):
+        raise ValueError("incremental Draft input view excludes other reuse modes and requires air-directory")
+    if any(value is not None for value in decode_arguments):
+        if not all(value is not None for value in decode_arguments):
+            raise ValueError("decode input view requires source job, inventory and export receipt")
+        if reuse_failed_job is not None or input_layout != "air-directory":
+            raise ValueError("decode input view requires air-directory and excludes failed-job reuse")
+    options = _conversion_options(input_shape, dynamic_dims, limit_partition_size,
+                                  save_weights_as_external_data, use_origin_format, weight_data_type)
+    customization = _cl_customization_source(cl_customization)
+    customization_snapshot = None
+    if customization is not None:
+        options["cl_customization"] = _CL_CUSTOMIZATION_OPTION
+
+    def notify(stage, message, **details):
+        if progress is not None:
+            progress({"stage": stage, "message": message, **details})
+
+    air, ddk = Path(air_path).resolve(), Path(ddk_root).resolve()
+    if not air.is_file() or not air.stat().st_size:
+        raise ValueError("existing AIR must be a nonempty regular file")
+    output = output_path(output_dir)
+    if output == air.parent or air.parent in output.parents or output == ddk or ddk in output.parents:
+        raise ValueError("compilation output must be outside the source and DDK directories")
+    omg, env = omg_environment(ddk)
+    if omg_path is not None:
+        selected = Path(omg_path).resolve()
+        if ddk not in selected.parents or not selected.is_file():
+            raise ValueError("explicit OMG must be a regular executable within the selected DDK")
+        with selected.open("rb") as stream:
+            if stream.read(4) != b"\x7fELF":
+                raise ValueError("explicit OMG must be an ELF tool; vendor shell/Python wrappers can write shared DDK files. Use tools/tools_omg/master/omg")
+        omg = selected
+    if not os.access(omg, os.X_OK):
+        raise PermissionError(f"selected OMG is not executable: {omg}")
+    output.mkdir(parents=True, exist_ok=False)
+    # Some OMG builds validate --output as a model name, rejecting a full
+    # path before graph parsing. Keep AIR and cwd together; exported sidecars
+    # may need their original directory prefix for relative FileConstant paths.
+    scratch = output / "compile-work"
+    inputs = generated = scratch / "generated"
+    inputs.mkdir(parents=True)
+    data_prefix = Path(air.parent.name) if input_layout == "export-directory" else Path()
+
+    def staged_relative(source):
+        if decode_plan is not None:
+            return decode_plan.source_relative(source)
+        relative = source.relative_to(air.parent)
+        return relative if source == air else data_prefix / relative
+
+    log = output / "compile.log"
+    report = {
+        "schema_version": 1, "artifact_kind": "qwen35-existing-air-compilation",
+        "status": "COMPILING", "output": str(output), "comparison": str(output / "report.txt"),
+        "platform": "kirinx90", "ddk_id": ddk_id, "ddk_root": str(ddk),
+        "omg_path": str(omg), "omg_sha256": sha256_file(omg), "air_source": str(air),
+        "requested_options": options,
+        "source_contract": {key: "UNVERIFIED" for key in
+                            ("checkpoint", "quantization", "layer_count", "shape", "input_output_abi")},
+        "legacy_hiai_abi_compatible": "UNVERIFIED", "stateful_hiai_abi_compatible": "UNVERIFIED",
+        "model_compilation": "NOT_RUN", "device_execution": "NOT_RUN", "numerical_validation": "NOT_RUN",
+        "runtime_placement": "UNVERIFIED", "device_ready": False,
+        "compile_work": "compile-work", "compile_log": "compile.log",
+        "input_layout": {"mode": input_layout, "sidecar_prefix": str(data_prefix),
+                         "air_path": str((inputs / air.name).relative_to(output)),
+                         "compiler_cwd": str(inputs.relative_to(output))},
+        "input_snapshots": [],
+        "external_weights": {
+            "status": "UNVERIFIED", "scope": "Only selected neighboring data files are inventoried and hash bound.",
+            "limitations": "AIR is not parsed. Absolute/out-of-tree, symlinked, unselected names or deeper FileConstant references remain unbound; no path is rewritten.",
+            "max_entries": _MAX_ENTRIES, "max_files": _MAX_FILES, "max_depth": _MAX_DEPTH,
+            "data_suffixes": sorted(_DATA_SUFFIXES), "skipped": [],
+            "extensionless_regular_files": "INCLUDED_EXCEPT_HIDDEN_NAMES",
+        },
+    }
+    compatibility = None
+    reuse_binding = {}
+    retained_plan = None
+    decode_plan = None
+    input_view_key = "incremental_input_view" if incremental_draft_export is not None else "decode_input_view"
+    input_view_file = "incremental-input-view" if incremental_draft_export is not None else "decode-input-view"
+    retained_selection = None
+    if tbe_diagnosis is not None:
+        compatibility = {"diagnosis": str(Path(tbe_diagnosis).resolve()),
+                         "compiler_invocation": "NOT_ATTEMPTED", "compile": "NOT_RUN",
+                         "audit": {"status": "NOT_PREPARED"}, "metadata": None,
+                         "scope": "Compile outcome is separate from adaptation; NOT_OBSERVED does not prove a repair."}
+        report["tbe_compatibility"] = compatibility
+    stage = "omg-help"
+    attempted = False
+    error = None
+    try:
+        if incremental_draft_export is not None:
+            from qwen35_moe_dflash.draft.incremental.inputs import prepare_incremental_input_view
+            stage = "incremental-input-validation"
+            decode_plan = prepare_incremental_input_view(incremental_draft_export, air=air, output=output)
+            report[input_view_key] = decode_plan.evidence
+            save_json(output / (input_view_file + "-plan.json"), decode_plan.evidence)
+            report["external_weights"].update(
+                status="INCREMENTAL_RECIPE_BOUND_REFERENCE_VIEW",
+                scope="All FileConstants in the retained incremental recipe bind exact original prepared weights; no payload copies or hardlinks.",
+                limitations="Compiler read-only use is audited by pre/post SHA256 and full identity; file aliases do not enforce OS write protection.")
+            retained_selection = (decode_plan.sources, [])
+            notify(stage, "Bound incremental Draft AIR and original weight references without copying weights")
+        if borrowed_decode_job is not None:
+            from qwen35_moe_dflash.target.decode_inputs import prepare_decode_input_view
+            stage = "decode-input-validation"
+            decode_plan = prepare_decode_input_view(borrowed_decode_job, air=air,
+                inventory=decode_inventory, export_receipt=decode_export_receipt,
+                output=output, ddk_root=ddk, ddk_id=ddk_id, omg_path=omg,
+                omg_sha256=report["omg_sha256"], options=options, input_layout=input_layout)
+            report["decode_input_view"] = decode_plan.evidence
+            save_json(output / "decode-input-view-plan.json", decode_plan.evidence)
+            report["external_weights"].update(
+                status="MANIFEST_BOUND_READONLY_REFERENCE_VIEW",
+                scope="Exact transferred decode1 inventory references select individual owned file aliases to verified readonly prefill snapshots.",
+                limitations="Aliases share source snapshot storage. This input view does not prove compiler dependency completeness, output-space capacity, runtime ABI or numerical correctness.",
+                extensionless_regular_files="MANIFEST_SELECTED_ONLY")
+            retained_selection = (decode_plan.sources, [])
+            notify(stage, "Validated decode1 inventory and readonly completed prefill inputs")
+        if reuse_failed_job is not None:
+            from qwen35_moe_dflash.target.snapshot_retry import prepare_failed_prefill_reuse
+            stage = "retained-input-validation"
+            selected, skipped = _input_inventory(air, reuse_binding=reuse_binding)
+            retained_plan = prepare_failed_prefill_reuse(reuse_failed_job, air=air,
+                ddk_root=ddk, ddk_id=ddk_id, omg_path=omg, omg_sha256=report["omg_sha256"],
+                tbe_diagnosis=tbe_diagnosis, input_layout=input_layout, options=options,
+                selected=selected, output=output)
+            report["retained_input_reuse"] = retained_plan.evidence
+            retained_selection = (selected, skipped)
+            notify(stage, "Validated failed-job snapshot receipts; shared readonly payloads will be freshly hashed")
+        stage = "omg-help"
+        notify(stage, "Checking selected OMG help before copying AIR or sidecars")
+        report["help_check"] = _check_help(omg, env, output, options, timeout_seconds)
+        if report["help_check"]["missing"]:
+            notify(stage, "Requested options not listed in help; compiler will validate unchanged arguments",
+                   options=report["help_check"]["missing"])
+        if customization is not None:
+            stage = "cl-customization-snapshot"
+            snapshot = scratch / "options/cl-customization.json"
+            customization_snapshot = _snapshot(customization["source"], snapshot)
+            if any(customization_snapshot[key] != customization[key]
+                   for key in ("source_stat", "bytes", "sha256")):
+                raise ValueError("cl_customization source changed since validation")
+            report["cl_customization"] = {
+                "path": snapshot.relative_to(output).as_posix(),
+                "bytes": customization_snapshot["bytes"], "sha256": customization_snapshot["sha256"],
+            }
+        if compatibility is not None:
+            stage = "tbe-compatibility-prepare"
+            env, metadata = prepare_tbe_compatibility(ddk, tbe_diagnosis,
+                                                       output / "tbe-compat", inherited=env)
+            compatibility.update(metadata=metadata, audit={"status": "NOT_OBSERVED"})
+        stage = "input-snapshot"
+        selected, skipped = retained_selection or _input_inventory(air, reuse_binding=reuse_binding)
+        if reuse_binding:
+            if input_layout != "air-directory":
+                raise ValueError("receipt-bound reused target requires input_layout=air-directory")
+            report["external_weights"]["reuse_binding"] = reuse_binding
+        if any(staged_relative(source).parts[0] == "model"
+               or staged_relative(source).parts[0].startswith("model.")
+               for source in selected):
+            raise ValueError("AIR snapshot conflicts with reserved compiler output basename 'model'")
+        report["external_weights"]["skipped"] = skipped
+        selection = {"file_count": len(selected),
+                     "total_bytes": sum(source.stat().st_size for source in selected),
+                     "layout": report["input_layout"],
+                     "physical_copy_reserve_bytes": _COPY_RESERVE_BYTES,
+                     "scope": "Selected AIR and neighboring data candidates; not verified AIR dependencies. "
+                              "Free space is checked per file only if reflink fails."}
+        if decode_plan is not None:
+            selection["scope"] = ("Bound AIR plus exact manifest-selected original input references. "
+                                  "Only the AIR is independently copied/reflinked; compiler outputs require separate space.")
+        report["input_selection"] = selection
+        save_json(output / "input-selection.json", selection)
+        notify(stage, f"Snapshotting {selection['file_count']} files, {selection['total_bytes']} bytes selected",
+               total=selection["file_count"], total_bytes=selection["total_bytes"])
+        notify(stage, f"Input layout {input_layout}; sidecar prefix {data_prefix}")
+        for index, source in enumerate(selected):
+            relative = staged_relative(source) if decode_plan is not None else source.relative_to(air.parent)
+            snapshot = inputs / staged_relative(source)
+            notify(stage, ("Binding original input references" if decode_plan is not None else
+                           "Snapshotting input" if retained_plan is None else "Hashing and sharing retained input"),
+                   completed=index, total=len(selected),
+                   source_relative=str(relative), bytes=source.stat().st_size)
+            input_plan = decode_plan or retained_plan
+            row = (_snapshot(source, snapshot) if input_plan is None else
+                   input_plan.snapshot(source, snapshot, _snapshot))
+            expected = reuse_binding.get("expected_files", {}).get(str(relative))
+            if expected is not None and any(row[key] != expected[key] for key in ("bytes", "sha256", "source_stat")):
+                raise ValueError("input snapshot differs from receipt-bound SHA256: " + str(relative))
+            row.update(path=str(snapshot.relative_to(output)), source_relative=str(relative),
+                       role="air" if source == air else "neighbor_data_candidate")
+            report["input_snapshots"].append(row)
+            if source == air:
+                report["air"] = {"path": str(air), "bytes": row["bytes"], "sha256": row["sha256"]}
+        save_json(output / "input-inventory.json", {"files": report["input_snapshots"],
+                                                    "external_weights": report["external_weights"]})
+        if reuse_binding and _recheck_reuse_binding(reuse_binding):
+            raise ValueError("reuse receipt/inventory identity changed during input snapshot")
+        if reuse_binding and any(_stat(source) != reuse_binding["expected_files"][str(source.relative_to(air.parent))]["source_stat"]
+                                 for source in selected):
+            raise ValueError("receipt-bound AIR/sidecar identity changed during input snapshot")
+        if reuse_binding:
+            reuse_binding["payload_verification"] = "ALL_SELECTED_SNAPSHOT_SHA256_MATCHED_RECEIPT"
+        command = [str(omg), "--framework=1", f"--model={inputs / air.name}",
+                   "--output=model", "--target=omc", "--platform=kirinx90"]
+        command.extend(f"--{name}={value}" for name, value in options.items())
+        save_json(output / "compile-command.json", {"argv": command, "cwd": str(inputs),
+                                                    "weight_dtype_override": weight_data_type})
+        stage = "omg"
+        notify(stage, "Compiling existing AIR with the selected DDK; full output is in compile.log")
+        notify(stage, f"Live log: {log}; wait updates every 30s; timeout={timeout_seconds:g}s")
+        with _omg_ipc_environment(inputs, env) as (local_env, ipc), log.open("x") as stream:
+            environment = _environment_record(ddk, local_env)
+            environment["ipc_temporary_directory"] = ipc
+            save_json(output / "omg-environment.json", environment)
+            attempted = True
+            report["model_compilation"] = "FAILED"
+            if compatibility is not None:
+                compatibility.update(compiler_invocation="ATTEMPTED", compile="FAILED")
+            with compiler_heartbeat(log, progress) as observation:
+                report["compile_observation"] = observation
+                subprocess.run(command, cwd=inputs, env=local_env, stdout=stream, stderr=subprocess.STDOUT,
+                               check=True, timeout=timeout_seconds)
+                # check=True returned normally. Keep this distinct from the
+                # subsequent output/inventory checks for resumable recovery.
+                report["returncode"] = 0
+        stage = "output-check"
+        omc = select_primary_omc(output)
+        report["primary_omc_layout"] = omc.relative_to(generated).as_posix()
+        report["model_compilation"] = "PASSED"
+        if compatibility is not None:
+            compatibility["compile"] = "PASSED"
+    except Exception as exc:
+        error = exc
+        report.update(stage=stage, error=f"{type(exc).__name__}: {exc}")
+        if isinstance(exc, subprocess.CalledProcessError):
+            report["returncode"] = exc.returncode
+        if isinstance(exc, subprocess.TimeoutExpired):
+            report["timeout_seconds"] = exc.timeout
+    finally:
+        if retained_plan is not None:
+            try:
+                audit = retained_plan.audit()
+                report["retained_input_reuse"] = audit
+                save_json(output / "retained-input-reuse.json", audit)
+                if audit.get("status") != "PASSED":
+                    report["retained_input_audit_error"] = audit
+                    if error is None:
+                        error = RuntimeError("shared retained-input audit failed; old and new evidence retained")
+                        report.update(stage="retained-input-audit", error=str(error))
+            except Exception as exc:
+                report["retained_input_audit_error"] = f"{type(exc).__name__}: {exc}"
+                if error is None:
+                    error = exc
+                    report.update(stage="retained-input-audit", error=str(exc))
+        if "help_check" not in report and (output / "help-check.json").is_file():
+            report["help_check"] = json.loads((output / "help-check.json").read_text())
+        if compatibility is not None:
+            if compatibility["metadata"] is not None and attempted:
+                try:
+                    audit = verify_tbe_compatibility(compatibility["metadata"])
+                    if not isinstance(audit, dict) or audit.get("status") not in {"APPLIED", "NOT_OBSERVED", "REJECTED"}:
+                        raise ValueError("invalid TBE audit result")
+                    compatibility["audit"] = audit
+                except Exception as exc:
+                    compatibility["audit"] = {"status": "AUDIT_FAILED", "error": f"{type(exc).__name__}: {exc}"}
+                if compatibility["audit"]["status"] not in {"APPLIED", "NOT_OBSERVED"}:
+                    report["audit_error"] = compatibility["audit"]
+                    if error is None:
+                        error = RuntimeError("TBE compatibility audit rejected compilation")
+                        report.update(stage="tbe-compatibility-audit", error=str(error))
+            save_json(output / "tbe-compatibility-result.json", compatibility)
+        try:
+            report["compiler_diagnostics"] = _retain_compiler_diagnostics(inputs, output, failure=error is not None)
+        except Exception as exc:
+            report["compiler_diagnostics"] = {"status": "RETENTION_FAILED", "error": str(exc)}
+        try:
+            notify("artifact-inventory", "Hashing retained compiler outputs, including external-data candidates")
+            artifacts, context, skipped = _generated_inventory(output, report["input_snapshots"])
+            report["generated_artifacts"], report["compiler_work_artifacts"] = artifacts, context
+            report["skipped_nonregular_artifacts"] = skipped
+            report["external_data_candidates"] = [row for row in artifacts if row["role"] != "primary_omc"]
+            report["external_data_scope"] = "Preserve every generated file and its relative path. Candidate classification does not prove model dependency completeness."
+            primary = next((row for row in artifacts if row["role"] == "primary_omc"), None)
+            if primary is not None:
+                report["omc"] = primary
+            if any(path == "compile-work/generated" or path.startswith("compile-work/generated/") for path in skipped):
+                raise ValueError("generated model directory contains nonregular artifacts that could not be hash bound")
+        except Exception as exc:
+            report["artifact_inventory_error"] = f"{type(exc).__name__}: {exc}"
+            if error is None:
+                error = exc
+                report.update(stage="artifact-inventory", error=report["artifact_inventory_error"])
+        changed = []
+        if reuse_binding:
+            changed.extend(_recheck_reuse_binding(reuse_binding))
+        for row in report["input_snapshots"]:
+            try:
+                if (_stat(Path(row["source"])) != row["source_stat"]
+                        or _stat(output / row["path"]) != row["snapshot_stat"]):
+                    changed.append(row["source_relative"])
+            except OSError:
+                changed.append(row["source_relative"])
+        if customization is not None:
+            try:
+                if (_stat(customization["source"]) != customization["source_stat"]
+                        or sha256_file(customization["source"]) != customization["sha256"]):
+                    changed.append("cl_customization source")
+            except OSError:
+                changed.append("cl_customization source")
+            if customization_snapshot is not None:
+                snapshot = scratch / "options/cl-customization.json"
+                try:
+                    if (_stat(snapshot) != customization_snapshot["snapshot_stat"]
+                            or sha256_file(snapshot) != customization["sha256"]):
+                        changed.append("cl_customization snapshot")
+                except OSError:
+                    changed.append("cl_customization snapshot")
+        preservation = "CHANGED" if changed else ("UNCHANGED_BY_STAT" if report["input_snapshots"] or customization is not None else "NOT_CHECKED")
+        report["source_preservation"] = {"status": preservation,
+                                         "changed": changed,
+                                         "scope": "Hash-bound snapshot plus before/after metadata checks; no original file writes or source directory links."}
+        if changed and error is None:
+            error = ValueError("source or staged input changed during compilation")
+            report.update(stage="input-recheck", error=str(error))
+        if log.is_file():
+            report["compiler_evidence"] = compile_evidence(log.read_text(errors="replace"))
+            report["compile_log_sha256"] = sha256_file(log)
+        if decode_plan is not None:
+            try:
+                audit = decode_plan.audit()
+                report[input_view_key] = audit
+                save_json(output / (input_view_file + ".json"), audit)
+                if audit.get("status") != "PASSED":
+                    report["decode_input_audit_error"] = audit
+                    if error is None:
+                        error = RuntimeError("original input reference audit failed; all evidence retained")
+                        report.update(stage=input_view_file + "-audit", error=str(error))
+            except Exception as exc:
+                report["decode_input_audit_error"] = f"{type(exc).__name__}: {exc}"
+                if error is None:
+                    error = exc
+                    report.update(stage=input_view_file + "-audit", error=str(exc))
+    report["status"] = "FAILED" if error is not None else "COMPILED"
+    if error is not None:
+        save_json(output / "failure.json", report)
+    else:
+        save_json(output / "manifest.json", report)
+    save_json(output / "report.json", report)
+    dtype_policy = ("AIR weight dtype retained without override" if weight_data_type is None
+                    else f"explicit compiler weight dtype override={weight_data_type}")
+    lines = ["Existing AIR -> selected-DDK OMG compilation", f"status={report['status']}",
+             f"Target: kirinx90; {dtype_policy}.",
+             "Requested compiler options: " + json.dumps(options, sort_keys=True),
+             "Original model checkpoint, quantization, layer count, shapes and runtime ABI remain UNVERIFIED.",
+             "No board execution; this artifact is not validated against this project's runner ABI.",
+             "Tool help: help.log; option verification: help-check.json.",
+             f"Source AIR: {air}", "Input inventory: input-inventory.json",
+             f"Input layout: {input_layout}; sidecar prefix: {data_prefix}",
+             "Full compiler log: compile.log; compiler work: compile-work/"]
+    lines.append(f"Generated files: {len(report.get('generated_artifacts', []))}; external-data candidates: {len(report.get('external_data_candidates', []))}")
+    if report.get("omc"):
+        lines.append(f"Primary OMC: {report['omc']['path']}")
+    if compatibility is not None:
+        lines.append("TBE compatibility: " + json.dumps({key: compatibility[key] for key in
+                                                       ("compiler_invocation", "compile", "audit")}))
+    if error is not None:
+        lines.append(report["error"])
+        if log.is_file():
+            lines.append(log_excerpt(log))
+    (output / "report.txt").write_text("\n".join(lines) + "\n")
+    return report

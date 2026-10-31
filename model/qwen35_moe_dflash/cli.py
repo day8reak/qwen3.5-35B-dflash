@@ -7,10 +7,10 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from .artifacts import checked_file, output_path, save_json
-from .resources import load_resources, resource_path
-from .hashing import sha256_file
-from .diagnostics import format_error, probe_reference_import
+from qwen35_moe_dflash.common.artifacts import checked_file, output_path, save_json
+from qwen35_moe_dflash.common.resources import load_resources, resource_path
+from qwen35_moe_dflash.common.hashing import sha256_file
+from qwen35_moe_dflash.toolchain.diagnostics import format_error, probe_reference_import
 
 
 def _generation_difference(expected_tokens, expected_stop, actual_tokens, actual_stop):
@@ -145,11 +145,11 @@ def execute(args):
     output = output_path(args.output)
     if output.exists(): raise FileExistsError(output)
     if args.command == "build-full-pytorch":
-        from .export import build_full_pytorch
+        from qwen35_moe_dflash.toolchain.export import build_full_pytorch
         build_full_pytorch(output, sequence_length=args.sequence_length)
         return
     if args.command == "quant-plan":
-        from .quantization import meta_graphs, make_plan, memory_budget, dopt_config
+        from qwen35_moe_dflash.reference.quantization import meta_graphs, make_plan, memory_budget, dopt_config
         target, draft = meta_graphs()
         plan = make_plan(target, draft, group_size=args.group_size)
         plan["memory"] = memory_budget(plan, available_gib=args.available_gib,
@@ -181,7 +181,7 @@ def execute(args):
             except Exception as error:
                 result["cuda_error"] = format_error(error)
             try:
-                from .export import require_torchair
+                from qwen35_moe_dflash.toolchain.export import require_torchair
                 require_torchair()
                 # Dependency import only; no GE graph or device was validated.
                 result["air_export_ready"] = True
@@ -189,8 +189,8 @@ def execute(args):
             except Exception as error:
                 result["air_dependency_error"] = format_error(error)
             try:
-                from .quantization import load_dopt, require_dopt_air
-                from .resources import dopt_resource
+                from qwen35_moe_dflash.reference.quantization import load_dopt, require_dopt_air
+                from qwen35_moe_dflash.common.resources import dopt_resource
                 dopt_root = dopt_resource(resources)
                 _, result["dopt_identity"] = load_dopt(dopt_root)
                 result["dopt_calibration_ready"] = True
@@ -209,7 +209,7 @@ def execute(args):
         import torch
     if args.command in ("demo", "export-tiny-air"):
         if args.command == "export-tiny-air":
-            from .export import require_torchair, export_air
+            from qwen35_moe_dflash.toolchain.export import require_torchair, export_air
             torchair = require_torchair()
         from reference.tiny import create
         torch.set_num_threads(1)
@@ -241,46 +241,46 @@ def execute(args):
             save_json(output, result); return
         draft_path = resource_path(resources, "draft_weights", directory=True)
         if args.command == "export-air":
-            from .export import require_torchair
+            from qwen35_moe_dflash.toolchain.export import require_torchair
             torchair = require_torchair()  # before checkpoint hashing/loading
         dopt_root = None
         if args.command == "quantize" or getattr(args, "quantized_checkpoint", None):
-            from .quantization import load_dopt
-            from .resources import dopt_resource
+            from qwen35_moe_dflash.reference.quantization import load_dopt
+            from qwen35_moe_dflash.common.resources import dopt_resource
             dopt_root = dopt_resource(resources)
             load_dopt(dopt_root)
             if args.command == "export-air":
-                from .quantization import require_dopt_air
+                from qwen35_moe_dflash.reference.quantization import require_dopt_air
                 require_dopt_air(dopt_root)
-        from .checkpoints import audit_checkpoints
+        from qwen35_moe_dflash.reference.checkpoints import audit_checkpoints
         identity = audit_checkpoints(target_path, draft_path)
         if args.command == "audit":
             save_json(output, identity)
             if identity["status"] != "PASS": raise ValueError(identity["errors"])
             return
         if identity["status"] != "PASS": raise ValueError(identity["errors"])
-        from .graphs import load_graphs
+        from qwen35_moe_dflash.reference.graphs import load_graphs
         dtype = torch.bfloat16 if getattr(args, "precision", "fp16") == "upstream-bf16" else torch.float16
         target, draft = load_graphs(target_path, draft_path, device=getattr(args, "device", "cpu"), dtype=dtype)
         pad, eos = 248044, (248044, 248046)
         if args.command == "quantize":
-            from .quantization import calibrate
+            from qwen35_moe_dflash.reference.quantization import calibrate
             prompts = json.loads(Path(args.calibration).read_text())["token_ids"]
             calibrate(target, draft, prompts, output, sequence_length=args.sequence_length,
                       dopt_root=dopt_root, source_identity=identity, group_size=args.group_size)
             return
         if args.command == "export-air":
-            from .export import export_air
+            from qwen35_moe_dflash.toolchain.export import export_air
             quantization = None
             if args.quantized_checkpoint:
-                from .quantization import restore_for_air
+                from qwen35_moe_dflash.reference.quantization import restore_for_air
                 target, draft, quantization = restore_for_air(
                     target, draft, args.quantized_checkpoint, dopt_root, source_identity=identity)
             export_air(target, draft, output, args.sequence_length, torchair_module=torchair,
                        source_identity=identity, quantization=quantization)
             return
     elif args.command == "compile-omc":
-        from .compile import compile_air
+        from qwen35_moe_dflash.toolchain.compile import compile_air
         resources, _ = load_resources(args.resources)
         ddk_id = os.path.expandvars(resources.get("ddk_id", ""))
         if not ddk_id or "$" in ddk_id: raise ValueError("declare ddk_id in resource JSON or CPRO_DDK_ID")
@@ -375,17 +375,17 @@ def execute(args):
     if getattr(args, "quantized_checkpoint", None):
         if args.precision != "fp16":
             raise ValueError("quantized reference requires the FP16 non-quantization policy")
-        from .quantization import restore_for_reference
+        from qwen35_moe_dflash.reference.quantization import restore_for_reference
         target, draft, quantization = restore_for_reference(
             target, draft, args.quantized_checkpoint, dopt_root, source_identity=identity)
     if args.precision == "fp16":
-        from .precision import prepare_fp16_pair
+        from qwen35_moe_dflash.toolchain.precision import prepare_fp16_pair
         target, draft, precision_audit = prepare_fp16_pair(
             target, draft, args.sequence_length, quantization=quantization is not None)
     else:
         target.to(torch.bfloat16); draft.to(torch.bfloat16)
         precision_audit = None
-    from .runtime import TorchExecutor, generate
+    from qwen35_moe_dflash.execution.runtime import TorchExecutor, generate
     executor = TorchExecutor(target, draft, args.sequence_length, pad)
     ordinary = generate(executor, prompt, ordinary=True, max_new_tokens=args.max_new_tokens, eos_token_ids=eos)
     dflash = generate(executor, prompt, max_new_tokens=args.max_new_tokens, eos_token_ids=eos)
@@ -403,10 +403,10 @@ def main():
     args = parser().parse_args()
     try:
         if args.command in ("demo", "reference"):
-            from .backends import configure_reference_backend
+            from qwen35_moe_dflash.reference.backends import configure_reference_backend
             configure_reference_backend(args.device)
         elif args.command == "build-full-pytorch":
-            from .backends import configure_reference_backend
+            from qwen35_moe_dflash.reference.backends import configure_reference_backend
             configure_reference_backend("cpu")
         execute(args)
     except Exception as error:

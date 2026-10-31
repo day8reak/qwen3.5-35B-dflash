@@ -21,7 +21,7 @@ def main(argv=None):
     parser.add_argument('--timeout-seconds', type=int, default=3600)
     parser.add_argument('--output', required=True)
     args = parser.parse_args(argv)
-    from qwen35_moe_dflash.incremental_draft_export import export_incremental_draft
+    from qwen35_moe_dflash.draft.incremental.export import export_incremental_draft
     try:
         result = export_incremental_draft(args.job, args.output, context_rows=args.context_rows,
             cache_capacity=args.cache_capacity, max_draft_tokens=args.max_draft_tokens,

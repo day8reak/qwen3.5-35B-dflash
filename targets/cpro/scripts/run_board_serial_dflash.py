@@ -67,13 +67,13 @@ def main(argv=None):
         parser.error('--detach requires --apply')
     try:
         if args.recover:
-            from qwen35_moe_dflash.board_serial_transport import recover_board_serial
+            from qwen35_moe_dflash.execution.serial_transport import recover_board_serial
             selected = Path(args.recover)
             if (selected / 'board').is_dir():
                 selected /= 'board'
             result = recover_board_serial(selected, args.output, timeout_seconds=args.timeout_seconds or 7200)
         else:
-            from qwen35_moe_dflash.board_serial_dflash import run_board_serial_dflash
+            from qwen35_moe_dflash.execution.serial_dflash import run_board_serial_dflash
             options = vars(args).copy(); options.pop('recover')
             if args.config:
                 for name in (*required, 'draft-bundle', 'prefill-feedback', 'tokenizer-dir',

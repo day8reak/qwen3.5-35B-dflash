@@ -18,11 +18,7 @@ from transformers.modeling_outputs import (
     CausalLMOutputWithPast,
 )
 
-from .config import (
-    DFLASH_TARGET_HIDDEN_SIZE,
-    DFLASH_TARGET_LAYER_IDS,
-    DFLASH_TARGET_NUM_HIDDEN_LAYERS,
-)
+from qwen35_moe_dflash.config import DFLASH_TARGET_HIDDEN_SIZE, DFLASH_TARGET_LAYER_IDS, DFLASH_TARGET_NUM_HIDDEN_LAYERS
 
 
 @dataclass(frozen=True)

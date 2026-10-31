@@ -20,7 +20,7 @@ _EXPORT_MODULES = {
     "DFLASH_TARGET_NUM_HIDDEN_LAYERS": "config",
     "Qwen35DFlashConfig": "config",
     "audit_official_35b_dflash_config": "config",
-    "audit_dflash_checkpoint": "weights",
+    "audit_dflash_checkpoint": "reference.weights",
 }
 
 __all__ = [

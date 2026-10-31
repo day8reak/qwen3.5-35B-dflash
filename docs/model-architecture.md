@@ -35,3 +35,22 @@
 正在开发增量Draft：每次接收C16／C64行新特征，独立设置KV总容量（首个导出用192），六层共12个FP16缓存。候选计算档位由`--max-draft-tokens 15|7|3|1`选择，块长度分别16／8／4／2，保留同一套71份权重。新图17输入／14输出，常驻运行器已支持12路KV和按实际编译输入槽位传参；主机模拟通过，尚无新KV模型的板端结果。缩短候选块会改变末层双向注意力，不能把短档结果视为15档输出的简单截断。
 
 参数来源：`specs/target-config.json`、`specs/draft-config.json`；部署继续复用原量化权重，未缩减层数或词表。
+
+## 代码结构
+
+`model/qwen35_moe_dflash/` 顶层保留模型、配置、算子接口、特征接口和CLI；其余实现按职责分组。
+
+| 目录 | 职责 |
+|---|---|
+| `execution/` | 运行配置、文字输入输出、板端启动与回收、运行目录管理 |
+| `draft/` | Draft准备、编译检查、profiling；`incremental/`负责增量KV |
+| `target/` | 原Target适配、输入输出及状态映射 |
+| `graph/` | GE图构建与算子降级 |
+| `toolchain/` | AIR、OMG、OMC与工具链适配 |
+| `reference/`、`fused/` | 参考数学实现、权重读取与融合实现 |
+| `common/` | 文件、资源配置与公共工具 |
+| `targets/cpro/scripts/` | 主流程准备、导出、编译、执行命令 |
+| `targets/cpro/tools/` | 按需使用的板端profiling等诊断工具 |
+| `targets/cpro/runtime/` | 板端C++运行器与词表实现 |
+
+本地回归测试和模拟设备代码在仓库外维护，不发布到GitHub。已结束的一次性测试入口删除，历史代码通过Git历史查阅。日常运行继续使用完整流程页的命令。

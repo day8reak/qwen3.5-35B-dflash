@@ -9,8 +9,8 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
-from .config import Qwen35DFlashConfig
-from .ops import DFlashOps, TorchDFlashOps
+from qwen35_moe_dflash.config import Qwen35DFlashConfig
+from qwen35_moe_dflash.ops import DFlashOps, TorchDFlashOps
 
 
 def extract_context_feature(
@@ -397,7 +397,7 @@ class DFlashDraftModel(nn.Module):
         device: str | torch.device = "cpu",
         dtype: torch.dtype = torch.bfloat16,
     ) -> "DFlashDraftModel":
-        from .weights import load_dflash_weights
+        from qwen35_moe_dflash.reference.weights import load_dflash_weights
 
         config = Qwen35DFlashConfig.from_pretrained(model_dir)
         model = cls(config, ops=ops, device=device, dtype=dtype)
