@@ -6,7 +6,8 @@ import uuid
 
 from qwen35_moe_dflash.common.artifacts import output_path, save_json
 from qwen35_moe_dflash.config import Qwen35DFlashConfig
-from qwen35_moe_dflash.draft.capacity_export import _bind_source_job, _export_source, _stable, _sdk_path
+from qwen35_moe_dflash.draft.capacity_export import _bind_source_job, _export_source, _stable, _sdk_path, _metadata, _current
+from qwen35_moe_dflash.common.hashing import sha256_file
 from qwen35_moe_dflash.graph.export import configurations
 from qwen35_moe_dflash.graph.incremental_draft import _validate
 from qwen35_moe_dflash.common.file_io import _read_small, _safe
@@ -14,17 +15,31 @@ from qwen35_moe_dflash.common.file_io import _read_small, _safe
 
 def export_incremental_draft(job, output, *, context_rows=16, cache_capacity=192,
                              max_draft_tokens=15, ge_root=None, cxx='c++',
-                             timeout_seconds=3600, progress=None):
+                             timeout_seconds=3600, progress=None, prepared=None, cxx11_abi=0):
     """Export one static C16/C64 and candidate-width gear; never relabel S64."""
     _validate(Qwen35DFlashConfig.from_dict(configurations()[1]),
               context_rows, cache_capacity, True, max_draft_tokens)
-    job, _ = _safe(job, directory=True)
+    if (job is None) == (prepared is None):
+        raise ValueError('select exactly one prepared weight root or legacy full-draft job')
+    job, _ = _safe(prepared if prepared is not None else job, directory=True)
     destination = output_path(output)
     if destination == job or job in destination.parents:
         raise ValueError('incremental output must be outside the retained full-draft job')
     if destination.exists():
         raise FileExistsError('incremental output already exists: ' + str(destination))
-    bound = _bind_source_job(job, ge_root)
+    if prepared is None:
+        bound = _bind_source_job(job, ge_root)
+    else:
+        if not ge_root:
+            raise ValueError('--ge-root is required with --prepared')
+        bindings = []
+        plan, identity = _metadata(job / 'prepared.json', bindings)
+        ge = _sdk_path(ge_root, directory=True)
+        library, library_id = _current(_sdk_path(ge / 'lib64/libgraph.so'))
+        bound = dict(prepared_root=job, prepared=plan, prepared_id=identity,
+            selected_ge=ge, library=library, library_id=library_id, bindings=bindings,
+            original=dict(residual_policy='cpu-fp32-add', cxx11_abi=cxx11_abi,
+                          libgraph_sha256=sha256_file(library)))
     invocation = uuid.uuid4().hex
     try:
         result = _export_source(bound['prepared_root'], bound['prepared'], destination, bound['selected_ge'],
@@ -39,12 +54,16 @@ def export_incremental_draft(job, output, *, context_rows=16, cache_capacity=192
             raise ValueError('selected GE library link changed during export')
         result.update(schema_version=1, artifact_kind='qwen35-incremental-draft-air',
             output=str(destination), invocation_token=invocation,
-            source_job=bound['source_id'], source_prepared=bound['prepared_id'],
-            source_air_manifest=bound['original_id'], source_bundle_manifest=bound['bundle_id'],
+            source_prepared=bound['prepared_id'],
             source_bindings=bound['bindings'], ge_root=str(bound['selected_ge']),
             libgraph_sha256=bound['original']['libgraph_sha256'], cxx11_abi=bound['original']['cxx11_abi'],
             draft_config=bound['prepared']['draft_config'],
             source_preservation='ORIGINAL_RECEIPT_AND_WEIGHT_FULL_IDENTITIES_UNCHANGED_NO_LINK_COPY_OR_MANIFEST_REWRITE')
+        if prepared is None:
+            result.update(source_job=bound['source_id'], source_air_manifest=bound['original_id'],
+                          source_bundle_manifest=bound['bundle_id'])
+        else:
+            result['source_policy'] = 'prepared-weights-v1'
         save_json(destination / 'manifest.json', result)
         return result
     except Exception as error:

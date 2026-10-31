@@ -16,8 +16,21 @@ from qwen35_moe_dflash.toolchain.omc_embed_weights import embed_external_weights
 from qwen35_moe_dflash.execution.run_layout import relocated_path
 
 
-def _compiler_source(bound):
+def _compiler_source(bound, *, ddk_root=None, ddk_id=None):
     manifest, bindings = bound['manifest'], bound['bindings']
+    declared = manifest.get('compiler', {})
+    if ddk_root is not None or ddk_id is not None or declared:
+        root, identity = ddk_root or declared.get('ddk_root'), ddk_id or declared.get('ddk_id')
+        if not root or not identity:
+            raise ValueError('declare both --ddk-root and --ddk-id for a standalone AIR')
+        ddk = _sdk_path(root, directory=True)
+        omg = _sdk_path(ddk / 'tools/tools_omg/master/omg')
+        schema = _sdk_path(ddk / 'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')
+        if ddk not in omg.parents or ddk not in schema.parents:
+            raise ValueError('compiler and schema must belong to the selected DDK')
+        return dict(ddk_id=identity, omg_sha256=sha256_file(omg)), ddk, omg, schema
+    if 'source_bundle_manifest' not in manifest:
+        raise ValueError('standalone AIR requires --ddk-root and --ddk-id')
     bundle, bundle_id = _metadata(relocated_path(manifest['source_bundle_manifest']['path'], bound['root']), bindings)
     if any(bundle_id[k] != manifest['source_bundle_manifest'].get(k) for k in ('bytes', 'sha256', 'full_identity')):
         raise ValueError('original successful bundle metadata changed')
@@ -40,7 +53,8 @@ def _record(path, root):
     return {'path': str(path.relative_to(root)), 'bytes': path.stat().st_size, 'sha256': sha256_file(path)}
 
 
-def compile_incremental_draft(export_dir, output, *, timeout_seconds=7200, tbe_diagnosis=None, progress=None):
+def compile_incremental_draft(export_dir, output, *, timeout_seconds=7200, tbe_diagnosis=None,
+                              progress=None, ddk_root=None, ddk_id=None):
     root = output_path(output)
     export = Path(export_dir).absolute()
     if root == export or export in root.parents:
@@ -51,7 +65,9 @@ def compile_incremental_draft(export_dir, output, *, timeout_seconds=7200, tbe_d
         raise ValueError('timeout_seconds must be a positive integer')
     # Check protected source directories before creating any output directory.
     exported_meta, _ = _metadata(export / 'manifest.json', [])
-    protected_roots = [relocated_path(exported_meta['source_prepared_root'], export)]
+    prepared_path = exported_meta['source_prepared_root']
+    protected_roots = [(export / prepared_path).resolve() if exported_meta.get('source_policy') == 'portable-prepared-weights-v1'
+                       else relocated_path(prepared_path, export)]
     if exported_meta.get('source_job', {}).get('path'):
         protected_roots.append(relocated_path(exported_meta['source_job']['path'], export).parent)
     for protected in protected_roots:
@@ -73,7 +89,7 @@ def compile_incremental_draft(export_dir, output, *, timeout_seconds=7200, tbe_d
         manifest = bound['manifest']
         result.update(**{k: manifest[k] for k in ('context_rows', 'cache_capacity', 'max_draft_tokens', 'draft_config', 'incremental_abi')},
             export_manifest=bound['identity'])
-        previous, ddk, omg, schema = _compiler_source(bound)
+        previous, ddk, omg, schema = _compiler_source(bound, ddk_root=ddk_root, ddk_id=ddk_id)
         schema_hash = sha256_file(schema)
         result.update(ddk_id=previous['ddk_id'], ddk_root=str(ddk), platform='kirinx90',
             schema_library={'path': str(schema), 'sha256': schema_hash})

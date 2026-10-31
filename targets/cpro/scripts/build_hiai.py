@@ -49,6 +49,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--resources")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--replace", action="store_true", help="Rebuild the shared native directory after all jobs exit")
     parser.add_argument("--headers-only", action="store_true")
     parser.add_argument("--compatible-sdk-version", type=positive_api,
         help="optional minimum API; omitted means use the selected SDK toolchain default")
@@ -70,7 +71,20 @@ def main():
     libraries = [str(Path(os.path.expandvars(p)).resolve()) for p in libraries]
     if not args.headers_only and (not libraries or not all(Path(p).is_file() for p in libraries)):
         raise ValueError("supply internal HarmonyOS ARM64 HIAI libraries through hiai_libraries or HIAI_LIBRARIES")
-    out = output_path(args.output); out.mkdir(parents=True, exist_ok=False)
+    out = output_path(args.output)
+    if out.exists():
+        import shutil
+        from qwen35_moe_dflash.execution.run_layout import _active_processes
+        if out.is_symlink() or not out.is_dir():
+            raise ValueError('native output must be a regular directory')
+        if any(out.iterdir()):
+            if (not args.replace or out.name != 'native' or not (out / 'command.json').is_file()
+                    or _active_processes(Path(os.environ['AI_RUN_DIR']).resolve())):
+                raise ValueError('finish active jobs and use --replace for the owned native build')
+            shutil.rmtree(out)
+        else:
+            out.rmdir()
+    out.mkdir(parents=True, exist_ok=False)
     command = ["cmake", "-S", str(ROOT/"targets/cpro/runtime"), "-B", str(out/"build"),
         "-DCMAKE_TOOLCHAIN_FILE="+str(toolchain),
         "-DCMAKE_BUILD_TYPE=Release",

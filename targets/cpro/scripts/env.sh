@@ -228,7 +228,7 @@ _qwen35_load_env() (
     printf '%s\n' 'cpro-env: keep the private config outside the repository and AI_RUN_DIR' >&2
     return 1
   fi
-  files=("$REPO_DIR/targets/cpro/scripts/run_fused_probes.py"
+  files=("$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py"
          "$CANN_ROOT/include/graph/graph.h" "$CANN_ROOT/lib64/libgraph.so"
          "$OHOS_NATIVE_SDK/build/cmake/ohos.toolchain.cmake"
          "$HIAI_INCLUDE_DIR/HiAiModelManagerService.h")

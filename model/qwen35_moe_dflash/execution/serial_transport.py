@@ -739,16 +739,33 @@ def _upload_cached(hdc, out, state, rows, decisions, manifest):
         | {'decision': decisions[row['remote']]} for row in rows]
 
 
-def _build_payloads(out, timeout, *, resident=False):
-    runner = _build_runner(out, timeout)
+def _build_payloads(out, timeout, *, resident=False, native_directory=None):
+    build_root = Path(native_directory).parent if native_directory else out
+    if native_directory and Path(native_directory).name != 'native':
+        raise ValueError('shared native directory must be named native')
+    result_path = build_root / 'native/result.json'
+    if native_directory and result_path.is_file():
+        built = _json(result_path)[0]
+        if built.get('status') != 'LINKED':
+            raise ValueError('shared runtime build is incomplete; rebuild runtime/native')
+        runner = build_root / 'native/build/qwen35_dflash_hiai'
+    else:
+        native = build_root / 'native'
+        if native_directory and native.is_dir() and not any(native.iterdir()):
+            native.rmdir()
+        build_root.mkdir(parents=True, exist_ok=True)
+        if native_directory:
+            (build_root / 'runner-build.log').unlink(missing_ok=True)
+        runner = _build_runner(build_root, timeout)
     supervisor = runner.parent / ('qwen35_board_resident_mixed' if resident == 'resident-mixed'
         else 'qwen35_board_resident_v1' if resident == 'resident-v1'
         else 'qwen35_board_resident' if resident else 'qwen35_board_serial')
     _safe(supervisor); dynamic_info(supervisor)
     if resident == 'resident-mixed':
-        record = _json(out / 'native/result.json')[0].get('resident_binaries', {}).get(supervisor.name)
+        record = _json(result_path)[0].get('resident_binaries', {}).get(supervisor.name)
         expected = dict(path=str(supervisor), bytes=_full(supervisor)['bytes'], sha256=sha256_file(supervisor))
-        if record != expected:
+        keys = ('bytes', 'sha256') if native_directory else ('path', 'bytes', 'sha256')
+        if not isinstance(record, dict) or any(record.get(k) != expected[k] for k in keys):
             raise ValueError('mixed supervisor differs from its exact native build result')
     uploads = [*([_file_record(runner, 'draft-runner')] if resident not in {'resident-v1', 'resident-mixed'} else []),
         _file_record(supervisor, 'board-serial')]
@@ -763,7 +780,7 @@ def _build_payloads(out, timeout, *, resident=False):
     # executable. The sibling supervisor uses the same selected SDK C++ runtime
     # and is separately ELF/SHA bound; it is not that recorded HIAI executable.
     for binary in (runner,):
-        found = discover_libraries(binary, out / 'native')
+        found = discover_libraries(binary, build_root / 'native')
         discoveries.append(found['metadata'])
         for path in found['libraries']:
             row = _file_record(path.resolve(), 'lib/' + str(_relative(path.name)))
@@ -1879,8 +1896,9 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
             compilation_report_sha256=digest, draft_model_sha256=manifest['draft']['model_source']['sha256'],
             tables_cache_sha256=table_digest, runtime_version=base['runtime_version'], firmware_id=base['firmware_id'])
         _checkpoint(out, state, 'host-preflight')
-        print('board-serial: building current native runtime; existing OMCs are reused', flush=True)
-        uploads, search, deployment = (_build_payloads(out, timeout_seconds, resident=manifest['execution_mode'])
+        print('board-serial: preparing shared native runtime; existing OMCs are reused', flush=True)
+        build_options = ({'native_directory': manifest['native_directory']} if manifest.get('native_directory') else {})
+        uploads, search, deployment = (_build_payloads(out, timeout_seconds, resident=manifest['execution_mode'], **build_options)
             if _resident_mode(manifest) else _build_payloads(out, timeout_seconds))
         state['libraries'] = deployment
         hdc = Hdc(executable, serial, server, out, timeout_seconds)

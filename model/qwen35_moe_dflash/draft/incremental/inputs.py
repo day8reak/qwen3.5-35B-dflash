@@ -55,13 +55,15 @@ def bind_incremental_export(folder):
         expected = [{'name': r.name, 'shape': list(r.shape), 'dtype': r.dtype} for r in getattr(graph, kind)]
         if manifest.get(kind) != expected:
             raise ValueError('incremental ' + kind + ' differ from the selected graph')
-    locate = lambda path: relocated_path(path, root)
+    portable = manifest.get('source_policy') == 'portable-prepared-weights-v1'
+    locate = lambda path: (root / path).resolve() if portable else relocated_path(path, root)
     prepared_root, _ = _safe(locate(manifest['source_prepared_root']), directory=True)
     if locate(manifest['file_constant_root']) != prepared_root:
         raise ValueError('FileConstant root differs from original preparation')
     prepared, prepared_id = _metadata(locate(manifest['source_prepared']['path']), bindings)
     if (Path(prepared_id['path']).parent != prepared_root
-            or any(prepared_id[k] != manifest['source_prepared'].get(k) for k in ('bytes', 'sha256', 'full_identity'))
+            or any(prepared_id[k] != manifest['source_prepared'].get(k)
+                   for k in (('bytes', 'sha256') if portable else ('bytes', 'sha256', 'full_identity')))
             or prepared.get('status') != 'PREPARED' or prepared.get('draft_config') != manifest['draft_config']
             or prepared.get('source', {}).get('fp16_payload_sha256') != weight_identity(prepared['weights'])
             or set(prepared['weights']) != set(graph.weights)):
@@ -73,7 +75,7 @@ def bind_incremental_export(folder):
         raise ValueError('incremental export lacks original metadata bindings')
     for row in guards:
         _, actual = _metadata(locate(row['path']), bindings)
-        if any(actual[k] != row.get(k) for k in ('bytes', 'sha256', 'full_identity')):
+        if any(actual[k] != row.get(k) for k in (('bytes', 'sha256') if portable else ('bytes', 'sha256', 'full_identity'))):
             raise ValueError('original export metadata changed: ' + row['path'])
     rows = {}
     retained = manifest.get('source_weight_identities', [])
@@ -89,7 +91,7 @@ def bind_incremental_export(folder):
             raise ValueError('invalid prepared weight path/descriptor: ' + key)
         path = prepared_root / relative
         before = _payload(path, row)
-        if retained_ids.get(str(path)) != before or str(path) in rows:
+        if (not portable and retained_ids.get(str(path)) != before) or str(path) in rows:
             raise ValueError('original weight full identity changed or duplicated: ' + key)
         rows[str(path)] = dict(row, identity=before, relative=relative.as_posix())
     if manifest.get('source_weight_bytes') != sum(row['bytes'] for row in rows.values()):

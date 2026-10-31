@@ -321,6 +321,8 @@ def prepare_config(config_file, output, *, text=None, text_file=None, prompt_inp
         manifest['draft_preread'] = 'sequential-1m-v1'
     if text_io:
         manifest['text_io'] = text_io
+    if config.get('native_directory'):
+        manifest['native_directory'] = str((parent / config['native_directory']).resolve())
     validate_prepared_config(out, manifest)
     write_json(out / 'manifest.json', manifest)
     return manifest

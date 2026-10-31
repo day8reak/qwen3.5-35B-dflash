@@ -33,15 +33,15 @@ source "$REPO_DIR/targets/cpro/scripts/env.sh"
 在可联网电脑下载[离线词表包（3.52 MB）](https://raw.githubusercontent.com/day8reak/qwen3.5-35B-dflash/main/docs/assets/qwen35-tokenizer-offline.tar.gz)和[SHA256清单](https://raw.githubusercontent.com/day8reak/qwen3.5-35B-dflash/main/docs/assets/qwen35-tokenizer-offline.tar.gz.sha256)，再传到服务器。包内是锁定版本的三个原始词表文件，不含权重或Python依赖。已有source和prepared目录时跳过解压／准备，只设置TOKENIZER_DIR。
 
 ```bash
-mkdir "$AI_RUN_DIR/tokenizer-offline"
+mkdir -p "$AI_RUN_DIR/common/tokenizer-offline"
 tar -xzf /实际路径/qwen35-tokenizer-offline.tar.gz \
-  -C "$AI_RUN_DIR/tokenizer-offline"
-(cd "$AI_RUN_DIR/tokenizer-offline" && sha256sum -c SHA256SUMS)
+  -C "$AI_RUN_DIR/common/tokenizer-offline"
+(cd "$AI_RUN_DIR/common/tokenizer-offline" && sha256sum -c SHA256SUMS)
 
-export TOKENIZER_DIR="$AI_RUN_DIR/tokenizer-offline/source"
+export TOKENIZER_DIR="$AI_RUN_DIR/common/tokenizer-offline/source"
 python3 "$REPO_DIR/targets/cpro/scripts/prepare_board_tokenizer.py" \
   --source-dir "$TOKENIZER_DIR" \
-  --output "$AI_RUN_DIR/tokenizer-offline/prepared"
+  --output "$AI_RUN_DIR/common/tokenizer-offline/prepared"
 
 python3 -c 'import numpy, tokenizers; print(tokenizers.__version__)'
 cmake --version
