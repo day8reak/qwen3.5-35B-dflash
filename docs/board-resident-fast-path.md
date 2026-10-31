@@ -27,7 +27,7 @@
 - `phase_latency.prefill`：一次 prefill 的加载、运行包装、关闭总墙钟。
 - `supervisor_timing.total_wall_ms`：整个板端请求，包括启动与三模型加载。
 
-11 token/s 的单 token 平均约 90.91 ms，必须先核对会议数据是否是同模型、同量化、同上下文与普通 decode 的稳定阶段。下次先比较 `native_api_latency.decode.mean_ms`，再看外层包装差额。当前没有测出本版实机速度，不承诺达到 11 token/s；接受率为零的结果也不能证明 DFlash 算法加速。
+11 token/s 的单 token 平均约 90.91 ms，必须先核对会议数据是否是同模型、同量化、同上下文与普通 decode 的稳定阶段。下次先比较 `native_api_latency.decode.mean_ms`，再看外层包装差额。用户已回传单次本版Run111.64ms（倒数约8.96次／秒），但draft加载202.958秒，整轮230.735秒。见[首次实机结果](board-resident-fast-first-completion.md)。它不是同条件配对基准；接受率为零也不能证明DFlash算法加速。
 
 ## 在 DDK 主机执行
 
@@ -59,7 +59,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
   --output "$AI_RUN_DIR/dflash-board-resident-fast8-recovery"
 ```
 
-检查最终 token、接受率、三个 `native_api_latency`、`phase_latency`、总墙钟，以及两个 resident 模型仍各加载／关闭一次。首次快速模式需要用户实机执行；主机 fake SDK 验证覆盖真实 C++ 调度、80 状态映射、输出一致性、失败关闭和同 attempt 回收，不证明模型精度或实机性能。
+检查最终 token、接受率、三个 `native_api_latency`、`phase_latency`、总墙钟，以及两个 resident 模型仍各加载／关闭一次。首次快速模式已由用户执行，结果见[实机记录](board-resident-fast-first-completion.md)；不要重复覆盖这两个已完成目录。主机 fake SDK 验证覆盖真实 C++ 调度、80 状态映射、输出一致性、失败关闭和同 attempt 回收，不证明模型精度或实机性能。
 
 主线仍需解决先前新旧运行第 2 个 token 的差异；本次按用户优先级先清除运行框架开销，没有把该数值问题标记为已解决。
 

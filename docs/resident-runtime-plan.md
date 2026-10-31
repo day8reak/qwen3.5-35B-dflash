@@ -2,7 +2,7 @@
 
 更新：2026-10-31。用户已明确允许prefill／decode用V2、完整六层embedded draft用V1，优先推进常驻。全V1候选的HCL空buffer失败保留，当前命令见[current-status.md](current-status.md)。
 
-**实机进展：** 用户已完成混合常驻完整请求，prefill1／decode8／draft7、各resident模型加载1次且正常关闭，总墙钟88.680秒。见[首次结果](board-resident-mixed-first-completion.md)。用户最新要求先移除诊断和文件I/O，已接入 [compact-memory-v1](board-resident-fast-path.md)，设备测速待执行；随后定位首decode差异，再验重复稳定性和独立权重释放。
+**实机进展：** 用户已完成混合常驻完整请求，prefill1／decode8／draft7、各resident模型加载1次且正常关闭，总墙钟88.680秒。见[首次结果](board-resident-mixed-first-completion.md)。[compact-memory-v1首次实机](board-resident-fast-first-completion.md)也已完成：decode包装195.75ms、Run111.64ms，draft加载202.958秒使整轮230.735秒。先定位加载阶段，再处理首decode差异、重复稳定性和独立权重释放。
 
 ## 单线程生命周期
 

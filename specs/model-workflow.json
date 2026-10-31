@@ -3,7 +3,7 @@
   "updated": "2026-10-31",
   "active_phase": "integration",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
-  "run_id": "20261031T004021Z-20576-9a76bb",
+  "run_id": "20261031T010820Z-24717-0642a2",
   "navigation": {
     "home": "docs/README.md",
     "current_commands": "docs/current-status.md",
@@ -5453,31 +5453,33 @@
     "host_validation": "specs/resident-mixed-host-validation.json",
     "latest_device_observation": {
       "schema_version": 1,
-      "artifact_kind": "qwen35-board-resident-mixed-first-completion",
+      "artifact_kind": "qwen35-board-resident-fast-first-completion",
       "recorded_date": "2026-10-31",
-      "run_id": "20261031T003112Z-20154-6e73a8",
+      "run_id": "20261031T010820Z-24717-0642a2",
       "source": "USER_PASTED_COMPACT_RECOVERY_SUMMARY",
-      "assistant_device_access": "NOT_PERFORMED_USER_REQUEST",
-      "candidate_commit": "060ea2619db0f0c623c92642e5188d7f9502d718",
+      "candidate_commit": "3042e633a4a1faf52c2285f1e81e82c3c06fe767",
       "executed_source_identity": "NOT_INDEPENDENTLY_RECHECKED_FROM_USER_ARTIFACTS",
+      "assistant_device_access": "NOT_PERFORMED_USER_REQUEST",
       "status": "BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED",
       "stage": "complete",
-      "execution": "$AI_RUN_DIR/dflash-board-resident-mixed8-run",
-      "output": "$AI_RUN_DIR/dflash-board-resident-mixed8-recovery",
-      "prepared": "$AI_RUN_DIR/dflash-board-resident-mixed8-run/prepared",
-      "board_attempt": "/data/local/tmp/qwen35_board_serial_1a8537eaa0954c1a87ecb6a2e0c7e474",
+      "execution": "$AI_RUN_DIR/dflash-board-resident-fast8-run",
+      "output": "$AI_RUN_DIR/dflash-board-resident-fast8-recovery",
+      "prepared": "$AI_RUN_DIR/dflash-board-resident-fast8-run/prepared",
+      "board_attempt": "/data/local/tmp/qwen35_board_serial_e5406ec6e21241259be1769fbb2e3faa",
+      "process_id": 12858,
+      "session_id": "a0f953c4d348877fd7a84e8a7ffa3f7b81414ef41a427c2342ff0c8b2487f16e",
       "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
       "model_compilation": "NOT_RUN",
       "numerical_validation": "NOT_EVALUATED",
       "generated_token_ids": [
         4,
+        2,
+        24,
+        2,
+        4,
+        22,
         0,
-        28,
-        18,
-        2,
-        2,
-        2,
-        0
+        2
       ],
       "counts": {
         "accepted": 0,
@@ -5488,55 +5490,14 @@
         "prefill_native_calls": 1,
         "target_native_calls": 8
       },
-      "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
-      "dump": false,
-      "retrieval_mode": "FINAL_TOKENS_ONLY",
-      "evidence_scope": "TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY",
       "acceptance": {
         "accepted": 0,
         "considered": 7,
         "rate": 0
       },
-      "phase_latency": {
-        "decode": {
-          "calls": 8,
-          "mean_ms": 1149.25,
-          "total_ms": 9194,
-          "native_api": "Run",
-          "timing_scope": "RESIDENT_RUN_INCLUDES_TENSOR_COPIES_READBACK_HASH_AND_BUFFER_CHECKS_NOT_NPU_ONLY"
-        },
-        "draft": {
-          "calls": 7,
-          "mean_ms": 747.5714285714286,
-          "total_ms": 5233,
-          "native_api": "Process",
-          "timing_scope": "RESIDENT_RUN_INCLUDES_TENSOR_COPIES_READBACK_HASH_AND_BUFFER_CHECKS_NOT_NPU_ONLY"
-        },
-        "prefill": {
-          "calls": 1,
-          "mean_ms": 13833,
-          "total_ms": 13833,
-          "native_api": "Run",
-          "timing_scope": "PREFILL_V2_LOAD_RUN_CLOSE_WALL"
-        },
-        "inference_only_status": "NOT_PROVIDED",
-        "timing_scope": "RESIDENT_RUN_WALL_EXCLUDES_MODEL_LOAD_AND_CLOSE"
-      },
-      "supervisor_timing": {
-        "startup_source_hash_ms": 19899,
-        "prefill_model_load_ms": 11435,
-        "prefill_model_unload_ms": 462,
-        "prefill_process_ms": 1931,
-        "prefill_v2_total_ms": 13833,
-        "resident_target_load_ms": 8885,
-        "resident_draft_load_ms": 8380,
-        "resident_target_run_ms": 9194,
-        "resident_draft_run_ms": 5233,
-        "resident_close_ms": 420,
-        "total_wall_ms": 88680,
-        "scope": "MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE"
-      },
-      "prompt_ingestion": "PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL",
+      "lock_state": "NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT",
+      "dump": false,
+      "runtime_profile": "compact-memory-v1",
       "execution_mode": "resident-mixed",
       "model_load_api": "target-v2-draft-v1",
       "model_load_apis": {
@@ -5544,163 +5505,138 @@
         "target": "file-v2",
         "draft": "legacy-buffer"
       },
-      "target_lifecycle_policy": "v2-target-v1-draft-resident-v1",
-      "resident_lifecycle": {
-        "cleanup_error": "",
-        "close_ms": 420,
-        "closed": true,
-        "draft_close_calls": 1,
-        "draft_load_attempts": 1,
-        "draft_load_ms": 8380,
-        "draft_loads": 1,
-        "draft_run_attempts": 7,
-        "draft_run_ms": 5233,
-        "draft_runs": 7,
-        "target_close_calls": 1,
-        "target_load_attempts": 1,
-        "target_load_ms": 8885,
-        "target_loads": 1,
-        "target_run_attempts": 8,
-        "target_run_ms": 9194,
-        "target_runs": 8,
-        "model_load_api": "target-v2-draft-v1",
-        "poisoned": false,
-        "process_id": 5008,
-        "session_id": "dd9e45a8211c80f74e10630f0c8b2c1fcb26b40cc6eafd388d80aac03518ebd9",
-        "stage": "CLOSED",
-        "status": "CLOSED",
-        "target_lifecycle": {
-          "cleanup_error": "",
-          "closed": true,
-          "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
-          "failure_stage": "",
-          "manager_deinit_called": true,
-          "manager_deinit_returned": true,
-          "manager_init_attempted": true,
-          "manager_init_status": 0,
-          "manager_initialized": true,
-          "ordering_validation": "NOT_VALIDATED_ON_DEVICE",
-          "weight_cleanup_policy": "MANAGER_DEINIT_ONLY_NO_SEPARATE_WEIGHT_UNLOAD",
-          "weight_init_policy": "INIT_BEFORE_WEIGHTS_NO_FALLBACK",
-          "weights_deinit_called": false,
-          "weights_deinit_status": -1,
-          "weights_init_attempted": true,
-          "weights_init_status": 0,
-          "weights_initialized": true,
-          "run_attempts": 8,
-          "successful_runs": 8
+      "retrieval_mode": "FINAL_TOKENS_ONLY",
+      "evidence_scope": "TOKENS_AND_SUPERVISOR_COMPLETION_ONLY_NO_HOST_STATE_CHAIN_REPLAY",
+      "diagnostics": "DISABLED_TENSOR_HASH_READBACK_AND_FP16_SCANS",
+      "intermediate_tensor_io": "NONE_MEMORY_ONLY",
+      "startup_payload_validation": "OWNED_CACHE_EXTENTS_NEW_UPLOAD_SHA256",
+      "prompt_ingestion": "PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL",
+      "phase_latency": {
+        "decode": {
+          "calls": 8,
+          "total_ms": 1566,
+          "mean_ms": 195.75,
+          "native_api": "Run",
+          "timing_scope": "RESIDENT_MEMORY_RUN_WITH_TENSOR_COPIES_NO_HASH_OR_FILE_IO"
         },
-        "draft_v1_lifecycle": {
-          "cleanup_error": "",
-          "client_init_attempted": true,
-          "client_init_status": 0,
-          "client_initialized": true,
-          "closed": true,
-          "failure_stage": "",
-          "load_attempted": true,
-          "load_status": 0,
-          "loaded": true,
-          "model_load_api": "legacy-buffer",
-          "process_attempts": 7,
-          "successful_processes": 7,
-          "unload_called": true,
-          "unload_status": 0
-        }
+        "draft": {
+          "calls": 7,
+          "total_ms": 5185,
+          "mean_ms": 740.7142857142857,
+          "native_api": "Process",
+          "timing_scope": "RESIDENT_MEMORY_RUN_WITH_TENSOR_COPIES_NO_HASH_OR_FILE_IO"
+        },
+        "prefill": {
+          "calls": 1,
+          "total_ms": 10285,
+          "mean_ms": 10285,
+          "native_api": "Run",
+          "timing_scope": "PREFILL_V2_LOAD_RUN_CLOSE_WALL"
+        },
+        "timing_scope": "RESIDENT_RUN_WALL_EXCLUDES_MODEL_LOAD_AND_CLOSE",
+        "inference_only_status": "NOT_PROVIDED"
       },
-      "prefill_lifecycle": {
-        "cleanup_error": "",
+      "native_api_latency": {
+        "decode": {
+          "calls": 8,
+          "total_us": 893120,
+          "mean_ms": 111.64,
+          "native_api": "Run"
+        },
+        "draft": {
+          "calls": 7,
+          "total_us": 5187738,
+          "mean_ms": 741.1054285714285,
+          "native_api": "Process"
+        },
+        "prefill": {
+          "calls": 1,
+          "total_us": 484542,
+          "mean_ms": 484.542,
+          "native_api": "Run"
+        },
+        "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY"
+      },
+      "supervisor_timing": {
+        "prefill_model_load_ms": 9264,
+        "prefill_model_unload_ms": 438,
+        "prefill_process_ms": 579,
+        "prefill_v2_total_ms": 10285,
+        "resident_close_ms": 377,
+        "resident_draft_load_ms": 202958,
+        "resident_draft_run_ms": 5185,
+        "resident_target_load_ms": 9793,
+        "resident_target_run_ms": 1566,
+        "startup_source_hash_ms": 1,
+        "total_wall_ms": 230735,
+        "scope": "MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE"
+      },
+      "resident_lifecycle_summary": {
+        "target_load_attempts": 1,
+        "target_loads": 1,
+        "target_runs": 8,
+        "target_close_calls": 1,
+        "draft_load_attempts": 1,
+        "draft_loads": 1,
+        "draft_runs": 7,
+        "draft_close_calls": 1,
         "closed": true,
-        "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
-        "failure_stage": "",
-        "manager_deinit_called": true,
-        "manager_deinit_returned": true,
-        "manager_init_attempted": true,
-        "manager_init_status": 0,
-        "manager_initialized": true,
-        "ordering_validation": "NOT_VALIDATED_ON_DEVICE",
-        "weight_cleanup_policy": "MANAGER_DEINIT_ONLY_NO_SEPARATE_WEIGHT_UNLOAD",
-        "weight_init_policy": "INIT_BEFORE_WEIGHTS_NO_FALLBACK",
-        "weights_deinit_called": false,
-        "weights_deinit_status": -1,
-        "weights_init_attempted": true,
-        "weights_init_status": 0,
-        "weights_initialized": true,
-        "run_attempts": 1,
-        "successful_runs": 1
+        "poisoned": false,
+        "cleanup_error": ""
       },
+      "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
       "resident_memory": {
         "scope": "PROCESS_RSS_NOT_NPU_ALLOCATED_MEMORY",
         "snapshots": [
           {
             "phase": "before-prefill-load",
-            "mem_available_kib": 23740416,
-            "vm_hwm_kib": 86924,
-            "vm_rss_kib": 86924,
+            "mem_available_kib": 26352640,
+            "vm_rss_kib": 87476,
+            "vm_hwm_kib": 87476,
             "status": "OBSERVED"
           },
           {
             "phase": "after-prefill-load",
-            "mem_available_kib": 7961600,
-            "vm_hwm_kib": 43416,
-            "vm_rss_kib": 43416,
+            "mem_available_kib": 7981056,
+            "vm_rss_kib": 130484,
+            "vm_hwm_kib": 130484,
             "status": "OBSERVED"
           },
           {
             "phase": "after-prefill-close",
-            "mem_available_kib": 8271872,
-            "vm_hwm_kib": 136172,
-            "vm_rss_kib": 136172,
+            "mem_available_kib": 8738816,
+            "vm_rss_kib": 215512,
+            "vm_hwm_kib": 215512,
             "status": "OBSERVED"
           },
           {
             "phase": "before-load",
-            "mem_available_kib": 18048000,
-            "vm_hwm_kib": 63928,
-            "vm_rss_kib": 63928,
+            "mem_available_kib": 9430016,
+            "vm_rss_kib": 139320,
+            "vm_hwm_kib": 139320,
             "status": "OBSERVED"
           },
           {
             "phase": "after-both-load",
-            "mem_available_kib": 4941824,
-            "vm_hwm_kib": 2867028,
-            "vm_rss_kib": 2867028,
+            "mem_available_kib": 4871168,
+            "vm_rss_kib": 2916504,
+            "vm_hwm_kib": 2916504,
             "status": "OBSERVED"
           },
           {
             "phase": "after-close",
-            "mem_available_kib": 6544384,
-            "vm_hwm_kib": 59736,
-            "vm_rss_kib": 59736,
+            "mem_available_kib": 5856256,
+            "vm_rss_kib": 139680,
+            "vm_hwm_kib": 139680,
             "status": "OBSERVED"
           }
         ]
       },
-      "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
-      "physical_disconnect_validation": "NOT_SPECIFICALLY_TESTED",
-      "state_chain_host_replay": "NOT_RUN_COMPACT_SCOPE",
-      "repeated_request_stability": "NOT_TESTED",
-      "paired_algorithm_speedup": "NOT_MEASURED",
-      "milestones": {
-        "original_prefill_autonomous_loop": "USER_REPORTED_PASSED",
-        "mixed_target_draft_single_load_residency": "USER_REPORTED_PASSED_SINGLE_REQUEST",
-        "api_close": "NORMAL_RETURN_OBSERVED_NO_CLEANUP_ERROR",
-        "numerical_equivalence": "NOT_VALIDATED_GENERATED_SEQUENCE_DIFFERS",
-        "independent_weight_release": "NOT_VALIDATED",
-        "full_P5_acceptance": "PENDING_EQUIVALENCE_REPEAT_STABILITY_AND_MEMORY"
-      },
-      "comparison_with_old_nonresident": {
-        "source": "specs/board-prefill-first-completion.json",
-        "old_token_ids": [
-          4,
-          12,
-          10,
-          8,
-          0,
-          4,
-          32,
-          2
-        ],
-        "new_token_ids": [
+      "record_scope": "SELECTED_FIELDS_FROM_USER_SUMMARY_WITH_SEPARATELY_LABELLED_ANALYSIS_NOT_RAW_ARTIFACT_COPY",
+      "comparison": {
+        "previous": "specs/board-resident-mixed-first-completion.json",
+        "scope": "SINGLE_REQUEST_OBSERVATIONS_DIFFERENT_TOKEN_PATHS_NOT_PAIRED_ALGORITHM_SPEEDUP",
+        "previous_generated_token_ids": [
           4,
           0,
           28,
@@ -5711,26 +5647,38 @@
           0
         ],
         "first_different_generated_index": 1,
-        "old_token_at_first_difference": 12,
-        "new_token_at_first_difference": 0,
-        "old_total_wall_ms": 305788,
-        "new_total_wall_ms": 88680,
-        "total_wall_ratio": 3.4482183130356336,
-        "wall_reduction_percent": 70.99951600455216,
-        "scope": "TWO_USER_REPORTED_SINGLE_REQUESTS_DIFFERENT_TOKEN_PATHS_NOT_PAIRED_ALGORITHM_OR_NPU_SPEEDUP",
-        "phase_comparability": "OLD_CHILD_PHASES_INCLUDE_LOAD_RUN_UNLOAD_NEW_RESIDENT_PHASES_EXCLUDE_LOAD_CLOSE_INCLUDE_COPIES_HASH_CHECKS"
+        "decode_wrapper_old_ms": 1149.25,
+        "decode_wrapper_new_ms": 195.75,
+        "decode_wrapper_ratio": 5.871008939974457,
+        "decode_wrapper_reduction_percent": 82.96715249075484,
+        "decode_api_reciprocal_tokens_per_s": 8.957362952346829,
+        "meeting_11_tokens_per_s_equivalent_ms": 90.9090909090909,
+        "meeting_scope": "USER_REPORTED_BASELINE_MODEL_CONTEXT_AND_TIMING_NOT_BOUND",
+        "decode_wrapper_minus_api_ms": 84.11,
+        "draft_load_old_ms": 8380,
+        "draft_load_new_ms": 202958,
+        "draft_load_share_of_total_percent": 87.96151429128653,
+        "total_without_draft_load_ms": 27777,
+        "generation_run_wrappers_total_ms": 6751,
+        "draft_share_of_generation_run_wrappers": 0.7680343652792179,
+        "total_wall_old_ms": 88680,
+        "total_wall_new_ms": 230735
       },
       "diagnosis": {
-        "first_difference": "Second generated token is determined by first decode(anchor token4 at position8), before first draft Process; draft model Load has already occurred.",
-        "code_reference": "targets/cpro/runtime/src/board_serial_main.cpp:737-743",
-        "prefill_top1_caveat": "Same first token4 does not prove matching prefill logits,80states or8tap features.",
-        "next": "Bind both prepared model/prompt/table/control identities; compare prefill states and first decode89inputs/82outputs. Compact does not retain tensor payloads; implement bounded capture and ordinary target-only comparison without model recompilation.",
-        "memory_caveat": "Reported VmHWM decreases and equals VmRSS in all snapshots. Preserve raw values; cannot treat as proven lifetime peak, dedicated NPU allocation or leak-free release.",
-        "unattributed_wall_ms": 22836,
-        "unattributed_wall_scope": "Remainder after named hash,prefill,total model loads,resident runs,andclose; do not attribute all to disk IO without measurement."
+        "draft_load_scope": "ResidentSession::Load times full HiaiStatefulExecutor construction: live target storage acquisition, V1 client Init/version/support, mmap model, SetModelBuffer, Load, IO descriptors, allocations/initialization. No subphase duration retained.",
+        "draft_load_cause": "UNRESOLVED_NOT_PROVEN_SDK_LOAD_OR_IO_OR_MEMORY_PRESSURE",
+        "hypotheses": [
+          "Removing full payload hash may change cache warmth before demand-mapped buffer is consumed.",
+          "Different available memory or SDK/device conditions may affect load wall time."
+        ],
+        "memory_limit": "RSS/MemAvailable cannot isolate NPU allocation or prove leak; HWM observations decrease with phase and remain unverified.",
+        "rounding": "Wrapper totals sum per-call integer milliseconds; API totals sum microseconds. Draft API exceeds wrapper by2.738ms over7calls, within millisecond truncation; do not interpret as negative copy time.",
+        "numerical_gap": "Second generated token is2 versus prior resident0 and nonresident12; exact prepared input identities and intermediate states not rechecked. First decode precedes first draft Process, but draft is already loaded.",
+        "acceptance_gap": "0/7 accepted. Existing decode1 serial verify still performs one target advance per committed token; no measured target-call reduction or speculative algorithm speedup.",
+        "next": "Inspect retained PID12858 hilog without rerun; if inconclusive add bounded load subphase wall/page-fault/IO counters, keeping fast per-token path unchanged. Preserve first-decode divergence investigation."
       }
     },
-    "host_validation_limitation": "Host fake SDK validates lifecycle/scheduling/reporting only. Selected-device mixed loading, joint residency and external-weight reclamation remain unvalidated.",
+    "host_validation_limitation": "Host tests and two user-reported mixed runs establish execution observations, not numerical equivalence, repeated stability or independent external weight release.",
     "source_comparison": {
       "official_example": "https://github.com/huaweicodelabs/HiAI-Foundation/blob/83320362c10f2e85a2a1bbb283b3359db204ab2a/app/src/main/jni/classify_sync_jni.cpp",
       "official_load": "InputMemBufferCreate -> SetModelBuffer -> Load; generic classification example, no external-weight file contract",
@@ -5746,7 +5694,7 @@
       "draft": "legacy-buffer"
     },
     "target_lifecycle_policy": "v2-target-v1-draft-resident-v1",
-    "current_candidate": "specs/resident-mixed-host-validation.json",
+    "current_candidate": "specs/board-resident-fast-host-validation.json",
     "prior_host_validation": "specs/resident-v1-host-validation.json",
     "previous_device_observation": {
       "source": "USER_PASTED_REPORT_NOT_INDEPENDENTLY_RETRIEVED",
@@ -5763,19 +5711,22 @@
       "conclusion": "Application descriptor guard failed before SDK Load; not an inference or residency failure."
     },
     "latest_diagnostics": "specs/resident-v1-hcl-load-failure.json",
-    "last_full_request": "dflash-board-resident-mixed8-run",
-    "last_recovery": "dflash-board-resident-mixed8-recovery",
+    "last_full_request": "dflash-board-resident-fast8-run",
+    "last_recovery": "dflash-board-resident-fast8-recovery",
     "user_authorization": "2026-10-31 async reply: 允许混合接口，优先推进常驻（推荐）",
     "prior_candidate": "specs/resident-v1-file-buffer-candidate.json",
     "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
-    "next_action": "Run compact-memory-v1 after host validation per docs/board-resident-fast-path.md, then return to first-decode numerical divergence and repeat stability.",
+    "next_action": "Inspect retained PID12858 hilog without rerun; if inconclusive add bounded load subphase wall/page-fault/IO counters, keeping fast per-token path unchanged. Preserve first-decode divergence investigation.",
     "compact_memory_task": {
       "runtime_profile": "compact-memory-v1",
-      "device_validation": "PENDING_USER_RUN",
+      "device_validation": "USER_REPORTED_EXECUTED_UNVALIDATED",
       "document": "docs/board-resident-fast-path.md",
       "user_request": "Remove dump=false diagnostics, intermediate tensor files, repeated payload hashes; report isolated SDK timings",
       "numerical_divergence": "REMAINS_UNRESOLVED",
-      "host_validation": "specs/board-resident-fast-host-validation.json"
-    }
+      "host_validation": "specs/board-resident-fast-host-validation.json",
+      "device_evidence": "specs/board-resident-fast-first-completion.json",
+      "draft_load_diagnosis": "UNRESOLVED_202958_MS"
+    },
+    "prior_mixed_completion": "specs/board-resident-mixed-first-completion.json"
   }
 }
