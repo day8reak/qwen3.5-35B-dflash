@@ -13,6 +13,7 @@ namespace {
 int tensors=0, clients=0;
 std::uint16_t* target_features=nullptr;
 void* diagnostic_query_buffer=nullptr;
+void* mixed_target_storage=nullptr;
 std::string Failure() { const auto* p=std::getenv("FAKE_HIAI_FAILURE"); return p?p:""; }
 bool AllowDualModelSource() {
   // Synthetic scheduling fixtures only. The selected device has confirmed
@@ -113,6 +114,7 @@ void* AiTensor::GetBuffer() const {
   auto* data = const_cast<std::int32_t*>(data_.data());
   if (ordinal_==1) diagnostic_query_buffer=data;
   if (Failure()=="v1-cross-alias" && ordinal_==172) return diagnostic_query_buffer;
+  if (Failure()=="mixed-cross-alias" && ordinal_==172) return mixed_target_storage;
   if ((Failure()=="gdn-input-alias" && ordinal_==2) ||
       (Failure()=="gdn-output-alias" && ordinal_==8)) return diagnostic_query_buffer;
   // Init validation and zeroing read this pointer four times; SetInput reads
@@ -598,7 +600,7 @@ std::vector<NDTensorDesc> OriginalDescriptors(bool input,bool resident_loop=fals
 }
 class FakeBuiltModel final : public IBuiltModel {
  public:
-  bool restored=false,original=false,draft64=false,resident_loop=false,draft_loop=false,load_probe=false;
+  bool restored=false,original=false,draft64=false,resident_loop=false,draft_loop=false,load_probe=false,prefill=false;
   std::string name="graph_1";
   std::string GetName() const override{return name;}
   void SetName(const std::string& value) override {
@@ -611,7 +613,8 @@ class FakeBuiltModel final : public IBuiltModel {
     if (const auto* trace=std::getenv("FAKE_HIAI_PATH_TRACE")) std::ofstream(trace) << path;
     std::ifstream file(path,std::ios::binary);
     std::string data((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());
-    resident_loop=data=="original-resident-target-fixture";
+    prefill=data=="original-resident-prefill64-fixture";
+    resident_loop=data=="original-resident-target-fixture" || prefill;
     load_probe=data=="original-target-load-probe-fixture";
     original=data=="original-target-fixture" || resident_loop || load_probe;
     draft_loop=data=="draft-resident-loop64-fixture";
@@ -621,7 +624,7 @@ class FakeBuiltModel final : public IBuiltModel {
     return restored?0:31;
   }
   std::vector<NDTensorDesc> GetInputTensorDescs() const override {
-    if (original) return OriginalDescriptors(true,resident_loop);
+    if (original) {auto rows=OriginalDescriptors(true,resident_loop);if(prefill){rows[0].dims={1,1,64,2048};rows[1].dims={1,1,64,2048};rows[2].dims={1,64};rows[83].dims={64};rows[85].dims={1,64,1};}return rows;}
     const std::int32_t seq=draft64?64:8;
     auto input=std::vector<NDTensorDesc>{DraftDesc({1,seq,16384},DataType::FLOAT16),
         DraftDesc({1,seq},DataType::INT32),DraftDesc({1,seq},DataType::INT32)};
@@ -633,7 +636,7 @@ class FakeBuiltModel final : public IBuiltModel {
     return input;
   }
   std::vector<NDTensorDesc> GetOutputTensorDescs() const override {
-    if (original) return OriginalDescriptors(false,resident_loop);
+    if (original) {auto rows=OriginalDescriptors(false,resident_loop);if(prefill)rows[81].dims={1,1,64,16384};return rows;}
     if (Failure()=="v2-count") return {};
     auto output = std::vector<NDTensorDesc>{DraftDesc({1,15},DataType::INT32),DraftDesc({1,15,2048},DataType::FLOAT16)};
     ModelIoNames(output, "output");
@@ -651,7 +654,7 @@ class FakeModelManager final : public IModelManager {
     Trace("v2-init-weights");
     if (weights_ || !initialized_ || !std::filesystem::path(directory).is_absolute() ||
         !std::filesystem::is_directory(directory)) return 71;
-    if (Failure()=="original-init-weights") return 72;
+    if (Failure()=="original-init-weights" || (Failure()=="v2-target-init-weights"&&name_=="qwen35_resident_target")) return 72;
     if (Failure()=="original-init-weights-throw") throw std::runtime_error("injected InitWeights exception");
     if (Failure()=="original-init-weights-unknown") throw 123;
     weights_=true;
@@ -672,32 +675,35 @@ class FakeModelManager final : public IModelManager {
     if (listener || options.perfMode!=PerfMode::HIGH || !concrete || !concrete->restored) return 4;
     if (concrete->original && weights_) { model_=model; return 74; }
     model_=model; initialized_=true; original_=concrete->original; draft64_=concrete->draft64;
-    load_probe_=concrete->load_probe;
+    load_probe_=concrete->load_probe;prefill_=concrete->prefill;name_=concrete->name;Trace(("v2-init:"+name_).c_str());
     resident_loop_=concrete->resident_loop;draft_loop_=concrete->draft_loop;
     return Failure()=="v2-init" || Failure()=="original-init" ||
-      Failure()=="original-init-deinit-throw" || (draft64_ && Failure()=="resident-draft-init")?32:0;
+      Failure()=="original-init-deinit-throw" || (prefill_&&Failure()=="v2-prefill-init") || (draft64_ && Failure()=="resident-draft-init")?32:0;
   }
   Status Run(const std::vector<std::shared_ptr<INDTensorBuffer>>& inputs,
              std::vector<std::shared_ptr<INDTensorBuffer>>& outputs) override {
-    Trace("v2-run");
+    Trace("v2-run");Trace(("v2-run:"+name_).c_str());
     if (original_) {
       if (!initialized_ || !weights_ || model_.expired() || inputs.size()!=89 || outputs.size()!=82) return 75;
-      if (Failure()=="original-run") return 76;
+      if (Failure()=="original-run" || (prefill_&&Failure()=="v2-prefill-run")) return 76;
       if (Failure()=="original-run-unknown-exception") throw 123;
       if (Failure()=="original-replace-output") outputs[1]=CreateNDTensorBuffer(outputs[1]->GetTensorDesc());
       if(resident_loop_) {
-        std::int32_t position=0;std::memcpy(&position,inputs[2]->GetData(),4);
-        const auto token=*static_cast<const std::uint8_t*>(inputs[0]->GetData());
+        std::int32_t position=0;
+        if(prefill_){std::int16_t valid=0;std::memcpy(&valid,inputs[88]->GetData(),2);position=valid;if(position<1||position>64)return 80;}
+        else std::memcpy(&position,inputs[2]->GetData(),4);
+        const auto token=static_cast<const std::uint8_t*>(inputs[0]->GetData())[(prefill_?position-1:0)*2048];
         for(std::size_t ref=0;ref<80;++ref) {
           const auto& in=inputs[ref+3];const auto& out=outputs[1+ref*37%80];
           std::int32_t actual_ref=0,actual_position=0;
           std::memcpy(&actual_ref,in->GetData(),4);std::memcpy(&actual_position,static_cast<const std::uint8_t*>(in->GetData())+4,4);
-          if(actual_ref!=static_cast<std::int32_t>(ref)||actual_position!=position||in->GetSize()!=out->GetSize())return 79;
-          std::memcpy(out->GetData(),in->GetData(),in->GetSize());const auto next=position+1;
+          if((!prefill_&&(actual_ref!=static_cast<std::int32_t>(ref)||actual_position!=position))||in->GetSize()!=out->GetSize())return 79;
+          std::memcpy(out->GetData(),in->GetData(),in->GetSize());const auto next=prefill_?position:position+1;
+          const auto state_ref=static_cast<std::int32_t>(ref);std::memcpy(out->GetData(),&state_ref,4);
           std::memcpy(static_cast<std::uint8_t*>(out->GetData())+4,&next,4);
         }
         std::memset(outputs[0]->GetData(),0,outputs[0]->GetSize());static_cast<float*>(outputs[0]->GetData())[token+1]=2.0f;
-        std::fill_n(static_cast<std::uint16_t*>(outputs[81]->GetData()),16384,0x3800);++runs_;return 0;
+        std::fill_n(static_cast<std::uint16_t*>(outputs[81]->GetData()),outputs[81]->GetSize()/2,0x3800);++runs_;return 0;
       }
       ++runs_;
       for (std::size_t i=0;i<80;++i) {
@@ -742,12 +748,17 @@ class FakeModelManager final : public IModelManager {
   void DeInit() override {
     Trace("v2-deinit");
     if (model_.expired()) { std::cerr << "premature v2 built model release\n"; std::abort(); }
-    initialized_=false;
+    // Host fixture models manager-owned teardown for the explicit mixed candidate.
+    // This is not evidence of private-device external-weight release behavior.
+    initialized_=false;weights_=false;Trace(("v2-deinit:"+name_).c_str());
+    if(prefill_&&Failure()=="v2-prefill-deinit")throw std::runtime_error("injected prefill DeInit exception");
+    if(original_&&(Failure()=="original-deinit"||(Failure()=="v2-target-deinit"&&name_=="qwen35_resident_target")))throw std::runtime_error("injected target DeInit exception");
     if(original_&&(Failure()=="original-init-deinit-throw"||Failure()=="original-both-cleanup-failures"))throw std::runtime_error("injected target DeInit exception");
     if(draft64_&&Failure()=="resident-draft-deinit")throw std::runtime_error("injected draft DeInit exception");
   }
  private:
-  bool initialized_=false,weights_=false,original_=false,draft64_=false,resident_loop_=false,draft_loop_=false,load_probe_=false;
+  bool initialized_=false,weights_=false,original_=false,draft64_=false,resident_loop_=false,draft_loop_=false,load_probe_=false,prefill_=false;
+  std::string name_;
   std::size_t runs_=0;
   std::weak_ptr<IBuiltModel> model_;
 };
@@ -768,6 +779,7 @@ std::shared_ptr<INDTensorBuffer> CreateNDTensorBuffer(const NDTensorDesc& desc) 
 #endif
   auto tensor=std::make_shared<FakeNDTensor>(desc);
 #ifndef QWEN35_FAKE_NO_TENSOR_NAME
+  if (desc.tensorName=="runtime_input_0") mixed_target_storage=tensor->GetData();
   if (desc.tensorName=="runtime_input_3") original_alias_input=tensor;
   if (desc.tensorName=="runtime_output_1") original_alias_output=tensor;
   if (desc.tensorName=="runtime_input_9") resident_alias_storage=tensor;

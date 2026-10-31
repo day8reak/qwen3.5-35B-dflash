@@ -7,7 +7,7 @@
   "overall_status": "in_progress",
   "active_phase": "P5",
   "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
-  "user_priority": "User explicitly requests all new execution interfaces V1 after supplying V2 deprecation notice and V1 lifecycle constraints. Preserve original OMCs, one-shot V1 prefill then resident V1 decode+draft, historical recovery only for old requests.",
+  "user_priority": "User explicitly authorizes mixed APIs to prioritize residency: original prefill/decode V2, embedded full-six-layer draft V1. All loops remain board-local; unchanged OMCs and weights. New manager-only V2 cleanup is an explicit unvalidated experiment, not a suppressed error.",
   "status_policy": {
     "allowed": [
       "pending",
@@ -293,20 +293,38 @@
       "source_constraints": "USER_QUOTED_OFFICIAL_V1_DOCS:oneLoadPerInstance,max256InstancesPerApp,max63ModelsSync,max31ModelsAsync,asyncQueue512",
       "async": "NOT_USED",
       "model_compilation": "NOT_REQUESTED",
-      "fallback_to_v2": "FORBIDDEN",
+      "fallback_to_v2": "NO_SILENT_FALLBACK_IN_HISTORICAL_REQUESTS_NEW_MIXED_LANE_SEPARATELY_AUTHORIZED",
       "historical_runtime": "specs/resident-v2-target-cleanup-observed.json",
-      "next_device_action": "NO_REPEAT_MODEL_RUN_IDENTIFY_SUPPORTED_V1_EXTERNAL_WEIGHT_ENTRY",
+      "next_device_action": "SUPERSEDED_BY_USER_AUTHORIZED_MIXED_API_CANDIDATE",
       "validation_manifest": "specs/resident-v1-host-validation.json",
       "validation_document": "docs/resident-v1-validation.md",
-      "latest_observation": "specs/resident-v1-hcl-load-failure.json"
+      "latest_observation": "specs/resident-v1-hcl-load-failure.json",
+      "authorization_scope": "HISTORICAL_SUPERSEDED_BY_EXPLICIT_MIXED_API_AUTHORIZATION_2026_10_31"
+    },
+    "resident_mixed": {
+      "status": "HOST_VALIDATED_DEVICE_NOT_RUN",
+      "execution_mode": "resident-mixed",
+      "model_load_api": "target-v2-draft-v1",
+      "model_load_apis": {
+        "prefill": "file-v2",
+        "target": "file-v2",
+        "draft": "legacy-buffer"
+      },
+      "target_lifecycle_policy": "v2-target-v1-draft-resident-v1",
+      "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
+      "source": "USER_EXPLICIT_ASYNC_REPLY_ALLOWS_MIXED_APIS_PRIORITIZE_RESIDENCY",
+      "validation_manifest": "specs/resident-mixed-host-validation.json",
+      "host_python_units": 186,
+      "unique_actual_cpp_recovery_scenarios": 7,
+      "native_ctest_groups": 18
     }
   },
   "next_action": {
     "phase": "P5",
-    "type": "inspect_selected_v1_external_weight_interface",
+    "type": "run_full_mixed_resident_board_loop",
     "entrypoint": "targets/cpro/scripts/run_board_serial_dflash.py",
     "command_document": "docs/current-status.md",
-    "note": "当前HCL V1 Load拒绝path-only描述符空buffer，0次Process；先核对实际SDK的受支持外置权重入口。原板端闭环成功保留，不重复启动失败候选、不静默切V2或重编模型。"
+    "note": "主机检查已通过；按docs/current-status.md直接执行dflash-board-resident-mixed8-run完整板端请求并恢复。V2 prefill一次后关闭，V2 decode与V1 draft常驻；不重编OMC，外置权重释放仍待实机观察。"
   },
   "last_actual_execution": {
     "source": "USER_PROVIDED_RECOVERY_SUMMARY",
@@ -392,7 +410,7 @@
     "paired_speedup": "NOT_MEASURED"
   },
   "planned_parallelism": [
-    "P0 original-prefill baseline passed. Current V1 path-only request failed before model parse; investigate actual supported external-weight API while host reporting/diagnostic work proceeds. No repeated device request or automatic fallback.",
+    "P0 original-prefill baseline passed. User permits mixed runtime APIs. Parallel native session/supervisor and host preparation/recovery integration; test full mixed flow with fake SDK, then user runs actual device request.",
     "P1 reference preparation while P0 device runs",
     "P2 fixture preparation and P3 static mapping; do not accept accuracy with wrong features",
     "P4 host source/ABI and P5 resident runner after shared interfaces frozen",
@@ -578,8 +596,8 @@
         0.5,
         2
       ],
-      "next_action_type": "inspect_selected_v1_external_weight_interface",
-      "next_action": "当前HCL V1 Load拒绝path-only描述符空buffer，0次Process；先核对实际SDK的受支持外置权重入口。原板端闭环成功保留，不重复启动失败候选、不静默切V2或重编模型。",
+      "next_action_type": "run_full_mixed_resident_board_loop",
+      "next_action": "主机检查已通过；按docs/current-status.md直接执行dflash-board-resident-mixed8-run完整板端请求并恢复。V2 prefill一次后关闭，V2 decode与V1 draft常驻；不重编OMC，外置权重释放仍待实机观察。",
       "pass_conditions": [
         "two-model residency feasibility measured",
         "native loop same tokens/state as baseline",
@@ -595,9 +613,10 @@
       "evidence": [
         "docs/resident-runtime-plan.md",
         "docs/board-resident-validation.md",
-        "specs/resident-v1-host-validation.json"
+        "specs/resident-v1-host-validation.json",
+        "specs/resident-mixed-host-validation.json"
       ],
-      "last_error": "Probe v2 Init=0 InitWeights=0; DeinitWeights before DeInit returned1 at CLEANUP_FAILED, 10435ms; no Run/draft, locks released. Both attempted cleanup orders failed; cause unresolved.",
+      "last_error": "Historical all-V1 candidate failed HCL Load on empty model buffer before parsing. Historical V2 explicit DeinitWeights orders returned3/1. Mixed manager-only close is a separate user-authorized candidate; actual co-residency/weight release not validated.",
       "numerical_acceptance_depends_on": [
         "P1",
         "P2"
@@ -741,6 +760,10 @@
     {
       "date": "2026-10-30",
       "decision": "用户随后提供V2弃用说明和V1线程/一次Load限制，明确将全部新执行改V1。prefill独立实例执行一次并释放，decode/draft独立常驻实例各Load一次，同一线程同步Process；主机检查后直接完整板端DFlash验证。此决定取代先前V2新运行方案，旧证据保留，不重编原OMC。"
+    },
+    {
+      "date": "2026-10-31",
+      "decision": "User explicitly authorizes resident-mixed: V2 original prefill/decode and V1 embedded full-six-layer draft. This supersedes all-V1 new-request requirement; historical requests recover under pinned APIs. No model recompilation. Manager-only V2 cleanup is experimental and must retain unvalidated external-weight release status."
     }
   ],
   "handoff_update_fields": [
@@ -780,7 +803,7 @@
     ],
     "disconnect_policy": "Started board request must continue without host/HDC connection; recover retrieves the same attempt, never relaunches it",
     "accuracy_gate": "DEFERRED_FOR_P0",
-    "residency_gate": "CURRENT_P5_TARGET_REQUIRES_V1_DECODE_AND_DRAFT_RESIDENCY_P0_HISTORICAL_GATE_UNCHANGED",
+    "residency_gate": "CURRENT_P5_MIXED_V2_TARGET_V1_DRAFT_RESIDENCY_P0_HISTORICAL_GATE_UNCHANGED",
     "original_prefill_required": true,
     "serial_prompt_is_submilestone_only": true,
     "prefill_experiment": {
@@ -791,7 +814,7 @@
       "draft_capacity_policy": "EXPLICIT_FULL_HISTORY_AND_ANCHOR_CONTRACT_NO_AUTOMATIC_S128_REQUIREMENT"
     },
     "physical_disconnect_validation": "NOT_SPECIFICALLY_TESTED",
-    "runtime_api": "V1_ALL_NEW_PREFILL_DECODE_DRAFT_EXECUTION"
+    "runtime_api": "USER_AUTHORIZED_V2_PREFILL_DECODE_V1_DRAFT"
   },
   "legacy_code_baseline": "4ea1c105c66b5014c2c1260ad9f757a096c38028",
   "code_baseline_policy": "Use the Git commit containing this state file; native source SHA is recorded in current_known_evidence.",
@@ -803,6 +826,10 @@
     {
       "date": "2026-10-30",
       "decision": "用户随后提供V2弃用说明和V1线程/一次Load限制，明确将全部新执行改V1。prefill独立实例执行一次并释放，decode/draft独立常驻实例各Load一次，同一线程同步Process；主机检查后直接完整板端DFlash验证。此决定取代先前V2新运行方案，旧证据保留，不重编原OMC。"
+    },
+    {
+      "date": "2026-10-31",
+      "decision": "用户明确回复允许混合接口，优先推进常驻。prefill/decode用V2，完整embedded draft保留V1，模型不重编。manager-only关闭是未实机验证的显式实验，不吞旧DeinitWeights失败。"
     }
   ]
 }

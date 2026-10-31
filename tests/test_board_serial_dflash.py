@@ -214,9 +214,11 @@ def test_prefill_v1_abi_retains_v2_descriptor_provenance_without_invented_sdk_na
     assert 'target_input\t' not in wire
     assert result['descriptor_provenance'] == 'HISTORICAL_FILE_V2_NAMED_MODEL_IO_PROBE'
     assert result['runtime_validation'] == 'V1_SLOT_SHAPE_AND_BYTE_EXTENT_REQUIRED_NO_SDK_TENSOR_NAME_CLAIM'
+    mixed = job._resident_abi(binding, probe, tmp_path / 'mixed-abi.tsv', runtime_api='file-v2')
+    assert mixed['runtime_validation'] == 'V2_NAMED_RAW_DESCRIPTOR_AND_BYTE_EXTENT_REQUIRED'
 
 
-def test_new_resident_preparation_pins_both_v1_abis_and_keeps_source_models_read_only(sources, monkeypatch):
+def test_new_mixed_preparation_pins_named_abis_and_keeps_source_models_read_only(sources, monkeypatch):
     options, _, model = sources
     from qwen35_moe_dflash import board_prefill_binding
     before = job._current(model['path'])[1]
@@ -224,18 +226,22 @@ def test_new_resident_preparation_pins_both_v1_abis_and_keeps_source_models_read
         base_plan=dict(runtime_probe=str(options['runtime_probe'])), source_bindings=[],
         control_recipe=board_prefill_binding.RECIPE))
     selected = []
-    def abi(binding, probe, output, *, prefix='target'):
-        selected.append(prefix)
+    def abi(binding, probe, output, *, prefix='target', runtime_api='legacy-v1'):
+        selected.append((prefix, runtime_api))
         record = write(Path(output), ('QWEN35_RESIDENT_ABI\t1\n' + prefix + '_input\tfixture\n').encode())
         return dict(record, inputs=[{}] * 89, outputs=[{}] * 82,
             descriptor_provenance='HISTORICAL_FILE_V2_NAMED_MODEL_IO_PROBE')
     monkeypatch.setattr(job, '_resident_abi', abi)
-    manifest = job.prepare_board_serial(**options, resident=True, prefill_feedback=options['state_lineage'])
-    assert selected == ['target', 'prefill']
-    assert manifest['execution_mode'] == 'resident-v1'
-    assert manifest['target_lifecycle_policy'] == 'legacy-v1-file-target-buffer-draft-v1'
-    assert manifest['model_load_api'] == 'legacy-v1-mixed'
-    assert manifest['model_load_apis'] == {'prefill': 'legacy-file', 'target': 'legacy-file', 'draft': 'legacy-buffer'}
+    result = job.run_board_serial_dflash(**options, resident=True, prefill_feedback=options['state_lineage'])
+    assert result['status'] == 'BOARD_SERIAL_DFLASH_PLANNED', result
+    manifest = json.loads((Path(result['prepared']) / 'manifest.json').read_text())
+    assert selected == [('target', 'file-v2'), ('prefill', 'file-v2')]
+    assert manifest['execution_mode'] == 'resident-mixed'
+    assert manifest['target_lifecycle_policy'] == 'v2-target-v1-draft-resident-v1'
+    assert manifest['model_load_api'] == 'target-v2-draft-v1'
+    assert manifest['model_load_apis'] == {'prefill': 'file-v2', 'target': 'file-v2', 'draft': 'legacy-buffer'}
+    for key in ('execution_mode', 'target_lifecycle_policy', 'model_load_api', 'model_load_apis', 'external_weight_release'):
+        assert result[key] == manifest[key]
     assert manifest['prefill_abi']['path'].endswith('/prefill-abi.tsv')
     assert job._current(model['path'])[1] == before
     assert not list(options['output'].rglob('*.omc'))
@@ -245,7 +251,7 @@ def test_v1_wire_uses_native_abi_and_no_v2_tool_or_legacy_child_runner(tmp_path)
     record = dict(bytes=1, sha256='a' * 64)
     manifest = dict(target_model=record, draft=dict(model_source=record, abi=record),
         tables=dict(weight=record, scale=record), resident_abi=record, prefill_abi=record,
-        execution_mode='resident-v1', target_lifecycle_policy=job.TARGET_LIFECYCLE_POLICY,
+        execution_mode='resident-v1', target_lifecycle_policy=job.V1_TARGET_LIFECYCLE_POLICY,
         model_load_api=job.V1_MODEL_LOAD_API, model_load_apis=dict(job.V1_MODEL_LOAD_APIS),
         prompt_token_ids=[1, 2], max_new_tokens=8, max_proposals_per_round=2, minimum_draft_rounds=2,
         timeout_seconds=120, target_binding=dict(base_plan=dict(runtime_version='v', ddk_id='d', firmware_id='f',
@@ -258,6 +264,12 @@ def test_v1_wire_uses_native_abi_and_no_v2_tool_or_legacy_child_runner(tmp_path)
     assert b'target_lifecycle_policy\tlegacy-v1-file-target-buffer-draft-v1\n' in wire
     assert b'prefill_abi\t/board/prefill_abi\t' in wire
     assert b'target_tool\t' not in wire and b'draft_runner\t' not in wire
+    mixed = dict(manifest, execution_mode='resident-mixed', target_lifecycle_policy=job.TARGET_LIFECYCLE_POLICY,
+        model_load_api=job.MIXED_MODEL_LOAD_API, model_load_apis=dict(job.MIXED_MODEL_LOAD_APIS))
+    new_wire = job.make_config(mixed, paths)
+    assert b'execution_mode\tresident-mixed\n' in new_wire
+    assert b'target_lifecycle_policy\tv2-target-v1-draft-resident-v1\n' in new_wire
+    assert b'target_tool\t' not in new_wire and b'draft_runner\t' not in new_wire
     old = dict(manifest, target_lifecycle_policy=job.HISTORICAL_V1_LIFECYCLE_POLICY)
     for key in ('model_load_api', 'model_load_apis'): old.pop(key)
     historical = job.make_config(old, paths)
@@ -268,7 +280,7 @@ def test_v1_wire_uses_native_abi_and_no_v2_tool_or_legacy_child_runner(tmp_path)
 @pytest.mark.parametrize('damage', ['missing-map', 'missing-api', 'prefill-buffer', 'target-buffer',
     'draft-file', 'unknown-policy', 'old-policy-new-map'])
 def test_v1_prepared_source_contract_rejects_mixed_or_implicit_modes(damage):
-    manifest = dict(execution_mode='resident-v1', target_lifecycle_policy=job.TARGET_LIFECYCLE_POLICY,
+    manifest = dict(execution_mode='resident-v1', target_lifecycle_policy=job.V1_TARGET_LIFECYCLE_POLICY,
         model_load_api=job.V1_MODEL_LOAD_API, model_load_apis=dict(job.V1_MODEL_LOAD_APIS))
     if damage == 'missing-map': manifest.pop('model_load_apis')
     elif damage == 'missing-api': manifest.pop('model_load_api')
@@ -331,7 +343,7 @@ def test_cli_pins_dump_mode_for_new_attempts(tmp_path, monkeypatch, capsys, flag
     with pytest.raises(SystemExit):
         cli.main([value for value in argv if value != '--resident'] + flag)
     assert not calls
-    assert 'all-V1' in capsys.readouterr().err
+    assert 'mixed-API' in capsys.readouterr().err
     assert cli.main(argv + flag) == 0
     assert len(calls) == 1 and calls[0]['dump'] is expected
     summary = json.loads(capsys.readouterr().out)

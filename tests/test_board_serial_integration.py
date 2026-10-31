@@ -115,6 +115,26 @@ def resident_v1_native_programs(tmp_path_factory):
     return binary, binary
 
 
+@pytest.fixture(scope='module')
+def mixed_native_programs(tmp_path_factory):
+    existing = os.environ.get('QWEN35_RESIDENT_MIXED_TEST_BINARY')
+    if existing:
+        binary = Path(existing)
+        assert binary.is_absolute() and binary.is_file() and os.access(binary, os.X_OK)
+        assert digest(binary) == os.environ.get('QWEN35_RESIDENT_MIXED_TEST_BINARY_SHA256')
+        return binary, binary
+    compiler = shutil.which('g++')
+    if not compiler: pytest.skip('host C++ compiler is unavailable')
+    root = tmp_path_factory.mktemp('board-resident-mixed-build'); binary = root / 'board-resident-mixed-fake'
+    command = [compiler, '-std=c++17', '-O2', '-DQWEN35_RESIDENT_MIXED=1', '-DQWEN35_BOARD_SERIAL_HOST_FAKE=1',
+        '-DQWEN35_FAKE_HIAI=1', '-I' + str(RUNTIME / 'include'), '-I' + str(RUNTIME / 'tests/fake_hiai'),
+        *[str(RUNTIME / 'src' / name) for name in ('board_serial_main.cpp', 'resident_session.cpp', 'hiai_executor.cpp', 'sha256.cpp', 'generation.cpp')],
+        str(RUNTIME / 'tests/fake_hiai/fake_hiai.cpp'), '-o', str(binary)]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=180)
+    assert result.returncode == 0, result.stderr
+    return binary, binary
+
+
 TARGET_SCRIPT = r'''
 import json, os, struct, sys
 from pathlib import Path
@@ -405,6 +425,180 @@ def enable_resident_v1(case):
         str(row['prefill']['runtime_input_index']), str(row['prefill']['runtime_output_index']), str(row['bytes']))) for row in mapping]
     case['config'].write_text('\n'.join(config) + '\n')
     (root / 'expected-prepared-manifest.json').write_text(json.dumps(manifest, indent=2))
+
+
+def enable_resident_mixed(case):
+    from qwen35_moe_dflash.board_serial_dflash import TARGET_LIFECYCLE_POLICY, MIXED_MODEL_LOAD_API, MIXED_MODEL_LOAD_APIS
+    enable_resident_v1(case)
+    manifest = case['manifest']
+    manifest.update(execution_mode='resident-mixed', target_lifecycle_policy=TARGET_LIFECYCLE_POLICY,
+        model_load_api=MIXED_MODEL_LOAD_API, model_load_apis=dict(MIXED_MODEL_LOAD_APIS),
+        external_weight_release='NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY',
+        host_fake_sdk_scope='MIXED_SCHEDULING_ABI_ONLY_NO_DEVICE_OR_WEIGHT_RELEASE_PROOF')
+    text = case['config'].read_text().replace('execution_mode\tresident-v1', 'execution_mode\tresident-mixed')
+    text = text.replace('target_lifecycle_policy\tlegacy-v1-file-target-buffer-draft-v1',
+        'target_lifecycle_policy\t' + TARGET_LIFECYCLE_POLICY)
+    # V2 returns actual tensor names. V1's fixture deliberately used different
+    # provenance labels because its API cannot query names; mixed must bind
+    # the actual fake V2 descriptors, without weakening that exact-name guard.
+    abi = Path(manifest['prefill_abi']['path'])
+    rows = [line.split('\t') for line in abi.read_text().splitlines()]
+    for row in rows[1:]:
+        if row[0] == 'prefill_output': row[2] = 'native-output-' + row[1]
+    abi.write_text('\n'.join('\t'.join(row) for row in rows) + '\n')
+    from qwen35_moe_dflash.board_serial_transport import _full
+    manifest['prefill_abi'].update(bytes=abi.stat().st_size, sha256=digest(abi), identity=_full(abi))
+    lines = []
+    for line in text.splitlines():
+        fields = line.split('\t')
+        if fields[0] == 'prefill_abi': fields[2:] = [digest(abi), str(abi.stat().st_size)]
+        elif fields[0] == 'prefill_output': fields[2] = 'native-output-' + fields[1]
+        lines.append('\t'.join(fields))
+    text = '\n'.join(lines) + '\n'
+    for row in manifest['prefill']['base_plan']['outputs']:
+        row['runtime_tensor_name'] = 'native-output-' + str(row['index'])
+    case['config'].write_text(text)
+    (case['root'] / 'expected-prepared-manifest.json').write_text(json.dumps(manifest, indent=2))
+
+
+@pytest.mark.parametrize('dump', [True, False])
+def test_actual_mixed_resident_prefill_and_complete_generation(tmp_path, mixed_native_programs, dump, monkeypatch):
+    from qwen35_moe_dflash.board_serial_transport import validate_retrieved_loop
+    case = make_case(tmp_path / ('mixed-debug' if dump else 'mixed-compact'), mixed_native_programs, dump=dump)
+    enable_resident_mixed(case); trace = case['root'] / 'sdk.trace'
+    process = execute(case, native_trace=trace)
+    assert process.returncode == 0, (process.stdout, process.stderr)
+    loop = validate_retrieved_loop(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
+        _expected_config_sha256=digest(case['config']))
+    assert loop['generated_tokens'] == list(range(9, 17))
+    assert loop['counts']['prefill_native_calls'] == 1 and loop['counts']['target_native_calls'] == 8
+    assert loop['counts']['draft_native_calls'] >= 2 and loop['child_lifecycle']['children'] == []
+    life = loop['resident_lifecycle']
+    assert life['model_load_api'] == 'target-v2-draft-v1' and life['target_loads'] == life['draft_loads'] == 1
+    for value in (loop['prefill_lifecycle'], life['target_lifecycle']):
+        assert value['manager_deinit_called'] and value['manager_deinit_returned']
+        assert value['weights_deinit_called'] is False and value['weights_deinit_status'] == -1
+        assert value['external_weight_release'] == 'NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY'
+    assert life['draft_v1_lifecycle']['model_load_api'] == 'legacy-buffer'
+    events = trace.read_text().splitlines()
+    assert events.index('v2-deinit:qwen35_resident_prefill') < events.index('v2-init:qwen35_resident_target')
+    assert events.count('v2-run:qwen35_resident_prefill') == 1 and events.count('v2-run:qwen35_resident_target') == 8
+    assert events.count('v1-load:qwen35_resident_draft') == events.count('v1-unload:qwen35_resident_draft') == 1
+    assert not any('deinit-weights' in event for event in events)
+    assert loop['phase_latency']['prefill']['native_api'] == loop['phase_latency']['decode']['native_api'] == 'Run'
+    assert loop['phase_latency']['draft']['native_api'] == 'Process'
+    if not dump:
+        _recover_actual_mixed_case(case, loop, 0, monkeypatch)
+
+
+@pytest.mark.parametrize('fault,expected_prefill', [('v2-prefill-init', 0), ('v2-prefill-run', 0),
+    ('v2-prefill-deinit', 1), ('v2-target-init-weights', 1), ('v2-target-deinit', 1)])
+def test_actual_mixed_failure_preserves_lifecycle_and_commits(tmp_path, mixed_native_programs, fault, expected_prefill, monkeypatch):
+    from qwen35_moe_dflash.board_serial_transport import validate_retrieved_tokens
+    case = make_case(tmp_path / fault, mixed_native_programs, dump=False); enable_resident_mixed(case)
+    process = execute(case, native_fault=fault)
+    assert process.returncode == 1, (process.stdout, process.stderr)
+    loop = validate_retrieved_tokens(case['manifest'], case['output'], _expected_evidence_kind='host-fake-hiai',
+        _expected_config_sha256=digest(case['config']), _remote_exitcode=1)
+    assert loop['counts']['prefill_native_calls'] == expected_prefill and loop['child_lifecycle']['children'] == []
+    if fault == 'v2-target-deinit':
+        assert loop['generated_tokens'] == list(range(9, 17)) and loop['counts']['target_native_calls'] == 8
+        target = loop['resident_lifecycle']['target_lifecycle']
+        assert target['manager_deinit_called'] and target['manager_deinit_returned'] is False
+        assert target['weights_deinit_called'] is False and target['weights_deinit_status'] == -1
+        assert loop['resident_lifecycle']['poisoned'] and loop['stage'] == 'resident-close'
+        _recover_actual_mixed_case(case, loop, 1, monkeypatch)
+    else:
+        assert loop['generated_tokens'] == [] and loop['counts']['target_native_calls'] == loop['counts']['draft_native_calls'] == 0
+
+
+def _recover_actual_mixed_case(case, loop, exitcode, monkeypatch):
+    """Replay only the actual finished C++ evidence through Python recovery.
+
+    HDC is replaced by a private local filesystem and actual POSIX guard
+    commands. No supervisor executable is invoked by this recovery fixture.
+    """
+    from qwen35_moe_dflash import board_serial_transport as transport
+    from qwen35_moe_dflash import board_serial_dflash as preparation
+    root, manifest = case['root'], case['manifest']
+    monkeypatch.setenv('AI_RUN_DIR', str(root))
+    token = 'e' * 32
+    base = manifest['target_binding']['base_plan']; base['compilation_report_sha256'] = 'a' * 64
+    manifest['prefill']['base_plan']['compilation_report_sha256'] = 'b' * 64
+    manifest['board_model_root'] = '/data/local/tmp/model-cache'
+    prepared = root / 'recovery-prepared'; prepared.mkdir()
+    (prepared / 'manifest.json').write_text(json.dumps(manifest))
+    board = '/data/local/tmp/qwen35_board_serial_' + token
+    target = manifest['board_model_root'] + '/codex-target-' + 'a' * 20
+    prefill = manifest['board_model_root'] + '/codex-target-' + 'b' * 20
+    draft = '/data/local/tmp/qwen35_real_draft_' + manifest['draft']['model_source']['sha256']
+    remote = root / 'private-remote'; remote.mkdir()
+    prefixes = {board: remote / 'attempt', target: remote / 'target', prefill: remote / 'prefill', draft: remote / 'draft'}
+    for path in prefixes.values(): path.mkdir()
+    global_lock = remote / 'global-lock'; global_lock.mkdir()
+    (global_lock / 'owner').write_text(token + '\n')
+    monkeypatch.setattr(transport, '_GLOBAL', PurePosixPath(global_lock))
+    for cache in (target, prefill, draft): (prefixes[cache] / '.execution-lock').mkdir()
+    (prefixes[target] / '.compilation-sha256').write_text('a' * 64 + '\n')
+    (prefixes[prefill] / '.compilation-sha256').write_text('b' * 64 + '\n')
+    (prefixes[draft] / '.model-sha256').write_text(manifest['draft']['model_source']['sha256'] + '\n')
+    (prefixes[draft] / '.execution-lock/owner').write_text(token + '\n')
+    for kind in ('target', 'prefill'): (prefixes[board] / (kind + '-lock.owner')).write_text(token + '\n')
+    (prefixes[board] / 'tool.pid').write_text(str(loop['process_id']) + '\n')
+    (prefixes[board] / 'tool.exitcode').write_text(str(exitcode) + '\n')
+    shutil.copytree(case['output'], prefixes[board] / 'results')
+    state = dict(schema_version=1, artifact_kind=transport._KIND, prepared=str(prepared),
+        prepared_manifest=transport._json(prepared / 'manifest.json')[1],
+        board_attempt=board, global_lock=str(global_lock), target_cache=target, prefill_cache=prefill, draft_cache=draft,
+        tables_cache='/data/local/tmp/tables', board_lock_token=token,
+        compilation_report_sha256='a' * 64, prefill_compilation_report_sha256='b' * 64,
+        prefill_model_sha256=manifest['prefill']['model']['sha256'], draft_model_sha256=manifest['draft']['model_source']['sha256'],
+        runtime_version=base['runtime_version'], firmware_id=base['firmware_id'],
+        config_sha256=digest(case['config']), supervisor_library_path='/system/lib64',
+        execution_mode=manifest['execution_mode'], target_lifecycle_policy=manifest['target_lifecycle_policy'],
+        model_load_api=manifest['model_load_api'], model_load_apis=manifest['model_load_apis'], dump=False,
+        serial='host-fixture', hdc_server='host-fixture', launch_requested=True, uncertain=True,
+        global_held=True, target_lock_held=True, prefill_lock_held=True, draft_lock_held=True)
+    state['launcher'] = transport._launcher(state)
+    execution = root / 'journal'; execution.mkdir()
+    (execution / 'checkpoint.json').write_text(json.dumps(state))
+    journal_before = (execution / 'checkpoint.json').read_bytes()
+    monkeypatch.setattr(preparation, 'validate_prepared', lambda path: manifest)
+    monkeypatch.setattr(transport, '_environment', lambda: ('no-device-hdc', 'host-fixture', 'host-fixture'))
+    observed = []
+    class LocalReadOnlyHdc:
+        def __init__(self, executable, serial, server, output, timeout):
+            self.timeout = timeout; self.count = 0
+        def shell(self, command, label, **kwargs):
+            self.count += 1; observed.append(label)
+            assert 'launch' not in label and 'acquire' not in label
+            for source, destination in sorted(prefixes.items(), key=lambda row: -len(row[0])):
+                command = command.replace(source, str(destination))
+            result = subprocess.run(['sh', '-c', command], capture_output=True, text=True, timeout=30)
+            assert result.returncode == 0, (label, result.stdout, result.stderr)
+            return 0, result.stdout.strip()
+        def receive(self, source, destination, **kwargs):
+            self.count += 1
+            assert str(source).startswith(board + '/')
+            path = prefixes[board] / str(source)[len(board) + 1:]
+            Path(destination).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, destination)
+        def send(self, *args, **kwargs): pytest.fail('recovery must never upload or relaunch')
+    monkeypatch.setattr(transport, 'Hdc', LocalReadOnlyHdc)
+    validator = transport.validate_retrieved_tokens
+    monkeypatch.setattr(transport, 'validate_retrieved_tokens', lambda *args, **kwargs:
+        validator(*args, **kwargs, _expected_evidence_kind='host-fake-hiai'))
+    recovered = transport.recover_board_serial(execution, root / 'recovered', timeout_seconds=30)
+    assert recovered['stage'] == 'complete', recovered.get('error')
+    assert recovered['status'] == ('FAILED' if exitcode else 'BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED')
+    assert recovered['generated_token_ids'] == loop['generated_tokens']
+    assert recovered['counts'] == loop['counts']
+    assert recovered['resident_lifecycle'] == loop['resident_lifecycle']
+    assert recovered['lock_state'] == 'NO_LOCK_HELD_OR_RELEASED_AFTER_KNOWN_EXIT'
+    assert (execution / 'checkpoint.json').read_bytes() == journal_before
+    assert 'release-whole-loop-locks' in observed and not global_lock.exists()
+    if exitcode:
+        assert recovered['execution_error'] == loop['error'] and recovered['execution_failure_stage'] == 'resident-close'
 
 
 @pytest.mark.parametrize('dump', [True, False])

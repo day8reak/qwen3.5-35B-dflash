@@ -233,6 +233,9 @@ struct HiaiOriginalTargetLifecycle {
   bool weights_init_attempted = false, weights_initialized = false;
   bool manager_init_attempted = false, manager_initialized = false;
   bool manager_deinit_called = false, weights_deinit_called = false, closed = false;
+  // DeInit returns void. Record a normal return separately from an attempt;
+  // neither observation attests device-side external-weight reclamation.
+  bool manager_deinit_returned = false;
   // No value means the SDK has not returned from this call. In particular a
   // real signed -1 status is distinct from an exception or an uncalled API.
   std::optional<std::int64_t> weights_init_status, manager_init_status;
@@ -245,6 +248,14 @@ struct HiaiOriginalTargetLoadProbe {
   std::string runtime_stage, error, runtime_version;
   HiaiOriginalTargetLifecycle lifecycle;
   std::uint64_t elapsed_ms = 0;
+};
+
+// Select the complete shutdown policy before loading. This is never a retry
+// after a failed DeinitWeights call. Historical probes retain their explicit
+// weights-first order; the mixed-runtime candidate uses manager destruction.
+enum class HiaiOriginalTargetCleanupPolicy {
+  ExplicitWeightsBeforeManager,
+  ManagerDeinitOnly,
 };
 
 // Original 40-layer target only: one file-v2 model, one explicit external-weight
@@ -267,13 +278,16 @@ class HiaiOriginalTargetExecutor final {
                             const std::vector<HiaiBoundRuntimeTensor>& inputs,
                             const std::vector<HiaiBoundRuntimeTensor>& outputs,
                             const std::string& resident_model_name = "",
-                            HiaiOriginalTargetLifecycle* constructor_failure_snapshot = nullptr);
+                            HiaiOriginalTargetLifecycle* constructor_failure_snapshot = nullptr,
+                            HiaiOriginalTargetCleanupPolicy cleanup_policy =
+                                HiaiOriginalTargetCleanupPolicy::ExplicitWeightsBeforeManager);
   ~HiaiOriginalTargetExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
   void Execute();
   std::vector<std::uint8_t> CopyOutput(std::size_t index) const;
-  // Explicit shutdown makes DeinitWeights' Status inspectable. Idempotent;
-  // failures are reported, never retried by the destructor.
+  // Idempotent shutdown follows the preselected policy. An uncalled weight
+  // unload keeps called=false/status=-1; manager DeInit has no return Status.
+  // Exceptions and returned failures are reported, never retried.
   void Close();
   const std::string& runtime_version() const noexcept;
   const std::string& runtime_stage() const noexcept;

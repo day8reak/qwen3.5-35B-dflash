@@ -138,6 +138,7 @@ def test_linked_result_binds_binary_to_exact_command_record(build_case, tmp_path
             binary = case["output"] / "build/qwen35_dflash_hiai"
             binary.parent.mkdir(parents=True, exist_ok=True)
             binary.write_bytes(linked_payload)
+            (binary.parent / "qwen35_board_resident_mixed").write_bytes(b"PINNED-MIXED-RUNTIME")
         return result
 
     monkeypatch.setattr(case["module"].subprocess, "run", simulate_link)
@@ -145,6 +146,9 @@ def test_linked_result_binds_binary_to_exact_command_record(build_case, tmp_path
     result = json.loads((case["output"] / "result.json").read_text())
     assert result["status"] == "LINKED" and result["device_validation"] == "PENDING"
     assert result["binary_sha256"] == hashlib.sha256(linked_payload).hexdigest()
+    mixed = case["output"] / "build/qwen35_board_resident_mixed"
+    assert result["resident_binaries"] == {mixed.name: {"path": str(mixed),
+        "bytes": mixed.stat().st_size, "sha256": hashlib.sha256(mixed.read_bytes()).hexdigest()}}
     command_path = case["output"] / "command.json"
     assert result["command_sha256"] == hashlib.sha256(command_path.read_bytes()).hexdigest()
     command = json.loads(command_path.read_text())

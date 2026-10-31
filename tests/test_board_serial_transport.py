@@ -45,7 +45,7 @@ def prepared_request(tmp_path, monkeypatch):
     (root / 'manifest.json').write_text(json.dumps(manifest))
     monkeypatch.setattr(preparation, 'validate_prepared', lambda path: deepcopy(manifest))
     def config(value, paths):
-        if value.get('execution_mode') == 'resident-v1':
+        if value.get('execution_mode') in {'resident-v1', 'resident-mixed'}:
             assert 'target_tool_record' not in paths
             assert 'draft_runner_record' not in paths
         else:
@@ -567,14 +567,22 @@ def test_compact_recovery_receives_only_tokens_progress_and_two_completion_files
         _enable_prefill_request(root, manifest, tmp_path)
     v1 = resident in {'v1', 'v1-historical', 'v1-prefill'}
     if v1:
-        manifest.update(execution_mode='resident-v1', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+        manifest.update(execution_mode='resident-v1', target_lifecycle_policy=preparation.V1_TARGET_LIFECYCLE_POLICY,
             model_load_api=preparation.V1_MODEL_LOAD_API, model_load_apis=dict(preparation.V1_MODEL_LOAD_APIS),
             resident_abi=_write(root / 'resident-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n'),
             prefill_abi=_write(root / 'prefill-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n'))
         old_build = transport._build_payloads
         monkeypatch.setattr(transport, '_build_payloads', lambda out, timeout, **kwargs: old_build(out, timeout))
+    historical = {key: manifest.pop(key) for key in ('execution_mode', 'target_lifecycle_policy', 'model_load_api', 'model_load_apis')
+        if key in manifest} if v1 else {}
     (root / 'manifest.json').write_text(json.dumps(manifest))
     launched = transport.execute_board_serial(root, tmp_path / 'execution', detach=True)
+    if v1:
+        manifest.update(historical)
+        (root / 'manifest.json').write_text(json.dumps(manifest))
+        checkpoint = tmp_path / 'execution/checkpoint.json'; old = json.loads(checkpoint.read_text())
+        old.update(historical, prepared_manifest=transport._json(root / 'manifest.json')[1])
+        checkpoint.write_text(json.dumps(old))
     if resident is True:
         # A retained historical V2 journal is constructed as test evidence;
         # new execution of this mode is now forbidden before transport setup.
@@ -832,8 +840,8 @@ def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_rela
     _enable_prefill_request(root, manifest, tmp_path)
     abi = _write(root / 'resident-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n')
     prefill_abi = _write(root / 'prefill-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\nprefill_input\t0\targ1_1\tINT8\t1\t0\t1,64,2048\t131072\n')
-    manifest.update(execution_mode='resident-v1', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
-        model_load_api=preparation.V1_MODEL_LOAD_API, model_load_apis=dict(preparation.V1_MODEL_LOAD_APIS),
+    manifest.update(execution_mode='resident-mixed', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+        model_load_api=preparation.MIXED_MODEL_LOAD_API, model_load_apis=dict(preparation.MIXED_MODEL_LOAD_APIS),
         resident_abi=abi, prefill_abi=prefill_abi)
     (root / 'manifest.json').write_text(json.dumps(manifest))
     old = transport._build_payloads; selected = []
@@ -849,7 +857,7 @@ def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_rela
     monkeypatch.setattr(preparation, 'make_config', config)
     started = transport.execute_board_serial(root, tmp_path / 'execution', detach=True)
     assert started['status'] == 'BOARD_SERIAL_DFLASH_STARTED', started.get('error')
-    assert selected == ['resident-v1'] and started['execution_mode'] == 'resident-v1'
+    assert selected == ['resident-mixed'] and started['execution_mode'] == 'resident-mixed'
     assert any(local == abi['path'] and remote.endswith('/resident-abi.tsv') for local, remote in FakeHdc.instances[0].sends)
     assert any(local == prefill_abi['path'] and remote.endswith('/prefill-abi.tsv') for local, remote in FakeHdc.instances[0].sends)
     assert not any('TOOL_BYTES' in command or 'sha256sum /data/local/tmp/tools/tool' in command
@@ -864,8 +872,8 @@ def test_resident_stages_pinned_descriptor_abi_selects_new_binary_and_never_rela
 def test_recovery_refuses_changed_new_v1_source_selection_before_transport(prepared_request, tmp_path, monkeypatch, damage):
     root, manifest, FakeHdc, _ = prepared_request
     _enable_prefill_request(root, manifest, tmp_path)
-    manifest.update(execution_mode='resident-v1', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
-        model_load_api=preparation.V1_MODEL_LOAD_API, model_load_apis=dict(preparation.V1_MODEL_LOAD_APIS),
+    manifest.update(execution_mode='resident-mixed', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+        model_load_api=preparation.MIXED_MODEL_LOAD_API, model_load_apis=dict(preparation.MIXED_MODEL_LOAD_APIS),
         resident_abi=_write(root / 'resident-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n'),
         prefill_abi=_write(root / 'prefill-abi.tsv', b'QWEN35_RESIDENT_ABI\t1\n'))
     (root / 'manifest.json').write_text(json.dumps(manifest))
@@ -880,7 +888,7 @@ def test_recovery_refuses_changed_new_v1_source_selection_before_transport(prepa
     else: state['model_load_api'] = 'legacy-buffer'
     checkpoint.write_text(json.dumps(state))
     recovered = transport.recover_board_serial(tmp_path / 'execution', tmp_path / 'recovery')
-    assert recovered['status'] == 'FAILED' and 'source representations' in recovered['error']
+    assert recovered['status'] == 'FAILED' and 'per-model APIs' in recovered['error']
     assert len(FakeHdc.instances) == 1
 
 
@@ -984,7 +992,7 @@ def _v1_compact(manifest):
     session_api, model_apis = preparation.v1_load_contract(manifest)
     life.update(model_load_api=session_api, target_v1_lifecycle=_v1_life('target', 8),
         draft_v1_lifecycle=_v1_life('draft', 7))
-    if manifest['target_lifecycle_policy'] == preparation.TARGET_LIFECYCLE_POLICY:
+    if manifest['target_lifecycle_policy'] == preparation.V1_TARGET_LIFECYCLE_POLICY:
         loop['model_load_apis'] = dict(model_apis)
     loop['prefill_lifecycle']['model_load_api'] = model_apis['prefill']
     for kind in ('target', 'draft'):
@@ -1005,12 +1013,64 @@ def _v1_compact(manifest):
     return loop, progress
 
 
+def _mixed_v2_life(runs, *, attempted=True):
+    return dict(weight_init_policy='INIT_BEFORE_WEIGHTS_NO_FALLBACK',
+        weight_cleanup_policy='MANAGER_DEINIT_ONLY_NO_SEPARATE_WEIGHT_UNLOAD',
+        external_weight_release='NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY', ordering_validation='NOT_VALIDATED_ON_DEVICE',
+        manager_init_attempted=attempted, manager_initialized=attempted, manager_init_status=0 if attempted else None,
+        weights_init_attempted=attempted, weights_initialized=attempted, weights_init_status=0 if attempted else None,
+        manager_deinit_called=attempted, manager_deinit_returned=attempted, weights_deinit_called=False,
+        weights_deinit_status=-1, closed=attempted, run_attempts=runs, successful_runs=runs, failure_stage='', cleanup_error='')
+
+
+def _mixed_compact(manifest):
+    old = deepcopy(manifest)
+    old.update(execution_mode='resident-v1', target_lifecycle_policy=preparation.V1_TARGET_LIFECYCLE_POLICY,
+        model_load_api=preparation.V1_MODEL_LOAD_API, model_load_apis=dict(preparation.V1_MODEL_LOAD_APIS))
+    loop, progress = _v1_compact(old)
+    loop.update(execution_mode='resident-mixed', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+        model_load_api=preparation.MIXED_MODEL_LOAD_API, model_load_apis=dict(preparation.MIXED_MODEL_LOAD_APIS),
+        external_weight_release='NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY', prefill_lifecycle=_mixed_v2_life(1))
+    life = loop['resident_lifecycle']; life.pop('target_v1_lifecycle')
+    life.update(model_load_api=preparation.MIXED_MODEL_LOAD_API, target_lifecycle=_mixed_v2_life(8),
+        target_model_name_scope='SDK_SETNAME_GETNAME_VALIDATED_BEFORE_INIT')
+    phases = loop['phase_latency']
+    for kind in ('prefill', 'prompt_ingest'):
+        phases[kind].update(timing_scope='PREFILL_V2_LOAD_RUN_CLOSE_WALL', native_api='Run')
+    phases['decode']['native_api'] = 'Run'
+    timing = loop['supervisor_timing']; timing['prefill_v2_total_ms'] = timing.pop('prefill_v1_total_ms')
+    return loop, progress
+
+
+@pytest.mark.parametrize('damage', [None, 'old-mode', 'old-api', 'separate-weight-close', 'fake-zero-status',
+    'deinit-not-returned', 'fabricated-close', 'release-claimed', 'draft-v2'])
+def test_mixed_compact_has_exact_api_and_experimental_manager_cleanup(prepared_request, tmp_path, damage):
+    root, manifest, _, _ = prepared_request; _enable_prefill_request(root, manifest, tmp_path)
+    manifest.update(dump=False, execution_mode='resident-mixed', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+        model_load_api=preparation.MIXED_MODEL_LOAD_API, model_load_apis=dict(preparation.MIXED_MODEL_LOAD_APIS),
+        resident_abi=dict(sha256='e' * 64), prefill_abi=dict(sha256='f' * 64))
+    loop, progress = _mixed_compact(manifest); target = loop['resident_lifecycle']['target_lifecycle']
+    if damage == 'old-mode': loop['execution_mode'] = 'resident-v1'
+    elif damage == 'old-api': loop['model_load_apis']['target'] = 'legacy-file'
+    elif damage == 'separate-weight-close': target['weights_deinit_called'] = True
+    elif damage == 'fake-zero-status': target['weights_deinit_status'] = 0
+    elif damage == 'deinit-not-returned': target['manager_deinit_returned'] = False
+    elif damage == 'fabricated-close': target.update(manager_init_attempted=False, manager_initialized=False, manager_init_status=None)
+    elif damage == 'release-claimed': target['external_weight_release'] = 'VALIDATED'
+    elif damage == 'draft-v2': loop['resident_lifecycle']['draft_v1_lifecycle']['model_load_api'] = 'file-v2'
+    out = tmp_path / 'mixed-evidence'; _compact_files(out, loop, progress)
+    if damage:
+        with pytest.raises(ValueError): transport.validate_retrieved_loop(manifest, out, _expected_evidence_kind='host-fake-hiai')
+    else:
+        assert transport.validate_retrieved_loop(manifest, out, _expected_evidence_kind='host-fake-hiai') == loop
+
+
 @pytest.mark.parametrize('damage', [None, 'v2-api', 'v2-policy', 'fake-child', 'wrong-prefill-abi',
     'missing-prefill', 'bool-status', 'process-count', 'unclosed-prefill', 'legacy-session-api',
     'target-api', 'prefill-api', 'draft-api', 'missing-api-map', 'mixed-api-map'])
 def test_all_v1_compact_is_explicit_without_v2_weight_or_child_evidence(prepared_request, tmp_path, damage):
     root, manifest, _, _ = prepared_request; _enable_prefill_request(root, manifest, tmp_path)
-    manifest.update(dump=False, execution_mode='resident-v1', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+    manifest.update(dump=False, execution_mode='resident-v1', target_lifecycle_policy=preparation.V1_TARGET_LIFECYCLE_POLICY,
         model_load_api=preparation.V1_MODEL_LOAD_API, model_load_apis=dict(preparation.V1_MODEL_LOAD_APIS),
         resident_abi=dict(sha256='e' * 64), prefill_abi=dict(sha256='f' * 64))
     loop, progress = _v1_compact(manifest)
@@ -1058,7 +1118,7 @@ def test_v1_recovery_requires_the_original_descriptor_policy(prepared_request, t
         resident_abi=dict(sha256='e' * 64), prefill_abi=dict(sha256='f' * 64))
     def choose(value, newer):
         if newer:
-            value.update(target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+            value.update(target_lifecycle_policy=preparation.V1_TARGET_LIFECYCLE_POLICY,
                 model_load_api=preparation.V1_MODEL_LOAD_API, model_load_apis=dict(preparation.V1_MODEL_LOAD_APIS))
         return value
     observed = choose(deepcopy(manifest), observed_new)
@@ -1076,7 +1136,7 @@ def test_v1_recovery_requires_the_original_descriptor_policy(prepared_request, t
 @pytest.mark.parametrize('historical', [False, True])
 def test_v1_prefill_init_or_descriptor_failure_before_resident_load_is_recoverable(prepared_request, tmp_path, failure, historical):
     root, manifest, _, _ = prepared_request; _enable_prefill_request(root, manifest, tmp_path)
-    manifest.update(dump=False, execution_mode='resident-v1', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+    manifest.update(dump=False, execution_mode='resident-v1', target_lifecycle_policy=preparation.V1_TARGET_LIFECYCLE_POLICY,
         model_load_api=preparation.V1_MODEL_LOAD_API, model_load_apis=dict(preparation.V1_MODEL_LOAD_APIS),
         resident_abi=dict(sha256='e' * 64), prefill_abi=dict(sha256='f' * 64))
     if historical:
@@ -1125,7 +1185,7 @@ def test_v1_prefill_init_or_descriptor_failure_before_resident_load_is_recoverab
 @pytest.mark.parametrize('kind', ['target', 'draft'])
 def test_failed_v1_constructor_preserves_successful_sdk_load_before_shape_failure(prepared_request, tmp_path, kind):
     root, manifest, _, _ = prepared_request; _enable_prefill_request(root, manifest, tmp_path)
-    manifest.update(dump=False, execution_mode='resident-v1', target_lifecycle_policy=preparation.TARGET_LIFECYCLE_POLICY,
+    manifest.update(dump=False, execution_mode='resident-v1', target_lifecycle_policy=preparation.V1_TARGET_LIFECYCLE_POLICY,
         model_load_api=preparation.V1_MODEL_LOAD_API, model_load_apis=dict(preparation.V1_MODEL_LOAD_APIS),
         resident_abi=dict(sha256='e' * 64), prefill_abi=dict(sha256='f' * 64))
     loop, _ = _v1_compact(manifest); life = loop['resident_lifecycle']
@@ -1145,14 +1205,17 @@ def test_failed_v1_constructor_preserves_successful_sdk_load_before_shape_failur
         transport._resident_lifecycle(loop, manifest, success=True)
 
 
-def test_build_selects_v1_supervisor_and_does_not_stage_unused_v2_runner(tmp_path, monkeypatch):
+@pytest.mark.parametrize('mode,name', [('resident-v1', 'qwen35_board_resident_v1'), ('resident-mixed', 'qwen35_board_resident_mixed')])
+def test_build_selects_supervisor_and_does_not_stage_unused_v2_runner(tmp_path, monkeypatch, mode, name):
     runner = tmp_path / 'native/build/qwen35_dflash_hiai'
     _write(runner, b'old-runner-only-build-anchor')
-    v1 = runner.with_name('qwen35_board_resident_v1'); _write(v1, b'new-all-v1-runtime')
+    v1 = runner.with_name(name); record = _write(v1, b'new-resident-runtime')
+    _write(tmp_path / 'native/result.json', json.dumps(dict(resident_binaries={name:
+        {key: record[key] for key in ('path', 'bytes', 'sha256')}})).encode())
     monkeypatch.setattr(transport, '_build_runner', lambda *args: runner)
     monkeypatch.setattr(transport, 'dynamic_info', lambda path: {})
     monkeypatch.setenv('BOARD_HIAI_LIB_DIR', '/system/lib64')
-    uploads, _, _ = transport._build_payloads(tmp_path, 10, resident='resident-v1')
+    uploads, _, _ = transport._build_payloads(tmp_path, 10, resident=mode)
     assert [(row['local'], row['remote']) for row in uploads] == [(str(v1), 'board-serial')]
     assert uploads[0]['sha256'] == hashlib.sha256(v1.read_bytes()).hexdigest()
 

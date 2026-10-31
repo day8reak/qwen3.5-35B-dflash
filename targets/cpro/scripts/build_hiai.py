@@ -106,10 +106,16 @@ def main():
                 print("HEADER " + name + "\n" + text, file=sys.stderr)
         raise
     binary = out/"build/qwen35_dflash_hiai"
+    resident_binaries = {}
+    for name in ("qwen35_board_resident", "qwen35_board_resident_v1", "qwen35_board_resident_mixed"):
+        path = out / "build" / name
+        if path.is_file():
+            resident_binaries[name] = {"path": str(path), "bytes": path.stat().st_size,
+                "sha256": sha256_file(path)}
     save_json(out/"result.json", {"status": "HEADERS_COMPILED" if args.headers_only else "LINKED",
         "native_build_type": "Release", "model_compilation": "NOT_RUN",
         "device_validation": "PENDING", "binary_sha256": sha256_file(binary) if binary.is_file() else None,
-        "command_sha256": sha256_file(out/"command.json")})
+        "command_sha256": sha256_file(out/"command.json"), "resident_binaries": resident_binaries})
     print(out)
 
 

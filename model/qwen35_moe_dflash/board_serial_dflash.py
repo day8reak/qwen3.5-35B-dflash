@@ -1,7 +1,7 @@
 """Prepare an autonomous board-local loop using the existing complete OMCs.
 
 The supervisor moves orchestration, original embedding row lookup, and all
-state/feature feedback onto the board. Resident legacy-V1 execution is an explicit
+state/feature feedback onto the board. Resident mixed-API execution is an explicit
 separate mode; neither mode is a speed/accuracy acceptance gate.
 """
 from __future__ import annotations
@@ -21,10 +21,13 @@ from .target_compile_failure import _read_small
 
 KIND = 'qwen35-board-serial-dflash-prepared'
 MAX_MANIFEST_BYTES = 64 << 20
-TARGET_LIFECYCLE_POLICY = 'legacy-v1-file-target-buffer-draft-v1'
+TARGET_LIFECYCLE_POLICY = 'v2-target-v1-draft-resident-v1'
+V1_TARGET_LIFECYCLE_POLICY = 'legacy-v1-file-target-buffer-draft-v1'
 HISTORICAL_V1_LIFECYCLE_POLICY = 'legacy-v1-load-process-unload-v1'
 V1_MODEL_LOAD_API = 'legacy-v1-mixed'
 V1_MODEL_LOAD_APIS = {'prefill': 'legacy-file', 'target': 'legacy-file', 'draft': 'legacy-buffer'}
+MIXED_MODEL_LOAD_API = 'target-v2-draft-v1'
+MIXED_MODEL_LOAD_APIS = {'prefill': 'file-v2', 'target': 'file-v2', 'draft': 'legacy-buffer'}
 V2_TARGET_LIFECYCLE_POLICY = 'init-before-weights-close-weights-first-v1'
 
 
@@ -37,13 +40,22 @@ def v1_load_contract(manifest):
         if 'model_load_api' in manifest or 'model_load_apis' in manifest:
             raise ValueError('historical V1 preparation cannot adopt a new model source representation')
         return 'legacy-buffer', dict.fromkeys(('prefill', 'target', 'draft'), 'legacy-buffer')
-    if (policy != TARGET_LIFECYCLE_POLICY or manifest.get('model_load_api') != V1_MODEL_LOAD_API
+    if (policy != V1_TARGET_LIFECYCLE_POLICY or manifest.get('model_load_api') != V1_MODEL_LOAD_API
             or manifest.get('model_load_apis') != V1_MODEL_LOAD_APIS):
         raise ValueError('prepared V1 model source policy requires exact file target and buffer draft bindings')
     return V1_MODEL_LOAD_API, dict(V1_MODEL_LOAD_APIS)
 
 
-def _resident_abi(binding, runtime_probe, output, *, prefix='target'):
+def mixed_load_contract(manifest):
+    if (manifest.get('execution_mode') != 'resident-mixed'
+            or manifest.get('target_lifecycle_policy') != TARGET_LIFECYCLE_POLICY
+            or manifest.get('model_load_api') != MIXED_MODEL_LOAD_API
+            or manifest.get('model_load_apis') != MIXED_MODEL_LOAD_APIS):
+        raise ValueError('mixed residency requires explicit V2 prefill/target and V1 embedded-draft APIs')
+    return MIXED_MODEL_LOAD_API, dict(MIXED_MODEL_LOAD_APIS)
+
+
+def _resident_abi(binding, runtime_probe, output, *, prefix='target', runtime_api='legacy-v1'):
     """Pin actual selected-HIAI descriptors; never infer shapes from byte counts."""
     from .target_prefill_smoke_plan import _runtime_keys, _WIDTHS, _TOOL_TYPES
     base = binding['base_plan']; records = {row['path']: row['identity'] for row in binding['active_source_identities']}
@@ -83,7 +95,8 @@ def _resident_abi(binding, runtime_probe, output, *, prefix='target'):
     return {**_hash_source(output), 'descriptor_source': dict(observed, identity=records[str(source)]),
         'inputs': descriptors['inputs'], 'outputs': descriptors['outputs'],
         'descriptor_provenance': 'HISTORICAL_FILE_V2_NAMED_MODEL_IO_PROBE',
-        'runtime_validation': 'V1_SLOT_SHAPE_AND_BYTE_EXTENT_REQUIRED_NO_SDK_TENSOR_NAME_CLAIM',
+        'runtime_validation': ('V2_NAMED_RAW_DESCRIPTOR_AND_BYTE_EXTENT_REQUIRED' if runtime_api == 'file-v2'
+            else 'V1_SLOT_SHAPE_AND_BYTE_EXTENT_REQUIRED_NO_SDK_TENSOR_NAME_CLAIM'),
         'scope': 'ACTUAL_NAMED_HIAI_RAW_ENUM_AND_FIXED_SHAPE_DESCRIPTORS'}
 
 
@@ -118,7 +131,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
     if type(dump) is not bool or type(resident) is not bool:
         raise ValueError('dump/resident must be explicit booleans')
     if resident and prefill_feedback is None:
-        raise ValueError('resident-v1 requires the bound original prefill feedback mapping')
+        raise ValueError('resident-mixed requires the bound original prefill feedback mapping')
     if (not isinstance(board_model_root, str)
             or not re.fullmatch(r'/[A-Za-z0-9_./-]+', board_model_root)
             or any(part in {'.', '..'} for part in PurePosixPath(board_model_root).parts)):
@@ -134,7 +147,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
         source_torchair_pb2=source_torchair_pb2, board_model_root=board_model_root,
         timeout_seconds=timeout_seconds, lock_wait_seconds=lock_wait_seconds)
     target_preflight = target.preflight(prompt)
-    resident_abi = _resident_abi(target.binding, runtime_probe, out / 'resident-abi.tsv') if resident else None
+    resident_abi = _resident_abi(target.binding, runtime_probe, out / 'resident-abi.tsv', runtime_api='file-v2') if resident else None
     draft = Draft(draft_bundle, out / 'draft-binding', runtime_version=target.runtime_version,
         firmware_id=target.firmware_id, timeout_seconds=timeout_seconds,
         lock_wait_seconds=lock_wait_seconds)
@@ -149,7 +162,7 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
     if resident:
         prefill_abi = _resident_abi({'base_plan': prefill['base_plan'],
             'active_source_identities': prefill['source_bindings']},
-            prefill['base_plan']['runtime_probe'], out / 'prefill-abi.tsv', prefix='prefill')
+            prefill['base_plan']['runtime_probe'], out / 'prefill-abi.tsv', prefix='prefill', runtime_api='file-v2')
     if (draft._source['ddk_id'] != base['ddk_id']
             or draft._source['outputs'] != [
                 {'index': 0, 'name': 'draft_top1', 'dtype': 'int32', 'shape': [1, 15]},
@@ -227,11 +240,12 @@ def prepare_board_serial(*, decode_job, runtime_probe, state_lineage, source_tor
     else:
         manifest['prompt_ingestion'] = 'DECODE1_SERIAL_PROMPT_INGESTION'
     if resident:
-        manifest.update(execution_mode='resident-v1', resident_abi=resident_abi, prefill_abi=prefill_abi,
+        manifest.update(execution_mode='resident-mixed', resident_abi=resident_abi, prefill_abi=prefill_abi,
             target_lifecycle_policy=TARGET_LIFECYCLE_POLICY,
-            model_load_api=V1_MODEL_LOAD_API, model_load_apis=dict(V1_MODEL_LOAD_APIS),
-            orchestration='BOARD_LOCAL_SINGLE_PROCESS_LEGACY_V1_PREFILL_DECODE_AND_DRAFT',
-            model_residency='REQUESTED_LEGACY_V1_PREFILL_ONCE_DECODE_AND_DRAFT_LOADED_ONCE_UNVALIDATED')
+            model_load_api=MIXED_MODEL_LOAD_API, model_load_apis=dict(MIXED_MODEL_LOAD_APIS),
+            external_weight_release='NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY',
+            orchestration='BOARD_LOCAL_SINGLE_PROCESS_V2_PREFILL_TARGET_V1_DRAFT',
+            model_residency='REQUESTED_V2_PREFILL_ONCE_V2_DECODE_AND_V1_DRAFT_LOADED_ONCE_UNVALIDATED')
     save_json(out / 'manifest.json', manifest)
     (out / 'manifest.sha256').write_text(sha256_file(out / 'manifest.json') + '\n')
     return validate_prepared(out)
@@ -257,11 +271,13 @@ def validate_prepared(directory):
     if type(manifest.get('dump', True)) is not bool:
         raise ValueError('prepared dump mode must be boolean')
     mode = manifest.get('execution_mode', 'fresh-process')
-    if mode not in {'fresh-process', 'resident-v2', 'resident-v1'}:
+    if mode not in {'fresh-process', 'resident-v2', 'resident-v1', 'resident-mixed'}:
         raise ValueError('prepared execution mode is unsupported')
-    if mode in {'resident-v2', 'resident-v1'}:
+    if mode in {'resident-v2', 'resident-v1', 'resident-mixed'}:
         if mode == 'resident-v1':
             v1_load_contract(manifest)
+        elif mode == 'resident-mixed':
+            mixed_load_contract(manifest)
         elif manifest.get('target_lifecycle_policy', V2_TARGET_LIFECYCLE_POLICY) != V2_TARGET_LIFECYCLE_POLICY:
             raise ValueError('prepared resident target lifecycle policy is unsupported')
         abi = manifest.get('resident_abi', {})
@@ -269,19 +285,19 @@ def validate_prepared(directory):
                 or _hash_source(abi['path']) != {key: abi[key] for key in ('path', 'bytes', 'sha256', 'identity')}
                 or len(abi.get('inputs', [])) != 89 or len(abi.get('outputs', [])) != 82):
             raise ValueError('prepared resident ABI changed or is incomplete')
-        if mode == 'resident-v1':
+        if mode in {'resident-v1', 'resident-mixed'}:
             abi = manifest.get('prefill_abi', {})
             if (abi.get('path') != str(root / 'prefill-abi.tsv')
                     or _hash_source(abi['path']) != {key: abi[key] for key in ('path', 'bytes', 'sha256', 'identity')}
                     or len(abi.get('inputs', [])) != 89 or len(abi.get('outputs', [])) != 82):
-                raise ValueError('prepared V1 prefill ABI changed or is incomplete')
+                raise ValueError('prepared same-process prefill ABI changed or is incomplete')
     elif 'resident_abi' in manifest:
         raise ValueError('resident ABI cannot be attached to a legacy request')
-    if 'prefill_abi' in manifest and mode != 'resident-v1':
+    if 'prefill_abi' in manifest and mode not in {'resident-v1', 'resident-mixed'}:
         raise ValueError('V1 prefill ABI cannot be attached to a historical request')
-    if 'target_lifecycle_policy' in manifest and mode not in {'resident-v2', 'resident-v1'}:
+    if 'target_lifecycle_policy' in manifest and mode not in {'resident-v2', 'resident-v1', 'resident-mixed'}:
         raise ValueError('target lifecycle policy belongs only to an explicit resident request')
-    if mode != 'resident-v1' and any(key in manifest for key in ('model_load_api', 'model_load_apis')):
+    if mode not in {'resident-v1', 'resident-mixed'} and any(key in manifest for key in ('model_load_api', 'model_load_apis')):
         raise ValueError('V1 model source representation cannot be attached to another execution mode')
     for row in manifest['source_bindings']:
         if _current(row['path'])[1] != row['identity']:
@@ -306,14 +322,14 @@ def make_config(manifest, remote_paths):
     files = {'target_model': manifest['target_model'], 'draft_model': manifest['draft']['model_source'],
         'draft_abi': manifest['draft']['abi'],
         'weight_table': manifest['tables']['weight'], 'scale_table': manifest['tables']['scale']}
-    if manifest.get('execution_mode') != 'resident-v1':
+    if manifest.get('execution_mode') not in {'resident-v1', 'resident-mixed'}:
         files.update(target_tool=remote_paths['target_tool_record'], draft_runner=remote_paths['draft_runner_record'])
     if 'prefill' in manifest:
         files['prefill_model'] = manifest['prefill']['model']
-    resident = manifest.get('execution_mode') in {'resident-v2', 'resident-v1'}
+    resident = manifest.get('execution_mode') in {'resident-v2', 'resident-v1', 'resident-mixed'}
     if resident:
         files['resident_abi'] = manifest['resident_abi']
-    if manifest.get('execution_mode') == 'resident-v1':
+    if manifest.get('execution_mode') in {'resident-v1', 'resident-mixed'}:
         files['prefill_abi'] = manifest['prefill_abi']
     for key, record in files.items():
         path = str(remote_paths[key])
@@ -337,6 +353,8 @@ def make_config(manifest, remote_paths):
             policy = manifest['target_lifecycle_policy']
             if manifest['execution_mode'] == 'resident-v1':
                 v1_load_contract(manifest)
+            elif manifest['execution_mode'] == 'resident-mixed':
+                mixed_load_contract(manifest)
             elif policy != V2_TARGET_LIFECYCLE_POLICY:
                 raise ValueError('unsupported resident target lifecycle policy')
             lines.append('target_lifecycle_policy\t' + policy)
@@ -379,11 +397,15 @@ def run_board_serial_dflash(*, output, apply=False, detach=False, **options):
         result['prepared'] = manifest['output']
         result['dump'] = manifest.get('dump', True)
         result['prompt_ingestion'] = manifest['prompt_ingestion']
-        if manifest.get('execution_mode') in {'resident-v2', 'resident-v1'}:
+        if manifest.get('execution_mode') in {'resident-v2', 'resident-v1', 'resident-mixed'}:
             result['execution_mode'] = manifest['execution_mode']
         if manifest.get('execution_mode') == 'resident-v1':
             result['target_lifecycle_policy'] = manifest['target_lifecycle_policy']
             result['model_load_api'], result['model_load_apis'] = v1_load_contract(manifest)
+        elif manifest.get('execution_mode') == 'resident-mixed':
+            result['target_lifecycle_policy'] = manifest['target_lifecycle_policy']
+            result['model_load_api'], result['model_load_apis'] = mixed_load_contract(manifest)
+            result['external_weight_release'] = 'NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY'
         result['retrieval_mode'] = 'FULL_DEBUG' if result['dump'] else 'FINAL_TOKENS_ONLY'
         if apply:
             from .board_serial_transport import execute_board_serial

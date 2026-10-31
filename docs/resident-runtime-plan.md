@@ -1,36 +1,35 @@
-# 板端统一 V1 常驻执行
+# 板端混合接口常驻执行
 
-更新：2026-10-30。用户明确要求prefill、decode、draft的新执行接口全部使用V1。此前V2加载两次成功但关闭失败，用户随后提供官方弃用说明；V2路线保留为历史诊断和恢复，最新命令见[当前入口](current-status.md)。
+更新：2026-10-31。用户已明确允许prefill／decode用V2、完整六层embedded draft用V1，优先推进常驻。全V1候选的HCL空buffer失败保留，当前命令见[current-status.md](current-status.md)。
 
 ## 单线程生命周期
 
 ```text
 板端进程
-  prefill V1：Init → Load一次 → Process一次 → UnLoadModel → 释放
-  decode  V1：Init → Load一次 ─┐
-  draft   V1：Init → Load一次 ─┤交替多次Process → 各自UnLoadModel → 释放
+  prefill V2：RestoreFromFile → Init → InitWeights → Run一次 → DeInit → 释放
+  decode  V2：RestoreFromFile → Init → InitWeights ─┐
+  draft   V1：Init → SetModelBuffer → Load一次 ────┤交替多次Run／Process
+  结束：draft UnLoadModel并释放 → decode DeInit并释放
 ```
 
-同一执行线程操作各自独立的模型管家，不跨线程共享；每个实例只调用一次Load，不用异步队列。每实例只装一个模型，prefill结束才创建两个常驻实例。符合用户提供的单实例Load一次、同步最多63模型、APP最多256实例约束；异步31模型／512队列限制不涉及本路线。
-
-prefill也使用native V1执行，原V2模型工具不参与新请求。服务器只做部署、启动与最终回收。读取embedding表、候选生成、decode1 verify、接受／纠正、状态与特征更新都在板端，模型只加载一次，不在每轮卸载。
+prefill释放后才加载常驻二模型，不并行加载卸载。每个实例仅加载一次，不跨线程共享、无异步队列。模型中途失败停止推进，保留首个错误及清理异常，不重试加载、不自动切换API。所有热路径工作在板端，服务器只部署、启动和最终回收。
 
 ## 模型与输入输出
 
-复用原prefill64、decode1和六层draft S64的三个OMC及权重，均不重编。target维持原89输入／82输出和80状态映射；draft维持3输入／2输出、15候选、最多考虑K=2的逐token验证。短prompt控制及P+G<=64容量边界不变。
+复用原prefill64、decode1、draft S64三个OMC及权重，均不重编。target原89输入／82输出、80状态映射保持；draft3输入／2输出，每次15候选，最多考虑前K=2。物理S64、短prompt实验控制与P+G<=64容量限制不变，不新增draft KV ABI。
 
-V1加载沿用已有legacy路径的模型描述和映射读取；保持原OMC绝对路径及邻接的外置权重文件。不得拼接权重进OMC、暗改weight目录或在失败时切V2。外置target在这条V1路径能否正确加载仍是实机待验证项。
+V2 prefill／decode分别绑定自己的named ABI并逐槽核对name、dtype、format、shape及字节数；不把decode1描述符用于prefill64。V1 draft使用已有完整embedded buffer路径，保留模型buffer到Unload结束。检查两实例tensor区间不重叠且反复调用中不变；输入／输出和状态仍采用独立副本，不宣称零拷贝。
 
-两套target ABI来自已经绑定的源图及历史runtime描述符，新V1分别核对实际描述符shape、format、dtype对应分配与字节数。历史V2元数据只能作为来源；V1接口未给出的tensor名称或dtype不能标成V1已观察。相同尺寸不足以证明不同state层语义，保留原逐slot映射和实验范围。
+## V2关闭策略及限制
 
-所有buffer由各自模型实例持有，Process同步返回后检查输出对象/地址与实际输入读回。80状态和特征仍采用独立副本及板端私有文件，不在本次生命周期迁移中引入零拷贝。
+新mixed请求在构造前选择 `ManagerDeinitOnly`，准确输出 `MANAGER_DEINIT_ONLY_NO_SEPARATE_WEIGHT_UNLOAD`。调用DeInit后才销毁manager，随后释放built model与tensor对象；部分初始化失败也按同一所有权范围清理。called与returned分开记录；void接口不伪造status0。未调用DeinitWeights则called=false、status=-1，历史返回1／3不改写。
 
-## 结果、失败与验证
+这是一条明确的实验策略，不能宣称私有InitWeights的全部权重已被独立证明释放。报告保留 `external_weight_release=NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY`。DeInit抛异常仍报告失败，析构不再次重试。旧V2 probe保持原显式weight-unload顺序，历史回执按原合同验证。
 
-新结果明确标注resident-v1和V1 lifecycle policy，记录各模型Init、Load、Process、Unload尝试/结果及耗时。同实例不重复Load；清理失败仍保留错误且不重复卸载。任一运行失败停止推进，不回退V2。
+prefill加载前／加载后／关闭后，以及常驻pair加载前／加载后／关闭后记录RSS/HWM与系统MemAvailable。它们是诊断观察，不能直接换算为NPU显存或作为权重释放PASS。
 
-prefill是同进程的一次调用，不再伪造子进程PID/退出码。decode和draft的计时排除一次性加载/关闭，保留输入复制、输出读回和校验的实际范围；不是纯NPU计时。默认只返回最终token、接受率、时延与进程RSS摘要；dump启用时保留逐步证据。
+## 报告与验证
 
-验证顺序为主机生命周期/失败回归，随后用户实机首次V1初始化、prefill→decode/draft多轮、与旧成功token对照，再做重复请求内存与性能。主机fake SDK结果不证明真实外置权重兼容、精度或加速。
+`execution_mode=resident-mixed`，`model_load_api=target-v2-draft-v1`，三模型source API分别file-v2／file-v2／legacy-buffer。真实manager调用与wrapper计数分别保留；prefill是本进程一次调用，无虚构子进程PID。普通输出仍为最终token、接受率和prefill/decode/draft时延；运行时间包含复制、读回、哈希检查，排除常驻模型的一次性加载/关闭，不能称纯NPU推理时间。
 
-旧V2/fresh-process请求仍按原schema、参数、PID和哈希回收，不把旧V2结果冒充V1。原成功基线见[记录](board-prefill-first-completion.md)，V2历史验证见[记录](board-resident-validation.md)，新的V1验证见[V1记录](resident-v1-validation.md)。
+主机测试验证调度、持有期及错误处理，随后用户直接跑完整板端候选，对照旧同输入token与调用计数，再验重复请求内存和性能。首次实机闭环尚未回传前不宣称mixed常驻、清理、数值或加速通过。旧请求仍按原schema和配置恢复，原成功P0基线见[记录](board-prefill-first-completion.md)。

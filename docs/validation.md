@@ -1,3 +1,15 @@
+<a id="resident-mixed-candidate"></a>
+
+## 2026-10-31：用户授权 V2 target／V1 draft 混合常驻候选
+
+在当前HCL的V1 path-only失败及工具头文件调查之后，用户明确回复“允许混合接口，优先推进常驻”。新 `--resident` 准备独立 `resident-mixed` 请求：本进程V2 prefill64执行一次并关闭，随后V2 decode1与V1完整embedded draft各加载一次并反复交替运行。绑定三份原OMC、权重和独立prefill／decode named ABI；未编译模型或改变算法／控制。旧V1、V2、逐次进程请求仍按原策略恢复，失败不会自动换接口。
+
+V2初始化保持已有设备Init→InitWeights均返回0的顺序。新请求在加载前固定 `ManagerDeinitOnly` 关闭策略，DeInit后销毁manager，再释放built model和tensor；它不调用单独DeinitWeights，不将未调用的返回码伪造成0，也不吞掉历史1／3错误。DeInit的called／returned分别记录；异常仍清理并失败，不重复关闭。官方[V2模型管家索引](https://developer.huawei.com/consumer/cn/doc/hiai-References/model-manager-class-0000001139115907)只确认DeInit是公开接口，未取得证明私有InitWeights资源所有权的正文。因此保留 `external_weight_release=NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY`，不宣称外置权重释放已修复或实机验证。
+
+新native目标和每模型API随manifest／config／返回摘要绑定；compact及dump均校验实际API计数和关闭事实。新增prefill加载前后及关闭后的RSS/HWM／MemAvailable快照，均不是专用NPU显存或释放证明。主机fake验证持有期、调度、跨模型buffer重叠拒绝和失败传播，不能证明实际DDK加载、模型数值或性能。具体测试及源码快照见[混合候选验证](../specs/resident-mixed-host-validation.json)。
+
+本轮186项Python单元测试通过，18组native CTest通过；完整C++ mixed runner生成的7个唯一场景已通过主机验证。首次联测有两项在新增恢复测试夹具中缺AI_RUN_DIR，补齐后仅补跑对应两个场景并通过，原5通过／2失败的XML与补跑2通过的XML均保留。两项恢复实际执行本地文件系统上的shell锁／PID／哈希检查，未使用设备HDC；成功回收及生成完成后关闭失败均不重启或上传。实际内部SDK编译、加载和双模型常驻留待用户完整板端请求。
+
 <a id="resident-v1-hcl-file-load-failure"></a>
 
 ## 2026-10-31：原40层 V1 FILE_ONLY 在 HCL Load 被空buffer拒绝

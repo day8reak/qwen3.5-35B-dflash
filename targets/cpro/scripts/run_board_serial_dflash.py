@@ -30,7 +30,7 @@ def main(argv=None):
     parser.add_argument('--dump', action='store_true', default=None,
         help='Retain debug tensors/receipts on board and retrieve detailed evidence; default returns final tokens/status only')
     parser.add_argument('--resident', action='store_true', default=None,
-        help='Required for new runs: V1 prefill once, then same-thread V1 decode+draft residency; historical V2 requests are recover-only')
+        help='Required for new runs: V2 prefill once, resident V2 decode and V1 embedded draft; historical policies are recover-only')
     args = parser.parse_args(argv)
     if args.recover:
         if args.apply or args.detach or args.dump is not None or args.resident is not None or args.prefill_feedback is not None or any(getattr(args, name.replace('-', '_')) is not None for name in required):
@@ -38,7 +38,7 @@ def main(argv=None):
     elif any(getattr(args, name.replace('-', '_')) is None for name in required):
         parser.error('new runs require ' + ', '.join('--' + name for name in required))
     elif not args.resident:
-        parser.error('new runs require --resident for the explicit all-V1 runtime; old modes support historical --recover only')
+        parser.error('new runs require --resident for explicit mixed-API residency; old modes support historical --recover only')
     elif args.detach and not args.apply:
         parser.error('--detach requires --apply')
     try:
@@ -61,6 +61,7 @@ def main(argv=None):
             'lock_state', 'error', 'next', 'prepared', 'board_result')
     keys += ('dump', 'retrieval_mode', 'evidence_scope', 'acceptance', 'phase_latency', 'supervisor_timing', 'prompt_ingestion')
     keys += ('execution_mode', 'model_load_api', 'model_load_apis', 'resident_lifecycle', 'resident_memory', 'target_lifecycle_policy')
+    keys += ('external_weight_release',)
     keys += ('execution_failure_stage', 'resident_failure_stage', 'prefill_failure_stage', 'prefill_lifecycle')
     print(json.dumps({key: result[key] for key in keys if key in result}, ensure_ascii=False, allow_nan=False), flush=True)
     return 0 if result.get('status') in {'BOARD_SERIAL_DFLASH_PLANNED', 'BOARD_SERIAL_DFLASH_STARTED',

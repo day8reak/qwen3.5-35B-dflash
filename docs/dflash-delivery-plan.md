@@ -1,6 +1,6 @@
 # Qwen3.5-35B DFlash 后续执行计划与交接
 
-更新：2026-10-30。旧主机联调基线：`4ea1c105c66b5014c2c1260ad9f757a096c38028`；当前端侧自主实现见本提交。
+更新：2026-10-31。旧主机联调基线：`4ea1c105c66b5014c2c1260ad9f757a096c38028`；当前端侧自主实现见本提交。
 
 本文件是后续执行助手的总计划。机器可读进度见 [dflash-execution-state.json](../specs/dflash-execution-state.json)，立即可运行的命令见 [current-status.md](current-status.md)。每次接手先读这三份；旧验证记录用于查证，不按历史记录重新跑一遍。
 
@@ -27,7 +27,7 @@
 
 下面各阶段工时是局部估计，有重叠，**不要把它们再加到累计时间上**。每次完成一个阶段，应按实际耗时和新发现更新剩余估计。
 
-用户最新调整：P0执行已完成，先推进P5的V1统一与常驻工程，再完成P1/P2精度验收；这不提前宣布性能收益或取消后续依赖。
+用户最新调整：P0执行已完成，先推进P5的混合接口常驻工程，再完成P1/P2精度验收；这不提前宣布性能收益或取消后续依赖。
 
 ## 3. 当前真实进展
 
@@ -152,11 +152,11 @@ P0 已实现根据该映射交接实际状态、从本次 prefill logits 查原 
 
 **局部预算：0.5–2天。完整验收依赖正确普通baseline；按用户最新要求，接口适配与主机检查提前到P0期间并行。**
 
-具体生命周期和实机待验项见[常驻执行方案](resident-runtime-plan.md)。用户在两次V2显式卸载失败后提供官方弃用说明，要求新执行全部改V1；旧请求只按原格式恢复，不自动切换接口。既有prefill、decode和draft OMC及权重均保留。
+具体生命周期和实机待验项见[常驻执行方案](resident-runtime-plan.md)。全V1 path-only候选被所选HCL拒绝后，用户明确允许prefill／decode V2与embedded draft V1混合，优先推进常驻。旧请求只按原配置恢复；既有三个OMC及权重均保留。
 
 P0已经要求端侧自主完整循环；旧主机每步HDC路径仅保留为联调。此阶段优化板端逐次子进程加载和文件交接，不能把这些开销计入DFlash算法收益。先分解模型load／Process／板端状态文件IO／调度／一次部署与最终回收成本。
 
-新请求使用显式 `--resident`、`execution_mode=resident-v1`：同一线程先创建独立V1 prefill实例，Load／Process／Unload各一次并释放；随后创建独立decode和draft V1实例，各Load一次，交替同步Process，循环结束各Unload一次。同一实例不重试Load、不跨线程共享，不使用异步队列。prefill也由本进程V1直接执行，不调用旧V2工具。主机替身检查完成后，用户直接运行完整板端DFlash；不增加load-only试跑。target外置权重解析、真实V1 ABI和两模型常驻仍由这次实机验证。
+新请求使用显式 `--resident`、`execution_mode=resident-mixed`：同一线程执行V2 prefill一次并关闭，再各加载一个V2 decode与V1 draft实例，交替Run／Process。循环结束关闭两个实例，无逐token主机交互或模型子进程。V2明确选择manager-only关闭的新实验策略，不独立调用DeinitWeights，标记外权重释放尚未独立验证；DeInit异常仍失败。主机检查后直接完整板端测试，不增加load-only试跑，也不把mixed接口或替身测试当成常驻已通过。
 
 首次常驻版本保留 80 状态私有文件／输出副本、完整 prefix 特征与原 S64 draft；不引入新的 draft KV ABI，也不宣称零拷贝。之后再根据测量优化内存 bank 和文件 I/O。常规只回收 token／小摘要，`--dump` 保留详细证据。加载／Run／关闭时延分开，RSS 不等于专用 NPU 内存。
 
@@ -249,7 +249,7 @@ decode1串行verify仍对每个已提交token运行target，主要是正确性�
 
 可直接复制给后续模型：
 
-> 请先读取 docs/dflash-delivery-plan.md、specs/dflash-execution-state.json 和 docs/current-status.md。P0原prefill→draft／串行verify→多轮generation已由用户实机完成。当前按用户要求推进P5统一V1常驻；P1/P2精度仍待验收，不要求重复已经成功的逐次加载请求。不要自动指定S128，也不要裁历史或以串行prompt替代原prefill。按计划完成常规修复、验证、提交／推送和远端命令交付，保持旧成功产物。禁止用host测试或有限值冒称设备精度／加速通过。每次结束更新阶段状态、证据和一条下一动作；遇到计划第7节情况，保留最小复现，向用户汇报以便重新规划。
+> 请先读取 docs/dflash-delivery-plan.md、specs/dflash-execution-state.json 和 docs/current-status.md。P0原prefill→draft／串行verify→多轮generation已由用户实机完成。当前按用户明确许可推进P5混合接口常驻（prefill/decode V2，draft V1）；P1/P2精度仍待验收，不要求重复已经成功的逐次加载请求。不要自动指定S128，也不要裁历史或以串行prompt替代原prefill。按计划完成常规修复、验证、提交／推送和远端命令交付，保持旧成功产物。禁止用host测试或有限值冒称设备精度／加速通过。每次结束更新阶段状态、证据和一条下一动作；遇到计划第7节情况，保留最小复现，向用户汇报以便重新规划。
 
 每次交接更新状态JSON，并用以下格式简报：
 

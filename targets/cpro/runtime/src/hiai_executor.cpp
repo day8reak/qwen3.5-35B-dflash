@@ -936,6 +936,8 @@ struct HiaiOriginalTargetExecutor::Impl {
   std::string version, stage = "VALIDATE_ORIGINAL_TARGET_CONTRACT";
   HiaiIoDiagnostic diagnostic;
   HiaiOriginalTargetLifecycle lifecycle;
+  HiaiOriginalTargetCleanupPolicy cleanup_policy =
+      HiaiOriginalTargetCleanupPolicy::ExplicitWeightsBeforeManager;
   bool outputs_available = false, poisoned = false;
 
   void Stage(const char* value) {
@@ -1028,7 +1030,8 @@ struct HiaiOriginalTargetExecutor::Impl {
       if (!cleanup_error.empty()) cleanup_error += "; ";
       cleanup_error += message;
     };
-    if (manager && lifecycle.weights_initialized) {
+    if (manager && lifecycle.weights_initialized &&
+        cleanup_policy == HiaiOriginalTargetCleanupPolicy::ExplicitWeightsBeforeManager) {
       Stage("EXTERNAL_WEIGHTS_DEINIT");
       lifecycle.weights_deinit_called = true;
       try {
@@ -1043,12 +1046,12 @@ struct HiaiOriginalTargetExecutor::Impl {
     if (manager && lifecycle.manager_init_attempted) {
       Stage("MODEL_MANAGER_DEINIT");
       lifecycle.manager_deinit_called = true;
-      try { manager->DeInit(); }
+      try { manager->DeInit(); lifecycle.manager_deinit_returned = true; }
       catch (const std::exception& e) { append_error(e.what()); }
       catch (...) { append_error("unknown DeInit exception"); }
     }
-    // Keep restored model and all tensors alive until BOTH cleanup APIs and the
-    // manager destructor have finished, including construction/Run failures.
+    // Keep restored model and all tensors alive through the selected cleanup
+    // calls and manager destruction, including construction/Run failures.
     manager.reset();
     built_model.reset();
     input_ptrs.clear(); output_ptrs.clear(); inputs.clear(); outputs.clear();
@@ -1104,7 +1107,14 @@ HiaiOriginalTargetExecutor::HiaiOriginalTargetExecutor(
     const std::filesystem::path& model, const std::filesystem::path& weight_directory,
     const std::string& expected_version, const std::vector<HiaiBoundRuntimeTensor>& inputs,
     const std::vector<HiaiBoundRuntimeTensor>& outputs, const std::string& resident_model_name,
-    HiaiOriginalTargetLifecycle* constructor_failure_snapshot) : impl_(std::make_unique<Impl>()) {
+    HiaiOriginalTargetLifecycle* constructor_failure_snapshot,
+    HiaiOriginalTargetCleanupPolicy cleanup_policy) : impl_(std::make_unique<Impl>()) {
+  if (cleanup_policy != HiaiOriginalTargetCleanupPolicy::ExplicitWeightsBeforeManager &&
+      cleanup_policy != HiaiOriginalTargetCleanupPolicy::ManagerDeinitOnly)
+    throw std::invalid_argument("unknown original target cleanup policy");
+  impl_->cleanup_policy = cleanup_policy;
+  if (cleanup_policy == HiaiOriginalTargetCleanupPolicy::ManagerDeinitOnly)
+    impl_->lifecycle.weight_cleanup_policy = "MANAGER_DEINIT_ONLY_NO_SEPARATE_WEIGHT_UNLOAD";
   auto snapshot_failure = [&](const std::string& original_stage) {
     impl_->lifecycle.failure_stage = original_stage;
     // A constructor that throws never yields an executor for the caller to

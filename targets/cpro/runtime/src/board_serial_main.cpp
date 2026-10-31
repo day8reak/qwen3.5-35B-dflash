@@ -1,7 +1,7 @@
 // Board-local original40 / full6 serial DFlash execution smoke.
 // No network, model compilation, speculative state, or numerical acceptance.
 #include "qwen35_dflash/sha256.hpp"
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
 #include "qwen35_dflash/resident_session.hpp"
 #endif
 #include <algorithm>
@@ -39,8 +39,12 @@ constexpr const char* kEvidence = "host-fake-hiai";
 constexpr const char* kEvidence = "device-hiai";
 #endif
 constexpr std::size_t kVocab=248320, kWidth=16384, kFeatureBytes=32768;
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
-#ifdef QWEN35_RESIDENT_V1
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
+#if defined(QWEN35_RESIDENT_MIXED)
+constexpr const char* kResidentMode="resident-mixed";
+constexpr const char* kTargetLifecyclePolicy="v2-target-v1-draft-resident-v1";
+constexpr const char* kResidentLoadApi="target-v2-draft-v1";
+#elif defined(QWEN35_RESIDENT_V1)
 constexpr const char* kResidentMode="resident-v1";
 constexpr const char* kTargetLifecyclePolicy="legacy-v1-file-target-buffer-draft-v1";
 constexpr const char* kResidentLoadApi="legacy-v1-mixed";
@@ -171,11 +175,11 @@ struct Tensor {std::uint32_t index;std::string name,type;std::uint64_t bytes;};
 struct State {std::string ref;std::uint32_t in,out;std::uint64_t bytes;};
 struct PrefillState {std::string decode_ref,ref;std::uint32_t in,out;std::uint64_t bytes;};
 struct Config {std::map<std::string,File> files;std::map<std::string,std::string> strings;std::vector<Tensor> inputs,outputs,prefill_inputs,prefill_outputs;std::vector<State> states;std::vector<PrefillState> prefill_states;std::vector<std::uint32_t> prompt;std::uint32_t maxnew=0,k=0,minrounds=0,timeout=0;std::uint64_t startup_hash_ms=0;bool dump=true,prefill=false;Clock::time_point started=Clock::now();File config;
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
   std::vector<qwen35::dflash::HiaiBoundRuntimeTensor> resident_inputs,resident_outputs,prefill_bound_inputs,prefill_bound_outputs;
 #endif
 };
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
 void ReadRuntimeAbi(Config& c,const std::string& key,const std::string& role,
     const std::vector<Tensor>& input_wire,const std::vector<Tensor>& output_wire,
     std::vector<qwen35::dflash::HiaiBoundRuntimeTensor>& bound_inputs,
@@ -203,9 +207,9 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
   Require(!lines.empty()&&lines[0]=="QWEN35_BOARD_SERIAL\t1","config header mismatch");
   std::set<std::string> filekeys={"target_model","prefill_model","draft_model","draft_abi","target_tool","draft_runner","weight_table","scale_table"};
   std::set<std::string> strkeys={"target_library_path","draft_library_path","runtime_version","ddk_id","firmware_id","prompt","max_new_tokens","max_proposals","min_draft_rounds","timeout_ms"};
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
   filekeys.insert("resident_abi");
-#ifdef QWEN35_RESIDENT_V1
+#if defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
   filekeys.erase("target_tool");filekeys.erase("draft_runner");filekeys.insert("prefill_abi");
 #endif
   strkeys.insert("execution_mode");strkeys.insert("target_lifecycle_policy");
@@ -231,7 +235,7 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
     else if(f[0]=="prefill_state"){Require(f.size()==6,"prefill state row malformed");Name(f[1]);Name(f[2]);c.prefill_states.push_back({f[1],f[2],static_cast<std::uint32_t>(Integer(f[3],88)),static_cast<std::uint32_t>(Integer(f[4],81)),Integer(f[5],8ULL<<20,false)});}
     else Fail("unknown config row: "+f[0]);}
   c.prefill=c.files.count("prefill_model")!=0;
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
   Require(c.prefill&&c.strings.count("execution_mode")&&c.strings.at("execution_mode")==kResidentMode,"resident binary requires explicit "+std::string(kResidentMode)+" mode and one original prefill");
   Require(c.strings.count("target_lifecycle_policy")&&c.strings.at("target_lifecycle_policy")==kTargetLifecyclePolicy,"resident binary requires explicit current target lifecycle policy");
 #endif
@@ -240,7 +244,7 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
   Require(c.files.at("weight_table").bytes==kVocab*2048ULL&&c.files.at("scale_table").bytes==kVocab*4ULL,"original table extents mismatch");
   Require(c.files.at("target_model").bytes<=64ULL<<20&&c.files.at("draft_model").bytes<=UINT32_MAX&&c.files.at("draft_abi").bytes<=1<<20,"model/ABI budget mismatch");
   for(auto key:{"target_library_path","draft_library_path"})for(const auto& s:Split(c.strings.at(key),':'))Safe(Absolute(s),true);
-#ifndef QWEN35_RESIDENT_V1
+#if !defined(QWEN35_RESIDENT_V1) && !defined(QWEN35_RESIDENT_MIXED)
   for(auto key:{"target_tool","draft_runner"})Require(::access(c.files.at(key).path.c_str(),X_OK)==0,"child executable is not executable");
 #endif
   for(const auto& s:Split(c.strings.at("prompt"),','))c.prompt.push_back(static_cast<std::uint32_t>(Integer(s,kVocab-1)));
@@ -268,9 +272,9 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
     Require(c.prefill_outputs[0].type=="FP32"&&c.prefill_outputs[0].bytes==kVocab*4&&c.prefill_outputs[81].type=="FP16"&&c.prefill_outputs[81].bytes==64*kFeatureBytes,"prefill full logits/features ABI mismatch");
     names.clear();for(const auto& t:c.prefill_outputs)Require(names.insert(t.name).second,"duplicate prefill runtime output name");
   }
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
   ReadRuntimeAbi(c,"resident_abi","target",c.inputs,c.outputs,c.resident_inputs,c.resident_outputs);
-#ifdef QWEN35_RESIDENT_V1
+#if defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
   ReadRuntimeAbi(c,"prefill_abi","prefill",c.prefill_inputs,c.prefill_outputs,c.prefill_bound_inputs,c.prefill_bound_outputs);
 #endif
 #endif
@@ -302,14 +306,19 @@ Child Run(const std::vector<std::string>& args,const fs::path& cwd,const std::st
 std::string Numbered(const std::string& prefix,std::size_t n){std::ostringstream s;s<<prefix<<std::setfill('0')<<std::setw(4)<<n;return s.str();}
 class Supervisor {
   Config c;fs::path out,last_target_step;J loop=J::Obj(),progress=J::Obj(),children=J::Arr();std::vector<File> sources,inputs,outputs,states;std::vector<std::uint32_t> prefix,generated;Bytes features;std::uint32_t next=0;std::set<std::string> retrieve;std::map<std::string,File> kept;std::size_t targets=0,drafts=0,prefills=0,prompt_calls=0,round_count=0,considered=0,accepted=0,corrections=0,bonuses=0;std::uint64_t target_child_ms=0,draft_child_ms=0,prompt_child_ms=0,prefill_child_ms=0;std::map<std::uint64_t,std::string> zero_hashes;std::string stage="initialize";
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
   qwen35::dflash::ResidentSession session{kResidentLoadApi};
   std::string session_id;
   std::uint64_t resident_call_index=0;
   J resident_memory=J::Arr();
-#ifdef QWEN35_RESIDENT_V1
+#if defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
+#ifdef QWEN35_RESIDENT_MIXED
+  std::unique_ptr<qwen35::dflash::HiaiOriginalTargetExecutor> prefill_executor;
+  qwen35::dflash::HiaiOriginalTargetLifecycle prefill_lifecycle;
+#else
   std::unique_ptr<qwen35::dflash::HiaiOriginalTargetV1Executor> prefill_executor;
   qwen35::dflash::HiaiLegacyLifecycle prefill_lifecycle;
+#endif
   std::uint64_t prefill_load_ms=0,prefill_process_ms=0,prefill_unload_ms=0,prefill_total_ms=0;
   J LegacyLifecycle(const qwen35::dflash::HiaiLegacyLifecycle& e) const {
     J value=J::Obj();value["model_load_api"]=e.model_load_api;value["lifecycle_policy"]=e.lifecycle_policy;value["model_name"]=e.model_name;
@@ -332,6 +341,18 @@ class Supervisor {
     prefill_unload_ms+=ElapsedMs(start);prefill_lifecycle=prefill_executor->lifecycle();prefill_executor.reset();
   }
 #endif
+  J V2Lifecycle(const qwen35::dflash::HiaiOriginalTargetLifecycle& t) const {
+    J target=J::Obj();target["weight_init_policy"]=t.weight_init_policy;target["weight_cleanup_policy"]=t.weight_cleanup_policy;target["ordering_validation"]=t.ordering_validation;
+    target["weights_init_attempted"]=t.weights_init_attempted;target["weights_initialized"]=t.weights_initialized;target["manager_init_attempted"]=t.manager_init_attempted;target["manager_initialized"]=t.manager_initialized;
+    auto status_value=[](const std::optional<std::int64_t>& status){J value;if(status){value.kind=J::Number;value.s=std::to_string(*status);}return value;};
+    target["weights_init_status"]=status_value(t.weights_init_status);target["manager_init_status"]=status_value(t.manager_init_status);target["failure_stage"]=t.failure_stage;target["cleanup_error"]=t.cleanup_error;
+    target["manager_deinit_called"]=t.manager_deinit_called;target["manager_deinit_returned"]=t.manager_deinit_returned;target["weights_deinit_called"]=t.weights_deinit_called;target["closed"]=t.closed;
+    J deinit_status;deinit_status.kind=J::Number;deinit_status.s=std::to_string(t.weights_deinit_status);target["weights_deinit_status"]=deinit_status;target["run_attempts"]=t.run_attempts;target["successful_runs"]=t.successful_runs;
+#ifdef QWEN35_RESIDENT_MIXED
+    target["external_weight_release"]="NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY";
+#endif
+    return target;
+  }
   void MemorySnapshot(const std::string& phase) {
     J value=J::Obj();value["phase"]=phase;value["status"]="UNAVAILABLE";
     auto sample=[&](const char* path,const std::map<std::string,std::string>& fields){std::ifstream file(path);std::string line;std::size_t total=0;while(std::getline(file,line)&&total<65536){total+=line.size()+1;std::istringstream input(line);std::string name,unit;std::uint64_t number=0;if(input>>name>>number>>unit){auto selected=fields.find(name);if(selected!=fields.end()&&unit=="kB"){value[selected->second]=number;value["status"]="OBSERVED";}}}};
@@ -349,7 +370,11 @@ class Supervisor {
     value["target_model_name_scope"]="V1_MODEL_DESCRIPTION_LABEL_NOT_RUNTIME_TENSOR_NAME";value["draft_model_name_scope"]="V1_MODEL_DESCRIPTION_LABEL_NOT_RUNTIME_TENSOR_NAME";
 #else
     value["target_model_name_scope"]=e.target_loads?"SDK_SETNAME_GETNAME_VALIDATED_BEFORE_INIT":"REQUESTED_NOT_YET_LOADED";
+#ifdef QWEN35_RESIDENT_MIXED
+    value["draft_model_name_scope"]="V1_MODEL_DESCRIPTION_LABEL_NOT_RUNTIME_TENSOR_NAME";
+#else
     value["draft_model_name_scope"]=e.draft_loads?"SDK_SETNAME_GETNAME_VALIDATED_BEFORE_INIT":"REQUESTED_NOT_YET_LOADED";
+#endif
 #endif
     value["cleanup_error"]=e.cleanup_error;value["target_load_attempts"]=e.target_load_attempts;value["draft_load_attempts"]=e.draft_load_attempts;
     value["target_loads"]=e.target_loads;value["draft_loads"]=e.draft_loads;value["target_run_attempts"]=e.target_run_attempts;value["target_runs"]=e.target_runs;
@@ -359,12 +384,11 @@ class Supervisor {
 #ifdef QWEN35_RESIDENT_V1
     value["target_v1_lifecycle"]=LegacyLifecycle(e.target_v1_lifecycle);value["draft_v1_lifecycle"]=LegacyLifecycle(e.draft_v1_lifecycle);return value;
 #else
-    J target=J::Obj();const auto& t=e.target_lifecycle;target["weight_init_policy"]=t.weight_init_policy;target["weight_cleanup_policy"]=t.weight_cleanup_policy;target["ordering_validation"]=t.ordering_validation;
-    target["weights_init_attempted"]=t.weights_init_attempted;target["weights_initialized"]=t.weights_initialized;target["manager_init_attempted"]=t.manager_init_attempted;target["manager_initialized"]=t.manager_initialized;
-    auto status_value=[](const std::optional<std::int64_t>& status){J value;if(status){value.kind=J::Number;value.s=std::to_string(*status);}return value;};
-    target["weights_init_status"]=status_value(t.weights_init_status);target["manager_init_status"]=status_value(t.manager_init_status);target["failure_stage"]=t.failure_stage;target["cleanup_error"]=t.cleanup_error;
-    target["manager_deinit_called"]=t.manager_deinit_called;target["weights_deinit_called"]=t.weights_deinit_called;target["closed"]=t.closed;
-    J deinit_status;deinit_status.kind=J::Number;deinit_status.s=std::to_string(t.weights_deinit_status);target["weights_deinit_status"]=deinit_status;target["run_attempts"]=t.run_attempts;target["successful_runs"]=t.successful_runs;value["target_lifecycle"]=target;return value;
+    value["target_lifecycle"]=V2Lifecycle(e.target_lifecycle);
+#ifdef QWEN35_RESIDENT_MIXED
+    value["draft_v1_lifecycle"]=LegacyLifecycle(e.draft_v1_lifecycle);
+#endif
+    return value;
 #endif
   }
   void ResidentCounts() {
@@ -372,7 +396,11 @@ class Supervisor {
     loop["target_lifecycle_policy"]=c.strings.at("target_lifecycle_policy");
     loop["resident_memory"]=J::Obj();loop["resident_memory"]["scope"]="PROCESS_RSS_NOT_NPU_ALLOCATED_MEMORY";loop["resident_memory"]["snapshots"]=resident_memory;
     loop["resident_abi_sha256"]=c.files.at("resident_abi").hash;
-#ifdef QWEN35_RESIDENT_V1
+#ifdef QWEN35_RESIDENT_MIXED
+    loop["prefill_abi_sha256"]=c.files.at("prefill_abi").hash;loop["prefill_lifecycle"]=V2Lifecycle(prefill_lifecycle);loop["model_residency"]="PERSISTENT_V2_TARGET_AND_V1_DRAFT_AFTER_V2_PREFILL_CLOSE";
+    loop["model_load_api"]="target-v2-draft-v1";loop["model_load_apis"]=J::Obj();loop["model_load_apis"]["prefill"]="file-v2";loop["model_load_apis"]["target"]="file-v2";loop["model_load_apis"]["draft"]="legacy-buffer";
+    loop["external_weight_release"]="NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY";
+#elif defined(QWEN35_RESIDENT_V1)
     loop["prefill_abi_sha256"]=c.files.at("prefill_abi").hash;loop["prefill_lifecycle"]=LegacyLifecycle(prefill_lifecycle);loop["model_residency"]="TWO_PERSISTENT_V1_CLIENTS_AFTER_PREFILL_CLIENT_UNLOAD";
     loop["model_load_api"]="legacy-v1-mixed";loop["model_load_apis"]=J::Obj();loop["model_load_apis"]["prefill"]="legacy-file";loop["model_load_apis"]["target"]="legacy-file";loop["model_load_apis"]["draft"]="legacy-buffer";
 #else
@@ -382,7 +410,13 @@ class Supervisor {
     timing["resident_target_load_ms"]=e.target_load_ms;timing["resident_draft_load_ms"]=e.draft_load_ms;timing["resident_target_run_ms"]=e.target_run_ms;timing["resident_draft_run_ms"]=e.draft_run_ms;timing["resident_close_ms"]=e.close_ms;
     auto phase=[](std::uint64_t calls,std::uint64_t ms){J p=J::Obj();p["calls"]=calls;p["total_ms"]=ms;p["mean_ms"]=Ratio(ms,calls);return p;};
     auto& phases=loop["phase_latency"];phases["timing_scope"]="RESIDENT_RUN_WALL_EXCLUDES_MODEL_LOAD_AND_CLOSE";phases["decode"]=phase(e.target_runs,e.target_run_ms);phases["draft"]=phase(e.draft_runs,e.draft_run_ms);
-#ifdef QWEN35_RESIDENT_V1
+#ifdef QWEN35_RESIDENT_MIXED
+    timing["prefill_child_process_wall_ms"]=0;timing["prefill_child_processes_timed"]=0;
+    timing["prefill_model_load_ms"]=prefill_load_ms;timing["prefill_process_ms"]=prefill_process_ms;timing["prefill_model_unload_ms"]=prefill_unload_ms;timing["prefill_v2_total_ms"]=prefill_total_ms;
+    phases["prefill"]=phase(prefills,prefill_total_ms);phases["prefill"]["native_api"]="Run";phases["prefill"]["timing_scope"]="PREFILL_V2_LOAD_RUN_CLOSE_WALL";
+    phases["prompt_ingest"]["calls"]=prefills;phases["prompt_ingest"]["total_ms"]=prefill_total_ms;phases["prompt_ingest"]["mean_ms"]=Ratio(prefill_total_ms,prefills);phases["prompt_ingest"]["timing_scope"]="PREFILL_V2_LOAD_RUN_CLOSE_WALL";
+    phases["decode"]["native_api"]="Run";phases["draft"]["native_api"]="Process";
+#elif defined(QWEN35_RESIDENT_V1)
     timing["prefill_child_process_wall_ms"]=0;timing["prefill_child_processes_timed"]=0;
     timing["prefill_model_load_ms"]=prefill_load_ms;timing["prefill_process_ms"]=prefill_process_ms;timing["prefill_model_unload_ms"]=prefill_unload_ms;timing["prefill_v1_total_ms"]=prefill_total_ms;
     phases["prefill"]=phase(prefills,prefill_total_ms);phases["prefill"]["native_api"]="Process";phases["prefill"]["timing_scope"]="PREFILL_V1_LOAD_PROCESS_UNLOAD_WALL";
@@ -396,8 +430,8 @@ class Supervisor {
     progress["resident_lifecycle"]=loop["resident_lifecycle"];
   }
   void StartResident() {
-#ifdef QWEN35_RESIDENT_V1
-    Require(prefill_lifecycle.closed&&!prefill_executor&&prefill_lifecycle.cleanup_error.empty(),"prefill V1 client must unload successfully before resident clients load");
+#if defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
+    Require(prefill_lifecycle.closed&&!prefill_executor&&prefill_lifecycle.cleanup_error.empty(),"prefill model must close successfully before resident models load");
 #endif
     Require(prefills==1&&targets==0&&drafts==0,"resident managers must load after the sole prefill completes");Pins();stage="resident-load";Progress();Lifecycle("resident-load-start","session="+session_id);
     qwen35::dflash::ResidentSessionConfig config;config.target_model=c.files.at("target_model").path;config.target_weight_directory=config.target_model.parent_path();config.draft_model=c.files.at("draft_model").path;
@@ -432,18 +466,18 @@ class Supervisor {
   void KeepLogs(const fs::path& p){if(!c.dump)return;for(auto name:{"tool.stdout","tool.stderr","tool.pid","tool.exitcode","command.json"})if(fs::exists(p/name))Keep(p/name);}
   void Counts(){J n=J::Obj();n["target_native_calls"]=targets;n["draft_native_calls"]=drafts;if(c.prefill)n["prefill_native_calls"]=prefills;n["considered"]=considered;n["accepted"]=accepted;n["corrections"]=corrections;n["bonuses"]=bonuses;loop["counts"]=n;loop["prompt"]=Array(c.prompt);loop["generated_tokens"]=Array(generated);loop["full_prefix"]=Array(prefix);loop["prompt_token_ids"]=Array(c.prompt);loop["generated_token_ids"]=Array(generated);loop["full_prefix_token_ids"]=Array(prefix);J timing=J::Obj();timing["scope"]="MONOTONIC_WALL_CLOCK_NOT_NPU_INFERENCE";timing["startup_source_hash_ms"]=c.startup_hash_ms;timing["target_child_process_wall_ms"]=target_child_ms;timing["draft_child_process_wall_ms"]=draft_child_ms;timing["target_child_processes_timed"]=targets;timing["draft_child_processes_timed"]=drafts;timing["total_wall_ms"]=ElapsedMs(c.started);if(c.prefill){timing["prefill_child_process_wall_ms"]=prefill_child_ms;timing["prefill_child_processes_timed"]=prefills;}loop["supervisor_timing"]=timing;J acceptance=J::Obj();acceptance["accepted"]=accepted;acceptance["considered"]=considered;acceptance["rate"]=Ratio(accepted,considered);loop["acceptance"]=acceptance;J phases=J::Obj();phases["timing_scope"]="CHILD_WALL_INCLUDES_LOAD_RUN_UNLOAD";phases["inference_only_status"]="NOT_PROVIDED";auto phase=[](std::uint64_t calls,std::uint64_t ms){J row=J::Obj();row["calls"]=calls;row["total_ms"]=ms;row["mean_ms"]=Ratio(ms,calls);return row;};phases["prompt_ingest"]=phase(c.prefill?prefills:prompt_calls,c.prefill?prefill_child_ms:prompt_child_ms);phases["prompt_ingest"]["mechanism"]=c.prefill?"PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL":"DECODE1_SERIAL_PROMPT_INGESTION";if(c.prefill){phases["prefill"]=phase(prefills,prefill_child_ms);phases["prompt_ingest"]["latency_alias"]="prefill";}phases["decode"]=phase(targets-prompt_calls,target_child_ms-prompt_child_ms);phases["draft"]=phase(drafts,draft_child_ms);loop["phase_latency"]=phases;if(!c.dump){loop.o.erase("prompt_token_ids");loop.o.erase("generated_token_ids");loop.o.erase("full_prefix_token_ids");loop["completed_rounds"]=round_count;J life=J::Obj();for(auto key:{"launched_child_count","completed_child_count","active_child_count","last_child_pid","last_child_exitcode","child_status"})life[key]=progress.at(key);life["children"]=children;loop["child_lifecycle"]=life;}}
   void Progress(){Counts();
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     ResidentCounts();
 #endif
     progress["stage"]=stage;progress["committed_prefix_length"]=prefix.size();progress["generated_tokens"]=Array(generated);progress["counts"]=loop["counts"];progress["supervisor_timing"]=loop["supervisor_timing"];Atomic(out/"progress.json",progress);}
   void PruneOwned(const fs::path& tree){
-#ifdef QWEN35_RESIDENT_V1
-    Require(!c.dump&&progress.at("child_status").str()=="NONE"&&progress.at("active_child_count").num()==0&&prefill_lifecycle.closed&&prefill_lifecycle.cleanup_error.empty(),"V1 scratch cleanup requires closed successful prefill and no child process");
-    Require(progress.at("resident_call_status").str()=="RETURNED","V1 scratch cleanup requires a returned synchronous Process call");
+#if defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
+    Require(!c.dump&&progress.at("child_status").str()=="NONE"&&progress.at("active_child_count").num()==0&&prefill_lifecycle.closed&&prefill_lifecycle.cleanup_error.empty(),"direct scratch cleanup requires closed successful prefill and no child process");
+    Require(progress.at("resident_call_status").str()=="RETURNED","direct scratch cleanup requires a returned synchronous model call");
 #else
     Require(!c.dump&&progress.at("child_status").str()=="EXITED"&&progress.at("last_child_exitcode").num()==0&&progress.at("active_child_count").num()==0,"scratch cleanup requires a known successful child exit");
 #endif
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     if(tree.lexically_relative(out).generic_string().rfind("prefill/",0)!=0||targets)
       Require(progress.at("resident_call_status").str()=="RETURNED","scratch cleanup requires a returned resident call");
 #endif
@@ -482,35 +516,55 @@ class Supervisor {
     std::map<std::string,Bytes> controls={{"arg1_1",std::move(embeddings)},{"arg0_1",std::move(scales)},{"arg107_1",positions},{"arg2_1",positions},{"arg1238_1",Scalar(valid-1,4)},{"arg114_1",Scalar(valid,8)},{"arg18_1",Scalar(valid,2)},{"arg14_1",std::move(conv)},{"arg113_1",std::move(mask)}};
     std::set<unsigned> state_inputs;for(const auto& s:c.prefill_states)state_inputs.insert(s.in);
     J inputrows=J::Arr(),outputrows=J::Arr();std::string paths,types,outtypes;
-#ifdef QWEN35_RESIDENT_V1
+#if defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     std::vector<Bytes> prefill_data;
 #endif
     for(const auto& t:c.prefill_inputs){auto path=step/"inputs"/(Numbered("input_",t.index)+".bin");Bytes data=state_inputs.count(t.index)?Bytes(t.bytes,0):controls.at(t.name);Require(data.size()==t.bytes,"prefill input extent mismatch");Write(path,data);auto f=Observe(path,t.bytes,Hash(data));inputs.push_back(f);J row=Record(f,out);row["index"]=t.index;row["name"]=t.name;row["tool_type"]=t.type;inputrows.a.push_back(row);
-#ifdef QWEN35_RESIDENT_V1
+#if defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
       prefill_data.push_back(std::move(data));
 #endif
       if(!paths.empty()){paths+=',';types+=',';}paths+=path.string();types+=t.type;}
     for(const auto& t:c.prefill_outputs){if(!outtypes.empty())outtypes+=',';outtypes+=t.type;}
     for(const auto& f:inputs){Stable(f);}Pins();
-#ifdef QWEN35_RESIDENT_V1
-    stage="prefill-v1-load";Progress();Lifecycle("prefill-v1-load-start","model=qwen35_resident_prefill");
+#if defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
+#ifdef QWEN35_RESIDENT_MIXED
+    const std::string prefill_api_stage="prefill-v2";
+#else
+    const std::string prefill_api_stage="prefill-v1";
+#endif
+    stage=prefill_api_stage+"-load";Progress();Lifecycle(prefill_api_stage+"-load-start","model=qwen35_resident_prefill");
     qwen35::dflash::HiaiIoDiagnostic prefill_diag;std::map<unsigned,fs::path> mapping;
     std::uint64_t prefill_call_index=0;auto prefill_begin=Clock::now();
     try {
+#ifdef QWEN35_RESIDENT_MIXED
+      MemorySnapshot("before-prefill-load");
+#endif
       auto load_begin=Clock::now();
-      try{prefill_executor=std::make_unique<qwen35::dflash::HiaiOriginalTargetV1Executor>(c.files.at("prefill_model").path,c.files.at("prefill_model").path.parent_path(),c.strings.at("runtime_version"),c.prefill_bound_inputs,c.prefill_bound_outputs,c.timeout,"qwen35_resident_prefill",&prefill_lifecycle);}
+      try{
+#ifdef QWEN35_RESIDENT_MIXED
+        prefill_executor=std::make_unique<qwen35::dflash::HiaiOriginalTargetExecutor>(c.files.at("prefill_model").path,c.files.at("prefill_model").path.parent_path(),c.strings.at("runtime_version"),c.prefill_bound_inputs,c.prefill_bound_outputs,"qwen35_resident_prefill",&prefill_lifecycle,qwen35::dflash::HiaiOriginalTargetCleanupPolicy::ManagerDeinitOnly);
+#else
+        prefill_executor=std::make_unique<qwen35::dflash::HiaiOriginalTargetV1Executor>(c.files.at("prefill_model").path,c.files.at("prefill_model").path.parent_path(),c.strings.at("runtime_version"),c.prefill_bound_inputs,c.prefill_bound_outputs,c.timeout,"qwen35_resident_prefill",&prefill_lifecycle);
+#endif
+      }
       catch(...){prefill_load_ms+=ElapsedMs(load_begin);throw;}
-      prefill_load_ms+=ElapsedMs(load_begin);Lifecycle("prefill-v1-load-end","model=qwen35_resident_prefill");
+      prefill_load_ms+=ElapsedMs(load_begin);Lifecycle(prefill_api_stage+"-load-end","model=qwen35_resident_prefill");
+#ifdef QWEN35_RESIDENT_MIXED
+      MemorySnapshot("after-prefill-load");
+#endif
       prefill_call_index=BeginResidentCall("prefill");auto process_begin=Clock::now();
       try{for(std::size_t i=0;i<prefill_data.size();++i)prefill_executor->SetInput(i,prefill_data[i]);prefill_executor->Execute();++prefills;
         prefill_diag=prefill_executor->io_diagnostic();ValidateResidentIo(prefill_diag,prefill_data,82);
-        for(const auto& t:c.prefill_outputs){auto bytes=prefill_executor->CopyOutput(t.index);Require(bytes.size()==t.bytes,"V1 prefill output extent differs");auto path=step/"outputs"/Numbered("output_",t.index);Write(path,bytes);mapping.emplace(t.index,path);}
+        for(const auto& t:c.prefill_outputs){auto bytes=prefill_executor->CopyOutput(t.index);Require(bytes.size()==t.bytes,"direct prefill output extent differs");auto path=step/"outputs"/Numbered("output_",t.index);Write(path,bytes);mapping.emplace(t.index,path);}
       }catch(...){prefill_process_ms+=ElapsedMs(process_begin);throw;}
       prefill_process_ms+=ElapsedMs(process_begin);EndResidentCall("prefill",prefill_call_index,prefill_process_ms);
-      stage="prefill-v1-close";Progress();ClosePrefill();Require(prefill_lifecycle.closed&&prefill_lifecycle.cleanup_error.empty(),"V1 prefill failed to close successfully");
+      stage=prefill_api_stage+"-close";Progress();ClosePrefill();Require(prefill_lifecycle.closed&&prefill_lifecycle.cleanup_error.empty(),"direct prefill failed to close successfully");
+#ifdef QWEN35_RESIDENT_MIXED
+      MemorySnapshot("after-prefill-close");
+#endif
     }catch(...){try{ClosePrefill();}catch(const std::exception& cleanup){loop["prefill_cleanup_error"]=cleanup.what();}prefill_total_ms=ElapsedMs(prefill_begin);throw;}
-    prefill_total_ms=ElapsedMs(prefill_begin);Lifecycle("prefill-v1-close-end","model=qwen35_resident_prefill");
-    for(const auto& f:inputs){Stable(f);Require(Observe(f.path,f.bytes).hash==f.hash,"V1 prefill changed private input bytes");}Pins();stage="prefill-bind-outputs";
+    prefill_total_ms=ElapsedMs(prefill_begin);Lifecycle(prefill_api_stage+"-close-end","model=qwen35_resident_prefill");
+    for(const auto& f:inputs){Stable(f);Require(Observe(f.path,f.bytes).hash==f.hash,"direct prefill changed private input bytes");}Pins();stage="prefill-bind-outputs";
 #else
     for(const auto& f:inputs){Stable(f);}Pins();stage="prefill-child";Progress();
     std::vector<std::string> args={c.files.at("target_tool").path.string(),"--model="+c.files.at("prefill_model").path.string(),"--input="+paths,"--times=1","--modelmanager_itf=V2","--weight_dir="+c.files.at("prefill_model").path.parent_path().string(),"--enable_item=1","--direct_from_file=true","--input_type="+types,"--output_type="+outtypes,"--output_dir="+(step/"outputs").string()};
@@ -526,13 +580,18 @@ class Supervisor {
     std::map<std::string,PrefillState> bridge;for(const auto& s:c.prefill_states)bridge.emplace(s.decode_ref,s);J state_rows=J::Arr();std::vector<File> newstates;
     for(const auto& decode:c.states){const auto& s=bridge.at(decode.ref);const auto& f=outputs.at(s.out);Stable(f);Require(f.bytes==decode.bytes,"prefill state handoff byte extent differs");newstates.push_back(f);J row=J::Obj();row["decode_source_refdata"]=decode.ref;row["decode_runtime_input_index"]=decode.in;row["decode_runtime_output_index"]=decode.out;row["prefill_source_refdata"]=s.ref;row["prefill_runtime_input_index"]=s.in;row["prefill_runtime_output_index"]=s.out;row["bytes"]=s.bytes;row["prefill_output"]=Record(f,out);row["initialization"]="ZERO_FP16";state_rows.a.push_back(row);}
     if(c.dump){J receipt=J::Obj();receipt["schema_version"]=1;receipt["artifact_kind"]="qwen35-board-serial-prefill-step";receipt["evidence_kind"]=kEvidence;receipt["status"]="EXECUTED_OUTPUTS_BOUND";
-#ifdef QWEN35_RESIDENT_V1
-      receipt["schema_version"]=2;ResidentIdentity(receipt,prefill_call_index);receipt["io_diagnostic"]=IoEvidence(prefill_diag);receipt["prefill_lifecycle"]=LegacyLifecycle(prefill_lifecycle);LegacyAbiEvidence(receipt,prefill_lifecycle);
+#if defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
+      receipt["schema_version"]=2;ResidentIdentity(receipt,prefill_call_index);receipt["io_diagnostic"]=IoEvidence(prefill_diag);
+#ifdef QWEN35_RESIDENT_MIXED
+      receipt["prefill_lifecycle"]=V2Lifecycle(prefill_lifecycle);receipt["model_load_api"]="file-v2";
+#else
+      receipt["prefill_lifecycle"]=LegacyLifecycle(prefill_lifecycle);LegacyAbiEvidence(receipt,prefill_lifecycle);
+#endif
 #else
       receipt["pid"]=child.pid;receipt["exitcode"]=0;
 #endif
       receipt["model_sha256"]=c.files.at("prefill_model").hash;receipt["prompt_token_ids"]=Array(c.prompt);receipt["logical_prompt_length"]=valid;receipt["physical_sequence_length"]=64;receipt["selected_output_pos"]=valid-1;receipt["control_semantics"]="EXPERIMENTAL_PADDED_PREFILL_VALID_LENGTH_NOT_NUMERICALLY_VALIDATED";receipt["inputs"]=inputrows;receipt["outputs"]=outputrows;receipt["state_mapping"]=state_rows;receipt["next_token_id"]=next;J feature=J::Obj();feature["source"]=Record(outputs.at(81),out);feature["row_start"]=0;feature["row_count"]=valid;feature["bytes"]=feature_rows.size();feature["sha256"]=Hash(feature_rows);receipt["feature_prefix"]=feature;Write(step/"receipt.json",Dump(receipt)+"\n");auto file=Observe(step/"receipt.json",Stat(step/"receipt.json").size);Keep(file);J event=J::Obj();event["receipt"]=Record(file,out);
-#ifdef QWEN35_RESIDENT_V1
+#if defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
       ResidentIdentity(event,prefill_call_index);
 #else
       event["pid"]=child.pid;
@@ -542,7 +601,7 @@ class Supervisor {
     if(!c.dump){PruneOwned(step/"inputs");inputs.clear();last_target_step=step;}stage="prefill-committed";Progress();
   }
   void Target(std::uint32_t token,const std::string& role){stage="target-inputs";Pins();for(const auto& f:states)Stable(f);auto step=out/"target"/Numbered("step_",targets);NewDir(step);NewDir(step/"inputs");NewDir(step/"outputs");auto oldstates=states;inputs.clear();
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     std::vector<Bytes> resident_inputs;
 #endif
     Bytes row=TableRow(c.files.at("weight_table"),token,2048),scale=TableRow(c.files.at("scale_table"),token,4);std::uint32_t sb=0;for(int i=0;i<4;++i)sb|=std::uint32_t(scale[i])<<(8*i);float sf;std::memcpy(&sf,&sb,4);Require(std::isfinite(sf)&&sf>=0,"invalid original embedding scale");
@@ -557,7 +616,7 @@ class Supervisor {
       else if(!oldstates.empty()){Stable(oldstates[found->second]);expected_hash=oldstates[found->second].hash;}
       else {auto known=zero_hashes.find(t.bytes);if(known==zero_hashes.end())known=zero_hashes.emplace(t.bytes,Hash(b)).first;expected_hash=known->second;}
       Write(path,b);auto f=Observe(path,t.bytes,expected_hash);inputs.push_back(f);J r=Record(f,out);r["index"]=t.index;r["name"]=t.name;r["tool_type"]=t.type;inputrows.a.push_back(r);
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
       resident_inputs.push_back(std::move(b));
 #endif
       if(found!=byinput.end()){J state=J::Obj();state["source_refdata"]=c.states[found->second].ref;state["runtime_input_index"]=t.index;state["runtime_output_index"]=c.states[found->second].out;state["input"]=r;if(!oldstates.empty()){Stable(oldstates[found->second]);Require(f.hash==oldstates[found->second].hash,"state input differs from committed parent");state["parent_output"]=Record(oldstates[found->second],out);}else state["initialization"]="ZERO_FP16";feedback.a.push_back(state);}
@@ -565,7 +624,7 @@ class Supervisor {
     for(const auto& t:c.outputs){if(!outtypes.empty())outtypes+=',';outtypes+=t.type;}
     for(const auto& f:inputs)Stable(f);
     Pins();stage="target-child";Progress();
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     const auto call_index=BeginResidentCall("target");auto actual_run=session.RunTarget(resident_inputs);EndResidentCall("target",call_index,actual_run.wall_ms);++targets;
     ValidateResidentIo(actual_run.io_diagnostic,resident_inputs,82);Require(actual_run.outputs.size()==82,"resident target output count differs");
     std::map<unsigned,fs::path> mapping;
@@ -587,17 +646,19 @@ class Supervisor {
       outputs.push_back(f);J r=Record(f,out);r["index"]=t.index;r["runtime_name"]=t.name;r["tool_type"]=t.type;outputrows.a.push_back(r);}
     next=Argmax(logits);FiniteHalf(chunk);
     if(c.dump){J receipt=J::Obj();receipt["schema_version"]=1;receipt["artifact_kind"]="qwen35-board-serial-target-step";receipt["evidence_kind"]=kEvidence;receipt["status"]="EXECUTED_OUTPUTS_BOUND";
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     receipt["schema_version"]=2;ResidentIdentity(receipt,call_index);receipt["io_diagnostic"]=IoEvidence(actual_run.io_diagnostic);
 #ifdef QWEN35_RESIDENT_V1
     LegacyAbiEvidence(receipt,session.evidence().target_v1_lifecycle);
+#elif defined(QWEN35_RESIDENT_MIXED)
+    receipt["model_load_api"]="file-v2";
 #endif
 #else
     receipt["pid"]=child.pid;receipt["exitcode"]=0;
 #endif
     receipt["token_id"]=token;receipt["absolute_position"]=prefix.size();receipt["role"]=role;receipt["model_sha256"]=c.files.at("target_model").hash;receipt["inputs"]=inputrows;receipt["outputs"]=outputrows;receipt["state_feedback"]=feedback;receipt["next_token_id"]=next;receipt["control_semantics"]="EXPERIMENTAL_SINGLE_QUERY_ABSOLUTE_POSITION";
     Write(step/"receipt.json",Dump(receipt)+"\n");auto receiptfile=Observe(step/"receipt.json",Stat(step/"receipt.json").size);Keep(receiptfile);J event=J::Obj();event["receipt"]=Record(receiptfile,out);
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     ResidentIdentity(event,call_index);
 #else
     event["pid"]=child.pid;
@@ -607,7 +668,7 @@ class Supervisor {
     states.clear();for(const auto& s:c.states)states.push_back(outputs[s.out]);features.insert(features.end(),chunk.begin(),chunk.end());prefix.push_back(token);
     if(!c.dump){PruneOwned(step/"inputs");inputs.clear();if(!last_target_step.empty())PruneOwned(last_target_step);last_target_step=step;}stage="target-committed";Progress();
   }
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
   std::vector<std::uint32_t> ResidentDraft() {
     stage="draft-inputs";Pins();Require(!prefix.empty()&&prefix.size()<=64&&features.size()==prefix.size()*kFeatureBytes,"resident draft prefix/features mismatch");
     auto call=out/"draft"/Numbered("call-",drafts);NewDir(call);auto bundle=call/"bundle";NewDir(bundle);NewDir(call/"results");
@@ -624,8 +685,8 @@ class Supervisor {
     FiniteHalf(actual.outputs[1]);std::vector<std::uint32_t> proposals;
     for(std::size_t i=0;i<15;++i){std::uint32_t token=0;for(int n=0;n<4;++n)token|=std::uint32_t(actual.outputs[0][i*4+n])<<(8*n);Require(token<kVocab,"resident draft token outside full vocabulary");proposals.push_back(token);}
     if(c.dump){J native=J::Obj();native["schema_version"]=2;native["artifact_kind"]="qwen35-resident-draft-call";native["status"]="EXECUTED";native["evidence_kind"]=kEvidence;ResidentIdentity(native,index);native["model_sha256"]=c.files.at("draft_model").hash;native["draft_abi_sha256"]=c.files.at("draft_abi").hash;
-      native["runtime_version"]=c.strings.at("runtime_version");native["ddk_id"]=c.strings.at("ddk_id");native["firmware_id"]=c.strings.at("firmware_id");native["model_load_api"]=std::string(kResidentLoadApi)=="legacy-v1-mixed"?"legacy-buffer":kResidentLoadApi;native["sequence_length"]=64;native["target_calls"]=0;native["draft_calls"]=1;native["inputs"]=native_inputs;native["outputs"]=native_outputs;native["io_diagnostic"]=IoEvidence(actual.io_diagnostic);
-#ifdef QWEN35_RESIDENT_V1
+      native["runtime_version"]=c.strings.at("runtime_version");native["ddk_id"]=c.strings.at("ddk_id");native["firmware_id"]=c.strings.at("firmware_id");native["model_load_api"]=std::string(kResidentLoadApi)=="file-v2"?"file-v2":"legacy-buffer";native["sequence_length"]=64;native["target_calls"]=0;native["draft_calls"]=1;native["inputs"]=native_inputs;native["outputs"]=native_outputs;native["io_diagnostic"]=IoEvidence(actual.io_diagnostic);
+#if defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
       LegacyAbiEvidence(native,session.evidence().draft_v1_lifecycle);
 #endif
       Write(call/"results/result.json",Dump(native)+"\n");auto result=Observe(call/"results/result.json",Stat(call/"results/result.json").size);Keep(result);
@@ -635,7 +696,7 @@ class Supervisor {
   }
 #endif
   std::vector<std::uint32_t> Draft(){
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     return ResidentDraft();
 #else
     stage="draft-inputs";Pins();Require(!prefix.empty()&&prefix.size()<=64&&features.size()==prefix.size()*kFeatureBytes,"draft prefix/features mismatch");auto call=out/"draft"/Numbered("call-",drafts);NewDir(call);auto bundle=call/"bundle";NewDir(bundle);NewDir(bundle/"model");
@@ -664,15 +725,17 @@ class Supervisor {
   void Commit(std::uint32_t token,const std::string& role){Target(token,role);generated.push_back(token);if(c.dump){J event=J::Obj();event["token_id"]=token;event["position"]=prefix.size()-1;event["role"]=role;event["target_step_index"]=targets-1;loop["commits"].a.push_back(event);}Progress();}
  public:
   Supervisor(Config config,fs::path directory):c(std::move(config)),out(std::move(directory)){Safe(out,true);NewDir(out/"target");NewDir(out/"draft");if(c.prefill)NewDir(out/"prefill");loop["schema_version"]=1;loop["artifact_kind"]="qwen35-board-local-serial-dflash";loop["evidence_kind"]=kEvidence;loop["status"]="RUNNING";loop["device_execution"]="ATTEMPTED";loop["model_compilation"]="NOT_RUN";loop["numerical_validation"]="NOT_RUN";loop["performance"]="NOT_EVALUATED";loop["state_policy"]="ADVANCE_ONLY_COMMITTED_TOKENS_NO_SPECULATIVE_STATE";loop["control_semantics"]="EXPERIMENTAL_SINGLE_QUERY_ABSOLUTE_POSITION";loop["target_steps"]=J::Arr();loop["draft_steps"]=J::Arr();loop["rounds"]=J::Arr();loop["commits"]=J::Arr();loop["models"]=J::Obj();loop["models"]["target_sha256"]=c.files.at("target_model").hash;loop["models"]["draft_sha256"]=c.files.at("draft_model").hash;loop["config_sha256"]=c.config.hash;loop["target_model_sha256"]=c.files.at("target_model").hash;loop["draft_model_sha256"]=c.files.at("draft_model").hash;loop["draft_abi_sha256"]=c.files.at("draft_abi").hash;loop["runtime_version"]=c.strings.at("runtime_version");loop["ddk_id"]=c.strings.at("ddk_id");loop["firmware_id"]=c.strings.at("firmware_id");loop["process_id"]=static_cast<std::uint64_t>(::getpid());progress["status"]="RUNNING";progress["supervisor_pid"]=static_cast<std::uint64_t>(::getpid());progress["launched_child_count"]=0;progress["completed_child_count"]=0;progress["active_child_count"]=0;progress["last_child_pid"]=J();progress["last_child_exitcode"]=J();progress["child_status"]="NOT_STARTED";if(!c.dump){loop["schema_version"]=2;loop["dump"]=false;loop["retrieval_mode"]="FINAL_TOKENS_ONLY";for(auto key:{"target_steps","draft_steps","rounds","commits"})loop.o.erase(key);}if(c.prefill){loop["prompt_ingestion"]="PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL";loop["prefill_model_sha256"]=c.files.at("prefill_model").hash;loop["models"]["prefill_sha256"]=c.files.at("prefill_model").hash;loop["control_semantics"]="EXPERIMENTAL_PADDED_PREFILL_VALID_LENGTH_NOT_NUMERICALLY_VALIDATED";if(c.dump)loop["prefill_steps"]=J::Arr();}
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     const auto seed=c.config.hash+":"+std::to_string(::getpid());session_id=Sha256(seed);progress["resident_call_status"]="NOT_STARTED";
-#ifdef QWEN35_RESIDENT_V1
+#ifdef QWEN35_RESIDENT_MIXED
+    progress["child_status"]="NONE";prefill_lifecycle.weight_cleanup_policy="MANAGER_DEINIT_ONLY_NO_SEPARATE_WEIGHT_UNLOAD";
+#elif defined(QWEN35_RESIDENT_V1)
     progress["child_status"]="NONE";prefill_lifecycle.model_name="qwen35_resident_prefill";prefill_lifecycle.model_load_api="legacy-file";
 #endif
 #endif
     Progress();}
   int Execute(){try{if(c.prefill)Prefill();else for(auto token:c.prompt)Target(token,"prompt");
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     StartResident();
 #endif
     Commit(next,"initial_target_next_anchor");
@@ -681,14 +744,14 @@ class Supervisor {
       if(!mismatch&&used==limit&&generated.size()<c.maxnew){auto bonus=next;++bonuses;Commit(bonus,"all_considered_accepted_bonus");round["bonus_token_id"]=bonus;round["committed"].a.emplace_back(static_cast<std::uint64_t>(bonus));}
       round["considered"]=used;round["accepted"]=matched;round["discarded_unverified"]=15-used;round["prefix_after"]=Array(prefix);if(c.dump)loop["rounds"].a.push_back(round);++round_count;stage="round-complete";Progress();}
     Require(round_count>=c.minrounds,"minimum draft rounds not observed");Require(targets==(c.prefill?c.maxnew:c.prompt.size()+c.maxnew)&&generated.size()==c.maxnew&&(!c.prefill||prefills==1),"native target/prefill commit count mismatch");Pins();
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     stage="resident-close";Progress();Lifecycle("resident-close-start","session="+session_id);session.Close();MemorySnapshot("after-close");Require(session.evidence().closed&&!session.evidence().poisoned,"resident session did not close successfully");Pins();Lifecycle("resident-close-end","session="+session_id);
 #endif
     if(c.dump){Write(out/"final-features.bin",features);auto final=Observe(out/"final-features.bin",features.size(),Hash(features));Keep(final);loop["final_features"]=Record(final,out);loop["final_features"]["dtype"]="float16";loop["final_features"]["shape"]=Array({1,static_cast<std::uint32_t>(prefix.size()),16384});loop["final_target_outputs"]=J::Arr();for(std::size_t i=0;i<outputs.size();++i){const auto& f=outputs[i];Stable(f);Keep(f);J row=Record(f,out);row["index"]=i;row["runtime_name"]=c.outputs[i].name;row["tool_type"]=c.outputs[i].type;loop["final_target_outputs"].a.push_back(row);}loop["final_state_files"]=J::Arr();for(std::size_t i=0;i<states.size();++i){Stable(states[i]);J r=Record(states[i],out);r["source_refdata"]=c.states[i].ref;r["runtime_input_index"]=c.states[i].in;r["runtime_output_index"]=c.states[i].out;loop["final_state_files"].a.push_back(r);}}else{for(const auto& f:outputs)Stable(f);for(const auto& f:states)Stable(f);PruneOwned(last_target_step);outputs.clear();states.clear();last_target_step.clear();Pins();}
     loop["status"]="BOARD_SERIAL_DFLASH_EXECUTED_UNVALIDATED";loop["device_execution"]=std::string(kEvidence)=="device-hiai"?(c.dump?"EXECUTED_BOARD_LOCAL_OUTPUTS_RETAINED":"EXECUTED_BOARD_LOCAL_FINAL_TOKENS_ONLY"):"HOST_FAKE_EXECUTED";loop["eos_policy"]="DISABLED_FIXED_BUDGET_SMOKE";loop["acceptance_scope"]="CONSIDERED_K_ONLY_NOT_ALL15";loop["retrieval_manifest"]="retrieval-manifest.tsv";stage="complete";progress["status"]=loop["status"];Progress();Atomic(out/"loop.json",loop);Keep(out/"loop.json");Keep(out/"progress.json");Manifest();return 0;
   }catch(const std::exception& e){
-#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1)
-#ifdef QWEN35_RESIDENT_V1
+#if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
+#if defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     try{ClosePrefill();}catch(const std::exception& cleanup){loop["prefill_cleanup_error"]=cleanup.what();}
 #endif
     try{session.Close();}catch(const std::exception& cleanup){loop["resident_cleanup_error"]=cleanup.what();}

@@ -29,6 +29,7 @@ struct ResidentSessionEvidence {
 
 // One process owns two immutable models through one explicit policy. V1 uses
 // file-only target and buffer-only embedded draft; V2 is a separate policy.
+// Mixed uses a V2 external-weight target and V1 buffer-only embedded draft.
 // Clients/managers retain their persistent tensor storage.
 // The caller supplies hash-bound sources/descriptors, preserves source lifetimes,
 // and advances only committed target states. This class never falls back to a

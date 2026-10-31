@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "qwen35-resident-mixed-host-validation",
+  "updated": "2026-10-31",
+  "run_id": "20261031T000519Z-15193-5dccde",
+  "source_base_commit": "6e613ba",
+  "status": "HOST_VALIDATED_DEVICE_MIXED_RESIDENCY_PENDING",
+  "user_authorization": "允许混合接口，优先推进常驻（推荐）",
+  "execution_mode": "resident-mixed",
+  "model_load_api": "target-v2-draft-v1",
+  "model_load_apis": {
+    "prefill": "file-v2",
+    "target": "file-v2",
+    "draft": "legacy-buffer"
+  },
+  "target_lifecycle_policy": "v2-target-v1-draft-resident-v1",
+  "v2_weight_cleanup_policy": "MANAGER_DEINIT_ONLY_NO_SEPARATE_WEIGHT_UNLOAD",
+  "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
+  "model_compilation": "NOT_RUN",
+  "assistant_device_access": "NONE_USER_REQUEST",
+  "device_residency": "NOT_RUN",
+  "numerical_validation": "NOT_RUN",
+  "performance_validation": "NOT_RUN",
+  "original_models_and_weights": "UNCHANGED_FULL40_TARGET_FULL6_DRAFT",
+  "changes": [
+    "One board process/thread: V2 prefill64 once with its own bound ABI, close before resident pair loading; V2 decode1 and V1 embedded draft each load once and repeatedly Run/Process.",
+    "Preselected manager-only V2 cleanup records attempted and normal-return facts separately. No separate DeinitWeights, no fabricated status0, no retry or fallback; historical explicit-cleanup probes remain unchanged.",
+    "New native target/build hash, prepared/config/API binding, compact and dump recovery, partial success and failed-close evidence preservation. Historical requests recover under their original mode.",
+    "Separate phase/load/close wall timing and RSS/HWM/MemAvailable observations; these are not NPU-only time or allocated NPU memory."
+  ],
+  "native_mixed_core": {
+    "target_runs": 3,
+    "draft_runs": 3,
+    "target_loads": 1,
+    "draft_loads": 1,
+    "persistent_buffers": 176,
+    "negative_cases": 12,
+    "scope": "HOST_FAKE_SDK_OWNERSHIP_SCHEDULING_AND_ERROR_PROPAGATION_ONLY"
+  },
+  "validation": [
+    {
+      "path": "out/mixed-python.xml",
+      "sha256": "6aa964c44520d3339c67d7f28cf586849b0a6d6bf32fa055e6be8c967e09d33c",
+      "testcases": 186,
+      "failed": [],
+      "skipped": []
+    },
+    {
+      "path": "out/mixed-native-all.xml",
+      "sha256": "d0cc1f0706d1b0a1b88466e9ea69f1c97e49234a51a3bf616a37518aba185520",
+      "testcases": 18,
+      "failed": [],
+      "skipped": []
+    },
+    {
+      "path": "out/mixed-integration.xml",
+      "sha256": "02b5fbd088fa379cb98ac7b553d525ceb269730b40b3795c28eb8eb8d968d1eb",
+      "testcases": 7,
+      "failed": [
+        "test_actual_mixed_resident_prefill_and_complete_generation[False]",
+        "test_actual_mixed_failure_preserves_lifecycle_and_commits[v2-target-deinit-1]"
+      ],
+      "skipped": []
+    },
+    {
+      "path": "out/mixed-integration-recovery.xml",
+      "sha256": "f62a51ae5845a99ce6f79dff9f68ac709e305823251df8a7ac87ae6d91612e9b",
+      "testcases": 2,
+      "failed": [],
+      "skipped": [],
+      "rerun_scenarios": [
+        "test_actual_mixed_resident_prefill_and_complete_generation[False]",
+        "test_actual_mixed_failure_preserves_lifecycle_and_commits[v2-target-deinit-1]"
+      ]
+    }
+  ],
+  "counting_policy": "Native18 CTest groups include62 serial and19 resident protocol pytest subcases. Do not add preliminary repeated core runs. Integration has7 unique scenarios; two initial fixture failures require same-name corrective reruns.",
+  "integration_fixture_issue": {
+    "reason": "Added local recovery helper omitted AI_RUN_DIR; native execution and output validator had passed before test-harness setup failed.",
+    "correction": "Set AI_RUN_DIR to the private fixture root before full local recovery. Production source unchanged.",
+    "affected_scenarios": [
+      "test_actual_mixed_resident_prefill_and_complete_generation[False]",
+      "test_actual_mixed_failure_preserves_lifecycle_and_commits[v2-target-deinit-1]"
+    ],
+    "corrective_rerun": "PASSED_BOTH_EXACT_AFFECTED_SCENARIOS_ORIGINAL_FAILURE_XML_RETAINED"
+  },
+  "final_source_sha256": {
+    "model/qwen35_moe_dflash/board_serial_dflash.py": "66e7ba61784487ec6ac54b5da5a56e99ddacdf78b69b527c6a022530bd43eb8d",
+    "model/qwen35_moe_dflash/board_serial_transport.py": "19fedc0f035cc3d4cf79a58c18ac4930b2442aa46e511dd45437a11e5b962a6a",
+    "targets/cpro/runtime/CMakeLists.txt": "e568adf151f525a6520142e6fcff661d81ca915de1a34db9958fb332f9c78d08",
+    "targets/cpro/runtime/include/qwen35_dflash/hiai_executor.hpp": "2d8b0abd9c60828271ba11fcb97bce9b8b295df6cdd75ba3ef3e35114b5c6f62",
+    "targets/cpro/runtime/include/qwen35_dflash/resident_session.hpp": "6fd540f5a2c588f5fbf217126536ff57448d2568861430fe99585e74acd66dee",
+    "targets/cpro/runtime/src/board_serial_main.cpp": "4846afee7d95dae17afcb00f39986b775e65f5c33e2ccb2512339d4a54f162f9",
+    "targets/cpro/runtime/src/hiai_executor.cpp": "c14db98677fa9510ea1f37958d60af164e7b1c88dc9de031175303540d71a4a3",
+    "targets/cpro/runtime/src/resident_session.cpp": "05a46ebfd5eda7524246a18a3ef287de11a94abdf3c154401984195fcd7df38d",
+    "targets/cpro/runtime/tests/fake_hiai/fake_hiai.cpp": "9034a17ed4d2e53c4068948c44408ea900b832415559ed444fd0035eb20c597b",
+    "targets/cpro/scripts/build_hiai.py": "33591bad214b7462b5128877827bfcf24140ff44cded8dff59b6b312a73e992f",
+    "targets/cpro/scripts/run_board_serial_dflash.py": "54c4ec00e64ffc401a968d21d7e4e209689fbccc789780a58a68fe3fc551dd3d",
+    "tests/test_board_serial_dflash.py": "20551cbbcdb784a3419b8e2ad2a2493dcb112c6272d8a8f0402b427c55453138",
+    "tests/test_board_serial_integration.py": "21cf145a7c44456f4c7805ea9ded4943dfcd6035dafdd7089708d59c232b76a5",
+    "tests/test_board_serial_transport.py": "85bc5d3fb0626ebeb72d48dcc922b772af8a608e3849429479a6b6c20d338177",
+    "tests/test_hiai_build_config.py": "3cb23b43b315dbf2ff23dfe40ff0c5a75886a101b24505302a2323b7a732c3e4",
+    "targets/cpro/runtime/tests/test_resident_mixed.cpp": "4bd19ebe46cb7cd3946b37b6bb093914a5fb6a00de675ddbe3edda3ec7bc5690"
+  },
+  "host_fake_binary": {
+    "path": "out/mixed-build/board_resident_mixed_hiai_fake",
+    "sha256": "ee2931bb8f856c8fdda549f9488b3c19fe98d0bd92c3078c0f5bb53e3b18ce2d",
+    "scope": "HOST_ONLY_NOT_OHOS_SELECTED_SDK"
+  },
+  "independent_review": {
+    "native_ownership_lifecycle": "PASS",
+    "python_prepare_config_recovery": "PASS",
+    "reviewer": "continuation_input_path",
+    "scope": "Read-only review; no actual-device compatibility claim"
+  },
+  "prior_device_baseline": "specs/board-prefill-first-completion.json",
+  "prior_device_failure": "specs/resident-v1-hcl-load-failure.json",
+  "next_device_request": "dflash-board-resident-mixed8-run",
+  "next_recovery": "dflash-board-resident-mixed8-recovery",
+  "command_document": "docs/current-status.md",
+  "limitations": [
+    "Selected internal SDK compile/link and actual mixed model loading await user run.",
+    "DeInit normal return/object destruction does not independently establish external-weight reclamation.",
+    "Physical S64 padded short-prompt controls remain experimental; accuracy and acceptance quality not validated.",
+    "State tensors still use owned copies/private files; no zero-copy or speedup claim."
+  ],
+  "experience": "Generic SDK examples and permissive fakes cannot establish selected-runtime source/weight loading support. Bind per-model APIs and distinguish scheduler tests from real library/device behavior.",
+  "unique_python_scenarios_passed": 193,
+  "native_ctest_groups_passed": 18
+}
