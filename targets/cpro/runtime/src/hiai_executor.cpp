@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <set>
@@ -23,6 +24,35 @@ namespace {
 constexpr std::size_t kFeatureCaptureLimit = 65536;
 constexpr std::size_t kStatefulTensorLimit = 512ULL << 20;
 constexpr std::uint64_t kStatefulTotalLimit = 2ULL << 30;
+struct LoadCounters {
+  std::optional<std::uint64_t> minor_faults, major_faults, read_bytes, read_chars;
+};
+LoadCounters ReadLoadCounters() noexcept {
+  LoadCounters result;
+  try {
+    std::ifstream stat("/proc/self/stat");std::string line;
+    if(std::getline(stat,line)&&line.size()<16384){
+      const auto end=line.rfind(')');
+      if(end!=std::string::npos){
+        std::istringstream fields(line.substr(end+1));std::string value;
+        for(int field=3;field<=12&&fields>>value;++field)
+          if((field==10||field==12)&&!value.empty()&&value.find_first_not_of("0123456789")==std::string::npos)
+            (field==10?result.minor_faults:result.major_faults)=std::stoull(value);
+      }
+    }
+    std::ifstream io("/proc/self/io");std::size_t bytes=0;
+    while(std::getline(io,line)&&(bytes+=line.size()+1)<=16384){
+      std::istringstream fields(line);std::string key;std::uint64_t value;
+      if(fields>>key>>value){if(key=="read_bytes:")result.read_bytes=value;else if(key=="rchar:")result.read_chars=value;}
+    }
+  } catch(...) {} // Observation failure must never change SDK execution.
+  return result;
+}
+std::optional<std::uint64_t> CounterDelta(const std::optional<std::uint64_t>& before,
+                                        const std::optional<std::uint64_t>& after) {
+  if(before&&after&&*after>=*before)return *after-*before;
+  return std::nullopt;
+}
 void Check(hiai::AIStatus status, const char* operation) {
   if (status != hiai::AI_SUCCESS)
     throw std::runtime_error(std::string("HIAI ") + operation + " failed: " + std::to_string(status));
@@ -109,6 +139,7 @@ class ModelBuffer {
 };
 struct Model {
   std::uint64_t last_api_us = 0;
+  bool profile_load=false;
   // Reverse destruction order keeps mapped bytes and descriptor alive through
   // UnLoadModel AND the client destructor, including partial-load failures.
   ModelBuffer model_buffer;
@@ -170,6 +201,24 @@ struct Model {
   }
   ~Model() { CloseFile(false); CloseLegacy(false); }
 
+  template<class Action> void LoadStep(const char* phase, Action action) {
+    if(!profile_load){action();return;}
+    HiaiLoadPhase row;row.phase=phase;
+    std::cerr<<"HIAI load-phase-begin model="<<name<<" phase="<<phase<<std::endl;
+    const auto before=ReadLoadCounters();const auto begin=std::chrono::steady_clock::now();
+    auto finish=[&]{
+      row.wall_us=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-begin).count();
+      const auto after=ReadLoadCounters();
+      row.minor_faults=CounterDelta(before.minor_faults,after.minor_faults);
+      row.major_faults=CounterDelta(before.major_faults,after.major_faults);
+      row.read_bytes=CounterDelta(before.read_bytes,after.read_bytes);
+      row.read_chars=CounterDelta(before.read_chars,after.read_chars);
+      legacy.load_phases.push_back(row);
+      std::cerr<<"HIAI load-phase-end model="<<name<<" phase="<<phase<<" wall_us="<<row.wall_us<<" completed="<<row.completed<<std::endl;
+    };
+    try{action();}catch(...){finish();throw;}
+    row.completed=true;finish();
+  }
   void Load(const std::filesystem::path& path, const std::string& model_name,
             const std::string& expected_version, std::uint32_t timeout_ms,
             std::size_t input_count, std::size_t output_count, const char* abi = "ABI v2",
@@ -178,9 +227,12 @@ struct Model {
     legacy.model_load_api=file_only?"legacy-file":"legacy-buffer";
     if(legacy.client_init_attempted)throw std::logic_error("V1 client Init/Load allowed once");
     stage="LEGACY_CLIENT_INIT";legacy.client_init_attempted=true;
+    LoadStep("CLIENT_INIT",[&]{
     legacy.client_init_status=static_cast<std::int64_t>(client.Init(nullptr));
     Check(static_cast<hiai::AIStatus>(*legacy.client_init_status), "Init(sync)");
+    });
     initialized=true;legacy.client_initialized=true;stage="LEGACY_RUNTIME_IDENTITY";
+    LoadStep("RUNTIME_QUERY_AND_DESCRIPTION",[&]{
     version = Version(client);
     if (version != expected_version)
       throw std::runtime_error("HIAI version differs from --expected-runtime-version");
@@ -188,6 +240,7 @@ struct Model {
     description = std::make_shared<hiai::AiModelDescription>(
         name, hiai::AiModelDescription_Frequency_HIGH, hiai::HIAI_FRAMEWORK_NONE,
         hiai::HIAI_MODELTYPE_OFFLINE, hiai::AiModelDescription_DeviceType_NPU);
+    });
     auto check_load = [&](hiai::AIStatus status, const char* operation) {
       if (status != hiai::AI_SUCCESS)
         throw std::runtime_error(std::string("HIAI ") + operation + " failed: " +
@@ -206,22 +259,27 @@ struct Model {
                                  name + ", path=" + path.string() + ", runtime=" + version + "]");
     } else {
       try {
-        model_buffer.Open(path);
+        LoadStep("MODEL_MMAP",[&]{model_buffer.Open(path);});
       } catch (const std::exception& error) {
         throw std::runtime_error(std::string(error.what()) + " [model=" + name +
                                  ", path=" + path.string() + ", runtime=" + version + "]");
       }
+      LoadStep("SET_MODEL_BUFFER",[&]{
       check_load(description->SetModelBuffer(model_buffer.Data(), model_buffer.Size()), "SetModelBuffer");
       if (!description->GetModelBuffer() || description->GetModelNetSize() != model_buffer.Size())
         throw std::runtime_error("HIAI model buffer descriptor is empty or truncated [model=" + name +
                                  ", path=" + path.string() + ", runtime=" + version + "]");
+      });
     }
     // Load still decides compatibility; no bypass or model type change.
     std::vector<std::shared_ptr<hiai::AiModelDescription>> descriptions{description};
     stage="LEGACY_LOAD";legacy.load_attempted=true;
+    LoadStep("MODEL_LOAD",[&]{
     legacy.load_status=static_cast<std::int64_t>(client.Load(descriptions));
     check_load(static_cast<hiai::AIStatus>(*legacy.load_status), "Load");legacy.loaded=true;
+    });
     stage="LEGACY_TENSOR_DESCRIPTORS";
+    LoadStep("IO_DESCRIPTORS",[&]{
     check_load(client.GetModelIOTensorDim(name, input_dims, output_dims), "GetModelIOTensorDim");
     for (bool input : {true, false}) {
       const auto& dims = input ? input_dims : output_dims;
@@ -233,6 +291,7 @@ struct Model {
     }
     if (input_dims.size() != input_count || output_dims.size() != output_count)
       throw std::runtime_error(std::string("HIAI OMC tensor count differs from ") + abi);
+    });
   }
   void LoadFile(const std::filesystem::path& path, const std::string& expected_version,
                 std::size_t input_count, std::size_t output_count, bool descriptor_only = false,
@@ -558,6 +617,7 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
     HiaiLegacyLifecycle* constructor_failure_snapshot,
     const std::vector<HiaiTensorStorage>& disjoint_from, bool diagnostics) : impl_(std::make_unique<Impl>()) {
   impl_->diagnostics = diagnostics;
+  impl_->target.profile_load=standalone_draft&&!resident_model_name.empty()&&model_load_api=="legacy-buffer";
   try {
   if (model_load_api != "legacy-buffer" && model_load_api != "file-v2")
     throw std::invalid_argument("model load API must be legacy-buffer or file-v2");
@@ -590,6 +650,7 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
                      expected_version, timeout_ms, inputs.size(), outputs.size(),
                      standalone_draft ? "standalone full draft ABI" :
                      fused_operator_probe ? "documented fused operator ABI" : "stateful target ABI");
+  impl_->target.LoadStep("TENSOR_SETUP",[&]{
   std::uint64_t allocated = 0;
   for (bool input : {true, false}) {
     const auto& specs = input ? inputs : outputs;
@@ -645,6 +706,7 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
       impl_->resident_storage.push_back({t.Object(),t.Data(),t.Size()});
   impl_->ready.assign(inputs.size(), false);
   if (diagnostic_output_fill_byte >= 0) impl_->input_source_hashes.resize(inputs.size());
+  });
   } catch(const std::exception& e) {
     if(model_load_api=="legacy-buffer") {
       const auto* precise=dynamic_cast<const HiaiRuntimeError*>(&e);

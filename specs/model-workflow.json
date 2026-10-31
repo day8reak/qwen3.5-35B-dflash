@@ -5675,7 +5675,7 @@
         "rounding": "Wrapper totals sum per-call integer milliseconds; API totals sum microseconds. Draft API exceeds wrapper by2.738ms over7calls, within millisecond truncation; do not interpret as negative copy time.",
         "numerical_gap": "Second generated token is2 versus prior resident0 and nonresident12; exact prepared input identities and intermediate states not rechecked. First decode precedes first draft Process, but draft is already loaded.",
         "acceptance_gap": "0/7 accepted. Existing decode1 serial verify still performs one target advance per committed token; no measured target-call reduction or speculative algorithm speedup.",
-        "next": "Inspect retained PID12858 hilog without rerun; if inconclusive add bounded load subphase wall/page-fault/IO counters, keeping fast per-token path unchanged. Preserve first-decode divergence investigation."
+        "next": "Load phase timing implemented and host-tested; run docs/board-resident-load-timing.md once while board-local text tokenizer work proceeds. Preserve first-decode divergence investigation."
       }
     },
     "host_validation_limitation": "Host tests and two user-reported mixed runs establish execution observations, not numerical equivalence, repeated stability or independent external weight release.",
@@ -5716,7 +5716,7 @@
     "user_authorization": "2026-10-31 async reply: 允许混合接口，优先推进常驻（推荐）",
     "prior_candidate": "specs/resident-v1-file-buffer-candidate.json",
     "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
-    "next_action": "Inspect retained PID12858 hilog without rerun; if inconclusive add bounded load subphase wall/page-fault/IO counters, keeping fast per-token path unchanged. Preserve first-decode divergence investigation.",
+    "next_action": "Load phase timing implemented and host-tested; run docs/board-resident-load-timing.md once while board-local text tokenizer work proceeds. Preserve first-decode divergence investigation.",
     "compact_memory_task": {
       "runtime_profile": "compact-memory-v1",
       "device_validation": "USER_REPORTED_EXECUTED_UNVALIDATED",
@@ -5728,5 +5728,30 @@
       "draft_load_diagnosis": "UNRESOLVED_202958_MS"
     },
     "prior_mixed_completion": "specs/board-resident-mixed-first-completion.json"
+  },
+  "load_timing_candidate": {
+    "schema_version": 1,
+    "status": "HOST_TESTED_DEVICE_NOT_RUN",
+    "document": "docs/board-resident-load-timing.md",
+    "run": "20261031T011114Z-24876-645bba",
+    "native_ctest_groups_passed": 2,
+    "actual_mixed_integration_cases_passed": 13,
+    "new_device_calls": 0,
+    "models_recompiled": false,
+    "timing_scope": "STARTUP_ONLY_DRAFT_V1_LOAD_PHASES",
+    "sources": {
+      "targets/cpro/runtime/src/hiai_executor.cpp": "9b3cfea00e4f001dcfadb8b4186df85c63ece80ab0033a95bf20df424be500f7",
+      "targets/cpro/runtime/src/board_serial_main.cpp": "85f62844a0b339b5b788bfd1be61345092671c164ddfe7daa051ab550b12acc7",
+      "targets/cpro/runtime/include/qwen35_dflash/hiai_executor.hpp": "d54879ad7a45f24a4a5a911044893d257a1e3550a3e246dfc734e2818e62c67c"
+    },
+    "evidence": {
+      "integration": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T011114Z-24876-645bba/integration.xml",
+      "ctest": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T011114Z-24876-645bba/ctest.log"
+    },
+    "next": "Run one fresh loadtiming request; measure before choosing a loading change."
+  },
+  "text_interface_task": {
+    "status": "IN_PROGRESS",
+    "goal": "Board-local UTF-8 text encoding, autonomous existing model loop, decoded generated text; original tokenizer pinned; no inter-token server dependency."
   }
 }

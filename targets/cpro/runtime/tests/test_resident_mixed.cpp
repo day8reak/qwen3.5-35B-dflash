@@ -59,10 +59,17 @@ int main(int argc,char** argv){try{
   setenv("FAKE_HIAI_V1_RESIDENT_TRACE","1",1);unsetenv("FAKE_HIAI_ALLOW_DUAL_MODEL_SOURCE");
   auto trace=[&](const std::string& name){const auto p=root/(name+".trace");std::ofstream(p).close();setenv("FAKE_HIAI_TRACE",p.c_str(),1);return p;};
   Failure("");const auto repeated=trace("mixed-alternating");
+  setenv("FAKE_HIAI_DRAFT_LOAD_DELAY","1",1);
   {
     ResidentSession session("target-v2-draft-v1");
     Require(session.evidence().target_lifecycle.weight_cleanup_policy=="MANAGER_DEINIT_ONLY_NO_SEPARATE_WEIGHT_UNLOAD","preload evidence used historical cleanup policy");
     session.Load(config);Throws([&]{session.Load(config);});
+    const auto& phases=session.evidence().draft_v1_lifecycle.load_phases;
+    const std::vector<std::string> expected={"CLIENT_INIT","RUNTIME_QUERY_AND_DESCRIPTION","MODEL_MMAP","SET_MODEL_BUFFER","MODEL_LOAD","IO_DESCRIPTORS","TENSOR_SETUP"};
+    Require(phases.size()==expected.size(),"draft load stages missing");
+    for(std::size_t i=0;i<phases.size();++i)Require(phases[i].phase==expected[i]&&phases[i].completed,"draft load stage order or completion differs");
+    Require(phases[4].wall_us>=20000,"deliberate SDK load delay not attributed to MODEL_LOAD");
+    unsetenv("FAKE_HIAI_DRAFT_LOAD_DELAY");
     auto inputs=TargetInputs(config);auto first=session.RunTarget(inputs);Diagnostic(first,89);
     auto first_draft=session.RunDraft(DraftInputs());Diagnostic(first_draft,3);Require(Top(first_draft)==10,"V1 draft result differs");
     first.outputs[81][0]=77;
@@ -92,6 +99,10 @@ int main(int argc,char** argv){try{
     if(fault=="original-init")Require(e.target_lifecycle.manager_init_status==32&&!e.target_lifecycle.weights_init_attempted,"manager failure snapshot differs");
     if(fault.rfind("original-init-weights",0)==0)Require(e.target_lifecycle.manager_init_status==0&&e.target_lifecycle.weights_init_attempted&&!e.target_lifecycle.weights_initialized,"weights failure snapshot lost");
     if(fault=="mixed-cross-alias")Require(e.stage.find("LIVE_STORAGE")!=std::string::npos,"cross-API overlapping allocations accepted");
+    if(fault=="v1-draft-load"){
+      const auto& phases=e.draft_v1_lifecycle.load_phases;
+      Require(phases.size()==5&&phases.back().phase=="MODEL_LOAD"&&!phases.back().completed,"failed load timing lost or marked complete");
+    }
     Failure("");Throws([&]{session.Load(config);});Throws([&]{session.RunDraft(DraftInputs());});session.Close();
     events=Trace(path);Require(Count(events,"v2-run")==0&&Count(events,"process")==0&&Count(events,"v2-deinit-weights")==0&&Count(events,"v2-deinit")==1,"failed load retried or used separate weights cleanup");
   }

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "status": "HOST_TESTED_DEVICE_NOT_RUN",
+  "document": "docs/board-resident-load-timing.md",
+  "run": "20261031T011114Z-24876-645bba",
+  "native_ctest_groups_passed": 2,
+  "actual_mixed_integration_cases_passed": 13,
+  "new_device_calls": 0,
+  "models_recompiled": false,
+  "timing_scope": "STARTUP_ONLY_DRAFT_V1_LOAD_PHASES",
+  "sources": {
+    "targets/cpro/runtime/src/hiai_executor.cpp": "9b3cfea00e4f001dcfadb8b4186df85c63ece80ab0033a95bf20df424be500f7",
+    "targets/cpro/runtime/src/board_serial_main.cpp": "85f62844a0b339b5b788bfd1be61345092671c164ddfe7daa051ab550b12acc7",
+    "targets/cpro/runtime/include/qwen35_dflash/hiai_executor.hpp": "d54879ad7a45f24a4a5a911044893d257a1e3550a3e246dfc734e2818e62c67c"
+  },
+  "evidence": {
+    "integration": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T011114Z-24876-645bba/integration.xml",
+    "ctest": "/home/cann/workspaces/ai-model-workspace/.work/qwen3.5-35B-moe/20261031T011114Z-24876-645bba/ctest.log"
+  },
+  "next": "Run one fresh loadtiming request; measure before choosing a loading change."
+}

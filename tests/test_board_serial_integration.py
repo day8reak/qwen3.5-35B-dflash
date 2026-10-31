@@ -491,6 +491,13 @@ def test_actual_mixed_resident_prefill_and_complete_generation(tmp_path, mixed_n
         assert value['weights_deinit_called'] is False and value['weights_deinit_status'] == -1
         assert value['external_weight_release'] == 'NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY'
     assert life['draft_v1_lifecycle']['model_load_api'] == 'legacy-buffer'
+    load_profile = life['draft_v1_lifecycle']['load_profile']
+    assert load_profile['scope'] == 'LOAD_PHASE_WALL_AND_PROCESS_COUNTER_DELTAS_NOT_NPU_OR_SYSTEM_IO'
+    phases = load_profile['phases']
+    assert [row['phase'] for row in phases] == ['CLIENT_INIT', 'RUNTIME_QUERY_AND_DESCRIPTION',
+        'MODEL_MMAP', 'SET_MODEL_BUFFER', 'MODEL_LOAD', 'IO_DESCRIPTORS', 'TENSOR_SETUP']
+    assert all(row['completed'] is True and row['wall_us'] >= 0 for row in phases)
+    assert sum(row['wall_us'] for row in phases) <= (life['draft_load_ms'] + 1) * 1000
     events = trace.read_text().splitlines()
     assert events.index('v2-deinit:qwen35_resident_prefill') < events.index('v2-init:qwen35_resident_target')
     assert events.count('v2-run:qwen35_resident_prefill') == 1 and events.count('v2-run:qwen35_resident_target') == 8

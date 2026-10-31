@@ -12,7 +12,7 @@
 
 用户要求先移除 `dump=false` 的校验和临时文件开销。本版新请求默认使用 `compact-memory-v1`：80 状态与特征在内存反馈，不写中间张量，移除逐步哈希／读回诊断／重复重叠扫描／细粒度日志，已有权重缓存不重新哈希，原表只读 mmap。独立 `native_api_latency` 给出同步 Run／Process 时间，与外层包装时延分开。
 
-先按[本次结果中的只读命令](board-resident-fast-first-completion.md#唯一下一动作)提取PID12858的保留日志，不重跑完整请求。加载计时包含mmap、SetModelBuffer、Load、tensor分配等整个构造过程；冷缓存／内存压力目前只是候选原因。日志不足时再补一次加载的阶段计时与I/O／缺页计数，保持逐token快速路径。首次fast请求已完成，不覆盖原目录。
+用户已补回加载日志，筛选记录将长间隔定位到00:29:38.476—00:33:10.682，但仍缺少buffer设置与Load的边界。新版已增加七段一次性加载计时及可选进程I/O／缺页计数，逐token快速路径不变。下一次完整运行使用[加载计时版命令](board-resident-load-timing.md#ddk主机下一次完整请求)，目录为dflash-board-resident-loadtiming8-run/recovery。首次fast请求已完成，不覆盖原目录。
 
 ## 随后的精度工作：定位首decode差异
 

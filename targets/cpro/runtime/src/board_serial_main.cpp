@@ -362,6 +362,13 @@ class Supervisor {
     value["client_init_attempted"]=e.client_init_attempted;value["client_initialized"]=e.client_initialized;value["load_attempted"]=e.load_attempted;value["loaded"]=e.loaded;value["unload_called"]=e.unload_called;value["closed"]=e.closed;
     auto status=[](const std::optional<std::int64_t>& v){J j;if(v){j.kind=J::Number;j.s=std::to_string(*v);}return j;};
     value["client_init_status"]=status(e.client_init_status);value["load_status"]=status(e.load_status);value["unload_status"]=status(e.unload_status);value["process_attempts"]=e.process_attempts;value["successful_processes"]=e.successful_processes;value["failure_stage"]=e.failure_stage;value["cleanup_error"]=e.cleanup_error;
+    if(!e.load_phases.empty()){
+      J profile=J::Obj();profile["scope"]="LOAD_PHASE_WALL_AND_PROCESS_COUNTER_DELTAS_NOT_NPU_OR_SYSTEM_IO";profile["phases"]=J::Arr();
+      auto counter=[](const std::optional<std::uint64_t>& v){return v?J(*v):J();};
+      for(const auto& p:e.load_phases){J row=J::Obj();row["phase"]=p.phase;row["wall_us"]=p.wall_us;row["completed"]=p.completed;
+        row["minor_faults"]=counter(p.minor_faults);row["major_faults"]=counter(p.major_faults);row["read_bytes"]=counter(p.read_bytes);row["read_chars"]=counter(p.read_chars);profile["phases"].a.push_back(row);}
+      value["load_profile"]=profile;
+    }
     return value;
   }
   J LegacyObservedAbi(const qwen35::dflash::HiaiLegacyLifecycle& e) const {

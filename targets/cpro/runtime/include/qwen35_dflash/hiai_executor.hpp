@@ -144,6 +144,13 @@ struct HiaiLegacyRuntimeTensor {
   std::int64_t raw_format=0;
   std::size_t bytes=0;
 };
+struct HiaiLoadPhase {
+  std::string phase;
+  std::uint64_t wall_us=0;
+  bool completed=false;
+  // Process-local deltas; unavailable/reset counters remain null, never zero.
+  std::optional<std::uint64_t> minor_faults, major_faults, read_bytes, read_chars;
+};
 struct HiaiLegacyLifecycle {
   std::string model_load_api = "legacy-buffer";
   std::string lifecycle_policy = "legacy-v1-load-process-unload-v1";
@@ -157,6 +164,7 @@ struct HiaiLegacyLifecycle {
   std::uint64_t process_attempts=0, successful_processes=0;
   std::string failure_stage, cleanup_error;
   std::vector<HiaiLegacyRuntimeTensor> observed_inputs, observed_outputs;
+  std::vector<HiaiLoadPhase> load_phases;
 };
 
 // One immutable graph, synchronous execution, caller-owned ordered tensor flow.

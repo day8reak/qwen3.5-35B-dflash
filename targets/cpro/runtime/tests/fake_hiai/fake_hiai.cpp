@@ -9,6 +9,8 @@
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
+#include <chrono>
+#include <thread>
 namespace {
 int tensors=0, clients=0;
 std::uint16_t* target_features=nullptr;
@@ -193,6 +195,8 @@ AIStatus AiModelMngerClient::Load(std::vector<std::shared_ptr<AiModelDescription
     model_buffer_=d[0]->GetModelBuffer();model_bytes_=d[0]->GetModelNetSize();
   }
   name_=d[0]->name;
+  if(name_=="qwen35_resident_draft"&&std::getenv("FAKE_HIAI_DRAFT_LOAD_DELAY"))
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
   if(name_.rfind("qwen35_resident_",0)==0)Trace(("v1-load:"+name_).c_str());
   if(name_.rfind("qwen35_resident_",0)==0)Trace(("v1-model-source:"+name_+(file_only?":file-only":":buffer-only")).c_str());
   loaded_=true; // partial target or draft load failure must still unload.
