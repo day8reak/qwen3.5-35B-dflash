@@ -47,7 +47,9 @@
     "cpro": {
       "path": "targets/cpro",
       "profile": "cpro-blue-pending",
-      "skills": {},
+      "skills": [
+        "develop-model-on-x90"
+      ],
       "knowledge": [
         "cpro",
         "dflash"
