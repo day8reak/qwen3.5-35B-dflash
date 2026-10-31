@@ -1,6 +1,6 @@
 # PyTorch 构图、参考与导出
 
-> 开发指南：本页涉及其他导出／ABI路径。当前原40层模型的文字＋预读运行入口在[这里](../board-text-input-output.md)。
+> 开发指南：本页涉及其他导出／ABI路径。当前原40层模型的文字＋预读运行入口在[这里](../reference/board-text-input-output.md)。
 
 
 [首页](../README.md) · [环境配置](environment-setup.md) · [GE 路径](ge-guide.md)

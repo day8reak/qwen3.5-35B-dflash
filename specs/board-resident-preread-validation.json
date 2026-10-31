@@ -8,7 +8,7 @@
   "performance": "NOT_MEASURED_ON_DEVICE",
   "policy": "sequential-1m-v1",
   "default_enabled": false,
-  "document": "docs/board-resident-load-timing.md",
+  "document": "docs/history/board-resident-load-timing.md",
   "baseline_observation": "specs/board-resident-load-observation.json",
   "host_validation": {
     "unique_preparation_transport_cases_passed": 190,

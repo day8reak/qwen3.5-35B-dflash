@@ -12,3 +12,7 @@
 - [项目结构与端到端流程](project-structure.md)
 - [Qwen3.5-MoE（35B-A3B）NPU 工程：算子与量化分析](qwen35-moe-operators-and-quantization-analysis.md)
 - [A 导出后的权重核对与空间复用](target-weight-reuse.md)
+
+- [交接总计划](dflash-delivery-plan.md)
+- [文字接口实现与验证细节](board-text-input-output.md)
+- [离线词表来源与校验细节](tokenizer-offline.md)

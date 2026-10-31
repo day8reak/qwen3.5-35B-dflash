@@ -1,6 +1,6 @@
 # tokenizer 离线准备
 
-[文档首页](README.md) · [下一步：文字＋预读运行](board-text-input-output.md)
+[文档首页](../README.md) · [下一步：文字＋预读运行](board-text-input-output.md)
 
 DDK服务器可以全程离线。`prepare_board_tokenizer.py --source-dir`只读取本地文件、检查大小和SHA256、生成板端词表；不会下载文件。文本请求也直接从本地词表编码，不需要连接Hugging Face。
 
@@ -14,7 +14,7 @@ DDK服务器可以全程离线。`prepare_board_tokenizer.py --source-dir`只读
 | tokenizer_config.json | [固定版本下载](https://huggingface.co/Qwen/Qwen3.5-35B-A3B/resolve/59d61f3ce65a6d9863b86d2e96597125219dc754/tokenizer_config.json?download=true) | 16710 |
 | chat_template.jinja | [固定版本下载](https://huggingface.co/Qwen/Qwen3.5-35B-A3B/resolve/59d61f3ce65a6d9863b86d2e96597125219dc754/chat_template.jinja?download=true) | 7756 |
 
-已有这个准确版本的本地模型目录时，直接复制这三个文件即可。不要取网页HTML、Git LFS指针或不同版本的文件；身份由仓库的[锁定清单](../specs/tokenizer.lock.json)检查。
+已有这个准确版本的本地模型目录时，直接复制这三个文件即可。不要取网页HTML、Git LFS指针或不同版本的文件；身份由仓库的[锁定清单](../../specs/tokenizer.lock.json)检查。
 
 联网电脑也可运行仓库现有准备脚本，随后只把输出的`source/`目录传到服务器：
 
@@ -39,7 +39,7 @@ $AI_RUN_DIR/tokenizer-offline/
 
 若收到本次提供的`qwen35-tokenizer-offline.tar.gz`，包内已经有`source/`和`SHA256SUMS`。先将压缩包传到服务器，选择一个尚不存在的解压目录：
 
-本次包大小为3,521,447字节，SHA256为`68e5346d7072a6aba9e684678f74c2626053cdd2a080ac3adefa4f3de6b28b6e`；不包含模型权重或Python依赖。
+本次包大小为3,521,458字节，SHA256为`005e7724bb07369d6b2e700aab07abd068dfbc2612659e6a0acc0054516ef2d6`；不包含模型权重或Python依赖。
 
 ```bash
 mkdir "$AI_RUN_DIR/tokenizer-offline"
@@ -102,4 +102,4 @@ python3 -c 'import sys, platform; print(sys.version); print(platform.system(), p
 
 三个源文件、板端词表和本地Python依赖准备好后，服务器无需互联网。服务器到板端的HDC仍用于一次下发与最终回收；生成期间不逐token与服务器交互。
 
-本地离线准备已在禁止下载函数与socket连接的测试中通过，记录见[离线验证](../specs/board-tokenizer-offline-validation.json)。这项检查不代表文字请求已经在用户板端执行。
+本地离线准备已在禁止下载函数与socket连接的测试中通过，记录见[离线验证](../../specs/board-tokenizer-offline-validation.json)。这项检查不代表文字请求已经在用户板端执行。

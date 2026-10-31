@@ -2,7 +2,7 @@
   "schema_version": 1,
   "status": "HOST_VALIDATED_COMBINED_TEXT_PREREAD_BOARD_EXECUTION_PENDING",
   "run": "20261031T014052Z-30071-063f8d",
-  "document": "docs/board-text-input-output.md",
+  "document": "docs/reference/board-text-input-output.md",
   "device_calls_by_assistant": 0,
   "models_recompiled": false,
   "production_runtime_changed": false,

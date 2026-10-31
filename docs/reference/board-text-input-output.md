@@ -77,6 +77,6 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
 
 主机复验需要设置 `QWEN35_TOKENIZER_SOURCE_DIR`、`QWEN35_TOKENIZER_TEST_BINARY`，以及混合fixture二进制路径 `QWEN35_RESIDENT_MIXED_TEST_BINARY` 和其 `QWEN35_RESIDENT_MIXED_TEST_BINARY_SHA256`；运行 `pytest tests/test_board_tokenizer.py`。不设置这些显式路径时资源测试跳过，不自动下载或触碰设备。
 
-验证记录见[结构化主机验证](../specs/board-text-host-validation.json)：2670组编码、6066组解码对照无差异；原准备／传输176项回归通过，文字及原生循环16项通过，扩展文字下发4项通过（其中2项与前者传输回归重叠）。实机文字流程待用户运行。
+验证记录见[结构化主机验证](../../specs/board-text-host-validation.json)：2670组编码、6066组解码对照无差异；原准备／传输176项回归通过，文字及原生循环16项通过，扩展文字下发4项通过（其中2项与前者传输回归重叠）。实机文字流程待用户运行。
 
-文字＋预读组合另经4项实际C++／fake HIAI用例通过（chat/raw × 预读开/关），同一请求验证编码、一次prefill、常驻循环、预读完整字节与含预读的总计时、文本解码和最终回收。[组合验证记录](../specs/board-text-preread-validation.json)。这部分是主机验证，合并文字请求的实机结果待回传。
+文字＋预读组合另经4项实际C++／fake HIAI用例通过（chat/raw × 预读开/关），同一请求验证编码、一次prefill、常驻循环、预读完整字节与含预读的总计时、文本解码和最终回收。[组合验证记录](../../specs/board-text-preread-validation.json)。这部分是主机验证，合并文字请求的实机结果待回传。

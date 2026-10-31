@@ -2,7 +2,7 @@
 
 ## 最新实机结果：包含预读的draft加载降到3.883秒
 
-用户回传 `dflash-board-resident-preread8-recovery`（PID21363）：prefill1／decode8／draft7，两个常驻模型各加载一次、正常关闭，接受0/7。完整结果来自用户摘要，助手未连接设备。[结构化记录](../specs/board-resident-preread-observation.json)保留计数与边界。
+用户回传 `dflash-board-resident-preread8-recovery`（PID21363）：prefill1／decode8／draft7，两个常驻模型各加载一次、正常关闭，接受0/7。完整结果来自用户摘要，助手未连接设备。[结构化记录](../../specs/board-resident-preread-observation.json)保留计数与边界。
 
 | 指标 | 无预读PID17495 | 开启预读PID21363 |
 |---|---:|---:|
@@ -15,11 +15,11 @@
 
 本轮draft总加载约缩短53.2倍、完整请求墙钟减少86.6%，收益主要来自启动。预读耗时已计入，不是仅把等待移出Load。此结果支持提前顺序读取有益于加载的解释；仍有44,297次Load major fault，无法断言缺页已清零、具体存储／回收根因或重复稳定性。不同请求生成的token不同，以上不是数值等价后的推测解码加速比。
 
-下一步按用户要求与[文字版完整请求](board-text-input-output.md#2-运行文字版完整闭环)合并；文档命令已带`--draft-preread`。CLI仍显式开启，不改变历史请求策略。
+下一步按用户要求与[文字版完整请求](../reference/board-text-input-output.md#2-运行文字版完整闭环)合并；文档命令已带`--draft-preread`。CLI仍显式开启，不改变历史请求策略。
 
 ## 上轮加载定位：慢在SDK Load
 
-用户回传 `dflash-board-resident-loadtiming8-recovery`（PID17495）已完成prefill1／decode8／draft7、接受0/7，正常关闭。总耗时234.506秒，draft一次加载206.640秒，其中 **MODEL_LOAD占206.630436秒**。mmap仅59µs，SetModelBuffer仅1µs。Load阶段记录128,122次major fault，其他阶段仅TENSOR_SETUP另有10次。完整关键字段见[用户观察](../specs/board-resident-load-observation.json)。助手没有连接设备，以上来自用户粘贴的摘要。
+用户回传 `dflash-board-resident-loadtiming8-recovery`（PID17495）已完成prefill1／decode8／draft7、接受0/7，正常关闭。总耗时234.506秒，draft一次加载206.640秒，其中 **MODEL_LOAD占206.630436秒**。mmap仅59µs，SetModelBuffer仅1µs。Load阶段记录128,122次major fault，其他阶段仅TENSOR_SETUP另有10次。完整关键字段见[用户观察](../../specs/board-resident-load-observation.json)。助手没有连接设备，以上来自用户粘贴的摘要。
 
 这次测量确定了应用侧长耗时位于SDK Load。它支持“加载映射文件时缺页读取很慢”的假设，但无法确定fault地址、底层存储耗时、回收或换页，也不能把fault数乘页大小当成模型实际读取量。read_bytes=0不能在本设备上证明没有I/O；[Linux proc文档](https://docs.kernel.org/filesystems/proc.html)说明这些是特定进程计数，不能代替系统或SDK其他进程观测。
 
@@ -62,7 +62,7 @@ P8/G8单变量首轮已完成。下一次合并文字入口与预读；若专门
 
 ## DDK主机下一次完整请求
 
-当前优先执行[文字＋预读命令](board-text-input-output.md#2-运行文字版完整闭环)。下面保留token输入的重复测量命令：沿用原prompt与生成配置，默认dump=false，使用独立repeat目录。
+当前优先执行[文字＋预读命令](../reference/board-text-input-output.md#2-运行文字版完整闭环)。下面保留token输入的重复测量命令：沿用原prompt与生成配置，默认dump=false，使用独立repeat目录。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -101,4 +101,4 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
 
 恢复仅读取原请求，不能给`--recover`追加`--draft-preread`来改变已执行策略。数值正确性、0接受率和不同请求token差异仍未解决；本实验不重编模型。
 
-主机验证：190项准备／回收测试、14项真实C++＋fake SDK循环场景及1组native生命周期测试通过。[验证记录](../specs/board-resident-preread-validation.json)包含源码身份与测试范围；未连接用户DDK或板端，实机预读收益待回传。
+主机验证：190项准备／回收测试、14项真实C++＋fake SDK循环场景及1组native生命周期测试通过。[验证记录](../../specs/board-resident-preread-validation.json)包含源码身份与测试范围；未连接用户DDK或板端，实机预读收益待回传。

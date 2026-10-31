@@ -2,7 +2,7 @@
 
 更新：2026-10-31。旧主机联调基线：`4ea1c105c66b5014c2c1260ad9f757a096c38028`；当前端侧自主实现见本提交。
 
-本文件是后续执行助手的总计划。机器可读进度见 [dflash-execution-state.json](../specs/dflash-execution-state.json)，立即可运行的命令见 [current-status.md](current-status.md)。每次接手先读这三份；旧验证记录用于查证，不按历史记录重新跑一遍。
+本文件是后续执行助手的总计划。机器可读进度见 [dflash-execution-state.json](../../specs/dflash-execution-state.json)，立即可运行的命令见 [current-status.md](../current-status.md)。每次接手先读这三份；旧验证记录用于查证，不按历史记录重新跑一遍。
 
 ## 1. 目标与本次约定
 
@@ -43,7 +43,7 @@
 | 增量draft缓存图 | `ge_incremental_draft.py`及独立主机等价测试已存在 | **没有新增AIR／OMC／实机增量ABI通过结果** |
 | 精度／稳定性／2倍加速 | 待完成 | 不从有限值、exit0或host测试推断通过 |
 
-主机逐步调度、row63试验、serial-prompt子里程碑及旧加载接口失败见[历史索引](history/README.md)，不再作为当前复现入口。
+主机逐步调度、row63试验、serial-prompt子里程碑及旧加载接口失败见[历史索引](../history/README.md)，不再作为当前复现入口。
 
 旧64-token prompt把现draft S64的输入容量用满；标准下一token anchor需要第65行。当前采用独立8-token请求，完整历史保留，复用旧OMC。新prefill路径将8个有效token填充到物理64行，首个anchor推进decode后使用完整9行历史；合同已实现并通过主机检查，私有算子的有效长度语义仍待数值验证。它不是裁掉旧64-token请求后冒称等价，不自动指定S128。
 
@@ -64,13 +64,13 @@
 
 ## P0. 完成原prefill驱动的端侧自主多轮循环
 
-**状态：passed（执行范围）。** [首次原prefill闭环](history/board-prefill-first-completion.md)实际完成prefill1／decode8／draft7，生成8个token，compact回收成功。精度、状态数值语义、常驻与性能另行验收。
+**状态：passed（执行范围）。** [首次原prefill闭环](../history/board-prefill-first-completion.md)实际完成prefill1／decode8／draft7，生成8个token，compact回收成功。精度、状态数值语义、常驻与性能另行验收。
 
 主机循环 `run_serial_dflash_smoke.py` 仍只算联调。端侧入口新增 `--prefill-feedback` 后，首次非驻留的真实 prefill 驱动 P8/G8 请求当时总墙钟 305.788 秒，prefill 15.802 秒、decode 合计 116.692 秒、draft 合计 137.128 秒，均包含逐次加载／执行／卸载。保留该历史结果作为常驻改动的对照，不要求重复旧 serial 路线。
 
 本阶段已观察：原prefill实际执行一次，明确其80状态、logits和8层features到decode／draft的身份与字节交接；随后由板端完成提议、串行验证、接受／纠正及多轮生成。prefill／decode是不同模型variant，保留各自SHA，不能按RefData编号或相同shape猜对应关系。功能接入应在P0推进；P3保留同输入的数值／历史一致性验收。
 
-当前实现`PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL`：8个有效prompt token右padding到原prefill64，使用显式控制配方和80状态映射；首个anchor在位置8推进decode后，完整9行历史进入原S64 draft。用户已回传该路径的compact实机完成摘要；复现命令见[current-status.md](current-status.md)，合同细节见[board-prefill-integration.md](history/board-prefill-integration.md)。原私有算子的短有效长度语义仍待数值验证。不裁真实历史、不重置位置，P＋G不得超过64，当前不需S128编译。
+当前实现`PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL`：8个有效prompt token右padding到原prefill64，使用显式控制配方和80状态映射；首个anchor在位置8推进decode后，完整9行历史进入原S64 draft。用户已回传该路径的compact实机完成摘要；复现命令见[current-status.md](../current-status.md)，合同细节见[board-prefill-integration.md](../history/board-prefill-integration.md)。原私有算子的短有效长度语义仍待数值验证。不裁真实历史、不重置位置，P＋G不得超过64，当前不需S128编译。
 
 通过条件：
 
@@ -154,11 +154,11 @@ P0 已实现根据该映射交接实际状态、从本次 prefill logits 查原 
 
 **局部预算：0.5–2天。完整验收依赖正确普通baseline；按用户最新要求，接口适配与主机检查提前到P0期间并行。**
 
-具体生命周期和实机待验项见[常驻执行方案](history/resident-runtime-plan.md)。全V1 path-only候选被所选HCL拒绝后，用户明确允许prefill／decode V2与embedded draft V1混合，优先推进常驻。旧请求只按原配置恢复；既有三个OMC及权重均保留。
+具体生命周期和实机待验项见[常驻执行方案](../history/resident-runtime-plan.md)。全V1 path-only候选被所选HCL拒绝后，用户明确允许prefill／decode V2与embedded draft V1混合，优先推进常驻。旧请求只按原配置恢复；既有三个OMC及权重均保留。
 
 P0已经要求端侧自主完整循环；旧主机每步HDC路径仅保留为联调。此阶段优化板端逐次子进程加载和文件交接，不能把这些开销计入DFlash算法收益。先分解模型load／Process／板端状态文件IO／调度／一次部署与最终回收成本。
 
-新请求使用显式 `--resident`、`execution_mode=resident-mixed`：同一线程执行V2 prefill一次并关闭，再各加载一个V2 decode与V1 draft实例，交替Run／Process。循环结束关闭两个实例，无逐token主机交互或模型子进程。V2明确选择manager-only关闭的新实验策略，不独立调用DeinitWeights，标记外权重释放尚未独立验证；DeInit异常仍失败。用户已回传该完整板端请求成功，详见[混合常驻首次结果](history/board-resident-mixed-first-completion.md)；其数值等价与内存稳定性继续验收。
+新请求使用显式 `--resident`、`execution_mode=resident-mixed`：同一线程执行V2 prefill一次并关闭，再各加载一个V2 decode与V1 draft实例，交替Run／Process。循环结束关闭两个实例，无逐token主机交互或模型子进程。V2明确选择manager-only关闭的新实验策略，不独立调用DeinitWeights，标记外权重释放尚未独立验证；DeInit异常仍失败。用户已回传该完整板端请求成功，详见[混合常驻首次结果](../history/board-resident-mixed-first-completion.md)；其数值等价与内存稳定性继续验收。
 
 首次常驻版本保留过80状态私有文件／输出副本；当前`dump=false`已采用内存循环，关闭中间张量文件I/O、张量hash和FP16扫描。完整prefix特征与原S64 draft继续复用，没有新增draft KV ABI，也不宣称零拷贝。显式`--draft-preread`已在实机缩短冷加载；后续优化应针对剩余张量复制与实际Run/Process耗时。常规只回收token／文字和小摘要，`--dump`保留详细证据。加载／Run／关闭时延分开，RSS不等于专用NPU内存。
 
@@ -251,7 +251,7 @@ decode1串行verify仍对每个已提交token运行target，主要是正确性�
 
 可直接复制给后续模型：
 
-> 请先读取 docs/dflash-delivery-plan.md、specs/dflash-execution-state.json 和 docs/current-status.md。P0原prefill→draft／串行verify→多轮generation已由用户实机完成。P5混合接口常驻（prefill/decode V2，draft V1）、无中间文件的内存循环及显式draft预读已实机运行。当前先按 docs/tokenizer-offline.md 离线准备，再按 docs/board-text-input-output.md 一次验证文字＋预读完整请求；之后定位首decode第二token差异，完成P1/P2精度与P5重复稳定性验收。不要求重复已经成功的逐次加载请求，不连接用户设备替代其执行。不要自动指定S128，也不要裁历史或以串行prompt替代原prefill。按计划完成常规修复、验证、提交／推送和远端命令交付，保持旧成功产物。禁止用host测试或有限值冒称设备精度／加速通过。每次结束更新阶段状态、证据和一条下一动作；遇到计划第7节情况，保留最小复现，向用户汇报以便重新规划。
+> 请先读取 docs/reference/dflash-delivery-plan.md、specs/dflash-execution-state.json 和 docs/current-status.md。P0原prefill→draft／串行verify→多轮generation已由用户实机完成。P5混合接口常驻（prefill/decode V2，draft V1）、无中间文件的内存循环及显式draft预读已实机运行。当前先按 docs/reference/tokenizer-offline.md 离线准备，再按 docs/reference/board-text-input-output.md 一次验证文字＋预读完整请求；之后定位首decode第二token差异，完成P1/P2精度与P5重复稳定性验收。不要求重复已经成功的逐次加载请求，不连接用户设备替代其执行。不要自动指定S128，也不要裁历史或以串行prompt替代原prefill。按计划完成常规修复、验证、提交／推送和远端命令交付，保持旧成功产物。禁止用host测试或有限值冒称设备精度／加速通过。每次结束更新阶段状态、证据和一条下一动作；遇到计划第7节情况，保留最小复现，向用户汇报以便重新规划。
 
 每次交接更新状态JSON，并用以下格式简报：
 
@@ -273,7 +273,7 @@ decode1串行verify仍对每个已提交token运行target，主要是正确性�
 
 ## 文字入口与预读合并执行（2026-10-31）
 
-PID21363预读请求已成功完成原prefill1／decode8／draft7；包含预读的draft总加载从206.640秒降至3.883秒、完整请求从234.506秒降至31.455秒。模型API及OMC保持原路径；单次结果不提升数值或重复性能验收。详见[预读观察](../specs/board-resident-preread-observation.json)。
+PID21363预读请求已成功完成原prefill1／decode8／draft7；包含预读的draft总加载从206.640秒降至3.883秒、完整请求从234.506秒降至31.455秒。模型API及OMC保持原路径；单次结果不提升数值或重复性能验收。详见[预读观察](../../specs/board-resident-preread-observation.json)。
 
 用户明确要求将该操作与tokenizer合并，DDK服务器无法联网。先按[离线准备指南](tokenizer-offline.md)准备原词表一次并设置`TOKENIZER_DIR`；下一次直接执行[文字＋预读完整命令](board-text-input-output.md)：`--text`和`--draft-preread`在同一请求中生效。不要额外安排一次纯加载运行；同一结果返回板端编码／解码信息、最终文字和加载／推理时延。
 

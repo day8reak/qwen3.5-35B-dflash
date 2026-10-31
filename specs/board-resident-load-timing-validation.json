@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "status": "HOST_TESTED_DEVICE_NOT_RUN",
-  "document": "docs/board-resident-load-timing.md",
+  "document": "docs/history/board-resident-load-timing.md",
   "run": "20261031T011114Z-24876-645bba",
   "native_ctest_groups_passed": 2,
   "actual_mixed_integration_cases_passed": 13,

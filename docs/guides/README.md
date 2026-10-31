@@ -2,7 +2,7 @@
 
 [文档首页](../README.md) · [当前状态](../current-status.md)
 
-这些文档用于环境和模型导出开发。当前文字＋预读请求见[运行入口](../board-text-input-output.md)。
+这些文档用于环境和模型导出开发。当前文字＋预读请求见[运行入口](../reference/board-text-input-output.md)。
 
 - [AIR 环境排障](air-troubleshooting.md)
 - [板端执行与参考比较](board-guide.md)

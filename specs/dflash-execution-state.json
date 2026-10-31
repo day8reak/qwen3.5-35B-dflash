@@ -2,7 +2,7 @@
   "schema_version": 1,
   "artifact_kind": "qwen35-dflash-execution-plan-state",
   "updated": "2026-10-31",
-  "plan_document": "docs/dflash-delivery-plan.md",
+  "plan_document": "docs/reference/dflash-delivery-plan.md",
   "current_commands": "docs/current-status.md",
   "overall_status": "in_progress",
   "active_phase": "P5",
@@ -332,9 +332,9 @@
     "phase": "P5",
     "type": "run_combined_board_text_preread",
     "implementation_required": false,
-    "command_document": "docs/board-text-input-output.md",
-    "note": "Prepare the three pinned original tokenizer files with local --source-dir, set TOKENIZER_DIR, then execute --text and --draft-preread together using the current command document. No server Internet is required after offline assets/dependencies/code are transferred. Numerical closure follows.",
-    "preparation_document": "docs/tokenizer-offline.md"
+    "command_document": "docs/current-status.md",
+    "note": "Use the standalone environment setup page to prepare the downloadable offline tokenizer; then copy the complete text+preread request and recovery commands from the current-stage page. No sub-document traversal or extra device probe is required.",
+    "preparation_document": "docs/environment-setup.md"
   },
   "last_actual_execution": {
     "schema_version": 1,
@@ -952,7 +952,7 @@
   "load_timing_candidate": {
     "schema_version": 1,
     "status": "USER_REPORTED_DEVICE_OBSERVED_SDK_LOAD_DOMINANT",
-    "document": "docs/board-resident-load-timing.md",
+    "document": "docs/history/board-resident-load-timing.md",
     "run": "20261031T011114Z-24876-645bba",
     "native_ctest_groups_passed": 2,
     "actual_mixed_integration_cases_passed": 13,
@@ -975,16 +975,16 @@
     "status": "HOST_VALIDATED_BOARD_EXECUTION_PENDING",
     "goal": "Board-local original tokenizer encode/decode and autonomous full model loop",
     "validation": "specs/board-text-host-validation.json",
-    "document": "docs/board-text-input-output.md",
-    "next": "Offline prepare with --source-dir and set TOKENIZER_DIR; run docs/board-text-input-output.md with --text and --draft-preread together using new dflash-board-text-preread8-run/recovery directories.",
+    "document": "docs/run-end-to-end.md",
+    "next": "Run the complete commands in docs/current-status.md after offline preparation. Original tokenizer text input/output and explicit draft preread share one board request.",
     "combined_validation": "specs/board-text-preread-validation.json",
-    "offline_document": "docs/tokenizer-offline.md",
+    "offline_document": "docs/environment-setup.md",
     "offline_validation": "specs/board-tokenizer-offline-validation.json"
   },
   "draft_load_task": {
     "status": "USER_REPORTED_PREREAD_STARTUP_IMPROVEMENT_SINGLE_RUN",
     "observation": "specs/board-resident-preread-observation.json",
-    "document": "docs/board-resident-load-timing.md",
+    "document": "docs/results.md",
     "validation": "specs/board-resident-preread-validation.json",
     "next": "Retain explicit --draft-preread in the same request as --text; run board-text-preread8 and recover once. Repeated controlled performance and numerical acceptance remain pending.",
     "default_enabled": false,
@@ -993,11 +993,12 @@
   },
   "documentation": {
     "entry": "docs/README.md",
-    "current_commands": "docs/board-text-input-output.md",
-    "offline_tokenizer": "docs/tokenizer-offline.md",
-    "developer_guides": "docs/guides/README.md",
-    "technical_reference": "docs/reference/README.md",
-    "historical_evidence": "docs/history/README.md",
-    "policy": "Current entry and last_actual_execution take precedence for next actions; historical records retain their observed version and scope."
+    "model": "docs/model-architecture.md",
+    "flow": "docs/end-to-end-flow.md",
+    "results": "docs/results.md",
+    "environment": "docs/environment-setup.md",
+    "full_execution": "docs/run-end-to-end.md",
+    "current_stage_commands": "docs/current-status.md",
+    "maintenance_policy": "Homepage contains only a brief introduction and six direct links. Keep each primary page self-contained; operational pages contain short instructions and complete command blocks. Detailed development and historical evidence remain outside primary navigation."
   }
 }

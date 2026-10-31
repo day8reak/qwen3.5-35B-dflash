@@ -2,7 +2,7 @@
   "schema_version": 1,
   "status": "HOST_VALIDATED_BOARD_EXECUTION_PENDING",
   "run": "20261031T011114Z-24876-645bba",
-  "document": "docs/board-text-input-output.md",
+  "document": "docs/reference/board-text-input-output.md",
   "device_access": "NOT_ATTEMPTED_USER_RUNS_DEVICE",
   "native_build": "RELEASE_HOST_C_AND_CPP_REAL_TOKENIZER_FAKE_HIAI",
   "model_compilation": "NOT_RUN",

@@ -2,7 +2,7 @@
 
 [文档首页](../README.md) · [当前状态](../current-status.md)
 
-保留当时的探针、失败、旧运行方式与首次完成证据。以下页面不是当前待执行清单；当前命令见[文字＋预读入口](../board-text-input-output.md)。
+保留当时的探针、失败、旧运行方式与首次完成证据。以下页面不是当前待执行清单；当前命令见[文字＋预读入口](../reference/board-text-input-output.md)。
 
 - [已完成子里程碑：decode1串行prompt的端侧自主循环](board-first-completion.md)
 - [原prefill驱动的端侧DFlash首次闭环](board-prefill-first-completion.md)
@@ -19,3 +19,5 @@
 - [两条完整 target 路线并行](target-parallel-tracks.md)
 - [历史 Target V2 加载顺序实验](target-resident-load-probe.md)
 - [验证范围与保留结论](validation.md)
+
+- [加载定位与顺序预读测量](board-resident-load-timing.md)

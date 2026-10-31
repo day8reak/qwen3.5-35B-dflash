@@ -2,7 +2,7 @@
   "schema_version": 1,
   "status": "HOST_OFFLINE_PREPARATION_VALIDATED_BOARD_TEXT_EXECUTION_PENDING",
   "run": "20261031T014457Z-30553-67759a",
-  "document": "docs/tokenizer-offline.md",
+  "document": "docs/reference/tokenizer-offline.md",
   "device_calls_by_assistant": 0,
   "models_recompiled": false,
   "production_runtime_changed": false,
@@ -71,5 +71,13 @@
     "tests/test_board_tokenizer.py": "e52875b5c1ea313a3b1aad4f653a1afdcce11360169c7f8e612219d1b863f5e5",
     "specs/tokenizer.lock.json": "f215daa687fab42e7d66b9ea0647aa0ef76b390fb5a9f3bc4e49203e6b837fb1"
   },
-  "scope": "No Internet is needed on the DDK server for tokenizer preparation from local locked files. Text admission/recovery needs a local tokenizers Python package; separate matching-platform wheelhouse instructions are documented. Combined board text execution remains pending."
+  "scope": "No Internet is needed on the DDK server for tokenizer preparation from local locked files. Text admission/recovery needs a local tokenizers Python package; separate matching-platform wheelhouse instructions are documented. Combined board text execution remains pending.",
+  "published_package": {
+    "repo_path": "docs/assets/qwen35-tokenizer-offline.tar.gz",
+    "bytes": 3521458,
+    "sha256": "005e7724bb07369d6b2e700aab07abd068dfbc2612659e6a0acc0054516ef2d6",
+    "url": "https://raw.githubusercontent.com/day8reak/qwen3.5-35B-dflash/main/docs/assets/qwen35-tokenizer-offline.tar.gz",
+    "checksum_url": "https://raw.githubusercontent.com/day8reak/qwen3.5-35B-dflash/main/docs/assets/qwen35-tokenizer-offline.tar.gz.sha256",
+    "change_from_local_package": "README guide path updated; original tokenizer source bytes unchanged"
+  }
 }

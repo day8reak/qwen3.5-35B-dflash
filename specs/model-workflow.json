@@ -6,13 +6,12 @@
   "run_id": "20261031T010820Z-24717-0642a2",
   "navigation": {
     "home": "docs/README.md",
-    "current_commands": "docs/current-status.md",
-    "structure": "docs/reference/project-structure.md",
-    "environment": "docs/guides/environment-setup.md",
-    "pytorch": "docs/guides/pytorch-guide.md",
-    "ge": "docs/guides/ge-guide.md",
-    "board": "docs/guides/board-guide.md",
-    "validation": "docs/history/validation.md"
+    "model": "docs/model-architecture.md",
+    "flow": "docs/end-to-end-flow.md",
+    "results": "docs/results.md",
+    "environment": "docs/environment-setup.md",
+    "full_execution": "docs/run-end-to-end.md",
+    "current_commands": "docs/current-status.md"
   },
   "paths": {
     "legacy_pair": {
@@ -5436,7 +5435,7 @@
       "actions_executed": "NONE"
     }
   },
-  "delivery_plan_document": "docs/dflash-delivery-plan.md",
+  "delivery_plan_document": "docs/reference/dflash-delivery-plan.md",
   "execution_state": "specs/dflash-execution-state.json",
   "planning_horizon": "P0 functional loop through P8 accuracy/stability/performance/release; normal10–20workingdays conditional, optimistic7–10, initialloop0.5–1",
   "current_resident_work": {
@@ -5675,7 +5674,7 @@
         "rounding": "Wrapper totals sum per-call integer milliseconds; API totals sum microseconds. Draft API exceeds wrapper by2.738ms over7calls, within millisecond truncation; do not interpret as negative copy time.",
         "numerical_gap": "Second generated token is2 versus prior resident0 and nonresident12; exact prepared input identities and intermediate states not rechecked. First decode precedes first draft Process, but draft is already loaded.",
         "acceptance_gap": "0/7 accepted. Existing decode1 serial verify still performs one target advance per committed token; no measured target-call reduction or speculative algorithm speedup.",
-        "next": "Load phase timing implemented and host-tested; run docs/board-resident-load-timing.md once while board-local text tokenizer work proceeds. Preserve first-decode divergence investigation."
+        "next": "Load phase timing implemented and host-tested; run docs/history/board-resident-load-timing.md once while board-local text tokenizer work proceeds. Preserve first-decode divergence investigation."
       }
     },
     "host_validation_limitation": "Host tests and two user-reported mixed runs establish execution observations, not numerical equivalence, repeated stability or independent external weight release.",
@@ -5716,7 +5715,7 @@
     "user_authorization": "2026-10-31 async reply: 允许混合接口，优先推进常驻（推荐）",
     "prior_candidate": "specs/resident-v1-file-buffer-candidate.json",
     "external_weight_release": "NOT_INDEPENDENTLY_VALIDATED_MANAGER_DEINIT_ONLY",
-    "next_action": "Load phase timing implemented and host-tested; run docs/board-resident-load-timing.md once while board-local text tokenizer work proceeds. Preserve first-decode divergence investigation.",
+    "next_action": "Use the complete offline tokenizer+text+preread commands in docs/current-status.md; environment and download commands are in docs/environment-setup.md.",
     "compact_memory_task": {
       "runtime_profile": "compact-memory-v1",
       "device_validation": "USER_REPORTED_EXECUTED_UNVALIDATED",
@@ -5732,7 +5731,7 @@
   "load_timing_candidate": {
     "schema_version": 1,
     "status": "HOST_TESTED_DEVICE_NOT_RUN",
-    "document": "docs/board-resident-load-timing.md",
+    "document": "docs/history/board-resident-load-timing.md",
     "run": "20261031T011114Z-24876-645bba",
     "native_ctest_groups_passed": 2,
     "actual_mixed_integration_cases_passed": 13,
@@ -5755,14 +5754,14 @@
     "status": "HOST_VALIDATED_BOARD_EXECUTION_PENDING",
     "goal": "Board-local original tokenizer encode/decode and autonomous full model loop",
     "validation": "specs/board-text-host-validation.json",
-    "document": "docs/board-text-input-output.md",
-    "next": "Run docs/board-text-input-output.md with --text and --draft-preread together; use dflash-board-text-preread8-run/recovery. Tokenizer preparation is once only.",
+    "document": "docs/current-status.md",
+    "next": "Use the complete offline tokenizer+text+preread commands in docs/current-status.md; environment and download commands are in docs/environment-setup.md.",
     "combined_validation": "specs/board-text-preread-validation.json"
   },
   "draft_load_task": {
     "status": "USER_REPORTED_PREREAD_STARTUP_IMPROVEMENT_SINGLE_RUN",
     "observation": "specs/board-resident-preread-observation.json",
-    "document": "docs/board-resident-load-timing.md",
+    "document": "docs/results.md",
     "validation": "specs/board-resident-preread-validation.json",
     "next": "Retain explicit --draft-preread in the same request as --text; run board-text-preread8 and recover once. Repeated controlled performance and numerical acceptance remain pending.",
     "default_enabled": false,
