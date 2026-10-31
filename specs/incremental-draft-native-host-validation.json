@@ -23,7 +23,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "Profile the current incremental OMC with --allow-numerical-failure; retain original accuracy results. Offline region analysis is optional.",
+  "next": "Read existing compiled-precision.json partition counts; isolate runtime partition overhead and evaluate fixed-row projection work before a controlled optimization.",
   "latest_user_board_observation": {
     "source": "USER_PASTED_RECOVERY_JSON",
     "independently_retrieved": false,
@@ -148,5 +148,36 @@
       "source numerical status survives launch and recovery"
     ],
     "local_test_sources": "NOT_PUBLISHED"
+  },
+  "latest_incremental_profile_observation": {
+    "source": "USER_PASTED_OP_TABLE_MODEL_CSV_AND_MODEL_TOOL_LOG",
+    "independently_retrieved": false,
+    "context_rows": 16,
+    "cache_capacity": 192,
+    "max_draft_tokens": 15,
+    "case_metadata_source": "CURRENT_DEFAULT_PROFILE_PLAN; REQUEST_NOT_INDEPENDENTLY_READ",
+    "profile_case": 2,
+    "profile_case_valid_rows": 2,
+    "profile_case_context_end": 18,
+    "operator_times_us": {
+      "feature_projection_conv": 70968,
+      "vocabulary_matmul": 19911,
+      "cpu_argmax": 13883
+    },
+    "user_reported_operator_sum_us": 142440,
+    "model_csv_inference_total_us": 518990,
+    "model_csv_load_total_us": 558829,
+    "model_csv_unload_total_us": 56097,
+    "tool_v1_load_time_us": 606042,
+    "inference_minus_operator_sum_us": 376550,
+    "difference_scope": "ARITHMETIC_DIFFERENCE_ONLY_NOT_DISJOINT_RUNTIME_OVERHEAD; OPERATOR_COVERAGE_AND_OVERLAP_UNVERIFIED",
+    "tool_execute_result": "Success",
+    "api_timer_scope": "STEADY_CLOCK_AROUND_SYNCHRONOUS_CLIENT_PROCESS_ONLY",
+    "external_copy_load_tokenizer_and_cache_commit_in_api_timer": false,
+    "cpu_npu_partitioning": "OBSERVED_FP32_RMS_ATTENTION_AND_RESIDUAL_CPU_WITH_FP16_MATMUL_NPU",
+    "gap_attribution": "UNRESOLVED_RUNTIME_DISPATCH_SYNCHRONIZATION_AND_INTERNAL_TRANSFERS_ARE_HYPOTHESES",
+    "timestamp_caveat": "SAME_STREAM_CONV_AND_DEPENDENT_RESHAPE_STARTS_DIFFER_BY_2_US_WITH_CONV_DURATION_70968_US; DO_NOT_CONSTRUCT_DEVICE_TIMELINE_WITHOUT_CLOCK_SCOPE",
+    "static_work": "C16_CONTEXT_PROJECTION_EXECUTES_FOR_PARTIAL_OR_ZERO_VALID_ROWS",
+    "next": "Inspect existing compiled CPU/NPU partitions. Keep baseline precision and raw CSV; compare changed graphs on the same inputs using whole-model wall time."
   }
 }

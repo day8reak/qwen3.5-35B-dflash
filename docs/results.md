@@ -1,6 +1,6 @@
 # 当前结果
 
-最新实机记录为用户回传的`fused/result`，板端PID34211。C16／cap192／K15增量Draft，18个prompt token、生成8个，混合接口常驻、dump关闭、顺序预读开启。完整流程接通；独立Draft数值验证已执行但未通过，见下节。以下未独立读取板端原始产物。
+整体流程记录为用户回传的`fused/result`，板端PID34211。C16／cap192／K15增量Draft，18个prompt token、生成8个，混合接口常驻、dump关闭、顺序预读开启。完整流程接通；后续独立精度与profiling见下文。以下未独立读取板端原始产物。
 
 ## 增量Draft独立验证
 
@@ -24,9 +24,27 @@ L2口径为`norm(actual-reference)/norm(reference)`。现有KV指标来自整块
 | 每次输入参考KV | 11／548.396 ms | 8／548.296 ms |
 | 连续复用板端KV | 11／539.176 ms | 8／543.051 ms |
 
-这是不同上下文长度下的诊断API墙钟，包含首次调用，不是同输入稳态基准。当前静态图中`proposal_count=0`只改变掩码，仍保留候选计算与词表head；所以补齐并非只执行KV投影。需要新profiling才能确定各部分耗时。精度失败状态保留，未放宽比较阈值。
+这是不同上下文长度下的诊断API墙钟，包含首次调用，不是同输入稳态基准。当前静态图中`proposal_count=0`只改变掩码，仍保留候选计算与词表head；所以补齐并非只执行KV投影。本轮proposal profiling见下节，补齐需另行测量。精度失败状态保留，未放宽比较阈值。
 
 ## 推理时延
+
+最新用户回传增量C16的算子表、同轮模型CSV及厂商工具日志，执行成功。模型CSV的`inference end`记录518.990ms，确认整模型推理仍约0.52秒。
+
+| 增量Draft热点 | CSV设备 | 记录耗时 |
+|---|---|---:|
+| `__ge/v23/full_dot_conv/output(Convolution)`，入口特征投影 | npu_aicore | 70.968 ms |
+| `__ge/draft_logits/flat_output(MatMul)`，完整词表head | npu_aicore | 19.911 ms |
+| `draft_top1(ArgMaxExt2)` | cpu | 13.883 ms |
+| 用户表中算子耗时合计 | CPU与NPU混合 | 142.440 ms |
+| 模型CSV `inference end` | 整模型推理事件 | **518.990 ms** |
+
+Conv2D占算子合计约49.8%，其时长相当于整模型推理的13.7%。518.990与142.440的算术差为376.550ms；由于算子计时覆盖范围与重叠关系未核实，这不是已测得的“CPU开销”或可直接分配的时间桶。此前同步`Process`为539～608ms，与本轮整模型记录量级一致，但输入、上下文和首次调用条件不同，不能当成配对差值。
+
+源码的API计时仅包住同步`client.Process()`，外部输入拷贝、输出文件、tokenizer与KV提交在其外。同轮模型CSV另列加载558.829ms、卸载56.097ms；工具的V1加载日志为606.042ms，计时范围不同，均不并入518.990ms推理。日志`time: 1`未标注耗时单位，不作为时延读数。
+
+当前精度策略让FP32 RMS、score/Softmax与残差加法落在CPU，FP16矩阵乘落在NPU。多次跨设备分段的调度、同步及运行时内部搬运是待测原因，未将全部差额归给CPU。表中同一stream的Conv2D与其输出Reshape起点仅差2μs，而Conv记录70.968ms；起点与duration尚不能组成可信设备执行时间线。
+
+当前图固定计算16行context投影，即使只追加2行，或某轮`valid_rows=0`，掩码也不会删除这段计算。当前脚本默认profiling样本为case2、追加2行；尚未独立读取本轮request确认。下一步核对编译后的CPU/NPU分段，同时评估投影表达与有效行计算量；优化收益以同一输入的整模型墙钟确认。入口使用Conv2D是因为此前选定OMG拒绝K=16384的MatMul，不能直接换回原MatMul就宣称可用。
 
 | 阶段 | 调用数 | 同步SDK API平均时延 |
 |---|---:|---:|
@@ -76,7 +94,7 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 | 增量Draft完整板端流程 | 17输入／14输出接通，KV提交完成 |
 | Draft独立数值精度 | 38次完成；旧逐元素规则未通过，当前作为阶段性诊断基线 |
 | Target精度与语言质量 | 调试中，不据此判断Draft精度 |
-| 新增量OMC逐算子性能 | 当前待采集，允许已完成数值失败结果进入诊断profiling |
+| 新增量OMC逐算子性能 | 用户回传：Conv70.968ms；同轮整模型518.990ms |
 | 相对普通Decode的配对加速 | 未测得 |
 
 ## 原S64 Profiling参考
@@ -89,4 +107,4 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 | `__ge/draft_logits/flat_output(MatMul)` | npu_aicore | 19.912 ms |
 | `draft_top1(ArgMaxExt2)` | cpu | 13.058 ms |
 
-`v20`对应入口特征投影。新C16图沿用Conv2D表达，但固定处理16行，不能按64／16比例直接预测耗时。后续以新CSV检查投影、全词表head／Top1与CPU/NPU调度；不把跨stream算子时间直接求和，也不据4B比例承诺50ms。
+`v20`对应入口特征投影。新C16图沿用Conv2D表达，当前记录70.968ms；两个算子记录约相差4倍，不等于端到端4倍加速。后续以新CSV检查投影、全词表head／Top1与CPU/NPU调度；不把跨stream算子时间直接求和，也不据4B比例承诺50ms。

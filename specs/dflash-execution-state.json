@@ -964,7 +964,7 @@
     "maintenance_policy": "Homepage contains only a brief introduction and six direct links. Keep each primary page self-contained; operational pages contain short instructions and complete command blocks. Detailed development and historical evidence remain outside primary navigation."
   },
   "incremental_draft_task": {
-    "status": "USER_ACCEPTED_INTERIM_BASELINE_DIAGNOSTIC_PROFILING_PENDING",
+    "status": "USER_REPORTED_INCREMENTAL_MODEL_INFERENCE_518990_US",
     "context_gears": [
       16,
       64
@@ -980,7 +980,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "profile_draft.py --accuracy \"$AI_RUN_DIR/draft/tests/accuracy-result\" --allow-numerical-failure --output \"$AI_RUN_DIR/draft/tests/profile\" --apply",
+    "next_command": "Inspect existing draft/omc/compiled-precision.json; see docs/current-status.md",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",

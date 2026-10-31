@@ -5802,11 +5802,11 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "INTERIM_NUMERICAL_BASELINE_DIAGNOSTIC_PROFILING",
+    "status": "PROFILE_MODEL_INFERENCE_518990_US_RUNTIME_GAP_UNATTRIBUTED",
     "entry": "targets/cpro/tools/profile_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Profile the current incremental OMC with --allow-numerical-failure; retain original accuracy results. Offline region analysis is optional."
+    "next": "Inspect existing compiled-precision.json partition counts; isolate runtime overhead and evaluate projection/physical context rows without changing the numerical baseline."
   }
 }
