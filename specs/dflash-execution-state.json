@@ -1083,7 +1083,7 @@
     "compiled_add_boundary_observation": "specs/incremental-draft-native-host-validation.json#compiled_add_boundary_observation",
     "compiled_add_kernel_observation": "specs/incremental-draft-native-host-validation.json#compiled_add_kernel_observation",
     "pytorch_candidate": {
-      "source": "USER_PASTED_COMPILED_MANIFEST_AND_INTERFACE",
+      "source": "USER_PASTED_COMPILATION_INTERFACE_AND_RECOVERED_NUMERICAL_SUMMARY",
       "independently_retrieved": false,
       "model_compilation": "PASSED",
       "graphop_counts": {
@@ -1092,8 +1092,8 @@
       },
       "inputs": 17,
       "outputs": 14,
-      "device_execution": "FAILED_AT_MODEL_LOAD",
-      "numerical_validation": "NOT_RUN",
+      "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+      "numerical_validation": "FAILED",
       "internal_arithmetic_precision": "UNVERIFIED",
       "production_promotion": "NOT_PERFORMED",
       "diagnostic_entry": "targets/cpro/tools/validate_incremental_draft.py",
@@ -1167,7 +1167,100 @@
         "inference_timing": "NOT_MEASURED",
         "recovery_fix_host_checks": 9,
         "recovery_fix_scope": "MOCK_HDC_AND_SHARED_LOG_SELECTION_ONLY"
-      }
+      },
+      "numerical_execution": {
+        "source": "USER_PASTED_RECOVERY_JSON_2026_11_02; RAW_SNAPSHOTS_NOT_INDEPENDENTLY_READ",
+        "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_ec3f7c3136ac43fcb927c25eef63f4e3",
+        "model_sha256": "NOT_PROVIDED_IN_THIS_SUMMARY; DO_NOT_REUSE_PRIOR_FAILED_MODEL_HASH",
+        "status": "NUMERICAL_FAILED",
+        "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+        "isolated": {
+          "cases": 19,
+          "passed": 0,
+          "top1_matches": 0,
+          "top1_tokens": 86,
+          "kv_failed": 13,
+          "hidden_relative_l2": [
+            1.0,
+            1.4075795033199092
+          ],
+          "kv_appended_relative_l2": [
+            0.004417372793104131,
+            0.008283531899103903
+          ],
+          "proposal_api_mean_ms": 727.875375,
+          "catchup_api_mean_ms": 734.7269090909091
+        },
+        "feedback": {
+          "cases": 19,
+          "passed": 0,
+          "top1_matches": 0,
+          "top1_tokens": 86,
+          "kv_failed": 18,
+          "hidden_relative_l2": [
+            1.0,
+            1.4075223089732272
+          ],
+          "kv_appended_relative_l2": [
+            0.004417372793104131,
+            0.008283531899103903
+          ],
+          "proposal_api_mean_ms": 727.062125,
+          "catchup_api_mean_ms": 735.9185454545454
+        },
+        "first_failure": {
+          "index": 0,
+          "label": "empty-context",
+          "actual_top1": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "hidden_max_abs_error": 4.44921875,
+          "hidden_rmse": 0.9999992592062805,
+          "hidden_relative_l2": 1.0
+        },
+        "later_proposals": "ALL_REPORTED_ACTIVE_TOP1_TOKENS_314_IN_BOTH_MODES",
+        "hidden_zero_or_duplicate_rows": "NOT_ESTABLISHED_BY_SUMMARY; READ_RETAINED_BYTES",
+        "cache_preservation_failed": 0,
+        "feedback_repeat_indices_bitwise_equal": [
+          3,
+          18
+        ],
+        "timing_scope": "SYNCHRONOUS_API_WALL_DIAGNOSTIC_MIXED_INPUTS_NOT_WARM_BENCHMARK",
+        "comparison": "UNCHANGED_ELEMENTWISE_ATOL_0.01_RTOL_0.01_AND_ZERO_TOP1_MISMATCHES; NO_L2_GATE",
+        "root_cause": "UNRESOLVED; CONTEXT_KV_IS_INDEPENDENT_OF_CANDIDATE_ATTENTION",
+        "next": "DDK_SERVER_READ_ONLY --diagnose EXISTING_RESULT --source PREPARED; docs/current-status.md"
+      },
+      "output_diagnosis": {
+        "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose",
+        "host_checks": 13,
+        "scope": "SYNTHETIC_RETAINED_BYTES_AND_CLI; NOT_USER_RAW_TENSORS_OR_DEVICE",
+        "inspects": [
+          "active hidden zero rows and bitwise repeated rows",
+          "reference hidden statistics",
+          "adjacent proposal common prefix and corresponding isolated/feedback hidden",
+          "hash and values of retained control input files",
+          "optional hash-bound prepared mask/anchor embedding rows"
+        ],
+        "model_execution": "NOT_RUN",
+        "model_compilation": "NOT_RUN",
+        "production_promotion": "NOT_PERFORMED",
+        "limitations": "SOURCE_ROWS_ARE_NOT_DEVICE_GATHER_OUTPUTS; INPUT_FILES_ARE_NOT_DEVICE_READBACK"
+      },
+      "next": "DDK_SERVER_READ_ONLY --diagnose EXISTING_RESULT --source PREPARED; docs/current-status.md"
     }
   },
   "draft_milestone_e2e_gate": {

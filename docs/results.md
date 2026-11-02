@@ -2,6 +2,25 @@
 
 当前开发集中推进PyTorch Draft，手写GE／AddCustom优化按用户要求暂缓。现有公共GE产物继续作为已接通的运行基线，PyTorch尚未替换它。
 
+## 最新PyTorch独立执行：加载成功，数值失败
+
+2026-11-02，用户回传尝试`ec3f7c3136ac43fcb927c25eef63f4e3`的完整比较摘要：`EXECUTED_OUTPUTS_RETRIEVED`、`NUMERICAL_FAILED`，任务完成且锁释放。两组各19次调用全部完成，说明本次已经跨过此前的Fill加载失败；38例均未通过原比较门槛。以下为用户回传，未独立读取原始板端张量，新OMC的hash未在本条摘要中提供。
+
+| 指标 | 参考KV输入 isolated | 板端KV反馈 feedback |
+|---|---:|---:|
+| 有效Top1一致数 | 0/86 | 0/86 |
+| hidden相对L2范围 | 1.0～1.40758 | 1.0～1.40752 |
+| 新增KV相对L2范围 | 0.004417～0.008284 | 0.004417～0.008284 |
+| KV未写区失败 | 0 | 0 |
+| Proposal：8次同步API均值 | 727.875 ms | 727.062 ms |
+| Catchup：11次同步API均值 | 734.727 ms | 735.919 ms |
+
+首轮空context的15个Top1全为0，hidden相对L2=1，最大绝对误差4.44921875；后续所有proposal输出均为314，更换anchor也未改变Top1。尚不能只凭这些汇总断定hidden全零或各行逐位相同。新增context KV独立于候选Attention计算，其误差较小并不能证明候选分支正确。原逐元素阈值仍使isolated的13例、feedback的18例KV失败；反馈中的两次相同输入重复输出逐位一致。
+
+本轮为不同上下文及proposal数量的诊断调用，不是同输入预热稳态基准。约727ms远未达到50ms目标；与旧GE的profiling记录不构成配对性能对照。先定位候选embedding／临时block KV／Attention／hidden输出异常，保留数值失败与生产未提升状态。
+
+新增`validate_incremental_draft.py --diagnose`读取已回收快照：检查四个控制量的文件hash及值，统计有效hidden的零行、逐位唯一行数、范数、跨调用及两序列对应行差异；可选prepared源权重检查mask／anchor embedding行。它先复算原比较，不改验收规则或结果文件，不调用模型。13项主机合成检查通过，覆盖全零、重复行、同Top1但不同hidden、不同物理控制槽、无效尾行、NaN／Inf、有符号零、文件篡改／截断拒绝及CLI只读行为。源码对照Target的NZ排布及端口未发现直接解释此错误的差异；真实张量统计仍需执行[当前命令](current-status.md)。
+
 整体流程记录为用户回传的`fused/result`，板端PID34211。C16／cap192／K15增量Draft，18个prompt token、生成8个，混合接口常驻、dump关闭、顺序预读开启。完整流程接通；后续独立精度与profiling见下文。以下未独立读取板端原始产物。
 
 ## 增量Draft独立验证
@@ -109,7 +128,9 @@ FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitc
 
 KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Draft API均值726.839ms与这次不是严格配对试验，不能直接作为优化收益结论。
 
-## PyTorch当前开发路线（编译成功，独立上板Load失败）
+## PyTorch此前的编译与加载定位
+
+本节保留此前失败及修复的过程；最新加载和数值状态以上方独立执行结果为准。
 
 用户随后回传独立执行`da070fd03aab4ab2b6cef0011270bb3f`：源图／编译槽位及参考权重绑定完成，19组CPU参考完成，新模型2851073026字节上传完成；packed OMC SHA256为`48d087e60ba505c7c23e7f4478b5c87d1d2fc14b692a1ae06cc4c3088776d83b`。runtime `800.631.120.010`完成ClientInit、运行版本查询、mmap、顺序预读及SetModelBuffer，SDK `MODEL_LOAD`在844976μs后返回1。native退出码1，任务已完成且锁释放，未执行推理／KV比较；844.976ms是失败加载耗时，不是proposal耗时。
 

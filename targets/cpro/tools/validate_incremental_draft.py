@@ -19,6 +19,7 @@ def main():
     mode.add_argument('--recover')
     mode.add_argument('--inspect',help='print existing comparison details locally; no board access')
     mode.add_argument('--analyze',help='recompute new-KV and repeat diagnostics from retained host tensors')
+    mode.add_argument('--diagnose',help='inspect retained hidden zeros/repeated rows and controls; optional --source checks embedding rows locally')
     parser.add_argument('--output')
     parser.add_argument('--apply',action='store_true')
     parser.add_argument('--atol',type=float)
@@ -26,6 +27,13 @@ def main():
     parser.add_argument('--timeout-seconds',type=int,default=1800)
     args=parser.parse_args()
     from qwen35_moe_dflash.draft.incremental.accuracy import summarize_result
+    if args.diagnose:
+        if (args.apply or any((args.config,args.compiled,args.air_export,args.output,args.ddk_root))
+                or args.atol is not None or args.rtol is not None):
+            parser.error('--diagnose reads retained results and optional --source only')
+        from qwen35_moe_dflash.draft.incremental.accuracy_diagnose import diagnose_result
+        print(json.dumps(diagnose_result(args.diagnose,source=args.source),ensure_ascii=False,allow_nan=False))
+        return 0
     if args.inspect or args.analyze:
         if (args.apply or any((args.config,args.compiled,args.source,args.air_export,args.output,args.ddk_root))
                 or args.atol is not None or args.rtol is not None):

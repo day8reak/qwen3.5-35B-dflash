@@ -1,25 +1,25 @@
 # 当前阶段测试命令
 
-当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**。按用户要求暂缓手写GE和AddCustom优化，不再要求运行相关探针。成功导出的AIR统一放`draft/air/`，编译和测试直接引用它。当前可运行OMC仍放`draft/omc/`；新OMC完成接口绑定和板端验证后再替换运行模型。`tests/`用于测试记录和可清理的构建临时文件。
+当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**，手写GE／AddCustom按用户要求暂缓。成功AIR放在`draft/air/`；PyTorch候选仍在`draft/tests/pytorch-omc/`，没有替换公共`draft/omc/`。
 
-目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms，尚未达到。用户已回传`PYTORCH_DRAFT_OMC_COMPILED`，公共接口保持17输入／14输出，编译分段为CPUCL3／NPUCL2。旧GE的518.990ms仍是旧模型结果；新模型在SDK Load失败，尚无推理数值或时延。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
+目标仍为C16／cap192／K15，常驻预热后proposal同步`Process`平均≤50ms，尚未达到。最新用户结果已完成Load及两组各19次调用；原比较门槛下38例均失败。两组Top1均为0/86，首轮全部0，后续proposal均为314；hidden相对L2为1.0～1.408，新增KV为0.44%～0.83%，未写区逐位保持。proposal诊断API均值约727ms，不能视为已完成预热的基准。详见[当前结果](results.md)。
 
-**HiLog候选会话已显示CPUCL的`Fill_1`初始化失败：`input1 dtype:1 is not support`，随后SubGraph_0初始化失败并导致Load返回1。已增加静态Fill物化，需复编并验证加载。以下均在DDK服务器`t00826215_atc_mobile`的`custom_pypto`环境执行；复用现有AIR、prepared权重和native runner。**
+**本轮先分析已回收的输出。在DDK服务器`t00826215_atc_mobile`的`custom_pypto`环境执行：**
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
-  --air-export "$AI_RUN_DIR/draft/air" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --diagnose "$AI_RUN_DIR/draft/tests/pytorch-result" \
+  --source "$AI_RUN_DIR/draft/source/prepared"
 ```
 
-预处理策略为`draft-static-preparation-v4`，进度新增`materialized N Fill constants`。只把能从AIR证明尺寸和字面填充值的Fill替换为同输出dtype的Const，保留负无穷／有符号零，拒绝有损转换；不会把mask负无穷改成有限负值。来源、尺寸、dtype及标量字节保存在`compilation/air-preparation.json`的`fills`中。不修改公共AIR或权重，无需权重服务器重新导出。预处理失败会在权重快照／OMG之前报告具体Fill节点。
+该命令复核原比较结果，读取现有二进制快照并检查四个控制量文件的hash和值；不执行模型、不重编、不访问板端、不改阈值。可选`--source`核对PyTorch ABI绑定中的prepared身份及embedding文件hash，只读取mask／anchor行的数值，不装载完整Draft。
 
-用户随后遇到`Shape:0`的dtype预检查失败；实际节点确认Shape／Cast的输出描述仍为`dtype=1, shape={}`占位，但`Shape.dtype=3`、索引`Cast.dst_type=3`及mask `Cast.dst_type=1`属性已明确。已修正为按GE属性枚举解析INT32／FP16，和protobuf描述枚举分开处理，并精确计算填充值的常量Cast。只有无已知shape且无`_meta`的缺省描述允许由显式属性补足；明确冲突仍拒绝。更新代码后执行上面的同一复编命令即可，属性及推导类型写入`fills.value_proofs`。
+重点看`cases[].hidden`的`zero_rows`、`unique_rows_bitwise`、行范数和前8个数；`previous_proposal`比较相邻proposal的共同有效位置，`same_case_isolated_hidden`比较两组对应调用。`reference_hidden`提供独立参考的同类统计。相同Top1不代表hidden逐位相同，L2=1也不单独证明全零，须由这些实际字节检查确认。embedding字段仅反映源文件，不证明板端Gather读到了正确行；控制文件核验同样不是设备输入回读。
 
-返回`PYTORCH_DRAFT_OMC_COMPILED`后，启动新候选的独立验证。上次任务已结束且锁释放，可以复用固定测试目录：
+新增context KV由特征投影独立生成，不依赖候选分支的Attention结果。KV误差较小、未写区保持，只能验证该部分，不能替代embedding、临时block KV、Attention和hidden/head的逐段定位。源码已对照Target CPro的NZ转换、18个端口及长度属性，尚未找到能解释本次固定候选输出的源码差异。
+
+以下为模型修正并复编后的验证流程，本轮保留现有结果用于上述离线诊断。新编译成功后，仍用原独立CPU参考和17／14 native runner：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
@@ -31,9 +31,7 @@ python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-run" --apply
 ```
 
-脚本先按源AIR的控制／缓存连线绑定语义输入，再按编译Data.index排序；KV不按相同尺寸猜顺序。编译输入hash、输出顺序、权重准备与编译快照hash一起核验，绑定证据在`pytorch-run/fixture/pytorch-abi.json`。使用原独立CPU参考，执行参考KV输入及板端KV连续反馈两条序列，检查Top1、hidden、12个K/V及未写区逐位不变。首次运行自动上传新模型，后续按SHA复用模型缓存；不会替换`draft/omc`或启动Target。
-
-看到`DRAFT_ACCURACY_STARTED`后，在**同一DDK服务器**回收同一次执行：
+看到`DRAFT_ACCURACY_STARTED`后，在同一DDK服务器回收同一次执行：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
@@ -41,9 +39,9 @@ python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-result"
 ```
 
-若为`DRAFT_ACCURACY_PENDING`，稍后重复回收命令；不要重发`--apply`。原生runner沿用`runtime/native/build/qwen35_draft_accuracy`。仅当脚本提示缺少或构建身份不匹配时，在DDK服务器运行`python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" --output "$AI_RUN_DIR/runtime/native" --replace`后再启动。
+若为`DRAFT_ACCURACY_PENDING`，稍后重复回收命令，不重发`--apply`。runner为`runtime/native/build/qwen35_draft_accuracy`；仅在脚本报告缺少或构建身份不匹配时重建。绑定证据在`pytorch-run/fixture/pytorch-abi.json`，以源AIR语义连线与编译Data.index确定输入角色，KV不按尺寸猜顺序。两序列分别使用参考KV及连续板端KV反馈。
 
-结果中的`native_api_latency`为诊断调用的同步API墙钟，包含首次调用、不同上下文和补齐／proposal分类，尚非预热稳态基准。既有逐元素门槛`atol=0.01 / rtol=0.01`和Top1零差异规则保持，失败仍报告失败，并单列relative L2；它不是“L2小于1%”的判据。内部FP32算术仍未证明，候选不因此自动进入生产运行链路。
+逐元素门槛`atol=0.01 / rtol=0.01`和Top1零差异规则保持；relative L2是诊断量，不是新增验收条件。候选未提升为生产模型，内部精度尚未证明。
 
 以下为首次导出／工具链准备的说明，本轮无需重复执行。当前预处理继续保留Reshape链简化、静态ZerosLike物化和FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。每个节点的来源、形状及修改前后标志保存在`compilation/air-preparation.json`中。
 
@@ -174,6 +172,6 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 ## 4. 本阶段通过条件与后续
 
-用户已回传融合版`PYTORCH_DRAFT_OMC_COMPILED`和编译接口。独立尝试已在SDK Load返回1；下一步为本页开头的失败日志回收，定位修复后再做Load／KV验证。当前跨子图仍有FP32／FP16 Cast，不能从子图数量或接口dtype推断内部精度、Load成功或达到50ms。
+用户已回传融合版编译成功及38次板端调用完成，但数值失败；当前按本页开头命令检查保留张量。CPUCL3／NPUCL2及跨子图Cast属于编译结构观察，不证明内部精度或达到50ms。
 
-前一轮主机检查覆盖C16／C64、K15／7／3／1、滑窗开关共280步：使用CPU模拟Target布局／调用，与原语参考的Top1、hidden、全部K/V完全一致，输入KV和未写区保持。真实宽度的布局索引检查覆盖212992个元素；四档完整形状图捕获均为6个测试融合节点、32个测试RMS节点、17／14接口及INT32 Gather。这些检查验证适配器和mask／缓存语义，不验证厂商融合内核。OMG已由用户报告成功，板端精度与性能仍待验证。
+前一轮主机检查覆盖C16／C64、K15／7／3／1、滑窗开关共280步：使用CPU模拟Target布局／调用，与原语参考的Top1、hidden、全部K/V完全一致，输入KV和未写区保持。真实宽度的布局索引检查覆盖212992个元素；四档完整形状图捕获均为6个测试融合节点、32个测试RMS节点、17／14接口及INT32 Gather。这些检查验证适配器和mask／缓存语义，不验证厂商融合内核。OMG及板端执行已由用户报告成功；最新板端数值失败，50ms目标未达到。

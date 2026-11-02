@@ -5806,8 +5806,8 @@
     "entry": "targets/cpro/scripts/export_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
-    "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Weight server: finalize saved draft/tests/export into draft/air without re-exporting; transfer whole AIR to selected DDK and compile. Intermediate attention dimensions remain unknown until OMG inference and subsequent interface/device validation.",
+    "device_numerics": "PYTORCH_USER_REPORTED_TOP1_0_OF_86_PER_MODE_AND_HIDDEN_L2_1_TO_1.408; PRIOR_GE_INTERIM_ACCEPTANCE_DOES_NOT_APPLY",
+    "next": "Diagnose retained PyTorch outputs and bound source embedding rows on DDK server; no rebuild or board relaunch. Candidate hidden/Top1 failure blocks promotion; 50ms target remains unmet.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -5839,9 +5839,9 @@
       "projection": "FULL_DOT_4X4_CONV2D_NO_PARTIAL_SUM_BOUNDARIES",
       "host_validation": "5 model checks: 37 reduced-width steps over K15/7/3/1; top1 exact, KV max_abs=0, hidden max_abs=0.001953125 at fixed atol=rtol=0.002; torch.export 17/14 and 32 test RMS nodes; full-width projection versus linear. 6 additional schema and mocked tool-boundary checks.",
       "server_air_export": "USER_REPORTED_PYTORCH_DRAFT_AIR_EXPORTED",
-      "server_omg_compilation": "USER_REPORTED_FAILED_EXIT_1",
-      "physical_abi": "NOT_BOUND",
-      "device_execution": "NOT_RUN_USER_OWNS_EXECUTION",
+      "server_omg_compilation": "USER_REPORTED_PASSED",
+      "physical_abi": "BOUND_FOR_STANDALONE_DIAGNOSIS",
+      "device_execution": "USER_REPORTED_EXECUTED_OUTPUTS_RETRIEVED_NUMERICAL_FAILED",
       "promotion": "NOT_PROMOTED",
       "execution_hosts": {
         "prepare_and_air_export": "WEIGHT_SERVER_WITH_EXISTING_TARGET_TORCHAIR_ENVIRONMENT",
@@ -5996,10 +5996,10 @@
           "capture": "FULL_WIDTH_FOUR_GEARS_WITH_FAKE_OPERATORS; 6_FUSED_32_RMS_17_INPUTS_14_OUTPUTS_INT32_GATHER",
           "scope": "CPU_EMULATION_OF_LAYOUT_AND_MASK_NOT_VENDOR_FUSED_KERNEL"
         },
-        "server_air_export": "USER_REPORTED_82_FILES_SAVED_POST_EXPORT_ATTENTION_CHECK_FAILED",
-        "server_omg_compilation": "NOT_RUN_FOR_FUSED_CANDIDATE",
-        "device_execution": "NOT_RUN_USER_OWNS_EXECUTION",
-        "performance": "NOT_MEASURED_50MS_UNMET",
+        "server_air_export": "USER_REPORTED_RETAINED_EXPORT_COMPILED_AFTER_PREPARATION",
+        "server_omg_compilation": "USER_REPORTED_PASSED",
+        "device_execution": "USER_REPORTED_FULL_DRAFT_EXECUTED_NUMERICAL_FAILED; OP_ISOLATION_PENDING",
+        "performance": "PROPOSAL_DIAGNOSTIC_API_MEAN_ABOUT_727MS; NOT_WARM_BENCHMARK; 50MS_UNMET",
         "air_validation_failure": {
           "source": "USER_PASTED_EXPORT_RESULT",
           "independently_retrieved": false,
@@ -6048,7 +6048,8 @@
             "server_finalization": "NOT_YET_REPORTED"
           }
         }
-      }
+      },
+      "numerical_execution": "specs/dflash-execution-state.json#incremental_draft_task/pytorch_candidate/numerical_execution"
     },
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
