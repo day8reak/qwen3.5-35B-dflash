@@ -2,12 +2,22 @@
 
 当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**。按用户要求暂缓手写GE和AddCustom优化，不再要求运行相关探针。成功导出的AIR统一放`draft/air/`，编译和测试直接引用它。当前可运行OMC仍放`draft/omc/`；新OMC完成接口绑定和板端验证后再替换运行模型。`tests/`用于测试记录和可清理的构建临时文件。
 
-目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms，尚未达到。用户已回传`PYTORCH_DRAFT_OMC_COMPILED`，公共接口保持17输入／14输出，编译分段为CPUCL3／NPUCL2。旧GE的518.990ms仍是旧模型结果；新模型尚无板端数值或时延。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
+目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms，尚未达到。用户已回传`PYTORCH_DRAFT_OMC_COMPILED`，公共接口保持17输入／14输出，编译分段为CPUCL3／NPUCL2。旧GE的518.990ms仍是旧模型结果；新模型在SDK Load失败，尚无推理数值或时延。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
 
-**本轮在DDK服务器`t00826215_atc_mobile`的`custom_pypto`环境运行以下独立验证。** 复用已编译的`draft/tests/pytorch-omc`、公共`draft/air`和原先的`draft/source/prepared`；权重服务器无需操作，也不需要重编模型。
+**本次上板已在MODEL_LOAD失败，任务结束且锁已释放。现在只在DDK服务器`t00826215_atc_mobile`的`custom_pypto`环境更新并重新回收，补采HiLog：**
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-result"
+```
+
+回收保持原失败状态，同时新增`hilog.summary_lines`；完整快照为`pytorch-result/draft-hilog.txt`。旧任务没有记录native PID，筛选记录只是近期共享日志候选，不能直接归因。此命令不重新加载模型；当前不要重发`--apply`、重编模型或native runner。
+
+以下独立验证启动命令用于后续修复后的新尝试，**当前先不要重跑**。复用已编译的`draft/tests/pytorch-omc`、公共`draft/air`和原先的`draft/source/prepared`：
+
+```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
   --compiled "$AI_RUN_DIR/draft/tests/pytorch-omc" \
   --air-export "$AI_RUN_DIR/draft/air" \
@@ -160,6 +170,6 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 ## 4. 本阶段通过条件与后续
 
-用户已回传融合版`PYTORCH_DRAFT_OMC_COMPILED`和编译接口。下一步为本页开头的独立Load／KV验证，通过后采集同输入的完整模型profiling。当前跨子图仍有FP32／FP16 Cast，不能从子图数量或接口dtype推断内部精度、Load成功或达到50ms。
+用户已回传融合版`PYTORCH_DRAFT_OMC_COMPILED`和编译接口。独立尝试已在SDK Load返回1；下一步为本页开头的失败日志回收，定位修复后再做Load／KV验证。当前跨子图仍有FP32／FP16 Cast，不能从子图数量或接口dtype推断内部精度、Load成功或达到50ms。
 
 前一轮主机检查覆盖C16／C64、K15／7／3／1、滑窗开关共280步：使用CPU模拟Target布局／调用，与原语参考的Top1、hidden、全部K/V完全一致，输入KV和未写区保持。真实宽度的布局索引检查覆盖212992个元素；四档完整形状图捕获均为6个测试融合节点、32个测试RMS节点、17／14接口及INT32 Gather。这些检查验证适配器和mask／缓存语义，不验证厂商融合内核。OMG已由用户报告成功，板端精度与性能仍待验证。

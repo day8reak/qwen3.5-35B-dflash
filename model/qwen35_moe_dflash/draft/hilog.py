@@ -64,7 +64,7 @@ def _service_failure_context(snapshot, recorded_pid, candidate):
         "scope": "Same service thread within two seconds of a failure explicitly naming the runner PID; diagnostic context, not exclusive attribution."}
 
 
-def capture_draft_hilog(hdc, board, out, *, receive, recorded_pid=None):
+def capture_draft_hilog(hdc, board, out, *, receive, recorded_pid=None, application_names=None):
     """Return auxiliary evidence without changing an execution result.
 
     ``receive(hdc, board, out, name, timeout_seconds=...)`` must return the
@@ -76,6 +76,7 @@ def capture_draft_hilog(hdc, board, out, *, receive, recorded_pid=None):
     diagnostic = {"artifact_kind": "qwen35-draft-hilog", "status": "FAILED",
                   "command": ["hilog", "-x"], "scope": _SCOPE,
                   "returncode": None, "retrieved_files": [], "retrieved_sha256": {},
+                  "application_names": application_names,
                   "retrieval_errors": [], "summary_lines": [],
                   "process_identity": {"recorded_pid": recorded_pid,
                       "scope": "Caller-supplied native PID; PID reuse remains possible."}}
@@ -148,7 +149,8 @@ def capture_draft_hilog(hdc, board, out, *, receive, recorded_pid=None):
         snapshot_bytes = snapshot.stat().st_size
         try:
             lines, matches, metadata = _hilog_summary_details(
-                snapshot, recorded_pid=recorded_pid, candidate_output=candidate_path)
+                snapshot, recorded_pid=recorded_pid, candidate_output=candidate_path,
+                application_names=application_names)
             # Both selectors stream the snapshot and retain bounded display
             # windows. A 20MB shared HiLog must not hide a useful load failure.
             service_lines, service_metadata = _service_failure_context(snapshot, recorded_pid, metadata)

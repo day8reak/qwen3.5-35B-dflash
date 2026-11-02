@@ -41,7 +41,7 @@ _HILOG_RUNTIME_OPERATION = re.compile(
 _HILOG_FAILURE = re.compile(r"\b(?:fail\w*|error\w*|false|null|reject\w*)\b|!=", re.IGNORECASE)
 
 
-def _hilog_summary_details(path, *, recorded_pid=None, candidate_output=None):
+def _hilog_summary_details(path, *, recorded_pid=None, candidate_output=None, application_names=None):
     """Bounded candidate-session diagnostics, without attributing a PID to this run.
 
     A recorded PID restricts selection to that process number, without falling
@@ -54,6 +54,12 @@ def _hilog_summary_details(path, *, recorded_pid=None, candidate_output=None):
     """
     if recorded_pid is not None and (type(recorded_pid) is not int or recorded_pid <= 0):
         raise ValueError("recorded PID must be a positive integer")
+    if application_names is not None and (not isinstance(application_names, (tuple, list))
+            or not 1 <= len(application_names) <= 8
+            or any(not isinstance(n, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', n) for n in application_names)):
+        raise ValueError('invalid HiLog application name')
+    app = (re.compile(r'(?:^|/)(?:' + '|'.join(map(re.escape, application_names)) + r')(?:/|$)')
+           if application_names is not None else _HILOG_APP)
     related = re.compile(
         r"hiai|ai_fmk|ai_infra|cpucl|npucl|te_fusion|\bomc\b|"
         r"(?<![A-Za-z0-9_])npu(?![A-Za-z0-9_])|"
@@ -75,7 +81,7 @@ def _hilog_summary_details(path, *, recorded_pid=None, candidate_output=None):
                 continue
             if recorded_pid is not None and int(parsed["pid"]) != recorded_pid:
                 continue
-            if recorded_pid is None and not _HILOG_APP.search(parsed["tag"]):
+            if recorded_pid is None and not app.search(parsed["tag"]):
                 continue
             key = (parsed["date"], int(parsed["pid"]))
             initialized = bool(_HILOG_INIT.search(parsed["message"]))

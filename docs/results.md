@@ -109,11 +109,15 @@ FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitc
 
 KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Draft API均值726.839ms与这次不是严格配对试验，不能直接作为优化收益结论。
 
-## PyTorch当前开发路线（编译成功，独立上板待验证）
+## PyTorch当前开发路线（编译成功，独立上板Load失败）
 
-2026-11-02，用户回传`PYTORCH_DRAFT_OMC_COMPILED / model_compilation=PASSED`，接口观察为17输入／14输出，CPUCL3、NPUCL2。特征输入FP16 `[1,16,16384]`，四个控制量INT32，12个输入／输出缓存FP16 `[1,8,192,128]`；Top1为INT32 `[1,15]`，hidden为FP16 `[1,15,2048]`。源图语义顺序不能直接作为编译输入槽位：编译Data为`arg*`名称，需源图连线与编译index联合绑定。未独立读取用户OMC，本轮没有板端运行结果。
+用户随后回传独立执行`da070fd03aab4ab2b6cef0011270bb3f`：源图／编译槽位及参考权重绑定完成，19组CPU参考完成，新模型2851073026字节上传完成；packed OMC SHA256为`48d087e60ba505c7c23e7f4478b5c87d1d2fc14b692a1ae06cc4c3088776d83b`。runtime `800.631.120.010`完成ClientInit、运行版本查询、mmap、顺序预读及SetModelBuffer，SDK `MODEL_LOAD`在844976μs后返回1。native退出码1，任务已完成且锁释放，未执行推理／KV比较；844.976ms是失败加载耗时，不是proposal耗时。
 
-新增独立验证入口复用原17／14 native runner，以源AIR控制关系及每个KV输出Select的保留分支确定输入角色，再绑定实际编译Data.index；输出依赖hash绑定的源／编译AIR顺序合同。原准备权重hash与编译输入快照核对，模型按SHA缓存首次上传；候选不修改旧GE生产绑定或精度状态。24项主机合成schema／OMC／模拟传输检查通过，真实Load、两序列KV比较和时延由用户执行[当前命令](current-status.md)后确认。
+当前日志不足以确认RmsNorm、AdnFusedInferAttention或资源加载为根因；早期RmsNorm探针也有Load失败，但相同顶层返回码不足以建立同一原因。回收入口现于native失败时复用有界HiLog采集，保留原错误；按诊断runner名称筛选近期候选而不把旧主runner记录当成本次失败。9项模拟回收／日志选择检查通过，未重新执行设备。下一步仅[重新回收](current-status.md)这次完成的任务，取得底层日志。
+
+2026-11-02，用户回传`PYTORCH_DRAFT_OMC_COMPILED / model_compilation=PASSED`，接口观察为17输入／14输出，CPUCL3、NPUCL2。特征输入FP16 `[1,16,16384]`，四个控制量INT32，12个输入／输出缓存FP16 `[1,8,192,128]`；Top1为INT32 `[1,15]`，hidden为FP16 `[1,15,2048]`。源图语义顺序不能直接作为编译输入槽位：编译Data为`arg*`名称，需源图连线与编译index联合绑定。未独立读取用户OMC，后续Load失败见上文。
+
+新增独立验证入口复用原17／14 native runner，以源AIR控制关系及每个KV输出Select的保留分支确定输入角色，再绑定实际编译Data.index；输出依赖hash绑定的源／编译AIR顺序合同。原准备权重hash与编译输入快照核对，模型按SHA缓存首次上传；候选不修改旧GE生产绑定或精度状态。24项主机合成schema／OMC／模拟传输检查通过，实际尝试在Load失败，尚无两序列KV比较和推理时延。
 
 编译主图仍有跨子图FP32↔FP16转换，包括 `[1,16]`、`[1,16,1]`、`[1,16,64]`，以及词表logits `[1,15,248320]` 的FP16→FP32。53个子图减少为5个是编译结构变化，不是已测加速；也不证明内部FP32运算保留。
 

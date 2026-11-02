@@ -279,7 +279,7 @@ def summarize_result(result):
     """Expose existing comparisons without rereading tensors or changing gates."""
     keys=('status','stage','device_execution','model_compilation','numerical_validation',
           'first_failure','native_api_latency','board_attempt','lock_state','error',
-          'lock_release_errors','next','frontend','internal_precision','production_promotion','native_failure')
+          'lock_release_errors','next','frontend','internal_precision','production_promotion','native_failure','hilog')
     summary = {k:result[k] for k in keys if k in result}
     rows = result.get('cases', [])
     if not rows:

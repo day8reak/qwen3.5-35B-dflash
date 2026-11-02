@@ -188,6 +188,16 @@ def recover(execution, output):
         if (out/'native.exitcode').read_text().strip()!='0':
             result['native_failure'] = dict(exitcode=(out/'native.exitcode').read_text().strip(),
                 stderr_tail=(out/'native.stderr').read_text(errors='replace')[-4000:])
+            # Load returns only a generic status in the native log. Recover
+            # the bounded system-log evidence without loading the model again.
+            # Old attempts have no recorded native PID: selection remains a
+            # shared-log candidate, not an attributed cause of this failure.
+            try:
+                from qwen35_moe_dflash.draft.hilog import capture_draft_hilog
+                result['hilog'] = capture_draft_hilog(hdc, board, out, receive=_receive,
+                                                      application_names=('draft-accuracy', 'qwen35_draft_accuracy'))
+            except Exception as error:
+                result['hilog'] = dict(status='UNAVAILABLE', error=f'{type(error).__name__}: {error}')
             raise ValueError('native accuracy execution failed; see native.stderr')
         if _receive(hdc,board,out,'archive.exitcode') is None or (out/'archive.exitcode').read_text().strip()!='0':
             raise ValueError('native output archive failed')
