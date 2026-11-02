@@ -33,7 +33,14 @@ def extract_prefix(raw, schema, lookup, config):
             if len(chain) >= 8 or n['name'] in chain or len(n.get('input', [])) != 1:
                 raise ValueError('cyclic/unsupported input-prefix cast chain')
             if n['type'] == 'Cast' and _attributes(n).get('dst_type', {}).get('i') != dtype:
-                raise ValueError('input-prefix Cast has unexpected GE destination dtype: '+n['name'])
+                raise ValueError(
+                    f'input-prefix Cast has unexpected GE destination dtype: {n["name"]}; '
+                    f'expected_ge_dtype={dtype}, actual_dst_type={_attributes(n).get("dst_type")}, '
+                    f'input_edges={n.get("input")}, '
+                    f'input_descriptor_dtypes={[d.get("dtype") for d in n.get("input_desc", [])]}, '
+                    f'output_descriptor_dtypes={[d.get("dtype") for d in n.get("output_desc", [])]}. '
+                    'GE attribute numbers and protobuf descriptor numbers use different enums; '
+                    'inspect the complete chain before changing the graph.')
             chain.append(n['name'])
             edge = n['input'][0]
 

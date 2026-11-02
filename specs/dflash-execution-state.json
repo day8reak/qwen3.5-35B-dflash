@@ -1331,7 +1331,17 @@
         "device_execution": "NOT_RUN",
         "numerical_validation": "NOT_RUN",
         "limitations": "CUT_BEFORE_ATTENTION; FULL_GRAPH_PARTITION_NOT_PRESERVED; DOES_NOT_CHANGE_FULL_DRAFT_FAILURE",
-        "production_promotion": "NOT_PERFORMED"
+        "production_promotion": "NOT_PERFORMED",
+        "latest_extraction": {
+          "status": "USER_REPORTED_FAILED",
+          "node": "Cast_7",
+          "stage": "SOURCE_PREFIX_TYPE_CHECK_BEFORE_SNAPSHOT_OR_OMG",
+          "error": "input-prefix Cast has unexpected GE destination dtype",
+          "actual_dst_type": "NOT_YET_REPORTED",
+          "decision": "RETAIN_TYPE_GUARD; REQUEST_ORIGINAL_CAST_ATTRIBUTES_AND_CONNECTED_DESCRIPTORS",
+          "next": "READ_ONLY_SOURCE_AIR_INSPECTION_ON_DDK_SERVER"
+        },
+        "diagnostic_fix": "CAST_ERRORS_INCLUDE_EXPECTED_GE_TYPE_ACTUAL_ATTRIBUTE_INPUT_EDGES_AND_DESCRIPTOR_TYPES; NO_GRAPH_OR_TOLERANCE_CHANGE"
       }
     }
   },
