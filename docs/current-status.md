@@ -2,21 +2,24 @@
 
 当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**。按用户要求暂缓手写GE和AddCustom优化，不再要求运行相关探针。成功导出的AIR统一放`draft/air/`，编译和测试直接引用它。当前可运行OMC仍放`draft/omc/`；新OMC完成接口绑定和板端验证后再替换运行模型。`tests/`用于测试记录和可清理的构建临时文件。
 
-目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms，尚未达到。当前GE整模型profiling为518.990ms。此前24个中间Reshape简化已使OMG推进到ZerosLike构建。最新复编停在新增AIR预处理，OMG编译未调用；用户只读检查确认六个mask ZerosLike输入为FP32、输出为FP16，shape均为未记录的`{}`。已修正预处理的同dtype假设和空shape处理，待本轮DDK复编。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
+目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms，尚未达到。当前GE整模型profiling为518.990ms。最新用户复编已成功删除24个中间Reshape、物化7个ZerosLike；OMG随后在Attention编译worker的`_prerun → _update_options → te_update_version()`退出，异常为`RuntimeError: te_update_version() return error.`。这发生在内核编译主体之前，尚不能判定融合Attention的参数或目标支持有问题。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
 
 **本轮只在DDK服务器／`custom_pypto`环境执行。无需重导出或重新传输AIR、权重。** 沿用现有`REPO_DIR`、`AI_RUN_DIR`及DDK变量：
+
+本次命令补传Target此前使用的`--tbe-diagnosis`。目录来自项目已有执行记录；若本机已迁移它，使用完整保留的实际诊断目录。该参数核验诊断报告、模块与选定DDK的来源，只在本次编译目录复制TE包并适配底层平台名称参数；OMG目标保持`kirinx90`。不修改已安装包或DDK，不需要重新运行12组诊断。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
   --air-export "$AI_RUN_DIR/draft/air" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
 ```
 
 编译入口在独立快照旁生成`prepared.air`：保留已有的静态Reshape链简化，并将能证明静态尺寸的`ZerosLike`替换为其**输出dtype**的零常量。缓存索引零值为INT32，六层mask零值为FP16；后者允许已观察到的FP32输入／FP16输出形式。空`shape: {}`视为尺寸未记录，不能当成标量；只读取AIR内的描述、shape／axis字面常量和明确的算子形状关系推导尺寸，不从期望配置补造shape。预处理现已移到权重快照和OMG调用之前，失败直接报告节点的dtype／layout等信息。
 
-公共`draft/air`、原始快照、权重和17／14公共接口保持。进度日志新增`materialized N ZerosLike constants`，详细节点、输入／输出dtype、形状推导和哈希保存在`compilation/air-preparation.json`。源码也改为固定零buffer，供以后重新导出使用；本轮已有AIR不必重新导出。检查器已按本次回传的空shape及混合dtype形式补充主机回归，用户DDK复编仍待执行。下方第1、2节是首次生成AIR的完整流程，本轮跳过；成功条件和失败检查见第3节。
+公共`draft/air`、原始快照、权重和17／14公共接口保持。进度日志的`materialized 7 ZerosLike constants`已由用户实际复编确认，详细证据在`compilation/air-preparation.json`。源码也改为固定零buffer，供以后重新导出使用；本轮已有AIR不必重新导出。TBE兼容选项已有实现，本轮复用；日志摘要补充有界traceback和worker失败节点，避免早期Cast诊断挤掉终止异常。下方第1、2节是首次生成AIR的完整流程，本轮跳过；成功条件和失败检查见第3节。
 
 本轮把每层的QK／mask／Softmax／PV交给Target同款融合算子，使用原Target的converter端口映射；内部构造NZ分块KV，block_size=32，C16／cap192／K15的临时KV设计形状为`[7,64,32,16]`。padding全部屏蔽，保留Draft五层因果／滑窗与末层双向可见性。公共ND缓存仍只提交context，不直接套用Target的原地CacheUpdate。权重和公共接口不变，融合内核的舍入行为仍需实机比较。
 
@@ -105,13 +108,14 @@ python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
 
 ## 3. DDK服务器：编译OMC
 
-沿用已配置的`CPRO_DDK_ROOT`、`CPRO_DDK_ID`，确认已安装完整`draft/air`后：
+沿用已配置的`CPRO_DDK_ROOT`、`CPRO_DDK_ID`，确认已安装完整`draft/air`后，复用上述已完成的TBE诊断：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
   --air-export "$AI_RUN_DIR/draft/air" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
 ```
 
@@ -128,6 +132,6 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 ## 4. 本阶段通过条件与后续
 
-用户已完成融合版AIR导出，OMG越过此前ReshapeFusion失败阶段，ZerosLike构建兼容改动仍待通过本轮复编；最新失败属于AIR预处理，不能记成新的OMG编译失败。下一阶段需要`PYTORCH_DRAFT_OMC_COMPILED`。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
+用户已完成融合版AIR导出，OMG已越过此前ReshapeFusion和ZerosLike失败阶段；最新失败属于TBE worker平台更新。带兼容参数复编后需要确认真实worker审计及`PYTORCH_DRAFT_OMC_COMPILED`，不能将平台API诊断通过当成模型编译通过。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
 
 前一轮主机检查覆盖C16／C64、K15／7／3／1、滑窗开关共280步：使用CPU模拟Target布局／调用，与原语参考的Top1、hidden、全部K/V完全一致，输入KV和未写区保持。真实宽度的布局索引检查覆盖212992个元素；四档完整形状图捕获均为6个测试融合节点、32个测试RMS节点、17／14接口及INT32 Gather。这些检查验证适配器和mask／缓存语义，不验证厂商融合内核。真实融合版AIR已保存并进入编译；OMG、板端精度与性能仍未通过。

@@ -19,6 +19,8 @@ _SUPPORT_DTYPE_FAILURE = re.compile(
     rb"(?:CheckIfTensorTypeSupport|(?:input|output)(?:data)?Type).*(?:not support|unsupported)", re.I)
 _KERNEL_FAILURE = re.compile(rb"kernel.*(?:failed|missing|not found|not valid|invalid)", re.I)
 _PYTHON_FAILURE = re.compile(rb"^(?:Traceback \(most recent call last\):|[\w.]+(?:Error|Exception):)")
+_TRACEBACK_START = b"Traceback (most recent call last):"
+_WORKER_FAILURE = re.compile(rb"COMPILER PROCESS DIED OF NODE|compiler process died, caused by current task|Failed to (?:pre-)?compile node", re.I)
 _PASS_FAILURE = re.compile(rb"ByPassNode.*PreCheck|Pass Run failed|AfterInferShape.*failed to run", re.I)
 _BUILD_FAILURE = re.compile(rb"create OpGraphBuilder fail|opGraphBuilder is null|Op Build4NPU failed|OpPreBuild failed\. Node:", re.I)
 
@@ -91,6 +93,7 @@ def _read_excerpt(log):
         return ""
     candidates = {priority: [] for priority in range(6)}
     terminal_pass = []
+    tracebacks, active_trace = [], None
     with log.open("rb") as stream:
         line_number = 0
         scanned = 0
@@ -102,8 +105,27 @@ def _read_excerpt(log):
             scanned += len(chunk)
             line_number += 1
             python_failure = bool(_PYTHON_FAILURE.search(chunk))
+            # Worker exceptions can be far from EOF, after thousands of
+            # recoverable constant-folding errors. Keep their frames and
+            # terminal exception independently of the six-message budget.
+            # A tool/worker can interleave text on the traceback header line.
+            if _TRACEBACK_START in chunk:
+                active_trace = {'lines': [], 'bytes': 0, 'truncated': False}
+                tracebacks.append(active_trace)
+                tracebacks = tracebacks[-2:]
+            if active_trace is not None:
+                remaining = 8192 - active_trace['bytes']
+                excerpt = chunk[:min(1024, remaining)]
+                active_trace['lines'].append((line_number, excerpt))
+                active_trace['bytes'] += len(excerpt)
+                active_trace['truncated'] |= len(excerpt) < len(chunk)
+                if python_failure and _TRACEBACK_START not in chunk:
+                    active_trace = None
+                elif len(active_trace['lines']) >= 48 or active_trace['bytes'] >= 8192:
+                    active_trace['truncated'] = True
+                    active_trace = None
             if _is_error(chunk) or python_failure:
-                if _PASS_FAILURE.search(chunk) or _BUILD_FAILURE.search(chunk):
+                if _PASS_FAILURE.search(chunk) or _BUILD_FAILURE.search(chunk) or _WORKER_FAILURE.search(chunk):
                     terminal_pass.append((line_number, chunk[:2048], len(chunk) > 2048))
                     terminal_pass = terminal_pass[-3:]
                 # A backend can reject many candidate dtypes before declaring
@@ -140,4 +162,13 @@ def _read_excerpt(log):
     initial = label + "\n" + "\n".join(first) + "\n" if first else ""
     if scan_limited:
         initial += f"Diagnostic scan limited to first {_MAX_SCAN_BYTES} bytes; raw tail retained.\n"
+    contexts = []
+    for trace in tracebacks:
+        contexts.append('Python traceback context (bounded):\n' + '\n'.join(
+            f'L{number}: ' + chunk.decode('utf-8', errors='replace').rstrip()
+            for number, chunk in trace['lines']))
+        if trace['truncated']:
+            contexts.append('[Traceback context truncated]')
+    if contexts:
+        initial = '\n'.join(contexts) + '\n' + initial
     return initial + "Log tail:\n" + tail
