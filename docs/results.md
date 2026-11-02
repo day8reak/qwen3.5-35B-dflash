@@ -109,7 +109,7 @@ FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitc
 
 KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Draft API均值726.839ms与这次不是严格配对试验，不能直接作为优化收益结论。
 
-## PyTorch当前开发路线（仅主机验证）
+## PyTorch当前开发路线（AIR已导出）
 
 新增六层增量Draft模块，复用71份prepared权重和17输入／14输出的语义合同；使用Target CPro的`npu_rms_norm → RmsNorm`接口。RMS gamma不加1，候选在FP32乘gamma后转FP16，舍入位置不同于旧GE原语链。入口仍是完整dot的4×4 Conv2D表达，避免直接重试已被拒绝的K=16384 MatMul。
 
@@ -117,7 +117,9 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 
 单独用真实全宽FP16 `[2048,16384]`权重检查4×4投影，相对`F.linear`最大绝对差0.00048828125、L2为2.27e-5。完整模型5项主机检查、AIR／编译接线6项模拟边界检查，以及AddCustom工具7项检查通过。本地测试代码未发布。
 
-这些结果不证明原始全权重Draft精度、真实TorchAir转换或NPU性能。新候选AIR与OMC尚待用户在权重／DDK服务器生成；尚未绑定物理KV槽位、上板Load或测量。没有替换公共GE模型，50ms目标仍未达到。
+随后用户在权重服务器的`qwen3_5_cpro`环境完成真实TorchAir导出，回传`PYTORCH_DRAFT_AIR_EXPORTED`。PyTorch为`2.8.0+cpu`，TorchAir版本未提供；源AIR为C16／cap192／K15，17输入、14输出、32个RmsNorm，schema为`ge_ir.proto / ge.proto`。导出保存80个外置常量文件，日志列出的参数与buffer包括71份模型权重及9份位置、索引、掩码和RoPE常量。deprecated和GMM tiling冲突warning未阻止本次导出完成，不能据此评价后续OMG或板端行为。
+
+此结果是用户回传的AIR导出和源图检查成功；未独立读取服务器产物，也不证明数值精度、编译内部FP32或NPU性能。下一步传输完整AIR目录并在DDK服务器编译OMC，再绑定实际KV槽位、上板Load及验证。公共GE模型未替换，50ms目标仍未达到。
 
 ## 加载与完整请求
 

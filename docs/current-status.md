@@ -2,7 +2,9 @@
 
 当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**。按用户要求暂缓手写GE和AddCustom优化，不再要求运行相关探针。公共`draft/air`、`draft/omc`继续保留现有可运行模型；PyTorch候选使用固定测试槽位，通过加载、ABI与数值验证后再替换。
 
-目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前GE整模型profiling为518.990ms，PyTorch候选尚无服务器导出、编译或板端结果。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
+目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前GE整模型profiling为518.990ms。用户已在权重服务器导出PyTorch AIR：17输入、14输出、32个RmsNorm、80个外置常量文件；OMG编译与板端验证尚未执行。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
+
+**本轮下一步：跳到第2节传输已完成的AIR整目录，然后在第3节所述DDK服务器编译OMC。第1节保留供首次准备或更改模型后重导出使用，本轮无需重跑。**
 
 ## 1. 权重服务器：准备权重并导出AIR
 
@@ -103,6 +105,6 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 ## 4. 本阶段通过条件与后续
 
-先取得`PYTORCH_DRAFT_AIR_EXPORTED`和`PYTORCH_DRAFT_OMC_COMPILED`。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
+已取得用户回传的`PYTORCH_DRAFT_AIR_EXPORTED`，下一阶段需要`PYTORCH_DRAFT_OMC_COMPILED`。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
 
-已有主机检查覆盖K15／7／3／1共37步，Top1无差异、KV最大差0、hidden最大绝对差0.001953125；另检查了17输入／14输出、32个测试RMS节点、全宽4×4完整dot投影和可移植AIR打包。这些是CPU、图捕获及模拟工具检查，实际服务器与板端验证仍待完成。
+已有主机检查覆盖K15／7／3／1共37步，Top1无差异、KV最大差0、hidden最大绝对差0.001953125；另检查了17输入／14输出、32个测试RMS节点、全宽4×4完整dot投影和可移植AIR打包。这些是CPU、图捕获及模拟工具检查；本轮真实TorchAir导出另已完成，实际OMG编译、板端精度与性能仍待完成。

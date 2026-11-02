@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_AIR_EXPORT_NEXT_GE_OPTIMIZATION_PAUSED_BY_USER",
-    "entry": "targets/cpro/scripts/export_incremental_draft.py --frontend pytorch",
+    "status": "PYTORCH_AIR_EXPORTED_DDK_COMPILATION_NEXT_GE_OPTIMIZATION_PAUSED_BY_USER",
+    "entry": "targets/cpro/scripts/compile_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "User exports PyTorch Draft AIR on the weight server, transfers the complete portable bundle, then compiles on the selected X90 DDK server using docs/current-status.md. Bind physical ABI and validate Load/KV numerics before profiling and promotion.",
+    "next": "User transfers the completed PyTorch AIR directory including all weight sidecars and air-schema.pb, then compiles on the selected X90 DDK server using docs/current-status.md. No AIR re-export needed. Physical ABI binding and Load/KV accuracy follow successful compilation.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -5838,7 +5838,7 @@
       "gamma": "DIRECT_DRAFT_GAMMA_FP32_MULTIPLY_BEFORE_FP16_CAST",
       "projection": "FULL_DOT_4X4_CONV2D_NO_PARTIAL_SUM_BOUNDARIES",
       "host_validation": "5 model checks: 37 reduced-width steps over K15/7/3/1; top1 exact, KV max_abs=0, hidden max_abs=0.001953125 at fixed atol=rtol=0.002; torch.export 17/14 and 32 test RMS nodes; full-width projection versus linear. 6 additional schema and mocked tool-boundary checks.",
-      "server_air_export": "NOT_RUN",
+      "server_air_export": "USER_REPORTED_PYTORCH_DRAFT_AIR_EXPORTED",
       "server_omg_compilation": "NOT_RUN",
       "physical_abi": "NOT_BOUND",
       "device_execution": "NOT_RUN_USER_OWNS_EXECUTION",
@@ -5849,6 +5849,28 @@
         "transfer": "COMPLETE_PYTORCH_AIR_DIRECTORY_WITH_RELATIVE_WEIGHT_SIDECARS_AND_PRODUCER_SCHEMA",
         "target_weights": "ORIGINAL_TARGET_YAML.model_file_BF16_EMBEDDING_AND_LM_HEAD_ONLY",
         "draft_weights": "SEPARATE_ORIGINAL_DFLASH_CHECKPOINT_DIRECTORY"
+      },
+      "air_export_observation": {
+        "source": "USER_PASTED_WEIGHT_SERVER_EXPORT_OUTPUT",
+        "independently_retrieved": false,
+        "status": "PYTORCH_DRAFT_AIR_EXPORTED",
+        "environment": "qwen3_5_cpro",
+        "torch_version": "2.8.0+cpu",
+        "torchair_version": "unknown",
+        "context_rows": 16,
+        "cache_capacity": 192,
+        "max_draft_tokens": 15,
+        "input_count": 17,
+        "output_count": 14,
+        "rms_nodes": 32,
+        "weight_files": 80,
+        "schema_file": "ge_ir.proto",
+        "schema_package": "ge.proto",
+        "projection": "PYTORCH_CONV2D_4X4_FULL_K",
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
+        "warnings": "PKG_RESOURCES_DEPRECATION_AND_GMM_TILING_STRUCT_CONFLICT_EXPORT_COMPLETED"
       }
     },
     "compiled_partition_observation": {
