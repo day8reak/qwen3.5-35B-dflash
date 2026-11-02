@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_FUSED_AIR_SPARSE_DESCRIPTOR_GATE_CORRECTED_FINALIZE_AND_OMG_PENDING",
-    "entry": "targets/cpro/scripts/export_incremental_draft.py",
+    "status": "PYTORCH_NUMERICAL_FAILURE_SOURCE_EMBEDDING_PROBE_PENDING",
+    "entry": "targets/cpro/tools/probe_draft_embedding.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "PYTORCH_USER_REPORTED_TOP1_0_OF_86_PER_MODE_AND_HIDDEN_L2_1_TO_1.408; PRIOR_GE_INTERIM_ACCEPTANCE_DOES_NOT_APPLY",
-    "next": "Diagnose retained PyTorch outputs and bound source embedding rows on DDK server; no rebuild or board relaunch. Candidate hidden/Top1 failure blocks promotion; 50ms target remains unmet.",
+    "next": "Compile extracted source-bound embedding lookup on DDK server, rebuild mixed-dtype tensor runner and validate exact embedding/ID bytes. Full model numerical failure and 50ms objective remain unresolved.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",

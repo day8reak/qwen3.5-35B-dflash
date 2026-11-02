@@ -4,7 +4,7 @@
 
 ## 最新PyTorch独立执行：加载成功，数值失败
 
-2026-11-02，用户回传尝试`ec3f7c3136ac43fcb927c25eef63f4e3`的完整比较摘要：`EXECUTED_OUTPUTS_RETRIEVED`、`NUMERICAL_FAILED`，任务完成且锁释放。两组各19次调用全部完成，说明本次已经跨过此前的Fill加载失败；38例均未通过原比较门槛。以下为用户回传，未独立读取原始板端张量，新OMC的hash未在本条摘要中提供。
+2026-11-02，用户回传尝试`ec3f7c3136ac43fcb927c25eef63f4e3`的完整比较摘要：`EXECUTED_OUTPUTS_RETRIEVED`、`NUMERICAL_FAILED`，任务完成且锁释放。两组各19次调用全部完成，说明本次已经跨过此前的Fill加载失败；38例均未通过原比较门槛。以下为用户回传，未独立读取原始板端张量，随后离线诊断报告OMC SHA256为 ce11666f9298ec7453bbdcdfe1e3a3a38d396cd12a0bd13f9faf6c82c4981ad6。
 
 | 指标 | 参考KV输入 isolated | 板端KV反馈 feedback |
 |---|---:|---:|
@@ -15,13 +15,15 @@
 | Proposal：8次同步API均值 | 727.875 ms | 727.062 ms |
 | Catchup：11次同步API均值 | 734.727 ms | 735.919 ms |
 
-首轮空context的15个Top1全为0，hidden相对L2=1，最大绝对误差4.44921875；后续所有proposal输出均为314，更换anchor也未改变Top1。尚不能只凭这些汇总断定hidden全零或各行逐位相同。新增context KV独立于候选Attention计算，其误差较小并不能证明候选分支正确。原逐元素阈值仍使isolated的13例、feedback的18例KV失败；反馈中的两次相同输入重复输出逐位一致。
+首轮空context的15个Top1全为0，hidden相对L2=1，最大绝对误差4.44921875；后续所有proposal输出均为314，更换anchor也未改变Top1。后续字节诊断确认两组首轮30720个hidden元素全零。context=18时anchor改为32／34／38，共同有效位置仍逐位相同，参考明显改变。15个位置仍有15个不同向量，context变化也影响hidden，不能称为全局固定输出。新增context KV独立于候选Attention计算，其误差较小并不能证明候选分支正确。原逐元素阈值仍使isolated的13例、feedback的18例KV失败；反馈中的两次相同输入重复输出逐位一致。
 
 本轮为不同上下文及proposal数量的诊断调用，不是同输入预热稳态基准。约727ms远未达到50ms目标；与旧GE的profiling记录不构成配对性能对照。先定位候选embedding／临时block KV／Attention／hidden输出异常，保留数值失败与生产未提升状态。
 
-新增`validate_incremental_draft.py --diagnose`读取已回收快照：检查四个控制量的文件hash及值，统计有效hidden的零行、逐位唯一行数、范数、跨调用及两序列对应行差异；可选prepared源权重检查mask／anchor embedding行。它先复算原比较，不改验收规则或结果文件，不调用模型。13项主机合成检查通过，覆盖全零、重复行、同Top1但不同hidden、不同物理控制槽、无效尾行、NaN／Inf、有符号零、文件篡改／截断拒绝及CLI只读行为。源码对照Target的NZ排布及端口未发现直接解释此错误的差异；真实张量统计仍需执行[当前命令](current-status.md)。
+新增`validate_incremental_draft.py --diagnose`读取已回收快照：检查四个控制量的文件hash及值，统计有效hidden的零行、逐位唯一行数、范数、跨调用及两序列对应行差异；可选prepared源权重检查mask／anchor embedding行。它先复算原比较，不改验收规则或结果文件，不调用模型。13项主机合成检查通过，覆盖全零、重复行、同Top1但不同hidden、不同物理控制槽、无效尾行、NaN／Inf、有符号零、文件篡改／截断拒绝及CLI只读行为。源码对照Target的NZ排布及端口未发现直接解释此错误的差异；用户已回传张量统计；控制文件hash和值通过，物理槽start／valid／proposal_count／anchor分别为0／1／2／3。源anchor与mask 248077的embedding均有限且无零元素，源表hash为 ab1a0ddd89ba1cb895b58259f78c18080420595215b02234ee5e84996cf31e28。这些检查不证明设备输入或Gather输出。
 
 首次诊断因`KeyError: mask_token_id`中断：诊断器误读prepared配置的顶层字段，实际位于`draft_config.dflash_config.mask_token_id`。已复用模型的`Qwen35DFlashConfig.from_dict`解析器；原合成夹具的扁平配置改为仓库真实嵌套结构，16项检查通过，包括原检查、实际配置读取、嵌套字段优先和非法token拒绝。该修复只涉及离线诊断，复用原结果重跑同一命令即可；板端数值失败仍待定位。
+
+新增probe_draft_embedding.py从绑定的PyTorch AIR提取原完整表、axis及Gather，用显式INT32 ID切入，输出embedding和ID回读，逐字节比较。通用张量runner补充FP16／INT32支持；已有FP32用例和完整Draft门槛不变。23项主机合成／模拟检查及C++语法检查通过；实际探针编译、上板和分区均待验证。小图通过也不能证明完整图的分区及后续RMS／Attention正确。执行命令见[当前阶段](current-status.md)。
 
 整体流程记录为用户回传的`fused/result`，板端PID34211。C16／cap192／K15增量Draft，18个prompt token、生成8个，混合接口常驻、dump关闭、顺序预读开启。完整流程接通；后续独立精度与profiling见下文。以下未独立读取板端原始产物。
 

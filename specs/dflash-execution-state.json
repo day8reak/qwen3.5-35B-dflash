@@ -1171,7 +1171,7 @@
       "numerical_execution": {
         "source": "USER_PASTED_RECOVERY_JSON_2026_11_02; RAW_SNAPSHOTS_NOT_INDEPENDENTLY_READ",
         "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_ec3f7c3136ac43fcb927c25eef63f4e3",
-        "model_sha256": "NOT_PROVIDED_IN_THIS_SUMMARY; DO_NOT_REUSE_PRIOR_FAILED_MODEL_HASH",
+        "model_sha256": "ce11666f9298ec7453bbdcdfe1e3a3a38d396cd12a0bd13f9faf6c82c4981ad6",
         "status": "NUMERICAL_FAILED",
         "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
         "isolated": {
@@ -1233,7 +1233,7 @@
           "hidden_relative_l2": 1.0
         },
         "later_proposals": "ALL_REPORTED_ACTIVE_TOP1_TOKENS_314_IN_BOTH_MODES",
-        "hidden_zero_or_duplicate_rows": "NOT_ESTABLISHED_BY_SUMMARY; READ_RETAINED_BYTES",
+        "hidden_zero_or_duplicate_rows": "USER_DIAGNOSIS_CONFIRMS_EMPTY_CONTEXT_ALL_ZERO; ANCHOR_CHANGES_COMMON_ACTIVE_PREFIX_BITWISE_EQUAL; POSITION_ROWS_DISTINCT",
         "cache_preservation_failed": 0,
         "feedback_repeat_indices_bitwise_equal": [
           3,
@@ -1242,7 +1242,7 @@
         "timing_scope": "SYNCHRONOUS_API_WALL_DIAGNOSTIC_MIXED_INPUTS_NOT_WARM_BENCHMARK",
         "comparison": "UNCHANGED_ELEMENTWISE_ATOL_0.01_RTOL_0.01_AND_ZERO_TOP1_MISMATCHES; NO_L2_GATE",
         "root_cause": "UNRESOLVED; CONTEXT_KV_IS_INDEPENDENT_OF_CANDIDATE_ATTENTION",
-        "next": "DDK_SERVER_READ_ONLY --diagnose EXISTING_RESULT --source PREPARED; docs/current-status.md"
+        "next": "DDK_SERVER_SOURCE_BOUND_EMBEDDING_PROBE; docs/current-status.md"
       },
       "output_diagnosis": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose",
@@ -1265,9 +1265,29 @@
           "fix": "USE_EXISTING_Qwen35DFlashConfig.from_dict_AS_MODEL_REFERENCE_DOES",
           "fixture": "REPOSITORY_NESTED_CONFIGURATION_WITH_REDUCED_VOCABULARY_PAYLOAD",
           "execution": "READ_ONLY_RETRY_SAME_RETAINED_RESULT; NO_MODEL_OR_WEIGHT_CHANGE"
+        },
+        "user_observation": {
+          "source": "USER_PASTED_JSON_NOT_INDEPENDENTLY_READ",
+          "empty_context_hidden_zero_elements": 30720,
+          "empty_context_hidden_elements": 30720,
+          "context18_anchor_changes_common_hidden_prefix": "BITWISE_EQUAL_WHILE_REFERENCE_CHANGES",
+          "context18_hidden_unique_rows": 15,
+          "controls": "HOST_FILES_HASH_AND_VALUE_MATCH_NOT_DEVICE_READBACK",
+          "embedding": "ANCHOR_AND_MASK_SOURCE_ROWS_FINITE_NONZERO_NOT_DEVICE_GATHER"
         }
       },
-      "next": "DDK_SERVER_READ_ONLY --diagnose EXISTING_RESULT --source PREPARED; docs/current-status.md"
+      "next": "DDK_SERVER_SOURCE_BOUND_EMBEDDING_PROBE; docs/current-status.md",
+      "embedding_probe": {
+        "entry": "targets/cpro/tools/probe_draft_embedding.py",
+        "host_checks": 23,
+        "host_scope": "SYNTHETIC_WIRE_MIXED_IO_MOCK_COMPILER_AND_CPP_SYNTAX",
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "source": "ORIGINAL_GATHER_FULL_TABLE_AXIS_BYTES_WITH_EXPLICIT_INT32_IDS",
+        "comparison": "EXACT_FP16_AND_INT32_BYTES",
+        "limitations": "CUT_BEFORE_GATHER_EXCLUDES_ID_CONSTRUCTION_SCALE_RMS_ATTENTION; COMPILED_PARTITION_MAY_DIFFER",
+        "production_promotion": "NOT_PERFORMED"
+      }
     }
   },
   "draft_milestone_e2e_gate": {

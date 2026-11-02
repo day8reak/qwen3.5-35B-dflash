@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate existing X90 FP32 probe OMCs; never compile or replace Draft models."""
+"""Validate existing X90 tensor probes; never compile or replace Draft models."""
 import argparse
 import fcntl
 import json
@@ -25,6 +25,10 @@ from qwen35_moe_dflash.execution.lock import _acquire_global, _release_global, _
 from qwen35_moe_dflash.draft.profile_board import GLOBAL_LOCK, _guard, _identity_guard
 from qwen35_moe_dflash.draft.board import _receive
 from qwen35_moe_dflash.common.hashing import sha256_file
+from qwen35_moe_dflash.draft.incremental.embedding_probe import CASE as EMBEDDING_CASE, KIND as EMBEDDING_KIND, DTYPES
+
+VALIDATION_CASES = (*CASES, EMBEDDING_CASE)
+WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4}
 
 KIND = 'qwen35-draft-vector-validation'
 PREFIX = '/data/local/tmp/qwen35_vector_'
@@ -33,7 +37,7 @@ WARMUP, REPETITIONS = 3, 10
 ATOL, RTOL = 1e-5, 1e-4
 
 
-def selected_cases(names, available=CASES):
+def selected_cases(names, available=VALIDATION_CASES):
     names = list(names)
     if not names or any(name not in available for name in names) or len(set(names)) != len(names):
         raise ValueError('select one or more distinct available probe cases')
@@ -77,8 +81,8 @@ def bind_io(document, declared, enums):
             raise ValueError('missing or ambiguous compiled input index')
         descs = node['output_desc']
         if len(descs) != 1 or any(_observed_desc(descs[0], enums)[k] != spec[k] for k in ('shape', 'dtype')):
-            raise ValueError('compiled FP32 input descriptor changed')
-        inputs.append(dict(spec, index=indices[0], fixture_index=source, bytes=math.prod(spec['shape'])*4))
+            raise ValueError('compiled probe input descriptor changed')
+        inputs.append(dict(spec, index=indices[0], fixture_index=source, bytes=math.prod(spec['shape'])*WIDTHS[spec['dtype']]))
     if (len(inputs) != len(expected) or {r['name'] for r in inputs} != set(expected)
             or sorted(r['index'] for r in inputs) != list(range(len(expected)))):
         raise ValueError('compiled inputs are not a complete indexed mapping')
@@ -98,7 +102,7 @@ def bind_io(document, declared, enums):
         if len(matches) != 1:
             raise ValueError('compiled output descriptor changed or is ambiguous')
         source, spec = matches[0]
-        outputs.append(dict(spec, index=index, fixture_index=source, bytes=math.prod(spec['shape'])*4))
+        outputs.append(dict(spec, index=index, fixture_index=source, bytes=math.prod(spec['shape'])*WIDTHS[spec['dtype']]))
     if sorted(r['fixture_index'] for r in outputs) != list(range(len(declared['outputs']))):
         raise ValueError('compiled outputs do not cover every probe output once')
     return dict(inputs=sorted(inputs, key=lambda r: r['index']), outputs=outputs,
@@ -112,6 +116,9 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     root = Path(compiled).resolve()
     report = read_json(root/'result.json')
+    if report.get('artifact_kind') == EMBEDDING_KIND:
+        from qwen35_moe_dflash.draft.incremental.embedding_probe import prepare_fixture
+        return prepare_fixture(root, out, ddk, ddk_id, selection)
     if report.get('artifact_kind') != COMPILE_KIND or report.get('status') not in {'COMPILED', 'PARTIAL'}:
         raise ValueError('expected completed FP32 probe compilation')
     if report['status'] == 'PARTIAL' and selection is None:
@@ -197,20 +204,30 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
             stable = stable and raw == first
             offset = 0
             for spec in case['outputs']:
-                actual = np.frombuffer(raw[offset:offset+spec['bytes']], dtype='<f4').astype(np.float64)
+                dtype = np.dtype(DTYPES[spec['dtype']])
+                observed_bytes = raw[offset:offset+spec['bytes']]
+                actual = np.frombuffer(observed_bytes, dtype=dtype).astype(np.float64)
                 offset += spec['bytes']
-                expected = np.fromfile(fixture/name/f'golden_{spec["index"]}.bin', dtype='<f4').astype(np.float64)
-                if expected.size*4 != spec['bytes'] or not np.isfinite(expected).all():
+                expected_bytes = (fixture/name/f'golden_{spec["index"]}.bin').read_bytes()
+                expected = np.frombuffer(expected_bytes, dtype=dtype).astype(np.float64)
+                if expected.size*dtype.itemsize != spec['bytes'] or not np.isfinite(expected).all():
                     raise ValueError('invalid retained reference')
                 finite = bool(np.isfinite(actual).all())
                 delta = actual-expected
                 passed = finite and bool(np.all(np.abs(delta) <= meta['atol']+meta['rtol']*np.abs(expected)))
+                exact = observed_bytes == expected_bytes
+                if meta.get('exact_bytes'):
+                    passed = passed and exact
                 tensors.append(dict(iteration=iteration, name=spec['name'], passed=passed, finite=finite,
+                    bytes_equal=exact,
                     max_abs_error=float(np.max(np.abs(delta))) if finite else None,
                     relative_l2_error=float(np.linalg.norm(delta)/max(float(np.linalg.norm(expected)), 1e-30)) if finite else None))
         passed = all(r['passed'] for r in tensors)
         finite = all(r['finite'] for r in tensors)
         cases.append(dict(case=name, passed=passed, repeat_bitwise_stable=stable,
+            outputs=[dict(name=spec['name'], passed=all(t['passed'] for t in tensors if t['name'] == spec['name']),
+                          all_calls_bytes_equal=all(t['bytes_equal'] for t in tensors if t['name'] == spec['name']))
+                     for spec in case['outputs']],
             numerics=dict(finite=finite,
                 max_abs_error=max(r['max_abs_error'] for r in tensors) if finite else None,
                 max_relative_l2_error=max(r['relative_l2_error'] for r in tensors) if finite else None),
@@ -220,6 +237,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
     passed = all(r['passed'] for r in cases)
     return dict(status='PASSED' if passed else 'NUMERICAL_FAILED', numerical_validation='PASSED' if passed else 'FAILED',
         cases=cases, warmup=WARMUP, repetitions=REPETITIONS, atol=meta['atol'], rtol=meta['rtol'],
+        scope=meta.get('scope'), exact_bytes_required=bool(meta.get('exact_bytes')),
         validated_cases=selected, requested_cases=requested,
         repeat_bitwise_stable=all(r['repeat_bitwise_stable'] for r in cases),
         timing_scope='SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_BETWEEN_CALLS_EXCLUDED',
@@ -246,6 +264,9 @@ def analyze(directory):
                 if path.stat().st_size != spec['bytes'] or sha256_file(path) != spec['fixture_sha256']:
                     raise ValueError('retained input/reference changed after launch')
     comparison = compare(fixture, native, selection=report['validated_cases'])
+    if EMBEDDING_CASE in comparison['validated_cases']:
+        return dict(comparison, artifact_kind=KIND, model_execution='NOT_RUN',
+                    analysis='RETAINED_EMBEDDING_AND_IDS_BYTES_RECOMPARED')
 
     def metrics(actual, expected):
         finite = bool(np.isfinite(actual).all())
@@ -371,6 +392,8 @@ def start(args, out):
         if not binary.is_file() or built.get('diagnostic_binaries', {}).get(binary.name) != {
                 'bytes': binary.stat().st_size, 'sha256': sha256_file(binary)}:
             raise ValueError('rebuild runtime/native with build_hiai.py --replace for tensor probes')
+        if EMBEDDING_CASE in state['requested_cases'] and not {'float16', 'int32'} <= set(built.get('tensor_probe_dtypes', [])):
+            raise ValueError('rebuild runtime/native with build_hiai.py --replace for FP16/INT32 embedding probes')
         uploads, search, _ = _build_payloads(out, 600, resident='resident-mixed', native_directory=native)
         uploads = [r for r in uploads if r['remote'].startswith('lib/')]
         uploads.append(_file_record(binary, 'tensor-probe'))
@@ -579,7 +602,7 @@ def recover(root, out):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compiled')
-    parser.add_argument('--cases', nargs='+', choices=CASES, help='Only execute these existing probes, in the supplied order')
+    parser.add_argument('--cases', nargs='+', choices=VALIDATION_CASES, help='Only execute these existing probes, in the supplied order')
     parser.add_argument('--config')
     parser.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     parser.add_argument('--recover')
