@@ -106,7 +106,7 @@ def bind_io(document, declared, enums):
                 netoutput_input_metadata=net[0].get('input'))
 
 
-def prepare(compiled, out, ddk, ddk_id, selection=CASES):
+def prepare(compiled, out, ddk, ddk_id, selection=None):
     from qwen35_moe_dflash.toolchain.omc_container import read_container, read_partition
     from qwen35_moe_dflash.toolchain.omc_wire import load_schema
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
@@ -115,10 +115,9 @@ def prepare(compiled, out, ddk, ddk_id, selection=CASES):
     if report.get('artifact_kind') != COMPILE_KIND or report.get('status') != 'COMPILED':
         raise ValueError('expected completed FP32 probe compilation')
     rows = report['cases']
-    if len(rows) != len(CASES) or {r['case'] for r in rows} != set(CASES):
-        raise ValueError('expected all five distinct compiled probes')
+    available = selected_cases(r['case'] for r in rows)
     by_name = {r['case']: r for r in rows}
-    rows = [by_name[name] for name in selected_cases(selection)]
+    rows = [by_name[name] for name in selected_cases(available if selection is None else selection, available)]
     schema = load_schema(Path(ddk)/'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')
     enums = _enum_fields(schema)
     cases = []
@@ -156,6 +155,7 @@ def prepare(compiled, out, ddk, ddk_id, selection=CASES):
                 spec['fixture_sha256'] = sha256_file(destination)
         (folder/'plan.txt').write_text('\n'.join(plan)+'\n')
         cases.append(dict(case=name, **io, model=_file_record(model, name+'/model.omc'),
+                          compiler_options=compilation.get('requested_options', {}),
                           graphop_counts=row['graphop_counts']))
     result = dict(cases=cases, warmup=WARMUP, repetitions=REPETITIONS, atol=ATOL, rtol=RTOL,
                   scope='FP32_REGIONS_ONLY_NOT_FULL_DRAFT_VALIDATION', ddk_id=ddk_id, schema=schema.evidence)
@@ -211,6 +211,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
                 max_abs_error=max(r['max_abs_error'] for r in tensors) if finite else None,
                 max_relative_l2_error=max(r['relative_l2_error'] for r in tensors) if finite else None),
             tensors=tensors, graphop_counts=case['graphop_counts'], api_us=timings,
+            compiler_options=case.get('compiler_options', {}),
             mean_ms=sum(timings)/REPETITIONS/1000, min_ms=min(timings)/1000, max_ms=max(timings)/1000))
     passed = all(r['passed'] for r in cases)
     return dict(status='PASSED' if passed else 'NUMERICAL_FAILED', numerical_validation='PASSED' if passed else 'FAILED',
@@ -257,6 +258,10 @@ def analyze(directory):
     def number(value):
         return float(value) if np.isfinite(value) else str(float(value))
 
+    def round16(value):
+        with np.errstate(over='ignore', invalid='ignore'):
+            return value.astype(np.float16).astype('<f4')
+
     cases = []
     for case in meta['cases']:
         name = case['case']
@@ -283,13 +288,37 @@ def analyze(directory):
                 row += begin
                 groups.append(dict(group=label, **metrics(a, e),
                     worst=dict(row=int(row), column=int(column), actual=number(a_rows[row, column]),
-                        expected=number(e_rows[row, column]), input_abs_max=number(np.max(np.abs(x_rows[row]))),
+                        expected=number(e_rows[row, column]),
+                        input_finite_abs_max=(number(np.max(np.abs(x_rows[row][np.isfinite(x_rows[row])])))
+                            if np.isfinite(x_rows[row]).any() else None),
+                        input_nonfinite_elements=int((~np.isfinite(x_rows[row])).sum()),
                         actual_first4=[number(v) for v in a_rows[row, :4]],
                         expected_first4=[number(v) for v in e_rows[row, :4]])))
-            outputs.append(dict(name=spec['name'], shape=spec['shape'], groups=groups))
+            a32 = actual.astype('<f4')
+            finite = np.isfinite(a32)
+            rounded = round16(a32)
+            precision = dict(finite_elements=int(finite.sum()),
+                fp16_roundtrip_exact_elements=int((finite & (rounded.view('<u4') == a32.view('<u4'))).sum()),
+                scope='NUMERICAL_SIGNATURE_ONLY_NOT_INTERNAL_INSTRUCTION_PROOF')
+            if name == 'residual_fp32':
+                right_spec = next(s for s in case['inputs'] if s['name'] == 'residual')
+                right = np.fromfile(fixture/name/f'input_{right_spec["index"]}.bin', dtype='<f4').reshape(right_spec['shape'])
+                full = np.add(x, right, dtype=np.float32)
+                rounded_sum = np.add(round16(x), round16(right), dtype=np.float32)
+                hypotheses = {'fp32_add': full, 'output_round_only': round16(full),
+                    'inputs_round_only': rounded_sum, 'inputs_and_output_round': round16(rounded_sum)}
+                precision['rounding_models'] = {}
+                for label, candidate in hypotheses.items():
+                    both_finite = finite & np.isfinite(candidate)
+                    precision['rounding_models'][label] = dict(elements=int(a32.size),
+                        exact_fp32_bit_matches=int((both_finite & (candidate.view('<u4') == a32.view('<u4'))).sum()),
+                        max_abs_error_to_actual=(float(np.max(np.abs(candidate.astype(np.float64)-actual)))
+                            if both_finite.all() else None))
+            outputs.append(dict(name=spec['name'], shape=spec['shape'], groups=groups, precision=precision))
         summary = next(c for c in comparison['cases'] if c['case'] == name)
         cases.append(dict(case=name, numerics=summary['numerics'],
-            repeat_bitwise_stable=summary['repeat_bitwise_stable'], outputs=outputs))
+            repeat_bitwise_stable=summary['repeat_bitwise_stable'],
+            compiler_options=summary['compiler_options'], outputs=outputs))
     return dict(status='ANALYZED', artifact_kind=KIND, source_batch_status=report['status'],
         numerical_validation=comparison['numerical_validation'], validated_cases=comparison['validated_cases'],
         scope='LOCAL_RETAINED_OUTPUTS; ALL_CALLS_RECOMPARED; ROW_DETAILS_FROM_ITERATION_0',
@@ -328,7 +357,7 @@ def start(args, out):
         env = read_json(config.parent/cfg['assets'])['environment']
         with (source.parent/('.'+source.name+'.lock')).open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            meta = prepare(source, out, args.ddk_root, env['ddk_id'], args.cases or CASES)
+            meta = prepare(source, out, args.ddk_root, env['ddk_id'], args.cases)
         state.update(status='PREPARED', stage='prepared', requested_cases=[c['case'] for c in meta['cases']])
         if not args.apply:
             return state

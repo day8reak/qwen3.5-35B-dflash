@@ -23,7 +23,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "Analyze retained vector-result locally with validate_draft_vector.py --analyze before reusing vector slots: primitive RMS has relative L2 0.8812251152 despite stable 1.5722 ms calls. Keep original gates and snapshots; distinguish row-scale/layout/arithmetic causes. Builtin RMS hidden Load failure remains separate; remaining three probes pending. See docs/current-status.md.",
+  "next": "Analyze current retained Softmax/Add outputs, then compile only residual_fp32 and rms_builtin_heads with explicit --weight-data-type FP32. Reuse native and fixed vector slots. Compare Add rounding signatures and RmsNorm Load/y/rstd outcomes. This tests weight conversion, not an arithmetic-precision guarantee. See docs/current-status.md.",
   "latest_user_board_observation": {
     "source": "USER_PASTED_RECOVERY_JSON",
     "independently_retrieved": false,
@@ -178,7 +178,7 @@
     "gap_attribution": "UNRESOLVED_RUNTIME_DISPATCH_SYNCHRONIZATION_AND_INTERNAL_TRANSFERS_ARE_HYPOTHESES",
     "timestamp_caveat": "SAME_STREAM_CONV_AND_DEPENDENT_RESHAPE_STARTS_DIFFER_BY_2_US_WITH_CONV_DURATION_70968_US; DO_NOT_CONSTRUCT_DEVICE_TIMELINE_WITHOUT_CLOCK_SCOPE",
     "static_work": "C16_CONTEXT_PROJECTION_EXECUTES_FOR_PARTIAL_OR_ZERO_VALID_ROWS",
-    "next": "Analyze retained vector-result locally with validate_draft_vector.py --analyze before reusing vector slots: primitive RMS has relative L2 0.8812251152 despite stable 1.5722 ms calls. Keep original gates and snapshots; distinguish row-scale/layout/arithmetic causes. Builtin RMS hidden Load failure remains separate; remaining three probes pending. See docs/current-status.md."
+    "next": "Analyze current retained Softmax/Add outputs, then compile only residual_fp32 and rms_builtin_heads with explicit --weight-data-type FP32. Reuse native and fixed vector slots. Compare Add rounding signatures and RmsNorm Load/y/rstd outcomes. This tests weight conversion, not an arithmetic-precision guarantee. See docs/current-status.md."
   },
   "compiled_partition_observation": {
     "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
@@ -296,35 +296,72 @@
     "local_test_sources": "NOT_PUBLISHED"
   },
   "fp32_probe_execution_observation": {
-    "source": "USER_PASTED_PARTIAL_RECOVERY_AND_FIRST_TENSOR_ERROR",
+    "source": "USER_PASTED_PARTIAL_RECOVERY_AND_LOCAL_ANALYSIS_JSON",
     "independently_retrieved": false,
-    "board_attempt": "/data/local/tmp/qwen35_vector_da07af337d41484e99dfad93e975d5d6",
+    "board_attempt": "/data/local/tmp/qwen35_vector_7984b40d383f42f3bbfbd49938d0d184",
     "status": "FAILED",
     "stage": "complete",
     "device_execution": "PARTIAL_OUTPUTS_RETRIEVED",
     "numerical_validation": "FAILED",
     "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
-    "error": "HIAI Load failed: 1",
-    "cause": "LOAD_FAILURE_OBSERVED; UNDERLYING_MODEL_RUNTIME_COMPATIBILITY_CAUSE_UNRESOLVED",
-    "next": "Analyze retained vector-result locally with validate_draft_vector.py --analyze before reusing vector slots: primitive RMS has relative L2 0.8812251152 despite stable 1.5722 ms calls. Keep original gates and snapshots; distinguish row-scale/layout/arithmetic causes. Builtin RMS hidden Load failure remains separate; remaining three probes pending. See docs/current-status.md.",
-    "failure_stage": "HIAI_LOAD_BEFORE_INFERENCE",
     "runtime_version": "800.631.120.010",
     "native_exitcode": 1,
     "archive_exitcode": 0,
     "case_exitcodes": {
-      "rms_primitive_hidden": 0,
-      "rms_builtin_hidden": 1,
-      "rms_builtin_heads": null,
-      "softmax_fp32": null,
-      "residual_fp32": null
+      "softmax_fp32": 0,
+      "residual_fp32": 0,
+      "rms_builtin_heads": 1
     },
     "first_failure": {
-      "case": "rms_builtin_hidden",
+      "case": "rms_builtin_heads",
       "exitcode": 1,
       "stderr": "HIAI Load failed: 1"
     },
-    "primitive_rms": "EXECUTED_NUMERICAL_FAILED; RELATIVE_L2_0.8812251152339386",
-    "remaining_cases": "NOT_STARTED_AFTER_FIRST_FAILED_CHILD"
+    "failure_stage": "HIAI_LOAD_BEFORE_INFERENCE",
+    "cause": "LOAD_FAILURE_OBSERVED; UNDERLYING_MODEL_RUNTIME_COMPATIBILITY_CAUSE_UNRESOLVED",
+    "previous_builtin_hidden_failure": {
+      "board_attempt": "/data/local/tmp/qwen35_vector_da07af337d41484e99dfad93e975d5d6",
+      "runtime_version": "800.631.120.010",
+      "exitcode": 1,
+      "stderr": "HIAI Load failed: 1"
+    },
+    "warmup": 3,
+    "repetitions": 10,
+    "repeat_bitwise_stable": true,
+    "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_BETWEEN_CALLS_EXCLUDED",
+    "atol": 1e-05,
+    "rtol": 0.0001,
+    "cases": {
+      "softmax_fp32": {
+        "mean_ms": 1.7261,
+        "min_ms": 0.675,
+        "max_ms": 2.246,
+        "finite": true,
+        "graphop_counts": {
+          "NPUCL": 1
+        },
+        "max_abs_error": 0.001953125,
+        "relative_l2_error": 0.0014337895061407174,
+        "ordinary_rows_relative_l2_error": 0.0013845485765079115,
+        "large_row_peak": 0.998046875,
+        "large_row_expected_peak": 1.0
+      },
+      "residual_fp32": {
+        "mean_ms": 0.8412,
+        "min_ms": 0.7,
+        "max_ms": 1.341,
+        "finite": true,
+        "graphop_counts": {
+          "NPUCL": 1
+        },
+        "max_abs_error": 0.989990234375,
+        "relative_l2_error": 0.013361009945102177,
+        "ordinary_rows_relative_l2_error": 0.00030649184952551877,
+        "cancellation_row_relative_l2_error": 7.087766798949951,
+        "failing_elements": 24873
+      }
+    },
+    "next": "Analyze current retained Softmax/Add outputs, then compile only residual_fp32 and rms_builtin_heads with explicit --weight-data-type FP32. Reuse native and fixed vector slots. Compare Add rounding signatures and RmsNorm Load/y/rstd outcomes. This tests weight conversion, not an arithmetic-precision guarantee. See docs/current-status.md."
   },
   "fp32_probe_failure_reporting_checks": {
     "status": "PASSED",
@@ -403,6 +440,93 @@
     ],
     "native_code_changed": false,
     "model_recompile_required": false,
+    "native_rebuild_required": false,
+    "local_test_sources": "NOT_PUBLISHED"
+  },
+  "residual_rounding_reproduction": {
+    "status": "REPRODUCED_USER_REPORTED_STATISTICS_AND_SAMPLES",
+    "source": "LOCAL_REGENERATED_DETERMINISTIC_PROBE_FIXTURE_VS_USER_PRINTED_METRICS_AND_VALUES",
+    "raw_device_outputs_available_locally": false,
+    "model": "round_fp16(round_fp16(x) + round_fp16(residual)); widen to FP32 for output",
+    "reported_sample_matches": 20,
+    "reported_samples": 20,
+    "output_round_only_sample_matches": 12,
+    "inputs_round_only_sample_matches": 12,
+    "matched_metrics": [
+      "global and four group maximum absolute errors",
+      "global and four group relative L2 errors",
+      "global and four group failing-element counts"
+    ],
+    "example": {
+      "x": 1040.5068359375,
+      "residual": -1040.496826171875,
+      "fp32_sum": 0.010009765625,
+      "rounded_input_sum": 1.0,
+      "reported_actual": 1.0
+    },
+    "interpretation": "STRONG_EFFECTIVE_FP16_ROUNDING_EVIDENCE; ROUNDING_STAGE_AND_INTERNAL_INSTRUCTION_TYPE_UNRESOLVED",
+    "full_tensor_bitwise_match": "PENDING_USER_LOCAL_ANALYZE",
+    "selected_omg_precision_controls": "HELP_RECEIVED_WEIGHT_TYPE_FP16_DEFAULT_OR_FP32; NO_DIRECT_ARITHMETIC_PRECISION_OPTION_LISTED",
+    "full_draft_changed": false,
+    "production_precision_policy_changed": false
+  },
+  "fp16_rounding_analysis_host_checks": {
+    "status": "PASSED",
+    "checks": 7,
+    "scope": "LOCAL_SYNTHETIC_FIXTURES_NO_DEVICE_EXECUTION",
+    "coverage": [
+      "four distinct input/output rounding hypotheses",
+      "reproduced user aggregate and group errors",
+      "nonfinite actual outputs and FP16 overflow",
+      "masked Softmax finite input scale and unchanged numerical gate"
+    ],
+    "native_code_changed": false,
+    "model_recompile_required": false,
+    "native_rebuild_required": false,
+    "local_test_sources": "NOT_PUBLISHED"
+  },
+  "selected_omg_help_observation": {
+    "source": "USER_PASTED_SELECTED_OMG_HELP",
+    "independently_executed": false,
+    "returncode": 0,
+    "weight_data_type": {
+      "default": "FP16",
+      "supported": [
+        "FP16",
+        "FP32"
+      ],
+      "scope": "ORIGINAL_FP32_WEIGHTS_WITHOUT_COMPRESS_CONF"
+    },
+    "other_options": [
+      "cl_customization",
+      "execute_device_config",
+      "mode=6 precision simulation JSON"
+    ],
+    "arithmetic_precision_control": "NOT_LISTED; UNKNOWN_SCHEMAS_NOT_ASSUMED",
+    "platform_help_example": "kirin9020",
+    "selected_platform": "kirinx90",
+    "platform_decision": "KEEP_PREVIOUSLY_WORKING_X90_TARGET; HELP_EXAMPLE_DOES_NOT_REPLACE_MODEL_CONFIGURATION"
+  },
+  "fp32_weight_control_experiment": {
+    "status": "HOST_CHECKS_PASSED_USER_COMPILATION_AND_DEVICE_PENDING",
+    "cases": [
+      "residual_fp32",
+      "rms_builtin_heads"
+    ],
+    "weight_data_type": "FP32",
+    "hypothesis": "EXCLUDE_DEFAULT_FP16_CONVERSION_OF_RMS_CONSTANT_GAMMA_AS_LOAD_CONTRIBUTOR; DYNAMIC_ADD_HAS_NO_FLOAT_WEIGHT_CONTROL",
+    "scope": "WEIGHT_CONVERSION_ONLY_NOT_ARITHMETIC_PRECISION_GUARANTEE",
+    "stop_condition": "RMS_LOAD_STILL_FAILS_ENDS_THIS_FLAG_ONLY_TRIAL; SUCCESSFUL_LOAD_STILL_REQUIRES_Y_AND_RSTD_NUMERICS; REQUESTED_OPTIONS_ARE_NOT_COMPILED_CONSTANT_DTYPE_PROOF",
+    "host_checks": 10,
+    "host_scope": "MOCKED_COMPILATION_AND_HOST_FIXTURES_NO_SELECTED_DDK_OR_DEVICE",
+    "coverage": [
+      "FP32/FP16/omitted option validation and compiler call",
+      "selected compiled subset and order",
+      "missing duplicate unknown cases rejected",
+      "legacy results without compiler_options",
+      "numerical comparison and compact slot summary retain settings"
+    ],
+    "full_draft_changed": false,
     "native_rebuild_required": false,
     "local_test_sources": "NOT_PUBLISHED"
   }

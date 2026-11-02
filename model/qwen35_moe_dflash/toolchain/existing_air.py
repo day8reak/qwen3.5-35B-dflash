@@ -267,8 +267,8 @@ def _conversion_options(input_shape, dynamic_dims, limit_partition_size, save_we
                 raise ValueError(f"{name} must be bool or None")
             values[name] = "true" if value else "false"
     if weight_data_type is not None:
-        if not isinstance(weight_data_type, str) or weight_data_type != "FP16":
-            raise ValueError("weight_data_type must be FP16 or None")
+        if not isinstance(weight_data_type, str) or weight_data_type not in {"FP16", "FP32"}:
+            raise ValueError("weight_data_type must be FP16, FP32 or None")
         values["weight_data_type"] = weight_data_type
     return values
 
@@ -793,7 +793,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     else:
         save_json(output / "manifest.json", report)
     save_json(output / "report.json", report)
-    dtype_policy = ("AIR weight dtype retained without override" if weight_data_type is None
+    dtype_policy = ("weight dtype follows the selected OMG default; no explicit override" if weight_data_type is None
                     else f"explicit compiler weight dtype override={weight_data_type}")
     lines = ["Existing AIR -> selected-DDK OMG compilation", f"status={report['status']}",
              f"Target: kirinx90; {dtype_policy}.",

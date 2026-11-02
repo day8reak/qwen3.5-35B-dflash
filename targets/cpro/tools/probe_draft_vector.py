@@ -134,7 +134,8 @@ def _run(args, root):
     result = {'artifact_kind': KIND, 'status': 'RUNNING', 'stage': 'prepare',
         'device_execution': 'NOT_RUN', 'numerical_validation': 'NOT_RUN',
         'model_compilation': 'NOT_RUN', 'full_draft_changed': False, 'cases': [],
-        'precision_request': 'FP32_INPUT_OUTPUT_AND_ARITHMETIC_NO_CPU_CUSTOMIZATION_NO_FP16_WEIGHT_OVERRIDE',
+        'precision_request': 'SOURCE_FP32_GRAPH_WITH_DEFAULT_OMG_ARITHMETIC_POLICY_NO_CPU_CUSTOMIZATION',
+        'weight_data_type': args.weight_data_type or 'OMG_DEFAULT',
         'schema_source': SCHEMA, 'platform': 'kirinx90'}
     write_json(root / 'result.json', result)
     try:
@@ -174,6 +175,7 @@ def _run(args, root):
                         log=folder / 'export.log', timeout=args.timeout_seconds)
                 compiled = compile_existing_air(air, folder / 'omc', ddk, ddk_id=args.ddk_id,
                     timeout_seconds=args.timeout_seconds, use_origin_format=True,
+                    weight_data_type=args.weight_data_type,
                     tbe_diagnosis=args.tbe_diagnosis, save_weights_as_external_data=False)
                 row['model_compilation'] = compiled['model_compilation']
                 if compiled['status'] != 'COMPILED':
@@ -228,6 +230,8 @@ def main(argv=None):
     parser.add_argument('--cxx11-abi', type=int, choices=(0, 1), default=0)
     parser.add_argument('--timeout-seconds', type=int, default=600)
     parser.add_argument('--tbe-diagnosis')
+    parser.add_argument('--weight-data-type', choices=('FP16', 'FP32'),
+                        help='Explicit OMG weight conversion; omitted uses its default. Does not set arithmetic precision.')
     args = parser.parse_args(argv)
     if args.timeout_seconds <= 0 or len(args.cases) != len(set(args.cases)):
         parser.error('timeout must be positive and cases must be distinct')

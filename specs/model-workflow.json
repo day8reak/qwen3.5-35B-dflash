@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "FP32_PRIMITIVE_RMS_LARGE_NUMERICAL_ERROR_LOCAL_ANALYSIS_PENDING",
+    "status": "FP32_PROBE_WEIGHT_CONVERSION_CONTROL_READY_FOR_USER_EXECUTION",
     "entry": "targets/cpro/tools/validate_draft_vector.py",
     "commands": "docs/current-status.md",
     "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Analyze retained vector-result locally with validate_draft_vector.py --analyze before reusing vector slots: primitive RMS has relative L2 0.8812251152 despite stable 1.5722 ms calls. Keep original gates and snapshots; distinguish row-scale/layout/arithmetic causes. Builtin RMS hidden Load failure remains separate; remaining three probes pending. See docs/current-status.md.",
+    "next": "Analyze current retained Softmax/Add outputs, then compile only residual_fp32 and rms_builtin_heads with explicit --weight-data-type FP32. Reuse native and fixed vector slots. Compare Add rounding signatures and RmsNorm Load/y/rstd outcomes. This tests weight conversion, not an arithmetic-precision guarantee. See docs/current-status.md.",
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
       "independently_retrieved": false,
@@ -5872,6 +5872,8 @@
       },
       "meaning": "COMPILED_PLACEMENT_ONLY_NOT_DEVICE_NUMERICS_INTERNAL_FP32_PROOF_OR_SPEEDUP"
     },
-    "fp32_probe_execution_observation": "specs/incremental-draft-native-host-validation.json#fp32_probe_execution_observation"
+    "fp32_probe_execution_observation": "specs/incremental-draft-native-host-validation.json#fp32_probe_execution_observation",
+    "residual_rounding_reproduction": "specs/incremental-draft-native-host-validation.json#residual_rounding_reproduction",
+    "fp32_weight_control_experiment": "specs/incremental-draft-native-host-validation.json#fp32_weight_control_experiment"
   }
 }
