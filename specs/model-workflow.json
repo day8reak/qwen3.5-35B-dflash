@@ -5802,12 +5802,21 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "ADDCUSTOM_PROBE_AND_PYTORCH_INCREMENTAL_CANDIDATE_HOST_CHECKED",
+    "status": "ADDCUSTOM_OMG_FAILED_LOG_DETAILS_PENDING_PYTORCH_CANDIDATE_READY",
     "entry": "targets/cpro/tools/probe_draft_vector.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Run residual_addcustom_fp32 on selected GE/DDK and board; in parallel export --frontend pytorch on weight server and compile its portable bundle on DDK server. Both candidates need compiled dtype/ABI and device validation; commands in docs/current-status.md.",
+    "next": "Inspect the retained AddCustom failure with probe_draft_vector.py --inspect-compile; OMG exited 1, actual compiler error not yet supplied, no retry for diagnostics. PyTorch AIR export/compile can proceed independently using docs/current-status.md.",
+    "addcustom_attempt": {
+      "source": "USER_PASTED_PROBE_SUMMARY",
+      "case": "residual_addcustom_fp32",
+      "model_compilation": "FAILED",
+      "omg_returncode": 1,
+      "root_cause": "NOT_DETERMINED_COMPILER_LOG_PENDING",
+      "device_execution": "NOT_RUN",
+      "full_draft_changed": false
+    },
     "pytorch_candidate": {
       "rms": "INSTALLED_NPU_RMS_NORM_CONVERTER_TO_RmsNorm_NOT_AdnRmsNorm",
       "gamma": "DIRECT_DRAFT_GAMMA_FP32_MULTIPLY_BEFORE_FP16_CAST",

@@ -80,6 +80,8 @@ FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitc
 
 所选OMG帮助说明`weight_data_type`仅控制原始FP32权重且未指定`compress_conf`的场景，未列出中间算术保精度开关。Add的两个操作数都是动态输入，没有浮点权重。完整Draft保持现有CPU FP32策略，新增AddCustom独立探针复用同一输入及参考，命令见[当前阶段](current-status.md)。仅在OMG目录的文本搜索零匹配不能排除其他DDK配置。直接删除Cast无法让既有FP16接口的NPU子图接受FP32输入。
 
+随后用户执行`residual_addcustom_fp32`：OMG以`--framework=1 --target=omc --platform=kirinx90 --save_weights_as_external_data=false --use_origin_format=true`退出1，小图编译失败、未上板，完整Draft未修改。回传尚无具体编译日志，注册／JIT／dtype／平台支持等原因都未确定。工具现可通过`--inspect-compile`读取这一失败目录，后续编译失败也会直接返回错误摘要；无需为提取诊断重编小图。
+
 公开[AscendC Add文档](https://asc.gitcode.com/api/SIMD-API/basic_api/memory_vector_compute/basic_arithmetic/Add.html)列出X90支持`float`运算；[华为算子工程工具文档](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/cannkit-creating-operator-project-msopgen)却注明KirinX90暂不支持float类型输入。它们描述的计算API和工程接口不同，当前DDK的自定义FP32输入接线仍待确认，不能将API支持当成可部署证明。
 
 当前图固定计算16行context投影，即使只追加2行，或某轮`valid_rows=0`，掩码也不会删除这段计算。当前脚本默认profiling样本为case2、追加2行；尚未独立读取本轮request确认。下一步先验证FP32区域的NPU编译路径，同时评估投影表达与有效行计算量；优化收益以同一输入的整模型墙钟确认。入口使用Conv2D是因为此前选定OMG拒绝K=16384的MatMul，不能直接换回原MatMul就宣称可用。

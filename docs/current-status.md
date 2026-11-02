@@ -8,7 +8,21 @@
 
 用户回传的DDK注册列出`AddCustom`输入输出支持`float16,float32,int32`，同时有`precision_reduce=true`和JIT-only提示。它不同于此前普通Add的`executor_add_eltwise_half_nd`，必须实际编译和运行。下面保留大值相消输入，不能只看总体L2。
 
-在DDK服务器沿用已配置的`REPO_DIR`、`AI_RUN_DIR`、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID`。之前vector任务已回收完成，可以复用同名目录；不要在仍有任务运行时重建。
+本次AddCustom已在OMG编译阶段退出1，未上板。当前回传只有进程退出摘要，没有具体编译错误；不能据此认定FP32不支持，也不能把之前发现的缺失库直接当成本次根因。**先检查本次保留目录，不重复编译**：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/tools/probe_draft_vector.py" \
+  --inspect-compile "$AI_RUN_DIR/draft/tests/vector"
+```
+
+这个入口只读取已有失败case的`omc/report.json`及编译日志，返回真实stage、returncode和优先错误行／末尾日志；不编译、不上板、不修改产物。回传其中`compilation_diagnostics`即可。尚未更新脚本时也可直接提取：
+
+```bash
+tail -n 120 "$AI_RUN_DIR/draft/tests/vector/residual_addcustom_fp32/omc/compile.log"
+```
+
+定位并修复具体原因后，才使用下面的原编译命令复测。在DDK服务器沿用已配置的`REPO_DIR`、`AI_RUN_DIR`、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID`，复用同名已结束目录：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only

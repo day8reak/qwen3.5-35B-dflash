@@ -300,6 +300,42 @@ def inspect_rms(airs, pb2=None):
                 model_compilation='NOT_RUN', device_execution='NOT_RUN', models=reports)
 
 
+def compilation_diagnostics(folder):
+    """Read existing compiler errors; never retry compilation or infer a cause."""
+    from qwen35_moe_dflash.common.tool_logs import log_excerpt
+    root = Path(folder) / 'omc'
+    result = {'report': str(root / 'report.json'), 'compile_log': str(root / 'compile.log')}
+    try:
+        report = json.loads((root / 'report.json').read_text())
+        result.update({key: report[key] for key in
+                       ('status', 'stage', 'model_compilation', 'returncode', 'error') if key in report})
+    except (OSError, ValueError) as error:
+        result['report_error'] = str(error)
+    result['log_excerpt'] = log_excerpt(root / 'compile.log')
+    if not result['log_excerpt']:
+        result['log_excerpt'] = log_excerpt(root / 'help.log')
+    return result
+
+
+def inspect_compilation(directory):
+    root = Path(directory)
+    report = json.loads((root / 'result.json').read_text())
+    if report.get('artifact_kind') != KIND:
+        raise ValueError('expected an existing Draft vector probe directory')
+    cases = []
+    for row in report['cases']:
+        name = row['case']
+        if name not in CASES:
+            raise ValueError('unknown probe case in saved report')
+        if row.get('status') != 'FAILED':
+            continue
+        cases.append(dict(case=name, error=row.get('error'),
+                          compilation_diagnostics=compilation_diagnostics(root / name)))
+    return dict(status='INSPECTED', source_batch_status=report.get('status'), cases=cases,
+                scope='EXISTING_COMPILER_REPORTS_AND_LOGS_ONLY_ROOT_CAUSE_NOT_CLASSIFIED',
+                model_compilation='NOT_RUN', device_execution='NOT_RUN')
+
+
 def _run(args, root):
     from qwen35_moe_dflash.graph.fused.emitter import emit_cpp
     from qwen35_moe_dflash.graph.export import _logged
@@ -374,6 +410,7 @@ def _run(args, root):
                     tbe_diagnosis=args.tbe_diagnosis, save_weights_as_external_data=False)
                 row['model_compilation'] = compiled['model_compilation']
                 if compiled['status'] != 'COMPILED':
+                    row['compilation_diagnostics'] = compilation_diagnostics(folder)
                     raise RuntimeError(str(compiled.get('error', compiled['status'])))
                 row['omc'] = str(Path(case) / 'omc' / compiled['omc']['path'])
                 placement = inspect_placement(root / row['omc'], schema)
@@ -388,8 +425,12 @@ def _run(args, root):
         result.update(stage='complete', status=('PLANNED' if args.plan_only else
                       'COMPILED' if statuses == {'COMPILED'} else 'FAILED' if statuses == {'FAILED'} else 'PARTIAL'),
             model_compilation=('NOT_RUN' if compilation == {'NOT_RUN'} else
-                               'PASSED' if compilation == {'PASSED'} else 'FAILED_OR_PARTIAL'),
-            next='Inspect placement.json for FP32 descriptors and CPU/NPU owners; device precision and performance are still required before Draft integration.')
+                               'PASSED' if compilation == {'PASSED'} else
+                               'FAILED' if compilation == {'FAILED'} else 'PARTIAL'),
+            next=('No SDK compilation requested; inspect the planned source and fixtures.' if args.plan_only else
+                  'Inspect placement.json for FP32 descriptors and CPU/NPU owners; device precision and performance are still required before Draft integration.'
+                  if statuses == {'COMPILED'} else
+                  'Inspect failed cases and compilation_diagnostics; failed compilation has no validated placement. Do not run failed cases on device.'))
     except Exception as error:
         result.update(status='FAILED', error=f'{type(error).__name__}: {error}')
     finally:
@@ -420,6 +461,8 @@ def main(argv=None):
                         help='read saved compiler environment and selected DDK AddCustom registration; no writes or compilation')
     parser.add_argument('--inspect-rms', nargs='+', metavar='AIR',
                         help='read normalized Target/PyTorch AIR RMS descriptors without compiling or executing')
+    parser.add_argument('--inspect-compile', metavar='COMPILED_PROBES',
+                        help='read existing failed compiler reports and error excerpts; no writes or retries')
     parser.add_argument('--torchair-pb2', help='optional actual TorchAir schema for --inspect-rms')
     parser.add_argument('--cases', nargs='+', choices=CASES, default=list(CASES))
     parser.add_argument('--plan-only', action='store_true', help='write source and fixtures without invoking any SDK')
@@ -436,16 +479,19 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.timeout_seconds <= 0 or len(args.cases) != len(set(args.cases)):
         parser.error('timeout must be positive and cases must be distinct')
-    if args.inspect_ddk and args.inspect_rms:
+    if sum(bool(value) for value in (args.inspect_ddk, args.inspect_rms, args.inspect_compile)) > 1:
         parser.error('select one read-only inspection mode')
     if args.torchair_pb2 and not args.inspect_rms:
         parser.error('--torchair-pb2 requires --inspect-rms')
-    if args.inspect_ddk or args.inspect_rms:
+    if args.inspect_ddk or args.inspect_rms or args.inspect_compile:
         if args.output or args.replace or args.plan_only:
             parser.error('inspection cannot be combined with --output, --replace or --plan-only')
     elif not args.output:
         parser.error('--output is required for compilation or --plan-only')
     try:
+        if args.inspect_compile:
+            print(json.dumps(inspect_compilation(args.inspect_compile), ensure_ascii=False, indent=2))
+            return 0
         if args.inspect_rms:
             print(json.dumps(inspect_rms(args.inspect_rms, args.torchair_pb2), ensure_ascii=False, indent=2))
             return 0
