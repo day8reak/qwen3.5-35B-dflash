@@ -2,11 +2,19 @@
 
 当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**。按用户要求暂缓手写GE和AddCustom优化，不再要求运行相关探针。成功导出的AIR统一放`draft/air/`，编译和测试直接引用它。当前可运行OMC仍放`draft/omc/`；新OMC完成接口绑定和板端验证后再替换运行模型。`tests/`用于测试记录和可清理的构建临时文件。
 
-目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前GE整模型profiling为518.990ms。首次PyTorch AIR已导出，但DDK编译被`GatherV2_1 / GatherV2D`的INT64索引校验阻断；板端未执行。本轮按Target CPro接入六个`AdnFusedInferAttention`，并保留INT32索引修复、17输入／14输出和32个RmsNorm。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
+目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前GE整模型profiling为518.990ms。原语版PyTorch AIR的DDK编译曾被Gather的INT64索引阻断，源码已修复。随后按Target CPro接入融合注意力；最新权重服务器日志已保存82个文件，但导出后的融合节点检查失败，尚未进入OMG。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
 
-**本轮需要更新AIR：权重服务器执行第1节末尾的导出命令（复用已有prepared）；按第2节传输整包；DDK服务器执行第3节重编。只在DDK拉取代码并重编旧AIR无法改变其中的INT64索引。**
+**当前先检查保留的失败AIR，无需重新导出权重。** 在刚才执行导出的**权重服务器／`qwen3_5_cpro`环境**运行：
 
-本轮把每层的QK／mask／Softmax／PV交给Target同款融合算子，使用原Target的converter端口映射；内部构造NZ分块KV，block_size=32，C16／cap192／K15的临时KV形状为`[7,64,32,16]`。padding全部屏蔽，保留Draft五层因果／滑窗与末层双向可见性。公共ND缓存仍只提交context，不直接套用Target的原地CacheUpdate。权重和公共接口不变，融合内核的舍入行为仍需实机比较。实际AIR会检查六个融合节点、布局属性与INT32 Gather索引；尚待真实TorchAir重导出和OMG复编确认。
+```bash
+git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
+  --inspect-air "$AI_RUN_DIR/draft/tests/export"
+```
+
+检查直接读取该目录的`export.air`、`air-schema.pb`和manifest，列出`first_mismatch`、期望值／实际值及`first_attention`的端口与来源节点描述，不导出、不编译、不改写文件。`status=INSPECTED`仅表示检查已执行，另看`validation_status`。旧报错没有指出具体字段，当前根因待该输出确认；不能据此判定融合算子不受DDK支持。原公共`draft/air`仍是此前产物，本轮先保留失败目录，不执行下面的重导出或传输步骤。
+
+本轮把每层的QK／mask／Softmax／PV交给Target同款融合算子，使用原Target的converter端口映射；内部构造NZ分块KV，block_size=32，C16／cap192／K15的临时KV形状为`[7,64,32,16]`。padding全部屏蔽，保留Draft五层因果／滑窗与末层双向可见性。公共ND缓存仍只提交context，不直接套用Target的原地CacheUpdate。权重和公共接口不变，融合内核的舍入行为仍需实机比较。实际AIR检查六个融合节点、布局属性与INT32 Gather索引；本轮新增逐字段差异报告，未放宽检查条件。
 
 ## 1. 权重服务器：准备权重并导出AIR
 

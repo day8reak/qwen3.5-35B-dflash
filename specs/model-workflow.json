@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_TARGET_ATTENTION_HOST_VALIDATED_REEXPORT_AND_OMG_PENDING",
+    "status": "PYTORCH_FUSED_AIR_VALIDATION_FAILED_FIELD_DIAGNOSIS_PENDING",
     "entry": "targets/cpro/scripts/export_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Weight server: re-export updated PyTorch Draft with six Target CPro fused attention calls; transfer and install the complete AIR; selected DDK server: compile the same pytorch-omc candidate slot. Validate physical ABI, vendor fused numerics and profiling before runtime promotion.",
+    "next": "Weight server: inspect retained draft/tests/export with export_incremental_draft.py --inspect-air. Resolve the reported attention field mismatch before replacing public AIR, transferring or compiling. No re-export is needed for this inspection.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -5996,10 +5996,23 @@
           "capture": "FULL_WIDTH_FOUR_GEARS_WITH_FAKE_OPERATORS; 6_FUSED_32_RMS_17_INPUTS_14_OUTPUTS_INT32_GATHER",
           "scope": "CPU_EMULATION_OF_LAYOUT_AND_MASK_NOT_VENDOR_FUSED_KERNEL"
         },
-        "server_air_export": "NOT_RUN_FOR_FUSED_CANDIDATE",
+        "server_air_export": "USER_REPORTED_82_FILES_SAVED_POST_EXPORT_ATTENTION_CHECK_FAILED",
         "server_omg_compilation": "NOT_RUN_FOR_FUSED_CANDIDATE",
         "device_execution": "NOT_RUN_USER_OWNS_EXECUTION",
-        "performance": "NOT_MEASURED_50MS_UNMET"
+        "performance": "NOT_MEASURED_50MS_UNMET",
+        "air_validation_failure": {
+          "source": "USER_PASTED_EXPORT_RESULT",
+          "independently_retrieved": false,
+          "reported_stage": "torchair-export",
+          "localized_stage": "POST_EXPORT_AIR_VALIDATION_BEFORE_OMG",
+          "error": "Target CPro attention attributes or NZ/mask descriptors differ: AdnFusedInferAttention",
+          "field": "NOT_REPORTED_IN_OLD_ERROR",
+          "retained_directory": "draft/tests/export",
+          "public_air_replaced": false,
+          "next": "READ_ONLY_INSPECT_AIR_EXPECTED_ACTUAL_AND_PRODUCER_DESCRIPTORS",
+          "diagnostic_host_checks": 11,
+          "diagnostic_scope": "SERIALIZED_GE_SCHEMA_FIXTURES_ONLY_NOT_ACTUAL_FAILED_AIR"
+        }
       }
     },
     "compiled_partition_observation": {

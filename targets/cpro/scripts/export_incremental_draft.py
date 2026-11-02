@@ -17,6 +17,7 @@ def main(argv=None):
     source.add_argument('--job', help='legacy full-draft job containing prepared and residual-fix')
     source.add_argument('--prepared', help='shared prepared weight directory; no previous AIR/OMC required')
     source.add_argument('--import-air', help='move a completed PyTorch AIR bundle to --output without exporting or compiling')
+    source.add_argument('--inspect-air', help='read an existing successful or failed PyTorch AIR export; no model or SDK execution')
     parser.add_argument('--frontend', choices=('ge', 'pytorch'), default='ge')
     parser.add_argument('--torchair-pb2', help='installed TorchAir literal schema; normally discovered automatically')
     parser.add_argument('--replace', action='store_true', help='replace a finished AIR bundle after successful PyTorch export/import')
@@ -27,16 +28,23 @@ def main(argv=None):
     parser.add_argument('--cxx', default='c++')
     parser.add_argument('--cxx11-abi', type=int, choices=(0, 1), default=0)
     parser.add_argument('--timeout-seconds', type=int, default=3600)
-    parser.add_argument('--output', required=True)
+    parser.add_argument('--output')
     args = parser.parse_args(argv)
+    if not args.inspect_air and not args.output:
+        parser.error('--output is required for export/import')
+    if args.inspect_air and (args.output or args.replace):
+        parser.error('--inspect-air is read-only; omit --output and --replace')
     if args.timeout_seconds <= 0:
         parser.error('--timeout-seconds must be positive')
-    if args.frontend == 'pytorch' and not (args.prepared or args.import_air):
+    if args.frontend == 'pytorch' and not (args.prepared or args.import_air or args.inspect_air):
         parser.error('PyTorch export requires --prepared')
     if args.frontend == 'ge' and not args.import_air and (args.replace or args.torchair_pb2):
         parser.error('--replace and --torchair-pb2 belong to the PyTorch candidate export')
-    from qwen35_moe_dflash.draft.incremental.export import export_incremental_draft
     try:
+        if args.inspect_air:
+            from qwen35_moe_dflash.draft.incremental.torch_export import inspect_pytorch_air
+            print(json.dumps(inspect_pytorch_air(args.inspect_air), ensure_ascii=False, indent=2, allow_nan=False), flush=True)
+            return 0
         if args.import_air:
             from qwen35_moe_dflash.draft.incremental.torch_export import import_pytorch_air
             result = import_pytorch_air(args.import_air, args.output, replace=args.replace)
@@ -52,6 +60,7 @@ def main(argv=None):
             shown.update(input_count=len(result.get('inputs', [])), output_count=len(result.get('outputs', [])))
             print(json.dumps(shown, ensure_ascii=False, allow_nan=False), flush=True)
             return 0 if result['status'] == 'PYTORCH_DRAFT_AIR_EXPORTED' else 1
+        from qwen35_moe_dflash.draft.incremental.export import export_incremental_draft
         result = export_incremental_draft(args.job, args.output, context_rows=args.context_rows,
             cache_capacity=args.cache_capacity, max_draft_tokens=args.max_draft_tokens,
             ge_root=args.ge_root or (os.environ.get('CANN_ROOT') if args.prepared else None),
@@ -67,7 +76,8 @@ def main(argv=None):
         return 0
     except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
         print(json.dumps({'status': 'FAILED', 'model_compilation': 'NOT_RUN', 'device_execution': 'NOT_RUN',
-            'output': str(Path(args.output).absolute()), 'error': f'{type(error).__name__}: {error}'}, ensure_ascii=False), flush=True)
+            'output': str(Path(args.output).absolute()) if args.output else None,
+            'error': f'{type(error).__name__}: {error}'}, ensure_ascii=False), flush=True)
         return 1
 
 

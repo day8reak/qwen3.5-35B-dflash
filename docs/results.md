@@ -109,7 +109,7 @@ FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitc
 
 KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Draft API均值726.839ms与这次不是严格配对试验，不能直接作为优化收益结论。
 
-## PyTorch当前开发路线（原语版AIR已导出，融合版待导出）
+## PyTorch当前开发路线（融合版AIR检查失败，OMG未执行）
 
 新增六层增量Draft模块，复用71份prepared权重和17输入／14输出的语义合同；使用Target CPro的`npu_rms_norm → RmsNorm`接口。RMS gamma不加1，候选在FP32乘gamma后转FP16，舍入位置不同于旧GE原语链。入口仍是完整dot的4×4 Conv2D表达，避免直接重试已被拒绝的K=16384 MatMul。
 
@@ -128,6 +128,10 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 本轮继续参照Target CPro，六层接入`adn_fused_infer_attention → AdnFusedInferAttention`，使用原Target的GE端口映射、NZ query与block_size=32的分块KV。保留32个RmsNorm、INT32 Gather及17／14公共ND接口；只在注意力内部生成临时分块缓存，不引入原地CacheUpdate，也不改变Draft gamma和权重。减少了显式GQA复制和QK／Softmax／PV原语，入口Conv2D保持，尚无新性能结果。
 
 本轮主机验证：真实宽度KV布局逐元素检查212992项；六层缩小宽度参考覆盖C16／C64、K15／7／3／1、滑窗开关共280步，CPU模拟Target调用与原语参考的Top1、hidden、全部K/V完全相同，输入未被修改、未写缓存区保留。四档完整宽度`torch.export`捕获6个测试融合节点及32个测试RMS节点，17／14接口、INT32 Gather均保持。原Target的长度端口和`pse_shift → all_seq_lengths_q`映射另通过调用记录检查。测试使用模拟算子，只证明主机布局、mask和接线；真实TorchAir导出、OMG、厂商融合内核精度及≤50ms目标仍待用户实测。
+
+随后用户回传融合版导出失败：TorchAir已完成`82/82`权重文件保存，脚本在导出后检查`AdnFusedInferAttention`时抛出属性或NZ／mask描述不匹配。旧manifest将此阶段仍记为`torchair-export`，具体差异未输出；尚不能确定哪个字段不同，也不能归因于OMG或硬件。失败AIR保留在`draft/tests/export`，公共AIR和OMC未替换。
+
+现增加`export_incremental_draft.py --inspect-air`只读入口，直接解析保留AIR及其schema，逐字段报告期望／实际值、端口名与显式来源边，并保留原检查条件。后续导出同类失败会记录`stage=air-validation`及完整`air-inspection.json`。11项主机检查通过：使用真实GE schema序列化的夹具覆盖属性、shape、dtype、动态与空端口、INT64 Gather拒绝；来源描述正确不能覆盖缺失的消费端描述；CLI读取失败目录不改内容或mtime，也不导入PyTorch／TorchAir。检查工具通过不代表用户失败AIR已修复，下一步由权重服务器回传具体差异。
 
 ## 加载与完整请求
 

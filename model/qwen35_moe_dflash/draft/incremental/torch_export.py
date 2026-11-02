@@ -7,6 +7,7 @@ from collections import Counter
 from contextlib import contextmanager, ExitStack
 import fcntl
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import shutil
@@ -16,6 +17,15 @@ from qwen35_moe_dflash.common.artifacts import output_path, working_directory
 AIR_KIND = 'qwen35-incremental-draft-pytorch-air'
 OMC_KIND = 'qwen35-incremental-draft-pytorch-omc'
 GE_AIR_KIND = 'qwen35-incremental-draft-air'
+
+
+class AirValidationError(ValueError):
+    """Retain the observation even when an export cannot be published."""
+    def __init__(self, inspection):
+        self.inspection = inspection
+        first = inspection['validation_errors'][0]
+        super().__init__(f"AIR validation: {first['node']} {first['field']}: "
+                         f"expected {first['expected']!r}, observed {first['actual']!r}")
 
 
 def _save(path, value):
@@ -183,7 +193,8 @@ def _schema(descriptor, metadata):
     return Schema(descriptor, expected_file=metadata['schema_file'], expected_package=metadata['schema_package'])
 
 
-def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False, expected_attention=None):
+def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False,
+                expected_attention=None, strict=True):
     """Read only graph metadata and sidecar extents, without loading weight data."""
     from qwen35_moe_dflash.target.original_air_roundtrip import _decode, _attributes, MAX_AIR_BYTES
     path = Path(air)
@@ -194,42 +205,71 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
     _, _, graph = _decode(schema, raw)
     nodes = graph['op']
     counts = Counter(n['type'] for n in nodes)
+    errors = []
+    def mismatch(node, field, expected, actual):
+        errors.append(dict(node=node, field=field, expected=expected, actual=actual))
     if expected_norms is not None and (counts['RmsNorm'] != expected_norms or counts['AdnRmsNorm']):
-        raise ValueError(f'expected {expected_norms} installed-converter RmsNorm nodes; observed {counts["RmsNorm"]}, AdnRmsNorm={counts["AdnRmsNorm"]}')
+        mismatch('graph', 'norm_counts', {'RmsNorm': expected_norms, 'AdnRmsNorm': 0},
+                 {'RmsNorm': counts['RmsNorm'], 'AdnRmsNorm': counts['AdnRmsNorm']})
     if expected_attention is not None and (expected_attention.get('policy') != 'target-cpro-fused-attention-v1'
             or counts['AdnFusedInferAttention'] != 6):
-        raise ValueError('expected six Target CPro AdnFusedInferAttention nodes; re-export the Draft AIR')
+        mismatch('graph', 'attention_policy_and_count',
+                 {'policy': 'target-cpro-fused-attention-v1', 'nodes': 6},
+                 {'policy': expected_attention.get('policy'), 'nodes': counts['AdnFusedInferAttention']})
     types = schema.enums.get(schema.package + '.DataType', {})
     def desc(d):
         return dict(shape=d.get('shape', {}).get('dim'), layout=d.get('layout'), raw_dtype=d.get('dtype'),
                     dtype_names=[name for name, value in types.items() if value == d.get('dtype')])
+    names = Counter(n['name'] for n in nodes)
+    producers = {n['name']: n for n in nodes if names[n['name']] == 1}
+    def port(d, index, references):
+        row = dict(desc(d), slot=index, name=d.get('name'),
+                   reference=references[index] if index < len(references) else None)
+        reference = row['reference']
+        if reference:
+            name, separator, output = reference.rpartition(':')
+            producer = producers.get(name)
+            if separator and output.isdecimal() and producer and int(output) < len(producer.get('output_desc', [])):
+                row['producer'] = dict(node=name, type=producer['type'], output=int(output),
+                                       descriptor=desc(producer['output_desc'][int(output)]))
+            else:
+                row['producer_resolution'] = 'UNRESOLVED_EXPLICIT_EDGE'
+        return row
     norms, sidecars, gathers, attention = [], {}, [], []
     for n in nodes:
         attrs = _attributes(n)
         if n['type'] == 'AdnFusedInferAttention':
-            inputs = [desc(d) for d in n.get('input_desc', [])]
+            inputs = [port(d, i, n.get('input', [])) for i, d in enumerate(n.get('input_desc', []))]
             observed_attrs = {key: attrs.get(key, {}).get('s' if key == 'input_layout' else 'f' if key == 'scale_value' else 'i')
                               for key in ('num_heads', 'num_key_value_heads', 'block_size', 'input_layout', 'inner_precise', 'scale_value')}
             attention.append(dict(name=n['name'], inputs=inputs,
                 outputs=[desc(d) for d in n.get('output_desc', [])], attrs=observed_attrs))
             if expected_attention is not None:
-                import math
-                valid = all(observed_attrs[key] == expected_attention[key] for key in observed_attrs if key != 'scale_value')
-                valid = valid and isinstance(observed_attrs['scale_value'], (int, float)) and math.isclose(
-                    observed_attrs['scale_value'], expected_attention['scale_value'], rel_tol=1e-6)
+                for key, actual in observed_attrs.items():
+                    expected = expected_attention[key]
+                    matched = (isinstance(actual, (int, float)) and math.isclose(actual, expected, rel_tol=1e-6)
+                               if key == 'scale_value' else actual == expected)
+                    if not matched:
+                        mismatch(n['name'], 'attrs.' + key, expected, actual)
                 shapes = [expected_attention['query_shape'], expected_attention['kv_shape'], expected_attention['kv_shape']]
-                valid = valid and len(inputs) >= 3 and all(inputs[i]['shape'] == shape and 'DT_FLOAT16' in inputs[i]['dtype_names'] for i, shape in enumerate(shapes))
-                valid = valid and any(d['shape'] == expected_attention['mask_shape'] and 'DT_FLOAT16' in d['dtype_names'] for d in inputs)
-                valid = valid and any(d['shape'] == expected_attention['block_table_shape'] and 'DT_INT32' in d['dtype_names'] for d in inputs)
-                if not valid:
-                    raise ValueError('Target CPro attention attributes or NZ/mask descriptors differ: ' + n['name'])
+                for i, shape in enumerate(shapes):
+                    actual = inputs[i] if i < len(inputs) else {}
+                    if actual.get('shape') != shape:
+                        mismatch(n['name'], f'inputs[{i}].shape', shape, actual.get('shape'))
+                    if 'DT_FLOAT16' not in actual.get('dtype_names', []):
+                        mismatch(n['name'], f'inputs[{i}].dtype', 'DT_FLOAT16', actual.get('dtype_names'))
+                for role, shape, dtype in (('atten_mask', expected_attention['mask_shape'], 'DT_FLOAT16'),
+                                           ('block_table', expected_attention['block_table_shape'], 'DT_INT32')):
+                    if not any(d['shape'] == shape and dtype in d['dtype_names'] for d in inputs):
+                        actual = [d for d in inputs if d.get('name') == role]
+                        mismatch(n['name'], 'inputs.' + role, {'shape': shape, 'dtype': dtype},
+                                 actual or {'matching_named_port': 'ABSENT; inspect recorded inputs'})
         if n['type'] in {'Gather', 'GatherV2', 'GatherV2D'}:
             inputs = n.get('input_desc', [])
             indices = desc(inputs[1]) if len(inputs) > 1 else {}
             gathers.append(dict(name=n['name'], type=n['type'], indices=indices))
             if require_int32_indices and 'DT_INT32' not in indices.get('dtype_names', []):
-                raise ValueError(f"X90 Draft Gather indices must be INT32: {n['name']} "
-                                 f"has {indices.get('dtype_names', [])}; re-export with INT32 embedding/KV indices")
+                mismatch(n['name'], 'Gather.indices.dtype', 'DT_INT32', indices.get('dtype_names', []))
         if n['type'] in {'RmsNorm', 'AdnRmsNorm'}:
             norms.append(dict(name=n['name'], type=n['type'], input=n.get('input', []),
                 inputs=[desc(d) for d in n.get('input_desc', [])],
@@ -249,9 +289,35 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
         sidecars[str(relative)] = member.stat().st_size
     inputs = [n for n in nodes if n['type'] == 'Data']
     outputs = [n for n in nodes if n['type'] == 'NetOutput']
-    return dict(node_types=dict(counts), rms=norms, gather_indices=gathers, attention=attention, weight_files=sidecars,
+    result = dict(node_types=dict(counts), rms=norms, gather_indices=gathers, attention=attention, weight_files=sidecars,
+                validation_status='FAILED' if errors else 'PASSED', validation_errors=errors,
                 input_count=len(inputs), output_counts=[len(n.get('input_desc', [])) for n in outputs],
                 scope='SOURCE_GRAPH_ONLY_NOT_COMPILED_PRECISION_OR_RUNTIME_ABI')
+    if strict and errors:
+        raise AirValidationError(result)
+    return result
+
+
+def inspect_pytorch_air(directory):
+    """Read a successful or failed export in place; no TorchAir, model or writes."""
+    root = Path(directory)
+    manifest = json.loads((root / 'manifest.json').read_text())
+    if manifest.get('artifact_kind') != AIR_KIND:
+        raise ValueError('expected a retained PyTorch Draft AIR export directory')
+    inspection = inspect_air(root / 'export.air', _schema((root / 'air-schema.pb').read_bytes(), manifest['schema']),
+        expected_norms=32, require_int32_indices=True, expected_attention=manifest.get('attention'), strict=False)
+    errors = inspection['validation_errors']
+    first = next((node for node in inspection['attention'] if errors and node['name'] == errors[0]['node']),
+                 inspection['attention'][0] if inspection['attention'] else None)
+    return dict(status='INSPECTED', source_status=manifest.get('status'), source_stage=manifest.get('stage'),
+        source_error=manifest.get('error'), air=str(root / 'export.air'),
+        validation_status=inspection['validation_status'], first_mismatch=errors[0] if errors else None,
+        mismatch_count=len(errors), mismatches=errors[:24], mismatches_truncated=len(errors) > 24,
+        attention_nodes=len(inspection['attention']), first_attention=first,
+        node_types=inspection['node_types'], input_count=inspection['input_count'], output_counts=inspection['output_counts'],
+        weight_files=len(inspection['weight_files']), expected_attention=manifest.get('attention'),
+        scope='READ_ONLY_RETAINED_AIR; PRODUCER_DESCRIPTORS_ARE_DIAGNOSTIC_ONLY_NOT_SUBSTITUTED',
+        model_export='NOT_RUN', model_compilation='NOT_RUN', device_execution='NOT_RUN')
 
 
 def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max_draft_tokens=15,
@@ -298,6 +364,7 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
             for name in ('dynamo.pbtxt', 'dynamo.txt'):
                 if (root / 'weight' / name).is_file():
                     (root / 'weight' / name).replace(root / name)
+            result['stage'] = 'air-validation'
             inspection = inspect_air(root / 'export.air', _schema(descriptor, metadata),
                                      expected_norms=32, require_int32_indices=True, expected_attention=result['attention'])
             if inspection['input_count'] != 17 or inspection['output_counts'] != [14]:
@@ -310,6 +377,10 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
                 attention_nodes=len(inspection['attention']),
                 next='Transfer this whole AIR directory; compile it on the selected DDK server. Candidate is not runtime-bound.')
         except Exception as error:
+            if isinstance(error, AirValidationError):
+                _save(root / 'air-inspection.json', error.inspection)
+                result['first_mismatch'] = error.inspection['validation_errors'][0]
+                result['inspection'] = str(root / 'air-inspection.json')
             result.update(status='FAILED', error=f'{type(error).__name__}: {error}',
                           manifest=str(root / 'manifest.json'))
         _save(root / 'manifest.json', result)
