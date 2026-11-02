@@ -159,7 +159,8 @@ def _summary(root, source, report):
                     'warmup', 'repetitions', 'atol', 'rtol', 'timing_scope'):
             if key in selected:
                 compact[key] = selected[key]
-        case_keys = ('case', 'passed', 'mean_ms', 'min_ms', 'max_ms', 'repeat_bitwise_stable', 'graphop_counts')
+        case_keys = ('case', 'passed', 'numerics', 'mean_ms', 'min_ms', 'max_ms',
+                     'repeat_bitwise_stable', 'graphop_counts')
         compact['cases'] = [{k: row[k] for k in case_keys if k in row} for row in selected.get('cases', [])]
     compact['source_directory'] = source
     _save(destination / 'result.json', compact)

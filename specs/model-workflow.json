@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "FP32_BUILTIN_RMS_LOAD_FAILED_PARTIAL_RESULTS_PENDING",
+    "status": "FP32_PRIMITIVE_RMS_LARGE_NUMERICAL_ERROR_LOCAL_ANALYSIS_PENDING",
     "entry": "targets/cpro/tools/validate_draft_vector.py",
     "commands": "docs/current-status.md",
     "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Recover the completed vector-run to compare and retain primitive RMS outputs and timing; then run --cases softmax_fp32 residual_fp32 rms_builtin_heads with existing OMC/native in the same fixed slots. Builtin hidden RMS failed HIAI Load; cause unresolved. See docs/current-status.md.",
+    "next": "Analyze retained vector-result locally with validate_draft_vector.py --analyze before reusing vector slots: primitive RMS has relative L2 0.8812251152 despite stable 1.5722 ms calls. Keep original gates and snapshots; distinguish row-scale/layout/arithmetic causes. Builtin RMS hidden Load failure remains separate; remaining three probes pending. See docs/current-status.md.",
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
       "independently_retrieved": false,

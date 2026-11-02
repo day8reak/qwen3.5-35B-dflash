@@ -205,7 +205,11 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
                     max_abs_error=float(np.max(np.abs(delta))) if finite else None,
                     relative_l2_error=float(np.linalg.norm(delta)/max(float(np.linalg.norm(expected)), 1e-30)) if finite else None))
         passed = all(r['passed'] for r in tensors)
+        finite = all(r['finite'] for r in tensors)
         cases.append(dict(case=name, passed=passed, repeat_bitwise_stable=stable,
+            numerics=dict(finite=finite,
+                max_abs_error=max(r['max_abs_error'] for r in tensors) if finite else None,
+                max_relative_l2_error=max(r['relative_l2_error'] for r in tensors) if finite else None),
             tensors=tensors, graphop_counts=case['graphop_counts'], api_us=timings,
             mean_ms=sum(timings)/REPETITIONS/1000, min_ms=min(timings)/1000, max_ms=max(timings)/1000))
     passed = all(r['passed'] for r in cases)
@@ -215,6 +219,81 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
         repeat_bitwise_stable=all(r['repeat_bitwise_stable'] for r in cases),
         timing_scope='SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_BETWEEN_CALLS_EXCLUDED',
         full_draft_validation='NOT_RUN', internal_instruction_precision='NOT_PROVEN_BY_OUTPUT_MATCH')
+
+
+def analyze(directory):
+    """Read retained snapshots only; never execute models or change pass gates."""
+    import numpy as np
+    directory = Path(directory).resolve()
+    report = read_json(directory/'result.json')
+    if report.get('artifact_kind') != KIND or not report.get('validated_cases'):
+        raise ValueError('analysis requires recovered probe outputs')
+    source = Path(report['recovery_source'])
+    fixture, native = source/'fixture', directory/'native'
+    request = read_json(source/'request.json')
+    if sha256_file(fixture/'manifest.json') != request['fixture_sha256']:
+        raise ValueError('retained fixture manifest changed')
+    meta = read_json(fixture/'manifest.json')
+    for case in meta['cases']:
+        for direction, prefix in (('inputs', 'input'), ('outputs', 'golden')):
+            for spec in case[direction]:
+                path = member(fixture, f'{case["case"]}/{prefix}_{spec["index"]}.bin')
+                if path.stat().st_size != spec['bytes'] or sha256_file(path) != spec['fixture_sha256']:
+                    raise ValueError('retained input/reference changed after launch')
+    comparison = compare(fixture, native, selection=report['validated_cases'])
+
+    def metrics(actual, expected):
+        finite = bool(np.isfinite(actual).all())
+        bad = ~np.isfinite(actual) | (np.abs(actual-expected) > meta['atol']+meta['rtol']*np.abs(expected))
+        a, e = actual.reshape(-1), expected.reshape(-1)
+        a_norm, e_norm = np.linalg.norm(a), np.linalg.norm(e)
+        dot = float(a @ e) if finite else None
+        return dict(finite=finite, failing_elements=int(bad.sum()), elements=int(actual.size),
+            max_abs_error=float(np.max(np.abs(a-e))) if finite else None,
+            relative_l2_error=float(np.linalg.norm(a-e)/e_norm) if finite and e_norm else None,
+            least_squares_scale=dot/float(e_norm**2) if finite and e_norm else None,
+            cosine=dot/float(a_norm*e_norm) if finite and a_norm and e_norm else None)
+
+    def number(value):
+        return float(value) if np.isfinite(value) else str(float(value))
+
+    cases = []
+    for case in meta['cases']:
+        name = case['case']
+        if name not in report['validated_cases']:
+            continue
+        input_spec = next(s for s in case['inputs'] if s['name'] == 'x')
+        x = np.fromfile(fixture/name/f'input_{input_spec["index"]}.bin', dtype='<f4').reshape(input_spec['shape'])
+        x_rows = x.reshape(-1, x.shape[-1])
+        raw = (native/name/'0.bin').read_bytes()
+        outputs, offset = [], 0
+        for spec in case['outputs']:
+            actual = np.frombuffer(raw[offset:offset+spec['bytes']], dtype='<f4').astype(np.float64).reshape(spec['shape'])
+            offset += spec['bytes']
+            expected = np.fromfile(fixture/name/f'golden_{spec["index"]}.bin', dtype='<f4').astype(np.float64).reshape(spec['shape'])
+            a_rows, e_rows = actual.reshape(-1, actual.shape[-1]), expected.reshape(-1, expected.shape[-1])
+            if len(a_rows) != len(x_rows) or len(a_rows) < 4:
+                raise ValueError('probe row analysis requires the original fixture shapes')
+            groups = []
+            for label, begin, end in (('zero_input_row', 0, 1), ('large_input_row', 1, 2),
+                    ('small_input_row', 2, 3), ('ordinary_input_rows', 3, len(x_rows))):
+                a, e = a_rows[begin:end], e_rows[begin:end]
+                error = np.where(np.isfinite(a), np.abs(a-e), np.inf)
+                row, column = np.unravel_index(int(np.argmax(error)), error.shape)
+                row += begin
+                groups.append(dict(group=label, **metrics(a, e),
+                    worst=dict(row=int(row), column=int(column), actual=number(a_rows[row, column]),
+                        expected=number(e_rows[row, column]), input_abs_max=number(np.max(np.abs(x_rows[row]))),
+                        actual_first4=[number(v) for v in a_rows[row, :4]],
+                        expected_first4=[number(v) for v in e_rows[row, :4]])))
+            outputs.append(dict(name=spec['name'], shape=spec['shape'], groups=groups))
+        summary = next(c for c in comparison['cases'] if c['case'] == name)
+        cases.append(dict(case=name, numerics=summary['numerics'],
+            repeat_bitwise_stable=summary['repeat_bitwise_stable'], outputs=outputs))
+    return dict(status='ANALYZED', artifact_kind=KIND, source_batch_status=report['status'],
+        numerical_validation=comparison['numerical_validation'], validated_cases=comparison['validated_cases'],
+        scope='LOCAL_RETAINED_OUTPUTS; ALL_CALLS_RECOMPARED; ROW_DETAILS_FROM_ITERATION_0',
+        model_execution='NOT_RUN', cases=cases)
 
 
 def supervisor(meta, board, token, env, search):
@@ -471,9 +550,17 @@ def main():
     parser.add_argument('--config')
     parser.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     parser.add_argument('--recover')
-    parser.add_argument('--output', required=True)
+    parser.add_argument('--analyze', help='Read an existing recovery directory and print numerical details; no board access')
+    parser.add_argument('--output')
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
+    if args.analyze:
+        if args.recover or args.compiled or args.config or args.cases or args.apply or args.output:
+            parser.error('--analyze only accepts a recovered result directory')
+        print(json.dumps(analyze(args.analyze), ensure_ascii=False, allow_nan=False))
+        return 0
+    if not args.output:
+        parser.error('start and recovery require --output')
     if args.recover and (args.apply or args.config or args.compiled or args.cases):
         parser.error('recovery only accepts the original execution and separate output')
     if not args.recover and not all((args.config, args.compiled, args.ddk_root)):

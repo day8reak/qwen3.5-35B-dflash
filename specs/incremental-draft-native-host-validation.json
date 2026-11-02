@@ -23,7 +23,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "Recover the completed vector-run to compare and retain primitive RMS outputs and timing; then run --cases softmax_fp32 residual_fp32 rms_builtin_heads with existing OMC/native in the same fixed slots. Builtin hidden RMS failed HIAI Load; cause unresolved. See docs/current-status.md.",
+  "next": "Analyze retained vector-result locally with validate_draft_vector.py --analyze before reusing vector slots: primitive RMS has relative L2 0.8812251152 despite stable 1.5722 ms calls. Keep original gates and snapshots; distinguish row-scale/layout/arithmetic causes. Builtin RMS hidden Load failure remains separate; remaining three probes pending. See docs/current-status.md.",
   "latest_user_board_observation": {
     "source": "USER_PASTED_RECOVERY_JSON",
     "independently_retrieved": false,
@@ -178,7 +178,7 @@
     "gap_attribution": "UNRESOLVED_RUNTIME_DISPATCH_SYNCHRONIZATION_AND_INTERNAL_TRANSFERS_ARE_HYPOTHESES",
     "timestamp_caveat": "SAME_STREAM_CONV_AND_DEPENDENT_RESHAPE_STARTS_DIFFER_BY_2_US_WITH_CONV_DURATION_70968_US; DO_NOT_CONSTRUCT_DEVICE_TIMELINE_WITHOUT_CLOCK_SCOPE",
     "static_work": "C16_CONTEXT_PROJECTION_EXECUTES_FOR_PARTIAL_OR_ZERO_VALID_ROWS",
-    "next": "Recover the completed vector-run to compare and retain primitive RMS outputs and timing; then run --cases softmax_fp32 residual_fp32 rms_builtin_heads with existing OMC/native in the same fixed slots. Builtin hidden RMS failed HIAI Load; cause unresolved. See docs/current-status.md."
+    "next": "Analyze retained vector-result locally with validate_draft_vector.py --analyze before reusing vector slots: primitive RMS has relative L2 0.8812251152 despite stable 1.5722 ms calls. Keep original gates and snapshots; distinguish row-scale/layout/arithmetic causes. Builtin RMS hidden Load failure remains separate; remaining three probes pending. See docs/current-status.md."
   },
   "compiled_partition_observation": {
     "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
@@ -296,17 +296,17 @@
     "local_test_sources": "NOT_PUBLISHED"
   },
   "fp32_probe_execution_observation": {
-    "source": "USER_PASTED_RECOVERY_JSON_WITH_CHILD_EXIT_CODES_AND_STDERR",
+    "source": "USER_PASTED_PARTIAL_RECOVERY_AND_FIRST_TENSOR_ERROR",
     "independently_retrieved": false,
     "board_attempt": "/data/local/tmp/qwen35_vector_da07af337d41484e99dfad93e975d5d6",
     "status": "FAILED",
-    "stage": "recover",
-    "device_execution": "FAILED_OUTPUTS_RETRIEVED",
-    "numerical_validation": "NOT_RUN",
+    "stage": "complete",
+    "device_execution": "PARTIAL_OUTPUTS_RETRIEVED",
+    "numerical_validation": "FAILED",
     "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
     "error": "HIAI Load failed: 1",
     "cause": "LOAD_FAILURE_OBSERVED; UNDERLYING_MODEL_RUNTIME_COMPATIBILITY_CAUSE_UNRESOLVED",
-    "next": "Recover the completed vector-run to compare and retain primitive RMS outputs and timing; then run --cases softmax_fp32 residual_fp32 rms_builtin_heads with existing OMC/native in the same fixed slots. Builtin hidden RMS failed HIAI Load; cause unresolved. See docs/current-status.md.",
+    "next": "Analyze retained vector-result locally with validate_draft_vector.py --analyze before reusing vector slots: primitive RMS has relative L2 0.8812251152 despite stable 1.5722 ms calls. Keep original gates and snapshots; distinguish row-scale/layout/arithmetic causes. Builtin RMS hidden Load failure remains separate; remaining three probes pending. See docs/current-status.md.",
     "failure_stage": "HIAI_LOAD_BEFORE_INFERENCE",
     "runtime_version": "800.631.120.010",
     "native_exitcode": 1,
@@ -323,7 +323,7 @@
       "exitcode": 1,
       "stderr": "HIAI Load failed: 1"
     },
-    "primitive_rms": "PROCESS_EXIT_ZERO; OUTPUT_COMPARISON_AND_TIMING_PENDING_RECOVERY",
+    "primitive_rms": "EXECUTED_NUMERICAL_FAILED; RELATIVE_L2_0.8812251152339386",
     "remaining_cases": "NOT_STARTED_AFTER_FIRST_FAILED_CHILD"
   },
   "fp32_probe_failure_reporting_checks": {
@@ -352,6 +352,54 @@
       "real shell selected order and first-failure stop",
       "reused fixed slots preserve compact per-case timing without tensor snapshots",
       "invalid selection and recovery selection override rejected"
+    ],
+    "native_code_changed": false,
+    "model_recompile_required": false,
+    "native_rebuild_required": false,
+    "local_test_sources": "NOT_PUBLISHED"
+  },
+  "fp32_primitive_rms_observation": {
+    "source": "USER_PASTED_PARTIAL_RECOVERY_JSON_AND_ITERATION_0_ERROR",
+    "independently_retrieved": false,
+    "case": "rms_primitive_hidden",
+    "graphop_counts": {
+      "NPUCL": 2,
+      "CPUCL": 1
+    },
+    "runtime_version": "800.631.120.010",
+    "warmup": 3,
+    "repetitions": 10,
+    "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_BETWEEN_CALLS_EXCLUDED",
+    "mean_ms": 1.5722,
+    "min_ms": 1.232,
+    "max_ms": 1.928,
+    "repeat_bitwise_stable": true,
+    "numerical_validation": "FAILED",
+    "atol": 1e-05,
+    "rtol": 0.0001,
+    "first_output": {
+      "iteration": 0,
+      "name": "normalized",
+      "finite": true,
+      "max_abs_error": 11.511693716049194,
+      "relative_l2_error": 0.8812251152339386
+    },
+    "cause": "UNRESOLVED_PENDING_RETAINED_ROW_ANALYSIS",
+    "promotion": "NOT_ELIGIBLE; NOT_THE_PRIOR_FULL_DRAFT_APPROX_ONE_PERCENT_ERROR",
+    "full_draft_changed": false
+  },
+  "fp32_probe_numerical_analysis_checks": {
+    "status": "PASSED",
+    "checks": 11,
+    "scope": "HOST_SYNTHETIC_FIXTURES_AND_LOCAL_CLI_ONLY; NO_DEVICE_RUN",
+    "coverage": [
+      "compact finite/max absolute/maximum relative L2 across every call and output",
+      "nonfinite output does not get a finite error summary",
+      "local row grouping including zero reference and separate rstd output",
+      "multiplicative error detection using fitted scale and cosine",
+      "retained source files unchanged by analysis",
+      "all ten snapshots still compared; missing data and changed input rejected",
+      "analysis CLI does not invoke HDC; rejects --apply"
     ],
     "native_code_changed": false,
     "model_recompile_required": false,
