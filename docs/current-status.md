@@ -2,19 +2,18 @@
 
 当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**。按用户要求暂缓手写GE和AddCustom优化，不再要求运行相关探针。成功导出的AIR统一放`draft/air/`，编译和测试直接引用它。当前可运行OMC仍放`draft/omc/`；新OMC完成接口绑定和板端验证后再替换运行模型。`tests/`用于测试记录和可清理的构建临时文件。
 
-目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前GE整模型profiling为518.990ms。用户已在权重服务器导出PyTorch AIR：17输入、14输出、32个RmsNorm、80个外置常量文件；OMG编译与板端验证尚未执行。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
+目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前GE整模型profiling为518.990ms。PyTorch AIR已导出：17输入、14输出、32个RmsNorm、80个外置常量文件。本次DDK编译在OMG阶段退出码为1，尚未取得具体失败节点；板端未执行。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
 
-**本轮AIR已生成，无需重导出。先在权重服务器把此前的输出移入公共AIR目录：**
+**本轮下一步：在DDK服务器读取已保存的编译错误，无需重导出、重传或重编。**
 
 ```bash
-# 权重服务器；如果此前已把整包传到DDK的旧测试目录，也在DDK执行同一迁移命令
+# DDK服务器，沿用custom_pypto环境及已有REPO_DIR、AI_RUN_DIR
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
-  --import-air "$AI_RUN_DIR/draft/tests/pytorch-air" \
-  --output "$AI_RUN_DIR/draft/air" --replace
+python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
+  --inspect-compile "$AI_RUN_DIR/draft/tests/pytorch-omc"
 ```
 
-预期`PYTORCH_DRAFT_AIR_INSTALLED`。该命令无需TorchAir或DDK，检查源图、17／14接口和外置权重文件大小后，同盘移动整个目录；替换已识别的旧Draft AIR并清理旧目录。未知目录、活动任务和不完整输入不会被覆盖。它不修改`draft/source/prepared`、当前OMC或runtime配置。成功后跳到第2节传输、第3节编译。
+预期`INSPECTED`，`source_status=FAILED`。回传`compilation_diagnostics`中的阶段、退出码、优先错误与日志末尾；检查只读取现有小报告和日志，不复制权重、不加载模型。当前目录先保留用于定位，修复后再用第3节的`--replace`复用同一目录。以下第1～3节用于首次构建或修复后重跑，本轮先执行页首检查。
 
 ## 1. 权重服务器：准备权重并导出AIR
 
@@ -96,7 +95,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
   --output "$AI_RUN_DIR/draft/air" --replace
 ```
 
-`weight/`、`air-schema.pb`和全部JSON一起传输。两台服务器的根目录可以不同，AIR采用相对权重路径；无需传原始Target／DFlash检查点。若已按页首命令在DDK把旧测试目录迁移到了`draft/air/`，直接进入第3节，无需再传一份。
+`weight/`、`air-schema.pb`和全部JSON一起传输。两台服务器的根目录可以不同，AIR采用相对权重路径；无需传原始Target／DFlash检查点。DDK已有完整`draft/air/`时直接进入第3节，无需再传一份。
 
 ## 3. DDK服务器：编译OMC
 
@@ -118,4 +117,4 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 已取得用户回传的`PYTORCH_DRAFT_AIR_EXPORTED`，下一阶段需要`PYTORCH_DRAFT_OMC_COMPILED`。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
 
-已有主机检查覆盖K15／7／3／1共37步，Top1无差异、KV最大差0、hidden最大绝对差0.001953125；另检查了17输入／14输出、32个测试RMS节点、全宽4×4完整dot投影和可移植AIR打包。这些是CPU、图捕获及模拟工具检查；本轮真实TorchAir导出另已完成，实际OMG编译、板端精度与性能仍待完成。
+已有主机检查覆盖K15／7／3／1共37步，Top1无差异、KV最大差0、hidden最大绝对差0.001953125；另检查了17输入／14输出、32个测试RMS节点、全宽4×4完整dot投影和可移植AIR打包。这些是CPU、图捕获及模拟工具检查；真实TorchAir导出另已完成，本轮实际OMG编译失败待定位，板端精度与性能仍待完成。

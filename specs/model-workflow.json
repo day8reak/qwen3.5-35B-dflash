@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_AIR_EXPORTED_DDK_COMPILATION_NEXT_GE_OPTIMIZATION_PAUSED_BY_USER",
+    "status": "PYTORCH_OMG_FAILED_DIAGNOSTICS_PENDING_GE_OPTIMIZATION_PAUSED_BY_USER",
     "entry": "targets/cpro/scripts/compile_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Move the completed PyTorch AIR into draft/air with export_incremental_draft.py --import-air; on the DDK server install the complete transferred bundle in draft/air, then compile. Existing OMC/runtime remain unchanged until new physical ABI and device validation.",
+    "next": "On the DDK server run compile_incremental_draft.py --inspect-compile AI_RUN_DIR/draft/tests/pytorch-omc; read retained report and log before selecting a fix. No re-export or recompile for inspection.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -5839,7 +5839,7 @@
       "projection": "FULL_DOT_4X4_CONV2D_NO_PARTIAL_SUM_BOUNDARIES",
       "host_validation": "5 model checks: 37 reduced-width steps over K15/7/3/1; top1 exact, KV max_abs=0, hidden max_abs=0.001953125 at fixed atol=rtol=0.002; torch.export 17/14 and 32 test RMS nodes; full-width projection versus linear. 6 additional schema and mocked tool-boundary checks.",
       "server_air_export": "USER_REPORTED_PYTORCH_DRAFT_AIR_EXPORTED",
-      "server_omg_compilation": "NOT_RUN",
+      "server_omg_compilation": "USER_REPORTED_FAILED_EXIT_1",
       "physical_abi": "NOT_BOUND",
       "device_execution": "NOT_RUN_USER_OWNS_EXECUTION",
       "promotion": "NOT_PROMOTED",
@@ -5881,6 +5881,25 @@
         "air_import_entry": "targets/cpro/scripts/export_incremental_draft.py --import-air SOURCE --output AI_RUN_DIR/draft/air --replace",
         "air_import_policy": "VALIDATE_COMPLETED_AIR_AND_SIDECAR_EXTENTS_THEN_RENAME_WITH_NO_WEIGHT_COPY; OLD_RECOGNIZED_AIR_REMOVED; OMC_AND_RUNTIME_UNCHANGED",
         "host_validation": "14 host storage checks using actual schema fixtures; includes replacement, missing/truncated sidecars, active locks/jobs, rename rollback, failed export preservation, successful export publication and CLI without TorchAir"
+      },
+      "omg_compile_observation": {
+        "source": "USER_PASTED_DDK_COMPILE_OUTPUT",
+        "independently_retrieved": false,
+        "status": "FAILED",
+        "stage": "compile",
+        "model_compilation": "FAILED",
+        "omg_returncode": 1,
+        "input_files": 81,
+        "selected_bytes": 2807233674,
+        "platform": "kirinx90",
+        "save_weights_as_external_data": true,
+        "use_origin_format": true,
+        "root_cause": "UNRESOLVED_COMPILER_LOG_REQUIRED",
+        "compiled_abi": "NOT_BOUND",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
+        "diagnostic_entry": "targets/cpro/scripts/compile_incremental_draft.py --inspect-compile AI_RUN_DIR/draft/tests/pytorch-omc",
+        "diagnostic_host_validation": "11 checks passed: retained-log inspection without SDK/AIR/tool invocation or writes; missing/malformed/oversize reports; help fallback; failed compiler status and CLI propagation; snapshot progress. No real OMG or device execution."
       }
     },
     "compiled_partition_observation": {

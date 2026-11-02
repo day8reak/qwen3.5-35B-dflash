@@ -12,8 +12,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--air-export', required=True)
-    parser.add_argument('--output', required=True, help='Shared OMC directory; build scratch goes in sibling tests/compile')
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument('--air-export')
+    source.add_argument('--inspect-compile', metavar='PYTORCH_OMC_DIR',
+                        help='read an existing PyTorch compilation report/log; no compile or device execution')
+    parser.add_argument('--output', help='Shared GE OMC directory or PyTorch candidate build directory')
     parser.add_argument('--replace-failed', action='store_true', help='Reuse a finished failed compilation directory')
     parser.add_argument('--replace', action='store_true', help='Replace a finished PyTorch candidate in the same test slot')
     parser.add_argument('--timeout-seconds', type=int, default=7200)
@@ -23,8 +26,16 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.timeout_seconds <= 0:
         parser.error('--timeout-seconds must be positive')
-    from qwen35_moe_dflash.draft.incremental.storage import compile_shared
+    if args.air_export and not args.output:
+        parser.error('--output is required with --air-export')
+    if args.inspect_compile and (args.output or args.replace or args.replace_failed):
+        parser.error('--inspect-compile is read-only; omit output and replacement options')
     try:
+        if args.inspect_compile:
+            from qwen35_moe_dflash.draft.incremental.torch_export import inspect_pytorch_compilation
+            result = inspect_pytorch_compilation(args.inspect_compile)
+            print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False), flush=True)
+            return 0
         source = json.loads((Path(args.air_export) / 'manifest.json').read_text())
         if source.get('artifact_kind') == 'qwen35-incremental-draft-pytorch-air':
             from qwen35_moe_dflash.draft.incremental.torch_export import compile_pytorch
@@ -38,6 +49,7 @@ def main(argv=None):
                 ddk_id=args.ddk_id or os.environ.get('CPRO_DDK_ID'),
                 progress=lambda value: print('pytorch-draft: ' + value, flush=True))
         else:
+            from qwen35_moe_dflash.draft.incremental.storage import compile_shared
             if args.replace:
                 parser.error('--replace is only for a PyTorch candidate; GE uses --replace-failed')
             result = compile_shared(args.air_export, args.output, replace_failed=args.replace_failed,
@@ -47,7 +59,7 @@ def main(argv=None):
         keys = ('status', 'stage', 'context_rows', 'cache_capacity', 'max_draft_tokens', 'model_compilation',
             'compiled_precision', 'compiled_abi', 'device_execution', 'numerical_validation',
             'runtime_integration', 'full_loop_smoke', 'weight_files_copied', 'graphop_counts',
-            'interface_inspection', 'interface_error', 'omc', 'error', 'next')
+            'interface_inspection', 'interface_error', 'omc', 'error', 'compilation_diagnostics', 'next')
         shown = {k: result[k] for k in keys if k in result}
         shown.update(input_count=len(result.get('inputs', [])), output_count=len(result.get('outputs', [])),
             manifest=result.get('manifest', str(Path(args.output).absolute() / 'manifest.json')))

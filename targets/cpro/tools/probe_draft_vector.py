@@ -302,19 +302,8 @@ def inspect_rms(airs, pb2=None):
 
 def compilation_diagnostics(folder):
     """Read existing compiler errors; never retry compilation or infer a cause."""
-    from qwen35_moe_dflash.common.tool_logs import log_excerpt
-    root = Path(folder) / 'omc'
-    result = {'report': str(root / 'report.json'), 'compile_log': str(root / 'compile.log')}
-    try:
-        report = json.loads((root / 'report.json').read_text())
-        result.update({key: report[key] for key in
-                       ('status', 'stage', 'model_compilation', 'returncode', 'error') if key in report})
-    except (OSError, ValueError) as error:
-        result['report_error'] = str(error)
-    result['log_excerpt'] = log_excerpt(root / 'compile.log')
-    if not result['log_excerpt']:
-        result['log_excerpt'] = log_excerpt(root / 'help.log')
-    return result
+    from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics as read_diagnostics
+    return read_diagnostics(Path(folder) / 'omc')
 
 
 def inspect_compilation(directory):

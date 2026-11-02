@@ -307,9 +307,34 @@ def _compiled_observation(omc, ddk):
                 scope='COMPILED_DESCRIPTORS_ONLY_NOT_RUNTIME_SLOT_BINDING_OR_INTERNAL_INSTRUCTION_PRECISION')
 
 
+def inspect_pytorch_compilation(directory):
+    """Inspect a retained candidate without the AIR, SDK or compiled payloads."""
+    from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
+    root = Path(directory)
+    manifest = json.loads((root / 'manifest.json').read_text())
+    if manifest.get('artifact_kind') != OMC_KIND:
+        raise ValueError('expected a PyTorch Draft OMC compilation directory')
+    return dict(status='INSPECTED', source_status=manifest.get('status'),
+                source_stage=manifest.get('stage'), error=manifest.get('error'),
+                compilation_diagnostics=compilation_diagnostics(root / 'compilation'),
+                scope='RETAINED_COMPILER_REPORT_AND_LOGS_ONLY_ROOT_CAUSE_NOT_CLASSIFIED',
+                model_compilation='NOT_RUN', device_execution='NOT_RUN')
+
+
 def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                     timeout_seconds=7200, tbe_diagnosis=None, progress=print):
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
+    from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
+
+    def compiler_progress(row):
+        message = row['message']
+        if row.get('stage') == 'input-snapshot' and message == 'Snapshotting input':
+            index, total = row['completed'], row['total']
+            if index not in (0, total - 1) and (index + 1) % 10:
+                return
+            message = f"Snapshotting input {index + 1}/{total}: {row['source_relative']} ({row['bytes']} bytes)"
+        progress(message)
+
     source = Path(air_export).resolve(strict=True)
     manifest = json.loads((source / 'manifest.json').read_text())
     if manifest.get('artifact_kind') != AIR_KIND or manifest.get('status') != 'PYTORCH_DRAFT_AIR_EXPORTED':
@@ -338,7 +363,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             compiled = compile_existing_air(source / 'export.air', root / 'compilation', ddk_root,
                 ddk_id=ddk_id, timeout_seconds=timeout_seconds, input_layout='air-directory',
                 use_origin_format=True, save_weights_as_external_data=True,
-                tbe_diagnosis=tbe_diagnosis, progress=lambda row: progress(row['message']))
+                tbe_diagnosis=tbe_diagnosis, progress=compiler_progress)
             result['model_compilation'] = compiled['model_compilation']
             if compiled['status'] != 'COMPILED':
                 raise RuntimeError(str(compiled.get('error', compiled['status'])))
@@ -367,5 +392,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             result['next'] = 'Review compiled-interface.json; bind semantic KV slots and validate on device before promoting this candidate.'
         except Exception as error:
             result.update(status='FAILED', error=f'{type(error).__name__}: {error}')
+            result['compilation_diagnostics'] = compilation_diagnostics(root / 'compilation')
+            result['next'] = 'Inspect compilation_diagnostics and the retained compile.log before retrying this same build directory.'
         _save(root / 'manifest.json', result)
         return result

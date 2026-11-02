@@ -1,5 +1,7 @@
 """Standard-library-only diagnostics for external GE/OMG tools."""
 
+import json
+from pathlib import Path
 import re
 
 
@@ -55,6 +57,30 @@ def log_excerpt(log):
     except OSError as error:
         # Diagnostic failure must not mask the subprocess exception.
         return f"Log excerpt unavailable: {error}"
+
+
+def compilation_diagnostics(directory):
+    """Read retained reports and bounded log excerpts; never invoke a tool."""
+    root = Path(directory)
+    result = {'report': str(root / 'report.json'), 'compile_log': str(root / 'compile.log')}
+    try:
+        with (root / 'report.json').open('rb') as stream:
+            raw = stream.read((8 << 20) + 1)
+        if len(raw) > 8 << 20:
+            raise ValueError('compiler report exceeds 8 MiB')
+        report = json.loads(raw)
+        if not isinstance(report, dict):
+            raise ValueError('compiler report must be an object')
+        result.update({key: report[key] for key in
+                       ('status', 'stage', 'model_compilation', 'returncode', 'error') if key in report})
+    except (OSError, ValueError) as error:
+        result['report_error'] = str(error)
+    log = root / 'compile.log'
+    if not log.is_file():
+        log = root / 'help.log'
+    result['excerpt_source'] = str(log)
+    result['log_excerpt'] = log_excerpt(log)
+    return result
 
 
 def _read_excerpt(log):
