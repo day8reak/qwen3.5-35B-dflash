@@ -670,7 +670,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
             save_json(output / 'air-preparation.json', report['air_preparation'])
             notify(stage, 'Prepared compiler AIR', path=str(compiler_air),
                    status=evidence.get('status'), removed_count=evidence.get('removed_count'),
-                   zero_count=evidence.get('zero_count', 0))
+                   zero_count=evidence.get('zero_count', 0),
+                   weight_transpose_count=evidence.get('weight_transpose_count', 0))
         command = [str(omg), "--framework=1", f"--model={compiler_air}",
                    "--output=model", "--target=omc", "--platform=kirinx90"]
         command.extend(f"--{name}={value}" for name, value in options.items())

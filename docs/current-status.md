@@ -2,24 +2,24 @@
 
 当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**。按用户要求暂缓手写GE和AddCustom优化，不再要求运行相关探针。成功导出的AIR统一放`draft/air/`，编译和测试直接引用它。当前可运行OMC仍放`draft/omc/`；新OMC完成接口绑定和板端验证后再替换运行模型。`tests/`用于测试记录和可清理的构建临时文件。
 
-目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms，尚未达到。当前GE整模型profiling为518.990ms。最新用户带`common/tbe-diagnosis`复编，静态AIR预处理保持通过；日志已推进到子图任务生成，在`Transpose`处出现`GetDataParam: inputTensorPtr is NULL`、`Permute ProduceTiling failed`及`compileInfo is null`，导致SubGraph_1失败。当前还需读取这个精确节点的源AIR输入／消费者及TBE审计，不能仅按节点名认定是权重转置。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
+目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms，尚未达到。当前GE整模型profiling为518.990ms。最新用户复编已推进到任务生成，终止于`Transpose`的输入张量空指针／`Permute ProduceTiling failed`；源AIR确认它是第0层Q投影的`FileConstant[4096,2048] → Transpose[1,0] → MatMul`，TBE worker审计为`APPLIED`。新增编译副本中的等价权重转置合并，主机检查通过，实际OMG复编待执行。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
 
-**本轮先做只读定位，不重复诊断或编译。** DDK服务器／`custom_pypto`更新后可用下列命令查看改进的错误摘要。还需从源AIR读取精确节点`Transpose`的输入、生产者、消费者，以及编译`report.json`中的`tbe_compatibility.audit`，据此确定修复位置。
+**本轮只在DDK服务器／`custom_pypto`更新代码并复编。** 复用公共`draft/air`和已经生效的`common/tbe-diagnosis`；权重服务器无需操作。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
-  --inspect-compile "$AI_RUN_DIR/draft/tests/pytorch-omc"
+  --air-export "$AI_RUN_DIR/draft/air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
 ```
 
-以下恢复及编译命令保留供缺失环境的首次准备；已完成本轮带TBE参数的编译时跳过。
+预处理策略为`draft-static-preparation-v3`：保留Reshape链简化和静态ZerosLike物化，再将已证明的FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。所有消费者必须是MatMul的右输入；有公共输出、控制依赖、非MatMul消费者或未知排列的节点不改写，激活布局转置也不改写。权重数据和FileConstant节点保持原字节，公共17／14接口保持。编译进度新增`folded N weight Transposes`；每个节点的来源、形状及修改前后标志记录在`compilation/air-preparation.json`的`weight_transposes`中。此次主机20项检查通过，不代表OMG或板端通过。
 
-**首次准备在DDK服务器／`custom_pypto`环境执行。无需重导出或重新传输AIR、权重。** 沿用现有`REPO_DIR`、`AI_RUN_DIR`及DDK变量：
-
-用户确认旧TBE诊断目录已删除。先在固定公共位置`common/tbe-diagnosis`重新生成一次；这是当前DDK的平台API诊断，不读取模型权重、不编译模型、不上板，也不修改已安装包或DDK。使用发生错误的`custom_pypto`环境中的Python。后续编译复用完整目录，不能只留`report.json`，其中还引用模块副本和逐例记录；生成后不要再移动它。
+以下诊断恢复命令仅用于整个目录缺失的首次准备，已有`common/tbe-diagnosis`时跳过。它不读取权重、不编译模型、不上板，也不修改已安装包或DDK。诊断目录中含模块副本和逐例记录，不能只保留`report.json`，也不要移动：
 
 ```bash
-git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" check-tbe-platform \
   --ddk-root "$CPRO_DDK_ROOT" \
   --python "$(command -v python3)" \
@@ -27,15 +27,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" check-tbe-platform 
   --output "$AI_RUN_DIR/common/tbe-diagnosis"
 ```
 
-诊断返回`DIAGNOSIS_COMPLETE`表示12组执行完毕，不要求每组都成功。恢复后运行下面的编译命令；`--tbe-diagnosis`会核验实际候选、对照及DDK来源，条件不符就停止，不会直接套用旧结论。兼容处理仍只在本次编译目录生效，OMG目标保持`kirinx90`。
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
-  --air-export "$AI_RUN_DIR/draft/air" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
-```
+诊断返回`DIAGNOSIS_COMPLETE`表示12组执行完毕，不要求每组都成功。`--tbe-diagnosis`会核验候选、对照及DDK来源，兼容处理只在本次编译目录生效，OMG目标保持`kirinx90`。
 
 编译入口在独立快照旁生成`prepared.air`：保留已有的静态Reshape链简化，并将能证明静态尺寸的`ZerosLike`替换为其**输出dtype**的零常量。缓存索引零值为INT32，六层mask零值为FP16；后者允许已观察到的FP32输入／FP16输出形式。空`shape: {}`视为尺寸未记录，不能当成标量；只读取AIR内的描述、shape／axis字面常量和明确的算子形状关系推导尺寸，不从期望配置补造shape。预处理现已移到权重快照和OMG调用之前，失败直接报告节点的dtype／layout等信息。
 
@@ -152,6 +144,6 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 ## 4. 本阶段通过条件与后续
 
-用户已完成融合版AIR导出，OMG已越过此前ReshapeFusion和ZerosLike失败阶段；带TBE参数的最新复编在Transpose任务生成处失败。下一步核对其实际图连接再修复，最终仍需`PYTORCH_DRAFT_OMC_COMPILED`，不能将阶段推进当成模型编译通过。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
+用户已完成融合版AIR导出，OMG已越过此前ReshapeFusion和ZerosLike失败阶段；TBE worker兼容审计已确认生效。当前等价权重转置合并仍需实际复编取得`PYTORCH_DRAFT_OMC_COMPILED`。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
 
 前一轮主机检查覆盖C16／C64、K15／7／3／1、滑窗开关共280步：使用CPU模拟Target布局／调用，与原语参考的Top1、hidden、全部K/V完全一致，输入KV和未写区保持。真实宽度的布局索引检查覆盖212992个元素；四档完整形状图捕获均为6个测试融合节点、32个测试RMS节点、17／14接口及INT32 Gather。这些检查验证适配器和mask／缓存语义，不验证厂商融合内核。真实融合版AIR已保存并进入编译；OMG、板端精度与性能仍未通过。
