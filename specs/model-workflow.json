@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_INT32_GATHER_FIX_HOST_VALIDATED_REEXPORT_AND_OMG_RETRY_PENDING",
-    "entry": "targets/cpro/scripts/compile_incremental_draft.py",
+    "status": "PYTORCH_TARGET_ATTENTION_HOST_VALIDATED_REEXPORT_AND_OMG_PENDING",
+    "entry": "targets/cpro/scripts/export_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Weight server: re-export PyTorch Draft AIR from existing prepared weights after pull; transfer complete new AIR bundle and install into DDK draft/air; recompile same draft/tests/pytorch-omc with --replace. Old AIR cannot be fixed by rerunning OMG alone.",
+    "next": "Weight server: re-export updated PyTorch Draft with six Target CPro fused attention calls; transfer and install the complete AIR; selected DDK server: compile the same pytorch-omc candidate slot. Validate physical ABI, vendor fused numerics and profiling before runtime promotion.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -5938,6 +5938,68 @@
         "actual_torchair_reexport": "NOT_RUN",
         "omg_recompile": "NOT_RUN",
         "device_execution": "NOT_RUN"
+      },
+      "target_attention": {
+        "policy": "target-cpro-fused-attention-v1",
+        "source": "AUDITED_ORIGINAL_CPRO_PYTHON_CALL_AND_GE_CONVERTER",
+        "torch_call": "torch.ops.npu.adn_fused_infer_attention.default",
+        "ge_type": "AdnFusedInferAttention",
+        "nodes": 6,
+        "block_size": 32,
+        "num_heads": 32,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "c16_cap192_k15": {
+          "query_nz": [
+            1,
+            256,
+            16,
+            16
+          ],
+          "temporary_kv": [
+            7,
+            64,
+            32,
+            16
+          ],
+          "mask": [
+            1,
+            1,
+            16,
+            224
+          ]
+        },
+        "cache_policy": "PUBLIC_ND_COMMITTED_CONTEXT_ONLY; NZ_AND_CANDIDATE_KV_TEMPORARY; NO_INPLACE_CACHE_UPDATE",
+        "mask_policy": "ORIGINAL_DRAFT_FIVE_SLIDING_ONE_BIDIRECTIONAL; INVALID_QUERY_ANCHOR_WITNESS; PADDING_MASKED",
+        "converter": "TARGET_PYTHON_pse_shift_TO_GE_all_seq_lengths_q; GE_pse_shift_UNCONNECTED; LENGTHS_INT64",
+        "numerics": "FUSED_INTERNAL_ROUNDING_UNVERIFIED; NO_THRESHOLD_CHANGE",
+        "host_validation": {
+          "full_width_layout_elements": 212992,
+          "reduced_width_feedback_steps": 280,
+          "context_rows": [
+            16,
+            64
+          ],
+          "k": [
+            15,
+            7,
+            3,
+            1
+          ],
+          "sliding_window_enabled": [
+            false,
+            true
+          ],
+          "top1_mismatches": 0,
+          "hidden_and_kv_max_abs_error": 0.0,
+          "input_mutation": false,
+          "capture": "FULL_WIDTH_FOUR_GEARS_WITH_FAKE_OPERATORS; 6_FUSED_32_RMS_17_INPUTS_14_OUTPUTS_INT32_GATHER",
+          "scope": "CPU_EMULATION_OF_LAYOUT_AND_MASK_NOT_VENDOR_FUSED_KERNEL"
+        },
+        "server_air_export": "NOT_RUN_FOR_FUSED_CANDIDATE",
+        "server_omg_compilation": "NOT_RUN_FOR_FUSED_CANDIDATE",
+        "device_execution": "NOT_RUN_USER_OWNS_EXECUTION",
+        "performance": "NOT_MEASURED_50MS_UNMET"
       }
     },
     "compiled_partition_observation": {

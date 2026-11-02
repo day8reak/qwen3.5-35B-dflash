@@ -2,11 +2,11 @@
 
 当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**。按用户要求暂缓手写GE和AddCustom优化，不再要求运行相关探针。成功导出的AIR统一放`draft/air/`，编译和测试直接引用它。当前可运行OMC仍放`draft/omc/`；新OMC完成接口绑定和板端验证后再替换运行模型。`tests/`用于测试记录和可清理的构建临时文件。
 
-目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前GE整模型profiling为518.990ms。首次PyTorch AIR已导出，但DDK编译被`GatherV2_1 / GatherV2D`的INT64索引校验阻断；板端未执行。PyTorch实现已将embedding和KV行索引改为INT32，保持17输入／14输出和32个RmsNorm。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
+目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前GE整模型profiling为518.990ms。首次PyTorch AIR已导出，但DDK编译被`GatherV2_1 / GatherV2D`的INT64索引校验阻断；板端未执行。本轮按Target CPro接入六个`AdnFusedInferAttention`，并保留INT32索引修复、17输入／14输出和32个RmsNorm。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
 
 **本轮需要更新AIR：权重服务器执行第1节末尾的导出命令（复用已有prepared）；按第2节传输整包；DDK服务器执行第3节重编。只在DDK拉取代码并重编旧AIR无法改变其中的INT64索引。**
 
-此次只改变整数索引类型：token ID在词表范围内，KV行索引为0～C−1；权重、浮点计算和KV写入区间保持原表达。导出后、导入时及编译前会检查实际AIR的Gather索引描述，若仍是INT64或缺失则直接报出节点名。此修复尚待真实TorchAir重导出和OMG复编确认。
+本轮把每层的QK／mask／Softmax／PV交给Target同款融合算子，使用原Target的converter端口映射；内部构造NZ分块KV，block_size=32，C16／cap192／K15的临时KV形状为`[7,64,32,16]`。padding全部屏蔽，保留Draft五层因果／滑窗与末层双向可见性。公共ND缓存仍只提交context，不直接套用Target的原地CacheUpdate。权重和公共接口不变，融合内核的舍入行为仍需实机比较。实际AIR会检查六个融合节点、布局属性与INT32 Gather索引；尚待真实TorchAir重导出和OMG复编确认。
 
 ## 1. 权重服务器：准备权重并导出AIR
 
@@ -64,7 +64,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
   --output "$AI_RUN_DIR/draft/air" --replace
 ```
 
-导出过程暂存在固定`draft/tests/export/`，成功检查后移动到`draft/air/`并清理旧AIR；失败保留原AIR，修复后`--replace`复用同一临时目录。预期`PYTORCH_DRAFT_AIR_EXPORTED`、17输入、14输出、32个`RmsNorm`及`gather_index_dtype=int32`，实际逐节点描述见`air-inspection.json`的`gather_indices`。这里用已安装converter的`torch_npu.npu_rms_norm → RmsNorm`（[公开converter](https://github.com/Ascend/torchair/blob/master/python/torchair/_ge_concrete_graph/ge_converter/custom/npu_rms_norm.py)），与Target CPro接口一致；不使用ND工程的`AdnRmsNorm`。Draft gamma直接使用，不加Target零中心权重的1。mask复制与GQA继续使用GE已采用的Gather表达，避免重新引入BOOL查询轴广播和五维KV展开。PyTorch候选在FP32完成gamma乘法后转FP16，与旧GE RMS的中间舍入不同，需要重新做数值验证。
+导出过程暂存在固定`draft/tests/export/`，成功检查后移动到`draft/air/`并清理旧AIR；失败保留原AIR，修复后`--replace`复用同一临时目录。预期`PYTORCH_DRAFT_AIR_EXPORTED`、17输入、14输出、`rms_nodes=32`、`attention_nodes=6`及`gather_index_dtype=int32`。实际逐节点描述见`air-inspection.json`的`attention`和`gather_indices`。这里用已安装converter的`torch_npu.npu_rms_norm → RmsNorm`，Draft gamma直接使用；融合注意力调用`torch.ops.npu.adn_fused_infer_attention.default`，在本次导出进程注册原Target的GE端口映射。使用已成功导出Target的环境，缺少该算子时会明确失败，不自动退回原语图。GQA交给融合算子的`num_heads=32 / num_key_value_heads=8`处理；query mask复制仍为INT32 Gather。PyTorch候选RMS与融合注意力的数值仍需重新验证。
 
 ## 2. 权重服务器 → DDK服务器：传输AIR目录
 
@@ -118,4 +118,4 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 已取得用户回传的`PYTORCH_DRAFT_AIR_EXPORTED`，下一阶段需要`PYTORCH_DRAFT_OMC_COMPILED`。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
 
-已有主机检查覆盖K15／7／3／1共37步，Top1无差异、KV最大差0、hidden最大绝对差0.001953125；另检查了17输入／14输出、32个测试RMS节点、全宽4×4完整dot投影和可移植AIR打包。这些是CPU、图捕获及模拟工具检查；真实TorchAir导出另已完成，首次实际OMG编译因INT64索引失败，本轮修复仍待重导出及复编，板端精度与性能仍待完成。
+本轮主机检查覆盖C16／C64、K15／7／3／1、滑窗开关共280步：使用CPU模拟Target布局／调用，与原语参考的Top1、hidden、全部K/V完全一致，输入KV和未写区保持。真实宽度的布局索引检查覆盖212992个元素；四档完整形状图捕获均为6个测试融合节点、32个测试RMS节点、17／14接口及INT32 Gather。这些检查验证适配器和mask／缓存语义，不验证厂商融合内核。此前成功导出的是原语注意力版本，本轮融合版本的真实TorchAir、OMG、板端精度与性能均待完成。

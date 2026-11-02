@@ -1,7 +1,7 @@
 """PyTorch incremental Draft with the same committed-context KV contract as GE.
 
-Only the RMS callable changes between CPU reference and TorchAir export. The
-export uses the installed npu_rms_norm converter, without custom registration.
+Export uses the installed npu_rms_norm converter and the Target CPro fused
+attention call. The primitive attention path remains the CPU comparison model.
 """
 from __future__ import annotations
 
@@ -26,13 +26,16 @@ def reference_rms(x, gamma, epsilon):
 
 class IncrementalDraft(nn.Module):
     def __init__(self, draft, embedding, head, *, context_rows=16, cache_capacity=192,
-                 max_draft_tokens=15, rms=reference_rms):
+                 max_draft_tokens=15, rms=reference_rms, attention_kernel=None):
         super().__init__()
         self.config = c = draft.config
         _validate(c, context_rows, cache_capacity, True, max_draft_tokens)
         self.draft, self.embedding, self.head = draft, embedding, head
         self.context_rows, self.capacity, self.k = context_rows, cache_capacity, max_draft_tokens
         self.rms = rms
+        from .torch_target import TargetAttention
+        self.target_attention = (TargetAttention(c, cache_capacity, max_draft_tokens + 1, attention_kernel)
+                                 if attention_kernel is not None else None)
         self.register_buffer('context_offsets', torch.arange(context_rows, dtype=torch.int32).view(1, -1))
         self.register_buffer('block_offsets', torch.arange(max_draft_tokens + 1, dtype=torch.int32).view(1, -1))
         self.register_buffer('cache_positions', torch.arange(cache_capacity, dtype=torch.int32).view(1, -1))
@@ -102,8 +105,8 @@ class IncrementalDraft(nn.Module):
             block_k = attn.k_proj(x).reshape(1, b, c.num_key_value_heads, c.head_dim)
             block_k = self.rope(self.norm(block_k, attn.k_norm).transpose(1, 2), block_positions)
             block_v = attn.v_proj(x).reshape(1, b, c.num_key_value_heads, c.head_dim).transpose(1, 2)
-            key = torch.index_select(torch.cat((present_k, block_k), dim=2), 1, self.kv_heads)
-            value = torch.index_select(torch.cat((present_v, block_v), dim=2), 1, self.kv_heads)
+            key = torch.cat((present_k, block_k), dim=2)
+            value = torch.cat((present_v, block_v), dim=2)
             visible = key_valid
             if c.layer_types[index] == 'sliding_attention':
                 distance = block_positions.reshape(1, 1, b, 1) - positions.reshape(1, 1, 1, -1)
@@ -111,10 +114,16 @@ class IncrementalDraft(nn.Module):
                 if c.use_sliding_window:
                     visible = visible & (distance < c.sliding_window)
             visible = visible | witness
-            visible = torch.index_select(visible.int(), 1, self.head_repeat).bool()
-            scores = torch.matmul(query, key.transpose(-1, -2)).float() * (c.head_dim ** -0.5)
-            probabilities = torch.softmax(torch.where(visible, scores, torch.full_like(scores, -float('inf'))), dim=-1).half()
-            mixed = torch.matmul(probabilities, value).transpose(1, 2).reshape(1, b, c.query_width)
+            if self.target_attention is not None:
+                mixed = self.target_attention(query, key, value, visible)
+            else:
+                key = torch.index_select(key, 1, self.kv_heads)
+                value = torch.index_select(value, 1, self.kv_heads)
+                visible = torch.index_select(visible.int(), 1, self.head_repeat).bool()
+                scores = torch.matmul(query, key.transpose(-1, -2)).float() * (c.head_dim ** -0.5)
+                probabilities = torch.softmax(torch.where(visible, scores, torch.full_like(scores, -float('inf'))), dim=-1).half()
+                mixed = torch.matmul(probabilities, value)
+            mixed = mixed.transpose(1, 2).reshape(1, b, c.query_width)
             hidden = (hidden.float() + attn.o_proj(mixed).float()).half()
             mlp = layer.mlp(self.norm(hidden, layer.post_attention_layernorm))
             hidden = (hidden.float() + mlp.float()).half()
@@ -136,7 +145,8 @@ class IncrementalDraft(nn.Module):
         return tuple(values)
 
 
-def load_prepared(prepared, *, context_rows=16, cache_capacity=192, max_draft_tokens=15, rms=reference_rms):
+def load_prepared(prepared, *, context_rows=16, cache_capacity=192, max_draft_tokens=15,
+                  rms=reference_rms, attention_kernel=None):
     """Map existing standalone FP16 files; do not load the Target decoder."""
     import json
     root = Path(prepared).resolve(strict=True)
@@ -165,4 +175,5 @@ def load_prepared(prepared, *, context_rows=16, cache_capacity=192, max_draft_to
         parent, _, attribute = name.rpartition('.')
         setattr(owner.get_submodule(parent) if parent else owner, attribute, nn.Parameter(tensor, requires_grad=False))
     return IncrementalDraft(draft, embedding, head, context_rows=context_rows,
-                            cache_capacity=cache_capacity, max_draft_tokens=max_draft_tokens, rms=rms).eval()
+                            cache_capacity=cache_capacity, max_draft_tokens=max_draft_tokens,
+                            rms=rms, attention_kernel=attention_kernel).eval()

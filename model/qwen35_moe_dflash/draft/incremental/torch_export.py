@@ -92,7 +92,8 @@ def _completed_air(folder):
     if manifest.get('artifact_kind') != AIR_KIND or manifest.get('status') != 'PYTORCH_DRAFT_AIR_EXPORTED':
         raise ValueError('import requires a completed PyTorch Draft AIR bundle')
     schema = _schema((folder / 'air-schema.pb').read_bytes(), manifest['schema'])
-    observed = inspect_air(folder / 'export.air', schema, expected_norms=32, require_int32_indices=True)
+    observed = inspect_air(folder / 'export.air', schema, expected_norms=32, require_int32_indices=True,
+                           expected_attention=manifest.get('attention'))
     recorded = json.loads((folder / 'air-inspection.json').read_text())
     if (len(manifest.get('inputs', [])) != 17 or len(manifest.get('outputs', [])) != 14
             or observed['input_count'] != 17 or observed['output_counts'] != [14]
@@ -135,6 +136,7 @@ def import_pytorch_air(source, output, *, replace=False):
     return dict(status='PYTORCH_DRAFT_AIR_INSTALLED', air=str(destination / 'export.air'),
                 output=str(destination), moved=source != destination,
                 input_count=len(manifest['inputs']), output_count=len(manifest['outputs']),
+                attention_nodes=manifest.get('attention_nodes', 0),
                 rms_nodes=32, weight_files=manifest['weight_files'], model_compilation='NOT_RUN',
                 device_execution='NOT_RUN', numerical_validation='NOT_RUN', runtime_changed=False)
 
@@ -181,7 +183,7 @@ def _schema(descriptor, metadata):
     return Schema(descriptor, expected_file=metadata['schema_file'], expected_package=metadata['schema_package'])
 
 
-def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False):
+def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False, expected_attention=None):
     """Read only graph metadata and sidecar extents, without loading weight data."""
     from qwen35_moe_dflash.target.original_air_roundtrip import _decode, _attributes, MAX_AIR_BYTES
     path = Path(air)
@@ -194,13 +196,33 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
     counts = Counter(n['type'] for n in nodes)
     if expected_norms is not None and (counts['RmsNorm'] != expected_norms or counts['AdnRmsNorm']):
         raise ValueError(f'expected {expected_norms} installed-converter RmsNorm nodes; observed {counts["RmsNorm"]}, AdnRmsNorm={counts["AdnRmsNorm"]}')
+    if expected_attention is not None and (expected_attention.get('policy') != 'target-cpro-fused-attention-v1'
+            or counts['AdnFusedInferAttention'] != 6):
+        raise ValueError('expected six Target CPro AdnFusedInferAttention nodes; re-export the Draft AIR')
     types = schema.enums.get(schema.package + '.DataType', {})
     def desc(d):
         return dict(shape=d.get('shape', {}).get('dim'), layout=d.get('layout'), raw_dtype=d.get('dtype'),
                     dtype_names=[name for name, value in types.items() if value == d.get('dtype')])
-    norms, sidecars, gathers = [], {}, []
+    norms, sidecars, gathers, attention = [], {}, [], []
     for n in nodes:
         attrs = _attributes(n)
+        if n['type'] == 'AdnFusedInferAttention':
+            inputs = [desc(d) for d in n.get('input_desc', [])]
+            observed_attrs = {key: attrs.get(key, {}).get('s' if key == 'input_layout' else 'f' if key == 'scale_value' else 'i')
+                              for key in ('num_heads', 'num_key_value_heads', 'block_size', 'input_layout', 'inner_precise', 'scale_value')}
+            attention.append(dict(name=n['name'], inputs=inputs,
+                outputs=[desc(d) for d in n.get('output_desc', [])], attrs=observed_attrs))
+            if expected_attention is not None:
+                import math
+                valid = all(observed_attrs[key] == expected_attention[key] for key in observed_attrs if key != 'scale_value')
+                valid = valid and isinstance(observed_attrs['scale_value'], (int, float)) and math.isclose(
+                    observed_attrs['scale_value'], expected_attention['scale_value'], rel_tol=1e-6)
+                shapes = [expected_attention['query_shape'], expected_attention['kv_shape'], expected_attention['kv_shape']]
+                valid = valid and len(inputs) >= 3 and all(inputs[i]['shape'] == shape and 'DT_FLOAT16' in inputs[i]['dtype_names'] for i, shape in enumerate(shapes))
+                valid = valid and any(d['shape'] == expected_attention['mask_shape'] and 'DT_FLOAT16' in d['dtype_names'] for d in inputs)
+                valid = valid and any(d['shape'] == expected_attention['block_table_shape'] and 'DT_INT32' in d['dtype_names'] for d in inputs)
+                if not valid:
+                    raise ValueError('Target CPro attention attributes or NZ/mask descriptors differ: ' + n['name'])
         if n['type'] in {'Gather', 'GatherV2', 'GatherV2D'}:
             inputs = n.get('input_desc', [])
             indices = desc(inputs[1]) if len(inputs) > 1 else {}
@@ -227,7 +249,7 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
         sidecars[str(relative)] = member.stat().st_size
     inputs = [n for n in nodes if n['type'] == 'Data']
     outputs = [n for n in nodes if n['type'] == 'NetOutput']
-    return dict(node_types=dict(counts), rms=norms, gather_indices=gathers, weight_files=sidecars,
+    return dict(node_types=dict(counts), rms=norms, gather_indices=gathers, attention=attention, weight_files=sidecars,
                 input_count=len(inputs), output_counts=[len(n.get('input_desc', [])) for n in outputs],
                 scope='SOURCE_GRAPH_ONLY_NOT_COMPILED_PRECISION_OR_RUNTIME_ABI')
 
@@ -238,9 +260,12 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
     torchair = require_torchair()
     import torch
     from .torch_model import load_prepared
+    from .torch_target import register_target_attention
     # Use the installed converter, as the original CPro Target does. No Adn
-    # replacement, monkey-patched converter or CPU fallback on export failure.
+    # replacement or CPU fallback on export failure. Attention uses the Target
+    # CPro custom converter, registered only in this exporting process.
     rms = torch.ops.npu.npu_rms_norm.default
+    attention_kernel = register_target_attention(torchair)
     descriptor, metadata = _producer_schema(torchair_pb2)
     _disjoint(output, prepared)
     with _air_export_slot(output, prepared, replace) as root:
@@ -257,13 +282,14 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
                 raise OSError(f'AIR export needs at least {required} free bytes for weights and reserve')
             progress('loading Draft, embedding and head from shared prepared FP16 weights')
             model = load_prepared(prepared, context_rows=context_rows, cache_capacity=cache_capacity,
-                                  max_draft_tokens=max_draft_tokens, rms=rms)
+                                  max_draft_tokens=max_draft_tokens, rms=rms, attention_kernel=attention_kernel)
             result.update(**model.abi(), schema={k: metadata[k] for k in ('schema_file', 'schema_package')},
                 torch_version=torch.__version__, torchair_version=getattr(torchair, '__version__', 'unknown'),
+                attention=model.target_attention.contract(),
                 projection='PYTORCH_CONV2D_4X4_FULL_K', stage='torchair-export')
             _save(root / 'manifest.json', result)
             (root / 'air-schema.pb').write_bytes(descriptor)
-            progress('TorchAir export: 17 inputs, 14 outputs, tensor-controlled committed KV')
+            progress('TorchAir export: 17 inputs, 14 outputs, 6 Target CPro fused attention calls; committed ND KV retained')
             with working_directory(root), torch.inference_mode():
                 torchair.dynamo_export(*model.example_inputs(), model=model, export_path='weight', export_name='export', dynamic=False)
             # Relative export_path keeps FileConstant paths portable on the DDK
@@ -273,7 +299,7 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
                 if (root / 'weight' / name).is_file():
                     (root / 'weight' / name).replace(root / name)
             inspection = inspect_air(root / 'export.air', _schema(descriptor, metadata),
-                                     expected_norms=32, require_int32_indices=True)
+                                     expected_norms=32, require_int32_indices=True, expected_attention=result['attention'])
             if inspection['input_count'] != 17 or inspection['output_counts'] != [14]:
                 raise ValueError('TorchAir source boundary does not contain all 17 inputs / 14 outputs')
             _save(root / 'air-inspection.json', inspection)
@@ -281,6 +307,7 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
                 schema_file='air-schema.pb', rms_nodes=len(inspection['rms']),
                 weight_files=len(inspection['weight_files']), gather_index_dtype='int32',
                 gather_nodes=len(inspection['gather_indices']),
+                attention_nodes=len(inspection['attention']),
                 next='Transfer this whole AIR directory; compile it on the selected DDK server. Candidate is not runtime-bound.')
         except Exception as error:
             result.update(status='FAILED', error=f'{type(error).__name__}: {error}',
@@ -354,9 +381,11 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
     metadata = manifest['schema']
     descriptor = (source / 'air-schema.pb').read_bytes()
     inspection = inspect_air(source / 'export.air', _schema(descriptor, metadata),
-                             expected_norms=32, require_int32_indices=True)
+                             expected_norms=32, require_int32_indices=True, expected_attention=manifest.get('attention'))
     with _slot(output, OMC_KIND, replace) as root:
         result = {k: manifest[k] for k in ('context_rows', 'cache_capacity', 'max_draft_tokens', 'inputs', 'outputs', 'rms', 'gamma')}
+        if 'attention' in manifest:
+            result['attention'] = manifest['attention']
         result.update(artifact_kind=OMC_KIND, status='COMPILING', stage='compile', frontend='pytorch',
             model_compilation='NOT_RUN', compiled_precision='NOT_VALIDATED', compiled_abi='NOT_BOUND',
             device_execution='NOT_RUN', numerical_validation='NOT_RUN', ddk_id=ddk_id,
