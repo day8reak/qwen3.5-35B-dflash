@@ -4,7 +4,7 @@ The compiler side imports no PyTorch. Candidates stay separate from the current
 runtime model until physical IO binding and device precision are validated.
 """
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import fcntl
 import json
 import os
@@ -15,6 +15,7 @@ from qwen35_moe_dflash.common.artifacts import output_path, working_directory
 
 AIR_KIND = 'qwen35-incremental-draft-pytorch-air'
 OMC_KIND = 'qwen35-incremental-draft-pytorch-omc'
+GE_AIR_KIND = 'qwen35-incremental-draft-air'
 
 
 def _save(path, value):
@@ -51,6 +52,118 @@ def _disjoint(output, *sources):
         source = Path(source).resolve()
         if destination == source or destination in source.parents or source in destination.parents:
             raise ValueError('candidate output must be separate from inputs and SDK directories')
+
+
+@contextmanager
+def _air_locks(*folders):
+    with ExitStack() as stack:
+        for folder in sorted(set(folders)):
+            if folder.is_symlink():
+                raise ValueError('AIR directory must not be a symlink')
+            folder.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(folder.parent / ('.' + folder.name + '.lock'),
+                         os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            lock = stack.enter_context(os.fdopen(fd, 'a'))
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise ValueError('AIR directory is active; retained') from None
+        from qwen35_moe_dflash.execution.run_layout import _active_processes
+        if _active_processes(Path(os.environ['AI_RUN_DIR']).resolve()):
+            raise ValueError('finish active local model jobs before moving shared AIR')
+        yield
+
+
+def _replaceable_air(folder, replace):
+    if folder.is_symlink():
+        raise ValueError('AIR directory must not be a symlink')
+    if not folder.exists():
+        return
+    marker = folder / 'manifest.json'
+    old = json.loads(marker.read_text()) if marker.is_file() and not marker.is_symlink() else {}
+    terminal = {AIR_KIND: {'FAILED', 'PYTORCH_DRAFT_AIR_EXPORTED'},
+                GE_AIR_KIND: {'FAILED', 'DRAFT_INCREMENTAL_AIR_EXPORTED'}}
+    if not replace or old.get('status') not in terminal.get(old.get('artifact_kind'), set()):
+        raise ValueError('AIR destination is active or unknown; --replace requires a finished Draft AIR bundle')
+
+
+def _completed_air(folder):
+    manifest = json.loads((folder / 'manifest.json').read_text())
+    if manifest.get('artifact_kind') != AIR_KIND or manifest.get('status') != 'PYTORCH_DRAFT_AIR_EXPORTED':
+        raise ValueError('import requires a completed PyTorch Draft AIR bundle')
+    schema = _schema((folder / 'air-schema.pb').read_bytes(), manifest['schema'])
+    observed = inspect_air(folder / 'export.air', schema, expected_norms=32)
+    recorded = json.loads((folder / 'air-inspection.json').read_text())
+    if (len(manifest.get('inputs', [])) != 17 or len(manifest.get('outputs', [])) != 14
+            or observed['input_count'] != 17 or observed['output_counts'] != [14]
+            or not observed['weight_files'] or observed['weight_files'] != recorded.get('weight_files')):
+        raise ValueError('AIR inputs/outputs or external weight extents differ; retain the previous AIR')
+    return manifest
+
+
+def _install_air(source, destination, replace):
+    _replaceable_air(destination, replace)
+    previous = destination.with_name('.' + destination.name + '-replaced')
+    if previous.exists() or previous.is_symlink():
+        raise ValueError('interrupted AIR replacement exists; retain it and recover before replacing again: ' + str(previous))
+    # Use rename only: no second copy of the multi-GB external weights. The
+    # current OMC and its runtime configuration do not depend on these AIR files.
+    had_previous = destination.exists()
+    if had_previous:
+        destination.rename(previous)
+    try:
+        source.rename(destination)
+    except BaseException:
+        if had_previous:
+            previous.rename(destination)
+        raise
+    if had_previous:
+        shutil.rmtree(previous)
+
+
+def import_pytorch_air(source, output, *, replace=False):
+    """Move a completed portable AIR into its shared location; no TorchAir/DDK."""
+    if Path(source).is_symlink() or Path(output).is_symlink():
+        raise ValueError('AIR directory must not be a symlink')
+    source, destination = output_path(source), output_path(output)
+    if source != destination:
+        _disjoint(destination, source)
+    with _air_locks(source, destination):
+        manifest = _completed_air(source)
+        if source != destination:
+            _install_air(source, destination, replace)
+    return dict(status='PYTORCH_DRAFT_AIR_INSTALLED', air=str(destination / 'export.air'),
+                output=str(destination), moved=source != destination,
+                input_count=len(manifest['inputs']), output_count=len(manifest['outputs']),
+                rms_nodes=32, weight_files=manifest['weight_files'], model_compilation='NOT_RUN',
+                device_execution='NOT_RUN', numerical_validation='NOT_RUN', runtime_changed=False)
+
+
+@contextmanager
+def _air_export_slot(output, prepared, replace):
+    if Path(output).is_symlink():
+        raise ValueError('AIR directory must not be a symlink')
+    destination = output_path(output)
+    if destination.name != 'air':
+        with _slot(output, AIR_KIND, replace) as root:
+            yield root
+        return
+    if (destination.parent / 'tests').is_symlink() or (destination.parent / 'tests/export').is_symlink():
+        raise ValueError('AIR export scratch must not be a symlink')
+    scratch = output_path(destination.parent / 'tests/export')
+    _disjoint(scratch, destination, prepared)
+    with _air_locks(destination, scratch):
+        _replaceable_air(destination, replace)
+        if scratch.exists():
+            old = json.loads((scratch / 'manifest.json').read_text())
+            if not replace or old.get('artifact_kind') != AIR_KIND or old.get('status') != 'FAILED':
+                raise ValueError('export scratch is active or completed; import a completed AIR instead of re-exporting: ' + str(scratch))
+            shutil.rmtree(scratch)
+        scratch.mkdir()
+        yield scratch
+        if json.loads((scratch / 'manifest.json').read_text()).get('status') == 'PYTORCH_DRAFT_AIR_EXPORTED':
+            _completed_air(scratch)
+            _install_air(scratch, destination, replace)
 
 
 def _producer_schema(pb2=None):
@@ -123,7 +236,7 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
     rms = torch.ops.npu.npu_rms_norm.default
     descriptor, metadata = _producer_schema(torchair_pb2)
     _disjoint(output, prepared)
-    with _slot(output, AIR_KIND, replace) as root:
+    with _air_export_slot(output, prepared, replace) as root:
         result = dict(artifact_kind=AIR_KIND, status='EXPORTING', stage='weights', frontend='pytorch',
             context_rows=context_rows, cache_capacity=cache_capacity, max_draft_tokens=max_draft_tokens,
             model_compilation='NOT_RUN', device_execution='NOT_RUN', numerical_validation='NOT_RUN',
@@ -161,7 +274,8 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
                 weight_files=len(inspection['weight_files']),
                 next='Transfer this whole AIR directory; compile it on the selected DDK server. Candidate is not runtime-bound.')
         except Exception as error:
-            result.update(status='FAILED', error=f'{type(error).__name__}: {error}')
+            result.update(status='FAILED', error=f'{type(error).__name__}: {error}',
+                          manifest=str(root / 'manifest.json'))
         _save(root / 'manifest.json', result)
         return result
 

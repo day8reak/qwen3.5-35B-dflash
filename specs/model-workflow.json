@@ -5807,7 +5807,7 @@
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "User transfers the completed PyTorch AIR directory including all weight sidecars and air-schema.pb, then compiles on the selected X90 DDK server using docs/current-status.md. No AIR re-export needed. Physical ABI binding and Load/KV accuracy follow successful compilation.",
+    "next": "Move the completed PyTorch AIR into draft/air with export_incremental_draft.py --import-air; on the DDK server install the complete transferred bundle in draft/air, then compile. Existing OMC/runtime remain unchanged until new physical ABI and device validation.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -5871,6 +5871,16 @@
         "device_execution": "NOT_RUN",
         "numerical_validation": "NOT_RUN",
         "warnings": "PKG_RESOURCES_DEPRECATION_AND_GMM_TILING_STRUCT_CONFLICT_EXPORT_COMPLETED"
+      },
+      "artifact_layout": {
+        "air": "draft/air",
+        "air_export_scratch": "draft/tests/export",
+        "transfer_scratch": "draft/.air-incoming",
+        "omc_build_pending_physical_abi": "draft/tests/pytorch-omc",
+        "runtime_omc": "draft/omc",
+        "air_import_entry": "targets/cpro/scripts/export_incremental_draft.py --import-air SOURCE --output AI_RUN_DIR/draft/air --replace",
+        "air_import_policy": "VALIDATE_COMPLETED_AIR_AND_SIDECAR_EXTENTS_THEN_RENAME_WITH_NO_WEIGHT_COPY; OLD_RECOGNIZED_AIR_REMOVED; OMC_AND_RUNTIME_UNCHANGED",
+        "host_validation": "14 host storage checks using actual schema fixtures; includes replacement, missing/truncated sidecars, active locks/jobs, rename rollback, failed export preservation, successful export publication and CLI without TorchAir"
       }
     },
     "compiled_partition_observation": {

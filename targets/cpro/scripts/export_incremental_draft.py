@@ -16,9 +16,10 @@ def main(argv=None):
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--job', help='legacy full-draft job containing prepared and residual-fix')
     source.add_argument('--prepared', help='shared prepared weight directory; no previous AIR/OMC required')
+    source.add_argument('--import-air', help='move a completed PyTorch AIR bundle to --output without exporting or compiling')
     parser.add_argument('--frontend', choices=('ge', 'pytorch'), default='ge')
     parser.add_argument('--torchair-pb2', help='installed TorchAir literal schema; normally discovered automatically')
-    parser.add_argument('--replace', action='store_true', help='replace a finished PyTorch candidate in the same test slot')
+    parser.add_argument('--replace', action='store_true', help='replace a finished AIR bundle after successful PyTorch export/import')
     parser.add_argument('--context-rows', type=int, choices=(16, 64), default=16)
     parser.add_argument('--cache-capacity', type=int, default=192)
     parser.add_argument('--max-draft-tokens', type=int, choices=(15, 7, 3, 1), default=15)
@@ -30,12 +31,17 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.timeout_seconds <= 0:
         parser.error('--timeout-seconds must be positive')
-    if args.frontend == 'pytorch' and not args.prepared:
+    if args.frontend == 'pytorch' and not (args.prepared or args.import_air):
         parser.error('PyTorch export requires --prepared')
-    if args.frontend == 'ge' and (args.replace or args.torchair_pb2):
+    if args.frontend == 'ge' and not args.import_air and (args.replace or args.torchair_pb2):
         parser.error('--replace and --torchair-pb2 belong to the PyTorch candidate export')
     from qwen35_moe_dflash.draft.incremental.export import export_incremental_draft
     try:
+        if args.import_air:
+            from qwen35_moe_dflash.draft.incremental.torch_export import import_pytorch_air
+            result = import_pytorch_air(args.import_air, args.output, replace=args.replace)
+            print(json.dumps(result, ensure_ascii=False, allow_nan=False), flush=True)
+            return 0
         if args.frontend == 'pytorch':
             from qwen35_moe_dflash.draft.incremental.torch_export import export_pytorch
             result = export_pytorch(args.prepared, args.output, context_rows=args.context_rows,

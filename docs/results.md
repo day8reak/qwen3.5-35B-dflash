@@ -119,7 +119,7 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 
 随后用户在权重服务器的`qwen3_5_cpro`环境完成真实TorchAir导出，回传`PYTORCH_DRAFT_AIR_EXPORTED`。PyTorch为`2.8.0+cpu`，TorchAir版本未提供；源AIR为C16／cap192／K15，17输入、14输出、32个RmsNorm，schema为`ge_ir.proto / ge.proto`。导出保存80个外置常量文件，日志列出的参数与buffer包括71份模型权重及9份位置、索引、掩码和RoPE常量。deprecated和GMM tiling冲突warning未阻止本次导出完成，不能据此评价后续OMG或板端行为。
 
-此结果是用户回传的AIR导出和源图检查成功；未独立读取服务器产物，也不证明数值精度、编译内部FP32或NPU性能。下一步传输完整AIR目录并在DDK服务器编译OMC，再绑定实际KV槽位、上板Load及验证。公共GE模型未替换，50ms目标仍未达到。
+此结果是用户回传的AIR导出和源图检查成功；未独立读取服务器产物，也不证明数值精度、编译内部FP32或NPU性能。成功AIR归入公共`draft/air/`，迁移只移动文件且保留prepared源权重和当前OMC。下一步传输完整AIR目录并在DDK服务器编译OMC，再绑定实际KV槽位、上板Load及验证。公共GE模型未替换，50ms目标仍未达到。
 
 ## 加载与完整请求
 
