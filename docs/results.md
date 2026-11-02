@@ -23,7 +23,15 @@
 
 首次诊断因`KeyError: mask_token_id`中断：诊断器误读prepared配置的顶层字段，实际位于`draft_config.dflash_config.mask_token_id`。已复用模型的`Qwen35DFlashConfig.from_dict`解析器；原合成夹具的扁平配置改为仓库真实嵌套结构，16项检查通过，包括原检查、实际配置读取、嵌套字段优先和非法token拒绝。该修复只涉及离线诊断，复用原结果重跑同一命令即可；板端数值失败仍待定位。
 
-新增probe_draft_embedding.py从绑定的PyTorch AIR提取原完整表、axis及Gather，用显式INT32 ID切入，输出embedding和ID回读，逐字节比较。通用张量runner补充FP16／INT32支持；已有FP32用例和完整Draft门槛不变。23项主机合成／模拟检查及C++语法检查通过；实际探针编译、上板和分区均待验证。小图通过也不能证明完整图的分区及后续RMS／Attention正确。执行命令见[当前阶段](current-status.md)。
+2026-11-02，用户回传独立embedding探针编译及板端验证通过（未独立读取原始文件）。probe_draft_embedding.py从绑定的PyTorch AIR提取原完整表、axis及Gather，用显式INT32 ID切入，输出embedding和ID回读；原表未转换。DDK为100.520.020.010，编译为一个NPUCL子图。一次Load、3次预热、10次调用的两项输出均逐字节匹配、重复稳定，max_abs及relative L2均为0。同步API均值0.460ms，范围0.365～0.783ms，快照写盘在计时外；这是独立查表耗时。
+
+| 身份 | SHA256或尝试路径 |
+|---|---|
+| 原始AIR | e976adece11fc82e0911fb82552cdf6fa9115ffc2c53e3221e4df05a1af53d95 |
+| 查表探针OMC | 859820964436e3d4a63d2e40315954069ac04c7d20250219f0823d2cd720d794 |
+| 板端尝试 | /data/local/tmp/qwen35_vector_dfb692ce94004b739c9207692d78188a |
+
+此结果验证独立原表查表，未验证上游ID构造、缩放、RMS及完整图分区。下一步新增`--stage input-rms`，保留原anchor→mask拼接→Gather→缩放→第一层RmsNorm连接，输出实际ID、raw embedding、FP32 RMS。前两项零容差逐字节比较，RMS沿用完整Draft的0.01／0.01逐元素门槛；原gamma直接使用，不加1。主机合成图、独立参考与PyTorch公式对照、重排物理输出槽、不同类型比较及权重篡改拒绝检查通过；新探针实际编译及板端结果待回传。23项旧查表探针检查回归通过。完整Draft仍数值失败、未提升生产。执行命令见[当前阶段](current-status.md)。
 
 整体流程记录为用户回传的`fused/result`，板端PID34211。C16／cap192／K15增量Draft，18个prompt token、生成8个，混合接口常驻、dump关闭、顺序预读开启。完整流程接通；后续独立精度与profiling见下文。以下未独立读取板端原始产物。
 

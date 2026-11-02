@@ -1242,7 +1242,7 @@
         "timing_scope": "SYNCHRONOUS_API_WALL_DIAGNOSTIC_MIXED_INPUTS_NOT_WARM_BENCHMARK",
         "comparison": "UNCHANGED_ELEMENTWISE_ATOL_0.01_RTOL_0.01_AND_ZERO_TOP1_MISMATCHES; NO_L2_GATE",
         "root_cause": "UNRESOLVED; CONTEXT_KV_IS_INDEPENDENT_OF_CANDIDATE_ATTENTION",
-        "next": "DDK_SERVER_SOURCE_BOUND_EMBEDDING_PROBE; docs/current-status.md"
+        "next": "DDK_SERVER_SOURCE_INPUT_RMS_PREFIX_PROBE; docs/current-status.md"
       },
       "output_diagnosis": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose",
@@ -1276,16 +1276,61 @@
           "embedding": "ANCHOR_AND_MASK_SOURCE_ROWS_FINITE_NONZERO_NOT_DEVICE_GATHER"
         }
       },
-      "next": "DDK_SERVER_SOURCE_BOUND_EMBEDDING_PROBE; docs/current-status.md",
+      "next": "DDK_SERVER_SOURCE_INPUT_RMS_PREFIX_PROBE; docs/current-status.md",
       "embedding_probe": {
         "entry": "targets/cpro/tools/probe_draft_embedding.py",
         "host_checks": 23,
         "host_scope": "SYNTHETIC_WIRE_MIXED_IO_MOCK_COMPILER_AND_CPP_SYNTAX",
-        "model_compilation": "NOT_RUN",
-        "device_execution": "NOT_RUN",
+        "model_compilation": "USER_REPORTED_PASSED",
+        "device_execution": "USER_REPORTED_EXECUTED_OUTPUTS_RETRIEVED",
         "source": "ORIGINAL_GATHER_FULL_TABLE_AXIS_BYTES_WITH_EXPLICIT_INT32_IDS",
         "comparison": "EXACT_FP16_AND_INT32_BYTES",
         "limitations": "CUT_BEFORE_GATHER_EXCLUDES_ID_CONSTRUCTION_SCALE_RMS_ATTENTION; COMPILED_PARTITION_MAY_DIFFER",
+        "production_promotion": "NOT_PERFORMED",
+        "numerical_validation": "USER_REPORTED_PASSED",
+        "user_observation": {
+          "source": "USER_PASTED_JSON_NOT_INDEPENDENTLY_RETRIEVED",
+          "ddk_id": "100.520.020.010",
+          "source_air_sha256": "e976adece11fc82e0911fb82552cdf6fa9115ffc2c53e3221e4df05a1af53d95",
+          "prepared_sha256": "990edd08f0a6e089605463c7605b46a3d7456e9dfc39207f06ef301362e31946",
+          "model_sha256": "859820964436e3d4a63d2e40315954069ac04c7d20250219f0823d2cd720d794",
+          "source_embedding_sha256": "ab1a0ddd89ba1cb895b58259f78c18080420595215b02234ee5e84996cf31e28",
+          "board_attempt": "/data/local/tmp/qwen35_vector_dfb692ce94004b739c9207692d78188a",
+          "graphop_counts": {
+            "NPUCL": 1
+          },
+          "warmup": 3,
+          "repetitions": 10,
+          "all_embedding_and_ids_calls_bytes_equal": true,
+          "repeat_bitwise_stable": true,
+          "max_abs_error": 0.0,
+          "max_relative_l2_error": 0.0,
+          "api_ms": {
+            "mean": 0.46,
+            "min": 0.365,
+            "max": 0.783
+          },
+          "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_EXCLUDED",
+          "full_draft_validation": "NOT_RUN",
+          "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION"
+        }
+      },
+      "input_rms_probe": {
+        "entry": "targets/cpro/tools/probe_draft_embedding.py --stage input-rms",
+        "validation_case": "pytorch_input_rms",
+        "source": "ORIGINAL_ANCHOR_MASK_GATHER_SCALE_AND_FIRST_RMS_PREFIX",
+        "mutation": "ONLY_ANCHOR_DATA_INDEX_AND_NETOUTPUT; ORIGINAL_PREFIX_PAYLOAD_AND_THREE_SIDECAR_HASHES_RETAINED",
+        "host_checks": 19,
+        "host_scope": "SYNTHETIC_PROTO_MOCK_COMPILER_MIXED_IO_AND_INDEPENDENT_REFERENCE_CHECK",
+        "comparison": {
+          "embedding": "EXACT_FP16_BYTES",
+          "ids_readback": "EXACT_INT32_BYTES",
+          "input_rms": "ELEMENTWISE_ATOL_0.01_RTOL_0.01"
+        },
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
+        "limitations": "CUT_BEFORE_ATTENTION; FULL_GRAPH_PARTITION_NOT_PRESERVED; DOES_NOT_CHANGE_FULL_DRAFT_FAILURE",
         "production_promotion": "NOT_PERFORMED"
       }
     }

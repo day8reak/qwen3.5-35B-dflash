@@ -4,44 +4,43 @@
 
 目标仍为C16／cap192／K15，常驻预热后proposal同步`Process`平均≤50ms，尚未达到。最新用户结果已完成Load及两组各19次调用；原比较门槛下38例均失败。两组Top1均为0/86，首轮全部0，后续proposal均为314；hidden相对L2为1.0～1.408，新增KV为0.44%～0.83%，未写区逐位保持。proposal诊断API均值约727ms，不能视为已完成预热的基准。详见[当前结果](results.md)。
 
-最新诊断已确认两组空context的30720个hidden元素全零。context=18时，更换anchor 17／32／34／38，共同有效位置仍逐位相同；位置之间并非全部相同，context变化也影响hidden。源anchor／mask embedding均非零。优先验证进入第一层之前的查表结果，根因尚未确定。
+最新诊断已确认两组空context的30720个hidden元素全零。context=18时，更换anchor 17／32／34／38，共同有效位置仍逐位相同；位置之间并非全部相同，context变化也影响hidden。用户随后回传独立Gather探针通过：原完整表、显式INT32 ID，10次embedding与ID回读均逐字节一致，NPUCL一个子图，API均值0.460ms。该结果只验证独立查表，完整Draft根因尚未确定。
 
-**本轮所有命令均在DDK服务器`t00826215_atc_mobile`的`custom_pypto`环境执行。先提取并编译embedding探针：**
+**本轮所有命令均在DDK服务器`t00826215_atc_mobile`的`custom_pypto`环境执行。下一步提取原始anchor到第一层RMS的连接：**
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_embedding.py" \
+  --stage input-rms \
   --air-export "$AI_RUN_DIR/draft/air" \
   --source "$AI_RUN_DIR/draft/source/prepared" \
   --result "$AI_RUN_DIR/draft/tests/pytorch-result" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-embedding"
+  --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms"
 ```
 
-探针在Gather之前切入，直接输入16个INT32 ID，包含四个anchor、mask 248077及词表边界、重复行；输出原Gather的FP16向量和ID回读。原完整embedding表与axis常量逐字节保留，AIR／prepared绑定到这次已回收执行，完整表hash与prepared相同。输出逐字节比较，容差为零。该图不含上游ID构造、embedding缩放、RMSNorm或Attention；小图编译分区也可能与完整图不同。无需回权重服务器导出。完整表约1 GB，主机需要约4.5 GB编译空间，板端传输约1 GB。目录已存在时保留旧证据并使用新的测试目录。
+探针输入anchor=17，保留原AIR的anchor／mask拼接、INT32转换、Gather、embedding缩放及第一层input_layernorm的RmsNorm。原节点字节保持，仅调整唯一Data的index并添加NetOutput；保留完整embedding表、mask buffer及原始gamma，核验AIR／prepared／失败模型身份与权重hash。三项输出为拼接后的16个ID、原Gather的FP16向量、第一层RMS的FP32结果。ID与embedding要求逐字节一致，RMS按独立FP32参考公式以原完整Draft的`atol=rtol=0.01`逐元素比较。
 
-返回`COMPILED`后，沿用已配置的OHOS SDK／HIAI环境，重建支持FP16／INT32的通用runner并执行：
+无需回权重服务器导出；用户刚重建的混合类型runner可复用。完整表约1 GB，主机需要约4.5 GB编译空间，板端传输约1 GB。目录已存在时保留旧证据并使用新的测试目录。返回`COMPILED`后执行：
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$AI_RUN_DIR/runtime/native" --replace
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$AI_RUN_DIR/draft/tests/pytorch-embedding" \
-  --cases pytorch_embedding \
+  --compiled "$AI_RUN_DIR/draft/tests/pytorch-input-rms" \
+  --cases pytorch_input_rms \
   --ddk-root "$CPRO_DDK_ROOT" \
   --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-embedding-run" --apply
+  --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms-run" --apply
 ```
 
-`validate_draft_vector.py`复用通用上板传输与回收逻辑，本次用例来自PyTorch AIR，GE优化路线仍暂停。一次Load、3次预热、10次同输入调用，每次保存两项输出。返回`VECTOR_VALIDATION_STARTED`后回收同一次执行：
+`validate_draft_vector.py`复用通用上板传输与回收逻辑，本次用例来自PyTorch AIR，GE优化路线仍暂停。一次Load、3次预热、10次同输入调用，每次保存三项输出。返回`VECTOR_VALIDATION_STARTED`后回收同一次执行：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$AI_RUN_DIR/draft/tests/pytorch-embedding-run" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-embedding-result"
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-input-rms-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms-result"
 ```
 
-`VECTOR_VALIDATION_PENDING`时稍后重复回收。`cases[].outputs`分别显示`ids_readback`和`embedding`是否所有调用都逐字节相同；ID正确而embedding失败时继续查表实现及编译权重；都通过则继续查完整图的ID构造、RMS和Attention。23项主机合成图／混合类型IO／模拟编译流程检查及C++语法检查通过，实际探针编译和上板待执行。
+`VECTOR_VALIDATION_PENDING`时稍后重复回收。`cases[].outputs`分别显示`ids_readback`、`embedding`和`input_rms`的结果。前两项正确而RMS失败，可定位到缩放／第一层归一化路径；三项通过则继续下游及完整图分区定位。该小图不包含Attention、残差、后续层或head，也不保留完整图分区，不能替代完整Draft验证。输入RMS探针的19项主机合成图／混合类型IO／模拟编译检查通过，真实编译及上板待用户执行。旧`--stage lookup`（默认值）仍可复查已通过的查表用例。
 
 以下离线命令仍可复查原完整Draft结果：
 

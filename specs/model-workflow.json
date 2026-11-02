@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_NUMERICAL_FAILURE_SOURCE_EMBEDDING_PROBE_PENDING",
-    "entry": "targets/cpro/tools/probe_draft_embedding.py",
+    "status": "PYTORCH_NUMERICAL_FAILURE_EMBEDDING_LOOKUP_PASSED_INPUT_RMS_PROBE_PENDING",
+    "entry": "targets/cpro/tools/probe_draft_embedding.py --stage input-rms",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "PYTORCH_USER_REPORTED_TOP1_0_OF_86_PER_MODE_AND_HIDDEN_L2_1_TO_1.408; PRIOR_GE_INTERIM_ACCEPTANCE_DOES_NOT_APPLY",
-    "next": "Compile extracted source-bound embedding lookup on DDK server, rebuild mixed-dtype tensor runner and validate exact embedding/ID bytes. Full model numerical failure and 50ms objective remain unresolved.",
+    "next": "User reported isolated original Gather exact-byte pass (10 calls, NPUCL1, mean API 0.460ms). Compile and run original anchor/mask/embedding/first-RMS prefix on DDK server with existing native runner. Full Draft numerics and 50ms objective unresolved.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6049,7 +6049,9 @@
           }
         }
       },
-      "numerical_execution": "specs/dflash-execution-state.json#incremental_draft_task/pytorch_candidate/numerical_execution"
+      "numerical_execution": "specs/dflash-execution-state.json#incremental_draft_task/pytorch_candidate/numerical_execution",
+      "embedding_probe": "specs/dflash-execution-state.json#incremental_draft_task/pytorch_candidate/embedding_probe",
+      "input_rms_probe": "specs/dflash-execution-state.json#incremental_draft_task/pytorch_candidate/input_rms_probe"
     },
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",

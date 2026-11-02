@@ -1,7 +1,7 @@
-"""Extract the source AIR's embedding lookup, with explicit INT32 IDs.
+"""Extract the source AIR's embedding lookup or anchor-to-first-RMS prefix.
 
-This cuts before Gather. It tests the original full table and lookup operation,
-not Draft's upstream ID construction, RMSNorm, attention or full-model accuracy.
+Lookup cuts before Gather; input-rms retains upstream ID construction and RMS.
+Both retain original weights and remain separate from full-model validation.
 No GE/PyTorch installation is needed on the selected DDK server.
 """
 import hashlib
@@ -22,6 +22,8 @@ from .torch_export import AIR_KIND, _schema, _disjoint, _save
 
 KIND = 'qwen35-draft-pytorch-embedding-probe'
 CASE = 'pytorch_embedding'
+INPUT_CASE = 'pytorch_input_rms'
+STAGES = {'lookup': CASE, 'input-rms': INPUT_CASE}
 DTYPES = {'float16': '<f2', 'float32': '<f4', 'int32': '<i4'}
 
 
@@ -131,11 +133,13 @@ def extract_lookup(raw, schema, shape):
     return result, receipt
 
 
-def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, timeout_seconds=1800, progress=print):
+def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, stage='lookup', timeout_seconds=1800, progress=print):
     from qwen35_moe_dflash.toolchain.existing_air import _snapshot, compile_existing_air
     from qwen35_moe_dflash.toolchain.omc_embed_weights import embed_external_weights
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
     air, prepared, root = Path(air_export).resolve(), Path(source).resolve(), output_path(output)
+    if stage not in STAGES:
+        raise ValueError('select lookup or input-rms probe stage')
     _disjoint(root, air, prepared, ddk_root)
     if root.exists():
         raise ValueError('probe output already exists; preserve it and use a new test directory')
@@ -164,6 +168,9 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, timeo
             or binding['packed_model_sha256'] != meta['model']['sha256']):
         raise ValueError('source AIR/prepared/model differs from the recovered execution binding')
     extracted, receipt = extract_lookup(raw, schema, [cfg.vocab_size, cfg.hidden_size])
+    if stage == 'input-rms':
+        from .input_probe import extract_prefix
+        extracted, receipt = extract_prefix(raw, schema, receipt, cfg)
     record = plan['weights']['target.embed_tokens.weight']
     if (record['dtype'] != 'float16' or record['shape'] != receipt['table_shape']
             or record['bytes'] != math.prod(record['shape'])*2):
@@ -173,11 +180,31 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, timeo
     if relative.is_absolute() or '..' in relative.parts or relative.parts[0] != 'weight':
         raise ValueError('embedding sidecar must be a relative weight/ member')
     table = checked_file(air, dict(record, path=str(relative)))
+    snapshots = [(table, relative, record['sha256'])]
+    gamma = None
+    if stage == 'input-rms':
+        from .input_probe import GAMMA
+        gamma_record = plan['weights'][GAMMA]
+        if gamma_record['dtype'] != 'float16' or gamma_record['shape'] != [cfg.hidden_size] or gamma_record['bytes'] != cfg.hidden_size*2:
+            raise ValueError('prepared first-RMS gamma descriptor differs')
+        gamma = np.fromfile(checked_file(prepared, gamma_record), dtype='<f2').astype('<f4')
+        gamma_relative = Path(receipt['gamma_path'])
+        gamma_file = checked_file(air, dict(gamma_record, path=str(gamma_relative)))
+        mask_relative = Path(receipt['mask_path'])
+        if mask_relative.is_absolute() or len(mask_relative.parts) != 2 or mask_relative.parts[0] != 'weight':
+            raise ValueError('source mask must be a relative weight/ member')
+        mask_bytes = np.full((1,15), cfg.mask_token_id, dtype='<i4').tobytes()
+        mask_hash = hashlib.sha256(mask_bytes).hexdigest()
+        mask_file = checked_file(air, dict(path=str(mask_relative), bytes=len(mask_bytes), sha256=mask_hash))
+        snapshots += [(gamma_file, gamma_relative, gamma_record['sha256']), (mask_file, mask_relative, mask_hash)]
     root.parent.mkdir(parents=True, exist_ok=True)
     if shutil.disk_usage(root.parent).free < 4*record['bytes']+(512 << 20):
         raise OSError('embedding probe needs space for source snapshot, compiler weights and packed model')
     ids = np.array([[17, 32, 34, 38, cfg.mask_token_id, 0, 1, cfg.vocab_size-1,
                      cfg.mask_token_id, 38, 34, 32, 17, cfg.mask_token_id, 17, cfg.mask_token_id]], dtype='<i4')
+    if stage == 'input-rms':
+        ids = np.full((1,16), cfg.mask_token_id, dtype='<i4')
+        ids[0,0] = 17
     if np.any(ids < 0) or np.any(ids >= cfg.vocab_size):
         raise ValueError('diagnostic IDs exceed source vocabulary')
     golden = np.empty((1, 16, cfg.hidden_size), dtype='<f2')
@@ -187,25 +214,40 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, timeo
             golden[0, i] = np.frombuffer(stream.read(cfg.hidden_size*2), dtype='<f2')
     if not np.isfinite(golden).all():
         raise ValueError('prepared diagnostic embedding rows are nonfinite')
+    arrays = [('input_0', ids), ('golden_0', golden), ('golden_1', ids)]
+    if stage == 'input-rms':
+        # Same FP16 embedding/scaling boundary and independent FP32 RMS formula
+        # as the full Draft reference; no target outputs enter this reference.
+        x = (golden.astype('<f4')*np.float32(cfg.input_embedding_scale)).astype('<f2').astype('<f4')
+        rstd = np.float32(1)/np.sqrt(np.mean(x*x, axis=-1, keepdims=True, dtype=np.float32)+np.float32(cfg.rms_norm_eps))
+        normalized = np.asarray(x*rstd*gamma, dtype='<f4')
+        if not np.isfinite(normalized).all():
+            raise ValueError('first-RMS reference is nonfinite')
+        arrays[0] = ('input_0', np.array([17], dtype='<i4'))
+        arrays.append(('golden_2', normalized))
     root.mkdir(parents=True)
     state = dict(artifact_kind=KIND, status='FAILED', stage='extract', model_compilation='NOT_RUN',
         device_execution='NOT_RUN', numerical_validation='NOT_RUN', ddk_id=ddk_id,
-        scope='SOURCE_EMBEDDING_LOOKUP_ONLY_NOT_FULL_DRAFT', extraction=receipt,
+        probe_case=STAGES[stage], scope=('SOURCE_INPUT_PREFIX_ONLY_NOT_FULL_DRAFT' if stage == 'input-rms'
+            else 'SOURCE_EMBEDDING_LOOKUP_ONLY_NOT_FULL_DRAFT'), extraction=receipt,
         source_embedding_sha256=record['sha256'], prepared_sha256=sha256_file(prepared/'prepared.json'),
         original_model_sha256=meta['model']['sha256'], board_attempt=observed.get('board_attempt'))
     _save(root/'result.json', state)
     try:
-        progress('snapshotting the original full embedding table; no weight conversion')
-        snapshot = _snapshot(table, root/'air'/relative)
-        if snapshot['sha256'] != record['sha256']:
-            raise ValueError('embedding changed during probe snapshot')
+        progress('snapshotting original prefix weights; no weight conversion')
+        state['source_sidecars'] = {}
+        for path, rel, digest in snapshots:
+            snapshot = _snapshot(path, root/'air'/rel)
+            if snapshot['sha256'] != digest:
+                raise ValueError('source changed during probe snapshot: '+str(rel))
+            state['source_sidecars'][str(rel)] = dict(bytes=snapshot['bytes'], sha256=digest)
         (root/'air/export.air').write_bytes(extracted)
         (root/'fixture').mkdir()
-        for name, value in (('input_0', ids), ('golden_0', golden), ('golden_1', ids)):
+        for name, value in arrays:
             value.tofile(root/'fixture'/f'{name}.bin')
         state['fixtures'] = {p.name: dict(bytes=p.stat().st_size, sha256=sha256_file(p)) for p in (root/'fixture').iterdir()}
         state['stage'] = 'compile'
-        progress('compiling extracted PyTorch Gather AIR with the selected DDK')
+        progress('compiling extracted PyTorch '+stage+' AIR with the selected DDK')
         compilation = compile_existing_air(root/'air/export.air', root/'compilation', ddk_root,
             ddk_id=ddk_id, timeout_seconds=timeout_seconds, input_layout='air-directory',
             use_origin_format=True, save_weights_as_external_data=True, progress=lambda r: progress(r['message']))
@@ -238,9 +280,10 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     from validate_draft_vector import bind_io, WARMUP, REPETITIONS
     from qwen35_moe_dflash.execution.hdc_run import _file_record
     report = read_json(root/'result.json')
+    case = report.get('probe_case', CASE)
     if (report.get('artifact_kind') != KIND or report.get('status') != 'COMPILED'
             or report.get('model_compilation') != 'PASSED' or report.get('ddk_id') != ddk_id
-            or selection not in (None, [CASE])):
+            or case not in STAGES.values() or selection not in (None, [case])):
         raise ValueError('expected the completed embedding probe for this DDK')
     model = checked_file(root, report['model'])
     if model.stat().st_size > 2 << 30:
@@ -250,7 +293,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     if len(main) != 1:
         raise ValueError('probe requires exactly one main model partition')
     io = bind_io(schema.decode(read_partition(model, main[0]), 'ModelDef'), report['extraction']['graph'], _enum_fields(schema))
-    folder = out/'fixture'/CASE
+    folder = out/'fixture'/case
     folder.mkdir(parents=True)
     plan = ['QWEN35_TENSOR_PROBE 1', f'iterations {WARMUP} {REPETITIONS}']
     for direction, prefix in (('inputs', 'input'), ('outputs', 'golden')):
@@ -265,9 +308,10 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
             plan.append(' '.join((direction[:-1], str(spec['index']), spec['name'], spec['dtype'], ','.join(map(str, spec['shape'])))))
     (folder/'plan.txt').write_text('\n'.join(plan)+'\n')
     observed = _compiled_observation(model, ddk)
-    meta = dict(cases=[dict(case=CASE, **io, model=_file_record(model, CASE+'/model.omc'),
+    meta = dict(cases=[dict(case=case, **io, model=_file_record(model, case+'/model.omc'),
         graphop_counts=observed['graphop_counts'])], warmup=WARMUP, repetitions=REPETITIONS,
-        atol=0.0, rtol=0.0, exact_bytes=True, scope='SOURCE_EMBEDDING_LOOKUP_ONLY_NOT_FULL_DRAFT',
+        atol=0.0 if case == CASE else 0.01, rtol=0.0 if case == CASE else 0.01,
+        exact_bytes=case == CASE, scope=report['scope'],
         ddk_id=ddk_id, schema=schema.evidence, source_evidence=report)
     _save(out/'fixture/manifest.json', meta)
     return meta

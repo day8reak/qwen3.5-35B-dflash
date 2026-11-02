@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract/compile the PyTorch AIR embedding lookup on the selected DDK server."""
+"""Extract/compile a PyTorch AIR lookup or input-RMS probe on the selected DDK server."""
 import argparse
 import json
 from pathlib import Path
@@ -15,10 +15,12 @@ def main():
     for name in ('air-export', 'source', 'result', 'ddk-root', 'ddk-id', 'output'):
         parser.add_argument('--'+name, required=True)
     parser.add_argument('--timeout-seconds', type=int, default=1800)
+    parser.add_argument('--stage', choices=('lookup', 'input-rms'), default='lookup',
+                        help='explicit IDs at Gather, or original anchor/mask construction through first RMS')
     args = parser.parse_args()
     try:
         result = compile_probe(args.air_export, args.source, args.output, result=args.result, ddk_root=args.ddk_root,
-            ddk_id=args.ddk_id, timeout_seconds=args.timeout_seconds,
+            ddk_id=args.ddk_id, stage=args.stage, timeout_seconds=args.timeout_seconds,
             progress=lambda text: print('embedding-probe: '+text, flush=True))
     except (OSError, ValueError, KeyError, RuntimeError) as error:
         result = dict(status='FAILED', error=f'{type(error).__name__}: {error}')
