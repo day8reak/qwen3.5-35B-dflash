@@ -111,6 +111,18 @@ PyTorch候选用`torch_npu.npu_rms_norm → RmsNorm`，沿用Target CPro的算�
 
 PyTorch的embedding与KV选行使用INT32索引，mask／GQA复制的索引也为INT32。首次编译日志显示embedding的INT64 indices被所选DDK的GatherV2D拒绝，因此去掉了原实现中的`.long()`，这不是新增的算子拆分。[TorchAir embedding转换](https://github.com/Ascend/torchair/blob/master/python/torchair/_ge_concrete_graph/ge_converter/aten/embedding.py)和[index_select转换](https://github.com/Ascend/torchair/blob/master/python/torchair/_ge_concrete_graph/ge_converter/aten/index_select.py)将indices交给GatherV2；实际导出AIR另逐节点检查，axis常量类型与indices类型分别处理。
 
+### Target CPro 中可借鉴的调用
+
+以下对照来自已核对版本的原始Target CPro源码，不把源代码调用当作当前Draft候选的编译或设备验证。
+
+| 部分 | Target CPro 写法 | Draft 的复用边界 |
+| --- | --- | --- |
+| Token／位置索引 | `export_glm_model_qwen3_5_moe.py:334–339` 创建INT32的`input_ids`、`position_ids`和`new_kv_cache_pos` | 沿用INT32约定，embedding／KV Gather的indices不转INT64；最新Draft源码已如此修改，旧AIR必须重新导出 |
+| Embedding | 导出入口设`embedding_in_omc=False`；量化路径在图外查INT8权重及scale，CPro wrapper接收后相乘 | Target这条路径不能证明Draft图内FP16 embedding Gather已在该DDK编译通过 |
+| RMSNorm | `modeling_qwen3_5_moe_hiai_cpro.py:116–118,129–135` 调用`torch_npu.npu_rms_norm` | PyTorch Draft已使用同一接口。Target普通Norm的forward有`weight+1`，Draft权重直接是gamma，不能照搬权重变换 |
+| KV更新 | 同文件`:283–296` 用INT32的块号与块内偏移调用`torch_npu.npu_cache_update_` | 可借鉴索引类型；Target采用block_size=32的分块缓存，Draft为ND committed KV和临时候选KV，不能直接替换其Gather／Select更新 |
+| 完整注意力 | 同文件`:333–371` 调用`torch_npu.adn_fused_infer_attention`，带分块KV、NZ布局与mask | 可作为后续融合候选；先核对Draft的滑窗／双向可见性、GQA、位置和缓存提交语义，再单独验证精度与耗时 |
+
 ### 残差Add：为避免NPU输入降精度保留CPU计算
 
 ```mermaid
