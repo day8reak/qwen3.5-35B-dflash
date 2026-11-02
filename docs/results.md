@@ -109,7 +109,15 @@ FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitc
 
 KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Draft API均值726.839ms与这次不是严格配对试验，不能直接作为优化收益结论。
 
-## PyTorch当前开发路线（权重Transpose等价改写待复编）
+## PyTorch当前开发路线（编译成功，独立上板待验证）
+
+2026-11-02，用户回传`PYTORCH_DRAFT_OMC_COMPILED / model_compilation=PASSED`，接口观察为17输入／14输出，CPUCL3、NPUCL2。特征输入FP16 `[1,16,16384]`，四个控制量INT32，12个输入／输出缓存FP16 `[1,8,192,128]`；Top1为INT32 `[1,15]`，hidden为FP16 `[1,15,2048]`。源图语义顺序不能直接作为编译输入槽位：编译Data为`arg*`名称，需源图连线与编译index联合绑定。未独立读取用户OMC，本轮没有板端运行结果。
+
+新增独立验证入口复用原17／14 native runner，以源AIR控制关系及每个KV输出Select的保留分支确定输入角色，再绑定实际编译Data.index；输出依赖hash绑定的源／编译AIR顺序合同。原准备权重hash与编译输入快照核对，模型按SHA缓存首次上传；候选不修改旧GE生产绑定或精度状态。24项主机合成schema／OMC／模拟传输检查通过，真实Load、两序列KV比较和时延由用户执行[当前命令](current-status.md)后确认。
+
+编译主图仍有跨子图FP32↔FP16转换，包括 `[1,16]`、`[1,16,1]`、`[1,16,64]`，以及词表logits `[1,15,248320]` 的FP16→FP32。53个子图减少为5个是编译结构变化，不是已测加速；也不证明内部FP32运算保留。
+
+以下保留本次编译成功前的定位过程。
 
 最新用户使用`--tbe-diagnosis common/tbe-diagnosis`复编，OMG读取`prepared.air`，24个Reshape简化和7个零常量替换保持。日志已进入内存分配、`BuildModelRes`和任务生成，在`GetDataParam op=Transpose`后出现`inputTensorPtr is NULL`，随后`Permute ProduceTiling failed`／`Permute Transpose compileInfo is null`，导致SubGraph_1及整图编译失败。报错码为1443627009，具体含义未确认。随后源AIR检查确认：`arg15_1`为第0层Q权重，FileConstant形状为`[4096,2048]`，经常量`[1,0]`转置供`MatMul`右输入使用，两个transpose标志均为false。常量字节hash与INT64 `[1,0]`相符；实际改写仍逐节点读取排列字节。TBE审计为`APPLIED`，worker使用本次编译目录的模块副本；这不等于模型编译成功，也不能把空指针归因为权重文件丢失。
 

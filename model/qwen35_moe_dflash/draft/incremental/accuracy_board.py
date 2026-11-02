@@ -1,4 +1,4 @@
-"""Detached standalone accuracy request; reuse the already deployed Draft OMC."""
+"""Detached standalone accuracy request with a hash-addressed Draft model cache."""
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
@@ -13,7 +13,7 @@ from qwen35_moe_dflash.execution.runtime_config import read_json
 from qwen35_moe_dflash.execution.run_layout import _save, reuse_test_output
 from qwen35_moe_dflash.execution.serial_transport import _environment, _build_payloads
 from qwen35_moe_dflash.execution.hdc_run import Hdc, _file_record
-from qwen35_moe_dflash.execution.lock import _acquire_global, _release_global, _space
+from qwen35_moe_dflash.execution.lock import _acquire_global, _release_global
 from qwen35_moe_dflash.draft.board import _receive
 from qwen35_moe_dflash.draft.profile_board import GLOBAL_LOCK, _guard, _identity_guard
 from .accuracy import KIND, prepare, compare
@@ -43,7 +43,7 @@ def extract_outputs(archive, destination, meta):
 
 
 def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol=0.01,
-          timeout_seconds=1800):
+          timeout_seconds=1800, ddk_root=None):
     out = output_path(output)
     config_path = Path(config).resolve()
     # These are public shared inputs, never descendants of the disposable slot.
@@ -59,10 +59,11 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
     try:
         cfg = read_json(config_path)
         env = read_json(config_path.parent / cfg['assets'])['environment']
-        meta = prepare(compiled, source, air, out / 'fixture', atol=atol, rtol=rtol)
+        meta = prepare(compiled, source, air, out / 'fixture', atol=atol, rtol=rtol, ddk_root=ddk_root)
         if meta['ddk_id'] != env['ddk_id']:
             raise ValueError('compiled Draft and runtime configuration use different DDKs')
-        state.update(status='REFERENCE_PREPARED', stage='prepared')
+        state.update(status='REFERENCE_PREPARED', stage='prepared', frontend=meta.get('frontend', 'ge'),
+                     internal_precision=meta.get('internal_precision'), production_promotion='NOT_PERFORMED')
         if not apply:
             return state
         if not 1 <= timeout_seconds <= 7200:
@@ -97,20 +98,26 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
         state.update(board_attempt=str(board), stage='board-preflight')
         hdc=Hdc(executable, serial, server, out, 180)
         for lock in locks:
+            if lock == locks[1]:
+                # The global lock protects creation; the cache owner binds it
+                # to this exact OMC. Old and new candidates cannot collide.
+                owner = cache / '.model-sha256'
+                hdc.shell('if mkdir '+q(str(cache))+'; then printf "%s\\n" '+q(meta['model']['sha256'])
+                    +' > '+q(str(owner))+'; else test -d '+q(str(cache))+' && test ! -L '+q(str(cache))
+                    +' && test ! -L '+q(str(owner))+' && read -r draft_cache_owner < '+q(str(owner))
+                    +' && test "$draft_cache_owner" = '+q(meta['model']['sha256'])+'; fi', 'accuracy-model-cache')
             uncertain=True
             try: _acquire_global(hdc, lock, token, 0)
             except ValueError as error:
                 if 'BOARD_MODEL_IO_BUSY:' in str(error): uncertain=False
                 raise
             held.append(lock); uncertain=False
-        # One explicit diagnostic content check. This is outside inference timing.
-        hdc.shell(_identity_guard(model,meta['model']), 'accuracy-existing-omc', timeout=180)
         _, firmware=hdc.shell('param get const.ohos.fullname','accuracy-firmware')
         if firmware.strip()!=env['firmware_id'].strip():
             raise ValueError('board firmware differs from the runtime configuration')
-        _, space=hdc.shell('df -Pk /data/local/tmp','accuracy-space')
         required=archive.stat().st_size*2+2*len(meta['cases'])*sum(r['bytes'] for r in meta['outputs'])*2+(128<<20)
-        if _space(space)<required: raise OSError(f'accuracy needs {required} free board bytes')
+        from qwen35_moe_dflash.draft.real_feature_draft_board import _cache_model
+        model, state['model_cache'] = _cache_model(hdc, cache, meta['model'], out, extra_bytes=required)
         hdc.shell('mkdir '+q(str(board))+' && printf "%s\\n" '+q(token)+' > '+q(str(board/'owner'))
             +' && mkdir '+q(str(board/'lib'))+' '+q(str(board/'fixture')), 'accuracy-directory')
         for row in uploads:
@@ -179,6 +186,8 @@ def recover(execution, output):
         for name in ('native.stdout','native.stderr','native.exitcode'):
             if _receive(hdc,board,out,name) is None:raise ValueError('missing '+name)
         if (out/'native.exitcode').read_text().strip()!='0':
+            result['native_failure'] = dict(exitcode=(out/'native.exitcode').read_text().strip(),
+                stderr_tail=(out/'native.stderr').read_text(errors='replace')[-4000:])
             raise ValueError('native accuracy execution failed; see native.stderr')
         if _receive(hdc,board,out,'archive.exitcode') is None or (out/'archive.exitcode').read_text().strip()!='0':
             raise ValueError('native output archive failed')
@@ -192,7 +201,8 @@ def recover(execution, output):
         extract_outputs(out/'outputs.tar',out/'native',meta)
         result.update(compare(root/'fixture',out/'native'),stage='complete',device_execution='EXECUTED_OUTPUTS_RETRIEVED',
                       fixture=str(root/'fixture'),fixture_sha256=sha256_file(root/'fixture/manifest.json'),
-                      model=meta['model'],runtime=plan['runtime'])
+                      model=meta['model'],runtime=plan['runtime'], frontend=meta.get('frontend', 'ge'),
+                      internal_precision=meta.get('internal_precision'), production_promotion='NOT_PERFORMED')
     except Exception as error:
         result.update(status='FAILED',error=f'{type(error).__name__}: {error}')
     finally:

@@ -964,7 +964,7 @@
     "maintenance_policy": "Homepage contains only a brief introduction and six direct links. Keep each primary page self-contained; operational pages contain short instructions and complete command blocks. Detailed development and historical evidence remain outside primary navigation."
   },
   "incremental_draft_task": {
-    "status": "ADD_HALF_KERNEL_CONFIRMED_ADDCUSTOM_REGISTRATION_INSPECTION_PENDING",
+    "status": "PYTORCH_CANDIDATE_COMPILED_DIAGNOSTIC_ABI_HOST_TESTED_DEVICE_PENDING",
     "context_gears": [
       16,
       64
@@ -980,7 +980,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "User compile log identifies executor_add_eltwise_half_nd for ordinary Add. Read saved KIRIN_CONF_JSON_PATH and AddCustom registration/JIT source candidates with probe_draft_vector.py --inspect-ddk. No new compile or device run; FP32 custom support remains unverified. See docs/current-status.md.",
+    "next_command": "DDK server: validate_incremental_draft.py with PyTorch compiled candidate, source AIR, original prepared weights, selected --ddk-root and runtime config; --apply once, then --recover the same attempt. See docs/current-status.md.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -1081,7 +1081,41 @@
     "fp32_weight_control_experiment": "specs/incremental-draft-native-host-validation.json#fp32_weight_control_experiment",
     "fp32_add_implementation_research": "specs/incremental-draft-native-host-validation.json#fp32_add_implementation_research",
     "compiled_add_boundary_observation": "specs/incremental-draft-native-host-validation.json#compiled_add_boundary_observation",
-    "compiled_add_kernel_observation": "specs/incremental-draft-native-host-validation.json#compiled_add_kernel_observation"
+    "compiled_add_kernel_observation": "specs/incremental-draft-native-host-validation.json#compiled_add_kernel_observation",
+    "pytorch_candidate": {
+      "source": "USER_PASTED_COMPILED_MANIFEST_AND_INTERFACE",
+      "independently_retrieved": false,
+      "model_compilation": "PASSED",
+      "graphop_counts": {
+        "CPUCL": 3,
+        "NPUCL": 2
+      },
+      "inputs": 17,
+      "outputs": 14,
+      "device_execution": "NOT_RUN",
+      "numerical_validation": "NOT_RUN",
+      "internal_arithmetic_precision": "UNVERIFIED",
+      "production_promotion": "NOT_PERFORMED",
+      "diagnostic_entry": "targets/cpro/tools/validate_incremental_draft.py",
+      "binding": "SOURCE_CONTROL_AND_CACHE_EDGES_TO_EXACT_COMPILED_DATA_NAMES_AND_INDICES; HASH_BOUND_ORDERED_OUTPUTS",
+      "host_checks": {
+        "passed": 24,
+        "scope": "SYNTHETIC_PROTOBUF_AND_OMC_WITH_MOCK_SELECTED_SCHEMA; MOCK_HDC_LIFECYCLE_NO_DEVICE",
+        "coverage": [
+          "source and compiled input order differ",
+          "same-shape KV mapping",
+          "ambiguous or cyclic source edges rejected",
+          "multi-output unrelated RoPE edges",
+          "dtype and index mismatch rejection",
+          "source/packed model/reference identity mismatch",
+          "first deployment under owned locks",
+          "upload failure releases locks",
+          "uncertain launch retains locks",
+          "recovery reports Load failure without relaunch"
+        ]
+      },
+      "ge_optimization": "PAUSED_BY_USER"
+    }
   },
   "draft_milestone_e2e_gate": {
     "policy": "EVERY_EXECUTABLE_DRAFT_MILESTONE_REQUIRES_BOARD_LOCAL_FULL_LOOP_SMOKE",

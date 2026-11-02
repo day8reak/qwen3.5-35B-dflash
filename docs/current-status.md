@@ -2,20 +2,36 @@
 
 当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**。按用户要求暂缓手写GE和AddCustom优化，不再要求运行相关探针。成功导出的AIR统一放`draft/air/`，编译和测试直接引用它。当前可运行OMC仍放`draft/omc/`；新OMC完成接口绑定和板端验证后再替换运行模型。`tests/`用于测试记录和可清理的构建临时文件。
 
-目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms，尚未达到。当前GE整模型profiling为518.990ms。最新用户复编已推进到任务生成，终止于`Transpose`的输入张量空指针／`Permute ProduceTiling failed`；源AIR确认它是第0层Q投影的`FileConstant[4096,2048] → Transpose[1,0] → MatMul`，TBE worker审计为`APPLIED`。新增编译副本中的等价权重转置合并，主机检查通过，实际OMG复编待执行。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
+目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms，尚未达到。用户已回传`PYTORCH_DRAFT_OMC_COMPILED`，公共接口保持17输入／14输出，编译分段为CPUCL3／NPUCL2。旧GE的518.990ms仍是旧模型结果；新模型尚无板端数值或时延。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
 
-**本轮只在DDK服务器／`custom_pypto`更新代码并复编。** 复用公共`draft/air`和已经生效的`common/tbe-diagnosis`；权重服务器无需操作。
+**本轮在DDK服务器`t00826215_atc_mobile`的`custom_pypto`环境运行以下独立验证。** 复用已编译的`draft/tests/pytorch-omc`、公共`draft/air`和原先的`draft/source/prepared`；权重服务器无需操作，也不需要重编模型。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --compiled "$AI_RUN_DIR/draft/tests/pytorch-omc" \
   --air-export "$AI_RUN_DIR/draft/air" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
+  --source "$AI_RUN_DIR/draft/source/prepared" \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-run" --apply
 ```
 
-预处理策略为`draft-static-preparation-v3`：保留Reshape链简化和静态ZerosLike物化，再将已证明的FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。所有消费者必须是MatMul的右输入；有公共输出、控制依赖、非MatMul消费者或未知排列的节点不改写，激活布局转置也不改写。权重数据和FileConstant节点保持原字节，公共17／14接口保持。编译进度新增`folded N weight Transposes`；每个节点的来源、形状及修改前后标志记录在`compilation/air-preparation.json`的`weight_transposes`中。此次主机20项检查通过，不代表OMG或板端通过。
+脚本先按源AIR的控制／缓存连线绑定语义输入，再按编译Data.index排序；KV不按相同尺寸猜顺序。编译输入hash、输出顺序、权重准备与编译快照hash一起核验，绑定证据在`pytorch-run/fixture/pytorch-abi.json`。使用原独立CPU参考，执行参考KV输入及板端KV连续反馈两条序列，检查Top1、hidden、12个K/V及未写区逐位不变。首次运行自动上传新模型，后续按SHA复用模型缓存；不会替换`draft/omc`或启动Target。
+
+看到`DRAFT_ACCURACY_STARTED`后，在**同一DDK服务器**回收同一次执行：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-result"
+```
+
+若为`DRAFT_ACCURACY_PENDING`，稍后重复回收命令；不要重发`--apply`。原生runner沿用`runtime/native/build/qwen35_draft_accuracy`。仅当脚本提示缺少或构建身份不匹配时，在DDK服务器运行`python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" --output "$AI_RUN_DIR/runtime/native" --replace`后再启动。
+
+结果中的`native_api_latency`为诊断调用的同步API墙钟，包含首次调用、不同上下文和补齐／proposal分类，尚非预热稳态基准。既有逐元素门槛`atol=0.01 / rtol=0.01`和Top1零差异规则保持，失败仍报告失败，并单列relative L2；它不是“L2小于1%”的判据。内部FP32算术仍未证明，候选不因此自动进入生产运行链路。
+
+以下为需要重现导出／编译时的说明，本轮无需执行。预处理策略`draft-static-preparation-v3`保留Reshape链简化和静态ZerosLike物化，将已证明的FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。每个节点的来源、形状及修改前后标志保存在`compilation/air-preparation.json`的`weight_transposes`中。
 
 以下诊断恢复命令仅用于整个目录缺失的首次准备，已有`common/tbe-diagnosis`时跳过。它不读取权重、不编译模型、不上板，也不修改已安装包或DDK。诊断目录中含模块副本和逐例记录，不能只保留`report.json`，也不要移动：
 
@@ -144,6 +160,6 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 ## 4. 本阶段通过条件与后续
 
-用户已完成融合版AIR导出，OMG已越过此前ReshapeFusion和ZerosLike失败阶段；TBE worker兼容审计已确认生效。当前等价权重转置合并仍需实际复编取得`PYTORCH_DRAFT_OMC_COMPILED`。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
+用户已回传融合版`PYTORCH_DRAFT_OMC_COMPILED`和编译接口。下一步为本页开头的独立Load／KV验证，通过后采集同输入的完整模型profiling。当前跨子图仍有FP32／FP16 Cast，不能从子图数量或接口dtype推断内部精度、Load成功或达到50ms。
 
-前一轮主机检查覆盖C16／C64、K15／7／3／1、滑窗开关共280步：使用CPU模拟Target布局／调用，与原语参考的Top1、hidden、全部K/V完全一致，输入KV和未写区保持。真实宽度的布局索引检查覆盖212992个元素；四档完整形状图捕获均为6个测试融合节点、32个测试RMS节点、17／14接口及INT32 Gather。这些检查验证适配器和mask／缓存语义，不验证厂商融合内核。真实融合版AIR已保存并进入编译；OMG、板端精度与性能仍未通过。
+前一轮主机检查覆盖C16／C64、K15／7／3／1、滑窗开关共280步：使用CPU模拟Target布局／调用，与原语参考的Top1、hidden、全部K/V完全一致，输入KV和未写区保持。真实宽度的布局索引检查覆盖212992个元素；四档完整形状图捕获均为6个测试融合节点、32个测试RMS节点、17／14接口及INT32 Gather。这些检查验证适配器和mask／缓存语义，不验证厂商融合内核。OMG已由用户报告成功，板端精度与性能仍待验证。

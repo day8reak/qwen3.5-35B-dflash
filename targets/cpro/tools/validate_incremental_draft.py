@@ -14,6 +14,7 @@ def main():
     parser.add_argument('--compiled')
     parser.add_argument('--source',help='prepared FP16 weights directory containing prepared.json')
     parser.add_argument('--air-export')
+    parser.add_argument('--ddk-root',help='selected DDK schema, required for a PyTorch OMC candidate')
     mode=parser.add_mutually_exclusive_group()
     mode.add_argument('--recover')
     mode.add_argument('--inspect',help='print existing comparison details locally; no board access')
@@ -26,7 +27,7 @@ def main():
     args=parser.parse_args()
     from qwen35_moe_dflash.draft.incremental.accuracy import summarize_result
     if args.inspect or args.analyze:
-        if (args.apply or any((args.config,args.compiled,args.source,args.air_export,args.output))
+        if (args.apply or any((args.config,args.compiled,args.source,args.air_export,args.output,args.ddk_root))
                 or args.atol is not None or args.rtol is not None):
             parser.error('--inspect/--analyze only read existing results; comparison gates cannot be changed')
         if args.analyze:
@@ -44,7 +45,7 @@ def main():
         parser.error('preparation/recovery requires --output')
     from qwen35_moe_dflash.draft.incremental.accuracy_board import start,recover
     if args.recover:
-        if args.apply or any((args.config,args.compiled,args.source,args.air_export)):
+        if args.apply or any((args.config,args.compiled,args.source,args.air_export,args.ddk_root)):
             parser.error('--recover only accepts the original execution and a separate output')
         result=recover(args.recover,args.output)
     else:
@@ -52,7 +53,8 @@ def main():
             parser.error('preparation requires --config, --compiled, --source and --air-export')
         result=start(args.config,args.compiled,args.source,args.air_export,args.output,
                      apply=args.apply,atol=0.01 if args.atol is None else args.atol,
-                     rtol=0.01 if args.rtol is None else args.rtol,timeout_seconds=args.timeout_seconds)
+                     rtol=0.01 if args.rtol is None else args.rtol,timeout_seconds=args.timeout_seconds,
+                     ddk_root=args.ddk_root)
     print(json.dumps(summarize_result(result),ensure_ascii=False))
     return 1 if result['status'] in ('FAILED','NUMERICAL_FAILED') else 0
 

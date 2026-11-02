@@ -75,12 +75,17 @@ def _write(path, array):
     array.tofile(path)
 
 
-def prepare(compiled, source, air, output, *, seed=17, atol=0.01, rtol=0.01):
+def prepare(compiled, source, air, output, *, seed=17, atol=0.01, rtol=0.01, ddk_root=None):
     from qwen35_moe_dflash.draft.reference import load_draft_reference
     if any(not math.isfinite(v) or v < 0 for v in (atol, rtol)):
         raise ValueError('atol/rtol must be finite and nonnegative')
     root, source, air, out = map(Path, (compiled, source, air, output))
     meta = read_json(root / 'manifest.json')
+    pytorch = meta.get('artifact_kind') == 'qwen35-incremental-draft-pytorch-omc'
+    if pytorch:
+        from .torch_abi import bind_candidate
+        print('draft-accuracy: binding PyTorch source roles, compiled slots and reference weights', flush=True)
+        meta = bind_candidate(root, air, source, ddk_root, out)
     geometry = validate_abi(meta)
     c, capacity, k = (geometry[n] for n in ('context_rows', 'cache_capacity', 'max_draft_tokens'))
     schedule = cases(c, capacity, k)
@@ -91,20 +96,20 @@ def prepare(compiled, source, air, output, *, seed=17, atol=0.01, rtol=0.01):
                                + 6*sum(r['bytes'] for r in meta['outputs'])) + (256 << 20)
     if shutil.disk_usage(out).free < required:
         raise OSError(f'accuracy fixture and retrieval need {required} free host bytes')
-    if (meta.get('status') != 'DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND'
+    if not pytorch and (meta.get('status') != 'DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND'
             or meta.get('compiled_precision') != 'PASSED' or meta.get('compiled_abi') != 'PASSED'):
         raise ValueError('accuracy requires the completed incremental OMC')
     # Explicit numerical diagnosis binds the reference to the original prepared
     # weights. No dependency on an old smoke or its absolute paths is introduced.
     export = read_json(air / 'manifest.json')
-    if sha256_file(air / 'manifest.json') != meta['export_manifest']['sha256']:
+    if not pytorch and sha256_file(air / 'manifest.json') != meta['export_manifest']['sha256']:
         raise ValueError('AIR manifest does not match this compiled OMC')
-    if sha256_file(source / 'prepared.json') != export['source_prepared']['sha256']:
+    if not pytorch and sha256_file(source / 'prepared.json') != export['source_prepared']['sha256']:
         raise ValueError('reference preparation does not match the compiled source weights')
     if read_json(source / 'prepared.json')['draft_config'] != meta['draft_config']:
         raise ValueError('reference/model configurations differ')
     model = root / meta['model']['path']
-    if model.stat().st_size != meta['model']['bytes'] or sha256_file(model) != meta['model']['sha256']:
+    if not pytorch and (model.stat().st_size != meta['model']['bytes'] or sha256_file(model) != meta['model']['sha256']):
         raise ValueError('accuracy OMC differs from its compilation receipt')
     print('draft-accuracy: loading the independent CPU reference and prepared FP16 weights', flush=True)
     graph = load_draft_reference(source)
@@ -156,7 +161,9 @@ def prepare(compiled, source, air, output, *, seed=17, atol=0.01, rtol=0.01):
         inputs=meta['inputs'], outputs=meta['outputs'], input_files=input_files, cases=schedule, seed=seed, **geometry,
         comparison=dict(atol=atol, rtol=rtol, top1_mismatches=0,
             cache_preservation='BIT_EXACT_OUTSIDE_WRITE_INTERVAL'),
-        profile_case=2, ddk_id=meta['ddk_id'])
+        profile_case=2, ddk_id=meta['ddk_id'], frontend='pytorch' if pytorch else 'ge',
+        internal_precision='UNVERIFIED_AFTER_COMPILATION' if pytorch else 'COMPILED_POLICY_CHECKED',
+        production_promotion='NOT_PERFORMED')
     (out / 'manifest.json').write_text(json.dumps(result, indent=2)+'\n')
     return result
 
@@ -272,7 +279,7 @@ def summarize_result(result):
     """Expose existing comparisons without rereading tensors or changing gates."""
     keys=('status','stage','device_execution','model_compilation','numerical_validation',
           'first_failure','native_api_latency','board_attempt','lock_state','error',
-          'lock_release_errors','next')
+          'lock_release_errors','next','frontend','internal_precision','production_promotion','native_failure')
     summary = {k:result[k] for k in keys if k in result}
     rows = result.get('cases', [])
     if not rows:
