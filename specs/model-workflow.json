@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "COMPILED_ADD_FP16_BOUNDARY_CONFIRMED_FP32_IMPLEMENTATION_SELECTION_PENDING",
-    "entry": "targets/cpro/tools/validate_draft_vector.py",
+    "status": "ADD_HALF_KERNEL_CONFIRMED_ADDCUSTOM_REGISTRATION_INSPECTION_PENDING",
+    "entry": "targets/cpro/tools/probe_draft_vector.py",
     "commands": "docs/current-status.md",
     "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Compiled Add main graph confirms two FP32-to-FP16 input casts, NPUCL FP16 IO and FP16-to-FP32 output cast. Inspect selected-DDK implementation selection logs and documented configuration; do not repeat weight options, delete casts against the current ABI or guess implementation IDs. No compilation or board execution for this inspection. See docs/current-status.md.",
+    "next": "User compile log identifies executor_add_eltwise_half_nd for ordinary Add. Read saved KIRIN_CONF_JSON_PATH and AddCustom registration/JIT source candidates with probe_draft_vector.py --inspect-ddk. No new compile or device run; FP32 custom support remains unverified. See docs/current-status.md.",
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
       "independently_retrieved": false,
@@ -5876,6 +5876,7 @@
     "residual_rounding_reproduction": "specs/incremental-draft-native-host-validation.json#residual_rounding_reproduction",
     "fp32_weight_control_experiment": "specs/incremental-draft-native-host-validation.json#fp32_weight_control_experiment",
     "fp32_add_implementation_research": "specs/incremental-draft-native-host-validation.json#fp32_add_implementation_research",
-    "compiled_add_boundary_observation": "specs/incremental-draft-native-host-validation.json#compiled_add_boundary_observation"
+    "compiled_add_boundary_observation": "specs/incremental-draft-native-host-validation.json#compiled_add_boundary_observation",
+    "compiled_add_kernel_observation": "specs/incremental-draft-native-host-validation.json#compiled_add_kernel_observation"
   }
 }

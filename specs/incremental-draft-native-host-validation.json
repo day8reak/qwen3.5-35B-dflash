@@ -23,7 +23,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "Compiled Add main graph confirms two FP32-to-FP16 input casts, NPUCL FP16 IO and FP16-to-FP32 output cast. Inspect selected-DDK implementation selection logs and documented configuration; do not repeat weight options, delete casts against the current ABI or guess implementation IDs. No compilation or board execution for this inspection. See docs/current-status.md.",
+  "next": "User compile log identifies executor_add_eltwise_half_nd for ordinary Add. Read saved KIRIN_CONF_JSON_PATH and AddCustom registration/JIT source candidates with probe_draft_vector.py --inspect-ddk. No new compile or device run; FP32 custom support remains unverified. See docs/current-status.md.",
   "latest_user_board_observation": {
     "source": "USER_PASTED_RECOVERY_JSON",
     "independently_retrieved": false,
@@ -178,7 +178,7 @@
     "gap_attribution": "UNRESOLVED_RUNTIME_DISPATCH_SYNCHRONIZATION_AND_INTERNAL_TRANSFERS_ARE_HYPOTHESES",
     "timestamp_caveat": "SAME_STREAM_CONV_AND_DEPENDENT_RESHAPE_STARTS_DIFFER_BY_2_US_WITH_CONV_DURATION_70968_US; DO_NOT_CONSTRUCT_DEVICE_TIMELINE_WITHOUT_CLOCK_SCOPE",
     "static_work": "C16_CONTEXT_PROJECTION_EXECUTES_FOR_PARTIAL_OR_ZERO_VALID_ROWS",
-    "next": "Compiled Add main graph confirms two FP32-to-FP16 input casts, NPUCL FP16 IO and FP16-to-FP32 output cast. Inspect selected-DDK implementation selection logs and documented configuration; do not repeat weight options, delete casts against the current ABI or guess implementation IDs. No compilation or board execution for this inspection. See docs/current-status.md."
+    "next": "User compile log identifies executor_add_eltwise_half_nd for ordinary Add. Read saved KIRIN_CONF_JSON_PATH and AddCustom registration/JIT source candidates with probe_draft_vector.py --inspect-ddk. No new compile or device run; FP32 custom support remains unverified. See docs/current-status.md."
   },
   "compiled_partition_observation": {
     "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
@@ -361,7 +361,7 @@
         "failing_elements": 24873
       }
     },
-    "next": "Compiled Add main graph confirms two FP32-to-FP16 input casts, NPUCL FP16 IO and FP16-to-FP32 output cast. Inspect selected-DDK implementation selection logs and documented configuration; do not repeat weight options, delete casts against the current ABI or guess implementation IDs. No compilation or board execution for this inspection. See docs/current-status.md."
+    "next": "User compile log identifies executor_add_eltwise_half_nd for ordinary Add. Read saved KIRIN_CONF_JSON_PATH and AddCustom registration/JIT source candidates with probe_draft_vector.py --inspect-ddk. No new compile or device run; FP32 custom support remains unverified. See docs/current-status.md."
   },
   "fp32_probe_failure_reporting_checks": {
     "status": "PASSED",
@@ -579,7 +579,7 @@
       },
       "comparison": "ADD_AGGREGATE_ERRORS_UNCHANGED; CROSS_BUILD_BITWISE_EQUALITY_NOT_CHECKED; NO_SPEEDUP_CLAIM"
     },
-    "next": "Compiled Add main graph confirms two FP32-to-FP16 input casts, NPUCL FP16 IO and FP16-to-FP32 output cast. Inspect selected-DDK implementation selection logs and documented configuration; do not repeat weight options, delete casts against the current ABI or guess implementation IDs. No compilation or board execution for this inspection. See docs/current-status.md."
+    "next": "User compile log identifies executor_add_eltwise_half_nd for ordinary Add. Read saved KIRIN_CONF_JSON_PATH and AddCustom registration/JIT source candidates with probe_draft_vector.py --inspect-ddk. No new compile or device run; FP32 custom support remains unverified. See docs/current-status.md."
   },
   "fp32_add_implementation_research": {
     "status": "DOCUMENTED_API_SUPPORT_AND_ENGINEERING_INTERFACE_LIMIT; SELECTED_DDK_SUPPORT_UNRESOLVED",
@@ -650,11 +650,55 @@
     "separate_ir_dumps": "NO_DUMPS",
     "interpretation": "EXPLICIT_COMPILER_INSERTED_BOUNDARY_NARROWING_CONSISTENT_WITH_OBSERVED_FP16_ROUNDING",
     "unresolved": [
-      "which compiler policy or implementation-selection decision caused narrowing",
-      "internal NPU instruction types",
-      "selected-DDK supported configuration for FP32 arithmetic and interfaces"
+      "selected-DDK supported FP32 arithmetic implementation and input interface",
+      "AddCustom registered input/output types and available JIT build source",
+      "exact internal instruction sequence; no disassembly performed"
     ],
-    "next": "Compiled Add main graph confirms two FP32-to-FP16 input casts, NPUCL FP16 IO and FP16-to-FP32 output cast. Inspect selected-DDK implementation selection logs and documented configuration; do not repeat weight options, delete casts against the current ABI or guess implementation IDs. No compilation or board execution for this inspection. See docs/current-status.md.",
+    "next": "User compile log identifies executor_add_eltwise_half_nd for ordinary Add. Read saved KIRIN_CONF_JSON_PATH and AddCustom registration/JIT source candidates with probe_draft_vector.py --inspect-ddk. No new compile or device run; FP32 custom support remains unverified. See docs/current-status.md.",
     "full_draft_changed": false
+  },
+  "compiled_add_kernel_observation": {
+    "source": "USER_PASTED_SELECTED_DDK_COMPILE_LOG_FILTERED_LINES",
+    "independently_retrieved": false,
+    "case": "residual_fp32",
+    "selected_kernel": "executor_add_eltwise_half_nd",
+    "kernel_bytes": 7936,
+    "selection_evidence": "NPUGraphCompiler SaveKernelBinInfo",
+    "custom_store_check": {
+      "source_type": "Add",
+      "store": "custom_ascendc_lib",
+      "supported": false
+    },
+    "jit_only_registrations_in_log": [
+      "AddCustom",
+      "ReduceSumCpro"
+    ],
+    "jit_message": "no kernelBins field; can only be used in JIT Mode",
+    "aggregate_library": "tools/tools_omg/master/lib64/libai_npucore_ascendc_kernel.so",
+    "aggregate_library_message": "file path not valid",
+    "library_failure_is_root_cause": "NOT_ESTABLISHED; ORDINARY_ADD_COMPILED_AND_EXECUTED",
+    "ordinary_add_is_addcustom": false,
+    "addcustom_fp32_support": "UNKNOWN_REGISTRATION_AND_JIT_SOURCE_REQUIRED",
+    "previous_configuration_search": "ZERO_MATCHES_ONLY_WITHIN_TOOLS_OMG_TEXT_FILES",
+    "full_draft_changed": false
+  },
+  "ddk_inspection_host_checks": {
+    "status": "PASSED",
+    "checks": 8,
+    "scope": "HOST_SYNTHETIC_REGISTRATION_FILES_AND_SOURCE_ONLY_PLAN_CLI",
+    "model_compilation": "NOT_RUN",
+    "device_execution": "NOT_RUN",
+    "selected_ddk_inspection": "PENDING_USER_EXECUTION",
+    "local_test_sources": "NOT_PUBLISHED",
+    "coverage": [
+      "recorded configuration outside OMG",
+      "keyed and list operator registrations",
+      "ordinary Add excluded",
+      "read-only CLI and incompatible mutation flags",
+      "explicit configuration symlink and child link exclusion",
+      "malformed/oversized JSON and missing environment coverage",
+      "nested directory deduplication and source inventory",
+      "existing residual source-only plan CLI"
+    ]
   }
 }

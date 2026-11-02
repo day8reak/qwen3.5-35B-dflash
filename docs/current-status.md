@@ -26,50 +26,22 @@ x FP32        → graphop_data_cast_0 → FP16 ┐
 residual FP32 → graphop_data_cast_1 → FP16 ┘                       netoutput_cast_0
 ```
 
-## 2. 查找实现选择依据
+编译日志进一步确认保存的Add内核为`executor_add_eltwise_half_nd`（7936 bytes）。普通`Add`未通过`custom_ascendc_lib`的支持检查；这不等于`AddCustom`不支持FP32，两者是不同算子类型。`AddCustom`注册缺少`kernelBins`、被提示只能用于JIT，目前尚未确认其输入类型和JIT构建方式。聚合kernel库报无效没有阻止普通Add编译运行，不能仅据此认定根因。
 
-沿用现有`REPO_DIR`、`AI_RUN_DIR`、`CPRO_DDK_ROOT`。主图检查已完成，不必重复。下面只用Python标准库读取Add编译日志和所选OMG目录的配置文本，不需要安装`rg`，不重新编译、构建runner或连接板端。日志最多显示120条匹配，配置每个文件最多12条，每行最多1000字符；达到上限会注明，零匹配不代表不支持。
+## 2. 检查AddCustom注册与JIT入口
+
+沿用现有`REPO_DIR`、`AI_RUN_DIR`、`CPRO_DDK_ROOT`。以下检查复用现有probe目录，只用Python标准库读取编译环境和DDK配置，不写文件、不编译、不连接板端，不依赖`rg`。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
-import os, re
-from pathlib import Path
-
-def scan(paths, pattern, limit):
-    rx = re.compile(pattern, re.I)
-    total = 0
-    for path in paths:
-        if path.is_symlink():
-            continue
-        hits = 0
-        try:
-            with path.open(errors='replace') as stream:
-                for number, line in enumerate(stream, 1):
-                    if rx.search(line):
-                        print(f'{path}:{number}: {line.rstrip()[:1000]}')
-                        hits += 1
-                        total += 1
-                        if hits >= limit:
-                            print(f'[LIMIT] {path}: remaining lines not scanned')
-                            break
-        except OSError as error:
-            print(f'[READ_ERROR] {path}: {error}')
-    print(f'[MATCHES_SHOWN] {total}')
-
-log = Path(os.environ['AI_RUN_DIR']) / 'draft/tests/vector/residual_fp32/omc/compile.log'
-scan([log], r'graphop_data_cast|netoutput_cast|precision|implementation|select.?kernel|custom_ascendc|(?:add|sum).*(?:dtype|support|kernel)', 120)
-
-root = Path(os.environ['CPRO_DDK_ROOT']) / 'tools/tools_omg'
-if not root.is_dir():
-    raise SystemExit(f'Missing directory: {root}')
-extensions = {'.json', '.ini', '.cfg', '.md', '.txt', '.py', '.h'}
-paths = (p for p in sorted(root.rglob('*')) if p.is_file() and p.suffix in extensions)
-scan(paths, r'npucl_implementation|execute_device_config|keep_origin_dtype|must_keep_origin_dtype|precision_mode', 12)
-PY
+python3 "$REPO_DIR/targets/cpro/tools/probe_draft_vector.py" \
+  --inspect-ddk "$AI_RUN_DIR/draft/tests/vector" \
+  --ddk-root "$CPRO_DDK_ROOT"
 ```
 
-需查明配置的正式schema、可选实现及其FP32输入支持。`CheckSupport`行是候选查询，不等于最终选中；关键字或枚举值本身也不是有效配置证明。若本目录没有相关文本，请提供该DDK附带的配置说明或样例路径，不能从无匹配推断不支持。不要盲试实现编号：现有精度策略中的7表示`custom_ascendc_lib`，并非“强制FP32”。
+检查先读取各小图`omc/omg-environment.json`中的`KIRIN_CONF_JSON_PATH`，再扫描所选DDK的AscendC、平台及OMG目录。之前只搜索OMG目录得到零匹配，未覆盖可能位于`ddk/ascendcpp/conf`的实际注册配置。
+
+回传输出中的`compile_environments`、`registrations`、`source_candidates`和`notes`。注册记录保留原字段，用于核对输入/输出dtype、实现名及JIT源码；文件存在仅代表找到了候选，不代表FP32可用。单文件上限2MiB、总读取32MiB，截断或读取异常会注明。下一步依据真实注册判断能否构建最小FP32 Add验证；当前不重跑已经确认降精度的普通Add，也不盲试实现编号或修改共享DDK。
 
 ## 3. FP32 Add的可行路径
 

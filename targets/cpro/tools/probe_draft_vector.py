@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Compile small FP32 Draft regions on the selected X90 DDK; no board access."""
+"""Inspect the selected DDK or compile small FP32 Draft regions; no board access."""
 import argparse
 from collections import Counter
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 
@@ -107,6 +108,146 @@ def write_json(path, value):
     temporary = path.with_suffix(path.suffix + '.tmp')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + '\n')
     temporary.replace(path)
+
+
+def inspect_ddk(compiled, ddk_root):
+    """Read registration records and locate sources without loading vendor code."""
+    if not ddk_root or not Path(ddk_root).is_dir():
+        raise ValueError('set CPRO_DDK_ROOT or pass an existing --ddk-root')
+    root, compiled = Path(ddk_root).resolve(), Path(compiled).resolve()
+    if not compiled.is_dir():
+        raise FileNotFoundError(compiled)
+    limits = {'file_bytes': 2 * 1024 * 1024, 'total_bytes': 32 * 1024 * 1024,
+              'entries': 10000, 'matches': 32, 'record_characters': 6000}
+    report = {'artifact_kind': 'qwen35-draft-ddk-inspection', 'status': 'INSPECTED',
+        'scope': 'READ_ONLY_REGISTRATION_AND_FILE_PRESENCE_NOT_FP32_SUPPORT_PROOF',
+        'model_compilation': 'NOT_RUN', 'device_execution': 'NOT_RUN',
+        'ddk_root': str(root), 'limits': limits, 'compile_environments': [],
+        'roots': [], 'registrations': [], 'source_candidates': [], 'notes': []}
+    used = {'bytes': 0, 'entries': 0, 'files_read': 0, 'symlinks_skipped': 0}
+    seen_files, seen_dirs = set(), set()
+
+    def note(path, error):
+        if len(report['notes']) < 32:
+            report['notes'].append({'path': str(path), 'error': str(error)})
+        report['status'] = 'PARTIAL'
+
+    def read(path):
+        try:
+            size = path.stat().st_size
+            if size > limits['file_bytes'] or used['bytes'] + size > limits['total_bytes']:
+                raise ValueError('read budget exceeded')
+            with path.open('rb') as stream:
+                raw = stream.read(size + 1)
+            if len(raw) > size:
+                raise ValueError('file grew while reading')
+            used['bytes'] += len(raw)
+            used['files_read'] += 1
+            return raw.decode('utf-8', errors='replace')
+        except (OSError, ValueError) as error:
+            note(path, error)
+            return None
+
+    # The compile record includes KIRIN_CONF_JSON_PATH; it need not be under OMG.
+    roots = []
+    for case in CASES:
+        path = compiled / case / 'omc/omg-environment.json'
+        if not path.is_file():
+            continue
+        raw = read(path)
+        try:
+            record = json.loads(raw) if raw is not None else {}
+            env = record.get('environment', {})
+            conf = env.get('KIRIN_CONF_JSON_PATH')
+            report['compile_environments'].append({'case': case, 'record': str(path),
+                'ddk_root': record.get('ddk_root'), 'KIRIN_CONF_JSON_PATH': conf})
+            if conf:
+                roots.append(Path(conf))
+        except (ValueError, AttributeError, TypeError) as error:
+            note(path, error)
+    if not report['compile_environments']:
+        note(compiled, 'no saved compiler environment found; only selected DDK defaults will be scanned')
+    roots.extend(root / name for name in ('ddk/ascendcpp', 'tools/platform/kirinx90',
+                 'tools/tools_ascendc', 'tools/tools_omg/master'))
+    match = re.compile(r'add_?custom', re.I)
+
+    def records(value, location='$'):
+        if isinstance(value, dict):
+            if any(isinstance(v, str) and match.fullmatch(v) for v in value.values()):
+                yield location, value
+                return
+            for key, item in value.items():
+                child = location + '[' + json.dumps(key) + ']'
+                if match.fullmatch(key):
+                    yield child, item
+                else:
+                    yield from records(item, child)
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                yield from records(item, f'{location}[{index}]')
+
+    for folder in dict.fromkeys(roots):
+        report['roots'].append({'path': str(folder), 'exists': folder.is_dir()})
+        if not folder.is_dir():
+            continue
+        # Explicit config roots can be links. Do not recursively follow child links.
+        for directory, dirs, files in os.walk(folder, followlinks=False,
+                onerror=lambda error: note(error.filename, error)):
+            resolved = Path(directory).resolve()
+            if resolved in seen_dirs:
+                dirs[:] = []
+                continue
+            seen_dirs.add(resolved)
+            used['entries'] += len(dirs) + len(files)
+            if used['entries'] > limits['entries']:
+                report['status'] = 'PARTIAL'
+                break
+            used['symlinks_skipped'] += sum((Path(directory) / name).is_symlink() for name in dirs)
+            dirs[:] = sorted(name for name in dirs if not (Path(directory) / name).is_symlink())
+            for name in sorted(files):
+                path = Path(directory) / name
+                if path.is_symlink():
+                    used['symlinks_skipped'] += 1
+                    continue
+                if path in seen_files:
+                    continue
+                seen_files.add(path)
+                if match.search(str(path.relative_to(folder))):
+                    if len(report['source_candidates']) < 40:
+                        report['source_candidates'].append(str(path))
+                    else:
+                        note(folder, 'source candidate list truncated at 40 files')
+                if path.suffix.lower() != '.json':
+                    continue
+                raw = read(path)
+                if raw is None or not match.search(raw):
+                    continue
+                try:
+                    found = records(json.loads(raw))
+                    for location, record in found:
+                        if len(report['registrations']) >= limits['matches']:
+                            note(path, 'registration list truncated at match limit')
+                            break
+                        serialized = json.dumps(record, ensure_ascii=False)
+                        row = {'path': str(path), 'json_path': location}
+                        if len(serialized) <= limits['record_characters']:
+                            row['record'] = record
+                        else:
+                            row['record_excerpt'] = serialized[:limits['record_characters']]
+                            row['truncated'] = True
+                        report['registrations'].append(row)
+                except (ValueError, RecursionError) as error:
+                    note(path, error)
+        if used['entries'] > limits['entries']:
+            report['notes'].append({'error': 'entry budget exceeded; remaining roots not scanned'})
+            break
+    report['files'] = [{'path': str(root / name), 'exists': (root / name).is_file()}
+        for name in ('tools/tools_omg/master/lib64/libai_npucore_ascendc_kernel.so',
+                     'tools/tools_ascendc/bisheng/bin/bisheng', 'ddk/ccec_compiler/bin/ccec')]
+    report['coverage'] = used
+    report['next'] = ('Inspect AddCustom input/output types, registration and JIT build sources. '
+                      'Missing files or zero matches do not establish lack of platform support.')
+    return report
 
 
 def _run(args, root):
@@ -219,7 +360,9 @@ def run(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', required=True)
+    parser.add_argument('--output')
+    parser.add_argument('--inspect-ddk', metavar='COMPILED_PROBES',
+                        help='read saved compiler environment and selected DDK AddCustom registration; no writes or compilation')
     parser.add_argument('--cases', nargs='+', choices=CASES, default=list(CASES))
     parser.add_argument('--plan-only', action='store_true', help='write source and fixtures without invoking any SDK')
     parser.add_argument('--replace', action='store_true', help='replace this completed probe slot; never shared models')
@@ -235,7 +378,15 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.timeout_seconds <= 0 or len(args.cases) != len(set(args.cases)):
         parser.error('timeout must be positive and cases must be distinct')
+    if args.inspect_ddk:
+        if args.output or args.replace or args.plan_only:
+            parser.error('--inspect-ddk cannot be combined with --output, --replace or --plan-only')
+    elif not args.output:
+        parser.error('--output is required for compilation or --plan-only')
     try:
+        if args.inspect_ddk:
+            print(json.dumps(inspect_ddk(args.inspect_ddk, args.ddk_root), ensure_ascii=False, indent=2))
+            return 0
         result = run(args)
         shown = {key: value for key, value in result.items() if key != 'cases'}
         shown['cases'] = [{key: value for key, value in row.items() if key != 'graph'} for row in result['cases']]
