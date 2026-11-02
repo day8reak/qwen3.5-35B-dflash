@@ -17,6 +17,8 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 预处理策略为`draft-static-preparation-v4`，进度新增`materialized N Fill constants`。只把能从AIR证明尺寸和字面填充值的Fill替换为同输出dtype的Const，保留负无穷／有符号零，拒绝有损转换；不会把mask负无穷改成有限负值。来源、尺寸、dtype及标量字节保存在`compilation/air-preparation.json`的`fills`中。不修改公共AIR或权重，无需权重服务器重新导出。预处理失败会在权重快照／OMG之前报告具体Fill节点。
 
+用户随后遇到`Shape:0`的dtype预检查失败；实际节点确认Shape／Cast的输出描述仍为`dtype=1, shape={}`占位，但`Shape.dtype=3`、索引`Cast.dst_type=3`及mask `Cast.dst_type=1`属性已明确。已修正为按GE属性枚举解析INT32／FP16，和protobuf描述枚举分开处理，并精确计算填充值的常量Cast。只有无已知shape且无`_meta`的缺省描述允许由显式属性补足；明确冲突仍拒绝。更新代码后执行上面的同一复编命令即可，属性及推导类型写入`fills.value_proofs`。
+
 返回`PYTORCH_DRAFT_OMC_COMPILED`后，启动新候选的独立验证。上次任务已结束且锁释放，可以复用固定测试目录：
 
 ```bash

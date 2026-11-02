@@ -1146,6 +1146,16 @@
           "precision": "SAME_OUTPUT_DTYPE; SCALAR_BITS_PRESERVED_OR_EXACT_FLOAT_CONVERSION; NO_FINITE_MASK_APPROXIMATION",
           "source_air_and_weights": "UNCHANGED",
           "host_checks": 29,
+          "placeholder_dtype_followup": {
+            "source": "USER_PASTED_AIR_PREPARATION_ERROR_AND_FILL_SHAPE_CAST_DESCRIPTORS",
+            "failure": "Shape:0 descriptor dtype check stopped before weight snapshots and OMG",
+            "observed": "Shape.dtype=3 and Cast_4.dst_type=3 mean GE INT32; Cast_47.dst_type=1 means GE FP16; their empty descriptors and Fill inputs retained proto dtype=1",
+            "fix": "RESOLVE_EXPLICIT_GE_ATTRIBUTES_SEPARATELY_FROM_PROTO_ENUM; EXACT_SCALAR_CAST; ONLY_SPARSE_NO_META_DEFAULT_DESCRIPTORS_ARE_PLACEHOLDERS",
+            "host_checks": 45,
+            "scope": "SYNTHETIC_PROTOBUF_WITH_USER_ENUM_AND_DESCRIPTOR_PATTERNS; NO_FULL_USER_AIR_OR_DDK",
+            "model_compilation": "NOT_RUN",
+            "device_execution": "NOT_RUN"
+          },
           "transpose_zero_regression_checks": 20,
           "abi_transport_regression_checks": 24,
           "validation_scope": "SYNTHETIC_PROTOBUF_NUMPY_AND_MOCK_TRANSPORT_ONLY",

@@ -14,6 +14,13 @@ from qwen35_moe_dflash.target.original_ge_append_wire import _graph_raw, _node_b
 from .air_zeros import _Shapes, _constant_node, _known, _replace_nodes
 
 
+# GE API attributes use DataType, NOT ge_ir.proto's descriptor enum. Keep the
+# small supported mapping explicit and separate, with its upstream definition.
+_GE_TYPES_SOURCE = ('https://github.com/Ascend/torchair/blob/'
+    'e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/ge/_ge_graph.py')
+_GE_TYPES = {0: 'DT_FLOAT', 1: 'DT_FLOAT16', 3: 'DT_INT32', 9: 'DT_INT64', 12: 'DT_BOOL'}
+
+
 class _FillValues:
     def __init__(self, shapes):
         self.shapes = shapes
@@ -22,6 +29,25 @@ class _FillValues:
             ('DT_BOOL', '?'), ('DT_INT32', 'i'), ('DT_INT64', 'q'),
             ('DT_FLOAT16', 'e'), ('DT_FLOAT', 'f'))}
         self.proofs = {}
+
+    def attribute_dtype(self, node, key):
+        value = _attributes(node).get(key, {}).get('i')
+        if self.shapes.schema.package != 'ge.proto' or value not in _GE_TYPES:
+            raise ValueError(f'unsupported source GE {key} attribute on {node["name"]}: {value}')
+        return self.types[_GE_TYPES[value]]
+
+    def descriptor_dtype(self, desc, dtype, context, *, allow_placeholder=False):
+        actual = desc.get('dtype')
+        if actual == dtype:
+            return False
+        # Internal Shape/Cast results may not receive FX meta; serialization
+        # then retains an untyped/default FP32 descriptor, also copied to the
+        # consumer. Resolve only these nodes from explicit semantic attributes.
+        placeholder = (not desc.get('shape', {}).get('dim') and '_meta' not in _attributes(desc)
+                       and actual in (None, self.types.get('DT_UNDEFINED'), self.types['DT_FLOAT']))
+        if allow_placeholder and placeholder:
+            return True
+        raise ValueError(f'{context} dtype conflicts: descriptor={actual}, resolved={dtype}')
 
     def _node(self, edge, depth):
         if depth >= 32:
@@ -38,6 +64,12 @@ class _FillValues:
     def exact_cast(self, data, source, target):
         if source == target:
             return data
+        integers = {self.types['DT_INT32'], self.types['DT_INT64']}
+        if source in integers and target in integers:
+            try:
+                return struct.pack('<' + self.formats[target], struct.unpack('<' + self.formats[source], data)[0])
+            except struct.error as error:
+                raise ValueError('Fill integer scalar conversion is not exact') from error
         floats = {self.types['DT_FLOAT16'], self.types['DT_FLOAT']}
         if source not in floats or target not in floats:
             raise ValueError('Fill scalar dtype conversion is not supported')
@@ -57,9 +89,10 @@ class _FillValues:
         node = self._node(edge, depth)
         dtype = node['output_desc'][0].get('dtype')
         attrs, inputs = _attributes(node), node.get('input', [])
-        if dtype not in self.formats:
-            raise ValueError('unsupported Fill scalar dtype: ' + edge)
+        placeholder = False
         if node['type'] == 'Const' and not inputs:
+            if dtype not in self.formats:
+                raise ValueError('unsupported Fill scalar dtype: ' + edge)
             desc = attrs.get('value', {}).get('t', {}).get('desc', {})
             data = self.shapes.constant_data(node)
             if (desc.get('dtype') != dtype or desc.get('layout', 'ND') != 'ND'
@@ -67,26 +100,42 @@ class _FillValues:
                     or data is None or len(data) != struct.calcsize(self.formats[dtype])):
                 raise ValueError('Fill needs one typed scalar literal: ' + edge)
             rule = 'Const.value.bytes'
-        elif node['type'] == 'Identity' and len(inputs) == 1:
+        elif node['type'] in {'Identity', 'Cast'} and len(inputs) == 1:
             source, data = self.scalar(inputs[0], depth + 1)
-            if len(node.get('input_desc', [])) != 1 or node['input_desc'][0].get('dtype') != source:
-                raise ValueError('conflicting Fill scalar input dtype: ' + edge)
-            if source != dtype:
-                raise ValueError('Fill scalar Identity changes dtype: ' + edge)
-            rule = 'Identity.scalar'
+            if len(node.get('input_desc', [])) != 1:
+                raise ValueError('Fill scalar needs one input descriptor: ' + edge)
+            self.descriptor_dtype(node['input_desc'][0], source, 'Fill scalar input ' + edge,
+                                  allow_placeholder=self.proofs[inputs[0]]['placeholder_dtype'])
+            if node['type'] == 'Cast':
+                dtype = self.attribute_dtype(node, 'dst_type')
+                data = self.exact_cast(data, source, dtype)
+                placeholder = self.descriptor_dtype(node['output_desc'][0], dtype, 'Cast output ' + edge,
+                                                     allow_placeholder=True)
+                rule = 'Cast.dst_type.exact_scalar'
+            else:
+                self.descriptor_dtype(node['output_desc'][0], source, 'Identity output ' + edge)
+                dtype, rule = source, 'Identity.scalar'
         else:
             raise ValueError('Fill value is not a static scalar: ' + edge)
         known = node['output_desc'][0].get('shape', {}).get('dim')
         if known and known != [1]:
             raise ValueError('Fill scalar output is not scalar or one element: ' + edge)
-        self.proofs[edge] = dict(rule=rule, dtype=dtype, scalar_hex=data.hex())
+        self.proofs[edge] = dict(rule=rule, dtype=dtype, scalar_hex=data.hex(),
+                                ge_dst_type=attrs.get('dst_type', {}).get('i'),
+                                descriptor_dtype=node['output_desc'][0].get('dtype'),
+                                placeholder_dtype=placeholder)
         return dtype, data
 
     def dimensions(self, edge, depth=0):
         node = self._node(edge, depth)
         dtype = node['output_desc'][0].get('dtype')
+        placeholder = False
+        if node['type'] == 'Shape' and 'dtype' in _attributes(node):
+            dtype = self.attribute_dtype(node, 'dtype')
+            placeholder = self.descriptor_dtype(node['output_desc'][0], dtype, 'Shape output ' + edge,
+                                                 allow_placeholder=True)
         if dtype not in {self.types['DT_INT32'], self.types['DT_INT64']}:
-            raise ValueError('Fill dimensions need INT32 or INT64: ' + edge)
+            raise ValueError(f'Fill dimensions need INT32 or INT64: {edge}, descriptor={node["output_desc"][0].get("dtype")}, attrs={_attributes(node)}')
         inputs = node.get('input', [])
         if node['type'] == 'Const' and not inputs:
             literal = _attributes(node).get('value', {}).get('t', {}).get('desc', {})
@@ -114,7 +163,10 @@ class _FillValues:
         recorded = node['output_desc'][0].get('shape', {}).get('dim') or None
         if recorded is not None and recorded != [len(shape)]:
             raise ValueError('Fill dimensions vector descriptor conflicts: ' + edge)
-        self.proofs[edge] = dict(rule=rule, dtype=dtype, dimensions=shape)
+        self.proofs[edge] = dict(rule=rule, dtype=dtype, dimensions=shape,
+                                ge_shape_dtype=_attributes(node).get('dtype', {}).get('i'),
+                                descriptor_dtype=node['output_desc'][0].get('dtype'),
+                                placeholder_dtype=placeholder)
         return shape
 
 
@@ -149,9 +201,10 @@ def materialize_fills(raw, schema):
                 raise ValueError('Fill requires ND layout')
             shape = values.dimensions(node['input'][0])
             dtype, scalar = values.scalar(node['input'][1])
-            if (inputs[0].get('dtype') != shapes.node(node['input'][0])['output_desc'][0].get('dtype')
-                    or inputs[1].get('dtype') != dtype):
-                raise ValueError('Fill input dtype conflicts with its producer')
+            for desc, edge in zip(inputs, node['input']):
+                proof = values.proofs[edge]
+                values.descriptor_dtype(desc, proof['dtype'], 'Fill input',
+                                        allow_placeholder=proof['placeholder_dtype'])
             for desc, expected in ((inputs[0], [len(shape)]), (inputs[1], [1]), (outputs[0], shape)):
                 recorded = desc.get('shape', {}).get('dim') or None
                 if recorded is not None and recorded != expected:
@@ -171,6 +224,7 @@ def materialize_fills(raw, schema):
     updated = _replace_nodes(raw, schema, replacements)
     return updated, dict(status='APPLIED' if replacements else 'UNCHANGED',
         fill_count=len(replacements), embedded_bytes=added, changes=changes,
+        ge_attribute_types_source=_GE_TYPES_SOURCE,
         value_proofs=values.proofs, shape_proofs=shapes.proofs,
         source_sha256=hashlib.sha256(raw).hexdigest(), compiler_sha256=hashlib.sha256(updated).hexdigest(),
         scope='STATIC_FILL_LITERALS_ONLY; NO_WEIGHT_CHANGE; OMG_AND_DEVICE_NOT_VALIDATED')

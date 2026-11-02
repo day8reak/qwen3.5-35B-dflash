@@ -119,6 +119,10 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 
 29项静态Fill主机检查通过，覆盖稀疏描述、Shape(Cast(...))、广播mask、INT32上限、负无穷、负零、NaN原字节保留、空张量、控制依赖拒绝、有损转换拒绝、大小限制、其他节点字节保持及预处理组合；原转置／零常量20项回归和ABI／模拟传输24项回归通过。本地未运行用户完整AIR、OMG或设备。新OMC编译、加载、两序列KV数值验证及50ms目标仍待用户实测，不能由本次Fill失败推断RmsNorm／融合Attention已通过或不支持。执行命令见[当前阶段](current-status.md)。
 
+首版Fill预处理在用户实际AIR的`Shape:0`上提前失败，OMG及权重快照均未开始。用户只读节点检查确认：`Fill`的输出为INT32，输入来自`Shape(dtype=3)`和`Cast_4(dst_type=3)`；`Fill_1`输出FP16，输入来自`Shape_1(dtype=3)`和`Cast_47(dst_type=1)`。这些Shape／Cast及Fill输入的描述均为`dtype=1, shape={}`且无`_meta`，属于该源图的中间占位描述。Shape/Cast属性是[GE API DataType](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/ge/_ge_graph.py)，不能套用protobuf枚举：GE INT32=3、FP16=1，对应用户schema中的7、2。上游[full_like converter](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/ge_converter/aten/full_like.py)也明确生成Shape和标量Cast，再调用Fill。
+
+已补齐显式属性到描述枚举的独立映射、占位检查及精确标量Cast（包含INT64→INT32的范围检查）。保留字面维度、可证明的静态连线和实际常量字节作为依据，拒绝未知属性、明确类型冲突、整数溢出和有损浮点转换。45项主机检查通过，含原29项与新增16项；夹具使用用户回传的枚举值和节点描述形式，父图及标量数据由源码语义构造，未读取用户完整AIR或运行DDK。该修正仍待同一AIR复编和新OMC加载验证。
+
 2026-11-02，用户回传`PYTORCH_DRAFT_OMC_COMPILED / model_compilation=PASSED`，接口观察为17输入／14输出，CPUCL3、NPUCL2。特征输入FP16 `[1,16,16384]`，四个控制量INT32，12个输入／输出缓存FP16 `[1,8,192,128]`；Top1为INT32 `[1,15]`，hidden为FP16 `[1,15,2048]`。源图语义顺序不能直接作为编译输入槽位：编译Data为`arg*`名称，需源图连线与编译index联合绑定。未独立读取用户OMC，后续Load失败见上文。
 
 新增独立验证入口复用原17／14 native runner，以源AIR控制关系及每个KV输出Select的保留分支确定输入角色，再绑定实际编译Data.index；输出依赖hash绑定的源／编译AIR顺序合同。原准备权重hash与编译输入快照核对，模型按SHA缓存首次上传；候选不修改旧GE生产绑定或精度状态。24项主机合成schema／OMC／模拟传输检查通过，实际尝试在Load失败，尚无两序列KV比较和推理时延。
