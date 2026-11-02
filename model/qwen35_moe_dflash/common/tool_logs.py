@@ -8,7 +8,7 @@ import re
 _MAX_SCAN_BYTES = 64 << 20
 _NAMED_NODE_REJECTION = re.compile(
     rb"(?:\bnode\s+[^\s\"']+\s+type\s+[^\s\"']+|\[(?:op|node):[^\]\r\n]+\btype:[^\]\r\n]+\])"
-    rb".*(?:don't support|does not support|not support|unsupported)", re.I)
+    rb".*(?:don't support|does not support|not support|unsupported|Verify failed.*DataType.*wrong)", re.I)
 _MATRIX_SIZE_LIMIT = re.compile(
     rb"\bMatrix\s+[mnk]\s+(?:greater|less)\s+than\s+\d+\s+is\s+not\s+supported\b", re.I)
 _CONCRETE_FAILURE = re.compile(

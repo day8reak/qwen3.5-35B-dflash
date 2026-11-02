@@ -109,6 +109,8 @@ FP32统计与归一化核心按当前策略放CPU，最后的FP16 gamma乘法可
 
 PyTorch候选用`torch_npu.npu_rms_norm → RmsNorm`，沿用Target CPro的算子接口；ND工程的`adn_rms_norm → AdnRmsNorm`是另一条接口。候选RMS在FP32完成gamma乘法后才转FP16，与上图先转FP16再乘gamma的舍入位置不同，需要重新比较；换前端本身不保证消除Load失败或降精度。
 
+PyTorch的embedding与KV选行使用INT32索引，mask／GQA复制的索引也为INT32。首次编译日志显示embedding的INT64 indices被所选DDK的GatherV2D拒绝，因此去掉了原实现中的`.long()`，这不是新增的算子拆分。[TorchAir embedding转换](https://github.com/Ascend/torchair/blob/master/python/torchair/_ge_concrete_graph/ge_converter/aten/embedding.py)和[index_select转换](https://github.com/Ascend/torchair/blob/master/python/torchair/_ge_concrete_graph/ge_converter/aten/index_select.py)将indices交给GatherV2；实际导出AIR另逐节点检查，axis常量类型与indices类型分别处理。
+
 ### 残差Add：为避免NPU输入降精度保留CPU计算
 
 ```mermaid

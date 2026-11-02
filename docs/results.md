@@ -121,7 +121,9 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 
 此结果是用户回传的AIR导出和源图检查成功；未独立读取服务器产物，也不证明数值精度、编译内部FP32或NPU性能。成功AIR归入公共`draft/air/`，迁移只移动文件且保留prepared源权重和当前OMC。
 
-随后用户在DDK服务器从公共AIR编译PyTorch OMC，选择81个输入文件、2807233674字节，进入OMG后以退出码1失败。命令使用`kirinx90`、外置权重及`use_origin_format=true`；当前回传仅含`CalledProcessError`，不足以归因于RmsNorm、磁盘空间、ABI或工具链。下一步读取保留的`compilation/report.json`和`compile.log`，无需重编。入口已增加错误摘要和只读`--inspect-compile`，输入快照进度改为带编号的抽样输出。当前OMC和runtime未替换，50ms目标仍未达到。
+随后用户在DDK服务器从公共AIR编译PyTorch OMC，选择81个输入文件、2807233674字节，进入OMG后以退出码1失败。命令使用`kirinx90`、外置权重及`use_origin_format=true`。回收日志明确显示`GatherV2_1 / GatherV2D`校验失败：`Input[1] DataType INT64 is wrong`，参数shape为`[248320,2048]`，索引shape为`[1,16]`，对应embedding。源码的`ids.long()`导致token索引升为INT64，KV行索引也有同样的`local.long()`；已一起改为INT32。较早的Cast常量图infershape错误仍需复编观察，未据此推断RmsNorm或硬件不支持。
+
+索引修复通过7项主机检查：保留六层拓扑、缩小宽度的K15／7／3／1连续KV共76步，Top1、hidden及全部K/V与修改前逐元素完全相同；`torch.export`每档32个Gather类调用的indices均为INT32，17／14接口不变；真实词表边界ID取值一致。使用真实schema夹具验证INT64索引在编译前被拒绝，而INT64的axis常量不被误判为indices。实际TorchAir重导出、OMG复编和板端验证仍待用户执行。当前OMC和runtime未替换，50ms目标仍未达到。
 
 ## 加载与完整请求
 

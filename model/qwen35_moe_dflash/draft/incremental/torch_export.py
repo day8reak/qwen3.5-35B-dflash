@@ -92,7 +92,7 @@ def _completed_air(folder):
     if manifest.get('artifact_kind') != AIR_KIND or manifest.get('status') != 'PYTORCH_DRAFT_AIR_EXPORTED':
         raise ValueError('import requires a completed PyTorch Draft AIR bundle')
     schema = _schema((folder / 'air-schema.pb').read_bytes(), manifest['schema'])
-    observed = inspect_air(folder / 'export.air', schema, expected_norms=32)
+    observed = inspect_air(folder / 'export.air', schema, expected_norms=32, require_int32_indices=True)
     recorded = json.loads((folder / 'air-inspection.json').read_text())
     if (len(manifest.get('inputs', [])) != 17 or len(manifest.get('outputs', [])) != 14
             or observed['input_count'] != 17 or observed['output_counts'] != [14]
@@ -181,7 +181,7 @@ def _schema(descriptor, metadata):
     return Schema(descriptor, expected_file=metadata['schema_file'], expected_package=metadata['schema_package'])
 
 
-def inspect_air(air, schema, *, expected_norms=None):
+def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False):
     """Read only graph metadata and sidecar extents, without loading weight data."""
     from qwen35_moe_dflash.target.original_air_roundtrip import _decode, _attributes, MAX_AIR_BYTES
     path = Path(air)
@@ -198,9 +198,16 @@ def inspect_air(air, schema, *, expected_norms=None):
     def desc(d):
         return dict(shape=d.get('shape', {}).get('dim'), layout=d.get('layout'), raw_dtype=d.get('dtype'),
                     dtype_names=[name for name, value in types.items() if value == d.get('dtype')])
-    norms, sidecars = [], {}
+    norms, sidecars, gathers = [], {}, []
     for n in nodes:
         attrs = _attributes(n)
+        if n['type'] in {'Gather', 'GatherV2', 'GatherV2D'}:
+            inputs = n.get('input_desc', [])
+            indices = desc(inputs[1]) if len(inputs) > 1 else {}
+            gathers.append(dict(name=n['name'], type=n['type'], indices=indices))
+            if require_int32_indices and 'DT_INT32' not in indices.get('dtype_names', []):
+                raise ValueError(f"X90 Draft Gather indices must be INT32: {n['name']} "
+                                 f"has {indices.get('dtype_names', [])}; re-export with INT32 embedding/KV indices")
         if n['type'] in {'RmsNorm', 'AdnRmsNorm'}:
             norms.append(dict(name=n['name'], type=n['type'], input=n.get('input', []),
                 inputs=[desc(d) for d in n.get('input_desc', [])],
@@ -220,7 +227,7 @@ def inspect_air(air, schema, *, expected_norms=None):
         sidecars[str(relative)] = member.stat().st_size
     inputs = [n for n in nodes if n['type'] == 'Data']
     outputs = [n for n in nodes if n['type'] == 'NetOutput']
-    return dict(node_types=dict(counts), rms=norms, weight_files=sidecars,
+    return dict(node_types=dict(counts), rms=norms, gather_indices=gathers, weight_files=sidecars,
                 input_count=len(inputs), output_counts=[len(n.get('input_desc', [])) for n in outputs],
                 scope='SOURCE_GRAPH_ONLY_NOT_COMPILED_PRECISION_OR_RUNTIME_ABI')
 
@@ -265,13 +272,15 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
             for name in ('dynamo.pbtxt', 'dynamo.txt'):
                 if (root / 'weight' / name).is_file():
                     (root / 'weight' / name).replace(root / name)
-            inspection = inspect_air(root / 'export.air', _schema(descriptor, metadata), expected_norms=32)
+            inspection = inspect_air(root / 'export.air', _schema(descriptor, metadata),
+                                     expected_norms=32, require_int32_indices=True)
             if inspection['input_count'] != 17 or inspection['output_counts'] != [14]:
                 raise ValueError('TorchAir source boundary does not contain all 17 inputs / 14 outputs')
             _save(root / 'air-inspection.json', inspection)
             result.update(status='PYTORCH_DRAFT_AIR_EXPORTED', stage='complete', air='export.air',
                 schema_file='air-schema.pb', rms_nodes=len(inspection['rms']),
-                weight_files=len(inspection['weight_files']),
+                weight_files=len(inspection['weight_files']), gather_index_dtype='int32',
+                gather_nodes=len(inspection['gather_indices']),
                 next='Transfer this whole AIR directory; compile it on the selected DDK server. Candidate is not runtime-bound.')
         except Exception as error:
             result.update(status='FAILED', error=f'{type(error).__name__}: {error}',
@@ -344,7 +353,8 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
     _disjoint(output, source, ddk_root)
     metadata = manifest['schema']
     descriptor = (source / 'air-schema.pb').read_bytes()
-    inspection = inspect_air(source / 'export.air', _schema(descriptor, metadata), expected_norms=32)
+    inspection = inspect_air(source / 'export.air', _schema(descriptor, metadata),
+                             expected_norms=32, require_int32_indices=True)
     with _slot(output, OMC_KIND, replace) as root:
         result = {k: manifest[k] for k in ('context_rows', 'cache_capacity', 'max_draft_tokens', 'inputs', 'outputs', 'rms', 'gamma')}
         result.update(artifact_kind=OMC_KIND, status='COMPILING', stage='compile', frontend='pytorch',

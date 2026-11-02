@@ -46,7 +46,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 编译临时文件在`draft/tests/compile/`，成功后将模型和必要元数据发布到`draft/omc/`并删除临时构建；失败不替换当前模型。替换已有模型时，只保留一份临时回退至新模型的板端闭环成功回收，随后自动删除。需要DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND、compiled_precision和compiled_abi均PASSED。C16／cap192／K15已经上板接通，独立数值测试仍未通过原逐元素规则，详见结果页。
 
-PyTorch候选使用同一导出入口的`--frontend pytorch`，在权重服务器的`draft/air/`生成可移植的`export.air + weight/`，DDK服务器也安装到`draft/air/`后编译；完整命令见[当前阶段测试](current-status.md)。该路线使用Target CPro的`npu_rms_norm → RmsNorm`接口，现已收到权重服务器AIR导出成功结果，首次OMG编译失败，当前先读取日志定位，板端验证仍待完成；不代替本节的已接线GE流程。
+PyTorch候选使用同一导出入口的`--frontend pytorch`，在权重服务器的`draft/air/`生成可移植的`export.air + weight/`，DDK服务器也安装到`draft/air/`后编译；完整命令见[当前阶段测试](current-status.md)。该路线使用Target CPro的`npu_rms_norm → RmsNorm`接口，现已收到权重服务器AIR导出成功结果，首次OMG编译因embedding的INT64索引失败，已修正PyTorch索引类型，待重导出及复编，板端验证仍待完成；不代替本节的已接线GE流程。
 
 ## 3. Target源工程 → Prefill64／Decode1 AIR → OMC
 

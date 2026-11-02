@@ -2,18 +2,11 @@
 
 当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**。按用户要求暂缓手写GE和AddCustom优化，不再要求运行相关探针。成功导出的AIR统一放`draft/air/`，编译和测试直接引用它。当前可运行OMC仍放`draft/omc/`；新OMC完成接口绑定和板端验证后再替换运行模型。`tests/`用于测试记录和可清理的构建临时文件。
 
-目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前GE整模型profiling为518.990ms。PyTorch AIR已导出：17输入、14输出、32个RmsNorm、80个外置常量文件。本次DDK编译在OMG阶段退出码为1，尚未取得具体失败节点；板端未执行。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
+目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前GE整模型profiling为518.990ms。首次PyTorch AIR已导出，但DDK编译被`GatherV2_1 / GatherV2D`的INT64索引校验阻断；板端未执行。PyTorch实现已将embedding和KV行索引改为INT32，保持17输入／14输出和32个RmsNorm。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
 
-**本轮下一步：在DDK服务器读取已保存的编译错误，无需重导出、重传或重编。**
+**本轮需要更新AIR：权重服务器执行第1节末尾的导出命令（复用已有prepared）；按第2节传输整包；DDK服务器执行第3节重编。只在DDK拉取代码并重编旧AIR无法改变其中的INT64索引。**
 
-```bash
-# DDK服务器，沿用custom_pypto环境及已有REPO_DIR、AI_RUN_DIR
-git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
-  --inspect-compile "$AI_RUN_DIR/draft/tests/pytorch-omc"
-```
-
-预期`INSPECTED`，`source_status=FAILED`。回传`compilation_diagnostics`中的阶段、退出码、优先错误与日志末尾；检查只读取现有小报告和日志，不复制权重、不加载模型。当前目录先保留用于定位，修复后再用第3节的`--replace`复用同一目录。以下第1～3节用于首次构建或修复后重跑，本轮先执行页首检查。
+此次只改变整数索引类型：token ID在词表范围内，KV行索引为0～C−1；权重、浮点计算和KV写入区间保持原表达。导出后、导入时及编译前会检查实际AIR的Gather索引描述，若仍是INT64或缺失则直接报出节点名。此修复尚待真实TorchAir重导出和OMG复编确认。
 
 ## 1. 权重服务器：准备权重并导出AIR
 
@@ -60,9 +53,10 @@ fi
 
 这里按原配置读取规则，将相对`model_file`解析到YAML所在目录。如果目录只留了裁剪后的Target权重，需补齐上述两个原始BF16张量；不能用量化目录或embedding二进制文件代替。准备成功状态为`PREPARED`。
 
-继续在**权重服务器同一终端**导出六层增量Draft：
+继续在**权重服务器同一终端**更新代码并导出六层增量Draft；本轮已有prepared时直接执行此块：
 
 ```bash
+git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
   --frontend pytorch \
   --prepared "$AI_RUN_DIR/draft/source/prepared" \
@@ -70,7 +64,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
   --output "$AI_RUN_DIR/draft/air" --replace
 ```
 
-导出过程暂存在固定`draft/tests/export/`，成功检查后移动到`draft/air/`并清理旧AIR；失败保留原AIR，修复后`--replace`复用同一临时目录。预期`PYTORCH_DRAFT_AIR_EXPORTED`、17输入、14输出、32个`RmsNorm`。这里用已安装converter的`torch_npu.npu_rms_norm → RmsNorm`（[公开converter](https://github.com/Ascend/torchair/blob/master/python/torchair/_ge_concrete_graph/ge_converter/custom/npu_rms_norm.py)），与Target CPro接口一致；不使用ND工程的`AdnRmsNorm`。Draft gamma直接使用，不加Target零中心权重的1。mask复制与GQA继续使用GE已采用的Gather表达，避免重新引入BOOL查询轴广播和五维KV展开。PyTorch候选在FP32完成gamma乘法后转FP16，与旧GE RMS的中间舍入不同，需要重新做数值验证。
+导出过程暂存在固定`draft/tests/export/`，成功检查后移动到`draft/air/`并清理旧AIR；失败保留原AIR，修复后`--replace`复用同一临时目录。预期`PYTORCH_DRAFT_AIR_EXPORTED`、17输入、14输出、32个`RmsNorm`及`gather_index_dtype=int32`，实际逐节点描述见`air-inspection.json`的`gather_indices`。这里用已安装converter的`torch_npu.npu_rms_norm → RmsNorm`（[公开converter](https://github.com/Ascend/torchair/blob/master/python/torchair/_ge_concrete_graph/ge_converter/custom/npu_rms_norm.py)），与Target CPro接口一致；不使用ND工程的`AdnRmsNorm`。Draft gamma直接使用，不加Target零中心权重的1。mask复制与GQA继续使用GE已采用的Gather表达，避免重新引入BOOL查询轴广播和五维KV展开。PyTorch候选在FP32完成gamma乘法后转FP16，与旧GE RMS的中间舍入不同，需要重新做数值验证。
 
 ## 2. 权重服务器 → DDK服务器：传输AIR目录
 
@@ -95,7 +89,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
   --output "$AI_RUN_DIR/draft/air" --replace
 ```
 
-`weight/`、`air-schema.pb`和全部JSON一起传输。两台服务器的根目录可以不同，AIR采用相对权重路径；无需传原始Target／DFlash检查点。DDK已有完整`draft/air/`时直接进入第3节，无需再传一份。
+`weight/`、`air-schema.pb`和全部JSON一起传输。两台服务器的根目录可以不同，AIR采用相对权重路径；无需传原始Target／DFlash检查点。本轮DDK上的旧AIR包含INT64索引，必须先安装本次修复后的整包。
 
 ## 3. DDK服务器：编译OMC
 
@@ -113,8 +107,15 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 预期状态为`PYTORCH_DRAFT_OMC_COMPILED`，但`compiled_abi=NOT_BOUND`、`compiled_precision=NOT_VALIDATED`。检查`compiled-interface.json`的子图归属和边界Cast，再绑定实际输入输出槽位、做Load及独立KV验证。这一候选尚不能直接传给现有`--incremental-draft`。此前内置RmsNorm小图有Load失败，换PyTorch前端不保证自动解决。
 
+若仍失败，先在**DDK服务器**读取同一目录的错误，避免未经定位连续重编：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
+  --inspect-compile "$AI_RUN_DIR/draft/tests/pytorch-omc"
+```
+
 ## 4. 本阶段通过条件与后续
 
 已取得用户回传的`PYTORCH_DRAFT_AIR_EXPORTED`，下一阶段需要`PYTORCH_DRAFT_OMC_COMPILED`。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
 
-已有主机检查覆盖K15／7／3／1共37步，Top1无差异、KV最大差0、hidden最大绝对差0.001953125；另检查了17输入／14输出、32个测试RMS节点、全宽4×4完整dot投影和可移植AIR打包。这些是CPU、图捕获及模拟工具检查；真实TorchAir导出另已完成，本轮实际OMG编译失败待定位，板端精度与性能仍待完成。
+已有主机检查覆盖K15／7／3／1共37步，Top1无差异、KV最大差0、hidden最大绝对差0.001953125；另检查了17输入／14输出、32个测试RMS节点、全宽4×4完整dot投影和可移植AIR打包。这些是CPU、图捕获及模拟工具检查；真实TorchAir导出另已完成，首次实际OMG编译因INT64索引失败，本轮修复仍待重导出及复编，板端精度与性能仍待完成。

@@ -72,10 +72,13 @@ class IncrementalDraft(nn.Module):
         # Match the GE integer Select expression, without tensor->Python scalars.
         local = torch.where(local < 0, torch.zeros_like(local), local)
         local = torch.where(local < rows, local, torch.full_like(local, rows - 1))
+        # X90 GatherV2D rejects INT64 indices. These bounded row indices and
+        # token IDs already fit the INT32 control ABI; do not promote to long.
+        local = local.int()
         write = ((self.cache_positions >= start_position) & (self.cache_positions < end)).reshape(1, 1, self.capacity, 1)
         write = write.int().expand(1, c.num_key_value_heads, self.capacity, c.head_dim).bool()
         ids = torch.cat((anchor.reshape(1, 1), self.mask_tokens), dim=1)
-        hidden = self.embedding(ids.long()) * c.input_embedding_scale
+        hidden = self.embedding(ids.int()) * c.input_embedding_scale
         # Preserve the proven full-K projection expression. A 16384-wide MatMul
         # was rejected on the selected OMG; changing frontend is not a fix.
         channels = self.draft.fc.in_features // 16
@@ -93,8 +96,8 @@ class IncrementalDraft(nn.Module):
             new_k = attn.k_proj(context).reshape(1, rows, c.num_key_value_heads, c.head_dim)
             new_k = self.rope(self.norm(new_k, attn.k_norm).transpose(1, 2), context_positions)
             new_v = attn.v_proj(context).reshape(1, rows, c.num_key_value_heads, c.head_dim).transpose(1, 2)
-            present_k = torch.where(write, torch.index_select(new_k, 2, local.long()), past[index][0])
-            present_v = torch.where(write, torch.index_select(new_v, 2, local.long()), past[index][1])
+            present_k = torch.where(write, torch.index_select(new_k, 2, local), past[index][0])
+            present_v = torch.where(write, torch.index_select(new_v, 2, local), past[index][1])
             updated.extend((present_k, present_v))
             block_k = attn.k_proj(x).reshape(1, b, c.num_key_value_heads, c.head_dim)
             block_k = self.rope(self.norm(block_k, attn.k_norm).transpose(1, 2), block_positions)

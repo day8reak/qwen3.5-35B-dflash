@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_OMG_FAILED_DIAGNOSTICS_PENDING_GE_OPTIMIZATION_PAUSED_BY_USER",
+    "status": "PYTORCH_INT32_GATHER_FIX_HOST_VALIDATED_REEXPORT_AND_OMG_RETRY_PENDING",
     "entry": "targets/cpro/scripts/compile_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "On the DDK server run compile_incremental_draft.py --inspect-compile AI_RUN_DIR/draft/tests/pytorch-omc; read retained report and log before selecting a fix. No re-export or recompile for inspection.",
+    "next": "Weight server: re-export PyTorch Draft AIR from existing prepared weights after pull; transfer complete new AIR bundle and install into DDK draft/air; recompile same draft/tests/pytorch-omc with --replace. Old AIR cannot be fixed by rerunning OMG alone.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -5883,7 +5883,7 @@
         "host_validation": "14 host storage checks using actual schema fixtures; includes replacement, missing/truncated sidecars, active locks/jobs, rename rollback, failed export preservation, successful export publication and CLI without TorchAir"
       },
       "omg_compile_observation": {
-        "source": "USER_PASTED_DDK_COMPILE_OUTPUT",
+        "source": "USER_PASTED_DDK_INSPECT_COMPILE_OUTPUT",
         "independently_retrieved": false,
         "status": "FAILED",
         "stage": "compile",
@@ -5894,12 +5894,50 @@
         "platform": "kirinx90",
         "save_weights_as_external_data": true,
         "use_origin_format": true,
-        "root_cause": "UNRESOLVED_COMPILER_LOG_REQUIRED",
+        "root_cause": "EMBEDDING_GatherV2D_REJECTED_INT64_INDICES",
         "compiled_abi": "NOT_BOUND",
         "device_execution": "NOT_RUN",
         "numerical_validation": "NOT_RUN",
         "diagnostic_entry": "targets/cpro/scripts/compile_incremental_draft.py --inspect-compile AI_RUN_DIR/draft/tests/pytorch-omc",
-        "diagnostic_host_validation": "11 checks passed: retained-log inspection without SDK/AIR/tool invocation or writes; missing/malformed/oversize reports; help fallback; failed compiler status and CLI propagation; snapshot progress. No real OMG or device execution."
+        "diagnostic_host_validation": "11 checks passed: retained-log inspection without SDK/AIR/tool invocation or writes; missing/malformed/oversize reports; help fallback; failed compiler status and CLI propagation; snapshot progress. No real OMG or device execution.",
+        "failure_node": "GatherV2_1",
+        "failure_type": "GatherV2D",
+        "failure_input": 1,
+        "failure_dtype": "INT64",
+        "parameter_shape": [
+          248320,
+          2048
+        ],
+        "indices_shape": [
+          1,
+          16
+        ],
+        "earlier_cast_errors": "OBSERVED_CONST_GRAPH_INFER_FAILURES_NEED_RECHECK_AFTER_KNOWN_GATHER_FIX"
+      },
+      "index_dtype_fix": {
+        "scope": "PYTORCH_SOURCE_EMBEDDING_AND_KV_ROW_INDICES_INT32_NO_FLOAT_ARITHMETIC_CHANGE",
+        "bounds": "token IDs within vocab 248320; KV gather indices clamped to 0..context_rows-1; existing control ABI is INT32",
+        "air_validation": "inspect actual Gather/GatherV2/GatherV2D input_desc[1] using producer schema at export, import and precompile; do not confuse axis with indices",
+        "host_validation": {
+          "tests": 7,
+          "status": "PASSED",
+          "six_layer_reduced_width_feedback_steps": 76,
+          "gears": [
+            15,
+            7,
+            3,
+            1
+          ],
+          "comparison": "BITWISE_EQUAL_TO_PRECHANGE_PYTORCH_TOP1_HIDDEN_AND_ALL_KV; UNWRITTEN_CACHE_PRESERVED",
+          "torch_export_gather_calls_per_gear": 32,
+          "all_indices_dtype": "int32",
+          "input_count": 17,
+          "output_count": 14,
+          "additional_checks": "original vocabulary ID boundaries; actual schema INT32 acceptance and INT64/missing index rejection; precompile rejection before copying/tool call; terminal datatype error priority"
+        },
+        "actual_torchair_reexport": "NOT_RUN",
+        "omg_recompile": "NOT_RUN",
+        "device_execution": "NOT_RUN"
       }
     },
     "compiled_partition_observation": {
