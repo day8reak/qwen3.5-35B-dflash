@@ -1,60 +1,111 @@
 # 当前阶段测试命令
 
-目标：C16／cap192／K15，常驻预热后，单次Draft proposal同步`Process`平均≤50ms，包含API内部调度、同步和搬运；加载与初始KV补齐另计。现有整模型profiling为518.990ms，目标尚未达到。
+两条路线并行：GE试验FP32 `AddCustom`；PyTorch实现同一套增量Draft，权重服务器导出AIR、DDK服务器编译OMC。当前已上板GE模型继续放在公共`draft/air`、`draft/omc`；新候选使用固定测试槽位，验证前不覆盖公共模型。
 
-## 1. 当前结论
+目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前整模型profiling为518.990ms，目标未达到。已有精度、计时与失败原因见[当前结果](results.md)，算子展开图见[模型结构](model-architecture.md)。
 
-显式`weight_data_type=FP32`对照已结束：Add仍未通过数值检查，head RmsNorm仍在HIAI Load返回1。该权重选项没有修复动态输入Add的精度，停止重复此项测试。完整Draft精度策略保持原状。
+## 1. GE：AddCustom FP32小图
 
-| 小图 | 同步Process均值 | 当前结论 |
-|---|---:|---|
-| RMS原语链，默认权重选项 | 1.5722ms | L2误差88.12%；2个NPUCL＋1个CPUCL |
-| Softmax，默认权重选项 | 1.7261ms | L2误差0.1434%；原逐元素阈值失败 |
-| Add，默认权重选项 | 0.8412ms | 整体L2误差1.3361%；大值抵消行708.78% |
-| Add，显式FP32权重 | 0.6651ms | 整体L2与最大绝对误差和默认编译相同；跨编译输出逐位比较尚未完成 |
-| 内置RmsNorm hidden／heads | 未执行推理 | 默认编译两者均Load失败；显式FP32权重的heads仍失败 |
+用户回传的DDK注册列出`AddCustom`输入输出支持`float16,float32,int32`，同时有`precision_reduce=true`和JIT-only提示。它不同于此前普通Add的`executor_add_eltwise_half_nd`，必须实际编译和运行。下面保留大值相消输入，不能只看总体L2。
 
-已执行小图均为3次预热、10次计时，各批次内输出逐位稳定；耗时排除加载、外部输出拷贝和快照写盘。不同批次均值不作为已确认加速，不能相加预测完整Draft时延。
-
-用户对默认权重批次的全张量分析已经确认：Add的32768个输出全部逐位匹配`FP32(FP16(FP16(x)+FP16(residual)))`，FP32直接加法匹配0个。Softmax的106496个输出都能精确表示为FP16。
-
-显式FP32权重的Add主图随后确认存在两个输入`CastT(float32→float16)`、一个输入输出均为float16的NPUCL GraphOp，以及输出`CastT(float16→float32)`。输入精度损失已经定位到编译产物的NPU子图边界；内部指令是否还使用其他精度仍未知。`NO_DUMPS`只表示没有独立IR dump，不推翻主图证据。
-
-```text
-x FP32        → graphop_data_cast_0 → FP16 ┐
-                                          ├→ NPUCL (FP16输入/输出) → FP32输出
-residual FP32 → graphop_data_cast_1 → FP16 ┘                       netoutput_cast_0
-```
-
-编译日志进一步确认保存的Add内核为`executor_add_eltwise_half_nd`（7936 bytes）。普通`Add`未通过`custom_ascendc_lib`的支持检查；这不等于`AddCustom`不支持FP32，两者是不同算子类型。`AddCustom`注册缺少`kernelBins`、被提示只能用于JIT，目前尚未确认其输入类型和JIT构建方式。聚合kernel库报无效没有阻止普通Add编译运行，不能仅据此认定根因。
-
-## 2. 检查AddCustom注册与JIT入口
-
-沿用现有`REPO_DIR`、`AI_RUN_DIR`、`CPRO_DDK_ROOT`。以下检查复用现有probe目录，只用Python标准库读取编译环境和DDK配置，不写文件、不编译、不连接板端，不依赖`rg`。
+在DDK服务器沿用已配置的`REPO_DIR`、`AI_RUN_DIR`、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID`。之前vector任务已回收完成，可以复用同名目录；不要在仍有任务运行时重建。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_vector.py" \
-  --inspect-ddk "$AI_RUN_DIR/draft/tests/vector" \
-  --ddk-root "$CPRO_DDK_ROOT"
+  --ge-root "$CANN_ROOT" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --cases residual_addcustom_fp32 \
+  --output "$AI_RUN_DIR/draft/tests/vector" --replace
 ```
 
-检查先读取各小图`omc/omg-environment.json`中的`KIRIN_CONF_JSON_PATH`，再扫描所选DDK的AscendC、平台及OMG目录。之前只搜索OMG目录得到零匹配，未覆盖可能位于`ddk/ascendcpp/conf`的实际注册配置。
+若本例编译为COMPILED，再启动板端小图验证：
 
-回传输出中的`compile_environments`、`registrations`、`source_candidates`和`notes`。注册记录保留原字段，用于核对输入/输出dtype、实现名及JIT源码；文件存在仅代表找到了候选，不代表FP32可用。单文件上限2MiB、总读取32MiB，截断或读取异常会注明。下一步依据真实注册判断能否构建最小FP32 Add验证；当前不重跑已经确认降精度的普通Add，也不盲试实现编号或修改共享DDK。
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$AI_RUN_DIR/draft/tests/vector" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --cases residual_addcustom_fp32 \
+  --output "$AI_RUN_DIR/draft/tests/vector-run" --apply
 
-## 3. FP32 Add的可行路径
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$AI_RUN_DIR/draft/tests/vector-run" \
+  --output "$AI_RUN_DIR/draft/tests/vector-result"
 
-当前所选OMG帮助没有列出已验证的中间算术保FP32开关。`weight_data_type`控制权重；源图和输入输出声明FP32也已被本次结果证明不足以保证实际算术。其他编译器的`precision_mode`或`keep_dtype`不能直接当成本版OMG的有效参数。
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --analyze "$AI_RUN_DIR/draft/tests/vector-result"
+```
 
-当前完整Draft采用已检查的CPU FP32路径。要迁移到NPU，必须选中并验证FP32实现，保证进入加法前的有效输入精度也得到保留。不能直接删掉两个输入Cast而继续使用现有FP16接口子图；这会造成接口不匹配。仅增加输出FP32 Cast也无法恢复已丢失的输入信息。
+检查`precision_boundaries`中的输入降精度Cast与GraphOp dtype，以及`sum`全部输出、相消行误差、重复稳定性和同步API时间。原阈值不变；即使NPUCL归属正确，也不能单凭归属宣称FP32通过。若编译失败，回传该例`omc/compile.log`末尾和`result.json`，先处理JIT／实现选择，不继续重跑已确定降精度的普通Add。
 
-公开[AscendC Add文档](https://asc.gitcode.com/api/SIMD-API/basic_api/memory_vector_compute/basic_arithmetic/Add.html)列出X90支持`Add<float>`；但[华为算子工程工具文档](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/cannkit-creating-operator-project-msopgen)同时注明KirinX90暂不支持float类型输入。这分别描述计算API与工程接口，不能据此宣称当前DDK已打通自定义FP32输入链路。自定义实现需先核对该DDK的接口和注册支持，不能只在kernel内换成float就视为完成。
+## 2. PyTorch：权重服务器导出AIR
 
-单独Add验证保留大值抵消样本：`1040.5068359375 + (-1040.496826171875)`的FP32结果是`0.010009765625`，输入先转FP16后为`1.0`。原阈值与完整张量比较继续保留，不以约1%的整图误差接受替代此项验证。
+使用能导出Target CPro的PyTorch／torch_npu／TorchAir环境。新模块只装载六层Draft、Target embedding和LM head，不装载40层Target。复用`draft/source/prepared`；如果权重服务器还没有它，先从原始权重准备：
 
-## 4. 后续接入
+```bash
+# 仅在尚无prepared权重时执行；两个变量指向该服务器上的实际源权重。
+python3 "$REPO_DIR/targets/cpro/scripts/prepare_draft.py" \
+  --target-weights "$TARGET_WEIGHTS" --draft-weights "$DRAFT_WEIGHTS" \
+  --output "$AI_RUN_DIR/draft/source/prepared"
+```
 
-确认有效精度后再减少每层CPU/NPU分段，并考虑融合残差与RMS以减少调度边界；独立Draft精度、连续KV和整模型时延均需复查。
+在权重服务器更新仓库后导出：
 
-随后优化固定16行context投影的无效计算，以及词表head和ArgMax。入口Conv曾记录70.968ms；27／26是静态CPUCL／NPUCL子图数，整模型与算子合计相差376.550ms的部分仍未全部归因。最终在相同输入、缓存长度和频率配置下，3次预热后测10次proposal，报告均值和最大值。Target精度和verify开发继续独立处理。
+```bash
+git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
+  --frontend pytorch \
+  --prepared "$AI_RUN_DIR/draft/source/prepared" \
+  --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-air" --replace
+```
+
+预期`PYTORCH_DRAFT_AIR_EXPORTED`、17输入、14输出、32个`RmsNorm`。这里用已安装converter的`torch_npu.npu_rms_norm → RmsNorm`（[公开converter](https://github.com/Ascend/torchair/blob/master/python/torchair/_ge_concrete_graph/ge_converter/custom/npu_rms_norm.py)），与Target CPro接口一致；不使用ND工程的`AdnRmsNorm`。Draft gamma直接使用，不加Target零中心权重的1。mask复制与GQA继续使用GE已采用的Gather表达，避免重新引入BOOL查询轴广播和五维KV展开。PyTorch候选在FP32完成gamma乘法后转FP16，与旧GE RMS的中间舍入不同，需要重新做数值验证。
+
+输出整目录：
+
+```text
+draft/tests/pytorch-air/
+  export.air
+  weight/                 # AIR用相对路径引用
+  air-schema.pb           # 本次安装的TorchAir schema
+  manifest.json
+  air-inspection.json
+```
+
+把**整个目录**传到DDK服务器相同角色的位置，不能只传`export.air`。服务器根目录可不同，AIR不依赖权重服务器的绝对路径。跨机传输使用现有文件通道；DDK服务器不需要安装TorchAir。两次`--replace`只替换本工具已结束的候选槽位，拒绝活动或未知目录。
+
+## 3. PyTorch：DDK服务器转OMC
+
+确认收到完整`draft/tests/pytorch-air`后：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
+  --air-export "$AI_RUN_DIR/draft/tests/pytorch-air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
+```
+
+编译自动识别PyTorch AIR。使用外置权重编译后流式打包成`pytorch-omc/model.omc`，避免重走大模型内嵌序列化失败路径。此候选编译器需要输入快照、编译权重与打包模型同时存在，预检为额外三份权重大小＋1GiB，编译临时空间可能更大；不会把旧的6GiB估计用于这里。
+
+预期状态为`PYTORCH_DRAFT_OMC_COMPILED`，但`compiled_abi=NOT_BOUND`、`compiled_precision=NOT_VALIDATED`。检查`compiled-interface.json`的子图归属和边界Cast，再绑定实际输入输出槽位、做Load及独立KV验证。这一候选尚不能直接传给现有`--incremental-draft`。此前内置RmsNorm小图有Load失败，换PyTorch前端不保证自动解决。
+
+## 4. 核对当前Target AIR的RMS
+
+需要对比实际Prefill／Decode的RMS类型、端口dtype、shape和epsilon时，读取规范化后的公共AIR即可，不编译、不上板，也不需要`rg`：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/probe_draft_vector.py" \
+  --inspect-rms "$AI_RUN_DIR/prefill/air/export.air" \
+                "$AI_RUN_DIR/decode/air/export.air"
+```
+
+默认使用仓库的TorchAir schema；若源AIR使用不同schema，可传`--torchair-pb2`指定实际导出环境中的文件。输出按RMS类型／描述分组；源AIR端口不等于编译内核精度证明。
+
+## 已完成的主机检查
+
+AddCustom探针及分析入口7项检查通过。PyTorch模型5项检查通过：K15／7／3／1共37步独立前缀对照，Top1无差异、KV最大差0、hidden最大绝对差0.001953125；覆盖零新增行、拒绝换anchor、重复、无效padding和容量边界。全宽16384→2048入口确认是4×4完整dot表达。另6项检查覆盖可移植AIR、源码RMS识别、替换保护及导出／编译／打包错误传播。
+
+这些是CPU数值、`torch.export`捕获与模拟工具边界检查；实际TorchAir导出、OMG编译、板端精度和性能尚待上述命令验证。成功后继续减少CPU/NPU分段、优化入口投影与词表head，并重新测量同输入的完整Draft。

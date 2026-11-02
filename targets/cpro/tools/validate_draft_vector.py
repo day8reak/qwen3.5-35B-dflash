@@ -112,12 +112,16 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     root = Path(compiled).resolve()
     report = read_json(root/'result.json')
-    if report.get('artifact_kind') != COMPILE_KIND or report.get('status') != 'COMPILED':
+    if report.get('artifact_kind') != COMPILE_KIND or report.get('status') not in {'COMPILED', 'PARTIAL'}:
         raise ValueError('expected completed FP32 probe compilation')
+    if report['status'] == 'PARTIAL' and selection is None:
+        raise ValueError('partial compilation requires --cases selecting only compiled probes')
     rows = report['cases']
     available = selected_cases(r['case'] for r in rows)
     by_name = {r['case']: r for r in rows}
     rows = [by_name[name] for name in selected_cases(available if selection is None else selection, available)]
+    if any(row.get('status') != 'COMPILED' or row.get('model_compilation') != 'PASSED' for row in rows):
+        raise ValueError('every selected probe must have compiled successfully')
     schema = load_schema(Path(ddk)/'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')
     enums = _enum_fields(schema)
     cases = []
@@ -300,7 +304,7 @@ def analyze(directory):
             precision = dict(finite_elements=int(finite.sum()),
                 fp16_roundtrip_exact_elements=int((finite & (rounded.view('<u4') == a32.view('<u4'))).sum()),
                 scope='NUMERICAL_SIGNATURE_ONLY_NOT_INTERNAL_INSTRUCTION_PROOF')
-            if name == 'residual_fp32':
+            if name in {'residual_fp32', 'residual_addcustom_fp32'}:
                 right_spec = next(s for s in case['inputs'] if s['name'] == 'residual')
                 right = np.fromfile(fixture/name/f'input_{right_spec["index"]}.bin', dtype='<f4').reshape(right_spec['shape'])
                 full = np.add(x, right, dtype=np.float32)

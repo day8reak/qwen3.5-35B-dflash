@@ -17,7 +17,7 @@ SCHEMA = ('https://github.com/Ascend/torchair/blob/'
           'e1118e8b0fc1b95190ab53b732c0872989550e20/'
           'python/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py')
 CASES = ('rms_primitive_hidden', 'rms_builtin_hidden', 'rms_builtin_heads',
-         'softmax_fp32', 'residual_fp32')
+         'softmax_fp32', 'residual_fp32', 'residual_addcustom_fp32')
 
 
 def graph_case(case):
@@ -68,8 +68,34 @@ def graph_case(case):
         inputs.append(right)
         y = g.input('residual', shape, 'float32')
         golden = [(data + right).astype('<f4')]
-        g.outputs = [g.op('add', x, y, shape=shape, dtype='float32', name='sum')]
+        if case == 'residual_addcustom_fp32':
+            # Selected X90 DDK registration: AddCustom(x, y) -> z, ND FP32.
+            # It also permits precision_reduce; declaration alone is not a gate.
+            result = g.custom('AddCustom', {'x': x, 'y': y},
+                              {'z': (shape, 'float32')}, name='sum')
+            g.outputs = [result['z']]
+        else:
+            g.outputs = [g.op('add', x, y, shape=shape, dtype='float32', name='sum')]
     return g.validate(), inputs, golden
+
+
+def precision_boundaries(nodes):
+    """Summarize actual descriptors without claiming internal arithmetic dtype."""
+    casts, graphs = [], []
+    for node in nodes:
+        ins = [d.get('dtype') for d in node['inputs']]
+        outs = [d.get('dtype') for d in node['outputs']]
+        if node['type'] in {'Cast', 'CastT'} and ins == ['float32'] and outs == ['float16']:
+            casts.append(node['name'])
+        if node['type'] == 'GraphOp':
+            graphs.append({'name': node['name'], 'owner': node['owner'],
+                           'input_dtypes': ins, 'output_dtypes': outs})
+    npu = [g for g in graphs if g['owner'] == 'NPUCL']
+    return {'fp32_to_fp16_casts': casts, 'graph_interfaces': graphs,
+            'all_npu_boundaries_fp32': bool(npu) and all(
+                g['input_dtypes'] and g['output_dtypes']
+                and all(d == 'float32' for d in g['input_dtypes'] + g['output_dtypes']) for g in npu),
+            'scope': 'COMPILED_BOUNDARY_DESCRIPTORS_NOT_INTERNAL_INSTRUCTIONS'}
 
 
 def inspect_placement(omc, schema_path):
@@ -99,6 +125,7 @@ def inspect_placement(omc, schema_path):
     if not counts:
         raise ValueError('no decoded GraphOp ownership; cannot establish placement')
     return {'graphop_counts': dict(counts), 'nodes': nodes,
+        'precision_boundaries': precision_boundaries(nodes),
         'status': 'NPU_GRAPH_PRESENT' if counts['NPUCL'] else 'NO_NPU_GRAPH',
         'internal_precision': 'NOT_VERIFIED_BY_GRAPH_BOUNDARY_DTYPES',
         'scope': 'Compiler task ownership and boundary descriptors only; no device accuracy or latency claim'}
@@ -250,6 +277,29 @@ def inspect_ddk(compiled, ddk_root):
     return report
 
 
+def inspect_rms(airs, pb2=None):
+    from qwen35_moe_dflash.target.air_weights import weight_schema
+    from qwen35_moe_dflash.draft.incremental.torch_export import inspect_air
+    schema = weight_schema(pb2)
+    reports = []
+    for air in airs:
+        observation = inspect_air(air, schema)
+        groups = {}
+        for node in observation['rms']:
+            signature = {k: node[k] for k in ('type', 'inputs', 'outputs', 'epsilon')}
+            key = json.dumps(signature, sort_keys=True)
+            group = groups.setdefault(key, dict(**signature, count=0, examples=[]))
+            group['count'] += 1
+            if len(group['examples']) < 2:
+                group['examples'].append(dict(name=node['name'], input=node['input']))
+        reports.append(dict(air=str(air), rms_count=len(observation['rms']),
+            groups=list(groups.values()), input_count=observation['input_count'],
+            output_counts=observation['output_counts']))
+    return dict(status='INSPECTED', schema_source=pb2 or 'specs/torchair-ge-ir.pb',
+                scope='SOURCE_AIR_RMS_DESCRIPTORS_ONLY_NOT_COMPILED_KERNEL_OR_FP32_PROOF',
+                model_compilation='NOT_RUN', device_execution='NOT_RUN', models=reports)
+
+
 def _run(args, root):
     from qwen35_moe_dflash.graph.fused.emitter import emit_cpp
     from qwen35_moe_dflash.graph.export import _logged
@@ -294,7 +344,11 @@ def _run(args, root):
                 for index, array in enumerate(arrays):
                     array.tofile(fixture / f'{prefix}_{index}.bin')
             row = {'case': case, 'status': 'PLANNED', 'model_compilation': 'NOT_RUN', 'graph': graph.manifest(),
-                   'reference': 'NUMPY_FP32_ROW_REDUCTION_NOT_DEVICE_VALIDATION'}
+                   'reference': ('NUMPY_FP32_ADD_WITH_CANCELLATION_ROWS_NOT_DEVICE_VALIDATION'
+                       if case.startswith('residual_') else 'NUMPY_FP32_ROW_REDUCTION_NOT_DEVICE_VALIDATION')}
+            if case == 'residual_addcustom_fp32':
+                row['schema_source'] = 'USER_OBSERVED_SELECTED_DDK_AddCustom_REGISTRATION_x_y_TO_z'
+                row['implementation_request'] = 'AddCustom_FP32_ND_DEFAULT_DDK_SELECTION_NO_FORCED_IMPLEMENTATION'
             result['cases'].append(row)
             if args.plan_only:
                 continue
@@ -324,7 +378,8 @@ def _run(args, root):
                 row['omc'] = str(Path(case) / 'omc' / compiled['omc']['path'])
                 placement = inspect_placement(root / row['omc'], schema)
                 write_json(folder / 'placement.json', placement)
-                row.update(status='COMPILED', placement=placement['status'], graphop_counts=placement['graphop_counts'])
+                row.update(status='COMPILED', placement=placement['status'], graphop_counts=placement['graphop_counts'],
+                           precision_boundaries=placement['precision_boundaries'])
             except (OSError, ValueError, KeyError, RuntimeError) as error:
                 row.update(status='FAILED', error=f'{type(error).__name__}: {error}')
             write_json(root / 'result.json', result)
@@ -363,6 +418,9 @@ def main(argv=None):
     parser.add_argument('--output')
     parser.add_argument('--inspect-ddk', metavar='COMPILED_PROBES',
                         help='read saved compiler environment and selected DDK AddCustom registration; no writes or compilation')
+    parser.add_argument('--inspect-rms', nargs='+', metavar='AIR',
+                        help='read normalized Target/PyTorch AIR RMS descriptors without compiling or executing')
+    parser.add_argument('--torchair-pb2', help='optional actual TorchAir schema for --inspect-rms')
     parser.add_argument('--cases', nargs='+', choices=CASES, default=list(CASES))
     parser.add_argument('--plan-only', action='store_true', help='write source and fixtures without invoking any SDK')
     parser.add_argument('--replace', action='store_true', help='replace this completed probe slot; never shared models')
@@ -378,12 +436,19 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.timeout_seconds <= 0 or len(args.cases) != len(set(args.cases)):
         parser.error('timeout must be positive and cases must be distinct')
-    if args.inspect_ddk:
+    if args.inspect_ddk and args.inspect_rms:
+        parser.error('select one read-only inspection mode')
+    if args.torchair_pb2 and not args.inspect_rms:
+        parser.error('--torchair-pb2 requires --inspect-rms')
+    if args.inspect_ddk or args.inspect_rms:
         if args.output or args.replace or args.plan_only:
-            parser.error('--inspect-ddk cannot be combined with --output, --replace or --plan-only')
+            parser.error('inspection cannot be combined with --output, --replace or --plan-only')
     elif not args.output:
         parser.error('--output is required for compilation or --plan-only')
     try:
+        if args.inspect_rms:
+            print(json.dumps(inspect_rms(args.inspect_rms, args.torchair_pb2), ensure_ascii=False, indent=2))
+            return 0
         if args.inspect_ddk:
             print(json.dumps(inspect_ddk(args.inspect_ddk, args.ddk_root), ensure_ascii=False, indent=2))
             return 0

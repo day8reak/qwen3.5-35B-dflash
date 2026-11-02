@@ -42,7 +42,9 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
   --replace-failed --output "$INCREMENTAL_COMPILED"
 ```
 
-编译临时文件在`draft/tests/compile/`，成功后将模型和必要元数据发布到`draft/omc/`并删除临时构建；失败不替换当前模型。替换已有模型时，只保留一份临时回退至新模型的板端闭环成功回收，随后自动删除。需要DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND、compiled_precision和compiled_abi均PASSED。当前新增量模型的实机结果待补，不能把主机测试写成板端精度通过。
+编译临时文件在`draft/tests/compile/`，成功后将模型和必要元数据发布到`draft/omc/`并删除临时构建；失败不替换当前模型。替换已有模型时，只保留一份临时回退至新模型的板端闭环成功回收，随后自动删除。需要DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND、compiled_precision和compiled_abi均PASSED。C16／cap192／K15已经上板接通，独立数值测试仍未通过原逐元素规则，详见结果页。
+
+PyTorch候选使用同一导出入口的`--frontend pytorch`，在权重服务器生成可移植的`export.air + weight/`，再到DDK服务器编译；完整命令见[当前阶段测试](current-status.md)。该路线使用Target CPro的`npu_rms_norm → RmsNorm`接口，目前停留在主机验证与待服务器生成阶段，不代替本节的已接线GE流程。
 
 ## 3. Target源工程 → Prefill64／Decode1 AIR → OMC
 

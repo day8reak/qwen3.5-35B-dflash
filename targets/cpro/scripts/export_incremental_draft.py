@@ -16,6 +16,9 @@ def main(argv=None):
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--job', help='legacy full-draft job containing prepared and residual-fix')
     source.add_argument('--prepared', help='shared prepared weight directory; no previous AIR/OMC required')
+    parser.add_argument('--frontend', choices=('ge', 'pytorch'), default='ge')
+    parser.add_argument('--torchair-pb2', help='installed TorchAir literal schema; normally discovered automatically')
+    parser.add_argument('--replace', action='store_true', help='replace a finished PyTorch candidate in the same test slot')
     parser.add_argument('--context-rows', type=int, choices=(16, 64), default=16)
     parser.add_argument('--cache-capacity', type=int, default=192)
     parser.add_argument('--max-draft-tokens', type=int, choices=(15, 7, 3, 1), default=15)
@@ -25,8 +28,24 @@ def main(argv=None):
     parser.add_argument('--timeout-seconds', type=int, default=3600)
     parser.add_argument('--output', required=True)
     args = parser.parse_args(argv)
+    if args.timeout_seconds <= 0:
+        parser.error('--timeout-seconds must be positive')
+    if args.frontend == 'pytorch' and not args.prepared:
+        parser.error('PyTorch export requires --prepared')
+    if args.frontend == 'ge' and (args.replace or args.torchair_pb2):
+        parser.error('--replace and --torchair-pb2 belong to the PyTorch candidate export')
     from qwen35_moe_dflash.draft.incremental.export import export_incremental_draft
     try:
+        if args.frontend == 'pytorch':
+            from qwen35_moe_dflash.draft.incremental.torch_export import export_pytorch
+            result = export_pytorch(args.prepared, args.output, context_rows=args.context_rows,
+                cache_capacity=args.cache_capacity, max_draft_tokens=args.max_draft_tokens,
+                replace=args.replace, torchair_pb2=args.torchair_pb2,
+                progress=lambda value: print('pytorch-draft: ' + value, flush=True))
+            shown = {k: v for k, v in result.items() if k not in ('inputs', 'outputs')}
+            shown.update(input_count=len(result.get('inputs', [])), output_count=len(result.get('outputs', [])))
+            print(json.dumps(shown, ensure_ascii=False, allow_nan=False), flush=True)
+            return 0 if result['status'] == 'PYTORCH_DRAFT_AIR_EXPORTED' else 1
         result = export_incremental_draft(args.job, args.output, context_rows=args.context_rows,
             cache_capacity=args.cache_capacity, max_draft_tokens=args.max_draft_tokens,
             ge_root=args.ge_root or (os.environ.get('CANN_ROOT') if args.prepared else None),

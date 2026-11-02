@@ -5802,12 +5802,23 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "ADD_HALF_KERNEL_CONFIRMED_ADDCUSTOM_REGISTRATION_INSPECTION_PENDING",
+    "status": "ADDCUSTOM_PROBE_AND_PYTORCH_INCREMENTAL_CANDIDATE_HOST_CHECKED",
     "entry": "targets/cpro/tools/probe_draft_vector.py",
     "commands": "docs/current-status.md",
-    "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
+    "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "User compile log identifies executor_add_eltwise_half_nd for ordinary Add. Read saved KIRIN_CONF_JSON_PATH and AddCustom registration/JIT source candidates with probe_draft_vector.py --inspect-ddk. No new compile or device run; FP32 custom support remains unverified. See docs/current-status.md.",
+    "next": "Run residual_addcustom_fp32 on selected GE/DDK and board; in parallel export --frontend pytorch on weight server and compile its portable bundle on DDK server. Both candidates need compiled dtype/ABI and device validation; commands in docs/current-status.md.",
+    "pytorch_candidate": {
+      "rms": "INSTALLED_NPU_RMS_NORM_CONVERTER_TO_RmsNorm_NOT_AdnRmsNorm",
+      "gamma": "DIRECT_DRAFT_GAMMA_FP32_MULTIPLY_BEFORE_FP16_CAST",
+      "projection": "FULL_DOT_4X4_CONV2D_NO_PARTIAL_SUM_BOUNDARIES",
+      "host_validation": "5 model checks: 37 reduced-width steps over K15/7/3/1; top1 exact, KV max_abs=0, hidden max_abs=0.001953125 at fixed atol=rtol=0.002; torch.export 17/14 and 32 test RMS nodes; full-width projection versus linear. 6 additional schema and mocked tool-boundary checks.",
+      "server_air_export": "NOT_RUN",
+      "server_omg_compilation": "NOT_RUN",
+      "physical_abi": "NOT_BOUND",
+      "device_execution": "NOT_RUN_USER_OWNS_EXECUTION",
+      "promotion": "NOT_PROMOTED"
+    },
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
       "independently_retrieved": false,
