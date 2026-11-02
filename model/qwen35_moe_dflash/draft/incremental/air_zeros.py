@@ -7,6 +7,7 @@ Unknown shapes stop preparation instead of inventing a successful replacement.
 from copy import deepcopy
 import hashlib
 from itertools import zip_longest
+import json
 import math
 import struct
 
@@ -37,6 +38,15 @@ class _Shapes:
         self.schema, self.cache, self.active = schema, {}, set()
         self.proofs = {}
 
+    def constant_data(self, node):
+        number = _field(self.schema, 'OpDef', 'attr', 11, True)
+        for field, _, _, entry in _parts(self.payloads[node['name']]):
+            if field == number and self.schema.decode(entry, 'OpDef.AttrEntry').get('key') == 'value':
+                attr = _payload(entry, self.schema, 'OpDef.AttrEntry', 'value')
+                tensor = _payload(attr, self.schema, 'AttrDef', 't')
+                return _payload(tensor, self.schema, 'TensorDef', 'data') if tensor is not None else None
+        return None
+
     def node(self, edge):
         name, separator, port = edge.rpartition(':')
         if separator != ':' or port != '0' or name not in self.nodes:
@@ -53,14 +63,9 @@ class _Shapes:
         shape = value.get('desc', {}).get('shape', {}).get('dim', [])
         if not _known(shape) or math.prod(shape) > 8:
             raise ValueError('shape/axis Const is not a small tensor: ' + edge)
-        number = _field(self.schema, 'OpDef', 'attr', 11, True)
-        for field, _, _, entry in _parts(self.payloads[node['name']]):
-            if field == number and self.schema.decode(entry, 'OpDef.AttrEntry').get('key') == 'value':
-                attr = _payload(entry, self.schema, 'OpDef.AttrEntry', 'value')
-                tensor = _payload(attr, self.schema, 'AttrDef', 't')
-                data = _payload(tensor, self.schema, 'TensorDef', 'data')
-                if data is not None and len(data) == math.prod(shape) * struct.calcsize(fmt):
-                    return list(struct.unpack('<' + fmt * math.prod(shape), data))
+        data = self.constant_data(node)
+        if data is not None and len(data) == math.prod(shape) * struct.calcsize(fmt):
+            return list(struct.unpack('<' + fmt * math.prod(shape), data))
         raise ValueError('invalid shape/axis Const bytes: ' + edge)
 
     def shape(self, edge):
@@ -72,7 +77,9 @@ class _Shapes:
         node = self.node(edge)
         kind, inputs, attrs = node['type'], node.get('input', []), _attributes(node)
         outputs = node.get('output_desc', [])
-        recorded = outputs[0].get('shape', {}).get('dim', []) if outputs and 'shape' in outputs[0] else None
+        # TorchAir serializes unknown intermediate dimensions as shape: {}.
+        # An empty descriptor alone is not evidence of a rank-zero tensor.
+        recorded = (outputs[0].get('shape', {}).get('dim') or None) if outputs else None
         rule = 'output_descriptor'
         # FileConstant output descriptors can be placeholders in source AIR.
         if kind == 'FileConstant':
@@ -83,6 +90,13 @@ class _Shapes:
             desc = attrs.get('value', {}).get('t', {}).get('desc', {})
             shape = desc.get('shape', {}).get('dim', []) if 'shape' in desc else None
             rule = 'Const.value.desc'
+            if shape == []:
+                types = self.schema.enums[self.schema.package + '.DataType']
+                widths = {types[t]: w for t, w in (('DT_BOOL', 1), ('DT_INT32', 4),
+                          ('DT_INT64', 8), ('DT_FLOAT16', 2), ('DT_FLOAT', 4))}
+                data = self.constant_data(node)
+                if data is None or len(data) != widths.get(desc.get('dtype')):
+                    raise ValueError('scalar Const requires one typed literal value: ' + edge)
         elif kind in {'Cast', 'CastT', 'Identity', 'ZerosLike', 'LogicalNot'} and len(inputs) == 1:
             shape, rule = self.shape(inputs[0]), kind + '.input_shape'
         elif kind == 'Reshape' and len(inputs) == 2:
@@ -158,12 +172,22 @@ def materialize_zeros(raw, schema):
         desc = node['output_desc'][0]
         dtype = desc.get('dtype')
         inp = node['input_desc'][0]
-        if (dtype not in widths or inp.get('dtype') != dtype
+        # The observed TorchAir mask has an FP32 shape carrier and an FP16
+        # output descriptor (zeros_like(..., dtype=float16)). Zero is exact
+        # in both types: materialize the recorded output type, without casting
+        # input data or changing any consumer. Other mismatches remain errors.
+        compatible = inp.get('dtype') == dtype or (inp.get('dtype'), dtype) == (types['DT_FLOAT'], types['DT_FLOAT16'])
+        if (dtype not in widths or not compatible
                 or any(d.get('layout', 'ND') != 'ND' for d in (inp, desc))):
-            raise ValueError('unsupported ZerosLike dtype/layout: ' + name)
+            def descriptor(d):
+                return dict(dtype=d.get('dtype'),
+                    dtype_names=[t for t, v in types.items() if v == d.get('dtype')],
+                    layout=d.get('layout'), shape=d.get('shape'))
+            raise ValueError('unsupported ZerosLike dtype/layout: ' + json.dumps(dict(
+                node=name, input=descriptor(inp), output=descriptor(desc)), ensure_ascii=False))
         shape = shapes.shape(node['input'][0])
         for d in (inp, desc):
-            known = d.get('shape', {}).get('dim', []) if 'shape' in d else None
+            known = d.get('shape', {}).get('dim') or None
             if _known(known) and known != shape:
                 raise ValueError('ZerosLike input/output shape mismatch: ' + name)
         size = math.prod(shape) * widths[dtype]
@@ -193,7 +217,7 @@ def materialize_zeros(raw, schema):
             pieces.append(encoded)
         replacements[name] = b''.join(pieces) + _blob(attr_field, attr)
         changes.append(dict(node=name, source=node['input'][0], shape=shape,
-                            dtype=dtype, bytes=size, replacement='Const'))
+                            dtype=dtype, input_dtype=inp.get('dtype'), bytes=size, replacement='Const'))
     updated = raw
     if replacements:
         rebuilt = b''.join(_blob(field, replacements[schema.decode(payload, 'OpDef')['name']])

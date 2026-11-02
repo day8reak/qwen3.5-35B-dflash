@@ -111,7 +111,11 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 
 ## PyTorch当前开发路线（OMG ZerosLike构建失败，静态零替换待复编）
 
-最新用户复编回传：`prepared.air`已生效，24个中间Reshape被删除，OMG越过此前的ByPassNode失败阶段。本次终止在`ZerosLike create OpGraphBuilder fail`／`opGraphBuilder is null`，随后`Op Build4NPU failed. Node: ZerosLike`导致SubGraph_1构建失败。早期Cast常量图诊断、reshape-transpose融合候选的rank检查和FORMAT_RESERVED警告后仍继续编译，不能把它们当成本次已定位的终止点。
+最新用户复编回传：静态零替换停在`air-preparation`的`unsupported ZerosLike dtype/layout: ZerosLike_1`，`model_compilation=NOT_RUN`。只读检查进一步确认：首个索引ZerosLike为INT32→INT32；六个mask ZerosLike均为FP32→FP16，前驱Cast输出FP32；全部layout为ND，输入／输出及前驱shape均为`{}`。此前要求输入／输出dtype相同导致误拒绝；同时代码将空shape当成标量，属于检查器错误，不能依据旧主机夹具通过声称覆盖了实际AIR。
+
+修正为保留已记录的FP16输出零值，允许上述FP32→FP16零张量形式；空中间shape视为未知，从源图常量和算子关系推导，不能补造期望尺寸。真正的标量Const需有一项已知类型的字面数据。预处理移到权重快照／OMG调用前，错误包含具体dtype／layout，`--inspect-air`也展示ZerosLike描述及其前驱。本轮9项主机检查通过：按回传形式构造的空shape和混合dtype夹具覆盖8档容量／候选组合，索引零常量为`[cap]`、mask零常量为`[1,1,K+1,cap+K+1]`，内容、dtype、未改节点字节与幂等均核对；未知shape不冒充标量，明确冲突仍拒绝；编译入口检查覆盖前置失败不复制权重／不调用OMG、快照变化拒绝及旧路线保持。用户DDK复编、设备精度与性能尚未验证。
+
+前一轮用户复编回传：`prepared.air`已生效，24个中间Reshape被删除，OMG越过此前的ByPassNode失败阶段。本次终止在`ZerosLike create OpGraphBuilder fail`／`opGraphBuilder is null`，随后`Op Build4NPU failed. Node: ZerosLike`导致SubGraph_1构建失败。早期Cast常量图诊断、reshape-transpose融合候选的rank检查和FORMAT_RESERVED警告后仍继续编译，不能把它们当成本次已定位的终止点。
 
 新增同一编译副本中的静态零物化：对缓存索引裁剪及六层mask的ZerosLike，从源AIR描述、常量shape／axis和有界形状规则推导输出尺寸，替换为同dtype的Const。FileConstant只读其shape属性，不使用占位输出描述，不读取权重数据；未知形状、dtype／布局冲突、控制输入或超出8MiB常量预算时停止。未修改节点保留原始protobuf字节；源AIR和原始编译快照保持，证据存入`air-preparation.json`的`zeros_like`。PyTorch源码两处同步改为固定零buffer，今后导出不再生成这7个ZerosLike。本轮用户可直接复用已传输AIR，仅在DDK服务器复编。
 

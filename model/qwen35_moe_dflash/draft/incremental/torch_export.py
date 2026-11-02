@@ -299,9 +299,13 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
             else:
                 row['producer_resolution'] = 'UNRESOLVED_EXPLICIT_EDGE'
         return row
-    norms, sidecars, gathers, attention = [], {}, [], []
+    norms, sidecars, gathers, attention, zeros = [], {}, [], [], []
     for n in nodes:
         attrs = _attributes(n)
+        if n['type'] == 'ZerosLike':
+            zeros.append(dict(name=n['name'],
+                inputs=[port(d, i, n.get('input', [])) for i, d in enumerate(n.get('input_desc', []))],
+                outputs=[desc(d) for d in n.get('output_desc', [])]))
         if n['type'] == 'AdnFusedInferAttention':
             inputs = [port(d, i, n.get('input', [])) for i, d in enumerate(n.get('input_desc', []))]
             # TorchAir stores names in attributes before AIR serialization. The
@@ -375,7 +379,7 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
         sidecars[str(relative)] = member.stat().st_size
     inputs = [n for n in nodes if n['type'] == 'Data']
     outputs = [n for n in nodes if n['type'] == 'NetOutput']
-    result = dict(node_types=dict(counts), rms=norms, gather_indices=gathers, attention=attention, weight_files=sidecars,
+    result = dict(node_types=dict(counts), rms=norms, gather_indices=gathers, attention=attention, zeros_like=zeros, weight_files=sidecars,
                 validation_status='FAILED' if errors else 'PASSED_WITH_DEFERRED_SHAPES' if deferred_shapes else 'PASSED',
                 validation_errors=errors, deferred_shapes=deferred_shapes,
                 input_count=len(inputs), output_counts=[len(n.get('input_desc', [])) for n in outputs],
@@ -402,6 +406,7 @@ def inspect_pytorch_air(directory):
         mismatch_count=len(errors), mismatches=errors[:24], mismatches_truncated=len(errors) > 24,
         deferred_shape_count=len(inspection['deferred_shapes']), deferred_shapes=inspection['deferred_shapes'],
         attention_nodes=len(inspection['attention']), first_attention=first,
+        zeros_like=inspection['zeros_like'],
         node_types=inspection['node_types'], input_count=inspection['input_count'], output_counts=inspection['output_counts'],
         weight_files=len(inspection['weight_files']), expected_attention=manifest.get('attention'),
         scope='READ_ONLY_RETAINED_AIR; PRODUCER_DESCRIPTORS_ARE_DIAGNOSTIC_ONLY_NOT_SUBSTITUTED',
@@ -541,11 +546,10 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
     schema = _schema(descriptor, metadata)
     inspection = inspect_air(source / 'export.air', schema,
                              expected_norms=32, require_int32_indices=True, expected_attention=manifest.get('attention'))
-    def prepare_air(snapshot):
+    def prepare_air(raw):
         from .air_reshape import fold_reshape_chains
         from .air_zeros import materialize_zeros
-        with snapshot.open('rb') as stream:
-            prepared, evidence = fold_reshape_chains(stream.read((64 << 20) + 1), schema)
+        prepared, evidence = fold_reshape_chains(raw, schema)
         prepared, zeros = materialize_zeros(prepared, schema)
         evidence.update(reshape_policy=evidence['policy'], policy='draft-static-preparation-v2',
                         zero_count=zeros['zero_count'], zeros_like=zeros,
@@ -565,6 +569,24 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             runtime_integration='PENDING_PHYSICAL_ABI_AND_DEVICE_VALIDATION')
         _save(root / 'manifest.json', result)
         try:
+            transform = None
+            if manifest.get('attention', {}).get('policy') == 'target-cpro-fused-attention-v1':
+                # Validate the small source graph before copying multi-GB
+                # sidecars or invoking OMG --help. The snapshot must still
+                # match the bytes that were prepared here.
+                result['stage'] = 'air-preparation'
+                _save(root / 'manifest.json', result)
+                progress('Preparing static AIR before weight snapshots or OMG invocation')
+                with (source / 'export.air').open('rb') as stream:
+                    source_raw = stream.read((64 << 20) + 1)
+                prepared_raw, preparation = prepare_air(source_raw)
+                def transform(snapshot):
+                    with snapshot.open('rb') as stream:
+                        if stream.read((64 << 20) + 1) != source_raw:
+                            raise ValueError('source AIR changed after static preparation; snapshot differs')
+                    return prepared_raw, preparation
+            result['stage'] = 'compile'
+            _save(root / 'manifest.json', result)
             # Snapshot + generated sidecars + packed model coexist. Reuse the
             # proven external-compile/stream-pack path, not OMG's large embedded
             # serialization. Compiler scratch may exceed this lower bound.
@@ -576,7 +598,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                 ddk_id=ddk_id, timeout_seconds=timeout_seconds, input_layout='air-directory',
                 use_origin_format=True, save_weights_as_external_data=True,
                 tbe_diagnosis=tbe_diagnosis, progress=compiler_progress,
-                air_transform=prepare_air if manifest.get('attention', {}).get('policy') == 'target-cpro-fused-attention-v1' else None)
+                air_transform=transform)
             result['model_compilation'] = compiled['model_compilation']
             if 'air_preparation' in compiled:
                 evidence = compiled['air_preparation']
@@ -609,7 +631,10 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             result['next'] = 'Review compiled-interface.json; bind semantic KV slots and validate on device before promoting this candidate.'
         except Exception as error:
             result.update(status='FAILED', error=f'{type(error).__name__}: {error}')
-            result['compilation_diagnostics'] = compilation_diagnostics(root / 'compilation')
-            result['next'] = 'Inspect compilation_diagnostics and the retained compile.log before retrying this same build directory.'
+            if result['stage'] == 'air-preparation':
+                result['next'] = 'Inspect the reported source AIR node descriptors; no weight snapshot or OMG invocation occurred.'
+            else:
+                result['compilation_diagnostics'] = compilation_diagnostics(root / 'compilation')
+                result['next'] = 'Inspect compilation_diagnostics and the retained compile.log before retrying this same build directory.'
         _save(root / 'manifest.json', result)
         return result
