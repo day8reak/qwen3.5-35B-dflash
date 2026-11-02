@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_FUSED_AIR_VALIDATION_FAILED_FIELD_DIAGNOSIS_PENDING",
+    "status": "PYTORCH_FUSED_AIR_SPARSE_DESCRIPTOR_GATE_CORRECTED_FINALIZE_AND_OMG_PENDING",
     "entry": "targets/cpro/scripts/export_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Weight server: inspect retained draft/tests/export with export_incremental_draft.py --inspect-air. Resolve the reported attention field mismatch before replacing public AIR, transferring or compiling. No re-export is needed for this inspection.",
+    "next": "Weight server: finalize saved draft/tests/export into draft/air without re-exporting; transfer whole AIR to selected DDK and compile. Intermediate attention dimensions remain unknown until OMG inference and subsequent interface/device validation.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6006,12 +6006,47 @@
           "reported_stage": "torchair-export",
           "localized_stage": "POST_EXPORT_AIR_VALIDATION_BEFORE_OMG",
           "error": "Target CPro attention attributes or NZ/mask descriptors differ: AdnFusedInferAttention",
-          "field": "NOT_REPORTED_IN_OLD_ERROR",
+          "field": "SOURCE_Q_K_V_MASK_DIMENSIONS_NOT_RECORDED; INPUT_NAMES_NOT_RETAINED",
           "retained_directory": "draft/tests/export",
           "public_air_replaced": false,
-          "next": "READ_ONLY_INSPECT_AIR_EXPECTED_ACTUAL_AND_PRODUCER_DESCRIPTORS",
-          "diagnostic_host_checks": 11,
-          "diagnostic_scope": "SERIALIZED_GE_SCHEMA_FIXTURES_ONLY_NOT_ACTUAL_FAILED_AIR"
+          "next": "FINALIZE_RETAINED_AIR_THEN_TRANSFER_AND_OMG",
+          "diagnostic_host_checks": 28,
+          "diagnostic_scope": "SERIALIZED_GE_SCHEMA_RECOVERY_TESTS_WITH_USER_REPORTED_SPARSE_PATTERN; NO_ACTUAL_AIR_OR_OMG_EXECUTION",
+          "diagnosis": "24 missing-shape failures across six attention nodes; all recorded attributes matched. Mask input slot4 connected; absent shape is not a known conflicting shape.",
+          "user_inspection": {
+            "source": "USER_PASTED_INSPECT_AIR",
+            "attention_nodes": 6,
+            "rms_nodes": 32,
+            "inputs": 17,
+            "outputs": 14,
+            "file_constants": 82,
+            "mismatches": 24,
+            "mismatch_fields": "Q_K_V_SHAPES_AND_MASK_DESCRIPTOR_SEARCH",
+            "first_attention_attributes": "MATCHED",
+            "first_attention_qkv_mask_dtype": "DT_FLOAT16",
+            "first_attention_block_table": {
+              "dtype": "DT_INT32",
+              "shape": [
+                1,
+                7
+              ]
+            },
+            "first_attention_length_ports": {
+              "dtype": "DT_INT64",
+              "shape": [
+                1
+              ]
+            }
+          },
+          "correction": {
+            "missing_dimensions": "DEFERRED_TO_OMG_SHAPE_INFERENCE",
+            "names": "OPTIONAL_DESCRIPTOR_OR_ATTRIBUTE_NAMES; FIXED_TARGET_18_SLOT_SIGNATURE",
+            "known_shape_dtype_attribute_or_edge_conflicts": "REJECTED",
+            "expected_shapes_copied_into_actual": "NEVER",
+            "finalize": "RECHECK_METADATA_AND_SIDECARS_THEN_MOVE_RETAINED_BUNDLE; NO_TORCHAIR_REEXPORT",
+            "host_checks": 28,
+            "server_finalization": "NOT_YET_REPORTED"
+          }
         }
       }
     },

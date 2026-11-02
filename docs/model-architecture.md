@@ -141,6 +141,8 @@ flowchart LR
 
 长度端口沿用Target的INT64转换；Python调用的`pse_shift`按原Target converter接到GE的`all_seq_lengths_q`，GE `pse_shift`保持空，不把它当注意力bias。选择`inner_precise=2`只记录请求，不证明内部精度。融合改变了中间舍入边界，CPU布局模拟通过不等于厂商内核精度通过。本轮280步缓存／mask主机检查不替代重新编译、Load及板端数值测试。
 
+用户导出的AIR未记录Q/K/V/mask中间描述的shape及端口名。源图检查据原Target的18槽顺序核对连接和dtype，已记录shape仍需匹配；缺失shape保留为未知并交给OMG推导，不把上图设计尺寸当成已观察到的编译尺寸。
+
 ### 残差Add：为避免NPU输入降精度保留CPU计算
 
 ```mermaid

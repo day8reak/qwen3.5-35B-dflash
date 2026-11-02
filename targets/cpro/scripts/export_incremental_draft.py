@@ -18,6 +18,7 @@ def main(argv=None):
     source.add_argument('--prepared', help='shared prepared weight directory; no previous AIR/OMC required')
     source.add_argument('--import-air', help='move a completed PyTorch AIR bundle to --output without exporting or compiling')
     source.add_argument('--inspect-air', help='read an existing successful or failed PyTorch AIR export; no model or SDK execution')
+    source.add_argument('--finalize-air', help='recheck a saved Target-attention AIR after export failure and move it to --output; no re-export')
     parser.add_argument('--frontend', choices=('ge', 'pytorch'), default='ge')
     parser.add_argument('--torchair-pb2', help='installed TorchAir literal schema; normally discovered automatically')
     parser.add_argument('--replace', action='store_true', help='replace a finished AIR bundle after successful PyTorch export/import')
@@ -36,14 +37,19 @@ def main(argv=None):
         parser.error('--inspect-air is read-only; omit --output and --replace')
     if args.timeout_seconds <= 0:
         parser.error('--timeout-seconds must be positive')
-    if args.frontend == 'pytorch' and not (args.prepared or args.import_air or args.inspect_air):
+    if args.frontend == 'pytorch' and not (args.prepared or args.import_air or args.inspect_air or args.finalize_air):
         parser.error('PyTorch export requires --prepared')
-    if args.frontend == 'ge' and not args.import_air and (args.replace or args.torchair_pb2):
+    if args.frontend == 'ge' and not (args.import_air or args.finalize_air) and (args.replace or args.torchair_pb2):
         parser.error('--replace and --torchair-pb2 belong to the PyTorch candidate export')
     try:
         if args.inspect_air:
             from qwen35_moe_dflash.draft.incremental.torch_export import inspect_pytorch_air
             print(json.dumps(inspect_pytorch_air(args.inspect_air), ensure_ascii=False, indent=2, allow_nan=False), flush=True)
+            return 0
+        if args.finalize_air:
+            from qwen35_moe_dflash.draft.incremental.torch_export import finalize_pytorch_air
+            print(json.dumps(finalize_pytorch_air(args.finalize_air, args.output, replace=args.replace),
+                             ensure_ascii=False, allow_nan=False), flush=True)
             return 0
         if args.import_air:
             from qwen35_moe_dflash.draft.incremental.torch_export import import_pytorch_air

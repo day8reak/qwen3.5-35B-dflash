@@ -17,6 +17,13 @@ from qwen35_moe_dflash.common.artifacts import output_path, working_directory
 AIR_KIND = 'qwen35-incremental-draft-pytorch-air'
 OMC_KIND = 'qwen35-incremental-draft-pytorch-omc'
 GE_AIR_KIND = 'qwen35-incremental-draft-air'
+# Exactly one key/value tensor in the original Target CPro converter. Empty
+# optional inputs retain their slots even when AIR omits descriptor names.
+_ATTENTION_PORTS = ('query', 'key0', 'value0', 'pse_shift', 'atten_mask',
+    'actual_seq_lengths_q', 'actual_seq_lengths_kv', 'dequant_scale1', 'quant_scale1',
+    'dequant_scale2', 'quant_scale2', 'quant_offset2', 'antiquant_scale',
+    'antiquant_offset', 'block_table', 'kv_padding_size', 'all_seq_lengths_q',
+    'actual_seq_lengths_q_back')
 
 
 class AirValidationError(ValueError):
@@ -148,7 +155,64 @@ def import_pytorch_air(source, output, *, replace=False):
                 input_count=len(manifest['inputs']), output_count=len(manifest['outputs']),
                 attention_nodes=manifest.get('attention_nodes', 0),
                 rms_nodes=32, weight_files=manifest['weight_files'], model_compilation='NOT_RUN',
-                device_execution='NOT_RUN', numerical_validation='NOT_RUN', runtime_changed=False)
+                device_execution='NOT_RUN', numerical_validation='NOT_RUN', runtime_changed=False,
+                air_validation=manifest.get('air_validation', 'NOT_RECORDED'),
+                deferred_shape_count=manifest.get('deferred_shape_count', 0))
+
+
+def _finish_air_manifest(result, inspection):
+    for key in ('error', 'first_mismatch', 'manifest', 'inspection'):
+        result.pop(key, None)
+    result.update(status='PYTORCH_DRAFT_AIR_EXPORTED', stage='complete', air='export.air',
+        schema_file='air-schema.pb', rms_nodes=len(inspection['rms']),
+        weight_files=len(inspection['weight_files']), gather_index_dtype='int32',
+        gather_nodes=len(inspection['gather_indices']), attention_nodes=len(inspection['attention']),
+        air_validation=inspection['validation_status'],
+        deferred_shape_count=len(inspection['deferred_shapes']),
+        next='Transfer this whole AIR directory; compile it on the selected DDK server. Missing intermediate shapes require OMG inference; candidate is not runtime-bound.')
+
+
+def finalize_pytorch_air(source, output, *, replace=False):
+    """Recheck saved AIR after a post-export failure; never rerun TorchAir."""
+    if Path(source).is_symlink() or Path(output).is_symlink():
+        raise ValueError('AIR directory must not be a symlink')
+    source, destination = output_path(source), output_path(output)
+    if source != destination:
+        _disjoint(destination, source)
+    with _air_locks(source, destination):
+        result = json.loads((source / 'manifest.json').read_text())
+        if result.get('artifact_kind') != AIR_KIND:
+            raise ValueError('finalize requires a retained PyTorch Draft AIR bundle')
+        if result.get('status') == 'PYTORCH_DRAFT_AIR_EXPORTED':
+            _completed_air(source)
+        else:
+            if (result.get('status') != 'FAILED'
+                    or result.get('stage') not in {'torchair-export', 'air-validation'}
+                    or result.get('attention', {}).get('policy') != 'target-cpro-fused-attention-v1'):
+                raise ValueError('only a finished Target-attention AIR export failure can be finalized')
+            if source != destination:
+                _replaceable_air(destination, replace)
+            inspection = inspect_air(source / 'export.air',
+                _schema((source / 'air-schema.pb').read_bytes(), result['schema']),
+                expected_norms=32, require_int32_indices=True, expected_attention=result['attention'])
+            if (len(result.get('inputs', [])) != 17 or len(result.get('outputs', [])) != 14
+                    or inspection['input_count'] != 17 or inspection['output_counts'] != [14]
+                    or not inspection['weight_files']):
+                raise ValueError('saved AIR is incomplete: expected 17 inputs, 14 outputs and external weights')
+            result['recovered_export_failure'] = dict(stage=result['stage'], error=result.get('error'))
+            _finish_air_manifest(result, inspection)
+            _save(source / 'air-inspection.json', inspection)
+            _save(source / 'manifest.json', result)
+        if source != destination:
+            _install_air(source, destination, replace)
+    return dict(status='PYTORCH_DRAFT_AIR_INSTALLED', output=str(destination),
+        air=str(destination / 'export.air'), moved=source != destination,
+        input_count=len(result['inputs']), output_count=len(result['outputs']),
+        rms_nodes=result['rms_nodes'], attention_nodes=result.get('attention_nodes', 0),
+        weight_files=result['weight_files'], air_validation=result.get('air_validation'),
+        deferred_shape_count=result.get('deferred_shape_count', 0),
+        model_export='NOT_RUN_REUSED_RETAINED_AIR', model_compilation='NOT_RUN',
+        device_execution='NOT_RUN', numerical_validation='NOT_RUN', runtime_changed=False)
 
 
 @contextmanager
@@ -205,7 +269,7 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
     _, _, graph = _decode(schema, raw)
     nodes = graph['op']
     counts = Counter(n['type'] for n in nodes)
-    errors = []
+    errors, deferred_shapes = [], []
     def mismatch(node, field, expected, actual):
         errors.append(dict(node=node, field=field, expected=expected, actual=actual))
     if expected_norms is not None and (counts['RmsNorm'] != expected_norms or counts['AdnRmsNorm']):
@@ -240,6 +304,15 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
         attrs = _attributes(n)
         if n['type'] == 'AdnFusedInferAttention':
             inputs = [port(d, i, n.get('input', [])) for i, d in enumerate(n.get('input_desc', []))]
+            # TorchAir stores names in attributes before AIR serialization. The
+            # Target's fixed slot signature is still usable if names are absent.
+            keys = attrs.get('_input_name_key', {}).get('list', {}).get('s', [])
+            values = attrs.get('_input_name_value', {}).get('list', {}).get('i', [])
+            for key, index in zip(keys, values):
+                if isinstance(index, int) and 0 <= index < len(inputs):
+                    inputs[index]['mapped_name'] = key
+            for i, d in enumerate(inputs):
+                d['target_role'] = _ATTENTION_PORTS[i] if i < len(_ATTENTION_PORTS) else None
             observed_attrs = {key: attrs.get(key, {}).get('s' if key == 'input_layout' else 'f' if key == 'scale_value' else 'i')
                               for key in ('num_heads', 'num_key_value_heads', 'block_size', 'input_layout', 'inner_precise', 'scale_value')}
             attention.append(dict(name=n['name'], inputs=inputs,
@@ -251,19 +324,32 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
                                if key == 'scale_value' else actual == expected)
                     if not matched:
                         mismatch(n['name'], 'attrs.' + key, expected, actual)
-                shapes = [expected_attention['query_shape'], expected_attention['kv_shape'], expected_attention['kv_shape']]
-                for i, shape in enumerate(shapes):
+                if len(inputs) != 18 or len(n.get('input', [])) != 18:
+                    mismatch(n['name'], 'input_slots', {'descriptors': 18, 'references': 18},
+                             {'descriptors': len(inputs), 'references': len(n.get('input', []))})
+                required = {0: (expected_attention['query_shape'], 'DT_FLOAT16'),
+                    1: (expected_attention['kv_shape'], 'DT_FLOAT16'),
+                    2: (expected_attention['kv_shape'], 'DT_FLOAT16'),
+                    4: (expected_attention['mask_shape'], 'DT_FLOAT16'),
+                    5: ([1], 'DT_INT64'), 6: ([1], 'DT_INT64'),
+                    14: (expected_attention['block_table_shape'], 'DT_INT32'), 16: ([1], 'DT_INT64')}
+                for i, (shape, dtype) in required.items():
                     actual = inputs[i] if i < len(inputs) else {}
-                    if actual.get('shape') != shape:
+                    role = _ATTENTION_PORTS[i]
+                    if not actual.get('producer'):
+                        mismatch(n['name'], f'inputs[{i}].reference', 'RESOLVED_' + role, actual.get('reference'))
+                    for label in ('name', 'mapped_name'):
+                        allowed_names = (role, role[:-1]) if role in {'key0', 'value0'} else (role,)
+                        if actual.get(label) and actual[label] not in allowed_names:
+                            mismatch(n['name'], f'inputs[{i}].' + label, role, actual[label])
+                    if actual.get('shape') is None:
+                        deferred_shapes.append(dict(node=n['name'], slot=i, role=role, expected=shape,
+                            actual=None, status='DEFERRED_TO_OMG_SHAPE_INFERENCE',
+                            reason='SOURCE_DESCRIPTOR_DIMENSIONS_NOT_RECORDED'))
+                    elif actual['shape'] != shape:
                         mismatch(n['name'], f'inputs[{i}].shape', shape, actual.get('shape'))
-                    if 'DT_FLOAT16' not in actual.get('dtype_names', []):
-                        mismatch(n['name'], f'inputs[{i}].dtype', 'DT_FLOAT16', actual.get('dtype_names'))
-                for role, shape, dtype in (('atten_mask', expected_attention['mask_shape'], 'DT_FLOAT16'),
-                                           ('block_table', expected_attention['block_table_shape'], 'DT_INT32')):
-                    if not any(d['shape'] == shape and dtype in d['dtype_names'] for d in inputs):
-                        actual = [d for d in inputs if d.get('name') == role]
-                        mismatch(n['name'], 'inputs.' + role, {'shape': shape, 'dtype': dtype},
-                                 actual or {'matching_named_port': 'ABSENT; inspect recorded inputs'})
+                    if dtype not in actual.get('dtype_names', []):
+                        mismatch(n['name'], f'inputs[{i}].dtype', dtype, actual.get('dtype_names'))
         if n['type'] in {'Gather', 'GatherV2', 'GatherV2D'}:
             inputs = n.get('input_desc', [])
             indices = desc(inputs[1]) if len(inputs) > 1 else {}
@@ -290,7 +376,8 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
     inputs = [n for n in nodes if n['type'] == 'Data']
     outputs = [n for n in nodes if n['type'] == 'NetOutput']
     result = dict(node_types=dict(counts), rms=norms, gather_indices=gathers, attention=attention, weight_files=sidecars,
-                validation_status='FAILED' if errors else 'PASSED', validation_errors=errors,
+                validation_status='FAILED' if errors else 'PASSED_WITH_DEFERRED_SHAPES' if deferred_shapes else 'PASSED',
+                validation_errors=errors, deferred_shapes=deferred_shapes,
                 input_count=len(inputs), output_counts=[len(n.get('input_desc', [])) for n in outputs],
                 scope='SOURCE_GRAPH_ONLY_NOT_COMPILED_PRECISION_OR_RUNTIME_ABI')
     if strict and errors:
@@ -313,6 +400,7 @@ def inspect_pytorch_air(directory):
         source_error=manifest.get('error'), air=str(root / 'export.air'),
         validation_status=inspection['validation_status'], first_mismatch=errors[0] if errors else None,
         mismatch_count=len(errors), mismatches=errors[:24], mismatches_truncated=len(errors) > 24,
+        deferred_shape_count=len(inspection['deferred_shapes']), deferred_shapes=inspection['deferred_shapes'],
         attention_nodes=len(inspection['attention']), first_attention=first,
         node_types=inspection['node_types'], input_count=inspection['input_count'], output_counts=inspection['output_counts'],
         weight_files=len(inspection['weight_files']), expected_attention=manifest.get('attention'),
@@ -370,12 +458,7 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
             if inspection['input_count'] != 17 or inspection['output_counts'] != [14]:
                 raise ValueError('TorchAir source boundary does not contain all 17 inputs / 14 outputs')
             _save(root / 'air-inspection.json', inspection)
-            result.update(status='PYTORCH_DRAFT_AIR_EXPORTED', stage='complete', air='export.air',
-                schema_file='air-schema.pb', rms_nodes=len(inspection['rms']),
-                weight_files=len(inspection['weight_files']), gather_index_dtype='int32',
-                gather_nodes=len(inspection['gather_indices']),
-                attention_nodes=len(inspection['attention']),
-                next='Transfer this whole AIR directory; compile it on the selected DDK server. Candidate is not runtime-bound.')
+            _finish_air_manifest(result, inspection)
         except Exception as error:
             if isinstance(error, AirValidationError):
                 _save(root / 'air-inspection.json', error.inspection)
@@ -458,6 +541,8 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
         if 'attention' in manifest:
             result['attention'] = manifest['attention']
         result.update(artifact_kind=OMC_KIND, status='COMPILING', stage='compile', frontend='pytorch',
+            source_air_validation=inspection['validation_status'],
+            source_deferred_shape_count=len(inspection['deferred_shapes']),
             model_compilation='NOT_RUN', compiled_precision='NOT_VALIDATED', compiled_abi='NOT_BOUND',
             device_execution='NOT_RUN', numerical_validation='NOT_RUN', ddk_id=ddk_id,
             runtime_integration='PENDING_PHYSICAL_ABI_AND_DEVICE_VALIDATION')
