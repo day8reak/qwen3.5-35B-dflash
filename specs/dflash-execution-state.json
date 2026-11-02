@@ -964,7 +964,7 @@
     "maintenance_policy": "Homepage contains only a brief introduction and six direct links. Keep each primary page self-contained; operational pages contain short instructions and complete command blocks. Detailed development and historical evidence remain outside primary navigation."
   },
   "incremental_draft_task": {
-    "status": "FP32_PROBE_WEIGHT_CONVERSION_CONTROL_READY_FOR_USER_EXECUTION",
+    "status": "FP32_WEIGHT_CONTROL_NO_FIX_RETAINED_ADD_INSPECTION_PENDING",
     "context_gears": [
       16,
       64
@@ -980,7 +980,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "Analyze current retained Softmax/Add outputs, then compile only residual_fp32 and rms_builtin_heads with explicit --weight-data-type FP32. Reuse native and fixed vector slots. Compare Add rounding signatures and RmsNorm Load/y/rstd outcomes. This tests weight conversion, not an arithmetic-precision guarantee. See docs/current-status.md.",
+    "next_command": "FP32 weight option did not fix Add numerics or RmsNorm Load. Inspect retained Add placement and IR with the selected DDK schema; resolve arithmetic implementation and FP32 interface support before another compiler policy or custom-kernel trial. No model/native rebuild for inspection. See docs/current-status.md.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -1078,7 +1078,8 @@
     },
     "fp32_probe_execution_observation": "specs/incremental-draft-native-host-validation.json#fp32_probe_execution_observation",
     "residual_rounding_reproduction": "specs/incremental-draft-native-host-validation.json#residual_rounding_reproduction",
-    "fp32_weight_control_experiment": "specs/incremental-draft-native-host-validation.json#fp32_weight_control_experiment"
+    "fp32_weight_control_experiment": "specs/incremental-draft-native-host-validation.json#fp32_weight_control_experiment",
+    "fp32_add_implementation_research": "specs/incremental-draft-native-host-validation.json#fp32_add_implementation_research"
   },
   "draft_milestone_e2e_gate": {
     "policy": "EVERY_EXECUTABLE_DRAFT_MILESTONE_REQUIRES_BOARD_LOCAL_FULL_LOOP_SMOKE",

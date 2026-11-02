@@ -70,11 +70,13 @@ FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitc
 
 三者均未通过原小图阈值。Add普通行L2仅0.03065%，但大值抵消行达到708.78%：参考约0.01的位置可输出0或1，不能只看整体平均误差。Softmax大值行的峰值概率为0.998046875，参考为1.0。原语RMS的88%也不能视为约1%的阶段性可接受偏差。这些探针与原完整Draft的编译路径不同，原完整Draft精度结论保留。
 
-对同一确定性配方作主机复算，`FP32(FP16(FP16(x)+FP16(residual)))`重现了Add全部回传统计：整体与四组L2、最大误差、24873个失败元素及20个具体值。仅输出舍入或仅输入舍入各匹配这20个值中的12个。这是有效FP16舍入的强证据，尚不定位运行链路中的具体舍入位置，也不是内部指令类型证明。当前小图未显式请求FP16权重覆盖；源图的FP32声明不足以保证所选OMG默认策略下的中间算术。
+用户回传的完整张量分析确认：默认权重批次的Add全部32768个输出逐位匹配`FP32(FP16(FP16(x)+FP16(residual)))`；FP32直接相加匹配0个，仅输出舍入匹配20414个，仅输入舍入匹配16357个。Softmax的106496个输出均能精确表示为FP16。该结果确认了有效舍入特征，尚不定位转换发生在哪一层，也不是内部指令类型证明。
 
-`validate_draft_vector.py --analyze`新增整个张量的FP16往返精确表示计数，以及Add四类舍入模型与实际输出的逐位匹配数。使用当前Softmax／Add快照确认；命令见[当前阶段](current-status.md)。完整Draft尚未改图，当前探针不作为保留FP32计算的替换。
+随后显式请求`weight_data_type=FP32`：Add仍失败，整体L2为1.336101%，最大绝对误差0.989990234375，与默认权重批次的汇总误差相同；跨编译的完整输出尚未逐位比较。新批次内10次输出逐位稳定，均值0.6651ms，范围0.578–0.817ms，不能据此宣称加速。head RmsNorm仍在HIAI Load返回1，runtime为`800.631.120.010`。该选项对照结束，没有修复数值或加载问题。
 
-所选OMG帮助随后确认：`--weight_data_type`默认FP16，也支持FP32，仅控制原始FP32权重且未指定`compress_conf`的场景；没有列出中间算术保精度选项。新增显式FP32权重的两项对照：内置head RmsNorm检查含常量gamma的加载／数值，动态输入Add作为无浮点权重对照。这不是已证实的修复，实际编译／板端结果待回传。编译器保持`kirinx90`，不因帮助中的平台示例写成kirin9020就更换已工作的目标。
+所选OMG帮助说明`weight_data_type`仅控制原始FP32权重且未指定`compress_conf`的场景，未列出中间算术保精度开关。Add的两个操作数都是动态输入，没有浮点权重。完整Draft保持现有CPU FP32策略，下一步只读现有Add编译图；命令见[当前阶段](current-status.md)。
+
+公开[AscendC Add文档](https://asc.gitcode.com/api/SIMD-API/basic_api/memory_vector_compute/basic_arithmetic/Add.html)列出X90支持`float`运算；[华为算子工程工具文档](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/cannkit-creating-operator-project-msopgen)却注明KirinX90暂不支持float类型输入。它们描述的计算API和工程接口不同，当前DDK的自定义FP32输入接线仍待确认，不能将API支持当成可部署证明。
 
 当前图固定计算16行context投影，即使只追加2行，或某轮`valid_rows=0`，掩码也不会删除这段计算。当前脚本默认profiling样本为case2、追加2行；尚未独立读取本轮request确认。下一步先验证FP32区域的NPU编译路径，同时评估投影表达与有效行计算量；优化收益以同一输入的整模型墙钟确认。入口使用Conv2D是因为此前选定OMG拒绝K=16384的MatMul，不能直接换回原MatMul就宣称可用。
 

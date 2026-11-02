@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "FP32_PROBE_WEIGHT_CONVERSION_CONTROL_READY_FOR_USER_EXECUTION",
+    "status": "FP32_WEIGHT_CONTROL_NO_FIX_RETAINED_ADD_INSPECTION_PENDING",
     "entry": "targets/cpro/tools/validate_draft_vector.py",
     "commands": "docs/current-status.md",
     "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Analyze current retained Softmax/Add outputs, then compile only residual_fp32 and rms_builtin_heads with explicit --weight-data-type FP32. Reuse native and fixed vector slots. Compare Add rounding signatures and RmsNorm Load/y/rstd outcomes. This tests weight conversion, not an arithmetic-precision guarantee. See docs/current-status.md.",
+    "next": "FP32 weight option did not fix Add numerics or RmsNorm Load. Inspect retained Add placement and IR with the selected DDK schema; resolve arithmetic implementation and FP32 interface support before another compiler policy or custom-kernel trial. No model/native rebuild for inspection. See docs/current-status.md.",
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
       "independently_retrieved": false,
@@ -5874,6 +5874,7 @@
     },
     "fp32_probe_execution_observation": "specs/incremental-draft-native-host-validation.json#fp32_probe_execution_observation",
     "residual_rounding_reproduction": "specs/incremental-draft-native-host-validation.json#residual_rounding_reproduction",
-    "fp32_weight_control_experiment": "specs/incremental-draft-native-host-validation.json#fp32_weight_control_experiment"
+    "fp32_weight_control_experiment": "specs/incremental-draft-native-host-validation.json#fp32_weight_control_experiment",
+    "fp32_add_implementation_research": "specs/incremental-draft-native-host-validation.json#fp32_add_implementation_research"
   }
 }

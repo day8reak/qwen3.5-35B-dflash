@@ -23,7 +23,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "Analyze current retained Softmax/Add outputs, then compile only residual_fp32 and rms_builtin_heads with explicit --weight-data-type FP32. Reuse native and fixed vector slots. Compare Add rounding signatures and RmsNorm Load/y/rstd outcomes. This tests weight conversion, not an arithmetic-precision guarantee. See docs/current-status.md.",
+  "next": "FP32 weight option did not fix Add numerics or RmsNorm Load. Inspect retained Add placement and IR with the selected DDK schema; resolve arithmetic implementation and FP32 interface support before another compiler policy or custom-kernel trial. No model/native rebuild for inspection. See docs/current-status.md.",
   "latest_user_board_observation": {
     "source": "USER_PASTED_RECOVERY_JSON",
     "independently_retrieved": false,
@@ -178,7 +178,7 @@
     "gap_attribution": "UNRESOLVED_RUNTIME_DISPATCH_SYNCHRONIZATION_AND_INTERNAL_TRANSFERS_ARE_HYPOTHESES",
     "timestamp_caveat": "SAME_STREAM_CONV_AND_DEPENDENT_RESHAPE_STARTS_DIFFER_BY_2_US_WITH_CONV_DURATION_70968_US; DO_NOT_CONSTRUCT_DEVICE_TIMELINE_WITHOUT_CLOCK_SCOPE",
     "static_work": "C16_CONTEXT_PROJECTION_EXECUTES_FOR_PARTIAL_OR_ZERO_VALID_ROWS",
-    "next": "Analyze current retained Softmax/Add outputs, then compile only residual_fp32 and rms_builtin_heads with explicit --weight-data-type FP32. Reuse native and fixed vector slots. Compare Add rounding signatures and RmsNorm Load/y/rstd outcomes. This tests weight conversion, not an arithmetic-precision guarantee. See docs/current-status.md."
+    "next": "FP32 weight option did not fix Add numerics or RmsNorm Load. Inspect retained Add placement and IR with the selected DDK schema; resolve arithmetic implementation and FP32 interface support before another compiler policy or custom-kernel trial. No model/native rebuild for inspection. See docs/current-status.md."
   },
   "compiled_partition_observation": {
     "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
@@ -361,7 +361,7 @@
         "failing_elements": 24873
       }
     },
-    "next": "Analyze current retained Softmax/Add outputs, then compile only residual_fp32 and rms_builtin_heads with explicit --weight-data-type FP32. Reuse native and fixed vector slots. Compare Add rounding signatures and RmsNorm Load/y/rstd outcomes. This tests weight conversion, not an arithmetic-precision guarantee. See docs/current-status.md."
+    "next": "FP32 weight option did not fix Add numerics or RmsNorm Load. Inspect retained Add placement and IR with the selected DDK schema; resolve arithmetic implementation and FP32 interface support before another compiler policy or custom-kernel trial. No model/native rebuild for inspection. See docs/current-status.md."
   },
   "fp32_probe_failure_reporting_checks": {
     "status": "PASSED",
@@ -465,7 +465,17 @@
       "reported_actual": 1.0
     },
     "interpretation": "STRONG_EFFECTIVE_FP16_ROUNDING_EVIDENCE; ROUNDING_STAGE_AND_INTERNAL_INSTRUCTION_TYPE_UNRESOLVED",
-    "full_tensor_bitwise_match": "PENDING_USER_LOCAL_ANALYZE",
+    "full_tensor_bitwise_match": {
+      "source": "USER_PASTED_ANALYZE_FOR_DEFAULT_WEIGHT_BATCH",
+      "board_attempt": "/data/local/tmp/qwen35_vector_7984b40d383f42f3bbfbd49938d0d184",
+      "elements": 32768,
+      "fp32_add_matches": 0,
+      "output_round_only_matches": 20414,
+      "inputs_round_only_matches": 16357,
+      "inputs_and_output_round_matches": 32768,
+      "inputs_and_output_round_max_abs_error": 0.0,
+      "scope": "ITERATION_0_FULL_TENSOR; TEN_CALLS_REPEAT_BITWISE_STABLE; NOT_INTERNAL_INSTRUCTION_PROOF"
+    },
     "selected_omg_precision_controls": "HELP_RECEIVED_WEIGHT_TYPE_FP16_DEFAULT_OR_FP32; NO_DIRECT_ARITHMETIC_PRECISION_OPTION_LISTED",
     "full_draft_changed": false,
     "production_precision_policy_changed": false
@@ -508,13 +518,13 @@
     "platform_decision": "KEEP_PREVIOUSLY_WORKING_X90_TARGET; HELP_EXAMPLE_DOES_NOT_REPLACE_MODEL_CONFIGURATION"
   },
   "fp32_weight_control_experiment": {
-    "status": "HOST_CHECKS_PASSED_USER_COMPILATION_AND_DEVICE_PENDING",
+    "status": "USER_REPORTED_FLAG_ONLY_TRIAL_FAILED_TO_FIX",
     "cases": [
       "residual_fp32",
       "rms_builtin_heads"
     ],
     "weight_data_type": "FP32",
-    "hypothesis": "EXCLUDE_DEFAULT_FP16_CONVERSION_OF_RMS_CONSTANT_GAMMA_AS_LOAD_CONTRIBUTOR; DYNAMIC_ADD_HAS_NO_FLOAT_WEIGHT_CONTROL",
+    "hypothesis": "TEST_WHETHER_REQUESTING_FP32_WEIGHTS_ALONE_FIXES_RMS_LOAD; ADD_HAS_TWO_DYNAMIC_INPUTS_AND_NO_FLOAT_WEIGHT",
     "scope": "WEIGHT_CONVERSION_ONLY_NOT_ARITHMETIC_PRECISION_GUARANTEE",
     "stop_condition": "RMS_LOAD_STILL_FAILS_ENDS_THIS_FLAG_ONLY_TRIAL; SUCCESSFUL_LOAD_STILL_REQUIRES_Y_AND_RSTD_NUMERICS; REQUESTED_OPTIONS_ARE_NOT_COMPILED_CONSTANT_DTYPE_PROOF",
     "host_checks": 10,
@@ -528,6 +538,62 @@
     ],
     "full_draft_changed": false,
     "native_rebuild_required": false,
-    "local_test_sources": "NOT_PUBLISHED"
+    "local_test_sources": "NOT_PUBLISHED",
+    "device_observation": {
+      "source": "USER_PASTED_RECOVERY_JSON",
+      "independently_executed": false,
+      "board_attempt": "/data/local/tmp/qwen35_vector_8683f7a85a924fe784c17d2bf18702f9",
+      "runtime": "800.631.120.010",
+      "status": "FAILED",
+      "stage": "complete",
+      "device_execution": "PARTIAL_OUTPUTS_RETRIEVED",
+      "numerical_validation": "FAILED",
+      "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+      "compiler_options": {
+        "save_weights_as_external_data": "false",
+        "use_origin_format": "true",
+        "weight_data_type": "FP32"
+      },
+      "residual_fp32": {
+        "exitcode": 0,
+        "passed": false,
+        "finite": true,
+        "max_abs_error": 0.989990234375,
+        "relative_l2_error": 0.013361009945102177,
+        "repeat_bitwise_stable": true,
+        "warmup": 3,
+        "repetitions": 10,
+        "mean_ms": 0.6651,
+        "min_ms": 0.578,
+        "max_ms": 0.817,
+        "graphop_counts": {
+          "NPUCL": 1
+        },
+        "timing_scope": "SYNCHRONOUS_API_WALL; SNAPSHOTS_BETWEEN_CALLS_EXCLUDED"
+      },
+      "rms_builtin_heads": {
+        "exitcode": 1,
+        "stage": "HIAI_LOAD",
+        "status": 1,
+        "inference": "NOT_RUN"
+      },
+      "comparison": "ADD_AGGREGATE_ERRORS_UNCHANGED; CROSS_BUILD_BITWISE_EQUALITY_NOT_CHECKED; NO_SPEEDUP_CLAIM"
+    },
+    "next": "FP32 weight option did not fix Add numerics or RmsNorm Load. Inspect retained Add placement and IR with the selected DDK schema; resolve arithmetic implementation and FP32 interface support before another compiler policy or custom-kernel trial. No model/native rebuild for inspection. See docs/current-status.md."
+  },
+  "fp32_add_implementation_research": {
+    "status": "DOCUMENTED_API_SUPPORT_AND_ENGINEERING_INTERFACE_LIMIT; SELECTED_DDK_SUPPORT_UNRESOLVED",
+    "sources": [
+      {
+        "url": "https://asc.gitcode.com/api/SIMD-API/basic_api/memory_vector_compute/basic_arithmetic/Add.html",
+        "scope": "ASCENDC_MASTER_PREVIEW_API_LISTS_KIRIN_X90_ADD_FLOAT; NOT_INSTALLED_DDK_VALIDATION"
+      },
+      {
+        "url": "https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/cannkit-creating-operator-project-msopgen",
+        "scope": "MSOPGEN_ENGINEERING_GUIDE_SAYS_KIRIN_X90_FLOAT_INPUT_NOT_SUPPORTED; NOT_HARDWARE_ARITHMETIC_LIMIT"
+      }
+    ],
+    "decision": "NO_UNVERIFIED_FORCE_FP32_FLAG; KEEP_CURRENT_CPU_PRECISION_PATH_UNTIL_NPU_IMPLEMENTATION_AND_END_TO_END_INPUT_PRECISION_PASS",
+    "custom_kernel_integration": "NOT_IMPLEMENTED_OR_VALIDATED"
   }
 }
