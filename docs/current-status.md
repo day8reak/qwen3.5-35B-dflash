@@ -28,19 +28,45 @@ residual FP32 → graphop_data_cast_1 → FP16 ┘                       netoutp
 
 ## 2. 查找实现选择依据
 
-沿用现有`REPO_DIR`、`AI_RUN_DIR`、`CPRO_DDK_ROOT`。主图检查已完成，不必重复。下面只读当前Add的编译日志及所选OMG目录中的配置文本，不重新编译、构建runner或连接板端。使用`rg`筛选；每份文件最多显示规定条数，无匹配时返回1，不代表测试失败：
+沿用现有`REPO_DIR`、`AI_RUN_DIR`、`CPRO_DDK_ROOT`。主图检查已完成，不必重复。下面只用Python标准库读取Add编译日志和所选OMG目录的配置文本，不需要安装`rg`，不重新编译、构建runner或连接板端。日志最多显示120条匹配，配置每个文件最多12条，每行最多1000字符；达到上限会注明，零匹配不代表不支持。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-rg -n -i -m 120 \
-  'graphop_data_cast|netoutput_cast|precision|implementation|select.?kernel|custom_ascendc|add.*(dtype|support|kernel)|sum.*(dtype|support|kernel)' \
-  "$AI_RUN_DIR/draft/tests/vector/residual_fp32/omc/compile.log"
+PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import os, re
+from pathlib import Path
 
-rg -n -i -m 12 \
-  --glob '*.json' --glob '*.ini' --glob '*.cfg' \
-  --glob '*.md' --glob '*.txt' --glob '*.py' --glob '*.h' \
-  'npucl_implementation|execute_device_config|keep_origin_dtype|must_keep_origin_dtype|precision_mode' \
-  "$CPRO_DDK_ROOT/tools/tools_omg"
+def scan(paths, pattern, limit):
+    rx = re.compile(pattern, re.I)
+    total = 0
+    for path in paths:
+        if path.is_symlink():
+            continue
+        hits = 0
+        try:
+            with path.open(errors='replace') as stream:
+                for number, line in enumerate(stream, 1):
+                    if rx.search(line):
+                        print(f'{path}:{number}: {line.rstrip()[:1000]}')
+                        hits += 1
+                        total += 1
+                        if hits >= limit:
+                            print(f'[LIMIT] {path}: remaining lines not scanned')
+                            break
+        except OSError as error:
+            print(f'[READ_ERROR] {path}: {error}')
+    print(f'[MATCHES_SHOWN] {total}')
+
+log = Path(os.environ['AI_RUN_DIR']) / 'draft/tests/vector/residual_fp32/omc/compile.log'
+scan([log], r'graphop_data_cast|netoutput_cast|precision|implementation|select.?kernel|custom_ascendc|(?:add|sum).*(?:dtype|support|kernel)', 120)
+
+root = Path(os.environ['CPRO_DDK_ROOT']) / 'tools/tools_omg'
+if not root.is_dir():
+    raise SystemExit(f'Missing directory: {root}')
+extensions = {'.json', '.ini', '.cfg', '.md', '.txt', '.py', '.h'}
+paths = (p for p in sorted(root.rglob('*')) if p.is_file() and p.suffix in extensions)
+scan(paths, r'npucl_implementation|execute_device_config|keep_origin_dtype|must_keep_origin_dtype|precision_mode', 12)
+PY
 ```
 
 需查明配置的正式schema、可选实现及其FP32输入支持。`CheckSupport`行是候选查询，不等于最终选中；关键字或枚举值本身也不是有效配置证明。若本目录没有相关文本，请提供该DDK附带的配置说明或样例路径，不能从无匹配推断不支持。不要盲试实现编号：现有精度策略中的7表示`custom_ascendc_lib`，并非“强制FP32”。
