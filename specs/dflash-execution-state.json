@@ -980,7 +980,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "Run validate_draft_vector.py on the five existing OMCs: one load, 3 warmup and 10 measured calls per case; compare every output before full Draft integration. See docs/current-status.md.",
+    "next_command": "Reuse existing FP32 probe OMCs and the user-built runtime/native; update Python output binding and rerun validate_draft_vector.py in the same vector-run slot. See docs/current-status.md.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",

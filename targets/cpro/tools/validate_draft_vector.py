@@ -44,14 +44,20 @@ def member(root, name):
 
 
 def bind_io(document, declared, enums):
+    """Bind the public probe ABI, not compiler-internal producer connectivity.
+
+    Each supported probe has unique output (shape, dtype) pairs. NetOutput's
+    ordered descriptors therefore identify its reference buffers without
+    requiring a particular compiler-internal input reference syntax.
+    The runner still checks runtime counts/dimensions/storage before Process,
+    and comparison covers every output. This is not a model KV binder.
+    """
     from qwen35_moe_dflash.draft.compile_precision import _observed_desc
-    from qwen35_moe_dflash.draft.direct_abi import _ordered_edges
     graphs = document.get('graph', [])
     if len(graphs) != 1:
         raise ValueError('probe needs one compiled main graph')
     nodes = graphs[0]['op']
-    operations = {n['name']: n for n in nodes}
-    if len(operations) != len(nodes):
+    if len({n['name'] for n in nodes}) != len(nodes):
         raise ValueError('duplicate compiled node name')
     expected = {r['name']: (i, r) for i, r in enumerate(declared['inputs'])}
     inputs = []
@@ -72,8 +78,10 @@ def bind_io(document, declared, enums):
     net = [n for n in nodes if n.get('type') == 'NetOutput']
     if len(net) != 1:
         raise ValueError('missing or ambiguous compiled NetOutput')
-    descriptors = [_observed_desc(d, enums) for d in net[0]['input_desc']]
-    connections = _ordered_edges(net[0], operations, len(descriptors), enums, descriptors)
+    descs = net[0].get('input_desc')
+    if not isinstance(descs, list) or not descs or len(descs) != len(declared['outputs']):
+        raise ValueError('compiled probe output count differs from reference')
+    descriptors = [_observed_desc(d, enums) for d in descs]
     outputs = []
     for index, desc in enumerate(descriptors):
         # These small probes have unique output shapes (RMS y versus rstd).
@@ -83,11 +91,12 @@ def bind_io(document, declared, enums):
         if len(matches) != 1:
             raise ValueError('compiled output descriptor changed or is ambiguous')
         source, spec = matches[0]
-        outputs.append(dict(spec, index=index, fixture_index=source, bytes=math.prod(spec['shape'])*4,
-                            connection=connections[index]))
+        outputs.append(dict(spec, index=index, fixture_index=source, bytes=math.prod(spec['shape'])*4))
     if sorted(r['fixture_index'] for r in outputs) != list(range(len(declared['outputs']))):
         raise ValueError('compiled outputs do not cover every probe output once')
-    return dict(inputs=sorted(inputs, key=lambda r: r['index']), outputs=outputs)
+    return dict(inputs=sorted(inputs, key=lambda r: r['index']), outputs=outputs,
+                output_binding='UNIQUE_SHAPE_DTYPE_IN_COMPILED_NETOUTPUT_ORDER',
+                netoutput_input_metadata=net[0].get('input'))
 
 
 def prepare(compiled, out, ddk, ddk_id):

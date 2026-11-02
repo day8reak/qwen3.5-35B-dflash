@@ -6,12 +6,10 @@
 
 用户已回传5个小图全部编译成功。内置RmsNorm（hidden与head形状）、Softmax、残差Add均为1个NPUCL；RMS原语链为2个NPUCL＋1个CPUCL。下一步复用这些OMC，对每个小图加载一次，预热3次，再测10次同步`Process`并比较全部输出。原语RMS作为分段路径的对照。
 
-在已加载项目环境的DDK服务器执行：
+native runner已构建成功；上一次失败停在主机的NetOutput内部连线检查，未启动板端。小图绑定已改用编译后的有序输出描述，并保留shape、dtype、输出数量及唯一性检查。直接更新代码，复用原OMC和runner重试：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$AI_RUN_DIR/runtime/native" --replace
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --compiled "$AI_RUN_DIR/draft/tests/vector" \
   --config "$AI_RUN_DIR/runtime/runtime.json" \
@@ -27,11 +25,11 @@ python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --output "$AI_RUN_DIR/draft/tests/vector-result"
 ```
 
-若返回`VECTOR_VALIDATION_PENDING`，稍后重复回收命令。结果保存在`vector-result/result.json`：每项包含数值结果、10次API耗时、均值、最大值及输出逐字节重复性。失败看对应`<case>.stderr`；已确认结束后可复用相同测试目录。只重建runner，不重编小图或完整Draft。
+若返回`VECTOR_VALIDATION_PENDING`，稍后重复回收命令。结果保存在`vector-result/result.json`：每项包含数值结果、10次API耗时、均值、最大值及输出逐字节重复性。失败看对应`<case>.stderr`。脚本会清理本次`NOT_RUN`的失败执行目录并复用同名槽位，不需要手动删除或重编。
 
 小图预设逐元素容差为`atol=1e-5, rtol=1e-4`，检查有限值；输入含零行、大值、小值、Softmax掩码及残差抵消。每个实测调用都保留快照，文件写入与外部输出拷贝不计入API耗时。这是小图诊断时延，不能相加预测完整Draft时延。编译归属和输出一致也不单独证明内部指令精度。
 
-验证工具已通过16项本地检查，包括参考绑定、全部输出比较、native连续调用、归档与恢复；本地使用假执行器及模拟传输，所选OHOS SDK构建与板端验证等待上述命令回传。完整Draft的原精度阈值保持不变。
+验证工具此前通过16项本地检查，包括参考绑定、全部输出比较、native连续调用、归档与恢复。本次补查输出绑定与失败槽位重用；本地夹具不能替代现有OMC的设备验证。完整Draft的KV绑定和原精度阈值保持不变。
 
 ## 2. 后续接入顺序
 

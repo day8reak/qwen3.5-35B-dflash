@@ -5807,7 +5807,7 @@
     "commands": "docs/current-status.md",
     "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Run validate_draft_vector.py on the five existing OMCs: one load, 3 warmup and 10 measured calls per case; compare every output before full Draft integration. See docs/current-status.md.",
+    "next": "Reuse existing FP32 probe OMCs and the user-built runtime/native; update Python output binding and rerun validate_draft_vector.py in the same vector-run slot. See docs/current-status.md.",
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
       "independently_retrieved": false,

@@ -23,7 +23,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "Run validate_draft_vector.py on the five existing OMCs: one load, 3 warmup and 10 measured calls per case; compare every output before full Draft integration. See docs/current-status.md.",
+  "next": "Reuse existing FP32 probe OMCs and the user-built runtime/native; update Python output binding and rerun validate_draft_vector.py in the same vector-run slot. See docs/current-status.md.",
   "latest_user_board_observation": {
     "source": "USER_PASTED_RECOVERY_JSON",
     "independently_retrieved": false,
@@ -278,5 +278,21 @@
     ],
     "main_draft_model_changed": false,
     "production_precision_policy_changed": false
+  },
+  "fp32_probe_prepare_fix": {
+    "status": "HOST_CHECKS_PASSED_USER_OMC_RERUN_PENDING",
+    "source": "USER_PASTED_BUILD_AND_PREPARE_LOG",
+    "native_build": "USER_REPORTED_COMPLETED",
+    "observed_error": "ValueError: compiled NetOutput input reference is unresolved",
+    "device_execution": "NOT_RUN",
+    "raw_user_omc_metadata": "NOT_RECEIVED",
+    "change": "Only bounded probe outputs bind by unique shape/dtype in compiled NetOutput descriptor order; internal edge strings are retained as metadata, not required for this ABI.",
+    "runtime_checks": "EXISTING_HIAI_COUNTS_DIMENSIONS_FORMAT_AND_STORAGE; ALL_OUTPUTS_COMPARED",
+    "checks": 6,
+    "validation_scope": "SYNTHETIC_COMPILED_METADATA_AND_LOCAL_PREPARATION_NOT_USER_OMC_OR_DEVICE",
+    "full_draft_kv_binding_changed": false,
+    "native_code_changed": false,
+    "model_recompile_required": false,
+    "local_test_sources": "NOT_PUBLISHED"
   }
 }

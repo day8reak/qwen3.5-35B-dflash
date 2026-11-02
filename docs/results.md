@@ -60,6 +60,8 @@ FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitc
 
 这为减少原27个CPUCL提供了可验证的替换路径，尚不是整模型加速结果。`validate_draft_vector.py`复用这些OMC，分别预热3次、执行10次并逐次比较输出；命令见[当前阶段](current-status.md)。完整Draft尚未改图，设备精度及小图时延待回传。
 
+用户已构建native runner，但首次小图验证在主机prepare阶段被内部连线解析拒绝，`device_execution=NOT_RUN`。验证工具改为按小图唯一的输出shape、dtype和编译槽位绑定参考，runner继续核对运行时尺寸，逐次比较所有输出；此次修复无需重编OMC或runner。
+
 当前图固定计算16行context投影，即使只追加2行，或某轮`valid_rows=0`，掩码也不会删除这段计算。当前脚本默认profiling样本为case2、追加2行；尚未独立读取本轮request确认。下一步先验证FP32区域的NPU编译路径，同时评估投影表达与有效行计算量；优化收益以同一输入的整模型墙钟确认。入口使用Conv2D是因为此前选定OMG拒绝K=16384的MatMul，不能直接换回原MatMul就宣称可用。
 
 当前性能目标为**C16／cap192／K15，常驻预热后proposal同步`Process`平均≤50ms**，包含API内部调度、同步和搬运，加载与初始补齐另计。计划相同输入3次预热、10次计时，并报告最大值；该目标尚未达到。当前518.990ms是单轮profiling读数，不作为已完成预热基准。优化顺序为减少CPU/NPU分段、减少context投影无效计算、检查词表head和ArgMax；不以约1%的阶段误差接受替代新图精度复查。
