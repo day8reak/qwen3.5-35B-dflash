@@ -964,7 +964,7 @@
     "maintenance_policy": "Homepage contains only a brief introduction and six direct links. Keep each primary page self-contained; operational pages contain short instructions and complete command blocks. Detailed development and historical evidence remain outside primary navigation."
   },
   "incremental_draft_task": {
-    "status": "FP32_PROBE_EXECUTION_FAILURE_DETAILS_PENDING",
+    "status": "FP32_BUILTIN_RMS_LOAD_FAILED_PARTIAL_RESULTS_PENDING",
     "context_gears": [
       16,
       64
@@ -980,7 +980,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "Recover the same completed vector-run with updated validate_draft_vector.py to expose first child exit code and stderr; do not relaunch or recompile before diagnosis. See docs/current-status.md.",
+    "next_command": "Recover the completed vector-run to compare and retain primitive RMS outputs and timing; then run --cases softmax_fp32 residual_fp32 rms_builtin_heads with existing OMC/native in the same fixed slots. Builtin hidden RMS failed HIAI Load; cause unresolved. See docs/current-status.md.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -1075,7 +1075,8 @@
         }
       },
       "meaning": "COMPILED_PLACEMENT_ONLY_NOT_DEVICE_NUMERICS_INTERNAL_FP32_PROOF_OR_SPEEDUP"
-    }
+    },
+    "fp32_probe_execution_observation": "specs/incremental-draft-native-host-validation.json#fp32_probe_execution_observation"
   },
   "draft_milestone_e2e_gate": {
     "policy": "EVERY_EXECUTABLE_DRAFT_MILESTONE_REQUIRES_BOARD_LOCAL_FULL_LOOP_SMOKE",

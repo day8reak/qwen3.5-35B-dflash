@@ -154,6 +154,13 @@ def _summary(root, source, report):
     reports = list(_reports(root / source))
     selected = report or next((r for r in reports if _closed(r)), reports[0] if reports else {})
     compact = {k: selected[k] for k in keys if k in selected}
+    if selected.get('artifact_kind') == 'qwen35-draft-vector-validation':
+        for key in ('requested_cases', 'validated_cases', 'numerical_scope', 'execution_diagnostics',
+                    'warmup', 'repetitions', 'atol', 'rtol', 'timing_scope'):
+            if key in selected:
+                compact[key] = selected[key]
+        case_keys = ('case', 'passed', 'mean_ms', 'min_ms', 'max_ms', 'repeat_bitwise_stable', 'graphop_counts')
+        compact['cases'] = [{k: row[k] for k in case_keys if k in row} for row in selected.get('cases', [])]
     compact['source_directory'] = source
     _save(destination / 'result.json', compact)
     for path in (root / source).rglob('*.csv'):

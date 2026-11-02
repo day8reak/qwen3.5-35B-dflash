@@ -23,7 +23,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "Recover the same completed vector-run with updated validate_draft_vector.py to expose first child exit code and stderr; do not relaunch or recompile before diagnosis. See docs/current-status.md.",
+  "next": "Recover the completed vector-run to compare and retain primitive RMS outputs and timing; then run --cases softmax_fp32 residual_fp32 rms_builtin_heads with existing OMC/native in the same fixed slots. Builtin hidden RMS failed HIAI Load; cause unresolved. See docs/current-status.md.",
   "latest_user_board_observation": {
     "source": "USER_PASTED_RECOVERY_JSON",
     "independently_retrieved": false,
@@ -178,7 +178,7 @@
     "gap_attribution": "UNRESOLVED_RUNTIME_DISPATCH_SYNCHRONIZATION_AND_INTERNAL_TRANSFERS_ARE_HYPOTHESES",
     "timestamp_caveat": "SAME_STREAM_CONV_AND_DEPENDENT_RESHAPE_STARTS_DIFFER_BY_2_US_WITH_CONV_DURATION_70968_US; DO_NOT_CONSTRUCT_DEVICE_TIMELINE_WITHOUT_CLOCK_SCOPE",
     "static_work": "C16_CONTEXT_PROJECTION_EXECUTES_FOR_PARTIAL_OR_ZERO_VALID_ROWS",
-    "next": "Run validate_draft_vector.py on the five existing OMCs: one load, 3 warmup and 10 measured calls per case; compare every output before full Draft integration. See docs/current-status.md."
+    "next": "Recover the completed vector-run to compare and retain primitive RMS outputs and timing; then run --cases softmax_fp32 residual_fp32 rms_builtin_heads with existing OMC/native in the same fixed slots. Builtin hidden RMS failed HIAI Load; cause unresolved. See docs/current-status.md."
   },
   "compiled_partition_observation": {
     "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
@@ -296,7 +296,7 @@
     "local_test_sources": "NOT_PUBLISHED"
   },
   "fp32_probe_execution_observation": {
-    "source": "USER_PASTED_LAUNCH_AND_RECOVERY_JSON",
+    "source": "USER_PASTED_RECOVERY_JSON_WITH_CHILD_EXIT_CODES_AND_STDERR",
     "independently_retrieved": false,
     "board_attempt": "/data/local/tmp/qwen35_vector_da07af337d41484e99dfad93e975d5d6",
     "status": "FAILED",
@@ -304,9 +304,27 @@
     "device_execution": "FAILED_OUTPUTS_RETRIEVED",
     "numerical_validation": "NOT_RUN",
     "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
-    "error": "probe execution/archive failed; inspect per-case stderr and exitcode",
-    "cause": "UNKNOWN_PENDING_CHILD_EXIT_CODES_AND_STDERR",
-    "next": "Recover the same completed vector-run with updated validate_draft_vector.py to expose first child exit code and stderr; do not relaunch or recompile before diagnosis. See docs/current-status.md."
+    "error": "HIAI Load failed: 1",
+    "cause": "LOAD_FAILURE_OBSERVED; UNDERLYING_MODEL_RUNTIME_COMPATIBILITY_CAUSE_UNRESOLVED",
+    "next": "Recover the completed vector-run to compare and retain primitive RMS outputs and timing; then run --cases softmax_fp32 residual_fp32 rms_builtin_heads with existing OMC/native in the same fixed slots. Builtin hidden RMS failed HIAI Load; cause unresolved. See docs/current-status.md.",
+    "failure_stage": "HIAI_LOAD_BEFORE_INFERENCE",
+    "runtime_version": "800.631.120.010",
+    "native_exitcode": 1,
+    "archive_exitcode": 0,
+    "case_exitcodes": {
+      "rms_primitive_hidden": 0,
+      "rms_builtin_hidden": 1,
+      "rms_builtin_heads": null,
+      "softmax_fp32": null,
+      "residual_fp32": null
+    },
+    "first_failure": {
+      "case": "rms_builtin_hidden",
+      "exitcode": 1,
+      "stderr": "HIAI Load failed: 1"
+    },
+    "primitive_rms": "PROCESS_EXIT_ZERO; OUTPUT_COMPARISON_AND_TIMING_PENDING_RECOVERY",
+    "remaining_cases": "NOT_STARTED_AFTER_FIRST_FAILED_CHILD"
   },
   "fp32_probe_failure_reporting_checks": {
     "status": "PASSED",
@@ -316,5 +334,28 @@
     "local_test_sources": "NOT_PUBLISHED",
     "model_execution_on_recovery": false,
     "native_code_changed": false
+  },
+  "fp32_probe_partial_recovery_checks": {
+    "status": "PASSED",
+    "checks": 13,
+    "scope": "LOCAL_HOST_FIXTURES_MOCKED_TRANSPORT_AND_REAL_SHELL_CONTROL_FLOW; NO_DEVICE_EXECUTION",
+    "coverage": [
+      "legacy five-case request recovers completed primitive output after later Load failure",
+      "partial numeric pass remains batch FAILED and nonzero CLI exit",
+      "all ten completed snapshots compared; corruption and truncation remain failures",
+      "failed-case partial snapshots never compared as completed calls",
+      "archive failure and zero completed probes skip tensor retrieval",
+      "missing duplicate unexpected linked and oversized archive members rejected",
+      "pending request retains lock; completed recovery never relaunches and releases only owned lock",
+      "selected preparation uploads and request metadata include only requested models in order",
+      "subset success is scoped to named requested and validated cases",
+      "real shell selected order and first-failure stop",
+      "reused fixed slots preserve compact per-case timing without tensor snapshots",
+      "invalid selection and recovery selection override rejected"
+    ],
+    "native_code_changed": false,
+    "model_recompile_required": false,
+    "native_rebuild_required": false,
+    "local_test_sources": "NOT_PUBLISHED"
   }
 }

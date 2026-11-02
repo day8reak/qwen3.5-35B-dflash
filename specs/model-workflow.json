@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "FP32_PROBE_EXECUTION_FAILURE_DETAILS_PENDING",
+    "status": "FP32_BUILTIN_RMS_LOAD_FAILED_PARTIAL_RESULTS_PENDING",
     "entry": "targets/cpro/tools/validate_draft_vector.py",
     "commands": "docs/current-status.md",
     "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Recover the same completed vector-run with updated validate_draft_vector.py to expose first child exit code and stderr; do not relaunch or recompile before diagnosis. See docs/current-status.md.",
+    "next": "Recover the completed vector-run to compare and retain primitive RMS outputs and timing; then run --cases softmax_fp32 residual_fp32 rms_builtin_heads with existing OMC/native in the same fixed slots. Builtin hidden RMS failed HIAI Load; cause unresolved. See docs/current-status.md.",
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
       "independently_retrieved": false,
@@ -5871,6 +5871,7 @@
         }
       },
       "meaning": "COMPILED_PLACEMENT_ONLY_NOT_DEVICE_NUMERICS_INTERNAL_FP32_PROOF_OR_SPEEDUP"
-    }
+    },
+    "fp32_probe_execution_observation": "specs/incremental-draft-native-host-validation.json#fp32_probe_execution_observation"
   }
 }

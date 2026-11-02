@@ -33,6 +33,13 @@ WARMUP, REPETITIONS = 3, 10
 ATOL, RTOL = 1e-5, 1e-4
 
 
+def selected_cases(names, available=CASES):
+    names = list(names)
+    if not names or any(name not in available for name in names) or len(set(names)) != len(names):
+        raise ValueError('select one or more distinct available probe cases')
+    return names
+
+
 def member(root, name):
     relative = Path(name)
     if relative.is_absolute() or '..' in relative.parts:
@@ -99,7 +106,7 @@ def bind_io(document, declared, enums):
                 netoutput_input_metadata=net[0].get('input'))
 
 
-def prepare(compiled, out, ddk, ddk_id):
+def prepare(compiled, out, ddk, ddk_id, selection=CASES):
     from qwen35_moe_dflash.toolchain.omc_container import read_container, read_partition
     from qwen35_moe_dflash.toolchain.omc_wire import load_schema
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
@@ -110,6 +117,8 @@ def prepare(compiled, out, ddk, ddk_id):
     rows = report['cases']
     if len(rows) != len(CASES) or {r['case'] for r in rows} != set(CASES):
         raise ValueError('expected all five distinct compiled probes')
+    by_name = {r['case']: r for r in rows}
+    rows = [by_name[name] for name in selected_cases(selection)]
     schema = load_schema(Path(ddk)/'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')
     enums = _enum_fields(schema)
     cases = []
@@ -154,12 +163,16 @@ def prepare(compiled, out, ddk, ddk_id):
     return result
 
 
-def compare(fixture, native, *, allow_host_fake=False):
+def compare(fixture, native, *, selection=None, allow_host_fake=False):
     import numpy as np
     meta = read_json(fixture/'manifest.json')
+    requested = selected_cases(c['case'] for c in meta['cases'])
+    selected = selected_cases(requested if selection is None else selection, requested)
     cases = []
     for case in meta['cases']:
         name = case['case']
+        if name not in selected:
+            continue
         result = read_json(native/name/'result.json')
         expected_kind = 'host-fake-hiai' if allow_host_fake else 'device-hiai'
         timings = result.get('api_us', [])
@@ -198,6 +211,7 @@ def compare(fixture, native, *, allow_host_fake=False):
     passed = all(r['passed'] for r in cases)
     return dict(status='PASSED' if passed else 'NUMERICAL_FAILED', numerical_validation='PASSED' if passed else 'FAILED',
         cases=cases, warmup=WARMUP, repetitions=REPETITIONS, atol=meta['atol'], rtol=meta['rtol'],
+        validated_cases=selected, requested_cases=requested,
         repeat_bitwise_stable=all(r['repeat_bitwise_stable'] for r in cases),
         timing_scope='SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_BETWEEN_CALLS_EXCLUDED',
         full_draft_validation='NOT_RUN', internal_instruction_precision='NOT_PROVEN_BY_OUTPUT_MATCH')
@@ -235,8 +249,8 @@ def start(args, out):
         env = read_json(config.parent/cfg['assets'])['environment']
         with (source.parent/('.'+source.name+'.lock')).open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            meta = prepare(source, out, args.ddk_root, env['ddk_id'])
-        state.update(status='PREPARED', stage='prepared')
+            meta = prepare(source, out, args.ddk_root, env['ddk_id'], args.cases or CASES)
+        state.update(status='PREPARED', stage='prepared', requested_cases=[c['case'] for c in meta['cases']])
         if not args.apply:
             return state
         native = (config.parent/cfg.get('native_directory', 'native')).resolve()
@@ -256,7 +270,8 @@ def start(args, out):
         exe, serial, server = _environment(); token = uuid.uuid4().hex
         board = PurePosixPath(PREFIX+token)
         plan = dict(artifact_kind=KIND, token=token, board_attempt=str(board), serial=serial,
-                    hdc_server=server, runtime=env, fixture_sha256=sha256_file(out/'fixture/manifest.json'))
+                    hdc_server=server, runtime=env, cases=[c['case'] for c in meta['cases']],
+                    fixture_sha256=sha256_file(out/'fixture/manifest.json'))
         _save(out/'request.json', plan)
         state.update(board_attempt=str(board), stage='board-preflight')
         hdc = Hdc(exe, serial, server, out, 180)
@@ -276,7 +291,7 @@ def start(args, out):
         if _space(space) < sum(r['bytes'] for r in uploads)+2*output_bytes+(64 << 20):
             raise OSError('insufficient board space for small probe request')
         hdc.shell('mkdir '+q(str(board))+' && printf "%s\\n" '+q(token)+' > '+q(str(board/'owner'))
-                  +' && mkdir '+shlex.join(str(board/p) for p in ['lib', 'outputs', *CASES]), 'vector-directory')
+                  +' && mkdir '+shlex.join(str(board/p) for p in ['lib', 'outputs', *plan['cases']]), 'vector-directory')
         for row in uploads:
             hdc.send(row['local'], board/row['remote'])
             hdc.shell(_identity_guard(board/row['remote'], row), 'vector-upload')
@@ -303,27 +318,35 @@ def start(args, out):
     return state
 
 
-def extract(archive, destination, meta):
+def extract(archive, destination, meta, *, selection=None):
+    requested = selected_cases(c['case'] for c in meta['cases'])
+    selected = selected_cases(requested if selection is None else selection, requested)
     expected = {}
     for case in meta['cases']:
         expected[case['case']+'/result.json'] = None
         for i in range(REPETITIONS):
             expected[f'{case["case"]}/{i}.bin'] = sum(r['bytes'] for r in case['outputs'])
+    required = {name for name in expected if name.split('/')[0] in selected}
     with tarfile.open(archive) as stream:
         members = [m for m in stream.getmembers() if not m.isdir()]
         names = [m.name.removeprefix('./') for m in members]
-        if len(names) != len(set(names)) or set(names) != set(expected):
-            raise ValueError('archive does not contain exactly five complete probe results')
+        if len(names) != len(set(names)) or not required <= set(names) <= set(expected):
+            raise ValueError('archive has missing completed outputs or unexpected probe members')
         for m, name in zip(members, names):
             size = expected[name]
-            if not m.isfile() or (size is None and not 0 < m.size < 65536) or (size is not None and m.size != size):
+            limit = 65535 if size is None else size
+            if not m.isfile() or not 0 <= m.size <= limit:
                 raise ValueError('invalid archive member extent or type')
+            if name not in required:
+                continue  # Failed-case partial snapshots are never compared as completed calls.
+            if (size is None and m.size == 0) or (size is not None and m.size != size):
+                raise ValueError('completed probe output is truncated')
             path = destination/name; path.parent.mkdir(parents=True, exist_ok=True)
             with stream.extractfile(m) as src, path.open('xb') as dst:
                 shutil.copyfileobj(src, dst)
 
 
-def execution_diagnostics(out):
+def execution_diagnostics(out, selection=CASES):
     """Explain a completed request from retained logs, without model execution."""
     def tail(name, limit=3072):
         path = out/name
@@ -342,7 +365,7 @@ def execution_diagnostics(out):
             raw = stream.read(64).strip()
         return int(raw) if re.fullmatch(r'[0-9]{1,3}', raw) and int(raw) <= 255 else None
 
-    codes = {name: code(name+'.exitcode') for name in CASES}
+    codes = {name: code(name+'.exitcode') for name in selected_cases(selection)}
     report = dict(native_exitcode=code('native.exitcode'), archive_exitcode=code('archive.exitcode'),
                   case_exitcodes=codes, errors=[])
     failed = next((name for name, value in codes.items() if value not in (None, 0)), None)
@@ -386,19 +409,24 @@ def recover(root, out):
         if done != token:
             raise ValueError('completion belongs to another request')
         complete = True; state['device_execution'] = 'FAILED_OUTPUTS_RETRIEVED'
+        requested = selected_cases(plan.get('cases', CASES))
+        state['requested_cases'] = requested
         for name in ('native.exitcode', 'archive.exitcode', 'supervisor.stdout', 'supervisor.stderr'):
             _receive(hdc, board, out, name)
-        for name in CASES:
+        for name in requested:
             for suffix in ('stdout', 'stderr', 'exitcode'):
                 _receive(hdc, board, out, name+'.'+suffix)
-        diagnostics = execution_diagnostics(out)
+        diagnostics = execution_diagnostics(out, requested)
         state['execution_diagnostics'] = diagnostics
-        if diagnostics['errors']:
+        completed = [name for name in requested if diagnostics['case_exitcodes'][name] == 0]
+        if diagnostics['archive_exitcode'] != 0 or not completed:
             raise ValueError('; '.join(diagnostics['errors']))
         fixture = root/'fixture'
         if sha256_file(fixture/'manifest.json') != plan['fixture_sha256']:
             raise ValueError('retained fixture manifest changed')
         meta = read_json(fixture/'manifest.json')
+        if [c['case'] for c in meta['cases']] != requested:
+            raise ValueError('request case selection differs from retained fixtures')
         for case in meta['cases']:
             for direction, prefix in (('inputs', 'input'), ('outputs', 'golden')):
                 for spec in case[direction]:
@@ -411,8 +439,13 @@ def recover(root, out):
             raise ValueError('unexpected output archive size')
         if _receive(hdc, board, out, 'outputs.tar') is None:
             raise ValueError('missing output archive')
-        extract(out/'outputs.tar', out/'native', meta)
-        state.update(compare(fixture, out/'native'), stage='complete', device_execution='EXECUTED_OUTPUTS_RETRIEVED')
+        extract(out/'outputs.tar', out/'native', meta, selection=completed)
+        state.update(compare(fixture, out/'native', selection=completed), stage='complete',
+                     device_execution='EXECUTED_OUTPUTS_RETRIEVED')
+        if diagnostics['errors']:
+            state.update(status='FAILED', device_execution='PARTIAL_OUTPUTS_RETRIEVED',
+                numerical_validation=('PARTIAL_PASSED' if state['numerical_validation'] == 'PASSED' else 'FAILED'),
+                numerical_scope='COMPLETED_CASES_ONLY', error='; '.join(diagnostics['errors']))
     except Exception as error:
         state.update(status='FAILED', error=f'{type(error).__name__}: {error}')
     finally:
@@ -434,13 +467,14 @@ def recover(root, out):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compiled')
+    parser.add_argument('--cases', nargs='+', choices=CASES, help='Only execute these existing probes, in the supplied order')
     parser.add_argument('--config')
     parser.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     parser.add_argument('--recover')
     parser.add_argument('--output', required=True)
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
-    if args.recover and (args.apply or args.config or args.compiled):
+    if args.recover and (args.apply or args.config or args.compiled or args.cases):
         parser.error('recovery only accepts the original execution and separate output')
     if not args.recover and not all((args.config, args.compiled, args.ddk_root)):
         parser.error('start requires --config, --compiled and CPRO_DDK_ROOT/--ddk-root')

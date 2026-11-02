@@ -48,7 +48,7 @@ Conv2D占算子合计约49.8%，其时长相当于整模型推理的13.7%。518.
 
 FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitcode.com/api/SIMD-API/adv_api/normalization/RmsNorm.html)列出Kirin X90与float类型支持，但当前公开接口不证明用户安装的DDK已为GE节点提供相同实现。此前`AdnRmsNorm`的infershape失败不能直接用于判定另一算子`RmsNorm`。NPU归属、内部精度、设备数值与耗时分开验证。
 
-用户最新回传5个FP32小图全部编译成功，未执行设备验证：
+用户回传5个FP32小图全部编译成功，编译归属如下：
 
 | 小图 | NPUCL | CPUCL |
 |---|---:|---:|
@@ -58,11 +58,9 @@ FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitc
 | Softmax FP32 | 1 | 0 |
 | 残差Add FP32 | 1 | 0 |
 
-这为减少原27个CPUCL提供了可验证的替换路径，尚不是整模型加速结果。`validate_draft_vector.py`复用这些OMC，分别预热3次、执行10次并逐次比较输出；命令见[当前阶段](current-status.md)。完整Draft尚未改图，设备精度及小图时延待回传。
+最新板端结果：原语RMS退出码0；内置RmsNorm hidden在`HIAI Load`返回1，runtime为`800.631.120.010`，尚未进入推理。剩余3个小图未启动，打包退出码0，任务已结束并释放锁。错误码尚不能确定底层原因，也不能据此判定X90不支持FP32 NPU运算。原语RMS的数值与时延尚待回收；编译为单个NPUCL不等于可加载或数值通过。
 
-用户已构建native runner，但首次小图验证在主机prepare阶段被内部连线解析拒绝，`device_execution=NOT_RUN`。验证工具改为按小图唯一的输出shape、dtype和编译槽位绑定参考，runner继续核对运行时尺寸，逐次比较所有输出；此次修复无需重编OMC或runner。
-
-输出绑定修复后，用户回传`VECTOR_VALIDATION_STARTED`，随后已知完成并释放锁；回收状态为`FAILED_OUTPUTS_RETRIEVED`，汇总指向子进程执行或打包失败。具体退出码和stderr尚未收到，不能据此判断算子是否支持或数值是否正确。新版回收会直接显示首个失败小图及原始日志摘要，仍读取同一任务。
+`validate_draft_vector.py`现可回收失败批次中已完成小图的输出与时延，整批保留失败状态；也支持按名称和顺序选择已有OMC。下一步先读取原语RMS结果，再分别测试Softmax、残差Add与head形状RmsNorm；命令见[当前阶段](current-status.md)。完整Draft尚未改图，内置RmsNorm尚不能接入主流程。
 
 当前图固定计算16行context投影，即使只追加2行，或某轮`valid_rows=0`，掩码也不会删除这段计算。当前脚本默认profiling样本为case2、追加2行；尚未独立读取本轮request确认。下一步先验证FP32区域的NPU编译路径，同时评估投影表达与有效行计算量；优化收益以同一输入的整模型墙钟确认。入口使用Conv2D是因为此前选定OMG拒绝K=16384的MatMul，不能直接换回原MatMul就宣称可用。
 
