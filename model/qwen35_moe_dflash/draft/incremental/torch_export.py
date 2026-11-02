@@ -506,6 +506,7 @@ def inspect_pytorch_compilation(directory):
         raise ValueError('expected a PyTorch Draft OMC compilation directory')
     return dict(status='INSPECTED', source_status=manifest.get('status'),
                 source_stage=manifest.get('stage'), error=manifest.get('error'),
+                air_preparation=manifest.get('air_preparation'),
                 compilation_diagnostics=compilation_diagnostics(root / 'compilation'),
                 scope='RETAINED_COMPILER_REPORT_AND_LOGS_ONLY_ROOT_CAUSE_NOT_CLASSIFIED',
                 model_compilation='NOT_RUN', device_execution='NOT_RUN')
@@ -518,6 +519,8 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
 
     def compiler_progress(row):
         message = row['message']
+        if row.get('stage') == 'air-preparation':
+            message += f": {row['status']}, removed {row['removed_count']} intermediate Reshapes; {row['path']}"
         if row.get('stage') == 'input-snapshot' and message == 'Snapshotting input':
             index, total = row['completed'], row['total']
             if index not in (0, total - 1) and (index + 1) % 10:
@@ -534,8 +537,13 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
     _disjoint(output, source, ddk_root)
     metadata = manifest['schema']
     descriptor = (source / 'air-schema.pb').read_bytes()
-    inspection = inspect_air(source / 'export.air', _schema(descriptor, metadata),
+    schema = _schema(descriptor, metadata)
+    inspection = inspect_air(source / 'export.air', schema,
                              expected_norms=32, require_int32_indices=True, expected_attention=manifest.get('attention'))
+    def prepare_air(snapshot):
+        from .air_reshape import fold_reshape_chains
+        with snapshot.open('rb') as stream:
+            return fold_reshape_chains(stream.read((64 << 20) + 1), schema)
     with _slot(output, OMC_KIND, replace) as root:
         result = {k: manifest[k] for k in ('context_rows', 'cache_capacity', 'max_draft_tokens', 'inputs', 'outputs', 'rms', 'gamma')}
         if 'attention' in manifest:
@@ -558,8 +566,13 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             compiled = compile_existing_air(source / 'export.air', root / 'compilation', ddk_root,
                 ddk_id=ddk_id, timeout_seconds=timeout_seconds, input_layout='air-directory',
                 use_origin_format=True, save_weights_as_external_data=True,
-                tbe_diagnosis=tbe_diagnosis, progress=compiler_progress)
+                tbe_diagnosis=tbe_diagnosis, progress=compiler_progress,
+                air_transform=prepare_air if manifest.get('attention', {}).get('policy') == 'target-cpro-fused-attention-v1' else None)
             result['model_compilation'] = compiled['model_compilation']
+            if 'air_preparation' in compiled:
+                evidence = compiled['air_preparation']
+                result['air_preparation'] = {key: evidence[key] for key in ('policy', 'status', 'removed_count')}
+                result['air_preparation']['report'] = 'compilation/air-preparation.json'
             if compiled['status'] != 'COMPILED':
                 raise RuntimeError(str(compiled.get('error', compiled['status'])))
             model_path = root / 'compilation' / compiled['omc']['path']

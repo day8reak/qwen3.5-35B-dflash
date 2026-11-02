@@ -5,7 +5,7 @@ explicit, audited decode1 mode references readonly completed prefill snapshots
 through individually owned file symlinks. The incremental Draft mode binds every
 recipe FileConstant to its original prepared file and audits source preservation.
 No source directory links,
-FileConstant rewrites, graph reconstruction, platform diagnosis
+FileConstant rewrites, platform diagnosis
 matrix, or device execution is performed. Original AIR defaults do not override
 weight precision or format; callers may explicitly select the FP16 draft profile.
 """
@@ -404,7 +404,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                          input_layout="air-directory", use_origin_format=None,
                          weight_data_type=None, cl_customization=None, reuse_failed_job=None,
                          borrowed_decode_job=None, decode_inventory=None,
-                         decode_export_receipt=None, incremental_draft_export=None):
+                         decode_export_receipt=None, incremental_draft_export=None,
+                         air_transform=None):
     """Return a host compilation report, retaining failures without deployment.
 
     Only inventoried local snapshots are hash bound. Absolute or out-of-tree
@@ -430,6 +431,9 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     ``incremental_draft_export`` selects the separate complete 17/14 cached-Draft
     export contract. Exact per-file aliases reference original weights; fresh
     hashes and full identities are audited without source chmod or hardlinks.
+    ``air_transform`` optionally prepares a separate compiler AIR from the
+    independent snapshot. It returns (bytes, JSON evidence), never overwrites
+    source/snapshot files, and is not used by the legacy compilation routes.
     """
     if (not isinstance(ddk_id, str) or not ddk_id.strip()
             or isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
@@ -437,6 +441,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
         raise ValueError("declare a nonempty ddk_id and finite positive timeout_seconds")
     if progress is not None and not callable(progress):
         raise ValueError("progress must be callable or None")
+    if air_transform is not None and not callable(air_transform):
+        raise ValueError("air_transform must be callable or None")
     if input_layout not in INPUT_LAYOUTS:
         raise ValueError(f"input_layout must be one of {INPUT_LAYOUTS}")
     decode_arguments = (borrowed_decode_job, decode_inventory, decode_export_receipt)
@@ -533,6 +539,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     stage = "omg-help"
     attempted = False
     error = None
+    prepared_air = None
     try:
         if incremental_draft_export is not None:
             from qwen35_moe_dflash.draft.incremental.inputs import prepare_incremental_input_view
@@ -647,7 +654,23 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
             raise ValueError("receipt-bound AIR/sidecar identity changed during input snapshot")
         if reuse_binding:
             reuse_binding["payload_verification"] = "ALL_SELECTED_SNAPSHOT_SHA256_MATCHED_RECEIPT"
-        command = [str(omg), "--framework=1", f"--model={inputs / air.name}",
+        compiler_air = inputs / air.name
+        if air_transform is not None:
+            stage = "air-preparation"
+            raw, evidence = air_transform(compiler_air)
+            if not isinstance(raw, bytes) or not 0 < len(raw) <= 64 << 20:
+                raise ValueError('prepared compiler AIR must be nonempty bytes at most 64 MiB')
+            compiler_air = inputs / 'prepared.air'
+            with compiler_air.open('xb') as stream:
+                stream.write(raw)
+            compiler_air.chmod(0o444)
+            prepared_air = dict(path=str(compiler_air.relative_to(output)), bytes=len(raw),
+                                sha256=sha256_file(compiler_air), stat=_stat(compiler_air))
+            report['air_preparation'] = dict(evidence, compiler_air=prepared_air)
+            save_json(output / 'air-preparation.json', report['air_preparation'])
+            notify(stage, 'Prepared compiler AIR', path=str(compiler_air),
+                   status=evidence.get('status'), removed_count=evidence.get('removed_count'))
+        command = [str(omg), "--framework=1", f"--model={compiler_air}",
                    "--output=model", "--target=omc", "--platform=kirinx90"]
         command.extend(f"--{name}={value}" for name, value in options.items())
         save_json(output / "compile-command.json", {"argv": command, "cwd": str(inputs),
@@ -738,6 +761,12 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                 error = exc
                 report.update(stage="artifact-inventory", error=report["artifact_inventory_error"])
         changed = []
+        if prepared_air is not None:
+            try:
+                if _stat(output / prepared_air['path']) != prepared_air['stat']:
+                    changed.append('prepared compiler AIR')
+            except OSError:
+                changed.append('prepared compiler AIR')
         if reuse_binding:
             changed.extend(_recheck_reuse_binding(reuse_binding))
         for row in report["input_snapshots"]:

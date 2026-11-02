@@ -19,6 +19,7 @@ _SUPPORT_DTYPE_FAILURE = re.compile(
     rb"(?:CheckIfTensorTypeSupport|(?:input|output)(?:data)?Type).*(?:not support|unsupported)", re.I)
 _KERNEL_FAILURE = re.compile(rb"kernel.*(?:failed|missing|not found|not valid|invalid)", re.I)
 _PYTHON_FAILURE = re.compile(rb"^(?:Traceback \(most recent call last\):|[\w.]+(?:Error|Exception):)")
+_PASS_FAILURE = re.compile(rb"ByPassNode.*PreCheck|Pass Run failed|AfterInferShape.*failed to run", re.I)
 
 
 _OMG_TRACE_PATTERNS = tuple(re.compile(pattern) for pattern in (
@@ -88,6 +89,7 @@ def _read_excerpt(log):
     if not log.is_file():
         return ""
     candidates = {priority: [] for priority in range(6)}
+    terminal_pass = []
     with log.open("rb") as stream:
         line_number = 0
         scanned = 0
@@ -100,6 +102,9 @@ def _read_excerpt(log):
             line_number += 1
             python_failure = bool(_PYTHON_FAILURE.search(chunk))
             if _is_error(chunk) or python_failure:
+                if _PASS_FAILURE.search(chunk):
+                    terminal_pass.append((line_number, chunk[:2048], len(chunk) > 2048))
+                    terminal_pass = terminal_pass[-3:]
                 # A backend can reject many candidate dtypes before declaring
                 # the actual named node unsupported. Never let those attempts
                 # consume every slot ahead of the terminal node/type message.
@@ -118,7 +123,11 @@ def _read_excerpt(log):
         stream.seek(max(0, log.stat().st_size - 8192))
         tail = stream.read(8192).decode("utf-8", errors="replace")
     first, budget = [], 4096
-    selected = [row for priority in range(6) for row in candidates[priority]][:6]
+    # Late pass failures can terminate compilation after early constant-folding
+    # diagnostics. Show both; neither is automatically a root-cause verdict.
+    pass_lines = {row[0] for row in terminal_pass}
+    selected = (terminal_pass + [row for priority in range(6) for row in candidates[priority]
+                                 if row[0] not in pass_lines])[:6]
     for number, chunk, truncated in selected:
         if budget <= 0:
             break

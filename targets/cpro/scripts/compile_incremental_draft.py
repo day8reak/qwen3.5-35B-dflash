@@ -59,7 +59,7 @@ def main(argv=None):
         keys = ('status', 'stage', 'context_rows', 'cache_capacity', 'max_draft_tokens', 'model_compilation',
             'compiled_precision', 'compiled_abi', 'device_execution', 'numerical_validation',
             'runtime_integration', 'full_loop_smoke', 'weight_files_copied', 'graphop_counts',
-            'interface_inspection', 'interface_error', 'omc', 'error', 'compilation_diagnostics', 'next')
+            'interface_inspection', 'interface_error', 'air_preparation', 'omc', 'error', 'compilation_diagnostics', 'next')
         shown = {k: result[k] for k in keys if k in result}
         shown.update(input_count=len(result.get('inputs', [])), output_count=len(result.get('outputs', [])),
             manifest=result.get('manifest', str(Path(args.output).absolute() / 'manifest.json')))

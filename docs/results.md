@@ -109,7 +109,13 @@ FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitc
 
 KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Draft API均值726.839ms与这次不是严格配对试验，不能直接作为优化收益结论。
 
-## PyTorch当前开发路线（融合版AIR检查修正，OMG待执行）
+## PyTorch当前开发路线（OMG ReshapeFusion失败，等价简化待复编）
+
+最新用户回传：融合版AIR选择83个文件、2807342555字节，OMG目标仍为`kirinx90`。编译已越过原先的Gather校验，最终在`ReshapeFusion: removing Reshape_49`之后出现`ByPassNode PreCheck(node) false`，随后`Pass Run failed`／`AfterInferShape failed to run infershape pass`并退出1。早期Cast_2／Cast_3常量图infershape诊断仍存在，但日志继续执行了大量图推导与reshape融合；不能仅凭最早报错定为根因，也不能把最后打印的Reshape_49当成已证实的非法节点。
+
+新增编译副本的静态Reshape链合并：只删去单消费者、没有控制依赖／公共输出引用的中间Reshape，保留末端shape与顺序；INT32／INT64 shape常量可用，零维度、动态shape、无法确定元素数的双`-1`目标、dtype／布局冲突均不合并。不跨Transpose、Cast、Identity。改写用导出包自带schema，逐节点保留未修改的protobuf字节，并重新解码核对全部元数据；公共AIR、FileConstant、权重及17／14接口保持。OMG读取新`prepared.air`，保留原始快照和`air-preparation.json`。这只是针对失败阶段的候选规避，用户DDK复编待执行。
+
+本轮31项主机检查通过：24项真实GE schema夹具／数值布局检查覆盖ModelDef和GraphDef、缺失中间shape、节点逆序、长链、共享输出／控制依赖保护、非法shape不合并、四档完整宽度ND/NZ逐元素一致及重复处理幂等；7项模拟编译检查覆盖实际传给编译器的路径、源AIR／快照不变、失败保留改写记录、预处理失败不调用编译器及终止pass诊断优先展示。这些不是实际OMG、数值精度或性能结果。以下为前序实现与观察。
 
 新增六层增量Draft模块，复用71份prepared权重和17输入／14输出的语义合同；使用Target CPro的`npu_rms_norm → RmsNorm`接口。RMS gamma不加1，候选在FP32乘gamma后转FP16，舍入位置不同于旧GE原语链。入口仍是完整dot的4×4 Conv2D表达，避免直接重试已被拒绝的K=16384 MatMul。
 

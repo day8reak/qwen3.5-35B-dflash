@@ -2,20 +2,21 @@
 
 当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**。按用户要求暂缓手写GE和AddCustom优化，不再要求运行相关探针。成功导出的AIR统一放`draft/air/`，编译和测试直接引用它。当前可运行OMC仍放`draft/omc/`；新OMC完成接口绑定和板端验证后再替换运行模型。`tests/`用于测试记录和可清理的构建临时文件。
 
-目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前GE整模型profiling为518.990ms。原语版PyTorch AIR的DDK编译曾被Gather的INT64索引阻断，源码已修复。融合版已保存82个文件；用户回传确认六个融合节点属性匹配，旧导出检查将未记录的中间shape误判成不匹配。现已修正该检查，可复用保留AIR继续OMG编译。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
+目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms，尚未达到。当前GE整模型profiling为518.990ms。融合版PyTorch AIR已进入OMG，本次终止在`ReshapeFusion`删除节点时的`ByPassNode PreCheck`，不是此前的Gather INT64检查。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
 
-**本轮复用已保存的AIR，无需重新导出权重。** 在刚才执行导出的**权重服务器／`qwen3_5_cpro`环境**运行：
+**本轮只在DDK服务器／`custom_pypto`环境执行。无需重导出或重新传输AIR、权重。** 沿用现有`REPO_DIR`、`AI_RUN_DIR`及DDK变量：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
-  --finalize-air "$AI_RUN_DIR/draft/tests/export" \
-  --output "$AI_RUN_DIR/draft/air" --replace
+python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
+  --air-export "$AI_RUN_DIR/draft/air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
 ```
 
-该命令重新检查保留的`export.air`、schema、接口数量和权重文件，更新导出报告后把整目录移动到`draft/air`。不会重跑TorchAir或改写AIR／权重字节。预期`PYTORCH_DRAFT_AIR_INSTALLED`、`air_validation=PASSED_WITH_DEFERRED_SHAPES`、`deferred_shape_count=24`、6个融合节点、32个RmsNorm、82个文件。**成功后跳过第1节，直接按第2节传输完整AIR，再在DDK服务器执行第3节。** 失败时保留当前公共AIR，可用`--inspect-air "$AI_RUN_DIR/draft/tests/export"`读取具体差异。
+新编译入口在独立快照旁生成`prepared.air`，只合并满足静态shape、相同dtype／ND布局、单消费者且无控制依赖的连续Reshape。保留最终Reshape与目标shape，不跨Transpose／Cast／Identity合并；算术、注意力、mask、权重和17／14公共接口保持。公共`draft/air`和原始编译快照不改写。日志会显示`Prepared compiler AIR: APPLIED, removed N intermediate Reshapes`；具体节点保存在`compilation/air-preparation.json`。若没有满足条件的链，则显示`UNCHANGED`，不会猜测形状后强行改写。
 
-24项待推导对应六层各自的Q／K／V／mask中间shape。检查继续拒绝明确的shape、dtype、属性或连接错误；mask按Target converter的第4号槽位识别，兼容AIR未保留端口名的情况。缺失维度保留为未知，不用manifest期望值填入实际描述；由OMG进行形状推导，后续再检查编译接口和板端数值。此状态不表示OMG、数值或50ms目标已通过。
+这是针对失败阶段的等价简化候选，已通过主机检查，尚未在用户DDK验证。不能仅凭最后一行`removing Reshape_49`断言该节点本身非法；早期Cast常量图报错也保留为线索。下方第1、2节是首次生成AIR的完整流程，本轮跳过；成功条件和失败检查见第3节。
 
 本轮把每层的QK／mask／Softmax／PV交给Target同款融合算子，使用原Target的converter端口映射；内部构造NZ分块KV，block_size=32，C16／cap192／K15的临时KV设计形状为`[7,64,32,16]`。padding全部屏蔽，保留Draft五层因果／滑窗与末层双向可见性。公共ND缓存仍只提交context，不直接套用Target的原地CacheUpdate。权重和公共接口不变，融合内核的舍入行为仍需实机比较。
 
@@ -100,7 +101,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
   --output "$AI_RUN_DIR/draft/air" --replace
 ```
 
-`weight/`、`air-schema.pb`和全部JSON一起传输。两台服务器的根目录可以不同，AIR采用相对权重路径；无需传原始Target／DFlash检查点。本轮DDK上的旧AIR包含INT64索引，必须先安装本次修复后的整包。
+`weight/`、`air-schema.pb`和全部JSON一起传输。两台服务器的根目录可以不同，AIR采用相对权重路径；无需传原始Target／DFlash检查点。本轮DDK上已安装融合版AIR，可直接复用。
 
 ## 3. DDK服务器：编译OMC
 
@@ -127,6 +128,6 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 ## 4. 本阶段通过条件与后续
 
-已取得用户回传的`PYTORCH_DRAFT_AIR_EXPORTED`，下一阶段需要`PYTORCH_DRAFT_OMC_COMPILED`。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
+用户已完成融合版AIR导出并进入OMG，目前在ReshapeFusion阶段失败；下一阶段需要`PYTORCH_DRAFT_OMC_COMPILED`。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
 
-本轮主机检查覆盖C16／C64、K15／7／3／1、滑窗开关共280步：使用CPU模拟Target布局／调用，与原语参考的Top1、hidden、全部K/V完全一致，输入KV和未写区保持。真实宽度的布局索引检查覆盖212992个元素；四档完整形状图捕获均为6个测试融合节点、32个测试RMS节点、17／14接口及INT32 Gather。这些检查验证适配器和mask／缓存语义，不验证厂商融合内核。此前成功导出的是原语注意力版本，本轮融合版本的真实TorchAir、OMG、板端精度与性能均待完成。
+前一轮主机检查覆盖C16／C64、K15／7／3／1、滑窗开关共280步：使用CPU模拟Target布局／调用，与原语参考的Top1、hidden、全部K/V完全一致，输入KV和未写区保持。真实宽度的布局索引检查覆盖212992个元素；四档完整形状图捕获均为6个测试融合节点、32个测试RMS节点、17／14接口及INT32 Gather。这些检查验证适配器和mask／缓存语义，不验证厂商融合内核。真实融合版AIR已保存并进入编译；OMG、板端精度与性能仍未通过。
