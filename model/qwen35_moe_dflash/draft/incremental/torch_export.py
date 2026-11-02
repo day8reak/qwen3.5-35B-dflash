@@ -527,6 +527,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
         if row.get('stage') == 'air-preparation':
             message += (f": {row['status']}, removed {row['removed_count']} intermediate Reshapes, "
                         f"materialized {row.get('zero_count', 0)} ZerosLike constants, "
+                        f"materialized {row.get('fill_count', 0)} Fill constants, "
                         f"folded {row.get('weight_transpose_count', 0)} weight Transposes; {row['path']}")
         if row.get('stage') == 'input-snapshot' and message == 'Snapshotting input':
             index, total = row['completed'], row['total']
@@ -550,15 +551,18 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
     def prepare_air(raw):
         from .air_reshape import fold_reshape_chains
         from .air_zeros import materialize_zeros
+        from .air_fill import materialize_fills
         from .air_matmul import fold_weight_transposes
         prepared, evidence = fold_reshape_chains(raw, schema)
         prepared, zeros = materialize_zeros(prepared, schema)
+        prepared, fills = materialize_fills(prepared, schema)
         prepared, transposes = fold_weight_transposes(prepared, schema)
-        evidence.update(reshape_policy=evidence['policy'], policy='draft-static-preparation-v3',
+        evidence.update(reshape_policy=evidence['policy'], policy='draft-static-preparation-v4',
                         zero_count=zeros['zero_count'], zeros_like=zeros,
+                        fill_count=fills['fill_count'], fills=fills,
                         weight_transpose_count=transposes['weight_transpose_count'], weight_transposes=transposes,
                         compiler_sha256=transposes['compiler_sha256'])
-        if zeros['zero_count'] or transposes['weight_transpose_count']:
+        if zeros['zero_count'] or fills['fill_count'] or transposes['weight_transpose_count']:
             evidence['status'] = 'APPLIED'
         return prepared, evidence
     with _slot(output, OMC_KIND, replace) as root:
@@ -607,7 +611,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             if 'air_preparation' in compiled:
                 evidence = compiled['air_preparation']
                 result['air_preparation'] = {key: evidence[key] for key in
-                    ('policy', 'status', 'removed_count', 'zero_count', 'weight_transpose_count')}
+                    ('policy', 'status', 'removed_count', 'zero_count', 'fill_count', 'weight_transpose_count')}
                 result['air_preparation']['report'] = 'compilation/air-preparation.json'
             if compiled['status'] != 'COMPILED':
                 raise RuntimeError(str(compiled.get('error', compiled['status'])))

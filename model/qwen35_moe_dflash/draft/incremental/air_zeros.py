@@ -144,12 +144,61 @@ class _Shapes:
         return self.cache[edge]
 
 
+def _constant_node(payload, schema, shape, data):
+    """Replace one-output source op by an inline literal, retaining its name."""
+    fields = {f.name: f for f in schema._messages[schema.package + '.OpDef'].values()}
+    shape_field = _field(schema, 'TensorDescriptor', 'shape', 11, False)
+    dim_field = _field(schema, 'ShapeDef', 'dim', 3, True)
+    attr_field = _field(schema, 'OpDef', 'attr', 11, True)
+    desc_raw = next(v for f, _, _, v in _parts(payload) if f == fields['output_desc'].number)
+    desc_raw = b''.join(e for f, _, e, _ in _parts(desc_raw) if f != shape_field)
+    desc_raw += _blob(shape_field, _blob(dim_field, b''.join(_v(d) for d in shape)))
+    tensor = (_blob(_field(schema, 'TensorDef', 'desc', 11, False), desc_raw)
+              + _blob(_field(schema, 'TensorDef', 'data', 12, False), data))
+    value = _blob(_field(schema, 'AttrDef', 't', 11, False), tensor)
+    attr = (_blob(_field(schema, 'OpDef.AttrEntry', 'key', 9, False), 'value')
+            + _blob(_field(schema, 'OpDef.AttrEntry', 'value', 11, False), value))
+    pieces = []
+    for number, _, encoded, entry in _parts(payload):
+        if number in {fields['input'].number, fields['input_desc'].number}:
+            continue
+        if number == fields['type'].number:
+            encoded = _blob(number, 'Const')
+        elif number == fields['output_desc'].number:
+            encoded = _blob(number, desc_raw)
+        elif number == attr_field:
+            key = schema.decode(entry, 'OpDef.AttrEntry')['key']
+            if key in {'_input_name_key', '_input_name_value', 'value', '_readable_value'}:
+                continue
+        pieces.append(encoded)
+    return b''.join(pieces) + _blob(attr_field, attr)
+
+
+def _replace_nodes(raw, schema, replacements):
+    if not replacements:
+        return raw
+    kind, original, graph = _decode(schema, raw)
+    graph_raw, graph_field = _graph_raw(raw, schema, kind)
+    _, op_field = _node_bytes(graph_raw, schema)
+    rebuilt = b''.join(_blob(field, replacements[schema.decode(payload, 'OpDef')['name']])
+        if field == op_field and schema.decode(payload, 'OpDef')['name'] in replacements else encoded
+        for field, _, encoded, payload in _parts(graph_raw))
+    updated = rebuilt if graph_field is None else b''.join(_blob(f, rebuilt) if f == graph_field else encoded
+        for f, _, encoded, _ in _parts(raw))
+    expected = deepcopy(original)
+    expected_graph = expected if kind == 'GraphDef' else expected['graph'][0]
+    expected_graph['op'] = [schema.decode(replacements[n['name']], 'OpDef') if n['name'] in replacements else n for n in graph['op']]
+    if len(updated) > MAX_AIR_BYTES or _decode(schema, updated)[1] != expected:
+        raise ValueError('static constant rewrite changed unrelated AIR metadata')
+    return updated
+
+
 def materialize_zeros(raw, schema):
     if not isinstance(raw, bytes) or not 0 < len(raw) <= MAX_AIR_BYTES:
         raise ValueError('zero preparation requires AIR at most 64 MiB')
-    kind, original, graph = _decode(schema, raw)
-    graph_raw, graph_field = _graph_raw(raw, schema, kind)
-    rows, op_field = _node_bytes(graph_raw, schema)
+    kind, _, _ = _decode(schema, raw)
+    graph_raw, _ = _graph_raw(raw, schema, kind)
+    rows, _ = _node_bytes(graph_raw, schema)
     unsupported = {'src_name', 'src_index', 'dst_name', 'dst_index', 'input_i', 'output_i', 'subgraph_name'}
     if any(any(n.get(key) for key in unsupported) or
            any('g' in attr or attr.get('list', {}).get('g') for attr in _attributes(n).values())
@@ -158,10 +207,6 @@ def materialize_zeros(raw, schema):
     shapes = _Shapes(rows, schema)
     types = schema.enums[schema.package + '.DataType']
     widths = {types[t]: w for t, w in (('DT_BOOL', 1), ('DT_INT32', 4), ('DT_INT64', 8), ('DT_FLOAT16', 2), ('DT_FLOAT', 4))}
-    fields = {f.name: f for f in schema._messages[schema.package + '.OpDef'].values()}
-    shape_field = _field(schema, 'TensorDescriptor', 'shape', 11, False)
-    dim_field = _field(schema, 'ShapeDef', 'dim', 3, True)
-    attr_field = _field(schema, 'OpDef', 'attr', 11, True)
     replacements, changes, added = {}, [], 0
     for node, payload, _ in rows:
         if node['type'] != 'ZerosLike':
@@ -194,42 +239,10 @@ def materialize_zeros(raw, schema):
         added += size
         if added > 8 << 20:
             raise ValueError('static zero payloads exceed 8 MiB budget')
-        desc_raw = next(v for f, _, _, v in _parts(payload) if f == fields['output_desc'].number)
-        desc_raw = b''.join(e for f, _, e, _ in _parts(desc_raw) if f != shape_field)
-        desc_raw += _blob(shape_field, _blob(dim_field, b''.join(_v(d) for d in shape)))
-        tensor = (_blob(_field(schema, 'TensorDef', 'desc', 11, False), desc_raw)
-                  + _blob(_field(schema, 'TensorDef', 'data', 12, False), bytes(size)))
-        value = _blob(_field(schema, 'AttrDef', 't', 11, False), tensor)
-        attr = (_blob(_field(schema, 'OpDef.AttrEntry', 'key', 9, False), 'value')
-                + _blob(_field(schema, 'OpDef.AttrEntry', 'value', 11, False), value))
-        pieces = []
-        for number, _, encoded, entry in _parts(payload):
-            if number in {fields['input'].number, fields['input_desc'].number}:
-                continue
-            if number == fields['type'].number:
-                encoded = _blob(number, 'Const')
-            elif number == fields['output_desc'].number:
-                encoded = _blob(number, desc_raw)
-            elif number == attr_field:
-                key = schema.decode(entry, 'OpDef.AttrEntry')['key']
-                if key in {'_input_name_key', '_input_name_value', 'value', '_readable_value'}:
-                    continue
-            pieces.append(encoded)
-        replacements[name] = b''.join(pieces) + _blob(attr_field, attr)
+        replacements[name] = _constant_node(payload, schema, shape, bytes(size))
         changes.append(dict(node=name, source=node['input'][0], shape=shape,
                             dtype=dtype, input_dtype=inp.get('dtype'), bytes=size, replacement='Const'))
-    updated = raw
-    if replacements:
-        rebuilt = b''.join(_blob(field, replacements[schema.decode(payload, 'OpDef')['name']])
-            if field == op_field and schema.decode(payload, 'OpDef')['name'] in replacements else encoded
-            for field, _, encoded, payload in _parts(graph_raw))
-        updated = rebuilt if graph_field is None else b''.join(_blob(f, rebuilt) if f == graph_field else encoded
-            for f, _, encoded, _ in _parts(raw))
-        expected = deepcopy(original)
-        expected_graph = expected if kind == 'GraphDef' else expected['graph'][0]
-        expected_graph['op'] = [schema.decode(replacements[n['name']], 'OpDef') if n['name'] in replacements else n for n in graph['op']]
-        if len(updated) > MAX_AIR_BYTES or _decode(schema, updated)[1] != expected:
-            raise ValueError('static zero rewrite changed unrelated AIR metadata')
+    updated = _replace_nodes(raw, schema, replacements)
     return updated, dict(status='APPLIED' if replacements else 'UNCHANGED',
         zero_count=len(replacements), embedded_bytes=added, changes=changes, shape_proofs=shapes.proofs,
         source_sha256=hashlib.sha256(raw).hexdigest(), compiler_sha256=hashlib.sha256(updated).hexdigest(),

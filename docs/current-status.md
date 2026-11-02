@@ -4,18 +4,20 @@
 
 目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms，尚未达到。用户已回传`PYTORCH_DRAFT_OMC_COMPILED`，公共接口保持17输入／14输出，编译分段为CPUCL3／NPUCL2。旧GE的518.990ms仍是旧模型结果；新模型在SDK Load失败，尚无推理数值或时延。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
 
-**本次上板已在MODEL_LOAD失败，任务结束且锁已释放。现在只在DDK服务器`t00826215_atc_mobile`的`custom_pypto`环境更新并重新回收，补采HiLog：**
+**HiLog候选会话已显示CPUCL的`Fill_1`初始化失败：`input1 dtype:1 is not support`，随后SubGraph_0初始化失败并导致Load返回1。已增加静态Fill物化，需复编并验证加载。以下均在DDK服务器`t00826215_atc_mobile`的`custom_pypto`环境执行；复用现有AIR、prepared权重和native runner。**
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --recover "$AI_RUN_DIR/draft/tests/pytorch-run" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-result"
+python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
+  --air-export "$AI_RUN_DIR/draft/air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
 ```
 
-回收保持原失败状态，同时新增`hilog.summary_lines`；完整快照为`pytorch-result/draft-hilog.txt`。旧任务没有记录native PID，筛选记录只是近期共享日志候选，不能直接归因。此命令不重新加载模型；当前不要重发`--apply`、重编模型或native runner。
+预处理策略为`draft-static-preparation-v4`，进度新增`materialized N Fill constants`。只把能从AIR证明尺寸和字面填充值的Fill替换为同输出dtype的Const，保留负无穷／有符号零，拒绝有损转换；不会把mask负无穷改成有限负值。来源、尺寸、dtype及标量字节保存在`compilation/air-preparation.json`的`fills`中。不修改公共AIR或权重，无需权重服务器重新导出。预处理失败会在权重快照／OMG之前报告具体Fill节点。
 
-以下独立验证启动命令用于后续修复后的新尝试，**当前先不要重跑**。复用已编译的`draft/tests/pytorch-omc`、公共`draft/air`和原先的`draft/source/prepared`：
+返回`PYTORCH_DRAFT_OMC_COMPILED`后，启动新候选的独立验证。上次任务已结束且锁释放，可以复用固定测试目录：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
@@ -41,7 +43,7 @@ python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
 
 结果中的`native_api_latency`为诊断调用的同步API墙钟，包含首次调用、不同上下文和补齐／proposal分类，尚非预热稳态基准。既有逐元素门槛`atol=0.01 / rtol=0.01`和Top1零差异规则保持，失败仍报告失败，并单列relative L2；它不是“L2小于1%”的判据。内部FP32算术仍未证明，候选不因此自动进入生产运行链路。
 
-以下为需要重现导出／编译时的说明，本轮无需执行。预处理策略`draft-static-preparation-v3`保留Reshape链简化和静态ZerosLike物化，将已证明的FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。每个节点的来源、形状及修改前后标志保存在`compilation/air-preparation.json`的`weight_transposes`中。
+以下为首次导出／工具链准备的说明，本轮无需重复执行。当前预处理继续保留Reshape链简化、静态ZerosLike物化和FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。每个节点的来源、形状及修改前后标志保存在`compilation/air-preparation.json`中。
 
 以下诊断恢复命令仅用于整个目录缺失的首次准备，已有`common/tbe-diagnosis`时跳过。它不读取权重、不编译模型、不上板，也不修改已安装包或DDK。诊断目录中含模块副本和逐例记录，不能只保留`report.json`，也不要移动：
 

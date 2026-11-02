@@ -113,7 +113,11 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 
 用户随后回传独立执行`da070fd03aab4ab2b6cef0011270bb3f`：源图／编译槽位及参考权重绑定完成，19组CPU参考完成，新模型2851073026字节上传完成；packed OMC SHA256为`48d087e60ba505c7c23e7f4478b5c87d1d2fc14b692a1ae06cc4c3088776d83b`。runtime `800.631.120.010`完成ClientInit、运行版本查询、mmap、顺序预读及SetModelBuffer，SDK `MODEL_LOAD`在844976μs后返回1。native退出码1，任务已完成且锁释放，未执行推理／KV比较；844.976ms是失败加载耗时，不是proposal耗时。
 
-当前日志不足以确认RmsNorm、AdnFusedInferAttention或资源加载为根因；早期RmsNorm探针也有Load失败，但相同顶层返回码不足以建立同一原因。回收入口现于native失败时复用有界HiLog采集，保留原错误；按诊断runner名称筛选近期候选而不把旧主runner记录当成本次失败。9项模拟回收／日志选择检查通过，未重新执行设备。下一步仅[重新回收](current-status.md)这次完成的任务，取得底层日志。
+随后用户重新回收并提供HiLog。候选会话PID15386、板端日期03-16、07:05:55.287—07:05:56.649，包含`qwen35_draft_accuracy`的初始化链：`Fill_1 / Fill`在CPUCL初始化时报`input1 dtype:1 is not support`，继而SubGraph_0 Prepare失败，最终Load返回1。此前缺少`libhiai_hcl_model_runtime.so`的搜索错误之后，流程仍继续至计算库、内存分配和CPU子图初始化，不能将它单独认定为终止原因。完整快照SHA256为`4f46b3dcd6da8eeb0a8a65ec52b4a55c0f9e2fc5d62fa28978458ad15ddd50c1`；旧任务没有记录native PID，仍保留“共享日志候选会话”的关联限制。运行日志中的数字dtype不直接套用AIR枚举。
+
+源码的Fill来自缓存索引上限和六层注意力mask的负无穷填充。新增`draft-static-preparation-v4`在编译副本中物化静态Fill：只从实际AIR的字面shape／Shape连线推导尺寸，读取标量常量原始字节，保持输出dtype和数值。相同dtype保留标量位模式；FP16／FP32转换只接受精确可表示值，负无穷和有符号零保持，有损转换／未知值／未知shape提前失败。公共AIR、权重、17／14接口及比较门槛保持；复用现有AIR在DDK服务器复编即可。
+
+29项静态Fill主机检查通过，覆盖稀疏描述、Shape(Cast(...))、广播mask、INT32上限、负无穷、负零、NaN原字节保留、空张量、控制依赖拒绝、有损转换拒绝、大小限制、其他节点字节保持及预处理组合；原转置／零常量20项回归和ABI／模拟传输24项回归通过。本地未运行用户完整AIR、OMG或设备。新OMC编译、加载、两序列KV数值验证及50ms目标仍待用户实测，不能由本次Fill失败推断RmsNorm／融合Attention已通过或不支持。执行命令见[当前阶段](current-status.md)。
 
 2026-11-02，用户回传`PYTORCH_DRAFT_OMC_COMPILED / model_compilation=PASSED`，接口观察为17输入／14输出，CPUCL3、NPUCL2。特征输入FP16 `[1,16,16384]`，四个控制量INT32，12个输入／输出缓存FP16 `[1,8,192,128]`；Top1为INT32 `[1,15]`，hidden为FP16 `[1,15,2048]`。源图语义顺序不能直接作为编译输入槽位：编译Data为`arg*`名称，需源图连线与编译index联合绑定。未独立读取用户OMC，后续Load失败见上文。
 
