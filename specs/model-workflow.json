@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "FP32_WEIGHT_CONTROL_NO_FIX_RETAINED_ADD_INSPECTION_PENDING",
+    "status": "COMPILED_ADD_FP16_BOUNDARY_CONFIRMED_FP32_IMPLEMENTATION_SELECTION_PENDING",
     "entry": "targets/cpro/tools/validate_draft_vector.py",
     "commands": "docs/current-status.md",
     "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "FP32 weight option did not fix Add numerics or RmsNorm Load. Inspect retained Add placement and IR with the selected DDK schema; resolve arithmetic implementation and FP32 interface support before another compiler policy or custom-kernel trial. No model/native rebuild for inspection. See docs/current-status.md.",
+    "next": "Compiled Add main graph confirms two FP32-to-FP16 input casts, NPUCL FP16 IO and FP16-to-FP32 output cast. Inspect selected-DDK implementation selection logs and documented configuration; do not repeat weight options, delete casts against the current ABI or guess implementation IDs. No compilation or board execution for this inspection. See docs/current-status.md.",
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
       "independently_retrieved": false,
@@ -5875,6 +5875,7 @@
     "fp32_probe_execution_observation": "specs/incremental-draft-native-host-validation.json#fp32_probe_execution_observation",
     "residual_rounding_reproduction": "specs/incremental-draft-native-host-validation.json#residual_rounding_reproduction",
     "fp32_weight_control_experiment": "specs/incremental-draft-native-host-validation.json#fp32_weight_control_experiment",
-    "fp32_add_implementation_research": "specs/incremental-draft-native-host-validation.json#fp32_add_implementation_research"
+    "fp32_add_implementation_research": "specs/incremental-draft-native-host-validation.json#fp32_add_implementation_research",
+    "compiled_add_boundary_observation": "specs/incremental-draft-native-host-validation.json#compiled_add_boundary_observation"
   }
 }

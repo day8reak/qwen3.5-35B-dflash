@@ -23,7 +23,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "FP32 weight option did not fix Add numerics or RmsNorm Load. Inspect retained Add placement and IR with the selected DDK schema; resolve arithmetic implementation and FP32 interface support before another compiler policy or custom-kernel trial. No model/native rebuild for inspection. See docs/current-status.md.",
+  "next": "Compiled Add main graph confirms two FP32-to-FP16 input casts, NPUCL FP16 IO and FP16-to-FP32 output cast. Inspect selected-DDK implementation selection logs and documented configuration; do not repeat weight options, delete casts against the current ABI or guess implementation IDs. No compilation or board execution for this inspection. See docs/current-status.md.",
   "latest_user_board_observation": {
     "source": "USER_PASTED_RECOVERY_JSON",
     "independently_retrieved": false,
@@ -178,7 +178,7 @@
     "gap_attribution": "UNRESOLVED_RUNTIME_DISPATCH_SYNCHRONIZATION_AND_INTERNAL_TRANSFERS_ARE_HYPOTHESES",
     "timestamp_caveat": "SAME_STREAM_CONV_AND_DEPENDENT_RESHAPE_STARTS_DIFFER_BY_2_US_WITH_CONV_DURATION_70968_US; DO_NOT_CONSTRUCT_DEVICE_TIMELINE_WITHOUT_CLOCK_SCOPE",
     "static_work": "C16_CONTEXT_PROJECTION_EXECUTES_FOR_PARTIAL_OR_ZERO_VALID_ROWS",
-    "next": "FP32 weight option did not fix Add numerics or RmsNorm Load. Inspect retained Add placement and IR with the selected DDK schema; resolve arithmetic implementation and FP32 interface support before another compiler policy or custom-kernel trial. No model/native rebuild for inspection. See docs/current-status.md."
+    "next": "Compiled Add main graph confirms two FP32-to-FP16 input casts, NPUCL FP16 IO and FP16-to-FP32 output cast. Inspect selected-DDK implementation selection logs and documented configuration; do not repeat weight options, delete casts against the current ABI or guess implementation IDs. No compilation or board execution for this inspection. See docs/current-status.md."
   },
   "compiled_partition_observation": {
     "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
@@ -361,7 +361,7 @@
         "failing_elements": 24873
       }
     },
-    "next": "FP32 weight option did not fix Add numerics or RmsNorm Load. Inspect retained Add placement and IR with the selected DDK schema; resolve arithmetic implementation and FP32 interface support before another compiler policy or custom-kernel trial. No model/native rebuild for inspection. See docs/current-status.md."
+    "next": "Compiled Add main graph confirms two FP32-to-FP16 input casts, NPUCL FP16 IO and FP16-to-FP32 output cast. Inspect selected-DDK implementation selection logs and documented configuration; do not repeat weight options, delete casts against the current ABI or guess implementation IDs. No compilation or board execution for this inspection. See docs/current-status.md."
   },
   "fp32_probe_failure_reporting_checks": {
     "status": "PASSED",
@@ -464,7 +464,7 @@
       "rounded_input_sum": 1.0,
       "reported_actual": 1.0
     },
-    "interpretation": "STRONG_EFFECTIVE_FP16_ROUNDING_EVIDENCE; ROUNDING_STAGE_AND_INTERNAL_INSTRUCTION_TYPE_UNRESOLVED",
+    "interpretation": "FULL_TENSOR_ROUNDING_MATCH_USER_CONFIRMED; EXPLICIT_BOUNDARY_CASTS_CONFIRMED_IN_FP32_WEIGHT_BUILD; INTERNAL_INSTRUCTION_TYPE_UNRESOLVED",
     "full_tensor_bitwise_match": {
       "source": "USER_PASTED_ANALYZE_FOR_DEFAULT_WEIGHT_BATCH",
       "board_attempt": "/data/local/tmp/qwen35_vector_7984b40d383f42f3bbfbd49938d0d184",
@@ -579,7 +579,7 @@
       },
       "comparison": "ADD_AGGREGATE_ERRORS_UNCHANGED; CROSS_BUILD_BITWISE_EQUALITY_NOT_CHECKED; NO_SPEEDUP_CLAIM"
     },
-    "next": "FP32 weight option did not fix Add numerics or RmsNorm Load. Inspect retained Add placement and IR with the selected DDK schema; resolve arithmetic implementation and FP32 interface support before another compiler policy or custom-kernel trial. No model/native rebuild for inspection. See docs/current-status.md."
+    "next": "Compiled Add main graph confirms two FP32-to-FP16 input casts, NPUCL FP16 IO and FP16-to-FP32 output cast. Inspect selected-DDK implementation selection logs and documented configuration; do not repeat weight options, delete casts against the current ABI or guess implementation IDs. No compilation or board execution for this inspection. See docs/current-status.md."
   },
   "fp32_add_implementation_research": {
     "status": "DOCUMENTED_API_SUPPORT_AND_ENGINEERING_INTERFACE_LIMIT; SELECTED_DDK_SUPPORT_UNRESOLVED",
@@ -595,5 +595,66 @@
     ],
     "decision": "NO_UNVERIFIED_FORCE_FP32_FLAG; KEEP_CURRENT_CPU_PRECISION_PATH_UNTIL_NPU_IMPLEMENTATION_AND_END_TO_END_INPUT_PRECISION_PASS",
     "custom_kernel_integration": "NOT_IMPLEMENTED_OR_VALIDATED"
+  },
+  "compiled_add_boundary_observation": {
+    "status": "INPUT_PRECISION_LOSS_LOCATED_IN_COMPILED_MAIN_GRAPH",
+    "source": "USER_PASTED_PLACEMENT_JSON_FROM_FP32_WEIGHT_BUILD",
+    "independently_retrieved": false,
+    "case": "residual_fp32",
+    "requested_options": {
+      "save_weights_as_external_data": "false",
+      "use_origin_format": "true",
+      "weight_data_type": "FP32"
+    },
+    "shape": [
+      1,
+      16,
+      2048
+    ],
+    "input_casts": [
+      {
+        "name": "graphop_data_cast_0",
+        "type": "CastT",
+        "input_dtype": "float32",
+        "output_dtype": "float16"
+      },
+      {
+        "name": "graphop_data_cast_1",
+        "type": "CastT",
+        "input_dtype": "float32",
+        "output_dtype": "float16"
+      }
+    ],
+    "npu_graph": {
+      "name": "SubGraph_0",
+      "owner": "NPUCL",
+      "input_dtypes": [
+        "float16",
+        "float16"
+      ],
+      "output_dtypes": [
+        "float16"
+      ]
+    },
+    "output_cast": {
+      "name": "netoutput_cast_0",
+      "type": "CastT",
+      "input_dtype": "float16",
+      "output_dtype": "float32"
+    },
+    "raw_dtype_mapping": {
+      "1": "DT_FLOAT",
+      "2": "DT_FLOAT16"
+    },
+    "enum_source": "SELECTED_DDK_HIAI_PROTO_SCHEMA",
+    "separate_ir_dumps": "NO_DUMPS",
+    "interpretation": "EXPLICIT_COMPILER_INSERTED_BOUNDARY_NARROWING_CONSISTENT_WITH_OBSERVED_FP16_ROUNDING",
+    "unresolved": [
+      "which compiler policy or implementation-selection decision caused narrowing",
+      "internal NPU instruction types",
+      "selected-DDK supported configuration for FP32 arithmetic and interfaces"
+    ],
+    "next": "Compiled Add main graph confirms two FP32-to-FP16 input casts, NPUCL FP16 IO and FP16-to-FP32 output cast. Inspect selected-DDK implementation selection logs and documented configuration; do not repeat weight options, delete casts against the current ABI or guess implementation IDs. No compilation or board execution for this inspection. See docs/current-status.md.",
+    "full_draft_changed": false
   }
 }
