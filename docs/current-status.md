@@ -1,73 +1,57 @@
 # 当前阶段测试命令
 
-两条路线并行：GE试验FP32 `AddCustom`；PyTorch实现同一套增量Draft，权重服务器导出AIR、DDK服务器编译OMC。当前已上板GE模型继续放在公共`draft/air`、`draft/omc`；新候选使用固定测试槽位，验证前不覆盖公共模型。
+当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**。按用户要求暂缓手写GE和AddCustom优化，不再要求运行相关探针。公共`draft/air`、`draft/omc`继续保留现有可运行模型；PyTorch候选使用固定测试槽位，通过加载、ABI与数值验证后再替换。
 
-目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前整模型profiling为518.990ms，目标未达到。已有精度、计时与失败原因见[当前结果](results.md)，算子展开图见[模型结构](model-architecture.md)。
+目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms。当前GE整模型profiling为518.990ms，PyTorch候选尚无服务器导出、编译或板端结果。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
 
-## 1. GE：AddCustom FP32小图
+## 1. 权重服务器：准备权重并导出AIR
 
-用户回传的DDK注册列出`AddCustom`输入输出支持`float16,float32,int32`，同时有`precision_reduce=true`和JIT-only提示。它不同于此前普通Add的`executor_add_eltwise_half_nd`，必须实际编译和运行。下面保留大值相消输入，不能只看总体L2。
+在**保存原始Target／DFlash权重、此前成功导出Target AIR的服务器**执行本节。使用当时的PyTorch／torch_npu／TorchAir环境。该机无需DDK、HDC或板端连接，也无需加载DDK服务器的`env.sh`。
 
-本次AddCustom已在OMG编译阶段退出1，未上板。当前回传只有进程退出摘要，没有具体编译错误；不能据此认定FP32不支持，也不能把之前发现的缺失库直接当成本次根因。**先检查本次保留目录，不重复编译**：
+`TARGET_WEIGHTS`对应原Target YAML的 **`model_file`**。它是包含`config.json`和原始BF16 safetensors的目录；准备脚本只读取其中的embedding和LM head，不装载40层Target。
+
+| 输入或YAML字段 | 本次用途 |
+|---|---|
+| `model_file` → `TARGET_WEIGHTS` | 原始Target目录，读取`model.language_model.embed_tokens.weight`、`lm_head.weight` |
+| `quanted_pth` | Target量化权重目录，Draft准备不使用 |
+| `embedding_weight_path`、`embedding_scale_path` | Target量化embedding及scale文件，Draft准备不使用 |
+| `DRAFT_WEIGHTS` | 独立的`Qwen3.5-35B-A3B-DFlash`原始权重目录，含`config.json`和safetensors；来自该机已有DFlash权重 |
+
+先设置**权重服务器上的路径**并更新代码。示例中的路径需要替换；`AI_RUN_DIR`放在仓库外，两台服务器可以取不同值。
 
 ```bash
+# 权重服务器，已激活原Target导出环境
+export REPO_DIR='/实际路径/qwen3.5-35B-dflash'
+export AI_RUN_DIR='/实际路径/qwen3.5-35B-dflash-run'
+export TARGET_YAML='/实际路径/原Target配置.yaml'
+export DRAFT_WEIGHTS='/实际路径/Qwen3.5-35B-A3B-DFlash'
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/tools/probe_draft_vector.py" \
-  --inspect-compile "$AI_RUN_DIR/draft/tests/vector"
 ```
 
-这个入口只读取已有失败case的`omc/report.json`及编译日志，返回真实stage、returncode和优先错误行／末尾日志；不编译、不上板、不修改产物。回传其中`compilation_diagnostics`即可。尚未更新脚本时也可直接提取：
+已有`draft/source/prepared/prepared.json`时直接复用，无需重新准备或再设置原始权重路径。首次准备时，在**权重服务器同一终端**读取YAML的`model_file`，再转换所需权重：
 
 ```bash
-tail -n 120 "$AI_RUN_DIR/draft/tests/vector/residual_addcustom_fp32/omc/compile.log"
+if ! test -f "$AI_RUN_DIR/draft/source/prepared/prepared.json"; then
+  TARGET_WEIGHTS=$(python3 - <<'PYCONFIG'
+import os
+from pathlib import Path
+import yaml
+p = Path(os.environ['TARGET_YAML']).expanduser().resolve()
+config = yaml.safe_load(p.read_text())
+value = Path(config['model_file']).expanduser()
+print((value if value.is_absolute() else p.parent / value).resolve())
+PYCONFIG
+  ) && python3 "$REPO_DIR/targets/cpro/scripts/prepare_draft.py" \
+    --target-weights "$TARGET_WEIGHTS" --draft-weights "$DRAFT_WEIGHTS" \
+    --output "$AI_RUN_DIR/draft/source/prepared"
+fi
 ```
 
-定位并修复具体原因后，才使用下面的原编译命令复测。在DDK服务器沿用已配置的`REPO_DIR`、`AI_RUN_DIR`、`CANN_ROOT`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID`，复用同名已结束目录：
+这里按原配置读取规则，将相对`model_file`解析到YAML所在目录。如果目录只留了裁剪后的Target权重，需补齐上述两个原始BF16张量；不能用量化目录或embedding二进制文件代替。准备成功状态为`PREPARED`。
+
+继续在**权重服务器同一终端**导出六层增量Draft：
 
 ```bash
-git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/tools/probe_draft_vector.py" \
-  --ge-root "$CANN_ROOT" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --cases residual_addcustom_fp32 \
-  --output "$AI_RUN_DIR/draft/tests/vector" --replace
-```
-
-若本例编译为COMPILED，再启动板端小图验证：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$AI_RUN_DIR/draft/tests/vector" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --cases residual_addcustom_fp32 \
-  --output "$AI_RUN_DIR/draft/tests/vector-run" --apply
-
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$AI_RUN_DIR/draft/tests/vector-run" \
-  --output "$AI_RUN_DIR/draft/tests/vector-result"
-
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --analyze "$AI_RUN_DIR/draft/tests/vector-result"
-```
-
-检查`precision_boundaries`中的输入降精度Cast与GraphOp dtype，以及`sum`全部输出、相消行误差、重复稳定性和同步API时间。原阈值不变；即使NPUCL归属正确，也不能单凭归属宣称FP32通过。若编译失败，回传该例`omc/compile.log`末尾和`result.json`，先处理JIT／实现选择，不继续重跑已确定降精度的普通Add。
-
-## 2. PyTorch：权重服务器导出AIR
-
-使用能导出Target CPro的PyTorch／torch_npu／TorchAir环境。新模块只装载六层Draft、Target embedding和LM head，不装载40层Target。复用`draft/source/prepared`；如果权重服务器还没有它，先从原始权重准备：
-
-```bash
-# 仅在尚无prepared权重时执行；两个变量指向该服务器上的实际源权重。
-python3 "$REPO_DIR/targets/cpro/scripts/prepare_draft.py" \
-  --target-weights "$TARGET_WEIGHTS" --draft-weights "$DRAFT_WEIGHTS" \
-  --output "$AI_RUN_DIR/draft/source/prepared"
-```
-
-在权重服务器更新仓库后导出：
-
-```bash
-git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
   --frontend pytorch \
   --prepared "$AI_RUN_DIR/draft/source/prepared" \
@@ -77,7 +61,9 @@ python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
 
 预期`PYTORCH_DRAFT_AIR_EXPORTED`、17输入、14输出、32个`RmsNorm`。这里用已安装converter的`torch_npu.npu_rms_norm → RmsNorm`（[公开converter](https://github.com/Ascend/torchair/blob/master/python/torchair/_ge_concrete_graph/ge_converter/custom/npu_rms_norm.py)），与Target CPro接口一致；不使用ND工程的`AdnRmsNorm`。Draft gamma直接使用，不加Target零中心权重的1。mask复制与GQA继续使用GE已采用的Gather表达，避免重新引入BOOL查询轴广播和五维KV展开。PyTorch候选在FP32完成gamma乘法后转FP16，与旧GE RMS的中间舍入不同，需要重新做数值验证。
 
-输出整目录：
+## 2. 权重服务器 → DDK服务器：传输AIR目录
+
+只有第1步返回`PYTORCH_DRAFT_AIR_EXPORTED`后才传输。权重服务器生成的整目录为：
 
 ```text
 draft/tests/pytorch-air/
@@ -88,11 +74,20 @@ draft/tests/pytorch-air/
   air-inspection.json
 ```
 
-把**整个目录**传到DDK服务器相同角色的位置，不能只传`export.air`。服务器根目录可不同，AIR不依赖权重服务器的绝对路径。跨机传输使用现有文件通道；DDK服务器不需要安装TorchAir。两次`--replace`只替换本工具已结束的候选槽位，拒绝活动或未知目录。
+在**DDK服务器**沿用现有`custom_pypto`与DDK环境、`REPO_DIR`和`AI_RUN_DIR`，先准备接收位置：
 
-## 3. PyTorch：DDK服务器转OMC
+```bash
+# DDK服务器：使用该机已有的AI_RUN_DIR
+mkdir -p "$AI_RUN_DIR/draft/tests"
+```
 
-确认收到完整`draft/tests/pytorch-air`后：
+用现有跨机文件通道，将权重服务器的`$AI_RUN_DIR/draft/tests/pytorch-air/`整目录传到**DDK服务器**的`$AI_RUN_DIR/draft/tests/pytorch-air/`。最终应能直接访问`pytorch-air/export.air`，不要多套一层同名目录。`weight/`、`air-schema.pb`和manifest等文件一起传，不只传AIR，也无需把原始Target／DFlash权重传到DDK服务器。
+
+两台服务器的根目录可以不同；AIR使用相对权重路径。DDK服务器不需要安装TorchAir。两个构建入口的`--replace`只替换本工具已结束的候选槽位。
+
+## 3. DDK服务器：编译OMC
+
+沿用已配置的`CPRO_DDK_ROOT`、`CPRO_DDK_ID`，确认收到完整`draft/tests/pytorch-air`后：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -106,20 +101,8 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 预期状态为`PYTORCH_DRAFT_OMC_COMPILED`，但`compiled_abi=NOT_BOUND`、`compiled_precision=NOT_VALIDATED`。检查`compiled-interface.json`的子图归属和边界Cast，再绑定实际输入输出槽位、做Load及独立KV验证。这一候选尚不能直接传给现有`--incremental-draft`。此前内置RmsNorm小图有Load失败，换PyTorch前端不保证自动解决。
 
-## 4. 核对当前Target AIR的RMS
+## 4. 本阶段通过条件与后续
 
-需要对比实际Prefill／Decode的RMS类型、端口dtype、shape和epsilon时，读取规范化后的公共AIR即可，不编译、不上板，也不需要`rg`：
+先取得`PYTORCH_DRAFT_AIR_EXPORTED`和`PYTORCH_DRAFT_OMC_COMPILED`。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
 
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/probe_draft_vector.py" \
-  --inspect-rms "$AI_RUN_DIR/prefill/air/export.air" \
-                "$AI_RUN_DIR/decode/air/export.air"
-```
-
-默认使用仓库的TorchAir schema；若源AIR使用不同schema，可传`--torchair-pb2`指定实际导出环境中的文件。输出按RMS类型／描述分组；源AIR端口不等于编译内核精度证明。
-
-## 已完成的主机检查
-
-AddCustom探针及分析入口7项检查通过。PyTorch模型5项检查通过：K15／7／3／1共37步独立前缀对照，Top1无差异、KV最大差0、hidden最大绝对差0.001953125；覆盖零新增行、拒绝换anchor、重复、无效padding和容量边界。全宽16384→2048入口确认是4×4完整dot表达。另6项检查覆盖可移植AIR、源码RMS识别、替换保护及导出／编译／打包错误传播。
-
-这些是CPU数值、`torch.export`捕获与模拟工具边界检查；实际TorchAir导出、OMG编译、板端精度和性能尚待上述命令验证。成功后继续减少CPU/NPU分段、优化入口投影与词表head，并重新测量同输入的完整Draft。
+已有主机检查覆盖K15／7／3／1共37步，Top1无差异、KV最大差0、hidden最大绝对差0.001953125；另检查了17输入／14输出、32个测试RMS节点、全宽4×4完整dot投影和可移植AIR打包。这些是CPU、图捕获及模拟工具检查，实际服务器与板端验证仍待完成。

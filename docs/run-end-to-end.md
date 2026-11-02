@@ -2,13 +2,15 @@
 
 从源权重生成Draft、Prefill和Decode，再准备配置并运行板端文字闭环。原始Target Cpro导出工程、量化权重与源模型权重由用户提供，不在GitHub中。当前首次生成运行ABI配置的入口尚未补齐，具体边界见第5步；已有成功闭环的配置可由当前阶段整理命令保留。
 
+当前开发已转向[PyTorch Draft测试流程](current-status.md)，手写GE优化暂缓。本页保留现有已接线模型的从零重建方法；PyTorch候选尚未完成板端验证，暂不能直接替换下面的Draft运行模型。
+
 ## 1. 公共目录和源权重
 
 先加载conda/DDK环境，再加载项目配置。以下变量填写实际输入位置，不依赖已有AIR或OMC。
 
 ```bash
 source "$REPO_DIR/targets/cpro/scripts/env.sh"
-export TARGET_WEIGHTS='/实际路径/Target原始权重'
+export TARGET_WEIGHTS='/实际路径/原Target配置model_file对应的原始权重目录'
 export DRAFT_WEIGHTS='/实际路径/DFlash原始权重'
 export TARGET_SOURCE='/实际路径/原始Cpro导出工程'
 export TARGET_YAML='/实际路径/原始量化配置.yaml'
@@ -20,7 +22,7 @@ export INCREMENTAL_AIR="$AI_RUN_DIR/draft/air"
 export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft/omc"
 ```
 
-Target YAML包含有效的model_file、quanted_pth、embedding_weight_path、embedding_scale_path。导出主机与DDK服务器不同时，传输整个AIR输入目录及引用权重，不能只传AIR。
+`TARGET_WEIGHTS`对应原Target YAML的`model_file`目录；Draft只从中读取原始embedding和LM head。`DRAFT_WEIGHTS`指向独立的DFlash原始检查点。Target YAML另含`quanted_pth`、`embedding_weight_path`、`embedding_scale_path`，供后面的Target量化导出使用。导出主机与DDK服务器不同时，传输整个AIR输入目录及引用权重，不能只传AIR。
 
 ## 2. Draft权重 → AIR → OMC
 

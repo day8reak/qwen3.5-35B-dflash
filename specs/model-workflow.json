@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-31",
+  "updated": "2026-11-02",
   "active_phase": "validation",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
   "run_id": "20261031T082522Z-15435-7304bd",
@@ -5802,20 +5802,36 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "ADDCUSTOM_OMG_FAILED_LOG_DETAILS_PENDING_PYTORCH_CANDIDATE_READY",
-    "entry": "targets/cpro/tools/probe_draft_vector.py",
+    "status": "PYTORCH_AIR_EXPORT_NEXT_GE_OPTIMIZATION_PAUSED_BY_USER",
+    "entry": "targets/cpro/scripts/export_incremental_draft.py --frontend pytorch",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Inspect the retained AddCustom failure with probe_draft_vector.py --inspect-compile; OMG exited 1, actual compiler error not yet supplied, no retry for diagnostics. PyTorch AIR export/compile can proceed independently using docs/current-status.md.",
+    "next": "User exports PyTorch Draft AIR on the weight server, transfers the complete portable bundle, then compiles on the selected X90 DDK server using docs/current-status.md. Bind physical ABI and validate Load/KV numerics before profiling and promotion.",
     "addcustom_attempt": {
-      "source": "USER_PASTED_PROBE_SUMMARY",
+      "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
       "model_compilation": "FAILED",
       "omg_returncode": 1,
-      "root_cause": "NOT_DETERMINED_COMPILER_LOG_PENDING",
+      "root_cause": "JIT_TE_UPDATE_VERSION_FAILED_UNDERLYING_CAUSE_UNRESOLVED",
       "device_execution": "NOT_RUN",
-      "full_draft_changed": false
+      "full_draft_changed": false,
+      "jit_compile_request": {
+        "implementation": "custom_ascendc_lib",
+        "op_type": "AddCustom",
+        "node": "sum",
+        "input_dtypes": [
+          "float16",
+          "float16"
+        ],
+        "output_dtypes": [
+          "float16"
+        ],
+        "scope": "FAILED_JIT_BUILD_REQUEST_NOT_SUCCESSFUL_OMC_OR_DEVICE_PRECISION"
+      },
+      "reported_soc": "Ascend310B1",
+      "omg_platform": "kirinx90",
+      "decision": "PAUSED_BY_USER_NO_FURTHER_PROBES"
     },
     "pytorch_candidate": {
       "rms": "INSTALLED_NPU_RMS_NORM_CONVERTER_TO_RmsNorm_NOT_AdnRmsNorm",
@@ -5826,7 +5842,14 @@
       "server_omg_compilation": "NOT_RUN",
       "physical_abi": "NOT_BOUND",
       "device_execution": "NOT_RUN_USER_OWNS_EXECUTION",
-      "promotion": "NOT_PROMOTED"
+      "promotion": "NOT_PROMOTED",
+      "execution_hosts": {
+        "prepare_and_air_export": "WEIGHT_SERVER_WITH_EXISTING_TARGET_TORCHAIR_ENVIRONMENT",
+        "compile": "SELECTED_DDK_SERVER_USER_OWNS_EXECUTION",
+        "transfer": "COMPLETE_PYTORCH_AIR_DIRECTORY_WITH_RELATIVE_WEIGHT_SIDECARS_AND_PRODUCER_SCHEMA",
+        "target_weights": "ORIGINAL_TARGET_YAML.model_file_BF16_EMBEDDING_AND_LM_HEAD_ONLY",
+        "draft_weights": "SEPARATE_ORIGINAL_DFLASH_CHECKPOINT_DIRECTORY"
+      }
     },
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
@@ -5897,6 +5920,13 @@
     "fp32_weight_control_experiment": "specs/incremental-draft-native-host-validation.json#fp32_weight_control_experiment",
     "fp32_add_implementation_research": "specs/incremental-draft-native-host-validation.json#fp32_add_implementation_research",
     "compiled_add_boundary_observation": "specs/incremental-draft-native-host-validation.json#compiled_add_boundary_observation",
-    "compiled_add_kernel_observation": "specs/incremental-draft-native-host-validation.json#compiled_add_kernel_observation"
+    "compiled_add_kernel_observation": "specs/incremental-draft-native-host-validation.json#compiled_add_kernel_observation",
+    "route_decision": {
+      "source": "USER_EXPLICITLY_SHELVED_GE_ROUTE",
+      "active": "PYTORCH_TORCHAIR_AIR_TO_SELECTED_DDK_OMC",
+      "paused": "HANDWRITTEN_GE_AND_ADDCUSTOM_OPTIMIZATION",
+      "existing_runtime_artifacts": "RETAIN_CURRENT_PUBLIC_GE_AIR_AND_OMC_UNTIL_VALIDATED_REPLACEMENT",
+      "resume": "ONLY_ON_USER_REQUEST"
+    }
   }
 }
