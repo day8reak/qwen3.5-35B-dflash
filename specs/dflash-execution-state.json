@@ -1246,7 +1246,7 @@
       },
       "output_diagnosis": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose",
-        "host_checks": 13,
+        "host_checks": 16,
         "scope": "SYNTHETIC_RETAINED_BYTES_AND_CLI; NOT_USER_RAW_TENSORS_OR_DEVICE",
         "inspects": [
           "active hidden zero rows and bitwise repeated rows",
@@ -1258,7 +1258,14 @@
         "model_execution": "NOT_RUN",
         "model_compilation": "NOT_RUN",
         "production_promotion": "NOT_PERFORMED",
-        "limitations": "SOURCE_ROWS_ARE_NOT_DEVICE_GATHER_OUTPUTS; INPUT_FILES_ARE_NOT_DEVICE_READBACK"
+        "limitations": "SOURCE_ROWS_ARE_NOT_DEVICE_GATHER_OUTPUTS; INPUT_FILES_ARE_NOT_DEVICE_READBACK",
+        "mask_config_fix": {
+          "observed": "USER_REPORTED_KeyError_mask_token_id",
+          "cause": "DIAGNOSIS_READ_TOP_LEVEL_INSTEAD_OF_DRAFT_CONFIG_DFLASH_CONFIG; INITIAL_TEST_FIXTURE_WAS_FLAT",
+          "fix": "USE_EXISTING_Qwen35DFlashConfig.from_dict_AS_MODEL_REFERENCE_DOES",
+          "fixture": "REPOSITORY_NESTED_CONFIGURATION_WITH_REDUCED_VOCABULARY_PAYLOAD",
+          "execution": "READ_ONLY_RETRY_SAME_RETAINED_RESULT; NO_MODEL_OR_WEIGHT_CHANGE"
+        }
       },
       "next": "DDK_SERVER_READ_ONLY --diagnose EXISTING_RESULT --source PREPARED; docs/current-status.md"
     }

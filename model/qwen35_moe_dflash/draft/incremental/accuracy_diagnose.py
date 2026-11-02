@@ -10,6 +10,7 @@ import numpy as np
 
 from qwen35_moe_dflash.common.artifacts import checked_file
 from qwen35_moe_dflash.common.hashing import sha256_file
+from qwen35_moe_dflash.config import Qwen35DFlashConfig
 from qwen35_moe_dflash.execution.runtime_config import read_json
 from .accuracy import analyze_result, read_snapshot
 
@@ -63,16 +64,17 @@ def _embedding_rows(source, fixture, meta):
             or binding['packed_model_sha256'] != meta['model']['sha256']):
         raise ValueError('prepared source/model differs from the retained PyTorch ABI binding')
     plan = read_json(source/'prepared.json')
+    config = Qwen35DFlashConfig.from_dict(plan['draft_config'])
     name = 'target.embed_tokens.weight'
     record = plan['weights'][name]
     bound = [r for r in binding['reference_weights'] if r['name'] == name]
-    shape = [plan['draft_config']['vocab_size'], plan['draft_config']['hidden_size']]
+    shape = [config.vocab_size, config.hidden_size]
     if (len(bound) != 1 or bound[0]['sha256'] != record['sha256']
             or record['dtype'] != 'float16' or record['shape'] != shape
             or record['bytes'] != math.prod(shape)*2):
         raise ValueError('embedding descriptor/hash differs from the bound FP16 source')
     path = checked_file(source, record)
-    mask = plan['draft_config']['mask_token_id']
+    mask = config.mask_token_id
     ids = sorted({mask, *(s['anchor'] for s in meta['cases'] if s['proposals'])})
     if any(type(i) is not int or not 0 <= i < shape[0] for i in ids):
         raise ValueError('embedding diagnostic token outside vocabulary')

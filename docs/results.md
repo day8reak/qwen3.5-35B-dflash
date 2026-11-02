@@ -21,6 +21,8 @@
 
 新增`validate_incremental_draft.py --diagnose`读取已回收快照：检查四个控制量的文件hash及值，统计有效hidden的零行、逐位唯一行数、范数、跨调用及两序列对应行差异；可选prepared源权重检查mask／anchor embedding行。它先复算原比较，不改验收规则或结果文件，不调用模型。13项主机合成检查通过，覆盖全零、重复行、同Top1但不同hidden、不同物理控制槽、无效尾行、NaN／Inf、有符号零、文件篡改／截断拒绝及CLI只读行为。源码对照Target的NZ排布及端口未发现直接解释此错误的差异；真实张量统计仍需执行[当前命令](current-status.md)。
 
+首次诊断因`KeyError: mask_token_id`中断：诊断器误读prepared配置的顶层字段，实际位于`draft_config.dflash_config.mask_token_id`。已复用模型的`Qwen35DFlashConfig.from_dict`解析器；原合成夹具的扁平配置改为仓库真实嵌套结构，16项检查通过，包括原检查、实际配置读取、嵌套字段优先和非法token拒绝。该修复只涉及离线诊断，复用原结果重跑同一命令即可；板端数值失败仍待定位。
+
 整体流程记录为用户回传的`fused/result`，板端PID34211。C16／cap192／K15增量Draft，18个prompt token、生成8个，混合接口常驻、dump关闭、顺序预读开启。完整流程接通；后续独立精度与profiling见下文。以下未独立读取板端原始产物。
 
 ## 增量Draft独立验证
