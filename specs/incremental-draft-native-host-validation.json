@@ -23,7 +23,7 @@
   "model_compilation": "NOT_RUN",
   "numerical_validation": "NOT_EVALUATED",
   "performance": "NOT_MEASURED_ON_DEVICE",
-  "next": "Reuse existing FP32 probe OMCs and the user-built runtime/native; update Python output binding and rerun validate_draft_vector.py in the same vector-run slot. See docs/current-status.md.",
+  "next": "Recover the same completed vector-run with updated validate_draft_vector.py to expose first child exit code and stderr; do not relaunch or recompile before diagnosis. See docs/current-status.md.",
   "latest_user_board_observation": {
     "source": "USER_PASTED_RECOVERY_JSON",
     "independently_retrieved": false,
@@ -280,7 +280,7 @@
     "production_precision_policy_changed": false
   },
   "fp32_probe_prepare_fix": {
-    "status": "HOST_CHECKS_PASSED_USER_OMC_RERUN_PENDING",
+    "status": "USER_REPORTED_PREPARATION_PASSED_EXECUTION_STARTED",
     "source": "USER_PASTED_BUILD_AND_PREPARE_LOG",
     "native_build": "USER_REPORTED_COMPLETED",
     "observed_error": "ValueError: compiled NetOutput input reference is unresolved",
@@ -294,5 +294,27 @@
     "native_code_changed": false,
     "model_recompile_required": false,
     "local_test_sources": "NOT_PUBLISHED"
+  },
+  "fp32_probe_execution_observation": {
+    "source": "USER_PASTED_LAUNCH_AND_RECOVERY_JSON",
+    "independently_retrieved": false,
+    "board_attempt": "/data/local/tmp/qwen35_vector_da07af337d41484e99dfad93e975d5d6",
+    "status": "FAILED",
+    "stage": "recover",
+    "device_execution": "FAILED_OUTPUTS_RETRIEVED",
+    "numerical_validation": "NOT_RUN",
+    "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+    "error": "probe execution/archive failed; inspect per-case stderr and exitcode",
+    "cause": "UNKNOWN_PENDING_CHILD_EXIT_CODES_AND_STDERR",
+    "next": "Recover the same completed vector-run with updated validate_draft_vector.py to expose first child exit code and stderr; do not relaunch or recompile before diagnosis. See docs/current-status.md."
+  },
+  "fp32_probe_failure_reporting_checks": {
+    "status": "PASSED",
+    "checks": 6,
+    "scope": "SYNTHETIC_LOGS_AND_MOCKED_TRANSPORT_NOT_DEVICE",
+    "changes": "Retain per-case and aggregate exits; surface first nonzero child with bounded stderr/stdout and separate archive failure; missing records cannot pass",
+    "local_test_sources": "NOT_PUBLISHED",
+    "model_execution_on_recovery": false,
+    "native_code_changed": false
   }
 }

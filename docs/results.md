@@ -62,6 +62,8 @@ FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitc
 
 用户已构建native runner，但首次小图验证在主机prepare阶段被内部连线解析拒绝，`device_execution=NOT_RUN`。验证工具改为按小图唯一的输出shape、dtype和编译槽位绑定参考，runner继续核对运行时尺寸，逐次比较所有输出；此次修复无需重编OMC或runner。
 
+输出绑定修复后，用户回传`VECTOR_VALIDATION_STARTED`，随后已知完成并释放锁；回收状态为`FAILED_OUTPUTS_RETRIEVED`，汇总指向子进程执行或打包失败。具体退出码和stderr尚未收到，不能据此判断算子是否支持或数值是否正确。新版回收会直接显示首个失败小图及原始日志摘要，仍读取同一任务。
+
 当前图固定计算16行context投影，即使只追加2行，或某轮`valid_rows=0`，掩码也不会删除这段计算。当前脚本默认profiling样本为case2、追加2行；尚未独立读取本轮request确认。下一步先验证FP32区域的NPU编译路径，同时评估投影表达与有效行计算量；优化收益以同一输入的整模型墙钟确认。入口使用Conv2D是因为此前选定OMG拒绝K=16384的MatMul，不能直接换回原MatMul就宣称可用。
 
 当前性能目标为**C16／cap192／K15，常驻预热后proposal同步`Process`平均≤50ms**，包含API内部调度、同步和搬运，加载与初始补齐另计。计划相同输入3次预热、10次计时，并报告最大值；该目标尚未达到。当前518.990ms是单轮profiling读数，不作为已完成预热基准。优化顺序为减少CPU/NPU分段、减少context投影无效计算、检查词表head和ArgMax；不以约1%的阶段误差接受替代新图精度复查。

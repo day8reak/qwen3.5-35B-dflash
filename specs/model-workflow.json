@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "FP32_PROBES_USER_COMPILED_DEVICE_VALIDATION_READY",
+    "status": "FP32_PROBE_EXECUTION_FAILURE_DETAILS_PENDING",
     "entry": "targets/cpro/tools/validate_draft_vector.py",
     "commands": "docs/current-status.md",
     "model_changes": "NONE_EXISTING_INCREMENTAL_OMC_REUSED",
     "device_numerics": "USER_REPORTED_FAILED_UNDER_ORIGINAL_ELEMENTWISE_GATE; INTERIM_ERROR_ACCEPTED_FOR_DIAGNOSIS",
-    "next": "Reuse existing FP32 probe OMCs and the user-built runtime/native; update Python output binding and rerun validate_draft_vector.py in the same vector-run slot. See docs/current-status.md.",
+    "next": "Recover the same completed vector-run with updated validate_draft_vector.py to expose first child exit code and stderr; do not relaunch or recompile before diagnosis. See docs/current-status.md.",
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
       "independently_retrieved": false,

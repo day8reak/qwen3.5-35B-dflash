@@ -2,34 +2,26 @@
 
 目标：C16／cap192／K15，模型常驻并预热后，单次Draft proposal的同步`Process`平均时延≤50ms，包含API内部调度、同步和搬运。加载与初始KV补齐单独统计。当前整模型profiling为518.990ms，尚未达标；最终用相同输入、缓存长度和频率配置，3次预热后测10次，报告均值与最大值。
 
-## 1. 复用FP32小图，上板验证精度与时延
+## 1. 回收FP32小图的执行失败详情
 
-用户已回传5个小图全部编译成功。内置RmsNorm（hidden与head形状）、Softmax、残差Add均为1个NPUCL；RMS原语链为2个NPUCL＋1个CPUCL。下一步复用这些OMC，对每个小图加载一次，预热3次，再测10次同步`Process`并比较全部输出。原语RMS作为分段路径的对照。
+5个小图已编译，native runner已构建，NetOutput准备阶段已通过。最新板端请求已结束并释放锁，但回收报告执行或打包失败，尚无数值和时延结果。先获取已有请求的具体错误。
 
-native runner已构建成功；上一次失败停在主机的NetOutput内部连线检查，未启动板端。小图绑定已改用编译后的有序输出描述，并保留shape、dtype、输出数量及唯一性检查。直接更新代码，复用原OMC和runner重试：
+更新Python脚本后，再次回收原`vector-run`。此命令只读取已结束任务的结果，不启动模型：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$AI_RUN_DIR/draft/tests/vector" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$AI_RUN_DIR/draft/tests/vector-run" --apply
-```
-
-看到`VECTOR_VALIDATION_STARTED`后回收同一任务：
-
-```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --recover "$AI_RUN_DIR/draft/tests/vector-run" \
   --output "$AI_RUN_DIR/draft/tests/vector-result"
 ```
 
-若返回`VECTOR_VALIDATION_PENDING`，稍后重复回收命令。结果保存在`vector-result/result.json`：每项包含数值结果、10次API耗时、均值、最大值及输出逐字节重复性。失败看对应`<case>.stderr`。脚本会清理本次`NOT_RUN`的失败执行目录并复用同名槽位，不需要手动删除或重编。
+结果保存在`vector-result/result.json`。新增`execution_diagnostics`列出每项退出码，`first_failure`附首个失败小图的stderr/stdout末尾；`archive_exitcode`与`supervisor_stderr_tail`用于区分打包失败。缺少退出记录不视为成功。原始日志保留在同一目录。
+
+本轮先排查该错误，不重编或重跑。修复执行问题后，继续复用这5个OMC：每个小图加载一次，预热3次，再测10次同步`Process`并比较全部输出。内置RmsNorm（hidden与head形状）、Softmax、残差Add均为1个NPUCL；RMS原语链为2个NPUCL＋1个CPUCL，作为分段路径的对照。
 
 小图预设逐元素容差为`atol=1e-5, rtol=1e-4`，检查有限值；输入含零行、大值、小值、Softmax掩码及残差抵消。每个实测调用都保留快照，文件写入与外部输出拷贝不计入API耗时。这是小图诊断时延，不能相加预测完整Draft时延。编译归属和输出一致也不单独证明内部指令精度。
 
-验证工具此前通过16项本地检查，包括参考绑定、全部输出比较、native连续调用、归档与恢复。本次补查输出绑定与失败槽位重用；本地夹具不能替代现有OMC的设备验证。完整Draft的KV绑定和原精度阈值保持不变。
+输出绑定修复和本次失败诊断各通过6项本地检查，覆盖失败槽位复用、错误分类、日志摘要及只读恢复。本地夹具不能替代现有OMC的设备验证。完整Draft的KV绑定和原精度阈值保持不变。
 
 ## 2. 后续接入顺序
 

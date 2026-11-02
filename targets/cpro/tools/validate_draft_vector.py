@@ -323,6 +323,44 @@ def extract(archive, destination, meta):
                 shutil.copyfileobj(src, dst)
 
 
+def execution_diagnostics(out):
+    """Explain a completed request from retained logs, without model execution."""
+    def tail(name, limit=3072):
+        path = out/name
+        if not path.is_file():
+            return ''
+        with path.open('rb') as stream:
+            stream.seek(0, 2)
+            stream.seek(max(0, stream.tell()-limit))
+            return stream.read(limit).decode('utf-8', errors='replace').strip()
+
+    def code(name):
+        path = out/name
+        if not path.is_file():
+            return None
+        with path.open() as stream:
+            raw = stream.read(64).strip()
+        return int(raw) if re.fullmatch(r'[0-9]{1,3}', raw) and int(raw) <= 255 else None
+
+    codes = {name: code(name+'.exitcode') for name in CASES}
+    report = dict(native_exitcode=code('native.exitcode'), archive_exitcode=code('archive.exitcode'),
+                  case_exitcodes=codes, errors=[])
+    failed = next((name for name, value in codes.items() if value not in (None, 0)), None)
+    if failed is None:
+        failed = next((name for name, value in codes.items() if value is None), None)
+    if failed is not None:
+        report['first_failure'] = dict(case=failed, exitcode=codes[failed],
+            stderr_tail=tail(failed+'.stderr'), stdout_tail=tail(failed+'.stdout'))
+        report['errors'].append(f'probe {failed}: exitcode={codes[failed]} (None means missing/invalid exit record)')
+    if report['native_exitcode'] != 0:
+        report['errors'].append('native execution summary: exitcode='+str(report['native_exitcode']))
+    if report['archive_exitcode'] != 0:
+        report['errors'].append('output archive: exitcode='+str(report['archive_exitcode']))
+    if report['errors']:
+        report['supervisor_stderr_tail'] = tail('supervisor.stderr')
+    return report
+
+
 def recover(root, out):
     root = Path(root).resolve()
     if root == out or root in out.parents or out in root.parents:
@@ -353,8 +391,10 @@ def recover(root, out):
         for name in CASES:
             for suffix in ('stdout', 'stderr', 'exitcode'):
                 _receive(hdc, board, out, name+'.'+suffix)
-        if (out/'native.exitcode').read_text().strip() != '0' or (out/'archive.exitcode').read_text().strip() != '0':
-            raise ValueError('probe execution/archive failed; inspect per-case stderr and exitcode')
+        diagnostics = execution_diagnostics(out)
+        state['execution_diagnostics'] = diagnostics
+        if diagnostics['errors']:
+            raise ValueError('; '.join(diagnostics['errors']))
         fixture = root/'fixture'
         if sha256_file(fixture/'manifest.json') != plan['fixture_sha256']:
             raise ValueError('retained fixture manifest changed')

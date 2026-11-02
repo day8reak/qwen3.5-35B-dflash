@@ -964,7 +964,7 @@
     "maintenance_policy": "Homepage contains only a brief introduction and six direct links. Keep each primary page self-contained; operational pages contain short instructions and complete command blocks. Detailed development and historical evidence remain outside primary navigation."
   },
   "incremental_draft_task": {
-    "status": "FP32_PROBES_USER_COMPILED_DEVICE_VALIDATION_READY",
+    "status": "FP32_PROBE_EXECUTION_FAILURE_DETAILS_PENDING",
     "context_gears": [
       16,
       64
@@ -980,7 +980,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "Reuse existing FP32 probe OMCs and the user-built runtime/native; update Python output binding and rerun validate_draft_vector.py in the same vector-run slot. See docs/current-status.md.",
+    "next_command": "Recover the same completed vector-run with updated validate_draft_vector.py to expose first child exit code and stderr; do not relaunch or recompile before diagnosis. See docs/current-status.md.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
