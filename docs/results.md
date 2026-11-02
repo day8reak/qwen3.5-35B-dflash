@@ -109,11 +109,15 @@ FP32不必然只能运行在CPU。[AscendC RmsNorm接口文档](https://asc.gitc
 
 KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Draft API均值726.839ms与这次不是严格配对试验，不能直接作为优化收益结论。
 
-## PyTorch当前开发路线（静态AIR预处理通过，TBE平台更新失败）
+## PyTorch当前开发路线（静态AIR预处理通过，Transpose任务生成失败）
 
-最新用户复编已确认`draft-static-preparation-v2`生效：删除24个中间Reshape、物化7个ZerosLike，实际OMG读取`prepared.air`。随后六个Attention编译任务失败；完整traceback定位在`parallel_compilation.py`的`_prerun → _update_options → platform_info.te_update_version()`，抛出`RuntimeError: te_update_version() return error.`，worker退出1。当前证据定位到内核编译主体之前的平台更新失败，不能归因于Attention尺寸或断言算子不支持。日志所列Q、KV、mask形状分别为`[1,256,16,16]`、`[7,64,32,16]`、`[1,1,16,224]`，与源适配器预期一致；并不证明该内核已编译或执行。
+最新用户使用`--tbe-diagnosis common/tbe-diagnosis`复编，OMG读取`prepared.air`，24个Reshape简化和7个零常量替换保持。日志已进入内存分配、`BuildModelRes`和任务生成，在`GetDataParam op=Transpose`后出现`inputTensorPtr is NULL`，随后`Permute ProduceTiling failed`／`Permute Transpose compileInfo is null`，导致SubGraph_1及整图编译失败。报错码为1443627009，具体含义未确认。当前需读取精确节点的输入、常量及消费者和TBE worker审计，尚不能把空指针归因为权重缺失，也不能用此前的Attention tiling warning判定本次终止原因。
 
-本次命令没有传已有的`--tbe-diagnosis`。随后用户确认旧诊断目录已删除；当前恢复方案是用同一DDK和`custom_pypto`重新执行平台API诊断，固定保存到`common/tbe-diagnosis`，后续复用整个目录。新诊断及真实OMG兼容复编均待用户执行，不复用已不存在的旧报告，也不重导出AIR。现有兼容实现核验候选、对照及选定DDK来源，适配底层更新参数，OMG仍为`kirinx90`。日志摘要独立保留有界Python traceback及worker失败节点，避免早期Cast错误占满摘要；加载、数值和性能仍未验证。
+日志摘要增加这三类已观察到的任务生成错误，优先于早期Cast常量图诊断；5项主机检查通过，覆盖晚出现的Transpose失败、只读报告、Python traceback保留、warning不提升及旧ByPassNode错误保留。未调用OMG或设备，图尚未新增改写。
+
+此前用户复编已确认`draft-static-preparation-v2`生效：删除24个中间Reshape、物化7个ZerosLike，实际OMG读取`prepared.air`。随后六个Attention编译任务失败；完整traceback定位在`parallel_compilation.py`的`_prerun → _update_options → platform_info.te_update_version()`，抛出`RuntimeError: te_update_version() return error.`，worker退出1。该轮证据定位到内核编译主体之前的平台更新失败，不能归因于Attention尺寸或断言算子不支持。日志所列Q、KV、mask形状分别为`[1,256,16,16]`、`[7,64,32,16]`、`[1,1,16,224]`，与源适配器预期一致；并不证明该内核已编译或执行。
+
+该历史失败轮次没有传`--tbe-diagnosis`。随后用户确认旧诊断目录已删除，改用同一DDK和`custom_pypto`恢复到`common/tbe-diagnosis`。最新复编已引用这个目录，实际worker审计结果仍待读取。现有兼容实现核验候选、对照及选定DDK来源，适配底层更新参数，OMG仍为`kirinx90`。日志摘要独立保留有界Python traceback及worker失败节点，避免早期Cast错误占满摘要；加载、数值和性能仍未验证。
 
 本轮日志诊断的8项主机检查通过，覆盖第41986行才出现的worker异常、交错日志、截断上限、旧节点／pass错误保留，以及真实`--inspect-compile`入口读取模拟失败记录后文件字节不变。测试不调用OMG或设备。
 
