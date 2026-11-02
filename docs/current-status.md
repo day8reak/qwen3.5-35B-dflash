@@ -6,14 +6,24 @@
 
 **本轮只在DDK服务器／`custom_pypto`环境执行。无需重导出或重新传输AIR、权重。** 沿用现有`REPO_DIR`、`AI_RUN_DIR`及DDK变量：
 
-本次命令补传Target此前使用的`--tbe-diagnosis`。目录来自项目已有执行记录；若本机已迁移它，使用完整保留的实际诊断目录。该参数核验诊断报告、模块与选定DDK的来源，只在本次编译目录复制TE包并适配底层平台名称参数；OMG目标保持`kirinx90`。不修改已安装包或DDK，不需要重新运行12组诊断。
+用户确认旧TBE诊断目录已删除。先在固定公共位置`common/tbe-diagnosis`重新生成一次；这是当前DDK的平台API诊断，不读取模型权重、不编译模型、不上板，也不修改已安装包或DDK。使用发生错误的`custom_pypto`环境中的Python。后续编译复用完整目录，不能只留`report.json`，其中还引用模块副本和逐例记录；生成后不要再移动它。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" check-tbe-platform \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --python "$(command -v python3)" \
+  --diagnose --jobs 4 \
+  --output "$AI_RUN_DIR/common/tbe-diagnosis"
+```
+
+诊断返回`DIAGNOSIS_COMPLETE`表示12组执行完毕，不要求每组都成功。恢复后运行下面的编译命令；`--tbe-diagnosis`会核验实际候选、对照及DDK来源，条件不符就停止，不会直接套用旧结论。兼容处理仍只在本次编译目录生效，OMG目标保持`kirinx90`。
+
+```bash
 python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
   --air-export "$AI_RUN_DIR/draft/air" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
 ```
 
@@ -108,14 +118,14 @@ python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
 
 ## 3. DDK服务器：编译OMC
 
-沿用已配置的`CPRO_DDK_ROOT`、`CPRO_DDK_ID`，确认已安装完整`draft/air`后，复用上述已完成的TBE诊断：
+沿用已配置的`CPRO_DDK_ROOT`、`CPRO_DDK_ID`，确认已安装完整`draft/air`后，复用上述已完成的TBE诊断。旧目录丢失时先执行本页开头的恢复命令：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
   --air-export "$AI_RUN_DIR/draft/air" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/fused-all-f6b81ead7ae8/diagnosis" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
 ```
 

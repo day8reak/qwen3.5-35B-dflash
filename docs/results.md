@@ -113,7 +113,7 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 
 最新用户复编已确认`draft-static-preparation-v2`生效：删除24个中间Reshape、物化7个ZerosLike，实际OMG读取`prepared.air`。随后六个Attention编译任务失败；完整traceback定位在`parallel_compilation.py`的`_prerun → _update_options → platform_info.te_update_version()`，抛出`RuntimeError: te_update_version() return error.`，worker退出1。当前证据定位到内核编译主体之前的平台更新失败，不能归因于Attention尺寸或断言算子不支持。日志所列Q、KV、mask形状分别为`[1,256,16,16]`、`[7,64,32,16]`、`[1,1,16,224]`，与源适配器预期一致；并不证明该内核已编译或执行。
 
-本次命令没有传已有的`--tbe-diagnosis`。下一轮复用Target此前保留的`fused-all-f6b81ead7ae8/diagnosis`及现有运行目录兼容实现：验证诊断与选定DDK来源，适配底层更新参数，OMG仍为`kirinx90`。不重导出AIR、不重跑诊断矩阵。日志摘要独立保留有界Python traceback及worker失败节点，避免早期Cast错误占满摘要。真实OMG兼容复编、加载、数值和性能均待验证。
+本次命令没有传已有的`--tbe-diagnosis`。随后用户确认旧诊断目录已删除；当前恢复方案是用同一DDK和`custom_pypto`重新执行平台API诊断，固定保存到`common/tbe-diagnosis`，后续复用整个目录。新诊断及真实OMG兼容复编均待用户执行，不复用已不存在的旧报告，也不重导出AIR。现有兼容实现核验候选、对照及选定DDK来源，适配底层更新参数，OMG仍为`kirinx90`。日志摘要独立保留有界Python traceback及worker失败节点，避免早期Cast错误占满摘要；加载、数值和性能仍未验证。
 
 本轮日志诊断的8项主机检查通过，覆盖第41986行才出现的worker异常、交错日志、截断上限、旧节点／pass错误保留，以及真实`--inspect-compile`入口读取模拟失败记录后文件字节不变。测试不调用OMG或设备。
 
