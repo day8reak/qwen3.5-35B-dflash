@@ -6,7 +6,7 @@
 
 最新诊断已确认两组空context的30720个hidden元素全零。context=18时，更换anchor 17／32／34／38，共同有效位置仍逐位相同；位置之间并非全部相同，context变化也影响hidden。用户随后回传独立Gather探针通过：原完整表、显式INT32 ID，10次embedding与ID回读均逐字节一致，NPUCL一个子图，API均值0.460ms。该结果只验证独立查表，完整Draft根因尚未确定。
 
-输入RMS探针首次提取在Cast_7类型检查处失败，尚未调用OMG；返回未包含实际目标类型。当前先只读核对该Cast的属性、输入输出描述及上下游，区分中间整数转换与最终索引类型冲突。独立Gather探针在此节点之后切入，因此此前查表通过未覆盖它。以下编译命令待核对后续用。
+用户补充的错误详情已确认：Cast_7接在Muls之后，GE目标属性1对应FP16，描述为FP32→FP16；此前把该节点推断为索引转换有误。提取器误要求RMS上游每个Cast都转成FP32，现已按执行顺序核对实际类型，保留缩放后的FP16舍入以及进入RMS前的FP32转换；空shape且没有FX类型信息的Muls默认描述按输入类型解析，明确冲突仍拒绝。独立Gather探针未包含这段下游路径。更新代码后重新执行以下命令，沿用已有AIR、prepared和native runner。
 
 **本轮所有命令均在DDK服务器`t00826215_atc_mobile`的`custom_pypto`环境执行。下一步提取原始anchor到第一层RMS的连接：**
 
@@ -42,7 +42,7 @@ python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms-result"
 ```
 
-`VECTOR_VALIDATION_PENDING`时稍后重复回收。`cases[].outputs`分别显示`ids_readback`、`embedding`和`input_rms`的结果。前两项正确而RMS失败，可定位到缩放／第一层归一化路径；三项通过则继续下游及完整图分区定位。该小图不包含Attention、残差、后续层或head，也不保留完整图分区，不能替代完整Draft验证。输入RMS探针的19项主机合成图／混合类型IO／模拟编译检查通过，真实编译及上板待用户执行。旧`--stage lookup`（默认值）仍可复查已通过的查表用例。
+`VECTOR_VALIDATION_PENDING`时稍后重复回收。`cases[].outputs`分别显示`ids_readback`、`embedding`和`input_rms`的结果。前两项正确而RMS失败，可定位到缩放／第一层归一化路径；三项通过则继续下游及完整图分区定位。该小图不包含Attention、残差、后续层或head，也不保留完整图分区，不能替代完整Draft验证。输入RMS探针的33项主机检查通过，包括回传的Cast形式、原节点字节保留、非单位缩放的FP16舍入参考和类型冲突拒绝；真实编译及上板待用户执行。`extraction.float_paths`记录实际通过检查的类型链。旧`--stage lookup`（默认值）仍可复查已通过的查表用例。
 
 以下离线命令仍可复查原完整Draft结果：
 

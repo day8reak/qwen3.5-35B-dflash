@@ -4,9 +4,86 @@ import math
 
 from qwen35_moe_dflash.target.original_air_roundtrip import _attributes, _decode
 from qwen35_moe_dflash.target.original_ge_append_wire import _blob, _field, _graph_raw, _node_bytes, _parts, _v, _new_id
+from .air_fill import _FillValues
 from .air_zeros import _Shapes
 
 GAMMA = 'draft.layers.0.input_layernorm.weight'
+
+
+def _unary_path(shapes, edge, allowed):
+    """Return the root and execution-ordered nodes without discarding Casts."""
+    path, seen = [], set()
+    while True:
+        node = shapes.node(edge)
+        if node['type'] not in allowed:
+            return node, list(reversed(path))
+        if len(path) >= 16 or node['name'] in seen or len(node.get('input', [])) != 1:
+            raise ValueError('cyclic/unsupported input-prefix unary chain: '+node['name'])
+        seen.add(node['name'])
+        path.append(node)
+        edge = node['input'][0]
+
+
+def _float_path(shapes, root, path, shape, *, allow_scale=False):
+    """Prove FP16 source -> optional scaling/FP16 rounding -> FP32 RMS.
+
+    Cast destination attributes use GE numbers; descriptors use protobuf enums.
+    Replay types forward and retain all nodes. Only placeholder descriptors
+    covered by the existing source-AIR rule may omit a concrete dtype.
+    """
+    values = _FillValues(shapes)
+    half, single = values.types['DT_FLOAT16'], values.types['DT_FLOAT']
+    names = {half: 'float16', single: 'float32'}
+    dtype, placeholder = half, root['type'] == 'FileConstant'
+    scale, rounded, proof = None, False, []
+    for node in path:
+        inputs, outputs = node.get('input_desc', []), node.get('output_desc', [])
+        if len(inputs) != 1 or len(outputs) != 1:
+            raise ValueError('float prefix requires one input/output descriptor: '+node['name'])
+        for desc in inputs+outputs:
+            if desc.get('layout', 'ND') != 'ND':
+                raise ValueError('float prefix requires ND descriptors: '+node['name'])
+            recorded = desc.get('shape', {}).get('dim')
+            if recorded and recorded != shape:
+                raise ValueError('float prefix recorded shape conflicts: '+node['name'])
+        input_placeholder = values.descriptor_dtype(inputs[0], dtype, 'float prefix input '+node['name'],
+                                                    allow_placeholder=placeholder)
+        attrs, before = _attributes(node), dtype
+        if node['type'] == 'Cast':
+            dtype = values.attribute_dtype(node, 'dst_type')
+            if dtype not in names:
+                raise ValueError('float prefix Cast destination dtype must be FP16 or FP32: '+node['name'])
+            placeholder = values.descriptor_dtype(outputs[0], dtype, 'float prefix Cast output '+node['name'],
+                                                  allow_placeholder=True)
+        elif node['type'] in {'Identity', 'Muls'}:
+            if node['type'] == 'Muls':
+                if not allow_scale or scale is not None:
+                    raise ValueError('float prefix permits at most one embedding Muls')
+                scale = attrs.get('value', {}).get('f')
+                if not isinstance(scale, (float, int)) or not math.isfinite(scale):
+                    raise ValueError('embedding Muls needs a finite scalar')
+            # TorchAir's raw Muls API adds an output name without a dtype;
+            # aten.mul then casts that internal result to the FX output dtype.
+            # Resolve only an untyped/default descriptor from Muls' input type.
+            # Source: Ascend/torchair e1118e8b, ge_converter/aten/mul.py and
+            # auto_generated_ge_raw_ops.py (Muls).
+            placeholder = values.descriptor_dtype(outputs[0], dtype, 'float prefix output '+node['name'],
+                                                  allow_placeholder=node['type'] == 'Muls')
+        else:
+            raise ValueError('unsupported float prefix operator: '+node['type'])
+        if scale is not None and dtype == half:
+            rounded = True
+        proof.append(dict(name=node['name'], type=node['type'], input_dtype=names[before],
+                          output_dtype=names[dtype], ge_dst_type=attrs.get('dst_type', {}).get('i'),
+                          recorded_input_dtype=inputs[0].get('dtype'),
+                          recorded_output_dtype=outputs[0].get('dtype'),
+                          placeholder_input_dtype=input_placeholder,
+                          placeholder_output_dtype=placeholder))
+    if dtype != single:
+        raise ValueError('float prefix final destination dtype must be FP32 at RMS')
+    if scale is not None and not rounded:
+        raise ValueError('embedding scaling must preserve the source FP16 boundary before RMS')
+    return (1.0 if scale is None else scale), proof
 
 
 def extract_prefix(raw, schema, lookup, config):
@@ -49,29 +126,24 @@ def extract_prefix(raw, schema, lookup, config):
     for n, _, _ in rows:
         if n['type'] != 'RmsNorm' or len(n.get('input', [])) != 2:
             continue
-        gamma, _ = strip(n['input'][1], 0)
+        gamma, gamma_path_nodes = _unary_path(shapes, n['input'][1], {'Cast', 'Identity'})
         if gamma['type'] == 'FileConstant' and _attributes(gamma).get('file_path', {}).get('s') == gamma_path:
-            matches.append((n, gamma))
+            matches.append((n, gamma, gamma_path_nodes))
     if len(matches) != 1:
         raise ValueError('cannot uniquely identify first candidate RMS from its gamma weight')
-    rms, gamma = matches[0]
+    rms, gamma, gamma_path_nodes = matches[0]
     epsilon = _attributes(rms).get('epsilon', {}).get('f')
     if (not isinstance(epsilon, (float, int)) or not math.isfinite(epsilon)
             or not math.isclose(epsilon, config.rms_norm_eps, rel_tol=1e-6)
             or len(rms.get('input_desc', [])) != 2 or not rms.get('output_desc')
             or any(d.get('dtype') != types['DT_FLOAT'] for d in rms['input_desc']+[rms['output_desc'][0]])):
         raise ValueError('first RMS must request FP32 input/gamma/output with source epsilon')
-    carrier, _ = strip(rms['input'][0], 0)
-    scale = 1.0
-    if carrier['type'] == 'Muls' and len(carrier.get('input', [])) == 1:
-        scale = _attributes(carrier).get('value', {}).get('f')
-        if carrier['input'][0] != gather['name']+':0':
-            raise ValueError('first RMS scaling does not consume the original embedding Gather')
-        if (len(carrier.get('input_desc', [])) != 1 or len(carrier.get('output_desc', [])) != 1
-                or any(d.get('dtype') != types['DT_FLOAT16'] for d in carrier['input_desc']+carrier['output_desc'])):
-            raise ValueError('embedding scaling must preserve the source FP16 boundary')
-    elif carrier['name'] != gather['name']:
+    carrier, embedding_path = _unary_path(shapes, rms['input'][0], {'Cast', 'Identity', 'Muls'})
+    if carrier['name'] != gather['name']:
         raise ValueError('unsupported path from embedding to first RMS: '+carrier['name'])
+    scale, embedding_types = _float_path(shapes, gather, embedding_path,
+                                       [1,16,config.hidden_size], allow_scale=True)
+    _, gamma_types = _float_path(shapes, gamma, gamma_path_nodes, [config.hidden_size])
     if (not isinstance(scale, (float, int)) or not math.isfinite(scale)
             or not math.isclose(scale, config.input_embedding_scale, rel_tol=1e-6)):
         raise ValueError('AIR embedding scale conflicts with source reference config')
@@ -157,6 +229,7 @@ def extract_prefix(raw, schema, lookup, config):
         preserved_payload_sha256={n: hashlib.sha256(payloads[n]).hexdigest() for n in sorted(selected) if n!=anchor['name']},
         anchor=anchor['name'], mask_path=_attributes(mask)['file_path']['s'], gamma_path=gamma_path,
         rms=rms['name'], epsilon=epsilon, scale=scale,
+        float_paths=dict(embedding=embedding_types, gamma=gamma_types),
         graph=dict(inputs=[dict(name=anchor['name'], dtype='int32', shape=[1])], outputs=[
             dict(name='embedding', dtype='float16', shape=outputs[0][2], exact_bytes=True),
             dict(name='ids_readback', dtype='int32', shape=outputs[1][2], exact_bytes=True),

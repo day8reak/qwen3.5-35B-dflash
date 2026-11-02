@@ -1242,7 +1242,7 @@
         "timing_scope": "SYNCHRONOUS_API_WALL_DIAGNOSTIC_MIXED_INPUTS_NOT_WARM_BENCHMARK",
         "comparison": "UNCHANGED_ELEMENTWISE_ATOL_0.01_RTOL_0.01_AND_ZERO_TOP1_MISMATCHES; NO_L2_GATE",
         "root_cause": "UNRESOLVED; CONTEXT_KV_IS_INDEPENDENT_OF_CANDIDATE_ATTENTION",
-        "next": "DDK_SERVER_SOURCE_INPUT_RMS_PREFIX_PROBE; docs/current-status.md"
+        "next": "DDK_SERVER_RETRY_INPUT_RMS_PROBE_AFTER_FLOAT_CAST_CHECK_FIX; docs/current-status.md"
       },
       "output_diagnosis": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose",
@@ -1276,7 +1276,7 @@
           "embedding": "ANCHOR_AND_MASK_SOURCE_ROWS_FINITE_NONZERO_NOT_DEVICE_GATHER"
         }
       },
-      "next": "DDK_SERVER_SOURCE_INPUT_RMS_PREFIX_PROBE; docs/current-status.md",
+      "next": "DDK_SERVER_RETRY_INPUT_RMS_PROBE_AFTER_FLOAT_CAST_CHECK_FIX; docs/current-status.md",
       "embedding_probe": {
         "entry": "targets/cpro/tools/probe_draft_embedding.py",
         "host_checks": 23,
@@ -1320,7 +1320,7 @@
         "validation_case": "pytorch_input_rms",
         "source": "ORIGINAL_ANCHOR_MASK_GATHER_SCALE_AND_FIRST_RMS_PREFIX",
         "mutation": "ONLY_ANCHOR_DATA_INDEX_AND_NETOUTPUT; ORIGINAL_PREFIX_PAYLOAD_AND_THREE_SIDECAR_HASHES_RETAINED",
-        "host_checks": 19,
+        "host_checks": 33,
         "host_scope": "SYNTHETIC_PROTO_MOCK_COMPILER_MIXED_IO_AND_INDEPENDENT_REFERENCE_CHECK",
         "comparison": {
           "embedding": "EXACT_FP16_BYTES",
@@ -1337,11 +1337,35 @@
           "node": "Cast_7",
           "stage": "SOURCE_PREFIX_TYPE_CHECK_BEFORE_SNAPSHOT_OR_OMG",
           "error": "input-prefix Cast has unexpected GE destination dtype",
-          "actual_dst_type": "NOT_YET_REPORTED",
-          "decision": "RETAIN_TYPE_GUARD; REQUEST_ORIGINAL_CAST_ATTRIBUTES_AND_CONNECTED_DESCRIPTORS",
-          "next": "READ_ONLY_SOURCE_AIR_INSPECTION_ON_DDK_SERVER"
+          "actual_dst_type": {
+            "i": 1
+          },
+          "decision": "FIX_OVERRESTRICTIVE_FLOAT_PATH_CHECK; NOT_AN_INDEX_CAST; RETAIN_ORIGINAL_CAST_AND_ROUNDING",
+          "next": "UPDATE_CODE_AND_RETRY_SAME_INPUT_RMS_PROBE_ON_DDK_SERVER",
+          "expected_ge_dtype": 0,
+          "input_edges": [
+            "Muls:0"
+          ],
+          "input_descriptor_dtypes": [
+            1
+          ],
+          "output_descriptor_dtypes": [
+            2
+          ]
         },
-        "diagnostic_fix": "CAST_ERRORS_INCLUDE_EXPECTED_GE_TYPE_ACTUAL_ATTRIBUTE_INPUT_EDGES_AND_DESCRIPTOR_TYPES; NO_GRAPH_OR_TOLERANCE_CHANGE"
+        "diagnostic_fix": "CAST_ERRORS_INCLUDE_EXPECTED_GE_TYPE_ACTUAL_ATTRIBUTE_INPUT_EDGES_AND_DESCRIPTOR_TYPES; NO_GRAPH_OR_TOLERANCE_CHANGE",
+        "float_path_fix": {
+          "cause": "FINAL_RMS_FP32_REQUIREMENT_WAS_APPLIED_TO_EVERY_INTERMEDIATE_CAST",
+          "evidence": "USER_REPORTED_CAST7_AFTER_MULS_DESTINATION_GE_FP16; DESCRIPTOR_PROOFBOUNDS_ONLY",
+          "preserve": "ALL_ORIGINAL_CAST_MULS_AND_WEIGHT_BYTES; REFERENCE_FP16_SCALING_BOUNDARY_AND_GATES",
+          "validation": "FORWARD_FLOAT16_FLOAT32_TYPE_FLOW; FINAL_FP32_AND_POST_SCALE_FP16_REQUIRED; CONCRETE_CONFLICTS_REJECTED",
+          "placeholders": "ONLY_UNTYPED_DEFAULT_SOURCE_CAST_OR_MULS_OUTPUTS_WITHOUT_FX_META_OR_SHAPE",
+          "upstream_reference": "https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/ge_converter/aten/mul.py",
+          "reference_scope": "CHECKED_UPSTREAM_PATTERN_NOT_INSTALLED_EXPORTER_VERSION_PROOF",
+          "host_checks": 33,
+          "old_lookup_checks": 23,
+          "real_source_reextraction": "AWAITING_USER_RETRY"
+        }
       }
     }
   },

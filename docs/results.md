@@ -33,7 +33,9 @@
 
 此结果验证独立原表查表，未验证上游ID构造、缩放、RMS及完整图分区。下一步新增`--stage input-rms`，保留原anchor→mask拼接→Gather→缩放→第一层RmsNorm连接，输出实际ID、raw embedding、FP32 RMS。前两项零容差逐字节比较，RMS沿用完整Draft的0.01／0.01逐元素门槛；原gamma直接使用，不加1。主机合成图、独立参考与PyTorch公式对照、重排物理输出槽、不同类型比较及权重篡改拒绝检查通过；新探针实际编译及板端结果待回传。23项旧查表探针检查回归通过。完整Draft仍数值失败、未提升生产。执行命令见[当前阶段](current-status.md)。
 
-输入RMS探针首次执行被源图检查拦截：Cast_7的GE目标属性不等于提取器要求值，但旧错误消息未输出实际属性。尚未进行权重快照、OMG或板端调用；不能据此判定Cast语义错误，也不能认定只是检查器误拒绝。已补充完整类型错误详情，19项原探针检查及1项属性／描述冲突诊断检查通过；待原AIR局部输出确认后决定修复，未放宽类型检查。
+输入RMS探针首次执行被源图检查拦截。2026-11-03用户回传详情：Cast_7输入Muls，输入描述1（FP32）、输出描述2（FP16），GE dst_type=1（FP16）；提取器此处却要求GE类型0（FP32）。这确认报错发生在RMS的浮点输入链，撤回此前索引链的推断。问题是提取器把最终RMS输入类型错误地施加到每个中间Cast，不能据此指认完整Draft的数值根因。
+
+修复按顺序核对FP16源embedding／gamma到RMS的浮点链，保留原Cast及Muls字节，支持缩放前FP32提升及缩放后FP16舍入。最终RMS必须为FP32；缺少缩放后的FP16边界、整数Cast、明确的dtype／shape冲突及循环仍拒绝。原参考公式已有对应FP16舍入，未改参考权重或0.01／0.01阈值。33项主机检查通过，包含用户回传形式的合成图、节点字节保留、非单位缩放与PyTorch参考对照、重排输出槽及拒绝路径；23项旧查表检查回归通过。上游[TorchAir乘法converter](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/ge_converter/aten/mul.py)对FP16张量与标量生成Muls后再转换到输出类型；对应raw API未填写Muls输出dtype，因此补测无shape／无FX元信息的默认描述解析。这是已核对的上游模式，不证明用户安装版本或实际内部运算精度。实际源AIR提取、OMG和板端结果仍待用户重跑。
 
 整体流程记录为用户回传的`fused/result`，板端PID34211。C16／cap192／K15增量Draft，18个prompt token、生成8个，混合接口常驻、dump关闭、顺序预读开启。完整流程接通；后续独立精度与profiling见下文。以下未独立读取板端原始产物。
 

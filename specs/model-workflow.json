@@ -5807,7 +5807,7 @@
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "PYTORCH_USER_REPORTED_TOP1_0_OF_86_PER_MODE_AND_HIDDEN_L2_1_TO_1.408; PRIOR_GE_INTERIM_ACCEPTANCE_DOES_NOT_APPLY",
-    "next": "User reported isolated original Gather exact-byte pass (10 calls, NPUCL1, mean API 0.460ms). Compile and run original anchor/mask/embedding/first-RMS prefix on DDK server with existing native runner. Full Draft numerics and 50ms objective unresolved.",
+    "next": "Retry input-RMS probe after correcting intermediate FP16 Cast validation. User Cast_7 is after Muls, not an index Cast. Original nodes/weights and numerical gates retained. Full Draft numerics and 50ms objective unresolved.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
