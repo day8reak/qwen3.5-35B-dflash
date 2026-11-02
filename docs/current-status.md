@@ -2,7 +2,7 @@
 
 当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**。按用户要求暂缓手写GE和AddCustom优化，不再要求运行相关探针。成功导出的AIR统一放`draft/air/`，编译和测试直接引用它。当前可运行OMC仍放`draft/omc/`；新OMC完成接口绑定和板端验证后再替换运行模型。`tests/`用于测试记录和可清理的构建临时文件。
 
-目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms，尚未达到。当前GE整模型profiling为518.990ms。融合版PyTorch AIR已进入OMG，本次终止在`ReshapeFusion`删除节点时的`ByPassNode PreCheck`，不是此前的Gather INT64检查。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
+目标仍为C16／cap192／K15，常驻预热后单次proposal同步`Process`平均≤50ms，尚未达到。当前GE整模型profiling为518.990ms。用户复编确认24个中间Reshape已被简化，OMG越过此前的`ByPassNode PreCheck`失败阶段；本次终止于NPU子图构建的`ZerosLike create OpGraphBuilder fail`。现有结果见[当前结果](results.md)，算子流程见[模型结构](model-architecture.md)。
 
 **本轮只在DDK服务器／`custom_pypto`环境执行。无需重导出或重新传输AIR、权重。** 沿用现有`REPO_DIR`、`AI_RUN_DIR`及DDK变量：
 
@@ -14,9 +14,9 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
 ```
 
-新编译入口在独立快照旁生成`prepared.air`，只合并满足静态shape、相同dtype／ND布局、单消费者且无控制依赖的连续Reshape。保留最终Reshape与目标shape，不跨Transpose／Cast／Identity合并；算术、注意力、mask、权重和17／14公共接口保持。公共`draft/air`和原始编译快照不改写。日志会显示`Prepared compiler AIR: APPLIED, removed N intermediate Reshapes`；具体节点保存在`compilation/air-preparation.json`。若没有满足条件的链，则显示`UNCHANGED`，不会猜测形状后强行改写。
+编译入口在独立快照旁生成`prepared.air`：保留已有的静态Reshape链简化，并将能证明静态尺寸的`ZerosLike`替换为同dtype的零常量。这些零值用于缓存索引下界裁剪和六层注意力mask；只读取AIR内的描述、shape／axis字面常量和明确的算子形状关系，不读取权重值、不从期望配置补造shape，也不使用可能传播NaN的`x*0`替代。无法证明形状时，在调用OMG前明确失败。
 
-这是针对失败阶段的等价简化候选，已通过主机检查，尚未在用户DDK验证。不能仅凭最后一行`removing Reshape_49`断言该节点本身非法；早期Cast常量图报错也保留为线索。下方第1、2节是首次生成AIR的完整流程，本轮跳过；成功条件和失败检查见第3节。
+公共`draft/air`、原始快照、权重和17／14公共接口保持。进度日志新增`materialized N ZerosLike constants`，详细节点、形状推导和哈希保存在`compilation/air-preparation.json`。源码也改为固定零buffer，供以后重新导出使用；本轮已有AIR不必重新导出。该替换已通过主机检查，用户DDK复编仍待执行。早期Cast常量图诊断和reshape-transpose融合候选的rank提示不应代替本次终止点。下方第1、2节是首次生成AIR的完整流程，本轮跳过；成功条件和失败检查见第3节。
 
 本轮把每层的QK／mask／Softmax／PV交给Target同款融合算子，使用原Target的converter端口映射；内部构造NZ分块KV，block_size=32，C16／cap192／K15的临时KV设计形状为`[7,64,32,16]`。padding全部屏蔽，保留Draft五层因果／滑窗与末层双向可见性。公共ND缓存仍只提交context，不直接套用Target的原地CacheUpdate。权重和公共接口不变，融合内核的舍入行为仍需实机比较。
 
@@ -128,6 +128,6 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 ## 4. 本阶段通过条件与后续
 
-用户已完成融合版AIR导出并进入OMG，目前在ReshapeFusion阶段失败；下一阶段需要`PYTORCH_DRAFT_OMC_COMPILED`。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
+用户已完成融合版AIR导出，OMG越过此前ReshapeFusion失败阶段，目前在ZerosLike的NPU子图构建阶段失败；下一阶段需要`PYTORCH_DRAFT_OMC_COMPILED`。随后核对编译后的RmsNorm、Cast和实际输入输出槽位，完成板端Load及独立KV精度验证，再采集同输入的完整模型profiling。PyTorch仍使用TorchAir和OMG，换前端不代表消除了内部降精度或加载问题。
 
 前一轮主机检查覆盖C16／C64、K15／7／3／1、滑窗开关共280步：使用CPU模拟Target布局／调用，与原语参考的Top1、hidden、全部K/V完全一致，输入KV和未写区保持。真实宽度的布局索引检查覆盖212992个元素；四档完整形状图捕获均为6个测试融合节点、32个测试RMS节点、17／14接口及INT32 Gather。这些检查验证适配器和mask／缓存语义，不验证厂商融合内核。真实融合版AIR已保存并进入编译；OMG、板端精度与性能仍未通过。

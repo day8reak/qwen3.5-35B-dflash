@@ -20,6 +20,7 @@ _SUPPORT_DTYPE_FAILURE = re.compile(
 _KERNEL_FAILURE = re.compile(rb"kernel.*(?:failed|missing|not found|not valid|invalid)", re.I)
 _PYTHON_FAILURE = re.compile(rb"^(?:Traceback \(most recent call last\):|[\w.]+(?:Error|Exception):)")
 _PASS_FAILURE = re.compile(rb"ByPassNode.*PreCheck|Pass Run failed|AfterInferShape.*failed to run", re.I)
+_BUILD_FAILURE = re.compile(rb"create OpGraphBuilder fail|opGraphBuilder is null|Op Build4NPU failed|OpPreBuild failed\. Node:", re.I)
 
 
 _OMG_TRACE_PATTERNS = tuple(re.compile(pattern) for pattern in (
@@ -102,7 +103,7 @@ def _read_excerpt(log):
             line_number += 1
             python_failure = bool(_PYTHON_FAILURE.search(chunk))
             if _is_error(chunk) or python_failure:
-                if _PASS_FAILURE.search(chunk):
+                if _PASS_FAILURE.search(chunk) or _BUILD_FAILURE.search(chunk):
                     terminal_pass.append((line_number, chunk[:2048], len(chunk) > 2048))
                     terminal_pass = terminal_pass[-3:]
                 # A backend can reject many candidate dtypes before declaring

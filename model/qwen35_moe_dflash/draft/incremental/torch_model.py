@@ -39,6 +39,7 @@ class IncrementalDraft(nn.Module):
         self.register_buffer('context_offsets', torch.arange(context_rows, dtype=torch.int32).view(1, -1))
         self.register_buffer('block_offsets', torch.arange(max_draft_tokens + 1, dtype=torch.int32).view(1, -1))
         self.register_buffer('cache_positions', torch.arange(cache_capacity, dtype=torch.int32).view(1, -1))
+        self.register_buffer('cache_zeros', torch.zeros(cache_capacity, dtype=torch.int32))
         self.register_buffer('mask_tokens', torch.full((1, max_draft_tokens), c.mask_token_id, dtype=torch.int32))
         self.register_buffer('query_repeat', torch.zeros(max_draft_tokens + 1, dtype=torch.int32))
         self.register_buffer('head_repeat', torch.zeros(c.num_attention_heads, dtype=torch.int32))
@@ -73,7 +74,7 @@ class IncrementalDraft(nn.Module):
         witness = (self.block_offsets > proposal_count).reshape(1, 1, b, 1) & self.anchor_witness
         local = self.cache_positions.reshape(-1) - start_position
         # Match the GE integer Select expression, without tensor->Python scalars.
-        local = torch.where(local < 0, torch.zeros_like(local), local)
+        local = torch.where(local < 0, self.cache_zeros, local)
         local = torch.where(local < rows, local, torch.full_like(local, rows - 1))
         # X90 GatherV2D rejects INT64 indices. These bounded row indices and
         # token IDs already fit the INT32 control ABI; do not promote to long.

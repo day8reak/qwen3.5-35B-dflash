@@ -23,6 +23,7 @@ class TargetAttention(nn.Module):
         self.register_buffer('query_lengths', torch.tensor([block_rows], dtype=torch.int64))
         self.register_buffer('kv_padding', torch.zeros(1, self.kv_heads, self.extent - self.length, self.dim, dtype=torch.float16))
         self.register_buffer('mask_padding', torch.full((1, 1, block_rows, self.extent - self.length), -float('inf'), dtype=torch.float16))
+        self.register_buffer('mask_zeros', torch.zeros(1, 1, block_rows, self.length, dtype=torch.float16))
 
     def pack_kv(self, tensor):
         # ND [1,H,S,D] -> [blocks,H*D/16,32,16], matching Target CacheUpdate's
@@ -33,7 +34,7 @@ class TargetAttention(nn.Module):
 
     def forward(self, query, key, value, visible):
         query_nz = query.reshape(1, self.heads, self.rows, self.dim // 16, 16).transpose(2, 3).contiguous().reshape(1, self.heads * self.dim // 16, self.rows, 16)
-        mask = torch.where(visible, torch.zeros_like(visible, dtype=torch.float16),
+        mask = torch.where(visible, self.mask_zeros,
                            torch.full_like(visible, -float('inf'), dtype=torch.float16))
         if self.extent != self.length:
             mask = torch.cat((mask, self.mask_padding), dim=-1)

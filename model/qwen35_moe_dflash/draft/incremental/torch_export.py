@@ -520,7 +520,8 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
     def compiler_progress(row):
         message = row['message']
         if row.get('stage') == 'air-preparation':
-            message += f": {row['status']}, removed {row['removed_count']} intermediate Reshapes; {row['path']}"
+            message += (f": {row['status']}, removed {row['removed_count']} intermediate Reshapes, "
+                        f"materialized {row.get('zero_count', 0)} ZerosLike constants; {row['path']}")
         if row.get('stage') == 'input-snapshot' and message == 'Snapshotting input':
             index, total = row['completed'], row['total']
             if index not in (0, total - 1) and (index + 1) % 10:
@@ -542,8 +543,16 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                              expected_norms=32, require_int32_indices=True, expected_attention=manifest.get('attention'))
     def prepare_air(snapshot):
         from .air_reshape import fold_reshape_chains
+        from .air_zeros import materialize_zeros
         with snapshot.open('rb') as stream:
-            return fold_reshape_chains(stream.read((64 << 20) + 1), schema)
+            prepared, evidence = fold_reshape_chains(stream.read((64 << 20) + 1), schema)
+        prepared, zeros = materialize_zeros(prepared, schema)
+        evidence.update(reshape_policy=evidence['policy'], policy='draft-static-preparation-v2',
+                        zero_count=zeros['zero_count'], zeros_like=zeros,
+                        compiler_sha256=zeros['compiler_sha256'])
+        if zeros['zero_count']:
+            evidence['status'] = 'APPLIED'
+        return prepared, evidence
     with _slot(output, OMC_KIND, replace) as root:
         result = {k: manifest[k] for k in ('context_rows', 'cache_capacity', 'max_draft_tokens', 'inputs', 'outputs', 'rms', 'gamma')}
         if 'attention' in manifest:
@@ -571,7 +580,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             result['model_compilation'] = compiled['model_compilation']
             if 'air_preparation' in compiled:
                 evidence = compiled['air_preparation']
-                result['air_preparation'] = {key: evidence[key] for key in ('policy', 'status', 'removed_count')}
+                result['air_preparation'] = {key: evidence[key] for key in ('policy', 'status', 'removed_count', 'zero_count')}
                 result['air_preparation']['report'] = 'compilation/air-preparation.json'
             if compiled['status'] != 'COMPILED':
                 raise RuntimeError(str(compiled.get('error', compiled['status'])))
