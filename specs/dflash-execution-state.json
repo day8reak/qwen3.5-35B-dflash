@@ -336,10 +336,10 @@
   },
   "next_action": {
     "phase": "P4",
-    "type": "inspect_current_compiled_partition_boundaries",
-    "implementation_required": false,
+    "type": "implement_graph_optimization_candidates_from_reference_review",
+    "implementation_required": true,
     "command_document": "docs/current-status.md",
-    "note": "Current accuracy baseline accepted by user for performance work; read same OMC locally, diagnose 492.707ms model/op-sum difference without attributing it prematurely. Conv spatial candidate remains unmeasured."
+    "note": "Review complete at pinned 4B commit; prioritize packed projections, grouped GQA and shared RoPE with separate baseline comparisons. Keep Conv and NPU Top1 hotspots in scope. No new model or measured speedup yet; 492.707ms gap remains unattributed."
   },
   "last_actual_execution": {
     "schema_version": 1,
@@ -2317,7 +2317,7 @@
         },
         "timing_scope": "MIXED_INPUT_ACCURACY_SEQUENCE_SYNCHRONOUS_API_WALL_NOT_WARM_BENCHMARK",
         "performance_cause": "UNRESOLVED_MODEL627.647MS_MINUS_OPERATOR_SUM134.940MS; SAME5SUBGRAPHS_AS_FUSED",
-        "next": "READ_CURRENT_OMC_PARTITION_BOUNDARIES; PRIORITIZE_PERFORMANCE_PER_USER_ACCEPTANCE"
+        "next": "IMPLEMENT_AND_HOST_CHECK_GRAPH_CANDIDATES_FROM_PINNED_4B_REVIEW; MEASURE_SELECTED_DDK_AND_DEVICE_WITH_USER"
       },
       "host_reference_audit": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --audit-reference",
@@ -2409,7 +2409,7 @@
       },
       "runtime_boundary_inspection": {
         "entry": "targets/cpro/tools/profile_draft.py --inspect-boundaries",
-        "status": "IMPLEMENTED_HOST_CHECKED_PENDING_USER_CURRENT_OMC_INSPECTION",
+        "status": "INSPECTED_USER_REPORTED_CURRENT_OMC",
         "run_id": "20261103T102947Z-16488-f050e3",
         "host_check_groups": 18,
         "test_scope": "REAL_IMOD_CONTAINER_AND_HASH; JSON_SCHEMA_STUB; NO_REAL_DDK_OR_DEVICE",
@@ -2417,7 +2417,111 @@
         "limitation": "NO_OMG_JSON_CROSS_CHECK; NOT_MEASURED_TRANSFER_WAIT_OR_ROOT_CAUSE",
         "model_compilation": "NOT_RUN",
         "device_execution": "NOT_RUN",
-        "model_graph_changed": false
+        "model_graph_changed": false,
+        "user_observation": {
+          "source": "USER_PASTED_REAL_DDK_BOUNDARY_REPORT; SERVER_FILES_NOT_INDEPENDENTLY_RETRIEVED",
+          "model_sha256": "288644ea39913fc49466ed4b6d9329825b6ea819259c266c4601cba391b5e182",
+          "partitions": [
+            {
+              "name": "SubGraph_0",
+              "owner": "CPUCL",
+              "input_logical_bytes": 16,
+              "output_logical_bytes": 235408
+            },
+            {
+              "name": "SubGraph_1",
+              "owner": "NPUCL",
+              "input_logical_bytes": 3081808,
+              "output_logical_bytes": 4850448
+            },
+            {
+              "name": "SubGraph_2",
+              "owner": "CPUCL",
+              "input_logical_bytes": 37968,
+              "output_logical_bytes": 712704
+            },
+            {
+              "name": "SubGraph_3",
+              "owner": "NPUCL",
+              "input_logical_bytes": 7688960,
+              "output_logical_bytes": 9870336
+            },
+            {
+              "name": "SubGraph_4",
+              "owner": "CPUCL",
+              "input_logical_bytes": 14899200,
+              "output_logical_bytes": 60
+            }
+          ],
+          "cpu_tasks_decoded": 3,
+          "tail_cpu_operator": "ArgMaxExt2",
+          "tail_cpu_input": {
+            "shape": [
+              1,
+              15,
+              248320
+            ],
+            "dtype": "float32",
+            "producer": "insert_cast_0:0"
+          },
+          "limitation": "LOGICAL_PORT_METADATA; NOT_ACTUAL_COPY_OR_WAIT_MEASUREMENT; NO_OMG_JSON_CROSS_CHECK"
+        }
+      },
+      "reference_4b_review": {
+        "status": "REVIEWED_HOST_GQA_CHECKED; NOT_INTEGRATED",
+        "run_id": "20261103T104208Z-17166-836288",
+        "repository": "https://github.com/day8reak/qwen3.5-4B-dflash",
+        "branch": "feature/gdr-chunk-verify",
+        "commit": "90186732d915e8b058b2a053d205991d805eae76",
+        "reference_platform": "ASCEND310P_ATC_ACL",
+        "current_platform": "X90_OMG_HIAI",
+        "immediate_candidates": [
+          "PACK_CONTEXT_BLOCK_KV_AND_GATE_UP",
+          "GROUP_QUERY_ROWS_WITHOUT_KV_REPETITION",
+          "SHARE_CONTEXT_AND_BLOCK_ROPE"
+        ],
+        "additional_candidates": [
+          "VALID_ROW_PRESERVING_CACHE_UPDATE",
+          "CONTEXT_ONLY_CATCHUP",
+          "PREBOUND_CROSS_GRAPH_FEATURE_AND_KV_BUFFERS",
+          "FINAL_PREFILL_CHUNK_WITH_FIRST_PROPOSAL",
+          "INCREMENTAL_IMMUTABLE_ARTIFACT_REUSE",
+          "INTERLEAVED_FROZEN_INPUT_REPLAY",
+          "SAME_COMMITTED_PREFIX_ROUND_COMPARISON"
+        ],
+        "linear_call_estimate": {
+          "current": 55,
+          "packed": 31,
+          "excludes": "12_ATTENTION_BMM_AND_FEATURE_CONV",
+          "performance": "UNMEASURED"
+        },
+        "host_gqa": {
+          "case_count": 10,
+          "bitwise_equal": 10,
+          "shape": [
+            1,
+            32,
+            8,
+            16,
+            208,
+            128
+          ],
+          "shape_order": "B,Hq,Hkv,Q,KV,D",
+          "scope": "TWO_SEEDS_FIVE_MASKS_CPU_SYNTHETIC; NO_COMPILED_OR_DEVICE_CLAIM"
+        },
+        "constraints": [
+          "4B_SCATTER_WRITES_PADDING; 35B_UNWRITTEN_ROWS_MUST_REMAIN_BIT_EXACT",
+          "X90_BOOL_BROADCAST_WORKAROUND_RETAINED",
+          "ACL_BUFFER_AND_WORKSPACE_APIS_NOT_PORTABLE_TO_HIAI",
+          "FULL_VOCAB_FUSED_TOP1_ONLY_PLANNED_IN_4B",
+          "CONTEXT_ONLY_CLASS_EXISTS_BUT_PRODUCTION_EXPORT_USES_UNIFIED_GRAPH",
+          "4B_PLAIN_LINEAR_DOES_NOT_RESOLVE_X90_WIDE_K_RESTRICTION",
+          "QUANTIZED_4B_RESULTS_SLOWER_THAN_FP16_AND_DIFFERENT_CHECKPOINTS"
+        ],
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "model_graph_changed": false,
+        "document": "docs/results.md"
       }
     },
     "attention_matrix_combined_observation": {

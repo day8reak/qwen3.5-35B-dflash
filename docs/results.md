@@ -28,7 +28,34 @@
 
 算子热点为Conv2D 69.038ms、MatMul_54 19.975ms、CPU ArgMaxV2 16.199ms，合计105.212ms，占算子加和约78%；末尾MatMul的具体语义尚需图映射确认。六组QK/PV BatchMatMul与Softmax分别加和0.271ms和0.860ms，不含attention的Gather／Transpose等工作。只优化Conv不足以解释或消除整次627.647ms。现有精度runner已一次Load、多次Process，请求HIGH档位；CopyOutput、输出快照及CommitInputSlices均在Process计时外，尚未发现外层重复Load或文件IO混入API计时的证据。
 
-新增`profile_draft.py --inspect-boundaries`，只读hash绑定的当前OMC、夹具manifest和所选DDK schema，输出GraphOp边界描述、明确同图producer及CPU节点清单。逻辑尺寸按端口统计，未知shape不猜测；NPU task不解码，CPU task按范围及归属图名检查，没有匹配OMG JSON交叉验证。该报告不能作为实际搬运量或等待归因。18组主机检查通过，包含真实IMOD容器读取／hash绑定及四项CLI拒绝；protobuf解码用JSON schema stub替代，未验证真实DDK schema或设备。证据run `20261103T102947Z-16488-f050e3`。下一步读取用户当前分区边界，同时保留完整K点积的Conv空间排布候选；当前未改模型图，未声称提速。
+新增`profile_draft.py --inspect-boundaries`，只读hash绑定的当前OMC、夹具manifest和所选DDK schema，输出GraphOp边界描述、明确同图producer及CPU节点清单。逻辑尺寸按端口统计，未知shape不猜测；NPU task不解码，CPU task按范围及归属图名检查，没有匹配OMG JSON交叉验证。该报告不能作为实际搬运量或等待归因。18组主机检查通过，包含真实IMOD容器读取／hash绑定及四项CLI拒绝；protobuf解码用JSON schema stub替代，未验证真实DDK schema或设备。证据run `20261103T102947Z-16488-f050e3`。用户已回传实际DDK读取结果，见下文；当前未改模型图，未声称提速。
+
+2026-11-03，用户回传真实DDK的当前OMC边界检查，状态INSPECTED、模型hash与上述基线一致，三个CPU task均已解码。SubGraph_0／2／4输入逻辑字节分别为16／37968／14899200；中间CPU子图输出712704字节，末尾CPU子图只有ArgMaxExt2，接收FP32[1,15,248320]（约14.21MiB），输出15个INT32，共60字节。SubGraph_3的最大已列输入为来自SubGraph_1的FP16[32,208,128]，逻辑1703936字节。此证据确定了Top1的CPU消费边界，未测量实际拷贝、同步或493ms差额；不能把边界尺寸直接换算为耗时。所有数值来自用户回传JSON，未独立取回服务器文件。
+
+用户要求全面借鉴4B分支，已只读检出 `day8reak/qwen3.5-4B-dflash` 的 `feature/gdr-chunk-verify`，固定提交 `90186732d915e8b058b2a053d205991d805eae76`，对照当前35B代码；没有把外部代码接入生产。参考实现使用Ascend310P／ATC／ACL，当前平台是X90／OMG／HIAI。
+
+| 可借鉴项 | 参考分支实际实现 | 对当前35B的判断 |
+|---|---|---|
+| 投影合并 | PackedDraftLayer离线合并K/V、gate/up输出通道；DraftGraph先拼context与block行再做一次KV投影 | 每层9次线性投影可改为5次；六层加head为55→31次，不含12次attention BMM与特征Conv。数学相同但M/N改变可能影响FP16舍入，需编译及数值对照，不能按节点减少比例推断加速 |
+| GQA不复制KV | query从[B,Hkv,G,Q,D]折成[B,Hkv,G*Q,D]，与原始KV做BMM，再恢复Hq | 当前32/8头可删除4倍KV展开；score元素数与attention计算量不变。X90已有BOOL Broadcast限制，mask表达须保留已验证路径 |
+| 公共控制量复用 | context、block的RoPE sin/cos及位置距离在层循环外计算 | 当前18组RoPE可表达为2组并共享，另按full/sliding类型复用可见性mask；后者是基于其组织方式提出的35B扩展，参考代码仍在层内组合mask |
+| 按行更新KV | BHSD直接展平为[-1,D]并用唯一行索引ScatterNdUpdate | 值得对照当前整bank Gather/Select，但4B会写物理padding暂存行，当前35B要求[start,end)外逐位保持；零有效行、尾部与容量边界均不能直接照搬 |
+| 常驻特征与预绑定KV | ACL内Target输出features与Draft输入共享池，KV两套dataset预绑定，提交交换current/next角色 | 借鉴跨模型缓冲区所有权；35B已有一次Load、多次Process、固定tensor，不能重复计入收益。HIAI是否支持相应外部buffer绑定需验证，不能直接套ACL API |
+| C16/C64与末块调度 | 非末尾prompt块C64建立KV，末块由第一次有效proposal消费，后续按有效行数选C16 | 35B已有两档能力；集成时避免额外catchup调用或用C64承载所有小增量。减少物理行数才可能减少计算，仅valid_rows变小不代表省算 |
+| 纯context入口 | DraftContextGraph只做FC/norm、各层context K/V与cache更新 | 可用于35B纯catchup，删除无消费者的候选attention/MLP/head；参考生产导出仍使用统一DraftGraph，context-only生产快路在优化文档中仍待开发。增加OM及常驻权重成本需一并测量 |
+| 权重与产物复用 | 合并后consume_source删除原参数；按来源/ABI/编译配置校验后复用公共图；W8离线NZ可逐字节逆变换 | 35B可借鉴逐对处理、避免同时保留整套原始与合并权重、仅重编变化的Draft。NZ是特定310P INT8布局，不能给X90 FP16权重只改format标签 |
+| 同输入与交错回放 | 冻结实际输入，isolated与interleaved_prefill回放，校验输入只读、KV区域、指针及输出 | 补充当前重复用例，尤其用于检查复用buffer/共享workspace造成的跨模型污染；读回与hash会扰动执行，诊断结果不作性能成绩 |
+| 完整生成评估 | 按相同已提交token前缀比较轮次，记录proposed/accepted/fallback；分别统计Prefill、Decode、各图与C档位 | 优化后除了单图ms还需接受率与端到端decode；不能把轮号相同、前缀内容不同的两轮直接比较，也不能只凭较低Draft L2断言加速 |
+
+源码入口：[投影合并、context图与统一Draft图](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/framework/python/qwen35_dflash/ascend310p/incremental.py#L454)、[GQA与实际Top1](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/framework/python/qwen35_dflash/ascend310p/quant_factory.py#L290)、[常驻池、预绑定与回放](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/framework/runtime/cpp/src/acl_chunk.cpp#L502)、[不可变产物复用](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/framework/python/qwen35_dflash/ascend310p/common_reuse.py)、[按相同前缀比较](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/framework/python/qwen35_dflash/ascend310p/compare_rounds.py)。
+
+本地直接提取该固定提交的AirDFlashOps类，使用35B当前Q32／KV8／Q16／KV208／D128、非连续query布局与FP16 QK／FP32 softmax／FP16 PV表达，对照当前显式KV复制路径。两组随机种子×五种mask（全208、仅anchor、部分context、sliding32、inactive witness），10组CPU合成输出全部逐位相同。只验证这些输入下的表达对齐，未测试完整权重、所选DDK编译或设备；参考仓自身也明确GEMM分块变化不承诺FP16逐位一致。证据run `20261103T104208Z-17166-836288`。
+
+不直接借用的结论：参考生产Top1仍是Linear→ArgMax，融合完整词表head+Top1仅为[待开发接口](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/docs/OPTIMIZATION.md#L115)。特征FC使用普通Linear，未提供X90上K=16384的Conv替代方案。[参考实测](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/docs/RESULTS.md#L27)为310P FP16约20.22ms、W8 runtime63.52ms／离线NZ47.89ms、W4 runtime94.68ms；量化checkpoint层数不同，且来自不同预热配置，不能视为同模型纯bitwidth实验或X90速度承诺。
+
+FC宽K对照：4B FP16为8×2560=20480，输出2560；4B W4/W8为5×2560=12800；当前35B为8×2048=16384，输出2048。4B FP16的K反而更大，不能按Target总参数量判断Draft投影宽度。参考源码直接调用Linear，使用310P/ATC；本地此前用户日志明确在matmul_nd_check_support.cc的CheckBatchMatMulCubeDim拒绝K>8000，并绑定draft.fc对应的__ge/v20/flat_output。该限制只属于已观察的所选OMG实现路径，不是X90所有矩阵乘的硬件上限。现有69.038ms Conv是该FC的完整点积等价表达，并非Target GatedDeltaNet时序卷积；4B源码没有同一Conv路径。历史拒绝记录见[完整Draft K限制](history/validation.md#完整-draft-k-限制与完整点积卷积表达)，4B尺寸见[配置](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/models/dflash_v1/dflash_config.py#L211)。
+
+实施顺序：先做保持既有接口/精度边界的投影合并、GQA与RoPE共享候选；保留Conv空间排布与NPU侧完整词表Top1作为现有profile热点实验。随后评估严格valid-row KV更新、纯catchup图和Target→Draft常驻buffer集成。每项分别检查编译放置、相对已接受基线的hidden/Top1/KV变化及完整同步调用时间。当前执行图、权重、原始数值报告均未修改。
 
 以下为本轮原始数值验证及此前调查记录。
 
