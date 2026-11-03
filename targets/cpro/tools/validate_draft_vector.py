@@ -27,9 +27,10 @@ from qwen35_moe_dflash.draft.board import _receive
 from qwen35_moe_dflash.common.hashing import sha256_file
 from qwen35_moe_dflash.draft.incremental.embedding_probe import CASE as EMBEDDING_CASE, KIND as EMBEDDING_KIND, DTYPES, STAGES
 from qwen35_moe_dflash.draft.incremental.attention_probe import CASES as ATTENTION_CASES, KIND as ATTENTION_KIND
+from qwen35_moe_dflash.draft.incremental.attention_matrix import CASES as MATRIX_CASES, KIND as MATRIX_KIND
 
 PYTORCH_CASES = set(STAGES.values())
-VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES)
+VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES)
 WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4, 'int64': 8}
 DTYPES = {**DTYPES, 'int64': '<i8'}
 
@@ -146,6 +147,9 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     root = Path(compiled).resolve()
     report = read_json(root/'result.json')
+    if report.get('artifact_kind') == MATRIX_KIND:
+        from qwen35_moe_dflash.draft.incremental.attention_matrix import prepare_fixture
+        return prepare_fixture(root, out, ddk, ddk_id, selection)
     if report.get('artifact_kind') == ATTENTION_KIND:
         from qwen35_moe_dflash.draft.incremental.attention_probe import prepare_fixture
         return prepare_fixture(root, out, ddk, ddk_id, selection)
@@ -303,6 +307,9 @@ def analyze(directory):
                 if path.stat().st_size != spec['bytes'] or sha256_file(path) != spec['fixture_sha256']:
                     raise ValueError('retained input/reference changed after launch')
     comparison = compare(fixture, native, selection=report['validated_cases'])
+    if meta.get('source_evidence',{}).get('artifact_kind') == MATRIX_KIND:
+        from qwen35_moe_dflash.draft.incremental.attention_matrix import diagnose
+        return diagnose(fixture, native, meta, comparison, report)
     if set(ATTENTION_CASES) & set(comparison['validated_cases']):
         from qwen35_moe_dflash.draft.incremental.attention_probe import diagnose
         return diagnose(fixture, native, meta, comparison, report)
@@ -434,6 +441,8 @@ def start(args, out):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             meta = prepare(source, out, args.ddk_root, env['ddk_id'], args.cases)
         state.update(status='PREPARED', stage='prepared', requested_cases=[c['case'] for c in meta['cases']])
+        if meta.get('source_evidence',{}).get('artifact_kind') == MATRIX_KIND:
+            state['matrix_preparation_failures'] = meta['source_evidence'].get('preparation_failures',[])
         if not args.apply:
             return state
         native = (config.parent/cfg.get('native_directory', 'native')).resolve()

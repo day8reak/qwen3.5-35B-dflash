@@ -6,75 +6,64 @@
 
 此前原embedding→单位Muls→Cast→RMS前缀得到全零x。只旁路单位Muls的小图十次通过后，完整编译准备加入同一严格旁路（`draft-static-preparation-v5`）。新完整复测恢复非零hidden，但没有通过精度。保持此准备规则、源AIR、权重与原数值门槛；第一层mask／融合Attention小探针现已完成七组执行，正在从保留输出定位数值错误。
 
-**以下命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。** 新探针不需要学习权重，只复制最多256KiB的小buffer，七组输入共用一份OMC。已有AIR、prepared、TBE诊断和native runner继续复用。
+**以下命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。** 复用已有AIR、prepared、TBE诊断和支持INT64的native runner，不需要学习权重或重新导出完整模型。
 
-Attention同图对照现已完成：OMC `856090b9…884a0`，尝试 `qwen35_vector_f4e9e86b2f17408386e313b393d378af`。七组全部执行回收、锁释放，每组三次预热、十次输出逐位稳定。原Attention仍全部数值失败，mask可见性谓词和packed V均逐字节匹配；完整Draft没有重跑。
+直接INT64运行时长度对照已回传：OMC `cb1c94b0…d69471`，尝试 `qwen35_vector_03fa34f46ce34ac890dbd979dd964b36`。七组均十次逐位稳定，但四个新分支仍与原Attention逐字节相同，原golden全部失败。六组非加权输出精确符合无mask前16行签名，加权组最大签名误差0.00048828125；mask可见性和packed V辅助读回仍逐字节正确。改变常量／运行时来源未恢复结果，不能据此认定长度在物理内核中完全被忽略。
 
-| 对照输出 | 用户回传结果 | 当前结论 |
-|---|---|---|
-| attention_key0／key15 | 全七组、十次均逐字节匹配对应V行 | 固定mask能够选择这两个key |
-| attention_unmasked，KV=224 | 全张量与原Attention逐字节相同 | 未得到224行SDPA结果 |
-| attention_kv32，KV=32 | 全张量与KV=224分支逐字节相同 | 此端口改为32没有产生可见输出变化 |
+本轮改为一次成套实验。每组独立编译，避免把大量Attention分支放在同一图；对比带／不带回读的小图，检查诊断分支自身的影响。原0.01／0.01容差保持。
 
-六组非加权输出仍逐字节符合无mask的前16行SDPA，加权组对该签名的最大差为0.00048828125。KV=32分支在六组非加权例中“通过”仅因与32行参考的差0.001953125落在原容差内，全部65536元素仍逐位不同；加权例明确失败13696元素。不能据此认定32长度已生效，也不能概括为所有mask被忽略。原动态mask的辅助读回正确，不证明Attention内核实际消费的mask或长度。
+| 小模型 | 用例数 | 区分的问题 |
+|---|---:|---|
+| source | 7 | 原动态mask和Attention基线是否重现 |
+| constant | 36 | 原Q16/KV224长度与identity table常量；运行时mask、Q/K响应、逐行V脉冲、有限／负无穷mask、逐query可见性 |
+| runtime | 51 | 同样数据测试；三个长度端口和table均为运行时输入；KV长度1/15/16/17/31/32/33/63/64/65/192/208；页表旋转、反转和补偿置换 |
+| constant_mask | 1 | 与运行时mask使用相同逐query选行值，只改变mask来源 |
+| q32 | 10 | 保持Draft head配置和KV224，Q物理长度及两个Q长度值改为32 |
+| target_prefill | 10 | Target的16 Q heads / 2 KV heads / head_dim256，Q64 |
+| target_decode | 10 | 同一Target head配置，Q1 |
+| observed | 4 | 与runtime对应例比较；回读K、V、有限mask、三个INT64长度和table，要求逐字节一致 |
 
-长度检查已回传：同一OMC为341503字节，未发现编译主图中的Attention节点、可读DDK源码候选或保留IR。编译日志出现ATB参数／mask检查、`seqlenQ=16`、tiling key 1329990976；另有读取ACTUAL_SEQ_LENGTHS_Q_ATTR失败后返回NOT_CHANGED的记录。query长度16本来就符合当前Q形状，这些日志没有给出有效KV长度，不能单独作为根因。内核元数据只有一份也不等于五个分支被错误合并。
+合计8份小OMC、129例，每例3次预热＋10次保留输出。V编码区分行、head、channel；逐行脉冲覆盖0、15、16、31、32、63、64、127、191、192、207、208、223。KV长度与脉冲见证的预期差异超过原容差，避免原KV32均值与前16行过近导致的“通过”。页表用逐query选行测试，避免全页均值对页置换不敏感。
 
-源码对照发现原Target导出把 `allQLen` 作为运行时INT64张量传入，Draft则使用值为16的FileConstant。下一步用 `--runtime-lengths` 只改变长度的来源，所有分支保持actual_seq_lengths_q=16、actual_seq_lengths_kv=224、all_seq_lengths_q=16，Q/K/V形状、属性和block table不变。第一项原Attention及mask／V回读继续保留。
+Target两组仅复现其head配置与Q64／Q1形状，KV仍固定224；没有抽取实际Target AIR，也没有验证Target完整cache或整模型。它们可以检查共用接口是否同样出错，不能单独归因Target精度。第一层Attention路径数值错误已经复现，但端口、布局、编译或内核哪一环导致，仍待本轮区分。
 
-| 新增输出 | all_seq_lengths_q（端口16） | actual_seq_lengths_kv（端口6） | mask／参考 |
-|---|---|---|---|
-| attention_runtime_q | 运行时16 | 原常量224 | 原动态mask／原golden |
-| attention_runtime_kv | 原FileConstant16 | 运行时224 | 原动态mask／原golden |
-| attention_runtime_both | 运行时16 | 运行时224 | 原动态mask／原golden |
-| attention_runtime_unmasked | 运行时16 | 运行时224 | 全0／224行SDPA |
-
-本次运行时长度小图停在编译：NPUCL为新增的 `probe_attention_kv_length_i64` 选择Cast内核时报告 `kernelId not registered: 589827`，随后终止。没有上板结果，尚不能判断长度来源假设。已改成两个直接INT64输入（各8字节），去掉新增Cast；原Attention、四个对照分支和16／224数值保持，提取策略更新为 `source-first-attention-runtime-lengths-v2`。
-
-现有HIAI执行器已支持INT64；本次扩展探针计划解析、编译ABI绑定和构建记录，启动前按全部输入／输出dtype检查native能力。需要重编共享native runner。总计仍为8输入／7输出，原0.01／0.01门槛保持。INT64输出若被诊断使用则要求逐字节一致，避免FP64比较掩盖大整数的最低位差异。新增分支可能改变编译分区，设备结果待验证。
-
-在**DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境**编译一份小图：
+先批量编译；一组已知主机编译失败不会阻止其余组编译。目录为新的固定功能槽，不覆盖之前已执行的实验：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_attention.py" \
-  --runtime-lengths --replace \
+  --matrix \
   --air-export "$AI_RUN_DIR/draft/air" \
   --source "$AI_RUN_DIR/draft/source/prepared" \
   --result "$AI_RUN_DIR/draft/tests/pytorch-result" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths"
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix"
 ```
 
-`--replace` 只复用已确认失败且未上板的同一编译目录。返回 `COMPILED` 后，先重编探针所在的native runner（模型不在此步骤重编），再启动：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$AI_RUN_DIR/runtime/native" --replace
-```
-
-native构建成功后：
+返回 `COMPILED` 或 `PARTIAL` 后，批量运行已成功编译且ABI检查通过的组。编译后的描述无法可靠绑定时，该组单列在 `matrix-preparation.json` 和分析的 `preparation_failures` 中，其余组继续。缺失组不能算整个矩阵通过。此前直接INT64实验已成功执行，本轮复用其native，不需要重编runner：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths" \
+  --compiled "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix" \
   --ddk-root "$CPRO_DDK_ROOT" \
   --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths-run" --apply
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-run" --apply
 ```
 
-回收同一次执行并分析；若仍在运行，只重复recover：
+回收同一次执行；若返回 `VECTOR_VALIDATION_PENDING`，只重复recover，不重复apply。某例原生进程失败或超时仍停止后续设备调用，并回收已完成部分，不以继续执行掩盖设备状态：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths-run" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths-result"
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-result"
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths-result"
+  --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-result"
 ```
 
-原Attention仍可能失败，因此看 `attention_controls.branches` 的各自比较，不只看整例状态。只改端口16的分支恢复可支持allQLen来源影响；只改端口6恢复可支持KV长度来源影响；两者都改仍为前16行特征则说明本实验未解决长度问题。这些都不能直接代替完整Draft复测。7组新增主机检查覆盖原图字节保留、GraphDef／ModelDef、8输入7输出、直接INT64输入且无新增Cast、七例独立SDPA、乱序ABI、十次比较、前16行故障和错误长度拒绝；14组原对照、12组原探针回归通过。另4组检查覆盖真实探针main的主机mock编译、含高位的INT64字节传输、3预热＋10次快照、截断／容量拒绝、旧runner在HDC前拒绝、大整数逐字节比较与构建能力记录。直接INT64图的实际DDK编译及设备结果待回传。
+分析重比全部十次输出，汇总覆盖范围、各例错误、常量／运行时来源差异、Q/K/各V行响应、页表响应、带回读／不带回读差异；失败例比较不同KV前缀、ND输出布局与GQA head映射签名，同时保留相关编译日志。数值签名不会自动宣告根因，也不会修改原接受门槛。
+
+新增122例已与独立PyTorch FP64 SDPA核对；7组主机检查覆盖序列化图解释执行、完整8模型批处理、单组编译失败后继续、乱序ABI、十次输出比较、前16行故障识别、部分覆盖和禁止覆盖旧目录。原有7＋14＋12组探针检查通过。以上是主机／mock证据；本矩阵的DDK编译和板端结果尚未取得。
 
 以下为首次导出／工具链准备的说明，本轮无需重复执行。当前预处理继续保留Reshape链简化、静态ZerosLike物化和FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。每个节点的来源、形状及修改前后标志保存在`compilation/air-preparation.json`中。
 

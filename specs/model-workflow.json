@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_ATTENTION_RUNTIME_LENGTH_CAST_FAILED_DIRECT_INT64_PENDING",
+    "status": "PYTORCH_ATTENTION_RUNTIME_LENGTHS_FAILED_DIAGNOSTIC_MATRIX_PENDING",
     "entry": "targets/cpro/tools/probe_draft_attention.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "LATEST_FULL_MODEL_TOP1_0_OF_86_PER_MODE; EMPTY_CONTEXT_NONZERO_IDENTICAL_ROWS; COMMON_PREFIX_ANCHOR_INSENSITIVE",
-    "next": "Retry --runtime-lengths --replace using direct INT64 length inputs. Added CastT failed with kernelId 589827; no device length result. Rebuild runtime/native after COMPILED, then run/recover/analyze. Full Draft remains NUMERICAL_FAILED.",
+    "next": "Compile --matrix (eight independent small models,129 fixtures); execute compiled groups, recover and analyze. Test length/page/mask/layout/shape hypotheses including Target head geometry. Full Draft remains NUMERICAL_FAILED.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6130,6 +6130,7 @@
       "paused": "HANDWRITTEN_GE_AND_ADDCUSTOM_OPTIMIZATION",
       "existing_runtime_artifacts": "RETAIN_CURRENT_PUBLIC_GE_AIR_AND_OMC_UNTIL_VALIDATED_REPLACEMENT",
       "resume": "ONLY_ON_USER_REQUEST"
-    }
+    },
+    "latest_attention_observation": "Direct INT64 controls still bitwise equal source in all seven cases; first16 signature retained. No cause or full-model pass established."
   }
 }

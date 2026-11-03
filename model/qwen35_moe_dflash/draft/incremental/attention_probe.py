@@ -492,8 +492,13 @@ def _replace_failed(root, replace):
 
 
 def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_diagnosis,
-                  timeout_seconds=1800, progress=print, replace=False, controls=False, runtime_lengths=False):
+                  timeout_seconds=1800, progress=print, replace=False, controls=False, runtime_lengths=False,
+                  matrix_variant=None):
     _control_variants(controls,runtime_lengths)
+    if matrix_variant is not None:
+        from .attention_matrix import VARIANTS
+        if matrix_variant not in VARIANTS or controls or runtime_lengths or replace:
+            raise ValueError('matrix variant requires an independent fresh compile')
     root = output_path(output)
     if Path(output).absolute()!=root:
         raise ValueError('attention output must not contain symlink or traversal components')
@@ -504,11 +509,11 @@ def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_d
         fcntl.flock(lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
         return _compile_probe(air_export,source,result,root,ddk_root=ddk_root,ddk_id=ddk_id,
             tbe_diagnosis=tbe_diagnosis,timeout_seconds=timeout_seconds,progress=progress,replace=replace,
-            controls=controls,runtime_lengths=runtime_lengths)
+            controls=controls,runtime_lengths=runtime_lengths,matrix_variant=matrix_variant)
 
 
 def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_diagnosis,
-                   timeout_seconds, progress, replace, controls, runtime_lengths):
+                   timeout_seconds, progress, replace, controls, runtime_lengths, matrix_variant=None):
     from qwen35_moe_dflash.toolchain.existing_air import _snapshot, compile_existing_air
     from qwen35_moe_dflash.toolchain.omc_embed_weights import embed_external_weights
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
@@ -537,6 +542,11 @@ def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_
         raise ValueError('recovered full model source/config binding differs')
     schema = _schema((air/'air-schema.pb').read_bytes(),manifest['schema'])
     extracted,receipt = extract_attention(raw,schema,manifest,controls=controls,runtime_lengths=runtime_lengths)
+    case_names = CASES
+    if matrix_variant is not None:
+        from .attention_matrix import graph, names
+        extracted,receipt = graph(extracted,schema,receipt,matrix_variant)
+        case_names = names(matrix_variant)
     snapshots = []
     widths = {0:4,1:2,3:4,9:8,12:1}  # GE operator attribute numbers.
     total = 0
@@ -569,6 +579,9 @@ def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_
         device_execution='NOT_RUN',numerical_validation='NOT_RUN',ddk_id=ddk_id,scope=SCOPE,extraction=receipt,
         original_model_sha256=meta['model']['sha256'],board_attempt=observed.get('board_attempt'),
         prepared_sha256=sha256_file(prepared/'prepared.json'),cases=[],source_sidecars={})
+    if matrix_variant is not None:
+        from .attention_matrix import SCOPE as matrix_scope
+        state['scope'] = matrix_scope
     _save(root/'result.json',state)
     try:
         for path,relative,digest,size in snapshots:
@@ -577,8 +590,12 @@ def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_
                 raise ValueError('source buffer changed during snapshot')
             state['source_sidecars'][relative] = dict(bytes=size,sha256=digest)
         (root/'air').mkdir(exist_ok=True); (root/'air/export.air').write_bytes(extracted)
-        for name in CASES:
-            ins,outs,detail = reference_case(name,cfg,controls=controls,runtime_lengths=runtime_lengths)
+        for name in case_names:
+            if matrix_variant is None:
+                ins,outs,detail = reference_case(name,cfg,controls=controls,runtime_lengths=runtime_lengths)
+            else:
+                from .attention_matrix import reference_case as matrix_case
+                ins,outs,detail = matrix_case(matrix_variant,name,receipt['graph'])
             folder = root/'fixture'/name; folder.mkdir(parents=True)
             for prefix,arrays in (('input',ins),('golden',outs)):
                 for i,array in enumerate(arrays):
@@ -586,9 +603,10 @@ def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_
             state['cases'].append(dict(case=name,controls=detail,fixtures={p.name:dict(bytes=p.stat().st_size,
                 sha256=sha256_file(p)) for p in folder.iterdir()}))
         state['stage']='compile'; _save(root/'result.json',state)
-        progress('compiling one '+('source Attention plus four runtime-length controls' if runtime_lengths else
+        progress('compiling one '+('matrix '+matrix_variant if matrix_variant else
+                                  'source Attention plus four runtime-length controls' if runtime_lengths else
                                   'source Attention plus four mask/length controls' if controls else 'source-mask/Attention')
-                 +' model for seven fixtures; no learned weights')
+                 +f' model for {len(case_names)} fixtures; no learned weights')
         compilation = compile_existing_air(root/'air/export.air',root/'compilation',ddk_root,ddk_id=ddk_id,
             tbe_diagnosis=tbe_diagnosis,timeout_seconds=timeout_seconds,input_layout='air-directory',
             use_origin_format=True,save_weights_as_external_data=True,progress=lambda r:progress(r['message']))
@@ -689,10 +707,15 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     from validate_draft_vector import bind_io,selected_cases,WARMUP,REPETITIONS
     root,out = Path(root),Path(out)
     report,model,schema,document,enums = _compiled_probe(root,ddk,ddk_id)
-    selected = selected_cases(CASES if selection is None else selection,CASES)
+    case_names = CASES
+    variant = report['extraction'].get('matrix_variant')
+    if variant is not None:
+        from .attention_matrix import names
+        case_names = names(variant)
+    selected = selected_cases(case_names if selection is None else selection,case_names)
     io = bind_io(document,report['extraction']['graph'],enums,input_order='graph-input')
     rows = {r['case']:r for r in report['cases']}
-    if len(rows)!=len(CASES) or set(rows)!=set(CASES):
+    if len(rows)!=len(case_names) or set(rows)!=set(case_names):
         raise ValueError('missing/duplicate attention fixtures')
     observed = _compiled_observation(model,ddk)
     cases=[]

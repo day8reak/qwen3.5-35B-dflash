@@ -1709,7 +1709,7 @@
         "limitations": "NO_PROJECTIONS_ROPE_OR_QKV_PACKING_OPERATORS; AUXILIARY_OUTPUTS_CAN_CHANGE_FUSION; NO_PHYSICAL_KERNEL_INPUT_READBACK",
         "mask_readback": "EQUAL_ZERO_SELECT_FP16_ONE_OR_ZERO; EXACT_BYTES",
         "failed_retry_checks": 19,
-        "next": "Retry --runtime-lengths --replace with direct INT64 inputs; after COMPILED rebuild runtime/native, then execute and recover the seven cases.",
+        "next": "Compile --matrix, execute all successfully compiled groups, recover and analyze fixed matrix slots. No complete-model promotion.",
         "previous_compile": {
           "source": "USER_PASTED_DDK_LOG_2026_11_03; NOT_INDEPENDENTLY_READ",
           "policy": "source-first-attention-mask-packed-qkv-v1",
@@ -2120,7 +2120,7 @@
           }
         },
         "runtime_length_controls": {
-          "status": "DIRECT_INT64_HOST_CHECKED_DDK_AND_DEVICE_PENDING",
+          "status": "USER_REPORTED_DIRECT_INT64_EXECUTED_NUMERICAL_FAILED",
           "policy": "source-first-attention-runtime-lengths-v2",
           "entry_option": "--runtime-lengths",
           "output": "draft/tests/pytorch-attention-runtime-lengths",
@@ -2171,11 +2171,11 @@
           "original_attention_retained": true,
           "query_lengths_changed": false,
           "full_draft_changed": false,
-          "model_compilation": "NOT_RUN",
-          "device_execution": "NOT_RUN",
-          "numerical_validation": "NOT_RUN",
+          "model_compilation": "COMPILED_ARTIFACT_USER_REPORTED_COMPILER_REPORT_NOT_SUPPLIED",
+          "device_execution": "RETAINED_TEN_CALL_OUTPUTS_USER_REPORTED",
+          "numerical_validation": "FAILED",
           "scope": "CONSTANT_VS_RUNTIME_LENGTH_SOURCES; VALUES_UNCHANGED; NOT_FULL_DRAFT",
-          "native_rebuild_required": true,
+          "native_rebuild_required": false,
           "native_int64_checks": 4,
           "previous_cast_attempt": {
             "source": "USER_PASTED_COMPILATION_RESULT",
@@ -2191,7 +2191,60 @@
             "failing_node": "probe_attention_kv_length_i64",
             "error": "CastT kernelId not registered: 589827",
             "meaning": "ADDED_INT32_TO_INT64_CAST_COMPILE_FAILURE; LENGTH_HYPOTHESIS_NOT_DEVICE_TESTED"
+          },
+          "observation": {
+            "source": "USER_PASTED_ANALYSIS_NOT_INDEPENDENTLY_RETRIEVED",
+            "model_sha256": "cb1c94b0b0703a4fdb9825a236ac8dca38baf50e2864b5bc70e293b210d69471",
+            "board_attempt": "/data/local/tmp/qwen35_vector_03fa34f46ce34ac890dbd979dd964b36",
+            "cases": 7,
+            "repetitions": 10,
+            "repeat_bitwise_stable": true,
+            "all_runtime_branches_equal_source_iteration0": true,
+            "mask_and_v_exact": true,
+            "unweighted_prefix16_exact": true,
+            "weighted_prefix16_max_abs": 0.00048828125,
+            "anchor_actual_bytes_equal": true,
+            "anchor_reference_max_abs": 4.0,
+            "conclusion": "CHANGING_LENGTH_SOURCE_ALONE_DID_NOT_RESTORE_REFERENCE; PHYSICAL_LENGTH_CONSUMPTION_UNPROVEN"
           }
+        },
+        "diagnostic_matrix": {
+          "status": "HOST_CHECKED_DDK_AND_DEVICE_PENDING",
+          "entry_option": "--matrix",
+          "output": "draft/tests/pytorch-attention-matrix",
+          "models": 8,
+          "cases": 129,
+          "new_reference_cases": 122,
+          "variants": [
+            "source",
+            "constant",
+            "runtime",
+            "constant_mask",
+            "q32",
+            "target_prefill",
+            "target_decode",
+            "observed"
+          ],
+          "coverage": [
+            "MASK_SOURCE_AND_VALUES",
+            "QUERY_AND_KEY_RESPONSE",
+            "KV_ROW_IMPULSES_AND_SELECTION",
+            "RUNTIME_KV_LENGTH_SWEEP",
+            "PAGE_TABLE_AND_COMPENSATED_STORAGE_PERMUTATION",
+            "READBACK_COMPILATION_EFFECT",
+            "DRAFT_QUERY16_VS32",
+            "TARGET_HEAD_GEOMETRY_QUERY64_AND1",
+            "OUTPUT_LAYOUT_AND_GQA_SIGNATURES"
+          ],
+          "target_scope": "SYNTHETIC_HEAD_GEOMETRY_ONLY_KV224_NOT_TARGET_AIR_OR_COMPLETE_MODEL",
+          "host_groups": 7,
+          "regression_groups": 33,
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN",
+          "root_cause": "UNRESOLVED",
+          "original_acceptance_gate": "UNCHANGED",
+          "native_rebuild_required": false
         }
       }
     }
