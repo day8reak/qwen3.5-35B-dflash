@@ -4,43 +4,25 @@
 
 目标仍为C16／cap192／K15，常驻预热后proposal同步`Process`平均≤50ms，尚未达到。最新完整OMC为`52cf888e…a6d5eee`，用户回传38例均数值失败、两组Top1各0/86。空context的hidden已非零，但15行逐位相同，Top1全16；context=18时更换anchor，共同有效hidden前缀仍逐位相同。新增KV相对L2仍为0.44%～0.83%，未写区逐位保持，候选分支根因尚未确定。Proposal诊断API均值约743／732ms，不是预热稳态基准。完整结果与模型hash见[当前结果](results.md)。
 
-此前原embedding→单位Muls→Cast→RMS前缀得到全零x。只旁路单位Muls的小图十次通过后，完整编译准备加入同一严格旁路（`draft-static-preparation-v5`）。新完整复测恢复非零hidden，但没有通过精度。保持此准备规则、源AIR、权重与原数值门槛；本轮先验证第一层mask和融合Attention对临时K/V的处理。
+此前原embedding→单位Muls→Cast→RMS前缀得到全零x。只旁路单位Muls的小图十次通过后，完整编译准备加入同一严格旁路（`draft-static-preparation-v5`）。新完整复测恢复非零hidden，但没有通过精度。保持此准备规则、源AIR、权重与原数值门槛；第一层mask／融合Attention小探针现已完成七组执行，正在从保留输出定位数值错误。
 
 **以下命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。** 新探针不需要学习权重，只复制最多256KiB的小buffer，七组输入共用一份OMC。已有AIR、prepared、TBE诊断和native runner继续复用。
 
-Attention探针v2已经实际编译通过，OMC仅218998字节，SHA256为 `df4248dd95204cf882ad5d0f088eeb82697491f11b373768420d529ad35d09ff`。此前mask回读CastT编译问题已绕过。这次板端Load与IO描述查询完成，但第一例在输入槽位校验退出：HIAI第0槽为 `[1,256,16,16]`，计划第0槽却为控制量 `[1]`。其余六例未执行，锁已释放，数值验证为NOT_RUN。
+Attention探针已完成七组执行、回收和离线分析：OMC `df4248dd…5d09ff`，尝试 `qwen35_vector_9178f47c526e444593a912330176d7b1`。每组3次预热、10次输出逐位稳定；mask可见性谓词和packed V均逐字节匹配，Attention七组全部数值失败。此前输入计划排序错误已修复，本次通过运行描述检查并完成调用；完整Draft未重跑。
 
-用户进一步回传同一OMC的 `GraphDef.input`：`probe_attention_q:0`、`probe_attention_k:0`、`probe_attention_v:0`、`arg0_1:0`、`arg1_1:0`、`arg5_1:0`。其声明的输入顺序与HIAI形状顺序一致，Data.index却仍为3、4、5、0、1、2。已修正Attention探针的计划生成：按这些明确的边引用绑定原夹具，槽位依次为Q、K、V、start_position、valid_rows、proposal_count；原Data.index单独记录，不再用来排列本探针输入。缺失、重复、非Data或非0号端口均拒绝，没有按同形状猜K/V或控制量。
+关键线索：六组非加权用例的首头首通道16行都为 `-0.03125`，加权用例则为 `-0.027435302734375`。用同一夹具忽略mask、仅取缓存前16行做Attention，主机FP64计算再舍入FP16恰好得到这两个值。该假设还复现了全部七组的最大绝对误差，六组非加权相对L2吻合到浮点舍入级；加权组预测L2为0.537950373，实测为0.537972693。汇总指标吻合仍不等于完整张量逐元素相同，也不能确定具体长度端口有错；mask谓词／V辅助支路正确也不证明融合内核实际消费了这些值。
 
-拉取后直接复用现有OMC、native及七组原夹具，启动新尝试。上次失败已完成回收并释放锁，工具可复用同一run／result目录：
+本轮直接分析已经回收的输出：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$AI_RUN_DIR/draft/tests/pytorch-attention" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-run" --apply
-```
-
-返回 `VECTOR_VALIDATION_STARTED` 后恢复同一尝试：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$AI_RUN_DIR/draft/tests/pytorch-attention-run" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-result"
-```
-
-若仍在运行，继续上述recover，不重复apply。回收得到 `PASSED` 或 `NUMERICAL_FAILED` 后分析输出：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-result"
 ```
 
-本轮24项绑定／目录复用检查、11项只读接口检查、12组探针流程及23项旧前缀回归通过，均为主机合成／mock检查。原OMC、源夹具、输出门槛和板端形状／格式检查保持。正确的编译声明映射仍需这次实际执行与数值结果验证，完整Draft仍为NUMERICAL_FAILED。
+新增 `attention_signatures` 对每例第0次快照的32头×16查询×128通道共65536元素核对五个有界假设：无mask的前16／32／192／208／224行。每项报告逐位差异、RMSE、最大误差及原容差下的差异数；`reference_reproduction` 独立核对保留golden和原可见性；`temporary_anchor_response` 比较正负anchor两例的完整输出。输入按角色和实际槽位读取，并核验启动时hash；分析前仍重新比较全部十次输出。
 
-旧embedding／input-rms／input-rms-taps／input-rms-no-scale四组探针的清理返回候选、删除、保留列表均为空，所选字节为0：这次没有删除文件，也没有新增释放空间，无需重复清理。该命令不表示全部tests目录为空。
+读取原run／result即可，不重编、不上板、不生成新golden。若前16行假设在完整张量上吻合，下一步再用长度／mask单独对照定位；签名吻合本身不是物理内核读址证据。原Attention 0.01／0.01门槛、mask／V逐字节门槛和FAILED状态保持。14项诊断检查及12组探针回归通过，均为主机合成／mock结果。
 
 以下为首次导出／工具链准备的说明，本轮无需重复执行。当前预处理继续保留Reshape链简化、静态ZerosLike物化和FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。每个节点的来源、形状及修改前后标志保存在`compilation/air-preparation.json`中。
 

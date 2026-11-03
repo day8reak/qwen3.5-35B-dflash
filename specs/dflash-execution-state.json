@@ -1704,12 +1704,12 @@
         "prefix_regression_checks": 23,
         "host_scope": "SYNTHETIC_PROTOBUF_MASK_INTERPRETER_INDEPENDENT_SDPA_AND_MOCK_COMPILER_ABI_COMPARE; NOT_SELECTED_DDK_OR_DEVICE",
         "model_compilation": "PASSED_USER_REPORTED",
-        "device_execution": "FAILED_OUTPUTS_RETRIEVED",
-        "numerical_validation": "NOT_RUN",
+        "device_execution": "EXECUTED_OUTPUTS_RETRIEVED_USER_REPORTED",
+        "numerical_validation": "FAILED",
         "limitations": "NO_PROJECTIONS_ROPE_OR_QKV_PACKING_OPERATORS; AUXILIARY_OUTPUTS_CAN_CHANGE_FUSION; NO_PHYSICAL_KERNEL_INPUT_READBACK",
         "mask_readback": "EQUAL_ZERO_SELECT_FP16_ONE_OR_ZERO; EXACT_BYTES",
         "failed_retry_checks": 19,
-        "next": "RELAUNCH_SEVEN_CASES_WITH_CORRECTED_PLAN_USING_EXISTING_OMC_THEN_RECOVER_AND_ANALYZE",
+        "next": "ANALYZE_RETAINED_RESULT_WITH_FULL_TENSOR_PREFIX_HYPOTHESES; NO_RECOMPILE_OR_RELAUNCH",
         "previous_compile": {
           "source": "USER_PASTED_DDK_LOG_2026_11_03; NOT_INDEPENDENTLY_READ",
           "policy": "source-first-attention-mask-packed-qkv-v1",
@@ -1732,7 +1732,7 @@
         "model_sha256": "df4248dd95204cf882ad5d0f088eeb82697491f11b373768420d529ad35d09ff",
         "model_bytes": 218998,
         "probe_air_sha256": "9fccfba3296b3b07177b040a205c3692ff07101275e82e3fc681db073df8e183",
-        "board_attempt": "/data/local/tmp/qwen35_vector_612345cd94bd4d5b85fcf57d50673401",
+        "board_attempt": "/data/local/tmp/qwen35_vector_9178f47c526e444593a912330176d7b1",
         "inspection_host_checks": 11,
         "runtime_interface_failure": {
           "source": "USER_PASTED_RECOVERY_JSON; RAW_MODEL_AND_LOG_NOT_INDEPENDENTLY_READ",
@@ -1863,7 +1863,7 @@
             }
           ],
           "policy": "COMPILED_GRAPHDEF_INPUT_REFERENCES",
-          "status": "HOST_VALIDATED_RUNTIME_PENDING",
+          "status": "RUNTIME_DESCRIPTOR_CHECK_AND_ALL_CALLS_COMPLETED_USER_REPORTED; ATTENTION_NUMERICAL_FAILED",
           "shape_matching": "NEVER_USED_TO_DISAMBIGUATE_EQUAL_SHAPED_INPUTS",
           "recompilation": "NOT_REQUIRED; REUSE_EXISTING_HASH_BOUND_OMC_AND_FIXTURES",
           "runtime_checks": "UNCHANGED_COUNTS_SHAPES_FORMAT_BEFORE_PROCESS",
@@ -1872,6 +1872,107 @@
           "inspection_host_checks": 11,
           "probe_pipeline_host_checks": 12,
           "prefix_regression_checks": 23
+        },
+        "numerical_execution": {
+          "source": "USER_PASTED_RECOVERY_AND_DIAGNOSIS_JSON; RAW_OUTPUTS_NOT_INDEPENDENTLY_READ",
+          "board_attempt": "/data/local/tmp/qwen35_vector_9178f47c526e444593a912330176d7b1",
+          "model_sha256": "df4248dd95204cf882ad5d0f088eeb82697491f11b373768420d529ad35d09ff",
+          "native_exitcode": 0,
+          "archive_exitcode": 0,
+          "cases_executed": 7,
+          "cases_passed": 0,
+          "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+          "warmup": 3,
+          "repetitions": 10,
+          "finite": true,
+          "repeat_bitwise_stable": true,
+          "mask_predicate": "EXACT_BYTES_ALL_CASES_ALL_CALLS",
+          "packed_v": "EXACT_BYTES_ALL_CASES_ALL_CALLS",
+          "attention": "FAILED_ALL_CASES",
+          "graphop_counts": {
+            "CPUCL": 2,
+            "NPUCL": 2
+          },
+          "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_BETWEEN_CALLS_EXCLUDED",
+          "cases": [
+            {
+              "case": "pytorch_attention_empty",
+              "max_abs_error": 2.03125,
+              "relative_l2_error": 0.799853594838494,
+              "mean_ms": 1.728
+            },
+            {
+              "case": "pytorch_attention_anchor",
+              "max_abs_error": 1.96875,
+              "relative_l2_error": 0.8986411288418977,
+              "mean_ms": 1.7672
+            },
+            {
+              "case": "pytorch_attention_partial",
+              "max_abs_error": 0.5166015625,
+              "relative_l2_error": 0.5405835811879964,
+              "mean_ms": 1.6121
+            },
+            {
+              "case": "pytorch_attention_short",
+              "max_abs_error": 0.112548828125,
+              "relative_l2_error": 0.28982802276890923,
+              "mean_ms": 1.4768
+            },
+            {
+              "case": "pytorch_attention_full",
+              "max_abs_error": 0.10400390625,
+              "relative_l2_error": 0.18372983150767289,
+              "mean_ms": 1.5454
+            },
+            {
+              "case": "pytorch_attention_weighted",
+              "max_abs_error": 0.55322265625,
+              "relative_l2_error": 0.537972692833318,
+              "mean_ms": 1.4305
+            },
+            {
+              "case": "pytorch_attention_catchup",
+              "max_abs_error": 0.11962890625,
+              "relative_l2_error": 0.3030208484628693,
+              "mean_ms": 1.7837
+            }
+          ],
+          "head0_channel0": {
+            "unweighted_all_queries": -0.03125,
+            "weighted_all_queries": -0.027435302734375,
+            "temporary_anchor_delta_response": "NO_CHANGE_IN_PRINTED_CHANNEL; FULL_TENSOR_COMPARISON_PENDING"
+          },
+          "full_draft_validation": "NOT_RUN"
+        },
+        "prefix_signature_analysis": {
+          "status": "HYPOTHESIS; PRINTED_SAMPLES_AND_AGGREGATE_ERRORS_REPRODUCED_ON_HOST",
+          "hypothesis": "UNMASKED_LOGICAL_KV_PREFIX_16",
+          "prefix_candidates": [
+            16,
+            32,
+            192,
+            208,
+            224
+          ],
+          "source_length_construction": {
+            "actual_seq_lengths_q": 16,
+            "actual_seq_lengths_kv": 224,
+            "all_seq_lengths_q": 16
+          },
+          "signature_method": "FP64_LOGICAL_SDPA_ROUNDED_TO_FP16",
+          "new_analysis": "HASH_BOUND_RETAINED_INPUTS_AND_ALL_65536_ATTENTION_ELEMENTS_FROM_ITERATION_0; TEN_CALLS_RECOMPARED",
+          "diagnostic_host_checks": 14,
+          "probe_regression_checks": 12,
+          "device_full_tensor_signature": "NOT_YET_REPORTED",
+          "limitations": "LOGICAL_HOST_INPUTS_AND_AUXILIARY_READBACKS_NOT_KERNEL_INPUTS; NO_LENGTH_PORT_ROOT_CAUSE_VERDICT; ORIGINAL_GATE_UNCHANGED",
+          "aggregate_comparison": {
+            "all_seven_max_abs_errors_match": true,
+            "unweighted_relative_l2_max_abs_difference": 1.1102230246251565e-16,
+            "weighted_predicted_relative_l2": 0.537950372929622,
+            "weighted_observed_relative_l2": 0.537972692833318,
+            "scope": "AGGREGATES_NOT_ELEMENTWISE_DEVICE_OUTPUT_COMPARISON"
+          }
         }
       }
     }

@@ -578,9 +578,82 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     return meta
 
 
+def _query_nd(packed):
+    """Interpret the declared query/output NZ coordinates, not device memory."""
+    if packed.shape != tuple(CONTRACT['query_shape']):
+        raise ValueError('attention diagnosis query/output geometry differs')
+    return packed.reshape(32,8,16,16).transpose(0,2,1,3).reshape(32,16,128)
+
+
+def _kv_nd(packed):
+    if packed.shape != tuple(CONTRACT['kv_shape']):
+        raise ValueError('attention diagnosis KV geometry differs')
+    return packed.reshape(7,8,8,32,16).transpose(1,0,3,2,4).reshape(8,224,128)
+
+
+def _diagnostic_sdpa(q,k,v,visible):
+    """FP64 logical hypothesis, rounded once to FP16; never a new golden."""
+    if visible.shape != (16,224) or visible.dtype != np.bool_ or not visible.any(axis=1).all():
+        raise ValueError('attention hypothesis requires at least one visible key per query')
+    scores = np.matmul(q,k[np.arange(32)//4].transpose(0,2,1))*CONTRACT['scale_value']
+    scores = np.where(visible[None],scores,-np.inf)
+    p = np.exp(scores-scores.max(axis=-1,keepdims=True))
+    p /= p.sum(axis=-1,keepdims=True)
+    return np.matmul(p,v[np.arange(32)//4]).astype('<f2')
+
+
+def _hypothesis_difference(actual, expected, atol, rtol):
+    from .embedding_diagnose import _difference
+    metrics = _difference(actual,expected,atol,rtol)
+    metrics.update(bytes_equal=actual.tobytes()==expected.tobytes(),
+        bitwise_mismatched_elements=int(np.count_nonzero(actual.view('<u2')!=expected.view('<u2'))),
+        rmse=float(np.sqrt(np.mean((actual.astype(np.float64)-expected)**2))) if metrics['finite'] else None)
+    return metrics
+
+
+def _attention_signatures(fixture,case,actual,reference,visible,atol,rtol):
+    """Compare bounded hypotheses against every output coordinate in call 0."""
+    packed = {}
+    for role in ('q','k','v'):
+        specs = [s for s in case['inputs'] if s.get('role')==role]
+        shape = CONTRACT['query_shape'] if role=='q' else CONTRACT['kv_shape']
+        if (len(specs)!=1 or specs[0]['dtype']!='float16' or specs[0]['shape']!=shape
+                or specs[0]['bytes']!=math.prod(shape)*2):
+            raise ValueError('attention diagnosis requires one hash-bound packed '+role+' input')
+        spec=specs[0]
+        path=checked_file(fixture/case['case'],dict(path=f'input_{spec["index"]}.bin',
+            bytes=spec['bytes'],sha256=spec['fixture_sha256']))
+        packed[role]=np.fromfile(path,dtype='<f2').reshape(shape)
+        if not np.isfinite(packed[role]).all():
+            raise ValueError('nonfinite attention diagnostic input: '+role)
+    q=_query_nd(packed['q']).astype(np.float64)
+    k,v=(_kv_nd(packed[role]).astype(np.float64) for role in ('k','v'))
+    a,e=_query_nd(actual),_query_nd(reference)
+    source=_diagnostic_sdpa(q,k,v,visible)
+    hypotheses=[]
+    for length in (16,32,192,208,224):
+        mask=np.broadcast_to(np.arange(224)<length,(16,224))
+        prediction=_diagnostic_sdpa(q,k,v,mask)
+        hypotheses.append(dict(hypothesis='unmasked_prefix_'+str(length),key_interval=[0,length],
+            **_hypothesis_difference(a,prediction,atol,rtol),
+            head0_channel0_first=float(prediction[0,0,0])))
+    def distinct_rows(x):
+        rows=x.transpose(1,0,2).copy().reshape(16,-1)
+        return len({row.tobytes() for row in rows})
+    return dict(scope='ITERATION_0_ALL_32_HEADS_16_QUERIES_128_CHANNELS; DIAGNOSTIC_HYPOTHESES_ONLY',
+        input_scope='HASH_BOUND_HOST_FIXTURES_NOT_PHYSICAL_KERNEL_INPUT_READBACK',
+        precision='FP64_LOGICAL_SDPA_ROUNDED_TO_FP16; INTERNAL_KERNEL_PRECISION_NOT_INFERRED',
+        comparison_tolerances=dict(atol=atol,rtol=rtol),
+        reference_reproduction=_hypothesis_difference(e,source,atol,rtol),
+        declared_visibility=_hypothesis_difference(a,source,atol,rtol),
+        unique_query_rows_bitwise=dict(actual=distinct_rows(a),reference=distinct_rows(e)),
+        unmasked_prefix_hypotheses=hypotheses,
+        interpretation='MATCH_IS_A_NUMERICAL_SIGNATURE_NOT_PROOF_OF_LENGTH_PORT_OR_MASK_KERNEL_BEHAVIOR; ORIGINAL_GATE_UNCHANGED')
+
+
 def diagnose(fixture,native,meta,comparison,report):
     """Expose which query rows lose temporary keys, with unchanged comparisons."""
-    cases=[]
+    cases=[]; anchor_outputs={}
     for case in meta['cases']:
         if case['case'] not in comparison['validated_cases']:
             continue
@@ -605,10 +678,22 @@ def diagnose(fixture,native,meta,comparison,report):
                 actual_visible_padding=int(av[:,208:].sum())),
             attention_head0_channel0=dict(actual=finite_values(aq[0,0,:,0]),expected=finite_values(eq[0,0,:,0])))
         row['comparison']={k:v for k,v in row['comparison'].items() if k not in ('tensors','api_us')}
+        row['attention_signatures']=_attention_signatures(
+            fixture,case,aq,eq,ev,meta['atol'],meta['rtol'])
+        if case['case'] in CASES[:2]:
+            anchor_outputs[case['case']]=(aq,eq)
         cases.append(row)
+    anchor_response=dict(status='NOT_EVALUATED_PAIR_NOT_SELECTED')
+    if all(name in anchor_outputs for name in CASES[:2]):
+        left,right=(anchor_outputs[name] for name in CASES[:2])
+        anchor_response=dict(status='COMPARED',cases=list(CASES[:2]),
+            scope='ITERATION_0_ALL_ATTENTION_ELEMENTS; PAIR_DIFFERENCE_NOT_ACCEPTANCE_GATE',
+            actual=_hypothesis_difference(left[0],right[0],meta['atol'],meta['rtol']),
+            reference=_hypothesis_difference(left[1],right[1],meta['atol'],meta['rtol']))
     return dict(artifact_kind='qwen35-draft-source-attention-diagnosis',status='ANALYZED',
         numerical_validation=comparison['numerical_validation'],model_execution='NOT_RUN',model_compilation='NOT_RUN',
         scope='RETAINED_SOURCE_ATTENTION_PROBE; TEN_CALLS_RECOMPARED; DETAILS_FROM_ITERATION_0',
         board_attempt=report.get('board_attempt'),model_sha256=meta['source_evidence']['model']['sha256'],
         original_model_sha256=meta['source_evidence']['original_model_sha256'],cases=cases,
+        temporary_anchor_response=anchor_response,
         limitation=meta['source_evidence']['extraction']['limitation'])
