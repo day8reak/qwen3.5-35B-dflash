@@ -132,7 +132,7 @@ def main():
         if binary_path.is_file():
             diagnostic_binaries[name] = {"bytes": binary_path.stat().st_size, "sha256": sha256_file(binary_path)}
     save_json(out/"result.json", {"diagnostic_binaries":diagnostic_binaries, "status": "HEADERS_COMPILED" if args.headers_only else "LINKED",
-        "tensor_probe_dtypes": ["float32", "float16", "int32"] if "qwen35_tensor_probe" in diagnostic_binaries else [],
+        "tensor_probe_dtypes": ["float32", "float16", "int32", "int64"] if "qwen35_tensor_probe" in diagnostic_binaries else [],
         "native_build_type": "Release", "model_compilation": "NOT_RUN",
         "device_validation": "PENDING", "binary_sha256": sha256_file(binary) if binary.is_file() else None,
         "command_sha256": sha256_file(out/"command.json"), "resident_binaries": resident_binaries})

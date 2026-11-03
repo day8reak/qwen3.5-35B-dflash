@@ -29,14 +29,16 @@ Attention同图对照现已完成：OMC `856090b9…884a0`，尝试 `qwen35_vect
 | attention_runtime_both | 运行时16 | 运行时224 | 原动态mask／原golden |
 | attention_runtime_unmasked | 运行时16 | 运行时224 | 全0／224行SDPA |
 
-两个新增输入在native边界为INT32，图内精确转成原Attention需要的INT64；不需要重编native runner。总计8输入／7输出。转换及新增分支可能改变编译分区，结果只用于定位长度来源的影响；没有将query长度猜改成224。三个原mask分支的golden逐字节沿用原结果含义，第四项使用独立无mask参考，原0.01／0.01门槛保持。
+本次运行时长度小图停在编译：NPUCL为新增的 `probe_attention_kv_length_i64` 选择Cast内核时报告 `kernelId not registered: 589827`，随后终止。没有上板结果，尚不能判断长度来源假设。已改成两个直接INT64输入（各8字节），去掉新增Cast；原Attention、四个对照分支和16／224数值保持，提取策略更新为 `source-first-attention-runtime-lengths-v2`。
+
+现有HIAI执行器已支持INT64；本次扩展探针计划解析、编译ABI绑定和构建记录，启动前按全部输入／输出dtype检查native能力。需要重编共享native runner。总计仍为8输入／7输出，原0.01／0.01门槛保持。INT64输出若被诊断使用则要求逐字节一致，避免FP64比较掩盖大整数的最低位差异。新增分支可能改变编译分区，设备结果待验证。
 
 在**DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境**编译一份小图：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_attention.py" \
-  --runtime-lengths \
+  --runtime-lengths --replace \
   --air-export "$AI_RUN_DIR/draft/air" \
   --source "$AI_RUN_DIR/draft/source/prepared" \
   --result "$AI_RUN_DIR/draft/tests/pytorch-result" \
@@ -45,7 +47,14 @@ python3 "$REPO_DIR/targets/cpro/tools/probe_draft_attention.py" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths"
 ```
 
-返回 `COMPILED` 后执行：
+`--replace` 只复用已确认失败且未上板的同一编译目录。返回 `COMPILED` 后，先重编探针所在的native runner（模型不在此步骤重编），再启动：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$AI_RUN_DIR/runtime/native" --replace
+```
+
+native构建成功后：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
@@ -65,7 +74,7 @@ python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths-result"
 ```
 
-原Attention仍可能失败，因此看 `attention_controls.branches` 的各自比较，不只看整例状态。只改端口16的分支恢复可支持allQLen来源影响；只改端口6恢复可支持KV长度来源影响；两者都改仍为前16行特征则说明本实验未解决长度问题。这些都不能直接代替完整Draft复测。7组新增主机检查覆盖原图字节保留、GraphDef／ModelDef、8输入7输出、两种长度的精确扩展、七例独立SDPA、乱序ABI、十次比较、前16行故障和错误长度拒绝；14组原对照、12组原探针回归通过。实际DDK编译及设备结果待回传。
+原Attention仍可能失败，因此看 `attention_controls.branches` 的各自比较，不只看整例状态。只改端口16的分支恢复可支持allQLen来源影响；只改端口6恢复可支持KV长度来源影响；两者都改仍为前16行特征则说明本实验未解决长度问题。这些都不能直接代替完整Draft复测。7组新增主机检查覆盖原图字节保留、GraphDef／ModelDef、8输入7输出、直接INT64输入且无新增Cast、七例独立SDPA、乱序ABI、十次比较、前16行故障和错误长度拒绝；14组原对照、12组原探针回归通过。另4组检查覆盖真实探针main的主机mock编译、含高位的INT64字节传输、3预热＋10次快照、截断／容量拒绝、旧runner在HDC前拒绝、大整数逐字节比较与构建能力记录。直接INT64图的实际DDK编译及设备结果待回传。
 
 以下为首次导出／工具链准备的说明，本轮无需重复执行。当前预处理继续保留Reshape链简化、静态ZerosLike物化和FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。每个节点的来源、形状及修改前后标志保存在`compilation/air-preparation.json`中。
 

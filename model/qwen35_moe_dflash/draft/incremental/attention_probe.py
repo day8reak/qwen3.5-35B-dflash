@@ -260,18 +260,14 @@ def extract_attention(raw, schema, manifest, *, controls=False, runtime_lengths=
         [('probe_attention_v:0',desc('DT_FLOAT16',CONTRACT['kv_shape'])),('probe_attention_v_shape:0',shaped)],[viewd]))
     control_receipts = []; control_outputs = []; runtime_edges = {}
     if runtime_lengths:
-        # The native probe boundary supports INT32. Exact widening preserves
-        # the source Attention's INT64 length descriptors and values 16/224.
-        # No Q extent or query length is increased.
+        # Preserve the source Attention's INT64 descriptors and values at the
+        # runtime boundary. The selected DDK rejected an INT32->INT64 Cast.
         for spec in RUNTIME_LENGTH_INPUTS:
-            d32,d64 = desc('DT_INT32',[1]),desc('DT_INT64',[1])
-            added.append(node(spec['name'],'Data',[('',d32)],[d32],
+            d64 = desc('DT_INT64',[1])
+            added.append(node(spec['name'],'Data',[('',d64)],[d64],
                               attribute('index',integer('AttrDef','i',len(inputs)))))
-            cast = spec['name']+'_i64'
-            added.append(node(cast,'Cast',[(spec['name']+':0',d32)],[d64],
-                              attribute('dst_type',integer('AttrDef','i',9))))
-            runtime_edges[spec['port']] = cast+':0'
-            inputs.append(dict(name=spec['name'],role=spec['role'],dtype='int32',shape=[1]))
+            runtime_edges[spec['port']] = spec['name']+':0'
+            inputs.append(dict(name=spec['name'],role=spec['role'],dtype='int64',shape=[1]))
     if variants:
         # Compare valid mask/actual-KV-length changes without guessing the
         # meaning of all_seq_lengths_q. Both query lengths stay at source 16.
@@ -362,7 +358,7 @@ def extract_attention(raw, schema, manifest, *, controls=False, runtime_lengths=
             dict(name='mask_visible',dtype='float16',shape=CONTRACT['mask_shape'],exact_bytes=True),
             dict(name='packed_v',dtype='float16',shape=viewdims,exact_bytes=True)]))
     if variants:
-        receipt.update(policy=('source-first-attention-runtime-lengths-v1' if runtime_lengths
+        receipt.update(policy=('source-first-attention-runtime-lengths-v2' if runtime_lengths
                                else 'source-first-attention-mask-length-controls-v1'),
             control_experiment=dict(branches=control_receipts,
                 original_attention='PRESERVED; BASELINE_MUST_BE_RECHECKED_IN_CHANGED_COMPILED_GRAPH',
@@ -374,12 +370,12 @@ def extract_attention(raw, schema, manifest, *, controls=False, runtime_lengths=
         receipt['changed'] += '; clone four Attention branches changing only mask and optional actual_seq_lengths_kv edges, with unique output views'
         if runtime_lengths:
             receipt['control_experiment'].update(
-                runtime_length_inputs=[dict(s,dtype='int32',attention_dtype='int64',cast=runtime_edges[s['port']])
+                runtime_length_inputs=[dict(s,dtype='int64',attention_dtype='int64',edge=runtime_edges[s['port']])
                                        for s in RUNTIME_LENGTH_INPUTS],
                 query_lengths='VALUES_16_PRESERVED; PORT16_SOURCE_OR_RUNTIME_AS_DECLARED',
                 scope='CONSTANT_VS_RUNTIME_LENGTH_SOURCES; VALUES_UNCHANGED; NOT_FULL_DRAFT',
-                limitation='INT32_TO_INT64_CAST_IS_ADDED; MAY_CHANGE_PLACEMENT; NO_PHYSICAL_LENGTH_READBACK')
-            receipt['changed'] = ('Preserve original Attention/mask/V outputs; add two INT32 length inputs with exact INT64 widening; '
+                limitation='DIRECT_INT64_DATA_INPUTS; MAY_CHANGE_PLACEMENT; NO_PHYSICAL_LENGTH_READBACK')
+            receipt['changed'] = ('Preserve original Attention/mask/V outputs; add two direct INT64 length inputs; '
                                   'clone four Attention branches with declared port6/16 sources and one zero-mask control; values remain16/224')
     return extracted,receipt
 
@@ -444,7 +440,7 @@ def reference_case(name, config, *, controls=False, runtime_lengths=False):
     inputs = [np.array([s],dtype='<i4') for s in (start,valid,count)]+[packed[0],*kv]
     outputs = [packed[1],visible.astype('<f2').reshape(CONTRACT['mask_shape']),kv[1].reshape(7,64,512)]
     if runtime_lengths:
-        inputs.extend(np.array([s['value']],dtype='<i4') for s in RUNTIME_LENGTH_INPUTS)
+        inputs.extend(np.array([s['value']],dtype='<i8') for s in RUNTIME_LENGTH_INPUTS)
     if control_variants:
         for control in control_variants:
             logical = _diagnostic_sdpa(q.astype(np.float64),k.astype(np.float64),v.astype(np.float64),
@@ -804,12 +800,12 @@ def _control_observations(fixture,case,arrays,atol,rtol,*,runtime_lengths=False)
     if runtime_lengths:
         for declared in RUNTIME_LENGTH_INPUTS:
             specs=[s for s in case['inputs'] if s.get('role')==declared['role']]
-            if len(specs)!=1 or (specs[0]['dtype'],specs[0]['shape'],specs[0]['bytes'])!=('int32',[1],4):
+            if len(specs)!=1 or (specs[0]['dtype'],specs[0]['shape'],specs[0]['bytes'])!=('int64',[1],8):
                 raise ValueError('runtime length fixture ABI differs: '+declared['role'])
             spec=specs[0]
             path=checked_file(fixture/case['case'],dict(path=f'input_{spec["index"]}.bin',
-                bytes=4,sha256=spec['fixture_sha256']))
-            value=int(np.fromfile(path,dtype='<i4')[0])
+                bytes=8,sha256=spec['fixture_sha256']))
+            value=int(np.fromfile(path,dtype='<i8')[0])
             if value!=declared['value']:
                 raise ValueError('runtime length fixture value differs: '+declared['role'])
             length_values.append(dict(role=declared['role'],value=value,
@@ -877,7 +873,7 @@ def diagnose(fixture,native,meta,comparison,report):
             fixture,case,aq,eq,ev,meta['atol'],meta['rtol'])
         if meta['source_evidence']['extraction'].get('control_experiment'):
             row['attention_controls']=_control_observations(fixture,case,arrays,meta['atol'],meta['rtol'],
-                runtime_lengths=meta['source_evidence']['extraction']['policy']=='source-first-attention-runtime-lengths-v1')
+                runtime_lengths=meta['source_evidence']['extraction']['policy'].startswith('source-first-attention-runtime-lengths-'))
         if case['case'] in CASES[:2]:
             anchor_outputs[case['case']]=(aq,eq)
         cases.append(row)

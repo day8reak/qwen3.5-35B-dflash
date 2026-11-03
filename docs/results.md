@@ -90,6 +90,13 @@ compile.log为985893字节／8862行，hash `b270f2ba1161e9f20d86f57ab2564afcfb8
 
 7组新主机合成／mock检查通过，覆盖GraphDef／ModelDef原节点字节保持、声明外端口不变、8／7 ABI及唯一输出视图、INT32→INT64精确解释、全部七组原golden与前三个新分支一致、独立PyTorch SDPA、编译失败／重试与准备流程、乱序物理槽位、十次比较、全分支错误截到前16行时仍失败、单分支故障、hash有效但值错误的runtime长度拒绝、CLI互斥。14组mask／长度对照和12组原探针回归通过；真实DDK编译与板端执行均待用户完成。原数值门槛及完整Draft NUMERICAL_FAILED、未提升状态保持。
 
+2026-11-03，用户回传运行时长度对照编译失败（DDK 100.520.020.010，OMG退出1）。提取AIR hash为 `5a7ad0a80fac17cfdfc5505c59592672f2f72a099583ab1f9f731aa284d3301f`，预处理AIR hash为 `8d81d0a39f0b1fe59b6867d80284189d94f90dd3a8a92e71271c4162b1b4697a`。编译尾部明确为 `probe_attention_kv_length_i64` 的INT32→INT64 CastT报 `kernelId not registered: 589827`、`SelectKernel failed`、`compileInfo is null`，随后SubGraph_1编译失败。该新增转换未获得当前NPUCL实现，runtime长度假设没有得到设备检验；原Attention数值问题仍未闭合。
+
+修复将两个长度输入直接声明为INT64[1]、各8字节，连接原第6／16端口，移除新增Cast，保留原图、16／224值、四分支参考及数值容差。提取策略为 `source-first-attention-runtime-lengths-v2`。现有HIAI执行器的INT64分配／字节长度路径无需改动；探针计划解析、准备时ABI字节计算和native构建能力记录补充INT64，启动前检查实际所需dtype并在HDC前拒绝旧runner。INT64输出比较另要求逐字节相等，防止FP64不能区分大整数相邻值导致假通过。
+
+7组图／夹具／绑定／比较检查、14组原controls和12组原探针回归通过；另4组检查通过：以真实探针main和头文件构建主机mock，验证高32位保留、3预热＋10次快照和错误字节数／容量拒绝；旧runner在设备访问前被拒绝；2^53与2^53+1比较失败；构建记录声明INT64且绑定探针二进制。这些均为主机证据，所选DDK的直接INT64图编译与OHOS runner重编、设备执行仍待用户运行。复用原失败目录，未生成版本目录或修改共享DDK。
+
+
 
 ## 此前PyTorch独立执行：加载成功，数值失败
 

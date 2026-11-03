@@ -30,7 +30,8 @@ from qwen35_moe_dflash.draft.incremental.attention_probe import CASES as ATTENTI
 
 PYTORCH_CASES = set(STAGES.values())
 VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES)
-WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4}
+WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4, 'int64': 8}
+DTYPES = {**DTYPES, 'int64': '<i8'}
 
 KIND = 'qwen35-draft-vector-validation'
 PREFIX = '/data/local/tmp/qwen35_vector_'
@@ -206,6 +207,11 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
     return result
 
 
+def _exact_required(meta, spec):
+    # FP64 comparison cannot distinguish every adjacent INT64 value.
+    return bool(meta.get('exact_bytes') or spec.get('exact_bytes') or spec['dtype']=='int64')
+
+
 def compare(fixture, native, *, selection=None, allow_host_fake=False):
     import numpy as np
     meta = read_json(fixture/'manifest.json')
@@ -248,7 +254,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
                 delta = actual-expected
                 passed = finite and bool(np.all(np.abs(delta) <= meta['atol']+meta['rtol']*np.abs(expected)))
                 exact = observed_bytes == expected_bytes
-                if meta.get('exact_bytes') or spec.get('exact_bytes'):
+                if _exact_required(meta, spec):
                     passed = passed and exact
                 tensors.append(dict(iteration=iteration, name=spec['name'], passed=passed, finite=finite,
                     bytes_equal=exact,
@@ -258,7 +264,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
         finite = all(r['finite'] for r in tensors)
         cases.append(dict(case=name, passed=passed, repeat_bitwise_stable=stable,
             outputs=[dict(name=spec['name'], passed=all(t['passed'] for t in tensors if t['name'] == spec['name']),
-                          exact_bytes_required=bool(meta.get('exact_bytes') or spec.get('exact_bytes')),
+                          exact_bytes_required=_exact_required(meta, spec),
                           all_calls_bytes_equal=all(t['bytes_equal'] for t in tensors if t['name'] == spec['name']))
                      for spec in case['outputs']],
             numerics=dict(finite=finite,
@@ -403,6 +409,14 @@ def supervisor(meta, board, token, env, search):
         'printf "%s\\n" '+q(token)+' > complete.tmp', 'mv complete.tmp complete', ''])
 
 
+def _check_probe_dtypes(meta, built):
+    required = {s['dtype'] for c in meta['cases'] for direction in ('inputs', 'outputs') for s in c[direction]}
+    missing = required - set(built.get('tensor_probe_dtypes', []))
+    if missing:
+        raise ValueError('rebuild runtime/native with build_hiai.py --replace; tensor probe lacks dtypes: '
+                         + ', '.join(sorted(missing)))
+
+
 def start(args, out):
     config = Path(args.config).resolve(); source = Path(args.compiled).resolve()
     for path in (config, source):
@@ -428,8 +442,7 @@ def start(args, out):
         if not binary.is_file() or built.get('diagnostic_binaries', {}).get(binary.name) != {
                 'bytes': binary.stat().st_size, 'sha256': sha256_file(binary)}:
             raise ValueError('rebuild runtime/native with build_hiai.py --replace for tensor probes')
-        if (PYTORCH_CASES | set(ATTENTION_CASES)) & set(state['requested_cases']) and not {'float16', 'int32'} <= set(built.get('tensor_probe_dtypes', [])):
-            raise ValueError('rebuild runtime/native with build_hiai.py --replace for FP16/INT32 embedding probes')
+        _check_probe_dtypes(meta, built)
         uploads, search, _ = _build_payloads(out, 600, resident='resident-mixed', native_directory=native)
         uploads = [r for r in uploads if r['remote'].startswith('lib/')]
         uploads.append(_file_record(binary, 'tensor-probe'))

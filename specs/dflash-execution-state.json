@@ -1709,7 +1709,7 @@
         "limitations": "NO_PROJECTIONS_ROPE_OR_QKV_PACKING_OPERATORS; AUXILIARY_OUTPUTS_CAN_CHANGE_FUSION; NO_PHYSICAL_KERNEL_INPUT_READBACK",
         "mask_readback": "EQUAL_ZERO_SELECT_FP16_ONE_OR_ZERO; EXACT_BYTES",
         "failed_retry_checks": 19,
-        "next": "COMPILE_AND_RUN_CONSTANT_VS_RUNTIME_LENGTH_SOURCE_CONTROLS; SAME_VALUES_QUERY16_KV224",
+        "next": "Retry --runtime-lengths --replace with direct INT64 inputs; after COMPILED rebuild runtime/native, then execute and recover the seven cases.",
         "previous_compile": {
           "source": "USER_PASTED_DDK_LOG_2026_11_03; NOT_INDEPENDENTLY_READ",
           "policy": "source-first-attention-mask-packed-qkv-v1",
@@ -2120,8 +2120,8 @@
           }
         },
         "runtime_length_controls": {
-          "status": "HOST_CHECKED_DDK_AND_DEVICE_PENDING",
-          "policy": "source-first-attention-runtime-lengths-v1",
+          "status": "DIRECT_INT64_HOST_CHECKED_DDK_AND_DEVICE_PENDING",
+          "policy": "source-first-attention-runtime-lengths-v2",
           "entry_option": "--runtime-lengths",
           "output": "draft/tests/pytorch-attention-runtime-lengths",
           "source_difference": "ORIGINAL_TARGET_ALLQLEN_RUNTIME_INPUT; DRAFT_FILECONSTANT16",
@@ -2132,7 +2132,7 @@
           },
           "native_inputs": 8,
           "native_outputs": 7,
-          "added_input_dtype": "INT32_EXACT_WIDENING_TO_INT64_INSIDE_GRAPH",
+          "added_input_dtype": "DIRECT_INT64_NO_CAST",
           "branches": [
             {
               "name": "attention_runtime_q",
@@ -2174,7 +2174,24 @@
           "model_compilation": "NOT_RUN",
           "device_execution": "NOT_RUN",
           "numerical_validation": "NOT_RUN",
-          "scope": "CONSTANT_VS_RUNTIME_LENGTH_SOURCES; VALUES_UNCHANGED; NOT_FULL_DRAFT"
+          "scope": "CONSTANT_VS_RUNTIME_LENGTH_SOURCES; VALUES_UNCHANGED; NOT_FULL_DRAFT",
+          "native_rebuild_required": true,
+          "native_int64_checks": 4,
+          "previous_cast_attempt": {
+            "source": "USER_PASTED_COMPILATION_RESULT",
+            "status": "FAILED",
+            "stage": "compile",
+            "model_compilation": "FAILED",
+            "device_execution": "NOT_RUN",
+            "numerical_validation": "NOT_RUN",
+            "ddk_id": "100.520.020.010",
+            "returncode": 1,
+            "extracted_air_sha256": "5a7ad0a80fac17cfdfc5505c59592672f2f72a099583ab1f9f731aa284d3301f",
+            "probe_air_sha256": "8d81d0a39f0b1fe59b6867d80284189d94f90dd3a8a92e71271c4162b1b4697a",
+            "failing_node": "probe_attention_kv_length_i64",
+            "error": "CastT kernelId not registered: 589827",
+            "meaning": "ADDED_INT32_TO_INT64_CAST_COMPILE_FAILURE; LENGTH_HYPOTHESIS_NOT_DEVICE_TESTED"
+          }
         }
       }
     }
