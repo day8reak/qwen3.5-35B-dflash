@@ -113,6 +113,25 @@ compile.log为985893字节／8862行，hash `b270f2ba1161e9f20d86f57ab2564afcfb8
 
 本地确认新增路径正则遗漏`+`，正常部署的`lib/libc++_shared.so`即可复现同一错误；上轮传输测试将运行库清单模拟为空，漏测了这一项。修复复用原部署`_relative`合同，保留绝对路径／父目录／控制字符／反斜杠／重复目的地／保留名拒绝；错误包含具体成员与位置，并保留`payload-manifest.json`。新增3组检查含实际`_build_payloads → discover_libraries → SDK C++库发现 → start → pack → tar解包 → sha256sum`链路，使用明确标记的合成AArch64 ELF和构建记录、129例实际夹具生成逻辑，共1021成员逐文件校验通过；原7组启动／回收检查补入C++库名后通过。合成ELF从未执行，未访问DDK服务器或板子；Attention数值结论未更新。
 
+2026-11-03，用户回传矩阵分析与完整recover摘要。8／8模型编译成功，129例请求仅79例完成比较，71例失败、8例通过；全部已比较例十次逐位稳定。尝试 `/data/local/tmp/qwen35_vector_a883382ee2d74125aeb24bb88fead246`，native退出1、输出归档退出0，回收 `outputs.tar` 为136690176字节，状态 `PARTIAL_OUTPUTS_RETRIEVED / NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION`。第80例 `attention_matrix_runtime__length_1`（Q16、运行时KV1）输入／输出描述检查及ND尾部补1接受后，`HIAI Process(sync) failed: 1`；不是编译或传输失败，也不是本轮记录的超时。后49例没有退出记录，脚本按原生失败停止；因此Q32／Target等尚无数值结果。
+
+| 组 | OMC SHA256 | 已比较／计划 | 数值失败 |
+|---|---|---:|---:|
+| source | `d58f04ba408de19f2cc0983cc435725386f764aa0faed4788de68ef18307495d` | 7／7 | 7 |
+| constant | `f75b15e3f2415aeefb6cf054e2d81ea716ba27280e4e5aae85cdfcfd320707fb` | 36／36 | 32 |
+| runtime | `0032c80ce23dde92ca8588127f0f828a99bf302cc4a844cc037181419bdf5147` | 36／51 | 32 |
+| constant_mask | `759bb6ca1e4c4e683c66e401e82d7ae9c30ed7355540830767d3512311578171` | 0／1 | 未比较 |
+| q32 | `f669dadba7b8fd76a1f7d72dfeacdb9e640232f0033522aae89037bcf9548bea` | 0／10 | 未比较 |
+| target_prefill | `0f46a4de4a9445e17c7557851e5a56134c3ff0d8d30ce1b75141b08dda587558` | 0／10 | 未比较 |
+| target_decode | `b952125f37604e7f6c873d088bbffebc31222bf68765c803acb0984b5b6c36a7` | 0／10 | 未比较 |
+| observed | `2acb338d37943da6fafd49112e27ac39de58f3ef37d2a63067bbf8e705abc0c5` | 0／4 | 未比较 |
+
+constant／runtime完成的36对输出逐字节相同。两组均只有前缀因果mask、zero_v、key0、key15通过；原source七例仍仅Attention失败，mask可见性／packed V辅助读回通过。两组V幅值8的行0／15脉冲均使输出变化0.5，完整224行参考变化0.03570556640625；行16／31／32／63／64／127／191／192／207／208／223的脉冲与zero_v输出逐字节相同。该组独立扰动联合支持有效KV范围局限于前16行的现象；单个零输出可能匹配多个前缀，不能单凭closest_signature=prefix1认定只读1行。weighted改变Q使实际输出变化4.513671875；仅反转K第32～63行则输出不变，参考应变化0.3421783447265625。两种大负mask值产生相同结果，前缀因果mask通过及mask_bias与无mask签名不符，不支持“所有mask完全被忽略”的概括。
+
+这一结果把已复现故障集中到Q16／KV224的融合Attention接口执行路径；仍不能单独确定是端口／布局／分页、编译处理还是内核实现。runtime KV1发生Process错误，说明不同长度值会改变执行结果，不能断言所有运行时长度输入被忽略。8组编译日志的tilingkey均为1329990976，blockdim1，分别记录seqlenQ16／32／64／1；相同key不能证明其他tiling字段相同或这些形状数值正确。Target组尚未执行，完整Draft／Target精度与性能结论保持未通过／未验证。
+
+分析器此前丢失执行诊断，现保留原恢复的状态、首个原生失败、退出码和锁状态，补充分组覆盖及首个未比较例；未比较不自动等同于执行失败。新增保留原加性mask的KV前缀假设，明确不模拟全负无穷行fallback，显示多签名歧义，并标明K扰动区间及mask响应。这是保留输出的诊断增强，未更改夹具、OMC、执行停止策略或验收门槛。5组新增主机检查及7组矩阵回归通过；用户实际输出的新增签名仍需其只读analyze回传。后续使用已编译模型补48例并带2个runtime配对基线、共50例，形状先行，原79例保留；KV<Q的length1／15单列为后续边界调查，不标为通过。
+
 ## 此前PyTorch独立执行：加载成功，数值失败
 
 2026-11-02，用户回传尝试`ec3f7c3136ac43fcb927c25eef63f4e3`的完整比较摘要：`EXECUTED_OUTPUTS_RETRIEVED`、`NUMERICAL_FAILED`，任务完成且锁释放。两组各19次调用全部完成，说明本次已经跨过此前的Fill加载失败；38例均未通过原比较门槛。以下为用户回传，未独立读取原始板端张量，随后离线诊断报告OMC SHA256为 ce11666f9298ec7453bbdcdfe1e3a3a38d396cd12a0bd13f9faf6c82c4981ad6。

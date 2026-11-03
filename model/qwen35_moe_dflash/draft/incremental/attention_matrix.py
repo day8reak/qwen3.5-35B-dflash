@@ -398,18 +398,27 @@ def diagnose(fixture, native, meta, comparison, report):
                     pred = pack_q(sdpa(q, k, v, np.zeros_like(mask), n, table))
                     m = _metrics(a, pred, meta['atol'], meta['rtol'])
                     candidates.append(dict(hypothesis='unmasked_prefix_'+str(n), **m))
+                    # A shortened KV range need not imply that mask values are
+                    # ignored. Keep their additive values, including finite
+                    # negative sentinels. Do not invent an all-negative-infinity
+                    # softmax policy when a truncated row has no finite score.
+                    if np.any(mask) and np.isfinite(mask[:, :n].max(axis=1)).all():
+                        pred = pack_q(sdpa(q, k, v, mask, n, table))
+                        candidates.append(dict(hypothesis='declared_mask_prefix_'+str(n),
+                            **_metrics(a, pred, meta['atol'], meta['rtol'])))
                 logical = unpack_q(e, s)
                 for label, pred in (('output_ND_BNSD', logical.reshape(a.shape)),
                     ('output_ND_BSND', logical.transpose(1,0,2).copy().reshape(a.shape)),
                     ('GQA_modulo', pack_q(sdpa(q,k,v,mask,length,table,group='modulo')))):
                     candidates.append(dict(hypothesis=label, **_metrics(a,pred,meta['atol'],meta['rtol'])))
                 row['matching_signatures'] = [m for m in candidates if m['failing_elements'] == 0]
+                row['multiple_matching_signatures'] = len(row['matching_signatures']) > 1
                 row['closest_signature'] = min(candidates, key=lambda m:(m['failing_elements'], m['max_abs_error'] if m['finite'] else float('inf')))
         records.append(row)
     pairs = []
-    def pair(left, right, purpose):
+    def pair(left, right, purpose, **details):
         if left in arrays and right in arrays and arrays[left][0].shape == arrays[right][0].shape:
-            pairs.append(dict(purpose=purpose, cases=[left,right],
+            pairs.append(dict(purpose=purpose, cases=[left,right], **details,
                 actual=_metrics(arrays[left][0],arrays[right][0],meta['atol'],meta['rtol']),
                 reference=_metrics(arrays[left][1],arrays[right][1],meta['atol'],meta['rtol'])))
     for case in BASE_CASES:
@@ -422,7 +431,10 @@ def diagnose(fixture, native, meta, comparison, report):
         for left,right,purpose in [('mask_rows','table_rotate','page_table_response'),('mask_rows','table_reverse','page_table_response'),
                 ('mask_rows','page_equivalent','compensated_page_permutation'),('weighted','query_changed','query_response'),
                 ('weighted','key_changed','key_response'),('mask_rows','mask_rows_inf','finite_vs_infinite_mask')]:
-            pair(base+left,base+right,purpose)
+            detail = dict(changed_key_interval=[32,64]) if purpose == 'key_response' else {}
+            pair(base+left,base+right,purpose,**detail)
+        pair(base+'uniform',base+'mask_rows','mask_response')
+        pair(base+'weighted',base+'mask_bias','mask_response')
         for n in LENGTHS:
             pair(base+'uniform',base+'length_'+str(n),'kv_length_response')
         for n in BOUNDARIES:
@@ -430,15 +442,33 @@ def diagnose(fixture, native, meta, comparison, report):
     source = meta['source_evidence']
     from .attention_probe import CASES as SOURCE_CASES
     complete = set(comparison['validated_cases']) == set((*SOURCE_CASES,*CASES))
+    requested = [c['case'] for c in meta['cases']]
+    uncompared = [name for name in requested if name not in comparisons]
+    groups = []
+    for variant, planned in [('source', SOURCE_CASES), *((v, names(v)) for v in VARIANTS)]:
+        chosen = [name for name in requested if name in planned]
+        done = [comparisons[name] for name in chosen if name in comparisons]
+        groups.append(dict(variant=variant, planned_cases=len(planned), requested_cases=len(chosen),
+            compared_cases=len(done), passed_cases=sum(c['passed'] for c in done),
+            failed_cases=sum(not c['passed'] for c in done),
+            uncompared_cases=[name for name in chosen if name not in comparisons]))
+    # Copy the recovered execution verdict rather than inferring an execution
+    # failure from missing comparisons. Older reports may lack these records.
+    retained = {k:report[k] for k in ('status','stage','device_execution','lock_state',
+        'error','execution_diagnostics') if k in report}
     return dict(artifact_kind=KIND+'-diagnosis', status='ANALYZED', scope=SCOPE,
         model_compilation='NOT_RUN', model_execution='NOT_RUN', numerical_validation=comparison['numerical_validation'],
         matrix_validation=comparison['numerical_validation'] if complete else 'INCOMPLETE',
-        board_attempt=report.get('board_attempt'), coverage=dict(compiled_models=source['compiled_models'],
+        board_attempt=report.get('board_attempt'), retained_execution=retained,
+        coverage=dict(compiled_models=source['compiled_models'],
         total_models=source['total_models'], requested_cases=len(meta['cases']), compared_cases=len(records),
         planned_cases=len(SOURCE_CASES)+len(CASES),
         failed_cases=sum(not c['passed'] for c in records), skipped_models=[m for m in source['models'] if m['status']!='COMPILED'],
-        preparation_failures=source.get('preparation_failures',[])),
+        preparation_failures=source.get('preparation_failures',[]), groups=groups,
+        first_uncompared_case=uncompared[0] if uncompared else None,
+        limitation='UNCOMPARED_DOES_NOT_ESTABLISH_EXECUTION_FAILURE; SEE_RETAINED_EXECUTION'),
         models=[dict(variant=m['variant'],model=m.get('model'),compiler_observations=m.get('compiler_observations')) for m in source['models']],
         cases=records, pair_differences=pairs,
         interpretation='SIGNATURES_AND_RESPONSE_TESTS_ARE_OBSERVATIONS; NO_AUTOMATIC_KERNEL_CAUSE_OR_MODEL_PROMOTION',
+        signature_limitation='MULTIPLE_MATCHES_ARE_NOT_UNIQUE_CAUSES; DECLARED_MASK_PREFIX_PRESERVES_ADDITIVE_VALUES; ALL_NEGATIVE_INFINITY_QUERY_ROWS_ARE_NOT_MODELED',
         target_scope='TARGET_HEAD_GEOMETRY_PREFILL64_DECODE1; SYNTHETIC_KV224; NOT_ACTUAL_TARGET_AIR_OR_FULL_MODEL')

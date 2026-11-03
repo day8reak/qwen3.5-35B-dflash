@@ -27,64 +27,63 @@
 
 Target两组仅复现其head配置与Q64／Q1形状，KV仍固定224；没有抽取实际Target AIR，也没有验证Target完整cache或整模型。它们可以检查共用接口是否同样出错，不能单独归因Target精度。第一层Attention路径数值错误已经复现，但端口、布局、编译或内核哪一环导致，仍待本轮区分。
 
-**本次更新后直接复用已编译矩阵，重新执行下方启动命令。** 旧请求 `qwen35_vector_297df57991e34b2a8ad76aed1118f437` 恢复后在HDC发送`attention_matrix_runtime__key_64/plan.txt`时报告180秒超时，`device_execution=NOT_RUN`、`lock_state=NO_KNOWN_OWNED_LOCK`，进程已退出。随后新启动的129例准备通过、`matrix_preparation_failures=[]`，但在打包1021个文件时被路径检查拒绝；同样未运行设备、未持有锁。这两次已知未启动的失败均可复用固定测试目录，无需删除目录或锁，无需重编OMC或native。
+**最新矩阵结果为79／129例完成，71例数值失败。** 尝试 `qwen35_vector_a883382ee2d74125aeb24bb88fead246` 已结束、输出归档成功且锁释放。第80例 `attention_matrix_runtime__length_1` 保持Q16、将运行时KV长度改成1，在 `HIAI Process(sync)` 返回1；原生退出码1，之后49例没有退出记录。原脚本按失败停止，所以Q32、Target形状、页表及辅助回读尚无设备数值结果。这里的长度1运行错误不能解释成Q16／KV224同样无法执行，后者已稳定运行但数值失败。
 
-打包器原正则遗漏`+`，会误拒部署库`lib/libc++_shared.so`。已改为复用部署流程的相对路径规则，保留越界／重复／保留名称检查，并在错误中显示具体成员；完整清单保存在`payload-manifest.json`。包含实际运行库发现逻辑、合成SDK构建记录及129例夹具的主机检查已走通1021成员打包、解包和逐文件SHA校验；设备执行仍待本轮回传。
+已完成的constant／runtime各36例逐字节相同。V第0、15行幅值8的脉冲使输出变化0.5（8／16），测试到的第16及之后11个边界行均无响应；完整KV224参考应变化约0.0357（8／224）。K仅改变第32～63行无响应，Q改变有响应。前16行的因果mask与key0／key15通过，不能概括为所有mask被忽略。综合证据指向Q16／KV224接口路径的有效KV范围异常，但尚未区分长度映射、布局／分页、编译选择或内核实现。长度1会改变Process结果，也不能断言运行时长度完全未被使用。
 
-先更新代码，然后跳过下面的首次编译步骤，直接运行已有矩阵：
-
-```bash
-git -C "$REPO_DIR" pull --ff-only
-```
-
-以后若启动状态不明确，可用`validate_draft_vector.py --status "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-run"`只读检查本地主进程和最后一次通信记录。它不连接设备、不改文件、不获取执行锁；Ctrl-Z／Stopped表示挂起，需在原终端核对`jobs -l`后恢复对应job。request存在或缺少complete均不证明模型已开始／仍在运行，未确认完成的请求不能重复apply。
-
-可以在另一个相同环境的终端使用下方recover查看同一次请求。新版允许独立回收目录重复使用；`PENDING`现在表示`completion-unconfirmed`，并附本地主进程状态、板端已完成例数、最后退出码和未完成例名。新版启动另提供当前例序号、归档阶段标记。上述标记不是进程存活证明，旧请求没有新标记也不等于尚未执行。
-
-新启动会打印准备、打包、上传、校验、启动阶段，每30秒显示等待信息；输入／模型一次打包传输，再核验归档及每个文件SHA256。新请求的日志打包回收，旧请求保留逐文件回收且显示进度。所有例的3次预热、10次快照、原数值门槛和失败停止规则保持。无需重编OMC或native runner；尚未执行的矩阵才按下面两步编译、启动。
-
-首次批量编译时，一组已知主机编译失败不会阻止其余组编译。目录为固定功能槽，不覆盖之前已执行的实验：
+先更新代码，只读重分析原结果。新版保留 `retained_execution` 中的退出码、首个失败日志和锁状态，按组列出未比较例；另比较保留原加性mask的KV前缀签名。全负无穷query行不猜测fallback，多个匹配签名不当作唯一根因。不会重跑模型或更改原0.01／0.01门槛。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/tools/probe_draft_attention.py" \
-  --matrix \
-  --air-export "$AI_RUN_DIR/draft/air" \
-  --source "$AI_RUN_DIR/draft/source/prepared" \
-  --result "$AI_RUN_DIR/draft/tests/pytorch-result" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix"
-```
-
-返回 `COMPILED` 或 `PARTIAL` 后，批量运行已成功编译且ABI检查通过的组。编译后的描述无法可靠绑定时，该组单列在 `matrix-preparation.json` 和分析的 `preparation_failures` 中，其余组继续。缺失组不能算整个矩阵通过。此前直接INT64实验已成功执行，本轮复用其native，不需要重编runner：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-run" --apply
-```
-
-回收同一次执行；若返回 `VECTOR_VALIDATION_PENDING`，先查看附带状态，挂起的启动进程需要在原终端恢复。运行中的请求只重复recover，不重复apply。某例原生进程失败或超时仍停止后续设备调用，并回收已完成部分：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-run" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-result"
-```
-
-已有回收张量及`validated_cases`后再分析：
-
-```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-result"
 ```
 
-分析重比全部十次输出，汇总覆盖范围、各例错误、常量／运行时来源差异、Q/K/各V行响应、页表响应、带回读／不带回读差异；失败例比较不同KV前缀、ND输出布局与GQA head映射签名，同时保留相关编译日志。数值签名不会自动宣告根因，也不会修改原接受门槛。
+然后补已有矩阵中的48例，并带2个runtime基线，共50例：先Q32及Target两组30例，再常量mask1例、runtime基线uniform／mask_rows两例、KV≥16和页表13例、辅助读回4例。两个基线用于同批页表响应／补偿置换和回读影响比较，避免缺少配对。已知失败的length1及尚未验证的length15（均KV<Q）本次不选；没有把它们标成通过。复用8份OMC和native，无需重新导出或编译。独立的remaining执行／回收槽保留原79例及其夹具，便于比较同一OMC；不要复用原matrix-run覆盖这批证据。
 
-新增122例已与独立PyTorch FP64 SDPA核对；7组主机检查覆盖序列化图解释执行、完整8模型批处理、单组编译失败后继续、乱序ABI、十次输出比较、前16行故障识别、部分覆盖和禁止覆盖旧目录。原有7＋14＋12组探针检查通过。以上是主机／mock证据；本矩阵的DDK编译和板端结果尚未取得。
+```bash
+matrix_cases=()
+for variant in q32 target_prefill target_decode; do
+  for case_name in uniform weighted mask_rows mask_temporary_causal \
+      impulse_16 impulse_32 impulse_192 key_16 key_32 key_192; do
+    matrix_cases+=("attention_matrix_${variant}__${case_name}")
+  done
+done
+matrix_cases+=(attention_matrix_constant_mask__mask_rows)
+matrix_cases+=(attention_matrix_runtime__uniform attention_matrix_runtime__mask_rows)
+for kv_length in 16 17 31 32 33 63 64 65 192 208; do
+  matrix_cases+=("attention_matrix_runtime__length_${kv_length}")
+done
+for case_name in table_rotate table_reverse page_equivalent; do
+  matrix_cases+=("attention_matrix_runtime__${case_name}")
+done
+for case_name in uniform mask_rows length_32 table_rotate; do
+  matrix_cases+=("attention_matrix_observed__${case_name}")
+done
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix" \
+  --cases "${matrix_cases[@]}" \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-remaining-run" --apply
+```
+
+同一次补测用下列命令回收；若返回PENDING，只检查状态／重复recover，不重复apply。仍保持原生失败或超时停止后续设备调用，不自动跳过错误继续跑板：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-remaining-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-remaining-result"
+```
+
+有回收张量和validated_cases后再分析补测结果：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-remaining-result"
+```
+
+每个分析报告只覆盖自己的请求，补测成功也不会把未做的长度边界、完整Draft或Target自动提升为通过。已有8模型均编译成功、相同tilingkey并不能证明形状支持；必须看各自的设备数值。5组新增主机检查覆盖79／129部分回收和错误保留、缺失／未选择区别、独立Torch的masked-prefix签名、全负无穷与多签名限制、第十次故障及50例选择；原7组矩阵回归通过。以上主机检查不替代用户设备输出。
 
 以下为首次导出／工具链准备的说明，本轮无需重复执行。当前预处理继续保留Reshape链简化、静态ZerosLike物化和FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。每个节点的来源、形状及修改前后标志保存在`compilation/air-preparation.json`中。
 
