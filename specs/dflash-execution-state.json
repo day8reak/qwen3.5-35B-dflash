@@ -2765,7 +2765,7 @@
       "limitation": "PORT_SUMS_NOT_UNIQUE_BUFFERS_OR_MEASURED_COPIES; TOP_INPUT_LIST_INCOMPLETE; CPU_NPU_GAP_CAUSE_UNRESOLVED"
     },
     "boundary_optimization_candidate": {
-      "status": "USER_REPORTED_COMPILED_ABI_BINDING_AND_DEVICE_VALIDATION_PENDING",
+      "status": "USER_REPORTED_DEVICE_SPEEDUP_WITH_ACCEPTED_BASELINE_NUMERICAL_DIFFERENCES",
       "policy": "packed-spatial-4d",
       "run_id": "20261103T115433Z-20069-553cbd",
       "baseline_policy": "packed-spatial",
@@ -2809,12 +2809,12 @@
         "mock_pipeline_checks": 14
       },
       "model_compilation": "USER_REPORTED_PASSED",
-      "device_execution": "NOT_RUN",
-      "placement": "GRAPHOP_COUNTS_CPU3_NPU2; NODE_PLACEMENT_AND_INTERFACE_BYTES_UNVERIFIED",
-      "performance": "NOT_MEASURED",
+      "device_execution": "USER_REPORTED_EXECUTED_OUTPUTS_RETRIEVED",
+      "placement": "FEATURE_PERMUTES_ON_NPU; CPU0_CONTROLS_ONLY; CPU2_SMALLER; CPU3_NPU2_PARTITIONS_REMAIN",
+      "performance": "USER_REPORTED_API_MEANS_189_TO201_MS; PROFILE184_568_MS; 50_MS_NOT_ACHIEVED",
       "command_document": "docs/current-status.md",
-      "next": "VALIDATE_NEW_MODEL_WITH_SEMANTIC_PHYSICAL_ABI_BINDING; THEN_BOUND_BOUNDARY_INSPECTION_AND_V1_PROFILE",
-      "compiled_abi": "NOT_BOUND",
+      "next": "PRIORITIZE_105_582_MS_UNASSIGNED_DIFFERENCE; ANALYZE_SAVED_BOUNDARY_DEPENDENCIES_BEFORE_NEXT_MODEL_REWRITE",
+      "compiled_abi": "USER_REPORTED_BOUND_BY_COMPLETED_STANDALONE_ACCURACY",
       "compiled_precision": "NOT_VALIDATED",
       "user_compilation_observation": {
         "source": "USER_PASTED_COMPILE_SUMMARY_NOT_INDEPENDENTLY_RETRIEVED",
@@ -2863,6 +2863,218 @@
         "model_sha256": null,
         "model_identity": "NEW_SHA_NOT_SUPPLIED; DO_NOT_REUSE_PREVIOUS_PACKED_SPATIAL_IDENTITY",
         "interpretation": "PARTITION_COUNTS_UNCHANGED; SPECIFIC_PERMUTE_MASK_PLACEMENT_BOUNDARY_BYTES_AND_DEVICE_SPEED_UNVERIFIED"
+      },
+      "user_device_observation": {
+        "source": "USER_PASTED_ACCURACY_BOUNDARIES_AND_PROFILE_TABLES; NOT_INDEPENDENTLY_RETRIEVED",
+        "recorded": "2026-11-03",
+        "model": {
+          "bytes": 2808242141,
+          "sha256": "c7e8007bcceb37141e2d667040ed64cc88afbc532173043deb4ee6ff4719a5b2"
+        },
+        "board_attempt": "qwen35_draft_accuracy_c2b8c8ed4df542daa4981af458b95903",
+        "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+        "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+        "numerical_validation": "FAILED",
+        "numerical_observation": {
+          "accepted_baseline_summary": "UNCHANGED_TOP1_DIFFERENCES_AND_HIDDEN_KV_L2_RANGES",
+          "top1": {
+            "isolated_matches": 82,
+            "feedback_matches": 83,
+            "tokens_per_mode": 86,
+            "total_differences": 7
+          },
+          "hidden_relative_l2": {
+            "isolated": [
+              0.013387271239375807,
+              0.025755650596962287
+            ],
+            "feedback": [
+              0.014494312718133574,
+              0.026116219967572855
+            ]
+          },
+          "kv_appended_relative_l2": [
+            0.004417372793104131,
+            0.008283531899103903
+          ],
+          "preservation_failed": 0,
+          "feedback_repeats_bitwise_equal": true,
+          "all_old_new_outputs_bitwise_equal": "NOT_ESTABLISHED_BY_SUMMARY"
+        },
+        "native_api_latency": {
+          "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; MIXED_ACCURACY_CASES_NOT_STEADY_BENCHMARK",
+          "isolated": {
+            "catchup": {
+              "calls": 11,
+              "mean_ms": 192.06654545454543,
+              "min_ms": 179.534,
+              "max_ms": 200.805
+            },
+            "proposal": {
+              "calls": 8,
+              "mean_ms": 191.469375,
+              "min_ms": 183.25,
+              "max_ms": 205.458
+            }
+          },
+          "feedback": {
+            "catchup": {
+              "calls": 11,
+              "mean_ms": 200.51472727272727,
+              "min_ms": 186.69,
+              "max_ms": 209.778
+            },
+            "proposal": {
+              "calls": 8,
+              "mean_ms": 189.1465,
+              "min_ms": 168.493,
+              "max_ms": 199.197
+            }
+          }
+        },
+        "api_mean_decrease_percent": {
+          "isolated_catchup": 33.65160317809253,
+          "isolated_proposal": 33.107776154697724,
+          "feedback_catchup": 28.308900127055047,
+          "feedback_proposal": 36.528446117811285
+        },
+        "boundary_observation": {
+          "graphop_counts": {
+            "CPUCL": 3,
+            "NPUCL": 2
+          },
+          "subgraph0": {
+            "owner": "CPUCL",
+            "inputs": 4,
+            "input_bytes": 16,
+            "outputs": 10,
+            "output_bytes": 207760,
+            "permute_count": 0
+          },
+          "subgraph1_feature_input": {
+            "dtype": "float16",
+            "shape": [
+              1,
+              16,
+              16384
+            ],
+            "logical_bytes": 524288,
+            "producer": "Data"
+          },
+          "subgraph2": {
+            "owner": "CPUCL",
+            "inputs": 6,
+            "input_bytes": 10320,
+            "outputs": 4,
+            "output_bytes": 221184,
+            "explicit_npu_input": {
+              "producer": "SubGraph_1:2",
+              "dtype": "bool",
+              "shape": [
+                1,
+                208
+              ],
+              "logical_bytes": 208
+            },
+            "cast_inputs": {
+              "names": [
+                "netoutput_cast_1",
+                "netoutput_cast_0"
+              ],
+              "dtype": "float32",
+              "shape": [
+                1,
+                16,
+                1
+              ],
+              "logical_bytes_each": 64,
+              "upstream_partition": "PENDING_EXPLICIT_MAIN_GRAPH_TRACE"
+            },
+            "node_counts": {
+              "GatherV2D": 3,
+              "CastT": 6,
+              "LogicalAnd": 2,
+              "LogicalOr": 2
+            }
+          },
+          "subgraph3": {
+            "inputs": 26,
+            "input_bytes": 5690112,
+            "outputs": 13,
+            "output_bytes": 11836416
+          },
+          "subgraph4": {
+            "owner": "CPUCL",
+            "operation": "ArgMaxExt2",
+            "input_dtype": "float32",
+            "input_shape": [
+              1,
+              15,
+              248320
+            ],
+            "input_bytes": 14899200,
+            "output_bytes": 60
+          },
+          "scope": "LOGICAL_DESCRIPTOR_EXTENTS_NOT_MEASURED_TRANSFERS"
+        },
+        "profile": {
+          "load_ms": 234.684,
+          "inference_ms": 184.568,
+          "unload_ms": 7.56,
+          "operator_duration_sum_ms": 78.986,
+          "arithmetic_difference_ms": 105.582,
+          "difference_fraction": 0.5720493259936716,
+          "previous_packed_spatial_inference_ms": 245.989,
+          "inference_decrease_percent": 24.969002678981578,
+          "top_operators_ms": {
+            "final_matmul": 19.797,
+            "cpu_argmax": 17.576,
+            "conv": 8.685,
+            "feature_permute_1": 5.255,
+            "feature_permute_0": 0.361
+          },
+          "npu_model_ids": [
+            62,
+            63
+          ],
+          "streams": [
+            478,
+            479
+          ],
+          "cpu_model_id": 1,
+          "attribution": "DIFFERENCE_UNASSIGNED; NOT_MEASURED_COPY_WAIT_OR_PURE_NPU_TIME",
+          "identity": "USER_ASSOCIATED_WITH_THIS_CANDIDATE; PROFILE_RECEIPT_PID_CSV_HASHES_NOT_SUPPLIED",
+          "timestamp_consistency": "CPU_ARGMAX_START_PRECEDES_FINAL_MATMUL_START; DO_NOT_INFER_CROSS_DEVICE_IDLE_GAPS",
+          "scope": "ONE_VENDOR_PROFILE; NOT_FIXED_INPUT_WARMUP3_MEASURE10_ACCEPTANCE"
+        },
+        "production_promotion": "NOT_PERFORMED",
+        "target_50ms": "NOT_ACHIEVED"
+      }
+    },
+    "runtime_gap_priority": {
+      "status": "PRIORITIZE_UNASSIGNED_API_WALL_BEFORE_HEAD_REWRITE",
+      "basis": "USER_EXPLICITLY_PRIORITIZED_105_582_MS_DIFFERENCE",
+      "run_id": "20261103T124343Z-21225-c999d4",
+      "confirmed": [
+        "NATIVE_API_TIMER_WRAP_PROCESS_ONLY; LOAD_INPUT_PREP_SNAPSHOT_AND_KV_COMMIT_EXCLUDED",
+        "INTERMEDIATE_CPU_PARTITION_HAS_EXPLICIT_BOOL_INPUT_FROM_NPU_SUBGRAPH1",
+        "OP_START_TIMESTAMPS_DO_NOT_ESTABLISH_UNIFIED_CPU_NPU_TIMELINE"
+      ],
+      "first_experiment": "TRACE_ALL_EXPLICIT_MAIN_GRAPH_PATHS_THROUGH_CASTS; IDENTIFY_CONTROL_BACKFLOW_FOR_EXACT_PLACEMENT_REWRITE",
+      "command": "profile_draft.py --analyze-boundaries SAVED_FULL_BOUNDARIES_JSON --output DEPENDENCIES_JSON",
+      "execution": "LOCAL_METADATA_ONLY; NO_OMC_RECOMPILE_MODEL_RELAUNCH_OR_SDK_REQUIRED",
+      "proposed_followup": "TRY_MOVING_SCALAR_DERIVED_MASK_POSITION_CONTROLS_AHEAD_OF_NPU_BODY; COMPILE_MUST_CONFIRM_REMOVAL_OF_NPU_CPU_NPU_PATH",
+      "experiment_gates": [
+        "SAME_C16_CAP192_K15_WEIGHTS_INPUTS_AND_V1_FREQUENCY",
+        "FULL_OUTPUT_NUMERICS_AND_KV_PRESERVATION_AGAINST_ACCEPTED_BASELINE",
+        "COMPILED_BOUNDARY_CHANGE_THEN_FIXED_INPUT_WARMUP3_MEASURE10_API_LATENCY",
+        "DO_NOT_ASSIGN_ALL_DIFFERENCE_TO_BOUNDARY_OR_PREDICT_REMOVABLE_TIME_FROM_SUBTRACTION"
+      ],
+      "deferred": "FULL_VOCABULARY_TOP1_AND_MATMUL_REWRITE",
+      "host_validation": {
+        "check_groups": 11,
+        "status": "PASSED",
+        "scope": "SYNTHETIC_COMPILED_METADATA_AND_ACTUAL_CLI_NOT_USER_OMC_OR_DEVICE"
       }
     }
   },

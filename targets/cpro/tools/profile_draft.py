@@ -17,6 +17,8 @@ def main(argv=None):
     source.add_argument('--recover', help='same retained profiling execution, no model relaunch')
     source.add_argument('--inspect-boundaries', metavar='PYTORCH_OMC_DIR',
                         help='read current compiled partition metadata locally; no compiler or board access')
+    source.add_argument('--analyze-boundaries', metavar='BOUNDARIES_JSON',
+                        help='trace partition dependencies in saved full boundary JSON; no SDK or board access')
     parser.add_argument('--accuracy-result', help='retained accuracy result binding for --inspect-boundaries')
     parser.add_argument('--ddk-root', help='selected DDK schema for --inspect-boundaries; no library execution')
     parser.add_argument('--tool-inspection', help='existing target-board-tool-inspection-writable')
@@ -31,6 +33,19 @@ def main(argv=None):
     parser.add_argument('--timeout-seconds', type=int, default=600)
     parser.add_argument('--lock-wait-seconds', type=int, default=1800)
     args = parser.parse_args(argv)
+    if args.analyze_boundaries:
+        if (args.accuracy_result or args.ddk_root or args.apply or args.tool_inspection
+                or args.allow_numerical_failure or args.modelmanager_itf):
+            parser.error('--analyze-boundaries needs only the saved JSON and --output; omit execution flags')
+        try:
+            from qwen35_moe_dflash.draft.boundary_dependencies import analyze_boundaries
+            result = analyze_boundaries(args.analyze_boundaries, args.output)
+            print(json.dumps(result, ensure_ascii=False, allow_nan=False), flush=True)
+            return 0
+        except Exception as error:
+            print(json.dumps(dict(status='FAILED', model_compilation='NOT_RUN', device_execution='NOT_RUN',
+                error=f'{type(error).__name__}: {error}'), ensure_ascii=False), flush=True)
+            return 1
     if args.inspect_boundaries:
         if (not args.accuracy_result or not args.ddk_root or args.apply or args.tool_inspection
                 or args.allow_numerical_failure or args.modelmanager_itf):

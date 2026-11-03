@@ -2,7 +2,25 @@
 
 2026-11-03，用户在确认“最差hidden相对L2约2.61%、Top1共7/172不一致”后明确回复：**“接受本轮结果，先优化性能”**。当前组合版作为性能优化基线，暂停继续追查数值差异。此决定针对已观测的OMC与用例，原报告的NUMERICAL_FAILED、逐元素门槛及golden保留；后续候选仍须报告相对本基线的数值变化，不能由此次接受推出任意额外近似均已获准。生产未提升。
 
-2026-11-03，用户回传第一轮 `packed-spatial` 编译后精度与profiling结果，执行及回收成功。随后边界报告绑定优化OMC字节数2808368316、SHA256 `f178fc83a0a9981b501bd5a012e5dee33a54f11f28175dc84dd10625889a6a1e`，CPUCL=3／NPUCL=2；所回传精度摘要与上一版一致：isolated Top1 82/86、feedback 83/86，共7/172个相同位置和token的差异；hidden相对L2上限仍为2.61%，新增KV为0.44%～0.83%，未写KV均保持，两组重复调用逐位稳定。这些摘要不能证明两版全部输出逐位相同。原NUMERICAL_FAILED保留。
+最新用户回传 `packed-spatial-4d` 的完整accuracy摘要、边界及profile表。边界所绑定OMC为2808242141字节，SHA256 `c7e8007bcceb37141e2d667040ed64cc88afbc532173043deb4ee6ff4719a5b2`；accuracy尝试 `qwen35_draft_accuracy_c2b8c8ed4df542daa4981af458b95903` 已完成并回收，未残留其持有锁。仍为NUMERICAL_FAILED：Top1 isolated82/86、feedback83/86，7处差异的位置/token及hidden／KV误差范围与已接受基线一致；未写KV保持，两组反馈重复逐位相等。摘要一致不证明两版全部输出逐位相同。
+
+| 同类测量 | packed-spatial ms | packed-spatial-4d ms | 下降 |
+|---|---:|---:|---:|
+| isolated catchup API均值，11次 | 289.482 | 192.067 | 33.7% |
+| isolated proposal API均值，8次 | 286.236 | 191.469 | 33.1% |
+| feedback catchup API均值，11次 | 279.693 | 200.515 | 28.3% |
+| feedback proposal API均值，8次 | 298.002 | 189.147 | 36.5% |
+| 单次厂商model inference | 245.989 | 184.568 | 25.0% |
+
+新profile算子汇总78.986ms，与184.568ms推理的算术差额为105.582ms（57.2%）。Load234.684ms、Unload7.560ms不在推理内。末尾MatMul19.797ms、CPU ArgMax17.576ms、Conv8.685ms；特征重排现在是两个NPU Permute，分别5.255ms和0.361ms。NPU model ID为62／63、stream478／479，CPU model ID为1。此处按用户表格记录；该新profile的回收receipt、PID、CSV哈希尚未提供，不继承上一轮的身份信息。单次profile和混合accuracy均值均不是50ms预热稳态验收。
+
+新边界仍为CPUCL3／NPUCL2，但CPU0只接收四个INT32控制量共16字节，已经没有特征Permute；特征FP16[1,16,16384]直接输入NPU。CPU2从14输入／8输出降为6输入／4输出，逻辑输出647168→221184字节；其中BOOL[1,208]输入明确来自NPU1:2，另有两个FP32[1,16,1]输入经netoutput_cast_0／1，尚需追上游。末尾CPU ArgMax仍接收14899200字节FP32 logits。逻辑描述尺寸不代表实际传输量。
+
+用户明确要求优先解决105.582ms差额，故暂缓Top1和MatMul改写。源码复核：native API计时仅包住同步Process，加载、输入拷贝、结果落盘及KV提交都在计时外。中间CPU子图的NPU输入依赖是下一项对照重点，但不能直接把差额归因于这条边界。新表中CPU ArgMax起点12:01:49.365758早于末尾MatMul起点49.366910，后者加时长还超过model结束时间49.383778；因此不以这些start time拼出CPU/NPU统一执行时间线或断言具体空等时长。
+
+新增 `profile_draft.py --analyze-boundaries`，只读取已保存的完整边界JSON，穿过主图Cast／Reshape等显式输入边追踪GraphOp端口。列出NPU→CPU连接及有后续NPU消费者的中间CPU分区；不按src_name／device_type猜执行归属，不推断GraphOp内部输入输出关系。11组主机检查通过，覆盖直接及双Cast回流、动态shape分支、共享生产者、跨设备终端logits、缺失/错位引用、多输出不确定性、环、实际CLI及原证据不变。run `20261103T124343Z-21225-c999d4`，检查为合成编译元数据，不是用户OMC或设备测量。下一步用现有JSON定位控制计算回流，设计前移控制计算的单因素实验；不重新采集已提供的profile。
+
+以下为上一轮记录。2026-11-03，用户回传第一轮 `packed-spatial` 编译后精度与profiling结果，执行及回收成功。随后边界报告绑定优化OMC字节数2808368316、SHA256 `f178fc83a0a9981b501bd5a012e5dee33a54f11f28175dc84dd10625889a6a1e`，CPUCL=3／NPUCL=2；所回传精度摘要与上一版一致：isolated Top1 82/86、feedback 83/86，共7/172个相同位置和token的差异；hidden相对L2上限仍为2.61%，新增KV为0.44%～0.83%，未写KV均保持，两组重复调用逐位稳定。这些摘要不能证明两版全部输出逐位相同。原NUMERICAL_FAILED保留。
 
 | 同类测量 | 旧组合版 ms | packed-spatial ms |
 |---|---:|---:|
