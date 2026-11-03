@@ -1276,7 +1276,7 @@
           "embedding": "ANCHOR_AND_MASK_SOURCE_ROWS_FINITE_NONZERO_NOT_DEVICE_GATHER"
         }
       },
-      "next": "DDK_SERVER_COMPILE_AND_VALIDATE_INPUT_RMS_NO_SCALE_COMPARISON; RETAIN_TAPS_BASELINE; docs/current-status.md",
+      "next": "DDK_SERVER_CLEAN_COMPLETED_PROBES_THEN_COMPILE_V5_AND_VALIDATE_FULL_DRAFT; docs/current-status.md",
       "embedding_probe": {
         "entry": "targets/cpro/tools/probe_draft_embedding.py",
         "host_checks": 23,
@@ -1583,9 +1583,9 @@
         "mutation": "REMOVE_ONE_DIRECT_GATHER_FP16_MULS_EXACT_SCALAR_1; REWIRE_ONLY_SOLE_DOWNSTREAM_CAST_INPUT; OTHER_NODES_BYTE_IDENTICAL",
         "reference": "SAME_INPUT_GOLDEN_AND_SIDECAR_HASHES_AS_TAPS_BASELINE",
         "math_scope": "IDENTITY_ON_ALL_FINITE_FP16_VALUES_INCLUDING_SIGNED_ZERO; NOT_NAN_PAYLOAD_CLAIM",
-        "model_compilation": "NOT_RUN",
-        "device_execution": "NOT_RUN",
-        "numerical_validation": "NOT_RUN",
+        "model_compilation": "USER_REPORTED_PASSED",
+        "device_execution": "USER_REPORTED_EXECUTED_OUTPUTS_RETRIEVED",
+        "numerical_validation": "USER_REPORTED_PASSED",
         "production_promotion": "NOT_PERFORMED",
         "host_checks": {
           "rewrite": 13,
@@ -1594,8 +1594,73 @@
           "prefix_inspection": 14
         },
         "host_equivalence_patterns": 63488,
-        "next": "DDK_SERVER_COMPILE_AND_VALIDATE_INPUT_RMS_NO_SCALE_COMPARISON; RETAIN_TAPS_BASELINE; docs/current-status.md",
-        "limitations": "DIAGNOSTIC_COPY_ONLY; REMOVAL_CAN_CHANGE_FUSION_AND_PARTITION; NO_FULL_DRAFT_CHANGE_OR_ROOT_CAUSE_VERDICT"
+        "next": "DDK_SERVER_CLEAN_COMPLETED_PROBES_THEN_COMPILE_V5_AND_VALIDATE_FULL_DRAFT; docs/current-status.md",
+        "limitations": "PREFIX_ONLY; SUPPORTS_UNIT_SCALE_PATH_WORKAROUND; NO_INDEPENDENT_MULS_ROOT_CAUSE_OR_FULL_DRAFT_PASS",
+        "observation": {
+          "source": "USER_PASTED_RECOVER_AND_ANALYZE_NOT_INDEPENDENTLY_READ",
+          "board_attempt": "/data/local/tmp/qwen35_vector_d8d60bcd95ec4148959e36063f1ae3fc",
+          "model_sha256": "1231035460562818b02e105ea426d3af385bc6ec0c6a277c50eb28430f216e4f",
+          "repetitions": 10,
+          "warmup": 3,
+          "repeat_bitwise_stable": true,
+          "exact_outputs": [
+            "embedding",
+            "ids_readback",
+            "rms_x",
+            "rms_gamma",
+            "gamma_factor_readback"
+          ],
+          "rms": {
+            "atol": 0.01,
+            "rtol": 0.01,
+            "passed": true,
+            "max_abs_error": 0.0621337890625,
+            "relative_l2_error": 0.0007162242425801184,
+            "anchor_relative_l2_error": 0.0023033991859535683
+          },
+          "api_ms": {
+            "mean": 0.845,
+            "min": 0.647,
+            "max": 1.086
+          },
+          "timing_scope": "SYNCHRONOUS_API_WALL_PREFIX_ONLY_NOT_NPU_ONLY"
+        }
+      },
+      "full_draft_unit_scale": {
+        "policy": "draft-static-preparation-v5",
+        "pass_policy": "fp16-embedding-unit-scale-v1",
+        "implementation": "SAME_REWRITE_AS_PASSED_PREFIX_PROBE; SOURCE_AIR_UNCHANGED",
+        "mutation": "REMOVE_ONE_DIRECT_FP16_EMBEDDING_UNIT_MULS_AND_REWIRE_SOLE_CAST_INPUT",
+        "reference": "UNCHANGED",
+        "external_abi": "UNCHANGED_17_INPUTS_14_OUTPUTS",
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
+        "production_promotion": "NOT_PERFORMED",
+        "host_checks": {
+          "full_graph_and_compile": 16,
+          "shared_rewrite": 13,
+          "probe_pipeline": 23
+        },
+        "next": "DDK_SERVER_CLEAN_COMPLETED_PROBES_THEN_COMPILE_V5_AND_VALIDATE_FULL_DRAFT; docs/current-status.md"
+      },
+      "probe_retention": {
+        "user_instruction": "DELETE_ALL_COMPLETED_PROBES_NO_BACKUP",
+        "entry": "targets/cpro/tools/clean_draft_probes.py",
+        "families": [
+          "pytorch-embedding",
+          "pytorch-input-rms",
+          "pytorch-input-rms-taps",
+          "pytorch-input-rms-no-scale"
+        ],
+        "directories_per_family": [
+          "compiled",
+          "run",
+          "result"
+        ],
+        "scope": "HOST_ONLY; COMPLETION_AND_BINDING_CHECKED; NO_ARCHIVE",
+        "host_checks": 11,
+        "remote_cleanup": "NOT_OBSERVED"
       }
     }
   },

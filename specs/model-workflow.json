@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_UNIT_SCALE_IDENTITY_BYPASS_COMPARISON_READY",
-    "entry": "targets/cpro/tools/probe_draft_embedding.py --stage input-rms-no-scale",
+    "status": "PYTORCH_UNIT_SCALE_PREFIX_PASSED_FULL_DRAFT_PREPARATION_READY",
+    "entry": "targets/cpro/scripts/compile_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "PYTORCH_USER_REPORTED_TOP1_0_OF_86_PER_MODE_AND_HIDDEN_L2_1_TO_1.408; PRIOR_GE_INTERIM_ACCEPTANCE_DOES_NOT_APPLY",
-    "next": "Compile and validate a separate six-output probe removing only direct FP16 Muls(value=1). Keep the current taps OMC as baseline. Casts/RMS/reference/gates remain; physical FP16 boundaries observed but zero-x cause not proven. Full Draft remains failed.",
+    "next": "Delete completed probe families as requested, compile full Draft with preparation v5 and unit_scale_count=1, then validate isolated/feedback. Prefix A/B passed; full Draft remains unvalidated after this change.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",

@@ -672,7 +672,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                    status=evidence.get('status'), removed_count=evidence.get('removed_count'),
                    zero_count=evidence.get('zero_count', 0),
                    fill_count=evidence.get('fill_count', 0),
-                   weight_transpose_count=evidence.get('weight_transpose_count', 0))
+                   weight_transpose_count=evidence.get('weight_transpose_count', 0),
+                   unit_scale_count=evidence.get('unit_scale_count', 0))
         command = [str(omg), "--framework=1", f"--model={compiler_air}",
                    "--output=model", "--target=omc", "--platform=kirinx90"]
         command.extend(f"--{name}={value}" for name, value in options.items())
