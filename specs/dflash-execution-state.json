@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_kind": "qwen35-dflash-execution-plan-state",
-  "updated": "2026-10-31",
+  "updated": "2026-11-03",
   "plan_document": "docs/reference/dflash-delivery-plan.md",
   "current_commands": "docs/current-status.md",
   "overall_status": "in_progress",
@@ -1946,7 +1946,7 @@
           "full_draft_validation": "NOT_RUN"
         },
         "prefix_signature_analysis": {
-          "status": "HYPOTHESIS; PRINTED_SAMPLES_AND_AGGREGATE_ERRORS_REPRODUCED_ON_HOST",
+          "status": "USER_REPORTED_FULL_TENSOR_NUMERICAL_SIGNATURE_CONFIRMED_NOT_ROOT_CAUSE",
           "hypothesis": "UNMASKED_LOGICAL_KV_PREFIX_16",
           "prefix_candidates": [
             16,
@@ -1964,7 +1964,7 @@
           "new_analysis": "HASH_BOUND_RETAINED_INPUTS_AND_ALL_65536_ATTENTION_ELEMENTS_FROM_ITERATION_0; TEN_CALLS_RECOMPARED",
           "diagnostic_host_checks": 14,
           "probe_regression_checks": 12,
-          "device_full_tensor_signature": "NOT_YET_REPORTED",
+          "device_full_tensor_signature": "SIX_UNWEIGHTED_CASES_BIT_EXACT_PREFIX16; WEIGHTED_WITHIN_ORIGINAL_TOLERANCE",
           "limitations": "LOGICAL_HOST_INPUTS_AND_AUXILIARY_READBACKS_NOT_KERNEL_INPUTS; NO_LENGTH_PORT_ROOT_CAUSE_VERDICT; ORIGINAL_GATE_UNCHANGED",
           "aggregate_comparison": {
             "all_seven_max_abs_errors_match": true,
@@ -1972,7 +1972,74 @@
             "weighted_predicted_relative_l2": 0.537950372929622,
             "weighted_observed_relative_l2": 0.537972692833318,
             "scope": "AGGREGATES_NOT_ELEMENTWISE_DEVICE_OUTPUT_COMPARISON"
+          },
+          "confirmation": {
+            "source": "USER_PASTED_ANALYSIS; NOT_INDEPENDENTLY_RETRIEVED",
+            "date": "2026-11-03",
+            "board_attempt": "/data/local/tmp/qwen35_vector_9178f47c526e444593a912330176d7b1",
+            "elements_per_case": 65536,
+            "unweighted_bit_exact_cases": 6,
+            "reference_reproduction_bit_exact_cases": 7,
+            "weighted": {
+              "max_abs_error": 0.00048828125,
+              "relative_l2_error": 0.0003691992091269304,
+              "rmse": 0.0001091502326789014,
+              "bitwise_mismatched_elements": 21424,
+              "failing_elements": 0,
+              "unique_query_rows": 15
+            },
+            "unweighted_prefix32": {
+              "within_tolerance": true,
+              "bytes_equal": false,
+              "rmse": 0.001953125,
+              "bitwise_mismatched_elements": 65536
+            },
+            "anchor_pair": {
+              "actual_bytes_equal": true,
+              "reference_max_difference": 4.0,
+              "reference_rmse": 1.2587414108669686
+            }
           }
+        },
+        "mask_length_controls": {
+          "status": "HOST_CHECKED_DDK_AND_DEVICE_PENDING",
+          "policy": "source-first-attention-mask-length-controls-v1",
+          "entry_option": "--controls",
+          "output": "draft/tests/pytorch-attention-controls",
+          "original_attention_retained": true,
+          "query_lengths": {
+            "actual_seq_lengths_q": 16,
+            "all_seq_lengths_q": 16
+          },
+          "branches": [
+            {
+              "name": "attention_key0",
+              "mask": "key0",
+              "kv_length": 224
+            },
+            {
+              "name": "attention_key15",
+              "mask": "key15",
+              "kv_length": 224
+            },
+            {
+              "name": "attention_unmasked",
+              "mask": "unmasked",
+              "kv_length": 224
+            },
+            {
+              "name": "attention_kv32",
+              "mask": "unmasked",
+              "kv_length": 32
+            }
+          ],
+          "host_control_checks": 14,
+          "source_probe_regression_checks": 12,
+          "signature_regression_checks": 14,
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN",
+          "scope": "DIAGNOSTIC_CLONED_BRANCHES; SOURCE_QUERY_LENGTHS_UNCHANGED; NOT_FULL_DRAFT"
         }
       }
     }

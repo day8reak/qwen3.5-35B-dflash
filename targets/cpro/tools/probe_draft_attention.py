@@ -18,9 +18,11 @@ def main():
                         help='read existing Attention OMC input-order metadata; no compilation or board access')
     parser.add_argument('--timeout-seconds',type=int)
     parser.add_argument('--replace',action='store_true',help='reuse a known failed host compilation in draft/tests; no archive')
+    parser.add_argument('--controls',action='store_true',
+                        help='retain source Attention and add four fixed mask/actual-KV-length control branches')
     args = parser.parse_args()
     if args.inspect_compiled:
-        if args.replace or any(getattr(args,name) is not None for name in
+        if args.replace or args.controls or any(getattr(args,name) is not None for name in
                 ('air_export','source','result','tbe_diagnosis','output','timeout_seconds')):
             parser.error('inspection accepts only --ddk-root and --ddk-id')
     elif any(getattr(args,name) is None for name in ('air_export','source','result','tbe_diagnosis','output')):
@@ -32,6 +34,7 @@ def main():
             result = compile_probe(args.air_export,args.source,args.result,args.output,
                 ddk_root=args.ddk_root,ddk_id=args.ddk_id,tbe_diagnosis=args.tbe_diagnosis,
                 timeout_seconds=1800 if args.timeout_seconds is None else args.timeout_seconds,replace=args.replace,
+                controls=args.controls,
                 progress=lambda s:print('attention-probe: '+s,flush=True))
     except (OSError,ValueError,KeyError,RuntimeError) as error:
         result = dict(status='FAILED',error=f'{type(error).__name__}: {error}')

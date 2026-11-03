@@ -39,6 +39,21 @@ CONTRACT = dict(num_heads=32, num_key_value_heads=8, head_dim=128, block_size=32
                 query_shape=[1,256,16,16], kv_shape=[7,64,32,16],
                 mask_shape=[1,1,16,224], block_table_shape=[1,7],
                 logical_kv_rows=208, padded_kv_rows=224)
+ATTENTION_CONTROLS = (
+    dict(name='attention_key0', mask='key0', kv_length=224, shape=[32,16,128]),
+    dict(name='attention_key15', mask='key15', kv_length=224, shape=[32,2048]),
+    dict(name='attention_unmasked', mask='unmasked', kv_length=224, shape=[16,4096]),
+    dict(name='attention_kv32', mask='unmasked', kv_length=32, shape=[65536]),
+)
+
+
+def _control_visibility(control):
+    visible = np.zeros((16,224),dtype=bool)
+    if control['mask']=='unmasked':
+        visible[:,:control['kv_length']] = True
+    else:
+        visible[:,int(control['mask'][3:])] = True
+    return visible
 
 
 def _contract(manifest):
@@ -51,7 +66,7 @@ def _contract(manifest):
             raise ValueError('source attention contract differs: '+key)
 
 
-def extract_attention(raw, schema, manifest):
+def extract_attention(raw, schema, manifest, *, controls=False):
     """Preserve source mask/length/table nodes; never copy QKV weight ancestry."""
     _contract(manifest)
     kind, _, graph = _decode(schema, raw)
@@ -127,6 +142,12 @@ def extract_attention(raw, schema, manifest):
     for slot, expected in ((5,[16]),(6,[224])):
         if shapes.integers(edges[slot]) != expected:
             raise ValueError('source Attention literal length differs: '+str(slot))
+    all_query = shapes.node(edges[16]); all_query_attrs = _attributes(all_query)
+    if (all_query['type']!='FileConstant'
+            or all_query_attrs.get('file_path',{}).get('s')!='weight/target_attention_query_lengths'
+            or all_query_attrs.get('dtype',{}).get('i')!=9
+            or all_query_attrs.get('shape',{}).get('list',{}).get('i')!=[1]):
+        raise ValueError('source all_seq_lengths_q must bind the verified INT64 query-length sidecar')
     if any(n.startswith('probe_attention_') for n in nodes):
         raise ValueError('probe namespace already exists')
 
@@ -216,8 +237,61 @@ def extract_attention(raw, schema, manifest):
     viewd = desc('DT_FLOAT16',viewdims)
     added.append(node('probe_attention_v_view','Reshape',
         [('probe_attention_v:0',desc('DT_FLOAT16',CONTRACT['kv_shape'])),('probe_attention_v_shape:0',shaped)],[viewd]))
+    control_receipts = []; control_outputs = []
+    if controls:
+        # Compare valid mask/actual-KV-length changes without guessing the
+        # meaning of all_seq_lengths_q. Both query lengths stay at source 16.
+        # Keep the original Attention and source-mask readback in this graph.
+        masks = {}
+        for control in ATTENTION_CONTROLS:
+            name = 'probe_'+control['name']
+            if control['mask'] not in masks:
+                mask = np.full(CONTRACT['mask_shape'],-np.inf,dtype='<f2')
+                if control['mask']=='unmasked':
+                    mask.fill(0)
+                else:
+                    mask[:,:,:,int(control['mask'][3:])] = 0
+                mask_name = name+'_mask'
+                tensor = blob('TensorDef','desc',maskd,11)+blob('TensorDef','data',mask.tobytes(),12)
+                added.append(node(mask_name,'Const',[],[maskd],attribute('value',blob('AttrDef','t',tensor,11))))
+                masks[control['mask']] = (mask_name+':0',hashlib.sha256(mask.tobytes()).hexdigest())
+            mask_edge,mask_sha = masks[control['mask']]
+            replacements = {4:mask_edge}
+            if control['kv_length']!=224:
+                lengthd = desc('DT_INT64',[1]); length_name = name+'_length'
+                tensor = blob('TensorDef','desc',lengthd,11)+blob('TensorDef','data',
+                    np.array([control['kv_length']],dtype='<i8').tobytes(),12)
+                added.append(node(length_name,'Const',[],[lengthd],attribute('value',blob('AttrDef','t',tensor,11))))
+                replacements[6] = length_name+':0'
+            parts = []; slot = 0
+            for f,_,e,p in _parts(changed[op['name']]):
+                if f==_field(schema,'OpDef','name',9,False):
+                    e = _blob(f,name)
+                elif f==input_field:
+                    if slot in replacements:
+                        e = _blob(f,replacements[slot])
+                    slot += 1
+                parts.append(e)
+            clone = _new_id(b''.join(parts),schema,next_id); next_id += 1
+            expected_clone = deepcopy(expected)
+            expected_clone.update(name=name,id=next_id-1)
+            for slot,edge in replacements.items():
+                expected_clone['input'][slot] = edge
+            if schema.decode(clone,'OpDef')!=expected_clone:
+                raise ValueError('Attention control changed more than declared mask/length edges')
+            added.append(clone)
+            shape_name = name+'_shape'; dims = control['shape']; shaped = desc('DT_INT64',[len(dims)])
+            tensor = blob('TensorDef','desc',shaped,11)+blob('TensorDef','data',np.array(dims,dtype='<i8').tobytes(),12)
+            added.append(node(shape_name,'Const',[],[shaped],attribute('value',blob('AttrDef','t',tensor,11))))
+            outputd = desc('DT_FLOAT16',dims)
+            added.append(node(name+'_view','Reshape',[(name+':0',desc('DT_FLOAT16',CONTRACT['query_shape'])),
+                (shape_name+':0',shaped)],[outputd]))
+            control_outputs.append((name+'_view:0',outputd))
+            control_receipts.append(dict(control,node=name,mask_edge=mask_edge,mask_sha256=mask_sha,
+                changed_input_ports=sorted(replacements),actual_seq_lengths_q=16,all_seq_lengths_q=16,
+                payload_sha256=hashlib.sha256(clone).hexdigest()))
     net = node('NetOutput','NetOutput',[(op['name']+':0',desc('DT_FLOAT16',CONTRACT['query_shape'])),
-        ('probe_attention_visible:0',maskd),('probe_attention_v_view:0',viewd)],[])
+        ('probe_attention_visible:0',maskd),('probe_attention_v_view:0',viewd)]+control_outputs,[])
     # New QKV Data precedes Attention; auxiliary consumers follow it.
     selected.add(op['name'])
     kept = [changed.get(n['name'],p) for n,p,_ in rows if n['name'] in selected]
@@ -252,10 +326,20 @@ def extract_attention(raw, schema, manifest):
             dict(name='attention',dtype='float16',shape=CONTRACT['query_shape'],exact_bytes=False),
             dict(name='mask_visible',dtype='float16',shape=CONTRACT['mask_shape'],exact_bytes=True),
             dict(name='packed_v',dtype='float16',shape=viewdims,exact_bytes=True)]))
+    if controls:
+        receipt.update(policy='source-first-attention-mask-length-controls-v1',
+            control_experiment=dict(branches=control_receipts,
+                original_attention='PRESERVED; BASELINE_MUST_BE_RECHECKED_IN_CHANGED_COMPILED_GRAPH',
+                query_lengths='SOURCE_16_PRESERVED_AT_PORTS_5_AND_16',
+                mask_visible='ORIGINAL_SOURCE_MASK_AUXILIARY_BRANCH; NOT_CONTROL_MASK_READBACK',
+                scope='DIAGNOSTIC_BRANCHES_ONLY; NOT_FULL_DRAFT_FIX_OR_LENGTH_PORT_PROOF'))
+        receipt['graph']['outputs'].extend(dict(name=c['name'],dtype='float16',shape=c['shape'],exact_bytes=False)
+                                           for c in ATTENTION_CONTROLS)
+        receipt['changed'] += '; clone four Attention branches changing only mask and optional actual_seq_lengths_kv edges, with unique output views'
     return extracted,receipt
 
 
-def reference_case(name, config):
+def reference_case(name, config, *, controls=False):
     """Independent ND reference, then explicit NZ coordinate assignment.
 
     Uniform-score cases expose cache/block visibility and anchor contribution.
@@ -313,6 +397,13 @@ def reference_case(name, config):
         kv.append(p)
     inputs = [np.array([s],dtype='<i4') for s in (start,valid,count)]+[packed[0],*kv]
     outputs = [packed[1],visible.astype('<f2').reshape(CONTRACT['mask_shape']),kv[1].reshape(7,64,512)]
+    if controls:
+        for control in ATTENTION_CONTROLS:
+            logical = _diagnostic_sdpa(q.astype(np.float64),k.astype(np.float64),v.astype(np.float64),
+                                       _control_visibility(control))
+            # Same NZ output coordinates; the public view changes shape only.
+            output = logical.reshape(32,16,8,16).transpose(0,2,1,3).copy()
+            outputs.append(output.reshape(control['shape']))
     return inputs,outputs,dict(start_position=start,valid_rows=valid,context=end,proposal_count=count,
         synthetic_anchor_delta=anchor,weighted_scores=weighted,
         visible_keys_per_query=visible.sum(axis=1).tolist(),
@@ -357,7 +448,7 @@ def _replace_failed(root, replace):
 
 
 def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_diagnosis,
-                  timeout_seconds=1800, progress=print, replace=False):
+                  timeout_seconds=1800, progress=print, replace=False, controls=False):
     root = output_path(output)
     if Path(output).absolute()!=root:
         raise ValueError('attention output must not contain symlink or traversal components')
@@ -367,11 +458,11 @@ def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_d
     with (root.parent/('.'+root.name+'.lock')).open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
         return _compile_probe(air_export,source,result,root,ddk_root=ddk_root,ddk_id=ddk_id,
-            tbe_diagnosis=tbe_diagnosis,timeout_seconds=timeout_seconds,progress=progress,replace=replace)
+            tbe_diagnosis=tbe_diagnosis,timeout_seconds=timeout_seconds,progress=progress,replace=replace,controls=controls)
 
 
 def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_diagnosis,
-                   timeout_seconds, progress, replace):
+                   timeout_seconds, progress, replace, controls):
     from qwen35_moe_dflash.toolchain.existing_air import _snapshot, compile_existing_air
     from qwen35_moe_dflash.toolchain.omc_embed_weights import embed_external_weights
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
@@ -399,7 +490,7 @@ def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_
             or binding['packed_model_sha256']!=meta['model']['sha256']):
         raise ValueError('recovered full model source/config binding differs')
     schema = _schema((air/'air-schema.pb').read_bytes(),manifest['schema'])
-    extracted,receipt = extract_attention(raw,schema,manifest)
+    extracted,receipt = extract_attention(raw,schema,manifest,controls=controls)
     snapshots = []
     widths = {0:4,1:2,3:4,9:8,12:1}  # GE operator attribute numbers.
     total = 0
@@ -441,7 +532,7 @@ def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_
             state['source_sidecars'][relative] = dict(bytes=size,sha256=digest)
         (root/'air').mkdir(exist_ok=True); (root/'air/export.air').write_bytes(extracted)
         for name in CASES:
-            ins,outs,detail = reference_case(name,cfg)
+            ins,outs,detail = reference_case(name,cfg,controls=controls)
             folder = root/'fixture'/name; folder.mkdir(parents=True)
             for prefix,arrays in (('input',ins),('golden',outs)):
                 for i,array in enumerate(arrays):
@@ -449,7 +540,8 @@ def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_
             state['cases'].append(dict(case=name,controls=detail,fixtures={p.name:dict(bytes=p.stat().st_size,
                 sha256=sha256_file(p)) for p in folder.iterdir()}))
         state['stage']='compile'; _save(root/'result.json',state)
-        progress('compiling one source-mask/Attention model for seven fixtures; no learned weights')
+        progress('compiling one '+('source Attention plus four mask/length controls' if controls else 'source-mask/Attention')
+                 +' model for seven fixtures; no learned weights')
         compilation = compile_existing_air(root/'air/export.air',root/'compilation',ddk_root,ddk_id=ddk_id,
             tbe_diagnosis=tbe_diagnosis,timeout_seconds=timeout_seconds,input_layout='air-directory',
             use_origin_format=True,save_weights_as_external_data=True,progress=lambda r:progress(r['message']))
@@ -592,7 +684,7 @@ def _kv_nd(packed):
 
 
 def _diagnostic_sdpa(q,k,v,visible):
-    """FP64 logical hypothesis, rounded once to FP16; never a new golden."""
+    """FP64 logical SDPA, rounded once to FP16; no device-dependent reference."""
     if visible.shape != (16,224) or visible.dtype != np.bool_ or not visible.any(axis=1).all():
         raise ValueError('attention hypothesis requires at least one visible key per query')
     scores = np.matmul(q,k[np.arange(32)//4].transpose(0,2,1))*CONTRACT['scale_value']
@@ -611,8 +703,7 @@ def _hypothesis_difference(actual, expected, atol, rtol):
     return metrics
 
 
-def _attention_signatures(fixture,case,actual,reference,visible,atol,rtol):
-    """Compare bounded hypotheses against every output coordinate in call 0."""
+def _retained_qkv(fixture,case):
     packed = {}
     for role in ('q','k','v'):
         specs = [s for s in case['inputs'] if s.get('role')==role]
@@ -628,6 +719,12 @@ def _attention_signatures(fixture,case,actual,reference,visible,atol,rtol):
             raise ValueError('nonfinite attention diagnostic input: '+role)
     q=_query_nd(packed['q']).astype(np.float64)
     k,v=(_kv_nd(packed[role]).astype(np.float64) for role in ('k','v'))
+    return q,k,v
+
+
+def _attention_signatures(fixture,case,actual,reference,visible,atol,rtol):
+    """Compare bounded hypotheses against every output coordinate in call 0."""
+    q,k,v=_retained_qkv(fixture,case)
     a,e=_query_nd(actual),_query_nd(reference)
     source=_diagnostic_sdpa(q,k,v,visible)
     hypotheses=[]
@@ -649,6 +746,32 @@ def _attention_signatures(fixture,case,actual,reference,visible,atol,rtol):
         unique_query_rows_bitwise=dict(actual=distinct_rows(a),reference=distinct_rows(e)),
         unmasked_prefix_hypotheses=hypotheses,
         interpretation='MATCH_IS_A_NUMERICAL_SIGNATURE_NOT_PROOF_OF_LENGTH_PORT_OR_MASK_KERNEL_BEHAVIOR; ORIGINAL_GATE_UNCHANGED')
+
+
+def _control_observations(fixture,case,arrays,atol,rtol):
+    q,k,v=_retained_qkv(fixture,case)
+    prefix=_diagnostic_sdpa(q,k,v,np.broadcast_to(np.arange(224)<16,(16,224)))
+    source=_query_nd(arrays['attention'][0]); rows=[]; nd={}
+    for control in ATTENTION_CONTROLS:
+        actual,expected=arrays[control['name']]
+        actual,expected=(_query_nd(x.reshape(CONTRACT['query_shape'])) for x in (actual,expected))
+        prediction=_diagnostic_sdpa(q,k,v,_control_visibility(control))
+        nd[control['name']]=(actual,expected)
+        rows.append(dict(name=control['name'],mask=control['mask'],actual_seq_lengths_kv=control['kv_length'],
+            comparison=_hypothesis_difference(actual,expected,atol,rtol),
+            reference_reproduction=_hypothesis_difference(expected,prediction,atol,rtol),
+            source_output_difference=_hypothesis_difference(actual,source,atol,rtol),
+            unmasked_prefix_16=_hypothesis_difference(actual,prefix,atol,rtol),
+            head0_channel0=dict(actual=[float(x) if np.isfinite(x) else None for x in actual[0,:,0]],
+                               expected=expected[0,:,0].astype(float).tolist())))
+    pairs=[]
+    for left,right in (('attention_key0','attention_key15'),('attention_unmasked','attention_kv32')):
+        a,e=nd[left]; b,f=nd[right]
+        pairs.append(dict(outputs=[left,right],actual=_hypothesis_difference(a,b,atol,rtol),
+                          reference=_hypothesis_difference(e,f,atol,rtol)))
+    return dict(scope='ITERATION_0_ALL_65536_ELEMENTS_PER_BRANCH; TEN_CALL_GATES_IN_COMPARISON',
+        query_lengths=dict(actual_seq_lengths_q=16,all_seq_lengths_q=16),branches=rows,pair_differences=pairs,
+        limitation='ADDED_BRANCHES_MAY_CHANGE_COMPILATION; CONSTANT_MASKS_NOT_PHYSICAL_KERNEL_READBACK; NOT_FULL_DRAFT')
 
 
 def diagnose(fixture,native,meta,comparison,report):
@@ -680,6 +803,8 @@ def diagnose(fixture,native,meta,comparison,report):
         row['comparison']={k:v for k,v in row['comparison'].items() if k not in ('tensors','api_us')}
         row['attention_signatures']=_attention_signatures(
             fixture,case,aq,eq,ev,meta['atol'],meta['rtol'])
+        if meta['source_evidence']['extraction'].get('control_experiment'):
+            row['attention_controls']=_control_observations(fixture,case,arrays,meta['atol'],meta['rtol'])
         if case['case'] in CASES[:2]:
             anchor_outputs[case['case']]=(aq,eq)
         cases.append(row)
@@ -696,4 +821,5 @@ def diagnose(fixture,native,meta,comparison,report):
         board_attempt=report.get('board_attempt'),model_sha256=meta['source_evidence']['model']['sha256'],
         original_model_sha256=meta['source_evidence']['original_model_sha256'],cases=cases,
         temporary_anchor_response=anchor_response,
+        control_experiment=meta['source_evidence']['extraction'].get('control_experiment'),
         limitation=meta['source_evidence']['extraction']['limitation'])

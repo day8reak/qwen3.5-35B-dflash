@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-02",
+  "updated": "2026-11-03",
   "active_phase": "validation",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
   "run_id": "20261031T082522Z-15435-7304bd",
@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_ATTENTION_SEVEN_CASES_EXECUTED_MASK_V_EXACT_ATTENTION_FAILED",
+    "status": "PYTORCH_ATTENTION_PREFIX16_SIGNATURE_CONFIRMED_MASK_LENGTH_CONTROLS_PENDING",
     "entry": "targets/cpro/tools/probe_draft_attention.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "LATEST_FULL_MODEL_TOP1_0_OF_86_PER_MODE; EMPTY_CONTEXT_NONZERO_IDENTICAL_ROWS; COMMON_PREFIX_ANCHOR_INSENSITIVE",
-    "next": "Analyze retained Attention outputs across all heads/channels against unmasked KV-prefix hypotheses. Printed values match the first16 hypothesis; physical length/mask behavior is not yet established. No recompile or board relaunch. Full Draft remains NUMERICAL_FAILED.",
+    "next": "Compile and run --controls: original Attention plus key0/key15 masks and unmasked KV224/KV32 branches. Query lengths remain source16; inspect each branch and original output again. Full Draft remains NUMERICAL_FAILED.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",

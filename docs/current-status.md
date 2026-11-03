@@ -10,19 +10,55 @@
 
 Attention探针已完成七组执行、回收和离线分析：OMC `df4248dd…5d09ff`，尝试 `qwen35_vector_9178f47c526e444593a912330176d7b1`。每组3次预热、10次输出逐位稳定；mask可见性谓词和packed V均逐字节匹配，Attention七组全部数值失败。此前输入计划排序错误已修复，本次通过运行描述检查并完成调用；完整Draft未重跑。
 
-关键线索：六组非加权用例的首头首通道16行都为 `-0.03125`，加权用例则为 `-0.027435302734375`。用同一夹具忽略mask、仅取缓存前16行做Attention，主机FP64计算再舍入FP16恰好得到这两个值。该假设还复现了全部七组的最大绝对误差，六组非加权相对L2吻合到浮点舍入级；加权组预测L2为0.537950373，实测为0.537972693。汇总指标吻合仍不等于完整张量逐元素相同，也不能确定具体长度端口有错；mask谓词／V辅助支路正确也不证明融合内核实际消费了这些值。
+最新完整张量分析已确认：六组非加权输出的全部65536元素与“无mask、只取KV前16行”逐字节相同；加权组与该假设的最大差为0.00048828125、相对L2为0.0003691992。正负anchor两例实际输出完全相同，参考最大变化为4。七组原golden均由独立逻辑参考逐字节复现。非加权前32行假设也落在容差内，但全部元素逐位不同，不能只用容差通过来判定长度。该结果确定了数值特征，尚未确定具体长度端口或mask消费方式。
 
-本轮直接分析已经回收的输出：
+下一步运行同图对照：`--controls` 保留原Attention和两个原回读输出，增加四个Attention分支。所有分支的Q/K/V、属性、block table保持一致，两个query长度端口均保持源值16。每个分支单独比较全部输出；输出的不同shape仅用于避免ABI绑定歧义，字节排列仍按原NZ输出解释。
+
+| 输出 | Attention mask | actual_seq_lengths_kv | 参考 |
+|---|---|---:|---|
+| attention | 原动态mask | 224 | 原golden |
+| attention_key0 | 仅key 0为0，其余负无穷 | 224 | V的第0行 |
+| attention_key15 | 仅key 15为0，其余负无穷 | 224 | V的第15行 |
+| attention_unmasked | 全0 | 224 | 前224行SDPA |
+| attention_kv32 | 全0 | 32 | 前32行SDPA |
+
+三个原输出及参考保持；`mask_visible` 仍观察**原动态mask辅助支路**，不表示四个新分支的物理mask读回。固定mask和长度改动记录在 `extraction.control_experiment`。新增分支可能改变编译分区，因此分析也再次报告原Attention的前16行签名。不会把 `all_seq_lengths_q` 猜改成224；完整Draft和权重保持原状。
+
+先编译一份无学习权重的小对照OMC，复用原七组输入和native runner：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-result"
+python3 "$REPO_DIR/targets/cpro/tools/probe_draft_attention.py" \
+  --controls \
+  --air-export "$AI_RUN_DIR/draft/air" \
+  --source "$AI_RUN_DIR/draft/source/prepared" \
+  --result "$AI_RUN_DIR/draft/tests/pytorch-result" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-controls"
 ```
 
-新增 `attention_signatures` 对每例第0次快照的32头×16查询×128通道共65536元素核对五个有界假设：无mask的前16／32／192／208／224行。每项报告逐位差异、RMSE、最大误差及原容差下的差异数；`reference_reproduction` 独立核对保留golden和原可见性；`temporary_anchor_response` 比较正负anchor两例的完整输出。输入按角色和实际槽位读取，并核验启动时hash；分析前仍重新比较全部十次输出。
+编译返回 `COMPILED` 后启动：
 
-读取原run／result即可，不重编、不上板、不生成新golden。若前16行假设在完整张量上吻合，下一步再用长度／mask单独对照定位；签名吻合本身不是物理内核读址证据。原Attention 0.01／0.01门槛、mask／V逐字节门槛和FAILED状态保持。14项诊断检查及12组探针回归通过，均为主机合成／mock结果。
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$AI_RUN_DIR/draft/tests/pytorch-attention-controls" \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-controls-run" --apply
+```
+
+回收同一次执行并分析；若仍在运行，只重复recover，不再次apply：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-attention-controls-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-controls-result"
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-controls-result"
+```
+
+重点看 `attention_controls.branches` 和 `pair_differences`：key0／key15参考首头首通道分别为−0.5／0.4375；无mask的224／32长度对照应不同。加权组还能区分前16与32行的SDPA。所有数值门槛保持0.01／0.01；mask／V回读仍逐字节比较。原Attention预计仍失败，因此整例 `NUMERICAL_FAILED` 不等于新分支全部失败，应分别看每个输出。新图编译与设备结果尚未回传；14组新对照主机检查、原探针12组回归和14项签名检查已通过，均不能代替实机验证。
 
 以下为首次导出／工具链准备的说明，本轮无需重复执行。当前预处理继续保留Reshape链简化、静态ZerosLike物化和FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。每个节点的来源、形状及修改前后标志保存在`compilation/air-preparation.json`中。
 

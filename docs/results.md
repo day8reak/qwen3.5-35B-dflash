@@ -62,6 +62,15 @@ Attention探针现在单独启用 `COMPILED_GRAPHDEF_INPUT_REFERENCES` 绑定，
 
 扩展现有只读 `--analyze`：从hash绑定的保留Q/K/V按确切角色与槽位解包，对每例65536个Attention输出元素比较上述五种前缀假设；独立重算原可见性golden，报告全部query行的逐位差异，并比较正负anchor用例的整个输出。hypothesis是诊断结果，不替换golden、不参与原验收；即使命中也保持NUMERICAL_FAILED。14项主机检查包括随机完整宽度SDPA对照、显式NZ坐标、两项用户样本复现、七例故障注入、首通道外错误、NaN、部分选择、输入篡改、十次快照复查和只读性；12组探针回归通过。实际完整输出签名仍待用户在原result上重新分析，当前不新增编译或板端尝试。
 
+2026-11-03，用户再次回传同一已回收尝试 `qwen35_vector_9178f47c526e444593a912330176d7b1` 的完整张量签名分析。六组非加权用例各65536元素与无mask前16行SDPA逐字节相同，最大误差、RMSE、逐位差异均0；加权组最大误差0.00048828125、相对L2为0.0003691992091269304、RMSE为0.0001091502326789014，21424元素逐位不同，原容差内无失败元素。加权实际query行有15种，不能把首通道相同推广为所有行相同。非加权前32行假设也在容差内，但65536元素均逐位不同、RMSE为0.001953125。七组原golden全部逐字节复现。
+
+正负临时anchor的实际65536元素完全相同，参考全部元素不同、最大变化4、RMSE为1.2587414108669686。此证据支持“临时anchor未体现在该探针输出中，输出符合无mask前16行计算”的数值结论；不能单独证明某个长度端口或mask内核实现错误。原Attention七组数值失败、十次重复稳定和完整Draft失败状态保持。本轮用户只运行离线分析，没有新增设备执行。
+
+新增可选 `--controls`，在同一小图中保留原Attention，另复制四个分支：仅看key0、仅看key15、无mask且actual_seq_lengths_kv=224、无mask且actual_seq_lengths_kv=32。修改限定于复制节点的mask／KV长度连接，原属性、QKV、block table、actual_seq_lengths_q=16、all_seq_lengths_q=16保留；query长度FileConstant必须绑定已验证的INT64源sidecar。源mask回读仍只观察原动态mask辅助支路。新增参考独立于实际输出，不使用前16行假设替换验收；单key参考为对应V行，另两项为指定范围的SDPA。不同输出shape只做原NZ字节视图，方便唯一ABI绑定。
+
+14组主机合成／mock检查通过：原分支字节保留、四项修改范围、固定mask内容、长度32和224、所有query长度保持、七输出唯一描述、单key直接V参考、独立PyTorch SDPA、乱序输入／输出绑定、十次比较、全部分支错误截到16行时仍判失败、单分支故障定位及不合法query长度来源拒绝。原探针12组回归和签名14项检查通过。新对照的真实DDK编译和板端执行均NOT_RUN，完整Draft未改动或提升。
+
+
 ## 此前PyTorch独立执行：加载成功，数值失败
 
 2026-11-02，用户回传尝试`ec3f7c3136ac43fcb927c25eef63f4e3`的完整比较摘要：`EXECUTED_OUTPUTS_RETRIEVED`、`NUMERICAL_FAILED`，任务完成且锁释放。两组各19次调用全部完成，说明本次已经跨过此前的Fill加载失败；38例均未通过原比较门槛。以下为用户回传，未独立读取原始板端张量，随后离线诊断报告OMC SHA256为 ce11666f9298ec7453bbdcdfe1e3a3a38d396cd12a0bd13f9faf6c82c4981ad6。
