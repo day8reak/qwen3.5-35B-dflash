@@ -1242,7 +1242,7 @@
         "timing_scope": "SYNCHRONOUS_API_WALL_DIAGNOSTIC_MIXED_INPUTS_NOT_WARM_BENCHMARK",
         "comparison": "UNCHANGED_ELEMENTWISE_ATOL_0.01_RTOL_0.01_AND_ZERO_TOP1_MISMATCHES; NO_L2_GATE",
         "root_cause": "UNRESOLVED; CONTEXT_KV_IS_INDEPENDENT_OF_CANDIDATE_ATTENTION",
-        "next": "DDK_SERVER_COMPILE_AND_RUN_INPUT_RMS_TAPS; ORIGINAL_PREFIX_ANALYSIS_COMPLETE; docs/current-status.md"
+        "next": "DDK_SERVER_INSPECT_EXISTING_INPUT_RMS_TAPS_COMPILED_INTERFACE; NO_RECOMPILE_OR_BOARD_RETRY_YET; docs/current-status.md"
       },
       "output_diagnosis": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose",
@@ -1276,7 +1276,7 @@
           "embedding": "ANCHOR_AND_MASK_SOURCE_ROWS_FINITE_NONZERO_NOT_DEVICE_GATHER"
         }
       },
-      "next": "DDK_SERVER_COMPILE_AND_RUN_INPUT_RMS_TAPS; ORIGINAL_PREFIX_ANALYSIS_COMPLETE; docs/current-status.md",
+      "next": "DDK_SERVER_INSPECT_EXISTING_INPUT_RMS_TAPS_COMPILED_INTERFACE; NO_RECOMPILE_OR_BOARD_RETRY_YET; docs/current-status.md",
       "embedding_probe": {
         "entry": "targets/cpro/tools/probe_draft_embedding.py",
         "host_checks": 23,
@@ -1444,7 +1444,7 @@
           "rms_gamma": "FP32_2048_EXACT"
         },
         "abi": "UNIQUE_SHAPE_DTYPE_PAIRS_BOUND_TO_COMPILED_OUTPUT_SLOTS; NOT_A_KV_BINDER",
-        "model_compilation": "NOT_RUN",
+        "model_compilation": "USER_REPORTED_PASSED",
         "device_execution": "NOT_RUN",
         "numerical_validation": "NOT_RUN",
         "host_checks": 14,
@@ -1455,7 +1455,30 @@
         "host_scope": "SYNTHETIC_PROTO_AND_MOCK_COMPILER_REORDERED_OUTPUTS_REFERENCE_GATES_AND_LOCAL_RECOVERY_ANALYSIS",
         "analysis": "LOCAL_RETAINED_SNAPSHOTS_ONLY; TEN_CALLS_RECOMPARED; ITERATION0_ROW_STATS; NO_GATE_OR_RESULT_FILE_CHANGE",
         "limitations": "TAPS_MAY_CHANGE_COMPILER_PARTITION_OR_FUSION; LOGICAL_EDGE_VALUES_NOT_PHYSICAL_KERNEL_INPUT_READBACK; DERIVED_RMS_IS_DIAGNOSTIC_ONLY",
-        "production_promotion": "NOT_PERFORMED"
+        "production_promotion": "NOT_PERFORMED",
+        "user_observation": {
+          "source": "USER_PASTED_COMPILE_AND_START_JSON_NOT_INDEPENDENTLY_READ",
+          "ddk_id": "100.520.020.010",
+          "probe_air_sha256": "e2a9d3309be32a59a7fd9b2b9890cc09a1199836799106ddf2b1c49642b870a2",
+          "model_sha256": "160c9bcd31dc80c26aa2f33e633973469c30a660f4065875f2e5a5302bdea704",
+          "model_bytes": 1017155097,
+          "compile_status": "COMPILED",
+          "validation_status": "FAILED",
+          "validation_stage": "prepare",
+          "validation_error": "ValueError: compiled output descriptor changed or is ambiguous",
+          "device_execution": "NOT_RUN",
+          "lock_state": "NO_KNOWN_OWNED_LOCK",
+          "actual_compiled_outputs": "NOT_YET_REPORTED",
+          "board_attempt": "NO_NEW_LAUNCH; COMPILATION_SOURCE_REFERENCE_IS_ORIGINAL_FULL_DRAFT_ATTEMPT"
+        },
+        "interface_inspection": {
+          "entry": "targets/cpro/tools/probe_draft_embedding.py --inspect-compiled",
+          "scope": "READ_ONLY_RETAINED_OMC; NO_PREPARATION_COMPILER_OR_BOARD_CALLS",
+          "binding": "UNCHANGED_STRICT_UNIQUE_SHAPE_DTYPE_AND_COMPLETE_COVERAGE",
+          "host_checks": 12,
+          "user_execution": "PENDING",
+          "decision": "INSPECT_BEFORE_CHANGING_BINDING; NO_SQUEEZE_CAST_OR_ORDER_GUESS"
+        }
       }
     }
   },

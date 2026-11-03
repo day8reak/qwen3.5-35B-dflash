@@ -8,7 +8,20 @@
 
 用户最新的离线分析已确认：`pytorch_input_rms` 的ID及raw embedding十次均逐字节正确；第一层RMS的16行、32768个元素全部为有符号零，十次输出逐位稳定。`unique_rows_bitwise=2`表示零值符号排列不同。源图缩放系数为1；浮点路径为 `Muls → Cast_7(FP16) → Cast_11(FP32) → RmsNorm`，gamma经过 `Cast_12(FP32)`。这仍不能区分x／gamma生成或转换异常与RMS执行异常，完整Draft保持数值失败。
 
-**本轮所有命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。已有三输出分析完成，下一步运行带x／gamma输出的探针。**
+**本轮所有命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。** 用户已成功编译 `pytorch_input_rms_taps`，但启动准备阶段因 `compiled output descriptor changed or is ambiguous` 停止，设备未执行。当前摘要尚未打印实际接口，不能推断具体哪个输出变化。
+
+先读取现有OMC的接口，不重复编译或上板：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/tools/probe_draft_embedding.py" \
+  --inspect-compiled "$AI_RUN_DIR/draft/tests/pytorch-input-rms-taps" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID"
+```
+
+`status=INSPECTED`仅表示读取完成，重点查看 `binding_status`、`binding_error` 和 `graphs[].netoutputs[].inputs`。每个槽位列出实际shape／dtype、来源连线及匹配的预期名称；producer描述仅用于诊断，不替换NetOutput描述。命令只读现有文件，不创建fixture、不访问板端、不自动展平／改dtype或猜输出顺序。新增12项合成检查通过，原14项taps、33项前缀及23项查表回归通过。实际接口待回传后再决定修复方式。
+
+以下保留探针的生成和执行说明；本次已编译完成，当前先做上述接口检查。
 
 为检查进入RMS前的值，新增 `input-rms-taps`。它保留原前缀与RMS输出，额外输出同一RMS的 `x` 和 `gamma` 逻辑边。x只在新增输出支路展平到 `[16,2048]`，避免与原RMS的 `[1,16,2048]` FP32输出混淆。五项输出中，ID、embedding、x、gamma逐字节比较；RMS仍以独立参考的 `atol=rtol=0.01` 逐元素比较。原始gamma不加1。新增输出可能改变编译分图／融合，因此仍需复查原RMS输出；逻辑边输出不等于内核物理输入回读。
 

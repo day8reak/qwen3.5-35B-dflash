@@ -101,7 +101,9 @@ def bind_io(document, declared, enums):
         matches = [(i, r) for i, r in enumerate(declared['outputs'])
                    if all(desc[k] == r[k] for k in ('shape', 'dtype'))]
         if len(matches) != 1:
-            raise ValueError('compiled output descriptor changed or is ambiguous')
+            detail = dict(index=index, observed=desc, matches=[r['name'] for _, r in matches],
+                          declared=[{k: r[k] for k in ('name', 'shape', 'dtype')} for r in declared['outputs']])
+            raise ValueError('compiled output descriptor changed or is ambiguous: '+json.dumps(detail))
         source, spec = matches[0]
         outputs.append(dict(spec, index=index, fixture_index=source, bytes=math.prod(spec['shape'])*WIDTHS[spec['dtype']]))
     if sorted(r['fixture_index'] for r in outputs) != list(range(len(declared['outputs']))):

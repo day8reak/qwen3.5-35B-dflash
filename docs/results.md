@@ -43,6 +43,10 @@
 
 工具支持 `validate_draft_vector.py --analyze` 只读分析现有三输出结果，并提供 `input-rms-taps`：原前缀不变，额外输出RMS的x和gamma逻辑边，仍比较原RMS输出。x的附加展平支路使五个输出的shape／dtype组合互异；按编译物理槽重排参考文件，禁止按输出次序猜角色。x／gamma要求逐字节匹配独立参考，RMS原0.01／0.01门槛保持。回读值的RMS公式仅作诊断，不参与验收；新增输出可能改变分图／融合，不是内核输入物理回读证据。14项主机合成及mock检查通过，另有33项原前缀与23项查表回归通过；新增探针真实编译及板端结果待回传。完整Draft仍数值失败，未提升生产。
 
+用户随后回传 `pytorch_input_rms_taps` 编译成功：DDK 100.520.020.010，探针AIR SHA256为 `e2a9d3309be32a59a7fd9b2b9890cc09a1199836799106ddf2b1c49642b870a2`，打包OMC为 `160c9bcd31dc80c26aa2f33e633973469c30a660f4065875f2e5a5302bdea704`、1017155097字节。原embedding、gamma和mask侧文件hash保持。随后验证在prepare阶段报 `compiled output descriptor changed or is ambiguous`，`device_execution=NOT_RUN`、无已知自有锁；编译摘要中的board_attempt指向原完整Draft来源，不能算本探针的新板端尝试。
+
+新增 `probe_draft_embedding.py --inspect-compiled` 只读现有OMC，报告全部公共输出槽的实际描述、连线、producer诊断信息及严格绑定结果。报错也补充槽号、实际shape／dtype和预期列表。尚未获取用户的实际编译输出接口，未放宽匹配或实施重排修复。12项主机合成检查通过，覆盖FP16/FP32变化、形状改变、输出重复匹配、缺失端口、未知enum、只读CLI与模型身份检查；14项taps、33项前缀、23项查表回归通过。完整Draft数值失败状态保持。
+
 整体流程记录为用户回传的`fused/result`，板端PID34211。C16／cap192／K15增量Draft，18个prompt token、生成8个，混合接口常驻、dump关闭、顺序预读开启。完整流程接通；后续独立精度与profiling见下文。以下未独立读取板端原始产物。
 
 ## 增量Draft独立验证

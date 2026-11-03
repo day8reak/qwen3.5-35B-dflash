@@ -275,14 +275,12 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, stage
     return state
 
 
-def prepare_fixture(root, out, ddk, ddk_id, selection=None):
-    """Use the shared tensor-probe transport with a separately bound recipe."""
+def _compiled_probe(root, ddk, ddk_id, selection=None):
+    """Read the retained packed model with the selected DDK schema."""
     from qwen35_moe_dflash.toolchain.omc_container import read_container, read_partition
     from qwen35_moe_dflash.toolchain.omc_wire import load_schema
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
-    from qwen35_moe_dflash.draft.incremental.torch_export import _compiled_observation
-    from validate_draft_vector import bind_io, WARMUP, REPETITIONS
-    from qwen35_moe_dflash.execution.hdc_run import _file_record
+    root = Path(root).resolve()
     report = read_json(root/'result.json')
     case = report.get('probe_case', CASE)
     if (report.get('artifact_kind') != KIND or report.get('status') != 'COMPILED'
@@ -296,7 +294,77 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     main = [p for p in read_container(model)['partitions'] if p['type'] == 0]
     if len(main) != 1:
         raise ValueError('probe requires exactly one main model partition')
-    io = bind_io(schema.decode(read_partition(model, main[0]), 'ModelDef'), report['extraction']['graph'], _enum_fields(schema))
+    document = schema.decode(read_partition(model, main[0]), 'ModelDef')
+    return report, case, model, schema, document, _enum_fields(schema)
+
+
+def inspect_compiled_probe(root, ddk, ddk_id):
+    """Report descriptor mismatches without preparing files or starting a run."""
+    from qwen35_moe_dflash.draft.compile_precision import _observed_desc
+    from qwen35_moe_dflash.toolchain.omc_inspect import _preview
+    from validate_draft_vector import bind_io
+    report, case, model, schema, document, enums = _compiled_probe(root, ddk, ddk_id)
+    declared = report['extraction']['graph']
+    result = dict(artifact_kind='qwen35-draft-probe-interface-inspection', status='INSPECTED',
+                  probe_case=case, model=dict(report['model'], path=str(model)), ddk_id=ddk_id,
+                  model_compilation='NOT_RUN', device_execution='NOT_RUN', numerical_validation='NOT_RUN',
+                  scope='READ_ONLY_COMPILED_DESCRIPTORS; NO_SLOT_REMAP_OR_TYPE_CONVERSION',
+                  declared=declared, source_taps=report['extraction'].get('taps', []), graphs=[])
+    def describe(desc):
+        return dict(_observed_desc(desc, enums), layout=desc.get('layout'),
+                    device_type=desc.get('device_type'), recorded=_preview(desc, budget=[128]))
+    graphs = document.get('graph', [])
+    if len(graphs) > 8:
+        raise ValueError('probe interface inspection exceeds eight graphs')
+    for graph in graphs:
+        nodes = {n['name']: n for n in graph.get('op', [])}
+        inputs, nets = [], []
+        for node in graph.get('op', []):
+            if node.get('type') == 'Data':
+                inputs.append(dict(name=node['name'],
+                    indices=[a.get('value', {}).get('i') for a in node.get('attr', []) if a.get('key') == 'index'],
+                    outputs=[describe(d) for d in node.get('output_desc', [])[:8]]))
+            if node.get('type') != 'NetOutput':
+                continue
+            ports = []
+            references = node.get('input', [])
+            descriptors = node.get('input_desc', [])
+            if len(descriptors) > 8 or len(references) > 16:
+                raise ValueError('probe NetOutput inspection exceeds port budget')
+            for index, descriptor in enumerate(descriptors):
+                observed = describe(descriptor)
+                edge = references[index] if index < len(references) else None
+                row = dict(index=index, descriptor=observed, reference=edge,
+                    matching_declared_names=[s['name'] for s in declared['outputs']
+                                             if all(s[k] == observed[k] for k in ('shape', 'dtype'))])
+                # Producer metadata is diagnostic, never a descriptor substitute.
+                if isinstance(edge, str) and ':' in edge:
+                    name, port = edge.rsplit(':', 1)
+                    producer = nodes.get(name)
+                    if producer is not None and port.isdecimal():
+                        port = int(port)
+                        descs = producer.get('output_desc', [])
+                        row['producer'] = dict(name=name, type=producer.get('type'), output=port,
+                            descriptor=describe(descs[port]) if port < len(descs) else None)
+                ports.append(row)
+            nets.append(dict(name=node['name'], inputs=ports, input_references=references,
+                             output_descriptors=[describe(d) for d in node.get('output_desc', [])[:8]]))
+        result['graphs'].append(dict(name=graph.get('name'), inputs=inputs, netoutputs=nets))
+    try:
+        result['binding'] = bind_io(document, declared, enums)
+        result['binding_status'] = 'PASSED'
+    except (KeyError, ValueError) as error:
+        result.update(binding_status='FAILED', binding_error=f'{type(error).__name__}: {error}')
+    return result
+
+
+def prepare_fixture(root, out, ddk, ddk_id, selection=None):
+    """Use the shared tensor-probe transport with a separately bound recipe."""
+    from qwen35_moe_dflash.draft.incremental.torch_export import _compiled_observation
+    from validate_draft_vector import bind_io, WARMUP, REPETITIONS
+    from qwen35_moe_dflash.execution.hdc_run import _file_record
+    report, case, model, schema, document, enums = _compiled_probe(root, ddk, ddk_id, selection)
+    io = bind_io(document, report['extraction']['graph'], enums)
     folder = out/'fixture'/case
     folder.mkdir(parents=True)
     plan = ['QWEN35_TENSOR_PROBE 1', f'iterations {WARMUP} {REPETITIONS}']
