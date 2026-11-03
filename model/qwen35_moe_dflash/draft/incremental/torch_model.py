@@ -1,7 +1,7 @@
 """PyTorch incremental Draft with the same committed-context KV contract as GE.
 
-Export uses the installed npu_rms_norm converter and the Target CPro fused
-attention call. The primitive attention path remains the CPU comparison model.
+Export uses the installed npu_rms_norm converter and explicit attention
+primitives. The optional Target kernel is retained for isolated diagnostics.
 """
 from __future__ import annotations
 
@@ -45,6 +45,12 @@ class IncrementalDraft(nn.Module):
         self.register_buffer('head_repeat', torch.zeros(c.num_attention_heads, dtype=torch.int32))
         self.register_buffer('kv_heads', torch.arange(c.num_key_value_heads, dtype=torch.int32)
                              .repeat_interleave(c.num_key_value_groups))
+        if attention_kernel is None:
+            # A literal buffer avoids a Shape(scores)->Fill dependency on
+            # un-inferred MatMul dimensions in the source TorchAir graph.
+            self.register_buffer('attention_masked_scores', torch.full(
+                (1, c.num_attention_heads, max_draft_tokens + 1, cache_capacity + max_draft_tokens + 1),
+                -float('inf'), dtype=torch.float32))
         witness = torch.zeros((1, 1, 1, cache_capacity + max_draft_tokens + 1), dtype=torch.bool)
         witness[..., cache_capacity] = True
         self.register_buffer('anchor_witness', witness)
@@ -122,7 +128,7 @@ class IncrementalDraft(nn.Module):
                 value = torch.index_select(value, 1, self.kv_heads)
                 visible = torch.index_select(visible.int(), 1, self.head_repeat).bool()
                 scores = torch.matmul(query, key.transpose(-1, -2)).float() * (c.head_dim ** -0.5)
-                probabilities = torch.softmax(torch.where(visible, scores, torch.full_like(scores, -float('inf'))), dim=-1).half()
+                probabilities = torch.softmax(torch.where(visible, scores, self.attention_masked_scores), dim=-1).half()
                 mixed = torch.matmul(probabilities, value)
             mixed = mixed.transpose(1, 2).reshape(1, b, c.query_width)
             hidden = (hidden.float() + attn.o_proj(mixed).float()).half()
@@ -131,6 +137,21 @@ class IncrementalDraft(nn.Module):
         hidden = self.norm(hidden, self.draft.norm)[:, 1:, :]
         top1 = self.head(hidden).argmax(dim=-1).to(torch.int32)
         return (top1, hidden, *updated)
+
+    def attention_contract(self):
+        if self.target_attention is not None:
+            return self.target_attention.contract()
+        c, b = self.config, self.k + 1
+        return dict(policy='composed-attention-v1', layers=c.num_hidden_layers,
+            num_heads=c.num_attention_heads, num_key_value_heads=c.num_key_value_heads, head_dim=c.head_dim,
+            query_shape=[1, c.num_attention_heads, b, c.head_dim],
+            kv_shape=[1, c.num_key_value_heads, self.capacity + b, c.head_dim],
+            score_shape=[1, c.num_attention_heads, b, self.capacity + b],
+            scale_value=c.head_dim ** -0.5, logical_kv_rows=self.capacity + b,
+            operations='INT32_GQA_GATHER; QK_MATMUL; SCALE; SELECT_MASK; SOFTMAX; PV_MATMUL',
+            mask='DRAFT_VISIBILITY_WITH_INACTIVE_QUERY_ANCHOR_WITNESS',
+            cache='PUBLIC_ND_COMMITTED_CONTEXT_ONLY; CANDIDATE_KV_TEMPORARY',
+            precision='FP16_QK_RESULT; FP32_SCALE_MASK_SOFTMAX; FP16_PROBABILITIES_AND_PV; DEVICE_INTERNAL_PRECISION_UNVERIFIED')
 
     def abi(self):
         contract = incremental_draft_abi(self.config, self.context_rows, self.capacity, max_draft_tokens=self.k)

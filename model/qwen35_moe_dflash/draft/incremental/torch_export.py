@@ -17,6 +17,7 @@ from qwen35_moe_dflash.common.artifacts import output_path, working_directory
 AIR_KIND = 'qwen35-incremental-draft-pytorch-air'
 OMC_KIND = 'qwen35-incremental-draft-pytorch-omc'
 GE_AIR_KIND = 'qwen35-incremental-draft-air'
+COMPOSED_ATTENTION = 'composed-attention-v1'
 # Exactly one key/value tensor in the original Target CPro converter. Empty
 # optional inputs retain their slots even when AIR omits descriptor names.
 _ATTENTION_PORTS = ('query', 'key0', 'value0', 'pse_shift', 'atten_mask',
@@ -154,6 +155,7 @@ def import_pytorch_air(source, output, *, replace=False):
                 output=str(destination), moved=source != destination,
                 input_count=len(manifest['inputs']), output_count=len(manifest['outputs']),
                 attention_nodes=manifest.get('attention_nodes', 0),
+                composed_attention_layers=manifest.get('composed_attention_layers', 0),
                 rms_nodes=32, weight_files=manifest['weight_files'], model_compilation='NOT_RUN',
                 device_execution='NOT_RUN', numerical_validation='NOT_RUN', runtime_changed=False,
                 air_validation=manifest.get('air_validation', 'NOT_RECORDED'),
@@ -167,6 +169,7 @@ def _finish_air_manifest(result, inspection):
         schema_file='air-schema.pb', rms_nodes=len(inspection['rms']),
         weight_files=len(inspection['weight_files']), gather_index_dtype='int32',
         gather_nodes=len(inspection['gather_indices']), attention_nodes=len(inspection['attention']),
+        composed_attention_layers=len(inspection.get('composed_attention', [])),
         air_validation=inspection['validation_status'],
         deferred_shape_count=len(inspection['deferred_shapes']),
         next='Transfer this whole AIR directory; compile it on the selected DDK server. Missing intermediate shapes require OMG inference; candidate is not runtime-bound.')
@@ -188,8 +191,9 @@ def finalize_pytorch_air(source, output, *, replace=False):
         else:
             if (result.get('status') != 'FAILED'
                     or result.get('stage') not in {'torchair-export', 'air-validation'}
-                    or result.get('attention', {}).get('policy') != 'target-cpro-fused-attention-v1'):
-                raise ValueError('only a finished Target-attention AIR export failure can be finalized')
+                    or result.get('attention', {}).get('policy') not in
+                       {'target-cpro-fused-attention-v1', COMPOSED_ATTENTION}):
+                raise ValueError('only a finished supported Draft AIR export failure can be finalized')
             if source != destination:
                 _replaceable_air(destination, replace)
             inspection = inspect_air(source / 'export.air',
@@ -209,6 +213,7 @@ def finalize_pytorch_air(source, output, *, replace=False):
         air=str(destination / 'export.air'), moved=source != destination,
         input_count=len(result['inputs']), output_count=len(result['outputs']),
         rms_nodes=result['rms_nodes'], attention_nodes=result.get('attention_nodes', 0),
+        composed_attention_layers=result.get('composed_attention_layers', 0),
         weight_files=result['weight_files'], air_validation=result.get('air_validation'),
         deferred_shape_count=result.get('deferred_shape_count', 0),
         model_export='NOT_RUN_REUSED_RETAINED_AIR', model_compilation='NOT_RUN',
@@ -275,7 +280,8 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
     if expected_norms is not None and (counts['RmsNorm'] != expected_norms or counts['AdnRmsNorm']):
         mismatch('graph', 'norm_counts', {'RmsNorm': expected_norms, 'AdnRmsNorm': 0},
                  {'RmsNorm': counts['RmsNorm'], 'AdnRmsNorm': counts['AdnRmsNorm']})
-    if expected_attention is not None and (expected_attention.get('policy') != 'target-cpro-fused-attention-v1'
+    composed = expected_attention is not None and expected_attention.get('policy') == COMPOSED_ATTENTION
+    if expected_attention is not None and not composed and (expected_attention.get('policy') != 'target-cpro-fused-attention-v1'
             or counts['AdnFusedInferAttention'] != 6):
         mismatch('graph', 'attention_policy_and_count',
                  {'policy': 'target-cpro-fused-attention-v1', 'nodes': 6},
@@ -321,7 +327,7 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
                               for key in ('num_heads', 'num_key_value_heads', 'block_size', 'input_layout', 'inner_precise', 'scale_value')}
             attention.append(dict(name=n['name'], inputs=inputs,
                 outputs=[desc(d) for d in n.get('output_desc', [])], attrs=observed_attrs))
-            if expected_attention is not None:
+            if expected_attention is not None and not composed:
                 for key, actual in observed_attrs.items():
                     expected = expected_attention[key]
                     matched = (isinstance(actual, (int, float)) and math.isclose(actual, expected, rel_tol=1e-6)
@@ -377,9 +383,14 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
         if member.is_symlink() or path.parent.resolve() not in member.resolve().parents or not member.is_file() or member.stat().st_size <= 0:
             raise ValueError('missing external weight: ' + name)
         sidecars[str(relative)] = member.stat().st_size
+    composed_attention = []
+    if composed:
+        from .torch_attention_inspect import inspect_composed_attention
+        composed_attention = inspect_composed_attention(nodes, expected_attention, types, mismatch)
     inputs = [n for n in nodes if n['type'] == 'Data']
     outputs = [n for n in nodes if n['type'] == 'NetOutput']
-    result = dict(node_types=dict(counts), rms=norms, gather_indices=gathers, attention=attention, zeros_like=zeros, weight_files=sidecars,
+    result = dict(node_types=dict(counts), rms=norms, gather_indices=gathers, attention=attention,
+                composed_attention=composed_attention, zeros_like=zeros, weight_files=sidecars,
                 validation_status='FAILED' if errors else 'PASSED_WITH_DEFERRED_SHAPES' if deferred_shapes else 'PASSED',
                 validation_errors=errors, deferred_shapes=deferred_shapes,
                 input_count=len(inputs), output_counts=[len(n.get('input_desc', [])) for n in outputs],
@@ -406,6 +417,7 @@ def inspect_pytorch_air(directory):
         mismatch_count=len(errors), mismatches=errors[:24], mismatches_truncated=len(errors) > 24,
         deferred_shape_count=len(inspection['deferred_shapes']), deferred_shapes=inspection['deferred_shapes'],
         attention_nodes=len(inspection['attention']), first_attention=first,
+        composed_attention=inspection['composed_attention'],
         zeros_like=inspection['zeros_like'],
         node_types=inspection['node_types'], input_count=inspection['input_count'], output_counts=inspection['output_counts'],
         weight_files=len(inspection['weight_files']), expected_attention=manifest.get('attention'),
@@ -419,12 +431,9 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
     torchair = require_torchair()
     import torch
     from .torch_model import load_prepared
-    from .torch_target import register_target_attention
-    # Use the installed converter, as the original CPro Target does. No Adn
-    # replacement or CPU fallback on export failure. Attention uses the Target
-    # CPro custom converter, registered only in this exporting process.
+    # Keep the installed RMS converter. Attention exports ordinary Torch
+    # MatMul/Select/Softmax operations; do not register the failed fused call.
     rms = torch.ops.npu.npu_rms_norm.default
-    attention_kernel = register_target_attention(torchair)
     descriptor, metadata = _producer_schema(torchair_pb2)
     _disjoint(output, prepared)
     with _air_export_slot(output, prepared, replace) as root:
@@ -441,14 +450,14 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
                 raise OSError(f'AIR export needs at least {required} free bytes for weights and reserve')
             progress('loading Draft, embedding and head from shared prepared FP16 weights')
             model = load_prepared(prepared, context_rows=context_rows, cache_capacity=cache_capacity,
-                                  max_draft_tokens=max_draft_tokens, rms=rms, attention_kernel=attention_kernel)
+                                  max_draft_tokens=max_draft_tokens, rms=rms)
             result.update(**model.abi(), schema={k: metadata[k] for k in ('schema_file', 'schema_package')},
                 torch_version=torch.__version__, torchair_version=getattr(torchair, '__version__', 'unknown'),
-                attention=model.target_attention.contract(),
+                attention=model.attention_contract(),
                 projection='PYTORCH_CONV2D_4X4_FULL_K', stage='torchair-export')
             _save(root / 'manifest.json', result)
             (root / 'air-schema.pb').write_bytes(descriptor)
-            progress('TorchAir export: 17 inputs, 14 outputs, 6 Target CPro fused attention calls; committed ND KV retained')
+            progress('TorchAir export: 17 inputs, 14 outputs, 6 composed MatMul/Softmax attention layers; committed ND KV retained')
             with working_directory(root), torch.inference_mode():
                 torchair.dynamo_export(*model.example_inputs(), model=model, export_path='weight', export_name='export', dynamic=False)
             # Relative export_path keeps FileConstant paths portable on the DDK
@@ -486,9 +495,12 @@ def _compiled_observation(omc, ddk):
     if len(parts) != 1:
         raise ValueError('expected one compiled model metadata partition')
     model = schema.decode(read_partition(omc, parts[0]), 'ModelDef')
-    enums, owners, nodes = _enum_fields(schema), Counter(), []
+    enums, owners, nodes, fused_attention = _enum_fields(schema), Counter(), [], []
     for graph in model.get('graph', []):
         for node in graph.get('op', []):
+            if 'FusedInferAttention' in node['type'] or node['type'] in {
+                    'FlashAttentionScore', 'PromptFlashAttention', 'IncreFlashAttention'}:
+                fused_attention.append(dict(name=node['name'], type=node['type']))
             if node['type'] not in {'Data', 'NetOutput', 'GraphOp', 'Cast', 'CastT'}:
                 continue
             row = dict(name=node['name'], type=node['type'], input=node.get('input', []),
@@ -498,7 +510,8 @@ def _compiled_observation(omc, ddk):
                 row['owner'] = _task(node)['cl_name']
                 owners[row['owner']] += 1
             nodes.append(row)
-    return dict(graphop_counts=dict(owners), nodes=nodes,
+    return dict(graphop_counts=dict(owners), nodes=nodes, fused_attention_nodes=fused_attention,
+                attention_inspection_scope='MAIN_GRAPH_METADATA_ONLY; OPAQUE_GRAPHOP_KERNELS_NOT_DECODED',
                 scope='COMPILED_DESCRIPTORS_ONLY_NOT_RUNTIME_SLOT_BINDING_OR_INTERNAL_INSTRUCTION_PRECISION')
 
 
@@ -582,7 +595,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
         _save(root / 'manifest.json', result)
         try:
             transform = None
-            if manifest.get('attention', {}).get('policy') == 'target-cpro-fused-attention-v1':
+            if manifest.get('attention', {}).get('policy') in {'target-cpro-fused-attention-v1', COMPOSED_ATTENTION}:
                 # Validate the small source graph before copying multi-GB
                 # sidecars or invoking OMG --help. The snapshot must still
                 # match the bytes that were prepared here.
@@ -620,6 +633,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             if compiled['status'] != 'COMPILED':
                 raise RuntimeError(str(compiled.get('error', compiled['status'])))
             model_path = root / 'compilation' / compiled['omc']['path']
+            result['stage'] = 'compiled-interface'
             try:
                 observed = _compiled_observation(model_path, ddk_root)
                 _save(root / 'compiled-interface.json', observed)
@@ -627,6 +641,15 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                 result['interface_inspection'] = 'OBSERVED'
             except (OSError, ValueError, KeyError) as error:
                 result.update(interface_inspection='UNAVAILABLE', interface_error=str(error))
+                if manifest.get('attention', {}).get('policy') == COMPOSED_ATTENTION:
+                    raise
+            if manifest.get('attention', {}).get('policy') == COMPOSED_ATTENTION:
+                result['composed_attention'] = dict(source_layers=len(inspection['composed_attention']),
+                    source_fused_nodes=len(inspection['attention']),
+                    compiled_main_graph_fused_nodes=observed['fused_attention_nodes'],
+                    scope=observed['attention_inspection_scope'])
+                if observed['fused_attention_nodes']:
+                    raise ValueError('compiler main graph contains a fused attention operator; retain this candidate for inspection')
             result['stage'] = 'pack-model'
             _save(root / 'manifest.json', result)
             from qwen35_moe_dflash.toolchain.omc_embed_weights import embed_external_weights

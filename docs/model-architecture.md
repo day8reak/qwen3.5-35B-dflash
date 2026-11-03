@@ -109,7 +109,7 @@ FP32统计与归一化核心按当前策略放CPU，最后的FP16 gamma乘法可
 
 PyTorch候选用`torch_npu.npu_rms_norm → RmsNorm`，沿用Target CPro的算子接口；ND工程的`adn_rms_norm → AdnRmsNorm`是另一条接口。候选RMS在FP32完成gamma乘法后才转FP16，与上图先转FP16再乘gamma的舍入位置不同，需要重新比较；换前端本身不保证消除Load失败或降精度。
 
-PyTorch的embedding、KV选行与query mask复制均使用INT32索引；GQA由本轮融合注意力内部处理。首次编译日志显示embedding的INT64 indices被所选DDK的GatherV2D拒绝，因此去掉了原实现中的`.long()`，这不是新增的算子拆分。实际导出AIR另逐节点检查，axis常量、注意力INT64长度端口与Gather indices分别处理。
+PyTorch的embedding、KV选行与query mask复制均使用INT32索引；GQA用INT32索引沿head轴Gather，将每个KV head连续重复到对应Q heads。首次编译日志显示embedding的INT64 indices被所选DDK的GatherV2D拒绝，因此去掉了原实现中的`.long()`。实际导出AIR逐节点检查Gather indices，axis常量单独处理；组合attention不再包含融合算子的INT64长度端口。
 
 ### Target CPro 中可借鉴的调用
 
@@ -121,27 +121,27 @@ PyTorch的embedding、KV选行与query mask复制均使用INT32索引；GQA由�
 | Embedding | 导出入口设`embedding_in_omc=False`；量化路径在图外查INT8权重及scale，CPro wrapper接收后相乘 | Target这条路径不能证明Draft图内FP16 embedding Gather已在该DDK编译通过 |
 | RMSNorm | `modeling_qwen3_5_moe_hiai_cpro.py:116–118,129–135` 调用`torch_npu.npu_rms_norm` | PyTorch Draft已使用同一接口。Target普通Norm的forward有`weight+1`，Draft权重直接是gamma，不能照搬权重变换 |
 | KV更新 | 同文件`:283–296` 用INT32的块号与块内偏移调用`torch_npu.npu_cache_update_` | 可借鉴索引类型；Target采用block_size=32的分块缓存，Draft为ND committed KV和临时候选KV，不能直接替换其Gather／Select更新 |
-| 完整注意力 | 同文件`:333–371` 调用`torch_npu.adn_fused_infer_attention`，带分块KV、NZ布局与mask | 本轮六层已接入；内部转换布局并携带Draft原有mask，仍待真实AIR／OMC／设备验证 |
+| 完整注意力 | 同文件`:333–371` 调用`torch_npu.adn_fused_infer_attention`，带分块KV、NZ布局与mask | 旧候选已接入但矩阵数值失败；当前六层改为MatMul／Softmax组合 |
 
-PyTorch候选的注意力流程如下，公共KV输入输出仍为ND。C16／cap192／K15时，208个逻辑KV槽补齐为224个物理槽；已提交context之后到槽191之间的空洞、槽208～223的padding均被mask屏蔽。候选KV在槽192起的临时区，永不回写公共缓存。
+PyTorch候选当前组合已有算子实现attention。C16／cap192／K15计算192个context槽＋16个临时anchor／proposal槽，共208行；空洞和无效候选由原mask排除，不再转换NZ或使用页表。候选KV不回写公共缓存。
 
 ```mermaid
 flowchart LR
-    Q["Q：1×32×16×128"] --> QNZ["NZ布局<br/>1×256×16×16"]
-    Committed["ND committed K/V"] --> Cat["拼接临时anchor/proposal K/V"]
-    Temporary["本轮临时K/V"] --> Cat
-    Cat --> KVNZ["补零并转换分块NZ<br/>7×64×32×16"]
-    Mask["Draft逐行可见性<br/>滑窗/双向/无效query witness"] --> PadMask["FP16加性mask<br/>padding为负无穷"]
-    QNZ --> Fused["AdnFusedInferAttention<br/>GQA 32/8，block_size=32"]
-    KVNZ --> Fused
-    PadMask --> Fused
-    Fused --> ND["转换回ND → o_proj → 残差"]
-    Committed --> CacheOutput["独立的公共KV输出<br/>不包含临时区"]
+    Q["Q：1×32×16×128"] --> QK["QK MatMul：FP16结果"]
+    C["ND committed K/V"] --> Cat["拼接本轮临时K/V：208行"]
+    T["anchor/proposal K/V"] --> Cat
+    Cat --> G["INT32 Gather：8个KV heads映射到32个Q heads"]
+    G --> QK
+    QK --> S["FP32缩放 → mask Select → Softmax"]
+    M["原Draft可见性及无效query witness"] --> S
+    S --> P["概率转FP16"]
+    P --> PV["PV MatMul"]
+    G --> PV
+    PV --> O["o_proj → 残差"]
+    C --> Out["公共KV输出只提交新增context"]
 ```
 
-长度端口沿用Target的INT64转换；Python调用的`pse_shift`按原Target converter接到GE的`all_seq_lengths_q`，GE `pse_shift`保持空，不把它当注意力bias。选择`inner_precise=2`只记录请求，不证明内部精度。融合改变了中间舍入边界，CPU布局模拟通过不等于厂商内核精度通过。本轮280步缓存／mask主机检查不替代重新编译、Load及板端数值测试。
-
-用户导出的AIR未记录Q/K/V/mask中间描述的shape及端口名。源图检查据原Target的18槽顺序核对连接和dtype，已记录shape仍需匹配；缺失shape保留为未知并交给OMG推导，不把上图设计尺寸当成已观察到的编译尺寸。
+缩放系数为1／√128；QK结果为FP16，再转FP32做缩放、mask和Softmax，概率转FP16后与V相乘，沿用现有独立参考的边界。源AIR检查6条MatMul—Softmax—MatMul连接和零融合attention；内部精度仍需设备验证。当前RMS舍入与完整参考的区别保留，不以更换attention宣称整模型已经对齐。
 
 ### 残差Add：为避免NPU输入降精度保留CPU计算
 

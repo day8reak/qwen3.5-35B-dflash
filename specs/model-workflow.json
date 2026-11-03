@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "updated": "2026-11-03",
-  "active_phase": "validation",
+  "active_phase": "accuracy",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
   "run_id": "20261031T082522Z-15435-7304bd",
   "navigation": {
@@ -6131,6 +6131,7 @@
       "existing_runtime_artifacts": "RETAIN_CURRENT_PUBLIC_GE_AIR_AND_OMC_UNTIL_VALIDATED_REPLACEMENT",
       "resume": "ONLY_ON_USER_REQUEST"
     },
-    "latest_attention_observation": "Direct INT64 controls still bitwise equal source in all seven cases; first16 signature retained. No cause or full-model pass established."
+    "latest_attention_observation": "127 unique synthetic cases compared; effective KV prefix tracks co-varied Q quantities. User selected composed attention for full Draft accuracy.",
+    "composed_attention": "specs/dflash-execution-state.json#incremental_draft_task/composed_attention"
   }
 }

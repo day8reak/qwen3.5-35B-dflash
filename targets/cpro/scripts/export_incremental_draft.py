@@ -18,7 +18,7 @@ def main(argv=None):
     source.add_argument('--prepared', help='shared prepared weight directory; no previous AIR/OMC required')
     source.add_argument('--import-air', help='move a completed PyTorch AIR bundle to --output without exporting or compiling')
     source.add_argument('--inspect-air', help='read an existing successful or failed PyTorch AIR export; no model or SDK execution')
-    source.add_argument('--finalize-air', help='recheck a saved Target-attention AIR after export failure and move it to --output; no re-export')
+    source.add_argument('--finalize-air', help='recheck a saved Draft AIR after export failure and move it to --output; no re-export')
     parser.add_argument('--frontend', choices=('ge', 'pytorch'), default='ge')
     parser.add_argument('--torchair-pb2', help='installed TorchAir literal schema; normally discovered automatically')
     parser.add_argument('--replace', action='store_true', help='replace a finished AIR bundle after successful PyTorch export/import')

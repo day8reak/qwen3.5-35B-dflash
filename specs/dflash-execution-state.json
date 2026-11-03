@@ -964,7 +964,7 @@
     "maintenance_policy": "Homepage contains only a brief introduction and six direct links. Keep each primary page self-contained; operational pages contain short instructions and complete command blocks. Detailed development and historical evidence remain outside primary navigation."
   },
   "incremental_draft_task": {
-    "status": "PYTORCH_CANDIDATE_NUMERICAL_FAILED_INPUT_PREFIX_RMS_LOCALIZED",
+    "status": "COMPOSED_ATTENTION_IMPLEMENTED_FULL_DRAFT_ACCURACY_PENDING",
     "context_gears": [
       16,
       64
@@ -980,7 +980,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "DDK server: update code and recover the same pytorch-run into pytorch-result to collect HiLog; no apply, model relaunch or recompilation.",
+    "next_command": "Export composed PyTorch Draft on original TorchAir host; transfer AIR; compile on selected X90 DDK; validate_incremental_draft.py isolated and feedback. See docs/current-status.md.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -2247,6 +2247,59 @@
           "native_rebuild_required": false
         }
       }
+    },
+    "composed_attention": {
+      "policy": "composed-attention-v1",
+      "authorization": "USER_REQUESTED_EXISTING_OPS_FOR_FULL_DRAFT_ACCURACY",
+      "source_fused_attention_nodes": 0,
+      "logical_kv_rows": 208,
+      "source_softmax_dtype": "FP32",
+      "learned_weights_changed": false,
+      "reference_changed": false,
+      "tolerances_changed": false,
+      "public_abi": "17_INPUTS_14_OUTPUTS_UNCHANGED",
+      "projection": "UNCHANGED_4X4_CONV2D",
+      "model_compilation": "NOT_RUN",
+      "device_execution": "NOT_RUN",
+      "numerical_validation": "NOT_RUN_NEW_FULL_WEIGHT_DEVICE_MODEL",
+      "production_promotion": "NOT_PERFORMED",
+      "host_regression_calls": 440,
+      "prechange_primitive_bitwise_equal": true,
+      "independent_host_oracle": {
+        "status": "FAILED_ALSO_IN_PRECHANGE_PRIMITIVES",
+        "top1_mismatches": 4,
+        "hidden_kv_original_gate": "PASSED",
+        "max_abs_error": 0.0068359375,
+        "scope": "REDUCED_WIDTH_SYNTHETIC_SIX_LAYER"
+      },
+      "full_width_capture": "FOUR_GEARS_12_MATMUL_6_FP32_SOFTMAX_32_FAKE_RMS_17_14",
+      "export_compile_host_checks": 14,
+      "old_matrix_host_regression_groups": 7,
+      "commands": "docs/current-status.md"
+    },
+    "attention_matrix_combined_observation": {
+      "source": "USER_PASTED_TWO_DIAGNOSES_NOT_INDEPENDENTLY_RETRIEVED",
+      "planned_global": 129,
+      "unique_compared": 127,
+      "unique_failed": 114,
+      "unique_passed": 13,
+      "missing_numeric_cases": {
+        "length_1": "NATIVE_PROCESS_EXIT1",
+        "length_15": "NOT_RUN"
+      },
+      "effective_prefix_by_q": {
+        "16": 16,
+        "32": 32,
+        "64": 64,
+        "1": 1
+      },
+      "mask_response": true,
+      "page_table_response": true,
+      "compensated_page_permutation_exact": true,
+      "q_shape_vs_actual_q_vs_all_q": "NOT_SEPARATED",
+      "physical_cause": "UNRESOLVED",
+      "target_scope": "SYNTHETIC_GEOMETRY_NOT_TARGET_AIR_OR_MODEL",
+      "investigation": "DEFERRED_BY_USER"
     }
   },
   "draft_milestone_e2e_gate": {

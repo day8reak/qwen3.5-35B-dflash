@@ -1,5 +1,25 @@
 # 当前结果
 
+2026-11-03 当前推进组合attention完整Draft候选，用户要求暂时停用 AdnFusedInferAttention。新导出为六组QK MatMul → FP32缩放／mask／Softmax → FP16概率 → PV MatMul，完整208行逻辑KV、GQA INT32 Gather；学习权重、mask、17／14接口和原门槛保持。特征Conv投影仍保留。新TorchAir／OMG／板端均待运行，未提升生产。
+
+本地缩小宽度、保留六层与八个Target taps的32组序列／440次调用覆盖C16／C64、K15／7／3／1、滑窗开关、独立输入与连续缓存反馈。全部14输出与旧原语实现逐位相同，输入及未写KV保持。独立完整前缀oracle的hidden／KV通过原0.01／0.01门槛，最大绝对差0.0068359375；容量边界和重复反馈共有4个Top1差异，旧原语路径同样存在，该oracle检查记为FAILED。四档真实宽度meta捕获为12 MatMul、6 FP32 Softmax、32测试RMS、17／14接口、INT32 Gather、无融合attention。14组源图及mock导出编译检查、7组旧矩阵回归通过。以上均为主机证据，临时测试未发布。
+
+融合矩阵补测来自用户回传，未独立取回设备文件。尝试 /data/local/tmp/qwen35_vector_bf2f47fe1c8548f18eaea37c8db6d7cb，50／50请求完成、native与归档退出均0，45失败、5通过，重复稳定。与首批79例去重后为127／129例比较、114失败、13通过；KV1执行失败，KV15未执行。补测INCOMPLETE表示只覆盖总矩阵子集，不是这50例执行中断。
+
+| 补测组 | 比较数 | 通过数 | 行为 |
+|---|---:|---:|---|
+| Q32，Draft头配置 | 10 | 1 | 对应prefix32；key16通过，key32／192失败 |
+| Target prefill头配置，Q64 | 10 | 2 | 对应prefix64；key16／32通过，key192失败 |
+| Target decode头配置，Q1 | 10 | 1 | uniform／weighted精确匹配prefix1；选择key0的mask_rows通过 |
+| constant_mask | 1 | 0 | 精确匹配declared_mask_prefix16 |
+| runtime，含2个重复基线 | 15 | 1 | KV16通过；KV17至208已测长度仍与KV224基线逐字节相同 |
+| observed | 4 | 0 | 仅attention失败；辅助读回通过，对应runtime attention逐字节相同 |
+
+有限mask响应匹配带mask的受限前缀。页表rotate／reverse改变输出且匹配按页表映射的prefix16；补偿存储与页表置换后逐字节保持。Q16／32／64／1对应相同长度的有效KV前缀，但Q物理长度、actual_seq_lengths_q和all_seq_lengths_q同时变化，尚不能确定哪个量决定范围或物理原因。Target组仅为相同头部几何的合成图。该调查暂缓，先验证组合版完整Draft。
+
+以下保留旧融合版完整模型与矩阵的历史实测记录。
+
+
 当前开发集中推进PyTorch Draft，手写GE／AddCustom优化按用户要求暂缓。现有公共GE产物继续作为已接通的运行基线，PyTorch尚未替换它。
 
 ## 最新完整PyTorch复测：非零hidden，anchor仍未影响共同输出行
