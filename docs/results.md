@@ -20,9 +20,15 @@
 
 新增context KV不经过候选Attention，其误差范围与前轮相同不能排除临时block KV、mask、Attention或残差路径错误。当前只支持“候选输出恢复非零、anchor敏感性仍异常”，不能据此确定融合内核、RoPE或任一具体节点为根因。同步API仍是混合输入诊断计时，50ms目标未达到。
 
-新增 `probe_draft_attention.py`：从同一源AIR保留第一层融合Attention的属性、长度／block-table端口和mask构造，使用三项原控制输入，在原packed Q/K/V输入处切入已知数据。只复制不超过256KiB的小buffer，拒绝embedding等学习权重；一份小OMC覆盖空缓存、改变临时anchor值、部分缓存、较少候选、容量边界、加权QK、零候选七组输入。输出Attention、mask是否为零的INT32谓词、packed V展平回读。后两项逐字节比较，Attention沿用0.01／0.01逐元素门槛。独立ND参考采用显式坐标打包，padding写入哨兵值以暴露误读；probe不包含投影、RoPE、QKV打包算子及后续层，也不保存完整图分区。mask谓词不是原始负无穷字节或物理内核输入的读回。
+新增 `probe_draft_attention.py`：从同一源AIR保留第一层融合Attention的属性、长度／block-table端口和mask构造，使用三项原控制输入，在原packed Q/K/V输入处切入已知数据。只复制不超过256KiB的小buffer，拒绝embedding等学习权重；一份小OMC覆盖空缓存、改变临时anchor值、部分缓存、较少候选、容量边界、加权QK、零候选七组输入。输出Attention、mask是否为零的谓词、packed V展平回读；当前谓词使用FP16 0/1，首次INT32版本的编译失败见下文。后两项逐字节比较，Attention沿用0.01／0.01逐元素门槛。独立ND参考采用显式坐标打包，padding写入哨兵值以暴露误读；probe不包含投影、RoPE、QKV打包算子及后续层，也不保存完整图分区。mask谓词不是原始负无穷字节或物理内核输入的读回。
 
-12组主机合成／mock检查通过：原属性和非QKV端口保留、学习权重祖先排除、静态Fill／ZerosLike准备、拒绝错误长度／shape／控制依赖、七组mask解释执行和独立SDPA比较、打包坐标、重排公共ABI、绑定文件篡改拒绝、mask／Attention故障与NaN诊断。原前缀探针23项回归通过。所选DDK真实编译与板端执行均待用户运行；完整模型精度门槛、权重、源码数学表达和v5准备规则未更改。
+12组主机合成／mock检查通过：原属性和非QKV端口保留、学习权重祖先排除、静态Fill／ZerosLike准备、拒绝错误长度／shape／控制依赖、七组mask解释执行和独立SDPA比较、打包坐标、重排公共ABI、绑定文件篡改拒绝、mask／Attention故障与NaN诊断。原前缀探针23项回归通过。该轮主机检查不证明DDK编译或设备数值；完整模型精度门槛、权重、源码数学表达和v5准备规则未更改。
+
+2026-11-03，用户回传上述Attention探针的实际OMG失败：DDK `100.520.020.010`、目标 `kirinx90`，8个输入快照共50951字节，未复制学习权重。源AIR为 `e976adece11fc82e0911fb82552cdf6fa9115ffc2c53e3221e4df05a1af53d95`，首次准备后的probe AIR为 `a9bf96121db566099735213f14bb22c202201b28f47d0dba0fd32c24907181c6`。明确终止链为 `probe_attention_visible` → CastT SelectKernel → `kernelId not registered: 196620` → `compileInfo is null` → SubGraph_3编译失败，OMG退出1。此前Cast_44／Cast_47推形和AdnFusedInferAttention建算子告警不能代替这条终止证据。本次未生成可验证成品、未上板，不能认定Attention本体数值错误。
+
+修订为 `source-first-attention-mask-packed-qkv-v2`：只把新增回读支路的BOOL→INT32 Cast替换为Equal条件加SelectV2，选择完整形状的FP16常量1／0；不对负无穷mask做乘法或其他算术。mask golden改为同义FP16谓词，仍逐字节比较；Attention参考、0.01／0.01门槛、源Attention其他端口与mask构造保持。附加边仍可能改变编译分区，修订后的实机结果待回传。分析支持异常非二值／NaN回读并保留失败状态。
+
+修订版12组合成／mock检查通过，包括七组mask解释执行与独立SDPA、原节点字节保留、无新增Cast的FP16谓词、物理ABI重排、原目录失败后重编、mask／Attention／NaN故障；19项目录重试检查通过。`--replace`限于直接draft/tests子目录内本探针已知失败的OMG编译，采用与验证器相同的源目录锁，拒绝成品、板端运行、未知退出、符号链接和仍占用目录的编译进程；确认后删除该失败目录，不保存备份。以上全部为主机检查，不能记作所选DDK编译通过或板端通过。
 
 ## 此前PyTorch独立执行：加载成功，数值失败
 

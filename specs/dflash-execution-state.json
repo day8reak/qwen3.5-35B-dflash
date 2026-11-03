@@ -1679,7 +1679,7 @@
       },
       "attention_probe": {
         "entry": "targets/cpro/tools/probe_draft_attention.py",
-        "policy": "source-first-attention-mask-packed-qkv-v1",
+        "policy": "source-first-attention-mask-packed-qkv-v2",
         "scope": "SOURCE_FIRST_MASK_AND_FUSED_ATTENTION_SYNTHETIC_PACKED_QKV_NOT_FULL_DRAFT",
         "cuts": "ORIGINAL_PACKED_Q_K_V_INPUTS_ONLY; ORIGINAL_MASK_CONTROLS_AND_ATTENTION_ATTRIBUTES_PRESERVED",
         "cases": [
@@ -1703,10 +1703,32 @@
         "host_checks": 12,
         "prefix_regression_checks": 23,
         "host_scope": "SYNTHETIC_PROTOBUF_MASK_INTERPRETER_INDEPENDENT_SDPA_AND_MOCK_COMPILER_ABI_COMPARE; NOT_SELECTED_DDK_OR_DEVICE",
-        "model_compilation": "NOT_RUN",
+        "model_compilation": "REVISED_PROBE_NOT_RUN; PREVIOUS_V1_COMPILE_FAILED",
         "device_execution": "NOT_RUN",
         "numerical_validation": "NOT_RUN",
-        "limitations": "NO_PROJECTIONS_ROPE_OR_QKV_PACKING_OPERATORS; AUXILIARY_OUTPUTS_CAN_CHANGE_FUSION; NO_PHYSICAL_KERNEL_INPUT_READBACK"
+        "limitations": "NO_PROJECTIONS_ROPE_OR_QKV_PACKING_OPERATORS; AUXILIARY_OUTPUTS_CAN_CHANGE_FUSION; NO_PHYSICAL_KERNEL_INPUT_READBACK",
+        "mask_readback": "EQUAL_ZERO_SELECT_FP16_ONE_OR_ZERO; EXACT_BYTES",
+        "failed_retry_checks": 19,
+        "next": "DDK_SERVER_RETRY_SAME_pytorch-attention_DIRECTORY_WITH_REPLACE; THEN_VALIDATE_RECOVER_ANALYZE",
+        "previous_compile": {
+          "source": "USER_PASTED_DDK_LOG_2026_11_03; NOT_INDEPENDENTLY_READ",
+          "policy": "source-first-attention-mask-packed-qkv-v1",
+          "status": "FAILED",
+          "stage": "omg",
+          "returncode": 1,
+          "ddk_id": "100.520.020.010",
+          "platform": "kirinx90",
+          "snapshot_files": 8,
+          "snapshot_bytes": 50951,
+          "source_air_sha256": "e976adece11fc82e0911fb82552cdf6fa9115ffc2c53e3221e4df05a1af53d95",
+          "probe_air_sha256": "a9bf96121db566099735213f14bb22c202201b28f47d0dba0fd32c24907181c6",
+          "failing_node": "probe_attention_visible",
+          "failing_type": "CastT",
+          "kernel_id": 196620,
+          "error": "kernelId not registered; SelectKernel failed; compileInfo is null",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN"
+        }
       }
     }
   },

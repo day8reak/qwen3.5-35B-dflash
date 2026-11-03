@@ -5,8 +5,10 @@ Cut only packed Q/K/V, supply deterministic values, and compare against an
 independent logical attention reference. This is not full-Draft validation.
 """
 from copy import deepcopy
+import fcntl
 import hashlib
 import math
+import os
 from pathlib import Path
 import shutil
 
@@ -196,10 +198,17 @@ def extract_attention(raw, schema, manifest):
     added.append(node(zero,'Const',[],[d0],extra))
     maskd = desc('DT_FLOAT16',CONTRACT['mask_shape'])
     boold = desc('DT_BOOL',CONTRACT['mask_shape'])
-    intd = desc('DT_INT32',CONTRACT['mask_shape'])
     added.append(node('probe_attention_equal','Equal',[(edges[4],maskd),(zero+':0',d0)],[boold]))
-    added.append(node('probe_attention_visible','Cast',[('probe_attention_equal:0',boold)],[intd],
-                      attribute('dst_type',integer('AttrDef','i',3))))
+    # The selected DDK cannot compile the added BOOL -> INT32 CastT.
+    # Select finite FP16 literals instead; no arithmetic touches the -inf mask.
+    for suffix, value in (('ones',1),('zeros',0)):
+        tensor = blob('TensorDef','desc',maskd,11)+blob('TensorDef','data',
+            np.full(CONTRACT['mask_shape'],value,dtype='<f2').tobytes(),12)
+        added.append(node('probe_attention_'+suffix,'Const',[],[maskd],
+                          attribute('value',blob('AttrDef','t',tensor,11))))
+    added.append(node('probe_attention_visible','SelectV2',
+        [('probe_attention_equal:0',boold),('probe_attention_ones:0',maskd),
+         ('probe_attention_zeros:0',maskd)],[maskd]))
     # Preserve the packed value bytes in a unique public shape for ABI binding.
     shaped = desc('DT_INT64',[3]); viewdims = [7,64,512]
     tensor = blob('TensorDef','desc',shaped,11)+blob('TensorDef','data',np.array(viewdims,dtype='<i8').tobytes(),12)
@@ -208,7 +217,7 @@ def extract_attention(raw, schema, manifest):
     added.append(node('probe_attention_v_view','Reshape',
         [('probe_attention_v:0',desc('DT_FLOAT16',CONTRACT['kv_shape'])),('probe_attention_v_shape:0',shaped)],[viewd]))
     net = node('NetOutput','NetOutput',[(op['name']+':0',desc('DT_FLOAT16',CONTRACT['query_shape'])),
-        ('probe_attention_visible:0',intd),('probe_attention_v_view:0',viewd)],[])
+        ('probe_attention_visible:0',maskd),('probe_attention_v_view:0',viewd)],[])
     # New QKV Data precedes Attention; auxiliary consumers follow it.
     selected.add(op['name'])
     kept = [changed.get(n['name'],p) for n,p,_ in rows if n['name'] in selected]
@@ -226,7 +235,8 @@ def extract_attention(raw, schema, manifest):
     prepared_rows,_ = _node_bytes(prepared_graph,schema)
     if _Shapes(prepared_rows,schema).shape(edges[4]) != CONTRACT['mask_shape']:
         raise ValueError('cannot prove prepared source mask shape')
-    receipt = dict(policy='source-first-attention-mask-packed-qkv-v1',
+    receipt = dict(policy='source-first-attention-mask-packed-qkv-v2',
+        mask_observation='EQUAL_ZERO_SELECT_FP16_ONE_OR_ZERO; EXACT_BYTES; AUXILIARY_BRANCH',
         source_air_sha256=hashlib.sha256(raw).hexdigest(), extracted_air_sha256=original_probe_sha,
         probe_air_sha256=hashlib.sha256(extracted).hexdigest(), attention=op['name'],
         source_mask_edge=edges[4], source_input_roles={k:roles[k] for k in CONTROLS},
@@ -240,7 +250,7 @@ def extract_attention(raw, schema, manifest):
         limitation='Synthetic packed inputs test the source mask and Attention interface; extra outputs may change fusion/partition. Readbacks are logical edges, not physical kernel inputs.',
         graph=dict(inputs=inputs,outputs=[
             dict(name='attention',dtype='float16',shape=CONTRACT['query_shape'],exact_bytes=False),
-            dict(name='mask_visible',dtype='int32',shape=CONTRACT['mask_shape'],exact_bytes=True),
+            dict(name='mask_visible',dtype='float16',shape=CONTRACT['mask_shape'],exact_bytes=True),
             dict(name='packed_v',dtype='float16',shape=viewdims,exact_bytes=True)]))
     return extracted,receipt
 
@@ -302,21 +312,73 @@ def reference_case(name, config):
                     p[row//32,h*8+d//16,row%32,d%16] = logical[h,row,d]
         kv.append(p)
     inputs = [np.array([s],dtype='<i4') for s in (start,valid,count)]+[packed[0],*kv]
-    outputs = [packed[1],visible.astype('<i4').reshape(CONTRACT['mask_shape']),kv[1].reshape(7,64,512)]
+    outputs = [packed[1],visible.astype('<f2').reshape(CONTRACT['mask_shape']),kv[1].reshape(7,64,512)]
     return inputs,outputs,dict(start_position=start,valid_rows=valid,context=end,proposal_count=count,
         synthetic_anchor_delta=anchor,weighted_scores=weighted,
         visible_keys_per_query=visible.sum(axis=1).tolist(),
         visible_temporary_keys_per_query=visible[:,192:208].sum(axis=1).tolist())
 
 
-def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_diagnosis, timeout_seconds=1800, progress=print):
+def _replace_failed(root, replace):
+    """Reuse only a known failed, host-only compile; never reset a board run."""
+    if not root.exists():
+        return
+    if not replace:
+        raise ValueError('attention probe output exists; use --replace only for a failed host compilation')
+    if root.parent != Path(os.environ['AI_RUN_DIR']).resolve()/'draft/tests':
+        raise ValueError('failed attention probe replacement requires a direct draft/tests child')
+    report_paths = (root/'result.json',root/'compilation/report.json')
+    if (not root.is_dir() or any(p.is_symlink() or p.resolve()!=p for p in report_paths)
+            or (root/'request.json').exists() or (root/'model.omc').exists()):
+        raise ValueError('unexpected probe files or model/request present; output retained')
+    state, compilation = (read_json(p) for p in report_paths)
+    if (state.get('artifact_kind')!=KIND or state.get('status')!='FAILED' or state.get('stage')!='compile'
+            or state.get('model_compilation')!='FAILED' or state.get('device_execution')!='NOT_RUN'
+            or state.get('numerical_validation')!='NOT_RUN'
+            or compilation.get('artifact_kind')!='qwen35-existing-air-compilation'
+            or compilation.get('status')!='FAILED' or compilation.get('stage')!='omg'
+            or compilation.get('model_compilation')!='FAILED' or compilation.get('device_execution')!='NOT_RUN'
+            or type(compilation.get('returncode')) is not int or compilation['returncode']==0):
+        raise ValueError('known failed OMG exit with no device execution is required; output retained')
+    # Older probe versions did not hold the sibling lock. Also detect their
+    # surviving OMG processes by command paths and compiler working directory.
+    for proc in Path('/proc').glob('[0-9]*'):
+        if proc.name==str(os.getpid()):
+            continue
+        try:
+            args = proc.joinpath('cmdline').read_bytes().decode(errors='replace').split('\0')
+            cwd = proc.joinpath('cwd').resolve(strict=True)
+        except OSError:
+            continue
+        if (cwd==root or root in cwd.parents or any(
+                arg.split('=',1)[-1]==str(root) or arg.split('=',1)[-1].startswith(str(root)+'/') for arg in args)):
+            raise ValueError('process still references attention probe output; retained')
+    shutil.rmtree(root)
+
+
+def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_diagnosis,
+                  timeout_seconds=1800, progress=print, replace=False):
+    root = output_path(output)
+    if Path(output).absolute()!=root:
+        raise ValueError('attention output must not contain symlink or traversal components')
+    _disjoint(root,air_export,source,result,ddk_root,tbe_diagnosis)
+    root.parent.mkdir(parents=True,exist_ok=True)
+    # Shared with validate_draft_vector's source snapshot lock.
+    with (root.parent/('.'+root.name+'.lock')).open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return _compile_probe(air_export,source,result,root,ddk_root=ddk_root,ddk_id=ddk_id,
+            tbe_diagnosis=tbe_diagnosis,timeout_seconds=timeout_seconds,progress=progress,replace=replace)
+
+
+def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_diagnosis,
+                   timeout_seconds, progress, replace):
     from qwen35_moe_dflash.toolchain.existing_air import _snapshot, compile_existing_air
     from qwen35_moe_dflash.toolchain.omc_embed_weights import embed_external_weights
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
     air,prepared,root = Path(air_export).resolve(),Path(source).resolve(),output_path(output)
     _disjoint(root,air,prepared,result,ddk_root)
-    if root.exists():
-        raise ValueError('attention probe output exists; recover any run before replacing the completed test directory')
+    if root.exists() and not replace:
+        raise ValueError('attention probe output exists; use --replace only for a failed host compilation')
     manifest = read_json(air/'manifest.json'); plan = read_json(prepared/'prepared.json')
     if manifest.get('artifact_kind')!=AIR_KIND or manifest.get('status')!='PYTORCH_DRAFT_AIR_EXPORTED':
         raise ValueError('expected completed PyTorch AIR')
@@ -364,6 +426,7 @@ def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_d
     root.parent.mkdir(parents=True,exist_ok=True)
     if shutil.disk_usage(root.parent).free<128<<20:
         raise OSError('small attention probe needs 128 MiB free')
+    _replace_failed(root,replace)
     root.mkdir()
     state = dict(artifact_kind=KIND,status='FAILED',stage='extract',model_compilation='NOT_RUN',
         device_execution='NOT_RUN',numerical_validation='NOT_RUN',ddk_id=ddk_id,scope=SCOPE,extraction=receipt,
@@ -465,21 +528,23 @@ def diagnose(fixture,native,meta,comparison,report):
             continue
         raw=(native/case['case']/'0.bin').read_bytes(); offset=0; arrays={}
         for spec in case['outputs']:
-            dtype='<i4' if spec['dtype']=='int32' else '<f2'
+            dtype={'int32':'<i4','float16':'<f2'}[spec['dtype']]
             actual=np.frombuffer(raw[offset:offset+spec['bytes']],dtype=dtype).reshape(spec['shape'])
             expected=np.fromfile(fixture/case['case']/f'golden_{spec["index"]}.bin',dtype=dtype).reshape(spec['shape'])
             arrays[spec['name']]=(actual,expected); offset+=spec['bytes']
         a,e=arrays['mask_visible']; a,e=a.reshape(16,224),e.reshape(16,224)
+        av,ev=a==1,e==1
         aq,eq=arrays['attention']
         def finite_values(x):
             return [float(v) if np.isfinite(v) else None for v in x]
         row=dict(case=case['case'],controls=case['controls'],
             comparison=next(c for c in comparison['cases'] if c['case']==case['case']),
             mask_visible=dict(mismatched_elements=int((a!=e).sum()),
-                actual_keys_per_query=a.sum(axis=1).tolist(),expected_keys_per_query=e.sum(axis=1).tolist(),
-                actual_temporary_keys_per_query=a[:,192:208].sum(axis=1).tolist(),
-                expected_temporary_keys_per_query=e[:,192:208].sum(axis=1).tolist(),
-                actual_visible_padding=int(a[:,208:].sum())),
+                nonbinary_elements=int((~((a==0)|(a==1))).sum()),
+                actual_keys_per_query=av.sum(axis=1).tolist(),expected_keys_per_query=ev.sum(axis=1).tolist(),
+                actual_temporary_keys_per_query=av[:,192:208].sum(axis=1).tolist(),
+                expected_temporary_keys_per_query=ev[:,192:208].sum(axis=1).tolist(),
+                actual_visible_padding=int(av[:,208:].sum())),
             attention_head0_channel0=dict(actual=finite_values(aq[0,0,:,0]),expected=finite_values(eq[0,0,:,0])))
         row['comparison']={k:v for k,v in row['comparison'].items() if k not in ('tensors','api_us')}
         cases.append(row)
