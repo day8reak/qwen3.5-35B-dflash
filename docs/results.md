@@ -18,7 +18,15 @@
 
 用户明确要求优先解决105.582ms差额，故暂缓Top1和MatMul改写。源码复核：native API计时仅包住同步Process，加载、输入拷贝、结果落盘及KV提交都在计时外。中间CPU子图的NPU输入依赖是下一项对照重点，但不能直接把差额归因于这条边界。新表中CPU ArgMax起点12:01:49.365758早于末尾MatMul起点49.366910，后者加时长还超过model结束时间49.383778；因此不以这些start time拼出CPU/NPU统一执行时间线或断言具体空等时长。
 
-新增 `profile_draft.py --analyze-boundaries`，只读取已保存的完整边界JSON，穿过主图Cast／Reshape等显式输入边追踪GraphOp端口。列出NPU→CPU连接及有后续NPU消费者的中间CPU分区；不按src_name／device_type猜执行归属，不推断GraphOp内部输入输出关系。11组主机检查通过，覆盖直接及双Cast回流、动态shape分支、共享生产者、跨设备终端logits、缺失/错位引用、多输出不确定性、环、实际CLI及原证据不变。run `20261103T124343Z-21225-c999d4`，检查为合成编译元数据，不是用户OMC或设备测量。下一步用现有JSON定位控制计算回流，设计前移控制计算的单因素实验；不重新采集已提供的profile。
+新增 `profile_draft.py --analyze-boundaries`，只读取已保存的完整边界JSON，穿过主图Cast／Reshape等显式输入边追踪GraphOp端口。列出NPU→CPU连接及有后续NPU消费者的中间CPU分区；不按src_name／device_type猜执行归属，不推断GraphOp内部输入输出关系。11组主机检查通过，覆盖直接及双Cast回流、动态shape分支、共享生产者、跨设备终端logits、缺失/错位引用、多输出不确定性、环、实际CLI及原证据不变。run `20261103T124343Z-21225-c999d4`，检查为合成编译元数据，不是用户OMC或设备测量。
+
+用户随后回传依赖分析，status=ANALYZED、unresolved为空；输入完整边界JSON为333337字节，SHA256 `3f66adf078481b028ffa38ba76b2ef95c3099247d8dc095afe74ca1deed552a4`，继承上述4d OMC身份。确认SubGraph_1端口12／11的FP16[1,16,1]分别经netoutput_cast_1／0变为FP32，进入CPU SubGraph_2端口3／4；SubGraph_1端口2的BOOL[1,208]进入同一CPU端口5。这个CPU子图向SubGraph_3输出两个FP32[1,16,64]（经Cast成FP16）及两个BOOL[1,8,64,208]。两条位置形状路径与源码的RoPE位置展开／乘频率相符，这是源图对应推断，未解码NPU内部任务。三个NPU生产端逻辑尺寸合计272字节，CPU消费端合计336字节，不能由此给105.582ms差额分配具体拷贝或同步时间。
+
+新增显式候选 `packed-spatial-controls`，仅改两个控制表达：位置先做INT32 Unsqueeze再Cast为FP32；cache／block有效性先各转精确0/1 INT32，再Concat及原有Gather扩展。保持FP32频率乘法、三角函数、完整词表、FP16权重和17／14接口，尝试将这些控制计算放在NPU主体之前。没有强制编译分配，源码改写不能证明中间CPU子图已消失。
+
+主机证据run `20261103T125807Z-21638-b356b9`：六层缩小宽度、C16／C64、K15／7／3／1、滑窗开关的220次连续回放，全部14输出与4d版本逐位相等，输入未修改，未写KV保持。八档实际模型尺寸meta捕获（测试RMS）通过，确认位置INT32视图先于FP32 Cast、有效性不存在BOOL Concat；31线性、12attention MatMul、6FP32 Softmax、32RMS和17／14接口保持。18项权重与ABI检查、14项protobuf夹具／模拟导出编译检查通过。CLI支持新policy。本地无所选CPro DDK／TorchAir，候选未实际编译或上板；需要用户侧编译、完整数值回收、同模型边界检查及相同输入的同步API对照。
+
+用户另询问NPU ArgMax／流水。当前ArgMaxExt2被选到CPU不代表X90没有归约能力：[Ascend C ReduceMax文档](https://asc.gitcode.com/api/SIMD-API/basic_api/memory_vector_compute/reduction_compute/ReduceMax.html)明确支持X90 half／float、返回最大值索引及并列最小索引。248320词表需按UB约束分块；half块内索引不能超过65535，恢复全局索引应使用INT32，再按最大值优先、相等时最小索引合并。目标是NPU内完成完整词表Top1，只输出15个INT32共60字节，去掉末尾CPU的FP32 logits消费接口；当前14,899,200字节是逻辑尺寸，不是测得搬运量。公开API支持不证明已选DDK的注册、编译或本模型分配可用，新ArgMax尚未实现或测量。先做独立归约探针验证部署、边界值／并列值／NaN行为，再考虑整图接入；不默认TopK(k=1)在并列值时等价。单次推理内真正依赖NPU结果的CPU步骤不能仅靠异步调用掩盖；这些标量控制可前置，跨轮proposal仍依赖Target验证与新anchor，多请求吞吐流水不能替代单请求50ms时延目标。
 
 以下为上一轮记录。2026-11-03，用户回传第一轮 `packed-spatial` 编译后精度与profiling结果，执行及回收成功。随后边界报告绑定优化OMC字节数2808368316、SHA256 `f178fc83a0a9981b501bd5a012e5dee33a54f11f28175dc84dd10625889a6a1e`，CPUCL=3／NPUCL=2；所回传精度摘要与上一版一致：isolated Top1 82/86、feedback 83/86，共7/172个相同位置和token的差异；hidden相对L2上限仍为2.61%，新增KV为0.44%～0.83%，未写KV均保持，两组重复调用逐位稳定。这些摘要不能证明两版全部输出逐位相同。原NUMERICAL_FAILED保留。
 

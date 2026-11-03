@@ -2813,7 +2813,7 @@
       "placement": "FEATURE_PERMUTES_ON_NPU; CPU0_CONTROLS_ONLY; CPU2_SMALLER; CPU3_NPU2_PARTITIONS_REMAIN",
       "performance": "USER_REPORTED_API_MEANS_189_TO201_MS; PROFILE184_568_MS; 50_MS_NOT_ACHIEVED",
       "command_document": "docs/current-status.md",
-      "next": "PRIORITIZE_105_582_MS_UNASSIGNED_DIFFERENCE; ANALYZE_SAVED_BOUNDARY_DEPENDENCIES_BEFORE_NEXT_MODEL_REWRITE",
+      "next": "EXACT_INT32_CONTROL_REWRITE_CANDIDATE_HOST_CHECKED; SELECTED_DDK_COMPILATION_AND_SAME_MODEL_BOUNDARY_VALIDATION_PENDING",
       "compiled_abi": "USER_REPORTED_BOUND_BY_COMPLETED_STANDALONE_ACCURACY",
       "compiled_precision": "NOT_VALIDATED",
       "user_compilation_observation": {
@@ -3052,30 +3052,231 @@
       }
     },
     "runtime_gap_priority": {
-      "status": "PRIORITIZE_UNASSIGNED_API_WALL_BEFORE_HEAD_REWRITE",
+      "status": "EXACT_CONTROL_BACKFLOW_REWRITE_HOST_CHECKED_DEVICE_EXPERIMENT_PENDING",
       "basis": "USER_EXPLICITLY_PRIORITIZED_105_582_MS_DIFFERENCE",
-      "run_id": "20261103T124343Z-21225-c999d4",
+      "run_id": "20261103T125807Z-21638-b356b9",
       "confirmed": [
         "NATIVE_API_TIMER_WRAP_PROCESS_ONLY; LOAD_INPUT_PREP_SNAPSHOT_AND_KV_COMMIT_EXCLUDED",
         "INTERMEDIATE_CPU_PARTITION_HAS_EXPLICIT_BOOL_INPUT_FROM_NPU_SUBGRAPH1",
-        "OP_START_TIMESTAMPS_DO_NOT_ESTABLISH_UNIFIED_CPU_NPU_TIMELINE"
+        "OP_START_TIMESTAMPS_DO_NOT_ESTABLISH_UNIFIED_CPU_NPU_TIMELINE",
+        "USER_DEPENDENCY_REPORT_RESOLVED_ALL_THREE_NPU_INPUTS_TO_INTERMEDIATE_CPU"
       ],
-      "first_experiment": "TRACE_ALL_EXPLICIT_MAIN_GRAPH_PATHS_THROUGH_CASTS; IDENTIFY_CONTROL_BACKFLOW_FOR_EXACT_PLACEMENT_REWRITE",
-      "command": "profile_draft.py --analyze-boundaries SAVED_FULL_BOUNDARIES_JSON --output DEPENDENCIES_JSON",
-      "execution": "LOCAL_METADATA_ONLY; NO_OMC_RECOMPILE_MODEL_RELAUNCH_OR_SDK_REQUIRED",
-      "proposed_followup": "TRY_MOVING_SCALAR_DERIVED_MASK_POSITION_CONTROLS_AHEAD_OF_NPU_BODY; COMPILE_MUST_CONFIRM_REMOVAL_OF_NPU_CPU_NPU_PATH",
+      "first_experiment": "packed-spatial-controls: INT32_POSITION_VIEW_BEFORE_FLOAT_CAST_AND_INT32_VALIDITY_CONCAT",
+      "command": "export_incremental_draft.py --frontend pytorch --optimization packed-spatial-controls; full arguments in docs/current-status.md",
+      "execution": "NEW_PYTORCH_SOURCE_CANDIDATE; SELECTED_DDK_AND_DEVICE_NOT_RUN",
+      "proposed_followup": "VERIFY_ACTUAL_REMOVAL_OF_INTERMEDIATE_NPU_CPU_NPU_DEPENDENCIES_AND_SYNCHRONOUS_API_IMPROVEMENT",
       "experiment_gates": [
         "SAME_C16_CAP192_K15_WEIGHTS_INPUTS_AND_V1_FREQUENCY",
         "FULL_OUTPUT_NUMERICS_AND_KV_PRESERVATION_AGAINST_ACCEPTED_BASELINE",
         "COMPILED_BOUNDARY_CHANGE_THEN_FIXED_INPUT_WARMUP3_MEASURE10_API_LATENCY",
         "DO_NOT_ASSIGN_ALL_DIFFERENCE_TO_BOUNDARY_OR_PREDICT_REMOVABLE_TIME_FROM_SUBTRACTION"
       ],
-      "deferred": "FULL_VOCABULARY_TOP1_AND_MATMUL_REWRITE",
-      "host_validation": {
+      "deferred": "HEAD_MATMUL_REWRITE; NPU_FULL_VOCABULARY_ARGMAX_RESEARCH_CONFIRMED_PUBLIC_X90_REDUCEMAX_SUPPORT",
+      "dependency_analysis_host_validation": {
+        "run_id": "20261103T124343Z-21225-c999d4",
         "check_groups": 11,
         "status": "PASSED",
         "scope": "SYNTHETIC_COMPILED_METADATA_AND_ACTUAL_CLI_NOT_USER_OMC_OR_DEVICE"
-      }
+      },
+      "host_validation": "control_optimization_candidate.host"
+    },
+    "boundary_dependency_observation": {
+      "source": "USER_PASTED_DEPENDENCY_ANALYZER_REPORT_NOT_INDEPENDENTLY_RETRIEVED",
+      "status": "ANALYZED",
+      "model_sha256": "c7e8007bcceb37141e2d667040ed64cc88afbc532173043deb4ee6ff4719a5b2",
+      "unresolved": [],
+      "boundary_json": {
+        "bytes": 333337,
+        "sha256": "3f66adf078481b028ffa38ba76b2ef95c3099247d8dc095afe74ca1deed552a4"
+      },
+      "owner_pair_paths": {
+        "CPUCL_to_NPUCL": 13,
+        "CPUCL_to_CPUCL": 3,
+        "NPUCL_to_CPUCL": 4,
+        "NPUCL_to_NPUCL": 9
+      },
+      "intermediate_cpu": "SubGraph_2",
+      "incoming_edge_indices": [
+        10,
+        11,
+        12
+      ],
+      "outgoing_edge_indices": [
+        16,
+        17,
+        25,
+        27
+      ],
+      "incoming": [
+        {
+          "producer": "SubGraph_1:12",
+          "dtype": "float16",
+          "shape": [
+            1,
+            16,
+            1
+          ],
+          "via": "netoutput_cast_1",
+          "consumer": "SubGraph_2:3",
+          "consumer_dtype": "float32"
+        },
+        {
+          "producer": "SubGraph_1:11",
+          "dtype": "float16",
+          "shape": [
+            1,
+            16,
+            1
+          ],
+          "via": "netoutput_cast_0",
+          "consumer": "SubGraph_2:4",
+          "consumer_dtype": "float32"
+        },
+        {
+          "producer": "SubGraph_1:2",
+          "dtype": "bool",
+          "shape": [
+            1,
+            208
+          ],
+          "via": null,
+          "consumer": "SubGraph_2:5",
+          "consumer_dtype": "bool"
+        }
+      ],
+      "outgoing": [
+        {
+          "producer": "SubGraph_2:0",
+          "dtype": "float32",
+          "shape": [
+            1,
+            16,
+            64
+          ],
+          "via": "graphop_data_cast_3",
+          "consumer": "SubGraph_3:3",
+          "consumer_dtype": "float16"
+        },
+        {
+          "producer": "SubGraph_2:1",
+          "dtype": "float32",
+          "shape": [
+            1,
+            16,
+            64
+          ],
+          "via": "graphop_data_cast_5",
+          "consumer": "SubGraph_3:4",
+          "consumer_dtype": "float16"
+        },
+        {
+          "producer": "SubGraph_2:3",
+          "dtype": "bool",
+          "shape": [
+            1,
+            8,
+            64,
+            208
+          ],
+          "via": null,
+          "consumer": "SubGraph_3:12",
+          "consumer_dtype": "bool"
+        },
+        {
+          "producer": "SubGraph_2:2",
+          "dtype": "bool",
+          "shape": [
+            1,
+            8,
+            64,
+            208
+          ],
+          "via": null,
+          "consumer": "SubGraph_3:20",
+          "consumer_dtype": "bool"
+        }
+      ],
+      "source_correspondence": "POSITION_VIEWS_AND_ROPE_FREQUENCY_MUL_INFERRED_FROM_SOURCE_SHAPES; OPAQUE_NPU_TASK_NOT_DECODED",
+      "mid_input_logical_bytes": {
+        "producer": 272,
+        "consumer_after_cast": 336
+      },
+      "terminal_logits": {
+        "edge_index": 28,
+        "producer": "SubGraph_3:0",
+        "producer_dtype": "float16",
+        "shape": [
+          1,
+          15,
+          248320
+        ],
+        "via": "insert_cast_0",
+        "consumer": "SubGraph_4:0",
+        "consumer_dtype": "float32",
+        "consumer_logical_bytes": 14899200
+      },
+      "scope": "EXPLICIT_GRAPH_DEPENDENCIES_NOT_RUNTIME_TRANSFERS_WAITS_OR_TIME_ATTRIBUTION"
+    },
+    "control_optimization_candidate": {
+      "status": "HOST_CHECKED_SELECTED_DDK_AND_DEVICE_PENDING",
+      "policy": "packed-spatial-controls",
+      "run_id": "20261103T125807Z-21638-b356b9",
+      "baseline_policy": "packed-spatial-4d",
+      "baseline_model_sha256": "c7e8007bcceb37141e2d667040ed64cc88afbc532173043deb4ee6ff4719a5b2",
+      "changes": [
+        "INT32_POSITION_UNSQUEEZE_BEFORE_FP32_CAST",
+        "EXACT_0_1_INT32_VALIDITY_CONCAT_BEFORE_EXISTING_QUERY_GATHER"
+      ],
+      "preserved": [
+        "FP32_ROPE_FREQUENCY_MATH",
+        "FULL_K_PROJECTION",
+        "ORIGINAL_FP16_WEIGHTS",
+        "FULL_VOCABULARY_HEAD_ARGMAX",
+        "17_INPUTS_14_OUTPUTS",
+        "KV_WRITE_INTERVAL",
+        "ORIGINAL_GOLDEN_AND_GATES",
+        "V1_RUNTIME_DEFAULT"
+      ],
+      "host": {
+        "scope": "SYNTHETIC_CPU_REDUCED_WIDTH_FULL_SHAPE_META_AND_MOCK_EXPORT_NOT_SELECTED_DDK_OR_DEVICE",
+        "replay_cases": 220,
+        "all_14_outputs": "BITWISE_EQUAL_TO_PACKED_SPATIAL_4D",
+        "max_abs_error": 0.0,
+        "input_mutations": 0,
+        "unwritten_kv": "BIT_EXACT",
+        "full_shape_meta_gears": 8,
+        "binding_checks": 18,
+        "mock_pipeline_checks": 14,
+        "cli_help": "PASSED"
+      },
+      "model_compilation": "NOT_RUN",
+      "compiled_abi": "NOT_BOUND",
+      "device_execution": "NOT_RUN",
+      "numerical_validation": "NOT_RUN_ON_DEVICE",
+      "placement": "UNVERIFIED",
+      "performance": "NOT_MEASURED",
+      "production_promotion": "NOT_PERFORMED",
+      "command_document": "docs/current-status.md"
+    },
+    "npu_argmax_research": {
+      "source": "PUBLIC_PRIMARY_API_DOCUMENTATION_NOT_SELECTED_DDK_HEADER_OR_KERNEL_VERIFICATION",
+      "url": "https://asc.gitcode.com/api/SIMD-API/basic_api/memory_vector_compute/reduction_compute/ReduceMax.html",
+      "x90_support": [
+        "half",
+        "float"
+      ],
+      "api": "ReduceMax(calIndex=true)",
+      "ties": "MINIMUM_INDEX",
+      "candidate": "UB_BOUNDED_TILES_WITH_LOCAL_MAX_INDEX_PLUS_INT32_OFFSET; MERGE_MAX_THEN_MIN_INDEX",
+      "half_local_index_max": 65535,
+      "full_vocabulary": 248320,
+      "rows": 15,
+      "final_int32_bytes": 60,
+      "selected_ddk_support": "UNVERIFIED",
+      "implementation": "NOT_STARTED",
+      "device_execution": "NOT_RUN",
+      "next": "BOUNDED_FULL_VOCABULARY_REDUCTION_PROBE_BEFORE_MODEL_INTEGRATION; CHECK_PLACEMENT_TIES_TAILS_AND_NONFINITE_BEHAVIOR",
+      "pipeline_limit": "DEPENDENT_CPU_CONSUMER_CANNOT_BE_HIDDEN_BY_ASYNC_ALONE; PRECOMPUTE_SCALAR_CONTROLS; CROSS_REQUEST_THROUGHPUT_NOT_SINGLE_REQUEST_LATENCY"
     }
   },
   "draft_milestone_e2e_gate": {

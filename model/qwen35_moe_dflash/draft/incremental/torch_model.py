@@ -37,9 +37,10 @@ class IncrementalDraft(nn.Module):
         self.rms = rms
         self.optimization = optimization_contract(optimization)
         self.packed = optimization != 'baseline'
-        self.spatial_projection = optimization in ('packed-spatial', 'packed-spatial-4d')
-        self.rank4_spatial = optimization == 'packed-spatial-4d'
-        self.shared_masks = optimization == 'packed-spatial-4d'
+        self.spatial_projection = optimization in ('packed-spatial', 'packed-spatial-4d', 'packed-spatial-controls')
+        self.rank4_spatial = optimization in ('packed-spatial-4d', 'packed-spatial-controls')
+        self.shared_masks = self.rank4_spatial
+        self.integer_controls = optimization == 'packed-spatial-controls'
         if self.packed:
             if attention_kernel is not None:
                 raise ValueError('packed optimization requires composed attention')
@@ -91,6 +92,19 @@ class IncrementalDraft(nn.Module):
         cosine, sine = self.draft.rotary(positions, x.dtype)
         return self.apply_rope(x, cosine, sine)
 
+    def control_rope(self, positions, dtype):
+        if not self.integer_controls:
+            return self.draft.rotary(positions, dtype)
+        # The observed NPU -> FP32 Cast -> CPU boundary has two floating
+        # [1,rows,1] tensors matching these position views. This is a source
+        # correspondence, not a decode of the opaque NPU task.
+        # Reshape the INT32 positions first; the values and FP32 multiplication
+        # are identical to DFlashRotaryEmbedding. Placement still needs OMG
+        # inspection: a source rewrite alone does not prove a CPU-only prefix.
+        frequencies = positions.unsqueeze(-1).float() * self.draft.rotary.inv_freq.view(1, 1, -1)
+        embedding = torch.cat((frequencies, frequencies), dim=-1)
+        return embedding.cos().to(dtype=dtype), embedding.sin().to(dtype=dtype)
+
     @staticmethod
     def apply_rope(x, cosine, sine):
         return x * cosine.unsqueeze(1) + _rotate_half(x) * sine.unsqueeze(1)
@@ -132,7 +146,14 @@ class IncrementalDraft(nn.Module):
         context_positions = start_position + self.context_offsets
         block_positions = end + self.block_offsets
         positions = torch.cat((self.cache_positions, block_positions), dim=1)
-        key_valid = torch.cat((self.cache_positions < end, self.block_offsets <= proposal_count), dim=1)
+        cache_valid, block_valid = self.cache_positions < end, self.block_offsets <= proposal_count
+        # This BOOL validity concat matches the NPU output consumed by the
+        # intermediate CPU mask graph in the observed partition boundaries.
+        # Concatenate exact 0/1 INT32 values, keeping the existing integer
+        # Gather expansion. No boolean BroadcastTo or arithmetic mask change.
+        if self.integer_controls:
+            cache_valid, block_valid = cache_valid.int(), block_valid.int()
+        key_valid = torch.cat((cache_valid, block_valid), dim=1)
         # Keep the GE workaround for failed BOOL query/head BroadcastTo:
         # integer Gather copies singleton axes exactly, before casting to BOOL.
         key_valid = torch.index_select(key_valid.reshape(1, 1, 1, self.capacity + b).int(),
@@ -151,8 +172,8 @@ class IncrementalDraft(nn.Module):
         hidden = self.embedding(ids.int()) * c.input_embedding_scale
         context = self.norm(self.project_features(target_features), self.draft.hidden_norm)
         if self.packed:
-            context_rope = self.draft.rotary(context_positions, context.dtype)
-            block_rope = self.draft.rotary(block_positions, hidden.dtype)
+            context_rope = self.control_rope(context_positions, context.dtype)
+            block_rope = self.control_rope(block_positions, hidden.dtype)
         if self.shared_masks:
             # Layer visibility depends only on controls and the attention
             # type. Preserve causal/window rules and the inactive-query
