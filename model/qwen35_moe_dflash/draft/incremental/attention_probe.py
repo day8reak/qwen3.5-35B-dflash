@@ -45,9 +45,29 @@ ATTENTION_CONTROLS = (
     dict(name='attention_unmasked', mask='unmasked', kv_length=224, shape=[16,4096]),
     dict(name='attention_kv32', mask='unmasked', kv_length=32, shape=[65536]),
 )
+RUNTIME_LENGTH_CONTROLS = (
+    dict(name='attention_runtime_q', mask='source', kv_length=224, runtime_ports=[16], shape=[32,16,128]),
+    dict(name='attention_runtime_kv', mask='source', kv_length=224, runtime_ports=[6], shape=[32,2048]),
+    dict(name='attention_runtime_both', mask='source', kv_length=224, runtime_ports=[6,16], shape=[16,4096]),
+    dict(name='attention_runtime_unmasked', mask='unmasked', kv_length=224, runtime_ports=[6,16], shape=[65536]),
+)
+RUNTIME_LENGTH_INPUTS = (
+    dict(name='probe_attention_all_query_length', role='all_query_length', value=16, port=16),
+    dict(name='probe_attention_kv_length', role='kv_length', value=224, port=6),
+)
 
 
-def _control_visibility(control):
+def _control_variants(controls=False, runtime_lengths=False):
+    if controls and runtime_lengths:
+        raise ValueError('choose mask/length controls or runtime-length controls, not both')
+    return RUNTIME_LENGTH_CONTROLS if runtime_lengths else ATTENTION_CONTROLS if controls else ()
+
+
+def _control_visibility(control, source_visibility=None):
+    if control['mask']=='source':
+        if source_visibility is None or source_visibility.shape!=(16,224) or source_visibility.dtype!=np.bool_:
+            raise ValueError('runtime length reference needs original source visibility')
+        return source_visibility
     visible = np.zeros((16,224),dtype=bool)
     if control['mask']=='unmasked':
         visible[:,:control['kv_length']] = True
@@ -66,8 +86,9 @@ def _contract(manifest):
             raise ValueError('source attention contract differs: '+key)
 
 
-def extract_attention(raw, schema, manifest, *, controls=False):
+def extract_attention(raw, schema, manifest, *, controls=False, runtime_lengths=False):
     """Preserve source mask/length/table nodes; never copy QKV weight ancestry."""
+    variants = _control_variants(controls, runtime_lengths)
     _contract(manifest)
     kind, _, graph = _decode(schema, raw)
     roles, _ = source_input_roles(graph, manifest['inputs'])
@@ -237,13 +258,26 @@ def extract_attention(raw, schema, manifest, *, controls=False):
     viewd = desc('DT_FLOAT16',viewdims)
     added.append(node('probe_attention_v_view','Reshape',
         [('probe_attention_v:0',desc('DT_FLOAT16',CONTRACT['kv_shape'])),('probe_attention_v_shape:0',shaped)],[viewd]))
-    control_receipts = []; control_outputs = []
-    if controls:
+    control_receipts = []; control_outputs = []; runtime_edges = {}
+    if runtime_lengths:
+        # The native probe boundary supports INT32. Exact widening preserves
+        # the source Attention's INT64 length descriptors and values 16/224.
+        # No Q extent or query length is increased.
+        for spec in RUNTIME_LENGTH_INPUTS:
+            d32,d64 = desc('DT_INT32',[1]),desc('DT_INT64',[1])
+            added.append(node(spec['name'],'Data',[('',d32)],[d32],
+                              attribute('index',integer('AttrDef','i',len(inputs)))))
+            cast = spec['name']+'_i64'
+            added.append(node(cast,'Cast',[(spec['name']+':0',d32)],[d64],
+                              attribute('dst_type',integer('AttrDef','i',9))))
+            runtime_edges[spec['port']] = cast+':0'
+            inputs.append(dict(name=spec['name'],role=spec['role'],dtype='int32',shape=[1]))
+    if variants:
         # Compare valid mask/actual-KV-length changes without guessing the
         # meaning of all_seq_lengths_q. Both query lengths stay at source 16.
         # Keep the original Attention and source-mask readback in this graph.
-        masks = {}
-        for control in ATTENTION_CONTROLS:
+        masks = {'source': (edges[4], None)}
+        for control in variants:
             name = 'probe_'+control['name']
             if control['mask'] not in masks:
                 mask = np.full(CONTRACT['mask_shape'],-np.inf,dtype='<f2')
@@ -256,13 +290,14 @@ def extract_attention(raw, schema, manifest, *, controls=False):
                 added.append(node(mask_name,'Const',[],[maskd],attribute('value',blob('AttrDef','t',tensor,11))))
                 masks[control['mask']] = (mask_name+':0',hashlib.sha256(mask.tobytes()).hexdigest())
             mask_edge,mask_sha = masks[control['mask']]
-            replacements = {4:mask_edge}
+            replacements = {} if mask_edge==edges[4] else {4:mask_edge}
             if control['kv_length']!=224:
                 lengthd = desc('DT_INT64',[1]); length_name = name+'_length'
                 tensor = blob('TensorDef','desc',lengthd,11)+blob('TensorDef','data',
                     np.array([control['kv_length']],dtype='<i8').tobytes(),12)
                 added.append(node(length_name,'Const',[],[lengthd],attribute('value',blob('AttrDef','t',tensor,11))))
                 replacements[6] = length_name+':0'
+            replacements.update({port:runtime_edges[port] for port in control.get('runtime_ports',[])})
             parts = []; slot = 0
             for f,_,e,p in _parts(changed[op['name']]):
                 if f==_field(schema,'OpDef','name',9,False):
@@ -326,25 +361,36 @@ def extract_attention(raw, schema, manifest, *, controls=False):
             dict(name='attention',dtype='float16',shape=CONTRACT['query_shape'],exact_bytes=False),
             dict(name='mask_visible',dtype='float16',shape=CONTRACT['mask_shape'],exact_bytes=True),
             dict(name='packed_v',dtype='float16',shape=viewdims,exact_bytes=True)]))
-    if controls:
-        receipt.update(policy='source-first-attention-mask-length-controls-v1',
+    if variants:
+        receipt.update(policy=('source-first-attention-runtime-lengths-v1' if runtime_lengths
+                               else 'source-first-attention-mask-length-controls-v1'),
             control_experiment=dict(branches=control_receipts,
                 original_attention='PRESERVED; BASELINE_MUST_BE_RECHECKED_IN_CHANGED_COMPILED_GRAPH',
                 query_lengths='SOURCE_16_PRESERVED_AT_PORTS_5_AND_16',
                 mask_visible='ORIGINAL_SOURCE_MASK_AUXILIARY_BRANCH; NOT_CONTROL_MASK_READBACK',
                 scope='DIAGNOSTIC_BRANCHES_ONLY; NOT_FULL_DRAFT_FIX_OR_LENGTH_PORT_PROOF'))
         receipt['graph']['outputs'].extend(dict(name=c['name'],dtype='float16',shape=c['shape'],exact_bytes=False)
-                                           for c in ATTENTION_CONTROLS)
+                                           for c in variants)
         receipt['changed'] += '; clone four Attention branches changing only mask and optional actual_seq_lengths_kv edges, with unique output views'
+        if runtime_lengths:
+            receipt['control_experiment'].update(
+                runtime_length_inputs=[dict(s,dtype='int32',attention_dtype='int64',cast=runtime_edges[s['port']])
+                                       for s in RUNTIME_LENGTH_INPUTS],
+                query_lengths='VALUES_16_PRESERVED; PORT16_SOURCE_OR_RUNTIME_AS_DECLARED',
+                scope='CONSTANT_VS_RUNTIME_LENGTH_SOURCES; VALUES_UNCHANGED; NOT_FULL_DRAFT',
+                limitation='INT32_TO_INT64_CAST_IS_ADDED; MAY_CHANGE_PLACEMENT; NO_PHYSICAL_LENGTH_READBACK')
+            receipt['changed'] = ('Preserve original Attention/mask/V outputs; add two INT32 length inputs with exact INT64 widening; '
+                                  'clone four Attention branches with declared port6/16 sources and one zero-mask control; values remain16/224')
     return extracted,receipt
 
 
-def reference_case(name, config, *, controls=False):
+def reference_case(name, config, *, controls=False, runtime_lengths=False):
     """Independent ND reference, then explicit NZ coordinate assignment.
 
     Uniform-score cases expose cache/block visibility and anchor contribution.
     The weighted case additionally exercises QK scores and GQA heads.
     """
+    control_variants = _control_variants(controls,runtime_lengths)
     variants = ((0,0,15,2,False),(0,0,15,-2,False),(16,2,15,2,False),
                 (18,0,1,2,False),(192,0,15,2,False),(18,0,15,2,True),(0,16,0,2,False))
     if name not in CASES:
@@ -397,10 +443,12 @@ def reference_case(name, config, *, controls=False):
         kv.append(p)
     inputs = [np.array([s],dtype='<i4') for s in (start,valid,count)]+[packed[0],*kv]
     outputs = [packed[1],visible.astype('<f2').reshape(CONTRACT['mask_shape']),kv[1].reshape(7,64,512)]
-    if controls:
-        for control in ATTENTION_CONTROLS:
+    if runtime_lengths:
+        inputs.extend(np.array([s['value']],dtype='<i4') for s in RUNTIME_LENGTH_INPUTS)
+    if control_variants:
+        for control in control_variants:
             logical = _diagnostic_sdpa(q.astype(np.float64),k.astype(np.float64),v.astype(np.float64),
-                                       _control_visibility(control))
+                                       _control_visibility(control,visible))
             # Same NZ output coordinates; the public view changes shape only.
             output = logical.reshape(32,16,8,16).transpose(0,2,1,3).copy()
             outputs.append(output.reshape(control['shape']))
@@ -448,7 +496,8 @@ def _replace_failed(root, replace):
 
 
 def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_diagnosis,
-                  timeout_seconds=1800, progress=print, replace=False, controls=False):
+                  timeout_seconds=1800, progress=print, replace=False, controls=False, runtime_lengths=False):
+    _control_variants(controls,runtime_lengths)
     root = output_path(output)
     if Path(output).absolute()!=root:
         raise ValueError('attention output must not contain symlink or traversal components')
@@ -458,11 +507,12 @@ def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_d
     with (root.parent/('.'+root.name+'.lock')).open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
         return _compile_probe(air_export,source,result,root,ddk_root=ddk_root,ddk_id=ddk_id,
-            tbe_diagnosis=tbe_diagnosis,timeout_seconds=timeout_seconds,progress=progress,replace=replace,controls=controls)
+            tbe_diagnosis=tbe_diagnosis,timeout_seconds=timeout_seconds,progress=progress,replace=replace,
+            controls=controls,runtime_lengths=runtime_lengths)
 
 
 def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_diagnosis,
-                   timeout_seconds, progress, replace, controls):
+                   timeout_seconds, progress, replace, controls, runtime_lengths):
     from qwen35_moe_dflash.toolchain.existing_air import _snapshot, compile_existing_air
     from qwen35_moe_dflash.toolchain.omc_embed_weights import embed_external_weights
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
@@ -490,7 +540,7 @@ def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_
             or binding['packed_model_sha256']!=meta['model']['sha256']):
         raise ValueError('recovered full model source/config binding differs')
     schema = _schema((air/'air-schema.pb').read_bytes(),manifest['schema'])
-    extracted,receipt = extract_attention(raw,schema,manifest,controls=controls)
+    extracted,receipt = extract_attention(raw,schema,manifest,controls=controls,runtime_lengths=runtime_lengths)
     snapshots = []
     widths = {0:4,1:2,3:4,9:8,12:1}  # GE operator attribute numbers.
     total = 0
@@ -532,7 +582,7 @@ def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_
             state['source_sidecars'][relative] = dict(bytes=size,sha256=digest)
         (root/'air').mkdir(exist_ok=True); (root/'air/export.air').write_bytes(extracted)
         for name in CASES:
-            ins,outs,detail = reference_case(name,cfg,controls=controls)
+            ins,outs,detail = reference_case(name,cfg,controls=controls,runtime_lengths=runtime_lengths)
             folder = root/'fixture'/name; folder.mkdir(parents=True)
             for prefix,arrays in (('input',ins),('golden',outs)):
                 for i,array in enumerate(arrays):
@@ -540,7 +590,8 @@ def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_
             state['cases'].append(dict(case=name,controls=detail,fixtures={p.name:dict(bytes=p.stat().st_size,
                 sha256=sha256_file(p)) for p in folder.iterdir()}))
         state['stage']='compile'; _save(root/'result.json',state)
-        progress('compiling one '+('source Attention plus four mask/length controls' if controls else 'source-mask/Attention')
+        progress('compiling one '+('source Attention plus four runtime-length controls' if runtime_lengths else
+                                  'source Attention plus four mask/length controls' if controls else 'source-mask/Attention')
                  +' model for seven fixtures; no learned weights')
         compilation = compile_existing_air(root/'air/export.air',root/'compilation',ddk_root,ddk_id=ddk_id,
             tbe_diagnosis=tbe_diagnosis,timeout_seconds=timeout_seconds,input_layout='air-directory',
@@ -748,16 +799,32 @@ def _attention_signatures(fixture,case,actual,reference,visible,atol,rtol):
         interpretation='MATCH_IS_A_NUMERICAL_SIGNATURE_NOT_PROOF_OF_LENGTH_PORT_OR_MASK_KERNEL_BEHAVIOR; ORIGINAL_GATE_UNCHANGED')
 
 
-def _control_observations(fixture,case,arrays,atol,rtol):
+def _control_observations(fixture,case,arrays,atol,rtol,*,runtime_lengths=False):
+    length_values = []
+    if runtime_lengths:
+        for declared in RUNTIME_LENGTH_INPUTS:
+            specs=[s for s in case['inputs'] if s.get('role')==declared['role']]
+            if len(specs)!=1 or (specs[0]['dtype'],specs[0]['shape'],specs[0]['bytes'])!=('int32',[1],4):
+                raise ValueError('runtime length fixture ABI differs: '+declared['role'])
+            spec=specs[0]
+            path=checked_file(fixture/case['case'],dict(path=f'input_{spec["index"]}.bin',
+                bytes=4,sha256=spec['fixture_sha256']))
+            value=int(np.fromfile(path,dtype='<i4')[0])
+            if value!=declared['value']:
+                raise ValueError('runtime length fixture value differs: '+declared['role'])
+            length_values.append(dict(role=declared['role'],value=value,
+                scope='HASH_BOUND_HOST_FIXTURE_NOT_DEVICE_LENGTH_READBACK'))
     q,k,v=_retained_qkv(fixture,case)
     prefix=_diagnostic_sdpa(q,k,v,np.broadcast_to(np.arange(224)<16,(16,224)))
     source=_query_nd(arrays['attention'][0]); rows=[]; nd={}
-    for control in ATTENTION_CONTROLS:
+    visibility=arrays['mask_visible'][1].reshape(16,224)==1
+    for control in _control_variants(not runtime_lengths,runtime_lengths):
         actual,expected=arrays[control['name']]
         actual,expected=(_query_nd(x.reshape(CONTRACT['query_shape'])) for x in (actual,expected))
-        prediction=_diagnostic_sdpa(q,k,v,_control_visibility(control))
+        prediction=_diagnostic_sdpa(q,k,v,_control_visibility(control,visibility))
         nd[control['name']]=(actual,expected)
         rows.append(dict(name=control['name'],mask=control['mask'],actual_seq_lengths_kv=control['kv_length'],
+            runtime_input_ports=control.get('runtime_ports',[]),
             comparison=_hypothesis_difference(actual,expected,atol,rtol),
             reference_reproduction=_hypothesis_difference(expected,prediction,atol,rtol),
             source_output_difference=_hypothesis_difference(actual,source,atol,rtol),
@@ -765,12 +832,17 @@ def _control_observations(fixture,case,arrays,atol,rtol):
             head0_channel0=dict(actual=[float(x) if np.isfinite(x) else None for x in actual[0,:,0]],
                                expected=expected[0,:,0].astype(float).tolist())))
     pairs=[]
-    for left,right in (('attention_key0','attention_key15'),('attention_unmasked','attention_kv32')):
+    pairs_to_compare=(('attention_runtime_q','attention_runtime_both'),
+                      ('attention_runtime_kv','attention_runtime_both'),
+                      ('attention_runtime_both','attention_runtime_unmasked')) if runtime_lengths else (
+                      ('attention_key0','attention_key15'),('attention_unmasked','attention_kv32'))
+    for left,right in pairs_to_compare:
         a,e=nd[left]; b,f=nd[right]
         pairs.append(dict(outputs=[left,right],actual=_hypothesis_difference(a,b,atol,rtol),
                           reference=_hypothesis_difference(e,f,atol,rtol)))
     return dict(scope='ITERATION_0_ALL_65536_ELEMENTS_PER_BRANCH; TEN_CALL_GATES_IN_COMPARISON',
         query_lengths=dict(actual_seq_lengths_q=16,all_seq_lengths_q=16),branches=rows,pair_differences=pairs,
+        runtime_length_inputs=length_values,
         limitation='ADDED_BRANCHES_MAY_CHANGE_COMPILATION; CONSTANT_MASKS_NOT_PHYSICAL_KERNEL_READBACK; NOT_FULL_DRAFT')
 
 
@@ -804,7 +876,8 @@ def diagnose(fixture,native,meta,comparison,report):
         row['attention_signatures']=_attention_signatures(
             fixture,case,aq,eq,ev,meta['atol'],meta['rtol'])
         if meta['source_evidence']['extraction'].get('control_experiment'):
-            row['attention_controls']=_control_observations(fixture,case,arrays,meta['atol'],meta['rtol'])
+            row['attention_controls']=_control_observations(fixture,case,arrays,meta['atol'],meta['rtol'],
+                runtime_lengths=meta['source_evidence']['extraction']['policy']=='source-first-attention-runtime-lengths-v1')
         if case['case'] in CASES[:2]:
             anchor_outputs[case['case']]=(aq,eq)
         cases.append(row)

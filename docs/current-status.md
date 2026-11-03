@@ -18,18 +18,54 @@ Attention同图对照现已完成：OMC `856090b9…884a0`，尝试 `qwen35_vect
 
 六组非加权输出仍逐字节符合无mask的前16行SDPA，加权组对该签名的最大差为0.00048828125。KV=32分支在六组非加权例中“通过”仅因与32行参考的差0.001953125落在原容差内，全部65536元素仍逐位不同；加权例明确失败13696元素。不能据此认定32长度已生效，也不能概括为所有mask被忽略。原动态mask的辅助读回正确，不证明Attention内核实际消费的mask或长度。
 
-下一步只读检查所选DDK的Attention实现候选、保留编译记录和可用IR，核对长度处理路径。检查绑定当前OMC、编译日志和OMG的hash；按限定目录与文件名读取源码文本，不导入厂商模块。源码存在不等于已证明编译加载它，未保存IR或安装包没有可读源码时会明确报告缺失。两个query长度仍为源值16，尚无依据将 `all_seq_lengths_q` 改成224。
+长度检查已回传：同一OMC为341503字节，未发现编译主图中的Attention节点、可读DDK源码候选或保留IR。编译日志出现ATB参数／mask检查、`seqlenQ=16`、tiling key 1329990976；另有读取ACTUAL_SEQ_LENGTHS_Q_ATTR失败后返回NOT_CHANGED的记录。query长度16本来就符合当前Q形状，这些日志没有给出有效KV长度，不能单独作为根因。内核元数据只有一份也不等于五个分支被错误合并。
 
-在**DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境**运行这一条检查并回传JSON：
+源码对照发现原Target导出把 `allQLen` 作为运行时INT64张量传入，Draft则使用值为16的FileConstant。下一步用 `--runtime-lengths` 只改变长度的来源，所有分支保持actual_seq_lengths_q=16、actual_seq_lengths_kv=224、all_seq_lengths_q=16，Q/K/V形状、属性和block table不变。第一项原Attention及mask／V回读继续保留。
+
+| 新增输出 | all_seq_lengths_q（端口16） | actual_seq_lengths_kv（端口6） | mask／参考 |
+|---|---|---|---|
+| attention_runtime_q | 运行时16 | 原常量224 | 原动态mask／原golden |
+| attention_runtime_kv | 原FileConstant16 | 运行时224 | 原动态mask／原golden |
+| attention_runtime_both | 运行时16 | 运行时224 | 原动态mask／原golden |
+| attention_runtime_unmasked | 运行时16 | 运行时224 | 全0／224行SDPA |
+
+两个新增输入在native边界为INT32，图内精确转成原Attention需要的INT64；不需要重编native runner。总计8输入／7输出。转换及新增分支可能改变编译分区，结果只用于定位长度来源的影响；没有将query长度猜改成224。三个原mask分支的golden逐字节沿用原结果含义，第四项使用独立无mask参考，原0.01／0.01门槛保持。
+
+在**DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境**编译一份小图：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_attention.py" \
-  --inspect-lengths "$AI_RUN_DIR/draft/tests/pytorch-attention-controls" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID"
+  --runtime-lengths \
+  --air-export "$AI_RUN_DIR/draft/air" \
+  --source "$AI_RUN_DIR/draft/source/prepared" \
+  --result "$AI_RUN_DIR/draft/tests/pytorch-result" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths"
 ```
 
-这一步复用已有目录，不编译、不上板、不写夹具或DDK。重点查看 `ddk_source_candidates` 的长度处理行、`compiler_records` 的算子／tiling记录，以及 `compiler_ir` 中第5／6／16号端口。主图和IR检查保留全部18个Attention输入描述；NPU不透明任务不猜解。`INSPECTED` 只表示检查完成，不代表根因或数值通过。15组新增主机检查、11组接口检查、14组对照和12组原探针回归通过；所选DDK的实际检查结果待回传。
+返回 `COMPILED` 后执行：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths" \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths-run" --apply
+```
+
+回收同一次执行并分析；若仍在运行，只重复recover：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths-result"
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-runtime-lengths-result"
+```
+
+原Attention仍可能失败，因此看 `attention_controls.branches` 的各自比较，不只看整例状态。只改端口16的分支恢复可支持allQLen来源影响；只改端口6恢复可支持KV长度来源影响；两者都改仍为前16行特征则说明本实验未解决长度问题。这些都不能直接代替完整Draft复测。7组新增主机检查覆盖原图字节保留、GraphDef／ModelDef、8输入7输出、两种长度的精确扩展、七例独立SDPA、乱序ABI、十次比较、前16行故障和错误长度拒绝；14组原对照、12组原探针回归通过。实际DDK编译及设备结果待回传。
 
 以下为首次导出／工具链准备的说明，本轮无需重复执行。当前预处理继续保留Reshape链简化、静态ZerosLike物化和FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。每个节点的来源、形状及修改前后标志保存在`compilation/air-preparation.json`中。
 

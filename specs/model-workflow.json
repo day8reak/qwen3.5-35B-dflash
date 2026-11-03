@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_ATTENTION_FIXED_MASKS_PASS_KV_LENGTH_CONTROL_UNCHANGED_INSPECTION_PENDING",
+    "status": "PYTORCH_ATTENTION_LENGTH_INSPECTION_UNRESOLVED_RUNTIME_SOURCE_CONTROLS_PENDING",
     "entry": "targets/cpro/tools/probe_draft_attention.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "LATEST_FULL_MODEL_TOP1_0_OF_86_PER_MODE; EMPTY_CONTEXT_NONZERO_IDENTICAL_ROWS; COMMON_PREFIX_ANCHOR_INSENSITIVE",
-    "next": "Run --inspect-lengths on retained pytorch-attention-controls with selected DDK. Fixed key0/key15 masks pass exactly; unmasked KV224/KV32 outputs are identical and match prefix16. Inspect implementation and retained compilation before changing length semantics. Full Draft remains NUMERICAL_FAILED.",
+    "next": "Compile and run --runtime-lengths: preserve original branch; compare constant/runtime allQLen16 and KV224 inputs. Selected DDK inspection found ATB query16 but no source/IR or effective KV evidence. Full Draft remains NUMERICAL_FAILED.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",

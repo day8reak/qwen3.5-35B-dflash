@@ -1709,7 +1709,7 @@
         "limitations": "NO_PROJECTIONS_ROPE_OR_QKV_PACKING_OPERATORS; AUXILIARY_OUTPUTS_CAN_CHANGE_FUSION; NO_PHYSICAL_KERNEL_INPUT_READBACK",
         "mask_readback": "EQUAL_ZERO_SELECT_FP16_ONE_OR_ZERO; EXACT_BYTES",
         "failed_retry_checks": 19,
-        "next": "INSPECT_SELECTED_DDK_ATTENTION_LENGTH_IMPLEMENTATION_AND_RETAINED_COMPILER_RECORDS; NO_RECOMPILE_OR_DEVICE_RUN",
+        "next": "COMPILE_AND_RUN_CONSTANT_VS_RUNTIME_LENGTH_SOURCE_CONTROLS; SAME_VALUES_QUERY16_KV224",
         "previous_compile": {
           "source": "USER_PASTED_DDK_LOG_2026_11_03; NOT_INDEPENDENTLY_READ",
           "policy": "source-first-attention-mask-packed-qkv-v1",
@@ -2088,7 +2088,7 @@
         },
         "length_inspection": {
           "entry_option": "--inspect-lengths",
-          "status": "HOST_CHECKED_SELECTED_DDK_INSPECTION_PENDING",
+          "status": "USER_REPORTED_INSPECTED_NO_SOURCE_OR_IR_LENGTH_HANDLING_UNRESOLVED",
           "host_checks": 15,
           "interface_regression_checks": 11,
           "control_regression_checks": 14,
@@ -2097,7 +2097,84 @@
           "source_candidates": "NOT_PROOF_OF_IMPLEMENTATION_LOADED",
           "query_lengths_changed": false,
           "full_draft_changed": false,
-          "selected_ddk_inspection": "NOT_RUN"
+          "selected_ddk_inspection": "USER_REPORTED_INSPECTED",
+          "observation": {
+            "source": "USER_PASTED_READ_ONLY_INSPECTION; NOT_INDEPENDENTLY_READ",
+            "model_bytes": 341503,
+            "model_sha256": "856090b9aaa37a5d578ba297da0229eb2ef9325aa3a8e12ab166f9301e3884a0",
+            "omg_sha256": "f199b5cdc78eb694d78c952b6a15feada16a6f6196f39358e739670eae932aa0",
+            "compile_log_sha256": "b270f2ba1161e9f20d86f57ab2564afcfb8dbf8f02d44b23b4b8f1345c1e65bd",
+            "compiler_report_sha256": "a11e69b49651d19f848e5bb36cd7a5ce88ae139e28a9de6e1e891c9271a925fa",
+            "compiled_main_graph_matches": 0,
+            "compiler_ir": "NO_DUMPS",
+            "ddk_source_candidates": 0,
+            "scanned_entries": 3801,
+            "selected_log_observations": [
+              "ACTUAL_SEQ_LENGTHS_Q_ATTR_GET_FAILED_PASS_RETURNED_NOT_CHANGED",
+              "KV32_CONST_SKIP_INT64_TO_INT32",
+              "ATB_PARAM_AND_MASK_CHECK_SUCCESS",
+              "seqlenQ=16",
+              "tiilingkey=1329990976; blockdim=1; opParaSize=992"
+            ],
+            "meaning": "QUERY16_EXPECTED; EFFECTIVE_KV_LENGTH_NOT_REPORTED; KERNEL_REUSE_NOT_BRANCH_MERGE_PROOF"
+          }
+        },
+        "runtime_length_controls": {
+          "status": "HOST_CHECKED_DDK_AND_DEVICE_PENDING",
+          "policy": "source-first-attention-runtime-lengths-v1",
+          "entry_option": "--runtime-lengths",
+          "output": "draft/tests/pytorch-attention-runtime-lengths",
+          "source_difference": "ORIGINAL_TARGET_ALLQLEN_RUNTIME_INPUT; DRAFT_FILECONSTANT16",
+          "values": {
+            "actual_seq_lengths_q": 16,
+            "actual_seq_lengths_kv": 224,
+            "all_seq_lengths_q": 16
+          },
+          "native_inputs": 8,
+          "native_outputs": 7,
+          "added_input_dtype": "INT32_EXACT_WIDENING_TO_INT64_INSIDE_GRAPH",
+          "branches": [
+            {
+              "name": "attention_runtime_q",
+              "runtime_ports": [
+                16
+              ],
+              "mask": "source"
+            },
+            {
+              "name": "attention_runtime_kv",
+              "runtime_ports": [
+                6
+              ],
+              "mask": "source"
+            },
+            {
+              "name": "attention_runtime_both",
+              "runtime_ports": [
+                6,
+                16
+              ],
+              "mask": "source"
+            },
+            {
+              "name": "attention_runtime_unmasked",
+              "runtime_ports": [
+                6,
+                16
+              ],
+              "mask": "unmasked"
+            }
+          ],
+          "host_checks": 7,
+          "mask_length_regression_checks": 14,
+          "source_probe_regression_checks": 12,
+          "original_attention_retained": true,
+          "query_lengths_changed": false,
+          "full_draft_changed": false,
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN",
+          "scope": "CONSTANT_VS_RUNTIME_LENGTH_SOURCES; VALUES_UNCHANGED; NOT_FULL_DRAFT"
         }
       }
     }

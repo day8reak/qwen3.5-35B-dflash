@@ -82,6 +82,15 @@ Attention探针现在单独启用 `COMPILED_GRAPHDEF_INPUT_REFERENCES` 绑定，
 新增只读 `probe_draft_attention.py --inspect-lengths`：校验既有OMC和所选OMG的hash，读取保留编译日志／文本元数据，按所选DDK的限定算子目录及Attention文件名寻找可读实现／注册候选，输出长度相关行号和hash。已有IR检查扩展到32个端口，完整保留Attention的18个输入及第16端口生产者。源码候选不是已加载实现证明；缺少IR／源码、不透明NPU任务和读取限额均明确报告。不执行厂商代码、不改图、权重、fixture、DDK或数值门槛。15组新增主机检查覆盖只读性、准确行号、hash命名编译元数据、端口16、DDK／OMG／日志／元数据篡改拒绝、路径与符号链接边界、读取限额及CLI互斥；11组接口、14组对照和12组原探针回归通过。真实DDK长度检查尚待用户执行，完整Draft仍NUMERICAL_FAILED，未提升。
 
 
+2026-11-03，用户回传 `--inspect-lengths`：同一controls OMC为341503字节，hash仍为 `856090b9aaa37a5d578ba297da0229eb2ef9325aa3a8e12ab166f9301e3884a0`。所选OMG hash为 `f199b5cdc78eb694d78c952b6a15feada16a6f6196f39358e739670eae932aa0`；编译report hash为 `a11e69b49651d19f848e5bb36cd7a5ce88ae139e28a9de6e1e891c9271a925fa`。主图没有匹配Attention节点，IR为NO_DUMPS；限定SDK目录扫描3801项、未触限，未找到可读实现候选。这不证明整个安装包没有实现。
+
+compile.log为985893字节／8862行，hash `b270f2ba1161e9f20d86f57ab2564afcfb8dbf8f02d44b23b4b8f1345c1e65bd`。摘录出现ACTUAL_SEQ_LENGTHS_Q_ATTR读取失败后返回NOT_CHANGED、KV32常量跳过INT64→INT32转换、ATB参数／mask检查成功、`seqlenQ=16`、tiling key 1329990976、blockdim1及992字节参数容量。唯一保留的Attention kernel JSON为602字节，hash `fa90f1f9361b8032e5d1ccf764a4c8222299cb29abb2a57fbfeba9276ca60a30`，声明AiCore与opParaSize992。query16与Q形状一致，摘录未提供有效KV长度或完整参数映射；NOT_CHANGED不是本次成功编译的终止错误，单个kernel文件也不证明分支错误合并。此轮只读检查没有新增编译或设备执行。
+
+本地再次核对原Target的export调用：`allQLen=torch.tensor([seq_len], dtype=torch.int64)` 作为 `dynamo_export` 的运行时输入，转发到GE端口16；当前Draft同值来自FileConstant。这是已识别的结构差异，尚不是实机根因。新增 `--runtime-lengths` 同图对照保留原Attention、源mask及V回读，另加四分支：仅端口16改运行时16、仅端口6改运行时224、两端口同时改、两端口同时改且mask全0。两个INT32公开输入经Cast精确扩展到INT64，所有query16／KV224值、QKV／block table／Attention属性保持，8输入7输出沿用现有native runner。图内Cast和新增分支可能改变分区；没有用未知端口解释扩大Q长度，也没有修改完整模型。
+
+7组新主机合成／mock检查通过，覆盖GraphDef／ModelDef原节点字节保持、声明外端口不变、8／7 ABI及唯一输出视图、INT32→INT64精确解释、全部七组原golden与前三个新分支一致、独立PyTorch SDPA、编译失败／重试与准备流程、乱序物理槽位、十次比较、全分支错误截到前16行时仍失败、单分支故障、hash有效但值错误的runtime长度拒绝、CLI互斥。14组mask／长度对照和12组原探针回归通过；真实DDK编译与板端执行均待用户完成。原数值门槛及完整Draft NUMERICAL_FAILED、未提升状态保持。
+
+
 ## 此前PyTorch独立执行：加载成功，数值失败
 
 2026-11-02，用户回传尝试`ec3f7c3136ac43fcb927c25eef63f4e3`的完整比较摘要：`EXECUTED_OUTPUTS_RETRIEVED`、`NUMERICAL_FAILED`，任务完成且锁释放。两组各19次调用全部完成，说明本次已经跨过此前的Fill加载失败；38例均未通过原比较门槛。以下为用户回传，未独立读取原始板端张量，随后离线诊断报告OMC SHA256为 ce11666f9298ec7453bbdcdfe1e3a3a38d396cd12a0bd13f9faf6c82c4981ad6。
