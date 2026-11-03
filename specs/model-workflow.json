@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_ATTENTION_RUNTIME_LENGTHS_FAILED_DIAGNOSTIC_MATRIX_PENDING",
-    "entry": "targets/cpro/tools/probe_draft_attention.py",
+    "status": "COMPOSED_ATTENTION_IMPLEMENTED_FULL_DRAFT_ACCURACY_PENDING",
+    "entry": "targets/cpro/tools/validate_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "LATEST_FULL_MODEL_TOP1_0_OF_86_PER_MODE; EMPTY_CONTEXT_NONZERO_IDENTICAL_ROWS; COMMON_PREFIX_ANCHOR_INSENSITIVE",
-    "next": "Compile --matrix (eight independent small models,129 fixtures); execute compiled groups, recover and analyze. Test length/page/mask/layout/shape hypotheses including Target head geometry. Full Draft remains NUMERICAL_FAILED.",
+    "next": "User runs current composed-attention export, compile, validate and recover commands. Review full Draft Top1, hidden and KV before promotion; projection performance remains a separate proposed experiment.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6132,6 +6132,21 @@
       "resume": "ONLY_ON_USER_REQUEST"
     },
     "latest_attention_observation": "127 unique synthetic cases compared; effective KV prefix tracks co-varied Q quantities. User selected composed attention for full Draft accuracy.",
-    "composed_attention": "specs/dflash-execution-state.json#incremental_draft_task/composed_attention"
+    "composed_attention": "specs/dflash-execution-state.json#incremental_draft_task/composed_attention",
+    "projection_review": {
+      "status": "HOST_LAYOUT_CHECKED_TARGET_EXPERIMENT_PROPOSED",
+      "run_id": "20261103T095423Z-15096-6621a2",
+      "document": "docs/results.md",
+      "first_candidate": "MOVE_TOKEN_BATCH_TO_NONOVERLAPPING_CONV_SPATIAL_PATCHES; PRESERVE_FULL_K_DOT_AND_FP16_BOUNDARIES",
+      "host_scope": "SYNTHETIC_FULL_WIDTH_WEIGHT; M1_2_16_64; RANDOM_AND_BOUNDARY_IMPULSES",
+      "host_cases": 8,
+      "spatial_vs_original_conv_bitwise_equal": true,
+      "max_abs_error_vs_linear": 0.00048828125,
+      "other_candidates": "SMALL_CONTEXT_GEARS_AND_ZERO_APPEND_SPECIALIZATION; SPLIT_K_DEFERRED_DUE_TO_PARTIAL_SUM_ROUNDING",
+      "graph_and_commands_changed": false,
+      "model_compilation": "NOT_RUN_FOR_PROJECTION_CANDIDATE",
+      "device_execution": "NOT_RUN",
+      "device_speedup": "NOT_MEASURED"
+    }
   }
 }
