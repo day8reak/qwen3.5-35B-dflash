@@ -20,6 +20,8 @@ def main(argv=None):
     source.add_argument('--inspect-air', help='read an existing successful or failed PyTorch AIR export; no model or SDK execution')
     source.add_argument('--finalize-air', help='recheck a saved Draft AIR after export failure and move it to --output; no re-export')
     parser.add_argument('--frontend', choices=('ge', 'pytorch'), default='ge')
+    parser.add_argument('--optimization', choices=('baseline', 'packed', 'packed-spatial'), default='baseline',
+                        help='PyTorch graph candidate; packed-spatial also changes full-dot Conv token layout')
     parser.add_argument('--torchair-pb2', help='installed TorchAir literal schema; normally discovered automatically')
     parser.add_argument('--replace', action='store_true', help='replace a finished AIR bundle after successful PyTorch export/import')
     parser.add_argument('--context-rows', type=int, choices=(16, 64), default=16)
@@ -31,6 +33,8 @@ def main(argv=None):
     parser.add_argument('--timeout-seconds', type=int, default=3600)
     parser.add_argument('--output')
     args = parser.parse_args(argv)
+    if args.optimization != 'baseline' and (args.frontend != 'pytorch' or not args.prepared):
+        parser.error('--optimization requires --frontend pytorch --prepared')
     if not args.inspect_air and not args.output:
         parser.error('--output is required for export/import')
     if args.inspect_air and (args.output or args.replace):
@@ -60,7 +64,7 @@ def main(argv=None):
             from qwen35_moe_dflash.draft.incremental.torch_export import export_pytorch
             result = export_pytorch(args.prepared, args.output, context_rows=args.context_rows,
                 cache_capacity=args.cache_capacity, max_draft_tokens=args.max_draft_tokens,
-                replace=args.replace, torchair_pb2=args.torchair_pb2,
+                replace=args.replace, torchair_pb2=args.torchair_pb2, optimization=args.optimization,
                 progress=lambda value: print('pytorch-draft: ' + value, flush=True))
             shown = {k: v for k, v in result.items() if k not in ('inputs', 'outputs')}
             shown.update(input_count=len(result.get('inputs', [])), output_count=len(result.get('outputs', [])))

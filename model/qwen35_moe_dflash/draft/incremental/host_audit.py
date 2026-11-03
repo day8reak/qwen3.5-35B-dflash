@@ -101,6 +101,8 @@ def audit_reference(path, source, air_export, output, progress=lambda x: None):
         raise ValueError('refusing to overwrite an unrelated audit output')
     binding = read_json(fixture/'pytorch-abi.json')
     plan, exported = read_json(source/'prepared.json'), read_json(air/'manifest.json')
+    from .optimization import manifest_policy, optimization_contract
+    policy = manifest_policy(exported)
     if (meta.get('frontend') != 'pytorch'
             or binding.get('packed_model_sha256') != meta['model']['sha256']
             or binding.get('prepared_sha256') != sha256_file(source/'prepared.json')
@@ -109,7 +111,7 @@ def audit_reference(path, source, air_export, output, progress=lambda x: None):
     if (exported.get('artifact_kind') != 'qwen35-incremental-draft-pytorch-air'
             or exported.get('status') != 'PYTORCH_DRAFT_AIR_EXPORTED'
             or exported.get('attention', {}).get('policy') != 'composed-attention-v1'
-            or exported.get('projection') != 'PYTORCH_CONV2D_4X4_FULL_K'
+            or exported.get('projection') != optimization_contract(policy)['projection']
             or any(exported[k] != meta[k] for k in GEOMETRY)):
         raise ValueError('host audit requires the matching composed-attention full-dot Conv export')
     bound = {r['name']: r['sha256'] for r in binding['reference_weights']}
@@ -128,7 +130,7 @@ def audit_reference(path, source, air_export, output, progress=lambda x: None):
     os.environ['TORCH_DEVICE_BACKEND_AUTOLOAD'] = '0'
     import torch
     from . import torch_model
-    model = torch_model.load_prepared(source, **{k: meta[k] for k in GEOMETRY})
+    model = torch_model.load_prepared(source, optimization=policy, **{k: meta[k] for k in GEOMETRY})
     if model.attention_contract() != exported['attention']:
         raise ValueError('current host source attention contract differs from the retained export')
     roles = [r['name'] for r in model.abi()['inputs']]
@@ -139,11 +141,13 @@ def audit_reference(path, source, air_export, output, progress=lambda x: None):
         source_numerical_validation=original['numerical_validation'],
         scope='CPU_SOURCE_MATH_REPLAY_OF_SELECTED_ISOLATED_CASES_NOT_TARGET_EXECUTION',
         device_execution='NOT_RUN', model_compilation='NOT_RUN', production_promotion='NOT_PERFORMED',
+        optimization=optimization_contract(policy),
         model_sha256=meta['model']['sha256'], board_attempt=result.get('board_attempt'),
         comparison=meta['comparison'], controls=control_evidence,
         host_source_sha256=sha256_file(Path(torch_model.__file__)), torch_version=torch.__version__,
         host_sources={name: sha256_file(Path(__file__).resolve().parents[2]/name) for name in (
             'draft/incremental/torch_model.py', 'draft/incremental/host_audit.py',
+            'draft/incremental/optimization.py',
             'model.py', 'ops.py', 'config.py')},
         source_air_sha256=binding['source_air_sha256'], prepared_sha256=binding['prepared_sha256'],
         rms_variants=dict(source_fused_gamma='FP32_NORMALIZE_AND_GAMMA_THEN_FP16',

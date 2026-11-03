@@ -426,7 +426,9 @@ def inspect_pytorch_air(directory):
 
 
 def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max_draft_tokens=15,
-                   replace=False, torchair_pb2=None, progress=print):
+                   replace=False, torchair_pb2=None, progress=print, optimization='baseline'):
+    from .optimization import optimization_contract
+    contract = optimization_contract(optimization)
     from qwen35_moe_dflash.toolchain.export import require_torchair
     torchair = require_torchair()
     import torch
@@ -450,11 +452,11 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
                 raise OSError(f'AIR export needs at least {required} free bytes for weights and reserve')
             progress('loading Draft, embedding and head from shared prepared FP16 weights')
             model = load_prepared(prepared, context_rows=context_rows, cache_capacity=cache_capacity,
-                                  max_draft_tokens=max_draft_tokens, rms=rms)
+                                  max_draft_tokens=max_draft_tokens, rms=rms, optimization=optimization)
             result.update(**model.abi(), schema={k: metadata[k] for k in ('schema_file', 'schema_package')},
                 torch_version=torch.__version__, torchair_version=getattr(torchair, '__version__', 'unknown'),
                 attention=model.attention_contract(),
-                projection='PYTORCH_CONV2D_4X4_FULL_K', stage='torchair-export')
+                optimization=contract, projection=contract['projection'], stage='torchair-export')
             _save(root / 'manifest.json', result)
             (root / 'air-schema.pb').write_bytes(descriptor)
             progress('TorchAir export: 17 inputs, 14 outputs, 6 composed MatMul/Softmax attention layers; committed ND KV retained')
@@ -584,8 +586,9 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
         return prepared, evidence
     with _slot(output, OMC_KIND, replace) as root:
         result = {k: manifest[k] for k in ('context_rows', 'cache_capacity', 'max_draft_tokens', 'inputs', 'outputs', 'rms', 'gamma')}
-        if 'attention' in manifest:
-            result['attention'] = manifest['attention']
+        for key in ('attention', 'optimization', 'projection'):
+            if key in manifest:
+                result[key] = manifest[key]
         result.update(artifact_kind=OMC_KIND, status='COMPILING', stage='compile', frontend='pytorch',
             source_air_validation=inspection['validation_status'],
             source_deferred_shape_count=len(inspection['deferred_shapes']),

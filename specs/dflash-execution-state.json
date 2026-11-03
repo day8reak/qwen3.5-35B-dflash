@@ -336,10 +336,10 @@
   },
   "next_action": {
     "phase": "P4",
-    "type": "implement_graph_optimization_candidates_from_reference_review",
-    "implementation_required": true,
+    "type": "compile_and_measure_packed_spatial_draft",
+    "implementation_required": false,
     "command_document": "docs/current-status.md",
-    "note": "Review complete at pinned 4B commit; prioritize packed projections, grouped GQA and shared RoPE with separate baseline comparisons. Keep Conv and NPU Top1 hotspots in scope. No new model or measured speedup yet; 492.707ms gap remains unattributed."
+    "note": "First graph candidate implemented and host checked. User runs selected-DDK export/compile, accuracy recovery and same-model vendor profile via docs/current-status.md. 50ms remains unachieved; runtime/operator gap remains unattributed."
   },
   "last_actual_execution": {
     "schema_version": 1,
@@ -589,8 +589,8 @@
         1,
         3
       ],
-      "next_action_type": "performance_diagnosis_on_user_accepted_baseline",
-      "next_action": "用户已接受当前数值范围，先读取当前5个子图边界、定位模型推理与算子加和差额；保留Conv空间排布候选。原精度报告不改写，未提升生产。",
+      "next_action_type": "compile_and_measure_packed_spatial_draft",
+      "next_action": "第一轮图优化已实现并通过主机检查；用户执行所选DDK导出／编译、精度回收和同模型CSV。保留旧基线并继续定位运行时耗时差额，50ms未达成。",
       "pass_conditions": [
         "real newAIR andOMC, not metadata relabel",
         "named17inputs14outputs typed ABI",
@@ -1032,7 +1032,7 @@
         "model_load",
         "initial_context_catchup"
       ],
-      "comparison": "SAME_INPUTS_CACHE_LENGTH_REQUESTED_FREQUENCY; EXISTING_518990_US_IS_ONE_PROFILE_NOT_WARM_BASELINE"
+      "comparison": "SAME_INPUTS_CACHE_LENGTH_REQUESTED_FREQUENCY; USER_MODEL627.647MS_PROFILE_IS_NOT_WARM_BENCHMARK"
     },
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",
@@ -2547,6 +2547,65 @@
       "physical_cause": "UNRESOLVED",
       "target_scope": "SYNTHETIC_GEOMETRY_NOT_TARGET_AIR_OR_MODEL",
       "investigation": "DEFERRED_BY_USER"
+    },
+    "optimization_candidate": {
+      "status": "IMPLEMENTED_HOST_CHECKED_PENDING_SELECTED_DDK_AND_DEVICE",
+      "run_id": "20261103T105358Z-18207-11e412",
+      "policies": [
+        "baseline",
+        "packed",
+        "packed-spatial"
+      ],
+      "recommended": "packed-spatial",
+      "default": "baseline",
+      "changes": [
+        "PACK_CONTEXT_BLOCK_KV",
+        "PACK_GATE_UP",
+        "GROUP_QUERY_WITHOUT_KV_COPY",
+        "SHARED_ROPE",
+        "OPTIONAL_FULL_DOT_SPATIAL_CONV"
+      ],
+      "abi": {
+        "inputs": 17,
+        "outputs": 14
+      },
+      "weights": "ORIGINAL_FP16_SEGMENTS_BYTE_VERIFIED; NO_SPLIT_K_OR_QUANTIZATION",
+      "host": {
+        "comparisons": 440,
+        "bitwise": 427,
+        "max_abs_error": 0.005859375,
+        "top1_mismatches": 0,
+        "unwritten_kv": "BIT_EXACT",
+        "full_width_conv_cases": 2,
+        "full_width_meta_captures": 10,
+        "linear_calls": [
+          55,
+          31
+        ],
+        "sin_cos_each": [
+          18,
+          2
+        ],
+        "parameter_bytes": 2806049792,
+        "binding_checks": 19,
+        "mock_pipeline_checks": 14,
+        "baseline_audit_checks": 14,
+        "packed_audit_checks": 14
+      },
+      "model_compilation": "NOT_RUN",
+      "device_execution": "NOT_RUN",
+      "performance": "UNMEASURED",
+      "command_document": "docs/current-status.md"
+    },
+    "performance_schedule_estimate": {
+      "workdays": [
+        5,
+        7
+      ],
+      "assumptions": "1_TO_2_USER_COMPILE_BOARD_FEEDBACK_ROUNDS_PER_DAY",
+      "commitment": "VALIDATION_WINDOW_NOT_50MS_GUARANTEE",
+      "main_risk": "UNATTRIBUTED_RUNTIME_DURATION_GAP",
+      "reassess": "AFTER_FIRST_OPTIMIZED_DEVICE_MEASUREMENT"
     }
   },
   "draft_milestone_e2e_gate": {

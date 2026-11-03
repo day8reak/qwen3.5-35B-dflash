@@ -2,6 +2,21 @@
 
 2026-11-03，用户在确认“最差hidden相对L2约2.61%、Top1共7/172不一致”后明确回复：**“接受本轮结果，先优化性能”**。当前组合版作为性能优化基线，暂停继续追查数值差异。此决定针对已观测的OMC与用例，原报告的NUMERICAL_FAILED、逐元素门槛及golden保留；后续候选仍须报告相对本基线的数值变化，不能由此次接受推出任意额外近似均已获准。生产未提升。
 
+2026-11-03，第一轮图优化已实现，尚未运行所选DDK或设备。新增显式 `--optimization packed` 与 `packed-spatial`，默认baseline便于保留现有路径。packed把同层context/block拼行后合并K/V投影，合并MLP gate/up输出通道；query折叠到KV头组，避免复制KV；context/block各计算一次RoPE供六层复用。packed-spatial进一步将C16 token排为4×4个空间patch，在[1,1024,16,16]上以stride4执行原[2048,1024,4,4]完整点积权重；C64对应[1,1024,32,32]。没有拆K、量化、缩词表或改KV写入规则。
+
+| 本地主机检查 | 结果与范围 |
+|---|---|
+| 六层缩小宽度、两档C、四档K、滑窗开关、连续反馈 | 440个优化版对照均通过0.01／0.01；427逐位一致，最大绝对差0.005859375；Top1全部一致，输入只读，未写KV逐位保持 |
+| 实际16384→2048特征投影 | C16/C64的空间Conv与batch Conv逐位一致，随机合成FP16输入与权重 |
+| 完整配置meta捕获 | 10图；55→31线性投影、sin/cos各18→2、31→19个INT32 Gather（删除12次KV头复制）；12attention MatMul、6FP32 Softmax、32测试RMS、17／14接口不变 |
+| 权重组织 | 71→59参数文件、学习参数总字节数2806049792不变；逐段绑定原始prepared，交换K/V、损坏snapshot等拒绝，19项检查通过 |
+| 导出／编译控制链 | 14项protobuf夹具与mock工具链检查通过，含packed-spatial元数据透传及可见融合attention拒绝；未调用真实OMG |
+| CPU结果审计 | 原版和packed-spatial各14项检查通过，均保留旧门槛、失败状态和golden |
+
+证据run `20261103T105358Z-18207-11e412`。以上检查不证明设备舍入、编译分区或速度；本地没有所选CPro DDK，未访问用户设备。新的17／14语义绑定支持Conv前空间Transpose，合并权重通过原K/V和gate/up各段hash核对。现有native runner、公共AIR/OMC、参考数学和验收门槛未替换。操作命令已收敛到[当前阶段测试](current-status.md)，先导出/编译packed-spatial，再精度回收与同模型CSV；需要辨别Conv影响时改为packed，复用同一已结束候选槽位。
+
+50ms目标按C16/cap192/K15常驻同步API、同输入3次预热加10次测量判断。用户询问工期，暂以5～7个工作日安排验证窗口，前提每天1～2轮编译／板端反馈；不是达标承诺。当前627.647ms模型时间与134.940ms算子加和之间的差额仍未归因，NPU侧完整词表Top1和运行时边界优化尚未实现。首轮真实结果后再估计。
+
 当前基线OMC SHA256：`288644ea39913fc49466ed4b6d9329825b6ea819259c266c4601cba391b5e182`，来自用户回传的真实权重CPU审计。源数学在四个选定isolated case中通过原参考门槛，两种gamma舍入边界报告的指标相同；这不能证明所有中间张量逐位相同或编译后算术精度。
 
 | case | CPU hidden相对L2 vs reference | CPU新增KV最大绝对差 | device hidden相对L2 vs CPU | device新增KV最大绝对差 |
@@ -55,7 +70,7 @@
 
 FC宽K对照：4B FP16为8×2560=20480，输出2560；4B W4/W8为5×2560=12800；当前35B为8×2048=16384，输出2048。4B FP16的K反而更大，不能按Target总参数量判断Draft投影宽度。参考源码直接调用Linear，使用310P/ATC；本地此前用户日志明确在matmul_nd_check_support.cc的CheckBatchMatMulCubeDim拒绝K>8000，并绑定draft.fc对应的__ge/v20/flat_output。该限制只属于已观察的所选OMG实现路径，不是X90所有矩阵乘的硬件上限。现有69.038ms Conv是该FC的完整点积等价表达，并非Target GatedDeltaNet时序卷积；4B源码没有同一Conv路径。历史拒绝记录见[完整Draft K限制](history/validation.md#完整-draft-k-限制与完整点积卷积表达)，4B尺寸见[配置](https://github.com/day8reak/qwen3.5-4B-dflash/blob/90186732d915e8b058b2a053d205991d805eae76/models/dflash_v1/dflash_config.py#L211)。
 
-实施顺序：先做保持既有接口/精度边界的投影合并、GQA与RoPE共享候选；保留Conv空间排布与NPU侧完整词表Top1作为现有profile热点实验。随后评估严格valid-row KV更新、纯catchup图和Target→Draft常驻buffer集成。每项分别检查编译放置、相对已接受基线的hidden/Top1/KV变化及完整同步调用时间。当前执行图、权重、原始数值报告均未修改。
+实施顺序：先做保持既有接口/精度边界的投影合并、GQA与RoPE共享候选；保留Conv空间排布与NPU侧完整词表Top1作为现有profile热点实验。随后评估严格valid-row KV更新、纯catchup图和Target→Draft常驻buffer集成。每项分别检查编译放置、相对已接受基线的hidden/Top1/KV变化及完整同步调用时间。该段为实施前评审；第一轮候选现已接入，主机结果与剩余工作见页首。原始prepared权重与旧数值报告保留。
 
 以下为本轮原始数值验证及此前调查记录。
 

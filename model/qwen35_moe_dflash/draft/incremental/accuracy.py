@@ -164,6 +164,9 @@ def prepare(compiled, source, air, output, *, seed=17, atol=0.01, rtol=0.01, ddk
         profile_case=2, ddk_id=meta['ddk_id'], frontend='pytorch' if pytorch else 'ge',
         internal_precision='UNVERIFIED_AFTER_COMPILATION' if pytorch else 'COMPILED_POLICY_CHECKED',
         production_promotion='NOT_PERFORMED')
+    for key in ('optimization', 'projection'):
+        if key in meta:
+            result[key] = meta[key]
     (out / 'manifest.json').write_text(json.dumps(result, indent=2)+'\n')
     return result
 

@@ -1,32 +1,75 @@
 # 当前阶段测试命令
 
-2026-11-03，用户明确接受本轮组合attention完整Draft作为性能优化基线：最差hidden相对L2约2.61%，Top1共7/172不一致，新增KV相对L2约0.44%～0.83%。未写KV逐位保持，两个feedback重复逐位稳定。当前OMC SHA256为`288644ea39913fc49466ed4b6d9329825b6ea819259c266c4601cba391b5e182`。此次接受针对已观测结果；原0.01／0.01逐元素及Top1零差异报告仍为NUMERICAL_FAILED，golden不改，生产未提升。
+当前目标是 C16／cap192／K15 常驻同步 Process 的预热后平均耗时 ≤50 ms，包含内部调度、同步和搬运，排除加载与初始 catchup。用户已接受上一版最差 hidden 相对 L2 2.61%、Top1 7/172 不一致，先优化性能；原 NUMERICAL_FAILED 和 golden 保留。
 
-四个代表case的真实权重CPU审计已由用户执行：两种RMS gamma边界的host_vs_reference均通过，剩余板端差异尚未定位具体算子。按用户要求暂停精度追查，先优化性能。
+2026-11-03，第一轮优化代码已接入 PyTorch Draft，选项如下。原有命令默认 baseline；本轮推荐先测 packed-spatial。
 
-当前composed-attention-v1为CPUCL=3／NPUCL=2，共5个子图。用户回传同次厂商profile：模型推理627.647ms，算子耗时加和134.940ms，两者相差492.707ms。加载231.187ms、卸载7.652ms另计，表底866.486ms是三项合计。inference begin的`09:47:25.89418`按未补齐六位的微秒字段解释为`.089418`，与结束`.717065`相减吻合。算子start字段不能直接拼成统一执行时间线；差额尚不能归因为CPU、搬运或IPC。此前760.223／773.596ms是混合输入精度调用的Process均值，不与本次单次profile直接相减。
+| --optimization | 内容 |
+|---|---|
+| baseline | 原独立投影、KV 复制和 batch Conv |
+| packed | context/block 合并 K/V 投影、gate/up 合并、GQA 折叠 query、共享 RoPE |
+| packed-spatial | packed 加上 Conv 空间排布；C16 从 [16,1024,4,4] 改为 [1,1024,16,16]、stride4 |
 
-Conv69.038ms、末尾MatMul19.975ms、CPU ArgMax16.199ms是当前算子热点。现有native运行器已一次Load、多次Process，请求HIGH档位，外部输出快照及KV回写不计入Process时间。用户已回传实际DDK边界报告：中间CPU子图输入37968字节；末尾CPU子图只有ArgMaxExt2，接收FP32[1,15,248320]共14899200字节、输出60字节。逻辑尺寸不能证明实际拷贝量或解释493ms差额。
+三档均保留完整点积、全词表、17输入／14输出与原 KV 写入区间。合并权重按原 K/V、gate/up 顺序核对每段字节；原始 prepared 不改。真实尺寸主机图捕获：线性投影55→31、sin/cos各18→2、消除12次KV头复制，仍为12个attention MatMul、6个FP32 Softmax和32个RMS。440次缩小宽度六层反馈对照通过原0.01／0.01门槛，427次逐位一致，最大绝对差0.005859375，Top1全部一致，未写KV逐位保持。完整16384→2048投影的C16/C64主机对照逐位一致。主机结果不代表所选DDK或设备结果。
 
-已按用户要求全面对照4B的feature/gdr-chunk-verify分支，固定提交90186732d915e8b058b2a053d205991d805eae76。优先候选是合并context/block K/V与gate/up投影、GQA折叠query组避免复制KV、层间共享RoPE；后续借鉴常驻特征/预绑定KV、末块调度、严格有效行cache更新、纯catchup及交错回放。10组当前头部尺寸的CPU合成GQA对照逐位一致。参考使用310P/ACL，其20ms不能外推X90；融合Top1只是待开发方案，普通Linear也未解决本地宽K限制。完整比较及优先级见[当前结果](results.md)。
+本地缺少所选 CPro DDK，未编译 OMC、未访问设备、未测得提速。上一版仍是5个子图，单次厂商模型推理627.647ms、算子加和134.940ms，差额492.707ms尚未归因；新分区数量以本次编译为准。Conv69.038ms与CPU ArgMax16.199ms仍是需要实测的热点。NPU Top1与运行时边界优化尚未实现。
 
-此次完成源码对照与主机表达检查，尚未接入执行图。Conv空间排布和NPU侧完整词表Top1继续保留为热点实验，实际收益待编译和设备测量；当前无需重跑已有准确性命令。
+## 导出与编译
 
-## 已完成的OMC子图边界检查
-
-在DDK服务器custom_pypto环境运行。复用现有OMC和已回收结果，只读所选DDK的protobuf schema，不调用OMG、不加载厂商库、不访问板子，也无需重新编译。
+在现有 custom_pypto 环境运行。REPO_DIR 指向本仓库，AI_RUN_DIR 指向现有运行根目录；CPRO_DDK_ROOT／CPRO_DDK_ID 沿用已选 X90 DDK（100.520.020.010）。需要已有 draft/source/prepared 和 runtime/runtime.json。本候选使用固定测试槽位，保留当前 draft/air、pytorch-omc 及 pytorch-result 基线。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
-  --inspect-boundaries "$AI_RUN_DIR/draft/tests/pytorch-omc" \
-  --accuracy-result "$AI_RUN_DIR/draft/tests/pytorch-result" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-boundaries.json"
+
+python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
+  --frontend pytorch --optimization packed-spatial \
+  --prepared "$AI_RUN_DIR/draft/source/prepared" \
+  --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-air" --replace
+
+python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
+  --air-export "$AI_RUN_DIR/draft/tests/pytorch-optimized-air" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-omc" --replace
 ```
 
-工具核对OMC完整hash、保留夹具身份及编译打包schema。stdout列出各分区输入／输出的已知逻辑字节数、最大输入、明确的同图producer和CPU算子计数；完整节点信息保留在固定JSON。缺失或动态shape不猜大小，引用无法对齐则标为未解析。CPU task按明确offset／size且图名匹配后读取，NPU task保持不透明。
+导出成功应显示 PYTORCH_DRAFT_AIR_EXPORTED、optimization.policy=packed-spatial、17输入／14输出；编译成功应显示 PYTORCH_DRAFT_OMC_COMPILED，并报告实际 graphop_counts。若编译失败，保留该槽位的 manifest 和 compiler 日志；不要据主机捕获的节点数推算板端子图或速度。
 
-逻辑字节数不等于实测搬运量：重复消费按端口计数，物理padding、缓冲区复用、同步等待均未知。此检查没有匹配OMG JSON交叉验证，CPU task结果仅作有边界检查的元数据诊断；不能单独确定493ms差额的来源。INSPECTED／PARTIAL不是精度或性能通过。
+## 执行并回收
 
-完整Draft仍为C16／cap192／K15、17输入／14输出，组合attention使用208行逻辑KV。边界检查已收到用户结果，上述命令仅供复现；当前未修改执行图或实现加速。证据、原数值门槛和后续候选见[当前结果](results.md)。
+复用现有 native runner。先启动，收到启动确认后执行回收；回收不重新运行模型。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --compiled "$AI_RUN_DIR/draft/tests/pytorch-optimized-omc" \
+  --source "$AI_RUN_DIR/draft/source/prepared" \
+  --air-export "$AI_RUN_DIR/draft/tests/pytorch-optimized-air" \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-run" --apply
+
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-optimized-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-result"
+```
+
+检查所有调用完成、hidden／新增KV相对L2、Top1差异、未写区与重复稳定性，并与保留的 pytorch-result 对照。新候选不会因旧版本已被接受而自动通过数值验收。native_api_latency 是混合精度用例的同步API统计，不能当作固定输入3次预热＋10次测量的50ms达标成绩。
+
+## 采集同一候选的厂商 CSV
+
+精度回收完成后运行。allow-numerical-failure 仅允许对原门槛失败结果采集性能，不会修改精度状态。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
+  --accuracy "$AI_RUN_DIR/draft/tests/pytorch-optimized-result" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-profile-run" \
+  --allow-numerical-failure --apply
+
+python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-optimized-profile-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-profile-result"
+```
+
+回传编译 graphop_counts、精度摘要和 *_model.csv／*_op.csv。重点对照完整 inference、Conv、末尾 MatMul、ArgMax，以及新分区边界。packed-spatial 若收益不明确，下一轮在相同固定候选槽位改用 --optimization packed，单独辨别 Conv 排布影响；先回收已启动任务再替换候选。
+
+工程估计先按5～7个工作日安排验证窗口，假设每天有1～2轮编译／板端反馈；这不是50ms达标承诺。未解释的运行时耗时差额是主要工期风险。首轮实测后重新评估。完整基线与历史分析见[当前结果](results.md)。

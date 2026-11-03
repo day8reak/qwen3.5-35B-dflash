@@ -38,7 +38,7 @@ def source_input_roles(graph, declared):
             raise ValueError('unresolved source data edge: ' + edge)
         return nodes[name], int(port)
 
-    def root(edge):
+    def root(edge, *, feature=False):
         seen = set()
         while True:
             n, port = node(edge)
@@ -50,7 +50,12 @@ def source_input_roles(graph, declared):
             if n['name'] in seen or len(seen) >= 64:
                 raise ValueError('cyclic or excessive source passthrough chain')
             seen.add(n['name'])
-            if n['type'] not in {'Cast', 'Identity', 'Reshape'}:
+            passthrough = {'Cast', 'Identity', 'Reshape'}
+            if feature:
+                # Spatial Conv permutes token patches before the input reshape.
+                # This traversal identifies the feature Data, not its layout.
+                passthrough.add('Transpose')
+            if n['type'] not in passthrough:
                 return n
             edge = n['input'][0]
 
@@ -66,8 +71,8 @@ def source_input_roles(graph, declared):
 
     roles = {}
     roles['target_features'] = unique(
-        [root(n['input'][0])['name'] for n in ops if n['type'] == 'Conv2D'
-         and root(n['input'][0])['type'] == 'Data'], 'target_features')
+        [root(n['input'][0], feature=True)['name'] for n in ops if n['type'] == 'Conv2D'
+         and root(n['input'][0], feature=True)['type'] == 'Data'], 'target_features')
     roles['start_position'] = unique(
         [root(n['input'][1])['name'] for n in ops if n['type'] == 'Sub'
          and buffer(root(n['input'][0]), 'cache_positions')
@@ -123,6 +128,10 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
         raise ValueError('expected completed PyTorch AIR and OMC candidate bundles')
     if any(meta[k] != export[k] for k in (*GEOMETRY, 'inputs', 'outputs')):
         raise ValueError('candidate and source export contracts differ')
+    from .optimization import manifest_policy, bind_weight_snapshots
+    policy = manifest_policy(export)
+    if manifest_policy(meta) != policy:
+        raise ValueError('candidate and source optimization contracts differ')
     validate_abi(dict(meta, inputs=_slots(meta['inputs']), outputs=_slots(meta['outputs'])))
     compilation = root/'compilation'
     receipt = read_json(compilation/'report.json', 8 << 20)
@@ -169,16 +178,7 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
         raise ValueError('expected original prepared FP16 reference weights')
     file_constants = [_attributes(n).get('file_path', {}).get('s')
                       for n in graph['op'] if n['type'] == 'FileConstant']
-    weights = []
-    for name, record in plan['weights'].items():
-        parameter = {'target.embed_tokens.weight': 'embedding.weight',
-                     'target.lm_head.weight': 'head.weight'}.get(name, name)
-        relative = 'weight/' + parameter.replace('.', '_')
-        snap = snapshots.get(relative)
-        if (file_constants.count(relative) != 1 or snap is None
-                or any(snap[k] != record[k] for k in ('bytes', 'sha256'))):
-            raise ValueError('reference weight differs from compiled PyTorch source: ' + name)
-        weights.append(dict(name=name, source_relative=relative, sha256=record['sha256']))
+    weights = bind_weight_snapshots(plan['weights'], policy, file_constants, snapshots, compilation)
     # The reference loader verifies the complete topology and prepared file bytes.
     checked_file(root, dict(packing['output'], path='model.omc'))
     result = dict(meta, inputs=abi['inputs'], outputs=abi['outputs'],

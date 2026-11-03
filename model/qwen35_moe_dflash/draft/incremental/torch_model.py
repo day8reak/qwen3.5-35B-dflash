@@ -16,6 +16,7 @@ from qwen35_moe_dflash.config import Qwen35DFlashConfig
 from qwen35_moe_dflash.graph.incremental_draft import _validate, incremental_draft_abi
 from qwen35_moe_dflash.model import DFlashDraftModel
 from qwen35_moe_dflash.ops import _rotate_half
+from .optimization import optimization_contract
 
 
 def reference_rms(x, gamma, epsilon):
@@ -26,13 +27,25 @@ def reference_rms(x, gamma, epsilon):
 
 class IncrementalDraft(nn.Module):
     def __init__(self, draft, embedding, head, *, context_rows=16, cache_capacity=192,
-                 max_draft_tokens=15, rms=reference_rms, attention_kernel=None):
+                 max_draft_tokens=15, rms=reference_rms, attention_kernel=None,
+                 optimization='baseline'):
         super().__init__()
         self.config = c = draft.config
         _validate(c, context_rows, cache_capacity, True, max_draft_tokens)
         self.draft, self.embedding, self.head = draft, embedding, head
         self.context_rows, self.capacity, self.k = context_rows, cache_capacity, max_draft_tokens
         self.rms = rms
+        self.optimization = optimization_contract(optimization)
+        self.packed = optimization != 'baseline'
+        self.spatial_projection = optimization == 'packed-spatial'
+        if self.packed:
+            if attention_kernel is not None:
+                raise ValueError('packed optimization requires composed attention')
+            # Concatenate output channels only: each output retains its full
+            # dot product and the original FP16 weight bytes.
+            for layer in draft.layers:
+                self._pack(layer.self_attn, 'k_proj', 'v_proj', 'kv_proj')
+                self._pack(layer.mlp, 'gate_proj', 'up_proj', 'gate_up_proj')
         from .torch_target import TargetAttention
         self.target_attention = (TargetAttention(c, cache_capacity, max_draft_tokens + 1, attention_kernel)
                                  if attention_kernel is not None else None)
@@ -48,12 +61,24 @@ class IncrementalDraft(nn.Module):
         if attention_kernel is None:
             # A literal buffer avoids a Shape(scores)->Fill dependency on
             # un-inferred MatMul dimensions in the source TorchAir graph.
+            score_heads = c.num_key_value_heads if self.packed else c.num_attention_heads
+            score_rows = (max_draft_tokens + 1) * (c.num_key_value_groups if self.packed else 1)
             self.register_buffer('attention_masked_scores', torch.full(
-                (1, c.num_attention_heads, max_draft_tokens + 1, cache_capacity + max_draft_tokens + 1),
+                (1, score_heads, score_rows, cache_capacity + max_draft_tokens + 1),
                 -float('inf'), dtype=torch.float32))
         witness = torch.zeros((1, 1, 1, cache_capacity + max_draft_tokens + 1), dtype=torch.bool)
         witness[..., cache_capacity] = True
         self.register_buffer('anchor_witness', witness)
+
+    @staticmethod
+    def _pack(owner, first, second, destination):
+        a, b = getattr(owner, first).weight, getattr(owner, second).weight
+        linear = nn.Linear(a.shape[1], a.shape[0] + b.shape[0], bias=False,
+                           device='meta', dtype=a.dtype)
+        linear.weight = nn.Parameter(torch.cat((a, b), dim=0), requires_grad=False)
+        setattr(owner, destination, linear)
+        delattr(owner, first)
+        delattr(owner, second)
 
     def norm(self, x, norm):
         # Request FP32 normalization through the same RMS API as Target CPro.
@@ -62,7 +87,25 @@ class IncrementalDraft(nn.Module):
 
     def rope(self, x, positions):
         cosine, sine = self.draft.rotary(positions, x.dtype)
+        return self.apply_rope(x, cosine, sine)
+
+    @staticmethod
+    def apply_rope(x, cosine, sine):
         return x * cosine.unsqueeze(1) + _rotate_half(x) * sine.unsqueeze(1)
+
+    def project_features(self, features):
+        c, rows = self.config, self.context_rows
+        channels = self.draft.fc.in_features // 16
+        weight = self.draft.fc.weight.reshape(c.hidden_size, channels, 4, 4)
+        if not self.spatial_projection:
+            return F.conv2d(features.reshape(rows, channels, 4, 4), weight).reshape(1, rows, c.hidden_size)
+        # Place each token in a distinct 4x4 patch. A plain reshape would
+        # interleave channels/tokens and change the projection.
+        grid = math.isqrt(rows)
+        tiles = features.reshape(grid, grid, channels, 4, 4)
+        packed = tiles.permute(2, 0, 3, 1, 4).reshape(1, channels, grid * 4, grid * 4)
+        projected = F.conv2d(packed, weight, stride=4)
+        return projected.permute(0, 2, 3, 1).reshape(1, rows, c.hidden_size)
 
     def forward(self, target_features, start_position, valid_rows, anchor, proposal_count,
                 past_k_0, past_v_0, past_k_1, past_v_1, past_k_2, past_v_2,
@@ -89,12 +132,10 @@ class IncrementalDraft(nn.Module):
         write = write.int().expand(1, c.num_key_value_heads, self.capacity, c.head_dim).bool()
         ids = torch.cat((anchor.reshape(1, 1), self.mask_tokens), dim=1)
         hidden = self.embedding(ids.int()) * c.input_embedding_scale
-        # Preserve the proven full-K projection expression. A 16384-wide MatMul
-        # was rejected on the selected OMG; changing frontend is not a fix.
-        channels = self.draft.fc.in_features // 16
-        projected = F.conv2d(target_features.reshape(rows, channels, 4, 4),
-                             self.draft.fc.weight.reshape(c.hidden_size, channels, 4, 4))
-        context = self.norm(projected.reshape(1, rows, c.hidden_size), self.draft.hidden_norm)
+        context = self.norm(self.project_features(target_features), self.draft.hidden_norm)
+        if self.packed:
+            context_rope = self.draft.rotary(context_positions, context.dtype)
+            block_rope = self.draft.rotary(block_positions, hidden.dtype)
         past = ((past_k_0, past_v_0), (past_k_1, past_v_1), (past_k_2, past_v_2),
                 (past_k_3, past_v_3), (past_k_4, past_v_4), (past_k_5, past_v_5))
         updated = []
@@ -102,16 +143,25 @@ class IncrementalDraft(nn.Module):
             attn = layer.self_attn
             x = self.norm(hidden, layer.input_layernorm)
             query = attn.q_proj(x).reshape(1, b, c.num_attention_heads, c.head_dim)
-            query = self.rope(self.norm(query, attn.q_norm).transpose(1, 2), block_positions)
-            new_k = attn.k_proj(context).reshape(1, rows, c.num_key_value_heads, c.head_dim)
-            new_k = self.rope(self.norm(new_k, attn.k_norm).transpose(1, 2), context_positions)
-            new_v = attn.v_proj(context).reshape(1, rows, c.num_key_value_heads, c.head_dim).transpose(1, 2)
+            query = self.norm(query, attn.q_norm).transpose(1, 2)
+            query = self.apply_rope(query, *block_rope) if self.packed else self.rope(query, block_positions)
+            if self.packed:
+                kv = attn.kv_proj(torch.cat((context, x), dim=1))
+                keys, values = kv.split(c.key_value_width, dim=-1)
+                new_k, block_k = keys.split((rows, b), dim=1)
+                new_v, block_v = values.split((rows, b), dim=1)
+            else:
+                new_k, new_v = attn.k_proj(context), attn.v_proj(context)
+                block_k, block_v = attn.k_proj(x), attn.v_proj(x)
+            new_k = self.norm(new_k.reshape(1, rows, c.num_key_value_heads, c.head_dim), attn.k_norm).transpose(1, 2)
+            new_k = self.apply_rope(new_k, *context_rope) if self.packed else self.rope(new_k, context_positions)
+            new_v = new_v.reshape(1, rows, c.num_key_value_heads, c.head_dim).transpose(1, 2)
             present_k = torch.where(write, torch.index_select(new_k, 2, local), past[index][0])
             present_v = torch.where(write, torch.index_select(new_v, 2, local), past[index][1])
             updated.extend((present_k, present_v))
-            block_k = attn.k_proj(x).reshape(1, b, c.num_key_value_heads, c.head_dim)
-            block_k = self.rope(self.norm(block_k, attn.k_norm).transpose(1, 2), block_positions)
-            block_v = attn.v_proj(x).reshape(1, b, c.num_key_value_heads, c.head_dim).transpose(1, 2)
+            block_k = self.norm(block_k.reshape(1, b, c.num_key_value_heads, c.head_dim), attn.k_norm).transpose(1, 2)
+            block_k = self.apply_rope(block_k, *block_rope) if self.packed else self.rope(block_k, block_positions)
+            block_v = block_v.reshape(1, b, c.num_key_value_heads, c.head_dim).transpose(1, 2)
             key = torch.cat((present_k, block_k), dim=2)
             value = torch.cat((present_v, block_v), dim=2)
             visible = key_valid
@@ -124,15 +174,26 @@ class IncrementalDraft(nn.Module):
             if self.target_attention is not None:
                 mixed = self.target_attention(query, key, value, visible)
             else:
-                key = torch.index_select(key, 1, self.kv_heads)
-                value = torch.index_select(value, 1, self.kv_heads)
+                if self.packed:
+                    query = query.reshape(1, c.num_key_value_heads, c.num_key_value_groups * b, c.head_dim)
+                else:
+                    key = torch.index_select(key, 1, self.kv_heads)
+                    value = torch.index_select(value, 1, self.kv_heads)
                 visible = torch.index_select(visible.int(), 1, self.head_repeat).bool()
+                if self.packed:
+                    visible = visible.reshape(1, c.num_key_value_heads, c.num_key_value_groups * b, self.capacity + b)
                 scores = torch.matmul(query, key.transpose(-1, -2)).float() * (c.head_dim ** -0.5)
                 probabilities = torch.softmax(torch.where(visible, scores, self.attention_masked_scores), dim=-1).half()
                 mixed = torch.matmul(probabilities, value)
+                mixed = mixed.reshape(1, c.num_attention_heads, b, c.head_dim)
             mixed = mixed.transpose(1, 2).reshape(1, b, c.query_width)
             hidden = (hidden.float() + attn.o_proj(mixed).float()).half()
-            mlp = layer.mlp(self.norm(hidden, layer.post_attention_layernorm))
+            mlp_input = self.norm(hidden, layer.post_attention_layernorm)
+            if self.packed:
+                gate, up = layer.mlp.gate_up_proj(mlp_input).chunk(2, dim=-1)
+                mlp = layer.mlp.down_proj(F.silu(gate) * up)
+            else:
+                mlp = layer.mlp(mlp_input)
             hidden = (hidden.float() + mlp.float()).half()
         hidden = self.norm(hidden, self.draft.norm)[:, 1:, :]
         top1 = self.head(hidden).argmax(dim=-1).to(torch.int32)
@@ -146,9 +207,11 @@ class IncrementalDraft(nn.Module):
             num_heads=c.num_attention_heads, num_key_value_heads=c.num_key_value_heads, head_dim=c.head_dim,
             query_shape=[1, c.num_attention_heads, b, c.head_dim],
             kv_shape=[1, c.num_key_value_heads, self.capacity + b, c.head_dim],
-            score_shape=[1, c.num_attention_heads, b, self.capacity + b],
+            score_shape=([1, c.num_key_value_heads, c.num_key_value_groups * b, self.capacity + b]
+                         if self.packed else [1, c.num_attention_heads, b, self.capacity + b]),
             scale_value=c.head_dim ** -0.5, logical_kv_rows=self.capacity + b,
-            operations='INT32_GQA_GATHER; QK_MATMUL; SCALE; SELECT_MASK; SOFTMAX; PV_MATMUL',
+            operations=('GROUPED_QUERY_RESHAPE; QK_MATMUL; SCALE; SELECT_MASK; SOFTMAX; PV_MATMUL'
+                        if self.packed else 'INT32_GQA_GATHER; QK_MATMUL; SCALE; SELECT_MASK; SOFTMAX; PV_MATMUL'),
             mask='DRAFT_VISIBILITY_WITH_INACTIVE_QUERY_ANCHOR_WITNESS',
             cache='PUBLIC_ND_COMMITTED_CONTEXT_ONLY; CANDIDATE_KV_TEMPORARY',
             precision='FP16_QK_RESULT; FP32_SCALE_MASK_SOFTMAX; FP16_PROBABILITIES_AND_PV; DEVICE_INTERNAL_PRECISION_UNVERIFIED')
@@ -168,7 +231,7 @@ class IncrementalDraft(nn.Module):
 
 
 def load_prepared(prepared, *, context_rows=16, cache_capacity=192, max_draft_tokens=15,
-                  rms=reference_rms, attention_kernel=None):
+                  rms=reference_rms, attention_kernel=None, optimization='baseline'):
     """Map existing standalone FP16 files; do not load the Target decoder."""
     import json
     root = Path(prepared).resolve(strict=True)
@@ -198,4 +261,4 @@ def load_prepared(prepared, *, context_rows=16, cache_capacity=192, max_draft_to
         setattr(owner.get_submodule(parent) if parent else owner, attribute, nn.Parameter(tensor, requires_grad=False))
     return IncrementalDraft(draft, embedding, head, context_rows=context_rows,
                             cache_capacity=cache_capacity, max_draft_tokens=max_draft_tokens,
-                            rms=rms, attention_kernel=attention_kernel).eval()
+                            rms=rms, attention_kernel=attention_kernel, optimization=optimization).eval()
