@@ -21,6 +21,7 @@ from qwen35_moe_dflash.execution.runtime_config import read_json
 from qwen35_moe_dflash.execution.run_layout import _save, reuse_test_output
 from qwen35_moe_dflash.execution.serial_transport import _environment, _build_payloads
 from qwen35_moe_dflash.execution.hdc_run import Hdc, _file_record
+from qwen35_moe_dflash.execution.probe_progress import Progress, local_status, pack_uploads, unpack_logs
 from qwen35_moe_dflash.execution.lock import _acquire_global, _release_global, _space
 from qwen35_moe_dflash.draft.profile_board import GLOBAL_LOCK, _guard, _identity_guard
 from qwen35_moe_dflash.draft.board import _receive
@@ -401,19 +402,33 @@ def analyze(directory):
 
 def supervisor(meta, board, token, env, search):
     lines = ['#!/bin/sh', 'cd '+q(str(board))+' || exit 91', _guard(board, token)+' || exit 92',
-             _guard(GLOBAL_LOCK, token)+' || exit 93', 'failed=0', 'for batch in once; do']
-    for case in meta['cases']:
+             _guard(GLOBAL_LOCK, token)+' || exit 93',
+             'printf "%s\\n" '+q(token)+' > started', 'failed=0', 'for batch in once; do']
+    for index, case in enumerate(meta['cases'], 1):
         name = case['case']
         argv = ['timeout', '-k', '5', '600', 'env', 'LD_LIBRARY_PATH='+':'.join([str(board/'lib'), *search]),
                 str(board/'tensor-probe'), str(board/name/'model.omc'), env['runtime_version'],
                 str(board/name), str(board/'outputs'/name)]
-        lines += [shlex.join(argv)+' > '+name+'.stdout 2> '+name+'.stderr', 'rc=$?',
+        lines += ['printf "%s\\n" '+q(f'CASE {index}/{len(meta["cases"])} {name}')
+                  +' > progress.tmp && mv progress.tmp progress',
+                  shlex.join(argv)+' > '+name+'.stdout 2> '+name+'.stderr', 'rc=$?',
                   'printf "%s\\n" "$rc" > '+name+'.exitcode',
                   'if test "$rc" -ne 0; then failed=1; break; fi']
     # Do not start another SDK process after a failed/timed-out case.
     return '\n'.join([*lines, 'done', 'printf "%s\\n" "$failed" > native.exitcode',
+        'printf "ARCHIVING\\n" > progress.tmp && mv progress.tmp progress',
         'tar -cf outputs.tar -C outputs .', 'printf "%s\\n" "$?" > archive.exitcode',
+        'set --', 'for f in '+shlex.join(log_names(meta['cases']))+'; do',
+        '  if test -f "$f"; then set -- "$@" "$f"; fi', 'done',
+        'tar -cf logs.tar "$@"', 'printf "%s\\n" "$?" > logs.exitcode',
+        'printf "COMPLETE\\n" > progress.tmp && mv progress.tmp progress',
         'printf "%s\\n" '+q(token)+' > complete.tmp', 'mv complete.tmp complete', ''])
+
+
+def log_names(cases):
+    names = [c['case'] if isinstance(c, dict) else c for c in cases]
+    return ['native.exitcode', 'archive.exitcode', 'supervisor.stdout', 'supervisor.stderr',
+            *(name+'.'+suffix for name in names for suffix in ('stdout', 'stderr', 'exitcode'))]
 
 
 def _check_probe_dtypes(meta, built):
@@ -434,7 +449,9 @@ def start(args, out):
     state = dict(artifact_kind=KIND, status='FAILED', stage='prepare', device_execution='NOT_RUN',
                  model_compilation='NOT_RUN', numerical_validation='NOT_RUN', lock_state='NO_KNOWN_OWNED_LOCK')
     hdc = None; held = uncertain = launched = False
+    progress = Progress(out, state)
     try:
+        progress.update('prepare', 'Checking compiled ABI and preparing fixtures', status='PREPARING')
         cfg = read_json(config)
         env = read_json(config.parent/cfg['assets'])['environment']
         with (source.parent/('.'+source.name+'.lock')).open('a') as lock:
@@ -445,6 +462,7 @@ def start(args, out):
             state['matrix_preparation_failures'] = meta['source_evidence'].get('preparation_failures',[])
         if not args.apply:
             return state
+        progress.update('payload', f'Preparing deployment for {len(meta["cases"])} cases')
         native = (config.parent/cfg.get('native_directory', 'native')).resolve()
         binary = native/'build/qwen35_tensor_probe'
         built = read_json(native/'result.json')
@@ -462,13 +480,20 @@ def start(args, out):
                     uploads.append(_file_record(path, case['case']+'/'+path.name))
         exe, serial, server = _environment(); token = uuid.uuid4().hex
         board = PurePosixPath(PREFIX+token)
+        (out/'launch.sh').write_text(supervisor(meta, board, token, env, search))
+        uploads.append(_file_record(out/'launch.sh', 'launch.sh'))
+        progress.update('pack', f'Packing {len(uploads)} files ({sum(r["bytes"] for r in uploads)} bytes) for one HDC transfer')
+        payload = pack_uploads(out, uploads)
         plan = dict(artifact_kind=KIND, token=token, board_attempt=str(board), serial=serial,
                     hdc_server=server, runtime=env, cases=[c['case'] for c in meta['cases']],
-                    fixture_sha256=sha256_file(out/'fixture/manifest.json'))
+                    fixture_sha256=sha256_file(out/'fixture/manifest.json'),
+                    transport='archive-v1', payload=payload, payload_files=len(uploads))
         _save(out/'request.json', plan)
-        state.update(board_attempt=str(board), stage='board-preflight')
+        progress.update('board-preflight', 'Checking board owner, firmware and free space', board_attempt=str(board))
         hdc = Hdc(exe, serial, server, out, 180)
         uncertain = True
+        state['lock_state'] = 'RETAINED_OR_UNCERTAIN'
+        _save(out/'result.json', state)
         try:
             _acquire_global(hdc, GLOBAL_LOCK, token, 0)
         except ValueError as error:
@@ -481,23 +506,25 @@ def start(args, out):
             raise ValueError('board firmware differs from runtime configuration')
         _, space = hdc.shell('df -Pk /data/local/tmp', 'vector-space')
         output_bytes = REPETITIONS*sum(s['bytes'] for c in meta['cases'] for s in c['outputs'])
-        if _space(space) < sum(r['bytes'] for r in uploads)+2*output_bytes+(64 << 20):
+        if _space(space) < payload['bytes']+sum(r['bytes'] for r in uploads)+2*output_bytes+(64 << 20):
             raise OSError('insufficient board space for small probe request')
         hdc.shell('mkdir '+q(str(board))+' && printf "%s\\n" '+q(token)+' > '+q(str(board/'owner'))
-                  +' && mkdir '+shlex.join(str(board/p) for p in ['lib', 'outputs', *plan['cases']]), 'vector-directory')
-        for row in uploads:
-            hdc.send(row['local'], board/row['remote'])
-            hdc.shell(_identity_guard(board/row['remote'], row), 'vector-upload')
-        hdc.shell('chmod +x '+q(str(board/'tensor-probe')), 'vector-executable')
-        (out/'launch.sh').write_text(supervisor(meta, board, token, env, search))
-        hdc.send(out/'launch.sh', board/'launch.sh')
-        hdc.shell(_identity_guard(board/'launch.sh', _file_record(out/'launch.sh', 'launch.sh')), 'vector-launcher')
+                  +' && mkdir '+shlex.join(str(board/p) for p in ['lib', 'outputs']), 'vector-directory')
+        progress.update('upload', f'Uploading payload.tar ({payload["bytes"]} bytes); device computation has not been launched')
+        hdc.send(payload['local'], board/'payload.tar')
+        progress.update('verify-upload', f'Verifying archive and all {len(uploads)} extracted files')
+        hdc.shell(_guard(board, token)+' && '+_guard(GLOBAL_LOCK, token)
+            +' && '+_identity_guard(board/'payload.tar', payload)
+            +' && cd '+q(str(board))+' && tar -xf payload.tar'
+            +' && sha256sum -c payload.sha256 > payload-checks.stdout'
+            +' && chmod +x tensor-probe', 'vector-payload-install')
         launched = True
-        state.update(launch_requested=True, device_execution='RUNNING_OR_COMPLETION_PENDING')
-        _save(out/'result.json', state)
+        progress.update('launch', 'Requesting one detached board execution',
+                        launch_requested=True, device_execution='RUNNING_OR_COMPLETION_PENDING')
         hdc.shell('cd '+q(str(board))+' && '+_guard(board, token)
                   +' && { nohup sh launch.sh < /dev/null > supervisor.stdout 2> supervisor.stderr & }', 'vector-launch')
-        state.update(status='VECTOR_VALIDATION_STARTED', stage='running-detached', next='Recover the same execution; no relaunch.')
+        progress.update('running-detached', 'Launch acknowledged; use --recover on this execution directory',
+                        status='VECTOR_VALIDATION_STARTED', next='Recover the same execution; no relaunch.')
     except Exception as error:
         state.update(status='FAILED', error=f'{type(error).__name__}: {error}')
     finally:
@@ -508,6 +535,7 @@ def start(args, out):
                 state['lock_release_error'] = str(error)
         state['lock_state'] = 'RETAINED_OR_UNCERTAIN' if held or uncertain else 'NO_KNOWN_OWNED_LOCK'
         _save(out/'result.json', state)
+        progress.close()
     return state
 
 
@@ -577,6 +605,47 @@ def execution_diagnostics(out, selection=CASES):
     return report
 
 
+def pending_progress(hdc, board, token, requested):
+    """Markers are observations, not a process-liveness or numerical verdict."""
+    command = [_guard(board, token)+' || exit 92', 'cd '+q(str(board))+' || exit 91',
+        'if test -f started; then read -r probe_token < started; test "$probe_token" = '+q(token)
+        +' || exit 93; echo STARTED; fi',
+        'if test -f progress; then read -r probe_step < progress; printf "PROGRESS %s\\n" "$probe_step"; fi']
+    # Keep the HDC command short even for the 129-case matrix. Only filenames
+    # declared in the request are accepted when parsing the returned markers.
+    command += ['for probe_file in *.exitcode; do',
+        '  case "$probe_file" in native.exitcode|archive.exitcode|logs.exitcode) continue;; esac',
+        '  if test -f "$probe_file"; then read -r probe_rc < "$probe_file"; '
+        'printf "EXIT %s %s\\n" "${probe_file%.exitcode}" "$probe_rc"; fi', 'done',
+        'for probe_file in *.stdout; do',
+        '  case "$probe_file" in supervisor.stdout|payload-checks.stdout) continue;; esac',
+        '  probe_case=${probe_file%.stdout}',
+        '  if test -f "$probe_file" && test ! -f "$probe_case.exitcode"; then '
+        'printf "CASE_STARTED %s\\n" "$probe_case"; fi', 'done']
+    _, raw = hdc.shell('\n'.join(command), 'vector-progress', timeout=30)
+    result = dict(supervisor_started=False, completed_cases=0, last_case_exit=None,
+                  incomplete_case=None, progress=None,
+                  scope='RETAINED_MARKERS; NOT_A_LIVE_PROCESS_CHECK')
+    for line in raw.splitlines():
+        if line == 'STARTED':
+            result['supervisor_started'] = True
+        elif line.startswith('PROGRESS ') and len(line) <= 256:
+            result['progress'] = line[9:]
+        elif line.startswith('CASE_STARTED ') and line[13:] in requested:
+            result['incomplete_case'] = line[13:]
+        elif line.startswith('EXIT '):
+            parts = line.split()
+            if len(parts) != 3 or parts[1] not in requested or not re.fullmatch(r'\d{1,3}', parts[2]) or int(parts[2]) > 255:
+                raise ValueError('invalid case exit progress')
+            result['completed_cases'] += 1
+            if (result['last_case_exit'] is None or requested.index(parts[1]) >
+                    requested.index(result['last_case_exit']['case'])):
+                result['last_case_exit'] = dict(case=parts[1], exitcode=int(parts[2]))
+        else:
+            raise ValueError('unrecognized board progress response')
+    return result
+
+
 def recover(root, out):
     root = Path(root).resolve()
     if root == out or root in out.parents or out in root.parents:
@@ -586,11 +655,16 @@ def recover(root, out):
         numerical_validation='NOT_RUN', recovery_source=str(root), recovery_model_execution='FORBIDDEN',
         lock_state='RETAINED_OR_UNCERTAIN')
     complete = False; hdc = plan = None
+    progress = Progress(out, state)
     try:
+        progress.update('recover', 'Inspecting the existing request; no model relaunch', status='RECOVERING')
+        state['local_status'] = local_status(root)
         plan = read_json(root/'request.json'); token = plan['token']
         if plan['artifact_kind'] != KIND or not re.fullmatch('[0-9a-f]{32}', token) or plan['board_attempt'] != PREFIX+token:
             raise ValueError('invalid vector request')
         board = PurePosixPath(plan['board_attempt']); state['board_attempt'] = str(board)
+        requested = selected_cases(plan.get('cases', CASES))
+        state['requested_cases'] = requested
         exe, serial, server = _environment()
         if (serial, server) != (plan['serial'], plan['hdc_server']):
             raise ValueError('recover requires the same board')
@@ -598,23 +672,37 @@ def recover(root, out):
         _, done = hdc.shell(_guard(board, token)+' && if test -f '+q(str(board/'complete'))
             +'; then cat '+q(str(board/'complete'))+'; else echo PENDING; fi', 'vector-completion')
         if done == 'PENDING':
-            state.update(status='VECTOR_VALIDATION_PENDING', stage='running'); return state
+            state.update(status='VECTOR_VALIDATION_PENDING', stage='completion-unconfirmed',
+                         board_progress=pending_progress(hdc, board, token, requested),
+                         next='Inspect local_status and board_progress; resume a suspended launcher in its original shell. '
+                              'Recover this same request; do not repeat --apply or remove its locks.')
+            return state
         if done != token:
             raise ValueError('completion belongs to another request')
         complete = True; state['device_execution'] = 'FAILED_OUTPUTS_RETRIEVED'
-        requested = selected_cases(plan.get('cases', CASES))
-        state['requested_cases'] = requested
-        for name in ('native.exitcode', 'archive.exitcode', 'supervisor.stdout', 'supervisor.stderr'):
-            _receive(hdc, board, out, name)
-        for name in requested:
-            for suffix in ('stdout', 'stderr', 'exitcode'):
-                _receive(hdc, board, out, name+'.'+suffix)
+        names = log_names(requested)
+        if plan.get('transport') == 'archive-v1':
+            progress.update('retrieve-logs', f'Retrieving log archive for {len(requested)} cases')
+            _, log_info = hdc.shell('cd '+q(str(board))+' && cat logs.exitcode && wc -c < logs.tar', 'vector-log-size')
+            fields = log_info.split()
+            if len(fields) != 2 or fields[0] != '0' or not fields[1].isdigit() or not 0 < int(fields[1]) <= 64 << 20:
+                raise ValueError('invalid or failed probe log archive')
+            if _receive(hdc, board, out, 'logs.tar', timeout_seconds=180) is None:
+                raise ValueError('missing probe log archive')
+            unpack_logs(out/'logs.tar', out, names)
+        else:
+            # Legacy attempts retain their original layout; recovery never rewrites them.
+            for index, name in enumerate(names, 1):
+                if index == 1 or index % 10 == 0:
+                    progress.update('retrieve-logs', f'Retrieving legacy logs {index}/{len(names)}: {name}')
+                _receive(hdc, board, out, name)
         diagnostics = execution_diagnostics(out, requested)
         state['execution_diagnostics'] = diagnostics
         completed = [name for name in requested if diagnostics['case_exitcodes'][name] == 0]
         if diagnostics['archive_exitcode'] != 0 or not completed:
             raise ValueError('; '.join(diagnostics['errors']))
         fixture = root/'fixture'
+        progress.update('verify-fixtures', 'Verifying retained input and reference hashes')
         if sha256_file(fixture/'manifest.json') != plan['fixture_sha256']:
             raise ValueError('retained fixture manifest changed')
         meta = read_json(fixture/'manifest.json')
@@ -630,8 +718,10 @@ def recover(root, out):
         _, size = hdc.shell('wc -c < '+q(str(board/'outputs.tar')), 'vector-output-size')
         if not size.isdigit() or not 0 < int(size) < maximum:
             raise ValueError('unexpected output archive size')
-        if _receive(hdc, board, out, 'outputs.tar') is None:
+        progress.update('retrieve-outputs', f'Retrieving outputs.tar ({size} bytes)')
+        if _receive(hdc, board, out, 'outputs.tar', timeout_seconds=180) is None:
             raise ValueError('missing output archive')
+        progress.update('compare', f'Extracting and comparing all ten calls for {len(completed)} completed cases')
         extract(out/'outputs.tar', out/'native', meta, selection=completed)
         state.update(compare(fixture, out/'native', selection=completed), stage='complete',
                      device_execution='EXECUTED_OUTPUTS_RETRIEVED')
@@ -654,6 +744,7 @@ def recover(root, out):
             except Exception as error:
                 state['lock_release_error'] = str(error)
         _save(out/'result.json', state)
+        progress.close()
     return state
 
 
@@ -664,10 +755,16 @@ def main():
     parser.add_argument('--config')
     parser.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     parser.add_argument('--recover')
+    parser.add_argument('--status', help='Inspect local launcher state and last transport receipt; no HDC, writes or locks')
     parser.add_argument('--analyze', help='Read an existing recovery directory and print numerical details; no board access')
     parser.add_argument('--output')
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
+    if args.status:
+        if args.analyze or args.recover or args.compiled or args.config or args.cases or args.apply or args.output:
+            parser.error('--status only accepts the original execution directory')
+        print(json.dumps(local_status(args.status), ensure_ascii=False, allow_nan=False))
+        return 0
     if args.analyze:
         if args.recover or args.compiled or args.config or args.cases or args.apply or args.output:
             parser.error('--analyze only accepts a recovered result directory')

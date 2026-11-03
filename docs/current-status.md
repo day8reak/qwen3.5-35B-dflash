@@ -27,7 +27,24 @@
 
 Target两组仅复现其head配置与Q64／Q1形状，KV仍固定224；没有抽取实际Target AIR，也没有验证Target完整cache或整模型。它们可以检查共用接口是否同样出错，不能单独归因Target精度。第一层Attention路径数值错误已经复现，但端口、布局、编译或内核哪一环导致，仍待本轮区分。
 
-先批量编译；一组已知主机编译失败不会阻止其余组编译。目录为新的固定功能槽，不覆盖之前已执行的实验：
+**已有矩阵请求先查看状态，不重复编译／启动。** 用户这次 `qwen35_vector_297df57991e34b2a8ad76aed1118f437` 在启动命令处按了Ctrl-Z，shell显示Stopped；这会挂起进程。旧启动流程逐文件上传、校验且无进度，旧recover还会把“没有complete”直接标成running；已有回收目录又被同运行目录内的启动进程拦住。这些是执行工具的问题，目前没有该矩阵的数值结果或算子卡死证据。
+
+在原DDK服务器终端更新并读取本地状态；`--status`不连接设备、不改文件、不获取执行锁：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+jobs -l
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --status "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-run"
+```
+
+`local_jobs`给出PID、进程状态及`suspended`；`last_completed_transport_call`给出最后完成的通信操作，不冒充正在执行的操作。如果原终端的job 1仍是这条Stopped命令，用`fg %1`恢复它。旧进程不会自动加载新代码；挂起期间也可能超过原HDC调用的墙钟超时，恢复后以其实际退出结果为准。如果任务已不存在，保留请求与锁并回传status，不盲目删除锁或再次apply。
+
+可以在另一个相同环境的终端使用下方recover查看同一次请求。新版允许独立回收目录重复使用；`PENDING`现在表示`completion-unconfirmed`，并附本地主进程状态、板端已完成例数、最后退出码和未完成例名。新版启动另提供当前例序号、归档阶段标记。上述标记不是进程存活证明，旧请求没有新标记也不等于尚未执行。
+
+新启动会打印准备、打包、上传、校验、启动阶段，每30秒显示等待信息；输入／模型一次打包传输，再核验归档及每个文件SHA256。新请求的日志打包回收，旧请求保留逐文件回收且显示进度。所有例的3次预热、10次快照、原数值门槛和失败停止规则保持。无需重编OMC或native runner；尚未执行的矩阵才按下面两步编译、启动。
+
+首次批量编译时，一组已知主机编译失败不会阻止其余组编译。目录为固定功能槽，不覆盖之前已执行的实验：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -51,12 +68,17 @@ python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-run" --apply
 ```
 
-回收同一次执行；若返回 `VECTOR_VALIDATION_PENDING`，只重复recover，不重复apply。某例原生进程失败或超时仍停止后续设备调用，并回收已完成部分，不以继续执行掩盖设备状态：
+回收同一次执行；若返回 `VECTOR_VALIDATION_PENDING`，先查看附带状态，挂起的启动进程需要在原终端恢复。运行中的请求只重复recover，不重复apply。某例原生进程失败或超时仍停止后续设备调用，并回收已完成部分：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --recover "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-run" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-result"
+```
+
+已有回收张量及`validated_cases`后再分析：
+
+```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-result"
 ```

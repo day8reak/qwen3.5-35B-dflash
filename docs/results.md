@@ -105,6 +105,10 @@ compile.log为985893字节／8862行，hash `b270f2ba1161e9f20d86f57ab2564afcfb8
 7组矩阵主机检查通过，包含全部122例的独立Torch FP64 SDPA、序列化图解释执行、受控编译失败后完成8组尝试、乱序ABI、全部十次模拟快照和错误前16行签名识别；原7／14／12组检查通过。矩阵的设备数值／shape支持仍待用户执行，未更改权重、完整模型或数值容差。
 
 
+2026-11-03，用户启动矩阵后长时间无输出，按Ctrl-Z后shell显示`Stopped`。请求`qwen35_vector_297df57991e34b2a8ad76aed1118f437`第一次recover返回`VECTOR_VALIDATION_PENDING / RETAINED_OR_UNCERTAIN`，后两次因`another local model job is running`拒绝。没有该矩阵的数值输出；不能把这次等待归为Attention shape不支持或内核卡死。源码确认旧启动逐文件HDC发送／校验且没有进度，request在上传前创建；缺少complete就标记running并不证明已发起模型调用。第一次回收目录不存在，因此跳过复用检查；第二次复用检查扫描整个AI_RUN_DIR，挂起的启动脚本也会触发拒绝。
+
+修复增加只读本地`--status`、持久阶段记录和30秒等待提示；同一源请求的独立vector回收目录只检查引用该回收目录的活动任务，原执行目录复用仍保留全局活动任务检查。新请求打包上传并核验归档和每个成员SHA，板端记录当前例／归档阶段并打包日志回收；旧请求兼容逐文件回收。未完成请求报告`completion-unconfirmed`和证据标记，不宣称进程仍存活，也不重启模型或强制解锁。7组新主机检查包含真实SIGSTOP进程、重复回收、只读状态、冲突写入保护、真实shell／tar流程、损坏拒绝、失败停止及十次host-fake输出比较；24组原ABI／目录生命周期和7组矩阵检查通过。助手未连接DDK服务器或板子，本次旧请求实际停留阶段仍需用户status／recover回传。
+
 ## 此前PyTorch独立执行：加载成功，数值失败
 
 2026-11-02，用户回传尝试`ec3f7c3136ac43fcb927c25eef63f4e3`的完整比较摘要：`EXECUTED_OUTPUTS_RETRIEVED`、`NUMERICAL_FAILED`，任务完成且锁释放。两组各19次调用全部完成，说明本次已经跨过此前的Fill加载失败；38例均未通过原比较门槛。以下为用户回传，未独立读取原始板端张量，随后离线诊断报告OMC SHA256为 ce11666f9298ec7453bbdcdfe1e3a3a38d396cd12a0bd13f9faf6c82c4981ad6。

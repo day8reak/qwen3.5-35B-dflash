@@ -181,8 +181,6 @@ def reuse_test_output(output, *, config=None, recovery_source=None):
                *(root / role / 'tests' for role in ('draft', 'prefill', 'decode'))}
     if path.is_symlink() or path.parent.resolve() not in allowed:
         raise ValueError('reusable test outputs must be in fused/ or draft/prefill/decode/tests/')
-    if _active_processes(root):
-        raise ValueError('another local model job is running; output retained')
     rows = list(_reports(path))
     if not rows or any(r.get('artifact_kind') not in {None, 'qwen35-board-serial-dflash-job',
             'qwen35-board-serial-dflash-execution', 'qwen35-draft-operator-profile',
@@ -199,6 +197,18 @@ def reuse_test_output(output, *, config=None, recovery_source=None):
     readonly_recovery = recovery_source is not None and Path(recovery_source).exists() and all(
         r.get('recovery_model_execution') == 'FORBIDDEN'
         and Path(r.get('recovery_source', '')).absolute() == Path(recovery_source).absolute() for r in rows)
+    # A vector recovery owns a separate, locked result slot. The original
+    # launcher may still be uploading (or SIGSTOPed); it never writes this slot.
+    # Keep whole-run protection for every other cleanup, and protect readers/
+    # writers of the recovery directory itself even for this narrow exception.
+    vector_recovery = (readonly_recovery
+        and all(r.get('artifact_kind') == 'qwen35-draft-vector-validation' for r in rows)
+        and not (path/'request.json').exists()
+        and path.resolve() != Path(recovery_source).resolve()
+        and path.resolve() not in Path(recovery_source).resolve().parents
+        and Path(recovery_source).resolve() not in path.resolve().parents)
+    if _active_processes(path if vector_recovery else root):
+        raise ValueError('another local model job is running; output retained')
     if not (host_only or any(_closed(r) for r in rows) and not attempts
             or attempts and attempts <= closed or readonly_recovery):
         raise ValueError('previous attempt still running or exit unknown; recover it before reusing: ' + str(path))
