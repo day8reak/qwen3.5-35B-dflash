@@ -16,7 +16,7 @@ import uuid
 from qwen35_moe_dflash.common.artifacts import output_path, save_json
 from qwen35_moe_dflash.execution.serial_transport import _environment
 from qwen35_moe_dflash.draft.board import _receive
-from qwen35_moe_dflash.draft.profile_plan import KIND, bind_profile, model_argv, bind_accuracy_profile, check_model_help
+from qwen35_moe_dflash.draft.profile_plan import KIND, bind_profile, model_argv, bind_accuracy_profile, check_model_help, manager_interface
 from qwen35_moe_dflash.common.hashing import sha256_file
 from qwen35_moe_dflash.execution.hdc_run import Hdc
 from qwen35_moe_dflash.target.board_tool_inspect import _shell_result, _tool_hash, _tool_path
@@ -70,8 +70,11 @@ def _identity_guard(path, row):
 
 def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
                   timeout_seconds=600, lock_wait_seconds=1800, accuracy=None,
-                  allow_numerical_failure=False,
+                  allow_numerical_failure=False, model_manager_interface='V1',
                   model_tool="/data/local/tmp/tools_sysdbg/model_run_tool_internal"):
+    interface = manager_interface(model_manager_interface)
+    if interface != 'V1' and not accuracy:
+        raise ValueError('V2 profiling requires a retained incremental --accuracy result')
     if allow_numerical_failure and not accuracy:
         raise ValueError('--allow-numerical-failure requires --accuracy')
     if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 7200:
@@ -95,9 +98,11 @@ def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
     token = uuid.uuid4().hex
     try:
         plan = (bind_accuracy_profile(accuracy, model_tool,
-                    allow_numerical_failure=allow_numerical_failure) if accuracy else
+                    allow_numerical_failure=allow_numerical_failure,
+                    model_manager_interface=interface) if accuracy else
                 bind_profile(prepared, inspection, refresh_output=out / 'input-revalidation'))
-        result.update({k:plan[k] for k in ('source_numerical_validation','profiling_scope') if k in plan})
+        result.update({k:plan[k] for k in ('source_numerical_validation','profiling_scope',
+            'model_manager_interface','model_restore_mode') if k in plan})
         if plan.get('input_revalidation'):
             result['input_revalidation'] = {key: plan['input_revalidation'][key]
                 for key in ('status', 'identity_change_count', 'prepared')}
@@ -162,7 +167,8 @@ def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
             save_json(out/'model-help.json', {'returncode':status,'text':text})
             if status >= 128:
                 raise ValueError('model tool help failed before inference')
-            check_model_help(text)
+            check_model_help(text, interface)
+            plan['model_help_sha256'] = hashlib.sha256(text.encode()).hexdigest()
             plan['tool']['sha256'] = plan['model_tool_sha256']
         result['stage'] = 'parser-help'
         status, text = _shell_result(hdc, 'cd ' + q(str(board / 'help/parser')) + ' && timeout -k 1 15 env LD_LIBRARY_PATH='
@@ -247,7 +253,8 @@ def recover_profile(execution, output):
     try:
         raw, identity = _read_small(root / 'request.json', 4 << 20)
         plan = json.loads(raw)
-        result.update({k:plan[k] for k in ('source_numerical_validation','profiling_scope') if k in plan})
+        result.update({k:plan[k] for k in ('source_numerical_validation','profiling_scope',
+            'model_manager_interface','model_restore_mode') if k in plan})
         token = plan['token']
         if (plan.get('artifact_kind') != KIND or re.fullmatch('[0-9a-f]{32}', token) is None
                 or plan['board_attempt'] != PREFIX + token
@@ -305,6 +312,7 @@ def recover_profile(execution, output):
         # part of capture success and must not trigger another model invocation.
         result['capture'] = {'request': identity, 'model': plan['model'], 'model_process_id': int(pid),
             'input_scope': plan['input_scope'], 'timing_scope': plan['timing_scope'],
+            'model_manager_interface': plan.get('model_manager_interface', 'V1'),
             'attribution_status': 'VENDOR_SERVICE_EXPORT_HISTORY_AND_MODEL_MEMBERSHIP_REQUIRE_REVIEW'}
         result.update(status='DRAFT_PROFILE_CAPTURED_REQUIRES_ATTRIBUTION_REVIEW', stage='complete',
             device_execution='ONE_VENDOR_TOOL_CALL_COMPLETED', csv_directory=str(out / 'prof_data'),

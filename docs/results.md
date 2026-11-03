@@ -2,7 +2,28 @@
 
 2026-11-03，用户在确认“最差hidden相对L2约2.61%、Top1共7/172不一致”后明确回复：**“接受本轮结果，先优化性能”**。当前组合版作为性能优化基线，暂停继续追查数值差异。此决定针对已观测的OMC与用例，原报告的NUMERICAL_FAILED、逐元素门槛及golden保留；后续候选仍须报告相对本基线的数值变化，不能由此次接受推出任意额外近似均已获准。生产未提升。
 
-2026-11-03，第一轮图优化已实现，尚未运行所选DDK或设备。新增显式 `--optimization packed` 与 `packed-spatial`，默认baseline便于保留现有路径。packed把同层context/block拼行后合并K/V投影，合并MLP gate/up输出通道；query折叠到KV头组，避免复制KV；context/block各计算一次RoPE供六层复用。packed-spatial进一步将C16 token排为4×4个空间patch，在[1,1024,16,16]上以stride4执行原[2048,1024,4,4]完整点积权重；C64对应[1,1024,32,32]。没有拆K、量化、缩词表或改KV写入规则。
+2026-11-03，用户回传第一轮 `packed-spatial` 编译后精度与profiling结果，执行及回收成功。优化OMC上传字节数2808368316，当前尚未收到其SHA和新分区数量；所回传精度摘要与上一版一致：isolated Top1 82/86、feedback 83/86，共7/172个相同位置和token的差异；hidden相对L2上限仍为2.61%，新增KV为0.44%～0.83%，未写KV均保持，两组重复调用逐位稳定。这些摘要不能证明两版全部输出逐位相同。原NUMERICAL_FAILED保留。
+
+| 同类测量 | 旧组合版 ms | packed-spatial ms |
+|---|---:|---:|
+| isolated catchup API均值，11次 | 736.501 | 289.482 |
+| isolated proposal API均值，8次 | 760.223 | 286.236 |
+| feedback catchup API均值，11次 | 754.463 | 279.693 |
+| feedback proposal API均值，8次 | 773.596 | 298.002 |
+| 单次厂商model inference | 627.647 | 245.989 |
+| Conv2D单算子 | 69.038 | 8.664 |
+| 末尾MatMul单算子 | 19.975 | 19.798 |
+| CPU ArgMax单算子 | 16.199 | 17.404 |
+
+本轮profile模型Load237.132ms、Unload6.100ms另计。用户汇总算子约70ms，与模型推理相差约176ms；不是实测的拷贝或等待时间桶。混合输入API均值、单次厂商profile、固定输入预热基准仍须分开。Conv约8倍、完整单次profile约2.55倍的改善来自用户回传，不是本地重新测量，50ms目标未达到。
+
+精度尝试为 `qwen35_draft_accuracy_2039853432e54f378e601bcebd7ee8dd`；profile尝试为 `qwen35_draft_profile_aee65f0c941d43548838915203005627`，工具PID34795，model/parser退出0，原CSV已回收且锁已释放。model CSV SHA256 `afe84bc612fc160afe483a6d97a62db0f952cf9353672dcb89c5de62dc5e3762`；op CSV SHA256 `4387fd276b3efc4d6a3b85b9ffc45a03dba190d950897ce8a23d0e46ae7e5b72`。此处根据用户粘贴摘要及表格记录，未独立读取服务器文件。
+
+用户补充Target推理与算子汇总接近，因此不把Draft差额解释为所有模型普遍具有的统计现象。源码确认原Target厂商工具入口使用V2和外置权重，Draft入口使用V1和内嵌权重；Draft新op表仍有CPU Cast/Gather/Logical、ArgMax及两个NPU model ID。尚未收到当前Target分区/完整对照CSV，也未收到新Draft边界报告，不宣称Target单NPU子图或V1必然慢。当前优先区分接口路径与图内边界，而非继续仅压Conv。
+
+新增显式 `profile_draft.py --accuracy ... --modelmanager-itf V2`：同一内嵌OMC、同一17/14 ABI和参考输入、同一单次profile/频率/优先级，只改厂商工具接口为V2并从文件恢复。V1默认不变；先核对所选工具真实help，失败不回退或重跑，恢复沿用原request。无需新OMG、native构建或大模型上传；V2兼容性、输出正确性和性能尚未实测。10组主机检查覆盖真实fixture绑定、命令差异、help门槛、失败停止、V1回归、模拟启动和不重启恢复，shell语法通过；证据run `20261103T113618Z-19197-f0ca6f`。命令见[当前阶段测试](current-status.md)。
+
+第一轮图优化新增显式 `--optimization packed` 与 `packed-spatial`，默认baseline便于保留现有路径。packed把同层context/block拼行后合并K/V投影，合并MLP gate/up输出通道；query折叠到KV头组，避免复制KV；context/block各计算一次RoPE供六层复用。packed-spatial进一步将C16 token排为4×4个空间patch，在[1,1024,16,16]上以stride4执行原[2048,1024,4,4]完整点积权重；C64对应[1,1024,32,32]。没有拆K、量化、缩词表或改KV写入规则。
 
 | 本地主机检查 | 结果与范围 |
 |---|---|
@@ -13,9 +34,9 @@
 | 导出／编译控制链 | 14项protobuf夹具与mock工具链检查通过，含packed-spatial元数据透传及可见融合attention拒绝；未调用真实OMG |
 | CPU结果审计 | 原版和packed-spatial各14项检查通过，均保留旧门槛、失败状态和golden |
 
-证据run `20261103T105358Z-18207-11e412`。以上检查不证明设备舍入、编译分区或速度；本地没有所选CPro DDK，未访问用户设备。新的17／14语义绑定支持Conv前空间Transpose，合并权重通过原K/V和gate/up各段hash核对。现有native runner、公共AIR/OMC、参考数学和验收门槛未替换。操作命令已收敛到[当前阶段测试](current-status.md)，先导出/编译packed-spatial，再精度回收与同模型CSV；需要辨别Conv影响时改为packed，复用同一已结束候选槽位。
+证据run `20261103T105358Z-18207-11e412`。以上为改动时主机检查，后续用户设备反馈见本页顶部；本地没有所选CPro DDK，未访问用户设备。新的17／14语义绑定支持Conv前空间Transpose，合并权重通过原K/V和gate/up各段hash核对。现有native runner、公共AIR/OMC、参考数学和验收门槛未替换。
 
-50ms目标按C16/cap192/K15常驻同步API、同输入3次预热加10次测量判断。用户询问工期，暂以5～7个工作日安排验证窗口，前提每天1～2轮编译／板端反馈；不是达标承诺。当前627.647ms模型时间与134.940ms算子加和之间的差额仍未归因，NPU侧完整词表Top1和运行时边界优化尚未实现。首轮真实结果后再估计。
+50ms目标按C16/cap192/K15常驻同步API、同输入3次预热加10次测量判断。此前暂以5～7个工作日安排验证窗口，前提每天1～2轮编译／板端反馈；不是达标承诺。第一轮已见提速，但245.989ms与约70ms算子汇总间的差额仍未归因，不据算子接近70ms就缩短达标工期。NPU侧完整词表Top1和图内边界优化尚未实现。
 
 当前基线OMC SHA256：`288644ea39913fc49466ed4b6d9329825b6ea819259c266c4601cba391b5e182`，来自用户回传的真实权重CPU审计。源数学在四个选定isolated case中通过原参考门槛，两种gamma舍入边界报告的指标相同；这不能证明所有中间张量逐位相同或编译后算术精度。
 

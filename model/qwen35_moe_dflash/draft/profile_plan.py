@@ -72,30 +72,46 @@ def bind_profile(prepared, inspection, *, refresh_output=None):
 
 def model_argv(plan, board, model):
     board = PurePosixPath(board)
-    return [plan['tool']['path'], '--model=' + str(model),
+    interface = manager_interface(plan.get('model_manager_interface', 'V1'))
+    argv = [plan['tool']['path'], '--model=' + str(model),
         '--input=' + ','.join(str(board / f'input_{i}.bin') for i in range(len(plan['inputs']))),
-        '--output_dir=' + str(board / 'outputs'), '--modelmanager_itf=V1', '--enable_item=1',
+        '--output_dir=' + str(board / 'outputs'), '--modelmanager_itf=' + interface, '--enable_item=1',
         '--times=1', '--async=false', '--dev_perf=3', '--priority=7',
         '--input_type=' + ','.join(_tool_dtype(r['dtype']) for r in plan['inputs']),
         '--output_type=' + ','.join(_tool_dtype(r['dtype']) for r in plan['outputs'])]
+    if interface == 'V2':
+        # Restore the same embedded OMC from its cached file. There are no
+        # external weight files to initialize and no fallback to a V1 call.
+        argv.append('--direct_from_file=true')
+    return argv
+
+
+def manager_interface(value):
+    if value not in ('V1', 'V2'):
+        raise ValueError('profiling model manager interface must be V1 or V2')
+    return value
 
 
 def _tool_dtype(dtype):
     return {'float16': 'FP16', 'int32': 'INT32', 'float32': 'FP32'}[dtype]
 
 
-def check_model_help(text):
+def check_model_help(text, model_manager_interface='V1'):
+    interface = manager_interface(model_manager_interface)
     if (any(not re.search(r'--'+flag+r'\b', text) for flag in FLAGS)
             or not re.search(r'V1\s*;\s*V2', text)
-            or not re.search(r'1\s*:\s*Enable profiling', text, re.I)):
-        raise ValueError('selected model tool help does not establish the V1 profiling CLI')
+            or not re.search(r'1\s*:\s*Enable profiling', text, re.I)
+            or (interface == 'V2' and not re.search(r'--direct_from_file\b', text))):
+        raise ValueError('selected model tool help does not establish the ' + interface + ' profiling CLI')
 
 
-def bind_accuracy_profile(accuracy, model_tool, *, allow_numerical_failure=False):
+def bind_accuracy_profile(accuracy, model_tool, *, allow_numerical_failure=False,
+                          model_manager_interface='V1'):
     from qwen35_moe_dflash.common.hashing import sha256_file
     from qwen35_moe_dflash.execution.runtime_config import read_json
     from qwen35_moe_dflash.draft.incremental.runtime import validate_abi
     from qwen35_moe_dflash.draft.incremental.accuracy import KIND as ACCURACY_KIND
+    interface = manager_interface(model_manager_interface)
     root = Path(accuracy).resolve()
     result = read_json(root/'result.json', 4 << 20)
     passed = (result.get('status'), result.get('numerical_validation')) == ('PASSED', 'PASSED')
@@ -136,5 +152,8 @@ def bind_accuracy_profile(accuracy, model_tool, *, allow_numerical_failure=False
         model_compilation='NOT_RUN',numerical_validation='NOT_EVALUATED',
         source_numerical_validation=result['numerical_validation'],
         profiling_scope=('PASSED_REFERENCE_BASELINE' if passed else 'DIAGNOSTIC_NUMERICAL_FAILURE_ALLOWED'),
-        model_manager_interface='V1',times=1,warmup=0,
+        model_manager_interface=interface,
+        model_restore_mode='FILE' if interface == 'V2' else 'VENDOR_V1_DEFAULT',
+        source_accuracy_model_manager_interface='V1',
+        interface_accuracy='NOT_REVALIDATED_BY_PROFILE',times=1,warmup=0,
         timing_scope='ONE_FRESH_VENDOR_TOOL_PROFILED_INFERENCE_NOT_RESIDENT_LATENCY_DISTRIBUTION')

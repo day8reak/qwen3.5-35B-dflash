@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "USER_ACCEPTED_COMPOSED_DRAFT_PERFORMANCE_BASELINE_BOUNDARY_INSPECTION_READY",
+    "status": "PACKED_SPATIAL_USER_REPORTED_SPEEDUP_RUNTIME_GAP_UNRESOLVED",
     "entry": "targets/cpro/tools/validate_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "COMPOSED_ATTENTION_TOP1_ISOLATED82_OF86_FEEDBACK83_OF86; HIDDEN_L2_1.34_TO2.61_PERCENT; APPENDED_KV_L2_0.44_TO0.83_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "User accepted current worst hidden relative L2 2.61% and 7/172 Top1 differences for performance work. Inspect current OMC partition boundaries without compile/device access; model inference627.647ms versus op sum134.940ms remains unexplained. Keep original failed accuracy report and goldens. Conv spatial packing candidate awaits target experiment.",
+    "next": "Use same optimized OMC/inputs in explicit V2 vendor profile; V1 remains default. No compiler or native build. Inspect optimized boundaries. Original numerical failure and goldens preserved.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6150,6 +6150,34 @@
       "current_conv_profile_ms": 69.038,
       "priority_note": "Measured Conv hotspot; whole-model493ms unexplained duration difference also requires runtime/partition investigation."
     },
-    "performance_baseline_acceptance": "specs/dflash-execution-state.json#incremental_draft_task/composed_attention/performance_baseline_acceptance"
+    "performance_baseline_acceptance": "specs/dflash-execution-state.json#incremental_draft_task/composed_attention/performance_baseline_acceptance",
+    "optimized_performance_observation": "specs/dflash-execution-state.json optimization_candidate.user_observation",
+    "runtime_interface_experiment": {
+      "status": "HOST_CHECKED_DEVICE_PENDING",
+      "entry": "targets/cpro/tools/profile_draft.py --accuracy ... --modelmanager-itf V2",
+      "run_id": "20261103T113618Z-19197-f0ca6f",
+      "host_check_groups_passed": 10,
+      "scope": "REAL_FIXTURE_BINDING_AND_COMMAND_VALIDATION; MOCKED_HDC_START_RECOVERY_NO_DEVICE",
+      "same": [
+        "embedded_omc",
+        "ordered_17_inputs_14_outputs",
+        "profile_case",
+        "frequency_priority",
+        "times_1_warmup_0"
+      ],
+      "changed": [
+        "modelmanager_itf_V2",
+        "direct_from_file_true"
+      ],
+      "default": "V1",
+      "model_compilation": "NOT_RUN",
+      "native_build": "NOT_REQUIRED",
+      "device_execution": "NOT_RUN",
+      "numerical_validation": "NOT_EVALUATED",
+      "fallback": "NONE",
+      "recovery": "RETAINED_INTERFACE_NO_RELAUNCH",
+      "hypothesis": "TARGET_TOOL_USES_V2_EXTERNAL_WEIGHTS_WHILE_DRAFT_USES_V1_EMBEDDED; API_PATH_NOT_PROVEN_CAUSE",
+      "interpretation": "IF_OP_TIME_STABLE_AND_MODEL_TIME_FALLS_INVESTIGATE_INTERFACE_PATH; OTHERWISE_INVESTIGATE_GRAPH_BOUNDARIES; NO_AUTOMATIC_PROMOTION"
+    }
   }
 }

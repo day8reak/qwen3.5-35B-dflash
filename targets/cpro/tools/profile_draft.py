@@ -21,6 +21,8 @@ def main(argv=None):
     parser.add_argument('--ddk-root', help='selected DDK schema for --inspect-boundaries; no library execution')
     parser.add_argument('--tool-inspection', help='existing target-board-tool-inspection-writable')
     parser.add_argument('--model-tool', default='/data/local/tmp/tools_sysdbg/model_run_tool_internal')
+    parser.add_argument('--modelmanager-itf', choices=('V1', 'V2'),
+                        help='--accuracy only: compare the same embedded OMC through V1 (default) or V2 file restore')
     parser.add_argument('--data-proc-tool', default='/data/local/tmp/tools_sysdbg/data_proc_tool_internal')
     parser.add_argument('--output', required=True, help='separate fixed test slot below AI_RUN_DIR')
     parser.add_argument('--apply', action='store_true', help='start one detached profiling invocation')
@@ -31,7 +33,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.inspect_boundaries:
         if (not args.accuracy_result or not args.ddk_root or args.apply or args.tool_inspection
-                or args.allow_numerical_failure):
+                or args.allow_numerical_failure or args.modelmanager_itf):
             parser.error('--inspect-boundaries requires --accuracy-result, --ddk-root and --output JSON; omit execution flags')
         try:
             from qwen35_moe_dflash.draft.runtime_boundaries import inspect_boundaries
@@ -46,6 +48,8 @@ def main(argv=None):
         parser.error('--accuracy-result and --ddk-root require --inspect-boundaries')
     if args.allow_numerical_failure and not args.accuracy:
         parser.error('--allow-numerical-failure requires --accuracy')
+    if args.modelmanager_itf and not args.accuracy:
+        parser.error('--modelmanager-itf requires --accuracy; recovery uses the retained interface')
     if args.prepared and (not args.apply or not args.tool_inspection):
         parser.error('--prepared requires --apply and --tool-inspection')
     if args.accuracy and (not args.apply or args.tool_inspection):
@@ -60,9 +64,10 @@ def main(argv=None):
             result = start_profile(args.prepared, args.tool_inspection, args.output,
                 parser_tool=args.data_proc_tool, timeout_seconds=args.timeout_seconds,
                 lock_wait_seconds=args.lock_wait_seconds,accuracy=args.accuracy,model_tool=args.model_tool,
-                allow_numerical_failure=args.allow_numerical_failure)
+                allow_numerical_failure=args.allow_numerical_failure,
+                model_manager_interface=args.modelmanager_itf or 'V1')
         keys = ('status', 'stage', 'device_execution', 'model_compilation', 'numerical_validation',
-            'source_numerical_validation', 'profiling_scope',
+            'source_numerical_validation', 'profiling_scope', 'model_manager_interface', 'model_restore_mode',
             'board_attempt', 'model_process_id', 'model_exitcode', 'parser_exitcode',
             'csv_directory', 'csv_count', 'csv_files', 'csv_analysis', 'input_revalidation',
             'lock_state', 'error', 'lock_release_errors', 'next')
