@@ -1242,7 +1242,7 @@
         "timing_scope": "SYNCHRONOUS_API_WALL_DIAGNOSTIC_MIXED_INPUTS_NOT_WARM_BENCHMARK",
         "comparison": "UNCHANGED_ELEMENTWISE_ATOL_0.01_RTOL_0.01_AND_ZERO_TOP1_MISMATCHES; NO_L2_GATE",
         "root_cause": "UNRESOLVED; CONTEXT_KV_IS_INDEPENDENT_OF_CANDIDATE_ATTENTION",
-        "next": "DDK_SERVER_REBUILD_RUNTIME_UNITY_GAMMA_TAPS_IN_SAME_TEST_SLOT_THEN_VALIDATE; docs/current-status.md"
+        "next": "DDK_SERVER_READ_ONLY_PREFIX_COMPILED_PATH_INSPECTION; REUSE_EXISTING_OMC_AND_RESULTS; docs/current-status.md"
       },
       "output_diagnosis": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose",
@@ -1276,7 +1276,7 @@
           "embedding": "ANCHOR_AND_MASK_SOURCE_ROWS_FINITE_NONZERO_NOT_DEVICE_GATHER"
         }
       },
-      "next": "DDK_SERVER_REBUILD_RUNTIME_UNITY_GAMMA_TAPS_IN_SAME_TEST_SLOT_THEN_VALIDATE; docs/current-status.md",
+      "next": "DDK_SERVER_READ_ONLY_PREFIX_COMPILED_PATH_INSPECTION; REUSE_EXISTING_OMC_AND_RESULTS; docs/current-status.md",
       "embedding_probe": {
         "entry": "targets/cpro/tools/probe_draft_embedding.py",
         "host_checks": 23,
@@ -1445,9 +1445,9 @@
           "gamma_factor_readback": "FP32_1x2048_EXACT_UNITY"
         },
         "abi": "UNIQUE_SHAPE_DTYPE_PAIRS_BOUND_TO_COMPILED_OUTPUT_SLOTS; NOT_A_KV_BINDER",
-        "model_compilation": "NOT_RUN",
-        "device_execution": "NOT_RUN",
-        "numerical_validation": "NOT_RUN",
+        "model_compilation": "USER_REPORTED_PASSED",
+        "device_execution": "USER_REPORTED_EXECUTED_OUTPUTS_RETRIEVED",
+        "numerical_validation": "FAILED",
         "host_checks": 15,
         "regression_checks": {
           "original_prefix": 33,
@@ -1469,7 +1469,7 @@
           "validation_error": "ValueError: compiled output descriptor changed or is ambiguous",
           "device_execution": "NOT_RUN",
           "lock_state": "NO_KNOWN_OWNED_LOCK",
-          "actual_compiled_outputs": "NOT_YET_REPORTED",
+          "actual_compiled_outputs": "LATER_REPORTED_DISCONNECTED_GAMMA; SEE_INTERFACE_INSPECTION",
           "board_attempt": "NO_NEW_LAUNCH; COMPILATION_SOURCE_REFERENCE_IS_ORIGINAL_FULL_DRAFT_ATTEMPT"
         },
         "interface_inspection": {
@@ -1508,6 +1508,50 @@
           "factor_reference": "HOST_ONES_INPUT_AND_GOLDEN_READBACK",
           "derived_formula": "ONLY_WHEN_FACTOR_READBACK_IS_UNITY; DIAGNOSTIC_ONLY",
           "scope": "AUXILIARY_BRANCH_NOT_PHYSICAL_RMS_INPUT_READBACK"
+        },
+        "device_observation": {
+          "source": "USER_PASTED_RECOVER_AND_ANALYZE_JSON_NOT_INDEPENDENTLY_READ",
+          "model_sha256": "1995dc87eb59bdb4f548cfe03f2374745ed48c61c38c5c02c477ce3b20be5794",
+          "board_attempt": "/data/local/tmp/qwen35_vector_cdfbec2849b74e03abac5b749b5c7309",
+          "numerical_validation": "FAILED",
+          "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+          "warmup": 3,
+          "repetitions": 10,
+          "repeat_bitwise_stable": true,
+          "exact_passed_outputs": [
+            "embedding",
+            "ids_readback",
+            "rms_gamma",
+            "gamma_factor_readback"
+          ],
+          "zero_outputs": {
+            "rms_x": 32768,
+            "input_rms": 32768
+          },
+          "gamma_all_ones": true,
+          "rms_max_abs_error": 27.2183837890625,
+          "x_relative_l2_error": 1.0,
+          "rms_from_captured_inputs": "ZERO_FORMULA_MATCHES_ZERO_OUTPUT; DIAGNOSTIC_ONLY_NOT_ACCURACY_PASS",
+          "graphop_counts": {
+            "CPUCL": 1,
+            "NPUCL": 1
+          },
+          "api_ms": {
+            "mean": 0.8468,
+            "min": 0.721,
+            "max": 1.032
+          },
+          "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY_NOT_FULL_DRAFT",
+          "next": "DDK_SERVER_READ_ONLY_PREFIX_COMPILED_PATH_INSPECTION; REUSE_EXISTING_OMC_AND_RESULTS; docs/current-status.md",
+          "root_cause": "UNRESOLVED; PRIORITIZE_GATHER_TO_RMS_X_MULS_CAST_PATH_AND_COMPILED_BOUNDARIES"
+        },
+        "prefix_graph_inspection": {
+          "entry": "targets/cpro/tools/probe_draft_embedding.py --inspect-prefix",
+          "host_checks": 14,
+          "interface_regression_checks": 13,
+          "user_execution": "PENDING",
+          "scope": "READ_ONLY_MAIN_CPUCL_AND_RETAINED_IR; NPUCL_TASKS_OPAQUE; NO_GRAPH_CHANGE_OR_BOARD_CALL",
+          "target_comparison": "TARGET_IN_MODEL_EMBEDDING_LOOKUP_THEN_FP16; DRAFT_ADDITIONAL_MULS_SCALE_1_IS_HYPOTHESIS_NOT_PROVEN_CAUSE"
         }
       }
     }

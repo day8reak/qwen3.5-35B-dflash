@@ -16,17 +16,24 @@ def main():
         parser.add_argument('--'+name, required=name in ('ddk-root', 'ddk-id'))
     parser.add_argument('--inspect-compiled', metavar='DIRECTORY',
                         help='Read an existing probe OMC interface; no compilation, fixture writes or board access')
+    parser.add_argument('--inspect-prefix', metavar='DIRECTORY',
+                        help='Read retained prefix graph boundaries, CPU tasks and compiler IR; no compilation or board access')
     parser.add_argument('--timeout-seconds', type=int)
     parser.add_argument('--stage', choices=('lookup', 'input-rms', 'input-rms-taps'),
                         help='explicit IDs, original first-RMS prefix, or prefix with x/gamma readback')
     args = parser.parse_args()
-    if args.inspect_compiled:
+    if args.inspect_compiled and args.inspect_prefix:
+        parser.error('choose one inspection mode')
+    if args.inspect_compiled or args.inspect_prefix:
         if any(getattr(args, name) is not None for name in ('air_export', 'source', 'result', 'output', 'stage', 'timeout_seconds')):
-            parser.error('--inspect-compiled accepts only --ddk-root and --ddk-id')
+            parser.error('inspection accepts only --ddk-root and --ddk-id')
     elif any(getattr(args, name) is None for name in ('air_export', 'source', 'result', 'output')):
         parser.error('compilation requires --air-export, --source, --result and --output')
     try:
-        if args.inspect_compiled:
+        if args.inspect_prefix:
+            from qwen35_moe_dflash.draft.incremental.prefix_inspect import inspect_prefix
+            result = inspect_prefix(args.inspect_prefix, args.ddk_root, args.ddk_id)
+        elif args.inspect_compiled:
             result = inspect_compiled_probe(args.inspect_compiled, args.ddk_root, args.ddk_id)
         else:
             result = compile_probe(args.air_export, args.source, args.output, result=args.result, ddk_root=args.ddk_root,

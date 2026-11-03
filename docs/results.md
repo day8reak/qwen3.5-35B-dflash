@@ -51,6 +51,10 @@
 
 修订 `source-first-rms-input-taps-v2` 保留原RMS及其输入字节，额外增加FP32运行时全1因子、gamma乘该因子的Mul支路及因子回读。两输入六输出的角色仍通过互异shape／dtype组合绑定；显式空来源现在即使shape匹配也会拒绝。参考因子自动生成为1，gamma乘积和因子回读均要求逐字节匹配；若回读不是1，辅助RMS公式跳过，原验收失败状态保持。该观察支路可能改变编译分图，不是内核物理输入回读。15项探针／分析与13项接口主机检查通过，另有33项前缀、23项查表回归；新修订真实编译和执行尚未验证。
 
+2026-11-03，用户回传六输出v2探针执行及离线分析：尝试 `/data/local/tmp/qwen35_vector_cdfbec2849b74e03abac5b749b5c7309`，OMC SHA256 `1995dc87eb59bdb4f548cfe03f2374745ed48c61c38c5c02c477ce3b20be5794`。执行与归档exitcode均为0，锁释放；3次预热、10次输出逐位稳定，但独立数值比较失败。ID、raw embedding、gamma乘积、全1因子回读均逐字节匹配；gamma的2048项均为1。rms_x和input_rms各32768元素均为有符号零，raw embedding无零元素。input_rms最大绝对误差27.2183837890625；rms_x相对L2=1。以回读x和gamma计算得到的零RMS与实际一致，仅为诊断一致性，不能替代独立参考。CPUCL=1、NPUCL=1；同步API均值0.8468ms，范围0.721～1.032ms，不是完整Draft性能。
+
+观察把优先检查范围缩至Gather后Muls→Cast_7→Cast_11及其编译／观测路径，仍不能单独认定Muls或某个Cast的执行错误。源码对照Target CPro内置embedding分支为直接查表再转FP16，Draft额外乘标量1；保留为候选差异，尚未删除节点或更改RMS实现。新增 `probe_draft_embedding.py --inspect-prefix` 只读当前主图、CPUCL任务与哈希核验的保留IR，NPUCL任务不套用CPU GraphDef解码。14项主机合成检查及13项既有接口回归通过；具体编译属性待用户回传，完整Draft数值失败状态保持。以上设备结果均为用户回传，未在本地主机独立读取原张量。
+
 整体流程记录为用户回传的`fused/result`，板端PID34211。C16／cap192／K15增量Draft，18个prompt token、生成8个，混合接口常驻、dump关闭、顺序预读开启。完整流程接通；后续独立精度与profiling见下文。以下未独立读取板端原始产物。
 
 ## 增量Draft独立验证

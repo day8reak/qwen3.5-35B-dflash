@@ -25,7 +25,8 @@ _MAX_GRAPHS = 64
 _MAX_MATCHES = 16
 _MAX_OUTPUT_BYTES = 256 << 10
 _ATTRIBUTES = {"dtype", "shape", "file_path", "file_id", "transpose_x1", "transpose_x2",
-               "transpose_a", "transpose_b", "adj_x1", "adj_x2"}
+               "transpose_a", "transpose_b", "adj_x1", "adj_x2", "value", "scale",
+               "shift", "power", "dst_type", "src_type", "epsilon", "alpha", "beta"}
 
 
 def _read(path, limit):
@@ -83,8 +84,8 @@ def _descriptors(node, enum_fields):
 
 
 def _node(node, enum_fields):
-    # Exclude tensor value attributes even though the decoder has already
-    # replaced byte payloads by hashes. Only small conversion-relevant attrs.
+    # Scalars retain their attribute types. Tensor bytes are represented by
+    # hashes by the decoder; previews remain bounded.
     attrs = node.get("attr", [])
     if not isinstance(attrs, list):
         raise ValueError("operator attributes must be key/value entries")
@@ -189,13 +190,19 @@ def _inventory(root):
     return records, {"status": "RECORDED", "path": str(path), "sha256": hashlib.sha256(raw).hexdigest()}
 
 
-def inspect_draft_ir(compile_dir, schema_library, node_name="__ge/v20/flat_output"):
+def inspect_draft_ir(compile_dir, schema_library, node_name="__ge/v20/flat_output", *, node_names=None):
     """Return bounded diagnostics; never invoke the compiler, library or board."""
     if not isinstance(node_name, str) or not node_name or len(node_name) > 512:
         raise ValueError("node_name must contain 1..512 characters")
+    selected = [node_name] if node_names is None else node_names
+    if (not isinstance(selected, list) or not 1 <= len(selected) <= 8
+            or any(not isinstance(n, str) or not n or len(n) > 512 for n in selected)
+            or len(set(selected)) != len(selected)):
+        raise ValueError("node_names requires 1..8 unique nonempty names")
     root = Path(compile_dir).resolve()
     result = {"schema_version": 1, "artifact_kind": "qwen35-draft-ir-inspection",
               "status": "PARTIAL", "compilation_dir": str(root), "node_name": node_name,
+              "node_names": selected,
               "dump_directory": str(root / _DUMP_DIRECTORY), "files": [],
               "limits": {"files": _MAX_FILES, "file_bytes": _MAX_FILE_BYTES,
                          "total_bytes": _MAX_TOTAL_BYTES, "output_bytes": _MAX_OUTPUT_BYTES},
@@ -252,7 +259,7 @@ def inspect_draft_ir(compile_dir, schema_library, node_name="__ge/v20/flat_outpu
                 row.update(status="INTEGRITY_MISMATCH", inventory_binding="MISMATCHED")
                 continue
             model = schema.decode(raw, "ModelDef")
-            row["matches"] = _select(model, node_name, enum_fields)
+            row["matches"] = [match for name in selected for match in _select(model, name, enum_fields)]
             row["status"] = "TARGET_FOUND" if row["matches"] else "TARGET_NOT_FOUND"
             if len(json.dumps(result, ensure_ascii=True).encode()) > _MAX_OUTPUT_BYTES:
                 row.pop("matches", None)
