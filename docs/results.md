@@ -1,6 +1,38 @@
 # 当前结果
 
-2026-11-03，用户回传组合attention完整Draft结果，attempt `/data/local/tmp/qwen35_draft_accuracy_d47d8f927c5e4a6fa14797efd0e23e80`：38次调用全部执行回收、锁释放，NUMERICAL_FAILED，未提升生产。以下数字来自用户摘要，未独立读取设备文件；摘要未提供新OMC SHA。导出为六组QK MatMul → FP32缩放／mask／Softmax → FP16概率 → PV MatMul，完整208行逻辑KV、GQA INT32 Gather；学习权重、mask、17／14接口、特征Conv投影和原门槛保持。
+2026-11-03，用户在确认“最差hidden相对L2约2.61%、Top1共7/172不一致”后明确回复：**“接受本轮结果，先优化性能”**。当前组合版作为性能优化基线，暂停继续追查数值差异。此决定针对已观测的OMC与用例，原报告的NUMERICAL_FAILED、逐元素门槛及golden保留；后续候选仍须报告相对本基线的数值变化，不能由此次接受推出任意额外近似均已获准。生产未提升。
+
+当前基线OMC SHA256：`288644ea39913fc49466ed4b6d9329825b6ea819259c266c4601cba391b5e182`，来自用户回传的真实权重CPU审计。源数学在四个选定isolated case中通过原参考门槛，两种gamma舍入边界报告的指标相同；这不能证明所有中间张量逐位相同或编译后算术精度。
+
+| case | CPU hidden相对L2 vs reference | CPU新增KV最大绝对差 | device hidden相对L2 vs CPU | device新增KV最大绝对差 |
+|---|---:|---:|---:|---:|
+| 0 empty-context | 0 | 无新增 | 0.0144943 | 无新增 |
+| 1 initial-catchup | 不比较hidden | 0.015625 | 不比较hidden | 0.171875 |
+| 2 partial-context | 0.00185118 | 0.015625 | 0.0158052 | 0.156250 |
+| 17 capacity-boundary | 0.00181693 | 0.031250 | 0.0258057 | 0.140625 |
+
+四例CPU Top1均与原参考一致；板端对CPU的Top1差异分别为1／0／0／2。非空context三例的12项新增K/V在设备侧全部未通过原门槛。完整保留结果中每层新增K、V各13例，isolated与feedback的逐层摘要误差相同，数值均有限。CPU最大绝对差大于0.01仍可能通过`atol+rtol*abs(reference)`逐元素门槛。以上缩小了参考表达差异的可能范围，没有确定Conv、RMS或其他具体算子根因，现按用户决定暂缓追查。
+
+用户回传本次厂商profile的两张表，当前编译manifest仍为CPUCL=3／NPUCL=2。以下为粘贴数据，未独立取回原CSV、PID与模型身份文件。
+
+| 计时项 | ms | 范围 |
+|---|---:|---|
+| Load | 231.187 | 本次新实例加载 |
+| Model inference | 627.647 | 本次模型推理 |
+| Unload | 7.652 | 本次卸载 |
+| 三项合计 | 866.486 | 不能当作单次常驻推理 |
+| 记录的CPU＋NPU算子耗时加和 | 134.940 | 不能当作模型墙钟 |
+| 推理减算子加和 | 492.707 | 尚未解释的算术差额 |
+
+模型inference begin显示`09:47:25.89418`，按未补齐六位的微秒整数解释为`.089418`，至`.717065`恰为627647us。算子表中CPU ArgMax start早于末尾MatMul start，NPU节点start又高度聚集，因此不能直接从这些start字段构建统一执行时间线。493ms差额不是已测得的CPU、IPC或拷贝耗时，也不应与另一组760ms混合输入均值相减推断开销。
+
+算子热点为Conv2D 69.038ms、MatMul_54 19.975ms、CPU ArgMaxV2 16.199ms，合计105.212ms，占算子加和约78%；末尾MatMul的具体语义尚需图映射确认。六组QK/PV BatchMatMul与Softmax分别加和0.271ms和0.860ms，不含attention的Gather／Transpose等工作。只优化Conv不足以解释或消除整次627.647ms。现有精度runner已一次Load、多次Process，请求HIGH档位；CopyOutput、输出快照及CommitInputSlices均在Process计时外，尚未发现外层重复Load或文件IO混入API计时的证据。
+
+新增`profile_draft.py --inspect-boundaries`，只读hash绑定的当前OMC、夹具manifest和所选DDK schema，输出GraphOp边界描述、明确同图producer及CPU节点清单。逻辑尺寸按端口统计，未知shape不猜测；NPU task不解码，CPU task按范围及归属图名检查，没有匹配OMG JSON交叉验证。该报告不能作为实际搬运量或等待归因。18组主机检查通过，包含真实IMOD容器读取／hash绑定及四项CLI拒绝；protobuf解码用JSON schema stub替代，未验证真实DDK schema或设备。证据run `20261103T102947Z-16488-f050e3`。下一步读取用户当前分区边界，同时保留完整K点积的Conv空间排布候选；当前未改模型图，未声称提速。
+
+以下为本轮原始数值验证及此前调查记录。
+
+2026-11-03，用户回传组合attention完整Draft结果，attempt `/data/local/tmp/qwen35_draft_accuracy_d47d8f927c5e4a6fa14797efd0e23e80`：38次调用全部执行回收、锁释放，NUMERICAL_FAILED，未提升生产。以下数字来自用户摘要，未独立读取设备文件；随后CPU审计给出的OMC SHA为`288644ea39913fc49466ed4b6d9329825b6ea819259c266c4601cba391b5e182`。导出为六组QK MatMul → FP32缩放／mask／Softmax → FP16概率 → PV MatMul，完整208行逻辑KV、GQA INT32 Gather；学习权重、mask、17／14接口、特征Conv投影和原门槛保持。
 
 | 当前组合版指标 | isolated | feedback |
 |---|---:|---:|
@@ -16,9 +48,9 @@
 
 首例空context的第10号候选为220、参考13；hidden最大绝对差0.15234375、相对L2为0.0144943。其余Top1差异位于case17／18的容量边界与重复；两个feedback重复均逐位稳定。相对旧融合版Top1各0/86和hidden约1.35～1.39的相对L2，候选数值明显改善，但逐元素及Top1门槛仍失败。新增KV误差范围与旧融合版一致，其计算支路不经过候选attention；空context仍有误差说明单独修context Conv不足以闭合全部精度。
 
-用户随后读取当前编译manifest：`PYTORCH_DRAFT_OMC_COMPILED`、`composed-attention-v1`、CPUCL=3／NPUCL=2，共5个子图。组合版与上一融合版的静态分区数量相同，不能将当前耗时归因于子图数量增加，也不能把53→5的旧结构改善当作已实现加速。缺少当前逐算子CSV，慢点未定位；现有profiling入口复用此次精度模型／输入，保持失败状态，其单次厂商工具时延与常驻SDK统计分开解释。
+用户随后读取当前编译manifest：`PYTORCH_DRAFT_OMC_COMPILED`、`composed-attention-v1`、CPUCL=3／NPUCL=2，共5个子图。组合版与上一融合版的静态分区数量相同，不能将当前耗时归因于子图数量增加，也不能把53→5的旧结构改善当作已实现加速。用户随后提供当前逐算子及模型耗时表，详见上方记录；算子热点已见，但模型墙钟与算子加和之间的差额来源仍未知。单次厂商工具时延与常驻SDK统计分开解释。
 
-新增 `validate_incremental_draft.py --audit-reference`：在服务器CPU复用四个代表case、hash绑定的prepared权重及原参考，比较源表达、板端和golden；另在CPU对齐RMS先转FP16再乘gamma的原参考边界，不更改生产模型。报告按层拆分新增K/V。14项主机检查通过，含缩小宽度六层实际计算、反转物理输入槽、已知hidden故障定位、原数据不变、失败状态保持、固定报告复用及身份／权重／AIR／控制量拒绝；测试的完整宽度ABI入口用mock替代，未运行用户真实权重或板端。证据run `20261103T101101Z-15574-ff6859`，完整权重审计待用户执行；当前命令见[当前阶段](current-status.md)。
+新增 `validate_incremental_draft.py --audit-reference`：在服务器CPU复用四个代表case、hash绑定的prepared权重及原参考，比较源表达、板端和golden；另在CPU对齐RMS先转FP16再乘gamma的原参考边界，不更改生产模型。报告按层拆分新增K/V。14项主机检查通过，含缩小宽度六层实际计算、反转物理输入槽、已知hidden故障定位、原数据不变、失败状态保持、固定报告复用及身份／权重／AIR／控制量拒绝；测试的完整宽度ABI入口用mock替代，未运行用户真实权重或板端。证据run `20261103T101101Z-15574-ff6859`，用户已执行真实权重四例审计，结果见上方；当前性能诊断命令见[当前阶段](current-status.md)。
 
 本地缩小宽度、保留六层与八个Target taps的32组序列／440次调用覆盖C16／C64、K15／7／3／1、滑窗开关、独立输入与连续缓存反馈。全部14输出与旧原语实现逐位相同，输入及未写KV保持。独立完整前缀oracle的hidden／KV通过原0.01／0.01门槛，最大绝对差0.0068359375；容量边界和重复反馈共有4个Top1差异，旧原语路径同样存在，该oracle检查记为FAILED。四档真实宽度meta捕获为12 MatMul、6 FP32 Softmax、32测试RMS、17／14接口、INT32 Gather、无融合attention。14组源图及mock导出编译检查、7组旧矩阵回归通过。以上均为主机证据，临时测试未发布。
 

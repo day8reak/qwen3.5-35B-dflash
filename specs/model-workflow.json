@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "updated": "2026-11-03",
-  "active_phase": "accuracy",
+  "active_phase": "performance",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
   "run_id": "20261031T082522Z-15435-7304bd",
   "navigation": {
@@ -2170,10 +2170,10 @@
     },
     {
       "name": "performance",
-      "status": "pending",
+      "status": "in_progress",
       "owner": "model-workflow",
-      "evidence": "specs/dflash-contract.json",
-      "note": "Matched ordinary vs DFlash full decode-loop target >= 2x; not measured."
+      "evidence": "docs/results.md",
+      "note": "Standalone Draft performance on user-accepted composed baseline is active. No measured speedup yet. Matched ordinary vs DFlash full decode-loop >=2x remains unmeasured."
     },
     {
       "name": "release",
@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "COMPOSED_ATTENTION_NUMERICAL_FAILED_CPU_AUDIT_AND_PROFILE_PENDING",
+    "status": "USER_ACCEPTED_COMPOSED_DRAFT_PERFORMANCE_BASELINE_BOUNDARY_INSPECTION_READY",
     "entry": "targets/cpro/tools/validate_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "COMPOSED_ATTENTION_TOP1_ISOLATED82_OF86_FEEDBACK83_OF86; HIDDEN_L2_1.34_TO2.61_PERCENT; APPENDED_KV_L2_0.44_TO0.83_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "Reuse current result for CPU source-math/RMS-rounding audit and diagnostic operator profiling. Current OMC has3CPUCL+2NPUCL; performance cause unresolved. Do not repeat full export/compile/validation or promote.",
+    "next": "User accepted current worst hidden relative L2 2.61% and 7/172 Top1 differences for performance work. Inspect current OMC partition boundaries without compile/device access; model inference627.647ms versus op sum134.940ms remains unexplained. Keep original failed accuracy report and goldens. Conv spatial packing candidate awaits target experiment.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6146,7 +6146,10 @@
       "graph_and_commands_changed": false,
       "model_compilation": "NOT_RUN_FOR_PROJECTION_CANDIDATE",
       "device_execution": "NOT_RUN",
-      "device_speedup": "NOT_MEASURED"
-    }
+      "device_speedup": "NOT_MEASURED",
+      "current_conv_profile_ms": 69.038,
+      "priority_note": "Measured Conv hotspot; whole-model493ms unexplained duration difference also requires runtime/partition investigation."
+    },
+    "performance_baseline_acceptance": "specs/dflash-execution-state.json#incremental_draft_task/composed_attention/performance_baseline_acceptance"
   }
 }

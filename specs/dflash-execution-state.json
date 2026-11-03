@@ -7,7 +7,7 @@
   "overall_status": "in_progress",
   "active_phase": "P4",
   "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
-  "user_priority": "Prioritize Draft implementation, independent numerical correctness and standalone performance with longer contexts, KV cache and max-draft-tokens15/7/3/1. Target accuracy is being debugged separately; verify development and tuning wait for Target correctness.",
+  "user_priority": "Prioritize Draft performance using the explicitly accepted composed-attention baseline. Further Draft accuracy investigation deferred by user. Target accuracy and later verify work remain separate.",
   "status_policy": {
     "allowed": [
       "pending",
@@ -336,10 +336,10 @@
   },
   "next_action": {
     "phase": "P4",
-    "type": "compile_incremental_draft_on_ddk",
+    "type": "inspect_current_compiled_partition_boundaries",
     "implementation_required": false,
     "command_document": "docs/current-status.md",
-    "note": "User reported successful C16/cache192/K15 AIR export in air-v1. Pull main and run the new compile_incremental_draft.py against that exact export; do not re-export or pass it to the old S64 runner."
+    "note": "Current accuracy baseline accepted by user for performance work; read same OMC locally, diagnose 492.707ms model/op-sum difference without attributing it prematurely. Conv spatial candidate remains unmeasured."
   },
   "last_actual_execution": {
     "schema_version": 1,
@@ -589,8 +589,8 @@
         1,
         3
       ],
-      "next_action_type": "standalone_accuracy_then_profile",
-      "next_action": "Incremental OMC and complete board loop succeeded per user report. Compare independent CPU prefix reference against isolated and feedback KV sequences; profile the same passed model/inputs. Defer Target verify.",
+      "next_action_type": "performance_diagnosis_on_user_accepted_baseline",
+      "next_action": "用户已接受当前数值范围，先读取当前5个子图边界、定位模型推理与算子加和差额；保留Conv空间排布候选。原精度报告不改写，未提升生产。",
       "pass_conditions": [
         "real newAIR andOMC, not metadata relabel",
         "named17inputs14outputs typed ABI",
@@ -908,6 +908,10 @@
     {
       "date": "2026-10-31",
       "decision": "用户要求Draft每个可执行阶段完成后都接完整板端DFlash进行保通测试；整体流程暂不看精度。保留现有decode1串行verify作为集成工具，新增verify开发继续等待Target精度就绪。Draft独立精度门槛不被整体保通替代。"
+    },
+    {
+      "date": "2026-11-03",
+      "decision": "用户确认接受本轮composed-attention-v1最差hidden相对L2约2.61%、Top1共7/172差异，先优化性能。原NUMERICAL_FAILED报告和golden保留，当前baseline接受不等于任意后续近似或生产提升授权。"
     }
   ],
   "load_timing_candidate": {
@@ -964,7 +968,7 @@
     "maintenance_policy": "Homepage contains only a brief introduction and six direct links. Keep each primary page self-contained; operational pages contain short instructions and complete command blocks. Detailed development and historical evidence remain outside primary navigation."
   },
   "incremental_draft_task": {
-    "status": "COMPOSED_ATTENTION_NUMERICAL_FAILED_CPU_AUDIT_AND_PROFILE_PENDING",
+    "status": "USER_ACCEPTED_COMPOSED_DRAFT_PERFORMANCE_BASELINE_BOUNDARY_INSPECTION_READY",
     "context_gears": [
       16,
       64
@@ -980,7 +984,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "Export composed PyTorch Draft on original TorchAir host; transfer AIR; compile on selected X90 DDK; validate_incremental_draft.py isolated and feedback. See docs/current-status.md.",
+    "next_command": "profile_draft.py --inspect-boundaries: inspect current OMC locally, no recompile or board execution. See docs/current-status.md.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -2263,36 +2267,101 @@
       "device_execution": "EXECUTED_OUTPUTS_RETRIEVED_USER_REPORTED",
       "numerical_validation": "FAILED",
       "latest_device_observation": {
-        "source": "USER_PASTED_RECOVERY_AND_COMPILED_MANIFEST_SUMMARIES",
+        "source": "USER_PASTED_RECOVERY_COMPILED_MANIFEST_HOST_AUDIT_AND_PROFILE_TABLES",
         "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_d47d8f927c5e4a6fa14797efd0e23e80",
-        "model_sha256": "NOT_SUPPLIED_IN_SUMMARY",
-        "case_counts": {"isolated": 19, "feedback": 19},
-        "passed_cases": {"isolated": 0, "feedback": 0},
-        "top1_matches_of_86": {"isolated": 82, "feedback": 83},
-        "hidden_relative_l2": {
-          "isolated": [0.013387271239375807, 0.025755650596962287],
-          "feedback": [0.014494312718133574, 0.026116219967572855]
+        "model_sha256": "288644ea39913fc49466ed4b6d9329825b6ea819259c266c4601cba391b5e182",
+        "case_counts": {
+          "isolated": 19,
+          "feedback": 19
         },
-        "appended_kv_relative_l2_both_modes": [0.004417372793104131, 0.008283531899103903],
-        "kv_failed_cases": {"isolated": 13, "feedback": 18},
+        "passed_cases": {
+          "isolated": 0,
+          "feedback": 0
+        },
+        "top1_matches_of_86": {
+          "isolated": 82,
+          "feedback": 83
+        },
+        "hidden_relative_l2": {
+          "isolated": [
+            0.013387271239375807,
+            0.025755650596962287
+          ],
+          "feedback": [
+            0.014494312718133574,
+            0.026116219967572855
+          ]
+        },
+        "appended_kv_relative_l2_both_modes": [
+          0.004417372793104131,
+          0.008283531899103903
+        ],
+        "kv_failed_cases": {
+          "isolated": 13,
+          "feedback": 18
+        },
         "preservation_failed": 0,
         "feedback_repeats_bitwise_equal": true,
         "first_failure": "EMPTY_CONTEXT_POSITION10_ACTUAL220_EXPECTED13_HIDDEN_MAX_ABS0.15234375",
-        "graphop_counts": {"CPUCL": 3, "NPUCL": 2},
-        "proposal_api_mean_ms": {"isolated": 760.223125, "feedback": 773.595875},
-        "catchup_api_mean_ms": {"isolated": 736.5009090909091, "feedback": 754.4629090909091},
+        "graphop_counts": {
+          "CPUCL": 3,
+          "NPUCL": 2
+        },
+        "proposal_api_mean_ms": {
+          "isolated": 760.223125,
+          "feedback": 773.595875
+        },
+        "catchup_api_mean_ms": {
+          "isolated": 736.5009090909091,
+          "feedback": 754.4629090909091
+        },
         "timing_scope": "MIXED_INPUT_ACCURACY_SEQUENCE_SYNCHRONOUS_API_WALL_NOT_WARM_BENCHMARK",
-        "performance_cause": "UNRESOLVED_CURRENT_OP_CSV_PENDING; SAME5SUBGRAPHS_AS_FUSED",
-        "next": "CPU_SOURCE_MATH_AND_RMS_BOUNDARY_AUDIT; CURRENT_MODEL_DIAGNOSTIC_OP_PROFILE"
+        "performance_cause": "UNRESOLVED_MODEL627.647MS_MINUS_OPERATOR_SUM134.940MS; SAME5SUBGRAPHS_AS_FUSED",
+        "next": "READ_CURRENT_OMC_PARTITION_BOUNDARIES; PRIORITIZE_PERFORMANCE_PER_USER_ACCEPTANCE"
       },
       "host_reference_audit": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --audit-reference",
         "run_id": "20261103T101101Z-15574-ff6859",
         "host_checks_passed": 14,
         "host_scope": "REDUCED_WIDTH_SIX_LAYER_WITH_MOCKED_FULL_WIDTH_ABI_CHECK; NO_DEVICE",
-        "real_weight_audit": "PENDING_USER_RUN",
+        "real_weight_audit": "USER_REPORTED_SELECTED_CPU_CASES_PASS",
         "source_model_changed": false,
-        "goldens_and_gates_changed": false
+        "goldens_and_gates_changed": false,
+        "model_sha256": "288644ea39913fc49466ed4b6d9329825b6ea819259c266c4601cba391b5e182",
+        "selected_isolated_cases": [
+          0,
+          1,
+          2,
+          17
+        ],
+        "variants": [
+          "source_fused_gamma",
+          "reference_gamma_boundary"
+        ],
+        "host_vs_reference_all_selected_passed": true,
+        "host_top1_mismatches": 0,
+        "host_hidden_relative_l2_by_case": {
+          "0": 0.0,
+          "2": 0.0018511804778676645,
+          "17": 0.001816933267993745
+        },
+        "host_appended_kv_max_abs_by_case": {
+          "1": 0.015625,
+          "2": 0.015625,
+          "17": 0.03125
+        },
+        "device_vs_host_hidden_relative_l2_by_case": {
+          "0": 0.014494312718133574,
+          "2": 0.015805165324913325,
+          "17": 0.025805693949086796
+        },
+        "device_vs_host_top1_mismatches_by_case": {
+          "0": 1,
+          "1": 0,
+          "2": 0,
+          "17": 2
+        },
+        "limitation": "USER_SUMMARY; CPU_FORMULA_NOT_VENDOR_REDUCTION_OR_COMPILED_PRECISION; NOT_ALL_CASES_OR_FEEDBACK_REPLAY"
       },
       "production_promotion": "NOT_PERFORMED",
       "host_regression_calls": 440,
@@ -2307,7 +2376,49 @@
       "full_width_capture": "FOUR_GEARS_12_MATMUL_6_FP32_SOFTMAX_32_FAKE_RMS_17_14",
       "export_compile_host_checks": 14,
       "old_matrix_host_regression_groups": 7,
-      "commands": "docs/current-status.md"
+      "commands": "docs/current-status.md",
+      "performance_baseline_acceptance": {
+        "date": "2026-11-03",
+        "user_reply": "接受本轮结果，先优化性能",
+        "confirmed_question": "是否接受本轮最差 hidden 相对 L2 2.61%、Top1 共 7/172 不一致，先作为性能优化基线？",
+        "model_sha256": "288644ea39913fc49466ed4b6d9329825b6ea819259c266c4601cba391b5e182",
+        "scope": "OBSERVED_BASELINE_FOR_PERFORMANCE_WORK; NOT_BLANKET_APPROVAL_OF_FUTURE_ERROR_OR_PRODUCTION_PROMOTION",
+        "numerical_gate_report": "NUMERICAL_FAILED_RETAINED",
+        "goldens_and_tolerances_changed": false,
+        "accuracy_investigation": "DEFERRED_BY_USER",
+        "next_candidates": "REPORT_NUMERICAL_CHANGE_AGAINST_THIS_BASELINE"
+      },
+      "current_profile": {
+        "source": "USER_PASTED_OP_AND_MODEL_TABLES; RAW_FILES_PID_MODEL_BINDING_NOT_INDEPENDENTLY_READ",
+        "load_ms": 231.187,
+        "inference_ms": 627.647,
+        "unload_ms": 7.652,
+        "lifecycle_sum_ms": 866.486,
+        "operator_duration_sum_ms": 134.94,
+        "inference_minus_operator_sum_ms": 492.707,
+        "largest_recorded_ops_ms": {
+          "Conv2D": 69.038,
+          "MatMul_54": 19.975,
+          "ArgMaxV2_CPU": 16.199
+        },
+        "six_attention_batchmatmul_sum_ms": 0.271,
+        "six_attention_softmax_sum_ms": 0.86,
+        "timestamp_interpretation": "MODEL_BEGIN_09:47:25.89418_USES_UNPADDED_MICROSECOND_INTEGER_089418; DELTA627647US",
+        "limitation": "SINGLE_FRESH_VENDOR_CALL; OP_SUM_NOT_WALL; GAP_NOT_PROVEN_COPY_IPC_CPU_OR_IDLE; OP_STARTS_NOT_PROVEN_GLOBALLY_ALIGNED",
+        "native_source_review": "ONE_LOAD_MULTIPLE_PROCESS_HIGH_REQUESTED; OUTPUT_SNAPSHOTS_AND_KV_COMMIT_OUTSIDE_API_TIMER"
+      },
+      "runtime_boundary_inspection": {
+        "entry": "targets/cpro/tools/profile_draft.py --inspect-boundaries",
+        "status": "IMPLEMENTED_HOST_CHECKED_PENDING_USER_CURRENT_OMC_INSPECTION",
+        "run_id": "20261103T102947Z-16488-f050e3",
+        "host_check_groups": 18,
+        "test_scope": "REAL_IMOD_CONTAINER_AND_HASH; JSON_SCHEMA_STUB; NO_REAL_DDK_OR_DEVICE",
+        "semantics": "LOGICAL_PORT_SIZES_AND_EXPLICIT_SAME_GRAPH_EDGES; CPU_TASK_RANGE_AND_NAME_CHECKED; NPU_OPAQUE",
+        "limitation": "NO_OMG_JSON_CROSS_CHECK; NOT_MEASURED_TRANSFER_WAIT_OR_ROOT_CAUSE",
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "model_graph_changed": false
+      }
     },
     "attention_matrix_combined_observation": {
       "source": "USER_PASTED_TWO_DIAGNOSES_NOT_INDEPENDENTLY_RETRIEVED",
