@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_NUMERICAL_FAILURE_INPUT_PREFIX_IDS_EMBEDDING_PASS_RMS_FAIL",
-    "entry": "targets/cpro/tools/validate_draft_vector.py --analyze",
+    "status": "PYTORCH_NUMERICAL_FAILURE_INPUT_PREFIX_RMS_ALL_SIGNED_ZERO",
+    "entry": "targets/cpro/tools/probe_draft_embedding.py --stage input-rms-taps",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "PYTORCH_USER_REPORTED_TOP1_0_OF_86_PER_MODE_AND_HIDDEN_L2_1_TO_1.408; PRIOR_GE_INTERIM_ACCEPTANCE_DOES_NOT_APPLY",
-    "next": "Read retained prefix RMS zero/row statistics, then capture original RMS x/gamma logical edges with input-rms-taps. Preserve original RMS comparison and full Draft failure; extra outputs can alter compiler partition. Full accuracy and 50ms objective unresolved.",
+    "next": "User retained analysis confirms 32768 signed-zero RMS values with exact IDs and raw embedding. Capture original RMS x/gamma logical edges next; extra outputs may change partition. Full accuracy and 50ms objective unresolved.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",

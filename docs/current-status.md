@@ -6,23 +6,16 @@
 
 最新诊断已确认两组空context的30720个hidden元素全零。context=18时，更换anchor 17／32／34／38，共同有效位置仍逐位相同；位置之间并非全部相同，context变化也影响hidden。用户随后回传独立Gather探针通过：原完整表、显式INT32 ID，10次embedding与ID回读均逐字节一致，NPUCL一个子图，API均值0.460ms。该结果只验证独立查表，完整Draft根因尚未确定。
 
-用户最新回传的 `pytorch_input_rms` 探针已完成：ID构造与raw embedding十次均逐字节正确；第一层RMS结果失败，最大绝对误差27.21838、相对L2=1，重复输出稳定。它把当前小图中的异常缩小到embedding之后的缩放／RMS路径，但L2=1不能单独证明输出全零，也不能直接断言RMS内核或CPU/NPU传输是根因。完整Draft仍数值失败。
+用户最新的离线分析已确认：`pytorch_input_rms` 的ID及raw embedding十次均逐字节正确；第一层RMS的16行、32768个元素全部为有符号零，十次输出逐位稳定。`unique_rows_bitwise=2`表示零值符号排列不同。源图缩放系数为1；浮点路径为 `Muls → Cast_7(FP16) → Cast_11(FP32) → RmsNorm`，gamma经过 `Cast_12(FP32)`。这仍不能区分x／gamma生成或转换异常与RMS执行异常，完整Draft保持数值失败。
 
-**本轮所有命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。先分析已有结果，无需重新导出、编译或上板：**
-
-```bash
-git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --analyze "$AI_RUN_DIR/draft/tests/pytorch-input-rms-result"
-```
-
-该命令核对保留的输入／参考文件，重新比较十次快照，打印 `cases[].outputs` 的零元素／零行、逐行误差及anchor／首个mask行样本；详细行统计来自第0次调用。`source_float_paths`保留源图Cast／Muls类型链。它不修改结果或验收门槛。
+**本轮所有命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。已有三输出分析完成，下一步运行带x／gamma输出的探针。**
 
 为检查进入RMS前的值，新增 `input-rms-taps`。它保留原前缀与RMS输出，额外输出同一RMS的 `x` 和 `gamma` 逻辑边。x只在新增输出支路展平到 `[16,2048]`，避免与原RMS的 `[1,16,2048]` FP32输出混淆。五项输出中，ID、embedding、x、gamma逐字节比较；RMS仍以独立参考的 `atol=rtol=0.01` 逐元素比较。原始gamma不加1。新增输出可能改变编译分图／融合，因此仍需复查原RMS输出；逻辑边输出不等于内核物理输入回读。
 
 现有AIR、prepared及混合类型native runner可复用。提取并编译这个带输入输出观测的小图：
 
 ```bash
+git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_embedding.py" \
   --stage input-rms-taps \
   --air-export "$AI_RUN_DIR/draft/air" \

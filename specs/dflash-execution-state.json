@@ -1242,7 +1242,7 @@
         "timing_scope": "SYNCHRONOUS_API_WALL_DIAGNOSTIC_MIXED_INPUTS_NOT_WARM_BENCHMARK",
         "comparison": "UNCHANGED_ELEMENTWISE_ATOL_0.01_RTOL_0.01_AND_ZERO_TOP1_MISMATCHES; NO_L2_GATE",
         "root_cause": "UNRESOLVED; CONTEXT_KV_IS_INDEPENDENT_OF_CANDIDATE_ATTENTION",
-        "next": "DDK_SERVER_ANALYZE_RETAINED_INPUT_RMS_THEN_PROBE_RMS_X_GAMMA; docs/current-status.md"
+        "next": "DDK_SERVER_COMPILE_AND_RUN_INPUT_RMS_TAPS; ORIGINAL_PREFIX_ANALYSIS_COMPLETE; docs/current-status.md"
       },
       "output_diagnosis": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose",
@@ -1276,7 +1276,7 @@
           "embedding": "ANCHOR_AND_MASK_SOURCE_ROWS_FINITE_NONZERO_NOT_DEVICE_GATHER"
         }
       },
-      "next": "DDK_SERVER_ANALYZE_RETAINED_INPUT_RMS_THEN_PROBE_RMS_X_GAMMA; docs/current-status.md",
+      "next": "DDK_SERVER_COMPILE_AND_RUN_INPUT_RMS_TAPS; ORIGINAL_PREFIX_ANALYSIS_COMPLETE; docs/current-status.md",
       "embedding_probe": {
         "entry": "targets/cpro/tools/probe_draft_embedding.py",
         "host_checks": 23,
@@ -1391,7 +1391,43 @@
           "min_ms": 0.552,
           "max_ms": 1.118,
           "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_EXCLUDED",
-          "interpretation": "PREFIX_ERROR_AFTER_CORRECT_RAW_EMBEDDING; ZERO_RMS_NOT_YET_PROVEN; FULL_DRAFT_STILL_FAILED"
+          "interpretation": "USER_RETAINED_DIAGNOSIS_CONFIRMS_ALL_SIGNED_ZERO_RMS; IDS_AND_RAW_EMBEDDING_EXACT; X_GAMMA_OR_RMS_EXECUTION_NOT_YET_DISTINGUISHED"
+        },
+        "retained_diagnosis": {
+          "source": "USER_PASTED_ANALYSIS_JSON_NOT_INDEPENDENTLY_READ",
+          "board_attempt": "/data/local/tmp/qwen35_vector_5c3026ffb81643c5a54ae12e6a4f868b",
+          "probe_model_sha256": "f37526e2c41736451db97570f3c4724e568fdd45fa8765124d2195df28ae5880",
+          "source_air_sha256": "e976adece11fc82e0911fb82552cdf6fa9115ffc2c53e3221e4df05a1af53d95",
+          "original_model_sha256": "ce11666f9298ec7453bbdcdfe1e3a3a38d396cd12a0bd13f9faf6c82c4981ad6",
+          "rms": {
+            "elements": 32768,
+            "zero_elements": 32768,
+            "rows": 16,
+            "zero_rows": 16,
+            "nonfinite_elements": 0,
+            "unique_rows_bitwise": 2,
+            "max_abs": 0.0,
+            "signed_zero_samples": true
+          },
+          "reference_rms": {
+            "zero_elements": 0,
+            "row_l2_min": 44.20071383921167,
+            "row_l2_max": 44.96104395476446
+          },
+          "ids_and_embedding": "EXACT_BYTES_ALL_TEN_CALLS",
+          "repeat_bitwise_stable": true,
+          "scale": 1.0,
+          "epsilon": 9.999999974752427e-07,
+          "embedding_path": [
+            "Muls:FP16_LOGICAL_WITH_PLACEHOLDER_DESCRIPTOR",
+            "Cast_7:FP16",
+            "Cast_11:FP32"
+          ],
+          "gamma_path": [
+            "Cast_12:FP32"
+          ],
+          "scope": "ROW_DETAILS_FROM_ITERATION0; TEN_CALLS_RECOMPARED; SOURCE_TYPES_NOT_COMPILED_PHYSICAL_INPUT_PROOF",
+          "root_cause": "UNRESOLVED; CAPTURE_RMS_X_AND_GAMMA_NEXT"
         }
       },
       "input_rms_taps": {
