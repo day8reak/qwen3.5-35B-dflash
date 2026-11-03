@@ -101,33 +101,39 @@ def _partition_summary(graphs):
 
 
 def inspect_boundaries(compiled, accuracy, ddk_root, output):
-    root, retained = Path(compiled).resolve(), Path(accuracy).resolve()
-    path = retained/'result.json' if retained.is_dir() else retained
-    source = read_json(path, 4 << 20)
+    root = Path(compiled).resolve()
     manifest = read_json(root/'manifest.json')
-    if (source.get('artifact_kind') != 'qwen35-incremental-draft-accuracy'
-            or source.get('status') not in {'PASSED', 'NUMERICAL_FAILED'}
-            or source.get('stage') != 'complete'
-            or source.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED'
-            or manifest.get('artifact_kind') != 'qwen35-incremental-draft-pytorch-omc'
+    if (manifest.get('artifact_kind') != 'qwen35-incremental-draft-pytorch-omc'
             or manifest.get('status') != 'PYTORCH_DRAFT_OMC_COMPILED'
             or manifest.get('omc') != 'model.omc'):
-        raise ValueError('need completed PyTorch compilation and retrieved full accuracy result')
+        raise ValueError('need completed PyTorch compilation')
+    source, path = None, None
+    protected = [root, Path(ddk_root).resolve()]
+    if accuracy is not None:
+        retained = Path(accuracy).resolve()
+        path = retained/'result.json' if retained.is_dir() else retained
+        source = read_json(path, 4 << 20)
+        if (source.get('artifact_kind') != 'qwen35-incremental-draft-accuracy'
+                or source.get('status') not in {'PASSED', 'NUMERICAL_FAILED'}
+                or source.get('stage') != 'complete'
+                or source.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED'):
+            raise ValueError('supplied accuracy result must be complete with outputs retrieved')
+        fixture = Path(source['fixture'])
+        fixture = fixture if fixture.is_absolute() else path.parent/fixture
+        protected.extend((path.parent, fixture.resolve()))
+        if sha256_file(fixture/'manifest.json') != source['fixture_sha256']:
+            raise ValueError('retained fixture changed')
+        meta = read_json(fixture/'manifest.json')
+        if meta['model'] != source['model'] or meta.get('ddk_id') != manifest.get('ddk_id'):
+            raise ValueError('fixture and accuracy/compiler model or DDK identities disagree')
     destination = output_path(output)
-    fixture = Path(source['fixture'])
-    fixture = fixture if fixture.is_absolute() else path.parent/fixture
-    if any(destination == p or p in destination.parents for p in (root, path.parent, fixture.resolve(), Path(ddk_root).resolve())):
+    if any(destination == p or p in destination.parents for p in protected):
         raise ValueError('inspection output must be separate from retained inputs and DDK')
     if destination.exists() and read_json(destination).get('artifact_kind') != KIND:
         raise ValueError('refusing to replace unrelated inspection output')
-    if sha256_file(fixture/'manifest.json') != source['fixture_sha256']:
-        raise ValueError('retained fixture changed')
-    meta = read_json(fixture/'manifest.json')
-    if meta['model'] != source['model'] or meta.get('ddk_id') != manifest.get('ddk_id'):
-        raise ValueError('fixture and accuracy/compiler model or DDK identities disagree')
     model = root/'model.omc'
     identity = dict(bytes=model.stat().st_size, sha256=sha256_file(model))
-    if any(identity[k] != source['model'][k] for k in identity):
+    if source is not None and any(identity[k] != source['model'][k] for k in identity):
         raise ValueError('compiled model differs from measured accuracy model')
     schema = load_schema(Path(ddk_root)/'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')
     packing = read_json(root/'weight-packing.json')
@@ -143,8 +149,9 @@ def inspect_boundaries(compiled, accuracy, ddk_root, output):
         raise ValueError('expected 1..8 compiled main graphs')
     graphs = [summarize_graph(g, enums) for g in document['graph']]
     report = dict(artifact_kind=KIND, status='INSPECTED',
-        model=dict(path=str(model), **identity), source_accuracy=str(path),
-        source_numerical_validation=source['numerical_validation'],
+        model=dict(path=str(model), **identity), source_accuracy=str(path) if path is not None else None,
+        accuracy_binding='MATCHED_MODEL_AND_FIXTURE' if source is not None else 'NOT_PROVIDED',
+        source_numerical_validation=source['numerical_validation'] if source is not None else 'NOT_EVALUATED',
         model_compilation='NOT_RUN', device_execution='NOT_RUN', production_promotion='NOT_PERFORMED',
         scope='COMPILED_PARTITION_METADATA_NOT_RUNTIME_TRANSFER_OR_WAIT_MEASUREMENT',
         schema=schema.evidence, container_layout=container['layout'],
@@ -188,6 +195,8 @@ def inspect_boundaries(compiled, accuracy, ddk_root, output):
         'NPU task internals remain opaque. Boundary dtypes do not establish internal arithmetic precision.',
         'This report cannot attribute the model/API versus operator duration gap or prove a performance cause.',
     ]
+    if source is None:
+        report['limitations'].append('No accuracy result supplied; current OMC identity is recorded, with no link to prior device execution or numerical results.')
     if model.stat().st_size != identity['bytes'] or sha256_file(model) != identity['sha256']:
         raise ValueError('model changed during inspection')
     encoded = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)+'\n'
@@ -196,7 +205,7 @@ def inspect_boundaries(compiled, accuracy, ddk_root, output):
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix+'.tmp')
     temporary.write_text(encoded); temporary.replace(destination)
-    return {**{k: report[k] for k in ('artifact_kind','status','model','source_numerical_validation',
+    return {**{k: report[k] for k in ('artifact_kind','status','model','accuracy_binding','source_numerical_validation',
         'model_compilation','device_execution','scope','graphop_counts','partitions','report','limitations')},
         'cpu_subgraphs': [{k:v for k,v in r.items() if k!='graph'} | {
             'node_type_counts': r.get('graph', {}).get('node_type_counts')} for r in report['cpu_subgraphs']]}

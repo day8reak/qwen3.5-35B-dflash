@@ -26,6 +26,10 @@
 
 主机证据run `20261103T125807Z-21638-b356b9`：六层缩小宽度、C16／C64、K15／7／3／1、滑窗开关的220次连续回放，全部14输出与4d版本逐位相等，输入未修改，未写KV保持。八档实际模型尺寸meta捕获（测试RMS）通过，确认位置INT32视图先于FP32 Cast、有效性不存在BOOL Concat；31线性、12attention MatMul、6FP32 Softmax、32RMS和17／14接口保持。18项权重与ABI检查、14项protobuf夹具／模拟导出编译检查通过。CLI支持新policy。本地无所选CPro DDK／TorchAir，候选未实际编译或上板；需要用户侧编译、完整数值回收、同模型边界检查及相同输入的同步API对照。
 
+用户随后回传 `packed-spatial-controls` 编译成功摘要：C16／cap192／K15、17输入／14输出，优化字段INT32_UNSQUEEZE_BEFORE_FP32_CAST与INT32_BEFORE_QUERY_GATHER均确认。CPUCL3／NPUCL2仍未减少；static-preparation-v5为removed18、fill1、weight_transpose31、unit_scale1。没有新模型SHA、边界明细、数值或时延，compiled_abi=NOT_BOUND、compiled_precision=NOT_VALIDATED、device_execution=NOT_RUN。编译成功不能证明中间回流已移除，分区数量不变也不能证明三条具体连接完全未改。
+
+为先核对结构再决定是否进行整模型板端实验，`profile_draft.py --inspect-boundaries`现允许不附accuracy结果，只读已完成编译的OMC并记录当前hash；仍验证打包记录中的DDK schema、任务范围与CPU图归属，并检查模型在读取过程中未变化。无accuracy时明确标记NOT_PROVIDED／NOT_EVALUATED，不借用旧模型精度；显式提供结果时保留所有模型／夹具／DDK一致性检查。run `20261103T132107Z-22364-d70b19`共32项主机检查通过，包括原18项回归和新模式的实际CLI、证据不变、读取期间模型变化、错配不降级、schema／输出路径保护、下游依赖分析。使用真实IMOD容器读取及JSON schema夹具，未运行所选DDK或设备。下一步检查当前OMC并追踪中间NPU→CPU→NPU连接，旧accuracy不绑定新模型。
+
 用户另询问NPU ArgMax／流水。当前ArgMaxExt2被选到CPU不代表X90没有归约能力：[Ascend C ReduceMax文档](https://asc.gitcode.com/api/SIMD-API/basic_api/memory_vector_compute/reduction_compute/ReduceMax.html)明确支持X90 half／float、返回最大值索引及并列最小索引。248320词表需按UB约束分块；half块内索引不能超过65535，恢复全局索引应使用INT32，再按最大值优先、相等时最小索引合并。目标是NPU内完成完整词表Top1，只输出15个INT32共60字节，去掉末尾CPU的FP32 logits消费接口；当前14,899,200字节是逻辑尺寸，不是测得搬运量。公开API支持不证明已选DDK的注册、编译或本模型分配可用，新ArgMax尚未实现或测量。先做独立归约探针验证部署、边界值／并列值／NaN行为，再考虑整图接入；不默认TopK(k=1)在并列值时等价。单次推理内真正依赖NPU结果的CPU步骤不能仅靠异步调用掩盖；这些标量控制可前置，跨轮proposal仍依赖Target验证与新anchor，多请求吞吐流水不能替代单请求50ms时延目标。
 
 以下为上一轮记录。2026-11-03，用户回传第一轮 `packed-spatial` 编译后精度与profiling结果，执行及回收成功。随后边界报告绑定优化OMC字节数2808368316、SHA256 `f178fc83a0a9981b501bd5a012e5dee33a54f11f28175dc84dd10625889a6a1e`，CPUCL=3／NPUCL=2；所回传精度摘要与上一版一致：isolated Top1 82/86、feedback 83/86，共7/172个相同位置和token的差异；hidden相对L2上限仍为2.61%，新增KV为0.44%～0.83%，未写KV均保持，两组重复调用逐位稳定。这些摘要不能证明两版全部输出逐位相同。原NUMERICAL_FAILED保留。

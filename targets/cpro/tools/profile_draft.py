@@ -19,7 +19,7 @@ def main(argv=None):
                         help='read current compiled partition metadata locally; no compiler or board access')
     source.add_argument('--analyze-boundaries', metavar='BOUNDARIES_JSON',
                         help='trace partition dependencies in saved full boundary JSON; no SDK or board access')
-    parser.add_argument('--accuracy-result', help='retained accuracy result binding for --inspect-boundaries')
+    parser.add_argument('--accuracy-result', help='optional retained accuracy result; if supplied, require a matching model and fixture for --inspect-boundaries')
     parser.add_argument('--ddk-root', help='selected DDK schema for --inspect-boundaries; no library execution')
     parser.add_argument('--tool-inspection', help='existing target-board-tool-inspection-writable')
     parser.add_argument('--model-tool', default='/data/local/tmp/tools_sysdbg/model_run_tool_internal')
@@ -47,9 +47,9 @@ def main(argv=None):
                 error=f'{type(error).__name__}: {error}'), ensure_ascii=False), flush=True)
             return 1
     if args.inspect_boundaries:
-        if (not args.accuracy_result or not args.ddk_root or args.apply or args.tool_inspection
+        if (not args.ddk_root or args.apply or args.tool_inspection
                 or args.allow_numerical_failure or args.modelmanager_itf):
-            parser.error('--inspect-boundaries requires --accuracy-result, --ddk-root and --output JSON; omit execution flags')
+            parser.error('--inspect-boundaries requires --ddk-root and --output JSON; --accuracy-result is optional; omit execution flags')
         try:
             from qwen35_moe_dflash.draft.runtime_boundaries import inspect_boundaries
             result = inspect_boundaries(args.inspect_boundaries, args.accuracy_result, args.ddk_root, args.output)

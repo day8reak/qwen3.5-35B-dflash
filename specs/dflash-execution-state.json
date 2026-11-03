@@ -984,7 +984,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "profile_draft.py --inspect-boundaries: inspect current OMC locally, no recompile or board execution. See docs/current-status.md.",
+    "next_command": "profile_draft.py --inspect-boundaries WITHOUT --accuracy-result; then --analyze-boundaries. See docs/current-status.md.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -3052,7 +3052,7 @@
       }
     },
     "runtime_gap_priority": {
-      "status": "EXACT_CONTROL_BACKFLOW_REWRITE_HOST_CHECKED_DEVICE_EXPERIMENT_PENDING",
+      "status": "CONTROL_CANDIDATE_COMPILED_COUNTS_UNCHANGED_INSPECT_SPECIFIC_BACKFLOW_NEXT",
       "basis": "USER_EXPLICITLY_PRIORITIZED_105_582_MS_DIFFERENCE",
       "run_id": "20261103T125807Z-21638-b356b9",
       "confirmed": [
@@ -3062,8 +3062,8 @@
         "USER_DEPENDENCY_REPORT_RESOLVED_ALL_THREE_NPU_INPUTS_TO_INTERMEDIATE_CPU"
       ],
       "first_experiment": "packed-spatial-controls: INT32_POSITION_VIEW_BEFORE_FLOAT_CAST_AND_INT32_VALIDITY_CONCAT",
-      "command": "export_incremental_draft.py --frontend pytorch --optimization packed-spatial-controls; full arguments in docs/current-status.md",
-      "execution": "NEW_PYTORCH_SOURCE_CANDIDATE; SELECTED_DDK_AND_DEVICE_NOT_RUN",
+      "command": "profile_draft.py --inspect-boundaries WITHOUT --accuracy-result; then --analyze-boundaries. See docs/current-status.md.",
+      "execution": "USER_REPORTED_CONTROLS_OMC_COMPILED; NO_NEW_DEVICE_EXECUTION; NEXT_READ_ONLY_CURRENT_OMC",
       "proposed_followup": "VERIFY_ACTUAL_REMOVAL_OF_INTERMEDIATE_NPU_CPU_NPU_DEPENDENCIES_AND_SYNCHRONOUS_API_IMPROVEMENT",
       "experiment_gates": [
         "SAME_C16_CAP192_K15_WEIGHTS_INPUTS_AND_V1_FREQUENCY",
@@ -3218,7 +3218,7 @@
       "scope": "EXPLICIT_GRAPH_DEPENDENCIES_NOT_RUNTIME_TRANSFERS_WAITS_OR_TIME_ATTRIBUTION"
     },
     "control_optimization_candidate": {
-      "status": "HOST_CHECKED_SELECTED_DDK_AND_DEVICE_PENDING",
+      "status": "USER_REPORTED_COMPILED_PARTITION_DEPENDENCIES_PENDING",
       "policy": "packed-spatial-controls",
       "run_id": "20261103T125807Z-21638-b356b9",
       "baseline_policy": "packed-spatial-4d",
@@ -3249,14 +3249,67 @@
         "mock_pipeline_checks": 14,
         "cli_help": "PASSED"
       },
-      "model_compilation": "NOT_RUN",
+      "model_compilation": "USER_REPORTED_PASSED",
       "compiled_abi": "NOT_BOUND",
       "device_execution": "NOT_RUN",
       "numerical_validation": "NOT_RUN_ON_DEVICE",
-      "placement": "UNVERIFIED",
+      "placement": "CPUCL3_NPUCL2_COUNTS_UNCHANGED; SPECIFIC_BACKFLOW_NOT_YET_INSPECTED",
       "performance": "NOT_MEASURED",
       "production_promotion": "NOT_PERFORMED",
-      "command_document": "docs/current-status.md"
+      "command_document": "docs/current-status.md",
+      "user_compilation_observation": {
+        "source": "USER_PASTED_COMPILE_SUMMARY_NOT_INDEPENDENTLY_RETRIEVED",
+        "status": "PYTORCH_DRAFT_OMC_COMPILED",
+        "stage": "complete",
+        "context_rows": 16,
+        "cache_capacity": 192,
+        "max_draft_tokens": 15,
+        "model_compilation": "PASSED",
+        "compiled_precision": "NOT_VALIDATED",
+        "compiled_abi": "NOT_BOUND",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
+        "runtime_integration": "PENDING_PHYSICAL_ABI_AND_DEVICE_VALIDATION",
+        "graphop_counts": {
+          "CPUCL": 3,
+          "NPUCL": 2
+        },
+        "interface_inspection": "OBSERVED",
+        "input_count": 17,
+        "output_count": 14,
+        "optimization": {
+          "policy": "packed-spatial-controls",
+          "version": 1,
+          "packed_projections": true,
+          "grouped_query_reshape": true,
+          "shared_rope": true,
+          "projection": "PYTORCH_CONV2D_SPATIAL_4X4_FULL_K",
+          "feature_pack": "TWO_RANK4_TRANSPOSES",
+          "shared_visibility_masks": true,
+          "position_layout": "INT32_UNSQUEEZE_BEFORE_FP32_CAST",
+          "key_valid_concat": "INT32_BEFORE_QUERY_GATHER"
+        },
+        "air_preparation": {
+          "policy": "draft-static-preparation-v5",
+          "status": "APPLIED",
+          "removed_count": 18,
+          "zero_count": 0,
+          "fill_count": 1,
+          "weight_transpose_count": 31,
+          "unit_scale_count": 1
+        },
+        "attention": "composed-attention-v1",
+        "composed_attention": {
+          "source_layers": 6,
+          "source_fused_nodes": 0,
+          "compiled_main_graph_fused_nodes": [],
+          "scope": "MAIN_GRAPH_METADATA_ONLY; OPAQUE_GRAPHOP_KERNELS_NOT_DECODED"
+        },
+        "model_sha256": null,
+        "identity": "NEW_OMC_SHA_NOT_SUPPLIED; PREVIOUS_4D_IDENTITY_NOT_REUSED",
+        "interpretation": "COMPILATION_ONLY; COUNTS_DO_NOT_PROVE_SPECIFIC_DEPENDENCIES_CHANGED_OR_UNCHANGED"
+      },
+      "next": "INSPECT_CURRENT_OMC_WITHOUT_OLD_ACCURACY_BINDING; ANALYZE_EXPLICIT_DEPENDENCIES_BEFORE_DEVICE_EXPERIMENT"
     },
     "npu_argmax_research": {
       "source": "PUBLIC_PRIMARY_API_DOCUMENTATION_NOT_SELECTED_DDK_HEADER_OR_KERNEL_VERIFICATION",
@@ -3277,6 +3330,22 @@
       "device_execution": "NOT_RUN",
       "next": "BOUNDED_FULL_VOCABULARY_REDUCTION_PROBE_BEFORE_MODEL_INTEGRATION; CHECK_PLACEMENT_TIES_TAILS_AND_NONFINITE_BEHAVIOR",
       "pipeline_limit": "DEPENDENT_CPU_CONSUMER_CANNOT_BE_HIDDEN_BY_ASYNC_ALONE; PRECOMPUTE_SCALAR_CONTROLS; CROSS_REQUEST_THROUGHPUT_NOT_SINGLE_REQUEST_LATENCY"
+    },
+    "compiled_only_boundary_inspection": {
+      "status": "HOST_CHECKED",
+      "run_id": "20261103T132107Z-22364-d70b19",
+      "entry": "profile_draft.py --inspect-boundaries COMPILED --ddk-root DDK --output JSON",
+      "accuracy_result": "OPTIONAL; IF_SUPPLIED_ALL_PRIOR_MODEL_FIXTURE_DDK_CHECKS_REMAIN_MANDATORY",
+      "without_accuracy": {
+        "accuracy_binding": "NOT_PROVIDED",
+        "source_numerical_validation": "NOT_EVALUATED"
+      },
+      "identity": "CURRENT_OMC_SIZE_AND_SHA_CHECKED_BEFORE_AND_AFTER_READ",
+      "host_check_groups": 32,
+      "host_scope": "REAL_IMOD_CONTAINER_READER_AND_HASH_CHECKS; JSON_SCHEMA_STUB_AND_ACTUAL_CLI; NO_SELECTED_DDK_OR_DEVICE",
+      "model_compilation": "NOT_RUN_BY_INSPECTION",
+      "device_execution": "NOT_RUN",
+      "command_document": "docs/current-status.md"
     }
   },
   "draft_milestone_e2e_gate": {

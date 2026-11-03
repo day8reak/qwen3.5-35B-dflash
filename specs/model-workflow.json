@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "DRAFT_INT32_CONTROL_BACKFLOW_CANDIDATE_HOST_CHECKED",
-    "entry": "targets/cpro/scripts/export_incremental_draft.py",
+    "status": "DRAFT_INT32_CONTROL_CANDIDATE_COMPILED_BOUNDARY_REVIEW_PENDING",
+    "entry": "targets/cpro/tools/profile_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "COMPOSED_ATTENTION_TOP1_ISOLATED82_OF86_FEEDBACK83_OF86; HIDDEN_L2_1.34_TO2.61_PERCENT; APPENDED_KV_L2_0.44_TO0.83_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "Export/compile packed-spatial-controls using selected DDK, then full accuracy, same-model boundary inspection and fixed-input synchronous API measurement; NPU ArgMax remains a separate bounded follow-up.",
+    "next": "Inspect current compiled OMC without old accuracy binding and analyze explicit NPU-to-CPU dependencies; partition counts remain CPU3/NPU2. Device numerics and warm performance pending.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6199,6 +6199,7 @@
     "runtime_gap_priority": "specs/dflash-execution-state.json#incremental_draft_task/runtime_gap_priority",
     "boundary_dependency_observation": "specs/dflash-execution-state.json#incremental_draft_task/boundary_dependency_observation",
     "control_optimization_candidate": "specs/dflash-execution-state.json#incremental_draft_task/control_optimization_candidate",
-    "npu_argmax_research": "specs/dflash-execution-state.json#incremental_draft_task/npu_argmax_research"
+    "npu_argmax_research": "specs/dflash-execution-state.json#incremental_draft_task/npu_argmax_research",
+    "compiled_only_boundary_inspection": "specs/dflash-execution-state.json#incremental_draft_task/compiled_only_boundary_inspection"
   }
 }
