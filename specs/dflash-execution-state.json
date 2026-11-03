@@ -1709,7 +1709,7 @@
         "limitations": "NO_PROJECTIONS_ROPE_OR_QKV_PACKING_OPERATORS; AUXILIARY_OUTPUTS_CAN_CHANGE_FUSION; NO_PHYSICAL_KERNEL_INPUT_READBACK",
         "mask_readback": "EQUAL_ZERO_SELECT_FP16_ONE_OR_ZERO; EXACT_BYTES",
         "failed_retry_checks": 19,
-        "next": "READ_EXISTING_OMC_WITH_probe_draft_attention.py_--inspect-compiled; NO_RECOMPILE_OR_RELAUNCH",
+        "next": "RELAUNCH_SEVEN_CASES_WITH_CORRECTED_PLAN_USING_EXISTING_OMC_THEN_RECOVER_AND_ANALYZE",
         "previous_compile": {
           "source": "USER_PASTED_DDK_LOG_2026_11_03; NOT_INDEPENDENTLY_READ",
           "policy": "source-first-attention-mask-packed-qkv-v1",
@@ -1805,7 +1805,73 @@
           ],
           "runtime_dtype": "UNAVAILABLE",
           "runtime_format": 2,
-          "input_mapping": "UNRESOLVED; DO_NOT_MATCH_EQUAL_SHAPES"
+          "input_mapping": "OLD_PLAN_USED_DATA_INDEX; COMPILED_GRAPH_INPUT_REFERENCES_NOW_REPORTED"
+        },
+        "input_binding_correction": {
+          "source": "USER_PASTED_COMPILED_INTERFACE_INSPECTION; OMC_NOT_INDEPENDENTLY_RETRIEVED",
+          "model_sha256": "df4248dd95204cf882ad5d0f088eeb82697491f11b373768420d529ad35d09ff",
+          "graph_input_references": [
+            "probe_attention_q:0",
+            "probe_attention_k:0",
+            "probe_attention_v:0",
+            "arg0_1:0",
+            "arg1_1:0",
+            "arg5_1:0"
+          ],
+          "mapping": [
+            {
+              "runtime_index": 0,
+              "name": "probe_attention_q",
+              "role": "q",
+              "data_index": 3,
+              "fixture_index": 3
+            },
+            {
+              "runtime_index": 1,
+              "name": "probe_attention_k",
+              "role": "k",
+              "data_index": 4,
+              "fixture_index": 4
+            },
+            {
+              "runtime_index": 2,
+              "name": "probe_attention_v",
+              "role": "v",
+              "data_index": 5,
+              "fixture_index": 5
+            },
+            {
+              "runtime_index": 3,
+              "name": "arg0_1",
+              "role": "start_position",
+              "data_index": 0,
+              "fixture_index": 0
+            },
+            {
+              "runtime_index": 4,
+              "name": "arg1_1",
+              "role": "valid_rows",
+              "data_index": 1,
+              "fixture_index": 1
+            },
+            {
+              "runtime_index": 5,
+              "name": "arg5_1",
+              "role": "proposal_count",
+              "data_index": 2,
+              "fixture_index": 2
+            }
+          ],
+          "policy": "COMPILED_GRAPHDEF_INPUT_REFERENCES",
+          "status": "HOST_VALIDATED_RUNTIME_PENDING",
+          "shape_matching": "NEVER_USED_TO_DISAMBIGUATE_EQUAL_SHAPED_INPUTS",
+          "recompilation": "NOT_REQUIRED; REUSE_EXISTING_HASH_BOUND_OMC_AND_FIXTURES",
+          "runtime_checks": "UNCHANGED_COUNTS_SHAPES_FORMAT_BEFORE_PROCESS",
+          "numerical_gates": "UNCHANGED",
+          "binding_and_reuse_host_checks": 24,
+          "inspection_host_checks": 11,
+          "probe_pipeline_host_checks": 12,
+          "prefix_regression_checks": 23
         }
       }
     }

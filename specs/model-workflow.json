@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_ATTENTION_PROBE_COMPILED_RUNTIME_INPUT_ORDER_MISMATCH",
+    "status": "PYTORCH_ATTENTION_PROBE_GRAPH_INPUT_BINDING_FIXED_HOST_VALIDATED_RUNTIME_PENDING",
     "entry": "targets/cpro/tools/probe_draft_attention.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "LATEST_FULL_MODEL_TOP1_0_OF_86_PER_MODE; EMPTY_CONTEXT_NONZERO_IDENTICAL_ROWS; COMMON_PREFIX_ANCHOR_INSENSITIVE",
-    "next": "Inspect the existing 218998-byte Attention OMC input references and Data metadata before correcting runtime bindings. First case stopped before Process; no probe numerical validation. Full Draft remains NUMERICAL_FAILED.",
+    "next": "Reuse the existing Attention OMC; generate the plan from explicit compiled GraphDef.input references, run seven cases, recover and analyze. No recompile or native rebuild. Full Draft remains NUMERICAL_FAILED.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",

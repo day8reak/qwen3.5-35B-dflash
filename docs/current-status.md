@@ -10,26 +10,37 @@
 
 Attention探针v2已经实际编译通过，OMC仅218998字节，SHA256为 `df4248dd95204cf882ad5d0f088eeb82697491f11b373768420d529ad35d09ff`。此前mask回读CastT编译问题已绕过。这次板端Load与IO描述查询完成，但第一例在输入槽位校验退出：HIAI第0槽为 `[1,256,16,16]`，计划第0槽却为控制量 `[1]`。其余六例未执行，锁已释放，数值验证为NOT_RUN。
 
-当前绑定器使用编译Data.index；它与实际槽位顺序至少在第0槽冲突。HIAI只返回形状，不能区分同形状K/V，也不能区分三个INT32控制量；不直接猜测重排。下一步只读现有OMC的输入引用、Data节点排列、index及相关描述：
+用户进一步回传同一OMC的 `GraphDef.input`：`probe_attention_q:0`、`probe_attention_k:0`、`probe_attention_v:0`、`arg0_1:0`、`arg1_1:0`、`arg5_1:0`。其声明的输入顺序与HIAI形状顺序一致，Data.index却仍为3、4、5、0、1、2。已修正Attention探针的计划生成：按这些明确的边引用绑定原夹具，槽位依次为Q、K、V、start_position、valid_rows、proposal_count；原Data.index单独记录，不再用来排列本探针输入。缺失、重复、非Data或非0号端口均拒绝，没有按同形状猜K/V或控制量。
+
+拉取后直接复用现有OMC、native及七组原夹具，启动新尝试。上次失败已完成回收并释放锁，工具可复用同一run／result目录：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/tools/probe_draft_attention.py" \
-  --inspect-compiled "$AI_RUN_DIR/draft/tests/pytorch-attention" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID"
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$AI_RUN_DIR/draft/tests/pytorch-attention" \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-run" --apply
 ```
 
-这条命令不重编、不创建夹具、不上板，也不修改绑定。`INSPECTED`只表示元数据读取完成；`current_binding_status=GENERATED_NOT_RUNTIME_VALIDATED`不能当作物理ABI已正确。实际OMC元数据回传后再确定映射修复。保留当前小OMC及这次run／result，不重复启动尚未修复的计划。
-
-本次没有推理输出，`--analyze`拒绝数值分析符合当前执行状态。首例修复前的失败不能用来判断mask或Attention精度，完整Draft仍为NUMERICAL_FAILED。只读检查11项主机测试及12组探针回归通过。
-
-已得结论的四组旧探针按用户要求整组删除，不保留副本。该工具只处理旧embedding／input-rms／input-rms-taps／input-rms-no-scale及各自run／result，核对已结束状态；不删除正在定位的完整模型与新Attention探针。若此前已清理，可跳过：
+返回 `VECTOR_VALIDATION_STARTED` 后恢复同一尝试：
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/tools/clean_draft_probes.py" \
-  --root "$AI_RUN_DIR" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" --apply
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-attention-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-result"
 ```
+
+若仍在运行，继续上述recover，不重复apply。回收得到 `PASSED` 或 `NUMERICAL_FAILED` 后分析输出：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-result"
+```
+
+本轮24项绑定／目录复用检查、11项只读接口检查、12组探针流程及23项旧前缀回归通过，均为主机合成／mock检查。原OMC、源夹具、输出门槛和板端形状／格式检查保持。正确的编译声明映射仍需这次实际执行与数值结果验证，完整Draft仍为NUMERICAL_FAILED。
+
+旧embedding／input-rms／input-rms-taps／input-rms-no-scale四组探针的清理返回候选、删除、保留列表均为空，所选字节为0：这次没有删除文件，也没有新增释放空间，无需重复清理。该命令不表示全部tests目录为空。
 
 以下为首次导出／工具链准备的说明，本轮无需重复执行。当前预处理继续保留Reshape链简化、静态ZerosLike物化和FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。每个节点的来源、形状及修改前后标志保存在`compilation/air-preparation.json`中。
 

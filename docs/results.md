@@ -36,6 +36,14 @@
 
 现有小探针绑定按编译Data.index排序。用户日志证明该计划与此OMC的HIAI输入顺序至少在第0槽不一致；两项K/V和三项控制量同形，不能从维度推断它们各自的语义。新增 `probe_draft_attention.py --inspect-compiled` 只读当前OMC，报告GraphDef输入引用、Data节点序号／index／属性、NetOutput和现有绑定，明确运行顺序未解决；不执行自动重排。11项主机检查覆盖排列与index冲突、同形歧义、缺失图输入、错误绑定仍可查看、身份/hash拒绝、只读性与CLI互斥；12组原探针回归通过。真实编译元数据待用户回传，完整Draft精度状态不变。
 
+2026-11-03，用户回传上述同一OMC的只读接口检查。GraphDef.input明确为Q、K、V、start_position、valid_rows、proposal_count；对应Data.index仍是3、4、5、0、1、2。此编译图边界声明与此前HIAI描述的形状序列一致，旧绑定器按Data.index排列为控制量在前，解释了第0槽在Process前退出。角色由明确的Data名引用确定，同形状K/V和三个控制量没有用shape猜配。
+
+Attention探针现在单独启用 `COMPILED_GRAPHDEF_INPUT_REFERENCES` 绑定，计划runtime index按GraphDef.input生成、fixture_index保持原文件身份、data_index单独记录原属性。缺失／重复／未知引用、非Data／非0端口、描述变化均拒绝，不回退到节点排列或Data.index。原OMC与源夹具字节不变，不要求再次编译或构建native；完整Draft和其他探针的输入绑定方式没有随此修复改变。新的物理执行、mask及Attention数值验证仍待用户回传，不能由边界声明确认同形状输入已在设备正确消费。
+
+本轮24项主机检查覆盖用户报告的顺序冲突、独立打乱节点与index、同形状角色引用重排、非法边拒绝、旧绑定兼容、未知尝试保留和已关闭失败尝试同目录重试。11项接口只读检查、12组合成／mock探针检查和23项前缀回归通过；其中七组实际生成的输入／输出文件逐字节匹配各自原夹具，OMC／编译目录hash保持，原数值失败门槛仍生效。它们不是实际DDK或板端数值结果。
+
+同轮用户运行旧四组探针清理，候选／删除／保留列表均为空、logical_bytes_selected=0。本次未删除文件，没有可归因于本次调用的磁盘释放量，也不代表完整模型或当前Attention探针已被删除。
+
 ## 此前PyTorch独立执行：加载成功，数值失败
 
 2026-11-02，用户回传尝试`ec3f7c3136ac43fcb927c25eef63f4e3`的完整比较摘要：`EXECUTED_OUTPUTS_RETRIEVED`、`NUMERICAL_FAILED`，任务完成且锁释放。两组各19次调用全部完成，说明本次已经跨过此前的Fill加载失败；38例均未通过原比较门槛。以下为用户回传，未独立读取原始板端张量，随后离线诊断报告OMC SHA256为 ce11666f9298ec7453bbdcdfe1e3a3a38d396cd12a0bd13f9faf6c82c4981ad6。

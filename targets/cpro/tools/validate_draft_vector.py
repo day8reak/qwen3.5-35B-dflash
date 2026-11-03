@@ -56,12 +56,15 @@ def member(root, name):
     return path
 
 
-def bind_io(document, declared, enums):
+def bind_io(document, declared, enums, *, input_order='data-index'):
     """Bind the public probe ABI, not compiler-internal producer connectivity.
 
     Each supported probe has unique output (shape, dtype) pairs. NetOutput's
     ordered descriptors therefore identify its reference buffers without
     requiring a particular compiler-internal input reference syntax.
+    Attention probes opt into ordered GraphDef.input references: their compiled
+    Data.index attributes retain source indices that differ from HIAI slots.
+    Exact Data names bind even equal-shaped K/V and control inputs to fixtures.
     The runner still checks runtime counts/dimensions/storage before Process,
     and comparison covers every output. This is not a model KV binder.
     """
@@ -69,14 +72,20 @@ def bind_io(document, declared, enums):
     graphs = document.get('graph', [])
     if len(graphs) != 1:
         raise ValueError('probe needs one compiled main graph')
+    if input_order not in ('data-index', 'graph-input'):
+        raise ValueError('unknown probe input binding policy')
     nodes = graphs[0]['op']
     if len({n['name'] for n in nodes}) != len(nodes):
         raise ValueError('duplicate compiled node name')
     expected = {r['name']: (i, r) for i, r in enumerate(declared['inputs'])}
+    if len(expected) != len(declared['inputs']):
+        raise ValueError('duplicate declared probe input name')
     inputs = []
     for node in nodes:
         if node.get('type') != 'Data':
             continue
+        if node['name'] not in expected:
+            raise ValueError('unexpected compiled probe input: '+node['name'])
         source, spec = expected[node['name']]
         indices = [a['value']['i'] for a in node.get('attr', []) if a['key'] == 'index']
         if len(indices) != 1 or type(indices[0]) is not int:
@@ -88,6 +97,19 @@ def bind_io(document, declared, enums):
     if (len(inputs) != len(expected) or {r['name'] for r in inputs} != set(expected)
             or sorted(r['index'] for r in inputs) != list(range(len(expected)))):
         raise ValueError('compiled inputs are not a complete indexed mapping')
+    inputs.sort(key=lambda r: r['index'])
+    input_metadata = {}
+    if input_order == 'graph-input':
+        references = graphs[0].get('input')
+        by_edge = {r['name']+':0': r for r in inputs}
+        if (not isinstance(references, list) or len(references) != len(inputs)
+                or any(not isinstance(ref, str) or ref not in by_edge for ref in references)
+                or len(set(references)) != len(inputs)):
+            raise ValueError('compiled GraphDef.input must reference every declared Data:0 exactly once')
+        inputs = [dict(by_edge[ref], index=slot, data_index=by_edge[ref]['index'])
+                  for slot, ref in enumerate(references)]
+        input_metadata = dict(input_binding='COMPILED_GRAPHDEF_INPUT_REFERENCES',
+                              graph_input_references=list(references))
     net = [n for n in nodes if n.get('type') == 'NetOutput']
     if len(net) != 1:
         raise ValueError('missing or ambiguous compiled NetOutput')
@@ -112,7 +134,7 @@ def bind_io(document, declared, enums):
         outputs.append(dict(spec, index=index, fixture_index=source, bytes=math.prod(spec['shape'])*WIDTHS[spec['dtype']]))
     if sorted(r['fixture_index'] for r in outputs) != list(range(len(declared['outputs']))):
         raise ValueError('compiled outputs do not cover every probe output once')
-    return dict(inputs=sorted(inputs, key=lambda r: r['index']), outputs=outputs,
+    return dict(inputs=inputs, outputs=outputs, **input_metadata,
                 output_binding='UNIQUE_SHAPE_DTYPE_IN_COMPILED_NETOUTPUT_ORDER',
                 netoutput_input_metadata=net[0].get('input'))
 

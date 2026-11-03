@@ -494,11 +494,12 @@ def _compiled_probe(root, ddk, ddk_id):
 
 
 def inspect_compiled_probe(root, ddk, ddk_id):
-    """Expose all serialized input-order evidence without choosing a remap.
+    """Inspect compiled boundary references and the proposed runtime plan.
 
     Runtime dimensions cannot distinguish the equal-shaped K/V inputs or the
     three controls. Data.index, graph boundary references and serialized node
-    order are separate observations, not interchangeable slot authorities.
+    order are reported separately. Only explicit boundary references bind the
+    attention fixtures; runtime checks and numerical validation remain pending.
     """
     from qwen35_moe_dflash.draft.compile_precision import _observed_desc
     from qwen35_moe_dflash.toolchain.omc_inspect import _preview
@@ -526,7 +527,7 @@ def inspect_compiled_probe(root, ddk, ddk_id):
     result=dict(artifact_kind='qwen35-draft-attention-interface-inspection',status='INSPECTED',
         model=dict(report['model'],path=str(model)),ddk_id=ddk_id,schema=schema.evidence,
         model_compilation='NOT_RUN',device_execution='NOT_RUN',numerical_validation='NOT_RUN',
-        scope='READ_ONLY_COMPILED_INPUT_METADATA; NO_REMAP_NO_FIXTURE_WRITES_NO_EXECUTION',
+        scope='READ_ONLY_COMPILED_INPUT_METADATA; NO_FIXTURE_WRITES_NO_EXECUTION',
         declared=declared,model_metadata=_preview({k:v for k,v in document.items() if k!='graph'}),
         graph_metadata=_preview({k:v for k,v in graph.items() if k!='op'}),
         graph_input_references=graph.get('input',[]),data_nodes=data,netoutputs=nets,
@@ -535,8 +536,9 @@ def inspect_compiled_probe(root, ddk, ddk_id):
             [s['name'] for s in declared['inputs'] if (s['dtype'],s['shape'])==(dtype,list(shape))]
             for dtype,shape in sorted({(s['dtype'],tuple(s['shape'])) for s in declared['inputs']})) if len(names)>1])
     try:
-        result['current_binding']=bind_io(document,declared,enums)
+        result['current_binding']=bind_io(document,declared,enums,input_order='graph-input')
         result['current_binding_status']='GENERATED_NOT_RUNTIME_VALIDATED'
+        result['runtime_input_order']='COMPILED_GRAPHDEF_INPUT_REFERENCES; RUNTIME_VALIDATION_PENDING'
     except (ValueError,KeyError,TypeError) as error:
         result.update(current_binding_status='FAILED',binding_error=f'{type(error).__name__}: {error}')
     return result
@@ -549,7 +551,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     root,out = Path(root),Path(out)
     report,model,schema,document,enums = _compiled_probe(root,ddk,ddk_id)
     selected = selected_cases(CASES if selection is None else selection,CASES)
-    io = bind_io(document,report['extraction']['graph'],enums)
+    io = bind_io(document,report['extraction']['graph'],enums,input_order='graph-input')
     rows = {r['case']:r for r in report['cases']}
     if len(rows)!=len(CASES) or set(rows)!=set(CASES):
         raise ValueError('missing/duplicate attention fixtures')
