@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_RMS_TAPS_COMPILED_PUBLIC_OUTPUT_BINDING_FAILED_BEFORE_DEVICE",
-    "entry": "targets/cpro/tools/probe_draft_embedding.py --inspect-compiled",
+    "status": "PYTORCH_RMS_GAMMA_CONSTANT_OUTPUT_DISCONNECTED_RUNTIME_UNITY_PROBE_READY",
+    "entry": "targets/cpro/tools/probe_draft_embedding.py --stage input-rms-taps",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "PYTORCH_USER_REPORTED_TOP1_0_OF_86_PER_MODE_AND_HIDDEN_L2_1_TO_1.408; PRIOR_GE_INTERIM_ACCEPTANCE_DOES_NOT_APPLY",
-    "next": "Read actual NetOutput descriptors of existing taps OMC; validation prepare failed before device execution. Do not infer a shape/dtype fix from the generic error. Original prefix RMS is signed zero and full Draft numerical validation remains failed.",
+    "next": "User OMC has four correct output descriptors but gamma slot 4 has no shape or source edge. Rebuild revised taps with a runtime unity Mul branch and factor readback; keep original RMS unchanged and all gates. New probe device validation and full Draft accuracy remain unresolved.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",

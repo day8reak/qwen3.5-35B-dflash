@@ -228,7 +228,9 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, stage
         arrays[0] = ('input_0', np.array([17], dtype='<i4'))
         arrays.append(('golden_2', normalized))
         if stage == 'input-rms-taps':
-            arrays += [('golden_3', x.reshape(16, cfg.hidden_size)), ('golden_4', gamma)]
+            factor = np.ones(cfg.hidden_size, dtype='<f4')
+            arrays += [('input_1', factor), ('golden_3', x.reshape(16, cfg.hidden_size)),
+                       ('golden_4', gamma), ('golden_5', factor.reshape(1, cfg.hidden_size))]
     root.mkdir(parents=True)
     state = dict(artifact_kind=KIND, status='FAILED', stage='extract', model_compilation='NOT_RUN',
         device_execution='NOT_RUN', numerical_validation='NOT_RUN', ddk_id=ddk_id,

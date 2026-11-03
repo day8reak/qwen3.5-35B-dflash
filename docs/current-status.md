@@ -8,27 +8,39 @@
 
 用户最新的离线分析已确认：`pytorch_input_rms` 的ID及raw embedding十次均逐字节正确；第一层RMS的16行、32768个元素全部为有符号零，十次输出逐位稳定。`unique_rows_bitwise=2`表示零值符号排列不同。源图缩放系数为1；浮点路径为 `Muls → Cast_7(FP16) → Cast_11(FP32) → RmsNorm`，gamma经过 `Cast_12(FP32)`。这仍不能区分x／gamma生成或转换异常与RMS执行异常，完整Draft保持数值失败。
 
-**本轮所有命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。** 用户已成功编译 `pytorch_input_rms_taps`，但启动准备阶段因 `compiled output descriptor changed or is ambiguous` 停止，设备未执行。当前摘要尚未打印实际接口，不能推断具体哪个输出变化。
+**本轮所有命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。** 用户已回传编译接口：前四项匹配；第4号槽 `rms_gamma` 为FP32但shape为空、来源连线为空，记录size=32。`_meta`字符串中的 `[2048]`不能替代实际接口。这解释了准备阶段失败，尚未执行本探针，也不能据此认定RMS内部gamma为零。
 
-先读取现有OMC的接口，不重复编译或上板：
+已修改gamma观测支路：增加运行时全1向量，输出 `原gamma × 该向量`，另回读该向量确认其为1。原RMS的x、gamma和计算节点保持。固定测试目录中的旧探针没有上板；以下检查限定为已回传的旧模型及prepare失败状态，再删除其编译副本，供同目录重编。原AIR、prepared、三输出前缀结果均保留。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/tools/probe_draft_embedding.py" \
-  --inspect-compiled "$AI_RUN_DIR/draft/tests/pytorch-input-rms-taps" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID"
+python3 - <<'PYRESET'
+import json, os, shutil
+from pathlib import Path
+base = Path(os.environ['AI_RUN_DIR']) / 'draft/tests'
+compiled = base / 'pytorch-input-rms-taps'
+run = base / 'pytorch-input-rms-taps-run'
+if compiled.exists():
+    old = json.loads((compiled / 'result.json').read_text())
+    attempt = json.loads((run / 'result.json').read_text())
+    safe = (old.get('artifact_kind') == 'qwen35-draft-pytorch-embedding-probe'
+            and old.get('status') == 'COMPILED' and old.get('probe_case') == 'pytorch_input_rms_taps'
+            and old.get('model', {}).get('sha256') == '160c9bcd31dc80c26aa2f33e633973469c30a660f4065875f2e5a5302bdea704'
+            and attempt.get('status') == 'FAILED' and attempt.get('stage') == 'prepare'
+            and attempt.get('device_execution') == 'NOT_RUN'
+            and attempt.get('lock_state') == 'NO_KNOWN_OWNED_LOCK'
+            and not (run / 'request.json').exists() and not attempt.get('launch_requested'))
+    if not safe:
+        raise SystemExit('State differs from the reported unlaunched probe; no files removed.')
+    shutil.rmtree(compiled)
+PYRESET
 ```
 
-`status=INSPECTED`仅表示读取完成，重点查看 `binding_status`、`binding_error` 和 `graphs[].netoutputs[].inputs`。每个槽位列出实际shape／dtype、来源连线及匹配的预期名称；producer描述仅用于诊断，不替换NetOutput描述。命令只读现有文件，不创建fixture、不访问板端、不自动展平／改dtype或猜输出顺序。新增12项合成检查通过，原14项taps、33项前缀及23项查表回归通过。实际接口待回传后再决定修复方式。
-
-以下保留探针的生成和执行说明；本次已编译完成，当前先做上述接口检查。
-
-为检查进入RMS前的值，新增 `input-rms-taps`。它保留原前缀与RMS输出，额外输出同一RMS的 `x` 和 `gamma` 逻辑边。x只在新增输出支路展平到 `[16,2048]`，避免与原RMS的 `[1,16,2048]` FP32输出混淆。五项输出中，ID、embedding、x、gamma逐字节比较；RMS仍以独立参考的 `atol=rtol=0.01` 逐元素比较。原始gamma不加1。新增输出可能改变编译分图／融合，因此仍需复查原RMS输出；逻辑边输出不等于内核物理输入回读。
+`input-rms-taps`修订为 `source-first-rms-input-taps-v2`：两项输入为anchor和脚本生成的全1因子；六项输出为embedding、ID、RMS结果、RMS输入x、gamma乘积、因子回读。x与因子回读分别展平／改形为 `[16,2048]`、`[1,2048]`，六个输出的shape／dtype组合互异。除RMS结果保持独立参考 `atol=rtol=0.01` 外，其余输出均逐字节比较。gamma乘积仅在因子回读为1时用于辅助RMS公式；不改验收结果。此支路可能改变编译分图／融合，也不证明RMS内核物理输入，因此继续比较原RMS结果。
 
 现有AIR、prepared及混合类型native runner可复用。提取并编译这个带输入输出观测的小图：
 
 ```bash
-git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_embedding.py" \
   --stage input-rms-taps \
   --air-export "$AI_RUN_DIR/draft/air" \
@@ -38,7 +50,15 @@ python3 "$REPO_DIR/targets/cpro/tools/probe_draft_embedding.py" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms-taps"
 ```
 
-完整embedding表约1 GB，主机需约4.5 GB编译空间。当前原前缀结果用于对照，保留到该问题定位完成。返回 `COMPILED` 后，在同一终端执行：
+完整embedding表约1 GB，主机需约4.5 GB编译空间。当前原前缀结果用于对照，保留到该问题定位完成。返回 `COMPILED` 后可用下列只读命令确认 `binding_status=PASSED`：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/probe_draft_embedding.py" \
+  --inspect-compiled "$AI_RUN_DIR/draft/tests/pytorch-input-rms-taps" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID"
+```
+
+然后在同一终端执行：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
@@ -49,7 +69,7 @@ python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms-taps-run" --apply
 ```
 
-一次Load、3次预热、10次调用，每次保存五项输出。返回 `VECTOR_VALIDATION_STARTED` 后回收同一次执行：
+一次Load、3次预热、10次调用，每次保存六项输出。返回 `VECTOR_VALIDATION_STARTED` 后回收同一次执行：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
@@ -66,7 +86,7 @@ python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
 
 若x或gamma失败，先定位其生成／转换；若二者正确而RMS仍失败，继续检查归一化执行。`rms_from_captured_inputs`仅以回读的逻辑边值计算诊断公式，不替代独立参考或改变失败状态。若增加输出后RMS变为正确，也要继续查分图／融合差异，不能据此认定完整Draft恢复。
 
-新增探针与分析有14项主机合成／mock检查通过，覆盖五输出重排、原节点保留、逐字节门槛、三输出旧结果兼容、全零／非有限值、文件篡改及末次快照截断拒绝。原前缀33项、查表23项回归通过。新五输出探针的真实OMG及板端执行待用户回传。旧 `--stage lookup` 与 `--stage input-rms` 均保留。
+修订后的探针／分析15项和接口检查13项主机合成／mock检查通过，包含两输入六输出重排、全1因子参考、非1因子回读拒绝、原RMS节点字节保留，以及shape正确但显式空来源仍拒绝。原前缀33项、查表23项回归通过。真实OMG和板端结果待回传；当前修订未证明原完整Draft精度恢复。
 
 以下离线命令仍可复查原完整Draft结果：
 

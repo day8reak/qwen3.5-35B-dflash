@@ -90,8 +90,9 @@ def _float_path(shapes, root, path, shape, *, allow_scale=False):
 def extract_prefix(raw, schema, lookup, config, *, capture_inputs=False):
     """Cut after first RMS output 0; keep every original prefix op/weight.
 
-    Only the sole Data.index becomes zero and NetOutput is replaced. Shapes
-    are proved from source constants/edges, not copied from missing metadata.
+    The original anchor Data.index becomes zero and NetOutput is replaced.
+    Optional taps add a runtime unity factor to observe constant gamma through
+    a live Mul branch. Original RMS inputs/operations remain byte-identical.
     """
     kind, _, _ = _decode(schema, raw)
     graph_raw, graph_field = _graph_raw(raw, schema, kind)
@@ -221,7 +222,9 @@ def extract_prefix(raw, schema, lookup, config, *, capture_inputs=False):
         # A flat view gives x a unique public (shape,dtype) pair. Never infer
         # equal-shaped tensor identities from compiled slot order.
         shape_name, view_name = 'probe_rms_x_shape', 'probe_rms_x_view'
-        if {shape_name, view_name} & set(nodes):
+        factor_name, gamma_view = 'probe_gamma_factor', 'probe_gamma_product'
+        factor_shape, factor_view = 'probe_gamma_factor_shape', 'probe_gamma_factor_view'
+        if {shape_name, view_name, factor_name, gamma_view, factor_shape, factor_view} & set(nodes):
             raise ValueError('RMS tap node names collide with source AIR')
         tensor = (blob('TensorDef', 'desc', desc('DT_INT64', [2]), 11)
                   + blob('TensorDef', 'data', struct.pack('<2q', 16, config.hidden_size), 12))
@@ -235,12 +238,38 @@ def extract_prefix(raw, schema, lookup, config, *, capture_inputs=False):
                                  (shape_name+':0', desc('DT_INT64', [2]))):
             view += blob('OpDef', 'input', edge, repeated=True) + blob('OpDef', 'input_desc', descriptor, 11, True)
         view += blob('OpDef', 'output_desc', desc('DT_FLOAT', [16,config.hidden_size]), 11, True)
-        added = [_new_id(constant, schema, next_id), _new_id(view, schema, next_id+1)]
-        next_id += 2
+        # Direct Const/Cast -> NetOutput gamma was observed with an empty
+        # compiled edge. A runtime factor prevents a constant-only output.
+        factor_desc = desc('DT_FLOAT', [config.hidden_size])
+        factor = blob('OpDef', 'name', factor_name) + blob('OpDef', 'type', 'Data')
+        factor += blob('OpDef', 'input_desc', factor_desc, 11, True) + blob('OpDef', 'output_desc', factor_desc, 11, True)
+        factor_index = _v(_field(schema, 'AttrDef', 'i', 3, False) << 3) + _v(1)
+        factor += _blob(attr_field, blob('OpDef.AttrEntry', 'key', 'index')
+                        + blob('OpDef.AttrEntry', 'value', factor_index, 11))
+        product = blob('OpDef', 'name', gamma_view) + blob('OpDef', 'type', 'Mul')
+        for edge in (rms['input'][1], factor_name+':0'):
+            product += blob('OpDef', 'input', edge, repeated=True)
+            product += blob('OpDef', 'input_desc', factor_desc, 11, True)
+        product += blob('OpDef', 'output_desc', factor_desc, 11, True)
+        tensor = (blob('TensorDef', 'desc', desc('DT_INT64', [2]), 11)
+                  + blob('TensorDef', 'data', struct.pack('<2q', 1, config.hidden_size), 12))
+        factor_constant = (blob('OpDef', 'name', factor_shape) + blob('OpDef', 'type', 'Const')
+                           + blob('OpDef', 'output_desc', desc('DT_INT64', [2]), 11, True)
+                           + _blob(attr_field, blob('OpDef.AttrEntry', 'key', 'value')
+                                   + blob('OpDef.AttrEntry', 'value', blob('AttrDef', 't', tensor, 11), 11)))
+        factor_readback = blob('OpDef', 'name', factor_view) + blob('OpDef', 'type', 'Reshape')
+        for edge, descriptor in ((factor_name+':0', factor_desc), (factor_shape+':0', desc('DT_INT64', [2]))):
+            factor_readback += blob('OpDef', 'input', edge, repeated=True) + blob('OpDef', 'input_desc', descriptor, 11, True)
+        factor_readback += blob('OpDef', 'output_desc', desc('DT_FLOAT', [1,config.hidden_size]), 11, True)
+        added = [_new_id(n, schema, next_id+i) for i, n in
+                 enumerate((constant, view, factor, product, factor_constant, factor_readback))]
+        next_id += len(added)
         outputs += [(view_name+':0', 'DT_FLOAT', [16,config.hidden_size]),
-                    (rms['input'][1], 'DT_FLOAT', [config.hidden_size])]
+                    (gamma_view+':0', 'DT_FLOAT', [config.hidden_size]),
+                    (factor_view+':0', 'DT_FLOAT', [1,config.hidden_size])]
         taps = [dict(name='rms_x', source_edge=rms['input'][0], view=view_name),
-                dict(name='rms_gamma', source_edge=rms['input'][1])]
+                dict(name='rms_gamma', source_edge=rms['input'][1], view=gamma_view,
+                     operation='MUL_BY_RUNTIME_FACTOR', factor_input=factor_name)]
     net = blob('OpDef', 'name', 'NetOutput') + blob('OpDef', 'type', 'NetOutput')
     for edge, dtype, shape in outputs:
         net += blob('OpDef', 'input', edge, repeated=True) + blob('OpDef', 'input_desc', desc(dtype, shape), 11, True)
@@ -262,10 +291,15 @@ def extract_prefix(raw, schema, lookup, config, *, capture_inputs=False):
             dict(name='ids_readback', dtype='int32', shape=outputs[1][2], exact_bytes=True),
             dict(name='input_rms', dtype='float32', shape=outputs[2][2], exact_bytes=False)]))
     if capture_inputs:
-        receipt.update(policy='source-first-rms-input-taps-v1', taps=taps,
-                       changed='Original prefix bytes preserved except anchor Data.index; add x Reshape/shape Const and NetOutput taps',
+        receipt.update(policy='source-first-rms-input-taps-v2', taps=taps,
+                       changed='Original prefix bytes preserved except anchor Data.index; add x view, gamma runtime-unity Mul, factor readback and NetOutput taps',
                        limitation='Extra output edges may change compiler partition or fusion; compare original RMS output again')
+        receipt['gamma_observation'] = dict(method='SOURCE_GAMMA_TIMES_RUNTIME_UNITY',
+            input=factor_name, required_value=1.0, output='rms_gamma', factor_output='gamma_factor_readback',
+            scope='AUXILIARY_BRANCH_NOT_PHYSICAL_RMS_KERNEL_INPUT_READBACK')
+        receipt['graph']['inputs'].append(dict(name=factor_name, dtype='float32', shape=[config.hidden_size]))
         receipt['graph']['outputs'] += [
             dict(name='rms_x', dtype='float32', shape=outputs[3][2], exact_bytes=True),
-            dict(name='rms_gamma', dtype='float32', shape=outputs[4][2], exact_bytes=True)]
+            dict(name='rms_gamma', dtype='float32', shape=outputs[4][2], exact_bytes=True),
+            dict(name='gamma_factor_readback', dtype='float32', shape=outputs[5][2], exact_bytes=True)]
     return updated, receipt

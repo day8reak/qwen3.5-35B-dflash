@@ -96,6 +96,9 @@ def bind_io(document, declared, enums):
     descriptors = [_observed_desc(d, enums) for d in descs]
     outputs = []
     for index, desc in enumerate(descriptors):
+        references = net[0].get('input', [])
+        if index < len(references) and references[index] in ('', None):
+            raise ValueError('compiled probe output has no producer reference: '+json.dumps(dict(index=index, observed=desc)))
         # These small probes have unique output shapes (RMS y versus rstd).
         # Never extend shape-only matching to equal-shaped model KV outputs.
         matches = [(i, r) for i, r in enumerate(declared['outputs'])

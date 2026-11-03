@@ -1242,7 +1242,7 @@
         "timing_scope": "SYNCHRONOUS_API_WALL_DIAGNOSTIC_MIXED_INPUTS_NOT_WARM_BENCHMARK",
         "comparison": "UNCHANGED_ELEMENTWISE_ATOL_0.01_RTOL_0.01_AND_ZERO_TOP1_MISMATCHES; NO_L2_GATE",
         "root_cause": "UNRESOLVED; CONTEXT_KV_IS_INDEPENDENT_OF_CANDIDATE_ATTENTION",
-        "next": "DDK_SERVER_INSPECT_EXISTING_INPUT_RMS_TAPS_COMPILED_INTERFACE; NO_RECOMPILE_OR_BOARD_RETRY_YET; docs/current-status.md"
+        "next": "DDK_SERVER_REBUILD_RUNTIME_UNITY_GAMMA_TAPS_IN_SAME_TEST_SLOT_THEN_VALIDATE; docs/current-status.md"
       },
       "output_diagnosis": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose",
@@ -1276,7 +1276,7 @@
           "embedding": "ANCHOR_AND_MASK_SOURCE_ROWS_FINITE_NONZERO_NOT_DEVICE_GATHER"
         }
       },
-      "next": "DDK_SERVER_INSPECT_EXISTING_INPUT_RMS_TAPS_COMPILED_INTERFACE; NO_RECOMPILE_OR_BOARD_RETRY_YET; docs/current-status.md",
+      "next": "DDK_SERVER_REBUILD_RUNTIME_UNITY_GAMMA_TAPS_IN_SAME_TEST_SLOT_THEN_VALIDATE; docs/current-status.md",
       "embedding_probe": {
         "entry": "targets/cpro/tools/probe_draft_embedding.py",
         "host_checks": 23,
@@ -1435,19 +1435,20 @@
         "validation_case": "pytorch_input_rms_taps",
         "diagnosis_entry": "targets/cpro/tools/validate_draft_vector.py --analyze",
         "source": "SAME_HASH_BOUND_ORIGINAL_PREFIX_AND_WEIGHTS",
-        "mutation": "ADD_NETOUTPUT_X_GAMMA_TAPS_AND_X_STATIC_RESHAPE_BRANCH; ORIGINAL_PREFIX_NODES_PRESERVED_EXCEPT_ANCHOR_DATA_INDEX",
+        "mutation": "ORIGINAL_RMS_INPUT_EDGES_AND_NODE_BYTES_PRESERVED; ADD_DYNAMIC_FACTOR_DATA_MUL_AND_FACTOR_READBACK_VIEW",
         "outputs": {
           "embedding": "FP16_1x16x2048_EXACT",
           "ids_readback": "INT32_1x16_EXACT",
           "input_rms": "FP32_1x16x2048_ATOL_RTOL_0.01",
           "rms_x": "FP32_16x2048_EXACT",
-          "rms_gamma": "FP32_2048_EXACT"
+          "rms_gamma": "SOURCE_GAMMA_TIMES_RUNTIME_UNITY_FP32_2048_EXACT",
+          "gamma_factor_readback": "FP32_1x2048_EXACT_UNITY"
         },
         "abi": "UNIQUE_SHAPE_DTYPE_PAIRS_BOUND_TO_COMPILED_OUTPUT_SLOTS; NOT_A_KV_BINDER",
-        "model_compilation": "USER_REPORTED_PASSED",
+        "model_compilation": "NOT_RUN",
         "device_execution": "NOT_RUN",
         "numerical_validation": "NOT_RUN",
-        "host_checks": 14,
+        "host_checks": 15,
         "regression_checks": {
           "original_prefix": 33,
           "lookup": 23
@@ -1474,10 +1475,39 @@
         "interface_inspection": {
           "entry": "targets/cpro/tools/probe_draft_embedding.py --inspect-compiled",
           "scope": "READ_ONLY_RETAINED_OMC; NO_PREPARATION_COMPILER_OR_BOARD_CALLS",
-          "binding": "UNCHANGED_STRICT_UNIQUE_SHAPE_DTYPE_AND_COMPLETE_COVERAGE",
-          "host_checks": 12,
-          "user_execution": "PENDING",
-          "decision": "INSPECT_BEFORE_CHANGING_BINDING; NO_SQUEEZE_CAST_OR_ORDER_GUESS"
+          "binding": "UNCHANGED_UNIQUE_SHAPE_DTYPE_AND_COVERAGE; EXPLICIT_EMPTY_OUTPUT_EDGE_NOW_REJECTED",
+          "host_checks": 13,
+          "user_execution": "USER_REPORTED_GAMMA_SLOT_DISCONNECTED",
+          "decision": "INSPECT_BEFORE_CHANGING_BINDING; NO_SQUEEZE_CAST_OR_ORDER_GUESS",
+          "observation": {
+            "matched_slots": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "unbound_slot": 4,
+            "unbound_role": "rms_gamma",
+            "dtype": "float32",
+            "shape": null,
+            "reference": "",
+            "recorded_size": 32,
+            "meta_shape_string": "[2048]",
+            "decision": "REBUILD_OBSERVATION_BRANCH; NEVER_FILL_MISSING_COMPILED_SHAPE_OR_IGNORE_EMPTY_EDGE"
+          }
+        },
+        "policy": "source-first-rms-input-taps-v2",
+        "previous_observation_policy": "source-first-rms-input-taps-v1",
+        "inputs": {
+          "anchor": "INT32_1",
+          "probe_gamma_factor": "FP32_2048_RUNTIME_UNITY"
+        },
+        "gamma_observation": {
+          "method": "SOURCE_GAMMA_TIMES_RUNTIME_UNITY",
+          "reference": "ORIGINAL_PREPARED_GAMMA_UNCHANGED",
+          "factor_reference": "HOST_ONES_INPUT_AND_GOLDEN_READBACK",
+          "derived_formula": "ONLY_WHEN_FACTOR_READBACK_IS_UNITY; DIAGNOSTIC_ONLY",
+          "scope": "AUXILIARY_BRANCH_NOT_PHYSICAL_RMS_INPUT_READBACK"
         }
       }
     }

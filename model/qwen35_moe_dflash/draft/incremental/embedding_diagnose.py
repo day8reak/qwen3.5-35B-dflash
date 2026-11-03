@@ -75,7 +75,19 @@ def diagnose(fixture, native, meta, comparison, report):
                     or x.shape != (16, gamma.size) or y.shape != (1,16,gamma.size)):
                 raise ValueError('retained RMS tap geometry/epsilon differs')
             derived = dict(scope='CAPTURED_LOGICAL_EDGE_VALUES_NOT_KERNEL_INPUT_READBACK_OR_ACCEPTANCE_REFERENCE')
-            if all(np.isfinite(a).all() for a in (x, gamma, y)):
+            observation = extraction.get('gamma_observation')
+            factor_ok = True
+            if observation is not None:
+                factor = arrays.get(observation.get('factor_output'))
+                if (observation.get('method') != 'SOURCE_GAMMA_TIMES_RUNTIME_UNITY'
+                        or observation.get('required_value') != 1.0 or factor is None
+                        or factor.shape != (1, gamma.size)):
+                    raise ValueError('retained gamma observation contract differs')
+                factor_ok = bool(np.all(factor == 1.0))
+                derived.update(gamma_observation=observation, factor_readback_is_unity=factor_ok)
+            if not factor_ok:
+                derived['status'] = 'NONUNITY_GAMMA_FACTOR; DERIVED_COMPARISON_SKIPPED'
+            elif all(np.isfinite(a).all() for a in (x, gamma, y)):
                 with np.errstate(over='ignore', invalid='ignore'):
                     expected_from_taps = x * (np.float32(1)/np.sqrt(
                         np.mean(x*x, axis=-1, keepdims=True, dtype=np.float32)+np.float32(epsilon))) * gamma
@@ -95,4 +107,5 @@ def diagnose(fixture, native, meta, comparison, report):
                 source_air_sha256=extraction.get('source_air_sha256'),
                 original_model_sha256=source.get('original_model_sha256'),
                 source_float_paths=extraction.get('float_paths'), epsilon=extraction.get('epsilon'),
+                gamma_observation=extraction.get('gamma_observation'),
                 scale=extraction.get('scale'), atol=meta['atol'], rtol=meta['rtol'], cases=rows)
