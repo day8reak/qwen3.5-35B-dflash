@@ -1169,9 +1169,9 @@
         "recovery_fix_scope": "MOCK_HDC_AND_SHARED_LOG_SELECTION_ONLY"
       },
       "numerical_execution": {
-        "source": "USER_PASTED_RECOVERY_JSON_2026_11_02; RAW_SNAPSHOTS_NOT_INDEPENDENTLY_READ",
-        "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_ec3f7c3136ac43fcb927c25eef63f4e3",
-        "model_sha256": "ce11666f9298ec7453bbdcdfe1e3a3a38d396cd12a0bd13f9faf6c82c4981ad6",
+        "source": "USER_PASTED_RECOVERY_AND_DIAGNOSIS_JSON_2026_11_03; RAW_SNAPSHOTS_NOT_INDEPENDENTLY_READ",
+        "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_4375459a4d7e45a1a3a60f55a34ccd64",
+        "model_sha256": "52cf888e66f8144cbb1a4e7a71ddd221b22a115cce80e5508d1d89c92a6d5eee",
         "status": "NUMERICAL_FAILED",
         "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
         "isolated": {
@@ -1181,15 +1181,15 @@
           "top1_tokens": 86,
           "kv_failed": 13,
           "hidden_relative_l2": [
-            1.0,
-            1.4075795033199092
+            1.3491959259294337,
+            1.3923994537532858
           ],
           "kv_appended_relative_l2": [
             0.004417372793104131,
             0.008283531899103903
           ],
-          "proposal_api_mean_ms": 727.875375,
-          "catchup_api_mean_ms": 734.7269090909091
+          "proposal_api_mean_ms": 742.9785,
+          "catchup_api_mean_ms": 736.0384545454546
         },
         "feedback": {
           "cases": 19,
@@ -1198,42 +1198,44 @@
           "top1_tokens": 86,
           "kv_failed": 18,
           "hidden_relative_l2": [
-            1.0,
-            1.4075223089732272
+            1.3497079588048657,
+            1.3923456016241818
           ],
           "kv_appended_relative_l2": [
             0.004417372793104131,
             0.008283531899103903
           ],
-          "proposal_api_mean_ms": 727.062125,
-          "catchup_api_mean_ms": 735.9185454545454
+          "proposal_api_mean_ms": 732.2615,
+          "catchup_api_mean_ms": 715.8498181818183
         },
         "first_failure": {
           "index": 0,
           "label": "empty-context",
           "actual_top1": [
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16
           ],
-          "hidden_max_abs_error": 4.44921875,
-          "hidden_rmse": 0.9999992592062805,
-          "hidden_relative_l2": 1.0
+          "hidden_max_abs_error": 6.9453125,
+          "hidden_rmse": 1.3573868871193064,
+          "hidden_relative_l2": 1.3573878926637322,
+          "hidden_zero_elements": 0,
+          "hidden_bitwise_unique_rows": 1
         },
-        "later_proposals": "ALL_REPORTED_ACTIVE_TOP1_TOKENS_314_IN_BOTH_MODES",
-        "hidden_zero_or_duplicate_rows": "USER_DIAGNOSIS_CONFIRMS_EMPTY_CONTEXT_ALL_ZERO; ANCHOR_CHANGES_COMMON_ACTIVE_PREFIX_BITWISE_EQUAL; POSITION_ROWS_DISTINCT",
+        "later_proposals": "CONTEXT18_AND192_TOP1_NOW_VARY_BY_POSITION; COMMON_HIDDEN_PREFIX_STILL_ANCHOR_INSENSITIVE",
+        "hidden_zero_or_duplicate_rows": "EMPTY_CONTEXT_NONZERO_BUT_15_IDENTICAL_ROWS; CONTEXT18_HAS15_UNIQUE_ROWS; CHANGED_ANCHOR_COMMON_PREFIX_IDENTICAL",
         "cache_preservation_failed": 0,
         "feedback_repeat_indices_bitwise_equal": [
           3,
@@ -1241,8 +1243,11 @@
         ],
         "timing_scope": "SYNCHRONOUS_API_WALL_DIAGNOSTIC_MIXED_INPUTS_NOT_WARM_BENCHMARK",
         "comparison": "UNCHANGED_ELEMENTWISE_ATOL_0.01_RTOL_0.01_AND_ZERO_TOP1_MISMATCHES; NO_L2_GATE",
-        "root_cause": "UNRESOLVED; CONTEXT_KV_IS_INDEPENDENT_OF_CANDIDATE_ATTENTION",
-        "next": "DDK_SERVER_COMPILE_AND_VALIDATE_INPUT_RMS_NO_SCALE_COMPARISON; RETAIN_TAPS_BASELINE; docs/current-status.md"
+        "root_cause": "UNRESOLVED; TEST_SOURCE_MASK_AND_TEMPORARY_BLOCK_VISIBILITY_AT_FIRST_FUSED_ATTENTION",
+        "next": "DDK_SERVER_COMPILE_AND_EXECUTE_SMALL_SOURCE_ATTENTION_PROBE; docs/current-status.md",
+        "previous_model_sha256": "ce11666f9298ec7453bbdcdfe1e3a3a38d396cd12a0bd13f9faf6c82c4981ad6",
+        "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+        "numerical_validation": "FAILED"
       },
       "output_diagnosis": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose",
@@ -1268,15 +1273,21 @@
         },
         "user_observation": {
           "source": "USER_PASTED_JSON_NOT_INDEPENDENTLY_READ",
-          "empty_context_hidden_zero_elements": 30720,
+          "empty_context_hidden_zero_elements": 0,
           "empty_context_hidden_elements": 30720,
           "context18_anchor_changes_common_hidden_prefix": "BITWISE_EQUAL_WHILE_REFERENCE_CHANGES",
           "context18_hidden_unique_rows": 15,
           "controls": "HOST_FILES_HASH_AND_VALUE_MATCH_NOT_DEVICE_READBACK",
-          "embedding": "ANCHOR_AND_MASK_SOURCE_ROWS_FINITE_NONZERO_NOT_DEVICE_GATHER"
+          "embedding": "ANCHOR_AND_MASK_SOURCE_ROWS_FINITE_NONZERO_NOT_DEVICE_GATHER",
+          "model_sha256": "52cf888e66f8144cbb1a4e7a71ddd221b22a115cce80e5508d1d89c92a6d5eee",
+          "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_4375459a4d7e45a1a3a60f55a34ccd64",
+          "empty_context_hidden_unique_rows": 1,
+          "empty_context_top1_unique": [
+            16
+          ]
         }
       },
-      "next": "DDK_SERVER_CLEAN_COMPLETED_PROBES_THEN_COMPILE_V5_AND_VALIDATE_FULL_DRAFT; docs/current-status.md",
+      "next": "DDK_SERVER_COMPILE_AND_EXECUTE_SMALL_SOURCE_ATTENTION_PROBE; docs/current-status.md",
       "embedding_probe": {
         "entry": "targets/cpro/tools/probe_draft_embedding.py",
         "host_checks": 23,
@@ -1633,16 +1644,20 @@
         "mutation": "REMOVE_ONE_DIRECT_FP16_EMBEDDING_UNIT_MULS_AND_REWIRE_SOLE_CAST_INPUT",
         "reference": "UNCHANGED",
         "external_abi": "UNCHANGED_17_INPUTS_14_OUTPUTS",
-        "model_compilation": "NOT_RUN",
-        "device_execution": "NOT_RUN",
-        "numerical_validation": "NOT_RUN",
+        "model_compilation": "USER_REPORTED_COMPILED_MODEL_EXECUTED",
+        "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+        "numerical_validation": "FAILED",
         "production_promotion": "NOT_PERFORMED",
         "host_checks": {
           "full_graph_and_compile": 16,
           "shared_rewrite": 13,
           "probe_pipeline": 23
         },
-        "next": "DDK_SERVER_CLEAN_COMPLETED_PROBES_THEN_COMPILE_V5_AND_VALIDATE_FULL_DRAFT; docs/current-status.md"
+        "next": "DDK_SERVER_COMPILE_AND_EXECUTE_SMALL_SOURCE_ATTENTION_PROBE; docs/current-status.md",
+        "compilation_preparation_receipt": "NOT_SUPPLIED_WITH_THIS_RECOVERY",
+        "model_sha256": "52cf888e66f8144cbb1a4e7a71ddd221b22a115cce80e5508d1d89c92a6d5eee",
+        "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_4375459a4d7e45a1a3a60f55a34ccd64",
+        "outcome": "HIDDEN_NO_LONGER_ZERO; ANCHOR_INSENSITIVITY_AND_TOP1_ZERO_MATCHES_REMAIN"
       },
       "probe_retention": {
         "user_instruction": "DELETE_ALL_COMPLETED_PROBES_NO_BACKUP",
@@ -1661,6 +1676,37 @@
         "scope": "HOST_ONLY; COMPLETION_AND_BINDING_CHECKED; NO_ARCHIVE",
         "host_checks": 11,
         "remote_cleanup": "NOT_OBSERVED"
+      },
+      "attention_probe": {
+        "entry": "targets/cpro/tools/probe_draft_attention.py",
+        "policy": "source-first-attention-mask-packed-qkv-v1",
+        "scope": "SOURCE_FIRST_MASK_AND_FUSED_ATTENTION_SYNTHETIC_PACKED_QKV_NOT_FULL_DRAFT",
+        "cuts": "ORIGINAL_PACKED_Q_K_V_INPUTS_ONLY; ORIGINAL_MASK_CONTROLS_AND_ATTENTION_ATTRIBUTES_PRESERVED",
+        "cases": [
+          "empty",
+          "anchor",
+          "partial",
+          "short",
+          "full",
+          "weighted",
+          "catchup"
+        ],
+        "learned_weights": "NONE",
+        "max_source_buffers_bytes": 262144,
+        "outputs": [
+          "attention",
+          "mask_visible",
+          "packed_v"
+        ],
+        "comparison": "ATTENTION_ATOL_RTOL_0.01; MASK_PREDICATE_AND_PACKED_V_EXACT_BYTES",
+        "original_model_sha256": "52cf888e66f8144cbb1a4e7a71ddd221b22a115cce80e5508d1d89c92a6d5eee",
+        "host_checks": 12,
+        "prefix_regression_checks": 23,
+        "host_scope": "SYNTHETIC_PROTOBUF_MASK_INTERPRETER_INDEPENDENT_SDPA_AND_MOCK_COMPILER_ABI_COMPARE; NOT_SELECTED_DDK_OR_DEVICE",
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
+        "limitations": "NO_PROJECTIONS_ROPE_OR_QKV_PACKING_OPERATORS; AUXILIARY_OUTPUTS_CAN_CHANGE_FUSION; NO_PHYSICAL_KERNEL_INPUT_READBACK"
       }
     }
   },

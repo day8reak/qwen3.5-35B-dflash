@@ -2,7 +2,29 @@
 
 当前开发集中推进PyTorch Draft，手写GE／AddCustom优化按用户要求暂缓。现有公共GE产物继续作为已接通的运行基线，PyTorch尚未替换它。
 
-## 最新PyTorch独立执行：加载成功，数值失败
+## 最新完整PyTorch复测：非零hidden，anchor仍未影响共同输出行
+
+2026-11-03，用户回传新模型的recover与diagnose：OMC SHA256 `52cf888e66f8144cbb1a4e7a71ddd221b22a115cce80e5508d1d89c92a6d5eee`，板端尝试 `/data/local/tmp/qwen35_draft_accuracy_4375459a4d7e45a1a3a60f55a34ccd64`。两组各19例执行并回收，锁释放，原门槛下仍为 `NUMERICAL_FAILED`，Top1各0/86，生产未提升。以下数字来自用户JSON，未独立读取原始张量；本次未附编译准备receipt。
+
+单位缩放旁路后的复测中，空context的30720个hidden元素已无零值，但15行逐位相同，Top1全16，hidden相对L2为1.357387893。context=18时有15个不同hidden行，Top1开始随位置变化；anchor改为32／34／38时，共同有效hidden前缀仍与前一proposal逐位相同，独立参考明显变化。context=192时输出也随位置变化，两次完全相同的请求逐位复现。控制文件hash和值匹配不等于设备输入回读。
+
+| 指标 | isolated | feedback |
+|---|---:|---:|
+| 完整用例通过数 | 0/19 | 0/19 |
+| Top1匹配 | 0/86 | 0/86 |
+| hidden相对L2范围 | 1.349196～1.392399 | 1.349708～1.392346 |
+| 新增KV相对L2范围 | 0.004417～0.008284 | 0.004417～0.008284 |
+| KV失败用例／未写区失败 | 13／0 | 18／0 |
+| Proposal同步API均值 | 742.979 ms | 732.262 ms |
+| Catchup同步API均值 | 736.038 ms | 715.850 ms |
+
+新增context KV不经过候选Attention，其误差范围与前轮相同不能排除临时block KV、mask、Attention或残差路径错误。当前只支持“候选输出恢复非零、anchor敏感性仍异常”，不能据此确定融合内核、RoPE或任一具体节点为根因。同步API仍是混合输入诊断计时，50ms目标未达到。
+
+新增 `probe_draft_attention.py`：从同一源AIR保留第一层融合Attention的属性、长度／block-table端口和mask构造，使用三项原控制输入，在原packed Q/K/V输入处切入已知数据。只复制不超过256KiB的小buffer，拒绝embedding等学习权重；一份小OMC覆盖空缓存、改变临时anchor值、部分缓存、较少候选、容量边界、加权QK、零候选七组输入。输出Attention、mask是否为零的INT32谓词、packed V展平回读。后两项逐字节比较，Attention沿用0.01／0.01逐元素门槛。独立ND参考采用显式坐标打包，padding写入哨兵值以暴露误读；probe不包含投影、RoPE、QKV打包算子及后续层，也不保存完整图分区。mask谓词不是原始负无穷字节或物理内核输入的读回。
+
+12组主机合成／mock检查通过：原属性和非QKV端口保留、学习权重祖先排除、静态Fill／ZerosLike准备、拒绝错误长度／shape／控制依赖、七组mask解释执行和独立SDPA比较、打包坐标、重排公共ABI、绑定文件篡改拒绝、mask／Attention故障与NaN诊断。原前缀探针23项回归通过。所选DDK真实编译与板端执行均待用户运行；完整模型精度门槛、权重、源码数学表达和v5准备规则未更改。
+
+## 此前PyTorch独立执行：加载成功，数值失败
 
 2026-11-02，用户回传尝试`ec3f7c3136ac43fcb927c25eef63f4e3`的完整比较摘要：`EXECUTED_OUTPUTS_RETRIEVED`、`NUMERICAL_FAILED`，任务完成且锁释放。两组各19次调用全部完成，说明本次已经跨过此前的Fill加载失败；38例均未通过原比较门槛。以下为用户回传，未独立读取原始板端张量，随后离线诊断报告OMC SHA256为 ce11666f9298ec7453bbdcdfe1e3a3a38d396cd12a0bd13f9faf6c82c4981ad6。
 

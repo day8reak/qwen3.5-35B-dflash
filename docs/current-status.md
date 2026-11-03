@@ -2,64 +2,58 @@
 
 当前集中推进**PyTorch Draft → TorchAir AIR → X90 OMG/OMC**，手写GE／AddCustom按用户要求暂缓。成功AIR放在`draft/air/`；PyTorch候选仍在`draft/tests/pytorch-omc/`，没有替换公共`draft/omc/`。
 
-目标仍为C16／cap192／K15，常驻预热后proposal同步`Process`平均≤50ms，尚未达到。最新用户结果已完成Load及两组各19次调用；原比较门槛下38例均失败。两组Top1均为0/86，首轮全部0，后续proposal均为314；hidden相对L2为1.0～1.408，新增KV为0.44%～0.83%，未写区逐位保持。proposal诊断API均值约727ms，不能视为已完成预热的基准。详见[当前结果](results.md)。
+目标仍为C16／cap192／K15，常驻预热后proposal同步`Process`平均≤50ms，尚未达到。最新完整OMC为`52cf888e…a6d5eee`，用户回传38例均数值失败、两组Top1各0/86。空context的hidden已非零，但15行逐位相同，Top1全16；context=18时更换anchor，共同有效hidden前缀仍逐位相同。新增KV相对L2仍为0.44%～0.83%，未写区逐位保持，候选分支根因尚未确定。Proposal诊断API均值约743／732ms，不是预热稳态基准。完整结果与模型hash见[当前结果](results.md)。
 
-最新诊断已确认两组空context的30720个hidden元素全零。context=18时，更换anchor 17／32／34／38，共同有效位置仍逐位相同；位置之间并非全部相同，context变化也影响hidden。用户随后回传独立Gather探针通过：原完整表、显式INT32 ID，10次embedding与ID回读均逐字节一致，NPUCL一个子图，API均值0.460ms。该结果只验证独立查表，完整Draft根因尚未确定。
+此前原embedding→单位Muls→Cast→RMS前缀得到全零x。只旁路单位Muls的小图十次通过后，完整编译准备加入同一严格旁路（`draft-static-preparation-v5`）。新完整复测恢复非零hidden，但没有通过精度。保持此准备规则、源AIR、权重与原数值门槛；本轮先验证第一层mask和融合Attention对临时K/V的处理。
 
-原六输出探针在embedding正确时，`rms_x`与RMS输出均为32768个有符号零。新 `input-rms-no-scale` 对照仅旁路Gather后的FP16 Muls(value严格为1)，保留Cast_7／Cast_11和RMS；用户回传十次全部通过且逐位稳定：embedding、ID、x、gamma观测和因子逐字节一致，RMS按原 `atol=rtol=0.01` 逐元素通过。RMS整体相对L2约0.0716%，最大绝对误差0.06213；绝对误差超过0.01仍可能满足含相对项的逐元素门槛。平均同步API 0.845ms，仅是输入前缀探针。
+**以下命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。** 新探针不需要学习权重，只复制最多256KiB的小buffer，七组输入共用一份OMC。已有AIR、prepared、TBE诊断和native runner继续复用。
 
-这支持将单位乘法旁路用于完整Draft验证，不证明独立Muls内核普遍错误。两种探针均含CPUCL和NPUCL；编译图显示FP16子图边界和FP32公共输出，NPU内部指令尚未确认。完整Draft仍以旧结果记录为数值失败，新的完整模型尚未上板。
-
-编译准备现为 `draft-static-preparation-v5`：从第0层候选RMS的gamma权重识别embedding路径，仅对原FP16全表Gather后的严格单位Muls，复用设备通过探针的同一改线实现。删除Muls并把其唯一Cast消费者改接Gather，其他节点字节、权重、17／14接口与参考保持。非单位乘法及已无乘法的路径不改；公共输出、控制边、多消费者或描述冲突拒绝改写。主机完整图与编译预检16项、原旁路13项、探针执行与分析23项通过；这些不代替真实完整模型验证。
-
-**以下命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。** 已有AIR、prepared、TBE诊断和native runner继续复用，无需重新导出AIR或重建runner。
-
-先更新，并按用户要求删除已有结论的四组探针：`pytorch-embedding`、`pytorch-input-rms`、`pytorch-input-rms-taps`、`pytorch-input-rms-no-scale`及各自 `-run`、`-result`，共12个目录，不保留副本。工具按实际回收记录核对请求、模型绑定及已结束状态；未知状态、活动进程或runtime引用会保留并报告原因。不会修改板端目录，也不处理完整Draft或其它accuracy/profile/vector目录。省略 `--apply` 可只查看计划。
+更新代码并编译小探针：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/tools/probe_draft_attention.py" \
+  --air-export "$AI_RUN_DIR/draft/air" \
+  --source "$AI_RUN_DIR/draft/source/prepared" \
+  --result "$AI_RUN_DIR/draft/tests/pytorch-result" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention"
+```
+
+返回`COMPILED`后执行七组输入：空缓存、只改变临时anchor值、部分缓存、较少候选、满缓存、非零QK、零候选。源mask构造及Attention属性／长度／block-table端口保留，Q/K/V在已打包输入处切入；它不验证上游投影、RoPE和打包算子。附加输出可能改变编译分区与融合。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$AI_RUN_DIR/draft/tests/pytorch-attention" \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-run" --apply
+```
+
+返回`VECTOR_VALIDATION_STARTED`后回收同一次执行。若仍pending，只重复recover：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-attention-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-result"
+```
+
+执行结束后分析：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-result"
+```
+
+`mask_visible`和`packed_v`必须逐字节匹配，`attention`按原0.01／0.01逐元素比较；不以整体L2代替门槛。分析报告各query可见的缓存／临时位置、padding误读与第0头第0通道的实际／期望Attention。mask输出是“mask等于零”的谓词，不是负无穷字节或物理内核输入回读。12组主机合成／mock检查及23项前缀回归通过，实际OMG和设备结果待回传。完整Draft仍数值失败，不能由此小图通过直接提升生产。
+
+已得结论的四组旧探针按用户要求整组删除，不保留副本。该工具只处理旧embedding／input-rms／input-rms-taps／input-rms-no-scale及各自run／result，核对已结束状态；不删除正在定位的完整模型与新Attention探针。若此前已清理，可跳过：
+
+```bash
 python3 "$REPO_DIR/targets/cpro/tools/clean_draft_probes.py" \
   --root "$AI_RUN_DIR" \
   --config "$AI_RUN_DIR/runtime/runtime.json" --apply
-df -h "$AI_RUN_DIR"
-```
-
-接着复用固定完整模型编译目录：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
-  --air-export "$AI_RUN_DIR/draft/air" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
-```
-
-进度应显示 `bypassed 1 embedding unit scales`，最终 `air_preparation.unit_scale_count=1`，策略v5，编译状态 `PYTORCH_DRAFT_OMC_COMPILED`。`compilation/air-preparation.json`记录输入／输出hash及删除节点、改线节点hash。源 `draft/air/export.air`不变。编译成功后复测完整Draft：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --compiled "$AI_RUN_DIR/draft/tests/pytorch-omc" \
-  --air-export "$AI_RUN_DIR/draft/air" \
-  --source "$AI_RUN_DIR/draft/source/prepared" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-run" --apply
-```
-
-返回 `DRAFT_ACCURACY_STARTED` 后回收同一次执行；若仍为 `DRAFT_ACCURACY_PENDING`，稍后重复recover，不重复apply：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --recover "$AI_RUN_DIR/draft/tests/pytorch-run" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-result"
-```
-
-仍使用独立CPU参考、原逐元素门槛、Top1零差异及KV未写区逐位保持，验证isolated和feedback各19例。输入以源AIR语义与编译Data.index绑定，KV不按尺寸猜顺序。完成后可直接读取诊断，无须再次执行模型：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --diagnose "$AI_RUN_DIR/draft/tests/pytorch-result" \
-  --source "$AI_RUN_DIR/draft/source/prepared"
 ```
 
 以下为首次导出／工具链准备的说明，本轮无需重复执行。当前预处理继续保留Reshape链简化、静态ZerosLike物化和FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。每个节点的来源、形状及修改前后标志保存在`compilation/air-preparation.json`中。
