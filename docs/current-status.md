@@ -8,57 +8,28 @@
 
 **以下命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。** 新探针不需要学习权重，只复制最多256KiB的小buffer，七组输入共用一份OMC。已有AIR、prepared、TBE诊断和native runner继续复用。
 
-Attention探针已完成七组执行、回收和离线分析：OMC `df4248dd…5d09ff`，尝试 `qwen35_vector_9178f47c526e444593a912330176d7b1`。每组3次预热、10次输出逐位稳定；mask可见性谓词和packed V均逐字节匹配，Attention七组全部数值失败。此前输入计划排序错误已修复，本次通过运行描述检查并完成调用；完整Draft未重跑。
+Attention同图对照现已完成：OMC `856090b9…884a0`，尝试 `qwen35_vector_f4e9e86b2f17408386e313b393d378af`。七组全部执行回收、锁释放，每组三次预热、十次输出逐位稳定。原Attention仍全部数值失败，mask可见性谓词和packed V均逐字节匹配；完整Draft没有重跑。
 
-最新完整张量分析已确认：六组非加权输出的全部65536元素与“无mask、只取KV前16行”逐字节相同；加权组与该假设的最大差为0.00048828125、相对L2为0.0003691992。正负anchor两例实际输出完全相同，参考最大变化为4。七组原golden均由独立逻辑参考逐字节复现。非加权前32行假设也落在容差内，但全部元素逐位不同，不能只用容差通过来判定长度。该结果确定了数值特征，尚未确定具体长度端口或mask消费方式。
+| 对照输出 | 用户回传结果 | 当前结论 |
+|---|---|---|
+| attention_key0／key15 | 全七组、十次均逐字节匹配对应V行 | 固定mask能够选择这两个key |
+| attention_unmasked，KV=224 | 全张量与原Attention逐字节相同 | 未得到224行SDPA结果 |
+| attention_kv32，KV=32 | 全张量与KV=224分支逐字节相同 | 此端口改为32没有产生可见输出变化 |
 
-下一步运行同图对照：`--controls` 保留原Attention和两个原回读输出，增加四个Attention分支。所有分支的Q/K/V、属性、block table保持一致，两个query长度端口均保持源值16。每个分支单独比较全部输出；输出的不同shape仅用于避免ABI绑定歧义，字节排列仍按原NZ输出解释。
+六组非加权输出仍逐字节符合无mask的前16行SDPA，加权组对该签名的最大差为0.00048828125。KV=32分支在六组非加权例中“通过”仅因与32行参考的差0.001953125落在原容差内，全部65536元素仍逐位不同；加权例明确失败13696元素。不能据此认定32长度已生效，也不能概括为所有mask被忽略。原动态mask的辅助读回正确，不证明Attention内核实际消费的mask或长度。
 
-| 输出 | Attention mask | actual_seq_lengths_kv | 参考 |
-|---|---|---:|---|
-| attention | 原动态mask | 224 | 原golden |
-| attention_key0 | 仅key 0为0，其余负无穷 | 224 | V的第0行 |
-| attention_key15 | 仅key 15为0，其余负无穷 | 224 | V的第15行 |
-| attention_unmasked | 全0 | 224 | 前224行SDPA |
-| attention_kv32 | 全0 | 32 | 前32行SDPA |
+下一步只读检查所选DDK的Attention实现候选、保留编译记录和可用IR，核对长度处理路径。检查绑定当前OMC、编译日志和OMG的hash；按限定目录与文件名读取源码文本，不导入厂商模块。源码存在不等于已证明编译加载它，未保存IR或安装包没有可读源码时会明确报告缺失。两个query长度仍为源值16，尚无依据将 `all_seq_lengths_q` 改成224。
 
-三个原输出及参考保持；`mask_visible` 仍观察**原动态mask辅助支路**，不表示四个新分支的物理mask读回。固定mask和长度改动记录在 `extraction.control_experiment`。新增分支可能改变编译分区，因此分析也再次报告原Attention的前16行签名。不会把 `all_seq_lengths_q` 猜改成224；完整Draft和权重保持原状。
-
-先编译一份无学习权重的小对照OMC，复用原七组输入和native runner：
+在**DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境**运行这一条检查并回传JSON：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_attention.py" \
-  --controls \
-  --air-export "$AI_RUN_DIR/draft/air" \
-  --source "$AI_RUN_DIR/draft/source/prepared" \
-  --result "$AI_RUN_DIR/draft/tests/pytorch-result" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-controls"
+  --inspect-lengths "$AI_RUN_DIR/draft/tests/pytorch-attention-controls" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID"
 ```
 
-编译返回 `COMPILED` 后启动：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$AI_RUN_DIR/draft/tests/pytorch-attention-controls" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-controls-run" --apply
-```
-
-回收同一次执行并分析；若仍在运行，只重复recover，不再次apply：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$AI_RUN_DIR/draft/tests/pytorch-attention-controls-run" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-controls-result"
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-controls-result"
-```
-
-重点看 `attention_controls.branches` 和 `pair_differences`：key0／key15参考首头首通道分别为−0.5／0.4375；无mask的224／32长度对照应不同。加权组还能区分前16与32行的SDPA。所有数值门槛保持0.01／0.01；mask／V回读仍逐字节比较。原Attention预计仍失败，因此整例 `NUMERICAL_FAILED` 不等于新分支全部失败，应分别看每个输出。新图编译与设备结果尚未回传；14组新对照主机检查、原探针12组回归和14项签名检查已通过，均不能代替实机验证。
+这一步复用已有目录，不编译、不上板、不写夹具或DDK。重点查看 `ddk_source_candidates` 的长度处理行、`compiler_records` 的算子／tiling记录，以及 `compiler_ir` 中第5／6／16号端口。主图和IR检查保留全部18个Attention输入描述；NPU不透明任务不猜解。`INSPECTED` 只表示检查完成，不代表根因或数值通过。15组新增主机检查、11组接口检查、14组对照和12组原探针回归通过；所选DDK的实际检查结果待回传。
 
 以下为首次导出／工具链准备的说明，本轮无需重复执行。当前预处理继续保留Reshape链简化、静态ZerosLike物化和FP16 ND二维权重转置吸收到MatMul的`transpose_x2`标志。每个节点的来源、形状及修改前后标志保存在`compilation/air-preparation.json`中。
 

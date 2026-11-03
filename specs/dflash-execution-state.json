@@ -1709,7 +1709,7 @@
         "limitations": "NO_PROJECTIONS_ROPE_OR_QKV_PACKING_OPERATORS; AUXILIARY_OUTPUTS_CAN_CHANGE_FUSION; NO_PHYSICAL_KERNEL_INPUT_READBACK",
         "mask_readback": "EQUAL_ZERO_SELECT_FP16_ONE_OR_ZERO; EXACT_BYTES",
         "failed_retry_checks": 19,
-        "next": "ANALYZE_RETAINED_RESULT_WITH_FULL_TENSOR_PREFIX_HYPOTHESES; NO_RECOMPILE_OR_RELAUNCH",
+        "next": "INSPECT_SELECTED_DDK_ATTENTION_LENGTH_IMPLEMENTATION_AND_RETAINED_COMPILER_RECORDS; NO_RECOMPILE_OR_DEVICE_RUN",
         "previous_compile": {
           "source": "USER_PASTED_DDK_LOG_2026_11_03; NOT_INDEPENDENTLY_READ",
           "policy": "source-first-attention-mask-packed-qkv-v1",
@@ -2002,7 +2002,7 @@
           }
         },
         "mask_length_controls": {
-          "status": "HOST_CHECKED_DDK_AND_DEVICE_PENDING",
+          "status": "USER_REPORTED_EXECUTED_NUMERICAL_FAILED_FIXED_MASKS_PASS_LENGTH_EFFECT_UNRESOLVED",
           "policy": "source-first-attention-mask-length-controls-v1",
           "entry_option": "--controls",
           "output": "draft/tests/pytorch-attention-controls",
@@ -2036,10 +2036,68 @@
           "host_control_checks": 14,
           "source_probe_regression_checks": 12,
           "signature_regression_checks": 14,
-          "model_compilation": "NOT_RUN",
-          "device_execution": "NOT_RUN",
-          "numerical_validation": "NOT_RUN",
-          "scope": "DIAGNOSTIC_CLONED_BRANCHES; SOURCE_QUERY_LENGTHS_UNCHANGED; NOT_FULL_DRAFT"
+          "model_compilation": "PASSED_USER_REPORTED",
+          "device_execution": "EXECUTED_OUTPUTS_RETRIEVED_USER_REPORTED",
+          "numerical_validation": "FAILED",
+          "scope": "DIAGNOSTIC_CLONED_BRANCHES; SOURCE_QUERY_LENGTHS_UNCHANGED; NOT_FULL_DRAFT",
+          "model_sha256": "856090b9aaa37a5d578ba297da0229eb2ef9325aa3a8e12ab166f9301e3884a0",
+          "observation": {
+            "source": "USER_PASTED_RECOVERY_AND_ANALYSIS_JSON; RAW_OUTPUTS_NOT_INDEPENDENTLY_RETRIEVED",
+            "board_attempt": "/data/local/tmp/qwen35_vector_f4e9e86b2f17408386e313b393d378af",
+            "native_exitcode": 0,
+            "archive_exitcode": 0,
+            "cases_executed": 7,
+            "warmup": 3,
+            "repetitions": 10,
+            "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+            "repeat_bitwise_stable": true,
+            "mask_visible": "EXACT_BYTES_ALL_CASES_ALL_CALLS",
+            "packed_v": "EXACT_BYTES_ALL_CASES_ALL_CALLS",
+            "key0_and_key15": "EXACT_BYTES_ALL_CASES_ALL_CALLS; FIXED_MASK_SELECTION_EFFECTIVE_FOR_THESE_KEYS",
+            "unmasked224_vs_kv32_vs_original": "ALL_65536_ELEMENTS_BIT_EXACT_EACH_OF_SEVEN_CASES",
+            "kv32_unweighted": {
+              "passed_cases": 6,
+              "bitwise_mismatched_elements_per_case": 65536,
+              "max_abs_error": 0.001953125,
+              "meaning": "TOLERANCE_PASS_NOT_LENGTH_EFFECT_PROOF"
+            },
+            "kv32_weighted": {
+              "failing_elements": 13696,
+              "max_abs_error": 0.0146484375,
+              "relative_l2_error": 0.032013517179236735,
+              "rmse": 0.009241208065964172
+            },
+            "source_signature": "SIX_NONWEIGHTED_CASES_BIT_EXACT_UNMASKED_PREFIX16; WEIGHTED_MAX_ERROR_0.00048828125",
+            "reference_reproduction": "ALL_BRANCHES_ALL_CASES_BIT_EXACT",
+            "graphop_counts": {
+              "CPUCL": 2,
+              "NPUCL": 2
+            },
+            "api_mean_ms": {
+              "empty": 3.2218,
+              "anchor": 2.8729,
+              "partial": 3.063,
+              "short": 3.3837,
+              "full": 3.5004,
+              "weighted": 3.2817,
+              "catchup": 2.9802
+            },
+            "timing_scope": "FIVE_ATTENTION_DIAGNOSTIC_GRAPH_SYNCHRONOUS_API_WALL_NOT_FULL_DRAFT",
+            "limitation": "LOGICAL_READBACK_NOT_PHYSICAL_KERNEL_INPUT; LENGTH_HANDLING_ROOT_CAUSE_UNRESOLVED"
+          }
+        },
+        "length_inspection": {
+          "entry_option": "--inspect-lengths",
+          "status": "HOST_CHECKED_SELECTED_DDK_INSPECTION_PENDING",
+          "host_checks": 15,
+          "interface_regression_checks": 11,
+          "control_regression_checks": 14,
+          "source_probe_regression_checks": 12,
+          "scope": "READ_ONLY_SELECTED_DDK_SOURCE_AND_RETAINED_COMPILATION; NO_VENDOR_EXECUTION_OR_WRITES",
+          "source_candidates": "NOT_PROOF_OF_IMPLEMENTATION_LOADED",
+          "query_lengths_changed": false,
+          "full_draft_changed": false,
+          "selected_ddk_inspection": "NOT_RUN"
         }
       }
     }

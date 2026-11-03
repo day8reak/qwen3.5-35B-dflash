@@ -26,7 +26,9 @@ _MAX_MATCHES = 16
 _MAX_OUTPUT_BYTES = 256 << 10
 _ATTRIBUTES = {"dtype", "shape", "file_path", "file_id", "transpose_x1", "transpose_x2",
                "transpose_a", "transpose_b", "adj_x1", "adj_x2", "value", "scale",
-               "shift", "power", "dst_type", "src_type", "epsilon", "alpha", "beta"}
+               "shift", "power", "dst_type", "src_type", "epsilon", "alpha", "beta",
+               "num_heads", "num_key_value_heads", "block_size", "input_layout", "inner_precise",
+               "scale_value", "sparse_mode", "pre_tokens", "next_tokens"}
 
 
 def _read(path, limit):
@@ -66,7 +68,7 @@ def _descriptors(node, enum_fields):
         if not isinstance(raw, list):
             raise ValueError(f"{key} must be a descriptor list")
         rows = []
-        for desc in raw[:16]:
+        for desc in raw[:32]:
             if not isinstance(desc, dict):
                 raise ValueError("tensor descriptor must be an object")
             row = {"raw": _preview(desc, budget=[128]), "schema_enum_names": {}}
@@ -78,8 +80,8 @@ def _descriptors(node, enum_fields):
                         "names": [name for name, number in domain["values"].items() if number == value]}
             rows.append(row)
         result[key] = rows
-        if len(raw) > 16:
-            result[key + "_omitted"] = len(raw) - 16
+        if len(raw) > 32:
+            result[key + "_omitted"] = len(raw) - 32
     return result
 
 
@@ -127,12 +129,12 @@ def _inputs(node):
     rows = []
     names, indices = node.get("src_name", []), node.get("src_index", [])
     if isinstance(names, list):
-        for i, name in enumerate(names[:16]):
+        for i, name in enumerate(names[:32]):
             rows.append({"field": "src_name", "input_index": i, "name": name,
                          "output_port": indices[i] if isinstance(indices, list) and i < len(indices) else None})
     edges = node.get("input", [])
     if isinstance(edges, list):
-        for i, edge in enumerate(edges[:16]):
+        for i, edge in enumerate(edges[:32]):
             name, port = None, None
             if isinstance(edge, str) and ":" in edge:
                 prefix, suffix = edge.rsplit(":", 1)
