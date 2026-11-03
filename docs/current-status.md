@@ -27,18 +27,17 @@
 
 Target两组仅复现其head配置与Q64／Q1形状，KV仍固定224；没有抽取实际Target AIR，也没有验证Target完整cache或整模型。它们可以检查共用接口是否同样出错，不能单独归因Target精度。第一层Attention路径数值错误已经复现，但端口、布局、编译或内核哪一环导致，仍待本轮区分。
 
-**已有矩阵请求先查看状态，不重复编译／启动。** 用户这次 `qwen35_vector_297df57991e34b2a8ad76aed1118f437` 在启动命令处按了Ctrl-Z，shell显示Stopped；这会挂起进程。旧启动流程逐文件上传、校验且无进度，旧recover还会把“没有complete”直接标成running；已有回收目录又被同运行目录内的启动进程拦住。这些是执行工具的问题，目前没有该矩阵的数值结果或算子卡死证据。
+**本次更新后直接复用已编译矩阵，重新执行下方启动命令。** 旧请求 `qwen35_vector_297df57991e34b2a8ad76aed1118f437` 恢复后在HDC发送`attention_matrix_runtime__key_64/plan.txt`时报告180秒超时，`device_execution=NOT_RUN`、`lock_state=NO_KNOWN_OWNED_LOCK`，进程已退出。随后新启动的129例准备通过、`matrix_preparation_failures=[]`，但在打包1021个文件时被路径检查拒绝；同样未运行设备、未持有锁。这两次已知未启动的失败均可复用固定测试目录，无需删除目录或锁，无需重编OMC或native。
 
-在原DDK服务器终端更新并读取本地状态；`--status`不连接设备、不改文件、不获取执行锁：
+打包器原正则遗漏`+`，会误拒部署库`lib/libc++_shared.so`。已改为复用部署流程的相对路径规则，保留越界／重复／保留名称检查，并在错误中显示具体成员；完整清单保存在`payload-manifest.json`。包含实际运行库发现逻辑、合成SDK构建记录及129例夹具的主机检查已走通1021成员打包、解包和逐文件SHA校验；设备执行仍待本轮回传。
+
+先更新代码，然后跳过下面的首次编译步骤，直接运行已有矩阵：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-jobs -l
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --status "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-run"
 ```
 
-`local_jobs`给出PID、进程状态及`suspended`；`last_completed_transport_call`给出最后完成的通信操作，不冒充正在执行的操作。如果原终端的job 1仍是这条Stopped命令，用`fg %1`恢复它。旧进程不会自动加载新代码；挂起期间也可能超过原HDC调用的墙钟超时，恢复后以其实际退出结果为准。如果任务已不存在，保留请求与锁并回传status，不盲目删除锁或再次apply。
+以后若启动状态不明确，可用`validate_draft_vector.py --status "$AI_RUN_DIR/draft/tests/pytorch-attention-matrix-run"`只读检查本地主进程和最后一次通信记录。它不连接设备、不改文件、不获取执行锁；Ctrl-Z／Stopped表示挂起，需在原终端核对`jobs -l`后恢复对应job。request存在或缺少complete均不证明模型已开始／仍在运行，未确认完成的请求不能重复apply。
 
 可以在另一个相同环境的终端使用下方recover查看同一次请求。新版允许独立回收目录重复使用；`PENDING`现在表示`completion-unconfirmed`，并附本地主进程状态、板端已完成例数、最后退出码和未完成例名。新版启动另提供当前例序号、归档阶段标记。上述标记不是进程存活证明，旧请求没有新标记也不等于尚未执行。
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import io
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import shutil
 import sys
@@ -13,7 +13,7 @@ import threading
 import time
 
 from .run_layout import _save
-from .hdc_run import _check_local, _file_record
+from .hdc_run import _check_local, _file_record, _relative
 
 
 class Progress:
@@ -46,11 +46,21 @@ class Progress:
 
 def pack_uploads(out, rows):
     """One transfer replaces per-file round trips; remote checks still cover every file."""
-    names = [r['remote'] for r in rows]
-    if len(set(names)) != len(names) or any(not re.fullmatch(r'[A-Za-z0-9_./-]+', n)
-            or PurePosixPath(n).is_absolute() or any(p in ('', '.', '..') for p in n.split('/'))
-            or n in ('payload.sha256', 'payload.tar') for n in names):
-        raise ValueError('invalid or duplicate probe payload destination')
+    _save(out/'payload-manifest.json', dict(files=rows, file_count=len(rows)))
+    seen = {}
+    for index, row in enumerate(rows):
+        name = row['remote']
+        try:
+            # Share deployment's relative-path contract. C++ runtime filenames
+            # contain '+'; these names are tar/checksum data, not shell code.
+            _relative(name)
+        except ValueError as error:
+            raise ValueError(f'invalid probe payload destination at item {index}: {name!r}: {error}') from error
+        if name in ('payload.sha256', 'payload.tar'):
+            raise ValueError(f'reserved probe payload destination at item {index}: {name!r}')
+        if name in seen:
+            raise ValueError(f'duplicate probe payload destination {name!r}: items {seen[name]} and {index}')
+        seen[name] = index
     required = sum(r['bytes']+1024 for r in rows)+(1 << 20)
     if shutil.disk_usage(out).free < required:
         raise OSError('insufficient local space for probe payload archive')

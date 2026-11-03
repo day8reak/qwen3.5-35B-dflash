@@ -109,6 +109,10 @@ compile.log为985893字节／8862行，hash `b270f2ba1161e9f20d86f57ab2564afcfb8
 
 修复增加只读本地`--status`、持久阶段记录和30秒等待提示；同一源请求的独立vector回收目录只检查引用该回收目录的活动任务，原执行目录复用仍保留全局活动任务检查。新请求打包上传并核验归档和每个成员SHA，板端记录当前例／归档阶段并打包日志回收；旧请求兼容逐文件回收。未完成请求报告`completion-unconfirmed`和证据标记，不宣称进程仍存活，也不重启模型或强制解锁。7组新主机检查包含真实SIGSTOP进程、重复回收、只读状态、冲突写入保护、真实shell／tar流程、损坏拒绝、失败停止及十次host-fake输出比较；24组原ABI／目录生命周期和7组矩阵检查通过。助手未连接DDK服务器或板子，本次旧请求实际停留阶段仍需用户status／recover回传。
 
+随后用户回传本地状态：PID68999为`T (stopped)`，已有1172条通信记录，最后一次为成功的`vector-upload`。`fg %1`后旧进程在发送`attention_matrix_runtime__key_64/plan.txt`时报180秒超时，结果为`FAILED / NOT_RUN / NO_KNOWN_OWNED_LOCK`；未进入模型执行。用新版重启后129例准备通过、无准备失败，1021文件共146871831字节，在`pack`阶段报`invalid or duplicate probe payload destination`，仍未访问设备执行。
+
+本地确认新增路径正则遗漏`+`，正常部署的`lib/libc++_shared.so`即可复现同一错误；上轮传输测试将运行库清单模拟为空，漏测了这一项。修复复用原部署`_relative`合同，保留绝对路径／父目录／控制字符／反斜杠／重复目的地／保留名拒绝；错误包含具体成员与位置，并保留`payload-manifest.json`。新增3组检查含实际`_build_payloads → discover_libraries → SDK C++库发现 → start → pack → tar解包 → sha256sum`链路，使用明确标记的合成AArch64 ELF和构建记录、129例实际夹具生成逻辑，共1021成员逐文件校验通过；原7组启动／回收检查补入C++库名后通过。合成ELF从未执行，未访问DDK服务器或板子；Attention数值结论未更新。
+
 ## 此前PyTorch独立执行：加载成功，数值失败
 
 2026-11-02，用户回传尝试`ec3f7c3136ac43fcb927c25eef63f4e3`的完整比较摘要：`EXECUTED_OUTPUTS_RETRIEVED`、`NUMERICAL_FAILED`，任务完成且锁释放。两组各19次调用全部完成，说明本次已经跨过此前的Fill加载失败；38例均未通过原比较门槛。以下为用户回传，未独立读取原始板端张量，随后离线诊断报告OMC SHA256为 ce11666f9298ec7453bbdcdfe1e3a3a38d396cd12a0bd13f9faf6c82c4981ad6。
