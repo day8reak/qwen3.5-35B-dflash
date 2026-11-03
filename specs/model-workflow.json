@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "RANK4_SPATIAL_SHARED_MASK_HOST_CHECKED_DEVICE_PENDING",
+    "status": "RANK4_SPATIAL_SHARED_MASK_USER_COMPILED_DEVICE_PENDING",
     "entry": "targets/cpro/tools/validate_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "COMPOSED_ATTENTION_TOP1_ISOLATED82_OF86_FEEDBACK83_OF86; HIDDEN_L2_1.34_TO2.61_PERCENT; APPENDED_KV_L2_0.44_TO0.83_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "Compile explicit packed-spatial-4d candidate, validate new model outputs and inspect bound partitions; default V1 profiling. V2 single-call inference258.682ms showed no benefit. Keep accepted numerical baseline and original gates.",
+    "next": "New packed-spatial-4d compilation passed with CPUCL3/NPUCL2 and 17/14 ABI. Bind compiled slots and validate full outputs, then inspect this model boundaries and V1 profile. No recompile needed; device speedup remains unmeasured.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",

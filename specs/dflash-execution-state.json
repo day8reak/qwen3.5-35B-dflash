@@ -2765,7 +2765,7 @@
       "limitation": "PORT_SUMS_NOT_UNIQUE_BUFFERS_OR_MEASURED_COPIES; TOP_INPUT_LIST_INCOMPLETE; CPU_NPU_GAP_CAUSE_UNRESOLVED"
     },
     "boundary_optimization_candidate": {
-      "status": "HOST_CHECKED_SELECTED_DDK_AND_DEVICE_PENDING",
+      "status": "USER_REPORTED_COMPILED_ABI_BINDING_AND_DEVICE_VALIDATION_PENDING",
       "policy": "packed-spatial-4d",
       "run_id": "20261103T115433Z-20069-553cbd",
       "baseline_policy": "packed-spatial",
@@ -2808,12 +2808,62 @@
         "binding_checks": 25,
         "mock_pipeline_checks": 14
       },
-      "model_compilation": "NOT_RUN_SELECTED_DDK_UNAVAILABLE_LOCALLY",
+      "model_compilation": "USER_REPORTED_PASSED",
       "device_execution": "NOT_RUN",
-      "placement": "UNVERIFIED_RANK4_PERMUTES_MAY_STILL_FALL_BACK_OR_BE_REWRITTEN",
+      "placement": "GRAPHOP_COUNTS_CPU3_NPU2; NODE_PLACEMENT_AND_INTERFACE_BYTES_UNVERIFIED",
       "performance": "NOT_MEASURED",
       "command_document": "docs/current-status.md",
-      "next": "USER_EXPORT_COMPILE_THEN_NEW_MODEL_ACCURACY_BOUNDARY_AND_V1_PROFILE"
+      "next": "VALIDATE_NEW_MODEL_WITH_SEMANTIC_PHYSICAL_ABI_BINDING; THEN_BOUND_BOUNDARY_INSPECTION_AND_V1_PROFILE",
+      "compiled_abi": "NOT_BOUND",
+      "compiled_precision": "NOT_VALIDATED",
+      "user_compilation_observation": {
+        "source": "USER_PASTED_COMPILE_SUMMARY_NOT_INDEPENDENTLY_RETRIEVED",
+        "status": "PYTORCH_DRAFT_OMC_COMPILED",
+        "stage": "complete",
+        "context_rows": 16,
+        "cache_capacity": 192,
+        "max_draft_tokens": 15,
+        "model_compilation": "PASSED",
+        "compiled_precision": "NOT_VALIDATED",
+        "compiled_abi": "NOT_BOUND",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
+        "runtime_integration": "PENDING_PHYSICAL_ABI_AND_DEVICE_VALIDATION",
+        "graphop_counts": {
+          "CPUCL": 3,
+          "NPUCL": 2
+        },
+        "input_count": 17,
+        "output_count": 14,
+        "optimization": {
+          "policy": "packed-spatial-4d",
+          "version": 1,
+          "packed_projections": true,
+          "grouped_query_reshape": true,
+          "shared_rope": true,
+          "projection": "PYTORCH_CONV2D_SPATIAL_4X4_FULL_K",
+          "feature_pack": "TWO_RANK4_TRANSPOSES",
+          "shared_visibility_masks": true
+        },
+        "air_preparation": {
+          "policy": "draft-static-preparation-v5",
+          "status": "APPLIED",
+          "removed_count": 18,
+          "zero_count": 0,
+          "fill_count": 1,
+          "weight_transpose_count": 31,
+          "unit_scale_count": 1
+        },
+        "composed_attention": {
+          "source_layers": 6,
+          "source_fused_nodes": 0,
+          "compiled_main_graph_fused_nodes": [],
+          "scope": "MAIN_GRAPH_METADATA_ONLY; OPAQUE_GRAPHOP_KERNELS_NOT_DECODED"
+        },
+        "model_sha256": null,
+        "model_identity": "NEW_SHA_NOT_SUPPLIED; DO_NOT_REUSE_PREVIOUS_PACKED_SPATIAL_IDENTITY",
+        "interpretation": "PARTITION_COUNTS_UNCHANGED; SPECIFIC_PERMUTE_MASK_PLACEMENT_BOUNDARY_BYTES_AND_DEVICE_SPEED_UNVERIFIED"
+      }
     }
   },
   "draft_milestone_e2e_gate": {

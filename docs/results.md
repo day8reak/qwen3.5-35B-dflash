@@ -50,7 +50,9 @@
 
 证据run `20261103T105358Z-18207-11e412`。以上为改动时主机检查，后续用户设备反馈见本页顶部；本地没有所选CPro DDK，未访问用户设备。新的17／14语义绑定支持Conv前空间Transpose，合并权重通过原K/V和gate/up各段hash核对。现有native runner、公共AIR/OMC、参考数学和验收门槛未替换。
 
-50ms目标按C16/cap192/K15常驻同步API、同输入3次预热加10次测量判断。此前暂以5～7个工作日安排验证窗口，前提每天1～2轮编译／板端反馈；不是达标承诺。第一轮已见提速，但245.989ms与约70ms算子汇总间的差额仍未归因，不据算子接近70ms就缩短达标工期。NPU侧完整词表Top1尚未实现；图内边界候选已完成主机检查，设备效果待验证。
+2026-11-03，用户随后回传 `packed-spatial-4d` 编译成功摘要：C16／cap192／K15，17输入／14输出，CPUCL=3／NPUCL=2。optimization契约含TWO_RANK4_TRANSPOSES和shared_visibility_masks=true；source组合attention六组、无源融合节点，编译主图融合节点列表为空，但GraphOp内部未解码。v5准备removed18、fill1、weight_transpose31、unit_scale1。compiled_abi=NOT_BOUND、compiled_precision=NOT_VALIDATED、device_execution=NOT_RUN；尚未收到新OMC SHA、CPU节点细节或时延。数量仍为5不能证明重排仍在CPU或mask共享无效，也不能证明提速。下一步验证脚本绑定物理ABI并执行完整accuracy，再读取同模型边界和V1 profile，沿用原数值门槛；无需再次导出编译。该条是用户编译摘要，未独立取回产物。
+
+50ms目标按C16/cap192/K15常驻同步API、同输入3次预热加10次测量判断。此前暂以5～7个工作日安排验证窗口，前提每天1～2轮编译／板端反馈；不是达标承诺。第一轮已见提速，但245.989ms与约70ms算子汇总间的差额仍未归因，不据算子接近70ms就缩短达标工期。NPU侧完整词表Top1尚未实现；图内边界候选已由用户编译，设备效果待验证。
 
 当前基线OMC SHA256：`288644ea39913fc49466ed4b6d9329825b6ea819259c266c4601cba391b5e182`，来自用户回传的真实权重CPU审计。源数学在四个选定isolated case中通过原参考门槛，两种gamma舍入边界报告的指标相同；这不能证明所有中间张量逐位相同或编译后算术精度。
 
