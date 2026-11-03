@@ -1,6 +1,24 @@
 # 当前结果
 
-2026-11-03 当前推进组合attention完整Draft候选，用户要求暂时停用 AdnFusedInferAttention。新导出为六组QK MatMul → FP32缩放／mask／Softmax → FP16概率 → PV MatMul，完整208行逻辑KV、GQA INT32 Gather；学习权重、mask、17／14接口和原门槛保持。特征Conv投影仍保留。新TorchAir／OMG／板端均待运行，未提升生产。
+2026-11-03，用户回传组合attention完整Draft结果，attempt `/data/local/tmp/qwen35_draft_accuracy_d47d8f927c5e4a6fa14797efd0e23e80`：38次调用全部执行回收、锁释放，NUMERICAL_FAILED，未提升生产。以下数字来自用户摘要，未独立读取设备文件；摘要未提供新OMC SHA。导出为六组QK MatMul → FP32缩放／mask／Softmax → FP16概率 → PV MatMul，完整208行逻辑KV、GQA INT32 Gather；学习权重、mask、17／14接口、特征Conv投影和原门槛保持。
+
+| 当前组合版指标 | isolated | feedback |
+|---|---:|---:|
+| 整例通过 | 0/19 | 0/19 |
+| 有效候选Top1匹配 | 82/86 | 83/86 |
+| 有Top1差异的case数 | 3 | 3 |
+| hidden失败case数 | 8 | 8 |
+| 新增KV相对L2范围 | 0.004417～0.008284 | 0.004417～0.008284 |
+| hidden相对L2范围 | 0.013387～0.025756 | 0.014494～0.026116 |
+| KV失败case数／未写区失败 | 13／0 | 18／0 |
+| proposal同步API均值 | 760.223 ms | 773.596 ms |
+| catchup同步API均值 | 736.501 ms | 754.463 ms |
+
+首例空context的第10号候选为220、参考13；hidden最大绝对差0.15234375、相对L2为0.0144943。其余Top1差异位于case17／18的容量边界与重复；两个feedback重复均逐位稳定。相对旧融合版Top1各0/86和hidden约1.35～1.39的相对L2，候选数值明显改善，但逐元素及Top1门槛仍失败。新增KV误差范围与旧融合版一致，其计算支路不经过候选attention；空context仍有误差说明单独修context Conv不足以闭合全部精度。
+
+用户随后读取当前编译manifest：`PYTORCH_DRAFT_OMC_COMPILED`、`composed-attention-v1`、CPUCL=3／NPUCL=2，共5个子图。组合版与上一融合版的静态分区数量相同，不能将当前耗时归因于子图数量增加，也不能把53→5的旧结构改善当作已实现加速。缺少当前逐算子CSV，慢点未定位；现有profiling入口复用此次精度模型／输入，保持失败状态，其单次厂商工具时延与常驻SDK统计分开解释。
+
+新增 `validate_incremental_draft.py --audit-reference`：在服务器CPU复用四个代表case、hash绑定的prepared权重及原参考，比较源表达、板端和golden；另在CPU对齐RMS先转FP16再乘gamma的原参考边界，不更改生产模型。报告按层拆分新增K/V。14项主机检查通过，含缩小宽度六层实际计算、反转物理输入槽、已知hidden故障定位、原数据不变、失败状态保持、固定报告复用及身份／权重／AIR／控制量拒绝；测试的完整宽度ABI入口用mock替代，未运行用户真实权重或板端。证据run `20261103T101101Z-15574-ff6859`，完整权重审计待用户执行；当前命令见[当前阶段](current-status.md)。
 
 本地缩小宽度、保留六层与八个Target taps的32组序列／440次调用覆盖C16／C64、K15／7／3／1、滑窗开关、独立输入与连续缓存反馈。全部14输出与旧原语实现逐位相同，输入及未写KV保持。独立完整前缀oracle的hidden／KV通过原0.01／0.01门槛，最大绝对差0.0068359375；容量边界和重复反馈共有4个Top1差异，旧原语路径同样存在，该oracle检查记为FAILED。四档真实宽度meta捕获为12 MatMul、6 FP32 Softmax、32测试RMS、17／14接口、INT32 Gather、无融合attention。14组源图及mock导出编译检查、7组旧矩阵回归通过。以上均为主机证据，临时测试未发布。
 

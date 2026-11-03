@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "COMPOSED_ATTENTION_IMPLEMENTED_FULL_DRAFT_ACCURACY_PENDING",
+    "status": "COMPOSED_ATTENTION_NUMERICAL_FAILED_CPU_AUDIT_AND_PROFILE_PENDING",
     "entry": "targets/cpro/tools/validate_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
-    "device_numerics": "LATEST_FULL_MODEL_TOP1_0_OF_86_PER_MODE; EMPTY_CONTEXT_NONZERO_IDENTICAL_ROWS; COMMON_PREFIX_ANCHOR_INSENSITIVE",
-    "next": "User runs current composed-attention export, compile, validate and recover commands. Review full Draft Top1, hidden and KV before promotion; projection performance remains a separate proposed experiment.",
+    "device_numerics": "COMPOSED_ATTENTION_TOP1_ISOLATED82_OF86_FEEDBACK83_OF86; HIDDEN_L2_1.34_TO2.61_PERCENT; APPENDED_KV_L2_0.44_TO0.83_PERCENT; ORIGINAL_GATES_FAILED",
+    "next": "Reuse current result for CPU source-math/RMS-rounding audit and diagnostic operator profiling. Current OMC has3CPUCL+2NPUCL; performance cause unresolved. Do not repeat full export/compile/validation or promote.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",

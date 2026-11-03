@@ -20,6 +20,7 @@ def main():
     mode.add_argument('--inspect',help='print existing comparison details locally; no board access')
     mode.add_argument('--analyze',help='recompute new-KV and repeat diagnostics from retained host tensors')
     mode.add_argument('--diagnose',help='inspect retained hidden zeros/repeated rows and controls; optional --source checks embedding rows locally')
+    mode.add_argument('--audit-reference',help='CPU source-math replay against retained reference and board tensors; requires --source, --air-export and an --output JSON file')
     parser.add_argument('--output')
     parser.add_argument('--apply',action='store_true')
     parser.add_argument('--atol',type=float)
@@ -27,6 +28,15 @@ def main():
     parser.add_argument('--timeout-seconds',type=int,default=1800)
     args=parser.parse_args()
     from qwen35_moe_dflash.draft.incremental.accuracy import summarize_result
+    if args.audit_reference:
+        if (args.apply or any((args.config,args.compiled,args.ddk_root))
+                or args.atol is not None or args.rtol is not None
+                or not all((args.source,args.air_export,args.output))):
+            parser.error('--audit-reference requires only retained result, --source, --air-export and --output JSON')
+        from qwen35_moe_dflash.draft.incremental.host_audit import audit_reference
+        print(json.dumps(audit_reference(args.audit_reference,args.source,args.air_export,args.output,
+            progress=lambda x: print('draft-host-audit: '+x,flush=True)),ensure_ascii=False,allow_nan=False))
+        return 0
     if args.diagnose:
         if (args.apply or any((args.config,args.compiled,args.air_export,args.output,args.ddk_root))
                 or args.atol is not None or args.rtol is not None):

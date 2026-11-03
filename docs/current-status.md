@@ -1,106 +1,48 @@
 # 当前阶段测试命令
 
-当前任务：用已有算子组合实现六层Draft attention，重新验证完整Draft精度。配置为C16／cap192／K15、17输入／14输出；学习权重、GQA分组、mask、KV提交规则和验收门槛保持。特征投影仍为16384→2048的4×4 Conv2D，本轮未处理其性能问题。
+2026-11-03，组合attention完整Draft已执行回收，精度仍为NUMERICAL_FAILED。isolated／feedback的Top1分别82/86、83/86；hidden相对L2约1.34%～2.61%，新增KV约0.44%～0.83%。两组各19例仍无整例通过；未写KV逐位保持，重复调用逐位稳定。原0.01／0.01逐元素门槛及Top1零差异门槛保持。
 
-新导出为 Gather → QK MatMul → FP32缩放／mask／Softmax → FP16概率 → PV MatMul，不注册或调用 AdnFusedInferAttention。计算192个context槽＋16个临时候选槽，共208行，通过原有mask选择有效行，不再使用NZ分页或补齐224行。无效query保留anchor witness，RMS保留 npu_rms_norm → RmsNorm。
+用户确认当前composed-attention-v1 OMC为CPUCL=3／NPUCL=2，共5个子图，与上一融合版相同。proposal同步Process均值760.223／773.596ms，属于混合输入的精度诊断调用，包含运行时内部调度、同步和搬运，未达到50ms目标。静态分区减少不证明提速，历史GE的Conv70.968ms不能代替当前模型profiling。
 
-旧融合矩阵两轮合计比较127／129个不同case：114失败、13通过；KV1执行失败、KV15未执行。Q16／32／64／1分别匹配对应长度的KV前缀，mask和页表有响应，物理原因未定。用户选择暂缓该调查，先做组合版完整精度。历史结果见[当前结果](results.md)。
+复用现有draft/air、draft/tests/pytorch-omc、pytorch-run和pytorch-result。当前不重新导出、编译、生成golden或重复apply完整精度验证，生产未提升。下一步分开检查热点和剩余数值误差。
 
-本地440次缩小宽度六层调用与原组合实现逐位一致，四档真实尺寸FX捕获为12 MatMul、6 FP32 Softmax、32 RMS、17／14接口。独立完整前缀oracle的hidden／KV通过原容差，但有4个Top1差异，旧组合实现同样存在，故未标为整体精度通过。新TorchAir／OMG和板端结果待回传，原≤50ms目标仍未达到。
+## 1. 当前OMC的逐算子profiling
 
-## 1. 原Target导出环境：重新导出Draft
-
-在此前成功导出Target／Draft AIR、已有PyTorch／torch_npu／TorchAir的权重服务器执行。REPO_DIR、AI_RUN_DIR沿用该机路径，运行目录位于仓库外；若换终端，先设置这两个变量。
-
-已有 draft/source/prepared/prepared.json 时直接复用。仅首次缺少prepared时，设置 TARGET_WEIGHTS 为原Target YAML的 model_file 对应的原始BF16权重目录，DRAFT_WEIGHTS 为原始DFlash检查点目录，再执行：
+在DDK服务器custom_pypto环境，沿用该机REPO_DIR、AI_RUN_DIR和原HDC环境。复用本次精度夹具的case2及模型，允许数值失败状态下采集诊断；已有native无需重建。
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/scripts/prepare_draft.py" \
-  --target-weights "$TARGET_WEIGHTS" --draft-weights "$DRAFT_WEIGHTS" \
-  --output "$AI_RUN_DIR/draft/source/prepared"
+python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
+  --accuracy "$AI_RUN_DIR/draft/tests/pytorch-result" \
+  --allow-numerical-failure \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-profile-run" --apply
+
+python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-profile-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-profile-result"
 ```
 
-更新代码并重新导出；旧融合AIR不能作为本轮输入：
+若回收为PENDING，继续同一recover，不重复apply。工具使用厂商model_run_tool的一次新实例推理，warmup=0／times=1。CSV用于观察当前热点，不是常驻SDK十次延迟基准，不与760ms直接相减。保留原始op／model CSV、PID和单位；跨stream耗时不能求和当作整模型时间，原精度失败状态保持。
+
+## 2. 服务器CPU复现当前源图数学
+
+复用已回收输入／输出、原golden、同一prepared权重及源AIR，只在CPU执行空context、首次补齐、部分context、容量边界四个代表case。当前RMS在FP32中完成归一化及gamma相乘后转FP16，原参考先把归一化结果转FP16再乘gamma；两种公式仅作CPU对照，实际AIR／OMC不改。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
-  --frontend pytorch \
-  --prepared "$AI_RUN_DIR/draft/source/prepared" \
-  --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 \
-  --output "$AI_RUN_DIR/draft/air" --replace
-```
-
-预期 PYTORCH_DRAFT_AIR_EXPORTED、attention.policy=composed-attention-v1、attention_nodes=0、composed_attention_layers=6、rms_nodes=32、17输入／14输出。air-inspection.json记录六条QK → FP32 Softmax → PV连接；发现融合attention、缺失连接、Softmax变成FP16或已记录KV维度缩为前缀时拒绝发布。
-
-导出先写固定 draft/tests/export，成功后移动到 draft/air，失败保留旧公共AIR。源图缺失中间shape不被当作真实形状证明。
-
-## 2. 传输新AIR并安装
-
-将权重服务器的 draft/air 整目录传到DDK服务器的 $AI_RUN_DIR/draft/.air-incoming，直接包含 export.air、weight/、air-schema.pb、manifest.json、air-inspection.json。两机根路径可以不同，权重相对路径保持；若同机导出、编译则跳过此步骤。
-
-在DDK服务器 t00826215_atc_mobile 的 custom_pypto 环境执行：
-
-```bash
-git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
-  --import-air "$AI_RUN_DIR/draft/.air-incoming" \
-  --output "$AI_RUN_DIR/draft/air" --replace
-```
-
-返回 PYTORCH_DRAFT_AIR_INSTALLED 后再编译。安装使用目录移动，不额外复制学习权重。
-
-## 3. DDK服务器：编译完整候选OMC
-
-沿用 CPRO_DDK_ROOT、CPRO_DDK_ID 与已存在的 common/tbe-diagnosis 完整目录。仅当诊断目录缺失时执行：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" check-tbe-platform \
-  --ddk-root "$CPRO_DDK_ROOT" --python "$(command -v python3)" \
-  --diagnose --jobs 4 --output "$AI_RUN_DIR/common/tbe-diagnosis"
-```
-
-编译复用固定候选槽，原公共 draft/omc 与运行配置保留：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
-  --air-export "$AI_RUN_DIR/draft/air" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-omc" --replace
-```
-
-预期 PYTORCH_DRAFT_OMC_COMPILED。继续执行 draft-static-preparation-v5：Reshape链简化、静态ZerosLike／Fill物化、二维权重转置吸收到MatMul属性、已验证的embedding单位Muls旁路。
-
-可读OMC主图若出现融合attention则拒绝打包；GraphOp不透明内核未解码，不能由主图证明内部指令或精度。编译失败时只读查看原因：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
-  --inspect-compile "$AI_RUN_DIR/draft/tests/pytorch-omc"
-```
-
-## 4. DDK服务器：完整Draft独立精度
-
-使用现有 runtime/runtime.json 和已成功运行过的 qwen35_draft_accuracy native；本轮未改runner，无需重建。--source必须与AIR学习权重一致。入口绑定实际编译槽位，生成独立完整前缀参考，再执行 isolated 和 feedback 两组，共38次调用：
-
-```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --compiled "$AI_RUN_DIR/draft/tests/pytorch-omc" \
+  --audit-reference "$AI_RUN_DIR/draft/tests/pytorch-result" \
   --source "$AI_RUN_DIR/draft/source/prepared" \
   --air-export "$AI_RUN_DIR/draft/air" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-run" --apply
+  --output "$AI_RUN_DIR/draft/tests/pytorch-host-audit.json"
 ```
 
-启动返回后回收同一次请求；PENDING时继续recover，不重复apply：
+需要已用于生成参考的CPU PyTorch，不需要TorchAir或DDK导出环境，不访问板端。核对保留结果、权重hash、源AIR及控制量，按语义名恢复物理输入顺序。完整比较详情写入固定JSON，stdout显示摘要；原golden／输入／板端结果不改写。读取全部学习权重并执行完整六层及全词表head可能需要数分钟。
 
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --recover "$AI_RUN_DIR/draft/tests/pytorch-run" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-result"
-```
+- host_vs_reference：CPU源表达与原golden的差异。
+- device_vs_host：相同输入下板端与CPU源表达的差异。
+- reference_gamma_boundary：仅在CPU对齐RMS舍入边界后检查差异。
+- retained_kv_appended_by_layer：分别统计六层K、V新增区误差。
 
-入口只复用已知结束的固定测试槽，运行中或状态不明的目录不可覆盖。通过条件：两组各19例全部通过，各86个有效候选Top1完全一致，hidden及每层K/V维持 atol=0.01、rtol=0.01，KV未写区逐位保持。覆盖空context、初始追赶、部分块、拒绝候选、重复调用、增长与容量边界。
+ANALYZED只表示诊断完成，不能提升模型。CPU源表达不复现厂商RmsNorm内部实现，也不证明编译后指令精度；feedback仍以原38次验证为准。若CPU源表达已经失败，先核对源表达与参考边界；若CPU接近参考而板端差异显著，再定位当前OMC的首个偏差，不放宽原门槛。
 
-这里验证完整Draft在相同确定性非零合成features下的计算精度，尚不证明Target特征精度、文本质量、接受率或端侧闭环。新候选不自动替换生产模型；先回传本轮编译摘要和整体精度结果。
+完整Draft仍为C16／cap192／K15、17输入／14输出，组合attention使用208行逻辑KV。Conv空间排布与小行数档位只完成主机研究，未并入当前图。历史证据见[当前结果](results.md)。
