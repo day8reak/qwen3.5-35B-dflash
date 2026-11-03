@@ -4,16 +4,20 @@ import math
 
 from qwen35_moe_dflash.common.artifacts import checked_file
 
-POLICIES = ('baseline', 'packed', 'packed-spatial')
+POLICIES = ('baseline', 'packed', 'packed-spatial', 'packed-spatial-4d')
 
 
 def optimization_contract(policy='baseline'):
     if policy not in POLICIES:
         raise ValueError('unknown Draft optimization: ' + str(policy))
-    return dict(policy=policy, version=1, packed_projections=policy != 'baseline',
-                grouped_query_reshape=policy != 'baseline', shared_rope=policy != 'baseline',
-                projection=('PYTORCH_CONV2D_SPATIAL_4X4_FULL_K' if policy == 'packed-spatial'
-                            else 'PYTORCH_CONV2D_4X4_FULL_K'))
+    spatial = policy in ('packed-spatial', 'packed-spatial-4d')
+    contract = dict(policy=policy, version=1, packed_projections=policy != 'baseline',
+                    grouped_query_reshape=policy != 'baseline', shared_rope=policy != 'baseline',
+                    projection=('PYTORCH_CONV2D_SPATIAL_4X4_FULL_K' if spatial
+                                else 'PYTORCH_CONV2D_4X4_FULL_K'))
+    if policy == 'packed-spatial-4d':
+        contract.update(feature_pack='TWO_RANK4_TRANSPOSES', shared_visibility_masks=True)
+    return contract
 
 
 def manifest_policy(manifest):

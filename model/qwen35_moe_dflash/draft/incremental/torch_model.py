@@ -37,7 +37,9 @@ class IncrementalDraft(nn.Module):
         self.rms = rms
         self.optimization = optimization_contract(optimization)
         self.packed = optimization != 'baseline'
-        self.spatial_projection = optimization == 'packed-spatial'
+        self.spatial_projection = optimization in ('packed-spatial', 'packed-spatial-4d')
+        self.rank4_spatial = optimization == 'packed-spatial-4d'
+        self.shared_masks = optimization == 'packed-spatial-4d'
         if self.packed:
             if attention_kernel is not None:
                 raise ValueError('packed optimization requires composed attention')
@@ -102,10 +104,25 @@ class IncrementalDraft(nn.Module):
         # Place each token in a distinct 4x4 patch. A plain reshape would
         # interleave channels/tokens and change the projection.
         grid = math.isqrt(rows)
-        tiles = features.reshape(grid, grid, channels, 4, 4)
-        packed = tiles.permute(2, 0, 3, 1, 4).reshape(1, channels, grid * 4, grid * 4)
+        if self.rank4_spatial:
+            # [i,j,c,h,w] -> [c,i,j,h,w] -> [c,i,h,j,w], expressed
+            # with rank-4 permutations. The previous rank-5 Permute was
+            # compiled on CPU with FP32 interfaces on the selected DDK.
+            tiles = features.reshape(rows, channels, 4, 4).permute(1, 0, 2, 3)
+            packed = tiles.reshape(channels * grid, grid, 4, 4).permute(0, 2, 1, 3)
+            packed = packed.reshape(1, channels, grid * 4, grid * 4)
+        else:
+            tiles = features.reshape(grid, grid, channels, 4, 4)
+            packed = tiles.permute(2, 0, 3, 1, 4).reshape(1, channels, grid * 4, grid * 4)
         projected = F.conv2d(packed, weight, stride=4)
         return projected.permute(0, 2, 3, 1).reshape(1, rows, c.hidden_size)
+
+    def expand_visibility(self, visible):
+        visible = torch.index_select(visible.int(), 1, self.head_repeat).bool()
+        if self.packed:
+            c, b = self.config, self.k + 1
+            visible = visible.reshape(1, c.num_key_value_heads, c.num_key_value_groups * b, self.capacity + b)
+        return visible
 
     def forward(self, target_features, start_position, valid_rows, anchor, proposal_count,
                 past_k_0, past_v_0, past_k_1, past_v_1, past_k_2, past_v_2,
@@ -136,6 +153,16 @@ class IncrementalDraft(nn.Module):
         if self.packed:
             context_rope = self.draft.rotary(context_positions, context.dtype)
             block_rope = self.draft.rotary(block_positions, hidden.dtype)
+        if self.shared_masks:
+            # Layer visibility depends only on controls and the attention
+            # type. Preserve causal/window rules and the inactive-query
+            # anchor witness, while expanding each distinct mask once.
+            full_visible = self.expand_visibility(key_valid | witness)
+            distance = block_positions.reshape(1, 1, b, 1) - positions.reshape(1, 1, 1, -1)
+            sliding_visible = key_valid & (distance >= 0)
+            if c.use_sliding_window:
+                sliding_visible = sliding_visible & (distance < c.sliding_window)
+            sliding_visible = self.expand_visibility(sliding_visible | witness)
         past = ((past_k_0, past_v_0), (past_k_1, past_v_1), (past_k_2, past_v_2),
                 (past_k_3, past_v_3), (past_k_4, past_v_4), (past_k_5, past_v_5))
         updated = []
@@ -164,13 +191,16 @@ class IncrementalDraft(nn.Module):
             block_v = block_v.reshape(1, b, c.num_key_value_heads, c.head_dim).transpose(1, 2)
             key = torch.cat((present_k, block_k), dim=2)
             value = torch.cat((present_v, block_v), dim=2)
-            visible = key_valid
-            if c.layer_types[index] == 'sliding_attention':
-                distance = block_positions.reshape(1, 1, b, 1) - positions.reshape(1, 1, 1, -1)
-                visible = visible & (distance >= 0)
-                if c.use_sliding_window:
-                    visible = visible & (distance < c.sliding_window)
-            visible = visible | witness
+            if self.shared_masks:
+                visible = sliding_visible if c.layer_types[index] == 'sliding_attention' else full_visible
+            else:
+                visible = key_valid
+                if c.layer_types[index] == 'sliding_attention':
+                    distance = block_positions.reshape(1, 1, b, 1) - positions.reshape(1, 1, 1, -1)
+                    visible = visible & (distance >= 0)
+                    if c.use_sliding_window:
+                        visible = visible & (distance < c.sliding_window)
+                visible = visible | witness
             if self.target_attention is not None:
                 mixed = self.target_attention(query, key, value, visible)
             else:
@@ -179,9 +209,8 @@ class IncrementalDraft(nn.Module):
                 else:
                     key = torch.index_select(key, 1, self.kv_heads)
                     value = torch.index_select(value, 1, self.kv_heads)
-                visible = torch.index_select(visible.int(), 1, self.head_repeat).bool()
-                if self.packed:
-                    visible = visible.reshape(1, c.num_key_value_heads, c.num_key_value_groups * b, self.capacity + b)
+                if not self.shared_masks:
+                    visible = self.expand_visibility(visible)
                 scores = torch.matmul(query, key.transpose(-1, -2)).float() * (c.head_dim ** -0.5)
                 probabilities = torch.softmax(torch.where(visible, scores, self.attention_masked_scores), dim=-1).half()
                 mixed = torch.matmul(probabilities, value)

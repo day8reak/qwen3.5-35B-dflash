@@ -20,8 +20,8 @@ def main(argv=None):
     source.add_argument('--inspect-air', help='read an existing successful or failed PyTorch AIR export; no model or SDK execution')
     source.add_argument('--finalize-air', help='recheck a saved Draft AIR after export failure and move it to --output; no re-export')
     parser.add_argument('--frontend', choices=('ge', 'pytorch'), default='ge')
-    parser.add_argument('--optimization', choices=('baseline', 'packed', 'packed-spatial'), default='baseline',
-                        help='PyTorch graph candidate; packed-spatial also changes full-dot Conv token layout')
+    parser.add_argument('--optimization', choices=('baseline', 'packed', 'packed-spatial', 'packed-spatial-4d'), default='baseline',
+                        help='PyTorch candidate; packed-spatial-4d uses rank-4 feature packing and shared visibility masks')
     parser.add_argument('--torchair-pb2', help='installed TorchAir literal schema; normally discovered automatically')
     parser.add_argument('--replace', action='store_true', help='replace a finished AIR bundle after successful PyTorch export/import')
     parser.add_argument('--context-rows', type=int, choices=(16, 64), default=16)

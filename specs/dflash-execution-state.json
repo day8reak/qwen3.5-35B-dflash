@@ -2599,8 +2599,11 @@
       "user_observation": {
         "source": "USER_PASTED_ACCURACY_PROFILE_RESULTS_AND_CSV_TABLES; NOT_INDEPENDENTLY_RETRIEVED",
         "model_bytes": 2808368316,
-        "model_sha256": null,
-        "graphop_counts": null,
+        "model_sha256": "f178fc83a0a9981b501bd5a012e5dee33a54f11f28175dc84dd10625889a6a1e",
+        "graphop_counts": {
+          "CPUCL": 3,
+          "NPUCL": 2
+        },
         "accuracy_attempt": "/data/local/tmp/qwen35_draft_accuracy_2039853432e54f378e601bcebd7ee8dd",
         "profile_attempt": "/data/local/tmp/qwen35_draft_profile_aee65f0c941d43548838915203005627",
         "profile_model_pid": 34795,
@@ -2634,7 +2637,7 @@
         },
         "timing_limit": "MIXED_INPUT_API_MEANS_AND_SINGLE_FRESH_PROFILE_NOT_FIXED_INPUT_WARM_BENCHMARK; GAP_NOT_PROVEN_COPY_OR_WAIT",
         "target_comparison": "USER_REPORTS_TARGET_MODEL_TIME_CLOSE_TO_OP_SUM; NO_CURRENT_TARGET_CSV_OR_PARTITION_REPORT",
-        "next": "SAME_DRAFT_OMC_AND_INPUT_V1_V2_PROFILE_CONTROL; READ_OPTIMIZED_BOUNDARIES_WITHOUT_RECOMPILATION"
+        "next": "COMPILE_RANK4_SPATIAL_AND_SHARED_MASK_CANDIDATE; CHECK_NEW_BOUNDARIES_AND_FULL_OUTPUTS_THEN_V1_LATENCY"
       }
     },
     "performance_schedule_estimate": {
@@ -2645,10 +2648,10 @@
       "assumptions": "1_TO_2_USER_COMPILE_BOARD_FEEDBACK_ROUNDS_PER_DAY",
       "commitment": "VALIDATION_WINDOW_NOT_50MS_GUARANTEE",
       "main_risk": "UNATTRIBUTED_RUNTIME_DURATION_GAP",
-      "reassess": "AFTER_RUNTIME_INTERFACE_AND_BOUNDARY_ATTRIBUTION; FIRST_OPTIMIZED_RESULT245_989MS"
+      "reassess": "AFTER_GRAPH_BOUNDARY_CANDIDATE; SINGLE_V2_PROFILE258_682MS_NO_OBSERVED_BENEFIT"
     },
     "runtime_interface_experiment": {
-      "status": "HOST_CHECKED_DEVICE_PENDING",
+      "status": "USER_REPORTED_NO_LATENCY_BENEFIT_V1_DEFAULT_RETAINED",
       "entry": "targets/cpro/tools/profile_draft.py --accuracy ... --modelmanager-itf V2",
       "run_id": "20261103T113618Z-19197-f0ca6f",
       "host_check_groups_passed": 10,
@@ -2667,12 +2670,150 @@
       "default": "V1",
       "model_compilation": "NOT_RUN",
       "native_build": "NOT_REQUIRED",
-      "device_execution": "NOT_RUN",
+      "device_execution": "USER_REPORTED_MODEL_TIMING_ONLY",
       "numerical_validation": "NOT_EVALUATED",
       "fallback": "NONE",
       "recovery": "RETAINED_INTERFACE_NO_RELAUNCH",
       "hypothesis": "TARGET_TOOL_USES_V2_EXTERNAL_WEIGHTS_WHILE_DRAFT_USES_V1_EMBEDDED; API_PATH_NOT_PROVEN_CAUSE",
-      "interpretation": "IF_OP_TIME_STABLE_AND_MODEL_TIME_FALLS_INVESTIGATE_INTERFACE_PATH; OTHERWISE_INVESTIGATE_GRAPH_BOUNDARIES; NO_AUTOMATIC_PROMOTION"
+      "interpretation": "ONE_FRESH_V2_PROFILE_SHOWED_NO_BENEFIT; INTERFACE_HYPOTHESIS_LOWER_PRIORITY; NOT_PROOF_V2_UNIVERSALLY_SLOWER_OR_SHARED_RUNTIME_EXCLUDED",
+      "user_observation": {
+        "source": "USER_PASTED_MODEL_CSV_AFTER_V2_COMMAND; NO_OP_CSV_PID_HASH_OR_OUTPUTS_INDEPENDENTLY_BOUND",
+        "load_ms": 507.168,
+        "inference_ms": 258.682,
+        "unload_ms": 10.904,
+        "baseline_V1_load_ms": 237.132,
+        "baseline_V1_inference_ms": 245.989,
+        "baseline_V1_unload_ms": 6.1,
+        "inference_change_ms": 12.693,
+        "inference_change_percent": 5.159986828679327,
+        "load_change_ms": 270.036,
+        "op_duration": "NOT_SUPPLIED_THIS_CALL",
+        "numerical_validation": "NOT_EVALUATED",
+        "no_old_op_sum_subtraction": true
+      }
+    },
+    "optimized_boundary_observation": {
+      "source": "USER_PASTED_OPTIMIZED_BOUNDARY_REPORT_NOT_INDEPENDENTLY_RETRIEVED",
+      "model_sha256": "f178fc83a0a9981b501bd5a012e5dee33a54f11f28175dc84dd10625889a6a1e",
+      "model_bytes": 2808368316,
+      "graphop_counts": {
+        "CPUCL": 3,
+        "NPUCL": 2
+      },
+      "scope": "COMPILED_PARTITION_METADATA_NOT_RUNTIME_TRANSFER_OR_WAIT_MEASUREMENT",
+      "cpu_feature_pack": {
+        "subgraph": "SubGraph_0",
+        "dtype": "float32",
+        "shape": [
+          1,
+          16,
+          16384
+        ],
+        "logical_bytes": 1048576,
+        "permute_nodes": 1,
+        "source_rank": 5,
+        "producer": "insert_cast_0",
+        "observed_transpose_ms": 0.404
+      },
+      "conv_input": {
+        "subgraph": "SubGraph_1",
+        "dtype": "float16",
+        "shape": [
+          1,
+          1024,
+          16,
+          16
+        ],
+        "logical_bytes": 524288,
+        "producer": "insert_cast_1"
+      },
+      "middle_cpu": {
+        "subgraph": "SubGraph_2",
+        "input_ports": 14,
+        "input_logical_bytes_sum": 36944,
+        "output_ports": 8,
+        "output_logical_bytes_sum": 647168,
+        "node_type_counts": {
+          "GatherV2D": 7,
+          "CastT": 14,
+          "LogicalAnd": 10,
+          "LogicalOr": 6
+        }
+      },
+      "value_boundary": {
+        "dtype": "float16",
+        "shape": [
+          8,
+          208,
+          128
+        ],
+        "logical_bytes": 425984,
+        "previous_logical_bytes": 1703936
+      },
+      "cpu_argmax": {
+        "subgraph": "SubGraph_4",
+        "input_dtype": "float32",
+        "input_shape": [
+          1,
+          15,
+          248320
+        ],
+        "input_logical_bytes": 14899200,
+        "output_logical_bytes": 60,
+        "producer": "insert_cast_2"
+      },
+      "limitation": "PORT_SUMS_NOT_UNIQUE_BUFFERS_OR_MEASURED_COPIES; TOP_INPUT_LIST_INCOMPLETE; CPU_NPU_GAP_CAUSE_UNRESOLVED"
+    },
+    "boundary_optimization_candidate": {
+      "status": "HOST_CHECKED_SELECTED_DDK_AND_DEVICE_PENDING",
+      "policy": "packed-spatial-4d",
+      "run_id": "20261103T115433Z-20069-553cbd",
+      "baseline_policy": "packed-spatial",
+      "baseline_model_sha256": "f178fc83a0a9981b501bd5a012e5dee33a54f11f28175dc84dd10625889a6a1e",
+      "changes": [
+        "TWO_RANK4_PERMUTATIONS_FOR_EXACT_CONV_SPATIAL_PACK",
+        "SHARE_FULL_AND_SLIDING_VISIBILITY_ACROSS_LAYERS"
+      ],
+      "preserved": [
+        "FULL_K_FP16_WEIGHT_DOT",
+        "ALL_ORIGINAL_WEIGHT_SEGMENTS",
+        "FULL_VOCABULARY_HEAD_AND_ARGMAX",
+        "17_INPUTS_14_OUTPUTS",
+        "UNWRITTEN_KV_BIT_EXACT",
+        "ORIGINAL_GOLDEN_AND_NUMERICAL_GATES",
+        "V1_RUNTIME_DEFAULT"
+      ],
+      "host": {
+        "scope": "SYNTHETIC_CPU_FULL_WIDTH_PROJECTION_META_AND_MOCK_EXPORT_NOT_DEVICE",
+        "new_vs_packed_spatial_cases": 220,
+        "new_vs_packed_spatial_all14_outputs": "BITWISE_EQUAL",
+        "all_candidate_vs_baseline_comparisons": 660,
+        "bitwise_vs_baseline": 634,
+        "max_abs_error_vs_baseline": 0.005859375,
+        "top1_mismatches": 0,
+        "full_width_projection_cases": 2,
+        "full_width_projection_vs_original_conv": "BITWISE_EQUAL",
+        "full_width_meta_captures": 11,
+        "new_policy_gear_captures": 8,
+        "mask_head_expansions": [
+          6,
+          2
+        ],
+        "int32_gathers": [
+          19,
+          15
+        ],
+        "attention_matmuls": 12,
+        "fp32_softmax": 6,
+        "binding_checks": 25,
+        "mock_pipeline_checks": 14
+      },
+      "model_compilation": "NOT_RUN_SELECTED_DDK_UNAVAILABLE_LOCALLY",
+      "device_execution": "NOT_RUN",
+      "placement": "UNVERIFIED_RANK4_PERMUTES_MAY_STILL_FALL_BACK_OR_BE_REWRITTEN",
+      "performance": "NOT_MEASURED",
+      "command_document": "docs/current-status.md",
+      "next": "USER_EXPORT_COMPILE_THEN_NEW_MODEL_ACCURACY_BOUNDARY_AND_V1_PROFILE"
     }
   },
   "draft_milestone_e2e_gate": {

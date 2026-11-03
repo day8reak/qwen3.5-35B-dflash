@@ -2,7 +2,7 @@
 
 2026-11-03，用户在确认“最差hidden相对L2约2.61%、Top1共7/172不一致”后明确回复：**“接受本轮结果，先优化性能”**。当前组合版作为性能优化基线，暂停继续追查数值差异。此决定针对已观测的OMC与用例，原报告的NUMERICAL_FAILED、逐元素门槛及golden保留；后续候选仍须报告相对本基线的数值变化，不能由此次接受推出任意额外近似均已获准。生产未提升。
 
-2026-11-03，用户回传第一轮 `packed-spatial` 编译后精度与profiling结果，执行及回收成功。优化OMC上传字节数2808368316，当前尚未收到其SHA和新分区数量；所回传精度摘要与上一版一致：isolated Top1 82/86、feedback 83/86，共7/172个相同位置和token的差异；hidden相对L2上限仍为2.61%，新增KV为0.44%～0.83%，未写KV均保持，两组重复调用逐位稳定。这些摘要不能证明两版全部输出逐位相同。原NUMERICAL_FAILED保留。
+2026-11-03，用户回传第一轮 `packed-spatial` 编译后精度与profiling结果，执行及回收成功。随后边界报告绑定优化OMC字节数2808368316、SHA256 `f178fc83a0a9981b501bd5a012e5dee33a54f11f28175dc84dd10625889a6a1e`，CPUCL=3／NPUCL=2；所回传精度摘要与上一版一致：isolated Top1 82/86、feedback 83/86，共7/172个相同位置和token的差异；hidden相对L2上限仍为2.61%，新增KV为0.44%～0.83%，未写KV均保持，两组重复调用逐位稳定。这些摘要不能证明两版全部输出逐位相同。原NUMERICAL_FAILED保留。
 
 | 同类测量 | 旧组合版 ms | packed-spatial ms |
 |---|---:|---:|
@@ -19,9 +19,23 @@
 
 精度尝试为 `qwen35_draft_accuracy_2039853432e54f378e601bcebd7ee8dd`；profile尝试为 `qwen35_draft_profile_aee65f0c941d43548838915203005627`，工具PID34795，model/parser退出0，原CSV已回收且锁已释放。model CSV SHA256 `afe84bc612fc160afe483a6d97a62db0f952cf9353672dcb89c5de62dc5e3762`；op CSV SHA256 `4387fd276b3efc4d6a3b85b9ffc45a03dba190d950897ce8a23d0e46ae7e5b72`。此处根据用户粘贴摘要及表格记录，未独立读取服务器文件。
 
-用户补充Target推理与算子汇总接近，因此不把Draft差额解释为所有模型普遍具有的统计现象。源码确认原Target厂商工具入口使用V2和外置权重，Draft入口使用V1和内嵌权重；Draft新op表仍有CPU Cast/Gather/Logical、ArgMax及两个NPU model ID。尚未收到当前Target分区/完整对照CSV，也未收到新Draft边界报告，不宣称Target单NPU子图或V1必然慢。当前优先区分接口路径与图内边界，而非继续仅压Conv。
+用户补充Target推理与算子汇总接近，因此不把Draft差额解释为所有模型普遍具有的统计现象。源码确认原Target厂商工具入口使用V2和外置权重，Draft入口使用V1和内嵌权重；Draft新op表仍有CPU Cast/Gather/Logical、ArgMax及两个NPU model ID。当前Target分区/完整对照CSV尚未提供，不宣称Target单NPU子图。V2对照未见收益，新Draft边界报告见下文，优先检查图内边界。
 
-新增显式 `profile_draft.py --accuracy ... --modelmanager-itf V2`：同一内嵌OMC、同一17/14 ABI和参考输入、同一单次profile/频率/优先级，只改厂商工具接口为V2并从文件恢复。V1默认不变；先核对所选工具真实help，失败不回退或重跑，恢复沿用原request。无需新OMG、native构建或大模型上传；V2兼容性、输出正确性和性能尚未实测。10组主机检查覆盖真实fixture绑定、命令差异、help门槛、失败停止、V1回归、模拟启动和不重启恢复，shell语法通过；证据run `20261103T113618Z-19197-f0ca6f`。命令见[当前阶段测试](current-status.md)。
+显式 `profile_draft.py --accuracy ... --modelmanager-itf V2`对照使用同一内嵌OMC、17/14 ABI、参考输入和单次profile/频率/优先级，只改为V2并从文件恢复。10组主机检查通过，证据run `20261103T113618Z-19197-f0ca6f`。用户随后回传模型表：V2 inference258.682ms、Load507.168ms、Unload10.904ms；对照V1的245.989／237.132／6.100ms，单次推理增加12.693ms（约5.2%），Load约2.14倍。没有观察到接口切换收益，默认继续V1。该轮未附op CSV、PID／模型hash和完整输出，不能用旧70ms算子和推算V2自身差额，也不能推广为V2一定更慢；输出正确性未验收，接口假设优先级降低。
+
+同轮用户回传优化OMC边界报告，三个CPU task均解码；以下是编译描述，未独立取回服务器文件，不是实测拷贝或等待：
+
+| 边界 | 当前观察 | 对下一轮的意义 |
+|---|---|---|
+| SubGraph_0 CPU | 接收FP32[1,16,16384]，1048576字节；含Permute1 | 结合源图确认Conv空间重排五维Permute落CPU，前后有编译器插入的FP16／FP32转换；现有op表该CPU Transpose仅0.404ms，不能据此解释全部差额 |
+| SubGraph_1 NPU | Conv输入FP16[1,1024,16,16]，524288字节 | Conv仍采用已提速的完整K空间表达 |
+| SubGraph_2 CPU | 14输入共36944字节、8输出共647168字节；Gather7、Cast14、LogicalAnd10、LogicalOr6 | 六层重复mask扩展仍有合并机会；最大输入列表只展示8项，不推断所有依赖或执行次序 |
+| SubGraph_1→3 | FP16[8,208,128]，425984字节 | 前版对应32头1703936字节，GQA取消KV复制已反映在此接口 |
+| SubGraph_4 CPU | FP32[1,15,248320]，14899200字节→15个INT32共60字节；ArgMaxExt2 | 完整词表Top1仍是CPU消费者，尚未消除 |
+
+新候选 `packed-spatial-4d` 将原五维特征排列拆为两个四维Transpose，保持token到4×4 patch的精确坐标及完整点积；将层间相同的full／sliding visibility放在循环外，保留窗口、因果条件与inactive-query anchor witness。旧policies及manifest契约保持，增加显式候选契约。完整词表head／ArgMax未改，未新增量化或近似。
+
+本轮主机证据run `20261103T115433Z-20069-553cbd`：两档C、四档K、滑窗开关的220次六层连续回放，新候选全部14输出与上一packed-spatial逐位一致；全部三种优化版对baseline共660个对照通过0.01／0.01，634逐位相同，最大绝对差0.005859375，Top1全部相同且未写KV保持。C16／C64的实际16384→2048随机FP16投影与原batch Conv逐位一致。11个完整配置meta图（测试RMS）通过，新候选八档的mask头扩展6→2、INT32 Gather19→15，12attention MatMul、6FP32 Softmax、17／14接口不变。25项权重／ABI绑定和14项protobuf／mock导出编译检查通过。本地缺少所选CPro DDK，尚未验证编译后的NPU放置、真实权重数值或时延；四维Transpose可能仍被改写或落CPU，不能由源图减少节点推断50ms达成。下一步命令见[当前阶段测试](current-status.md)。
 
 第一轮图优化新增显式 `--optimization packed` 与 `packed-spatial`，默认baseline便于保留现有路径。packed把同层context/block拼行后合并K/V投影，合并MLP gate/up输出通道；query折叠到KV头组，避免复制KV；context/block各计算一次RoPE供六层复用。packed-spatial进一步将C16 token排为4×4个空间patch，在[1,1024,16,16]上以stride4执行原[2048,1024,4,4]完整点积权重；C64对应[1,1024,32,32]。没有拆K、量化、缩词表或改KV写入规则。
 
@@ -36,7 +50,7 @@
 
 证据run `20261103T105358Z-18207-11e412`。以上为改动时主机检查，后续用户设备反馈见本页顶部；本地没有所选CPro DDK，未访问用户设备。新的17／14语义绑定支持Conv前空间Transpose，合并权重通过原K/V和gate/up各段hash核对。现有native runner、公共AIR/OMC、参考数学和验收门槛未替换。
 
-50ms目标按C16/cap192/K15常驻同步API、同输入3次预热加10次测量判断。此前暂以5～7个工作日安排验证窗口，前提每天1～2轮编译／板端反馈；不是达标承诺。第一轮已见提速，但245.989ms与约70ms算子汇总间的差额仍未归因，不据算子接近70ms就缩短达标工期。NPU侧完整词表Top1和图内边界优化尚未实现。
+50ms目标按C16/cap192/K15常驻同步API、同输入3次预热加10次测量判断。此前暂以5～7个工作日安排验证窗口，前提每天1～2轮编译／板端反馈；不是达标承诺。第一轮已见提速，但245.989ms与约70ms算子汇总间的差额仍未归因，不据算子接近70ms就缩短达标工期。NPU侧完整词表Top1尚未实现；图内边界候选已完成主机检查，设备效果待验证。
 
 当前基线OMC SHA256：`288644ea39913fc49466ed4b6d9329825b6ea819259c266c4601cba391b5e182`，来自用户回传的真实权重CPU审计。源数学在四个选定isolated case中通过原参考门槛，两种gamma舍入边界报告的指标相同；这不能证明所有中间张量逐位相同或编译后算术精度。
 

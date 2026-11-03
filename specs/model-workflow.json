@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PACKED_SPATIAL_USER_REPORTED_SPEEDUP_RUNTIME_GAP_UNRESOLVED",
+    "status": "RANK4_SPATIAL_SHARED_MASK_HOST_CHECKED_DEVICE_PENDING",
     "entry": "targets/cpro/tools/validate_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "COMPOSED_ATTENTION_TOP1_ISOLATED82_OF86_FEEDBACK83_OF86; HIDDEN_L2_1.34_TO2.61_PERCENT; APPENDED_KV_L2_0.44_TO0.83_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "Use same optimized OMC/inputs in explicit V2 vendor profile; V1 remains default. No compiler or native build. Inspect optimized boundaries. Original numerical failure and goldens preserved.",
+    "next": "Compile explicit packed-spatial-4d candidate, validate new model outputs and inspect bound partitions; default V1 profiling. V2 single-call inference258.682ms showed no benefit. Keep accepted numerical baseline and original gates.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6153,7 +6153,7 @@
     "performance_baseline_acceptance": "specs/dflash-execution-state.json#incremental_draft_task/composed_attention/performance_baseline_acceptance",
     "optimized_performance_observation": "specs/dflash-execution-state.json optimization_candidate.user_observation",
     "runtime_interface_experiment": {
-      "status": "HOST_CHECKED_DEVICE_PENDING",
+      "status": "USER_REPORTED_NO_LATENCY_BENEFIT_V1_DEFAULT_RETAINED",
       "entry": "targets/cpro/tools/profile_draft.py --accuracy ... --modelmanager-itf V2",
       "run_id": "20261103T113618Z-19197-f0ca6f",
       "host_check_groups_passed": 10,
@@ -6172,12 +6172,29 @@
       "default": "V1",
       "model_compilation": "NOT_RUN",
       "native_build": "NOT_REQUIRED",
-      "device_execution": "NOT_RUN",
+      "device_execution": "USER_REPORTED_MODEL_TIMING_ONLY",
       "numerical_validation": "NOT_EVALUATED",
       "fallback": "NONE",
       "recovery": "RETAINED_INTERFACE_NO_RELAUNCH",
       "hypothesis": "TARGET_TOOL_USES_V2_EXTERNAL_WEIGHTS_WHILE_DRAFT_USES_V1_EMBEDDED; API_PATH_NOT_PROVEN_CAUSE",
-      "interpretation": "IF_OP_TIME_STABLE_AND_MODEL_TIME_FALLS_INVESTIGATE_INTERFACE_PATH; OTHERWISE_INVESTIGATE_GRAPH_BOUNDARIES; NO_AUTOMATIC_PROMOTION"
-    }
+      "interpretation": "ONE_FRESH_V2_PROFILE_SHOWED_NO_BENEFIT; INTERFACE_HYPOTHESIS_LOWER_PRIORITY; NOT_PROOF_V2_UNIVERSALLY_SLOWER_OR_SHARED_RUNTIME_EXCLUDED",
+      "user_observation": {
+        "source": "USER_PASTED_MODEL_CSV_AFTER_V2_COMMAND; NO_OP_CSV_PID_HASH_OR_OUTPUTS_INDEPENDENTLY_BOUND",
+        "load_ms": 507.168,
+        "inference_ms": 258.682,
+        "unload_ms": 10.904,
+        "baseline_V1_load_ms": 237.132,
+        "baseline_V1_inference_ms": 245.989,
+        "baseline_V1_unload_ms": 6.1,
+        "inference_change_ms": 12.693,
+        "inference_change_percent": 5.159986828679327,
+        "load_change_ms": 270.036,
+        "op_duration": "NOT_SUPPLIED_THIS_CALL",
+        "numerical_validation": "NOT_EVALUATED",
+        "no_old_op_sum_subtraction": true
+      }
+    },
+    "optimized_boundary_observation": "specs/dflash-execution-state.json#incremental_draft_task/optimized_boundary_observation",
+    "boundary_optimization_candidate": "specs/dflash-execution-state.json#incremental_draft_task/boundary_optimization_candidate"
   }
 }
