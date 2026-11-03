@@ -473,19 +473,15 @@ def _compile_probe(air_export, source, result, output, *, ddk_root, ddk_id, tbe_
     return state
 
 
-def prepare_fixture(root, out, ddk, ddk_id, selection=None):
+def _compiled_probe(root, ddk, ddk_id):
     from qwen35_moe_dflash.toolchain.omc_container import read_container,read_partition
     from qwen35_moe_dflash.toolchain.omc_wire import load_schema
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
-    from qwen35_moe_dflash.execution.hdc_run import _file_record
-    from .torch_export import _compiled_observation
-    from validate_draft_vector import bind_io,selected_cases,WARMUP,REPETITIONS
-    root,out = Path(root),Path(out)
+    root = Path(root)
     report = read_json(root/'result.json')
     if (report.get('artifact_kind')!=KIND or report.get('status')!='COMPILED'
             or report.get('model_compilation')!='PASSED' or report.get('ddk_id')!=ddk_id):
         raise ValueError('expected compiled source-attention probe for selected DDK')
-    selected = selected_cases(CASES if selection is None else selection,CASES)
     model = checked_file(root,report['model'])
     if model.stat().st_size>16<<20:
         raise ValueError('attention model exceeds 16 MiB')
@@ -493,7 +489,67 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     main = [p for p in read_container(model)['partitions'] if p['type']==0]
     if len(main)!=1:
         raise ValueError('attention probe needs exactly one main graph')
-    io = bind_io(schema.decode(read_partition(model,main[0]),'ModelDef'),report['extraction']['graph'],_enum_fields(schema))
+    document = schema.decode(read_partition(model,main[0]),'ModelDef')
+    return report,model,schema,document,_enum_fields(schema)
+
+
+def inspect_compiled_probe(root, ddk, ddk_id):
+    """Expose all serialized input-order evidence without choosing a remap.
+
+    Runtime dimensions cannot distinguish the equal-shaped K/V inputs or the
+    three controls. Data.index, graph boundary references and serialized node
+    order are separate observations, not interchangeable slot authorities.
+    """
+    from qwen35_moe_dflash.draft.compile_precision import _observed_desc
+    from qwen35_moe_dflash.toolchain.omc_inspect import _preview
+    from validate_draft_vector import bind_io
+    report,model,schema,document,enums = _compiled_probe(root,ddk,ddk_id)
+    graphs = document.get('graph',[])
+    if len(graphs)!=1 or len(graphs[0].get('op',[]))>512:
+        raise ValueError('attention interface inspection needs one bounded main graph')
+    graph=graphs[0]; declared=report['extraction']['graph']
+    expected={s['name']:s for s in declared['inputs']}
+    data=[]; nets=[]
+    def describe(d):
+        return dict(_observed_desc(d,enums),recorded=_preview(d))
+    for ordinal,node in enumerate(graph.get('op',[])):
+        if node.get('type') in ('Data','RefData'):
+            data.append(dict(op_ordinal=ordinal,data_ordinal=len(data),name=node['name'],type=node['type'],
+                role=expected.get(node['name'],{}).get('role'),
+                indices=[a.get('value',{}).get('i') for a in node.get('attr',[]) if a.get('key')=='index'],
+                metadata=_preview({k:v for k,v in node.items() if k not in ('input_desc','output_desc')}),
+                inputs=[describe(d) for d in node.get('input_desc',[])[:8]],
+                outputs=[describe(d) for d in node.get('output_desc',[])[:8]]))
+        elif node.get('type')=='NetOutput':
+            nets.append(dict(name=node['name'],input=node.get('input',[]),
+                             descriptors=[describe(d) for d in node.get('input_desc',[])[:8]]))
+    result=dict(artifact_kind='qwen35-draft-attention-interface-inspection',status='INSPECTED',
+        model=dict(report['model'],path=str(model)),ddk_id=ddk_id,schema=schema.evidence,
+        model_compilation='NOT_RUN',device_execution='NOT_RUN',numerical_validation='NOT_RUN',
+        scope='READ_ONLY_COMPILED_INPUT_METADATA; NO_REMAP_NO_FIXTURE_WRITES_NO_EXECUTION',
+        declared=declared,model_metadata=_preview({k:v for k,v in document.items() if k!='graph'}),
+        graph_metadata=_preview({k:v for k,v in graph.items() if k!='op'}),
+        graph_input_references=graph.get('input',[]),data_nodes=data,netoutputs=nets,
+        runtime_input_order='UNRESOLVED; DATA_INDEX_AND_SERIALIZED_NODE_ORDER_ARE_REPORTED_SEPARATELY',
+        same_descriptor_input_groups=[names for names in (
+            [s['name'] for s in declared['inputs'] if (s['dtype'],s['shape'])==(dtype,list(shape))]
+            for dtype,shape in sorted({(s['dtype'],tuple(s['shape'])) for s in declared['inputs']})) if len(names)>1])
+    try:
+        result['current_binding']=bind_io(document,declared,enums)
+        result['current_binding_status']='GENERATED_NOT_RUNTIME_VALIDATED'
+    except (ValueError,KeyError,TypeError) as error:
+        result.update(current_binding_status='FAILED',binding_error=f'{type(error).__name__}: {error}')
+    return result
+
+
+def prepare_fixture(root, out, ddk, ddk_id, selection=None):
+    from qwen35_moe_dflash.execution.hdc_run import _file_record
+    from .torch_export import _compiled_observation
+    from validate_draft_vector import bind_io,selected_cases,WARMUP,REPETITIONS
+    root,out = Path(root),Path(out)
+    report,model,schema,document,enums = _compiled_probe(root,ddk,ddk_id)
+    selected = selected_cases(CASES if selection is None else selection,CASES)
+    io = bind_io(document,report['extraction']['graph'],enums)
     rows = {r['case']:r for r in report['cases']}
     if len(rows)!=len(CASES) or set(rows)!=set(CASES):
         raise ValueError('missing/duplicate attention fixtures')

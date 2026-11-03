@@ -8,47 +8,20 @@
 
 **以下命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。** 新探针不需要学习权重，只复制最多256KiB的小buffer，七组输入共用一份OMC。已有AIR、prepared、TBE诊断和native runner继续复用。
 
-首次Attention探针已经在所选DDK尝试编译，终止于新增的 `probe_attention_visible` BOOL→INT32 CastT：`kernelId not registered: 196620`。设备未执行，尚无Attention数值结论。回读支路现改成 `Equal(mask, 0) → SelectV2(FP16 1, FP16 0)`，保持原mask及Attention节点。
+Attention探针v2已经实际编译通过，OMC仅218998字节，SHA256为 `df4248dd95204cf882ad5d0f088eeb82697491f11b373768420d529ad35d09ff`。此前mask回读CastT编译问题已绕过。这次板端Load与IO描述查询完成，但第一例在输入槽位校验退出：HIAI第0槽为 `[1,256,16,16]`，计划第0槽却为控制量 `[1]`。其余六例未执行，锁已释放，数值验证为NOT_RUN。
 
-更新代码后，在同一目录重编。`--replace`只清理已知非零退出、未上板的失败编译，不保留旧目录副本；成品、运行中或退出未知的目录不会被覆盖：
+当前绑定器使用编译Data.index；它与实际槽位顺序至少在第0槽冲突。HIAI只返回形状，不能区分同形状K/V，也不能区分三个INT32控制量；不直接猜测重排。下一步只读现有OMC的输入引用、Data节点排列、index及相关描述：
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_attention.py" \
-  --air-export "$AI_RUN_DIR/draft/air" \
-  --source "$AI_RUN_DIR/draft/source/prepared" \
-  --result "$AI_RUN_DIR/draft/tests/pytorch-result" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention" --replace
+  --inspect-compiled "$AI_RUN_DIR/draft/tests/pytorch-attention" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID"
 ```
 
-返回`COMPILED`后执行七组输入：空缓存、只改变临时anchor值、部分缓存、较少候选、满缓存、非零QK、零候选。源mask构造及Attention属性／长度／block-table端口保留，Q/K/V在已打包输入处切入；它不验证上游投影、RoPE和打包算子。附加输出可能改变编译分区与融合。
+这条命令不重编、不创建夹具、不上板，也不修改绑定。`INSPECTED`只表示元数据读取完成；`current_binding_status=GENERATED_NOT_RUNTIME_VALIDATED`不能当作物理ABI已正确。实际OMC元数据回传后再确定映射修复。保留当前小OMC及这次run／result，不重复启动尚未修复的计划。
 
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$AI_RUN_DIR/draft/tests/pytorch-attention" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-run" --apply
-```
-
-返回`VECTOR_VALIDATION_STARTED`后回收同一次执行。若仍pending，只重复recover：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$AI_RUN_DIR/draft/tests/pytorch-attention-run" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-attention-result"
-```
-
-执行结束后分析：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --analyze "$AI_RUN_DIR/draft/tests/pytorch-attention-result"
-```
-
-`mask_visible`和`packed_v`必须逐字节匹配，`attention`按原0.01／0.01逐元素比较；不以整体L2代替门槛。分析报告各query可见的缓存／临时位置、padding误读与第0头第0通道的实际／期望Attention。mask输出是FP16 0/1的“mask等于零”谓词，逐字节比较门槛不变；它不是负无穷字节或物理内核输入回读。修订版通过12组主机合成／mock检查及19项失败目录重试检查，覆盖七组mask、输出ABI重排、故障注入、非有限回读和失败后原目录重编。修订版实际OMG及设备结果待回传。完整Draft仍数值失败，不能由此小图通过直接提升生产。
+本次没有推理输出，`--analyze`拒绝数值分析符合当前执行状态。首例修复前的失败不能用来判断mask或Attention精度，完整Draft仍为NUMERICAL_FAILED。只读检查11项主机测试及12组探针回归通过。
 
 已得结论的四组旧探针按用户要求整组删除，不保留副本。该工具只处理旧embedding／input-rms／input-rms-taps／input-rms-no-scale及各自run／result，核对已结束状态；不删除正在定位的完整模型与新Attention探针。若此前已清理，可跳过：
 

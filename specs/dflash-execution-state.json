@@ -1703,13 +1703,13 @@
         "host_checks": 12,
         "prefix_regression_checks": 23,
         "host_scope": "SYNTHETIC_PROTOBUF_MASK_INTERPRETER_INDEPENDENT_SDPA_AND_MOCK_COMPILER_ABI_COMPARE; NOT_SELECTED_DDK_OR_DEVICE",
-        "model_compilation": "REVISED_PROBE_NOT_RUN; PREVIOUS_V1_COMPILE_FAILED",
-        "device_execution": "NOT_RUN",
+        "model_compilation": "PASSED_USER_REPORTED",
+        "device_execution": "FAILED_OUTPUTS_RETRIEVED",
         "numerical_validation": "NOT_RUN",
         "limitations": "NO_PROJECTIONS_ROPE_OR_QKV_PACKING_OPERATORS; AUXILIARY_OUTPUTS_CAN_CHANGE_FUSION; NO_PHYSICAL_KERNEL_INPUT_READBACK",
         "mask_readback": "EQUAL_ZERO_SELECT_FP16_ONE_OR_ZERO; EXACT_BYTES",
         "failed_retry_checks": 19,
-        "next": "DDK_SERVER_RETRY_SAME_pytorch-attention_DIRECTORY_WITH_REPLACE; THEN_VALIDATE_RECOVER_ANALYZE",
+        "next": "READ_EXISTING_OMC_WITH_probe_draft_attention.py_--inspect-compiled; NO_RECOMPILE_OR_RELAUNCH",
         "previous_compile": {
           "source": "USER_PASTED_DDK_LOG_2026_11_03; NOT_INDEPENDENTLY_READ",
           "policy": "source-first-attention-mask-packed-qkv-v1",
@@ -1728,6 +1728,84 @@
           "error": "kernelId not registered; SelectKernel failed; compileInfo is null",
           "device_execution": "NOT_RUN",
           "numerical_validation": "NOT_RUN"
+        },
+        "model_sha256": "df4248dd95204cf882ad5d0f088eeb82697491f11b373768420d529ad35d09ff",
+        "model_bytes": 218998,
+        "probe_air_sha256": "9fccfba3296b3b07177b040a205c3692ff07101275e82e3fc681db073df8e183",
+        "board_attempt": "/data/local/tmp/qwen35_vector_612345cd94bd4d5b85fcf57d50673401",
+        "inspection_host_checks": 11,
+        "runtime_interface_failure": {
+          "source": "USER_PASTED_RECOVERY_JSON; RAW_MODEL_AND_LOG_NOT_INDEPENDENTLY_READ",
+          "stage": "INPUT_ABI_CHECK_BEFORE_PROCESS",
+          "first_case": "pytorch_attention_empty",
+          "native_exitcode": 1,
+          "archive_exitcode": 0,
+          "other_cases": "NOT_EXECUTED",
+          "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+          "planned_input0_shape": [
+            1
+          ],
+          "observed_input_shapes": [
+            [
+              1,
+              256,
+              16,
+              16
+            ],
+            [
+              7,
+              64,
+              32,
+              16
+            ],
+            [
+              7,
+              64,
+              32,
+              16
+            ],
+            [
+              1,
+              1,
+              1,
+              1
+            ],
+            [
+              1,
+              1,
+              1,
+              1
+            ],
+            [
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          "observed_output_shapes": [
+            [
+              1,
+              256,
+              16,
+              16
+            ],
+            [
+              1,
+              1,
+              16,
+              224
+            ],
+            [
+              1,
+              7,
+              64,
+              512
+            ]
+          ],
+          "runtime_dtype": "UNAVAILABLE",
+          "runtime_format": 2,
+          "input_mapping": "UNRESOLVED; DO_NOT_MATCH_EQUAL_SHAPES"
         }
       }
     }

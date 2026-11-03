@@ -30,6 +30,12 @@
 
 修订版12组合成／mock检查通过，包括七组mask解释执行与独立SDPA、原节点字节保留、无新增Cast的FP16谓词、物理ABI重排、原目录失败后重编、mask／Attention／NaN故障；19项目录重试检查通过。`--replace`限于直接draft/tests子目录内本探针已知失败的OMG编译，采用与验证器相同的源目录锁，拒绝成品、板端运行、未知退出、符号链接和仍占用目录的编译进程；确认后删除该失败目录，不保存备份。以上全部为主机检查，不能记作所选DDK编译通过或板端通过。
 
+2026-11-03，用户回传Attention探针v2实际编译通过：probe AIR SHA256为 `9fccfba3296b3b07177b040a205c3692ff07101275e82e3fc681db073df8e183`，内嵌OMC为 `df4248dd95204cf882ad5d0f088eeb82697491f11b373768420d529ad35d09ff`，218998字节。它仍使用同一源AIR、原Attention属性及非QKV端口；FP16谓词回读消除了前次新增CastT的编译阻断。这只确立本探针编译通过。
+
+板端尝试 `/data/local/tmp/qwen35_vector_612345cd94bd4d5b85fcf57d50673401` 在首例 `pytorch_attention_empty` 退出1，archive退出0，其余六例没有执行退出记录；恢复为FAILED_OUTPUTS_RETRIEVED、锁已释放、数值NOT_RUN。HIAI查询的输入形状依次为 `[1,256,16,16]`、两项 `[7,64,32,16]`、三项 `[1,1,1,1]`；输出为 `[1,256,16,16]`、`[1,1,16,224]`、`[1,7,64,512]`，format均2，dtype不可查询。原运行器在第0槽期望 `[1]`，因此在Process之前中止。Load和IO查询已完成；没有Attention数值或时延结果。输出前置单位维仍由原ND兼容规则检查，不因本次输入错误修改此规则。
+
+现有小探针绑定按编译Data.index排序。用户日志证明该计划与此OMC的HIAI输入顺序至少在第0槽不一致；两项K/V和三项控制量同形，不能从维度推断它们各自的语义。新增 `probe_draft_attention.py --inspect-compiled` 只读当前OMC，报告GraphDef输入引用、Data节点序号／index／属性、NetOutput和现有绑定，明确运行顺序未解决；不执行自动重排。11项主机检查覆盖排列与index冲突、同形歧义、缺失图输入、错误绑定仍可查看、身份/hash拒绝、只读性与CLI互斥；12组原探针回归通过。真实编译元数据待用户回传，完整Draft精度状态不变。
+
 ## 此前PyTorch独立执行：加载成功，数值失败
 
 2026-11-02，用户回传尝试`ec3f7c3136ac43fcb927c25eef63f4e3`的完整比较摘要：`EXECUTED_OUTPUTS_RETRIEVED`、`NUMERICAL_FAILED`，任务完成且锁释放。两组各19次调用全部完成，说明本次已经跨过此前的Fill加载失败；38例均未通过原比较门槛。以下为用户回传，未独立读取原始板端张量，随后离线诊断报告OMC SHA256为 ce11666f9298ec7453bbdcdfe1e3a3a38d396cd12a0bd13f9faf6c82c4981ad6。
