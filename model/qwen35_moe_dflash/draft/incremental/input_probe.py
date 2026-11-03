@@ -87,13 +87,18 @@ def _float_path(shapes, root, path, shape, *, allow_scale=False):
     return (1.0 if scale is None else scale), proof
 
 
-def extract_prefix(raw, schema, lookup, config, *, capture_inputs=False):
+def extract_prefix(raw, schema, lookup, config, *, capture_inputs=False, bypass_unit_scale=False):
     """Cut after first RMS output 0; keep every original prefix op/weight.
 
     The original anchor Data.index becomes zero and NetOutput is replaced.
     Optional taps add a runtime unity factor to observe constant gamma through
     a live Mul branch. Original RMS inputs/operations remain byte-identical.
+    A separate comparison case may bypass only a proved FP16 Muls(value=1).
     """
+    if bypass_unit_scale and not capture_inputs:
+        raise ValueError('unit-scale comparison requires the six-output RMS taps')
+    if bypass_unit_scale and config.input_embedding_scale != 1.0:
+        raise ValueError('unit-scale comparison requires reference scale exactly 1')
     kind, _, _ = _decode(schema, raw)
     graph_raw, graph_field = _graph_raw(raw, schema, kind)
     rows, op_field = _node_bytes(graph_raw, schema)
@@ -302,4 +307,70 @@ def extract_prefix(raw, schema, lookup, config, *, capture_inputs=False):
             dict(name='rms_x', dtype='float32', shape=outputs[3][2], exact_bytes=True),
             dict(name='rms_gamma', dtype='float32', shape=outputs[4][2], exact_bytes=True),
             dict(name='gamma_factor_readback', dtype='float32', shape=outputs[5][2], exact_bytes=True)]
+    if bypass_unit_scale:
+        return _bypass_unit_scale(updated, schema, receipt)
+    return updated, receipt
+
+
+def _bypass_unit_scale(raw, schema, receipt):
+    """Remove one exact identity scalar operation in the diagnostic copy only.
+
+    Keep the downstream Cast's attrs/descriptors and the RMS node unchanged.
+    No tolerance is allowed when recognizing a unit scale.
+    """
+    path = receipt['float_paths']['embedding']
+    scales = [row for row in path if row['type'] == 'Muls']
+    if (len(scales) != 1 or receipt['scale'] != 1.0
+            or scales[0]['input_dtype'] != 'float16' or scales[0]['output_dtype'] != 'float16'):
+        raise ValueError('unit-scale comparison needs exactly one FP16 Muls with scale exactly 1')
+    kind, _, _ = _decode(schema, raw)
+    graph_raw, graph_field = _graph_raw(raw, schema, kind)
+    rows, op_field = _node_bytes(graph_raw, schema)
+    nodes = {n['name']: (n, payload) for n, payload, _ in rows}
+    name = scales[0]['name']
+    mul, mul_payload = nodes[name]
+    source_edge, removed_edge = receipt['gather']+':0', name+':0'
+    if (mul['type'] != 'Muls' or mul.get('input') != [source_edge]
+            or _attributes(mul).get('value', {}).get('f') != 1.0):
+        raise ValueError('unit-scale comparison must bypass the direct Gather scalar-one Muls')
+    consumers = [(n, payload) for n, payload, _ in rows if removed_edge in n.get('input', [])]
+    if (len(consumers) != 1 or consumers[0][0]['type'] != 'Cast'
+            or consumers[0][0].get('input') != [removed_edge]
+            or consumers[0][0]['name'] not in {n['name'] for n in path}):
+        raise ValueError('unit-scale comparison requires one downstream prefix Cast consumer')
+    consumer, old_payload = consumers[0]
+    input_field = _field(schema, 'OpDef', 'input', 9, True)
+    new_payload = b''.join(_blob(f, source_edge) if f == input_field else encoded
+                           for f, _, encoded, _ in _parts(old_payload))
+    replacement = {consumer['name']: new_payload}
+    # The original prefix builder has one ordered op field per node. Preserve
+    # every other graph field and node byte, including all downstream Casts.
+    pieces, index = [], 0
+    for f, _, encoded, _ in _parts(graph_raw):
+        if f == op_field:
+            node, payload, _ = rows[index]
+            index += 1
+            if node['name'] == name:
+                continue
+            encoded = _blob(f, replacement.get(node['name'], payload))
+        pieces.append(encoded)
+    changed_graph = b''.join(pieces)
+    updated = changed_graph if graph_field is None else b''.join(
+        _blob(f, changed_graph) if f == graph_field else encoded for f, _, encoded, _ in _parts(raw))
+    _decode(schema, updated)
+    receipt = dict(receipt, policy='source-first-rms-unit-scale-bypass-v1',
+        baseline_probe_air_sha256=hashlib.sha256(raw).hexdigest(),
+        probe_air_sha256=hashlib.sha256(updated).hexdigest(),
+        changed='Same six-output taps; remove direct FP16 Muls(value=1) and rewire its sole Cast input to Gather; all other node bytes unchanged',
+        prefix_nodes=[n for n in receipt['prefix_nodes'] if n['name'] != name],
+        preserved_payload_sha256={n: sha for n, sha in receipt['preserved_payload_sha256'].items()
+                                 if n not in {name, consumer['name']}})
+    receipt['unit_scale_bypass'] = dict(
+        removed_node=name, removed_payload_sha256=hashlib.sha256(mul_payload).hexdigest(),
+        source_edge=source_edge, consumer=consumer['name'], old_input=removed_edge, new_input=source_edge,
+        consumer_before_sha256=hashlib.sha256(old_payload).hexdigest(),
+        consumer_after_sha256=hashlib.sha256(new_payload).hexdigest(),
+        scale=1.0, dtype='float16', equivalence='IDENTITY_FOR_FINITE_FP16_VALUES_INCLUDING_SIGNED_ZERO',
+        effective_embedding_path=[n for n in path if n['name'] != name],
+        scope='DIAGNOSTIC_COPY_ONLY; COMPILED_PARTITION_MAY_CHANGE; NOT_FULL_DRAFT_FIX')
     return updated, receipt

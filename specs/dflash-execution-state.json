@@ -1242,7 +1242,7 @@
         "timing_scope": "SYNCHRONOUS_API_WALL_DIAGNOSTIC_MIXED_INPUTS_NOT_WARM_BENCHMARK",
         "comparison": "UNCHANGED_ELEMENTWISE_ATOL_0.01_RTOL_0.01_AND_ZERO_TOP1_MISMATCHES; NO_L2_GATE",
         "root_cause": "UNRESOLVED; CONTEXT_KV_IS_INDEPENDENT_OF_CANDIDATE_ATTENTION",
-        "next": "DDK_SERVER_READ_ONLY_PREFIX_COMPILED_PATH_INSPECTION; REUSE_EXISTING_OMC_AND_RESULTS; docs/current-status.md"
+        "next": "DDK_SERVER_COMPILE_AND_VALIDATE_INPUT_RMS_NO_SCALE_COMPARISON; RETAIN_TAPS_BASELINE; docs/current-status.md"
       },
       "output_diagnosis": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose",
@@ -1276,7 +1276,7 @@
           "embedding": "ANCHOR_AND_MASK_SOURCE_ROWS_FINITE_NONZERO_NOT_DEVICE_GATHER"
         }
       },
-      "next": "DDK_SERVER_READ_ONLY_PREFIX_COMPILED_PATH_INSPECTION; REUSE_EXISTING_OMC_AND_RESULTS; docs/current-status.md",
+      "next": "DDK_SERVER_COMPILE_AND_VALIDATE_INPUT_RMS_NO_SCALE_COMPARISON; RETAIN_TAPS_BASELINE; docs/current-status.md",
       "embedding_probe": {
         "entry": "targets/cpro/tools/probe_draft_embedding.py",
         "host_checks": 23,
@@ -1542,17 +1542,60 @@
             "max": 1.032
           },
           "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY_NOT_FULL_DRAFT",
-          "next": "DDK_SERVER_READ_ONLY_PREFIX_COMPILED_PATH_INSPECTION; REUSE_EXISTING_OMC_AND_RESULTS; docs/current-status.md",
+          "next": "DDK_SERVER_COMPILE_AND_VALIDATE_INPUT_RMS_NO_SCALE_COMPARISON; RETAIN_TAPS_BASELINE; docs/current-status.md",
           "root_cause": "UNRESOLVED; PRIORITIZE_GATHER_TO_RMS_X_MULS_CAST_PATH_AND_COMPILED_BOUNDARIES"
         },
         "prefix_graph_inspection": {
           "entry": "targets/cpro/tools/probe_draft_embedding.py --inspect-prefix",
           "host_checks": 14,
           "interface_regression_checks": 13,
-          "user_execution": "PENDING",
+          "user_execution": "USER_REPORTED_INSPECTED",
           "scope": "READ_ONLY_MAIN_CPUCL_AND_RETAINED_IR; NPUCL_TASKS_OPAQUE; NO_GRAPH_CHANGE_OR_BOARD_CALL",
-          "target_comparison": "TARGET_IN_MODEL_EMBEDDING_LOOKUP_THEN_FP16; DRAFT_ADDITIONAL_MULS_SCALE_1_IS_HYPOTHESIS_NOT_PROVEN_CAUSE"
+          "target_comparison": "TARGET_IN_MODEL_EMBEDDING_LOOKUP_THEN_FP16; DRAFT_ADDITIONAL_MULS_SCALE_1_IS_HYPOTHESIS_NOT_PROVEN_CAUSE",
+          "observation": {
+            "source": "USER_PASTED_JSON_NOT_INDEPENDENTLY_READ",
+            "probe_air_sha256": "01cc6b789e756f765e901475979dadae6b90f3c64aa73a171dcbde922e60abe7",
+            "model_bytes": 1017175435,
+            "cpu_operations": [
+              "Data",
+              "Const",
+              "Reshape",
+              "Const",
+              "ConcatD",
+              "NetOutput"
+            ],
+            "npu_floating_output_dtype": "FLOAT16",
+            "public_rms_x_gamma_outputs": "CAST_BACK_TO_FLOAT32",
+            "gamma_factor_input": "FLOAT32_TO_FLOAT16_BEFORE_NPUCL",
+            "internal_instruction_precision": "NOT_PROVEN",
+            "compiler_ir": "NO_DUMPS",
+            "npu_task": "OPAQUE_NOT_DECODED",
+            "schema_library_sha256": "542ff32272088008ca95cb13c9647cd06857f84a08c2fa7c908172b1b0f1f975"
+          }
         }
+      },
+      "input_rms_no_scale": {
+        "entry": "targets/cpro/tools/probe_draft_embedding.py --stage input-rms-no-scale",
+        "validation_case": "pytorch_input_rms_no_scale",
+        "policy": "source-first-rms-unit-scale-bypass-v1",
+        "source": "SAME_AIR_PREPARED_AND_FULL_DRAFT_RESULT_BINDING",
+        "baseline_probe_air_sha256": "01cc6b789e756f765e901475979dadae6b90f3c64aa73a171dcbde922e60abe7",
+        "mutation": "REMOVE_ONE_DIRECT_GATHER_FP16_MULS_EXACT_SCALAR_1; REWIRE_ONLY_SOLE_DOWNSTREAM_CAST_INPUT; OTHER_NODES_BYTE_IDENTICAL",
+        "reference": "SAME_INPUT_GOLDEN_AND_SIDECAR_HASHES_AS_TAPS_BASELINE",
+        "math_scope": "IDENTITY_ON_ALL_FINITE_FP16_VALUES_INCLUDING_SIGNED_ZERO; NOT_NAN_PAYLOAD_CLAIM",
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
+        "production_promotion": "NOT_PERFORMED",
+        "host_checks": {
+          "rewrite": 13,
+          "pipeline_and_analysis": 23,
+          "interface": 13,
+          "prefix_inspection": 14
+        },
+        "host_equivalence_patterns": 63488,
+        "next": "DDK_SERVER_COMPILE_AND_VALIDATE_INPUT_RMS_NO_SCALE_COMPARISON; RETAIN_TAPS_BASELINE; docs/current-status.md",
+        "limitations": "DIAGNOSTIC_COPY_ONLY; REMOVAL_CAN_CHANGE_FUSION_AND_PARTITION; NO_FULL_DRAFT_CHANGE_OR_ROOT_CAUSE_VERDICT"
       }
     }
   },

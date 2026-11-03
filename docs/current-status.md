@@ -10,18 +10,52 @@
 
 当前优先定位正确embedding到错误x的路径：`Muls(value=1) → Cast_7(FP16) → Cast_11(FP32)`及其编译转换。Target CPro内置embedding分支直接查表并转为FP16；Draft多出的单位标量乘法是候选差异，尚未证明它就是根因。gamma支路正确也不等于RMS内核物理输入回读。完整Draft仍数值失败。
 
-**以下命令在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。** 保留现有编译及回收目录，直接读取本次OMC、CPU任务和编译器保留IR；不重新编译或上板：
+编译图检查已完成：CPUCL只包含anchor改形和ID拼接；NPUCL输出的RMS、x、gamma观测值均为FP16，公共接口再Cast回FP32。因子输入也先FP32→FP16。这证明存在接口降精度，不能证明内部每条指令精度，也不足以解释原非零FP16 embedding为何全部变零。当前无保留IR（`NO_DUMPS`），不能继续从主图确认Muls内部属性。
+
+下一步做有界对照：`input-rms-no-scale`只旁路原Gather之后、系数严格为1的FP16 Muls，保持Cast_7／Cast_11、RMS及六个观测输出。只有唯一后续Cast消费者时才允许改线；源系数和参考配置必须都严格等于1，不接受近似相等。原权重、参考、输入文件和精度门槛保持；这是独立诊断副本，尚未修改完整Draft。
+
+**以下命令在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。** 原 `pytorch-input-rms-taps` 编译和结果目录保留用于对照；新对照使用固定目录 `pytorch-input-rms-no-scale`。现有AIR、prepared和native runner可复用，无需重新导出AIR。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_embedding.py" \
-  --inspect-prefix "$AI_RUN_DIR/draft/tests/pytorch-input-rms-taps" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID"
+  --stage input-rms-no-scale \
+  --air-export "$AI_RUN_DIR/draft/air" \
+  --source "$AI_RUN_DIR/draft/source/prepared" \
+  --result "$AI_RUN_DIR/draft/tests/pytorch-result" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms-no-scale"
 ```
 
-`main_graphs`列出实际Cast和GraphOp接口；`cpu_graphs`只解码显式属于CPUCL且范围有效的任务；`opaque_tasks`保留未解码的NPUCL信息。`compiler_ir.files[].matches`同时检查原Gather、Muls、浮点Cast和RMS，保留算术属性的原始`i`／`f`类型、描述、同图来源边及文件hash核验状态。`NO_DUMPS`或找不到源节点名不证明节点被删除，可能是未保留IR、改名或融合；检查结果不覆盖原数值失败。
+编译摘要应为 `COMPILED`，`extraction.policy=source-first-rms-unit-scale-bypass-v1`；`unit_scale_bypass`记录删除节点、唯一改线及前后hash。`baseline_probe_air_sha256`应与原六输出探针AIR `01cc6b789e756f765e901475979dadae6b90f3c64aa73a171dcbde922e60abe7` 一致。主机需约4.5 GB可用编译空间，脚本会检查。编译后启动同样3次预热、10次比较：
 
-本轮新增14项主机合成检查通过，覆盖只读行为、标量与Cast枚举区别、同图连接、CPU任务归属／范围／重叠、编译IR篡改、OMC读取中变化、缺失IR和旧单节点接口。原13项公共接口检查回归通过。模型图、权重、原参考及数值阈值本轮均未改变。
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$AI_RUN_DIR/draft/tests/pytorch-input-rms-no-scale" \
+  --cases pytorch_input_rms_no_scale \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms-no-scale-run" --apply
+```
+
+返回 `VECTOR_VALIDATION_STARTED` 后回收同一次执行；若为 `VECTOR_VALIDATION_PENDING`，稍后重复recover，不重复apply：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-input-rms-no-scale-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms-no-scale-result"
+```
+
+完成后分析实际x及RMS：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --analyze "$AI_RUN_DIR/draft/tests/pytorch-input-rms-no-scale-result"
+```
+
+通过条件仍为embedding、ID、x、gamma乘积、因子回读逐字节一致，RMS按独立参考 `atol=rtol=0.01` 逐元素通过，并检查十次重复稳定。若旁路后x恢复，支持原Muls所在编译路径有问题，仍不证明独立Muls内核普遍错误；若x仍为零，继续检查Cast／观测路径。对照探针通过后还需将合适修正用于完整Draft并重跑全部KV及候选测试，不能直接提升生产。
+
+主机13项改写检查、23项原探针／对照执行模拟与分析、13项接口和14项只读图检查通过；包括遍历63488种有限FP16位模式的单位乘法等价、signed zero、近1拒绝、原节点字节保留，以及两探针输入／参考／权重hash一致。真实对照编译和设备执行尚待回传。
 
 以下离线命令仍可复查原完整Draft结果：
 

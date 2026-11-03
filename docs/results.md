@@ -55,6 +55,10 @@
 
 观察把优先检查范围缩至Gather后Muls→Cast_7→Cast_11及其编译／观测路径，仍不能单独认定Muls或某个Cast的执行错误。源码对照Target CPro内置embedding分支为直接查表再转FP16，Draft额外乘标量1；保留为候选差异，尚未删除节点或更改RMS实现。新增 `probe_draft_embedding.py --inspect-prefix` 只读当前主图、CPUCL任务与哈希核验的保留IR，NPUCL任务不套用CPU GraphDef解码。14项主机合成检查及13项既有接口回归通过；具体编译属性待用户回传，完整Draft数值失败状态保持。以上设备结果均为用户回传，未在本地主机独立读取原张量。
 
+用户随后回传同一OMC的只读编译检查：探针AIR SHA256为 `01cc6b789e756f765e901475979dadae6b90f3c64aa73a171dcbde922e60abe7`，模型1017175435字节。CPUCL任务仅含anchor改形和ID拼接；`SubGraph_1`的五项浮点输出均为FP16，其中RMS／x／gamma乘积／因子回读通过主图Cast转回FP32。运行时因子也先转FP16。该证据只证明这些接口降精度，不能证明内部指令或将全部零值归因于FP16。选定DDK schema库hash为 `542ff32272088008ca95cb13c9647cd06857f84a08c2fa7c908172b1b0f1f975`；编译报告无保留IR（`NO_DUMPS`），NPU任务保持未解码。
+
+新增独立 `input-rms-no-scale` 对照，从同一源AIR提取六输出探针，仅旁路直接Gather后的FP16 Muls(value严格为1)，并将唯一后续Cast输入改接Gather；Cast描述／属性、RMS及其他节点字节保持。源scale和参考scale均须严格为1，有限FP16包含有符号零时数学等价；NaN payload不在该等价声明内。原参考、侧文件及观测ABI保持。13项主机改写检查通过，其中遍历63488种有限FP16位模式；23项探针／模拟执行及原参考门槛检查、13项接口和14项只读检查通过。对照实际编译和设备结果待用户执行；若恢复，只支持原标量路径或相关编译变换的因果嫌疑，不能单凭对照认定独立Muls实现或完整Draft均已修复。
+
 整体流程记录为用户回传的`fused/result`，板端PID34211。C16／cap192／K15增量Draft，18个prompt token、生成8个，混合接口常驻、dump关闭、顺序预读开启。完整流程接通；后续独立精度与profiling见下文。以下未独立读取板端原始产物。
 
 ## 增量Draft独立验证

@@ -31,6 +31,7 @@ def inspect_prefix(root, ddk, ddk_id):
         source=dict(source_air_sha256=extraction['source_air_sha256'],
                     probe_air_sha256=extraction['probe_air_sha256'],
                     scale=extraction['scale'], epsilon=extraction['epsilon'],
+                    unit_scale_bypass=extraction.get('unit_scale_bypass'),
                     float_paths=paths, selected_node_names=names),
         main_graphs=[], cpu_graphs=[], opaque_tasks=[])
 

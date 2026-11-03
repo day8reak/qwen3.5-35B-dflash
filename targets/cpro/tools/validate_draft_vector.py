@@ -25,10 +25,10 @@ from qwen35_moe_dflash.execution.lock import _acquire_global, _release_global, _
 from qwen35_moe_dflash.draft.profile_board import GLOBAL_LOCK, _guard, _identity_guard
 from qwen35_moe_dflash.draft.board import _receive
 from qwen35_moe_dflash.common.hashing import sha256_file
-from qwen35_moe_dflash.draft.incremental.embedding_probe import CASE as EMBEDDING_CASE, INPUT_CASE, TAPS_CASE, KIND as EMBEDDING_KIND, DTYPES
+from qwen35_moe_dflash.draft.incremental.embedding_probe import CASE as EMBEDDING_CASE, KIND as EMBEDDING_KIND, DTYPES, STAGES
 
-PYTORCH_CASES = {EMBEDDING_CASE, INPUT_CASE, TAPS_CASE}
-VALIDATION_CASES = (*CASES, EMBEDDING_CASE, INPUT_CASE, TAPS_CASE)
+PYTORCH_CASES = set(STAGES.values())
+VALIDATION_CASES = (*CASES, *STAGES.values())
 WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4}
 
 KIND = 'qwen35-draft-vector-validation'

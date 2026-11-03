@@ -7,7 +7,7 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]/'model'))
-from qwen35_moe_dflash.draft.incremental.embedding_probe import compile_probe, inspect_compiled_probe
+from qwen35_moe_dflash.draft.incremental.embedding_probe import compile_probe, inspect_compiled_probe, STAGES
 
 
 def main():
@@ -19,8 +19,8 @@ def main():
     parser.add_argument('--inspect-prefix', metavar='DIRECTORY',
                         help='Read retained prefix graph boundaries, CPU tasks and compiler IR; no compilation or board access')
     parser.add_argument('--timeout-seconds', type=int)
-    parser.add_argument('--stage', choices=('lookup', 'input-rms', 'input-rms-taps'),
-                        help='explicit IDs, original first-RMS prefix, or prefix with x/gamma readback')
+    parser.add_argument('--stage', choices=tuple(STAGES),
+                        help='lookup, original RMS prefix/taps, or six-output unit-scale bypass comparison')
     args = parser.parse_args()
     if args.inspect_compiled and args.inspect_prefix:
         parser.error('choose one inspection mode')

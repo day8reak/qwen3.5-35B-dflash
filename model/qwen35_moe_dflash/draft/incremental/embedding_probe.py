@@ -24,7 +24,9 @@ KIND = 'qwen35-draft-pytorch-embedding-probe'
 CASE = 'pytorch_embedding'
 INPUT_CASE = 'pytorch_input_rms'
 TAPS_CASE = 'pytorch_input_rms_taps'
-STAGES = {'lookup': CASE, 'input-rms': INPUT_CASE, 'input-rms-taps': TAPS_CASE}
+NO_SCALE_CASE = 'pytorch_input_rms_no_scale'
+STAGES = {'lookup': CASE, 'input-rms': INPUT_CASE, 'input-rms-taps': TAPS_CASE,
+          'input-rms-no-scale': NO_SCALE_CASE}
 DTYPES = {'float16': '<f2', 'float32': '<f4', 'int32': '<i4'}
 
 
@@ -140,8 +142,9 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, stage
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
     air, prepared, root = Path(air_export).resolve(), Path(source).resolve(), output_path(output)
     if stage not in STAGES:
-        raise ValueError('select lookup, input-rms or input-rms-taps probe stage')
+        raise ValueError('unknown probe stage: '+str(stage))
     prefix_stage = stage != 'lookup'
+    taps = stage in {'input-rms-taps', 'input-rms-no-scale'}
     _disjoint(root, air, prepared, ddk_root)
     if root.exists():
         raise ValueError('probe output already exists; preserve it and use a new test directory')
@@ -172,7 +175,8 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, stage
     extracted, receipt = extract_lookup(raw, schema, [cfg.vocab_size, cfg.hidden_size])
     if prefix_stage:
         from .input_probe import extract_prefix
-        extracted, receipt = extract_prefix(raw, schema, receipt, cfg, capture_inputs=stage == 'input-rms-taps')
+        extracted, receipt = extract_prefix(raw, schema, receipt, cfg, capture_inputs=taps,
+                                            bypass_unit_scale=stage == 'input-rms-no-scale')
     record = plan['weights']['target.embed_tokens.weight']
     if (record['dtype'] != 'float16' or record['shape'] != receipt['table_shape']
             or record['bytes'] != math.prod(record['shape'])*2):
@@ -227,7 +231,7 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, stage
             raise ValueError('first-RMS reference is nonfinite')
         arrays[0] = ('input_0', np.array([17], dtype='<i4'))
         arrays.append(('golden_2', normalized))
-        if stage == 'input-rms-taps':
+        if taps:
             factor = np.ones(cfg.hidden_size, dtype='<f4')
             arrays += [('input_1', factor), ('golden_3', x.reshape(16, cfg.hidden_size)),
                        ('golden_4', gamma), ('golden_5', factor.reshape(1, cfg.hidden_size))]

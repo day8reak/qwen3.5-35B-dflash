@@ -107,5 +107,6 @@ def diagnose(fixture, native, meta, comparison, report):
                 source_air_sha256=extraction.get('source_air_sha256'),
                 original_model_sha256=source.get('original_model_sha256'),
                 source_float_paths=extraction.get('float_paths'), epsilon=extraction.get('epsilon'),
+                unit_scale_bypass=extraction.get('unit_scale_bypass'),
                 gamma_observation=extraction.get('gamma_observation'),
                 scale=extraction.get('scale'), atol=meta['atol'], rtol=meta['rtol'], cases=rows)
