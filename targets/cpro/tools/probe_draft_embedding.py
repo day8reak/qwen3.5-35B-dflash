@@ -15,8 +15,8 @@ def main():
     for name in ('air-export', 'source', 'result', 'ddk-root', 'ddk-id', 'output'):
         parser.add_argument('--'+name, required=True)
     parser.add_argument('--timeout-seconds', type=int, default=1800)
-    parser.add_argument('--stage', choices=('lookup', 'input-rms'), default='lookup',
-                        help='explicit IDs at Gather, or original anchor/mask construction through first RMS')
+    parser.add_argument('--stage', choices=('lookup', 'input-rms', 'input-rms-taps'), default='lookup',
+                        help='explicit IDs, original first-RMS prefix, or prefix with x/gamma readback')
     args = parser.parse_args()
     try:
         result = compile_probe(args.air_export, args.source, args.output, result=args.result, ddk_root=args.ddk_root,

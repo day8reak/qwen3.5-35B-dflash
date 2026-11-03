@@ -6,43 +6,61 @@
 
 最新诊断已确认两组空context的30720个hidden元素全零。context=18时，更换anchor 17／32／34／38，共同有效位置仍逐位相同；位置之间并非全部相同，context变化也影响hidden。用户随后回传独立Gather探针通过：原完整表、显式INT32 ID，10次embedding与ID回读均逐字节一致，NPUCL一个子图，API均值0.460ms。该结果只验证独立查表，完整Draft根因尚未确定。
 
-用户补充的错误详情已确认：Cast_7接在Muls之后，GE目标属性1对应FP16，描述为FP32→FP16；此前把该节点推断为索引转换有误。提取器误要求RMS上游每个Cast都转成FP32，现已按执行顺序核对实际类型，保留缩放后的FP16舍入以及进入RMS前的FP32转换；空shape且没有FX类型信息的Muls默认描述按输入类型解析，明确冲突仍拒绝。独立Gather探针未包含这段下游路径。更新代码后重新执行以下命令，沿用已有AIR、prepared和native runner。
+用户最新回传的 `pytorch_input_rms` 探针已完成：ID构造与raw embedding十次均逐字节正确；第一层RMS结果失败，最大绝对误差27.21838、相对L2=1，重复输出稳定。它把当前小图中的异常缩小到embedding之后的缩放／RMS路径，但L2=1不能单独证明输出全零，也不能直接断言RMS内核或CPU/NPU传输是根因。完整Draft仍数值失败。
 
-**本轮所有命令均在DDK服务器`t00826215_atc_mobile`的`custom_pypto`环境执行。下一步提取原始anchor到第一层RMS的连接：**
+**本轮所有命令均在DDK服务器 `t00826215_atc_mobile` 的 `custom_pypto` 环境执行。先分析已有结果，无需重新导出、编译或上板：**
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --analyze "$AI_RUN_DIR/draft/tests/pytorch-input-rms-result"
+```
+
+该命令核对保留的输入／参考文件，重新比较十次快照，打印 `cases[].outputs` 的零元素／零行、逐行误差及anchor／首个mask行样本；详细行统计来自第0次调用。`source_float_paths`保留源图Cast／Muls类型链。它不修改结果或验收门槛。
+
+为检查进入RMS前的值，新增 `input-rms-taps`。它保留原前缀与RMS输出，额外输出同一RMS的 `x` 和 `gamma` 逻辑边。x只在新增输出支路展平到 `[16,2048]`，避免与原RMS的 `[1,16,2048]` FP32输出混淆。五项输出中，ID、embedding、x、gamma逐字节比较；RMS仍以独立参考的 `atol=rtol=0.01` 逐元素比较。原始gamma不加1。新增输出可能改变编译分图／融合，因此仍需复查原RMS输出；逻辑边输出不等于内核物理输入回读。
+
+现有AIR、prepared及混合类型native runner可复用。提取并编译这个带输入输出观测的小图：
+
+```bash
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_embedding.py" \
-  --stage input-rms \
+  --stage input-rms-taps \
   --air-export "$AI_RUN_DIR/draft/air" \
   --source "$AI_RUN_DIR/draft/source/prepared" \
   --result "$AI_RUN_DIR/draft/tests/pytorch-result" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms"
+  --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms-taps"
 ```
 
-探针输入anchor=17，保留原AIR的anchor／mask拼接、INT32转换、Gather、embedding缩放及第一层input_layernorm的RmsNorm。原节点字节保持，仅调整唯一Data的index并添加NetOutput；保留完整embedding表、mask buffer及原始gamma，核验AIR／prepared／失败模型身份与权重hash。三项输出为拼接后的16个ID、原Gather的FP16向量、第一层RMS的FP32结果。ID与embedding要求逐字节一致，RMS按独立FP32参考公式以原完整Draft的`atol=rtol=0.01`逐元素比较。
-
-无需回权重服务器导出；用户刚重建的混合类型runner可复用。完整表约1 GB，主机需要约4.5 GB编译空间，板端传输约1 GB。目录已存在时保留旧证据并使用新的测试目录。返回`COMPILED`后执行：
+完整embedding表约1 GB，主机需约4.5 GB编译空间。当前原前缀结果用于对照，保留到该问题定位完成。返回 `COMPILED` 后，在同一终端执行：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$AI_RUN_DIR/draft/tests/pytorch-input-rms" \
-  --cases pytorch_input_rms \
+  --compiled "$AI_RUN_DIR/draft/tests/pytorch-input-rms-taps" \
+  --cases pytorch_input_rms_taps \
   --ddk-root "$CPRO_DDK_ROOT" \
   --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms-run" --apply
+  --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms-taps-run" --apply
 ```
 
-`validate_draft_vector.py`复用通用上板传输与回收逻辑，本次用例来自PyTorch AIR，GE优化路线仍暂停。一次Load、3次预热、10次同输入调用，每次保存三项输出。返回`VECTOR_VALIDATION_STARTED`后回收同一次执行：
+一次Load、3次预热、10次调用，每次保存五项输出。返回 `VECTOR_VALIDATION_STARTED` 后回收同一次执行：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$AI_RUN_DIR/draft/tests/pytorch-input-rms-run" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms-result"
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-input-rms-taps-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-input-rms-taps-result"
 ```
 
-`VECTOR_VALIDATION_PENDING`时稍后重复回收。`cases[].outputs`分别显示`ids_readback`、`embedding`和`input_rms`的结果。前两项正确而RMS失败，可定位到缩放／第一层归一化路径；三项通过则继续下游及完整图分区定位。该小图不包含Attention、残差、后续层或head，也不保留完整图分区，不能替代完整Draft验证。输入RMS探针的33项主机检查通过，包括回传的Cast形式、原节点字节保留、非单位缩放的FP16舍入参考和类型冲突拒绝；真实编译及上板待用户执行。`extraction.float_paths`记录实际通过检查的类型链。旧`--stage lookup`（默认值）仍可复查已通过的查表用例。
+`VECTOR_VALIDATION_PENDING` 时稍后重复回收。完成后可离线分析：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --analyze "$AI_RUN_DIR/draft/tests/pytorch-input-rms-taps-result"
+```
+
+若x或gamma失败，先定位其生成／转换；若二者正确而RMS仍失败，继续检查归一化执行。`rms_from_captured_inputs`仅以回读的逻辑边值计算诊断公式，不替代独立参考或改变失败状态。若增加输出后RMS变为正确，也要继续查分图／融合差异，不能据此认定完整Draft恢复。
+
+新增探针与分析有14项主机合成／mock检查通过，覆盖五输出重排、原节点保留、逐字节门槛、三输出旧结果兼容、全零／非有限值、文件篡改及末次快照截断拒绝。原前缀33项、查表23项回归通过。新五输出探针的真实OMG及板端执行待用户回传。旧 `--stage lookup` 与 `--stage input-rms` 均保留。
 
 以下离线命令仍可复查原完整Draft结果：
 

@@ -25,9 +25,10 @@ from qwen35_moe_dflash.execution.lock import _acquire_global, _release_global, _
 from qwen35_moe_dflash.draft.profile_board import GLOBAL_LOCK, _guard, _identity_guard
 from qwen35_moe_dflash.draft.board import _receive
 from qwen35_moe_dflash.common.hashing import sha256_file
-from qwen35_moe_dflash.draft.incremental.embedding_probe import CASE as EMBEDDING_CASE, INPUT_CASE, KIND as EMBEDDING_KIND, DTYPES
+from qwen35_moe_dflash.draft.incremental.embedding_probe import CASE as EMBEDDING_CASE, INPUT_CASE, TAPS_CASE, KIND as EMBEDDING_KIND, DTYPES
 
-VALIDATION_CASES = (*CASES, EMBEDDING_CASE, INPUT_CASE)
+PYTORCH_CASES = {EMBEDDING_CASE, INPUT_CASE, TAPS_CASE}
+VALIDATION_CASES = (*CASES, EMBEDDING_CASE, INPUT_CASE, TAPS_CASE)
 WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4}
 
 KIND = 'qwen35-draft-vector-validation'
@@ -265,9 +266,9 @@ def analyze(directory):
                 if path.stat().st_size != spec['bytes'] or sha256_file(path) != spec['fixture_sha256']:
                     raise ValueError('retained input/reference changed after launch')
     comparison = compare(fixture, native, selection=report['validated_cases'])
-    if {EMBEDDING_CASE, INPUT_CASE} & set(comparison['validated_cases']):
-        return dict(comparison, artifact_kind=KIND, model_execution='NOT_RUN',
-                    analysis='RETAINED_PYTORCH_PROBE_OUTPUTS_RECOMPARED')
+    if PYTORCH_CASES & set(comparison['validated_cases']):
+        from qwen35_moe_dflash.draft.incremental.embedding_diagnose import diagnose
+        return diagnose(fixture, native, meta, comparison, report)
 
     def metrics(actual, expected):
         finite = bool(np.isfinite(actual).all())
@@ -393,7 +394,7 @@ def start(args, out):
         if not binary.is_file() or built.get('diagnostic_binaries', {}).get(binary.name) != {
                 'bytes': binary.stat().st_size, 'sha256': sha256_file(binary)}:
             raise ValueError('rebuild runtime/native with build_hiai.py --replace for tensor probes')
-        if {EMBEDDING_CASE, INPUT_CASE} & set(state['requested_cases']) and not {'float16', 'int32'} <= set(built.get('tensor_probe_dtypes', [])):
+        if PYTORCH_CASES & set(state['requested_cases']) and not {'float16', 'int32'} <= set(built.get('tensor_probe_dtypes', [])):
             raise ValueError('rebuild runtime/native with build_hiai.py --replace for FP16/INT32 embedding probes')
         uploads, search, _ = _build_payloads(out, 600, resident='resident-mixed', native_directory=native)
         uploads = [r for r in uploads if r['remote'].startswith('lib/')]

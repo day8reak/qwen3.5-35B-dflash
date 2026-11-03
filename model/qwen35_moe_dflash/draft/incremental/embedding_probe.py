@@ -23,7 +23,8 @@ from .torch_export import AIR_KIND, _schema, _disjoint, _save
 KIND = 'qwen35-draft-pytorch-embedding-probe'
 CASE = 'pytorch_embedding'
 INPUT_CASE = 'pytorch_input_rms'
-STAGES = {'lookup': CASE, 'input-rms': INPUT_CASE}
+TAPS_CASE = 'pytorch_input_rms_taps'
+STAGES = {'lookup': CASE, 'input-rms': INPUT_CASE, 'input-rms-taps': TAPS_CASE}
 DTYPES = {'float16': '<f2', 'float32': '<f4', 'int32': '<i4'}
 
 
@@ -139,7 +140,8 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, stage
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
     air, prepared, root = Path(air_export).resolve(), Path(source).resolve(), output_path(output)
     if stage not in STAGES:
-        raise ValueError('select lookup or input-rms probe stage')
+        raise ValueError('select lookup, input-rms or input-rms-taps probe stage')
+    prefix_stage = stage != 'lookup'
     _disjoint(root, air, prepared, ddk_root)
     if root.exists():
         raise ValueError('probe output already exists; preserve it and use a new test directory')
@@ -168,9 +170,9 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, stage
             or binding['packed_model_sha256'] != meta['model']['sha256']):
         raise ValueError('source AIR/prepared/model differs from the recovered execution binding')
     extracted, receipt = extract_lookup(raw, schema, [cfg.vocab_size, cfg.hidden_size])
-    if stage == 'input-rms':
+    if prefix_stage:
         from .input_probe import extract_prefix
-        extracted, receipt = extract_prefix(raw, schema, receipt, cfg)
+        extracted, receipt = extract_prefix(raw, schema, receipt, cfg, capture_inputs=stage == 'input-rms-taps')
     record = plan['weights']['target.embed_tokens.weight']
     if (record['dtype'] != 'float16' or record['shape'] != receipt['table_shape']
             or record['bytes'] != math.prod(record['shape'])*2):
@@ -182,7 +184,7 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, stage
     table = checked_file(air, dict(record, path=str(relative)))
     snapshots = [(table, relative, record['sha256'])]
     gamma = None
-    if stage == 'input-rms':
+    if prefix_stage:
         from .input_probe import GAMMA
         gamma_record = plan['weights'][GAMMA]
         if gamma_record['dtype'] != 'float16' or gamma_record['shape'] != [cfg.hidden_size] or gamma_record['bytes'] != cfg.hidden_size*2:
@@ -202,7 +204,7 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, stage
         raise OSError('embedding probe needs space for source snapshot, compiler weights and packed model')
     ids = np.array([[17, 32, 34, 38, cfg.mask_token_id, 0, 1, cfg.vocab_size-1,
                      cfg.mask_token_id, 38, 34, 32, 17, cfg.mask_token_id, 17, cfg.mask_token_id]], dtype='<i4')
-    if stage == 'input-rms':
+    if prefix_stage:
         ids = np.full((1,16), cfg.mask_token_id, dtype='<i4')
         ids[0,0] = 17
     if np.any(ids < 0) or np.any(ids >= cfg.vocab_size):
@@ -215,7 +217,7 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, stage
     if not np.isfinite(golden).all():
         raise ValueError('prepared diagnostic embedding rows are nonfinite')
     arrays = [('input_0', ids), ('golden_0', golden), ('golden_1', ids)]
-    if stage == 'input-rms':
+    if prefix_stage:
         # Same FP16 embedding/scaling boundary and independent FP32 RMS formula
         # as the full Draft reference; no target outputs enter this reference.
         x = (golden.astype('<f4')*np.float32(cfg.input_embedding_scale)).astype('<f2').astype('<f4')
@@ -225,10 +227,12 @@ def compile_probe(air_export, source, output, *, result, ddk_root, ddk_id, stage
             raise ValueError('first-RMS reference is nonfinite')
         arrays[0] = ('input_0', np.array([17], dtype='<i4'))
         arrays.append(('golden_2', normalized))
+        if stage == 'input-rms-taps':
+            arrays += [('golden_3', x.reshape(16, cfg.hidden_size)), ('golden_4', gamma)]
     root.mkdir(parents=True)
     state = dict(artifact_kind=KIND, status='FAILED', stage='extract', model_compilation='NOT_RUN',
         device_execution='NOT_RUN', numerical_validation='NOT_RUN', ddk_id=ddk_id,
-        probe_case=STAGES[stage], scope=('SOURCE_INPUT_PREFIX_ONLY_NOT_FULL_DRAFT' if stage == 'input-rms'
+        probe_case=STAGES[stage], scope=('SOURCE_INPUT_PREFIX_ONLY_NOT_FULL_DRAFT' if prefix_stage
             else 'SOURCE_EMBEDDING_LOOKUP_ONLY_NOT_FULL_DRAFT'), extraction=receipt,
         source_embedding_sha256=record['sha256'], prepared_sha256=sha256_file(prepared/'prepared.json'),
         original_model_sha256=meta['model']['sha256'], board_attempt=observed.get('board_attempt'))

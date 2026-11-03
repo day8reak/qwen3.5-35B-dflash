@@ -1,6 +1,7 @@
 """Preserve the original candidate ID/embedding/first-RMS prefix for diagnosis."""
 import hashlib
 import math
+import struct
 
 from qwen35_moe_dflash.target.original_air_roundtrip import _attributes, _decode
 from qwen35_moe_dflash.target.original_ge_append_wire import _blob, _field, _graph_raw, _node_bytes, _parts, _v, _new_id
@@ -86,7 +87,7 @@ def _float_path(shapes, root, path, shape, *, allow_scale=False):
     return (1.0 if scale is None else scale), proof
 
 
-def extract_prefix(raw, schema, lookup, config):
+def extract_prefix(raw, schema, lookup, config, *, capture_inputs=False):
     """Cut after first RMS output 0; keep every original prefix op/weight.
 
     Only the sole Data.index becomes zero and NetOutput is replaced. Shapes
@@ -214,12 +215,38 @@ def extract_prefix(raw, schema, lookup, config):
     outputs = [(gather['name']+':0', 'DT_FLOAT16', [1,16,config.hidden_size]),
                (gather['input'][1], 'DT_INT32', [1,16]),
                (rms['name']+':0', 'DT_FLOAT', [1,16,config.hidden_size])]
+    added, taps = [], []
+    next_id = max(n.get('id', 0) for n, _, _ in rows)+1
+    if capture_inputs:
+        # A flat view gives x a unique public (shape,dtype) pair. Never infer
+        # equal-shaped tensor identities from compiled slot order.
+        shape_name, view_name = 'probe_rms_x_shape', 'probe_rms_x_view'
+        if {shape_name, view_name} & set(nodes):
+            raise ValueError('RMS tap node names collide with source AIR')
+        tensor = (blob('TensorDef', 'desc', desc('DT_INT64', [2]), 11)
+                  + blob('TensorDef', 'data', struct.pack('<2q', 16, config.hidden_size), 12))
+        value = blob('AttrDef', 't', tensor, 11)
+        entry = blob('OpDef.AttrEntry', 'key', 'value') + blob('OpDef.AttrEntry', 'value', value, 11)
+        constant = (blob('OpDef', 'name', shape_name) + blob('OpDef', 'type', 'Const')
+                    + blob('OpDef', 'output_desc', desc('DT_INT64', [2]), 11, True)
+                    + _blob(attr_field, entry))
+        view = blob('OpDef', 'name', view_name) + blob('OpDef', 'type', 'Reshape')
+        for edge, descriptor in ((rms['input'][0], desc('DT_FLOAT', [1,16,config.hidden_size])),
+                                 (shape_name+':0', desc('DT_INT64', [2]))):
+            view += blob('OpDef', 'input', edge, repeated=True) + blob('OpDef', 'input_desc', descriptor, 11, True)
+        view += blob('OpDef', 'output_desc', desc('DT_FLOAT', [16,config.hidden_size]), 11, True)
+        added = [_new_id(constant, schema, next_id), _new_id(view, schema, next_id+1)]
+        next_id += 2
+        outputs += [(view_name+':0', 'DT_FLOAT', [16,config.hidden_size]),
+                    (rms['input'][1], 'DT_FLOAT', [config.hidden_size])]
+        taps = [dict(name='rms_x', source_edge=rms['input'][0], view=view_name),
+                dict(name='rms_gamma', source_edge=rms['input'][1])]
     net = blob('OpDef', 'name', 'NetOutput') + blob('OpDef', 'type', 'NetOutput')
     for edge, dtype, shape in outputs:
         net += blob('OpDef', 'input', edge, repeated=True) + blob('OpDef', 'input_desc', desc(dtype, shape), 11, True)
-    net = _new_id(net, schema, max(n.get('id', 0) for n, _, _ in rows)+1)
+    net = _new_id(net, schema, next_id)
     reduced = blob('GraphDef', 'name', 'draft_input_rms_probe') + b''.join(_blob(op_field, data if n['name']==anchor['name'] else p)
-        for n,p,_ in rows if n['name'] in selected) + _blob(op_field, net)
+        for n,p,_ in rows if n['name'] in selected) + b''.join(_blob(op_field, p) for p in added) + _blob(op_field, net)
     updated = reduced if graph_field is None else b''.join(_blob(f,reduced) if f==graph_field else e for f,_,e,_ in _parts(raw))
     _decode(schema, updated)
     receipt = dict(lookup, policy='source-anchor-embedding-first-rms-prefix-v1', probe_air_sha256=hashlib.sha256(updated).hexdigest(),
@@ -234,4 +261,11 @@ def extract_prefix(raw, schema, lookup, config):
             dict(name='embedding', dtype='float16', shape=outputs[0][2], exact_bytes=True),
             dict(name='ids_readback', dtype='int32', shape=outputs[1][2], exact_bytes=True),
             dict(name='input_rms', dtype='float32', shape=outputs[2][2], exact_bytes=False)]))
+    if capture_inputs:
+        receipt.update(policy='source-first-rms-input-taps-v1', taps=taps,
+                       changed='Original prefix bytes preserved except anchor Data.index; add x Reshape/shape Const and NetOutput taps',
+                       limitation='Extra output edges may change compiler partition or fusion; compare original RMS output again')
+        receipt['graph']['outputs'] += [
+            dict(name='rms_x', dtype='float32', shape=outputs[3][2], exact_bytes=True),
+            dict(name='rms_gamma', dtype='float32', shape=outputs[4][2], exact_bytes=True)]
     return updated, receipt

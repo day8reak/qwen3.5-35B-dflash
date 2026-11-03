@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "PYTORCH_NUMERICAL_FAILURE_EMBEDDING_LOOKUP_PASSED_INPUT_RMS_PROBE_PENDING",
-    "entry": "targets/cpro/tools/probe_draft_embedding.py --stage input-rms",
+    "status": "PYTORCH_NUMERICAL_FAILURE_INPUT_PREFIX_IDS_EMBEDDING_PASS_RMS_FAIL",
+    "entry": "targets/cpro/tools/validate_draft_vector.py --analyze",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "PYTORCH_USER_REPORTED_TOP1_0_OF_86_PER_MODE_AND_HIDDEN_L2_1_TO_1.408; PRIOR_GE_INTERIM_ACCEPTANCE_DOES_NOT_APPLY",
-    "next": "Retry input-RMS probe after correcting intermediate FP16 Cast validation. User Cast_7 is after Muls, not an index Cast. Original nodes/weights and numerical gates retained. Full Draft numerics and 50ms objective unresolved.",
+    "next": "Read retained prefix RMS zero/row statistics, then capture original RMS x/gamma logical edges with input-rms-taps. Preserve original RMS comparison and full Draft failure; extra outputs can alter compiler partition. Full accuracy and 50ms objective unresolved.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6051,7 +6051,8 @@
       },
       "numerical_execution": "specs/dflash-execution-state.json#incremental_draft_task/pytorch_candidate/numerical_execution",
       "embedding_probe": "specs/dflash-execution-state.json#incremental_draft_task/pytorch_candidate/embedding_probe",
-      "input_rms_probe": "specs/dflash-execution-state.json#incremental_draft_task/pytorch_candidate/input_rms_probe"
+      "input_rms_probe": "specs/dflash-execution-state.json#incremental_draft_task/pytorch_candidate/input_rms_probe",
+      "input_rms_taps": "specs/dflash-execution-state.json#incremental_draft_task/pytorch_candidate/input_rms_taps"
     },
     "compiled_partition_observation": {
       "source": "USER_PASTED_COMPILED_PRECISION_REPORT",

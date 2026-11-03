@@ -964,7 +964,7 @@
     "maintenance_policy": "Homepage contains only a brief introduction and six direct links. Keep each primary page self-contained; operational pages contain short instructions and complete command blocks. Detailed development and historical evidence remain outside primary navigation."
   },
   "incremental_draft_task": {
-    "status": "PYTORCH_CANDIDATE_DEVICE_LOAD_FAILED_HILOG_RECOVERY_REQUIRED",
+    "status": "PYTORCH_CANDIDATE_NUMERICAL_FAILED_INPUT_PREFIX_RMS_LOCALIZED",
     "context_gears": [
       16,
       64
@@ -1242,7 +1242,7 @@
         "timing_scope": "SYNCHRONOUS_API_WALL_DIAGNOSTIC_MIXED_INPUTS_NOT_WARM_BENCHMARK",
         "comparison": "UNCHANGED_ELEMENTWISE_ATOL_0.01_RTOL_0.01_AND_ZERO_TOP1_MISMATCHES; NO_L2_GATE",
         "root_cause": "UNRESOLVED; CONTEXT_KV_IS_INDEPENDENT_OF_CANDIDATE_ATTENTION",
-        "next": "DDK_SERVER_RETRY_INPUT_RMS_PROBE_AFTER_FLOAT_CAST_CHECK_FIX; docs/current-status.md"
+        "next": "DDK_SERVER_ANALYZE_RETAINED_INPUT_RMS_THEN_PROBE_RMS_X_GAMMA; docs/current-status.md"
       },
       "output_diagnosis": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose",
@@ -1276,7 +1276,7 @@
           "embedding": "ANCHOR_AND_MASK_SOURCE_ROWS_FINITE_NONZERO_NOT_DEVICE_GATHER"
         }
       },
-      "next": "DDK_SERVER_RETRY_INPUT_RMS_PROBE_AFTER_FLOAT_CAST_CHECK_FIX; docs/current-status.md",
+      "next": "DDK_SERVER_ANALYZE_RETAINED_INPUT_RMS_THEN_PROBE_RMS_X_GAMMA; docs/current-status.md",
       "embedding_probe": {
         "entry": "targets/cpro/tools/probe_draft_embedding.py",
         "host_checks": 23,
@@ -1327,13 +1327,13 @@
           "ids_readback": "EXACT_INT32_BYTES",
           "input_rms": "ELEMENTWISE_ATOL_0.01_RTOL_0.01"
         },
-        "model_compilation": "NOT_RUN",
-        "device_execution": "NOT_RUN",
-        "numerical_validation": "NOT_RUN",
+        "model_compilation": "USER_REPORTED_EXECUTED_COMPILED_PROBE",
+        "device_execution": "USER_REPORTED_EXECUTED_OUTPUTS_RETRIEVED",
+        "numerical_validation": "FAILED",
         "limitations": "CUT_BEFORE_ATTENTION; FULL_GRAPH_PARTITION_NOT_PRESERVED; DOES_NOT_CHANGE_FULL_DRAFT_FAILURE",
         "production_promotion": "NOT_PERFORMED",
         "latest_extraction": {
-          "status": "USER_REPORTED_FAILED",
+          "status": "HISTORICAL_FAILURE_FOLLOWED_BY_USER_EXECUTED_PROBE",
           "node": "Cast_7",
           "stage": "SOURCE_PREFIX_TYPE_CHECK_BEFORE_SNAPSHOT_OR_OMG",
           "error": "input-prefix Cast has unexpected GE destination dtype",
@@ -1341,7 +1341,7 @@
             "i": 1
           },
           "decision": "FIX_OVERRESTRICTIVE_FLOAT_PATH_CHECK; NOT_AN_INDEX_CAST; RETAIN_ORIGINAL_CAST_AND_ROUNDING",
-          "next": "UPDATE_CODE_AND_RETRY_SAME_INPUT_RMS_PROBE_ON_DDK_SERVER",
+          "next": "RESOLVED_EXTRACTION_CHECK; CURRENT_RMS_NUMERICS_FAILED",
           "expected_ge_dtype": 0,
           "input_edges": [
             "Muls:0"
@@ -1364,8 +1364,62 @@
           "reference_scope": "CHECKED_UPSTREAM_PATTERN_NOT_INSTALLED_EXPORTER_VERSION_PROOF",
           "host_checks": 33,
           "old_lookup_checks": 23,
-          "real_source_reextraction": "AWAITING_USER_RETRY"
+          "real_source_reextraction": "USER_EXECUTED_PROBE_AFTER_FIX"
+        },
+        "user_observation": {
+          "source": "USER_PASTED_RECOVERY_JSON_NOT_INDEPENDENTLY_READ",
+          "board_attempt": "/data/local/tmp/qwen35_vector_5c3026ffb81643c5a54ae12e6a4f868b",
+          "status": "NUMERICAL_FAILED",
+          "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+          "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+          "warmup": 3,
+          "repetitions": 10,
+          "outputs": {
+            "embedding": "ALL_CALLS_EXACT_BYTES",
+            "ids_readback": "ALL_CALLS_EXACT_BYTES",
+            "input_rms": "FAILED"
+          },
+          "repeat_bitwise_stable": true,
+          "finite": true,
+          "max_abs_error": 27.2183837890625,
+          "max_relative_l2_error": 1.0,
+          "graphop_counts": {
+            "CPUCL": 1,
+            "NPUCL": 1
+          },
+          "mean_ms": 0.8178,
+          "min_ms": 0.552,
+          "max_ms": 1.118,
+          "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_EXCLUDED",
+          "interpretation": "PREFIX_ERROR_AFTER_CORRECT_RAW_EMBEDDING; ZERO_RMS_NOT_YET_PROVEN; FULL_DRAFT_STILL_FAILED"
         }
+      },
+      "input_rms_taps": {
+        "entry": "targets/cpro/tools/probe_draft_embedding.py --stage input-rms-taps",
+        "validation_case": "pytorch_input_rms_taps",
+        "diagnosis_entry": "targets/cpro/tools/validate_draft_vector.py --analyze",
+        "source": "SAME_HASH_BOUND_ORIGINAL_PREFIX_AND_WEIGHTS",
+        "mutation": "ADD_NETOUTPUT_X_GAMMA_TAPS_AND_X_STATIC_RESHAPE_BRANCH; ORIGINAL_PREFIX_NODES_PRESERVED_EXCEPT_ANCHOR_DATA_INDEX",
+        "outputs": {
+          "embedding": "FP16_1x16x2048_EXACT",
+          "ids_readback": "INT32_1x16_EXACT",
+          "input_rms": "FP32_1x16x2048_ATOL_RTOL_0.01",
+          "rms_x": "FP32_16x2048_EXACT",
+          "rms_gamma": "FP32_2048_EXACT"
+        },
+        "abi": "UNIQUE_SHAPE_DTYPE_PAIRS_BOUND_TO_COMPILED_OUTPUT_SLOTS; NOT_A_KV_BINDER",
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
+        "host_checks": 14,
+        "regression_checks": {
+          "original_prefix": 33,
+          "lookup": 23
+        },
+        "host_scope": "SYNTHETIC_PROTO_AND_MOCK_COMPILER_REORDERED_OUTPUTS_REFERENCE_GATES_AND_LOCAL_RECOVERY_ANALYSIS",
+        "analysis": "LOCAL_RETAINED_SNAPSHOTS_ONLY; TEN_CALLS_RECOMPARED; ITERATION0_ROW_STATS; NO_GATE_OR_RESULT_FILE_CHANGE",
+        "limitations": "TAPS_MAY_CHANGE_COMPILER_PARTITION_OR_FUSION; LOGICAL_EDGE_VALUES_NOT_PHYSICAL_KERNEL_INPUT_READBACK; DERIVED_RMS_IS_DIAGNOSTIC_ONLY",
+        "production_promotion": "NOT_PERFORMED"
       }
     }
   },

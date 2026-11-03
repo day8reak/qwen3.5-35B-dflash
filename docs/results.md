@@ -35,7 +35,11 @@
 
 输入RMS探针首次执行被源图检查拦截。2026-11-03用户回传详情：Cast_7输入Muls，输入描述1（FP32）、输出描述2（FP16），GE dst_type=1（FP16）；提取器此处却要求GE类型0（FP32）。这确认报错发生在RMS的浮点输入链，撤回此前索引链的推断。问题是提取器把最终RMS输入类型错误地施加到每个中间Cast，不能据此指认完整Draft的数值根因。
 
-修复按顺序核对FP16源embedding／gamma到RMS的浮点链，保留原Cast及Muls字节，支持缩放前FP32提升及缩放后FP16舍入。最终RMS必须为FP32；缺少缩放后的FP16边界、整数Cast、明确的dtype／shape冲突及循环仍拒绝。原参考公式已有对应FP16舍入，未改参考权重或0.01／0.01阈值。33项主机检查通过，包含用户回传形式的合成图、节点字节保留、非单位缩放与PyTorch参考对照、重排输出槽及拒绝路径；23项旧查表检查回归通过。上游[TorchAir乘法converter](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/ge_converter/aten/mul.py)对FP16张量与标量生成Muls后再转换到输出类型；对应raw API未填写Muls输出dtype，因此补测无shape／无FX元信息的默认描述解析。这是已核对的上游模式，不证明用户安装版本或实际内部运算精度。实际源AIR提取、OMG和板端结果仍待用户重跑。
+修复按顺序核对FP16源embedding／gamma到RMS的浮点链，保留原Cast及Muls字节，支持缩放前FP32提升及缩放后FP16舍入。最终RMS必须为FP32；缺少缩放后的FP16边界、整数Cast、明确的dtype／shape冲突及循环仍拒绝。原参考公式已有对应FP16舍入，未改参考权重或0.01／0.01阈值。33项主机检查通过，包含用户回传形式的合成图、节点字节保留、非单位缩放与PyTorch参考对照、重排输出槽及拒绝路径；23项旧查表检查回归通过。上游[TorchAir乘法converter](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/ge_converter/aten/mul.py)对FP16张量与标量生成Muls后再转换到输出类型；对应raw API未填写Muls输出dtype，因此补测无shape／无FX元信息的默认描述解析。这是已核对的上游模式，不证明用户安装版本或实际内部运算精度。随后用户已完成下述原前缀执行。
+
+2026-11-03，用户回传原前缀 `pytorch_input_rms` 的板端结果：执行及回收成功，精度失败，尝试为 `/data/local/tmp/qwen35_vector_5c3026ffb81643c5a54ae12e6a4f868b`。一次Load、3次预热、10次调用，ID与raw embedding均逐字节匹配；RMS结果最大绝对误差27.2183837890625、最大相对L2=1，数值有限且十次输出逐位稳定。分图数量为CPUCL=1、NPUCL=1；同步API均值0.8178ms，范围0.552～1.118ms。以上来自用户摘要，尚未独立读取原张量，不能单凭L2=1断言RMS输出全零，分图数量也不能证明哪个算子出错。
+
+下一步支持 `validate_draft_vector.py --analyze` 只读分析现有三输出结果，并新增 `input-rms-taps`：原前缀不变，额外输出RMS的x和gamma逻辑边，仍比较原RMS输出。x的附加展平支路使五个输出的shape／dtype组合互异；按编译物理槽重排参考文件，禁止按输出次序猜角色。x／gamma要求逐字节匹配独立参考，RMS原0.01／0.01门槛保持。回读值的RMS公式仅作诊断，不参与验收；新增输出可能改变分图／融合，不是内核输入物理回读证据。14项主机合成及mock检查通过，另有33项原前缀与23项查表回归通过；新增探针真实编译及板端结果待回传。完整Draft仍数值失败，未提升生产。
 
 整体流程记录为用户回传的`fused/result`，板端PID34211。C16／cap192／K15增量Draft，18个prompt token、生成8个，混合接口常驻、dump关闭、顺序预读开启。完整流程接通；后续独立精度与profiling见下文。以下未独立读取板端原始产物。
 
