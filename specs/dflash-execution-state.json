@@ -3687,7 +3687,7 @@
       }
     },
     "host_embedding_candidate": {
-      "status": "INLINE_EXPORT_FAILURE_REPAIRED_HOST_CHECKED_REEXPORT_PENDING",
+      "status": "USER_REPORTED_COMPILED_BOUNDARIES_CONFIRMED_DEVICE_PENDING",
       "policy": "packed-spatial-host-embedding",
       "run_id": "20261104T004345Z-29867-0cafbe",
       "source_math": "COPY_ORIGINAL_FP16_ANCHOR_AND_MASK_ROWS; UNIT_SCALE_ONLY",
@@ -3718,12 +3718,12 @@
         "scope": "SYNTHETIC_HOST_AND_MOCK_TOOLCHAIN_NOT_SELECTED_DDK_OR_DEVICE"
       },
       "timing": "PRECOMPUTED_SERVER_FIXTURE_ROWS_EXCLUDED_FROM_NATIVE_API; MEASURE_PREPARATION_SUBMISSION_AND_API_FOR_END_TO_END",
-      "model_compilation": "NOT_RUN",
+      "model_compilation": "USER_REPORTED_COMPLETED_OMC_INSPECTION",
       "device_execution": "NOT_RUN",
       "numerical_validation": "NOT_RUN_ON_DEVICE",
       "performance": "NOT_MEASURED",
       "production_promotion": "NOT_PERFORMED",
-      "next": "REEXPORT_WITH_NATIVE_FILECONSTANT_STORAGE_THEN_COMPILE_AND_INSPECT_WEIGHTS_AND_DEPENDENCIES",
+      "next": "REBUILD_NATIVE_ACCURACY_PLAN_V2; VALIDATE_CURRENT_OMC_LOAD_NUMERICS_KV_AND_API_LATENCY; PROFILE_ONLY_AFTER_OUTPUTS_RETRIEVED",
       "command_document": "docs/current-status.md",
       "experience_audit": {
         "captured": [
@@ -3758,7 +3758,82 @@
         "selected_torchair": "PENDING",
         "model_compilation": "NOT_RUN",
         "device_execution": "NOT_RUN",
-        "experience_audit": "MODEL_SPECIFIC_FORMAT_THRESHOLD_RECORDED; NO_SKILL_CHANGE_NEEDED"
+        "experience_audit": "MODEL_SPECIFIC_FORMAT_THRESHOLD_RECORDED; NO_SKILL_CHANGE_NEEDED",
+        "downstream_observation": "USER_REPORTED_COMPLETED_PACKED_OMC_INSPECTION; EXACT_EXPORT_RECEIPT_NOT_SUPPLIED"
+      },
+      "user_observation": {
+        "source": "USER_PASTED_BOUNDARY_AND_DEPENDENCY_REPORTS; SERVER_FILES_NOT_INDEPENDENTLY_READ",
+        "run_id": "20261104T012816Z-31991-bf3f74",
+        "model": {
+          "bytes": 1790918688,
+          "sha256": "967e9b640915893890ef95425b0e1279c8245bff0cfc2833f0cbfa56eb023372"
+        },
+        "previous_merged_model_bytes": 2808047355,
+        "omc_size_reduction_bytes": 1017128667,
+        "graphop_counts": {
+          "CPUCL": 2,
+          "NPUCL": 1
+        },
+        "partitions": [
+          {
+            "name": "SubGraph_0",
+            "owner": "CPUCL",
+            "role": "FRONT_CONTROLS",
+            "input_ports": 3,
+            "input_logical_bytes": 12,
+            "output_ports": 6,
+            "output_logical_bytes": 410496
+          },
+          {
+            "name": "SubGraph_1",
+            "owner": "NPUCL",
+            "role": "SINGLE_NPU_BODY",
+            "input_ports": 20,
+            "input_logical_bytes": 5718912,
+            "output_ports": 14,
+            "output_logical_bytes": 12229632
+          },
+          {
+            "name": "SubGraph_2",
+            "owner": "CPUCL",
+            "role": "ARGMAX",
+            "input_ports": 1,
+            "input_logical_bytes": 14899200,
+            "output_ports": 1,
+            "output_logical_bytes": 60
+          }
+        ],
+        "dependencies": {
+          "CPUCL_to_NPUCL_paths": 6,
+          "NPUCL_to_CPUCL_paths": 1,
+          "intermediate_cpu_partitions": [],
+          "unresolved": [],
+          "source_boundary_bytes": 244482,
+          "source_boundary_sha256": "8c1b82a99f021b3c5288bee6df7113c6a9e1af96c53b1fc6a97a245cda49e330"
+        },
+        "remaining_npu_to_cpu": {
+          "producer": "SubGraph_1:0",
+          "producer_dtype": "float16",
+          "shape": [
+            1,
+            15,
+            248320
+          ],
+          "producer_logical_bytes": 7449600,
+          "via": "insert_cast_0:0",
+          "consumer": "SubGraph_2:0",
+          "consumer_dtype": "float32",
+          "consumer_logical_bytes": 14899200,
+          "output_dtype": "int32",
+          "output_logical_bytes": 60
+        },
+        "compiled_artifact": "USER_REPORTED_INSPECTION_OF_COMPLETED_PACKED_OMC",
+        "per_partition_weight_bytes": "NOT_PROVIDED_THIS_REPORT",
+        "accuracy_binding": "NOT_PROVIDED",
+        "device_execution": "NOT_RUN_FOR_THIS_MODEL_IN_SUPPLIED_EVIDENCE",
+        "numerical_validation": "NOT_EVALUATED",
+        "performance": "NOT_MEASURED",
+        "scope": "EXPLICIT_MAIN_GRAPH_DEPENDENCIES_AND_LOGICAL_DESCRIPTORS; NO_WAIT_TRANSFER_TIMING_OR_DEVICE_LOAD_PROOF"
       }
     }
   },

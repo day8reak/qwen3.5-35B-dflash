@@ -1,5 +1,11 @@
 # 当前结果
 
+2026-11-04，用户回传host-embedding候选的编译OMC边界及依赖检查：模型1790918688字节，SHA256 `967e9b640915893890ef95425b0e1279c8245bff0cfc2833f0cbfa56eb023372`。较上一单NPU相位表OMC的2808047355字节减少1017128667字节，约1.79GB／1.668GiB。这里是完整OMC大小；本轮摘要没有给出各GraphOp权重大小或实际分配参数，不替代加载成功证据。检查工具的model_compilation=NOT_RUN表示本次只读已有编译产物。
+
+CPUCL2／NPUCL1保留，中间CPU分区及输出列表均为空，unresolved=[]。前置CPU由4个标量输入变为3个，输出6条CPU→NPU路径；单NPU主体20输入／14输出属于内部边界，不是公共ABI数量。唯一NPU→CPU路径仍为float16 logits [1,15,248320]经Cast到float32后交给CPU ArgMax；对应逻辑尺寸7449600／14899200字节，Top1输出60字节。这些是描述尺寸，不是实测搬运量。报告绑定的边界JSON为244482字节、SHA256 `8c1b82a99f021b3c5288bee6df7113c6a9e1af96c53b1fc6a97a245cda49e330`；证据来源为用户粘贴，未独立读取服务器文件。
+
+此结构已满足本轮避免中间CPU回流的目标；新OMC尚无设备加载、数值或时延结果，不能把旧184.568−78.986=105.582ms直接当作已消除的开销。下一步复用新OMC，重建支持accuracy plan v2的共享runner，执行原isolated／feedback验证与回收。查表在服务器fixture准备阶段完成，native API不含该开销；仍须保留原数值失败门槛、KV保持和后续端侧输入准备计时。命令已切换到[当前阶段](current-status.md)，无需重新导出或编译模型。
+
 2026-11-04，host-embedding候选首次TorchAir导出停在air-validation。用户确认export.air为1790366439字节、weight/文件数0；尚未编译或上板。公开[TorchAir export_utils.py](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_utils/export_utils.py)按图与权重总量超过(2048−200)MiB才选择FileConstant，否则写内嵌Const，与减掉约1GB表后本次观察一致。64MiB错误来自本项目对外置权重AIR元数据的限制，不是NPU容量或数值失败。Const分支保留arg节点名但不写原参数文件名，不能依靠大小或位置猜出后续精度校验所需的权重绑定。
 
 修复在导出CLI进程内临时固定原生外置权重分支；核对实际安装函数签名、转换器调用关系、单次转换、参数文件名无冲突、Data节点及连续非空张量，保留原used_weight_num和原生写盘实现。finally恢复原函数，记录安装源码哈希及各外置文件尺寸，并在导出、导入、恢复和编译入口保持检查。未修改TorchAir安装、数学、权重dtype、原精度门槛或64MiB限制。本次已有内嵌AIR需要重新导出，不再尝试直接拆包恢复。
