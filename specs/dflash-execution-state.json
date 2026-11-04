@@ -3724,7 +3724,7 @@
       "numerical_validation": "FAILED_SAME_REPORTED_ERROR_SUMMARIES_AS_PREVIOUS",
       "performance": "NATIVE_API_PHASE_MEANS_103.958_TO106.09_MS_NOT_END_TO_END",
       "production_promotion": "NOT_PERFORMED",
-      "next": "READ_TOP1_FRONTEND_IR; FULL_DRAFT_103.720MS_NUMERICAL_FAILED_BASELINE_UNCHANGED",
+      "next": "RECOMPILE_CORRECTED_TOP1_FRONTEND_PROBES; FULL_DRAFT_103.720MS_NUMERICAL_FAILED_BASELINE_UNCHANGED",
       "command_document": "docs/current-status.md",
       "experience_audit": {
         "captured": [
@@ -4053,7 +4053,7 @@
       }
     },
     "top1_builtin_probe": {
-      "status": "NATIVE_TOP1_FRONTEND_ARITY_REJECTED_IR_INSPECTION_PENDING",
+      "status": "NATIVE_TOP1_FRONTEND_CORRECTED_HOST_CHECKED_RECOMPILE_PENDING",
       "run_id": "20261104T015950Z-753-3ad426",
       "entry": "targets/cpro/tools/probe_draft_vector.py",
       "cases": [
@@ -4119,7 +4119,11 @@
           "EMPTY_KIRIN_CONF_AND_PUBLIC_LAYOUT_ABSENCE_NOT_INTERNAL_DDK_FAILURE_PROOF",
           "NPU_OPINFO_ATTRIBUTES_DO_NOT_EXHAUST_OMG_IR_VERIFIER_REQUIREMENTS",
           "OUTPUT_DESCRIPTOR_IS_NOT_AN_OUTPUT_TYPE_ATTRIBUTE; FAIL_LOCAL_EXPORT_ON_OMISSION",
-          "PRIORITIZE_ATTRNAME_MISSING_IR_DIAGNOSTIC_OVER_GENERIC_VERIFY_FAILURE"
+          "PRIORITIZE_ATTRNAME_MISSING_IR_DIAGNOSTIC_OVER_GENERIC_VERIFY_FAILURE",
+          "HIAI_FRONTEND_AXIS_TENSOR_AND_BACKEND_AXIS_ATTRIBUTE_ARE_DIFFERENT_CONTRACTS",
+          "TENSORDESC_DTYPE_ENUM7_AND_OPERATOR_ATTRIBUTE_ENUM3_ARE_SEPARATE_INT32_ENCODINGS",
+          "COMPILED_CPUCL_OWNER_OVERRIDES_DESCRIPTOR_DEVICE_TYPE_LABEL_FOR_PLACEMENT",
+          "FRONTEND_REGISTRATION_SEARCH_MUST_HANDLE_HIAI_MACROS_AND_EXCLUDE_KERNEL_INTRINSIC_NOISE"
         ],
         "executable_checks": "validate_draft_vector.py dtype plans and exact integer gates",
         "skill_changes": "NONE; EXISTING_PROFILE_SCOPE_RULES_ADEQUATE",
@@ -4133,6 +4137,13 @@
           "run_id": "20261104T024333Z-2592-afd370",
           "lesson": "Separate backend kernel opinfo from frontend IR prototypes. Host graph replay and mock metadata cannot validate vendor verifier schemas. Inspect retained compiled examples and exact selected frontend declarations before retries.",
           "applied_in": "top1_ir_inspect.py; type_contracts.py; probe_draft_vector.py; current-status.md",
+          "full_model_accuracy_or_performance_claim": "NONE"
+        },
+        "frontend_contract_fix": {
+          "run_id": "20261104T030633Z-3506-c58c14",
+          "applied_in": "top1_probe.py; type_contracts.py; top1_ir_inspect.py",
+          "lesson": "Use actual selected frontend ports and types, corroborate with compiled examples, then test the mathematical expression and serialized ports separately. Full-shape host replay is not OMG or NPU proof.",
+          "model_compilation": "NOT_RUN",
           "full_model_accuracy_or_performance_claim": "NONE"
         }
       },
@@ -4201,7 +4212,7 @@
         ],
         "next": "READ_SAVED_COMPILER_ENVIRONMENT_AND_SELECTED_DDK_REDUCTION_REGISTRATION; NO_RECOMPILE_OR_DEVICE_RUN"
       },
-      "next": "READ_SELECTED_FRONTEND_CONTRACT_AND_RETAINED_FAILED_IR_CPU_EXAMPLES_BEFORE_ANOTHER_COMPILE",
+      "next": "RECOMPILE_NATIVE_THREE_CASES_WITH_SELECTED_DDK_DEFAULT_POLICY_THEN_INSPECT_OMC_OWNERS_AND_BOUNDARIES",
       "registration_inspection": {
         "entry": "probe_draft_vector.py --inspect-top1 COMPILED_PROBES --ddk-root DDK",
         "run_id": "20261104T021319Z-1312-aa1ef2",
@@ -4298,15 +4309,15 @@
         }
       },
       "native_cpro_candidates": {
-        "status": "REJECTED_ONE_INPUT_FRONTEND_CONTRACT_PENDING",
+        "status": "HOST_CHECKED_SELECTED_OMG_RECOMPILE_PENDING",
         "run_id": "20261104T022117Z-1605-76c12b",
         "cases": [
           "top1_ext2_fp16",
           "top1_ext2_flat_fp16",
           "top1_ext2_tiled_fp16"
         ],
-        "schema_source": "BACKEND_REGISTRATION_ONLY_NOT_FRONTEND_SCHEMA; ONE_INPUT_EXPRESSION_REJECTED_BY_SELECTED_OMG",
-        "model_compilation": "FAILED",
+        "schema_source": "USER_REPORTED_SELECTED_HIAI_MATH_AND_ARRAY_HEADERS; COMPILED_CPU_AXIS_AND_DEFAULTS_CORROBORATED",
+        "model_compilation": "NOT_RUN_FOR_FRONTEND_CORRECTION",
         "device_execution": "NOT_RUN",
         "numerical_validation": "NOT_RUN_ON_DEVICE",
         "host": {
@@ -4326,9 +4337,9 @@
           ]
         },
         "legacy_compatibility": "THREE_OLD_GRAPH_MANIFESTS_AND_FIXTURE_BYTES_UNCHANGED",
-        "graph": "ArgMaxExt2 dimension attribute; native ReduceMax one input axes/keep_dims attributes; GatherV2D and INT32 merge",
+        "graph": "FP16_PUBLIC_INPUT_TO_FP32; ArgMaxExt2 x+axis; ReduceMax x+axes; GatherV2D and INT32 merge",
         "nonfinite": "SEPARATE_VALUE_AND_INDEX_REDUCTION_CONSISTENCY_REQUIRES_DEVICE_TEST",
-        "direct_candidate": "CONTROL_ONLY; OLD_ARGMAXV2_MAY_ALREADY_MAP_TO_EXT2",
+        "direct_candidate": "CONTROL_ONLY; RETAINED_DRAFT_ARGMAXV2_IS_ALREADY_CPU_ARGMAXEXT2",
         "paused_addcustom_path": "NOT_USED",
         "full_draft_changed": false,
         "user_compilation_observation": {
@@ -4470,10 +4481,60 @@
             "REDUCEMAX_EXPECTED_OUTPUT_SHAPE",
             "MISSING_ASCENDC_LIBRARY_CAUSED_VERIFY_FAILURE"
           ]
+        },
+        "frontend_contract_fix": {
+          "run_id": "20261104T030633Z-3506-c58c14",
+          "status": "HOST_CHECKED_SELECTED_OMG_RECOMPILE_PENDING",
+          "source": "USER_REPORTED_SELECTED_HIAI_HEADERS_AND_COMPILED_CPU_EXAMPLE",
+          "public_input": "FP16[1,15,248320]",
+          "data_path": "EXPLICIT_FP16_TO_FP32_VALUE_WIDENING_BEFORE_FRONTEND_REDUCTIONS",
+          "argmax": "x:FP32; axis:INT32_SCALAR; output_type=3; keep_dims=false; outmaxval=false; topk=1",
+          "axes": {
+            "direct": 2,
+            "flat": 1,
+            "tiled_local": 2,
+            "tiled_winner": 1,
+            "local_reduce_max": [
+              2
+            ]
+          },
+          "reduce_max": "x:FP32[15,485,512]; axes:INT32[1]; y:FP32[15,485]; keep_dims=false",
+          "index_path": "INT32_GATHERV2D_AND_MULTIPLY_ADD_NO_FLOAT_INDEX_CARRIER",
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN_ON_DEVICE",
+          "host": {
+            "status": "HOST_CHECKED",
+            "checks": 243,
+            "full_shape_replays": 54,
+            "model_compilation": "NOT_RUN",
+            "device_execution": "NOT_RUN",
+            "scope": "CPU_GRAPH_REPLAY_CPP_EMISSION_REAL_BINDING_WITH_FAKE_VENDOR_METADATA_AND_NATIVE_OUTPUTS",
+            "cases": [
+              "top1_argmax_fp16",
+              "top1_with_value_fp16",
+              "top1_tiled_fp16",
+              "top1_ext2_fp16",
+              "top1_ext2_flat_fp16",
+              "top1_ext2_tiled_fp16"
+            ]
+          },
+          "fix_checks": {
+            "status": "HOST_CHECKED",
+            "checks": 46,
+            "fp16_bit_patterns": 65536,
+            "model_compilation": "NOT_RUN",
+            "device_execution": "NOT_RUN",
+            "scope": "OLD_FIXTURE_AND_GE_SOURCE_COMPATIBILITY_NEGATIVE_FRONTEND_CONTRACTS_AND_SYNTHETIC_HEADER_INSPECTION"
+          },
+          "legacy_compatibility": "OLD_THREE_GE_GRAPH_MANIFESTS_AND_CPP_IDENTICAL_ALL_FIXTURES_IDENTICAL",
+          "inspector_correction": "PRIORITIZE_HIAI_FRONTEND_HEADERS_RECOGNIZE_HIAI_MACROS_SKIP_TIKCPP_ASCENDC_INTRINSICS",
+          "full_draft_changed": false,
+          "next": "RECOMPILE_NATIVE_THREE_CASES_WITH_SELECTED_DDK_DEFAULT_POLICY_THEN_INSPECT_OMC_OWNERS_AND_BOUNDARIES"
         }
       },
       "frontend_ir_inspection": {
-        "status": "HOST_CHECKED_USER_READ_ONLY_INSPECTION_PENDING",
+        "status": "USER_REPORTED_PARTIAL_REQUIRED_FRONTEND_AND_CPU_EVIDENCE_RECEIVED",
         "run_id": "20261104T024333Z-2592-afd370",
         "entry": "probe_draft_vector.py --inspect-top1-ir COMPILED_PROBES --reference-compiled COMPILED_DRAFT --ddk-root DDK",
         "host": {
@@ -4490,7 +4551,139 @@
           "PRIORITIZE_NAMED_NODE_INPUT_COUNT_FAILURE",
           "READ_SELECTED_DDK_PROTOTYPES_AND_RETAINED_GRAPH_EVIDENCE"
         ],
-        "remaining": "SELECTED_DDK_FRONTEND_PORTS_AXIS_CONTRACT_REDUCEMAX_SHAPE_AND_NPU_SUPPORT_UNVERIFIED"
+        "remaining": "CORRECTED_FRONTEND_OMG_ACCEPTANCE_AND_NPU_PLACEMENT_DEVICE_SEMANTICS_UNVERIFIED",
+        "observation": {
+          "source": "USER_PASTED_SELECTED_DDK_FRONTEND_AND_COMPILED_CPU_INSPECTION",
+          "independently_retrieved": false,
+          "date": "2026-11-04",
+          "source_revision": "d79661c",
+          "status": "PARTIAL",
+          "case_dump_status": "NO_DUMPS_AT_ORIGINAL_DIRECTORY_ALL_THREE_CASES",
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "headers_sha256": {
+            "ddk/ai_ddk_lib/include/graph/op/math_defs.h": "50dbd5318f2bfbc584d83a97de4fc6aed2751b0bcf3f653fd767b68f58fd827e",
+            "ddk/ai_ddk_lib/include/graph/op/array_defs.h": "978d175bfb5b74f0a3d47d4803974f0ced33354557cf0764ec7137b54e311b65"
+          },
+          "declarations": {
+            "ArgMaxExt2": {
+              "inputs": {
+                "x": [
+                  "float32",
+                  "int32"
+                ],
+                "axis": [
+                  "int32"
+                ]
+              },
+              "output": {
+                "y": [
+                  "int32",
+                  "int64"
+                ]
+              },
+              "defaults": {
+                "output_type": 3,
+                "keep_dims": false,
+                "outmaxval": false,
+                "topk": 1
+              }
+            },
+            "ReduceMax": {
+              "inputs": {
+                "x": [
+                  "float32",
+                  "int32",
+                  "uint8"
+                ],
+                "axes": [
+                  "int32"
+                ]
+              },
+              "output": {
+                "y": [
+                  "float32",
+                  "int32",
+                  "uint8"
+                ]
+              },
+              "defaults": {
+                "keep_dims": false
+              }
+            },
+            "GatherV2D": {
+              "inputs": {
+                "x": [
+                  "float32",
+                  "int32"
+                ],
+                "indices": [
+                  "int32"
+                ]
+              },
+              "output": {
+                "y": [
+                  "float32",
+                  "int32"
+                ]
+              },
+              "required_attrs": {
+                "axis": "int"
+              }
+            }
+          },
+          "compiled_cpu_example": {
+            "model_bytes": 1790918688,
+            "model_sha256": "967e9b640915893890ef95425b0e1279c8245bff0cfc2833f0cbfa56eb023372",
+            "main_partition_sha256": "74cb1d7cef2113e12e0e209f4af9e37d96c0bb3325d5ac2c219763f7dfb7ecf4",
+            "owner": "SubGraph_2",
+            "task": {
+              "cl_name": "CPUCL",
+              "offset": 1328606,
+              "bytes": 2003
+            },
+            "slice_sha256": "0f7d0c41036ea88cbf6901ffd45a713b48a551e19d562efb702896fa0fd05716",
+            "node": "ArgMaxV2",
+            "type": "ArgMaxExt2",
+            "input": {
+              "dtype": "float32",
+              "shape": [
+                1,
+                15,
+                248320
+              ],
+              "bytes": 14899200
+            },
+            "axis": {
+              "producer": "Const_483",
+              "dtype": "int32",
+              "shape": [],
+              "bytes": 4,
+              "value": "NOT_DECODED"
+            },
+            "attrs": {
+              "output_type": 3,
+              "outmaxval": false,
+              "keep_dims": false,
+              "topk": 1
+            },
+            "output": {
+              "dtype": "int32",
+              "shape": [
+                1,
+                15
+              ],
+              "bytes": 60
+            },
+            "schema_enum": {
+              "TensorDesc_INT32": 7,
+              "attribute_INT32": 3
+            },
+            "scope": "COMPILED_CPU_EXAMPLE_NOT_NPU_SUPPORT"
+          },
+          "reader_limitation": "HIAI_REG_OP classified as related text; TIK/AscendC intrinsic excerpts consumed budget; exact required frontend declarations were nevertheless supplied",
+          "conclusion": "TWO_INPUT_HIAI_FRONTEND_AND_FP32_DATA_CORROBORATED; CORRECT_PROBES_THEN_COMPILE; KERNEL_PLACEMENT_UNVERIFIED"
+        }
       }
     }
   },

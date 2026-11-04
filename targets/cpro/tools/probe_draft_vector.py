@@ -437,11 +437,13 @@ def _run(args, root):
     result = {'artifact_kind': KIND, 'status': 'RUNNING', 'stage': 'prepare',
         'device_execution': 'NOT_RUN', 'numerical_validation': 'NOT_RUN',
         'model_compilation': 'NOT_RUN', 'full_draft_changed': False, 'cases': [],
-        'precision_request': ('SOURCE_FP16_LOGITS_INT32_INDICES_DEFAULT_DDK_SELECTION'
+        'precision_request': ('FP16_PUBLIC_LOGITS_FP32_HIAI_FRONTEND_INT32_INDICES_DEFAULT_DDK_SELECTION'
+            if any(case in NATIVE_CASES for case in args.cases) else
+            'SOURCE_FP16_LOGITS_INT32_INDICES_DEFAULT_DDK_SELECTION'
             if all(case in TOP1_CASES for case in args.cases) else
             'SOURCE_DECLARED_DTYPES_WITH_DEFAULT_OMG_ARITHMETIC_POLICY_NO_CPU_CUSTOMIZATION'),
         'weight_data_type': args.weight_data_type or 'OMG_DEFAULT',
-        'schema_source': ('CASE_SPECIFIC_SELECTED_CPRO_REGISTRATION_AND_PINNED_GE_AUXILIARIES'
+        'schema_source': ('CASE_SPECIFIC_SELECTED_HIAI_FRONTEND_HEADERS_AND_PINNED_GE_AUXILIARIES'
                           if any(case in NATIVE_CASES for case in args.cases) else SCHEMA),
         'platform': 'kirinx90'}
     write_json(root / 'result.json', result)
@@ -528,9 +530,6 @@ def _run(args, root):
 def run(args):
     import fcntl
     from qwen35_moe_dflash.common.artifacts import output_path
-    if any(case in NATIVE_CASES for case in args.cases):
-        raise ValueError('retained native Top1 expressions were rejected by OMG for missing a second input; '
-                         'use --inspect-top1-ir before revising the frontend contract; existing results retained')
     if Path(args.output).is_symlink():
         raise ValueError('probe output must not be a symlink')
     root = output_path(args.output)

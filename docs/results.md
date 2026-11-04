@@ -1,5 +1,13 @@
 # 当前结果
 
+2026-11-04，用户回传所选DDK前端头文件及完整Draft的CPU节点，原报告仍为PARTIAL、三个失败case的原dump目录均NO_DUMPS。math_defs.h的HIAI_REG_OP声明明确给出ArgMaxExt2(x, axis)和ReduceMax(x, axes)，轴输入均INT32；数据端口分别允许FLOAT／INT32和FLOAT／INT32／UINT8，未列FLOAT16。array_defs.h声明GatherV2D(x, indices)、INT32 indices及整数axis属性。后端npu_generated_opinfo的一输入／轴属性定义不能继续用作这些前端节点的原型。此次已有声明足以修正探针，无需等失败dump出现。
+
+用户读取的完整Draft OMC为1790918688字节，SHA256 `967e9b640915893890ef95425b0e1279c8245bff0cfc2833f0cbfa56eb023372`。CPU SubGraph_2的ArgMaxV2节点实际类型ArgMaxExt2，数据输入FP32[1,15,248320]，第二输入Const_483为INT32、空维度、4字节，输出INT32[1,15]；属性output_type=3、keep_dims=false、outmaxval=false、topk=1。Const实际数据未解码，不能据此声称读到其轴值；TensorDesc的INT32编号7与属性枚举3属于不同编码。CPUCL任务owner证明这里是CPU示例，描述中的device_type=NPU不能覆盖owner判定。
+
+据此修正三个原生探针：公共输入仍FP16，在图内先扩展到FP32；ArgMaxExt2连接显式INT32标量轴，保留上述四个属性。分块ReduceMax连接INT32向量[2]，输出FP32[15,485]，GatherV2D与全局索引乘加保持INT32。导出守卫检查端口、类型和属性，移除上一版本对三个case的临时整例禁编。直接版只是对照，现有CPU例已说明改算子名不能保证NPU落点；分块的落点、NaN传播和并列规则仍需编译／设备验证。前端检查器也识别完整HIAI_REG_OP／HIAI_OP_END，优先实际op头文件、跳过TIK／AscendC内核目录，避免内核ReduceMax同名片段耗尽前端摘录预算。
+
+主机run `20261104T030633Z-3506-c58c14`：243项检查通过，含六图54次完整形状PyTorch回放、直接NumPy交叉检查、C++端口／属性发射、模拟厂商元数据的真实ABI绑定及十次模拟回收，仍对高位token差1判失败。另46项检查通过：原三图manifest／C++与全部fixture字节保持、原错误单输入图拒绝、错误轴类型／端口／输出枚举拒绝、全部65536种FP16位模式的主机扩展（非NaN逐位往返、NaN分类保持），以及合成HIAI／GE头文件与内核噪声下的只读摘录。没有所选DDK执行，模拟结果不能充当设备证据。完整Draft仍103.720ms／NUMERICAL_FAILED，完整模型和暂停的AddCustom路径均未修改。下一步重编命令见[当前阶段](current-status.md)。
+
 2026-11-04，用户回传8b80eec补output_type后的三个原生Top1探针仍全部编译失败、设备NOT_RUN。直接及展平版本在argmax_ext2、分块版本在winning_tile触发`Input size 1 is wrong, should be 2`，随后出现`Input[1] DataType FLOAT is wrong`。缺失第二输入后出现的dtype诊断不构成FP16 logits不支持的证据；没有已编译落点。上一版把NPU后端opinfo当成完整前端IR原型，接口假设错误；主机数学回放和发射检查未覆盖厂商前端合同。补output_type使校验走到输入合同，不证明完整属性语义已正确。
 
 停止重复编译已知无效表达，新增只读--inspect-top1-ir：从所选DDK通用头文件／前端源码提取声明，按保存DDK路径和编译清单检查失败图，并可读取保留完整Draft的CPU ArgMaxExt2及其直接输入生产者。失败图仅尝试所选DDK的HIAI ModelDef schema；CPU切片按packing schema、owner、范围和不重叠约束读取。厂商库只作字节读取，不import／dlopen／执行，不写入输入目录。头文件、失败图和已编译CPU示例分别标注证据范围；没有猜第二输入端口名、轴值或ReduceMax空shape原因，也没有宣称解决NPU回落。

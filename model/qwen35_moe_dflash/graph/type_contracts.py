@@ -59,15 +59,34 @@ def validate_record_types(record):
         require(attrs.get("dtype") == {"type": "dtype", "value": outputs["y"]["dtype"]},
                 "ArgMax dtype must match its output descriptor")
     elif typ == "ArgMaxExt2":
-        # Selected OMG rejected the backend opinfo's one-input expression.
-        # The frontend's port names/axis contract still require local evidence.
-        require(len(record["inputs"]) == 2,
-                "selected OMG ArgMaxExt2 requires two inputs; inspect its frontend IR contract")
-        require(set(outputs) == {"y"}, "unexpected ArgMaxExt2 output ports")
+        # Selected HIAI math_defs.h frontend, not npu_generated_opinfo.json.
+        ports(("x", "axis"))
+        require(inputs["x"]["dtype"] in {"float32", "int32"}, "ArgMaxExt2 frontend data must be float32 or int32")
+        require(inputs["axis"]["dtype"] == "int32", "ArgMaxExt2 axis must be int32")
         require(outputs["y"]["dtype"] in _INTEGER, "ArgMaxExt2 indices must be int32 or int64")
         require(attrs.get("output_type") ==
                 {"type": "int", "value": GE_DTYPE_IDS[outputs["y"]["dtype"]]},
                 "ArgMaxExt2 output_type must match its output descriptor")
+        require(set(attrs) == {"output_type", "keep_dims", "outmaxval", "topk"},
+                "ArgMaxExt2 probe requires explicit frontend attributes; axis is an input")
+        require(attrs["keep_dims"] == {"type": "bool", "value": False}
+                and attrs["outmaxval"] == {"type": "bool", "value": False}
+                and attrs["topk"] == {"type": "int", "value": 1},
+                "ArgMaxExt2 probe requires top1 indices with reduced rank")
+    elif typ == "ReduceMax":
+        ports(("x", "axes"))
+        require(inputs["x"]["dtype"] in {"float32", "int32", "uint8"}, "ReduceMax frontend data dtype mismatch")
+        require(inputs["axes"]["dtype"] == "int32", "ReduceMax axes must be int32")
+        same(inputs["x"], outputs["y"])
+        require(attrs == {"keep_dims": {"type": "bool", "value": False}},
+                "ReduceMax probe uses an axes tensor and keep_dims=false")
+    elif typ == "GatherV2D":
+        ports(("x", "indices"))
+        require(inputs["x"]["dtype"] in {"float32", "int32"}, "GatherV2D frontend data dtype mismatch")
+        require(inputs["indices"]["dtype"] == "int32", "GatherV2D indices must be int32")
+        same(inputs["x"], outputs["y"])
+        require(set(attrs) == {"axis"} and attrs["axis"].get("type") == "int"
+                and type(attrs["axis"].get("value")) is int, "GatherV2D requires an integer axis attribute")
     elif typ == "TopKV2":
         ports(("x", "k"), ("values", "indices"))
         require(inputs["x"]["dtype"] != "bool", "TopK does not accept bool data")

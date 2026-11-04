@@ -33,13 +33,15 @@ def _frontend_sources(root):
                   coverage=dict(entries=0, files_read=0, bytes=0, symlinks_skipped=0))
     used = result["coverage"]
     # Prioritize headers; do not spend the file budget on TBE Python or binaries.
-    seeds = [root / p for p in ("include", "ddk/include", "tools/tools_omg/master/include",
+    seeds = [root / p for p in ("ddk/ai_ddk_lib/include/graph/op", "include", "ddk/include", "tools/tools_omg/master/include",
                                 "ddk", "tools/tools_omg/master")]
     result["roots"] = [dict(path=str(p), exists=p.is_dir()) for p in seeds]
     queue, seen = deque(seeds), set()
-    ignored = {"__pycache__", ".git", "tbe", "ccec_compiler", "bisheng", "node_modules"}
+    ignored = {"__pycache__", ".git", "tbe", "ccec_compiler", "bisheng", "node_modules", "tikcpp", "ascendc"}
+    result["excluded_directory_names"] = sorted(ignored)
     token = re.compile(r"\b(?:ArgMaxExt2(?:Verify|Infer)?|ReduceMax(?:Verify|Infer)?|GatherV2D(?:Verify|Infer)?)\b")
-    macro = re.compile(r"\bREG_OP\s*\(\s*(ArgMaxExt2|ReduceMax|GatherV2D)\s*\)")
+    macro = re.compile(r"\b(?:HIAI_)?REG_OP\s*\(\s*(ArgMaxExt2|ReduceMax|GatherV2D)\s*\)")
+    end_macro = re.compile(r"\b(?:HIAI_OP_END|OP_END_FACTORY_REG)\s*\(")
 
     def note(path, message):
         result["status"] = "PARTIAL"
@@ -80,7 +82,12 @@ def _frontend_sources(root):
             if not token.search(source):
                 continue
             lines, covered = source.splitlines(), set()
-            for i, line in enumerate(lines):
+            # Declarations precede examples/comments so a nearby mention does
+            # not consume a short context window and hide the actual prototype.
+            declarations = [i for i, line in enumerate(lines) if macro.search(line)]
+            related = [i for i, line in enumerate(lines) if token.search(line) and not macro.search(line)]
+            for i in declarations + related:
+                line = lines[i]
                 if i in covered or not token.search(line):
                     continue
                 if len(result["excerpts"]) >= _LIMITS["excerpts"]:
@@ -91,17 +98,17 @@ def _frontend_sources(root):
                 if declaration:
                     stop = min(len(lines), i + _LIMITS["excerpt_lines"])
                     for end in range(i, stop):
-                        if "OP_END_FACTORY_REG" in lines[end]:
+                        if end_macro.search(lines[end]):
                             stop = end + 1
                             break
                 covered.update(range(start, stop))
                 excerpt = "\n".join(f"L{n + 1}: {lines[n]}" for n in range(start, stop))
                 result["excerpts"].append(dict(path=str(path), sha256=hashlib.sha256(raw).hexdigest(),
-                    kind="REG_OP_TEXT" if declaration else "RELATED_SOURCE_TEXT",
+                    kind=("HIAI_REG_OP_TEXT" if "HIAI_REG_OP" in line else "REG_OP_TEXT") if declaration else "RELATED_SOURCE_TEXT",
                     first_line=start + 1, last_line=stop,
                     excerpt=excerpt[:_LIMITS["excerpt_characters"]],
                     truncated=len(excerpt) > _LIMITS["excerpt_characters"] or
-                        bool(declaration and "OP_END_FACTORY_REG" not in "\n".join(lines[i:stop])),
+                        bool(declaration and not end_macro.search("\n".join(lines[i:stop]))),
                     scope="PRESENT_TEXT_NOT_PROOF_THIS_DECLARATION_WAS_LOADED"))
         except (OSError, ValueError) as error:
             note(path, error)
