@@ -29,7 +29,7 @@ _LIMITS = dict(entries=20000, source_file_bytes=2 << 20, source_total_bytes=32 <
                excerpts=24, excerpt_lines=90, excerpt_characters=8000, output_bytes=2 << 20)
 
 
-def _frontend_sources(root):
+def _frontend_sources(root, *, types=_TYPES, declarations_only=False):
     """Bounded text search including generic math/array prototype headers."""
     result = dict(status="INSPECTED", excerpts=[], notes=[],
                   coverage=dict(entries=0, files_read=0, bytes=0, symlinks_skipped=0))
@@ -41,8 +41,9 @@ def _frontend_sources(root):
     queue, seen = deque(seeds), set()
     ignored = {"__pycache__", ".git", "tbe", "ccec_compiler", "bisheng", "node_modules", "tikcpp", "ascendc"}
     result["excluded_directory_names"] = sorted(ignored)
-    token = re.compile(r"\b(?:ArgMaxExt2(?:Verify|Infer)?|ReduceMax(?:Verify|Infer)?|GatherV2D(?:Verify|Infer)?)\b")
-    macro = re.compile(r"\b(?:HIAI_)?REG_OP\s*\(\s*(ArgMaxExt2|ReduceMax|GatherV2D)\s*\)")
+    names = '|'.join(re.escape(name) for name in types)
+    token = re.compile(r"\b(?:" + names + r")(?:Verify|Infer)?\b")
+    macro = re.compile(r"\b(?:HIAI_)?REG_OP\s*\(\s*(" + names + r")\s*\)")
     end_macro = re.compile(r"\b(?:HIAI_OP_END|OP_END_FACTORY_REG)\s*\(")
 
     def note(path, message):
@@ -87,10 +88,11 @@ def _frontend_sources(root):
             # Declarations precede examples/comments so a nearby mention does
             # not consume a short context window and hide the actual prototype.
             declarations = [i for i, line in enumerate(lines) if macro.search(line)]
-            related = [i for i, line in enumerate(lines) if token.search(line) and not macro.search(line)]
+            related = ([] if declarations_only else
+                       [i for i, line in enumerate(lines) if token.search(line) and not macro.search(line)])
             for i in declarations + related:
                 line = lines[i]
-                if i in covered or not token.search(line):
+                if (i in covered and not macro.search(line)) or not token.search(line):
                     continue
                 if len(result["excerpts"]) >= _LIMITS["excerpts"]:
                     note(path, "excerpt budget reached")
@@ -140,7 +142,8 @@ def _reference(root, schema):
 
 def _node_summary(node, enums):
     from qwen35_moe_dflash.draft.compile_precision import _observed_desc
-    keys = {"axis", "axes", "dimension", "output_type", "keep_dims", "outmaxval", "topk", "dst_type"}
+    keys = {"axis", "axes", "dimension", "output_type", "keep_dims", "outmaxval", "topk", "dst_type",
+            "k", "dim", "sorted", "largest"}
     return dict(name=node.get("name"), type=node.get("type"), input=node.get("input", []),
         inputs=[_observed_desc(d, enums) for d in node.get("input_desc", [])],
         outputs=[_observed_desc(d, enums) for d in node.get("output_desc", [])],
@@ -183,7 +186,7 @@ def _compiled_model(model, schema, *, compact=False):
             spans.append((start, start + size))
             if task["cl_name"] == "CPUCL":
                 cpu.append((node["name"], task))
-    if len(cpu) > 16 or sum(t["bytes"] for _, t in cpu) > 32 << 20:
+    if len(cpu) > 64 or sum(t["bytes"] for _, t in cpu) > 32 << 20:
         raise ValueError("reference CPU slices exceed inspection budget")
     result = dict(status="INSPECTED", model=identity, main_partition_sha256=hashlib.sha256(raw).hexdigest(),
                   cpu_subgraphs=[], scope="COMPILED_CPU_EXAMPLE_NOT_FRONTEND_SCHEMA_OR_NPU_SUPPORT")
@@ -294,8 +297,19 @@ def placement_summary(report):
             row["cpu_operations"] = [dict(owner=g["owner"], **n)
                 for g in case["cpu_subgraphs"] for n in g["operations"]
                 if n["type"] not in {"Const", "Data", "NetOutput"}]
+            row["main_operations_outside_tasks"] = [n for n in case["main_nodes"]
+                if n["type"] not in {"Const", "Data", "GraphOp", "NetOutput"}]
+            owners = case["graphop_counts"]
+            row["npu_only_candidate"] = bool(owners.get("NPUCL") and set(owners) == {"NPUCL"}
+                and not row["cpu_operations"] and not row["main_operations_outside_tasks"])
+            row["placement_gate"] = ("NPU_TASKS_ONLY_AT_DECODED_GRAPH_LEVEL"
+                if row["npu_only_candidate"] else "CPU_OTHER_OWNER_OR_UNASSIGNED_MAIN_COMPUTE")
         cases.append(row)
+    from .top1_alternatives import FULL_CASES
     return dict(status=report["status"], cases=cases,
+                npu_only_cases=[r["case"] for r in cases if r.get("npu_only_candidate")],
+                npu_only_full_top1_candidates=[r["case"] for r in cases
+                    if r.get("npu_only_candidate") and r["case"] in FULL_CASES],
                 scope="COMPILED_CPU_OPERATIONS_AND_BOUNDARIES_NOT_NPU_KERNEL_INTERNALS_OR_PERFORMANCE")
 
 

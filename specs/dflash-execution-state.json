@@ -4242,7 +4242,7 @@
         ],
         "next": "READ_SAVED_COMPILER_ENVIRONMENT_AND_SELECTED_DDK_REDUCTION_REGISTRATION; NO_RECOMPILE_OR_DEVICE_RUN"
       },
-      "next": "RESEARCH_SELECTED_DDK_TOPK_VALUE_INDEX_AND_COMPARE_SELECT_TREE; NO_REPEAT_OF_COMPLETED_BATCH",
+      "next": "COMPILE_ONE_12_CASE_BUILTIN_TOPK_TREE_BATCH_WITH_AUTOMATIC_FRONTEND_AND_PLACEMENT_INSPECTION; REUSE_SUCCESSFUL_OMCS_FOR_DEVICE_VALIDATION",
       "registration_inspection": {
         "entry": "probe_draft_vector.py --inspect-top1 COMPILED_PROBES --ddk-root DDK",
         "run_id": "20261104T021319Z-1312-aa1ef2",
@@ -6445,6 +6445,59 @@
         "all_npu_placement": "NOT_VALIDATED",
         "device_execution": "NOT_RUN_NEW_CANDIDATES",
         "full_draft_changed": false
+      },
+      "alternative_suite": {
+        "status": "HOST_CHECKED_SELECTED_DDK_AND_DEVICE_PENDING",
+        "run_id": "20261104T065646Z-7503-f04a85",
+        "cases": [
+          "top1_topk_r15_d512_fp16",
+          "top1_topk_r485_d512_fp16",
+          "top1_topk_r7275_d512_fp16",
+          "top1_topk_r15_d485_fp16",
+          "top1_select_int32",
+          "top1_gather_int32",
+          "top1_compose_int32",
+          "top1_tree_r15_d485_fp16",
+          "top1_topk_direct_fp16",
+          "top1_topk_tiled_fp16",
+          "top1_topk_split15_fp16",
+          "top1_tree_full_fp16"
+        ],
+        "full_vocabulary_cases": [
+          "top1_topk_direct_fp16",
+          "top1_topk_tiled_fp16",
+          "top1_topk_split15_fp16",
+          "top1_tree_full_fp16"
+        ],
+        "entry": "targets/cpro/tools/probe_draft_vector.py --top1-alternatives",
+        "implementation": "model/qwen35_moe_dflash/draft/incremental/top1_alternatives.py",
+        "command_document": "docs/current-status.md",
+        "server_output": "$AI_RUN_DIR/draft/tests/top1-alternatives",
+        "schema": "EXISTING_PINNED_GE_TOPKV2_SELECTV2_EMITTER_AND_USER_OBSERVED_HIAI_GATHERV2D",
+        "frontend_audit": "AUTOMATIC_BOUNDED_SELECTED_DDK_DECLARATIONS_BEFORE_COMPILATION; TEXT_NOT_LOADED_REGISTRATION_PROOF",
+        "input_contract": "FINITE_FP16_LOGITS; EXPLICIT_INT32_HELPERS; NO_CHANGE_TO_OLD_NAN_CONTRACT",
+        "acceptance": "EXACT_OUTPUT_BYTES_ALL_TEN_REPEATS; DIRECT_NUMPY_ARGMAX_CROSS_CHECKED_WITH_PYTORCH",
+        "index_path": "INT32_ONLY; ADJACENT_TREE_TIES_LEFT_ODD_TAIL_CARRY; NO_FULL_INDEX_CONSTANT",
+        "placement_gate": "NPUCL_ONLY_AND_NO_CPU_OTHER_OWNER_OR_MAIN_COMPUTE_OUTSIDE_TASKS; NOT_INTERNAL_INSTRUCTION_PROOF",
+        "host_checks": {
+          "graph_replays": 12,
+          "logits_pytorch_crosschecks": 9,
+          "tree_widths": 20,
+          "old_probes_cpp_manifest_fixtures_unchanged": 26,
+          "synthetic_abi_cases": 12,
+          "fake_snapshot_calls": 120,
+          "late_large_index_corruption_rejected": true,
+          "mock_compile_failure_continues_with_automatic_reports": true,
+          "full_tree_construction_nodes": 273,
+          "full_tree_explicit_constant_bytes": 68
+        },
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "HOST_ONLY",
+        "all_npu_placement": "NOT_VALIDATED",
+        "latency": "NOT_MEASURED",
+        "full_draft_changed": false,
+        "paused_addcustom_path": "NOT_RESUMED"
       }
     }
   },

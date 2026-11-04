@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 from qwen35_moe_dflash.draft.incremental.top1_probe import CASES as TOP1_CASES
 from qwen35_moe_dflash.draft.incremental.top1_probe import NATIVE_CASES, NATIVE_SCHEMA
 from qwen35_moe_dflash.draft.incremental.top1_matrix import MATRIX_CASES
+from qwen35_moe_dflash.draft.incremental.top1_alternatives import CASES as ALTERNATIVE_CASES, FRONTEND_TYPES
 
 KIND = 'qwen35-draft-vector-probe'
 SCHEMA = ('https://github.com/Ascend/torchair/blob/'
@@ -440,18 +441,33 @@ def _run(args, root):
         'model_compilation': 'NOT_RUN', 'full_draft_changed': False, 'cases': [],
         'precision_request': ('FP16_PUBLIC_LOGITS_FP32_HIAI_FRONTEND_INT32_INDICES_DEFAULT_DDK_SELECTION'
             if any(case in NATIVE_CASES for case in args.cases) else
+            'FINITE_FP16_PUBLIC_LOGITS_FP32_FRONTEND_INT32_INDICES_DEFAULT_DDK'
+            if any(case in ALTERNATIVE_CASES for case in args.cases) else
             'SOURCE_FP16_LOGITS_INT32_INDICES_DEFAULT_DDK_SELECTION'
             if all(case in TOP1_CASES for case in args.cases) else
             'SOURCE_DECLARED_DTYPES_WITH_DEFAULT_OMG_ARITHMETIC_POLICY_NO_CPU_CUSTOMIZATION'),
         'weight_data_type': args.weight_data_type or 'OMG_DEFAULT',
         'schema_source': ('CASE_SPECIFIC_SELECTED_HIAI_FRONTEND_HEADERS_AND_PINNED_GE_AUXILIARIES'
-                          if any(case in NATIVE_CASES for case in args.cases) else SCHEMA),
+                          if any(case in (*NATIVE_CASES, *ALTERNATIVE_CASES) for case in args.cases) else SCHEMA),
         'platform': 'kirinx90'}
     if getattr(args, 'top1_matrix', False):
         result.update(suite=f'TOP1_SHAPE_AND_COMPOSITION_{len(MATRIX_CASES)}_CASES',
             precision_request='FP16_PUBLIC_INPUT_FP32_HIAI_FRONTEND_INT32_ARGMAX_FP32_MAX_DEFAULT_DDK_SELECTION')
+    if getattr(args, 'top1_alternatives', False):
+        result.update(suite=f'TOP1_BUILTIN_ALTERNATIVES_{len(ALTERNATIVE_CASES)}_CASES',
+            precision_request='FINITE_FP16_PUBLIC_LOGITS_FP32_FRONTEND_INT32_INDICES_DEFAULT_DDK',
+            schema_source=SCHEMA + '; OBSERVED_HIAI_GATHERV2D',
+            finite_input_contract=True)
     write_json(root / 'result.json', result)
     try:
+        if any(c in ALTERNATIVE_CASES for c in args.cases) and not args.plan_only:
+            from qwen35_moe_dflash.draft.incremental.top1_ir_inspect import _frontend_sources
+            sources = _frontend_sources(ddk, types=FRONTEND_TYPES, declarations_only=True)
+            sources.update(requested_types=list(FRONTEND_TYPES),
+                scope='SELECTED_DDK_DECLARATIONS_ONLY; NOT_LOADED_SCHEMA_OR_PLACEMENT_PROOF',
+                emitter_schema=SCHEMA)
+            write_json(root / 'frontend-sources.json', sources)
+            result['frontend_sources'] = dict(status=sources['status'], report='frontend-sources.json')
         for case in args.cases:
             folder = root / case
             folder.mkdir()
@@ -475,6 +491,9 @@ def _run(args, root):
                 row.update(schema_source=NATIVE_SCHEMA,
                     auxiliary_schema_source=SCHEMA,
                     implementation_request='OBSERVED_CPRO_IR_DEFAULT_DDK_SELECTION_NO_FORCED_PLACEMENT')
+            if case in ALTERNATIVE_CASES:
+                row.update(schema_source=SCHEMA + '; OBSERVED_HIAI_GATHERV2D',
+                    implementation_request='BUILTIN_GE_CANDIDATE_DEFAULT_DDK_SELECTION_NO_FORCED_PLACEMENT')
             if case == 'residual_addcustom_fp32':
                 row['schema_source'] = 'USER_OBSERVED_SELECTED_DDK_AddCustom_REGISTRATION_x_y_TO_z'
                 row['implementation_request'] = 'AddCustom_FP32_ND_DEFAULT_DDK_SELECTION_NO_FORCED_IMPLEMENTATION'
@@ -527,7 +546,7 @@ def _run(args, root):
     except Exception as error:
         result.update(status='FAILED', error=f'{type(error).__name__}: {error}')
     finally:
-        if getattr(args, 'top1_matrix', False) and not args.plan_only and result['status'] in {'COMPILED', 'PARTIAL'}:
+        if (getattr(args, 'top1_matrix', False) or getattr(args, 'top1_alternatives', False)) and not args.plan_only and result['status'] in {'COMPILED', 'PARTIAL'}:
             result['next'] = ('Read the automatic placement_inspection summary and placement-inspection.json. '
                 'Compare isolated reductions with composed graphs; device numerical and latency checks remain pending.')
         write_json(root / 'result.json', result)
@@ -548,7 +567,7 @@ def run(args):
         except BlockingIOError:
             raise ValueError('this probe slot is still running; retained') from None
         result = _run(args, root)
-        if getattr(args, 'top1_matrix', False) and not args.plan_only:
+        if (getattr(args, 'top1_matrix', False) or getattr(args, 'top1_alternatives', False)) and not args.plan_only:
             # _run has saved the terminal compilation report. Keep it unchanged
             # so the separate placement report can bind its source hash.
             if result['status'] in {'COMPILED', 'PARTIAL'}:
@@ -592,6 +611,8 @@ def main(argv=None):
     selection.add_argument('--cases', nargs='+', choices=CASES, default=list(VECTOR_CASES))
     selection.add_argument('--top1-matrix', action='store_true',
                            help=f'compile {len(MATRIX_CASES)} reduction shape/composition controls and inspect CPU placement in the same run')
+    selection.add_argument('--top1-alternatives', action='store_true',
+                           help=f'compile {len(ALTERNATIVE_CASES)} finite-input TopK/tree/index candidates and inspect all owners in one run')
     parser.add_argument('--plan-only', action='store_true', help='write source and fixtures without invoking any SDK')
     parser.add_argument('--replace', action='store_true', help='replace this completed probe slot; never shared models')
     parser.add_argument('--ge-root', default=os.environ.get('CANN_ROOT'))
@@ -606,6 +627,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.top1_matrix:
         args.cases = list(MATRIX_CASES)
+    if args.top1_alternatives:
+        args.cases = list(ALTERNATIVE_CASES)
     if args.timeout_seconds <= 0 or len(args.cases) != len(set(args.cases)):
         parser.error('timeout must be positive and cases must be distinct')
     inspections = (args.inspect_ddk, args.inspect_top1, args.inspect_top1_ir,
@@ -617,8 +640,8 @@ def main(argv=None):
     if args.reference_compiled and not args.inspect_top1_ir:
         parser.error('--reference-compiled requires --inspect-top1-ir')
     if any(inspections):
-        if args.output or args.replace or args.plan_only or args.top1_matrix:
-            parser.error('inspection cannot be combined with --output, --replace, --plan-only or --top1-matrix')
+        if args.output or args.replace or args.plan_only or args.top1_matrix or args.top1_alternatives:
+            parser.error('inspection cannot be combined with output/replacement/planning or a compilation suite')
     elif not args.output:
         parser.error('--output is required for compilation or --plan-only')
     try:
@@ -647,13 +670,12 @@ def main(argv=None):
         result = run(args)
         shown = {key: value for key, value in result.items() if key != 'cases'}
         shown['cases'] = [{key: value for key, value in row.items() if key != 'graph'} for row in result['cases']]
-        if args.top1_matrix:
-            shown['suite'] = f'TOP1_SHAPE_AND_COMPOSITION_{len(MATRIX_CASES)}_CASES'
+        if args.top1_matrix or args.top1_alternatives:
             shown['cases'] = [{key: row[key] for key in ('case', 'status', 'model_compilation',
                 'placement', 'graphop_counts', 'compilation_diagnostics', 'error') if key in row}
                 for row in result['cases']]
         print(json.dumps(shown, ensure_ascii=False, allow_nan=False))
-        if args.top1_matrix and result.get('placement_inspection', {}).get('status') in {'FAILED', 'PARTIAL'}:
+        if (args.top1_matrix or args.top1_alternatives) and result.get('placement_inspection', {}).get('status') in {'FAILED', 'PARTIAL'}:
             return 1
         return 0 if result['status'] in {'COMPILED', 'PLANNED'} else 1
     except (OSError, ValueError, RuntimeError) as error:

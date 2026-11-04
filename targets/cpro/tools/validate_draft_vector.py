@@ -30,6 +30,7 @@ from qwen35_moe_dflash.draft.incremental.embedding_probe import CASE as EMBEDDIN
 from qwen35_moe_dflash.draft.incremental.attention_probe import CASES as ATTENTION_CASES, KIND as ATTENTION_KIND
 from qwen35_moe_dflash.draft.incremental.attention_matrix import CASES as MATRIX_CASES, KIND as MATRIX_KIND
 from qwen35_moe_dflash.draft.incremental import top1_semantics
+from qwen35_moe_dflash.draft.incremental.top1_alternatives import CASES as ALTERNATIVE_CASES
 
 PYTORCH_CASES = set(STAGES.values())
 VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES, *top1_semantics.EXTRA_CASES)
@@ -210,8 +211,13 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
         cases.append(dict(case=name, **io, model=_file_record(model, name+'/model.omc'),
                           compiler_options=compilation.get('requested_options', {}),
                           graphop_counts=row['graphop_counts']))
+        if name in ALTERNATIVE_CASES:
+            cases[-1]['top1_contract'] = graph.output_contract
     result = dict(cases=cases, warmup=WARMUP, repetitions=REPETITIONS, atol=ATOL, rtol=RTOL,
                   scope='DECLARED_DTYPE_REGIONS_ONLY_NOT_FULL_DRAFT_VALIDATION', ddk_id=ddk_id, schema=schema.evidence)
+    if all(c['case'] in ALTERNATIVE_CASES for c in cases):
+        result.update(scope='FINITE_INPUT_BUILTIN_TOP1_CANDIDATES_NOT_NAN_CONTRACT_OR_FULL_DRAFT',
+                      exact_bytes=True)
     _save(out/'fixture/manifest.json', result)
     return result
 
@@ -273,6 +279,19 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
                     for index in bad[:max(0, 8-len(examples))]:
                         examples.append(dict(iteration=iteration, output=spec['name'],
                             flat_index=int(index), expected=int(expected[index]), actual=int(actual[index])))
+                elif case.get('top1_contract'):
+                    # Compare storage too: e.g. -0 versus +0 may be numerically
+                    # equal but fail this probe's exact value-output contract.
+                    width = dtype.itemsize
+                    bad = np.flatnonzero(np.any(
+                        np.frombuffer(observed_bytes, dtype='u1').reshape(-1, width) !=
+                        np.frombuffer(expected_bytes, dtype='u1').reshape(-1, width), axis=1))
+                    mismatches += int(bad.size)
+                    for index in bad[:max(0, 8-len(examples))]:
+                        examples.append(dict(iteration=iteration, output=spec['name'], flat_index=int(index),
+                            expected=float(expected[index]), actual=float(actual[index]) if np.isfinite(actual[index]) else str(actual[index]),
+                            expected_hex=expected_bytes[index*width:(index+1)*width].hex(),
+                            actual_hex=observed_bytes[index*width:(index+1)*width].hex()))
                 tensors.append(dict(iteration=iteration, name=spec['name'], passed=passed, finite=finite,
                     bytes_equal=exact,
                     max_abs_error=float(np.max(np.abs(delta))) if finite else None,
@@ -292,6 +311,9 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
             mean_ms=sum(timings)/REPETITIONS/1000, min_ms=min(timings)/1000, max_ms=max(timings)/1000))
         if meta.get('top1_semantics'):
             cases[-1].update(compiled_case=case['compiled_case'], scenario=case['scenario'],
+                mismatched_elements_all_calls=mismatches, mismatch_examples=examples)
+        elif case.get('top1_contract'):
+            cases[-1].update(top1_contract=case['top1_contract'],
                 mismatched_elements_all_calls=mismatches, mismatch_examples=examples)
     passed = all(r['passed'] for r in cases)
     report = dict(status='PASSED' if passed else 'NUMERICAL_FAILED', numerical_validation='PASSED' if passed else 'FAILED',
@@ -326,7 +348,7 @@ def analyze(directory):
                 if path.stat().st_size != spec['bytes'] or sha256_file(path) != spec['fixture_sha256']:
                     raise ValueError('retained input/reference changed after launch')
     comparison = compare(fixture, native, selection=report['validated_cases'])
-    if meta.get('top1_semantics'):
+    if meta.get('top1_semantics') or any(c['case'] in ALTERNATIVE_CASES for c in meta['cases']):
         return dict(comparison, artifact_kind=KIND, model_execution='NOT_RUN',
                     scope='RECOMPARE_RETAINED_TOP1_OUTPUTS_NO_DEVICE_EXECUTION')
     if meta.get('source_evidence',{}).get('artifact_kind') == MATRIX_KIND:

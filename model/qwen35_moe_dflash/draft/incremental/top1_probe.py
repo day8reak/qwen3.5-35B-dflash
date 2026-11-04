@@ -4,14 +4,15 @@ Legacy GE schemas are from the pinned TorchAir raw-op definitions. Native CPro
 candidates use the user's selected HIAI frontend headers, corroborated by the
 retained Draft's CPU ArgMaxExt2. FP16 input values widen to FP32 for that
 frontend's data ports. Actual compiler selection and placement remain unverified.
-All candidates must return the original smallest-index argmax, including across
-tiles. Nonfinite rows test behavior rather than assuming a vendor NaN policy.
+Full-vocabulary candidates require the smallest-index argmax across tiles.
+Legacy nonfinite rows test behavior rather than assuming a vendor NaN policy;
+the separate builtin alternative suite declares a finite-logit input domain.
 """
 import numpy as np
 
 from qwen35_moe_dflash.graph.fused.ir import Graph
 from qwen35_moe_dflash.graph.type_contracts import GE_DTYPE_IDS
-from . import top1_matrix
+from . import top1_matrix, top1_alternatives
 
 NATIVE_CASES = ('top1_ext2_fp16', 'top1_ext2_flat_fp16', 'top1_ext2_tiled_fp16',
                 'top1_ext2_tiled_flat_fp16', 'top1_ext2_tiled_transposed_fp16',
@@ -26,7 +27,8 @@ FRONTEND_HEADERS = {
     'ddk/ai_ddk_lib/include/graph/op/array_defs.h':
         '978d175bfb5b74f0a3d47d4803974f0ced33354557cf0764ec7137b54e311b65',
 }
-CASES = ('top1_argmax_fp16', 'top1_with_value_fp16', 'top1_tiled_fp16', *NATIVE_CASES)
+CASES = ('top1_argmax_fp16', 'top1_with_value_fp16', 'top1_tiled_fp16', *NATIVE_CASES,
+         *top1_alternatives.CASES)
 SHAPE = (1, 15, 248320)
 TILE = 512
 LABELS = ('all_equal', 'first', 'last', 'index_65535', 'index_65536',
@@ -71,6 +73,8 @@ def contract():
 def graph_case(case):
     if case not in CASES:
         raise ValueError('unknown full-vocabulary Top1 probe')
+    if case in top1_alternatives.CASES:
+        return top1_alternatives.graph_case(case)
     if case in top1_matrix.PRIMITIVES:
         return top1_matrix.graph_case(case, FRONTEND_HEADERS)
     g = Graph('draft_top1_probe')

@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "DRAFT_TOP1_DEVICE_BATCH_COMPLETE_ALL_NPU_ALTERNATIVES_UNDER_REVIEW",
+    "status": "DRAFT_TOP1_BUILTIN_ALTERNATIVES_HOST_READY_SELECTED_DDK_PENDING",
     "entry": "targets/cpro/scripts/export_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "COMPOSED_ATTENTION_TOP1_ISOLATED82_OF86_FEEDBACK83_OF86; HIDDEN_L2_1.34_TO2.61_PERCENT; APPENDED_KV_L2_0.44_TO0.83_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "61 cases completed with stable outputs; 45 pass and 16 fail synthetic mixed-NaN semantics. Keep non-NaN small NPU primitives as candidates, investigate TopK value/index and compare-select graphs; no repeat of the same batch or full-Draft integration. Full Draft remains 103.720ms and NUMERICAL_FAILED.",
+    "next": "Compile the single 12-case builtin TopK/tree/index suite with automatic source and owner inspection using docs/current-status.md. Reuse successful OMCs for later exact finite-input device comparison; no repeat of completed 61-case NaN batch. Full Draft remains 103.720ms and NUMERICAL_FAILED.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6263,6 +6263,13 @@
       "status": "OFFICIAL_WEB_SOURCES_REVIEWED_NOT_IMPLEMENTED",
       "run_id": "20261104T064450Z-6893-0209ce",
       "evidence": "specs/dflash-execution-state.json#incremental_draft_task/top1_builtin_probe/alternative_research",
+      "full_draft_changed": false
+    },
+    "top1_alternative_suite": {
+      "status": "HOST_CHECKED_SELECTED_DDK_AND_DEVICE_PENDING",
+      "run_id": "20261104T065646Z-7503-f04a85",
+      "cases": 12,
+      "evidence": "specs/dflash-execution-state.json#incremental_draft_task/top1_builtin_probe/alternative_suite",
       "full_draft_changed": false
     }
   }
