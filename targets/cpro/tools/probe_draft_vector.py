@@ -528,6 +528,9 @@ def _run(args, root):
 def run(args):
     import fcntl
     from qwen35_moe_dflash.common.artifacts import output_path
+    if any(case in NATIVE_CASES for case in args.cases):
+        raise ValueError('retained native Top1 expressions were rejected by OMG for missing a second input; '
+                         'use --inspect-top1-ir before revising the frontend contract; existing results retained')
     if Path(args.output).is_symlink():
         raise ValueError('probe output must not be a symlink')
     root = output_path(args.output)
@@ -548,6 +551,10 @@ def main(argv=None):
                         help='read saved compiler environment and selected DDK AddCustom registration; no writes or compilation')
     parser.add_argument('--inspect-top1', metavar='COMPILED_PROBES',
                         help='read saved Top1 compiler environments and selected DDK reduction registrations; no writes, compilation or device access')
+    parser.add_argument('--inspect-top1-ir', metavar='COMPILED_PROBES',
+                        help='read selected DDK frontend text and retained failed Top1 IR; no compilation or device access')
+    parser.add_argument('--reference-compiled', metavar='COMPILED_DRAFT',
+                        help='optional existing PyTorch Draft CPU node examples for --inspect-top1-ir')
     parser.add_argument('--inspect-rms', nargs='+', metavar='AIR',
                         help='read normalized Target/PyTorch AIR RMS descriptors without compiling or executing')
     parser.add_argument('--inspect-compile', metavar='COMPILED_PROBES',
@@ -568,16 +575,23 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.timeout_seconds <= 0 or len(args.cases) != len(set(args.cases)):
         parser.error('timeout must be positive and cases must be distinct')
-    if sum(bool(value) for value in (args.inspect_ddk, args.inspect_top1, args.inspect_rms, args.inspect_compile)) > 1:
+    if sum(bool(value) for value in (args.inspect_ddk, args.inspect_top1, args.inspect_top1_ir, args.inspect_rms, args.inspect_compile)) > 1:
         parser.error('select one read-only inspection mode')
     if args.torchair_pb2 and not args.inspect_rms:
         parser.error('--torchair-pb2 requires --inspect-rms')
-    if args.inspect_ddk or args.inspect_top1 or args.inspect_rms or args.inspect_compile:
+    if args.reference_compiled and not args.inspect_top1_ir:
+        parser.error('--reference-compiled requires --inspect-top1-ir')
+    if args.inspect_ddk or args.inspect_top1 or args.inspect_top1_ir or args.inspect_rms or args.inspect_compile:
         if args.output or args.replace or args.plan_only:
             parser.error('inspection cannot be combined with --output, --replace or --plan-only')
     elif not args.output:
         parser.error('--output is required for compilation or --plan-only')
     try:
+        if args.inspect_top1_ir:
+            from qwen35_moe_dflash.draft.incremental.top1_ir_inspect import inspect_top1_ir
+            print(json.dumps(inspect_top1_ir(args.inspect_top1_ir, args.ddk_root, args.reference_compiled),
+                             ensure_ascii=False, indent=2))
+            return 0
         if args.inspect_compile:
             print(json.dumps(inspect_compilation(args.inspect_compile), ensure_ascii=False, indent=2))
             return 0

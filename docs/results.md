@@ -1,5 +1,11 @@
 # 当前结果
 
+2026-11-04，用户回传8b80eec补output_type后的三个原生Top1探针仍全部编译失败、设备NOT_RUN。直接及展平版本在argmax_ext2、分块版本在winning_tile触发`Input size 1 is wrong, should be 2`，随后出现`Input[1] DataType FLOAT is wrong`。缺失第二输入后出现的dtype诊断不构成FP16 logits不支持的证据；没有已编译落点。上一版把NPU后端opinfo当成完整前端IR原型，接口假设错误；主机数学回放和发射检查未覆盖厂商前端合同。补output_type使校验走到输入合同，不证明完整属性语义已正确。
+
+停止重复编译已知无效表达，新增只读--inspect-top1-ir：从所选DDK通用头文件／前端源码提取声明，按保存DDK路径和编译清单检查失败图，并可读取保留完整Draft的CPU ArgMaxExt2及其直接输入生产者。失败图仅尝试所选DDK的HIAI ModelDef schema；CPU切片按packing schema、owner、范围和不重叠约束读取。厂商库只作字节读取，不import／dlopen／执行，不写入输入目录。头文件、失败图和已编译CPU示例分别标注证据范围；没有猜第二输入端口名、轴值或ReduceMax空shape原因，也没有宣称解决NPU回落。
+
+导出检查改为所选OMG已观察到的二输入数量要求；三个原生case在CLI替换测试槽前拒绝重试，保留失败证据。日志优先展示具体输入数量错误，避免次生dtype报错遮蔽原因。主机run `20261104T024333Z-2592-afd370`：69项检查通过，包括真实只读schema解码器处理合成ELF／IR／CPU OMC、通用头文件摘录、DDK及清单不匹配、损坏／重叠／owner错配的切片拒绝、链接与预算处理、CLI互斥、输入字节未变，以及六图／fixture保留和旧三图发射兼容。测试中的合成proto最初使用无presence的proto3零值，导致任务offset缺字段而被拒绝；改为有presence的合成字段后通过，未放松实际解析约束。未调用所选DDK或设备。完整Draft仍103.720ms／NUMERICAL_FAILED，下一条只读命令见[当前阶段](current-status.md)。
+
 2026-11-04，用户回传三个原生Top1探针全部OMG编译失败、设备NOT_RUN。直接／展平版本在argmax_ext2节点、分块版本在winning_tile节点触发同一具体错误：`math_op_infershapes.cpp ArgMaxExt2Verify(476): AttrName output_type not exis.`。因此本轮没有验证出大轴或分块的实现限制，也没有可用于落点判断的OMC。分块日志显示Reshape到[15,485,512]和local_value／ReduceMax infershape success，随后winning_tile input shape为空；此现象尚未解释，不以“success”断言其shape正确或NPU可用。
 
 探针上一版只使用NPU opinfo中的dimension属性，遗漏OMG IR校验要求的output_type。现为所有原生ArgMaxExt2补整数属性output_type=3（现用GE INT32枚举），不以输出描述代替属性、不使用私有protobuf dtype编号。发射前合同新增属性／输出一致性检查；已有旧图缺属性会在导出前拒绝。日志诊断将AttrName缺失信息置于一般Verify失败和可选kernel库提示之前，保留原始tail与有界读取。该设置的所选OMG接受情况仍待服务器重编，不宣称已解决NPU回落。

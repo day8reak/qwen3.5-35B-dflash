@@ -1,8 +1,10 @@
 """Full-vocabulary Top1 placement candidates; no learned weights or model edits.
 
 Legacy GE schemas are from the pinned TorchAir raw-op definitions. Native CPro
-candidates use the user's selected npu_generated_opinfo.json registration.
-Schema availability is not selected X90 DDK implementation or placement proof.
+candidates retain the user's selected backend opinfo expression for diagnosis.
+OMG rejected its one-input ArgMaxExt2; export is blocked by the observed arity
+check pending the selected frontend IR contract. Backend registration is not
+a frontend schema or selected X90 DDK implementation/placement proof.
 All candidates must return the original smallest-index argmax, including across
 tiles. Nonfinite rows test behavior rather than assuming a vendor NaN policy.
 """
@@ -14,7 +16,7 @@ from qwen35_moe_dflash.graph.type_contracts import GE_DTYPE_IDS
 NATIVE_CASES = ('top1_ext2_fp16', 'top1_ext2_flat_fp16', 'top1_ext2_tiled_fp16')
 NATIVE_SCHEMA = ('USER_OBSERVED_SELECTED_DDK_tools/tools_omg/master/lib64/config/'
                  'npu_generated_opinfo.json:ArgMaxExt2,ReduceMax; '
-                 'OMG_ArgMaxExt2Verify_REQUIRES_output_type')
+                 'OMG_REJECTED_ONE_INPUT_FRONTEND_CONTRACT_PENDING')
 CASES = ('top1_argmax_fp16', 'top1_with_value_fp16', 'top1_tiled_fp16', *NATIVE_CASES)
 SHAPE = (1, 15, 248320)
 TILE = 512
@@ -97,8 +99,8 @@ def graph_case(case):
         tiles = SHAPE[-1] // TILE
         tiled = reshape(x, (15, tiles, TILE), 'tiles')
         local_index = ext2(tiled, (15, tiles), 2, 'local_argmax')
-        # CPro's observed ReduceMax has ONE input and an axes ATTRIBUTE.
-        # Do not substitute the newer public GE schema with an axes input.
+        # Retain the rejected experiment's backend opinfo form for inspection.
+        # Its frontend axis contract and inferred output shape are unverified.
         local_value = g.custom('ReduceMax', {'x': tiled},
             {'y': ((15, tiles), 'float16')},
             {'axes': {'type': 'ints', 'value': [2]},

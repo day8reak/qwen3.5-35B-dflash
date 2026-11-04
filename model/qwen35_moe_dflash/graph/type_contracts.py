@@ -59,7 +59,11 @@ def validate_record_types(record):
         require(attrs.get("dtype") == {"type": "dtype", "value": outputs["y"]["dtype"]},
                 "ArgMax dtype must match its output descriptor")
     elif typ == "ArgMaxExt2":
-        ports(("x",))
+        # Selected OMG rejected the backend opinfo's one-input expression.
+        # The frontend's port names/axis contract still require local evidence.
+        require(len(record["inputs"]) == 2,
+                "selected OMG ArgMaxExt2 requires two inputs; inspect its frontend IR contract")
+        require(set(outputs) == {"y"}, "unexpected ArgMaxExt2 output ports")
         require(outputs["y"]["dtype"] in _INTEGER, "ArgMaxExt2 indices must be int32 or int64")
         require(attrs.get("output_type") ==
                 {"type": "int", "value": GE_DTYPE_IDS[outputs["y"]["dtype"]]},

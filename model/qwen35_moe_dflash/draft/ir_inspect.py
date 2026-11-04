@@ -28,7 +28,9 @@ _ATTRIBUTES = {"dtype", "shape", "file_path", "file_id", "transpose_x1", "transp
                "transpose_a", "transpose_b", "adj_x1", "adj_x2", "value", "scale",
                "shift", "power", "dst_type", "src_type", "epsilon", "alpha", "beta",
                "num_heads", "num_key_value_heads", "block_size", "input_layout", "inner_precise",
-               "scale_value", "sparse_mode", "pre_tokens", "next_tokens"}
+               "scale_value", "sparse_mode", "pre_tokens", "next_tokens",
+               "dimension", "axis", "axes", "output_type", "keep_dims", "keepdims",
+               "topk", "outmaxval"}
 
 
 def _read(path, limit):
