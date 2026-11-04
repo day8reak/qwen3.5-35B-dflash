@@ -984,7 +984,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "No relaunch/recovery needed for completed Top1 batch. Review alternative all-NPU algorithms and selected-DDK frontend/backend support before one bounded candidate batch; see docs/current-status.md.",
+    "next_command": "Compile final gated builtin batch with --top1-bitcarrier; see docs/current-status.md. No previous batch relaunch. Conditional custom Top1 authorization recorded.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -6612,7 +6612,50 @@
         "implementation": "NOT_STARTED",
         "device_execution": "NOT_RUN",
         "full_draft_changed": false,
-        "paused_addcustom_path": "NOT_RESUMED_BY_EVALUATION_REQUEST"
+        "paused_addcustom_path": "NOT_RESUMED_BY_EVALUATION_REQUEST",
+        "followup_authorization": "USER_AUTHORIZED_CUSTOM_TOP1_IF_LAST_BUILTIN_ATTEMPT_FAILS; IMPLEMENTATION_NOT_YET_STARTED"
+      },
+      "last_builtin_attempt": {
+        "status": "IMPLEMENTED_HOST_VALIDATED_SELECTED_DDK_PENDING",
+        "run_id": "20261104T073410Z-8724-fa9f44",
+        "user_request": "你再尝试一下？实在不行那我们就写算子",
+        "conditional_authorization": "IF_FINAL_BUILTIN_ROUTE_FAILS_PROCEED_WITH_BOUNDED_CUSTOM_TOP1; NO_NEW_PERMISSION_NEEDED_FOR_THIS_SCOPE",
+        "entry": "probe_draft_vector.py --top1-bitcarrier",
+        "output_slot": "draft/tests/top1-last-builtin",
+        "cases": [
+          "top1_bits_payload",
+          "top1_bits_tree_offset65500",
+          "top1_bits_tree_full"
+        ],
+        "algorithm": "STABLE_ADJACENT_TREE; TWO_OPAQUE_FP16_WORDS_PER_INT32_ID; TERMINAL_GE_BITCAST",
+        "payload_contract": "ALL_248320_IDS_BOTH_SELECT_BRANCHES_TWICE; ALL_65536_LOW_WORD_PATTERNS; NO_FLOAT_ARITHMETIC_OR_CAST_ON_PAYLOAD",
+        "logit_contract": "FINITE_FP16; FIRST_MAXIMUM; FULL_VOCABULARY; EXACT_INT32_ABI",
+        "compile_gate": "DEPENDENCIES_REQUIRE_SUCCESSFUL_COMPILE_NPUCL_ONLY_NO_UNASSIGNED_MAIN_COMPUTE; OTHERWISE_SKIP_DEPENDENTS",
+        "device_gate": "ALL_THREE_HASH_BOUND_MODELS_TOGETHER; FRESH_PLACEMENT_CHECK; 3_WARMUP_10_CALLS_EXACT_BYTES",
+        "schema_source": "https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py#L68735",
+        "schema_scope": "PUBLIC_GE_PROTOTYPE_NOT_SELECTED_CPRO_SUPPORT_PROOF",
+        "host_validation": {
+          "status": "PASSED",
+          "ids": 248320,
+          "low_word_patterns": 65536,
+          "tree_replays": 57,
+          "tree_widths": 19,
+          "old_cases_unchanged": 38,
+          "fake_snapshots": 30,
+          "mock_compile_paths": 6,
+          "actual_plan_cli": "PASSED",
+          "compiled_abi_prepare": "HOST_FAKE_PASSED",
+          "fresh_cpu_reinspection_rejected": true,
+          "subset_or_reorder_rejected": true,
+          "invalid_cli_modes_rejected": 4,
+          "invalid_bitcast_shape_rejected": true
+        },
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
+        "latency": "NOT_MEASURED",
+        "full_draft_changed": false,
+        "fallback": "BOUNDED_CUSTOM_TOP1_AFTER_FAILURE_OR_NO_MEASURED_BENEFIT; DO_NOT_EXPAND_BUILTIN_MATRIX"
       }
     }
   },

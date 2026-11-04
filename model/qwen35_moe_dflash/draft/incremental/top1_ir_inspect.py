@@ -143,7 +143,7 @@ def _reference(root, schema):
 def _node_summary(node, enums):
     from qwen35_moe_dflash.draft.compile_precision import _observed_desc
     keys = {"axis", "axes", "dimension", "output_type", "keep_dims", "outmaxval", "topk", "dst_type",
-            "k", "dim", "sorted", "largest"}
+            "k", "dim", "sorted", "largest", "type", "keep_dim"}
     return dict(name=node.get("name"), type=node.get("type"), input=node.get("input", []),
         inputs=[_observed_desc(d, enums) for d in node.get("input_desc", [])],
         outputs=[_observed_desc(d, enums) for d in node.get("output_desc", [])],
@@ -306,10 +306,11 @@ def placement_summary(report):
                 if row["npu_only_candidate"] else "CPU_OTHER_OWNER_OR_UNASSIGNED_MAIN_COMPUTE")
         cases.append(row)
     from .top1_alternatives import FULL_CASES
+    from .top1_bitcarrier import FULL_CASES as BITCARRIER_FULL_CASES
     return dict(status=report["status"], cases=cases,
                 npu_only_cases=[r["case"] for r in cases if r.get("npu_only_candidate")],
                 npu_only_full_top1_candidates=[r["case"] for r in cases
-                    if r.get("npu_only_candidate") and r["case"] in FULL_CASES],
+                    if r.get("npu_only_candidate") and r["case"] in (*FULL_CASES, *BITCARRIER_FULL_CASES)],
                 scope="COMPILED_CPU_OPERATIONS_AND_BOUNDARIES_NOT_NPU_KERNEL_INTERNALS_OR_PERFORMANCE")
 
 

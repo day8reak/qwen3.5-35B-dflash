@@ -12,7 +12,7 @@ import numpy as np
 
 from qwen35_moe_dflash.graph.fused.ir import Graph
 from qwen35_moe_dflash.graph.type_contracts import GE_DTYPE_IDS
-from . import top1_matrix, top1_alternatives
+from . import top1_matrix, top1_alternatives, top1_bitcarrier
 
 NATIVE_CASES = ('top1_ext2_fp16', 'top1_ext2_flat_fp16', 'top1_ext2_tiled_fp16',
                 'top1_ext2_tiled_flat_fp16', 'top1_ext2_tiled_transposed_fp16',
@@ -28,7 +28,7 @@ FRONTEND_HEADERS = {
         '978d175bfb5b74f0a3d47d4803974f0ced33354557cf0764ec7137b54e311b65',
 }
 CASES = ('top1_argmax_fp16', 'top1_with_value_fp16', 'top1_tiled_fp16', *NATIVE_CASES,
-         *top1_alternatives.CASES)
+         *top1_alternatives.CASES, *top1_bitcarrier.CASES)
 SHAPE = (1, 15, 248320)
 TILE = 512
 LABELS = ('all_equal', 'first', 'last', 'index_65535', 'index_65536',
@@ -71,6 +71,8 @@ def contract():
 
 
 def graph_case(case):
+    if case in top1_bitcarrier.CASES:
+        return top1_bitcarrier.graph_case(case)
     if case not in CASES:
         raise ValueError('unknown full-vocabulary Top1 probe')
     if case in top1_alternatives.CASES:

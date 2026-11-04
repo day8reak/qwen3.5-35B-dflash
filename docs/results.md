@@ -1,5 +1,9 @@
 # 当前结果
 
+2026-11-04，按用户“你再尝试一下？实在不行那我们就写算子”实现最后一轮内置候选：用两个FP16存储字携带INT32原始位，比较／选择树只搬运索引片段，最后GE Bitcast还原INT32。三项固定顺序为全ID双分支位模式、65500偏移的15×485奇数尾归约、完整词表Top1。前置编译或纯NPU检查失败会跳过后续编译；完整图只有全部NPU任务且无未归属主图计算才是候选。设备准备要求三项一起验证并重新检查落点。该路径有意避开旧INT32 Select／Mul／Add及BOOL→INT32 Cast，禁止对载荷字做浮点计算或转换；载荷中的NaN位模式也必须逐字节保留。
+
+主机run `20261104T073410Z-8724-fa9f44`：248320索引位表示往返、全部65536种低半字、三图回放与两图PyTorch直接ArgMax、19种宽度57次并列／首末／奇数尾树回放通过；原38图manifest／发射C++／fixture完全相同。实际比较入口处理三项各10次伪设备快照，最后一次高位索引差1被拒绝；伪设备不能充当真实设备证据。6种模拟编译流程覆盖前置编译失败、CPU落点、未归属主图Cast、小树失败、完整图CPU及三项通过，验证依赖跳过逻辑。公开GE Bitcast原型不等于所选DDK的支持证明；本地没有执行所选DDK、设备或完整Draft。当前命令见[当前进展](current-status.md)，新方案失败后的自定义Top1授权已记录，残差AddCustom继续暂停。
+
 2026-11-04，用户回传12项内置Top1替代批次：10项编译成功、2项树失败，`npu_only_cases`和`npu_only_full_top1_candidates`均为空。4个独立TopK全为CPUCL1；直接完整TopK为NPUCL1／CPUCL1，tiled与split15均为NPUCL2／CPUCL2，CPU任务明确包含`TopKD`，split15的15个局部TopK也全在CPU。Select控制为NPUCL1／CPUCL1，INT32 Select在CPU；GatherV2D和INT32 Mul／Add控制均为CPUCL1。两棵树在NPUCL编译`CastT tree_0_index`时报`kernelId not registered: 196620`；源节点是BOOL→INT32，失败图没有可用落点。来源为用户粘贴，未提供本批OMC哈希；设备和数值均NOT_RUN，完整Draft未改。本批不安排重复运行。
 
 用户随后要求评估是否有必要自写算子。结论：针对纯NPU及精确INT32 ABI，值得做范围固定的自定义Top1可行性原型；首要风险是所选X90 DDK编译／注册／运行链路，而非归约数学。评估覆盖核内分块值／索引归约、同值最小全局索引、INT32输出、完整词表等价基线及整模型回归。主机穷举确认0–248319中单FP16仅7168个索引能精确表示，首个失真2049；双FP16分量可数学精确还原，但纯NPU INT32重建未证明。此结果不授权降精度或修改输出ABI。本轮没有恢复AddCustom、编写自定义内核或执行新设备探针；详细判断见[当前进展](current-status.md)。评估run为20261104T072307Z-8454-abb9a6。

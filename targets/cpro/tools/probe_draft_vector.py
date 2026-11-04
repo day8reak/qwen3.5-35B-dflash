@@ -15,6 +15,7 @@ from qwen35_moe_dflash.draft.incremental.top1_probe import CASES as TOP1_CASES
 from qwen35_moe_dflash.draft.incremental.top1_probe import NATIVE_CASES, NATIVE_SCHEMA
 from qwen35_moe_dflash.draft.incremental.top1_matrix import MATRIX_CASES
 from qwen35_moe_dflash.draft.incremental.top1_alternatives import CASES as ALTERNATIVE_CASES, FRONTEND_TYPES
+from qwen35_moe_dflash.draft.incremental import top1_bitcarrier as bitcarrier
 
 KIND = 'qwen35-draft-vector-probe'
 SCHEMA = ('https://github.com/Ascend/torchair/blob/'
@@ -458,17 +459,33 @@ def _run(args, root):
             precision_request='FINITE_FP16_PUBLIC_LOGITS_FP32_FRONTEND_INT32_INDICES_DEFAULT_DDK',
             schema_source=SCHEMA + '; OBSERVED_HIAI_GATHERV2D',
             finite_input_contract=True)
+    if getattr(args, 'top1_bitcarrier', False):
+        result.update(suite='TOP1_LAST_BUILTIN_BITCARRIER_3_GATED_CASES',
+            precision_request='FINITE_FP16_LOGITS_OPAQUE_FP16_WORDS_BITCAST_INT32',
+            schema_source=SCHEMA, finite_logit_contract=True,
+            payload_contract='BIT_EXACT_ALL_TOKEN_IDS_BOTH_SELECT_BRANCHES_DEVICE_UNVERIFIED')
     write_json(root / 'result.json', result)
     try:
-        if any(c in ALTERNATIVE_CASES for c in args.cases) and not args.plan_only:
+        if any(c in (*ALTERNATIVE_CASES, *bitcarrier.CASES) for c in args.cases) and not args.plan_only:
             from qwen35_moe_dflash.draft.incremental.top1_ir_inspect import _frontend_sources
-            sources = _frontend_sources(ddk, types=FRONTEND_TYPES, declarations_only=True)
-            sources.update(requested_types=list(FRONTEND_TYPES),
+            types = bitcarrier.FRONTEND_TYPES if getattr(args, 'top1_bitcarrier', False) else FRONTEND_TYPES
+            sources = _frontend_sources(ddk, types=types, declarations_only=True)
+            sources.update(requested_types=list(types),
                 scope='SELECTED_DDK_DECLARATIONS_ONLY; NOT_LOADED_SCHEMA_OR_PLACEMENT_PROOF',
                 emitter_schema=SCHEMA)
             write_json(root / 'frontend-sources.json', sources)
             result['frontend_sources'] = dict(status=sources['status'], report='frontend-sources.json')
         for case in args.cases:
+            if case in bitcarrier.DEPENDENCIES and not args.plan_only:
+                prior = {r['case']: r for r in result['cases']}
+                blocked = [c for c in bitcarrier.DEPENDENCIES[case]
+                           if prior.get(c, {}).get('status') != 'COMPILED'
+                           or not prior.get(c, {}).get('bitcarrier_gate', {}).get('npu_only_candidate')]
+                if blocked:
+                    result['cases'].append(dict(case=case, status='SKIPPED', model_compilation='NOT_RUN',
+                        error='Last builtin prerequisite failed compilation or NPU-only placement: ' + ', '.join(blocked)))
+                    write_json(root / 'result.json', result)
+                    continue
             folder = root / case
             folder.mkdir()
             air_dir = folder / 'air'
@@ -494,6 +511,9 @@ def _run(args, root):
             if case in ALTERNATIVE_CASES:
                 row.update(schema_source=SCHEMA + '; OBSERVED_HIAI_GATHERV2D',
                     implementation_request='BUILTIN_GE_CANDIDATE_DEFAULT_DDK_SELECTION_NO_FORCED_PLACEMENT')
+            if case in bitcarrier.CASES:
+                row.update(schema_source=SCHEMA,
+                    implementation_request='BUILTIN_BIT_PRESERVING_SELECT_AND_BITCAST_NO_CUSTOM_KERNEL')
             if case == 'residual_addcustom_fp32':
                 row['schema_source'] = 'USER_OBSERVED_SELECTED_DDK_AddCustom_REGISTRATION_x_y_TO_z'
                 row['implementation_request'] = 'AddCustom_FP32_ND_DEFAULT_DDK_SELECTION_NO_FORCED_IMPLEMENTATION'
@@ -529,6 +549,16 @@ def _run(args, root):
                 write_json(folder / 'placement.json', placement)
                 row.update(status='COMPILED', placement=placement['status'], graphop_counts=placement['graphop_counts'],
                            precision_boundaries=placement['precision_boundaries'])
+                if case in bitcarrier.CASES:
+                    from qwen35_moe_dflash.draft.incremental.top1_ir_inspect import _compiled_model, placement_summary
+                    from qwen35_moe_dflash.toolchain.omc_wire import load_schema
+                    inspected = _compiled_model(root / row['omc'], load_schema(schema), compact=True)
+                    inspected.update(case=case, status='INSPECTED')
+                    gate = placement_summary(dict(status='INSPECTED', cases=[inspected]))['cases'][0]
+                    row['bitcarrier_gate'] = dict(npu_only_candidate=gate['npu_only_candidate'],
+                        placement_gate=gate['placement_gate'], model_sha256=inspected['model']['sha256'],
+                        numerical_validation='NOT_RUN')
+                    write_json(folder / 'bitcarrier-placement.json', gate)
             except (OSError, ValueError, KeyError, RuntimeError) as error:
                 row.update(status='FAILED', error=f'{type(error).__name__}: {error}')
             write_json(root / 'result.json', result)
@@ -546,9 +576,15 @@ def _run(args, root):
     except Exception as error:
         result.update(status='FAILED', error=f'{type(error).__name__}: {error}')
     finally:
-        if (getattr(args, 'top1_matrix', False) or getattr(args, 'top1_alternatives', False)) and not args.plan_only and result['status'] in {'COMPILED', 'PARTIAL'}:
+        if (getattr(args, 'top1_matrix', False) or getattr(args, 'top1_alternatives', False) or getattr(args, 'top1_bitcarrier', False)) and not args.plan_only and result['status'] in {'COMPILED', 'PARTIAL'}:
             result['next'] = ('Read the automatic placement_inspection summary and placement-inspection.json. '
                 'Compare isolated reductions with composed graphs; device numerical and latency checks remain pending.')
+        if getattr(args, 'top1_bitcarrier', False) and not args.plan_only:
+            candidates = [r for r in result['cases'] if r.get('status') == 'COMPILED'
+                          and r.get('bitcarrier_gate', {}).get('npu_only_candidate')]
+            result['next'] = ('ALL_THREE_NPU_ONLY_AT_GRAPH_LEVEL; VALIDATE_ALL_PAYLOAD_BYTES_AND_FULL_TOP1_ON_DEVICE'
+                if len(candidates) == len(bitcarrier.CASES) else
+                'LAST_BUILTIN_ROUTE_NOT_ESTABLISHED; RETAIN_DIAGNOSTICS_AND_PROCEED_TO_BOUNDED_CUSTOM_TOP1')
         write_json(root / 'result.json', result)
     return result
 
@@ -567,7 +603,7 @@ def run(args):
         except BlockingIOError:
             raise ValueError('this probe slot is still running; retained') from None
         result = _run(args, root)
-        if (getattr(args, 'top1_matrix', False) or getattr(args, 'top1_alternatives', False)) and not args.plan_only:
+        if (getattr(args, 'top1_matrix', False) or getattr(args, 'top1_alternatives', False) or getattr(args, 'top1_bitcarrier', False)) and not args.plan_only:
             # _run has saved the terminal compilation report. Keep it unchanged
             # so the separate placement report can bind its source hash.
             if result['status'] in {'COMPILED', 'PARTIAL'}:
@@ -613,6 +649,8 @@ def main(argv=None):
                            help=f'compile {len(MATRIX_CASES)} reduction shape/composition controls and inspect CPU placement in the same run')
     selection.add_argument('--top1-alternatives', action='store_true',
                            help=f'compile {len(ALTERNATIVE_CASES)} finite-input TopK/tree/index candidates and inspect all owners in one run')
+    selection.add_argument('--top1-bitcarrier', action='store_true',
+                           help='last builtin attempt: exhaustive payload helper, odd tree, full Top1; stop dependencies at failed NPU placement')
     parser.add_argument('--plan-only', action='store_true', help='write source and fixtures without invoking any SDK')
     parser.add_argument('--replace', action='store_true', help='replace this completed probe slot; never shared models')
     parser.add_argument('--ge-root', default=os.environ.get('CANN_ROOT'))
@@ -629,6 +667,12 @@ def main(argv=None):
         args.cases = list(MATRIX_CASES)
     if args.top1_alternatives:
         args.cases = list(ALTERNATIVE_CASES)
+    if args.top1_bitcarrier:
+        args.cases = list(bitcarrier.CASES)
+    if any(c in bitcarrier.CASES for c in args.cases) and not args.top1_bitcarrier:
+        parser.error('use --top1-bitcarrier so prerequisite gates cannot be bypassed')
+    if args.top1_bitcarrier and args.weight_data_type:
+        parser.error('bit-carrier probes require default weight selection; numerical conversion is not allowed')
     if args.timeout_seconds <= 0 or len(args.cases) != len(set(args.cases)):
         parser.error('timeout must be positive and cases must be distinct')
     inspections = (args.inspect_ddk, args.inspect_top1, args.inspect_top1_ir,
@@ -640,7 +684,7 @@ def main(argv=None):
     if args.reference_compiled and not args.inspect_top1_ir:
         parser.error('--reference-compiled requires --inspect-top1-ir')
     if any(inspections):
-        if args.output or args.replace or args.plan_only or args.top1_matrix or args.top1_alternatives:
+        if args.output or args.replace or args.plan_only or args.top1_matrix or args.top1_alternatives or args.top1_bitcarrier:
             parser.error('inspection cannot be combined with output/replacement/planning or a compilation suite')
     elif not args.output:
         parser.error('--output is required for compilation or --plan-only')
@@ -670,12 +714,15 @@ def main(argv=None):
         result = run(args)
         shown = {key: value for key, value in result.items() if key != 'cases'}
         shown['cases'] = [{key: value for key, value in row.items() if key != 'graph'} for row in result['cases']]
-        if args.top1_matrix or args.top1_alternatives:
+        if args.top1_matrix or args.top1_alternatives or args.top1_bitcarrier:
             shown['cases'] = [{key: row[key] for key in ('case', 'status', 'model_compilation',
-                'placement', 'graphop_counts', 'compilation_diagnostics', 'error') if key in row}
+                'placement', 'graphop_counts', 'bitcarrier_gate', 'compilation_diagnostics', 'error') if key in row}
                 for row in result['cases']]
         print(json.dumps(shown, ensure_ascii=False, allow_nan=False))
-        if (args.top1_matrix or args.top1_alternatives) and result.get('placement_inspection', {}).get('status') in {'FAILED', 'PARTIAL'}:
+        if (args.top1_matrix or args.top1_alternatives or args.top1_bitcarrier) and result.get('placement_inspection', {}).get('status') in {'FAILED', 'PARTIAL'}:
+            return 1
+        if args.top1_bitcarrier and not args.plan_only and not all(
+                r.get('bitcarrier_gate', {}).get('npu_only_candidate') for r in result['cases']):
             return 1
         return 0 if result['status'] in {'COMPILED', 'PLANNED'} else 1
     except (OSError, ValueError, RuntimeError) as error:

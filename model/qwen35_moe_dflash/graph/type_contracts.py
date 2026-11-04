@@ -51,6 +51,16 @@ def validate_record_types(record):
         require(list(inputs["x"]["shape"]) == list(outputs["y"]["shape"]), "Cast must preserve shape")
         require(attrs.get("dst_type") == {"type": "int", "value": GE_DTYPE_IDS[outputs["y"]["dtype"]]},
                 "Cast dst_type must match its output descriptor")
+    elif typ == "Bitcast":
+        # Only this bounded probe's packing recipe; not a general GE schema.
+        ports(("x",))
+        require(inputs["x"]["dtype"] == "float16" and outputs["y"]["dtype"] == "int32",
+                "probe Bitcast requires FP16 storage words and INT32 output")
+        require(list(inputs["x"]["shape"]) == list(outputs["y"]["shape"]) + [2],
+                "probe Bitcast must consume exactly two words per INT32")
+        require(attrs == {"type": {"type": "dtype", "value": "int32"},
+                          "keep_dim": {"type": "bool", "value": False}},
+                "probe Bitcast requires type=int32 and keep_dim=false")
     elif typ == "ArgMaxV2":
         ports(("x", "dimension"))
         integer("dimension")

@@ -31,6 +31,7 @@ from qwen35_moe_dflash.draft.incremental.attention_probe import CASES as ATTENTI
 from qwen35_moe_dflash.draft.incremental.attention_matrix import CASES as MATRIX_CASES, KIND as MATRIX_KIND
 from qwen35_moe_dflash.draft.incremental import top1_semantics
 from qwen35_moe_dflash.draft.incremental.top1_alternatives import CASES as ALTERNATIVE_CASES
+from qwen35_moe_dflash.draft.incremental.top1_bitcarrier import CASES as BITCARRIER_CASES
 
 PYTORCH_CASES = set(STAGES.values())
 VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES, *top1_semantics.EXTRA_CASES)
@@ -169,6 +170,14 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
     rows = [by_name[name] for name in selected_cases(available if selection is None else selection, available)]
     if any(row.get('status') != 'COMPILED' or row.get('model_compilation') != 'PASSED' for row in rows):
         raise ValueError('every selected probe must have compiled successfully')
+    if any(row['case'] in BITCARRIER_CASES for row in rows):
+        if tuple(row['case'] for row in rows) != BITCARRIER_CASES:
+            raise ValueError('last builtin validation must include all three cases in prerequisite order')
+        from qwen35_moe_dflash.draft.incremental.top1_ir_inspect import inspect_top1_placement, placement_summary
+        checked = placement_summary(inspect_top1_placement(root, ddk))
+        if (checked['status'] != 'INSPECTED'
+                or set(checked['npu_only_cases']) != set(BITCARRIER_CASES)):
+            raise ValueError('last builtin cases did not all pass fresh NPU-only placement inspection')
     schema = load_schema(Path(ddk)/'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')
     enums = _enum_fields(schema)
     cases = []
@@ -211,12 +220,15 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
         cases.append(dict(case=name, **io, model=_file_record(model, name+'/model.omc'),
                           compiler_options=compilation.get('requested_options', {}),
                           graphop_counts=row['graphop_counts']))
-        if name in ALTERNATIVE_CASES:
+        if name in (*ALTERNATIVE_CASES, *BITCARRIER_CASES):
             cases[-1]['top1_contract'] = graph.output_contract
     result = dict(cases=cases, warmup=WARMUP, repetitions=REPETITIONS, atol=ATOL, rtol=RTOL,
                   scope='DECLARED_DTYPE_REGIONS_ONLY_NOT_FULL_DRAFT_VALIDATION', ddk_id=ddk_id, schema=schema.evidence)
     if all(c['case'] in ALTERNATIVE_CASES for c in cases):
         result.update(scope='FINITE_INPUT_BUILTIN_TOP1_CANDIDATES_NOT_NAN_CONTRACT_OR_FULL_DRAFT',
+                      exact_bytes=True)
+    if all(c['case'] in BITCARRIER_CASES for c in cases):
+        result.update(scope='EXHAUSTIVE_INDEX_BITS_AND_FINITE_TOP1_LAST_BUILTIN_NOT_FULL_DRAFT',
                       exact_bytes=True)
     _save(out/'fixture/manifest.json', result)
     return result
@@ -348,7 +360,7 @@ def analyze(directory):
                 if path.stat().st_size != spec['bytes'] or sha256_file(path) != spec['fixture_sha256']:
                     raise ValueError('retained input/reference changed after launch')
     comparison = compare(fixture, native, selection=report['validated_cases'])
-    if meta.get('top1_semantics') or any(c['case'] in ALTERNATIVE_CASES for c in meta['cases']):
+    if meta.get('top1_semantics') or any(c['case'] in (*ALTERNATIVE_CASES, *BITCARRIER_CASES) for c in meta['cases']):
         return dict(comparison, artifact_kind=KIND, model_execution='NOT_RUN',
                     scope='RECOMPARE_RETAINED_TOP1_OUTPUTS_NO_DEVICE_EXECUTION')
     if meta.get('source_evidence',{}).get('artifact_kind') == MATRIX_KIND:
