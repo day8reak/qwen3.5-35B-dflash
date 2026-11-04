@@ -25,37 +25,25 @@ NaN由探针主动注入，不能据此推断真实Draft logits有NaN。正常�
 
 MaxPoolWithArgmax作为低优先级线索：[MindSpore文档](https://www.mindspore.cn/docs/zh-CN/r2.1/api_python/ops/mindspore.ops.MaxPoolWithArgmaxV2.html)中Ascend索引为uint16，不能直接当作248320词表的INT32全局索引；文档也没有验证当前X90／CPro组合。
 
-## 本轮执行：12项内置算子候选
+## 12项内置算子结果与自定义Top1评估
 
-已实现`--top1-alternatives`，一次生成、编译并检查以下候选：
+用户回传`2a42b15`候选批次：**10项编译成功、2项失败，纯NPU候选为0**。6个成功图仅CPUCL，4个是NPU／CPU混合。设备执行和数值仍为NOT_RUN；本批不安排重跑或设备计时，保留已有诊断。
 
-| 组别 | 数量 | 目的 |
-|---|---:|---|
-| TopK(1)同时输出value／INT32 index | 4 | `[15,512]`、`[485,512]`、`[7275,512]`、`[15,485]`，检查局部与最终归约 |
-| INT32 Select／Gather／索引乘加 | 3 | 单独检查大索引选择与合成，覆盖65535、65536、131072、248319 |
-| 比较／选择树 | 2 | `[15,485]`奇数尾项及完整248320词表；相邻区间同值取左，索引全程INT32 |
-| 完整词表TopK组合 | 3 | 直接TopK、批量分块TopK、同一图内15条`[485,512]`分支后合并 |
+| 已测表达 | 所选DDK结果 | 对下一步的意义 |
+|---|---|---|
+| 4种独立TopK及直接／分块／15分支完整组合 | TopKV2落为CPU `TopKD`；15分支的局部TopK也全在CPU | 本批的分块大小和拆分方式没有解决归约回退 |
+| Select控制 | 浮点值／条件分支为NPU任务，INT32 `Select`在CPU | 仅替换首层Cast不能使现有整数索引树成为纯NPU |
+| INT32 Gather和索引合成 | `GatherV2D`、`Mul`、`Add`均在CPU | 只把局部归约移到NPU仍不够 |
+| 小树与完整词表树 | NPUCL编译`CastT tree_0_index`失败：`kernelId not registered: 196620` | 源码该节点为BOOL→INT32；失败图没有有效落点 |
 
-这批采用**有限FP16 logits**的明确输入合同，golden仍由直接NumPy ArgMax给出并在主机与PyTorch核对。完整词表fixture覆盖同值、跨块／65536边界、大索引、负值、正负零、最大／最小有限值、subnormal和相邻FP16值。原61例NaN合同的失败记录不变。15分支是一次模型调用内的图结构，不是15次主机调用；能否融合及是否更快尚未测量。
+日志里的裸`dataType 3`不按HIAI序列化枚举解读。上述是当前前端、形状、dtype和默认选择策略的证据，不代表X90硬件普遍不支持INT32。用户摘要未提供本批OMC哈希，未独立读取服务器产物。
 
-主机已检查12个候选计算图、20种宽度的树归约、双输出ABI重排、10次输出逐字节验收及最后一次大索引损坏的拒绝；26个旧探针源码／manifest／fixture逐字节不变。完整词表树有273个构图节点，未展开完整词表索引常量。这些是主机检查，未运行所选DDK或设备。
+**评估结论：为“纯NPU＋精确INT32输出”值得投入一个独立自定义Top1原型。**把FP16值归约、同值最小索引选择和INT32全局索引合并封装在同一个NPU算子内部，可避开已观察到的GE整数节点回退。官方X90 `ReduceMax(calIndex=true)`是算法基础；实际选定DDK的注册、代码生成和运行支持仍须验证。
 
-在已有编译环境执行一次：
+候选边界固定为`FP16[1,15,248320] → INT32[1,15]`，完整词表、不改LM head。输入逻辑7,449,600字节，输出60字节；这不是已测传输量。按实际UB容量分块，half块内索引不超过65535，按API约定读取索引位表示，在核内用INT32加块偏移并比较合并。首版可按核数分配行、核内遍历连续块，减少跨核同步；是否需要二阶段并行由实测决定。
 
-```bash
-git -C "$REPO_DIR" pull --ff-only
-python3 "$REPO_DIR/targets/cpro/tools/probe_draft_vector.py" \
-  --top1-alternatives \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$AI_RUN_DIR/draft/tests/top1-alternatives"
-```
+单个FP16无法精确承载全局索引：主机穷举0–248319，首个失真值是2049。两个FP16小整数能精确存储高低位，但最终纯NPU INT32重建尚无已证实路径；FP32虽能精确表示这些索引，当前编译链的FP16降精度已有记录，不能仅靠前端声明保证。
 
-沿用此前成功编译的`CANN_ROOT`、`CPRO_DDK_ID`和Python环境。新目录保留本批结果；旧`top1-probes`与`top1-validation`不覆盖。只有替换同一已完成候选批次时才加`--replace`。
+建议把后续工作限定为同一个Top1验证包：先验证所选DDK中的FP16输入／INT32输出、自定义NPU任务和实际Load／执行，再验证完整词表的并列、尾块、65535／65536、大索引及subnormal，最后与**等价的完整词表CPU Top1**配对计时并做整模型回归。原61例NaN合同保持独立记录。算法范围清楚，最大不确定性是自定义接入；此前AddCustom JIT的`te_update_version()`失败说明这部分仍有风险。不能将小NPU原语0.4–0.8ms、局部CPU对照7.4633ms或混合图19–40ms直接当成新算子的预期收益，也不能据此承诺完整Draft≤50ms。
 
-命令先保存所选DDK的前端声明到`frontend-sources.json`；TopKV2／SelectV2仍使用已有固定版本GE发射接口，声明文本不代表OMG实际加载或支持。随后逐例编译，失败保留日志并继续其余候选，最后自动保存`placement-inspection.json`。重点读取标准输出的：
-
-- `npu_only_full_top1_candidates`：在已解码图层面只含NPU任务、没有CPU／其他owner及未归属主图计算节点的完整词表候选；不是设备数值或性能验收。
-- `cpu_operations`和`main_operations_outside_tasks`：具体阻碍纯NPU的节点。
-- `compilation_diagnostics`：前端／编译失败证据；失败模型不进入设备验证。
-
-本轮先用这一个批次确定候选。成功编译的OMC后续可直接复用现有验证器，精确比较全部输出与10次调用，无需重编译。完整Draft和暂停的AddCustom路径均未修改。数学等价、前端支持、落点和设备收益分别记录，详细证据见[结果](results.md)。
+本轮只完成评估和证据记录，自定义实现／编译／设备执行尚未开始，暂停的AddCustom路径未恢复。详细记录见[结果](results.md)。

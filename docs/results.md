@@ -1,8 +1,12 @@
 # 当前结果
 
+2026-11-04，用户回传12项内置Top1替代批次：10项编译成功、2项树失败，`npu_only_cases`和`npu_only_full_top1_candidates`均为空。4个独立TopK全为CPUCL1；直接完整TopK为NPUCL1／CPUCL1，tiled与split15均为NPUCL2／CPUCL2，CPU任务明确包含`TopKD`，split15的15个局部TopK也全在CPU。Select控制为NPUCL1／CPUCL1，INT32 Select在CPU；GatherV2D和INT32 Mul／Add控制均为CPUCL1。两棵树在NPUCL编译`CastT tree_0_index`时报`kernelId not registered: 196620`；源节点是BOOL→INT32，失败图没有可用落点。来源为用户粘贴，未提供本批OMC哈希；设备和数值均NOT_RUN，完整Draft未改。本批不安排重复运行。
+
+用户随后要求评估是否有必要自写算子。结论：针对纯NPU及精确INT32 ABI，值得做范围固定的自定义Top1可行性原型；首要风险是所选X90 DDK编译／注册／运行链路，而非归约数学。评估覆盖核内分块值／索引归约、同值最小全局索引、INT32输出、完整词表等价基线及整模型回归。主机穷举确认0–248319中单FP16仅7168个索引能精确表示，首个失真2049；双FP16分量可数学精确还原，但纯NPU INT32重建未证明。此结果不授权降精度或修改输出ABI。本轮没有恢复AddCustom、编写自定义内核或执行新设备探针；详细判断见[当前进展](current-status.md)。评估run为20261104T072307Z-8454-abb9a6。
+
 2026-11-04，继续实现内置纯NPU Top1候选批次：4个TopK值／索引原语、3个INT32选择／Gather／合成控制、2个比较选择树、3个完整词表TopK组合，共12例。`--top1-alternatives`一次编译并自动读取选定DDK前端声明、CPU任务和主图边界，单列未归属任务的主图计算；只有图层面NPU任务独占且没有其他计算节点时才列为纯NPU候选，数值与收益另验。
 
-有限FP16输入合同独立记录，原61例NaN合同与完整Draft失败不变。主机通过12图NumPy回放、9个logits图的PyTorch直接ArgMax／选值核对、20种树宽度的奇数尾项／并列／边界检查、12图公共ABI输出重排与错误dtype拒绝、12例各10次伪设备输出比较和最后一次INT32损坏拒绝；伪编译流程验证单例失败后继续、自动报告及无设备执行。原26个探针的manifest、发射C++和fixture逐字节相同。完整词表树273个构图节点、68字节显式常量，不建立全词表索引常量；导出辅助常量另计。主机run为20261104T065646Z-7503-f04a85。**所选DDK编译、NPU落点、设备数值与时延均未验证**；执行命令见[当前进展](current-status.md#本轮执行12项内置算子候选)。
+有限FP16输入合同独立记录，原61例NaN合同与完整Draft失败不变。主机通过12图NumPy回放、9个logits图的PyTorch直接ArgMax／选值核对、20种树宽度的奇数尾项／并列／边界检查、12图公共ABI输出重排与错误dtype拒绝、12例各10次伪设备输出比较和最后一次INT32损坏拒绝；伪编译流程验证单例失败后继续、自动报告及无设备执行。原26个探针的manifest、发射C++和fixture逐字节相同。完整词表树273个构图节点、68字节显式常量，不建立全词表索引常量；导出辅助常量另计。主机run为20261104T065646Z-7503-f04a85。该主机阶段未运行所选DDK或设备；后续用户编译结果已记录于本页开头。
 
 2026-11-04，用户回传现有9个OMC的Top1设备验证最终结果：61例全部完成，每例预热3次、测量10次，共610次测量调用；native／archive及全部case退出码均为0，输出重复逐位稳定。原完整合同下45例通过、16例失败，状态保留NUMERICAL_FAILED。已知完成后无本任务持有锁，不再重复启动／回收。证据为用户粘贴，未独立取回服务器文件；9个OMC的SHA256、失败索引及原fixture时延记录于specs/dflash-execution-state.json的top1_builtin_probe.device_semantics.observation。
 

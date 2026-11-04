@@ -4242,7 +4242,7 @@
         ],
         "next": "READ_SAVED_COMPILER_ENVIRONMENT_AND_SELECTED_DDK_REDUCTION_REGISTRATION; NO_RECOMPILE_OR_DEVICE_RUN"
       },
-      "next": "COMPILE_ONE_12_CASE_BUILTIN_TOPK_TREE_BATCH_WITH_AUTOMATIC_FRONTEND_AND_PLACEMENT_INSPECTION; REUSE_SUCCESSFUL_OMCS_FOR_DEVICE_VALIDATION",
+      "next": "ASSESS_BOUNDED_CUSTOM_TOP1_INTEGRATION_BEFORE_ANY_MORE_PROBES; DO_NOT_RERUN_COMPLETED_BUILTIN_BATCH",
       "registration_inspection": {
         "entry": "probe_draft_vector.py --inspect-top1 COMPILED_PROBES --ddk-root DDK",
         "run_id": "20261104T021319Z-1312-aa1ef2",
@@ -6447,7 +6447,7 @@
         "full_draft_changed": false
       },
       "alternative_suite": {
-        "status": "HOST_CHECKED_SELECTED_DDK_AND_DEVICE_PENDING",
+        "status": "USER_REPORTED_10_COMPILED_2_FAILED_ZERO_NPU_ONLY_CANDIDATES",
         "run_id": "20261104T065646Z-7503-f04a85",
         "cases": [
           "top1_topk_r15_d512_fp16",
@@ -6491,13 +6491,128 @@
           "full_tree_construction_nodes": 273,
           "full_tree_explicit_constant_bytes": 68
         },
-        "model_compilation": "NOT_RUN",
+        "model_compilation": "PARTIAL",
         "device_execution": "NOT_RUN",
-        "numerical_validation": "HOST_ONLY",
-        "all_npu_placement": "NOT_VALIDATED",
+        "numerical_validation": "NOT_RUN_ON_DEVICE",
+        "all_npu_placement": "NO_NPU_ONLY_CANDIDATES_IN_THIS_BATCH",
         "latency": "NOT_MEASURED",
         "full_draft_changed": false,
-        "paused_addcustom_path": "NOT_RESUMED"
+        "paused_addcustom_path": "NOT_RESUMED",
+        "observation": {
+          "source": "USER_PASTED_NOT_INDEPENDENTLY_RETRIEVED",
+          "source_revision": "2a42b15",
+          "source_batch_status": "PARTIAL",
+          "compiled_cases": 10,
+          "failed_cases": 2,
+          "cpu_only_compiled_cases": 6,
+          "mixed_compiled_cases": 4,
+          "npu_only_cases": [],
+          "npu_only_full_top1_candidates": [],
+          "topk_primitive_shapes": [
+            [
+              15,
+              512
+            ],
+            [
+              485,
+              512
+            ],
+            [
+              7275,
+              512
+            ],
+            [
+              15,
+              485
+            ]
+          ],
+          "topk_primitive_placement": "CPUCL1; TOPKV2_LOWERED_TO_TOPKD",
+          "full_compositions": {
+            "top1_topk_direct_fp16": {
+              "NPUCL": 1,
+              "CPUCL": 1
+            },
+            "top1_topk_tiled_fp16": {
+              "NPUCL": 2,
+              "CPUCL": 2
+            },
+            "top1_topk_split15_fp16": {
+              "NPUCL": 2,
+              "CPUCL": 2
+            }
+          },
+          "split15_local_topk": "ALL_15_IN_CPU_TASK; WINNER_TOPKD_AND_INDEX_RECONSTRUCTION_ALSO_CPU",
+          "integer_controls": {
+            "top1_select_int32": "INT32_SELECT_CPU; FLOAT_VALUE_AND_CONDITION_BRANCH_NPU_TASK",
+            "top1_gather_int32": "GATHERV2D_CPU",
+            "top1_compose_int32": "MUL_AND_ADD_CPU"
+          },
+          "tree_failures": {
+            "cases": [
+              "top1_tree_r15_d485_fp16",
+              "top1_tree_full_fp16"
+            ],
+            "node": "tree_0_index",
+            "source_operation": "BOOL_TO_INT32_CAST",
+            "compiled_operator": "CastT",
+            "diagnostic": "kernelId not registered: 196620; compileInfo is null",
+            "placement": "NOT_VALIDATED_FAILED_COMPILATION",
+            "raw_dtype_3": "LOG_ENUM_NAMESPACE_NOT_INDEPENDENTLY_DECODED"
+          },
+          "frontend_sources_status": "PARTIAL",
+          "model_hashes": "NOT_SUPPLIED_IN_USER_SUMMARY",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN",
+          "latency": "NOT_MEASURED",
+          "scope": "SELECTED_DDK_TESTED_EXPRESSIONS_DTYPES_AND_SHAPES_NOT_UNIVERSAL_HARDWARE_SUPPORT"
+        }
+      },
+      "custom_top1_assessment": {
+        "status": "ASSESSED_NOT_IMPLEMENTED",
+        "run_id": "20261104T072307Z-8454-abb9a6",
+        "user_request": "Evaluate whether a custom Top1 operator is worth implementing.",
+        "recommendation": "WORTH_A_BOUNDED_PROTOTYPE_FOR_STRICT_NPU_ONLY_AND_EXACT_INT32_OUTPUT",
+        "contract": {
+          "input_shape": [
+            1,
+            15,
+            248320
+          ],
+          "input_dtype": "float16",
+          "output_shape": [
+            1,
+            15
+          ],
+          "output_dtype": "int32",
+          "input_bytes": 7449600,
+          "output_bytes": 60,
+          "input_domain": "FINITE_LOGITS; HISTORICAL_NAN_CONTRACT_REMAINS_SEPARATE",
+          "tie_rule": "SMALLEST_GLOBAL_INDEX",
+          "full_vocabulary": true
+        },
+        "algorithm": "UB_BOUNDED_VALUE_INDEX_REDUCTION; NPU_KERNEL_INT32_OFFSETS_AND_STABLE_MERGE; FINAL_INT32_STORE",
+        "kernel_basis": "https://asc.gitcode.com/api/SIMD-API/basic_api/memory_vector_compute/reduction_compute/ReduceMax.html",
+        "kernel_basis_scope": "PUBLIC_X90_API_NOT_SELECTED_DDK_REGISTRATION_OR_EXECUTION_PROOF",
+        "initial_scheduling": "ASSIGN_ROWS_TO_ACTUAL_CORES_AND_STREAM_TILES; TWO_STAGE_ONLY_IF_MEASUREMENTS_JUSTIFY",
+        "main_risk": "SELECTED_X90_DDK_CODEGEN_REGISTRATION_AND_RUNTIME; PRIOR_ADDCUSTOM_TE_UPDATE_VERSION_FAILURE_UNRESOLVED",
+        "first_gate": "SAME_OPERATOR_FP16_TO_INT32_SMALL_AND_FULL_INPUTS; COMPILE_OWNER_LOAD_EXECUTION_BEFORE_OPTIMIZATION",
+        "numeric_gate": "EXACT_INT32_ALL_ROWS_ALL_REPEATS; TIES_TAILS_65535_65536_LARGE_INDEX_SUBNORMAL",
+        "performance_gate": "EQUIVALENT_FULL_VOCABULARY_CPU_BASELINE_AND_SAME_MODEL_WARM_API_REGRESSION",
+        "carrier_math": {
+          "checked_indices": 248320,
+          "single_fp16_exact_indices": 7168,
+          "first_inexact_index": 2049,
+          "fp32_all_exact": true,
+          "two_fp16_limbs_math_exact": true,
+          "two_limb_npu_int32_reconstruction": "UNVERIFIED",
+          "frontend_fp32_guarantees_internal_fp32": false
+        },
+        "latency_prediction_ms": null,
+        "full_draft_50ms_guaranteed": false,
+        "implementation": "NOT_STARTED",
+        "device_execution": "NOT_RUN",
+        "full_draft_changed": false,
+        "paused_addcustom_path": "NOT_RESUMED_BY_EVALUATION_REQUEST"
       }
     }
   },
