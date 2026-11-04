@@ -1,5 +1,15 @@
 # 当前结果
 
+2026-11-04，用户回传485a0d7对应的21项Top1矩阵摘要：全部COMPILED／PASSED，自动placement_inspection全部INSPECTED，设备与数值仍NOT_RUN。4个小ArgMax图[1,512]、[15,485]、[15,512]、[485,512]均仅NPUCL1且没有CPU操作；4个较大ArgMax图[7275,512]、[7680,485]、[15,485,512]及[512,7275]沿axis0均为CPUCL1，CPU节点明确为ArgMaxExt2。全部9个独立ReduceMax均在CPU，包含最小[1,512]与全宽[15,248320]。
+
+4个完整词表组合（原3D、展平、转置、485宽）均保持NPUCL2／CPUCL2，CPU SubGraph_1仍同时包含局部ArgMaxExt2与ReduceMax，并接收完整3724800元素的FP32输入；逻辑14899200字节不等于测得搬运量。后续小NPU分区输出INT32[15]，末尾CPU完成Gather／INT32索引合成。该批已排除“只改rank、轴方向或交换因子就能移除全量CPU归约”的候选，也表明回退并非仅发生在组合图中；精确选择门槛和通用硬件支持范围未确定。来源为用户粘贴，未独立读取服务器OMC；紧凑摘要未含新OMC／批次哈希，不继承上一批哈希。
+
+下一步复用9个已有OMC：4个小ArgMax各14种输入，1个大CPU ArgMax及4个完整组合沿用原fixture，共61例。小图新增52组输入覆盖首末、并列最小索引、负数、正负零、正负Inf、首／末／多处／全NaN和最小正FP16子正规数。新输入／golden仅写入独立执行目录，先保留原编译recipe、ABI与fixture核对，再绑定同一OMC。整数逐字节比较保持；汇总显示缺失覆盖、失败场景和具体索引，设备计时为每输入预热3次后10次同步API，不能直接相加推断完整Draft收益。
+
+检查执行链发现旧tensor_probe_main.cpp把单维上限固定为65536，会在Load前拒绝完整词表248320。现将单维限制与16 MiB预算对齐，保留原合计IO字节、rank、槽位与dtype检查；build_hiai.py记录支持上限，Python在上传前拒绝旧运行器。需要重建native，OMC及plan V1无需更改。未改HIAI执行、计时或SDK失败后停止后续case的原规则。
+
+主机run `20261104T062203Z-6272-3833d3`：315项检查通过，52组输入与直接PyTorch ArgMax逐字节一致，真实准备／扩展／比较／打包路径处理61例及610次模拟输出；原编译目录字节不变，损坏原fixture、旧运行器和伪设备证据均拒绝，NaN／零／子正规数及大索引差1可定位。实际C++计划解析器配合从源码提取的HiaiTensorBytes接受全部61份计划，拒绝零维、超单维、超乘积／合计预算、超rank和非法dtype6类输入；仅主机编译该解析器，没有链接HIAI或执行设备。完整Draft的103.720ms／NUMERICAL_FAILED不变，当前操作见[当前阶段](current-status.md)。
+
 2026-11-04，用户回传6017594检查器对已编译三个Top1 OMC的结果，status=INSPECTED。direct的ArgMaxExt2在CPU SubGraph_0，输入FP32[1,15,248320]；flat的ArgMaxExt2在CPU SubGraph_1，输入FP32[15,248320]。tiled的CPU SubGraph_1同时包含local_argmax／ArgMaxExt2和local_value／ReduceMax，输入FP32[15,485,512]，输出INT32[7275]与FP32[15,485]；末尾CPU SubGraph_3执行索引Gather、INT32乘加与Reshape。因此局部全量归约仍在CPU，尚未消除完整词表CPU处理。该输入逻辑14899200字节，不是测得的搬运量或耗时。
 
 | 用户回传OMC | 字节数 | SHA256 |

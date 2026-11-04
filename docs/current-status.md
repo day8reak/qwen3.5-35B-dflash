@@ -2,36 +2,51 @@
 
 目标为C16／cap192／K15常驻预热后平均≤50ms。完整Draft仍为103.720ms／NUMERICAL_FAILED，host embedding准备未计入API。
 
-## Top1局部归约已确认在CPU，本轮成组验证形状和组合
+## 21项编译矩阵已完成
 
-用户回传的已编译OMC检查确认：direct和flat的ArgMaxExt2均在CPU；tiled的local_argmax与local_value（ReduceMax）也都在CPU，输入仍是完整FP32[15,485,512]。tiled另有NPU边界FP16[15,485]→INT32[15]，内部算子未解码。当前结构尚未消除完整词表的CPU归约。
+用户回传21／21编译通过，自动落点检查全部INSPECTED，设备尚未执行。
 
-本轮固定21项，用同一条命令编译并自动检查落点：17个独立归约，4个完整词表组合。复用`draft/tests/top1-probes`，保留完整Draft和已有性能基线。
+| 已测表达 | 编译观察 |
+|---|---|
+| ArgMax [1,512]、[15,485]、[15,512]、[485,512] | 各1个NPUCL、无CPU操作 |
+| ArgMax [7275,512]、[7680,485]、[15,485,512]、[512,7275]沿axis0 | 各1个CPUCL，明确含ArgMaxExt2 |
+| 9种ReduceMax | 全部CPUCL，明确含ReduceMax |
+| 4个完整词表组合 | 均NPUCL2＋CPUCL2，局部ArgMax和ReduceMax仍在CPU |
 
-| 对照 | 覆盖 | 要回答的问题 |
-|---|---|---|
-| ArgMaxExt2与ReduceMax分别运行 | 每个几何使用相同输入 | 哪个归约单独落CPU，是否由组合影响 |
-| 行数 | 宽512：1／15／485／7275行 | 小批量与完整局部数据量有何区别 |
-| 归约长度 | 宽485：15／7680行；宽512的上述对照；单独ReduceMax宽248320 | 小轴长度及总元素量是否影响放置 |
-| rank | [7275,512]与[15,485,512]，输入字节一致 | 只改变前导维度的影响 |
-| 轴方向 | [512,7275]沿axis0，为二维输入的精确转置 | 非末轴归约能否改变放置 |
-| 完整组合 | 原3D控制、局部展平、局部转置、512×485分块 | 单算子结果能否保留到完整Top1链 |
+因此，展平、转置和交换485／512因子均未移除全量CPU归约；回退也发生在独立图，不能只归因于组合分段。存在规模相关的选择差异，但这些点不能给出精确行数／元素数门槛，更不证明硬件普遍不支持ReduceMax。NPU内核未解码，也没有新时延结果。
 
-[7275,512]和[7680,485]均为3724800元素，完整组合均保留248320词表、无padding。已经确认的全宽CPU ArgMax不重复新增测试。独立算子使用有限FP16值，覆盖并列、负数、零与正子正规数；完整组合保留NaN、Inf、全相等、跨块并列及65535／65536／大索引。485宽组合的跨块并列行改为484／485，golden仍由直接全词表NumPy ArgMax生成并与PyTorch交叉检查。
+## 复用现有OMC，一次验证语义和API时延
 
-## 一次执行
+这次不编译新模型。选择4个小ArgMax、1个大规模CPU ArgMax对照和4个完整词表组合，共9个已有OMC。小ArgMax各跑原fixture及13种新输入：全相等、首／末唯一最大、非零位置并列、全负数、正负零并列、正Inf并列、全负Inf、首／末／多处／全NaN、正子正规数。其余5个控制沿用原fixture，共61个输入case。先执行9个原fixture控制，再执行52个新输入。
 
-沿用上一轮已成功编译的环境：`REPO_DIR`是代码仓库，`AI_RUN_DIR`是运行目录，`CANN_ROOT`是已有GE环境，`CPRO_DDK_ROOT`和`CPRO_DDK_ID`指向所选X90 DDK。同步main后执行：
+每个输入case独立Load一次、预热3次、保留10次同步API调用及输出；所有INT32结果逐字节比较。NaN参考为第一个NaN，否则取第一个最大值；不改golden门槛。报告按9个原模型汇总场景覆盖、失败场景、实际／期望索引与每例API时延；时延不能相加或直接外推完整Draft收益。
+
+沿用[环境配置](environment-setup.md)中的REPO_DIR、AI_RUN_DIR、CPRO_DDK_ROOT和HDC配置，运行配置为现有`runtime/runtime.json`。
+
+先重建共享native运行器：旧探针解析器限制单维≤65536，会拒绝248320词表。新版本允许长轴，保留16 MiB合计输入输出预算，plan仍为V1；Python在上传前拒绝旧运行器。
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/tools/probe_draft_vector.py" \
-  --top1-matrix \
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$AI_RUN_DIR/runtime/native" --replace
+
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --top1-semantics \
+  --compiled "$AI_RUN_DIR/draft/tests/top1-probes" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
   --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$AI_RUN_DIR/draft/tests/top1-probes" --replace
+  --output "$AI_RUN_DIR/draft/tests/top1-validation" --apply
 ```
 
-命令逐例编译，单例编译失败会记录诊断并继续其余例。随后在同一目录锁内自动读取成功编译的OMC，终端输出各例编译状态、CPU操作、GraphOp实际输入输出和owner。无需再跑一轮只读命令；贴回最后JSON即可。
+启动后回收同一次执行：
 
-`result.json`保存原编译报告，`placement-inspection.json`保存完整检查及源报告哈希，逐例`omc/compile.log`保留原日志。某例失败仍明确标出，不能把部分覆盖算整体通过。NPU分区数量不证明指定归约的NPU实现；下一步按CPU操作和完整输入边界比较17个独立图与4个组合，再选候选做设备数值和时延验证。
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$AI_RUN_DIR/draft/tests/top1-validation" \
+  --output "$AI_RUN_DIR/draft/tests/top1-validation-result"
+```
 
-本地主机检查450项通过：57次图语义回放（其中40次完整词表组合）、210次模拟native回收、真实ABI准备入口的模拟元数据绑定，以及自动编译／检查调度。原六图的manifest、C++和fixture字节保持。独立ReduceMax的FP32结果也要求精确字节相等，差一个ULP会失败；原其他浮点门槛不变。此处未运行所选DDK或设备，详见[结果](results.md)。
+若回收显示仍在运行，稍后只重复recover。SDK执行失败会按原规则停止后续case并回收已完成输出；数值不一致会完整报告，未执行场景不能算通过。新输入在独立验证目录生成，编译目录中的OMC、原fixture和报告保持。
+
+先确认小ArgMax的语义，再决定是否尝试限规模分支及按索引取值来避开ReduceMax。当前没有可提升为完整Draft的全NPU Top1，也不重启暂停的AddCustom路径。
+
+主机315项检查通过，52组新输入与PyTorch交叉一致，610次模拟输出通过原比较／回收入口；真实C++计划解析器接受全部61份计划并拒绝6类非法／超预算输入。主机模拟不替代设备结果，详见[结果](results.md)。

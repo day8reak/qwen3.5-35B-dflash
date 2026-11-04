@@ -29,9 +29,10 @@ from qwen35_moe_dflash.common.hashing import sha256_file
 from qwen35_moe_dflash.draft.incremental.embedding_probe import CASE as EMBEDDING_CASE, KIND as EMBEDDING_KIND, DTYPES, STAGES
 from qwen35_moe_dflash.draft.incremental.attention_probe import CASES as ATTENTION_CASES, KIND as ATTENTION_KIND
 from qwen35_moe_dflash.draft.incremental.attention_matrix import CASES as MATRIX_CASES, KIND as MATRIX_KIND
+from qwen35_moe_dflash.draft.incremental import top1_semantics
 
 PYTORCH_CASES = set(STAGES.values())
-VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES)
+VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES, *top1_semantics.EXTRA_CASES)
 WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4, 'int64': 8}
 DTYPES = {**DTYPES, 'int64': '<i8'}
 
@@ -241,6 +242,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
             raise ValueError('native report does not establish ten device calls after warmup')
         total = sum(r['bytes'] for r in case['outputs'])
         tensors, stable, first = [], True, None
+        mismatches, examples = 0, []
         for iteration in range(REPETITIONS):
             snapshot = member(native, f'{name}/{iteration}.bin')
             if snapshot.stat().st_size != total:
@@ -265,6 +267,12 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
                 exact = observed_bytes == expected_bytes
                 if _exact_required(meta, spec):
                     passed = passed and exact
+                if meta.get('top1_semantics'):
+                    bad = np.flatnonzero(actual != expected)
+                    mismatches += int(bad.size)
+                    for index in bad[:max(0, 8-len(examples))]:
+                        examples.append(dict(iteration=iteration, output=spec['name'],
+                            flat_index=int(index), expected=int(expected[index]), actual=int(actual[index])))
                 tensors.append(dict(iteration=iteration, name=spec['name'], passed=passed, finite=finite,
                     bytes_equal=exact,
                     max_abs_error=float(np.max(np.abs(delta))) if finite else None,
@@ -282,14 +290,20 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
             tensors=tensors, graphop_counts=case['graphop_counts'], api_us=timings,
             compiler_options=case.get('compiler_options', {}),
             mean_ms=sum(timings)/REPETITIONS/1000, min_ms=min(timings)/1000, max_ms=max(timings)/1000))
+        if meta.get('top1_semantics'):
+            cases[-1].update(compiled_case=case['compiled_case'], scenario=case['scenario'],
+                mismatched_elements_all_calls=mismatches, mismatch_examples=examples)
     passed = all(r['passed'] for r in cases)
-    return dict(status='PASSED' if passed else 'NUMERICAL_FAILED', numerical_validation='PASSED' if passed else 'FAILED',
+    report = dict(status='PASSED' if passed else 'NUMERICAL_FAILED', numerical_validation='PASSED' if passed else 'FAILED',
         cases=cases, warmup=WARMUP, repetitions=REPETITIONS, atol=meta['atol'], rtol=meta['rtol'],
         scope=meta.get('scope'), exact_bytes_required=bool(meta.get('exact_bytes')),
         validated_cases=selected, requested_cases=requested,
         repeat_bitwise_stable=all(r['repeat_bitwise_stable'] for r in cases),
         timing_scope='SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_BETWEEN_CALLS_EXCLUDED',
         full_draft_validation='NOT_RUN', internal_instruction_precision='NOT_PROVEN_BY_OUTPUT_MATCH')
+    if meta.get('top1_semantics'):
+        report['top1_semantics'] = top1_semantics.summary(meta, cases)
+    return report
 
 
 def analyze(directory):
@@ -312,6 +326,9 @@ def analyze(directory):
                 if path.stat().st_size != spec['bytes'] or sha256_file(path) != spec['fixture_sha256']:
                     raise ValueError('retained input/reference changed after launch')
     comparison = compare(fixture, native, selection=report['validated_cases'])
+    if meta.get('top1_semantics'):
+        return dict(comparison, artifact_kind=KIND, model_execution='NOT_RUN',
+                    scope='RECOMPARE_RETAINED_TOP1_OUTPUTS_NO_DEVICE_EXECUTION')
     if meta.get('source_evidence',{}).get('artifact_kind') == MATRIX_KIND:
         from qwen35_moe_dflash.draft.incremental.attention_matrix import diagnose
         return diagnose(fixture, native, meta, comparison, report)
@@ -441,6 +458,10 @@ def _check_probe_dtypes(meta, built):
     if missing:
         raise ValueError('rebuild runtime/native with build_hiai.py --replace; tensor probe lacks dtypes: '
                          + ', '.join(sorted(missing)))
+    largest = max(n for c in meta['cases'] for direction in ('inputs', 'outputs')
+                  for s in c[direction] for n in s['shape'])
+    if largest > built.get('tensor_probe_limits', {}).get('max_dimension', 65536):
+        raise ValueError('rebuild runtime/native with build_hiai.py --replace; tensor probe axis limit is too small')
 
 
 def start(args, out):
@@ -460,8 +481,13 @@ def start(args, out):
         env = read_json(config.parent/cfg['assets'])['environment']
         with (source.parent/('.'+source.name+'.lock')).open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            meta = prepare(source, out, args.ddk_root, env['ddk_id'], args.cases)
+            selection = top1_semantics.BASE_CASES if getattr(args, 'top1_semantics', False) else args.cases
+            meta = prepare(source, out, args.ddk_root, env['ddk_id'], selection)
+            if getattr(args, 'top1_semantics', False):
+                meta = top1_semantics.expand(out, meta)
         state.update(status='PREPARED', stage='prepared', requested_cases=[c['case'] for c in meta['cases']])
+        if meta.get('top1_semantics'):
+            state['top1_semantics'] = meta['top1_semantics']
         if meta.get('source_evidence',{}).get('artifact_kind') == MATRIX_KIND:
             state['matrix_preparation_failures'] = meta['source_evidence'].get('preparation_failures',[])
         if not args.apply:
@@ -755,7 +781,10 @@ def recover(root, out):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compiled')
-    parser.add_argument('--cases', nargs='+', choices=VALIDATION_CASES, help='Only execute these existing probes, in the supplied order')
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument('--cases', nargs='+', choices=VALIDATION_CASES, help='Only execute these existing probes, in the supplied order')
+    selection.add_argument('--top1-semantics', action='store_true',
+        help='reuse nine compiled Top1 OMCs for 61 input cases; no compilation or native ABI change')
     parser.add_argument('--config')
     parser.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     parser.add_argument('--recover')
@@ -765,18 +794,18 @@ def main():
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
     if args.status:
-        if args.analyze or args.recover or args.compiled or args.config or args.cases or args.apply or args.output:
+        if args.analyze or args.recover or args.compiled or args.config or args.cases or args.top1_semantics or args.apply or args.output:
             parser.error('--status only accepts the original execution directory')
         print(json.dumps(local_status(args.status), ensure_ascii=False, allow_nan=False))
         return 0
     if args.analyze:
-        if args.recover or args.compiled or args.config or args.cases or args.apply or args.output:
+        if args.recover or args.compiled or args.config or args.cases or args.top1_semantics or args.apply or args.output:
             parser.error('--analyze only accepts a recovered result directory')
         print(json.dumps(analyze(args.analyze), ensure_ascii=False, allow_nan=False))
         return 0
     if not args.output:
         parser.error('start and recovery require --output')
-    if args.recover and (args.apply or args.config or args.compiled or args.cases):
+    if args.recover and (args.apply or args.config or args.compiled or args.cases or args.top1_semantics):
         parser.error('recovery only accepts the original execution and separate output')
     if not args.recover and not all((args.config, args.compiled, args.ddk_root)):
         parser.error('start requires --config, --compiled and CPRO_DDK_ROOT/--ddk-root')
@@ -787,7 +816,7 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = recover(args.recover, out) if args.recover else start(args, out)
     shown = {k: v for k, v in result.items() if k != 'cases'}
-    if 'cases' in result:
+    if 'cases' in result and not result.get('top1_semantics'):
         shown['cases'] = [{k: v for k, v in c.items() if k not in ('tensors', 'api_us')} for c in result['cases']]
     print(json.dumps(shown, ensure_ascii=False, allow_nan=False))
     return 1 if result['status'] in ('FAILED', 'NUMERICAL_FAILED') else 0

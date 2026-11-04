@@ -984,7 +984,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "probe_draft_vector.py --top1-matrix --ddk-root selected DDK --output draft/tests/top1-probes --replace; automatic compiled CPU and boundary inspection. See docs/current-status.md.",
+    "next_command": "Rebuild runtime/native; validate_draft_vector.py --top1-semantics --compiled draft/tests/top1-probes --apply; recover same execution. See docs/current-status.md.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -3724,7 +3724,7 @@
       "numerical_validation": "FAILED_SAME_REPORTED_ERROR_SUMMARIES_AS_PREVIOUS",
       "performance": "NATIVE_API_PHASE_MEANS_103.958_TO106.09_MS_NOT_END_TO_END",
       "production_promotion": "NOT_PERFORMED",
-      "next": "RUN_TOP1_SHAPE_MATRIX; FULL_DRAFT_103.720MS_NUMERICAL_FAILED_UNCHANGED",
+      "next": "REUSE_TOP1_OMCS_FOR_DEVICE_SEMANTICS_AND_API_TIMING; FULL_DRAFT_103.720MS_NUMERICAL_FAILED_UNCHANGED",
       "command_document": "docs/current-status.md",
       "experience_audit": {
         "captured": [
@@ -4053,7 +4053,7 @@
       }
     },
     "top1_builtin_probe": {
-      "status": "LOCAL_REDUCTIONS_CONFIRMED_CPU_SHAPE_MATRIX_PENDING",
+      "status": "SHAPE_MATRIX_COMPILED_SMALL_ARGMAX_NPU_FULL_COMPOSITIONS_CPU_LOCAL_REDUCTIONS",
       "run_id": "20261104T015950Z-753-3ad426",
       "entry": "targets/cpro/tools/probe_draft_vector.py",
       "cases": [
@@ -4101,7 +4101,7 @@
           "top1_tiled_fp16"
         ]
       },
-      "model_compilation": "PASSED_CORRECTED_NATIVE_THREE_USER_REPORT",
+      "model_compilation": "PASSED_21_CASES_USER_REPORT",
       "device_execution": "NOT_RUN",
       "numerical_validation": "NOT_RUN_ON_DEVICE",
       "full_draft_changed": false,
@@ -4127,7 +4127,10 @@
           "NPU_GRAPH_PRESENT_IS_NOT_ARGMAX_NPU_PLACEMENT; DECODE_CPU_OPERATORS_AND_SHAPES_BEFORE_INTEGRATION",
           "BATCH_MATCHED_DATA_RANK_AXIS_ROWCOUNT_WIDTH_AND_COMPOSITION_CONTROLS_BEFORE_NEXT_SERVER_ROUNDTRIP",
           "AUTOMATIC_COMPILED_CPU_INSPECTION_WITH_COMPILE_REPORT_HASH_PRESERVED",
-          "FINITE_REDUCEMAX_PROBES_REQUIRE_EXACT_BYTES_NOT_GENERIC_FLOAT_TOLERANCE"
+          "FINITE_REDUCEMAX_PROBES_REQUIRE_EXACT_BYTES_NOT_GENERIC_FLOAT_TOLERANCE",
+          "SMALL_NPU_ARGMAX_AND_ALL_TESTED_CPU_REDUCEMAX_ARE_SEPARATE_CONSTRAINTS; NO_UNMEASURED_HARDWARE_THRESHOLD",
+          "REUSE_COMPILED_OMC_FOR_NONFINITE_AND_TIE_INPUT_VARIANTS_BEFORE_COMPOSING_NEW_GRAPH",
+          "NATIVE_PLAN_AXIS_LIMIT_MUST_COVER_FULL_VOCABULARY_WITH_TOTAL_BYTE_BUDGET_RETAINED"
         ],
         "executable_checks": "validate_draft_vector.py dtype plans and exact integer gates",
         "skill_changes": "NONE; EXISTING_PROFILE_SCOPE_RULES_ADEQUATE",
@@ -4160,6 +4163,13 @@
           "user_steering": "Think through comprehensive probes; avoid repeated one-off rounds",
           "lesson": "Observe CPU nodes first. Batch isolated and composed controls using matched fixtures, including equal-volume 485/512 layouts, then inspect all compiled cases in the same invocation.",
           "skill_changes": "NONE; EXISTING_GROUPED_DIAGNOSTIC_AND_EVIDENCE_RULES_SUFFICIENT",
+          "full_model_accuracy_or_performance_claim": "NONE"
+        },
+        "semantics_followup": {
+          "run_id": "20261104T062203Z-6272-3833d3",
+          "skill_changes": "NONE; EXISTING_TARGET_ABI_AND_GROUPED_TEST_RULES_ADEQUATE",
+          "applied_in": "top1_semantics.py; validate_draft_vector.py; tensor_probe_main.cpp; build_hiai.py",
+          "remaining": "DEVICE_NUMERICS_AND_LATENCY; EXACT_SELECTION_THRESHOLD_AND_ALTERNATIVE_VALUE_RETRIEVAL_UNPROVEN",
           "full_model_accuracy_or_performance_claim": "NONE"
         }
       },
@@ -4228,7 +4238,7 @@
         ],
         "next": "READ_SAVED_COMPILER_ENVIRONMENT_AND_SELECTED_DDK_REDUCTION_REGISTRATION; NO_RECOMPILE_OR_DEVICE_RUN"
       },
-      "next": "RUN_21_CASE_TOP1_MATRIX_ONCE_WITH_AUTOMATIC_CPU_AND_BOUNDARY_INSPECTION",
+      "next": "REUSE_NINE_EXISTING_OMCS_FOR_ONE_61_INPUT_SEMANTICS_AND_API_TIMING_BATCH; REBUILD_NATIVE_ONLY",
       "registration_inspection": {
         "entry": "probe_draft_vector.py --inspect-top1 COMPILED_PROBES --ddk-root DDK",
         "run_id": "20261104T021319Z-1312-aa1ef2",
@@ -5007,7 +5017,7 @@
         }
       },
       "shape_matrix": {
-        "status": "HOST_CHECKED_SELECTED_DDK_COMPILATION_PENDING",
+        "status": "USER_REPORTED_ALL_21_COMPILED_AND_INSPECTED",
         "run_id": "20261104T032933Z-4366-5ee867",
         "entry": "probe_draft_vector.py --top1-matrix",
         "output_slot": "draft/tests/top1-probes",
@@ -5199,12 +5209,761 @@
           "device_execution": "NOT_RUN",
           "numerical_validation": "HOST_ONLY_NOT_DEVICE"
         },
-        "model_compilation": "NOT_RUN",
+        "model_compilation": "PASSED_USER_REPORT",
         "device_execution": "NOT_RUN",
         "numerical_validation": "NOT_RUN_ON_DEVICE",
         "full_draft_changed": false,
         "paused_addcustom_path": "NOT_USED",
-        "decision": "Compare CPU reductions and actual full-input boundaries across the batch; do not infer named NPU kernels or speedup from NPU graph count. Device correctness and latency remain separate follow-up work."
+        "decision": "Compare CPU reductions and actual full-input boundaries across the batch; do not infer named NPU kernels or speedup from NPU graph count. Device correctness and latency remain separate follow-up work.",
+        "observation": {
+          "source": "USER_PASTED_21_CASE_COMPILATION_AND_AUTOMATIC_PLACEMENT_SUMMARY",
+          "independently_retrieved": false,
+          "date": "2026-11-04",
+          "requested_revision": "485a0d7",
+          "server_revision": "NOT_REPORTED",
+          "status": "COMPILED",
+          "model_compilation": "PASSED",
+          "placement_inspection": "INSPECTED",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN",
+          "full_draft_changed": false,
+          "platform": "kirinx90",
+          "suite": "TOP1_SHAPE_AND_COMPOSITION_21_CASES",
+          "weight_data_type": "OMG_DEFAULT",
+          "identities": "OMC_AND_SOURCE_BATCH_HASHES_NOT_INCLUDED_IN_PASTED_COMPACT_REPORT",
+          "cases": [
+            {
+              "case": "top1_argmax_r1_d512_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "NPUCL": 1
+              },
+              "input": {
+                "dtype": "float16",
+                "shape": [
+                  1,
+                  512
+                ]
+              },
+              "output": {
+                "dtype": "int32",
+                "shape": [
+                  1
+                ]
+              },
+              "cpu_operations": []
+            },
+            {
+              "case": "top1_max_r1_d512_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "input": {
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  512
+                ]
+              },
+              "output": {
+                "dtype": "float32",
+                "shape": [
+                  1
+                ]
+              },
+              "cpu_operations": [
+                "reduction:ReduceMax"
+              ]
+            },
+            {
+              "case": "top1_argmax_r15_d485_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "NPUCL": 1
+              },
+              "input": {
+                "dtype": "float16",
+                "shape": [
+                  15,
+                  485
+                ]
+              },
+              "output": {
+                "dtype": "int32",
+                "shape": [
+                  15
+                ]
+              },
+              "cpu_operations": []
+            },
+            {
+              "case": "top1_max_r15_d485_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "input": {
+                "dtype": "float32",
+                "shape": [
+                  15,
+                  485
+                ]
+              },
+              "output": {
+                "dtype": "float32",
+                "shape": [
+                  15
+                ]
+              },
+              "cpu_operations": [
+                "reduction:ReduceMax"
+              ]
+            },
+            {
+              "case": "top1_argmax_r15_d512_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "NPUCL": 1
+              },
+              "input": {
+                "dtype": "float16",
+                "shape": [
+                  15,
+                  512
+                ]
+              },
+              "output": {
+                "dtype": "int32",
+                "shape": [
+                  15
+                ]
+              },
+              "cpu_operations": []
+            },
+            {
+              "case": "top1_max_r15_d512_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "input": {
+                "dtype": "float32",
+                "shape": [
+                  15,
+                  512
+                ]
+              },
+              "output": {
+                "dtype": "float32",
+                "shape": [
+                  15
+                ]
+              },
+              "cpu_operations": [
+                "reduction:ReduceMax"
+              ]
+            },
+            {
+              "case": "top1_argmax_r485_d512_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "NPUCL": 1
+              },
+              "input": {
+                "dtype": "float16",
+                "shape": [
+                  485,
+                  512
+                ]
+              },
+              "output": {
+                "dtype": "int32",
+                "shape": [
+                  485
+                ]
+              },
+              "cpu_operations": []
+            },
+            {
+              "case": "top1_max_r485_d512_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "input": {
+                "dtype": "float32",
+                "shape": [
+                  485,
+                  512
+                ]
+              },
+              "output": {
+                "dtype": "float32",
+                "shape": [
+                  485
+                ]
+              },
+              "cpu_operations": [
+                "reduction:ReduceMax"
+              ]
+            },
+            {
+              "case": "top1_argmax_r7275_d512_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "input": {
+                "dtype": "float32",
+                "shape": [
+                  7275,
+                  512
+                ]
+              },
+              "output": {
+                "dtype": "int32",
+                "shape": [
+                  7275
+                ]
+              },
+              "cpu_operations": [
+                "reduction:ArgMaxExt2"
+              ]
+            },
+            {
+              "case": "top1_max_r7275_d512_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "input": {
+                "dtype": "float32",
+                "shape": [
+                  7275,
+                  512
+                ]
+              },
+              "output": {
+                "dtype": "float32",
+                "shape": [
+                  7275
+                ]
+              },
+              "cpu_operations": [
+                "reduction:ReduceMax"
+              ]
+            },
+            {
+              "case": "top1_argmax_r7680_d485_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "input": {
+                "dtype": "float32",
+                "shape": [
+                  7680,
+                  485
+                ]
+              },
+              "output": {
+                "dtype": "int32",
+                "shape": [
+                  7680
+                ]
+              },
+              "cpu_operations": [
+                "reduction:ArgMaxExt2"
+              ]
+            },
+            {
+              "case": "top1_max_r7680_d485_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "input": {
+                "dtype": "float32",
+                "shape": [
+                  7680,
+                  485
+                ]
+              },
+              "output": {
+                "dtype": "float32",
+                "shape": [
+                  7680
+                ]
+              },
+              "cpu_operations": [
+                "reduction:ReduceMax"
+              ]
+            },
+            {
+              "case": "top1_argmax_b15_r485_d512_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "input": {
+                "dtype": "float32",
+                "shape": [
+                  15,
+                  485,
+                  512
+                ]
+              },
+              "output": {
+                "dtype": "int32",
+                "shape": [
+                  15,
+                  485
+                ]
+              },
+              "cpu_operations": [
+                "reduction:ArgMaxExt2"
+              ]
+            },
+            {
+              "case": "top1_max_b15_r485_d512_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "input": {
+                "dtype": "float32",
+                "shape": [
+                  15,
+                  485,
+                  512
+                ]
+              },
+              "output": {
+                "dtype": "float32",
+                "shape": [
+                  15,
+                  485
+                ]
+              },
+              "cpu_operations": [
+                "reduction:ReduceMax"
+              ]
+            },
+            {
+              "case": "top1_argmax_d512_r7275_axis0_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "input": {
+                "dtype": "float32",
+                "shape": [
+                  512,
+                  7275
+                ]
+              },
+              "output": {
+                "dtype": "int32",
+                "shape": [
+                  7275
+                ]
+              },
+              "cpu_operations": [
+                "reduction:ArgMaxExt2"
+              ]
+            },
+            {
+              "case": "top1_max_d512_r7275_axis0_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "input": {
+                "dtype": "float32",
+                "shape": [
+                  512,
+                  7275
+                ]
+              },
+              "output": {
+                "dtype": "float32",
+                "shape": [
+                  7275
+                ]
+              },
+              "cpu_operations": [
+                "reduction:ReduceMax"
+              ]
+            },
+            {
+              "case": "top1_max_r15_d248320_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "input": {
+                "dtype": "float32",
+                "shape": [
+                  15,
+                  248320
+                ]
+              },
+              "output": {
+                "dtype": "float32",
+                "shape": [
+                  15
+                ]
+              },
+              "cpu_operations": [
+                "reduction:ReduceMax"
+              ]
+            },
+            {
+              "case": "top1_ext2_tiled_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "NPUCL": 2,
+                "CPUCL": 2
+              },
+              "cpu_local": {
+                "owner": "SubGraph_1",
+                "input": {
+                  "dtype": "float32",
+                  "shape": [
+                    15,
+                    485,
+                    512
+                  ],
+                  "logical_bytes": 14899200
+                },
+                "operations": [
+                  "local_argmax:ArgMaxExt2",
+                  "flat_indices:Reshape",
+                  "local_value:ReduceMax"
+                ],
+                "outputs": [
+                  {
+                    "dtype": "int32",
+                    "shape": [
+                      7275
+                    ]
+                  },
+                  {
+                    "dtype": "float32",
+                    "shape": [
+                      15,
+                      485
+                    ]
+                  }
+                ]
+              },
+              "npu_small_boundary": {
+                "owner": "SubGraph_2",
+                "input": {
+                  "dtype": "float16",
+                  "shape": [
+                    15,
+                    485
+                  ]
+                },
+                "output": {
+                  "dtype": "int32",
+                  "shape": [
+                    15
+                  ]
+                }
+              },
+              "cpu_merge": {
+                "owner": "SubGraph_3",
+                "operations": [
+                  "selector:Add",
+                  "local_index:GatherV2D",
+                  "tile_offset:Mul",
+                  "global_index:Add",
+                  "tokens:Reshape"
+                ]
+              }
+            },
+            {
+              "case": "top1_ext2_tiled_flat_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "NPUCL": 2,
+                "CPUCL": 2
+              },
+              "cpu_local": {
+                "owner": "SubGraph_1",
+                "input": {
+                  "dtype": "float32",
+                  "shape": [
+                    7275,
+                    512
+                  ],
+                  "logical_bytes": 14899200
+                },
+                "operations": [
+                  "local_argmax:ArgMaxExt2",
+                  "flat_indices:Reshape",
+                  "local_value:ReduceMax"
+                ],
+                "outputs": [
+                  {
+                    "dtype": "int32",
+                    "shape": [
+                      7275
+                    ]
+                  },
+                  {
+                    "dtype": "float32",
+                    "shape": [
+                      7275
+                    ]
+                  }
+                ]
+              },
+              "npu_small_boundary": {
+                "owner": "SubGraph_2",
+                "input": {
+                  "dtype": "float16",
+                  "shape": [
+                    7275
+                  ]
+                },
+                "output": {
+                  "dtype": "int32",
+                  "shape": [
+                    15
+                  ]
+                }
+              },
+              "cpu_merge": {
+                "owner": "SubGraph_3",
+                "operations": [
+                  "selector:Add",
+                  "local_index:GatherV2D",
+                  "tile_offset:Mul",
+                  "global_index:Add",
+                  "tokens:Reshape"
+                ]
+              }
+            },
+            {
+              "case": "top1_ext2_tiled_transposed_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "NPUCL": 2,
+                "CPUCL": 2
+              },
+              "cpu_local": {
+                "owner": "SubGraph_1",
+                "input": {
+                  "dtype": "float32",
+                  "shape": [
+                    512,
+                    7275
+                  ],
+                  "logical_bytes": 14899200
+                },
+                "operations": [
+                  "local_argmax:ArgMaxExt2",
+                  "flat_indices:Reshape",
+                  "local_value:ReduceMax"
+                ],
+                "outputs": [
+                  {
+                    "dtype": "int32",
+                    "shape": [
+                      7275
+                    ]
+                  },
+                  {
+                    "dtype": "float32",
+                    "shape": [
+                      7275
+                    ]
+                  }
+                ]
+              },
+              "npu_small_boundary": {
+                "owner": "SubGraph_2",
+                "input": {
+                  "dtype": "float16",
+                  "shape": [
+                    7275
+                  ]
+                },
+                "output": {
+                  "dtype": "int32",
+                  "shape": [
+                    15
+                  ]
+                }
+              },
+              "cpu_merge": {
+                "owner": "SubGraph_3",
+                "operations": [
+                  "selector:Add",
+                  "local_index:GatherV2D",
+                  "tile_offset:Mul",
+                  "global_index:Add",
+                  "tokens:Reshape"
+                ]
+              }
+            },
+            {
+              "case": "top1_ext2_tiled_485_fp16",
+              "model_compilation": "PASSED",
+              "graphop_counts": {
+                "NPUCL": 2,
+                "CPUCL": 2
+              },
+              "cpu_local": {
+                "owner": "SubGraph_1",
+                "input": {
+                  "dtype": "float32",
+                  "shape": [
+                    7680,
+                    485
+                  ],
+                  "logical_bytes": 14899200
+                },
+                "operations": [
+                  "local_argmax:ArgMaxExt2",
+                  "flat_indices:Reshape",
+                  "local_value:ReduceMax"
+                ],
+                "outputs": [
+                  {
+                    "dtype": "int32",
+                    "shape": [
+                      7680
+                    ]
+                  },
+                  {
+                    "dtype": "float32",
+                    "shape": [
+                      7680
+                    ]
+                  }
+                ]
+              },
+              "npu_small_boundary": {
+                "owner": "SubGraph_2",
+                "input": {
+                  "dtype": "float16",
+                  "shape": [
+                    7680
+                  ]
+                },
+                "output": {
+                  "dtype": "int32",
+                  "shape": [
+                    15
+                  ]
+                }
+              },
+              "cpu_merge": {
+                "owner": "SubGraph_3",
+                "operations": [
+                  "selector:Add",
+                  "local_index:GatherV2D",
+                  "tile_offset:Mul",
+                  "global_index:Add",
+                  "tokens:Reshape"
+                ]
+              }
+            }
+          ],
+          "conclusions": [
+            "Four isolated small ArgMax graphs have one NPUCL and no CPU operations",
+            "Four tested large ArgMax geometries are CPU, including both rank2 and rank3 and axis0",
+            "All nine tested ReduceMax graphs contain CPU ReduceMax",
+            "All four compositions retain CPU local ArgMax and ReduceMax over the complete input",
+            "Flattening, transposing and swapping 485/512 factors did not remove full-input CPU reduction in this batch"
+          ],
+          "not_established": [
+            "Exact row/element threshold or general hardware support boundary",
+            "Named internal NPU kernel or instruction dtype",
+            "Device NaN/tie/subnormal semantics",
+            "Measured transfers or new latency benefit"
+          ]
+        }
+      },
+      "device_semantics": {
+        "status": "HOST_CHECKED_USER_DEVICE_EXECUTION_PENDING",
+        "run_id": "20261104T062203Z-6272-3833d3",
+        "entry": "validate_draft_vector.py --top1-semantics",
+        "compiled_slot": "draft/tests/top1-probes",
+        "execution_slot": "draft/tests/top1-validation",
+        "recovery_slot": "draft/tests/top1-validation-result",
+        "compiled_models": 9,
+        "execution_cases": 61,
+        "small_models": [
+          "top1_argmax_r1_d512_fp16",
+          "top1_argmax_r15_d485_fp16",
+          "top1_argmax_r15_d512_fp16",
+          "top1_argmax_r485_d512_fp16"
+        ],
+        "controls": [
+          "top1_argmax_r7275_d512_fp16",
+          "top1_ext2_tiled_fp16",
+          "top1_ext2_tiled_flat_fp16",
+          "top1_ext2_tiled_transposed_fp16",
+          "top1_ext2_tiled_485_fp16"
+        ],
+        "input_scenarios": [
+          "original_fixture",
+          "all_equal",
+          "first",
+          "last",
+          "finite_tie",
+          "negative_only",
+          "signed_zero_tie",
+          "positive_inf_tie",
+          "all_negative_inf",
+          "first_nan",
+          "last_nan",
+          "multiple_nan",
+          "all_nan",
+          "subnormal"
+        ],
+        "new_graphs": 0,
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN_ON_DEVICE",
+        "host": {
+          "status": "HOST_CHECKED",
+          "checks": 315,
+          "new_fixture_torch_crosschecks": 52,
+          "reused_models": 9,
+          "input_cases": 61,
+          "simulated_native_calls": 610,
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "scope": "REAL_PREPARE_EXPANSION_COMPARISON_SUPERVISOR_ARCHIVE; FAKE_VENDOR_METADATA_AND_OUTPUTS"
+        },
+        "native_parser_host": {
+          "status": "HOST_CHECKED",
+          "valid_real_plans": 61,
+          "rejected_malformed_plans": [
+            "zero",
+            "oversize_axis",
+            "product",
+            "aggregate",
+            "rank5",
+            "bad_dtype"
+          ],
+          "scope": "ACTUAL_NATIVE_PLAN_PARSER_AND_COPIED_HIAITENSORBYTES_FUNCTION; NO_HIAI_LINK_OR_DEVICE",
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN"
+        },
+        "native_change": "Keep plan V1 and 16 MiB combined IO cap; remove old 65536 axis ceiling, declare limits in build result and reject older runtime before upload",
+        "gates": "EXACT_INT32_BYTES_ALL_ROWS_ALL_TEN_CALLS_AFTER_3_WARMUPS; MISSING_SCENARIOS_EXPLICIT; NO_NEW_TOLERANCE",
+        "timing_scope": "API_WALL_PER_MODEL_AND_INPUT; LOAD_INPUT_PREPARATION_SNAPSHOTS_EXCLUDED; NOT_ADDITIVE_NOT_FULL_DRAFT",
+        "decision": "Do not recompile more equivalent shape variants. Validate the small ArgMax primitive before considering bounded row splitting and value retrieval without ReduceMax; neither that composition nor speedup is established.",
+        "full_draft_changed": false,
+        "paused_addcustom_path": "NOT_USED"
       }
     }
   },

@@ -41,7 +41,9 @@ Plan ReadPlan(const fs::path& path) {
       std::istringstream dimensions(fields[4]);
       while (std::getline(dimensions, token, ',')) {
         const auto n = Number(token);
-        if (!n || n > 65536 || spec.shape.size() == 4) throw std::invalid_argument("invalid probe shape");
+        // Full-vocabulary probes have an axis of 248320. Bound dimensions by
+        // the existing IO budget; the checked byte product below is decisive.
+        if (!n || n > (16U << 20) || spec.shape.size() == 4) throw std::invalid_argument("invalid probe shape");
         spec.shape.push_back(n);
       }
       if (spec.shape.empty()) throw std::invalid_argument("probe shape is empty");
