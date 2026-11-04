@@ -8,25 +8,25 @@
 |---|---|
 | Operator | draft-top1 |
 | Branch | operator/draft-top1 |
-| Current phase | 0 |
-| Based-on revision | bc56986b7dd70304fb7be55109884f016a21c182 |
-| Updated UTC | 2026-11-04T08:08:44Z |
-| Summary | Custom Top1 scope and host specification ready for first checkpoint; target implementation pending. |
-| Blocker | — |
-| Active files | operator.json<br>scripts/inspect_ddk.py<br>scripts/reference.py<br>scripts/validate_host.py<br>src/reference/top1_cpu.cpp |
-| Recorded working tree (PLAN excluded) |  M docs/current-status.md<br> M docs/results.md<br> M specs/dflash-execution-state.json<br>?? specs/operator-workflow.json<br>?? targets/cpro/operators/draft-top1/README.md<br>?? targets/cpro/operators/draft-top1/docs/CONTRACT.md<br>?? targets/cpro/operators/draft-top1/docs/ENVIRONMENT.md<br>?? targets/cpro/operators/draft-top1/docs/LESSONS.md<br>?? targets/cpro/operators/draft-top1/docs/OPTIMIZATION.md<br>?? targets/cpro/operators/draft-top1/docs/VALIDATION.md<br>?? targets/cpro/operators/draft-top1/operator.json<br>?? targets/cpro/operators/draft-top1/scripts/blocked_target.py<br>?? targets/cpro/operators/draft-top1/scripts/build.sh<br>?? targets/cpro/operators/draft-top1/scripts/compare.sh<br>?? targets/cpro/operators/draft-top1/scripts/gen_golden.sh<br>?? targets/cpro/operators/draft-top1/scripts/inspect_ddk.py<br>?? targets/cpro/operators/draft-top1/scripts/preflight.sh<br>?? targets/cpro/operators/draft-top1/scripts/reference.py<br>?? targets/cpro/operators/draft-top1/scripts/run_on_board.sh<br>?? targets/cpro/operators/draft-top1/scripts/setup_env.sh<br>?? targets/cpro/operators/draft-top1/scripts/validate.sh<br>?? targets/cpro/operators/draft-top1/scripts/validate_host.py<br>?? targets/cpro/operators/draft-top1/src/framework/README.md<br>?? targets/cpro/operators/draft-top1/src/host/README.md<br>?? targets/cpro/operators/draft-top1/src/kernel/README.md<br>?? targets/cpro/operators/draft-top1/src/reference/top1_cpu.cpp |
+| Current phase | 2 |
+| Based-on revision | 2f5552902fff334a125428a17bdb2e60616d37e3 |
+| Updated UTC | 2026-11-04T08:10:46Z |
+| Summary | Selected internal X90 DDK interfaces unavailable locally; bounded read-only collector ready. |
+| Blocker | No selected DDK or target profile on this host; kernel, registration and exact 60-byte output-store ABI cannot be established. |
+| Active files | scripts/inspect_ddk.py<br>docs/ENVIRONMENT.md<br>docs/OPTIMIZATION.md |
+| Recorded working tree (PLAN excluded) | clean |
 
 ## Exact next commands
 
-- `python3 targets/cpro/operators/draft-top1/scripts/inspect_ddk.py --help`
+- `python3 "$REPO_DIR/targets/cpro/operators/draft-top1/scripts/inspect_ddk.py" --ddk-root "$CPRO_DDK_ROOT" --compile-environment "$AI_RUN_DIR/draft/tests/top1-last-builtin/top1_bits_payload/omc/omg-environment.json" --output "$AI_RUN_DIR/draft/tests/custom-top1-ddk"`
 
 ## Phase table
 
 | ID | Phase | Status | Gate | Summary / result / evidence | Next action | Knowledge |
 |---:|---|---|---|---|---|---|
-| 0 | Git scope | IN_PROGRESS | Branch, manifest, persistent plan, and scaffold form a rollback checkpoint | Custom Top1 scope and host specification ready for first checkpoint; target implementation pending.<br>35 host checks passed; selected DDK and device not run.<br>Evidence: 20261104T075532Z-9847-483675/evidence/host-final/host-validation.json | Review the rendered contract, run the working check, stage the scaffold, and commit it. | — |
-| 1 | Contract and baseline | PENDING | Interface, semantics, rejection behavior, deterministic golden, and baseline are frozen | — | — | — |
-| 2 | Environment | PENDING | Environment identity, dependency locks, setup, and preflight are reproducible | — | — | — |
+| 0 | Git scope | COMPLETED | Branch, manifest, persistent plan, and scaffold form a rollback checkpoint | Managed operator branch and source checkpoint established.<br>Source checkpoint 2f55529; lifecycle working check passed.<br>Evidence: git:2f55529 | Record the frozen independently validated host contract. | — |
+| 1 | Contract and baseline | COMPLETED | Interface, semantics, rejection behavior, deterministic golden, and baseline are frozen | Fixed finite FP16 contract, host references and acceptance fixtures frozen.<br>35 host checks pass; seven full-shape fixtures match NumPy/PyTorch; no NPU baseline claimed.<br>Evidence: 20261104T075532Z-9847-483675/evidence/host-final/host-validation.json | Collect actual selected X90 DDK source and registration interfaces. | — |
+| 2 | Environment | BLOCKED | Environment identity, dependency locks, setup, and preflight are reproducible | Selected internal X90 DDK interfaces unavailable locally; bounded read-only collector ready.<br>Target build/device NOT_RUN; host tooling checkpoint 2f55529; no further builtin probes. | Return ddk-context.tar.gz from the single collector; reconcile selected interfaces before kernel implementation. | — |
 | 3 | Development | PENDING | Smallest correct host, kernel/device, framework, build, golden, and compare paths work | — | — | — |
 | 4 | Correctness validation | PENDING | Independent-copy, boundary, negative, integration, and on-board PASS or documented PENDING/N/A have evidence | — | — | — |
 | 5 | Optimization | PENDING | Frozen baseline, one-hypothesis experiments, correctness reruns, and promotion decision are reproducible | — | — | — |
@@ -37,6 +37,7 @@
 
 - Created operator/draft-top1 from bc56986b7dd70304fb7be55109884f016a21c182; phase history before scaffold is not inferred.
 - 2026-11-04T08:08:44Z: Final builtin failure triggers existing user authorization; no additional builtin matrix.
+- 2026-11-04T08:10:46Z: Keep hardware_reference_policy use; matching X90 capacity portrait and pre-generation ledger pending, no numerical latency estimate.
 
 ## Machine-readable state
 
@@ -44,50 +45,51 @@
 ```json
 {
   "active_files": [
-    "operator.json",
     "scripts/inspect_ddk.py",
-    "scripts/reference.py",
-    "scripts/validate_host.py",
-    "src/reference/top1_cpu.cpp"
+    "docs/ENVIRONMENT.md",
+    "docs/OPTIMIZATION.md"
   ],
-  "based_on_revision": "bc56986b7dd70304fb7be55109884f016a21c182",
-  "blocker": "",
+  "based_on_revision": "2f5552902fff334a125428a17bdb2e60616d37e3",
+  "blocker": "No selected DDK or target profile on this host; kernel, registration and exact 60-byte output-store ABI cannot be established.",
   "branch": "operator/draft-top1",
-  "current_phase": "0",
+  "current_phase": "2",
   "decisions": [
     "Created operator/draft-top1 from bc56986b7dd70304fb7be55109884f016a21c182; phase history before scaffold is not inferred.",
-    "2026-11-04T08:08:44Z: Final builtin failure triggers existing user authorization; no additional builtin matrix."
+    "2026-11-04T08:08:44Z: Final builtin failure triggers existing user authorization; no additional builtin matrix.",
+    "2026-11-04T08:10:46Z: Keep hardware_reference_policy use; matching X90 capacity portrait and pre-generation ledger pending, no numerical latency estimate."
   ],
   "next_commands": [
-    "python3 targets/cpro/operators/draft-top1/scripts/inspect_ddk.py --help"
+    "python3 \"$REPO_DIR/targets/cpro/operators/draft-top1/scripts/inspect_ddk.py\" --ddk-root \"$CPRO_DDK_ROOT\" --compile-environment \"$AI_RUN_DIR/draft/tests/top1-last-builtin/top1_bits_payload/omc/omg-environment.json\" --output \"$AI_RUN_DIR/draft/tests/custom-top1-ddk\""
   ],
   "operator_id": "draft-top1",
   "phases": [
     {
       "evidence": [
-        "20261104T075532Z-9847-483675/evidence/host-final/host-validation.json"
+        "git:2f55529"
       ],
       "gate": "Branch, manifest, persistent plan, and scaffold form a rollback checkpoint",
       "id": "0",
       "knowledge_refs": [],
       "name": "Git scope",
-      "next_action": "Review the rendered contract, run the working check, stage the scaffold, and commit it.",
-      "result": "35 host checks passed; selected DDK and device not run.",
-      "status": "IN_PROGRESS",
-      "summary": "Custom Top1 scope and host specification ready for first checkpoint; target implementation pending.",
-      "updated_utc": "2026-11-04T08:08:44Z"
+      "next_action": "Record the frozen independently validated host contract.",
+      "result": "Source checkpoint 2f55529; lifecycle working check passed.",
+      "status": "COMPLETED",
+      "summary": "Managed operator branch and source checkpoint established.",
+      "updated_utc": "2026-11-04T08:10:05Z"
     },
     {
-      "evidence": [],
+      "evidence": [
+        "20261104T075532Z-9847-483675/evidence/host-final/host-validation.json"
+      ],
       "gate": "Interface, semantics, rejection behavior, deterministic golden, and baseline are frozen",
       "id": "1",
       "knowledge_refs": [],
       "name": "Contract and baseline",
-      "next_action": "",
-      "result": "",
-      "status": "PENDING",
-      "summary": "",
-      "updated_utc": ""
+      "next_action": "Collect actual selected X90 DDK source and registration interfaces.",
+      "result": "35 host checks pass; seven full-shape fixtures match NumPy/PyTorch; no NPU baseline claimed.",
+      "status": "COMPLETED",
+      "summary": "Fixed finite FP16 contract, host references and acceptance fixtures frozen.",
+      "updated_utc": "2026-11-04T08:10:32Z"
     },
     {
       "evidence": [],
@@ -95,11 +97,11 @@
       "id": "2",
       "knowledge_refs": [],
       "name": "Environment",
-      "next_action": "",
-      "result": "",
-      "status": "PENDING",
-      "summary": "",
-      "updated_utc": ""
+      "next_action": "Return ddk-context.tar.gz from the single collector; reconcile selected interfaces before kernel implementation.",
+      "result": "Target build/device NOT_RUN; host tooling checkpoint 2f55529; no further builtin probes.",
+      "status": "BLOCKED",
+      "summary": "Selected internal X90 DDK interfaces unavailable locally; bounded read-only collector ready.",
+      "updated_utc": "2026-11-04T08:10:46Z"
     },
     {
       "evidence": [],
@@ -162,36 +164,11 @@
       "updated_utc": ""
     }
   ],
-  "resume_summary": "Custom Top1 scope and host specification ready for first checkpoint; target implementation pending.",
+  "resume_summary": "Selected internal X90 DDK interfaces unavailable locally; bounded read-only collector ready.",
   "schema_version": 1,
-  "updated_utc": "2026-11-04T08:08:44Z",
+  "updated_utc": "2026-11-04T08:10:46Z",
   "working_tree": [
-    " M docs/current-status.md",
-    " M docs/results.md",
-    " M specs/dflash-execution-state.json",
-    "?? specs/operator-workflow.json",
-    "?? targets/cpro/operators/draft-top1/README.md",
-    "?? targets/cpro/operators/draft-top1/docs/CONTRACT.md",
-    "?? targets/cpro/operators/draft-top1/docs/ENVIRONMENT.md",
-    "?? targets/cpro/operators/draft-top1/docs/LESSONS.md",
-    "?? targets/cpro/operators/draft-top1/docs/OPTIMIZATION.md",
-    "?? targets/cpro/operators/draft-top1/docs/VALIDATION.md",
-    "?? targets/cpro/operators/draft-top1/operator.json",
-    "?? targets/cpro/operators/draft-top1/scripts/blocked_target.py",
-    "?? targets/cpro/operators/draft-top1/scripts/build.sh",
-    "?? targets/cpro/operators/draft-top1/scripts/compare.sh",
-    "?? targets/cpro/operators/draft-top1/scripts/gen_golden.sh",
-    "?? targets/cpro/operators/draft-top1/scripts/inspect_ddk.py",
-    "?? targets/cpro/operators/draft-top1/scripts/preflight.sh",
-    "?? targets/cpro/operators/draft-top1/scripts/reference.py",
-    "?? targets/cpro/operators/draft-top1/scripts/run_on_board.sh",
-    "?? targets/cpro/operators/draft-top1/scripts/setup_env.sh",
-    "?? targets/cpro/operators/draft-top1/scripts/validate.sh",
-    "?? targets/cpro/operators/draft-top1/scripts/validate_host.py",
-    "?? targets/cpro/operators/draft-top1/src/framework/README.md",
-    "?? targets/cpro/operators/draft-top1/src/host/README.md",
-    "?? targets/cpro/operators/draft-top1/src/kernel/README.md",
-    "?? targets/cpro/operators/draft-top1/src/reference/top1_cpu.cpp"
+    "clean"
   ]
 }
 ```
