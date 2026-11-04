@@ -492,6 +492,7 @@ def _compiled_observation(omc, ddk):
     from qwen35_moe_dflash.toolchain.omc_cpu_inspect import _task
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     from qwen35_moe_dflash.draft.compile_precision import _observed_desc
+    from qwen35_moe_dflash.toolchain.omc_embed_weights import _attribute
     schema = load_schema(Path(ddk) / 'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')
     parts = [p for p in read_container(omc)['partitions'] if p['type'] == 0]
     if len(parts) != 1:
@@ -511,10 +512,30 @@ def _compiled_observation(omc, ddk):
             if node['type'] == 'GraphOp':
                 row['owner'] = _task(node)['cl_name']
                 owners[row['owner']] += 1
+                row['weight_bytes'] = (_attribute(node, 'graphop_weight_size')
+                    if any(a.get('key') == 'graphop_weight_size' for a in node.get('attr', [])) else None)
             nodes.append(row)
     return dict(graphop_counts=dict(owners), nodes=nodes, fused_attention_nodes=fused_attention,
                 attention_inspection_scope='MAIN_GRAPH_METADATA_ONLY; OPAQUE_GRAPHOP_KERNELS_NOT_DECODED',
                 scope='COMPILED_DESCRIPTORS_ONLY_NOT_RUNTIME_SLOT_BINDING_OR_INTERNAL_INSTRUCTION_PRECISION')
+
+
+def _partition_weights(observed):
+    # Diagnostic threshold: the public Secure C implementation rejects a
+    # destMax above 0x7fffffff. Actual runtime copy arguments are not observed.
+    limit = 0x7fffffff
+    rows = [dict(name=n['name'], owner=n['owner'], bytes=n.get('weight_bytes'))
+            for n in observed.get('nodes', []) if n['type'] == 'GraphOp']
+    known = [r for r in rows if type(r['bytes']) is int and r['bytes'] >= 0]
+    oversized = [r['name'] for r in known if r['bytes'] > limit]
+    missing = [r['name'] for r in rows if r not in known]
+    complete = bool(rows) and not missing
+    return dict(status=('EXCEEDS_DIAGNOSTIC_LIMIT' if oversized else
+                        'WITHIN_DIAGNOSTIC_LIMIT' if complete else 'INCOMPLETE'),
+                diagnostic_limit_bytes=limit, partitions=rows,
+                max_known_bytes=max((r['bytes'] for r in known), default=None),
+                oversized=oversized, missing=missing,
+                scope='COMPILED_GRAPHOP_WEIGHT_EXTENTS_NOT_RUNTIME_ALLOCATION_OR_COPY_ARGUMENTS')
 
 
 def inspect_pytorch_compilation(directory):
@@ -533,9 +554,12 @@ def inspect_pytorch_compilation(directory):
 
 
 def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
-                    timeout_seconds=7200, tbe_diagnosis=None, progress=print):
+                    timeout_seconds=7200, tbe_diagnosis=None, progress=print,
+                    limit_partition_size=None):
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
+    if limit_partition_size is not None and type(limit_partition_size) is not bool:
+        raise ValueError('limit_partition_size must be bool or None')
 
     def compiler_progress(row):
         message = row['message']
@@ -595,6 +619,8 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             model_compilation='NOT_RUN', compiled_precision='NOT_VALIDATED', compiled_abi='NOT_BOUND',
             device_execution='NOT_RUN', numerical_validation='NOT_RUN', ddk_id=ddk_id,
             runtime_integration='PENDING_PHYSICAL_ABI_AND_DEVICE_VALIDATION')
+        if limit_partition_size is not None:
+            result['compiler_options'] = dict(limit_partition_size=limit_partition_size)
         _save(root / 'manifest.json', result)
         try:
             transform = None
@@ -625,6 +651,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             compiled = compile_existing_air(source / 'export.air', root / 'compilation', ddk_root,
                 ddk_id=ddk_id, timeout_seconds=timeout_seconds, input_layout='air-directory',
                 use_origin_format=True, save_weights_as_external_data=True,
+                limit_partition_size=limit_partition_size,
                 tbe_diagnosis=tbe_diagnosis, progress=compiler_progress,
                 air_transform=transform)
             result['model_compilation'] = compiled['model_compilation']
@@ -641,6 +668,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                 observed = _compiled_observation(model_path, ddk_root)
                 _save(root / 'compiled-interface.json', observed)
                 result['graphop_counts'] = observed['graphop_counts']
+                result['partition_weights'] = _partition_weights(observed)
                 result['interface_inspection'] = 'OBSERVED'
             except (OSError, ValueError, KeyError) as error:
                 result.update(interface_inspection='UNAVAILABLE', interface_error=str(error))
@@ -653,6 +681,11 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                     scope=observed['attention_inspection_scope'])
                 if observed['fused_attention_nodes']:
                     raise ValueError('compiler main graph contains a fused attention operator; retain this candidate for inspection')
+            if limit_partition_size is True:
+                result['stage'] = 'partition-weight-check'
+                if result.get('partition_weights', {}).get('status') != 'WITHIN_DIAGNOSTIC_LIMIT':
+                    raise ValueError('bounded-partition candidate requires known GraphOp weight extents <= 0x7fffffff; '
+                                     'see partition_weights and compiled-interface.json; packed model not published')
             result['stage'] = 'pack-model'
             _save(root / 'manifest.json', result)
             from qwen35_moe_dflash.toolchain.omc_embed_weights import embed_external_weights
@@ -672,6 +705,8 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             result.update(status='FAILED', error=f'{type(error).__name__}: {error}')
             if result['stage'] == 'air-preparation':
                 result['next'] = 'Inspect the reported source AIR node descriptors; no weight snapshot or OMG invocation occurred.'
+            elif result['stage'] == 'partition-weight-check':
+                result['next'] = 'Inspect compiled partition weight extents; this requested limit did not produce a bounded candidate. No packed model or device execution.'
             else:
                 result['compilation_diagnostics'] = compilation_diagnostics(root / 'compilation')
                 result['next'] = 'Inspect compilation_diagnostics and the retained compile.log before retrying this same build directory.'

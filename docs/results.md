@@ -1,5 +1,13 @@
 # 当前结果
 
+2026-11-04，用户回传相位表OMC `a045f7629920fd962d21c8ce694b1ee694a3be61942c4cac6a556f00cc631027` 的accuracy执行失败。板端尝试cc7399ff087d40be8e647bcdd2f46a7c已完成回收、exitcode=1、NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION；失败阶段MODEL_LOAD，尚未进入推理或数值比较。native.stderr中CLIENT_INIT、版本查询、MMAP、357485us预读和SetModelBuffer完成，Load在266499us后失败；这些是加载阶段时间，不是推理时延。
+
+HiLog候选PID52903、设备日期03-17、23:54:25.537～23:54:26.236：SubGraph_0／1／2权重分别3892／2806299136／20字节；remote_c_mem_allocator.cpp Copy的memcpy_s失败后，AllocateWeightMemory、InitMemory、ModelManagerInit和Load依次失败。候选完整日志SHA256 `41c2c85dc7b6d33ec074aae7aaac6e3ccf21cca4caa34be2aa0966d888fed634`，共享快照SHA256 `5ffd08a8d89bbd570a6dd90c31597bb130b09d63749324474ee656c26309db5b`。没有记录本次native PID，候选与本次执行关联及实际dstSize／srcSize／memcpy_s返回码仍未证实。早期库搜索错误之后程序继续进入权重初始化，不能单凭第一条error归因。
+
+公开OpenHarmony [securectype.h](https://raw.githubusercontent.com/openharmony/third_party_bounds_checking_function/master/include/securectype.h)定义默认SECUREC_MEM_MAX_LEN=0x7fffffff；[memcpy_s.c](https://raw.githubusercontent.com/openharmony/third_party_bounds_checking_function/master/src/memcpy_s.c)对超限destMax返回ERANGE。合并后的单块2806299136字节（2.614 GiB）超过此值，单块拷贝上限是优先假设；公开源码不证明设备800.631.120.010实际加载库的宏配置，也不证明本次失败是总内存不足。之前的无中间CPU结构结论保留，但该模型目前不可加载。
+
+新增PyTorch编译显式参数--limit-partition-size true／false；默认省略，原AIR、相位表、训练权重和运行API不变。true请求所选OMG限制分区，并在打包前检查每个GraphOp的graphop_weight_size均可读且≤2147483647；未知或超限停止在partition-weight-check，保留编译和接口报告。报告包含每块owner／大小、max_known_bytes及超限名单；这些是编译描述值，不是实际拷贝参数。允许多个NPU分区，下一步仍检查无中间CPU依赖，不强求单NPU块。主机证据run `20261104T003321Z-29312-8cfae7` 的28项protobuf／模拟编译／CLI检查通过，包括默认选项不变、true／false传递、边界值、2.806GB单块阻止打包、总量超2GiB但各块受控、缺失／非法大小拒绝及原静态预处理回归。所选DDK对true的实际分区效果、设备加载、数值及性能均待验证。
+
 2026-11-04，用户回传相位表候选的编译产物检查：OMC 2808047355字节，SHA256 `a045f7629920fd962d21c8ce694b1ee694a3be61942c4cac6a556f00cc631027`。CPUCL3／NPUCL2变为CPUCL2／NPUCL1，前置CPU控制节点类别计数保持，中间CPU的两个频率Mul不再出现，两个NPU分区合并为一个。新SubGraph_2是末尾ArgMax，并非旧的频率子图；其FP32[1,15,248320]输入逻辑14899200字节、INT32输出60字节保持。NPU主体20输入／14输出是内部分区接口，不代表公共ABI扩为20输入。
 
 依赖分析ANALYZED、unresolved为空、intermediate_cpu_partitions和intermediate_cpu_outputs均为空；CPU→NPU7条，NPU→CPU仅1条，即FP16 logits经insert_cast_0成为FP32后进入末尾CPU ArgMax。边界JSON 255447字节，SHA256 `7e75e9a23c78f7b748f8de2e08111bbc2699a46f155a9390a1cdbfe924f4a51c`。这是用户粘贴的静态元数据，未独立取回文件；accuracy_binding=NOT_PROVIDED、source_numerical_validation=NOT_EVALUATED，尚无此模型的设备数值、同步API或算子时延。结构目标达成，不将旧模型105.582ms差额直接记为收益；下一步使用当前OMC完成19步isolated／feedback设备比较及API统计，原golden和门槛不变。
