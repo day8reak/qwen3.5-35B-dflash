@@ -158,7 +158,7 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
         from qwen35_moe_dflash.draft.incremental.embedding_probe import prepare_fixture
         return prepare_fixture(root, out, ddk, ddk_id, selection)
     if report.get('artifact_kind') != COMPILE_KIND or report.get('status') not in {'COMPILED', 'PARTIAL'}:
-        raise ValueError('expected completed FP32 probe compilation')
+        raise ValueError('expected completed Draft region probe compilation')
     if report['status'] == 'PARTIAL' and selection is None:
         raise ValueError('partial compilation requires --cases selecting only compiled probes')
     rows = report['cases']
@@ -197,7 +197,7 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
         plan = ['QWEN35_TENSOR_PROBE 1', f'iterations {WARMUP} {REPETITIONS}']
         for direction, prefix in (('inputs', 'input'), ('outputs', 'golden')):
             for spec in io[direction]:
-                plan.append(' '.join((direction[:-1], str(spec['index']), spec['name'], 'float32',
+                plan.append(' '.join((direction[:-1], str(spec['index']), spec['name'], spec['dtype'],
                                       ','.join(map(str, spec['shape'])))))
                 destination = folder/f'{prefix}_{spec["index"]}.bin'
                 shutil.copyfile(root/f'{name}/fixture/{prefix}_{spec["fixture_index"]}.bin', destination)
@@ -207,14 +207,15 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
                           compiler_options=compilation.get('requested_options', {}),
                           graphop_counts=row['graphop_counts']))
     result = dict(cases=cases, warmup=WARMUP, repetitions=REPETITIONS, atol=ATOL, rtol=RTOL,
-                  scope='FP32_REGIONS_ONLY_NOT_FULL_DRAFT_VALIDATION', ddk_id=ddk_id, schema=schema.evidence)
+                  scope='DECLARED_DTYPE_REGIONS_ONLY_NOT_FULL_DRAFT_VALIDATION', ddk_id=ddk_id, schema=schema.evidence)
     _save(out/'fixture/manifest.json', result)
     return result
 
 
 def _exact_required(meta, spec):
-    # FP64 comparison cannot distinguish every adjacent INT64 value.
-    return bool(meta.get('exact_bytes') or spec.get('exact_bytes') or spec['dtype']=='int64')
+    # Token indices need equality: relative float tolerance accepts nearby IDs.
+    # FP64 comparison also cannot distinguish every adjacent INT64 value.
+    return bool(meta.get('exact_bytes') or spec.get('exact_bytes') or spec['dtype'] in ('int32', 'int64'))
 
 
 def compare(fixture, native, *, selection=None, allow_host_fake=False):

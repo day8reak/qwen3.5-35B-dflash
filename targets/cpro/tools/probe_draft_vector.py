@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect the selected DDK or compile small FP32 Draft regions; no board access."""
+"""Inspect the selected DDK or compile bounded Draft regions; no board access."""
 import argparse
 from collections import Counter
 import json
@@ -11,17 +11,22 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
+from qwen35_moe_dflash.draft.incremental.top1_probe import CASES as TOP1_CASES
 
 KIND = 'qwen35-draft-vector-probe'
 SCHEMA = ('https://github.com/Ascend/torchair/blob/'
           'e1118e8b0fc1b95190ab53b732c0872989550e20/'
           'python/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py')
-CASES = ('rms_primitive_hidden', 'rms_builtin_hidden', 'rms_builtin_heads',
+VECTOR_CASES = ('rms_primitive_hidden', 'rms_builtin_hidden', 'rms_builtin_heads',
          'softmax_fp32', 'residual_fp32', 'residual_addcustom_fp32')
+CASES = (*VECTOR_CASES, *TOP1_CASES)
 
 
 def graph_case(case):
-    """Keep FP32 IO explicit; support does not prove internal precision."""
+    """Keep declared IO explicit; placement and arithmetic require validation."""
+    if case in TOP1_CASES:
+        from qwen35_moe_dflash.draft.incremental.top1_probe import graph_case as top1_graph
+        return top1_graph(case)
     import numpy as np
     from qwen35_moe_dflash.graph.fused.ir import Graph
     if case not in CASES:
@@ -350,7 +355,9 @@ def _run(args, root):
     result = {'artifact_kind': KIND, 'status': 'RUNNING', 'stage': 'prepare',
         'device_execution': 'NOT_RUN', 'numerical_validation': 'NOT_RUN',
         'model_compilation': 'NOT_RUN', 'full_draft_changed': False, 'cases': [],
-        'precision_request': 'SOURCE_FP32_GRAPH_WITH_DEFAULT_OMG_ARITHMETIC_POLICY_NO_CPU_CUSTOMIZATION',
+        'precision_request': ('SOURCE_FP16_LOGITS_INT32_INDICES_DEFAULT_DDK_SELECTION'
+            if all(case in TOP1_CASES for case in args.cases) else
+            'SOURCE_DECLARED_DTYPES_WITH_DEFAULT_OMG_ARITHMETIC_POLICY_NO_CPU_CUSTOMIZATION'),
         'weight_data_type': args.weight_data_type or 'OMG_DEFAULT',
         'schema_source': SCHEMA, 'platform': 'kirinx90'}
     write_json(root / 'result.json', result)
@@ -371,6 +378,9 @@ def _run(args, root):
             row = {'case': case, 'status': 'PLANNED', 'model_compilation': 'NOT_RUN', 'graph': graph.manifest(),
                    'reference': ('NUMPY_FP32_ADD_WITH_CANCELLATION_ROWS_NOT_DEVICE_VALIDATION'
                        if case.startswith('residual_') else 'NUMPY_FP32_ROW_REDUCTION_NOT_DEVICE_VALIDATION')}
+            if case in TOP1_CASES:
+                row.update(reference=graph.output_contract['reference'],
+                           top1_contract=graph.output_contract)
             if case == 'residual_addcustom_fp32':
                 row['schema_source'] = 'USER_OBSERVED_SELECTED_DDK_AddCustom_REGISTRATION_x_y_TO_z'
                 row['implementation_request'] = 'AddCustom_FP32_ND_DEFAULT_DDK_SELECTION_NO_FORCED_IMPLEMENTATION'
@@ -417,7 +427,7 @@ def _run(args, root):
                                'PASSED' if compilation == {'PASSED'} else
                                'FAILED' if compilation == {'FAILED'} else 'PARTIAL'),
             next=('No SDK compilation requested; inspect the planned source and fixtures.' if args.plan_only else
-                  'Inspect placement.json for FP32 descriptors and CPU/NPU owners; device precision and performance are still required before Draft integration.'
+                  'Inspect placement.json descriptors and CPU/NPU owners; device numerical and performance checks are still required before Draft integration.'
                   if statuses == {'COMPILED'} else
                   'Inspect failed cases and compilation_diagnostics; failed compilation has no validated placement. Do not run failed cases on device.'))
     except Exception as error:
@@ -453,7 +463,7 @@ def main(argv=None):
     parser.add_argument('--inspect-compile', metavar='COMPILED_PROBES',
                         help='read existing failed compiler reports and error excerpts; no writes or retries')
     parser.add_argument('--torchair-pb2', help='optional actual TorchAir schema for --inspect-rms')
-    parser.add_argument('--cases', nargs='+', choices=CASES, default=list(CASES))
+    parser.add_argument('--cases', nargs='+', choices=CASES, default=list(VECTOR_CASES))
     parser.add_argument('--plan-only', action='store_true', help='write source and fixtures without invoking any SDK')
     parser.add_argument('--replace', action='store_true', help='replace this completed probe slot; never shared models')
     parser.add_argument('--ge-root', default=os.environ.get('CANN_ROOT'))

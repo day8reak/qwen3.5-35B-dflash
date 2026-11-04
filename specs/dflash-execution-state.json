@@ -3430,7 +3430,8 @@
       "implementation": "NOT_STARTED",
       "device_execution": "NOT_RUN",
       "next": "BOUNDED_FULL_VOCABULARY_REDUCTION_PROBE_BEFORE_MODEL_INTEGRATION; CHECK_PLACEMENT_TIES_TAILS_AND_NONFINITE_BEHAVIOR",
-      "pipeline_limit": "DEPENDENT_CPU_CONSUMER_CANNOT_BE_HIDDEN_BY_ASYNC_ALONE; PRECOMPUTE_SCALAR_CONTROLS; CROSS_REQUEST_THROUGHPUT_NOT_SINGLE_REQUEST_LATENCY"
+      "pipeline_limit": "DEPENDENT_CPU_CONSUMER_CANNOT_BE_HIDDEN_BY_ASYNC_ALONE; PRECOMPUTE_SCALAR_CONTROLS; CROSS_REQUEST_THROUGHPUT_NOT_SINGLE_REQUEST_LATENCY",
+      "builtin_probe": "specs/dflash-execution-state.json#incremental_draft_task/top1_builtin_probe"
     },
     "compiled_only_boundary_inspection": {
       "status": "HOST_CHECKED",
@@ -3687,7 +3688,7 @@
       }
     },
     "host_embedding_candidate": {
-      "status": "USER_REPORTED_EXECUTED_NUMERICAL_FAILED_API_104_TO106_MS_PROFILE_PENDING",
+      "status": "USER_REPORTED_PROFILE_103720_US_NUMERICAL_FAILED",
       "policy": "packed-spatial-host-embedding",
       "run_id": "20261104T004345Z-29867-0cafbe",
       "source_math": "COPY_ORIGINAL_FP16_ANCHOR_AND_MASK_ROWS; UNIT_SCALE_ONLY",
@@ -3723,7 +3724,7 @@
       "numerical_validation": "FAILED_SAME_REPORTED_ERROR_SUMMARIES_AS_PREVIOUS",
       "performance": "NATIVE_API_PHASE_MEANS_103.958_TO106.09_MS_NOT_END_TO_END",
       "production_promotion": "NOT_PERFORMED",
-      "next": "REUSE_RECOVERED_ACCURACY; ONE_SAME_MODEL_PROFILE_THEN_RECOVER; NO_RECOMPILE_OR_ACCURACY_RELAUNCH",
+      "next": "COMPILE_BOUNDED_FULL_VOCABULARY_TOP1_BUILTIN_PLACEMENT_PROBES; KEEP_CURRENT_MODEL",
       "command_document": "docs/current-status.md",
       "experience_audit": {
         "captured": [
@@ -4009,6 +4010,117 @@
         ],
         "production_promotion": "NOT_PERFORMED",
         "next": "PROFILE_THE_RECOVERED_ACCURACY_MODEL_ONCE_THEN_RECOVER_SAME_ATTEMPT"
+      },
+      "profile_observation": {
+        "artifact_kind": "qwen35-draft-user-profile-observation",
+        "source": "USER_PASTED_MODEL_AND_COMPLETE_OPERATOR_TABLES; CSV_RECEIPT_HASHES_NOT_RETRIEVED",
+        "date": "2026-11-04",
+        "model_association": "CONVERSATION_CONTEXT_ONLY_HOST_EMBEDDING_967e9b64; NO_DIGEST_IN_PASTED_PROFILE",
+        "model_us": {
+          "load": 160281,
+          "inference": 103720,
+          "unload": 4859
+        },
+        "operator_sum_us": 73656,
+        "arithmetic_difference_us": 30064,
+        "cpu_operator_sum_us": 13138,
+        "npu_operator_sum_us": 60518,
+        "hotspots_us": {
+          "MatMul_30": 19960,
+          "ArgMaxV2": 12353,
+          "Conv2D": 8643,
+          "Transpose_1": 5252,
+          "Transpose": 363
+        },
+        "previous_profile": {
+          "inference_us": 184568,
+          "operator_sum_us": 78986,
+          "arithmetic_difference_us": 105582
+        },
+        "deltas_us": {
+          "inference": 80848,
+          "operator_sum": 5330,
+          "arithmetic_difference": 75518
+        },
+        "timing_limitations": [
+          "OPERATOR_SUM_IS_NOT_ELAPSED_CRITICAL_PATH",
+          "DIFFERENCE_IS_NOT_MEASURED_WAIT_OR_TRANSFER_TIME",
+          "START_TIMES_DO_NOT_ESTABLISH_ALIGNED_CPU_NPU_EXECUTION_CLOCKS",
+          "HOST_EMBEDDING_PREPARATION_NOT_INCLUDED",
+          "NO_WARMED_FIXED_INPUT_TEN_CALL_ACCEPTANCE_IN_THIS_TABLE"
+        ],
+        "numerical_validation": "PRECEDING_CANDIDATE_NUMERICAL_FAILED; NOT_REEVALUATED_BY_PROFILE"
+      }
+    },
+    "top1_builtin_probe": {
+      "status": "HOST_CHECKED_SELECTED_DDK_PENDING",
+      "run_id": "20261104T015950Z-753-3ad426",
+      "entry": "targets/cpro/tools/probe_draft_vector.py",
+      "cases": [
+        "top1_argmax_fp16",
+        "top1_with_value_fp16",
+        "top1_tiled_fp16"
+      ],
+      "scope": "BUILTIN_GE_FULL_VOCABULARY_REDUCTION_PLACEMENT_NO_FULL_MODEL_EDIT",
+      "schema_source": "https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py",
+      "input": {
+        "shape": [
+          1,
+          15,
+          248320
+        ],
+        "dtype": "float16",
+        "bytes": 7449600
+      },
+      "output": {
+        "shape": [
+          1,
+          15
+        ],
+        "dtype": "int32",
+        "bytes": 60
+      },
+      "tile_geometry": [
+        485,
+        512
+      ],
+      "padding": 0,
+      "index_arithmetic": "INT32",
+      "ties": "MINIMUM_GLOBAL_INDEX_REQUIRED",
+      "nonfinite": "CHECKED_IN_SYNTHETIC_FIXTURE_DEVICE_BEHAVIOR_PENDING",
+      "host": {
+        "status": "HOST_CHECKED",
+        "checks": 128,
+        "full_shape_replays": 27,
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "scope": "CPU_GRAPH_REPLAY_CPP_EMISSION_REAL_BINDING_WITH_FAKE_VENDOR_METADATA_AND_NATIVE_OUTPUTS",
+        "cases": [
+          "top1_argmax_fp16",
+          "top1_with_value_fp16",
+          "top1_tiled_fp16"
+        ]
+      },
+      "model_compilation": "NOT_RUN",
+      "device_execution": "NOT_RUN",
+      "numerical_validation": "NOT_RUN_ON_DEVICE",
+      "full_draft_changed": false,
+      "integration": "ONLY_AFTER_PLACEMENT_AND_EXACT_DEVICE_REDUCTION_CHECKS; FULL_DRAFT_GATES_REMAIN",
+      "paused_addcustom_path": "NOT_USED",
+      "command_document": "docs/current-status.md",
+      "experience_audit": {
+        "captured": [
+          "DURATION_SUM_NOT_CRITICAL_PATH",
+          "INT32_TOKEN_INDICES_REQUIRE_EXACT_COMPARISON_NOT_FLOAT_RELATIVE_TOLERANCE",
+          "GENERIC_PROBE_PLAN_MUST_USE_BOUND_DESCRIPTOR_DTYPE"
+        ],
+        "executable_checks": "validate_draft_vector.py dtype plans and exact integer gates",
+        "skill_changes": "NONE; EXISTING_PROFILE_SCOPE_RULES_ADEQUATE",
+        "remaining_hypotheses": [
+          "SELECTED_DDK_BUILTIN_NPU_PLACEMENT",
+          "DEVICE_TIES_NAN_SEMANTICS",
+          "FULL_MODEL_LATENCY_BENEFIT"
+        ]
       }
     }
   },

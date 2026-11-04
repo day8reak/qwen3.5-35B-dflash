@@ -2,33 +2,26 @@
 
 目标为C16／cap192／K15常驻预热后平均≤50ms。同步API、输入准备／提交、加载与初始catchup分别记录。原数值门槛和golden保持。
 
-## 当前进展：设备执行完成，采集同模型profile
+## 当前进展：103.720ms，先检查全词表Top1落点
 
-用户已回收host-embedding候选的38次accuracy调用，board_attempt为qwen35_draft_accuracy_2486123ea3e3411390d491ff6db887a0，状态EXECUTED_OUTPUTS_RETRIEVED、无持有锁。缺失host_embedding绑定已通过原表和模型来源校验恢复；当前候选加载和推理成功。先前边界报告的OMC为1790918688字节、SHA256 `967e9b640915893890ef95425b0e1279c8245bff0cfc2833f0cbfa56eb023372`，CPUCL2／NPUCL1、无中间CPU回流。本次粘贴的accuracy摘要没有模型digest，profile工具会从已回收fixture校验实际模型身份。
+用户已回传host-embedding候选model.csv及完整op表：inference为103.720ms，算子耗时合计73.656ms，算术差额30.064ms；上一轮为184.568／78.986／105.582ms。差额减少75.518ms，但不是已归因的等待或拷贝时间。当前最大项为末尾MatMul 19.960ms、CPU ArgMax 12.353ms、Conv 8.643ms及两次特征Transpose 5.615ms。CPU小算子合计约0.785ms。加载160.281ms、卸载4.859ms另计。
 
-isolated catchup／proposal均值103.958／103.998ms，feedback为106.090／104.994ms。按11／8／11／8次调用加权为104.802ms，上一双NPU轮同类均值为193.772ms，减少45.9%。这是混合输入诊断API结果，不是固定输入预热验收，也不包含服务器embedding查表、输入文件读取和提交。
+本轮与先前OMC `967e9b640915893890ef95425b0e1279c8245bff0cfc2833f0cbfa56eb023372` 的关联来自连续会话；粘贴表没有模型哈希或回收receipt。CPU／NPU start time不能据此直接拼接关键路径。现有accuracy仍为NUMERICAL_FAILED：Top1 82/86与83/86，hidden／KV原门槛未通过；未写KV保持和重复调用稳定。host embedding准备不包含在native API中，生产resident尚未切换新ABI。
 
-NUMERICAL_FAILED保留：Top1为82/86与83/86，错误位置、hidden／KV相对L2范围与上一轮摘要一致；未写KV保持、两组重复调用逐位稳定。摘要一致不证明全部输出与旧版逐字节相同。生产resident尚未切换新block_embeddings接口，50ms和数值通过均未达成。历史与详细数据见[结果](results.md)。
+## 编译三个无模型权重的小图
 
-## 1. 启动一次诊断profile
-
-沿用现有REPO_DIR、AI_RUN_DIR及板端环境，直接复用已回收的pytorch-optimized-result。无需重新导出、编译、重建runner或再跑accuracy。允许数值失败仅用于性能诊断，原失败状态仍保留。
+更新本次源码，沿用已有REPO_DIR、AI_RUN_DIR、CPRO_DDK_ROOT、CPRO_DDK_ID和CANN_ROOT。CANN_ROOT为此前GE导出使用的主机CANN目录，不是手机DDK。当前只需要在服务器编译这三个小图；复用现有大模型与profile，不重新跑accuracy或profile。
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
-  --accuracy "$AI_RUN_DIR/draft/tests/pytorch-optimized-result" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-profile-run" \
-  --allow-numerical-failure --apply
+python3 "$REPO_DIR/targets/cpro/tools/probe_draft_vector.py" \
+  --cases top1_argmax_fp16 top1_with_value_fp16 top1_tiled_fp16 \
+  --ge-root "$CANN_ROOT" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$AI_RUN_DIR/draft/tests/top1-probes"
 ```
 
-## 2. 回收同一次执行
+三者都输入FP16 `[1,15,248320]`、只输出INT32 `[1,15]`，没有训练权重。依次检查ArgMaxV2、ArgMaxWithValue和485×512两级ArgMaxWithValue＋INT32索引合成。保持完整词表，不用近似TopK或FP16编码全局索引；不会运行已暂停的AddCustom探针。
 
-看到DRAFT_OPERATOR_PROFILE_STARTED后执行下面命令。若返回PENDING，稍后重复同一recover；不要为了取CSV重新启动模型。
+回传命令末尾JSON，其中包含每个case的编译状态、CPUCL／NPUCL数量和边界dtype。COMPILED仅说明编译成功；仍落CPU的方案不视为达到目标，混合图需查看对应placement.json。若失败，JSON会附已有编译错误摘要，不启动设备。
 
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
-  --recover "$AI_RUN_DIR/draft/tests/pytorch-optimized-profile-run" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-profile-result"
-```
-
-回传本轮完整回收摘要、model.csv，以及op.csv中耗时最高的前20行和算子总和。先核对同一模型的inference与CPU／NPU算子数据，再决定剩余运行时差额、CPU ArgMax、head MatMul或特征重排的优化优先级。加载／卸载另计；不能用本轮104.8ms API减去旧模型78.986ms算子总和，也不能将旧105.582ms差额视为已全部消除。
+主机已有27次完整形状回放及128项检查，覆盖跨块并列、65535／65536、末尾token、signed zero、±Inf和NaN；设备选择规则仍未验证。placement合适后再用现有validate_draft_vector.py执行三次预热／十次测量，所有INT32结果要求逐字节一致。探针通过也不能代替完整Draft数值及50ms验收；只有接入后同模型端到端测量才能判断最终收益。历史数据见[结果](results.md)。

@@ -1,5 +1,23 @@
 # 当前结果
 
+2026-11-04，用户追加本轮完整op表，合计73656us，与紧邻的model表103720us组成同轮粘贴对照。以下均按duration字段计算，未独立获取原CSV、哈希或回收receipt；与host-embedding OMC的关联来自会话连续性。
+
+| 项目 | 上一双NPU轮 ms | 本轮单NPU／host-embedding ms |
+|---|---:|---:|
+| model inference | 184.568 | 103.720 |
+| 算子duration合计 | 78.986 | 73.656 |
+| 两者算术差额 | 105.582 | 30.064 |
+| 末尾MatMul_30 | 19.797 | 19.960 |
+| CPU ArgMax | 17.576 | 12.353 |
+| Conv | 8.685 | 8.643 |
+| 两次输入Transpose | 5.616 | 5.615 |
+
+model inference减少80.848ms，算子合计减少5.330ms，算术差额减少75.518ms。当前CPU算子合计13.138ms（其中ArgMax 12.353ms），NPU合计60.518ms。不能把duration合计当关键路径，也不能把30.064ms归为实测拷贝、等待或可全部消除的固定开销。NPU任务start time集中于极短窗口，与各自duration及CPU时间不构成可直接相加的统一时间线；小数部分位数也不固定。本轮load 160.281ms、unload 4.859ms另计；原数值失败及host查表未计入API的限制保留。
+
+下一步独立编译全词表Top1三种内置GE表达：ArgMaxV2对照、ArgMaxWithValue、485×512两级归约，最后GatherElements＋INT32乘加还原全局索引。输入7,449,600字节、最终输出60字节为逻辑尺寸，不是实测跨设备传输量。只输出token索引的图允许编译器正常消除未使用values；不假定换算子名一定落NPU。[固定版本TorchAir schema](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py)提供端口与属性定义，不构成所选X90 DDK实现支持证明。未修改完整模型、head权重、数值容差或暂停的AddCustom路径。
+
+主机run `20261104T015950Z-753-3ad426`：128项检查通过，包括三种图27次完整形状CPU回放、C++发射、用模拟厂商元数据执行真实ABI绑定、混合FP16／INT32 plan生成、十次模拟回收及高位索引差1必败。15行诊断输入覆盖并列、块边界、大索引、全负数、signed zero、±Inf和NaN；参考为直接NumPy argmax并与原PyTorch交叉检查，独立于候选归约表达。验证器原通用路径的plan dtype从固定FP32改为已核验描述dtype，INT32输出强化为精确字节门槛，原浮点门槛不变。仅主机检查，所选DDK编译及设备执行NOT_RUN。当前只跑小图编译，命令见[当前阶段](current-status.md)。
+
 2026-11-04，用户回传host-embedding候选完整accuracy摘要：EXECUTED_OUTPUTS_RETRIEVED，board_attempt `qwen35_draft_accuracy_2486123ea3e3411390d491ff6db887a0`，锁已释放。host_embedding_binding=RESTORED_FROM_VERIFIED_AIR_AND_PREPARED_WEIGHTS，原FP16表SHA256仍为 `ab1a0ddd89ba1cb895b58259f78c18080420595215b02234ee5e84996cf31e28`。这次已越过来源绑定和MODEL_LOAD并完成推理；对应先前1.79GB／CPUCL2／NPUCL1候选由会话连续性关联，本次粘贴摘要未包含OMC digest，尚未独立读取服务器fixture。后续profile入口按保留fixture核验实际模型。
 
 | 同类同步API测量 | 上一双NPU轮 ms | 本轮 ms | 降幅 |
@@ -14,7 +32,7 @@
 
 NUMERICAL_FAILED保持，isolated／feedback仍各19例全部未通过原严格门槛；Top1为82/86及83/86，7处差异的位置与token和上一轮一致。hidden相对L2范围分别0.013387271239375807～0.025755650596962287、0.014494312718133574～0.026116219967572855，新增KV范围均为0.004417372793104131～0.008283531899103903；其余KV范围和case计数也与旧摘要一致。首例hidden最大绝对误差0.15234375。两模式preservation_failed均0，identical-repeat与full-cache-repeat逐位稳定。没有观察到摘要层面的数值退化，不等同于跨版本所有输出逐位相同，也不构成精度通过。
 
-本地run `20261104T015331Z-570-fc5e19`仅记录用户证据并计算对照，没有重新编译或上板。旧原始报告／数值门槛保留，生产resident仍未接入新ABI。下一步复用完成的accuracy结果采集一次同模型profile，回收model.csv与op.csv，再评估剩余运行时差额和ArgMax／head／特征重排；命令见[当前阶段](current-status.md)。
+本地run `20261104T015331Z-570-fc5e19`仅记录用户证据并计算对照，没有重新编译或上板。旧原始报告／数值门槛保留，生产resident仍未接入新ABI。当时安排的profile已有后续用户回传，见本页顶部；不再重复采集。
 
 2026-11-04，host-embedding候选accuracy在reference阶段报candidate and source host embedding bindings differ，device_execution=NOT_RUN、无已知持有锁。用户只读两份manifest后确认：优化策略均为packed-spatial-host-embedding；AIR含原FP16表[248320,2048]、1017118720字节、SHA256 `ab1a0ddd89ba1cb895b58259f78c18080420595215b02234ee5e84996cf31e28`，mask_token_id=248077、scale=1；OMC通过get读取host_embedding为null（未区分字段不存在与显式null）。当前源码编译流程会保留该字段，服务器生成时为何遗漏尚未确定；此报错不是模型加载或数值失败。
 
