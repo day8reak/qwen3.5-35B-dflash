@@ -1,5 +1,19 @@
 # 当前结果
 
+2026-11-04，用户回传6017594检查器对已编译三个Top1 OMC的结果，status=INSPECTED。direct的ArgMaxExt2在CPU SubGraph_0，输入FP32[1,15,248320]；flat的ArgMaxExt2在CPU SubGraph_1，输入FP32[15,248320]。tiled的CPU SubGraph_1同时包含local_argmax／ArgMaxExt2和local_value／ReduceMax，输入FP32[15,485,512]，输出INT32[7275]与FP32[15,485]；末尾CPU SubGraph_3执行索引Gather、INT32乘加与Reshape。因此局部全量归约仍在CPU，尚未消除完整词表CPU处理。该输入逻辑14899200字节，不是测得的搬运量或耗时。
+
+| 用户回传OMC | 字节数 | SHA256 |
+|---|---:|---|
+| direct | 7897 | `20a37a9e45348f5164c320fb683ea3ba30574146766b1261e2a14308cccdcb04` |
+| flat | 16042 | `3d1482284527c8e269b3a55b82f1c632328a13e991ef2183f42727fc3152762e` |
+| tiled | 42159 | `ba5780097d6f31a836c7a64515cd386bd512ea5b12f7208d02df8a98f1835400` |
+
+tiled的NPU SubGraph_2边界确为FP16[15,485]→INT32[15]，内部仍未解码。局部最大值经FP32→FP16转换；输入来自FP16且最大值选择原值，因此仅凭这一Cast不能认定有限值精度损失，NaN与并列行为仍需设备验证。源批次SHA256为`6c1c75b66fe79aa78ac527f3d72be2305622e3dc4ae55aedbd094dc206907ab0`。上述来自用户粘贴，未独立取回服务器文件；schema、逐例报告／主分区／CPU切片哈希见`specs/dflash-execution-state.json`的top1_builtin_probe.compiled_placement_inspection.observation。
+
+按用户“尽量全面，避免多次单点探测”的要求，本轮提供固定21项矩阵：17个独立ArgMaxExt2／ReduceMax形状对照，4个完整词表组合。独立对照覆盖行数、485／512／248320归约长度、相同字节的2D／3D输入、精确转置的axis0输入；组合覆盖原3D控制、局部展平、局部转置、512×485分块。21图一次编译后自动汇总成功例的CPU算子和实际边界，无需第二轮读取命令。原编译result.json保持，独立placement-inspection.json绑定其哈希；失败例的诊断及未验证状态保留。
+
+主机run `20261104T032933Z-4366-5ee867`：450项检查通过，57次语义图回放含40次完整词表组合，直接NumPy与PyTorch oracle一致；210次模拟native输出验证实际ABI准备和比较入口。原六图的manifest、发射C++及fixture逐字节保持。有限值原语覆盖最小正FP16子正规数；ReduceMax输出新增精确字节门槛，注入一个FP32 ULP会失败，原通用浮点容差保持。所有模拟均标注host-fake，未运行所选DDK、设备或新时延测量。完整Draft仍为103.720ms／NUMERICAL_FAILED，当前命令见[当前阶段](current-status.md)。
+
 2026-11-04，用户回传283da71的三个修正后原生Top1探针全部COMPILED／model_compilation=PASSED，device_execution及numerical_validation均NOT_RUN。直接版CPUCL1、无NPU图，边界FP32→INT32；展平版NPUCL1＋CPUCL1，分别FP16→FP16、FP32→INT32；分块版NPUCL2＋CPUCL2，依次NPU FP16→FP16、CPU FP32→[INT32,FP32]、NPU FP16→INT32、CPU [INT32,INT32]→INT32，并出现graphop_data_cast_1的FP32→FP16转换。此处由用户摘要记录，未独立获取OMC哈希或边界shape。
 
 前端缺属性／缺第二输入的编译阻塞已经解决。NPU_GRAPH_PRESENT仅证明存在NPU分区，不证明完整Top1归约或昂贵的局部归约落NPU。分块的接口模式与局部索引和值留CPU、获胜块选择在NPU相符，但必须以CPU节点及边界shape核实，尚不能作为事实或性能收益。未重编完整Draft，也没有放松NaN／并列规则、整数精确比较或启动设备验证。

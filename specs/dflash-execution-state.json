@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_kind": "qwen35-dflash-execution-plan-state",
-  "updated": "2026-11-03",
+  "updated": "2026-11-04",
   "plan_document": "docs/reference/dflash-delivery-plan.md",
   "current_commands": "docs/current-status.md",
   "overall_status": "in_progress",
@@ -984,7 +984,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "compile_incremental_draft.py --air-export current AIR --limit-partition-size true --output current OMC --replace; then inspect/analyze boundaries. See docs/current-status.md.",
+    "next_command": "probe_draft_vector.py --top1-matrix --ddk-root selected DDK --output draft/tests/top1-probes --replace; automatic compiled CPU and boundary inspection. See docs/current-status.md.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -3724,7 +3724,7 @@
       "numerical_validation": "FAILED_SAME_REPORTED_ERROR_SUMMARIES_AS_PREVIOUS",
       "performance": "NATIVE_API_PHASE_MEANS_103.958_TO106.09_MS_NOT_END_TO_END",
       "production_promotion": "NOT_PERFORMED",
-      "next": "READ_COMPILED_TOP1_OPERATOR_OWNERS; FULL_DRAFT_103.720MS_NUMERICAL_FAILED_UNCHANGED",
+      "next": "RUN_TOP1_SHAPE_MATRIX; FULL_DRAFT_103.720MS_NUMERICAL_FAILED_UNCHANGED",
       "command_document": "docs/current-status.md",
       "experience_audit": {
         "captured": [
@@ -4053,7 +4053,7 @@
       }
     },
     "top1_builtin_probe": {
-      "status": "CORRECTED_NATIVE_TOP1_COMPILED_MIXED_PLACEMENT_OPERATOR_MAPPING_PENDING",
+      "status": "LOCAL_REDUCTIONS_CONFIRMED_CPU_SHAPE_MATRIX_PENDING",
       "run_id": "20261104T015950Z-753-3ad426",
       "entry": "targets/cpro/tools/probe_draft_vector.py",
       "cases": [
@@ -4124,7 +4124,10 @@
           "TENSORDESC_DTYPE_ENUM7_AND_OPERATOR_ATTRIBUTE_ENUM3_ARE_SEPARATE_INT32_ENCODINGS",
           "COMPILED_CPUCL_OWNER_OVERRIDES_DESCRIPTOR_DEVICE_TYPE_LABEL_FOR_PLACEMENT",
           "FRONTEND_REGISTRATION_SEARCH_MUST_HANDLE_HIAI_MACROS_AND_EXCLUDE_KERNEL_INTRINSIC_NOISE",
-          "NPU_GRAPH_PRESENT_IS_NOT_ARGMAX_NPU_PLACEMENT; DECODE_CPU_OPERATORS_AND_SHAPES_BEFORE_INTEGRATION"
+          "NPU_GRAPH_PRESENT_IS_NOT_ARGMAX_NPU_PLACEMENT; DECODE_CPU_OPERATORS_AND_SHAPES_BEFORE_INTEGRATION",
+          "BATCH_MATCHED_DATA_RANK_AXIS_ROWCOUNT_WIDTH_AND_COMPOSITION_CONTROLS_BEFORE_NEXT_SERVER_ROUNDTRIP",
+          "AUTOMATIC_COMPILED_CPU_INSPECTION_WITH_COMPILE_REPORT_HASH_PRESERVED",
+          "FINITE_REDUCEMAX_PROBES_REQUIRE_EXACT_BYTES_NOT_GENERIC_FLOAT_TOLERANCE"
         ],
         "executable_checks": "validate_draft_vector.py dtype plans and exact integer gates",
         "skill_changes": "NONE; EXISTING_PROFILE_SCOPE_RULES_ADEQUATE",
@@ -4150,6 +4153,13 @@
         "placement_followup": {
           "run_id": "20261104T032006Z-4074-bb512d",
           "lesson": "Shape-only or FP16-to-FP16 NPU subgraphs can coexist with CPU Top1. Counted NPU partitions do not locate the expensive reduction. Inspect hash-bound compiled CPU node types and actual boundary shapes.",
+          "full_model_accuracy_or_performance_claim": "NONE"
+        },
+        "shape_matrix": {
+          "run_id": "20261104T032933Z-4366-5ee867",
+          "user_steering": "Think through comprehensive probes; avoid repeated one-off rounds",
+          "lesson": "Observe CPU nodes first. Batch isolated and composed controls using matched fixtures, including equal-volume 485/512 layouts, then inspect all compiled cases in the same invocation.",
+          "skill_changes": "NONE; EXISTING_GROUPED_DIAGNOSTIC_AND_EVIDENCE_RULES_SUFFICIENT",
           "full_model_accuracy_or_performance_claim": "NONE"
         }
       },
@@ -4218,7 +4228,7 @@
         ],
         "next": "READ_SAVED_COMPILER_ENVIRONMENT_AND_SELECTED_DDK_REDUCTION_REGISTRATION; NO_RECOMPILE_OR_DEVICE_RUN"
       },
-      "next": "INSPECT_EXISTING_TOP1_OMC_CPU_OPERATORS_AND_BOUNDARY_SHAPES_NO_RECOMPILE",
+      "next": "RUN_21_CASE_TOP1_MATRIX_ONCE_WITH_AUTOMATIC_CPU_AND_BOUNDARY_INSPECTION",
       "registration_inspection": {
         "entry": "probe_draft_vector.py --inspect-top1 COMPILED_PROBES --ddk-root DDK",
         "run_id": "20261104T021319Z-1312-aa1ef2",
@@ -4315,7 +4325,7 @@
         }
       },
       "native_cpro_candidates": {
-        "status": "USER_REPORTED_COMPILED_MIXED_CPU_NPU_PLACEMENT",
+        "status": "USER_REPORTED_COMPILED_AND_CPU_LOCAL_REDUCTIONS_CONFIRMED",
         "run_id": "20261104T022117Z-1605-76c12b",
         "cases": [
           "top1_ext2_fp16",
@@ -4536,7 +4546,7 @@
           "legacy_compatibility": "OLD_THREE_GE_GRAPH_MANIFESTS_AND_CPP_IDENTICAL_ALL_FIXTURES_IDENTICAL",
           "inspector_correction": "PRIORITIZE_HIAI_FRONTEND_HEADERS_RECOGNIZE_HIAI_MACROS_SKIP_TIKCPP_ASCENDC_INTRINSICS",
           "full_draft_changed": false,
-          "next": "INSPECT_EXISTING_TOP1_OMC_CPU_OPERATORS_AND_BOUNDARY_SHAPES_NO_RECOMPILE",
+          "next": "COMPLETED_FRONTEND_COMPILE_AND_CPU_PLACEMENT_INSPECTION; SHAPE_MATRIX_NEXT",
           "server_compilation": "USER_REPORTED_PASSED_ALL_THREE; PLACEMENT_MIXED"
         },
         "frontend_compilation_observation": {
@@ -4696,7 +4706,7 @@
           "PRIORITIZE_NAMED_NODE_INPUT_COUNT_FAILURE",
           "READ_SELECTED_DDK_PROTOTYPES_AND_RETAINED_GRAPH_EVIDENCE"
         ],
-        "remaining": "CORRECTED_FRONTEND_OMG_ACCEPTANCE_AND_NPU_PLACEMENT_DEVICE_SEMANTICS_UNVERIFIED",
+        "remaining": "FRONTEND_ACCEPTED_AND_CPU_OPERATIONS_OBSERVED; NEW_MATRIX_PLACEMENT_DEVICE_NUMERICS_AND_LATENCY_PENDING",
         "observation": {
           "source": "USER_PASTED_SELECTED_DDK_FRONTEND_AND_COMPILED_CPU_INSPECTION",
           "independently_retrieved": false,
@@ -4832,7 +4842,7 @@
       },
       "compiled_placement_inspection": {
         "run_id": "20261104T032006Z-4074-bb512d",
-        "status": "HOST_CHECKED_USER_READ_ONLY_PLACEMENT_INSPECTION_PENDING",
+        "status": "USER_REPORTED_INSPECTED",
         "entry": "probe_draft_vector.py --inspect-top1-placement COMPILED_PROBES --ddk-root DDK",
         "host": {
           "status": "HOST_CHECKED",
@@ -4843,7 +4853,358 @@
         },
         "scope": "COMPILER_INVENTORY_BOUND_OMC_MAIN_BOUNDARIES_AND_CPU_GRAPHDEFS_ONLY_NO_WRITES",
         "checks": "SAVED_COMPILER_STATUS_PLATFORM_DDK; MODEL_PATH_SIZE_SHA256; TASK_RANGE_OVERLAP_OWNER; SAVED_GRAPHOP_COUNTS",
-        "remaining": "NPU_TASK_INTERNALS_OPAQUE; ONLY_EXPLICIT_CPU_OPERATORS_AND_MAIN_BOUNDARIES_REPORTED; NO_OMG_JSON_CROSSCHECK"
+        "remaining": "NPU_TASK_INTERNALS_OPAQUE; ONLY_EXPLICIT_CPU_OPERATORS_AND_MAIN_BOUNDARIES_REPORTED; NO_OMG_JSON_CROSSCHECK",
+        "observation": {
+          "source": "USER_PASTED_TOP1_PLACEMENT_INSPECTION",
+          "independently_retrieved": false,
+          "date": "2026-11-04",
+          "inspector_revision": "6017594",
+          "compiled_source_revision": "283da71",
+          "status": "INSPECTED",
+          "model_compilation": "NOT_RUN",
+          "source_batch_status": "COMPILED",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN",
+          "source_batch_sha256": "6c1c75b66fe79aa78ac527f3d72be2305622e3dc4ae55aedbd094dc206907ab0",
+          "schema": {
+            "library_sha256": "542ff32272088008ca95cb13c9647cd06857f84a08c2fa7c908172b1b0f1f975",
+            "descriptor_sha256": "75a0c62fb309df67fdf85c6d83a3d2294d4cb8815aa62c00d0870c1031d5648a",
+            "package": "hiai.proto",
+            "file": "proto/ge_ir.proto"
+          },
+          "cases": [
+            {
+              "case": "top1_ext2_fp16",
+              "model_bytes": 7897,
+              "model_sha256": "20a37a9e45348f5164c320fb683ea3ba30574146766b1261e2a14308cccdcb04",
+              "compiler_report_sha256": "6987720eae255daa20e400d21842b065d40cdfe747a9c71b4999513fde96e8cb",
+              "main_partition_sha256": "3bc5ebd360a148abf3f2c9ae799986d3fbdb1e69d09cd47c1139d05679707354",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "cpu_reductions": [
+                {
+                  "owner": "SubGraph_0",
+                  "name": "argmax_ext2",
+                  "type": "ArgMaxExt2",
+                  "input": "float32[1,15,248320]",
+                  "output": "int32[1,15]"
+                }
+              ],
+              "cpu_tasks": [
+                {
+                  "owner": "SubGraph_0",
+                  "offset": 0,
+                  "bytes": 2302,
+                  "sha256": "02986883798f0f2920174c775888f6884efff940ad7c9c1c6eb748f0b6a71dbe"
+                }
+              ]
+            },
+            {
+              "case": "top1_ext2_flat_fp16",
+              "model_bytes": 16042,
+              "model_sha256": "3d1482284527c8e269b3a55b82f1c632328a13e991ef2183f42727fc3152762e",
+              "compiler_report_sha256": "283182bd1f22c63ba51eea971189c5ee44923bc983f9e435c4441d4ba8637452",
+              "main_partition_sha256": "4aa958a107e1b096d010521ceb8275e13af5fa460f61ccf5fb9d23eb968b7442",
+              "graphop_counts": {
+                "NPUCL": 1,
+                "CPUCL": 1
+              },
+              "cpu_reductions": [
+                {
+                  "owner": "SubGraph_1",
+                  "name": "argmax_ext2",
+                  "type": "ArgMaxExt2",
+                  "input": "float32[15,248320]",
+                  "output": "int32[15]"
+                }
+              ],
+              "npu_boundaries": [
+                "SubGraph_0: float16[1,15,248320] -> float16[15,248320]"
+              ],
+              "cpu_tasks": [
+                {
+                  "owner": "SubGraph_1",
+                  "offset": 3640,
+                  "bytes": 3463,
+                  "sha256": "b66c8d7c4af92084e04ef2ed5983ba6707b9a49db6e0e371b087565b9ab9c8d6"
+                }
+              ]
+            },
+            {
+              "case": "top1_ext2_tiled_fp16",
+              "model_bytes": 42159,
+              "model_sha256": "ba5780097d6f31a836c7a64515cd386bd512ea5b12f7208d02df8a98f1835400",
+              "compiler_report_sha256": "0ff70491233ff2705d67906cf5aca70d20975c0045182087a6b5abe139932cfd",
+              "main_partition_sha256": "c8fb6ef9af8cd9e5e47de661907def5f08b639e11db97f21e1645c40269988f1",
+              "graphop_counts": {
+                "NPUCL": 2,
+                "CPUCL": 2
+              },
+              "cpu_reductions": [
+                {
+                  "owner": "SubGraph_1",
+                  "name": "local_argmax",
+                  "type": "ArgMaxExt2",
+                  "input": "float32[15,485,512]",
+                  "output": "int32[15,485]"
+                },
+                {
+                  "owner": "SubGraph_1",
+                  "name": "local_value",
+                  "type": "ReduceMax",
+                  "input": "float32[15,485,512]",
+                  "output": "float32[15,485]"
+                }
+              ],
+              "cpu_merge": {
+                "owner": "SubGraph_3",
+                "operations": [
+                  "selector:Add",
+                  "local_index:GatherV2D",
+                  "tile_offset:Mul",
+                  "global_index:Add",
+                  "tokens:Reshape"
+                ],
+                "inputs": [
+                  "int32[7275]",
+                  "int32[15]"
+                ],
+                "output": "int32[1,15]"
+              },
+              "npu_boundaries": [
+                "SubGraph_0: float16[1,15,248320] -> float16[15,485,512]",
+                "SubGraph_2: float16[15,485] -> int32[15]"
+              ],
+              "boundary_casts": [
+                "netoutput_cast_0: float16[15,485,512] -> float32[15,485,512]",
+                "graphop_data_cast_1: float32[15,485] -> float16[15,485]"
+              ],
+              "cpu_full_logits_input_logical_bytes": 14899200,
+              "cpu_tasks": [
+                {
+                  "owner": "SubGraph_1",
+                  "offset": 3651,
+                  "bytes": 5079,
+                  "sha256": "aa6dd38d4360072f315a6ee1c1590dd342ee089ec55eb6fa1d7051a99bf1e53d"
+                },
+                {
+                  "owner": "SubGraph_3",
+                  "offset": 14785,
+                  "bytes": 6244,
+                  "sha256": "aaedce530d57530da057921c6184449df79c13222dec2b87f2a5f75973604313"
+                }
+              ]
+            }
+          ],
+          "conclusion": "DIRECT_FLAT_ARGMAX_AND_TILED_LOCAL_ARGMAX_REDUCEMAX_CONFIRMED_CPU; FULL_VOCABULARY_CPU_REDUCTION_NOT_REMOVED",
+          "limits": [
+            "NPU internal operations not decoded",
+            "logical bytes are not measured transfers or latency",
+            "finite FP16-origin maxima can be represented exactly in FP16; cast alone does not prove value loss",
+            "nonfinite and tie behavior remain device-unverified"
+          ]
+        }
+      },
+      "shape_matrix": {
+        "status": "HOST_CHECKED_SELECTED_DDK_COMPILATION_PENDING",
+        "run_id": "20261104T032933Z-4366-5ee867",
+        "entry": "probe_draft_vector.py --top1-matrix",
+        "output_slot": "draft/tests/top1-probes",
+        "case_count": 21,
+        "isolated_count": 17,
+        "composition_count": 4,
+        "primitives": [
+          {
+            "case": "top1_argmax_r1_d512_fp16",
+            "operator": "argmax",
+            "shape": [
+              1,
+              512
+            ],
+            "axis": 1
+          },
+          {
+            "case": "top1_max_r1_d512_fp16",
+            "operator": "max",
+            "shape": [
+              1,
+              512
+            ],
+            "axis": 1
+          },
+          {
+            "case": "top1_argmax_r15_d485_fp16",
+            "operator": "argmax",
+            "shape": [
+              15,
+              485
+            ],
+            "axis": 1
+          },
+          {
+            "case": "top1_max_r15_d485_fp16",
+            "operator": "max",
+            "shape": [
+              15,
+              485
+            ],
+            "axis": 1
+          },
+          {
+            "case": "top1_argmax_r15_d512_fp16",
+            "operator": "argmax",
+            "shape": [
+              15,
+              512
+            ],
+            "axis": 1
+          },
+          {
+            "case": "top1_max_r15_d512_fp16",
+            "operator": "max",
+            "shape": [
+              15,
+              512
+            ],
+            "axis": 1
+          },
+          {
+            "case": "top1_argmax_r485_d512_fp16",
+            "operator": "argmax",
+            "shape": [
+              485,
+              512
+            ],
+            "axis": 1
+          },
+          {
+            "case": "top1_max_r485_d512_fp16",
+            "operator": "max",
+            "shape": [
+              485,
+              512
+            ],
+            "axis": 1
+          },
+          {
+            "case": "top1_argmax_r7275_d512_fp16",
+            "operator": "argmax",
+            "shape": [
+              7275,
+              512
+            ],
+            "axis": 1
+          },
+          {
+            "case": "top1_max_r7275_d512_fp16",
+            "operator": "max",
+            "shape": [
+              7275,
+              512
+            ],
+            "axis": 1
+          },
+          {
+            "case": "top1_argmax_r7680_d485_fp16",
+            "operator": "argmax",
+            "shape": [
+              7680,
+              485
+            ],
+            "axis": 1
+          },
+          {
+            "case": "top1_max_r7680_d485_fp16",
+            "operator": "max",
+            "shape": [
+              7680,
+              485
+            ],
+            "axis": 1
+          },
+          {
+            "case": "top1_argmax_b15_r485_d512_fp16",
+            "operator": "argmax",
+            "shape": [
+              15,
+              485,
+              512
+            ],
+            "axis": 2
+          },
+          {
+            "case": "top1_max_b15_r485_d512_fp16",
+            "operator": "max",
+            "shape": [
+              15,
+              485,
+              512
+            ],
+            "axis": 2
+          },
+          {
+            "case": "top1_argmax_d512_r7275_axis0_fp16",
+            "operator": "argmax",
+            "shape": [
+              512,
+              7275
+            ],
+            "axis": 0
+          },
+          {
+            "case": "top1_max_d512_r7275_axis0_fp16",
+            "operator": "max",
+            "shape": [
+              512,
+              7275
+            ],
+            "axis": 0
+          },
+          {
+            "case": "top1_max_r15_d248320_fp16",
+            "operator": "max",
+            "shape": [
+              15,
+              248320
+            ],
+            "axis": 1
+          }
+        ],
+        "compositions": [
+          "top1_ext2_tiled_fp16",
+          "top1_ext2_tiled_flat_fp16",
+          "top1_ext2_tiled_transposed_fp16",
+          "top1_ext2_tiled_485_fp16"
+        ],
+        "design": [
+          "Isolate ArgMaxExt2 and ReduceMax with identical input bytes per geometry",
+          "Same canonical bytes for rank2/rank3; exact transpose for axis0",
+          "Rows 1/15/485/7275 at width512; rows15/7680 at width485; preserve 3724800 elements in both full local layouts",
+          "Full vocabulary ReduceMax width248320; existing full-width CPU ArgMax observation retained",
+          "Compare isolated reductions against rank3, flattened, transposed and swapped-factor full Top1 compositions"
+        ],
+        "fixture": "FINITE_PRIMITIVES_WITH_POSITIVE_SUBNORMAL; COMPOSITIONS_KEEP_TIES_NAN_INFINITY_AND_LARGE_INT32_INDICES; 485_TILE_CASE_HAS_484_485_BOUNDARY_TIE",
+        "acceptance": "EXACT_BYTES_ALL_PRIMITIVE_OUTPUTS_AND_ALL_COMPOSED_INT32_OUTPUTS; EXISTING_OTHER_GATES_UNCHANGED",
+        "automatic_inspection": "Same locked invocation writes placement-inspection.json and prints CPU operations plus GraphOp boundary summary; original compilation result.json retained for source hash binding",
+        "host": {
+          "status": "HOST_CHECKED",
+          "checks": 450,
+          "semantic_graph_replays": 57,
+          "matrix_cases": 21,
+          "full_vocabulary_composition_replays": 40,
+          "simulated_native_calls": 210,
+          "scope": "MATRIX_CPP_AND_DIRECT_NUMPY_PYTORCH_ORACLES; REAL_ABI_PREPARATION_WITH_FAKE_VENDOR_METADATA; EXACT_GATES_AND_AUTOMATIC_INSPECTION_ORCHESTRATION",
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "HOST_ONLY_NOT_DEVICE"
+        },
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN_ON_DEVICE",
+        "full_draft_changed": false,
+        "paused_addcustom_path": "NOT_USED",
+        "decision": "Compare CPU reductions and actual full-input boundaries across the batch; do not infer named NPU kernels or speedup from NPU graph count. Device correctness and latency remain separate follow-up work."
       }
     }
   },

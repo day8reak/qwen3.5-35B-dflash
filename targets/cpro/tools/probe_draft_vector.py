@@ -13,6 +13,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 from qwen35_moe_dflash.draft.incremental.top1_probe import CASES as TOP1_CASES
 from qwen35_moe_dflash.draft.incremental.top1_probe import NATIVE_CASES, NATIVE_SCHEMA
+from qwen35_moe_dflash.draft.incremental.top1_matrix import MATRIX_CASES
 
 KIND = 'qwen35-draft-vector-probe'
 SCHEMA = ('https://github.com/Ascend/torchair/blob/'
@@ -446,6 +447,9 @@ def _run(args, root):
         'schema_source': ('CASE_SPECIFIC_SELECTED_HIAI_FRONTEND_HEADERS_AND_PINNED_GE_AUXILIARIES'
                           if any(case in NATIVE_CASES for case in args.cases) else SCHEMA),
         'platform': 'kirinx90'}
+    if getattr(args, 'top1_matrix', False):
+        result.update(suite=f'TOP1_SHAPE_AND_COMPOSITION_{len(MATRIX_CASES)}_CASES',
+            precision_request='FP16_PUBLIC_INPUT_FP32_HIAI_FRONTEND_INT32_ARGMAX_FP32_MAX_DEFAULT_DDK_SELECTION')
     write_json(root / 'result.json', result)
     try:
         for case in args.cases:
@@ -523,6 +527,9 @@ def _run(args, root):
     except Exception as error:
         result.update(status='FAILED', error=f'{type(error).__name__}: {error}')
     finally:
+        if getattr(args, 'top1_matrix', False) and not args.plan_only and result['status'] in {'COMPILED', 'PARTIAL'}:
+            result['next'] = ('Read the automatic placement_inspection summary and placement-inspection.json. '
+                'Compare isolated reductions with composed graphs; device numerical and latency checks remain pending.')
         write_json(root / 'result.json', result)
     return result
 
@@ -540,7 +547,27 @@ def run(args):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError('this probe slot is still running; retained') from None
-        return _run(args, root)
+        result = _run(args, root)
+        if getattr(args, 'top1_matrix', False) and not args.plan_only:
+            # _run has saved the terminal compilation report. Keep it unchanged
+            # so the separate placement report can bind its source hash.
+            if result['status'] in {'COMPILED', 'PARTIAL'}:
+                from qwen35_moe_dflash.draft.incremental.top1_ir_inspect import (
+                    inspect_top1_placement, placement_summary)
+                try:
+                    inspection = inspect_top1_placement(root, args.ddk_root)
+                    write_json(root / 'placement-inspection.json', inspection)
+                    result = dict(result, placement_inspection=dict(placement_summary(inspection),
+                        report='placement-inspection.json'))
+                except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+                    failure = dict(status='FAILED', error=f'{type(error).__name__}: {error}',
+                                   model_compilation='NOT_RUN', device_execution='NOT_RUN')
+                    write_json(root / 'placement-inspection.json', failure)
+                    result = dict(result, placement_inspection=failure)
+            else:
+                result = dict(result, placement_inspection=dict(status='NOT_RUN',
+                    reason='NO_COMPLETED_COMPILED_CASES'))
+        return result
 
 
 def main(argv=None):
@@ -561,7 +588,10 @@ def main(argv=None):
     parser.add_argument('--inspect-compile', metavar='COMPILED_PROBES',
                         help='read existing failed compiler reports and error excerpts; no writes or retries')
     parser.add_argument('--torchair-pb2', help='optional actual TorchAir schema for --inspect-rms')
-    parser.add_argument('--cases', nargs='+', choices=CASES, default=list(VECTOR_CASES))
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument('--cases', nargs='+', choices=CASES, default=list(VECTOR_CASES))
+    selection.add_argument('--top1-matrix', action='store_true',
+                           help=f'compile {len(MATRIX_CASES)} reduction shape/composition controls and inspect CPU placement in the same run')
     parser.add_argument('--plan-only', action='store_true', help='write source and fixtures without invoking any SDK')
     parser.add_argument('--replace', action='store_true', help='replace this completed probe slot; never shared models')
     parser.add_argument('--ge-root', default=os.environ.get('CANN_ROOT'))
@@ -574,6 +604,8 @@ def main(argv=None):
     parser.add_argument('--weight-data-type', choices=('FP16', 'FP32'),
                         help='Explicit OMG weight conversion; omitted uses its default. Does not set arithmetic precision.')
     args = parser.parse_args(argv)
+    if args.top1_matrix:
+        args.cases = list(MATRIX_CASES)
     if args.timeout_seconds <= 0 or len(args.cases) != len(set(args.cases)):
         parser.error('timeout must be positive and cases must be distinct')
     inspections = (args.inspect_ddk, args.inspect_top1, args.inspect_top1_ir,
@@ -585,8 +617,8 @@ def main(argv=None):
     if args.reference_compiled and not args.inspect_top1_ir:
         parser.error('--reference-compiled requires --inspect-top1-ir')
     if any(inspections):
-        if args.output or args.replace or args.plan_only:
-            parser.error('inspection cannot be combined with --output, --replace or --plan-only')
+        if args.output or args.replace or args.plan_only or args.top1_matrix:
+            parser.error('inspection cannot be combined with --output, --replace, --plan-only or --top1-matrix')
     elif not args.output:
         parser.error('--output is required for compilation or --plan-only')
     try:
@@ -615,7 +647,14 @@ def main(argv=None):
         result = run(args)
         shown = {key: value for key, value in result.items() if key != 'cases'}
         shown['cases'] = [{key: value for key, value in row.items() if key != 'graph'} for row in result['cases']]
+        if args.top1_matrix:
+            shown['suite'] = f'TOP1_SHAPE_AND_COMPOSITION_{len(MATRIX_CASES)}_CASES'
+            shown['cases'] = [{key: row[key] for key in ('case', 'status', 'model_compilation',
+                'placement', 'graphop_counts', 'compilation_diagnostics', 'error') if key in row}
+                for row in result['cases']]
         print(json.dumps(shown, ensure_ascii=False, allow_nan=False))
+        if args.top1_matrix and result.get('placement_inspection', {}).get('status') in {'FAILED', 'PARTIAL'}:
+            return 1
         return 0 if result['status'] in {'COMPILED', 'PLANNED'} else 1
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({'status': 'FAILED', 'error': f'{type(error).__name__}: {error}'}))

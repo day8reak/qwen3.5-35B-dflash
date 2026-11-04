@@ -22,7 +22,8 @@ from qwen35_moe_dflash.toolchain.omc_wire import load_schema
 
 _TYPES = ("ArgMaxExt2", "ReduceMax", "GatherV2D")
 _NAMES = ["argmax_ext2", "local_argmax", "local_value", "winning_tile", "local_index"]
-_CASES = ("top1_ext2_fp16", "top1_ext2_flat_fp16", "top1_ext2_tiled_fp16")
+_CASES = ("top1_ext2_fp16", "top1_ext2_flat_fp16", "top1_ext2_tiled_fp16",
+          "top1_ext2_tiled_flat_fp16", "top1_ext2_tiled_transposed_fp16", "top1_ext2_tiled_485_fp16")
 _LIBRARY = "tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so"
 _LIMITS = dict(entries=20000, source_file_bytes=2 << 20, source_total_bytes=32 << 20,
                excerpts=24, excerpt_lines=90, excerpt_characters=8000, output_bytes=2 << 20)
@@ -279,6 +280,23 @@ def inspect_top1_placement(compiled, ddk_root):
     if len(json.dumps(result, ensure_ascii=True).encode()) > _LIMITS["output_bytes"]:
         raise ValueError("Top1 placement inspection exceeds output budget")
     return result
+
+
+def placement_summary(report):
+    """Compact per-case observations, without inferring opaque NPU operators."""
+    cases = []
+    for case in report["cases"]:
+        row = {key: case[key] for key in ("case", "status", "error", "graphop_counts") if key in case}
+        if case["status"] == "INSPECTED":
+            row["boundaries"] = [dict(name=n["name"], owner=n["owner"],
+                input=n["input"], inputs=n["inputs"], outputs=n["outputs"])
+                for n in case["main_nodes"] if n["type"] == "GraphOp"]
+            row["cpu_operations"] = [dict(owner=g["owner"], **n)
+                for g in case["cpu_subgraphs"] for n in g["operations"]
+                if n["type"] not in {"Const", "Data", "NetOutput"}]
+        cases.append(row)
+    return dict(status=report["status"], cases=cases,
+                scope="COMPILED_CPU_OPERATIONS_AND_BOUNDARIES_NOT_NPU_KERNEL_INTERNALS_OR_PERFORMANCE")
 
 
 def inspect_top1_ir(compiled, ddk_root, reference_compiled=None):

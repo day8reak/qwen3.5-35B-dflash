@@ -11,8 +11,12 @@ import numpy as np
 
 from qwen35_moe_dflash.graph.fused.ir import Graph
 from qwen35_moe_dflash.graph.type_contracts import GE_DTYPE_IDS
+from . import top1_matrix
 
-NATIVE_CASES = ('top1_ext2_fp16', 'top1_ext2_flat_fp16', 'top1_ext2_tiled_fp16')
+NATIVE_CASES = ('top1_ext2_fp16', 'top1_ext2_flat_fp16', 'top1_ext2_tiled_fp16',
+                'top1_ext2_tiled_flat_fp16', 'top1_ext2_tiled_transposed_fp16',
+                'top1_ext2_tiled_485_fp16',
+                *top1_matrix.PRIMITIVES)
 NATIVE_SCHEMA = ('USER_OBSERVED_SELECTED_DDK_ddk/ai_ddk_lib/include/graph/op/'
                  'math_defs.h:ArgMaxExt2,ReduceMax; array_defs.h:GatherV2D; '
                  'COMPILED_DRAFT_CPU_ARGMAXEXT2_CORROBORATES_AXIS_AND_DEFAULTS')
@@ -67,6 +71,8 @@ def contract():
 def graph_case(case):
     if case not in CASES:
         raise ValueError('unknown full-vocabulary Top1 probe')
+    if case in top1_matrix.PRIMITIVES:
+        return top1_matrix.graph_case(case, FRONTEND_HEADERS)
     g = Graph('draft_top1_probe')
     x = g.input('logits', SHAPE, 'float16')
     if case in NATIVE_CASES:
@@ -106,14 +112,26 @@ def graph_case(case):
     elif case == 'top1_ext2_flat_fp16':
         output = reshape(ext2(reshape(x, (15, SHAPE[-1]), 'rows'), (15,),
                               1, 'argmax_ext2'), (1, 15), 'tokens')
-    elif case == 'top1_ext2_tiled_fp16':
-        tiles = SHAPE[-1] // TILE
-        tiled = reshape(x, (15, tiles, TILE), 'tiles')
-        local_index = ext2(tiled, (15, tiles), 2, 'local_argmax')
-        axes = g.const(np.array([2], dtype='<i4'), dtype='int32', name='local_value_axes')
+    elif case in top1_matrix.COMPOSITIONS:
+        tile_width = 485 if case == 'top1_ext2_tiled_485_fp16' else TILE
+        tiles = SHAPE[-1] // tile_width
+        # The observed [15,485,512] local reductions are CPU-owned. Flatten
+        # only the leading dimensions to test a 2-D frontend reduction.
+        flat = case != 'top1_ext2_tiled_fp16'
+        local_shape = (15 * tiles,) if flat else (15, tiles)
+        local_axis = 1 if flat else 2
+        tiled = reshape(x, (*local_shape, tile_width), 'tiles')
+        if case == 'top1_ext2_tiled_transposed_fp16':
+            tiled = g.op('transpose', tiled, shape=(TILE, 15 * tiles), dtype=tiled.dtype,
+                         attrs={'perm': [1, 0]}, name='tiles_transposed')
+            local_axis = 0
+        local_index = ext2(tiled, local_shape, local_axis, 'local_argmax')
+        axes = g.const(np.array([local_axis], dtype='<i4'), dtype='int32', name='local_value_axes')
         local_value = g.custom('ReduceMax', {'x': tiled, 'axes': axes},
-            {'y': ((15, tiles), 'float32')},
+            {'y': (local_shape, 'float32')},
             {'keep_dims': {'type': 'bool', 'value': False}}, name='local_value')['y']
+        if flat:
+            local_value = reshape(local_value, (15, tiles), 'local_values')
         winner = ext2(local_value, (15,), 1, 'winning_tile')
         row_offsets = g.const(np.arange(15, dtype='<i4') * tiles,
                               dtype='int32', name='row_offsets')
@@ -122,7 +140,7 @@ def graph_case(case):
             {'x': reshape(local_index, (15 * tiles,), 'flat_indices'), 'indices': selector},
             {'y': ((15,), 'int32')}, {'axis': {'type': 'int', 'value': 0}},
             name='local_index')['y']
-        stride = g.const(np.array(TILE, dtype='<i4'), dtype='int32', name='tile_stride')
+        stride = g.const(np.array(tile_width, dtype='<i4'), dtype='int32', name='tile_stride')
         offset = g.op('mul', winner, stride, shape=(15,), dtype='int32', name='tile_offset')
         output = reshape(g.op('add', offset, selected, shape=(15,), dtype='int32',
                               name='global_index'), (1, 15), 'tokens')
@@ -147,7 +165,23 @@ def graph_case(case):
             axis_input='INT32_SCALAR_ARGMAX; INT32_VECTOR_REDUCEMAX',
             frontend_headers=dict(FRONTEND_HEADERS),
             schema_scope='USER_REPORTED_SELECTED_HIAI_HEADERS_NOT_KERNEL_PLACEMENT_PROOF')
-    if case == 'top1_ext2_tiled_fp16':
+    if case in top1_matrix.COMPOSITIONS:
         g.output_contract['local_value_reduction'] = 'SEPARATE_REDUCEMAX_NAN_AND_TIE_CONSISTENCY_DEVICE_UNVERIFIED'
+    if case == 'top1_ext2_tiled_flat_fp16':
+        g.output_contract.update(local_reduction_shape=[15 * (SHAPE[-1] // TILE), TILE],
+            local_reduction_axis=1, comparison_case='top1_ext2_tiled_fp16',
+            change='FLATTEN_LOCAL_REDUCTION_LEADING_DIMS_RESTORE_VALUES_BEFORE_WINNING_TILE')
+    if case == 'top1_ext2_tiled_transposed_fp16':
+        g.output_contract.update(local_reduction_shape=[TILE, 15 * (SHAPE[-1] // TILE)],
+            local_reduction_axis=0, comparison_case='top1_ext2_tiled_flat_fp16',
+            change='TRANSPOSE_FLAT_LOCAL_ROWS_REDUCE_AXIS_ZERO_RESTORE_VALUES')
+    if case == 'top1_ext2_tiled_485_fp16':
+        g.output_contract.update(tiled_geometry=[512, 485], local_reduction_shape=[7680, 485],
+            local_reduction_axis=1, comparison_case='top1_ext2_tiled_flat_fp16',
+            change='SWAP_TILE_FACTORS_NO_PADDING; FIXTURE_TILE_BOUNDARY_ROW_484_485')
     data, expected = fixture()
+    if case == 'top1_ext2_tiled_485_fp16':
+        data[0, 5] = -8
+        data[0, 5, [484, 485]] = 8
+        expected = np.argmax(data, axis=-1).astype('<i4')
     return g.validate(), [data], [expected]

@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "DRAFT_TOP1_COMPILED_MIXED_PLACEMENT_OPERATOR_MAPPING_PENDING",
+    "status": "DRAFT_TOP1_LOCAL_CPU_REDUCTIONS_CONFIRMED_SHAPE_MATRIX_PENDING",
     "entry": "targets/cpro/scripts/export_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "COMPOSED_ATTENTION_TOP1_ISOLATED82_OF86_FEEDBACK83_OF86; HIDDEN_L2_1.34_TO2.61_PERCENT; APPENDED_KV_L2_0.44_TO0.83_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "Corrected native Top1 probes all compiled. Direct remains CPUCL1; flat NPUCL1+CPUCL1; tiled NPUCL2+CPUCL2. Read existing OMC CPU operators and boundary shapes before another graph change or device validation. Full Draft remains 103.720ms and NUMERICAL_FAILED.",
+    "next": "Run --top1-matrix once: 17 isolated reductions plus 4 full-vocabulary compositions, with automatic CPU operations and boundary inspection. Observed tiled local ArgMax and ReduceMax are CPU; new matrix has host evidence only. Full Draft remains 103.720ms and NUMERICAL_FAILED.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6221,9 +6221,27 @@
     },
     "top1_compiled_placement_inspection": {
       "run_id": "20261104T032006Z-4074-bb512d",
-      "status": "HOST_CHECKED_USER_READ_ONLY_PLACEMENT_INSPECTION_PENDING",
+      "status": "USER_REPORTED_INSPECTED_LOCAL_ARGMAX_AND_REDUCEMAX_CONFIRMED_CPU",
       "host_checks": 70,
       "evidence": "specs/dflash-execution-state.json#incremental_draft_task/top1_builtin_probe/compiled_placement_inspection"
+    },
+    "top1_shape_matrix": {
+      "run_id": "20261104T032933Z-4366-5ee867",
+      "status": "HOST_CHECKED_SELECTED_DDK_COMPILATION_PENDING",
+      "case_count": 21,
+      "host": {
+        "status": "HOST_CHECKED",
+        "checks": 450,
+        "semantic_graph_replays": 57,
+        "matrix_cases": 21,
+        "full_vocabulary_composition_replays": 40,
+        "simulated_native_calls": 210,
+        "scope": "MATRIX_CPP_AND_DIRECT_NUMPY_PYTORCH_ORACLES; REAL_ABI_PREPARATION_WITH_FAKE_VENDOR_METADATA; EXACT_GATES_AND_AUTOMATIC_INSPECTION_ORCHESTRATION",
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "HOST_ONLY_NOT_DEVICE"
+      },
+      "evidence": "specs/dflash-execution-state.json#incremental_draft_task/top1_builtin_probe/shape_matrix"
     }
   }
 }

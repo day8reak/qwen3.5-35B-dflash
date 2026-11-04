@@ -187,6 +187,9 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
         if len(main) != 1 or any(model.parent.glob('*.weight')):
             raise ValueError('probe needs one embedded model without external weight sidecars')
         io = bind_io(schema.decode(read_partition(model, main[0]), 'ModelDef'), row['graph'], enums)
+        if row.get('top1_contract', {}).get('acceptance') == 'EXACT_OUTPUT_BYTES_ALL_REPEATS':
+            for spec in io['outputs']:
+                spec['exact_bytes'] = True
         folder = out/'fixture'/name
         folder.mkdir(parents=True)
         for prefix, arrays in (('input', inputs), ('golden', golden)):
