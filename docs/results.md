@@ -1,5 +1,21 @@
 # 当前结果
 
+2026-11-04，用户回传host-embedding候选完整accuracy摘要：EXECUTED_OUTPUTS_RETRIEVED，board_attempt `qwen35_draft_accuracy_2486123ea3e3411390d491ff6db887a0`，锁已释放。host_embedding_binding=RESTORED_FROM_VERIFIED_AIR_AND_PREPARED_WEIGHTS，原FP16表SHA256仍为 `ab1a0ddd89ba1cb895b58259f78c18080420595215b02234ee5e84996cf31e28`。这次已越过来源绑定和MODEL_LOAD并完成推理；对应先前1.79GB／CPUCL2／NPUCL1候选由会话连续性关联，本次粘贴摘要未包含OMC digest，尚未独立读取服务器fixture。后续profile入口按保留fixture核验实际模型。
+
+| 同类同步API测量 | 上一双NPU轮 ms | 本轮 ms | 降幅 |
+|---|---:|---:|---:|
+| isolated catchup，11次 | 192.067 | 103.958 | 45.9% |
+| isolated proposal，8次 | 191.469 | 103.998 | 45.7% |
+| feedback catchup，11次 | 200.515 | 106.090 | 47.1% |
+| feedback proposal，8次 | 189.147 | 104.994 | 44.5% |
+| 38次加权均值 | 193.772 | 104.802 | 45.9% |
+
+按用户报告的均值和次数计算，本轮减少88.970ms、约1.849倍提速；全组最小99.055ms、最大110.569ms。与50ms相比，本组均值还需减少约52.3%，但此处既不是固定输入预热稳态验收，也不是包含查表和提交的端到端时延。单NPU主体与host查表组合已经有用户测得的API收益，尚不能将全部收益归因于某条CPU边界，也不能将旧105.582ms差额直接算作已消除。
+
+NUMERICAL_FAILED保持，isolated／feedback仍各19例全部未通过原严格门槛；Top1为82/86及83/86，7处差异的位置与token和上一轮一致。hidden相对L2范围分别0.013387271239375807～0.025755650596962287、0.014494312718133574～0.026116219967572855，新增KV范围均为0.004417372793104131～0.008283531899103903；其余KV范围和case计数也与旧摘要一致。首例hidden最大绝对误差0.15234375。两模式preservation_failed均0，identical-repeat与full-cache-repeat逐位稳定。没有观察到摘要层面的数值退化，不等同于跨版本所有输出逐位相同，也不构成精度通过。
+
+本地run `20261104T015331Z-570-fc5e19`仅记录用户证据并计算对照，没有重新编译或上板。旧原始报告／数值门槛保留，生产resident仍未接入新ABI。下一步复用完成的accuracy结果采集一次同模型profile，回收model.csv与op.csv，再评估剩余运行时差额和ArgMax／head／特征重排；命令见[当前阶段](current-status.md)。
+
 2026-11-04，host-embedding候选accuracy在reference阶段报candidate and source host embedding bindings differ，device_execution=NOT_RUN、无已知持有锁。用户只读两份manifest后确认：优化策略均为packed-spatial-host-embedding；AIR含原FP16表[248320,2048]、1017118720字节、SHA256 `ab1a0ddd89ba1cb895b58259f78c18080420595215b02234ee5e84996cf31e28`，mask_token_id=248077、scale=1；OMC通过get读取host_embedding为null（未区分字段不存在与显式null）。当前源码编译流程会保留该字段，服务器生成时为何遗漏尚未确定；此报错不是模型加载或数值失败。
 
 验证器现仅对该policy下缺失／null的OMC重复契约延后判断：原编译AIR快照、编译器与打包记录、语义ABI、原权重与embedding表字节、最终OMC哈希全部通过后，从AIR及prepared恢复诊断绑定，写入独立pytorch-abi.json并随fixture／结果摘要保留RESTORED_FROM_VERIFIED_AIR_AND_PREPARED_WEIGHTS。显式冲突、缺失AIR契约、错配原表和损坏文件仍拒绝，原始manifest及OMC不变。现有1.79GB候选无需重编译，本次Python修复无需重建runner；继续重试原accuracy命令。

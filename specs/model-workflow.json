@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "DRAFT_HOST_EMBEDDING_BINDING_RECOVERY_HOST_TESTED_DEVICE_PENDING",
+    "status": "DRAFT_HOST_EMBEDDING_EXECUTED_API_104_TO106_MS_NUMERICAL_FAILED_PROFILE_PENDING",
     "entry": "targets/cpro/scripts/export_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "COMPOSED_ATTENTION_TOP1_ISOLATED82_OF86_FEEDBACK83_OF86; HIDDEN_L2_1.34_TO2.61_PERCENT; APPENDED_KV_L2_0.44_TO0.83_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "Update Python validator; reuse 967e9b64 OMC and current AIR. OMC host_embedding duplicate is missing/null; recover diagnostic binding only after source/compiler/table/model verification. Retry accuracy with existing plan-v2 runner, then recover the same attempt. No OMC recompile.",
+    "next": "User recovered 38 calls: phase means 103.958..106.09 ms; original numerical failures unchanged in supplied summaries. Reuse completed accuracy result for one diagnostic operator profile and recover same attempt. No model compile, runner rebuild or accuracy relaunch. Verify current model/operator timing before choosing next performance change.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",

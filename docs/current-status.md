@@ -1,61 +1,18 @@
 # 当前阶段测试命令
 
-目标为C16／cap192／K15常驻预热后平均≤50ms。同步API、输入准备／提交、加载与初始catchup分别记录。原数值门槛和golden保持；旧NUMERICAL_FAILED基线不能证明新模型精度通过。
+目标为C16／cap192／K15常驻预热后平均≤50ms。同步API、输入准备／提交、加载与初始catchup分别记录。原数值门槛和golden保持。
 
-## 当前模型：恢复缺失绑定后继续设备验证
+## 当前进展：设备执行完成，采集同模型profile
 
-本轮accuracy在reference阶段停止，尚未上板、没有持有设备锁。用户确认AIR manifest包含完整host_embedding契约，OMC manifest读取该字段为null，两边优化策略相同。验证器现允许从AIR及prepared原表恢复缺失的诊断绑定，但仍逐项核验编译AIR快照、语义输入、编译权重来源、原embedding表和打包OMC哈希；已有明确冲突仍拒绝。原始manifest／OMC不改写，恢复记录写入fixture/pytorch-abi.json及验证摘要。
+用户已回收host-embedding候选的38次accuracy调用，board_attempt为qwen35_draft_accuracy_2486123ea3e3411390d491ff6db887a0，状态EXECUTED_OUTPUTS_RETRIEVED、无持有锁。缺失host_embedding绑定已通过原表和模型来源校验恢复；当前候选加载和推理成功。先前边界报告的OMC为1790918688字节、SHA256 `967e9b640915893890ef95425b0e1279c8245bff0cfc2833f0cbfa56eb023372`，CPUCL2／NPUCL1、无中间CPU回流。本次粘贴的accuracy摘要没有模型digest，profile工具会从已回收fixture校验实际模型身份。
 
-```bash
-git -C "$REPO_DIR" pull --ff-only
-```
+isolated catchup／proposal均值103.958／103.998ms，feedback为106.090／104.994ms。按11／8／11／8次调用加权为104.802ms，上一双NPU轮同类均值为193.772ms，减少45.9%。这是混合输入诊断API结果，不是固定输入预热验收，也不包含服务器embedding查表、输入文件读取和提交。
 
-本次修复仅涉及Python验证器，保留现有AIR和1.79GB OMC，不需要重新导出、编译或为此重建runner。若此前已经构建支持plan v2的runner，直接重试第2步；成功恢复后摘要包含host_embedding_binding=RESTORED_FROM_VERIFIED_AIR_AND_PREPARED_WEIGHTS。该标记只说明来源绑定通过，设备加载、数值及性能仍需随后验证。
+NUMERICAL_FAILED保留：Top1为82/86与83/86，错误位置、hidden／KV相对L2范围与上一轮摘要一致；未写KV保持、两组重复调用逐位稳定。摘要一致不证明全部输出与旧版逐字节相同。生产resident尚未切换新block_embeddings接口，50ms和数值通过均未达成。历史与详细数据见[结果](results.md)。
 
-用户已完成packed-spatial-host-embedding候选的OMC边界及依赖检查。当前模型1790918688字节，SHA256 `967e9b640915893890ef95425b0e1279c8245bff0cfc2833f0cbfa56eb023372`；CPUCL2／NPUCL1，intermediate_cpu_partitions=[]、unresolved=[]。结构为前置CPU控制→单个NPU主体→CPU ArgMax，已经没有中间CPU回流。唯一NPU→CPU路径是完整logits经Cast交给ArgMax。边界逻辑尺寸不是实测搬运量，旧105.582ms模型／算子差额也不能直接当作已消除。
+## 1. 启动一次诊断profile
 
-新OMC约1.668GiB，上一单NPU模型约2.614GiB。旧模型在权重拷贝／MODEL_LOAD失败，新模型能否加载及收益尚待本次验证。现有OMC可直接复用，不需要重新导出、编译或重复边界检查。详细事实和历史见[结果](results.md)。
-
-新公共输入用float16[1,K+1,2048]的block_embeddings替换anchor ID，K15为65536字节，仍17输入／14输出。需要支持accuracy plan v2的runner；生产resident仍使用原token-ID接口，本次测试不切换生产配置。
-
-## 1. 重建共享runner
-
-在现有服务器环境中沿用REPO_DIR、AI_RUN_DIR、CPRO_DDK_ROOT、CPRO_DDK_ID，以及原OHOS_NATIVE_SDK、HIAI_INCLUDE_DIR、HIAI_LIBRARIES或QWEN35_RESOURCES配置。运行配置仍为runtime/runtime.json，默认共享运行器目录为runtime/native。旧accuracy失败已回收、无持有锁；下面复用原固定测试槽位，脚本仍保护未完成任务。
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$AI_RUN_DIR/runtime/native" --replace
-```
-
-这里只编译ARM64运行器，不编译OMC。成功后runtime/native/result.json应为LINKED，并含qwen35_draft_accuracy的构建记录。若已经用当前代码重建过支持plan v2的runner，可直接进入下一步。
-
-## 2. 验证加载、数值、KV与同步API
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --compiled "$AI_RUN_DIR/draft/tests/pytorch-optimized-omc" \
-  --source "$AI_RUN_DIR/draft/source/prepared" \
-  --air-export "$AI_RUN_DIR/draft/tests/pytorch-optimized-air" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-run" --apply
-```
-
-看到DRAFT_ACCURACY_STARTED后回收同一次执行，不再次启动模型：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --recover "$AI_RUN_DIR/draft/tests/pytorch-optimized-run" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-result"
-```
-
-若返回PENDING，稍后重复同一recover命令。回传完整摘要，核对device_execution、first_failure、case_counts、relative_l2_ranges、feedback_repeats和native_api_latency。EXECUTED_OUTPUTS_RETRIEVED才证明该OMC加载且执行成功；PASSED／NUMERICAL_FAILED另行判断数值。未写KV应保持、重复调用应稳定，偏差须与已接受旧基线对照，不能放宽门槛使其通过。若加载失败，保留自动回收的native.stderr和HiLog诊断，先处理失败。
-
-新fixture在服务器复制原FP16 [anchor, MASK×K]行，独立参考仍从token ID查原表。输入准备、文件读取和提交不在native API计时内；不能据此单独宣称端侧完整调用≤50ms。
-
-## 3. 执行成功后采集同模型profile
-
-仅在上一步已回收完整输出、结果为PASSED或NUMERICAL_FAILED后执行。允许数值失败仅用于性能诊断，原失败标记保留。
+沿用现有REPO_DIR、AI_RUN_DIR及板端环境，直接复用已回收的pytorch-optimized-result。无需重新导出、编译、重建runner或再跑accuracy。允许数值失败仅用于性能诊断，原失败状态仍保留。
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
@@ -64,7 +21,9 @@ python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
   --allow-numerical-failure --apply
 ```
 
-看到DRAFT_OPERATOR_PROFILE_STARTED后回收原执行：
+## 2. 回收同一次执行
+
+看到DRAFT_OPERATOR_PROFILE_STARTED后执行下面命令。若返回PENDING，稍后重复同一recover；不要为了取CSV重新启动模型。
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
@@ -72,4 +31,4 @@ python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-profile-result"
 ```
 
-回传这次model.csv与op.csv。用新OMC的同步API和同轮模型／算子数据评估收益，再决定ArgMax或输入准备的后续优化；不将旧模型数据拼成新模型时延。
+回传本轮完整回收摘要、model.csv，以及op.csv中耗时最高的前20行和算子总和。先核对同一模型的inference与CPU／NPU算子数据，再决定剩余运行时差额、CPU ArgMax、head MatMul或特征重排的优化优先级。加载／卸载另计；不能用本轮104.8ms API减去旧模型78.986ms算子总和，也不能将旧105.582ms差额视为已全部消除。

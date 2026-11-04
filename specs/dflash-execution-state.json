@@ -3687,7 +3687,7 @@
       }
     },
     "host_embedding_candidate": {
-      "status": "MISSING_COMPILED_HOST_BINDING_RECOVERY_HOST_TESTED_DEVICE_PENDING",
+      "status": "USER_REPORTED_EXECUTED_NUMERICAL_FAILED_API_104_TO106_MS_PROFILE_PENDING",
       "policy": "packed-spatial-host-embedding",
       "run_id": "20261104T004345Z-29867-0cafbe",
       "source_math": "COPY_ORIGINAL_FP16_ANCHOR_AND_MASK_ROWS; UNIT_SCALE_ONLY",
@@ -3719,22 +3719,24 @@
       },
       "timing": "PRECOMPUTED_SERVER_FIXTURE_ROWS_EXCLUDED_FROM_NATIVE_API; MEASURE_PREPARATION_SUBMISSION_AND_API_FOR_END_TO_END",
       "model_compilation": "USER_REPORTED_COMPLETED_OMC_INSPECTION",
-      "device_execution": "NOT_RUN",
-      "numerical_validation": "NOT_RUN_ON_DEVICE",
-      "performance": "NOT_MEASURED",
+      "device_execution": "EXECUTED_OUTPUTS_RETRIEVED_USER_REPORT",
+      "numerical_validation": "FAILED_SAME_REPORTED_ERROR_SUMMARIES_AS_PREVIOUS",
+      "performance": "NATIVE_API_PHASE_MEANS_103.958_TO106.09_MS_NOT_END_TO_END",
       "production_promotion": "NOT_PERFORMED",
-      "next": "UPDATE_PYTHON_VALIDATOR; REUSE_CURRENT_AIR_OMC_AND_RETRY_ACCURACY; NO_MODEL_RECOMPILE",
+      "next": "REUSE_RECOVERED_ACCURACY; ONE_SAME_MODEL_PROFILE_THEN_RECOVER; NO_RECOMPILE_OR_ACCURACY_RELAUNCH",
       "command_document": "docs/current-status.md",
       "experience_audit": {
         "captured": [
           "PLATFORM_PARTITION_LIMIT_TRUE_ALREADY_DEFAULT_AND_INEFFECTIVE_HERE",
           "INPUT_EMBEDDING_AND_OUTPUT_HEAD_HAVE_DIFFERENT_CONSUMERS",
-          "HOST_PREPROCESSING_COST_MUST_REMAIN_VISIBLE"
+          "HOST_PREPROCESSING_COST_MUST_REMAIN_VISIBLE",
+          "HOST_EMBEDDING_CANDIDATE_LOADED_AND_EXECUTED_IN_USER_REPORT",
+          "API_PHASE_MEANS_IMPROVED_WITH_SAME_REPORTED_ERROR_SUMMARIES"
         ],
         "reusable_skill_change": "NONE_EXISTING_SKILLS_REQUIRE_ACTUAL_HELP_ABI_AND_TIMING_SCOPE",
         "hypotheses": [
-          "ACTUAL_DEVICE_MEMCPY_LIMIT_AND_COPY_ARGUMENTS_UNCONFIRMED",
-          "WEIGHT_REDUCTION_AND_LATENCY_REQUIRE_SELECTED_COMPILER_AND_BOARD"
+          "ACTUAL_OLD_RUNTIME_MEMCPY_LIMIT_AND_COPY_ARGUMENTS_UNCONFIRMED",
+          "SAME_MODEL_PROFILE_REQUIRED_TO_ATTRIBUTE_REMAINING_RUNTIME_GAP"
         ]
       },
       "inline_export_repair": {
@@ -3857,7 +3859,156 @@
           "export_compile_pipeline": 15
         },
         "scope": "SYNTHETIC_HOST_PROTOBUF_AND_MOCK_DDK_REFERENCE; NOT_DEVICE",
-        "device_execution": "PENDING_USER_RETRY"
+        "device_execution": "USER_REPORTED_EXECUTED_OUTPUTS_RETRIEVED_WITH_RESTORED_BINDING"
+      },
+      "accuracy_observation": {
+        "artifact_kind": "qwen35-draft-host-embedding-accuracy-observation",
+        "source": "USER_PASTED_RECOVERY_SUMMARY; SERVER_FILES_NOT_INDEPENDENTLY_READ",
+        "run_id": "20261104T015331Z-570-fc5e19",
+        "status": "NUMERICAL_FAILED",
+        "stage": "complete",
+        "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+        "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_2486123ea3e3411390d491ff6db887a0",
+        "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+        "model_identity": {
+          "sha256": "967e9b640915893890ef95425b0e1279c8245bff0cfc2833f0cbfa56eb023372",
+          "bytes": 1790918688,
+          "scope": "ASSOCIATED_PRECEDING_BOUNDARY_REPORT; CURRENT_PASTED_ACCURACY_SUMMARY_HAS_NO_MODEL_DIGEST"
+        },
+        "host_embedding_binding": "RESTORED_FROM_VERIFIED_AIR_AND_PREPARED_WEIGHTS",
+        "embedding_sha256": "ab1a0ddd89ba1cb895b58259f78c18080420595215b02234ee5e84996cf31e28",
+        "native_api_latency": {
+          "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY",
+          "isolated": {
+            "catchup": {
+              "calls": 11,
+              "mean_ms": 103.95818181818183,
+              "min_ms": 101.638,
+              "max_ms": 106.178
+            },
+            "proposal": {
+              "calls": 8,
+              "mean_ms": 103.998375,
+              "min_ms": 100.461,
+              "max_ms": 107.805
+            }
+          },
+          "feedback": {
+            "catchup": {
+              "calls": 11,
+              "mean_ms": 106.09,
+              "min_ms": 101.905,
+              "max_ms": 109.68
+            },
+            "proposal": {
+              "calls": 8,
+              "mean_ms": 104.994375,
+              "min_ms": 99.055,
+              "max_ms": 110.569
+            }
+          }
+        },
+        "comparison_to_previous_two_npu_api": {
+          "rows": [
+            {
+              "mode": "isolated",
+              "phase": "catchup",
+              "calls": 11,
+              "mean_ms": 103.95818181818183,
+              "min_ms": 101.638,
+              "max_ms": 106.178,
+              "previous_mean_ms": 192.06654545454543,
+              "saved_ms": 88.1083636363636,
+              "decrease_percent": 45.873873259836074
+            },
+            {
+              "mode": "isolated",
+              "phase": "proposal",
+              "calls": 8,
+              "mean_ms": 103.998375,
+              "min_ms": 100.461,
+              "max_ms": 107.805,
+              "previous_mean_ms": 191.469375,
+              "saved_ms": 87.47100000000002,
+              "decrease_percent": 45.68406827462616
+            },
+            {
+              "mode": "feedback",
+              "phase": "catchup",
+              "calls": 11,
+              "mean_ms": 106.09,
+              "min_ms": 101.905,
+              "max_ms": 109.68,
+              "previous_mean_ms": 200.51472727272727,
+              "saved_ms": 94.42472727272727,
+              "decrease_percent": 47.09116809375145
+            },
+            {
+              "mode": "feedback",
+              "phase": "proposal",
+              "calls": 8,
+              "mean_ms": 104.994375,
+              "min_ms": 99.055,
+              "max_ms": 110.569,
+              "previous_mean_ms": 189.1465,
+              "saved_ms": 84.152125,
+              "decrease_percent": 44.490447880346714
+            }
+          ],
+          "calls": 38,
+          "previous_weighted_mean_ms": 193.77160526315788,
+          "weighted_mean_ms": 104.8018947368421,
+          "saved_ms": 88.96971052631578,
+          "decrease_percent": 45.91473059506709,
+          "speedup": 1.848932271212453,
+          "scope": "DERIVED_FROM_REPORTED_PHASE_MEANS_AND_COUNTS; NOT_PAIRED_RUN_OR_WARM_STEADY_BENCHMARK"
+        },
+        "numerical_validation": "FAILED",
+        "case_counts": {
+          "isolated": {
+            "total": 19,
+            "passed": 0,
+            "top1_tokens": 86,
+            "top1_matches": 82,
+            "top1_failed": 3,
+            "hidden_failed": 8,
+            "kv_failed": 13,
+            "preservation_failed": 0
+          },
+          "feedback": {
+            "total": 19,
+            "passed": 0,
+            "top1_tokens": 86,
+            "top1_matches": 83,
+            "top1_failed": 3,
+            "hidden_failed": 8,
+            "kv_failed": 18,
+            "preservation_failed": 0
+          }
+        },
+        "first_failure": {
+          "mode": "isolated",
+          "index": 0,
+          "label": "empty-context",
+          "top1_mismatches": 1,
+          "position": 10,
+          "actual": 220,
+          "expected": 13,
+          "hidden_max_abs_error": 0.15234375,
+          "hidden_relative_l2_error": 0.014494312718133574
+        },
+        "summary_comparison": "REPORTED_TOP1_DIFFERENCES_CASE_COUNTS_AND_RELATIVE_L2_RANGES_MATCH_PREVIOUS; NOT_ALL_OUTPUT_BITWISE_PROOF",
+        "feedback_repeats": {
+          "identical-repeat": true,
+          "full-cache-repeat": true
+        },
+        "timing_limitations": [
+          "SERVER_HOST_EMBEDDING_LOOKUP_AND_INPUT_PREPARATION_EXCLUDED",
+          "NEW_MODEL_AND_OPERATOR_PROFILE_PENDING",
+          "OLD_105.582_MS_GAP_NOT_ATTRIBUTED_BY_THIS_RESULT"
+        ],
+        "production_promotion": "NOT_PERFORMED",
+        "next": "PROFILE_THE_RECOVERED_ACCURACY_MODEL_ONCE_THEN_RECOVER_SAME_ATTEMPT"
       }
     }
   },
