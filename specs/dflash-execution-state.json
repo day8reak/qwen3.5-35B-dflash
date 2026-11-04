@@ -984,7 +984,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "Rebuild runtime/native; validate_draft_vector.py --top1-semantics --compiled draft/tests/top1-probes --apply; recover same execution. See docs/current-status.md.",
+    "next_command": "No relaunch/recovery needed for completed Top1 batch. Review alternative all-NPU algorithms and selected-DDK frontend/backend support before one bounded candidate batch; see docs/current-status.md.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -3724,7 +3724,7 @@
       "numerical_validation": "FAILED_SAME_REPORTED_ERROR_SUMMARIES_AS_PREVIOUS",
       "performance": "NATIVE_API_PHASE_MEANS_103.958_TO106.09_MS_NOT_END_TO_END",
       "production_promotion": "NOT_PERFORMED",
-      "next": "REUSE_TOP1_OMCS_FOR_DEVICE_SEMANTICS_AND_API_TIMING; FULL_DRAFT_103.720MS_NUMERICAL_FAILED_UNCHANGED",
+      "next": "TOP1_DEVICE_BATCH_RECORDED; REVIEW_ALTERNATIVE_ALL_NPU_VALUE_INDEX_GRAPH; FULL_DRAFT_103.720MS_NUMERICAL_FAILED_UNCHANGED",
       "command_document": "docs/current-status.md",
       "experience_audit": {
         "captured": [
@@ -4053,7 +4053,7 @@
       }
     },
     "top1_builtin_probe": {
-      "status": "SHAPE_MATRIX_COMPILED_SMALL_ARGMAX_NPU_FULL_COMPOSITIONS_CPU_LOCAL_REDUCTIONS",
+      "status": "DEVICE_BATCH_COMPLETE_SMALL_NPU_NON_NAN_CASES_PASS_FULL_COMPOSITIONS_RETAIN_CPU",
       "run_id": "20261104T015950Z-753-3ad426",
       "entry": "targets/cpro/tools/probe_draft_vector.py",
       "cases": [
@@ -4087,7 +4087,7 @@
       "padding": 0,
       "index_arithmetic": "INT32",
       "ties": "MINIMUM_GLOBAL_INDEX_REQUIRED",
-      "nonfinite": "CHECKED_IN_SYNTHETIC_FIXTURE_DEVICE_BEHAVIOR_PENDING",
+      "nonfinite": "MIXED_NAN_SYNTHETIC_CASES_FAIL_DETERMINISTICALLY; REAL_DRAFT_LOGIT_FINITE_COVERAGE_NOT_ESTABLISHED",
       "host": {
         "status": "HOST_CHECKED",
         "checks": 128,
@@ -4102,8 +4102,8 @@
         ]
       },
       "model_compilation": "PASSED_21_CASES_USER_REPORT",
-      "device_execution": "NOT_RUN",
-      "numerical_validation": "NOT_RUN_ON_DEVICE",
+      "device_execution": "EXECUTED_OUTPUTS_RETRIEVED_NINE_MODELS_USER_REPORT",
+      "numerical_validation": "FAILED_ORIGINAL_COMPLETE_CONTRACT_45_OF_61_PASS",
       "full_draft_changed": false,
       "integration": "ONLY_AFTER_PLACEMENT_AND_EXACT_DEVICE_REDUCTION_CHECKS; FULL_DRAFT_GATES_REMAIN",
       "paused_addcustom_path": "NOT_USED",
@@ -4130,13 +4130,17 @@
           "FINITE_REDUCEMAX_PROBES_REQUIRE_EXACT_BYTES_NOT_GENERIC_FLOAT_TOLERANCE",
           "SMALL_NPU_ARGMAX_AND_ALL_TESTED_CPU_REDUCEMAX_ARE_SEPARATE_CONSTRAINTS; NO_UNMEASURED_HARDWARE_THRESHOLD",
           "REUSE_COMPILED_OMC_FOR_NONFINITE_AND_TIE_INPUT_VARIANTS_BEFORE_COMPOSING_NEW_GRAPH",
-          "NATIVE_PLAN_AXIS_LIMIT_MUST_COVER_FULL_VOCABULARY_WITH_TOTAL_BYTE_BUDGET_RETAINED"
+          "NATIVE_PLAN_AXIS_LIMIT_MUST_COVER_FULL_VOCABULARY_WITH_TOTAL_BYTE_BUDGET_RETAINED",
+          "SEPARATE_SYNTHETIC_NONFINITE_SEMANTIC_FAILURE_FROM_REAL_FINITE_LOGIT_WORKLOAD_VIABILITY",
+          "ALL_NAN_ZERO_MATCH_DOES_NOT_PROVE_FIRST_NAN_SELECTION",
+          "ASCEND_C_X90_API_SUPPORT_IS_NOT_SELECTED_CPRO_GE_PLACEMENT_PROOF",
+          "LOCAL_REDUCTION_CONTROL_TIMING_IS_NOT_AN_EQUIVALENT_FULL_VOCABULARY_TOP1_BASELINE"
         ],
         "executable_checks": "validate_draft_vector.py dtype plans and exact integer gates",
         "skill_changes": "NONE; EXISTING_PROFILE_SCOPE_RULES_ADEQUATE",
         "remaining_hypotheses": [
-          "SELECTED_DDK_BUILTIN_NPU_PLACEMENT",
-          "DEVICE_TIES_NAN_SEMANTICS",
+          "SELECTED_DDK_TOPK_OR_COMPARE_SELECT_ALL_NPU_GRAPH",
+          "REAL_DEVICE_DRAFT_LOGIT_NONFINITE_COVERAGE",
           "FULL_MODEL_LATENCY_BENEFIT"
         ],
         "frontend_schema_correction": {
@@ -4169,7 +4173,7 @@
           "run_id": "20261104T062203Z-6272-3833d3",
           "skill_changes": "NONE; EXISTING_TARGET_ABI_AND_GROUPED_TEST_RULES_ADEQUATE",
           "applied_in": "top1_semantics.py; validate_draft_vector.py; tensor_probe_main.cpp; build_hiai.py",
-          "remaining": "DEVICE_NUMERICS_AND_LATENCY; EXACT_SELECTION_THRESHOLD_AND_ALTERNATIVE_VALUE_RETRIEVAL_UNPROVEN",
+          "remaining": "SELECTED_DDK_ALTERNATIVE_ALL_NPU_GRAPH_AND_FULL_MODEL_BENEFIT; CURRENT_BATCH_COMPLETE",
           "full_model_accuracy_or_performance_claim": "NONE"
         }
       },
@@ -4238,7 +4242,7 @@
         ],
         "next": "READ_SAVED_COMPILER_ENVIRONMENT_AND_SELECTED_DDK_REDUCTION_REGISTRATION; NO_RECOMPILE_OR_DEVICE_RUN"
       },
-      "next": "REUSE_NINE_EXISTING_OMCS_FOR_ONE_61_INPUT_SEMANTICS_AND_API_TIMING_BATCH; REBUILD_NATIVE_ONLY",
+      "next": "RESEARCH_SELECTED_DDK_TOPK_VALUE_INDEX_AND_COMPARE_SELECT_TREE; NO_REPEAT_OF_COMPLETED_BATCH",
       "registration_inspection": {
         "entry": "probe_draft_vector.py --inspect-top1 COMPILED_PROBES --ddk-root DDK",
         "run_id": "20261104T021319Z-1312-aa1ef2",
@@ -5891,7 +5895,7 @@
         }
       },
       "device_semantics": {
-        "status": "HOST_CHECKED_USER_DEVICE_EXECUTION_PENDING",
+        "status": "USER_REPORTED_COMPLETE_45_PASS_16_MIXED_NAN_FAILURES",
         "run_id": "20261104T062203Z-6272-3833d3",
         "entry": "validate_draft_vector.py --top1-semantics",
         "compiled_slot": "draft/tests/top1-probes",
@@ -5930,8 +5934,8 @@
         ],
         "new_graphs": 0,
         "model_compilation": "NOT_RUN",
-        "device_execution": "NOT_RUN",
-        "numerical_validation": "NOT_RUN_ON_DEVICE",
+        "device_execution": "EXECUTED_OUTPUTS_RETRIEVED_USER_REPORT",
+        "numerical_validation": "FAILED_ORIGINAL_COMPLETE_CONTRACT",
         "host": {
           "status": "HOST_CHECKED",
           "checks": 315,
@@ -5961,9 +5965,486 @@
         "native_change": "Keep plan V1 and 16 MiB combined IO cap; remove old 65536 axis ceiling, declare limits in build result and reject older runtime before upload",
         "gates": "EXACT_INT32_BYTES_ALL_ROWS_ALL_TEN_CALLS_AFTER_3_WARMUPS; MISSING_SCENARIOS_EXPLICIT; NO_NEW_TOLERANCE",
         "timing_scope": "API_WALL_PER_MODEL_AND_INPUT; LOAD_INPUT_PREPARATION_SNAPSHOTS_EXCLUDED; NOT_ADDITIVE_NOT_FULL_DRAFT",
-        "decision": "Do not recompile more equivalent shape variants. Validate the small ArgMax primitive before considering bounded row splitting and value retrieval without ReduceMax; neither that composition nor speedup is established.",
+        "decision": "Keep small NPU primitives as candidates for tested non-NaN inputs; do not repeat this batch or promote the four CPU-heavy compositions. Research alternative all-NPU value/index reductions. Retain original NaN failures and exact comparison; no broad finite-only device guarantee.",
         "full_draft_changed": false,
-        "paused_addcustom_path": "NOT_USED"
+        "paused_addcustom_path": "NOT_USED",
+        "observation": {
+          "source": "USER_PASTED_COMPLETED_RECOVERY_RESULT_NOT_INDEPENDENTLY_RETRIEVED",
+          "date": "2026-11-04",
+          "recorded_in_run": "20261104T064450Z-6893-0209ce",
+          "status": "NUMERICAL_FAILED",
+          "stage": "complete",
+          "model_compilation": "NOT_RUN_EXISTING_NINE_OMCS_REUSED",
+          "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+          "numerical_validation": "FAILED",
+          "board_attempt": "/data/local/tmp/qwen35_vector_1890fc41883e4f2280ad786bd24953c9",
+          "recovery_source": "/home/w00949577/qwen3.5-35B-dflash-run/draft/tests/top1-validation",
+          "updated_at_unix": 1793776439.917308,
+          "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+          "native_exitcode": 0,
+          "archive_exitcode": 0,
+          "all_61_case_exitcodes_zero": true,
+          "execution_errors": [],
+          "compiled_models": 9,
+          "completed_cases": 61,
+          "passed_cases": 45,
+          "failed_cases": 16,
+          "warmup": 3,
+          "repetitions": 10,
+          "measured_calls": 610,
+          "repeat_bitwise_stable": true,
+          "exact_bytes_required": true,
+          "contract": "FIRST_NAN_ELSE_FIRST_MAXIMUM; EXACT_INT32_BYTES_ALL_TEN_REPEATS",
+          "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_BETWEEN_CALLS_EXCLUDED",
+          "groups": [
+            {
+              "compiled_case": "top1_argmax_r1_d512_fp16",
+              "model_sha256": "00111f22ef0612d70e4def1c81b086de3231036bdf3774e90e5f6f24b603e1fd",
+              "input_shape": [
+                1,
+                512
+              ],
+              "input_dtype": "float16",
+              "graphop_counts": {
+                "NPUCL": 1
+              },
+              "requested": 14,
+              "completed": 14,
+              "passed": 11,
+              "repeat_bitwise_stable": true,
+              "original_fixture_timing_ms": {
+                "mean": 0.4993,
+                "min": 0.376,
+                "max": 0.753
+              },
+              "failed_scenarios": [
+                "first_nan",
+                "last_nan",
+                "multiple_nan"
+              ],
+              "all_tested_non_nan_scenarios_passed": true,
+              "all_nan_passed": true,
+              "failed_observations": [
+                {
+                  "scenario": "first_nan",
+                  "expected": 0,
+                  "actual": 511,
+                  "affected_rows": 1,
+                  "mismatched_elements_all_calls": 10
+                },
+                {
+                  "scenario": "last_nan",
+                  "expected": 511,
+                  "actual": 0,
+                  "affected_rows": 1,
+                  "mismatched_elements_all_calls": 10
+                },
+                {
+                  "scenario": "multiple_nan",
+                  "expected": 170,
+                  "actual": 0,
+                  "affected_rows": 1,
+                  "mismatched_elements_all_calls": 10
+                }
+              ]
+            },
+            {
+              "compiled_case": "top1_argmax_r15_d485_fp16",
+              "model_sha256": "4cfd206b745f76c8ad8c8ca59fc6c2528c7d7f73a87ee443a7e810cac5ac546c",
+              "input_shape": [
+                15,
+                485
+              ],
+              "input_dtype": "float16",
+              "graphop_counts": {
+                "NPUCL": 1
+              },
+              "requested": 14,
+              "completed": 14,
+              "passed": 11,
+              "repeat_bitwise_stable": true,
+              "original_fixture_timing_ms": {
+                "mean": 0.621,
+                "min": 0.473,
+                "max": 0.984
+              },
+              "failed_scenarios": [
+                "first_nan",
+                "last_nan",
+                "multiple_nan"
+              ],
+              "all_tested_non_nan_scenarios_passed": true,
+              "all_nan_passed": true,
+              "failed_observations": [
+                {
+                  "scenario": "first_nan",
+                  "expected": 0,
+                  "actual": 484,
+                  "affected_rows": 15,
+                  "mismatched_elements_all_calls": 150
+                },
+                {
+                  "scenario": "last_nan",
+                  "expected": 484,
+                  "actual": 0,
+                  "affected_rows": 15,
+                  "mismatched_elements_all_calls": 150
+                },
+                {
+                  "scenario": "multiple_nan",
+                  "expected": 161,
+                  "actual": 0,
+                  "affected_rows": 15,
+                  "mismatched_elements_all_calls": 150
+                }
+              ]
+            },
+            {
+              "compiled_case": "top1_argmax_r15_d512_fp16",
+              "model_sha256": "8c794a9f476a30a9ebeb0b6d95b2161897cbeff6e391b30df8751c8ce105db4a",
+              "input_shape": [
+                15,
+                512
+              ],
+              "input_dtype": "float16",
+              "graphop_counts": {
+                "NPUCL": 1
+              },
+              "requested": 14,
+              "completed": 14,
+              "passed": 11,
+              "repeat_bitwise_stable": true,
+              "original_fixture_timing_ms": {
+                "mean": 0.6964,
+                "min": 0.616,
+                "max": 0.874
+              },
+              "failed_scenarios": [
+                "first_nan",
+                "last_nan",
+                "multiple_nan"
+              ],
+              "all_tested_non_nan_scenarios_passed": true,
+              "all_nan_passed": true,
+              "failed_observations": [
+                {
+                  "scenario": "first_nan",
+                  "expected": 0,
+                  "actual": 511,
+                  "affected_rows": 15,
+                  "mismatched_elements_all_calls": 150
+                },
+                {
+                  "scenario": "last_nan",
+                  "expected": 511,
+                  "actual": 0,
+                  "affected_rows": 15,
+                  "mismatched_elements_all_calls": 150
+                },
+                {
+                  "scenario": "multiple_nan",
+                  "expected": 170,
+                  "actual": 0,
+                  "affected_rows": 15,
+                  "mismatched_elements_all_calls": 150
+                }
+              ]
+            },
+            {
+              "compiled_case": "top1_argmax_r485_d512_fp16",
+              "model_sha256": "03b7a9178af0e233f880baa4b4c01f83394d94f29cabe7e7f9110099e9caad7e",
+              "input_shape": [
+                485,
+                512
+              ],
+              "input_dtype": "float16",
+              "graphop_counts": {
+                "NPUCL": 1
+              },
+              "requested": 14,
+              "completed": 14,
+              "passed": 11,
+              "repeat_bitwise_stable": true,
+              "original_fixture_timing_ms": {
+                "mean": 0.5957,
+                "min": 0.54,
+                "max": 0.673
+              },
+              "failed_scenarios": [
+                "first_nan",
+                "last_nan",
+                "multiple_nan"
+              ],
+              "all_tested_non_nan_scenarios_passed": true,
+              "all_nan_passed": true,
+              "failed_observations": [
+                {
+                  "scenario": "first_nan",
+                  "expected": 0,
+                  "actual": 511,
+                  "affected_rows": 485,
+                  "mismatched_elements_all_calls": 4850
+                },
+                {
+                  "scenario": "last_nan",
+                  "expected": 511,
+                  "actual": 0,
+                  "affected_rows": 485,
+                  "mismatched_elements_all_calls": 4850
+                },
+                {
+                  "scenario": "multiple_nan",
+                  "expected": 170,
+                  "actual": 0,
+                  "affected_rows": 485,
+                  "mismatched_elements_all_calls": 4850
+                }
+              ]
+            },
+            {
+              "compiled_case": "top1_argmax_r7275_d512_fp16",
+              "model_sha256": "0307b1ff1da960495850e4266b18e9ec33c2551c667ab072e880daa551be9e39",
+              "input_shape": [
+                7275,
+                512
+              ],
+              "input_dtype": "float16",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "requested": 1,
+              "completed": 1,
+              "passed": 1,
+              "repeat_bitwise_stable": true,
+              "original_fixture_timing_ms": {
+                "mean": 7.4633,
+                "min": 7.286,
+                "max": 8.137
+              },
+              "failed_scenarios": [],
+              "scope": "FINITE_ORIGINAL_FIXTURE_ONLY_7275_LOCAL_REDUCTIONS_NOT_FULL_VOCABULARY_TOP1"
+            },
+            {
+              "compiled_case": "top1_ext2_tiled_fp16",
+              "model_sha256": "faa4db3d9798864a3ea1e9454ee5cd2c2ada98d7b9ae9ff51043cd018c9db636",
+              "input_shape": [
+                1,
+                15,
+                248320
+              ],
+              "input_dtype": "float16",
+              "graphop_counts": {
+                "NPUCL": 2,
+                "CPUCL": 2
+              },
+              "requested": 1,
+              "completed": 1,
+              "passed": 0,
+              "repeat_bitwise_stable": true,
+              "original_fixture_timing_ms": {
+                "mean": 19.8443,
+                "min": 19.505,
+                "max": 20.079
+              },
+              "failed_scenarios": [
+                "original_fixture"
+              ],
+              "mismatched_elements_all_calls": 20,
+              "mismatched_rows_all_ten_calls": [
+                {
+                  "flat_index": 12,
+                  "label": "nan_across_tiles",
+                  "expected": 512,
+                  "actual": 0
+                },
+                {
+                  "flat_index": 14,
+                  "label": "last_nan",
+                  "expected": 248319,
+                  "actual": 0
+                }
+              ],
+              "other_rows_passed": 13
+            },
+            {
+              "compiled_case": "top1_ext2_tiled_flat_fp16",
+              "model_sha256": "f5f09501a2b7b0a6a14f27da6a136f455caa056753a15e30b7959732f3ef181d",
+              "input_shape": [
+                1,
+                15,
+                248320
+              ],
+              "input_dtype": "float16",
+              "graphop_counts": {
+                "NPUCL": 2,
+                "CPUCL": 2
+              },
+              "requested": 1,
+              "completed": 1,
+              "passed": 0,
+              "repeat_bitwise_stable": true,
+              "original_fixture_timing_ms": {
+                "mean": 19.5646,
+                "min": 17.694,
+                "max": 20.159
+              },
+              "failed_scenarios": [
+                "original_fixture"
+              ],
+              "mismatched_elements_all_calls": 20,
+              "mismatched_rows_all_ten_calls": [
+                {
+                  "flat_index": 12,
+                  "label": "nan_across_tiles",
+                  "expected": 512,
+                  "actual": 0
+                },
+                {
+                  "flat_index": 14,
+                  "label": "last_nan",
+                  "expected": 248319,
+                  "actual": 0
+                }
+              ],
+              "other_rows_passed": 13
+            },
+            {
+              "compiled_case": "top1_ext2_tiled_transposed_fp16",
+              "model_sha256": "18b798a3571ec01e24fe6ae299f7bd521c23be5c97be96b9c31acb7ff973275a",
+              "input_shape": [
+                1,
+                15,
+                248320
+              ],
+              "input_dtype": "float16",
+              "graphop_counts": {
+                "NPUCL": 2,
+                "CPUCL": 2
+              },
+              "requested": 1,
+              "completed": 1,
+              "passed": 0,
+              "repeat_bitwise_stable": true,
+              "original_fixture_timing_ms": {
+                "mean": 40.027,
+                "min": 37.783,
+                "max": 42.351
+              },
+              "failed_scenarios": [
+                "original_fixture"
+              ],
+              "mismatched_elements_all_calls": 20,
+              "mismatched_rows_all_ten_calls": [
+                {
+                  "flat_index": 12,
+                  "label": "nan_across_tiles",
+                  "expected": 512,
+                  "actual": 0
+                },
+                {
+                  "flat_index": 14,
+                  "label": "last_nan",
+                  "expected": 248319,
+                  "actual": 0
+                }
+              ],
+              "other_rows_passed": 13
+            },
+            {
+              "compiled_case": "top1_ext2_tiled_485_fp16",
+              "model_sha256": "fa3924859860e7baf308d41e35dafae2dc221aaaab82df4675666f9dbb90bc89",
+              "input_shape": [
+                1,
+                15,
+                248320
+              ],
+              "input_dtype": "float16",
+              "graphop_counts": {
+                "NPUCL": 2,
+                "CPUCL": 2
+              },
+              "requested": 1,
+              "completed": 1,
+              "passed": 0,
+              "repeat_bitwise_stable": true,
+              "original_fixture_timing_ms": {
+                "mean": 19.6726,
+                "min": 19.28,
+                "max": 19.891
+              },
+              "failed_scenarios": [
+                "original_fixture"
+              ],
+              "mismatched_elements_all_calls": 20,
+              "mismatched_rows_all_ten_calls": [
+                {
+                  "flat_index": 12,
+                  "label": "nan_across_tiles",
+                  "expected": 512,
+                  "actual": 0
+                },
+                {
+                  "flat_index": 14,
+                  "label": "last_nan",
+                  "expected": 248319,
+                  "actual": 0
+                }
+              ],
+              "other_rows_passed": 13
+            }
+          ],
+          "interpretation": [
+            "The four small NPU graphs select the finite maximum on the tested mixed-NaN fixtures, consistently with ignoring NaNs; this is not a universal hardware NaN rule.",
+            "All-NaN returning zero on these fixtures does not establish first-NaN behavior.",
+            "All tested non-NaN small-model scenarios and the 13 non-NaN rows of each full composition pass. Synthetic NaNs do not establish actual Draft logits contain NaNs.",
+            "The exact stage losing NaN priority in the composed graph is not isolated.",
+            "The CPU control computes independent local reductions and is not an equivalent full-vocabulary Top1 timing baseline.",
+            "Four composed graphs retain full-input CPU local reductions. No complete all-NPU candidate or full-model speedup has been validated."
+          ],
+          "full_draft_changed": false,
+          "full_draft_validation": "NOT_RUN",
+          "internal_instruction_precision": "NOT_PROVEN_BY_OUTPUT_MATCH"
+        }
+      },
+      "alternative_research": {
+        "date": "2026-11-04",
+        "run_id": "20261104T064450Z-6893-0209ce",
+        "status": "OFFICIAL_WEB_SOURCES_REVIEWED_NOT_IMPLEMENTED",
+        "user_request": "Find alternative Top1 algorithms using only NPU; avoid repeated piecemeal probes.",
+        "priority": [
+          "BUILTIN_TOPK_K1_VALUE_INDEX_HIERARCHY",
+          "COMPARE_SELECT_VALUE_INT32_INDEX_TREE"
+        ],
+        "conditional_kernel_route": "ASCEND_C_VALUE_INDEX_REDUCTION; CUSTOM_INTEGRATION_PAUSED_NOT_RESUMED",
+        "lower_priority": "MAXPOOL_WITH_ARGMAX_INDEX_ENCODING_AND_SELECTED_DDK_SUPPORT_UNVERIFIED",
+        "sources": [
+          {
+            "url": "https://asc.gitcode.com/api/SIMD-API/adv_api/sort_operations/TopK.html",
+            "scope": "ASCEND_C_API_X90_HALF_WITH_INT32_INDICES_NOT_SELECTED_CPRO_GE_SUPPORT"
+          },
+          {
+            "url": "https://asc.gitcode.com/api/SIMD-API/basic_api/memory_vector_compute/reduction_compute/ReduceMax.html",
+            "scope": "ASCEND_C_X90_VALUE_INDEX_LOCAL_INDEX_BOUND_AND_UB_NOT_GE_REDUCEMAX"
+          },
+          {
+            "url": "https://onnx.ai/onnx/operators/onnx__Where.html",
+            "scope": "CONDITIONAL_SELECTION_SEMANTICS_NOT_DEVICE_SUPPORT"
+          },
+          {
+            "url": "https://onnx.ai/onnx/operators/onnx__TopK.html",
+            "scope": "VALUE_INDEX_AND_LOWER_INDEX_TIE_SEMANTICS_NOT_CPRO_ABI"
+          },
+          {
+            "url": "https://www.mindspore.cn/docs/zh-CN/r2.1/api_python/ops/mindspore.ops.MaxPoolWithArgmaxV2.html",
+            "scope": "ASCEND_FP16_UINT16_INDEX_NOT_X90_CPRO_SUPPORT"
+          }
+        ],
+        "normal_workload": "Finite logits are expected; synthetic NaNs do not show actual inference has NaNs. Existing complete-contract failures retained.",
+        "source_guard": "ops.py TorchDFlashOps.top1 rejects nonfinite hidden/logits; not evidence that current incremental device graph executes this guard.",
+        "current_frontend_and_backend_registration": "NOT_VERIFIED_FOR_NEW_CANDIDATES",
+        "all_npu_placement": "NOT_VALIDATED",
+        "device_execution": "NOT_RUN_NEW_CANDIDATES",
+        "full_draft_changed": false
       }
     }
   },

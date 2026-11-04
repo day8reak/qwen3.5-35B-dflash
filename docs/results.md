@@ -1,5 +1,25 @@
 # 当前结果
 
+2026-11-04，用户回传现有9个OMC的Top1设备验证最终结果：61例全部完成，每例预热3次、测量10次，共610次测量调用；native／archive及全部case退出码均为0，输出重复逐位稳定。原完整合同下45例通过、16例失败，状态保留NUMERICAL_FAILED。已知完成后无本任务持有锁，不再重复启动／回收。证据为用户粘贴，未独立取回服务器文件；9个OMC的SHA256、失败索引及原fixture时延记录于specs/dflash-execution-state.json的top1_builtin_probe.device_semantics.observation。
+
+| 模型／场景 | 精确结果 | 原fixture API均值ms |
+|---|---|---:|
+| 小NPU ArgMax [1,512] | 11／14；首／末／多NaN失败 | 0.4993 |
+| 小NPU ArgMax [15,485] | 11／14；首／末／多NaN失败 | 0.6210 |
+| 小NPU ArgMax [15,512] | 11／14；首／末／多NaN失败 | 0.6964 |
+| 小NPU ArgMax [485,512] | 11／14；首／末／多NaN失败 | 0.5957 |
+| CPU ArgMax [7275,512] | 原有限fixture通过 | 7.4633 |
+| 完整tiled | 13／15行通过；NaN两行失败 | 19.8443 |
+| 完整tiled_flat | 同上 | 19.5646 |
+| 完整tiled_transposed | 同上 | 40.0270 |
+| 完整tiled_485 | 同上 | 19.6726 |
+
+4个小NPU模型在混合NaN场景均选择了fixture中的有限最大值位置，表现与忽略NaN一致，不能推广为所有硬件指令的NaN规则。全NaN返回0仅通过该退化场景；非NaN场景（含有限并列、signed zero、Inf及子正规数）均通过。完整组合每次仅row12 nan_across_tiles（期望512，实际0）和row14 last_nan（期望248319，实际0）不符；具体丢失NaN优先级的阶段未隔离。
+
+用户指出正常推理不应有NaN，并要求网上查找其他纯NPU Top1。这里的NaN是人为诊断输入，并非真实Draft异常证据；正常logits预期有限，不能单凭此项排除小NPU原语。通用PyTorch Top1代码有hidden／logits有限性守卫，但当前设备增量图的真实logits有限性覆盖尚未建立。原golden、整数精确字节门槛和失败报告保持，不宣称完整合同或完整Draft通过。4个完整组合仍有全量CPU局部归约；其19.56–40.03ms为同步API墙钟，CPU对照7.4633ms只做7275个局部归约，两者不是等价功能基准，也不能直接扣减完整模型103.720ms。
+
+调研收敛为分块TopK(k=1)值／索引联合输出、比较／选择树，以及需自定义接入的Ascend C联合归约三类。官方[TopK](https://asc.gitcode.com/api/SIMD-API/adv_api/sort_operations/TopK.html)与[ReduceMax](https://asc.gitcode.com/api/SIMD-API/basic_api/memory_vector_compute/reduction_compute/ReduceMax.html)均列出X90支持；这是内核API证据，不是选定CPro GE算子注册／落点保证。候选数学结构、优先级与限制见[当前进展](current-status.md)。本轮仅记录已有结果和调研，没有新编译／设备执行、没有改变完整模型或恢复AddCustom。记录run为20261104T064450Z-6893-0209ce。
+
 2026-11-04，用户回传485a0d7对应的21项Top1矩阵摘要：全部COMPILED／PASSED，自动placement_inspection全部INSPECTED，设备与数值仍NOT_RUN。4个小ArgMax图[1,512]、[15,485]、[15,512]、[485,512]均仅NPUCL1且没有CPU操作；4个较大ArgMax图[7275,512]、[7680,485]、[15,485,512]及[512,7275]沿axis0均为CPUCL1，CPU节点明确为ArgMaxExt2。全部9个独立ReduceMax均在CPU，包含最小[1,512]与全宽[15,248320]。
 
 4个完整词表组合（原3D、展平、转置、485宽）均保持NPUCL2／CPUCL2，CPU SubGraph_1仍同时包含局部ArgMaxExt2与ReduceMax，并接收完整3724800元素的FP32输入；逻辑14899200字节不等于测得搬运量。后续小NPU分区输出INT32[15]，末尾CPU完成Gather／INT32索引合成。该批已排除“只改rank、轴方向或交换因子就能移除全量CPU归约”的候选，也表明回退并非仅发生在组合图中；精确选择门槛和通用硬件支持范围未确定。来源为用户粘贴，未独立读取服务器OMC；紧凑摘要未含新OMC／批次哈希，不继承上一批哈希。
