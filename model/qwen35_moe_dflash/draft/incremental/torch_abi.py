@@ -141,8 +141,18 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
     policy = manifest_policy(export)
     if manifest_policy(meta) != policy:
         raise ValueError('candidate and source optimization contracts differ')
-    if meta.get('host_embedding') != export.get('host_embedding'):
-        raise ValueError('candidate and source host embedding bindings differ')
+    host_embedding = policy == 'packed-spatial-host-embedding'
+    missing_host_binding = host_embedding and meta.get('host_embedding') is None
+    if host_embedding and not isinstance(export.get('host_embedding'), dict):
+        raise ValueError('source AIR is missing the host embedding binding')
+    # Some retained compiled manifests omit this host-only input contract.
+    # Defer only that missing duplicate: the AIR/compiler snapshots, prepared
+    # table, source roles and packed OMC must all pass the checks below before
+    # returning a diagnostic binding. An explicit conflicting value still fails.
+    if not missing_host_binding and meta.get('host_embedding') != export.get('host_embedding'):
+        raise ValueError('candidate and source host embedding bindings differ: ' + json.dumps(
+            dict(compiled=meta.get('host_embedding'), air_export=export.get('host_embedding')),
+            ensure_ascii=False, sort_keys=True))
     validate_abi(dict(meta, inputs=_slots(meta['inputs']), outputs=_slots(meta['outputs'])))
     compilation = root/'compilation'
     receipt = read_json(compilation/'report.json', 8 << 20)
@@ -190,7 +200,7 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
     file_constants = [_attributes(n).get('file_path', {}).get('s')
                       for n in graph['op'] if n['type'] == 'FileConstant']
     weights = bind_weight_snapshots(plan['weights'], policy, file_constants, snapshots, compilation)
-    if policy == 'packed-spatial-host-embedding':
+    if host_embedding:
         from .host_embedding import source_contract
         if export.get('host_embedding') != source_contract(plan):
             raise ValueError('host embedding differs from the export-bound original weight')
@@ -204,6 +214,9 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
     checked_file(root, dict(packing['output'], path='model.omc'))
     result = dict(meta, inputs=abi['inputs'], outputs=abi['outputs'],
                   model=dict(packing['output'], path='model.omc'), draft_config=plan['draft_config'])
+    if host_embedding:
+        result.update(host_embedding=export['host_embedding'], host_embedding_binding=(
+            'RESTORED_FROM_VERIFIED_AIR_AND_PREPARED_WEIGHTS' if missing_host_binding else 'VERIFIED'))
     validate_abi(result)
     evidence = dict(abi, artifact_kind='qwen35-pytorch-draft-diagnostic-abi',
         source_input_roles=roles, cache_edges=cache_edges, reference_weights=weights,
@@ -211,6 +224,9 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
         prepared_sha256=sha256_file(source/'prepared.json'), packed_model_sha256=packing['output']['sha256'],
         precision='UNVERIFIED_INTERNAL_ARITHMETIC', production_promotion='NOT_PERFORMED',
         output_binding='ORDERED_SOURCE_NETOUTPUT_PRESERVED_IN_HASH_BOUND_COMPILER_AIR')
+    if host_embedding:
+        evidence.update(host_embedding=result['host_embedding'],
+                        host_embedding_binding=result['host_embedding_binding'])
     out.mkdir(parents=True, exist_ok=True)
     (out/'pytorch-abi.json').write_text(json.dumps(evidence, indent=2)+'\n')
     result['diagnostic_frontend'] = 'pytorch'

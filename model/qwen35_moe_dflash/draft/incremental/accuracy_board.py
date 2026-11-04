@@ -64,6 +64,8 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
             raise ValueError('compiled Draft and runtime configuration use different DDKs')
         state.update(status='REFERENCE_PREPARED', stage='prepared', frontend=meta.get('frontend', 'ge'),
                      internal_precision=meta.get('internal_precision'), production_promotion='NOT_PERFORMED')
+        if 'host_embedding_binding' in meta:
+            state['host_embedding_binding'] = meta['host_embedding_binding']
         if not apply:
             return state
         if not 1 <= timeout_seconds <= 7200:

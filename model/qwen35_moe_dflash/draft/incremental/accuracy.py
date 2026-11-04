@@ -170,7 +170,7 @@ def prepare(compiled, source, air, output, *, seed=17, atol=0.01, rtol=0.01, ddk
         profile_case=2, ddk_id=meta['ddk_id'], frontend='pytorch' if pytorch else 'ge',
         internal_precision='UNVERIFIED_AFTER_COMPILATION' if pytorch else 'COMPILED_POLICY_CHECKED',
         production_promotion='NOT_PERFORMED')
-    for key in ('optimization', 'projection'):
+    for key in ('optimization', 'projection', 'host_embedding_binding'):
         if key in meta:
             result[key] = meta[key]
     if host_embedding:
@@ -267,7 +267,7 @@ def compare(fixture, native):
             rows.append(result)
             previous = values
     passed = all(r['passed'] for r in rows)
-    return dict({key: meta[key] for key in ('host_embedding', 'input_preparation') if key in meta},
+    return dict({key: meta[key] for key in ('host_embedding', 'host_embedding_binding', 'input_preparation') if key in meta},
         artifact_kind=KIND, status='PASSED' if passed else 'NUMERICAL_FAILED',
         numerical_validation='PASSED' if passed else 'FAILED', comparison=meta['comparison'],
         scope=meta['reference_scope'], reference_contract=CONTRACT, cases=rows,
@@ -296,7 +296,7 @@ def summarize_result(result):
     keys=('status','stage','device_execution','model_compilation','numerical_validation',
           'first_failure','native_api_latency','board_attempt','lock_state','error',
           'lock_release_errors','next','frontend','internal_precision','production_promotion','native_failure','hilog',
-          'host_embedding','input_preparation')
+          'host_embedding','host_embedding_binding','input_preparation')
     summary = {k:result[k] for k in keys if k in result}
     rows = result.get('cases', [])
     if not rows:

@@ -3687,7 +3687,7 @@
       }
     },
     "host_embedding_candidate": {
-      "status": "USER_REPORTED_COMPILED_BOUNDARIES_CONFIRMED_DEVICE_PENDING",
+      "status": "MISSING_COMPILED_HOST_BINDING_RECOVERY_HOST_TESTED_DEVICE_PENDING",
       "policy": "packed-spatial-host-embedding",
       "run_id": "20261104T004345Z-29867-0cafbe",
       "source_math": "COPY_ORIGINAL_FP16_ANCHOR_AND_MASK_ROWS; UNIT_SCALE_ONLY",
@@ -3723,7 +3723,7 @@
       "numerical_validation": "NOT_RUN_ON_DEVICE",
       "performance": "NOT_MEASURED",
       "production_promotion": "NOT_PERFORMED",
-      "next": "REBUILD_NATIVE_ACCURACY_PLAN_V2; VALIDATE_CURRENT_OMC_LOAD_NUMERICS_KV_AND_API_LATENCY; PROFILE_ONLY_AFTER_OUTPUTS_RETRIEVED",
+      "next": "UPDATE_PYTHON_VALIDATOR; REUSE_CURRENT_AIR_OMC_AND_RETRY_ACCURACY; NO_MODEL_RECOMPILE",
       "command_document": "docs/current-status.md",
       "experience_audit": {
         "captured": [
@@ -3834,6 +3834,30 @@
         "numerical_validation": "NOT_EVALUATED",
         "performance": "NOT_MEASURED",
         "scope": "EXPLICIT_MAIN_GRAPH_DEPENDENCIES_AND_LOGICAL_DESCRIPTORS; NO_WAIT_TRANSFER_TIMING_OR_DEVICE_LOAD_PROOF"
+      },
+      "binding_recovery": {
+        "run_id": "20261104T013628Z-32299-efe976",
+        "observation": {
+          "source": "USER_PASTED_MANIFEST_FIELDS",
+          "stage": "reference",
+          "error": "candidate and source host embedding bindings differ",
+          "air_contract": "PRESENT",
+          "compiled_contract": "GET_RETURNED_NULL_ABSENT_OR_EXPLICIT_NULL",
+          "policy": "MATCHED",
+          "embedding_sha256": "ab1a0ddd89ba1cb895b58259f78c18080420595215b02234ee5e84996cf31e28",
+          "device_execution": "NOT_RUN"
+        },
+        "method": "RESTORE_MISSING_COMPILED_DUPLICATE_ONLY_AFTER_AIR_SNAPSHOT_SOURCE_ABI_PREPARED_WEIGHTS_TABLE_AND_PACKED_OMC_VERIFICATION",
+        "explicit_conflict": "REJECTED",
+        "original_artifacts": "UNCHANGED",
+        "remote_omission_origin": "NOT_DETERMINED_CURRENT_COMPILE_CODE_COPIES_CONTRACT",
+        "host_checks": {
+          "binding": 25,
+          "row_ABI_fixture_status_propagation": 43,
+          "export_compile_pipeline": 15
+        },
+        "scope": "SYNTHETIC_HOST_PROTOBUF_AND_MOCK_DDK_REFERENCE; NOT_DEVICE",
+        "device_execution": "PENDING_USER_RETRY"
       }
     }
   },

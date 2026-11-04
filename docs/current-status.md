@@ -2,7 +2,15 @@
 
 目标为C16／cap192／K15常驻预热后平均≤50ms。同步API、输入准备／提交、加载与初始catchup分别记录。原数值门槛和golden保持；旧NUMERICAL_FAILED基线不能证明新模型精度通过。
 
-## 当前模型：已编译，继续设备验证
+## 当前模型：恢复缺失绑定后继续设备验证
+
+本轮accuracy在reference阶段停止，尚未上板、没有持有设备锁。用户确认AIR manifest包含完整host_embedding契约，OMC manifest读取该字段为null，两边优化策略相同。验证器现允许从AIR及prepared原表恢复缺失的诊断绑定，但仍逐项核验编译AIR快照、语义输入、编译权重来源、原embedding表和打包OMC哈希；已有明确冲突仍拒绝。原始manifest／OMC不改写，恢复记录写入fixture/pytorch-abi.json及验证摘要。
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+```
+
+本次修复仅涉及Python验证器，保留现有AIR和1.79GB OMC，不需要重新导出、编译或为此重建runner。若此前已经构建支持plan v2的runner，直接重试第2步；成功恢复后摘要包含host_embedding_binding=RESTORED_FROM_VERIFIED_AIR_AND_PREPARED_WEIGHTS。该标记只说明来源绑定通过，设备加载、数值及性能仍需随后验证。
 
 用户已完成packed-spatial-host-embedding候选的OMC边界及依赖检查。当前模型1790918688字节，SHA256 `967e9b640915893890ef95425b0e1279c8245bff0cfc2833f0cbfa56eb023372`；CPUCL2／NPUCL1，intermediate_cpu_partitions=[]、unresolved=[]。结构为前置CPU控制→单个NPU主体→CPU ArgMax，已经没有中间CPU回流。唯一NPU→CPU路径是完整logits经Cast交给ArgMax。边界逻辑尺寸不是实测搬运量，旧105.582ms模型／算子差额也不能直接当作已消除。
 

@@ -1,5 +1,11 @@
 # 当前结果
 
+2026-11-04，host-embedding候选accuracy在reference阶段报candidate and source host embedding bindings differ，device_execution=NOT_RUN、无已知持有锁。用户只读两份manifest后确认：优化策略均为packed-spatial-host-embedding；AIR含原FP16表[248320,2048]、1017118720字节、SHA256 `ab1a0ddd89ba1cb895b58259f78c18080420595215b02234ee5e84996cf31e28`，mask_token_id=248077、scale=1；OMC通过get读取host_embedding为null（未区分字段不存在与显式null）。当前源码编译流程会保留该字段，服务器生成时为何遗漏尚未确定；此报错不是模型加载或数值失败。
+
+验证器现仅对该policy下缺失／null的OMC重复契约延后判断：原编译AIR快照、编译器与打包记录、语义ABI、原权重与embedding表字节、最终OMC哈希全部通过后，从AIR及prepared恢复诊断绑定，写入独立pytorch-abi.json并随fixture／结果摘要保留RESTORED_FROM_VERIFIED_AIR_AND_PREPARED_WEIGHTS。显式冲突、缺失AIR契约、错配原表和损坏文件仍拒绝，原始manifest及OMC不变。现有1.79GB候选无需重编译，本次Python修复无需重建runner；继续重试原accuracy命令。
+
+主机run `20261104T013628Z-32299-efe976`：25项绑定检查通过，覆盖缺失／null恢复、原有相等记录、旧token-ID策略、明确冲突、AIR／编译AIR／OMC／原表损坏、编译DDK错配、修改快照哈希仍不能掩盖错误打包片段、错误block输入语义以及输入产物不变。使用合成protobuf、完整公共ABI与缩小权重，仅物理DDK接口检查为mock。另43项原字节查表／ABI／模拟参考fixture及结果传播检查通过，含prepared-only不访问板端；15项导出／编译流程检查通过并确认当前代码能保留host契约。均为主机证据，没有执行用户OMC；该候选加载、数值和时延仍待设备回传。
+
 2026-11-04，用户回传host-embedding候选的编译OMC边界及依赖检查：模型1790918688字节，SHA256 `967e9b640915893890ef95425b0e1279c8245bff0cfc2833f0cbfa56eb023372`。较上一单NPU相位表OMC的2808047355字节减少1017128667字节，约1.79GB／1.668GiB。这里是完整OMC大小；本轮摘要没有给出各GraphOp权重大小或实际分配参数，不替代加载成功证据。检查工具的model_compilation=NOT_RUN表示本次只读已有编译产物。
 
 CPUCL2／NPUCL1保留，中间CPU分区及输出列表均为空，unresolved=[]。前置CPU由4个标量输入变为3个，输出6条CPU→NPU路径；单NPU主体20输入／14输出属于内部边界，不是公共ABI数量。唯一NPU→CPU路径仍为float16 logits [1,15,248320]经Cast到float32后交给CPU ArgMax；对应逻辑尺寸7449600／14899200字节，Top1输出60字节。这些是描述尺寸，不是实测搬运量。报告绑定的边界JSON为244482字节、SHA256 `8c1b82a99f021b3c5288bee6df7113c6a9e1af96c53b1fc6a97a245cda49e330`；证据来源为用户粘贴，未独立读取服务器文件。
