@@ -984,7 +984,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "Export/compile packed-spatial-rope-table then inspect/analyze current OMC. See docs/current-status.md.",
+    "next_command": "validate_incremental_draft.py --config ... --compiled current OMC --apply; recover same execution. See docs/current-status.md.",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -3052,7 +3052,7 @@
       }
     },
     "runtime_gap_priority": {
-      "status": "MASK_BACKFLOW_REMOVED_TWO_ROPE_MUL_PATHS_REMAIN; PHASE_TABLE_CANDIDATE_HOST_CHECKED",
+      "status": "USER_REPORTED_INTERMEDIATE_CPU_REMOVED; DEVICE_NUMERICS_AND_LATENCY_PENDING",
       "basis": "USER_EXPLICITLY_PRIORITIZED_105_582_MS_DIFFERENCE",
       "run_id": "20261103T125807Z-21638-b356b9",
       "confirmed": [
@@ -3062,9 +3062,9 @@
         "USER_DEPENDENCY_REPORT_RESOLVED_ALL_THREE_NPU_INPUTS_TO_INTERMEDIATE_CPU"
       ],
       "first_experiment": "packed-spatial-controls: INT32_POSITION_VIEW_BEFORE_FLOAT_CAST_AND_INT32_VALIDITY_CONCAT",
-      "command": "Export/compile packed-spatial-rope-table then inspect/analyze current OMC. See docs/current-status.md.",
-      "execution": "CONTROLS_METADATA_USER_REPORTED; PHASE_TABLE_ONLY_HOST_VALIDATED",
-      "proposed_followup": "CHECK_REMOVAL_OF_MIDDLE_CPU_MULS_BEFORE_FULL_DEVICE_NUMERICS_AND_WARM_API_MEASUREMENT",
+      "command": "validate_incremental_draft.py --config ... --compiled current OMC --apply; recover same execution. See docs/current-status.md.",
+      "execution": "PHASE_TABLE_METADATA_USER_REPORTED; NO_DEVICE_EXECUTION_FOR_THIS_MODEL",
+      "proposed_followup": "VALIDATE_CURRENT_MODEL_NUMERICS_AND_MEASURE_SYNCHRONOUS_API_BEFORE_NEXT_GRAPH_CHANGE",
       "experiment_gates": [
         "SAME_C16_CAP192_K15_WEIGHTS_INPUTS_AND_V1_FREQUENCY",
         "FULL_OUTPUT_NUMERICS_AND_KV_PRESERVATION_AGAINST_ACCEPTED_BASELINE",
@@ -3449,7 +3449,7 @@
       "command_document": "docs/current-status.md"
     },
     "rope_table_candidate": {
-      "status": "HOST_CHECKED_SELECTED_DDK_PENDING",
+      "status": "USER_REPORTED_INTERMEDIATE_CPU_REMOVED_DEVICE_VALIDATION_PENDING",
       "policy": "packed-spatial-rope-table",
       "run_id": "20261103T235522Z-28355-7b79bf",
       "baseline_policy": "packed-spatial-controls",
@@ -3496,14 +3496,87 @@
         "mock_pipeline_checks": 14,
         "scope": "SYNTHETIC_CPU_FULL_PHASE_AND_REDUCED_MODEL_META_AND_MOCK_EXPORT_NOT_SELECTED_DDK_OR_DEVICE"
       },
-      "model_compilation": "NOT_RUN",
+      "model_compilation": "USER_REPORTED_COMPILED_ARTIFACT_INSPECTED",
       "compiled_abi": "NOT_BOUND",
       "device_execution": "NOT_RUN",
       "numerical_validation": "NOT_RUN_ON_DEVICE",
-      "placement": "UNVERIFIED",
+      "placement": "CPUCL2_NPUCL1; NO_INTERMEDIATE_CPU_PARTITION_IN_EXPLICIT_DEPENDENCIES",
       "performance": "NOT_MEASURED",
       "production_promotion": "NOT_PERFORMED",
-      "command_document": "docs/current-status.md"
+      "command_document": "docs/current-status.md",
+      "next": "RUN_CURRENT_MODEL_ACCURACY_AND_SYNCHRONOUS_API_STATISTICS",
+      "user_boundary_observation": {
+        "source": "USER_PASTED_BOUNDARIES_AND_DEPENDENCIES_NOT_INDEPENDENTLY_RETRIEVED",
+        "date": "2026-11-04",
+        "model": {
+          "bytes": 2808047355,
+          "sha256": "a045f7629920fd962d21c8ce694b1ee694a3be61942c4cac6a556f00cc631027"
+        },
+        "boundary_json": {
+          "bytes": 255447,
+          "sha256": "7e75e9a23c78f7b748f8de2e08111bbc2699a46f155a9390a1cdbfe924f4a51c"
+        },
+        "accuracy_binding": "NOT_PROVIDED",
+        "source_numerical_validation": "NOT_EVALUATED",
+        "device_execution": "NOT_RUN",
+        "graphop_counts": {
+          "CPUCL": 2,
+          "NPUCL": 1
+        },
+        "dependency_status": "ANALYZED",
+        "intermediate_cpu_partitions": [],
+        "intermediate_cpu_outputs": [],
+        "unresolved": [],
+        "owner_pairs": {
+          "CPUCL_to_NPUCL": 7,
+          "NPUCL_to_CPUCL": 1
+        },
+        "cpu_prefix": {
+          "name": "SubGraph_0",
+          "inputs": 4,
+          "input_logical_bytes": 16,
+          "outputs": 7,
+          "output_logical_bytes": 410560
+        },
+        "npu_body": {
+          "name": "SubGraph_1",
+          "inputs": 20,
+          "input_logical_bytes": 5653440,
+          "outputs": 14,
+          "output_logical_bytes": 12229632,
+          "scope": "INTERNAL_PARTITION_INTERFACE_NOT_PUBLIC_ABI"
+        },
+        "terminal_cpu": {
+          "name": "SubGraph_2",
+          "inputs": 1,
+          "input_logical_bytes": 14899200,
+          "outputs": 1,
+          "output_logical_bytes": 60,
+          "node_type_counts": {
+            "Data": 1,
+            "Const": 1,
+            "ArgMaxExt2": 1,
+            "NetOutput": 1
+          }
+        },
+        "remaining_npu_to_cpu": {
+          "producer": "SubGraph_1:0",
+          "producer_dtype": "float16",
+          "shape": [
+            1,
+            15,
+            248320
+          ],
+          "producer_logical_bytes": 7449600,
+          "via": "insert_cast_0",
+          "consumer": "SubGraph_2:0",
+          "consumer_dtype": "float32",
+          "consumer_logical_bytes": 14899200
+        },
+        "performance": "NOT_MEASURED_FOR_THIS_MODEL",
+        "interpretation": "INTERMEDIATE_CPU_MULS_AND_BACKFLOW_REMOVED; SINGLE_NPU_PARTITION; NO_RUNTIME_TIME_ATTRIBUTION",
+        "recording_run_id": "20261104T001657Z-28796-c9268b"
+      }
     }
   },
   "draft_milestone_e2e_gate": {

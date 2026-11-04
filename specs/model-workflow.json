@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "DRAFT_MASK_BACKFLOW_REMOVED_ROPE_PHASE_TABLE_HOST_CHECKED",
-    "entry": "targets/cpro/scripts/export_incremental_draft.py",
+    "status": "DRAFT_SINGLE_NPU_BODY_OBSERVED_DEVICE_VALIDATION_PENDING",
+    "entry": "targets/cpro/tools/validate_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "COMPOSED_ATTENTION_TOP1_ISOLATED82_OF86_FEEDBACK83_OF86; HIDDEN_L2_1.34_TO2.61_PERCENT; APPENDED_KV_L2_0.44_TO0.83_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "Export/compile packed-spatial-rope-table and read current OMC dependencies to check removal of two remaining intermediate CPU Muls; then validate device numerics and fixed-input warm API latency.",
+    "next": "Current rope-table OMC has CPU2/NPU1 and no intermediate CPU dependencies. Run complete isolated/feedback accuracy and synchronous API statistics for this exact model; fixed-input warm timing remains pending.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",

@@ -1,5 +1,9 @@
 # 当前结果
 
+2026-11-04，用户回传相位表候选的编译产物检查：OMC 2808047355字节，SHA256 `a045f7629920fd962d21c8ce694b1ee694a3be61942c4cac6a556f00cc631027`。CPUCL3／NPUCL2变为CPUCL2／NPUCL1，前置CPU控制节点类别计数保持，中间CPU的两个频率Mul不再出现，两个NPU分区合并为一个。新SubGraph_2是末尾ArgMax，并非旧的频率子图；其FP32[1,15,248320]输入逻辑14899200字节、INT32输出60字节保持。NPU主体20输入／14输出是内部分区接口，不代表公共ABI扩为20输入。
+
+依赖分析ANALYZED、unresolved为空、intermediate_cpu_partitions和intermediate_cpu_outputs均为空；CPU→NPU7条，NPU→CPU仅1条，即FP16 logits经insert_cast_0成为FP32后进入末尾CPU ArgMax。边界JSON 255447字节，SHA256 `7e75e9a23c78f7b748f8de2e08111bbc2699a46f155a9390a1cdbfe924f4a51c`。这是用户粘贴的静态元数据，未独立取回文件；accuracy_binding=NOT_PROVIDED、source_numerical_validation=NOT_EVALUATED，尚无此模型的设备数值、同步API或算子时延。结构目标达成，不将旧模型105.582ms差额直接记为收益；下一步使用当前OMC完成19步isolated／feedback设备比较及API统计，原golden和门槛不变。
+
 2026-11-04，用户回传 `packed-spatial-controls` 的只读分区与依赖结果：OMC 2808227325字节，SHA256 `63b94d9f05ec42a9ef8521fcc03fc800cec9b155f011251850aca28f7a9dcb6b`。原BOOL[1,208]的中间NPU→CPU回流消失，mask逻辑转入前置CPU；中间CPU SubGraph_2从6输入／4输出缩为2输入／2输出，逻辑输出221184→8192字节，节点只剩Data1、Const2、Mul2、NetOutput1。两条浮点回流仍在：NPU SubGraph_1端口1／2的FP16[1,16,1]分别经netoutput_cast_0／1进入CPU的FP32输入；CPU产出两个FP32[1,16,64]，经graphop_data_cast_1／3回到NPU SubGraph_3端口3／4。CPUCL3／NPUCL2未合并，末尾CPU ArgMax的FP32[1,15,248320]接口不变。
 
 本轮依赖分析status=ANALYZED、unresolved为空，CPU→NPU11条、NPU→CPU3条（含末尾logits）、NPU→NPU9条。完整边界JSON为306455字节，SHA256 `55c1b8c88d2a2335067532e55b2e7ba05b671f4989fdd78ca29f344c1caf92ac`；accuracy_binding=NOT_PROVIDED、source_numerical_validation=NOT_EVALUATED。这是用户粘贴的编译元数据，未独立取回文件，新模型无设备精度／时延，不继承4d的184.568ms或将逻辑输出减少换算为收益。前两次shell续行是缺少末尾双引号，最后一次依赖命令已成功。

@@ -1,38 +1,33 @@
 # 当前阶段测试命令
 
-目标为C16／cap192／K15常驻同步API预热后平均≤50ms，加载与初始catchup另计。用户已接受最差hidden相对L2 2.61%、Top1 7/172差异作为性能基线；原NUMERICAL_FAILED和golden保留。最近有设备时延的4d版本仍是profile184.568ms、算子汇总78.986ms，105.582ms差额尚未归因。
+目标为C16／cap192／K15常驻同步API预热后平均≤50ms，加载与初始catchup另计。用户已接受最差hidden相对L2 2.61%、Top1 7/172差异作为性能基线；原NUMERICAL_FAILED和golden保留。
 
-用户已完成 `packed-spatial-controls` 的编译和只读依赖检查：模型SHA为63b94d9f05ec42a9ef8521fcc03fc800cec9b155f011251850aca28f7a9dcb6b。mask回流已消除；中间CPU只剩两个Mul，接收NPU返回的两个浮点[1,16,1]，输出两个[1,16,64]。仍为CPUCL3／NPUCL2，新模型尚未执行设备数值和时延测试。
+`packed-spatial-rope-table` 已由用户完成编译产物的只读检查：OMC为2808047355字节，SHA256 `a045f7629920fd962d21c8ce694b1ee694a3be61942c4cac6a556f00cc631027`。CPUCL3／NPUCL2变为CPUCL2／NPUCL1，中间CPU两个Mul和回流依赖消失，`intermediate_cpu_partitions=[]`。当前结构是前置CPU控制→一个NPU主体→末尾CPU ArgMax；仅剩logits这条NPU→CPU路径。NPU分区20输入／14输出是内部边界，不是公共输入数量。
 
-新候选 `packed-spatial-rope-table` 把RoPE的FP32位置乘频率预计算成表，用INT32位置Gather代替运行时乘法，再沿用Sin／Cos。表覆盖cache_capacity+max(context_rows,K+1)行，包含满缓存时的填充context位置；当前208×64×4=53248字节。17／14接口及原始权重不变，新增确定性FP32常量。主机220例六层回放全部14输出逐字节相同；实际head_dim128的24组几何、594组控制、八档完整形状捕获及权重／模拟流程检查通过。实际编译分配和设备收益待验证。
+新模型尚无设备精度或时延。上一已测4d版本仍是profile184.568ms、算子汇总78.986ms，两者105.582ms差额尚未归因；不能直接将其视为这次收益。相位表的220例主机回放及实际head_dim128检查通过，编译后的常量精度和执行结果仍需设备验证。
 
-## 现在执行：导出、编译，再只读检查
+## 现在执行：当前OMC的完整accuracy
 
-服务器更新代码后，沿用已有REPO_DIR、AI_RUN_DIR、CPRO_DDK_ROOT、CPRO_DDK_ID。已完成测试槽位按类型复用，已收到的模型身份和观察记录在[结果](results.md)。以下步骤顺序执行，每一步成功后再继续；不需要重建native runner。
+沿用已有REPO_DIR、AI_RUN_DIR、CPRO_DDK_ROOT和native runner。无需再次导出或编译。已完成测试槽位按类型复用，旧模型身份及结果已记录在[结果](results.md)。启动一次：
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
-  --prepared "$AI_RUN_DIR/draft/source/prepared" \
-  --frontend pytorch --optimization packed-spatial-rope-table \
-  --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-air" --replace
-
-python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --compiled "$AI_RUN_DIR/draft/tests/pytorch-optimized-omc" \
+  --source "$AI_RUN_DIR/draft/source/prepared" \
   --air-export "$AI_RUN_DIR/draft/tests/pytorch-optimized-air" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-omc" --replace
-
-python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
-  --inspect-boundaries "$AI_RUN_DIR/draft/tests/pytorch-optimized-omc" \
   --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-boundaries.json"
-
-python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
-  --analyze-boundaries "$AI_RUN_DIR/draft/tests/pytorch-optimized-boundaries.json" \
-  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-dependencies.json"
+  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-run" --apply
 ```
 
-回传编译摘要和最后两条摘要。先确认新policy、17／14接口、模型SHA，再检查是否还有中间CPU分区及两个频率Mul回流。编译器可能重新编号，按操作、端口和依赖比较。NPU主体合并为一个分区是预期，不能由源码查表就宣称已经达成。
+返回DRAFT_ACCURACY_STARTED后，回收同一次执行：
 
-本轮只读检查省略--accuracy-result，避免旧结果与新模型错配；accuracy_binding=NOT_PROVIDED、source_numerical_validation=NOT_EVALUATED是预期状态。若中间回流消除，再执行完整accuracy与固定输入、同频率3次预热＋10次同步API测量。预计算仅在CPU源数学中已证等价；编译后常量精度、Gather／Sin／Cos分配及实际性能仍需检查。末尾CPU ArgMax是后续独立实验。
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$AI_RUN_DIR/draft/tests/pytorch-optimized-run" \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-result"
+```
+
+若为PENDING，仅重复recover；不重启apply。完整结果重点看native_api_latency、Top1差异、hidden／新增KV的相对L2、未写KV保持以及两组重复稳定性。仍使用原0.01／0.01逐元素门槛，NUMERICAL_FAILED可能与已接受基线一致，需要看实际差异，不能仅看状态判定退化或通过。
+
+先回传这份结果，确认数值变化及API时延后再决定是否采集新profile。accuracy里的时延来自不同上下文和proposal数的调用，不能代替固定输入、同频率3次预热＋10次测量的50ms验收。末尾CPU ArgMax仍是后续独立优化项。
