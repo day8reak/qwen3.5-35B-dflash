@@ -9,12 +9,12 @@
 | Operator | draft-top1 |
 | Branch | operator/draft-top1 |
 | Current phase | 2 |
-| Based-on revision | 14d72bfa120a2e50c3a9315cd1a7a842af7efdda |
-| Updated UTC | 2026-11-04T09:11:05Z |
-| Summary | Copyable StableArgMax source and portable Torch/GE bindings delivered; selected DDK execution remains with user. |
-| Blocker | Selected X90 DDK/profile/device unavailable locally; user will compile and install copied source. Actual kernel compatibility and NPU behavior pending. |
+| Based-on revision | 7562413eb78778412389f76caf799bbb5a670d0d |
+| Updated UTC | 2026-11-04T09:11:46Z |
+| Summary | Source checkpoint 7562413: generic StableArgMax, selected-msopgen preparation and Torch/GE bindings. |
+| Blocker | User-operated selected X90 DDK build/install and device evidence pending; no local selected DDK or device. |
 | Active files | op_host/stable_arg_max.cpp<br>op_kernel/stable_arg_max.cpp<br>python/stable_arg_max.py<br>scripts/prepare_project.py |
-| Recorded working tree (PLAN excluded) |  M docs/current-status.md<br> M docs/results.md<br> M project.yaml<br> M specs/dflash-execution-state.json<br> M specs/operator-workflow.json<br>RM targets/cpro/operators/draft-top1/README.md -> targets/cpro/ops/draft-top1/README.md<br>RM targets/cpro/operators/draft-top1/docs/CONTRACT.md -> targets/cpro/ops/draft-top1/docs/CONTRACT.md<br>RM targets/cpro/operators/draft-top1/docs/ENVIRONMENT.md -> targets/cpro/ops/draft-top1/docs/ENVIRONMENT.md<br>RM targets/cpro/operators/draft-top1/docs/LESSONS.md -> targets/cpro/ops/draft-top1/docs/LESSONS.md<br>RM targets/cpro/operators/draft-top1/docs/OPTIMIZATION.md -> targets/cpro/ops/draft-top1/docs/OPTIMIZATION.md<br>RM targets/cpro/operators/draft-top1/docs/VALIDATION.md -> targets/cpro/ops/draft-top1/docs/VALIDATION.md<br>RM targets/cpro/operators/draft-top1/operator.json -> targets/cpro/ops/draft-top1/operator.json<br>RM targets/cpro/operators/draft-top1/scripts/blocked_target.py -> targets/cpro/ops/draft-top1/scripts/blocked_target.py<br>RM targets/cpro/operators/draft-top1/scripts/build.sh -> targets/cpro/ops/draft-top1/scripts/build.sh<br>R  targets/cpro/operators/draft-top1/scripts/compare.sh -> targets/cpro/ops/draft-top1/scripts/compare.sh<br>R  targets/cpro/operators/draft-top1/scripts/gen_golden.sh -> targets/cpro/ops/draft-top1/scripts/gen_golden.sh<br>RM targets/cpro/operators/draft-top1/scripts/inspect_ddk.py -> targets/cpro/ops/draft-top1/scripts/inspect_ddk.py<br>R  targets/cpro/operators/draft-top1/scripts/preflight.sh -> targets/cpro/ops/draft-top1/scripts/preflight.sh<br>R  targets/cpro/operators/draft-top1/scripts/reference.py -> targets/cpro/ops/draft-top1/scripts/reference.py<br>R  targets/cpro/operators/draft-top1/scripts/run_on_board.sh -> targets/cpro/ops/draft-top1/scripts/run_on_board.sh<br>R  targets/cpro/operators/draft-top1/scripts/setup_env.sh -> targets/cpro/ops/draft-top1/scripts/setup_env.sh<br>R  targets/cpro/operators/draft-top1/scripts/validate.sh -> targets/cpro/ops/draft-top1/scripts/validate.sh<br>RM targets/cpro/operators/draft-top1/scripts/validate_host.py -> targets/cpro/ops/draft-top1/scripts/validate_host.py<br>RD targets/cpro/operators/draft-top1/src/framework/README.md -> targets/cpro/ops/draft-top1/src/framework/README.md<br>RD targets/cpro/operators/draft-top1/src/host/README.md -> targets/cpro/ops/draft-top1/src/host/README.md<br>RD targets/cpro/operators/draft-top1/src/kernel/README.md -> targets/cpro/ops/draft-top1/src/kernel/README.md<br>R  targets/cpro/operators/draft-top1/src/reference/top1_cpu.cpp -> targets/cpro/ops/draft-top1/src/reference/top1_cpu.cpp<br>?? targets/cpro/ops/README.md<br>?? targets/cpro/ops/draft-top1/docs/OFFICIAL_SOURCES.md<br>?? targets/cpro/ops/draft-top1/op_host/stable_arg_max.cpp<br>?? targets/cpro/ops/draft-top1/op_host/stable_arg_max_tiling.h<br>?? targets/cpro/ops/draft-top1/op_kernel/stable_arg_max.cpp<br>?? targets/cpro/ops/draft-top1/python/stable_arg_max.py<br>?? targets/cpro/ops/draft-top1/scripts/export_probe.py<br>?? targets/cpro/ops/draft-top1/scripts/prepare_project.py<br>?? targets/cpro/ops/draft-top1/scripts/validate_source.py<br>?? targets/cpro/ops/draft-top1/stable_arg_max.json<br>?? targets/cpro/ops/draft-top1/tests/kernel_host_driver.cpp<br>?? targets/cpro/ops/draft-top1/tests/kernel_operator.h<br>?? targets/cpro/ops/draft-top1/tests/test_prepare_project.py |
+| Recorded working tree (PLAN excluded) | clean |
 
 ## Exact next commands
 
@@ -26,7 +26,7 @@
 |---:|---|---|---|---|---|---|
 | 0 | Git scope | COMPLETED | Branch, manifest, persistent plan, and scaffold form a rollback checkpoint | Managed operator branch and source checkpoint established.<br>Source checkpoint 2f55529; lifecycle working check passed.<br>Evidence: git:2f55529 | Record the frozen independently validated host contract. | — |
 | 1 | Contract and baseline | COMPLETED | Interface, semantics, rejection behavior, deterministic golden, and baseline are frozen | Generic finite FP16 last-axis StableArgMax contract and host acceptance frozen.<br>63 actual-source control-flow/Torch export checks, 35 reference checks, 11 project preparation checks and 9 text-handoff checks pass. Vendor build/device unverified.<br>Evidence: 20261104T083807Z-10795-c00fd7/evidence/source-check-2/source-validation.json; 20261104T083807Z-10795-c00fd7/evidence/prepare-check/validation.json | User copies sources, prepares project with selected X90 msopgen and runs vendor build/install. | — |
-| 2 | Environment | BLOCKED | Environment identity, dependency locks, setup, and preflight are reproducible | Copyable StableArgMax source and portable Torch/GE bindings delivered; selected DDK execution remains with user.<br>Official source contract reconciled and host checks pass; no SDK archive needed. Source candidate only, no vendor or device pass.<br>Evidence: 20261104T083807Z-10795-c00fd7/evidence/source-check-2/source-validation.json; 20261104T083807Z-10795-c00fd7/evidence/prepare-check/validation.json | Copy ops/draft-top1 into the selected SDK build environment and run source preparation, then the generated vendor build.sh; retain logs. | — |
+| 2 | Environment | BLOCKED | Environment identity, dependency locks, setup, and preflight are reproducible | Source checkpoint 7562413: generic StableArgMax, selected-msopgen preparation and Torch/GE bindings.<br>Source-only handoff complete. Host checks and real PT2 export pass; selected X90 compiler/AIR/OMC/device remain unverified.<br>Evidence: git:7562413; 20261104T083807Z-10795-c00fd7/evidence/source-check-2/source-validation.json | Copy targets/cpro/ops/draft-top1; generate selected X90 project and run vendor build, then standalone AIR/OMG/device checks. | — |
 | 3 | Development | PENDING | Smallest correct host, kernel/device, framework, build, golden, and compare paths work | — | — | — |
 | 4 | Correctness validation | PENDING | Independent-copy, boundary, negative, integration, and on-board PASS or documented PENDING/N/A have evidence | — | — | — |
 | 5 | Optimization | PENDING | Frozen baseline, one-hypothesis experiments, correctness reruns, and promotion decision are reproducible | — | — | — |
@@ -53,8 +53,8 @@
     "python/stable_arg_max.py",
     "scripts/prepare_project.py"
   ],
-  "based_on_revision": "14d72bfa120a2e50c3a9315cd1a7a842af7efdda",
-  "blocker": "Selected X90 DDK/profile/device unavailable locally; user will compile and install copied source. Actual kernel compatibility and NPU behavior pending.",
+  "based_on_revision": "7562413eb78778412389f76caf799bbb5a670d0d",
+  "blocker": "User-operated selected X90 DDK build/install and device evidence pending; no local selected DDK or device.",
   "branch": "operator/draft-top1",
   "current_phase": "2",
   "decisions": [
@@ -101,18 +101,18 @@
     },
     {
       "evidence": [
-        "20261104T083807Z-10795-c00fd7/evidence/source-check-2/source-validation.json",
-        "20261104T083807Z-10795-c00fd7/evidence/prepare-check/validation.json"
+        "git:7562413",
+        "20261104T083807Z-10795-c00fd7/evidence/source-check-2/source-validation.json"
       ],
       "gate": "Environment identity, dependency locks, setup, and preflight are reproducible",
       "id": "2",
       "knowledge_refs": [],
       "name": "Environment",
-      "next_action": "Copy ops/draft-top1 into the selected SDK build environment and run source preparation, then the generated vendor build.sh; retain logs.",
-      "result": "Official source contract reconciled and host checks pass; no SDK archive needed. Source candidate only, no vendor or device pass.",
+      "next_action": "Copy targets/cpro/ops/draft-top1; generate selected X90 project and run vendor build, then standalone AIR/OMG/device checks.",
+      "result": "Source-only handoff complete. Host checks and real PT2 export pass; selected X90 compiler/AIR/OMC/device remain unverified.",
       "status": "BLOCKED",
-      "summary": "Copyable StableArgMax source and portable Torch/GE bindings delivered; selected DDK execution remains with user.",
-      "updated_utc": "2026-11-04T09:11:05Z"
+      "summary": "Source checkpoint 7562413: generic StableArgMax, selected-msopgen preparation and Torch/GE bindings.",
+      "updated_utc": "2026-11-04T09:11:46Z"
     },
     {
       "evidence": [],
@@ -175,50 +175,11 @@
       "updated_utc": ""
     }
   ],
-  "resume_summary": "Copyable StableArgMax source and portable Torch/GE bindings delivered; selected DDK execution remains with user.",
+  "resume_summary": "Source checkpoint 7562413: generic StableArgMax, selected-msopgen preparation and Torch/GE bindings.",
   "schema_version": 1,
-  "updated_utc": "2026-11-04T09:11:05Z",
+  "updated_utc": "2026-11-04T09:11:46Z",
   "working_tree": [
-    " M docs/current-status.md",
-    " M docs/results.md",
-    " M project.yaml",
-    " M specs/dflash-execution-state.json",
-    " M specs/operator-workflow.json",
-    "RM targets/cpro/operators/draft-top1/README.md -> targets/cpro/ops/draft-top1/README.md",
-    "RM targets/cpro/operators/draft-top1/docs/CONTRACT.md -> targets/cpro/ops/draft-top1/docs/CONTRACT.md",
-    "RM targets/cpro/operators/draft-top1/docs/ENVIRONMENT.md -> targets/cpro/ops/draft-top1/docs/ENVIRONMENT.md",
-    "RM targets/cpro/operators/draft-top1/docs/LESSONS.md -> targets/cpro/ops/draft-top1/docs/LESSONS.md",
-    "RM targets/cpro/operators/draft-top1/docs/OPTIMIZATION.md -> targets/cpro/ops/draft-top1/docs/OPTIMIZATION.md",
-    "RM targets/cpro/operators/draft-top1/docs/VALIDATION.md -> targets/cpro/ops/draft-top1/docs/VALIDATION.md",
-    "RM targets/cpro/operators/draft-top1/operator.json -> targets/cpro/ops/draft-top1/operator.json",
-    "RM targets/cpro/operators/draft-top1/scripts/blocked_target.py -> targets/cpro/ops/draft-top1/scripts/blocked_target.py",
-    "RM targets/cpro/operators/draft-top1/scripts/build.sh -> targets/cpro/ops/draft-top1/scripts/build.sh",
-    "R  targets/cpro/operators/draft-top1/scripts/compare.sh -> targets/cpro/ops/draft-top1/scripts/compare.sh",
-    "R  targets/cpro/operators/draft-top1/scripts/gen_golden.sh -> targets/cpro/ops/draft-top1/scripts/gen_golden.sh",
-    "RM targets/cpro/operators/draft-top1/scripts/inspect_ddk.py -> targets/cpro/ops/draft-top1/scripts/inspect_ddk.py",
-    "R  targets/cpro/operators/draft-top1/scripts/preflight.sh -> targets/cpro/ops/draft-top1/scripts/preflight.sh",
-    "R  targets/cpro/operators/draft-top1/scripts/reference.py -> targets/cpro/ops/draft-top1/scripts/reference.py",
-    "R  targets/cpro/operators/draft-top1/scripts/run_on_board.sh -> targets/cpro/ops/draft-top1/scripts/run_on_board.sh",
-    "R  targets/cpro/operators/draft-top1/scripts/setup_env.sh -> targets/cpro/ops/draft-top1/scripts/setup_env.sh",
-    "R  targets/cpro/operators/draft-top1/scripts/validate.sh -> targets/cpro/ops/draft-top1/scripts/validate.sh",
-    "RM targets/cpro/operators/draft-top1/scripts/validate_host.py -> targets/cpro/ops/draft-top1/scripts/validate_host.py",
-    "RD targets/cpro/operators/draft-top1/src/framework/README.md -> targets/cpro/ops/draft-top1/src/framework/README.md",
-    "RD targets/cpro/operators/draft-top1/src/host/README.md -> targets/cpro/ops/draft-top1/src/host/README.md",
-    "RD targets/cpro/operators/draft-top1/src/kernel/README.md -> targets/cpro/ops/draft-top1/src/kernel/README.md",
-    "R  targets/cpro/operators/draft-top1/src/reference/top1_cpu.cpp -> targets/cpro/ops/draft-top1/src/reference/top1_cpu.cpp",
-    "?? targets/cpro/ops/README.md",
-    "?? targets/cpro/ops/draft-top1/docs/OFFICIAL_SOURCES.md",
-    "?? targets/cpro/ops/draft-top1/op_host/stable_arg_max.cpp",
-    "?? targets/cpro/ops/draft-top1/op_host/stable_arg_max_tiling.h",
-    "?? targets/cpro/ops/draft-top1/op_kernel/stable_arg_max.cpp",
-    "?? targets/cpro/ops/draft-top1/python/stable_arg_max.py",
-    "?? targets/cpro/ops/draft-top1/scripts/export_probe.py",
-    "?? targets/cpro/ops/draft-top1/scripts/prepare_project.py",
-    "?? targets/cpro/ops/draft-top1/scripts/validate_source.py",
-    "?? targets/cpro/ops/draft-top1/stable_arg_max.json",
-    "?? targets/cpro/ops/draft-top1/tests/kernel_host_driver.cpp",
-    "?? targets/cpro/ops/draft-top1/tests/kernel_operator.h",
-    "?? targets/cpro/ops/draft-top1/tests/test_prepare_project.py"
+    "clean"
   ]
 }
 ```
