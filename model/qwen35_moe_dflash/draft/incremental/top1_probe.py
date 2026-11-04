@@ -9,10 +9,12 @@ tiles. Nonfinite rows test behavior rather than assuming a vendor NaN policy.
 import numpy as np
 
 from qwen35_moe_dflash.graph.fused.ir import Graph
+from qwen35_moe_dflash.graph.type_contracts import GE_DTYPE_IDS
 
 NATIVE_CASES = ('top1_ext2_fp16', 'top1_ext2_flat_fp16', 'top1_ext2_tiled_fp16')
 NATIVE_SCHEMA = ('USER_OBSERVED_SELECTED_DDK_tools/tools_omg/master/lib64/config/'
-                 'npu_generated_opinfo.json:ArgMaxExt2,ReduceMax')
+                 'npu_generated_opinfo.json:ArgMaxExt2,ReduceMax; '
+                 'OMG_ArgMaxExt2Verify_REQUIRES_output_type')
 CASES = ('top1_argmax_fp16', 'top1_with_value_fp16', 'top1_tiled_fp16', *NATIVE_CASES)
 SHAPE = (1, 15, 248320)
 TILE = 512
@@ -72,8 +74,12 @@ def graph_case(case):
              'keep_dims': {'type': 'bool', 'value': False}}, name=name)
 
     def ext2(value, shape, dimension, name):
+        # NPU kernel metadata lists dimension only. OMG's IR verifier also
+        # requires output_type; an INT32 output descriptor does not supply it.
+        # This is a GE enum-valued integer, not the protobuf tensor dtype ID.
         return g.custom('ArgMaxExt2', {'x': value}, {'y': (shape, 'int32')},
-            {'dimension': {'type': 'int', 'value': dimension}}, name=name)['y']
+            {'dimension': {'type': 'int', 'value': dimension},
+             'output_type': {'type': 'int', 'value': GE_DTYPE_IDS['int32']}}, name=name)['y']
 
     if case == 'top1_argmax_fp16':
         axis = g.const(np.array(-1, dtype='<i4'), dtype='int32', name='axis')

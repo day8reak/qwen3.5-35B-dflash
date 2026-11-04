@@ -58,6 +58,12 @@ def validate_record_types(record):
         require(outputs["y"]["dtype"] in _INTEGER, "ArgMax indices must be int32 or int64")
         require(attrs.get("dtype") == {"type": "dtype", "value": outputs["y"]["dtype"]},
                 "ArgMax dtype must match its output descriptor")
+    elif typ == "ArgMaxExt2":
+        ports(("x",))
+        require(outputs["y"]["dtype"] in _INTEGER, "ArgMaxExt2 indices must be int32 or int64")
+        require(attrs.get("output_type") ==
+                {"type": "int", "value": GE_DTYPE_IDS[outputs["y"]["dtype"]]},
+                "ArgMaxExt2 output_type must match its output descriptor")
     elif typ == "TopKV2":
         ports(("x", "k"), ("values", "indices"))
         require(inputs["x"]["dtype"] != "bool", "TopK does not accept bool data")

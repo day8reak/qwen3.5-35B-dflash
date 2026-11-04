@@ -1,5 +1,11 @@
 # 当前结果
 
+2026-11-04，用户回传三个原生Top1探针全部OMG编译失败、设备NOT_RUN。直接／展平版本在argmax_ext2节点、分块版本在winning_tile节点触发同一具体错误：`math_op_infershapes.cpp ArgMaxExt2Verify(476): AttrName output_type not exis.`。因此本轮没有验证出大轴或分块的实现限制，也没有可用于落点判断的OMC。分块日志显示Reshape到[15,485,512]和local_value／ReduceMax infershape success，随后winning_tile input shape为空；此现象尚未解释，不以“success”断言其shape正确或NPU可用。
+
+探针上一版只使用NPU opinfo中的dimension属性，遗漏OMG IR校验要求的output_type。现为所有原生ArgMaxExt2补整数属性output_type=3（现用GE INT32枚举），不以输出描述代替属性、不使用私有protobuf dtype编号。发射前合同新增属性／输出一致性检查；已有旧图缺属性会在导出前拒绝。日志诊断将AttrName缺失信息置于一般Verify失败和可选kernel库提示之前，保留原始tail与有界读取。该设置的所选OMG接受情况仍待服务器重编，不宣称已解决NPU回落。
+
+主机run `20261104T023316Z-2165-71799e`：233项检查通过，包含六图54次完整词表回放、整数属性C++发射、严格Top1比较和模拟ABI／native输出流程；另32项检查验证本次图差异仅output_type、fixture字节保持、三个旧原生图导出前拒绝、错误属性类型／枚举拒绝、具体缺属性错误位于raw tail之外仍可见、警告不升级和既有节点拒绝诊断保留。没有所选DDK或设备执行，完整Draft的103.720ms及NUMERICAL_FAILED基线不变。修复后重编命令见[当前阶段](current-status.md)。
+
 2026-11-04，用户回传所选内部DDK的只读Top1检查：在`tools/tools_omg/master/lib64/config/npu_generated_opinfo.json`发现ArgMaxExt2（FP16 ND输入、INT32 ND输出、dimension属性、arg_max_d实现）、ReduceMax（axes／keep_dims属性、reduce_max_d实现）及ArgMin注册。TBE源码存在；这仍不是加载该源码、当前形状可用或NPU落点证明。KIRIN_CONF_JSON_PATH为空；部分公共布局目录及AscendC聚合库／bisheng路径不存在，而ccec存在。保留当前内部DDK和kirinx90目标，不据目录布局认定环境错误。报告PARTIAL包含12文件摘录及40候选限额，原检查器将池化／NMS与pyc混入候选，导致归约正文被挤出。
 
 新增三种独立小图：直接ArgMaxExt2、二维[15,248320]归约，以及[15,485,512]局部ArgMaxExt2＋ReduceMax后再选获胜块。后一图使用单输入ReduceMax的axes属性，GatherV2D从展平局部INT32索引中取值，再以INT32乘加还原全局token。旧ArgMaxV2可能已映射同一实现，直接入口用于对照，不保证解决CPU回落。分块版本的NaN传播、并列规则和各段落点需实机核验；不因局部NPU或小逻辑中间量直接承诺时延改善。完整Draft／LM head、数值门槛及暂停的AddCustom路径未改动。

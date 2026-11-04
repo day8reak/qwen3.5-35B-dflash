@@ -11,6 +11,8 @@ _NAMED_NODE_REJECTION = re.compile(
     rb".*(?:don't support|does not support|not support|unsupported|Verify failed.*DataType.*wrong)", re.I)
 _MATRIX_SIZE_LIMIT = re.compile(
     rb"\bMatrix\s+[mnk]\s+(?:greater|less)\s+than\s+\d+\s+is\s+not\s+supported\b", re.I)
+_MISSING_IR_ATTRIBUTE = re.compile(
+    rb"\bAttrName\s+[^\s\"']+\s+(?:not\s+exis(?:t(?:s)?)?|does\s+not\s+exist|is\s+missing)\b", re.I)
 _CONCRETE_FAILURE = re.compile(
     rb"(?:\bnode\b|\bop\b|\btype\b).*(?:don't support|does not support|not support|unsupported)"
     rb"|(?:infershape|infer.?shape).*(?:failed|missing|not found)"
@@ -133,7 +135,7 @@ def _read_excerpt(log):
                 # A backend can reject many candidate dtypes before declaring
                 # the actual named node unsupported. Never let those attempts
                 # consume every slot ahead of the terminal node/type message.
-                priority = (0 if _NAMED_NODE_REJECTION.search(chunk) else
+                priority = (0 if _NAMED_NODE_REJECTION.search(chunk) or _MISSING_IR_ATTRIBUTE.search(chunk) else
                             1 if _MATRIX_SIZE_LIMIT.search(chunk) else
                             3 if _SUPPORT_DTYPE_FAILURE.search(chunk) else
                             2 if _CONCRETE_FAILURE.search(chunk) else
