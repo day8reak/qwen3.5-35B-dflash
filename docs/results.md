@@ -1,5 +1,13 @@
 # 当前结果
 
+2026-11-04，用户回传 `packed-spatial-controls` 的只读分区与依赖结果：OMC 2808227325字节，SHA256 `63b94d9f05ec42a9ef8521fcc03fc800cec9b155f011251850aca28f7a9dcb6b`。原BOOL[1,208]的中间NPU→CPU回流消失，mask逻辑转入前置CPU；中间CPU SubGraph_2从6输入／4输出缩为2输入／2输出，逻辑输出221184→8192字节，节点只剩Data1、Const2、Mul2、NetOutput1。两条浮点回流仍在：NPU SubGraph_1端口1／2的FP16[1,16,1]分别经netoutput_cast_0／1进入CPU的FP32输入；CPU产出两个FP32[1,16,64]，经graphop_data_cast_1／3回到NPU SubGraph_3端口3／4。CPUCL3／NPUCL2未合并，末尾CPU ArgMax的FP32[1,15,248320]接口不变。
+
+本轮依赖分析status=ANALYZED、unresolved为空，CPU→NPU11条、NPU→CPU3条（含末尾logits）、NPU→NPU9条。完整边界JSON为306455字节，SHA256 `55c1b8c88d2a2335067532e55b2e7ba05b671f4989fdd78ca29f344c1caf92ac`；accuracy_binding=NOT_PROVIDED、source_numerical_validation=NOT_EVALUATED。这是用户粘贴的编译元数据，未独立取回文件，新模型无设备精度／时延，不继承4d的184.568ms或将逻辑输出减少换算为收益。前两次shell续行是缺少末尾双引号，最后一次依赖命令已成功。
+
+下一候选 `packed-spatial-rope-table` 从运行图移除两次位置乘inv_freq：用原FP32公式预计算相位表，推理时INT32位置查表后沿用原Sin／Cos。表行数为capacity+max(C,K+1)，覆盖无写入满缓存时仍计算的填充context行；C16／cap192／K15为208×64 FP32，53248字节。只预计算相位，没有预计算或替换三角函数；原训练权重、17／14接口、KV区间和数值门槛保持。候选显式选择，旧policy仍可复现。需要编译后的分区及设备验证，不能宣称已消除同步或达到50ms。
+
+证据run `20261103T235522Z-28355-7b79bf`：六层缩小宽度、C16／64、K15／7／3／1及滑窗开关的220次回放，全部14输出与controls版逐字节一致，输入未修改，未写KV保持。实际head_dim128、容量192／512／4096的24组几何覆盖全部表项，FP32相位及FP32／FP16 Sin／Cos结果与原公式逐字节相同；594组边界控制通过，原越界拒绝保持。八档完整尺寸meta图（测试RMS）通过：两次FP32相位表Gather、INT32索引、原2组Sin／Cos，31线性／12attention MatMul／6FP32 Softmax／32RMS及17／14接口保持。18项权重／ABI检查及14项protobuf／模拟导出编译检查通过。本地未运行所选CPro DDK、TorchAir或设备；下一步导出、编译并只读检查是否还存在中间CPU的两次Mul。
+
 2026-11-03，用户在确认“最差hidden相对L2约2.61%、Top1共7/172不一致”后明确回复：**“接受本轮结果，先优化性能”**。当前组合版作为性能优化基线，暂停继续追查数值差异。此决定针对已观测的OMC与用例，原报告的NUMERICAL_FAILED、逐元素门槛及golden保留；后续候选仍须报告相对本基线的数值变化，不能由此次接受推出任意额外近似均已获准。生产未提升。
 
 最新用户回传 `packed-spatial-4d` 的完整accuracy摘要、边界及profile表。边界所绑定OMC为2808242141字节，SHA256 `c7e8007bcceb37141e2d667040ed64cc88afbc532173043deb4ee6ff4719a5b2`；accuracy尝试 `qwen35_draft_accuracy_c2b8c8ed4df542daa4981af458b95903` 已完成并回收，未残留其持有锁。仍为NUMERICAL_FAILED：Top1 isolated82/86、feedback83/86，7处差异的位置/token及hidden／KV误差范围与已接受基线一致；未写KV保持，两组反馈重复逐位相等。摘要一致不证明两版全部输出逐位相同。

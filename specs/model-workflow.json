@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-03",
+  "updated": "2026-11-04",
   "active_phase": "performance",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
   "run_id": "20261031T082522Z-15435-7304bd",
@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "DRAFT_INT32_CONTROL_CANDIDATE_COMPILED_BOUNDARY_REVIEW_PENDING",
-    "entry": "targets/cpro/tools/profile_draft.py",
+    "status": "DRAFT_MASK_BACKFLOW_REMOVED_ROPE_PHASE_TABLE_HOST_CHECKED",
+    "entry": "targets/cpro/scripts/export_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "COMPOSED_ATTENTION_TOP1_ISOLATED82_OF86_FEEDBACK83_OF86; HIDDEN_L2_1.34_TO2.61_PERCENT; APPENDED_KV_L2_0.44_TO0.83_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "Inspect current compiled OMC without old accuracy binding and analyze explicit NPU-to-CPU dependencies; partition counts remain CPU3/NPU2. Device numerics and warm performance pending.",
+    "next": "Export/compile packed-spatial-rope-table and read current OMC dependencies to check removal of two remaining intermediate CPU Muls; then validate device numerics and fixed-input warm API latency.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6200,6 +6200,7 @@
     "boundary_dependency_observation": "specs/dflash-execution-state.json#incremental_draft_task/boundary_dependency_observation",
     "control_optimization_candidate": "specs/dflash-execution-state.json#incremental_draft_task/control_optimization_candidate",
     "npu_argmax_research": "specs/dflash-execution-state.json#incremental_draft_task/npu_argmax_research",
-    "compiled_only_boundary_inspection": "specs/dflash-execution-state.json#incremental_draft_task/compiled_only_boundary_inspection"
+    "compiled_only_boundary_inspection": "specs/dflash-execution-state.json#incremental_draft_task/compiled_only_boundary_inspection",
+    "rope_table_candidate": "specs/dflash-execution-state.json#incremental_draft_task/rope_table_candidate"
   }
 }

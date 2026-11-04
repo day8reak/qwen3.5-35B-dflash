@@ -4,22 +4,28 @@ import math
 
 from qwen35_moe_dflash.common.artifacts import checked_file
 
-POLICIES = ('baseline', 'packed', 'packed-spatial', 'packed-spatial-4d', 'packed-spatial-controls')
+POLICIES = ('baseline', 'packed', 'packed-spatial', 'packed-spatial-4d',
+            'packed-spatial-controls', 'packed-spatial-rope-table')
 
 
 def optimization_contract(policy='baseline'):
     if policy not in POLICIES:
         raise ValueError('unknown Draft optimization: ' + str(policy))
-    spatial = policy in ('packed-spatial', 'packed-spatial-4d', 'packed-spatial-controls')
+    spatial = policy in ('packed-spatial', 'packed-spatial-4d', 'packed-spatial-controls', 'packed-spatial-rope-table')
     contract = dict(policy=policy, version=1, packed_projections=policy != 'baseline',
                     grouped_query_reshape=policy != 'baseline', shared_rope=policy != 'baseline',
                     projection=('PYTORCH_CONV2D_SPATIAL_4X4_FULL_K' if spatial
                                 else 'PYTORCH_CONV2D_4X4_FULL_K'))
-    if policy in ('packed-spatial-4d', 'packed-spatial-controls'):
+    if policy in ('packed-spatial-4d', 'packed-spatial-controls', 'packed-spatial-rope-table'):
         contract.update(feature_pack='TWO_RANK4_TRANSPOSES', shared_visibility_masks=True)
+    if policy in ('packed-spatial-controls', 'packed-spatial-rope-table'):
+        contract.update(key_valid_concat='INT32_BEFORE_QUERY_GATHER')
     if policy == 'packed-spatial-controls':
-        contract.update(position_layout='INT32_UNSQUEEZE_BEFORE_FP32_CAST',
-                        key_valid_concat='INT32_BEFORE_QUERY_GATHER')
+        contract.update(position_layout='INT32_UNSQUEEZE_BEFORE_FP32_CAST')
+    if policy == 'packed-spatial-rope-table':
+        contract.update(rope_phase='PRECOMPUTED_FP32_POSITION_TIMES_INV_FREQ',
+                        rope_phase_rows='CACHE_CAPACITY_PLUS_MAX_CONTEXT_BLOCK_ROWS',
+                        rope_lookup='INT32_GATHER_BEFORE_EXISTING_SIN_COS')
     return contract
 
 

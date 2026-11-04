@@ -37,10 +37,11 @@ class IncrementalDraft(nn.Module):
         self.rms = rms
         self.optimization = optimization_contract(optimization)
         self.packed = optimization != 'baseline'
-        self.spatial_projection = optimization in ('packed-spatial', 'packed-spatial-4d', 'packed-spatial-controls')
-        self.rank4_spatial = optimization in ('packed-spatial-4d', 'packed-spatial-controls')
+        self.spatial_projection = optimization in ('packed-spatial', 'packed-spatial-4d', 'packed-spatial-controls', 'packed-spatial-rope-table')
+        self.rank4_spatial = optimization in ('packed-spatial-4d', 'packed-spatial-controls', 'packed-spatial-rope-table')
         self.shared_masks = self.rank4_spatial
-        self.integer_controls = optimization == 'packed-spatial-controls'
+        self.integer_controls = optimization in ('packed-spatial-controls', 'packed-spatial-rope-table')
+        self.phase_table = optimization == 'packed-spatial-rope-table'
         if self.packed:
             if attention_kernel is not None:
                 raise ValueError('packed optimization requires composed attention')
@@ -61,6 +62,14 @@ class IncrementalDraft(nn.Module):
         self.register_buffer('head_repeat', torch.zeros(c.num_attention_heads, dtype=torch.int32))
         self.register_buffer('kv_heads', torch.arange(c.num_key_value_heads, dtype=torch.int32)
                              .repeat_interleave(c.num_key_value_groups))
+        if self.phase_table:
+            # Include every computed row, even padded context at a full cache.
+            # The existing control contract bounds start/end by capacity.
+            phase_rows = cache_capacity + max(context_rows, max_draft_tokens + 1)
+            positions = torch.arange(phase_rows, dtype=torch.int32,
+                                     device=draft.rotary.inv_freq.device)
+            phases = positions.float().unsqueeze(-1) * draft.rotary.inv_freq.view(1, -1)
+            self.register_buffer('rope_phases', phases, persistent=False)
         if attention_kernel is None:
             # A literal buffer avoids a Shape(scores)->Fill dependency on
             # un-inferred MatMul dimensions in the source TorchAir graph.
@@ -95,13 +104,15 @@ class IncrementalDraft(nn.Module):
     def control_rope(self, positions, dtype):
         if not self.integer_controls:
             return self.draft.rotary(positions, dtype)
-        # The observed NPU -> FP32 Cast -> CPU boundary has two floating
-        # [1,rows,1] tensors matching these position views. This is a source
-        # correspondence, not a decode of the opaque NPU task.
-        # Reshape the INT32 positions first; the values and FP32 multiplication
-        # are identical to DFlashRotaryEmbedding. Placement still needs OMG
-        # inspection: a source rewrite alone does not prove a CPU-only prefix.
-        frequencies = positions.unsqueeze(-1).float() * self.draft.rotary.inv_freq.view(1, 1, -1)
+        if self.phase_table:
+            # Replace only position*inv_freq, retaining source FP32 phases and
+            # the existing trigonometry. Compiled placement/precision still
+            # require inspection and device comparison.
+            frequencies = F.embedding(positions.int(), self.rope_phases)
+        else:
+            # This expression still compiled with two CPU frequency Muls and
+            # floating NPU inputs; retained as an explicit comparison policy.
+            frequencies = positions.unsqueeze(-1).float() * self.draft.rotary.inv_freq.view(1, 1, -1)
         embedding = torch.cat((frequencies, frequencies), dim=-1)
         return embedding.cos().to(dtype=dtype), embedding.sin().to(dtype=dtype)
 
