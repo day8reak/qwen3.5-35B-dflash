@@ -2,26 +2,21 @@
 
 目标为C16／cap192／K15常驻预热后平均≤50ms。完整Draft仍为103.720ms／NUMERICAL_FAILED，host embedding准备未计入API。
 
-当前操作：用户要求最后再试一次内置实现，失败后转独立自定义Top1。新增`--top1-bitcarrier`固定三项，源码已完成主机验证；所选DDK编译和设备执行均未运行。
+最后内置路线已结束：用户报告 `top1_bits_payload` 在OMG的NPU预构建阶段失败。选中的Bitcast配置是INT32→INT4，与请求的FP16入口不匹配；后两项树按依赖跳过，未编译。没有新的OMC或设备结果，不能据此推断所有X90 Bitcast均不可用。
+
+按用户“最后再试一次，不行就写算子”的条件授权，已建立[自定义Top1](../targets/cpro/operators/draft-top1/README.md)。固定FP16[1,15,248320]→INT32[1,15]、有限logits、完整词表、并列取最小索引。主机参考、七组完整尺寸fixture、严格比较器与只读DDK收集器已完成；NPU内核、tiling和注册尚未实现。35项主机检查通过，不是设备验证。
+
+本地无用户选定内部DDK；其注册配置与公开GE不一致。下一步一次收集自定义样例、注册、构建、联合归约及60字节输出的尾写接口，避免猜ABI：
 
 ```bash
 git pull --ff-only origin main
-python3 "$REPO_DIR/targets/cpro/tools/probe_draft_vector.py" \
-  --top1-bitcarrier --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$AI_RUN_DIR/draft/tests/top1-last-builtin" --replace
+python3 "$REPO_DIR/targets/cpro/operators/draft-top1/scripts/inspect_ddk.py" \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --compile-environment "$AI_RUN_DIR/draft/tests/top1-last-builtin/top1_bits_payload/omc/omg-environment.json" \
+  --output "$AI_RUN_DIR/draft/tests/custom-top1-ddk"
 ```
 
-该方案把INT32 token的原始字节拆成两个FP16存储字，只做Select／结构搬运，末尾Bitcast恢复INT32；不把token数值转成FP16，也不改变输出ABI。所用[固定版本GE Bitcast声明](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py#L68735)有`type`与`keep_dim`属性；形状按[两字合并的Bitcast语义](https://www.tensorflow.org/api_docs/python/tf/bitcast)构造。两份公开接口资料均不证明所选CPro DDK支持，实际编译是第一道检查。
-
-| 顺序 | 用例 | 检查范围 |
-|---|---|---|
-| 1 | `top1_bits_payload` | 0–248319每个ID在Select左右分支各选两次；覆盖全部65536种低16位、广播、拼接与Bitcast |
-| 2 | `top1_bits_tree_offset65500` | 15×485奇数尾项归约，输出带65500偏移，穿过65535／65536边界 |
-| 3 | `top1_bits_tree_full` | 完整FP16[1,15,248320]→INT32[1,15]，有限logits、并列选最小索引 |
-
-前置用例编译失败、落CPU或存在未归属任务的主图计算时，自动跳过依赖项并保留诊断，结束这条内置路线。三项都通过图层面纯NPU检查后，才进入同批三项设备验证；验证器重新读取哈希绑定的落点，不接受只挑最后一项。每项预热3次、测量10次，所有INT32输出逐字节一致。位片段可能呈现FP16 NaN／Inf／subnormal，但不是logits；编译器转换或Select未原样搬运都会破坏索引，不能豁免此类失败。
-
-主机已通过全词表位表示检查、19种宽度57次树回放、直接PyTorch ArgMax交叉检查、30次伪设备快照精确比较及损坏拒绝；旧38个探针的图、C++和fixture不变。尚无新NPU落点、设备数值或收益证据。若最后路线不成立或没有实际收益，按用户授权转固定边界的自定义Top1，不再扩展内置形状矩阵。整模型接入仍需单独验证。
+返回该目录的 `ddk-context.tar.gz`（完整源码和报告），只粘贴summary不足以写接入代码。收集不编译、不导入vendor模块、不连接设备、不修改SDK或覆盖已有输出。没有继续扩大内置探针矩阵。独立设备与整模型接入仍待验证，残差AddCustom保持暂停。
 
 21项Top1编译矩阵、9个OMC的61例设备语义／时延验证均已完成，无需重复启动或回收这批任务。用户报告610次测量调用全部成功，输出重复稳定；原完整比较标准下45例通过、16例失败。
 
@@ -67,4 +62,4 @@ MaxPoolWithArgmax作为低优先级线索：[MindSpore文档](https://www.mindsp
 
 建议把后续工作限定为同一个Top1验证包：先验证所选DDK中的FP16输入／INT32输出、自定义NPU任务和实际Load／执行，再验证完整词表的并列、尾块、65535／65536、大索引及subnormal，最后与**等价的完整词表CPU Top1**配对计时并做整模型回归。原61例NaN合同保持独立记录。算法范围清楚，最大不确定性是自定义接入；此前AddCustom JIT的`te_update_version()`失败说明这部分仍有风险。不能将小NPU原语0.4–0.8ms、局部CPU对照7.4633ms或混合图19–40ms直接当成新算子的预期收益，也不能据此承诺完整Draft≤50ms。
 
-该评估阶段只记录证据，自定义实现／编译／设备执行尚未开始，暂停的残差AddCustom路径未恢复。用户后续已授权“最后再试一次内置，失败后写Top1算子”，当前步骤见页首。详细记录见[结果](results.md)。
+上述为先前评估。最终内置失败已触发自定义Top1授权，当前主机合同与环境准备见页首；设备实现尚待所选DDK证据。详细记录见[结果](results.md)。

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "operators_root": "targets/cpro/operators",
+  "branch_prefix": "operator",
+  "default_base_branch": "main",
+  "environment_policy": "target-managed",
+  "knowledge_roots": [],
+  "independent_build_root": "${AI_RUN_DIR}/operators/independent",
+  "evidence_root": "${AI_RUN_DIR}/evidence",
+  "package_stage_root": "${AI_RUN_DIR}/operators/package-stage",
+  "package_output_dir": "${AI_RUN_DIR}/operators/packages",
+  "require_clean_checkpoint": true
+}

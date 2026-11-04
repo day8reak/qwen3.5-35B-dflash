@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "operator": {
+    "id": "draft-top1",
+    "display_name": "Qwen35DraftTop1",
+    "names": [
+      "Qwen35DraftTop1"
+    ],
+    "source_roots": [
+      "src/kernel",
+      "src/host",
+      "src/framework",
+      "src/reference"
+    ]
+  },
+  "git": {
+    "branch": "operator/draft-top1",
+    "base_branch": "bc56986b7dd70304fb7be55109884f016a21c182",
+    "base_revision": "bc56986b7dd70304fb7be55109884f016a21c182",
+    "created_utc": "2026-11-04T07:59:35Z"
+  },
+  "workflow": {
+    "knowledge_roots": null,
+    "independent_build_root": null,
+    "evidence_root": null,
+    "package_stage_root": null,
+    "package_output_dir": null
+  },
+  "target": {
+    "platform": "kirinx90",
+    "soc_or_device": "Huawei X90",
+    "core_type": "PENDING_SELECTED_DDK_CORE_CONFIGURATION",
+    "toolchain_identity": "USER_REPORTED_CPRO_100.520.020.010_HASH_COLLECTION_PENDING"
+  },
+  "model_replacement": {
+    "summary": "Standalone finite-logit full-vocabulary Top1 candidate; no Draft integration",
+    "inputs": [
+      {
+        "name": "logits",
+        "dtype": "float16",
+        "shape": [
+          1,
+          15,
+          248320
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "tokens",
+        "dtype": "int32",
+        "shape": [
+          1,
+          15
+        ]
+      }
+    ],
+    "replaced_nodes": [],
+    "excluded_semantics": [
+      "NaN/Inf logits",
+      "Other shapes",
+      "LM head changes",
+      "Draft integration before standalone acceptance"
+    ]
+  },
+  "tensor_contract": {
+    "dtypes": [
+      "float16",
+      "int32"
+    ],
+    "formats": [
+      "ND_CONTIGUOUS_LITTLE_ENDIAN"
+    ],
+    "shapes": [
+      [
+        1,
+        15,
+        248320
+      ],
+      [
+        1,
+        15
+      ]
+    ],
+    "batch": "FIXED_1_15_ROWS",
+    "weight_layout": "NO_WEIGHTS",
+    "alignment_and_padding": "7449600 input bytes; exactly60 output bytes; no allocation padding assumed; output tail/multi-core stores pending selected API",
+    "numeric_semantics": "FINITE_FP16_FIRST_MAXIMUM_EXACT_INT32"
+  },
+  "environment": {
+    "setup": "scripts/setup_env.sh",
+    "preflight": "scripts/preflight.sh",
+    "documentation": "docs/ENVIRONMENT.md",
+    "dependency_locks": []
+  },
+  "entrypoints": {
+    "setup": "scripts/setup_env.sh",
+    "preflight": "scripts/preflight.sh",
+    "build": "scripts/build.sh",
+    "golden": "scripts/gen_golden.sh",
+    "compare": "scripts/compare.sh",
+    "validate": "scripts/validate.sh",
+    "on_board": "scripts/run_on_board.sh"
+  },
+  "documentation": {
+    "contract": "docs/CONTRACT.md",
+    "environment": "docs/ENVIRONMENT.md",
+    "lessons": "docs/LESSONS.md",
+    "optimization": "docs/OPTIMIZATION.md",
+    "plan": "docs/PLAN.md",
+    "validation": "docs/VALIDATION.md"
+  },
+  "validation": {
+    "experience_audit": "docs/LESSONS.md; scoped observations recorded; no shared skill change",
+    "gates": {
+      "environment": "PENDING",
+      "static_audit": "PASS",
+      "golden": "PASS",
+      "compare": "PASS",
+      "build": "PENDING",
+      "independent_build": "PENDING",
+      "simulator_or_hardware": "PENDING",
+      "graph_integration": "PENDING",
+      "deployment_artifact": "PENDING",
+      "prebuilt": "PENDING",
+      "performance": "PENDING",
+      "on_board": "PENDING",
+      "real_model": "PENDING",
+      "hardware_latency": "PENDING"
+    },
+    "scope": "Golden/compare gates are HOST_ONLY; device/kernel/registration not implemented",
+    "host_evidence": {
+      "run_id": "20261104T075532Z-9847-483675",
+      "report": "evidence/host-final/host-validation.json",
+      "checks_passed": 35,
+      "scope": "HOST_ONLY_NO_KERNEL_OR_DEVICE"
+    }
+  },
+  "performance": {
+    "environment": "SELECTED_X90_CPRO_DDK_CONTEXT_PENDING",
+    "baseline": "HOST_EXECUTABLE_SPEC_ONLY_NO_DEVICE_BASELINE",
+    "optimized": "NOT_STARTED",
+    "measurement_scope": "STANDALONE_FULL_VOCABULARY_API_WALL_AND_SEPARATE_KERNEL_DIAGNOSIS",
+    "user_target": "PURE_NPU_EXACT_TOP1; LATENCY_TARGET_PENDING_EQUIVALENT_BASELINE",
+    "warmup_policy": "3_WARMUPS_THEN_10_MEASURED_DEVICE_CALLS",
+    "measured_device_invocations": 10,
+    "stability_rule": "EXACT_INT32_BYTES_ALL_10_CALLS",
+    "baseline_on_board_evidence": "PENDING",
+    "hardware_reference_policy": "use",
+    "hardware_reference_opt_out": "N/A",
+    "hardware_capacity_profile": "PENDING",
+    "pre_generation_roofline": "PENDING",
+    "camodel_bottleneck_evidence": "PENDING",
+    "pre_optimization_roofline": "PENDING",
+    "semantic_classification": "EXACT_WITHIN_FINITE_FP16_CONTRACT",
+    "approximation_approval": "N/A_NO_APPROXIMATION",
+    "external_change_approval": "USER_AUTHORIZED_BOUNDED_STANDALONE_CUSTOM_TOP1_AFTER_LAST_BUILTIN_FAILURE",
+    "optimized_on_board_evidence": "PENDING",
+    "final_roofline": "PENDING",
+    "roofline_status": "PENDING_MATCHING_X90_PROFILE; NO_FABRICATED_CAPACITY",
+    "convergence_reason": "NOT_CONVERGED_ENVIRONMENT_PENDING"
+  },
+  "tracked_artifacts": [],
+  "allowed_binary_patterns": [],
+  "implementation": {
+    "host_reference": "IMPLEMENTED_HOST_VALIDATED",
+    "fixture_and_compare": "IMPLEMENTED_HOST_VALIDATED",
+    "selected_ddk_collector": "IMPLEMENTED_SYNTHETIC_HOST_VALIDATED",
+    "kernel": "NOT_IMPLEMENTED",
+    "host_tiling": "NOT_IMPLEMENTED",
+    "framework_registration": "NOT_IMPLEMENTED"
+  }
+}

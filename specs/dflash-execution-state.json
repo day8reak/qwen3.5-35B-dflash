@@ -6568,7 +6568,7 @@
         }
       },
       "custom_top1_assessment": {
-        "status": "ASSESSED_NOT_IMPLEMENTED",
+        "status": "CONTRACT_HOST_REFERENCE_AND_DDK_COLLECTOR_IMPLEMENTED_TARGET_PENDING",
         "run_id": "20261104T072307Z-8454-abb9a6",
         "user_request": "Evaluate whether a custom Top1 operator is worth implementing.",
         "recommendation": "WORTH_A_BOUNDED_PROTOTYPE_FOR_STRICT_NPU_ONLY_AND_EXACT_INT32_OUTPUT",
@@ -6609,14 +6609,14 @@
         },
         "latency_prediction_ms": null,
         "full_draft_50ms_guaranteed": false,
-        "implementation": "NOT_STARTED",
+        "implementation": "HOST_ONLY_SCAFFOLD; KERNEL_TILING_REGISTRATION_PENDING_SELECTED_DDK",
         "device_execution": "NOT_RUN",
         "full_draft_changed": false,
-        "paused_addcustom_path": "NOT_RESUMED_BY_EVALUATION_REQUEST",
-        "followup_authorization": "USER_AUTHORIZED_CUSTOM_TOP1_IF_LAST_BUILTIN_ATTEMPT_FAILS; IMPLEMENTATION_NOT_YET_STARTED"
+        "paused_addcustom_path": "RESIDUAL_ADDCUSTOM_NOT_RESUMED",
+        "followup_authorization": "CONDITION_SATISFIED_BY_FINAL_BUILTIN_FAILURE; PROCEED_WITH_BOUNDED_CUSTOM_TOP1"
       },
       "last_builtin_attempt": {
-        "status": "IMPLEMENTED_HOST_VALIDATED_SELECTED_DDK_PENDING",
+        "status": "USER_REPORTED_PREREQUISITE_COMPILE_FAILED_ROUTE_CLOSED",
         "run_id": "20261104T073410Z-8724-fa9f44",
         "user_request": "你再尝试一下？实在不行那我们就写算子",
         "conditional_authorization": "IF_FINAL_BUILTIN_ROUTE_FAILS_PROCEED_WITH_BOUNDED_CUSTOM_TOP1; NO_NEW_PERMISSION_NEEDED_FOR_THIS_SCOPE",
@@ -6650,12 +6650,50 @@
           "invalid_cli_modes_rejected": 4,
           "invalid_bitcast_shape_rejected": true
         },
-        "model_compilation": "NOT_RUN",
+        "model_compilation": "PARTIAL_ONE_FAILED_TWO_SKIPPED",
         "device_execution": "NOT_RUN",
         "numerical_validation": "NOT_RUN",
         "latency": "NOT_MEASURED",
         "full_draft_changed": false,
-        "fallback": "BOUNDED_CUSTOM_TOP1_AFTER_FAILURE_OR_NO_MEASURED_BENEFIT; DO_NOT_EXPAND_BUILTIN_MATRIX"
+        "fallback": "BOUNDED_CUSTOM_TOP1_AFTER_FAILURE_OR_NO_MEASURED_BENEFIT; DO_NOT_EXPAND_BUILTIN_MATRIX",
+        "observation": {
+          "source": "USER_PASTED_JSON_NOT_INDEPENDENTLY_RETRIEVED",
+          "failed_case": "top1_bits_payload",
+          "stage": "OMG_NPU_PREBUILD",
+          "node": "tokens_bits",
+          "requested_input": "FLOAT16",
+          "selected_configuration": "INT32_TO_INT4",
+          "error": "Bitcast GetOutputFormats/CallInferFuncForCustomNode/OpPreBuild failed",
+          "skipped_cases": [
+            "top1_bits_tree_offset65500",
+            "top1_bits_tree_full"
+          ],
+          "skipped_model_compilation": "NOT_RUN",
+          "model_sha256": "NO_SUCCESSFUL_OMC",
+          "conclusion": "REQUEST_NOT_MATCHED_BY_SELECTED_REGISTRATION_NOT_UNIVERSAL_HARDWARE_UNSUPPORTED"
+        }
+      },
+      "custom_top1": {
+        "status": "ENVIRONMENT_PENDING",
+        "operator_dir": "targets/cpro/operators/draft-top1",
+        "run_id": "20261104T075532Z-9847-483675",
+        "authorization": "LAST_BUILTIN_FAILURE_TRIGGERED_USER_APPROVED_CUSTOM_TOP1",
+        "host_validation": {
+          "status": "PASSED",
+          "checks": 35,
+          "fixture_sets": 7,
+          "full_shape_rows": 105,
+          "reference": "DIRECT_NUMPY_ARGMAX_CROSS_CHECKED_PYTORCH_AND_CPP_BINARY16_ORDER",
+          "synthetic_compare_files": 70,
+          "synthetic_files_are_device_evidence": false
+        },
+        "kernel_build": "NOT_RUN",
+        "kernel_implementation": "NOT_IMPLEMENTED",
+        "device_execution": "NOT_RUN",
+        "full_draft_changed": false,
+        "blocker": "SELECTED_INTERNAL_X90_DDK_REGISTRATION_BUILD_REDUCTION_OUTPUT_TAIL_CONTEXT_UNAVAILABLE_LOCALLY",
+        "next": "ONE_READ_ONLY_SELECTED_DDK_CONTEXT_BUNDLE; NO_MORE_BUILTIN_SHAPE_PROBES",
+        "command": "python3 \"$REPO_DIR/targets/cpro/operators/draft-top1/scripts/inspect_ddk.py\" --ddk-root \"$CPRO_DDK_ROOT\" --compile-environment \"$AI_RUN_DIR/draft/tests/top1-last-builtin/top1_bits_payload/omc/omg-environment.json\" --output \"$AI_RUN_DIR/draft/tests/custom-top1-ddk\""
       }
     }
   },
