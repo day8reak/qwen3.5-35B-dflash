@@ -1,7 +1,8 @@
 """Full-vocabulary Top1 placement candidates; no learned weights or model edits.
 
-GE schemas are from the pinned TorchAir raw-op definitions used by the vector
-probe tool. Schema availability is not selected X90 DDK implementation proof.
+Legacy GE schemas are from the pinned TorchAir raw-op definitions. Native CPro
+candidates use the user's selected npu_generated_opinfo.json registration.
+Schema availability is not selected X90 DDK implementation or placement proof.
 All candidates must return the original smallest-index argmax, including across
 tiles. Nonfinite rows test behavior rather than assuming a vendor NaN policy.
 """
@@ -9,7 +10,10 @@ import numpy as np
 
 from qwen35_moe_dflash.graph.fused.ir import Graph
 
-CASES = ('top1_argmax_fp16', 'top1_with_value_fp16', 'top1_tiled_fp16')
+NATIVE_CASES = ('top1_ext2_fp16', 'top1_ext2_flat_fp16', 'top1_ext2_tiled_fp16')
+NATIVE_SCHEMA = ('USER_OBSERVED_SELECTED_DDK_tools/tools_omg/master/lib64/config/'
+                 'npu_generated_opinfo.json:ArgMaxExt2,ReduceMax')
+CASES = ('top1_argmax_fp16', 'top1_with_value_fp16', 'top1_tiled_fp16', *NATIVE_CASES)
 SHAPE = (1, 15, 248320)
 TILE = 512
 LABELS = ('all_equal', 'first', 'last', 'index_65535', 'index_65536',
@@ -67,6 +71,10 @@ def graph_case(case):
             {'dimension': {'type': 'int', 'value': -1},
              'keep_dims': {'type': 'bool', 'value': False}}, name=name)
 
+    def ext2(value, shape, dimension, name):
+        return g.custom('ArgMaxExt2', {'x': value}, {'y': (shape, 'int32')},
+            {'dimension': {'type': 'int', 'value': dimension}}, name=name)['y']
+
     if case == 'top1_argmax_fp16':
         axis = g.const(np.array(-1, dtype='<i4'), dtype='int32', name='axis')
         output = g.custom('ArgMaxV2', {'x': x, 'dimension': axis},
@@ -74,6 +82,33 @@ def graph_case(case):
             {'dtype': {'type': 'dtype', 'value': 'int32'}}, name='argmax')['y']
     elif case == 'top1_with_value_fp16':
         output = maximum(x, (1, 15), 'argmax_value')['indice']
+    elif case == 'top1_ext2_fp16':
+        output = ext2(x, (1, 15), 2, 'argmax_ext2')
+    elif case == 'top1_ext2_flat_fp16':
+        output = reshape(ext2(reshape(x, (15, SHAPE[-1]), 'rows'), (15,),
+                              1, 'argmax_ext2'), (1, 15), 'tokens')
+    elif case == 'top1_ext2_tiled_fp16':
+        tiles = SHAPE[-1] // TILE
+        tiled = reshape(x, (15, tiles, TILE), 'tiles')
+        local_index = ext2(tiled, (15, tiles), 2, 'local_argmax')
+        # CPro's observed ReduceMax has ONE input and an axes ATTRIBUTE.
+        # Do not substitute the newer public GE schema with an axes input.
+        local_value = g.custom('ReduceMax', {'x': tiled},
+            {'y': ((15, tiles), 'float16')},
+            {'axes': {'type': 'ints', 'value': [2]},
+             'keep_dims': {'type': 'bool', 'value': False}}, name='local_value')['y']
+        winner = ext2(local_value, (15,), 1, 'winning_tile')
+        row_offsets = g.const(np.arange(15, dtype='<i4') * tiles,
+                              dtype='int32', name='row_offsets')
+        selector = g.op('add', row_offsets, winner, shape=(15,), dtype='int32', name='selector')
+        selected = g.custom('GatherV2D',
+            {'x': reshape(local_index, (15 * tiles,), 'flat_indices'), 'indices': selector},
+            {'y': ((15,), 'int32')}, {'axis': {'type': 'int', 'value': 0}},
+            name='local_index')['y']
+        stride = g.const(np.array(TILE, dtype='<i4'), dtype='int32', name='tile_stride')
+        offset = g.op('mul', winner, stride, shape=(15,), dtype='int32', name='tile_offset')
+        output = reshape(g.op('add', offset, selected, shape=(15,), dtype='int32',
+                              name='global_index'), (1, 15), 'tokens')
     else:
         tiles = SHAPE[-1] // TILE
         local = maximum(reshape(x, (1, 15, tiles, TILE), 'tiles'),
@@ -89,5 +124,7 @@ def graph_case(case):
                       shape=(1, 15), dtype='int32', name='global_index')
     g.outputs = [output]
     g.output_contract = contract()
+    if case == 'top1_ext2_tiled_fp16':
+        g.output_contract['local_value_reduction'] = 'SEPARATE_REDUCEMAX_NAN_AND_TIE_CONSISTENCY_DEVICE_UNVERIFIED'
     data, expected = fixture()
     return g.validate(), [data], [expected]

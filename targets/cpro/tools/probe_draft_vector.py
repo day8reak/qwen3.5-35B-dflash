@@ -12,6 +12,7 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 from qwen35_moe_dflash.draft.incremental.top1_probe import CASES as TOP1_CASES
+from qwen35_moe_dflash.draft.incremental.top1_probe import NATIVE_CASES, NATIVE_SCHEMA
 
 KIND = 'qwen35-draft-vector-probe'
 SCHEMA = ('https://github.com/Ascend/torchair/blob/'
@@ -162,6 +163,7 @@ def inspect_ddk(compiled, ddk_root, *, family='addcustom'):
         'roots': [], 'registrations': [], 'source_candidates': [], 'source_excerpts': [], 'notes': []}
     used = {'bytes': 0, 'entries': 0, 'files_read': 0, 'symlinks_skipped': 0}
     seen_files, seen_dirs = set(), set()
+    source_queue = []
 
     def note(path, error):
         if len(report['notes']) < 32:
@@ -238,29 +240,24 @@ def inspect_ddk(compiled, ddk_root, *, family='addcustom'):
         if resolved in seen_files:
             return
         seen_files.add(resolved)
-        named = bool(match.search(str(path.relative_to(folder))))
-        if named:
+        suffix = path.suffix.lower()
+        named = bool(match.fullmatch(path.stem) if family == 'top1'
+                     else match.search(str(path.relative_to(folder))))
+        source = family == 'top1' and named and suffix in {'.py', '.h', '.hpp', '.cpp', '.cc', '.c'}
+        if source:
+            # Read registrations first, then prioritize their implementations.
+            # Pooling/NMS filenames and bytecode must not consume the Top1 budget.
+            source_queue.append(path)
+            return
+        if named and family != 'top1':
             if len(report['source_candidates']) < 40:
                 report['source_candidates'].append(str(path))
             else:
                 note(folder, 'source candidate list truncated at 40 files')
-        source = family == 'top1' and named and path.suffix.lower() in {'.py', '.h', '.hpp', '.cpp', '.cc', '.c'}
-        if path.suffix.lower() != '.json' and not source:
+        if suffix != '.json':
             return
         raw = read(path)
         if raw is None or not match.search(raw):
-            return
-        if source:
-            if len(report['source_excerpts']) >= 12:
-                note(path, 'source excerpts truncated at 12 files')
-                return
-            lines = raw.splitlines()
-            hits = [i for i, line in enumerate(lines) if match.search(line)][:8]
-            selected = sorted({j for i in hits for j in range(max(0, i-2), min(len(lines), i+4))})
-            excerpt = '\n'.join(f'L{i+1}: {lines[i]}' for i in selected)
-            report['source_excerpts'].append(dict(path=str(path),
-                excerpt=excerpt[:limits['record_characters']],
-                scope='BOUNDED_TEXT_EXCERPT_NOT_PROOF_THIS_SOURCE_WAS_LOADED'))
             return
         try:
             for location, record in records(json.loads(raw)):
@@ -301,13 +298,62 @@ def inspect_ddk(compiled, ddk_root, *, family='addcustom'):
                 report['status'] = 'PARTIAL'
                 break
             used['symlinks_skipped'] += sum((Path(directory) / name).is_symlink() for name in dirs)
-            dirs[:] = sorted(name for name in dirs if not (Path(directory) / name).is_symlink())
+            dirs[:] = sorted(name for name in dirs if not (Path(directory) / name).is_symlink()
+                             and not (family == 'top1' and name == '__pycache__'))
             for name in sorted(files):
                 path = Path(directory) / name
                 inspect_file(path, folder)
         if used['entries'] > limits['entries']:
             report['notes'].append({'error': 'entry budget exceeded; remaining roots not scanned'})
             break
+    if family == 'top1':
+        import ast
+        registered = set()
+        for row in report['registrations']:
+            record = row.get('record')
+            if isinstance(record, dict):
+                implementation = record.get('opFile', {})
+                value = implementation.get('value') if isinstance(implementation, dict) else implementation
+                if isinstance(value, str):
+                    registered.add(value)
+        preferred = ('arg_max_d', 'reduce_max_d', 'arg_min_d', 'reduce_min_d')
+        ordered = sorted(source_queue, key=lambda p: (
+            p.stem not in registered, p.stem not in preferred,
+            preferred.index(p.stem) if p.stem in preferred else 0,
+            'dynamic' in p.parts, str(p)))
+        report['source_candidates'] = [str(p) for p in ordered[:40]]
+        if len(ordered) > 40:
+            note(root, 'source candidate list truncated at 40 source files')
+        if len(ordered) > 12:
+            note(root, 'source excerpts limited to 12 prioritized source files')
+        for path in ordered[:12]:
+            raw = read(path)
+            if raw is None:
+                continue
+            lines = raw.splitlines()
+            selected, blocks = set(), []
+            if path.suffix == '.py':
+                try:
+                    functions = [n for n in ast.walk(ast.parse(raw))
+                                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                    # Show parameter guards before long kernel implementations.
+                    for n in sorted(functions, key=lambda n: (
+                            not ('param_check' in n.name or 'check_supported' in n.name), n.lineno)):
+                        guard = 'param_check' in n.name or 'check_supported' in n.name
+                        if guard or n.name in (path.stem, 'op_select_format'):
+                            end = min(n.end_lineno, n.lineno + (89 if guard else 29))
+                            selected.update(range(n.lineno - 1, end))
+                            blocks.append(dict(name=n.name, first_line=n.lineno, last_line=end,
+                                               truncated=end < n.end_lineno))
+                except (SyntaxError, ValueError, RecursionError) as error:
+                    note(path, 'source parse failed: ' + str(error))
+            hits = [i for i, line in enumerate(lines) if match.search(line)][:4]
+            selected.update(j for i in hits for j in range(max(0, i-2), min(len(lines), i+4)))
+            excerpt = '\n'.join(f'L{i+1}: {lines[i]}' for i in sorted(selected))
+            report['source_excerpts'].append(dict(path=str(path), blocks=blocks,
+                excerpt=excerpt[:limits['record_characters']],
+                truncated=len(excerpt) > limits['record_characters'] or any(b['truncated'] for b in blocks),
+                scope='BOUNDED_TEXT_EXCERPT_NOT_PROOF_THIS_SOURCE_WAS_LOADED'))
     report['files'] = [{'path': str(root / name), 'exists': (root / name).is_file()}
         for name in ('tools/tools_omg/master/lib64/libai_npucore_ascendc_kernel.so',
                      'tools/tools_ascendc/bisheng/bin/bisheng', 'ddk/ccec_compiler/bin/ccec')]
@@ -395,7 +441,9 @@ def _run(args, root):
             if all(case in TOP1_CASES for case in args.cases) else
             'SOURCE_DECLARED_DTYPES_WITH_DEFAULT_OMG_ARITHMETIC_POLICY_NO_CPU_CUSTOMIZATION'),
         'weight_data_type': args.weight_data_type or 'OMG_DEFAULT',
-        'schema_source': SCHEMA, 'platform': 'kirinx90'}
+        'schema_source': ('CASE_SPECIFIC_SELECTED_CPRO_REGISTRATION_AND_PINNED_GE_AUXILIARIES'
+                          if any(case in NATIVE_CASES for case in args.cases) else SCHEMA),
+        'platform': 'kirinx90'}
     write_json(root / 'result.json', result)
     try:
         for case in args.cases:
@@ -417,6 +465,10 @@ def _run(args, root):
             if case in TOP1_CASES:
                 row.update(reference=graph.output_contract['reference'],
                            top1_contract=graph.output_contract)
+            if case in NATIVE_CASES:
+                row.update(schema_source=NATIVE_SCHEMA,
+                    auxiliary_schema_source=SCHEMA,
+                    implementation_request='OBSERVED_CPRO_IR_DEFAULT_DDK_SELECTION_NO_FORCED_PLACEMENT')
             if case == 'residual_addcustom_fp32':
                 row['schema_source'] = 'USER_OBSERVED_SELECTED_DDK_AddCustom_REGISTRATION_x_y_TO_z'
                 row['implementation_request'] = 'AddCustom_FP32_ND_DEFAULT_DDK_SELECTION_NO_FORCED_IMPLEMENTATION'

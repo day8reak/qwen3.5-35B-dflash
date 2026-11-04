@@ -1,5 +1,11 @@
 # 当前结果
 
+2026-11-04，用户回传所选内部DDK的只读Top1检查：在`tools/tools_omg/master/lib64/config/npu_generated_opinfo.json`发现ArgMaxExt2（FP16 ND输入、INT32 ND输出、dimension属性、arg_max_d实现）、ReduceMax（axes／keep_dims属性、reduce_max_d实现）及ArgMin注册。TBE源码存在；这仍不是加载该源码、当前形状可用或NPU落点证明。KIRIN_CONF_JSON_PATH为空；部分公共布局目录及AscendC聚合库／bisheng路径不存在，而ccec存在。保留当前内部DDK和kirinx90目标，不据目录布局认定环境错误。报告PARTIAL包含12文件摘录及40候选限额，原检查器将池化／NMS与pyc混入候选，导致归约正文被挤出。
+
+新增三种独立小图：直接ArgMaxExt2、二维[15,248320]归约，以及[15,485,512]局部ArgMaxExt2＋ReduceMax后再选获胜块。后一图使用单输入ReduceMax的axes属性，GatherV2D从展平局部INT32索引中取值，再以INT32乘加还原全局token。旧ArgMaxV2可能已映射同一实现，直接入口用于对照，不保证解决CPU回落。分块版本的NaN传播、并列规则和各段落点需实机核验；不因局部NPU或小逻辑中间量直接承诺时延改善。完整Draft／LM head、数值门槛及暂停的AddCustom路径未改动。
+
+只读检查器改为按源码basename筛选、跳过字节码目录，注册解析完成后优先opFile实现，摘录参数检查正文并显式标注截断。主机run `20261104T022117Z-1605-76c12b` 的230项检查通过：新旧六图共54次完整形状PyTorch回放、NumPy直接argmax交叉检查、原生属性／端口发射、模拟厂商元数据下真实ABI绑定、FP16／INT32 plan、十次模拟回收和高位token差1必败。另22项检查覆盖读取器、噪声文件不耗尽摘录、参数守卫正文、DDK错配及只读保证；旧三图manifest和fixture逐字节保持。此处未调用所选DDK、未上板，新图编译／落点／数值／时延仍待用户执行。下一条命令见[当前阶段](current-status.md)。
+
 2026-11-04，用户回传三种全词表Top1小图的编译结果：PARTIAL、device_execution=NOT_RUN。ArgMaxV2编译通过但仍为CPUCL1／NO_NPU_GRAPH，CPU子图输入FP32、输出INT32。直接ArgMaxWithValue和485×512分块版均在OMG的GetInferFunc／RunInferShape阶段失败，节点分别argmax_value及local_max；后者Reshape推导到[1,15,485,512]已成功。当前只能认定所选编译路径未找到ArgMaxWithValue的infershape函数，不能认定硬件没有最大值归约，也不能归因为词表容量或分块大小。
 
 两份错误日志还包含libai_npucore_ascendc_kernel.so路径无效和TBE内部Ascend310B1字符串，它们未被确定为本次失败根因。既有普通Add成功编译日志也曾出现同类聚合库提示。保留kirinx90目标和共享DDK，不盲目补库、改SOC或重启原AddCustom探针。当前没有可进入实机性能验证的NPU Top1候选；完整Draft及103.720ms／NUMERICAL_FAILED结果不变。

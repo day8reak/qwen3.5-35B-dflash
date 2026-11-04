@@ -5802,12 +5802,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "DRAFT_TOP1_BUILTIN_PROBE_PARTIAL_CPU_OR_INFERSHAPE_FAILURE",
+    "status": "DRAFT_NATIVE_CPRO_TOP1_PROBES_HOST_CHECKED_USER_COMPILE_PENDING",
     "entry": "targets/cpro/scripts/export_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "COMPOSED_ATTENTION_TOP1_ISOLATED82_OF86_FEEDBACK83_OF86; HIDDEN_L2_1.34_TO2.61_PERCENT; APPENDED_KV_L2_0.44_TO0.83_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "User compiled Top1 probes: ArgMaxV2 CPUCL1; both ArgMaxWithValue variants fail infer-function lookup. Read saved compiler configuration and selected DDK reduction registrations with --inspect-top1. No repeat compilation or device run for these candidates; current full Draft remains 103.720ms and NUMERICAL_FAILED.",
+    "next": "Selected DDK has ArgMaxExt2 FP16->INT32 and ReduceMax axes-attribute registrations. Compile direct/flat/tiled native probes with default selection, then inspect actual CPU/NPU placement. Device tie/NaN/index validation and full-model benefit pending; full Draft remains 103.720ms and NUMERICAL_FAILED.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
