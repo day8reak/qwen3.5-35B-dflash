@@ -1,5 +1,11 @@
 # 当前结果
 
+2026-11-04，host-embedding候选首次TorchAir导出停在air-validation。用户确认export.air为1790366439字节、weight/文件数0；尚未编译或上板。公开[TorchAir export_utils.py](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_utils/export_utils.py)按图与权重总量超过(2048−200)MiB才选择FileConstant，否则写内嵌Const，与减掉约1GB表后本次观察一致。64MiB错误来自本项目对外置权重AIR元数据的限制，不是NPU容量或数值失败。Const分支保留arg节点名但不写原参数文件名，不能依靠大小或位置猜出后续精度校验所需的权重绑定。
+
+修复在导出CLI进程内临时固定原生外置权重分支；核对实际安装函数签名、转换器调用关系、单次转换、参数文件名无冲突、Data节点及连续非空张量，保留原used_weight_num和原生写盘实现。finally恢复原函数，记录安装源码哈希及各外置文件尺寸，并在导出、导入、恢复和编译入口保持检查。未修改TorchAir安装、数学、权重dtype、原精度门槛或64MiB限制。本次已有内嵌AIR需要重新导出，不再尝试直接拆包恢复。
+
+主机run `20261104T010541Z-31378-5f4c04`：15项导出存储检查通过，执行固定上游版本的原决策／转换／写盘Python函数，GE构造器为stub；覆盖阈值两侧、FP16特殊位模式、FP32／INT32原字节、节点名字、异常恢复、错误接口、文件冲突及大小边界。另15项protobuf和模拟导出／编译／恢复检查通过，包含权重选择记录不能被finalize绕过。此处未安装用户所选TorchAir或DDK，实机导出、编译、加载、精度与时延待用户验证。下一步按[当前阶段](current-status.md)重导出后编译检查单个NPU权重块。
+
 2026-11-04，用户回传显式limit_partition_size=true的结果：OMG编译通过，CPUCL2／NPUCL1，GraphOp权重仍为3892／2806299136／20字节。打包前检查在partition-weight-check拒绝超限候选，未发布packed model、未上板。所选OMG help.log明确true(default): limit by platform，未提供字节阈值；该选项不能解释为强制2GiB拆分。weight_merge描述IR权重合并，SC选项描述缓存用途，尚无证据证明它们能避开本次失败。
 
 下一候选packed-spatial-host-embedding从NPU图去掉完整embedding常量，由调用前原FP16行复制提供[anchor, MASK×K]。Target特征用于context K/V，embedding用于候选分支初始hidden，两者不能互相替代。公共anchor:int32[1]改为block_embeddings:float16[1,K+1,2048]，仍17输入／14输出。K15输入65536字节；原表248320×2048×2=1017118720字节，旧单NPU块减表约1789180416字节，这是估计，不是新OMC观察。LM head完整保留，不量化、不缩词表、不改golden或容差，只允许原embedding scale=1。导出／编译清单绑定host表，独立ABI绑定核验原表哈希和layer0 RMS消费连接。

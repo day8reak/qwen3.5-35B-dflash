@@ -8,9 +8,11 @@
 
 用户随后确认：显式--limit-partition-size true仍生成2806299136字节的单NPU权重块，被打包前检查拒绝。所选OMG帮助说明true本来就是默认值，不能继续靠这个开关实现2GiB拆分。
 
-## 现在执行：将embedding查表移到模型输入侧
+## 现在执行：固定外置权重格式后重新导出
 
 新增显式候选packed-spatial-host-embedding，沿用相位表和原FP16权重。调用前复制[anchor, MASK×K]对应行，以float16[1,K+1,2048]的block_embeddings替换anchor ID输入；仍17输入／14输出。完整embedding表不再作为NPU常量，LM head、六层计算和KV规则保留。K15输入块65536字节，embedding原表1017118720字节；旧NPU块减表约1789180416字节，仅为估计，须查看新编译结果。
+
+用户本次导出停在air-validation：export.air为1790366439字节，weight/文件数0。去掉embedding后，TorchAir自动选择了内嵌Const；本项目需要小AIR＋带原参数名的FileConstant来做编译快照与权重绑定。已固定本进程内的存储格式选择，沿用安装版本的原生FileConstant生成和原字节写盘，结束或异常后恢复，不修改共享安装。64MiB元数据限制保留。已有内嵌AIR不能仅凭arg节点名可靠恢复原参数文件名，本次需重新导出，不能用--finalize-air绕过。
 
 更新代码后，沿用已有REPO_DIR、AI_RUN_DIR、CPRO_DDK_ROOT、CPRO_DDK_ID。固定测试槽位上一任务已完成，可用--replace；原prepared权重、公共可运行模型及失败结果保留。
 
@@ -20,7 +22,13 @@ python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
   --optimization packed-spatial-host-embedding \
   --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 \
   --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-air" --replace
+```
 
+先确认status=PYTORCH_DRAFT_AIR_EXPORTED、weight_storage.policy=native-torchair-fileconstant-v1、weight_storage.restored=true、weight_files>0。weight-export.json记录安装版本源码哈希、原生格式选择、各文件名与尺寸；不支持的导出器接口会停止并保留错误，不静默回到内嵌格式。
+
+导出通过后再编译：
+
+```bash
 python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
   --air-export "$AI_RUN_DIR/draft/tests/pytorch-optimized-air" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \

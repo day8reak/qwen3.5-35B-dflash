@@ -112,12 +112,23 @@ def _completed_air(folder):
     schema = _schema((folder / 'air-schema.pb').read_bytes(), manifest['schema'])
     observed = inspect_air(folder / 'export.air', schema, expected_norms=32, require_int32_indices=True,
                            expected_attention=manifest.get('attention'))
+    _check_weight_storage(folder, manifest, observed)
     recorded = json.loads((folder / 'air-inspection.json').read_text())
     if (len(manifest.get('inputs', [])) != 17 or len(manifest.get('outputs', [])) != 14
             or observed['input_count'] != 17 or observed['output_counts'] != [14]
             or not observed['weight_files'] or observed['weight_files'] != recorded.get('weight_files')):
         raise ValueError('AIR inputs/outputs or external weight extents differ; retain the previous AIR')
     return manifest
+
+
+def _check_weight_storage(folder, manifest, inspection):
+    if 'weight_storage' not in manifest:
+        return  # Older successful external-weight exports keep their contract.
+    from .torch_weight_export import validate_external_weights
+    evidence = json.loads((folder / 'weight-export.json').read_text())
+    if {k: v for k, v in evidence.items() if k != 'files'} != manifest['weight_storage']:
+        raise ValueError('saved external-weight selection disagrees with the AIR manifest')
+    validate_external_weights(inspection, evidence)
 
 
 def _install_air(source, destination, replace):
@@ -199,6 +210,7 @@ def finalize_pytorch_air(source, output, *, replace=False):
             inspection = inspect_air(source / 'export.air',
                 _schema((source / 'air-schema.pb').read_bytes(), result['schema']),
                 expected_norms=32, require_int32_indices=True, expected_attention=result['attention'])
+            _check_weight_storage(source, result, inspection)
             if (len(result.get('inputs', [])) != 17 or len(result.get('outputs', [])) != 14
                     or inspection['input_count'] != 17 or inspection['output_counts'] != [14]
                     or not inspection['weight_files']):
@@ -267,10 +279,15 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
     """Read only graph metadata and sidecar extents, without loading weight data."""
     from qwen35_moe_dflash.target.original_air_roundtrip import _decode, _attributes, MAX_AIR_BYTES
     path = Path(air)
+    size = path.stat().st_size
+    if size <= 0 or size > MAX_AIR_BYTES:
+        raise ValueError(f'expected nonempty external-weight AIR metadata <=64 MiB; observed {size} bytes. '
+                         'Large inline-weight AIR requires re-export with named FileConstants; '
+                         'do not raise the metadata limit or finalize the inline export')
     with path.open('rb') as stream:
         raw = stream.read(MAX_AIR_BYTES + 1)
-    if not raw or len(raw) > MAX_AIR_BYTES:
-        raise ValueError('expected an external-weight AIR graph at most 64 MiB')
+    if len(raw) != size:
+        raise ValueError('AIR size changed during inspection')
     _, _, graph = _decode(schema, raw)
     nodes = graph['op']
     counts = Counter(n['type'] for n in nodes)
@@ -456,7 +473,7 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
                            or name != 'target.embed_tokens.weight') + (256 << 20)
             if shutil.disk_usage(root).free < required:
                 raise OSError(f'AIR export needs at least {required} free bytes for weights and reserve')
-            progress('loading Draft, embedding and head from shared prepared FP16 weights')
+            progress('loading Draft parameters and full vocabulary head from shared prepared FP16 weights')
             model = load_prepared(prepared, context_rows=context_rows, cache_capacity=cache_capacity,
                                   max_draft_tokens=max_draft_tokens, rms=rms, optimization=optimization)
             result.update(**model.abi(), schema={k: metadata[k] for k in ('schema_file', 'schema_package')},
@@ -466,8 +483,16 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
             _save(root / 'manifest.json', result)
             (root / 'air-schema.pb').write_bytes(descriptor)
             progress('TorchAir export: 17 inputs, 14 outputs, 6 composed MatMul/Softmax attention layers; committed ND KV retained')
-            with working_directory(root), torch.inference_mode():
-                torchair.dynamo_export(*model.example_inputs(), model=model, export_path='weight', export_name='export', dynamic=False)
+            from .torch_weight_export import external_weight_export, validate_external_weights
+            storage = None
+            try:
+                with external_weight_export() as storage:
+                    with working_directory(root), torch.inference_mode():
+                        torchair.dynamo_export(*model.example_inputs(), model=model, export_path='weight', export_name='export', dynamic=False)
+            finally:
+                if storage is not None:
+                    _save(root / 'weight-export.json', storage)
+                    result['weight_storage'] = {k: v for k, v in storage.items() if k != 'files'}
             # Relative export_path keeps FileConstant paths portable on the DDK
             # server; move only graph metadata, leaving the weight files in place.
             (root / 'weight/export.air').replace(root / 'export.air')
@@ -477,6 +502,7 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
             result['stage'] = 'air-validation'
             inspection = inspect_air(root / 'export.air', _schema(descriptor, metadata),
                                      expected_norms=32, require_int32_indices=True, expected_attention=result['attention'])
+            validate_external_weights(inspection, storage)
             if inspection['input_count'] != 17 or inspection['output_counts'] != [14]:
                 raise ValueError('TorchAir source boundary does not contain all 17 inputs / 14 outputs')
             _save(root / 'air-inspection.json', inspection)
@@ -594,6 +620,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
     schema = _schema(descriptor, metadata)
     inspection = inspect_air(source / 'export.air', schema,
                              expected_norms=32, require_int32_indices=True, expected_attention=manifest.get('attention'))
+    _check_weight_storage(source, manifest, inspection)
     def prepare_air(raw):
         from .air_reshape import fold_reshape_chains
         from .air_zeros import materialize_zeros
@@ -616,7 +643,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
         return prepared, evidence
     with _slot(output, OMC_KIND, replace) as root:
         result = {k: manifest[k] for k in ('context_rows', 'cache_capacity', 'max_draft_tokens', 'inputs', 'outputs', 'rms', 'gamma')}
-        for key in ('attention', 'optimization', 'projection', 'host_embedding'):
+        for key in ('attention', 'optimization', 'projection', 'host_embedding', 'weight_storage'):
             if key in manifest:
                 result[key] = manifest[key]
         result.update(artifact_kind=OMC_KIND, status='COMPILING', stage='compile', frontend='pytorch',

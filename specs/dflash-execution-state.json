@@ -3687,7 +3687,7 @@
       }
     },
     "host_embedding_candidate": {
-      "status": "HOST_CHECKED_SELECTED_DDK_AND_DEVICE_PENDING",
+      "status": "INLINE_EXPORT_FAILURE_REPAIRED_HOST_CHECKED_REEXPORT_PENDING",
       "policy": "packed-spatial-host-embedding",
       "run_id": "20261104T004345Z-29867-0cafbe",
       "source_math": "COPY_ORIGINAL_FP16_ANCHOR_AND_MASK_ROWS; UNIT_SCALE_ONLY",
@@ -3723,7 +3723,7 @@
       "numerical_validation": "NOT_RUN_ON_DEVICE",
       "performance": "NOT_MEASURED",
       "production_promotion": "NOT_PERFORMED",
-      "next": "EXPORT_COMPILE_INSPECT_WEIGHTS_AND_DEPENDENCIES; THEN_REBUILD_V2_ACCURACY_RUNNER_AND_VALIDATE",
+      "next": "REEXPORT_WITH_NATIVE_FILECONSTANT_STORAGE_THEN_COMPILE_AND_INSPECT_WEIGHTS_AND_DEPENDENCIES",
       "command_document": "docs/current-status.md",
       "experience_audit": {
         "captured": [
@@ -3736,6 +3736,29 @@
           "ACTUAL_DEVICE_MEMCPY_LIMIT_AND_COPY_ARGUMENTS_UNCONFIRMED",
           "WEIGHT_REDUCTION_AND_LATENCY_REQUIRE_SELECTED_COMPILER_AND_BOARD"
         ]
+      },
+      "inline_export_repair": {
+        "run_id": "20261104T010541Z-31378-5f4c04",
+        "observation": {
+          "source": "USER_REPORTED",
+          "stage": "air-validation",
+          "air_bytes": 1790366439,
+          "weight_files": 0,
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN"
+        },
+        "mechanism": "TORCHAIR_AUTOMATIC_INLINE_BELOW_1848_MIB_CONFIRMED_IN_PINNED_UPSTREAM; SELECTED_INSTALLED_SOURCE_NOT_YET_INSPECTED",
+        "policy": "native-torchair-fileconstant-v1",
+        "method": "PROCESS_LOCAL_NATIVE_STORAGE_DECISION; NO_SHARED_INSTALLATION_CHANGE; RESTORE_ON_SUCCESS_OR_EXCEPTION",
+        "retained_air": "REEXPORT_REQUIRED_NO_TRUSTED_ORIGINAL_PARAMETER_NAME_MAP",
+        "host_checks": {
+          "upstream_python_with_stub_GE": 15,
+          "protobuf_mock_export_compile_finalize": 15
+        },
+        "selected_torchair": "PENDING",
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "experience_audit": "MODEL_SPECIFIC_FORMAT_THRESHOLD_RECORDED; NO_SKILL_CHANGE_NEEDED"
       }
     }
   },
