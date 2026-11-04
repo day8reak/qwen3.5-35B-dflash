@@ -2,14 +2,14 @@
   "schema_version": 1,
   "operator": {
     "id": "draft-top1",
-    "display_name": "Qwen35DraftTop1",
+    "display_name": "StableArgMax",
     "names": [
-      "Qwen35DraftTop1"
+      "StableArgMax"
     ],
     "source_roots": [
-      "src/kernel",
-      "src/host",
-      "src/framework",
+      "op_kernel",
+      "op_host",
+      "python",
       "src/reference"
     ]
   },
@@ -29,14 +29,14 @@
   "target": {
     "platform": "kirinx90",
     "soc_or_device": "Huawei X90",
-    "core_type": "PENDING_SELECTED_DDK_CORE_CONFIGURATION",
+    "core_type": "AICORE_BLOCK_DIM_1_CANN_KIT_X90",
     "toolchain_identity": "USER_REPORTED_CPRO_100.520.020.010_HASH_COLLECTION_PENDING"
   },
   "model_replacement": {
-    "summary": "Standalone finite-logit full-vocabulary Top1 candidate; no Draft integration",
+    "summary": "Generic static last-axis finite FP16 Top1; Qwen fixed-shape acceptance configuration; no full Draft integration",
     "inputs": [
       {
-        "name": "logits",
+        "name": "x",
         "dtype": "float16",
         "shape": [
           1,
@@ -47,7 +47,7 @@
     ],
     "outputs": [
       {
-        "name": "tokens",
+        "name": "indices",
         "dtype": "int32",
         "shape": [
           1,
@@ -57,9 +57,12 @@
     ],
     "replaced_nodes": [],
     "excluded_semantics": [
-      "NaN/Inf logits",
-      "Other shapes",
-      "LM head changes",
+      "NaN/Inf input",
+      "TopK",
+      "Non-last-axis reduction",
+      "Other dtypes/layouts",
+      "Dynamic shapes in one OMC",
+      "310P execution without separate adapter validation",
       "Draft integration before standalone acceptance"
     ]
   },
@@ -72,20 +75,12 @@
       "ND_CONTIGUOUS_LITTLE_ENDIAN"
     ],
     "shapes": [
-      [
-        1,
-        15,
-        248320
-      ],
-      [
-        1,
-        15
-      ]
+      "STATIC_RANK_1_TO_8; POSITIVE_DIMS; NUMEL_LE_INT32_MAX; LAST_AXIS_REMOVED"
     ],
-    "batch": "FIXED_1_15_ROWS",
+    "batch": "LEADING_DIMS_FLATTENED_TO_ROWS",
     "weight_layout": "NO_WEIGHTS",
-    "alignment_and_padding": "7449600 input bytes; exactly60 output bytes; no allocation padding assumed; output tail/multi-core stores pending selected API",
-    "numeric_semantics": "FINITE_FP16_FIRST_MAXIMUM_EXACT_INT32"
+    "alignment_and_padding": "Valid-byte DataCopyPad reads/writes; no caller padding; 16 INT32 output slots; Qwen60B; UB32864B",
+    "numeric_semantics": "FINITE_FP16_FIRST_MAXIMUM_EXACT_INT32; FIXED_SHAPE_PER_COMPILE"
   },
   "environment": {
     "setup": "scripts/setup_env.sh",
@@ -100,7 +95,10 @@
     "golden": "scripts/gen_golden.sh",
     "compare": "scripts/compare.sh",
     "validate": "scripts/validate.sh",
-    "on_board": "scripts/run_on_board.sh"
+    "on_board": "scripts/run_on_board.sh",
+    "prepare": "scripts/prepare_project.py",
+    "torch_export": "scripts/export_probe.py",
+    "source_validation": "scripts/validate_source.py"
   },
   "documentation": {
     "contract": "docs/CONTRACT.md",
@@ -128,17 +126,28 @@
       "real_model": "PENDING",
       "hardware_latency": "PENDING"
     },
-    "scope": "Golden/compare gates are HOST_ONLY; device/kernel/registration not implemented",
+    "scope": "HOST_ONLY_REFERENCE_KERNEL_CONTROL_FLOW_AND_TORCH_EXPORT; SELECTED_DDK_BUILD_AND_DEVICE_PENDING",
     "host_evidence": {
-      "run_id": "20261104T075532Z-9847-483675",
-      "report": "evidence/host-final/host-validation.json",
-      "checks_passed": 35,
-      "scope": "HOST_ONLY_NO_KERNEL_OR_DEVICE"
+      "run_id": "20261104T083807Z-10795-c00fd7",
+      "reports": {
+        "source": "evidence/source-check-2/source-validation.json",
+        "reference": "evidence/host-check-2/host-validation.json",
+        "preparation": "evidence/prepare-check/validation.json",
+        "paste": "evidence/paste-check-final/validation.json",
+        "pt2_export": "evidence/pt2-probe/export-report.json"
+      },
+      "checks": {
+        "source": 63,
+        "reference": 35,
+        "preparation": 11,
+        "paste": 9
+      },
+      "scope": "HOST_ONLY; REDUCE_API_SHIM_AND_RECORDING_GE_STUB_ARE_NOT_DEVICE_PROOF"
     }
   },
   "performance": {
     "environment": "SELECTED_X90_CPRO_DDK_CONTEXT_PENDING",
-    "baseline": "HOST_EXECUTABLE_SPEC_ONLY_NO_DEVICE_BASELINE",
+    "baseline": "SOURCE_CANDIDATE_HOST_CHECKED; NO_DEVICE_BASELINE",
     "optimized": "NOT_STARTED",
     "measurement_scope": "STANDALONE_FULL_VOCABULARY_API_WALL_AND_SEPARATE_KERNEL_DIAGNOSIS",
     "user_target": "PURE_NPU_EXACT_TOP1; LATENCY_TARGET_PENDING_EQUIVALENT_BASELINE",
@@ -149,12 +158,12 @@
     "hardware_reference_policy": "use",
     "hardware_reference_opt_out": "N/A",
     "hardware_capacity_profile": "PENDING",
-    "pre_generation_roofline": "PENDING",
+    "pre_generation_roofline": "CAPACITY_UNAVAILABLE; evidence/pre-generation-work-ledger.json; NO_NUMERIC_ESTIMATE",
     "camodel_bottleneck_evidence": "PENDING",
     "pre_optimization_roofline": "PENDING",
     "semantic_classification": "EXACT_WITHIN_FINITE_FP16_CONTRACT",
     "approximation_approval": "N/A_NO_APPROXIMATION",
-    "external_change_approval": "USER_AUTHORIZED_BOUNDED_STANDALONE_CUSTOM_TOP1_AFTER_LAST_BUILTIN_FAILURE",
+    "external_change_approval": "USER_REQUESTED_OPS_SOURCE_HANDOFF_AND_GENERIC_TOP1_TORCH_META_EXPORT; TARGET_BUILD_INSTALL_USER_OPERATED",
     "optimized_on_board_evidence": "PENDING",
     "final_roofline": "PENDING",
     "roofline_status": "PENDING_MATCHING_X90_PROFILE; NO_FABRICATED_CAPACITY",
@@ -166,8 +175,11 @@
     "host_reference": "IMPLEMENTED_HOST_VALIDATED",
     "fixture_and_compare": "IMPLEMENTED_HOST_VALIDATED",
     "selected_ddk_collector": "IMPLEMENTED_SYNTHETIC_HOST_VALIDATED",
-    "kernel": "NOT_IMPLEMENTED",
-    "host_tiling": "NOT_IMPLEMENTED",
-    "framework_registration": "NOT_IMPLEMENTED"
+    "kernel": "IMPLEMENTED_SOURCE_CANDIDATE; HOST_CONTROL_FLOW_CHECKED; DDK_COMPILE_PENDING",
+    "host_tiling": "IMPLEMENTED_PUBLIC_CANN_KIT_SOURCE; DDK_COMPILE_PENDING",
+    "framework_registration": "TORCH_SCHEMA_META_GE_CONVERTER_IMPLEMENTED; REAL_PT2_EXPORT_PASSED; REAL_AIR_PENDING",
+    "build": "SELECTED_MSOPGEN_SOURCE_PROJECT_PREPARATION; USER_RUNS_VENDOR_BUILD_INSTALL",
+    "topk": "NOT_IMPLEMENTED_USER_SELECTED_TOP1_FIRST",
+    "ascend310p": "NOT_REGISTERED; FUTURE_DEVICE_ADAPTER_REQUIRED"
   }
 }

@@ -4,6 +4,6 @@ import json
 import sys
 print(json.dumps({"artifact_kind": "qwen35-custom-top1-target", "status": "PENDING",
     "model_compilation": "NOT_RUN", "device_execution": "NOT_RUN",
-    "reason": "Selected X90 registration/build adapter and device kernel are not implemented",
-    "next": "Run scripts/inspect_ddk.py once and return ddk-context.tar.gz"}))
+    "reason": "Source is supplied; a compiled OMC and bound device runner are still required",
+    "next": "Prepare and compile StableArgMax with the selected SDK, then validate the standalone OMC"}))
 sys.exit(2)

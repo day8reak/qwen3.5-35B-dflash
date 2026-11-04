@@ -33,8 +33,8 @@ def validate(output):
     blocked = subprocess.run(['bash', str(operator / 'scripts/build.sh')],
                              capture_output=True, text=True)
     assert blocked.returncode == 2
-    assert json.loads(blocked.stdout)['model_compilation'] == 'NOT_RUN'
-    passed('build_blocks_without_selected_adapter')
+    assert '--output' in blocked.stderr
+    passed('build_requires_explicit_new_project_output')
     command = shlex.split(os.environ.get('CXX', 'c++')) + [
         '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror',
         str(operator / 'src/reference/top1_cpu.cpp'), '-o', str(binary)]
@@ -151,7 +151,7 @@ def validate(output):
         'compiler_command': command, 'cpu_binary_sha256': reference.sha(binary),
         'fixture_manifest_sha256': reference.sha(manifest_file),
         'checks_passed': len(checks), 'checks': checks,
-        'npu_only_top1': 'PENDING_SELECTED_DDK_KERNEL_AND_REGISTRATION'}
+        'npu_only_top1': 'PENDING_SELECTED_DDK_BUILD_AND_DEVICE_VALIDATION'}
     (output / 'host-validation.json').write_text(json.dumps(report, indent=2) + '\n')
     return report
 

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "operators_root": "targets/cpro/operators",
+  "operators_root": "targets/cpro/ops",
   "branch_prefix": "operator",
   "default_base_branch": "main",
   "environment_policy": "target-managed",

@@ -2,7 +2,7 @@
 
 2026-11-04，用户回传最后内置Bitcast批次：payload在OMG NPU预构建的tokens_bits失败，当前注册为INT32→INT4，与FP16入口不匹配；offset65500和full两项SKIPPED/NOT_RUN。没有有效新OMC、落点或设备结果，停止扩展内置候选。此结果满足用户“再试一次，不行就写算子”的授权条件。
 
-已建立 `targets/cpro/operators/draft-top1`，固定有限FP16[1,15,248320]→精确INT32[1,15]。主机run `20261104T075532Z-9847-483675`：35项检查通过，七组完整尺寸fixture由NumPy/PyTorch直接ArgMax与独立C++ binary16整数排序交叉验证；70个复制输出仅用于比较器损坏/缺失/填充/伪造golden拒绝测试。只读DDK收集器验证了源码哈希、内部链接去重、外部链接拒绝、预算及不覆盖保护。源码与参考已落地，NPU kernel/tiling/注册尚未实现；当前缺选定内部DDK的接口与构建证据，本地profile也不可用。一次收集命令和bundle见[当前进展](current-status.md)。未改变完整Draft，未运行设备，也未给出性能收益。
+已建立 `targets/cpro/ops/draft-top1`，固定有限FP16[1,15,248320]→精确INT32[1,15]。主机run `20261104T075532Z-9847-483675`：35项检查通过，七组完整尺寸fixture由NumPy/PyTorch直接ArgMax与独立C++ binary16整数排序交叉验证；70个复制输出仅用于比较器损坏/缺失/填充/伪造golden拒绝测试。只读DDK收集器验证了源码哈希、内部链接去重、外部链接拒绝、预算及不覆盖保护。源码与参考已落地，NPU kernel/tiling/注册尚未实现；当前缺选定内部DDK的接口与构建证据，本地profile也不可用。一次收集命令和bundle见[当前进展](current-status.md)。未改变完整Draft，未运行设备，也未给出性能收益。
 
 2026-11-04，按用户“你再尝试一下？实在不行那我们就写算子”实现最后一轮内置候选：用两个FP16存储字携带INT32原始位，比较／选择树只搬运索引片段，最后GE Bitcast还原INT32。三项固定顺序为全ID双分支位模式、65500偏移的15×485奇数尾归约、完整词表Top1。前置编译或纯NPU检查失败会跳过后续编译；完整图只有全部NPU任务且无未归属主图计算才是候选。设备准备要求三项一起验证并重新检查落点。该路径有意避开旧INT32 Select／Mul／Add及BOOL→INT32 Cast，禁止对载荷字做浮点计算或转换；载荷中的NaN位模式也必须逐字节保留。
 
@@ -790,3 +790,7 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 | `draft_top1(ArgMaxExt2)` | cpu | 13.058 ms |
 
 `v20`对应入口特征投影。新C16图沿用Conv2D表达，当前记录70.968ms；两个算子记录约相差4倍，不等于端到端4倍加速。后续以新CSV检查投影、全词表head／Top1与CPU/NPU调度；不把跨stream算子时间直接求和，也不据4B比例承诺50ms。
+
+## 2026-11-04 通用 Top1 源码交付
+
+[StableArgMax](../targets/cpro/ops/draft-top1/README.md) 已含 AscendC kernel、host注册/tiling、Torch schema/Meta/GE converter、所选msopgen工程准备。支持合同扩展为静态rank1–8的有限FP16最后维Top1，Qwen为一个验收配置。源码控制流/真实Torch export63项、原参考工具35项、准备工具11项、文本回传9项主机检查通过；这些不证明厂商编译或NPU行为。用户负责复制和在所选DDK编译安装，真实AIR/OMG/设备/性能待验证。TopK与310P适配未实现，完整Draft不变。

@@ -1,0 +1,11 @@
+[
+  {
+    "op": "StableArgMax",
+    "input_desc": [
+      {"name": "x", "param_type": "required", "format": ["ND"], "type": ["fp16"]}
+    ],
+    "output_desc": [
+      {"name": "indices", "param_type": "required", "format": ["ND"], "type": ["int32"]}
+    ]
+  }
+]

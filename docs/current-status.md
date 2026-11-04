@@ -4,19 +4,11 @@
 
 最后内置路线已结束：用户报告 `top1_bits_payload` 在OMG的NPU预构建阶段失败。选中的Bitcast配置是INT32→INT4，与请求的FP16入口不匹配；后两项树按依赖跳过，未编译。没有新的OMC或设备结果，不能据此推断所有X90 Bitcast均不可用。
 
-按用户“最后再试一次，不行就写算子”的条件授权，已建立[自定义Top1](../targets/cpro/operators/draft-top1/README.md)。固定FP16[1,15,248320]→INT32[1,15]、有限logits、完整词表、并列取最小索引。主机参考、七组完整尺寸fixture、严格比较器与只读DDK收集器已完成；NPU内核、tiling和注册尚未实现。35项主机检查通过，不是设备验证。
+已按用户要求交付[ops自定义Top1源码](../targets/cpro/ops/draft-top1/README.md)，采用通用`StableArgMax`：有限连续FP16，静态rank1–8沿最后维归约，INT32输出，同值取小索引。Qwen `[1,15,248320]` 为验收配置。已包含kernel、host tiling/注册、Torch schema/Meta、GE converter和msopgen工程准备；TopK与310P执行适配暂不实现。
 
-本地无用户选定内部DDK；其注册配置与公开GE不一致。下一步一次收集自定义样例、注册、构建、联合归约及60字节输出的尾写接口，避免猜ABI：
+主机源码控制流/Torch导出63项、参考工具35项、工程准备11项、文本回传9项通过；真实pt2已导出。所选DDK编译、AIR/OMC、设备数值和性能仍待用户执行，不是已验证纯NPU实现。完整Draft未改变。
 
-```bash
-git pull --ff-only origin main
-python3 "$REPO_DIR/targets/cpro/operators/draft-top1/scripts/inspect_ddk.py" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --compile-environment "$AI_RUN_DIR/draft/tests/top1-last-builtin/top1_bits_payload/omc/omg-environment.json" \
-  --output "$AI_RUN_DIR/draft/tests/custom-top1-ddk"
-```
-
-返回该目录的 `ddk-context.tar.gz`（完整源码和报告），只粘贴summary不足以写接入代码。收集不编译、不导入vendor模块、不连接设备、不修改SDK或覆盖已有输出。没有继续扩大内置探针矩阵。独立设备与整模型接入仍待验证，残差AddCustom保持暂停。
+下一步在算子编译主机整体复制目录，用所选CANN Kit的msopgen生成工程，再运行厂商build.sh安装；具体命令在上述README。无需发送SDK压缩包，也不再扩大内置探针矩阵。
 
 21项Top1编译矩阵、9个OMC的61例设备语义／时延验证均已完成，无需重复启动或回收这批任务。用户报告610次测量调用全部成功，输出重复稳定；原完整比较标准下45例通过、16例失败。
 

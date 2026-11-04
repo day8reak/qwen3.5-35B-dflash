@@ -21,7 +21,7 @@
       "tests"
     ],
     "operator": [
-      "targets/cpro/operators",
+      "targets/cpro/ops",
       "targets/cpro/abi",
       "specs"
     ],

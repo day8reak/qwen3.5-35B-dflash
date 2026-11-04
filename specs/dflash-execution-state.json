@@ -6674,9 +6674,9 @@
         }
       },
       "custom_top1": {
-        "status": "ENVIRONMENT_PENDING",
-        "operator_dir": "targets/cpro/operators/draft-top1",
-        "run_id": "20261104T075532Z-9847-483675",
+        "status": "SOURCE_DELIVERED_TARGET_VALIDATION_PENDING",
+        "operator_dir": "targets/cpro/ops/draft-top1",
+        "run_id": "20261104T083807Z-10795-c00fd7",
         "authorization": "LAST_BUILTIN_FAILURE_TRIGGERED_USER_APPROVED_CUSTOM_TOP1",
         "host_validation": {
           "status": "PASSED",
@@ -6688,12 +6688,23 @@
           "synthetic_files_are_device_evidence": false
         },
         "kernel_build": "NOT_RUN",
-        "kernel_implementation": "NOT_IMPLEMENTED",
+        "kernel_implementation": "STABLE_ARG_MAX_SOURCE_WITH_HOST_TILING_AND_TORCH_META_GE_CONVERTER",
         "device_execution": "NOT_RUN",
         "full_draft_changed": false,
-        "blocker": "SELECTED_INTERNAL_X90_DDK_REGISTRATION_BUILD_REDUCTION_OUTPUT_TAIL_CONTEXT_UNAVAILABLE_LOCALLY",
-        "next": "ONE_READ_ONLY_SELECTED_DDK_CONTEXT_BUNDLE; NO_MORE_BUILTIN_SHAPE_PROBES",
-        "command": "python3 \"$REPO_DIR/targets/cpro/operators/draft-top1/scripts/inspect_ddk.py\" --ddk-root \"$CPRO_DDK_ROOT\" --compile-environment \"$AI_RUN_DIR/draft/tests/top1-last-builtin/top1_bits_payload/omc/omg-environment.json\" --output \"$AI_RUN_DIR/draft/tests/custom-top1-ddk\""
+        "blocker": "SELECTED_DDK_BUILD_AIR_OMC_AND_DEVICE_PENDING_USER_EXECUTION",
+        "next": "COPY_OPS_SOURCE; SELECTED_MSOPGEN_PREPARE_AND_VENDOR_BUILD; NO_ARCHIVE_REQUIRED",
+        "command": "python3 \"$REPO_DIR/targets/cpro/ops/draft-top1/scripts/prepare_project.py\" --ddk-root \"$CPRO_DDK_ROOT\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-build\"",
+        "torch_op": "custom_ops::stable_arg_max",
+        "ge_type": "StableArgMax",
+        "generic_contract": "FINITE_FP16_STATIC_RANK1_TO8_LAST_AXIS_INT32_FIRST_MAXIMUM; NUMEL_LE_INT32_MAX",
+        "source_validation": {
+          "kernel_host_and_export_checks": 63,
+          "project_preparation_checks": 11,
+          "text_handoff_checks": 9,
+          "scope": "HOST_ONLY_NO_VENDOR_COMPILE_OR_DEVICE"
+        },
+        "topk": "DEFERRED_USER_CONFIRMED_TOP1_FIRST",
+        "ascend310p": "FUTURE_ADAPTER_NOT_REGISTERED"
       }
     }
   },

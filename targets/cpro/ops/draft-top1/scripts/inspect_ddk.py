@@ -46,7 +46,7 @@ def priority(path):
     return 5
 
 
-def inspect(root, output, compile_environment=None, source_roots=()):
+def inspect(root, output, compile_environment=None, source_roots=(), *, make_archive=True):
     root, output = Path(root).resolve(strict=True), Path(output).resolve()
     if not root.is_dir():
         raise ValueError('DDK root must be a directory')
@@ -213,16 +213,104 @@ def inspect(root, output, compile_environment=None, source_roots=()):
     if report['unresolved']:
         report['status'] = 'PARTIAL'
     (output / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
-    archive = output / 'ddk-context.tar.gz'
-    with tarfile.open(archive, 'w:gz') as tar:
-        tar.add(output / 'report.json', arcname='report.json')
-        tar.add(output / 'sources', arcname='sources')
     summary = {key: report[key] for key in ('artifact_kind', 'status', 'scope', 'ddk_root',
         'model_compilation', 'device_execution', 'unresolved', 'used', 'next')}
-    summary.update(report=str(output / 'report.json'), bundle=str(archive),
-                   bundle_sha256=digest(archive.read_bytes()))
+    summary.update(report=str(output / 'report.json'), bundle=None, bundle_sha256=None)
+    if make_archive:
+        archive = output / 'ddk-context.tar.gz'
+        with tarfile.open(archive, 'w:gz') as tar:
+            tar.add(output / 'report.json', arcname='report.json')
+            tar.add(output / 'sources', arcname='sources')
+        summary.update(bundle=str(archive), bundle_sha256=digest(archive.read_bytes()))
     (output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     return summary
+
+
+def paste_report(report_path, ddk_root=None, max_chars=30000):
+    """Render retained excerpts only: no SDK reads, archive or output mutation.
+
+    Give each ABI question its own budget so a large registration file cannot
+    crowd out reduction or output-tail declarations. Report every omission.
+    """
+    if not 6000 <= max_chars <= 60000:
+        raise ValueError('paste size must be between 6000 and 60000 characters')
+    report_path = Path(report_path)
+    with report_path.open('rb') as stream:
+        raw = stream.read(8 * 1024 * 1024 + 1)
+    if len(raw) > 8 * 1024 * 1024:
+        raise ValueError('saved report exceeds 8 MiB')
+    report = json.loads(raw)
+    if (report.get('artifact_kind') != 'qwen35-custom-top1-ddk-context'
+            or report.get('platform') != 'kirinx90'
+            or not isinstance(report.get('ddk_root'), str)
+            or not isinstance(report.get('topic_evidence'), dict)):
+        raise ValueError('not a selected X90 custom Top1 context report')
+    if ddk_root and Path(report['ddk_root']).resolve() != Path(ddk_root).resolve():
+        raise ValueError('saved report belongs to a different DDK; do not reuse it')
+    # Paths are displayed from the retained report. Never follow them here.
+    header = {key: report.get(key) for key in ('artifact_kind', 'status', 'platform',
+        'ddk_root', 'declared_ddk_id', 'collector_sha256', 'compile_environment', 'unresolved')}
+    header.update(presentation='BOUNDED_RETAINED_EXCERPTS_NOT_COMPLETE_SOURCES',
+                  saved_report_sha256=digest(raw), sdk_rescan='NOT_RUN',
+                  model_compilation='NOT_RUN', device_execution='NOT_RUN')
+    # A character limit, not a byte limit; JSON is printed without cutting tokens.
+    text = 'BEGIN CUSTOM TOP1 DDK TEXT\n' + json.dumps(header, ensure_ascii=False) + '\n'
+    if len(text) > max_chars // 4:
+        raise ValueError('saved report metadata too large for the paste budget')
+    omitted = {}
+    section_budget = (max_chars - len(text) - 2000) // len(TOPICS)
+    for topic in TOPICS:
+        entries = report['topic_evidence'].get(topic, [])
+        if not isinstance(entries, list):
+            raise ValueError('invalid retained topic: ' + topic)
+        section = '\n[' + topic + ']\n'
+        if not entries:
+            section += 'NO_RETAINED_EVIDENCE; not a hardware-support conclusion\n'
+        shown_files, shown_lines = 0, 0
+        # Split the topic budget across up to three sources; at small limits,
+        # show one useful excerpt instead of three headers with no code.
+        picked = entries[:max(1, min(3, section_budget // 1200))]
+        per_file = max(0, (section_budget - len(section) - 120) // max(1, len(picked)))
+        for entry in picked:
+            chunk = 'FILE ' + json.dumps(entry['path'], ensure_ascii=False) + '\nSHA256 ' + entry['sha256'] + '\n'
+            if len(chunk) + 100 > per_file:
+                continue
+            lines = entry['lines']
+            selected = []
+            # Keep context around actual topic matches ahead of unrelated text.
+            hit_positions = [i for i, line in enumerate(lines) if PATTERNS[topic].search(line['text'])]
+            indices = []
+            for i in hit_positions:
+                indices.extend(range(max(0, i - 2), min(len(lines), i + 7)))
+            indices.extend(range(len(lines)))
+            count = len(chunk)
+            for i in dict.fromkeys(indices):
+                line = lines[i]
+                rendered = f"{line['line']}: {line['text']}\n"
+                if count + len(rendered) + 100 > per_file:
+                    continue
+                selected.append((i, rendered))
+                count += len(rendered)
+            chunk += ''.join(line for _, line in sorted(selected))
+            chunk += f"[retained lines shown {len(selected)}/{len(lines)}; full source not printed]\n"
+            section += chunk
+            shown_files += 1
+            shown_lines += len(selected)
+        total_lines = sum(len(e['lines']) for e in entries)
+        omitted[topic] = {'files': len(entries) - shown_files, 'lines': total_lines - shown_lines}
+        section += f'[retained files shown {shown_files}/{len(entries)}]\n'
+        text += section
+    footer = '\nOMITTED_FROM_TEXT ' + json.dumps(omitted) + '\n'
+    notes = report.get('notes', [])
+    footer += 'COLLECTION_NOTES ' + json.dumps(notes[:4], ensure_ascii=False) + '\n'
+    footer += f'[collection notes shown {min(4, len(notes))}/{len(notes)}]\nEND CUSTOM TOP1 DDK TEXT\n'
+    if len(text) + len(footer) > max_chars:
+        # Metadata/diagnostics can contain arbitrary long filenames; keep the
+        # evidence and omission counts, instead of silently truncating JSON.
+        footer = '\nOMITTED_FROM_TEXT ' + json.dumps(omitted) + '\nCOLLECTION_NOTES omitted for size\nEND CUSTOM TOP1 DDK TEXT\n'
+    if len(text) + len(footer) > max_chars:
+        raise ValueError('saved report exceeds bounded rendering budget')
+    return text + footer
 
 
 def main():
@@ -231,10 +319,23 @@ def main():
     parser.add_argument('--compile-environment')
     parser.add_argument('--source-root', action='append', default=[], help='explicit additional vendor sample/config root')
     parser.add_argument('--output', required=True)
+    parser.add_argument('--paste', action='store_true', help='print bounded text; reuse report.json if present, otherwise collect without archive')
+    parser.add_argument('--max-chars', type=int, default=30000, help='paste limit, 6000..60000 (default 30000)')
     args = parser.parse_args()
+    if not 6000 <= args.max_chars <= 60000:
+        parser.error('--max-chars must be between 6000 and 60000')
+    saved = Path(args.output) / 'report.json'
+    if args.paste and saved.is_file():
+        print(paste_report(saved, args.ddk_root, args.max_chars), end='')
+        return
     if not args.ddk_root:
         parser.error('set CPRO_DDK_ROOT or pass --ddk-root')
-    print(json.dumps(inspect(args.ddk_root, args.output, args.compile_environment, args.source_root)))
+    summary = inspect(args.ddk_root, args.output, args.compile_environment, args.source_root,
+                      make_archive=not args.paste)
+    if args.paste:
+        print(paste_report(saved, args.ddk_root, args.max_chars), end='')
+    else:
+        print(json.dumps(summary))
 
 
 if __name__ == '__main__':
