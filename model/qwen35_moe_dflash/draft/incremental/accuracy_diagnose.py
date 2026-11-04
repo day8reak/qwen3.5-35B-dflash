@@ -42,9 +42,13 @@ def _controls(fixture, meta):
     if len(records) != len(meta['input_files']):
         raise ValueError('duplicate fixture input records')
     slots = {r['name']: r['index'] for r in meta['inputs']}
+    controls = [('start_position', 'start'), ('valid_rows', 'valid'),
+                ('anchor', 'anchor'), ('proposal_count', 'proposals')]
+    block = next((r for r in meta['inputs'] if r['name'] == 'block_embeddings'), None)
+    if block is not None:
+        controls.remove(('anchor', 'anchor'))
     for step in meta['cases']:
-        for role, key in (('start_position', 'start'), ('valid_rows', 'valid'),
-                          ('anchor', 'anchor'), ('proposal_count', 'proposals')):
+        for role, key in controls:
             slot = slots[role]
             record = records[(step['index'], slot)]
             if record['path'] != f"inputs/{step['index']}/{slot}.bin" or record['bytes'] != 4:
@@ -52,9 +56,18 @@ def _controls(fixture, meta):
             value = int(np.fromfile(checked_file(fixture, record), dtype='<i4')[0])
             if value != step[key]:
                 raise ValueError('fixture control differs from schedule: ' + role)
-    return dict(cases=len(meta['cases']), slots={n: slots[n] for n in
-        ('start_position', 'valid_rows', 'anchor', 'proposal_count')},
+        if block is not None:
+            record = records[(step['index'], block['index'])]
+            if (record['path'] != f"inputs/{step['index']}/{block['index']}.bin"
+                    or record['bytes'] != block['bytes']):
+                raise ValueError('fixture embedding path/extent differs')
+            checked_file(fixture, record)
+    result = dict(cases=len(meta['cases']), slots={n: slots[n] for n, _ in controls},
         status='HASH_AND_VALUE_MATCH', scope='RETAINED_INPUT_FILES_NOT_DEVICE_READBACK')
+    if block is not None:
+        result['block_embeddings'] = dict(slot=block['index'], status='HASH_AND_EXTENT_MATCH',
+            anchor='SCHEDULE_ID; NO_SCALAR_ANCHOR_INPUT_IN_THIS_ABI')
+    return result
 
 
 def _embedding_rows(source, fixture, meta):

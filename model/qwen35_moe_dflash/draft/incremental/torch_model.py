@@ -32,16 +32,19 @@ class IncrementalDraft(nn.Module):
         super().__init__()
         self.config = c = draft.config
         _validate(c, context_rows, cache_capacity, True, max_draft_tokens)
-        self.draft, self.embedding, self.head = draft, embedding, head
+        self.host_embedding = optimization == 'packed-spatial-host-embedding'
+        if self.host_embedding and c.input_embedding_scale != 1.0:
+            raise ValueError('host embedding candidate requires the original unit embedding scale')
+        self.draft, self.embedding, self.head = draft, None if self.host_embedding else embedding, head
         self.context_rows, self.capacity, self.k = context_rows, cache_capacity, max_draft_tokens
         self.rms = rms
         self.optimization = optimization_contract(optimization)
         self.packed = optimization != 'baseline'
-        self.spatial_projection = optimization in ('packed-spatial', 'packed-spatial-4d', 'packed-spatial-controls', 'packed-spatial-rope-table')
-        self.rank4_spatial = optimization in ('packed-spatial-4d', 'packed-spatial-controls', 'packed-spatial-rope-table')
+        self.spatial_projection = self.host_embedding or optimization in ('packed-spatial', 'packed-spatial-4d', 'packed-spatial-controls', 'packed-spatial-rope-table')
+        self.rank4_spatial = self.host_embedding or optimization in ('packed-spatial-4d', 'packed-spatial-controls', 'packed-spatial-rope-table')
         self.shared_masks = self.rank4_spatial
-        self.integer_controls = optimization in ('packed-spatial-controls', 'packed-spatial-rope-table')
-        self.phase_table = optimization == 'packed-spatial-rope-table'
+        self.integer_controls = self.host_embedding or optimization in ('packed-spatial-controls', 'packed-spatial-rope-table')
+        self.phase_table = self.host_embedding or optimization == 'packed-spatial-rope-table'
         if self.packed:
             if attention_kernel is not None:
                 raise ValueError('packed optimization requires composed attention')
@@ -179,8 +182,14 @@ class IncrementalDraft(nn.Module):
         local = local.int()
         write = ((self.cache_positions >= start_position) & (self.cache_positions < end)).reshape(1, 1, self.capacity, 1)
         write = write.int().expand(1, c.num_key_value_heads, self.capacity, c.head_dim).bool()
-        ids = torch.cat((anchor.reshape(1, 1), self.mask_tokens), dim=1)
-        hidden = self.embedding(ids.int()) * c.input_embedding_scale
+        # This optional ABI uses the fourth argument for byte-preserved rows
+        # [anchor, MASK, ...], not an anchor ID. The complete table stays out
+        # of the compiled graph; the baseline token-ID ABI remains available.
+        if self.host_embedding:
+            hidden = anchor
+        else:
+            ids = torch.cat((anchor.reshape(1, 1), self.mask_tokens), dim=1)
+            hidden = self.embedding(ids.int()) * c.input_embedding_scale
         context = self.norm(self.project_features(target_features), self.draft.hidden_norm)
         if self.packed:
             context_rope = self.control_rope(context_positions, context.dtype)
@@ -279,6 +288,9 @@ class IncrementalDraft(nn.Module):
 
     def abi(self):
         contract = incremental_draft_abi(self.config, self.context_rows, self.capacity, max_draft_tokens=self.k)
+        if self.host_embedding:
+            contract['graph']['inputs'][3] = dict(name='block_embeddings', dtype='float16',
+                                                 shape=[1, self.k + 1, self.config.hidden_size])
         return {direction: contract['graph'][direction] for direction in ('inputs', 'outputs')}
 
     def example_inputs(self):

@@ -19,6 +19,10 @@ def validate_abi(value):
         raise ValueError('incremental runtime requires C16/C64, capacity<=4096, K1/3/7/15')
     inputs = [('target_features', 'float16', [1, c, 16384])]
     inputs += [(name, 'int32', [1]) for name in ('start_position', 'valid_rows', 'anchor', 'proposal_count')]
+    if value.get('optimization', {}).get('policy') == 'packed-spatial-host-embedding':
+        from .optimization import manifest_policy
+        manifest_policy(value)
+        inputs[3] = ('block_embeddings', 'float16', [1, k + 1, 2048])
     outputs = [('draft_top1', 'int32', [1, k]), ('draft_hidden', 'float16', [1, k, 2048])]
     banks = [(f'{kind}_{layer}', 'float16', [1, 8, capacity, 128]) for layer in range(6) for kind in ('k', 'v')]
     inputs += [('past_' + n, dt, shape) for n, dt, shape in banks]

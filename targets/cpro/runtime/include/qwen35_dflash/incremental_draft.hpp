@@ -12,7 +12,7 @@ struct IncrementalDraftAbi {
   std::vector<HiaiTensorSpec> inputs, outputs;
   bool enabled() const { return context_rows!=0; }
   std::size_t bank_bytes() const { return std::size_t(8)*capacity*128*2; }
-  void Validate() const {
+  void Validate(bool block_embeddings=false) const {
     if((context_rows!=16&&context_rows!=64)||capacity<context_rows||capacity>4096||
        (candidates!=1&&candidates!=3&&candidates!=7&&candidates!=15))
       throw std::invalid_argument("unsupported incremental Draft geometry");
@@ -20,6 +20,9 @@ struct IncrementalDraftAbi {
       {"target_features","float16",{1,context_rows,16384}},
       {"start_position","int32",{1}},{"valid_rows","int32",{1}},
       {"anchor","int32",{1}},{"proposal_count","int32",{1}}};
+    // Only the version-2 standalone accuracy plan opts into this ABI.
+    // Existing resident token-ID callers retain strict default validation.
+    if(block_embeddings) expected_in[3]={"block_embeddings","float16",{1,candidates+1,2048}};
     std::vector<HiaiTensorSpec> expected_out={
       {"draft_top1","int32",{1,candidates}},
       {"draft_hidden","float16",{1,candidates,2048}}};

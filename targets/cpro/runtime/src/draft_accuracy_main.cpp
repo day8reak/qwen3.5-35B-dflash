@@ -11,7 +11,7 @@ namespace fs=std::filesystem;
 using namespace qwen35::dflash;
 using Bytes=std::vector<std::uint8_t>;
 struct Step { unsigned index,start,valid,anchor,proposals; };
-struct Plan { IncrementalDraftAbi abi; std::vector<Step> steps; };
+struct Plan { IncrementalDraftAbi abi; std::vector<Step> steps; bool block_embeddings=false; };
 
 unsigned Number(const std::string& value) {
   if(value.empty()||value.size()>10||value.find_first_not_of("0123456789")!=std::string::npos)
@@ -25,8 +25,9 @@ Plan ReadPlan(const fs::path& path) {
     throw std::invalid_argument("missing/oversized accuracy plan");
   std::ifstream file(path);std::string line;
   std::getline(file,line);
-  if(line!="QWEN35_INCREMENTAL_ACCURACY 1")throw std::invalid_argument("invalid accuracy header");
   Plan p;bool geometry=false;
+  if(line=="QWEN35_INCREMENTAL_ACCURACY 2")p.block_embeddings=true;
+  else if(line!="QWEN35_INCREMENTAL_ACCURACY 1")throw std::invalid_argument("invalid accuracy header");
   while(std::getline(file,line)) {
     std::istringstream input(line);std::vector<std::string> f;std::string v;
     while(input>>v)f.push_back(v);
@@ -40,7 +41,7 @@ Plan ReadPlan(const fs::path& path) {
       while(std::getline(dimensions,v,','))s.shape.push_back(Number(v));
       rows.push_back(std::move(s));
     } else if(f[0]=="case"&&f.size()==6&&geometry) {
-      p.abi.Validate();
+      p.abi.Validate(p.block_embeddings);
       Step s{Number(f[1]),Number(f[2]),Number(f[3]),Number(f[4]),Number(f[5])};
       unsigned cursor=p.steps.empty()?0:p.steps.back().start+p.steps.back().valid;
       if(s.index!=p.steps.size()||s.start!=cursor||s.valid>p.abi.context_rows||
@@ -50,7 +51,7 @@ Plan ReadPlan(const fs::path& path) {
       p.steps.push_back(s);
     } else throw std::invalid_argument("unknown accuracy plan row");
   }
-  p.abi.Validate();
+  p.abi.Validate(p.block_embeddings);
   if(p.steps.empty()||p.abi.capacity>512)throw std::invalid_argument("accuracy needs cases and capacity<=512");
   return p;
 }

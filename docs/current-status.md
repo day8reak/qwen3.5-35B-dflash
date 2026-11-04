@@ -1,16 +1,26 @@
 # 当前阶段测试命令
 
-目标为C16／cap192／K15常驻同步API预热后平均≤50ms，加载与初始catchup另计。用户已接受最差hidden相对L2 2.61%、Top1 7/172差异作为性能基线；原NUMERICAL_FAILED和golden保留。
+目标为C16／cap192／K15常驻预热后平均≤50ms。继续记录同步API，并单列输入准备／提交开销，不能把移到Process之外的工作当作消失。加载与初始catchup另计。已接受的性能基线仍保留原NUMERICAL_FAILED、golden和门槛。
 
 `packed-spatial-rope-table` 已由用户完成编译产物的只读检查：OMC为2808047355字节，SHA256 `a045f7629920fd962d21c8ce694b1ee694a3be61942c4cac6a556f00cc631027`。CPUCL3／NPUCL2变为CPUCL2／NPUCL1，中间CPU两个Mul和回流依赖消失，`intermediate_cpu_partitions=[]`。当前结构是前置CPU控制→一个NPU主体→末尾CPU ArgMax；仅剩logits这条NPU→CPU路径。NPU分区20输入／14输出是内部边界，不是公共输入数量。
 
 该模型随后在MODEL_LOAD失败，尚未进入推理。执行cc7399ff087d40be8e647bcdd2f46a7c已回收，锁已释放。日志候选报告单个NPU分区权重2806299136字节（2.614 GiB），随后memcpy_s失败并终止AllocateWeightMemory。公开Secure C默认单次destMax上限为0x7fffffff；大权重块触及拷贝上限是当前优先假设，实际设备库和本次拷贝参数仍未核实。见[结果](results.md)。
 
-## 现在执行：限制分区大小的编译对照
+用户随后确认：显式--limit-partition-size true仍生成2806299136字节的单NPU权重块，被打包前检查拒绝。所选OMG帮助说明true本来就是默认值，不能继续靠这个开关实现2GiB拆分。
 
-更新代码，沿用已有REPO_DIR、AI_RUN_DIR、CPRO_DDK_ROOT、CPRO_DDK_ID。保留现有相位表AIR、原始权重和native runner，仅重编OMC。新增显式--limit-partition-size true传给所选OMG；省略时保留原来的编译选项。该候选允许多个NPU分区，重点是每个权重块受控且无中间CPU回流。
+## 现在执行：将embedding查表移到模型输入侧
+
+新增显式候选packed-spatial-host-embedding，沿用相位表和原FP16权重。调用前复制[anchor, MASK×K]对应行，以float16[1,K+1,2048]的block_embeddings替换anchor ID输入；仍17输入／14输出。完整embedding表不再作为NPU常量，LM head、六层计算和KV规则保留。K15输入块65536字节，embedding原表1017118720字节；旧NPU块减表约1789180416字节，仅为估计，须查看新编译结果。
+
+更新代码后，沿用已有REPO_DIR、AI_RUN_DIR、CPRO_DDK_ROOT、CPRO_DDK_ID。固定测试槽位上一任务已完成，可用--replace；原prepared权重、公共可运行模型及失败结果保留。
 
 ```bash
+python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
+  --prepared "$AI_RUN_DIR/draft/source/prepared" --frontend pytorch \
+  --optimization packed-spatial-host-embedding \
+  --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 \
+  --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-air" --replace
+
 python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
   --air-export "$AI_RUN_DIR/draft/tests/pytorch-optimized-air" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
@@ -19,7 +29,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-omc" --replace
 ```
 
-编译摘要新增compiler_options和partition_weights。启用true后，所有GraphOp权重大小须可读且不超过2147483647字节，否则保留编译产物、在partition-weight-check停止，不打包成可执行候选。此阈值是本轮诊断条件，不是设备分配或拷贝参数的实测结果。OMG支持情况和具体分区方式以所选工具结果为准。
+true保留以启用本项目打包前的权重大小检查，不再把它当作新增拆分策略。所有GraphOp权重大小须可读且≤2147483647字节，否则在partition-weight-check停止，不发布可执行候选。此阈值是诊断条件，不是设备拷贝参数的实测结果。
 
 编译成功后顺序执行只读检查：
 
@@ -34,6 +44,8 @@ python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
   --output "$AI_RUN_DIR/draft/tests/pytorch-optimized-dependencies.json"
 ```
 
-回传编译和依赖摘要，确认每个权重块大小以及intermediate_cpu_partitions为空，再验证新OMC能否加载、数值及同步API时延。当前失败尝试已完成，不重复apply或recover；原失败日志保留在pytorch-optimized-result，编译不会重用该槽位。
+本阶段回传编译与依赖摘要，核对每个权重块及intermediate_cpu_partitions为空。之后重建共享native runner以支持accuracy plan v2，再执行原isolated／feedback比较；旧runner只支持v1，不能直接用于新输入。新ABI目前仅接入独立accuracy候选，生产resident仍使用原token-ID接口。
 
-上一已测4d仍是profile184.568ms、算子汇总78.986ms。相位表和新分区限制均无设备数值或性能结论，105.582ms差额未归因；原golden、误差门槛和50ms目标保留。
+新accuracy在服务器准备原FP16 embedding输入文件，独立参考仍按token ID查表。API统计不含该查表、文件读取和输入提交，报告会明确标注；不能用它单独证明端侧完整调用≤50ms。后续端侧接入需复用本地embedding资源、缓存MASK行，并测输入准备＋提交＋同步API。
+
+主机六层缩小尺寸220次回放全部14输出逐字节相同，八档完整尺寸meta图不含embedding参数，完整词表head保持。所选DDK编译、新OMC加载、设备数值和时延均未执行。上一已测4d为profile184.568ms、算子汇总78.986ms，105.582ms差额仍未归因。

@@ -86,10 +86,19 @@ def source_input_roles(graph, declared):
         [root(n['input'][1])['name'] for n in ops if n['type'] == 'LessEqual'
          and buffer(root(n['input'][0]), 'block_offsets')
          and root(n['input'][1])['type'] == 'Data'], 'proposal_count')
-    roles['anchor'] = unique(
-        [root(n['input'][0])['name'] for n in ops if n['type'] == 'ConcatV2'
-         and len(n.get('input', [])) >= 2 and buffer(root(n['input'][1]), 'mask_tokens')
-         and root(n['input'][0])['type'] == 'Data'], 'anchor')
+    if any(r['name'] == 'block_embeddings' for r in declared):
+        # Prove the input feeds layer-zero candidate RMS with its original
+        # gamma; equal tensor dimensions alone cannot identify this role.
+        roles['block_embeddings'] = unique(
+            [root(n['input'][0])['name'] for n in ops if n['type'] == 'RmsNorm'
+             and len(n.get('input', [])) == 2
+             and buffer(root(n['input'][1]), 'draft_layers_0_input_layernorm_weight')
+             and root(n['input'][0])['type'] == 'Data'], 'block_embeddings')
+    else:
+        roles['anchor'] = unique(
+            [root(n['input'][0])['name'] for n in ops if n['type'] == 'ConcatV2'
+             and len(n.get('input', [])) >= 2 and buffer(root(n['input'][1]), 'mask_tokens')
+             and root(n['input'][0])['type'] == 'Data'], 'anchor')
     outputs = [n for n in ops if n['type'] == 'NetOutput']
     if len(outputs) != 1 or len(outputs[0].get('input', [])) != 14:
         raise ValueError('source must expose the 14 ordered Draft outputs')
@@ -132,6 +141,8 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
     policy = manifest_policy(export)
     if manifest_policy(meta) != policy:
         raise ValueError('candidate and source optimization contracts differ')
+    if meta.get('host_embedding') != export.get('host_embedding'):
+        raise ValueError('candidate and source host embedding bindings differ')
     validate_abi(dict(meta, inputs=_slots(meta['inputs']), outputs=_slots(meta['outputs'])))
     compilation = root/'compilation'
     receipt = read_json(compilation/'report.json', 8 << 20)
@@ -179,6 +190,16 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
     file_constants = [_attributes(n).get('file_path', {}).get('s')
                       for n in graph['op'] if n['type'] == 'FileConstant']
     weights = bind_weight_snapshots(plan['weights'], policy, file_constants, snapshots, compilation)
+    if policy == 'packed-spatial-host-embedding':
+        from .host_embedding import source_contract
+        if export.get('host_embedding') != source_contract(plan):
+            raise ValueError('host embedding differs from the export-bound original weight')
+        if 'weight/embedding_weight' in file_constants:
+            raise ValueError('host embedding candidate unexpectedly retains the full embedding table')
+        record = plan['weights']['target.embed_tokens.weight']
+        checked_file(source, record)
+        weights.append(dict(name='target.embed_tokens.weight', sha256=record['sha256'],
+                            role='HOST_INPUT_ROW_LOOKUP_NOT_COMPILED_WEIGHT'))
     # The reference loader verifies the complete topology and prepared file bytes.
     checked_file(root, dict(packing['output'], path='model.omc'))
     result = dict(meta, inputs=abi['inputs'], outputs=abi['outputs'],

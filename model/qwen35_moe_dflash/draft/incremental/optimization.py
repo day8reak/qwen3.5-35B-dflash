@@ -5,12 +5,15 @@ import math
 from qwen35_moe_dflash.common.artifacts import checked_file
 
 POLICIES = ('baseline', 'packed', 'packed-spatial', 'packed-spatial-4d',
-            'packed-spatial-controls', 'packed-spatial-rope-table')
+            'packed-spatial-controls', 'packed-spatial-rope-table', 'packed-spatial-host-embedding')
 
 
 def optimization_contract(policy='baseline'):
     if policy not in POLICIES:
         raise ValueError('unknown Draft optimization: ' + str(policy))
+    if policy == 'packed-spatial-host-embedding':
+        return dict(optimization_contract('packed-spatial-rope-table'), policy=policy,
+                    embedding='HOST_FP16_ROW_LOOKUP_BLOCK_INPUT', embedding_scale=1.0)
     spatial = policy in ('packed-spatial', 'packed-spatial-4d', 'packed-spatial-controls', 'packed-spatial-rope-table')
     contract = dict(policy=policy, version=1, packed_projections=policy != 'baseline',
                     grouped_query_reshape=policy != 'baseline', shared_rope=policy != 'baseline',
@@ -42,6 +45,8 @@ def weight_groups(weights, policy):
     optimization_contract(policy)
     groups = {}
     for name, record in weights.items():
+        if policy == 'packed-spatial-host-embedding' and name == 'target.embed_tokens.weight':
+            continue
         parameter = {'target.embed_tokens.weight': 'embedding.weight',
                      'target.lm_head.weight': 'head.weight'}.get(name, name)
         rank = 0

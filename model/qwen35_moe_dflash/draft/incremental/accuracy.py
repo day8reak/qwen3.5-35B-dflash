@@ -119,7 +119,8 @@ def prepare(compiled, source, air, output, *, seed=17, atol=0.01, rtol=0.01, ddk
     cache_shape = (1, graph.config.num_key_value_heads, capacity, graph.config.head_dim)
     bank = [np.zeros(cache_shape, dtype='<f2') for _ in range(12)]
     input_files = []
-    rows = ['QWEN35_INCREMENTAL_ACCURACY 1', f'geometry {c} {capacity} {k}']
+    host_embedding = meta.get('optimization', {}).get('policy') == 'packed-spatial-host-embedding'
+    rows = [f'QWEN35_INCREMENTAL_ACCURACY {2 if host_embedding else 1}', f'geometry {c} {capacity} {k}']
     for direction in ('inputs', 'outputs'):
         for spec in meta[direction]:
             rows.append(' '.join((direction[:-1], str(spec['index']), spec['name'], spec['dtype'],
@@ -137,6 +138,11 @@ def prepare(compiled, source, air, output, *, seed=17, atol=0.01, rtol=0.01, ddk
                 name: np.asarray([step[key]], dtype='<i4') for name, key in (
                     ('start_position', 'start'), ('valid_rows', 'valid'), ('anchor', 'anchor'),
                     ('proposal_count', 'proposals'))})
+            if host_embedding:
+                from .host_embedding import lookup_block
+                values['block_embeddings'] = lookup_block(graph.embedding.weight.detach().numpy(),
+                    step['anchor'], graph.config.mask_token_id, k)
+                del values['anchor']
             values.update({f'past_{kind}_{layer}': bank[2*layer+j]
                            for layer in range(6) for j, kind in enumerate(('k', 'v'))})
             for spec in meta['inputs']:
@@ -167,6 +173,12 @@ def prepare(compiled, source, air, output, *, seed=17, atol=0.01, rtol=0.01, ddk
     for key in ('optimization', 'projection'):
         if key in meta:
             result[key] = meta[key]
+    if host_embedding:
+        result['host_embedding'] = meta['host_embedding']
+        result['input_preparation'] = dict(
+            scope='HOST_PREPARED_EMBEDDING_FIXTURES_BEFORE_DEVICE_EXECUTION',
+            block_bytes=(k + 1) * 2048 * 2, arithmetic='ORIGINAL_FP16_ROW_COPIES',
+            timing='LOOKUP_AND_INPUT_PREPARATION_EXCLUDED_FROM_NATIVE_API_LATENCY; NOT_END_TO_END_BENCHMARK')
     (out / 'manifest.json').write_text(json.dumps(result, indent=2)+'\n')
     return result
 
@@ -255,7 +267,8 @@ def compare(fixture, native):
             rows.append(result)
             previous = values
     passed = all(r['passed'] for r in rows)
-    return dict(artifact_kind=KIND, status='PASSED' if passed else 'NUMERICAL_FAILED',
+    return dict({key: meta[key] for key in ('host_embedding', 'input_preparation') if key in meta},
+        artifact_kind=KIND, status='PASSED' if passed else 'NUMERICAL_FAILED',
         numerical_validation='PASSED' if passed else 'FAILED', comparison=meta['comparison'],
         scope=meta['reference_scope'], reference_contract=CONTRACT, cases=rows,
         first_failure=next((dict(mode=r['mode'],index=r['index'],label=r['label']) for r in rows if not r['passed']),None),
@@ -282,7 +295,8 @@ def summarize_result(result):
     """Expose existing comparisons without rereading tensors or changing gates."""
     keys=('status','stage','device_execution','model_compilation','numerical_validation',
           'first_failure','native_api_latency','board_attempt','lock_state','error',
-          'lock_release_errors','next','frontend','internal_precision','production_promotion','native_failure','hilog')
+          'lock_release_errors','next','frontend','internal_precision','production_promotion','native_failure','hilog',
+          'host_embedding','input_preparation')
     summary = {k:result[k] for k in keys if k in result}
     rows = result.get('cases', [])
     if not rows:

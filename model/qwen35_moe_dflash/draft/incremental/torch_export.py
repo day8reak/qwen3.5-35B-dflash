@@ -446,8 +446,14 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
             internal_precision='UNVERIFIED_AFTER_COMPILATION', runtime_integration='PENDING_PHYSICAL_ABI_AND_DEVICE_VALIDATION')
         _save(root / 'manifest.json', result)
         try:
-            weights = json.loads((Path(prepared) / 'prepared.json').read_text())['weights']
-            required = sum(r['bytes'] for r in weights.values()) + (256 << 20)
+            prepared_manifest = json.loads((Path(prepared) / 'prepared.json').read_text())
+            weights = prepared_manifest['weights']
+            if optimization == 'packed-spatial-host-embedding':
+                from .host_embedding import source_contract
+                result['host_embedding'] = source_contract(prepared_manifest)
+            required = sum(r['bytes'] for name, r in weights.items()
+                           if optimization != 'packed-spatial-host-embedding'
+                           or name != 'target.embed_tokens.weight') + (256 << 20)
             if shutil.disk_usage(root).free < required:
                 raise OSError(f'AIR export needs at least {required} free bytes for weights and reserve')
             progress('loading Draft, embedding and head from shared prepared FP16 weights')
@@ -610,7 +616,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
         return prepared, evidence
     with _slot(output, OMC_KIND, replace) as root:
         result = {k: manifest[k] for k in ('context_rows', 'cache_capacity', 'max_draft_tokens', 'inputs', 'outputs', 'rms', 'gamma')}
-        for key in ('attention', 'optimization', 'projection'):
+        for key in ('attention', 'optimization', 'projection', 'host_embedding'):
             if key in manifest:
                 result[key] = manifest[key]
         result.update(artifact_kind=OMC_KIND, status='COMPILING', stage='compile', frontend='pytorch',

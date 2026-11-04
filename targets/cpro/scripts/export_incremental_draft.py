@@ -22,7 +22,7 @@ def main(argv=None):
     parser.add_argument('--frontend', choices=('ge', 'pytorch'), default='ge')
     from qwen35_moe_dflash.draft.incremental.optimization import POLICIES
     parser.add_argument('--optimization', choices=POLICIES, default='baseline',
-                        help='PyTorch candidate; packed-spatial-rope-table replaces runtime position*frequency with an FP32 phase table and keeps existing Sin/Cos')
+                        help='PyTorch candidate; packed-spatial-host-embedding keeps the RoPE phase table and replaces the anchor ID with original FP16 block embeddings')
     parser.add_argument('--torchair-pb2', help='installed TorchAir literal schema; normally discovered automatically')
     parser.add_argument('--replace', action='store_true', help='replace a finished AIR bundle after successful PyTorch export/import')
     parser.add_argument('--context-rows', type=int, choices=(16, 64), default=16)

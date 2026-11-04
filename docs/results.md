@@ -1,12 +1,20 @@
 # 当前结果
 
+2026-11-04，用户回传显式limit_partition_size=true的结果：OMG编译通过，CPUCL2／NPUCL1，GraphOp权重仍为3892／2806299136／20字节。打包前检查在partition-weight-check拒绝超限候选，未发布packed model、未上板。所选OMG help.log明确true(default): limit by platform，未提供字节阈值；该选项不能解释为强制2GiB拆分。weight_merge描述IR权重合并，SC选项描述缓存用途，尚无证据证明它们能避开本次失败。
+
+下一候选packed-spatial-host-embedding从NPU图去掉完整embedding常量，由调用前原FP16行复制提供[anchor, MASK×K]。Target特征用于context K/V，embedding用于候选分支初始hidden，两者不能互相替代。公共anchor:int32[1]改为block_embeddings:float16[1,K+1,2048]，仍17输入／14输出。K15输入65536字节；原表248320×2048×2=1017118720字节，旧单NPU块减表约1789180416字节，这是估计，不是新OMC观察。LM head完整保留，不量化、不缩词表、不改golden或容差，只允许原embedding scale=1。导出／编译清单绑定host表，独立ABI绑定核验原表哈希和layer0 RMS消费连接。
+
+主机证据run `20261104T004345Z-29867-0cafbe`：六层缩小尺寸、C16／64、K1／3／7／15及滑窗开关的220次连续回放，全部14输出与相位表版逐字节相同，输入只读、未写KV保持。八档完整尺寸meta捕获（测试RMS）保留31线性、1Conv、12attention MatMul、6FP32 Softmax和完整head；参数59→58，不再包含embedding表。22项权重字节／语义ABI绑定、42项行复制／非法输入／完整ABI／模拟参考fixture和结果标注、14项protobuf及mock导出编译、3项保留输入诊断、22项C++实际plan解析／ABI检查通过。一次主机测试误把准备清单传给结果汇总，修正为实际compare返回值后通过，没有改变生产接受逻辑。本地缺少所选DDK／TorchAir，设备加载、数值和性能均未验证。
+
+独立accuracy runner新增显式plan v2，旧v1及生产resident默认token-ID ABI严格保留。新fixture在服务器提前查表，native Process时延不含查表／输入准备，报告显式标注NOT_END_TO_END_BENCHMARK；不能据此宣称50ms端到端达标。编译并确认权重和无中间CPU依赖后，需重建runner再验证。相位表a045的已回收失败及原数值基线保留。当前命令见[当前阶段](current-status.md)。
+
 2026-11-04，用户回传相位表OMC `a045f7629920fd962d21c8ce694b1ee694a3be61942c4cac6a556f00cc631027` 的accuracy执行失败。板端尝试cc7399ff087d40be8e647bcdd2f46a7c已完成回收、exitcode=1、NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION；失败阶段MODEL_LOAD，尚未进入推理或数值比较。native.stderr中CLIENT_INIT、版本查询、MMAP、357485us预读和SetModelBuffer完成，Load在266499us后失败；这些是加载阶段时间，不是推理时延。
 
 HiLog候选PID52903、设备日期03-17、23:54:25.537～23:54:26.236：SubGraph_0／1／2权重分别3892／2806299136／20字节；remote_c_mem_allocator.cpp Copy的memcpy_s失败后，AllocateWeightMemory、InitMemory、ModelManagerInit和Load依次失败。候选完整日志SHA256 `41c2c85dc7b6d33ec074aae7aaac6e3ccf21cca4caa34be2aa0966d888fed634`，共享快照SHA256 `5ffd08a8d89bbd570a6dd90c31597bb130b09d63749324474ee656c26309db5b`。没有记录本次native PID，候选与本次执行关联及实际dstSize／srcSize／memcpy_s返回码仍未证实。早期库搜索错误之后程序继续进入权重初始化，不能单凭第一条error归因。
 
 公开OpenHarmony [securectype.h](https://raw.githubusercontent.com/openharmony/third_party_bounds_checking_function/master/include/securectype.h)定义默认SECUREC_MEM_MAX_LEN=0x7fffffff；[memcpy_s.c](https://raw.githubusercontent.com/openharmony/third_party_bounds_checking_function/master/src/memcpy_s.c)对超限destMax返回ERANGE。合并后的单块2806299136字节（2.614 GiB）超过此值，单块拷贝上限是优先假设；公开源码不证明设备800.631.120.010实际加载库的宏配置，也不证明本次失败是总内存不足。之前的无中间CPU结构结论保留，但该模型目前不可加载。
 
-新增PyTorch编译显式参数--limit-partition-size true／false；默认省略，原AIR、相位表、训练权重和运行API不变。true请求所选OMG限制分区，并在打包前检查每个GraphOp的graphop_weight_size均可读且≤2147483647；未知或超限停止在partition-weight-check，保留编译和接口报告。报告包含每块owner／大小、max_known_bytes及超限名单；这些是编译描述值，不是实际拷贝参数。允许多个NPU分区，下一步仍检查无中间CPU依赖，不强求单NPU块。主机证据run `20261104T003321Z-29312-8cfae7` 的28项protobuf／模拟编译／CLI检查通过，包括默认选项不变、true／false传递、边界值、2.806GB单块阻止打包、总量超2GiB但各块受控、缺失／非法大小拒绝及原静态预处理回归。所选DDK对true的实际分区效果、设备加载、数值及性能均待验证。
+新增PyTorch编译显式参数--limit-partition-size true／false；默认省略，原AIR、相位表、训练权重和运行API不变。true请求所选OMG限制分区，并在打包前检查每个GraphOp的graphop_weight_size均可读且≤2147483647；未知或超限停止在partition-weight-check，保留编译和接口报告。报告包含每块owner／大小、max_known_bytes及超限名单；这些是编译描述值，不是实际拷贝参数。允许多个NPU分区，下一步仍检查无中间CPU依赖，不强求单NPU块。主机证据run `20261104T003321Z-29312-8cfae7` 的28项protobuf／模拟编译／CLI检查通过，包括默认选项不变、true／false传递、边界值、2.806GB单块阻止打包、总量超2GiB但各块受控、缺失／非法大小拒绝及原静态预处理回归。后续用户已确认true未改变单块大小，见本页最新记录；设备数值及性能仍未验证。
 
 2026-11-04，用户回传相位表候选的编译产物检查：OMC 2808047355字节，SHA256 `a045f7629920fd962d21c8ce694b1ee694a3be61942c4cac6a556f00cc631027`。CPUCL3／NPUCL2变为CPUCL2／NPUCL1，前置CPU控制节点类别计数保持，中间CPU的两个频率Mul不再出现，两个NPU分区合并为一个。新SubGraph_2是末尾ArgMax，并非旧的频率子图；其FP32[1,15,248320]输入逻辑14899200字节、INT32输出60字节保持。NPU主体20输入／14输出是内部分区接口，不代表公共ABI扩为20输入。
 
