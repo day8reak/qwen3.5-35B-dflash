@@ -3724,7 +3724,7 @@
       "numerical_validation": "FAILED_SAME_REPORTED_ERROR_SUMMARIES_AS_PREVIOUS",
       "performance": "NATIVE_API_PHASE_MEANS_103.958_TO106.09_MS_NOT_END_TO_END",
       "production_promotion": "NOT_PERFORMED",
-      "next": "COMPILE_BOUNDED_FULL_VOCABULARY_TOP1_BUILTIN_PLACEMENT_PROBES; KEEP_CURRENT_MODEL",
+      "next": "READ_TOP1_DDK_REGISTRATION; CURRENT_FULL_MODEL_AND_PROFILE_RETAINED",
       "command_document": "docs/current-status.md",
       "experience_audit": {
         "captured": [
@@ -4053,7 +4053,7 @@
       }
     },
     "top1_builtin_probe": {
-      "status": "HOST_CHECKED_SELECTED_DDK_PENDING",
+      "status": "USER_REPORTED_CPU_ARGMAX_AND_ARGMAXWITHVALUE_INFERSHAPE_LOOKUP_FAILURE",
       "run_id": "20261104T015950Z-753-3ad426",
       "entry": "targets/cpro/tools/probe_draft_vector.py",
       "cases": [
@@ -4101,7 +4101,7 @@
           "top1_tiled_fp16"
         ]
       },
-      "model_compilation": "NOT_RUN",
+      "model_compilation": "PARTIAL_USER_REPORT",
       "device_execution": "NOT_RUN",
       "numerical_validation": "NOT_RUN_ON_DEVICE",
       "full_draft_changed": false,
@@ -4112,7 +4112,8 @@
         "captured": [
           "DURATION_SUM_NOT_CRITICAL_PATH",
           "INT32_TOKEN_INDICES_REQUIRE_EXACT_COMPARISON_NOT_FLOAT_RELATIVE_TOLERANCE",
-          "GENERIC_PROBE_PLAN_MUST_USE_BOUND_DESCRIPTOR_DTYPE"
+          "GENERIC_PROBE_PLAN_MUST_USE_BOUND_DESCRIPTOR_DTYPE",
+          "ARGMAXWITHVALUE_SCHEMA_IS_NOT_SELECTED_OMG_INFERSHAPE_AVAILABILITY; TILING_DID_NOT_BYPASS_LOOKUP_FAILURE"
         ],
         "executable_checks": "validate_draft_vector.py dtype plans and exact integer gates",
         "skill_changes": "NONE; EXISTING_PROFILE_SCOPE_RULES_ADEQUATE",
@@ -4121,6 +4122,85 @@
           "DEVICE_TIES_NAN_SEMANTICS",
           "FULL_MODEL_LATENCY_BENEFIT"
         ]
+      },
+      "user_compilation_observation": {
+        "source": "USER_PASTED_SELECTED_DDK_PROBE_RESULT; NOT_INDEPENDENTLY_RETRIEVED",
+        "date": "2026-11-04",
+        "status": "PARTIAL",
+        "stage": "complete",
+        "model_compilation": "PARTIAL",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
+        "full_draft_changed": false,
+        "platform": "kirinx90",
+        "cases": [
+          {
+            "case": "top1_argmax_fp16",
+            "model_compilation": "PASSED",
+            "placement": "NO_NPU_GRAPH",
+            "graphop_counts": {
+              "CPUCL": 1
+            },
+            "graphop_inputs": [
+              "float32"
+            ],
+            "graphop_outputs": [
+              "int32"
+            ]
+          },
+          {
+            "case": "top1_with_value_fp16",
+            "model_compilation": "FAILED",
+            "stage": "omg",
+            "returncode": 1,
+            "failed_node": "argmax_value",
+            "failed_type": "ArgMaxWithValue",
+            "message": "GetInferFunc: infershape func failed",
+            "input_shape": [
+              1,
+              15,
+              248320
+            ]
+          },
+          {
+            "case": "top1_tiled_fp16",
+            "model_compilation": "FAILED",
+            "stage": "omg",
+            "returncode": 1,
+            "failed_node": "local_max",
+            "failed_type": "ArgMaxWithValue",
+            "message": "GetInferFunc: infershape func failed",
+            "input_shape": [
+              1,
+              15,
+              485,
+              512
+            ],
+            "preceding_reshape": "INFERSHAPE_SUCCESS"
+          }
+        ],
+        "interpretation": "DIRECT_ARGMAX_STILL_CPU; BOTH_ALTERNATIVES_STOP_AT_ARGMAXWITHVALUE_INFERSHAPE_FUNCTION_LOOKUP",
+        "not_established": [
+          "HARDWARE_LACKS_MAX_REDUCTION",
+          "VOCABULARY_OR_TILE_SIZE_LIMIT",
+          "MISSING_ASCENDC_AGGREGATE_LIBRARY_CAUSED_THIS_FAILURE",
+          "TBE_ASCEND310B1_LOG_REQUIRES_CHANGING_OMG_PLATFORM"
+        ],
+        "next": "READ_SAVED_COMPILER_ENVIRONMENT_AND_SELECTED_DDK_REDUCTION_REGISTRATION; NO_RECOMPILE_OR_DEVICE_RUN"
+      },
+      "next": "READ_SELECTED_DDK_REDUCTION_REGISTRATION_BEFORE_CHANGING_OPERATOR_EXPRESSION",
+      "registration_inspection": {
+        "entry": "probe_draft_vector.py --inspect-top1 COMPILED_PROBES --ddk-root DDK",
+        "run_id": "20261104T021319Z-1312-aa1ef2",
+        "status": "HOST_CHECKED_USER_EXECUTION_PENDING",
+        "host": {
+          "status": "HOST_CHECKED",
+          "checks": 17,
+          "scope": "SYNTHETIC_DDK_JSON_AND_SOURCE_FILES_READ_ONLY_CLI_NO_VENDOR_IMPORT",
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN"
+        },
+        "scope": "BOUNDED_READ_ONLY_SELECTED_DDK_CONFIG_AND_NAMED_SOURCE; NO_COMPILE_DEVICE_OR_VENDOR_IMPORT"
       }
     }
   },

@@ -1,5 +1,11 @@
 # 当前结果
 
+2026-11-04，用户回传三种全词表Top1小图的编译结果：PARTIAL、device_execution=NOT_RUN。ArgMaxV2编译通过但仍为CPUCL1／NO_NPU_GRAPH，CPU子图输入FP32、输出INT32。直接ArgMaxWithValue和485×512分块版均在OMG的GetInferFunc／RunInferShape阶段失败，节点分别argmax_value及local_max；后者Reshape推导到[1,15,485,512]已成功。当前只能认定所选编译路径未找到ArgMaxWithValue的infershape函数，不能认定硬件没有最大值归约，也不能归因为词表容量或分块大小。
+
+两份错误日志还包含libai_npucore_ascendc_kernel.so路径无效和TBE内部Ascend310B1字符串，它们未被确定为本次失败根因。既有普通Add成功编译日志也曾出现同类聚合库提示。保留kirinx90目标和共享DDK，不盲目补库、改SOC或重启原AddCustom探针。当前没有可进入实机性能验证的NPU Top1候选；完整Draft及103.720ms／NUMERICAL_FAILED结果不变。
+
+下一步只读本轮omg-environment.json、实际配置路径和归约注册。probe_draft_vector.py新增--inspect-top1，核对所选DDK根，识别配置目录／单个JSON，按有界文件数与字节数查ArgMax／ArgMin／TopK／ReduceMax／ReduceMin，附命名相关源码的有限片段。记录不等于实现、落点或形状支持证明；零匹配同样不是不支持结论。主机run `20261104T021319Z-1312-aa1ef2` 的17项检查通过，覆盖键式／列表式注册、外部配置路径、去重、子链接跳过、DDK错配、畸形／超限文件、源码只读不导入、CLI互斥和输入未变；仅合成文件，未读取用户DDK、未重编或上板。失败分支与下一条只读命令见[当前阶段](current-status.md)。
+
 2026-11-04，用户追加本轮完整op表，合计73656us，与紧邻的model表103720us组成同轮粘贴对照。以下均按duration字段计算，未独立获取原CSV、哈希或回收receipt；与host-embedding OMC的关联来自会话连续性。
 
 | 项目 | 上一双NPU轮 ms | 本轮单NPU／host-embedding ms |

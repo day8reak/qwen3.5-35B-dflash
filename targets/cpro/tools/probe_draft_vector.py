@@ -142,8 +142,10 @@ def write_json(path, value):
     temporary.replace(path)
 
 
-def inspect_ddk(compiled, ddk_root):
+def inspect_ddk(compiled, ddk_root, *, family='addcustom'):
     """Read registration records and locate sources without loading vendor code."""
+    if family not in ('addcustom', 'top1'):
+        raise ValueError('unknown DDK inspection family')
     if not ddk_root or not Path(ddk_root).is_dir():
         raise ValueError('set CPRO_DDK_ROOT or pass an existing --ddk-root')
     root, compiled = Path(ddk_root).resolve(), Path(compiled).resolve()
@@ -152,10 +154,12 @@ def inspect_ddk(compiled, ddk_root):
     limits = {'file_bytes': 2 * 1024 * 1024, 'total_bytes': 32 * 1024 * 1024,
               'entries': 10000, 'matches': 32, 'record_characters': 6000}
     report = {'artifact_kind': 'qwen35-draft-ddk-inspection', 'status': 'INSPECTED',
-        'scope': 'READ_ONLY_REGISTRATION_AND_FILE_PRESENCE_NOT_FP32_SUPPORT_PROOF',
+        'scope': ('READ_ONLY_REGISTRATION_AND_FILE_PRESENCE_NOT_IMPLEMENTATION_OR_PLACEMENT_PROOF'
+                  if family == 'top1' else 'READ_ONLY_REGISTRATION_AND_FILE_PRESENCE_NOT_FP32_SUPPORT_PROOF'),
+        'operator_family': family,
         'model_compilation': 'NOT_RUN', 'device_execution': 'NOT_RUN',
         'ddk_root': str(root), 'limits': limits, 'compile_environments': [],
-        'roots': [], 'registrations': [], 'source_candidates': [], 'notes': []}
+        'roots': [], 'registrations': [], 'source_candidates': [], 'source_excerpts': [], 'notes': []}
     used = {'bytes': 0, 'entries': 0, 'files_read': 0, 'symlinks_skipped': 0}
     seen_files, seen_dirs = set(), set()
 
@@ -182,26 +186,34 @@ def inspect_ddk(compiled, ddk_root):
 
     # The compile record includes KIRIN_CONF_JSON_PATH; it need not be under OMG.
     roots = []
-    for case in CASES:
+    for case in (TOP1_CASES if family == 'top1' else CASES):
         path = compiled / case / 'omc/omg-environment.json'
         if not path.is_file():
             continue
         raw = read(path)
         try:
             record = json.loads(raw) if raw is not None else {}
+            if family == 'top1' and Path(record.get('ddk_root') or '').resolve() != root:
+                raise ValueError('saved compiler DDK root differs from selected --ddk-root; configuration skipped')
             env = record.get('environment', {})
             conf = env.get('KIRIN_CONF_JSON_PATH')
             report['compile_environments'].append({'case': case, 'record': str(path),
                 'ddk_root': record.get('ddk_root'), 'KIRIN_CONF_JSON_PATH': conf})
             if conf:
+                if family == 'top1' and not Path(conf).is_absolute():
+                    raise ValueError('relative saved configuration has no resolved compile working directory; skipped')
                 roots.append(Path(conf))
         except (ValueError, AttributeError, TypeError) as error:
             note(path, error)
     if not report['compile_environments']:
         note(compiled, 'no saved compiler environment found; only selected DDK defaults will be scanned')
-    roots.extend(root / name for name in ('ddk/ascendcpp', 'tools/platform/kirinx90',
-                 'tools/tools_ascendc', 'tools/tools_omg/master'))
-    match = re.compile(r'add_?custom', re.I)
+    defaults = ('ddk/ascendcpp', 'tools/platform/kirinx90', 'tools/tools_ascendc', 'tools/tools_omg/master')
+    if family == 'top1':
+        defaults = ('tools/platform/kirinx90', 'ddk/ascendcpp', 'ddk/tbe/ops',
+                    'tools/tools_omg/master', 'tools/tools_ascendc')
+    roots.extend(root / name for name in defaults)
+    match = re.compile(r'add_?custom' if family == 'addcustom' else
+                       r'(?:arg_?(?:max|min)|top_?k|reduce_?(?:max|min))[a-z0-9_]*', re.I)
 
     def records(value, location='$'):
         if isinstance(value, dict):
@@ -218,8 +230,62 @@ def inspect_ddk(compiled, ddk_root):
             for index, item in enumerate(value):
                 yield from records(item, f'{location}[{index}]')
 
+    def inspect_file(path, folder):
+        if path.is_symlink():
+            used['symlinks_skipped'] += 1
+            return
+        resolved = path.resolve()
+        if resolved in seen_files:
+            return
+        seen_files.add(resolved)
+        named = bool(match.search(str(path.relative_to(folder))))
+        if named:
+            if len(report['source_candidates']) < 40:
+                report['source_candidates'].append(str(path))
+            else:
+                note(folder, 'source candidate list truncated at 40 files')
+        source = family == 'top1' and named and path.suffix.lower() in {'.py', '.h', '.hpp', '.cpp', '.cc', '.c'}
+        if path.suffix.lower() != '.json' and not source:
+            return
+        raw = read(path)
+        if raw is None or not match.search(raw):
+            return
+        if source:
+            if len(report['source_excerpts']) >= 12:
+                note(path, 'source excerpts truncated at 12 files')
+                return
+            lines = raw.splitlines()
+            hits = [i for i, line in enumerate(lines) if match.search(line)][:8]
+            selected = sorted({j for i in hits for j in range(max(0, i-2), min(len(lines), i+4))})
+            excerpt = '\n'.join(f'L{i+1}: {lines[i]}' for i in selected)
+            report['source_excerpts'].append(dict(path=str(path),
+                excerpt=excerpt[:limits['record_characters']],
+                scope='BOUNDED_TEXT_EXCERPT_NOT_PROOF_THIS_SOURCE_WAS_LOADED'))
+            return
+        try:
+            for location, record in records(json.loads(raw)):
+                if len(report['registrations']) >= limits['matches']:
+                    note(path, 'registration list truncated at match limit')
+                    break
+                serialized = json.dumps(record, ensure_ascii=False)
+                row = {'path': str(path), 'json_path': location}
+                if len(serialized) <= limits['record_characters']:
+                    row['record'] = record
+                else:
+                    row['record_excerpt'] = serialized[:limits['record_characters']]
+                    row['truncated'] = True
+                report['registrations'].append(row)
+        except (ValueError, RecursionError) as error:
+            note(path, error)
+
     for folder in dict.fromkeys(roots):
-        report['roots'].append({'path': str(folder), 'exists': folder.is_dir()})
+        report['roots'].append({'path': str(folder), 'exists': folder.exists(),
+                                'kind': 'file' if folder.is_file() else 'directory'})
+        # A recorded configuration may name one JSON file rather than a folder.
+        if folder.is_file():
+            used['entries'] += 1
+            inspect_file(folder.resolve(), folder.resolve().parent)
+            continue
         if not folder.is_dir():
             continue
         # Explicit config roots can be links. Do not recursively follow child links.
@@ -238,38 +304,7 @@ def inspect_ddk(compiled, ddk_root):
             dirs[:] = sorted(name for name in dirs if not (Path(directory) / name).is_symlink())
             for name in sorted(files):
                 path = Path(directory) / name
-                if path.is_symlink():
-                    used['symlinks_skipped'] += 1
-                    continue
-                if path in seen_files:
-                    continue
-                seen_files.add(path)
-                if match.search(str(path.relative_to(folder))):
-                    if len(report['source_candidates']) < 40:
-                        report['source_candidates'].append(str(path))
-                    else:
-                        note(folder, 'source candidate list truncated at 40 files')
-                if path.suffix.lower() != '.json':
-                    continue
-                raw = read(path)
-                if raw is None or not match.search(raw):
-                    continue
-                try:
-                    found = records(json.loads(raw))
-                    for location, record in found:
-                        if len(report['registrations']) >= limits['matches']:
-                            note(path, 'registration list truncated at match limit')
-                            break
-                        serialized = json.dumps(record, ensure_ascii=False)
-                        row = {'path': str(path), 'json_path': location}
-                        if len(serialized) <= limits['record_characters']:
-                            row['record'] = record
-                        else:
-                            row['record_excerpt'] = serialized[:limits['record_characters']]
-                            row['truncated'] = True
-                        report['registrations'].append(row)
-                except (ValueError, RecursionError) as error:
-                    note(path, error)
+                inspect_file(path, folder)
         if used['entries'] > limits['entries']:
             report['notes'].append({'error': 'entry budget exceeded; remaining roots not scanned'})
             break
@@ -277,8 +312,9 @@ def inspect_ddk(compiled, ddk_root):
         for name in ('tools/tools_omg/master/lib64/libai_npucore_ascendc_kernel.so',
                      'tools/tools_ascendc/bisheng/bin/bisheng', 'ddk/ccec_compiler/bin/ccec')]
     report['coverage'] = used
-    report['next'] = ('Inspect AddCustom input/output types, registration and JIT build sources. '
-                      'Missing files or zero matches do not establish lack of platform support.')
+    report['next'] = (('Inspect actual ArgMax/TopK/ReduceMax/ReduceMin registrations, dtype/axis limits and source candidates before another compile. '
+                      if family == 'top1' else 'Inspect AddCustom input/output types, registration and JIT build sources. ')
+                     + 'Missing files or zero matches do not establish lack of platform support.')
     return report
 
 
@@ -458,6 +494,8 @@ def main(argv=None):
     parser.add_argument('--output')
     parser.add_argument('--inspect-ddk', metavar='COMPILED_PROBES',
                         help='read saved compiler environment and selected DDK AddCustom registration; no writes or compilation')
+    parser.add_argument('--inspect-top1', metavar='COMPILED_PROBES',
+                        help='read saved Top1 compiler environments and selected DDK reduction registrations; no writes, compilation or device access')
     parser.add_argument('--inspect-rms', nargs='+', metavar='AIR',
                         help='read normalized Target/PyTorch AIR RMS descriptors without compiling or executing')
     parser.add_argument('--inspect-compile', metavar='COMPILED_PROBES',
@@ -478,11 +516,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.timeout_seconds <= 0 or len(args.cases) != len(set(args.cases)):
         parser.error('timeout must be positive and cases must be distinct')
-    if sum(bool(value) for value in (args.inspect_ddk, args.inspect_rms, args.inspect_compile)) > 1:
+    if sum(bool(value) for value in (args.inspect_ddk, args.inspect_top1, args.inspect_rms, args.inspect_compile)) > 1:
         parser.error('select one read-only inspection mode')
     if args.torchair_pb2 and not args.inspect_rms:
         parser.error('--torchair-pb2 requires --inspect-rms')
-    if args.inspect_ddk or args.inspect_rms or args.inspect_compile:
+    if args.inspect_ddk or args.inspect_top1 or args.inspect_rms or args.inspect_compile:
         if args.output or args.replace or args.plan_only:
             parser.error('inspection cannot be combined with --output, --replace or --plan-only')
     elif not args.output:
@@ -496,6 +534,9 @@ def main(argv=None):
             return 0
         if args.inspect_ddk:
             print(json.dumps(inspect_ddk(args.inspect_ddk, args.ddk_root), ensure_ascii=False, indent=2))
+            return 0
+        if args.inspect_top1:
+            print(json.dumps(inspect_ddk(args.inspect_top1, args.ddk_root, family='top1'), ensure_ascii=False, indent=2))
             return 0
         result = run(args)
         shown = {key: value for key, value in result.items() if key != 'cases'}
