@@ -3724,7 +3724,7 @@
       "numerical_validation": "FAILED_SAME_REPORTED_ERROR_SUMMARIES_AS_PREVIOUS",
       "performance": "NATIVE_API_PHASE_MEANS_103.958_TO106.09_MS_NOT_END_TO_END",
       "production_promotion": "NOT_PERFORMED",
-      "next": "RECOMPILE_CORRECTED_TOP1_FRONTEND_PROBES; FULL_DRAFT_103.720MS_NUMERICAL_FAILED_BASELINE_UNCHANGED",
+      "next": "READ_COMPILED_TOP1_OPERATOR_OWNERS; FULL_DRAFT_103.720MS_NUMERICAL_FAILED_UNCHANGED",
       "command_document": "docs/current-status.md",
       "experience_audit": {
         "captured": [
@@ -4053,7 +4053,7 @@
       }
     },
     "top1_builtin_probe": {
-      "status": "NATIVE_TOP1_FRONTEND_CORRECTED_HOST_CHECKED_RECOMPILE_PENDING",
+      "status": "CORRECTED_NATIVE_TOP1_COMPILED_MIXED_PLACEMENT_OPERATOR_MAPPING_PENDING",
       "run_id": "20261104T015950Z-753-3ad426",
       "entry": "targets/cpro/tools/probe_draft_vector.py",
       "cases": [
@@ -4101,7 +4101,7 @@
           "top1_tiled_fp16"
         ]
       },
-      "model_compilation": "PARTIAL_USER_REPORT",
+      "model_compilation": "PASSED_CORRECTED_NATIVE_THREE_USER_REPORT",
       "device_execution": "NOT_RUN",
       "numerical_validation": "NOT_RUN_ON_DEVICE",
       "full_draft_changed": false,
@@ -4123,7 +4123,8 @@
           "HIAI_FRONTEND_AXIS_TENSOR_AND_BACKEND_AXIS_ATTRIBUTE_ARE_DIFFERENT_CONTRACTS",
           "TENSORDESC_DTYPE_ENUM7_AND_OPERATOR_ATTRIBUTE_ENUM3_ARE_SEPARATE_INT32_ENCODINGS",
           "COMPILED_CPUCL_OWNER_OVERRIDES_DESCRIPTOR_DEVICE_TYPE_LABEL_FOR_PLACEMENT",
-          "FRONTEND_REGISTRATION_SEARCH_MUST_HANDLE_HIAI_MACROS_AND_EXCLUDE_KERNEL_INTRINSIC_NOISE"
+          "FRONTEND_REGISTRATION_SEARCH_MUST_HANDLE_HIAI_MACROS_AND_EXCLUDE_KERNEL_INTRINSIC_NOISE",
+          "NPU_GRAPH_PRESENT_IS_NOT_ARGMAX_NPU_PLACEMENT; DECODE_CPU_OPERATORS_AND_SHAPES_BEFORE_INTEGRATION"
         ],
         "executable_checks": "validate_draft_vector.py dtype plans and exact integer gates",
         "skill_changes": "NONE; EXISTING_PROFILE_SCOPE_RULES_ADEQUATE",
@@ -4144,6 +4145,11 @@
           "applied_in": "top1_probe.py; type_contracts.py; top1_ir_inspect.py",
           "lesson": "Use actual selected frontend ports and types, corroborate with compiled examples, then test the mathematical expression and serialized ports separately. Full-shape host replay is not OMG or NPU proof.",
           "model_compilation": "NOT_RUN",
+          "full_model_accuracy_or_performance_claim": "NONE"
+        },
+        "placement_followup": {
+          "run_id": "20261104T032006Z-4074-bb512d",
+          "lesson": "Shape-only or FP16-to-FP16 NPU subgraphs can coexist with CPU Top1. Counted NPU partitions do not locate the expensive reduction. Inspect hash-bound compiled CPU node types and actual boundary shapes.",
           "full_model_accuracy_or_performance_claim": "NONE"
         }
       },
@@ -4212,7 +4218,7 @@
         ],
         "next": "READ_SAVED_COMPILER_ENVIRONMENT_AND_SELECTED_DDK_REDUCTION_REGISTRATION; NO_RECOMPILE_OR_DEVICE_RUN"
       },
-      "next": "RECOMPILE_NATIVE_THREE_CASES_WITH_SELECTED_DDK_DEFAULT_POLICY_THEN_INSPECT_OMC_OWNERS_AND_BOUNDARIES",
+      "next": "INSPECT_EXISTING_TOP1_OMC_CPU_OPERATORS_AND_BOUNDARY_SHAPES_NO_RECOMPILE",
       "registration_inspection": {
         "entry": "probe_draft_vector.py --inspect-top1 COMPILED_PROBES --ddk-root DDK",
         "run_id": "20261104T021319Z-1312-aa1ef2",
@@ -4309,7 +4315,7 @@
         }
       },
       "native_cpro_candidates": {
-        "status": "HOST_CHECKED_SELECTED_OMG_RECOMPILE_PENDING",
+        "status": "USER_REPORTED_COMPILED_MIXED_CPU_NPU_PLACEMENT",
         "run_id": "20261104T022117Z-1605-76c12b",
         "cases": [
           "top1_ext2_fp16",
@@ -4317,7 +4323,7 @@
           "top1_ext2_tiled_fp16"
         ],
         "schema_source": "USER_REPORTED_SELECTED_HIAI_MATH_AND_ARRAY_HEADERS; COMPILED_CPU_AXIS_AND_DEFAULTS_CORROBORATED",
-        "model_compilation": "NOT_RUN_FOR_FRONTEND_CORRECTION",
+        "model_compilation": "PASSED_USER_REPORT",
         "device_execution": "NOT_RUN",
         "numerical_validation": "NOT_RUN_ON_DEVICE",
         "host": {
@@ -4530,7 +4536,146 @@
           "legacy_compatibility": "OLD_THREE_GE_GRAPH_MANIFESTS_AND_CPP_IDENTICAL_ALL_FIXTURES_IDENTICAL",
           "inspector_correction": "PRIORITIZE_HIAI_FRONTEND_HEADERS_RECOGNIZE_HIAI_MACROS_SKIP_TIKCPP_ASCENDC_INTRINSICS",
           "full_draft_changed": false,
-          "next": "RECOMPILE_NATIVE_THREE_CASES_WITH_SELECTED_DDK_DEFAULT_POLICY_THEN_INSPECT_OMC_OWNERS_AND_BOUNDARIES"
+          "next": "INSPECT_EXISTING_TOP1_OMC_CPU_OPERATORS_AND_BOUNDARY_SHAPES_NO_RECOMPILE",
+          "server_compilation": "USER_REPORTED_PASSED_ALL_THREE; PLACEMENT_MIXED"
+        },
+        "frontend_compilation_observation": {
+          "source": "USER_PASTED_PROBE_COMPILATION_RESULT",
+          "independently_retrieved": false,
+          "date": "2026-11-04",
+          "source_revision": "283da71",
+          "status": "COMPILED",
+          "model_compilation": "PASSED",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN",
+          "full_draft_changed": false,
+          "platform": "kirinx90",
+          "weight_data_type": "OMG_DEFAULT",
+          "cases": [
+            {
+              "case": "top1_ext2_fp16",
+              "status": "COMPILED",
+              "model_compilation": "PASSED",
+              "placement": "NO_NPU_GRAPH",
+              "graphop_counts": {
+                "CPUCL": 1
+              },
+              "graph_interfaces": [
+                {
+                  "name": "SubGraph_0",
+                  "owner": "CPUCL",
+                  "input_dtypes": [
+                    "float32"
+                  ],
+                  "output_dtypes": [
+                    "int32"
+                  ]
+                }
+              ],
+              "fp32_to_fp16_casts": [],
+              "all_npu_boundaries_fp32": false
+            },
+            {
+              "case": "top1_ext2_flat_fp16",
+              "status": "COMPILED",
+              "model_compilation": "PASSED",
+              "placement": "NPU_GRAPH_PRESENT",
+              "graphop_counts": {
+                "NPUCL": 1,
+                "CPUCL": 1
+              },
+              "graph_interfaces": [
+                {
+                  "name": "SubGraph_0",
+                  "owner": "NPUCL",
+                  "input_dtypes": [
+                    "float16"
+                  ],
+                  "output_dtypes": [
+                    "float16"
+                  ]
+                },
+                {
+                  "name": "SubGraph_1",
+                  "owner": "CPUCL",
+                  "input_dtypes": [
+                    "float32"
+                  ],
+                  "output_dtypes": [
+                    "int32"
+                  ]
+                }
+              ],
+              "fp32_to_fp16_casts": [],
+              "all_npu_boundaries_fp32": false
+            },
+            {
+              "case": "top1_ext2_tiled_fp16",
+              "status": "COMPILED",
+              "model_compilation": "PASSED",
+              "placement": "NPU_GRAPH_PRESENT",
+              "graphop_counts": {
+                "NPUCL": 2,
+                "CPUCL": 2
+              },
+              "graph_interfaces": [
+                {
+                  "name": "SubGraph_0",
+                  "owner": "NPUCL",
+                  "input_dtypes": [
+                    "float16"
+                  ],
+                  "output_dtypes": [
+                    "float16"
+                  ]
+                },
+                {
+                  "name": "SubGraph_1",
+                  "owner": "CPUCL",
+                  "input_dtypes": [
+                    "float32"
+                  ],
+                  "output_dtypes": [
+                    "int32",
+                    "float32"
+                  ]
+                },
+                {
+                  "name": "SubGraph_2",
+                  "owner": "NPUCL",
+                  "input_dtypes": [
+                    "float16"
+                  ],
+                  "output_dtypes": [
+                    "int32"
+                  ]
+                },
+                {
+                  "name": "SubGraph_3",
+                  "owner": "CPUCL",
+                  "input_dtypes": [
+                    "int32",
+                    "int32"
+                  ],
+                  "output_dtypes": [
+                    "int32"
+                  ]
+                }
+              ],
+              "fp32_to_fp16_casts": [
+                "graphop_data_cast_1"
+              ],
+              "all_npu_boundaries_fp32": false
+            }
+          ],
+          "conclusion": "FRONTEND_REJECTION_RESOLVED; DIRECT_TOP1_REMAINS_CPU; FLAT_AND_TILED_HAVE_MIXED_OWNERS; COMPLETE_NPU_REDUCTION_NOT_ESTABLISHED",
+          "not_established": [
+            "WHICH_REDUCTIONS_ARE_NPU",
+            "BOUNDARY_SHAPES",
+            "DEVICE_NAN_AND_TIE_BEHAVIOR",
+            "PERFORMANCE_BENEFIT"
+          ],
+          "tiled_hypothesis": "CPU_INT32_FLOAT32_OUTPUTS_COULD_BE_LOCAL_INDEX_AND_VALUE; NPU_INT32_OUTPUT_COULD_BE_WINNING_TILE; OPERATOR_MAPPING_REQUIRED"
         }
       },
       "frontend_ir_inspection": {
@@ -4684,6 +4829,21 @@
           "reader_limitation": "HIAI_REG_OP classified as related text; TIK/AscendC intrinsic excerpts consumed budget; exact required frontend declarations were nevertheless supplied",
           "conclusion": "TWO_INPUT_HIAI_FRONTEND_AND_FP32_DATA_CORROBORATED; CORRECT_PROBES_THEN_COMPILE; KERNEL_PLACEMENT_UNVERIFIED"
         }
+      },
+      "compiled_placement_inspection": {
+        "run_id": "20261104T032006Z-4074-bb512d",
+        "status": "HOST_CHECKED_USER_READ_ONLY_PLACEMENT_INSPECTION_PENDING",
+        "entry": "probe_draft_vector.py --inspect-top1-placement COMPILED_PROBES --ddk-root DDK",
+        "host": {
+          "status": "HOST_CHECKED",
+          "checks": 70,
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "scope": "REAL_SCHEMA_CONTAINER_DECODING_OF_SYNTHETIC_CPU_NPU_PROBES; HASH_PATH_DDK_OWNER_RANGE_REJECTIONS_AND_CLI; NOT_VENDOR_PLACEMENT_VALIDATION"
+        },
+        "scope": "COMPILER_INVENTORY_BOUND_OMC_MAIN_BOUNDARIES_AND_CPU_GRAPHDEFS_ONLY_NO_WRITES",
+        "checks": "SAVED_COMPILER_STATUS_PLATFORM_DDK; MODEL_PATH_SIZE_SHA256; TASK_RANGE_OVERLAP_OWNER; SAVED_GRAPHOP_COUNTS",
+        "remaining": "NPU_TASK_INTERNALS_OPAQUE; ONLY_EXPLICIT_CPU_OPERATORS_AND_MAIN_BOUNDARIES_REPORTED; NO_OMG_JSON_CROSSCHECK"
       }
     }
   },

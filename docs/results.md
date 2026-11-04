@@ -1,5 +1,11 @@
 # 当前结果
 
+2026-11-04，用户回传283da71的三个修正后原生Top1探针全部COMPILED／model_compilation=PASSED，device_execution及numerical_validation均NOT_RUN。直接版CPUCL1、无NPU图，边界FP32→INT32；展平版NPUCL1＋CPUCL1，分别FP16→FP16、FP32→INT32；分块版NPUCL2＋CPUCL2，依次NPU FP16→FP16、CPU FP32→[INT32,FP32]、NPU FP16→INT32、CPU [INT32,INT32]→INT32，并出现graphop_data_cast_1的FP32→FP16转换。此处由用户摘要记录，未独立获取OMC哈希或边界shape。
+
+前端缺属性／缺第二输入的编译阻塞已经解决。NPU_GRAPH_PRESENT仅证明存在NPU分区，不证明完整Top1归约或昂贵的局部归约落NPU。分块的接口模式与局部索引和值留CPU、获胜块选择在NPU相符，但必须以CPU节点及边界shape核实，尚不能作为事实或性能收益。未重编完整Draft，也没有放松NaN／并列规则、整数精确比较或启动设备验证。
+
+新增只读--inspect-top1-placement，重用选定schema的OMC／CPU切片读取逻辑，先以保存编译report绑定OMC路径、大小、SHA256、平台与DDK根，检查各任务范围、不重叠、CPU owner及保存的GraphOp数量；输出主图实际描述与连接、各CPU任务的全部节点摘要。数据常量及NPU二进制不展开；不根据源名、缺失CPU节点或FP16接口自动推断NPU内的操作。本地主机run `20261104T032006Z-4074-bb512d` 的70项检查通过，真实schema／容器读取器处理合成三种分区模式，验证完整Draft参考输出不变、只读保证、损坏／错配拒绝和CLI互斥。未调用厂商进程或设备，原探针与fixture未变。下一步命令见[当前阶段](current-status.md)。
+
 2026-11-04，用户回传所选DDK前端头文件及完整Draft的CPU节点，原报告仍为PARTIAL、三个失败case的原dump目录均NO_DUMPS。math_defs.h的HIAI_REG_OP声明明确给出ArgMaxExt2(x, axis)和ReduceMax(x, axes)，轴输入均INT32；数据端口分别允许FLOAT／INT32和FLOAT／INT32／UINT8，未列FLOAT16。array_defs.h声明GatherV2D(x, indices)、INT32 indices及整数axis属性。后端npu_generated_opinfo的一输入／轴属性定义不能继续用作这些前端节点的原型。此次已有声明足以修正探针，无需等失败dump出现。
 
 用户读取的完整Draft OMC为1790918688字节，SHA256 `967e9b640915893890ef95425b0e1279c8245bff0cfc2833f0cbfa56eb023372`。CPU SubGraph_2的ArgMaxV2节点实际类型ArgMaxExt2，数据输入FP32[1,15,248320]，第二输入Const_483为INT32、空维度、4字节，输出INT32[1,15]；属性output_type=3、keep_dims=false、outmaxval=false、topk=1。Const实际数据未解码，不能据此声称读到其轴值；TensorDesc的INT32编号7与属性枚举3属于不同编码。CPUCL任务owner证明这里是CPU示例，描述中的device_type=NPU不能覆盖owner判定。

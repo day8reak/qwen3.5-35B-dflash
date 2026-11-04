@@ -5,6 +5,7 @@ used as an operator prototype. A compiled CPU node is a comparison example,
 not a complete frontend schema or evidence of NPU placement.
 """
 from collections import deque
+from collections import Counter
 import hashlib
 import json
 from pathlib import Path
@@ -133,9 +134,22 @@ def _reference(root, schema):
         raise ValueError("reference requires the retained compiled PyTorch Draft")
     if packing.get("status") != "EMBEDDED" or packing.get("schema") != schema.evidence:
         raise ValueError("reference packing schema differs from selected DDK")
-    model = root / "model.omc"
+    return _compiled_model(root / "model.omc", schema)
+
+
+def _node_summary(node, enums):
+    from qwen35_moe_dflash.draft.compile_precision import _observed_desc
+    keys = {"axis", "axes", "dimension", "output_type", "keep_dims", "outmaxval", "topk", "dst_type"}
+    return dict(name=node.get("name"), type=node.get("type"), input=node.get("input", []),
+        inputs=[_observed_desc(d, enums) for d in node.get("input_desc", [])],
+        outputs=[_observed_desc(d, enums) for d in node.get("output_desc", [])],
+        attributes=[a for a in node.get("attr", []) if a.get("key") in keys])
+
+
+def _compiled_model(model, schema, *, compact=False):
+    """Decode bounded CPU task slices; NPU task payloads remain opaque."""
     if model.is_symlink():
-        raise ValueError("reference OMC must not be a symlink")
+        raise ValueError("OMC must not be a symlink")
     before = model.stat()
     identity = dict(path=str(model), bytes=before.st_size, sha256=sha256_file(model))
     container = read_container(model)
@@ -144,11 +158,22 @@ def _reference(root, schema):
     raw = read_partition(model, main, max_bytes=16 << 20)
     document = schema.decode(raw, "ModelDef")
     enums, spans, cpu = _enum_fields(schema), [], []
+    main_nodes, counts = [], Counter()
     for graph, _ in _graphs(document):
+        if compact:
+            names = [n.get("name") for n in graph["op"]]
+            if (len(names) > 1024 or len(names) != len(set(names))
+                    or any(not isinstance(n, str) or not n for n in names)):
+                raise ValueError("main graph operation names/count unsupported")
         for node in graph["op"]:
+            if compact:
+                main_nodes.append(dict(graph=graph.get("name"), **_node_summary(node, enums)))
             if node.get("type") != "GraphOp":
                 continue
             task = _task(node)
+            counts[task["cl_name"]] += 1
+            if compact:
+                main_nodes[-1]["owner"] = task["cl_name"]
             start, size = task["offset"], task["bytes"]
             if not size or start > tasks["bytes"] or size > tasks["bytes"] - start:
                 raise ValueError("task exceeds compiled task partition")
@@ -161,14 +186,24 @@ def _reference(root, schema):
         raise ValueError("reference CPU slices exceed inspection budget")
     result = dict(status="INSPECTED", model=identity, main_partition_sha256=hashlib.sha256(raw).hexdigest(),
                   cpu_subgraphs=[], scope="COMPILED_CPU_EXAMPLE_NOT_FRONTEND_SCHEMA_OR_NPU_SUPPORT")
+    if compact:
+        if not counts:
+            raise ValueError("no GraphOp owners found")
+        result.update(main_nodes=main_nodes, graphop_counts=dict(counts),
+            scope="COMPILED_MAIN_BOUNDARIES_AND_CPU_OPERATIONS_ONLY; NPU_TASK_INTERNALS_NOT_DECODED")
     for name, task in cpu:
         payload = read_partition(model, dict(offset=tasks["offset"] + task["offset"], bytes=task["bytes"]),
                                  max_bytes=16 << 20)
         graph = schema.decode(payload, "GraphDef")
         names = [n.get("name") for n in graph.get("op", [])]
         if (graph.get("name") != name or not names or len(names) != len(set(names))
-                or any(not isinstance(n, str) or not n for n in names)):
+                or len(names) > 1024 or any(not isinstance(n, str) or not n for n in names)):
             raise ValueError("CPU graph owner/name mismatch or ambiguous operation names")
+        if compact:
+            result["cpu_subgraphs"].append(dict(owner=name, task=task,
+                sha256=hashlib.sha256(payload).hexdigest(),
+                operations=[_node_summary(n, enums) for n in graph["op"]]))
+            continue
         chosen = [n for n in graph["op"] if n.get("type") in _TYPES]
         if len(chosen) > 16:
             raise ValueError("too many reference reduction nodes")
@@ -178,6 +213,71 @@ def _reference(root, schema):
     after = model.stat()
     if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
         raise ValueError("reference OMC changed during inspection")
+    return result
+
+
+def inspect_top1_placement(compiled, ddk_root):
+    """Inspect already compiled Top1 cases without compiling or writing files."""
+    from .top1_probe import CASES
+    if not ddk_root or not Path(ddk_root).is_dir():
+        raise ValueError("provide the selected --ddk-root")
+    root, sdk = Path(compiled).resolve(), Path(ddk_root).resolve()
+    batch_raw = _read(root / "result.json", 4 << 20)
+    batch = json.loads(batch_raw)
+    if (batch.get("artifact_kind") != "qwen35-draft-vector-probe"
+            or batch.get("status") not in {"COMPILED", "PARTIAL"}):
+        raise ValueError("expected completed probe compilation")
+    rows = batch.get("cases", [])
+    names = [r["case"] for r in rows]
+    if not names or len(names) != len(set(names)) or any(n not in CASES for n in names):
+        raise ValueError("expected distinct Top1 cases")
+    schema = load_schema(sdk / _LIBRARY)
+    result = dict(artifact_kind="qwen35-draft-top1-placement-inspection", status="INSPECTED",
+        model_compilation="NOT_RUN", device_execution="NOT_RUN", numerical_validation="NOT_RUN",
+        source_batch_status=batch["status"], source_batch_sha256=hashlib.sha256(batch_raw).hexdigest(),
+        schema=schema.evidence, cases=[],
+        scope="READ_ONLY_COMPILED_PROBE_MAIN_BOUNDARIES_AND_CPU_TASKS",
+        limitations=["NPU_GRAPH_PRESENT does not place any particular reduction on NPU.",
+            "Only CPU task GraphDefs are decoded; absent CPU names are not NPU operator mapping proof.",
+            "Tensor descriptors and explicit input references are reported, not measured transfers or internal arithmetic.",
+            "Empty/missing shape dimensions remain as decoded; no expected shape is filled in.",
+            "Reference OMC layout with selected schema, owner and range checks; no fresh OMG JSON conversion."])
+    for row in rows:
+        entry = dict(case=row["case"], status="UNINSPECTED")
+        result["cases"].append(entry)
+        try:
+            if row.get("status") != "COMPILED" or row.get("model_compilation") != "PASSED":
+                raise ValueError("case did not compile; no placement decoded")
+            folder = root / row["case"] / "omc"
+            report_raw = _read(folder / "report.json", 16 << 20)
+            report = json.loads(report_raw)
+            environment = json.loads(_read(folder / "omg-environment.json", 2 << 20))
+            if (report.get("status") != "COMPILED" or report.get("platform") != "kirinx90"
+                    or any(Path(d.get("ddk_root") or "").resolve() != sdk for d in (report, environment))):
+                raise ValueError("saved compiler status/platform/DDK differs from selected inspection")
+            identity = report["omc"]
+            relative = Path(identity["path"])
+            model = folder / relative
+            if (relative.is_absolute() or ".." in relative.parts or model.is_symlink()
+                    or not model.resolve().is_relative_to(folder.resolve())
+                    or model.resolve() != (root / row["omc"]).resolve()):
+                raise ValueError("probe model path differs from saved compilation")
+            if model.stat().st_size > 64 << 20:
+                raise ValueError("Top1 probe exceeds 64 MiB")
+            if (model.stat().st_size != identity["bytes"] or sha256_file(model) != identity["sha256"]):
+                raise ValueError("probe OMC differs from compiler inventory")
+            inspection = _compiled_model(model, schema, compact=True)
+            if (inspection["model"]["sha256"] != identity["sha256"]
+                    or inspection["graphop_counts"] != row.get("graphop_counts")):
+                raise ValueError("decoded probe identity/owners differ from saved result")
+            entry.update(status="INSPECTED", compiler_report_sha256=hashlib.sha256(report_raw).hexdigest(),
+                         **{k: v for k, v in inspection.items() if k != "status"})
+        except (OSError, ValueError, KeyError, TypeError, RecursionError) as error:
+            entry.update(status="UNSUPPORTED", error=str(error)[:512])
+            result["status"] = "PARTIAL"
+    result["next"] = "LOCATE_CPU_REDUCTIONS_AND_BOUNDARY_SHAPES; DEVICE_NUMERICS_AND_LATENCY_STILL_UNVERIFIED"
+    if len(json.dumps(result, ensure_ascii=True).encode()) > _LIMITS["output_bytes"]:
+        raise ValueError("Top1 placement inspection exceeds output budget")
     return result
 
 

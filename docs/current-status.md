@@ -1,24 +1,29 @@
 # 当前阶段测试命令
 
-目标为C16／cap192／K15常驻预热后平均≤50ms。最新完整Draft的model inference为103.720ms，完整Draft仍为NUMERICAL_FAILED，host embedding准备未计入API。
+目标为C16／cap192／K15常驻预热后平均≤50ms。完整Draft仍为103.720ms／NUMERICAL_FAILED，host embedding准备未计入API。
 
-## 当前进展：按所选HIAI前端定义修正Top1探针
+## Top1前端修正已通过编译，归约落点待核对
 
-用户回传的math_defs.h明确规定ArgMaxExt2第二输入为INT32 axis，ReduceMax第二输入为INT32 axes。两者的数据端口均列出FLOAT而未列FLOAT16。完整Draft的CPU子图同时证实：ArgMaxV2已编译为ArgMaxExt2，接FP32数据和一个4字节INT32常量，属性为output_type=3、keep_dims=false、outmaxval=false、topk=1。常量的实际轴值未解码。
+用户回传283da71的三个探针全部COMPILED，设备和数值验证尚未运行。
 
-三个原生探针现在保留FP16公共输入，在图内扩展为FP32后接前端算子。ArgMaxExt2使用INT32标量轴，ReduceMax使用INT32向量[2]，分块值输出为FP32[15,485]，全局索引恢复仍用INT32。旧的一输入／轴属性表达会在导出前拒绝。直接版作为同一路径对照；展平、分块是否改变NPU落点，需要实际编译结果。
+| 探针 | 编译分区 | 当前结论 |
+|---|---|---|
+| direct | CPUCL 1 | 仍无NPU图 |
+| flat | NPUCL 1＋CPUCL 1 | NPU边界FP16→FP16，CPU边界FP32→INT32；尚未证明ArgMax上NPU |
+| tiled | NPUCL 2＋CPUCL 2 | 归约链仍混合，存在FP32→FP16边界转换 |
 
-## 重新编译三个小图
+分块版的CPU子图输出INT32和FP32，随后NPU子图输出INT32，末尾CPU接两个INT32输入。这与局部索引／最大值留CPU、获胜块归约落NPU的结构相符，但目前仅是推测。需要CPU节点清单及实际边界shape；不能用NPU_GRAPH_PRESENT或描述中的device_type=NPU直接判定算子归属。
 
-同步main后执行以下命令，替换已完成的top1-probes测试槽。本轮只编译、检查OMC分区与边界描述，不上板。
+## 只读本轮已编译OMC
+
+同步main后运行，无需重新编译或替换测试槽：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_vector.py" \
-  --cases top1_ext2_fp16 top1_ext2_flat_fp16 top1_ext2_tiled_fp16 \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$AI_RUN_DIR/draft/tests/top1-probes" --replace
+  --inspect-top1-placement "$AI_RUN_DIR/draft/tests/top1-probes" \
+  --ddk-root "$CPRO_DDK_ROOT"
 ```
 
-查看每例的model_compilation、placement、graphop_counts及precision_boundaries。编译通过后仍需检查整个归约链的落点；设备比较必须保持所有15行、所有重复的INT32字节完全一致，包括并列、NaN和大索引。FP16扩展为FP32在主机上保持数值，不证明设备归约的NaN规则或内部指令精度。
+每例输出main_nodes（形状、类型、原始连接及GraphOp owner）与cpu_subgraphs.operations（CPU节点名称、类型和描述）。检查器先核对编译状态、kirinx90和保存DDK路径，再绑定report.json中的OMC路径、字节数和SHA256；读取CPU任务前检查范围、不重叠和图owner。NPU任务内部不解码，CPU中缺少某名称不能直接当作NPU映射证明。
 
-主机run `20261104T030633Z-3506-c58c14`：243项检查含六图54次完整词表回放、C++发射、模拟厂商元数据下的真实ABI绑定与严格整数比较；另46项检查覆盖旧图／fixture保持、65536种FP16位模式扩展、错误前端合同拒绝及HIAI头文件摘录。所选DDK编译、设备数值和性能验证均NOT_RUN。完整Draft与暂停的AddCustom路径未修改，详细证据见[结果](results.md)。
+本地主机run `20261104T032006Z-4074-bb512d`：70项合成schema／OMC／CLI检查通过，涵盖只读保证、哈希与DDK错配、损坏任务范围、owner和重复节点拒绝，并保持已有完整Draft参考检查输出。未调用所选DDK或设备；这次没有改探针数学表达、fixture或完整Draft。详细记录见[结果](results.md)。

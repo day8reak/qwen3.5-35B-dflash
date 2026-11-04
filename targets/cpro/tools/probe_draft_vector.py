@@ -552,6 +552,8 @@ def main(argv=None):
                         help='read saved Top1 compiler environments and selected DDK reduction registrations; no writes, compilation or device access')
     parser.add_argument('--inspect-top1-ir', metavar='COMPILED_PROBES',
                         help='read selected DDK frontend text and retained failed Top1 IR; no compilation or device access')
+    parser.add_argument('--inspect-top1-placement', metavar='COMPILED_PROBES',
+                        help='read hash-bound compiled Top1 CPU operators and main boundary shapes; no writes or device access')
     parser.add_argument('--reference-compiled', metavar='COMPILED_DRAFT',
                         help='optional existing PyTorch Draft CPU node examples for --inspect-top1-ir')
     parser.add_argument('--inspect-rms', nargs='+', metavar='AIR',
@@ -574,18 +576,25 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.timeout_seconds <= 0 or len(args.cases) != len(set(args.cases)):
         parser.error('timeout must be positive and cases must be distinct')
-    if sum(bool(value) for value in (args.inspect_ddk, args.inspect_top1, args.inspect_top1_ir, args.inspect_rms, args.inspect_compile)) > 1:
+    inspections = (args.inspect_ddk, args.inspect_top1, args.inspect_top1_ir,
+                   args.inspect_top1_placement, args.inspect_rms, args.inspect_compile)
+    if sum(bool(value) for value in inspections) > 1:
         parser.error('select one read-only inspection mode')
     if args.torchair_pb2 and not args.inspect_rms:
         parser.error('--torchair-pb2 requires --inspect-rms')
     if args.reference_compiled and not args.inspect_top1_ir:
         parser.error('--reference-compiled requires --inspect-top1-ir')
-    if args.inspect_ddk or args.inspect_top1 or args.inspect_top1_ir or args.inspect_rms or args.inspect_compile:
+    if any(inspections):
         if args.output or args.replace or args.plan_only:
             parser.error('inspection cannot be combined with --output, --replace or --plan-only')
     elif not args.output:
         parser.error('--output is required for compilation or --plan-only')
     try:
+        if args.inspect_top1_placement:
+            from qwen35_moe_dflash.draft.incremental.top1_ir_inspect import inspect_top1_placement
+            print(json.dumps(inspect_top1_placement(args.inspect_top1_placement, args.ddk_root),
+                             ensure_ascii=False, indent=2))
+            return 0
         if args.inspect_top1_ir:
             from qwen35_moe_dflash.draft.incremental.top1_ir_inspect import inspect_top1_ir
             print(json.dumps(inspect_top1_ir(args.inspect_top1_ir, args.ddk_root, args.reference_compiled),
