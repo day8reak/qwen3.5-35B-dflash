@@ -7,6 +7,7 @@ are reported separately; neither establishes full Draft accuracy/performance.
 from copy import deepcopy
 import fcntl
 import hashlib
+import json
 from pathlib import Path
 import shutil
 
@@ -35,25 +36,34 @@ PREPARATION = dict(baseline='copy-c16-v1', packed='feature-pack-c16-v1')
 TIMING = 'CPU_PACK_SETINPUT_EXECUTE_WALL; PREALLOCATED; SNAPSHOTS_EXCLUDED'
 
 
-def input_contract(raw, schema, input_name, shape):
+def input_contract(raw, schema, input_name, shape, *, input_device='NPU'):
     """Check both sides of Data, including its unconnected external input.
 
     TorchAir Data copies output_desc to input_desc (named y/x):
     Ascend/torchair e1118e8b, python/torchair/ge/_ge_graph.py, Data().
-    Checking only the producer output misses a stale importer input shape.
+    The retained baseline may have a CPU external input. That source placement
+    is not compiled-op placement; preserve it while checking shape/dtype/layout.
+    The newly written packed descriptors must both declare NPU.
     """
     _, _, graph = _decode(schema, raw)
     nodes = [n for n in graph['op'] if n['type'] == 'Data']
     if len(nodes) != 1 or nodes[0]['name'] != input_name or nodes[0].get('input', []) not in ([], ['']):
         raise ValueError('projection requires one unconnected external Data input')
+    if input_device not in ('CPU', 'NPU'):
+        raise ValueError('unsupported source Data input device: '+repr(input_device))
     observed = {}
+    half = schema.enums[schema.package+'.DataType']['DT_FLOAT16']
     for side in ('input_desc', 'output_desc'):
+        expected = dict(shape=list(shape), dtype='float16', layout='ND',
+            device_type=input_device if side == 'input_desc' else 'NPU')
         rows = nodes[0].get(side, [])
-        if (len(rows) != 1 or rows[0].get('shape', {}).get('dim') != shape
-                or rows[0].get('dtype') != schema.enums[schema.package+'.DataType']['DT_FLOAT16']
-                or rows[0].get('layout') != 'ND' or rows[0].get('device_type') != 'NPU'):
-            raise ValueError('projection Data '+side+' must declare FP16 ND NPU '+str(shape))
-        observed[side] = dict(shape=list(shape), dtype='float16', layout='ND', device_type='NPU')
+        actual = [dict(shape=d.get('shape', {}).get('dim'),
+            dtype='float16' if d.get('dtype') == half else d.get('dtype'),
+            layout=d.get('layout'), device_type=d.get('device_type')) for d in rows]
+        if actual != [expected]:
+            raise ValueError('projection Data descriptor mismatch: '+json.dumps(dict(
+                graph=graph.get('name'), node=input_name, side=side, expected=expected, actual=actual)))
+        observed[side] = actual[0]
     return observed
 
 
@@ -181,7 +191,12 @@ class Projection(LayerTrace):
         graph = blob('GraphDef', 'name', 'draft_feature_pack_'+variant)+b''.join(encoded)+_blob(self.op_field, net)
         raw = graph if self.graph_field is None else b''.join(
             _blob(f, graph) if f == self.graph_field else e for f, _, e, _ in _parts(self.raw))
-        contract = input_contract(raw, schema, self.input, shape)
+        # The compiled baseline kept the original external descriptor, whose
+        # placement follows the exporter input (CPU in the retained Draft).
+        source_inputs = self.nodes[self.input].get('input_desc', [])
+        input_device = (source_inputs[0].get('device_type') if len(source_inputs) == 1 else None)
+        contract = input_contract(raw, schema, self.input, shape,
+            input_device=input_device if variant == 'baseline' else 'NPU')
         return raw, dict(graph=dict(inputs=[dict(name=self.input, dtype='float16', shape=shape)],
             outputs=[dict(name='projected_features', source_edge=self.terminal, dtype='float16', shape=OUTPUT_SHAPE)]),
             removed_nodes=sorted(self.selected-selected), preserved_payload_sha256=preserved,
@@ -310,7 +325,8 @@ def compile_probe(air_export, result, output, *, ddk_root, ddk_id, tbe_diagnosis
         extracted, receipt = prefix.extract_projection(variant)
         prepared, preparation = prepare_compiler_air(extracted, schema)
         receipt['compiler_data_descriptor_contract'] = input_contract(prepared, schema, prefix.input,
-            PACKED_SHAPE if variant == 'packed' else INPUT_SHAPE)
+            PACKED_SHAPE if variant == 'packed' else INPUT_SHAPE,
+            input_device=receipt['data_descriptor_contract']['input_desc']['device_type'])
         plans.append((variant, extracted, receipt, prepared, preparation))
     root.parent.mkdir(parents=True, exist_ok=True)
     if shutil.disk_usage(root.parent).free < 1 << 30:

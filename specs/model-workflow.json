@@ -7247,7 +7247,31 @@
           "host_evidence": "20261105T114816Z-8899-cfd6e5/out/evidence/feature-pack-retry-checks.json",
           "retry": "--retry-failed; SAME_DIRECTORY; REUSE_BASELINE_AND_FIXTURES; ONLY_RECORDED_FAILED_OMG_EXIT",
           "model_compilation": "NOT_RUN_AFTER_FIX",
-          "device_execution": "NOT_RUN"
+          "device_execution": "NOT_RUN",
+          "cpu_input_fix": {
+            "status": "HOST_VALIDATED_AWAITING_USER_RETRY",
+            "source": "USER_RETURNED_SOURCE_DATA",
+            "observed": {
+              "node": "arg11_1",
+              "shape": [
+                1,
+                16,
+                16384
+              ],
+              "dtype": "float16",
+              "layout": "ND",
+              "input_device_type": "CPU",
+              "output_device_type": "CPU"
+            },
+            "previous_failure": "8a80e59 baseline input-device preflight; BEFORE_RESET_OR_COMPILATION",
+            "policy": "PRESERVE_SOURCE_BASELINE_INPUT_PLACEMENT; PACKED_BOTH_NPU; SHAPE_DTYPE_LAYOUT_GATES_UNCHANGED",
+            "placement_scope": "SOURCE_DATA_PLACEMENT_IS_NOT_COMPILED_OPERATOR_PLACEMENT",
+            "host_checks": 20,
+            "host_evidence": "20261105T120243Z-9658-4921a3/out/evidence/feature-pack-cpu-data-checks.json",
+            "host_scope": "USER_DATA_DESCRIPTOR_FIELDS; SYNTHETIC_PREFIX; MOCK_DDK_OMC_AND_PROCESS_OWNERSHIP",
+            "model_compilation": "NOT_RUN_AFTER_FIX",
+            "device_execution": "NOT_RUN"
+          }
         }
       }
     }
