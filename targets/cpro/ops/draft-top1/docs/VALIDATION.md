@@ -1,5 +1,7 @@
 # Validation
 
+用户随后启动修正后的命令但终端无输出。代码审查确认入口仅在返回时打印JSON、没有传递已有compiler progress回调；无法从用户未贴日志判断实际运行阶段或卡死。现已补stderr阶段通知及既有30秒OMG心跳，保持stdout单条JSON。run `20261105T012457Z-20992-be4a81` 的43项主机检查通过（`evidence/progress-check/validation.json`），包括回调透传、stderr可见且错误JSON不受影响；没有启动真实OMG或设备，没有修改host/kernel、超时或重试策略。
+
 最新用户日志已定位：`StableArgMax` 注册/dispatch及host tiling可达，`block_dim=1`、前三个tiling字段为15/248320/8192；编译worker在 `_prerun → _update_options → te_update_version` 失败，尚非kernel C++诊断。不是仅凭缺少builtin kernel库的较早日志判定根因。
 
 run `20261105T011001Z-20502-2dc937` 修复入口漏传 `--tbe-diagnosis`，并加入旧AIR的哈希核对复用。41项主机流程检查通过（`evidence/tbe-reuse-check/validation.json`），新增覆盖新编译/复用两种路径透传参数、审计摘要、无GE环境下只调用一次OMG、旧目录字节和mtime保留、shape/图源码/host-kernel/AIR/fixture变化拒绝。SDK调用仍为mock；修正后的实际OMG和设备未在本地执行，host/kernel未变。

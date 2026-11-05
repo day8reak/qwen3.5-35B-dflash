@@ -76,6 +76,8 @@ python3 "$OP_DIR/scripts/stable_arg_max_ge.py" \
 
 其他选项：
 
+- 进度：stderr立即显示阶段/日志路径；OMG启动后每30秒显示等待时间、日志大小及末行；stdout仅输出最终JSON。默认OMG超时1800秒，不含前置准备。日志暂时不增长不证明卡死。
+- 旧版已经启动的任务：在另一终端运行 `tail -n 60 -F "$AI_RUN_DIR/draft/tests/stable-arg-max-ge-tbe/omc/compile.log"`。日志尚未创建时会继续等待出现；观察终端的Ctrl-C只退出tail，不要为补显示而重启原编译。本轮编译/验证完成前保留当前代码版本，避免入口源码哈希变化影响既有验证绑定。
 - `--shape 17 8193`：输出尾写与输入 tile 尾部检查，四组输入共用一份 OMC，使用另一个新输出目录。
 - `--export-only`：只做 GE C++ → AIR，无需 DDK/OMG。
 - `--plan-only`：仅生成 C++ 和 NumPy 输入/参考，无需 GE SDK。

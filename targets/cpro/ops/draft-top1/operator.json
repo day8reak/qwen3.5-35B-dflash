@@ -179,6 +179,12 @@
       "checks": 41,
       "report": "evidence/tbe-reuse-check/validation.json",
       "scope": "HOST_MOCK_SDK; REAL_CORRECTED_OMG_PENDING"
+    },
+    "progress_evidence": {
+      "run_id": "20261105T012457Z-20992-be4a81",
+      "checks": 43,
+      "report": "evidence/progress-check/validation.json",
+      "scope": "HOST_MOCK_SDK_PROGRESS_WIRING; CURRENT_USER_COMPILE_RESULT_PENDING"
     }
   },
   "performance": {

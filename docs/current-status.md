@@ -12,6 +12,8 @@
 
 后续用户OMG日志确认StableArgMax注册/dispatch和host tiling已生效（15/248320/8192，block_dim=1），worker在te_update_version初始化失败。新GE入口漏传已有TBE兼容参数，现已补 `--tbe-diagnosis`，复用此前的 `common/tbe-diagnosis`。新增 `--reuse-export <旧目录>` 核验并复用AIR，仅重做OMG，保持kirinx90和旧失败现场；host/kernel不变。41项主机流程检查通过，修正后的实际编译/设备结果仍待用户执行。
 
+用户已启动修正后的OMG命令但终端无输出；代码确认新入口漏接既有progress回调。已补stderr阶段提示与30秒OMG等待观察，43项host检查通过；当前运行保留，另终端tail原compile.log，实际编译结果仍待回传。无需为进度显示重跑。
+
 21项Top1编译矩阵、9个OMC的61例设备语义／时延验证均已完成，无需重复启动或回收这批任务。用户报告610次测量调用全部成功，输出重复稳定；原完整比较标准下45例通过、16例失败。
 
 | 已测表达 | 设备结果 |

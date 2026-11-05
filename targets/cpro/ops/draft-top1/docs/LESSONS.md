@@ -1,5 +1,7 @@
 # Lessons and evidence scope
 
+- 2026-11-05入口等待时没有输出：既有compile_existing_air支持progress和30秒compiler_heartbeat，但新入口未接线。沿用该观察器，stderr立即刷新阶段/日志路径并转发有界日志摘要，stdout保持机器可读结果；不另建进程控制/超时/重试实现。已运行旧入口用tail -F观察原日志，静默不构成卡死或编译通过证据。43项host检查验证接线，真实用户运行结果待回传。
+
 - 2026-11-05进一步日志证明host注册及tiling已执行，当前阻塞在worker的te_update_version。对照既有toolchain/compile.py和历史Draft结果，发现新GE入口遗漏 `--tbe-diagnosis` 转发。复用已经证据绑定的CPro/TBE兼容处理；不改目标SOC、不改全局包、不重新扫描内置算子支持范围。入口测试现在验证参数从CLI到compiler，避免仅覆盖默认编译路径。
 - 编译环境修复不需要重复GE导出。新增 `--reuse-export` 校验旧AIR、recipe、host/kernel/reference哈希与fixtures，允许仅诊断CLI代码变化；新输出保留旧失败现场，41项主机检查覆盖。实测兼容是否APPLIED与OMG是否成功分别记录，不能把修复接线测试当目标编译成功。
 

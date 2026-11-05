@@ -9,16 +9,16 @@
 | Operator | draft-top1 |
 | Branch | operator/draft-top1 |
 | Current phase | 2 |
-| Based-on revision | 494cfd0178365330b126194354e2bad40f071ed7 |
-| Updated UTC | 2026-11-05T01:14:13Z |
-| Summary | Forwarded established TBE compatibility into StableArgMax GE probe and added retained AIR reuse. User host tiling reached; original worker failed platform update. |
-| Blocker | Corrected OMG compile and device validation must run on user-operated selected DDK; no local selected target profile. |
+| Based-on revision | 1978a568259c4c44a645bd40f14ca70b44f13772 |
+| Updated UTC | 2026-11-05T01:26:42Z |
+| Summary | Progress wiring fixed; existing user OMG execution retained and outcome pending. |
+| Blocker | No current compiler log or completion result from user-operated selected DDK. |
 | Active files | scripts/stable_arg_max_ge.py<br>tests/test_ddk_workflow.py |
-| Recorded working tree (PLAN excluded) |  M docs/current-status.md<br> M docs/results.md<br> M specs/dflash-execution-state.json<br> M targets/cpro/ops/draft-top1/README.md<br> M targets/cpro/ops/draft-top1/docs/ENVIRONMENT.md<br> M targets/cpro/ops/draft-top1/docs/LESSONS.md<br> M targets/cpro/ops/draft-top1/docs/VALIDATION.md<br> M targets/cpro/ops/draft-top1/operator.json<br> M targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py<br> M targets/cpro/ops/draft-top1/tests/test_ddk_workflow.py |
+| Recorded working tree (PLAN excluded) |  M docs/current-status.md<br> M docs/results.md<br> M specs/dflash-execution-state.json<br> M targets/cpro/ops/draft-top1/README.md<br> M targets/cpro/ops/draft-top1/docs/LESSONS.md<br> M targets/cpro/ops/draft-top1/docs/VALIDATION.md<br> M targets/cpro/ops/draft-top1/operator.json<br> M targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py<br> M targets/cpro/ops/draft-top1/tests/test_ddk_workflow.py |
 
 ## Exact next commands
 
-- `python3 "$OP_DIR/scripts/stable_arg_max_ge.py" --reuse-export "$AI_RUN_DIR/draft/tests/stable-arg-max-ge" --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" --output "$AI_RUN_DIR/draft/tests/stable-arg-max-ge-tbe"`
+- `tail -n 60 -F "$AI_RUN_DIR/draft/tests/stable-arg-max-ge-tbe/omc/compile.log"`
 
 ## Phase table
 
@@ -26,7 +26,7 @@
 |---:|---|---|---|---|---|---|
 | 0 | Git scope | COMPLETED | Branch, manifest, persistent plan, and scaffold form a rollback checkpoint | Managed operator branch and source checkpoint established.<br>Source checkpoint 2f55529; lifecycle working check passed.<br>Evidence: git:2f55529 | Record the frozen independently validated host contract. | — |
 | 1 | Contract and baseline | COMPLETED | Interface, semantics, rejection behavior, deterministic golden, and baseline are frozen | Generic finite FP16 last-axis StableArgMax contract and host acceptance frozen.<br>63 actual-source control-flow/Torch export checks, 35 reference checks, 11 project preparation checks and 9 text-handoff checks pass. Vendor build/device unverified.<br>Evidence: 20261104T083807Z-10795-c00fd7/evidence/source-check-2/source-validation.json; 20261104T083807Z-10795-c00fd7/evidence/prepare-check/validation.json | User copies sources, prepares project with selected X90 msopgen and runs vendor build/install. | — |
-| 2 | Environment | BLOCKED | Environment identity, dependency locks, setup, and preflight are reproducible | Forwarded established TBE compatibility into StableArgMax GE probe and added retained AIR reuse. User host tiling reached; original worker failed platform update.<br>41 host workflow checks pass, including tbe_diagnosis forwarding, audit reporting and hash-checked no-GE AIR reuse. No host/kernel change or local target execution.<br>Evidence: 20261105T011001Z-20502-2dc937/evidence/tbe-reuse-check/validation.json; 20261105T011001Z-20502-2dc937/evidence/user-observation.json | Reuse the exported AIR and existing common/tbe-diagnosis for one corrected OMG compile in a new output directory, then inspect compilation and worker audit. | — |
+| 2 | Environment | BLOCKED | Environment identity, dependency locks, setup, and preflight are reproducible | Progress wiring fixed; existing user OMG execution retained and outcome pending.<br>43 host workflow checks passed; stderr stage and compiler heartbeat forwarding, clean final stdout JSON. No SDK, device, kernel or process-control change.<br>Evidence: 20261105T012457Z-20992-be4a81/evidence/progress-check/validation.json | Observe existing compile.log in a separate terminal; keep current execution and source version through validation. | — |
 | 3 | Development | PENDING | Smallest correct host, kernel/device, framework, build, golden, and compare paths work | — | — | — |
 | 4 | Correctness validation | PENDING | Independent-copy, boundary, negative, integration, and on-board PASS or documented PENDING/N/A have evidence | — | — | — |
 | 5 | Optimization | PENDING | Frozen baseline, one-hypothesis experiments, correctness reruns, and promotion decision are reproducible | — | — | — |
@@ -54,8 +54,8 @@
     "scripts/stable_arg_max_ge.py",
     "tests/test_ddk_workflow.py"
   ],
-  "based_on_revision": "494cfd0178365330b126194354e2bad40f071ed7",
-  "blocker": "Corrected OMG compile and device validation must run on user-operated selected DDK; no local selected target profile.",
+  "based_on_revision": "1978a568259c4c44a645bd40f14ca70b44f13772",
+  "blocker": "No current compiler log or completion result from user-operated selected DDK.",
   "branch": "operator/draft-top1",
   "current_phase": "2",
   "decisions": [
@@ -70,7 +70,7 @@
     "2026-11-05T01:10:55Z: Reuse established selected-DDK TBE compatibility; retain kirinx90, no SDK edits, no host/kernel changes, no new builtin probe matrix."
   ],
   "next_commands": [
-    "python3 \"$OP_DIR/scripts/stable_arg_max_ge.py\" --reuse-export \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge\" --tbe-diagnosis \"$AI_RUN_DIR/common/tbe-diagnosis\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge-tbe\""
+    "tail -n 60 -F \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge-tbe/omc/compile.log\""
   ],
   "operator_id": "draft-top1",
   "phases": [
@@ -105,18 +105,17 @@
     },
     {
       "evidence": [
-        "20261105T011001Z-20502-2dc937/evidence/tbe-reuse-check/validation.json",
-        "20261105T011001Z-20502-2dc937/evidence/user-observation.json"
+        "20261105T012457Z-20992-be4a81/evidence/progress-check/validation.json"
       ],
       "gate": "Environment identity, dependency locks, setup, and preflight are reproducible",
       "id": "2",
       "knowledge_refs": [],
       "name": "Environment",
-      "next_action": "Reuse the exported AIR and existing common/tbe-diagnosis for one corrected OMG compile in a new output directory, then inspect compilation and worker audit.",
-      "result": "41 host workflow checks pass, including tbe_diagnosis forwarding, audit reporting and hash-checked no-GE AIR reuse. No host/kernel change or local target execution.",
+      "next_action": "Observe existing compile.log in a separate terminal; keep current execution and source version through validation.",
+      "result": "43 host workflow checks passed; stderr stage and compiler heartbeat forwarding, clean final stdout JSON. No SDK, device, kernel or process-control change.",
       "status": "BLOCKED",
-      "summary": "Forwarded established TBE compatibility into StableArgMax GE probe and added retained AIR reuse. User host tiling reached; original worker failed platform update.",
-      "updated_utc": "2026-11-05T01:14:13Z"
+      "summary": "Progress wiring fixed; existing user OMG execution retained and outcome pending.",
+      "updated_utc": "2026-11-05T01:26:42Z"
     },
     {
       "evidence": [],
@@ -179,15 +178,14 @@
       "updated_utc": ""
     }
   ],
-  "resume_summary": "Forwarded established TBE compatibility into StableArgMax GE probe and added retained AIR reuse. User host tiling reached; original worker failed platform update.",
+  "resume_summary": "Progress wiring fixed; existing user OMG execution retained and outcome pending.",
   "schema_version": 1,
-  "updated_utc": "2026-11-05T01:14:13Z",
+  "updated_utc": "2026-11-05T01:26:42Z",
   "working_tree": [
     " M docs/current-status.md",
     " M docs/results.md",
     " M specs/dflash-execution-state.json",
     " M targets/cpro/ops/draft-top1/README.md",
-    " M targets/cpro/ops/draft-top1/docs/ENVIRONMENT.md",
     " M targets/cpro/ops/draft-top1/docs/LESSONS.md",
     " M targets/cpro/ops/draft-top1/docs/VALIDATION.md",
     " M targets/cpro/ops/draft-top1/operator.json",

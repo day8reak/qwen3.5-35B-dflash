@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Host workflow tests with forbidden Torch imports and mocked SDK calls."""
 import argparse
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 import importlib.abc
 import io
 import json
@@ -102,6 +102,7 @@ def check(output):
     def compile_air(air, folder, ddk, **kwargs):
         calls.append(['OMG', str(air)])
         compiler_kwargs.append(kwargs)
+        kwargs['progress'](dict(stage='omg-wait', message='Waiting for OMG: elapsed=30s; log=123 bytes'))
         folder.mkdir()
         (folder / 'model.omc').write_bytes(b'MOCK OMC')
         report = dict(status='COMPILED', model_compilation='PASSED', platform='kirinx90',
@@ -131,7 +132,13 @@ def check(output):
         compatible = args('compatible-fresh', (2, 3), plan=False)
         compatible.ge_root, compatible.ddk_root, compatible.ddk_id = str(fakege), str(output / 'ddk'), 'mock-ddk'
         compatible.tbe_diagnosis = str(output / 'retained-diagnosis')
-        compatible_report = probe.run(compatible)
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            compatible_report = probe.run(compatible)
+        assert 'preflight:' in stderr.getvalue() and 'omg-prepare:' in stderr.getvalue()
+        assert 'omg-wait: Waiting for OMG: elapsed=30s; log=123 bytes' in stderr.getvalue()
+        assert 'inspect:' in stderr.getvalue()
+        checks.append('stage_and_existing_compiler_wait_callback_are_visible_on_stderr')
         assert compiler_kwargs[-1]['tbe_diagnosis'] == compatible.tbe_diagnosis
         assert compatible_report['tbe_compatibility']['audit_status'] == 'APPLIED'
         checks.append('fresh_compile_forwards_evidence_bound_tbe_option_and_reports_worker_audit')
@@ -240,6 +247,7 @@ def check(output):
         assert saved['model_compilation'] == 'NOT_RUN'
         checks.append('retain_failed_export_stage_no_false_compilation_pass')
         def compile_failure(air, folder, ddk, **kwargs):
+            kwargs['progress'](dict(stage='omg', message='Compiling existing AIR'))
             folder.mkdir()
             saved = dict(status='FAILED', stage='omg', model_compilation='FAILED', returncode=1,
                 error='CalledProcessError: synthetic OMG exited 1')
@@ -249,7 +257,8 @@ def check(output):
 
         with patch('qwen35_moe_dflash.toolchain.existing_air.compile_existing_air', compile_failure):
             stdout = io.StringIO()
-            with redirect_stdout(stdout):
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
                 code = probe.main(['--shape', '2', '3', '--output', str(output / 'failed-omg'),
                     '--ge-root', str(fakege), '--ddk-root', str(output / 'ddk'), '--ddk-id', 'mock-ddk'])
             failed = json.loads(stdout.getvalue())
@@ -258,6 +267,8 @@ def check(output):
             assert 'StableArgMax' in failed['compilation_diagnostics']['log_excerpt']
             assert 'synthetic OMG exited 1' in failed['error']
             assert json.loads((output / 'failed-omg/result.json').read_text()) == failed
+            assert 'Compiling existing AIR' in stderr.getvalue()
+            checks.append('progress_does_not_pollute_final_stdout_json_or_mask_compiler_failure')
             checks.append('failed_omg_json_includes_original_error_and_concrete_compiler_log')
         snapshot = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
             for p in (output / 'failed-omg').rglob('*') if p.is_file()}

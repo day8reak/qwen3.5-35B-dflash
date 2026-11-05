@@ -800,3 +800,5 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 用户随后报告GE探针已进入OMG，退出码1；只有调用栈，尚无具体compiler日志/安装结果。交付三个源码哈希与allops一致。新增只读失败诊断与终端JSON日志摘要，33项主机流程检查通过（run `20261105T010637Z-20281-c9f19f`）；没有重试编译或修改kernel，等待现有日志定位根因。
 
 进一步OMG日志包含StableArgMax的custom实现路径和host tiling（15/248320/8192、block_dim=1），随后worker在te_update_version失败。新入口遗漏了既有 `--tbe-diagnosis` 兼容转发，已修复，并支持校验后复用旧AIR只做一次OMG编译。沿用此前恢复的common/tbe-diagnosis，目标仍kirinx90，不改DDK或全局Python。41项主机流程检查通过（run `20261105T011001Z-20502-2dc937`）；实际修正后编译和设备待验证，host/kernel不变。
+
+2026-11-05进度修复（run `20261105T012457Z-20992-be4a81`）：用户已启动修正后的OMG命令但终端无输出；代码确认新入口漏接既有progress回调。已补stderr阶段提示与30秒OMG等待观察，43项host检查通过；当前运行保留，另终端tail原compile.log，实际编译结果仍待回传。无需为进度显示重跑。

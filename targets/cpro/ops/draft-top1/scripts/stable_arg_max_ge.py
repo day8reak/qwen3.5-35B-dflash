@@ -38,6 +38,15 @@ def write(path, value):
     Path(path).write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
 
 
+def progress(row):
+    """Keep stdout as one result JSON; immediately show existing compiler events."""
+    try:
+        print(f"stable-arg-max: {row['stage']}: {row['message']}", file=sys.stderr, flush=True)
+    except OSError:
+        # A closed diagnostic stream must not change the compilation result.
+        pass
+
+
 def failure_diagnostics(output, stage):
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics, log_excerpt
     try:
@@ -176,6 +185,7 @@ def inspect_model(model, ddk, graph):
 
 
 def run(args):
+    progress(dict(stage='preflight', message='Checking export inputs and retained AIR identity'))
     from qwen35_moe_dflash.graph.fused.emitter import emit_cpp
     from qwen35_moe_dflash.graph.export import _logged
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
@@ -208,6 +218,7 @@ def run(args):
         frontend='GE_CPP_NO_TORCH_TORCHAIR_TORCH_NPU', source_sha256=source_hashes(),
         contract='FINITE_FP16_FIRST_MAXIMUM_EXACT_INT32', cases=[])
     try:
+        progress(dict(stage='fixtures', message=f'Preparing and verifying reference inputs; output={output}'))
         graph = graph_for(shape)
         report['graph'] = graph.manifest()
         cpp = output / 'probe.cpp'
@@ -243,6 +254,7 @@ def run(args):
         air = output / 'air/stable_arg_max.air'
         if reused:
             report['stage'] = 'reuse-air'
+            progress(dict(stage='reuse-air', message='Reusing verified AIR; GE export is skipped'))
             shutil.copyfile(reused[0] / 'air/stable_arg_max.air', air)
             if sha(air) != reused[2]['air_sha256']:
                 raise ValueError('AIR changed during reuse copy')
@@ -252,6 +264,7 @@ def run(args):
                 if not path.is_file():
                     raise FileNotFoundError(path)
             report['stage'] = 'ge-export'
+            progress(dict(stage='ge-export', message=f'Building GE exporter; logs={output}/build.log, {output}/export.log'))
             env = dict(os.environ)
             library = ge / 'lib64'
             env['LD_LIBRARY_PATH'] = str(library) + os.pathsep + env.get('LD_LIBRARY_PATH', '')
@@ -273,9 +286,11 @@ def run(args):
             return report
         report['stage'] = 'omg'
         write(output / 'result.json', report)
+        progress(dict(stage='omg-prepare', message=f'Preparing selected DDK/TBE; OMG log={output}/omc/compile.log; '
+            f'OMG timeout={args.timeout_seconds:g}s; wait updates every 30s once OMG starts'))
         compiled = compile_existing_air(air, output / 'omc', args.ddk_root, ddk_id=args.ddk_id,
             timeout_seconds=args.timeout_seconds, use_origin_format=True, save_weights_as_external_data=False,
-            tbe_diagnosis=getattr(args, 'tbe_diagnosis', None))
+            tbe_diagnosis=getattr(args, 'tbe_diagnosis', None), progress=progress)
         report['model_compilation'] = compiled['model_compilation']
         compatibility = compiled.get('tbe_compatibility')
         if compatibility is not None:
@@ -287,6 +302,7 @@ def run(args):
         model = output / 'omc' / compiled['omc']['path']
         report.update(omc=str(model.relative_to(output)), omc_sha256=sha(model), ddk_id=args.ddk_id)
         report['stage'] = 'inspect'
+        progress(dict(stage='inspect', message='OMG completed; inspecting compiled placement and interfaces'))
         inspection = inspect_model(model, args.ddk_root, report['graph'])
         write(output / 'placement-inspection.json', inspection)
         report['placement'] = inspection['placement']
