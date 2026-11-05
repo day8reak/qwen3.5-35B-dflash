@@ -22,6 +22,7 @@ def main():
     mode.add_argument('--analyze',help='recompute new-KV and repeat diagnostics from retained host tensors')
     mode.add_argument('--diagnose',help='inspect retained hidden zeros/repeated rows and controls; optional --source checks embedding rows locally')
     mode.add_argument('--audit-reference',help='CPU source-math replay against retained reference and board tensors; requires --source, --air-export and an --output JSON file')
+    mode.add_argument('--audit-head',help='NumPy-only full-vocabulary ranking of retained hidden at Top1 mismatch positions; requires --source and --output JSON')
     parser.add_argument('--output')
     parser.add_argument('--apply',action='store_true')
     parser.add_argument('--atol',type=float)
@@ -33,6 +34,15 @@ def main():
     if args.output_initialization is not None and not args.replay:
         parser.error('--output-initialization requires --replay')
     from qwen35_moe_dflash.draft.incremental.accuracy import summarize_result
+    if args.audit_head:
+        if (args.apply or any((args.config,args.compiled,args.ddk_root,args.air_export))
+                or args.atol is not None or args.rtol is not None
+                or not all((args.source,args.output))):
+            parser.error('--audit-head requires only retained result, --source and --output JSON')
+        from qwen35_moe_dflash.draft.incremental.head_audit import audit_head
+        print(json.dumps(audit_head(args.audit_head,args.source,args.output,
+            progress=lambda x: print('draft-head-audit: '+x,flush=True)),ensure_ascii=False,allow_nan=False))
+        return 0
     if args.audit_reference:
         if (args.apply or any((args.config,args.compiled,args.ddk_root))
                 or args.atol is not None or args.rtol is not None

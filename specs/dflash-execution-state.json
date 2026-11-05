@@ -1009,11 +1009,11 @@
     },
     "latest_observation": "specs/incremental-draft-native-host-validation.json",
     "latest_accuracy_observation": {
-      "source": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json",
+      "source": "20261105T033543Z-26157-7fe4c7/evidence/user-output-init-summary.json",
       "status": "NUMERICAL_FAILED",
       "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
       "numerical_validation": "FAILED",
-      "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_279e74c27a2c470598f5d4488c3bf54f",
+      "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_cdde358fba2d415281c20f5aec6a3a90",
       "model_sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f",
       "case_counts": {
         "isolated": {
@@ -1043,12 +1043,14 @@
         "label": "empty-context",
         "top1_mismatches": 1,
         "hidden": {
-          "max_abs_error": 4.42578125,
-          "rmse": 0.6511128437106132,
-          "relative_l2_error": 0.6511133260512757
+          "max_abs_error": 0.15234375,
+          "rmse": 0.014494301980837742,
+          "relative_l2_error": 0.014494312718133574
         }
       },
-      "model_identity_evidence": "20261105T030837Z-25145-99c811/evidence/user-boundaries-summary.json"
+      "model_identity_evidence": "ORIGINAL_MODEL_AND_FIXTURE_REUSED_BY_REPLAY; NO_NEW_DIGEST_IN_PASTED_RECOVERY_SUMMARY",
+      "output_initialization": "untouched",
+      "first_case_modes_bitwise_equal": true
     },
     "performance_target": {
       "mean_ms": 50,
@@ -7232,7 +7234,7 @@
             "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json",
             "model_identity_evidence": "20261105T030837Z-25145-99c811/evidence/user-boundaries-summary.json"
           },
-          "next": "Rebuild native runner only; replay original fixture with untouched caller output initialization, recover same request, compare retained first calls. No new profiling or model compile.",
+          "next": "Run offline --audit-head on output-init/result with original prepared weights; retain failed accuracy gates. No new device execution, model compilation or profiling.",
           "diagnostic_host_evidence": "20261105T025158Z-24349-82e298/evidence/diagnostic-profile-check.json",
           "boundary_observation": {
             "provenance": "USER_PASTED_BOUNDARY_INSPECTION_NOT_INDEPENDENTLY_RETRIEVED",
@@ -7410,8 +7412,11 @@
               "cold_first_call": "RETAINED; NO_WARMUP_SKIP",
               "gates": "UNCHANGED",
               "model_compilation": "NOT_RUN",
-              "device_execution": "PENDING_USER",
-              "production_default": "ZERO_UNCHANGED"
+              "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+              "production_default": "ZERO_UNCHANGED",
+              "result": "EXTRA_ZERO_BLOCKS_ABSENT_IN_THIS_REPLAY; ALL_FIRST_CASE_OUTPUTS_BITWISE_EQUAL",
+              "numerical_validation": "FAILED",
+              "evidence": "20261105T033543Z-26157-7fe4c7/evidence/user-output-init-summary.json"
             },
             "evidence": "20261105T031159Z-25303-23ce63/evidence/user-hidden-zero-summary.json"
           },
@@ -7496,6 +7501,116 @@
               "NO_NUMERICAL_OR_PRODUCTION_PROMOTION"
             ],
             "evidence": "20261105T031159Z-25303-23ce63/evidence/user-profile-summary.json"
+          },
+          "output_initialization_observation": {
+            "artifact_kind": "qwen35-draft-user-output-initialization-observation",
+            "source": "USER_PASTED_COMPLETED_REPLAY_AND_FIRST_CALL_DIAGNOSIS; NOT_LOCALLY_RERUN",
+            "status": "NUMERICAL_FAILED",
+            "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+            "model_compilation": "NOT_RUN",
+            "numerical_validation": "FAILED",
+            "output_initialization": "untouched",
+            "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_cdde358fba2d415281c20f5aec6a3a90",
+            "model_sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f",
+            "model_identity_scope": "ORIGINAL_MODEL_AND_FIXTURE_REUSED_BY_REPLAY; NO_NEW_DIGEST_IN_PASTED_RECOVERY_SUMMARY",
+            "replay_source": "draft/tests/top1-integration/result",
+            "result": "draft/tests/top1-integration/output-init/result",
+            "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+            "calls": 38,
+            "first_case": {
+              "index": 0,
+              "call_ordinals": {
+                "isolated": 0,
+                "feedback": 19
+              },
+              "all_14_outputs_bitwise_equal": true,
+              "hidden": {
+                "elements": 30720,
+                "nonfinite_elements": 0,
+                "different_elements": 0,
+                "zero_elements": {
+                  "isolated": 3,
+                  "feedback": 3,
+                  "reference": 3
+                },
+                "max_abs_error": 0.15234375,
+                "rmse": 0.014494301980837742,
+                "relative_l2_error": 0.014494312718133574
+              },
+              "input_evidence": "17_RETAINED_FILES_VERIFIED_12_ZERO_KV; NOT_DEVICE_READBACK"
+            },
+            "top1_differences_unchanged": 7,
+            "isolated_top1": {
+              "matched": 82,
+              "total": 86
+            },
+            "feedback_top1": {
+              "matched": 83,
+              "total": 86
+            },
+            "hidden_relative_l2": {
+              "isolated": [
+                0.013387271239375807,
+                0.025755650596962287
+              ],
+              "feedback": [
+                0.014494312718133574,
+                0.026116219967572855
+              ]
+            },
+            "appended_kv_relative_l2": [
+              0.004417372793104131,
+              0.008283531899103903
+            ],
+            "kv_preservation_failed": 0,
+            "feedback_repeats_bitwise_equal": true,
+            "native_api_latency": {
+              "isolated": {
+                "catchup": {
+                  "calls": 11,
+                  "mean_ms": 66.33890909090908,
+                  "min_ms": 64.951,
+                  "max_ms": 66.778
+                },
+                "proposal": {
+                  "calls": 8,
+                  "mean_ms": 66.029,
+                  "min_ms": 64.93,
+                  "max_ms": 66.682
+                }
+              },
+              "feedback": {
+                "catchup": {
+                  "calls": 11,
+                  "mean_ms": 66.62172727272728,
+                  "min_ms": 66.305,
+                  "max_ms": 67.13
+                },
+                "proposal": {
+                  "calls": 8,
+                  "mean_ms": 66.45975,
+                  "min_ms": 64.751,
+                  "max_ms": 67.298
+                }
+              }
+            },
+            "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; PREPARATION_AND_SNAPSHOTS_EXCLUDED",
+            "interpretation": "EXTRA_12928_INITIAL_ZERO_ELEMENTS_ABSENT_IN_THIS_UNTOUCHED_REPLAY; ORIGINAL_NUMERICAL_FAILURE_REMAINS",
+            "root_cause": "CACHE_COHERENCY_VISIBILITY_OR_BUFFER_LIFETIME_NOT_LOCALIZED",
+            "production_promotion": "NOT_PERFORMED",
+            "normal_runtime_default": "UNCHANGED_ZERO_INITIALIZATION",
+            "evidence": "20261105T033543Z-26157-7fe4c7/evidence/user-output-init-summary.json"
+          },
+          "head_audit": {
+            "entry": "targets/cpro/tools/validate_incremental_draft.py --audit-head",
+            "status": "HOST_CHECKED_AWAITING_USER_REAL_WEIGHTS",
+            "host_checks": 24,
+            "host_evidence": "20261105T033543Z-26157-7fe4c7/evidence/head-audit-check.json",
+            "scope": "NUMPY_FULL_VOCAB_RANKING_AT_RETAINED_TOP1_MISMATCH_POSITIONS; NOT_DEVICE_LOGITS",
+            "device_execution": "NOT_RUN",
+            "model_compilation": "NOT_RUN",
+            "numerical_validation": "NOT_EVALUATED",
+            "source_model_changed": false
           }
         }
       }

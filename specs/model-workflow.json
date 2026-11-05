@@ -3,7 +3,7 @@
   "updated": "2026-11-05",
   "active_phase": "accuracy",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
-  "run_id": "20261105T030837Z-25145-99c811",
+  "run_id": "20261105T033543Z-26157-7fe4c7",
   "navigation": {
     "home": "docs/README.md",
     "model": "docs/model-architecture.md",
@@ -5809,8 +5809,8 @@
     "entry": "targets/cpro/tools/validate_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
-    "device_numerics": "ISOLATED82_OF86_FEEDBACK83_OF86; FIRST_ISOLATED_HIDDEN_L2_65.11_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "Rebuild native runner only; replay original fixture with untouched caller output initialization, recover same request, compare retained first calls. No new profiling or model compile.",
+    "device_numerics": "UNTOUCHED_REPLAY_FIRST_CASE_ALL14_OUTPUTS_BITWISE_EQUAL; HIDDEN_L2_1.449_PERCENT; ISOLATED82_OF86_FEEDBACK83_OF86; ORIGINAL_GATES_FAILED",
+    "next": "Run offline --audit-head on output-init/result with original prepared weights; retain failed accuracy gates. No new device execution, model compilation or profiling.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6304,13 +6304,13 @@
         "status": "NUMERICAL_FAILED",
         "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json"
       },
-      "next": "Rebuild native runner only; replay original fixture with untouched caller output initialization, recover same request, compare retained first calls. No new profiling or model compile.",
+      "next": "Run offline --audit-head on output-init/result with original prepared weights; retain failed accuracy gates. No new device execution, model compilation or profiling.",
       "diagnostic_host_evidence": "20261105T025158Z-24349-82e298/evidence/diagnostic-profile-check.json",
       "experience_audit": {
         "evidence": "docs/results.md#完整-draft-候选",
-        "observed": "ALL_12928_INITIAL_HIDDEN_DIFFERENCES_ARE_ZERO_REPLACEMENTS; PROFILE_STABLE_ARG_MAX_415_US",
-        "checks": "REPLAY_ORIGINAL_FIXTURE_AND_GATES_WITH_EXPLICIT_OUTPUT_INITIALIZATION; NO_TORCH",
-        "skill_changes": "NONE; EXISTING_TARGET_PROFILING_CLOCK_AND_EVIDENCE_RULES_APPLY",
+        "observed": "UNTOUCHED_REPLAY_REMOVES_EXTRA_12928_INITIAL_ZEROS; ALL14_FIRST_CASE_OUTPUTS_BITWISE_EQUAL; ORIGINAL_TOP1_KV_ERRORS_UNCHANGED",
+        "checks": "OFFLINE_HEAD_AUDIT_WITH_WEIGHT_BINDING_AND_RETAINED_COMPARISON; SYNTHETIC_HOST_CHECKS_PASSED",
+        "skill_changes": "NONE; MODEL_SPECIFIC_INITIALIZATION_OBSERVATION; CACHE_ROOT_CAUSE_UNPROVEN",
         "promotion": "NO_FULL_MODEL_PROMOTION",
         "remaining_hypotheses": [
           "OUTPUT_VISIBILITY_WRITEBACK_OR_LIFETIME",
@@ -6337,10 +6337,29 @@
       "runtime_diagnosis": {
         "entry": "targets/cpro/tools/validate_incremental_draft.py --replay --output-initialization untouched",
         "host_evidence": "20261105T031159Z-25303-23ce63/evidence/replay-check.json",
-        "device_execution": "NOT_RUN",
-        "native_sdk_build": "PENDING_USER_SELECTED_DDK",
+        "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+        "native_sdk_build": "UPDATED_RUNNER_EXECUTED_BY_USER; BUILD_RECEIPT_NOT_PASTED",
         "model_compilation": "NOT_RUN",
-        "normal_runtime_default": "UNCHANGED_ZERO_INITIALIZATION"
+        "normal_runtime_default": "UNCHANGED_ZERO_INITIALIZATION",
+        "first_case_modes_bitwise_equal": true,
+        "remaining_numerical_validation": "FAILED",
+        "evidence": "20261105T033543Z-26157-7fe4c7/evidence/user-output-init-summary.json"
+      },
+      "output_initialization_observation": {
+        "source": "specs/dflash-execution-state.json#incremental_draft_task/top1_builtin_probe/custom_top1/integration/output_initialization_observation",
+        "evidence": "20261105T033543Z-26157-7fe4c7/evidence/user-output-init-summary.json",
+        "status": "NUMERICAL_FAILED"
+      },
+      "head_audit": {
+        "entry": "targets/cpro/tools/validate_incremental_draft.py --audit-head",
+        "status": "HOST_CHECKED_AWAITING_USER_REAL_WEIGHTS",
+        "host_checks": 24,
+        "host_evidence": "20261105T033543Z-26157-7fe4c7/evidence/head-audit-check.json",
+        "scope": "NUMPY_FULL_VOCAB_RANKING_AT_RETAINED_TOP1_MISMATCH_POSITIONS; NOT_DEVICE_LOGITS",
+        "device_execution": "NOT_RUN",
+        "model_compilation": "NOT_RUN",
+        "numerical_validation": "NOT_EVALUATED",
+        "source_model_changed": false
       }
     }
   }

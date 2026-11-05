@@ -1,45 +1,25 @@
-# 当前阶段：Draft 首轮 hidden 零块定位
+# 当前阶段：Draft 剩余数值误差定位
 
-2026-11-05：首轮isolated的hidden有12931个零，feedback同例只有3个；多出的12928个零恰好覆盖全部差异，其余元素逐位相同。Top1和12路KV也逐位相同。已发现运行器分配输出后会由CPU清零，下一步验证省略这次写入是否影响首轮零块；尚未确定缓存、写回或buffer生命周期根因，原数值失败保持。
+2026-11-05：`untouched` 回放的首轮额外12928个零已消失，isolated／feedback首例全部14路输出逐位相同。hidden相对L2从65.11%回到1.449%，但原有七处Top1差异及hidden／KV失败仍在；整图尚未通过。该轮支持输出初始化影响首轮快照的判断，底层缓存或buffer机制仍未确定。
 
-profiling已回收：同一 `fadec11fab3e7…` OMC、case 2，model inference 66.556ms，StableArgMax 0.415ms；热点是末尾MatMul、Conv和布局转换。保留原CSV，不再重跑采集。测量范围和精度见[结果](results.md)。
+profiling已完成：同一OMC的model inference为66.556ms，StableArgMax为0.415ms。保留原CSV，无需重采；热点与测量范围见[结果](results.md)。
 
 ## 用户现在执行什么
 
-DDK／HDC服务器更新仓库后，重编运行器并复用旧精度夹具。无需Torch/TorchAir、权重加载、AIR导出或OMC重编。保留 `top1-integration/run`、`result`、`compiled` 和原fixture；本次只新增 `output-init` 测试槽位。
+DDK服务器更新仓库后，用已回收的hidden和原始FP16 LM head离线检查七处Top1差异。只需NumPy，不需要Torch／TorchAir、上板或重新编译。使用现有 `draft/source/prepared`、原精度fixture及本次 `output-init/result`，暂时保留它们。
 
 ```bash
 source "$REPO_DIR/targets/cpro/scripts/env.sh"
 export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
 
-python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$AI_RUN_DIR/runtime/native" --replace
-
 python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --replay "$TOP1_DIR/result" --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --output-initialization untouched \
-  --output "$TOP1_DIR/output-init/run" --apply
+  --audit-head "$TOP1_DIR/output-init/result" \
+  --source "$AI_RUN_DIR/draft/source/prepared" \
+  --output "$TOP1_DIR/output-init/head-audit.json"
 ```
 
-`--replay` 是一次新诊断执行，沿用原输入、golden、38次调用顺序和容差；`untouched` 仅省略调用方对输出的初始化写入，SDK分配行为不变。输入仍照原方式初始化，首轮不跳过。普通运行默认仍为 `zero`。出现启动确认后只回收同一请求：
+回传末尾JSON摘要即可。脚本校验原结果与权重绑定，对每处差异分别使用reference hidden和device hidden计算全词表排名，输出前两名、分差及FP16舍入是否改变第一名；完整数值写入指定JSON，不保存全词表logits。
 
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --recover "$TOP1_DIR/output-init/run" --output "$TOP1_DIR/output-init/result"
-```
+先看reference hidden是否复现原golden Top1，再看device hidden是否复现设备Top1。若两者均吻合，说明这组hidden差异在CPU head计算下足以重现翻转；若不吻合，再检查head计算或快照可见性。CPU累加顺序不代表NPU内部精度，本检查不改golden、容差或模型。原有CPU源码审计已通过部分用例，不重复整套审计。
 
-若为PENDING，继续同一回收命令，不重复 `--apply`。完成后读取首例差异及零值统计：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --diagnose "$TOP1_DIR/output-init/result" > "$TOP1_DIR/output-init/diagnosis.json"
-python3 - "$TOP1_DIR/output-init/diagnosis.json" <<'PY'
-import json, sys
-with open(sys.argv[1]) as f:
-    d = json.load(f)
-print(json.dumps({'initial_call_comparison': d['initial_call_comparison'],
-                  'first_cases': [r for r in d['cases'] if r['index'] == 0]}, ensure_ascii=False))
-PY
-```
-
-回传回收摘要与上述诊断即可。即使零块消失，也须单独比较hidden/KV原有误差及Top1，不能把初始化实验当作整图精度通过或缓存根因证明。原模型、算子和生产配置保持；首次构建见[完整流程](run-end-to-end.md)。
+普通运行仍保留原输出初始化默认值；本轮实验尚未作为生产修复推广。首次构建见[完整流程](run-end-to-end.md)。
