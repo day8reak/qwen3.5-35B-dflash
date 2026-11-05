@@ -6704,7 +6704,18 @@
           "scope": "HOST_ONLY_NO_VENDOR_COMPILE_OR_DEVICE"
         },
         "topk": "DEFERRED_USER_CONFIRMED_TOP1_FIRST",
-        "ascend310p": "FUTURE_ADAPTER_NOT_REGISTERED"
+        "ascend310p": "FUTURE_ADAPTER_NOT_REGISTERED",
+        "server_workflow": {
+          "ddk_server": "copy 3 op_host/op_kernel files into existing allops; existing build/install; no TorchAir",
+          "weights_server": "Torch schema/Meta/converter and TorchAir model export",
+          "ddk_probe": "targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py",
+          "board_validation": "targets/cpro/tools/validate_draft_vector.py",
+          "model_compilation": "NOT_RUN_LOCALLY",
+          "device_execution": "NOT_RUN_LOCALLY",
+          "host_checks": 27,
+          "fixture_crosschecks": 19,
+          "run_id": "20261105T005058Z-19077-dfa957"
+        }
       }
     }
   },

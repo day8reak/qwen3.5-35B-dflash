@@ -1,5 +1,9 @@
 # Lessons and evidence scope
 
+- 2026-11-05，用户确认DDK服务器已有allops且没有TorchAir，权重服务器才有TorchAir。默认工作流改为向既有工程复制三个host/kernel文件，使用GE C++构造单节点AIR测试；Torch schema/Meta/converter留在权重侧。不能把框架导出依赖当成算子编译前提，也不重建多算子工程。
+- 复用模型已有GE emitter、OMG隔离环境、OMC ABI/归属检查、上板启动/回收协议。每个shape只编译一份OMC，不因七组输入重复编译。DDK入口在禁用所有Torch系列导入的主机测试中通过；实际SDK和设备仍待用户执行。源码准备成功、GE主机程序成功、OMG成功、上板数值通过是独立阶段。
+- 本次经验已落入ENVIRONMENT/README及test_ddk_workflow.py；未提升为共享平台能力规则，因为allops部署和服务器分工是本项目配置。未解决假设仍是所选DDK兼容性、kernel真实执行及性能，没有新设备支持结论。
+
 - 2026-11-04，用户报告最后内置payload编译失败。tokens_bits的选定Bitcast注册是INT32→INT4，图中请求FP16入口；GetOutputFormats/OpPreBuild失败。两项树SKIPPED、NOT_RUN，不能当作两次独立编译失败。没有有效OMC或设备输出。不以日志裸dtype数字跨枚举解码，也不推断所有X90 Bitcast均不支持。
 - 此结果满足用户“再试一次，不行就写算子”的条件授权。终止内置矩阵扩张，进入固定Top1；残差AddCustom继续独立暂停，完整Draft未变。
 - 归约索引和图INT32节点是不同接口：公开X90 ReduceMax基础API不能证明当前CPro注册和OMG代码生成可用。先收集选定SDK的完整样例/注册/构建/API证据再写适配。

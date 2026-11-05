@@ -1,5 +1,16 @@
 # Validation
 
+2026-11-05两服务器流程更新，run `20261105T005058Z-19077-dfa957`：
+
+| 新检查 | 结果 | 证据 |
+|---|---|---|
+| allops只复制3文件、旧内容备份、GE节点/形状、共享OMC、板端准备、失败阶段/哈希/CPU落点拒绝、禁止框架导入 | 27项通过 | evidence/ddk-workflow-final/validation.json |
+| GE探针Qwen七组及通用shape参考与PyTorch独立比较 | 19组通过 | evidence/ge-fixture-crosscheck.json |
+
+流程检查中的GE/OMG是mock、输出是主机合成数据，**未进行真实GE编译、AIR导出、OMG或设备执行**。无框架检查会主动拒绝torch、torch_npu、torchair导入，涵盖GE工具和已有board adapter。第10次输出单字节错误会判失败。host/kernel和Torch绑定未改变，既有主机证据继续保留。
+
+当前默认是用户既有allops构建。DDK端用 `scripts/stable_arg_max_ge.py`，权重端才用 `scripts/export_probe.py` 的TorchAir路径；下文msopgen结果是可选旧入口的历史检查，不是本次构建前提。
+
 本次run：`20261104T083807Z-10795-c00fd7`。当前仅HOST_PASSED，厂商编译/真实AIR/OMG/设备/性能均待验证。
 
 | 检查 | 结果 | 证据（run相对路径） |

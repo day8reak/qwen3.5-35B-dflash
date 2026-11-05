@@ -9,16 +9,16 @@
 | Operator | draft-top1 |
 | Branch | operator/draft-top1 |
 | Current phase | 2 |
-| Based-on revision | 7562413eb78778412389f76caf799bbb5a670d0d |
-| Updated UTC | 2026-11-04T09:11:46Z |
-| Summary | Source checkpoint 7562413: generic StableArgMax, selected-msopgen preparation and Torch/GE bindings. |
-| Blocker | User-operated selected X90 DDK build/install and device evidence pending; no local selected DDK or device. |
-| Active files | op_host/stable_arg_max.cpp<br>op_kernel/stable_arg_max.cpp<br>python/stable_arg_max.py<br>scripts/prepare_project.py |
-| Recorded working tree (PLAN excluded) | clean |
+| Based-on revision | 48276dcad40ab835e3525b931167522ac5473658 |
+| Updated UTC | 2026-11-05T01:00:01Z |
+| Summary | Two-server source handoff: existing allops plus Torch-free GE probe on DDK server; Torch bindings stay on weights server. |
+| Blocker | Selected X90 DDK/GE and device are on user-operated servers; local selected profile unavailable. Source/workflow changes complete. |
+| Active files | scripts/prepare_allops.py<br>scripts/stable_arg_max_ge.py<br>tests/test_ddk_workflow.py<br>README.md |
+| Recorded working tree (PLAN excluded) |  M docs/current-status.md<br> M docs/results.md<br> M specs/dflash-execution-state.json<br> M targets/cpro/ops/README.md<br> M targets/cpro/ops/draft-top1/README.md<br> M targets/cpro/ops/draft-top1/docs/ENVIRONMENT.md<br> M targets/cpro/ops/draft-top1/docs/LESSONS.md<br> M targets/cpro/ops/draft-top1/docs/VALIDATION.md<br> M targets/cpro/ops/draft-top1/operator.json<br> M targets/cpro/ops/draft-top1/scripts/build.sh<br> M targets/cpro/ops/draft-top1/scripts/export_probe.py<br> M targets/cpro/ops/draft-top1/scripts/run_on_board.sh<br> M targets/cpro/ops/draft-top1/scripts/validate_host.py<br> M targets/cpro/tools/validate_draft_vector.py<br>?? targets/cpro/ops/draft-top1/scripts/prepare_allops.py<br>?? targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py<br>?? targets/cpro/ops/draft-top1/tests/test_ddk_workflow.py |
 
 ## Exact next commands
 
-- `python3 "$REPO_DIR/targets/cpro/ops/draft-top1/scripts/prepare_project.py" --ddk-root "$CPRO_DDK_ROOT" --output "$AI_RUN_DIR/draft/tests/stable-arg-max-build"`
+- `python3 "$REPO_DIR/targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py" --ge-root "$CANN_ROOT" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" --output "$AI_RUN_DIR/draft/tests/stable-arg-max-ge"`
 
 ## Phase table
 
@@ -26,7 +26,7 @@
 |---:|---|---|---|---|---|---|
 | 0 | Git scope | COMPLETED | Branch, manifest, persistent plan, and scaffold form a rollback checkpoint | Managed operator branch and source checkpoint established.<br>Source checkpoint 2f55529; lifecycle working check passed.<br>Evidence: git:2f55529 | Record the frozen independently validated host contract. | — |
 | 1 | Contract and baseline | COMPLETED | Interface, semantics, rejection behavior, deterministic golden, and baseline are frozen | Generic finite FP16 last-axis StableArgMax contract and host acceptance frozen.<br>63 actual-source control-flow/Torch export checks, 35 reference checks, 11 project preparation checks and 9 text-handoff checks pass. Vendor build/device unverified.<br>Evidence: 20261104T083807Z-10795-c00fd7/evidence/source-check-2/source-validation.json; 20261104T083807Z-10795-c00fd7/evidence/prepare-check/validation.json | User copies sources, prepares project with selected X90 msopgen and runs vendor build/install. | — |
-| 2 | Environment | BLOCKED | Environment identity, dependency locks, setup, and preflight are reproducible | Source checkpoint 7562413: generic StableArgMax, selected-msopgen preparation and Torch/GE bindings.<br>Source-only handoff complete. Host checks and real PT2 export pass; selected X90 compiler/AIR/OMC/device remain unverified.<br>Evidence: git:7562413; 20261104T083807Z-10795-c00fd7/evidence/source-check-2/source-validation.json | Copy targets/cpro/ops/draft-top1; generate selected X90 project and run vendor build, then standalone AIR/OMG/device checks. | — |
+| 2 | Environment | BLOCKED | Environment identity, dependency locks, setup, and preflight are reproducible | Two-server source handoff: existing allops plus Torch-free GE probe on DDK server; Torch bindings stay on weights server.<br>27 no-framework workflow checks and 19 NumPy/PyTorch fixture checks passed. GE/OMG calls mocked; selected DDK build and device validation remain user-operated and unverified.<br>Evidence: 20261105T005058Z-19077-dfa957/evidence/ddk-workflow-final/validation.json; 20261105T005058Z-19077-dfa957/evidence/ge-fixture-crosscheck.json | Copy three host/kernel files to existing allops, run its existing kirinx90 build/install, then GE probe and existing board validation. | — |
 | 3 | Development | PENDING | Smallest correct host, kernel/device, framework, build, golden, and compare paths work | — | — | — |
 | 4 | Correctness validation | PENDING | Independent-copy, boundary, negative, integration, and on-board PASS or documented PENDING/N/A have evidence | — | — | — |
 | 5 | Optimization | PENDING | Frozen baseline, one-hypothesis experiments, correctness reruns, and promotion decision are reproducible | — | — | — |
@@ -41,6 +41,7 @@
 - 2026-11-04T09:03:27Z: reopened phase 1; all later phase evidence was invalidated.
 - 2026-11-04T09:03:27Z: User requested copyable source using official CANN Kit, Torch Meta/export, future 310P extensibility and more shapes; Top1 first. Target build/install remains user-operated, no archive required.
 - 2026-11-04T09:10:03Z: Source preparation completed as explicitly requested before user-operated target validation; hardware_reference_policy remains use with unavailable capacity, not opt_out.
+- 2026-11-05T00:53:31Z: DDK server has existing allops and no TorchAir. Preserve weights-server Torch bindings.
 
 ## Machine-readable state
 
@@ -48,13 +49,13 @@
 ```json
 {
   "active_files": [
-    "op_host/stable_arg_max.cpp",
-    "op_kernel/stable_arg_max.cpp",
-    "python/stable_arg_max.py",
-    "scripts/prepare_project.py"
+    "scripts/prepare_allops.py",
+    "scripts/stable_arg_max_ge.py",
+    "tests/test_ddk_workflow.py",
+    "README.md"
   ],
-  "based_on_revision": "7562413eb78778412389f76caf799bbb5a670d0d",
-  "blocker": "User-operated selected X90 DDK build/install and device evidence pending; no local selected DDK or device.",
+  "based_on_revision": "48276dcad40ab835e3525b931167522ac5473658",
+  "blocker": "Selected X90 DDK/GE and device are on user-operated servers; local selected profile unavailable. Source/workflow changes complete.",
   "branch": "operator/draft-top1",
   "current_phase": "2",
   "decisions": [
@@ -63,10 +64,11 @@
     "2026-11-04T08:10:46Z: Keep hardware_reference_policy use; matching X90 capacity portrait and pre-generation ledger pending, no numerical latency estimate.",
     "2026-11-04T09:03:27Z: reopened phase 1; all later phase evidence was invalidated.",
     "2026-11-04T09:03:27Z: User requested copyable source using official CANN Kit, Torch Meta/export, future 310P extensibility and more shapes; Top1 first. Target build/install remains user-operated, no archive required.",
-    "2026-11-04T09:10:03Z: Source preparation completed as explicitly requested before user-operated target validation; hardware_reference_policy remains use with unavailable capacity, not opt_out."
+    "2026-11-04T09:10:03Z: Source preparation completed as explicitly requested before user-operated target validation; hardware_reference_policy remains use with unavailable capacity, not opt_out.",
+    "2026-11-05T00:53:31Z: DDK server has existing allops and no TorchAir. Preserve weights-server Torch bindings."
   ],
   "next_commands": [
-    "python3 \"$REPO_DIR/targets/cpro/ops/draft-top1/scripts/prepare_project.py\" --ddk-root \"$CPRO_DDK_ROOT\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-build\""
+    "python3 \"$REPO_DIR/targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py\" --ge-root \"$CANN_ROOT\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge\""
   ],
   "operator_id": "draft-top1",
   "phases": [
@@ -101,18 +103,18 @@
     },
     {
       "evidence": [
-        "git:7562413",
-        "20261104T083807Z-10795-c00fd7/evidence/source-check-2/source-validation.json"
+        "20261105T005058Z-19077-dfa957/evidence/ddk-workflow-final/validation.json",
+        "20261105T005058Z-19077-dfa957/evidence/ge-fixture-crosscheck.json"
       ],
       "gate": "Environment identity, dependency locks, setup, and preflight are reproducible",
       "id": "2",
       "knowledge_refs": [],
       "name": "Environment",
-      "next_action": "Copy targets/cpro/ops/draft-top1; generate selected X90 project and run vendor build, then standalone AIR/OMG/device checks.",
-      "result": "Source-only handoff complete. Host checks and real PT2 export pass; selected X90 compiler/AIR/OMC/device remain unverified.",
+      "next_action": "Copy three host/kernel files to existing allops, run its existing kirinx90 build/install, then GE probe and existing board validation.",
+      "result": "27 no-framework workflow checks and 19 NumPy/PyTorch fixture checks passed. GE/OMG calls mocked; selected DDK build and device validation remain user-operated and unverified.",
       "status": "BLOCKED",
-      "summary": "Source checkpoint 7562413: generic StableArgMax, selected-msopgen preparation and Torch/GE bindings.",
-      "updated_utc": "2026-11-04T09:11:46Z"
+      "summary": "Two-server source handoff: existing allops plus Torch-free GE probe on DDK server; Torch bindings stay on weights server.",
+      "updated_utc": "2026-11-05T01:00:01Z"
     },
     {
       "evidence": [],
@@ -175,11 +177,27 @@
       "updated_utc": ""
     }
   ],
-  "resume_summary": "Source checkpoint 7562413: generic StableArgMax, selected-msopgen preparation and Torch/GE bindings.",
+  "resume_summary": "Two-server source handoff: existing allops plus Torch-free GE probe on DDK server; Torch bindings stay on weights server.",
   "schema_version": 1,
-  "updated_utc": "2026-11-04T09:11:46Z",
+  "updated_utc": "2026-11-05T01:00:01Z",
   "working_tree": [
-    "clean"
+    " M docs/current-status.md",
+    " M docs/results.md",
+    " M specs/dflash-execution-state.json",
+    " M targets/cpro/ops/README.md",
+    " M targets/cpro/ops/draft-top1/README.md",
+    " M targets/cpro/ops/draft-top1/docs/ENVIRONMENT.md",
+    " M targets/cpro/ops/draft-top1/docs/LESSONS.md",
+    " M targets/cpro/ops/draft-top1/docs/VALIDATION.md",
+    " M targets/cpro/ops/draft-top1/operator.json",
+    " M targets/cpro/ops/draft-top1/scripts/build.sh",
+    " M targets/cpro/ops/draft-top1/scripts/export_probe.py",
+    " M targets/cpro/ops/draft-top1/scripts/run_on_board.sh",
+    " M targets/cpro/ops/draft-top1/scripts/validate_host.py",
+    " M targets/cpro/tools/validate_draft_vector.py",
+    "?? targets/cpro/ops/draft-top1/scripts/prepare_allops.py",
+    "?? targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py",
+    "?? targets/cpro/ops/draft-top1/tests/test_ddk_workflow.py"
   ]
 }
 ```

@@ -86,7 +86,11 @@
     "setup": "scripts/setup_env.sh",
     "preflight": "scripts/preflight.sh",
     "documentation": "docs/ENVIRONMENT.md",
-    "dependency_locks": []
+    "dependency_locks": [],
+    "server_roles": {
+      "ddk_server": "existing allops: copy exactly op_host/op_kernel; NumPy + GE C++ AIR -> OMG; no Torch/TorchAir",
+      "weights_server": "Torch schema/Meta/GE converter and TorchAir model export"
+    }
   },
   "entrypoints": {
     "setup": "scripts/setup_env.sh",
@@ -96,9 +100,12 @@
     "compare": "scripts/compare.sh",
     "validate": "scripts/validate.sh",
     "on_board": "scripts/run_on_board.sh",
-    "prepare": "scripts/prepare_project.py",
+    "prepare": "scripts/prepare_allops.py",
     "torch_export": "scripts/export_probe.py",
-    "source_validation": "scripts/validate_source.py"
+    "source_validation": "scripts/validate_source.py",
+    "optional_msopgen_prepare": "scripts/prepare_project.py",
+    "ge_probe": "scripts/stable_arg_max_ge.py",
+    "ddk_workflow_validation": "tests/test_ddk_workflow.py"
   },
   "documentation": {
     "contract": "docs/CONTRACT.md",
@@ -143,6 +150,14 @@
         "paste": 9
       },
       "scope": "HOST_ONLY; REDUCE_API_SHIM_AND_RECORDING_GE_STUB_ARE_NOT_DEVICE_PROOF"
+    },
+    "ddk_workflow_evidence": {
+      "run_id": "20261105T005058Z-19077-dfa957",
+      "checks": 27,
+      "fixture_crosschecks": 19,
+      "report": "evidence/ddk-workflow-final/validation.json",
+      "reference_report": "evidence/ge-fixture-crosscheck.json",
+      "scope": "HOST_ONLY_MOCK_SDK_NO_REAL_GE_OMG_DEVICE"
     }
   },
   "performance": {

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Weights-server Torch/TorchAir export. On the DDK server use stable_arg_max_ge.py.
 """Export one StableArgMax node; no model compile, board run or Draft integration."""
 import argparse
 import hashlib

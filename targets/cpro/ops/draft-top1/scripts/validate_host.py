@@ -34,7 +34,8 @@ def validate(output):
                              capture_output=True, text=True)
     assert blocked.returncode == 2
     assert '--output' in blocked.stderr
-    passed('build_requires_explicit_new_project_output')
+    assert '--allops-root' in blocked.stderr
+    passed('source_staging_requires_explicit_allops_and_new_report_output')
     command = shlex.split(os.environ.get('CXX', 'c++')) + [
         '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror',
         str(operator / 'src/reference/top1_cpu.cpp'), '-o', str(binary)]

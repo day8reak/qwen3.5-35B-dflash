@@ -33,8 +33,13 @@ from qwen35_moe_dflash.draft.incremental import top1_semantics
 from qwen35_moe_dflash.draft.incremental.top1_alternatives import CASES as ALTERNATIVE_CASES
 from qwen35_moe_dflash.draft.incremental.top1_bitcarrier import CASES as BITCARRIER_CASES
 
+# Operator-local GE probe: NumPy only; Torch bindings stay on the weights server.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops/draft-top1/scripts'))
+import stable_arg_max_ge
+
 PYTORCH_CASES = set(STAGES.values())
-VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES, *top1_semantics.EXTRA_CASES)
+VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES, *top1_semantics.EXTRA_CASES,
+                    *stable_arg_max_ge.CASES)
 WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4, 'int64': 8}
 DTYPES = {**DTYPES, 'int64': '<i8'}
 
@@ -151,6 +156,8 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     root = Path(compiled).resolve()
     report = read_json(root/'result.json')
+    if report.get('artifact_kind') == stable_arg_max_ge.KIND:
+        return stable_arg_max_ge.prepare_fixture(root, out, ddk, ddk_id, selection)
     if report.get('artifact_kind') == MATRIX_KIND:
         from qwen35_moe_dflash.draft.incremental.attention_matrix import prepare_fixture
         return prepare_fixture(root, out, ddk, ddk_id, selection)
