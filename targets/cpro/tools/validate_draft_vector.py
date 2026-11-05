@@ -33,6 +33,7 @@ from qwen35_moe_dflash.draft.incremental import top1_semantics
 from qwen35_moe_dflash.draft.incremental.top1_alternatives import CASES as ALTERNATIVE_CASES
 from qwen35_moe_dflash.draft.incremental.top1_bitcarrier import CASES as BITCARRIER_CASES
 from qwen35_moe_dflash.draft.incremental.hidden_probe import CASES as HIDDEN_CASES, KIND as HIDDEN_KIND
+from qwen35_moe_dflash.draft.incremental.hidden_layer_probe import CASES as LAYER_CASES, KIND as LAYER_KIND
 
 # Operator-local GE probe: NumPy only; Torch bindings stay on the weights server.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops/draft-top1/scripts'))
@@ -40,7 +41,7 @@ import stable_arg_max_ge
 
 PYTORCH_CASES = set(STAGES.values())
 VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES, *top1_semantics.EXTRA_CASES,
-                    *stable_arg_max_ge.CASES, *HIDDEN_CASES)
+                    *stable_arg_max_ge.CASES, *HIDDEN_CASES, *LAYER_CASES)
 WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4, 'int64': 8}
 DTYPES = {**DTYPES, 'int64': '<i8'}
 
@@ -157,6 +158,9 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     root = Path(compiled).resolve()
     report = read_json(root/'result.json')
+    if report.get('artifact_kind') == LAYER_KIND:
+        from qwen35_moe_dflash.draft.incremental.hidden_layer_probe import prepare_fixture
+        return prepare_fixture(root, out, ddk, ddk_id, selection)
     if report.get('artifact_kind') == HIDDEN_KIND:
         from qwen35_moe_dflash.draft.incremental.hidden_probe import prepare_fixture
         return prepare_fixture(root, out, ddk, ddk_id, selection)
@@ -350,6 +354,12 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
         full_draft_validation='NOT_RUN', internal_instruction_precision='NOT_PROVEN_BY_OUTPUT_MATCH')
     if 'output_initialization' in meta:
         report['output_initialization'] = meta['output_initialization']
+    if meta.get('source_evidence', {}).get('artifact_kind') == LAYER_KIND:
+        coverage = meta['source_evidence']['coverage']
+        complete = not coverage['missing_checkpoints'] and len(selected) == coverage['planned_device_cases']
+        report.update(probe_coverage=coverage, coverage_complete=complete)
+        if not complete and report['numerical_validation'] == 'PASSED':
+            report.update(status='PARTIAL', numerical_validation='PARTIAL_PASSED')
     if meta.get('top1_semantics'):
         report['top1_semantics'] = top1_semantics.summary(meta, cases)
     return report
@@ -375,6 +385,9 @@ def analyze(directory):
                 if path.stat().st_size != spec['bytes'] or sha256_file(path) != spec['fixture_sha256']:
                     raise ValueError('retained input/reference changed after launch')
     comparison = compare(fixture, native, selection=report['validated_cases'])
+    if meta.get('source_evidence', {}).get('artifact_kind') == LAYER_KIND:
+        from qwen35_moe_dflash.draft.incremental.hidden_layer_probe import diagnose
+        return diagnose(fixture, native, meta, comparison, report)
     if meta.get('source_evidence', {}).get('artifact_kind') == HIDDEN_KIND:
         from qwen35_moe_dflash.draft.incremental.hidden_probe import diagnose
         return diagnose(fixture, native, meta, comparison, report)
@@ -480,7 +493,7 @@ def supervisor(meta, board, token, env, search):
     for index, case in enumerate(meta['cases'], 1):
         name = case['case']
         argv = ['timeout', '-k', '5', '600', 'env', 'LD_LIBRARY_PATH='+':'.join([str(board/'lib'), *search]),
-                str(board/'tensor-probe'), str(board/name/'model.omc'), env['runtime_version'],
+                str(board/'tensor-probe'), str(board/case['model']['remote']), env['runtime_version'],
                 str(board/name), str(board/'outputs'/name)]
         if meta.get('output_initialization') == 'untouched':
             argv.append('untouched')
@@ -560,8 +573,15 @@ def start(args, out):
         uploads, search, _ = _build_payloads(out, 600, resident='resident-mixed', native_directory=native)
         uploads = [r for r in uploads if r['remote'].startswith('lib/')]
         uploads.append(_file_record(binary, 'tensor-probe'))
+        models = {}
         for case in meta['cases']:
-            uploads.append(case['model'])
+            record = case['model']; remote = PurePosixPath(record['remote'])
+            if remote.is_absolute() or '..' in remote.parts or len(remote.parts) != 2 or remote.name != 'model.omc':
+                raise ValueError('invalid shared probe model destination')
+            if record['remote'] in models and record != models[record['remote']]:
+                raise ValueError('shared model destination has conflicting source/hash records')
+            if record['remote'] not in models:
+                uploads.append(record); models[record['remote']] = record
             for path in sorted((out/'fixture'/case['case']).iterdir()):
                 if path.name.startswith('input_') or path.name == 'plan.txt':
                     uploads.append(_file_record(path, case['case']+'/'+path.name))
@@ -598,13 +618,14 @@ def start(args, out):
         hdc.shell('mkdir '+q(str(board))+' && printf "%s\\n" '+q(token)+' > '+q(str(board/'owner'))
                   +' && mkdir '+shlex.join(str(board/p) for p in ['lib', 'outputs']), 'vector-directory')
         progress.update('upload', f'Uploading payload.tar ({payload["bytes"]} bytes); device computation has not been launched')
-        hdc.send(payload['local'], board/'payload.tar')
+        transfer_timeout = min(1800, max(180, math.ceil(payload['bytes']/(4 << 20))+120))
+        hdc.call(['file', 'send', payload['local'], str(board/'payload.tar')], 'send', timeout=transfer_timeout)
         progress.update('verify-upload', f'Verifying archive and all {len(uploads)} extracted files')
         hdc.shell(_guard(board, token)+' && '+_guard(GLOBAL_LOCK, token)
             +' && '+_identity_guard(board/'payload.tar', payload)
             +' && cd '+q(str(board))+' && tar -xf payload.tar'
             +' && sha256sum -c payload.sha256 > payload-checks.stdout'
-            +' && chmod +x tensor-probe', 'vector-payload-install')
+            +' && chmod +x tensor-probe', 'vector-payload-install', timeout=transfer_timeout)
         launched = True
         progress.update('launch', 'Requesting one detached board execution',
                         launch_requested=True, device_execution='RUNNING_OR_COMPLETION_PENDING')

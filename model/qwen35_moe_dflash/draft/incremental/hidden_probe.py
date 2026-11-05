@@ -28,6 +28,8 @@ from .torch_export import _schema, _disjoint
 
 KIND = 'qwen35-draft-hidden-prefix-probe'
 CASES = ('hidden_first_query', 'hidden_first_query_taps')
+CHECKPOINT_ORDER = ('input_rms_fp32', 'input_rms_fp16', 'query_projection_fp16',
+                    'query_rms_fp32', 'query_rms_fp16')
 SCOPE = 'SOURCE_LAYER0_INPUT_RMS_QUERY_PROJECTION_QUERY_RMS_PREFIX_NOT_FULL_DRAFT'
 WEIGHTS = ('draft.layers.0.input_layernorm.weight',
            'draft.layers.0.self_attn.q_proj.weight', 'draft.layers.0.self_attn.q_norm.weight')
@@ -528,7 +530,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
 
 def diagnose(fixture, native, meta, comparison, report):
     from .accuracy import metrics
-    summaries, terminal = [], {}
+    summaries, terminal, captured = [], {}, {}
     for case in meta['cases']:
         name = case['case']; tensors = next(r['tensors'] for r in comparison['cases'] if r['case'] == name)
         rows = []
@@ -543,7 +545,16 @@ def diagnose(fixture, native, meta, comparison, report):
                 raw = (native/name/f'{call}.bin').read_bytes()[offset:offset+spec['bytes']]
                 actual.append(np.frombuffer(raw, dtype=boundary.dtype).reshape(spec['shape']))
             observed = [r for r in tensors if r['name'] == spec['name']]
+            if len(actual) != 10 or len(observed) != 10:
+                raise ValueError('hidden diagnosis requires every measured call')
+            captured[name, spec['name']] = actual
             rows.append(dict(name=spec['name'], source_edge=spec['source_edge'],
+                runtime_slot=spec['index'], dtype=spec['dtype'], shape=spec['shape'],
+                snapshot_offset_bytes=offset, snapshot_bytes=spec['bytes'],
+                actual_statistics=[dict(call=i, elements=int(a.size),
+                    zero_elements=int(np.count_nonzero(a == 0)),
+                    nonfinite_elements=int(np.count_nonzero(~np.isfinite(a))),
+                    all_zero=bool(np.all(a == 0))) for i, a in enumerate(actual)],
                 all_calls_passed=all(r['passed'] for r in observed),
                 all_calls_bytes_equal=all(r['bytes_equal'] for r in observed),
                 max_abs_error=max((r['max_abs_error'] for r in observed), key=lambda v: float('inf') if v is None else v),
@@ -552,15 +563,33 @@ def diagnose(fixture, native, meta, comparison, report):
                 call0_vs_original_rounding=metrics(actual[0], boundary, meta['atol'], meta['rtol'])))
             if spec['name'] == 'query_rms_fp16':
                 terminal[name] = actual
+        rows.sort(key=lambda r: CHECKPOINT_ORDER.index(r['name']))
         summaries.append(dict(case=name, placement=case['placement'], checkpoints=rows))
     same = all(a.tobytes() == b.tobytes() for a, b in zip(terminal[CASES[0]], terminal[CASES[1]]))
-    tapped = summaries[1]['checkpoints']
+    tapped = next(r['checkpoints'] for r in summaries if r['case'] == CASES[1])
+    pairs = []
+    for label, left, right in (
+            ('input_rms_cast_pair', (CASES[1], 'input_rms_fp32'), (CASES[1], 'input_rms_fp16')),
+            ('query_rms_cast_pair', (CASES[1], 'query_rms_fp32'), (CASES[1], 'query_rms_fp16')),
+            ('query_rms_recast_vs_normal', (CASES[1], 'query_rms_fp32'), (CASES[0], 'query_rms_fp16'))):
+        calls = []
+        for i, (a, b) in enumerate(zip(captured[left], captured[right])):
+            cast = a.astype('<f2')
+            calls.append(dict(call=i, bytes_equal=cast.tobytes() == b.tobytes(),
+                different_elements=int(np.count_nonzero(cast.view('<u2') != b.view('<u2'))),
+                **metrics(cast, b, meta['atol'], meta['rtol'])))
+        pairs.append(dict(name=label, left=list(left), right=list(right),
+            operation='CAST_RETRIEVED_FP32_TO_FP16; NOT_INTERNAL_PRECISION_PROOF',
+            all_calls_bytes_equal=all(c['bytes_equal'] for c in calls), calls=calls))
+    usable = same and comparison['repeat_bitwise_stable']
+    first_failed = next((r['name'] for r in tapped if not r['all_calls_passed']), None)
     return dict(artifact_kind=KIND, status='ANALYZED', scope=SCOPE, model_execution='NOT_RUN',
         numerical_validation=comparison['numerical_validation'], repeat_bitwise_stable=comparison['repeat_bitwise_stable'],
         normal_vs_tapped_terminal_all_calls_bitwise_equal=same,
-        checkpoint_attribution_usable=same and comparison['repeat_bitwise_stable'],
+        checkpoint_attribution_usable=usable, retained_output_crosschecks=pairs,
         first_nonexact_checkpoint=next((r['name'] for r in tapped if not r['all_calls_bytes_equal']), None),
-        first_failed_checkpoint=next((r['name'] for r in tapped if not r['all_calls_passed']), None),
+        observed_tapped_first_failed_checkpoint=first_failed,
+        first_failed_checkpoint=first_failed if usable else None,
         cases=summaries, full_model_first_divergence='NOT_ESTABLISHED_BY_ISOLATED_PREFIX',
         next=('Resolve changed compilation or output visibility before attributing tapped values' if not same else
               'Use first failed checkpoint to choose the next bounded accuracy experiment; if all pass, extend through layer0 attention/residual'),

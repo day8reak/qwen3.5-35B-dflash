@@ -218,7 +218,7 @@ def fixtures(shape):
     yield 'subnormal', x.copy()
 
 
-def inspect_model(model, ddk, graph):
+def inspect_model(model, ddk, graph, *, input_order='data-index'):
     from qwen35_moe_dflash.toolchain.omc_wire import load_schema
     from qwen35_moe_dflash.toolchain.omc_container import read_container, read_partition
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
@@ -233,7 +233,8 @@ def inspect_model(model, ddk, graph):
     main = [p for p in read_container(model)['partitions'] if p['type'] == 0]
     if len(main) != 1 or any(model.parent.glob('*.weight')):
         raise ValueError('expected one embedded model without external weights')
-    io = bind_io(schema.decode(read_partition(model, main[0]), 'ModelDef'), graph, _enum_fields(schema))
+    io = bind_io(schema.decode(read_partition(model, main[0]), 'ModelDef'), graph, _enum_fields(schema),
+                 input_order=input_order)
     return dict(placement=placement, io=io, schema=schema.evidence)
 
 

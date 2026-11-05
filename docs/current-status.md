@@ -1,58 +1,55 @@
-# 当前阶段：定位 hidden 最早的数值偏差
+# 当前阶段：批量定位 hidden 偏差
 
-2026-11-05：完整Draft仍未通过精度门槛。`untouched` 回放消除了首例额外零值，但hidden相对L2仍约1.34%–2.61%；离线head已用device hidden复现全部7处Top1翻转。按当前安排，先定位并改善精度，性能优化暂缓。已有结果见[结果页](results.md)。
+2026-11-05：完整Draft精度仍未通过，性能优化暂缓。首次query小图的单输出通过，但五输出版本中的FP16检查点失败；两图末端不一致，暂不能把它当作模型首错。FP32探针输出在编译后还经过FP16→FP32转换，不能据此证明内部FP32计算。已有实测见[结果页](results.md)。
 
-本轮检查第0层 `input RMSNorm → Q投影 → Q RMSNorm`。两个小图从当前AIR裁取：一个只输出Q归一化结果，另一个暴露五个检查点。原图和三份权重保留，编译副本复用整Draft的静态reshape和权重转置折叠。输入复用empty-context原始FP16 embedding，比较容差不变。**裁剪和增加输出可能改变编译，探针结果不能直接当作整图首错位置。**
+本轮一次覆盖**完整第0层**：特征投影、各RMSNorm、Q/K/V投影、RoPE、QK/Softmax/PV、输出投影、两段残差及MLP。每个检查点单独输出，避免成对FP16/FP32输出互相干扰；使用保留的case 0／2／17（空上下文、部分上下文、满缓存），每组3次预热＋10次比较。同一检查点只编译、上传一次，三组输入共用OMC。
 
-## 用户现在执行什么
+## DDK服务器执行
 
-更新代码后在DDK服务器执行；需要已保留的export、prepared和output-init/result，不需要Torch、TorchAir或重新导出整Draft。
-
-本次已修复探针遗漏权重转置准备的问题。`--replace`只重用两个case均已明确OMG失败且未上板的目录，并保留上次错误摘要；新目录也可使用。
+沿用已配置的 `REPO_DIR`、`AI_RUN_DIR`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID` 和支持untouched的运行器。需要原 `export`、`compiled/compilation`、`prepared`、`output-init/result`；不需要Torch/TorchAir，也不重编整Draft或算子。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
-export HIDDEN_DIR="$TOP1_DIR/hidden-first-query"
+export LAYER_DIR="$TOP1_DIR/hidden-layer0"
 
+# 只分析上次已回收的文件，补查零值与FP32转回FP16的对应关系。
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --analyze "$TOP1_DIR/hidden-first-query/result" \
+  > "$TOP1_DIR/hidden-first-query/diagnosis.json"
+
+# 所有检查点先完成源图/参考预检，再顺序编译。
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_hidden.py" \
-  --air-export "$TOP1_DIR/export" \
+  --suite layer0 --air-export "$TOP1_DIR/export" \
   --source "$AI_RUN_DIR/draft/source/prepared" \
   --result "$TOP1_DIR/output-init/result" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$HIDDEN_DIR/compiled" --replace
+  --output "$LAYER_DIR/compiled"
 ```
 
-先确认摘要的`air_preparation.weight_transpose_count`为1，且两个case均为`COMPILED`。只编译小图，不替换整Draft OMC。随后更新共享运行器，使tensor probe支持显式`untouched`输出模式；这是运行器构建，不是重编整模型：
+编译摘要的`coverage`列出实际检查点数和缺口。单点编译失败不阻止其余点；`PARTIAL`且有已编译检查点时仍可执行现有覆盖。脚本检查主机及板端空间；这批前缀包含原始FP16权重，大小高于前一轮两个query小图。使用固定新目录`hidden-layer0`，保留原query结果。
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$AI_RUN_DIR/runtime/native" --replace
-
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$HIDDEN_DIR/compiled" --ddk-root "$CPRO_DDK_ROOT" \
+  --compiled "$LAYER_DIR/compiled" --ddk-root "$CPRO_DDK_ROOT" \
   --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --output "$HIDDEN_DIR/run" --apply
-```
+  --output "$LAYER_DIR/run" --apply
 
-启动后回收同一请求，不重复启动：
-
-```bash
+# 启动后回收同一请求；尚未完成时再次recover，不重复apply。
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$HIDDEN_DIR/run" --output "$HIDDEN_DIR/result"
+  --recover "$LAYER_DIR/run" --output "$LAYER_DIR/result"
 
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --analyze "$HIDDEN_DIR/result" > "$HIDDEN_DIR/diagnosis.json"
-cat "$HIDDEN_DIR/diagnosis.json"
+  --analyze "$LAYER_DIR/result" > "$LAYER_DIR/diagnosis.json"
+
+python3 - "$LAYER_DIR/diagnosis.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(json.dumps({k: d[k] for k in (
+    'numerical_validation', 'coverage_complete', 'coverage',
+    'repeat_bitwise_stable', 'source_cases', 'independent_cast_pairs')}, ensure_ascii=False))
+PY
 ```
 
-## 如何读结果
-
-- 先看`normal_vs_tapped_terminal_all_calls_bitwise_equal`和`repeat_bitwise_stable`。若不同，先排查探针对编译或输出可见性的影响。
-- `first_nonexact_checkpoint`表示首次非逐位一致；`first_failed_checkpoint`才表示首次超过原容差。每个检查点均比较十次输出，并报告源码节点、误差和CPU/NPU归属。
-- 同时列出原参考的gamma舍入边界，供判断差异来源；这组备选计算不替换golden，不改变验收。
-
-若两图稳定且全部检查点通过，下一步扩到第0层attention／残差；若某点失败，围绕该点验证精度表达。当前本地检查已完成，真实DDK编译和设备数值尚待本轮回传。贴编译摘要及diagnosis.json文本即可，无需打包。
-
-完整构建流程见[执行说明](run-end-to-end.md)。
+贴最后的诊断摘要即可。完整文件保留每点的源码边、权重、误差、零值、十次稳定性和编译归属；缺失点不会写成整批通过。NumPy按源AIR计算，另列原参考gamma舍入方式作为诊断对照；原模型golden和0.01/0.01容差不变。独立前缀会影响融合，定位结果仍需回到整Draft确认。本批已完成主机检查，真实DDK编译与板端验证待执行。

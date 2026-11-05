@@ -7726,7 +7726,7 @@
             "candidate_code_changed": false
           },
           "hidden_prefix_probe": {
-            "status": "STATIC_PREPARATION_REPAIRED_DDK_RETRY_PENDING",
+            "status": "QUERY_CONTROL_PASSED_TAPPED_ATTRIBUTION_UNUSABLE; LAYER0_BATCH_READY",
             "entry": "targets/cpro/tools/probe_draft_hidden.py",
             "commands": "docs/current-status.md",
             "source": "RETAINED_UNTOUCHED_CASE0_HOST_EMBEDDINGS_AND_MATCHING_AIR",
@@ -7735,10 +7735,10 @@
               "hidden_first_query",
               "hidden_first_query_taps"
             ],
-            "model_compilation": "FAILED",
-            "device_execution": "NOT_RUN",
-            "numerical_validation": "NOT_RUN",
-            "full_model_first_divergence": "NOT_YET_LOCALIZED",
+            "model_compilation": "PASSED",
+            "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+            "numerical_validation": "FAILED",
+            "full_model_first_divergence": "NOT_ESTABLISHED",
             "performance_work": "DEFERRED_BY_USER_UNTIL_ACCURACY_IMPROVES",
             "host_evidence": "20261105T035706Z-27113-40e39d/evidence/hidden-probe-local-checks.json",
             "preflight_repair": {
@@ -7758,6 +7758,33 @@
               "retry": "SAME_OUTPUT_WITH_REPLACE; BOTH_KNOWN_FAILED_HOST_CASES_ONLY",
               "host_evidence": "20261105T060949Z-29519-d04bf9/evidence/hidden-static-preparation-checks.json",
               "model_compilation": "NOT_RUN"
+            },
+            "observed_query_result": {
+              "normal_terminal_passed": true,
+              "normal_terminal_relative_l2_error": 0.0017997762824496315,
+              "tapped_terminal_matches_normal": false,
+              "repeat_bitwise_stable": true,
+              "attribution_usable": false,
+              "fp32_output_scope": "FP16_NPU_BOUNDARY_THEN_MAIN_CAST; INTERNAL_PRECISION_UNPROVEN",
+              "evidence": "20261105T062609Z-29965-ed7fdd/evidence/reported-hidden-query-result.json"
+            },
+            "layer0_batch": {
+              "status": "HOST_CHECKED_DDK_AND_DEVICE_PENDING",
+              "command": "--suite layer0",
+              "implementation": "model/qwen35_moe_dflash/draft/incremental/hidden_layer_probe.py",
+              "scope": "COMPLETE_LAYER0_SOURCE_ARITHMETIC_AND_FP16_BOUNDARIES",
+              "source_cases": [
+                0,
+                2,
+                17
+              ],
+              "output_policy": "ONE_CHECKPOINT_PER_MODEL; SHARED_MODEL_ACROSS_THREE_CONTEXTS",
+              "controls": "UNTUCHED; THREE_WARMUPS_TEN_COMPARISONS; ORIGINAL_FULL_MODEL_THRESHOLDS_UNCHANGED",
+              "reference": "NUMPY_SOURCE_FORMULA_WITH_SEPARATE_ORIGINAL_GAMMA_ROUNDING_DIAGNOSTIC",
+              "model_compilation": "NOT_RUN",
+              "device_execution": "NOT_RUN",
+              "numerical_validation": "NOT_RUN",
+              "host_evidence": "20261105T062609Z-29965-ed7fdd/evidence/layer0-prefix-local-checks.json"
             }
           }
         }
