@@ -1,46 +1,28 @@
 # Validation
 
-2026-11-05：用户allops preset选ascend310b，包装生成读取aic-ascend310b-ops-info.ini，该INI没有StableArgMax；旧host只注册kirinx90。已补AddConfig(ascend310b)并保留kirinx90，修复这套X90工程的生成配置遗漏。kernel、tiling逻辑、Torch/GE端口不变，OMG目标仍kirinx90；不表示310B/310P已验证。55项主机流程检查通过（run `20261105T014301Z-21974-f624b8`，`evidence/allops-config-check/validation.json`），包括用用户旧host真实哈希验证仅注册增补可复用AIR、其他源码变化拒绝、旧目录保留。GE/OMG调用仍为mock，真实allops重建安装、OMG和设备等待用户执行。
+2026-11-05用户回传：**OMG编译通过、图层面NPU-only；设备数值和性能未运行。** 配置为有限FP16 `[1,15,248320]` → INT32 `[1,15]`，DDK 100.520.020.010，目标kirinx90。
 
-此前安装预检50项主机检查已复现缺搜索路径、包遮蔽及缺py行为，入口会在缺包装文件时停止于GE/OMG之前。新注册仍需实际厂商生成验证；新host SHA256：`a92876b59d72c2d430987d1b242d2f36fd3e77b601b9d955baacb1872ec91796`。
+| 门禁 | 结果 |
+|---|---|
+| allops选定INI、包装安装 | StableArgMax条目存在；STATIC_PATH_RESOLVED |
+| TBE兼容 | APPLIED |
+| OMC与公开ABI | COMPILED；FP16输入、INT32输出与预期shape一致 |
+| 解码归属 | NPUCL=1；CPU操作/主图遗留计算均为空 |
+| 设备正确性/稳定性 | NOT_RUN；七组fixture，每组3预热＋10次逐字节比较 |
+| 其他shape、独立构建、整模型、性能 | PENDING |
 
-用户随后启动修正后的命令但终端无输出。代码审查确认入口仅在返回时打印JSON、没有传递已有compiler progress回调；无法从用户未贴日志判断实际运行阶段或卡死。现已补stderr阶段通知及既有30秒OMG心跳，保持stdout单条JSON。run `20261105T012457Z-20992-be4a81` 的43项主机检查通过（`evidence/progress-check/validation.json`），包括回调透传、stderr可见且错误JSON不受影响；没有启动真实OMG或设备，没有修改host/kernel、超时或重试策略。
+报告目录：`draft/tests/stable-arg-max-ge-config`。来源为用户粘贴，未独立下载产物。当前身份：
 
-最新用户日志已定位：`StableArgMax` 注册/dispatch及host tiling可达，`block_dim=1`、前三个tiling字段为15/248320/8192；编译worker在 `_prerun → _update_options → te_update_version` 失败，尚非kernel C++诊断。不是仅凭缺少builtin kernel库的较早日志判定根因。
+| 文件 | SHA256 |
+|---|---|
+| OMC | `2e76eda684ae0a4ac201af1c1ba511ca6b84e864a698193cfd1cfdfc1de2598f` |
+| AIR | `9f51c2d6803e75b53baa612947f63f60e72b50d424d170fd57461c06230ee805` |
+| 安装包装PY | `52a313c85e26ee47b7fbcde6e63259aa86f8983552df5747d6ee31492820d152` |
+| host CPP | `a92876b59d72c2d430987d1b242d2f36fd3e77b601b9d955baacb1872ec91796` |
+| kernel CPP | `f81371611cbb2aa85ed41b3a2ca6cd4b498cf4953ed437459f6547daa3da723e` |
 
-run `20261105T011001Z-20502-2dc937` 修复入口漏传 `--tbe-diagnosis`，并加入旧AIR的哈希核对复用。41项主机流程检查通过（`evidence/tbe-reuse-check/validation.json`），新增覆盖新编译/复用两种路径透传参数、审计摘要、无GE环境下只调用一次OMG、旧目录字节和mtime保留、shape/图源码/host-kernel/AIR/fixture变化拒绝。SDK调用仍为mock；修正后的实际OMG和设备未在本地执行，host/kernel未变。
+保留的主机检查：kernel控制流/Torch export63项、独立参考35项、准备/文本交付20项、无Torch的DDK流程55项、NumPy/PyTorch参考交叉19组。主机API shim和mock SDK不能证明设备行为。报告位置由operator.json记录；最新用户观察摘要在run `20261105T015409Z-22517-5473bc` 的 `evidence/user-compilation-summary.json`。
 
-2026-11-05后续用户报告：三个allops源码SHA256与交付源码一致；GE流程已进入OMG，OMG退出码1，无OMC成功证据。用户未贴allops构建结果或compiler具体错误，尚不能定位注册/安装、接口或kernel问题。源码哈希一致不构成安装成功证据。
+首轮验证覆盖大索引、跨块并列、零与极值、subnormal、相邻FP16、随机及全部有限binary16。正确性通过后验证17行/8193列等尾部及其他声明shape，再考虑整模型接入。性能需要同功能全词表基线配对，不用旧局部CPU归约或混合图耗时推断收益。下一条命令见[当前上板页](../../../../../docs/current-status.md)。
 
-诊断工具修复run `20261105T010637Z-20281-c9f19f`：33项无Torch主机流程检查通过，见 `evidence/diagnostics-check/validation.json`。新增覆盖失败JSON携带真实读取的日志摘要、旧失败目录只读检查且不要求源码哈希、缺失/损坏日志报告保留、拒绝其他artifact、预检失败不覆盖旧结果。SDK调用仍为mock，用户失败没有在本地重跑，host/kernel不变。
-
-2026-11-05两服务器流程更新，run `20261105T005058Z-19077-dfa957`：
-
-| 新检查 | 结果 | 证据 |
-|---|---|---|
-| allops只复制3文件、旧内容备份、GE节点/形状、共享OMC、板端准备、失败阶段/哈希/CPU落点拒绝、禁止框架导入 | 27项通过 | evidence/ddk-workflow-final/validation.json |
-| GE探针Qwen七组及通用shape参考与PyTorch独立比较 | 19组通过 | evidence/ge-fixture-crosscheck.json |
-
-流程检查中的GE/OMG是mock、输出是主机合成数据，**未进行真实GE编译、AIR导出、OMG或设备执行**。无框架检查会主动拒绝torch、torch_npu、torchair导入，涵盖GE工具和已有board adapter。第10次输出单字节错误会判失败。host/kernel和Torch绑定未改变，既有主机证据继续保留。
-
-当前默认是用户既有allops构建。DDK端用 `scripts/stable_arg_max_ge.py`，权重端才用 `scripts/export_probe.py` 的TorchAir路径；下文msopgen结果是可选旧入口的历史检查，不是本次构建前提。
-
-本次run：`20261104T083807Z-10795-c00fd7`。当前仅HOST_PASSED，厂商编译/真实AIR/OMG/设备/性能均待验证。
-
-| 检查 | 结果 | 证据（run相对路径） |
-|---|---|---|
-| 实际kernel控制流 + Torch schema/Meta/export | 63项通过 | evidence/source-check-2/source-validation.json |
-| 原独立C++参考、NumPy/PyTorch、比较器及收集器 | 35项通过 | evidence/host-check-2/host-validation.json |
-| 工程生成/覆盖保护/名称/目标配置 | 11项通过 | evidence/prepare-check/validation.json |
-| 有限文本收集与离线复用 | 9项通过 | evidence/paste-check-final/validation.json |
-| Qwen形状真实torch.export保存pt2 | EXPORTED | evidence/pt2-probe/export-report.json |
-
-kernel检查将生产`op_kernel/stable_arg_max.cpp`直接编译到主机driver；只在测试include路径使用同步API shim，理想ReduceMax返回第一个最大值。它验证实际循环、tile offset、raw uint16索引读取、输入/UB/输出范围和输出canary。**不证明SDK兼容性、硬件ReduceMax、DMA或流水同步。**
-
-覆盖rank1标量输出、rank8、单元素轴、奇数轴长、15/16/17/31/32/33行、127/128/129、485/512/513、8191/8192/8193、16385/65537/248321；以及Qwen七组完整尺寸，包括65535/65536大索引、跨块并列、正负零、subnormal、极值、相邻FP16、随机与全部有限binary16模式。真实Torch export在四个形状均只保留一个custom op，Meta输出为正确shape/int32。未注册PrivateUse1执行，不使用CPU fallback冒充NPU。
-
-工程准备使用synthetic msopgen验证扁平/嵌套输出、示例默认compute unit修正为kirinx90、missing文件/错误入口/符号链接/缺少compute-unit拒绝、已有输出和DDK内部输出拒绝。准备脚本没有运行厂商build或安装。收集器纯文本测试允许直接粘贴，无需归档回传。
-
-旧参考比较器仍固定七组Qwen配置，要求每组10份结果并核对source/fixture哈希、重算golden；70份合成文件不是70次设备执行。通用尺寸的目标设备覆盖还需使用同一算子源码分别编译静态shape，并对照直接argmax，不以Qwen单一形状通过代表全部形状通过。
-
-首轮待做：所选DDK工程host/kernel编译；真实AIR里type=StableArgMax、输入x/输出indices；OMC计算归属全部NPU、无CPUCL或主图遗留计算；每例3次预热+10次真实执行，输出精确字节、canary及稳定性；最后再测延迟。最先验证Qwen60B输出及8193/17行尾部，再成组覆盖声明的静态尺寸。没有整Draft替换、真实logits有限性、310P或性能结论。
+本轮仅更新文档和状态：10个Shell代码块、42处本地链接及当前CLI参数检查通过；五份产物绑定源码哈希与用户编译报告一致。见同run的 `evidence/documentation-check.json`，未重新运行模型。

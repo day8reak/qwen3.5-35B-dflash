@@ -8,20 +8,20 @@
 |---|---|
 | Operator | draft-top1 |
 | Branch | operator/draft-top1 |
-| Current phase | 2 |
-| Based-on revision | a779ee1a35e147f8b620c04eef348cad41a6c17d |
-| Updated UTC | 2026-11-05T01:47:38Z |
-| Summary | Added observed ascend310b allops metadata config while retaining kirinx90; exact host registration delta permits verified old AIR reuse. |
-| Blocker | Selected DDK is on user server; actual rebuilt INI, wrapper, OMG and device result not yet supplied. Source delivery only. |
-| Active files | op_host/stable_arg_max.cpp<br>scripts/stable_arg_max_ge.py<br>scripts/prepare_allops.py<br>tests/test_ddk_workflow.py |
-| Recorded working tree (PLAN excluded) |  M docs/current-status.md<br> M docs/results.md<br> M specs/dflash-execution-state.json<br> M targets/cpro/ops/draft-top1/README.md<br> M targets/cpro/ops/draft-top1/docs/CONTRACT.md<br> M targets/cpro/ops/draft-top1/docs/ENVIRONMENT.md<br> M targets/cpro/ops/draft-top1/docs/LESSONS.md<br> M targets/cpro/ops/draft-top1/docs/VALIDATION.md<br> M targets/cpro/ops/draft-top1/op_host/stable_arg_max.cpp<br> M targets/cpro/ops/draft-top1/operator.json<br> M targets/cpro/ops/draft-top1/scripts/prepare_allops.py<br> M targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py<br> M targets/cpro/ops/draft-top1/tests/test_ddk_workflow.py |
+| Current phase | 4 |
+| Based-on revision | e1b00b5146f1f68272ade9368a86dad2379778e9 |
+| Updated UTC | 2026-11-05T02:01:06Z |
+| Summary | Current GitHub instructions reuse the compiled StableArgMax OMC; device correctness report is pending. |
+| Blocker | Device execution is user-operated; awaiting numerical and timing report. No local device connection. |
+| Active files | docs/current-status.md<br>docs/results.md<br>README.md<br>docs/VALIDATION.md<br>operator.json |
+| Recorded working tree (PLAN excluded) |  M docs/README.md<br> M docs/current-status.md<br> M docs/history/README.md<br> M docs/results.md<br> M docs/run-end-to-end.md<br> M specs/dflash-execution-state.json<br> M targets/cpro/ops/draft-top1/README.md<br> M targets/cpro/ops/draft-top1/docs/ENVIRONMENT.md<br> M targets/cpro/ops/draft-top1/docs/LESSONS.md<br> M targets/cpro/ops/draft-top1/docs/OPTIMIZATION.md<br> M targets/cpro/ops/draft-top1/docs/VALIDATION.md<br> M targets/cpro/ops/draft-top1/operator.json |
 
 ## Exact next commands
 
-- `python3 "$OP_DIR/scripts/prepare_allops.py" --allops-root "$ALLOPS_DIR" --output "$AI_RUN_DIR/draft/tests/stable-arg-max-copy-config" --replace`
-- `(cd "$ALLOPS_DIR" && bash ./build.sh)`
-- `python3 "$OP_DIR/scripts/stable_arg_max_ge.py" --inspect-installation --ddk-root "$CPRO_DDK_ROOT"`
-- `python3 "$OP_DIR/scripts/stable_arg_max_ge.py" --reuse-export "$AI_RUN_DIR/draft/tests/stable-arg-max-ge" --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" --output "$AI_RUN_DIR/draft/tests/stable-arg-max-ge-config"`
+- `source "$REPO_DIR/targets/cpro/scripts/env.sh"`
+- `export VECTOR_CONFIG="${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"`
+- `python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" --compiled "$AI_RUN_DIR/draft/tests/stable-arg-max-ge-config" --ddk-root "$CPRO_DDK_ROOT" --config "$VECTOR_CONFIG" --output "$AI_RUN_DIR/draft/tests/stable-arg-max-validation" --apply`
+- `python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" --recover "$AI_RUN_DIR/draft/tests/stable-arg-max-validation" --output "$AI_RUN_DIR/draft/tests/stable-arg-max-validation-result"`
 
 ## Phase table
 
@@ -29,9 +29,9 @@
 |---:|---|---|---|---|---|---|
 | 0 | Git scope | COMPLETED | Branch, manifest, persistent plan, and scaffold form a rollback checkpoint | Managed operator branch and source checkpoint established.<br>Source checkpoint 2f55529; lifecycle working check passed.<br>Evidence: git:2f55529 | Record the frozen independently validated host contract. | — |
 | 1 | Contract and baseline | COMPLETED | Interface, semantics, rejection behavior, deterministic golden, and baseline are frozen | Generic finite FP16 last-axis StableArgMax contract and host acceptance frozen.<br>63 actual-source control-flow/Torch export checks, 35 reference checks, 11 project preparation checks and 9 text-handoff checks pass. Vendor build/device unverified.<br>Evidence: 20261104T083807Z-10795-c00fd7/evidence/source-check-2/source-validation.json; 20261104T083807Z-10795-c00fd7/evidence/prepare-check/validation.json | User copies sources, prepares project with selected X90 msopgen and runs vendor build/install. | — |
-| 2 | Environment | BLOCKED | Environment identity, dependency locks, setup, and preflight are reproducible | Added observed ascend310b allops metadata config while retaining kirinx90; exact host registration delta permits verified old AIR reuse.<br>55 host workflow checks passed; kernel/tiling/GE interface unchanged. Vendor allops rebuild, wrapper installation, OMG and device pending user execution.<br>Evidence: 20261105T014301Z-21974-f624b8/evidence/allops-config-check/validation.json | User copies three sources with backup, rebuilds existing allops, verifies selected INI and installed Python wrapper, then compiles the retained AIR once. | — |
-| 3 | Development | PENDING | Smallest correct host, kernel/device, framework, build, golden, and compare paths work | — | — | — |
-| 4 | Correctness validation | PENDING | Independent-copy, boundary, negative, integration, and on-board PASS or documented PENDING/N/A have evidence | — | — | — |
+| 2 | Environment | COMPLETED | Environment identity, dependency locks, setup, and preflight are reproducible | User-selected DDK path now generates and resolves the wrapper and successfully compiles the retained AIR.<br>Selected allops INI has StableArgMax; wrapper hash recorded; TBE APPLIED; DDK 100.520.020.010 OMG passed. Full toolchain archival and independent reproduction remain pending.<br>Evidence: 20261105T015409Z-22517-5473bc/evidence/user-compilation-summary.json | Record minimal implementation compile/ABI completion, then validate device correctness. | — |
+| 3 | Development | COMPLETED | Smallest correct host, kernel/device, framework, build, golden, and compare paths work | Minimal host/kernel/GE build path completed for Qwen shape; device correctness baseline remains unverified.<br>User OMC 2e76eda684ae0a4ac201af1c1ba511ca6b84e864a698193cfd1cfdfc1de2598f: NPUCL=1, correct public shape/dtype, no CPU or unassigned main computation; retained host reference/export checks.<br>Evidence: 20261105T015409Z-22517-5473bc/evidence/user-compilation-summary.json; 20261105T014301Z-21974-f624b8/evidence/allops-config-check/validation.json | Validate exact INT32 outputs for seven device fixtures. | — |
+| 4 | Correctness validation | BLOCKED | Independent-copy, boundary, negative, integration, and on-board PASS or documented PENDING/N/A have evidence | Current GitHub instructions reuse the compiled StableArgMax OMC; device correctness report is pending.<br>User compile/static NPU-only placement passed. Documentation checks passed: 10 shell blocks, 42 links, CLI flags, five unchanged source hashes. Device execution/numerics/latency NOT_RUN.<br>Evidence: 20261105T015409Z-22517-5473bc/evidence/user-compilation-summary.json; 20261105T015409Z-22517-5473bc/evidence/documentation-check.json | User loads existing DDK/HDC environment/config, launches seven fixtures once, then recovers the same request; 3 warmups and 10 exact-byte measured calls each. | — |
 | 5 | Optimization | PENDING | Frozen baseline, one-hypothesis experiments, correctness reruns, and promotion decision are reproducible | — | — | — |
 | 6 | Packaging and delivery | PENDING | Release gates, whitelist, manifest, deterministic archive, hashes, and requested delivery pass | — | — | — |
 | 7 | Knowledge capture and handoff | PENDING | Lessons, traits, skill promotions, final state, and handoff are archived | — | — | — |
@@ -48,6 +48,7 @@
 - 2026-11-05T01:07:20Z: User source hashes match; source copy does not establish allops build/install. OMG root cause remains unknown until compiler log is provided.
 - 2026-11-05T01:10:55Z: Reuse established selected-DDK TBE compatibility; retain kirinx90, no SDK edits, no host/kernel changes, no new builtin probe matrix.
 - 2026-11-05T01:45:53Z: Observed allops uses ascend310b INI for wrapper generation. AddConfig ascend310b is packaging compatibility for this X90 workflow, not an Ascend device support claim; user owns build/install.
+- 2026-11-05T02:01:06Z: User requests current GitHub commands and lean docs. Current-stage page is the single next-action reference; historical detail remains in Git. No operator/runner/test implementation change.
 
 ## Machine-readable state
 
@@ -55,15 +56,16 @@
 ```json
 {
   "active_files": [
-    "op_host/stable_arg_max.cpp",
-    "scripts/stable_arg_max_ge.py",
-    "scripts/prepare_allops.py",
-    "tests/test_ddk_workflow.py"
+    "docs/current-status.md",
+    "docs/results.md",
+    "README.md",
+    "docs/VALIDATION.md",
+    "operator.json"
   ],
-  "based_on_revision": "a779ee1a35e147f8b620c04eef348cad41a6c17d",
-  "blocker": "Selected DDK is on user server; actual rebuilt INI, wrapper, OMG and device result not yet supplied. Source delivery only.",
+  "based_on_revision": "e1b00b5146f1f68272ade9368a86dad2379778e9",
+  "blocker": "Device execution is user-operated; awaiting numerical and timing report. No local device connection.",
   "branch": "operator/draft-top1",
-  "current_phase": "2",
+  "current_phase": "4",
   "decisions": [
     "Created operator/draft-top1 from bc56986b7dd70304fb7be55109884f016a21c182; phase history before scaffold is not inferred.",
     "2026-11-04T08:08:44Z: Final builtin failure triggers existing user authorization; no additional builtin matrix.",
@@ -74,13 +76,14 @@
     "2026-11-05T00:53:31Z: DDK server has existing allops and no TorchAir. Preserve weights-server Torch bindings.",
     "2026-11-05T01:07:20Z: User source hashes match; source copy does not establish allops build/install. OMG root cause remains unknown until compiler log is provided.",
     "2026-11-05T01:10:55Z: Reuse established selected-DDK TBE compatibility; retain kirinx90, no SDK edits, no host/kernel changes, no new builtin probe matrix.",
-    "2026-11-05T01:45:53Z: Observed allops uses ascend310b INI for wrapper generation. AddConfig ascend310b is packaging compatibility for this X90 workflow, not an Ascend device support claim; user owns build/install."
+    "2026-11-05T01:45:53Z: Observed allops uses ascend310b INI for wrapper generation. AddConfig ascend310b is packaging compatibility for this X90 workflow, not an Ascend device support claim; user owns build/install.",
+    "2026-11-05T02:01:06Z: User requests current GitHub commands and lean docs. Current-stage page is the single next-action reference; historical detail remains in Git. No operator/runner/test implementation change."
   ],
   "next_commands": [
-    "python3 \"$OP_DIR/scripts/prepare_allops.py\" --allops-root \"$ALLOPS_DIR\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-copy-config\" --replace",
-    "(cd \"$ALLOPS_DIR\" && bash ./build.sh)",
-    "python3 \"$OP_DIR/scripts/stable_arg_max_ge.py\" --inspect-installation --ddk-root \"$CPRO_DDK_ROOT\"",
-    "python3 \"$OP_DIR/scripts/stable_arg_max_ge.py\" --reuse-export \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge\" --tbe-diagnosis \"$AI_RUN_DIR/common/tbe-diagnosis\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge-config\""
+    "source \"$REPO_DIR/targets/cpro/scripts/env.sh\"",
+    "export VECTOR_CONFIG=\"${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}\"",
+    "python3 \"$REPO_DIR/targets/cpro/tools/validate_draft_vector.py\" --compiled \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge-config\" --ddk-root \"$CPRO_DDK_ROOT\" --config \"$VECTOR_CONFIG\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-validation\" --apply",
+    "python3 \"$REPO_DIR/targets/cpro/tools/validate_draft_vector.py\" --recover \"$AI_RUN_DIR/draft/tests/stable-arg-max-validation\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-validation-result\""
   ],
   "operator_id": "draft-top1",
   "phases": [
@@ -115,41 +118,47 @@
     },
     {
       "evidence": [
-        "20261105T014301Z-21974-f624b8/evidence/allops-config-check/validation.json"
+        "20261105T015409Z-22517-5473bc/evidence/user-compilation-summary.json"
       ],
       "gate": "Environment identity, dependency locks, setup, and preflight are reproducible",
       "id": "2",
       "knowledge_refs": [],
       "name": "Environment",
-      "next_action": "User copies three sources with backup, rebuilds existing allops, verifies selected INI and installed Python wrapper, then compiles the retained AIR once.",
-      "result": "55 host workflow checks passed; kernel/tiling/GE interface unchanged. Vendor allops rebuild, wrapper installation, OMG and device pending user execution.",
-      "status": "BLOCKED",
-      "summary": "Added observed ascend310b allops metadata config while retaining kirinx90; exact host registration delta permits verified old AIR reuse.",
-      "updated_utc": "2026-11-05T01:47:38Z"
+      "next_action": "Record minimal implementation compile/ABI completion, then validate device correctness.",
+      "result": "Selected allops INI has StableArgMax; wrapper hash recorded; TBE APPLIED; DDK 100.520.020.010 OMG passed. Full toolchain archival and independent reproduction remain pending.",
+      "status": "COMPLETED",
+      "summary": "User-selected DDK path now generates and resolves the wrapper and successfully compiles the retained AIR.",
+      "updated_utc": "2026-11-05T01:59:36Z"
     },
     {
-      "evidence": [],
+      "evidence": [
+        "20261105T015409Z-22517-5473bc/evidence/user-compilation-summary.json",
+        "20261105T014301Z-21974-f624b8/evidence/allops-config-check/validation.json"
+      ],
       "gate": "Smallest correct host, kernel/device, framework, build, golden, and compare paths work",
       "id": "3",
       "knowledge_refs": [],
       "name": "Development",
-      "next_action": "",
-      "result": "",
-      "status": "PENDING",
-      "summary": "",
-      "updated_utc": ""
+      "next_action": "Validate exact INT32 outputs for seven device fixtures.",
+      "result": "User OMC 2e76eda684ae0a4ac201af1c1ba511ca6b84e864a698193cfd1cfdfc1de2598f: NPUCL=1, correct public shape/dtype, no CPU or unassigned main computation; retained host reference/export checks.",
+      "status": "COMPLETED",
+      "summary": "Minimal host/kernel/GE build path completed for Qwen shape; device correctness baseline remains unverified.",
+      "updated_utc": "2026-11-05T01:59:58Z"
     },
     {
-      "evidence": [],
+      "evidence": [
+        "20261105T015409Z-22517-5473bc/evidence/user-compilation-summary.json",
+        "20261105T015409Z-22517-5473bc/evidence/documentation-check.json"
+      ],
       "gate": "Independent-copy, boundary, negative, integration, and on-board PASS or documented PENDING/N/A have evidence",
       "id": "4",
       "knowledge_refs": [],
       "name": "Correctness validation",
-      "next_action": "",
-      "result": "",
-      "status": "PENDING",
-      "summary": "",
-      "updated_utc": ""
+      "next_action": "User loads existing DDK/HDC environment/config, launches seven fixtures once, then recovers the same request; 3 warmups and 10 exact-byte measured calls each.",
+      "result": "User compile/static NPU-only placement passed. Documentation checks passed: 10 shell blocks, 42 links, CLI flags, five unchanged source hashes. Device execution/numerics/latency NOT_RUN.",
+      "status": "BLOCKED",
+      "summary": "Current GitHub instructions reuse the compiled StableArgMax OMC; device correctness report is pending.",
+      "updated_utc": "2026-11-05T02:01:06Z"
     },
     {
       "evidence": [],
@@ -188,23 +197,22 @@
       "updated_utc": ""
     }
   ],
-  "resume_summary": "Added observed ascend310b allops metadata config while retaining kirinx90; exact host registration delta permits verified old AIR reuse.",
+  "resume_summary": "Current GitHub instructions reuse the compiled StableArgMax OMC; device correctness report is pending.",
   "schema_version": 1,
-  "updated_utc": "2026-11-05T01:47:38Z",
+  "updated_utc": "2026-11-05T02:01:06Z",
   "working_tree": [
+    " M docs/README.md",
     " M docs/current-status.md",
+    " M docs/history/README.md",
     " M docs/results.md",
+    " M docs/run-end-to-end.md",
     " M specs/dflash-execution-state.json",
     " M targets/cpro/ops/draft-top1/README.md",
-    " M targets/cpro/ops/draft-top1/docs/CONTRACT.md",
     " M targets/cpro/ops/draft-top1/docs/ENVIRONMENT.md",
     " M targets/cpro/ops/draft-top1/docs/LESSONS.md",
+    " M targets/cpro/ops/draft-top1/docs/OPTIMIZATION.md",
     " M targets/cpro/ops/draft-top1/docs/VALIDATION.md",
-    " M targets/cpro/ops/draft-top1/op_host/stable_arg_max.cpp",
-    " M targets/cpro/ops/draft-top1/operator.json",
-    " M targets/cpro/ops/draft-top1/scripts/prepare_allops.py",
-    " M targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py",
-    " M targets/cpro/ops/draft-top1/tests/test_ddk_workflow.py"
+    " M targets/cpro/ops/draft-top1/operator.json"
   ]
 }
 ```

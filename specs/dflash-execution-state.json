@@ -6674,7 +6674,7 @@
         }
       },
       "custom_top1": {
-        "status": "SOURCE_DELIVERED_TARGET_VALIDATION_PENDING",
+        "status": "COMPILED_DEVICE_VALIDATION_PENDING",
         "operator_dir": "targets/cpro/ops/draft-top1",
         "run_id": "20261104T083807Z-10795-c00fd7",
         "authorization": "LAST_BUILTIN_FAILURE_TRIGGERED_USER_APPROVED_CUSTOM_TOP1",
@@ -6687,13 +6687,13 @@
           "synthetic_compare_files": 70,
           "synthetic_files_are_device_evidence": false
         },
-        "kernel_build": "NOT_RUN",
+        "kernel_build": "PASSED_USER_REPORTED_OMG",
         "kernel_implementation": "STABLE_ARG_MAX_SOURCE_WITH_HOST_TILING_AND_TORCH_META_GE_CONVERTER",
         "device_execution": "NOT_RUN",
         "full_draft_changed": false,
-        "blocker": "SELECTED_DDK_BUILD_AIR_OMC_AND_DEVICE_PENDING_USER_EXECUTION",
-        "next": "REBUILD_ALLOPS_WITH_ADDED_CONFIG; VERIFY_WRAPPER; REUSE_AIR_OMG",
-        "command": "python3 \"$OP_DIR/scripts/prepare_allops.py\" --allops-root \"$ALLOPS_DIR\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-copy-config\" --replace",
+        "blocker": "DEVICE_NUMERICAL_AND_PERFORMANCE_RESULTS_PENDING",
+        "next": "VALIDATE_SEVEN_FIXTURES_ON_EXISTING_OMC; NO_MODEL_RECOMPILATION",
+        "command": "python3 \"$REPO_DIR/targets/cpro/tools/validate_draft_vector.py\" --compiled \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge-config\" --ddk-root \"$CPRO_DDK_ROOT\" --config \"$VECTOR_CONFIG\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-validation\" --apply",
         "torch_op": "custom_ops::stable_arg_max",
         "ge_type": "StableArgMax",
         "generic_contract": "FINITE_FP16_STATIC_RANK1_TO8_LAST_AXIS_INT32_FIRST_MAXIMUM; NUMEL_LE_INT32_MAX",
@@ -6720,20 +6720,58 @@
           "source_copy": "SHA256_MATCHED",
           "ge_export": "REACHED_OMG",
           "registration_host_tiling": "OBSERVED; 15/248320/8192; blockdim1",
-          "omg_returncode": 1,
-          "failure_stage": "TE_WORKER_TE_UPDATE_VERSION",
+          "omg_returncode": 0,
+          "failure_stage": "NONE",
           "entrypoint_fix": "FORWARD_EXISTING_TBE_DIAGNOSIS_AND_HASH_CHECKED_AIR_REUSE",
-          "next": "REBUILD_INSTALL_WITH_ADDED_ASCEND310B_CONFIG; VERIFY_INI_AND_WRAPPER_BEFORE_OMG",
+          "next": "DEVICE_VALIDATE_EXISTING_OMC_AND_RECOVER_SAME_REQUEST",
           "run_id": "20261105T011001Z-20502-2dc937",
-          "corrected_omg": "WORKER_CUSTOM_MODULE_NOT_FOUND; FINAL_PROCESS_EXIT_UNCONFIRMED",
+          "corrected_omg": "COMPILED",
           "progress_entrypoint_fix": "FORWARD_EXISTING_PROGRESS_CALLBACK_TO_FLUSHED_STDERR",
-          "installed_python_wrapper": "MISSING_AT_REGISTERED_DDK_PATH",
+          "installed_python_wrapper": "STATIC_PATH_RESOLVED",
           "kernel_cpp": "PRESENT",
-          "allops_inspection": "ASCEND310B_SELECTED_INI_OMITS_STABLE_ARG_MAX; OLD_HOST_ONLY_KIRINX90",
+          "allops_inspection": "STABLE_ARG_MAX_PRESENT_IN_ASCEND310B_INI",
           "allops_config_fix_run": "20261105T014301Z-21974-f624b8",
           "allops_config_host_checks": 55,
-          "actual_rebuild": "PENDING_USER_EXECUTION",
+          "actual_rebuild": "USER_REPORTED_INSTALLED_WRAPPER_AND_OMG_PASSED",
           "physical_target": "kirinx90"
+        },
+        "target_compile_evidence": {
+          "artifact_kind": "stable-arg-max-user-compilation-observation",
+          "source": "USER_PASTED_REPORT; NOT_INDEPENDENTLY_RETRIEVED",
+          "date": "2026-11-05",
+          "ddk_id": "100.520.020.010",
+          "platform": "kirinx90",
+          "shape": [
+            1,
+            15,
+            248320
+          ],
+          "output_shape": [
+            1,
+            15
+          ],
+          "model_compilation": "PASSED",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN",
+          "omc": "draft/tests/stable-arg-max-ge-config/omc/compile-work/generated/model.omc",
+          "omc_sha256": "2e76eda684ae0a4ac201af1c1ba511ca6b84e864a698193cfd1cfdfc1de2598f",
+          "air_sha256": "9f51c2d6803e75b53baa612947f63f60e72b50d424d170fd57461c06230ee805",
+          "wrapper_sha256": "52a313c85e26ee47b7fbcde6e63259aa86f8983552df5747d6ee31492820d152",
+          "host_sha256": "a92876b59d72c2d430987d1b242d2f36fd3e77b601b9d955baacb1872ec91796",
+          "kernel_sha256": "f81371611cbb2aa85ed41b3a2ca6cd4b498cf4953ed437459f6547daa3da723e",
+          "installed_wrapper": "STATIC_PATH_RESOLVED",
+          "tbe_compatibility": "APPLIED",
+          "graphop_counts": {
+            "NPUCL": 1
+          },
+          "cpu_operations": [],
+          "main_operations_outside_tasks": [],
+          "placement_gate": "NPU_TASKS_ONLY_AT_DECODED_GRAPH_LEVEL",
+          "fixtures": 7,
+          "required_warmups_per_fixture": 3,
+          "required_repetitions_per_fixture": 10,
+          "scope": "USER_SELECTED_DDK_COMPILE_AND_STATIC_PLACEMENT; NO_DEVICE_OR_PERFORMANCE_CLAIM",
+          "run_id": "20261105T015409Z-22517-5473bc"
         }
       }
     }
