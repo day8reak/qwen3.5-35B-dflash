@@ -11,6 +11,7 @@ from copy import deepcopy
 import fcntl
 import hashlib
 import math
+import os
 from pathlib import Path
 import shutil
 
@@ -355,11 +356,30 @@ def prepare_air(raw, schema):
         compiler_sha256=hashlib.sha256(result).hexdigest())
 
 
+def storage_budget(plans, records, samples):
+    weights = [sum(records[r]['bytes'] for r in p['extraction']['files']) for p in plans]
+    fixtures = sum(sum(samples[s]['inputs'][spec['name']].nbytes for spec in p['extraction']['graph']['inputs'])
+        + samples[s]['golden'][p['checkpoint']['source_edge']].nbytes
+        + samples[s]['boundary'][p['checkpoint']['source_edge']].nbytes for p in plans for s in STEPS)
+    # Conservative metadata allowance, plus one extracted TE wheel (<=1 GiB)
+    # and vendor scratch. This is an estimate, not a compiler allocation bound.
+    packed = sum(weights)+(16 << 20)*len(plans)
+    reserve = 2 << 30
+    return dict(policy='SHARED_INDEPENDENT_READONLY_WEIGHTS; RELEASE_EACH_COMPLETED_PACKED_WORKSPACE',
+        unique_source_weight_bytes=sum(r['bytes'] for r in records.values()),
+        packed_models_bytes_estimate=packed, fixture_bytes=fixtures, scratch_reserve_bytes=reserve,
+        compile_free_bytes_required=packed+fixtures+sum(r['bytes'] for r in records.values())+2*max(weights, default=0)+reserve,
+        deployment_archive_bytes_estimate=packed+fixtures,
+        limitation='Compile estimate assumes successful packing and release; failures retain scratch and may stop later points. '
+                   'Deployment archive and recovered outputs require additional space after compilation.')
+
+
 def compile_suite(air_export, source, result, output, *, ddk_root, ddk_id,
                   tbe_diagnosis, timeout_seconds=1800, progress=print, replace=False):
     from .accuracy import analyze_result
     from .optimization import manifest_policy
-    from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
+    from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air, _snapshot
+    from qwen35_moe_dflash.toolchain.compiler_storage import release_packed_scratch, require_idle
     from qwen35_moe_dflash.toolchain.omc_embed_weights import embed_external_weights
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
     import stable_arg_max_ge
@@ -439,11 +459,15 @@ def compile_suite(air_export, source, result, output, *, ddk_root, ddk_id,
         prepared, preparation = prepare_air(extracted, schema)
         plans.append(dict(index=index, checkpoint=point, extracted=extracted, extraction=extraction,
                           prepared=prepared, preparation=preparation))
-    selected_weight_bytes = sum(sum(records[p]['bytes'] for p in r['extraction']['files']) for r in plans)
-    required = 4*selected_weight_bytes+(1 << 30)
+    budget = storage_budget(plans, records, samples)
+    required = budget['compile_free_bytes_required']
     root.parent.mkdir(parents=True, exist_ok=True)
-    if shutil.disk_usage(root.parent).free < required:
-        raise OSError(f'layer0 batch needs at least {required} free host bytes for source/compiler/packed copies')
+    available = shutil.disk_usage(root.parent).free
+    progress(f'host storage: available={available} bytes; compile budget={required}; '
+             f'later deployment archive estimate={budget["deployment_archive_bytes_estimate"]}')
+    if available < required:
+        raise OSError(f'layer0 compile needs {required} free bytes; available={available}; '
+                      'one shared source snapshot, retained packed models and one live compiler workspace')
     with (root.parent/('.'+root.name+'.lock')).open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         root.mkdir()
@@ -458,13 +482,31 @@ def compile_suite(air_export, source, result, output, *, ddk_root, ddk_id,
             coverage=dict(checkpoints=len(checkpoints), input_cases=3, planned_device_cases=len(checkpoints)*3,
                 node_type_counts=trace.counts, excluded_checkpoints=excluded,
                 semantics='ALL_LAYER0_ARITHMETIC_RESULTS_AND_SOURCE_FP16_BOUNDARIES; SINGLE_OUTPUT_MODELS'),
-            probe_source_sha256=sha256_file(Path(__file__)), cases=[])
+            probe_source_sha256=sha256_file(Path(__file__)), storage=budget, cases=[])
         _save(root/'result.json', state)
+        # One independent run-owned snapshot. Hardlinks never touch original
+        # AIR/prepared weights, and each compiler still gets its own snapshot.
+        shared = root/'shared-weights'
+        for relative, record in records.items():
+            snap = _snapshot(checked_file(air, record), shared/relative)
+            if snap['sha256'] != record['sha256'] or snap['bytes'] != record['bytes']:
+                raise ValueError('shared source snapshot differs from retained AIR weight')
+        stop = None
         for p in plans:
-            i = p['index']; name = f'p{i:02d}'; folder = root/name; (folder/'air/weight').mkdir(parents=True)
+            i = p['index']; name = f'p{i:02d}'; folder = root/name
+            needed = 3*sum(records[r]['bytes'] for r in p['extraction']['files'])+budget['scratch_reserve_bytes']
+            if stop is None and shutil.disk_usage(root).free < needed:
+                stop = f'insufficient remaining space for checkpoint {name}: needs {needed} free bytes'
+            if stop:
+                state['cases'].append(dict(case=name, status='SKIPPED', model_compilation='NOT_RUN',
+                                           checkpoint=p['checkpoint'], error=stop))
+                continue
+            (folder/'air/weight').mkdir(parents=True)
             (folder/'air/export.air').write_bytes(p['extracted'])
             for relative in p['extraction']['files']:
-                shutil.copyfile(checked_file(air, records[relative]), folder/'air'/relative)
+                destination = folder/'air'/relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                os.link(shared/relative, destination)
             fixtures = {}
             for step in STEPS:
                 f = folder/f'c{step:02d}'; f.mkdir(); sample = samples[step]
@@ -476,6 +518,7 @@ def compile_suite(air_export, source, result, output, *, ddk_root, ddk_id,
             row = dict(case=name, status='FAILED', model_compilation='NOT_RUN', checkpoint=p['checkpoint'],
                 extraction=p['extraction'], fixtures=fixtures, source_inputs={str(s):samples[s]['input_records'] for s in STEPS})
             state['cases'].append(row); _save(root/'result.json', state)
+            build = None
             try:
                 progress(f'compiling checkpoint {i+1}/{len(plans)}: {p["checkpoint"]["source_edge"]}')
                 def transform(snapshot):
@@ -504,8 +547,28 @@ def compile_suite(air_export, source, result, output, *, ddk_root, ddk_id,
             except Exception as error:
                 row.update(error=f'{type(error).__name__}: {error}',
                     compilation_diagnostics=compilation_diagnostics(folder/'compilation'))
+            # Only a known completed and packed candidate can lose its compiler
+            # payloads. Failed builds retain their workspace and bounded logs.
+            try:
+                require_idle(folder)
+                if row['status'] == 'COMPILED':
+                    row['storage'] = release_packed_scratch(folder, apply=True)
+                    for relative in p['extraction']['files']:
+                        (folder/'air'/relative).unlink()
+                    row['source_weight_retention'] = 'RECONSTRUCT_FROM_BOUND_ORIGINAL_AIR; LOCAL_LINKS_RELEASED'
+                elif build is None or not isinstance(build.get('returncode'), int):
+                    stop = 'compiler completion unknown; remaining checkpoints skipped and workspace retained'
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                row['storage_error'] = str(error)
+                stop = 'compiler workspace could not be safely released: '+str(error)
             _save(root/'result.json', state)
         good = sum(r['status'] == 'COMPILED' for r in state['cases'])
+        if good == len(plans) and stop is None:
+            require_idle(shared)
+            shutil.rmtree(shared)
+            state['storage']['shared_snapshot'] = 'RELEASED_AFTER_ALL_PACKED_MODELS_COMPLETED'
+        else:
+            state['storage']['shared_snapshot'] = 'RETAINED_FOR_INCOMPLETE_BATCH'
         state.update(status='COMPILED' if good == len(plans) else ('PARTIAL' if good else 'FAILED'),
             stage='complete', model_compilation='PASSED' if good == len(plans) else ('PARTIAL' if good else 'FAILED'))
         state['coverage'].update(compiled_checkpoints=good, missing_checkpoints=[r['checkpoint'] for r in state['cases'] if r['status'] != 'COMPILED'])

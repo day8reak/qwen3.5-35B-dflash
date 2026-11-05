@@ -7769,7 +7769,7 @@
               "evidence": "20261105T062609Z-29965-ed7fdd/evidence/reported-hidden-query-result.json"
             },
             "layer0_batch": {
-              "status": "PACK_PREFLIGHT_REPAIRED_HOST_CHECKED_DDK_RETRY_PENDING",
+              "status": "SOURCE_REFERENCE_COMPLETED_STORAGE_REPAIRED_DDK_RETRY_PENDING",
               "command": "--suite layer0",
               "implementation": "model/qwen35_moe_dflash/draft/incremental/hidden_layer_probe.py",
               "scope": "COMPLETE_LAYER0_SOURCE_ARITHMETIC_AND_FP16_BOUNDARIES",
@@ -7796,6 +7796,42 @@
                 "change": "GE_PACK_STACK_SEMANTICS_WITH_N_AXIS_SHAPE_DTYPE_CHECKS",
                 "retry": "ORIGINAL_COMMAND_SAME_OUTPUT_PATH; PREFLIGHT_CREATED_NO_COMPILE_DIRECTORY",
                 "host_evidence": "20261105T070022Z-31425-b42f12/evidence/pack-probe-checks.json",
+                "model_compilation": "NOT_RUN",
+                "device_execution": "NOT_RUN"
+              },
+              "storage": {
+                "status": "HOST_CHECKED_REMOTE_CLEANUP_AND_COMPILATION_PENDING",
+                "observed": {
+                  "source_reference_cases_completed": [
+                    0,
+                    2,
+                    17
+                  ],
+                  "old_compile_required_bytes": 16376971200,
+                  "host_available_reported": "585M",
+                  "tests_total_reported": "28G",
+                  "old_candidate_sizes": {
+                    "pytorch-omc": "8.0G",
+                    "pytorch-optimized-omc": "5.1G"
+                  }
+                },
+                "cleanup": {
+                  "command": "clean_draft_probes.py --root \"$AI_RUN_DIR\" --compiler-scratch --apply",
+                  "candidates": [
+                    "pytorch-omc",
+                    "pytorch-optimized-omc"
+                  ],
+                  "directories": [
+                    "compilation/compile-work",
+                    "compilation/tbe-compat/wheel-python"
+                  ],
+                  "retained": "PACKED_MODELS_REPORTS_DIAGNOSTICS_ORIGINAL_EXPORTS_FIXTURES_AND_PROFILE_CSVS",
+                  "current_top1_integration": "UNCHANGED",
+                  "remote_execution": "NOT_RUN"
+                },
+                "probe_storage": "ONE_INDEPENDENT_READONLY_WEIGHT_SNAPSHOT; RELEASE_EACH_COMPLETED_PACKED_WORKSPACE; KEEP_FAILED_OR_UNKNOWN",
+                "coverage": "UNCHANGED_CHECKPOINTS_AND_CASES_0_2_17",
+                "host_evidence": "20261105T070755Z-31779-496ecb/out/evidence/storage-tests.log",
                 "model_compilation": "NOT_RUN",
                 "device_execution": "NOT_RUN"
               }

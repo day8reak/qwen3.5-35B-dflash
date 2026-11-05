@@ -6,21 +6,20 @@
 
 ## DDK服务器执行
 
-沿用已配置的 `REPO_DIR`、`AI_RUN_DIR`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID` 和支持untouched的运行器。需要原 `export`、`compiled/compilation`、`prepared`、`output-init/result`；不需要Torch/TorchAir，也不重编整Draft或算子。
+沿用已配置的 `REPO_DIR`、`AI_RUN_DIR`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID` 和支持untouched的运行器。保留 `top1-integration`、`draft/source/prepared`、`runtime`、`common`；探针继续使用原AIR、权重、编译报告和untouched精度夹具，不需要Torch/TorchAir。
 
-已补齐真实AIR中的`Pack`参考计算。此前的`unsupported first-layer source operations`发生在创建编译目录及启动OMG之前；更新代码后直接重跑原命令，复用`hidden-layer0`路径，无需删除目录或加`--replace`。
+三组源图参考计算已完成，当前受服务器空间阻塞（仅585MB可用）。先清理旧 `pytorch-omc`／`pytorch-optimized-omc` 中已打包的编译副本；脚本验证模型和编译完成状态，保留OMC、报告、诊断和profiling CSV，不访问设备。去掉 `--apply` 可只查看计划。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
 export LAYER_DIR="$TOP1_DIR/hidden-layer0"
 
-# 只分析上次已回收的文件，补查零值与FP32转回FP16的对应关系。
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --analyze "$TOP1_DIR/hidden-first-query/result" \
-  > "$TOP1_DIR/hidden-first-query/diagnosis.json"
+python3 "$REPO_DIR/targets/cpro/tools/clean_draft_probes.py" \
+  --root "$AI_RUN_DIR" --compiler-scratch --apply
+df -h "$AI_RUN_DIR"
 
-# 所有检查点先完成源图/参考预检，再顺序编译。
+# 上次空间预检未创建compiled目录，仍用同一路径。
 python3 "$REPO_DIR/targets/cpro/tools/probe_draft_hidden.py" \
   --suite layer0 --air-export "$TOP1_DIR/export" \
   --source "$AI_RUN_DIR/draft/source/prepared" \
@@ -30,7 +29,7 @@ python3 "$REPO_DIR/targets/cpro/tools/probe_draft_hidden.py" \
   --output "$LAYER_DIR/compiled"
 ```
 
-编译摘要的`coverage`列出实际检查点数和缺口。单点编译失败不阻止其余点；`PARTIAL`且有已编译检查点时仍可执行现有覆盖。脚本检查主机及板端空间；这批前缀包含原始FP16权重，大小高于前一轮两个query小图。使用固定新目录`hidden-layer0`，保留原query结果。
+新版本只建立一份本轮只读权重快照，每点成功打包后释放编译副本，保留独立OMC、输入、参考值和日志。启动时打印实际空间预算；部署tar及回收输出另需空间。已知退出的失败保留现场并继续；退出不明或剩余空间不足会停止，并在`coverage`标明缺口。原检查点和三组输入覆盖不变。
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \

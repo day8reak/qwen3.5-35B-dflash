@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Delete completed embedding/RMS probe families without retaining copies."""
+"""Clean completed Draft probe families or obsolete compiler copies on the host."""
 import argparse
 from contextlib import ExitStack
 import fcntl
@@ -110,14 +110,55 @@ def clean(root, config, *, apply=False):
                 logical_bytes_selected=sum(r['logical_bytes'] for r in planned))
 
 
+def clean_compiler_scratch(root, config, *, apply=False):
+    from qwen35_moe_dflash.toolchain.compiler_storage import release_packed_scratch
+    from qwen35_moe_dflash.draft.incremental.torch_export import OMC_KIND
+    root = Path(root).resolve(strict=True)
+    tests = root/'draft/tests'
+    if not tests.is_dir() or tests.resolve() != tests:
+        raise ValueError('expected owned draft/tests directory without symlink parents')
+    protected = _runtime_paths(Path(config).resolve(strict=True))
+    results, retained = [], []
+    # Current top1-integration, AIR exports, device fixtures and CSVs are outside
+    # this bounded operation. The two older models themselves remain runnable.
+    for name in ('pytorch-omc', 'pytorch-optimized-omc'):
+        folder = tests/name
+        if not folder.exists() and not folder.is_symlink():
+            continue
+        try:
+            if folder.resolve() != folder or not folder.is_dir():
+                raise ValueError('candidate directory is linked or foreign')
+            fd = os.open(tests/('.'+name+'.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                manifest = read_json(folder/'manifest.json')
+                if (manifest.get('artifact_kind') != OMC_KIND or manifest.get('stage') != 'complete'
+                        or manifest.get('status') != 'PYTORCH_DRAFT_OMC_COMPILED'
+                        or manifest.get('omc') != 'model.omc'
+                        or manifest.get('weight_storage') != 'embedded-stream'):
+                    raise ValueError('not a completed packed PyTorch candidate')
+                print('draft-clean: checking '+name+' packed model and compiler completion', file=sys.stderr, flush=True)
+                results.append(dict(candidate=name, **release_packed_scratch(folder, apply=apply, protected=protected)))
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            retained.append(dict(candidate=name, reason=str(error)))
+    return dict(status=('PARTIAL' if retained else 'CLEANED') if apply else 'PLANNED',
+        scope='TWO_OLD_CANDIDATES_COMPILER_SCRATCH_ONLY; NO_DEVICE_ACCESS',
+        candidates=results, retained=retained,
+        allocated_bytes_selected=sum(r['allocated_bytes_selected'] for r in results),
+        free_bytes_after=shutil.disk_usage(root).free)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--root', required=True)
     p.add_argument('--config')
     p.add_argument('--apply', action='store_true')
+    p.add_argument('--compiler-scratch', action='store_true',
+                   help='retain old packed models/reports; remove only their completed compiler copies')
     a = p.parse_args()
     try:
-        result = clean(a.root, a.config or Path(a.root)/'runtime/runtime.json', apply=a.apply)
+        action = clean_compiler_scratch if a.compiler_scratch else clean
+        result = action(a.root, a.config or Path(a.root)/'runtime/runtime.json', apply=a.apply)
     except (OSError, ValueError, KeyError, TypeError) as error:
         result = dict(status='FAILED', error=f'{type(error).__name__}: {error}')
     print(json.dumps(result, ensure_ascii=False, indent=2))
