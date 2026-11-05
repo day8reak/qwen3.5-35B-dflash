@@ -372,6 +372,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     for name in CASES:
         row = rows[name]; model = checked_file(root, row['model'])
         inspection = stable_arg_max_ge.inspect_model(model, ddk, row['extraction']['graph'])
+        inspection['placement']['case'] = name
         if row['status'] != 'COMPILED':
             raise ValueError('query prefix did not compile')
         bound = deepcopy(inspection['io']); folder = out/'fixture'/name; folder.mkdir(parents=True)
