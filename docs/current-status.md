@@ -4,9 +4,9 @@
 
 本轮检查第0层 `input RMSNorm → Q投影 → Q RMSNorm`。两个小图从当前AIR裁取，保留原计算节点和三份权重：一个只输出Q归一化结果，另一个暴露五个检查点。输入复用empty-context原始FP16 embedding，比较容差不变。**裁剪和增加输出可能改变编译，探针结果不能直接当作整图首错位置。**
 
-## DDK服务器：准备与执行
+## 用户现在执行什么
 
-更新代码后执行；需要已保留的export、prepared和output-init/result，不需要Torch、TorchAir或重新导出整Draft。
+更新代码后在DDK服务器执行；需要已保留的export、prepared和output-init/result，不需要Torch、TorchAir或重新导出整Draft。
 
 ```bash
 export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"

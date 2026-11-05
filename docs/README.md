@@ -7,4 +7,4 @@
 - [当前结果：时延与接受率](results.md)
 - [环境配置](environment-setup.md)
 - [完整流程执行](run-end-to-end.md)
-- [最新执行命令：Draft精度定位与profiling](current-status.md#用户现在执行什么)
+- [最新执行命令：Draft hidden精度定位](current-status.md#用户现在执行什么)
