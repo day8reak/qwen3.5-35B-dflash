@@ -596,7 +596,7 @@ def inspect_pytorch_compilation(directory):
 
 def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                     timeout_seconds=7200, tbe_diagnosis=None, progress=print,
-                    limit_partition_size=None, rope_fp32_table=False):
+                    limit_partition_size=None, rope_fp32_table=False, cpu_feature_pack=False):
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
     if limit_partition_size is not None and type(limit_partition_size) is not bool:
@@ -630,6 +630,8 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
     inspection = inspect_air(source / 'export.air', schema,
                              expected_norms=32, require_int32_indices=True, expected_attention=manifest.get('attention'), expected_top1=manifest.get('top1'))
     _check_weight_storage(source, manifest, inspection)
+    if cpu_feature_pack and (not rope_fp32_table or manifest['context_rows'] != 16):
+        raise ValueError('CPU feature packing requires C16 and --rope-fp32-table')
     if rope_fp32_table:
         from .optimization import manifest_policy
         if (manifest_policy(manifest) != 'packed-spatial-host-embedding'
@@ -647,6 +649,14 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             raw_before_rope = raw
             raw, rope = fold_rope_tables(raw, schema, source,
                 expected_rows=manifest['cache_capacity']+max(manifest['context_rows'], manifest['max_draft_tokens']+1))
+        feature_pack = None
+        if cpu_feature_pack:
+            from .air_feature_pack import rewrite
+            from .torch_abi import source_input_roles
+            from qwen35_moe_dflash.target.original_air_roundtrip import _decode
+            _, _, graph = _decode(schema, raw)
+            roles, _ = source_input_roles(graph, manifest['inputs'])
+            raw, feature_pack = rewrite(raw, schema, roles['target_features'])
         prepared, evidence = fold_reshape_chains(raw, schema)
         prepared, zeros = materialize_zeros(prepared, schema)
         prepared, fills = materialize_fills(prepared, schema)
@@ -663,12 +673,21 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
         if rope is not None:
             evidence.update(status='APPLIED', policy='draft-static-preparation-rope-fp32-v1',
                             source_sha256=hashlib.sha256(raw_before_rope).hexdigest(), rope=rope)
+        if feature_pack is not None:
+            from .feature_pack_probe import input_contract, PACKED_SHAPE
+            input_contract(prepared, schema, feature_pack['input_data'], PACKED_SHAPE, full_graph=True)
+            evidence.update(status='APPLIED', policy='draft-static-preparation-feature-pack-v1',
+                            feature_pack=feature_pack)
         return prepared, evidence
     with _slot(output, OMC_KIND, replace) as root:
         result = {k: manifest[k] for k in ('context_rows', 'cache_capacity', 'max_draft_tokens', 'inputs', 'outputs', 'rms', 'gamma')}
         for key in ('attention', 'optimization', 'projection', 'host_embedding', 'weight_storage', 'top1'):
             if key in manifest:
                 result[key] = manifest[key]
+        if cpu_feature_pack:
+            from .air_feature_pack import CONTRACT, physical_inputs
+            result['feature_pack'] = dict(CONTRACT)
+            result['inputs'] = physical_inputs(result)
         result.update(artifact_kind=OMC_KIND, status='COMPILING', stage='compile', frontend='pytorch',
             source_air_validation=inspection['validation_status'],
             source_deferred_shape_count=len(inspection['deferred_shapes']),

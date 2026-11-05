@@ -36,7 +36,7 @@ PREPARATION = dict(baseline='copy-c16-v1', packed='feature-pack-c16-v1')
 TIMING = 'CPU_PACK_SETINPUT_EXECUTE_WALL; PREALLOCATED; SNAPSHOTS_EXCLUDED'
 
 
-def input_contract(raw, schema, input_name, shape, *, input_device='NPU'):
+def input_contract(raw, schema, input_name, shape, *, input_device='NPU', full_graph=False):
     """Check both sides of Data, including its unconnected external input.
 
     TorchAir Data copies output_desc to input_desc (named y/x):
@@ -47,6 +47,10 @@ def input_contract(raw, schema, input_name, shape, *, input_device='NPU'):
     """
     _, _, graph = _decode(schema, raw)
     nodes = [n for n in graph['op'] if n['type'] == 'Data']
+    if full_graph:
+        if len(nodes) != 17:
+            raise ValueError('full Draft requires 17 Data inputs')
+        nodes = [n for n in nodes if n['name'] == input_name]
     if len(nodes) != 1 or nodes[0]['name'] != input_name or nodes[0].get('input', []) not in ([], ['']):
         raise ValueError('projection requires one unconnected external Data input')
     if input_device not in ('CPU', 'NPU'):

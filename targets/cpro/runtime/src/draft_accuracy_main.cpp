@@ -1,6 +1,8 @@
 // Explicit standalone numerical diagnostic: one V1 Load, two KV sequences.
 #include "qwen35_dflash/incremental_draft.hpp"
 #include "qwen35_dflash/sha256.hpp"
+#include "qwen35_dflash/feature_pack.hpp"
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -12,7 +14,11 @@ namespace fs=std::filesystem;
 using namespace qwen35::dflash;
 using Bytes=std::vector<std::uint8_t>;
 struct Step { unsigned index,start,valid,anchor,proposals; };
-struct Plan { IncrementalDraftAbi abi; std::vector<Step> steps; bool block_embeddings=false; };
+struct Plan { IncrementalDraftAbi abi; std::vector<Step> steps; bool block_embeddings=false,cpu_feature_pack=false; };
+using Clock=std::chrono::steady_clock;
+std::int64_t Elapsed(Clock::time_point start) {
+  return std::chrono::duration_cast<std::chrono::microseconds>(Clock::now()-start).count();
+}
 
 unsigned Number(const std::string& value) {
   if(value.empty()||value.size()>10||value.find_first_not_of("0123456789")!=std::string::npos)
@@ -28,6 +34,7 @@ Plan ReadPlan(const fs::path& path) {
   std::getline(file,line);
   Plan p;bool geometry=false;
   if(line=="QWEN35_INCREMENTAL_ACCURACY 2")p.block_embeddings=true;
+  else if(line=="QWEN35_INCREMENTAL_ACCURACY 3")p.block_embeddings=p.cpu_feature_pack=true;
   else if(line!="QWEN35_INCREMENTAL_ACCURACY 1")throw std::invalid_argument("invalid accuracy header");
   while(std::getline(file,line)) {
     std::istringstream input(line);std::vector<std::string> f;std::string v;
@@ -42,7 +49,7 @@ Plan ReadPlan(const fs::path& path) {
       while(std::getline(dimensions,v,','))s.shape.push_back(Number(v));
       rows.push_back(std::move(s));
     } else if(f[0]=="case"&&f.size()==6&&geometry) {
-      p.abi.Validate(p.block_embeddings);
+      p.abi.Validate(p.block_embeddings,p.cpu_feature_pack);
       Step s{Number(f[1]),Number(f[2]),Number(f[3]),Number(f[4]),Number(f[5])};
       unsigned cursor=p.steps.empty()?0:p.steps.back().start+p.steps.back().valid;
       if(s.index!=p.steps.size()||s.start!=cursor||s.valid>p.abi.context_rows||
@@ -52,7 +59,7 @@ Plan ReadPlan(const fs::path& path) {
       p.steps.push_back(s);
     } else throw std::invalid_argument("unknown accuracy plan row");
   }
-  p.abi.Validate(p.block_embeddings);
+  p.abi.Validate(p.block_embeddings,p.cpu_feature_pack);
   if(p.steps.empty()||p.abi.capacity>512)throw std::invalid_argument("accuracy needs cases and capacity<=512");
   return p;
 }
@@ -136,7 +143,7 @@ int main(int argc,char** argv) {
     const fs::path fixture=argv[3],out=argv[4];
     const auto p=ReadPlan(fixture/"plan.txt");
     const unsigned reproduction=argc==7?Number(argv[6]):0;
-    if(argc==7&&(output_initialization!="untouched"||reproduction>=p.steps.size()||!p.steps[reproduction].valid))
+    if(argc==7&&(p.cpu_feature_pack||output_initialization!="untouched"||reproduction>=p.steps.size()||!p.steps[reproduction].valid))
       throw std::invalid_argument("KV reproduction requires untouched outputs and an appending case");
     if(fs::exists(out))throw std::invalid_argument("accuracy output already exists");
     fs::create_directories(out);
@@ -150,7 +157,9 @@ int main(int argc,char** argv) {
     const char* evidence="device-hiai";
 #endif
     result<<"{\"evidence_kind\":\""<<evidence<<"\",\"output_initialization\":\""
-          <<output_initialization<<"\",\"calls\":[";
+          <<output_initialization<<"\",\"input_preparation_version\":1,\"cpu_feature_pack\":"
+          <<(p.cpu_feature_pack?"true":"false")<<",\"calls\":[";
+    Bytes packed(p.cpu_feature_pack?524288:0);
     bool first=true;
     for(const std::string mode:{"isolated","feedback"})for(const auto& s:p.steps) {
       std::map<std::string,unsigned> control{{"start_position",s.start},{"valid_rows",s.valid},
@@ -161,13 +170,22 @@ int main(int argc,char** argv) {
         auto pos=std::find_if(p.abi.inputs.begin(),p.abi.inputs.end(),[&](const auto& r){return r.name==name;});
         slots.push_back(std::distance(p.abi.inputs.begin(),pos));
       }
+      std::int64_t packing_us=0,set_input_us=0,prepare_us=0;
       for(std::size_t i=0;i<p.abi.inputs.size();++i) {
         const auto& spec=p.abi.inputs[i];
-        if(mode=="feedback"&&s.index>0&&spec.name.rfind("past_",0)==0) {executor.ReuseInput(i);continue;}
+        if(mode=="feedback"&&s.index>0&&spec.name.rfind("past_",0)==0) {
+          auto t=Clock::now();executor.ReuseInput(i);prepare_us+=Elapsed(t);continue;
+        }
         auto bytes=Read(fixture/"inputs"/std::to_string(s.index)/(std::to_string(i)+".bin"),HiaiTensorBytes(spec));
         if(control.count(spec.name)&&Scalar(bytes)!=control.at(spec.name))
           throw std::invalid_argument("input control differs from plan");
-        executor.SetInput(i,bytes);
+        // Preserve the existing IO/readback schedule. Sum only preparation
+        // segments; file reads, diagnostic KV readbacks and commits are excluded.
+        const auto prepared_start=Clock::now();
+        const bool pack=p.cpu_feature_pack&&spec.name=="target_features";
+        if(pack) {auto t=Clock::now();PackDraftFeaturesC16(bytes,packed);packing_us+=Elapsed(t);}
+        auto t=Clock::now();executor.SetInput(i,pack?packed:bytes);set_input_us+=Elapsed(t);
+        prepare_us+=Elapsed(prepared_start);
       }
       std::vector<Bytes> before;
       for(auto i:slots)before.push_back(executor.CopyInput(i));
@@ -196,6 +214,8 @@ int main(int argc,char** argv) {
       first=false;
       result<<"{\"mode\":\""<<mode<<"\",\"index\":"<<s.index
           <<",\"api_us\":"<<executor.last_api_us()<<",\"commit_bytes\":"<<copied
+          <<",\"packing_us\":"<<packing_us<<",\"set_input_us\":"<<set_input_us
+          <<",\"prepare_us\":"<<prepare_us<<",\"prepared_call_us\":"<<prepare_us+executor.last_api_us()
           <<",\"commit_readback_matches\":true}";
       std::cout<<"draft-accuracy: "<<mode<<" case="<<s.index<<" api_us="<<executor.last_api_us()<<std::endl;
     }

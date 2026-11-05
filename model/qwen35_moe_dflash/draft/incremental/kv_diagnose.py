@@ -56,9 +56,15 @@ def _load(path):
 
 
 def _same_inputs(fixture, meta, baseline, old):
-    for key in ('cases', 'context_rows', 'cache_capacity', 'max_draft_tokens', 'comparison', 'outputs', 'host_embedding'):
+    for key in ('cases', 'context_rows', 'cache_capacity', 'max_draft_tokens', 'comparison', 'host_embedding'):
         if meta.get(key) != old.get(key):
             raise ValueError('candidate and baseline replay contract differs: '+key)
+    # Each compiled connection was bound independently. Internal GraphOp names
+    # may change; compare the ordered public tensor contract across models.
+    def outputs(m):
+        return [{k: s[k] for k in ('name', 'index', 'dtype', 'shape', 'bytes')} for s in m['outputs']]
+    if outputs(meta) != outputs(old):
+        raise ValueError('candidate and baseline output tensor contracts differ')
     inventories = []
     for directory, manifest in ((fixture, meta), (baseline, old)):
         _controls(directory, manifest)
@@ -73,7 +79,12 @@ def _same_inputs(fixture, meta, baseline, old):
             if key in inventory or r['bytes'] != spec['bytes']:
                 raise ValueError('duplicate or inconsistent retained KV input record')
             checked_file(directory, r)
-            inventory[key] = (spec['dtype'], spec['shape'], r['bytes'], r['sha256'])
+            shape = spec['shape']
+            if spec['name'] == 'target_features' and manifest.get('feature_pack'):
+                from .air_feature_pack import check_contract, LOGICAL_SHAPE
+                check_contract(manifest)
+                shape = LOGICAL_SHAPE  # Fixtures retain the original logical bytes.
+            inventory[key] = (spec['dtype'], shape, r['bytes'], r['sha256'])
         if len(inventory) != len(manifest['cases'])*len(manifest['inputs']):
             raise ValueError('retained input inventory is incomplete')
         inventories.append(inventory)

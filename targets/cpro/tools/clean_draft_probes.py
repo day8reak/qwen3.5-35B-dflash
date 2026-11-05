@@ -121,7 +121,8 @@ def clean_compiler_scratch(root, config, *, apply=False, integration_sidecars=Fa
     results, retained = [], []
     # Current candidates keep compiler AIR, snapshots and the small external
     # OMC descriptor: standalone ABI binding still reads them.
-    names = (('top1-integration/compiled', 'top1-integration/rope-fp32/compiled')
+    names = (('top1-integration/compiled', 'top1-integration/rope-fp32/compiled',
+              'top1-integration/feature-pack/compiled')
              if integration_sidecars else ('pytorch-omc', 'pytorch-optimized-omc'))
     for name in names:
         folder = tests/name
@@ -145,7 +146,7 @@ def clean_compiler_scratch(root, config, *, apply=False, integration_sidecars=Fa
         except (OSError, ValueError, KeyError, TypeError) as error:
             retained.append(dict(candidate=name, reason=str(error)))
     return dict(status=('PARTIAL' if retained else 'CLEANED') if apply else 'PLANNED',
-        scope=('TOP1_AND_ROPE_PACKED_WEIGHT_DUPLICATES_ONLY; NO_DEVICE_ACCESS' if integration_sidecars
+        scope=('TOP1_ROPE_FEATURE_PACK_WEIGHT_DUPLICATES_ONLY; NO_DEVICE_ACCESS' if integration_sidecars
                else 'TWO_OLD_CANDIDATES_COMPILER_SCRATCH_ONLY; NO_DEVICE_ACCESS'),
         candidates=results, retained=retained,
         allocated_bytes_selected=sum(r['allocated_bytes_selected'] for r in results),
@@ -161,7 +162,7 @@ def main():
     mode.add_argument('--compiler-scratch', action='store_true',
                    help='retain old packed models/reports; remove only their completed compiler copies')
     mode.add_argument('--integration-sidecars', action='store_true',
-                      help='remove packed weight duplicates from top1/RoPE builds; retain ABI/source snapshots')
+                      help='remove packed weight duplicates from top1/RoPE/full feature-pack builds; retain ABI/source snapshots')
     mode.add_argument('--layer0-probes', action='store_true',
                       help='retire completed hidden-layer0 compiled/run/result; retain summary and top-level analysis JSON')
     a = p.parse_args()

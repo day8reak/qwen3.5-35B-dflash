@@ -1,4 +1,4 @@
-"""Bind a RoPE-only compiler candidate to unchanged retained accuracy data."""
+"""Bind RoPE/CPU feature-pack candidates to unchanged retained accuracy data."""
 from copy import deepcopy
 from pathlib import Path
 import shutil
@@ -34,6 +34,13 @@ def rebind_candidate(fixture, original, compiled, source, air, ddk_root, output)
     for direction in ('inputs', 'outputs'):
         old = {s['name']: (s['dtype'], s['shape'], s['bytes']) for s in original[direction]}
         new = {s['name']: (s['dtype'], s['shape'], s['bytes']) for s in candidate[direction]}
+        if direction == 'inputs' and candidate.get('feature_pack') is not None:
+            from .air_feature_pack import CONTRACT, LOGICAL_SHAPE, PHYSICAL_SHAPE
+            if (original.get('feature_pack') is not None or candidate['feature_pack'] != CONTRACT
+                    or original.get('precision_repair') != repair
+                    or old.get('target_features') != ('float16', LOGICAL_SHAPE, 524288)):
+                raise ValueError('feature-pack replay requires the original unpacked RoPE baseline')
+            old['target_features'] = ('float16', PHYSICAL_SHAPE, 524288)
         if old != new or len(old) != len(original[direction]) or len(new) != len(candidate[direction]):
             raise ValueError('candidate changed semantic tensor contracts: '+direction)
     result = deepcopy(original)
@@ -41,6 +48,8 @@ def rebind_candidate(fixture, original, compiled, source, air, ddk_root, output)
         model=dict(candidate['model'], path=str((compiled/candidate['model']['path']).resolve())),
         host_embedding_binding=candidate.get('host_embedding_binding'),
         precision_repair=repair, input_files=[])
+    if candidate.get('feature_pack') is not None:
+        result['feature_pack'] = candidate['feature_pack']
     validate_abi(result)
     old_slots = {s['name']: s['index'] for s in original['inputs']}
     old_files = {(r['case'], r['index']): r for r in original['input_files']}
@@ -69,14 +78,14 @@ def rebind_candidate(fixture, original, compiled, source, air, ddk_root, output)
             copied = copy(record['path'], f'inputs/{index}/{spec["index"]}.bin', record)
             result['input_files'].append(dict(copied, case=index, index=spec['index']))
     goldens = [copy(p, p) for p in golden_paths]
-    rows = ['QWEN35_INCREMENTAL_ACCURACY 2',
+    rows = [f"QWEN35_INCREMENTAL_ACCURACY {3 if result.get('feature_pack') else 2}",
             f"geometry {result['context_rows']} {result['cache_capacity']} {result['max_draft_tokens']}"]
     for direction in ('inputs', 'outputs'):
         rows += [' '.join((direction[:-1], str(s['index']), s['name'], s['dtype'], ','.join(map(str, s['shape']))))
                  for s in result[direction]]
     rows += [f"case {c['index']} {c['start']} {c['valid']} {c['anchor']} {c['proposals']}" for c in result['cases']]
     (output/'plan.txt').write_text('\n'.join(rows)+'\n')
-    result['candidate_replay'] = dict(policy=POLICY, baseline_model=original['model'],
+    result['candidate_replay'] = dict(policy=result.get('feature_pack', {}).get('policy', POLICY), baseline_model=original['model'],
         source_fixture=str(fixture.resolve()), source_fixture_sha256=sha256_file(fixture/'manifest.json'),
         goldens=goldens, reference_generation='NOT_RUN', input_generation='NOT_RUN',
         input_binding='ORIGINAL_BYTES_REMAPPED_BY_VERIFIED_SEMANTIC_NAME',

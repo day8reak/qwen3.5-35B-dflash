@@ -7184,7 +7184,7 @@
       "realizable_speedup_estimate": null,
       "next": "User retries failed packed prefix with --retry-failed, reusing baseline; then native runner and six-case validation; docs/current-status.md",
       "input_pack_experiment": {
-        "status": "PACKED_DATA_DESCRIPTOR_FIXED_AWAITING_USER_RECOMPILE",
+        "status": "PREFIX_EQUIVALENT_WITH_MEASURED_SAVING_FULL_CANDIDATE_READY",
         "compile_tool": "targets/cpro/tools/probe_draft_feature_pack.py",
         "validation_tool": "targets/cpro/tools/validate_draft_vector.py",
         "variants": [
@@ -7210,33 +7210,11 @@
         "original_numeric_gates": "UNCHANGED; REPORTED_SEPARATELY_FROM_BASELINE_EQUIVALENCE",
         "host_checks": 15,
         "host_evidence": "20261105T112828Z-8110-cda527/out/evidence/feature-pack-host-checks.json",
-        "model_compilation": "PARTIAL",
-        "device_execution": "NOT_RUN_USER_OWNED",
-        "full_draft_integration": "NOT_RUN",
+        "model_compilation": "PASSED_REPORTED",
+        "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+        "full_draft_integration": "HOST_IMPLEMENTED_DEVICE_PENDING",
         "production_promotion": "NOT_PERFORMED",
-        "next": "User pulls main and retries only failed packed prefix using --retry-failed; then existing runner build and six-case validation; docs/current-status.md",
-        "reported_compilation": {
-          "source": "USER_RETURNED_SERVER_REPORT",
-          "ddk_id": "100.520.020.010",
-          "baseline": {
-            "status": "COMPILED",
-            "graphop_counts": {
-              "NPUCL": 1
-            },
-            "bytes": 67161378,
-            "sha256": "fe382ec0276b45b7bd9bbd107c855858cb291b00085ff6dd6d8e71f09ae0cc02"
-          },
-          "packed": {
-            "status": "FAILED",
-            "stage": "omg",
-            "returncode": 1,
-            "conv_observed_input_shape": [
-              1,
-              16,
-              16384
-            ]
-          }
-        },
+        "next": "Compile one full candidate, clean packed duplicates, replay same-runner baseline then candidate, compare outputs and prepared timings; docs/current-status.md",
         "descriptor_fix": {
           "status": "HOST_VALIDATED",
           "cause": "STALE_DATA_INPUT_DESC_WITH_UPDATED_OUTPUT_DESC",
@@ -7271,6 +7249,81 @@
             "host_scope": "USER_DATA_DESCRIPTOR_FIELDS; SYNTHETIC_PREFIX; MOCK_DDK_OMC_AND_PROCESS_OWNERSHIP",
             "model_compilation": "NOT_RUN_AFTER_FIX",
             "device_execution": "NOT_RUN"
+          }
+        },
+        "numerical_validation": "FAILED",
+        "reported_prefix_execution": {
+          "source": "USER_PASTED_RECOVERY_SUMMARY_NOT_LOCAL_DEVICE_EXECUTION",
+          "model_compilation": "PASSED_REPORTED",
+          "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+          "numerical_validation": "FAILED",
+          "baseline_equivalence": "PASSED",
+          "paired_bitwise_equal_calls": 30,
+          "total_calls": 60,
+          "repeat_bitwise_stable": true,
+          "warmup": 3,
+          "repetitions": 10,
+          "pairs": [
+            {
+              "source_case": 2,
+              "baseline_mean_ms": 15.9736,
+              "candidate_mean_ms": 10.9998,
+              "mean_saved_ms": 4.973799999999999
+            },
+            {
+              "source_case": 16,
+              "baseline_mean_ms": 16.0192,
+              "candidate_mean_ms": 10.4716,
+              "mean_saved_ms": 5.547600000000001
+            },
+            {
+              "source_case": 17,
+              "baseline_mean_ms": 16.0485,
+              "candidate_mean_ms": 11.121,
+              "mean_saved_ms": 4.9275
+            }
+          ],
+          "equal_case_mean_saved_ms": 5.149633333333334,
+          "prefix_time_reduction_percent": 32.15753945043119,
+          "timing_scope": "CPU_PACK_SETINPUT_EXECUTE_WALL; PREALLOCATED; SNAPSHOTS_AND_LOAD_EXCLUDED",
+          "recovery_source": "/home/w00949577/qwen3.5-35B-dflash-run/draft/tests/feature-pack-run",
+          "board_attempt": "/data/local/tmp/qwen35_vector_18354a7263b8480a93f28baa1c95eb4c",
+          "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+          "full_draft_validation": "NOT_RUN",
+          "production_promotion": "NOT_PERFORMED"
+        },
+        "full_candidate": {
+          "status": "IMPLEMENTED_HOST_CHECKED_AWAITING_USER_DDK_AND_DEVICE",
+          "compile_flag": "--cpu-feature-pack --rope-fp32-table",
+          "candidate_slot": "draft/tests/top1-integration/feature-pack/compiled",
+          "diagnostic_plan_version": 3,
+          "host_checks": 19,
+          "host_evidence": "20261105T121900Z-10021-cda314/evidence/full-feature-pack-host.json",
+          "model_compilation": "NOT_RUN_USER_OWNED",
+          "device_execution": "NOT_RUN_USER_OWNED",
+          "production_promotion": "NOT_PERFORMED",
+          "next": "Compile one full candidate, clean packed duplicates, replay same-runner baseline then candidate, compare outputs and prepared timings; docs/current-status.md"
+        },
+        "historical_initial_compilation": {
+          "source": "USER_RETURNED_SERVER_REPORT",
+          "ddk_id": "100.520.020.010",
+          "baseline": {
+            "status": "COMPILED",
+            "graphop_counts": {
+              "NPUCL": 1
+            },
+            "bytes": 67161378,
+            "sha256": "fe382ec0276b45b7bd9bbd107c855858cb291b00085ff6dd6d8e71f09ae0cc02"
+          },
+          "packed": {
+            "status": "FAILED",
+            "stage": "omg",
+            "returncode": 1,
+            "conv_observed_input_shape": [
+              1,
+              16,
+              16384
+            ]
           }
         }
       }

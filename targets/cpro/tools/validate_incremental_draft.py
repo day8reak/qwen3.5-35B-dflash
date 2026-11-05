@@ -17,11 +17,12 @@ def main():
     parser.add_argument('--ddk-root',help='selected DDK schema, required for a PyTorch OMC candidate')
     mode=parser.add_mutually_exclusive_group()
     mode.add_argument('--recover')
-    mode.add_argument('--replay', help='reuse a completed fixture; optional compiled/source/air-export/ddk-root binds a RoPE candidate; no reference regeneration')
+    mode.add_argument('--replay', help='reuse a completed fixture; optional compiled/source/air-export/ddk-root binds a RoPE or feature-pack candidate; no reference regeneration')
     mode.add_argument('--inspect',help='print existing comparison details locally; no board access')
     mode.add_argument('--analyze',help='recompute new-KV and repeat diagnostics from retained host tensors')
     mode.add_argument('--diagnose',help='inspect retained hidden zeros/repeated rows and controls; optional --source checks embedding rows locally')
     mode.add_argument('--diagnose-kv',help='compare all appended KV regions with the retained replay baseline; host-only')
+    mode.add_argument('--compare-feature-pack',help='compare full packed candidate outputs/timings with its retained device baseline; host-only')
     mode.add_argument('--audit-reference',help='CPU source-math replay against retained reference and board tensors; requires --source, --air-export and an --output JSON file')
     mode.add_argument('--audit-head',help='NumPy-only full-vocabulary ranking of retained hidden at Top1 mismatch positions; requires --source and --output JSON')
     parser.add_argument('--output')
@@ -39,6 +40,14 @@ def main():
     if args.kv_reproduction_case is not None and (not args.replay or args.compiled or args.output_initialization != 'untouched'):
         parser.error('--kv-reproduction-case requires --replay --output-initialization untouched without --compiled')
     from qwen35_moe_dflash.draft.incremental.accuracy import summarize_result
+    if args.compare_feature_pack:
+        if (args.apply or any((args.config,args.compiled,args.source,args.air_export,args.output,args.ddk_root))
+                or args.atol is not None or args.rtol is not None):
+            parser.error('--compare-feature-pack only reads retained candidate and baseline results')
+        from qwen35_moe_dflash.draft.incremental.feature_pack_compare import compare_result
+        report = compare_result(args.compare_feature_pack)
+        print(json.dumps(report,ensure_ascii=False,allow_nan=False))
+        return 0 if report['baseline_equivalence'] == 'PASSED' else 1
     if args.diagnose_kv:
         if (args.apply or any((args.config,args.compiled,args.source,args.air_export,args.output,args.ddk_root))
                 or args.atol is not None or args.rtol is not None):

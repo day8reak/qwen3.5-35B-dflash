@@ -128,6 +128,8 @@ def bind_accuracy_profile(accuracy, model_tool, *, allow_numerical_failure=False
     if sha256_file(fixture/'manifest.json') != result['fixture_sha256']:
         raise ValueError('accuracy fixture changed after numerical comparison')
     meta = read_json(fixture/'manifest.json', 4 << 20)
+    if meta.get('feature_pack'):
+        raise ValueError('packed accuracy fixtures contain logical bytes; vendor profiling needs an explicit packed-input adapter')
     validate_abi(meta)
     if meta['model'] != result['model']:
         raise ValueError('accuracy model and fixture differ')

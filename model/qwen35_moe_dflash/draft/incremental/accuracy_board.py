@@ -53,7 +53,7 @@ def replay_fixture(path):
         checked_file(fixture, record)
     # Verify both the plan and the retained golden/result relationship before
     # asking for another execution. This is explicit diagnosis, never inference.
-    rows = [f"QWEN35_INCREMENTAL_ACCURACY {2 if 'host_embedding' in meta else 1}",
+    rows = [f"QWEN35_INCREMENTAL_ACCURACY {3 if meta.get('feature_pack') else 2 if 'host_embedding' in meta else 1}",
             f"geometry {meta['context_rows']} {meta['cache_capacity']} {meta['max_draft_tokens']}"]
     for direction in ('inputs', 'outputs'):
         rows += [' '.join((direction[:-1], str(s['index']), s['name'], s['dtype'],
@@ -110,7 +110,7 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
     fixture, meta = replay_fixture(replay) if replay else (out/'fixture', None)
     reproduction = None
     if kv_reproduction_case is not None:
-        if not replay or compiled or output_initialization != 'untouched':
+        if not replay or compiled or output_initialization != 'untouched' or meta.get('feature_pack'):
             raise ValueError('KV reproduction requires untouched replay of the same retained OMC')
         from .kv_reproduction import request
         reproduction = request(meta, kv_reproduction_case)
@@ -144,6 +144,8 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
                      internal_precision=meta.get('internal_precision'), production_promotion='NOT_PERFORMED')
         if candidate_replay:
             state['precision_repair'] = meta['precision_repair']
+        if meta.get('feature_pack'):
+            state['feature_pack'] = meta['feature_pack']
         if 'host_embedding_binding' in meta:
             state['host_embedding_binding'] = meta['host_embedding_binding']
         if not apply:
@@ -163,6 +165,8 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
             raise ValueError('rebuild runtime/native: the accuracy runner lacks output initialization replay support')
         if reproduction and built.get('accuracy_kv_reproduction_version') != reproduction['version']:
             raise ValueError('rebuild runtime/native: the accuracy runner lacks KV reproduction support')
+        if meta.get('feature_pack') and built.get('accuracy_feature_pack_version') != 1:
+            raise ValueError('rebuild runtime/native: the accuracy runner lacks feature packing/timing support')
         uploads, search, _ = _build_payloads(out, 600, resident='resident-mixed', native_directory=native)
         uploads = [r for r in uploads if r['remote'].startswith('lib/')]
         uploads.append(_file_record(binary, 'draft-accuracy'))

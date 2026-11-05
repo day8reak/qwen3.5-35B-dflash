@@ -81,6 +81,8 @@ def prepare(compiled, source, air, output, *, seed=17, atol=0.01, rtol=0.01, ddk
         raise ValueError('atol/rtol must be finite and nonnegative')
     root, source, air, out = map(Path, (compiled, source, air, output))
     meta = read_json(root / 'manifest.json')
+    if meta.get('feature_pack'):
+        raise ValueError('full feature-pack validation requires --replay of the retained RoPE baseline')
     pytorch = meta.get('artifact_kind') == 'qwen35-incremental-draft-pytorch-omc'
     if pytorch:
         from .torch_abi import bind_candidate
@@ -267,7 +269,23 @@ def compare(fixture, native):
             rows.append(result)
             previous = values
     passed = all(r['passed'] for r in rows)
-    return dict({key: meta[key] for key in ('host_embedding', 'host_embedding_binding', 'input_preparation') if key in meta},
+    preparation = {}
+    if meta.get('feature_pack') and report.get('input_preparation_version') != 1:
+        raise ValueError('packed model is missing native input-preparation evidence')
+    if report.get('input_preparation_version') == 1:
+        if report.get('cpu_feature_pack') is not bool(meta.get('feature_pack')):
+            raise ValueError('native feature packing differs from the bound model ABI')
+        for row in timings:
+            keys = ('packing_us', 'set_input_us', 'prepare_us', 'prepared_call_us')
+            if (any(type(row.get(k)) is not int or row[k] < 0 for k in keys)
+                    or row['prepare_us'] < row['packing_us']+row['set_input_us']
+                    or row['prepared_call_us'] != row['prepare_us']+row['api_us']
+                    or not meta.get('feature_pack') and row['packing_us'] != 0):
+                raise ValueError('native prepared-call timing evidence differs')
+        preparation['prepared_call_latency'] = latency_summary(timings, meta['cases'], field='prepared_call_us',
+            scope='SUM_CPU_PACK_SETINPUT_REUSE_SEGMENTS_AND_API_WALL; FILE_IO_KV_READBACK_SNAPSHOTS_COMMIT_LOAD_EXCLUDED')
+    return dict({key: meta[key] for key in ('host_embedding', 'host_embedding_binding', 'input_preparation', 'feature_pack') if key in meta},
+        **preparation,
         artifact_kind=KIND, status='PASSED' if passed else 'NUMERICAL_FAILED',
         numerical_validation='PASSED' if passed else 'FAILED', comparison=meta['comparison'],
         scope=meta['reference_scope'], reference_contract=CONTRACT, cases=rows,
@@ -277,12 +295,12 @@ def compare(fixture, native):
         performance='DIAGNOSTIC_CALL_TIMINGS_NOT_PRODUCTION_BENCHMARK')
 
 
-def latency_summary(calls, schedule):
-    result = {'timing_scope':'SYNCHRONOUS_API_WALL_NOT_NPU_ONLY'}
+def latency_summary(calls, schedule, *, field='api_us', scope='SYNCHRONOUS_API_WALL_NOT_NPU_ONLY'):
+    result = {'timing_scope':scope}
     for mode in ('isolated', 'feedback'):
         result[mode] = {}
         for phase, proposal in (('catchup', False), ('proposal', True)):
-            values = [r['api_us'] for r in calls if r['mode']==mode
+            values = [r[field] for r in calls if r['mode']==mode
                       and bool(schedule[r['index']]['proposals'])==proposal]
             result[mode][phase] = dict(calls=len(values),
                 mean_ms=sum(values)/len(values)/1000 if values else None,
@@ -297,7 +315,8 @@ def summarize_result(result):
           'first_failure','native_api_latency','board_attempt','lock_state','error',
           'lock_release_errors','next','frontend','internal_precision','production_promotion','native_failure','hilog',
           'host_embedding','host_embedding_binding','input_preparation',
-          'output_initialization','replay_source','precision_repair','baseline_model','kv_reproduction')
+          'output_initialization','replay_source','precision_repair','baseline_model','kv_reproduction',
+          'feature_pack','prepared_call_latency')
     summary = {k:result[k] for k in keys if k in result}
     rows = result.get('cases', [])
     if not rows:

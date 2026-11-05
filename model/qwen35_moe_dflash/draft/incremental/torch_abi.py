@@ -135,7 +135,9 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
             or meta.get('model_compilation') != 'PASSED' or meta.get('omc') != 'model.omc'
             or export.get('artifact_kind') != AIR_KIND or export.get('status') != 'PYTORCH_DRAFT_AIR_EXPORTED'):
         raise ValueError('expected completed PyTorch AIR and OMC candidate bundles')
-    if any(meta[k] != export[k] for k in (*GEOMETRY, 'inputs', 'outputs')):
+    from .air_feature_pack import physical_inputs
+    expected_inputs = physical_inputs(dict(export, feature_pack=meta.get('feature_pack')))
+    if meta['inputs'] != expected_inputs or any(meta[k] != export[k] for k in (*GEOMETRY, 'outputs')):
         raise ValueError('candidate and source export contracts differ')
     from .optimization import manifest_policy, bind_weight_snapshots
     policy = manifest_policy(export)
@@ -158,6 +160,10 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
     validate_abi(dict(meta, inputs=_slots(meta['inputs']), outputs=_slots(meta['outputs'])))
     compilation = root/'compilation'
     receipt = read_json(compilation/'report.json', 8 << 20)
+    if meta.get('feature_pack') is not None:
+        proof = receipt.get('air_preparation', {}).get('feature_pack', {})
+        if proof.get('status') != 'APPLIED' or proof.get('contract') != meta['feature_pack']:
+            raise ValueError('feature-pack manifest and compiler receipt disagree')
     packing = read_json(root/'weight-packing.json')
     if (receipt.get('status') != 'COMPILED' or receipt.get('model_compilation') != 'PASSED'
             or receipt.get('platform') != 'kirinx90' or receipt.get('ddk_id') != meta['ddk_id']
@@ -177,13 +183,16 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
     if _netoutput(prepared_graph) != _netoutput(graph):
         raise ValueError('compiler AIR changed the ordered source output contract')
     prepared_roles, _ = source_input_roles(prepared_graph, export['inputs'])
+    if meta.get('feature_pack'):
+        from .feature_pack_probe import input_contract, PACKED_SHAPE
+        input_contract(compiler_air.read_bytes(), schema, roles['target_features'], PACKED_SHAPE, full_graph=True)
     if roles != prepared_roles:
         raise ValueError('compiler AIR changed source control/cache bindings')
     external = checked_file(compilation, receipt['omc'])
     if not ddk_root:
         raise ValueError('PyTorch candidate validation requires --ddk-root for the compiled ABI schema')
     library = Path(ddk_root)/'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so'
-    declared = dict(export, inputs=[dict(r, name=roles[r['name']]) for r in export['inputs']])
+    declared = dict(meta, inputs=[dict(r, name=roles[r['name']]) for r in expected_inputs])
     abi = inspect_incremental_abi(external, library, declared)
     if abi['status'] != 'PASSED':
         raise ValueError('PyTorch compiled ABI binding failed: ' + json.dumps(abi, ensure_ascii=False))

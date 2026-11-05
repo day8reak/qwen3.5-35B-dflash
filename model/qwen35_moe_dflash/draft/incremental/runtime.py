@@ -18,6 +18,9 @@ def validate_abi(value):
             or not c <= capacity <= 4096 or k not in (1, 3, 7, 15)):
         raise ValueError('incremental runtime requires C16/C64, capacity<=4096, K1/3/7/15')
     inputs = [('target_features', 'float16', [1, c, 16384])]
+    from .air_feature_pack import check_contract, PHYSICAL_SHAPE
+    if check_contract(value):
+        inputs[0] = ('target_features', 'float16', PHYSICAL_SHAPE)
     inputs += [(name, 'int32', [1]) for name in ('start_position', 'valid_rows', 'anchor', 'proposal_count')]
     if value.get('optimization', {}).get('policy') == 'packed-spatial-host-embedding':
         from .optimization import manifest_policy
