@@ -67,17 +67,22 @@ python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
   --recover "$FULL_PACK_DIR/baseline-run" --output "$FULL_PACK_DIR/baseline-result"
 ```
 
-baseline必须完成且锁已释放。数值状态预计仍为 `NUMERICAL_FAILED`，这与执行失败不同。随后运行完整packed候选。下面的 `DRAFT_SOURCE` 应指向**之前精度验证 `--source` 使用的原FP16准备目录**，其中有 `prepared.json`；不要重新生成权重或参考数据。
+baseline必须完成且锁已释放。数值状态预计仍为 `NUMERICAL_FAILED`，这与执行失败不同。随后运行完整packed候选。当前共享目录布局把原FP16准备目录保存在 `$AI_RUN_DIR/draft/source/prepared`，先给 `DRAFT_SOURCE` 赋值。验证器会核对其中 `prepared.json` 的哈希与原回放绑定一致；不要重新生成权重或参考数据。若使用其他目录布局，改为之前精度验证 `--source` 使用的目录。
+
+`${DRAFT_SOURCE:?...}` 只检查变量，不会赋值；`git pull` 也不会设置当前shell的变量。下面将文件检查和验证命令放在同一个条件中，避免缺失源目录后仍继续启动。
 
 ```bash
-: "${DRAFT_SOURCE:?Set DRAFT_SOURCE to the existing FP16 directory containing prepared.json}"
-
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --replay "$FULL_PACK_DIR/baseline-result" \
-  --compiled "$FULL_PACK_DIR/compiled" --source "$DRAFT_SOURCE" \
-  --air-export "$TOP1_DIR/export" --ddk-root "$CPRO_DDK_ROOT" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --output "$FULL_PACK_DIR/run" --output-initialization untouched --apply
+DRAFT_SOURCE="$AI_RUN_DIR/draft/source/prepared"
+if [ -f "$DRAFT_SOURCE/prepared.json" ]; then
+  python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+    --replay "$FULL_PACK_DIR/baseline-result" \
+    --compiled "$FULL_PACK_DIR/compiled" --source "$DRAFT_SOURCE" \
+    --air-export "$TOP1_DIR/export" --ddk-root "$CPRO_DDK_ROOT" \
+    --config "$AI_RUN_DIR/runtime/runtime.json" \
+    --output "$FULL_PACK_DIR/run" --output-initialization untouched --apply
+else
+  printf '未找到原FP16准备文件：%s\n' "$DRAFT_SOURCE/prepared.json" >&2
+fi
 ```
 
 启动确认后回收，再做纯本地对比：
