@@ -334,7 +334,7 @@
     },
     "incremental_air": "User reported DRAFT_INCREMENTAL_AIR_EXPORTED: C16/cap192/K15, 17 inputs/14 outputs, six layers, 4718592-byte KV bank; no original weight copies. New OMG/native execution remains pending."
   },
-  "next_action": "Read retained RoPE and baseline replay tensors with --diagnose-kv; locate isolated appended KV regression before further compilation or device runs.",
+  "next_action": "Run extended --diagnose-kv on existing RoPE result; compare all changed rows and six-layer V fingerprints without model execution.",
   "last_actual_execution": {
     "schema_version": 1,
     "artifact_kind": "qwen35-board-text-preread-user-observation",
@@ -8002,7 +8002,7 @@
               }
             },
             "rope_precision_candidate": {
-              "status": "FULL_DRAFT_REPLAY_FAILED; HIDDEN_IMPROVED_ISOLATED_APPENDED_KV_REGRESSION",
+              "status": "FULL_DRAFT_FAILED; ISOLATED_CASE16_ROW176_KV_REGRESSION_LOCALIZED; ROW_ORIGIN_PENDING",
               "implementation": "model/qwen35_moe_dflash/draft/incremental/air_rope.py",
               "compiler_flag": "--rope-fp32-table",
               "policy": "source-fp32-rope-trig-before-gather-v1",
@@ -8037,7 +8037,7 @@
                 "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_38f99fd0e10c4cac93f8f06073b241dc",
                 "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
                 "baseline_model_sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f",
-                "candidate_model_sha256": null,
+                "candidate_model_sha256": "b43ae9cfcd50999277829a21adc24099170d4a7c4856b70729385b59d362a828",
                 "compiler_graph_sha256": "234ce19b65db21fdf496acb1c9b5fa65702bf39d8bb89bca27528e436537fad3",
                 "repair_policy": "source-fp32-rope-trig-before-gather-v1",
                 "source_air_sha256": "78943088590344793c4dc789241db05196e78d5f9b5ab86c0f3e7bb6dd39d829",
@@ -8085,7 +8085,7 @@
                 "evidence": "20261105T090807Z-2722-a7e3db/out/evidence/user-rope-replay-summary.json"
               },
               "retained_kv_diagnosis": {
-                "status": "IMPLEMENTED_HOST_CHECKED_AWAITING_USER_ANALYSIS",
+                "status": "USER_ANALYZED_312_REGIONS; LARGE_REGRESSIONS_AT_ISOLATED_CASE16",
                 "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose-kv",
                 "implementation": "model/qwen35_moe_dflash/draft/incremental/kv_diagnose.py",
                 "device_execution": "NOT_RUN",
@@ -8093,7 +8093,106 @@
                 "reference_and_gates": "UNCHANGED",
                 "host_checks": 10,
                 "host_evidence": "20261105T090807Z-2722-a7e3db/log/kv-host-checks.log",
-                "purpose": "LOCATE_CASE_LAYER_K_OR_V_HEAD_ROW_ZERO_AND_MODE_BASELINE_DIFFERENCES"
+                "purpose": "LOCATE_CASE_LAYER_K_OR_V_HEAD_ROW_ZERO_AND_MODE_BASELINE_DIFFERENCES",
+                "observation": {
+                  "artifact_kind": "qwen35-user-retained-kv-localization",
+                  "provenance": "USER_PASTED_OFFLINE_DIAGNOSIS_SUMMARY; SERVER_FILES_NOT_READ_LOCALLY",
+                  "status": "ANALYZED",
+                  "numerical_validation": "FAILED",
+                  "compared_regions": 312,
+                  "candidate_model": {
+                    "bytes": 1791024740,
+                    "sha256": "b43ae9cfcd50999277829a21adc24099170d4a7c4856b70729385b59d362a828"
+                  },
+                  "baseline_model": {
+                    "bytes": 1790943538,
+                    "sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f"
+                  },
+                  "input_verification": "ALL_RETAINED_INPUT_HASHES_MATCH_BY_SEMANTIC_NAME; ORIGINAL_GOLDEN_BYTES_MATCH",
+                  "isolated_worst": {
+                    "index": 16,
+                    "label": "context-growth",
+                    "start": 162,
+                    "valid": 16,
+                    "tensor": "present_k_0",
+                    "relative_l2_error": 0.38214734094739145,
+                    "baseline_relative_l2_error": 0.007947060600202636,
+                    "max_abs_error": 7.669921875,
+                    "elements": 16384,
+                    "failed_elements": 1128,
+                    "zero_elements": 0,
+                    "nonfinite_elements": 0,
+                    "worst_coordinate": [
+                      0,
+                      2,
+                      176,
+                      28
+                    ],
+                    "actual": -4.34765625,
+                    "reference": 3.322265625,
+                    "worst_head_rows": [
+                      {
+                        "head": 0,
+                        "cache_position": 176,
+                        "relative_l2_error": 1.66926889991891
+                      },
+                      {
+                        "head": 1,
+                        "cache_position": 176,
+                        "relative_l2_error": 1.6508384996007526
+                      },
+                      {
+                        "head": 5,
+                        "cache_position": 176,
+                        "relative_l2_error": 1.6298772360660063
+                      }
+                    ],
+                    "between_modes_different_elements": 1024,
+                    "first_different_flat_index": 1792,
+                    "last_different_flat_index": 16255
+                  },
+                  "largest_regressions_case_indices": [
+                    16
+                  ],
+                  "largest_regression_tensors": [
+                    "present_k_0",
+                    "present_v_5",
+                    "present_v_3",
+                    "present_k_5",
+                    "present_v_4",
+                    "present_k_4",
+                    "present_v_0",
+                    "present_k_3"
+                  ],
+                  "feedback_worst": {
+                    "index": 2,
+                    "tensor": "present_k_0",
+                    "relative_l2_error": 0.0060837508004049235,
+                    "max_abs_error": 0.025390625,
+                    "same_case_between_modes_bitwise_equal": true
+                  },
+                  "initial_case_all_outputs_between_modes_bitwise_equal": true,
+                  "root_cause": "NOT_ESTABLISHED",
+                  "next": "ALL_CHANGED_ROWS_AND_SIX_LAYER_V_ROW_FINGERPRINTS_FROM_RETAINED_SNAPSHOTS",
+                  "limitations": [
+                    "1024 differing elements alone does not prove a complete single row.",
+                    "V is not rotated by RoPE; multiple large V errors need another explanation.",
+                    "Snapshots precede commit; CPU readback does not prove NPU input visibility."
+                  ],
+                  "evidence": "20261105T092917Z-3391-5ddb5f/out/evidence/user-kv-localization.json"
+                },
+                "row_audit": {
+                  "status": "IMPLEMENTED_HOST_CHECKED_AWAITING_USER_ANALYSIS",
+                  "implementation": "model/qwen35_moe_dflash/draft/incremental/kv_row_audit.py",
+                  "entry": "SAME_DIAGNOSE_KV_COMMAND",
+                  "device_execution": "NOT_RUN",
+                  "model_compilation": "NOT_RUN",
+                  "host_checks": 9,
+                  "evidence": "20261105T092917Z-3391-5ddb5f/log/row-checks-final.log",
+                  "max_fingerprinted_positions": 32,
+                  "coverage": "ALL_CHANGED_ROWS; BOUNDED_FINGERPRINT_COUNT_REPORTED_WITH_OMISSIONS",
+                  "next": "docs/current-status.md"
+                }
               }
             }
           }

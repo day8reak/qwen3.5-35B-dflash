@@ -8,6 +8,7 @@ from qwen35_moe_dflash.common.hashing import sha256_file
 from qwen35_moe_dflash.execution.runtime_config import read_json
 from .accuracy import analyze_result, metrics, read_snapshot
 from .accuracy_diagnose import _controls, initial_call_comparison, tensor_difference
+from .kv_row_audit import RowAudit
 
 
 def region_details(actual, golden, start, atol, rtol):
@@ -99,6 +100,7 @@ def diagnose_kv(path):
     _same_inputs(fixture, meta, baseline, old)
     atol, rtol = (meta['comparison'][k] for k in ('atol', 'rtol'))
     rows = []
+    audit = RowAudit(meta['cases'], atol, rtol)
     for step in meta['cases']:
         i, start, valid = (step[k] for k in ('index', 'start', 'valid'))
         if not valid:
@@ -107,8 +109,11 @@ def diagnose_kv(path):
                    for mode in ('isolated', 'feedback')}
         previous = {mode: read_snapshot(old_path.parent/'native'/f'{mode}-{i}.bin', old['outputs'])
                     for mode in current}
+        goldens = [np.fromfile(fixture/f'golden/{i}/kv_{j}.bin', dtype='<f2').reshape(spec['shape'])
+                   for j, spec in enumerate(meta['outputs'][2:])]
+        audit.observe(step, current, previous, goldens, meta['outputs'])
         for j, spec in enumerate(meta['outputs'][2:]):
-            expected = np.fromfile(fixture/f'golden/{i}/kv_{j}.bin', dtype='<f2').reshape(spec['shape'])[:,:,start:start+valid]
+            expected = goldens[j][:,:,start:start+valid]
             regions = {mode: values[j+2][:,:,start:start+valid] for mode, values in current.items()}
             between = tensor_difference(regions['isolated'], regions['feedback'])
             for mode, actual in regions.items():
@@ -142,6 +147,7 @@ def diagnose_kv(path):
             largest_regressions=[{k:r[k] for k in keys} for r in regressions[:8]],
             candidate_case_counts=analysis['case_counts'], baseline_case_counts=old_analysis['case_counts']),
         initial_call_comparison=initial_call_comparison(fixture, path.parent/'native', meta), rows=rows,
+        row_audit=audit.report(fixture, meta),
         limitations=['Retained inputs are not device input readback.',
             'Later feedback calls reuse device KV; hidden is not a same-input mode comparison.',
             'Source new-context KV rows have no mathematical dependence on past KV; packed/fused execution may differ.',
