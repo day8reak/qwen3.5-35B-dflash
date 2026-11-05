@@ -1,25 +1,26 @@
-# 当前阶段：Draft 剩余数值误差定位
+# 当前阶段：Draft 精度定位与性能方案
 
-2026-11-05：`untouched` 回放的首轮额外12928个零已消失，isolated／feedback首例全部14路输出逐位相同。hidden相对L2从65.11%回到1.449%，但原有七处Top1差异及hidden／KV失败仍在；整图尚未通过。该轮支持输出初始化影响首轮快照的判断，底层缓存或buffer机制仍未确定。
+2026-11-05：`untouched` 回放已消除本轮首例额外12928个零，14路输出在两模式间逐位一致。离线head检查的reference／device hidden分别复现7/7个golden／设备Top1，hidden差异足以在CPU head下解释翻转；首个偏差层尚未定位，整图仍未通过原数值门槛。详细结果见[结果页](results.md)。
 
-profiling已完成：同一OMC的model inference为66.556ms，StableArgMax为0.415ms。保留原CSV，无需重采；热点与测量范围见[结果](results.md)。
+## 性能优先级
 
-## 用户现在执行什么
+当前同步API约66ms；绑定profiling的一次inference为66.556ms，要到50ms需省16.556ms。下表的目标只是用于筛选实验的预算，**不是已测收益或硬件下界**；尚缺匹配X90的能力标定，编译节点与源码区域的shape映射也需核对。
 
-DDK服务器更新仓库后，用已回收的hidden和原始FP16 LM head离线检查七处Top1差异。只需NumPy，不需要Torch／TorchAir、上板或重新编译。使用现有 `draft/source/prepared`、原精度fixture及本次 `output-init/result`，暂时保留它们。
+| 方向 | 已测相关开销 | 准备验证的目标 |
+|---|---:|---|
+| 特征投影＋布局 | Conv2D 8.753ms＋Transpose_1 5.284ms | 直接读取ND特征做完整K=16384点积，争取区域降至6–8ms |
+| LM head分块＋Top1 | MatMul_30 19.965ms，Top1 0.415ms | 先验证矩阵乘本体能否降至12–15ms，再合并分块归约 |
+| KV更新 | 十二个Gather合计2.857ms，另有Select等 | 直接写新增区间、保留完整旧bank，争取省1–2ms |
+| 无新增context的proposal | 当前仍计算固定16行context | 仅在运行时valid_rows=0时跳过无消费者的投影和context KV分支 |
 
-```bash
-source "$REPO_DIR/targets/cpro/scripts/env.sh"
-export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
+head融合必须保留全词表、15行之间的权重复用、FP16 logits舍入与并列取最小索引；公开的hidden输出仍需保留。约1.017GB的head权重远大于7.45MB logits，仅省logits往返不能推断20ms矩阵乘大幅加速。融合减少中间搬运的机制可参照[华为Ascend C指南](https://www.hiascend.com/doc_center/source/zh/canncommercial/800/developmentguide/opdevg/Ascendcopdevg/CANN%E5%95%86%E7%94%A8%E7%89%88%208.0.0%20Ascend%20C%E8%87%AA%E5%AE%9A%E4%B9%89%E7%AE%97%E5%AD%90%E5%BC%80%E5%8F%91%E6%8C%87%E5%8D%97%2001.pdf)，具体接口和收益以所选X90 DDK验证为准。
 
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --audit-head "$TOP1_DIR/output-init/result" \
-  --source "$AI_RUN_DIR/draft/source/prepared" \
-  --output "$TOP1_DIR/output-init/head-audit.json"
-```
+假设其他部分不变、区域收益能落到API墙钟：入口8ms、head15ms、KV省1ms时约54.6ms；入口7ms、head12ms、KV省2ms时约49.6ms。这是有条件的串行预算，算子duration之和不等于关键路径。50ms有可测试路径，尚不能承诺达标；全context场景不能沿用valid_rows=0的收益。
 
-回传末尾JSON摘要即可。脚本校验原结果与权重绑定，对每处差异分别使用reference hidden和device hidden计算全词表排名，输出前两名、分差及FP16舍入是否改变第一名；完整数值写入指定JSON，不保存全词表logits。
+纯catchup可另查只生成context KV的入口，但需证明调用方只消费这些输出；其收益不能充当proposal≤50ms。当前不优先重写StableArgMax（0.415ms）或仅softmax（六层合计约0.87ms）。
 
-先看reference hidden是否复现原golden Top1，再看device hidden是否复现设备Top1。若两者均吻合，说明这组hidden差异在CPU head计算下足以重现翻转；若不吻合，再检查head计算或快照可见性。CPU累加顺序不代表NPU内部精度，本检查不改golden、容差或模型。原有CPU源码审计已通过部分用例，不重复整套审计。
+## 现在需要执行什么
 
-普通运行仍保留原输出初始化默认值；本轮实验尚未作为生产修复推广。首次构建见[完整流程](run-end-to-end.md)。
+本轮回放、head审计和profiling均已回收，无需重复上板、编译或采集。保留当前失败夹具、原始CSV和head-audit.json；下一步优先核对入口投影／布局映射和KV更新边界，再实施一个有独立正确性检查的小范围候选。新算子、模型图和运行器尚未改动，验收容差保持。
+
+首次构建见[完整流程](run-end-to-end.md)；离线审计入口仍为 `validate_incremental_draft.py --audit-head`，本轮已完成。

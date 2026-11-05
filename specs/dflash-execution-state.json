@@ -7234,7 +7234,7 @@
             "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json",
             "model_identity_evidence": "20261105T030837Z-25145-99c811/evidence/user-boundaries-summary.json"
           },
-          "next": "Run offline --audit-head on output-init/result with original prepared weights; retain failed accuracy gates. No new device execution, model compilation or profiling.",
+          "next": "Review feature projection/layout and KV update boundaries; retain failed numeric gates. Host head audit7/7 reproduced both reference and device IDs; no repeat profiling required.",
           "diagnostic_host_evidence": "20261105T025158Z-24349-82e298/evidence/diagnostic-profile-check.json",
           "boundary_observation": {
             "provenance": "USER_PASTED_BOUNDARY_INSPECTION_NOT_INDEPENDENTLY_RETRIEVED",
@@ -7603,14 +7603,127 @@
           },
           "head_audit": {
             "entry": "targets/cpro/tools/validate_incremental_draft.py --audit-head",
-            "status": "HOST_CHECKED_AWAITING_USER_REAL_WEIGHTS",
+            "status": "USER_REAL_WEIGHT_AUDIT_ANALYZED",
             "host_checks": 24,
             "host_evidence": "20261105T033543Z-26157-7fe4c7/evidence/head-audit-check.json",
             "scope": "NUMPY_FULL_VOCAB_RANKING_AT_RETAINED_TOP1_MISMATCH_POSITIONS; NOT_DEVICE_LOGITS",
             "device_execution": "NOT_RUN",
             "model_compilation": "NOT_RUN",
             "numerical_validation": "NOT_EVALUATED",
-            "source_model_changed": false
+            "source_model_changed": false,
+            "observation": {
+              "artifact_kind": "qwen35-draft-user-head-audit-observation",
+              "source": "USER_PASTED_HEAD_AUDIT_SUMMARY; NOT_LOCALLY_RERUN",
+              "status": "ANALYZED",
+              "numerical_validation": "NOT_EVALUATED",
+              "source_numerical_validation": "FAILED",
+              "model_sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f",
+              "output_initialization": "untouched",
+              "counts": {
+                "positions": 7,
+                "reference_head_matches_expected": 7,
+                "device_hidden_head_matches_actual": 7
+              },
+              "rounding_changes_top1": false,
+              "rows": [
+                {
+                  "mode": "isolated",
+                  "index": 0,
+                  "position": 10,
+                  "actual": 220,
+                  "expected": 13,
+                  "reference_margin": 0.00390625,
+                  "device_margin": 0.0234375
+                },
+                {
+                  "mode": "isolated",
+                  "index": 17,
+                  "position": 6,
+                  "actual": 791,
+                  "expected": 4560,
+                  "reference_margin": 0.01171875,
+                  "device_margin": 0.0625
+                },
+                {
+                  "mode": "isolated",
+                  "index": 17,
+                  "position": 8,
+                  "actual": 25,
+                  "expected": 220,
+                  "reference_margin": 0.07421875,
+                  "device_margin": 0
+                },
+                {
+                  "mode": "isolated",
+                  "index": 18,
+                  "position": 6,
+                  "actual": 791,
+                  "expected": 4560,
+                  "reference_margin": 0.01171875,
+                  "device_margin": 0.05859375
+                },
+                {
+                  "mode": "feedback",
+                  "index": 0,
+                  "position": 10,
+                  "actual": 220,
+                  "expected": 13,
+                  "reference_margin": 0.00390625,
+                  "device_margin": 0.0234375
+                },
+                {
+                  "mode": "feedback",
+                  "index": 17,
+                  "position": 6,
+                  "actual": 791,
+                  "expected": 4560,
+                  "reference_margin": 0.01171875,
+                  "device_margin": 0.05859375
+                },
+                {
+                  "mode": "feedback",
+                  "index": 18,
+                  "position": 6,
+                  "actual": 791,
+                  "expected": 4560,
+                  "reference_margin": 0.01171875,
+                  "device_margin": 0.05859375
+                }
+              ],
+              "scope": "CPU_FP32_HEAD_WITH_FP16_OUTPUT_RANKING_AT_ORIGINAL_MISMATCH_POSITIONS",
+              "interpretation": "RETAINED_HIDDEN_DIFFERENCES_SUFFICE_TO_REPRODUCE_ALL7_FLIPS_UNDER_HOST_HEAD; NOT_PROOF_OF_NPU_INTERNAL_HEAD_OR_UPSTREAM_LAYER_CAUSE",
+              "production_promotion": "NOT_PERFORMED",
+              "evidence": "20261105T034952Z-26771-b8dbd3/evidence/user-head-audit-summary.json"
+            }
+          },
+          "performance_assessment": {
+            "evidence": "20261105T034952Z-26771-b8dbd3/evidence/performance-assessment.json",
+            "document": "docs/current-status.md",
+            "status": "READ_ONLY_CANDIDATE_ASSESSMENT",
+            "hardware_reference_policy": "use",
+            "capacity_profile_status": "MISSING_MATCHING_X90_EMPIRICAL_PROFILE",
+            "realizable_speedup_estimate": null,
+            "conditional_examples": [
+              {
+                "projection_ms": 8,
+                "head_ms": 15,
+                "kv_save_ms": 1,
+                "total_ms": 54.554
+              },
+              {
+                "projection_ms": 7,
+                "head_ms": 12,
+                "kv_save_ms": 2,
+                "total_ms": 49.554
+              },
+              {
+                "projection_ms": 6,
+                "head_ms": 12,
+                "kv_save_ms": 2,
+                "total_ms": 48.554
+              }
+            ],
+            "candidate_code_changed": false
           }
         }
       }

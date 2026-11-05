@@ -60,7 +60,9 @@ C16／cap192／K15、host embedding候选：板端加载和执行已完成；iso
 
 首例isolated原有12931个零，feedback只有3个，额外12928个零恰好覆盖全部hidden差异；其余hidden元素、Top1及12路KV逐位相同。运行器分配输出后会由CPU清零。随后复用原OMC、夹具和38次调用，仅省略调用方输出初始化的 `untouched` 回放已完成：首例两模式的全部14路输出逐位相同，hidden均仅3个零，最大绝对误差0.15234375、相对L2 **1.449%**。首轮未跳过、验收门槛未改，SDK分配行为未改。
 
-本轮 `qwen35_draft_accuracy_cdde358fba2d415281c20f5aec6a3a90` 已回收且锁释放。isolated hidden相对L2为1.34–2.58%，feedback为1.45–2.61%；七处Top1差异、各类失败数及KV误差范围均未变，两组feedback重复仍逐位一致。同步API四组均值为66.339／66.029／66.622／66.460ms（顺序同上表），没有建立新的加速结论。结果支持输出初始化影响首轮快照，尚不能确定底层缓存／buffer机制或宣称普遍修复；普通运行默认未改。当前继续离线检查原有Top1翻转与hidden误差的关系。
+本轮 `qwen35_draft_accuracy_cdde358fba2d415281c20f5aec6a3a90` 已回收且锁释放。isolated hidden相对L2为1.34–2.58%，feedback为1.45–2.61%；七处Top1差异、各类失败数及KV误差范围均未变，两组feedback重复仍逐位一致。同步API四组均值为66.339／66.029／66.622／66.460ms（顺序同上表），没有建立新的加速结论。结果支持输出初始化影响首轮快照，尚不能确定底层缓存／buffer机制或宣称普遍修复；普通运行默认未改。
+
+离线head检查也已回收：七处差异中，reference hidden重算全词表均复现golden Top1，device hidden均复现设备Top1（7/7、7/7）。原前两名分差为0.00390625、0.01171875或0.07421875；isolated第17例位置8的device hidden对应25／220并列，最小索引25与设备一致。CPU FP32→FP16舍入没有改变这些行的第一名。这说明hidden差异在CPU head下足以重现翻转，尚未定位首个出错层，也没有证明NPU内部head数值或整图通过。
 
 后续边界报告已与这次精度测试绑定：OMC为1790943538字节，SHA256 `fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f`。当前CPUCL=1、NPUCL=1：CPU只接收三个INT32控制量，解码操作为比较、逻辑、Gather、Select等，没有ArgMax；其6路输出逻辑大小合计410496字节。NPU有20路输入／14路输出。原末尾CPU全词表归约分区已消失，整图仍保留前置CPU控制计算。端口大小不是实测传输量，NPU内部指令精度及实际热点需其他证据。
 
