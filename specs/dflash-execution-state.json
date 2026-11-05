@@ -7987,10 +7987,22 @@
                   "full_model_root_cause": "NOT_PROVEN_BY_SEPARATE_PREFIXES"
                 },
                 "observed_evidence": "20261105T082539Z-1133-4138d8/out/evidence/retained-math-audit-summary.json"
+              },
+              "retirement": {
+                "status": "HOST_CHECKED_USER_EXECUTION_PENDING",
+                "authorization": "USER_REQUESTED_RETIRE_COMPLETED_55_CHECKPOINT_PROBES",
+                "scope": "HOST_ONLY_HIDDEN_LAYER0_COMPILED_RUN_RESULT",
+                "tool": "clean_draft_probes.py --root AI_RUN_DIR --layer0-probes --apply",
+                "retained": "COMPACT_165_CASE_SUMMARY_AND_EXISTING_TOP_LEVEL_ANALYSIS_JSON",
+                "protected": "ORIGINAL_EXPORT_PREPARED_WEIGHTS_OUTPUT_INIT_FULL_MODEL_REPLAY_AND_ROPE_CANDIDATE",
+                "host_checks": 14,
+                "host_evidence": "20261105T085105Z-2180-d7ed33/out/evidence/retention-tests.log",
+                "observed_freed_bytes": null,
+                "device_execution": "NOT_RUN"
               }
             },
             "rope_precision_candidate": {
-              "status": "HOST_CHECKED_DDK_AND_FULL_REPLAY_PENDING",
+              "status": "USER_SOURCE_REWRITE_PREFLIGHT_PASSED; HOST_SPACE_BLOCKED_BEFORE_OMG",
               "implementation": "model/qwen35_moe_dflash/draft/incremental/air_rope.py",
               "compiler_flag": "--rope-fp32-table",
               "policy": "source-fp32-rope-trig-before-gather-v1",
@@ -8006,7 +8018,15 @@
               "matmul_precision": "UNRESOLVED",
               "host_checks": 16,
               "host_evidence": "20261105T082539Z-1133-4138d8/out/evidence/rope-host-checks.json",
-              "next": "docs/current-status.md"
+              "next": "docs/current-status.md",
+              "storage_preflight": {
+                "source": "USER_PASTED_COMPILE_RESULT",
+                "required_free_bytes": 6444829684,
+                "available_free_bytes": null,
+                "model_compilation": "NOT_RUN",
+                "retry": "SAME_OUTPUT_WITH_REPLACE_FAILED_AFTER_RELEASING_COMPLETED_PROBES",
+                "diagnostic_fix": "REPORT_AVAILABLE_AND_SHORTFALL_BYTES_WITHOUT_NONEXISTENT_COMPILER_LOG"
+              }
             }
           }
         }

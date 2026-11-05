@@ -702,14 +702,20 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                     if rope_fp32_table:
                         checked_file(snapshot.parent, preparation['rope']['phase_file'])
                     return prepared_raw, preparation
-            result['stage'] = 'compile'
+            result['stage'] = 'storage-preflight'
             _save(root / 'manifest.json', result)
             # Snapshot + generated sidecars + packed model coexist. Reuse the
             # proven external-compile/stream-pack path, not OMG's large embedded
             # serialization. Compiler scratch may exceed this lower bound.
             required = 3 * (sum(inspection['weight_files'].values()) + (source / 'export.air').stat().st_size) + (1 << 30)
-            if shutil.disk_usage(root).free < required:
-                raise OSError(f'OMC candidate compilation needs at least {required} free bytes; compiler scratch may need more')
+            available = shutil.disk_usage(root).free
+            result['storage'] = dict(required_free_bytes=required, available_free_bytes=available,
+                                     shortfall_bytes=max(0, required-available), scope='PRE_OMG_LOWER_BOUND')
+            if available < required:
+                raise OSError(f'OMC candidate compilation needs at least {required} free bytes; available={available}; '
+                              'compiler scratch may need more')
+            result['stage'] = 'compile'
+            _save(root / 'manifest.json', result)
             progress('compiling portable PyTorch AIR using selected OMG; no CPU customization')
             compiled = compile_existing_air(source / 'export.air', root / 'compilation', ddk_root,
                 ddk_id=ddk_id, timeout_seconds=timeout_seconds, input_layout='air-directory',
@@ -774,6 +780,9 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             result.update(status='FAILED', error=f'{type(error).__name__}: {error}')
             if result['stage'] == 'air-preparation':
                 result['next'] = 'Inspect the reported source AIR node descriptors; no weight snapshot or OMG invocation occurred.'
+            elif result['stage'] == 'storage-preflight':
+                result['next'] = ('Free completed probe storage, then retry the same command/output with --replace-failed. '
+                                  'No weight snapshot or OMG invocation occurred; no compile log exists.')
             elif result['stage'] == 'partition-weight-check':
                 result['next'] = 'Inspect compiled partition weight extents; this requested limit did not produce a bounded candidate. No packed model or device execution.'
             else:

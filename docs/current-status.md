@@ -6,19 +6,29 @@
 
 ## DDK 服务器执行
 
-只编译一个完整候选，并回放原 isolated／feedback 各19例。无需重导出 AIR、重新生成参考或再次跑165组探针；不需要 Torch/TorchAir。保留本次编译副本，后续 ABI 绑定需要它。
+本次 RoPE 图改写预检查已通过，随后因可用空间不足而停止，OMG 尚未启动；要求至少6444829684字节（约6.0 GiB），还需留编译临时空间。55个检查点的完整探针已经执行和分析完毕，可先清理其模型、部署包和回收张量。工具核对165组已完成、锁已释放，保留 `hidden-layer0/retained-summary.json` 和该目录根部已有的分析JSON。清理后不能再次从原探针张量重算分析；原 AIR、准备权重、`output-init/result` 以及 RoPE 候选保留。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
 export ROPE_DIR="$TOP1_DIR/rope-fp32"
 
+python3 "$REPO_DIR/targets/cpro/tools/clean_draft_probes.py" \
+  --root "$AI_RUN_DIR" --layer0-probes --apply
+df -h "$AI_RUN_DIR"
+```
+
+清理摘要会报告实际可用字节数；如果仍小于上述下限，先停止编译。该命令仅清理host的 `hidden-layer0/{compiled,run,result}`，不访问设备。完成后，在原失败槽位重试：
+
+```bash
 python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
   --air-export "$TOP1_DIR/export" --rope-fp32-table \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$ROPE_DIR/compiled"
+  --output "$ROPE_DIR/compiled" --replace-failed
 ```
+
+只编译一个完整候选，并回放原 isolated／feedback 各19例。无需重导出 AIR、重新生成参考或再次跑165组探针；不需要 Torch/TorchAir。保留本次编译副本，后续 ABI 绑定需要它。
 
 编译成功后运行原数据回放。工具校验原源图、权重、几何和语义 IO；若新 OMC 输入槽位顺序变化，按语义名称重排原输入文件，逐个核对字节哈希。
 

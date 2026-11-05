@@ -153,11 +153,18 @@ def main():
     p.add_argument('--root', required=True)
     p.add_argument('--config')
     p.add_argument('--apply', action='store_true')
-    p.add_argument('--compiler-scratch', action='store_true',
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument('--compiler-scratch', action='store_true',
                    help='retain old packed models/reports; remove only their completed compiler copies')
+    mode.add_argument('--layer0-probes', action='store_true',
+                      help='retire completed hidden-layer0 compiled/run/result; retain summary and top-level analysis JSON')
     a = p.parse_args()
     try:
-        action = clean_compiler_scratch if a.compiler_scratch else clean
+        if a.layer0_probes:
+            from qwen35_moe_dflash.draft.incremental.probe_retention import clean_layer0
+            action = clean_layer0
+        else:
+            action = clean_compiler_scratch if a.compiler_scratch else clean
         result = action(a.root, a.config or Path(a.root)/'runtime/runtime.json', apply=a.apply)
     except (OSError, ValueError, KeyError, TypeError) as error:
         result = dict(status='FAILED', error=f'{type(error).__name__}: {error}')
