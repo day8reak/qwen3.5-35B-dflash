@@ -21,6 +21,7 @@ def main():
     mode.add_argument('--inspect',help='print existing comparison details locally; no board access')
     mode.add_argument('--analyze',help='recompute new-KV and repeat diagnostics from retained host tensors')
     mode.add_argument('--diagnose',help='inspect retained hidden zeros/repeated rows and controls; optional --source checks embedding rows locally')
+    mode.add_argument('--diagnose-kv',help='compare all appended KV regions with the retained replay baseline; host-only')
     mode.add_argument('--audit-reference',help='CPU source-math replay against retained reference and board tensors; requires --source, --air-export and an --output JSON file')
     mode.add_argument('--audit-head',help='NumPy-only full-vocabulary ranking of retained hidden at Top1 mismatch positions; requires --source and --output JSON')
     parser.add_argument('--output')
@@ -34,6 +35,13 @@ def main():
     if args.output_initialization is not None and not args.replay:
         parser.error('--output-initialization requires --replay')
     from qwen35_moe_dflash.draft.incremental.accuracy import summarize_result
+    if args.diagnose_kv:
+        if (args.apply or any((args.config,args.compiled,args.source,args.air_export,args.output,args.ddk_root))
+                or args.atol is not None or args.rtol is not None):
+            parser.error('--diagnose-kv reads only the candidate result and its retained replay baseline')
+        from qwen35_moe_dflash.draft.incremental.kv_diagnose import diagnose_kv
+        print(json.dumps(diagnose_kv(args.diagnose_kv),ensure_ascii=False,allow_nan=False))
+        return 0
     if args.audit_head:
         if (args.apply or any((args.config,args.compiled,args.ddk_root,args.air_export))
                 or args.atol is not None or args.rtol is not None

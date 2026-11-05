@@ -334,7 +334,7 @@
     },
     "incremental_air": "User reported DRAFT_INCREMENTAL_AIR_EXPORTED: C16/cap192/K15, 17 inputs/14 outputs, six layers, 4718592-byte KV bank; no original weight copies. New OMG/native execution remains pending."
   },
-  "next_action": "Diagnose retained full Draft snapshots while user collects same-OMC operator profiling; no gate changes or model promotion.",
+  "next_action": "Read retained RoPE and baseline replay tensors with --diagnose-kv; locate isolated appended KV regression before further compilation or device runs.",
   "last_actual_execution": {
     "schema_version": 1,
     "artifact_kind": "qwen35-board-text-preread-user-observation",
@@ -8002,7 +8002,7 @@
               }
             },
             "rope_precision_candidate": {
-              "status": "USER_SOURCE_REWRITE_PREFLIGHT_PASSED; HOST_SPACE_BLOCKED_BEFORE_OMG",
+              "status": "FULL_DRAFT_REPLAY_FAILED; HIDDEN_IMPROVED_ISOLATED_APPENDED_KV_REGRESSION",
               "implementation": "model/qwen35_moe_dflash/draft/incremental/air_rope.py",
               "compiler_flag": "--rope-fp32-table",
               "policy": "source-fp32-rope-trig-before-gather-v1",
@@ -8012,9 +8012,9 @@
               "coefficients": "ORIGINAL_FP32_PHASE_SIN_COS_THEN_FP16_IN_FP32_CARRIER",
               "replay": "ORIGINAL_OUTPUT_INIT_UNTOUCHED_INPUTS_GOLDENS_SCHEDULE_AND_THRESHOLDS; ABI_REBOUND_BY_SEMANTIC_NAME",
               "reference_generation": "NOT_RUN",
-              "model_compilation": "NOT_RUN",
-              "device_execution": "NOT_RUN",
-              "numerical_validation": "NOT_RUN",
+              "model_compilation": "COMPILED_CANDIDATE_EXECUTED; ORIGINAL_COMPILATION_RECEIPT_NOT_IN_USER_SUMMARY",
+              "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+              "numerical_validation": "FAILED",
               "matmul_precision": "UNRESOLVED",
               "host_checks": 16,
               "host_evidence": "20261105T082539Z-1133-4138d8/out/evidence/rope-host-checks.json",
@@ -8026,6 +8026,74 @@
                 "model_compilation": "NOT_RUN",
                 "retry": "SAME_OUTPUT_WITH_REPLACE_FAILED_AFTER_RELEASING_COMPLETED_PROBES",
                 "diagnostic_fix": "REPORT_AVAILABLE_AND_SHORTFALL_BYTES_WITHOUT_NONEXISTENT_COMPILER_LOG"
+              },
+              "full_replay_observation": {
+                "artifact_kind": "qwen35-draft-user-rope-replay-observation",
+                "provenance": "USER_PASTED_COMPLETED_RECOVERY_JSON; REMOTE_FILES_NOT_READ_LOCALLY",
+                "status": "NUMERICAL_FAILED",
+                "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+                "numerical_validation": "FAILED",
+                "output_initialization": "untouched",
+                "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_38f99fd0e10c4cac93f8f06073b241dc",
+                "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+                "baseline_model_sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f",
+                "candidate_model_sha256": null,
+                "compiler_graph_sha256": "234ce19b65db21fdf496acb1c9b5fa65702bf39d8bb89bca27528e436537fad3",
+                "repair_policy": "source-fp32-rope-trig-before-gather-v1",
+                "source_air_sha256": "78943088590344793c4dc789241db05196e78d5f9b5ab86c0f3e7bb6dd39d829",
+                "cases_per_mode": 19,
+                "passed_per_mode": 0,
+                "top1_mismatches": 6,
+                "baseline_top1_mismatches": 7,
+                "first_hidden": {
+                  "max_abs_error": 0.091796875,
+                  "relative_l2_error": 0.01357509079483004
+                },
+                "hidden_max_relative_l2": {
+                  "isolated": 0.014980680791145933,
+                  "feedback": 0.017719312272192783
+                },
+                "appended_kv_max_relative_l2": {
+                  "isolated": 0.38214734094739145,
+                  "feedback": 0.0060837508004049235
+                },
+                "whole_kv_max_relative_l2": {
+                  "isolated": 0.11457278055981818,
+                  "feedback": 0.005477242706790854
+                },
+                "hidden_failed_per_mode": 8,
+                "kv_failed": {
+                  "isolated": 13,
+                  "feedback": 18
+                },
+                "preservation_failed_per_mode": 0,
+                "feedback_repeats_bitwise_equal": true,
+                "native_api_mean_ms": {
+                  "isolated": {
+                    "catchup": 66.09054545454545,
+                    "proposal": 66.412125
+                  },
+                  "feedback": {
+                    "catchup": 66.28154545454545,
+                    "proposal": 66.3315
+                  }
+                },
+                "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY",
+                "reference_and_gates": "UNCHANGED",
+                "production_promotion": "NOT_PERFORMED",
+                "next": "OFFLINE_RETAINED_APPENDED_KV_LOCALIZATION; NO_BOARD_RERUN",
+                "evidence": "20261105T090807Z-2722-a7e3db/out/evidence/user-rope-replay-summary.json"
+              },
+              "retained_kv_diagnosis": {
+                "status": "IMPLEMENTED_HOST_CHECKED_AWAITING_USER_ANALYSIS",
+                "entry": "targets/cpro/tools/validate_incremental_draft.py --diagnose-kv",
+                "implementation": "model/qwen35_moe_dflash/draft/incremental/kv_diagnose.py",
+                "device_execution": "NOT_RUN",
+                "model_compilation": "NOT_RUN",
+                "reference_and_gates": "UNCHANGED",
+                "host_checks": 10,
+                "host_evidence": "20261105T090807Z-2722-a7e3db/log/kv-host-checks.log",
+                "purpose": "LOCATE_CASE_LAYER_K_OR_V_HEAD_ROW_ZERO_AND_MODE_BASELINE_DIFFERENCES"
               }
             }
           }

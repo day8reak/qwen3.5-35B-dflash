@@ -122,11 +122,29 @@ RoPE相位是位置乘频率得到的旋转角度。参考路径为FP32相位→
 
 仅把三角函数输出转FP16仍有相同数量超差；模拟相位和输出同时转FP16后四组全部通过，case 17尚非逐位一致。这支持优先修复三角函数之前的相位舍入，不能单凭输出匹配断言所有内部指令。
 
-已实现 `--rope-fp32-table` 编译候选：使用原相位表预计算Sin/Cos并转FP16，在独立编译AIR中替换四条分支，位置索引和后续运算不变。候选回放重新验证物理ABI，复用原golden、输入和门槛；host检查16项通过，实际OMG及完整Draft精度待验证。NumPy三角函数与参考框架可能有舍入差异；Q投影残差保留，不预先承诺该单项修复能消除全部Top1或hidden误差。
+已实现 `--rope-fp32-table` 编译候选：使用原相位表预计算Sin/Cos并转FP16，在独立编译AIR中替换四条分支，位置索引和后续运算不变。候选回放重新验证物理ABI，复用原golden、输入和门槛；host检查16项通过。NumPy三角函数与参考框架可能有舍入差异；Q投影残差保留，不预先承诺该单项修复能消除全部Top1或hidden误差。
 
 用户首次编译已通过静态AIR改写预检查，随后在6444829684字节的空间下限检查处停止，`model_compilation=NOT_RUN`，无OMG日志。原提示让用户查看不存在的日志，已修正为报告可用空间、缺口和 `--replace-failed` 重试方法。
 
 用户已授权删除完成分析的55点探针。新增 `clean_draft_probes.py --layer0-probes --apply`：核对165组完成和释放锁记录后，保留检查点摘要及根部分析JSON，清理 `hidden-layer0/{compiled,run,result}`；原模型回放输入和参考不在范围内。清理与空间错误处理共14项本地检查通过，包括中断续清、活动任务/锁/运行配置保护及相邻源文件保留；实际释放字节数待用户运行回传。
+
+### RoPE 候选完整回放
+
+后续用户回传 `qwen35_draft_accuracy_38f99fd0e10c4cac93f8f06073b241dc`：38次调用完成，输出已回收、锁已释放，`output_initialization=untouched`，原始参考和门槛未改。完整精度仍为FAILED，两模式各19例均未全部通过；各8例hidden失败，isolated／feedback分别13／18例KV失败，未写区保持失败均为0。
+
+| 指标 | 原 untouched 基线 | RoPE 候选 |
+|---|---:|---:|
+| Top1不同位置，两模式合计 | 7 | 6 |
+| isolated hidden 最大相对L2 | 2.576% | 1.498% |
+| feedback hidden 最大相对L2 | 2.612% | 1.772% |
+| isolated 新增KV最大相对L2 | 0.828% | **38.215%** |
+| feedback 新增KV最大相对L2 | 0.828% | 0.608% |
+
+首例hidden最大绝对误差从0.15234375降至0.091796875，相对L2从1.449%降至1.358%。isolated case17位置8的Top1差异消失；剩余两模式均为case0位置10、case17／18位置6，共6处。两组feedback重复仍逐位一致，各张量无非有限值。同步API四组均值为66.091／66.412／66.282／66.332ms，没有建立加速结论。上述相对L2并非验收门槛。
+
+基线OMC SHA仍为 `fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f`。本次修复记录为 `source-fp32-rope-trig-before-gather-v1`，四条三角分支、表形状[208,64]；新增常量106496字节。回传的中间编译图SHA为 `234ce19b65db21fdf496acb1c9b5fa65702bf39d8bb89bca27528e436537fad3`，候选OMC的SHA未包含在该摘要中，待离线从manifest读取，不能混用两者。
+
+isolated每个case从参考KV重新输入，feedback沿用设备已提交KV，两者均复用同一个模型实例和固定测试计划。虽然缓存历史能影响后续attention／hidden，但源码中新上下文KV仅依赖本次features、权重与位置。因此38.215%的新增KV异常需单独定位，不能直接归因于正常FP16误差或反馈历史。新增 `--diagnose-kv` 只读两份完整回放，核对输入和golden，报告case／层／K或V／head／行及异常零值；本地10项检查通过，真实离线诊断待回传。不重跑已完成探针。
 
 ## 已有端侧闭环
 
