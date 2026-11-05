@@ -1,4 +1,4 @@
-"""Retire the completed 55-checkpoint layer0 batch, retaining its conclusions."""
+"""Retire completed probes and superseded compiler copies, retaining dependencies."""
 from contextlib import ExitStack
 import fcntl
 import os
@@ -15,6 +15,79 @@ VECTOR = 'qwen35-draft-vector-validation'
 SUITE = 'qwen35-draft-layer0-prefix-suite'
 DIRECTORIES = ('compiled', 'run', 'result')
 CASES = [f'hidden_layer0_c{c:02d}_p{p:02d}' for p in range(55) for c in (0, 2, 17)]
+
+
+def clean_retired_rope_scratch(root, config, *, apply=False):
+    """Keep the accepted packed baseline; release only its predecessor's scratch.
+
+    Both embedded OMCs, source exports, fixtures and recovered snapshots stay in
+    place. The old RoPE compiler copies are no longer needed for replay/profile;
+    fresh ABI rebinding of that retired build would require rebuilding them.
+    """
+    from .accuracy import KIND as ACCURACY
+    from .feature_pack_compare import compare_result
+    from ...toolchain.compiler_storage import release_packed_scratch
+    root = Path(root).resolve(strict=True)
+    top = root/'draft/tests/top1-integration'
+    current = top/'feature-pack'
+    previous = top/'rope-fp32/compiled'
+    for folder in (top, current, current/'compiled', previous):
+        _plain(folder, directory=True)
+    protected = _runtime_paths(Path(config).resolve(strict=True))
+    require_idle(top)
+    with ExitStack() as stack:
+        for folder in (current/'compiled', previous, current/'run', current/'baseline-run'):
+            fd = os.open(folder.parent/('.'+folder.name+'.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            lock = stack.enter_context(os.fdopen(fd, 'a'))
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for run_name, result_name in (('run', 'result'), ('baseline-run', 'baseline-result')):
+            execution = current/run_name
+            _plain(execution/'request.json')
+            _plain(current/result_name/'result.json')
+            request = read_json(execution/'request.json')
+            result = read_json(current/result_name/'result.json')
+            fixture = (current/result_name/Path(result.get('fixture', ''))).resolve()
+            if (result.get('artifact_kind') != ACCURACY or result.get('stage') != 'complete'
+                    or result.get('status') not in ('PASSED', 'NUMERICAL_FAILED')
+                    or result.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED'
+                    or result.get('lock_state') != 'NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION'
+                    or Path(result.get('recovery_source', '')).resolve() != execution
+                    or request.get('artifact_kind') != ACCURACY
+                    or not result.get('board_attempt') or request.get('board_attempt') != result['board_attempt']
+                    or (execution/Path(request.get('fixture', 'fixture'))).resolve() != fixture
+                    or request.get('fixture_sha256') != result.get('fixture_sha256')
+                    or result.get('fixture_sha256') != sha256_file(fixture/'manifest.json')):
+                raise ValueError('packed baseline and predecessor need matching completed recoveries and released locks')
+            protected.append(fixture)
+        comparison = compare_result(current/'result')
+        if (comparison.get('baseline_equivalence') != 'PASSED'
+                or comparison.get('differences') != [] or comparison.get('compared_regions') != 488
+                or Path(comparison['candidate_model']['path']).resolve() != current/'compiled/model.omc'
+                or Path(comparison['baseline_model']['path']).resolve() != previous/'model.omc'):
+            raise ValueError('full packed baseline equivalence or fixed model binding differs; scratch retained')
+        # Preserve the current compiler's complete independent inputs. Do not
+        # retire the old tree if current inputs/export links still depend on it.
+        for folder in (current/'compiled/compilation/compile-work', top/'export'):
+            _plain(folder, directory=True)
+            for path in folder.rglob('*'):
+                resolved = path.resolve()
+                if previous == resolved or previous in resolved.parents:
+                    raise ValueError('current build/export still depends on old RoPE compiler files; retained')
+        model = current/'compiled/model.omc'
+        _plain(model)
+        if (model.stat().st_size != comparison['candidate_model']['bytes']
+                or sha256_file(model) != comparison['candidate_model']['sha256']):
+            raise ValueError('accepted packed model changed; predecessor scratch retained')
+        _plain(previous/'weight-packing.json')
+        packing = read_json(previous/'weight-packing.json')
+        if any(packing.get('output', {}).get(k) != comparison['baseline_model'][k] for k in ('bytes', 'sha256')):
+            raise ValueError('retired RoPE OMC differs from the compared predecessor')
+        require_idle(top)
+        result = release_packed_scratch(previous, apply=apply, protected=protected)
+        return dict(result, scope='PREVIOUS_ROPE_COMPILER_SCRATCH_ONLY; CURRENT_PACKED_BUILD_AND_ALL_MODELS_FIXTURES_RESULTS_RETAINED',
+            accepted_model=comparison['candidate_model'], baseline_equivalence='PASSED',
+            free_bytes_after=shutil.disk_usage(root).free,
+            limitation='Old RoPE fresh compiler-ABI binding needs regenerated scratch; retained fixture replay, offline comparison and profiling remain available.')
 
 
 def _completed(base):

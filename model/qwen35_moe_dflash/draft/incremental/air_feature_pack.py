@@ -10,6 +10,14 @@ CONTRACT = dict(policy=POLICY, input='target_features', dtype='float16', bytes=5
     fixture_storage='ORIGINAL_LOGICAL_ROW_MAJOR_BYTES', arithmetic='NONE; FP16_WORD_PERMUTATION')
 
 
+def pack_words(a):
+    """The source view permutation, also usable on integer storage words."""
+    import numpy as np
+    if a.shape != tuple(LOGICAL_SHAPE):
+        raise ValueError('feature packing requires logical C16 input')
+    return np.ascontiguousarray(a.reshape(4, 4, 1024, 4, 4).transpose(2, 0, 3, 1, 4)).reshape(PHYSICAL_SHAPE)
+
+
 def check_contract(manifest):
     packing = manifest.get('feature_pack')
     if packing is None:

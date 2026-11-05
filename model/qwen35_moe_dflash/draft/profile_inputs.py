@@ -7,12 +7,46 @@ It never accepts changed metadata, weights or input payloads as the old case.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 from qwen35_moe_dflash.common.artifacts import output_path, save_json
 from qwen35_moe_dflash.draft import real_feature_draft as real
 from qwen35_moe_dflash.common.file_io import _relative, _safe
+
+
+def pack_accuracy_features(raw, source_record, output, *, fixture):
+    """Write one physical profiling input; retain the logical fixture unchanged.
+
+    Vendor tools take ready-to-use tensor bytes and do not execute the native
+    runner's preparation. This offline permutation is excluded from their timer.
+    """
+    import numpy as np
+    from qwen35_moe_dflash.draft.incremental.air_feature_pack import CONTRACT, pack_words
+    from qwen35_moe_dflash.target.source_inventory import _read_small
+    out = output_path(output)
+    fixture = Path(fixture).resolve()
+    if out == fixture or fixture in out.parents or out in fixture.parents:
+        raise ValueError('packed profile input must be outside the retained fixture')
+    if (len(raw) != CONTRACT['bytes'] or source_record['bytes'] != len(raw)
+            or source_record['sha256'] != hashlib.sha256(raw).hexdigest()):
+        raise ValueError('logical profile feature bytes differ from their verified source')
+    words = np.frombuffer(raw, dtype='<u2').reshape(CONTRACT['logical_shape'])
+    packed = pack_words(words).tobytes()
+    out.mkdir(parents=True, exist_ok=False)
+    path = out/'target_features.bin'
+    with path.open('xb') as stream:
+        stream.write(packed)
+    _, record = _read_small(path, CONTRACT['bytes'])
+    receipt = dict(policy=CONTRACT['policy'], input=CONTRACT['input'],
+        logical_source=source_record, physical_file=record,
+        logical_shape=CONTRACT['logical_shape'], physical_shape=CONTRACT['physical_shape'],
+        arithmetic=CONTRACT['arithmetic'], status='PACKED_FOR_VENDOR_PROFILE',
+        preparation_scope='HOST_OFFLINE; EXCLUDED_FROM_VENDOR_MODEL_AND_OPERATOR_TIMINGS',
+        retained_fixture='UNCHANGED', model_compilation='NOT_RUN')
+    save_json(out/'manifest.json', receipt)
+    return record, receipt
 
 
 def refresh_profile_inputs(prepared, output):

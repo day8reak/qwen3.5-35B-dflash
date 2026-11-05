@@ -22,6 +22,7 @@ from qwen35_moe_dflash.target.original_ge_append_wire import _blob, _field, _par
 from .hidden_layer_probe import LayerTrace
 from .hidden_probe import prepare_compiler_air
 from .torch_export import _schema, _disjoint
+from .air_feature_pack import pack_words
 
 KIND = 'qwen35-draft-feature-pack-prefix'
 SCOPE = 'SOURCE_C16_FEATURE_PROJECTION_PREFIX; NOT_FULL_DRAFT'
@@ -69,11 +70,6 @@ def input_contract(raw, schema, input_name, shape, *, input_device='NPU', full_g
                 graph=graph.get('name'), node=input_name, side=side, expected=expected, actual=actual)))
         observed[side] = actual[0]
     return observed
-
-
-def pack_words(a):
-    """Permutation oracle for arbitrary element indices or storage words."""
-    return np.ascontiguousarray(a.reshape(4, 4, 1024, 4, 4).transpose(2, 0, 3, 1, 4)).reshape(PACKED_SHAPE)
 
 
 class Projection(LayerTrace):

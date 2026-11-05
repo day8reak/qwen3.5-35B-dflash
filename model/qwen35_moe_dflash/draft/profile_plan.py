@@ -106,7 +106,7 @@ def check_model_help(text, model_manager_interface='V1'):
 
 
 def bind_accuracy_profile(accuracy, model_tool, *, allow_numerical_failure=False,
-                          model_manager_interface='V1', case_index=None):
+                          model_manager_interface='V1', case_index=None, packed_input_output=None):
     from qwen35_moe_dflash.common.hashing import sha256_file
     from qwen35_moe_dflash.execution.runtime_config import read_json
     from qwen35_moe_dflash.draft.incremental.runtime import validate_abi
@@ -128,9 +128,11 @@ def bind_accuracy_profile(accuracy, model_tool, *, allow_numerical_failure=False
     if sha256_file(fixture/'manifest.json') != result['fixture_sha256']:
         raise ValueError('accuracy fixture changed after numerical comparison')
     meta = read_json(fixture/'manifest.json', 4 << 20)
-    if meta.get('feature_pack'):
-        raise ValueError('packed accuracy fixtures contain logical bytes; vendor profiling needs an explicit packed-input adapter')
     validate_abi(meta)
+    from qwen35_moe_dflash.draft.incremental.air_feature_pack import check_contract
+    packed = check_contract(meta)
+    if packed and packed_input_output is None:
+        raise ValueError('packed profiling requires a separate packed_input_output directory')
     if meta['model'] != result['model']:
         raise ValueError('accuracy model and fixture differ')
     selected = meta['profile_case'] if case_index is None else case_index
@@ -143,15 +145,27 @@ def bind_accuracy_profile(accuracy, model_tool, *, allow_numerical_failure=False
     if step['proposals'] < 1 and case_index is None:
         raise ValueError('default profile case must contain active proposals')
     inputs = []
+    feature = None
     for spec in meta['inputs']:
-        row = next(r for r in meta['input_files'] if r['case']==step['index'] and r['index']==spec['index'])
+        rows = [r for r in meta['input_files'] if r['case']==step['index'] and r['index']==spec['index']]
+        if len(rows) != 1:
+            raise ValueError('profile input must have one file per selected physical slot')
+        row = rows[0]
         relative = Path(row['path'])
         if relative.is_absolute() or '..' in relative.parts:
             raise ValueError('profile input must be a fixture member')
-        _, observed = _read_small(fixture/relative, 3 << 20)
-        if any(observed[k] != row[k] for k in ('bytes','sha256')):
+        raw, observed = _read_small(fixture/relative, 3 << 20)
+        if any(observed[k] != row[k] for k in ('bytes','sha256')) or observed['bytes'] != spec['bytes']:
             raise ValueError('profile input changed since accuracy execution')
         inputs.append(dict(observed,index=spec['index'],dtype=spec['dtype'],shape=spec['shape']))
+        if packed and spec['name'] == 'target_features':
+            feature = (len(inputs)-1, raw, observed)
+    preparation = None
+    if packed:
+        from qwen35_moe_dflash.draft.profile_inputs import pack_accuracy_features
+        index, raw, observed = feature
+        physical, preparation = pack_accuracy_features(raw, observed, packed_input_output, fixture=fixture)
+        inputs[index].update(physical)
     return dict(schema_version=1,artifact_kind=KIND,
         tool={'path':_tool_path(model_tool),'sha256':None}, model=meta['model'],
         inputs=inputs,outputs=meta['outputs'],ddk_id=meta['ddk_id'],
@@ -160,6 +174,7 @@ def bind_accuracy_profile(accuracy, model_tool, *, allow_numerical_failure=False
                      'NUMERICAL_FAILED_INCREMENTAL_ACCURACY_FIXTURE_WITH_REFERENCE_KV'),
         input_provenance={'accuracy':str(root),'case':step,
                           'case_selection':'DEFAULT' if case_index is None else 'EXPLICIT_RETAINED_CASE'},
+        input_preparation=preparation,
         model_compilation='NOT_RUN',numerical_validation='NOT_EVALUATED',
         source_numerical_validation=result['numerical_validation'],
         profiling_scope=('PASSED_REFERENCE_BASELINE' if passed else 'DIAGNOSTIC_NUMERICAL_FAILURE_ALLOWED'),

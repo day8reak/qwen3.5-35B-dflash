@@ -165,6 +165,8 @@ def main():
                       help='remove packed weight duplicates from top1/RoPE/full feature-pack builds; retain ABI/source snapshots')
     mode.add_argument('--layer0-probes', action='store_true',
                       help='retire completed hidden-layer0 compiled/run/result; retain summary and top-level analysis JSON')
+    mode.add_argument('--retired-rope-scratch', action='store_true',
+                      help='after full packed equivalence, remove only previous RoPE compiler copies; keep current build and all OMCs/fixtures/results')
     a = p.parse_args()
     try:
         if a.integration_sidecars:
@@ -173,6 +175,9 @@ def main():
         elif a.layer0_probes:
             from qwen35_moe_dflash.draft.incremental.probe_retention import clean_layer0
             action = clean_layer0
+        elif a.retired_rope_scratch:
+            from qwen35_moe_dflash.draft.incremental.probe_retention import clean_retired_rope_scratch
+            action = clean_retired_rope_scratch
         else:
             action = clean_compiler_scratch if a.compiler_scratch else clean
         if not a.integration_sidecars:

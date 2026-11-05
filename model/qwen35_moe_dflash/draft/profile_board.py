@@ -101,10 +101,11 @@ def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
     try:
         plan = (bind_accuracy_profile(accuracy, model_tool,
                     allow_numerical_failure=allow_numerical_failure,
-                    model_manager_interface=interface, case_index=case_index) if accuracy else
+                    model_manager_interface=interface, case_index=case_index,
+                    packed_input_output=out/'packed-input') if accuracy else
                 bind_profile(prepared, inspection, refresh_output=out / 'input-revalidation'))
         result.update({k:plan[k] for k in ('source_numerical_validation','profiling_scope',
-            'model_manager_interface','model_restore_mode') if k in plan})
+            'model_manager_interface','model_restore_mode','input_preparation') if k in plan})
         result.update(model_sha256=plan['model']['sha256'], timing_scope=plan['timing_scope'],
             profile_case=plan.get('input_provenance', {}).get('case'))
         if plan.get('input_revalidation'):
@@ -258,7 +259,7 @@ def recover_profile(execution, output):
         raw, identity = _read_small(root / 'request.json', 4 << 20)
         plan = json.loads(raw)
         result.update({k:plan[k] for k in ('source_numerical_validation','profiling_scope',
-            'model_manager_interface','model_restore_mode') if k in plan})
+            'model_manager_interface','model_restore_mode','input_preparation') if k in plan})
         result.update(model_sha256=plan['model']['sha256'], timing_scope=plan['timing_scope'],
             profile_case=plan.get('input_provenance', {}).get('case'))
         token = plan['token']
