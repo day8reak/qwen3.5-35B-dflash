@@ -71,12 +71,14 @@ def _identity_guard(path, row):
 def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
                   timeout_seconds=600, lock_wait_seconds=1800, accuracy=None,
                   allow_numerical_failure=False, model_manager_interface='V1',
-                  model_tool="/data/local/tmp/tools_sysdbg/model_run_tool_internal"):
+                  model_tool="/data/local/tmp/tools_sysdbg/model_run_tool_internal", case_index=None):
     interface = manager_interface(model_manager_interface)
     if interface != 'V1' and not accuracy:
         raise ValueError('V2 profiling requires a retained incremental --accuracy result')
     if allow_numerical_failure and not accuracy:
         raise ValueError('--allow-numerical-failure requires --accuracy')
+    if case_index is not None and not accuracy:
+        raise ValueError('--case-index requires --accuracy')
     if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 7200:
         raise ValueError('timeout must be 1..7200 seconds')
     if type(lock_wait_seconds) is not int or not 0 <= lock_wait_seconds <= 7200:
@@ -99,7 +101,7 @@ def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
     try:
         plan = (bind_accuracy_profile(accuracy, model_tool,
                     allow_numerical_failure=allow_numerical_failure,
-                    model_manager_interface=interface) if accuracy else
+                    model_manager_interface=interface, case_index=case_index) if accuracy else
                 bind_profile(prepared, inspection, refresh_output=out / 'input-revalidation'))
         result.update({k:plan[k] for k in ('source_numerical_validation','profiling_scope',
             'model_manager_interface','model_restore_mode') if k in plan})

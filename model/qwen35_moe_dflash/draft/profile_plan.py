@@ -106,7 +106,7 @@ def check_model_help(text, model_manager_interface='V1'):
 
 
 def bind_accuracy_profile(accuracy, model_tool, *, allow_numerical_failure=False,
-                          model_manager_interface='V1'):
+                          model_manager_interface='V1', case_index=None):
     from qwen35_moe_dflash.common.hashing import sha256_file
     from qwen35_moe_dflash.execution.runtime_config import read_json
     from qwen35_moe_dflash.draft.incremental.runtime import validate_abi
@@ -123,15 +123,23 @@ def bind_accuracy_profile(accuracy, model_tool, *, allow_numerical_failure=False
         raise ValueError('profiling requires completed accuracy; use --allow-numerical-failure '
                          'only for a retrieved NUMERICAL_FAILED diagnostic')
     fixture = Path(result['fixture'])
+    if not fixture.is_absolute():
+        fixture = root/fixture
     if sha256_file(fixture/'manifest.json') != result['fixture_sha256']:
         raise ValueError('accuracy fixture changed after numerical comparison')
     meta = read_json(fixture/'manifest.json', 4 << 20)
     validate_abi(meta)
     if meta['model'] != result['model']:
         raise ValueError('accuracy model and fixture differ')
-    step = meta['cases'][meta['profile_case']]
-    if step['proposals'] < 1:
-        raise ValueError('profile case must contain active proposals')
+    selected = meta['profile_case'] if case_index is None else case_index
+    if type(selected) is not int or selected < 0:
+        raise ValueError('profile case index must be a nonnegative integer')
+    matches = [c for c in meta['cases'] if c['index'] == selected]
+    if len(matches) != 1:
+        raise ValueError('profile case index must uniquely identify a retained accuracy case')
+    step = matches[0]
+    if step['proposals'] < 1 and case_index is None:
+        raise ValueError('default profile case must contain active proposals')
     inputs = []
     for spec in meta['inputs']:
         row = next(r for r in meta['input_files'] if r['case']==step['index'] and r['index']==spec['index'])
@@ -148,7 +156,8 @@ def bind_accuracy_profile(accuracy, model_tool, *, allow_numerical_failure=False
         firmware_id=result['runtime']['firmware_id'],source_runtime_version=result['runtime']['runtime_version'],
         input_scope=('PASSED_INCREMENTAL_ACCURACY_FIXTURE_WITH_REFERENCE_KV' if passed else
                      'NUMERICAL_FAILED_INCREMENTAL_ACCURACY_FIXTURE_WITH_REFERENCE_KV'),
-        input_provenance={'accuracy':str(root),'case':step},
+        input_provenance={'accuracy':str(root),'case':step,
+                          'case_selection':'DEFAULT' if case_index is None else 'EXPLICIT_RETAINED_CASE'},
         model_compilation='NOT_RUN',numerical_validation='NOT_EVALUATED',
         source_numerical_validation=result['numerical_validation'],
         profiling_scope=('PASSED_REFERENCE_BASELINE' if passed else 'DIAGNOSTIC_NUMERICAL_FAILURE_ALLOWED'),

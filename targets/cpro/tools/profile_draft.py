@@ -30,9 +30,13 @@ def main(argv=None):
     parser.add_argument('--apply', action='store_true', help='start one detached profiling invocation')
     parser.add_argument('--allow-numerical-failure', action='store_true',
                         help='profile a completed NUMERICAL_FAILED result for diagnosis; keep accuracy failed')
+    parser.add_argument('--case-index', type=int,
+                        help='--accuracy only: select one retained case, including zero-append or catchup calls')
     parser.add_argument('--timeout-seconds', type=int, default=600)
     parser.add_argument('--lock-wait-seconds', type=int, default=1800)
     args = parser.parse_args(argv)
+    if args.case_index is not None and (not args.accuracy or args.case_index < 0):
+        parser.error('--case-index requires --accuracy and a nonnegative index; recovery uses its saved request')
     if args.analyze_boundaries:
         if (args.accuracy_result or args.ddk_root or args.apply or args.tool_inspection
                 or args.allow_numerical_failure or args.modelmanager_itf):
@@ -80,7 +84,7 @@ def main(argv=None):
                 parser_tool=args.data_proc_tool, timeout_seconds=args.timeout_seconds,
                 lock_wait_seconds=args.lock_wait_seconds,accuracy=args.accuracy,model_tool=args.model_tool,
                 allow_numerical_failure=args.allow_numerical_failure,
-                model_manager_interface=args.modelmanager_itf or 'V1')
+                model_manager_interface=args.modelmanager_itf or 'V1', case_index=args.case_index)
         keys = ('status', 'stage', 'device_execution', 'model_compilation', 'numerical_validation',
             'source_numerical_validation', 'profiling_scope', 'model_manager_interface', 'model_restore_mode',
             'model_sha256', 'profile_case', 'timing_scope',

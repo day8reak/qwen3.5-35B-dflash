@@ -2174,8 +2174,8 @@
       "name": "performance",
       "status": "in_progress",
       "owner": "model-workflow",
-      "evidence": "20261105T031159Z-25303-23ce63/evidence/user-profile-summary.json",
-      "note": "User permits proceeding with current numerically failed Draft; first recover server disk space. No new performance result or promotion.",
+      "evidence": "20261105T103539Z-5945-4b0b26/out/evidence/draft-performance-review.json",
+      "note": "Server free space now6.4G by user report. Source liveness review complete; current RoPE zero-append profile pending. No optimization speedup established.",
       "next_command": "docs/current-status.md"
     },
     {
@@ -5810,7 +5810,7 @@
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "UNTOUCHED_REPLAY_FIRST_CASE_ALL14_OUTPUTS_BITWISE_EQUAL; HIDDEN_L2_1.449_PERCENT; ISOLATED82_OF86_FEEDBACK83_OF86; ORIGINAL_GATES_FAILED",
-    "next": "Accuracy investigation deferred by user; clear disposable host runtime artifacts first, then performance diagnosis. Original numerical FAILED unchanged.",
+    "next": "Profile retained RoPE OMC on zero-append full-cache case18, then evaluate proposal/catchup specialization. Original numerical failure accepted for proceeding, not relabeled.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6372,33 +6372,78 @@
         }
       },
       "performance_assessment": {
-        "evidence": "20261105T034952Z-26771-b8dbd3/evidence/performance-assessment.json",
-        "document": "https://github.com/day8reak/qwen3.5-35B-dflash/blob/5c7d6aa8a74406e0975bbe1136d52fbfc5173b68/docs/current-status.md",
-        "status": "DEFERRED_BY_USER_UNTIL_ACCURACY_IMPROVES",
+        "status": "SOURCE_REVIEWED; CURRENT_MODEL_PROFILE_PENDING",
+        "user_directive": "Disk now 6.4G free; resume Draft optimization. Further accuracy work remains deferred.",
+        "model_sha256": "b43ae9cfcd50999277829a21adc24099170d4a7c4856b70729385b59d362a828",
+        "numerical_validation": "FAILED_UNCHANGED; USER_ACCEPTED_RESIDUALS_FOR_NEXT_STAGE",
+        "latest_api_means_ms": [
+          65.93545454545455,
+          65.948875,
+          65.991,
+          66.0045
+        ],
+        "target": "WARM_RESIDENT_PROPOSAL_MEAN_LE_50_MS; NOT_YET_MEASURED_AS_MATCHED_3_WARMUP_10_CALL_BASELINE",
+        "prior_profile": {
+          "model_sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f",
+          "inference_ms": 66.556,
+          "operator_duration_sum_ms": 61.96,
+          "hotspots_ms": {
+            "MatMul_30": 19.965,
+            "Conv2D": 8.753,
+            "Transpose_1": 5.284,
+            "StableArgMax": 0.415
+          },
+          "scope": "ONE_FRESH_TOOL_CALL_PRE_ROPE_MODEL; SOURCE_MAPPING_INFERRED_NOT_COMPILED_KERNEL_PROOF"
+        },
+        "candidates": [
+          {
+            "priority": 1,
+            "change": "Zero-append proposal specialization",
+            "guard": "valid_rows == 0; keep all requested proposals, old KV, positions and mask semantics",
+            "source_proof": "write interval empty => present K/V = past K/V; new context projection/KV rows feed only the unselected write branch",
+            "removed_work": "context spatial packing/fc/RMS; context half of KV projections; new-K RMS/RoPE/Gather",
+            "limit": "Separate compiled shape may choose a different kernel. Preserve original reference and compare against retained candidate; no device speedup established."
+          },
+          {
+            "priority": 2,
+            "change": "KV-only catchup specialization",
+            "guard": "proposal_count == 0 and caller consumes KV only; general combined path retained when both append and propose",
+            "removed_work": "candidate Q/attention/MLP/terminal head/argmax",
+            "scope": "Algorithmic caller-output liveness only; full 14-output graph is not byte-equivalent when unused outputs are omitted. Requires explicit runtime routing and ABI integration."
+          },
+          {
+            "priority": 3,
+            "change": "Full-vocabulary head/layout and input spatial packing",
+            "head_shape": [
+              15,
+              2048,
+              248320
+            ],
+            "head_unique_weight_bytes": 1017118720,
+            "head_multiply_add_flops": 15256780800,
+            "head_logits_bytes": 7449600,
+            "feature_unique_weight_bytes": 67108864,
+            "feature_multiply_add_flops": 1073741824,
+            "limit": "Source logical bytes/FLOPs only, not measured bandwidth, physical traffic or expected speedup; preserve full vocabulary and source FP16 boundaries."
+          }
+        ],
         "hardware_reference_policy": "use",
         "capacity_profile_status": "MISSING_MATCHING_X90_EMPIRICAL_PROFILE",
         "realizable_speedup_estimate": null,
-        "conditional_examples": [
-          {
-            "projection_ms": 8,
-            "head_ms": 15,
-            "kv_save_ms": 1,
-            "total_ms": 54.554
-          },
-          {
-            "projection_ms": 7,
-            "head_ms": 12,
-            "kv_save_ms": 2,
-            "total_ms": 49.554
-          },
-          {
-            "projection_ms": 6,
-            "head_ms": 12,
-            "kv_save_ms": 2,
-            "total_ms": 48.554
-          }
-        ],
-        "candidate_code_changed": false
+        "model_graph_changed": false,
+        "profile_entry": "targets/cpro/tools/profile_draft.py --accuracy ... --case-index 18 --allow-numerical-failure --apply",
+        "profile_case": {
+          "index": 18,
+          "start": 192,
+          "valid": 0,
+          "proposals": 15,
+          "label": "full-cache-repeat"
+        },
+        "profiling_scope": "ONE_CURRENT_OMC_TOOL_CALL_WITH_RETAINED_REFERENCE_KV; NOT_WARM_RESIDENT_BENCHMARK",
+        "host_checks": 9,
+        "host_evidence": "20261105T103539Z-5945-4b0b26/out/evidence/profile-case-host-checks.json",
+        "server_free_space": "6.4G_USER_REPORTED; CLEANUP_DETAILS_NOT_PROVIDED",
+        "next": "docs/current-status.md"
       },
       "hidden_prefix_probe": {
         "status": "LAYER0_AUDIT_AND_ROPE_REPLAY_COMPLETE; FURTHER_ACCURACY_WORK_DEFERRED_BY_USER",
@@ -7039,7 +7084,7 @@
             "next": "Bounded host runtime cleanup, then Draft performance work against retained candidate; no new accuracy probe required."
           },
           "host_cleanup": {
-            "status": "IMPLEMENTED_HOST_CHECKED; SERVER_EXECUTION_PENDING",
+            "status": "USER_REPORTED_SPACE_RECOVERED",
             "entry": "targets/cpro/tools/clean_draft_probes.py",
             "commands": "docs/current-status.md",
             "modes": [
@@ -7058,7 +7103,9 @@
             "host_checks": 12,
             "host_evidence": "20261105T101921Z-5087-21d2e8/out/evidence/sidecar-cleanup-host-checks.json",
             "server_disk_before": "USER_REPORTED_ABOUT_3_GB_FREE",
-            "server_bytes_freed": "NOT_OBSERVED"
+            "server_bytes_freed": "NOT_OBSERVED",
+            "server_free_space": "6.4G_USER_REPORTED",
+            "server_execution_summary": "NOT_PROVIDED; NO_PER_DIRECTORY_REMOVAL_CLAIM"
           }
         }
       }
