@@ -7830,7 +7830,40 @@
               "zero_append": "Current scheduler merges last append with proposal; rare in normal progression. Prototype host-tested but held locally, not published/compiled. Six synthetic zero-append test cases do not establish production frequency.",
               "top1": "Measured0.416ms; lower priority"
             },
-            "prototype": "HELD_IN_LOCAL_RUN_NOT_PUBLISHED"
+            "prototype": "HELD_IN_LOCAL_RUN_NOT_PUBLISHED",
+            "input_pack_experiment": {
+              "status": "HOST_VALIDATED_AWAITING_USER_DDK_AND_DEVICE",
+              "compile_tool": "targets/cpro/tools/probe_draft_feature_pack.py",
+              "validation_tool": "targets/cpro/tools/validate_draft_vector.py",
+              "variants": [
+                "baseline_source_layout",
+                "device_cpu_packed_input"
+              ],
+              "model_count": 2,
+              "weight_bytes_per_model": 67108864,
+              "input_cases": [
+                2,
+                16,
+                17
+              ],
+              "valid_rows": [
+                2,
+                16,
+                14
+              ],
+              "warmup": 3,
+              "repetitions": 10,
+              "timing": "CPU_PACK_SETINPUT_EXECUTE_WALL; PREALLOCATED; SNAPSHOTS_AND_LOAD_EXCLUDED",
+              "equivalence": "ALL_TEN_CALLS_BITWISE_EQUAL_TO_DEVICE_BASELINE; FINITE_AND_REPEAT_STABLE",
+              "original_numeric_gates": "UNCHANGED; REPORTED_SEPARATELY_FROM_BASELINE_EQUIVALENCE",
+              "host_checks": 15,
+              "host_evidence": "20261105T112828Z-8110-cda527/out/evidence/feature-pack-host-checks.json",
+              "model_compilation": "NOT_RUN",
+              "device_execution": "NOT_RUN_USER_OWNED",
+              "full_draft_integration": "NOT_RUN",
+              "production_promotion": "NOT_PERFORMED",
+              "next": "User compiles two prefixes, rebuilds native runner, executes/retrieves six cases; docs/current-status.md"
+            }
           },
           "hidden_prefix_probe": {
             "status": "LAYER0_AUDIT_AND_ROPE_REPLAY_COMPLETE; FURTHER_ACCURACY_WORK_DEFERRED_BY_USER",

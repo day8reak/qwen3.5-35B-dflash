@@ -1,5 +1,7 @@
 // Bounded diagnostic runner: one Load, warmup, repeated synchronous Process.
 #include "qwen35_dflash/hiai_executor.hpp"
+#include "qwen35_dflash/feature_pack.hpp"
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -17,6 +19,7 @@ unsigned Number(const std::string& text) {
 struct Plan {
   unsigned warmup = 0, repetitions = 0;
   std::vector<HiaiTensorSpec> inputs, outputs;
+  std::string preparation = "none";
 };
 Plan ReadPlan(const fs::path& path) {
   if (!fs::is_regular_file(path) || fs::file_size(path) > 65536)
@@ -24,7 +27,7 @@ Plan ReadPlan(const fs::path& path) {
   std::ifstream stream(path); std::string line;
   std::getline(stream, line);
   if (line != "QWEN35_TENSOR_PROBE 1") throw std::invalid_argument("invalid probe header");
-  Plan plan; bool iterations = false; std::size_t total = 0;
+  Plan plan; bool iterations = false, preparation = false; std::size_t total = 0;
   while (std::getline(stream, line)) {
     std::istringstream row(line); std::vector<std::string> fields; std::string token;
     while (row >> token) fields.push_back(token);
@@ -32,6 +35,11 @@ Plan ReadPlan(const fs::path& path) {
       plan.warmup = Number(fields[1]); plan.repetitions = Number(fields[2]); iterations = true;
       if (plan.warmup > 10 || !plan.repetitions || plan.repetitions > 20)
         throw std::invalid_argument("invalid probe iteration count");
+    } else if (fields.size() == 2 && fields[0] == "input_preparation" && iterations &&
+               !preparation && plan.inputs.empty() && plan.outputs.empty()) {
+      plan.preparation = fields[1]; preparation = true;
+      if (plan.preparation != "copy-c16-v1" && plan.preparation != "feature-pack-c16-v1")
+        throw std::invalid_argument("unknown probe input preparation");
     } else if (fields.size() == 5 && iterations && (fields[0] == "input" || fields[0] == "output")) {
       auto& specs = fields[0] == "input" ? plan.inputs : plan.outputs;
       if (Number(fields[1]) != specs.size() || specs.size() >= 8 ||
@@ -54,6 +62,14 @@ Plan ReadPlan(const fs::path& path) {
     } else throw std::invalid_argument("unknown probe row");
   }
   if (!iterations || plan.inputs.empty() || plan.outputs.empty()) throw std::invalid_argument("incomplete probe plan");
+  if (preparation) {
+    const std::vector<std::uint32_t> shape = plan.preparation == "copy-c16-v1"
+        ? std::vector<std::uint32_t>{1, 16, 16384} : std::vector<std::uint32_t>{1, 1024, 16, 16};
+    if (plan.inputs.size() != 1 || plan.inputs[0].dtype != "float16" || plan.inputs[0].shape != shape ||
+        plan.outputs.size() != 1 || plan.outputs[0].dtype != "float16" ||
+        plan.outputs[0].shape != std::vector<std::uint32_t>{1, 16, 2048})
+      throw std::invalid_argument("input preparation requires the C16 projection prefix ABI");
+  }
   return plan;
 }
 Bytes Read(const fs::path& path, std::size_t size) {
@@ -83,7 +99,15 @@ int main(int argc, char** argv) {
         30000, true, -1, false, "legacy-buffer", "qwen35_tensor_probe", nullptr, {}, false, false,
         output_initialization == "zero");
     fs::create_directories(output);
-    for (std::size_t i = 0; i < inputs.size(); ++i) executor.SetInput(i, inputs[i]);
+    const bool prepare_each_call = plan.preparation != "none";
+    Bytes packed(plan.preparation == "feature-pack-c16-v1" ? inputs[0].size() : 0);
+    if (!prepare_each_call)
+      for (std::size_t i = 0; i < inputs.size(); ++i) executor.SetInput(i, inputs[i]);
+    using Clock = std::chrono::steady_clock;
+    auto micros = [](auto start, auto end) {
+      return std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+    };
+    std::vector<std::int64_t> packing_us, set_input_us, prepared_call_us;
     std::ofstream result(output / "result.json");
 #ifdef QWEN35_FAKE_HIAI
     const char* evidence = "host-fake-hiai";
@@ -94,11 +118,22 @@ int main(int argc, char** argv) {
            << output_initialization << "\",\"warmup\":" << plan.warmup
            << ",\"repetitions\":" << plan.repetitions << ",\"api_us\":[";
     for (unsigned i = 0; i < plan.warmup + plan.repetitions; ++i) {
-      if (i) for (std::size_t j = 0; j < inputs.size(); ++j) executor.ReuseInput(j);
+      const auto start = Clock::now();
+      if (plan.preparation == "feature-pack-c16-v1") PackDraftFeaturesC16(inputs[0], packed);
+      const auto pack_end = Clock::now();
+      if (prepare_each_call) executor.SetInput(0, packed.empty() ? inputs[0] : packed);
+      else if (i) for (std::size_t j = 0; j < inputs.size(); ++j) executor.ReuseInput(j);
+      const auto set_end = Clock::now();
       executor.Execute();
+      const auto end = Clock::now();
       const auto us = executor.last_api_us();
       if (i < plan.warmup) continue;
       const auto index = i - plan.warmup;
+      if (prepare_each_call) {
+        packing_us.push_back(micros(start, pack_end));
+        set_input_us.push_back(micros(pack_end, set_end));
+        prepared_call_us.push_back(micros(start, end));
+      }
       if (index) result << ',';
       result << us;
       // Every retained call has a snapshot; file IO is outside the API timer.
@@ -112,7 +147,18 @@ int main(int argc, char** argv) {
       if (!snapshot) throw std::runtime_error("probe snapshot write failed");
     }
     executor.Close();
-    result << "],\"status\":\"EXECUTED\",\"timing_scope\":\"SYNCHRONOUS_API_WALL_NOT_NPU_ONLY\"}\n";
+    result << "],\"status\":\"EXECUTED\",\"timing_scope\":\"SYNCHRONOUS_API_WALL_NOT_NPU_ONLY\"";
+    if (prepare_each_call) {
+      result << ",\"input_preparation\":\"" << plan.preparation
+             << "\",\"prepared_timing_scope\":\"CPU_PACK_SETINPUT_EXECUTE_WALL; PREALLOCATED; SNAPSHOTS_EXCLUDED\"";
+      auto array = [&](const char* name, const std::vector<std::int64_t>& values) {
+        result << ",\"" << name << "\":[";
+        for (std::size_t j = 0; j < values.size(); ++j) { if (j) result << ','; result << values[j]; }
+        result << ']';
+      };
+      array("packing_us", packing_us); array("set_input_us", set_input_us); array("prepared_call_us", prepared_call_us);
+    }
+    result << "}\n";
     result.close();
     if (!result) throw std::runtime_error("probe result write failed");
     return 0;

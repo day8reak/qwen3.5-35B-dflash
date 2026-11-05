@@ -34,6 +34,7 @@ from qwen35_moe_dflash.draft.incremental.top1_alternatives import CASES as ALTER
 from qwen35_moe_dflash.draft.incremental.top1_bitcarrier import CASES as BITCARRIER_CASES
 from qwen35_moe_dflash.draft.incremental.hidden_probe import CASES as HIDDEN_CASES, KIND as HIDDEN_KIND
 from qwen35_moe_dflash.draft.incremental.hidden_layer_probe import CASES as LAYER_CASES, KIND as LAYER_KIND
+from qwen35_moe_dflash.draft.incremental import feature_pack_probe
 
 # Operator-local GE probe: NumPy only; Torch bindings stay on the weights server.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops/draft-top1/scripts'))
@@ -41,7 +42,7 @@ import stable_arg_max_ge
 
 PYTORCH_CASES = set(STAGES.values())
 VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES, *top1_semantics.EXTRA_CASES,
-                    *stable_arg_max_ge.CASES, *HIDDEN_CASES, *LAYER_CASES)
+                    *stable_arg_max_ge.CASES, *HIDDEN_CASES, *LAYER_CASES, *feature_pack_probe.CASES)
 WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4, 'int64': 8}
 DTYPES = {**DTYPES, 'int64': '<i8'}
 
@@ -158,6 +159,8 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     root = Path(compiled).resolve()
     report = read_json(root/'result.json')
+    if report.get('artifact_kind') == feature_pack_probe.KIND:
+        return feature_pack_probe.prepare_fixture(compiled, out, ddk, ddk_id, selection)
     if report.get('artifact_kind') == LAYER_KIND:
         from qwen35_moe_dflash.draft.incremental.hidden_layer_probe import prepare_fixture
         return prepare_fixture(root, out, ddk, ddk_id, selection)
@@ -362,6 +365,15 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
             report.update(status='PARTIAL', numerical_validation='PARTIAL_PASSED')
     if meta.get('top1_semantics'):
         report['top1_semantics'] = top1_semantics.summary(meta, cases)
+    if meta.get('source_evidence', {}).get('artifact_kind') == feature_pack_probe.KIND:
+        report['feature_pack'] = feature_pack_probe.summarize(meta, native, report)
+        report['numerical_scope'] = 'PREFIX_VS_CPU_SOURCE_REFERENCE; DEVICE_BASELINE_EQUIVALENCE_REPORTED_SEPARATELY'
+        if not report['feature_pack']['coverage_complete']:
+            report['status'] = 'PARTIAL'
+            if report['numerical_validation'] == 'PASSED':
+                report['numerical_validation'] = 'PARTIAL_PASSED'
+        elif report['feature_pack']['baseline_equivalence'] != 'PASSED':
+            report.update(status='FAILED', error='feature prefix device-baseline equivalence failed')
     return report
 
 
@@ -387,6 +399,8 @@ def analyze(directory, *, air_export=None):
     comparison = compare(fixture, native, selection=report['validated_cases'])
     if air_export and meta.get('source_evidence', {}).get('artifact_kind') != LAYER_KIND:
         raise ValueError('--air-export analysis requires the retained layer0 suite')
+    if meta.get('source_evidence', {}).get('artifact_kind') == feature_pack_probe.KIND:
+        return dict(comparison, artifact_kind=KIND, model_execution='NOT_RUN')
     if meta.get('source_evidence', {}).get('artifact_kind') == LAYER_KIND:
         from qwen35_moe_dflash.draft.incremental.hidden_layer_probe import diagnose
         result = diagnose(fixture, native, meta, comparison, report)
@@ -527,6 +541,9 @@ def log_names(cases):
 
 
 def _check_probe_dtypes(meta, built):
+    required_preparation = {c['input_preparation'] for c in meta['cases'] if 'input_preparation' in c}
+    if required_preparation - set(built.get('tensor_probe_input_preparation', [])):
+        raise ValueError('rebuild runtime/native with build_hiai.py --replace; tensor probe needs timed feature packing')
     if (meta.get('output_initialization') == 'untouched' and
             'untouched' not in built.get('tensor_probe_output_initialization', [])):
         raise ValueError('rebuild runtime/native with build_hiai.py --replace; tensor probe needs untouched output support')

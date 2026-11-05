@@ -22,7 +22,51 @@
 
 主机已逐字节核对现有 `IncrementalDraft.project_features` 的Conv输入：valid=0／1／2／14／16均一致；全部262144个元素的索引映射通过，覆盖全部16位存储模式。只证明重排等价，没有执行Conv或完整模型。本地主机CPU的NumPy拷贝计时不作为设备性能预测。
 
-下一实验保持小规模：同输入的投影前缀基线和预打包候选，先测端侧CPU打包成本、API、输出一致性及两者合计；确认值得继续后再编译一份完整Draft。完整模型保持原golden和容差，并单列对现有设备结果的等价比较。5.773ms是当前两算子的duration之和，不能预先承诺全部省掉。
+入口重排实验已实现，15项主机检查通过；当前尚未编译OMC或执行设备。只生成两份投影前缀，每份约64MiB原权重，输出均为FP16 `[1,16,2048]`。使用已完成回放的case2／16／17（valid2／16／14），共享这两份模型，不复制完整Draft。源码图逐元素验证两次转置的索引映射，Conv属性、权重及输出布局保留。
+
+端侧CPU使用预分配512KiB缓冲，候选每次做字节重排后SetInput；基线每次直接SetInput。两者都预热3次、记录10次，分别记录打包、SetInput、同步API以及从打包开始到Execute结束的总墙钟。当前小实验仍有一次临时缓冲到输入的拷贝，其成本已计入，尚未实现直接写入最终输入缓冲。快照和模型加载不计入总墙钟。
+
+先在服务器更新代码并编译小前缀，沿用现有已选DDK和环境变量：
+
+```bash
+cd "$REPO_DIR"
+git pull --ff-only origin main
+TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
+ROPE_DIR="$TOP1_DIR/rope-fp32"
+PACK_DIR="$AI_RUN_DIR/draft/tests/feature-pack"
+
+python3 "$REPO_DIR/targets/cpro/tools/probe_draft_feature_pack.py" \
+  --air-export "$TOP1_DIR/export" \
+  --result "$ROPE_DIR/kv-reproduction/result" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
+  --output "$PACK_DIR/compiled"
+```
+
+需要保留原export的特征投影权重和已完成回放的fixture。编译结果应为COMPILED，两份模型均完成；失败保留诊断并停止，不继续启动设备。编译器副本只在确认打包完成后清理，保留两份小OMC和必要报告。不会编译新的完整Draft。
+
+编译完成后，重建共享runner以支持端侧打包计时，再执行六组对照：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$AI_RUN_DIR/runtime/native" --replace
+
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$PACK_DIR/compiled" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --output "$AI_RUN_DIR/draft/tests/feature-pack-run" --apply
+```
+
+启动确认后，使用同一执行目录回收；这个命令只回收，不重新执行模型：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$AI_RUN_DIR/draft/tests/feature-pack-run" \
+  --output "$AI_RUN_DIR/draft/tests/feature-pack-result"
+```
+
+重点看结果中的 `feature_pack`：`coverage_complete=true`、`baseline_equivalence=PASSED` 表示三组输入十次输出均与设备基线逐字节一致且有限、稳定。各组 `mean_saved_ms`／`median_saved_ms` 比较包含CPU准备的总墙钟，正数代表候选较快；还需看波动范围。原CPU参考容差没有放宽，`numerical_validation=FAILED` 可能与“设备基线等价通过”同时出现，应分别解读。前缀收益足够且稳定后才进入完整Draft改图与验证；5.773ms是旧两算子的duration之和，不是已实现净收益。
 
 ## 后续排序
 

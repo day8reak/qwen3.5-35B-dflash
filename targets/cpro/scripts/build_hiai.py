@@ -135,6 +135,7 @@ def main():
         "accuracy_output_initialization": ["zero", "untouched"] if "qwen35_draft_accuracy" in diagnostic_binaries else [],
         "accuracy_kv_reproduction_version": 1 if "qwen35_draft_accuracy" in diagnostic_binaries else None,
         "tensor_probe_output_initialization": ["zero", "untouched"] if "qwen35_tensor_probe" in diagnostic_binaries else [],
+        "tensor_probe_input_preparation": ["copy-c16-v1", "feature-pack-c16-v1"] if "qwen35_tensor_probe" in diagnostic_binaries else [],
         "tensor_probe_dtypes": ["float32", "float16", "int32", "int64"] if "qwen35_tensor_probe" in diagnostic_binaries else [],
         "tensor_probe_limits": {"max_dimension": 16 << 20, "max_io_bytes": 16 << 20, "max_rank": 4}
             if "qwen35_tensor_probe" in diagnostic_binaries else {},
