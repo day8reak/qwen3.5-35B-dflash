@@ -53,7 +53,9 @@ def prepare(allops, output, replace=False):
             row['copied_sha256'] = sha(allops / row['path'])
             if row['copied_sha256'] != row['source_sha256']:
                 raise ValueError('copied source hash differs: ' + row['path'])
-        report.update(status='SOURCES_COPIED', next='Run the existing allops build command for kirinx90.')
+        report.update(status='SOURCES_COPIED', next='Run the existing X90 allops build/install; '
+            'verify StableArgMax in the selected ops-info INI and the installed Python wrapper. '
+            'This allops uses ascend310b metadata; OMG target remains kirinx90.')
     except Exception as error:
         report.update(status='FAILED', error=str(error))
         raise

@@ -10,4 +10,4 @@ kernel 每块最多8192个FP16，`ReduceMax(calIndex=true)` 联合得到值和�
 
 X90配置为BlockDim=1。UB预算32864字节：输入16384、独立scratch16384、归约结果32、输出64。host读取所选平台UB容量并检查；不假定另一芯片容量。所有GM读写使用DataCopyPad按有效字节搬运，ReduceMax仅归约实际count。每16行写一次索引，最后一次仅写剩余索引字节；Qwen为单次60字节写回。无GM临时workspace。
 
-验收是每个输出INT32逐字节相同，10次真实执行全部通过并稳定。主机shim只验证控制流、范围和索引规则，不证明硬件的ReduceMax tie/subnormal语义、DMA或同步。310P需独立配置与设备验证，当前AddConfig仅kirinx90。
+验收是每个输出INT32逐字节相同，10次真实执行全部通过并稳定。主机shim只验证控制流、范围和索引规则，不证明硬件的ReduceMax tie/subnormal语义、DMA或同步。host保留kirinx90，并为用户这套X90 allops的包装生成增加ascend310b配置；这是其所选INI的生成键，不是310B/310P设备支持证据。OMG目标仍kirinx90，310P需独立配置与设备验证。

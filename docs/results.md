@@ -804,3 +804,5 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 2026-11-05进度修复（run `20261105T012457Z-20992-be4a81`）：用户已启动修正后的OMG命令但终端无输出；代码确认新入口漏接既有progress回调。已补stderr阶段提示与30秒OMG等待观察，43项host检查通过；当前运行保留，另终端tail原compile.log，实际编译结果仍待回传。无需为进度显示重跑。
 
 2026-11-05：用户现确认第二轮worker已进入build_single_op，但注册指定的custom.stable_arg_max Python文件不存在；DDK只检出同名cpp。内部impl搜索路径遗漏已修复，并加入缺包装文件即停止的静态预检，50项host检查通过（run `20261105T012946Z-21424-863db2`）。仍需实际allops脚本/命令确认生成发布流程，不再盲重编OMG；host/kernel未改。
+
+2026-11-05：用户allops preset选ascend310b，包装生成读取aic-ascend310b-ops-info.ini，该INI没有StableArgMax；旧host只注册kirinx90。已补AddConfig(ascend310b)并保留kirinx90，修复这套X90工程的生成配置遗漏。kernel、tiling逻辑、Torch/GE端口不变，OMG目标仍kirinx90；不表示310B/310P已验证。55项主机流程检查通过（run `20261105T014301Z-21974-f624b8`，`evidence/allops-config-check/validation.json`），包括用用户旧host真实哈希验证仅注册增补可复用AIR、其他源码变化拒绝、旧目录保留。GE/OMG调用仍为mock，真实allops重建安装、OMG和设备等待用户执行。

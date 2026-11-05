@@ -237,11 +237,17 @@ def check(output):
         assert compatible_report['tbe_compatibility']['audit_status'] == 'APPLIED'
         checks.append('fresh_compile_forwards_evidence_bound_tbe_option_and_reports_worker_audit')
         old = output / 'compatible-fresh'
-        # Match the user's old failed report after a CLI-only source update.
+        # Match the user's old failed report before the allops config addition.
         saved_report = json.loads((old / 'result.json').read_text())
+        assert probe.retained_export(old)[2]['allowed_source_changes'] == []
+        checks.append('reuse_identical_host_without_compatibility_exception')
         saved_report['status'] = 'FAILED'; saved_report['stage'] = 'omg'
         saved_report['model_compilation'] = 'FAILED'
         saved_report['source_sha256']['scripts/stable_arg_max_ge.py'] = 'old-diagnostic-script'
+        # Actual source identity from the user's pre-fix copy report, not a hash
+        # generated using the compatibility matcher under test.
+        previous_host_sha = '7f0b10918da99626c0308f43ce0c3a7c1b2a5eba2de9fe3d96ea1abbf2d00e30'
+        saved_report['source_sha256']['op_host/stable_arg_max.cpp'] = previous_host_sha
         probe.write(old / 'result.json', saved_report)
         snapshot = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
             for p in old.rglob('*') if p.is_file()}
@@ -255,6 +261,12 @@ def check(output):
             reused = probe.run(reuse)
         assert len(calls) == before + 1 and compiler_kwargs[-1]['tbe_diagnosis'] == reuse.tbe_diagnosis
         assert reused['shape'] == [2, 3] and reused['reused_export']['air_sha256'] == saved_report['air']['sha256']
+        assert reused['reused_export']['allowed_source_changes'] == [dict(
+            path='op_host/stable_arg_max.cpp', previous_sha256=previous_host_sha,
+            current_sha256=probe.sha(ROOT / 'op_host/stable_arg_max.cpp'),
+            reason='ONLY_ADDED_ALLOPS_ASCEND310B_CONFIG; RECOMPILE_OMC_REQUIRED')]
+        assert reused['source_sha256']['op_host/stable_arg_max.cpp'] != previous_host_sha
+        checks.append('old_user_host_hash_accepts_only_packaging_delta_and_records_new_compile_identity')
         assert (output / 'reuse/air/stable_arg_max.air').read_bytes() == (old / 'air/stable_arg_max.air').read_bytes()
         assert snapshot == {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
             for p in old.rglob('*') if p.is_file()}
@@ -271,6 +283,11 @@ def check(output):
         edited['source_sha256']['op_kernel/stable_arg_max.cpp'] = 'changed'
         probe.write(old / 'result.json', edited)
         rejects(lambda: probe.retained_export(old), 'reject_reuse_changed_kernel')
+        for name in ('op_host/stable_arg_max.cpp', 'op_host/stable_arg_max_tiling.h', 'scripts/reference.py'):
+            edited = json.loads(json.dumps(saved_report))
+            edited['source_sha256'][name] = 'other-source-revision'
+            probe.write(old / 'result.json', edited)
+            rejects(lambda: probe.retained_export(old), 'reject_reuse_other_source_change/' + name)
         probe.write(old / 'result.json', saved_report)
         air_path = old / 'air/stable_arg_max.air'
         original = air_path.read_bytes(); air_path.write_bytes(b'changed AIR')

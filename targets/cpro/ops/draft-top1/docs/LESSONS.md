@@ -1,5 +1,8 @@
 # Lessons and evidence scope
 
+- 2026-11-05：用户allops preset选ascend310b，包装生成读取aic-ascend310b-ops-info.ini，该INI没有StableArgMax；旧host只注册kirinx90。已补AddConfig(ascend310b)并保留kirinx90，修复这套X90工程的生成配置遗漏。kernel、tiling逻辑、Torch/GE端口不变，OMG目标仍kirinx90；不表示310B/310P已验证。55项主机流程检查通过（run `20261105T014301Z-21974-f624b8`，`evidence/allops-config-check/validation.json`），包括用用户旧host真实哈希验证仅注册增补可复用AIR、其他源码变化拒绝、旧目录保留。GE/OMG调用仍为mock，真实allops重建安装、OMG和设备等待用户执行。
+- host库注册、cpp复制、Python包装生成分别由不同路径驱动，不能从前两者成功推断第三者。本次证据来自用户实际preset/INI/CMake；build.sh错误码变量混用与opbuild非致命错误会造成成功误报。先验证生成的INI和安装预检，再重试OMG。此项目级经验落入注册、AIR复用检查与README，未提升为通用芯片别名规则。
+
 - 2026-11-05用户第二轮日志越过平台初始化，在build_single_op的import阶段失败；静态检查确认注册指定py不存在，只有cpp。此前把日志中的File路径描述成“找到文件”不准确，已修正文档。分别核验host注册、实现文件发布、Python包解析、kernel编译；不要从其中一个阶段推定其他阶段成功。内部DDK的impl搜索根同时补齐，但不把它宣称为缺文件修复；使用当前allops构建脚本查明生成/发布环节，不手工拼厂商包装层。
 - 新终端环境变量可能未设置；ALLOPS_DIR为空的find错误表示未检查工程，不是工程构建失败。通过静态预检在缺文件时停止OMG，复用现有AIR与已有故障日志，避免无效重编。
 

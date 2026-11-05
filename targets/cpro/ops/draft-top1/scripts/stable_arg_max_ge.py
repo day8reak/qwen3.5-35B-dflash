@@ -22,6 +22,14 @@ QWEN_SCENARIOS = ('index_boundaries', 'ties_across_boundaries', 'zeros_equal_ext
 GENERAL_SCENARIOS = ('first_last', 'equal', 'tile_ties', 'subnormal')
 CASES = tuple('stable_arg_max__' + s for s in (*QWEN_SCENARIOS, *GENERAL_SCENARIOS))
 
+# The one host delta allowed when reusing AIR exported before the allops fix.
+# Removing these exact bytes must reproduce the recorded old host hash. This
+# does not permit other host/tiling edits and never reuses an old compiled OMC.
+ALLOPS_CONFIG_ADDITION = b'''        // This X90 allops project generates wrappers from the ascend310b INI.
+        // Packaging key only; OMG target remains kirinx90. Other devices unvalidated.
+        this->AICore().AddConfig("ascend310b");
+'''
+
 
 class ProbeFailure(RuntimeError):
     """A failed attempt whose original error and bounded diagnostics were saved."""
@@ -137,10 +145,21 @@ def retained_export(directory):
             or source.is_symlink() or not source.resolve().is_relative_to(root)
             or source.stat().st_size != len(cpp) or source.read_bytes() != cpp):
         raise ValueError('retained GE graph/source differs from the current recipe')
-    # Diagnostic/CLI changes may differ; the actual op and reference must not.
+    # Diagnostic/CLI changes and the exact packaging-only host addition may
+    # differ; graph, numerical implementation and reference must not.
+    source_changes = []
     for name, digest in source_hashes().items():
-        if name != 'scripts/stable_arg_max_ge.py' and report.get('source_sha256', {}).get(name) != digest:
-            raise ValueError('retained operator/reference source changed: ' + name)
+        previous = report.get('source_sha256', {}).get(name)
+        if name == 'scripts/stable_arg_max_ge.py' or previous == digest:
+            continue
+        if name == 'op_host/stable_arg_max.cpp':
+            current = (ROOT / name).read_bytes()
+            if (current.count(ALLOPS_CONFIG_ADDITION) == 1
+                    and hashlib.sha256(current.replace(ALLOPS_CONFIG_ADDITION, b'', 1)).hexdigest() == previous):
+                source_changes.append(dict(path=name, previous_sha256=previous, current_sha256=digest,
+                    reason='ONLY_ADDED_ALLOPS_ASCEND310B_CONFIG; RECOMPILE_OMC_REQUIRED'))
+                continue
+        raise ValueError('retained operator/reference source changed: ' + name)
     relative = Path(report['air']['path'])
     if relative != Path('air/stable_arg_max.air'):
         raise ValueError('unexpected retained AIR path')
@@ -150,7 +169,7 @@ def retained_export(directory):
         raise ValueError('retained AIR bytes/hash differ or file is outside the probe')
     return root, report, dict(source=str(root), source_report_sha256=hashlib.sha256(raw).hexdigest(),
         air_sha256=report['air']['sha256'], ge_export='REUSED_HASH_CHECKED_AIR',
-        graph_cpp_sha256=report['graph_cpp_sha256'])
+        graph_cpp_sha256=report['graph_cpp_sha256'], allowed_source_changes=source_changes)
 
 
 def checked_shape(shape):

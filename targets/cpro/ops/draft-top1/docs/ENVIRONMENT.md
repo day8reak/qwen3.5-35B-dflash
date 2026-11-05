@@ -12,6 +12,8 @@
 
 用户首轮OMG日志已识别StableArgMax、记录custom/stable_arg_max.py实现路径并产出正确host tiling，worker在平台 `te_update_version` 初始化时退出。路径出现在日志不证明文件存在。仓库此前在同一选定DDK已用 `common/tbe-diagnosis` 验证并应用运行目录TBE兼容；新入口遗漏参数已修复。`--tbe-diagnosis` 复用该证据校验，不能无依据硬编码Ascend310B1或修改全局site-packages。旧AIR可复用，参数修复本身不改变host/kernel。
 
-下一轮worker已进入build_single_op，但import custom.stable_arg_max失败。用户只读检查确认指定py不存在；DDK内只找到同名cpp，且新终端ALLOPS_DIR为空、尚未检索实际allops工程。omg_environment还遗漏内部ddk/ascendc/ops/impl目录，现只为编译子进程补入；文件缺失不能靠路径修复解决。GE入口加入无厂商导入的安装预检，缺失时停止在OMG之前。实际allops生成/发布脚本待用户回传，未更改SDK或编写替代包装层。
+下一轮worker已进入build_single_op，但import custom.stable_arg_max失败。用户只读检查确认指定py不存在，DDK内只有同名cpp。omg_environment遗漏的内部ddk/ascendc/ops/impl目录已为编译子进程补入；文件缺失不能靠路径修复解决。GE入口的静态安装预检不导入厂商代码，缺失时停止在OMG之前。
+
+最新allops证据已定位配置遗漏：preset选ascend310b，add_ops_impl_target读取autogen/aic-ascend310b-ops-info.ini，而该INI无StableArgMax；旧host只AddConfig(kirinx90)。host库的源码glob和kernel cpp的安装glob独立存在，因此能有host tiling和cpp，却没有生成的py。现host增加ascend310b并保留kirinx90；OMG仍用kirinx90，不修改allops preset、不生成替代py、不推断310B/310P可用。用户重建安装后须核对选定INI及STATIC_PATH_RESOLVED，再复用旧AIR编译一次。build.sh安装退出码变量混用、opbuild失败仅打印信息，末尾成功字样不能作为安装证据。
 
 `inspect_ddk.py --paste --output <已有报告目录>` 可输出有长度上限的纯文本，无需归档。未收集到接口是证据缺口，不是硬件不支持。所选内部DDK可能有接口差异，以实际编译诊断为准；不将内部打印的 Ascend310B1 字符串当作 310P 支持证据。

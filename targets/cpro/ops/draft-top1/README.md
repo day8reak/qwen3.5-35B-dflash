@@ -29,15 +29,20 @@ python3 "$OP_DIR/scripts/prepare_allops.py" \
 
 工具只复制上述三个文件并记录哈希，不生成新工程、不修改 CMake 或其他算子、不调用编译安装。相同文件可重复复制；有不同内容的同名文件时使用 `--replace`，旧内容保留在本次输出的 `previous/`。输出目录须为新的、位于 allops 外的目录。
 
-然后在 allops 中执行你已有的 **kirinx90 编译安装命令**。若工程显式枚举源码，将三个文件加入其既有列表；不要用单算子工程覆盖整个 allops。本目录 `scripts/build.sh` 只是复制工具包装，不是厂商构建命令。原 `prepare_project.py` / `stable_arg_max.json` 仅供没有现成工程时可选使用，**本流程无需 msopgen**。
+然后在 allops 中执行你已有的 **X90 编译安装命令**。若工程显式枚举源码，将三个文件加入其既有列表；不要用单算子工程覆盖整个 allops。本目录 `scripts/build.sh` 只是复制工具包装，不是厂商构建命令。原 `prepare_project.py` / `stable_arg_max.json` 仅供没有现成工程时可选使用，**本流程无需 msopgen**。
 
-OMG的当前注册路径会导入 `custom.stable_arg_max`，只看到host注册/tiling成功或已复制的 `stable_arg_max.cpp`，不能证明其Python包装文件存在。2026-11-05用户确认所选DDK缺少 `ddk/ascendc/ops/impl/custom/stable_arg_max.py`；目前需核对allops生成/发布脚本，不能仅加PYTHONPATH后反复编译。GE入口已在编译前检查文件和静态包解析，并为子进程补入该内部DDK的impl搜索目录。也可单独只读检查：
+2026-11-05用户的 allops preset 使用 `ASCEND_COMPUTE_UNIT=ascend310b`，包装生成读取 `aic-ascend310b-ops-info.ini`；旧 host 只注册 `kirinx90`，该 INI 没有 `StableArgMax`。现已补 `AddConfig("ascend310b")` 并保留 `kirinx90`，供这套工程生成包装文件，**OMG目标仍是kirinx90，不表示310B/310P设备验证通过**。不修改多算子工程的preset。更新旧源码时加 `--replace` 并使用新的复制报告目录，然后重新执行已有allops构建安装。
+
+OMG的当前注册路径会导入 `custom.stable_arg_max`，只看到host注册/tiling成功或已复制的 `stable_arg_max.cpp`，不能证明其Python包装文件存在。源码cpp由glob独立复制，Python包装则由选定INI驱动生成。重建后先检查INI条目及安装结果：
 
 ```bash
+rg -n -A 20 'StableArgMax|stable_arg_max' "$ALLOPS_DIR/build_out/autogen/aic-ascend310b-ops-info.ini"
 python3 "$OP_DIR/scripts/stable_arg_max_ge.py" --inspect-installation --ddk-root "$CPRO_DDK_ROOT"
 ```
 
 `MISSING_IMPLEMENTATION`或`IMPORT_PATH_REJECTED`时不会启动OMG。`STATIC_PATH_RESOLVED`仅表示静态文件/路径检查通过，不代表厂商模块实际导入、kernel编译或上板通过。不要把cpp改名成py；包装代码应来自所选DDK的实际生成流程。新终端先核实 `ALLOPS_DIR` 已设置；在allops内可用 `$PWD` 查看现有工程。
+
+用户的 `build.sh` 安装段记录 `insall_result` 却检查旧的 `make_result`，失败分支还是裸 `exit`；`opbuild` 工具失败也只打印消息。因此不能只看末尾“Build and install success”，以上INI/安装预检必须通过。
 
 安装成功不等于 kernel 已通过 OMG 编译；接着执行下面的单算子检查。`tests/kernel_operator.h` 是主机测试 shim，不能复制到 allops 或加入 NPU include 路径。
 
@@ -70,17 +75,17 @@ python3 "$OP_DIR/scripts/stable_arg_max_ge.py" \
 
 本项目选定DDK此前已验证需要 TBE 平台名称兼容，使用保留的 `common/tbe-diagnosis`；诊断放在其他路径时传入实际目录。脚本将 `--tbe-diagnosis` 交给既有工具链核验，在本次编译目录使用TE副本，不改已安装Python包或DDK，OMG目标仍是 `kirinx90`。无需该兼容的环境可省略参数；不以日志中的其他SOC名替换OMG目标。
 
-2026-11-05用户旧失败发生在 `te_update_version()`，该轮入口漏传此参数。host注册/tiling已有日志证据，host/kernel源码没有修改。可以直接复用已生成的AIR，只做一次修正后的OMG编译，保留旧失败目录：
+用户首轮失败发生在 `te_update_version()`，入口补传参数后又暴露出缺包装文件。完成上述allops重建安装且预检通过后，可以复用首次生成的AIR，保留两个旧失败目录：
 
 ```bash
 python3 "$OP_DIR/scripts/stable_arg_max_ge.py" \
   --reuse-export "$AI_RUN_DIR/draft/tests/stable-arg-max-ge" \
   --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --output "$AI_RUN_DIR/draft/tests/stable-arg-max-ge-tbe"
+  --output "$AI_RUN_DIR/draft/tests/stable-arg-max-ge-config"
 ```
 
-复用时无需GE SDK或重新导出，shape默认继承旧报告。校验旧AIR/图源码哈希、当前host/kernel及参考源码、全部输入与golden；仅CLI/诊断代码变化允许复用。新报告同时记录 `tbe_compatibility.audit_status` 与编译结果，`APPLIED` 只表示实际worker使用了兼容处理，不能代替OMG或设备通过。新OMC通过后，上板命令的 `--compiled` 改为这个新目录。
+复用时无需GE SDK或重新导出，shape默认继承旧报告。校验旧AIR/图源码哈希、当前host/kernel及参考源码、全部输入与golden。允许CLI/诊断代码变化；host仅允许本次精确的allops注册增补：从当前源码删除该增补块后必须逐字节哈希匹配旧host。其他host/tiling/kernel/reference改动仍拒绝，新报告记录旧/新host哈希和例外原因，始终重新编译OMC。`tbe_compatibility.audit_status=APPLIED` 只表示worker使用了兼容处理，不能代替OMG或设备通过。新OMC通过后，上板命令的 `--compiled` 改为这个新目录。
 
 其他选项：
 

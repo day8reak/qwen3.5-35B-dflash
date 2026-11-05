@@ -1,6 +1,8 @@
 # Validation
 
-最新用户证据：TBE worker已进入build_single_op，ModuleNotFoundError指向custom.stable_arg_max；指定DDK文件exists=False，补搜索路径后仍无module_origin，只找到stable_arg_max.cpp。allops实际生成/发布情况待脚本和构建命令确认。run `20261105T012946Z-21424-863db2` 完成50项host检查（`evidence/installation-final/validation.json`）：新Python进程复现缺路径、修复后解析、同名包遮蔽及公共布局兼容；安装预检不执行父包或算子源码且不写DDK，缺包装文件在任何GE/OMG调用前拒绝。GE/OMG仍为mock，未运行真实目标编译或设备。
+2026-11-05：用户allops preset选ascend310b，包装生成读取aic-ascend310b-ops-info.ini，该INI没有StableArgMax；旧host只注册kirinx90。已补AddConfig(ascend310b)并保留kirinx90，修复这套X90工程的生成配置遗漏。kernel、tiling逻辑、Torch/GE端口不变，OMG目标仍kirinx90；不表示310B/310P已验证。55项主机流程检查通过（run `20261105T014301Z-21974-f624b8`，`evidence/allops-config-check/validation.json`），包括用用户旧host真实哈希验证仅注册增补可复用AIR、其他源码变化拒绝、旧目录保留。GE/OMG调用仍为mock，真实allops重建安装、OMG和设备等待用户执行。
+
+此前安装预检50项主机检查已复现缺搜索路径、包遮蔽及缺py行为，入口会在缺包装文件时停止于GE/OMG之前。新注册仍需实际厂商生成验证；新host SHA256：`a92876b59d72c2d430987d1b242d2f36fd3e77b601b9d955baacb1872ec91796`。
 
 用户随后启动修正后的命令但终端无输出。代码审查确认入口仅在返回时打印JSON、没有传递已有compiler progress回调；无法从用户未贴日志判断实际运行阶段或卡死。现已补stderr阶段通知及既有30秒OMG心跳，保持stdout单条JSON。run `20261105T012457Z-20992-be4a81` 的43项主机检查通过（`evidence/progress-check/validation.json`），包括回调透传、stderr可见且错误JSON不受影响；没有启动真实OMG或设备，没有修改host/kernel、超时或重试策略。
 

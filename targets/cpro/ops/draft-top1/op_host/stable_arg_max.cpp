@@ -125,6 +125,9 @@ public:
         this->AICore().SetTiling(optiling::TilingFunc);
         // Add a 310P configuration only after its SDK/build/runtime validation.
         this->AICore().AddConfig("kirinx90");
+        // This X90 allops project generates wrappers from the ascend310b INI.
+        // Packaging key only; OMG target remains kirinx90. Other devices unvalidated.
+        this->AICore().AddConfig("ascend310b");
     }
 };
 OP_ADD(StableArgMax);

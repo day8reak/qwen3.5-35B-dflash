@@ -6692,8 +6692,8 @@
         "device_execution": "NOT_RUN",
         "full_draft_changed": false,
         "blocker": "SELECTED_DDK_BUILD_AIR_OMC_AND_DEVICE_PENDING_USER_EXECUTION",
-        "next": "COPY_OPS_SOURCE; SELECTED_MSOPGEN_PREPARE_AND_VENDOR_BUILD; NO_ARCHIVE_REQUIRED",
-        "command": "python3 \"$REPO_DIR/targets/cpro/ops/draft-top1/scripts/prepare_project.py\" --ddk-root \"$CPRO_DDK_ROOT\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-build\"",
+        "next": "REBUILD_ALLOPS_WITH_ADDED_CONFIG; VERIFY_WRAPPER; REUSE_AIR_OMG",
+        "command": "python3 \"$OP_DIR/scripts/prepare_allops.py\" --allops-root \"$ALLOPS_DIR\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-copy-config\" --replace",
         "torch_op": "custom_ops::stable_arg_max",
         "ge_type": "StableArgMax",
         "generic_contract": "FINITE_FP16_STATIC_RANK1_TO8_LAST_AXIS_INT32_FIRST_MAXIMUM; NUMEL_LE_INT32_MAX",
@@ -6723,13 +6723,17 @@
           "omg_returncode": 1,
           "failure_stage": "TE_WORKER_TE_UPDATE_VERSION",
           "entrypoint_fix": "FORWARD_EXISTING_TBE_DIAGNOSIS_AND_HASH_CHECKED_AIR_REUSE",
-          "next": "INSPECT_ACTUAL_ALLOPS_BUILD_GENERATION_AND_PUBLICATION; NO_OMG_RETRY",
+          "next": "REBUILD_INSTALL_WITH_ADDED_ASCEND310B_CONFIG; VERIFY_INI_AND_WRAPPER_BEFORE_OMG",
           "run_id": "20261105T011001Z-20502-2dc937",
           "corrected_omg": "WORKER_CUSTOM_MODULE_NOT_FOUND; FINAL_PROCESS_EXIT_UNCONFIRMED",
           "progress_entrypoint_fix": "FORWARD_EXISTING_PROGRESS_CALLBACK_TO_FLUSHED_STDERR",
           "installed_python_wrapper": "MISSING_AT_REGISTERED_DDK_PATH",
           "kernel_cpp": "PRESENT",
-          "allops_inspection": "INCOMPLETE_ALLOPS_DIR_EMPTY"
+          "allops_inspection": "ASCEND310B_SELECTED_INI_OMITS_STABLE_ARG_MAX; OLD_HOST_ONLY_KIRINX90",
+          "allops_config_fix_run": "20261105T014301Z-21974-f624b8",
+          "allops_config_host_checks": 55,
+          "actual_rebuild": "PENDING_USER_EXECUTION",
+          "physical_target": "kirinx90"
         }
       }
     }
