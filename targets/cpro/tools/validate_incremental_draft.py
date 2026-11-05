@@ -17,7 +17,7 @@ def main():
     parser.add_argument('--ddk-root',help='selected DDK schema, required for a PyTorch OMC candidate')
     mode=parser.add_mutually_exclusive_group()
     mode.add_argument('--recover')
-    mode.add_argument('--replay', help='new execution using a completed result and its original model/fixture; no Torch or reference regeneration')
+    mode.add_argument('--replay', help='reuse a completed fixture; optional compiled/source/air-export/ddk-root binds a RoPE candidate; no reference regeneration')
     mode.add_argument('--inspect',help='print existing comparison details locally; no board access')
     mode.add_argument('--analyze',help='recompute new-KV and repeat diagnostics from retained host tensors')
     mode.add_argument('--diagnose',help='inspect retained hidden zeros/repeated rows and controls; optional --source checks embedding rows locally')
@@ -78,11 +78,13 @@ def main():
         parser.error('preparation/recovery requires --output')
     from qwen35_moe_dflash.draft.incremental.accuracy_board import start,recover
     if args.replay:
-        if (not args.config or any((args.compiled,args.source,args.air_export,args.ddk_root))
+        candidate = (args.compiled,args.source,args.air_export,args.ddk_root)
+        if (not args.config or (any(candidate) and not all(candidate))
                 or args.atol is not None or args.rtol is not None):
-            parser.error('--replay requires --config and --output; original model, reference and gates are reused')
-        result=start(args.config,None,None,None,args.output,apply=args.apply,
+            parser.error('--replay requires config/output and unchanged gates; a candidate needs compiled/source/air-export/ddk-root together')
+        result=start(args.config,args.compiled,args.source,args.air_export,args.output,apply=args.apply,
                      timeout_seconds=args.timeout_seconds,replay=args.replay,
+                     ddk_root=args.ddk_root,
                      output_initialization=args.output_initialization or 'zero')
     elif args.recover:
         if args.apply or any((args.config,args.compiled,args.source,args.air_export,args.ddk_root)):

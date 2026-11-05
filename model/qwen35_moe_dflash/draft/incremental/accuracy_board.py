@@ -91,8 +91,9 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
           timeout_seconds=1800, ddk_root=None, replay=None, output_initialization='zero'):
     if output_initialization not in ('zero', 'untouched') or (not replay and output_initialization != 'zero'):
         raise ValueError('output initialization experiment requires replay and zero or untouched')
-    if replay and any((compiled, source, air, ddk_root)):
-        raise ValueError('replay uses the retained model and fixture, not new preparation inputs')
+    candidate_replay = bool(replay and compiled)
+    if replay and any((compiled, source, air, ddk_root)) and not all((compiled, source, air, ddk_root)):
+        raise ValueError('candidate replay requires compiled, source, air and ddk_root together')
     out = output_path(output)
     config_path = Path(config).resolve()
     fixture, meta = replay_fixture(replay) if replay else (out/'fixture', None)
@@ -113,12 +114,17 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
     try:
         cfg = read_json(config_path)
         env = read_json(config_path.parent / cfg['assets'])['environment']
+        if candidate_replay:
+            from .accuracy_replay import rebind_candidate
+            fixture, meta = rebind_candidate(fixture, meta, compiled, source, air, ddk_root, out/'fixture')
         if not replay:
             meta = prepare(compiled, source, air, fixture, atol=atol, rtol=rtol, ddk_root=ddk_root)
         if meta['ddk_id'] != env['ddk_id']:
             raise ValueError('compiled Draft and runtime configuration use different DDKs')
         state.update(status='REFERENCE_PREPARED', stage='prepared', frontend=meta.get('frontend', 'ge'),
                      internal_precision=meta.get('internal_precision'), production_promotion='NOT_PERFORMED')
+        if candidate_replay:
+            state['precision_repair'] = meta['precision_repair']
         if 'host_embedding_binding' in meta:
             state['host_embedding_binding'] = meta['host_embedding_binding']
         if not apply:
@@ -283,6 +289,9 @@ def recover(execution, output):
                       replay_source=plan.get('replay_source'), runner=plan.get('runner'),
                       model=meta['model'],runtime=plan['runtime'], frontend=meta.get('frontend', 'ge'),
                       internal_precision=meta.get('internal_precision'), production_promotion='NOT_PERFORMED')
+        if 'precision_repair' in meta:
+            result['precision_repair'] = meta['precision_repair']
+            result['baseline_model'] = meta['candidate_replay']['baseline_model']
     except Exception as error:
         result.update(status='FAILED',error=f'{type(error).__name__}: {error}')
     finally:

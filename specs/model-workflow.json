@@ -6401,7 +6401,7 @@
         "candidate_code_changed": false
       },
       "hidden_prefix_probe": {
-        "status": "LAYER0_BATCH_COMPLETED_NUMERICAL_FAILED; OFFLINE_Q_ROPE_ATTRIBUTION_PENDING",
+        "status": "LAYER0_MATH_AUDIT_COMPLETE; ROPE_PRECISION_CANDIDATE_FULL_REPLAY_PENDING",
         "entry": "targets/cpro/tools/probe_draft_hidden.py",
         "commands": "docs/current-status.md",
         "source": "RETAINED_UNTOUCHED_CASE0_HOST_EMBEDDINGS_AND_MATCHING_AIR",
@@ -6536,17 +6536,20 @@
               "0": {
                 "total": 55,
                 "passed": 37,
-                "failed": 18
+                "failed": 18,
+                "reference_all_zero": 12
               },
               "2": {
                 "total": 55,
                 "passed": 18,
-                "failed": 37
+                "failed": 37,
+                "reference_all_zero": 0
               },
               "17": {
                 "total": 55,
                 "passed": 6,
-                "failed": 49
+                "failed": 49,
+                "reference_all_zero": 0
               }
             },
             "first_observed_failure": {
@@ -6573,14 +6576,112 @@
             "attribution": "INDEPENDENT_PREFIXES; DOES_NOT_PROVE_INTERNAL_ACCUMULATOR_PRECISION_OR_FULL_MODEL_FIRST_ERROR"
           },
           "offline_math_audit": {
-            "status": "HOST_IMPLEMENTATION_CHECKED_REAL_RETAINED_ANALYSIS_PENDING",
+            "status": "ANALYZED_USER_RETURNED",
             "entry": "validate_draft_vector.py --analyze RESULT --air-export ORIGINAL_EXPORT",
             "scope": "CPU_Q_INPUT_PROPAGATION_AND_FOUR_ROPE_SIN_COS_ROUNDING_HYPOTHESES",
             "model_execution": "NOT_RUN",
             "model_compilation": "NOT_RUN",
             "acceptance": "ORIGINAL_GOLDENS_AND_THRESHOLDS_UNCHANGED",
-            "host_evidence": "20261105T080118Z-439-e73c79/out/evidence/analysis-tests.log"
+            "host_evidence": "20261105T080118Z-439-e73c79/out/evidence/analysis-tests.log",
+            "observed_summary": {
+              "source": "USER_PASTED_RETAINED_CPU_MATH_AUDIT",
+              "source_cases": [
+                0,
+                2,
+                17
+              ],
+              "baseline_model_sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f",
+              "model_compilation": "NOT_RUN",
+              "device_execution": "NOT_RUN",
+              "numerical_validation": "FAILED",
+              "query": {
+                "all_contexts_same": true,
+                "device_vs_reference": {
+                  "relative_l2_error": 0.001451668317112324,
+                  "max_abs_error": 0.625,
+                  "failed_elements": 15,
+                  "elements": 65536
+                },
+                "device_vs_cpu_device_rms": {
+                  "relative_l2_error": 0.0013889104139264558,
+                  "max_abs_error": 0.625,
+                  "failed_elements": 15,
+                  "elements": 65536
+                },
+                "cpu_device_rms_vs_reference": {
+                  "relative_l2_error": 0.0005299440742072849,
+                  "max_abs_error": 0.125,
+                  "failed_elements": 0,
+                  "elements": 65536
+                },
+                "interpretation": "SEPARATE_RMS_SNAPSHOT_DOES_NOT_EXPLAIN_Q_RESIDUAL; INTERNAL_Q_INPUT_AND_ACCUMULATOR_NOT_PROVEN"
+              },
+              "rope": {
+                "contexts_0_2": {
+                  "fp16_phase_and_output_bitwise_equal": 8,
+                  "comparisons": 8
+                },
+                "case17": {
+                  "block_phase_max_abs": 207.0,
+                  "block_phase_rounding_max_abs": 0.0588226318359375,
+                  "context_phase_max_abs": 193.0,
+                  "context_phase_rounding_max_abs": 0.062469482421875,
+                  "branches": [
+                    {
+                      "source_edge": "Cos_1:0",
+                      "original_max_abs_error": 0.04248178005218506,
+                      "failed_elements": 44,
+                      "elements": 2048,
+                      "fp16_phase_and_output_max_abs_error": 1.52587890625e-05
+                    },
+                    {
+                      "source_edge": "Sin_1:0",
+                      "original_max_abs_error": 0.0587921803817153,
+                      "failed_elements": 50,
+                      "elements": 2048,
+                      "fp16_phase_and_output_max_abs_error": 6.103515625e-05
+                    },
+                    {
+                      "source_edge": "Cos:0",
+                      "original_max_abs_error": 0.05047226697206497,
+                      "failed_elements": 46,
+                      "elements": 2048,
+                      "fp16_phase_and_output_max_abs_error": 3.0517578125e-05
+                    },
+                    {
+                      "source_edge": "Sin:0",
+                      "original_max_abs_error": 0.050484027713537216,
+                      "failed_elements": 48,
+                      "elements": 2048,
+                      "fp16_phase_and_output_max_abs_error": 6.103515625e-05
+                    }
+                  ]
+                },
+                "interpretation": "STRONGLY_SUPPORTS_PHASE_FP16_ROUNDING; OUTPUT_ONLY_ROUNDING_DOES_NOT_EXPLAIN_FAILURES"
+              },
+              "full_model_root_cause": "NOT_PROVEN_BY_SEPARATE_PREFIXES"
+            },
+            "observed_evidence": "20261105T082539Z-1133-4138d8/out/evidence/retained-math-audit-summary.json"
           }
+        },
+        "rope_precision_candidate": {
+          "status": "HOST_CHECKED_DDK_AND_FULL_REPLAY_PENDING",
+          "implementation": "model/qwen35_moe_dflash/draft/incremental/air_rope.py",
+          "compiler_flag": "--rope-fp32-table",
+          "policy": "source-fp32-rope-trig-before-gather-v1",
+          "scope": "FOUR_SHARED_SOURCE_TRIG_BRANCHES_IN_COMPILER_COPY; FULL_DRAFT_REPLAY",
+          "source_air": "UNCHANGED",
+          "weights": "UNCHANGED",
+          "coefficients": "ORIGINAL_FP32_PHASE_SIN_COS_THEN_FP16_IN_FP32_CARRIER",
+          "replay": "ORIGINAL_OUTPUT_INIT_UNTOUCHED_INPUTS_GOLDENS_SCHEDULE_AND_THRESHOLDS; ABI_REBOUND_BY_SEMANTIC_NAME",
+          "reference_generation": "NOT_RUN",
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN",
+          "matmul_precision": "UNRESOLVED",
+          "host_checks": 16,
+          "host_evidence": "20261105T082539Z-1133-4138d8/out/evidence/rope-host-checks.json",
+          "next": "docs/current-status.md"
         }
       }
     }

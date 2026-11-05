@@ -6,13 +6,14 @@ runtime model until physical IO binding and device precision are validated.
 from collections import Counter
 from contextlib import contextmanager, ExitStack
 import fcntl
+import hashlib
 import json
 import math
 import os
 from pathlib import Path, PurePosixPath
 import shutil
 
-from qwen35_moe_dflash.common.artifacts import output_path, working_directory
+from qwen35_moe_dflash.common.artifacts import checked_file, output_path, working_directory
 
 AIR_KIND = 'qwen35-incremental-draft-pytorch-air'
 OMC_KIND = 'qwen35-incremental-draft-pytorch-omc'
@@ -595,7 +596,7 @@ def inspect_pytorch_compilation(directory):
 
 def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                     timeout_seconds=7200, tbe_diagnosis=None, progress=print,
-                    limit_partition_size=None):
+                    limit_partition_size=None, rope_fp32_table=False):
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
     if limit_partition_size is not None and type(limit_partition_size) is not bool:
@@ -629,12 +630,23 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
     inspection = inspect_air(source / 'export.air', schema,
                              expected_norms=32, require_int32_indices=True, expected_attention=manifest.get('attention'), expected_top1=manifest.get('top1'))
     _check_weight_storage(source, manifest, inspection)
+    if rope_fp32_table:
+        from .optimization import manifest_policy
+        if (manifest_policy(manifest) != 'packed-spatial-host-embedding'
+                or manifest.get('attention', {}).get('policy') != COMPOSED_ATTENTION):
+            raise ValueError('RoPE precision candidate requires the retained host-embedding composed-attention source')
     def prepare_air(raw):
         from .air_reshape import fold_reshape_chains
         from .air_zeros import materialize_zeros
         from .air_fill import materialize_fills
         from .air_matmul import fold_weight_transposes
         from .air_embedding import fold_embedding_unit_scale
+        rope = None
+        if rope_fp32_table:
+            from .air_rope import fold_rope_tables
+            raw_before_rope = raw
+            raw, rope = fold_rope_tables(raw, schema, source,
+                expected_rows=manifest['cache_capacity']+max(manifest['context_rows'], manifest['max_draft_tokens']+1))
         prepared, evidence = fold_reshape_chains(raw, schema)
         prepared, zeros = materialize_zeros(prepared, schema)
         prepared, fills = materialize_fills(prepared, schema)
@@ -648,6 +660,9 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                         compiler_sha256=embedding['compiler_sha256'])
         if zeros['zero_count'] or fills['fill_count'] or transposes['weight_transpose_count'] or embedding['unit_scale_count']:
             evidence['status'] = 'APPLIED'
+        if rope is not None:
+            evidence.update(status='APPLIED', policy='draft-static-preparation-rope-fp32-v1',
+                            source_sha256=hashlib.sha256(raw_before_rope).hexdigest(), rope=rope)
         return prepared, evidence
     with _slot(output, OMC_KIND, replace) as root:
         result = {k: manifest[k] for k in ('context_rows', 'cache_capacity', 'max_draft_tokens', 'inputs', 'outputs', 'rms', 'gamma')}
@@ -684,6 +699,8 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                     with snapshot.open('rb') as stream:
                         if stream.read((64 << 20) + 1) != source_raw:
                             raise ValueError('source AIR changed after static preparation; snapshot differs')
+                    if rope_fp32_table:
+                        checked_file(snapshot.parent, preparation['rope']['phase_file'])
                     return prepared_raw, preparation
             result['stage'] = 'compile'
             _save(root / 'manifest.json', result)
@@ -706,6 +723,8 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                 result['air_preparation'] = {key: evidence[key] for key in
                     ('policy', 'status', 'removed_count', 'zero_count', 'fill_count', 'weight_transpose_count', 'unit_scale_count')}
                 result['air_preparation']['report'] = 'compilation/air-preparation.json'
+                if rope_fp32_table:
+                    result['precision_repair'] = evidence['rope']
             if compiled['status'] != 'COMPILED':
                 raise RuntimeError(str(compiled.get('error', compiled['status'])))
             model_path = root / 'compilation' / compiled['omc']['path']

@@ -23,6 +23,8 @@ def main(argv=None):
     parser.add_argument('--tbe-diagnosis', help='optional existing selected-DDK TBE compatibility diagnosis')
     parser.add_argument('--ddk-root', help='selected DDK root; independent of old compilation jobs')
     parser.add_argument('--ddk-id', help='version of the selected DDK; required with --ddk-root')
+    parser.add_argument('--rope-fp32-table', action='store_true',
+                        help='PyTorch host-embedding candidate: precompute Sin/Cos from the original FP32 phase table in the compiler copy')
     parser.add_argument('--limit-partition-size', choices=('true', 'false'),
                         help='PyTorch only: forward selected OMG partition limit; true also requires observed GraphOp weights <= 2 GiB - 1 before packing')
     args = parser.parse_args(argv)
@@ -30,7 +32,7 @@ def main(argv=None):
         parser.error('--timeout-seconds must be positive')
     if args.air_export and not args.output:
         parser.error('--output is required with --air-export')
-    if args.inspect_compile and (args.output or args.replace or args.replace_failed or args.limit_partition_size is not None):
+    if args.inspect_compile and (args.output or args.replace or args.replace_failed or args.rope_fp32_table or args.limit_partition_size is not None):
         parser.error('--inspect-compile is read-only; omit output and replacement options')
     try:
         if args.inspect_compile:
@@ -50,11 +52,14 @@ def main(argv=None):
                 ddk_root=args.ddk_root or os.environ.get('CPRO_DDK_ROOT'),
                 ddk_id=args.ddk_id or os.environ.get('CPRO_DDK_ID'),
                 limit_partition_size=None if args.limit_partition_size is None else args.limit_partition_size == 'true',
+                rope_fp32_table=args.rope_fp32_table,
                 progress=lambda value: print('pytorch-draft: ' + value, flush=True))
         else:
             from qwen35_moe_dflash.draft.incremental.storage import compile_shared
             if args.replace:
                 parser.error('--replace is only for a PyTorch candidate; GE uses --replace-failed')
+            if args.rope_fp32_table:
+                parser.error('--rope-fp32-table requires the PyTorch host-embedding source')
             if args.limit_partition_size is not None:
                 parser.error('--limit-partition-size is only for a PyTorch candidate')
             result = compile_shared(args.air_export, args.output, replace_failed=args.replace_failed,
@@ -66,7 +71,7 @@ def main(argv=None):
             'runtime_integration', 'full_loop_smoke', 'weight_files_copied', 'graphop_counts',
             'interface_inspection', 'interface_error', 'air_preparation', 'attention', 'composed_attention',
             'optimization', 'projection', 'host_embedding', 'top1', 'top1_placement', 'installation',
-            'compiler_options', 'partition_weights', 'omc', 'error', 'compilation_diagnostics', 'next')
+            'compiler_options', 'precision_repair', 'partition_weights', 'omc', 'error', 'compilation_diagnostics', 'next')
         shown = {k: result[k] for k in keys if k in result}
         shown.update(input_count=len(result.get('inputs', [])), output_count=len(result.get('outputs', [])),
             manifest=result.get('manifest', str(Path(args.output).absolute() / 'manifest.json')))

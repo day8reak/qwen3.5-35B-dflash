@@ -1,50 +1,40 @@
-# 当前阶段：复算 hidden 误差来源
+# 当前阶段：修复 RoPE 相位精度并回放完整 Draft
 
-2026-11-05：第0层55个单输出检查点 × case 0／2／17全部完成，165组、1650次比较均重复稳定；精度仍失败。三个上下文首次观察到超差均在Q投影 `MatMul:0`，相对L2约0.145%；输入RMS通过，Q-RMS后也通过。20组算术结果／FP16 Cast配对在三个上下文的十次比较均一致。本批未出现“参考非零、输出全零”。完整Draft精度仍未通过，性能优化暂缓。详情见[结果页](results.md)。
+2026-11-05：离线复算已返回。四条 Sin/Cos 在 case 0／2 都与“先把相位转 FP16，再计算三角函数并转 FP16”的模拟逐位一致；case 17 的模拟残差也仅为 1.5e-5～6.1e-5。原 FP32 相位在 case 17 被舍入约 0.059～0.062 弧度，支持相位降精度导致偏差。Q 投影仍有独立残差，完整 Draft 精度尚未通过，性能优化暂缓。证据见[结果页](results.md)。
 
-下一步只在CPU读取现有快照：用设备input-RMS输出复算Q投影，区分可由上游误差解释的部分；对四条Sin/Cos分支分别模拟相位舍入、输出舍入和两者同时舍入。独立前缀中的RMS不等于Q前缀内部实测输入，候选匹配不能证明内部累加精度；原golden和门槛不变。
+当前候选在编译副本中，把四条 Sin/Cos 改成从原 FP32 相位表预计算的系数查表：先算三角函数，再转 FP16，沿用原位置索引和下游乘加。源 AIR、模型权重、输入、golden 和容差保留。系数以能精确表示 FP16 值的 FP32 常量载体存储，不代表设备内部使用 FP32。NumPy 与参考框架的三角函数舍入仍须通过原完整模型门槛检验。
 
-## DDK服务器执行
+## DDK 服务器执行
 
-更新代码后运行以下离线分析。使用已完成的 `hidden-layer0/result`、原 `top1-integration/export` 及其权重，无需编译或设备调用，也不需要Torch/TorchAir。
+只编译一个完整候选，并回放原 isolated／feedback 各19例。无需重导出 AIR、重新生成参考或再次跑165组探针；不需要 Torch/TorchAir。保留本次编译副本，后续 ABI 绑定需要它。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
-export LAYER_DIR="$TOP1_DIR/hidden-layer0"
+export ROPE_DIR="$TOP1_DIR/rope-fp32"
 
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --analyze "$LAYER_DIR/result" --air-export "$TOP1_DIR/export" \
-  > "$LAYER_DIR/math-audit.json"
-
-python3 - "$LAYER_DIR/math-audit.json" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-if 'math_audit' not in d:
-    print(json.dumps(d, ensure_ascii=False))
-    raise SystemExit(1)
-def compact(r):
-    return {k: r[k] for k in ('passed', 'bitwise_equal', 'max_abs_error', 'relative_l2_error')} | {
-        'failed_elements': r['tolerance']['failed_elements'],
-        'elements': r['tolerance']['elements']}
-contexts = []
-for c in d['math_audit']['contexts']:
-    q = c['query_projection']
-    contexts.append({
-        'source_case': c['source_case'],
-        'query': {k: compact(v) for k, v in q.items() if isinstance(v, dict)},
-        'trigonometry': [{
-            'source_edge': t['source_edge'], 'phase_edge': t['phase_edge'],
-            'phase_max_abs': t['phase_max_abs'],
-            'phase_fp16_rounding_max_abs': t['phase_fp16_rounding_max_abs'],
-            'device_vs_candidates': {k: compact(v) for k, v in t['device_vs_candidates'].items()}
-        } for t in c['trigonometry']]})
-print(json.dumps({
-    'numerical_validation': d['numerical_validation'],
-    'counts_by_context': d['summary']['counts_by_context'],
-    'math_audit_status': d['math_audit']['status'], 'contexts': contexts
-}, ensure_ascii=False))
-PY
+python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
+  --air-export "$TOP1_DIR/export" --rope-fp32-table \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
+  --output "$ROPE_DIR/compiled"
 ```
 
-贴最后的摘要即可。完整JSON另保留每点超差元素数量、最严重坐标、参考重放一致性和编译归属。AIR、权重及保留输入按原记录校验；只在十次输出逐位稳定时使用第0次快照复算。该功能已通过本地合成检查，真实快照的CPU分析结果待回传。
+编译成功后运行原数据回放。工具校验原源图、权重、几何和语义 IO；若新 OMC 输入槽位顺序变化，按语义名称重排原输入文件，逐个核对字节哈希。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --replay "$TOP1_DIR/output-init/result" \
+  --compiled "$ROPE_DIR/compiled" \
+  --source "$AI_RUN_DIR/draft/source/prepared" \
+  --air-export "$TOP1_DIR/export" --ddk-root "$CPRO_DDK_ROOT" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --output-initialization untouched --output "$ROPE_DIR/run" --apply
+
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$ROPE_DIR/run" --output "$ROPE_DIR/result"
+```
+
+若返回仍在运行，只回收同一次执行。贴编译摘要和最后回收摘要即可，重点比较原七处 Top1 差异、hidden 与 appended KV 误差，同时保留未写区检查。Q 投影尚未修复，误差下降不等于完整精度通过。
+
+本地16项检查已通过：完整相位表位置覆盖、图与文件绑定、输入槽位重映射和原数据保护；使用合成数据及模拟编译入口，尚无该候选的真实 OMG 或设备结果。
