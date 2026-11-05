@@ -103,6 +103,8 @@ def start_profile(prepared, inspection, output, *, parser_tool=DEFAULT_PARSER,
                 bind_profile(prepared, inspection, refresh_output=out / 'input-revalidation'))
         result.update({k:plan[k] for k in ('source_numerical_validation','profiling_scope',
             'model_manager_interface','model_restore_mode') if k in plan})
+        result.update(model_sha256=plan['model']['sha256'], timing_scope=plan['timing_scope'],
+            profile_case=plan.get('input_provenance', {}).get('case'))
         if plan.get('input_revalidation'):
             result['input_revalidation'] = {key: plan['input_revalidation'][key]
                 for key in ('status', 'identity_change_count', 'prepared')}
@@ -255,6 +257,8 @@ def recover_profile(execution, output):
         plan = json.loads(raw)
         result.update({k:plan[k] for k in ('source_numerical_validation','profiling_scope',
             'model_manager_interface','model_restore_mode') if k in plan})
+        result.update(model_sha256=plan['model']['sha256'], timing_scope=plan['timing_scope'],
+            profile_case=plan.get('input_provenance', {}).get('case'))
         token = plan['token']
         if (plan.get('artifact_kind') != KIND or re.fullmatch('[0-9a-f]{32}', token) is None
                 or plan['board_attempt'] != PREFIX + token

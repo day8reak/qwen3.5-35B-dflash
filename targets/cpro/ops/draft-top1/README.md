@@ -2,7 +2,7 @@
 
 有限连续ND FP16，静态rank1–8、正维度、总元素数≤INT32_MAX；沿最后维归约，返回INT32索引，并列取最小索引。TopK、其他轴、FP32和310P执行适配未实现。
 
-**当前Qwen配置 `[1,15,248320] → [1,15]` 已在kirinx90完成七组、70次精确稳定的上板验证，单NPU子图；同步API均值约1.232ms。** 基线保留在 `draft/tests/stable-arg-max-ge-config`。17×8193尾部四组、40次也已通过，API均值0.515ms。当前进入[完整Draft接入](../../../../docs/current-status.md)，无需重建allops或重复单算子验证；下面是首次构建流程。
+**当前Qwen配置 `[1,15,248320] → [1,15]` 已在kirinx90完成七组、70次精确稳定的上板验证，单NPU子图；同步API均值约1.232ms。** 基线保留在 `draft/tests/stable-arg-max-ge-config`。17×8193尾部四组、40次也已通过，API均值0.515ms。当前进入[完整Draft精度定位与profiling](../../../../docs/current-status.md)，无需重建allops或重复单算子验证；下面是首次构建流程。
 
 ## DDK服务器：构建与GE单算子测试
 
@@ -64,6 +64,6 @@ tokens = torch.ops.custom_ops.stable_arg_max.default(logits)
 | GE / host注册 | StableArgMax，输入x、输出indices |
 | kernel入口 | stable_arg_max |
 
-`scripts/export_probe.py`保留TorchAir导出；DDK服务器使用上面的GE入口。完整Draft接入、PrivateUse1执行和310P adapter尚未验证。
+`scripts/export_probe.py`保留TorchAir导出；DDK服务器使用上面的GE入口。完整Draft候选已执行但数值失败，正在定位；PrivateUse1执行和310P adapter尚未验证。
 
 [合同](docs/CONTRACT.md) · [环境](docs/ENVIRONMENT.md) · [验证](docs/VALIDATION.md) · [官方接口来源](docs/OFFICIAL_SOURCES.md)

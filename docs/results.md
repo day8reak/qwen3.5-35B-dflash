@@ -1,6 +1,6 @@
 # 当前结果
 
-更新：2026-11-05。以下设备/编译结果来自用户回传，未在本地重新运行。当前操作见[整图接入命令](current-status.md)。完整 Draft 的数值门槛仍未通过，尚无配对端到端加速结论。
+更新：2026-11-05。以下设备/编译结果来自用户回传，未在本地重新运行。当前操作见[精度定位与profiling](current-status.md)。完整Draft数值门槛仍未通过，尚无配对端到端加速结论。
 
 ## 自定义 Top1
 
@@ -12,7 +12,7 @@
 | 图层面归属 | NPUCL=1；CPU操作=0；主图遗留计算=0 |
 | 设备数值与稳定性 | 七组全部通过；3次预热后每组10次，70次／1050个INT32结果精确一致、重复稳定 |
 | 同步API墙钟 | 七组等权总均值1.232ms；全部调用范围0.922–1.695ms |
-| 模型集成 | 可选Torch导出接线已实现并经主机检查；完整AIR／OMC／板端待验；TopK和310P未实现 |
+| 模型集成 | 完整Draft候选已执行回收，数值失败；单算子通过不代表整图精度通过；TopK和310P未实现 |
 
 当前OMC：`draft/tests/stable-arg-max-ge-config/omc/compile-work/generated/model.omc`。
 SHA256：`2e76eda684ae0a4ac201af1c1ba511ca6b84e864a698193cfd1cfdfc1de2598f`。
@@ -46,17 +46,19 @@ SHA256：`2e76eda684ae0a4ac201af1c1ba511ca6b84e864a698193cfd1cfdfc1de2598f`。
 
 C16／cap192／K15、host embedding候选：板端加载和执行已完成；isolated／feedback各19例仍全部未通过原严格数值门槛，有效Top1分别82/86、83/86。缓存保留检查通过，重复输出稳定。host查表准备不计入下表API。
 
-| 同步API均值 | 上一双NPU轮 ms | 单NPU主体／host embedding ms |
+| 同步API均值 | 原生Top1／host embedding ms | StableArgMax候选 ms |
 |---|---:|---:|
-| isolated catchup，11次 | 192.067 | 103.958 |
-| isolated proposal，8次 | 191.469 | 103.998 |
-| feedback catchup，11次 | 200.515 | 106.090 |
-| feedback proposal，8次 | 189.147 | 104.994 |
-| 38次加权均值 | 193.772 | 104.802 |
+| isolated catchup，11次 | 103.958 | 66.378 |
+| isolated proposal，8次 | 103.998 | 67.224 |
+| feedback catchup，11次 | 106.090 | 66.435 |
+| feedback proposal，8次 | 104.994 | 66.288 |
+| 38次加权均值 | 104.802 | 66.554 |
 
-均值下降45.9%，但不是含host查表的端到端结果，也不是固定输入3预热＋10次的稳态验收。目标是常驻预热后proposal同步Process均值≤50ms，尚未达到。
+新候选报告均值下降约36.5%，但两轮不是配对稳态验收，也不含host查表／输入准备，不能据此给出端到端加速或把全部收益归因于算子本身。目标是常驻预热后proposal同步Process均值≤50ms，尚未达到。
 
-该候选另一次profiling：model `inference` 为 **103.720ms**，算子duration合计73.656ms，其中末尾MatMul 19.960ms、CPU ArgMax 12.353ms、Conv 8.643ms。算子可能重叠，不能相加当关键路径或把差额直接归于搬运。load 160.281ms、unload 4.859ms另计。此模型尚未集成新Top1。
+新请求 `qwen35_draft_accuracy_279e74c27a2c470598f5d4488c3bf54f` 已完成、输出回收且锁释放。Top1七处差异及KV误差范围与上一候选相同：appended KV相对L2约0.44–0.83%，未写入区保持；feedback两组重复逐位稳定。不过isolated首例hidden最大绝对误差为4.42578125、相对L2 **65.11%**，此前该例为0.15234375／1.45%；feedback hidden仍为1.45–2.61%。不能把整图数值变化归结为已有的小误差。当前先比较首例两种模式的14路快照，同时采集同一候选profiling；不改容差。回传摘要未含新OMC digest或编译边界，整图归属待本地只读检查。
+
+原生Top1候选的另一次profiling：model `inference` 为 **103.720ms**，算子duration合计73.656ms，其中末尾MatMul 19.960ms、CPU ArgMax 12.353ms、Conv 8.643ms。算子可能重叠，不能相加当关键路径或把差额直接归于搬运。load 160.281ms、unload 4.859ms另计。StableArgMax整图的新profiling尚待用户采集。
 
 ## 已有端侧闭环
 

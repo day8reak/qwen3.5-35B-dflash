@@ -2,7 +2,7 @@
 
 从源权重生成Draft、Prefill和Decode，再准备配置并运行板端文字闭环。原始Target Cpro导出工程、量化权重与源模型权重由用户提供，不在GitHub中。当前首次生成运行ABI配置的入口尚未补齐，具体边界见第5步；已有成功闭环的配置可由当前阶段整理命令保留。
 
-当前开发阶段为[自定义Top1整图接入](current-status.md)。单算子两种shape已上板通过，可选Torch导出接线已实现，完整候选待编译和数值验证。本页保留已接线模型的从零重建方法。
+当前开发阶段为[Draft精度定位与profiling](current-status.md)。自定义Top1单算子已通过，完整候选已执行但数值失败。本页保留已接线模型的从零重建方法及候选配方。
 
 ## 1. 公共目录和源权重
 
@@ -46,7 +46,35 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 编译临时文件在`draft/tests/compile/`，成功后将模型和必要元数据发布到`draft/omc/`并删除临时构建；失败不替换当前模型。替换已有模型时，只保留一份临时回退至新模型的板端闭环成功回收，随后自动删除。需要DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND、compiled_precision和compiled_abi均PASSED。C16／cap192／K15已经上板接通，独立数值测试仍未通过原逐元素规则，详见结果页。
 
-PyTorch候选使用同一导出入口的`--frontend pytorch`，在权重服务器的`draft/air/`生成可移植的`export.air + weight/`，DDK服务器也安装到`draft/air/`后编译；完整命令见[当前阶段测试](current-status.md)。该路线保留 npu_rms_norm → RmsNorm，当前attention改为MatMul／Softmax组合，正在重新导出、编译并验证完整Draft精度；旧融合版已执行但数值失败。新候选尚未替换本节已接线GE模型。
+需要重建当前PyTorch候选时，用下列配方代替上面的GE导出／编译：权重服务器有TorchAir，DDK服务器已按[算子说明](../targets/cpro/ops/draft-top1/README.md)安装StableArgMax。原生Top1可省略`--top1`；候选使用host FP16 embedding、RmsNorm、MatMul／Softmax attention，不替换公共模型。
+
+```bash
+export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
+# 权重服务器：使用上面prepare_draft生成的权重。
+python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
+  --prepared "$AI_RUN_DIR/draft/source/prepared" --frontend pytorch \
+  --optimization packed-spatial-host-embedding --top1 stable-arg-max \
+  --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 \
+  --output "$TOP1_DIR/export"
+
+# 将整个export目录（含weight和元数据）复制到DDK服务器对应位置，再编译。
+python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
+  --air-export "$TOP1_DIR/export" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" --output "$TOP1_DIR/compiled"
+
+# DDK／HDC服务器：配置采用已有成功执行的runtime及设备连接。
+export VECTOR_CONFIG="${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --compiled "$TOP1_DIR/compiled" --air-export "$TOP1_DIR/export" \
+  --source "$AI_RUN_DIR/draft/source/prepared" \
+  --ddk-root "$CPRO_DDK_ROOT" --config "$VECTOR_CONFIG" \
+  --output "$TOP1_DIR/run" --apply
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$TOP1_DIR/run" --output "$TOP1_DIR/result"
+```
+
+导出需`PYTORCH_DRAFT_AIR_EXPORTED`，编译需`PYTORCH_DRAFT_OMC_COMPILED`及`top1_placement.status=NPU_OUTPUT_BOUNDARY_PASSED`。仅确认token出口来自NPU，不能证明全部图内精度。PENDING只回收同一请求。已有本轮产物时直接执行当前阶段页，勿重跑此配方。
 
 ## 3. Target源工程 → Prefill64／Decode1 AIR → OMC
 

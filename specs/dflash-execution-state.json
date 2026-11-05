@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_kind": "qwen35-dflash-execution-plan-state",
-  "updated": "2026-11-04",
+  "updated": "2026-11-05",
   "plan_document": "docs/reference/dflash-delivery-plan.md",
   "current_commands": "docs/current-status.md",
   "overall_status": "in_progress",
@@ -334,13 +334,7 @@
     },
     "incremental_air": "User reported DRAFT_INCREMENTAL_AIR_EXPORTED: C16/cap192/K15, 17 inputs/14 outputs, six layers, 4718592-byte KV bank; no original weight copies. New OMG/native execution remains pending."
   },
-  "next_action": {
-    "phase": "P4",
-    "type": "compile_and_measure_packed_spatial_draft",
-    "implementation_required": false,
-    "command_document": "docs/current-status.md",
-    "note": "First graph candidate implemented and host checked. User runs selected-DDK export/compile, accuracy recovery and same-model vendor profile via docs/current-status.md. 50ms remains unachieved; runtime/operator gap remains unattributed."
-  },
+  "next_action": "Diagnose retained full Draft snapshots while user collects same-OMC operator profiling; no gate changes or model promotion.",
   "last_actual_execution": {
     "schema_version": 1,
     "artifact_kind": "qwen35-board-text-preread-user-observation",
@@ -984,7 +978,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "docs/current-status.md: weights-server export --top1 stable-arg-max; DDK compile; full Draft accuracy start/recover",
+    "next_command": "docs/current-status.md",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -1014,7 +1008,47 @@
       "local_test_sources": "NOT_PUBLISHED"
     },
     "latest_observation": "specs/incremental-draft-native-host-validation.json",
-    "latest_accuracy_observation": "specs/incremental-draft-native-host-validation.json",
+    "latest_accuracy_observation": {
+      "source": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json",
+      "status": "NUMERICAL_FAILED",
+      "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+      "numerical_validation": "FAILED",
+      "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_279e74c27a2c470598f5d4488c3bf54f",
+      "model_sha256": null,
+      "case_counts": {
+        "isolated": {
+          "total": 19,
+          "passed": 0,
+          "top1_tokens": 86,
+          "top1_matches": 82,
+          "top1_failed": 3,
+          "hidden_failed": 8,
+          "kv_failed": 13,
+          "preservation_failed": 0
+        },
+        "feedback": {
+          "total": 19,
+          "passed": 0,
+          "top1_tokens": 86,
+          "top1_matches": 83,
+          "top1_failed": 3,
+          "hidden_failed": 8,
+          "kv_failed": 18,
+          "preservation_failed": 0
+        }
+      },
+      "first_failure": {
+        "mode": "isolated",
+        "index": 0,
+        "label": "empty-context",
+        "top1_mismatches": 1,
+        "hidden": {
+          "max_abs_error": 4.42578125,
+          "rmse": 0.6511128437106132,
+          "relative_l2_error": 0.6511133260512757
+        }
+      }
+    },
     "performance_target": {
       "mean_ms": 50,
       "status": "NOT_ACHIEVED",
@@ -6674,7 +6708,7 @@
         }
       },
       "custom_top1": {
-        "status": "TWO_SHAPE_DEVICE_PASSED_FULL_DRAFT_INTEGRATION_HOST_READY",
+        "status": "STANDALONE_PASSED_FULL_DRAFT_EXECUTED_NUMERICAL_FAILED",
         "operator_dir": "targets/cpro/ops/draft-top1",
         "run_id": "20261105T021938Z-23422-d80bfd",
         "authorization": "LAST_BUILTIN_FAILURE_TRIGGERED_USER_APPROVED_CUSTOM_TOP1",
@@ -6691,8 +6725,8 @@
         "kernel_implementation": "STABLE_ARG_MAX_SOURCE_WITH_HOST_TILING_AND_TORCH_META_GE_CONVERTER",
         "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
         "full_draft_changed": true,
-        "blocker": "FULL_DRAFT_TORCHAIR_EXPORT_OMG_AND_USER_DEVICE_VALIDATION_PENDING",
-        "next": "Run optional stable-arg-max full Draft export, compile and original-gate numerical validation; do not repeat standalone probes.",
+        "blocker": "Full Draft original gates failed; isolated first hidden relL2 0.651113 needs retained-output diagnosis.",
+        "next": "Read retained first-mode snapshots and collect one user-authorized diagnostic profile of the same OMC.",
         "command": "docs/current-status.md",
         "torch_op": "custom_ops::stable_arg_max",
         "ge_type": "StableArgMax",
@@ -6887,7 +6921,7 @@
           ],
           "run_id": "20261105T020607Z-23101-092df2"
         },
-        "full_draft_change_scope": "OPTIONAL_EXPORT_CODE_ONLY; RUNNING_MODEL_AND_VALIDATED_OPERATOR_UNCHANGED",
+        "full_draft_change_scope": "OPT_IN_TOP1_CANDIDATE_EXECUTED; PRODUCTION_NOT_PROMOTED",
         "tail_device_observation": {
           "artifact_kind": "stable-arg-max-tail-device-observation",
           "status": "PASSED",
@@ -6974,7 +7008,7 @@
           "full_draft_validation": "NOT_RUN"
         },
         "integration": {
-          "status": "HOST_PASSED_TARGET_PENDING",
+          "status": "DEVICE_EXECUTED_NUMERICAL_FAILED",
           "policy": "stable-arg-max",
           "torch_op": "custom_ops::stable_arg_max",
           "ge_type": "StableArgMax",
@@ -6982,14 +7016,221 @@
           "output_contract": "INT32_SMALLEST_INDEX",
           "reference": "UNCHANGED_ORIGINAL_MODEL",
           "host_evidence": "20261105T021938Z-23422-d80bfd/evidence/integration-check.json",
-          "model_compilation": "NOT_RUN",
-          "device_execution": "NOT_RUN",
-          "numerical_validation": "NOT_RUN",
+          "model_compilation": "COMPILED_CANDIDATE_EXECUTED; COMPILATION_RECEIPT_NOT_IN_PASTED_SUMMARY",
+          "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+          "numerical_validation": "FAILED",
           "deployment": "EXISTING_RUNTIME_NOT_REPLACED",
           "command_document": "docs/current-status.md",
           "host_checks": 30,
           "tool_evidence": "20261105T021938Z-23422-d80bfd/evidence/integration-tool-check.json",
-          "authorization": "EXISTING_USER_REQUEST_FOR_CUSTOM_DRAFT_TOP1_TORCH_META_EXPORT; OPT_IN_ONLY; NO_PRECISION_APPROXIMATION"
+          "authorization": "EXISTING_USER_REQUEST_FOR_CUSTOM_DRAFT_TOP1_TORCH_META_EXPORT; OPT_IN_ONLY; NO_PRECISION_APPROXIMATION",
+          "device_observation": {
+            "provenance": "USER_PASTED_RECOVERY_SUMMARY_NOT_INDEPENDENTLY_RETRIEVED",
+            "status": "NUMERICAL_FAILED",
+            "stage": "complete",
+            "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+            "model_compilation": "NOT_RUN",
+            "numerical_validation": "FAILED",
+            "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_279e74c27a2c470598f5d4488c3bf54f",
+            "model_sha256": null,
+            "model_association": "PRIOR_TOP1_INTEGRATION_COMMAND; SUMMARY_OMITS_OMC_IDENTITY_AND_PLACEMENT",
+            "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+            "production_promotion": "NOT_PERFORMED",
+            "host_embedding_binding": "VERIFIED",
+            "comparison": {
+              "atol": 0.01,
+              "rtol": 0.01,
+              "top1_mismatches": 0,
+              "top1_mismatches_field": "ACCEPTANCE_THRESHOLD_NOT_OBSERVED_COUNT",
+              "cache_preservation": "BIT_EXACT_OUTSIDE_WRITE_INTERVAL"
+            },
+            "case_counts": {
+              "isolated": {
+                "total": 19,
+                "passed": 0,
+                "top1_tokens": 86,
+                "top1_matches": 82,
+                "top1_failed": 3,
+                "hidden_failed": 8,
+                "kv_failed": 13,
+                "preservation_failed": 0
+              },
+              "feedback": {
+                "total": 19,
+                "passed": 0,
+                "top1_tokens": 86,
+                "top1_matches": 83,
+                "top1_failed": 3,
+                "hidden_failed": 8,
+                "kv_failed": 18,
+                "preservation_failed": 0
+              }
+            },
+            "first_failure": {
+              "mode": "isolated",
+              "index": 0,
+              "label": "empty-context",
+              "top1_mismatches": 1,
+              "hidden": {
+                "max_abs_error": 4.42578125,
+                "rmse": 0.6511128437106132,
+                "relative_l2_error": 0.6511133260512757
+              }
+            },
+            "top1_differences": [
+              {
+                "mode": "isolated",
+                "index": 0,
+                "position": 10,
+                "actual": 220,
+                "expected": 13
+              },
+              {
+                "mode": "isolated",
+                "index": 17,
+                "position": 6,
+                "actual": 791,
+                "expected": 4560
+              },
+              {
+                "mode": "isolated",
+                "index": 17,
+                "position": 8,
+                "actual": 25,
+                "expected": 220
+              },
+              {
+                "mode": "isolated",
+                "index": 18,
+                "position": 6,
+                "actual": 791,
+                "expected": 4560
+              },
+              {
+                "mode": "feedback",
+                "index": 0,
+                "position": 10,
+                "actual": 220,
+                "expected": 13
+              },
+              {
+                "mode": "feedback",
+                "index": 17,
+                "position": 6,
+                "actual": 791,
+                "expected": 4560
+              },
+              {
+                "mode": "feedback",
+                "index": 18,
+                "position": 6,
+                "actual": 791,
+                "expected": 4560
+              }
+            ],
+            "relative_l2_ranges": {
+              "isolated": {
+                "hidden": [
+                  0.013387271239375807,
+                  0.6511133260512757
+                ],
+                "kv_whole_bank": [
+                  0,
+                  0.005456312603925036
+                ],
+                "kv_appended": [
+                  0.004417372793104131,
+                  0.008283531899103903
+                ],
+                "kv_committed": [
+                  0,
+                  0.005456312603925036
+                ]
+              },
+              "feedback": {
+                "hidden": [
+                  0.014494312718133574,
+                  0.026116219967572855
+                ],
+                "kv_whole_bank": [
+                  0.004464887044850352,
+                  0.006521850010084283
+                ],
+                "kv_appended": [
+                  0.004417372793104131,
+                  0.008283531899103903
+                ],
+                "kv_committed": [
+                  0.004464887044850352,
+                  0.006521850010084283
+                ]
+              }
+            },
+            "nonfinite_tensors": 0,
+            "feedback_repeats": [
+              {
+                "index": 3,
+                "outputs_bitwise_equal": true
+              },
+              {
+                "index": 18,
+                "outputs_bitwise_equal": true
+              }
+            ],
+            "native_api_latency": {
+              "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; HOST_EMBEDDING_PREPARATION_EXCLUDED",
+              "isolated": {
+                "catchup": {
+                  "calls": 11,
+                  "mean_ms": 66.37790909090909,
+                  "min_ms": 64.625,
+                  "max_ms": 66.792
+                },
+                "proposal": {
+                  "calls": 8,
+                  "mean_ms": 67.22375,
+                  "min_ms": 66.456,
+                  "max_ms": 71.364
+                }
+              },
+              "feedback": {
+                "catchup": {
+                  "calls": 11,
+                  "mean_ms": 66.43490909090909,
+                  "min_ms": 64.952,
+                  "max_ms": 67.143
+                },
+                "proposal": {
+                  "calls": 8,
+                  "mean_ms": 66.2885,
+                  "min_ms": 64.502,
+                  "max_ms": 67.105
+                }
+              }
+            },
+            "diagnostic_profiling": {
+              "authorization": "USER_REQUESTED_PROFILING_IN_PARALLEL_WITH_ACCURACY_DIAGNOSIS",
+              "status": "PENDING_USER_EXECUTION",
+              "model_compilation": "NOT_RUN",
+              "times": 1,
+              "warmup": 0,
+              "interface": "V1",
+              "case": 2,
+              "scope": "SAME_RETAINED_OMC_AND_PARTIAL_CONTEXT_FIXTURE; NOT_ACCURACY_OR_STEADY_PERFORMANCE_ACCEPTANCE"
+            },
+            "derived": {
+              "weighted_api_mean_ms": 66.55365789473683,
+              "previous_mean_ms": 104.8018947368421,
+              "previous_first_isolated_hidden_relative_l2": 0.014494312718133574,
+              "previous_first_isolated_hidden_max_abs_error": 0.15234375,
+              "root_cause": "UNRESOLVED; RETAINED_INITIAL_SNAPSHOT_COMPARISON_NEXT",
+              "reported_mean_reduction_percent": 36.49574937375581
+            },
+            "run_id": "20261105T025158Z-24349-82e298",
+            "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json"
+          },
+          "next": "docs/current-status.md: retained --diagnose, compiled --inspect-boundaries and one V1 profile",
+          "diagnostic_host_evidence": "20261105T025158Z-24349-82e298/evidence/diagnostic-profile-check.json"
         }
       }
     }

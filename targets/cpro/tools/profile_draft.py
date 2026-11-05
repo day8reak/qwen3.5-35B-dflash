@@ -83,6 +83,7 @@ def main(argv=None):
                 model_manager_interface=args.modelmanager_itf or 'V1')
         keys = ('status', 'stage', 'device_execution', 'model_compilation', 'numerical_validation',
             'source_numerical_validation', 'profiling_scope', 'model_manager_interface', 'model_restore_mode',
+            'model_sha256', 'profile_case', 'timing_scope',
             'board_attempt', 'model_process_id', 'model_exitcode', 'parser_exitcode',
             'csv_directory', 'csv_count', 'csv_files', 'csv_analysis', 'input_revalidation',
             'lock_state', 'error', 'lock_release_errors', 'next')

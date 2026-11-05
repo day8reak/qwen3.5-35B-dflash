@@ -128,7 +128,7 @@
     "validation": "docs/VALIDATION.md"
   },
   "validation": {
-    "experience_audit": "docs/LESSONS.md; tail geometry acceptance and scoped model integration checks recorded; no shared skill promotion",
+    "experience_audit": "docs/LESSONS.md; full-model hidden anomaly isolated from standalone acceptance; user-authorized diagnostic profiling; no shared skill promotion",
     "gates": {
       "environment": "PASS",
       "static_audit": "PASS",
@@ -142,10 +142,10 @@
       "prebuilt": "PENDING",
       "performance": "PENDING",
       "on_board": "PASS",
-      "real_model": "PENDING",
+      "real_model": "FAIL",
       "hardware_latency": "PENDING"
     },
-    "scope": "USER_REPORTED_QWEN_AND_17X8193_DEVICE_EXACT_STABLE; FULL_MODEL_AND_GENERAL_RELEASE_PENDING",
+    "scope": "STANDALONE_TWO_SHAPE_DEVICE_PASS; FULL_DRAFT_EXECUTED_NUMERICAL_FAILED_NO_CAUSE_ATTRIBUTION",
     "host_evidence": {
       "run_id": "20261104T083807Z-10795-c00fd7",
       "reports": {
@@ -185,7 +185,7 @@
       "main_operations_outside_tasks": [],
       "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
       "numerical_validation": "PASSED",
-      "next": "SINGLE_OPERATOR_PROBES_CLOSED; FULL_DRAFT_INTEGRATION_PENDING",
+      "next": "STANDALONE_PROBES_CLOSED; FULL_DRAFT_DIAGNOSIS_AND_PROFILING",
       "completed_cases": 11,
       "measured_calls": 110,
       "repeat_bitwise_stable": true,
@@ -301,6 +301,15 @@
       "tool_report": "evidence/integration-tool-check.json",
       "tool_checks": 9,
       "total_checks": 30
+    },
+    "integration_device_evidence": {
+      "run_id": "20261105T025158Z-24349-82e298",
+      "report": "evidence/user-integration-summary.json",
+      "status": "NUMERICAL_FAILED",
+      "model_sha256": null,
+      "model_association": "PRIOR_TOP1_INTEGRATION_COMMAND; SUMMARY_OMITS_OMC_IDENTITY_AND_PLACEMENT",
+      "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_279e74c27a2c470598f5d4488c3bf54f",
+      "promotion": "NOT_PERFORMED"
     }
   },
   "performance": {

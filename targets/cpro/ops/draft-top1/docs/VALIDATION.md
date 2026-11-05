@@ -11,7 +11,8 @@
 | 设备正确性/稳定性 | PASSED；七组、70次输出、1050个INT32精确一致；3预热＋10次/组 |
 | API测量 | 总均值约1.232ms；范围0.922–1.695ms；非kernel-only |
 | 补充17×8193尾部shape | PASSED；4组／40次精确稳定；单NPU子图 |
-| 其他未测shape、独立构建、整模型、性能优化 | PENDING |
+| 整模型候选 | EXECUTED_OUTPUTS_RETRIEVED；NUMERICAL_FAILED；独立于单算子通过状态 |
+| 其他未测shape、独立构建、性能优化 | PENDING |
 
 报告目录：`draft/tests/stable-arg-max-ge-config`。来源为用户粘贴，未独立下载产物。下表编译身份取自此前用户报告；回收摘要未重复列出模型digest，按同一执行目录关联，未独立下载复核。当前身份：
 
@@ -31,6 +32,8 @@ Qwen组覆盖大索引、跨块并列、零与极值、subnormal、相邻FP16、
 
 尾部请求 `qwen35_vector_840699127bf2427eb5552d6eecf3b49a` 全部退出码0，已回收且锁释放。结果在 `draft/tests/stable-arg-max-tail/result`；用户摘要保留于run `20261105T021938Z-23422-d80bfd` 的 `evidence/user-tail-summary.json`。摘要未列shape和OMC digest，shape按已给编译命令关联，未独立取得二进制。
 
-两轮共11组／110次通过，单算子探针已收敛。已增加可选完整Draft Torch导出接线；缩小六层模型的14路输出与原路径逐位相等，真实PT2导出保留一个custom op，主机检查共30项（21项模型／PT2／边界，9项导出工具／安装预检／CLI），见同run的 `evidence/integration-check.json` 与 `evidence/integration-tool-check.json`。实际TorchAir整图导出、OMG及设备验证仍待执行，命令见[当前阶段](../../../../../docs/current-status.md)。
+两轮共11组／110次通过，单算子探针已收敛。已增加可选完整Draft Torch导出接线；缩小六层模型的14路输出与原路径逐位相等，真实PT2导出保留一个custom op，主机检查共30项，见同run的 `evidence/integration-check.json` 与 `evidence/integration-tool-check.json`。
+
+完整Draft候选已由用户执行回收：38次API均值66.554ms，isolated／feedback Top1为82/86、83/86，数值门槛失败；isolated首例hidden相对L2达65.11%，feedback范围仍1.45–2.61%。摘要未含新OMC digest／编译边界，不能宣称整图NPU-only或定位为Top1 kernel错误。下一步只读现有快照并并行采集同一候选profiling，命令见[当前阶段](../../../../../docs/current-status.md)，结果与单算子证据分别保留。
 
 kernel、host和单算子绑定保持设备验证版本。本轮不宣称全部rank/shape、NaN/Inf、310P或完整Draft已通过。

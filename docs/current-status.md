@@ -1,56 +1,43 @@
-# 当前阶段：将 StableArgMax 接入完整 Draft
+# 当前阶段：Draft 精度定位与 profiling
 
-2026-11-05：单算子两种shape共11组、110次输出全部INT32精确一致、重复稳定。Qwen配置同步API均值1.232ms；17×8193尾部配置0.515ms。两轮均为单NPU子图，详情见[结果](results.md)。单算子验证已收敛。
+2026-11-05：StableArgMax单算子两种shape、110次精确稳定验证通过。完整Draft候选已执行并回收，38次同步API加权均值约66.55ms；数值仍失败。Top1保持isolated 82/86、feedback 83/86，但isolated首例hidden相对L2从旧候选1.45%升到65.11%，需单独定位。详情见[结果](results.md)。
 
-本阶段在现有C16／cap192／K15、host embedding候选上选择 `StableArgMax`。权重、attention、hidden和KV计算保持原表达；使用有限FP16 logits，并列取最小索引。新的Torch导出接线已通过主机检查，完整AIR／OMC及板端结果待验证。产物放固定候选目录，现有运行模型继续保留。
+复用 `draft/tests/top1-integration` 的模型、输入与快照。下面精度分析只读服务器文件，可以与一次板端profiling同时进行；不重新导出、编译或运行整套精度测试。profiling按用户要求在数值失败状态下用于热点诊断，不作为性能验收。
 
 ## 用户现在执行什么
 
-先将两台服务器仓库更新到最新版本。以下 `REPO_DIR`、`AI_RUN_DIR` 及SDK路径沿用各自项目配置；`draft/source/prepared` 为已准备的FP16权重。无需重建allops或重复单算子测试。
-
-**权重服务器（已有TorchAir环境）**：导出一次完整Draft。
+DDK／HDC服务器先更新仓库；`REPO_DIR`、`AI_RUN_DIR`及设备环境沿用项目配置。保留本轮run/result、compiled以及板端模型缓存，完成分析前不清理。
 
 ```bash
 source "$REPO_DIR/targets/cpro/scripts/env.sh"
+export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
 
-python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
-  --prepared "$AI_RUN_DIR/draft/source/prepared" --frontend pytorch \
-  --optimization packed-spatial-host-embedding --top1 stable-arg-max \
-  --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 \
-  --output "$AI_RUN_DIR/draft/tests/top1-integration/export"
+# 只读：比较已回收的首例isolated/feedback全部14路输出及逐行hidden。
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --diagnose "$TOP1_DIR/result" > "$TOP1_DIR/diagnosis.json"
+
+# 只读：核对同一OMC的CPU操作、NPU边界及模型身份；不调用OMG。
+python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
+  --inspect-boundaries "$TOP1_DIR/compiled" \
+  --accuracy-result "$TOP1_DIR/result" --ddk-root "$CPRO_DDK_ROOT" \
+  --output "$TOP1_DIR/boundaries.json"
 ```
 
-需要返回 `PYTORCH_DRAFT_AIR_EXPORTED`，17输入／14输出。导出检查要求一个 `StableArgMax` 直接连接token输出、无原生ArgMax；缺失的中间shape交给OMG推导，明确冲突会拒绝。将整个 `draft/tests/top1-integration/export` 文件夹（含 `weight/` 和元数据）复制到DDK服务器对应位置。
+`diagnosis.json` 的 `initial_call_comparison` 列出各输出是否逐位相同、hidden差异位置及两种模式相对golden的逐行误差。运行器在两种模式的第0例重设全部输入；文件检查不等于设备输入回读，也不能单凭差异断言kernel或buffer根因。原容差和失败结果保持。
 
-**DDK服务器（无需TorchAir）**：复用已安装的StableArgMax及TBE诊断，编译候选。
+另一个已加载相同环境的终端可直接启动profiling，无需等待上述离线分析：
 
 ```bash
-source "$REPO_DIR/targets/cpro/scripts/env.sh"
+export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
 
-python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
-  --air-export "$AI_RUN_DIR/draft/tests/top1-integration/export" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/top1-integration/compiled"
+python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
+  --accuracy "$TOP1_DIR/result" --allow-numerical-failure \
+  --modelmanager-itf V1 --output "$TOP1_DIR/profile-run" --apply
+
+python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
+  --recover "$TOP1_DIR/profile-run" --output "$TOP1_DIR/profile-result"
 ```
 
-需要 `PYTORCH_DRAFT_OMC_COMPILED`，且 `top1_placement.status=NPU_OUTPUT_BOUNDARY_PASSED`。该检查确认token的INT32输出直接来自NPU任务；它不证明整图所有算子均在NPU或内部指令精度。
+默认使用原fixture的case 2（partial-context，15个proposal、参考KV），复用已部署OMC，只发输入。脚本核对所选工具help后执行一次 `enable_item=1`，随后转换并回收原始 `*_op.csv`／`*_model.csv`；出现PENDING继续回收同一请求。这是新建工具进程、无预热的一次诊断采集，与常驻API均值口径不同。CSV需按本次PID／模型归属筛选，算子耗时合计不当作关键路径。
 
-**编译通过后，同一DDK／HDC服务器**：运行完整Draft数值对照，沿用原容差。配置须提供此前成功的设备连接及运行器，默认公共 `runtime/runtime.json`。
-
-```bash
-export VECTOR_CONFIG="${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
-
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --compiled "$AI_RUN_DIR/draft/tests/top1-integration/compiled" \
-  --air-export "$AI_RUN_DIR/draft/tests/top1-integration/export" \
-  --source "$AI_RUN_DIR/draft/source/prepared" \
-  --ddk-root "$CPRO_DDK_ROOT" --config "$VECTOR_CONFIG" \
-  --output "$AI_RUN_DIR/draft/tests/top1-integration/run" --apply
-
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --recover "$AI_RUN_DIR/draft/tests/top1-integration/run" \
-  --output "$AI_RUN_DIR/draft/tests/top1-integration/result"
-```
-
-出现PENDING时继续回收同一请求。验证包含独立输入与连续KV反馈，golden仍由原模型产生；检查Top1、hidden和每层KV。旧完整Draft已有数值失败，单算子通过不会消除这些偏差，本轮也不放宽门槛。回传导出、编译和最终验证摘要后，再判断整图落点、精度与实测延迟。
+回传diagnosis中的首例比较、边界摘要与profiling回收摘要即可；CSV可粘贴模型事件和主要耗时行，无需打包文件。重点查看StableArgMax、末尾MatMul、Conv、布局转换及CPU分段。新热点与精度问题分别判断，当前候选不晋升生产模型。首次构建方法见[完整流程](run-end-to-end.md)。

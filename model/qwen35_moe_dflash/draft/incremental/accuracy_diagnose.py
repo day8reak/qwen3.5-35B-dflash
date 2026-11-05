@@ -12,7 +12,7 @@ from qwen35_moe_dflash.common.artifacts import checked_file
 from qwen35_moe_dflash.common.hashing import sha256_file
 from qwen35_moe_dflash.config import Qwen35DFlashConfig
 from qwen35_moe_dflash.execution.runtime_config import read_json
-from .accuracy import analyze_result, read_snapshot
+from .accuracy import analyze_result, metrics, read_snapshot
 
 
 def hidden_stats(value):
@@ -35,6 +35,69 @@ def prefix_difference(actual, other):
     return dict(rows=count, bitwise_equal=a.tobytes() == b.tobytes(),
         max_abs_difference=(float(np.abs(a.astype(np.float64)-b.astype(np.float64)).max())
                             if np.isfinite(a).all() and np.isfinite(b).all() else None))
+
+
+def tensor_difference(left, right):
+    """Bounded bitwise difference, including signed zero; no acceptance gate."""
+    if left.shape != right.shape or left.dtype != right.dtype:
+        raise ValueError('snapshot tensor descriptors differ')
+    a, b = np.ascontiguousarray(left), np.ascontiguousarray(right)
+    unequal = np.any(a.view(np.uint8).reshape(-1, a.dtype.itemsize)
+                     != b.view(np.uint8).reshape(-1, b.dtype.itemsize), axis=1)
+    positions = np.flatnonzero(unequal)
+    finite = bool(np.isfinite(a).all() and np.isfinite(b).all())
+    return dict(bitwise_equal=not bool(positions.size), different_elements=int(positions.size),
+        first_different_flat_index=int(positions[0]) if positions.size else None,
+        last_different_flat_index=int(positions[-1]) if positions.size else None,
+        max_abs_difference=float(np.max(np.abs(a.astype(np.float64)-b.astype(np.float64)), initial=0))
+            if finite else None)
+
+
+def initial_call_comparison(fixture, native, meta):
+    """Compare the two case-zero snapshots after checking their shared inputs.
+
+    The runner sets every input for isolated-0 and feedback-0 on one model
+    instance. Later feedback cases reuse KV and are not same-input repeats.
+    Retained files prove the fixture, not what the device actually consumed.
+    """
+    step = meta['cases'][0]
+    if step['index'] != 0 or step['start'] != 0 or step['valid'] != 0 or step['proposals'] < 1:
+        return dict(status='NOT_APPLICABLE', reason='first case is not an empty-context proposal')
+    records = {r['index']: r for r in meta['input_files'] if r['case'] == 0}
+    if len(records) != len(meta['inputs']):
+        raise ValueError('initial case input inventory is incomplete')
+    zero_kv = []
+    for spec in meta['inputs']:
+        record = records[spec['index']]
+        if record['path'] != f"inputs/0/{spec['index']}.bin" or record['bytes'] != spec['bytes']:
+            raise ValueError('initial case input path/extent differs: ' + spec['name'])
+        path = checked_file(fixture, record)
+        if spec['name'].startswith('past_'):
+            zero_kv.append(not bool(np.any(np.fromfile(path, dtype='<f2'))))
+    values = {mode: read_snapshot(native/f'{mode}-0.bin', meta['outputs'])
+              for mode in ('isolated', 'feedback')}
+    count = step['proposals']
+    hidden = {mode: tensors[1][:, :count] for mode, tensors in values.items()}
+    golden = np.fromfile(fixture/'golden/0/hidden.bin', dtype='<f2').reshape(hidden['isolated'].shape)
+    atol, rtol = (meta['comparison'][key] for key in ('atol', 'rtol'))
+    rows = []
+    for i, (a, b, g) in enumerate(zip(hidden['isolated'].reshape(-1, golden.shape[-1]),
+                                     hidden['feedback'].reshape(-1, golden.shape[-1]),
+                                     golden.reshape(-1, golden.shape[-1]))):
+        rows.append(dict(proposal_flat_row=i, between_modes=tensor_difference(a, b),
+            isolated_vs_reference=metrics(a, g, atol, rtol),
+            feedback_vs_reference=metrics(b, g, atol, rtol)))
+    return dict(status='COMPARED', case=step,
+        input_contract='RUNNER_RESETS_ALL_INPUTS_FROM_CASE_ZERO_FILES_IN_BOTH_MODES',
+        input_verification='RETAINED_FILES_HASH_AND_EXTENT; NOT_DEVICE_READBACK',
+        verified_input_count=len(records), kv_input_count=len(zero_kv),
+        all_kv_inputs_zero=all(zero_kv) if zero_kv else None,
+        call_ordinals_zero_based={'isolated': 0, 'feedback': len(meta['cases'])},
+        comparison_direction='LEFT_ISOLATED_RIGHT_FEEDBACK',
+        outputs=[dict(name=spec['name'], **tensor_difference(a, b)) for spec, a, b in
+                 zip(meta['outputs'], values['isolated'], values['feedback'])],
+        hidden_rows=rows, reference_tolerances=dict(atol=atol, rtol=rtol),
+        limitation='OUTPUT_DIFFERENCES_DO_NOT_LOCALIZE_COMPUTE_BUFFER_LIFETIME_OR_VISIBILITY_CAUSE')
 
 
 def _controls(fixture, meta):
@@ -122,6 +185,7 @@ def diagnose_result(path, *, source=None):
         model_execution='NOT_RUN', model_compilation='NOT_RUN',
         board_attempt=result.get('board_attempt'), model_sha256=meta['model']['sha256'],
         controls=_controls(fixture, meta), cases=[])
+    report['initial_call_comparison'] = initial_call_comparison(fixture, path.parent/'native', meta)
     for mode in ('isolated', 'feedback'):
         previous = None
         for step in meta['cases']:
