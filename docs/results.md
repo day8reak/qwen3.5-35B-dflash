@@ -56,11 +56,26 @@ C16／cap192／K15、host embedding候选：板端加载和执行已完成；iso
 
 新候选报告均值下降约36.5%，但两轮不是配对稳态验收，也不含host查表／输入准备，不能据此给出端到端加速或把全部收益归因于算子本身。目标是常驻预热后proposal同步Process均值≤50ms，尚未达到。
 
-新请求 `qwen35_draft_accuracy_279e74c27a2c470598f5d4488c3bf54f` 已完成、输出回收且锁释放。Top1七处差异及KV误差范围与上一候选相同：appended KV相对L2约0.44–0.83%，未写入区保持；feedback两组重复逐位稳定。不过isolated首例hidden最大绝对误差为4.42578125、相对L2 **65.11%**，此前该例为0.15234375／1.45%；feedback hidden仍为1.45–2.61%。不能把整图数值变化归结为已有的小误差。首例14路快照诊断已在用户服务器生成，内容尚待回传；原容差保持。
+新请求 `qwen35_draft_accuracy_279e74c27a2c470598f5d4488c3bf54f` 已完成、输出回收且锁释放。Top1七处差异及KV误差范围与上一候选相同：appended KV相对L2约0.44–0.83%，未写入区保持；feedback两组重复逐位稳定。isolated首例hidden相对L2 **65.11%**，feedback仍为1.45–2.61%，均未通过原容差。
+
+首例快照进一步确认：isolated第0次与feedback第19次使用同一组文件输入，Top1及12路KV逐位相同；hidden的30720个元素中12928个不同。两者零值数为12931／3，差值恰等于全部不同元素数，因此所有差异都是isolated为零、feedback非零，其余17792个元素逐位相同。各行差异计数和首末位置呈32个FP16对齐，但尚未检查每段范围或证明cacheline根因。运行器会在分配后清零输出，现提供复用原夹具的显式 `untouched` 初始化实验；不跳过首轮，不改变模型或验收门槛。
 
 后续边界报告已与这次精度测试绑定：OMC为1790943538字节，SHA256 `fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f`。当前CPUCL=1、NPUCL=1：CPU只接收三个INT32控制量，解码操作为比较、逻辑、Gather、Select等，没有ArgMax；其6路输出逻辑大小合计410496字节。NPU有20路输入／14路输出。原末尾CPU全词表归约分区已消失，整图仍保留前置CPU控制计算。端口大小不是实测传输量，NPU内部指令精度及实际热点需其他证据。
 
-原生Top1候选的另一次profiling：model `inference` 为 **103.720ms**，算子duration合计73.656ms，其中末尾MatMul 19.960ms、CPU ArgMax 12.353ms、Conv 8.643ms。算子可能重叠，不能相加当关键路径或把差额直接归于搬运。load 160.281ms、unload 4.859ms另计。StableArgMax整图的新profiling尚待用户采集。
+StableArgMax整图profiling已回收：同一OMC、V1新进程、case 2（start16＋valid2，15个proposal），无预热一次调用。PID36349，model/parser退出码0，原始CSV两份，锁已释放。下表来自用户粘贴表和回收摘要，未在本地读取原CSV；不是常驻十次验收。
+
+| profiling记录 | 本次 ms |
+|---|---:|
+| model load／inference／unload | 166.337／66.556／10.080 |
+| 算子duration合计 | 61.960 |
+| MatMul_30 | 19.965 |
+| Conv2D | 8.753 |
+| Transpose_1 | 5.284 |
+| StableArgMax，npu_aicore | 0.415 |
+
+Top1约占算子duration合计0.67%；前三项合计34.002ms、约54.88%。按源码结构，末尾MatMul应对应完整词表head，入口Conv及Transpose应对应特征投影与空间打包，具体编译节点映射仍需shape/边关系确认。后续优先分析这些区域，当前不继续优化Top1。
+
+原生Top1旧profiling为model inference103.720ms／算子合计73.656ms，CPU ArgMax12.353ms；本次两个合计分别下降37.164ms／11.696ms。它们不是配对稳态测量，不能把全部差额归因于Top1。新表NPU start time集中在 `02:36:57.697844–.698040`，晚于model inference end `.695706`；时间域或事件含义未解释，不能据此计算CPU→NPU等待。算子合计不当作关键路径，66.556−61.960=4.596ms也不等于实测搬运或调度时间。
 
 ## 已有端侧闭环
 

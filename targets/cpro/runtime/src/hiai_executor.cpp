@@ -638,10 +638,13 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
     int diagnostic_output_fill_byte, bool standalone_draft,
     const std::string& model_load_api, const std::string& resident_model_name,
     HiaiLegacyLifecycle* constructor_failure_snapshot,
-    const std::vector<HiaiTensorStorage>& disjoint_from, bool diagnostics, bool model_preread) : impl_(std::make_unique<Impl>()) {
+    const std::vector<HiaiTensorStorage>& disjoint_from, bool diagnostics, bool model_preread,
+    bool initialize_outputs) : impl_(std::make_unique<Impl>()) {
   impl_->diagnostics = diagnostics;
   impl_->target.profile_load=standalone_draft&&!resident_model_name.empty()&&model_load_api=="legacy-buffer";
   try {
+  if (!initialize_outputs && (!standalone_draft || diagnostics || diagnostic_output_fill_byte != -1))
+    throw std::invalid_argument("untouched outputs require a compact standalone draft without output fill");
   if (model_preread && !impl_->target.profile_load)
     throw std::invalid_argument("preread requires a resident legacy-buffer draft");
   impl_->target.legacy.preread_requested=model_preread;
@@ -713,7 +716,9 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
         }
       }
       // Extra runtime allocation is not interpreted as physical row padding.
-      std::memset(tensor.Data(), 0, tensor.bytes);
+      // The explicit accuracy experiment omits caller writes to output memory.
+      // SDK allocation behavior and cache synchronization remain SDK-owned.
+      if (input || initialize_outputs) std::memset(tensor.Data(), 0, tensor.bytes);
       if (diagnostic_output_fill_byte >= 0) {
         if (input) {
           HiaiInputIoDiagnostic record;

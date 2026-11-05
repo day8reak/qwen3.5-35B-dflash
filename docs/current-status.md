@@ -1,41 +1,45 @@
-# 当前阶段：Draft 精度定位与 profiling
+# 当前阶段：Draft 首轮 hidden 零块定位
 
-2026-11-05：StableArgMax单算子两种shape、110次精确稳定验证通过。完整Draft候选已执行并回收，38次同步API加权均值约66.55ms；数值仍失败。Top1保持isolated 82/86、feedback 83/86，但isolated首例hidden相对L2从旧候选1.45%升到65.11%，需单独定位。详情见[结果](results.md)。
+2026-11-05：首轮isolated的hidden有12931个零，feedback同例只有3个；多出的12928个零恰好覆盖全部差异，其余元素逐位相同。Top1和12路KV也逐位相同。已发现运行器分配输出后会由CPU清零，下一步验证省略这次写入是否影响首轮零块；尚未确定缓存、写回或buffer生命周期根因，原数值失败保持。
 
-边界检查已完成：同一精度测试OMC（SHA256前缀 `fadec11fab3e7`）为CPUCL=1、NPUCL=1；原末尾CPU ArgMax分区已消失，剩余CPU分区接收三个INT32控制量。精度诊断已写入 `diagnosis.json`，现在读取其中首例比较；profiling并行采集，不作为性能验收。
+profiling已回收：同一 `fadec11fab3e7…` OMC、case 2，model inference 66.556ms，StableArgMax 0.415ms；热点是末尾MatMul、Conv和布局转换。保留原CSV，不再重跑采集。测量范围和精度见[结果](results.md)。
 
 ## 用户现在执行什么
 
-DDK／HDC服务器先更新仓库；`REPO_DIR`、`AI_RUN_DIR`及设备环境沿用项目配置。保留本轮run/result、compiled以及板端模型缓存，完成分析前不清理。
+DDK／HDC服务器更新仓库后，重编运行器并复用旧精度夹具。无需Torch/TorchAir、权重加载、AIR导出或OMC重编。保留 `top1-integration/run`、`result`、`compiled` 和原fixture；本次只新增 `output-init` 测试槽位。
 
 ```bash
 source "$REPO_DIR/targets/cpro/scripts/env.sh"
 export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
 
-# 只读取已有诊断；此前重定向到文件，所以终端没有显示结果。
-python3 - "$TOP1_DIR/diagnosis.json" <<'PY'
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$AI_RUN_DIR/runtime/native" --replace
+
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --replay "$TOP1_DIR/result" --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --output-initialization untouched \
+  --output "$TOP1_DIR/output-init/run" --apply
+```
+
+`--replay` 是一次新诊断执行，沿用原输入、golden、38次调用顺序和容差；`untouched` 仅省略调用方对输出的初始化写入，SDK分配行为不变。输入仍照原方式初始化，首轮不跳过。普通运行默认仍为 `zero`。出现启动确认后只回收同一请求：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$TOP1_DIR/output-init/run" --output "$TOP1_DIR/output-init/result"
+```
+
+若为PENDING，继续同一回收命令，不重复 `--apply`。完成后读取首例差异及零值统计：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --diagnose "$TOP1_DIR/output-init/result" > "$TOP1_DIR/output-init/diagnosis.json"
+python3 - "$TOP1_DIR/output-init/diagnosis.json" <<'PY'
 import json, sys
 with open(sys.argv[1]) as f:
     d = json.load(f)
-print(json.dumps(d.get('initial_call_comparison', d), ensure_ascii=False))
+print(json.dumps({'initial_call_comparison': d['initial_call_comparison'],
+                  'first_cases': [r for r in d['cases'] if r['index'] == 0]}, ensure_ascii=False))
 PY
 ```
 
-`diagnosis.json` 的 `initial_call_comparison` 列出各输出是否逐位相同、hidden差异位置及两种模式相对golden的逐行误差。运行器在两种模式的第0例重设全部输入；文件检查不等于设备输入回读，也不能单凭差异断言kernel或buffer根因。原容差和失败结果保持。
-
-profiling尚未启动时，在已加载相同环境的终端执行启动命令；已经启动则只执行回收，不重复 `--apply`：
-
-```bash
-export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
-
-python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
-  --accuracy "$TOP1_DIR/result" --allow-numerical-failure \
-  --modelmanager-itf V1 --output "$TOP1_DIR/profile-run" --apply
-
-python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
-  --recover "$TOP1_DIR/profile-run" --output "$TOP1_DIR/profile-result"
-```
-
-默认使用原fixture的case 2（partial-context，15个proposal、参考KV），复用已部署OMC，只发输入。脚本核对所选工具help后执行一次 `enable_item=1`，随后转换并回收原始 `*_op.csv`／`*_model.csv`；出现PENDING继续回收同一请求。这是新建工具进程、无预热的一次诊断采集，与常驻API均值口径不同。CSV需按本次PID／模型归属筛选，算子耗时合计不当作关键路径。
-
-回传上面的首例比较与profiling回收摘要即可；CSV可粘贴模型事件和主要耗时行，无需打包文件。边界检查已完成。重点查看StableArgMax、末尾MatMul、Conv、布局转换及CPU控制分区。新热点与精度问题分别判断，当前候选不晋升生产模型。首次构建方法见[完整流程](run-end-to-end.md)。
+回传回收摘要与上述诊断即可。即使零块消失，也须单独比较hidden/KV原有误差及Top1，不能把初始化实验当作整图精度通过或缓存根因证明。原模型、算子和生产配置保持；首次构建见[完整流程](run-end-to-end.md)。

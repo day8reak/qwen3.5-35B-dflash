@@ -175,7 +175,7 @@ flowchart LR
     style FC stroke:#d97706,stroke-width:2px,stroke-dasharray:6 4
 ```
 
-这是同一完整dot product的布局表达，**没有拆成多个部分MatMul求和**，没有额外中间算术截断；归约顺序仍可能带来数值差异。C16 profiling中该Conv为70.968ms，是当前明确热点。
+这是同一完整dot product的布局表达，**没有拆成多个部分MatMul求和**，没有额外中间算术截断；归约顺序仍可能带来数值差异。早期C16表达的Conv曾记录70.968ms，后续PyTorch空间打包候选改变了物理布局；当前测量见[结果](results.md)，不混用两种图的时延。
 
 ```mermaid
 flowchart LR

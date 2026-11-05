@@ -2166,16 +2166,16 @@
       "name": "accuracy",
       "status": "blocked",
       "owner": "model-workflow",
-      "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json",
-      "note": "Original gates failed. Diagnosis generated on user server; read initial_call_comparison before any further device probe.",
-      "next_command": "docs/current-status.md: read existing diagnosis.json"
+      "evidence": "20261105T031159Z-25303-23ce63/evidence/user-hidden-zero-summary.json",
+      "note": "First isolated hidden has 12928 zero replacements relative to feedback; root cause unresolved, original numerical failure retained.",
+      "next_command": "docs/current-status.md"
     },
     {
       "name": "performance",
       "status": "blocked",
       "owner": "model-workflow",
-      "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json",
-      "note": "User explicitly requested diagnostic profiling concurrently with accuracy diagnosis. One V1 vendor-tool call reuses the same OMC/fixture; no performance acceptance or promotion.",
+      "evidence": "20261105T031159Z-25303-23ce63/evidence/user-profile-summary.json",
+      "note": "User returned one diagnostic profile: inference 66.556ms, StableArgMax 0.415ms; original accuracy still failed. No steady acceptance or promotion.",
       "next_command": "docs/current-status.md"
     },
     {
@@ -5810,7 +5810,7 @@
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "ISOLATED82_OF86_FEEDBACK83_OF86; FIRST_ISOLATED_HIDDEN_L2_65.11_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "Read retained diagnosis.json initial_call_comparison and receive profiling result; boundary inspection complete.",
+    "next": "Rebuild native runner only; replay original fixture with untouched caller output initialization, recover same request, compare retained first calls. No new profiling or model compile.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6304,14 +6304,18 @@
         "status": "NUMERICAL_FAILED",
         "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json"
       },
-      "next": "Read existing diagnosis.json initial_call_comparison; start profiling only if not already launched, otherwise recover same request.",
+      "next": "Rebuild native runner only; replay original fixture with untouched caller output initialization, recover same request, compare retained first calls. No new profiling or model compile.",
       "diagnostic_host_evidence": "20261105T025158Z-24349-82e298/evidence/diagnostic-profile-check.json",
       "experience_audit": {
-        "evidence": "targets/cpro/ops/draft-top1/docs/LESSONS.md",
-        "observed": "TOP1_COUNTS_UNCHANGED_BUT_FIRST_ISOLATED_HIDDEN_ERROR_INCREASED; ROOT_CAUSE_UNKNOWN",
-        "checks": "INITIAL_MODE_OUTPUTS_AND_PER_ROW_HIDDEN; RETAINED_FIXTURE_PROFILE_BINDING",
-        "skill_changes": "NONE_SCOPED_PROJECT_OBSERVATION",
-        "promotion": "NO_FULL_MODEL_PROMOTION"
+        "evidence": "docs/results.md#完整-draft-候选",
+        "observed": "ALL_12928_INITIAL_HIDDEN_DIFFERENCES_ARE_ZERO_REPLACEMENTS; PROFILE_STABLE_ARG_MAX_415_US",
+        "checks": "REPLAY_ORIGINAL_FIXTURE_AND_GATES_WITH_EXPLICIT_OUTPUT_INITIALIZATION; NO_TORCH",
+        "skill_changes": "NONE; EXISTING_TARGET_PROFILING_CLOCK_AND_EVIDENCE_RULES_APPLY",
+        "promotion": "NO_FULL_MODEL_PROMOTION",
+        "remaining_hypotheses": [
+          "OUTPUT_VISIBILITY_WRITEBACK_OR_LIFETIME",
+          "SEPARATE_REFERENCE_NUMERICAL_ERROR"
+        ]
       },
       "boundary_observation": {
         "source": "specs/dflash-execution-state.json#incremental_draft_task/top1_builtin_probe/custom_top1/integration/boundary_observation",
@@ -6321,6 +6325,22 @@
           "CPUCL": 1,
           "NPUCL": 1
         }
+      },
+      "initial_hidden_observation": {
+        "source": "specs/dflash-execution-state.json#incremental_draft_task/top1_builtin_probe/custom_top1/integration/initial_hidden_observation",
+        "evidence": "20261105T031159Z-25303-23ce63/evidence/user-hidden-zero-summary.json"
+      },
+      "profile_observation": {
+        "source": "specs/dflash-execution-state.json#incremental_draft_task/top1_builtin_probe/custom_top1/integration/profile_observation",
+        "evidence": "20261105T031159Z-25303-23ce63/evidence/user-profile-summary.json"
+      },
+      "runtime_diagnosis": {
+        "entry": "targets/cpro/tools/validate_incremental_draft.py --replay --output-initialization untouched",
+        "host_evidence": "20261105T031159Z-25303-23ce63/evidence/replay-check.json",
+        "device_execution": "NOT_RUN",
+        "native_sdk_build": "PENDING_USER_SELECTED_DDK",
+        "model_compilation": "NOT_RUN",
+        "normal_runtime_default": "UNCHANGED_ZERO_INITIALIZATION"
       }
     }
   }

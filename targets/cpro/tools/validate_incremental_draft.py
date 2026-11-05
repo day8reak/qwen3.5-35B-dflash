@@ -17,6 +17,7 @@ def main():
     parser.add_argument('--ddk-root',help='selected DDK schema, required for a PyTorch OMC candidate')
     mode=parser.add_mutually_exclusive_group()
     mode.add_argument('--recover')
+    mode.add_argument('--replay', help='new execution using a completed result and its original model/fixture; no Torch or reference regeneration')
     mode.add_argument('--inspect',help='print existing comparison details locally; no board access')
     mode.add_argument('--analyze',help='recompute new-KV and repeat diagnostics from retained host tensors')
     mode.add_argument('--diagnose',help='inspect retained hidden zeros/repeated rows and controls; optional --source checks embedding rows locally')
@@ -26,7 +27,11 @@ def main():
     parser.add_argument('--atol',type=float)
     parser.add_argument('--rtol',type=float)
     parser.add_argument('--timeout-seconds',type=int,default=1800)
+    parser.add_argument('--output-initialization', choices=('zero', 'untouched'),
+                        help='--replay only: caller output initialization, default zero; SDK allocation behavior is unchanged')
     args=parser.parse_args()
+    if args.output_initialization is not None and not args.replay:
+        parser.error('--output-initialization requires --replay')
     from qwen35_moe_dflash.draft.incremental.accuracy import summarize_result
     if args.audit_reference:
         if (args.apply or any((args.config,args.compiled,args.ddk_root))
@@ -62,7 +67,14 @@ def main():
     if not args.output:
         parser.error('preparation/recovery requires --output')
     from qwen35_moe_dflash.draft.incremental.accuracy_board import start,recover
-    if args.recover:
+    if args.replay:
+        if (not args.config or any((args.compiled,args.source,args.air_export,args.ddk_root))
+                or args.atol is not None or args.rtol is not None):
+            parser.error('--replay requires --config and --output; original model, reference and gates are reused')
+        result=start(args.config,None,None,None,args.output,apply=args.apply,
+                     timeout_seconds=args.timeout_seconds,replay=args.replay,
+                     output_initialization=args.output_initialization or 'zero')
+    elif args.recover:
         if args.apply or any((args.config,args.compiled,args.source,args.air_export,args.ddk_root)):
             parser.error('--recover only accepts the original execution and a separate output')
         result=recover(args.recover,args.output)

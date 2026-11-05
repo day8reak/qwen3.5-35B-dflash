@@ -190,7 +190,8 @@ class HiaiStatefulExecutor final {
                       const std::string& resident_model_name = "",
                       HiaiLegacyLifecycle* constructor_failure_snapshot = nullptr,
                       const std::vector<HiaiTensorStorage>& disjoint_from = {},
-                      bool diagnostics = true, bool model_preread = false);
+                      bool diagnostics = true, bool model_preread = false,
+                      bool initialize_outputs = true);
   ~HiaiStatefulExecutor();
   void SetInput(std::size_t index, const std::vector<std::uint8_t>& bytes);
   // Compact mode only. No buffer aliasing or device allocation is introduced.

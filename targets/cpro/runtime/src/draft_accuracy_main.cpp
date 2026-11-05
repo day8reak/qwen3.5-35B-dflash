@@ -69,22 +69,27 @@ std::uint32_t Scalar(const Bytes& b) {
 int main(int argc,char** argv) {
   try {
     if(argc==2&&std::string(argv[1])=="--help") {
-      std::cout<<"qwen35_draft_accuracy MODEL RUNTIME_VERSION FIXTURE_DIRECTORY OUTPUT_DIRECTORY\n";return 0;
+      std::cout<<"qwen35_draft_accuracy MODEL RUNTIME_VERSION FIXTURE_DIRECTORY OUTPUT_DIRECTORY [zero|untouched]\n";return 0;
     }
-    if(argc!=5)throw std::invalid_argument("expected model, runtime, fixture, output");
+    if(argc!=5&&argc!=6)throw std::invalid_argument("expected model, runtime, fixture, output, optional output initialization");
+    const std::string output_initialization=argc==6?argv[5]:"zero";
+    if(output_initialization!="zero"&&output_initialization!="untouched")
+      throw std::invalid_argument("output initialization must be zero or untouched");
     const fs::path fixture=argv[3],out=argv[4];
     const auto p=ReadPlan(fixture/"plan.txt");
     if(fs::exists(out))throw std::invalid_argument("accuracy output already exists");
     fs::create_directories(out);
     HiaiStatefulExecutor executor(argv[1],argv[2],p.abi.inputs,p.abi.outputs,
-        300000,false,-1,true,"legacy-buffer","qwen35_draft_accuracy",nullptr,{},false,true);
+        300000,false,-1,true,"legacy-buffer","qwen35_draft_accuracy",nullptr,{},false,true,
+        output_initialization=="zero");
     std::ofstream result(out/"result.json");
 #ifdef QWEN35_FAKE_HIAI
     const char* evidence="host-fake-hiai";
 #else
     const char* evidence="device-hiai";
 #endif
-    result<<"{\"evidence_kind\":\""<<evidence<<"\",\"calls\":[";
+    result<<"{\"evidence_kind\":\""<<evidence<<"\",\"output_initialization\":\""
+          <<output_initialization<<"\",\"calls\":[";
     bool first=true;
     for(const std::string mode:{"isolated","feedback"})for(const auto& s:p.steps) {
       std::map<std::string,unsigned> control{{"start_position",s.start},{"valid_rows",s.valid},

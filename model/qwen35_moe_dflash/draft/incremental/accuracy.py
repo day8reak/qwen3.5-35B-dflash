@@ -296,7 +296,8 @@ def summarize_result(result):
     keys=('status','stage','device_execution','model_compilation','numerical_validation',
           'first_failure','native_api_latency','board_attempt','lock_state','error',
           'lock_release_errors','next','frontend','internal_precision','production_promotion','native_failure','hilog',
-          'host_embedding','host_embedding_binding','input_preparation')
+          'host_embedding','host_embedding_binding','input_preparation',
+          'output_initialization','replay_source')
     summary = {k:result[k] for k in keys if k in result}
     rows = result.get('cases', [])
     if not rows:

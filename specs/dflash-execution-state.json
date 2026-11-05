@@ -7211,13 +7211,14 @@
             },
             "diagnostic_profiling": {
               "authorization": "USER_REQUESTED_PROFILING_IN_PARALLEL_WITH_ACCURACY_DIAGNOSIS",
-              "status": "PENDING_USER_EXECUTION",
+              "status": "DRAFT_PROFILE_CAPTURED_REQUIRES_ATTRIBUTION_REVIEW",
               "model_compilation": "NOT_RUN",
               "times": 1,
               "warmup": 0,
               "interface": "V1",
               "case": 2,
-              "scope": "SAME_RETAINED_OMC_AND_PARTIAL_CONTEXT_FIXTURE; NOT_ACCURACY_OR_STEADY_PERFORMANCE_ACCEPTANCE"
+              "scope": "SAME_RETAINED_OMC_AND_PARTIAL_CONTEXT_FIXTURE; NOT_ACCURACY_OR_STEADY_PERFORMANCE_ACCEPTANCE",
+              "evidence": "20261105T031159Z-25303-23ce63/evidence/user-profile-summary.json"
             },
             "derived": {
               "weighted_api_mean_ms": 66.55365789473683,
@@ -7231,7 +7232,7 @@
             "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json",
             "model_identity_evidence": "20261105T030837Z-25145-99c811/evidence/user-boundaries-summary.json"
           },
-          "next": "Read existing diagnosis.json initial_call_comparison; start profiling only if not already launched, otherwise recover same request.",
+          "next": "Rebuild native runner only; replay original fixture with untouched caller output initialization, recover same request, compare retained first calls. No new profiling or model compile.",
           "diagnostic_host_evidence": "20261105T025158Z-24349-82e298/evidence/diagnostic-profile-check.json",
           "boundary_observation": {
             "provenance": "USER_PASTED_BOUNDARY_INSPECTION_NOT_INDEPENDENTLY_RETRIEVED",
@@ -7315,6 +7316,186 @@
             },
             "scope": "COMPILED_PARTITION_METADATA_AND_CPU_OP_TYPES_NOT_MEASURED_TRANSFER_OR_INTERNAL_NPU_KERNEL_MAPPING",
             "evidence": "20261105T030837Z-25145-99c811/evidence/user-boundaries-summary.json"
+          },
+          "initial_hidden_observation": {
+            "artifact_kind": "qwen35-draft-user-initial-hidden-observation",
+            "source": "USER_PASTED_INITIAL_CALL_COMPARISON_AND_CASE_ZERO_STATS",
+            "model_sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f",
+            "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_279e74c27a2c470598f5d4488c3bf54f",
+            "case": {
+              "index": 0,
+              "start": 0,
+              "valid": 0,
+              "anchor": 17,
+              "proposals": 15,
+              "label": "empty-context"
+            },
+            "verified_input_files": 17,
+            "kv_input_files": 12,
+            "all_kv_inputs_zero": true,
+            "input_scope": "RETAINED_FILES_NOT_DEVICE_READBACK",
+            "call_ordinals": {
+              "isolated": 0,
+              "feedback": 19
+            },
+            "outputs_bitwise_equal": [
+              "draft_top1",
+              "present_k_0",
+              "present_v_0",
+              "present_k_1",
+              "present_v_1",
+              "present_k_2",
+              "present_v_2",
+              "present_k_3",
+              "present_v_3",
+              "present_k_4",
+              "present_v_4",
+              "present_k_5",
+              "present_v_5"
+            ],
+            "hidden": {
+              "shape": [
+                1,
+                15,
+                2048
+              ],
+              "dtype": "float16",
+              "elements": 30720,
+              "different_elements": 12928,
+              "zero_elements": {
+                "isolated": 12931,
+                "feedback": 3,
+                "reference": 3
+              },
+              "first_different_flat_index": 0,
+              "last_different_flat_index": 30463,
+              "max_abs_difference": 4.44140625,
+              "per_row_different_elements": [
+                800,
+                1536,
+                64,
+                128,
+                480,
+                1696,
+                992,
+                960,
+                864,
+                288,
+                1472,
+                1120,
+                1632,
+                608,
+                288
+              ],
+              "nonfinite_elements": 0
+            },
+            "derived": {
+              "zero_count_difference": 12928,
+              "all_different_elements": "ISOLATED_ZERO_FEEDBACK_NONZERO",
+              "proof": "ZERO_COUNT_DELTA_EQUALS_TOTAL_BITWISE_DIFFERENCE_COUNT; EACH_DIFFERING_ELEMENT_CAN_INCREASE_ZERO_COUNT_BY_AT_MOST_ONE",
+              "remaining_elements_bitwise_equal": 17792,
+              "alignment": "ALL_REPORTED_ROW_COUNTS_AND_FIRST_LAST_EXTENTS_ARE_32_FP16_ALIGNED; COMPLETE_RUN_SEGMENTS_NOT_INSPECTED"
+            },
+            "root_cause": "UNRESOLVED; INITIALIZATION_WRITEBACK_VISIBILITY_OR_BUFFER_LIFETIME_HYPOTHESES",
+            "runtime_audit": {
+              "constructor": "CALLER_ZEROES_INPUTS_AND_OUTPUTS",
+              "compact_process": "NO_OUTPUT_REFILL; SYNCHRONOUS_PROCESS_THEN_COPYOUTPUT",
+              "actual_output_identity": "CHECKED_BY_COMMITINPUTSLICES_EVEN_FOR_EMPTY_COMMIT",
+              "sdk_cache_contract": "NOT_ESTABLISHED_BY_SOURCE_AUDIT"
+            },
+            "experiment": {
+              "mode": "untouched",
+              "scope": "CALLER_OMITS_OUTPUT_INITIALIZATION_ONLY; SDK_ALLOCATION_UNCHANGED",
+              "fixture": "REUSE_COMPLETED_RESULT_ORIGINAL_INPUTS_REFERENCE_AND_38_CALL_SCHEDULE",
+              "cold_first_call": "RETAINED; NO_WARMUP_SKIP",
+              "gates": "UNCHANGED",
+              "model_compilation": "NOT_RUN",
+              "device_execution": "PENDING_USER",
+              "production_default": "ZERO_UNCHANGED"
+            },
+            "evidence": "20261105T031159Z-25303-23ce63/evidence/user-hidden-zero-summary.json"
+          },
+          "profile_observation": {
+            "artifact_kind": "qwen35-draft-user-profile-observation",
+            "date": "2026-11-05",
+            "source": "USER_PASTED_CAPTURE_RECEIPT_AND_OPERATOR_MODEL_TABLES; ORIGINAL_CSV_NOT_RETRIEVED_LOCALLY",
+            "status": "DRAFT_PROFILE_CAPTURED_REQUIRES_ATTRIBUTION_REVIEW",
+            "model_sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f",
+            "board_attempt": "/data/local/tmp/qwen35_draft_profile_75ad70a5a9dc450983b93e38a5377483",
+            "model_process_id": 36349,
+            "model_exitcode": 0,
+            "parser_exitcode": 0,
+            "profile_case": {
+              "index": 2,
+              "start": 16,
+              "valid": 2,
+              "anchor": 17,
+              "proposals": 15,
+              "label": "partial-context"
+            },
+            "model_manager_interface": "V1",
+            "warmup": 0,
+            "times": 1,
+            "timing_scope": "ONE_FRESH_VENDOR_TOOL_PROFILED_INFERENCE_NOT_RESIDENT_LATENCY_DISTRIBUTION",
+            "source_numerical_validation": "FAILED",
+            "numerical_validation": "NOT_EVALUATED",
+            "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+            "model_us": {
+              "load": 166337,
+              "inference": 66556,
+              "unload": 10080
+            },
+            "operator_sum_us": 61960,
+            "operator_sum_source": "USER_TABLE_TOTAL",
+            "arithmetic_difference_us": 4596,
+            "hotspots_us": {
+              "MatMul_30": 19965,
+              "Conv2D": 8753,
+              "Transpose_1": 5284,
+              "StableArgMax": 415
+            },
+            "top_three_sum_us": 34002,
+            "operator_fraction_top1": 0.006697869593285991,
+            "operator_fraction_top_three": 0.5487734021949645,
+            "timestamp_observation": {
+              "model_inference_end": "02:36:57.695706",
+              "npu_first_start": "02:36:57.697844",
+              "npu_last_start": "02:36:57.698040",
+              "npu_start_span_us": 196,
+              "first_npu_start_minus_inference_end_us": 2138,
+              "interpretation": "CLOCK_OR_EVENT_SEMANTICS_UNRESOLVED; NOT_A_VALID_CPU_NPU_EXECUTION_TIMELINE"
+            },
+            "csv_files": [
+              {
+                "path": "model_20260319_023656_model.csv",
+                "bytes": 335,
+                "sha256": "6461020a867ff364d790cfcd5f829d1ce6b6c4270d75bb9139964bb71fc09ccf"
+              },
+              {
+                "path": "model_20260319_023656_op.csv",
+                "bytes": 39414,
+                "sha256": "95b8a5663fb3973b1a9171e7f95392cf85bb0ee5142e51183516f5cf7e854cb7"
+              }
+            ],
+            "attribution": "RECEIPT_BINDS_MODEL_AND_CASE; PASTED_ROWS_CONSISTENT_WITH_STABLE_ARG_MAX_GRAPH; CSV_MEMBER_ATTRIBUTION_NOT_INDEPENDENTLY_CHECKED",
+            "previous": {
+              "inference_us": 103720,
+              "operator_sum_us": 73656,
+              "cpu_argmax_us": 12353
+            },
+            "deltas_us": {
+              "inference_reduction": 37164,
+              "operator_sum_reduction": 11696,
+              "terminal_reduction_record_difference": 11938
+            },
+            "limitations": [
+              "DIAGNOSTIC_SINGLE_CALL_NOT_ACCEPTANCE",
+              "OPERATOR_SUM_NOT_CRITICAL_PATH",
+              "ARITHMETIC_DIFFERENCE_NOT_MEASURED_WAIT_TRANSFER",
+              "COMPILER_NAMES_NOT_FULL_SOURCE_MAPPING",
+              "NO_NUMERICAL_OR_PRODUCTION_PROMOTION"
+            ],
+            "evidence": "20261105T031159Z-25303-23ce63/evidence/user-profile-summary.json"
           }
         }
       }
