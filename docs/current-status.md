@@ -2,13 +2,13 @@
 
 2026-11-05：完整Draft仍未通过精度门槛。`untouched` 回放消除了首例额外零值，但hidden相对L2仍约1.34%–2.61%；离线head已用device hidden复现全部7处Top1翻转。按当前安排，先定位并改善精度，性能优化暂缓。已有结果见[结果页](results.md)。
 
-本轮检查第0层 `input RMSNorm → Q投影 → Q RMSNorm`。两个小图从当前AIR裁取，保留原计算节点和三份权重：一个只输出Q归一化结果，另一个暴露五个检查点。输入复用empty-context原始FP16 embedding，比较容差不变。**裁剪和增加输出可能改变编译，探针结果不能直接当作整图首错位置。**
+本轮检查第0层 `input RMSNorm → Q投影 → Q RMSNorm`。两个小图从当前AIR裁取：一个只输出Q归一化结果，另一个暴露五个检查点。原图和三份权重保留，编译副本复用整Draft的静态reshape和权重转置折叠。输入复用empty-context原始FP16 embedding，比较容差不变。**裁剪和增加输出可能改变编译，探针结果不能直接当作整图首错位置。**
 
 ## 用户现在执行什么
 
 更新代码后在DDK服务器执行；需要已保留的export、prepared和output-init/result，不需要Torch、TorchAir或重新导出整Draft。
 
-已修正MatMul未提供bias时的空端口检查。若上次停在`source prefix requires ND descriptors: MatMul`，更新后重跑下面命令即可；该预检失败尚未创建输出目录或启动OMG，无需清理目录。
+本次已修复探针遗漏权重转置准备的问题。`--replace`只重用两个case均已明确OMG失败且未上板的目录，并保留上次错误摘要；新目录也可使用。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
@@ -21,10 +21,10 @@ python3 "$REPO_DIR/targets/cpro/tools/probe_draft_hidden.py" \
   --result "$TOP1_DIR/output-init/result" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$HIDDEN_DIR/compiled"
+  --output "$HIDDEN_DIR/compiled" --replace
 ```
 
-需要两个case均为`COMPILED`。只编译小图，不替换整Draft OMC。随后更新共享运行器，使tensor probe支持显式`untouched`输出模式；这是运行器构建，不是重编整模型：
+先确认摘要的`air_preparation.weight_transpose_count`为1，且两个case均为`COMPILED`。只编译小图，不替换整Draft OMC。随后更新共享运行器，使tensor probe支持显式`untouched`输出模式；这是运行器构建，不是重编整模型：
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \

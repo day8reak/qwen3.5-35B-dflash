@@ -16,11 +16,12 @@ def main():
     for name in ('air-export', 'source', 'result', 'ddk-root', 'ddk-id', 'tbe-diagnosis', 'output'):
         parser.add_argument('--'+name, required=True)
     parser.add_argument('--timeout-seconds', type=int, default=1800)
+    parser.add_argument('--replace', action='store_true', help='reuse a completed failed host compilation; retain its error summary')
     args = parser.parse_args()
     try:
         result = compile_probe(args.air_export, args.source, args.result, args.output,
             ddk_root=args.ddk_root, ddk_id=args.ddk_id, tbe_diagnosis=args.tbe_diagnosis,
-            timeout_seconds=args.timeout_seconds,
+            timeout_seconds=args.timeout_seconds, replace=args.replace,
             progress=lambda s: print('hidden-probe: '+s, flush=True))
         summary = {k: v for k, v in result.items() if k not in ('cases', 'source_weights', 'input_record')}
         summary['cases'] = [{k: v for k, v in r.items() if k not in ('fixtures', 'extraction')}

@@ -6401,7 +6401,7 @@
         "candidate_code_changed": false
       },
       "hidden_prefix_probe": {
-        "status": "LOCAL_IMPLEMENTATION_TESTED_TARGET_EXECUTION_PENDING",
+        "status": "STATIC_PREPARATION_REPAIRED_DDK_RETRY_PENDING",
         "entry": "targets/cpro/tools/probe_draft_hidden.py",
         "commands": "docs/current-status.md",
         "source": "RETAINED_UNTOUCHED_CASE0_HOST_EMBEDDINGS_AND_MATCHING_AIR",
@@ -6410,7 +6410,7 @@
           "hidden_first_query",
           "hidden_first_query_taps"
         ],
-        "model_compilation": "NOT_RUN",
+        "model_compilation": "FAILED",
         "device_execution": "NOT_RUN",
         "numerical_validation": "NOT_RUN",
         "full_model_first_divergence": "NOT_YET_LOCALIZED",
@@ -6418,9 +6418,21 @@
         "host_evidence": "20261105T035706Z-27113-40e39d/evidence/hidden-probe-local-checks.json",
         "preflight_repair": {
           "reported_error": "ValueError: source prefix requires ND descriptors: MatMul",
-          "status": "LOCAL_REGRESSION_PASSED_USER_RETRY_PENDING",
+          "status": "USER_RETRY_REACHED_OMG",
           "change": "VALIDATE_MARKED_ABSENT_MATMUL_BIAS_SEPARATELY_FROM_LIVE_TENSORS; PRESERVE_SOURCE_BYTES",
           "host_evidence": "20261105T055948Z-29093-bb6093/evidence/hidden-optional-input-checks.json"
+        },
+        "compiler_repair": {
+          "observation": "USER_PASTED_BOTH_CASES_FAILED_OMG_PERMUTE_TRANSPOSE_3_INPUT_TENSOR_NULL",
+          "original_model_sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f",
+          "source_air_sha256": "78943088590344793c4dc789241db05196e78d5f9b5ab86c0f3e7bb6dd39d829",
+          "ddk_id": "100.520.020.010",
+          "policy": "hidden-prefix-static-preparation-v1",
+          "change": "REUSE_FULL_DRAFT_RESHAPE_AND_WEIGHT_TRANSPOSE_FOLDING_ON_COMPILER_COPY",
+          "golden_and_weight_bytes": "UNCHANGED",
+          "retry": "SAME_OUTPUT_WITH_REPLACE; BOTH_KNOWN_FAILED_HOST_CASES_ONLY",
+          "host_evidence": "20261105T060949Z-29519-d04bf9/evidence/hidden-static-preparation-checks.json",
+          "model_compilation": "NOT_RUN"
         }
       }
     }

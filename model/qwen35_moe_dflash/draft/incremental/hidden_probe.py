@@ -1,13 +1,15 @@
 """Bounded first-query prefix from retained AIR and real case-zero embeddings.
 
 No Torch/TorchAir, new weights, full-model export, or device access here.
-The normal-output control and tapped copy preserve the same source op bytes.
+The normal-output control and tapped copy retain the original source op bytes;
+compiler copies use the full Draft's static reshape/weight-transpose rules.
 An isolated prefix can narrow a hypothesis, not prove full-graph placement.
 """
 from copy import deepcopy
 import fcntl
 import hashlib
 import math
+import os
 from pathlib import Path
 import shutil
 
@@ -30,6 +32,73 @@ SCOPE = 'SOURCE_LAYER0_INPUT_RMS_QUERY_PROJECTION_QUERY_RMS_PREFIX_NOT_FULL_DRAF
 WEIGHTS = ('draft.layers.0.input_layernorm.weight',
            'draft.layers.0.self_attn.q_proj.weight', 'draft.layers.0.self_attn.q_norm.weight')
 GE_DTYPES = {0: '<f4', 1: '<f2', 3: '<i4', 9: '<i8'}
+
+
+def prepare_compiler_air(raw, schema):
+    """Use the full Draft's exact static rewrites on the compiler copy only."""
+    from .air_reshape import fold_reshape_chains
+    from .air_matmul import fold_weight_transposes
+    prepared, reshapes = fold_reshape_chains(raw, schema)
+    prepared, transposes = fold_weight_transposes(prepared, schema)
+    # This prefix has no Fill, ZerosLike or embedding scale operations. Do not
+    # silently retry an unsupported FileConstant transpose on this DDK.
+    if transposes['skipped']:
+        raise ValueError('unsupported prefix weight transpose: '+str(transposes['skipped']))
+    return prepared, dict(policy='hidden-prefix-static-preparation-v1',
+        status='APPLIED' if prepared != raw else 'UNCHANGED',
+        removed_count=reshapes['removed_count'], weight_transpose_count=transposes['weight_transpose_count'],
+        reshapes=reshapes, weight_transposes=transposes,
+        source_sha256=hashlib.sha256(raw).hexdigest(), compiler_sha256=hashlib.sha256(prepared).hexdigest(),
+        scope='COMPILER_COPY_ONLY; FULL_DRAFT_REWRITE_RULES; NO_WEIGHT_DTYPE_OR_GOLDEN_CHANGE')
+
+
+def _replace_failed(root, replace):
+    """Called under the source-snapshot lock, after new input preflight succeeds."""
+    if not root.exists():
+        return None
+    if not replace:
+        raise ValueError('hidden probe output exists; use --replace for a completed failed host compilation')
+    tests = Path(os.environ['AI_RUN_DIR']).resolve()/'draft/tests'
+    if tests not in root.parents or not root.is_dir() or root.is_symlink():
+        raise ValueError('replacement requires a hidden probe directory below draft/tests')
+    if (root/'result.json').is_symlink() or set(p.name for p in root.iterdir()) - {*CASES, 'result.json', 'previous-failure.json'}:
+        raise ValueError('foreign files in hidden probe output; retained')
+    state = read_json(root/'result.json')
+    if (state.get('artifact_kind') != KIND or state.get('stage') != 'complete'
+            or state.get('status') not in {'FAILED', 'PARTIAL'}
+            or state.get('device_execution') != 'NOT_RUN' or state.get('numerical_validation') != 'NOT_RUN'
+            or [r.get('case') for r in state.get('cases', [])] != list(CASES)):
+        raise ValueError('replacement requires both completed failed host cases; output retained')
+    previous = dict(original_model_sha256=state.get('original_model_sha256'),
+        source_air_sha256=state.get('source_air_sha256'), cases=[],
+        scope='PREVIOUS_FAILED_COMPILATION_EXCERPTS; ORIGINAL_LOG_PATHS_REUSED')
+    for row in state['cases']:
+        folder = root/row['case']; report = folder/'compilation/report.json'
+        if (folder.resolve() != folder or report.resolve() != report or (folder/'model.omc').exists()
+                or (folder/'request.json').exists() or row.get('status') != 'FAILED'
+                or row.get('model_compilation') != 'FAILED'):
+            raise ValueError('successful, active or foreign case cannot be replaced')
+        compiled = read_json(report)
+        if (compiled.get('artifact_kind') != 'qwen35-existing-air-compilation'
+                or compiled.get('status') != 'FAILED' or compiled.get('stage') != 'omg'
+                or compiled.get('model_compilation') != 'FAILED' or compiled.get('device_execution') != 'NOT_RUN'
+                or type(compiled.get('returncode')) is not int or compiled['returncode'] == 0):
+            raise ValueError('replacement requires known failed OMG exits; output retained')
+        previous['cases'].append(dict(case=row['case'], error=row.get('error'), returncode=compiled['returncode'],
+            log_excerpt=row.get('compilation_diagnostics', {}).get('log_excerpt')))
+    for proc in Path('/proc').glob('[0-9]*'):
+        if proc.name == str(os.getpid()):
+            continue
+        try:
+            args = proc.joinpath('cmdline').read_bytes().decode(errors='replace').split('\0')
+            cwd = proc.joinpath('cwd').resolve(strict=True)
+        except OSError:
+            continue
+        if cwd == root or root in cwd.parents or any(
+                arg.split('=', 1)[-1] == str(root) or arg.split('=', 1)[-1].startswith(str(root)+'/') for arg in args):
+            raise ValueError('process still references hidden probe output; retained')
+    shutil.rmtree(root)
+    return previous
 
 
 class Prefix:
@@ -279,15 +348,17 @@ class Prefix:
 
 
 def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id,
-                  tbe_diagnosis, timeout_seconds=1800, progress=print):
+                  tbe_diagnosis, timeout_seconds=1800, progress=print, replace=False):
     from .accuracy import analyze_result
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
     from qwen35_moe_dflash.toolchain.omc_embed_weights import embed_external_weights
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
     root, air, prepared, recovered = output_path(output), Path(air_export).resolve(), Path(source).resolve(), Path(result).resolve()
+    if Path(output).absolute() != root:
+        raise ValueError('hidden probe output must not contain symlink or traversal components')
     _disjoint(root, air, prepared, recovered, ddk_root, tbe_diagnosis)
-    if root.exists():
-        raise ValueError('hidden probe requires an unused output directory')
+    if root.exists() and not replace:
+        raise ValueError('hidden probe output exists; use --replace for a completed failed host compilation')
     progress('verifying completed untouched replay and the source AIR binding')
     analyze_result(recovered)
     run = read_json(recovered/'result.json', 4 << 20)
@@ -330,12 +401,22 @@ def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id,
     progress('evaluating the two source RMS and query projection on real case-zero input')
     reference = prefix.evaluate(x, weights)
     alternate = prefix.evaluate(x, weights, reference_gamma_boundary=True)
+    plans = []
+    for index, name in enumerate(CASES):
+        extracted, receipt = prefix.extract(reference, taps=bool(index))
+        compiler_raw, preparation = prepare_compiler_air(extracted, schema)
+        plans.append((name, extracted, receipt, compiler_raw, preparation))
+        progress(f'prepared {name}: folded {preparation["weight_transpose_count"]} weight Transposes, '
+                 f'{preparation["removed_count"]} intermediate Reshapes; original AIR and golden retained')
     root.parent.mkdir(parents=True, exist_ok=True)
     if shutil.disk_usage(root.parent).free < 256 << 20:
         raise OSError('hidden prefix preparation requires 256 MiB free')
     with (root.parent/('.'+root.name+'.lock')).open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        previous = _replace_failed(root, replace)
         root.mkdir()
+        if previous is not None:
+            _save(root/'previous-failure.json', previous)
         state = dict(artifact_kind=KIND, status='PARTIAL', scope=SCOPE, stage='compile',
             model_compilation='PARTIAL', device_execution='NOT_RUN', numerical_validation='NOT_RUN',
             original_model_sha256=meta['model']['sha256'], source_air_sha256=binding['source_air_sha256'],
@@ -344,9 +425,10 @@ def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id,
             reference='NUMPY_FP32_RMS_AND_MATMUL_WITH_SOURCE_FP16_CASTS; CPU_REDUCTION_ORDER_MAY_DIFFER',
             comparison=meta['comparison'], cases=[])
         state['probe_source_sha256'] = sha256_file(Path(__file__))
-        for index, name in enumerate(CASES):
+        if previous is not None:
+            state['replaced_failed_compilation'] = 'previous-failure.json'
+        for name, extracted, receipt, compiler_raw, preparation in plans:
             folder = root/name; (folder/'air/weight').mkdir(parents=True)
-            extracted, receipt = prefix.extract(reference, taps=bool(index))
             (folder/'air/export.air').write_bytes(extracted)
             for relative, record in weight_records.items():
                 shutil.copyfile(checked_file(air, record), folder/'air'/relative)
@@ -356,14 +438,19 @@ def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id,
                 reference[s['name']].tofile(fixtures/f'golden_{i}.bin')
                 alternate[s['name']].tofile(fixtures/f'boundary_{i}.bin')
             row = dict(case=name, status='FAILED', model_compilation='NOT_RUN', extraction=receipt,
+                air_preparation={k: preparation[k] for k in ('policy', 'status', 'removed_count', 'weight_transpose_count')},
                 fixtures={p.name: dict(path=p.name, bytes=p.stat().st_size, sha256=sha256_file(p)) for p in fixtures.iterdir()})
             state['cases'].append(row); _save(root/'result.json', state)
             try:
+                def transform(snapshot):
+                    if snapshot.read_bytes() != extracted:
+                        raise ValueError('prefix AIR snapshot differs from the prepared source')
+                    return compiler_raw, preparation
                 progress('compiling '+name+'; only the small prefix is recompiled')
                 compiled = compile_existing_air(folder/'air/export.air', folder/'compilation', ddk_root,
                     ddk_id=ddk_id, tbe_diagnosis=tbe_diagnosis, timeout_seconds=timeout_seconds,
                     input_layout='air-directory', use_origin_format=True, save_weights_as_external_data=True,
-                    progress=lambda r: progress(r['message']))
+                    progress=lambda r: progress(r['message']), air_transform=transform)
                 row['model_compilation'] = compiled['model_compilation']
                 if compiled['status'] != 'COMPILED':
                     raise ValueError(str(compiled.get('error', compiled['status'])))
@@ -386,8 +473,9 @@ def compile_probe(air_export, source, result, output, *, ddk_root, ddk_id,
                     compilation_diagnostics=compilation_diagnostics(folder/'compilation'))
             _save(root/'result.json', state)
         passed = all(r['status'] == 'COMPILED' for r in state['cases'])
-        state.update(status='COMPILED' if passed else 'PARTIAL', stage='complete',
-                     model_compilation='PASSED' if passed else 'PARTIAL')
+        failed = all(r['model_compilation'] == 'FAILED' for r in state['cases'])
+        state.update(status='COMPILED' if passed else ('FAILED' if failed else 'PARTIAL'), stage='complete',
+                     model_compilation='PASSED' if passed else ('FAILED' if failed else 'PARTIAL'))
         _save(root/'result.json', state)
     return state
 
