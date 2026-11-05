@@ -56,7 +56,9 @@ C16／cap192／K15、host embedding候选：板端加载和执行已完成；iso
 
 新候选报告均值下降约36.5%，但两轮不是配对稳态验收，也不含host查表／输入准备，不能据此给出端到端加速或把全部收益归因于算子本身。目标是常驻预热后proposal同步Process均值≤50ms，尚未达到。
 
-新请求 `qwen35_draft_accuracy_279e74c27a2c470598f5d4488c3bf54f` 已完成、输出回收且锁释放。Top1七处差异及KV误差范围与上一候选相同：appended KV相对L2约0.44–0.83%，未写入区保持；feedback两组重复逐位稳定。不过isolated首例hidden最大绝对误差为4.42578125、相对L2 **65.11%**，此前该例为0.15234375／1.45%；feedback hidden仍为1.45–2.61%。不能把整图数值变化归结为已有的小误差。当前先比较首例两种模式的14路快照，同时采集同一候选profiling；不改容差。回传摘要未含新OMC digest或编译边界，整图归属待本地只读检查。
+新请求 `qwen35_draft_accuracy_279e74c27a2c470598f5d4488c3bf54f` 已完成、输出回收且锁释放。Top1七处差异及KV误差范围与上一候选相同：appended KV相对L2约0.44–0.83%，未写入区保持；feedback两组重复逐位稳定。不过isolated首例hidden最大绝对误差为4.42578125、相对L2 **65.11%**，此前该例为0.15234375／1.45%；feedback hidden仍为1.45–2.61%。不能把整图数值变化归结为已有的小误差。首例14路快照诊断已在用户服务器生成，内容尚待回传；原容差保持。
+
+后续边界报告已与这次精度测试绑定：OMC为1790943538字节，SHA256 `fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f`。当前CPUCL=1、NPUCL=1：CPU只接收三个INT32控制量，解码操作为比较、逻辑、Gather、Select等，没有ArgMax；其6路输出逻辑大小合计410496字节。NPU有20路输入／14路输出。原末尾CPU全词表归约分区已消失，整图仍保留前置CPU控制计算。端口大小不是实测传输量，NPU内部指令精度及实际热点需其他证据。
 
 原生Top1候选的另一次profiling：model `inference` 为 **103.720ms**，算子duration合计73.656ms，其中末尾MatMul 19.960ms、CPU ArgMax 12.353ms、Conv 8.643ms。算子可能重叠，不能相加当关键路径或把差额直接归于搬运。load 160.281ms、unload 4.859ms另计。StableArgMax整图的新profiling尚待用户采集。
 

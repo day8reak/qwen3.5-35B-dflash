@@ -1014,7 +1014,7 @@
       "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
       "numerical_validation": "FAILED",
       "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_279e74c27a2c470598f5d4488c3bf54f",
-      "model_sha256": null,
+      "model_sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f",
       "case_counts": {
         "isolated": {
           "total": 19,
@@ -1047,7 +1047,8 @@
           "rmse": 0.6511128437106132,
           "relative_l2_error": 0.6511133260512757
         }
-      }
+      },
+      "model_identity_evidence": "20261105T030837Z-25145-99c811/evidence/user-boundaries-summary.json"
     },
     "performance_target": {
       "mean_ms": 50,
@@ -7032,8 +7033,8 @@
             "model_compilation": "NOT_RUN",
             "numerical_validation": "FAILED",
             "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_279e74c27a2c470598f5d4488c3bf54f",
-            "model_sha256": null,
-            "model_association": "PRIOR_TOP1_INTEGRATION_COMMAND; SUMMARY_OMITS_OMC_IDENTITY_AND_PLACEMENT",
+            "model_sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f",
+            "model_association": "SUBSEQUENT_USER_BOUNDARY_REPORT_MATCHED_MODEL_AND_FIXTURE",
             "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
             "production_promotion": "NOT_PERFORMED",
             "host_embedding_binding": "VERIFIED",
@@ -7227,10 +7228,94 @@
               "reported_mean_reduction_percent": 36.49574937375581
             },
             "run_id": "20261105T025158Z-24349-82e298",
-            "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json"
+            "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json",
+            "model_identity_evidence": "20261105T030837Z-25145-99c811/evidence/user-boundaries-summary.json"
           },
-          "next": "docs/current-status.md: retained --diagnose, compiled --inspect-boundaries and one V1 profile",
-          "diagnostic_host_evidence": "20261105T025158Z-24349-82e298/evidence/diagnostic-profile-check.json"
+          "next": "Read existing diagnosis.json initial_call_comparison; start profiling only if not already launched, otherwise recover same request.",
+          "diagnostic_host_evidence": "20261105T025158Z-24349-82e298/evidence/diagnostic-profile-check.json",
+          "boundary_observation": {
+            "provenance": "USER_PASTED_BOUNDARY_INSPECTION_NOT_INDEPENDENTLY_RETRIEVED",
+            "artifact_kind": "qwen35-draft-runtime-boundary-inspection",
+            "status": "INSPECTED",
+            "model": {
+              "bytes": 1790943538,
+              "sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f"
+            },
+            "accuracy_binding": "MATCHED_MODEL_AND_FIXTURE",
+            "source_numerical_validation": "FAILED",
+            "model_compilation": "NOT_RUN",
+            "device_execution": "NOT_RUN",
+            "graphop_counts": {
+              "CPUCL": 1,
+              "NPUCL": 1
+            },
+            "partitions": [
+              {
+                "name": "SubGraph_0",
+                "owner": "CPUCL",
+                "inputs": {
+                  "ports": 3,
+                  "known_logical_bytes_sum": 12
+                },
+                "outputs": {
+                  "ports": 6,
+                  "known_logical_bytes_sum": 410496
+                },
+                "input_contract": "THREE_INT32_SHAPE_1_CONTROL_INPUTS"
+              },
+              {
+                "name": "SubGraph_1",
+                "owner": "NPUCL",
+                "inputs": {
+                  "ports": 20,
+                  "known_logical_bytes_sum": 5718912
+                },
+                "outputs": {
+                  "ports": 14,
+                  "known_logical_bytes_sum": 4780092
+                }
+              }
+            ],
+            "cpu_subgraphs": [
+              {
+                "owner": "SubGraph_0",
+                "status": "DECODED",
+                "task": {
+                  "cl_name": "CPUCL",
+                  "offset": 0,
+                  "bytes": 46021
+                },
+                "sha256": "25988f74e4c886df864351880f65ecb4e34ccc2bf38ec0d50c86067b6e89320b",
+                "node_type_counts": {
+                  "Data": 1,
+                  "Add": 3,
+                  "Const": 22,
+                  "Sub": 2,
+                  "Less": 5,
+                  "Greater": 1,
+                  "Reshape": 7,
+                  "LessEqual": 1,
+                  "CastT": 9,
+                  "ConcatD": 2,
+                  "GreaterEqual": 2,
+                  "LogicalAnd": 4,
+                  "BroadcastTo": 1,
+                  "GatherV2D": 3,
+                  "LogicalOr": 2,
+                  "Select": 2,
+                  "NetOutput": 1
+                }
+              }
+            ],
+            "conclusions": {
+              "terminal_cpu_argmax_partition": "ABSENT_IN_CURRENT_INSPECTED_GRAPH",
+              "full_graph_npu_only": false,
+              "initial_hidden_anomaly": "UNRESOLVED_DIAGNOSIS_FILE_CONTENT_PENDING",
+              "profiling": "RESULT_NOT_YET_PROVIDED"
+            },
+            "scope": "COMPILED_PARTITION_METADATA_AND_CPU_OP_TYPES_NOT_MEASURED_TRANSFER_OR_INTERNAL_NPU_KERNEL_MAPPING",
+            "evidence": "20261105T030837Z-25145-99c811/evidence/user-boundaries-summary.json"
+          }
         }
       }
     }

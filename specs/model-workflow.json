@@ -3,7 +3,7 @@
   "updated": "2026-11-05",
   "active_phase": "accuracy",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
-  "run_id": "20261105T025158Z-24349-82e298",
+  "run_id": "20261105T030837Z-25145-99c811",
   "navigation": {
     "home": "docs/README.md",
     "model": "docs/model-architecture.md",
@@ -2159,7 +2159,7 @@
       "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json",
       "working_directory": "$AI_RUN_DIR",
       "next_command_document": "docs/current-status.md#用户现在执行什么",
-      "note": "Full Draft candidate has executed and outputs were retrieved; complete model delivery/promotion remains blocked by accuracy, with new compiled identity/partition receipt still to inspect.",
+      "note": "Full Draft candidate executed and retrieved; OMC identity/CPU1-NPU1 boundary inspection now bound to accuracy. Complete model delivery remains blocked by numerical failure.",
       "next_command": "docs/current-status.md"
     },
     {
@@ -2167,8 +2167,8 @@
       "status": "blocked",
       "owner": "model-workflow",
       "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json",
-      "note": "Original gates failed. Compare retained isolated-0 and feedback-0 outputs/hidden rows before choosing another device probe.",
-      "next_command": "python3 \"$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py\" --diagnose \"$AI_RUN_DIR/draft/tests/top1-integration/result\""
+      "note": "Original gates failed. Diagnosis generated on user server; read initial_call_comparison before any further device probe.",
+      "next_command": "docs/current-status.md: read existing diagnosis.json"
     },
     {
       "name": "performance",
@@ -5810,7 +5810,7 @@
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "ISOLATED82_OF86_FEEDBACK83_OF86; FIRST_ISOLATED_HIDDEN_L2_65.11_PERCENT; ORIGINAL_GATES_FAILED",
-    "next": "docs/current-status.md: --diagnose retained result; user runs profile_draft --accuracy --allow-numerical-failure",
+    "next": "Read retained diagnosis.json initial_call_comparison and receive profiling result; boundary inspection complete.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6304,7 +6304,7 @@
         "status": "NUMERICAL_FAILED",
         "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json"
       },
-      "next": "docs/current-status.md: retained --diagnose, compiled --inspect-boundaries and one V1 profile",
+      "next": "Read existing diagnosis.json initial_call_comparison; start profiling only if not already launched, otherwise recover same request.",
       "diagnostic_host_evidence": "20261105T025158Z-24349-82e298/evidence/diagnostic-profile-check.json",
       "experience_audit": {
         "evidence": "targets/cpro/ops/draft-top1/docs/LESSONS.md",
@@ -6312,6 +6312,15 @@
         "checks": "INITIAL_MODE_OUTPUTS_AND_PER_ROW_HIDDEN; RETAINED_FIXTURE_PROFILE_BINDING",
         "skill_changes": "NONE_SCOPED_PROJECT_OBSERVATION",
         "promotion": "NO_FULL_MODEL_PROMOTION"
+      },
+      "boundary_observation": {
+        "source": "specs/dflash-execution-state.json#incremental_draft_task/top1_builtin_probe/custom_top1/integration/boundary_observation",
+        "model_sha256": "fadec11fab3e72c9fc2060a53fc57e0f6ccee136a87af1a064f7ece8f7b2f85f",
+        "accuracy_binding": "MATCHED_MODEL_AND_FIXTURE",
+        "graphop_counts": {
+          "CPUCL": 1,
+          "NPUCL": 1
+        }
       }
     }
   }
