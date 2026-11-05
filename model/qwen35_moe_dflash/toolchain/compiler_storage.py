@@ -67,7 +67,35 @@ def _tree_bytes(root):
     return size
 
 
-def release_packed_scratch(root, *, apply=False, protected=()):
+def _packed_sidecars(root, source, packing, build, protected):
+    """Select only packed weight duplicates; retain ABI/source binding inputs."""
+    records = packing.get('weights', [])
+    if not records or sum(r['bytes'] for r in records) != packing['partitions'][1]['bytes']:
+        raise ValueError('packed sidecar inventory does not cover embedded weights')
+    declared = {str(root/'compilation'/r['path']): r
+                for r in build.get('external_data_candidates', [])}
+    inputs = {str(root/'compilation'/r['path']) for r in build.get('input_snapshots', [])}
+    selected, seen = [], set()
+    for record in records:
+        path = Path(record['path'])
+        expected = declared.get(str(path), {})
+        if (path.parent != source.parent or path.suffix != '.weight' or path in seen
+                or str(path) in inputs or path.resolve() != path
+                or any(expected.get(k) != record[k] for k in ('bytes', 'sha256'))):
+            raise ValueError('unexpected packed sidecar path or compiler binding; retained')
+        seen.add(path)
+        if not path.exists() and not path.is_symlink():
+            continue  # Already removed or resume after interruption.
+        _plain(path)
+        if any(asset == path or asset in path.parents for asset in protected):
+            raise ValueError(f'runtime configuration references external weights: {path}')
+        if path.stat().st_size != record['bytes'] or sha256_file(path) != record['sha256']:
+            raise ValueError(f'packed sidecar content differs; retained: {path}')
+        selected.append(dict(path=str(path.relative_to(root)), allocated_bytes=path.stat().st_blocks*512))
+    return selected
+
+
+def release_packed_scratch(root, *, apply=False, protected=(), sidecars_only=False):
     root = Path(root).absolute()
     _plain(root, directory=True)
     require_idle(root)
@@ -95,18 +123,21 @@ def release_packed_scratch(root, *, apply=False, protected=()):
             or [(p['type'], p['bytes']) for p in parts] !=
                [(p['type'], p['bytes']) for p in packing.get('partitions', [])]):
         raise ValueError('packed OMC content/embedded weight partition differs; scratch retained')
-    selected = []
-    for relative in SCRATCH:
+    selected = _packed_sidecars(root, source, packing, build, protected) if sidecars_only else []
+    for relative in (() if sidecars_only else SCRATCH):
         path = root/relative
         if not path.exists() and not path.is_symlink():
             continue
         if any(asset == path or path in asset.parents or asset in path.parents for asset in protected):
             raise ValueError(f'runtime configuration references scratch: {path}')
         selected.append(dict(path=relative, allocated_bytes=_tree_bytes(path)))
-    result = dict(status='PLANNED', model_sha256=digest, directories=selected,
+    result = dict(status='PLANNED', model_sha256=digest,
+        **{('files' if sidecars_only else 'directories'): selected},
         allocated_bytes_selected=sum(r['allocated_bytes'] for r in selected),
-        scope='COMPLETED_PACKED_COMPILER_COPIES_ONLY; REPORTS_MODELS_AND_SOURCE_EXPORT_RETAINED',
+        scope=('PACKED_WEIGHT_DUPLICATES_ONLY; MODEL_AIR_INPUT_SNAPSHOTS_ABI_AND_REPORTS_RETAINED'
+               if sidecars_only else 'COMPLETED_PACKED_COMPILER_COPIES_ONLY; REPORTS_MODELS_AND_SOURCE_EXPORT_RETAINED'),
         limitation='Hardlinks/reflinks can reduce actual freed space; historical inventories describe removed copies.')
+    retention = root/'compilation'/('sidecar-retention.json' if sidecars_only else 'storage-retention.json')
     if apply and selected:
         require_idle(root)
         now = model.stat()
@@ -115,14 +146,17 @@ def release_packed_scratch(root, *, apply=False, protected=()):
             raise ValueError('packed model changed during cleanup checks')
         free = shutil.disk_usage(root).free
         result.update(status='REMOVING', removed=[])
-        _save(root/'compilation/storage-retention.json', result)
+        _save(retention, result)
         for row in selected:
-            shutil.rmtree(root/row['path'])
+            if sidecars_only:
+                (root/row['path']).unlink()
+            else:
+                shutil.rmtree(root/row['path'])
             result['removed'].append(row['path'])
-            _save(root/'compilation/storage-retention.json', result)
+            _save(retention, result)
         result.update(status='CLEANED', free_bytes_after=shutil.disk_usage(root).free,
                       observed_free_bytes_change=shutil.disk_usage(root).free-free)
-        _save(root/'compilation/storage-retention.json', result)
+        _save(retention, result)
     elif apply:
         result['status'] = 'ALREADY_CLEAN'
     return result

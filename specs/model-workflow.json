@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "updated": "2026-11-05",
-  "active_phase": "accuracy",
+  "active_phase": "performance",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
   "run_id": "20261105T035706Z-27113-40e39d",
   "navigation": {
@@ -2166,16 +2166,16 @@
       "name": "accuracy",
       "status": "blocked",
       "owner": "model-workflow",
-      "evidence": "20261105T031159Z-25303-23ce63/evidence/user-hidden-zero-summary.json",
-      "note": "First isolated hidden has 12928 zero replacements relative to feedback; root cause unresolved, original numerical failure retained.",
+      "evidence": "20261105T101921Z-5087-21d2e8/out/evidence/user-kv-reproduction.json",
+      "note": "Current Draft original gates FAILED; further work deferred by user accepting approximately percent-level residuals. Row duplication not reproduced, not proven fixed.",
       "next_command": "docs/current-status.md"
     },
     {
       "name": "performance",
-      "status": "blocked",
+      "status": "in_progress",
       "owner": "model-workflow",
       "evidence": "20261105T031159Z-25303-23ce63/evidence/user-profile-summary.json",
-      "note": "User returned one diagnostic profile: inference 66.556ms, StableArgMax 0.415ms; original accuracy still failed. No steady acceptance or promotion.",
+      "note": "User permits proceeding with current numerically failed Draft; first recover server disk space. No new performance result or promotion.",
       "next_command": "docs/current-status.md"
     },
     {
@@ -5810,7 +5810,7 @@
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "UNTOUCHED_REPLAY_FIRST_CASE_ALL14_OUTPUTS_BITWISE_EQUAL; HIDDEN_L2_1.449_PERCENT; ISOLATED82_OF86_FEEDBACK83_OF86; ORIGINAL_GATES_FAILED",
-    "next": "LOCATE_FIRST_HIDDEN_DIVERGENCE_WITH_REAL_INPUT_FIRST_QUERY_PREFIX; PERFORMANCE_DEFERRED_BY_USER",
+    "next": "Accuracy investigation deferred by user; clear disposable host runtime artifacts first, then performance diagnosis. Original numerical FAILED unchanged.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6401,7 +6401,7 @@
         "candidate_code_changed": false
       },
       "hidden_prefix_probe": {
-        "status": "LAYER0_MATH_AUDIT_COMPLETE; ROPE_PRECISION_CANDIDATE_FULL_REPLAY_PENDING",
+        "status": "LAYER0_AUDIT_AND_ROPE_REPLAY_COMPLETE; FURTHER_ACCURACY_WORK_DEFERRED_BY_USER",
         "entry": "targets/cpro/tools/probe_draft_hidden.py",
         "commands": "docs/current-status.md",
         "source": "RETAINED_UNTOUCHED_CASE0_HOST_EMBEDDINGS_AND_MATCHING_AIR",
@@ -6414,7 +6414,7 @@
         "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
         "numerical_validation": "FAILED",
         "full_model_first_divergence": "NOT_ESTABLISHED",
-        "performance_work": "DEFERRED_BY_USER_UNTIL_ACCURACY_IMPROVES",
+        "performance_work": "MAY_PROCEED_PER_USER; CURRENT_ACTION_HOST_STORAGE_CLEANUP",
         "host_evidence": "20261105T035706Z-27113-40e39d/evidence/hidden-probe-local-checks.json",
         "preflight_repair": {
           "reported_error": "ValueError: source prefix requires ND descriptors: MatMul",
@@ -6677,7 +6677,7 @@
           }
         },
         "rope_precision_candidate": {
-          "status": "FULL_DRAFT_FAILED; ALL_12_KV_BANKS_ROW176_EQUALS_ROW177; SAME_OMC_REPRODUCTION_PENDING",
+          "status": "FULL_DRAFT_FAILED; USER_DEFERRED_FURTHER_ACCURACY_WORK",
           "implementation": "model/qwen35_moe_dflash/draft/incremental/air_rope.py",
           "compiler_flag": "--rope-fp32-table",
           "policy": "source-fp32-rope-trig-before-gather-v1",
@@ -6958,7 +6958,7 @@
             }
           },
           "same_input_reproduction": {
-            "status": "IMPLEMENTED_HOST_CHECKED; DEVICE_PENDING",
+            "status": "DEVICE_EXECUTED; DUPLICATION_NOT_REPRODUCED; NUMERICAL_FAILED",
             "entry": "targets/cpro/tools/validate_incremental_draft.py --replay --output-initialization untouched --kv-reproduction-case 16",
             "original_calls": 38,
             "tail_calls": 20,
@@ -6968,11 +6968,97 @@
             "tail_kv_commit": false,
             "input_verification": "ALL_17_CPU_BUFFER_HASHES_BEFORE_AND_AFTER_PROCESS; NOT_NPU_READBACK",
             "model_compilation": "NOT_RUN",
-            "device_execution": "NOT_RUN",
+            "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
             "reference_and_gates": "UNCHANGED",
             "host_checks": 12,
             "host_evidence": "20261105T095301Z-4205-9fc02d/out/evidence/kv-reproduction-host-checks.json",
-            "next": "docs/current-status.md"
+            "next": "docs/current-status.md",
+            "observation": {
+              "artifact_kind": "qwen35-user-kv-reproduction-observation",
+              "provenance": "USER_PASTED_COMPLETED_RESULT_AND_MODEL_IDENTITY; REMOTE_FILES_NOT_READ_LOCALLY",
+              "board_attempt": "/data/local/tmp/qwen35_draft_accuracy_96a75701302249ab8f6a9d8d2686e6e8",
+              "model_sha256": "b43ae9cfcd50999277829a21adc24099170d4a7c4856b70729385b59d362a828",
+              "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+              "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+              "model_compilation": "NOT_RUN",
+              "numerical_validation": "FAILED",
+              "original_calls": 38,
+              "tail_calls": 20,
+              "source_case": 16,
+              "original_case_duplicates": [],
+              "original_case_changed_positions_between_modes": [],
+              "all_tail_appended_equal_original_both_modes": true,
+              "all_tail_no_exact_kv_row_duplicates": true,
+              "all_tail_same_strategy_bitwise_stable": true,
+              "cpu_input_hashes": "MATCH_BEFORE_AND_AFTER; NOT_NPU_READBACK",
+              "tail_preservation_passed": true,
+              "tail_commit_outputs": false,
+              "tail_max_appended_relative_l2": 0.005564911242465007,
+              "tail_numerical_passed": 0,
+              "full_top1_mismatches": 6,
+              "full_hidden_failed_per_mode": 8,
+              "full_appended_kv_max_relative_l2_both_modes": 0.0060837508004049235,
+              "hidden_relative_l2": {
+                "isolated": [
+                  0.011563219072038304,
+                  0.014980680791145933
+                ],
+                "feedback": [
+                  0.01325617938772265,
+                  0.017719312272192783
+                ]
+              },
+              "native_api_mean_ms": {
+                "isolated_catchup": 65.93545454545455,
+                "isolated_proposal": 65.948875,
+                "feedback_catchup": 65.991,
+                "feedback_proposal": 66.0045
+              },
+              "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY",
+              "row_duplication": "NOT_REPRODUCED_IN_THIS_RUN; NOT_PROVEN_FIXED",
+              "next": "NO_ADDITIONAL_REPRODUCTION_OR_PRECISION_PROBES_REQUIRED; USER_REQUESTED_STORAGE_CLEANUP"
+            },
+            "observation_evidence": "20261105T101921Z-5087-21d2e8/out/evidence/user-kv-reproduction.json"
+          },
+          "user_accuracy_disposition": {
+            "date": "2026-11-05",
+            "status": "FURTHER_ACCURACY_WORK_DEFERRED_BY_USER",
+            "scope": "CURRENT_ROPE_DRAFT_ONLY; NUMERICAL_GATES_UNCHANGED",
+            "user_directive": "L2在1左右就差不多了，matmul是硬件限制没有办法，精度问题是不是就可以先告一段落了；现在盘只剩3G了，再把运行目录清一下",
+            "interpretation": "Approximately percent-level relative L2 accepted for proceeding; not a strict 1% gate or numerical PASS.",
+            "model_sha256": "b43ae9cfcd50999277829a21adc24099170d4a7c4856b70729385b59d362a828",
+            "numerical_validation": "FAILED",
+            "hidden_relative_l2_percent": [
+              1.1563219072038304,
+              1.7719312272192782
+            ],
+            "appended_kv_max_relative_l2_percent": 0.6083750800404925,
+            "top1_matches_per_mode": "83/86",
+            "row_duplication": "NOT_REPRODUCED; ROOT_CAUSE_UNRESOLVED",
+            "hardware_precision_limit": "USER_STATED; EXACT_KERNEL_ACCUMULATION_DTYPE_NOT_ESTABLISHED",
+            "next": "Bounded host runtime cleanup, then Draft performance work against retained candidate; no new accuracy probe required."
+          },
+          "host_cleanup": {
+            "status": "IMPLEMENTED_HOST_CHECKED; SERVER_EXECUTION_PENDING",
+            "entry": "targets/cpro/tools/clean_draft_probes.py",
+            "commands": "docs/current-status.md",
+            "modes": [
+              "--compiler-scratch",
+              "--integration-sidecars",
+              "--layer0-probes"
+            ],
+            "new_scope": "Only compiler-declared .weight sidecars already packed in top1 and RoPE embedded models.",
+            "preserves": [
+              "packed models",
+              "source/prepared and AIR exports",
+              "current compiler AIR/input snapshots/external OMC ABI descriptors",
+              "runtime config/native runner",
+              "accuracy fixtures/results/anomaly evidence"
+            ],
+            "host_checks": 12,
+            "host_evidence": "20261105T101921Z-5087-21d2e8/out/evidence/sidecar-cleanup-host-checks.json",
+            "server_disk_before": "USER_REPORTED_ABOUT_3_GB_FREE",
+            "server_bytes_freed": "NOT_OBSERVED"
           }
         }
       }

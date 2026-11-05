@@ -110,7 +110,7 @@ def clean(root, config, *, apply=False):
                 logical_bytes_selected=sum(r['logical_bytes'] for r in planned))
 
 
-def clean_compiler_scratch(root, config, *, apply=False):
+def clean_compiler_scratch(root, config, *, apply=False, integration_sidecars=False):
     from qwen35_moe_dflash.toolchain.compiler_storage import release_packed_scratch
     from qwen35_moe_dflash.draft.incremental.torch_export import OMC_KIND
     root = Path(root).resolve(strict=True)
@@ -119,16 +119,18 @@ def clean_compiler_scratch(root, config, *, apply=False):
         raise ValueError('expected owned draft/tests directory without symlink parents')
     protected = _runtime_paths(Path(config).resolve(strict=True))
     results, retained = [], []
-    # Current top1-integration, AIR exports, device fixtures and CSVs are outside
-    # this bounded operation. The two older models themselves remain runnable.
-    for name in ('pytorch-omc', 'pytorch-optimized-omc'):
+    # Current candidates keep compiler AIR, snapshots and the small external
+    # OMC descriptor: standalone ABI binding still reads them.
+    names = (('top1-integration/compiled', 'top1-integration/rope-fp32/compiled')
+             if integration_sidecars else ('pytorch-omc', 'pytorch-optimized-omc'))
+    for name in names:
         folder = tests/name
         if not folder.exists() and not folder.is_symlink():
             continue
         try:
             if folder.resolve() != folder or not folder.is_dir():
                 raise ValueError('candidate directory is linked or foreign')
-            fd = os.open(tests/('.'+name+'.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            fd = os.open(folder.parent/('.'+folder.name+'.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, 'a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 manifest = read_json(folder/'manifest.json')
@@ -138,11 +140,13 @@ def clean_compiler_scratch(root, config, *, apply=False):
                         or manifest.get('weight_storage') != 'embedded-stream'):
                     raise ValueError('not a completed packed PyTorch candidate')
                 print('draft-clean: checking '+name+' packed model and compiler completion', file=sys.stderr, flush=True)
-                results.append(dict(candidate=name, **release_packed_scratch(folder, apply=apply, protected=protected)))
+                results.append(dict(candidate=name, **release_packed_scratch(folder, apply=apply,
+                                    protected=protected, sidecars_only=integration_sidecars)))
         except (OSError, ValueError, KeyError, TypeError) as error:
             retained.append(dict(candidate=name, reason=str(error)))
     return dict(status=('PARTIAL' if retained else 'CLEANED') if apply else 'PLANNED',
-        scope='TWO_OLD_CANDIDATES_COMPILER_SCRATCH_ONLY; NO_DEVICE_ACCESS',
+        scope=('TOP1_AND_ROPE_PACKED_WEIGHT_DUPLICATES_ONLY; NO_DEVICE_ACCESS' if integration_sidecars
+               else 'TWO_OLD_CANDIDATES_COMPILER_SCRATCH_ONLY; NO_DEVICE_ACCESS'),
         candidates=results, retained=retained,
         allocated_bytes_selected=sum(r['allocated_bytes_selected'] for r in results),
         free_bytes_after=shutil.disk_usage(root).free)
@@ -156,16 +160,22 @@ def main():
     mode = p.add_mutually_exclusive_group()
     mode.add_argument('--compiler-scratch', action='store_true',
                    help='retain old packed models/reports; remove only their completed compiler copies')
+    mode.add_argument('--integration-sidecars', action='store_true',
+                      help='remove packed weight duplicates from top1/RoPE builds; retain ABI/source snapshots')
     mode.add_argument('--layer0-probes', action='store_true',
                       help='retire completed hidden-layer0 compiled/run/result; retain summary and top-level analysis JSON')
     a = p.parse_args()
     try:
-        if a.layer0_probes:
+        if a.integration_sidecars:
+            result = clean_compiler_scratch(a.root, a.config or Path(a.root)/'runtime/runtime.json',
+                                            apply=a.apply, integration_sidecars=True)
+        elif a.layer0_probes:
             from qwen35_moe_dflash.draft.incremental.probe_retention import clean_layer0
             action = clean_layer0
         else:
             action = clean_compiler_scratch if a.compiler_scratch else clean
-        result = action(a.root, a.config or Path(a.root)/'runtime/runtime.json', apply=a.apply)
+        if not a.integration_sidecars:
+            result = action(a.root, a.config or Path(a.root)/'runtime/runtime.json', apply=a.apply)
     except (OSError, ValueError, KeyError, TypeError) as error:
         result = dict(status='FAILED', error=f'{type(error).__name__}: {error}')
     print(json.dumps(result, ensure_ascii=False, indent=2))

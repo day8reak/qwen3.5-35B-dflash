@@ -1,46 +1,31 @@
-# 当前阶段：复现完整K/V行重复
+# 当前阶段：暂缓精度排查，清理运行目录
 
-2026-11-05：用户回传确认，RoPE候选的isolated case16（start162、valid16）在cache176重复了177行。全部12路K/V都满足 `isolated[176] == isolated[177] == feedback[177]`，逐位一致；feedback的176、177行不同。保留features局部14、15行有16381/16384个元素不同，因此输入文件本身不是重复行。完整精度仍FAILED，性能工作暂缓。[完整结果](results.md)。
+2026-11-05：用户接受当前约百分之一量级的残余误差，暂缓进一步MatMul／精度排查；先释放服务器运行盘，再继续性能工作。原数值验收仍为FAILED，不修改golden或容差。当前hidden相对L2为1.1563%～1.7719%，新增KV最差0.6084%，两模式各83/86个Top1匹配。[完整结果](results.md)。
 
-源码共享Gather索引应分别为14和15。连经过RoPE的K都重复，支持优先检查共享行选择及后续Gather／搬运路径，尚不能确定具体算子或设备索引字节。CPU保存的文件不能证明NPU当时读到了相同数据。其余15行的数值误差仍未通过原门槛。
+当前RoPE候选OMC SHA为 `b43ae9cfcd50999277829a21adc24099170d4a7c4856b70729385b59d362a828`。同OMC的原38次回放及追加20次调用均未复现176／177重复行，追加KV逐位稳定；记录为“本轮未复现”，未认定根因已修复。无需再执行55点探针、KV复现或新的精度支持检查。
 
-本次新增一个明确开启的验证选项，复用同一OMC、夹具和参考：先原样执行38次isolated／feedback调用，再在同一次模型加载后追加case16的10对调用。每对先重写全部17路输入，再原样复用输入，两次均不提交输出KV；调用前后记录全部输入的CPU缓冲区SHA256并与保留文件核对。输入回读异常即停止追加部分，保留原回放和已完成的追加输出。
+## DDK服务器清理
 
-## DDK服务器执行
-
-只重建native运行器，不编译模型。保留原 `output-init/result`、`rope-fp32/result` 以及它们引用的fixture和OMC。以下命令沿用已有SDK资源配置。
+沿用现有 `REPO_DIR` 和 `AI_RUN_DIR`。只访问服务器文件，不连接板端，不重编模型。运行配置默认读取 `$AI_RUN_DIR/runtime/runtime.json`；若实际配置在其他位置，用 `--config` 指定。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-export ROPE_DIR="$AI_RUN_DIR/draft/tests/top1-integration/rope-fp32"
-export KV_REPEAT_DIR="$ROPE_DIR/kv-reproduction"
 
-python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$AI_RUN_DIR/runtime/native" --replace
+for mode in --compiler-scratch --integration-sidecars --layer0-probes; do
+  python3 "$REPO_DIR/targets/cpro/tools/clean_draft_probes.py" \
+    --root "$AI_RUN_DIR" "$mode" --apply
+done
 
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --replay "$ROPE_DIR/result" --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --output-initialization untouched --kv-reproduction-case 16 \
-  --output "$KV_REPEAT_DIR/run" --apply
+df -h "$AI_RUN_DIR"
+du -h -d 2 "$AI_RUN_DIR/draft/tests/top1-integration" | sort -h
 ```
 
-启动后只恢复同一请求；返回PENDING时继续使用这条恢复命令，不重新执行上面的启动命令。
+三个范围分别为：
 
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --recover "$KV_REPEAT_DIR/run" --output "$KV_REPEAT_DIR/result"
-```
+- 旧 `pytorch-omc`、`pytorch-optimized-omc` 的已完成编译临时副本，保留打包模型和报告。
+- 当前 `top1-integration/compiled`、`rope-fp32/compiled` 中已写入打包OMC的重复 `.weight` 文件。核对打包模型、编译清单和文件内容后才删除；保留compiler AIR、输入权重快照和外置OMC描述，后续ABI绑定仍需读取它们。
+- 已完成的 `hidden-layer0/{compiled,run,result}`。保留 `retained-summary.json` 和探针目录根部的分析JSON；已清过则跳过。
 
-恢复会自动比较原38次验收及追加20次输出。原验收与追加诊断分开报告；所有数值比较仍使用原golden、atol/rtol和未写区逐位保持门槛。追加部分的详细报告在 `result/kv-reproduction.json`。回传以下摘要即可，无需重新运行离线行匹配或打包文件：
+当前模型、准备权重、AIR导出、运行器、完整精度回放输入／参考／快照及整行重复证据保留。工具对活动进程、锁、运行配置引用或归属不明项报告保留；不会清理整个 `draft/tests`。`PARTIAL` 时查看 `retained` 原因，其他独立范围仍可清理。实际释放空间以 `df` 和 `free_bytes_after` 为准，不能把逻辑文件大小当作实际释放量。
 
-```bash
-python3 - "$KV_REPEAT_DIR/result/result.json" <<'PY'
-import json, sys
-with open(sys.argv[1]) as f:
-    r = json.load(f)
-print(json.dumps({k: r[k] for k in ('status', 'stage', 'error', 'model',
-    'numerical_validation', 'lock_state', 'kv_reproduction') if k in r}, ensure_ascii=False))
-PY
-```
-
-摘要包含每次重写／复用调用是否重复整行、是否与同策略前一次逐位一致、是否匹配本次原isolated／feedback新增KV，以及原数值门槛结果。CPU回读可能改变可见性和时序；20次稳定不能证明所有运行历史都正确，也不能证明内部Gather索引正确。没有新增输出清零、模型精度改写或验收放宽。
+新增重复权重清理完成12项主机检查，包括预览／删除／重复执行、中断续清、内容及清单冲突、符号链接、运行配置引用、锁与模拟活动进程保护、ABI／源文件保留和旧模式回归。尚未在用户服务器执行；回传三份清理摘要及磁盘输出即可继续判断是否需要清理其他目录。
