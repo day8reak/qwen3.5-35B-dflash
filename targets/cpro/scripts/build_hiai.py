@@ -133,6 +133,7 @@ def main():
             diagnostic_binaries[name] = {"bytes": binary_path.stat().st_size, "sha256": sha256_file(binary_path)}
     save_json(out/"result.json", {"diagnostic_binaries":diagnostic_binaries, "status": "HEADERS_COMPILED" if args.headers_only else "LINKED",
         "accuracy_output_initialization": ["zero", "untouched"] if "qwen35_draft_accuracy" in diagnostic_binaries else [],
+        "accuracy_kv_reproduction_version": 1 if "qwen35_draft_accuracy" in diagnostic_binaries else None,
         "tensor_probe_output_initialization": ["zero", "untouched"] if "qwen35_tensor_probe" in diagnostic_binaries else [],
         "tensor_probe_dtypes": ["float32", "float16", "int32", "int64"] if "qwen35_tensor_probe" in diagnostic_binaries else [],
         "tensor_probe_limits": {"max_dimension": 16 << 20, "max_io_bytes": 16 << 20, "max_rank": 4}

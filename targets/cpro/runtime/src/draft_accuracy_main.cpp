@@ -1,5 +1,6 @@
 // Explicit standalone numerical diagnostic: one V1 Load, two KV sequences.
 #include "qwen35_dflash/incremental_draft.hpp"
+#include "qwen35_dflash/sha256.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -66,17 +67,77 @@ std::uint32_t Scalar(const Bytes& b) {
   if(b.size()!=4)throw std::invalid_argument("invalid scalar extent");
   return std::uint32_t(b[0])|(std::uint32_t(b[1])<<8)|(std::uint32_t(b[2])<<16)|(std::uint32_t(b[3])<<24);
 }
+
+// This tail never commits outputs to inputs. Each rewrite/reuse pair consumes
+// the same retained case, after the original two validation sequences finish.
+void ReproduceKv(HiaiStatefulExecutor& executor,const Plan& p,const fs::path& fixture,
+                 const fs::path& out,unsigned index,const char* evidence) {
+  std::ostringstream calls;std::string stage="load-input",checks="[]";
+  unsigned completed=0;bool failed=false;
+  auto check=[&](const std::vector<Bytes>& inputs) {
+    std::ostringstream rows;rows<<'[';bool matches=true;
+    for(std::size_t i=0;i<inputs.size();++i) {
+      const auto got=executor.CopyInput(i);const bool same=got==inputs[i];matches&=same;
+      if(i)rows<<',';
+      rows<<"{\"index\":"<<i<<",\"bytes\":"<<got.size()<<",\"matches\":"<<(same?"true":"false")
+          <<",\"sha256\":\""<<Sha256(std::string_view(reinterpret_cast<const char*>(got.data()),got.size()))<<"\"}";
+    }
+    rows<<']';checks=rows.str();
+    if(!matches)throw std::runtime_error("KV reproduction CPU input readback differs from retained bytes");
+    return checks;
+  };
+  try {
+    std::vector<Bytes> inputs;
+    for(std::size_t i=0;i<p.abi.inputs.size();++i)
+      inputs.push_back(Read(fixture/"inputs"/std::to_string(index)/(std::to_string(i)+".bin"),HiaiTensorBytes(p.abi.inputs[i])));
+    for(unsigned call=0;call<20;++call) {
+      const bool rewrite=call%2==0;stage=rewrite?"rewrite":"reuse";checks="[]";
+      for(std::size_t i=0;i<inputs.size();++i) {
+        if(rewrite)executor.SetInput(i,inputs[i]);else executor.ReuseInput(i);
+      }
+      stage="input-before";const auto before=check(inputs);
+      stage="execute";executor.Execute();
+      stage="input-after";const auto after=check(inputs);
+      stage="snapshot";
+      std::ofstream snapshot(out/"kv-repeat-pending.bin",std::ios::binary);
+      for(std::size_t i=0;i<p.abi.outputs.size();++i) {
+        const auto bytes=executor.CopyOutput(i);
+        snapshot.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+      }
+      snapshot.close();if(!snapshot)throw std::runtime_error("KV reproduction snapshot write failed");
+      fs::rename(out/"kv-repeat-pending.bin",out/("kv-repeat-"+std::to_string(call)+".bin"));
+      if(completed)calls<<',';
+      calls<<"{\"call\":"<<call<<",\"strategy\":\""<<(rewrite?"rewrite":"reuse")
+           <<"\",\"api_us\":"<<executor.last_api_us()<<",\"input_before\":"<<before
+           <<",\"input_after\":"<<after<<'}';
+      ++completed;
+      std::cout<<"draft-kv-reproduction: case="<<index<<" call="<<call<<" strategy="<<(rewrite?"rewrite":"reuse")<<std::endl;
+    }
+  } catch(const std::exception& error) {
+    failed=true;std::cerr<<"KV reproduction tail failed at "<<stage<<": "<<error.what()<<'\n';
+    fs::remove(out/"kv-repeat-pending.bin");
+  }
+  std::ofstream report(out/"kv-reproduction.json");
+  report<<"{\"version\":1,\"evidence_kind\":\""<<evidence<<"\",\"case\":"<<index
+        <<",\"original_calls\":"<<2*p.steps.size()<<",\"planned_calls\":20,\"commit_outputs\":false"
+        <<",\"status\":\""<<(failed?"FAILED":"EXECUTED")<<"\",\"calls\":["<<calls.str()<<']';
+  if(failed)report<<",\"failure\":{\"call\":"<<completed<<",\"stage\":\""<<stage<<"\",\"input_checks\":"<<checks<<'}';
+  report<<"}\n";report.close();if(!report)throw std::runtime_error("KV reproduction report write failed");
+}
 int main(int argc,char** argv) {
   try {
     if(argc==2&&std::string(argv[1])=="--help") {
-      std::cout<<"qwen35_draft_accuracy MODEL RUNTIME_VERSION FIXTURE_DIRECTORY OUTPUT_DIRECTORY [zero|untouched]\n";return 0;
+      std::cout<<"qwen35_draft_accuracy MODEL RUNTIME_VERSION FIXTURE_DIRECTORY OUTPUT_DIRECTORY [zero|untouched [KV_REPRODUCTION_CASE]]\n";return 0;
     }
-    if(argc!=5&&argc!=6)throw std::invalid_argument("expected model, runtime, fixture, output, optional output initialization");
-    const std::string output_initialization=argc==6?argv[5]:"zero";
+    if(argc<5||argc>7)throw std::invalid_argument("expected model, runtime, fixture, output, optional initialization and reproduction case");
+    const std::string output_initialization=argc>=6?argv[5]:"zero";
     if(output_initialization!="zero"&&output_initialization!="untouched")
       throw std::invalid_argument("output initialization must be zero or untouched");
     const fs::path fixture=argv[3],out=argv[4];
     const auto p=ReadPlan(fixture/"plan.txt");
+    const unsigned reproduction=argc==7?Number(argv[6]):0;
+    if(argc==7&&(output_initialization!="untouched"||reproduction>=p.steps.size()||!p.steps[reproduction].valid))
+      throw std::invalid_argument("KV reproduction requires untouched outputs and an appending case");
     if(fs::exists(out))throw std::invalid_argument("accuracy output already exists");
     fs::create_directories(out);
     HiaiStatefulExecutor executor(argv[1],argv[2],p.abi.inputs,p.abi.outputs,
@@ -138,9 +199,10 @@ int main(int argc,char** argv) {
           <<",\"commit_readback_matches\":true}";
       std::cout<<"draft-accuracy: "<<mode<<" case="<<s.index<<" api_us="<<executor.last_api_us()<<std::endl;
     }
-    executor.Close();
     result<<"],\"status\":\"EXECUTED\",\"numerical_validation\":\"HOST_COMPARISON_REQUIRED\"}\n";
     result.close();if(!result)throw std::runtime_error("accuracy result write failed");
+    if(argc==7)ReproduceKv(executor,p,fixture,out,reproduction,evidence);
+    executor.Close();
     return 0;
   } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
 }

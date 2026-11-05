@@ -1,50 +1,46 @@
-# 当前阶段：确认176行重复177行的发生位置
+# 当前阶段：复现完整K/V行重复
 
-2026-11-05：离线核对了新旧回放的全部输入、golden及312个新增KV区间。RoPE候选OMC SHA为 `b43ae9cfcd50999277829a21adc24099170d4a7c4856b70729385b59d362a828`。最大回退位于isolated case16（start162、valid16）的第0层K；最差head行都位于cache位置176，即本次features的局部行14。该区间无零值或非有限值，两模式相差1024个元素，数量恰为8×128。多个层的V也有大幅回退，不能用仅影响K/Q的RoPE算术解释。完整精度仍FAILED，性能工作暂缓。[完整结果](results.md)。
+2026-11-05：用户回传确认，RoPE候选的isolated case16（start162、valid16）在cache176重复了177行。全部12路K/V都满足 `isolated[176] == isolated[177] == feedback[177]`，逐位一致；feedback的176、177行不同。保留features局部14、15行有16381/16384个元素不同，因此输入文件本身不是重复行。完整精度仍FAILED，性能工作暂缓。[完整结果](results.md)。
 
-完整行分析已回传：仅case16的cache176异常，12路K/V各8个head、1024个元素全部与feedback不同，其余15行两模式逐位一致。六层V的176行与同次177行逐位相同，未匹配到接近的保留历史行。其余15行相对L2约0.445%～0.556%，仍未通过逐元素门槛；整行重复与剩余数值误差都需处理。
+源码共享Gather索引应分别为14和15。连经过RoPE的K都重复，支持优先检查共享行选择及后续Gather／搬运路径，尚不能确定具体算子或设备索引字节。CPU保存的文件不能证明NPU当时读到了相同数据。其余15行的数值误差仍未通过原门槛。
 
-源码共享行索引为 `clamp(cache_position-start, 0, 15)`，应让176取14、177取15。下一步比较对应K是否也复制了177行：若K同样逐位一致，支持已经完成RoPE的整行被复用，优先检查共享Gather索引／Gather之后的数据路径；若K不同，上游features／投影行重复等可能仍需检查。两种结果都不能单凭输出定为某个算子故障。离线工具现在同时输出K配对和保留features行对比。
+本次新增一个明确开启的验证选项，复用同一OMC、夹具和参考：先原样执行38次isolated／feedback调用，再在同一次模型加载后追加case16的10对调用。每对先重写全部17路输入，再原样复用输入，两次均不提交输出KV；调用前后记录全部输入的CPU缓冲区SHA256并与保留文件核对。输入回读异常即停止追加部分，保留原回放和已完成的追加输出。
 
-## DDK 服务器执行
+## DDK服务器执行
 
-保留原 `output-init/result` 和本次 `rope-fp32/result`。仅重新读取这两份结果，既不重跑设备，也不重新编译或生成参考。
+只重建native运行器，不编译模型。保留原 `output-init/result`、`rope-fp32/result` 以及它们引用的fixture和OMC。以下命令沿用已有SDK资源配置。
 
 ```bash
 git -C "$REPO_DIR" pull --ff-only
-export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
-export ROPE_DIR="$TOP1_DIR/rope-fp32"
+export ROPE_DIR="$AI_RUN_DIR/draft/tests/top1-integration/rope-fp32"
+export KV_REPEAT_DIR="$ROPE_DIR/kv-reproduction"
+
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$AI_RUN_DIR/runtime/native" --replace
 
 python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --diagnose-kv "$ROPE_DIR/result" > "$ROPE_DIR/kv-diagnosis.json"
+  --replay "$ROPE_DIR/result" --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --output-initialization untouched --kv-reproduction-case 16 \
+  --output "$KV_REPEAT_DIR/run" --apply
+```
 
-python3 - "$ROPE_DIR/kv-diagnosis.json" <<'PY'
+启动后只恢复同一请求；返回PENDING时继续使用这条恢复命令，不重新执行上面的启动命令。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$KV_REPEAT_DIR/run" --output "$KV_REPEAT_DIR/result"
+```
+
+恢复会自动比较原38次验收及追加20次输出。原验收与追加诊断分开报告；所有数值比较仍使用原golden、atol/rtol和未写区逐位保持门槛。追加部分的详细报告在 `result/kv-reproduction.json`。回传以下摘要即可，无需重新运行离线行匹配或打包文件：
+
+```bash
+python3 - "$KV_REPEAT_DIR/result/result.json" <<'PY'
 import json, sys
 with open(sys.argv[1]) as f:
-    d = json.load(f)
-audit = d.get('row_audit', {})
-summary = {k: d[k] for k in ('status', 'error', 'candidate_model') if k in d}
-summary['row_audit'] = {
-    k: audit[k] for k in ('changed_case_indices', 'changed_tensor_regions',
-        'changed_case_positions', 'fingerprint_coverage', 'corpus') if k in audit}
-summary['patterns'] = [
-    {'index': p['index'], 'tensor': p['tensor'],
-     'rows': [{'position': r['cache_position'],
-               'heads': [h['head'] for h in r['heads']],
-               'different_elements': sum(h['different_elements'] for h in r['heads'])}
-              for r in p['changed_rows']],
-     'unchanged_rows': p['unchanged_rows'],
-     'unchanged_rows_vs_reference': p['unchanged_rows_vs_reference']}
-    for p in audit.get('patterns', [])]
-fingerprints = audit.get('value_fingerprints', [])
-for row in fingerprints:
-    for mode in row['value_modes'].values():
-        mode['nearest'] = {k: v[:1] for k, v in mode['nearest'].items()}
-summary['value_fingerprints'] = fingerprints
-print(json.dumps(summary, ensure_ascii=False))
+    r = json.load(f)
+print(json.dumps({k: r[k] for k in ('status', 'stage', 'error', 'model',
+    'numerical_validation', 'lock_state', 'kv_reproduction') if k in r}, ensure_ascii=False))
 PY
 ```
 
-本轮重点是 `value_modes.*.paired_keys` 和 `retained_feature_pair_comparisons`。完整文件保留全部差异区间和每组前三个最近V行；摘要显示每组最接近的一行。若匹配误差大或只有后续调用匹配，不把它判为旧数据来源。feature行哈希和输入KV零值检查只代表保留的文件，不能证明NPU当时读到的内容。搜索最多32个异常位置，并显式报告遗漏数量；全部差异位置仍完整列出。
-
-此前行匹配9项本地检查通过；新增K配对5项检查通过，覆盖K/V同时复制、仅V复制、无重复的对照、搜索上限和features文件行差异。未改变模型、运行器、原golden或容差。case16是只补KV的调用，没有proposal hidden比较；下一轮isolated重载参考KV，因而hidden整体改善不代表该KV异常已解决。
+摘要包含每次重写／复用调用是否重复整行、是否与同策略前一次逐位一致、是否匹配本次原isolated／feedback新增KV，以及原数值门槛结果。CPU回读可能改变可见性和时序；20次稳定不能证明所有运行历史都正确，也不能证明内部Gather索引正确。没有新增输出清零、模型精度改写或验收放宽。

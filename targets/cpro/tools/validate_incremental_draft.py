@@ -31,9 +31,13 @@ def main():
     parser.add_argument('--timeout-seconds',type=int,default=1800)
     parser.add_argument('--output-initialization', choices=('zero', 'untouched'),
                         help='--replay only: caller output initialization, default zero; SDK allocation behavior is unchanged')
+    parser.add_argument('--kv-reproduction-case', type=int,
+                        help='untouched same-OMC replay only: append 10 rewrite/reuse pairs for this case, without KV commits')
     args=parser.parse_args()
     if args.output_initialization is not None and not args.replay:
         parser.error('--output-initialization requires --replay')
+    if args.kv_reproduction_case is not None and (not args.replay or args.compiled or args.output_initialization != 'untouched'):
+        parser.error('--kv-reproduction-case requires --replay --output-initialization untouched without --compiled')
     from qwen35_moe_dflash.draft.incremental.accuracy import summarize_result
     if args.diagnose_kv:
         if (args.apply or any((args.config,args.compiled,args.source,args.air_export,args.output,args.ddk_root))
@@ -93,7 +97,8 @@ def main():
         result=start(args.config,args.compiled,args.source,args.air_export,args.output,apply=args.apply,
                      timeout_seconds=args.timeout_seconds,replay=args.replay,
                      ddk_root=args.ddk_root,
-                     output_initialization=args.output_initialization or 'zero')
+                     output_initialization=args.output_initialization or 'zero',
+                     kv_reproduction_case=args.kv_reproduction_case)
     elif args.recover:
         if args.apply or any((args.config,args.compiled,args.source,args.air_export,args.ddk_root)):
             parser.error('--recover only accepts the original execution and a separate output')
@@ -106,7 +111,9 @@ def main():
                      rtol=0.01 if args.rtol is None else args.rtol,timeout_seconds=args.timeout_seconds,
                      ddk_root=args.ddk_root)
     print(json.dumps(summarize_result(result),ensure_ascii=False))
-    return 1 if result['status'] in ('FAILED','NUMERICAL_FAILED') else 0
+    return 1 if (result['status'] in ('FAILED','NUMERICAL_FAILED')
+                 or result.get('kv_reproduction', {}).get('native_status') == 'FAILED'
+                 or result.get('kv_reproduction', {}).get('numerical_validation') == 'FAILED') else 0
 
 
 if __name__=='__main__':

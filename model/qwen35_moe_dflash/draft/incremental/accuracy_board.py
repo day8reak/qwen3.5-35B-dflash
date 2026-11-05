@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
+import json
 import re
 import shlex
 import tarfile
@@ -67,7 +68,7 @@ def replay_fixture(path):
     return fixture, meta
 
 
-def extract_outputs(archive, destination, meta):
+def extract_outputs(archive, destination, meta, reproduction=None):
     snapshot_bytes = sum(r['bytes'] for r in meta['outputs'])
     expected = {f'{mode}-{s["index"]}.bin': snapshot_bytes
                 for mode in ('isolated', 'feedback') for s in meta['cases']}
@@ -75,6 +76,15 @@ def extract_outputs(archive, destination, meta):
     with tarfile.open(archive) as stream:
         members = [m for m in stream.getmembers() if not (m.name in ('.', './') and m.isdir())]
         names = [m.name[2:] if m.name.startswith('./') else m.name for m in members]
+        if reproduction:
+            from .kv_reproduction import validate_report
+            reports = [m for m, n in zip(members, names) if n == 'kv-reproduction.json']
+            if len(reports) != 1 or not reports[0].isfile() or not 0 < reports[0].size < 1 << 20:
+                raise ValueError('missing/invalid native KV reproduction report')
+            with stream.extractfile(reports[0]) as source:
+                report = json.load(source)
+            expected.update({n: snapshot_bytes for n in validate_report(report, reproduction, meta)})
+            expected['kv-reproduction.json'] = None
         if len(names) != len(set(names)) or set(names) != set(expected):
             raise ValueError('native archive does not contain the complete two-sequence result')
         destination.mkdir()
@@ -88,7 +98,8 @@ def extract_outputs(archive, destination, meta):
 
 
 def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol=0.01,
-          timeout_seconds=1800, ddk_root=None, replay=None, output_initialization='zero'):
+          timeout_seconds=1800, ddk_root=None, replay=None, output_initialization='zero',
+          kv_reproduction_case=None):
     if output_initialization not in ('zero', 'untouched') or (not replay and output_initialization != 'zero'):
         raise ValueError('output initialization experiment requires replay and zero or untouched')
     candidate_replay = bool(replay and compiled)
@@ -97,6 +108,12 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
     out = output_path(output)
     config_path = Path(config).resolve()
     fixture, meta = replay_fixture(replay) if replay else (out/'fixture', None)
+    reproduction = None
+    if kv_reproduction_case is not None:
+        if not replay or compiled or output_initialization != 'untouched':
+            raise ValueError('KV reproduction requires untouched replay of the same retained OMC')
+        from .kv_reproduction import request
+        reproduction = request(meta, kv_reproduction_case)
     # These are public shared inputs, never descendants of the disposable slot.
     shared = [config_path, *(Path(v).resolve() for v in (compiled, source, air, replay) if v)]
     if replay:
@@ -110,6 +127,8 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
         model_compilation='NOT_RUN', numerical_validation='NOT_EVALUATED',
         lock_state='NO_KNOWN_OWNED_LOCK', output=str(out),
         output_initialization=output_initialization, replay_source=str(Path(replay).resolve()) if replay else None)
+    if reproduction:
+        state['kv_reproduction'] = dict(reproduction, status='NOT_RUN')
     hdc=None; held=[]; uncertain=False; launched=False
     try:
         cfg = read_json(config_path)
@@ -142,6 +161,8 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
         reports_initialization = output_initialization in built.get('accuracy_output_initialization', [])
         if replay and not reports_initialization:
             raise ValueError('rebuild runtime/native: the accuracy runner lacks output initialization replay support')
+        if reproduction and built.get('accuracy_kv_reproduction_version') != reproduction['version']:
+            raise ValueError('rebuild runtime/native: the accuracy runner lacks KV reproduction support')
         uploads, search, _ = _build_payloads(out, 600, resident='resident-mixed', native_directory=native)
         uploads = [r for r in uploads if r['remote'].startswith('lib/')]
         uploads.append(_file_record(binary, 'draft-accuracy'))
@@ -162,6 +183,8 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
             fixture_sha256=sha256_file(fixture/'manifest.json'), runner=observed,
             output_initialization=output_initialization, replay_source=state['replay_source'],
             output_initialization_reported=reports_initialization)
+        if reproduction:
+            plan['kv_reproduction'] = reproduction
         _save(out / 'request.json', plan)
         state.update(board_attempt=str(board), stage='board-preflight')
         hdc=Hdc(executable, serial, server, out, 180)
@@ -183,7 +206,8 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
         _, firmware=hdc.shell('param get const.ohos.fullname','accuracy-firmware')
         if firmware.strip()!=env['firmware_id'].strip():
             raise ValueError('board firmware differs from the runtime configuration')
-        required=archive.stat().st_size*2+2*len(meta['cases'])*sum(r['bytes'] for r in meta['outputs'])*2+(128<<20)
+        output_calls=2*len(meta['cases'])+(reproduction['planned_calls'] if reproduction else 0)
+        required=archive.stat().st_size*2+output_calls*sum(r['bytes'] for r in meta['outputs'])*2+(128<<20)
         from qwen35_moe_dflash.draft.real_feature_draft_board import _cache_model
         model, state['model_cache'] = _cache_model(hdc, cache, meta['model'], out, extra_bytes=required)
         hdc.shell('mkdir '+q(str(board))+' && printf "%s\\n" '+q(token)+' > '+q(str(board/'owner'))
@@ -198,6 +222,8 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
             str(board/'draft-accuracy'),str(model),env['runtime_version'],str(board/'fixture'),str(board/'outputs')]
         if replay:
             command.append(output_initialization)
+        if reproduction:
+            command.append(str(reproduction['case']))
         script='\n'.join(['#!/bin/sh','cd '+q(str(board))+' || exit 91',
             _guard(board,token)+' || exit 92',*[_guard(lock,token)+' || exit 93' for lock in locks],
             shlex.join(command)+' > native.stdout 2> native.stderr',
@@ -209,6 +235,8 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
         hdc.shell(_identity_guard(board/'launch.sh',dict(bytes=len(script.encode()),sha256=sha256_file(out/'launch.sh'))),
                   'accuracy-launcher')
         launched=True;state.update(launch_requested=True,device_execution='RUNNING_OR_COMPLETION_PENDING')
+        if reproduction:
+            state['kv_reproduction']['status'] = 'RUNNING_OR_COMPLETION_PENDING'
         _save(out/'result.json',state)
         hdc.shell('cd '+q(str(board))+' && '+_guard(board,token)
             +' && { nohup sh launch.sh < /dev/null > supervisor.stdout 2> supervisor.stderr & }','accuracy-launch')
@@ -275,11 +303,17 @@ def recover(execution, output):
         if sha256_file(fixture/'manifest.json') != plan['fixture_sha256']:
             raise ValueError('reference fixture changed after device launch')
         meta=read_json(fixture/'manifest.json')
-        maximum=2*len(meta['cases'])*sum(s['bytes'] for s in meta['outputs'])+(2<<20)
+        reproduction = plan.get('kv_reproduction')
+        if reproduction:
+            from .kv_reproduction import request
+            if reproduction != request(meta, reproduction['case']) or plan.get('output_initialization') != 'untouched':
+                raise ValueError('invalid retained KV reproduction plan')
+        output_calls=2*len(meta['cases'])+(reproduction['planned_calls'] if reproduction else 0)
+        maximum=output_calls*sum(s['bytes'] for s in meta['outputs'])+(3<<20)
         _,size=hdc.shell('wc -c < '+q(str(board/'outputs.tar')),'accuracy-output-size')
         if not size.strip().isdigit() or not 0<int(size)<maximum:raise ValueError('unexpected accuracy archive extent')
         if _receive(hdc,board,out,'outputs.tar',timeout_seconds=180) is None:raise ValueError('missing output archive')
-        extract_outputs(out/'outputs.tar',out/'native',meta)
+        extract_outputs(out/'outputs.tar',out/'native',meta,reproduction)
         if (plan.get('output_initialization_reported', False) and read_json(out/'native/result.json').get('output_initialization')
                 != plan['output_initialization']):
             raise ValueError('native output initialization differs from the requested experiment')
@@ -292,6 +326,11 @@ def recover(execution, output):
         if 'precision_repair' in meta:
             result['precision_repair'] = meta['precision_repair']
             result['baseline_model'] = meta['candidate_replay']['baseline_model']
+        if reproduction:
+            from .kv_reproduction import analyze
+            diagnostic = analyze(fixture, out/'native', reproduction)
+            _save(out/'kv-reproduction.json', diagnostic)
+            result['kv_reproduction'] = dict(diagnostic['summary'], report=str(out/'kv-reproduction.json'))
     except Exception as error:
         result.update(status='FAILED',error=f'{type(error).__name__}: {error}')
     finally:
