@@ -107,8 +107,16 @@ class LayerTrace(Prefix):
             raise ValueError('first-layer topology differs from packed Draft: '+str(dict(counts)))
         self.counts = dict(counts)
 
-    def evaluate_layer(self, inputs, weights, *, reference_gamma_boundary=False):
+    def evaluate_layer(self, inputs, weights, *, reference_gamma_boundary=False,
+                       targets=None, substitutions=None):
+        # Targeted replay is only for retained-output error attribution. The
+        # default full-layer reference and its output contract stay unchanged.
         self.values = {}
+        for edge, array in (substitutions or {}).items():
+            self.node_port(edge)
+            if targets is None or array.size > 32 << 20 or not np.isfinite(array).all():
+                raise ValueError('invalid targeted source substitution: '+edge)
+            self.values[edge] = array.copy()
         proto = {self.types[k]: np.dtype(v) for k, v in PROTO_TYPES.items()}
         def value(edge):
             if edge in self.values:
@@ -262,6 +270,10 @@ class LayerTrace(Prefix):
             self.values[edge] = np.ascontiguousarray(y) if y.ndim else np.array(y)
             return self.values[edge]
         with np.errstate(over='ignore', under='ignore', invalid='raise', divide='raise'):
+            if targets is not None:
+                for edge in targets:
+                    value(edge)
+                return self.values
             terminal = value(self.terminal)
         if terminal.shape != (1, 16, 2048) or terminal.dtype != np.float16 or not np.isfinite(terminal).all():
             raise ValueError('layer-zero residual output contract differs')
@@ -621,6 +633,53 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     return meta
 
 
+def tolerance_details(actual, expected, atol, rtol, *, examples=0):
+    """Describe the original elementwise gate; relative L2 is not a gate."""
+    a, e = actual.astype(np.float64).reshape(-1), expected.astype(np.float64).reshape(-1)
+    if actual.shape != expected.shape or atol < 0 or rtol < 0 or not np.isfinite(e).all():
+        raise ValueError('invalid retained tolerance comparison')
+    finite = np.isfinite(a)
+    delta, limit = np.abs(a-e), atol+rtol*np.abs(e)
+    bad = ~finite | (delta > limit)
+    ratios = np.zeros_like(delta)
+    np.divide(delta, limit, out=ratios, where=limit > 0)
+    ratios[(limit == 0) & (delta > 0) | ~finite] = np.inf
+    indices = np.flatnonzero(bad)
+    worst = indices[np.argsort(-ratios[indices], kind='stable')[:examples]] if examples else []
+    def number(v):
+        return float(v) if np.isfinite(v) else None
+    return dict(elements=int(a.size), failed_elements=int(indices.size),
+        failed_fraction=float(indices.size/a.size) if a.size else 0.,
+        nonfinite_elements=int(np.count_nonzero(~finite)),
+        max_error_over_tolerance=number(np.max(ratios, initial=0)),
+        worst=[dict(index=list(map(int, np.unravel_index(i, actual.shape))),
+                    actual=number(a[i]), expected=float(e[i]), abs_error=number(delta[i]),
+                    tolerance=float(limit[i]), error_over_tolerance=number(ratios[i])) for i in worst])
+
+
+def compact_diagnosis(rows):
+    """One source checkpoint per row, with all retained contexts side by side."""
+    grouped, counts = {}, {}
+    for row in rows:
+        key = row['case'].rsplit('_', 1)[1]
+        point = row['checkpoint']
+        group = grouped.setdefault(key, dict(point=key, checkpoint=point, contexts={}))
+        step = str(row['source_case'])
+        if group['checkpoint'] != point or step in group['contexts']:
+            raise ValueError('ambiguous retained checkpoint/context mapping')
+        group['contexts'][step] = dict(passed=row['passed'],
+            relative_l2=row['max_relative_l2_error'], max_abs_error=row['max_abs_error'],
+            failed_elements_max=max(c['tolerance']['failed_elements'] for c in row['calls']),
+            elements=row['calls'][0]['elements'], reference_all_zero=row['reference_all_zero'],
+            output_all_zero_any_call=any(c['all_zero'] for c in row['calls']))
+        count = counts.setdefault(step, dict(total=0, passed=0, failed=0, reference_all_zero=0))
+        count['total'] += 1
+        count['passed' if row['passed'] else 'failed'] += 1
+        count['reference_all_zero'] += int(row['reference_all_zero'])
+    return dict(counts_by_context=counts, checkpoint_table=list(grouped.values()),
+                ordering='SOURCE_DEPENDENCY_TRAVERSAL; NOT_A_SINGLE_LINEAR_ERROR_PATH')
+
+
 def diagnose(fixture, native, meta, comparison, report):
     from .accuracy import metrics
     rows, captured = [], {}
@@ -638,12 +697,14 @@ def diagnose(fixture, native, meta, comparison, report):
             arrays.append(actual)
             calls.append(dict(call=i, elements=int(actual.size), zero_elements=int(np.count_nonzero(actual == 0)),
                 all_zero=bool(np.all(actual == 0)), nonfinite_elements=int(np.count_nonzero(~np.isfinite(actual))),
+                tolerance=tolerance_details(actual, expected, meta['atol'], meta['rtol'], examples=8 if i == 0 else 0),
                 vs_original_gamma_rounding=metrics(actual, boundary, meta['atol'], meta['rtol'])))
         captured[case['source_case'], case['checkpoint']['source_edge']] = arrays
         tensors = measured['tensors']
         suspect = bool(np.any(expected != 0)) and any(c['all_zero'] for c in calls)
         rows.append(dict(case=case['case'], source_case=case['source_case'], checkpoint=case['checkpoint'],
             passed=measured['passed'], repeat_bitwise_stable=measured['repeat_bitwise_stable'],
+            reference_all_zero=bool(np.all(expected == 0)),
             all_zero_output_with_nonzero_reference=suspect, calls=calls,
             source_vs_original_gamma_rounding=metrics(expected, boundary, meta['atol'], meta['rtol']),
             max_abs_error=max((r['max_abs_error'] for r in tensors), key=lambda x: float('inf') if x is None else x),
@@ -669,6 +730,7 @@ def diagnose(fixture, native, meta, comparison, report):
     return dict(artifact_kind=KIND, status='ANALYZED', scope=SCOPE,
         numerical_validation=comparison['numerical_validation'], model_execution='NOT_RUN',
         repeat_bitwise_stable=comparison['repeat_bitwise_stable'], coverage=coverage,
+        summary=compact_diagnosis(rows),
         coverage_complete=not coverage['missing_checkpoints'] and len(rows) == coverage['planned_device_cases'],
         source_cases=first, independent_cast_pairs=cast_pairs, cases=rows, full_model_first_divergence='NOT_ESTABLISHED',
         limitations=['Single-output prefix cuts may change fusion/kernel choice.',

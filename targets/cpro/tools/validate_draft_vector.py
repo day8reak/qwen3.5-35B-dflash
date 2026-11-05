@@ -365,7 +365,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
     return report
 
 
-def analyze(directory):
+def analyze(directory, *, air_export=None):
     """Read retained snapshots only; never execute models or change pass gates."""
     import numpy as np
     directory = Path(directory).resolve()
@@ -385,9 +385,16 @@ def analyze(directory):
                 if path.stat().st_size != spec['bytes'] or sha256_file(path) != spec['fixture_sha256']:
                     raise ValueError('retained input/reference changed after launch')
     comparison = compare(fixture, native, selection=report['validated_cases'])
+    if air_export and meta.get('source_evidence', {}).get('artifact_kind') != LAYER_KIND:
+        raise ValueError('--air-export analysis requires the retained layer0 suite')
     if meta.get('source_evidence', {}).get('artifact_kind') == LAYER_KIND:
         from qwen35_moe_dflash.draft.incremental.hidden_layer_probe import diagnose
-        return diagnose(fixture, native, meta, comparison, report)
+        result = diagnose(fixture, native, meta, comparison, report)
+        if air_export:
+            from qwen35_moe_dflash.draft.incremental.hidden_layer_math import audit
+            result['math_audit'] = audit(air_export, fixture, native, meta, comparison,
+                progress=lambda text: print('hidden-math: '+text, file=sys.stderr, flush=True))
+        return result
     if meta.get('source_evidence', {}).get('artifact_kind') == HIDDEN_KIND:
         from qwen35_moe_dflash.draft.incremental.hidden_probe import diagnose
         return diagnose(fixture, native, meta, comparison, report)
@@ -868,9 +875,12 @@ def main():
     parser.add_argument('--recover')
     parser.add_argument('--status', help='Inspect local launcher state and last transport receipt; no HDC, writes or locks')
     parser.add_argument('--analyze', help='Read an existing recovery directory and print numerical details; no board access')
+    parser.add_argument('--air-export', help='With --analyze: replay bound layer0 Q/RoPE math on CPU using retained snapshots')
     parser.add_argument('--output')
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
+    if args.air_export and not args.analyze:
+        parser.error('--air-export requires --analyze')
     if args.status:
         if args.analyze or args.recover or args.compiled or args.config or args.cases or args.top1_semantics or args.apply or args.output:
             parser.error('--status only accepts the original execution directory')
@@ -879,7 +889,7 @@ def main():
     if args.analyze:
         if args.recover or args.compiled or args.config or args.cases or args.top1_semantics or args.apply or args.output:
             parser.error('--analyze only accepts a recovered result directory')
-        print(json.dumps(analyze(args.analyze), ensure_ascii=False, allow_nan=False))
+        print(json.dumps(analyze(args.analyze, air_export=args.air_export), ensure_ascii=False, allow_nan=False))
         return 0
     if not args.output:
         parser.error('start and recovery require --output')

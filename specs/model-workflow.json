@@ -6401,7 +6401,7 @@
         "candidate_code_changed": false
       },
       "hidden_prefix_probe": {
-        "status": "QUERY_CONTROL_PASSED_TAPPED_ATTRIBUTION_UNUSABLE; LAYER0_BATCH_READY",
+        "status": "LAYER0_BATCH_COMPLETED_NUMERICAL_FAILED; OFFLINE_Q_ROPE_ATTRIBUTION_PENDING",
         "entry": "targets/cpro/tools/probe_draft_hidden.py",
         "commands": "docs/current-status.md",
         "source": "RETAINED_UNTOUCHED_CASE0_HOST_EMBEDDINGS_AND_MATCHING_AIR",
@@ -6444,7 +6444,7 @@
           "evidence": "20261105T062609Z-29965-ed7fdd/evidence/reported-hidden-query-result.json"
         },
         "layer0_batch": {
-          "status": "SOURCE_REFERENCE_COMPLETED_STORAGE_REPAIRED_DDK_RETRY_PENDING",
+          "status": "COMPLETED_NUMERICAL_FAILED",
           "command": "--suite layer0",
           "implementation": "model/qwen35_moe_dflash/draft/incremental/hidden_layer_probe.py",
           "scope": "COMPLETE_LAYER0_SOURCE_ARITHMETIC_AND_FP16_BOUNDARIES",
@@ -6456,9 +6456,9 @@
           "output_policy": "ONE_CHECKPOINT_PER_MODEL; SHARED_MODEL_ACROSS_THREE_CONTEXTS",
           "controls": "UNTUCHED; THREE_WARMUPS_TEN_COMPARISONS; ORIGINAL_FULL_MODEL_THRESHOLDS_UNCHANGED",
           "reference": "NUMPY_SOURCE_FORMULA_WITH_SEPARATE_ORIGINAL_GAMMA_ROUNDING_DIAGNOSTIC",
-          "model_compilation": "NOT_RUN",
-          "device_execution": "NOT_RUN",
-          "numerical_validation": "NOT_RUN",
+          "model_compilation": "PASSED",
+          "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+          "numerical_validation": "FAILED",
           "host_evidence": "20261105T062609Z-29965-ed7fdd/evidence/layer0-prefix-local-checks.json",
           "source_preflight_repair": {
             "reported_unsupported_nodes": [
@@ -6475,7 +6475,7 @@
             "device_execution": "NOT_RUN"
           },
           "storage": {
-            "status": "HOST_CHECKED_REMOTE_CLEANUP_AND_COMPILATION_PENDING",
+            "status": "BATCH_COMPLETED_BY_USER; CLEANUP_RELEASED_BYTES_NOT_REPORTED",
             "observed": {
               "source_reference_cases_completed": [
                 0,
@@ -6509,6 +6509,77 @@
             "host_evidence": "20261105T070755Z-31779-496ecb/out/evidence/storage-tests.log",
             "model_compilation": "NOT_RUN",
             "device_execution": "NOT_RUN"
+          },
+          "observed_result": {
+            "source": "USER_PASTED_COMPLETE_RECOVERY_AND_ANALYSIS; LOCAL_DDK_OR_DEVICE_NOT_RUN",
+            "board_attempt": "/data/local/tmp/qwen35_vector_69f4467ff30e4a67be2270cf97cba1bb",
+            "result": "draft/tests/top1-integration/hidden-layer0/result",
+            "checkpoints": 55,
+            "input_cases": [
+              0,
+              2,
+              17
+            ],
+            "device_cases": 165,
+            "measured_comparisons": 1650,
+            "warmup_per_case": 3,
+            "repetitions_per_case": 10,
+            "coverage_complete": true,
+            "repeat_bitwise_stable": true,
+            "finite": true,
+            "native_exitcode": 0,
+            "archive_exitcode": 0,
+            "case_exitcodes": "ALL_165_ZERO",
+            "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+            "numerical_validation": "FAILED",
+            "counts_by_context": {
+              "0": {
+                "total": 55,
+                "passed": 37,
+                "failed": 18
+              },
+              "2": {
+                "total": 55,
+                "passed": 18,
+                "failed": 37
+              },
+              "17": {
+                "total": 55,
+                "passed": 6,
+                "failed": 49
+              }
+            },
+            "first_observed_failure": {
+              "source_edge": "MatMul:0",
+              "source_type": "MatMul",
+              "dtype": "float16",
+              "shape": [
+                16,
+                4096
+              ],
+              "source_weight": "weight/draft_layers_0_self_attn_q_proj_weight",
+              "all_source_cases": true,
+              "max_abs_error": 0.625,
+              "relative_l2_error": 0.001451668317112324
+            },
+            "independent_cast_pairs": {
+              "per_context": 20,
+              "contexts": 3,
+              "calls_per_pair": 10,
+              "checked_pairs": 600,
+              "all_calls_bytes_equal": true
+            },
+            "allzero_output_nonzero_reference_suspects": [],
+            "attribution": "INDEPENDENT_PREFIXES; DOES_NOT_PROVE_INTERNAL_ACCUMULATOR_PRECISION_OR_FULL_MODEL_FIRST_ERROR"
+          },
+          "offline_math_audit": {
+            "status": "HOST_IMPLEMENTATION_CHECKED_REAL_RETAINED_ANALYSIS_PENDING",
+            "entry": "validate_draft_vector.py --analyze RESULT --air-export ORIGINAL_EXPORT",
+            "scope": "CPU_Q_INPUT_PROPAGATION_AND_FOUR_ROPE_SIN_COS_ROUNDING_HYPOTHESES",
+            "model_execution": "NOT_RUN",
+            "model_compilation": "NOT_RUN",
+            "acceptance": "ORIGINAL_GOLDENS_AND_THRESHOLDS_UNCHANGED",
+            "host_evidence": "20261105T080118Z-439-e73c79/out/evidence/analysis-tests.log"
           }
         }
       }
