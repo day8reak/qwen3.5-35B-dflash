@@ -35,6 +35,28 @@ PREPARATION = dict(baseline='copy-c16-v1', packed='feature-pack-c16-v1')
 TIMING = 'CPU_PACK_SETINPUT_EXECUTE_WALL; PREALLOCATED; SNAPSHOTS_EXCLUDED'
 
 
+def input_contract(raw, schema, input_name, shape):
+    """Check both sides of Data, including its unconnected external input.
+
+    TorchAir Data copies output_desc to input_desc (named y/x):
+    Ascend/torchair e1118e8b, python/torchair/ge/_ge_graph.py, Data().
+    Checking only the producer output misses a stale importer input shape.
+    """
+    _, _, graph = _decode(schema, raw)
+    nodes = [n for n in graph['op'] if n['type'] == 'Data']
+    if len(nodes) != 1 or nodes[0]['name'] != input_name or nodes[0].get('input', []) not in ([], ['']):
+        raise ValueError('projection requires one unconnected external Data input')
+    observed = {}
+    for side in ('input_desc', 'output_desc'):
+        rows = nodes[0].get(side, [])
+        if (len(rows) != 1 or rows[0].get('shape', {}).get('dim') != shape
+                or rows[0].get('dtype') != schema.enums[schema.package+'.DataType']['DT_FLOAT16']
+                or rows[0].get('layout') != 'ND' or rows[0].get('device_type') != 'NPU'):
+            raise ValueError('projection Data '+side+' must declare FP16 ND NPU '+str(shape))
+        observed[side] = dict(shape=list(shape), dtype='float16', layout='ND', device_type='NPU')
+    return observed
+
+
 def pack_words(a):
     """Permutation oracle for arbitrary element indices or storage words."""
     return np.ascontiguousarray(a.reshape(4, 4, 1024, 4, 4).transpose(2, 0, 3, 1, 4)).reshape(PACKED_SHAPE)
@@ -126,14 +148,21 @@ class Projection(LayerTrace):
         index = blob('OpDef.AttrEntry', 'key', 'index')+blob('OpDef.AttrEntry', 'value',
             _v(_field(schema, 'AttrDef', 'i', 3, False) << 3)+_v(0), 11)
         input_field = _field(schema, 'OpDef', 'input', 9, True)
+        input_desc = _field(schema, 'OpDef', 'input_desc', 11, True)
         output_desc = _field(schema, 'OpDef', 'output_desc', 11, True)
         encoded, preserved = [], {}
         for n, payload, _ in self.rows:
             if n['name'] not in selected:
                 continue
             if n['name'] == self.input:
+                # Preserve the already compiled baseline byte-for-byte. The
+                # candidate must also replace Data's external input descriptor;
+                # its original shape otherwise wins during OMG Data inference.
+                remove = {output_desc, input_desc} if variant == 'packed' else {output_desc}
                 payload = b''.join(e for f, _, e, p in _parts(payload)
-                    if f != output_desc and (f != attr_field or schema.decode(p, 'OpDef.AttrEntry')['key'] != 'index'))
+                    if f not in remove and (f != attr_field or schema.decode(p, 'OpDef.AttrEntry')['key'] != 'index'))
+                if variant == 'packed':
+                    payload += _blob(input_desc, blob('TensorDescriptor', 'name', 'x')+desc(shape))
                 payload += _blob(attr_field, index)+_blob(output_desc, desc(shape))
             elif variant == 'packed' and n['name'] == self.conv['name']:
                 count, parts = 0, []
@@ -152,17 +181,80 @@ class Projection(LayerTrace):
         graph = blob('GraphDef', 'name', 'draft_feature_pack_'+variant)+b''.join(encoded)+_blob(self.op_field, net)
         raw = graph if self.graph_field is None else b''.join(
             _blob(f, graph) if f == self.graph_field else e for f, _, e, _ in _parts(self.raw))
-        _decode(schema, raw)
+        contract = input_contract(raw, schema, self.input, shape)
         return raw, dict(graph=dict(inputs=[dict(name=self.input, dtype='float16', shape=shape)],
             outputs=[dict(name='projected_features', source_edge=self.terminal, dtype='float16', shape=OUTPUT_SHAPE)]),
             removed_nodes=sorted(self.selected-selected), preserved_payload_sha256=preserved,
-            changes='DATA_INDEX_AND_NETOUTPUT' if variant == 'baseline' else 'DATA_SHAPE_AND_CONV_INPUT_0; PRUNE_DEAD_LAYOUT',
+            changes='DATA_INDEX_AND_NETOUTPUT' if variant == 'baseline' else 'DATA_INPUT_AND_OUTPUT_SHAPES_AND_CONV_INPUT_0; PRUNE_DEAD_LAYOUT',
+            data_descriptor_contract=contract,
             input_mapping='ALL_262144_ELEMENT_INDICES_EQUAL_SOURCE_VIEWS', conv_attributes='UNCHANGED',
             scope=SCOPE, full_graph_compilation_preserved=False)
 
 
+def _retry_failed(root, state, plans, inspect_model, ddk_root):
+    """Under the writer lock, retain completed OMCs and reset known failed OMG jobs."""
+    from qwen35_moe_dflash.toolchain.compiler_storage import require_idle, _plain, _tree_bytes
+    _plain(root, directory=True); _plain(root/'result.json')
+    old = read_json(root/'result.json')
+    if (old.get('artifact_kind') != KIND or old.get('status') != 'PARTIAL' or old.get('stage') != 'complete'
+            or old.get('device_execution') != 'NOT_RUN' or old.get('numerical_validation') != 'NOT_RUN'):
+        raise ValueError('--retry-failed requires a completed host-only partial compilation')
+    for key in ('original_model', 'source_air_sha256', 'source_weight', 'ddk_id', 'comparison', 'source_cases', 'cases'):
+        if old.get(key) != state[key]:
+            raise ValueError('retry source, inputs, reference or DDK changed: '+key)
+    rows = old.get('models', [])
+    if not 1 <= len(rows) <= 2 or [r.get('variant') for r in rows] != list(VARIANTS[:len(rows)]):
+        raise ValueError('invalid feature-prefix retry inventory')
+    allowed = {'result.json', 'fixtures', 'previous-failure.json', *(r['variant'] for r in rows)}
+    if set(p.name for p in root.iterdir()) - allowed or (root/'previous-failure.json').is_symlink():
+        raise ValueError('foreign files in feature-prefix output; retained')
+    require_idle(root)
+    for row in state['cases']:
+        for record in row['fixtures'].values():
+            checked_file(root, record)
+    by_variant = {p[0]: p for p in plans}
+    retained, failed = [], []
+    for row in rows:
+        variant = row['variant']; folder = root/variant
+        _plain(folder, directory=True); _plain(folder/'air', directory=True); _plain(folder/'air/export.air')
+        if row.get('status') == 'COMPILED' and row.get('model_compilation') == 'PASSED':
+            if row.get('model', {}).get('path') != variant+'/model.omc':
+                raise ValueError('unexpected retained model path')
+            model = checked_file(root, row['model'])
+            if (folder/'air/export.air').read_bytes() != by_variant[variant][1]:
+                raise ValueError('successful prefix source changed; refusing to reuse its OMC')
+            inspection = inspect_model(model, ddk_root, by_variant[variant][2]['graph'])
+            retained.append(dict(row, placement=inspection['placement'], reuse='EXISTING_COMPILED_MODEL_UNCHANGED',
+                compiled_probe_source_sha256=row.get('compiled_probe_source_sha256', old['probe_source_sha256'])))
+            continue
+        if (row.get('status') != 'FAILED' or row.get('model_compilation') != 'FAILED'
+                or set(p.name for p in folder.iterdir()) != {'air', 'compilation'}):
+            raise ValueError('only known failed OMG cases can be reset; all files retained')
+        _plain(folder/'compilation', directory=True); _plain(folder/'compilation/report.json')
+        build = read_json(folder/'compilation/report.json', 32 << 20)
+        if (build.get('artifact_kind') != 'qwen35-existing-air-compilation' or build.get('status') != 'FAILED'
+                or build.get('model_compilation') != 'FAILED' or build.get('device_execution') != 'NOT_RUN'
+                or build.get('stage') != 'omg' or type(build.get('returncode')) is not int or build['returncode'] == 0
+                or build.get('ddk_id') != state['ddk_id'] or build.get('platform') != 'kirinx90'
+                or build.get('air_source') != str(folder/'air/export.air')):
+            raise ValueError('retry requires a recorded failed OMG exit for this candidate and DDK')
+        _tree_bytes(folder)  # Reject mounts/special files; rmtree never follows scratch symlinks.
+        failed.append(dict(variant=variant, previous_model=row, compilation_report=build,
+            previous_air_sha256=sha256_file(folder/'air/export.air'),
+            replacement_air_sha256=hashlib.sha256(by_variant[variant][1]).hexdigest()))
+    if not failed:
+        raise ValueError('no failed OMG case to retry')
+    require_idle(root)
+    _save(root/'previous-failure.json', dict(artifact_kind=KIND, scope='LAST_KNOWN_FAILED_OMG_ATTEMPT',
+        probe_source_sha256=old['probe_source_sha256'], models=failed))
+    for failure in failed:
+        shutil.rmtree(root/failure['variant'])
+    state.update(models=retained, retry=dict(reused_variants=[r['variant'] for r in retained],
+        reset_failed_variants=[r['variant'] for r in failed], previous_failure='previous-failure.json'))
+
+
 def compile_probe(air_export, result, output, *, ddk_root, ddk_id, tbe_diagnosis,
-                  timeout_seconds=1800, progress=print):
+                  timeout_seconds=1800, progress=print, retry_failed=False):
     from .accuracy_board import replay_fixture
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
     from qwen35_moe_dflash.toolchain.omc_embed_weights import embed_external_weights
@@ -171,8 +263,10 @@ def compile_probe(air_export, result, output, *, ddk_root, ddk_id, tbe_diagnosis
     import stable_arg_max_ge
     root, air = output_path(output), Path(air_export).resolve()
     _disjoint(root, air, Path(result).resolve(), ddk_root, tbe_diagnosis)
-    if root.exists() or root != Path(output).absolute():
-        raise ValueError('feature-prefix output must be a new owned directory without symlinks')
+    if root != Path(output).absolute():
+        raise ValueError('feature-prefix output must not contain symlinks')
+    if root.exists() != retry_failed:
+        raise ValueError('use a new output, or --retry-failed on the existing completed failed build')
     fixture, meta = replay_fixture(result)
     binding, manifest = read_json(fixture/'pytorch-abi.json'), read_json(air/'manifest.json')
     raw, _ = _read_air(air/'export.air')
@@ -215,12 +309,14 @@ def compile_probe(air_export, result, output, *, ddk_root, ddk_id, tbe_diagnosis
     for variant in VARIANTS:
         extracted, receipt = prefix.extract_projection(variant)
         prepared, preparation = prepare_compiler_air(extracted, schema)
+        receipt['compiler_data_descriptor_contract'] = input_contract(prepared, schema, prefix.input,
+            PACKED_SHAPE if variant == 'packed' else INPUT_SHAPE)
         plans.append((variant, extracted, receipt, prepared, preparation))
     root.parent.mkdir(parents=True, exist_ok=True)
     if shutil.disk_usage(root.parent).free < 1 << 30:
         raise OSError('two feature prefixes need at least 1 GiB free; compiler scratch may need more')
     with (root.parent/('.'+root.name+'.lock')).open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB); root.mkdir()
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         state = dict(artifact_kind=KIND, scope=SCOPE, status='PARTIAL', stage='compile',
             model_compilation='PARTIAL', device_execution='NOT_RUN', numerical_validation='NOT_RUN',
             original_model=meta['model'], source_air_sha256=binding['source_air_sha256'],
@@ -229,12 +325,21 @@ def compile_probe(air_export, result, output, *, ddk_root, ddk_id, tbe_diagnosis
             reference='SOURCE_CONV_FULL_K_FP32_DOT_THEN_ORIGINAL_FP16; CPU_REDUCTION_ORDER_MAY_DIFFER',
             probe_source_sha256=sha256_file(Path(__file__)), cases=[], models=[])
         for step, (x, y) in fixtures.items():
-            folder = root/'fixtures'/str(step); folder.mkdir(parents=True)
-            x.tofile(folder/'input_0.bin'); y.tofile(folder/'golden_0.bin')
-            state['cases'].append(dict(source_case=step, fixtures={p.name: dict(
-                path=str(p.relative_to(root)), bytes=p.stat().st_size, sha256=sha256_file(p)) for p in folder.iterdir()}))
+            state['cases'].append(dict(source_case=step, fixtures={name: dict(
+                path=f'fixtures/{step}/{name}', bytes=a.nbytes, sha256=hashlib.sha256(a.tobytes()).hexdigest())
+                for name, a in (('input_0.bin', x), ('golden_0.bin', y))}))
+        if retry_failed:
+            _retry_failed(root, state, plans, stable_arg_max_ge.inspect_model, ddk_root)
+        else:
+            root.mkdir()
+            for step, (x, y) in fixtures.items():
+                folder = root/'fixtures'/str(step); folder.mkdir(parents=True)
+                x.tofile(folder/'input_0.bin'); y.tofile(folder/'golden_0.bin')
         _save(root/'result.json', state)
         for variant, extracted, receipt, prepared, preparation in plans:
+            if any(r['variant'] == variant for r in state['models']):
+                progress('reusing unchanged feature prefix '+variant)
+                continue
             folder = root/variant; (folder/'air/weight').mkdir(parents=True)
             (folder/'air/export.air').write_bytes(extracted)
             shutil.copyfile(weight_path, folder/'air'/WEIGHT)

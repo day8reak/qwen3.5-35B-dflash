@@ -7832,7 +7832,7 @@
             },
             "prototype": "HELD_IN_LOCAL_RUN_NOT_PUBLISHED",
             "input_pack_experiment": {
-              "status": "HOST_VALIDATED_AWAITING_USER_DDK_AND_DEVICE",
+              "status": "PACKED_DATA_DESCRIPTOR_FIXED_AWAITING_USER_RECOMPILE",
               "compile_tool": "targets/cpro/tools/probe_draft_feature_pack.py",
               "validation_tool": "targets/cpro/tools/validate_draft_vector.py",
               "variants": [
@@ -7858,11 +7858,45 @@
               "original_numeric_gates": "UNCHANGED; REPORTED_SEPARATELY_FROM_BASELINE_EQUIVALENCE",
               "host_checks": 15,
               "host_evidence": "20261105T112828Z-8110-cda527/out/evidence/feature-pack-host-checks.json",
-              "model_compilation": "NOT_RUN",
+              "model_compilation": "PARTIAL",
               "device_execution": "NOT_RUN_USER_OWNED",
               "full_draft_integration": "NOT_RUN",
               "production_promotion": "NOT_PERFORMED",
-              "next": "User compiles two prefixes, rebuilds native runner, executes/retrieves six cases; docs/current-status.md"
+              "next": "User pulls main and retries only failed packed prefix using --retry-failed; then existing runner build and six-case validation; docs/current-status.md",
+              "reported_compilation": {
+                "source": "USER_RETURNED_SERVER_REPORT",
+                "ddk_id": "100.520.020.010",
+                "baseline": {
+                  "status": "COMPILED",
+                  "graphop_counts": {
+                    "NPUCL": 1
+                  },
+                  "bytes": 67161378,
+                  "sha256": "fe382ec0276b45b7bd9bbd107c855858cb291b00085ff6dd6d8e71f09ae0cc02"
+                },
+                "packed": {
+                  "status": "FAILED",
+                  "stage": "omg",
+                  "returncode": 1,
+                  "conv_observed_input_shape": [
+                    1,
+                    16,
+                    16384
+                  ]
+                }
+              },
+              "descriptor_fix": {
+                "status": "HOST_VALIDATED",
+                "cause": "STALE_DATA_INPUT_DESC_WITH_UPDATED_OUTPUT_DESC",
+                "fix": "REPLACE_BOTH_PACKED_DATA_DESCRIPTORS; CHECK_EXTRACTED_AND_PREPARED_AIR",
+                "baseline_air": "BYTE_IDENTICAL_TO_D6DD142",
+                "host_checks": 30,
+                "host_scope": "PINNED_TORCHAIR_DATA_EMITTER; SYNTHETIC_SOURCE_REPLAY; MOCK_COMPILER_OMC_AND_PROCESS_OWNERSHIP",
+                "host_evidence": "20261105T114816Z-8899-cfd6e5/out/evidence/feature-pack-retry-checks.json",
+                "retry": "--retry-failed; SAME_DIRECTORY; REUSE_BASELINE_AND_FIXTURES; ONLY_RECORDED_FAILED_OMG_EXIT",
+                "model_compilation": "NOT_RUN_AFTER_FIX",
+                "device_execution": "NOT_RUN"
+              }
             }
           },
           "hidden_prefix_probe": {

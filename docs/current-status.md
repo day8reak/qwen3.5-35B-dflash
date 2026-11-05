@@ -22,11 +22,13 @@
 
 主机已逐字节核对现有 `IncrementalDraft.project_features` 的Conv输入：valid=0／1／2／14／16均一致；全部262144个元素的索引映射通过，覆盖全部16位存储模式。只证明重排等价，没有执行Conv或完整模型。本地主机CPU的NumPy拷贝计时不作为设备性能预测。
 
-入口重排实验已实现，15项主机检查通过；当前尚未编译OMC或执行设备。只生成两份投影前缀，每份约64MiB原权重，输出均为FP16 `[1,16,2048]`。使用已完成回放的case2／16／17（valid2／16／14），共享这两份模型，不复制完整Draft。源码图逐元素验证两次转置的索引映射，Conv属性、权重及输出布局保留。
+入口重排实验只生成两份投影前缀，每份约64MiB原权重，输出均为FP16 `[1,16,2048]`。使用已完成回放的case2／16／17（valid2／16／14），共享这两份模型，不复制完整Draft。源码图逐元素验证两次转置的索引映射，Conv属性、权重及输出布局保留。
+
+服务器首轮baseline已编译成功（NPUCL=1），packed在OMG形状检查失败，尚未执行设备。定位到入口Data仍保留旧的三维 `input_desc`；上一版只改了 `output_desc`。现已同步修正两侧描述，并在源码前缀与编译器准备后的AIR各检查一次。30项新增主机检查通过，使用固定版本TorchAir的真实Data生成函数复现旧问题；DDK、OMC检查和进程归属边界使用桩，实际重编仍待服务器验证。
 
 端侧CPU使用预分配512KiB缓冲，候选每次做字节重排后SetInput；基线每次直接SetInput。两者都预热3次、记录10次，分别记录打包、SetInput、同步API以及从打包开始到Execute结束的总墙钟。当前小实验仍有一次临时缓冲到输入的拷贝，其成本已计入，尚未实现直接写入最终输入缓冲。快照和模型加载不计入总墙钟。
 
-先在服务器更新代码并编译小前缀，沿用现有已选DDK和环境变量：
+在服务器更新代码，沿用已选DDK、现有目录和环境变量，保留baseline，只重编已知失败的packed：
 
 ```bash
 cd "$REPO_DIR"
@@ -40,8 +42,10 @@ python3 "$REPO_DIR/targets/cpro/tools/probe_draft_feature_pack.py" \
   --result "$ROPE_DIR/kv-reproduction/result" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$PACK_DIR/compiled"
+  --output "$PACK_DIR/compiled" --retry-failed
 ```
+
+`--retry-failed`核对原模型、源AIR、权重、输入、golden、DDK和成功前缀，确认无活动进程且OMG有非零退出码后，保存上次失败报告到 `previous-failure.json`，重置失败候选目录。baseline OMC和fixture复用；未知完成状态或文件身份变化会拒绝重置。首次运行、输出目录尚不存在时去掉这个参数。
 
 需要保留原export的特征投影权重和已完成回放的fixture。编译结果应为COMPILED，两份模型均完成；失败保留诊断并停止，不继续启动设备。编译器副本只在确认打包完成后清理，保留两份小OMC和必要报告。不会编译新的完整Draft。
 
