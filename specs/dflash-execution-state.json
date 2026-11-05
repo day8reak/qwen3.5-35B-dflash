@@ -6674,7 +6674,7 @@
         }
       },
       "custom_top1": {
-        "status": "COMPILED_DEVICE_VALIDATION_PENDING",
+        "status": "QWEN_SINGLE_OPERATOR_DEVICE_PASSED",
         "operator_dir": "targets/cpro/ops/draft-top1",
         "run_id": "20261104T083807Z-10795-c00fd7",
         "authorization": "LAST_BUILTIN_FAILURE_TRIGGERED_USER_APPROVED_CUSTOM_TOP1",
@@ -6689,11 +6689,11 @@
         },
         "kernel_build": "PASSED_USER_REPORTED_OMG",
         "kernel_implementation": "STABLE_ARG_MAX_SOURCE_WITH_HOST_TILING_AND_TORCH_META_GE_CONVERTER",
-        "device_execution": "NOT_RUN",
+        "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
         "full_draft_changed": false,
-        "blocker": "DEVICE_NUMERICAL_AND_PERFORMANCE_RESULTS_PENDING",
-        "next": "VALIDATE_SEVEN_FIXTURES_ON_EXISTING_OMC; NO_MODEL_RECOMPILATION",
-        "command": "python3 \"$REPO_DIR/targets/cpro/tools/validate_draft_vector.py\" --compiled \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge-config\" --ddk-root \"$CPRO_DDK_ROOT\" --config \"$VECTOR_CONFIG\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-validation\" --apply",
+        "blocker": "GENERIC_TAIL_AND_FULL_MODEL_VALIDATION_PENDING; NO_PAIRED_SPEEDUP_CLAIM",
+        "next": "PRESERVE_QWEN_BASELINE; ONE_17X8193_TAIL_SHAPE_FOUR_FIXTURES",
+        "command": "python3 \"$OP_DIR/scripts/stable_arg_max_ge.py\" --shape 17 8193 --ge-root \"$CANN_ROOT\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --tbe-diagnosis \"$AI_RUN_DIR/common/tbe-diagnosis\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-tail/compiled\"",
         "torch_op": "custom_ops::stable_arg_max",
         "ge_type": "StableArgMax",
         "generic_contract": "FINITE_FP16_STATIC_RANK1_TO8_LAST_AXIS_INT32_FIRST_MAXIMUM; NUMEL_LE_INT32_MAX",
@@ -6723,7 +6723,7 @@
           "omg_returncode": 0,
           "failure_stage": "NONE",
           "entrypoint_fix": "FORWARD_EXISTING_TBE_DIAGNOSIS_AND_HASH_CHECKED_AIR_REUSE",
-          "next": "DEVICE_VALIDATE_EXISTING_OMC_AND_RECOVER_SAME_REQUEST",
+          "next": "QWEN_DEVICE_PASS; PRESERVE_MODEL_AND_VALIDATE_TAIL_GEOMETRY",
           "run_id": "20261105T011001Z-20502-2dc937",
           "corrected_omg": "COMPILED",
           "progress_entrypoint_fix": "FORWARD_EXISTING_PROGRESS_CALLBACK_TO_FLUSHED_STDERR",
@@ -6772,6 +6772,120 @@
           "required_repetitions_per_fixture": 10,
           "scope": "USER_SELECTED_DDK_COMPILE_AND_STATIC_PLACEMENT; NO_DEVICE_OR_PERFORMANCE_CLAIM",
           "run_id": "20261105T015409Z-22517-5473bc"
+        },
+        "numerical_validation": "PASSED",
+        "device_observation": {
+          "artifact_kind": "stable-arg-max-user-device-observation",
+          "date": "2026-11-05",
+          "provenance": "USER_PASTED_RECOVERY_SUMMARY; NOT_INDEPENDENTLY_RETRIEVED",
+          "status": "PASSED",
+          "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+          "numerical_validation": "PASSED",
+          "execution": "draft/tests/stable-arg-max-validation",
+          "result": "draft/tests/stable-arg-max-validation-result",
+          "board_attempt": "qwen35_vector_442c4081a48343b58e12a647f18e204c",
+          "shape": [
+            1,
+            15,
+            248320
+          ],
+          "input_dtype": "float16",
+          "output_shape": [
+            1,
+            15
+          ],
+          "output_dtype": "int32",
+          "warmup": 3,
+          "repetitions": 10,
+          "completed_cases": 7,
+          "measured_calls": 70,
+          "checked_indices": 1050,
+          "exact_bytes_required": true,
+          "repeat_bitwise_stable": true,
+          "mismatched_elements_all_calls": 0,
+          "native_exitcode": 0,
+          "archive_exitcode": 0,
+          "all_case_exitcodes": 0,
+          "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+          "graphop_counts": {
+            "NPUCL": 1
+          },
+          "aggregate_mean_ms": 1.231842857142857,
+          "min_ms": 0.922,
+          "max_ms": 1.695,
+          "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_BETWEEN_CALLS_EXCLUDED",
+          "raw_per_call_timings": "NOT_INCLUDED_IN_PASTED_SUMMARY",
+          "compiled_source": "draft/tests/stable-arg-max-ge-config",
+          "omc_sha256_from_prior_compile_report": "2e76eda684ae0a4ac201af1c1ba511ca6b84e864a698193cfd1cfdfc1de2598f",
+          "model_association": "PREVIOUS_USER_COMPILE_AND_SAME_EXECUTION_DIRECTORY; RECOVERY_SUMMARY_OMITS_MODEL_DIGEST",
+          "full_draft_validation": "NOT_RUN",
+          "other_shapes": "NOT_RUN_ON_DEVICE",
+          "cases": [
+            {
+              "case": "stable_arg_max__index_boundaries",
+              "mean_ms": 1.1119,
+              "min_ms": 1.083,
+              "max_ms": 1.136,
+              "passed": true,
+              "repeat_bitwise_stable": true,
+              "mismatched_elements_all_calls": 0
+            },
+            {
+              "case": "stable_arg_max__ties_across_boundaries",
+              "mean_ms": 1.1874,
+              "min_ms": 0.922,
+              "max_ms": 1.315,
+              "passed": true,
+              "repeat_bitwise_stable": true,
+              "mismatched_elements_all_calls": 0
+            },
+            {
+              "case": "stable_arg_max__zeros_equal_extremes",
+              "mean_ms": 1.2344,
+              "min_ms": 1.072,
+              "max_ms": 1.639,
+              "passed": true,
+              "repeat_bitwise_stable": true,
+              "mismatched_elements_all_calls": 0
+            },
+            {
+              "case": "stable_arg_max__signed_subnormal",
+              "mean_ms": 1.433,
+              "min_ms": 1.26,
+              "max_ms": 1.695,
+              "passed": true,
+              "repeat_bitwise_stable": true,
+              "mismatched_elements_all_calls": 0
+            },
+            {
+              "case": "stable_arg_max__adjacent_representable",
+              "mean_ms": 1.1799,
+              "min_ms": 1.143,
+              "max_ms": 1.241,
+              "passed": true,
+              "repeat_bitwise_stable": true,
+              "mismatched_elements_all_calls": 0
+            },
+            {
+              "case": "stable_arg_max__random_seed350248320",
+              "mean_ms": 1.2852,
+              "min_ms": 1.163,
+              "max_ms": 1.544,
+              "passed": true,
+              "repeat_bitwise_stable": true,
+              "mismatched_elements_all_calls": 0
+            },
+            {
+              "case": "stable_arg_max__finite_binary16_alphabet",
+              "mean_ms": 1.1911,
+              "min_ms": 1.097,
+              "max_ms": 1.434,
+              "passed": true,
+              "repeat_bitwise_stable": true,
+              "mismatched_elements_all_calls": 0
+            }
+          ],
+          "run_id": "20261105T020607Z-23101-092df2"
         }
       }
     }

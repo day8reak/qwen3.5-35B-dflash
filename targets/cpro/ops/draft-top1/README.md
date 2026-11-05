@@ -2,7 +2,7 @@
 
 有限连续ND FP16，静态rank1–8、正维度、总元素数≤INT32_MAX；沿最后维归约，返回INT32索引，并列取最小索引。TopK、其他轴、FP32和310P执行适配未实现。
 
-**当前Qwen配置 `[1,15,248320] → [1,15]` 已在kirinx90编译并通过图层面纯NPU检查，设备数值/性能待验证。** 已有产物 `draft/tests/stable-arg-max-ge-config` 的用户直接执行[当前上板命令](../../../../docs/current-status.md)，跳过下面构建步骤。
+**当前Qwen配置 `[1,15,248320] → [1,15]` 已在kirinx90完成七组、70次精确稳定的上板验证，单NPU子图；同步API均值约1.232ms。** 基线保留在 `draft/tests/stable-arg-max-ge-config`。当前用户只需[尾部边界验证](../../../../docs/current-status.md)，无需重建allops或重跑Qwen；下面是首次构建流程。
 
 ## DDK服务器：构建与GE单算子测试
 

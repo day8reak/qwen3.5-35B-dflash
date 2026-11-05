@@ -10,13 +10,26 @@
 | 目标 | kirinx90，CPro DDK 100.520.020.010 |
 | 构建 | allops生成/安装包装文件、GE AIR→OMG编译通过 |
 | 图层面归属 | NPUCL=1；CPU操作=0；主图遗留计算=0 |
-| 设备数值、稳定性、时延 | 未运行；下一步七组输入，每组3次预热＋10次精确比较 |
+| 设备数值与稳定性 | 七组全部通过；3次预热后每组10次，70次／1050个INT32结果精确一致、重复稳定 |
+| 同步API墙钟 | 七组等权总均值1.232ms；全部调用范围0.922–1.695ms |
 | 模型集成 | 未接入完整Draft；TopK和310P未实现 |
 
 当前OMC：`draft/tests/stable-arg-max-ge-config/omc/compile-work/generated/model.omc`。
 SHA256：`2e76eda684ae0a4ac201af1c1ba511ca6b84e864a698193cfd1cfdfc1de2598f`。
 
-旧host漏配了allops使用的ascend310b元数据键，导致INI没有算子、包装py未生成；补注册并保留kirinx90后，安装预检及OMG通过。该键用于这套X90工程，不构成310B/310P设备支持证据。详细源码/环境身份见[算子验证记录](../targets/cpro/ops/draft-top1/docs/VALIDATION.md)。
+| 输入组 | 均值 ms | 最小–最大 ms |
+|---|---:|---:|
+| index_boundaries | 1.1119 | 1.083–1.136 |
+| ties_across_boundaries | 1.1874 | 0.922–1.315 |
+| zeros_equal_extremes | 1.2344 | 1.072–1.639 |
+| signed_subnormal | 1.4330 | 1.260–1.695 |
+| adjacent_representable | 1.1799 | 1.143–1.241 |
+| random_seed350248320 | 1.2852 | 1.163–1.544 |
+| finite_binary16_alphabet | 1.1911 | 1.097–1.434 |
+
+本任务已完成回收，native/archive/各case退出码均为0，锁已释放。计时为同步API墙钟，调用间快照不计入，不是纯NPU内核时间；不能与旧CPU算子profiling直接相除，或从完整Draft时延中扣减。当前冻结Qwen配置作为正确性基线，下一步补17×8193尾部边界。
+
+身份和证据范围见[算子验证记录](../targets/cpro/ops/draft-top1/docs/VALIDATION.md)。
 
 ## 完整 Draft 候选
 
