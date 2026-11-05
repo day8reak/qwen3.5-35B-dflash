@@ -8,6 +8,8 @@
 
 沿用已配置的 `REPO_DIR`、`AI_RUN_DIR`、`CPRO_DDK_ROOT`、`CPRO_DDK_ID` 和支持untouched的运行器。需要原 `export`、`compiled/compilation`、`prepared`、`output-init/result`；不需要Torch/TorchAir，也不重编整Draft或算子。
 
+已补齐真实AIR中的`Pack`参考计算。此前的`unsupported first-layer source operations`发生在创建编译目录及启动OMG之前；更新代码后直接重跑原命令，复用`hidden-layer0`路径，无需删除目录或加`--replace`。
+
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"

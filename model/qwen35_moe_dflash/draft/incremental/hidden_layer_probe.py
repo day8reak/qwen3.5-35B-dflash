@@ -34,7 +34,7 @@ GE_TYPES = {**GE_DTYPES, 12: '|b1'}
 PROTO_TYPES = {'DT_FLOAT': '<f4', 'DT_FLOAT16': '<f2', 'DT_INT32': '<i4', 'DT_INT64': '<i8', 'DT_BOOL': '|b1'}
 MATH = {'Conv2D', 'MatMul', 'BatchMatMul', 'BatchMatMulV2', 'RmsNorm', 'SoftmaxV2', 'Swish'}
 ALLOWED = MATH | {'Data', 'Const', 'FileConstant', 'Cast', 'Identity', 'Reshape', 'Transpose',
-    'Squeeze', 'Unsqueeze', 'ExpandDims', 'SplitV', 'ConcatV2', 'GatherV2', 'Neg',
+    'Squeeze', 'Unsqueeze', 'ExpandDims', 'SplitV', 'Pack', 'ConcatV2', 'GatherV2', 'Neg',
     'Add', 'Sub', 'Mul', 'Muls', 'Less', 'LessEqual', 'Greater', 'GreaterEqual', 'Equal',
     'LogicalAnd', 'LogicalOr', 'LogicalNot', 'SelectV2', 'BroadcastTo', 'Sin', 'Cos',
     'Shape', 'Fill', 'ZerosLike', 'StridedSliceV2'}
@@ -154,6 +154,18 @@ class LayerTrace(Prefix):
                 for i, part in enumerate(ys):
                     self.values[f'{name}:{i}'] = np.ascontiguousarray(part)
                 y = ys[port]
+            elif kind == 'Pack':
+                # GE Pack inserts an axis (torch.stack), including scalar
+                # shape carriers. It neither concatenates nor promotes dtype.
+                count, axis = attr('N', 'i'), attr('axis', 'i', 0)
+                if not a or count != len(a) or len(n['output_desc']) != 1:
+                    raise ValueError('Pack requires N matching its inputs and one output: '+name)
+                if any(x is None or x.shape != a[0].shape or x.dtype != a[0].dtype for x in a):
+                    raise ValueError('Pack input shapes/dtypes differ: '+name)
+                rank = a[0].ndim+1
+                if not -rank <= axis < rank:
+                    raise ValueError('Pack axis outside output rank: '+name)
+                y = np.stack(a, axis=axis)
             elif kind == 'ConcatV2':
                 y = np.concatenate(a[:-1], axis=int(a[-1].item()))
             elif kind == 'GatherV2':
