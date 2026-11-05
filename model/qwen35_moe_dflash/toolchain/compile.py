@@ -72,7 +72,10 @@ def omg_environment(ddk_root, inherited=None):
     env["DDK_PATH"] = str(ddk_root)
     env["TOOLCHAIN_HOME"] = str(ddk_root)
     env["HIAI_VERSION"] = str(master)
-    python_paths = [path for path in (ddk_root / "tools/tools_ascendc/package/python",
+    # Internal DDK registration names custom.<op> below ascendc/ops/impl.
+    # Host registration can name them even when Python cannot import them.
+    python_paths = [path for path in (ddk_root / "ddk/ascendc/ops/impl",
+                                     ddk_root / "tools/tools_ascendc/package/python",
                                      ddk_root / "ddk/tbe/ops", plugin / "ops/impl") if path.is_dir()]
     if python_paths:
         env["PYTHONPATH"] = _prepend_paths(python_paths, env.get("PYTHONPATH", ""))

@@ -10,6 +10,8 @@
 
 用户负责 allops 编译安装和板端命令，本次本地仅完成源码与工具检查；这不授权改动工作区共享 SDK。厂商 build.sh 成功可能仅发布源码/host 注册，kernel 编译仍须以实际 OMG 与板端结果为准。
 
-用户随后提供OMG日志：已识别StableArgMax、找到DDK中的custom/stable_arg_max.py并产出正确host tiling，worker在平台 `te_update_version` 初始化时退出。仓库此前在同一选定DDK已用 `common/tbe-diagnosis` 验证并应用运行目录TBE兼容；新入口遗漏参数已修复。`--tbe-diagnosis` 复用该证据校验，不能无依据硬编码Ascend310B1或修改全局site-packages。`--reuse-export` 可保留旧AIR并只重新执行OMG，无需重建allops。
+用户首轮OMG日志已识别StableArgMax、记录custom/stable_arg_max.py实现路径并产出正确host tiling，worker在平台 `te_update_version` 初始化时退出。路径出现在日志不证明文件存在。仓库此前在同一选定DDK已用 `common/tbe-diagnosis` 验证并应用运行目录TBE兼容；新入口遗漏参数已修复。`--tbe-diagnosis` 复用该证据校验，不能无依据硬编码Ascend310B1或修改全局site-packages。旧AIR可复用，参数修复本身不改变host/kernel。
+
+下一轮worker已进入build_single_op，但import custom.stable_arg_max失败。用户只读检查确认指定py不存在；DDK内只找到同名cpp，且新终端ALLOPS_DIR为空、尚未检索实际allops工程。omg_environment还遗漏内部ddk/ascendc/ops/impl目录，现只为编译子进程补入；文件缺失不能靠路径修复解决。GE入口加入无厂商导入的安装预检，缺失时停止在OMG之前。实际allops生成/发布脚本待用户回传，未更改SDK或编写替代包装层。
 
 `inspect_ddk.py --paste --output <已有报告目录>` 可输出有长度上限的纯文本，无需归档。未收集到接口是证据缺口，不是硬件不支持。所选内部DDK可能有接口差异，以实际编译诊断为准；不将内部打印的 Ascend310B1 字符串当作 310P 支持证据。

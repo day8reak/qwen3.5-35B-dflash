@@ -105,7 +105,8 @@
     "source_validation": "scripts/validate_source.py",
     "optional_msopgen_prepare": "scripts/prepare_project.py",
     "ge_probe": "scripts/stable_arg_max_ge.py",
-    "ddk_workflow_validation": "tests/test_ddk_workflow.py"
+    "ddk_workflow_validation": "tests/test_ddk_workflow.py",
+    "installation_inspection": "scripts/stable_arg_max_ge.py --inspect-installation"
   },
   "documentation": {
     "contract": "docs/CONTRACT.md",
@@ -163,10 +164,12 @@
       "date": "2026-11-05",
       "source_copy": "SHA256_MATCHED",
       "registration_and_host_tiling": "OBSERVED_15_248320_8192_BLOCKDIM1",
-      "omg": "FAILED_TE_UPDATE_VERSION",
-      "entrypoint_fix": "FORWARD_EXISTING_EVIDENCE_BOUND_TBE_DIAGNOSIS",
+      "omg": "WORKER_BUILD_SINGLE_OP_MODULE_NOT_FOUND",
+      "entrypoint_fix": "SELECTED_IMPL_PYTHONPATH_AND_STATIC_INSTALLATION_PREFLIGHT",
       "corrected_model_compilation": "NOT_RUN_LOCALLY",
-      "device_execution": "NOT_RUN"
+      "device_execution": "NOT_RUN",
+      "installed_python_wrapper": "MISSING_AT_REGISTERED_PATH; CPP_PRESENT",
+      "allops_build_install": "SCRIPT_AND_COMMAND_PENDING; ALLOPS_DIR_EMPTY_IN_NEW_SHELL"
     },
     "diagnostics_evidence": {
       "run_id": "20261105T010637Z-20281-c9f19f",
@@ -185,6 +188,12 @@
       "checks": 43,
       "report": "evidence/progress-check/validation.json",
       "scope": "HOST_MOCK_SDK_PROGRESS_WIRING; CURRENT_USER_COMPILE_RESULT_PENDING"
+    },
+    "installation_evidence": {
+      "run_id": "20261105T012946Z-21424-863db2",
+      "checks": 50,
+      "report": "evidence/installation-final/validation.json",
+      "scope": "HOST_SYNTHETIC_IMPORTS_AND_MOCK_SDK; ACTUAL_WRAPPER_GENERATION_UNRESOLVED"
     }
   },
   "performance": {

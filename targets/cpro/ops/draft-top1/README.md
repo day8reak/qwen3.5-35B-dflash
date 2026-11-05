@@ -31,6 +31,14 @@ python3 "$OP_DIR/scripts/prepare_allops.py" \
 
 然后在 allops 中执行你已有的 **kirinx90 编译安装命令**。若工程显式枚举源码，将三个文件加入其既有列表；不要用单算子工程覆盖整个 allops。本目录 `scripts/build.sh` 只是复制工具包装，不是厂商构建命令。原 `prepare_project.py` / `stable_arg_max.json` 仅供没有现成工程时可选使用，**本流程无需 msopgen**。
 
+OMG的当前注册路径会导入 `custom.stable_arg_max`，只看到host注册/tiling成功或已复制的 `stable_arg_max.cpp`，不能证明其Python包装文件存在。2026-11-05用户确认所选DDK缺少 `ddk/ascendc/ops/impl/custom/stable_arg_max.py`；目前需核对allops生成/发布脚本，不能仅加PYTHONPATH后反复编译。GE入口已在编译前检查文件和静态包解析，并为子进程补入该内部DDK的impl搜索目录。也可单独只读检查：
+
+```bash
+python3 "$OP_DIR/scripts/stable_arg_max_ge.py" --inspect-installation --ddk-root "$CPRO_DDK_ROOT"
+```
+
+`MISSING_IMPLEMENTATION`或`IMPORT_PATH_REJECTED`时不会启动OMG。`STATIC_PATH_RESOLVED`仅表示静态文件/路径检查通过，不代表厂商模块实际导入、kernel编译或上板通过。不要把cpp改名成py；包装代码应来自所选DDK的实际生成流程。新终端先核实 `ALLOPS_DIR` 已设置；在allops内可用 `$PWD` 查看现有工程。
+
 安装成功不等于 kernel 已通过 OMG 编译；接着执行下面的单算子检查。`tests/kernel_operator.h` 是主机测试 shim，不能复制到 allops 或加入 NPU include 路径。
 
 ## DDK 服务器：GE → AIR → OMC

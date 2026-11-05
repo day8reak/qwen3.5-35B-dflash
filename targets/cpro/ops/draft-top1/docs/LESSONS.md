@@ -1,5 +1,8 @@
 # Lessons and evidence scope
 
+- 2026-11-05用户第二轮日志越过平台初始化，在build_single_op的import阶段失败；静态检查确认注册指定py不存在，只有cpp。此前把日志中的File路径描述成“找到文件”不准确，已修正文档。分别核验host注册、实现文件发布、Python包解析、kernel编译；不要从其中一个阶段推定其他阶段成功。内部DDK的impl搜索根同时补齐，但不把它宣称为缺文件修复；使用当前allops构建脚本查明生成/发布环节，不手工拼厂商包装层。
+- 新终端环境变量可能未设置；ALLOPS_DIR为空的find错误表示未检查工程，不是工程构建失败。通过静态预检在缺文件时停止OMG，复用现有AIR与已有故障日志，避免无效重编。
+
 - 2026-11-05入口等待时没有输出：既有compile_existing_air支持progress和30秒compiler_heartbeat，但新入口未接线。沿用该观察器，stderr立即刷新阶段/日志路径并转发有界日志摘要，stdout保持机器可读结果；不另建进程控制/超时/重试实现。已运行旧入口用tail -F观察原日志，静默不构成卡死或编译通过证据。43项host检查验证接线，真实用户运行结果待回传。
 
 - 2026-11-05进一步日志证明host注册及tiling已执行，当前阻塞在worker的te_update_version。对照既有toolchain/compile.py和历史Draft结果，发现新GE入口遗漏 `--tbe-diagnosis` 转发。复用已经证据绑定的CPro/TBE兼容处理；不改目标SOC、不改全局包、不重新扫描内置算子支持范围。入口测试现在验证参数从CLI到compiler，避免仅覆盖默认编译路径。

@@ -6723,10 +6723,13 @@
           "omg_returncode": 1,
           "failure_stage": "TE_WORKER_TE_UPDATE_VERSION",
           "entrypoint_fix": "FORWARD_EXISTING_TBE_DIAGNOSIS_AND_HASH_CHECKED_AIR_REUSE",
-          "next": "OBSERVE_EXISTING_COMPILE_LOG_NO_RELAUNCH",
+          "next": "INSPECT_ACTUAL_ALLOPS_BUILD_GENERATION_AND_PUBLICATION; NO_OMG_RETRY",
           "run_id": "20261105T011001Z-20502-2dc937",
-          "corrected_omg": "USER_LAUNCHED_NO_COMPLETION_EVIDENCE",
-          "progress_entrypoint_fix": "FORWARD_EXISTING_PROGRESS_CALLBACK_TO_FLUSHED_STDERR"
+          "corrected_omg": "WORKER_CUSTOM_MODULE_NOT_FOUND; FINAL_PROCESS_EXIT_UNCONFIRMED",
+          "progress_entrypoint_fix": "FORWARD_EXISTING_PROGRESS_CALLBACK_TO_FLUSHED_STDERR",
+          "installed_python_wrapper": "MISSING_AT_REGISTERED_DDK_PATH",
+          "kernel_cpp": "PRESENT",
+          "allops_inspection": "INCOMPLETE_ALLOPS_DIR_EMPTY"
         }
       }
     }

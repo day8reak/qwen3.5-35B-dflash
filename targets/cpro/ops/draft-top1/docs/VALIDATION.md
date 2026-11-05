@@ -1,5 +1,7 @@
 # Validation
 
+最新用户证据：TBE worker已进入build_single_op，ModuleNotFoundError指向custom.stable_arg_max；指定DDK文件exists=False，补搜索路径后仍无module_origin，只找到stable_arg_max.cpp。allops实际生成/发布情况待脚本和构建命令确认。run `20261105T012946Z-21424-863db2` 完成50项host检查（`evidence/installation-final/validation.json`）：新Python进程复现缺路径、修复后解析、同名包遮蔽及公共布局兼容；安装预检不执行父包或算子源码且不写DDK，缺包装文件在任何GE/OMG调用前拒绝。GE/OMG仍为mock，未运行真实目标编译或设备。
+
 用户随后启动修正后的命令但终端无输出。代码审查确认入口仅在返回时打印JSON、没有传递已有compiler progress回调；无法从用户未贴日志判断实际运行阶段或卡死。现已补stderr阶段通知及既有30秒OMG心跳，保持stdout单条JSON。run `20261105T012457Z-20992-be4a81` 的43项主机检查通过（`evidence/progress-check/validation.json`），包括回调透传、stderr可见且错误JSON不受影响；没有启动真实OMG或设备，没有修改host/kernel、超时或重试策略。
 
 最新用户日志已定位：`StableArgMax` 注册/dispatch及host tiling可达，`block_dim=1`、前三个tiling字段为15/248320/8192；编译worker在 `_prerun → _update_options → te_update_version` 失败，尚非kernel C++诊断。不是仅凭缺少builtin kernel库的较早日志判定根因。

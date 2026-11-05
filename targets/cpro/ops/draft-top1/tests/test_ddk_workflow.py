@@ -6,7 +6,9 @@ import importlib.abc
 import io
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
 import sys
 from unittest.mock import patch
 
@@ -31,6 +33,85 @@ def check(output):
     sys.path.insert(0, str(probe.REPO / 'targets/cpro/tools'))
     import validate_draft_vector as board
     checks = []
+
+    # Exercise real Python package resolution, never vendor imports or OMG.
+    from qwen35_moe_dflash.toolchain.compile import omg_environment
+    ddk_env = output / 'import-ddk'
+    binary = ddk_env / 'tools/tools_omg/master/omg'
+    binary.parent.mkdir(parents=True)
+    binary.write_text('not invoked')
+    impl = ddk_env / 'ddk/ascendc/ops/impl'
+    competing = ddk_env / 'ddk/tbe/ops'
+    for root in (impl, competing):
+        (root / 'custom').mkdir(parents=True)
+        (root / 'custom/__init__.py').write_text('')
+    installed = impl / 'custom/stable_arg_max.py'
+    installed.write_text('MARKER = "selected allops wrapper"\n')
+    public = ddk_env / 'tools/platform/kirinx90/ops/impl'
+    public.mkdir(parents=True)
+    base = {'PYTHONPATH': str(output / 'user-python'), 'PATH': os.environ.get('PATH', '')}
+    before_env = dict(base)
+    _, child_env = omg_environment(ddk_env, inherited=base)
+    code = 'import custom.stable_arg_max as m; import json; print(json.dumps([m.__file__, m.MARKER]))'
+
+    def import_wrapper(env):
+        return subprocess.run([sys.executable, '-B', '-c', code], env=env,
+            cwd=output, text=True, capture_output=True, timeout=10)
+
+    old_env = dict(child_env)
+    old_env['PYTHONPATH'] = os.pathsep.join(p for p in old_env['PYTHONPATH'].split(os.pathsep)
+        if p != str(impl))
+    failed_import = import_wrapper(old_env)
+    assert failed_import.returncode != 0 and "No module named 'custom.stable_arg_max'" in failed_import.stderr
+    checks.append('missing_internal_impl_path_reproduces_custom_module_not_found_in_fresh_python')
+    success = import_wrapper(child_env)
+    assert success.returncode == 0, success.stderr
+    assert json.loads(success.stdout) == [str(installed), 'selected allops wrapper']
+    assert base == before_env and str(public) in child_env['PYTHONPATH'].split(os.pathsep)
+    assert str(output / 'user-python') in child_env['PYTHONPATH'].split(os.pathsep)
+    assert child_env['SOC_VERSION'] == 'kirinx90'
+    checks.append('selected_ascendc_wrapper_imports_before_other_custom_package_without_global_env_change')
+    # TBE compatibility prepends wheel roots; they do not replace impl roots.
+    wheel = output / 'import-wheel/te.data/purelib'
+    wheel.mkdir(parents=True)
+    compatible_env = dict(child_env, PYTHONPATH=str(wheel) + os.pathsep + child_env['PYTHONPATH'])
+    success = import_wrapper(compatible_env)
+    assert success.returncode == 0 and json.loads(success.stdout)[0] == str(installed), success.stderr
+    checks.append('wrapper_import_survives_preceding_unrelated_tbe_wheel_path')
+    (impl / 'custom/__init__.py').unlink()
+    shadowed = import_wrapper(child_env)
+    assert shadowed.returncode != 0 and 'ModuleNotFoundError' in shadowed.stderr
+    checks.append('namespace_custom_can_still_be_shadowed_requires_actual_user_package_evidence')
+    (impl / 'custom/__init__.py').write_text('')
+    # Public DDK without this optional internal directory retains prior paths.
+    public_ddk = output / 'public-ddk'
+    executable = public_ddk / 'tools/tools_omg/master/omg'
+    executable.parent.mkdir(parents=True)
+    executable.write_text('not invoked')
+    public_impl = public_ddk / 'tools/platform/kirinx90/ops/impl'
+    public_impl.mkdir(parents=True)
+    _, public_env = omg_environment(public_ddk, inherited=base)
+    assert public_env['PYTHONPATH'].split(os.pathsep) == [str(public_impl), base['PYTHONPATH']]
+    assert not list(ddk_env.rglob('__pycache__'))
+    checks.append('public_layout_unchanged_and_ddk_sources_not_written_by_import_checks')
+    # Static inspection must never execute a wrapper (or a parent initializer).
+    installed.write_text('raise AssertionError("vendor wrapper executed during inspection")\n')
+    (impl / 'custom/__init__.py').write_text('raise AssertionError("parent package executed")\n')
+    before_files = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+        for p in ddk_env.rglob('*') if p.is_file()}
+    inspected = probe.inspect_installation(ddk_env)
+    assert inspected['status'] == 'STATIC_PATH_RESOLVED'
+    assert inspected['module_origin'] == str(installed)
+    assert before_files == {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+        for p in ddk_env.rglob('*') if p.is_file()}
+    (impl / 'custom/__init__.py').write_text('')
+    installed.write_text('MARKER = "selected allops wrapper"\n')
+    saved = io.StringIO()
+    with redirect_stdout(saved):
+        assert probe.main(['--inspect-installation', '--ddk-root', str(public_ddk)]) == 1
+    missing = json.loads(saved.getvalue())
+    assert missing['status'] == 'MISSING_IMPLEMENTATION' and missing['model_compilation'] == 'NOT_RUN'
+    checks.append('installation_inspection_reports_missing_wrapper_without_importing_vendor_code')
 
     def rejects(fn, name):
         try:
@@ -121,16 +202,29 @@ def check(output):
         return dict(placement=dict(npu_only_candidate=True, graphop_counts={'NPUCL': 1}), io=io, schema={})
 
     actual_args = args('compiled', (17, 8193), plan=False)
-    actual_args.ge_root, actual_args.ddk_root, actual_args.ddk_id = str(fakege), str(output / 'ddk'), 'mock-ddk'
+    actual_args.ge_root, actual_args.ddk_root, actual_args.ddk_id = str(fakege), str(ddk_env), 'mock-ddk'
     with patch('qwen35_moe_dflash.graph.export._logged', logged), \
          patch('qwen35_moe_dflash.toolchain.existing_air.compile_existing_air', compile_air), \
          patch.object(probe, 'inspect_model', inspect):
+        missing_args = args('missing-wrapper', (2, 3), plan=False)
+        missing_args.ge_root, missing_args.ddk_root, missing_args.ddk_id = str(fakege), str(public_ddk), 'mock-ddk'
+        before = len(calls)
+        try:
+            probe.run(missing_args)
+        except probe.ProbeFailure as error:
+            assert error.report['stage'] == 'installation-preflight'
+            assert error.report['model_compilation'] == 'NOT_RUN'
+            assert error.report['installation']['status'] == 'MISSING_IMPLEMENTATION'
+        else:
+            raise AssertionError('missing wrapper did not reject before compilation')
+        assert len(calls) == before
+        checks.append('missing_installed_wrapper_stops_before_ge_export_or_omg')
         result = probe.run(actual_args)
         assert result['status'] == 'COMPILED' and sum(c[0] == 'OMG' for c in calls) == 1
         assert compiler_kwargs[-1]['tbe_diagnosis'] is None
         checks.append('mock_sdk_one_compile_reused_for_all_fixtures')
         compatible = args('compatible-fresh', (2, 3), plan=False)
-        compatible.ge_root, compatible.ddk_root, compatible.ddk_id = str(fakege), str(output / 'ddk'), 'mock-ddk'
+        compatible.ge_root, compatible.ddk_root, compatible.ddk_id = str(fakege), str(ddk_env), 'mock-ddk'
         compatible.tbe_diagnosis = str(output / 'retained-diagnosis')
         stderr = io.StringIO()
         with redirect_stderr(stderr):
@@ -154,7 +248,7 @@ def check(output):
         reuse = args('reuse', (2, 3), plan=False)
         reuse.shape = None
         reuse.ge_root = None
-        reuse.ddk_root, reuse.ddk_id = str(output / 'ddk'), 'mock-ddk'
+        reuse.ddk_root, reuse.ddk_id = str(ddk_env), 'mock-ddk'
         reuse.reuse_export, reuse.tbe_diagnosis = str(old), compatible.tbe_diagnosis
         before = len(calls)
         with patch('qwen35_moe_dflash.graph.export._logged', side_effect=AssertionError('re-exported')):
@@ -260,7 +354,7 @@ def check(output):
             stderr = io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 code = probe.main(['--shape', '2', '3', '--output', str(output / 'failed-omg'),
-                    '--ge-root', str(fakege), '--ddk-root', str(output / 'ddk'), '--ddk-id', 'mock-ddk'])
+                    '--ge-root', str(fakege), '--ddk-root', str(ddk_env), '--ddk-id', 'mock-ddk'])
             failed = json.loads(stdout.getvalue())
             assert code == 1 and failed['status'] == 'FAILED' and failed['stage'] == 'omg'
             assert failed['model_compilation'] == 'FAILED'
@@ -306,7 +400,8 @@ def check(output):
     checks.append('all_ddk_paths_and_board_preparation_without_framework_imports')
     report = dict(status='PASSED', checks=checks, count=len(checks),
         scope='HOST_WORKFLOW_WITH_MOCK_SDK_AND_SYNTHETIC_OUTPUTS; NO_REAL_GE_OMG_DEVICE_EXECUTION',
-        source_sha256=probe.source_hashes())
+        source_sha256=probe.source_hashes(),
+        toolchain_sha256={'compile.py': probe.sha(probe.REPO / 'model/qwen35_moe_dflash/toolchain/compile.py')})
     probe.write(output / 'validation.json', report)
     return report
 

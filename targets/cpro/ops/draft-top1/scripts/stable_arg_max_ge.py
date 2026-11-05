@@ -80,6 +80,40 @@ def inspect_compilation(directory):
         **failure_diagnostics(output, 'omg' if (output / 'omc').is_dir() else report.get('stage')))
 
 
+def inspect_installation(ddk_root):
+    """Check filesystem/path resolution without importing vendor packages."""
+    from importlib.machinery import PathFinder
+    from qwen35_moe_dflash.toolchain.compile import omg_environment
+    ddk = Path(ddk_root).resolve()
+    _, env = omg_environment(ddk)
+    roots = [ddk / 'ddk/ascendc/ops/impl', ddk / 'tools/platform/kirinx90/ops/impl']
+    files = []
+    for root in roots:
+        path = root / 'custom/stable_arg_max.py'
+        row = dict(path=str(path), exists=path.is_file(), kernel_cpp_exists=path.with_suffix('.cpp').is_file())
+        if row['exists']:
+            row['within_selected_ddk'] = path.resolve().is_relative_to(ddk)
+            row['bytes'] = path.stat().st_size
+            if row['within_selected_ddk'] and 0 < row['bytes'] <= 2 << 20:
+                row['sha256'] = sha(path)
+        files.append(row)
+    search = [p for p in env.get('PYTHONPATH', '').split(os.pathsep) if p]
+    package = PathFinder.find_spec('custom', search)
+    locations = list(package.submodule_search_locations or []) if package else []
+    module = PathFinder.find_spec('custom.stable_arg_max', locations) if locations else None
+    origin = getattr(module, 'origin', None)
+    expected = {str(Path(row['path']).resolve()) for row in files if row.get('sha256')}
+    status = ('MISSING_IMPLEMENTATION' if not any(row['exists'] for row in files) else
+        'STATIC_PATH_RESOLVED' if origin and str(Path(origin).resolve()) in expected else
+        'IMPORT_PATH_REJECTED')
+    return dict(artifact_kind=KIND + '-installation', status=status, files=files,
+        module='custom.stable_arg_max', function='stable_arg_max', pythonpath=search,
+        custom_origin=getattr(package, 'origin', None), custom_paths=locations, module_origin=origin,
+        model_compilation='NOT_RUN', device_execution='NOT_RUN',
+        scope='STATIC_FILES_AND_PYTHONPATH_ONLY; NO_VENDOR_IMPORT_OR_WORKER_EXECUTION',
+        next='If missing, inspect allops generation/publication for the selected DDK; source copy is not installation.')
+
+
 def retained_export(directory):
     """Validate an existing export, allowing tooling-only changes since failure."""
     root = Path(directory).resolve()
@@ -218,6 +252,14 @@ def run(args):
         frontend='GE_CPP_NO_TORCH_TORCHAIR_TORCH_NPU', source_sha256=source_hashes(),
         contract='FINITE_FP16_FIRST_MAXIMUM_EXACT_INT32', cases=[])
     try:
+        if not args.plan_only and not args.export_only:
+            report['stage'] = 'installation-preflight'
+            progress(dict(stage=report['stage'], message='Checking installed custom.stable_arg_max wrapper'))
+            report['installation'] = inspect_installation(args.ddk_root)
+            if report['installation']['status'] != 'STATIC_PATH_RESOLVED':
+                raise ValueError('StableArgMax installation preflight: ' + report['installation']['status'] +
+                    '; inspect installation.files and custom_paths; OMG was not launched')
+            report['stage'] = 'fixtures'
         progress(dict(stage='fixtures', message=f'Preparing and verifying reference inputs; output={output}'))
         graph = graph_for(shape)
         report['graph'] = graph.manifest()
@@ -399,23 +441,28 @@ def main(argv=None):
         help='reuse a hash-checked existing AIR/recipe in a new compile directory; no GE export')
     modes.add_argument('--inspect-compilation', metavar='DIRECTORY',
         help='read a retained result/report/log; no compilation, writes, SDK or device')
+    modes.add_argument('--inspect-installation', action='store_true',
+        help='read selected-DDK wrapper files and static import paths; no vendor import or compilation')
     args = parser.parse_args(argv)
-    if args.inspect_compilation:
+    if args.inspect_compilation or args.inspect_installation:
         if args.output:
-            parser.error('--inspect-compilation does not take --output or write a new run')
+            parser.error('inspection does not take --output or write a new run')
+        if args.inspect_installation and not args.ddk_root:
+            parser.error('--inspect-installation requires --ddk-root/CPRO_DDK_ROOT')
     elif not args.output:
         parser.error('export/compile requires --output')
     try:
-        report = inspect_compilation(args.inspect_compilation) if args.inspect_compilation else run(args)
+        report = (inspect_installation(args.ddk_root) if args.inspect_installation else
+            inspect_compilation(args.inspect_compilation) if args.inspect_compilation else run(args))
     except ProbeFailure as error:
         report = error.report
     except (OSError, ValueError, RuntimeError) as error:
         report = dict(artifact_kind=KIND, status='FAILED',
-            stage='inspect' if args.inspect_compilation else 'preflight',
+            stage='inspect' if args.inspect_compilation or args.inspect_installation else 'preflight',
             error=f'{type(error).__name__}: {error}', model_compilation='NOT_RUN',
             device_execution='NOT_RUN', numerical_validation='NOT_RUN')
     print(json.dumps(report))
-    return 0 if report['status'] in ('COMPILED', 'EXPORTED', 'PLANNED', 'INSPECTED') else 1
+    return 0 if report['status'] in ('COMPILED', 'EXPORTED', 'PLANNED', 'INSPECTED', 'STATIC_PATH_RESOLVED') else 1
 
 
 if __name__ == '__main__':
