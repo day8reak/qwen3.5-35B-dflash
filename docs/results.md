@@ -194,6 +194,14 @@ isolated每个case从参考KV重新输入，feedback沿用设备已提交KV，�
 
 profiling入口新增 `--case-index`，用已完成精度回放的输入选择调用类型，不生成新fixture或上传模型。先采集当前RoPE case18（满缓存、valid0、15个proposal）的单次V1原始CSV。9项主机检查通过，覆盖原ABI、case选择、数值失败显式允许、输入变更及CLI传参；真实profiling待用户执行。匹配X90实测能力画像仍缺失，未给出硬件极限或可实现加速倍数。
 
+### 当前 RoPE profiling 与常用路径优化排序
+
+用户按本阶段case18 profiling请求回传表格：load155.454ms、inference65.822ms、unload9.228ms；算子duration合计61.837ms。MatMul_30为19.807ms、Conv2D为8.788ms、Transpose_1为5.359ms、StableArgMax为0.416ms。表内存在RoPE修复节点，但未附请求摘要和OMC哈希，归属按会话关联，未本地核验原CSV。NPU model57的时间戳10:18:11.736xxx晚于API model1结束10:18:11.729179；不据此计算关键路径、CPU等待或预测节省时间。
+
+本地做过零新增KV proposal原型和20项主机检查，随后按用户的性价比要求复核实际调度：IncrementalDraftCache::Prepare将最后一次追加和proposal合并，正常连续生成有新增上下文时仍走一般图。零追加路径只能直接覆盖缓存已补齐后的特殊调用，测试中的6/19例不代表生产频率。原型保存在本次本地实验目录，未发布、未编译、未接入调度；不安排服务器构建。将来若拆成KV-only catchup＋proposal，要比较两次调用总耗时与缓存／常驻成本。
+
+第一优先改为正常调用都会经过的入口布局：原FP16 [1,16,16384]通过两次转置变为[1,1024,16,16]，每次512KiB，只搬字节。主机调用现有project_features并截取Conv输入，valid=0／1／2／14／16的预打包结果逐字节一致；另枚举全部262144个元素的目标位置，覆盖完整16位模式。此检查没有执行Conv或整模型，不能代替设备精度／性能。后续先做小投影前缀对照并计入端侧CPU打包成本，再决定完整图构建；没有新加速结论。第二优先为8.788ms投影表达，第三为完整词表head的实际布局／实现；0.416ms的Top1暂缓。
+
 ## 已有端侧闭环
 
 旧接线模型已完成文字编码→Prefill→常驻Draft/Decode→文字解码。以下为同次旧闭环结果，不能与上述新候选的独立API测量混作一组。

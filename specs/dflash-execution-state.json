@@ -7,7 +7,7 @@
   "overall_status": "in_progress",
   "active_phase": "P4",
   "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
-  "user_priority": "Resume Draft performance work after user reports6.4G free. Further accuracy investigation remains deferred; existing FAILED reports and numerical baseline retained.",
+  "user_priority": "Prioritize high cost-benefit optimizations on normal Draft calls. Defer rare zero-append specialization; source input-layout equivalence reviewed, no new model compiled.",
   "status_policy": {
     "allowed": [
       "pending",
@@ -7697,8 +7697,8 @@
             }
           },
           "performance_assessment": {
-            "status": "SOURCE_REVIEWED; CURRENT_MODEL_PROFILE_PENDING",
-            "user_directive": "Disk now 6.4G free; resume Draft optimization. Further accuracy work remains deferred.",
+            "status": "COMMON_PATH_ROI_REVIEWED",
+            "user_directive": "Prioritize high cost-benefit routes; reconsider the rare zero-append specialization.",
             "model_sha256": "b43ae9cfcd50999277829a21adc24099170d4a7c4856b70729385b59d362a828",
             "numerical_validation": "FAILED_UNCHANGED; USER_ACCEPTED_RESIDUALS_FOR_NEXT_STAGE",
             "latest_api_means_ms": [
@@ -7722,22 +7722,22 @@
             },
             "candidates": [
               {
-                "priority": 1,
+                "priority": "DEFERRED_RARE_CALL_PATH",
                 "change": "Zero-append proposal specialization",
                 "guard": "valid_rows == 0; keep all requested proposals, old KV, positions and mask semantics",
                 "source_proof": "write interval empty => present K/V = past K/V; new context projection/KV rows feed only the unselected write branch",
                 "removed_work": "context spatial packing/fc/RMS; context half of KV projections; new-K RMS/RoPE/Gather",
-                "limit": "Separate compiled shape may choose a different kernel. Preserve original reference and compare against retained candidate; no device speedup established."
+                "limit": "Current scheduler merges last append with proposal; rare in normal progression. Prototype host-tested but held locally, not published/compiled. Six synthetic zero-append test cases do not establish production frequency."
               },
               {
-                "priority": 2,
+                "priority": "DEFERRED_PENDING_SPLIT_TOTAL_COST",
                 "change": "KV-only catchup specialization",
                 "guard": "proposal_count == 0 and caller consumes KV only; general combined path retained when both append and propose",
                 "removed_work": "candidate Q/attention/MLP/terminal head/argmax",
                 "scope": "Algorithmic caller-output liveness only; full 14-output graph is not byte-equivalent when unused outputs are omitted. Requires explicit runtime routing and ABI integration."
               },
               {
-                "priority": 3,
+                "priority": "SUPERSEDED_BY_COMMON_PATH_PRIORITIES",
                 "change": "Full-vocabulary head/layout and input spatial packing",
                 "head_shape": [
                   15,
@@ -7766,9 +7766,71 @@
             },
             "profiling_scope": "ONE_CURRENT_OMC_TOOL_CALL_WITH_RETAINED_REFERENCE_KV; NOT_WARM_RESIDENT_BENCHMARK",
             "host_checks": 9,
-            "host_evidence": "20261105T103539Z-5945-4b0b26/out/evidence/profile-case-host-checks.json",
+            "host_evidence": "20261105T105610Z-6649-05c537/out/evidence/draft-roi-review.json",
             "server_free_space": "6.4G_USER_REPORTED; CLEANUP_DETAILS_NOT_PROVIDED",
-            "next": "docs/current-status.md"
+            "next": "docs/current-status.md",
+            "current_profile": {
+              "artifact_kind": "qwen35-draft-user-profile-observation",
+              "source": "USER_PASTED_TABLE_AFTER_CASE18_PROFILE_REQUEST",
+              "raw_csv_retrieved": false,
+              "request_identity_independently_verified": false,
+              "inference_ms": 65.822,
+              "load_ms": 155.454,
+              "unload_ms": 9.228,
+              "operator_duration_sum_ms": 61.837,
+              "hotspots_ms": {
+                "MatMul_30": 19.807,
+                "Conv2D": 8.788,
+                "Transpose_1": 5.359,
+                "Transpose": 0.414,
+                "StableArgMax": 0.416
+              },
+              "clock_limitation": "NPU model57 starts 10:18:11.736xxx after API model1 ends 10:18:11.729179; not a usable shared timeline or critical path",
+              "model_attribution": "Conversation associates requested retained RoPE case18; table alone does not supply OMC hash"
+            },
+            "priorities": [
+              {
+                "priority": 1,
+                "change": "Host feature spatial packing combined with existing input preparation",
+                "coverage": "General Draft calls including nonzero appends",
+                "input_shape": [
+                  1,
+                  16,
+                  16384
+                ],
+                "packed_shape": [
+                  1,
+                  1024,
+                  16,
+                  16
+                ],
+                "input_bytes": 524288,
+                "classification": "BIT_PERMUTATION_ONLY; NO_FLOAT_ARITHMETIC",
+                "host_evidence": "20261105T105610Z-6649-05c537/out/evidence/feature-pack-layout.json",
+                "scope": "Five valid-row cases and all262144 element indices; source Conv input bytes only",
+                "remaining": "Phone CPU packing + API wall; same-input prefix and full-model output comparisons"
+              },
+              {
+                "priority": 2,
+                "change": "Full-dot feature projection expression/layout",
+                "weight_bytes": 67108864,
+                "measured_node_ms": 8.788,
+                "scope": "Small prefix comparison before full model; source FP16 boundaries retained"
+              },
+              {
+                "priority": 3,
+                "change": "Full-vocabulary head layout/implementation",
+                "weight_bytes": 1017118720,
+                "logits_bytes": 7449600,
+                "measured_node_ms": 19.807,
+                "scope": "No new custom kernel or approximation; actual implementation/physical traffic not established"
+              }
+            ],
+            "deferred": {
+              "zero_append": "Current scheduler merges last append with proposal; rare in normal progression. Prototype host-tested but held locally, not published/compiled. Six synthetic zero-append test cases do not establish production frequency.",
+              "top1": "Measured0.416ms; lower priority"
+            },
+            "prototype": "HELD_IN_LOCAL_RUN_NOT_PUBLISHED"
           },
           "hidden_prefix_probe": {
             "status": "LAYER0_AUDIT_AND_ROPE_REPLAY_COMPLETE; FURTHER_ACCURACY_WORK_DEFERRED_BY_USER",

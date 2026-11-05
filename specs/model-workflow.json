@@ -3,7 +3,7 @@
   "updated": "2026-11-05",
   "active_phase": "performance",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
-  "run_id": "20261105T035706Z-27113-40e39d",
+  "run_id": "20261105T105610Z-6649-05c537",
   "navigation": {
     "home": "docs/README.md",
     "model": "docs/model-architecture.md",
@@ -2174,8 +2174,8 @@
       "name": "performance",
       "status": "in_progress",
       "owner": "model-workflow",
-      "evidence": "20261105T103539Z-5945-4b0b26/out/evidence/draft-performance-review.json",
-      "note": "Server free space now6.4G by user report. Source liveness review complete; current RoPE zero-append profile pending. No optimization speedup established.",
+      "evidence": "20261105T105610Z-6649-05c537/out/evidence/draft-roi-review.json",
+      "note": "User prioritizes common-call ROI. Zero-append prototype held because current scheduler combines final append with proposal. Feature input packing verified on host only; no new device gain.",
       "next_command": "docs/current-status.md"
     },
     {
@@ -5805,12 +5805,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "STABLE_ARG_MAX_FULL_DRAFT_NUMERICAL_FAILED_DIAGNOSIS_AND_PROFILE",
+    "status": "COMMON_PATH_PERFORMANCE_ROI_REVIEWED",
     "entry": "targets/cpro/tools/validate_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "UNTOUCHED_REPLAY_FIRST_CASE_ALL14_OUTPUTS_BITWISE_EQUAL; HIDDEN_L2_1.449_PERCENT; ISOLATED82_OF86_FEEDBACK83_OF86; ORIGINAL_GATES_FAILED",
-    "next": "Profile retained RoPE OMC on zero-append full-cache case18, then evaluate proposal/catchup specialization. Original numerical failure accepted for proceeding, not relabeled.",
+    "next": "Small common input-layout experiment including phone packing overhead; docs/current-status.md",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -7109,6 +7109,80 @@
           }
         }
       }
+    },
+    "performance_roi": {
+      "status": "COMMON_PATH_ROI_REVIEWED",
+      "user_directive": "Prioritize high cost-benefit routes; reconsider the rare zero-append specialization.",
+      "baseline_model_sha256": "b43ae9cfcd50999277829a21adc24099170d4a7c4856b70729385b59d362a828",
+      "numerical_validation": "FAILED_UNCHANGED; FURTHER_ACCURACY_WORK_DEFERRED_BY_USER",
+      "profile": {
+        "artifact_kind": "qwen35-draft-user-profile-observation",
+        "source": "USER_PASTED_TABLE_AFTER_CASE18_PROFILE_REQUEST",
+        "raw_csv_retrieved": false,
+        "request_identity_independently_verified": false,
+        "inference_ms": 65.822,
+        "load_ms": 155.454,
+        "unload_ms": 9.228,
+        "operator_duration_sum_ms": 61.837,
+        "hotspots_ms": {
+          "MatMul_30": 19.807,
+          "Conv2D": 8.788,
+          "Transpose_1": 5.359,
+          "Transpose": 0.414,
+          "StableArgMax": 0.416
+        },
+        "clock_limitation": "NPU model57 starts 10:18:11.736xxx after API model1 ends 10:18:11.729179; not a usable shared timeline or critical path",
+        "model_attribution": "Conversation associates requested retained RoPE case18; table alone does not supply OMC hash"
+      },
+      "priorities": [
+        {
+          "priority": 1,
+          "change": "Host feature spatial packing combined with existing input preparation",
+          "coverage": "General Draft calls including nonzero appends",
+          "input_shape": [
+            1,
+            16,
+            16384
+          ],
+          "packed_shape": [
+            1,
+            1024,
+            16,
+            16
+          ],
+          "input_bytes": 524288,
+          "classification": "BIT_PERMUTATION_ONLY; NO_FLOAT_ARITHMETIC",
+          "host_evidence": "20261105T105610Z-6649-05c537/out/evidence/feature-pack-layout.json",
+          "scope": "Five valid-row cases and all262144 element indices; source Conv input bytes only",
+          "remaining": "Phone CPU packing + API wall; same-input prefix and full-model output comparisons"
+        },
+        {
+          "priority": 2,
+          "change": "Full-dot feature projection expression/layout",
+          "weight_bytes": 67108864,
+          "measured_node_ms": 8.788,
+          "scope": "Small prefix comparison before full model; source FP16 boundaries retained"
+        },
+        {
+          "priority": 3,
+          "change": "Full-vocabulary head layout/implementation",
+          "weight_bytes": 1017118720,
+          "logits_bytes": 7449600,
+          "measured_node_ms": 19.807,
+          "scope": "No new custom kernel or approximation; actual implementation/physical traffic not established"
+        }
+      ],
+      "deferred": {
+        "zero_append": "Current scheduler merges last append with proposal; rare in normal progression. Prototype host-tested but held locally, not published/compiled. Six synthetic zero-append test cases do not establish production frequency.",
+        "top1": "Measured0.416ms; lower priority"
+      },
+      "model_compilation": "NOT_RUN",
+      "device_execution": "NOT_RUN",
+      "production_promotion": "NOT_PERFORMED",
+      "hardware_reference_policy": "use",
+      "capacity_profile_status": "MISSING_MATCHING_X90_EMPIRICAL_PROFILE",
+      "realizable_speedup_estimate": null,
+      "next": "Small common input-layout experiment including phone packing overhead; docs/current-status.md"
     }
   }
 }

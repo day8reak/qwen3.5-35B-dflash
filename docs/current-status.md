@@ -1,41 +1,38 @@
-# 当前阶段：Draft 性能优化
+# 当前阶段：优先优化 Draft 常用调用
 
-2026-11-05：用户报告服务器剩余空间6.4G，恢复Draft性能工作；精度排查继续暂缓。当前RoPE候选为C16／cap192／K15，OMC SHA `b43ae9cfcd50999277829a21adc24099170d4a7c4856b70729385b59d362a828`。最近同步API四组均值约65.94～66.00ms，目标仍为常驻预热后proposal均值≤50ms。原数值结果FAILED，hidden相对L2约1.16%～1.77%，新增KV最差约0.61%，两模式各83/86个Top1匹配。[完整结果](results.md)。
+2026-11-05：用户要求优先找性价比高的路线。按实际调度覆盖、已测热点、改动与验证成本排序。当前RoPE模型C16／cap192／K15，OMC SHA为 `b43ae9cfcd50999277829a21adc24099170d4a7c4856b70729385b59d362a828`。原数值结果保持FAILED，进一步精度排查按用户决定暂缓。[完整结果](results.md)。
 
-## 优先检查的优化方向
+## 当前 profiling
 
-| 方向 | 已有依据 | 下一步验证 |
+| 项目 | 耗时 ms | 源码对应关系 |
+|---|---:|---|
+| 同步模型 inference | 65.822 | 一次profiling调用，非预热后十次均值 |
+| MatMul_30 | 19.807 | 按源码推断为完整词表head |
+| Conv2D | 8.788 | 上下文特征投影 |
+| Transpose_1／Transpose | 5.359／0.414 | 投影前的空间打包 |
+| StableArgMax | 0.416 | 完整词表Top1 |
+
+表格来自用户响应case18采集请求的粘贴内容，原始CSV／本次请求摘要未在本地绑定。NPU时间戳晚于API结束，不能据此推算关键路径、等待时间或净收益；算子duration合计61.837ms也不是关键路径。
+
+## 第一优先：在输入准备时完成特征重排
+
+当前入口把FP16 `[1,16,16384]` 通过两次转置打包为 `[1,1024,16,16]`，再做原来的4×4、stride4 Conv。每次仅512KiB，重排本身不涉及浮点算术。正常有新增上下文的Draft调用都经过这条路径。
+
+拟保留Conv的权重、形状与计算边界，把空间打包移到端侧CPU准备输入的过程中。目标是免去图内两个转置，尽量合并到已有输入拷贝，避免新增一套独立的全量拷贝。
+
+主机已逐字节核对现有 `IncrementalDraft.project_features` 的Conv输入：valid=0／1／2／14／16均一致；全部262144个元素的索引映射通过，覆盖全部16位存储模式。只证明重排等价，没有执行Conv或完整模型。本地主机CPU的NumPy拷贝计时不作为设备性能预测。
+
+下一实验保持小规模：同输入的投影前缀基线和预打包候选，先测端侧CPU打包成本、API、输出一致性及两者合计；确认值得继续后再编译一份完整Draft。完整模型保持原golden和容差，并单列对现有设备结果的等价比较。5.773ms是当前两算子的duration之和，不能预先承诺全部省掉。
+
+## 后续排序
+
+| 顺序 | 方向 | 判断标准与成本 |
 |---|---|---|
-| 零新增行的proposal专用路径 | `valid_rows=0` 时写入区为空，present KV等于past KV；源码仍计算上下文空间打包、特征投影和新KV | 当前模型case18 profiling；再评估移除这条无效计算分支 |
-| 仅更新KV的catchup路径 | `proposal_count=0` 时调用方不需要候选hidden／Top1，统一图仍计算六层候选分支和head | 保留同时追加与proposal的一般路径，另行做运行时路由和ABI适配 |
-| 全词表head与布局 | 旧同系列模型MatMul_30约19.965ms；入口Conv2D约8.753ms、Transpose_1约5.284ms | 核实当前编译热点与形状后选择改图；保留完整词表和原舍入边界 |
+| 2 | 8.788ms的特征投影 | 复用约64MiB投影权重做少量前缀对照；保持完整点积和原舍入边界，先确认选用的表达／布局是否更快 |
+| 3 | 19.807ms完整词表head | 覆盖每轮proposal、耗时最大，但逻辑FP16权重约1.017GB；先查实际布局和实现，不能因热点大就直接重写自定义内核 |
+| 暂缓 | 零新增KV的专用proposal | 当前调度把最后一批追加与proposal合并，正常多轮生成很少满足valid=0；独立快路径收益覆盖有限 |
+| 暂缓 | 继续改StableArgMax | 已测仅0.416ms，优先级低 |
 
-旧profiling中的StableArgMax仅0.415ms，暂不优先优化。旧表来自RoPE修复前的一次新进程调用，不能直接当作当前模型的耗时分解。算子duration之和也不等于实际关键路径；尚不能承诺某个改动能省多少ms。
+当前head输出logits约7.45MB，远小于完整权重；单独融合Top1减少中间写回，不能据此推断能解决19.8ms。暂不以缩词表、量化或减少层数作为默认路线。没有匹配的X90实测能力画像，不给出带宽极限或硬件无优化空间结论。
 
-当前head逻辑权重约1.017GB，logits约7.45MB。仅融合argmax以免写出logits，仍需访问完整head权重；需要实测，不能从减少一个中间张量推断大幅加速。暂无匹配的X90实测能力画像，不作硬件带宽极限或理论剩余空间结论。
-
-## 服务器执行一次当前proposal profiling
-
-复用现有OMC和板端缓存，不编译新模型、不复制大权重、不重做精度探针。选择最新完整回放中的case18：start192、valid0、15个proposal、参考KV输入。该调用明确用于定位热点，不是3次预热＋10次常驻性能验收。
-
-```bash
-git -C "$REPO_DIR" pull --ff-only
-export ROPE_DIR="$AI_RUN_DIR/draft/tests/top1-integration/rope-fp32"
-export PROFILE_DIR="$AI_RUN_DIR/draft/tests/rope-zero-append-profile"
-
-python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
-  --accuracy "$ROPE_DIR/kv-reproduction/result" \
-  --case-index 18 --allow-numerical-failure \
-  --modelmanager-itf V1 --output "$PROFILE_DIR-run" --apply
-```
-
-启动后回收同一个请求：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
-  --recover "$PROFILE_DIR-run" --output "$PROFILE_DIR-result"
-```
-
-若返回 `DRAFT_OPERATOR_PROFILE_PENDING`，稍后只重复回收命令，不重复启动。完成后回传摘要与对应的原始 `*_op.csv`、`*_model.csv` 内容；文件位置由 `csv_files` 给出。原始CSV可能包含服务历史，必须结合本次PID／模型记录确认归属。
-
-本次新增 `--case-index` 只选择已保留的完整输入，支持纯catchup和零新增行proposal；默认行为保持case2。9项主机检查通过，未本地执行设备。没有修改模型图或权重，也没有新增性能改善结论。整行重复仍记录为上轮未复现、原因未查明。
+零新增KV原型已保存在本次本地实验目录，未发布、未编译、未接入生产，不占服务器运行盘。若以后采用KV-only catchup＋proposal拆分，必须比较两次调用总耗时、缓存交接和模型常驻成本；测试中6/19例为零追加不代表实际请求频率。现阶段无需执行该原型的编译命令，保留当前已完成profiling和基线OMC即可。
