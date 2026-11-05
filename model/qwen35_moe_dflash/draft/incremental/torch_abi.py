@@ -141,6 +141,8 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
     policy = manifest_policy(export)
     if manifest_policy(meta) != policy:
         raise ValueError('candidate and source optimization contracts differ')
+    if meta.get('top1') != export.get('top1'):
+        raise ValueError('candidate and source Top1 contracts differ')
     host_embedding = policy == 'packed-spatial-host-embedding'
     missing_host_binding = host_embedding and meta.get('host_embedding') is None
     if host_embedding and not isinstance(export.get('host_embedding'), dict):

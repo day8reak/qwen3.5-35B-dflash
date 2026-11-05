@@ -1,6 +1,6 @@
 # 当前结果
 
-更新：2026-11-05。以下设备/编译结果来自用户回传，未在本地重新运行。当前操作见[上板验证命令](current-status.md)。完整 Draft 的数值门槛仍未通过，尚无配对端到端加速结论。
+更新：2026-11-05。以下设备/编译结果来自用户回传，未在本地重新运行。当前操作见[整图接入命令](current-status.md)。完整 Draft 的数值门槛仍未通过，尚无配对端到端加速结论。
 
 ## 自定义 Top1
 
@@ -12,7 +12,7 @@
 | 图层面归属 | NPUCL=1；CPU操作=0；主图遗留计算=0 |
 | 设备数值与稳定性 | 七组全部通过；3次预热后每组10次，70次／1050个INT32结果精确一致、重复稳定 |
 | 同步API墙钟 | 七组等权总均值1.232ms；全部调用范围0.922–1.695ms |
-| 模型集成 | 未接入完整Draft；TopK和310P未实现 |
+| 模型集成 | 可选Torch导出接线已实现并经主机检查；完整AIR／OMC／板端待验；TopK和310P未实现 |
 
 当前OMC：`draft/tests/stable-arg-max-ge-config/omc/compile-work/generated/model.omc`。
 SHA256：`2e76eda684ae0a4ac201af1c1ba511ca6b84e864a698193cfd1cfdfc1de2598f`。
@@ -27,7 +27,18 @@ SHA256：`2e76eda684ae0a4ac201af1c1ba511ca6b84e864a698193cfd1cfdfc1de2598f`。
 | random_seed350248320 | 1.2852 | 1.163–1.544 |
 | finite_binary16_alphabet | 1.1911 | 1.097–1.434 |
 
-本任务已完成回收，native/archive/各case退出码均为0，锁已释放。计时为同步API墙钟，调用间快照不计入，不是纯NPU内核时间；不能与旧CPU算子profiling直接相除，或从完整Draft时延中扣减。当前冻结Qwen配置作为正确性基线，下一步补17×8193尾部边界。
+本任务已完成回收，native/archive/各case退出码均为0，锁已释放。计时为同步API墙钟，调用间快照不计入，不是纯NPU内核时间；不能与旧CPU算子profiling直接相除，或从完整Draft时延中扣减。Qwen配置已冻结为正确性基线。
+
+补充尾部配置 `[17,8193]` → INT32 `[17]` 已通过：四组共40次／680个索引精确一致、重复稳定，NPUCL=1，所有退出码0且锁已释放。覆盖16＋1行输出、8192＋1元素尾块和未对齐行起点。
+
+| 尾部输入组 | 均值 ms | 最小–最大 ms |
+|---|---:|---:|
+| first_last | 0.5562 | 0.448–0.677 |
+| equal | 0.5037 | 0.434–0.886 |
+| tile_ties | 0.4810 | 0.437–0.512 |
+| subnormal | 0.5189 | 0.438–0.657 |
+
+尾部API等权均值0.515ms；结果在 `draft/tests/stable-arg-max-tail/result`。两轮累计11组、110次／1730个索引通过，shape不同，不混算加速比。尾部回传摘要未包含OMC digest；shape按本阶段编译命令关联。
 
 身份和证据范围见[算子验证记录](../targets/cpro/ops/draft-top1/docs/VALIDATION.md)。
 

@@ -984,7 +984,7 @@
     "new_graph_outputs": 14,
     "new_weight_payload_copies": 0,
     "current_native_bundle": "INCREMENTAL_C16_CAP192_K15_17_INPUTS_14_OUTPUTS",
-    "next_command": "Compile final gated builtin batch with --top1-bitcarrier; see docs/current-status.md. No previous batch relaunch. Conditional custom Top1 authorization recorded.",
+    "next_command": "docs/current-status.md: weights-server export --top1 stable-arg-max; DDK compile; full Draft accuracy start/recover",
     "sdk_compatibility_fix": "specs/incremental-draft-sdk-link-fix.json",
     "selected_ddk_attempt": "USER_REPORTED_OMC_ABI_PRECISION_POLICY_PASSED_NOT_NUMERICAL",
     "air_export_observation": "specs/incremental-draft-air-observation.json",
@@ -3724,7 +3724,7 @@
       "numerical_validation": "FAILED_SAME_REPORTED_ERROR_SUMMARIES_AS_PREVIOUS",
       "performance": "NATIVE_API_PHASE_MEANS_103.958_TO106.09_MS_NOT_END_TO_END",
       "production_promotion": "NOT_PERFORMED",
-      "next": "TOP1_DEVICE_BATCH_RECORDED; REVIEW_ALTERNATIVE_ALL_NPU_VALUE_INDEX_GRAPH; FULL_DRAFT_103.720MS_NUMERICAL_FAILED_UNCHANGED",
+      "next": "OPTIONAL_STABLE_ARG_MAX_INTEGRATION_HOST_READY; ORIGINAL_NUMERICAL_FAILURE_PRESERVED",
       "command_document": "docs/current-status.md",
       "experience_audit": {
         "captured": [
@@ -6674,9 +6674,9 @@
         }
       },
       "custom_top1": {
-        "status": "QWEN_SINGLE_OPERATOR_DEVICE_PASSED",
+        "status": "TWO_SHAPE_DEVICE_PASSED_FULL_DRAFT_INTEGRATION_HOST_READY",
         "operator_dir": "targets/cpro/ops/draft-top1",
-        "run_id": "20261104T083807Z-10795-c00fd7",
+        "run_id": "20261105T021938Z-23422-d80bfd",
         "authorization": "LAST_BUILTIN_FAILURE_TRIGGERED_USER_APPROVED_CUSTOM_TOP1",
         "host_validation": {
           "status": "PASSED",
@@ -6690,10 +6690,10 @@
         "kernel_build": "PASSED_USER_REPORTED_OMG",
         "kernel_implementation": "STABLE_ARG_MAX_SOURCE_WITH_HOST_TILING_AND_TORCH_META_GE_CONVERTER",
         "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
-        "full_draft_changed": false,
-        "blocker": "GENERIC_TAIL_AND_FULL_MODEL_VALIDATION_PENDING; NO_PAIRED_SPEEDUP_CLAIM",
-        "next": "PRESERVE_QWEN_BASELINE; ONE_17X8193_TAIL_SHAPE_FOUR_FIXTURES",
-        "command": "python3 \"$OP_DIR/scripts/stable_arg_max_ge.py\" --shape 17 8193 --ge-root \"$CANN_ROOT\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --tbe-diagnosis \"$AI_RUN_DIR/common/tbe-diagnosis\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-tail/compiled\"",
+        "full_draft_changed": true,
+        "blocker": "FULL_DRAFT_TORCHAIR_EXPORT_OMG_AND_USER_DEVICE_VALIDATION_PENDING",
+        "next": "Run optional stable-arg-max full Draft export, compile and original-gate numerical validation; do not repeat standalone probes.",
+        "command": "docs/current-status.md",
         "torch_op": "custom_ops::stable_arg_max",
         "ge_type": "StableArgMax",
         "generic_contract": "FINITE_FP16_STATIC_RANK1_TO8_LAST_AXIS_INT32_FIRST_MAXIMUM; NUMEL_LE_INT32_MAX",
@@ -6886,6 +6886,110 @@
             }
           ],
           "run_id": "20261105T020607Z-23101-092df2"
+        },
+        "full_draft_change_scope": "OPTIONAL_EXPORT_CODE_ONLY; RUNNING_MODEL_AND_VALIDATED_OPERATOR_UNCHANGED",
+        "tail_device_observation": {
+          "artifact_kind": "stable-arg-max-tail-device-observation",
+          "status": "PASSED",
+          "date": "2026-11-05",
+          "provenance": "USER_PASTED_RECOVERY_SUMMARY; NOT_INDEPENDENTLY_RETRIEVED",
+          "source_updated_at_unix": 1793846772.3222876,
+          "shape": [
+            17,
+            8193
+          ],
+          "shape_source": "DOCUMENTED_COMPILE_COMMAND; RECOVERY_SUMMARY_OMITS_SHAPE",
+          "output_shape": [
+            17
+          ],
+          "compiled": "draft/tests/stable-arg-max-tail/compiled",
+          "model_sha256": null,
+          "model_identity_scope": "OMC_DIGEST_NOT_INCLUDED_IN_USER_SUMMARY",
+          "recovery_source": "draft/tests/stable-arg-max-tail/run",
+          "result": "draft/tests/stable-arg-max-tail/result",
+          "board_attempt": "qwen35_vector_840699127bf2427eb5552d6eecf3b49a",
+          "warmup": 3,
+          "repetitions": 10,
+          "execution_cases": 4,
+          "measured_calls": 40,
+          "compared_indices": 680,
+          "contract": "FINITE_FP16_FIRST_MAXIMUM_EXACT_INT32",
+          "graphop_counts": {
+            "NPUCL": 1
+          },
+          "repeat_bitwise_stable": true,
+          "mismatched_elements_all_calls": 0,
+          "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+          "model_compilation": "NOT_RUN_BY_VALIDATION",
+          "numerical_validation": "PASSED",
+          "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+          "execution_diagnostics": {
+            "native_exitcode": 0,
+            "archive_exitcode": 0,
+            "all_case_exitcodes": 0,
+            "errors": []
+          },
+          "cases": [
+            {
+              "case": "stable_arg_max__first_last",
+              "passed": true,
+              "mean_ms": 0.5562,
+              "min_ms": 0.448,
+              "max_ms": 0.677,
+              "repeat_bitwise_stable": true,
+              "mismatched_elements_all_calls": 0
+            },
+            {
+              "case": "stable_arg_max__equal",
+              "passed": true,
+              "mean_ms": 0.5037,
+              "min_ms": 0.434,
+              "max_ms": 0.886,
+              "repeat_bitwise_stable": true,
+              "mismatched_elements_all_calls": 0
+            },
+            {
+              "case": "stable_arg_max__tile_ties",
+              "passed": true,
+              "mean_ms": 0.481,
+              "min_ms": 0.437,
+              "max_ms": 0.512,
+              "repeat_bitwise_stable": true,
+              "mismatched_elements_all_calls": 0
+            },
+            {
+              "case": "stable_arg_max__subnormal",
+              "passed": true,
+              "mean_ms": 0.5189,
+              "min_ms": 0.438,
+              "max_ms": 0.657,
+              "repeat_bitwise_stable": true,
+              "mismatched_elements_all_calls": 0
+            }
+          ],
+          "aggregate_mean_ms": 0.51495,
+          "min_ms": 0.434,
+          "max_ms": 0.886,
+          "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_BETWEEN_CALLS_EXCLUDED",
+          "full_draft_validation": "NOT_RUN"
+        },
+        "integration": {
+          "status": "HOST_PASSED_TARGET_PENDING",
+          "policy": "stable-arg-max",
+          "torch_op": "custom_ops::stable_arg_max",
+          "ge_type": "StableArgMax",
+          "input_contract": "FINITE_FP16",
+          "output_contract": "INT32_SMALLEST_INDEX",
+          "reference": "UNCHANGED_ORIGINAL_MODEL",
+          "host_evidence": "20261105T021938Z-23422-d80bfd/evidence/integration-check.json",
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN",
+          "deployment": "EXISTING_RUNTIME_NOT_REPLACED",
+          "command_document": "docs/current-status.md",
+          "host_checks": 30,
+          "tool_evidence": "20261105T021938Z-23422-d80bfd/evidence/integration-tool-check.json",
+          "authorization": "EXISTING_USER_REQUEST_FOR_CUSTOM_DRAFT_TOP1_TORCH_META_EXPORT; OPT_IN_ONLY; NO_PRECISION_APPROXIMATION"
         }
       }
     }

@@ -1,40 +1,56 @@
-# 当前阶段：StableArgMax 尾部边界验证
+# 当前阶段：将 StableArgMax 接入完整 Draft
 
-2026-11-05：Qwen `[1,15,248320]` 的七组上板验证全部通过，70次输出逐字节一致且重复稳定，保留单NPU子图。同步API总均值约 **1.232ms**，范围0.922–1.695ms；完整Draft尚未接入。详情见[结果](results.md)。
+2026-11-05：单算子两种shape共11组、110次输出全部INT32精确一致、重复稳定。Qwen配置同步API均值1.232ms；17×8193尾部配置0.515ms。两轮均为单NPU子图，详情见[结果](results.md)。单算子验证已收敛。
 
-Qwen基线保留在 `draft/tests/stable-arg-max-ge-config`，原任务已完成、锁已释放，无需重跑。下一步只补 `[17,8193]`：同时覆盖16＋1行输出、8192＋1元素尾块和未对齐行起点。复用当前算子，不重建allops；新shape需要一份新AIR/OMC，四组输入共用。
+本阶段在现有C16／cap192／K15、host embedding候选上选择 `StableArgMax`。权重、attention、hidden和KV计算保持原表达；使用有限FP16 logits，并列取最小索引。新的Torch导出接线已通过主机检查，完整AIR／OMC及板端结果待验证。产物放固定候选目录，现有运行模型继续保留。
 
 ## 用户现在执行什么
 
-在已有DDK/HDC环境的服务器执行。`REPO_DIR`为仓库；`CANN_ROOT`为此前使用的GE SDK；其他路径沿用项目配置。`VECTOR_CONFIG`保留刚才成功的设备配置，未设置时默认公共runtime配置。
+先将两台服务器仓库更新到最新版本。以下 `REPO_DIR`、`AI_RUN_DIR` 及SDK路径沿用各自项目配置；`draft/source/prepared` 为已准备的FP16权重。无需重建allops或重复单算子测试。
+
+**权重服务器（已有TorchAir环境）**：导出一次完整Draft。
 
 ```bash
 source "$REPO_DIR/targets/cpro/scripts/env.sh"
-export OP_DIR="$REPO_DIR/targets/cpro/ops/draft-top1"
-export VECTOR_CONFIG="${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
 
-python3 "$OP_DIR/scripts/stable_arg_max_ge.py" \
-  --shape 17 8193 --ge-root "$CANN_ROOT" \
+python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
+  --prepared "$AI_RUN_DIR/draft/source/prepared" --frontend pytorch \
+  --optimization packed-spatial-host-embedding --top1 stable-arg-max \
+  --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 \
+  --output "$AI_RUN_DIR/draft/tests/top1-integration/export"
+```
+
+需要返回 `PYTORCH_DRAFT_AIR_EXPORTED`，17输入／14输出。导出检查要求一个 `StableArgMax` 直接连接token输出、无原生ArgMax；缺失的中间shape交给OMG推导，明确冲突会拒绝。将整个 `draft/tests/top1-integration/export` 文件夹（含 `weight/` 和元数据）复制到DDK服务器对应位置。
+
+**DDK服务器（无需TorchAir）**：复用已安装的StableArgMax及TBE诊断，编译候选。
+
+```bash
+source "$REPO_DIR/targets/cpro/scripts/env.sh"
+
+python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
+  --air-export "$AI_RUN_DIR/draft/tests/top1-integration/export" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/stable-arg-max-tail/compiled"
+  --output "$AI_RUN_DIR/draft/tests/top1-integration/compiled"
 ```
 
-返回 `COMPILED` 后启动四组边界输入，每组3次预热＋10次测量：
+需要 `PYTORCH_DRAFT_OMC_COMPILED`，且 `top1_placement.status=NPU_OUTPUT_BOUNDARY_PASSED`。该检查确认token的INT32输出直接来自NPU任务；它不证明整图所有算子均在NPU或内部指令精度。
+
+**编译通过后，同一DDK／HDC服务器**：运行完整Draft数值对照，沿用原容差。配置须提供此前成功的设备连接及运行器，默认公共 `runtime/runtime.json`。
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$AI_RUN_DIR/draft/tests/stable-arg-max-tail/compiled" \
+export VECTOR_CONFIG="${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
+
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --compiled "$AI_RUN_DIR/draft/tests/top1-integration/compiled" \
+  --air-export "$AI_RUN_DIR/draft/tests/top1-integration/export" \
+  --source "$AI_RUN_DIR/draft/source/prepared" \
   --ddk-root "$CPRO_DDK_ROOT" --config "$VECTOR_CONFIG" \
-  --output "$AI_RUN_DIR/draft/tests/stable-arg-max-tail/run" --apply
+  --output "$AI_RUN_DIR/draft/tests/top1-integration/run" --apply
+
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$AI_RUN_DIR/draft/tests/top1-integration/run" \
+  --output "$AI_RUN_DIR/draft/tests/top1-integration/result"
 ```
 
-启动确认后回收同一次请求：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$AI_RUN_DIR/draft/tests/stable-arg-max-tail/run" \
-  --output "$AI_RUN_DIR/draft/tests/stable-arg-max-tail/result"
-```
-
-`PENDING`时继续回收原请求，不重复启动。通过条件：四组first_last/equal/tile_ties/subnormal的40次输出全部INT32精确一致、重复稳定且无执行错误。这只补该shape的边界证据，其他未测shape和整模型不继承通过。
+出现PENDING时继续回收同一请求。验证包含独立输入与连续KV反馈，golden仍由原模型产生；检查Top1、hidden和每层KV。旧完整Draft已有数值失败，单算子通过不会消除这些偏差，本轮也不放宽门槛。回传导出、编译和最终验证摘要后，再判断整图落点、精度与实测延迟。

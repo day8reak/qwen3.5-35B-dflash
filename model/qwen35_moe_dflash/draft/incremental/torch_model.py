@@ -28,7 +28,7 @@ def reference_rms(x, gamma, epsilon):
 class IncrementalDraft(nn.Module):
     def __init__(self, draft, embedding, head, *, context_rows=16, cache_capacity=192,
                  max_draft_tokens=15, rms=reference_rms, attention_kernel=None,
-                 optimization='baseline'):
+                 optimization='baseline', top1_kernel=None):
         super().__init__()
         self.config = c = draft.config
         _validate(c, context_rows, cache_capacity, True, max_draft_tokens)
@@ -38,6 +38,7 @@ class IncrementalDraft(nn.Module):
         self.draft, self.embedding, self.head = draft, None if self.host_embedding else embedding, head
         self.context_rows, self.capacity, self.k = context_rows, cache_capacity, max_draft_tokens
         self.rms = rms
+        self.top1_kernel = top1_kernel
         self.optimization = optimization_contract(optimization)
         self.packed = optimization != 'baseline'
         self.spatial_projection = self.host_embedding or optimization in ('packed-spatial', 'packed-spatial-4d', 'packed-spatial-controls', 'packed-spatial-rope-table')
@@ -266,7 +267,9 @@ class IncrementalDraft(nn.Module):
                 mlp = layer.mlp(mlp_input)
             hidden = (hidden.float() + mlp.float()).half()
         hidden = self.norm(hidden, self.draft.norm)[:, 1:, :]
-        top1 = self.head(hidden).argmax(dim=-1).to(torch.int32)
+        logits = self.head(hidden)
+        top1 = (logits.argmax(dim=-1).to(torch.int32) if self.top1_kernel is None
+                else self.top1_kernel(logits))
         return (top1, hidden, *updated)
 
     def attention_contract(self):
@@ -304,7 +307,7 @@ class IncrementalDraft(nn.Module):
 
 
 def load_prepared(prepared, *, context_rows=16, cache_capacity=192, max_draft_tokens=15,
-                  rms=reference_rms, attention_kernel=None, optimization='baseline'):
+                  rms=reference_rms, attention_kernel=None, optimization='baseline', top1_kernel=None):
     """Map existing standalone FP16 files; do not load the Target decoder."""
     import json
     root = Path(prepared).resolve(strict=True)
@@ -334,4 +337,5 @@ def load_prepared(prepared, *, context_rows=16, cache_capacity=192, max_draft_to
         setattr(owner.get_submodule(parent) if parent else owner, attribute, nn.Parameter(tensor, requires_grad=False))
     return IncrementalDraft(draft, embedding, head, context_rows=context_rows,
                             cache_capacity=cache_capacity, max_draft_tokens=max_draft_tokens,
-                            rms=rms, attention_kernel=attention_kernel, optimization=optimization).eval()
+                            rms=rms, attention_kernel=attention_kernel, optimization=optimization,
+                            top1_kernel=top1_kernel).eval()

@@ -24,6 +24,8 @@ def main(argv=None):
     parser.add_argument('--optimization', choices=POLICIES, default='baseline',
                         help='PyTorch candidate; packed-spatial-host-embedding keeps the RoPE phase table and replaces the anchor ID with original FP16 block embeddings')
     parser.add_argument('--torchair-pb2', help='installed TorchAir literal schema; normally discovered automatically')
+    parser.add_argument('--top1', choices=('native', 'stable-arg-max'), default='native',
+                        help='PyTorch Top1 backend; stable-arg-max requires the installed finite-FP16 custom operator')
     parser.add_argument('--replace', action='store_true', help='replace a finished AIR bundle after successful PyTorch export/import')
     parser.add_argument('--context-rows', type=int, choices=(16, 64), default=16)
     parser.add_argument('--cache-capacity', type=int, default=192)
@@ -36,6 +38,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.optimization != 'baseline' and (args.frontend != 'pytorch' or not args.prepared):
         parser.error('--optimization requires --frontend pytorch --prepared')
+    if args.top1 != 'native' and (args.frontend != 'pytorch' or not args.prepared):
+        parser.error('--top1 requires --frontend pytorch --prepared')
     if not args.inspect_air and not args.output:
         parser.error('--output is required for export/import')
     if args.inspect_air and (args.output or args.replace):
@@ -65,7 +69,7 @@ def main(argv=None):
             from qwen35_moe_dflash.draft.incremental.torch_export import export_pytorch
             result = export_pytorch(args.prepared, args.output, context_rows=args.context_rows,
                 cache_capacity=args.cache_capacity, max_draft_tokens=args.max_draft_tokens,
-                replace=args.replace, torchair_pb2=args.torchair_pb2, optimization=args.optimization,
+                replace=args.replace, torchair_pb2=args.torchair_pb2, optimization=args.optimization, top1=args.top1,
                 progress=lambda value: print('pytorch-draft: ' + value, flush=True))
             shown = {k: v for k, v in result.items() if k not in ('inputs', 'outputs')}
             shown.update(input_count=len(result.get('inputs', [])), output_count=len(result.get('outputs', [])))

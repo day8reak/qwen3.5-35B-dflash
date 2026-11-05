@@ -65,7 +65,8 @@ def main(argv=None):
             'compiled_precision', 'compiled_abi', 'device_execution', 'numerical_validation',
             'runtime_integration', 'full_loop_smoke', 'weight_files_copied', 'graphop_counts',
             'interface_inspection', 'interface_error', 'air_preparation', 'attention', 'composed_attention',
-            'optimization', 'projection', 'host_embedding', 'compiler_options', 'partition_weights', 'omc', 'error', 'compilation_diagnostics', 'next')
+            'optimization', 'projection', 'host_embedding', 'top1', 'top1_placement', 'installation',
+            'compiler_options', 'partition_weights', 'omc', 'error', 'compilation_diagnostics', 'next')
         shown = {k: result[k] for k in keys if k in result}
         shown.update(input_count=len(result.get('inputs', [])), output_count=len(result.get('outputs', [])),
             manifest=result.get('manifest', str(Path(args.output).absolute() / 'manifest.json')))

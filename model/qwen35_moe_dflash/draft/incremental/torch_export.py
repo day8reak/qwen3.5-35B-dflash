@@ -111,7 +111,7 @@ def _completed_air(folder):
         raise ValueError('import requires a completed PyTorch Draft AIR bundle')
     schema = _schema((folder / 'air-schema.pb').read_bytes(), manifest['schema'])
     observed = inspect_air(folder / 'export.air', schema, expected_norms=32, require_int32_indices=True,
-                           expected_attention=manifest.get('attention'))
+                           expected_attention=manifest.get('attention'), expected_top1=manifest.get('top1'))
     _check_weight_storage(folder, manifest, observed)
     recorded = json.loads((folder / 'air-inspection.json').read_text())
     if (len(manifest.get('inputs', [])) != 17 or len(manifest.get('outputs', [])) != 14
@@ -209,7 +209,7 @@ def finalize_pytorch_air(source, output, *, replace=False):
                 _replaceable_air(destination, replace)
             inspection = inspect_air(source / 'export.air',
                 _schema((source / 'air-schema.pb').read_bytes(), result['schema']),
-                expected_norms=32, require_int32_indices=True, expected_attention=result['attention'])
+                expected_norms=32, require_int32_indices=True, expected_attention=result['attention'], expected_top1=result.get('top1'))
             _check_weight_storage(source, result, inspection)
             if (len(result.get('inputs', [])) != 17 or len(result.get('outputs', [])) != 14
                     or inspection['input_count'] != 17 or inspection['output_counts'] != [14]
@@ -275,7 +275,7 @@ def _schema(descriptor, metadata):
 
 
 def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False,
-                expected_attention=None, strict=True):
+                expected_attention=None, expected_top1=None, strict=True):
     """Read only graph metadata and sidecar extents, without loading weight data."""
     from qwen35_moe_dflash.target.original_air_roundtrip import _decode, _attributes, MAX_AIR_BYTES
     path = Path(air)
@@ -404,10 +404,12 @@ def inspect_air(air, schema, *, expected_norms=None, require_int32_indices=False
     if composed:
         from .torch_attention_inspect import inspect_composed_attention
         composed_attention = inspect_composed_attention(nodes, expected_attention, types, mismatch)
+    from .top1 import inspect_source
+    top1 = inspect_source(nodes, expected_top1, desc, mismatch, deferred_shapes)
     inputs = [n for n in nodes if n['type'] == 'Data']
     outputs = [n for n in nodes if n['type'] == 'NetOutput']
     result = dict(node_types=dict(counts), rms=norms, gather_indices=gathers, attention=attention,
-                composed_attention=composed_attention, zeros_like=zeros, weight_files=sidecars,
+                composed_attention=composed_attention, top1=top1, zeros_like=zeros, weight_files=sidecars,
                 validation_status='FAILED' if errors else 'PASSED_WITH_DEFERRED_SHAPES' if deferred_shapes else 'PASSED',
                 validation_errors=errors, deferred_shapes=deferred_shapes,
                 input_count=len(inputs), output_counts=[len(n.get('input_desc', [])) for n in outputs],
@@ -424,7 +426,7 @@ def inspect_pytorch_air(directory):
     if manifest.get('artifact_kind') != AIR_KIND:
         raise ValueError('expected a retained PyTorch Draft AIR export directory')
     inspection = inspect_air(root / 'export.air', _schema((root / 'air-schema.pb').read_bytes(), manifest['schema']),
-        expected_norms=32, require_int32_indices=True, expected_attention=manifest.get('attention'), strict=False)
+        expected_norms=32, require_int32_indices=True, expected_attention=manifest.get('attention'), expected_top1=manifest.get('top1'), strict=False)
     errors = inspection['validation_errors']
     first = next((node for node in inspection['attention'] if errors and node['name'] == errors[0]['node']),
                  inspection['attention'][0] if inspection['attention'] else None)
@@ -435,17 +437,20 @@ def inspect_pytorch_air(directory):
         deferred_shape_count=len(inspection['deferred_shapes']), deferred_shapes=inspection['deferred_shapes'],
         attention_nodes=len(inspection['attention']), first_attention=first,
         composed_attention=inspection['composed_attention'],
-        zeros_like=inspection['zeros_like'],
+        top1=inspection['top1'], zeros_like=inspection['zeros_like'],
         node_types=inspection['node_types'], input_count=inspection['input_count'], output_counts=inspection['output_counts'],
-        weight_files=len(inspection['weight_files']), expected_attention=manifest.get('attention'),
+        weight_files=len(inspection['weight_files']), expected_attention=manifest.get('attention'), expected_top1=manifest.get('top1'),
         scope='READ_ONLY_RETAINED_AIR; PRODUCER_DESCRIPTORS_ARE_DIAGNOSTIC_ONLY_NOT_SUBSTITUTED',
         model_export='NOT_RUN', model_compilation='NOT_RUN', device_execution='NOT_RUN')
 
 
 def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max_draft_tokens=15,
-                   replace=False, torchair_pb2=None, progress=print, optimization='baseline'):
+                   replace=False, torchair_pb2=None, progress=print, optimization='baseline', top1='native'):
     from .optimization import optimization_contract
     contract = optimization_contract(optimization)
+    from . import top1 as top1_adapter
+    if top1 not in top1_adapter.POLICIES:
+        raise ValueError('unknown Draft Top1 policy: ' + str(top1))
     from qwen35_moe_dflash.toolchain.export import require_torchair
     torchair = require_torchair()
     import torch
@@ -453,6 +458,7 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
     # Keep the installed RMS converter. Attention exports ordinary Torch
     # MatMul/Select/Softmax operations; do not register the failed fused call.
     rms = torch.ops.npu.npu_rms_norm.default
+    top1_kernel = top1_adapter.register(torchair) if top1 == 'stable-arg-max' else None
     descriptor, metadata = _producer_schema(torchair_pb2)
     _disjoint(output, prepared)
     with _air_export_slot(output, prepared, replace) as root:
@@ -475,10 +481,12 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
                 raise OSError(f'AIR export needs at least {required} free bytes for weights and reserve')
             progress('loading Draft parameters and full vocabulary head from shared prepared FP16 weights')
             model = load_prepared(prepared, context_rows=context_rows, cache_capacity=cache_capacity,
-                                  max_draft_tokens=max_draft_tokens, rms=rms, optimization=optimization)
+                                  max_draft_tokens=max_draft_tokens, rms=rms, optimization=optimization,
+                                  top1_kernel=top1_kernel)
             result.update(**model.abi(), schema={k: metadata[k] for k in ('schema_file', 'schema_package')},
                 torch_version=torch.__version__, torchair_version=getattr(torchair, '__version__', 'unknown'),
                 attention=model.attention_contract(),
+                top1=top1_adapter.contract(top1, [1, max_draft_tokens, model.config.vocab_size]),
                 optimization=contract, projection=contract['projection'], stage='torchair-export')
             _save(root / 'manifest.json', result)
             (root / 'air-schema.pb').write_bytes(descriptor)
@@ -501,7 +509,7 @@ def export_pytorch(prepared, output, *, context_rows=16, cache_capacity=192, max
                     (root / 'weight' / name).replace(root / name)
             result['stage'] = 'air-validation'
             inspection = inspect_air(root / 'export.air', _schema(descriptor, metadata),
-                                     expected_norms=32, require_int32_indices=True, expected_attention=result['attention'])
+                                     expected_norms=32, require_int32_indices=True, expected_attention=result['attention'], expected_top1=result.get('top1'))
             validate_external_weights(inspection, storage)
             if inspection['input_count'] != 17 or inspection['output_counts'] != [14]:
                 raise ValueError('TorchAir source boundary does not contain all 17 inputs / 14 outputs')
@@ -619,7 +627,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
     descriptor = (source / 'air-schema.pb').read_bytes()
     schema = _schema(descriptor, metadata)
     inspection = inspect_air(source / 'export.air', schema,
-                             expected_norms=32, require_int32_indices=True, expected_attention=manifest.get('attention'))
+                             expected_norms=32, require_int32_indices=True, expected_attention=manifest.get('attention'), expected_top1=manifest.get('top1'))
     _check_weight_storage(source, manifest, inspection)
     def prepare_air(raw):
         from .air_reshape import fold_reshape_chains
@@ -643,7 +651,7 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
         return prepared, evidence
     with _slot(output, OMC_KIND, replace) as root:
         result = {k: manifest[k] for k in ('context_rows', 'cache_capacity', 'max_draft_tokens', 'inputs', 'outputs', 'rms', 'gamma')}
-        for key in ('attention', 'optimization', 'projection', 'host_embedding', 'weight_storage'):
+        for key in ('attention', 'optimization', 'projection', 'host_embedding', 'weight_storage', 'top1'):
             if key in manifest:
                 result[key] = manifest[key]
         result.update(artifact_kind=OMC_KIND, status='COMPILING', stage='compile', frontend='pytorch',
@@ -656,6 +664,11 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             result['compiler_options'] = dict(limit_partition_size=limit_partition_size)
         _save(root / 'manifest.json', result)
         try:
+            if manifest.get('top1', {}).get('policy') == 'stable-arg-max':
+                from .top1 import inspect_installation
+                result['stage'] = 'installation-preflight'
+                progress('Checking selected DDK StableArgMax wrapper before weight snapshots')
+                result['installation'] = inspect_installation(ddk_root)
             transform = None
             if manifest.get('attention', {}).get('policy') in {'target-cpro-fused-attention-v1', COMPOSED_ATTENTION}:
                 # Validate the small source graph before copying multi-GB
@@ -703,9 +716,13 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                 result['graphop_counts'] = observed['graphop_counts']
                 result['partition_weights'] = _partition_weights(observed)
                 result['interface_inspection'] = 'OBSERVED'
+                if manifest.get('top1', {}).get('policy') == 'stable-arg-max':
+                    from .top1 import inspect_compiled
+                    result['top1_placement'] = inspect_compiled(observed, manifest['top1'])
             except (OSError, ValueError, KeyError) as error:
                 result.update(interface_inspection='UNAVAILABLE', interface_error=str(error))
-                if manifest.get('attention', {}).get('policy') == COMPOSED_ATTENTION:
+                if (manifest.get('attention', {}).get('policy') == COMPOSED_ATTENTION
+                        or manifest.get('top1', {}).get('policy') == 'stable-arg-max'):
                     raise
             if manifest.get('attention', {}).get('policy') == COMPOSED_ATTENTION:
                 result['composed_attention'] = dict(source_layers=len(inspection['composed_attention']),

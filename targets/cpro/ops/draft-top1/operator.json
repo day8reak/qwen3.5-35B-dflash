@@ -33,7 +33,7 @@
     "toolchain_identity": "USER_REPORTED_CPRO_100.520.020.010_WRAPPER_HASH_RECORDED; FULL_ARCHIVE_PENDING"
   },
   "model_replacement": {
-    "summary": "Generic static last-axis finite FP16 Top1; Qwen fixed-shape acceptance configuration; no full Draft integration",
+    "summary": "Generic static finite FP16 last-axis Top1; optional PyTorch Draft terminal ArgMax replacement, full-model target validation pending",
     "inputs": [
       {
         "name": "x",
@@ -55,7 +55,9 @@
         ]
       }
     ],
-    "replaced_nodes": [],
+    "replaced_nodes": [
+      "OPTIONAL_DRAFT_LOGITS_ARGMAX_AND_INT32_CAST"
+    ],
     "excluded_semantics": [
       "NaN/Inf input",
       "TopK",
@@ -126,7 +128,7 @@
     "validation": "docs/VALIDATION.md"
   },
   "validation": {
-    "experience_audit": "docs/LESSONS.md; scoped observations recorded; no shared skill change",
+    "experience_audit": "docs/LESSONS.md; tail geometry acceptance and scoped model integration checks recorded; no shared skill promotion",
     "gates": {
       "environment": "PASS",
       "static_audit": "PASS",
@@ -143,7 +145,7 @@
       "real_model": "PENDING",
       "hardware_latency": "PENDING"
     },
-    "scope": "HOST_VALIDATED_AND_USER_REPORTED_QWEN_SHAPE_DEVICE_EXACT_STABLE; OTHER_SHAPES_FULL_MODEL_AND_PERFORMANCE_OPTIMIZATION_PENDING",
+    "scope": "USER_REPORTED_QWEN_AND_17X8193_DEVICE_EXACT_STABLE; FULL_MODEL_AND_GENERAL_RELEASE_PENDING",
     "host_evidence": {
       "run_id": "20261104T083807Z-10795-c00fd7",
       "reports": {
@@ -183,9 +185,9 @@
       "main_operations_outside_tasks": [],
       "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
       "numerical_validation": "PASSED",
-      "next": "PRESERVE_QWEN_BASELINE; VALIDATE_17X8193_TAIL_WITH_SAME_OPERATOR_SOURCE",
-      "completed_cases": 7,
-      "measured_calls": 70,
+      "next": "SINGLE_OPERATOR_PROBES_CLOSED; FULL_DRAFT_INTEGRATION_PENDING",
+      "completed_cases": 11,
+      "measured_calls": 110,
       "repeat_bitwise_stable": true,
       "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION"
     },
@@ -243,12 +245,16 @@
       "scope": "USER_REPORT_ONLY; NO_DEVICE_EXECUTION_OR_NUMERICAL_RESULT"
     },
     "documentation_evidence": {
-      "run_id": "20261105T020607Z-23101-092df2",
+      "run_id": "20261105T021938Z-23422-d80bfd",
       "report": "evidence/documentation-check.json",
-      "shell_blocks": 6,
-      "local_links": 17,
-      "source_hashes_unchanged": true,
-      "scope": "DOCS_STATE_MEASUREMENT_ARITHMETIC_ONLY; NO_NEW_MODEL_OR_DEVICE_EXECUTION"
+      "python_files": 6,
+      "shell_blocks": 11,
+      "local_links": 19,
+      "frozen_operator_source_unchanged": true,
+      "measured_calls": 110,
+      "checked_indices": 1730,
+      "tail_mean_ms": 0.51495,
+      "scope": "DOCS_STATE_SYNTAX_AND_SOURCE_IDENTITY; NO_NEW_DEVICE_EXECUTION"
     },
     "device_evidence": {
       "run_id": "20261105T020607Z-23101-092df2",
@@ -267,6 +273,34 @@
       "repeat_bitwise_stable": true,
       "model_association": "PREVIOUS_USER_COMPILE_AND_SAME_EXECUTION_DIRECTORY; RECOVERY_SUMMARY_OMITS_MODEL_DIGEST",
       "on_board_scope": "QWEN_STATIC_SHAPE_SEVEN_FINITE_FP16_FIXTURES_ONLY; GENERIC_SHAPE_GATE_NOT_COMPLETE"
+    },
+    "tail_device_evidence": {
+      "run_id": "20261105T021938Z-23422-d80bfd",
+      "report": "evidence/user-tail-summary.json",
+      "provenance": "USER_PASTED_RECOVERY_SUMMARY; NOT_INDEPENDENTLY_RETRIEVED",
+      "shape": [
+        17,
+        8193
+      ],
+      "shape_source": "DOCUMENTED_COMPILE_COMMAND; RECOVERY_SUMMARY_OMITS_SHAPE",
+      "model_sha256": null,
+      "board_attempt": "qwen35_vector_840699127bf2427eb5552d6eecf3b49a",
+      "execution_cases": 4,
+      "measured_calls": 40,
+      "compared_indices": 680,
+      "repeat_bitwise_stable": true,
+      "mismatched_elements_all_calls": 0,
+      "aggregate_mean_ms": 0.51495,
+      "timing_scope": "SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_BETWEEN_CALLS_EXCLUDED"
+    },
+    "integration_host_evidence": {
+      "run_id": "20261105T021938Z-23422-d80bfd",
+      "report": "evidence/integration-check.json",
+      "checks": 21,
+      "scope": "REDUCED_WIDTH_SIX_LAYER_CPU_AND_REAL_PT2_EXPORT; NO_VENDOR_OR_FULL_WEIGHT_DEVICE_RESULT",
+      "tool_report": "evidence/integration-tool-check.json",
+      "tool_checks": 9,
+      "total_checks": 30
     }
   },
   "performance": {
@@ -291,7 +325,7 @@
     "optimized_on_board_evidence": "PENDING",
     "final_roofline": "PENDING",
     "roofline_status": "PENDING_MATCHING_X90_PROFILE; NO_FABRICATED_CAPACITY",
-    "convergence_reason": "QWEN_CORRECTNESS_BASELINE_FROZEN; TAIL_AND_GENERAL_RELEASE_GATES_PENDING; NO_OPTIMIZATION_PROMOTION",
+    "convergence_reason": "TWO_SHAPE_CORRECTNESS_BASELINES_FROZEN; INTEGRATION_AND_GENERAL_RELEASE_PENDING; NO_OPTIMIZATION_PROMOTION",
     "baseline_measurement": {
       "aggregate_mean_ms": 1.231842857142857,
       "min_ms": 0.922,
@@ -312,9 +346,9 @@
     "host_reference": "IMPLEMENTED_HOST_VALIDATED",
     "fixture_and_compare": "IMPLEMENTED_HOST_VALIDATED",
     "selected_ddk_collector": "IMPLEMENTED_SYNTHETIC_HOST_VALIDATED",
-    "kernel": "QWEN_SHAPE_USER_REPORTED_DEVICE_PASS; GENERIC_TAIL_VALIDATION_PENDING",
+    "kernel": "USER_REPORTED_QWEN_AND_17X8193_DEVICE_PASS; OTHER_GEOMETRIES_UNVERIFIED",
     "host_tiling": "USER_REPORTED_ALLOPS_INSTALLED_AND_OMG_COMPILED",
-    "framework_registration": "TORCH_SCHEMA_META_GE_CONVERTER_HOST_VALIDATED; REAL_GE_CPP_AIR_AND_OMG_USER_REPORTED; FULL_MODEL_PENDING",
+    "framework_registration": "OPTIONAL_FULL_DRAFT_TORCH_EXPORT_WIRED_AND_HOST_CHECKED; VENDOR_FULL_MODEL_PENDING",
     "build": "USER_REPORTED_ALLOPS_INSTALL_AND_OMG_PASSED",
     "topk": "NOT_IMPLEMENTED_USER_SELECTED_TOP1_FIRST",
     "ascend310p": "NOT_REGISTERED; FUTURE_DEVICE_ADAPTER_REQUIRED"

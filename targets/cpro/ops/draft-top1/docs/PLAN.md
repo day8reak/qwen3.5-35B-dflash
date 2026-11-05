@@ -9,20 +9,16 @@
 | Operator | draft-top1 |
 | Branch | operator/draft-top1 |
 | Current phase | 4 |
-| Based-on revision | 53517f9f7aa53859dca92fb3f153b5bdfecc59d7 |
-| Updated UTC | 2026-11-05T02:11:30Z |
-| Summary | Qwen-shaped StableArgMax device baseline passed: 7 cases, 70 measured calls exact and stable; remaining tail geometry is user-operated. |
-| Blocker | Awaiting user-operated 17x8193 tail result; independent-copy and broader shape/release gates remain unverified. Qwen baseline is passed, not blocked. |
-| Active files | docs/VALIDATION.md<br>docs/OPTIMIZATION.md<br>docs/LESSONS.md<br>operator.json<br>docs/current-status.md<br>docs/results.md |
-| Recorded working tree (PLAN excluded) |  M docs/README.md<br> M docs/current-status.md<br> M docs/results.md<br> M specs/dflash-execution-state.json<br> M targets/cpro/ops/draft-top1/README.md<br> M targets/cpro/ops/draft-top1/docs/LESSONS.md<br> M targets/cpro/ops/draft-top1/docs/OPTIMIZATION.md<br> M targets/cpro/ops/draft-top1/docs/VALIDATION.md<br> M targets/cpro/ops/draft-top1/operator.json |
+| Based-on revision | 1ad947852d8d254a4ce15d0383e2580dfb9f093f |
+| Updated UTC | 2026-11-05T02:29:45Z |
+| Summary | Qwen and 17x8193 standalone gates passed: 11 cases, 110 calls exact and stable; full Draft optional export wiring is host-ready. |
+| Blocker | Only wider release/independent-copy and real-model integration gates remain; user-operated full model results pending, not another standalone probe. |
+| Active files | model/qwen35_moe_dflash/draft/incremental/top1.py<br>model/qwen35_moe_dflash/draft/incremental/torch_model.py<br>model/qwen35_moe_dflash/draft/incremental/torch_export.py<br>docs/current-status.md<br>docs/results.md<br>operator.json |
+| Recorded working tree (PLAN excluded) |  M docs/README.md<br> M docs/current-status.md<br> M docs/results.md<br> M docs/run-end-to-end.md<br> M model/qwen35_moe_dflash/draft/incremental/torch_abi.py<br> M model/qwen35_moe_dflash/draft/incremental/torch_export.py<br> M model/qwen35_moe_dflash/draft/incremental/torch_model.py<br> M specs/dflash-execution-state.json<br> M specs/model-workflow.json<br> M targets/cpro/ops/draft-top1/README.md<br> M targets/cpro/ops/draft-top1/docs/LESSONS.md<br> M targets/cpro/ops/draft-top1/docs/OPTIMIZATION.md<br> M targets/cpro/ops/draft-top1/docs/VALIDATION.md<br> M targets/cpro/ops/draft-top1/operator.json<br> M targets/cpro/scripts/compile_incremental_draft.py<br> M targets/cpro/scripts/export_incremental_draft.py<br>?? model/qwen35_moe_dflash/draft/incremental/top1.py |
 
 ## Exact next commands
 
-- `source "$REPO_DIR/targets/cpro/scripts/env.sh"`
-- `export OP_DIR="$REPO_DIR/targets/cpro/ops/draft-top1"; export VECTOR_CONFIG="${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"`
-- `python3 "$OP_DIR/scripts/stable_arg_max_ge.py" --shape 17 8193 --ge-root "$CANN_ROOT" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" --output "$AI_RUN_DIR/draft/tests/stable-arg-max-tail/compiled"`
-- `python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" --compiled "$AI_RUN_DIR/draft/tests/stable-arg-max-tail/compiled" --ddk-root "$CPRO_DDK_ROOT" --config "$VECTOR_CONFIG" --output "$AI_RUN_DIR/draft/tests/stable-arg-max-tail/run" --apply`
-- `python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" --recover "$AI_RUN_DIR/draft/tests/stable-arg-max-tail/run" --output "$AI_RUN_DIR/draft/tests/stable-arg-max-tail/result"`
+- `python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" --prepared "$AI_RUN_DIR/draft/source/prepared" --frontend pytorch --optimization packed-spatial-host-embedding --top1 stable-arg-max --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 --output "$AI_RUN_DIR/draft/tests/top1-integration/export"`
 
 ## Phase table
 
@@ -32,7 +28,7 @@
 | 1 | Contract and baseline | COMPLETED | Interface, semantics, rejection behavior, deterministic golden, and baseline are frozen | Generic finite FP16 last-axis StableArgMax contract and host acceptance frozen.<br>63 actual-source control-flow/Torch export checks, 35 reference checks, 11 project preparation checks and 9 text-handoff checks pass. Vendor build/device unverified.<br>Evidence: 20261104T083807Z-10795-c00fd7/evidence/source-check-2/source-validation.json; 20261104T083807Z-10795-c00fd7/evidence/prepare-check/validation.json | User copies sources, prepares project with selected X90 msopgen and runs vendor build/install. | — |
 | 2 | Environment | COMPLETED | Environment identity, dependency locks, setup, and preflight are reproducible | User-selected DDK path now generates and resolves the wrapper and successfully compiles the retained AIR.<br>Selected allops INI has StableArgMax; wrapper hash recorded; TBE APPLIED; DDK 100.520.020.010 OMG passed. Full toolchain archival and independent reproduction remain pending.<br>Evidence: 20261105T015409Z-22517-5473bc/evidence/user-compilation-summary.json | Record minimal implementation compile/ABI completion, then validate device correctness. | — |
 | 3 | Development | COMPLETED | Smallest correct host, kernel/device, framework, build, golden, and compare paths work | Minimal host/kernel/GE build path completed for Qwen shape; device correctness baseline remains unverified.<br>User OMC 2e76eda684ae0a4ac201af1c1ba511ca6b84e864a698193cfd1cfdfc1de2598f: NPUCL=1, correct public shape/dtype, no CPU or unassigned main computation; retained host reference/export checks.<br>Evidence: 20261105T015409Z-22517-5473bc/evidence/user-compilation-summary.json; 20261105T014301Z-21974-f624b8/evidence/allops-config-check/validation.json | Validate exact INT32 outputs for seven device fixtures. | — |
-| 4 | Correctness validation | BLOCKED | Independent-copy, boundary, negative, integration, and on-board PASS or documented PENDING/N/A have evidence | Qwen-shaped StableArgMax device baseline passed: 7 cases, 70 measured calls exact and stable; remaining tail geometry is user-operated.<br>Mean API 1.231842857ms, min 0.922/max 1.695ms, no mismatches, all exits zero and lock released. Source hashes unchanged. Current docs/CLI/syntax/links and arithmetic checked; no local execution.<br>Evidence: 20261105T020607Z-23101-092df2/evidence/user-device-summary.json; 20261105T020607Z-23101-092df2/evidence/documentation-check.json | User compiles one 17x8193 model with the same installed operator, then executes its four fixtures and recovers the same request. Preserve passed Qwen model; no allops rebuild. | — |
+| 4 | Correctness validation | BLOCKED | Independent-copy, boundary, negative, integration, and on-board PASS or documented PENDING/N/A have evidence | Qwen and 17x8193 standalone gates passed: 11 cases, 110 calls exact and stable; full Draft optional export wiring is host-ready.<br>Tail four cases/40 calls/680 indices exact; mean API 0.51495 ms. Integration host checks 30 passed; kernel/host/schema code unchanged. No local vendor or board run.<br>Evidence: 20261105T021938Z-23422-d80bfd/evidence/user-tail-summary.json; 20261105T021938Z-23422-d80bfd/evidence/integration-check.json; 20261105T021938Z-23422-d80bfd/evidence/integration-tool-check.json; 20261105T021938Z-23422-d80bfd/evidence/documentation-check.json | Model owner proceeds with user-operated TorchAir full Draft export, selected-DDK compilation and original accuracy gates. Standalone probes are closed. | — |
 | 5 | Optimization | PENDING | Frozen baseline, one-hypothesis experiments, correctness reruns, and promotion decision are reproducible | — | — | — |
 | 6 | Packaging and delivery | PENDING | Release gates, whitelist, manifest, deterministic archive, hashes, and requested delivery pass | — | — | — |
 | 7 | Knowledge capture and handoff | PENDING | Lessons, traits, skill promotions, final state, and handoff are archived | — | — | — |
@@ -51,6 +47,7 @@
 - 2026-11-05T01:45:53Z: Observed allops uses ascend310b INI for wrapper generation. AddConfig ascend310b is packaging compatibility for this X90 workflow, not an Ascend device support claim; user owns build/install.
 - 2026-11-05T02:01:06Z: User requests current GitHub commands and lean docs. Current-stage page is the single next-action reference; historical detail remains in Git. No operator/runner/test implementation change.
 - 2026-11-05T02:11:30Z: Freeze existing Qwen OMC and exact operator source. One additional tail geometry covers 16+1 outputs, 8192+1 input tiles and odd row stride; do not repeat successful seven-case run or claim full Draft speedup.
+- 2026-11-05T02:29:45Z: Existing user authorization covers optional Draft Top1 integration. Keep original native rollback, finite FP16 contract, numerical thresholds, validated operator source and current runtime model.
 
 ## Machine-readable state
 
@@ -58,15 +55,15 @@
 ```json
 {
   "active_files": [
-    "docs/VALIDATION.md",
-    "docs/OPTIMIZATION.md",
-    "docs/LESSONS.md",
-    "operator.json",
+    "model/qwen35_moe_dflash/draft/incremental/top1.py",
+    "model/qwen35_moe_dflash/draft/incremental/torch_model.py",
+    "model/qwen35_moe_dflash/draft/incremental/torch_export.py",
     "docs/current-status.md",
-    "docs/results.md"
+    "docs/results.md",
+    "operator.json"
   ],
-  "based_on_revision": "53517f9f7aa53859dca92fb3f153b5bdfecc59d7",
-  "blocker": "Awaiting user-operated 17x8193 tail result; independent-copy and broader shape/release gates remain unverified. Qwen baseline is passed, not blocked.",
+  "based_on_revision": "1ad947852d8d254a4ce15d0383e2580dfb9f093f",
+  "blocker": "Only wider release/independent-copy and real-model integration gates remain; user-operated full model results pending, not another standalone probe.",
   "branch": "operator/draft-top1",
   "current_phase": "4",
   "decisions": [
@@ -81,14 +78,11 @@
     "2026-11-05T01:10:55Z: Reuse established selected-DDK TBE compatibility; retain kirinx90, no SDK edits, no host/kernel changes, no new builtin probe matrix.",
     "2026-11-05T01:45:53Z: Observed allops uses ascend310b INI for wrapper generation. AddConfig ascend310b is packaging compatibility for this X90 workflow, not an Ascend device support claim; user owns build/install.",
     "2026-11-05T02:01:06Z: User requests current GitHub commands and lean docs. Current-stage page is the single next-action reference; historical detail remains in Git. No operator/runner/test implementation change.",
-    "2026-11-05T02:11:30Z: Freeze existing Qwen OMC and exact operator source. One additional tail geometry covers 16+1 outputs, 8192+1 input tiles and odd row stride; do not repeat successful seven-case run or claim full Draft speedup."
+    "2026-11-05T02:11:30Z: Freeze existing Qwen OMC and exact operator source. One additional tail geometry covers 16+1 outputs, 8192+1 input tiles and odd row stride; do not repeat successful seven-case run or claim full Draft speedup.",
+    "2026-11-05T02:29:45Z: Existing user authorization covers optional Draft Top1 integration. Keep original native rollback, finite FP16 contract, numerical thresholds, validated operator source and current runtime model."
   ],
   "next_commands": [
-    "source \"$REPO_DIR/targets/cpro/scripts/env.sh\"",
-    "export OP_DIR=\"$REPO_DIR/targets/cpro/ops/draft-top1\"; export VECTOR_CONFIG=\"${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}\"",
-    "python3 \"$OP_DIR/scripts/stable_arg_max_ge.py\" --shape 17 8193 --ge-root \"$CANN_ROOT\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --tbe-diagnosis \"$AI_RUN_DIR/common/tbe-diagnosis\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-tail/compiled\"",
-    "python3 \"$REPO_DIR/targets/cpro/tools/validate_draft_vector.py\" --compiled \"$AI_RUN_DIR/draft/tests/stable-arg-max-tail/compiled\" --ddk-root \"$CPRO_DDK_ROOT\" --config \"$VECTOR_CONFIG\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-tail/run\" --apply",
-    "python3 \"$REPO_DIR/targets/cpro/tools/validate_draft_vector.py\" --recover \"$AI_RUN_DIR/draft/tests/stable-arg-max-tail/run\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-tail/result\""
+    "python3 \"$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py\" --prepared \"$AI_RUN_DIR/draft/source/prepared\" --frontend pytorch --optimization packed-spatial-host-embedding --top1 stable-arg-max --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 --output \"$AI_RUN_DIR/draft/tests/top1-integration/export\""
   ],
   "operator_id": "draft-top1",
   "phases": [
@@ -152,18 +146,20 @@
     },
     {
       "evidence": [
-        "20261105T020607Z-23101-092df2/evidence/user-device-summary.json",
-        "20261105T020607Z-23101-092df2/evidence/documentation-check.json"
+        "20261105T021938Z-23422-d80bfd/evidence/user-tail-summary.json",
+        "20261105T021938Z-23422-d80bfd/evidence/integration-check.json",
+        "20261105T021938Z-23422-d80bfd/evidence/integration-tool-check.json",
+        "20261105T021938Z-23422-d80bfd/evidence/documentation-check.json"
       ],
       "gate": "Independent-copy, boundary, negative, integration, and on-board PASS or documented PENDING/N/A have evidence",
       "id": "4",
       "knowledge_refs": [],
       "name": "Correctness validation",
-      "next_action": "User compiles one 17x8193 model with the same installed operator, then executes its four fixtures and recovers the same request. Preserve passed Qwen model; no allops rebuild.",
-      "result": "Mean API 1.231842857ms, min 0.922/max 1.695ms, no mismatches, all exits zero and lock released. Source hashes unchanged. Current docs/CLI/syntax/links and arithmetic checked; no local execution.",
+      "next_action": "Model owner proceeds with user-operated TorchAir full Draft export, selected-DDK compilation and original accuracy gates. Standalone probes are closed.",
+      "result": "Tail four cases/40 calls/680 indices exact; mean API 0.51495 ms. Integration host checks 30 passed; kernel/host/schema code unchanged. No local vendor or board run.",
       "status": "BLOCKED",
-      "summary": "Qwen-shaped StableArgMax device baseline passed: 7 cases, 70 measured calls exact and stable; remaining tail geometry is user-operated.",
-      "updated_utc": "2026-11-05T02:11:30Z"
+      "summary": "Qwen and 17x8193 standalone gates passed: 11 cases, 110 calls exact and stable; full Draft optional export wiring is host-ready.",
+      "updated_utc": "2026-11-05T02:29:45Z"
     },
     {
       "evidence": [],
@@ -202,19 +198,27 @@
       "updated_utc": ""
     }
   ],
-  "resume_summary": "Qwen-shaped StableArgMax device baseline passed: 7 cases, 70 measured calls exact and stable; remaining tail geometry is user-operated.",
+  "resume_summary": "Qwen and 17x8193 standalone gates passed: 11 cases, 110 calls exact and stable; full Draft optional export wiring is host-ready.",
   "schema_version": 1,
-  "updated_utc": "2026-11-05T02:11:30Z",
+  "updated_utc": "2026-11-05T02:29:45Z",
   "working_tree": [
     " M docs/README.md",
     " M docs/current-status.md",
     " M docs/results.md",
+    " M docs/run-end-to-end.md",
+    " M model/qwen35_moe_dflash/draft/incremental/torch_abi.py",
+    " M model/qwen35_moe_dflash/draft/incremental/torch_export.py",
+    " M model/qwen35_moe_dflash/draft/incremental/torch_model.py",
     " M specs/dflash-execution-state.json",
+    " M specs/model-workflow.json",
     " M targets/cpro/ops/draft-top1/README.md",
     " M targets/cpro/ops/draft-top1/docs/LESSONS.md",
     " M targets/cpro/ops/draft-top1/docs/OPTIMIZATION.md",
     " M targets/cpro/ops/draft-top1/docs/VALIDATION.md",
-    " M targets/cpro/ops/draft-top1/operator.json"
+    " M targets/cpro/ops/draft-top1/operator.json",
+    " M targets/cpro/scripts/compile_incremental_draft.py",
+    " M targets/cpro/scripts/export_incremental_draft.py",
+    "?? model/qwen35_moe_dflash/draft/incremental/top1.py"
   ]
 }
 ```
