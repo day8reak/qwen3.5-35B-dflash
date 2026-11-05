@@ -50,6 +50,15 @@ python3 "$OP_DIR/scripts/stable_arg_max_ge.py" \
 
 `result.json` 记录阶段和错误，`build.log` / `export.log` 是 GE 日志，`omc/compile.log` 是 OMG 日志，`placement-inspection.json` 核对实际公开 IO 和 CPU/NPU 归属。仅有 NPU GraphOp、无 CPU/未知归属/主图遗留计算时允许上板；此检查不证明 NPU 内部指令或设备正确性。
 
+编译失败时，终端和 `result.json` 保留原始错误及有长度上限的日志摘要。已有失败目录（包括旧脚本生成的目录）可直接只读检查，**不重跑编译、不要求当前源码哈希相同、不访问设备**：
+
+```bash
+python3 "$OP_DIR/scripts/stable_arg_max_ge.py" \
+  --inspect-compilation "$AI_RUN_DIR/draft/tests/stable-arg-max-ge"
+```
+
+检查命令的 `model_compilation=NOT_RUN` 指本次只读检查；原编译状态记录在 `source_model_compilation`。粘贴摘要即可，无需打包文件。仅有 OMG 退出码 1 不能判断根因；`prepare_allops.py` 的 `SOURCES_COPIED` 也不代表已经执行 allops 编译安装。
+
 其他选项：
 
 - `--shape 17 8193`：输出尾写与输入 tile 尾部检查，四组输入共用一份 OMC，使用另一个新输出目录。

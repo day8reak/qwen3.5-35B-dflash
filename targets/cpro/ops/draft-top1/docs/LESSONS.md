@@ -1,5 +1,7 @@
 # Lessons and evidence scope
 
+- 2026-11-05用户已走通GE入口到OMG，但旧入口只向终端抛CalledProcessError，隐藏了现有compiler日志。修复为输出原错误、失败阶段与有界日志摘要，并提供 `--inspect-compilation` 只读旧目录；不要求重导AIR/重编译来收集证据。33项主机检查覆盖此行为。OMG退出码1不是根因，allops源码一致不是构建安装成功。没有据此改kernel或认定DDK不支持。
+
 - 2026-11-05，用户确认DDK服务器已有allops且没有TorchAir，权重服务器才有TorchAir。默认工作流改为向既有工程复制三个host/kernel文件，使用GE C++构造单节点AIR测试；Torch schema/Meta/converter留在权重侧。不能把框架导出依赖当成算子编译前提，也不重建多算子工程。
 - 复用模型已有GE emitter、OMG隔离环境、OMC ABI/归属检查、上板启动/回收协议。每个shape只编译一份OMC，不因七组输入重复编译。DDK入口在禁用所有Torch系列导入的主机测试中通过；实际SDK和设备仍待用户执行。源码准备成功、GE主机程序成功、OMG成功、上板数值通过是独立阶段。
 - 本次经验已落入ENVIRONMENT/README及test_ddk_workflow.py；未提升为共享平台能力规则，因为allops部署和服务器分工是本项目配置。未解决假设仍是所选DDK兼容性、kernel真实执行及性能，没有新设备支持结论。

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Host workflow tests with forbidden Torch imports and mocked SDK calls."""
 import argparse
+from contextlib import redirect_stdout
 import importlib.abc
+import io
 import json
 import math
 from pathlib import Path
@@ -172,6 +174,58 @@ def check(output):
         assert saved['status'] == 'FAILED' and saved['stage'] == 'ge-export'
         assert saved['model_compilation'] == 'NOT_RUN'
         checks.append('retain_failed_export_stage_no_false_compilation_pass')
+        def compile_failure(air, folder, ddk, **kwargs):
+            folder.mkdir()
+            saved = dict(status='FAILED', stage='omg', model_compilation='FAILED', returncode=1,
+                error='CalledProcessError: synthetic OMG exited 1')
+            probe.write(folder / 'report.json', saved)
+            (folder / 'compile.log').write_text('E/AI_NPUCL: node top1 type StableArgMax is not supported\n')
+            return saved
+
+        with patch('qwen35_moe_dflash.toolchain.existing_air.compile_existing_air', compile_failure):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                code = probe.main(['--shape', '2', '3', '--output', str(output / 'failed-omg'),
+                    '--ge-root', str(fakege), '--ddk-root', str(output / 'ddk'), '--ddk-id', 'mock-ddk'])
+            failed = json.loads(stdout.getvalue())
+            assert code == 1 and failed['status'] == 'FAILED' and failed['stage'] == 'omg'
+            assert failed['model_compilation'] == 'FAILED'
+            assert 'StableArgMax' in failed['compilation_diagnostics']['log_excerpt']
+            assert 'synthetic OMG exited 1' in failed['error']
+            assert json.loads((output / 'failed-omg/result.json').read_text()) == failed
+            checks.append('failed_omg_json_includes_original_error_and_concrete_compiler_log')
+        snapshot = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in (output / 'failed-omg').rglob('*') if p.is_file()}
+        # Old failures are inspectable after a tooling/source update, without retry.
+        with patch.object(probe, 'run', side_effect=AssertionError('inspection recompiled')), \
+             patch.object(probe, 'source_hashes', side_effect=AssertionError('inspection requires current sources')):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                assert probe.main(['--inspect-compilation', str(output / 'failed-omg')]) == 0
+            inspected = json.loads(stdout.getvalue())
+            assert inspected['source_model_compilation'] == 'FAILED'
+            assert inspected['model_compilation'] == inspected['device_execution'] == 'NOT_RUN'
+            assert 'StableArgMax' in inspected['compilation_diagnostics']['log_excerpt']
+        assert snapshot == {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in (output / 'failed-omg').rglob('*') if p.is_file()}
+        checks.append('inspect_old_failed_run_read_only_no_source_gate_sdk_or_retry')
+        (output / 'failed-omg/omc/compile.log').unlink()
+        assert probe.inspect_compilation(output / 'failed-omg')['compilation_diagnostics']['log_excerpt'] == ''
+        checks.append('inspect_missing_log_retains_compiler_report')
+        (output / 'failed-omg/omc/report.json').write_text('invalid JSON')
+        assert 'report_error' in probe.inspect_compilation(output / 'failed-omg')['compilation_diagnostics']
+        checks.append('inspect_malformed_compiler_report_is_diagnostic_not_retry')
+        probe.write(output / 'foreign.json', {'artifact_kind': 'other'})
+        foreign = output / 'foreign'; foreign.mkdir()
+        probe.write(foreign / 'result.json', {'artifact_kind': 'other'})
+        rejects(lambda: probe.inspect_compilation(foreign), 'reject_foreign_probe_report')
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            assert probe.main(['--output', str(output / 'compiled'), '--plan-only']) == 1
+        preflight = json.loads(stdout.getvalue())
+        assert preflight['stage'] == 'preflight' and preflight['model_compilation'] == 'NOT_RUN'
+        assert json.loads((output / 'compiled/result.json').read_text())['status'] == 'COMPILED'
+        checks.append('preflight_json_does_not_relabel_or_overwrite_old_run')
     assert not any(n.split('.')[0] in ('torch', 'torch_npu', 'torchair') for n in sys.modules)
     checks.append('all_ddk_paths_and_board_preparation_without_framework_imports')
     report = dict(status='PASSED', checks=checks, count=len(checks),

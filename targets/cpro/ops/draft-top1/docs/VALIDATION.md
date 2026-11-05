@@ -1,5 +1,9 @@
 # Validation
 
+2026-11-05后续用户报告：三个allops源码SHA256与交付源码一致；GE流程已进入OMG，OMG退出码1，无OMC成功证据。用户未贴allops构建结果或compiler具体错误，尚不能定位注册/安装、接口或kernel问题。源码哈希一致不构成安装成功证据。
+
+诊断工具修复run `20261105T010637Z-20281-c9f19f`：33项无Torch主机流程检查通过，见 `evidence/diagnostics-check/validation.json`。新增覆盖失败JSON携带真实读取的日志摘要、旧失败目录只读检查且不要求源码哈希、缺失/损坏日志报告保留、拒绝其他artifact、预检失败不覆盖旧结果。SDK调用仍为mock，用户失败没有在本地重跑，host/kernel不变。
+
 2026-11-05两服务器流程更新，run `20261105T005058Z-19077-dfa957`：
 
 | 新检查 | 结果 | 证据 |

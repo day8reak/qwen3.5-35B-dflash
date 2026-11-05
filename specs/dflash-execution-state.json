@@ -6715,6 +6715,16 @@
           "host_checks": 27,
           "fixture_crosschecks": 19,
           "run_id": "20261105T005058Z-19077-dfa957"
+        },
+        "last_user_compile": {
+          "source_copy": "SHA256_MATCHED",
+          "ge_export": "REACHED_OMG",
+          "omg_returncode": 1,
+          "root_cause": "UNKNOWN_LOG_PENDING",
+          "allops_installation": "UNCONFIRMED",
+          "next": "READ_EXISTING_COMPILER_LOG_NO_RETRY",
+          "diagnostic_tool": "stable_arg_max_ge.py --inspect-compilation",
+          "run_id": "20261105T010637Z-20281-c9f19f"
         }
       }
     }

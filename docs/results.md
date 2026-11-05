@@ -796,3 +796,5 @@ KV提交开销很小，下一步优先定位`Process`内部耗时。此前S64 Dr
 [StableArgMax](../targets/cpro/ops/draft-top1/README.md) 已含 AscendC kernel、host注册/tiling、Torch schema/Meta/GE converter、所选msopgen工程准备。支持合同扩展为静态rank1–8的有限FP16最后维Top1，Qwen为一个验收配置。源码控制流/真实Torch export63项、原参考工具35项、准备工具11项、文本回传9项主机检查通过；这些不证明厂商编译或NPU行为。用户负责复制和在所选DDK编译安装，真实AIR/OMG/设备/性能待验证。TopK与310P适配未实现，完整Draft不变。
 
 2026-11-05更新服务器分工：DDK服务器沿用既有allops，只复制三个host/kernel文件；新增无Torch依赖的GE C++→AIR→OMG/OMC入口及既有板端验证adapter。权重服务器保留TorchAir导出。27项主机流程检查（SDK调用mock、合成输出）和19组NumPy/PyTorch参考对照通过；源码/fixture/OMC变化及CPU落点拒绝有覆盖。真实所选GE/DDK/设备未在本地执行；未修改host/kernel、Torch接口或完整Draft。证据run `20261105T005058Z-19077-dfa957`。
+
+用户随后报告GE探针已进入OMG，退出码1；只有调用栈，尚无具体compiler日志/安装结果。交付三个源码哈希与allops一致。新增只读失败诊断与终端JSON日志摘要，33项主机流程检查通过（run `20261105T010637Z-20281-c9f19f`）；没有重试编译或修改kernel，等待现有日志定位根因。

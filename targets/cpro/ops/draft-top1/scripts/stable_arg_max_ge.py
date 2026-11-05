@@ -23,12 +23,52 @@ GENERAL_SCENARIOS = ('first_last', 'equal', 'tile_ties', 'subnormal')
 CASES = tuple('stable_arg_max__' + s for s in (*QWEN_SCENARIOS, *GENERAL_SCENARIOS))
 
 
+class ProbeFailure(RuntimeError):
+    """A failed attempt whose original error and bounded diagnostics were saved."""
+    def __init__(self, report):
+        super().__init__(report['error'])
+        self.report = report
+
+
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def write(path, value):
     Path(path).write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
+
+
+def failure_diagnostics(output, stage):
+    from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics, log_excerpt
+    try:
+        if stage == 'omg':
+            return {'compilation_diagnostics': compilation_diagnostics(output / 'omc')}
+        if stage == 'ge-export':
+            return {'ge_diagnostics': {name: log_excerpt(output / name)
+                for name in ('build.log', 'export.log') if (output / name).is_file()}}
+    except (OSError, ValueError) as error:
+        return {'diagnostics_error': str(error)}
+    return {}
+
+
+def inspect_compilation(directory):
+    """Inspect even older failed attempts; never require source hashes or an SDK."""
+    output = Path(directory).resolve()
+    path = output / 'result.json'
+    with path.open('rb') as stream:
+        raw = stream.read((8 << 20) + 1)
+    if len(raw) > 8 << 20:
+        raise ValueError('probe report exceeds 8 MiB')
+    report = json.loads(raw)
+    if not isinstance(report, dict) or report.get('artifact_kind') != KIND:
+        raise ValueError('expected an existing StableArgMax GE probe directory')
+    return dict(artifact_kind=KIND + '-inspection', status='INSPECTED', source=str(output),
+        source_report_sha256=hashlib.sha256(raw).hexdigest(),
+        source_status=report.get('status'), source_stage=report.get('stage'),
+        source_model_compilation=report.get('model_compilation'), error=report.get('error'),
+        air=report.get('air'), model_compilation='NOT_RUN', device_execution='NOT_RUN',
+        numerical_validation='NOT_RUN', scope='READ_ONLY_EXISTING_REPORT_AND_LOGS_NOT_A_RETRY',
+        **failure_diagnostics(output, 'omg' if (output / 'omc').is_dir() else report.get('stage')))
 
 
 def checked_shape(shape):
@@ -185,7 +225,9 @@ def run(args):
         return report
     except Exception as error:
         report.update(status='FAILED', error=f'{type(error).__name__}: {error}')
-        raise
+        # Keep the original failure; do not replace it with an excerpt or retry.
+        report.update(failure_diagnostics(output, report['stage']))
+        raise ProbeFailure(report) from error
     finally:
         write(output / 'result.json', report)
 
@@ -253,10 +295,10 @@ def prepare_fixture(root, out, ddk, ddk_id, selection):
     return result
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--shape', nargs='+', type=int, default=[1, 15, 248320])
-    parser.add_argument('--output', required=True)
+    parser.add_argument('--output')
     parser.add_argument('--ge-root', default=os.environ.get('CANN_ROOT'))
     parser.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     parser.add_argument('--ddk-id', default=os.environ.get('CPRO_DDK_ID'))
@@ -266,9 +308,25 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--plan-only', action='store_true', help='source + NumPy fixtures, no GE/OMG needed')
     modes.add_argument('--export-only', action='store_true', help='GE C++ -> AIR without OMG')
-    report = run(parser.parse_args())
+    modes.add_argument('--inspect-compilation', metavar='DIRECTORY',
+        help='read a retained result/report/log; no compilation, writes, SDK or device')
+    args = parser.parse_args(argv)
+    if args.inspect_compilation:
+        if args.output:
+            parser.error('--inspect-compilation does not take --output or write a new run')
+    elif not args.output:
+        parser.error('export/compile requires --output')
+    try:
+        report = inspect_compilation(args.inspect_compilation) if args.inspect_compilation else run(args)
+    except ProbeFailure as error:
+        report = error.report
+    except (OSError, ValueError, RuntimeError) as error:
+        report = dict(artifact_kind=KIND, status='FAILED',
+            stage='inspect' if args.inspect_compilation else 'preflight',
+            error=f'{type(error).__name__}: {error}', model_compilation='NOT_RUN',
+            device_execution='NOT_RUN', numerical_validation='NOT_RUN')
     print(json.dumps(report))
-    return 0 if report['status'] in ('COMPILED', 'EXPORTED', 'PLANNED') else 1
+    return 0 if report['status'] in ('COMPILED', 'EXPORTED', 'PLANNED', 'INSPECTED') else 1
 
 
 if __name__ == '__main__':

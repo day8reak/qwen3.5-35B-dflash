@@ -9,16 +9,16 @@
 | Operator | draft-top1 |
 | Branch | operator/draft-top1 |
 | Current phase | 2 |
-| Based-on revision | 48276dcad40ab835e3525b931167522ac5473658 |
-| Updated UTC | 2026-11-05T01:00:01Z |
-| Summary | Two-server source handoff: existing allops plus Torch-free GE probe on DDK server; Torch bindings stay on weights server. |
-| Blocker | Selected X90 DDK/GE and device are on user-operated servers; local selected profile unavailable. Source/workflow changes complete. |
-| Active files | scripts/prepare_allops.py<br>scripts/stable_arg_max_ge.py<br>tests/test_ddk_workflow.py<br>README.md |
-| Recorded working tree (PLAN excluded) |  M docs/current-status.md<br> M docs/results.md<br> M specs/dflash-execution-state.json<br> M targets/cpro/ops/README.md<br> M targets/cpro/ops/draft-top1/README.md<br> M targets/cpro/ops/draft-top1/docs/ENVIRONMENT.md<br> M targets/cpro/ops/draft-top1/docs/LESSONS.md<br> M targets/cpro/ops/draft-top1/docs/VALIDATION.md<br> M targets/cpro/ops/draft-top1/operator.json<br> M targets/cpro/ops/draft-top1/scripts/build.sh<br> M targets/cpro/ops/draft-top1/scripts/export_probe.py<br> M targets/cpro/ops/draft-top1/scripts/run_on_board.sh<br> M targets/cpro/ops/draft-top1/scripts/validate_host.py<br> M targets/cpro/tools/validate_draft_vector.py<br>?? targets/cpro/ops/draft-top1/scripts/prepare_allops.py<br>?? targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py<br>?? targets/cpro/ops/draft-top1/tests/test_ddk_workflow.py |
+| Based-on revision | 5b4f840d9ad2c1519b9b91c02eeb5505b58166af |
+| Updated UTC | 2026-11-05T01:09:06Z |
+| Summary | User GE export reached OMG exit 1; compiler root cause and allops installation unconfirmed. Read-only diagnostic support delivered. |
+| Blocker | User OMG reports exit 1 without compiler log; cannot determine root cause from subprocess traceback. No local selected DDK/device. |
+| Active files | scripts/stable_arg_max_ge.py<br>tests/test_ddk_workflow.py |
+| Recorded working tree (PLAN excluded) |  M docs/current-status.md<br> M docs/results.md<br> M specs/dflash-execution-state.json<br> M targets/cpro/ops/draft-top1/README.md<br> M targets/cpro/ops/draft-top1/docs/LESSONS.md<br> M targets/cpro/ops/draft-top1/docs/VALIDATION.md<br> M targets/cpro/ops/draft-top1/operator.json<br> M targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py<br> M targets/cpro/ops/draft-top1/tests/test_ddk_workflow.py |
 
 ## Exact next commands
 
-- `python3 "$REPO_DIR/targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py" --ge-root "$CANN_ROOT" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" --output "$AI_RUN_DIR/draft/tests/stable-arg-max-ge"`
+- `python3 "$OP_DIR/scripts/stable_arg_max_ge.py" --inspect-compilation "$AI_RUN_DIR/draft/tests/stable-arg-max-ge"`
 
 ## Phase table
 
@@ -26,7 +26,7 @@
 |---:|---|---|---|---|---|---|
 | 0 | Git scope | COMPLETED | Branch, manifest, persistent plan, and scaffold form a rollback checkpoint | Managed operator branch and source checkpoint established.<br>Source checkpoint 2f55529; lifecycle working check passed.<br>Evidence: git:2f55529 | Record the frozen independently validated host contract. | — |
 | 1 | Contract and baseline | COMPLETED | Interface, semantics, rejection behavior, deterministic golden, and baseline are frozen | Generic finite FP16 last-axis StableArgMax contract and host acceptance frozen.<br>63 actual-source control-flow/Torch export checks, 35 reference checks, 11 project preparation checks and 9 text-handoff checks pass. Vendor build/device unverified.<br>Evidence: 20261104T083807Z-10795-c00fd7/evidence/source-check-2/source-validation.json; 20261104T083807Z-10795-c00fd7/evidence/prepare-check/validation.json | User copies sources, prepares project with selected X90 msopgen and runs vendor build/install. | — |
-| 2 | Environment | BLOCKED | Environment identity, dependency locks, setup, and preflight are reproducible | Two-server source handoff: existing allops plus Torch-free GE probe on DDK server; Torch bindings stay on weights server.<br>27 no-framework workflow checks and 19 NumPy/PyTorch fixture checks passed. GE/OMG calls mocked; selected DDK build and device validation remain user-operated and unverified.<br>Evidence: 20261105T005058Z-19077-dfa957/evidence/ddk-workflow-final/validation.json; 20261105T005058Z-19077-dfa957/evidence/ge-fixture-crosscheck.json | Copy three host/kernel files to existing allops, run its existing kirinx90 build/install, then GE probe and existing board validation. | — |
+| 2 | Environment | BLOCKED | Environment identity, dependency locks, setup, and preflight are reproducible | User GE export reached OMG exit 1; compiler root cause and allops installation unconfirmed. Read-only diagnostic support delivered.<br>33 host workflow checks pass, including old failure inspection without writes or recompilation and JSON compiler excerpts. Kernel/host unchanged; no new target execution.<br>Evidence: 20261105T010637Z-20281-c9f19f/evidence/diagnostics-check/validation.json; 20261105T010637Z-20281-c9f19f/evidence/user-observation.json | Read existing OMG report/log and obtain allops build/install outcome before selecting a fix. | — |
 | 3 | Development | PENDING | Smallest correct host, kernel/device, framework, build, golden, and compare paths work | — | — | — |
 | 4 | Correctness validation | PENDING | Independent-copy, boundary, negative, integration, and on-board PASS or documented PENDING/N/A have evidence | — | — | — |
 | 5 | Optimization | PENDING | Frozen baseline, one-hypothesis experiments, correctness reruns, and promotion decision are reproducible | — | — | — |
@@ -42,6 +42,7 @@
 - 2026-11-04T09:03:27Z: User requested copyable source using official CANN Kit, Torch Meta/export, future 310P extensibility and more shapes; Top1 first. Target build/install remains user-operated, no archive required.
 - 2026-11-04T09:10:03Z: Source preparation completed as explicitly requested before user-operated target validation; hardware_reference_policy remains use with unavailable capacity, not opt_out.
 - 2026-11-05T00:53:31Z: DDK server has existing allops and no TorchAir. Preserve weights-server Torch bindings.
+- 2026-11-05T01:07:20Z: User source hashes match; source copy does not establish allops build/install. OMG root cause remains unknown until compiler log is provided.
 
 ## Machine-readable state
 
@@ -49,13 +50,11 @@
 ```json
 {
   "active_files": [
-    "scripts/prepare_allops.py",
     "scripts/stable_arg_max_ge.py",
-    "tests/test_ddk_workflow.py",
-    "README.md"
+    "tests/test_ddk_workflow.py"
   ],
-  "based_on_revision": "48276dcad40ab835e3525b931167522ac5473658",
-  "blocker": "Selected X90 DDK/GE and device are on user-operated servers; local selected profile unavailable. Source/workflow changes complete.",
+  "based_on_revision": "5b4f840d9ad2c1519b9b91c02eeb5505b58166af",
+  "blocker": "User OMG reports exit 1 without compiler log; cannot determine root cause from subprocess traceback. No local selected DDK/device.",
   "branch": "operator/draft-top1",
   "current_phase": "2",
   "decisions": [
@@ -65,10 +64,11 @@
     "2026-11-04T09:03:27Z: reopened phase 1; all later phase evidence was invalidated.",
     "2026-11-04T09:03:27Z: User requested copyable source using official CANN Kit, Torch Meta/export, future 310P extensibility and more shapes; Top1 first. Target build/install remains user-operated, no archive required.",
     "2026-11-04T09:10:03Z: Source preparation completed as explicitly requested before user-operated target validation; hardware_reference_policy remains use with unavailable capacity, not opt_out.",
-    "2026-11-05T00:53:31Z: DDK server has existing allops and no TorchAir. Preserve weights-server Torch bindings."
+    "2026-11-05T00:53:31Z: DDK server has existing allops and no TorchAir. Preserve weights-server Torch bindings.",
+    "2026-11-05T01:07:20Z: User source hashes match; source copy does not establish allops build/install. OMG root cause remains unknown until compiler log is provided."
   ],
   "next_commands": [
-    "python3 \"$REPO_DIR/targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py\" --ge-root \"$CANN_ROOT\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge\""
+    "python3 \"$OP_DIR/scripts/stable_arg_max_ge.py\" --inspect-compilation \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge\""
   ],
   "operator_id": "draft-top1",
   "phases": [
@@ -103,18 +103,18 @@
     },
     {
       "evidence": [
-        "20261105T005058Z-19077-dfa957/evidence/ddk-workflow-final/validation.json",
-        "20261105T005058Z-19077-dfa957/evidence/ge-fixture-crosscheck.json"
+        "20261105T010637Z-20281-c9f19f/evidence/diagnostics-check/validation.json",
+        "20261105T010637Z-20281-c9f19f/evidence/user-observation.json"
       ],
       "gate": "Environment identity, dependency locks, setup, and preflight are reproducible",
       "id": "2",
       "knowledge_refs": [],
       "name": "Environment",
-      "next_action": "Copy three host/kernel files to existing allops, run its existing kirinx90 build/install, then GE probe and existing board validation.",
-      "result": "27 no-framework workflow checks and 19 NumPy/PyTorch fixture checks passed. GE/OMG calls mocked; selected DDK build and device validation remain user-operated and unverified.",
+      "next_action": "Read existing OMG report/log and obtain allops build/install outcome before selecting a fix.",
+      "result": "33 host workflow checks pass, including old failure inspection without writes or recompilation and JSON compiler excerpts. Kernel/host unchanged; no new target execution.",
       "status": "BLOCKED",
-      "summary": "Two-server source handoff: existing allops plus Torch-free GE probe on DDK server; Torch bindings stay on weights server.",
-      "updated_utc": "2026-11-05T01:00:01Z"
+      "summary": "User GE export reached OMG exit 1; compiler root cause and allops installation unconfirmed. Read-only diagnostic support delivered.",
+      "updated_utc": "2026-11-05T01:09:06Z"
     },
     {
       "evidence": [],
@@ -177,27 +177,19 @@
       "updated_utc": ""
     }
   ],
-  "resume_summary": "Two-server source handoff: existing allops plus Torch-free GE probe on DDK server; Torch bindings stay on weights server.",
+  "resume_summary": "User GE export reached OMG exit 1; compiler root cause and allops installation unconfirmed. Read-only diagnostic support delivered.",
   "schema_version": 1,
-  "updated_utc": "2026-11-05T01:00:01Z",
+  "updated_utc": "2026-11-05T01:09:06Z",
   "working_tree": [
     " M docs/current-status.md",
     " M docs/results.md",
     " M specs/dflash-execution-state.json",
-    " M targets/cpro/ops/README.md",
     " M targets/cpro/ops/draft-top1/README.md",
-    " M targets/cpro/ops/draft-top1/docs/ENVIRONMENT.md",
     " M targets/cpro/ops/draft-top1/docs/LESSONS.md",
     " M targets/cpro/ops/draft-top1/docs/VALIDATION.md",
     " M targets/cpro/ops/draft-top1/operator.json",
-    " M targets/cpro/ops/draft-top1/scripts/build.sh",
-    " M targets/cpro/ops/draft-top1/scripts/export_probe.py",
-    " M targets/cpro/ops/draft-top1/scripts/run_on_board.sh",
-    " M targets/cpro/ops/draft-top1/scripts/validate_host.py",
-    " M targets/cpro/tools/validate_draft_vector.py",
-    "?? targets/cpro/ops/draft-top1/scripts/prepare_allops.py",
-    "?? targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py",
-    "?? targets/cpro/ops/draft-top1/tests/test_ddk_workflow.py"
+    " M targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py",
+    " M targets/cpro/ops/draft-top1/tests/test_ddk_workflow.py"
   ]
 }
 ```
