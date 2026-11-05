@@ -100,7 +100,7 @@ def diagnose_kv(path):
     _same_inputs(fixture, meta, baseline, old)
     atol, rtol = (meta['comparison'][k] for k in ('atol', 'rtol'))
     rows = []
-    audit = RowAudit(meta['cases'], atol, rtol)
+    audit = RowAudit(meta['cases'], atol, rtol, meta['context_rows'])
     for step in meta['cases']:
         i, start, valid = (step[k] for k in ('index', 'start', 'valid'))
         if not valid:

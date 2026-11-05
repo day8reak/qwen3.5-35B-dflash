@@ -334,7 +334,7 @@
     },
     "incremental_air": "User reported DRAFT_INCREMENTAL_AIR_EXPORTED: C16/cap192/K15, 17 inputs/14 outputs, six layers, 4718592-byte KV bank; no original weight copies. New OMG/native execution remains pending."
   },
-  "next_action": "Run extended --diagnose-kv on existing RoPE result; compare all changed rows and six-layer V fingerprints without model execution.",
+  "next_action": "Compare retained K176 and K177 after six-layer V row duplication was confirmed; avoid changing model/runtime until row-copy boundary is narrowed.",
   "last_actual_execution": {
     "schema_version": 1,
     "artifact_kind": "qwen35-board-text-preread-user-observation",
@@ -8002,7 +8002,7 @@
               }
             },
             "rope_precision_candidate": {
-              "status": "FULL_DRAFT_FAILED; ISOLATED_CASE16_ROW176_KV_REGRESSION_LOCALIZED; ROW_ORIGIN_PENDING",
+              "status": "FULL_DRAFT_FAILED; SIX_LAYER_V_ROW176_EQUALS_SAME_CALL_ROW177; KEY_PAIR_PENDING",
               "implementation": "model/qwen35_moe_dflash/draft/incremental/air_rope.py",
               "compiler_flag": "--rope-fp32-table",
               "policy": "source-fp32-rope-trig-before-gather-v1",
@@ -8182,7 +8182,7 @@
                   "evidence": "20261105T092917Z-3391-5ddb5f/out/evidence/user-kv-localization.json"
                 },
                 "row_audit": {
-                  "status": "IMPLEMENTED_HOST_CHECKED_AWAITING_USER_ANALYSIS",
+                  "status": "USER_CONFIRMED_ALL_12_BANKS_ONE_POSITION; SIX_LAYER_V_DUPLICATES_NEXT_ROW",
                   "implementation": "model/qwen35_moe_dflash/draft/incremental/kv_row_audit.py",
                   "entry": "SAME_DIAGNOSE_KV_COMMAND",
                   "device_execution": "NOT_RUN",
@@ -8191,7 +8191,68 @@
                   "evidence": "20261105T092917Z-3391-5ddb5f/log/row-checks-final.log",
                   "max_fingerprinted_positions": 32,
                   "coverage": "ALL_CHANGED_ROWS; BOUNDED_FINGERPRINT_COUNT_REPORTED_WITH_OMISSIONS",
-                  "next": "docs/current-status.md"
+                  "next": "docs/current-status.md",
+                  "observation": {
+                    "artifact_kind": "qwen35-user-same-call-row-duplication",
+                    "provenance": "USER_PASTED_ROW_AUDIT; REMOTE_TENSORS_NOT_READ_LOCALLY",
+                    "status": "OBSERVED",
+                    "candidate_model_sha256": "b43ae9cfcd50999277829a21adc24099170d4a7c4856b70729385b59d362a828",
+                    "changed_case_indices": [
+                      16
+                    ],
+                    "changed_tensor_regions": 12,
+                    "changed_case_positions": 1,
+                    "index": 16,
+                    "start": 162,
+                    "valid": 16,
+                    "cache_position": 176,
+                    "local_row": 14,
+                    "all_12_banks_changed_heads": [
+                      0,
+                      1,
+                      2,
+                      3,
+                      4,
+                      5,
+                      6,
+                      7
+                    ],
+                    "different_elements_per_bank": 1024,
+                    "unchanged_rows": 15,
+                    "unchanged_rows_between_modes": "BITWISE_EQUAL",
+                    "unchanged_row_relative_l2_range": [
+                      0.004454160967382933,
+                      0.0055553328148634775
+                    ],
+                    "unchanged_rows_original_gate": "FAILED",
+                    "value_match": {
+                      "dataset": "candidate",
+                      "mode": "isolated",
+                      "index": 16,
+                      "cache_position": 177,
+                      "six_layers_all_heads_bitwise_equal": true,
+                      "sha256": "9d554f00780ec06e3995724550d94f884f8731a4b58dd9df854fb2cf3e55ee75"
+                    },
+                    "isolated_value_row_vs_reference_relative_l2": 1.4312545696401329,
+                    "feedback_value_row_vs_reference_relative_l2": 0.0051999186790686255,
+                    "between_modes_value_cosine": -0.01502722533454167,
+                    "best_retained_earlier_candidate_value_relative_l2": 1.3371657295000996,
+                    "retained_past_at_position": "ALL_12_BANKS_ALL_1024_ELEMENTS_ZERO",
+                    "retained_feature_row_sha256": "08011b1fc9662bfe447839f77d4f3b1aacc3daa014c75c5baa47456a237fb883",
+                    "key_176_vs_177": "AWAITING_RETAINED_PAIR_COMPARISON",
+                    "full_model_accuracy": "FAILED",
+                    "root_cause": "OPERATOR_AND_VISIBILITY_NOT_ESTABLISHED",
+                    "next": "COMPARE_PAIRED_K_ROWS; NO_MODEL_RERUN_OR_COMPILATION",
+                    "evidence": "20261105T094239Z-3834-ebd378/out/evidence/user-same-call-row-duplication.json"
+                  },
+                  "paired_key_analysis": {
+                    "status": "IMPLEMENTED_HOST_CHECKED_AWAITING_RETAINED_PAIR",
+                    "host_checks": 5,
+                    "evidence": "20261105T094239Z-3834-ebd378/log/paired-key-checks.log",
+                    "model_execution": "NOT_RUN",
+                    "model_compilation": "NOT_RUN",
+                    "scope": "K_COMPARISONS_AT_EXACT_SAME_CALL_V_DUPLICATES_PLUS_RETAINED_FEATURE_PAIRS"
+                  }
                 }
               }
             }

@@ -45,6 +45,30 @@ def distance(a, b):
         cosine=float(np.clip(np.dot(a, b)/(na*nb), -1., 1.)) if na and nb else None)
 
 
+def paired_keys(current, values, mode, position, start, end, context_rows):
+    """Compare K only where same-call six-layer V is an exact row duplicate."""
+    query = values[mode][position]
+    same = np.all(values[mode][:end].view('<u2') == query.view('<u2'), axis=(1, 2, 3))
+    same[position] = False
+    positions = [int(p) for p in np.flatnonzero(same)]
+    other = 'feedback' if mode == 'isolated' else 'isolated'
+    rows = []
+    for p in positions[:8]:
+        keys = [dict(layer=j//2,
+            same_call=tensor_difference(current[mode][j+2][:, :, position], current[mode][j+2][:, :, p]),
+            other_mode_matched_position=tensor_difference(current[mode][j+2][:, :, position], current[other][j+2][:, :, p]))
+            for j in range(0, 12, 2)]
+        rows.append(dict(matched_cache_position=p,
+            source_index_formula='clamp(cache_position - start, 0, context_rows - 1)',
+            expected_query_index=max(0, min(position-start, context_rows-1)),
+            expected_matched_index=max(0, min(p-start, context_rows-1)),
+            all_key_layers_same_call_bitwise_equal=all(r['same_call']['bitwise_equal'] for r in keys),
+            keys=keys))
+    return dict(exact_value_match_positions=positions, comparisons=rows,
+        comparison_coverage=dict(total=len(positions), analyzed=len(rows), omitted=max(0, len(positions)-8)),
+        limitation='K equality locates a repeated post-RoPE value, not the exact failing operator or device index bytes.')
+
+
 class ValueCorpus:
     """Deduplicate full six-layer V rows while preserving occurrence identities."""
     def __init__(self):
@@ -92,8 +116,9 @@ class ValueCorpus:
 
 
 class RowAudit:
-    def __init__(self, cases, atol, rtol):
+    def __init__(self, cases, atol, rtol, context_rows):
         self.count = len(cases)
+        self.context_rows = context_rows
         self.atol, self.rtol = atol, rtol
         self.corpus = ValueCorpus()
         self.patterns, self.queries = [], []
@@ -126,7 +151,8 @@ class RowAudit:
         reference = value_rows(golden)
         for position in sorted(positions):
             per_mode = {m:dict(value=v[position].copy(),
-                vs_reference=metrics(v[position], reference[position], self.atol, self.rtol))
+                vs_reference=metrics(v[position], reference[position], self.atol, self.rtol),
+                paired_keys=paired_keys(current, actual, m, position, start, end, self.context_rows))
                 for m, v in actual.items()}
             delta = distance(actual['isolated'][position], actual['feedback'][position])
             self.queries.append(dict(index=index, label=step['label'], cache_position=position,
@@ -144,14 +170,22 @@ class RowAudit:
             for mode, detail in query['modes'].items():
                 value = detail['value']
                 row['value_modes'][mode] = dict(vs_reference=detail['vs_reference'],
+                    paired_keys=detail['paired_keys'],
                     row_sha256=hashlib.sha256(value.tobytes()).hexdigest(),
                     nearest=self.corpus.nearest(value, mode=mode, index=index, position=position,
                         ordinal=index+(self.count if mode == 'feedback' else 0)))
-            feature = np.fromfile(fixture/f'inputs/{index}/{feature_slot["index"]}.bin', dtype='<f2').reshape(feature_slot['shape'])[0, query['local_row']]
+            features = np.fromfile(fixture/f'inputs/{index}/{feature_slot["index"]}.bin', dtype='<f2').reshape(feature_slot['shape'])[0]
+            feature = features[query['local_row']]
             row['retained_feature_row'] = dict(input_slot=feature_slot['index'],
                 local_row=query['local_row'], bytes=feature.nbytes,
                 sha256=hashlib.sha256(feature.tobytes()).hexdigest(),
                 finite=bool(np.isfinite(feature).all()), scope='FILE_BYTES_NOT_DEVICE_READBACK')
+            matched = {p for detail in query['modes'].values()
+                       for p in detail['paired_keys']['exact_value_match_positions']}
+            start = position-query['local_row']
+            row['retained_feature_pair_comparisons'] = [dict(cache_position=p, local_row=p-start,
+                **tensor_difference(feature, features[p-start])) for p in sorted(matched)
+                if start <= p < start+len(features)]
             past = []
             for spec in meta['inputs']:
                 if spec['name'].startswith('past_'):
