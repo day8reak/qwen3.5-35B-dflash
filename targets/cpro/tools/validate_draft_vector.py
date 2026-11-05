@@ -32,6 +32,7 @@ from qwen35_moe_dflash.draft.incremental.attention_matrix import CASES as MATRIX
 from qwen35_moe_dflash.draft.incremental import top1_semantics
 from qwen35_moe_dflash.draft.incremental.top1_alternatives import CASES as ALTERNATIVE_CASES
 from qwen35_moe_dflash.draft.incremental.top1_bitcarrier import CASES as BITCARRIER_CASES
+from qwen35_moe_dflash.draft.incremental.hidden_probe import CASES as HIDDEN_CASES, KIND as HIDDEN_KIND
 
 # Operator-local GE probe: NumPy only; Torch bindings stay on the weights server.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops/draft-top1/scripts'))
@@ -39,7 +40,7 @@ import stable_arg_max_ge
 
 PYTORCH_CASES = set(STAGES.values())
 VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES, *top1_semantics.EXTRA_CASES,
-                    *stable_arg_max_ge.CASES)
+                    *stable_arg_max_ge.CASES, *HIDDEN_CASES)
 WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4, 'int64': 8}
 DTYPES = {**DTYPES, 'int64': '<i8'}
 
@@ -156,6 +157,9 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     root = Path(compiled).resolve()
     report = read_json(root/'result.json')
+    if report.get('artifact_kind') == HIDDEN_KIND:
+        from qwen35_moe_dflash.draft.incremental.hidden_probe import prepare_fixture
+        return prepare_fixture(root, out, ddk, ddk_id, selection)
     if report.get('artifact_kind') == stable_arg_max_ge.KIND:
         return stable_arg_max_ge.prepare_fixture(root, out, ddk, ddk_id, selection)
     if report.get('artifact_kind') == MATRIX_KIND:
@@ -258,6 +262,8 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
         if name not in selected:
             continue
         result = read_json(native/name/'result.json')
+        if result.get('output_initialization', 'zero') != meta.get('output_initialization', 'zero'):
+            raise ValueError('native output initialization differs from the requested probe')
         expected_kind = 'host-fake-hiai' if allow_host_fake else 'device-hiai'
         timings = result.get('api_us', [])
         if (result.get('status') != 'EXECUTED' or result.get('evidence_kind') != expected_kind
@@ -342,6 +348,8 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
         repeat_bitwise_stable=all(r['repeat_bitwise_stable'] for r in cases),
         timing_scope='SYNCHRONOUS_API_WALL_NOT_NPU_ONLY; SNAPSHOTS_BETWEEN_CALLS_EXCLUDED',
         full_draft_validation='NOT_RUN', internal_instruction_precision='NOT_PROVEN_BY_OUTPUT_MATCH')
+    if 'output_initialization' in meta:
+        report['output_initialization'] = meta['output_initialization']
     if meta.get('top1_semantics'):
         report['top1_semantics'] = top1_semantics.summary(meta, cases)
     return report
@@ -367,6 +375,9 @@ def analyze(directory):
                 if path.stat().st_size != spec['bytes'] or sha256_file(path) != spec['fixture_sha256']:
                     raise ValueError('retained input/reference changed after launch')
     comparison = compare(fixture, native, selection=report['validated_cases'])
+    if meta.get('source_evidence', {}).get('artifact_kind') == HIDDEN_KIND:
+        from qwen35_moe_dflash.draft.incremental.hidden_probe import diagnose
+        return diagnose(fixture, native, meta, comparison, report)
     if meta.get('top1_semantics') or any(c['case'] in (*ALTERNATIVE_CASES, *BITCARRIER_CASES) for c in meta['cases']):
         return dict(comparison, artifact_kind=KIND, model_execution='NOT_RUN',
                     scope='RECOMPARE_RETAINED_TOP1_OUTPUTS_NO_DEVICE_EXECUTION')
@@ -471,6 +482,8 @@ def supervisor(meta, board, token, env, search):
         argv = ['timeout', '-k', '5', '600', 'env', 'LD_LIBRARY_PATH='+':'.join([str(board/'lib'), *search]),
                 str(board/'tensor-probe'), str(board/name/'model.omc'), env['runtime_version'],
                 str(board/name), str(board/'outputs'/name)]
+        if meta.get('output_initialization') == 'untouched':
+            argv.append('untouched')
         lines += ['printf "%s\\n" '+q(f'CASE {index}/{len(meta["cases"])} {name}')
                   +' > progress.tmp && mv progress.tmp progress',
                   shlex.join(argv)+' > '+name+'.stdout 2> '+name+'.stderr', 'rc=$?',
@@ -494,6 +507,9 @@ def log_names(cases):
 
 
 def _check_probe_dtypes(meta, built):
+    if (meta.get('output_initialization') == 'untouched' and
+            'untouched' not in built.get('tensor_probe_output_initialization', [])):
+        raise ValueError('rebuild runtime/native with build_hiai.py --replace; tensor probe needs untouched output support')
     required = {s['dtype'] for c in meta['cases'] for direction in ('inputs', 'outputs') for s in c[direction]}
     missing = required - set(built.get('tensor_probe_dtypes', []))
     if missing:

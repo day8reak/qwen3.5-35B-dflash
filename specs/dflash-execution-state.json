@@ -7234,7 +7234,7 @@
             "evidence": "20261105T025158Z-24349-82e298/evidence/user-integration-summary.json",
             "model_identity_evidence": "20261105T030837Z-25145-99c811/evidence/user-boundaries-summary.json"
           },
-          "next": "Review feature projection/layout and KV update boundaries; retain failed numeric gates. Host head audit7/7 reproduced both reference and device IDs; no repeat profiling required.",
+          "next": "DDK_COMPILE_FIRST_QUERY_CONTROL_AND_TAPS; EXECUTE_UNTOUCHED_AND_COMPARE_ALL_TEN_CALLS; PERFORMANCE_DEFERRED; docs/current-status.md",
           "diagnostic_host_evidence": "20261105T025158Z-24349-82e298/evidence/diagnostic-profile-check.json",
           "boundary_observation": {
             "provenance": "USER_PASTED_BOUNDARY_INSPECTION_NOT_INDEPENDENTLY_RETRIEVED",
@@ -7698,8 +7698,8 @@
           },
           "performance_assessment": {
             "evidence": "20261105T034952Z-26771-b8dbd3/evidence/performance-assessment.json",
-            "document": "docs/current-status.md",
-            "status": "READ_ONLY_CANDIDATE_ASSESSMENT",
+            "document": "https://github.com/day8reak/qwen3.5-35B-dflash/blob/5c7d6aa8a74406e0975bbe1136d52fbfc5173b68/docs/current-status.md",
+            "status": "DEFERRED_BY_USER_UNTIL_ACCURACY_IMPROVES",
             "hardware_reference_policy": "use",
             "capacity_profile_status": "MISSING_MATCHING_X90_EMPIRICAL_PROFILE",
             "realizable_speedup_estimate": null,
@@ -7724,6 +7724,23 @@
               }
             ],
             "candidate_code_changed": false
+          },
+          "hidden_prefix_probe": {
+            "status": "LOCAL_IMPLEMENTATION_TESTED_TARGET_EXECUTION_PENDING",
+            "entry": "targets/cpro/tools/probe_draft_hidden.py",
+            "commands": "docs/current-status.md",
+            "source": "RETAINED_UNTOUCHED_CASE0_HOST_EMBEDDINGS_AND_MATCHING_AIR",
+            "scope": "LAYER0_INPUT_RMS_QUERY_PROJECTION_QUERY_RMS_PREFIX_NOT_FULL_DRAFT",
+            "cases": [
+              "hidden_first_query",
+              "hidden_first_query_taps"
+            ],
+            "model_compilation": "NOT_RUN",
+            "device_execution": "NOT_RUN",
+            "numerical_validation": "NOT_RUN",
+            "full_model_first_divergence": "NOT_YET_LOCALIZED",
+            "performance_work": "DEFERRED_BY_USER_UNTIL_ACCURACY_IMPROVES",
+            "host_evidence": "20261105T035706Z-27113-40e39d/evidence/hidden-probe-local-checks.json"
           }
         }
       }

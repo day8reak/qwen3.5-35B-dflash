@@ -1,6 +1,6 @@
 # 当前结果
 
-更新：2026-11-05。以下设备/编译结果来自用户回传，未在本地重新运行。当前操作见[精度定位与profiling](current-status.md)。完整Draft数值门槛仍未通过，尚无配对端到端加速结论。
+更新：2026-11-05。以下设备/编译结果来自用户回传，未在本地重新运行。当前操作见[hidden精度定位](current-status.md)。完整Draft数值门槛仍未通过；性能优化按用户安排暂缓，尚无配对端到端加速结论。
 
 ## 自定义 Top1
 
@@ -77,7 +77,7 @@ StableArgMax整图profiling已回收：同一OMC、V1新进程、case 2（start1
 | Transpose_1 | 5.284 |
 | StableArgMax，npu_aicore | 0.415 |
 
-Top1约占算子duration合计0.67%；前三项合计34.002ms、约54.88%。按源码结构，末尾MatMul应对应完整词表head，入口Conv及Transpose应对应特征投影与空间打包，具体编译节点映射仍需shape/边关系确认。后续优先分析这些区域，当前不继续优化Top1。
+Top1约占算子duration合计0.67%；前三项合计34.002ms、约54.88%。按源码结构，末尾MatMul应对应完整词表head，入口Conv及Transpose应对应特征投影与空间打包，具体编译节点映射仍需shape/边关系确认。这些性能方向保留至精度改善后再推进。
 
 原生Top1旧profiling为model inference103.720ms／算子合计73.656ms，CPU ArgMax12.353ms；本次两个合计分别下降37.164ms／11.696ms。它们不是配对稳态测量，不能把全部差额归因于Top1。新表NPU start time集中在 `02:36:57.697844–.698040`，晚于model inference end `.695706`；时间域或事件含义未解释，不能据此计算CPU→NPU等待。算子合计不当作关键路径，66.556−61.960=4.596ms也不等于实测搬运或调度时间。
 

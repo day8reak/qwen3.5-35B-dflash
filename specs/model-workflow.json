@@ -3,7 +3,7 @@
   "updated": "2026-11-05",
   "active_phase": "accuracy",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
-  "run_id": "20261105T034952Z-26771-b8dbd3",
+  "run_id": "20261105T035706Z-27113-40e39d",
   "navigation": {
     "home": "docs/README.md",
     "model": "docs/model-architecture.md",
@@ -5810,7 +5810,7 @@
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
     "device_numerics": "UNTOUCHED_REPLAY_FIRST_CASE_ALL14_OUTPUTS_BITWISE_EQUAL; HIDDEN_L2_1.449_PERCENT; ISOLATED82_OF86_FEEDBACK83_OF86; ORIGINAL_GATES_FAILED",
-    "next": "Review feature projection/layout and KV update boundaries; retain failed numeric gates. Host head audit7/7 reproduced both reference and device IDs; no repeat profiling required.",
+    "next": "LOCATE_FIRST_HIDDEN_DIVERGENCE_WITH_REAL_INPUT_FIRST_QUERY_PREFIX; PERFORMANCE_DEFERRED_BY_USER",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -6373,8 +6373,8 @@
       },
       "performance_assessment": {
         "evidence": "20261105T034952Z-26771-b8dbd3/evidence/performance-assessment.json",
-        "document": "docs/current-status.md",
-        "status": "READ_ONLY_CANDIDATE_ASSESSMENT",
+        "document": "https://github.com/day8reak/qwen3.5-35B-dflash/blob/5c7d6aa8a74406e0975bbe1136d52fbfc5173b68/docs/current-status.md",
+        "status": "DEFERRED_BY_USER_UNTIL_ACCURACY_IMPROVES",
         "hardware_reference_policy": "use",
         "capacity_profile_status": "MISSING_MATCHING_X90_EMPIRICAL_PROFILE",
         "realizable_speedup_estimate": null,
@@ -6399,6 +6399,23 @@
           }
         ],
         "candidate_code_changed": false
+      },
+      "hidden_prefix_probe": {
+        "status": "LOCAL_IMPLEMENTATION_TESTED_TARGET_EXECUTION_PENDING",
+        "entry": "targets/cpro/tools/probe_draft_hidden.py",
+        "commands": "docs/current-status.md",
+        "source": "RETAINED_UNTOUCHED_CASE0_HOST_EMBEDDINGS_AND_MATCHING_AIR",
+        "scope": "LAYER0_INPUT_RMS_QUERY_PROJECTION_QUERY_RMS_PREFIX_NOT_FULL_DRAFT",
+        "cases": [
+          "hidden_first_query",
+          "hidden_first_query_taps"
+        ],
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
+        "full_model_first_divergence": "NOT_YET_LOCALIZED",
+        "performance_work": "DEFERRED_BY_USER_UNTIL_ACCURACY_IMPROVES",
+        "host_evidence": "20261105T035706Z-27113-40e39d/evidence/hidden-probe-local-checks.json"
       }
     }
   }

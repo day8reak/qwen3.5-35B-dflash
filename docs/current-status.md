@@ -1,26 +1,55 @@
-# 当前阶段：Draft 精度定位与性能方案
+# 当前阶段：定位 hidden 最早的数值偏差
 
-2026-11-05：`untouched` 回放已消除本轮首例额外12928个零，14路输出在两模式间逐位一致。离线head检查的reference／device hidden分别复现7/7个golden／设备Top1，hidden差异足以在CPU head下解释翻转；首个偏差层尚未定位，整图仍未通过原数值门槛。详细结果见[结果页](results.md)。
+2026-11-05：完整Draft仍未通过精度门槛。`untouched` 回放消除了首例额外零值，但hidden相对L2仍约1.34%–2.61%；离线head已用device hidden复现全部7处Top1翻转。按当前安排，先定位并改善精度，性能优化暂缓。已有结果见[结果页](results.md)。
 
-## 性能优先级
+本轮检查第0层 `input RMSNorm → Q投影 → Q RMSNorm`。两个小图从当前AIR裁取，保留原计算节点和三份权重：一个只输出Q归一化结果，另一个暴露五个检查点。输入复用empty-context原始FP16 embedding，比较容差不变。**裁剪和增加输出可能改变编译，探针结果不能直接当作整图首错位置。**
 
-当前同步API约66ms；绑定profiling的一次inference为66.556ms，要到50ms需省16.556ms。下表的目标只是用于筛选实验的预算，**不是已测收益或硬件下界**；尚缺匹配X90的能力标定，编译节点与源码区域的shape映射也需核对。
+## DDK服务器：准备与执行
 
-| 方向 | 已测相关开销 | 准备验证的目标 |
-|---|---:|---|
-| 特征投影＋布局 | Conv2D 8.753ms＋Transpose_1 5.284ms | 直接读取ND特征做完整K=16384点积，争取区域降至6–8ms |
-| LM head分块＋Top1 | MatMul_30 19.965ms，Top1 0.415ms | 先验证矩阵乘本体能否降至12–15ms，再合并分块归约 |
-| KV更新 | 十二个Gather合计2.857ms，另有Select等 | 直接写新增区间、保留完整旧bank，争取省1–2ms |
-| 无新增context的proposal | 当前仍计算固定16行context | 仅在运行时valid_rows=0时跳过无消费者的投影和context KV分支 |
+更新代码后执行；需要已保留的export、prepared和output-init/result，不需要Torch、TorchAir或重新导出整Draft。
 
-head融合必须保留全词表、15行之间的权重复用、FP16 logits舍入与并列取最小索引；公开的hidden输出仍需保留。约1.017GB的head权重远大于7.45MB logits，仅省logits往返不能推断20ms矩阵乘大幅加速。融合减少中间搬运的机制可参照[华为Ascend C指南](https://www.hiascend.com/doc_center/source/zh/canncommercial/800/developmentguide/opdevg/Ascendcopdevg/CANN%E5%95%86%E7%94%A8%E7%89%88%208.0.0%20Ascend%20C%E8%87%AA%E5%AE%9A%E4%B9%89%E7%AE%97%E5%AD%90%E5%BC%80%E5%8F%91%E6%8C%87%E5%8D%97%2001.pdf)，具体接口和收益以所选X90 DDK验证为准。
+```bash
+export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
+export HIDDEN_DIR="$TOP1_DIR/hidden-first-query"
 
-假设其他部分不变、区域收益能落到API墙钟：入口8ms、head15ms、KV省1ms时约54.6ms；入口7ms、head12ms、KV省2ms时约49.6ms。这是有条件的串行预算，算子duration之和不等于关键路径。50ms有可测试路径，尚不能承诺达标；全context场景不能沿用valid_rows=0的收益。
+python3 "$REPO_DIR/targets/cpro/tools/probe_draft_hidden.py" \
+  --air-export "$TOP1_DIR/export" \
+  --source "$AI_RUN_DIR/draft/source/prepared" \
+  --result "$TOP1_DIR/output-init/result" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
+  --output "$HIDDEN_DIR/compiled"
+```
 
-纯catchup可另查只生成context KV的入口，但需证明调用方只消费这些输出；其收益不能充当proposal≤50ms。当前不优先重写StableArgMax（0.415ms）或仅softmax（六层合计约0.87ms）。
+需要两个case均为`COMPILED`。只编译小图，不替换整Draft OMC。随后更新共享运行器，使tensor probe支持显式`untouched`输出模式；这是运行器构建，不是重编整模型：
 
-## 现在需要执行什么
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$AI_RUN_DIR/runtime/native" --replace
 
-本轮回放、head审计和profiling均已回收，无需重复上板、编译或采集。保留当前失败夹具、原始CSV和head-audit.json；下一步优先核对入口投影／布局映射和KV更新边界，再实施一个有独立正确性检查的小范围候选。新算子、模型图和运行器尚未改动，验收容差保持。
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$HIDDEN_DIR/compiled" --ddk-root "$CPRO_DDK_ROOT" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --output "$HIDDEN_DIR/run" --apply
+```
 
-首次构建见[完整流程](run-end-to-end.md)；离线审计入口仍为 `validate_incremental_draft.py --audit-head`，本轮已完成。
+启动后回收同一请求，不重复启动：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$HIDDEN_DIR/run" --output "$HIDDEN_DIR/result"
+
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --analyze "$HIDDEN_DIR/result" > "$HIDDEN_DIR/diagnosis.json"
+cat "$HIDDEN_DIR/diagnosis.json"
+```
+
+## 如何读结果
+
+- 先看`normal_vs_tapped_terminal_all_calls_bitwise_equal`和`repeat_bitwise_stable`。若不同，先排查探针对编译或输出可见性的影响。
+- `first_nonexact_checkpoint`表示首次非逐位一致；`first_failed_checkpoint`才表示首次超过原容差。每个检查点均比较十次输出，并报告源码节点、误差和CPU/NPU归属。
+- 同时列出原参考的gamma舍入边界，供判断差异来源；这组备选计算不替换golden，不改变验收。
+
+若两图稳定且全部检查点通过，下一步扩到第0层attention／残差；若某点失败，围绕该点验证精度表达。当前本地检查已完成，真实DDK编译和设备数值尚待本轮回传。贴编译摘要及diagnosis.json文本即可，无需打包。
+
+完整构建流程见[执行说明](run-end-to-end.md)。

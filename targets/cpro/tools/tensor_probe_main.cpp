@@ -66,10 +66,13 @@ Bytes Read(const fs::path& path, std::size_t size) {
 int main(int argc, char** argv) {
   try {
     if (argc == 2 && std::string(argv[1]) == "--help") {
-      std::cout << "qwen35_tensor_probe MODEL RUNTIME_VERSION FIXTURE_DIRECTORY NEW_OUTPUT_DIRECTORY\n";
+      std::cout << "qwen35_tensor_probe MODEL RUNTIME_VERSION FIXTURE_DIRECTORY NEW_OUTPUT_DIRECTORY [zero|untouched]\n";
       return 0;
     }
-    if (argc != 5) throw std::invalid_argument("expected model, runtime, fixture and output");
+    if (argc != 5 && argc != 6) throw std::invalid_argument("expected model, runtime, fixture, output and optional output initialization");
+    const std::string output_initialization = argc == 6 ? argv[5] : "zero";
+    if (output_initialization != "zero" && output_initialization != "untouched")
+      throw std::invalid_argument("output initialization must be zero or untouched");
     const fs::path fixture = argv[3], output = argv[4];
     const auto plan = ReadPlan(fixture / "plan.txt");
     if (fs::exists(output)) throw std::invalid_argument("probe output already exists");
@@ -77,7 +80,8 @@ int main(int argc, char** argv) {
     for (std::size_t i = 0; i < plan.inputs.size(); ++i)
       inputs.push_back(Read(fixture / ("input_" + std::to_string(i) + ".bin"), HiaiTensorBytes(plan.inputs[i])));
     HiaiStatefulExecutor executor(argv[1], argv[2], plan.inputs, plan.outputs,
-        30000, true, -1, false, "legacy-buffer", "qwen35_tensor_probe", nullptr, {}, false);
+        30000, true, -1, false, "legacy-buffer", "qwen35_tensor_probe", nullptr, {}, false, false,
+        output_initialization == "zero");
     fs::create_directories(output);
     for (std::size_t i = 0; i < inputs.size(); ++i) executor.SetInput(i, inputs[i]);
     std::ofstream result(output / "result.json");
@@ -86,7 +90,8 @@ int main(int argc, char** argv) {
 #else
     const char* evidence = "device-hiai";
 #endif
-    result << "{\"evidence_kind\":\"" << evidence << "\",\"warmup\":" << plan.warmup
+    result << "{\"evidence_kind\":\"" << evidence << "\",\"output_initialization\":\""
+           << output_initialization << "\",\"warmup\":" << plan.warmup
            << ",\"repetitions\":" << plan.repetitions << ",\"api_us\":[";
     for (unsigned i = 0; i < plan.warmup + plan.repetitions; ++i) {
       if (i) for (std::size_t j = 0; j < inputs.size(); ++j) executor.ReuseInput(j);

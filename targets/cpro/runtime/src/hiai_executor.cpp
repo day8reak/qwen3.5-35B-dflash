@@ -643,8 +643,8 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
   impl_->diagnostics = diagnostics;
   impl_->target.profile_load=standalone_draft&&!resident_model_name.empty()&&model_load_api=="legacy-buffer";
   try {
-  if (!initialize_outputs && (!standalone_draft || diagnostics || diagnostic_output_fill_byte != -1))
-    throw std::invalid_argument("untouched outputs require a compact standalone draft without output fill");
+  if (!initialize_outputs && ((!standalone_draft && !fused_operator_probe) || diagnostics || diagnostic_output_fill_byte != -1))
+    throw std::invalid_argument("untouched outputs require a compact standalone draft or operator probe without output fill");
   if (model_preread && !impl_->target.profile_load)
     throw std::invalid_argument("preread requires a resident legacy-buffer draft");
   impl_->target.legacy.preread_requested=model_preread;
