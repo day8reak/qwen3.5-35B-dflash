@@ -8,7 +8,10 @@
 
 更新代码后在DDK服务器执行；需要已保留的export、prepared和output-init/result，不需要Torch、TorchAir或重新导出整Draft。
 
+已修正MatMul未提供bias时的空端口检查。若上次停在`source prefix requires ND descriptors: MatMul`，更新后重跑下面命令即可；该预检失败尚未创建输出目录或启动OMG，无需清理目录。
+
 ```bash
+git -C "$REPO_DIR" pull --ff-only
 export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
 export HIDDEN_DIR="$TOP1_DIR/hidden-first-query"
 

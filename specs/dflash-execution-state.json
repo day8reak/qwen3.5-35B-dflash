@@ -7740,7 +7740,13 @@
             "numerical_validation": "NOT_RUN",
             "full_model_first_divergence": "NOT_YET_LOCALIZED",
             "performance_work": "DEFERRED_BY_USER_UNTIL_ACCURACY_IMPROVES",
-            "host_evidence": "20261105T035706Z-27113-40e39d/evidence/hidden-probe-local-checks.json"
+            "host_evidence": "20261105T035706Z-27113-40e39d/evidence/hidden-probe-local-checks.json",
+            "preflight_repair": {
+              "reported_error": "ValueError: source prefix requires ND descriptors: MatMul",
+              "status": "LOCAL_REGRESSION_PASSED_USER_RETRY_PENDING",
+              "change": "VALIDATE_MARKED_ABSENT_MATMUL_BIAS_SEPARATELY_FROM_LIVE_TENSORS; PRESERVE_SOURCE_BYTES",
+              "host_evidence": "20261105T055948Z-29093-bb6093/evidence/hidden-optional-input-checks.json"
+            }
           }
         }
       }

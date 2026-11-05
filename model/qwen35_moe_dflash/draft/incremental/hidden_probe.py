@@ -71,6 +71,32 @@ class Prefix:
             raise ValueError('expected one original FP16 Cast after '+norm['name'])
         return matches[0]
 
+    def data_inputs(self, node):
+        """Resolve live input slots without treating an absent MatMul bias as data."""
+        edges, descs = node.get('input', []), node.get('input_desc', [])
+        name, kind = node['name'], node['type']
+        if kind == 'MatMul':
+            if len(edges) not in (2, 3) or len(descs) != len(edges) or not all(edges[:2]):
+                raise ValueError('source MatMul requires two connected matrix ports and matching descriptors: '+name)
+            if len(edges) == 3:
+                bias = descs[2]
+                # TorchAir mm emits MatMul(x1, x2, None). The third slot is
+                # get_invalid_desc(), not an ND tensor. Keep its raw bytes.
+                # Pinned schema source: Ascend/torchair e1118e8b, MatMul and
+                # ge/_ge_graph.py:get_invalid_desc (_is_unfed_optional=1).
+                # Proto3 omits the default DT_UNDEFINED=0 enum value.
+                if (edges[2] != '' or bias.get('dtype', self.types['DT_UNDEFINED']) != self.types['DT_UNDEFINED']
+                        or _attributes(bias).get('_is_unfed_optional', {}).get('i') != 1
+                        or bias.get('shape', {}).get('dim')
+                        or bias.get('name') not in (None, 'bias')):
+                    raise ValueError('source MatMul input[2] must be a marked absent optional bias: '+name)
+            return list(enumerate(edges[:2]))
+        if kind == 'Data' and edges in ([], ['']):
+            return []
+        if any(not e for e in edges):
+            raise ValueError('empty required source input: '+name+' ('+kind+')')
+        return list(enumerate(edges))
+
     def select(self, embedding_name):
         first, query = self.norm(WEIGHTS[0]), self.norm(WEIGHTS[2])
         source, _ = _unary_path(self.shapes, first['input'][0], {'Cast', 'Identity'})
@@ -78,6 +104,7 @@ class Prefix:
             raise ValueError('first RMS must descend directly from the bound host embeddings')
         self.terminal = self.half_output(query)
         selected, active = set(), set()
+        self.absent_optional_inputs = []
         allowed = {'Data', 'FileConstant', 'Const', 'Cast', 'Identity', 'Reshape',
                    'Transpose', 'MatMul', 'RmsNorm'}
         def visit(edge):
@@ -88,12 +115,21 @@ class Prefix:
                 raise ValueError('cyclic or oversized query prefix')
             if n['type'] not in allowed or n.get('subgraph_name'):
                 raise ValueError('unsupported query-prefix node: '+name+' ('+n['type']+')')
-            if any(d.get('layout', 'ND') != 'ND' for d in n.get('input_desc', [])+n.get('output_desc', [])):
-                raise ValueError('source prefix requires ND descriptors: '+name)
+            inputs = self.data_inputs(n)
+            absent = n['type'] == 'MatMul' and len(n['input']) == 3
+            for side in ('input', 'output'):
+                for index, d in enumerate(n.get(side+'_desc', [])):
+                    if side == 'input' and absent and index == 2:
+                        self.absent_optional_inputs.append(dict(node=name, input_index=index,
+                            descriptor=deepcopy(d), reason='MARKED_ABSENT_MATMUL_BIAS; RAW_BYTES_PRESERVED'))
+                        continue
+                    if d.get('layout', 'ND') != 'ND':
+                        raise ValueError(f'source prefix requires ND descriptors: {name} ({n["type"]}) '
+                            f'{side}[{index}] layout={d.get("layout")!r} dtype={d.get("dtype")} '
+                            f'shape={d.get("shape", {}).get("dim")}')
             active.add(name)
-            for e in n.get('input', []):
-                if e or n['type'] != 'Data':
-                    visit(e)
+            for _, edge in inputs:
+                visit(edge)
             active.remove(name); selected.add(name)
         visit(self.terminal)
         self.selected = selected
@@ -121,7 +157,7 @@ class Prefix:
                 return values[edge]
             n = self.shapes.node(edge); name, kind = n['name'], n['type']
             attrs = _attributes(n)
-            args = [evaluate(e) for e in n.get('input', []) if e]
+            args = [evaluate(e) for _, e in self.data_inputs(n)]
             if kind == 'Data':
                 y = embeddings
             elif kind == 'FileConstant':
@@ -237,6 +273,7 @@ class Prefix:
         if len(signatures) != len(declared['outputs']):
             raise ValueError('tap shapes/dtypes are ambiguous for the existing probe ABI binder')
         return raw, dict(graph=declared, preserved_payload_sha256=preserved,
+            absent_optional_inputs=self.absent_optional_inputs,
             changes='ONLY_DATA_INDEX_AND_NETOUTPUT; ORIGINAL_PREFIX_COMPUTE_PAYLOADS_PRESERVED',
             scope=SCOPE, full_graph_compilation_preserved=False, taps=taps)
 
