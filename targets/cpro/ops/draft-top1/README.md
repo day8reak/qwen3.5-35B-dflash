@@ -41,6 +41,7 @@ python3 "$OP_DIR/scripts/prepare_allops.py" \
 python3 "$OP_DIR/scripts/stable_arg_max_ge.py" \
   --ge-root "$CANN_ROOT" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
   --output "$AI_RUN_DIR/draft/tests/stable-arg-max-ge"
 ```
 
@@ -58,6 +59,20 @@ python3 "$OP_DIR/scripts/stable_arg_max_ge.py" \
 ```
 
 检查命令的 `model_compilation=NOT_RUN` 指本次只读检查；原编译状态记录在 `source_model_compilation`。粘贴摘要即可，无需打包文件。仅有 OMG 退出码 1 不能判断根因；`prepare_allops.py` 的 `SOURCES_COPIED` 也不代表已经执行 allops 编译安装。
+
+本项目选定DDK此前已验证需要 TBE 平台名称兼容，使用保留的 `common/tbe-diagnosis`；诊断放在其他路径时传入实际目录。脚本将 `--tbe-diagnosis` 交给既有工具链核验，在本次编译目录使用TE副本，不改已安装Python包或DDK，OMG目标仍是 `kirinx90`。无需该兼容的环境可省略参数；不以日志中的其他SOC名替换OMG目标。
+
+2026-11-05用户旧失败发生在 `te_update_version()`，该轮入口漏传此参数。host注册/tiling已有日志证据，host/kernel源码没有修改。可以直接复用已生成的AIR，只做一次修正后的OMG编译，保留旧失败目录：
+
+```bash
+python3 "$OP_DIR/scripts/stable_arg_max_ge.py" \
+  --reuse-export "$AI_RUN_DIR/draft/tests/stable-arg-max-ge" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --output "$AI_RUN_DIR/draft/tests/stable-arg-max-ge-tbe"
+```
+
+复用时无需GE SDK或重新导出，shape默认继承旧报告。校验旧AIR/图源码哈希、当前host/kernel及参考源码、全部输入与golden；仅CLI/诊断代码变化允许复用。新报告同时记录 `tbe_compatibility.audit_status` 与编译结果，`APPLIED` 只表示实际worker使用了兼容处理，不能代替OMG或设备通过。新OMC通过后，上板命令的 `--compiled` 改为这个新目录。
 
 其他选项：
 

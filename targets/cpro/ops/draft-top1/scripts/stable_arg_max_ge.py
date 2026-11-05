@@ -71,6 +71,45 @@ def inspect_compilation(directory):
         **failure_diagnostics(output, 'omg' if (output / 'omc').is_dir() else report.get('stage')))
 
 
+def retained_export(directory):
+    """Validate an existing export, allowing tooling-only changes since failure."""
+    root = Path(directory).resolve()
+    path = root / 'result.json'
+    with path.open('rb') as stream:
+        raw = stream.read((8 << 20) + 1)
+    if len(raw) > 8 << 20:
+        raise ValueError('retained probe report exceeds 8 MiB')
+    report = json.loads(raw)
+    if (not isinstance(report, dict) or report.get('artifact_kind') != KIND
+            or report.get('status') not in ('FAILED', 'EXPORTED', 'COMPILED', 'PLACEMENT_REJECTED')
+            or not isinstance(report.get('air'), dict)):
+        raise ValueError('reuse requires an existing completed GE export with recorded AIR hash')
+    shape = checked_shape(report['shape'])
+    from qwen35_moe_dflash.graph.fused.emitter import emit_cpp
+    graph = graph_for(shape)
+    cpp = emit_cpp(graph, fold_constant_arithmetic=False).encode()
+    source = root / 'probe.cpp'
+    if (report.get('graph') != graph.manifest()
+            or report.get('graph_cpp_sha256') != hashlib.sha256(cpp).hexdigest()
+            or source.is_symlink() or not source.resolve().is_relative_to(root)
+            or source.stat().st_size != len(cpp) or source.read_bytes() != cpp):
+        raise ValueError('retained GE graph/source differs from the current recipe')
+    # Diagnostic/CLI changes may differ; the actual op and reference must not.
+    for name, digest in source_hashes().items():
+        if name != 'scripts/stable_arg_max_ge.py' and report.get('source_sha256', {}).get(name) != digest:
+            raise ValueError('retained operator/reference source changed: ' + name)
+    relative = Path(report['air']['path'])
+    if relative != Path('air/stable_arg_max.air'):
+        raise ValueError('unexpected retained AIR path')
+    air = root / relative
+    if (air.is_symlink() or not air.is_file() or not air.resolve().is_relative_to(root)
+            or not 0 < air.stat().st_size <= 64 << 20 or sha(air) != report['air'].get('sha256')):
+        raise ValueError('retained AIR bytes/hash differ or file is outside the probe')
+    return root, report, dict(source=str(root), source_report_sha256=hashlib.sha256(raw).hexdigest(),
+        air_sha256=report['air']['sha256'], ge_export='REUSED_HASH_CHECKED_AIR',
+        graph_cpp_sha256=report['graph_cpp_sha256'])
+
+
 def checked_shape(shape):
     shape = tuple(shape)
     if (not 1 <= len(shape) <= 8 or any(type(d) is not int or d <= 0 for d in shape)
@@ -140,7 +179,11 @@ def run(args):
     from qwen35_moe_dflash.graph.fused.emitter import emit_cpp
     from qwen35_moe_dflash.graph.export import _logged
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
-    shape = checked_shape(args.shape)
+    reused = retained_export(args.reuse_export) if getattr(args, 'reuse_export', None) else None
+    shape = checked_shape(args.shape if args.shape is not None else
+        reused[1]['shape'] if reused else reference.SHAPE)
+    if reused and tuple(reused[1]['shape']) != shape:
+        raise ValueError('--shape differs from retained export')
     if math.prod(shape) * 2 + math.prod(shape[:-1]) * 4 > 16 << 20:
         raise ValueError('standalone probe IO is bounded to 16 MiB; this is not the kernel shape limit')
     output = Path(args.output).absolute()
@@ -148,12 +191,14 @@ def run(args):
         raise ValueError('output must not be a symlink')
     output = output.resolve()
     protected = [REPO]
+    if reused:
+        protected.append(reused[0])
     for selected in (args.ge_root, args.ddk_root):
         if selected:
             protected.append(Path(selected).resolve())
     if any(output == p or p in output.parents or output in p.parents for p in protected):
         raise ValueError('output must be separate from repository and SDKs')
-    if not args.plan_only and not args.ge_root:
+    if not args.plan_only and not reused and not args.ge_root:
         raise ValueError('provide --ge-root/CANN_ROOT with GE C++ include/graph and lib64/libgraph.so')
     if not args.plan_only and not args.export_only and not (args.ddk_root and args.ddk_id):
         raise ValueError('provide CPRO_DDK_ROOT and CPRO_DDK_ID (or corresponding options)')
@@ -168,11 +213,24 @@ def run(args):
         cpp = output / 'probe.cpp'
         cpp.write_text(emit_cpp(graph, fold_constant_arithmetic=False))
         report['graph_cpp_sha256'] = sha(cpp)
+        if reused:
+            report['reused_export'] = reused[2]
+            expected_cases = ['stable_arg_max__' + name for name, _ in fixtures(shape)]
+            if [r['case'] for r in reused[1].get('cases', [])] != expected_cases:
+                raise ValueError('retained fixture suite differs')
+            saved_cases = {r['case']: r for r in reused[1]['cases']}
         for scenario, x in fixtures(shape):
             name = 'stable_arg_max__' + scenario
             folder = output / 'fixture' / name
             folder.mkdir(parents=True)
             y = np.argmax(x, axis=-1).astype('<i4')
+            if reused:
+                for prefix, array, key in (('input', x, 'input_sha256'), ('golden', y, 'golden_sha256')):
+                    old = reused[0] / 'fixture' / name / (prefix + '_0.bin')
+                    if (old.is_symlink() or not old.resolve().is_relative_to(reused[0])
+                            or old.stat().st_size != array.nbytes or sha(old) != saved_cases[name][key]
+                            or old.read_bytes() != array.tobytes()):
+                        raise ValueError('retained fixture differs from direct reference: ' + name)
             x.tofile(folder / 'input_0.bin')
             y.tofile(folder / 'golden_0.bin')
             report['cases'].append(dict(case=name, input_sha256=sha(folder / 'input_0.bin'),
@@ -181,28 +239,34 @@ def run(args):
         if args.plan_only:
             report.update(status='PLANNED', stage='complete')
             return report
-        ge = Path(args.ge_root).resolve()
-        for path in (ge / 'include/graph/graph.h', ge / 'lib64/libgraph.so'):
-            if not path.is_file():
-                raise FileNotFoundError(path)
-        report['stage'] = 'ge-export'
-        env = dict(os.environ)
-        library = ge / 'lib64'
-        env['LD_LIBRARY_PATH'] = str(library) + os.pathsep + env.get('LD_LIBRARY_PATH', '')
-        exporter = output / 'exporter'
-        command = [args.cxx, '-std=c++17', f'-D_GLIBCXX_USE_CXX11_ABI={args.cxx11_abi}',
-            '-I', str(ge / 'include'), str(cpp), '-L', str(library),
-            f'-Wl,-rpath,{library}', '-lgraph']
-        if (library / 'libgraph_base.so').is_file():
-            command.append('-lgraph_base')
-        command += ['-o', str(exporter)]
-        write(output / 'build-command.json', dict(argv=command, ge_root=str(ge),
-            libgraph_sha256=sha(library / 'libgraph.so')))
-        _logged(command, folder=output, env=env, log=output / 'build.log', timeout=args.timeout_seconds)
         (output / 'air').mkdir()
         air = output / 'air/stable_arg_max.air'
-        _logged([str(exporter), str(air)], folder=output, env=env,
-            log=output / 'export.log', timeout=args.timeout_seconds)
+        if reused:
+            report['stage'] = 'reuse-air'
+            shutil.copyfile(reused[0] / 'air/stable_arg_max.air', air)
+            if sha(air) != reused[2]['air_sha256']:
+                raise ValueError('AIR changed during reuse copy')
+        else:
+            ge = Path(args.ge_root).resolve()
+            for path in (ge / 'include/graph/graph.h', ge / 'lib64/libgraph.so'):
+                if not path.is_file():
+                    raise FileNotFoundError(path)
+            report['stage'] = 'ge-export'
+            env = dict(os.environ)
+            library = ge / 'lib64'
+            env['LD_LIBRARY_PATH'] = str(library) + os.pathsep + env.get('LD_LIBRARY_PATH', '')
+            exporter = output / 'exporter'
+            command = [args.cxx, '-std=c++17', f'-D_GLIBCXX_USE_CXX11_ABI={args.cxx11_abi}',
+                '-I', str(ge / 'include'), str(cpp), '-L', str(library),
+                f'-Wl,-rpath,{library}', '-lgraph']
+            if (library / 'libgraph_base.so').is_file():
+                command.append('-lgraph_base')
+            command += ['-o', str(exporter)]
+            write(output / 'build-command.json', dict(argv=command, ge_root=str(ge),
+                libgraph_sha256=sha(library / 'libgraph.so')))
+            _logged(command, folder=output, env=env, log=output / 'build.log', timeout=args.timeout_seconds)
+            _logged([str(exporter), str(air)], folder=output, env=env,
+                log=output / 'export.log', timeout=args.timeout_seconds)
         report.update(status='EXPORTED', air=dict(path=str(air.relative_to(output)), sha256=sha(air)))
         if args.export_only:
             report['stage'] = 'complete'
@@ -210,8 +274,14 @@ def run(args):
         report['stage'] = 'omg'
         write(output / 'result.json', report)
         compiled = compile_existing_air(air, output / 'omc', args.ddk_root, ddk_id=args.ddk_id,
-            timeout_seconds=args.timeout_seconds, use_origin_format=True, save_weights_as_external_data=False)
+            timeout_seconds=args.timeout_seconds, use_origin_format=True, save_weights_as_external_data=False,
+            tbe_diagnosis=getattr(args, 'tbe_diagnosis', None))
         report['model_compilation'] = compiled['model_compilation']
+        compatibility = compiled.get('tbe_compatibility')
+        if compatibility is not None:
+            report['tbe_compatibility'] = dict(diagnosis=compatibility.get('diagnosis'),
+                audit_status=compatibility.get('audit', {}).get('status', 'NOT_OBSERVED'),
+                report='omc/report.json')
         if compiled['status'] != 'COMPILED':
             raise RuntimeError(str(compiled.get('error', compiled['status'])))
         model = output / 'omc' / compiled['omc']['path']
@@ -297,17 +367,20 @@ def prepare_fixture(root, out, ddk, ddk_id, selection):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--shape', nargs='+', type=int, default=[1, 15, 248320])
+    parser.add_argument('--shape', nargs='+', type=int, help='default Qwen shape, or the retained export shape')
     parser.add_argument('--output')
     parser.add_argument('--ge-root', default=os.environ.get('CANN_ROOT'))
     parser.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     parser.add_argument('--ddk-id', default=os.environ.get('CPRO_DDK_ID'))
+    parser.add_argument('--tbe-diagnosis', help='existing selected-DDK diagnosis for run-local TBE compatibility')
     parser.add_argument('--cxx', default='c++')
     parser.add_argument('--cxx11-abi', type=int, choices=(0, 1), default=0)
     parser.add_argument('--timeout-seconds', type=int, default=1800)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--plan-only', action='store_true', help='source + NumPy fixtures, no GE/OMG needed')
     modes.add_argument('--export-only', action='store_true', help='GE C++ -> AIR without OMG')
+    modes.add_argument('--reuse-export', metavar='DIRECTORY',
+        help='reuse a hash-checked existing AIR/recipe in a new compile directory; no GE export')
     modes.add_argument('--inspect-compilation', metavar='DIRECTORY',
         help='read a retained result/report/log; no compilation, writes, SDK or device')
     args = parser.parse_args(argv)

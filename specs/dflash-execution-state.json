@@ -6719,12 +6719,13 @@
         "last_user_compile": {
           "source_copy": "SHA256_MATCHED",
           "ge_export": "REACHED_OMG",
+          "registration_host_tiling": "OBSERVED; 15/248320/8192; blockdim1",
           "omg_returncode": 1,
-          "root_cause": "UNKNOWN_LOG_PENDING",
-          "allops_installation": "UNCONFIRMED",
-          "next": "READ_EXISTING_COMPILER_LOG_NO_RETRY",
-          "diagnostic_tool": "stable_arg_max_ge.py --inspect-compilation",
-          "run_id": "20261105T010637Z-20281-c9f19f"
+          "failure_stage": "TE_WORKER_TE_UPDATE_VERSION",
+          "entrypoint_fix": "FORWARD_EXISTING_TBE_DIAGNOSIS_AND_HASH_CHECKED_AIR_REUSE",
+          "next": "ONE_OMG_RECOMPILE_WITH_RETAINED_common/tbe-diagnosis",
+          "run_id": "20261105T011001Z-20502-2dc937",
+          "corrected_omg": "PENDING_USER_EXECUTION"
         }
       }
     }

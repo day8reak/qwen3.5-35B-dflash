@@ -1,5 +1,8 @@
 # Lessons and evidence scope
 
+- 2026-11-05进一步日志证明host注册及tiling已执行，当前阻塞在worker的te_update_version。对照既有toolchain/compile.py和历史Draft结果，发现新GE入口遗漏 `--tbe-diagnosis` 转发。复用已经证据绑定的CPro/TBE兼容处理；不改目标SOC、不改全局包、不重新扫描内置算子支持范围。入口测试现在验证参数从CLI到compiler，避免仅覆盖默认编译路径。
+- 编译环境修复不需要重复GE导出。新增 `--reuse-export` 校验旧AIR、recipe、host/kernel/reference哈希与fixtures，允许仅诊断CLI代码变化；新输出保留旧失败现场，41项主机检查覆盖。实测兼容是否APPLIED与OMG是否成功分别记录，不能把修复接线测试当目标编译成功。
+
 - 2026-11-05用户已走通GE入口到OMG，但旧入口只向终端抛CalledProcessError，隐藏了现有compiler日志。修复为输出原错误、失败阶段与有界日志摘要，并提供 `--inspect-compilation` 只读旧目录；不要求重导AIR/重编译来收集证据。33项主机检查覆盖此行为。OMG退出码1不是根因，allops源码一致不是构建安装成功。没有据此改kernel或认定DDK不支持。
 
 - 2026-11-05，用户确认DDK服务器已有allops且没有TorchAir，权重服务器才有TorchAir。默认工作流改为向既有工程复制三个host/kernel文件，使用GE C++构造单节点AIR测试；Torch schema/Meta/converter留在权重侧。不能把框架导出依赖当成算子编译前提，也不重建多算子工程。

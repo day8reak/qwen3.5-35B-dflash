@@ -1,5 +1,9 @@
 # Validation
 
+最新用户日志已定位：`StableArgMax` 注册/dispatch及host tiling可达，`block_dim=1`、前三个tiling字段为15/248320/8192；编译worker在 `_prerun → _update_options → te_update_version` 失败，尚非kernel C++诊断。不是仅凭缺少builtin kernel库的较早日志判定根因。
+
+run `20261105T011001Z-20502-2dc937` 修复入口漏传 `--tbe-diagnosis`，并加入旧AIR的哈希核对复用。41项主机流程检查通过（`evidence/tbe-reuse-check/validation.json`），新增覆盖新编译/复用两种路径透传参数、审计摘要、无GE环境下只调用一次OMG、旧目录字节和mtime保留、shape/图源码/host-kernel/AIR/fixture变化拒绝。SDK调用仍为mock；修正后的实际OMG和设备未在本地执行，host/kernel未变。
+
 2026-11-05后续用户报告：三个allops源码SHA256与交付源码一致；GE流程已进入OMG，OMG退出码1，无OMC成功证据。用户未贴allops构建结果或compiler具体错误，尚不能定位注册/安装、接口或kernel问题。源码哈希一致不构成安装成功证据。
 
 诊断工具修复run `20261105T010637Z-20281-c9f19f`：33项无Torch主机流程检查通过，见 `evidence/diagnostics-check/validation.json`。新增覆盖失败JSON携带真实读取的日志摘要、旧失败目录只读检查且不要求源码哈希、缺失/损坏日志报告保留、拒绝其他artifact、预检失败不覆盖旧结果。SDK调用仍为mock，用户失败没有在本地重跑，host/kernel不变。

@@ -9,16 +9,16 @@
 | Operator | draft-top1 |
 | Branch | operator/draft-top1 |
 | Current phase | 2 |
-| Based-on revision | 5b4f840d9ad2c1519b9b91c02eeb5505b58166af |
-| Updated UTC | 2026-11-05T01:09:06Z |
-| Summary | User GE export reached OMG exit 1; compiler root cause and allops installation unconfirmed. Read-only diagnostic support delivered. |
-| Blocker | User OMG reports exit 1 without compiler log; cannot determine root cause from subprocess traceback. No local selected DDK/device. |
+| Based-on revision | 494cfd0178365330b126194354e2bad40f071ed7 |
+| Updated UTC | 2026-11-05T01:14:13Z |
+| Summary | Forwarded established TBE compatibility into StableArgMax GE probe and added retained AIR reuse. User host tiling reached; original worker failed platform update. |
+| Blocker | Corrected OMG compile and device validation must run on user-operated selected DDK; no local selected target profile. |
 | Active files | scripts/stable_arg_max_ge.py<br>tests/test_ddk_workflow.py |
-| Recorded working tree (PLAN excluded) |  M docs/current-status.md<br> M docs/results.md<br> M specs/dflash-execution-state.json<br> M targets/cpro/ops/draft-top1/README.md<br> M targets/cpro/ops/draft-top1/docs/LESSONS.md<br> M targets/cpro/ops/draft-top1/docs/VALIDATION.md<br> M targets/cpro/ops/draft-top1/operator.json<br> M targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py<br> M targets/cpro/ops/draft-top1/tests/test_ddk_workflow.py |
+| Recorded working tree (PLAN excluded) |  M docs/current-status.md<br> M docs/results.md<br> M specs/dflash-execution-state.json<br> M targets/cpro/ops/draft-top1/README.md<br> M targets/cpro/ops/draft-top1/docs/ENVIRONMENT.md<br> M targets/cpro/ops/draft-top1/docs/LESSONS.md<br> M targets/cpro/ops/draft-top1/docs/VALIDATION.md<br> M targets/cpro/ops/draft-top1/operator.json<br> M targets/cpro/ops/draft-top1/scripts/stable_arg_max_ge.py<br> M targets/cpro/ops/draft-top1/tests/test_ddk_workflow.py |
 
 ## Exact next commands
 
-- `python3 "$OP_DIR/scripts/stable_arg_max_ge.py" --inspect-compilation "$AI_RUN_DIR/draft/tests/stable-arg-max-ge"`
+- `python3 "$OP_DIR/scripts/stable_arg_max_ge.py" --reuse-export "$AI_RUN_DIR/draft/tests/stable-arg-max-ge" --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" --output "$AI_RUN_DIR/draft/tests/stable-arg-max-ge-tbe"`
 
 ## Phase table
 
@@ -26,7 +26,7 @@
 |---:|---|---|---|---|---|---|
 | 0 | Git scope | COMPLETED | Branch, manifest, persistent plan, and scaffold form a rollback checkpoint | Managed operator branch and source checkpoint established.<br>Source checkpoint 2f55529; lifecycle working check passed.<br>Evidence: git:2f55529 | Record the frozen independently validated host contract. | — |
 | 1 | Contract and baseline | COMPLETED | Interface, semantics, rejection behavior, deterministic golden, and baseline are frozen | Generic finite FP16 last-axis StableArgMax contract and host acceptance frozen.<br>63 actual-source control-flow/Torch export checks, 35 reference checks, 11 project preparation checks and 9 text-handoff checks pass. Vendor build/device unverified.<br>Evidence: 20261104T083807Z-10795-c00fd7/evidence/source-check-2/source-validation.json; 20261104T083807Z-10795-c00fd7/evidence/prepare-check/validation.json | User copies sources, prepares project with selected X90 msopgen and runs vendor build/install. | — |
-| 2 | Environment | BLOCKED | Environment identity, dependency locks, setup, and preflight are reproducible | User GE export reached OMG exit 1; compiler root cause and allops installation unconfirmed. Read-only diagnostic support delivered.<br>33 host workflow checks pass, including old failure inspection without writes or recompilation and JSON compiler excerpts. Kernel/host unchanged; no new target execution.<br>Evidence: 20261105T010637Z-20281-c9f19f/evidence/diagnostics-check/validation.json; 20261105T010637Z-20281-c9f19f/evidence/user-observation.json | Read existing OMG report/log and obtain allops build/install outcome before selecting a fix. | — |
+| 2 | Environment | BLOCKED | Environment identity, dependency locks, setup, and preflight are reproducible | Forwarded established TBE compatibility into StableArgMax GE probe and added retained AIR reuse. User host tiling reached; original worker failed platform update.<br>41 host workflow checks pass, including tbe_diagnosis forwarding, audit reporting and hash-checked no-GE AIR reuse. No host/kernel change or local target execution.<br>Evidence: 20261105T011001Z-20502-2dc937/evidence/tbe-reuse-check/validation.json; 20261105T011001Z-20502-2dc937/evidence/user-observation.json | Reuse the exported AIR and existing common/tbe-diagnosis for one corrected OMG compile in a new output directory, then inspect compilation and worker audit. | — |
 | 3 | Development | PENDING | Smallest correct host, kernel/device, framework, build, golden, and compare paths work | — | — | — |
 | 4 | Correctness validation | PENDING | Independent-copy, boundary, negative, integration, and on-board PASS or documented PENDING/N/A have evidence | — | — | — |
 | 5 | Optimization | PENDING | Frozen baseline, one-hypothesis experiments, correctness reruns, and promotion decision are reproducible | — | — | — |
@@ -43,6 +43,7 @@
 - 2026-11-04T09:10:03Z: Source preparation completed as explicitly requested before user-operated target validation; hardware_reference_policy remains use with unavailable capacity, not opt_out.
 - 2026-11-05T00:53:31Z: DDK server has existing allops and no TorchAir. Preserve weights-server Torch bindings.
 - 2026-11-05T01:07:20Z: User source hashes match; source copy does not establish allops build/install. OMG root cause remains unknown until compiler log is provided.
+- 2026-11-05T01:10:55Z: Reuse established selected-DDK TBE compatibility; retain kirinx90, no SDK edits, no host/kernel changes, no new builtin probe matrix.
 
 ## Machine-readable state
 
@@ -53,8 +54,8 @@
     "scripts/stable_arg_max_ge.py",
     "tests/test_ddk_workflow.py"
   ],
-  "based_on_revision": "5b4f840d9ad2c1519b9b91c02eeb5505b58166af",
-  "blocker": "User OMG reports exit 1 without compiler log; cannot determine root cause from subprocess traceback. No local selected DDK/device.",
+  "based_on_revision": "494cfd0178365330b126194354e2bad40f071ed7",
+  "blocker": "Corrected OMG compile and device validation must run on user-operated selected DDK; no local selected target profile.",
   "branch": "operator/draft-top1",
   "current_phase": "2",
   "decisions": [
@@ -65,10 +66,11 @@
     "2026-11-04T09:03:27Z: User requested copyable source using official CANN Kit, Torch Meta/export, future 310P extensibility and more shapes; Top1 first. Target build/install remains user-operated, no archive required.",
     "2026-11-04T09:10:03Z: Source preparation completed as explicitly requested before user-operated target validation; hardware_reference_policy remains use with unavailable capacity, not opt_out.",
     "2026-11-05T00:53:31Z: DDK server has existing allops and no TorchAir. Preserve weights-server Torch bindings.",
-    "2026-11-05T01:07:20Z: User source hashes match; source copy does not establish allops build/install. OMG root cause remains unknown until compiler log is provided."
+    "2026-11-05T01:07:20Z: User source hashes match; source copy does not establish allops build/install. OMG root cause remains unknown until compiler log is provided.",
+    "2026-11-05T01:10:55Z: Reuse established selected-DDK TBE compatibility; retain kirinx90, no SDK edits, no host/kernel changes, no new builtin probe matrix."
   ],
   "next_commands": [
-    "python3 \"$OP_DIR/scripts/stable_arg_max_ge.py\" --inspect-compilation \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge\""
+    "python3 \"$OP_DIR/scripts/stable_arg_max_ge.py\" --reuse-export \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge\" --tbe-diagnosis \"$AI_RUN_DIR/common/tbe-diagnosis\" --ddk-root \"$CPRO_DDK_ROOT\" --ddk-id \"$CPRO_DDK_ID\" --output \"$AI_RUN_DIR/draft/tests/stable-arg-max-ge-tbe\""
   ],
   "operator_id": "draft-top1",
   "phases": [
@@ -103,18 +105,18 @@
     },
     {
       "evidence": [
-        "20261105T010637Z-20281-c9f19f/evidence/diagnostics-check/validation.json",
-        "20261105T010637Z-20281-c9f19f/evidence/user-observation.json"
+        "20261105T011001Z-20502-2dc937/evidence/tbe-reuse-check/validation.json",
+        "20261105T011001Z-20502-2dc937/evidence/user-observation.json"
       ],
       "gate": "Environment identity, dependency locks, setup, and preflight are reproducible",
       "id": "2",
       "knowledge_refs": [],
       "name": "Environment",
-      "next_action": "Read existing OMG report/log and obtain allops build/install outcome before selecting a fix.",
-      "result": "33 host workflow checks pass, including old failure inspection without writes or recompilation and JSON compiler excerpts. Kernel/host unchanged; no new target execution.",
+      "next_action": "Reuse the exported AIR and existing common/tbe-diagnosis for one corrected OMG compile in a new output directory, then inspect compilation and worker audit.",
+      "result": "41 host workflow checks pass, including tbe_diagnosis forwarding, audit reporting and hash-checked no-GE AIR reuse. No host/kernel change or local target execution.",
       "status": "BLOCKED",
-      "summary": "User GE export reached OMG exit 1; compiler root cause and allops installation unconfirmed. Read-only diagnostic support delivered.",
-      "updated_utc": "2026-11-05T01:09:06Z"
+      "summary": "Forwarded established TBE compatibility into StableArgMax GE probe and added retained AIR reuse. User host tiling reached; original worker failed platform update.",
+      "updated_utc": "2026-11-05T01:14:13Z"
     },
     {
       "evidence": [],
@@ -177,14 +179,15 @@
       "updated_utc": ""
     }
   ],
-  "resume_summary": "User GE export reached OMG exit 1; compiler root cause and allops installation unconfirmed. Read-only diagnostic support delivered.",
+  "resume_summary": "Forwarded established TBE compatibility into StableArgMax GE probe and added retained AIR reuse. User host tiling reached; original worker failed platform update.",
   "schema_version": 1,
-  "updated_utc": "2026-11-05T01:09:06Z",
+  "updated_utc": "2026-11-05T01:14:13Z",
   "working_tree": [
     " M docs/current-status.md",
     " M docs/results.md",
     " M specs/dflash-execution-state.json",
     " M targets/cpro/ops/draft-top1/README.md",
+    " M targets/cpro/ops/draft-top1/docs/ENVIRONMENT.md",
     " M targets/cpro/ops/draft-top1/docs/LESSONS.md",
     " M targets/cpro/ops/draft-top1/docs/VALIDATION.md",
     " M targets/cpro/ops/draft-top1/operator.json",

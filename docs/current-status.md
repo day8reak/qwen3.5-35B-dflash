@@ -10,7 +10,7 @@
 
 2026-11-05按两台服务器重新分工：DDK服务器只把三个host/kernel文件复制到现有allops，沿用其编译安装；单算子使用 `stable_arg_max_ge.py` 走GE C++→AIR→OMG/OMC，再用已有validate/recover工具上板，无需Torch/TorchAir。权重服务器保留Torch Meta/converter及TorchAir导出。默认一份OMC复用七组Qwen输入，逐例3次预热/10次精确比较。无框架流程27项及NumPy/PyTorch参考交叉检查19组通过；GE/OMG调用测试使用mock，真实所选DDK和设备仍待用户执行。具体命令见上述README。
 
-后续用户已运行GE探针并到达OMG；OMG退出码1，具体编译日志与allops安装结果待回传。三个源码哈希一致。已补 `--inspect-compilation <旧目录>` 只读诊断及失败JSON日志摘要，33项主机流程检查通过；不重跑失败请求、不据退出码猜测根因，host/kernel未改。
+后续用户OMG日志确认StableArgMax注册/dispatch和host tiling已生效（15/248320/8192，block_dim=1），worker在te_update_version初始化失败。新GE入口漏传已有TBE兼容参数，现已补 `--tbe-diagnosis`，复用此前的 `common/tbe-diagnosis`。新增 `--reuse-export <旧目录>` 核验并复用AIR，仅重做OMG，保持kirinx90和旧失败现场；host/kernel不变。41项主机流程检查通过，修正后的实际编译/设备结果仍待用户执行。
 
 21项Top1编译矩阵、9个OMC的61例设备语义／时延验证均已完成，无需重复启动或回收这批任务。用户报告610次测量调用全部成功，输出重复稳定；原完整比较标准下45例通过、16例失败。
 

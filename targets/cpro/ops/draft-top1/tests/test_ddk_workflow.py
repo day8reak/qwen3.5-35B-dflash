@@ -66,7 +66,7 @@ def check(output):
     def args(folder, shape=(1, 15, 248320), plan=True, export=False):
         return argparse.Namespace(output=str(output / folder), shape=list(shape), plan_only=plan,
             export_only=export, ge_root=None, ddk_root=None, ddk_id=None,
-            cxx='c++', cxx11_abi=0, timeout_seconds=30)
+            cxx='c++', cxx11_abi=0, timeout_seconds=30, tbe_diagnosis=None, reuse_export=None)
 
     qwen = probe.run(args('qwen'))
     assert len(qwen['cases']) == 7 and qwen['model_compilation'] == 'NOT_RUN'
@@ -92,6 +92,7 @@ def check(output):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('mock GE SDK')
     calls = []
+    compiler_kwargs = []
 
     def logged(argv, **kwargs):
         calls.append(argv)
@@ -100,10 +101,13 @@ def check(output):
 
     def compile_air(air, folder, ddk, **kwargs):
         calls.append(['OMG', str(air)])
+        compiler_kwargs.append(kwargs)
         folder.mkdir()
         (folder / 'model.omc').write_bytes(b'MOCK OMC')
         report = dict(status='COMPILED', model_compilation='PASSED', platform='kirinx90',
             ddk_id='mock-ddk', omc=dict(path='model.omc'))
+        if kwargs.get('tbe_diagnosis'):
+            report['tbe_compatibility'] = dict(diagnosis=kwargs['tbe_diagnosis'], audit={'status': 'APPLIED'})
         probe.write(folder / 'report.json', report)
         return report
 
@@ -122,7 +126,68 @@ def check(output):
          patch.object(probe, 'inspect_model', inspect):
         result = probe.run(actual_args)
         assert result['status'] == 'COMPILED' and sum(c[0] == 'OMG' for c in calls) == 1
+        assert compiler_kwargs[-1]['tbe_diagnosis'] is None
         checks.append('mock_sdk_one_compile_reused_for_all_fixtures')
+        compatible = args('compatible-fresh', (2, 3), plan=False)
+        compatible.ge_root, compatible.ddk_root, compatible.ddk_id = str(fakege), str(output / 'ddk'), 'mock-ddk'
+        compatible.tbe_diagnosis = str(output / 'retained-diagnosis')
+        compatible_report = probe.run(compatible)
+        assert compiler_kwargs[-1]['tbe_diagnosis'] == compatible.tbe_diagnosis
+        assert compatible_report['tbe_compatibility']['audit_status'] == 'APPLIED'
+        checks.append('fresh_compile_forwards_evidence_bound_tbe_option_and_reports_worker_audit')
+        old = output / 'compatible-fresh'
+        # Match the user's old failed report after a CLI-only source update.
+        saved_report = json.loads((old / 'result.json').read_text())
+        saved_report['status'] = 'FAILED'; saved_report['stage'] = 'omg'
+        saved_report['model_compilation'] = 'FAILED'
+        saved_report['source_sha256']['scripts/stable_arg_max_ge.py'] = 'old-diagnostic-script'
+        probe.write(old / 'result.json', saved_report)
+        snapshot = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in old.rglob('*') if p.is_file()}
+        reuse = args('reuse', (2, 3), plan=False)
+        reuse.shape = None
+        reuse.ge_root = None
+        reuse.ddk_root, reuse.ddk_id = str(output / 'ddk'), 'mock-ddk'
+        reuse.reuse_export, reuse.tbe_diagnosis = str(old), compatible.tbe_diagnosis
+        before = len(calls)
+        with patch('qwen35_moe_dflash.graph.export._logged', side_effect=AssertionError('re-exported')):
+            reused = probe.run(reuse)
+        assert len(calls) == before + 1 and compiler_kwargs[-1]['tbe_diagnosis'] == reuse.tbe_diagnosis
+        assert reused['shape'] == [2, 3] and reused['reused_export']['air_sha256'] == saved_report['air']['sha256']
+        assert (output / 'reuse/air/stable_arg_max.air').read_bytes() == (old / 'air/stable_arg_max.air').read_bytes()
+        assert snapshot == {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in old.rglob('*') if p.is_file()}
+        checks.append('failed_export_reuse_without_ge_sdk_or_reexport_old_bytes_preserved_one_omg')
+        reuse.shape = [2, 4]
+        reuse.output = str(output / 'shape-mismatch')
+        rejects(lambda: probe.run(reuse), 'reject_reuse_shape_mismatch_before_compile')
+        reuse.shape = None
+        for field, value in (('graph_cpp_sha256', 'changed'), ('graph', {})):
+            edited = dict(saved_report); edited[field] = value
+            probe.write(old / 'result.json', edited)
+            rejects(lambda: probe.retained_export(old), 'reject_reuse_changed_' + field)
+        edited = json.loads(json.dumps(saved_report))
+        edited['source_sha256']['op_kernel/stable_arg_max.cpp'] = 'changed'
+        probe.write(old / 'result.json', edited)
+        rejects(lambda: probe.retained_export(old), 'reject_reuse_changed_kernel')
+        probe.write(old / 'result.json', saved_report)
+        air_path = old / 'air/stable_arg_max.air'
+        original = air_path.read_bytes(); air_path.write_bytes(b'changed AIR')
+        rejects(lambda: probe.retained_export(old), 'reject_reuse_changed_air')
+        air_path.write_bytes(original)
+        inp = old / 'fixture/stable_arg_max__first_last/input_0.bin'
+        original = inp.read_bytes(); inp.write_bytes(b'changed fixture')
+        reuse.output = str(output / 'reuse-bad-fixture')
+        before = len(calls)
+        try:
+            probe.run(reuse)
+        except probe.ProbeFailure as error:
+            assert 'fixture' in error.report['error']
+        else:
+            raise AssertionError('changed fixture reused')
+        assert len(calls) == before
+        inp.write_bytes(original)
+        checks.append('reject_reuse_changed_fixture_before_compilation')
         root, execution = output / 'compiled', output / 'execution'
         metadata = board.prepare(root, execution, actual_args.ddk_root, 'mock-ddk')
         assert len(metadata['cases']) == 4 and metadata['exact_bytes']
