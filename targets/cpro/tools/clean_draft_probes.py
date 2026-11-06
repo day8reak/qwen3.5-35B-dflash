@@ -158,6 +158,7 @@ def main():
     p.add_argument('--root', required=True)
     p.add_argument('--config')
     p.add_argument('--apply', action='store_true')
+    p.add_argument('--source', help='original FP16 prepared directory for --all-tests; otherwise discover outside tests under root')
     mode = p.add_mutually_exclusive_group()
     mode.add_argument('--compiler-scratch', action='store_true',
                    help='retain old packed models/reports; remove only their completed compiler copies')
@@ -167,9 +168,18 @@ def main():
                       help='retire completed hidden-layer0 compiled/run/result; retain summary and top-level analysis JSON')
     mode.add_argument('--retired-rope-scratch', action='store_true',
                       help='after full packed equivalence, remove only previous RoPE compiler copies; keep current build and all OMCs/fixtures/results')
+    mode.add_argument('--feature-projection', action='store_true',
+                      help='retire completed kernel2 prefix compiled/run/result after successful recovery; retain compact reports')
+    mode.add_argument('--all-tests', action='store_true',
+                      help='delete ALL draft/tests contents, including the accepted baseline and results, after verifying independent original weights')
     a = p.parse_args()
     try:
-        if a.integration_sidecars:
+        if a.source and not a.all_tests:
+            raise ValueError('--source is only used with --all-tests')
+        if a.all_tests:
+            from qwen35_moe_dflash.draft.incremental.test_cleanup import clean_all_tests
+            result = clean_all_tests(a.root, source=a.source, apply=a.apply)
+        elif a.integration_sidecars:
             result = clean_compiler_scratch(a.root, a.config or Path(a.root)/'runtime/runtime.json',
                                             apply=a.apply, integration_sidecars=True)
         elif a.layer0_probes:
@@ -178,9 +188,12 @@ def main():
         elif a.retired_rope_scratch:
             from qwen35_moe_dflash.draft.incremental.probe_retention import clean_retired_rope_scratch
             action = clean_retired_rope_scratch
+        elif a.feature_projection:
+            from qwen35_moe_dflash.draft.incremental.probe_retention import clean_projection
+            action = clean_projection
         else:
             action = clean_compiler_scratch if a.compiler_scratch else clean
-        if not a.integration_sidecars:
+        if not a.integration_sidecars and not a.all_tests:
             result = action(a.root, a.config or Path(a.root)/'runtime/runtime.json', apply=a.apply)
     except (OSError, ValueError, KeyError, TypeError) as error:
         result = dict(status='FAILED', error=f'{type(error).__name__}: {error}')

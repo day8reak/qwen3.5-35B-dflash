@@ -15,6 +15,50 @@ VECTOR = 'qwen35-draft-vector-validation'
 SUITE = 'qwen35-draft-layer0-prefix-suite'
 DIRECTORIES = ('compiled', 'run', 'result')
 CASES = [f'hidden_layer0_c{c:02d}_p{p:02d}' for p in range(55) for c in (0, 2, 17)]
+PROJECTION_RETENTION = 'qwen35-feature-projection-retention'
+
+
+def _completed_projection(base):
+    from .feature_pack_probe import KIND as FEATURE
+    from .feature_projection_probe import EXPERIMENT, CASES as expected
+    paths = {n: base/n for n in ('compiled/result.json', 'run/request.json', 'run/fixture/manifest.json', 'result/result.json')}
+    for p in paths.values(): _plain(p)
+    build, request, fixture, result = [read_json(p, 32 << 20) for p in paths.values()]
+    cases = list(expected); diagnostics = result.get('execution_diagnostics', {})
+    if (build.get('artifact_kind') != FEATURE or build.get('experiment') != EXPERIMENT
+            or build.get('status') != 'COMPILED' or build.get('stage') != 'complete'
+            or fixture.get('source_evidence') != build or request.get('artifact_kind') != VECTOR
+            or request.get('cases') != cases or [c.get('case') for c in fixture.get('cases', [])] != cases
+            or request.get('fixture_sha256') != sha256_file(paths['run/fixture/manifest.json'])
+            or not result.get('board_attempt') or request.get('board_attempt') != result['board_attempt']
+            or result.get('artifact_kind') != VECTOR or result.get('stage') != 'complete'
+            or result.get('status') not in ('PASSED', 'NUMERICAL_FAILED', 'FAILED')
+            or result.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED'
+            or result.get('lock_state') != 'NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION'
+            or Path(result.get('recovery_source', '')).resolve() != base/'run'
+            or result.get('requested_cases') != cases or result.get('validated_cases') != cases
+            or result.get('feature_pack', {}).get('coverage_complete') is not True
+            or diagnostics.get('native_exitcode') != 0 or diagnostics.get('archive_exitcode') != 0
+            or diagnostics.get('case_exitcodes') != dict.fromkeys(cases, 0) or diagnostics.get('errors')):
+        raise ValueError('projection probe lacks bound complete execution/recovery; retained')
+    if result['status'] == 'FAILED' and result.get('error') != 'feature prefix device-baseline equivalence failed':
+        raise ValueError('unknown projection failure requires diagnosis; retained')
+    source = Path(build['source_result']).resolve()
+    if source == base or base in source.parents: raise ValueError('shared source result is inside retired probe')
+    return dict(artifact_kind=PROJECTION_RETENTION, status='PLANNED', base=str(base),
+        scope='COMPLETED_KERNEL2_PREFIX_COMPILED_RUN_RESULT_ONLY; NO_DEVICE_ACCESS',
+        compilation=build, validation=result,
+        report_hashes={n:sha256_file(p) for n,p in paths.items()},
+        retained='THIS_SUMMARY_AND_TOP_LEVEL_ANALYSES; FULL_DRAFT_SOURCE_AND_RESULTS_UNTOUCHED',
+        directories=[], removed=[])
+
+
+def clean_projection(root, config, *, apply=False):
+    root = Path(root).resolve(strict=True)
+    base = root/'draft/tests/feature-projection'
+    if not base.exists() and not base.is_symlink():
+        return dict(status='NOT_FOUND', directory=str(base), free_bytes_after=shutil.disk_usage(root).free)
+    return _retire_completed(root, config, base, PROJECTION_RETENTION, _completed_projection, apply=apply)
 
 
 def clean_retired_rope_scratch(root, config, *, apply=False):
@@ -144,6 +188,10 @@ def clean_layer0(root, config, *, apply=False):
     base = root/'draft/tests/top1-integration/hidden-layer0'
     if not base.exists() and not base.is_symlink():
         return dict(status='NOT_FOUND', directory=str(base), free_bytes_after=shutil.disk_usage(root).free)
+    return _retire_completed(root, config, base, KIND, _completed, apply=apply)
+
+
+def _retire_completed(root, config, base, kind, completed, *, apply):
     _plain(base, directory=True)
     protected = _runtime_paths(Path(config).resolve(strict=True))
     require_idle(base)
@@ -164,12 +212,12 @@ def clean_layer0(root, config, *, apply=False):
             if any(asset == path or path in asset.parents or asset in path.parents for asset in protected):
                 raise ValueError('runtime references the layer0 probe directory; retained')
         old = read_json(summary, 32 << 20) if summary.exists() else {}
-        if old and (old.get('artifact_kind') != KIND or old.get('base') != str(base)):
+        if old and (old.get('artifact_kind') != kind or old.get('base') != str(base)):
             raise ValueError('foreign retention summary; retained')
         if old.get('status') == 'CLEANED' and not any((base/n).exists() for n in DIRECTORIES):
             return dict(status='ALREADY_CLEAN', summary=str(summary), free_bytes_after=shutil.disk_usage(root).free)
         resuming = old.get('status') == 'REMOVING'
-        result = old if resuming else _completed(base)
+        result = old if resuming else completed(base)
         if not resuming:
             for name in DIRECTORIES:
                 info = (base/name).stat()
