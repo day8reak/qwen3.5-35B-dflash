@@ -6,7 +6,7 @@
 
 ## 用户现在执行什么
 
-在已有产物的DDK服务器执行。该命令不导出、不编译、不启动设备：先从现有编译文件导入一次ABI绑定、保存紧凑对照摘要，将AIR同盘移动到`draft/air`，将自包含OMC及必要元数据发布到`draft/omc`，确认能从公共目录重新绑定后，再清空 **整个 `draft/tests` 的全部内容**。
+以下仅在Draft归档／清理尚未完成时，由用户在已有产物的DDK服务器执行；新窗口的Target工作从[精度交接](target-accuracy-handoff.md)开始。该命令不导出、不编译、不启动设备：先从现有编译文件导入一次ABI绑定、保存紧凑对照摘要，将AIR同盘移动到`draft/air`，将自包含OMC及必要元数据发布到`draft/omc`，确认能从公共目录重新绑定后，再清空 **整个 `draft/tests` 的全部内容**。
 
 ```bash
 (
@@ -45,4 +45,4 @@ draft/tests/            空目录
 
 正常Draft生成入口已改为公共`draft/air`、`draft/omc`，不再把可复用模型发布在tests中；从零配方见[完整流程](run-end-to-end.md)。本次直接保留已有模型，不重建。
 
-下一阶段处理原40层量化Target的精度：沿用现有Prefill64／Decode1与原量化参考，先定位普通Target输入、状态和数值差异，再恢复DFlash的批量verify与端到端接受率工作。本轮不新增Draft格式探针、不调整验收阈值。
+下一阶段在新窗口处理原40层量化Target精度，优先抽取实际自定义／融合／量化算子，按Prefill64／Decode1的真实shape和原权重、状态测试，再定位串联与整模差异。两份NZ／CPro原建模源码已在本地找到并重新核验；代码位置、静态差异、历史GDN输出覆盖异常和完整下一步见[Target精度交接](target-accuracy-handoff.md)。本轮只完成交接，未启动新探针；不继续Draft格式实验、不调整验收阈值。

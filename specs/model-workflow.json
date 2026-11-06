@@ -3,7 +3,7 @@
   "updated": "2026-11-06",
   "active_phase": "accuracy",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
-  "run_id": "20261106T070951Z-28148-3d19e8",
+  "run_id": "20261106T074803Z-29115-c19d48",
   "navigation": {
     "home": "docs/README.md",
     "model": "docs/model-architecture.md",
@@ -12,7 +12,8 @@
     "environment": "docs/environment-setup.md",
     "full_execution": "docs/run-end-to-end.md",
     "current_commands": "docs/current-status.md",
-    "optimization": "docs/optimization-strategy.md"
+    "optimization": "docs/optimization-strategy.md",
+    "target_accuracy_handoff": "docs/target-accuracy-handoff.md"
   },
   "paths": {
     "legacy_pair": {
@@ -5806,12 +5807,12 @@
     "next": "Export runtime config from completed text request, organize AI_RUN_DIR, then rerun fixed work/dflash-text with --config"
   },
   "current_draft_work": {
-    "status": "COMMON_PATH_PERFORMANCE_ROI_REVIEWED",
+    "status": "PAUSED_BY_USER_BASELINE_ARCHIVE_IMPLEMENTED",
     "entry": "targets/cpro/tools/validate_incremental_draft.py",
     "commands": "docs/current-status.md",
     "model_changes": "PYTORCH_CANDIDATE_ADDED_EXISTING_GE_RUNTIME_MODEL_UNCHANGED",
-    "device_numerics": "UNTOUCHED_REPLAY_FIRST_CASE_ALL14_OUTPUTS_BITWISE_EQUAL; HIDDEN_L2_1.449_PERCENT; ISOLATED82_OF86_FEEDBACK83_OF86; ORIGINAL_GATES_FAILED",
-    "next": "Clear all draft/tests after verifying source weights; verify selected X90 FP16 import and Zn/Nz consumer contract before implementing the 31 static MatMul weight layouts; docs/current-status.md",
+    "device_numerics": "LATEST_PACKED_BASELINE_AND_ND_N_ORIGINAL_GATES_FAILED; BOTH_MODES83_OF86_TOP1_MATCH; 488_BASELINE_REGIONS_ONLY_ISOLATED0_HIDDEN_DIFFERS; KEEP_PACKED_BASELINE",
+    "next": "Verify server archive receipt if available; retain approximately60ms baseline and clear all draft/tests via existing publication/cleanup. No further offline-weight or Draft performance experiments. Resume Target accuracy from docs/target-accuracy-handoff.md.",
     "addcustom_attempt": {
       "source": "USER_PASTED_INSPECT_COMPILE_OUTPUT",
       "case": "residual_addcustom_fp32",
@@ -5878,9 +5879,9 @@
       },
       "artifact_layout": {
         "air": "draft/air",
-        "air_export_scratch": "draft/tests/export",
+        "air_export_scratch": "draft/.air-build",
         "transfer_scratch": "draft/.air-incoming",
-        "omc_build_pending_physical_abi": "draft/tests/pytorch-omc",
+        "omc_build_pending_physical_abi": "draft/.omc-build",
         "runtime_omc": "draft/omc",
         "air_import_entry": "targets/cpro/scripts/export_incremental_draft.py --import-air SOURCE --output AI_RUN_DIR/draft/air --replace",
         "air_import_policy": "VALIDATE_COMPLETED_AIR_AND_SIDECAR_EXTENTS_THEN_RENAME_WITH_NO_WEIGHT_COPY; OLD_RECOGNIZED_AIR_REMOVED; OMC_AND_RUNTIME_UNCHANGED",
@@ -8311,7 +8312,7 @@
       }
     }
   },
-  "current_focus": "TARGET_ACCURACY_AFTER_DRAFT_BASELINE_ARCHIVE",
+  "current_focus": "TARGET_ACCURACY_CUSTOM_OPERATORS_REAL_SHAPES_FIRST",
   "draft_baseline_archive": {
     "status": "IMPLEMENTED_SERVER_EXECUTION_PENDING",
     "run_id": "20261106T070951Z-28148-3d19e8",
@@ -8331,5 +8332,27 @@
       "checks": 16,
       "scope": "HOST_FAKE_COMPILER_ABI_AND_COMPARISON; REAL_FILE_MOVES_LOCKS_CLEANUP_COMPACT_BINDING; PROC_SCAN_MOCKED_LOCAL_PERMISSION_LIMIT; NO_DDK_OR_DEVICE"
     }
+  },
+  "target_accuracy_work": {
+    "status": "HANDOFF_PREPARED_NEW_SUITE_NOT_IMPLEMENTED",
+    "document": "docs/target-accuracy-handoff.md",
+    "source_audit": "SOURCE_AUDIT_MATCHED_ACTUAL_SIX_FILES_REHASHED",
+    "local_private_source_relative_to_workspace": ".work/qwen3.5-35B-moe/20261027T130835Z-9607-68b43f/private-reference/qwen35_moe",
+    "source_audit_relative_to_workspace": ".work/qwen3.5-35B-moe/20261106T074803Z-29115-c19d48/out/target-source-audit.json",
+    "reference_observation": "USER_REPORTS_NZ_SHORT_SEQUENCE_TEXT_CORRECT_ON_310P; ACTUAL_SUCCESSFUL_RUN_REVISION_AND_INPUT_BINDING_PENDING",
+    "priority": "ACTUAL_CUSTOM_FUSED_QUANTIZED_OPERATORS_WITH_FULL_MODEL_PREFILL64_DECODE1_SHAPES_AND_REAL_INPUTS_STATES",
+    "static_differences": [
+      "ordinary RMS input/gamma FP32 casts",
+      "GDN initial_state FP32 cast versus original carrier",
+      "Convstate custom path",
+      "KV block position arithmetic",
+      "MoE router, GMM bias arguments and SwiGLU expansion"
+    ],
+    "historical_gdn": "SAME_OMC_INPUTS_OUTPUT_DEPENDS_ON_FILL_PATTERN; CAUSE_UNRESOLVED_NOT_ACCEPTED",
+    "model_compilation": "NOT_RUN",
+    "device_execution": "NOT_RUN",
+    "new_numerical_validation": "NOT_RUN",
+    "execution_owner": "USER_SERVER_AND_DEVICE; LOCAL_DEVELOPMENT_ONLY",
+    "next": "Bind current NZ310P success source and CPro AIR/operator contracts, then implement one comprehensive real-shape operator accuracy suite; no Draft optimization."
   }
 }

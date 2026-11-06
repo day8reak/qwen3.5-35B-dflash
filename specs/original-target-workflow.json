@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-30",
+  "updated": "2026-11-06",
   "lane": "original_quantized_target",
-  "active_phase": "integration",
-  "status": "SHORT_PROMPT_EXISTING_MODELS_SERIAL_DFLASH_LOOP_PRIORITIZED",
-  "handoff": "20261030T075543Z-2197-119a93/handoff.md",
-  "user_state": "User prioritizes complete real DFlash multi-round execution today, defers accuracy and new model compilation. Original embedding tables reported copied completely. Row63 prefill PID28669 retrieved82 outputs, feature hash unchanged, logits argmax6. First loop uses original decode1 fromzero80states for a NEW8token prompt and8 generated tokens, existing full six-layer S64 draft, complete feature/token history, serial verify first2of15 candidates per round. This avoids the64prompt+next-anchor65 capacity limit and cross-export prefill-state mapping for this milestone.",
+  "active_phase": "accuracy",
+  "status": "TARGET_ACCURACY_HANDOFF_CUSTOM_OPERATORS_FIRST",
+  "handoff": "docs/target-accuracy-handoff.md",
+  "user_state": "2026-11-06: user pauses Draft performance/offline weights at approximately60ms and requests a handoff for Target accuracy in a new window. Prioritize isolated actual custom/fused/quantized operators at full-model shapes against NZ310P and independent references; user owns server/device execution.",
   "entrypoint": "targets/cpro/scripts/run_serial_dflash_smoke.py",
   "compile_profile": "cpro-40block-prefill-64",
   "contract": {
@@ -47,12 +47,12 @@
     "board_tool_workflow": "HOST_FAKE_BOARD_TESTED; no actual user-device invocation from this assistant"
   },
   "remaining_gates": [
-    "Execute unchanged complete-model short-prompt serial DFlash loop with at least2 actual draft invocations",
-    "Review actual accepted/rejected/bonus and full80state committed-token chain; zero acceptance is permitted for this milestone",
-    "Then establish accurate ordinary baseline and original prefill64-to-decode1 bridge",
-    "Only then optimize incremental draft/cache, block verify/rollback, resident runtime and measure performance"
+    "Bind NZ310P successful-run source/resources/inputs and current CPro source/converters/AIR",
+    "Build and validate actual operator contracts at Prefill64/Decode1 full-model shapes, including states and output writes",
+    "Close dependent subgraphs, decoder blocks and complete ordinary Target sequence/state/numerical accuracy",
+    "Then resume Draft integration, acceptance, long-context and matched end-to-end performance"
   ],
-  "next_command": "docs/current-status.md: one run_serial_dflash_smoke.py --apply command; fresh output, no obligatory intermediate audit commands",
+  "next_command": "See docs/target-accuracy-handoff.md section1: local read-only six-file source audit, then prepare the full operator matrix. No new device command implemented in this handoff.",
   "resume_command": "python3 \"$REPO_DIR/targets/cpro/scripts/compile_full_target.py\" --resume \"$AI_RUN_DIR/full-target\" --inspect-only --source-root ORIGINAL_PROJECT",
   "experience_audit": {
     "captured": [
@@ -2734,10 +2734,12 @@
     "draft_omc_recompilation": "NOT_REQUIRED",
     "accuracy": "DEFERRED_NOT_ACCEPTED",
     "eos": "DISABLED_FOR_THIS_FIXED_BUDGET_SMOKE",
-    "status": "HOST_IMPLEMENTATION_PENDING_DEVICE_RUN"
+    "status": "HISTORICAL_EXECUTION_SMOKE_SUPERSEDED_BY_TARGET_ACCURACY_PRIORITY"
   },
   "compile_entrypoint": "targets/cpro/scripts/compile_full_target.py",
   "delivery_plan_document": "docs/reference/dflash-delivery-plan.md",
   "execution_state": "specs/dflash-execution-state.json",
-  "planning_horizon": "P0 functional loop through P8 accuracy/stability/performance/release; normal10–20workingdays conditional, optimistic7–10, initialloop0.5–1"
+  "planning_horizon": "P0 functional loop through P8 accuracy/stability/performance/release; normal10–20workingdays conditional, optimistic7–10, initialloop0.5–1",
+  "current_priority": "Freeze NZ310P reference and CPro actual calls; isolate custom/fused/quantized operators with full-model shapes, real weights and state before block/full-model accuracy.",
+  "historical_user_state_20261030": "User prioritizes complete real DFlash multi-round execution today, defers accuracy and new model compilation. Original embedding tables reported copied completely. Row63 prefill PID28669 retrieved82 outputs, feature hash unchanged, logits argmax6. First loop uses original decode1 fromzero80states for a NEW8token prompt and8 generated tokens, existing full six-layer S64 draft, complete feature/token history, serial verify first2of15 candidates per round. This avoids the64prompt+next-anchor65 capacity limit and cross-export prefill-state mapping for this milestone."
 }
