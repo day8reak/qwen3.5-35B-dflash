@@ -7767,8 +7767,8 @@
             "profiling_scope": "ONE_CURRENT_OMC_TOOL_CALL_WITH_RETAINED_REFERENCE_KV; NOT_WARM_RESIDENT_BENCHMARK",
             "host_checks": 9,
             "host_evidence": "20261105T105610Z-6649-05c537/out/evidence/draft-roi-review.json",
-            "server_free_space": "LAST_USER_REPORT_1.7G; CLEANUP_RESULT_NOT_RETURNED; RECHECK_BEFORE_PREFIX_COMPILE",
-            "next": "Read the retained full-vocabulary head source, prepared AIR and compiler IR with inspect_draft_head.py; no compilation or board access; docs/current-status.md",
+            "server_free_space": "LAST_USER_REPORT_3.4G; CLEANUP_NOT_OBSERVED",
+            "next": "Clear all draft/tests after verifying source weights; verify selected X90 FP16 import and Zn/Nz consumer contract before implementing the 31 static MatMul weight layouts; docs/current-status.md",
             "current_profile": {
               "artifact_kind": "qwen35-draft-user-profile-observation",
               "source": "USER_PASTED_TABLE_AFTER_PACKED_CASE18_PROFILE_REQUEST",
@@ -7830,7 +7830,7 @@
                 "logits_bytes": 7449600,
                 "measured_node_ms": 19.96,
                 "scope": "No new custom kernel or approximation; actual implementation/physical traffic not established",
-                "next": "READ_ONLY_SOURCE_PREPARED_AIR_AND_RETAINED_COMPILER_IR"
+                "next": "Clear all draft/tests after verifying source weights; verify selected X90 FP16 import and Zn/Nz consumer contract before implementing the 31 static MatMul weight layouts; docs/current-status.md"
               }
             ],
             "deferred": {
@@ -8407,7 +8407,7 @@
               "next": "CLOSED; NO_FULL_MODEL_BUILD_OR_FURTHER_ACCURACY_WORK"
             },
             "head_layout_inspection": {
-              "status": "HOST_CHECKED_READY_FOR_USER_READ_ONLY_INSPECTION",
+              "status": "USER_REPORTED_SOURCE_AND_PREPARED_AIR_INSPECTED; NO_COMPILED_IR_DUMPS",
               "tool": "targets/cpro/tools/inspect_draft_head.py",
               "model_compilation": "NOT_RUN",
               "device_execution": "NOT_RUN",
@@ -8416,7 +8416,148 @@
               "host_evidence": "20261106T003046Z-18557-6c5134/head-layout-host-checks.json",
               "known_source_rule": "fold_weight_transposes absorbs rank-two FileConstant transpose into MatMul transpose_x2; check retained candidate before repeating it",
               "planned_scope": "SOURCE_AND_COMPILER_INPUT_EXPRESSION; SELECTED_RETAINED_IR; FINAL_NPU_TILING_UNPROVEN",
-              "next": "Read the retained full-vocabulary head source, prepared AIR and compiler IR with inspect_draft_head.py; no compilation or board access; docs/current-status.md"
+              "next": "Clear all draft/tests after verifying source weights; verify selected X90 FP16 import and Zn/Nz consumer contract before implementing the 31 static MatMul weight layouts; docs/current-status.md",
+              "source_air_sha256": "78943088590344793c4dc789241db05196e78d5f9b5ab86c0f3e7bb6dd39d829",
+              "compiler_air_sha256": "0e99647dbbffc8443f284758dc4cbfdb1dd4f71930796cd0a62a41f43535cbd4",
+              "weight_transpose_folded": true,
+              "compiled_ir": "NO_DUMPS",
+              "weight_consumer_audit": "ADDED_THIS_REVISION; NOT_PRESENT_IN_PREVIOUS_USER_REPORT",
+              "weight_consumer_host_checks": 4,
+              "weight_consumer_host_evidence": "20261106T004209Z-19234-fec5a6/weight-consumer-audit-checks.json"
+            },
+            "head_offline_layout_experiment": {
+              "status": "ND_PRETRANSPOSE_PROTOTYPE_NOT_RELEASED",
+              "reason": "User clarified physical Zn packing and requested all static weights; verify selected DDK import first",
+              "host_checks": 14,
+              "host_evidence": "20261106T004209Z-19234-fec5a6/head-offline-host-checks.json",
+              "model_compilation": "NOT_RUN",
+              "device_execution": "NOT_RUN",
+              "full_model_integration": "NOT_RUN",
+              "production_promotion": "NOT_PERFORMED"
+            },
+            "all_draft_tests_cleanup": {
+              "status": "HOST_VALIDATED_READY_FOR_USER_EXECUTION",
+              "tool": "targets/cpro/tools/clean_draft_probes.py --all-tests --apply",
+              "scope": "ALL_DRAFT_TESTS_INCLUDING_60MS_BASELINE_AND_RESULTS",
+              "user_authorization": "EXPLICIT_DELETE_ALL_TESTS_KEEP_WEIGHTS_AND_CODE",
+              "retained": "VERIFIED_PREPARED_FP16_SOURCE_OUTSIDE_TESTS; CODE; OTHER_RUN_ZONES",
+              "server_free_space": "USER_REPORTED_3.4G",
+              "server_cleanup": "NOT_OBSERVED",
+              "host_checks": 9,
+              "host_evidence": "20261106T004209Z-19234-fec5a6/all-tests-cleanup-host-checks.json"
+            },
+            "all_weight_layout_audit": {
+              "status": "SOURCE_INVENTORY_AND_INDEX_MAPPING_CHECKED; X90_IMPORT_PENDING",
+              "scope": "CURRENT_PACKED_DRAFT_SOURCE; NO_WEIGHT_PAYLOAD_READ",
+              "families": {
+                "feature_conv": {
+                  "count": 1,
+                  "shapes": [
+                    [
+                      2048,
+                      16384
+                    ]
+                  ],
+                  "fp16_bytes": 67108864
+                },
+                "norm": {
+                  "count": 26,
+                  "shapes": [
+                    [
+                      2048
+                    ],
+                    [
+                      128
+                    ]
+                  ],
+                  "fp16_bytes": 60416
+                },
+                "q_proj": {
+                  "count": 6,
+                  "shapes": [
+                    [
+                      4096,
+                      2048
+                    ]
+                  ],
+                  "fp16_bytes": 100663296
+                },
+                "kv_proj": {
+                  "count": 6,
+                  "shapes": [
+                    [
+                      2048,
+                      2048
+                    ]
+                  ],
+                  "fp16_bytes": 50331648
+                },
+                "o_proj": {
+                  "count": 6,
+                  "shapes": [
+                    [
+                      2048,
+                      4096
+                    ]
+                  ],
+                  "fp16_bytes": 100663296
+                },
+                "gate_up_proj": {
+                  "count": 6,
+                  "shapes": [
+                    [
+                      12288,
+                      2048
+                    ]
+                  ],
+                  "fp16_bytes": 301989888
+                },
+                "down_proj": {
+                  "count": 6,
+                  "shapes": [
+                    [
+                      2048,
+                      6144
+                    ]
+                  ],
+                  "fp16_bytes": 150994944
+                },
+                "head": {
+                  "count": 1,
+                  "shapes": [
+                    [
+                      248320,
+                      2048
+                    ]
+                  ],
+                  "fp16_bytes": 1017118720
+                }
+              },
+              "constant_matmul_count": 31,
+              "static_matmul_fp16_bytes": 1721761792,
+              "excluded": [
+                "HOST_EMBEDDING_ROW_LOOKUP",
+                "NORM_VECTOR_LAYOUT",
+                "DYNAMIC_QK_AND_PV_OPERANDS"
+              ],
+              "layout": "Zn(B[K,N]) == Nz(W[N,K]) for B=W.T and matching 16x16 blocks",
+              "physical_axes": [
+                "K1",
+                "N1",
+                "N0",
+                "K0"
+              ],
+              "index_mapping_checks": 4,
+              "index_evidence": "20261106T004209Z-19234-fec5a6/zn-nz-transposed-weight-proof.json",
+              "external_fp16_import": "NOT_VERIFIED_FOR_DDK_100.520.020.010",
+              "public_api_limit": "PyPTO documents no TILEOP_NZ inputs on KirinX90; not an OMG built-in MatMul capability conclusion",
+              "references": [
+                "https://pypto.gitcode.com/api/tensor_api/operation/pypto-matmul.html",
+                "https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/programug/Ascendcopdevg/docs/en/guide/technical_appendix/concepts_and_terms/neural_networks_and_operators/data_layout_format.md"
+              ],
+              "model_compilation": "NOT_RUN",
+              "device_execution": "NOT_RUN",
+              "speedup": "NOT_MEASURED"
             }
           },
           "hidden_prefix_probe": {

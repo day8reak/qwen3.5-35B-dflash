@@ -50,6 +50,16 @@ packed模型的vendor profiling输入适配只生成一个512KiB物理输入，�
 
 下一步只读检查完整词表head的源图、编译输入及保留IR；6项本地主机检查通过（空／已知shape、矩阵属性与完整词表保护、可选bias、输出绑定、只读及失败决策），DDK解析入口在本地测试中替代，实际图结果待用户运行。[当前命令](current-status.md)。
 
+## 静态权重布局：源图确认，物理格式导入待核对
+
+2026-11-06用户回传head检查：当前packed OMC记录hash仍为 `1105ce436ed4dd889ce4c26d0a5eeb620382b51ec5c98d8b810e3875af37600b`；本次只核对OMC大小，未重算其hash。源AIR SHA256 `78943088590344793c4dc789241db05196e78d5f9b5ab86c0f3e7bb6dd39d829`，编译输入SHA256 `0e99647dbbffc8443f284758dc4cbfdb1dd4f71930796cd0a62a41f43535cbd4`。源图 `Transpose_75 -> MatMul_30` 已在编译输入中变为FileConstant直连、transpose_x2=true；没有保留的IR dump。权重文件shape为[248320,2048]，仍需计算全部词表及2048项点积。
+
+“权重转置已折入MatMul属性”只确认图表达，未证明1.017GB权重的最终物理布局或内部访存。旧检查中的additional_consumers仅针对logits路径，不能证明权重独占；检查器已增加同一路径FileConstant别名和全部视图消费者的核对。用户指出交换乘法两侧会新增输出转置后，未发布、编译或执行该方向。
+
+用户随后将范围扩大到所有静态矩阵，并明确Zn指大块行优先、小块列优先。当前packed源码有31个常量权重MatMul（Q、KV、O、gate/up、down各6个，head1个）和独立feature Conv；完整清单见[当前阶段](current-status.md)。匹配16×16分块下，Zn(Wᵀ)与Nz(W)字节相同，4组uint16索引检查通过；这不证明当前X90 DDK能够直接导入该物理格式。
+
+普通ND head预转置原型的14项主机检查曾通过，但该原型未发布，未编译或执行；当前不提供该探针命令。交付保留权重消费者只读审计及完整tests清理入口。下一步核对所选DDK 100.520.020.010的FP16权重导入和消费格式，再统一实现适用权重的布局转换；没有新的性能收益结论。
+
 ## 特征投影入口CPU打包：前缀对照
 
 2026-11-05用户回传：六个前缀case全部执行和回收，锁已释放。三个source case（2／16／17，valid2／16／14）每种实现预热3次、记录10次；30对输出全部逐字节相等，60次调用有限且重复稳定，六组均为NPUCL=1。
@@ -313,3 +323,5 @@ C++端侧重排仅复制原始字节；基线和候选均每次SetInput。预分
 后续TopK、INT32选择/合成、比较树及Bitcast路线未得到完整词表纯NPU候选，已停止扩张。NaN来自人工fixture，不证明真实Draft异常；新算子以有限FP16为独立合同，旧失败结果不改写。
 
 逐次排障和旧测量保留于[整理前记录](https://github.com/day8reak/qwen3.5-35B-dflash/blob/e1b00b5/docs/results.md)；机器状态见[执行状态](../specs/dflash-execution-state.json)。
+
+2026-11-06后续用户将磁盘清理范围扩大到全部 `draft/tests`，明确允许删除60ms基线及历史结果。新 `clean_draft_probes.py --all-tests --apply` 先核验测试目录外的原始prepared FP16权重，再清空测试内容；本地9项清理检查通过，服务器执行及释放空间尚未回传。历史性能记录不等于仍持有可重放产物；旧输入删除后需要重新生成输入，不能直接运行旧replay命令。

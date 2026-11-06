@@ -87,11 +87,33 @@ def head_expression(raw, schema, top1):
              for n in nodes.values() for i, e in enumerate(n.get('input', []))
              if e.rpartition(':')[0] in data_path
              and n['name'] not in data_path | {outputs[0]['name']}]
+    # Audit weight consumers separately from logits consumers. Distinct
+    # FileConstants may name the same payload; include all exact-path aliases.
+    aliases = {n['name'] for n in nodes.values() if n['type'] == 'FileConstant'
+               and _attributes(n).get('file_path', {}).get('s') == WEIGHT}
+    pending, visited, consumers, terminal = sorted(aliases), set(), [], []
+    while pending:
+        producer = pending.pop()
+        if producer in visited: continue
+        visited.add(producer)
+        for n in nodes.values():
+            for slot, edge in enumerate(n.get('input', [])):
+                if edge != producer+':0': continue
+                row = dict(producer=producer, consumer=n['name'], type=n['type'], input_slot=slot)
+                consumers.append(row)
+                if n['type'] in {'Identity', 'Reshape', 'Transpose'} and slot == 0:
+                    pending.append(n['name'])
+                else:
+                    terminal.append(row)
+    usage = dict(file_constant_aliases=sorted(aliases), consumers=consumers,
+        terminal_consumers=terminal, exclusive_head_use=bool(terminal) and all(
+            r['consumer']==mm['name'] and r['input_slot']==1 for r in terminal),
+        scope='ALL_EXACT_FILE_PATH_ALIASES_AND_VIEW_CONSUMERS_IN_THIS_SOURCE_GRAPH; NOT_OTHER_MODELS_OR_HOST_EMBEDDING_FILES')
     return dict(matmul=_node(mm, {}), weight=_node(weight, {}), weight_views=weight_views,
         weight_operand_shape=shape, effective_right_operand_shape=effective, transpose_flags=flags,
         activation_shape_observed=xshape, output_views=output_views,
         reduction=_node(reductions[0], {}), public_output_0=reductions[0]['name']+':0',
-        activation_producer=_node(trace.shapes.node(mm['input'][0]), {}), additional_consumers=extra,
+        activation_producer=_node(trace.shapes.node(mm['input'][0]), {}), additional_consumers=extra, weight_usage=usage,
         liveness=dict(scope='DECLARED_FULL_MODEL_CONTRACT_AND_TRACED_TOP1_PATH; NOT_FIXTURE_VALUES',
             rows=15, vocabulary=248320, terms_per_logit=2048, weight_bytes=1017118720,
             fp16_logits_bytes=7449600, removable_vocabulary_columns=0,
