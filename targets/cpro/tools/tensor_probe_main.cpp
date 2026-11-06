@@ -38,7 +38,8 @@ Plan ReadPlan(const fs::path& path) {
     } else if (fields.size() == 2 && fields[0] == "input_preparation" && iterations &&
                !preparation && plan.inputs.empty() && plan.outputs.empty()) {
       plan.preparation = fields[1]; preparation = true;
-      if (plan.preparation != "copy-c16-v1" && plan.preparation != "feature-pack-c16-v1")
+      if (plan.preparation != "copy-c16-v1" && plan.preparation != "feature-pack-c16-v1" &&
+          plan.preparation != "feature-pack-c16-kernel2-v1")
         throw std::invalid_argument("unknown probe input preparation");
     } else if (fields.size() == 5 && iterations && (fields[0] == "input" || fields[0] == "output")) {
       auto& specs = fields[0] == "input" ? plan.inputs : plan.outputs;
@@ -64,7 +65,9 @@ Plan ReadPlan(const fs::path& path) {
   if (!iterations || plan.inputs.empty() || plan.outputs.empty()) throw std::invalid_argument("incomplete probe plan");
   if (preparation) {
     const std::vector<std::uint32_t> shape = plan.preparation == "copy-c16-v1"
-        ? std::vector<std::uint32_t>{1, 16, 16384} : std::vector<std::uint32_t>{1, 1024, 16, 16};
+        ? std::vector<std::uint32_t>{1, 16, 16384}
+        : (plan.preparation == "feature-pack-c16-v1" ? std::vector<std::uint32_t>{1, 1024, 16, 16}
+                                                    : std::vector<std::uint32_t>{1, 4096, 8, 8});
     if (plan.inputs.size() != 1 || plan.inputs[0].dtype != "float16" || plan.inputs[0].shape != shape ||
         plan.outputs.size() != 1 || plan.outputs[0].dtype != "float16" ||
         plan.outputs[0].shape != std::vector<std::uint32_t>{1, 16, 2048})
@@ -100,7 +103,7 @@ int main(int argc, char** argv) {
         output_initialization == "zero");
     fs::create_directories(output);
     const bool prepare_each_call = plan.preparation != "none";
-    Bytes packed(plan.preparation == "feature-pack-c16-v1" ? inputs[0].size() : 0);
+    Bytes packed(prepare_each_call && plan.preparation != "copy-c16-v1" ? inputs[0].size() : 0);
     if (!prepare_each_call)
       for (std::size_t i = 0; i < inputs.size(); ++i) executor.SetInput(i, inputs[i]);
     using Clock = std::chrono::steady_clock;
@@ -120,6 +123,7 @@ int main(int argc, char** argv) {
     for (unsigned i = 0; i < plan.warmup + plan.repetitions; ++i) {
       const auto start = Clock::now();
       if (plan.preparation == "feature-pack-c16-v1") PackDraftFeaturesC16(inputs[0], packed);
+      if (plan.preparation == "feature-pack-c16-kernel2-v1") PackDraftFeaturesC16Kernel2(inputs[0], packed);
       const auto pack_end = Clock::now();
       if (prepare_each_call) executor.SetInput(0, packed.empty() ? inputs[0] : packed);
       else if (i) for (std::size_t j = 0; j < inputs.size(); ++j) executor.ReuseInput(j);

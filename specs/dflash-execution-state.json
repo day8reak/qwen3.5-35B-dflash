@@ -7767,26 +7767,29 @@
             "profiling_scope": "ONE_CURRENT_OMC_TOOL_CALL_WITH_RETAINED_REFERENCE_KV; NOT_WARM_RESIDENT_BENCHMARK",
             "host_checks": 9,
             "host_evidence": "20261105T105610Z-6649-05c537/out/evidence/draft-roi-review.json",
-            "server_free_space": "1.7G_USER_REPORTED; CLEANUP_REQUIRED_BEFORE_NEXT_EXECUTION",
-            "next": "Clean packed weight duplicates and retired RoPE compiler scratch, then one packed-model case18 vendor profile; docs/current-status.md",
+            "server_free_space": "LAST_USER_REPORT_1.7G; CLEANUP_RESULT_NOT_RETURNED; RECHECK_BEFORE_PREFIX_COMPILE",
+            "next": "Clean owned completed compiler duplicates, compile packed4x4 versus full-dot kernel2 prefixes, rebuild native runner and compare all 30 prepared device pairs; docs/current-status.md",
             "current_profile": {
               "artifact_kind": "qwen35-draft-user-profile-observation",
-              "source": "USER_PASTED_TABLE_AFTER_CASE18_PROFILE_REQUEST",
+              "source": "USER_PASTED_TABLE_AFTER_PACKED_CASE18_PROFILE_REQUEST",
               "raw_csv_retrieved": false,
               "request_identity_independently_verified": false,
-              "inference_ms": 65.822,
-              "load_ms": 155.454,
-              "unload_ms": 9.228,
-              "operator_duration_sum_ms": 61.837,
+              "inference_ms": 60.214,
+              "load_ms": 162.214,
+              "unload_ms": 9.318,
+              "operator_duration_sum_ms": 56.223,
               "hotspots_ms": {
-                "MatMul_30": 19.807,
-                "Conv2D": 8.788,
-                "Transpose_1": 5.359,
-                "Transpose": 0.414,
+                "MatMul_30": 19.96,
+                "Conv2D": 8.691,
                 "StableArgMax": 0.416
               },
-              "clock_limitation": "NPU model57 starts 10:18:11.736xxx after API model1 ends 10:18:11.729179; not a usable shared timeline or critical path",
-              "model_attribution": "Conversation associates requested retained RoPE case18; table alone does not supply OMC hash"
+              "removed_from_operator_table": [
+                "Transpose",
+                "Transpose_1"
+              ],
+              "clock_limitation": "NPU model66 starts 23:30:11.898xxx after API model1 ends 23:30:11.897677; not a shared timeline or critical path",
+              "model_attribution": "Conversation associates requested accepted packed OMC case18; table supplies no OMC hash",
+              "preparation_scope": "HOST_OFFLINE_PACK_EXCLUDED; DOES_NOT_REPLACE_ACCEPTED_PREPARED_CALL_BASELINE"
             },
             "priorities": [
               {
@@ -7808,21 +7811,23 @@
                 "classification": "BIT_PERMUTATION_ONLY; NO_FLOAT_ARITHMETIC",
                 "host_evidence": "20261105T105610Z-6649-05c537/out/evidence/feature-pack-layout.json",
                 "scope": "Five valid-row cases and all262144 element indices; source Conv input bytes only",
-                "remaining": "Full-model comparison completed; resident host-embedding and packed ABI integration remains separate."
+                "remaining": "Full-model comparison completed; resident host-embedding and packed ABI integration remains separate.",
+                "profile_confirmation": "ENTRY_TRANSPOSE_AND_TRANSPOSE_1_ABSENT_FROM_RETURNED_PACKED_TABLE"
               },
               {
                 "priority": 2,
                 "change": "Full-dot feature projection expression/layout",
                 "weight_bytes": 67108864,
-                "measured_node_ms": 8.788,
-                "scope": "Small prefix comparison before full model; source FP16 boundaries retained"
+                "measured_node_ms": 8.691,
+                "scope": "Small prefix comparison before full model; source FP16 boundaries retained",
+                "next_experiment": "full-dot-kernel2-v1"
               },
               {
                 "priority": 3,
                 "change": "Full-vocabulary head layout/implementation",
                 "weight_bytes": 1017118720,
                 "logits_bytes": 7449600,
-                "measured_node_ms": 19.807,
+                "measured_node_ms": 19.96,
                 "scope": "No new custom kernel or approximation; actual implementation/physical traffic not established"
               }
             ],
@@ -7862,7 +7867,7 @@
               "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
               "full_draft_integration": "COMPLETE_MODEL_DIAGNOSTIC_VALIDATED; RESIDENT_NOT_SWITCHED",
               "production_promotion": "NOT_PERFORMED",
-              "next": "Clean packed weight duplicates and retired RoPE compiler scratch, then one packed-model case18 vendor profile; docs/current-status.md",
+              "next": "Clean owned completed compiler duplicates, compile packed4x4 versus full-dot kernel2 prefixes, rebuild native runner and compare all 30 prepared device pairs; docs/current-status.md",
               "descriptor_fix": {
                 "status": "HOST_VALIDATED",
                 "cause": "STALE_DATA_INPUT_DESC_WITH_UPDATED_OUTPUT_DESC",
@@ -7950,7 +7955,7 @@
                 "model_compilation": "COMPILED_ARTIFACT_EXECUTED_REPORTED",
                 "device_execution": "EXECUTED_OUTPUTS_RETRIEVED_REPORTED",
                 "production_promotion": "NOT_PERFORMED",
-                "next": "Clean packed weight duplicates and retired RoPE compiler scratch, then one packed-model case18 vendor profile; docs/current-status.md",
+                "next": "Clean owned completed compiler duplicates, compile packed4x4 versus full-dot kernel2 prefixes, rebuild native runner and compare all 30 prepared device pairs; docs/current-status.md",
                 "numerical_validation": "FAILED",
                 "baseline_equivalence": "PASSED",
                 "reported_comparison": {
@@ -8087,14 +8092,14 @@
                   "production_promotion": "NOT_PERFORMED"
                 },
                 "profile_adapter": {
-                  "status": "HOST_CHECKED",
+                  "status": "USER_RETURNED_PACKED_PROFILE_TABLE",
                   "checks": 11,
                   "model_compilation": "NOT_REQUIRED",
                   "extra_input_bytes": 524288,
                   "preparation": "HOST_OFFLINE_NOT_INCLUDED_IN_VENDOR_TIMINGS"
                 },
                 "cleanup": {
-                  "status": "HOST_CHECKED_USER_EXECUTION_PENDING",
+                  "status": "HOST_CHECKED; SERVER_FREED_BYTES_NOT_REPORTED",
                   "checks": 9,
                   "command_flag": "--retired-rope-scratch",
                   "scope": "OLD_ROPE_COMPILER_SCRATCH_ONLY"
@@ -8207,6 +8212,105 @@
               "reduction_percent": 8.565137007266632,
               "timing_scope": "SUM_CPU_PACK_SETINPUT_REUSE_SEGMENTS_AND_API_WALL; FILE_IO_KV_READBACK_SNAPSHOTS_COMMIT_LOAD_EXCLUDED",
               "limitation": "SEPARATE_MODEL_LOADS; ORIGINAL_DIAGNOSTIC_SCHEDULE; NOT_WARM_REPEATED_OR_END_TO_END_BENCHMARK"
+            },
+            "previous_rope_profile": {
+              "artifact_kind": "qwen35-draft-user-profile-observation",
+              "source": "USER_PASTED_TABLE_AFTER_CASE18_PROFILE_REQUEST",
+              "raw_csv_retrieved": false,
+              "request_identity_independently_verified": false,
+              "inference_ms": 65.822,
+              "load_ms": 155.454,
+              "unload_ms": 9.228,
+              "operator_duration_sum_ms": 61.837,
+              "hotspots_ms": {
+                "MatMul_30": 19.807,
+                "Conv2D": 8.788,
+                "Transpose_1": 5.359,
+                "Transpose": 0.414,
+                "StableArgMax": 0.416
+              },
+              "clock_limitation": "NPU model57 starts 10:18:11.736xxx after API model1 ends 10:18:11.729179; not a usable shared timeline or critical path",
+              "model_attribution": "Conversation associates requested retained RoPE case18; table alone does not supply OMC hash"
+            },
+            "projection_kernel_experiment": {
+              "status": "HOST_VALIDATED_READY_FOR_SERVER_PREFIX_COMPILATION",
+              "experiment": "full-dot-kernel2-v1",
+              "compile_tool": "targets/cpro/tools/probe_draft_feature_pack.py --projection-kernel 2",
+              "validation_tool": "targets/cpro/tools/validate_draft_vector.py",
+              "server_slot": "draft/tests/feature-projection",
+              "source_result": "draft/tests/top1-integration/feature-pack/result",
+              "variants": [
+                "packed",
+                "kernel2"
+              ],
+              "source_input_shape": [
+                1,
+                1024,
+                16,
+                16
+              ],
+              "candidate_input_shape": [
+                1,
+                4096,
+                8,
+                8
+              ],
+              "source_filter_shape": [
+                2048,
+                1024,
+                4,
+                4
+              ],
+              "candidate_filter_shape": [
+                2048,
+                4096,
+                2,
+                2
+              ],
+              "source_stride": [
+                4,
+                4
+              ],
+              "candidate_stride": [
+                2,
+                2
+              ],
+              "output_shape": [
+                1,
+                16,
+                2048
+              ],
+              "full_dot_terms": 16384,
+              "weight_bytes_per_model": 67108864,
+              "weight_words": "UNCHANGED",
+              "classification": "ALGEBRAICALLY_EXACT; DEVICE_ACCUMULATION_ORDER_UNVERIFIED",
+              "input_preparation": "PREALLOCATED_CPU_BYTE_PERMUTATION_PLUS_SETINPUT",
+              "input_cases": [
+                2,
+                16,
+                17
+              ],
+              "valid_rows": [
+                2,
+                16,
+                14
+              ],
+              "warmup": 3,
+              "repetitions": 10,
+              "timing": "CPU_PACK_SETINPUT_EXECUTE_WALL; SNAPSHOTS_AND_LOAD_EXCLUDED",
+              "equivalence": "REQUIRE_ALL_30_PAIRS_BITWISE_EQUAL_FINITE_AND_REPEAT_STABLE",
+              "promotion": "ONLY_CONSIDER_FULL_MODEL_IF_EQUIVALENT_AND_PREPARED_TIMING_IMPROVES",
+              "original_numeric_gates": "UNCHANGED_FAILED; DEVICE_BASELINE_EQUIVALENCE_SEPARATE",
+              "host_checks": 11,
+              "host_scope": "SYNTHETIC_AIR_WITH_PINNED_REAL_PROTO; ACTUAL_CPP_PACK_AND_PLAN_PARSER; MOCK_COMPILER_OMC_AND_PROCESS_BOUNDARIES",
+              "host_evidence": "20261106T000923Z-17619-8372e5/projection-host-checks.json",
+              "model_compilation": "NOT_RUN",
+              "device_execution": "NOT_RUN",
+              "full_model_integration": "NOT_RUN",
+              "production_promotion": "NOT_PERFORMED",
+              "storage": "TWO_SMALL_PREFIXES; SUCCESSFUL_OWNED_COMPILER_COPIES_RELEASED; 1_GIB_PREFLIGHT_MINIMUM_NOT_PEAK_GUARANTEE",
+              "capacity_profile_status": "MISSING_MATCHING_X90_EMPIRICAL_PROFILE",
+              "realizable_speedup_estimate": null
             }
           },
           "hidden_prefix_probe": {

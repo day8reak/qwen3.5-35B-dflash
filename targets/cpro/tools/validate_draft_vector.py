@@ -42,7 +42,8 @@ import stable_arg_max_ge
 
 PYTORCH_CASES = set(STAGES.values())
 VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES, *top1_semantics.EXTRA_CASES,
-                    *stable_arg_max_ge.CASES, *HIDDEN_CASES, *LAYER_CASES, *feature_pack_probe.CASES)
+                    *stable_arg_max_ge.CASES, *HIDDEN_CASES, *LAYER_CASES, *feature_pack_probe.CASES,
+                    *feature_pack_probe.projection.CASES)
 WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4, 'int64': 8}
 DTYPES = {**DTYPES, 'int64': '<i8'}
 

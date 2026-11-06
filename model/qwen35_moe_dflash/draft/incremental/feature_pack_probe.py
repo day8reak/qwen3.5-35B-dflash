@@ -23,6 +23,7 @@ from .hidden_layer_probe import LayerTrace
 from .hidden_probe import prepare_compiler_air
 from .torch_export import _schema, _disjoint
 from .air_feature_pack import pack_words
+from . import feature_projection_probe as projection
 
 KIND = 'qwen35-draft-feature-pack-prefix'
 SCOPE = 'SOURCE_C16_FEATURE_PROJECTION_PREFIX; NOT_FULL_DRAFT'
@@ -34,7 +35,20 @@ INPUT_SHAPE = [1, 16, 16384]
 PACKED_SHAPE = [1, 1024, 16, 16]
 OUTPUT_SHAPE = [1, 16, 2048]
 PREPARATION = dict(baseline='copy-c16-v1', packed='feature-pack-c16-v1')
+PREPARATION['kernel2'] = 'feature-pack-c16-kernel2-v1'
 TIMING = 'CPU_PACK_SETINPUT_EXECUTE_WALL; PREALLOCATED; SNAPSHOTS_EXCLUDED'
+
+
+def suite(experiment=None):
+    if experiment is None:
+        return VARIANTS, CASES, 'feature_pack'
+    if experiment == projection.EXPERIMENT:
+        return projection.VARIANTS, projection.CASES, 'feature_projection'
+    raise ValueError('unknown feature prefix experiment')
+
+
+def variant_shape(variant):
+    return dict(baseline=INPUT_SHAPE, packed=PACKED_SHAPE, kernel2=projection.SHAPE)[variant]
 
 
 def input_contract(raw, schema, input_name, shape, *, input_device='NPU', full_graph=False):
@@ -211,6 +225,9 @@ def _retry_failed(root, state, plans, inspect_model, ddk_root):
     from qwen35_moe_dflash.toolchain.compiler_storage import require_idle, _plain, _tree_bytes
     _plain(root, directory=True); _plain(root/'result.json')
     old = read_json(root/'result.json')
+    variants, _, _ = suite(state.get('experiment'))
+    if old.get('experiment') != state.get('experiment'):
+        raise ValueError('retry cannot change the projection experiment')
     if (old.get('artifact_kind') != KIND or old.get('status') != 'PARTIAL' or old.get('stage') != 'complete'
             or old.get('device_execution') != 'NOT_RUN' or old.get('numerical_validation') != 'NOT_RUN'):
         raise ValueError('--retry-failed requires a completed host-only partial compilation')
@@ -218,7 +235,7 @@ def _retry_failed(root, state, plans, inspect_model, ddk_root):
         if old.get(key) != state[key]:
             raise ValueError('retry source, inputs, reference or DDK changed: '+key)
     rows = old.get('models', [])
-    if not 1 <= len(rows) <= 2 or [r.get('variant') for r in rows] != list(VARIANTS[:len(rows)]):
+    if not 1 <= len(rows) <= 2 or [r.get('variant') for r in rows] != list(variants[:len(rows)]):
         raise ValueError('invalid feature-prefix retry inventory')
     allowed = {'result.json', 'fixtures', 'previous-failure.json', *(r['variant'] for r in rows)}
     if set(p.name for p in root.iterdir()) - allowed or (root/'previous-failure.json').is_symlink():
@@ -269,13 +286,17 @@ def _retry_failed(root, state, plans, inspect_model, ddk_root):
 
 
 def compile_probe(air_export, result, output, *, ddk_root, ddk_id, tbe_diagnosis,
-                  timeout_seconds=1800, progress=print, retry_failed=False):
+                  timeout_seconds=1800, progress=print, retry_failed=False, projection_kernel=None):
     from .accuracy_board import replay_fixture
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
     from qwen35_moe_dflash.toolchain.omc_embed_weights import embed_external_weights
     from qwen35_moe_dflash.toolchain.compiler_storage import release_packed_scratch
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
     import stable_arg_max_ge
+    if projection_kernel not in (None, 2):
+        raise ValueError('only the bounded 2x2 projection experiment is supported')
+    experiment = projection.EXPERIMENT if projection_kernel == 2 else None
+    variants, _, _ = suite(experiment)
     root, air = output_path(output), Path(air_export).resolve()
     _disjoint(root, air, Path(result).resolve(), ddk_root, tbe_diagnosis)
     if root != Path(output).absolute():
@@ -283,6 +304,10 @@ def compile_probe(air_export, result, output, *, ddk_root, ddk_id, tbe_diagnosis
     if root.exists() != retry_failed:
         raise ValueError('use a new output, or --retry-failed on the existing completed failed build')
     fixture, meta = replay_fixture(result)
+    if experiment:
+        from .air_feature_pack import check_contract
+        if not check_contract(meta):
+            raise ValueError('kernel2 experiment requires the accepted packed full-model replay')
     binding, manifest = read_json(fixture/'pytorch-abi.json'), read_json(air/'manifest.json')
     raw, _ = _read_air(air/'export.air')
     if (meta.get('frontend') != 'pytorch' or binding['source_air_sha256'] != hashlib.sha256(raw).hexdigest()
@@ -300,7 +325,7 @@ def compile_probe(air_export, result, output, *, ddk_root, ddk_id, tbe_diagnosis
     if not np.isfinite(weight).all():
         raise ValueError('nonfinite feature weights')
     spec = next(s for s in meta['inputs'] if s['name'] == 'target_features')
-    if (spec['dtype'], spec['shape'], spec['bytes']) != ('float16', INPUT_SHAPE, 524288):
+    if (spec['dtype'], spec['shape'], spec['bytes']) != ('float16', PACKED_SHAPE if meta.get('feature_pack') else INPUT_SHAPE, 524288):
         raise ValueError('retained feature fixture geometry differs')
     fixtures, sources = {}, []
     for step, valid in zip(STEPS, (2, 16, 14)):
@@ -321,11 +346,11 @@ def compile_probe(air_export, result, output, *, ddk_root, ddk_id, tbe_diagnosis
         fixtures[step] = (x, y.copy())
         sources.append(dict(case=case, input=records[0]))
     plans = []
-    for variant in VARIANTS:
-        extracted, receipt = prefix.extract_projection(variant)
+    for variant in variants:
+        extracted, receipt = projection.extract_kernel2(prefix) if variant == 'kernel2' else prefix.extract_projection(variant)
         prepared, preparation = prepare_compiler_air(extracted, schema)
         receipt['compiler_data_descriptor_contract'] = input_contract(prepared, schema, prefix.input,
-            PACKED_SHAPE if variant == 'packed' else INPUT_SHAPE,
+            variant_shape(variant),
             input_device=receipt['data_descriptor_contract']['input_desc']['device_type'])
         plans.append((variant, extracted, receipt, prepared, preparation))
     root.parent.mkdir(parents=True, exist_ok=True)
@@ -340,6 +365,11 @@ def compile_probe(air_export, result, output, *, ddk_root, ddk_id, tbe_diagnosis
             ddk_id=ddk_id, comparison=meta['comparison'], output_initialization='untouched',
             reference='SOURCE_CONV_FULL_K_FP32_DOT_THEN_ORIGINAL_FP16; CPU_REDUCTION_ORDER_MAY_DIFFER',
             probe_source_sha256=sha256_file(Path(__file__)), cases=[], models=[])
+        if experiment:
+            state.update(experiment=experiment, projection_rewrite_sha256=sha256_file(Path(projection.__file__)),
+                baseline='ACCEPTED_FULL_MODEL_PACKED_4X4_PREFIX',
+                liveness='ALL_16_ROWS_AND_2048_CHANNELS_FEED_CONTEXT_RMS_AND_LAYER_KV; FULL_16384_TERM_DOTS',
+                decision='PREFIX_ONLY; REQUIRE_BITWISE_BASELINE_EQUIVALENCE_AND_PREPARED_TIMING_GAIN')
         for step, (x, y) in fixtures.items():
             state['cases'].append(dict(source_case=step, fixtures={name: dict(
                 path=f'fixtures/{step}/{name}', bytes=a.nbytes, sha256=hashlib.sha256(a.tobytes()).hexdigest())
@@ -410,13 +440,14 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     import stable_arg_max_ge
     root, out = Path(root), Path(out)
     report = read_json(root/'result.json')
+    variants, expected_cases, case_prefix = suite(report.get('experiment'))
     if report.get('status') != 'COMPILED' or report.get('ddk_id') != ddk_id:
         raise ValueError('both feature prefixes must compile for the selected DDK')
-    if selected_cases(CASES if selection is None else selection, CASES) != list(CASES):
+    if selected_cases(expected_cases if selection is None else selection, expected_cases) != list(expected_cases):
         raise ValueError('run all three paired feature inputs together')
     models = {r['variant']: r for r in report['models']}
     sources = {r['source_case']: r for r in report['cases']}
-    if len(report['models']) != 2 or set(models) != set(VARIANTS) or len(report['cases']) != 3 or set(sources) != set(STEPS):
+    if len(report['models']) != 2 or set(models) != set(variants) or len(report['cases']) != 3 or set(sources) != set(STEPS):
         raise ValueError('feature-prefix compile inventory differs')
     inspected = {}
     for variant, row in models.items():
@@ -425,8 +456,8 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
         inspected[variant] = stable_arg_max_ge.inspect_model(model, ddk, row['extraction']['graph'])
     cases = []
     for step in STEPS:
-        for variant in VARIANTS:
-            name = f'feature_pack_c{step:02d}_{variant}'
+        for variant in variants:
+            name = f'{case_prefix}_c{step:02d}_{variant}'
             row, inspection = models[variant], inspected[variant]
             bound = deepcopy(inspection['io']); folder = out/'fixture'/name; folder.mkdir(parents=True)
             plan = ['QWEN35_TENSOR_PROBE 1', f'iterations {WARMUP} {REPETITIONS}',
@@ -452,6 +483,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
 
 def summarize(meta, native, comparison):
     """Keep CPU reference failures; require finite stable bitwise device equivalence."""
+    variants, expected_cases, case_prefix = suite(meta.get('source_evidence', {}).get('experiment'))
     selected = set(comparison['validated_cases']); rows, pairs = {}, []
     for case in meta['cases']:
         name = case['case']
@@ -475,7 +507,7 @@ def summarize(meta, native, comparison):
         row['preparation_timing'] = {f: stats(result[f]) for f in ('packing_us', 'set_input_us', 'api_us', 'prepared_call_us')}
         rows[name] = row
     for step in STEPS:
-        names = [f'feature_pack_c{step:02d}_{v}' for v in VARIANTS]
+        names = [f'{case_prefix}_c{step:02d}_{v}' for v in variants]
         if not set(names) <= selected: continue
         b, c = [rows[n] for n in names]
         equal = [(native/names[0]/f'{i}.bin').read_bytes() == (native/names[1]/f'{i}.bin').read_bytes() for i in range(10)]
@@ -485,9 +517,10 @@ def summarize(meta, native, comparison):
             baseline=bt, candidate=ct, mean_saved_ms=bt['mean_ms']-ct['mean_ms'],
             median_saved_ms=bt['median_ms']-ct['median_ms'],
             observed_ranges_separated=ct['max_ms'] < bt['min_ms']))
-    complete = selected == set(CASES) and len(pairs) == len(STEPS)
+    complete = selected == set(expected_cases) and len(pairs) == len(STEPS)
     equivalence = 'PASSED' if complete and all(p['baseline_equivalence'] == 'PASSED' for p in pairs) else ('FAILED' if complete else 'INCOMPLETE')
-    return dict(coverage_complete=complete, baseline_equivalence=equivalence, pairs=pairs,
+    return dict(experiment=meta.get('source_evidence', {}).get('experiment', 'input-pack-v1'),
+        variants=list(variants), coverage_complete=complete, baseline_equivalence=equivalence, pairs=pairs,
         timing_scope=TIMING, full_model_integration='NOT_RUN', production_promotion='NOT_PERFORMED',
         decision='REVIEW_PREFIX_TIMINGS_BEFORE_FULL_MODEL_BUILD',
         limitations=['CPU reference gates remain unchanged; equivalence is a separate measured-device comparison.',

@@ -18,6 +18,14 @@ def pack_words(a):
     return np.ascontiguousarray(a.reshape(4, 4, 1024, 4, 4).transpose(2, 0, 3, 1, 4)).reshape(PHYSICAL_SHAPE)
 
 
+def pack_kernel2_words(a):
+    """Experimental 2x2 full-dot carrier; not the accepted full-model ABI."""
+    import numpy as np
+    if a.shape != tuple(LOGICAL_SHAPE):
+        raise ValueError('feature packing requires logical C16 input')
+    return np.ascontiguousarray(a.reshape(4, 4, 4096, 2, 2).transpose(2, 0, 3, 1, 4)).reshape(1, 4096, 8, 8)
+
+
 def check_contract(manifest):
     packing = manifest.get('feature_pack')
     if packing is None:
