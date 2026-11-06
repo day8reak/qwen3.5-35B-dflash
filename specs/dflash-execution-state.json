@@ -8574,7 +8574,7 @@
               }
             },
             "offline_weight_implementation": {
-              "status": "MODELDEF_CONTAINER_FIXED_HOST_CHECKED_SERVER_RETRY_PENDING",
+              "status": "ND_VARIANTS_DEVICE_VALIDATED_FRACTAL_IMPORT_FAILURE_DIAGNOSIS_PENDING",
               "policy": "fp16-static-rhs-layout-v1",
               "user_direction": "EXHAUSTIVE_LAYOUT_TRANSPOSE_PARAMETERS_BEFORE_FULL_MODEL",
               "variants": [
@@ -8594,14 +8594,14 @@
               "packed_payload_verification": "INVERSE_SHA256_AND_COMPILER_REFERENCE_BINDING",
               "local_host_checks": 14,
               "compiler_and_device_calls_in_host_checks": "MOCKED_NOT_HARDWARE_EVIDENCE",
-              "model_compilation": "FAILED_BEFORE_LAYOUT_COMPILATION",
-              "device_execution": "NOT_RUN",
-              "numerical_validation": "NOT_RUN",
+              "model_compilation": "PARTIAL",
+              "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+              "numerical_validation": "PASSED",
               "speedup": "NOT_MEASURED",
               "production_promotion": "NOT_PERFORMED",
               "commands": "docs/current-status.md",
-              "next": "RETRY_SAME_FAILED_DIRECTORY_WITH_REPLACE_FAILED; NO_LAYOUT_SELECTION_BEFORE_DEVICE_OUTPUTS",
-              "last_server_attempt": {
+              "next": "READ_RETAINED_NZ_ZN_COMPILER_DIAGNOSTICS; ND_N_READY_FOR_FULL_SHAPE_CANDIDATE_NOT_PROMOTED",
+              "initial_server_attempt": {
                 "source": "USER_RETURNED_REPORT",
                 "ddk_id": "100.520.020.010",
                 "planned_cases": 54,
@@ -8621,8 +8621,88 @@
                 "host_evidence": "20261106T015518Z-23155-fbc011/offline-weight-container-host-checks.json",
                 "check_scope": "INDEPENDENT_PROTOBUF_MODELDEF_DECODE_AND_ALL_54_REWRITES; COMPILER_AND_OMC_MOCKED",
                 "baseline_failure": "STOP_REMAINING_CASES_WITH_SKIPPED_NOT_RUN",
-                "selected_ddk_retry": "NOT_RUN",
-                "device_execution": "NOT_RUN"
+                "selected_ddk_retry": "EXECUTED;18_ND_CASES_COMPILED_AND_VALIDATED",
+                "device_execution": "EXECUTED_OUTPUTS_RETRIEVED"
+              },
+              "numerical_scope": "18_EXECUTED_ND_CASES;36_FRACTAL_CASES_NOT_RUN",
+              "last_device_validation": {
+                "source": "USER_RETURNED_VECTOR_VALIDATION",
+                "artifact_kind": "qwen35-draft-vector-validation",
+                "status": "PASSED",
+                "suite_coverage": "18_COMPILED_AND_VALIDATED;36_COMPILE_FAILED",
+                "ddk_id": "100.520.020.010",
+                "board_attempt": "/data/local/tmp/qwen35_vector_3f9b3f58e7fa4ba7b9764bf0c91cb7bf",
+                "recovery_source": "/home/w00949577/qwen3.5-35B-dflash-run/draft/tests/offline-weights/run",
+                "validated_cases": 18,
+                "retained_compared_calls": 180,
+                "warmup": 3,
+                "repetitions": 10,
+                "atol": 0.0,
+                "rtol": 0.0,
+                "exact_bytes_required": true,
+                "repeat_bitwise_stable": true,
+                "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+                "numerical_validation": "PASSED",
+                "baseline_passed": true,
+                "passing_variants": [
+                  "nd_t",
+                  "nd_n"
+                ],
+                "failed_compile_variants": [
+                  "nz_t",
+                  "nz_n",
+                  "zn_t",
+                  "zn_n"
+                ],
+                "failed_compile_cases": 36,
+                "failed_variant_root_cause": "NOT_IN_RETURNED_SUMMARY; NEED_RETAINED_COMPILER_DIAGNOSTICS",
+                "mean_api_ms": {
+                  "nd_t": {
+                    "mapping": 0.6777,
+                    "reverse": 0.5707,
+                    "k2048": 0.5391,
+                    "k4096": 0.4547,
+                    "k6144": 0.5732,
+                    "q_width": 0.7153,
+                    "kv_o_width": 0.6345,
+                    "gate_up_width": 0.6665,
+                    "head_width": 3.4724
+                  },
+                  "nd_n": {
+                    "mapping": 0.6387,
+                    "reverse": 0.5917,
+                    "k2048": 0.5084,
+                    "k4096": 0.5515,
+                    "k6144": 0.507,
+                    "q_width": 0.6414,
+                    "kv_o_width": 0.6221,
+                    "gate_up_width": 0.7412,
+                    "head_width": 3.3069
+                  }
+                },
+                "full_shape_validation": "NOT_RUN",
+                "full_draft_validation": "NOT_RUN",
+                "speedup": "NOT_ESTABLISHED",
+                "scope": "FP16_RHS_LAYOUT_TRANSPOSE_MATRIX_AXES_COVERAGE; NOT_FULL_SHAPE_OR_SPEEDUP"
+              },
+              "usable_candidate": {
+                "variant": "nd_n",
+                "storage": "ND",
+                "logical_shape": [
+                  "K",
+                  "N"
+                ],
+                "transpose_x1": false,
+                "transpose_x2": false,
+                "full_draft_static_matmuls": 31,
+                "full_draft_validation": "NOT_RUN",
+                "speedup": "NOT_ESTABLISHED"
+              },
+              "retained_log_inspection": {
+                "option": "--inspect",
+                "host_checks": 6,
+                "evidence": "20261106T021920Z-24234-646141/offline-weight-inspection-host-checks.json",
+                "server_execution": "PENDING"
               }
             }
           },

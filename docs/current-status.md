@@ -27,7 +27,7 @@
 
 2026-11-06回传已确认：源AIR的head权重是FP16 `[248320,2048]`；编译输入已经删除权重Transpose，以 `transpose_x2=true` 使用。报告PARTIAL只表示没有保留的编译IR，不能据此推断最终内核的权重布局。
 
-用户要求统一检查全部权重。按当前packed源码，矩阵权重用途如下；下面是本轮离线打包覆盖范围；编译器导入与板端验证尚待执行。
+用户要求统一检查全部权重。按当前packed源码，矩阵权重用途如下；ND两种导入设置已通过小探针，下面的完整权重转换范围仍待整图验证。
 
 | 用途 | 数量 | 原权重shape（输出×输入） | 布局检查范围 |
 |---|---:|---|---|
@@ -67,70 +67,43 @@ df -h "$AI_RUN_DIR"
 
 2026-11-06服务器首次清理在删除前扫描时遇到 `stable-arg-max-ge-tbe/.../.ipc-*/listener-*` 条目而停止。修复后的 `--all-tests` 允许已关闭的Unix socket，读取本地 `/proc/net/unix` 检查是否仍被绑定，并在删除前再次检查；不连接socket，不放宽其它清理模式。新增9项本地回归检查通过，覆盖已关闭／活跃socket、删除前重新绑定、源权重损坏、锁及重复执行。尚无独立清理回执，后续探针报告已记录上述可用空间。
 
-### 本轮：一次确定格式与transpose参数
+### 布局矩阵结果：两种ND通过，NZ／ZN编译失败待诊断
 
-2026-11-06服务器首轮54项编译均失败；六种变体首例都停在AIR解析，报 `modelDef_->graph_size() > 0`。根因是探针生成器输出裸GraphDef，缺少OMG要求的ModelDef封装，尚未测到布局支持。已修正源AIR及改写后AIR的封装检查，并新增9项主机回归：独立protobuf ModelDef解码器复现旧文件零graph，检查全部54项、外层元数据／公共接口保持、fixture绑定及失败停止／原目录重试。编译器和OMC检查在主机测试中模拟，修复后的真实DDK编译及板端验证待执行。
+2026-11-06最新回传：ModelDef封装修复后的矩阵中，nd_t和nd_n各九组编译通过并完成设备验证；18个case各保留10次输出，180份输出逐字节匹配参考，重复逐位稳定，atol=rtol=0。请求已完成回收且释放锁。NZ／ZN的四种组合共36项编译失败、未上板；本次摘要只有OMG退出码，没有根因日志。顶层PASSED仅指实际执行的18项，不能写成六种布局全部通过，也不能据此否定mmad内部ZN约定。
 
-整套仍为6种设置×9组尺寸，共54项；每个可编译且在NPU任务中的候选预热3次、保留10次输出。当前机器没有选定的CPro DDK／板端连接，由用户在原服务器执行。
+整套为6种设置×9组尺寸，共54项；每个可编译且在NPU任务中的候选预热3次、保留10次输出。当前机器没有选定的CPro DDK／板端连接，由用户在原服务器执行。首轮裸GraphDef的共同解析错误及修复记录见[结果页](results.md)。
 
-| 变体 | FileConstant导入格式 | 逻辑右输入 | transpose_x2 | 原FP16字节变换 |
-|---|---|---|---|---|
-| nd_t | ND | W[N,K] | true | ND基线 |
-| nd_n | ND | W.T[K,N] | false | 普通离线转置 |
-| nz_t | FRACTAL_NZ | W[N,K] | true | [K1,N1,N0,K0] |
-| nz_n | FRACTAL_NZ | W.T[K,N] | false | [N1,K1,K0,N0] |
-| zn_t | FRACTAL_ZN | W[N,K] | true | [N1,K1,K0,N0] |
-| zn_n | FRACTAL_ZN | W.T[K,N] | false | [K1,N1,N0,K0] |
+| 变体 | FileConstant导入格式 | 逻辑右输入 | transpose_x2 | 原FP16字节变换 | 本轮结果 |
+|---|---|---|---|---|---|
+| nd_t | ND | W[N,K] | true | ND基线 | 九组逐字节通过 |
+| nd_n | ND | W.T[K,N] | false | 普通离线转置 | 九组逐字节通过 |
+| nz_t | FRACTAL_NZ | W[N,K] | true | [K1,N1,N0,K0] | 九组编译失败 |
+| nz_n | FRACTAL_NZ | W.T[K,N] | false | [N1,K1,K0,N0] | 九组编译失败 |
+| zn_t | FRACTAL_ZN | W[N,K] | true | [N1,K1,K0,N0] | 九组编译失败 |
+| zn_n | FRACTAL_ZN | W.T[K,N] | false | [K1,N1,N0,K0] | 九组编译失败 |
 
-全部验证同一个 `X @ W.T`。NZ使用GE格式编号29；ZN以字面格式名试验，不猜测整数编号，不替换成卷积FRACTAL_Z或FRACTAL_ZN_RNN。当前尝试的导入合同是FileConstant的shape和消费端shape均声明物理尺寸，origin_shape声明逻辑尺寸。这些设置需要设备验证；编译拒绝只否定该接口表达，不能否定mmad内部ZN格式。
+全部验证同一个 `X @ W.T`。NZ使用GE格式编号29；ZN以字面格式名试验，不猜测整数编号，不替换成卷积FRACTAL_Z或FRACTAL_ZN_RNN。当前尝试的导入合同是FileConstant的shape和消费端shape均声明物理尺寸，origin_shape声明逻辑尺寸。四种分块导入表达均未编译通过，具体拒绝阶段待读取日志。
 
-九组W shape／M：`48×80 / 95`、`80×48 / 1`、`48×2048 / 15`、`48×4096 / 16`、`48×6144 / 32`、`4096×32 / 15`、`2048×48 / 16`、`12288×32 / 32`、`248320×16 / 15`。覆盖非方阵、完整K长度、各算子族N宽度、尾块、对齐块和词表末尾。大K与大N分轴测试，不称为真实head的完整尺寸验证；48×80一组用basis rows逐项暴露每个权重，其它组增加分块边界脉冲、全1、交错符号、零行和混合点积。整数参考限制在FP16可精确表达范围，逐字节比较全部输出。
+九组W shape／M：`48×80 / 95`、`80×48 / 1`、`48×2048 / 15`、`48×4096 / 16`、`48×6144 / 32`、`4096×32 / 15`、`2048×48 / 16`、`12288×32 / 32`、`248320×16 / 15`。大K与大N分轴覆盖，包含边界脉冲、稠密有符号点积、basis rows和零行；整数参考可由FP16精确表达。没有真实head的N=248320、K=2048完整组合，也没有真实权重下的整图Top1／hidden／KV或性能结论。
 
-每组先编译普通ND基线；任一ND基线编译或NPU归属检查失败就停止，后续项标为SKIPPED／NOT_RUN，记录baseline_gate和实际compilation_calls，避免将共同入口故障误报为布局不支持。非基线组合失败时保留日志，继续其它组合；九组ND全部通过后，剩余可编译组合一次上板。结果中的 `offline_weight_layouts` 分开列出编译、导入就绪、数值、重复稳定性及API均值；`passing_variants` 必须覆盖全部九组。探针计时只用于发现异常，不用于推算完整Draft收益。
-
-本次拉取修复后在同一失败目录重试：
+下一步只读提取已有日志，每个失败变体选首例。无需DDK路径，不读取权重，不创建新探针，不重编或重新上板：
 
 ```bash
 (
 set -eu
-: "${REPO_DIR:?}" "${AI_RUN_DIR:?}" "${CPRO_DDK_ROOT:?}" "${CPRO_DDK_ID:?}"
+: "${REPO_DIR:?}" "${AI_RUN_DIR:?}"
 cd "$REPO_DIR"
 git pull --ff-only origin main
 python3 targets/cpro/tools/probe_draft_offline_weights.py \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/offline-weights/compiled" --replace-failed
+  --inspect "$AI_RUN_DIR/draft/tests/offline-weights/compiled"
 )
 ```
 
-若TorchAir schema自动发现存在歧义，使用已有安装中的 `ge_ir_by_protoc_*_pb2.py` 作为 `--torchair-pb2`；工具只读取其字面descriptor，不执行该模块。首次构建失败可在同一目录加 `--replace-failed`，不创建时间戳目录。约59.43MiB合成权重覆盖全部54项；最大全部成功时10次输出约482.93MiB。预检查同时预留编译工作区和回收归档／解包空间，当前下界约3.9GiB；实际编译scratch仍可能更多。
+只读入口6项主机检查通过，覆盖18／36矩阵汇总、日志提取、无DDK运行、无写入、错误case身份及缺失日志；不会把日志缺失解释成格式不支持。暂时保留offline-weights的compiled、run、result目录，后续整图编译会重读这些设备输出。
 
-编译报告COMPILED或PARTIAL且普通ND基线九组都通过时：
+nd_n是当前已验证可进入全尺寸对照的候选：把W[N,K]按FP16原始位离线转为连续ND的W.T[K,N]，MatMul保持transpose_x1=false，设置transpose_x2=false。整图编译接口为 `--offline-weights nd_n --offline-weight-canary "$AI_RUN_DIR/draft/tests/offline-weights/result"`，会重新比较原始设备输出，要求选中变体和nd_t在九组全部通过后，对31个静态MatMul统一转换并验证逆转换SHA256；需额外1642MiB载体。原权重、融合K/V和gate/up的逻辑顺序不变；Conv、归一化向量和host embedding继续使用原接口。先诊断现存NZ／ZN失败，再决定是否采用ND候选进行全尺寸对照。
 
-```bash
-(
-set -eu
-cd "${REPO_DIR:?}"
-python3 targets/cpro/tools/validate_draft_vector.py \
-  --compiled "${AI_RUN_DIR:?}/draft/tests/offline-weights/compiled" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" --ddk-root "${CPRO_DDK_ROOT:?}" \
-  --output "$AI_RUN_DIR/draft/tests/offline-weights/run" --apply
-)
-```
-
-启动后回收同一个请求；若返回PENDING，继续使用这一条回收命令，不重新 `--apply`：
-
-```bash
-(
-set -eu
-cd "${REPO_DIR:?}"
-python3 targets/cpro/tools/validate_draft_vector.py \
-  --recover "${AI_RUN_DIR:?}/draft/tests/offline-weights/run" \
-  --output "$AI_RUN_DIR/draft/tests/offline-weights/result"
-)
-```
-
-整图编译接口已接入 `--offline-weights <变体> --offline-weight-canary <上述result目录>`。它重读原始设备输出，要求选中变体和nd_t在九组全部通过，才允许对31个常量MatMul统一打包；原权重、融合K/V和gate/up的逻辑顺序不变。每份打包文件都验证逆转换SHA256，验证入口再次核对实际编译引用。需额外1642MiB打包载体并在编译前计入空间下界；Conv、归一化向量、host embedding继续采用原接口。参数未选定前不开始完整模型编译。
+旧tests已清理时，从 `draft/source/prepared` 重建packed-spatial-host-embedding／StableArgMax AIR；对照两边都须加 `--rope-fp32-table --cpu-feature-pack`，候选才额外开启nd_n。历史60ms不能代替同批重建基线的测量；小探针API均值只作诊断，不用于推算完整Draft收益。
 
 ### 离线权重布局的收益判断
 

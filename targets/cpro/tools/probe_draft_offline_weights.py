@@ -9,12 +9,15 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]/'model'))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'ops/draft-top1/scripts'))
-from qwen35_moe_dflash.draft.incremental.offline_weight_probe import compile_probe
+from qwen35_moe_dflash.draft.incremental.offline_weight_probe import compile_probe, inspect_probe
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', required=True)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument('--output')
+    action.add_argument('--inspect', metavar='COMPILED_DIR',
+                        help='read retained compiler failures; no DDK, compilation, weight reads or device access')
     parser.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     parser.add_argument('--ddk-id', default=os.environ.get('CPRO_DDK_ID'))
     parser.add_argument('--torchair-pb2', help='installed literal TorchAir GE descriptor; auto-discovered when unique')
@@ -24,11 +27,16 @@ def main():
     args = parser.parse_args()
     if args.timeout_seconds <= 0:
         parser.error('--timeout-seconds must be positive')
+    if args.inspect and (args.replace_failed or args.torchair_pb2 or args.tbe_diagnosis):
+        parser.error('--inspect is read-only; omit build/replacement options')
     try:
-        result = compile_probe(args.output, ddk_root=args.ddk_root, ddk_id=args.ddk_id,
-            torchair_pb2=args.torchair_pb2, tbe_diagnosis=args.tbe_diagnosis,
-            timeout_seconds=args.timeout_seconds, replace=args.replace_failed,
-            progress=lambda s: print('offline-weights: '+s, flush=True))
+        if args.inspect:
+            result = inspect_probe(args.inspect)
+        else:
+            result = compile_probe(args.output, ddk_root=args.ddk_root, ddk_id=args.ddk_id,
+                torchair_pb2=args.torchair_pb2, tbe_diagnosis=args.tbe_diagnosis,
+                timeout_seconds=args.timeout_seconds, replace=args.replace_failed,
+                progress=lambda s: print('offline-weights: '+s, flush=True))
     except (OSError, ValueError, KeyError, RuntimeError) as error:
         result = dict(status='FAILED', error=f'{type(error).__name__}: {error}')
     shown = {k: v for k, v in result.items() if k != 'cases'}
@@ -40,7 +48,7 @@ def main():
         shown.update(case_count=len(result['cases']), first_failure_by_variant=first,
                      report=str(Path(args.output)/'result.json'))
     print(json.dumps(shown, ensure_ascii=False, allow_nan=False))
-    return int(result['status'] not in ('COMPILED', 'PARTIAL'))
+    return int(result['status'] not in ('COMPILED', 'PARTIAL', 'INSPECTED'))
 
 
 if __name__ == '__main__':

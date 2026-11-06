@@ -277,6 +277,36 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     return meta
 
 
+def inspect_probe(directory):
+    """Read the retained matrix and first compiler failure per layout only."""
+    from qwen35_moe_dflash.execution.runtime_config import read_json
+    from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
+    root = Path(directory)
+    report = read_json(root/'result.json', 8 << 20)
+    cases = report.get('cases', [])
+    if (report.get('artifact_kind') != KIND or report.get('suite') != json.loads(json.dumps(SUITE))
+            or len(cases) > len(CASES) or len({r['case'] for r in cases}) != len(cases)
+            or any(r['case'] not in CASES or r['scenario'] not in SCENARIOS
+                   or r['variant'] not in ow.VARIANTS
+                   or r['case'] != f"offline_weight_{r['scenario']}_{r['variant']}" for r in cases)):
+        raise ValueError('expected the retained offline weight layout matrix')
+    failures = {}
+    for row in cases:
+        if row['status'] == 'FAILED' and row['variant'] not in failures:
+            failures[row['variant']] = dict(case=row['case'], error=row.get('error'),
+                compilation_diagnostics=compilation_diagnostics(root/row['case']/'omc'))
+    return dict(artifact_kind=KIND+'-inspection', status='INSPECTED',
+                source_status=report.get('status'), ddk_id=report.get('ddk_id'),
+                case_count=len(cases), compiled_cases=sum(r['status'] == 'COMPILED' for r in cases),
+                failed_cases=sum(r['status'] == 'FAILED' for r in cases),
+                skipped_cases=sum(r['status'] == 'SKIPPED' for r in cases),
+                compilation_matrix={v: {r['scenario']: r['status'] for r in cases if r['variant'] == v}
+                                    for v in ow.VARIANTS},
+                first_failure_by_variant=failures, report=str(root/'result.json'),
+                model_compilation='NOT_RUN', device_execution='NOT_RUN', weight_payloads='NOT_READ',
+                scope='RETAINED_COMPILER_REPORT_AND_LOGS_ONLY; ROOT_CAUSE_NOT_CLASSIFIED')
+
+
 def summarize(meta, comparison):
     """Classify every attempted setting; never turn unsupported rows into a pass."""
     results = {r['case']: r for r in comparison['cases']}
