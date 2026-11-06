@@ -9,4 +9,3 @@
 - [环境配置](environment-setup.md)
 - [完整流程执行](run-end-to-end.md)
 - [当前阶段：归档Draft、清空测试、转向Target精度](current-status.md)
-- [Target精度定位交接：原源码与真实shape算子测试计划](target-accuracy-handoff.md)

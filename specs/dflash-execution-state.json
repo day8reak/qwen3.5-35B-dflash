@@ -7,7 +7,7 @@
   "overall_status": "in_progress",
   "active_phase": "P1",
   "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
-  "user_priority": "Retain approximately60ms packed Draft and finish archive/clear ALL draft/tests via existing tools. Pause Draft/offline-weight performance work. New window: compare local NZ310P and CPro sources, isolate actual custom/fused/quantized operators and test full-model Prefill64/Decode1 shapes before Target block/full-model accuracy.",
+  "user_priority": "Archive the latest approximately 60ms packed Draft; delete ALL draft/tests contents after publication. Pause offline-weight/performance experiments; next solve Target accuracy.",
   "status_policy": {
     "allowed": [
       "pending",
@@ -9685,6 +9685,5 @@
       "checks": 16,
       "scope": "HOST_FAKE_COMPILER_ABI_AND_COMPARISON; REAL_FILE_MOVES_LOCKS_CLEANUP_COMPACT_BINDING; PROC_SCAN_MOCKED_LOCAL_PERMISSION_LIMIT; NO_DDK_OR_DEVICE"
     }
-  },
-  "accuracy_handoff": "docs/target-accuracy-handoff.md"
+  }
 }
