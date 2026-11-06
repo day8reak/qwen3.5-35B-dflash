@@ -519,10 +519,18 @@ def summarize(meta, native, comparison):
             observed_ranges_separated=ct['max_ms'] < bt['min_ms']))
     complete = selected == set(expected_cases) and len(pairs) == len(STEPS)
     equivalence = 'PASSED' if complete and all(p['baseline_equivalence'] == 'PASSED' for p in pairs) else ('FAILED' if complete else 'INCOMPLETE')
+    decision = 'REVIEW_PREFIX_TIMINGS_BEFORE_FULL_MODEL_BUILD'
+    if meta.get('source_evidence', {}).get('experiment') == projection.EXPERIMENT:
+        if not complete:
+            decision = 'INCOMPLETE_KEEP_PACKED_BASELINE'
+        elif equivalence != 'PASSED':
+            decision = 'REJECT_KERNEL2_DEVICE_DIFFERENCES_KEEP_PACKED_BASELINE'
+        elif not all(p['mean_saved_ms'] > 0 and p['median_saved_ms'] > 0 for p in pairs):
+            decision = 'NO_CONSISTENT_PREPARED_GAIN_KEEP_PACKED_BASELINE'
     return dict(experiment=meta.get('source_evidence', {}).get('experiment', 'input-pack-v1'),
         variants=list(variants), coverage_complete=complete, baseline_equivalence=equivalence, pairs=pairs,
         timing_scope=TIMING, full_model_integration='NOT_RUN', production_promotion='NOT_PERFORMED',
-        decision='REVIEW_PREFIX_TIMINGS_BEFORE_FULL_MODEL_BUILD',
+        decision=decision,
         limitations=['CPU reference gates remain unchanged; equivalence is a separate measured-device comparison.',
                     'Separate model loads and snapshots between calls; no full-model or end-to-end speedup claim.',
                     'Candidate uses a preallocated CPU scratch plus SetInput copy; preparation is included.'])

@@ -7768,7 +7768,7 @@
             "host_checks": 9,
             "host_evidence": "20261105T105610Z-6649-05c537/out/evidence/draft-roi-review.json",
             "server_free_space": "LAST_USER_REPORT_1.7G; CLEANUP_RESULT_NOT_RETURNED; RECHECK_BEFORE_PREFIX_COMPILE",
-            "next": "Clean owned completed compiler duplicates, compile packed4x4 versus full-dot kernel2 prefixes, rebuild native runner and compare all 30 prepared device pairs; docs/current-status.md",
+            "next": "Read the retained full-vocabulary head source, prepared AIR and compiler IR with inspect_draft_head.py; no compilation or board access; docs/current-status.md",
             "current_profile": {
               "artifact_kind": "qwen35-draft-user-profile-observation",
               "source": "USER_PASTED_TABLE_AFTER_PACKED_CASE18_PROFILE_REQUEST",
@@ -7820,7 +7820,8 @@
                 "weight_bytes": 67108864,
                 "measured_node_ms": 8.691,
                 "scope": "Small prefix comparison before full model; source FP16 boundaries retained",
-                "next_experiment": "full-dot-kernel2-v1"
+                "next_experiment": "CLOSED_FULL_DOT_KERNEL2; NO_PREPARED_TIMING_GAIN",
+                "decision": "KEEP_CURRENT_4X4"
               },
               {
                 "priority": 3,
@@ -7828,7 +7829,8 @@
                 "weight_bytes": 1017118720,
                 "logits_bytes": 7449600,
                 "measured_node_ms": 19.96,
-                "scope": "No new custom kernel or approximation; actual implementation/physical traffic not established"
+                "scope": "No new custom kernel or approximation; actual implementation/physical traffic not established",
+                "next": "READ_ONLY_SOURCE_PREPARED_AIR_AND_RETAINED_COMPILER_IR"
               }
             ],
             "deferred": {
@@ -7867,7 +7869,7 @@
               "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
               "full_draft_integration": "COMPLETE_MODEL_DIAGNOSTIC_VALIDATED; RESIDENT_NOT_SWITCHED",
               "production_promotion": "NOT_PERFORMED",
-              "next": "Clean owned completed compiler duplicates, compile packed4x4 versus full-dot kernel2 prefixes, rebuild native runner and compare all 30 prepared device pairs; docs/current-status.md",
+              "next": "Read the retained full-vocabulary head source, prepared AIR and compiler IR with inspect_draft_head.py; no compilation or board access; docs/current-status.md",
               "descriptor_fix": {
                 "status": "HOST_VALIDATED",
                 "cause": "STALE_DATA_INPUT_DESC_WITH_UPDATED_OUTPUT_DESC",
@@ -7955,7 +7957,7 @@
                 "model_compilation": "COMPILED_ARTIFACT_EXECUTED_REPORTED",
                 "device_execution": "EXECUTED_OUTPUTS_RETRIEVED_REPORTED",
                 "production_promotion": "NOT_PERFORMED",
-                "next": "Clean owned completed compiler duplicates, compile packed4x4 versus full-dot kernel2 prefixes, rebuild native runner and compare all 30 prepared device pairs; docs/current-status.md",
+                "next": "Read the retained full-vocabulary head source, prepared AIR and compiler IR with inspect_draft_head.py; no compilation or board access; docs/current-status.md",
                 "numerical_validation": "FAILED",
                 "baseline_equivalence": "PASSED",
                 "reported_comparison": {
@@ -8233,7 +8235,7 @@
               "model_attribution": "Conversation associates requested retained RoPE case18; table alone does not supply OMC hash"
             },
             "projection_kernel_experiment": {
-              "status": "HOST_VALIDATED_READY_FOR_SERVER_PREFIX_COMPILATION",
+              "status": "REJECTED_NO_OBSERVED_NET_GAIN_AND_DEVICE_DIFFERENCES",
               "experiment": "full-dot-kernel2-v1",
               "compile_tool": "targets/cpro/tools/probe_draft_feature_pack.py --projection-kernel 2",
               "validation_tool": "targets/cpro/tools/validate_draft_vector.py",
@@ -8304,13 +8306,117 @@
               "host_checks": 11,
               "host_scope": "SYNTHETIC_AIR_WITH_PINNED_REAL_PROTO; ACTUAL_CPP_PACK_AND_PLAN_PARSER; MOCK_COMPILER_OMC_AND_PROCESS_BOUNDARIES",
               "host_evidence": "20261106T000923Z-17619-8372e5/projection-host-checks.json",
-              "model_compilation": "NOT_RUN",
-              "device_execution": "NOT_RUN",
+              "model_compilation": "COMPILED_ARTIFACTS_EXECUTED_REPORTED",
+              "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
               "full_model_integration": "NOT_RUN",
               "production_promotion": "NOT_PERFORMED",
               "storage": "TWO_SMALL_PREFIXES; SUCCESSFUL_OWNED_COMPILER_COPIES_RELEASED; 1_GIB_PREFLIGHT_MINIMUM_NOT_PEAK_GUARANTEE",
               "capacity_profile_status": "MISSING_MATCHING_X90_EMPIRICAL_PROFILE",
-              "realizable_speedup_estimate": null
+              "realizable_speedup_estimate": null,
+              "numerical_validation": "FAILED",
+              "baseline_equivalence": "FAILED",
+              "reported_execution": {
+                "source": "USER_RETURNED_RECOVERY_JSON; NOT_LOCAL_DEVICE_EXECUTION",
+                "date": "2026-11-06",
+                "status": "FAILED",
+                "decision": "REJECT_KERNEL2_KEEP_ACCEPTED_PACKED_BASELINE",
+                "reasons": [
+                  "ALL_30_DEVICE_BASELINE_PAIRS_DIFFER",
+                  "NO_OBSERVED_PREPARED_TIMING_GAIN_IN_ANY_GROUP"
+                ],
+                "board_attempt": "/data/local/tmp/qwen35_vector_9135138de7ed4adf9d88e755c1c99fbb",
+                "recovery_source": "/home/w00949577/qwen3.5-35B-dflash-run/draft/tests/feature-projection/run",
+                "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+                "native_exitcode": 0,
+                "archive_exitcode": 0,
+                "all_six_case_exitcodes": 0,
+                "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+                "coverage_complete": true,
+                "repeat_bitwise_stable": true,
+                "all_outputs_finite": true,
+                "all_cases_graphop_counts": {
+                  "NPUCL": 1
+                },
+                "warmup": 3,
+                "repetitions": 10,
+                "pairs": [
+                  {
+                    "source_case": 2,
+                    "baseline_prepared_mean_ms": 10.5075,
+                    "candidate_prepared_mean_ms": 10.8774,
+                    "mean_saved_ms": -0.36989999999999945,
+                    "baseline_api_mean_ms": 9.9558,
+                    "candidate_api_mean_ms": 9.9172,
+                    "baseline_pack_mean_ms": 0.4393,
+                    "candidate_pack_mean_ms": 0.8551,
+                    "baseline_relative_l2": 0.005082773973514781,
+                    "candidate_relative_l2": 0.005046748748014326,
+                    "bitwise_equal_calls": 0,
+                    "compared_calls": 10,
+                    "observed_ranges_separated": false
+                  },
+                  {
+                    "source_case": 16,
+                    "baseline_prepared_mean_ms": 10.8752,
+                    "candidate_prepared_mean_ms": 10.9697,
+                    "mean_saved_ms": -0.09450000000000003,
+                    "baseline_api_mean_ms": 10.1881,
+                    "candidate_api_mean_ms": 9.9649,
+                    "baseline_pack_mean_ms": 0.5575,
+                    "candidate_pack_mean_ms": 0.8984,
+                    "baseline_relative_l2": 0.004999903914235172,
+                    "candidate_relative_l2": 0.004960598358641226,
+                    "bitwise_equal_calls": 0,
+                    "compared_calls": 10,
+                    "observed_ranges_separated": false
+                  },
+                  {
+                    "source_case": 17,
+                    "baseline_prepared_mean_ms": 10.9199,
+                    "candidate_prepared_mean_ms": 10.9672,
+                    "mean_saved_ms": -0.0472999999999999,
+                    "baseline_api_mean_ms": 10.2782,
+                    "candidate_api_mean_ms": 10.0117,
+                    "baseline_pack_mean_ms": 0.5191,
+                    "candidate_pack_mean_ms": 0.8494,
+                    "baseline_relative_l2": 0.004986247064854597,
+                    "candidate_relative_l2": 0.004917478931050099,
+                    "bitwise_equal_calls": 0,
+                    "compared_calls": 10,
+                    "observed_ranges_separated": false
+                  }
+                ],
+                "baseline_prepared_mean_ms": 10.767533333333333,
+                "candidate_prepared_mean_ms": 10.9381,
+                "prepared_delta_ms": 0.17056666666666764,
+                "prepared_delta_percent": 1.5840830149895124,
+                "api_mean_saved_ms": 0.1761000000000005,
+                "packing_mean_extra_ms": 0.36233333333333334,
+                "timing_scope": "CPU_PACK_SETINPUT_EXECUTE_WALL; PREALLOCATED; SNAPSHOTS_AND_LOAD_EXCLUDED",
+                "numerical_validation": "FAILED",
+                "baseline_equivalence": "FAILED",
+                "full_model_integration": "NOT_RUN",
+                "production_promotion": "NOT_PERFORMED",
+                "limitations": [
+                  "Overlapping timing ranges and separate model loads; no statistical slowdown or full-model speedup claim.",
+                  "Lower CPU-reference L2 does not satisfy byte equality or original elementwise gates.",
+                  "Compiled accumulation-order change is a hypothesis, not proven by this output summary.",
+                  "Model hashes and actual freed disk bytes were not included in the returned summary."
+                ]
+              },
+              "next": "CLOSED; NO_FULL_MODEL_BUILD_OR_FURTHER_ACCURACY_WORK"
+            },
+            "head_layout_inspection": {
+              "status": "HOST_CHECKED_READY_FOR_USER_READ_ONLY_INSPECTION",
+              "tool": "targets/cpro/tools/inspect_draft_head.py",
+              "model_compilation": "NOT_RUN",
+              "device_execution": "NOT_RUN",
+              "weight_payloads": "NOT_READ_OR_COPIED",
+              "checks": 6,
+              "host_evidence": "20261106T003046Z-18557-6c5134/head-layout-host-checks.json",
+              "known_source_rule": "fold_weight_transposes absorbs rank-two FileConstant transpose into MatMul transpose_x2; check retained candidate before repeating it",
+              "planned_scope": "SOURCE_AND_COMPILER_INPUT_EXPRESSION; SELECTED_RETAINED_IR; FINAL_NPU_TILING_UNPROVEN",
+              "next": "Read the retained full-vocabulary head source, prepared AIR and compiler IR with inspect_draft_head.py; no compilation or board access; docs/current-status.md"
             }
           },
           "hidden_prefix_probe": {

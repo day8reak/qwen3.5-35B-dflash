@@ -11,66 +11,38 @@
 
 当前OMC为 `draft/tests/top1-integration/feature-pack/compiled/model.omc`，SHA256 `1105ce436ed4dd889ce4c26d0a5eeb620382b51ec5c98d8b810e3875af37600b`。计时包含端侧CPU打包及输入设置／复用和同步API，排除文件I/O、诊断回读、快照、commit、加载；不是整轮端到端或预热后十次重复的基准。常驻入口仍为旧token-ID接口，不能仅改OMC路径就使用host embedding＋packed候选。
 
-## 当前profile与下一步
+## 2×2投影实验结束，保留当前基线
 
-2026-11-06用户回传packed模型表：model inference **60.214ms**，入口原有的 `Transpose`／`Transpose_1` 已不在算子表中。`MatMul_30` 为19.960ms，`Conv2D` 为8.691ms，StableArgMax为0.416ms。算子duration合计56.223ms，不能当作关键路径；NPU start晚于API inference end，不能跨表计算等待时间。表格未附请求身份／OMC hash，按本轮case18请求关联，未在本地读取原CSV。
+2026-11-06用户回传：六组执行／回收成功、锁已释放，输出有限且重复稳定。每组预热3次、记录10次，30对设备输出均不满足逐字节等价；原CPU参考门槛也仍失败。
 
-下一步只比较特征投影前缀：当前packed **4×4／1024通道**与 **2×2／4096通道**。两者每个输出都保留全部16384项点积、原权重字节、16个token和2048通道及原FP16输出边界；没有缩减词表或有效行。2×2只是另一种卷积表达，实际DDK支持、累加舍入和性能尚待验证。
+| source case | 当前4×4准备＋API ms | 2×2准备＋API ms | 净省 ms |
+|---|---:|---:|---:|
+| 2 | 10.5075 | 10.8774 | −0.3699 |
+| 16 | 10.8752 | 10.9697 | −0.0945 |
+| 17 | 10.9199 | 10.9672 | −0.0473 |
 
-先做这个约64MiB权重的两模型实验，比直接改约1.017GB权重的head更节省构建空间。主机已检查全部262144项索引映射、实际C++打包字节、两侧Data描述符和AIR改写、旧4×4兼容性、六组计划及失败重试，共11项通过；没有本地DDK编译或设备执行结果。AIR编码沿用导出schema，类型按[固定版本TorchAir协议](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/proto/ge_ir.proto)检查。
+三组平均10.7675→10.9381ms，观测总耗时增加0.1706ms。API平均省0.1761ms，CPU打包平均增加0.3623ms；测量范围重叠，不据此声称统计显著变慢，但没有值得整图集成的净收益。2×2对CPU参考的L2略低，不能把逐字节差异说成精度恶化，也不据此推翻当前不集成的决定。停止这条路线，不重跑或编译完整2×2 Draft。[详细结果](results.md)。
 
-## 先清运行盘，再编译两个小前缀
+## 下一步只读检查完整词表head
 
-用户报告仅剩1.7G。以下清理保留当前packed编译目录、所有OMC、原始AIR／权重、回放输入／golden和已回收输出。第一步删除已嵌入OMC的外置权重重复副本；第二步核对完整packed等价、两次任务完成及释放锁记录，再删除上一版RoPE的 `compilation/compile-work` 和 `compilation/tbe-compat/wheel-python`。若仍被当前导出／编译输入或运行配置引用则拒绝。旧RoPE的保留fixture仍可回放、对比和profiling；重新做该旧编译目录的ABI绑定需要重建已删除的编译副本。
+当前packed profile中，inference为60.214ms，head方向的 `MatMul_30` 为19.960ms，特征投影 `Conv2D` 为8.691ms，StableArgMax为0.416ms；原入口 `Transpose`／`Transpose_1` 已消失。算子duration合计56.223ms不是关键路径，NPU start晚于API inference end，不能跨表推算等待时间。表格按本轮case18请求关联，未在本地核对原CSV及OMC hash。
 
-沿用服务器现有环境。先更新脚本并设置目录：
+源码已经把权重转置折入MatMul属性，下一步核对当前导出AIR、真正送入编译器的prepared AIR和保留IR中的head矩阵方向／格式，避免重复已做的转置优化。检查器通过完整词表权重和Top1消费路径定位节点，不依赖 `MatMul_30` 这个数字后缀。所有15行、248320个词表列、每个logit的2048项点积都属于当前声明合同；不从某次候选数较少推导可删除的词表。
+
+沿用服务器环境运行：
 
 ```bash
 cd "$REPO_DIR" && git pull --ff-only origin main
 TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
 FULL_PACK_DIR="$TOP1_DIR/feature-pack"
-PROJECTION_DIR="$AI_RUN_DIR/draft/tests/feature-projection"
+HEAD_DIR="$AI_RUN_DIR/draft/tests/head-layout"
+mkdir -p "$HEAD_DIR"
+python3 "$REPO_DIR/targets/cpro/tools/inspect_draft_head.py" \
+  --air-export "$TOP1_DIR/export" --compiled "$FULL_PACK_DIR/compiled" \
+  --ddk-root "$CPRO_DDK_ROOT" > "$HEAD_DIR/inspection.json"
+cat "$HEAD_DIR/inspection.json"
 ```
 
-清理成功后才编译；已清理的目录可重复执行。清理结果中的 `free_bytes_after` 是实测剩余空间，本地尚未收到这个值。探针编译前至少需1GiB可用空间，编译scratch可能另需空间；每个成功模型会回收自己的重复编译副本，不生成新的1.79GB完整Draft。
+此步不连接板端、不启动编译、不读取或复制约1.017GB的head权重，只输出小型JSON。报告的OMC hash来自已有packing记录，不重新计算；源AIR及prepared AIR核对原编译记录。`source`／`compiler_input`是编译前图，`retained_compiler_ir`单独列出可读IR及缺失部分，不能混写成最终内核实现。没有IR时返回PARTIAL，仍保留源图检查结果，不自动重新编译。
 
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/clean_draft_probes.py" \
-  --root "$AI_RUN_DIR" --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --integration-sidecars --apply &&
-python3 "$REPO_DIR/targets/cpro/tools/clean_draft_probes.py" \
-  --root "$AI_RUN_DIR" --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --retired-rope-scratch --apply &&
-python3 "$REPO_DIR/targets/cpro/tools/probe_draft_feature_pack.py" \
-  --air-export "$TOP1_DIR/export" --result "$FULL_PACK_DIR/result" \
-  --projection-kernel 2 \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$PROJECTION_DIR/compiled"
-```
-
-只有两个前缀均为COMPILED才执行下面一步。新2×2输入需要重建native runner；当前完整OMC保持为性能基线。
-
-```bash
-python3 "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$AI_RUN_DIR/runtime/native" --replace &&
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$PROJECTION_DIR/compiled" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$PROJECTION_DIR/run" --apply
-```
-
-启动确认后回收同一次请求；未完成时继续recover，不重新apply：
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$PROJECTION_DIR/run" --output "$PROJECTION_DIR/result"
-```
-
-编译失败先看 `models[].compilation_diagnostics`。仅有已记录的OMG失败退出、没有运行中的任务时，可对原编译命令加 `--retry-failed`，保留成功模型和fixture。不要删除整个测试树或重跑完整模型编译。
-
-## 对照判定
-
-使用原case2／16／17的逻辑输入和同一CPU参考，每种实现各预热3次、记录10次。报告沿用 `feature_pack` 字段，`experiment=full-dot-kernel2-v1`，baseline为当前packed4×4，candidate为kernel2。检查30对输出全部逐字节一致、有限、重复稳定，再比较各组 `prepared_call_us`：它包含预分配CPU打包、SetInput和同步API，排除快照与加载。CPU参考FAILED单独保留，不能被baseline等价覆盖。
-
-交回清理摘要和验证JSON即可判断这条路线是否值得整图集成。前缀有净收益才继续完整模型；输出出现新差异或没有净收益则保留当前60ms基线。完整词表head为下一候选；零新增KV专用proposal和StableArgMax继续低优先级。尚无匹配X90能力实测画像，不推断带宽瓶颈或可实现的加速上限。
+交回该JSON后，依据实际矩阵方向选择一个小head表达对照；当前不铺开大模型构建。服务器最近剩余空间仍只有用户先前报告的1.7G，未收到实际清理字节数；下一次编译前须重新核对。原数值门槛及60ms性能基线保持，常驻接入与端到端加速尚未完成。
