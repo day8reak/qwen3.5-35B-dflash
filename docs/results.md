@@ -58,7 +58,11 @@ packed模型的vendor profiling输入适配只生成一个512KiB物理输入，�
 
 用户随后将范围扩大到所有静态矩阵，并明确Zn指大块行优先、小块列优先。当前packed源码有31个常量权重MatMul（Q、KV、O、gate/up、down各6个，head1个）和独立feature Conv；完整清单见[当前阶段](current-status.md)。匹配16×16分块下，Zn(Wᵀ)与Nz(W)字节相同，4组uint16索引检查通过；这不证明当前X90 DDK能够直接导入该物理格式。
 
-2026-11-06新增本地实现：6种ND/NZ/ZN与transpose组合、9组尺寸共54项，使用合成权重核对当前FileConstant导入约定。完整31个MatMul的离线转换／编译和引用核验也已接线，须先有选中变体和ND基线全部九组设备输出通过。14项主机检查通过：包括全部65536种16位字模式、六种布局的独立地址计算及文件逆变换、31个矩阵完整覆盖、别名／其它消费者拒绝、源AIR空shape、54项构建与fixture流程的模拟、部分格式编译失败和数值失败的区分。模拟编译不调用OMG，模拟证据不能作为设备通过；没有本次真实DDK编译、板端数值或性能结果。[执行命令及范围](current-status.md)。
+2026-11-06新增本地实现：6种ND/NZ/ZN与transpose组合、9组尺寸共54项，使用合成权重核对当前FileConstant导入约定。完整31个MatMul的离线转换／编译和引用核验也已接线，须先有选中变体和ND基线全部九组设备输出通过。首批14项主机检查通过：包括全部65536种16位字模式、六种布局的独立地址计算及文件逆变换、31个矩阵完整覆盖、别名／其它消费者拒绝、源AIR空shape、54项构建与fixture流程的模拟、部分格式编译失败和数值失败的区分。模拟编译不调用OMG，当时的检查接受ModelDef／GraphDef两种输入，未覆盖真实OMG入口要求。[执行命令及范围](current-status.md)。
+
+随后服务器DDK 100.520.020.010回传54项全部FAILED，六种变体首例均报 `modelDef_->graph_size() > 0`，发生在AIR解析阶段；device_execution和numerical_validation均NOT_RUN。生成器漏了ModelDef外层，普通ND也未进入算子编译，本轮不形成NZ／ZN或transpose支持结论。报告记录编译前可用29622022144字节。
+
+修复为单graph的ModelDef，改写后同样核对容器；任一普通ND基线失败即停止后续构建并显式标为SKIPPED，不再提示执行设备验证。新增9项主机回归通过：用独立protobuf ModelDef解码器复现旧文件零graph，检查全部54项源图／改写容器、外层元数据及公共ABI、实际文件转换与fixture绑定、首例／后续ND失败、非基线失败继续、归属失败和同目录替换重试。测试所用descriptor SHA256与服务器一致；编译器和OMC检查仍为模拟。修复后的真实OMG编译、设备数值及速度均待验证。
 
 ## 特征投影入口CPU打包：前缀对照
 

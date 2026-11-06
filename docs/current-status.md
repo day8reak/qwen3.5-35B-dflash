@@ -45,9 +45,9 @@
 
 用户进一步确认CPro CCE的mmad约定为L0A的A使用ZZ、L0B的B使用ZN、L0C的C使用NZ。指令级右矩阵格式以此为依据；当前尚需核对所选DDK 100.520.020.010的FP16 FileConstant导入、GM到L0B搬运、逻辑／物理shape、padding及transpose语义，并确认编译器是否已经预打包。公开[PyPTO MatMul文档](https://pypto.gitcode.com/api/tensor_api/operation/pypto-matmul.html)列出KirinX90不支持TILEOP_NZ输入；这是PyPTO接口限制，不能据此断言OMG内置MatMul同样不支持，也不否定mmad的内部ZN约定。先前的ND head原型没有发布。本轮改为统一实现31个静态MatMul的位保持布局转换，并先运行下面的格式／transpose矩阵；尚未确定可用参数，也未声称加速。
 
-### 当前先清空全部Draft测试
+### 已授权的Draft测试清理（本次重试无需执行）
 
-用户最新授权删除 `draft/tests` 的全部内容，包括60ms基线、AIR副本、所有测试输入输出和历史结果，只保留测试目录外的源权重和代码。60ms是历史观测值；首轮服务器清理在删除前失败，尚无空间释放结果。
+用户授权删除 `draft/tests` 的全部内容，包括60ms基线、AIR副本、所有测试输入输出和历史结果，只保留测试目录外的源权重和代码。60ms是历史观测值。最新探针报告记录编译前可用29622022144字节（约29.6GB），本次只替换失败的offline-weights编译目录，无需再次清空全部tests。下方保留完整清理入口供需要时使用。
 
 ```bash
 (
@@ -65,11 +65,13 @@ df -h "$AI_RUN_DIR"
 
 清空后原来的replay及依赖旧输入的探针命令不能直接运行。本轮布局探针使用确定性合成权重与已安装TorchAir的schema，不依赖旧tests、旧AIR或DRAFT_SOURCE；整图阶段再从保留的prepared权重重建。清理入口此前9项主机检查通过，包含源权重保护、锁、软链接、不完整删除后重试。
 
-2026-11-06服务器首次清理在删除前扫描时遇到 `stable-arg-max-ge-tbe/.../.ipc-*/listener-*` 条目而停止。修复后的 `--all-tests` 允许已关闭的Unix socket，读取本地 `/proc/net/unix` 检查是否仍被绑定，并在删除前再次检查；不连接socket，不放宽其它清理模式。新增9项本地回归检查通过，覆盖已关闭／活跃socket、删除前重新绑定、源权重损坏、锁及重复执行。拉取更新后重跑上方同一条命令；尚未收到修复后的服务器结果。
+2026-11-06服务器首次清理在删除前扫描时遇到 `stable-arg-max-ge-tbe/.../.ipc-*/listener-*` 条目而停止。修复后的 `--all-tests` 允许已关闭的Unix socket，读取本地 `/proc/net/unix` 检查是否仍被绑定，并在删除前再次检查；不连接socket，不放宽其它清理模式。新增9项本地回归检查通过，覆盖已关闭／活跃socket、删除前重新绑定、源权重损坏、锁及重复执行。尚无独立清理回执，后续探针报告已记录上述可用空间。
 
 ### 本轮：一次确定格式与transpose参数
 
-2026-11-06本地实现，服务器编译／板端执行均未运行。整套为6种设置×9组尺寸，共54项；每个可编译且在NPU任务中的候选预热3次、保留10次输出。当前机器没有选定的CPro DDK／板端连接，由用户在原服务器执行。
+2026-11-06服务器首轮54项编译均失败；六种变体首例都停在AIR解析，报 `modelDef_->graph_size() > 0`。根因是探针生成器输出裸GraphDef，缺少OMG要求的ModelDef封装，尚未测到布局支持。已修正源AIR及改写后AIR的封装检查，并新增9项主机回归：独立protobuf ModelDef解码器复现旧文件零graph，检查全部54项、外层元数据／公共接口保持、fixture绑定及失败停止／原目录重试。编译器和OMC检查在主机测试中模拟，修复后的真实DDK编译及板端验证待执行。
+
+整套仍为6种设置×9组尺寸，共54项；每个可编译且在NPU任务中的候选预热3次、保留10次输出。当前机器没有选定的CPro DDK／板端连接，由用户在原服务器执行。
 
 | 变体 | FileConstant导入格式 | 逻辑右输入 | transpose_x2 | 原FP16字节变换 |
 |---|---|---|---|---|
@@ -84,19 +86,20 @@ df -h "$AI_RUN_DIR"
 
 九组W shape／M：`48×80 / 95`、`80×48 / 1`、`48×2048 / 15`、`48×4096 / 16`、`48×6144 / 32`、`4096×32 / 15`、`2048×48 / 16`、`12288×32 / 32`、`248320×16 / 15`。覆盖非方阵、完整K长度、各算子族N宽度、尾块、对齐块和词表末尾。大K与大N分轴测试，不称为真实head的完整尺寸验证；48×80一组用basis rows逐项暴露每个权重，其它组增加分块边界脉冲、全1、交错符号、零行和混合点积。整数参考限制在FP16可精确表达范围，逐字节比较全部输出。
 
-编译失败的组合保留日志，剩余可编译组合一次上板。结果中的 `offline_weight_layouts` 分开列出编译、导入就绪、数值、重复稳定性及API均值；`passing_variants` 必须覆盖全部九组。探针计时只用于发现异常，不用于推算完整Draft收益。
+每组先编译普通ND基线；任一ND基线编译或NPU归属检查失败就停止，后续项标为SKIPPED／NOT_RUN，记录baseline_gate和实际compilation_calls，避免将共同入口故障误报为布局不支持。非基线组合失败时保留日志，继续其它组合；九组ND全部通过后，剩余可编译组合一次上板。结果中的 `offline_weight_layouts` 分开列出编译、导入就绪、数值、重复稳定性及API均值；`passing_variants` 必须覆盖全部九组。探针计时只用于发现异常，不用于推算完整Draft收益。
 
-首轮在上面清理完成后运行，后续回收时不要重复清理：
+本次拉取修复后在同一失败目录重试：
 
 ```bash
 (
 set -eu
 : "${REPO_DIR:?}" "${AI_RUN_DIR:?}" "${CPRO_DDK_ROOT:?}" "${CPRO_DDK_ID:?}"
 cd "$REPO_DIR"
+git pull --ff-only origin main
 python3 targets/cpro/tools/probe_draft_offline_weights.py \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --output "$AI_RUN_DIR/draft/tests/offline-weights/compiled"
+  --output "$AI_RUN_DIR/draft/tests/offline-weights/compiled" --replace-failed
 )
 ```
 

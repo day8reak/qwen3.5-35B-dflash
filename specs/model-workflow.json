@@ -7927,7 +7927,7 @@
         }
       },
       "offline_weight_implementation": {
-        "status": "HOST_IMPLEMENTED_SELECTED_DDK_AND_DEVICE_PENDING",
+        "status": "MODELDEF_CONTAINER_FIXED_HOST_CHECKED_SERVER_RETRY_PENDING",
         "policy": "fp16-static-rhs-layout-v1",
         "user_direction": "EXHAUSTIVE_LAYOUT_TRANSPOSE_PARAMETERS_BEFORE_FULL_MODEL",
         "variants": [
@@ -7947,13 +7947,36 @@
         "packed_payload_verification": "INVERSE_SHA256_AND_COMPILER_REFERENCE_BINDING",
         "local_host_checks": 14,
         "compiler_and_device_calls_in_host_checks": "MOCKED_NOT_HARDWARE_EVIDENCE",
-        "model_compilation": "NOT_RUN",
+        "model_compilation": "FAILED_BEFORE_LAYOUT_COMPILATION",
         "device_execution": "NOT_RUN",
         "numerical_validation": "NOT_RUN",
         "speedup": "NOT_MEASURED",
         "production_promotion": "NOT_PERFORMED",
         "commands": "docs/current-status.md",
-        "next": "RUN_SINGLE_LAYOUT_MATRIX_SUITE_THEN_SELECT_PASSING_VARIANT_BEFORE_FULL_DRAFT"
+        "next": "RETRY_SAME_FAILED_DIRECTORY_WITH_REPLACE_FAILED; NO_LAYOUT_SELECTION_BEFORE_DEVICE_OUTPUTS",
+        "last_server_attempt": {
+          "source": "USER_RETURNED_REPORT",
+          "ddk_id": "100.520.020.010",
+          "planned_cases": 54,
+          "failed_cases": 54,
+          "model_compilation": "FAILED",
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN",
+          "first_error_each_variant": "modelDef_->graph_size() > 0",
+          "failure_stage": "AIR_MODEL_PARSE",
+          "diagnosis": "GENERATOR_EMITTED_BARE_GRAPHDEF_WITHOUT_MODELDEF",
+          "layout_support": "UNDETERMINED",
+          "available_free_bytes_before_compile": 29622022144
+        },
+        "container_fix": {
+          "air_container": "ModelDef",
+          "host_checks": 9,
+          "host_evidence": "20261106T015518Z-23155-fbc011/offline-weight-container-host-checks.json",
+          "check_scope": "INDEPENDENT_PROTOBUF_MODELDEF_DECODE_AND_ALL_54_REWRITES; COMPILER_AND_OMC_MOCKED",
+          "baseline_failure": "STOP_REMAINING_CASES_WITH_SKIPPED_NOT_RUN",
+          "selected_ddk_retry": "NOT_RUN",
+          "device_execution": "NOT_RUN"
+        }
       }
     }
   }

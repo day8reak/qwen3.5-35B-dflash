@@ -83,12 +83,25 @@ def graph(schema, scenario='mapping'):
              node('dot', 'MatMul', ['x:0', 'w:0', ''], [dx, dw, optional], [dy],
                   dict(transpose_x1=False, transpose_x2=True)),
              node('output', 'NetOutput', ['dot:0'], [dy], [], {})]
-    raw = (blob('GraphDef', 'name', 'offline_weight_import')
-           + b''.join(blob('GraphDef', 'op', _new_id(n, schema, i), 11, True)
-                      for i, n in enumerate(nodes)))
+    graph_raw = (blob('GraphDef', 'name', 'offline_weight_import')
+                 + b''.join(blob('GraphDef', 'op', _new_id(n, schema, i), 11, True)
+                            for i, n in enumerate(nodes)))
+    # OMG framework=1 loads ModelDef. A bare GraphDef can pass our general AIR
+    # reader but is seen by the compiler as a model with zero graphs.
+    raw = (blob('ModelDef', 'name', 'offline_weight_import')
+           + blob('ModelDef', 'graph', graph_raw, 11, True))
+    _check_model_container(raw, schema)
     declared = dict(inputs=[dict(name='x', shape=xshape, dtype='float16')],
                     outputs=[dict(name='y', shape=yshape, dtype='float16')])
     return raw, declared
+
+
+def _check_model_container(raw, schema):
+    """Check the compiler's container, without GraphDef autodetection."""
+    graphs = schema.decode(raw, 'ModelDef').get('graph', [])
+    if (len(graphs) != 1 or [(n.get('name'), n.get('type')) for n in graphs[0].get('op', [])]
+            != [('x', 'Data'), ('w', 'FileConstant'), ('dot', 'MatMul'), ('output', 'NetOutput')]):
+        raise ValueError('offline weight AIR must be a ModelDef containing the four-node probe graph')
 
 
 def compile_probe(output, *, ddk_root, ddk_id, torchair_pb2=None, tbe_diagnosis=None,
@@ -116,7 +129,8 @@ def compile_probe(output, *, ddk_root, ddk_id, torchair_pb2=None, tbe_diagnosis=
                       'includes later output archives/snapshots; compiler scratch may require more')
     with _slot(output, KIND, replace) as root:
         report = dict(artifact_kind=KIND, status='COMPILING', scope=SCOPE, ddk_id=ddk_id,
-                      suite=SUITE, schema=metadata, cases=[], model_compilation='NOT_RUN',
+                      suite=SUITE, schema=metadata, air_container='ModelDef', cases=[],
+                      model_compilation='NOT_RUN', compilation_calls=0,
                       storage=dict(required_free_bytes=required, available_free_bytes=available,
                                    learned_weight_bytes=0, synthetic_weight_bytes=weights,
                                    ten_repeat_output_bytes=10*outputs, scope='LOWER_BOUND_INCLUDING_RECOVERY'),
@@ -124,21 +138,27 @@ def compile_probe(output, *, ddk_root, ddk_id, torchair_pb2=None, tbe_diagnosis=
         # _slot owns manifest.json; result.json is the existing vector-runner ABI.
         _save(root/'manifest.json', report)
         (root/'air-schema.pb').write_bytes(descriptor)
+        blocked_by = None
         for case in CASES:
             scenario = next(s for s in SCENARIOS if case.startswith('offline_weight_'+s+'_'))
             variant = case.rsplit('_', 2)[-2]+'_'+case.rsplit('_', 1)[-1]
-            raw, declared = graph(schema, scenario)
-            plan = ow.inventory(raw, schema, draft=False, variant=variant)
-            w, _, _ = fixture(scenario)
-            folder = root/case
-            (folder/'air/weight').mkdir(parents=True)
-            w.tofile(folder/'air/weight/canary')
-            (folder/'air/probe.air').write_bytes(raw)
             row = dict(case=case, scenario=scenario, variant=variant, contract=ow.contract(variant),
-                       status='COMPILING', graph=declared, model_compilation='NOT_RUN')
+                       status='COMPILING', model_compilation='NOT_RUN')
             report['cases'].append(row)
+            if blocked_by:
+                row.update(status='SKIPPED', blocked_by=blocked_by,
+                           reason='ordinary ND baseline failed; layout support is undetermined')
+                continue
             _save(root/'result.json', report)
             try:
+                raw, declared = graph(schema, scenario)
+                row['graph'] = declared
+                plan = ow.inventory(raw, schema, draft=False, variant=variant)
+                w, _, _ = fixture(scenario)
+                folder = root/case
+                (folder/'air/weight').mkdir(parents=True)
+                w.tofile(folder/'air/weight/canary')
+                (folder/'air/probe.air').write_bytes(raw)
                 if shutil.disk_usage(root).free < 256 << 20:
                     raise OSError('less than 256 MiB free; compiler invocation skipped')
                 def transform(snapshot):
@@ -147,8 +167,11 @@ def compile_probe(output, *, ddk_root, ddk_id, torchair_pb2=None, tbe_diagnosis=
                     (snapshot.parent/'before-offline-weights.air').write_bytes(raw)
                     proof = ow.pack_files(snapshot.parent, plan, progress=progress)
                     proof.update(before_air='before-offline-weights.air', scope=SCOPE)
-                    return ow.rewrite(raw, schema, plan), dict(policy=ow.POLICY, status='APPLIED',
+                    prepared = ow.rewrite(raw, schema, plan)
+                    _check_model_container(prepared, schema)
+                    return prepared, dict(policy=ow.POLICY, status='APPLIED',
                         removed_count=0, offline_weights=proof)
+                report['compilation_calls'] += 1
                 result = compile_existing_air(folder/'air/probe.air', folder/'omc', ddk_root,
                     ddk_id=ddk_id, timeout_seconds=timeout_seconds, input_layout='air-directory',
                     use_origin_format=True, save_weights_as_external_data=False,
@@ -166,6 +189,10 @@ def compile_probe(output, *, ddk_root, ddk_id, torchair_pb2=None, tbe_diagnosis=
                     model=dict(path=str(model.relative_to(root)), bytes=model.stat().st_size, sha256=sha256_file(model)))
             except (OSError, ValueError, KeyError, RuntimeError) as error:
                 row.update(status='FAILED', error=f'{type(error).__name__}: {error}')
+                if variant == 'nd_t':
+                    blocked_by = case
+                    report['baseline_gate'] = dict(status='FAILED', case=case, error=row['error'])
+                    progress(case+': ND baseline failed; skipping the remaining cases')
             _save(root/'result.json', report)
         success = all(r['status'] == 'COMPILED' for r in report['cases'])
         baseline = all(r['status'] == 'COMPILED' for r in report['cases'] if r['variant'] == 'nd_t')
@@ -173,7 +200,12 @@ def compile_probe(output, *, ddk_root, ddk_id, torchair_pb2=None, tbe_diagnosis=
                       model_compilation='PASSED' if success else 'PARTIAL' if baseline else 'FAILED',
                       compilation_matrix={v: {r['scenario']: r['status'] for r in report['cases'] if r['variant'] == v}
                                           for v in ow.VARIANTS},
-                      next='Validate all compiled cases together; failed imports remain explicit in the matrix.')
+                      skipped_cases=sum(r['status'] == 'SKIPPED' for r in report['cases']),
+                      next=('Validate all compiled cases together; failed imports remain explicit in the matrix.'
+                            if baseline else 'Fix the ordinary ND baseline failure and retry with --replace-failed; '
+                            'do not run device validation or infer layout support from this suite.'))
+        if baseline:
+            report['baseline_gate'] = dict(status='PASSED', scenarios=len(SCENARIOS))
         _save(root/'result.json', report)
         _save(root/'manifest.json', report)
         return report
