@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "artifact_kind": "qwen35-dflash-execution-plan-state",
-  "updated": "2026-11-05",
+  "updated": "2026-11-06",
   "plan_document": "docs/reference/dflash-delivery-plan.md",
   "current_commands": "docs/current-status.md",
   "overall_status": "in_progress",
-  "active_phase": "P4",
+  "active_phase": "P1",
   "final_objective": "Complete original40layer target and trained6layer DFlash; numerical/sequence/state correctness, longcontext, matched measured decode-loop speedup>=2.0 and reproducible delivery",
-  "user_priority": "Prioritize high cost-benefit optimizations on normal Draft calls. Defer rare zero-append specialization; source input-layout equivalence reviewed, no new model compiled.",
+  "user_priority": "Archive the latest approximately 60ms packed Draft; delete ALL draft/tests contents after publication. Pause offline-weight/performance experiments; next solve Target accuracy.",
   "status_policy": {
     "allowed": [
       "pending",
@@ -15,7 +15,7 @@
       "blocked",
       "passed"
     ],
-    "advance": "User-directed Draft-only implementation, independent fixed-feature precision and standalone performance proceed now. Target numerical work is external; target verify/rollback waits for Target correctness. No whole-model accuracy or speedup pass inferred.",
+    "advance": "User switched priority to Target accuracy. Draft approximately60ms is a retained measured baseline, not a numerical or production pass.",
     "one_active_phase": true,
     "host_or_plan_is_device_pass": false,
     "deadline_is_pass": false,
@@ -334,7 +334,7 @@
     },
     "incremental_air": "User reported DRAFT_INCREMENTAL_AIR_EXPORTED: C16/cap192/K15, 17 inputs/14 outputs, six layers, 4718592-byte KV bank; no original weight copies. New OMG/native execution remains pending."
   },
-  "next_action": "Run current RoPE OMC profile case18 with existing cached model; recover same attempt. Use source liveness to prioritize zero-append proposal and KV-only catchup routes, then measured head/layout changes.",
+  "next_action": "Publish retained Draft AIR/OMC and compact ABI outside tests, remove all Draft tests, then resume original Target accuracy.",
   "last_actual_execution": {
     "schema_version": 1,
     "artifact_kind": "qwen35-board-text-preread-user-observation",
@@ -492,7 +492,7 @@
     {
       "id": "P1",
       "title": "普通target基线与原参考数值收敛",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P0"
       ],
@@ -501,7 +501,7 @@
         3
       ],
       "next_action_type": "implement_first_decode_comparison_and_target_baseline",
-      "next_action": "Target精度由用户继续调试；当前助手不主动开展Target精度修复。完成后提交可复现reference与控制／状态合同，作为verify前置条件。",
+      "next_action": "Resume Target accuracy after Draft artifact organization; original reference/quantized model contract retained.",
       "pass_conditions": [
         "same target/prompt/zero-state ordinary run reproducible",
         "reference/control identity bound",
@@ -575,7 +575,7 @@
     {
       "id": "P4",
       "title": "增量Draft实现、独立精度和单模型性能",
-      "status": "in_progress",
+      "status": "pending",
       "depends_on": [
         "P0"
       ],
@@ -584,7 +584,7 @@
         3
       ],
       "next_action_type": "compile_and_measure_packed_spatial_draft",
-      "next_action": "第一轮图优化已实现并通过主机检查；用户执行所选DDK导出／编译、精度回收和同模型CSV。保留旧基线并继续定位运行时耗时差额，50ms未达成。",
+      "next_action": "Retain measured packed Draft; performance experiments paused by user; original numerical failures retained.",
       "pass_conditions": [
         "real newAIR andOMC, not metadata relabel",
         "named17inputs14outputs typed ABI",
@@ -615,7 +615,8 @@
         "fixed-feature original six-layer reference comparisons -> full-loop execution smoke",
         "Draft-only measured optimization with precision regression -> full-loop execution smoke"
       ],
-      "numerical_scope": "Standalone Draft synthetic-feature computation can proceed independently of Target accuracy; whole-model acceptance remains separate."
+      "numerical_scope": "Standalone Draft synthetic-feature computation can proceed independently of Target accuracy; whole-model acceptance remains separate.",
+      "suspended_by_user": true
     },
     {
       "id": "P5",
@@ -874,7 +875,10 @@
       "draft_capacity_policy": "EXPLICIT_FULL_HISTORY_AND_ANCHOR_CONTRACT_NO_AUTOMATIC_S128_REQUIREMENT"
     },
     "physical_disconnect_validation": "NOT_SPECIFICALLY_TESTED",
-    "runtime_api": "USER_AUTHORIZED_V2_PREFILL_DECODE_V1_DRAFT"
+    "runtime_api": "USER_AUTHORIZED_V2_PREFILL_DECODE_V1_DRAFT",
+    "current_task": "DRAFT_BASELINE_ARCHIVE_AND_DOCUMENTATION",
+    "current_task_execution": "HOST_CHECKS_PASSED; SERVER_MIGRATION_PENDING_USER_EXECUTION",
+    "next": "TARGET_ACCURACY"
   },
   "legacy_code_baseline": "4ea1c105c66b5014c2c1260ad9f757a096c38028",
   "code_baseline_policy": "Use the Git commit containing this state file; native source SHA is recorded in current_known_evidence.",
@@ -8574,7 +8578,7 @@
               }
             },
             "offline_weight_implementation": {
-              "status": "FULL_PACKED_BASELINE_COMPILE_FAILED_TBE_RETRY_READY",
+              "status": "USER_PAUSED_OFFLINE_WEIGHTS_RETAIN_PACKED_BASELINE",
               "policy": "static-rhs-import-matrix-v2",
               "user_direction": "EXHAUSTIVE_LAYOUT_TRANSPOSE_PARAMETERS_BEFORE_FULL_MODEL",
               "variants": [
@@ -8598,7 +8602,7 @@
               "speedup": "NOT_MEASURED",
               "production_promotion": "NOT_PERFORMED",
               "commands": "docs/current-status.md",
-              "next": "RETRY_FAILED_BASELINE_WITH_RETAINED_TBE_DIAGNOSIS_THEN_COMPILE_ND_N; REUSE_EXPORTED_AIR",
+              "next": "PAUSED_BY_USER; RETAIN_ORIGINAL_PACKED_BASELINE; TARGET_ACCURACY",
               "initial_server_attempt": {
                 "source": "USER_RETURNED_REPORT",
                 "ddk_id": "100.520.020.010",
@@ -8917,6 +8921,42 @@
                 "remedy": "PASS_RETAINED_COMMON_TBE_DIAGNOSIS_TO_BOTH_COMPILATIONS",
                 "retry": "NOT_RUN",
                 "scope": "FULL_BASELINE_COMPILER_ENVIRONMENT_FAILURE; NOT_ND_N_OR_DEVICE_FAILURE"
+              },
+              "latest_full_model_comparison": {
+                "date": "2026-11-06",
+                "source": "USER_PASTED_FULL_OFFLINE_WEIGHT_COMPARISON",
+                "status": "USER_PAUSED_OFFLINE_WEIGHTS_RETAIN_PACKED_BASELINE",
+                "baseline_model": {
+                  "bytes": 1791018585,
+                  "sha256": "bc693db0bc3833d532f6b2158b3f1f19939311beb6941ff43c8c05b9aa4631dd"
+                },
+                "candidate_model": {
+                  "bytes": 1791018988,
+                  "sha256": "afa032703527491a20602d70445bede6fffb96894d8063455c1773c9ad9a6b5b"
+                },
+                "numerical_validation": "FAILED",
+                "baseline_equivalence": "FAILED",
+                "compared_regions": 488,
+                "equal_regions": 487,
+                "differences": [
+                  {
+                    "mode": "isolated",
+                    "index": 0,
+                    "tensor": "draft_hidden",
+                    "different_elements": 608,
+                    "max_abs_difference": 3.494140625
+                  }
+                ],
+                "prepared_timings": {
+                  "calls": 38,
+                  "baseline_mean_ms": 60.40665789473684,
+                  "candidate_mean_ms": 73.65739473684211,
+                  "added_ms": 13.25073684210527,
+                  "scope": "CPU_PACK_SETINPUT_REUSE_AND_API; SEPARATE_MODEL_LOADS; NOT_WARM_STEADY_OR_END_TO_END"
+                },
+                "baseline_isolated_hidden_l2_max": 0.13727390059080907,
+                "candidate_isolated_hidden_l2_max": 0.014980680791145933,
+                "production_promotion": "NOT_PERFORMED"
               }
             }
           },
@@ -9625,5 +9665,25 @@
       "draft_preread": true
     },
     "failure_action": "Retain failed attempt and version; fix this Draft integration before progressing to the next executable stage; do not divert to Target accuracy without evidence."
+  },
+  "draft_baseline_archive": {
+    "status": "IMPLEMENTED_SERVER_EXECUTION_PENDING",
+    "run_id": "20261106T070951Z-28148-3d19e8",
+    "entry": "targets/cpro/scripts/archive_incremental_draft.py",
+    "retained_air": "draft/air",
+    "retained_omc": "draft/omc",
+    "summary": "draft/archive.json",
+    "retained_source": "draft/source/prepared",
+    "cleanup": "ALL_DRAFT_TEST_CONTENTS_AFTER_PUBLIC_BINDING_VALIDATION",
+    "runtime": "PACKED_DIAGNOSTIC_ABI_NOT_OLD_TOKEN_ID_RESIDENT_INTERFACE",
+    "model_compilation": "NOT_RUN",
+    "device_execution": "NOT_RUN",
+    "next": "TARGET_ACCURACY",
+    "optimization_document": "docs/optimization-strategy.md",
+    "host_validation": {
+      "status": "PASSED",
+      "checks": 16,
+      "scope": "HOST_FAKE_COMPILER_ABI_AND_COMPARISON; REAL_FILE_MOVES_LOCKS_CLEANUP_COMPACT_BINDING; PROC_SCAN_MOCKED_LOCAL_PERMISSION_LIMIT; NO_DDK_OR_DEVICE"
+    }
   }
 }

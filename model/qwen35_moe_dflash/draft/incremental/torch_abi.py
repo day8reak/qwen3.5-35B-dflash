@@ -130,6 +130,9 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
     """Return a diagnostic ABI without changing the compiled candidate manifest."""
     from .torch_export import AIR_KIND, OMC_KIND, _schema
     root, air, source, out = map(Path, (compiled, air_export, prepared, output))
+    if read_json(root/'manifest.json').get('publication', {}).get('policy') == 'pytorch-draft-shared-v1':
+        from .publication import load_shared
+        return load_shared(root, air, source, out)
     meta, export = read_json(root/'manifest.json'), read_json(air/'manifest.json')
     if (meta.get('artifact_kind') != OMC_KIND or meta.get('status') != 'PYTORCH_DRAFT_OMC_COMPILED'
             or meta.get('model_compilation') != 'PASSED' or meta.get('omc') != 'model.omc'

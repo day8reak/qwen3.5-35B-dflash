@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-05",
-  "active_phase": "performance",
+  "updated": "2026-11-06",
+  "active_phase": "accuracy",
   "delivery_status": "ORIGINAL_PREFILL_AND_MIXED_RESIDENT_BOARD_EXECUTION_PASSED_NUMERICAL_EQUIVALENCE_PENDING",
-  "run_id": "20261105T105610Z-6649-05c537",
+  "run_id": "20261106T070951Z-28148-3d19e8",
   "navigation": {
     "home": "docs/README.md",
     "model": "docs/model-architecture.md",
@@ -11,7 +11,8 @@
     "results": "docs/results.md",
     "environment": "docs/environment-setup.md",
     "full_execution": "docs/run-end-to-end.md",
-    "current_commands": "docs/current-status.md"
+    "current_commands": "docs/current-status.md",
+    "optimization": "docs/optimization-strategy.md"
   },
   "paths": {
     "legacy_pair": {
@@ -7927,7 +7928,7 @@
         }
       },
       "offline_weight_implementation": {
-        "status": "FULL_PACKED_BASELINE_COMPILE_FAILED_TBE_RETRY_READY",
+        "status": "USER_PAUSED_OFFLINE_WEIGHTS_RETAIN_PACKED_BASELINE",
         "policy": "static-rhs-import-matrix-v2",
         "user_direction": "EXHAUSTIVE_LAYOUT_TRANSPOSE_PARAMETERS_BEFORE_FULL_MODEL",
         "variants": [
@@ -7951,7 +7952,7 @@
         "speedup": "NOT_MEASURED",
         "production_promotion": "NOT_PERFORMED",
         "commands": "docs/current-status.md",
-        "next": "RETRY_FAILED_BASELINE_WITH_RETAINED_TBE_DIAGNOSIS_THEN_COMPILE_ND_N; REUSE_EXPORTED_AIR",
+        "next": "PAUSED_BY_USER; RETAIN_ORIGINAL_PACKED_BASELINE; TARGET_ACCURACY",
         "initial_server_attempt": {
           "source": "USER_RETURNED_REPORT",
           "ddk_id": "100.520.020.010",
@@ -8270,8 +8271,65 @@
           "remedy": "PASS_RETAINED_COMMON_TBE_DIAGNOSIS_TO_BOTH_COMPILATIONS",
           "retry": "NOT_RUN",
           "scope": "FULL_BASELINE_COMPILER_ENVIRONMENT_FAILURE; NOT_ND_N_OR_DEVICE_FAILURE"
+        },
+        "latest_full_model_comparison": {
+          "date": "2026-11-06",
+          "source": "USER_PASTED_FULL_OFFLINE_WEIGHT_COMPARISON",
+          "status": "USER_PAUSED_OFFLINE_WEIGHTS_RETAIN_PACKED_BASELINE",
+          "baseline_model": {
+            "bytes": 1791018585,
+            "sha256": "bc693db0bc3833d532f6b2158b3f1f19939311beb6941ff43c8c05b9aa4631dd"
+          },
+          "candidate_model": {
+            "bytes": 1791018988,
+            "sha256": "afa032703527491a20602d70445bede6fffb96894d8063455c1773c9ad9a6b5b"
+          },
+          "numerical_validation": "FAILED",
+          "baseline_equivalence": "FAILED",
+          "compared_regions": 488,
+          "equal_regions": 487,
+          "differences": [
+            {
+              "mode": "isolated",
+              "index": 0,
+              "tensor": "draft_hidden",
+              "different_elements": 608,
+              "max_abs_difference": 3.494140625
+            }
+          ],
+          "prepared_timings": {
+            "calls": 38,
+            "baseline_mean_ms": 60.40665789473684,
+            "candidate_mean_ms": 73.65739473684211,
+            "added_ms": 13.25073684210527,
+            "scope": "CPU_PACK_SETINPUT_REUSE_AND_API; SEPARATE_MODEL_LOADS; NOT_WARM_STEADY_OR_END_TO_END"
+          },
+          "baseline_isolated_hidden_l2_max": 0.13727390059080907,
+          "candidate_isolated_hidden_l2_max": 0.014980680791145933,
+          "production_promotion": "NOT_PERFORMED"
         }
       }
+    }
+  },
+  "current_focus": "TARGET_ACCURACY_AFTER_DRAFT_BASELINE_ARCHIVE",
+  "draft_baseline_archive": {
+    "status": "IMPLEMENTED_SERVER_EXECUTION_PENDING",
+    "run_id": "20261106T070951Z-28148-3d19e8",
+    "entry": "targets/cpro/scripts/archive_incremental_draft.py",
+    "retained_air": "draft/air",
+    "retained_omc": "draft/omc",
+    "summary": "draft/archive.json",
+    "retained_source": "draft/source/prepared",
+    "cleanup": "ALL_DRAFT_TEST_CONTENTS_AFTER_PUBLIC_BINDING_VALIDATION",
+    "runtime": "PACKED_DIAGNOSTIC_ABI_NOT_OLD_TOKEN_ID_RESIDENT_INTERFACE",
+    "model_compilation": "NOT_RUN",
+    "device_execution": "NOT_RUN",
+    "next": "TARGET_ACCURACY",
+    "optimization_document": "docs/optimization-strategy.md",
+    "host_validation": {
+      "status": "PASSED",
+      "checks": 16,
+      "scope": "HOST_FAKE_COMPILER_ABI_AND_COMPARISON; REAL_FILE_MOVES_LOCKS_CLEANUP_COMPACT_BINDING; PROC_SCAN_MOCKED_LOCAL_PERMISSION_LIMIT; NO_DDK_OR_DEVICE"
     }
   }
 }

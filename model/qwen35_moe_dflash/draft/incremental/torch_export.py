@@ -242,9 +242,9 @@ def _air_export_slot(output, prepared, replace):
         with _slot(output, AIR_KIND, replace) as root:
             yield root
         return
-    if (destination.parent / 'tests').is_symlink() or (destination.parent / 'tests/export').is_symlink():
+    if (destination.parent / '.air-build').is_symlink():
         raise ValueError('AIR export scratch must not be a symlink')
-    scratch = output_path(destination.parent / 'tests/export')
+    scratch = output_path(destination.parent / '.air-build')
     _disjoint(scratch, destination, prepared)
     with _air_locks(destination, scratch):
         _replaceable_air(destination, replace)

@@ -2,7 +2,7 @@
 
 从源权重生成Draft、Prefill和Decode，再准备配置并运行板端文字闭环。原始Target Cpro导出工程、量化权重与源模型权重由用户提供，不在GitHub中。当前首次生成运行ABI配置的入口尚未补齐，具体边界见第5步；已有成功闭环的配置可由当前阶段整理命令保留。
 
-当前开发阶段为[Draft离线权重布局优化](current-status.md)，进一步精度排查暂缓；用户已要求清空全部旧Draft测试，继续前须从保留权重重建所需产物。自定义Top1单算子已通过，完整候选已执行但数值失败。本页保留已接线模型的从零重建方法及候选配方。
+当前阶段为[归档约60ms Draft并转向Target精度](current-status.md)。已有模型直接归档，不重新编译。以下是当前packed基线的从零生成配方；其独立设备调用已执行，原数值门槛仍FAILED，旧token-ID常驻接口尚未接入该host embedding模型。
 
 ## 1. 公共目录和源权重
 
@@ -24,57 +24,49 @@ export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft/omc"
 
 `TARGET_WEIGHTS`对应原Target YAML的`model_file`目录；Draft只从中读取原始embedding和LM head。`DRAFT_WEIGHTS`指向独立的DFlash原始检查点。Target YAML另含`quanted_pth`、`embedding_weight_path`、`embedding_scale_path`，供后面的Target量化导出使用。导出主机与DDK服务器不同时，传输整个AIR输入目录及引用权重，不能只传AIR。
 
-## 2. Draft权重 → AIR → OMC
+## 2. Draft权重 → 公共AIR → 公共OMC
 
-准备六层Draft的71份FP16权重，只读取Target的embedding和LM head。K支持15／7／3／1，当前档位写在manifest中，不增加目录层级；新导出不依赖旧S64 AIR或OMC。编译预检至少需要6.23GiB空闲，编译器临时文件可能额外占用空间。
+准备六层Draft的71份FP16权重；Target提供原始embedding和LM head。当前归档档位固定C16／cap192／K15，host FP16 embedding、合并投影、GQA reshape、StableArgMax、FP32 RoPE系数表与CPU feature pack均保留。DDK端需按[算子说明](../targets/cpro/ops/draft-top1/README.md)完成StableArgMax安装及已有TBE兼容诊断。
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/prepare_draft.py" \
   --target-weights "$TARGET_WEIGHTS" --draft-weights "$DRAFT_WEIGHTS" \
   --output "$AI_RUN_DIR/draft/source/prepared"
 
-python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
-  --prepared "$AI_RUN_DIR/draft/source/prepared" --ge-root "$CANN_ROOT" \
-  --context-rows 16 --cache-capacity 192 \
-  --max-draft-tokens "$MAX_DRAFT_TOKENS" --output "$INCREMENTAL_AIR"
-
-python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
-  --air-export "$INCREMENTAL_AIR" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --replace-failed --output "$INCREMENTAL_COMPILED"
-```
-
-编译临时文件在`draft/tests/compile/`，成功后将模型和必要元数据发布到`draft/omc/`并删除临时构建；失败不替换当前模型。替换已有模型时，只保留一份临时回退至新模型的板端闭环成功回收，随后自动删除。需要DRAFT_INCREMENTAL_OMC_COMPILED_ABI_BOUND、compiled_precision和compiled_abi均PASSED。C16／cap192／K15已经上板接通，独立数值测试仍未通过原逐元素规则，详见结果页。
-
-需要重建当前PyTorch候选时，用下列配方代替上面的GE导出／编译：权重服务器有TorchAir，DDK服务器已按[算子说明](../targets/cpro/ops/draft-top1/README.md)安装StableArgMax。原生Top1可省略`--top1`；候选使用host FP16 embedding、RmsNorm、MatMul／Softmax attention，不替换公共模型。
-
-```bash
-export TOP1_DIR="$AI_RUN_DIR/draft/tests/top1-integration"
-# 权重服务器：使用上面prepare_draft生成的权重。
+# TorchAir权重服务器；完整传输air目录及引用权重到DDK服务器。
 python3 "$REPO_DIR/targets/cpro/scripts/export_incremental_draft.py" \
   --prepared "$AI_RUN_DIR/draft/source/prepared" --frontend pytorch \
   --optimization packed-spatial-host-embedding --top1 stable-arg-max \
   --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 \
-  --output "$TOP1_DIR/export"
+  --output "$AI_RUN_DIR/draft/air"
 
-# 将整个export目录（含weight和元数据）复制到DDK服务器对应位置，再编译。
+# 所选DDK服务器；不使用离线转置参数。
 python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
-  --air-export "$TOP1_DIR/export" \
-  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" --output "$TOP1_DIR/compiled"
-
-# DDK／HDC服务器：配置采用已有成功执行的runtime及设备连接。
-export VECTOR_CONFIG="${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --compiled "$TOP1_DIR/compiled" --air-export "$TOP1_DIR/export" \
+  --air-export "$AI_RUN_DIR/draft/air" \
   --source "$AI_RUN_DIR/draft/source/prepared" \
-  --ddk-root "$CPRO_DDK_ROOT" --config "$VECTOR_CONFIG" \
-  --output "$TOP1_DIR/run" --apply
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --recover "$TOP1_DIR/run" --output "$TOP1_DIR/result"
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
+  --rope-fp32-table --cpu-feature-pack --output "$AI_RUN_DIR/draft/omc"
 ```
 
-导出需`PYTORCH_DRAFT_AIR_EXPORTED`，编译需`PYTORCH_DRAFT_OMC_COMPILED`及`top1_placement.status=NPU_OUTPUT_BOUNDARY_PASSED`。仅确认token出口来自NPU，不能证明全部图内精度。PENDING只回收同一请求。已有本轮产物时直接执行当前阶段页，勿重跑此配方。
+导出最终目录为`draft/air`，编译最终目录为`draft/omc`。固定暂存槽为`.air-build`／`.omc-build`，成功后发布并收起；编译失败不覆盖已有公共模型。失败重试使用`--replace-failed`，有意替换已有成功模型使用`--replace`。新模型未验证前保留`.omc-previous`；不会自动改成生产常驻模型。编译前磁盘下界约6.44GB，工具会按真实权重计算。
+
+编译成功状态为`PYTORCH_DRAFT_OMC_COMPILED`、物理ABI为`BOUND_DIAGNOSTIC`。紧凑bundle保留`pytorch-abi.json`和`compiler.air`，重新准备独立验证不再依赖旧test编译快照或DDK动态库。完整原始prepared权重仍用于CPU参考和host embedding。
+
+仅在需要重新验收时运行以下诊断；模型直接引用公共目录，不复制到tests。
+
+```bash
+export VECTOR_CONFIG="${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --compiled "$AI_RUN_DIR/draft/omc" --air-export "$AI_RUN_DIR/draft/air" \
+  --source "$AI_RUN_DIR/draft/source/prepared" --config "$VECTOR_CONFIG" \
+  --output "$AI_RUN_DIR/draft/tests/accuracy-run" --apply
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$AI_RUN_DIR/draft/tests/accuracy-run" \
+  --output "$AI_RUN_DIR/draft/tests/accuracy-result"
+```
+
+PENDING只回收同一请求；不得重复启动。上述公开位置是模型存放与独立诊断入口，后面的旧常驻循环仍需其兼容的token-ID Draft，不应直接指向这份packed OMC。
 
 ## 3. Target源工程 → Prefill64／Decode1 AIR → OMC
 
@@ -152,11 +144,11 @@ embedding大小分别为508559360、993280字节。所有测试共用runtime/nat
 
 **当前尚缺从全新编译产物自动生成runtime-assets.json的生产入口。** 首次部署需要获取两个模型的实际SDK命名描述，并完成源图状态所有者、编译图和运行时槽位的对应，不能按大小或序号猜测。上面的生成/编译从源权重开始；下面的启动要求该配置已就绪，不代表当前能从空目录自动完成全流程。
 
-对于已有成功闭环的本项目，当前阶段整理命令会迁移此配置，旧测试prepared不再是依赖。重新编译Target后须核对新ABI与状态映射，并更新cache_key；不能把旧模型缓存当作新产物。
+已有成功闭环的runtime.json继续绑定其兼容模型；归档若替换了公共目录，会重定向原配置中对应模型的路径。重新编译Target后须核对新ABI与状态映射，并更新cache_key。新生成的packed Draft尚需常驻接口适配，不能把它直接填入旧配置。
 
 ## 6. 文字输入、板端闭环、结果回收
 
-配置就绪后，板端自主执行文字编码→Prefill一次→常驻Draft/Decode循环→文字解码。服务器只准备、下发、启动和最终回收。当前模板后的prompt＋生成预算须≤64。
+以下仅适用于已有、兼容token-ID Draft的成功runtime配置；运行器从该配置识别原增量模型，不使用本页新生成的packed OMC。配置就绪后，板端自主执行文字编码→Prefill一次→常驻Draft/Decode循环→文字解码。服务器只准备、下发、启动和最终回收。当前模板后的prompt＋生成预算须≤64。
 
 ```bash
 export RUN_DIR="$AI_RUN_DIR/fused/run"
@@ -164,7 +156,6 @@ export RECOVERY_DIR="$AI_RUN_DIR/fused/result"
 
 python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
   --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --incremental-draft "$INCREMENTAL_COMPILED" \
   --max-draft-tokens "$MAX_DRAFT_TOKENS" \
   --text '你好，请介绍一下自己。' \
   --max-new-tokens 8 --max-proposals-per-round 2 \

@@ -1,6 +1,6 @@
 # 模型结构
 
-当前部署使用Qwen3.5-35B-A3B文本主干与独立DFlash草稿模型，不包含视觉编码器或原checkpoint的MTP路径。
+当前部署保留原40层量化Target和完整训练六层DFlash。下面的Draft结构对应归档的 **C16／cap192／K15、约60ms packed基线**，不是早期手写GE图。原始checkpoint配置中的BF16权重已在部署准备阶段转换为FP16；不删层、不裁词表。
 
 ## Target
 
@@ -17,229 +17,121 @@
 
 每层执行：RMSNorm → GDN或全注意力 → 残差 → RMSNorm → MoE → 残差。40层之后经过最终Norm与词表输出头。
 
-## Draft
+## 当前 Draft
 
-| 项目 | 配置 |
+| 项目 | 归档版本 |
 |---|---|
-| 模型 | 完整训练六层DFlash，内嵌权重OMC |
-| 注意力 | 前5层窗口注意力，末层全注意力 |
-| Hidden / MLP中间维度 | 2048 / 6144 |
-| Q/KV头 | 32/8，head_dim=128 |
-| Target特征层（从0开始） | 1、6、11、16、22、27、32、37 |
-| 输入特征 | 每token拼接8层输出，宽16384，再投影到2048 |
-| 一次生成 | block_size=16：1个anchor＋15个候选 |
-| 当前增量档位 | C16新特征／cap192已提交KV／K15候选 |
+| 前端／目标 | PyTorch → TorchAir → CPro OMG；kirinx90，DDK 100.520.020.010 |
+| 层数 | 6；前5层滑窗因果注意力，末层全注意力 |
+| Hidden／MLP中间维度 | 2048／6144 |
+| Q／KV heads；head_dim | 32／8；128（每组4个Q heads） |
+| 词表／MASK ID | 248320／248077；保留完整LM head |
+| Target特征层（0起始） | 1、6、11、16、22、27、32、37 |
+| 特征投影 | 拼接宽16384 → 2048；完整K点积以4×4 Conv2D表达 |
+| 新增context／committed KV容量 | 最多16行／192行 |
+| 候选块 | 1个anchor＋15个MASK；一次输出15个候选 |
+| 位置／滑窗 | RoPE theta=10000000；训练滑窗4096，当前缓存容量192 |
+| 权重 | 原始prepared共71份；K/V和gate/up按输出通道拼接，embedding在CPU查表 |
+| OMC | 内嵌权重、自包含，1791018585字节 |
+| 当前状态 | 已有独立设备测量；原CPU数值门槛仍FAILED，未替换旧常驻接口 |
 
-当前测试每轮最多验证前2个候选；生成15个候选不等于接受15个。Target决定最终token，三类状态只沿已提交的token推进。Prefill/decode使用HIAI V2，Draft使用HIAI V1。
+档位由manifest固定。源码仍支持K=15／7／3／1，但本次只归档K15；缩短块会改变末层双向注意力，不能把短档当作K15结果的截断。生成15个候选也不代表接受15个，最终由Target验证与提交。
 
-增量Draft每次接收C16／C64行新特征，独立设置KV总容量，六层共12个FP16缓存。候选计算档位由`--max-draft-tokens 15|7|3|1`选择，块长度分别16／8／4／2，保留同一套71份权重。当前C16／cap192／K15的17输入／14输出已上板接通；独立数值测试未通过原逐元素阈值，用户接受为阶段性诊断基线，详见[当前结果](results.md)。缩短候选块会改变末层双向注意力，不能把短档结果视为15档输出的简单截断。
+## 输入、输出与缓存
 
-参数来源：`specs/target-config.json`、`specs/draft-config.json`；部署继续复用原量化权重，未缩减层数或词表。
+下表按语义分组；**实际槽位以 `draft/omc/pytorch-abi.json` 为准**，不能按参数名排序。共17输入、14输出。
 
-## Draft算子调用流程
+| 方向／名称 | dtype与shape | 含义 |
+|---|---|---|
+| 输入 target_features | FP16 `[1,1024,16,16]` | CPU将逻辑 `[1,16,16384]` 的512KiB原始FP16字重排为16个4×4空间块 |
+| 输入 block_embeddings | FP16 `[1,16,2048]` | CPU复制anchor及15个MASK的原FP16 embedding行；scale=1 |
+| 输入 start_position／valid_rows／proposal_count | 各INT32 `[1]` | 新context起点／有效行数／实际消费候选数 |
+| 输入 past_k_i／past_v_i，i=0…5 | 各FP16 `[1,8,192,128]` | 六层已提交context的K/V |
+| 输出 draft_top1 | INT32 `[1,15]` | 全词表Top1，只消费前proposal_count项 |
+| 输出 draft_hidden | FP16 `[1,15,2048]` | 最终归一化后去掉anchor的hidden |
+| 输出 present_k_i／present_v_i，i=0…5 | 各FP16 `[1,8,192,128]` | 只更新新增已提交context区间的完整KV bank |
 
-以下画的是**当前已上板的GE增量图**。虚线框表示一个逻辑算子／模块的内部展开，框名不是编译OMC中的子图名；实际编译为27个CPUCL、26个NPUCL。CPU／NPU标签来自当前精度策略及用户回传profiling，不代表其他模型也只能放在同一设备。
+KV写区间为 `[start_position, start_position+valid_rows)`，其余位置选择原缓存值。历史K已做RoPE，不重复旋转。anchor和候选K/V只供本次attention，不写入committed缓存。每层attention读取192个context槽＋16个临时块槽，共208行；mask屏蔽未用缓存和无效候选。`valid_rows=0`仍执行当前静态图中的投影，不等于自动跳过算子。
+
+## 计算流程
 
 ```mermaid
 flowchart TD
-    Features["Target八层特征拼接<br/>1 × C16 × 16384"] --> FC["特征投影：完整MatMul用Conv2D表达"]
-    FC --> HNorm["hidden_norm：RMSNorm"]
-    Tokens["anchor + K15个MASK"] --> Embed["Embedding × input_embedding_scale"]
-    Control["start_position / valid_rows / proposal_count"] --> Mask["绝对位置、可见性掩码、缓存写入区间"]
-    Embed --> H["当前块 hidden"]
-    HNorm --> Context["projected_context<br/>六层共享输入"]
-    subgraph Layer["Draft Layer × 6（前5层窗口，末层全注意力）"]
-        H --> INorm["input_layernorm：RMSNorm"]
-        INorm --> Q["Q投影 → Q RMSNorm → RoPE"]
-        INorm --> BK["块K投影 → K RMSNorm → RoPE<br/>块V投影"]
-        Context --> CK["新增上下文K投影 → K RMSNorm → RoPE<br/>新增上下文V投影"]
-        CK --> Write["Gather + Select<br/>只更新已提交区间"]
-        Past["本层past_K / past_V"] --> Write
-        Write --> Present["present_K / present_V"]
-        Present --> Join["Concat缓存与块KV → GQA复制头"]
-        BK --> Join
-        Q --> Attention["QK → scale / mask / Softmax → PV"]
-        Join --> Attention
-        Attention --> O["o_proj"]
-        O --> Add1["FP32残差Add → FP16"]
-        H --> Add1
-        Add1 --> PNorm["post_attention_layernorm：RMSNorm"]
-        PNorm --> MLP["gate/up → Swish × up → down"]
-        MLP --> Add2["FP32残差Add → FP16"]
-        Add1 --> Add2
+    TF["Target 8层特征；16×16384"] --> Pack["CPU FP16字重排；1×1024×16×16"]
+    Pack --> Conv["Conv2D 4×4 stride4；完整K=16384"]
+    Conv --> HNorm["hidden_norm → context；16×2048"]
+    IDs["anchor ID＋15个MASK"] --> Lookup["CPU FP16 embedding行复制"]
+    Lookup --> H["block hidden；16×2048"]
+    Ctrl["位置／有效context／候选数"] --> Shared["共享RoPE系数与可见性mask"]
+    subgraph Layer["逐层执行 ×6"]
+        H --> IN["input RMSNorm"]
+        IN --> Q["Q投影 → Q RMSNorm → RoPE"]
+        HNorm --> KV["Concat context与block → 合并KV投影"]
+        IN --> KV
+        KV --> Split["拆分新context K/V与临时block K/V"]
+        Split --> KN["K RMSNorm＋RoPE；V保持投影值"]
+        Past["本层past K/V"] --> Write["Gather＋Select：只更新已提交context"]
+        KN --> Write
+        Write --> Present["present K/V"]
+        Present --> Attn["拼接临时KV；GQA reshape → QK → mask/Softmax → PV"]
+        KN --> Attn
+        Q --> Attn
+        Attn --> O["O投影＋残差"]
+        H --> O
+        O --> PN["post-attention RMSNorm"]
+        PN --> MLP["合并gate/up → Split → Swish×up → down"]
+        MLP --> Add["残差；交给下一层"]
+        O --> Add
     end
-    Mask -.-> Q
-    Mask -.-> CK
-    Mask -.-> Write
-    Mask -.-> Attention
-    Add2 --> Next["交给下一层；第6层后退出"]
-    Next --> Final["最终RMSNorm → Slice去掉anchor"]
-    Final --> HiddenOut["draft_hidden"]
-    Final --> Head["全词表MatMul → CPU ArgMax"]
-    Head --> Top1["draft_top1"]
-    Present --> CacheOut["12份present_K/V输出"]
+    Shared -.-> Q
+    Shared -.-> KN
+    Shared -.-> Attn
+    Add --> Final["最终RMSNorm → 去掉anchor"]
+    Final --> Hidden["draft_hidden；15×2048"]
+    Final --> Head["全词表MatMul；15×248320"]
+    Head --> Top["NPU StableArgMax → draft_top1"]
+    Present --> Cache["12份committed KV输出"]
 ```
 
-图中Layer只展开一次。块内anchor／候选K/V仅参与本次attention，不写回committed cache。缓存写入只发生在新增的已提交上下文区间；`valid_rows=0`时不写缓存，但当前静态图仍会执行投影等计算，掩码不等于跳过算子。
+图中的Layer表示循环体；第i层的block hidden进入第i+1层，projected context由六层共享。前五层保持因果／滑窗约束；末层有效block keys可双向可见。无效query保留anchor witness，避免无效行Softmax全被屏蔽。
 
-### RMSNorm：展开的FP32统计链
+- **投影合并**：每层context和block先合并行，K/V合并输出通道，一次MatMul后按原顺序拆回；gate/up同样合并输出通道。每个输出仍计算完整点积。
+- **GQA**：Q由 `[1,32,16,128]` reshape成 `[1,8,64,128]`，KV为 `[1,8,208,128]`，scores为 `[1,8,64,208]`。不再显式复制四份KV head。
+- **RMSNorm**：当前使用 `torch_npu.npu_rms_norm → RmsNorm`，共32次调用；直接用Draft gamma，不加1。源码请求FP32统计和gamma乘法后转FP16，区别于早期手写GE的舍入顺序；设备内部指令精度尚未证明。
+- **Attention／残差**：QK输出FP16，转FP32做缩放、mask和Softmax，概率转FP16再PV；残差源码为FP32相加后转FP16。源码dtype不等于编译后内部精度认证。
+- **RoPE**：离线按原FP32 phase计算Sin/Cos并保留FP16系数边界，覆盖208个位置、每位置64个频率；通过原索引取系数。保留原位置与旋转公式。
+- **Top1**：全词表FP16 logits交给StableArgMax，输出INT32，有限FP16合同下并列取最小索引。单算子精确验证通过，完整Draft仍有上游hidden及Top1差异。
 
-当前增量图共32次逻辑RMS：入口1次，六层各5次（input、Q、新context K、block K、post-attention），最终1次。新K和块K共享gamma，但各自归一化。
+## 静态权重用途
 
-```mermaid
-flowchart LR
-    X["x：FP16"] --> Cast
-    Gamma["Draft gamma：FP16<br/>直接使用，不加1"] --> Weight
-    subgraph RMS["RMSNorm（当前GE展开）"]
-        direction LR
-        Cast["Cast → FP32"] --> Square["Mul：x × x"]
-        Square --> Mean["ReduceMean：最后一维"]
-        Mean --> Eps["加epsilon<br/>GE降为Power"]
-        Eps --> Inv["Rsqrt"]
-        Inv --> Norm["Mul：x × rstd"]
-        Cast --> Norm
-        Norm --> Half["Cast → FP16"]
-        Half --> Weight["Mul：gamma"]
-    end
-    Weight --> Y["y：FP16"]
-    style RMS stroke:#d97706,stroke-width:2px,stroke-dasharray:6 4
+| 权重 | 数量 | 逻辑shape（输出×输入） | 当前表达 |
+|---|---:|---|---|
+| feature fc | 1 | `[2048,16384]` | Conv权重view为 `[2048,1024,4,4]` |
+| Q | 6 | `[4096,2048]` | MatMul |
+| 合并K/V | 6 | `[2048,2048]` | K在前、V在后 |
+| O | 6 | `[2048,4096]` | MatMul |
+| 合并gate/up | 6 | `[12288,2048]` | gate在前、up在后 |
+| down | 6 | `[2048,6144]` | MatMul |
+| 全词表head | 1 | `[248320,2048]` | MatMul → StableArgMax |
+| RMS gamma | 26 | hidden为2048、Q/K为128 | 向量；部分重复调用共享gamma |
+| embedding | 1 | `[248320,2048]` | 图外CPU查表，不进入OMC |
+
+31个静态MatMul的FP16权重合计1642MiB，feature权重另64MiB。归档基线保留普通ND权重；源Transpose在编译准备时折入MatMul的`transpose_x2=true`。**未采用本轮离线W.T、NZ或ZN候选**。QK和PV的操作数都是运行时张量，不存在静态权重可离线转换。
+
+## 公共产物与适用边界
+
+```text
+draft/
+  source/prepared/   # 原始准备权重，继续构建与CPU参考所需
+  air/               # export.air、schema、weight/和导出描述
+  omc/               # model.omc、物理ABI、compiler.air、紧凑manifest
+  archive.json       # 约60ms基线身份和本轮对照摘要
+  tests/             # 可清理的诊断输入、输出和临时实验
 ```
 
-FP32统计与归一化核心按当前策略放CPU，最后的FP16 gamma乘法可在NPU。这里首先是精度策略与原语表达；后续测试的内置`RmsNorm`虽编译到NPUCL，hidden／heads小图均在HIAI Load失败，所以尚未替换完整图。不能反推为“X90硬件不支持RMS”。
+正常导出／编译发布到`draft/air`和`draft/omc`；暂存使用固定 `.air-build`／`.omc-build`，成功后收起。旧常驻接口仍接收token ID，当前模型接收host embedding和packed features，不能仅替换OMC路径就宣称端到端已集成。整理工具若发现旧runtime配置引用被替换的公共模型，会保留该依赖并重定向原配置；不会把它指向不兼容的新ABI。
 
-PyTorch候选用`torch_npu.npu_rms_norm → RmsNorm`，沿用Target CPro的算子接口；ND工程的`adn_rms_norm → AdnRmsNorm`是另一条接口。候选RMS在FP32完成gamma乘法后才转FP16，与上图先转FP16再乘gamma的舍入位置不同，需要重新比较；换前端本身不保证消除Load失败或降精度。
-
-PyTorch的embedding、KV选行与query mask复制均使用INT32索引；GQA用INT32索引沿head轴Gather，将每个KV head连续重复到对应Q heads。首次编译日志显示embedding的INT64 indices被所选DDK的GatherV2D拒绝，因此去掉了原实现中的`.long()`。实际导出AIR逐节点检查Gather indices，axis常量单独处理；组合attention不再包含融合算子的INT64长度端口。
-
-### Target CPro 中可借鉴的调用
-
-以下对照来自已核对版本的原始Target CPro源码，不把源代码调用当作当前Draft候选的编译或设备验证。
-
-| 部分 | Target CPro 写法 | Draft 的复用边界 |
-| --- | --- | --- |
-| Token／位置索引 | `export_glm_model_qwen3_5_moe.py:334–339` 创建INT32的`input_ids`、`position_ids`和`new_kv_cache_pos` | 沿用INT32约定，embedding／KV Gather的indices不转INT64；最新Draft源码已如此修改，旧AIR必须重新导出 |
-| Embedding | 导出入口设`embedding_in_omc=False`；量化路径在图外查INT8权重及scale，CPro wrapper接收后相乘 | Target这条路径不能证明Draft图内FP16 embedding Gather已在该DDK编译通过 |
-| RMSNorm | `modeling_qwen3_5_moe_hiai_cpro.py:116–118,129–135` 调用`torch_npu.npu_rms_norm` | PyTorch Draft已使用同一接口。Target普通Norm的forward有`weight+1`，Draft权重直接是gamma，不能照搬权重变换 |
-| KV更新 | 同文件`:283–296` 用INT32的块号与块内偏移调用`torch_npu.npu_cache_update_` | 可借鉴索引类型；Target采用block_size=32的分块缓存，Draft为ND committed KV和临时候选KV，不能直接替换其Gather／Select更新 |
-| 完整注意力 | 同文件`:333–371` 调用`torch_npu.adn_fused_infer_attention`，带分块KV、NZ布局与mask | 旧候选已接入但矩阵数值失败；当前六层改为MatMul／Softmax组合 |
-
-PyTorch候选当前组合已有算子实现attention。C16／cap192／K15计算192个context槽＋16个临时anchor／proposal槽，共208行；空洞和无效候选由原mask排除，不再转换NZ或使用页表。候选KV不回写公共缓存。
-
-```mermaid
-flowchart LR
-    Q["Q：1×32×16×128"] --> QK["QK MatMul：FP16结果"]
-    C["ND committed K/V"] --> Cat["拼接本轮临时K/V：208行"]
-    T["anchor/proposal K/V"] --> Cat
-    Cat --> G["INT32 Gather：8个KV heads映射到32个Q heads"]
-    G --> QK
-    QK --> S["FP32缩放 → mask Select → Softmax"]
-    M["原Draft可见性及无效query witness"] --> S
-    S --> P["概率转FP16"]
-    P --> PV["PV MatMul"]
-    G --> PV
-    PV --> O["o_proj → 残差"]
-    C --> Out["公共KV输出只提交新增context"]
-```
-
-缩放系数为1／√128；QK结果为FP16，再转FP32做缩放、mask和Softmax，概率转FP16后与V相乘，沿用现有独立参考的边界。源AIR检查6条MatMul—Softmax—MatMul连接和零融合attention；内部精度仍需设备验证。当前RMS舍入与完整参考的区别保留，不以更换attention宣称整模型已经对齐。
-
-### 残差Add：为避免NPU输入降精度保留CPU计算
-
-```mermaid
-flowchart LR
-    X["hidden：FP16"] --> CX
-    R["attention / MLP输出：FP16"] --> CR
-    subgraph Residual["Residual Add（每层两次）"]
-        CX["Cast → FP32"] --> Sum["CPU Add：FP32"]
-        CR["Cast → FP32"] --> Sum
-        Sum --> Back["Cast → FP16"]
-    end
-    Back --> Y["下一子层输入"]
-    style Residual stroke:#d97706,stroke-width:2px,stroke-dasharray:6 4
-```
-
-普通Add的FP32小图曾被OMG插入两个FP32→FP16输入Cast，使用`executor_add_eltwise_half_nd`，最后再转FP32。因此当前采用CPU FP32残差。注册的`AddCustom`是**待测替代算子**，尚未进入上图；注册表列出FP32并不能证明实际JIT、编译和板端精度通过。
-
-### 特征投影与BOOL广播：有失败记录的兼容改写
-
-```mermaid
-flowchart LR
-    Feature["features：1 × C × 16384"] --> View
-    W["fc.weight：2048 × 16384"] --> WView
-    subgraph FC["MatMul特征投影（K=16384编译失败后的替代表达）"]
-        View["Reshape<br/>C × 1024 × 4 × 4"] --> Conv["NPU Conv2D<br/>4×4 / valid / groups=1"]
-        WView["Reshape<br/>2048 × 1024 × 4 × 4"] --> Conv
-        Conv --> Restore["Reshape<br/>1 × C × 2048"]
-    end
-    Restore --> Output["投影结果"]
-    style FC stroke:#d97706,stroke-width:2px,stroke-dasharray:6 4
-```
-
-这是同一完整dot product的布局表达，**没有拆成多个部分MatMul求和**，没有额外中间算术截断；归约顺序仍可能带来数值差异。早期C16表达的Conv曾记录70.968ms，后续PyTorch空间打包候选改变了物理布局；当前测量见[结果](results.md)，不混用两种图的时延。
-
-```mermaid
-flowchart LR
-    B["BOOL mask<br/>待扩展轴长度为1"] --> I
-    subgraph Broadcast["BroadcastTo：BOOL掩码复制（板端Prepare失败后的替代）"]
-        I["Cast BOOL → INT32"] --> Gather["GatherV2<br/>用全0索引复制singleton轴"]
-        Gather --> More["其他待扩展轴同样Gather"]
-        More --> Bool["Cast INT32 → BOOL"]
-    end
-    Bool --> M["扩展后mask"]
-    style Broadcast stroke:#d97706,stroke-width:2px,stroke-dasharray:6 4
-```
-
-历史板端日志在BOOL `BroadcastTo InitInput1Desc / SubGraph_0 Prepare`处失败；仅把shape控制改成INT32仍未解决，因此采用上述整数carrier。这个流程精确复制掩码值；不是用浮点近似代替布尔运算。
-
-```mermaid
-flowchart LR
-    Inputs["多个FP16三维输入"] --> Expand
-    subgraph Concat["Concat（三维padding探针出现丢行／重排后的替代）"]
-        Expand["各输入Reshape<br/>末尾增加长度1的维度"] --> Join["四维ConcatD<br/>保持原concat轴"]
-        Join --> Restore["Reshape恢复三维"]
-    end
-    Restore --> Result["原逻辑shape的结果"]
-    style Concat stroke:#d97706,stroke-width:2px,stroke-dasharray:6 4
-```
-
-这是板端数值／布局问题，区别于Load失败；四维padding探针能正确复制两组head。改写只改变view，保持线性元素顺序，不增加浮点计算边界。它是通用GE降级规则，是否命中某一新图要看其实际Concat rank。
-
-### Attention与MLP：本来就按原语构图
-
-```mermaid
-flowchart LR
-    Q["Q：FP16"] --> QK
-    K["K：FP16"] --> QK
-    V["V：FP16"] --> PV
-    Visibility["可见性mask"] --> Select
-    subgraph ATTN["Attention（原语实现；没有记录为融合Attention失败后的拆分）"]
-        QK["NPU BatchMatMul：QKᵀ"] --> Cast["Cast → FP32"]
-        Cast --> Scale["CPU scale：1 / sqrt(head_dim)"]
-        Scale --> Select["CPU Select：不可见处为负无穷"]
-        Select --> Softmax["CPU Softmax：FP32"]
-        Softmax --> Half["Cast → FP16"]
-        Half --> PV["NPU BatchMatMul：P × V"]
-        PV --> Layout["Transpose / Reshape"]
-        Layout --> O["NPU o_proj MatMul"]
-    end
-    O --> Out["attention输出 → 残差Add"]
-    style ATTN stroke:#d97706,stroke-width:2px,stroke-dasharray:6 4
-```
-
-MLP同样是常规原语：`gate_proj(x) → Swish`，与`up_proj(x)`逐元素相乘，再做`down_proj`。RoPE使用位置／频率、Cos／Sin、Slice／Neg／Concat、两次Mul及Add；GQA用Gather重复KV头。没有证据表明这些都是某个融合算子上板失败后才拆开的。
-
-### 改写原因与源码位置
-
-| 逻辑算子 | 当前表达／处理 | 原因与边界 |
-|---|---|---|
-| 入口MatMul | Reshape → 4×4 Conv2D → Reshape | 选定OMG拒绝K=16384 MatMul；完整dot，无分块求和 |
-| BOOL BroadcastTo | 整数Cast → Gather复制 → BOOL Cast | 有板端Prepare失败记录；精确复制 |
-| RMSNorm | 平方、均值、epsilon、Rsqrt、乘法 | 原语＋CPU FP32策略；内置小图Load失败，尚未接入 |
-| 残差Add | FP32 Cast → CPU Add → FP16 | 普通NPU Add有编译降精度实证；AddCustom待测 |
-| FP16三维Concat | Reshape为四维 → ConcatD → Reshape | 板端padding探针丢行／重排，四维对照正确；数值／布局问题，非Load失败 |
-| Attention / RoPE / MLP / KV写入 | 各自基础算子组合 | 正常构图／算法实现；未证明是融合算子失败后的替代 |
-
-源码：[增量图](../model/qwen35_moe_dflash/graph/incremental_draft.py)、[RMS与Attention](../model/qwen35_moe_dflash/graph/draft.py)、[GE降级](../model/qwen35_moe_dflash/graph/cpp.py)、[Conv投影](../model/qwen35_moe_dflash/graph/dense_projection.py)、[PyTorch候选](../model/qwen35_moe_dflash/draft/incremental/torch_model.py)。旧S64图的CumSum→移位加法扫描不在当前增量主流程中。
+参数与实现：[Target配置](../specs/target-config.json)、[Draft配置](../specs/draft-config.json)、[当前PyTorch图](../model/qwen35_moe_dflash/draft/incremental/torch_model.py)、[编译准备](../model/qwen35_moe_dflash/draft/incremental/torch_export.py)、[CPU feature pack合同](../model/qwen35_moe_dflash/draft/incremental/air_feature_pack.py)。优化收益见[优化策略](optimization-strategy.md)，精度与设备测量见[结果](results.md)。
 
 ## 代码结构
 

@@ -18,6 +18,7 @@ def main(argv=None):
     source.add_argument('--inspect-compile', metavar='PYTORCH_OMC_DIR',
                         help='read an existing PyTorch compilation report/log; no compile or device execution')
     parser.add_argument('--output', help='Shared GE OMC directory or PyTorch candidate build directory')
+    parser.add_argument('--source', help='original prepared FP16 weights; required when publishing PyTorch draft/omc')
     parser.add_argument('--replace-failed', action='store_true', help='Reuse a finished failed compilation directory')
     parser.add_argument('--replace', action='store_true', help='Replace a finished PyTorch candidate in the same test slot')
     parser.add_argument('--timeout-seconds', type=int, default=7200)
@@ -40,7 +41,7 @@ def main(argv=None):
         parser.error('--offline-weights and --offline-weight-canary must be supplied together')
     if args.air_export and not args.output:
         parser.error('--output is required with --air-export')
-    if args.inspect_compile and (args.output or args.replace or args.replace_failed or args.rope_fp32_table or args.cpu_feature_pack or args.offline_weights or args.limit_partition_size is not None):
+    if args.inspect_compile and (args.output or args.source or args.replace or args.replace_failed or args.rope_fp32_table or args.cpu_feature_pack or args.offline_weights or args.limit_partition_size is not None):
         parser.error('--inspect-compile is read-only; omit output and replacement options')
     try:
         if args.inspect_compile:
@@ -51,11 +52,24 @@ def main(argv=None):
         source = json.loads((Path(args.air_export) / 'manifest.json').read_text())
         if source.get('artifact_kind') == 'qwen35-incremental-draft-pytorch-air':
             from qwen35_moe_dflash.draft.incremental.torch_export import compile_pytorch
+            compile_action = compile_pytorch
+            extra = {}
+            if Path(args.output).name == 'omc' and Path(args.output).parent.name == 'draft':
+                from qwen35_moe_dflash.draft.incremental.publication import compile_shared
+                if not args.source:
+                    parser.error('publishing draft/omc requires --source original prepared weights')
+                if args.offline_weights:
+                    parser.error('offline-weight experiments are excluded from the archived shared baseline')
+                compile_action = compile_shared
+                extra['prepared'] = args.source
             replace = args.replace
+            if compile_action is not compile_pytorch and args.replace_failed:
+                scratch = Path(args.output).parent/'.omc-build/manifest.json'
+                replace = replace or (scratch.is_file() and json.loads(scratch.read_text()).get('status') == 'FAILED')
             if args.replace_failed and (Path(args.output) / 'manifest.json').is_file():
                 old = json.loads((Path(args.output) / 'manifest.json').read_text())
                 replace = replace or old.get('status') == 'FAILED'
-            result = compile_pytorch(args.air_export, args.output, replace=replace,
+            result = compile_action(args.air_export, args.output, replace=replace, **extra,
                 timeout_seconds=args.timeout_seconds, tbe_diagnosis=args.tbe_diagnosis,
                 ddk_root=args.ddk_root or os.environ.get('CPRO_DDK_ROOT'),
                 ddk_id=args.ddk_id or os.environ.get('CPRO_DDK_ID'),
