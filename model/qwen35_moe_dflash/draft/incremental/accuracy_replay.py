@@ -1,4 +1,4 @@
-"""Bind RoPE/CPU feature-pack candidates to unchanged retained accuracy data."""
+"""Bind RoPE, feature-pack or offline-weight candidates to retained accuracy data."""
 from copy import deepcopy
 from pathlib import Path
 import shutil
@@ -25,6 +25,12 @@ def rebind_candidate(fixture, original, compiled, source, air, ddk_root, output)
     print('draft-accuracy: binding candidate ABI to the original source and retained reference', flush=True)
     candidate = bind_candidate(compiled, air, source, ddk_root, output)
     binding = read_json(output/'pytorch-abi.json')
+    offline_replay = candidate.get('offline_weights') is not None
+    if offline_replay:
+        from .offline_weights import check_replay_pair
+        check_replay_pair(original, candidate, old_binding, binding)
+    elif original.get('feature_pack') is not None:
+        raise ValueError('packed-to-packed replay requires a verified offline-weight candidate')
     for key in ('source_air_sha256', 'prepared_sha256', 'source_input_roles', 'cache_edges', 'reference_weights'):
         if binding[key] != old_binding[key]:
             raise ValueError('candidate changed retained source/reference binding: '+key)
@@ -34,7 +40,7 @@ def rebind_candidate(fixture, original, compiled, source, air, ddk_root, output)
     for direction in ('inputs', 'outputs'):
         old = {s['name']: (s['dtype'], s['shape'], s['bytes']) for s in original[direction]}
         new = {s['name']: (s['dtype'], s['shape'], s['bytes']) for s in candidate[direction]}
-        if direction == 'inputs' and candidate.get('feature_pack') is not None:
+        if direction == 'inputs' and candidate.get('feature_pack') is not None and not offline_replay:
             from .air_feature_pack import CONTRACT, LOGICAL_SHAPE, PHYSICAL_SHAPE
             if (original.get('feature_pack') is not None or candidate['feature_pack'] != CONTRACT
                     or original.get('precision_repair') != repair
@@ -50,6 +56,8 @@ def rebind_candidate(fixture, original, compiled, source, air, ddk_root, output)
         precision_repair=repair, input_files=[])
     if candidate.get('feature_pack') is not None:
         result['feature_pack'] = candidate['feature_pack']
+    if offline_replay:
+        result['offline_weights'] = candidate['offline_weights']
     validate_abi(result)
     old_slots = {s['name']: s['index'] for s in original['inputs']}
     old_files = {(r['case'], r['index']): r for r in original['input_files']}
@@ -85,7 +93,8 @@ def rebind_candidate(fixture, original, compiled, source, air, ddk_root, output)
                  for s in result[direction]]
     rows += [f"case {c['index']} {c['start']} {c['valid']} {c['anchor']} {c['proposals']}" for c in result['cases']]
     (output/'plan.txt').write_text('\n'.join(rows)+'\n')
-    result['candidate_replay'] = dict(policy=result.get('feature_pack', {}).get('policy', POLICY), baseline_model=original['model'],
+    result['candidate_replay'] = dict(policy='draft-offline-weights-replay-v1' if offline_replay else
+        result.get('feature_pack', {}).get('policy', POLICY), baseline_model=original['model'],
         source_fixture=str(fixture.resolve()), source_fixture_sha256=sha256_file(fixture/'manifest.json'),
         goldens=goldens, reference_generation='NOT_RUN', input_generation='NOT_RUN',
         input_binding='ORIGINAL_BYTES_REMAPPED_BY_VERIFIED_SEMANTIC_NAME',

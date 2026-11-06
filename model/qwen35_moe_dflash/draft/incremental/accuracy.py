@@ -81,8 +81,8 @@ def prepare(compiled, source, air, output, *, seed=17, atol=0.01, rtol=0.01, ddk
         raise ValueError('atol/rtol must be finite and nonnegative')
     root, source, air, out = map(Path, (compiled, source, air, output))
     meta = read_json(root / 'manifest.json')
-    if meta.get('feature_pack'):
-        raise ValueError('full feature-pack validation requires --replay of the retained RoPE baseline')
+    if meta.get('offline_weights'):
+        raise ValueError('offline-weight validation requires --replay of the packed baseline')
     pytorch = meta.get('artifact_kind') == 'qwen35-incremental-draft-pytorch-omc'
     if pytorch:
         from .torch_abi import bind_candidate
@@ -122,7 +122,8 @@ def prepare(compiled, source, air, output, *, seed=17, atol=0.01, rtol=0.01, ddk
     bank = [np.zeros(cache_shape, dtype='<f2') for _ in range(12)]
     input_files = []
     host_embedding = meta.get('optimization', {}).get('policy') == 'packed-spatial-host-embedding'
-    rows = [f'QWEN35_INCREMENTAL_ACCURACY {2 if host_embedding else 1}', f'geometry {c} {capacity} {k}']
+    rows = [f"QWEN35_INCREMENTAL_ACCURACY {3 if meta.get('feature_pack') else 2 if host_embedding else 1}",
+            f'geometry {c} {capacity} {k}']
     for direction in ('inputs', 'outputs'):
         for spec in meta[direction]:
             rows.append(' '.join((direction[:-1], str(spec['index']), spec['name'], spec['dtype'],
@@ -172,7 +173,7 @@ def prepare(compiled, source, air, output, *, seed=17, atol=0.01, rtol=0.01, ddk
         profile_case=2, ddk_id=meta['ddk_id'], frontend='pytorch' if pytorch else 'ge',
         internal_precision='UNVERIFIED_AFTER_COMPILATION' if pytorch else 'COMPILED_POLICY_CHECKED',
         production_promotion='NOT_PERFORMED')
-    for key in ('optimization', 'projection', 'host_embedding_binding'):
+    for key in ('optimization', 'projection', 'host_embedding_binding', 'precision_repair', 'feature_pack'):
         if key in meta:
             result[key] = meta[key]
     if host_embedding:
@@ -284,7 +285,7 @@ def compare(fixture, native):
                 raise ValueError('native prepared-call timing evidence differs')
         preparation['prepared_call_latency'] = latency_summary(timings, meta['cases'], field='prepared_call_us',
             scope='SUM_CPU_PACK_SETINPUT_REUSE_SEGMENTS_AND_API_WALL; FILE_IO_KV_READBACK_SNAPSHOTS_COMMIT_LOAD_EXCLUDED')
-    return dict({key: meta[key] for key in ('host_embedding', 'host_embedding_binding', 'input_preparation', 'feature_pack') if key in meta},
+    return dict({key: meta[key] for key in ('host_embedding', 'host_embedding_binding', 'input_preparation', 'feature_pack', 'offline_weights') if key in meta},
         **preparation,
         artifact_kind=KIND, status='PASSED' if passed else 'NUMERICAL_FAILED',
         numerical_validation='PASSED' if passed else 'FAILED', comparison=meta['comparison'],
@@ -316,7 +317,7 @@ def summarize_result(result):
           'lock_release_errors','next','frontend','internal_precision','production_promotion','native_failure','hilog',
           'host_embedding','host_embedding_binding','input_preparation',
           'output_initialization','replay_source','precision_repair','baseline_model','kv_reproduction',
-          'feature_pack','prepared_call_latency')
+          'feature_pack','offline_weights','prepared_call_latency')
     summary = {k:result[k] for k in keys if k in result}
     rows = result.get('cases', [])
     if not rows:

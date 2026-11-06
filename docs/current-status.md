@@ -67,40 +67,108 @@ df -h "$AI_RUN_DIR"
 
 2026-11-06服务器首次清理在删除前扫描时遇到 `stable-arg-max-ge-tbe/.../.ipc-*/listener-*` 条目而停止。修复后的 `--all-tests` 允许已关闭的Unix socket，读取本地 `/proc/net/unix` 检查是否仍被绑定，并在删除前再次检查；不连接socket，不放宽其它清理模式。新增9项本地回归检查通过，覆盖已关闭／活跃socket、删除前重新绑定、源权重损坏、锁及重复执行。尚无独立清理回执，后续探针报告已记录上述可用空间。
 
-### 布局矩阵：ND通过，NZ数值失败，复用输出定位读取方式
+### 布局矩阵结论：采用ND离线转置进入整图对照
 
-2026-11-06用户回传v2设备结果：36项均执行、输出已回收、锁已释放，native／archive／所有case退出码为0；全部重复逐位稳定。180份ND输出通过，NZ仅`nz_t/head_width`的10份输出通过，另外170份失败。整批为NUMERICAL_FAILED，不能使用这两种NZ候选改写完整Draft。
+2026-11-06用户回传v2设备结果：36项均执行／回收成功，重复逐位稳定；180份ND输出通过，NZ仅`nz_t/head_width`的10份通过，另外170份失败。随后只读分析返回`PACKED_AS_ND_SIGNATURE_MATCHED`：17个有区分度的NZ用例全部10次输出逐字节匹配“打包字节按ND读取”的预测，mapping两种transpose的80个单位基行也全部匹配。当前NZ导入合同拒绝进入整图，不继续重跑这批探针。
 
-| 变体 | 逻辑右输入／transpose_x2 | 9组数值结果 | 后续用途 |
+| 变体 | 逻辑右输入／transpose_x2 | 9组数值结果 | 决定 |
 |---|---|---|---|
-| nd_t | W[N,K]／true | 9通过 | ND对照 |
-| nd_n | W.T[K,N]／false | 9通过 | 普通离线转置候选，仍需完整尺寸验证 |
-| nz_t | W[N,K]／true | 1通过、8失败 | 当前导入合同拒绝进入整图 |
-| nz_n | W.T[K,N]／false | 0通过、9失败 | 当前导入合同拒绝进入整图 |
+| nd_t | W[N,K]／true | 9通过 | 重建packed基线 |
+| nd_n | W.T[K,N]／false | 9通过 | 31个静态MatMul统一离线转置 |
+| nz_t | W[N,K]／true | 1通过、8失败 | 拒绝当前导入合同 |
+| nz_n | W.T[K,N]／false | 0通过、9失败 | 拒绝当前导入合同 |
 
-36项的编译由18次NZ新编译＋18个ND模型复用组成，DDK为`100.520.020.010`。新NZ描述使用二维ND逻辑shape、四维storage_shape及storage_format=29，已可编译，但设备结果不满足原数学合同。更早的四维逻辑shape表达在BatchMatMul推导中以K=80对16失败；字面FRACTAL_ZN被HIAI导入层拒绝。这些结果不否定mmad的L0B ZN约定。
+NZ描述使用二维ND逻辑shape、四维storage_shape及storage_format=29，DDK `100.520.020.010`能编译，但输出符合普通ND读取。唯一通过项N=248320、K=16的nz_t载体恰好与普通ND字节相同，不能证明NZ支持。更早的字面FRACTAL_ZN被导入层拒绝。这些观察不定位具体编译pass，也不否定mmad的L0B ZN约定。
 
-唯一通过的NZ用例是N=248320、K=16的`nz_t/head_width`：其分块顺序[K1,N1,N0,K0]中K1=1，文件字节与原普通ND完全相同，因此该例不能证明storage属性生效。本地主机将18个NZ载体模拟为普通ND读取、保持各自transpose标志，得到与回传完全一致的通过／失败分布：恰好只有这一例通过。这是支持“storage属性未生效”的线索；尚未读取服务器实际输出逐字节确认，也不能定位具体编译pass或内部kernel布局。
+普通离线转置仍可行：源权重保留，生成W.T[K,N]，MatMul使用transpose_x2=false。编译器也可能把两种输入预处理成相同布局，因此收益待测。九组探针分开覆盖K／N轴，完整head的N=248320、K=2048必须在整图中验证；不将K=16的小探针差值外推。
 
-下一步只分析已回收的storage-result，不编译、不上板、不创建新的探针／输出目录。原工具新增`--analyze`：先沿用原比较器复核请求／fixture与全部360份输出，再重建合成权重、普通ND误读预测，逐份比较18项NZ的10次输出；mapping的80个单位基行单独报告，可以直接观察有效右矩阵。
+### 当前执行：从源权重重建一份基线和一份nd_n候选
+
+在已加载custom_pypto和选定DDK的服务器运行。复用`draft/source/prepared`与既有storage-result，保留导入探针以便编译前重核nd_n设备门槛。本阶段导出一次AIR、编译两份完整模型；两边均启用同样的RoPE表和CPU feature pack，仅候选增加离线转置。没有设备调用。使用固定`offline-weights/full`目录，空间由每次编译预检，候选另需1642MiB转换权重；不要再次清空全部tests。
 
 ```bash
 (
 set -eu
 cd "${REPO_DIR:?}"
 git pull --ff-only origin main
-python3 targets/cpro/tools/probe_draft_offline_weights.py \
-  --analyze "$AI_RUN_DIR/draft/tests/offline-weights/storage-result"
+: "${AI_RUN_DIR:?}" "${CPRO_DDK_ROOT:?}" "${CPRO_DDK_ID:?}"
+full="$AI_RUN_DIR/draft/tests/offline-weights/full"
+df -h "$AI_RUN_DIR"
+python3 targets/cpro/scripts/export_incremental_draft.py \
+  --prepared "$AI_RUN_DIR/draft/source/prepared" --frontend pytorch \
+  --optimization packed-spatial-host-embedding --top1 stable-arg-max \
+  --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 \
+  --output "$full/export"
+python3 targets/cpro/scripts/compile_incremental_draft.py \
+  --air-export "$full/export" --output "$full/baseline" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --rope-fp32-table --cpu-feature-pack
+python3 targets/cpro/scripts/compile_incremental_draft.py \
+  --air-export "$full/export" --output "$full/nd_n" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --rope-fp32-table --cpu-feature-pack --offline-weights nd_n \
+  --offline-weight-canary "$AI_RUN_DIR/draft/tests/offline-weights/storage-result"
 )
 ```
 
-若返回`diagnosis=PACKED_AS_ND_SIGNATURE_MATCHED`，表示17个可区分用例及退化特例的全部输出都与“分块字节按ND读取”预测相同，同时ND对照通过；保留原numerical_validation=FAILED。它只确立输出特征，不声称观察到内部编译行为。若未匹配，报告逐次差异，不自动尝试其它布局。
+通过条件：两份均`PYTORCH_DRAFT_OMC_COMPILED`，Top1出口检查通过；候选offline_weights为`PACKED_AND_ROUNDTRIP_VERIFIED`、weight_count=31、bytes=1721761792。这是编译及字节置换证明，尚未验证完整模型输出或加速。编译失败先看回传的compilation_diagnostics；仅完成失败的编译槽可用相同命令加`--replace-failed`重试，不重新导出或重编成功模型。
 
-新增9项主机检查通过：独立标量分块／点积、36项模拟输出及360次比较、K=16退化识别、第10次输出变化、原数学结果负例、case／合同／容差／覆盖检查、原请求与fixture哈希检查、ND对照门槛、全目录只读。模拟输出明确标为host-fake，未执行DDK或设备；服务器的读取特征仍待以上命令回传。
+### 两份编译通过后：同一输入／参考的完整模型对照
 
-九组W shape／M不变：`48×80 / 95`、`80×48 / 1`、`48×2048 / 15`、`48×4096 / 16`、`48×6144 / 32`、`4096×32 / 15`、`2048×48 / 16`、`12288×32 / 32`、`248320×16 / 15`。大K与大N分轴覆盖，尚不包含真实head的N=248320、K=2048完整组合。
+验证入口已支持直接为packed基线生成原始逻辑feature输入，由现有端侧runner执行同一打包；不再依赖已删除的旧测试。候选通过`--replay`复用基线所有输入／golden和原门槛；核对候选离线转换前AIR与基线编译AIR逐字节身份一致。所有31个权重、输入槽、Top1／hidden和12个KV输出都保持完整覆盖。
 
-nd_n仍可作为31个静态MatMul的统一离线转置候选，额外1642MiB载体，完整编译门槛使用已通过的ND设备结果；未运行完整Draft数值或性能对照。Conv、归一化向量和host embedding继续使用原接口。完整对照须从保留的prepared权重重建，双方同加`--rope-fp32-table --cpu-feature-pack`，候选才增加离线权重。约60ms仍是历史性能基线，小探针均值不代表整图收益。
+先启动基线，命令返回后再回收；若回收为PENDING，只重复回收命令，不重复启动：
+
+```bash
+(
+set -eu
+cd "${REPO_DIR:?}"
+full="${AI_RUN_DIR:?}/draft/tests/offline-weights/full"
+python3 targets/cpro/tools/validate_incremental_draft.py \
+  --config "${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+  --compiled "$full/baseline" --air-export "$full/export" \
+  --source "$AI_RUN_DIR/draft/source/prepared" --ddk-root "${CPRO_DDK_ROOT:?}" \
+  --output "$full/baseline-run" --apply
+)
+```
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$AI_RUN_DIR/draft/tests/offline-weights/full/baseline-run" \
+  --output "$AI_RUN_DIR/draft/tests/offline-weights/full/baseline-result"
+```
+
+确认基线stage=complete、device_execution=EXECUTED_OUTPUTS_RETRIEVED且锁释放后，启动候选。已有CPU参考失败允许按用户授权继续设备基线对照，原FAILED状态保留；执行／回收错误不能当作数值失败继续。
+
+```bash
+(
+set -eu
+cd "${REPO_DIR:?}"
+full="${AI_RUN_DIR:?}/draft/tests/offline-weights/full"
+python3 targets/cpro/tools/validate_incremental_draft.py \
+  --config "${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+  --replay "$full/baseline-result" --compiled "$full/nd_n" \
+  --air-export "$full/export" --source "$AI_RUN_DIR/draft/source/prepared" \
+  --ddk-root "${CPRO_DDK_ROOT:?}" --output "$full/nd_n-run" --apply
+)
+```
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$AI_RUN_DIR/draft/tests/offline-weights/full/nd_n-run" \
+  --output "$AI_RUN_DIR/draft/tests/offline-weights/full/nd_n-result"
+```
+
+候选完成回收后，只读比较：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --compare-offline-weights "$AI_RUN_DIR/draft/tests/offline-weights/full/nd_n-result"
+```
+
+先检查baseline_equivalence=PASSED及feedback重复稳定，再看prepared_timings。比较isolated／feedback原始两序列的有效Top1、hidden、完整KV及含CPU打包／SetInput的准备＋同步API耗时；原CPU参考结果独立报告。两份模型分开加载，仍是原诊断调度，不是十次热态重复或整轮端到端基准；没有自动生产替换。
+
+本轮10项主机检查通过，覆盖新建packed基线的逻辑输入／plan版本、候选槽位重排与相同输入／golden复用、31项完整布局证明及转换前AIR绑定、输出差异、无效proposal范围、参考变更拒绝和旧feature-pack replay兼容。DDK绑定与参考计算使用桩，模拟输出标为host-fake，真实入口拒绝其作为设备证据；本地未编译或执行完整模型。
 
 ### 离线权重布局的收益判断
 

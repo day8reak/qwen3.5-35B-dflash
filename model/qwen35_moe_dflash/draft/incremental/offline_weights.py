@@ -373,7 +373,34 @@ def verify_binding(root, raw, schema, evidence):
                 or sha256_file(source) != row['source_sha256'] or sha256_file(packed) != row['sha256']
                 or _restored_hash(packed, row, variant) != row['source_sha256']):
             raise ValueError('offline weight payload binding failed: '+row['source'])
-    return dict(status='VERIFIED', weight_count=len(records), bytes=plan['bytes'], contract=plan['contract'])
+    return dict(status='VERIFIED', weight_count=len(records), bytes=plan['bytes'], contract=plan['contract'],
+                before_air_sha256=plan['source_sha256'])
+
+
+def check_replay_pair(original, candidate, old_binding, binding):
+    """Bind the full ND-transpose experiment to an otherwise identical packed baseline."""
+    from .air_feature_pack import CONTRACT as feature_contract
+    from .air_rope import POLICY as rope_policy
+    layout = candidate.get('offline_weights', {})
+    repair = original.get('precision_repair', {})
+    if (original.get('offline_weights') is not None
+            or layout.get('contract') != contract('nd_n')
+            or layout.get('status') != 'PACKED_AND_ROUNDTRIP_VERIFIED'
+            or layout.get('scope') != 'FULL_DRAFT_31_STATIC_MATMULS'
+            or layout.get('weight_count') != 31 or layout.get('bytes') != 1721761792
+            or original.get('feature_pack') != feature_contract
+            or candidate.get('feature_pack') != feature_contract
+            or repair.get('policy') != rope_policy or repair.get('status') != 'APPLIED'
+            or repair.get('trig_count') != 4 or candidate.get('precision_repair') != repair):
+        raise ValueError('offline replay requires nd_n for all 31 weights and the same packed RoPE baseline')
+    for key in ('source_air_sha256', 'prepared_sha256', 'source_input_roles', 'cache_edges', 'reference_weights'):
+        if key not in binding or key not in old_binding or binding[key] != old_binding[key]:
+            raise ValueError('offline replay changed the original source/reference binding: '+key)
+    before = old_binding.get('compiler_air_sha256')
+    if (not isinstance(before, str) or len(before) != 64 or old_binding.get('offline_weights') is not None
+            or binding.get('offline_weights') != dict(status='VERIFIED', weight_count=31,
+                bytes=1721761792, contract=contract('nd_n'), before_air_sha256=before)):
+        raise ValueError('offline candidate pre-layout AIR must equal the baseline compiler AIR')
 
 
 def _file_air(root, relative):

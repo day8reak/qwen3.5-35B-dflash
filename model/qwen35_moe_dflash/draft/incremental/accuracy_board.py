@@ -146,6 +146,8 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
             state['precision_repair'] = meta['precision_repair']
         if meta.get('feature_pack'):
             state['feature_pack'] = meta['feature_pack']
+        if meta.get('offline_weights'):
+            state['offline_weights'] = meta['offline_weights']
         if 'host_embedding_binding' in meta:
             state['host_embedding_binding'] = meta['host_embedding_binding']
         if not apply:
@@ -329,6 +331,7 @@ def recover(execution, output):
                       internal_precision=meta.get('internal_precision'), production_promotion='NOT_PERFORMED')
         if 'precision_repair' in meta:
             result['precision_repair'] = meta['precision_repair']
+        if 'candidate_replay' in meta:
             result['baseline_model'] = meta['candidate_replay']['baseline_model']
         if reproduction:
             from .kv_reproduction import analyze

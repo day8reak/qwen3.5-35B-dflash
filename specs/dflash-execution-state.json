@@ -8574,7 +8574,7 @@
               }
             },
             "offline_weight_implementation": {
-              "status": "ND_DEVICE_VALIDATED_NZ_NUMERICALLY_REJECTED_INTERPRETATION_PENDING",
+              "status": "ND_DEVICE_VALIDATED_NZ_ND_READ_SIGNATURE_CONFIRMED_FULL_ND_TRANSPOSE_READY",
               "policy": "static-rhs-import-matrix-v2",
               "user_direction": "EXHAUSTIVE_LAYOUT_TRANSPOSE_PARAMETERS_BEFORE_FULL_MODEL",
               "variants": [
@@ -8598,7 +8598,7 @@
               "speedup": "NOT_MEASURED",
               "production_promotion": "NOT_PERFORMED",
               "commands": "docs/current-status.md",
-              "next": "READ_ONLY_COMPARE_RETAINED_OUTPUTS_TO_PACKED_AS_ND_PREDICTION; NO_RECOMPILE_OR_RELAUNCH",
+              "next": "BUILD_FULL_PACKED_BASELINE_AND_ND_N_FROM_ONE_AIR_THEN_REPLAY_IDENTICAL_INPUTS",
               "initial_server_attempt": {
                 "source": "USER_RETURNED_REPORT",
                 "ddk_id": "100.520.020.010",
@@ -8778,12 +8778,25 @@
                 "scope": "COMPILE_ACCEPTANCE_ONLY; STORAGE_INTERPRETATION_NOT_YET_VERIFIED"
               },
               "next_validation": {
-                "action": "READ_ONLY_RETAINED_OUTPUT_INTERPRETATION",
-                "entry": "probe_draft_offline_weights.py --analyze",
-                "result": "draft/tests/offline-weights/storage-result",
+                "action": "FULL_DRAFT_PAIRED_ND_TRANSPOSE",
+                "variant": "nd_n",
+                "output": "draft/tests/offline-weights/full",
+                "source": "draft/source/prepared",
+                "canary": "draft/tests/offline-weights/storage-result",
+                "baseline_flags": [
+                  "--rope-fp32-table",
+                  "--cpu-feature-pack"
+                ],
+                "candidate_extra_flags": [
+                  "--offline-weights",
+                  "nd_n",
+                  "--offline-weight-canary"
+                ],
                 "model_compilation": "NOT_RUN",
                 "device_execution": "NOT_RUN",
-                "output_writes": "NONE"
+                "numerical_validation": "NOT_RUN",
+                "speedup": "NOT_ESTABLISHED",
+                "commands": "docs/current-status.md"
               },
               "prior_nd_device_validation": {
                 "source": "USER_RETURNED_VECTOR_VALIDATION",
@@ -8852,11 +8865,28 @@
                 ],
                 "host_predicted_failure_cases": 17,
                 "observed_pass_fail_pattern": "MATCHES_PREDICTION",
-                "observed_bytes_match_prediction": "NOT_YET_COMPARED",
+                "observed_bytes_match_prediction": "ALL_180_NZ_OUTPUTS_BITWISE_MATCHED_USER_RETURNED",
                 "degenerate_case": "NZ_T_HEAD_WIDTH_K16_CARRIER_BYTES_EQUAL_ND",
                 "host_checks": 9,
                 "host_evidence": "20261106T034153Z-25716-247b30/host-checks.json",
-                "scope": "NUMERICAL_SIGNATURE_NOT_COMPILER_PASS_OR_KERNEL_LAYOUT_PROOF"
+                "scope": "NUMERICAL_SIGNATURE_NOT_COMPILER_PASS_OR_KERNEL_LAYOUT_PROOF",
+                "diagnosis": "PACKED_AS_ND_SIGNATURE_MATCHED",
+                "discriminating_nz_cases": 17,
+                "matching_discriminating_nz_cases": 17,
+                "mapping_identity_basis_rows": 80,
+                "all_mapping_basis_calls_matched": true,
+                "source": "USER_RETURNED_READ_ONLY_IMPORT_INTERPRETATION",
+                "result": "draft/tests/offline-weights/storage-result/result.json"
+              },
+              "full_replay_implementation": {
+                "status": "HOST_VALIDATED",
+                "host_checks": 10,
+                "host_evidence": "20261106T061453Z-27195-f1115c/host-checks.json",
+                "reference": "ONE_FRESH_PACKED_BASELINE_FIXTURE_REUSED_BY_CANDIDATE",
+                "graph_binding": "CANDIDATE_BEFORE_LAYOUT_AIR_EQUALS_BASELINE_COMPILER_AIR",
+                "scope": "ALL_ACTIVE_TOP1_HIDDEN_AND_FULL_KV_BOTH_ORIGINAL_SEQUENCES",
+                "comparison_entry": "validate_incremental_draft.py --compare-offline-weights",
+                "host_test_boundary": "DDK_BINDING_AND_REFERENCE_MOCKED; HOST_FAKE_DEVICE_OUTPUTS; NOT_HARDWARE_EVIDENCE"
               }
             }
           },
