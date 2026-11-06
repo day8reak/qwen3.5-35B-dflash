@@ -7927,19 +7927,17 @@
         }
       },
       "offline_weight_implementation": {
-        "status": "ND_VARIANTS_DEVICE_VALIDATED_FRACTAL_IMPORT_FAILURE_DIAGNOSIS_PENDING",
-        "policy": "fp16-static-rhs-layout-v1",
+        "status": "NZ_LOGICAL_STORAGE_CANDIDATE_HOST_CHECKED_DDK_PENDING",
+        "policy": "static-rhs-import-matrix-v2",
         "user_direction": "EXHAUSTIVE_LAYOUT_TRANSPOSE_PARAMETERS_BEFORE_FULL_MODEL",
         "variants": [
           "nd_t",
           "nd_n",
           "nz_t",
-          "nz_n",
-          "zn_t",
-          "zn_n"
+          "nz_n"
         ],
         "probe_scenarios": 9,
-        "planned_compile_cases": 54,
+        "planned_compile_cases": 18,
         "scope": "REAL_K_AND_N_AXES_SEPARATELY_NOT_ALL_FULL_SHAPE_COMBINATIONS",
         "full_draft_static_matmuls": 31,
         "packed_weight_bytes": 1721761792,
@@ -7947,13 +7945,13 @@
         "packed_payload_verification": "INVERSE_SHA256_AND_COMPILER_REFERENCE_BINDING",
         "local_host_checks": 14,
         "compiler_and_device_calls_in_host_checks": "MOCKED_NOT_HARDWARE_EVIDENCE",
-        "model_compilation": "PARTIAL",
-        "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
-        "numerical_validation": "PASSED",
+        "model_compilation": "NOT_RUN",
+        "device_execution": "NOT_RUN",
+        "numerical_validation": "NOT_RUN",
         "speedup": "NOT_MEASURED",
         "production_promotion": "NOT_PERFORMED",
         "commands": "docs/current-status.md",
-        "next": "READ_RETAINED_NZ_ZN_COMPILER_DIAGNOSTICS; ND_N_READY_FOR_FULL_SHAPE_CANDIDATE_NOT_PROMOTED",
+        "next": "COMPILE_18_NZ_STORAGE_CASES_WITH_18_VERIFIED_ND_CONTROLS; NO_FULL_MODEL_YET",
         "initial_server_attempt": {
           "source": "USER_RETURNED_REPORT",
           "ddk_id": "100.520.020.010",
@@ -7977,7 +7975,7 @@
           "selected_ddk_retry": "EXECUTED;18_ND_CASES_COMPILED_AND_VALIDATED",
           "device_execution": "EXECUTED_OUTPUTS_RETRIEVED"
         },
-        "numerical_scope": "18_EXECUTED_ND_CASES;36_FRACTAL_CASES_NOT_RUN",
+        "numerical_scope": "NEW_NZ_STORAGE_CONTRACT; PRIOR_ND_RESULTS_RETAINED",
         "last_device_validation": {
           "source": "USER_RETURNED_VECTOR_VALIDATION",
           "artifact_kind": "qwen35-draft-vector-validation",
@@ -8008,7 +8006,7 @@
             "zn_n"
           ],
           "failed_compile_cases": 36,
-          "failed_variant_root_cause": "NOT_IN_RETURNED_SUMMARY; NEED_RETAINED_COMPILER_DIAGNOSTICS",
+          "failed_variant_root_cause": "FIRST_MAPPING_LOG_PER_VARIANT_CLASSIFIED_BELOW; OTHER_FAILURE_LOGS_NOT_READ",
           "mean_api_ms": {
             "nd_t": {
               "mapping": 0.6777,
@@ -8055,7 +8053,33 @@
           "option": "--inspect",
           "host_checks": 6,
           "evidence": "20261106T021920Z-24234-646141/offline-weight-inspection-host-checks.json",
-          "server_execution": "PENDING"
+          "server_execution": "INSPECTED_USER_RETURNED"
+        },
+        "reused_compile_cases": 18,
+        "previous_suite_cases": 54,
+        "import_failure_diagnosis": {
+          "source": "USER_RETURNED_RETAINED_COMPILER_LOGS",
+          "scope": "FIRST_MAPPING_CASE_PER_FAILED_VARIANT",
+          "nz": "PHYSICAL_4D_RHS_USED_AS_BATCHMATMUL_LOGICAL_DIMS; K80_VS16",
+          "zn": "FRACTAL_ZN_STRING_REJECTED; SUBSEQUENT_INPUT_COUNT_VERIFY_FAILURE",
+          "hardware_layout_support": "NOT_DETERMINED"
+        },
+        "logical_storage_candidate": {
+          "policy": "fp16-static-rhs-layout-v2",
+          "shape": "LOGICAL_2D_ND_ON_FILECONSTANT_AND_MATMUL",
+          "storage_shape": "PHYSICAL_4D",
+          "storage_format": 29,
+          "variant_flags": {
+            "nz_t": true,
+            "nz_n": false
+          },
+          "host_checks": 11,
+          "host_evidence": "20261106T023451Z-24651-a88302/host-checks.json",
+          "model_compilation": "NOT_RUN",
+          "device_execution": "NOT_RUN",
+          "nd_reuse": "VERIFY_RECIPE_AND_HASHES_THEN_REFERENCE_NO_COPY_NO_RECOMPILE",
+          "legacy_nd_canary": "REMAINS_VALID; LEGACY_NZ_CANNOT_PASS_NEW_CONTRACT",
+          "output": "draft/tests/offline-weights/storage"
         }
       }
     }

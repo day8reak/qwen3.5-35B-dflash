@@ -31,8 +31,74 @@ SCENARIOS = {
 }
 CASES = tuple(f'offline_weight_{s}_{v}' for s in SCENARIOS for v in ow.VARIANTS)
 SCOPE = 'FP16_RHS_LAYOUT_TRANSPOSE_MATRIX_AXES_COVERAGE; NOT_FULL_SHAPE_OR_SPEEDUP'
-SUITE = dict(policy='static-rhs-import-matrix-v1', scenarios=SCENARIOS,
-             variants={v: ow.contract(v) for v in ow.VARIANTS})
+LEGACY_SUITE = dict(policy='static-rhs-import-matrix-v1', scenarios=SCENARIOS,
+                    variants={v: ow.contract(v, legacy=True) for v in ow.VARIANTS})
+SUITE = dict(policy='static-rhs-import-matrix-v2', scenarios=SCENARIOS,
+             variants={v: ow.contract(v) for v in ('nd_t', 'nd_n', 'nz_t', 'nz_n')})
+
+
+def _suite_cases(suite):
+    if suite not in [json.loads(json.dumps(s)) for s in (LEGACY_SUITE, SUITE)]:
+        raise ValueError('unrecognized offline weight import contract')
+    return [f'offline_weight_{s}_{v}' for s in SCENARIOS for v in suite['variants']]
+
+
+def _read_report(root):
+    from qwen35_moe_dflash.execution.runtime_config import read_json
+    report = read_json(Path(root)/'result.json', 8 << 20)
+    cases = _suite_cases(report.get('suite'))
+    if (report.get('artifact_kind') != KIND or [r['case'] for r in report['cases']] != cases
+            or any(r['case'] != f"offline_weight_{r['scenario']}_{r['variant']}"
+                   or r['contract'] != report['suite']['variants'][r['variant']] for r in report['cases'])):
+        raise ValueError('layout matrix rows differ from their declared suite')
+    return report
+
+
+def _case_root(root, row):
+    """Reuse immutable ND artifacts by reference; never copy their payloads."""
+    reuse = row.get('reused_from')
+    if reuse is None:
+        return Path(root)
+    if row['variant'] not in ('nd_t', 'nd_n'):
+        raise ValueError('only unchanged ND controls may be reused')
+    source = Path(reuse['root'])
+    if sha256_file(source/'result.json') != reuse['report_sha256']:
+        raise ValueError('reused ND compilation report changed')
+    previous = _read_report(source)
+    original = next(r for r in previous['cases'] if r['case'] == row['case'])
+    if 'reused_from' in original or {k: v for k, v in row.items() if k != 'reused_from'} != original:
+        raise ValueError('reused ND row differs from its source')
+    return source
+
+
+def _validated_model(root, row, schema, ddk, ddk_id):
+    """Bind reused and freshly compiled models to the same source recipe."""
+    import stable_arg_max_ge
+    root = _case_root(root, row)
+    raw, declared = graph(schema, row['scenario'])
+    w, _, _ = fixture(row['scenario'])
+    name = row['case']
+    model = checked_file(root, row['model'])
+    receipt = json.loads((root/name/'omc/report.json').read_text())
+    if receipt['ddk_id'] != ddk_id or receipt['platform'] != 'kirinx90':
+        raise ValueError('canary compiler receipt differs')
+    snap = {r['source_relative']: r for r in receipt['input_snapshots']}
+    original = checked_file(root/name/'omc', snap['probe.air'])
+    weight = checked_file(root/name/'omc', snap['weight/canary'])
+    if (original.read_bytes() != raw or weight.read_bytes() != w.tobytes() or row['graph'] != declared
+            or row['contract'] != ow.contract(row['variant'])
+            or row['model']['sha256'] != receipt['omc']['sha256']):
+        raise ValueError('canary source recipe changed; recompile')
+    if row['variant'] != 'nd_t':
+        evidence = receipt['air_preparation']
+        if evidence['offline_weights']['contract'] != ow.contract(row['variant']):
+            raise ValueError('canary variant differs from the compiler layout contract')
+        packed_air = checked_file(root/name/'omc', evidence['compiler_air'])
+        ow.verify_binding(packed_air.parent, packed_air.read_bytes(), schema, evidence['offline_weights'])
+    inspected = stable_arg_max_ge.inspect_model(model, ddk, declared)
+    if not inspected['placement']['npu_only_candidate']:
+        raise ValueError('canary requires NPU-only decoded placement')
+    return model, inspected
 
 
 def fixture(scenario='mapping'):
@@ -105,7 +171,7 @@ def _check_model_container(raw, schema):
 
 
 def compile_probe(output, *, ddk_root, ddk_id, torchair_pb2=None, tbe_diagnosis=None,
-                  timeout_seconds=1800, replace=False, progress=print):
+                  timeout_seconds=1800, replace=False, reuse_nd_from=None, progress=print):
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
     import stable_arg_max_ge
@@ -117,12 +183,33 @@ def compile_probe(output, *, ddk_root, ddk_id, torchair_pb2=None, tbe_diagnosis=
             raise FileNotFoundError(Path(ddk_root)/relative)
     descriptor, metadata = _producer_schema(torchair_pb2)
     schema = _schema(descriptor, metadata)
+    cases = _suite_cases(json.loads(json.dumps(SUITE)))
+    reused = {}
+    if reuse_nd_from:
+        _disjoint(output, reuse_nd_from)
+        source = Path(reuse_nd_from).resolve()
+        previous = _read_report(source)
+        previous_hash = sha256_file(source/'result.json')
+        if (previous['status'] not in ('COMPILED', 'PARTIAL') or previous['ddk_id'] != ddk_id
+                or previous['schema']['descriptor_sha256'] != metadata['descriptor_sha256']
+                or sha256_file(source/'air-schema.pb') != metadata['descriptor_sha256']):
+            raise ValueError('reuse requires a completed suite with the same DDK and source schema')
+        for old in previous['cases']:
+            if old['variant'] not in ('nd_t', 'nd_n'): continue
+            if old['status'] != 'COMPILED' or 'reused_from' in old:
+                raise ValueError('reuse requires all 18 original compiled ND controls')
+            _validated_model(source, old, schema, ddk_root, ddk_id)
+            reused[old['case']] = dict(deepcopy(old), reused_from=dict(
+                root=str(source), report_sha256=previous_hash))
+        if len(reused) != 2*len(SCENARIOS) or sha256_file(source/'result.json') != previous_hash:
+            raise ValueError('ND source report changed during validation')
     ancestor = Path(output).resolve()
     while not ancestor.exists():
         ancestor = ancestor.parent
-    weights = sum(math.prod(s)*2 for s, _ in SCENARIOS.values())*len(ow.VARIANTS)
-    outputs = sum(s[0]*m*2 for s, m in SCENARIOS.values())*len(ow.VARIANTS)
-    required = 3*weights + 20*outputs + (48 << 20)*len(CASES) + (256 << 20)
+    new_variants = len(SUITE['variants']) - (2 if reused else 0)
+    weights = sum(math.prod(s)*2 for s, _ in SCENARIOS.values())*new_variants
+    outputs = sum(s[0]*m*2 for s, m in SCENARIOS.values())*len(SUITE['variants'])
+    required = 3*weights + 20*outputs + (48 << 20)*(len(cases)-len(reused)) + (256 << 20)
     available = shutil.disk_usage(ancestor).free
     if available < required:
         raise OSError(f'layout suite needs at least {required} free bytes; available={available}; '
@@ -130,7 +217,7 @@ def compile_probe(output, *, ddk_root, ddk_id, torchair_pb2=None, tbe_diagnosis=
     with _slot(output, KIND, replace) as root:
         report = dict(artifact_kind=KIND, status='COMPILING', scope=SCOPE, ddk_id=ddk_id,
                       suite=SUITE, schema=metadata, air_container='ModelDef', cases=[],
-                      model_compilation='NOT_RUN', compilation_calls=0,
+                      model_compilation='NOT_RUN', compilation_calls=0, reused_cases=len(reused),
                       storage=dict(required_free_bytes=required, available_free_bytes=available,
                                    learned_weight_bytes=0, synthetic_weight_bytes=weights,
                                    ten_repeat_output_bytes=10*outputs, scope='LOWER_BOUND_INCLUDING_RECOVERY'),
@@ -139,7 +226,11 @@ def compile_probe(output, *, ddk_root, ddk_id, torchair_pb2=None, tbe_diagnosis=
         _save(root/'manifest.json', report)
         (root/'air-schema.pb').write_bytes(descriptor)
         blocked_by = None
-        for case in CASES:
+        for case in cases:
+            if case in reused:
+                _case_root(root, reused[case])
+                report['cases'].append(reused[case])
+                continue
             scenario = next(s for s in SCENARIOS if case.startswith('offline_weight_'+s+'_'))
             variant = case.rsplit('_', 2)[-2]+'_'+case.rsplit('_', 1)[-1]
             row = dict(case=case, scenario=scenario, variant=variant, contract=ow.contract(variant),
@@ -169,7 +260,7 @@ def compile_probe(output, *, ddk_root, ddk_id, torchair_pb2=None, tbe_diagnosis=
                     proof.update(before_air='before-offline-weights.air', scope=SCOPE)
                     prepared = ow.rewrite(raw, schema, plan)
                     _check_model_container(prepared, schema)
-                    return prepared, dict(policy=ow.POLICY, status='APPLIED',
+                    return prepared, dict(policy=plan['contract']['policy'], status='APPLIED',
                         removed_count=0, offline_weights=proof)
                 report['compilation_calls'] += 1
                 result = compile_existing_air(folder/'air/probe.air', folder/'omc', ddk_root,
@@ -199,7 +290,7 @@ def compile_probe(output, *, ddk_root, ddk_id, torchair_pb2=None, tbe_diagnosis=
         report.update(status='COMPILED' if success else 'PARTIAL' if baseline else 'FAILED', stage='complete',
                       model_compilation='PASSED' if success else 'PARTIAL' if baseline else 'FAILED',
                       compilation_matrix={v: {r['scenario']: r['status'] for r in report['cases'] if r['variant'] == v}
-                                          for v in ow.VARIANTS},
+                                          for v in SUITE['variants']},
                       skipped_cases=sum(r['status'] == 'SKIPPED' for r in report['cases']),
                       next=('Validate all compiled cases together; failed imports remain explicit in the matrix.'
                             if baseline else 'Fix the ordinary ND baseline failure and retry with --replace-failed; '
@@ -214,13 +305,10 @@ def compile_probe(output, *, ddk_root, ddk_id, torchair_pb2=None, tbe_diagnosis=
 def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     from validate_draft_vector import selected_cases, WARMUP, REPETITIONS
     from qwen35_moe_dflash.execution.hdc_run import _file_record
-    import stable_arg_max_ge
     root, out = Path(root), Path(out)
-    report = json.loads((root/'result.json').read_text())
+    report = _read_report(root)
     compiled_cases = [r['case'] for r in report['cases'] if r['status'] == 'COMPILED']
     if (report['status'] not in ('COMPILED', 'PARTIAL') or report['ddk_id'] != ddk_id
-            or report['suite'] != json.loads(json.dumps(SUITE))
-            or [r['case'] for r in report['cases']] != list(CASES)
             or selected_cases(compiled_cases if selection is None else selection, CASES) != compiled_cases):
         raise ValueError('run all compiled layout matrix cases together with the selected DDK')
     if any(r['status'] != 'COMPILED' for r in report['cases'] if r['variant'] == 'nd_t'):
@@ -232,28 +320,9 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     cases = []
     for row in report['cases']:
         if row['status'] != 'COMPILED': continue
-        raw, declared = graph(schema, row['scenario'])
-        w, x, y = fixture(row['scenario'])
+        _, x, y = fixture(row['scenario'])
         name = row['case']
-        model = checked_file(root, row['model'])
-        receipt = json.loads((root/name/'omc/report.json').read_text())
-        if receipt['ddk_id'] != ddk_id or receipt['platform'] != 'kirinx90':
-            raise ValueError('canary compiler receipt differs')
-        snap = {r['source_relative']: r for r in receipt['input_snapshots']}
-        original = checked_file(root/name/'omc', snap['probe.air'])
-        weight = checked_file(root/name/'omc', snap['weight/canary'])
-        if (original.read_bytes() != raw or weight.read_bytes() != w.tobytes() or row['graph'] != declared
-                or row['model']['sha256'] != receipt['omc']['sha256']):
-            raise ValueError('canary source recipe changed; recompile')
-        if row['variant'] != 'nd_t':
-            evidence = receipt['air_preparation']
-            if evidence['offline_weights']['contract'] != ow.contract(row['variant']):
-                raise ValueError('canary variant differs from the compiler layout contract')
-            packed_air = checked_file(root/name/'omc', evidence['compiler_air'])
-            ow.verify_binding(packed_air.parent, packed_air.read_bytes(), schema, evidence['offline_weights'])
-        inspected = stable_arg_max_ge.inspect_model(model, ddk, declared)
-        if not inspected['placement']['npu_only_candidate']:
-            raise ValueError('canary requires NPU-only decoded placement')
+        model, inspected = _validated_model(root, row, schema, ddk, ddk_id)
         io = deepcopy(inspected['io'])
         folder = out/'fixture'/name
         folder.mkdir(parents=True)
@@ -284,10 +353,12 @@ def inspect_probe(directory):
     root = Path(directory)
     report = read_json(root/'result.json', 8 << 20)
     cases = report.get('cases', [])
-    if (report.get('artifact_kind') != KIND or report.get('suite') != json.loads(json.dumps(SUITE))
-            or len(cases) > len(CASES) or len({r['case'] for r in cases}) != len(cases)
-            or any(r['case'] not in CASES or r['scenario'] not in SCENARIOS
+    expected = _suite_cases(report.get('suite'))
+    if (report.get('artifact_kind') != KIND
+            or len(cases) > len(expected) or len({r['case'] for r in cases}) != len(cases)
+            or any(r['case'] not in expected or r['scenario'] not in SCENARIOS
                    or r['variant'] not in ow.VARIANTS
+                   or r['contract'] != report['suite']['variants'][r['variant']]
                    or r['case'] != f"offline_weight_{r['scenario']}_{r['variant']}" for r in cases)):
         raise ValueError('expected the retained offline weight layout matrix')
     failures = {}
@@ -301,7 +372,7 @@ def inspect_probe(directory):
                 failed_cases=sum(r['status'] == 'FAILED' for r in cases),
                 skipped_cases=sum(r['status'] == 'SKIPPED' for r in cases),
                 compilation_matrix={v: {r['scenario']: r['status'] for r in cases if r['variant'] == v}
-                                    for v in ow.VARIANTS},
+                                    for v in report['suite']['variants']},
                 first_failure_by_variant=failures, report=str(root/'result.json'),
                 model_compilation='NOT_RUN', device_execution='NOT_RUN', weight_payloads='NOT_READ',
                 scope='RETAINED_COMPILER_REPORT_AND_LOGS_ONLY; ROOT_CAUSE_NOT_CLASSIFIED')
@@ -310,8 +381,10 @@ def inspect_probe(directory):
 def summarize(meta, comparison):
     """Classify every attempted setting; never turn unsupported rows into a pass."""
     results = {r['case']: r for r in comparison['cases']}
+    suite = meta['source_evidence']['suite']
+    _suite_cases(suite)
     matrix, passing = {}, []
-    for variant in ow.VARIANTS:
+    for variant in suite['variants']:
         rows = {}
         for attempt in meta['source_evidence']['cases']:
             if attempt['variant'] != variant: continue
@@ -326,7 +399,7 @@ def summarize(meta, comparison):
                                               and r['repeat_stable'] for r in rows.values())):
             passing.append(variant)
         matrix[variant] = rows
-    return dict(suite=SUITE, passing_variants=passing, matrix=matrix,
+    return dict(suite=suite, passing_variants=passing, matrix=matrix,
                 baseline_passed='nd_t' in passing, full_shape_validation='NOT_RUN',
                 decision='CHOOSE_A_PASSING_VARIANT_FOR_FULL_DRAFT; NO_MICROBENCHMARK_SPEEDUP_CLAIM')
 
@@ -339,7 +412,11 @@ def check_device_canary(directory, ddk_id, variant='nz_t'):
     execution = Path(result['recovery_source'])
     fixture_meta = json.loads((execution/'fixture/manifest.json').read_text())
     source = fixture_meta['source_evidence']
-    if (source.get('artifact_kind') != KIND or source.get('suite') != json.loads(json.dumps(SUITE))
+    expected_matrix = _suite_cases(source.get('suite'))
+    if (source.get('artifact_kind') != KIND
+            or [r['case'] for r in source['cases']] != expected_matrix
+            or source['suite']['variants'].get(variant) != ow.contract(variant)
+            or any(r['contract'] != source['suite']['variants'][r['variant']] for r in source['cases'])
             or fixture_meta.get('ddk_id') != ddk_id or fixture_meta.get('exact_bytes') is not True
             or fixture_meta.get('scope') != SCOPE or fixture_meta.get('atol') != 0 or fixture_meta.get('rtol') != 0
             or result.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED'):

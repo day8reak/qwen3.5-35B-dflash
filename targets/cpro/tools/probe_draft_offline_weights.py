@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile ND/NZ/ZN × transpose on/off probes over nine matrix geometries."""
+"""Compile ND/NZ logical/storage descriptors over nine matrix geometries."""
 import argparse
 import json
 import os
@@ -24,10 +24,12 @@ def main():
     parser.add_argument('--tbe-diagnosis')
     parser.add_argument('--timeout-seconds', type=int, default=1800)
     parser.add_argument('--replace-failed', action='store_true')
+    parser.add_argument('--reuse-nd-from', metavar='COMPILED_DIR',
+                        help='verify and reference all 18 unchanged ND controls; compile only the 18 NZ cases')
     args = parser.parse_args()
     if args.timeout_seconds <= 0:
         parser.error('--timeout-seconds must be positive')
-    if args.inspect and (args.replace_failed or args.torchair_pb2 or args.tbe_diagnosis):
+    if args.inspect and (args.replace_failed or args.torchair_pb2 or args.tbe_diagnosis or args.reuse_nd_from):
         parser.error('--inspect is read-only; omit build/replacement options')
     try:
         if args.inspect:
@@ -36,6 +38,7 @@ def main():
             result = compile_probe(args.output, ddk_root=args.ddk_root, ddk_id=args.ddk_id,
                 torchair_pb2=args.torchair_pb2, tbe_diagnosis=args.tbe_diagnosis,
                 timeout_seconds=args.timeout_seconds, replace=args.replace_failed,
+                reuse_nd_from=args.reuse_nd_from,
                 progress=lambda s: print('offline-weights: '+s, flush=True))
     except (OSError, ValueError, KeyError, RuntimeError) as error:
         result = dict(status='FAILED', error=f'{type(error).__name__}: {error}')

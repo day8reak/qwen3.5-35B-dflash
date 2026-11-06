@@ -21,17 +21,22 @@ POLICY = 'fp16-static-rhs-layout-v1'
 VARIANTS = ('nd_t', 'nd_n', 'nz_t', 'nz_n', 'zn_t', 'zn_n')
 
 
-def contract(variant):
+def contract(variant, *, legacy=False):
     if variant not in VARIANTS:
         raise ValueError('unknown offline weight variant: '+str(variant))
     layout, transpose = variant.split('_')
     transposed = transpose == 't'
-    return dict(policy=POLICY, variant=variant,
+    result = dict(policy=POLICY, variant=variant,
         storage=dict(nd='ND', nz='FRACTAL_NZ', zn='FRACTAL_ZN')[layout],
         logical_axes=['N', 'K'] if transposed else ['K', 'N'],
         physical_axes=(['N', 'K'] if transposed else ['K', 'N']) if layout == 'nd' else
             (['K1', 'N1', 'N0', 'K0'] if (layout == 'nz') == transposed else ['N1', 'K1', 'K0', 'N0']),
         block=[16, 16], transpose_x2=transposed, arithmetic='NONE_UINT16_PERMUTATION')
+    if layout == 'nz' and not legacy:
+        result.update(policy='fp16-static-rhs-layout-v2',
+                      descriptor='LOGICAL_ND_WITH_STORAGE_SHAPE_AND_FORMAT',
+                      fileconstant_shape='LOGICAL_2D')
+    return result
 
 
 CONTRACT = contract('nz_t')
@@ -197,12 +202,20 @@ def descriptor(schema, shape, *, variant=None):
     logical = list(shape if not c or c['transpose_x2'] else shape[::-1])
     attrs = dict(origin_shape=logical, origin_shape_initialized=True, origin_format='ND', origin_format_for_int=2)
     layout = c['storage'] if c else 'ND'
+    dimensions = carrier_shape(shape, variant) if c else shape
+    if c and c.get('descriptor') == 'LOGICAL_ND_WITH_STORAGE_SHAPE_AND_FORMAT':
+        # The v1 physical rank-four shape was treated as BatchMatMul batches
+        # by the selected HIAI importer. Keep graph algebra rank two. Storage
+        # attributes are a separately versioned import candidate, not proof
+        # that this DDK honors them for FileConstant / MatMul.
+        attrs.update(storage_shape=dimensions, storage_format=NZ_FORMAT)
+        dimensions, layout = logical, 'ND'
     if layout != 'FRACTAL_ZN':
         attrs['format_for_int'] = NZ_FORMAT if layout == 'FRACTAL_NZ' else 2
     # ZN is an explicit string-import experiment. No unverified integer enum
     # is invented or confused with FRACTAL_Z / FRACTAL_ZN_RNN.
     return (_scalar(schema, 'TensorDescriptor', 'dtype', schema.enums[schema.package+'.DataType']['DT_FLOAT16'], 14)
-            + _shape(schema, carrier_shape(shape, variant) if c else shape)
+            + _shape(schema, dimensions)
             + _blob(_field(schema, 'TensorDescriptor', 'layout', 9, False), layout)
             + _blob(_field(schema, 'TensorDescriptor', 'device_type', 9, False), 'NPU')
             + b''.join(_attr(schema, 'TensorDescriptor', k, v) for k, v in attrs.items()))
@@ -233,7 +246,10 @@ def rewrite(raw, schema, plan):
             if name in weights and f == attr_f:
                 key = schema.decode(p, 'OpDef.AttrEntry')['key']
                 if key in ('shape', 'file_path'):
-                    value = row['physical_shape'] if key == 'shape' else row['destination']
+                    dimensions = row['physical_shape']
+                    if selected_contract.get('fileconstant_shape') == 'LOGICAL_2D':
+                        dimensions = row['shape'] if selected_contract['transpose_x2'] else row['shape'][::-1]
+                    value = dimensions if key == 'shape' else row['destination']
                     encoded = _attr(schema, 'OpDef', key, value)
                     for a in updated['attr']:
                         if a['key'] == key:
@@ -270,6 +286,8 @@ def pack_files(root, plan, *, progress=lambda s: None):
     """Bounded row chunks; no full-size in-memory transpose or FP arithmetic."""
     root, records = Path(root), []
     c = contract(plan['contract']['variant'])
+    if plan['contract'] != c:
+        raise ValueError('offline weight inventory uses a different import contract')
     for row in plan['weights']:
         source = _file(root, row['source'])
         if source.stat().st_size != row['bytes']:
