@@ -88,6 +88,12 @@ packed模型的vendor profiling输入适配只生成一个512KiB物理输入，�
 
 2026-11-06用户回传v2矩阵真实编译结果：DDK `100.520.020.010` 下36项全部COMPILED，18次新NZ编译、18个原ND模型复用，失败／跳过均0，baseline_gate通过。source descriptor SHA256仍为`5a1eac27746a7bb5109e819ce6dd7813a3ffcaab04bd0ab2ca3c2cdf1e4084ea`，ModelDef容器；编译前可用27191418880字节，新增合成权重20772864字节，预计十次输出337591040字节。报告在`draft/tests/offline-weights/storage/result.json`。这证明新逻辑／存储声明可编译，尚未证明storage属性被正确使用；device_execution和numerical_validation均NOT_RUN。下一步一次设备验证36项、360份输出，保留零容差和逐字节门槛；没有完整Draft或加速结论。
 
+2026-11-06用户回传v2设备验证：请求`qwen35_vector_6786a27c3f3a4cb2be3567b4875e7e46`已完成执行／回收并释放锁，36个case、native及archive退出码全部0，重复逐位稳定。共360份输出，原atol=rtol=0／逐字节门槛下19项通过、17项失败：nd_t和nd_n各9项通过，nz_t仅head_width通过，nz_n全部失败；整批NUMERICAL_FAILED。NZ导入合同被数值证据拒绝，未构建完整Draft。
+
+NZ唯一通过项为W[248320,16]、transpose_x2=true，K1=1使NZ载体字节等于普通ND。主机将分块文件按普通ND解释后的预测，恰好也只有此项匹配原golden；其余17项均不匹配，模式与回传相同。此时只确认模式一致，尚未取得实际输出与该预测的逐字节匹配，不把“storage属性被忽略”写成已观察的编译内部事实。新增原探针`--analyze`复用现有36项／360份输出进行只读确认，9项主机检查通过；没有新增编译或设备调用。
+
+本轮ND同步API均值（ms，依次mapping、reverse、k2048、k4096、k6144、q_width、kv_o_width、gate_up_width、head_width）：nd_t为0.4560／0.4197／0.3684／0.5730／0.5964／0.7503／0.4822／0.7331／3.5215；nd_n为0.7180／0.4697／0.5197／0.5953／0.5939／0.6811／0.5317／0.8013／3.2172。两方向各有快慢，head_width仍只有K=16，未据此宣称完整head或整图加速。
+
 ## 特征投影入口CPU打包：前缀对照
 
 2026-11-05用户回传：六个前缀case全部执行和回收，锁已释放。三个source case（2／16／17，valid2／16／14）每种实现预热3次、记录10次；30对输出全部逐字节相等，60次调用有限且重复稳定，六组均为NPUCL=1。

@@ -9,7 +9,7 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]/'model'))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'ops/draft-top1/scripts'))
-from qwen35_moe_dflash.draft.incremental.offline_weight_probe import compile_probe, inspect_probe
+from qwen35_moe_dflash.draft.incremental.offline_weight_probe import compile_probe, inspect_probe, analyze_retained
 
 
 def main():
@@ -18,6 +18,8 @@ def main():
     action.add_argument('--output')
     action.add_argument('--inspect', metavar='COMPILED_DIR',
                         help='read retained compiler failures; no DDK, compilation, weight reads or device access')
+    action.add_argument('--analyze', metavar='RESULT_DIR',
+                        help='compare all retained outputs with the packed-as-ND hypothesis; no writes or device access')
     parser.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     parser.add_argument('--ddk-id', default=os.environ.get('CPRO_DDK_ID'))
     parser.add_argument('--torchair-pb2', help='installed literal TorchAir GE descriptor; auto-discovered when unique')
@@ -29,11 +31,13 @@ def main():
     args = parser.parse_args()
     if args.timeout_seconds <= 0:
         parser.error('--timeout-seconds must be positive')
-    if args.inspect and (args.replace_failed or args.torchair_pb2 or args.tbe_diagnosis or args.reuse_nd_from):
-        parser.error('--inspect is read-only; omit build/replacement options')
+    if (args.inspect or args.analyze) and (args.replace_failed or args.torchair_pb2 or args.tbe_diagnosis or args.reuse_nd_from):
+        parser.error('--inspect/--analyze are read-only; omit build/replacement options')
     try:
         if args.inspect:
             result = inspect_probe(args.inspect)
+        elif args.analyze:
+            result = analyze_retained(args.analyze)
         else:
             result = compile_probe(args.output, ddk_root=args.ddk_root, ddk_id=args.ddk_id,
                 torchair_pb2=args.torchair_pb2, tbe_diagnosis=args.tbe_diagnosis,
@@ -51,7 +55,7 @@ def main():
         shown.update(case_count=len(result['cases']), first_failure_by_variant=first,
                      report=str(Path(args.output)/'result.json'))
     print(json.dumps(shown, ensure_ascii=False, allow_nan=False))
-    return int(result['status'] not in ('COMPILED', 'PARTIAL', 'INSPECTED'))
+    return int(result['status'] not in ('COMPILED', 'PARTIAL', 'INSPECTED', 'ANALYZED'))
 
 
 if __name__ == '__main__':

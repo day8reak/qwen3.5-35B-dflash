@@ -67,62 +67,40 @@ df -h "$AI_RUN_DIR"
 
 2026-11-06服务器首次清理在删除前扫描时遇到 `stable-arg-max-ge-tbe/.../.ipc-*/listener-*` 条目而停止。修复后的 `--all-tests` 允许已关闭的Unix socket，读取本地 `/proc/net/unix` 检查是否仍被绑定，并在删除前再次检查；不连接socket，不放宽其它清理模式。新增9项本地回归检查通过，覆盖已关闭／活跃socket、删除前重新绑定、源权重损坏、锁及重复执行。尚无独立清理回执，后续探针报告已记录上述可用空间。
 
-### 布局矩阵：36项编译通过，开始设备逐字节验证
+### 布局矩阵：ND通过，NZ数值失败，复用输出定位读取方式
 
-2026-11-06用户回传：原54项中nd_t、nd_n各九组编译和设备验证通过，180份保留输出在atol=rtol=0下逐字节匹配参考，重复逐位稳定；请求已完成回收并释放锁。NZ／ZN四种表达共36项编译失败、未上板。完整Draft性能基线仍为历史约60ms。
+2026-11-06用户回传v2设备结果：36项均执行、输出已回收、锁已释放，native／archive／所有case退出码为0；全部重复逐位稳定。180份ND输出通过，NZ仅`nz_t/head_width`的10份输出通过，另外170份失败。整批为NUMERICAL_FAILED，不能使用这两种NZ候选改写完整Draft。
 
-最新保留日志已定位每种失败变体的首个mapping用例：
+| 变体 | 逻辑右输入／transpose_x2 | 9组数值结果 | 后续用途 |
+|---|---|---|---|
+| nd_t | W[N,K]／true | 9通过 | ND对照 |
+| nd_n | W.T[K,N]／false | 9通过 | 普通离线转置候选，仍需完整尺寸验证 |
+| nz_t | W[N,K]／true | 1通过、8失败 | 当前导入合同拒绝进入整图 |
+| nz_n | W.T[K,N]／false | 0通过、9失败 | 当前导入合同拒绝进入整图 |
 
-| 表达 | 实际拒绝位置 | 结论范围 |
-|---|---|---|
-| 原nz_t／nz_n | MatMul变成BatchMatMul；输入[95,80]对右输入[5,3,16,16]／[3,5,16,16]，推导比较K=80与16而失败 | 物理四维尺寸被用于逻辑矩阵推导；尚不能判断NZ载体是否受支持 |
-| zn_t／zn_n | `Format not support FRACTAL_ZN`，随后BatchMatMul输入数量校验失败 | 此HIAI导入路径拒绝该字面格式名；不否定mmad的L0B ZN约定 |
+36项的编译由18次NZ新编译＋18个ND模型复用组成，DDK为`100.520.020.010`。新NZ描述使用二维ND逻辑shape、四维storage_shape及storage_format=29，已可编译，但设备结果不满足原数学合同。更早的四维逻辑shape表达在BatchMatMul推导中以K=80对16失败；字面FRACTAL_ZN被HIAI导入层拒绝。这些结果不否定mmad的L0B ZN约定。
 
-修正候选保持右矩阵的逻辑shape为二维ND，FileConstant.shape、输出描述和MatMul右输入描述一致；`storage_shape`单独声明四维分块，`storage_format=29`声明NZ。NZ合同升级为`fp16-static-rhs-layout-v2`，原权重字节置换不变。所选DDK是否尊重这些storage属性仍待实测，不能只凭编译通过认定成功；若被忽略，现有basis行的逐字节比较能检出误读。停止重复提交被拒绝的字面FRACTAL_ZN。ND的合同和AIR字节保持不变，旧设备结果仍可用于nd_n整图编译门槛。
+唯一通过的NZ用例是N=248320、K=16的`nz_t/head_width`：其分块顺序[K1,N1,N0,K0]中K1=1，文件字节与原普通ND完全相同，因此该例不能证明storage属性生效。本地主机将18个NZ载体模拟为普通ND读取、保持各自transpose标志，得到与回传完全一致的通过／失败分布：恰好只有这一例通过。这是支持“storage属性未生效”的线索；尚未读取服务器实际输出逐字节确认，也不能定位具体编译pass或内部kernel布局。
 
-| 当前候选 | 逻辑右输入 | transpose_x2 | 文件中的物理顺序 | 已有证据 |
-|---|---|---|---|---|
-| nd_t | W[N,K] | true | [N,K] | 九组设备逐字节通过，复用模型 |
-| nd_n | W.T[K,N] | false | [K,N] | 九组设备逐字节通过，复用模型 |
-| nz_t（新描述） | W[N,K] | true | [K1,N1,N0,K0] | 九组DDK编译通过，设备数值待验 |
-| nz_n（新描述） | W.T[K,N] | false | [N1,K1,K0,N0] | 九组DDK编译通过，设备数值待验 |
-
-全部验证同一个`X @ W.T`。九组W shape／M保持不变：`48×80 / 95`、`80×48 / 1`、`48×2048 / 15`、`48×4096 / 16`、`48×6144 / 32`、`4096×32 / 15`、`2048×48 / 16`、`12288×32 / 32`、`248320×16 / 15`。覆盖边界脉冲、稠密有符号点积、basis rows和零行。大K和大N分轴覆盖，尚不包含真实head的N=248320、K=2048完整组合。
-
-2026-11-06最新回传：DDK `100.520.020.010` 下v2矩阵全部36项COMPILED，`compilation_calls=18`、`reused_cases=18`、无失败或跳过。新NZ的逻辑／存储描述已越过此前的编译失败，尚不能证明编译器正确使用了分块字节。18个ND模型经核验后直接引用原compiled目录，没有复制或重新编译。
-
-下一步复用现有runtime，一次验证全部36项：每项预热3次、测量10次，共比较360份输出，atol=rtol=0且要求逐字节一致、重复逐位稳定。保留旧compiled／run／result及新storage；本次用固定storage-run／storage-result，避免覆盖已通过的ND设备证据。十次输出总量337591040字节（约338MB），另有上传包和回收归档；启动入口检查板端空间。此步不编译模型，也不构建完整Draft。
+下一步只分析已回收的storage-result，不编译、不上板、不创建新的探针／输出目录。原工具新增`--analyze`：先沿用原比较器复核请求／fixture与全部360份输出，再重建合成权重、普通ND误读预测，逐份比较18项NZ的10次输出；mapping的80个单位基行单独报告，可以直接观察有效右矩阵。
 
 ```bash
 (
 set -eu
 cd "${REPO_DIR:?}"
 git pull --ff-only origin main
-source targets/cpro/scripts/env.sh
-python3 targets/cpro/tools/validate_draft_vector.py \
-  --compiled "$AI_RUN_DIR/draft/tests/offline-weights/storage" \
-  --ddk-root "${CPRO_DDK_ROOT:?}" \
-  --config "${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
-  --output "$AI_RUN_DIR/draft/tests/offline-weights/storage-run" --apply
-python3 targets/cpro/tools/validate_draft_vector.py \
-  --recover "$AI_RUN_DIR/draft/tests/offline-weights/storage-run" \
-  --output "$AI_RUN_DIR/draft/tests/offline-weights/storage-result"
+python3 targets/cpro/tools/probe_draft_offline_weights.py \
+  --analyze "$AI_RUN_DIR/draft/tests/offline-weights/storage-result"
 )
 ```
 
-启动返回VECTOR_VALIDATION_STARTED后进入回收。如果回收返回PENDING，稍后只重复下面的回收命令，不重新执行启动：
+若返回`diagnosis=PACKED_AS_ND_SIGNATURE_MATCHED`，表示17个可区分用例及退化特例的全部输出都与“分块字节按ND读取”预测相同，同时ND对照通过；保留原numerical_validation=FAILED。它只确立输出特征，不声称观察到内部编译行为。若未匹配，报告逐次差异，不自动尝试其它布局。
 
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$AI_RUN_DIR/draft/tests/offline-weights/storage-run" \
-  --output "$AI_RUN_DIR/draft/tests/offline-weights/storage-result"
-```
+新增9项主机检查通过：独立标量分块／点积、36项模拟输出及360次比较、K=16退化识别、第10次输出变化、原数学结果负例、case／合同／容差／覆盖检查、原请求与fixture哈希检查、ND对照门槛、全目录只读。模拟输出明确标为host-fake，未执行DDK或设备；服务器的读取特征仍待以上命令回传。
 
-通过条件是实际执行36项、数值PASSED、重复逐位稳定，并且passing_variants包括nd_t、nd_n、nz_t、nz_n。若有失败，保留逐项失败和输出，不放宽门槛。原54项失败矩阵仍可用`--inspect "$AI_RUN_DIR/draft/tests/offline-weights/compiled"`读取。此前11项主机检查已通过；本次编译证据来自用户服务器回传，本地未运行DDK或设备。小探针计时不作为整图加速依据。
+九组W shape／M不变：`48×80 / 95`、`80×48 / 1`、`48×2048 / 15`、`48×4096 / 16`、`48×6144 / 32`、`4096×32 / 15`、`2048×48 / 16`、`12288×32 / 32`、`248320×16 / 15`。大K与大N分轴覆盖，尚不包含真实head的N=248320、K=2048完整组合。
 
-nd_n是已有设备证据的全尺寸候选：完整编译额外加`--offline-weights nd_n --offline-weight-canary "$AI_RUN_DIR/draft/tests/offline-weights/result"`，会重比原始设备输出，对31个静态MatMul统一离线转置并验证逆转换SHA256，增加1642MiB载体。NZ新合同只有经过新设备验证后才能进入同一整图入口。Conv、归一化向量和host embedding继续使用原接口。
-
-旧tests清理后，从`draft/source/prepared`重建packed-spatial-host-embedding／StableArgMax AIR；整图对照两边都加`--rope-fp32-table --cpu-feature-pack`，候选才额外开启离线权重。历史60ms不能代替同批重建基线，小探针API均值不能用于推算完整Draft收益。
+nd_n仍可作为31个静态MatMul的统一离线转置候选，额外1642MiB载体，完整编译门槛使用已通过的ND设备结果；未运行完整Draft数值或性能对照。Conv、归一化向量和host embedding继续使用原接口。完整对照须从保留的prepared权重重建，双方同加`--rope-fp32-table --cpu-feature-pack`，候选才增加离线权重。约60ms仍是历史性能基线，小探针均值不代表整图收益。
 
 ### 离线权重布局的收益判断
 

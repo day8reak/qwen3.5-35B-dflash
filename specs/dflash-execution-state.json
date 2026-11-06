@@ -8574,7 +8574,7 @@
               }
             },
             "offline_weight_implementation": {
-              "status": "NZ_LOGICAL_STORAGE_COMPILED_DEVICE_VALIDATION_NEXT",
+              "status": "ND_DEVICE_VALIDATED_NZ_NUMERICALLY_REJECTED_INTERPRETATION_PENDING",
               "policy": "static-rhs-import-matrix-v2",
               "user_direction": "EXHAUSTIVE_LAYOUT_TRANSPOSE_PARAMETERS_BEFORE_FULL_MODEL",
               "variants": [
@@ -8593,12 +8593,12 @@
               "local_host_checks": 14,
               "compiler_and_device_calls_in_host_checks": "MOCKED_NOT_HARDWARE_EVIDENCE",
               "model_compilation": "PASSED",
-              "device_execution": "NOT_RUN",
-              "numerical_validation": "NOT_RUN",
+              "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+              "numerical_validation": "FAILED",
               "speedup": "NOT_MEASURED",
               "production_promotion": "NOT_PERFORMED",
               "commands": "docs/current-status.md",
-              "next": "EXECUTE_ALL_36_COMPILED_CASES; COMPARE_360_OUTPUTS_EXACT_BYTES_AND_REPEAT_STABILITY",
+              "next": "READ_ONLY_COMPARE_RETAINED_OUTPUTS_TO_PACKED_AS_ND_PREDICTION; NO_RECOMPILE_OR_RELAUNCH",
               "initial_server_attempt": {
                 "source": "USER_RETURNED_REPORT",
                 "ddk_id": "100.520.020.010",
@@ -8622,8 +8622,170 @@
                 "selected_ddk_retry": "EXECUTED;18_ND_CASES_COMPILED_AND_VALIDATED",
                 "device_execution": "EXECUTED_OUTPUTS_RETRIEVED"
               },
-              "numerical_scope": "NEW_36_CASE_SUITE_PENDING; PRIOR_18_ND_RESULTS_RETAINED",
+              "numerical_scope": "36_CASES;19_PASSED_17_FAILED;ND_VARIANTS_PASSED_NZ_VARIANTS_REJECTED",
               "last_device_validation": {
+                "source": "USER_RETURNED_VECTOR_VALIDATION",
+                "artifact_kind": "qwen35-draft-vector-validation",
+                "status": "NUMERICAL_FAILED",
+                "ddk_id": "100.520.020.010",
+                "board_attempt": "/data/local/tmp/qwen35_vector_6786a27c3f3a4cb2be3567b4875e7e46",
+                "recovery_source": "/home/w00949577/qwen3.5-35B-dflash-run/draft/tests/offline-weights/storage-run",
+                "validated_cases": 36,
+                "retained_compared_calls": 360,
+                "warmup": 3,
+                "repetitions": 10,
+                "atol": 0.0,
+                "rtol": 0.0,
+                "exact_bytes_required": true,
+                "repeat_bitwise_stable": true,
+                "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+                "native_exitcode": 0,
+                "archive_exitcode": 0,
+                "all_case_exitcodes": 0,
+                "lock_state": "NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION",
+                "numerical_validation": "FAILED",
+                "passed_cases": 19,
+                "failed_cases": 17,
+                "passing_variants": [
+                  "nd_t",
+                  "nd_n"
+                ],
+                "nz_passed_cases": [
+                  "offline_weight_head_width_nz_t"
+                ],
+                "nz_failed_cases": 17,
+                "mean_api_ms": {
+                  "nd_t": {
+                    "mapping": 0.456,
+                    "reverse": 0.4197,
+                    "k2048": 0.3684,
+                    "k4096": 0.573,
+                    "k6144": 0.5964,
+                    "q_width": 0.7503,
+                    "kv_o_width": 0.4822,
+                    "gate_up_width": 0.7331,
+                    "head_width": 3.5215
+                  },
+                  "nd_n": {
+                    "mapping": 0.718,
+                    "reverse": 0.4697,
+                    "k2048": 0.5197,
+                    "k4096": 0.5953,
+                    "k6144": 0.5939,
+                    "q_width": 0.6811,
+                    "kv_o_width": 0.5317,
+                    "gate_up_width": 0.8013,
+                    "head_width": 3.2172
+                  },
+                  "nz_t": {
+                    "mapping": 0.5119,
+                    "reverse": 0.6542,
+                    "k2048": 0.6472,
+                    "k4096": 0.4113,
+                    "k6144": 0.6264,
+                    "q_width": 0.5977,
+                    "kv_o_width": 0.4549,
+                    "gate_up_width": 0.766,
+                    "head_width": 3.4905
+                  },
+                  "nz_n": {
+                    "mapping": 0.4931,
+                    "reverse": 0.5725,
+                    "k2048": 0.4449,
+                    "k4096": 0.4385,
+                    "k6144": 0.5882,
+                    "q_width": 0.6033,
+                    "kv_o_width": 0.5856,
+                    "gate_up_width": 0.6991,
+                    "head_width": 3.3476
+                  }
+                },
+                "full_shape_validation": "NOT_RUN",
+                "full_draft_validation": "NOT_RUN",
+                "speedup": "NOT_ESTABLISHED",
+                "scope": "FP16_RHS_LAYOUT_TRANSPOSE_MATRIX_AXES_COVERAGE; NOT_FULL_SHAPE_OR_SPEEDUP"
+              },
+              "usable_candidate": {
+                "variant": "nd_n",
+                "storage": "ND",
+                "logical_shape": [
+                  "K",
+                  "N"
+                ],
+                "transpose_x1": false,
+                "transpose_x2": false,
+                "full_draft_static_matmuls": 31,
+                "full_draft_validation": "NOT_RUN",
+                "speedup": "NOT_ESTABLISHED"
+              },
+              "retained_log_inspection": {
+                "option": "--inspect",
+                "host_checks": 6,
+                "evidence": "20261106T021920Z-24234-646141/offline-weight-inspection-host-checks.json",
+                "server_execution": "INSPECTED_USER_RETURNED"
+              },
+              "reused_compile_cases": 18,
+              "previous_suite_cases": 54,
+              "import_failure_diagnosis": {
+                "source": "USER_RETURNED_RETAINED_COMPILER_LOGS",
+                "scope": "FIRST_MAPPING_CASE_PER_FAILED_VARIANT",
+                "nz": "PHYSICAL_4D_RHS_USED_AS_BATCHMATMUL_LOGICAL_DIMS; K80_VS16",
+                "zn": "FRACTAL_ZN_STRING_REJECTED; SUBSEQUENT_INPUT_COUNT_VERIFY_FAILURE",
+                "hardware_layout_support": "NOT_DETERMINED"
+              },
+              "logical_storage_candidate": {
+                "policy": "fp16-static-rhs-layout-v2",
+                "shape": "LOGICAL_2D_ND_ON_FILECONSTANT_AND_MATMUL",
+                "storage_shape": "PHYSICAL_4D",
+                "storage_format": 29,
+                "variant_flags": {
+                  "nz_t": true,
+                  "nz_n": false
+                },
+                "host_checks": 11,
+                "host_evidence": "20261106T023451Z-24651-a88302/host-checks.json",
+                "model_compilation": "PASSED_USER_RETURNED",
+                "device_execution": "EXECUTED_OUTPUTS_RETRIEVED",
+                "nd_reuse": "VERIFY_RECIPE_AND_HASHES_THEN_REFERENCE_NO_COPY_NO_RECOMPILE",
+                "legacy_nd_canary": "REMAINS_VALID; LEGACY_NZ_CANNOT_PASS_NEW_CONTRACT",
+                "output": "draft/tests/offline-weights/storage",
+                "numerical_validation": "FAILED",
+                "decision": "REJECTED_FOR_FULL_DRAFT",
+                "nz_passed_cases": 1,
+                "nz_failed_cases": 17
+              },
+              "latest_compile": {
+                "source": "USER_RETURNED_COMPILATION_REPORT",
+                "artifact_kind": "qwen35-draft-offline-weight-import",
+                "status": "COMPILED",
+                "ddk_id": "100.520.020.010",
+                "suite_policy": "static-rhs-import-matrix-v2",
+                "case_count": 36,
+                "compilation_calls": 18,
+                "reused_cases": 18,
+                "failed_cases": 0,
+                "skipped_cases": 0,
+                "baseline_gate": "PASSED",
+                "air_container": "ModelDef",
+                "source_schema_sha256": "5a1eac27746a7bb5109e819ce6dd7813a3ffcaab04bd0ab2ca3c2cdf1e4084ea",
+                "report": "/home/w00949577/qwen3.5-35B-dflash-run/draft/tests/offline-weights/storage/result.json",
+                "available_free_bytes_before_compile": 27191418880,
+                "required_free_bytes": 1911905792,
+                "synthetic_weight_bytes": 20772864,
+                "ten_repeat_output_bytes": 337591040,
+                "device_execution": "NOT_RUN",
+                "numerical_validation": "NOT_RUN",
+                "scope": "COMPILE_ACCEPTANCE_ONLY; STORAGE_INTERPRETATION_NOT_YET_VERIFIED"
+              },
+              "next_validation": {
+                "action": "READ_ONLY_RETAINED_OUTPUT_INTERPRETATION",
+                "entry": "probe_draft_offline_weights.py --analyze",
+                "result": "draft/tests/offline-weights/storage-result",
+                "model_compilation": "NOT_RUN",
+                "device_execution": "NOT_RUN",
+                "output_writes": "NONE"
+              },
+              "prior_nd_device_validation": {
                 "source": "USER_RETURNED_VECTOR_VALIDATION",
                 "artifact_kind": "qwen35-draft-vector-validation",
                 "status": "PASSED",
@@ -8683,89 +8845,18 @@
                 "speedup": "NOT_ESTABLISHED",
                 "scope": "FP16_RHS_LAYOUT_TRANSPOSE_MATRIX_AXES_COVERAGE; NOT_FULL_SHAPE_OR_SPEEDUP"
               },
-              "usable_candidate": {
-                "variant": "nd_n",
-                "storage": "ND",
-                "logical_shape": [
-                  "K",
-                  "N"
+              "interpretation_hypothesis": {
+                "hypothesis": "PACKED_WEIGHT_BYTES_READ_AS_ORDINARY_ND_WITH_DECLARED_TRANSPOSE",
+                "host_predicted_original_golden_matches": [
+                  "offline_weight_head_width_nz_t"
                 ],
-                "transpose_x1": false,
-                "transpose_x2": false,
-                "full_draft_static_matmuls": 31,
-                "full_draft_validation": "NOT_RUN",
-                "speedup": "NOT_ESTABLISHED"
-              },
-              "retained_log_inspection": {
-                "option": "--inspect",
-                "host_checks": 6,
-                "evidence": "20261106T021920Z-24234-646141/offline-weight-inspection-host-checks.json",
-                "server_execution": "INSPECTED_USER_RETURNED"
-              },
-              "reused_compile_cases": 18,
-              "previous_suite_cases": 54,
-              "import_failure_diagnosis": {
-                "source": "USER_RETURNED_RETAINED_COMPILER_LOGS",
-                "scope": "FIRST_MAPPING_CASE_PER_FAILED_VARIANT",
-                "nz": "PHYSICAL_4D_RHS_USED_AS_BATCHMATMUL_LOGICAL_DIMS; K80_VS16",
-                "zn": "FRACTAL_ZN_STRING_REJECTED; SUBSEQUENT_INPUT_COUNT_VERIFY_FAILURE",
-                "hardware_layout_support": "NOT_DETERMINED"
-              },
-              "logical_storage_candidate": {
-                "policy": "fp16-static-rhs-layout-v2",
-                "shape": "LOGICAL_2D_ND_ON_FILECONSTANT_AND_MATMUL",
-                "storage_shape": "PHYSICAL_4D",
-                "storage_format": 29,
-                "variant_flags": {
-                  "nz_t": true,
-                  "nz_n": false
-                },
-                "host_checks": 11,
-                "host_evidence": "20261106T023451Z-24651-a88302/host-checks.json",
-                "model_compilation": "PASSED_USER_RETURNED",
-                "device_execution": "NOT_RUN",
-                "nd_reuse": "VERIFY_RECIPE_AND_HASHES_THEN_REFERENCE_NO_COPY_NO_RECOMPILE",
-                "legacy_nd_canary": "REMAINS_VALID; LEGACY_NZ_CANNOT_PASS_NEW_CONTRACT",
-                "output": "draft/tests/offline-weights/storage",
-                "numerical_validation": "NOT_RUN"
-              },
-              "latest_compile": {
-                "source": "USER_RETURNED_COMPILATION_REPORT",
-                "artifact_kind": "qwen35-draft-offline-weight-import",
-                "status": "COMPILED",
-                "ddk_id": "100.520.020.010",
-                "suite_policy": "static-rhs-import-matrix-v2",
-                "case_count": 36,
-                "compilation_calls": 18,
-                "reused_cases": 18,
-                "failed_cases": 0,
-                "skipped_cases": 0,
-                "baseline_gate": "PASSED",
-                "air_container": "ModelDef",
-                "source_schema_sha256": "5a1eac27746a7bb5109e819ce6dd7813a3ffcaab04bd0ab2ca3c2cdf1e4084ea",
-                "report": "/home/w00949577/qwen3.5-35B-dflash-run/draft/tests/offline-weights/storage/result.json",
-                "available_free_bytes_before_compile": 27191418880,
-                "required_free_bytes": 1911905792,
-                "synthetic_weight_bytes": 20772864,
-                "ten_repeat_output_bytes": 337591040,
-                "device_execution": "NOT_RUN",
-                "numerical_validation": "NOT_RUN",
-                "scope": "COMPILE_ACCEPTANCE_ONLY; STORAGE_INTERPRETATION_NOT_YET_VERIFIED"
-              },
-              "next_validation": {
-                "compiled": "draft/tests/offline-weights/storage",
-                "execution": "draft/tests/offline-weights/storage-run",
-                "result": "draft/tests/offline-weights/storage-result",
-                "cases": 36,
-                "warmup": 3,
-                "repetitions": 10,
-                "compared_outputs": 360,
-                "atol": 0.0,
-                "rtol": 0.0,
-                "exact_bytes": true,
-                "repeat_bitwise_stable_required": true,
-                "model_compilation": "NOT_NEEDED",
-                "full_draft_validation": "NOT_RUN"
+                "host_predicted_failure_cases": 17,
+                "observed_pass_fail_pattern": "MATCHES_PREDICTION",
+                "observed_bytes_match_prediction": "NOT_YET_COMPARED",
+                "degenerate_case": "NZ_T_HEAD_WIDTH_K16_CARRIER_BYTES_EQUAL_ND",
+                "host_checks": 9,
+                "host_evidence": "20261106T034153Z-25716-247b30/host-checks.json",
+                "scope": "NUMERICAL_SIGNATURE_NOT_COMPILER_PASS_OR_KERNEL_LAYOUT_PROOF"
               }
             }
           },

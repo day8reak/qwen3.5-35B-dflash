@@ -440,3 +440,110 @@ def check_device_canary(directory, ddk_id, variant='nz_t'):
                 validation_sha256=sha256_file(directory/'result.json'),
                 fixture_sha256=sha256_file(execution/'fixture/manifest.json'),
                 scope=SCOPE)
+
+
+def _packed_as_nd(w, x, variant):
+    """Predict ignoring storage metadata while retaining the transpose flag."""
+    c = ow.contract(variant)
+    if variant not in ('nz_t', 'nz_n'):
+        raise ValueError('packed-as-ND diagnosis requires an NZ candidate')
+    logical = w if c['transpose_x2'] else w.T
+    packed = ow.carrier_words(w.view('<u2'), variant)
+    rhs = packed.view('<f2').reshape(logical.shape)
+    effective = rhs.T if c['transpose_x2'] else rhs
+    prediction = (x.astype(np.float32) @ effective.astype(np.float32)).astype('<f2')
+    return prediction, packed.tobytes() == np.ascontiguousarray(logical).tobytes()
+
+
+def analyze_retained(directory):
+    """Compare a misinterpretation hypothesis with every retained device call.
+
+    No model execution, compilation, DDK loading, or learned-weight access.
+    A numerical signature cannot establish the responsible compiler pass or
+    the physical layout used by the eventual device kernel.
+    """
+    from validate_draft_vector import analyze, REPETITIONS
+    from qwen35_moe_dflash.execution.runtime_config import read_json
+    directory = Path(directory).resolve()
+    saved = read_json(directory/'result.json')
+    execution = Path(saved['recovery_source'])
+    fixture_root = execution/'fixture'
+    meta = read_json(fixture_root/'manifest.json')
+    source = meta.get('source_evidence', {})
+    expected = _suite_cases(json.loads(json.dumps(SUITE)))
+    if (saved.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED'
+            or source.get('artifact_kind') != KIND or source.get('suite') != json.loads(json.dumps(SUITE))
+            or meta.get('scope') != SCOPE or meta.get('exact_bytes') is not True
+            or meta.get('atol') != 0 or meta.get('rtol') != 0
+            or saved.get('validated_cases') != expected
+            or [c['case'] for c in meta['cases']] != expected
+            or [c['case'] for c in source['cases']] != expected):
+        raise ValueError('analysis requires all 36 recovered v2 layout cases with the original exact-byte gate')
+    attempts = {c['case']: c for c in source['cases']}
+    # Existing analyzer binds the fixture to the request and verifies original
+    # input/golden hashes, native completion records, and all ten snapshots.
+    comparison = analyze(directory)
+    observed = {c['case']: c for c in comparison['cases']}
+    rows = []
+    for scenario in SCENARIOS:
+        w, x, y = fixture(scenario)
+        for variant in SUITE['variants']:
+            name = f'offline_weight_{scenario}_{variant}'
+            case = next(c for c in meta['cases'] if c['case'] == name)
+            attempt = attempts[name]
+            if (case.get('scenario') != scenario or case.get('variant') != variant
+                    or attempt.get('scenario') != scenario or attempt.get('variant') != variant
+                    or attempt.get('contract') != ow.contract(variant)
+                    or attempt.get('status') != 'COMPILED' or attempt.get('model_compilation') != 'PASSED'):
+                raise ValueError('retained layout case identity or contract differs')
+            for direction, stem, array in (('inputs', 'input', x), ('outputs', 'golden', y)):
+                specs = case[direction]
+                if (len(specs) != 1 or specs[0]['index'] != 0 or specs[0]['dtype'] != 'float16'
+                        or specs[0]['shape'] != list(array.shape) or specs[0]['bytes'] != array.nbytes
+                        or (fixture_root/name/f'{stem}_0.bin').read_bytes() != array.tobytes()):
+                    raise ValueError('retained fixture differs from the deterministic layout recipe')
+            if variant not in ('nz_t', 'nz_n'):
+                continue
+            prediction, carrier_identity = _packed_as_nd(w, x, variant)
+            predicted_bytes, reference_bytes = prediction.tobytes(), y.tobytes()
+            matches, basis_matches = [], []
+            basis_bytes = w.shape[1]*w.shape[0]*2 if scenario == 'mapping' else 0
+            for iteration in range(REPETITIONS):
+                actual = (directory/'native'/name/f'{iteration}.bin').read_bytes()
+                if len(actual) != len(predicted_bytes):
+                    raise ValueError('retained output byte extent differs')
+                matches.append(actual == predicted_bytes)
+                if basis_bytes:
+                    basis_matches.append(actual[:basis_bytes] == predicted_bytes[:basis_bytes])
+            distinguishable = predicted_bytes != reference_bytes
+            row = dict(case=name, scenario=scenario, variant=variant,
+                original_numerical='PASSED' if observed[name]['passed'] else 'FAILED',
+                repeat_bitwise_stable=observed[name]['repeat_bitwise_stable'],
+                carrier_equals_logical_nd=carrier_identity,
+                predictions_distinguishable=distinguishable,
+                all_calls_match_packed_as_nd=all(matches), calls_match_packed_as_nd=matches,
+                identity_basis_rows=w.shape[1] if basis_bytes else 0,
+                basis_calls_match_packed_as_nd=basis_matches,
+                prediction_sha256=hashlib.sha256(predicted_bytes).hexdigest())
+            rows.append(row)
+    discriminating = [r for r in rows if r['predictions_distinguishable']]
+    controls = comparison['offline_weight_layouts']['passing_variants']
+    matched = (all(v in controls for v in ('nd_t', 'nd_n')) and len(discriminating) == 17
+               and comparison['repeat_bitwise_stable']
+               and all(r['all_calls_match_packed_as_nd'] for r in rows))
+    return dict(artifact_kind=KIND+'-interpretation', status='ANALYZED',
+        source_result=str(directory/'result.json'),
+        numerical_validation=comparison['numerical_validation'],
+        passed_cases=sum(c['passed'] for c in comparison['cases']),
+        failed_cases=sum(not c['passed'] for c in comparison['cases']),
+        compared_calls=len(comparison['cases'])*REPETITIONS, passing_variants=controls,
+        repeat_bitwise_stable=comparison['repeat_bitwise_stable'],
+        hypothesis='PACKED_WEIGHT_BYTES_READ_AS_ORDINARY_ND_WITH_DECLARED_TRANSPOSE',
+        diagnosis='PACKED_AS_ND_SIGNATURE_MATCHED' if matched else 'PACKED_AS_ND_SIGNATURE_NOT_ESTABLISHED',
+        discriminating_nz_cases=len(discriminating),
+        matching_discriminating_nz_cases=sum(r['all_calls_match_packed_as_nd'] for r in discriminating),
+        nz_interpretations=rows, model_compilation='NOT_RUN', device_execution='NOT_RUN',
+        output_writes='NONE', weight_payloads='SYNTHETIC_REGENERATED; LEARNED_WEIGHTS_NOT_READ',
+        scope='RETAINED_OUTPUT_NUMERICAL_SIGNATURE; NOT_COMPILER_PASS_OR_KERNEL_LAYOUT_PROOF',
+        next=('Reject the tested NZ import contract; retain ND candidates for full-shape validation.'
+              if matched else 'Inspect the mismatched retained outputs before changing the layout contract.'))
