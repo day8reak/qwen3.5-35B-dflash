@@ -45,18 +45,39 @@ def _plain(path, *, directory=False):
         raise ValueError(f'expected {"directory" if directory else "file"}: {path}')
 
 
-def _tree_bytes(root):
-    """Count allocated bytes once per inode, without following scratch links."""
+def _tree_bytes(root, *, allow_inactive_sockets=False):
+    """Count allocated file bytes, without following scratch links.
+
+    Explicit retirement of a whole test tree may include closed compiler IPC
+    sockets. Inspect kernel registrations passively; never connect to them.
+    Callers still check process ownership and hold writer locks.
+    """
     _plain(root, directory=True)
     if root.is_mount():
         raise ValueError(f'scratch root is a mount; retained: {root}')
     device, seen, size = root.stat().st_dev, set(), 0
+    active_sockets = None
     for base, dirs, files in os.walk(root, followlinks=False):
         for name in dirs+files:
             path = Path(base)/name
             info = path.lstat()
             if stat.S_ISLNK(info.st_mode):
                 continue  # rmtree unlinks this entry; never follows its target.
+            if (allow_inactive_sockets and stat.S_ISSOCK(info.st_mode)
+                    and info.st_dev == device and not path.is_mount()):
+                if active_sockets is None:
+                    active_sockets = []
+                    for line in Path('/proc/net/unix').read_text().splitlines()[1:]:
+                        fields = line.split(maxsplit=7)
+                        if len(fields) == 8 and not fields[7].startswith('@'):
+                            active_sockets.append(Path(fields[7]))
+                # A relative bind address has no recorded cwd. Conservatively
+                # retain a matching suffix rather than treating it as closed.
+                if any((address == path if address.is_absolute() else
+                        path.parts[-len(address.parts):] == address.parts)
+                       for address in active_sockets):
+                    raise ValueError(f'active Unix socket; retained: {path}')
+                continue  # Socket nodes contain no model payload bytes.
             if (info.st_dev != device or path.is_mount() or
                     not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))):
                 raise ValueError(f'unexpected scratch entry; retained: {path}')

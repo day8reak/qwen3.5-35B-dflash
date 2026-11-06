@@ -325,3 +325,5 @@ C++端侧重排仅复制原始字节；基线和候选均每次SetInput。预分
 逐次排障和旧测量保留于[整理前记录](https://github.com/day8reak/qwen3.5-35B-dflash/blob/e1b00b5/docs/results.md)；机器状态见[执行状态](../specs/dflash-execution-state.json)。
 
 2026-11-06后续用户将磁盘清理范围扩大到全部 `draft/tests`，明确允许删除60ms基线及历史结果。新 `clean_draft_probes.py --all-tests --apply` 先核验测试目录外的原始prepared FP16权重，再清空测试内容；本地9项清理检查通过，服务器执行及释放空间尚未回传。历史性能记录不等于仍持有可重放产物；旧输入删除后需要重新生成输入，不能直接运行旧replay命令。
+
+随后服务器回传：扫描到 `stable-arg-max-ge-tbe/omc/compile-work/generated/.ipc-17rier2_/listener-ng8cwplo` 时以unexpected scratch entry退出，尚未开始删除。仅对 `--all-tests` 增加未注册Unix socket支持，删除前复查本地内核socket表，活跃socket仍保留。9项本地回归检查通过，服务器重试和释放空间待回传。用户同时确认CPro CCE mmad的L0A/L0B/L0C格式为ZZ/ZN/NZ；离线权重路线继续检查外部导入、搬运以及现有预打包，而非重新猜测指令格式。

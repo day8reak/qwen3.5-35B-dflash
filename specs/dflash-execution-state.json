@@ -8442,9 +8442,16 @@
               "user_authorization": "EXPLICIT_DELETE_ALL_TESTS_KEEP_WEIGHTS_AND_CODE",
               "retained": "VERIFIED_PREPARED_FP16_SOURCE_OUTSIDE_TESTS; CODE; OTHER_RUN_ZONES",
               "server_free_space": "USER_REPORTED_3.4G",
-              "server_cleanup": "NOT_OBSERVED",
+              "server_cleanup": "USER_REPORTED_FAILED_BEFORE_DELETION; FIXED_RETRY_NOT_OBSERVED",
               "host_checks": 9,
-              "host_evidence": "20261106T004209Z-19234-fec5a6/all-tests-cleanup-host-checks.json"
+              "host_evidence": "20261106T004209Z-19234-fec5a6/all-tests-cleanup-host-checks.json",
+              "socket_cleanup_fix": {
+                "status": "HOST_VALIDATED",
+                "error": "unexpected scratch entry: compiler IPC listener",
+                "policy": "ALL_TESTS_ONLY_ALLOW_INACTIVE_UNIX_SOCKETS; PASSIVE_PROC_NET_UNIX_CHECK_BEFORE_DELETION",
+                "host_checks": 9,
+                "host_evidence": "20261106T011621Z-21541-090a31/socket-cleanup-checks.json"
+              }
             },
             "all_weight_layout_audit": {
               "status": "SOURCE_INVENTORY_AND_INDEX_MAPPING_CHECKED; X90_IMPORT_PENDING",
@@ -8557,7 +8564,14 @@
               ],
               "model_compilation": "NOT_RUN",
               "device_execution": "NOT_RUN",
-              "speedup": "NOT_MEASURED"
+              "speedup": "NOT_MEASURED",
+              "instruction_layout": {
+                "source": "USER_CONFIRMED_CPRO_CCE_MMAD_CONTRACT",
+                "A_L0A": "FRACTAL_ZZ",
+                "B_L0B": "FRACTAL_ZN",
+                "C_L0C": "FRACTAL_NZ",
+                "limitation": "External FileConstant import, GM transfer and existing compiler prepacking remain unverified"
+              }
             }
           },
           "hidden_prefix_probe": {

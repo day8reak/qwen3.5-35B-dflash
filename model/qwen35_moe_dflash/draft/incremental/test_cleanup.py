@@ -82,7 +82,7 @@ def clean_all_tests(root, *, source=None, apply=False):
             lock = stack.enter_context(os.fdopen(fd, 'a'))
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         original = _verify_source(root, tests, source)
-        allocated = _tree_bytes(tests)
+        allocated = _tree_bytes(tests, allow_inactive_sockets=True)
         selected = []
         for path in sorted(tests.iterdir()):
             info = path.lstat()
@@ -91,6 +91,9 @@ def clean_all_tests(root, *, source=None, apply=False):
         removed = []
         if apply:
             require_idle(tests)
+            # Recheck socket registrations after source verification/inventory,
+            # before deleting any entry. A closed pathname may be rebound.
+            _tree_bytes(tests, allow_inactive_sockets=True)
             for row in selected:
                 path = tests/row['name']
                 info = path.lstat()

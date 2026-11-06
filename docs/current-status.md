@@ -43,11 +43,11 @@
 
 用户明确的Zn表示“大块行优先、小块列优先”，符合[华为分形格式说明](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/programug/Ascendcopdevg/docs/en/guide/technical_appendix/concepts_and_terms/neural_networks_and_operators/data_layout_format.md)。对逻辑右矩阵 `B=W.T`，匹配的16×16分块下，`Zn(B[K,N])` 与 `Nz(W[N,K])` 都按 `[K1,N1,N0,K0]` 存放，逐字相同；本地4组索引检查通过。这是分块数学关系，不是X90外部导入能力证明，不能直接修改格式标签或把普通ND转置当作Zn打包。
 
-当前先核对所选DDK 100.520.020.010的FP16 FileConstant导入、逻辑／物理shape、padding、transpose语义及消费内核。公开[PyPTO MatMul文档](https://pypto.gitcode.com/api/tensor_api/operation/pypto-matmul.html)明确列出KirinX90不支持TILEOP_NZ输入；这是PyPTO接口限制，不能据此断言OMG内置MatMul同样不支持，也不能把其它Ascend架构的内部L0B布局当作当前CPro导入合同。普通ND head预转置原型未发布、未编译、未执行；全部权重的Zn/Nz导入与加速也尚未验证。
+用户进一步确认CPro CCE的mmad约定为L0A的A使用ZZ、L0B的B使用ZN、L0C的C使用NZ。指令级右矩阵格式以此为依据；当前尚需核对所选DDK 100.520.020.010的FP16 FileConstant导入、GM到L0B搬运、逻辑／物理shape、padding及transpose语义，并确认编译器是否已经预打包。公开[PyPTO MatMul文档](https://pypto.gitcode.com/api/tensor_api/operation/pypto-matmul.html)列出KirinX90不支持TILEOP_NZ输入；这是PyPTO接口限制，不能据此断言OMG内置MatMul同样不支持，也不否定mmad的内部ZN约定。普通ND head预转置原型未发布、未编译、未执行；全部权重的Zn/Nz导入与加速尚未验证。
 
 ### 当前先清空全部Draft测试
 
-用户最新授权删除 `draft/tests` 的全部内容，包括60ms基线、AIR副本、所有测试输入输出和历史结果，只保留测试目录外的源权重和代码。60ms是历史观测值；本轮尚未收到服务器清理结果，不声称已经释放空间。
+用户最新授权删除 `draft/tests` 的全部内容，包括60ms基线、AIR副本、所有测试输入输出和历史结果，只保留测试目录外的源权重和代码。60ms是历史观测值；首轮服务器清理在删除前失败，尚无空间释放结果。
 
 ```bash
 (
@@ -63,7 +63,9 @@ df -h "$AI_RUN_DIR"
 
 工具优先检查 `draft/source/prepared`，否则在运行根目录内查找测试目录外的 `prepared.json`；核验完整模型拓扑、必需FP16权重集合、shape、大小和SHA256后再删除。无需预设 `DRAFT_SOURCE`。源权重在运行目录外时可用 `--source` 指定其prepared目录；如果源本身还依赖tests，工具停止，须先将源移到测试目录外。实际占用进程或持有的写锁会阻止删除；旧精度失败或历史结果缺失不阻止本次明确授权的清理。不归档旧结果，不访问板端，不改runtime配置或其它角色目录。返回 `free_bytes_after` 是实测空闲量。
 
-清空后原来的replay及依赖旧输入的探针命令不能直接运行。后续核对格式导入能力，再从保留权重恢复所需AIR及测试输入，统一实现适用的权重布局；按算子族验证等价及净收益后集成。清理入口9项主机检查通过，包含源权重保护、锁、软链接、不完整删除后重试；尚未执行服务器清理。
+清空后原来的replay及依赖旧输入的探针命令不能直接运行。后续核对格式导入能力，再从保留权重恢复所需AIR及测试输入，统一实现适用的权重布局；按算子族验证等价及净收益后集成。清理入口此前9项主机检查通过，包含源权重保护、锁、软链接、不完整删除后重试。
+
+2026-11-06服务器首次清理在删除前扫描时遇到 `stable-arg-max-ge-tbe/.../.ipc-*/listener-*` 条目而停止。修复后的 `--all-tests` 允许已关闭的Unix socket，读取本地 `/proc/net/unix` 检查是否仍被绑定，并在删除前再次检查；不连接socket，不放宽其它清理模式。新增9项本地回归检查通过，覆盖已关闭／活跃socket、删除前重新绑定、源权重损坏、锁及重复执行。拉取更新后重跑上方同一条命令；尚未收到修复后的服务器结果。
 
 ### 离线权重布局的收益判断
 
