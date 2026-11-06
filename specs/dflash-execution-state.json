@@ -8572,6 +8572,35 @@
                 "C_L0C": "FRACTAL_NZ",
                 "limitation": "External FileConstant import, GM transfer and existing compiler prepacking remain unverified"
               }
+            },
+            "offline_weight_implementation": {
+              "status": "HOST_IMPLEMENTED_SELECTED_DDK_AND_DEVICE_PENDING",
+              "policy": "fp16-static-rhs-layout-v1",
+              "user_direction": "EXHAUSTIVE_LAYOUT_TRANSPOSE_PARAMETERS_BEFORE_FULL_MODEL",
+              "variants": [
+                "nd_t",
+                "nd_n",
+                "nz_t",
+                "nz_n",
+                "zn_t",
+                "zn_n"
+              ],
+              "probe_scenarios": 9,
+              "planned_compile_cases": 54,
+              "scope": "REAL_K_AND_N_AXES_SEPARATELY_NOT_ALL_FULL_SHAPE_COMBINATIONS",
+              "full_draft_static_matmuls": 31,
+              "packed_weight_bytes": 1721761792,
+              "source_weights": "UNCHANGED_FP16_BIT_PATTERNS",
+              "packed_payload_verification": "INVERSE_SHA256_AND_COMPILER_REFERENCE_BINDING",
+              "local_host_checks": 14,
+              "compiler_and_device_calls_in_host_checks": "MOCKED_NOT_HARDWARE_EVIDENCE",
+              "model_compilation": "NOT_RUN",
+              "device_execution": "NOT_RUN",
+              "numerical_validation": "NOT_RUN",
+              "speedup": "NOT_MEASURED",
+              "production_promotion": "NOT_PERFORMED",
+              "commands": "docs/current-status.md",
+              "next": "RUN_SINGLE_LAYOUT_MATRIX_SUITE_THEN_SELECT_PASSING_VARIANT_BEFORE_FULL_DRAFT"
             }
           },
           "hidden_prefix_probe": {

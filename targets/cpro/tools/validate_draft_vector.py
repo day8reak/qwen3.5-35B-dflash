@@ -34,7 +34,7 @@ from qwen35_moe_dflash.draft.incremental.top1_alternatives import CASES as ALTER
 from qwen35_moe_dflash.draft.incremental.top1_bitcarrier import CASES as BITCARRIER_CASES
 from qwen35_moe_dflash.draft.incremental.hidden_probe import CASES as HIDDEN_CASES, KIND as HIDDEN_KIND
 from qwen35_moe_dflash.draft.incremental.hidden_layer_probe import CASES as LAYER_CASES, KIND as LAYER_KIND
-from qwen35_moe_dflash.draft.incremental import feature_pack_probe
+from qwen35_moe_dflash.draft.incremental import feature_pack_probe, offline_weight_probe
 
 # Operator-local GE probe: NumPy only; Torch bindings stay on the weights server.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops/draft-top1/scripts'))
@@ -43,7 +43,7 @@ import stable_arg_max_ge
 PYTORCH_CASES = set(STAGES.values())
 VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES, *top1_semantics.EXTRA_CASES,
                     *stable_arg_max_ge.CASES, *HIDDEN_CASES, *LAYER_CASES, *feature_pack_probe.CASES,
-                    *feature_pack_probe.projection.CASES)
+                    *feature_pack_probe.projection.CASES, *offline_weight_probe.CASES)
 WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4, 'int64': 8}
 DTYPES = {**DTYPES, 'int64': '<i8'}
 
@@ -160,6 +160,8 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     root = Path(compiled).resolve()
     report = read_json(root/'result.json')
+    if report.get('artifact_kind') == offline_weight_probe.KIND:
+        return offline_weight_probe.prepare_fixture(root, out, ddk, ddk_id, selection)
     if report.get('artifact_kind') == feature_pack_probe.KIND:
         return feature_pack_probe.prepare_fixture(compiled, out, ddk, ddk_id, selection)
     if report.get('artifact_kind') == LAYER_KIND:
@@ -375,6 +377,8 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
                 report['numerical_validation'] = 'PARTIAL_PASSED'
         elif report['feature_pack']['baseline_equivalence'] != 'PASSED':
             report.update(status='FAILED', error='feature prefix device-baseline equivalence failed')
+    if meta.get('source_evidence', {}).get('artifact_kind') == offline_weight_probe.KIND:
+        report['offline_weight_layouts'] = offline_weight_probe.summarize(meta, report)
     return report
 
 
@@ -400,7 +404,7 @@ def analyze(directory, *, air_export=None):
     comparison = compare(fixture, native, selection=report['validated_cases'])
     if air_export and meta.get('source_evidence', {}).get('artifact_kind') != LAYER_KIND:
         raise ValueError('--air-export analysis requires the retained layer0 suite')
-    if meta.get('source_evidence', {}).get('artifact_kind') == feature_pack_probe.KIND:
+    if meta.get('source_evidence', {}).get('artifact_kind') in (feature_pack_probe.KIND, offline_weight_probe.KIND):
         return dict(comparison, artifact_kind=KIND, model_execution='NOT_RUN')
     if meta.get('source_evidence', {}).get('artifact_kind') == LAYER_KIND:
         from qwen35_moe_dflash.draft.incremental.hidden_layer_probe import diagnose
@@ -922,7 +926,7 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = recover(args.recover, out) if args.recover else start(args, out)
     shown = {k: v for k, v in result.items() if k != 'cases'}
-    if 'cases' in result and not result.get('top1_semantics'):
+    if 'cases' in result and not result.get('top1_semantics') and not result.get('offline_weight_layouts'):
         shown['cases'] = [{k: v for k, v in c.items() if k not in ('tensors', 'api_us')} for c in result['cases']]
     print(json.dumps(shown, ensure_ascii=False, allow_nan=False))
     return 1 if result['status'] in ('FAILED', 'NUMERICAL_FAILED') else 0

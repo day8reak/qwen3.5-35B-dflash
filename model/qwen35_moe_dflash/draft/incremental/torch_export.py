@@ -596,11 +596,14 @@ def inspect_pytorch_compilation(directory):
 
 def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                     timeout_seconds=7200, tbe_diagnosis=None, progress=print,
-                    limit_partition_size=None, rope_fp32_table=False, cpu_feature_pack=False):
+                    limit_partition_size=None, rope_fp32_table=False, cpu_feature_pack=False,
+                    offline_weights=None, offline_weight_canary=None):
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
     if limit_partition_size is not None and type(limit_partition_size) is not bool:
         raise ValueError('limit_partition_size must be bool or None')
+    if offline_weights not in (None, 'nd_n', 'nz_t', 'nz_n', 'zn_t', 'zn_n') or bool(offline_weights) != bool(offline_weight_canary):
+        raise ValueError('offline weights requires a layout variant and a completed device import canary')
 
     def compiler_progress(row):
         message = row['message']
@@ -630,6 +633,16 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
     inspection = inspect_air(source / 'export.air', schema,
                              expected_norms=32, require_int32_indices=True, expected_attention=manifest.get('attention'), expected_top1=manifest.get('top1'))
     _check_weight_storage(source, manifest, inspection)
+    canary = None
+    if offline_weights:
+        from .offline_weight_probe import check_device_canary
+        from . import offline_weights as offline
+        from .optimization import manifest_policy
+        if manifest_policy(manifest) != 'packed-spatial-host-embedding':
+            raise ValueError('offline weights currently requires the packed host-embedding Draft')
+        _disjoint(output, offline_weight_canary)
+        progress('Rechecking layout/transpose device matrix before full weight snapshots')
+        canary = check_device_canary(offline_weight_canary, ddk_id, offline_weights)
     if cpu_feature_pack and (not rope_fp32_table or manifest['context_rows'] != 16):
         raise ValueError('CPU feature packing requires C16 and --rope-fp32-table')
     if rope_fp32_table:
@@ -688,6 +701,9 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
             from .air_feature_pack import CONTRACT, physical_inputs
             result['feature_pack'] = dict(CONTRACT)
             result['inputs'] = physical_inputs(result)
+        if offline_weights:
+            result['offline_weights'] = dict(contract=offline.contract(offline_weights), canary=canary,
+                                             status='PENDING_PACKING', scope='FULL_DRAFT_31_STATIC_MATMULS')
         result.update(artifact_kind=OMC_KIND, status='COMPILING', stage='compile', frontend='pytorch',
             source_air_validation=inspection['validation_status'],
             source_deferred_shape_count=len(inspection['deferred_shapes']),
@@ -714,19 +730,37 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                 with (source / 'export.air').open('rb') as stream:
                     source_raw = stream.read((64 << 20) + 1)
                 prepared_raw, preparation = prepare_air(source_raw)
+                offline_plan = offline.inventory(prepared_raw, schema, variant=offline_weights) if offline_weights else None
+                if offline_plan:
+                    result['offline_weights'].update(weight_count=offline_plan['weight_count'],
+                                                     bytes=offline_plan['bytes'])
                 def transform(snapshot):
                     with snapshot.open('rb') as stream:
                         if stream.read((64 << 20) + 1) != source_raw:
                             raise ValueError('source AIR changed after static preparation; snapshot differs')
                     if rope_fp32_table:
                         checked_file(snapshot.parent, preparation['rope']['phase_file'])
+                    if offline_plan:
+                        before = snapshot.parent/'before-offline-weights.air'
+                        before.write_bytes(prepared_raw)
+                        before.chmod(0o444)
+                        proof = offline.pack_files(snapshot.parent, offline_plan, progress=progress)
+                        proof.update(before_air=before.name, scope='FULL_DRAFT_31_STATIC_MATMULS')
+                        packed_raw = offline.rewrite(prepared_raw, schema, offline_plan)
+                        offline.verify_binding(snapshot.parent, packed_raw, schema, proof)
+                        return packed_raw, dict(preparation, policy='draft-static-preparation-offline-weights-v1',
+                            status='APPLIED', compiler_sha256=hashlib.sha256(packed_raw).hexdigest(), offline_weights=proof)
                     return prepared_raw, preparation
+            if offline_weights and transform is None:
+                raise ValueError('offline weights requires the composed/fused PyTorch preparation path')
             result['stage'] = 'storage-preflight'
             _save(root / 'manifest.json', result)
             # Snapshot + generated sidecars + packed model coexist. Reuse the
             # proven external-compile/stream-pack path, not OMG's large embedded
             # serialization. Compiler scratch may exceed this lower bound.
             required = 3 * (sum(inspection['weight_files'].values()) + (source / 'export.air').stat().st_size) + (1 << 30)
+            if offline_weights:
+                required += offline_plan['bytes']
             available = shutil.disk_usage(root).free
             result['storage'] = dict(required_free_bytes=required, available_free_bytes=available,
                                      shortfall_bytes=max(0, required-available), scope='PRE_OMG_LOWER_BOUND')
@@ -750,6 +784,9 @@ def compile_pytorch(air_export, output, *, ddk_root, ddk_id, replace=False,
                 result['air_preparation']['report'] = 'compilation/air-preparation.json'
                 if rope_fp32_table:
                     result['precision_repair'] = evidence['rope']
+                if offline_weights:
+                    result['offline_weights'].update(status=evidence['offline_weights']['status'],
+                        report='compilation/air-preparation.json', device_validation='NOT_RUN')
             if compiled['status'] != 'COMPILED':
                 raise RuntimeError(str(compiled.get('error', compiled['status'])))
             model_path = root / 'compilation' / compiled['omc']['path']

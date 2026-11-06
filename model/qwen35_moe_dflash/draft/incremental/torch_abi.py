@@ -180,6 +180,16 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
     compiler_air = checked_file(compilation, receipt.get('air_preparation', {}).get(
         'compiler_air', snapshots['export.air']))
     _, _, prepared_graph = _decode(schema, compiler_air.read_bytes())
+    offline_proof = receipt.get('air_preparation', {}).get('offline_weights')
+    offline_binding = None
+    if bool(meta.get('offline_weights')) != bool(offline_proof):
+        raise ValueError('offline weight manifest/compiler receipt disagree')
+    if offline_proof:
+        from .offline_weights import contract, verify_binding
+        if (meta['offline_weights'].get('contract') != contract(offline_proof['contract']['variant'])
+                or offline_proof.get('scope') != 'FULL_DRAFT_31_STATIC_MATMULS'):
+            raise ValueError('offline weight layout contract differs')
+        offline_binding = verify_binding(compiler_air.parent, compiler_air.read_bytes(), schema, offline_proof)
     if _netoutput(prepared_graph) != _netoutput(graph):
         raise ValueError('compiler AIR changed the ordered source output contract')
     prepared_roles, _ = source_input_roles(prepared_graph, export['inputs'])
@@ -238,6 +248,8 @@ def bind_candidate(compiled, air_export, prepared, ddk_root, output):
     if host_embedding:
         evidence.update(host_embedding=result['host_embedding'],
                         host_embedding_binding=result['host_embedding_binding'])
+    if offline_binding:
+        evidence['offline_weights'] = offline_binding
     out.mkdir(parents=True, exist_ok=True)
     (out/'pytorch-abi.json').write_text(json.dumps(evidence, indent=2)+'\n')
     result['diagnostic_frontend'] = 'pytorch'

@@ -8,6 +8,7 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 
 
 def main(argv=None):
@@ -27,14 +28,19 @@ def main(argv=None):
                         help='PyTorch host-embedding candidate: precompute Sin/Cos from the original FP32 phase table in the compiler copy')
     parser.add_argument('--cpu-feature-pack', action='store_true',
                         help='C16 RoPE candidate: pack feature words on CPU; changes diagnostic input ABI only')
+    parser.add_argument('--offline-weights', choices=['nd_n', 'nz_t', 'nz_n', 'zn_t', 'zn_n'],
+                        help='pack all 31 static FP16 MatMul weights; requires --offline-weight-canary')
+    parser.add_argument('--offline-weight-canary', help='completed paired device import validation directory')
     parser.add_argument('--limit-partition-size', choices=('true', 'false'),
                         help='PyTorch only: forward selected OMG partition limit; true also requires observed GraphOp weights <= 2 GiB - 1 before packing')
     args = parser.parse_args(argv)
     if args.timeout_seconds <= 0:
         parser.error('--timeout-seconds must be positive')
+    if bool(args.offline_weights) != bool(args.offline_weight_canary):
+        parser.error('--offline-weights and --offline-weight-canary must be supplied together')
     if args.air_export and not args.output:
         parser.error('--output is required with --air-export')
-    if args.inspect_compile and (args.output or args.replace or args.replace_failed or args.rope_fp32_table or args.cpu_feature_pack or args.limit_partition_size is not None):
+    if args.inspect_compile and (args.output or args.replace or args.replace_failed or args.rope_fp32_table or args.cpu_feature_pack or args.offline_weights or args.limit_partition_size is not None):
         parser.error('--inspect-compile is read-only; omit output and replacement options')
     try:
         if args.inspect_compile:
@@ -56,12 +62,13 @@ def main(argv=None):
                 limit_partition_size=None if args.limit_partition_size is None else args.limit_partition_size == 'true',
                 rope_fp32_table=args.rope_fp32_table,
                 cpu_feature_pack=args.cpu_feature_pack,
+                offline_weights=args.offline_weights, offline_weight_canary=args.offline_weight_canary,
                 progress=lambda value: print('pytorch-draft: ' + value, flush=True))
         else:
             from qwen35_moe_dflash.draft.incremental.storage import compile_shared
             if args.replace:
                 parser.error('--replace is only for a PyTorch candidate; GE uses --replace-failed')
-            if args.rope_fp32_table or args.cpu_feature_pack:
+            if args.rope_fp32_table or args.cpu_feature_pack or args.offline_weights:
                 parser.error('RoPE/CPU feature packing requires the PyTorch host-embedding source')
             if args.limit_partition_size is not None:
                 parser.error('--limit-partition-size is only for a PyTorch candidate')
@@ -74,7 +81,7 @@ def main(argv=None):
             'runtime_integration', 'full_loop_smoke', 'weight_files_copied', 'graphop_counts',
             'interface_inspection', 'interface_error', 'air_preparation', 'attention', 'composed_attention',
             'optimization', 'projection', 'host_embedding', 'top1', 'top1_placement', 'installation',
-            'compiler_options', 'precision_repair', 'feature_pack', 'storage', 'partition_weights', 'omc', 'error', 'compilation_diagnostics', 'next')
+            'compiler_options', 'precision_repair', 'feature_pack', 'offline_weights', 'storage', 'partition_weights', 'omc', 'error', 'compilation_diagnostics', 'next')
         shown = {k: result[k] for k in keys if k in result}
         shown.update(input_count=len(result.get('inputs', [])), output_count=len(result.get('outputs', [])),
             manifest=result.get('manifest', str(Path(args.output).absolute() / 'manifest.json')))
