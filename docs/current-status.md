@@ -82,9 +82,13 @@ NZ描述使用二维ND逻辑shape、四维storage_shape及storage_format=29，DD
 
 普通离线转置仍可行：源权重保留，生成W.T[K,N]，MatMul使用transpose_x2=false。编译器也可能把两种输入预处理成相同布局，因此收益待测。九组探针分开覆盖K／N轴，完整head的N=248320、K=2048必须在整图中验证；不将K=16的小探针差值外推。
 
-### 当前执行：从源权重重建一份基线和一份nd_n候选
+### 当前重试：复用AIR，补回TBE兼容参数
 
-在已加载custom_pypto和选定DDK的服务器运行。复用`draft/source/prepared`与既有storage-result，保留导入探针以便编译前重核nd_n设备门槛。本阶段导出一次AIR、编译两份完整模型；两边均启用同样的RoPE表和CPU feature pack，仅候选增加离线转置。没有设备调用。使用固定`offline-weights/full`目录，空间由每次编译预检，候选另需1642MiB转换权重；不要再次清空全部tests。
+2026-11-06服务器回传：`offline-weights/full/baseline`在OMG编译StableArgMax时失败，worker于`te_update_version()`抛错。RoPE表、CPU feature pack及31个权重Transpose折叠均已完成；磁盘预检需要6444829684字节、当时可用23934201856字节。该模型是尚未应用nd_n的packed基线，不能将此次编译失败归因于离线权重。
+
+上一轮当前阶段命令遗漏了此前成功编译StableArgMax所用的`--tbe-diagnosis`。复用`common/tbe-diagnosis`已有完整诊断，兼容器只在本次编译目录内准备Python wheel副本，并核对worker审计；不重跑诊断矩阵、不改共享DDK或Python安装，OMG仍使用`--platform=kirinx90`。日志里的内部Ascend310B1字符串不用于更换目标。
+
+在已加载custom_pypto和选定DDK的服务器执行下列命令，保留已成功导出的`full/export`。先在同目录重试失败基线，通过后编译nd_n；两份都传入相同TBE兼容参数。旧命令使用set -e，基线失败时不会继续候选编译。本次不重新导出AIR、不重跑布局小探针、不清空tests。源权重和导入canary仍是`draft/source/prepared`、`offline-weights/storage-result`。
 
 ```bash
 (
@@ -93,25 +97,25 @@ cd "${REPO_DIR:?}"
 git pull --ff-only origin main
 : "${AI_RUN_DIR:?}" "${CPRO_DDK_ROOT:?}" "${CPRO_DDK_ID:?}"
 full="$AI_RUN_DIR/draft/tests/offline-weights/full"
-df -h "$AI_RUN_DIR"
-python3 targets/cpro/scripts/export_incremental_draft.py \
-  --prepared "$AI_RUN_DIR/draft/source/prepared" --frontend pytorch \
-  --optimization packed-spatial-host-embedding --top1 stable-arg-max \
-  --context-rows 16 --cache-capacity 192 --max-draft-tokens 15 \
-  --output "$full/export"
+test -f "$full/export/manifest.json"
+test -f "$AI_RUN_DIR/common/tbe-diagnosis/report.json"
 python3 targets/cpro/scripts/compile_incremental_draft.py \
-  --air-export "$full/export" --output "$full/baseline" \
+  --air-export "$full/export" --output "$full/baseline" --replace-failed \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
   --rope-fp32-table --cpu-feature-pack
 python3 targets/cpro/scripts/compile_incremental_draft.py \
   --air-export "$full/export" --output "$full/nd_n" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
   --rope-fp32-table --cpu-feature-pack --offline-weights nd_n \
   --offline-weight-canary "$AI_RUN_DIR/draft/tests/offline-weights/storage-result"
 )
 ```
 
-通过条件：两份均`PYTORCH_DRAFT_OMC_COMPILED`，Top1出口检查通过；候选offline_weights为`PACKED_AND_ROUNDTRIP_VERIFIED`、weight_count=31、bytes=1721761792。这是编译及字节置换证明，尚未验证完整模型输出或加速。编译失败先看回传的compilation_diagnostics；仅完成失败的编译槽可用相同命令加`--replace-failed`重试，不重新导出或重编成功模型。
+通过条件：两份均`PYTORCH_DRAFT_OMC_COMPILED`，Top1出口检查通过；候选offline_weights为`PACKED_AND_ROUNDTRIP_VERIFIED`、weight_count=31、bytes=1721761792。各自`compilation/report.json`中的`tbe_compatibility.audit.status`独立记录worker是否APPLIED，不能只凭传入参数声称修复生效。当前仅修正调用命令，重编结果待服务器回传。
+
+这仍是编译及字节置换证明，尚未验证完整模型输出或加速。候选额外保留1642MiB转换权重，每次编译重新检查实际剩余空间。若再次失败，读取新compilation_diagnostics和TBE审计；仅完成失败的编译槽可用相同命令加`--replace-failed`重试，保留成功模型和同一AIR。需要从零生成AIR时复用[完整流程的PyTorch导出配方](run-end-to-end.md)，本轮输出固定为`offline-weights/full/export`。
 
 ### 两份编译通过后：同一输入／参考的完整模型对照
 

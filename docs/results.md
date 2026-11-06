@@ -98,6 +98,10 @@ NZ唯一通过项为W[248320,16]、transpose_x2=true，K1=1使NZ载体字节等�
 
 完整对照入口补齐：直接从源权重生成packed基线的逻辑输入与CPU参考；候选沿用同一输入／golden并核对转换前AIR等于基线编译AIR；支持双方均packed的回放及有效Top1／hidden、完整KV的只读对比。原`--compare-feature-pack`保留用途，新增`--compare-offline-weights`。10项主机检查通过，模型／DDK绑定和参考计算为桩；模拟输出明确为host-fake，真实入口拒绝，未构建或运行完整ND候选。当前分阶段命令见[当前阶段](current-status.md)。
 
+2026-11-06完整ND对照的首次基线重建失败：`offline-weights/full/baseline`已完成RoPE表、CPU feature pack、18个Reshape删除、1个Fill物化和31个权重Transpose折叠，OMG在StableArgMax的TE worker `_prerun → _update_options → te_update_version`退出，最终编译FAILED；尚未使用nd_n，设备／数值均NOT_RUN。磁盘预检需要6444829684字节、当时可用23934201856字节，无缺口。wrapper静态路径已解析不代表worker可执行。
+
+本轮新命令遗漏了已验证流程中的`--tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis"`。此前同DDK的StableArgMax成功编译记录为compatibility APPLIED；现恢复基线和nd_n两份命令的该参数，复用同一export，在失败基线目录用`--replace-failed`重试。仅使用已有诊断建立本次编译的进程内适配，不更换kirinx90目标或修改共享安装，不重导出、不重跑单算子矩阵。当前只完成命令／状态修正，真实重编及worker审计待回传；不能将此次环境失败视为离线转置方案失败。
+
 ## 特征投影入口CPU打包：前缀对照
 
 2026-11-05用户回传：六个前缀case全部执行和回收，锁已释放。三个source case（2／16／17，valid2／16／14）每种实现预热3次、记录10次；30对输出全部逐字节相等，60次调用有限且重复稳定，六组均为NPUCL=1。

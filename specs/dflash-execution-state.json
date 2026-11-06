@@ -8574,7 +8574,7 @@
               }
             },
             "offline_weight_implementation": {
-              "status": "ND_DEVICE_VALIDATED_NZ_ND_READ_SIGNATURE_CONFIRMED_FULL_ND_TRANSPOSE_READY",
+              "status": "FULL_PACKED_BASELINE_COMPILE_FAILED_TBE_RETRY_READY",
               "policy": "static-rhs-import-matrix-v2",
               "user_direction": "EXHAUSTIVE_LAYOUT_TRANSPOSE_PARAMETERS_BEFORE_FULL_MODEL",
               "variants": [
@@ -8598,7 +8598,7 @@
               "speedup": "NOT_MEASURED",
               "production_promotion": "NOT_PERFORMED",
               "commands": "docs/current-status.md",
-              "next": "BUILD_FULL_PACKED_BASELINE_AND_ND_N_FROM_ONE_AIR_THEN_REPLAY_IDENTICAL_INPUTS",
+              "next": "RETRY_FAILED_BASELINE_WITH_RETAINED_TBE_DIAGNOSIS_THEN_COMPILE_ND_N; REUSE_EXPORTED_AIR",
               "initial_server_attempt": {
                 "source": "USER_RETURNED_REPORT",
                 "ddk_id": "100.520.020.010",
@@ -8778,25 +8778,32 @@
                 "scope": "COMPILE_ACCEPTANCE_ONLY; STORAGE_INTERPRETATION_NOT_YET_VERIFIED"
               },
               "next_validation": {
-                "action": "FULL_DRAFT_PAIRED_ND_TRANSPOSE",
+                "action": "RETRY_FULL_BASELINE_THEN_ND_N",
                 "variant": "nd_n",
                 "output": "draft/tests/offline-weights/full",
                 "source": "draft/source/prepared",
                 "canary": "draft/tests/offline-weights/storage-result",
                 "baseline_flags": [
                   "--rope-fp32-table",
-                  "--cpu-feature-pack"
+                  "--cpu-feature-pack",
+                  "--tbe-diagnosis",
+                  "common/tbe-diagnosis"
                 ],
                 "candidate_extra_flags": [
                   "--offline-weights",
                   "nd_n",
                   "--offline-weight-canary"
                 ],
-                "model_compilation": "NOT_RUN",
+                "model_compilation": "BASELINE_FAILED_RETRY_NOT_RUN",
                 "device_execution": "NOT_RUN",
                 "numerical_validation": "NOT_RUN",
                 "speedup": "NOT_ESTABLISHED",
-                "commands": "docs/current-status.md"
+                "commands": "docs/current-status.md",
+                "baseline_model_compilation": "FAILED_USER_RETURNED",
+                "candidate_model_compilation": "NOT_RUN_BY_PUBLISHED_SET_E_SEQUENCE",
+                "tbe_diagnosis": "common/tbe-diagnosis",
+                "baseline_retry_extra_flag": "--replace-failed",
+                "export": "REUSE_EXISTING_FULL_EXPORT"
               },
               "prior_nd_device_validation": {
                 "source": "USER_RETURNED_VECTOR_VALIDATION",
@@ -8887,6 +8894,29 @@
                 "scope": "ALL_ACTIVE_TOP1_HIDDEN_AND_FULL_KV_BOTH_ORIGINAL_SEQUENCES",
                 "comparison_entry": "validate_incremental_draft.py --compare-offline-weights",
                 "host_test_boundary": "DDK_BINDING_AND_REFERENCE_MOCKED; HOST_FAKE_DEVICE_OUTPUTS; NOT_HARDWARE_EVIDENCE"
+              },
+              "full_baseline_compile_failure": {
+                "source": "USER_RETURNED_COMPILATION_REPORT",
+                "manifest": "draft/tests/offline-weights/full/baseline/manifest.json",
+                "status": "FAILED",
+                "stage": "compile",
+                "ddk_id": "100.520.020.010",
+                "platform": "kirinx90",
+                "model_compilation": "FAILED",
+                "device_execution": "NOT_RUN",
+                "numerical_validation": "NOT_RUN",
+                "offline_weight_transform": "NOT_ENABLED_IN_THIS_BASELINE",
+                "failed_node": "StableArgMax",
+                "failure": "TE_WORKER_PRERUN_TE_UPDATE_VERSION_RUNTIMEERROR",
+                "wrapper_inspection": "STATIC_PATH_RESOLVED; NOT_WORKER_EXECUTION",
+                "required_free_bytes": 6444829684,
+                "available_free_bytes": 23934201856,
+                "shortfall_bytes": 0,
+                "command_omission": "TBE_DIAGNOSIS_OPTION_MISSING_FROM_NEW_FULL_PAIR_COMMANDS",
+                "known_compatibility": "SAME_DDK_PRIOR_STABLE_ARG_MAX_COMPILE_APPLIED",
+                "remedy": "PASS_RETAINED_COMMON_TBE_DIAGNOSIS_TO_BOTH_COMPILATIONS",
+                "retry": "NOT_RUN",
+                "scope": "FULL_BASELINE_COMPILER_ENVIRONMENT_FAILURE; NOT_ND_N_OR_DEVICE_FAILURE"
               }
             }
           },
