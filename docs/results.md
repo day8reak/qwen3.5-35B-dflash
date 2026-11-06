@@ -86,6 +86,8 @@ packed模型的vendor profiling输入适配只生成一个512KiB物理输入，�
 
 同一探针增加版本化的NZ逻辑／存储分离候选：二维ND逻辑尺寸配storage_shape四维、storage_format=29，保留两种transpose和原始FP16置换。新矩阵36项，允许只编译18个NZ并引用原18个ND模型，不复制对照权重；旧54项报告和设备结果仍按原合同读取，旧NZ结果不能给新合同放行。11项主机检查通过，包含独立protobuf解码、全部FP16位模式、原ND源图及改写逐字节保持、误当ND读取的负例、18项复用及18项编译编排、旧／新fixture绑定、十次保留输出重比及报告／输出变更拒绝。编译器、OMC解析及设备边界使用桩；新NZ的真实编译、设备精度和性能均未运行。
 
+2026-11-06用户回传v2矩阵真实编译结果：DDK `100.520.020.010` 下36项全部COMPILED，18次新NZ编译、18个原ND模型复用，失败／跳过均0，baseline_gate通过。source descriptor SHA256仍为`5a1eac27746a7bb5109e819ce6dd7813a3ffcaab04bd0ab2ca3c2cdf1e4084ea`，ModelDef容器；编译前可用27191418880字节，新增合成权重20772864字节，预计十次输出337591040字节。报告在`draft/tests/offline-weights/storage/result.json`。这证明新逻辑／存储声明可编译，尚未证明storage属性被正确使用；device_execution和numerical_validation均NOT_RUN。下一步一次设备验证36项、360份输出，保留零容差和逐字节门槛；没有完整Draft或加速结论。
+
 ## 特征投影入口CPU打包：前缀对照
 
 2026-11-05用户回传：六个前缀case全部执行和回收，锁已释放。三个source case（2／16／17，valid2／16／14）每种实现预热3次、记录10次；30对输出全部逐字节相等，60次调用有限且重复稳定，六组均为NPUCL=1。

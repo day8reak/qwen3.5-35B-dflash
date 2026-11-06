@@ -7927,7 +7927,7 @@
         }
       },
       "offline_weight_implementation": {
-        "status": "NZ_LOGICAL_STORAGE_CANDIDATE_HOST_CHECKED_DDK_PENDING",
+        "status": "NZ_LOGICAL_STORAGE_COMPILED_DEVICE_VALIDATION_NEXT",
         "policy": "static-rhs-import-matrix-v2",
         "user_direction": "EXHAUSTIVE_LAYOUT_TRANSPOSE_PARAMETERS_BEFORE_FULL_MODEL",
         "variants": [
@@ -7945,13 +7945,13 @@
         "packed_payload_verification": "INVERSE_SHA256_AND_COMPILER_REFERENCE_BINDING",
         "local_host_checks": 14,
         "compiler_and_device_calls_in_host_checks": "MOCKED_NOT_HARDWARE_EVIDENCE",
-        "model_compilation": "NOT_RUN",
+        "model_compilation": "PASSED",
         "device_execution": "NOT_RUN",
         "numerical_validation": "NOT_RUN",
         "speedup": "NOT_MEASURED",
         "production_promotion": "NOT_PERFORMED",
         "commands": "docs/current-status.md",
-        "next": "COMPILE_18_NZ_STORAGE_CASES_WITH_18_VERIFIED_ND_CONTROLS; NO_FULL_MODEL_YET",
+        "next": "EXECUTE_ALL_36_COMPILED_CASES; COMPARE_360_OUTPUTS_EXACT_BYTES_AND_REPEAT_STABILITY",
         "initial_server_attempt": {
           "source": "USER_RETURNED_REPORT",
           "ddk_id": "100.520.020.010",
@@ -7975,7 +7975,7 @@
           "selected_ddk_retry": "EXECUTED;18_ND_CASES_COMPILED_AND_VALIDATED",
           "device_execution": "EXECUTED_OUTPUTS_RETRIEVED"
         },
-        "numerical_scope": "NEW_NZ_STORAGE_CONTRACT; PRIOR_ND_RESULTS_RETAINED",
+        "numerical_scope": "NEW_36_CASE_SUITE_PENDING; PRIOR_18_ND_RESULTS_RETAINED",
         "last_device_validation": {
           "source": "USER_RETURNED_VECTOR_VALIDATION",
           "artifact_kind": "qwen35-draft-vector-validation",
@@ -8075,11 +8075,50 @@
           },
           "host_checks": 11,
           "host_evidence": "20261106T023451Z-24651-a88302/host-checks.json",
-          "model_compilation": "NOT_RUN",
+          "model_compilation": "PASSED_USER_RETURNED",
           "device_execution": "NOT_RUN",
           "nd_reuse": "VERIFY_RECIPE_AND_HASHES_THEN_REFERENCE_NO_COPY_NO_RECOMPILE",
           "legacy_nd_canary": "REMAINS_VALID; LEGACY_NZ_CANNOT_PASS_NEW_CONTRACT",
-          "output": "draft/tests/offline-weights/storage"
+          "output": "draft/tests/offline-weights/storage",
+          "numerical_validation": "NOT_RUN"
+        },
+        "latest_compile": {
+          "source": "USER_RETURNED_COMPILATION_REPORT",
+          "artifact_kind": "qwen35-draft-offline-weight-import",
+          "status": "COMPILED",
+          "ddk_id": "100.520.020.010",
+          "suite_policy": "static-rhs-import-matrix-v2",
+          "case_count": 36,
+          "compilation_calls": 18,
+          "reused_cases": 18,
+          "failed_cases": 0,
+          "skipped_cases": 0,
+          "baseline_gate": "PASSED",
+          "air_container": "ModelDef",
+          "source_schema_sha256": "5a1eac27746a7bb5109e819ce6dd7813a3ffcaab04bd0ab2ca3c2cdf1e4084ea",
+          "report": "/home/w00949577/qwen3.5-35B-dflash-run/draft/tests/offline-weights/storage/result.json",
+          "available_free_bytes_before_compile": 27191418880,
+          "required_free_bytes": 1911905792,
+          "synthetic_weight_bytes": 20772864,
+          "ten_repeat_output_bytes": 337591040,
+          "device_execution": "NOT_RUN",
+          "numerical_validation": "NOT_RUN",
+          "scope": "COMPILE_ACCEPTANCE_ONLY; STORAGE_INTERPRETATION_NOT_YET_VERIFIED"
+        },
+        "next_validation": {
+          "compiled": "draft/tests/offline-weights/storage",
+          "execution": "draft/tests/offline-weights/storage-run",
+          "result": "draft/tests/offline-weights/storage-result",
+          "cases": 36,
+          "warmup": 3,
+          "repetitions": 10,
+          "compared_outputs": 360,
+          "atol": 0.0,
+          "rtol": 0.0,
+          "exact_bytes": true,
+          "repeat_bitwise_stable_required": true,
+          "model_compilation": "NOT_NEEDED",
+          "full_draft_validation": "NOT_RUN"
         }
       }
     }

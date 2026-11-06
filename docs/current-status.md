@@ -47,7 +47,7 @@
 
 ### 已授权的Draft测试清理（本次重试无需执行）
 
-用户授权删除 `draft/tests` 的全部内容，包括60ms基线、AIR副本、所有测试输入输出和历史结果，只保留测试目录外的源权重和代码。60ms是历史观测值。最新探针报告记录编译前可用29622022144字节（约29.6GB），本次复用offline-weights/compiled中的ND对照，仅在storage目录编译新的NZ描述；无需再次清空全部tests。下方保留完整清理入口供需要时使用。
+用户授权删除 `draft/tests` 的全部内容，包括60ms基线、AIR副本、所有测试输入输出和历史结果，只保留测试目录外的源权重和代码。60ms是历史观测值。清理后的首轮探针记录编译前可用29622022144字节（约29.6GB），本次storage矩阵已完成18次NZ编译并复用18个ND对照，编译前可用27191418880字节（约27.2GB）；无需再次清空全部tests。下方保留完整清理入口供需要时使用。
 
 ```bash
 (
@@ -67,7 +67,7 @@ df -h "$AI_RUN_DIR"
 
 2026-11-06服务器首次清理在删除前扫描时遇到 `stable-arg-max-ge-tbe/.../.ipc-*/listener-*` 条目而停止。修复后的 `--all-tests` 允许已关闭的Unix socket，读取本地 `/proc/net/unix` 检查是否仍被绑定，并在删除前再次检查；不连接socket，不放宽其它清理模式。新增9项本地回归检查通过，覆盖已关闭／活跃socket、删除前重新绑定、源权重损坏、锁及重复执行。尚无独立清理回执，后续探针报告已记录上述可用空间。
 
-### 布局矩阵：ND已通过，修正NZ的逻辑／存储描述
+### 布局矩阵：36项编译通过，开始设备逐字节验证
 
 2026-11-06用户回传：原54项中nd_t、nd_n各九组编译和设备验证通过，180份保留输出在atol=rtol=0下逐字节匹配参考，重复逐位稳定；请求已完成回收并释放锁。NZ／ZN四种表达共36项编译失败、未上板。完整Draft性能基线仍为历史约60ms。
 
@@ -84,29 +84,41 @@ df -h "$AI_RUN_DIR"
 |---|---|---|---|---|
 | nd_t | W[N,K] | true | [N,K] | 九组设备逐字节通过，复用模型 |
 | nd_n | W.T[K,N] | false | [K,N] | 九组设备逐字节通过，复用模型 |
-| nz_t（新描述） | W[N,K] | true | [K1,N1,N0,K0] | 主机位保持／描述检查通过，DDK待编译 |
-| nz_n（新描述） | W.T[K,N] | false | [N1,K1,K0,N0] | 主机位保持／描述检查通过，DDK待编译 |
+| nz_t（新描述） | W[N,K] | true | [K1,N1,N0,K0] | 九组DDK编译通过，设备数值待验 |
+| nz_n（新描述） | W.T[K,N] | false | [N1,K1,K0,N0] | 九组DDK编译通过，设备数值待验 |
 
 全部验证同一个`X @ W.T`。九组W shape／M保持不变：`48×80 / 95`、`80×48 / 1`、`48×2048 / 15`、`48×4096 / 16`、`48×6144 / 32`、`4096×32 / 15`、`2048×48 / 16`、`12288×32 / 32`、`248320×16 / 15`。覆盖边界脉冲、稠密有符号点积、basis rows和零行。大K和大N分轴覆盖，尚不包含真实head的N=248320、K=2048完整组合。
 
-下一步在原DDK服务器补编译18个NZ用例，继续用同一个探针入口。`--reuse-nd-from`核验原报告、schema、源权重、转换证明、OMC及NPU归属后，以路径引用18个ND模型；不复制或重编ND。现有compiled／run／result保留，storage是本次候选的固定目录。开始前会检查新增编译和后续回收所需空间，约2GB下限，编译器临时文件可能额外占用。
+2026-11-06最新回传：DDK `100.520.020.010` 下v2矩阵全部36项COMPILED，`compilation_calls=18`、`reused_cases=18`、无失败或跳过。新NZ的逻辑／存储描述已越过此前的编译失败，尚不能证明编译器正确使用了分块字节。18个ND模型经核验后直接引用原compiled目录，没有复制或重新编译。
+
+下一步复用现有runtime，一次验证全部36项：每项预热3次、测量10次，共比较360份输出，atol=rtol=0且要求逐字节一致、重复逐位稳定。保留旧compiled／run／result及新storage；本次用固定storage-run／storage-result，避免覆盖已通过的ND设备证据。十次输出总量337591040字节（约338MB），另有上传包和回收归档；启动入口检查板端空间。此步不编译模型，也不构建完整Draft。
 
 ```bash
 (
 set -eu
-: "${REPO_DIR:?}" "${AI_RUN_DIR:?}"
-cd "$REPO_DIR"
+cd "${REPO_DIR:?}"
 git pull --ff-only origin main
 source targets/cpro/scripts/env.sh
-python3 targets/cpro/tools/probe_draft_offline_weights.py \
-  --ddk-root "${CPRO_DDK_ROOT:?}" --ddk-id "${CPRO_DDK_ID:?}" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
-  --reuse-nd-from "$AI_RUN_DIR/draft/tests/offline-weights/compiled" \
-  --output "$AI_RUN_DIR/draft/tests/offline-weights/storage"
+python3 targets/cpro/tools/validate_draft_vector.py \
+  --compiled "$AI_RUN_DIR/draft/tests/offline-weights/storage" \
+  --ddk-root "${CPRO_DDK_ROOT:?}" \
+  --config "${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+  --output "$AI_RUN_DIR/draft/tests/offline-weights/storage-run" --apply
+python3 targets/cpro/tools/validate_draft_vector.py \
+  --recover "$AI_RUN_DIR/draft/tests/offline-weights/storage-run" \
+  --output "$AI_RUN_DIR/draft/tests/offline-weights/storage-result"
 )
 ```
 
-预期`compilation_calls=18`、`reused_cases=18`、总36项；若NZ有失败，报告仍明确列出，不自动上板。回传编译摘要后再验证全部可编译项。旧矩阵只读检查仍可用`--inspect "$AI_RUN_DIR/draft/tests/offline-weights/compiled"`。本地11项主机检查通过，含独立protobuf解码、完整16位模式、ND字节兼容、复用零复制／零重编、旧／新输出重比及篡改拒绝；编译器和设备边界为桩，非DDK或板端证据。
+启动返回VECTOR_VALIDATION_STARTED后进入回收。如果回收返回PENDING，稍后只重复下面的回收命令，不重新执行启动：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$AI_RUN_DIR/draft/tests/offline-weights/storage-run" \
+  --output "$AI_RUN_DIR/draft/tests/offline-weights/storage-result"
+```
+
+通过条件是实际执行36项、数值PASSED、重复逐位稳定，并且passing_variants包括nd_t、nd_n、nz_t、nz_n。若有失败，保留逐项失败和输出，不放宽门槛。原54项失败矩阵仍可用`--inspect "$AI_RUN_DIR/draft/tests/offline-weights/compiled"`读取。此前11项主机检查已通过；本次编译证据来自用户服务器回传，本地未运行DDK或设备。小探针计时不作为整图加速依据。
 
 nd_n是已有设备证据的全尺寸候选：完整编译额外加`--offline-weights nd_n --offline-weight-canary "$AI_RUN_DIR/draft/tests/offline-weights/result"`，会重比原始设备输出，对31个静态MatMul统一离线转置并验证逆转换SHA256，增加1642MiB载体。NZ新合同只有经过新设备验证后才能进入同一整图入口。Conv、归一化向量和host embedding继续使用原接口。
 
