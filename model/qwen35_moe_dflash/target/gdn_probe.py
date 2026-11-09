@@ -202,6 +202,7 @@ def check_registration(ddk):
 
 
 def compile_prepared(output, *, ge_root, ddk_root, ddk_id, cxx="c++", cxx11_abi=0, timeout_seconds=600):
+    from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics, log_excerpt
     from qwen35_moe_dflash.graph.export import _logged
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
     root, manifest = load_prepared(output)
@@ -251,11 +252,17 @@ def compile_prepared(output, *, ge_root, ddk_root, ddk_id, cxx="c++", cxx11_abi=
             row.update(status="COMPILED", omc=identity(omc, root))
         except (OSError, ValueError, KeyError, RuntimeError) as error:
             row.update(status="FAILED", error=f"{type(error).__name__}: {error}")
+            if (folder / "omc").exists():
+                row["diagnostics"] = compilation_diagnostics(folder / "omc")
+            else:
+                row["diagnostics"] = {name: log_excerpt(folder / name) for name in ("build.log", "export.log")}
         write_json(root / "compile.json", result)
     result["status"] = ("COMPILED" if all(x["status"] == "COMPILED" for x in result["models"].values())
                         else "PARTIAL" if any(x["status"] == "COMPILED" for x in result["models"].values()) else "FAILED")
     result["model_compilation"] = result["status"]
-    result["next"] = "Inspect compiled placement/IO; use runner argv per case; retrieve every snapshot for metrics-only compare."
+    result["next"] = ("Run validate_target_attention.py with --reuse-gdn pointing to this directory."
+                      if result["status"] == "COMPILED" else
+                      "Read models.*.diagnostics for the compiler failure; retain these logs before any retry.")
     write_json(root / "compile.json", result)
     return result
 

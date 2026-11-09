@@ -156,6 +156,7 @@ def check_registration(ddk):
 
 
 def compile_prepared(output, *, ge_root, ddk_root, ddk_id, cxx="c++", cxx11_abi=0, timeout_seconds=600):
+    from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics, log_excerpt
     from qwen35_moe_dflash.graph.export import _logged
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
     root, manifest = load_prepared(output)
@@ -196,6 +197,10 @@ def compile_prepared(output, *, ge_root, ddk_root, ddk_id, cxx="c++", cxx11_abi=
             row.update(status="COMPILED", omc=identity(folder / "omc" / compiled["omc"]["path"], root))
         except (OSError, ValueError, KeyError, RuntimeError) as error:
             row.update(status="FAILED", error=f"{type(error).__name__}: {error}")
+            if (folder / "omc").exists():
+                row["diagnostics"] = compilation_diagnostics(folder / "omc")
+            else:
+                row["diagnostics"] = {name: log_excerpt(folder / name) for name in ("build.log", "export.log")}
         write_json(root / "compile.json", report)
     states = {row["status"] for row in report["models"].values()}
     report["status"] = "COMPILED" if states == {"COMPILED"} else "FAILED" if states == {"FAILED"} else "PARTIAL"

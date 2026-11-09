@@ -82,6 +82,9 @@ def run(root, request, *, wait_seconds=1800, poll_seconds=10):
                 compiled = read_json(probe/'compile.json')
                 row['model_compilation'] = compiled.get('status', 'FAILED')
                 if compiled.get('status') not in ('COMPILED', 'PARTIAL'):
+                    from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
+                    row['compiler_diagnostics'] = {name: compilation_diagnostics(probe/'models'/name/'omc')
+                        for name in ('t64', 't1')}
                     raise ValueError('no compiled case; see '+str(probe/'compile.json'))
                 row['stage'] = 'execute'
                 announce(family, 'binding compiled IO, deploying and executing on X90')
