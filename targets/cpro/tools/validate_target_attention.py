@@ -28,6 +28,14 @@ def announce(family, stage):
     print(f'target-operator [{family}] {stage}', file=sys.stderr, flush=True)
 
 
+def console_summary(root, state):
+    fields = ('status', 'stage', 'model_compilation', 'device_execution',
+              'numerical_validation', 'error', 'recovery', 'compiler_diagnostics')
+    return dict(status=state['status'], report=str(root/'result.json'),
+        families={family: {key: row[key] for key in fields if key in row}
+                  for family, row in state['families'].items()}, all_operators_passed=False)
+
+
 def finish(root, state):
     rows = list(state['families'].values())
     state['all_operators_passed'] = False
@@ -81,10 +89,13 @@ def run(root, request, *, wait_seconds=1800, poll_seconds=10):
                         cxx=request['cxx'], cxx11_abi=request['cxx11_abi'])
                 compiled = read_json(probe/'compile.json')
                 row['model_compilation'] = compiled.get('status', 'FAILED')
-                if compiled.get('status') not in ('COMPILED', 'PARTIAL'):
+                if compiled.get('status') != 'COMPILED':
                     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
-                    row['compiler_diagnostics'] = {name: compilation_diagnostics(probe/'models'/name/'omc')
-                        for name in ('t64', 't1')}
+                    row['compiler_diagnostics'] = {
+                        name: record.get('diagnostics') or compilation_diagnostics(probe/'models'/name/'omc')
+                        for name, record in compiled.get('models', {}).items()
+                        if record.get('status') != 'COMPILED'}
+                if compiled.get('status') not in ('COMPILED', 'PARTIAL'):
                     raise ValueError('no compiled case; see '+str(probe/'compile.json'))
                 row['stage'] = 'execute'
                 announce(family, 'binding compiled IO, deploying and executing on X90')
@@ -141,6 +152,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True)
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--diagnose', action='store_true',
+                        help='print retained errors only; no writes, compilation or device access')
     parser.add_argument('--config', help='existing runtime/runtime.json')
     parser.add_argument('--families', nargs='+', choices=tuple(MODULES), default=['gdn', 'cache'])
     parser.add_argument('--reuse-gdn', help='existing prepared/compiled GDN probe directory')
@@ -153,6 +166,15 @@ def main():
     parser.add_argument('--wait-seconds', type=int, default=1800)
     parser.add_argument('--poll-seconds', type=int, default=10)
     args = parser.parse_args()
+    if args.diagnose:
+        if args.resume or args.config or args.reuse_gdn or args.reuse_cache:
+            parser.error('--diagnose only needs --output')
+        root = Path(args.output).resolve()
+        state = read_json(root/'result.json')
+        if state.get('artifact_kind') != KIND:
+            parser.error('not a Target attention validation report')
+        print(json.dumps(console_summary(root, state), ensure_ascii=False, indent=2))
+        return 0
     if args.wait_seconds < 0 or not 1 <= args.poll_seconds <= 60:
         parser.error('wait must be nonnegative and poll must be 1..60 seconds')
     root = output_path(args.output)
@@ -197,10 +219,7 @@ def main():
             root.mkdir()
             _save(root/'request.json', request)
         state = run(root, request, wait_seconds=args.wait_seconds, poll_seconds=args.poll_seconds)
-    print(json.dumps(dict(status=state['status'], report=str(root/'result.json'),
-        families={k: {n: v.get(n) for n in ('status', 'stage', 'model_compilation',
-            'device_execution', 'numerical_validation', 'error', 'recovery')}
-            for k, v in state['families'].items()}, all_operators_passed=False), ensure_ascii=False))
+    print(json.dumps(console_summary(root, state), ensure_ascii=False, indent=2))
     return 2 if state['status'] == 'PENDING' else 0 if state['status'] == 'VALIDATION_COMPLETE' else 1
 
 

@@ -6,6 +6,16 @@ Linear Attention按Convstate更新、卷积／SiLU、GDN、门控RMSNorm推进�
 
 ## 直接执行Target单算子验证
 
+最新用户回传：共享native运行器构建成功，GDN和CacheUpdate的两档模型均在编译阶段失败，设备执行与数值比较尚未开始。需要实际OMG报错才能定位；现有摘要的“no compiled case”不是编译器根因。先读取保留结果，不重复构建或编译：
+
+```bash
+git pull --ff-only origin main
+python3 targets/cpro/tools/validate_target_attention.py \
+  --output "$AI_RUN_DIR/target/tests/operator-accuracy/attention-validation" --diagnose
+```
+
+`--diagnose`只读取现有`result.json`，输出每组的`compiler_diagnostics`（编译阶段、日志路径和错误摘录），不访问设备、不改写产物，也不要求runtime或DDK环境。失败原因修复后再使用以下执行命令；已有失败目录保留，改用新的输出目录。
+
 使用已有X90运行环境及`runtime/runtime.json`。下面的入口连续完成夹具和独立参考生成、单算子编译、编译IO绑定、板端执行、结果回收和数值比较；不需要先回传编译摘要。默认依次执行GDN和CacheUpdate，不重编整模。
 
 ```bash
