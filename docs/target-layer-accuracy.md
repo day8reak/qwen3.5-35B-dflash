@@ -2,9 +2,9 @@
 
 首批仅覆盖原模型第 0～3 层的 prefill 和第一个 decode。**导出阶段不构造整模型，不构造整层再裁图。** 每个进程只导一个 CPro 边界的一个输出，退出后再处理下一个。MoE 专家大子图不在本批导出范围内。
 
-原 `inference.py` 和私有模型文件保留原样。用户确认这里的可信参考是 `inference.py` 四层运行，整网分段运行使用另一个 `inference_segment.py`。新入口默认 `--model-layers 4`，在原 `load_npu_model` 构造时传入 `layer_num=4`，缓存分配也使用四层；不会先构造 40 层再裁剪。decode 使用这四层加原 norm/lm_head 的输出，与本次参考范围一致，不声称是完整 40 层模型生成。
+原 `inference.py` 和私有模型文件保留原样。用户确认这里的可信参考是 `inference.py` 四层运行，整网分段运行使用另一个 `inference_segment.py`。当前直接步骤入口固定四层；旧 probe 入口默认 `--model-layers 4`。两者都在原 `load_npu_model` 构造时传入 `layer_num=4`，缓存分配也使用四层，不会先构造 40 层再裁剪。decode 使用这四层加原 norm/lm_head 的输出，不声称是完整 40 层模型生成。
 
-构造 device 为 CPU，原程序完成 W4 量化替换后，NPU 每次搬入一个 decoder layer，执行原 forward 后同步并搬回 CPU；最终 norm、lm_head 也分别搬入、执行、搬回。`--layers` 是**采集范围**，必须在 `--model-layers` 范围内。原 loader 仍会读取完整 HF/量化 checkpoint，主机内存需要足够；NPU 保留四层缓存及当前层权重/临时计算空间。只做 device 搬运，不传 dtype、不做 `.half()`。CPU 不重算 golden；逐层搬运计时不作为模型性能。入口要求原外部量化 embedding 路径，不支持 `--use_origin_model` 或 pseudo_quant。
+构造 device 为 CPU，完成原 W4 量化替换后才搬到 NPU。当前直接步骤入口保留四层量化模型；旧 probe 逐个搬入 decoder layer、norm 和 lm_head，在执行后同步搬回 CPU。原 loader 仍会读取完整 HF/量化 checkpoint，主机内存需要足够。搬运不传 dtype、不做 `.half()`，CPU 不重算 golden，诊断计时不作为模型性能。入口要求原外部量化 embedding 路径，不支持 `--use_origin_model` 或 pseudo_quant。
 
 新增工具代码可公开，原始源码、权重、配置和实际 dump 留在各自工作目录，不提交仓库。
 
@@ -36,6 +36,33 @@ Convstate 的辅助 `linear_update_tensor` 使用原 CPro 导出声明的零 INT
 ## 1. 在已验证的 310P 环境采集
 
 以下变量由实际环境设置：`REPO_DIR` 指向本仓库，`TARGET_SOURCE` 指向原项目（含 inference.py、utils.py、models/），`AI_RUN_DIR` 指向仓库外的输出目录。激活原来的 PyTorch/torch_npu 环境，保留原来工作的配置和推理参数。
+
+### 当前入口：直接调用原 inference 的步骤
+
+用户要求直接提取推理步骤，新增 `inference_target_steps.py`。导入原 `inference.py` 的函数定义，**不执行其 main，不使用 runpy**。流程为原 wrapper 构造（工厂仅创建前四层、CPU）→ 原 `quant_model_inplace(...quant_bits=4)` → 仅搬运量化后的四层模型 → 原 `prefill()` → 其实际 logits 的 argmax 和返回 cache → 原 `decoder()`。不改 forward、量化算法、dtype、group_sizes、ACLNN 版本或 GE converter，不安装 V4/V5 桥接库。
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/inference_target_steps.py" \
+  --source-root "$TARGET_SOURCE" \
+  --config ./config/qwen3_5_moe.yaml \
+  --output "$AI_RUN_DIR/target-layer-accuracy/direct-001" \
+  --max_token 1
+```
+
+默认执行第一个配置 prompt 的 prefill + 一次 decode，dump 第 0～3 层。注意用户提供的 main 最后覆盖了 chat template，实际使用 **`prompt * 32`**；新入口默认 `--prompt-repeat 32`，不偷偷换输入或添加 padding。已有原 golden 时，可以添加 `--input-ids /实际路径/input_ids.bin`，直接复用其中的 INT32、batch=1 token（此路径要求没有 padding，真实长度等于文件 token 数）。`--prompt-index` 选择配置中的 prompt；更改输入策略须与原 golden 对齐。
+
+输出布局：
+
+- `steps.json`：原源码哈希、运行环境、逐步状态、实际 token ID、执行结果；成功执行仍不代表已与旧 golden 做过数值验证。
+- `original/prefill/` 和 `original/decode/`：原函数自行保存的 bin，分开目录避免 decode 覆盖 prefill；原 decoder 多步循环内部的同名文件仍按原逻辑覆盖。
+- `original/prefill-result.pt`、`original/generated-ids.pt`：实际返回的 prefill logits/首 token、decode token；没有第二次重算。
+- `capture/manifest.json`：CPro 粒度的中间输入/输出和权重。后续 list/export 的 `--capture` 指向这个 `capture/` 子目录，批量导出和比较脚本保持不变。
+
+若要直接验证没有采集 hook 的原函数路径，增加 `--baseline-only` 并使用新输出目录；它只保留原函数结果，不生成 CPro 中间采集。两个模式都只构造四层，不建立四十层模型，不导整图。原 loader 仍读取完整 checkpoint，因此主机内存需求未变。旧 `inference_target_probe.py` 保留用于复现已有运行，其逐层搬运策略与此入口的四层量化后常驻策略分别记录。
+
+2026-11-09 的环境报告确认：已加载的 custom QuantMatmul 库导出 V4 pair，没有 V5 pair；当前失败调用为 V5，属主规则对照通过。用户补充的 `QuantBatchMatmulV4444` / `GroupedMatmulV555` 打印来自 **AIR 导出**，不能当成 310P eager 成功执行记录。这些是 GE op type，不能直接作为 ACLNN API 版本。直接步骤入口保留原调用；若同样报 V5 错误，仍需恢复原成功运行的源代码/环境组合，不能把错误归为 CPro 数值偏差。
+
+### 旧入口：执行原主程序并逐层搬运
 
 ```bash
 cd "$TARGET_SOURCE"
