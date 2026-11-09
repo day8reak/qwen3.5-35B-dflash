@@ -42,10 +42,18 @@ def main():
     s.add_argument('--rtol', type=float)
     s = sub.add_parser('list')
     s.add_argument('--capture', required=True)
+    s = sub.add_parser('replay-qlinear-failure')
+    s.add_argument('--capture', required=True)
+    s.add_argument('--output', required=True)
+    s.add_argument('--device', default='npu:0')
+    s.add_argument('--group-size', type=int, choices=[256])
     a = p.parse_args()
     from qwen35_moe_dflash.target.layer_probe import batch
     from qwen35_moe_dflash.target.layer_probe.common import new_output, save_json
-    if a.command == 'export':
+    if a.command == 'replay-qlinear-failure':
+        from qwen35_moe_dflash.target.layer_probe.qlinear import replay_failure
+        result = replay_failure(a.capture, a.output, a.device, a.group_size)
+    elif a.command == 'export':
         result = batch.export_batch(a.capture, a.output, a.source_root, a.converter_script,
             points=a.points, kinds=a.kinds, timeout=a.timeout, torchair_pb2=a.torchair_pb2)
     elif a.command == 'export-one':

@@ -220,6 +220,39 @@ class StreamingTest(unittest.TestCase):
         capture.close('NPU out of memory during original constructor')
         self.assertEqual(capture.report['status'], 'FAILED')
 
+    def test_requested_four_layers_constructed_at_loader_and_caches_match(self):
+        calls = []
+        def loader(model_path, device, dtype, variant='nz', layer_num=None, start_layer_idx=0):
+            calls.append(layer_num)
+            model = self.cls('cpu', count=layer_num).model
+            model.config.num_hidden_layers = 40  # Checkpoint declares 40, loader builds 4.
+            return model
+        module = SimpleNamespace(load_npu_model=loader)
+        class SourceWrapper(torch.nn.Module):
+            def __init__(self, device):
+                super().__init__()
+                self.embedding_in_omc = False
+                self.model = module.load_npu_model('unused', device, torch.float16).to(device)
+            forward = self.cls.forward
+        module.Qwen3_5MoeForCausalLMWrapper = SourceWrapper
+        stream = LayerStreaming({}, model_layers=4)
+        stream.install(module)
+        try:
+            wrapper = SourceWrapper('npu')
+            self.assertEqual(calls, [4])
+            self.assertEqual(len(wrapper.model.model.layers), 4)
+            self.assertEqual(wrapper.model.config.num_hidden_layers, 4)
+            quantize(wrapper)
+            rows = generation(wrapper)
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all(len(row) == 5 for row in rows))  # Logits plus four caches.
+            self.assertEqual(stream.record['source_num_hidden_layers'], 40)
+            self.assertEqual(stream.record['executed_num_hidden_layers'], 4)
+            self.assertFalse(stream.record['full_model_forward_preserved'])
+        finally:
+            stream.close()
+        self.assertIs(module.load_npu_model, loader)
+
 
 if __name__ == '__main__':
     unittest.main()

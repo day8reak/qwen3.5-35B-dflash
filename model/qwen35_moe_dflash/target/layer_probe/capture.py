@@ -38,6 +38,7 @@ class Capture:
             raise ValueError('nonnegative layers and positive calls required')
         self.handles, self.patches, self.active, self.saved_weights = [], [], None, {}
         self.counts, self.attached = {}, set()
+        self.quant_audit = None
         self.report = dict(artifact_kind=KIND, status='CAPTURING', reference='ORIGINAL_310P_INFERENCE',
             layers=sorted(self.layers), calls_per_layer=calls, regions=[], errors=[], sources=[],
             torch_version=torch.__version__,
@@ -96,6 +97,8 @@ class Capture:
         if id(wrapper) in self.attached:
             return
         self.attached.add(id(wrapper))
+        if self.quant_audit is not None:
+            self.quant_audit.attach(wrapper)
         model = wrapper.model.model
         start = getattr(model, 'start_layer_idx', 0)
         for local, layer in enumerate(model.layers):
@@ -190,8 +193,14 @@ class Capture:
         setattr(obj, name, wrapped)
         self.patches.append((obj, name, original))
 
-    def install(self, npu, nz_module, wrapper_module):
+    def install(self, npu, nz_module, wrapper_module, *, qlinear_group_size=None):
         self.report['torch_npu_version'] = getattr(npu, '__version__', 'unknown')
+        if hasattr(npu, 'npu_quant_matmul') and hasattr(nz_module, 'QLinear'):
+            from .qlinear import QuantMatmulAudit
+            self.quant_audit = QuantMatmulAudit(self, npu, qlinear_group_size)
+            self.quant_audit.install(nz_module.QLinear)
+        elif qlinear_group_size is not None:
+            raise ValueError('cannot apply group256 without the original QLinear and npu_quant_matmul')
         # Attach after the original program has loaded and quantized its model.
         cls = wrapper_module.Qwen3_5MoeForCausalLMWrapper
         def wrapper_call(original, args, kwargs):

@@ -12,13 +12,17 @@ class LayerStreaming:
 
     Quantization remains the original inference.py operation, between wrapper
     construction and its first forward. No weight dtype or math is changed.
-    All decoder layers still execute, so decode tokens come from the full LM.
+    Every layer in the declared reference scope executes, followed by its LM
+    head. A four-layer reference must not be labelled full-model generation.
     This adapter requires the original external quantized embedding path.
     """
 
-    def __init__(self, report):
+    def __init__(self, report, model_layers=None):
+        if model_layers is not None and model_layers < 1:
+            raise ValueError('model_layers must be positive')
+        self.model_layers = model_layers
         self.record = dict(policy='CPU_LOAD_QUANTIZE_THEN_STREAM',
-            full_model_forward_preserved=True, decoder_layer_limit=1,
+            requested_model_layers=model_layers, decoder_layer_limit=1,
             dtype_policy='DEVICE_ONLY_NO_CAST', constructed_on_cpu=0,
             max_active_units=0, wrappers=[], cleanup_errors=[])
         report['placement'] = self.record
@@ -36,6 +40,25 @@ class LayerStreaming:
 
     def install(self, wrapper_module):
         cls = wrapper_module.Qwen3_5MoeForCausalLMWrapper
+        if self.model_layers is not None:
+            def load(original, args, kwargs):
+                values = inspect.signature(original).bind(*args, **kwargs)
+                values.apply_defaults()
+                if 'layer_num' not in values.arguments or values.arguments.get('start_layer_idx', 0) != 0:
+                    raise ValueError('four-layer reference requires original loader layer_num and start_layer_idx=0')
+                values.arguments['layer_num'] = self.model_layers
+                model = original(*values.args, **values.kwargs)
+                total = model.config.num_hidden_layers
+                if self.model_layers > total or len(model.model.layers) != self.model_layers:
+                    raise ValueError('original loader did not construct the requested layer prefix')
+                self.record.update(source_num_hidden_layers=total,
+                    executed_num_hidden_layers=self.model_layers,
+                    full_model_forward_preserved=self.model_layers == total,
+                    decode_token_source=f'FIRST_{self.model_layers}_LAYERS_PLUS_ORIGINAL_NORM_LM_HEAD')
+                # Original inference allocates caches and unpacks outputs using this field.
+                model.config.num_hidden_layers = self.model_layers
+                return model
+            self.patch(wrapper_module, 'load_npu_model', load)
 
         def construct(original, args, kwargs):
             values = inspect.signature(original).bind(*args, **kwargs)
@@ -66,7 +89,7 @@ class LayerStreaming:
                 raise ValueError('layer streaming requires external inputs_embeds + embed_scale from the original W4 inference')
             caches = values.arguments.get('past_key_values')
             if caches is None or len(caches) != len(wrapper.model.model.layers):
-                raise ValueError('full-model golden requires a cache entry for every decoder layer')
+                raise ValueError('reference requires a cache entry for every constructed decoder layer')
             self.attach(wrapper, embeds.device)
             try:
                 result = original(*args, **kwargs)

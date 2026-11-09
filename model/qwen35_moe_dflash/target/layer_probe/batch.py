@@ -39,7 +39,10 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
         capture_sha256=sha(capture/'manifest.json'), golden_source=source['reference'],
         layers=source['layers'], reference_sources=source['sources'],
         scope='ONE_CPRO_REGION_PER_GRAPH; GOLDEN_INPUT_REPLAY; NO_FULL_MODEL_EXPORT',
-        golden_state_feedback='CAPTURED_ORIGINAL_310P_TRAJECTORY', cpro_state_feedback='NOT_TESTED')
+        golden_state_feedback='CAPTURED_310P_TRAJECTORY', cpro_state_feedback='NOT_TESTED',
+        reference_quant_matmul_policy=source.get('quant_matmul', {}).get('policy', 'ORIGINAL_CALL'),
+        reference_baseline_equivalence=source.get('quant_matmul', {}).get('baseline_equivalence', 'ORIGINAL_CALL_UNCHANGED'),
+        reference_model_layers=source.get('placement', {}).get('executed_num_hidden_layers'))
     save_json(root/'manifest.json', report)
     tool = Path(__file__).resolve().parents[4]/'targets/cpro/tools/target_layer_probe.py'
     for region in regions:
@@ -200,6 +203,8 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
         planned_cases=[r['id'] for r in manifest['cases']], uncompiled_cases=[r['id'] for r in manifest['cases'] if r['id'] not in available],
         ddk_id=ddk_id, schema=schema.evidence, scope=manifest['scope'],
         source_evidence=dict(artifact_kind=KIND, manifest_sha256=sha(root/'manifest.json'), compile_sha256=sha(root/'compile.json')))
+    meta['reference'] = {k: manifest.get(k) for k in ('golden_source', 'reference_quant_matmul_policy',
+        'reference_baseline_equivalence', 'reference_model_layers')}
     save_json(out/'fixture/manifest.json', meta)
     return meta
 
@@ -270,6 +275,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
         numerical_validation=status, coverage_complete=complete, validated_cases=[r['case'] for r in rows],
         cases=rows, first_failed_boundary=failed[0]['case'] if failed else None,
         uncompiled_cases=meta.get('uncompiled_cases', []), all_model_layers_passed=False,
+        reference=meta.get('reference', {}),
         scope='CPro boundary replay with 310P inputs; isolated failures are not proof of full-graph root cause',
         first_failure_order='CALL_LAYER_CPRO_DEPENDENCY_ORDER; INDEPENDENT_BRANCHES_HAVE_NO_UNIQUE_FIRST_CAUSE',
         cpro_continuous_state_feedback='NOT_TESTED', thresholds=dict(atol=atol, rtol=rtol))

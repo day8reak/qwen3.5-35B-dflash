@@ -16,9 +16,16 @@ def main():
     p.add_argument('--source-root', required=True, help='original project containing inference.py and models/')
     p.add_argument('--output', required=True, help='new capture directory below AI_RUN_DIR')
     p.add_argument('--layers', default='0,1,2,3')
+    p.add_argument('--model-layers', type=int, default=4,
+        help='construct only this layer prefix; default 4 matches the working inference.py golden')
     p.add_argument('--calls', type=int, default=2, help='first calls per layer; 2 normally means prefill + first decode')
+    p.add_argument('--qlinear-group-size', type=int, choices=[256],
+        help='explicit QLinear group_sizes=[0,0,256], after shape checks; baseline equivalence remains unverified')
     p.add_argument('inference_args', nargs=argparse.REMAINDER, help='-- followed by the ORIGINAL working inference arguments')
     a = p.parse_args()
+    selected = [int(x) for x in a.layers.split(',')]
+    if a.model_layers < 1 or not selected or min(selected) < 0 or max(selected) >= a.model_layers:
+        p.error('capture layers must lie within the positive --model-layers prefix')
     root = Path(a.source_root).resolve()
     entry = root / 'inference.py'
     if not entry.is_file():
@@ -46,18 +53,18 @@ def main():
     import torch_npu
     nz = importlib.import_module('models.modeling_qwen3_5_moe_hiai_nz')
     wrappers = importlib.import_module('models.export_model_wrapper_qwen3_5_moe')
-    capture = Capture(a.output, [int(x) for x in a.layers.split(',')], a.calls)
+    capture = Capture(a.output, selected, a.calls)
     capture.report['original_argv'] = [str(entry), *forwarded]
     for path in (entry, Path(nz.__file__), Path(wrappers.__file__), root/'utils.py'):
         capture.source(path)
     # Record configuration identity, without rewriting relative paths or prompts.
     if reference.config:
         capture.source(Path(reference.config).resolve())
-    placement = LayerStreaming(capture.report)
+    placement = LayerStreaming(capture.report, model_layers=a.model_layers)
     old_argv = sys.argv
     error = None
     try:
-        capture.install(torch_npu, nz, wrappers)
+        capture.install(torch_npu, nz, wrappers, qlinear_group_size=a.qlinear_group_size)
         placement.install(wrappers)
         capture.flush()
         sys.argv = [str(entry), *forwarded]

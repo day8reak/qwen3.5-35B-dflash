@@ -2,9 +2,9 @@
 
 首批仅覆盖原模型第 0～3 层的 prefill 和第一个 decode。**导出阶段不构造整模型，不构造整层再裁图。** 每个进程只导一个 CPro 边界的一个输出，退出后再处理下一个。MoE 专家大子图不在本批导出范围内。
 
-原 `inference.py` 和私有模型文件保留原样。新入口在当前进程将原 wrapper 的构造 device 改为 CPU，让原程序先完成 W4 量化替换；forward 时依次搬入一个 decoder layer，执行原 forward 后同步并搬回 CPU，再处理下一层。最终 norm 和 lm_head 也分别搬入、执行、搬回。仍执行全部 40 层并使用原程序的 token 选择逻辑，只采第 0～3 层。CPU 负责存放权重，golden 来自实际 310P 运算，不用 CPU 重算。
+原 `inference.py` 和私有模型文件保留原样。用户确认这里的可信参考是 `inference.py` 四层运行，整网分段运行使用另一个 `inference_segment.py`。新入口默认 `--model-layers 4`，在原 `load_npu_model` 构造时传入 `layer_num=4`，缓存分配也使用四层；不会先构造 40 层再裁剪。decode 使用这四层加原 norm/lm_head 的输出，与本次参考范围一致，不声称是完整 40 层模型生成。
 
-这避免原 wrapper 在量化替换前 `.to(npu)` 整模型造成的 OOM。`--layers` 是**采集范围**，不裁掉后 36 层后再用不完整模型采样 decode token。模型权重与 checkpoint 加载仍需要足够主机内存；NPU 保留原输入、全部层缓存及当前层的权重/临时计算空间。只做 device 搬运，不传 dtype、不做 `.half()`；代价是逐层传输较慢，不能用这次运行计时评价模型性能。入口要求原外部量化 embedding 路径，不支持 `--use_origin_model` 或 pseudo_quant。
+构造 device 为 CPU，原程序完成 W4 量化替换后，NPU 每次搬入一个 decoder layer，执行原 forward 后同步并搬回 CPU；最终 norm、lm_head 也分别搬入、执行、搬回。`--layers` 是**采集范围**，必须在 `--model-layers` 范围内。原 loader 仍会读取完整 HF/量化 checkpoint，主机内存需要足够；NPU 保留四层缓存及当前层权重/临时计算空间。只做 device 搬运，不传 dtype、不做 `.half()`。CPU 不重算 golden；逐层搬运计时不作为模型性能。入口要求原外部量化 embedding 路径，不支持 `--use_origin_model` 或 pseudo_quant。
 
 新增工具代码可公开，原始源码、权重、配置和实际 dump 留在各自工作目录，不提交仓库。
 
@@ -42,11 +42,11 @@ cd "$TARGET_SOURCE"
 python "$REPO_DIR/targets/cpro/tools/inference_target_probe.py" \
   --source-root "$TARGET_SOURCE" \
   --output "$AI_RUN_DIR/target-layer-accuracy/golden" \
-  --layers 0,1,2,3 --calls 2 -- \
+  --model-layers 4 --layers 0,1,2,3 --calls 2 -- \
   --config "$TARGET_CONFIG" --quant_mode enable --quant_bits 4 --max_token 2
 ```
 
-启动应打印 `model on CPU; original quantization runs before layer streaming`，第一次 forward 应打印 `streaming all 40 decoder layers, norm and head; one unit on device at a time`（层数取实际配置）。manifest 的 `placement` 记录构造策略、总层数和各单元调用次数。若此前启动已 OOM，更新代码后使用一个新的 output 目录（例如 `golden-stream-001`），保留失败目录；后续 list/export 的 `--capture` 对应改成新目录。
+启动应打印 `model on CPU; original quantization runs before layer streaming`，第一次 forward 应打印 `streaming all 4 decoder layers, norm and head; one unit on device at a time`。manifest 的 `placement` 记录 checkpoint 层数、实际构造层数和各单元调用次数。旧版 096d207 固定完整模型计算的策略已被四层参考替代。重试使用新的 output 目录，保留失败目录；后续 list/export 的 `--capture` 对应改成新目录。
 
 `--` 后是原 inference.py 的参数，可以保留原来的其他参数。不要启用 pseudo_quant。输入 prompt/长度由原程序决定，不在采集入口中偷偷补齐或截断。原程序需完成 prefill 和至少一次 decode。`--calls 3` 可额外采第二个 decode，但 CPro 端仍是独立 golden 输入重放，不等于连续反馈验证。
 
@@ -56,6 +56,23 @@ python "$REPO_DIR/targets/cpro/tools/inference_target_probe.py" \
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" list \
   --capture "$AI_RUN_DIR/target-layer-accuracy/golden"
 ```
+
+### 首个 QLinear 报 groupSize 错误时
+
+原 `QLinear` 未传 `group_sizes`。[Ascend op-plugin 7.1.0 实现](https://github.com/Ascend/op-plugin/blob/7.1.0/op_plugin/ops/opapi/QuantMatmulKernelNpuOpApi.cpp) 的 `check_and_get_groups` 在未传参数时返回 0，A8W4 分支将其直接交给 `aclnnQuantMatmulV5`。这与当前日志要求 groupSize=256 不一致；仅凭这一条错误不能确认已加载的 vendor 内核是否同时匹配 I4ZN 布局和 FP32 scale。
+
+需要显式 group256 时，在采集命令的 `--` **前**加 `--qlinear-group-size 256`。只在真实 `x_quant=[M,K]` INT8、`W_q=[K,N/8]` INT32、`scale=[K/256,N]`、`pertoken_scale=[M,1]` 且连续时补入 `group_sizes=[0,0,256]`；不改权重、scale dtype、布局或量化分组。默认不改原调用，不自动失败重试或转伪量化。选项启用后的 reference 标记为 `310P_EXPLICIT_QMATMUL_GROUP256_BASELINE_UNVERIFIED`，需与已工作的四层输出对齐，不能直接声称原 golden 精度已通过。
+
+新版本每次采集保存 `qlinear-audit.json`，包含算子真实 shape/dtype/stride、由 scale 推导的组大小、原始/实际参数、Python/torch_npu 路径与已加载库。若 matmul 失败，保存该次的 `qlinear-failure.pt`，下一轮只加载这个算子的输入和权重即可复现，不加载模型：
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" replay-qlinear-failure \
+  --capture "$AI_RUN_DIR/target-layer-accuracy/golden-group256-001" \
+  --output "$AI_RUN_DIR/target-layer-accuracy/qlinear-replay-001" \
+  --group-size 256
+```
+
+省略 `--group-size` 则复现保存的原始调用参数。每次只调用一个 matmul，结果为 EXECUTED/FAILED；EXECUTED 不代表数值正确。旧版本失败目录未保存该夹具，不能用于这个命令。若后续出现 scale dtype 或布局错误，保留 audit 和 report，先核对已成功环境的 torch_npu/CANN/自定义库，不盲目转换 FP32 scale 或重打包权重。
 
 ## 2. 有 TorchAir 的环境逐个导出小 AIR
 
