@@ -47,6 +47,42 @@ python3 targets/cpro/tools/inspect_target_operators.py \
 
 `INVENTORIED`仅表示所请求的清点完成；`PARTIAL`／`SOURCE_REVIEW_REQUIRED`会列出缺失目录、解析错误或未知调用。目录缺失单独标为`CANDIDATE_ROOTS_ABSENT`；声明差异单独记录在`contract_review`，不作为已验证的设备ABI故障。工具不会导入DDK Python、自动修改输入端口或重选算子实现。所有数值状态仍为`NOT_RUN`。重复执行覆盖同一位置的清单和摘要。
 
+## GDN单算子对照
+
+`probe_target_gdn.py`已准备两张独立图（T64／T1），每张图各有零态与非零非对称态夹具。图严格使用回传DDK的六输入、双FP16输出声明，32个head、128维状态；这项诊断不修改master，也不代表已解决master七输入接口差异。独立NumPy FP64递推参考与现有Torch FP32参考已做四组交叉检查，公共输出均转为FP16，最大相对L2差异约`1.12e-5`；该结果只验证主机参考，不是设备误差门槛。
+
+在已激活的本工程模型Python环境中执行。`CANN_ROOT`提供GE导出所需的头文件和`lib64/libgraph.so`；`CPRO_DDK_ROOT`和`CPRO_DDK_ID`使用已选定的X90环境。准备只依赖NumPy；编译使用现有GE导出和OMG入口，不重编整模。
+
+```bash
+(
+set -eu
+cd "${REPO_DIR:?}"
+: "${AI_RUN_DIR:?}" "${CANN_ROOT:?}" "${CPRO_DDK_ROOT:?}" "${CPRO_DDK_ID:?}"
+GDN_PROBE_DIR="$AI_RUN_DIR/target/tests/operator-accuracy/gdn"
+python3 targets/cpro/tools/probe_target_gdn.py \
+  --output "$GDN_PROBE_DIR" --plan-only
+python3 targets/cpro/tools/probe_target_gdn.py \
+  --output "$GDN_PROBE_DIR" --compile
+python3 targets/cpro/tools/probe_target_gdn.py \
+  --output "$GDN_PROBE_DIR" --runner-commands
+)
+```
+
+准备成功返回`PREPARED`；两图均编译成功返回`COMPILED`，编译摘要保存在`gdn/compile.json`。先回传该摘要及新版AIR的`inspection/summary.json`。编译成功后仍需核对实际放置和IO，再执行板端对照；本工具不连接服务器或设备。已准备完成时续跑从`--compile`开始，不重复生成夹具。该固定诊断目录不覆盖已有编译记录；失败日志先用于定位，修复后确认原进程退出，再清理该诊断目录并原位重跑。
+
+`--runner-commands`输出现有`qwen35_tensor_probe`的四条调用参数模板；部署时保持模型和夹具的相对目录，填入实际运行器、部署根、运行时版本与新输出根。每例预热1次、记录10次，两项输出均完整回收。`zero`与`untouched`需分别使用输出目录；它们不等同于已覆盖00／A5／5A填充实验。
+
+回收目录应包含四个case子目录，每个有`result.json`及`0.bin`至`9.bin`，再比较：
+
+```bash
+python3 targets/cpro/tools/probe_target_gdn.py \
+  --output "$AI_RUN_DIR/target/tests/operator-accuracy/gdn" \
+  --compare "${GDN_RETRIEVED_ROOT:?}" \
+  --report "$AI_RUN_DIR/target/tests/operator-accuracy/gdn/comparison.json"
+```
+
+比较给出每次调用的注意力输出／末态误差和字节一致性，当前为`METRICS_ONLY_NO_CALIBRATED_THRESHOLD`，不会自动宣布精度通过。每次使用原始初态，尚不覆盖状态回灌或部分有效长度；设备回执也不能独自证明部署模型、输入与本地文件一致。这些限制保留到后续真实AIR和板端结果核对。
+
 ## 尚未完成时的Draft归档
 
 保留 `offline-weights/full/baseline/model.omc`，1791018585字节，SHA256 `bc693db0bc3833d532f6b2158b3f1f19939311beb6941ff43c8c05b9aa4631dd`。最新38次调用加权准备＋API为60.4067ms；nd_n候选73.6574ms，不采用。两模型原数值门槛仍FAILED，488个对照区域中只有isolated第0例hidden不同；其余487个区域相等。详细限制见[结果](results.md)与[优化策略](optimization-strategy.md)。服务器归档回执尚未收到；已经完成时无需为本轮算子检查重复执行以下操作。
