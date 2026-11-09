@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Prepare, compile, execute and compare isolated Target GDN/CacheUpdate cases.
 
-This command DOES access the selected X90 board. Resume retrieves the same
+Normal execution accesses the selected X90 board; --analyze and --diagnose
+only read retained local files. Resume retrieves the same
 pending request and never relaunches it. Runtime configuration is reused only
 for the SDK, firmware identity and shared native runner, not its model paths.
 """
@@ -158,6 +159,8 @@ def main():
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--diagnose', action='store_true',
                         help='print retained errors only; no writes, compilation or device access')
+    parser.add_argument('--analyze', action='store_true',
+                        help='analyze retained output bits; no writes, compilation or device access')
     parser.add_argument('--config', help='existing runtime/runtime.json')
     parser.add_argument('--families', nargs='+', choices=tuple(MODULES), default=['gdn', 'cache'])
     parser.add_argument('--reuse-gdn', help='existing prepared/compiled GDN probe directory')
@@ -171,14 +174,27 @@ def main():
     parser.add_argument('--wait-seconds', type=int, default=1800)
     parser.add_argument('--poll-seconds', type=int, default=10)
     args = parser.parse_args()
-    if args.diagnose:
+    if args.diagnose or args.analyze:
         if args.resume or args.config or args.reuse_gdn or args.reuse_cache or args.tbe_diagnosis:
-            parser.error('--diagnose only needs --output')
+            parser.error('--diagnose/--analyze only needs --output')
+        if args.diagnose and args.analyze:
+            parser.error('select --diagnose or --analyze')
         root = Path(args.output).resolve()
         state = read_json(root/'result.json')
         if state.get('artifact_kind') != KIND:
             parser.error('not a Target attention validation report')
-        print(json.dumps(console_summary(root, state), ensure_ascii=False, indent=2))
+        result = console_summary(root, state)
+        if args.analyze:
+            result = dict(artifact_kind='qwen35-target-attention-retained-analysis',
+                status='ANALYZED', model_execution='NOT_RUN', device_query='NOT_RUN',
+                families={}, all_operators_passed=False)
+            for family, row in state['families'].items():
+                if row.get('stage') == 'complete' and row.get('recovery'):
+                    result['families'][family] = device.analyze(Path(row['recovery']).parent)
+                else:
+                    result['status'] = 'PARTIAL'
+                    result['families'][family] = dict(status='NO_COMPLETED_RECOVERY', stage=row.get('stage'))
+        print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
         return 0
     if args.wait_seconds < 0 or not 1 <= args.poll_seconds <= 60:
         parser.error('wait must be nonnegative and poll must be 1..60 seconds')

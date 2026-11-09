@@ -410,6 +410,9 @@ def analyze(directory, *, air_export=None):
     comparison = compare(fixture, native, selection=report['validated_cases'])
     if air_export and meta.get('source_evidence', {}).get('artifact_kind') != LAYER_KIND:
         raise ValueError('--air-export analysis requires the retained layer0 suite')
+    if meta.get('artifact_kind') == attention_validation.KIND:
+        from qwen35_moe_dflash.target.attention_analysis import analyze as analyze_attention
+        return analyze_attention(fixture, native, meta, comparison, report)
     if meta.get('source_evidence', {}).get('artifact_kind') in (feature_pack_probe.KIND, offline_weight_probe.KIND):
         return dict(comparison, artifact_kind=KIND, model_execution='NOT_RUN')
     if meta.get('source_evidence', {}).get('artifact_kind') == LAYER_KIND:

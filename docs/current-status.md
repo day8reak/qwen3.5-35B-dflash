@@ -4,13 +4,45 @@
 
 Linear Attention按Convstate更新、卷积／SiLU、GDN、门控RMSNorm推进；Self Attention按Q/K RMSNorm、RoPE、CacheUpdate、融合Attention推进。先测状态与布局，再串联；GDN与CacheUpdate已有独立诊断入口，其余尚未数值验证。
 
+## 本轮设备结果与下一步
+
+用户回传`attention-validation-tbe/result.json`：四张单算子图均编译成功，TBE worker审计均为`APPLIED`。GDN与CacheUpdate各四例均完成设备执行和回收，native、archive及各case退出码均0；本地主机未连接服务器或重验原始产物。
+
+GDN每例十次输出逐字节稳定且全部有限。以下为对独立参考的相对L2；尚无校准过的误差门槛，维持`METRICS_RECORDED`。
+
+| GDN用例 | core_attn | last_recurrent_state |
+|---|---:|---:|
+| T64零初态 | 0.36166% | 0.06612% |
+| T64非零初态 | 0.61187% | 0.08209% |
+| T1零初态 | 0.05123% | 0.05066% |
+| T1非零初态 | 0.05012% | 0.05029% |
+
+这仍是六输入、FP16诊断，未验证master七输入接口、部分有效长度或连续状态回灌。T64 OMC SHA256为`c74fde9447192d08c9c72d0220c975f9280e322bfe64ff814497093b984c5fa4`，T1为`b96815646df5937aeaee3d6cb7cd4ec09130dfacb2b9b2e2215c9ecfb19b69d8`，来源为用户回传字段。
+
+CacheUpdate整缓存比较为`NUMERICAL_FAILED`。粘贴内容在首例指标处截断：T64连续块首例重复稳定，max-abs为65472，RMSE为10454.801881971178。主机用同一夹具模拟“写入区正确、未写区全为正零”，得到完全相同的两个汇总值；这是需要逐位核实的模式线索，不能仅凭RMSE判定alias、输入修改或内核故障。夹具故意用大范围有限FP16位模式区分地址，不能把65472直接解释成算术溢出。
+
+现在读取已经回收的快照，不重编、不重建运行器、不上板：
+
+```bash
+(
+set -eu
+cd "${REPO_DIR:?}"
+git pull --ff-only origin main
+python3 targets/cpro/tools/validate_target_attention.py \
+  --output "$AI_RUN_DIR/target/tests/operator-accuracy/attention-validation-tbe" \
+  --analyze
+)
+```
+
+回传这个紧凑输出即可。入口核对请求绑定的夹具、原回收报告中的逐次快照／receipt SHA256，重新比较所有十次输出；Cache逐位统计写入区、未写区、正零模式与原输入相等情况，并附少量位模式坐标。不改原报告和通过门槛。若出现`WRITES_EXACT_UNTOUCHED_POSITIVE_ZERO`，下一步核对所选实现的部分写入／alias合同和整模的RefData接线；该模式本身不证明哪个组件负责保留旧缓存。9项主机回归通过，覆盖四组物理夹具、输入槽位重排、不同错误模式、逐次差异保留、非有限指标、修改证据拒绝、只读CLI及失败门槛不变；这些回归使用合成输出，不是新设备结果。
+
 ## 直接执行Target单算子验证
 
-用户回传已定位这次共同失败：GDN和CacheUpdate的T64／T1均在TE worker的`_prerun → _update_options → te_update_version`退出。新单算子入口漏传了已有成功流程的`--tbe-diagnosis`；现已在两组探针、直接编译CLI及自动验证入口补齐传递。沿用`common/tbe-diagnosis`的已完成诊断，严格核验同DDK的包、库和平台初始化证据，仅在本次编译目录生成TBE副本并保留真实worker审计。OMG目标仍为`kirinx90`，不改算子输入／属性、不改共享DDK或已安装Python。
+此前编译失败已定位并修复：GDN和CacheUpdate的T64／T1均在TE worker的`_prerun → _update_options → te_update_version`退出。新单算子入口漏传了已有成功流程的`--tbe-diagnosis`；现已在两组探针、直接编译CLI及自动验证入口补齐传递。沿用`common/tbe-diagnosis`的已完成诊断，严格核验同DDK的包、库和平台初始化证据，仅在本次编译目录生成TBE副本并保留真实worker审计。OMG目标仍为`kirinx90`，不改算子输入／属性、不改共享DDK或已安装Python。
 
-本次TBE接线的5项主机检查通过，覆盖两组编译器、直接CLI、自动入口、诊断哈希及worker审计状态保留；未执行真实DDK编译。
+TBE接线修复先通过5项主机检查，随后用户完成真实DDK编译和设备验证，结果见上节。
 
-不用重建已成功构建的native运行器，也不用重跑平台诊断。旧失败结果保留在`attention-validation`，修复后的验证使用`attention-validation-tbe`。仍须看真实重编和设备结果；`APPLIED`只证明worker使用了兼容处理，不等于模型编译或数值通过。
+不用重建已成功构建的native运行器，也不用重跑平台诊断。旧失败结果保留在`attention-validation`，修复后的验证使用`attention-validation-tbe`。本轮已完成，优先使用上方离线分析命令；下方保留完整执行命令供新批次使用，已有目录不会覆盖。`APPLIED`只证明worker使用了兼容处理，不等于数值通过。
 
 使用已有X90运行环境及`runtime/runtime.json`。下面的入口连续完成夹具和独立参考生成、单算子编译、编译IO绑定、板端执行、结果回收和数值比较；不需要先回传编译摘要。默认依次执行GDN和CacheUpdate，不重编整模。
 
@@ -45,15 +77,15 @@ python3 targets/cpro/tools/validate_target_attention.py \
 
 恢复不会重复下发已有请求。模型编译/执行失败保留日志和阶段；未确认旧任务结束时不会启动下一组。修复后使用新的验证输出目录。需要检查未清零输出时，另选输出目录并加`--output-initialization untouched`；这不等于已经完成00/A5/5A填充对照。
 
-回传`attention-validation-tbe/result.json`即可，其中包含两组最终数值结果、逐次误差及详细回收路径。`VALIDATION_COMPLETE`表示已完成这组诊断流程；GDN的误差仍须判断，`all_operators_passed`保持false。13项主机检查通过，覆盖夹具、编译IO重排mock、回收包、误差检测、恢复流程和CLI运行器预检；尚无本轮真实设备数值结果。
+回传`attention-validation-tbe/result.json`即可，其中包含两组最终数值结果、逐次误差及详细回收路径。`VALIDATION_COMPLETE`表示已完成这组诊断流程；GDN的误差仍须判断，`all_operators_passed`保持false。13项主机检查通过，覆盖夹具、编译IO重排mock、回收包、误差检测、恢复流程和CLI运行器预检；本轮真实设备结果见上节，主机回归不替代该证据。
 
 ## 当前覆盖和结论
 
 源码检查覆盖12类显式调用：Convstate、GDN、CacheUpdate、Attention、RMSNorm、DynamicQuant、QuantMatMul、MoE TopK、MoE InitRouting、GroupedMatMul、MoE FinalizeRouting，以及权重准备阶段的TransQuantParam。整理出68组带用途标签的逻辑shape；这不是68组已编译或已通过的用例，也不等于覆盖全部导出后算子。真实AIR还包含30个Conv2D和40个ReduceSumCpro，现单独记录为导出后发现的类别。注册的AdnRmsNorm在当前CPro主路径没有调用，实际Norm使用npu_rms_norm。
 
-接口检查工具的28项主机检查通过，尚未在本轮编译或运行设备。用户回传已确认两份真实AIR成功解析；源AIR描述仍不能替代编译后接口与设备数值。
+接口检查工具的28项主机检查通过；该清单工具本身不编译或运行设备。用户回传已确认两份真实AIR成功解析；源AIR描述仍不能替代编译后接口与设备数值。
 
-当前回传的`PARTIAL`仅由两个预设候选目录缺失触发（`ddk/ascendcpp`、`tools/platform/kirinx90`）；两份AIR均为`GRAPH_OBSERVED`，扫描没有读取错误。这不表示DDK损坏或算子精度失败。
+此前清单报告中的`PARTIAL`仅由两个预设候选目录缺失触发（`ddk/ascendcpp`、`tools/platform/kirinx90`）；两份AIR均为`GRAPH_OBSERVED`，扫描没有读取错误。这不表示DDK损坏或算子精度失败。
 
 此前的`hiai.proto.AttrDef.list_list_float` wire-type错误已通过优先使用离线TorchAir `ge.proto` schema修复；两份真实AIR均以`BUNDLED_TORCHAIR_GE`成功解码。报告保留实际schema及失败原因。
 
@@ -64,7 +96,7 @@ python3 targets/cpro/tools/validate_target_attention.py \
 - 用户已确认INT8／INT32是INT4数据的承载容器，不能由容器dtype或`QBMInt8Compute`类名判断成W8。scale同样是编码参数，用户描述为类似FP32、尾数10位；INT32／INT64标签不代表整数数值，不能用数值`.float()`转换当作解码。后续若回到矩阵乘排查，应核对打包／解包、逻辑K/N、布局与分组scale，具体位分布与舍入规则仍以实现为准。
 - 历史GDN结果受输出缓冲区00／A5／5A填充值影响，零填充下state相对L2仍约0.146／0.155。来自旧版本用户回传，根因未定位，不能视为当前master内核已确认失败或已修复。
 - CPro量化MoE在`pertoken_scale.dim() > 1`时执行`x_quant = x.view(...)`，覆盖动态量化结果；两份AIR展示的GMM代表节点都直接连接DynamicQuant整数输出，未支持该分支在这些节点触发。全部节点及真实输入仍未验证，此项暂后移，保留master代码。
-- Convstate控制数组和输出rank、GDN末态dtype需与当前DDK核对。旧CacheUpdate／Attention只有shape检查，精度未通过。
+- Convstate控制数组和输出rank、GDN末态dtype需与当前DDK核对。CacheUpdate已有本轮整缓存数值失败证据；Attention仍仅有旧shape检查，精度未通过。
 - master的`quant_bits`默认8，使用原W4数据导出时需显式指定4。旧AIR不能作为新源码已经重新导出的证据。
 
 ## 已有清单的复查（可跳过）
