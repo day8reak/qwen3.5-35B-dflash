@@ -1,9 +1,41 @@
 """Explain retained Target probe output bits without changing numerical gates."""
 from pathlib import Path
+import hashlib
 
 import numpy as np
 
 from . import cache_probe
+
+
+def cache_address_hypotheses(actual, inputs):
+    """Compare bounded behavioral models; never select a new reference contract."""
+    original, updates, blocks, offsets = inputs
+    start = int(blocks[0]) * cache_probe.SHAPE[2] + int(offsets[0])
+    positions = start + np.arange(len(updates), dtype=np.int32)
+    sequential_blocks, sequential_offsets = positions // 32, positions % 32
+    models = {'PER_TOKEN_INDICES_ON_ZERO': cache_probe.physical_reference(
+        np.zeros_like(original), updates, blocks, offsets)}
+    bounded = bool(np.all(sequential_blocks < cache_probe.SHAPE[0]))
+    if bounded:
+        for name, base in (('FIRST_INDEX_CONTIGUOUS_ON_ZERO', np.zeros_like(original)),
+                           ('FIRST_INDEX_CONTIGUOUS_PRESERVING_INPUT', original)):
+            models[name] = cache_probe.physical_reference(base, updates,
+                sequential_blocks, sequential_offsets)
+    rows = {}
+    for name, candidate in models.items():
+        bad = int(np.count_nonzero(candidate.view('<u2') != actual.view('<u2')))
+        rows[name] = dict(sha256=hashlib.sha256(candidate.tobytes()).hexdigest(),
+                         mismatched_fp16_elements=bad, exact_bits=bad == 0)
+    differing = np.flatnonzero((blocks != sequential_blocks) | (offsets != sequential_offsets))
+    return dict(models=rows, first_index_contiguous_in_bounds=bounded,
+        requested_blocks=sorted(set(blocks.tolist())),
+        first_index_contiguous_blocks=sorted(set(sequential_blocks.tolist())),
+        different_token_destinations=len(differing),
+        first_different_destinations=[dict(token=int(i),
+            requested=[int(blocks[i]), int(offsets[i])],
+            first_index_contiguous=[int(sequential_blocks[i]), int(sequential_offsets[i])])
+            for i in differing[:3]],
+        scope='BEHAVIORAL_MATCH_ONLY; IMPLEMENTATION_AND_SUPPORTED_CONTRACT_UNVERIFIED')
 
 
 def cache_pattern(actual, original, expected, written):
@@ -92,7 +124,8 @@ def analyze(fixture, native, meta, comparison, retained):
             if digest not in variants:
                 actual = np.fromfile(native/name/f'{index}.bin', dtype='<f2').reshape(cache_probe.SHAPE)
                 variants[digest] = dict(sha256=digest, calls=[],
-                    **cache_pattern(actual, inputs[0], expected, written))
+                    **cache_pattern(actual, inputs[0], expected, written),
+                    address_hypotheses=cache_address_hypotheses(actual, inputs))
             variants[digest]['calls'].append(index)
         summary['output_patterns'] = list(variants.values())
     return dict(artifact_kind='qwen35-target-attention-retained-analysis',
