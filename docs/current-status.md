@@ -4,6 +4,44 @@
 
 Linear Attention按Convstate更新、卷积／SiLU、GDN、门控RMSNorm推进；Self Attention按Q/K RMSNorm、RoPE、CacheUpdate、融合Attention推进。先测状态与布局，再串联；GDN与CacheUpdate已有独立诊断入口，其余尚未数值验证。
 
+## 直接执行Target单算子验证
+
+使用已有X90运行环境及`runtime/runtime.json`。下面的入口连续完成夹具和独立参考生成、单算子编译、编译IO绑定、板端执行、结果回收和数值比较；不需要先回传编译摘要。默认依次执行GDN和CacheUpdate，不重编整模。
+
+```bash
+(
+set -eu
+cd "${REPO_DIR:?}"
+git pull --ff-only origin main
+: "${AI_RUN_DIR:?}" "${CANN_ROOT:?}" "${CPRO_DDK_ROOT:?}" "${SN:?}" "${BIP:?}"
+python3 targets/cpro/scripts/build_hiai.py \
+  --output "$AI_RUN_DIR/runtime/native" --replace
+python3 targets/cpro/tools/validate_target_attention.py \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --output "$AI_RUN_DIR/target/tests/operator-accuracy/attention-validation"
+)
+```
+
+运行器已按当前源码构建时省略`build_hiai.py`。若runtime配置指定了其它`native_directory`，构建到该目录。使用模型Python环境；GE头文件和`libgraph.so`来自`CANN_ROOT`，OMG来自`CPRO_DDK_ROOT`，DDK身份和运行时版本从已有runtime配置读取。`SN`、`BIP`、`HDC`沿用已工作的X90连接设置。运行配置只提供环境、固件身份和公共运行器，不执行其中的整模。
+
+需要复用之前已准备／编译的两组探针时，在验证命令后加`--reuse-gdn "$AI_RUN_DIR/target/tests/operator-accuracy/gdn" --reuse-cache "$AI_RUN_DIR/target/tests/operator-accuracy/cache"`；只执行一组用`--families gdn`或`--families cache`。这些选项无需重新清点算子。一次编译部分失败时继续运行该组中已编译的用例，并明确报告覆盖不完整。
+
+每例预热1次、记录10次完整输出。下发前按编译图的命名Data和GraphDef.input顺序重排输入，输出按编译NetOutput绑定参考；相同shape的Q/K/V不靠shape猜槽位。现有传输流程校验OMC、运行器和输入SHA256，回收时再次校验保留夹具。报告包含编译GraphOp归属；仅有HIAI执行不能宣称所有计算均在NPU上。
+
+- GDN：T64／T1，零／非零非对称初态，共4例。遵循已报告DDK的六输入、双FP16输出接口；独立FP64递推参考，逐次报告core输出和末态的max-abs、RMSE、relative-L2、cosine及字节稳定性。尚未校准误差阈值，有限且稳定的输出记为`METRICS_RECORDED`；非有限值或重复不稳定明确失败。master七输入接口、部分有效长度和连续状态回灌尚未覆盖。
+- CacheUpdate：T64跨31/32及63/64边界，连续／置换block表；T1分别写块尾和下一块首，共4例。参考按`cache[block,:,offset,:]=updates[token]`独立重建。整个FP16 cache逐位比较，分别报告写入区、未写区错误数及坐标。通过只证明这些用例的返回cache；alias/copy-back和移动位置的连续反馈仍需后续测试。
+
+入口默认等待每组最多30分钟。命令中断或返回`PENDING`时，继续回收原请求：
+
+```bash
+python3 targets/cpro/tools/validate_target_attention.py \
+  --output "$AI_RUN_DIR/target/tests/operator-accuracy/attention-validation" --resume
+```
+
+恢复不会重复下发已有请求。模型编译/执行失败保留日志和阶段；未确认旧任务结束时不会启动下一组。修复后使用新的验证输出目录。需要检查未清零输出时，另选输出目录并加`--output-initialization untouched`；这不等于已经完成00/A5/5A填充对照。
+
+回传`attention-validation/result.json`即可，其中包含两组最终数值结果、逐次误差及详细回收路径。`VALIDATION_COMPLETE`表示已完成这组诊断流程；GDN的误差仍须判断，`all_operators_passed`保持false。13项主机检查通过，覆盖夹具、编译IO重排mock、回收包、误差检测、恢复流程和CLI运行器预检；尚无本轮真实设备数值结果。
+
 ## 当前覆盖和结论
 
 源码检查覆盖12类显式调用：Convstate、GDN、CacheUpdate、Attention、RMSNorm、DynamicQuant、QuantMatMul、MoE TopK、MoE InitRouting、GroupedMatMul、MoE FinalizeRouting，以及权重准备阶段的TransQuantParam。整理出68组带用途标签的逻辑shape；这不是68组已编译或已通过的用例，也不等于覆盖全部导出后算子。真实AIR还包含30个Conv2D和40个ReduceSumCpro，现单独记录为导出后发现的类别。注册的AdnRmsNorm在当前CPro主路径没有调用，实际Norm使用npu_rms_norm。
@@ -24,7 +62,7 @@ Linear Attention按Convstate更新、卷积／SiLU、GDN、门控RMSNorm推进�
 - Convstate控制数组和输出rank、GDN末态dtype需与当前DDK核对。旧CacheUpdate／Attention只有shape检查，精度未通过。
 - master的`quant_bits`默认8，使用原W4数据导出时需显式指定4。旧AIR不能作为新源码已经重新导出的证据。
 
-## 用户现在执行什么
+## 已有清单的复查（可跳过）
 
 已有本轮`inspection/inventory.json`时直接复用它，不必重新提供源码目录或重扫DDK。以下命令只重读其中已绑定的AIR，追加注意力输入生产者和输出消费者信息；保留Cast／Bitcast，不把空shape当标量，不由载体dtype推断计算位宽。
 
@@ -64,73 +102,6 @@ python3 targets/cpro/tools/inspect_target_operators.py \
 结果为`inspection/inventory.json`与`inspection/summary.json`，请回传后者。新版summary包含完整GDN端口和dtype、注册签名、源码Meta、自动输入名差异，以及GDN／Cache／量化MatMul的内核入口；省去重复用例列表。AIR摘要保留每个实际GE类型的首个可达节点及输入／输出描述，全部节点和不同shape／dtype仍保存在inventory中。全部算子的完整JSON注册记录保存在inventory的`ddk.registrations`中，dtype／format的逗号分隔组合保持原顺序。
 
 `INVENTORIED`仅表示所请求的清点完成；`PARTIAL`／`SOURCE_REVIEW_REQUIRED`会列出缺失目录、解析错误或未知调用。目录缺失单独标为`CANDIDATE_ROOTS_ABSENT`；声明差异单独记录在`contract_review`，不作为已验证的设备ABI故障。工具不会导入DDK Python、自动修改输入端口或重选算子实现。所有数值状态仍为`NOT_RUN`。重复执行覆盖同一位置的清单和摘要。
-
-## GDN单算子对照
-
-`probe_target_gdn.py`已准备两张独立图（T64／T1），每张图各有零态与非零非对称态夹具。图严格使用回传DDK的六输入、双FP16输出声明，32个head、128维状态；这项诊断不修改master，也不代表已解决master七输入接口差异。独立NumPy FP64递推参考与现有Torch FP32参考已做四组交叉检查，公共输出均转为FP16，最大相对L2差异约`1.12e-5`；该结果只验证主机参考，不是设备误差门槛。
-
-在已激活的本工程模型Python环境中执行。`CANN_ROOT`提供GE导出所需的头文件和`lib64/libgraph.so`；`CPRO_DDK_ROOT`和`CPRO_DDK_ID`使用已选定的X90环境。准备只依赖NumPy；编译使用现有GE导出和OMG入口，不重编整模。
-
-```bash
-(
-set -eu
-cd "${REPO_DIR:?}"
-: "${AI_RUN_DIR:?}" "${CANN_ROOT:?}" "${CPRO_DDK_ROOT:?}" "${CPRO_DDK_ID:?}"
-GDN_PROBE_DIR="$AI_RUN_DIR/target/tests/operator-accuracy/gdn"
-python3 targets/cpro/tools/probe_target_gdn.py \
-  --output "$GDN_PROBE_DIR" --plan-only
-python3 targets/cpro/tools/probe_target_gdn.py \
-  --output "$GDN_PROBE_DIR" --compile
-python3 targets/cpro/tools/probe_target_gdn.py \
-  --output "$GDN_PROBE_DIR" --runner-commands
-)
-```
-
-准备成功返回`PREPARED`；两图均编译成功返回`COMPILED`，编译摘要保存在`gdn/compile.json`。先回传该摘要及新版AIR的`inspection/summary.json`。编译成功后仍需核对实际放置和IO，再执行板端对照；本工具不连接服务器或设备。已准备完成时续跑从`--compile`开始，不重复生成夹具。该固定诊断目录不覆盖已有编译记录；失败日志先用于定位，修复后确认原进程退出，再清理该诊断目录并原位重跑。
-
-`--runner-commands`输出现有`qwen35_tensor_probe`的四条调用参数模板；部署时保持模型和夹具的相对目录，填入实际运行器、部署根、运行时版本与新输出根。每例预热1次、记录10次，两项输出均完整回收。`zero`与`untouched`需分别使用输出目录；它们不等同于已覆盖00／A5／5A填充实验。
-
-回收目录应包含四个case子目录，每个有`result.json`及`0.bin`至`9.bin`，再比较：
-
-```bash
-python3 targets/cpro/tools/probe_target_gdn.py \
-  --output "$AI_RUN_DIR/target/tests/operator-accuracy/gdn" \
-  --compare "${GDN_RETRIEVED_ROOT:?}" \
-  --report "$AI_RUN_DIR/target/tests/operator-accuracy/gdn/comparison.json"
-```
-
-比较给出每次调用的注意力输出／末态误差和字节一致性，当前为`METRICS_ONLY_NO_CALIBRATED_THRESHOLD`，不会自动宣布精度通过。每次使用原始初态，尚不覆盖状态回灌或部分有效长度；设备回执也不能独自证明部署模型、输入与本地文件一致。这些限制保留到后续真实AIR和板端结果核对。
-
-## CacheUpdate单算子对照
-
-物理cache为`[block, heads*D/16, token_offset, 16] = [64,32,32,16]`，更新张量为`[T,32,16]`；一次写入是`cache[block, :, offset, :] = updates[token]`。两个相邻维度都是32，单看shape无法发现轴互换，因此夹具对各轴做非对称编码。
-
-准备T64／T1两图、四例：T64从位置31开始，覆盖31／32、63／64边界，分别使用连续与非连续物理block；Decode1分别写位置63和64。独立物理参考已与逻辑unpack→Torch append→repack交叉检查，8项主机检查和4项编译入口mock检查通过；真实DDK编译与设备执行仍未运行。
-
-沿用上节环境，执行：
-
-```bash
-(
-set -eu
-cd "${REPO_DIR:?}"
-: "${AI_RUN_DIR:?}" "${CANN_ROOT:?}" "${CPRO_DDK_ROOT:?}" "${CPRO_DDK_ID:?}"
-CACHE_PROBE_DIR="$AI_RUN_DIR/target/tests/operator-accuracy/cache"
-python3 targets/cpro/tools/probe_target_cache.py --output "$CACHE_PROBE_DIR" --plan-only
-python3 targets/cpro/tools/probe_target_cache.py --output "$CACHE_PROBE_DIR" --compile
-python3 targets/cpro/tools/probe_target_cache.py --output "$CACHE_PROBE_DIR" --runner-commands
-)
-```
-
-先回传`cache/compile.json`。准备过的目录从`--compile`续跑；失败后的固定目录复用规则与GDN相同。运行器每例预热1次、保留10次完整cache快照。回收四个case目录中的`result.json`、`0.bin`至`9.bin`后执行：
-
-```bash
-python3 targets/cpro/tools/probe_target_cache.py \
-  --output "$AI_RUN_DIR/target/tests/operator-accuracy/cache" \
-  --compare "${CACHE_RETRIEVED_ROOT:?}" \
-  --report "$AI_RUN_DIR/target/tests/operator-accuracy/cache/comparison.json"
-```
-
-门槛为整个cache的FP16比特完全相同，分别报告写入区和未写区的错误数、坐标及十次稳定性。该测试检查返回tensor，未独立证明输入／输出alias或master中的copy-back；重复相同写入是幂等操作，也不证明移动位置的多轮状态反馈。即使`ALL_BITS_MATCH`，部署身份尚未核对时也不记为完整算子或整模通过。
 
 ## 尚未完成时的Draft归档
 

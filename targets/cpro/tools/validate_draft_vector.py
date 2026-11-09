@@ -35,6 +35,7 @@ from qwen35_moe_dflash.draft.incremental.top1_bitcarrier import CASES as BITCARR
 from qwen35_moe_dflash.draft.incremental.hidden_probe import CASES as HIDDEN_CASES, KIND as HIDDEN_KIND
 from qwen35_moe_dflash.draft.incremental.hidden_layer_probe import CASES as LAYER_CASES, KIND as LAYER_KIND
 from qwen35_moe_dflash.draft.incremental import feature_pack_probe, offline_weight_probe
+from qwen35_moe_dflash.target import attention_validation
 
 # Operator-local GE probe: NumPy only; Torch bindings stay on the weights server.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops/draft-top1/scripts'))
@@ -43,7 +44,8 @@ import stable_arg_max_ge
 PYTORCH_CASES = set(STAGES.values())
 VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES, *top1_semantics.EXTRA_CASES,
                     *stable_arg_max_ge.CASES, *HIDDEN_CASES, *LAYER_CASES, *feature_pack_probe.CASES,
-                    *feature_pack_probe.projection.CASES, *offline_weight_probe.CASES)
+                    *feature_pack_probe.projection.CASES, *offline_weight_probe.CASES,
+                    *attention_validation.CASES)
 WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4, 'int64': 8}
 DTYPES = {**DTYPES, 'int64': '<i8'}
 
@@ -159,6 +161,8 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
     from qwen35_moe_dflash.toolchain.omc_wire import load_schema
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     root = Path(compiled).resolve()
+    if (root/'manifest.json').is_file() and read_json(root/'manifest.json').get('artifact_kind') in attention_validation.KINDS:
+        return attention_validation.prepare_fixture(root, out, ddk, ddk_id, selection)
     report = read_json(root/'result.json')
     if report.get('artifact_kind') == offline_weight_probe.KIND:
         return offline_weight_probe.prepare_fixture(root, out, ddk, ddk_id, selection)
@@ -264,6 +268,8 @@ def _exact_required(meta, spec):
 def compare(fixture, native, *, selection=None, allow_host_fake=False):
     import numpy as np
     meta = read_json(fixture/'manifest.json')
+    if meta.get('artifact_kind') == attention_validation.KIND:
+        return attention_validation.compare(fixture, native, selection=selection, allow_host_fake=allow_host_fake)
     requested = selected_cases(c['case'] for c in meta['cases'])
     selected = selected_cases(requested if selection is None else selection, requested)
     cases = []
@@ -582,6 +588,12 @@ def start(args, out):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             selection = top1_semantics.BASE_CASES if getattr(args, 'top1_semantics', False) else args.cases
             meta = prepare(source, out, args.ddk_root, env['ddk_id'], selection)
+            if meta.get('artifact_kind') == attention_validation.KIND:
+                mode = getattr(args, 'output_initialization', 'zero')
+                if mode not in ('zero', 'untouched'):
+                    raise ValueError('unsupported Target probe output initialization')
+                meta['output_initialization'] = mode
+                _save(out/'fixture/manifest.json', meta)
             if getattr(args, 'top1_semantics', False):
                 meta = top1_semantics.expand(out, meta)
         state.update(status='PREPARED', stage='prepared', requested_cases=[c['case'] for c in meta['cases']])
