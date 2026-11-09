@@ -21,6 +21,17 @@ CASES = tuple('target_gdn_'+name for name in (
 WARMUP, REPETITIONS = 1, 10
 
 
+def compatibility_summary(compiled):
+    result = {}
+    for name, row in compiled.get('models', {}).items():
+        evidence = row.get('tbe_compatibility')
+        result[name] = (dict(status='NOT_REQUESTED') if not evidence else dict(
+            status=(evidence.get('audit') or {}).get('status', 'NOT_AUDITED'),
+            diagnosis=evidence.get('diagnosis'), compile=evidence.get('compile'),
+            audit_log=(evidence.get('metadata') or {}).get('audit_log')))
+    return result
+
+
 def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     from validate_draft_vector import bind_io, selected_cases
     from qwen35_moe_dflash.execution.hdc_run import _file_record
@@ -92,6 +103,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
         source_evidence=dict(artifact_kind=manifest['artifact_kind'],
             manifest_sha256=sha256_file(root/'manifest.json'),
             compile_sha256=sha256_file(root/'compile.json'),
+            tbe_compatibility=compatibility_summary(compiled),
             scope=manifest.get('scope'), master_differences=manifest.get('master_differences', [])),
         cache_alias_semantics='RETURNED_CACHE_ONLY_INPUT_MUTATION_NOT_PROVEN',
         gdn_feedback='ORIGINAL_STATE_REUSED_NOT_CONTINUOUS_STATE_FEEDBACK')
@@ -179,6 +191,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
         all_operators_passed=False, model_compilation='COMPILED',
         evidence_kind='host-fake-hiai' if allow_host_fake else 'device-hiai',
         source_evidence=meta['source_evidence'], scope=meta['scope'],
+        tbe_compatibility=meta['source_evidence'].get('tbe_compatibility', {}),
         warmup=WARMUP, repetitions=REPETITIONS,
         output_initialization=meta['output_initialization'],
         cache_alias_semantics=meta['cache_alias_semantics'], gdn_feedback=meta['gdn_feedback'])

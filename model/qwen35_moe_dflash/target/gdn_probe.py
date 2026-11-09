@@ -201,7 +201,8 @@ def check_registration(ddk):
             "scope": "DECLARATION_ONLY; COMPILED_IMPLEMENTATION_SELECTION_UNVERIFIED"}
 
 
-def compile_prepared(output, *, ge_root, ddk_root, ddk_id, cxx="c++", cxx11_abi=0, timeout_seconds=600):
+def compile_prepared(output, *, ge_root, ddk_root, ddk_id, cxx="c++", cxx11_abi=0,
+                     timeout_seconds=600, tbe_diagnosis=None):
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics, log_excerpt
     from qwen35_moe_dflash.graph.export import _logged
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
@@ -221,6 +222,7 @@ def compile_prepared(output, *, ge_root, ddk_root, ddk_id, cxx="c++", cxx11_abi=
     result = {"artifact_kind": KIND, "status": "COMPILING", "platform": "kirinx90",
               "registration": registration, "models": {}, "model_compilation": "NOT_RUN",
               "device_execution": "NOT_RUN", "numerical_validation": "NOT_RUN",
+              "tbe_diagnosis": str(Path(tbe_diagnosis).resolve()) if tbe_diagnosis else None,
               "placement": "UNVERIFIED", "manifest_sha256": sha256_file(root / "manifest.json")}
     write_json(root / "compile.json", result)
     for name, model in manifest["models"].items():
@@ -245,7 +247,10 @@ def compile_prepared(output, *, ge_root, ddk_root, ddk_id, cxx="c++", cxx11_abi=
                     log=folder / "export.log", timeout=timeout_seconds)
             row["air"] = identity(air, root)
             compiled = compile_existing_air(air, folder / "omc", ddk, ddk_id=ddk_id,
-                timeout_seconds=timeout_seconds, use_origin_format=True, save_weights_as_external_data=False)
+                timeout_seconds=timeout_seconds, use_origin_format=True, save_weights_as_external_data=False,
+                tbe_diagnosis=tbe_diagnosis)
+            if "tbe_compatibility" in compiled:
+                row["tbe_compatibility"] = compiled["tbe_compatibility"]
             if compiled["status"] != "COMPILED":
                 raise RuntimeError(str(compiled.get("error", compiled["status"])))
             omc = folder / "omc" / compiled["omc"]["path"]

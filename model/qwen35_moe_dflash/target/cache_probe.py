@@ -155,7 +155,8 @@ def check_registration(ddk):
             "scope": "DECLARATIONS_ONLY_NOT_KERNEL_SELECTION_OR_ALIAS_PROOF"}
 
 
-def compile_prepared(output, *, ge_root, ddk_root, ddk_id, cxx="c++", cxx11_abi=0, timeout_seconds=600):
+def compile_prepared(output, *, ge_root, ddk_root, ddk_id, cxx="c++", cxx11_abi=0,
+                     timeout_seconds=600, tbe_diagnosis=None):
     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics, log_excerpt
     from qwen35_moe_dflash.graph.export import _logged
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
@@ -173,6 +174,7 @@ def compile_prepared(output, *, ge_root, ddk_root, ddk_id, cxx="c++", cxx11_abi=
     report = {"artifact_kind": KIND, "status": "COMPILING", "registration": registration, "models": {},
               "manifest_sha256": sha256_file(root / "manifest.json"), "device_execution": "NOT_RUN",
               "model_compilation": "NOT_RUN", "all_operators_passed": False,
+              "tbe_diagnosis": str(Path(tbe_diagnosis).resolve()) if tbe_diagnosis else None,
               "numerical_validation": "NOT_RUN", "placement_and_alias": "UNVERIFIED"}
     write_json(root / "compile.json", report)
     env = dict(os.environ); env["LD_LIBRARY_PATH"] = str(library) + os.pathsep + env.get("LD_LIBRARY_PATH", "")
@@ -191,7 +193,10 @@ def compile_prepared(output, *, ge_root, ddk_root, ddk_id, cxx="c++", cxx11_abi=
             _logged(argv, folder=folder, env=env, log=folder / "build.log", timeout=timeout_seconds)
             _logged([str(exporter), str(air)], folder=folder, env=env, log=folder / "export.log", timeout=timeout_seconds)
             compiled = compile_existing_air(air, folder / "omc", ddk, ddk_id=ddk_id,
-                timeout_seconds=timeout_seconds, use_origin_format=True, save_weights_as_external_data=False)
+                timeout_seconds=timeout_seconds, use_origin_format=True, save_weights_as_external_data=False,
+                tbe_diagnosis=tbe_diagnosis)
+            if "tbe_compatibility" in compiled:
+                row["tbe_compatibility"] = compiled["tbe_compatibility"]
             row.update(air=identity(air, root), compiler_status=compiled["status"])
             if compiled["status"] != "COMPILED": raise RuntimeError(str(compiled.get("error", compiled["status"])))
             row.update(status="COMPILED", omc=identity(folder / "omc" / compiled["omc"]["path"], root))

@@ -6,15 +6,11 @@ Linear Attention按Convstate更新、卷积／SiLU、GDN、门控RMSNorm推进�
 
 ## 直接执行Target单算子验证
 
-最新用户回传：共享native运行器构建成功，GDN和CacheUpdate的两档模型均在编译阶段失败，设备执行与数值比较尚未开始。需要实际OMG报错才能定位；现有摘要的“no compiled case”不是编译器根因。先读取保留结果，不重复构建或编译：
+用户回传已定位这次共同失败：GDN和CacheUpdate的T64／T1均在TE worker的`_prerun → _update_options → te_update_version`退出。新单算子入口漏传了已有成功流程的`--tbe-diagnosis`；现已在两组探针、直接编译CLI及自动验证入口补齐传递。沿用`common/tbe-diagnosis`的已完成诊断，严格核验同DDK的包、库和平台初始化证据，仅在本次编译目录生成TBE副本并保留真实worker审计。OMG目标仍为`kirinx90`，不改算子输入／属性、不改共享DDK或已安装Python。
 
-```bash
-git pull --ff-only origin main
-python3 targets/cpro/tools/validate_target_attention.py \
-  --output "$AI_RUN_DIR/target/tests/operator-accuracy/attention-validation" --diagnose
-```
+本次TBE接线的5项主机检查通过，覆盖两组编译器、直接CLI、自动入口、诊断哈希及worker审计状态保留；未执行真实DDK编译。
 
-`--diagnose`只读取现有`result.json`，输出每组的`compiler_diagnostics`（编译阶段、日志路径和错误摘录），不访问设备、不改写产物，也不要求runtime或DDK环境。失败原因修复后再使用以下执行命令；已有失败目录保留，改用新的输出目录。
+不用重建已成功构建的native运行器，也不用重跑平台诊断。旧失败结果保留在`attention-validation`，修复后的验证使用`attention-validation-tbe`。仍须看真实重编和设备结果；`APPLIED`只证明worker使用了兼容处理，不等于模型编译或数值通过。
 
 使用已有X90运行环境及`runtime/runtime.json`。下面的入口连续完成夹具和独立参考生成、单算子编译、编译IO绑定、板端执行、结果回收和数值比较；不需要先回传编译摘要。默认依次执行GDN和CacheUpdate，不重编整模。
 
@@ -24,17 +20,16 @@ set -eu
 cd "${REPO_DIR:?}"
 git pull --ff-only origin main
 : "${AI_RUN_DIR:?}" "${CANN_ROOT:?}" "${CPRO_DDK_ROOT:?}" "${SN:?}" "${BIP:?}"
-python3 targets/cpro/scripts/build_hiai.py \
-  --output "$AI_RUN_DIR/runtime/native" --replace
 python3 targets/cpro/tools/validate_target_attention.py \
   --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --output "$AI_RUN_DIR/target/tests/operator-accuracy/attention-validation"
+  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
+  --output "$AI_RUN_DIR/target/tests/operator-accuracy/attention-validation-tbe"
 )
 ```
 
-运行器已按当前源码构建时省略`build_hiai.py`。若runtime配置指定了其它`native_directory`，构建到该目录。使用模型Python环境；GE头文件和`libgraph.so`来自`CANN_ROOT`，OMG来自`CPRO_DDK_ROOT`，DDK身份和运行时版本从已有runtime配置读取。`SN`、`BIP`、`HDC`沿用已工作的X90连接设置。运行配置只提供环境、固件身份和公共运行器，不执行其中的整模。
+运行器复用此次已成功构建的`runtime/native`。使用模型Python环境；GE头文件和`libgraph.so`来自`CANN_ROOT`，OMG来自`CPRO_DDK_ROOT`，DDK身份和运行时版本从已有runtime配置读取。`SN`、`BIP`、`HDC`沿用已工作的X90连接设置。运行配置只提供环境、固件身份和公共运行器，不执行其中的整模。
 
-需要复用之前已准备／编译的两组探针时，在验证命令后加`--reuse-gdn "$AI_RUN_DIR/target/tests/operator-accuracy/gdn" --reuse-cache "$AI_RUN_DIR/target/tests/operator-accuracy/cache"`；只执行一组用`--families gdn`或`--families cache`。这些选项无需重新清点算子。一次编译部分失败时继续运行该组中已编译的用例，并明确报告覆盖不完整。
+仅复用尚未编译或已经成功编译的探针时，在验证命令后加`--reuse-gdn "$AI_RUN_DIR/target/tests/operator-accuracy/gdn" --reuse-cache "$AI_RUN_DIR/target/tests/operator-accuracy/cache"`；已有失败编译不在原目录重试。只执行一组用`--families gdn`或`--families cache`。这些选项无需重新清点算子。一次编译部分失败时继续运行该组中已编译的用例，并明确报告覆盖不完整。
 
 每例预热1次、记录10次完整输出。下发前按编译图的命名Data和GraphDef.input顺序重排输入，输出按编译NetOutput绑定参考；相同shape的Q/K/V不靠shape猜槽位。现有传输流程校验OMC、运行器和输入SHA256，回收时再次校验保留夹具。报告包含编译GraphOp归属；仅有HIAI执行不能宣称所有计算均在NPU上。
 
@@ -45,12 +40,12 @@ python3 targets/cpro/tools/validate_target_attention.py \
 
 ```bash
 python3 targets/cpro/tools/validate_target_attention.py \
-  --output "$AI_RUN_DIR/target/tests/operator-accuracy/attention-validation" --resume
+  --output "$AI_RUN_DIR/target/tests/operator-accuracy/attention-validation-tbe" --resume
 ```
 
 恢复不会重复下发已有请求。模型编译/执行失败保留日志和阶段；未确认旧任务结束时不会启动下一组。修复后使用新的验证输出目录。需要检查未清零输出时，另选输出目录并加`--output-initialization untouched`；这不等于已经完成00/A5/5A填充对照。
 
-回传`attention-validation/result.json`即可，其中包含两组最终数值结果、逐次误差及详细回收路径。`VALIDATION_COMPLETE`表示已完成这组诊断流程；GDN的误差仍须判断，`all_operators_passed`保持false。13项主机检查通过，覆盖夹具、编译IO重排mock、回收包、误差检测、恢复流程和CLI运行器预检；尚无本轮真实设备数值结果。
+回传`attention-validation-tbe/result.json`即可，其中包含两组最终数值结果、逐次误差及详细回收路径。`VALIDATION_COMPLETE`表示已完成这组诊断流程；GDN的误差仍须判断，`all_operators_passed`保持false。13项主机检查通过，覆盖夹具、编译IO重排mock、回收包、误差检测、恢复流程和CLI运行器预检；尚无本轮真实设备数值结果。
 
 ## 当前覆盖和结论
 

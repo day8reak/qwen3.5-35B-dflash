@@ -23,6 +23,7 @@ def main(argv=None):
     parser.add_argument("--ge-root", default=os.environ.get("CANN_ROOT"))
     parser.add_argument("--ddk-root", default=os.environ.get("CPRO_DDK_ROOT"))
     parser.add_argument("--ddk-id", default=os.environ.get("CPRO_DDK_ID"))
+    parser.add_argument("--tbe-diagnosis", help="existing selected-DDK diagnosis for run-local TBE compatibility")
     parser.add_argument("--cxx", default="c++")
     parser.add_argument("--cxx11-abi", type=int, choices=(0, 1), default=0)
     parser.add_argument("--timeout-seconds", type=int, default=600)
@@ -40,7 +41,8 @@ def main(argv=None):
                           manifest=str(Path(args.output).resolve() / "manifest.json"))
         elif args.compile:
             result = gdn_probe.compile_prepared(args.output, ge_root=args.ge_root, ddk_root=args.ddk_root,
-                ddk_id=args.ddk_id, cxx=args.cxx, cxx11_abi=args.cxx11_abi, timeout_seconds=args.timeout_seconds)
+                ddk_id=args.ddk_id, cxx=args.cxx, cxx11_abi=args.cxx11_abi, timeout_seconds=args.timeout_seconds,
+                tbe_diagnosis=args.tbe_diagnosis)
         elif args.runner_commands:
             result = gdn_probe.runner_commands(args.output)
         else:

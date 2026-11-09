@@ -21,7 +21,7 @@ from qwen35_moe_dflash.common.artifacts import output_path
 from qwen35_moe_dflash.common.hashing import sha256_file
 from qwen35_moe_dflash.execution.runtime_config import read_json
 from qwen35_moe_dflash.execution.run_layout import _save
-from qwen35_moe_dflash.target.attention_validation import KIND, MODULES
+from qwen35_moe_dflash.target.attention_validation import KIND, MODULES, compatibility_summary
 
 
 def announce(family, stage):
@@ -30,7 +30,7 @@ def announce(family, stage):
 
 def console_summary(root, state):
     fields = ('status', 'stage', 'model_compilation', 'device_execution',
-              'numerical_validation', 'error', 'recovery', 'compiler_diagnostics')
+              'numerical_validation', 'error', 'recovery', 'compiler_diagnostics', 'tbe_compatibility')
     return dict(status=state['status'], report=str(root/'result.json'),
         families={family: {key: row[key] for key in fields if key in row}
                   for family, row in state['families'].items()}, all_operators_passed=False)
@@ -83,12 +83,16 @@ def run(root, request, *, wait_seconds=1800, poll_seconds=10):
                     module.load_prepared(probe)
                 row['stage'] = 'compile'
                 if not (probe/'compile.json').is_file():
+                    diagnosis = request.get('tbe_diagnosis')
+                    if diagnosis and sha256_file(Path(diagnosis)/'report.json') != request.get('tbe_diagnosis_sha256'):
+                        raise ValueError('TBE diagnosis changed since this validation began')
                     announce(family, 'compiling isolated t64/t1 models')
                     module.compile_prepared(probe, ge_root=request['ge_root'],
                         ddk_root=request['ddk_root'], ddk_id=env['ddk_id'],
-                        cxx=request['cxx'], cxx11_abi=request['cxx11_abi'])
+                        cxx=request['cxx'], cxx11_abi=request['cxx11_abi'], tbe_diagnosis=diagnosis)
                 compiled = read_json(probe/'compile.json')
                 row['model_compilation'] = compiled.get('status', 'FAILED')
+                row['tbe_compatibility'] = compatibility_summary(compiled)
                 if compiled.get('status') != 'COMPILED':
                     from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
                     row['compiler_diagnostics'] = {
@@ -160,6 +164,7 @@ def main():
     parser.add_argument('--reuse-cache', help='existing prepared/compiled CacheUpdate probe directory')
     parser.add_argument('--ge-root', default=os.environ.get('CANN_ROOT'))
     parser.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
+    parser.add_argument('--tbe-diagnosis', help='existing selected-DDK diagnosis; no new diagnosis matrix')
     parser.add_argument('--cxx', default='c++')
     parser.add_argument('--cxx11-abi', type=int, choices=(0, 1), default=0)
     parser.add_argument('--output-initialization', choices=('zero', 'untouched'), default='zero')
@@ -167,7 +172,7 @@ def main():
     parser.add_argument('--poll-seconds', type=int, default=10)
     args = parser.parse_args()
     if args.diagnose:
-        if args.resume or args.config or args.reuse_gdn or args.reuse_cache:
+        if args.resume or args.config or args.reuse_gdn or args.reuse_cache or args.tbe_diagnosis:
             parser.error('--diagnose only needs --output')
         root = Path(args.output).resolve()
         state = read_json(root/'result.json')
@@ -183,6 +188,8 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if args.resume:
             request = read_json(root/'request.json')
+            if args.tbe_diagnosis and str(Path(args.tbe_diagnosis).resolve()) != request.get('tbe_diagnosis'):
+                parser.error('changed TBE settings require a new --output; --resume retrieves the existing request')
         else:
             if root.exists():
                 parser.error('output exists; use --resume for this request or select a new output')
@@ -190,6 +197,15 @@ def main():
                 parser.error('--config, CANN_ROOT and CPRO_DDK_ROOT (or explicit roots) are required')
             if len(set(args.families)) != len(args.families):
                 parser.error('families must be distinct')
+            diagnosis = str(Path(args.tbe_diagnosis).resolve()) if args.tbe_diagnosis else None
+            diagnosis_sha256 = None
+            if diagnosis:
+                diagnosis_report = Path(diagnosis)/'report.json'
+                evidence = read_json(diagnosis_report)
+                if (evidence.get('artifact_kind') != 'qwen35-tbe-platform-diagnosis'
+                        or evidence.get('status') != 'DIAGNOSIS_COMPLETE'):
+                    parser.error('--tbe-diagnosis requires the completed existing platform diagnosis')
+                diagnosis_sha256 = sha256_file(diagnosis_report)
             config = Path(args.config).resolve()
             cfg = read_json(config)
             assets = (config.parent/cfg['assets']).resolve()
@@ -215,6 +231,7 @@ def main():
             request = dict(config=str(config), config_sha256=sha256_file(config),
                 assets_sha256=sha256_file(assets), families=args.families, reuse=reuse,
                 ge_root=str(Path(args.ge_root).resolve()), ddk_root=str(Path(args.ddk_root).resolve()),
+                tbe_diagnosis=diagnosis, tbe_diagnosis_sha256=diagnosis_sha256,
                 cxx=args.cxx, cxx11_abi=args.cxx11_abi, output_initialization=args.output_initialization)
             root.mkdir()
             _save(root/'request.json', request)
