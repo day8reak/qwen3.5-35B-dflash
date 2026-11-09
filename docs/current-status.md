@@ -1,28 +1,46 @@
 # 当前阶段：检查Target自定义、融合与量化算子
 
-更新：2026-11-09。按用户提供的patch使用master源码，先检查原40层Target实际使用的算子，覆盖Prefill64／Decode1。暂停离线权重转置及其它Draft性能实验，保留最新packed基线。
+更新：2026-11-09。按用户提供的patch使用master源码，先检查原40层Target实际使用的算子，覆盖Prefill64／Decode1。当前优先Linear Attention与Self Attention中的非矩阵乘算子；量化MatMul与MoE数值排查后移。暂停离线权重转置及其它Draft性能实验，保留最新packed基线。
+
+Linear Attention按Convstate更新、卷积／SiLU、GDN、门控RMSNorm推进；Self Attention按Q/K RMSNorm、RoPE、CacheUpdate、融合Attention推进。先测状态与布局，再串联；GDN与CacheUpdate已有独立诊断入口，其余尚未数值验证。
 
 ## 当前覆盖和结论
 
-源码检查覆盖12类调用：Convstate、GDN、CacheUpdate、Attention、RMSNorm、DynamicQuant、QuantMatMul、MoE TopK、MoE InitRouting、GroupedMatMul、MoE FinalizeRouting，以及权重准备阶段的TransQuantParam。整理出68组带用途标签的逻辑shape；这不是68组已编译或已通过的用例。注册的AdnRmsNorm在当前CPro主路径没有调用，实际Norm使用npu_rms_norm。
+源码检查覆盖12类显式调用：Convstate、GDN、CacheUpdate、Attention、RMSNorm、DynamicQuant、QuantMatMul、MoE TopK、MoE InitRouting、GroupedMatMul、MoE FinalizeRouting，以及权重准备阶段的TransQuantParam。整理出68组带用途标签的逻辑shape；这不是68组已编译或已通过的用例，也不等于覆盖全部导出后算子。真实AIR还包含30个Conv2D和40个ReduceSumCpro，现单独记录为导出后发现的类别。注册的AdnRmsNorm在当前CPro主路径没有调用，实际Norm使用npu_rms_norm。
 
-接口检查工具的20项主机检查通过，尚未编译或运行设备。需要继续核对实际AIR和所选DDK的端口、dtype、layout，再生成同输入的独立数学参考与板端对照。
+接口检查工具的28项主机检查通过，尚未在本轮编译或运行设备。用户回传已确认两份真实AIR成功解析；源AIR描述仍不能替代编译后接口与设备数值。
 
-服务器首次回传的`PARTIAL`由两个预设候选目录缺失触发（`ddk/ascendcpp`、`tools/platform/kirinx90`）；扫描未达到上限且没有读取错误。这不表示DDK损坏或算子精度失败。`airs={}`表示本次没有提供AIR，尚未观察整模实际使用的GE类型。
+当前回传的`PARTIAL`仅由两个预设候选目录缺失触发（`ddk/ascendcpp`、`tools/platform/kirinx90`）；两份AIR均为`GRAPH_OBSERVED`，扫描没有读取错误。这不表示DDK损坏或算子精度失败。
 
-后续AIR回传的`hiai.proto.AttrDef.list_list_float` wire-type错误暴露了检查器的schema选择问题：旧入口默认使用DDK的HIAI schema。现已优先复用本工程AIR工具所用的离线TorchAir `ge.proto` schema（`specs/torchair-ge-ir.pb`），严格解码失败时才尝试所选DDK的HIAI schema；显式指定`--torchair-pb2`时只使用该指定。报告保留实际schema及失败原因，不将解析错误归因于模型损坏。
+此前的`hiai.proto.AttrDef.list_list_float` wire-type错误已通过优先使用离线TorchAir `ge.proto` schema修复；两份真实AIR均以`BUNDLED_TORCHAIR_GE`成功解码。报告保留实际schema及失败原因。
 
 目前优先保留以下问题线索：
 
-- GDN的源码converter包含7个输入；回传DDK的两个JSON注册表、Python入口和C++入口均只有6个，缺少`effective_length`。源码生成FP32的`g`，Meta将末态声明为FP32；两个DDK注册表将`g`、`initial_state`和两个输出均声明为FP16。仍需查看实际AIR的Cast及编译选择，不能直接删掉有效长度或断言这些声明差异已经造成数值故障。
-- DDK文本中出现`QuantBatchMatmulV4444`、`GroupedMatmulV555`、`MoeInitRoutingV3`和`MoeFinalizeRoutingV2`。新版工具按实际名称记录这些候选；未证明原Python调用最终选择了哪个变体。`ascend310b`目录名和头文件中的310P注释也不能替代X90编译选择证据。
-- 回传的V4444 C++入口实例化`QBMInt8Compute<SCALE_FP32>`，没有显示A8W4分支。目录中存在A8W4头文件不能证明该入口使用了它；需对照实际量化MatMul节点、权重载体和编译实现，保持原W4配置。
+- 两份AIR各有30个GDN。展示的代表节点都包含7个输入，`effective_length`为INT16[1]，`g`和末态描述为FP32，初态FP16；Prefill／Decode的chunk_size分别64／1。回传DDK注册和入口均为六输入、双FP16输出。差异已从源码线索推进到源AIR证据，但仍需核对编译处理，不能直接删掉有效长度或宣称内核数值故障。
+- 两份AIR均确认351个`QuantBatchMatmulV4444`、80个`GroupedMatmulV555`、40个`MoeInitRoutingV3`与40个`MoeFinalizeRoutingV2`。这些已不是仅DDK目录中的候选名；具体编译实现仍未绑定。
+- 用户已确认INT8／INT32是INT4数据的承载容器，不能由容器dtype或`QBMInt8Compute`类名判断成W8。scale同样是编码参数，用户描述为类似FP32、尾数10位；INT32／INT64标签不代表整数数值，不能用数值`.float()`转换当作解码。后续若回到矩阵乘排查，应核对打包／解包、逻辑K/N、布局与分组scale，具体位分布与舍入规则仍以实现为准。
 - 历史GDN结果受输出缓冲区00／A5／5A填充值影响，零填充下state相对L2仍约0.146／0.155。来自旧版本用户回传，根因未定位，不能视为当前master内核已确认失败或已修复。
-- CPro量化MoE在`pertoken_scale.dim() > 1`时执行`x_quant = x.view(...)`，覆盖动态量化结果。需采集实际scale维度和GMM输入dtype，确认该分支是否触发；当前保留master代码。
+- CPro量化MoE在`pertoken_scale.dim() > 1`时执行`x_quant = x.view(...)`，覆盖动态量化结果；两份AIR展示的GMM代表节点都直接连接DynamicQuant整数输出，未支持该分支在这些节点触发。全部节点及真实输入仍未验证，此项暂后移，保留master代码。
 - Convstate控制数组和输出rank、GDN末态dtype需与当前DDK核对。旧CacheUpdate／Attention只有shape检查，精度未通过。
 - master的`quant_bits`默认8，使用原W4数据导出时需显式指定4。旧AIR不能作为新源码已经重新导出的证据。
 
 ## 用户现在执行什么
+
+已有本轮`inspection/inventory.json`时直接复用它，不必重新提供源码目录或重扫DDK。以下命令只重读其中已绑定的AIR，追加注意力输入生产者和输出消费者信息；保留Cast／Bitcast，不把空shape当标量，不由载体dtype推断计算位宽。
+
+```bash
+(
+set -eu
+cd "${REPO_DIR:?}"
+git pull --ff-only origin main
+INSPECTION_DIR="${AI_RUN_DIR:?}/target/tests/operator-accuracy/inspection"
+python3 targets/cpro/tools/inspect_target_operators.py \
+  --from-inventory "$INSPECTION_DIR/inventory.json" \
+  --output "$INSPECTION_DIR"
+)
+```
+
+这次回传`inspection/review.json`即可。重点是注意力算子的声明差异、输入连接与状态输出的直接消费者；完整节点仍在inventory中。源AIR未推导出的shape保持未知；源AIR描述和注册表不同，只记为待编译核对，不记为设备ABI失败。复用模式保留上次DDK声明快照；DDK或AIR已更换时再用下方完整命令重新清点。
 
 在已有DDK服务器环境运行下面的接口检查。`REPO_DIR`是包含新入口的本工程目录，`TARGET_SOURCE_ROOT`是master原工程的`qwen3_5_moe`目录，`AI_RUN_DIR`是现有运行根，`CPRO_DDK_ROOT`是本次选定的X90 DDK。Python需为本工程声明的模型Python。命令不读取权重payload，不编译、不启动设备。
 
@@ -82,6 +100,37 @@ python3 targets/cpro/tools/probe_target_gdn.py \
 ```
 
 比较给出每次调用的注意力输出／末态误差和字节一致性，当前为`METRICS_ONLY_NO_CALIBRATED_THRESHOLD`，不会自动宣布精度通过。每次使用原始初态，尚不覆盖状态回灌或部分有效长度；设备回执也不能独自证明部署模型、输入与本地文件一致。这些限制保留到后续真实AIR和板端结果核对。
+
+## CacheUpdate单算子对照
+
+物理cache为`[block, heads*D/16, token_offset, 16] = [64,32,32,16]`，更新张量为`[T,32,16]`；一次写入是`cache[block, :, offset, :] = updates[token]`。两个相邻维度都是32，单看shape无法发现轴互换，因此夹具对各轴做非对称编码。
+
+准备T64／T1两图、四例：T64从位置31开始，覆盖31／32、63／64边界，分别使用连续与非连续物理block；Decode1分别写位置63和64。独立物理参考已与逻辑unpack→Torch append→repack交叉检查，8项主机检查和4项编译入口mock检查通过；真实DDK编译与设备执行仍未运行。
+
+沿用上节环境，执行：
+
+```bash
+(
+set -eu
+cd "${REPO_DIR:?}"
+: "${AI_RUN_DIR:?}" "${CANN_ROOT:?}" "${CPRO_DDK_ROOT:?}" "${CPRO_DDK_ID:?}"
+CACHE_PROBE_DIR="$AI_RUN_DIR/target/tests/operator-accuracy/cache"
+python3 targets/cpro/tools/probe_target_cache.py --output "$CACHE_PROBE_DIR" --plan-only
+python3 targets/cpro/tools/probe_target_cache.py --output "$CACHE_PROBE_DIR" --compile
+python3 targets/cpro/tools/probe_target_cache.py --output "$CACHE_PROBE_DIR" --runner-commands
+)
+```
+
+先回传`cache/compile.json`。准备过的目录从`--compile`续跑；失败后的固定目录复用规则与GDN相同。运行器每例预热1次、保留10次完整cache快照。回收四个case目录中的`result.json`、`0.bin`至`9.bin`后执行：
+
+```bash
+python3 targets/cpro/tools/probe_target_cache.py \
+  --output "$AI_RUN_DIR/target/tests/operator-accuracy/cache" \
+  --compare "${CACHE_RETRIEVED_ROOT:?}" \
+  --report "$AI_RUN_DIR/target/tests/operator-accuracy/cache/comparison.json"
+```
+
+门槛为整个cache的FP16比特完全相同，分别报告写入区和未写区的错误数、坐标及十次稳定性。该测试检查返回tensor，未独立证明输入／输出alias或master中的copy-back；重复相同写入是幂等操作，也不证明移动位置的多轮状态反馈。即使`ALL_BITS_MATCH`，部署身份尚未核对时也不记为完整算子或整模通过。
 
 ## 尚未完成时的Draft归档
 

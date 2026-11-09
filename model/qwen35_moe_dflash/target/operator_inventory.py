@@ -14,6 +14,10 @@ import os
 from pathlib import Path
 import re
 
+from qwen35_moe_dflash.target.operator_air_review import (
+    AIR_ONLY_FAMILIES, descriptor, graph_evidence, review_report,
+)
+
 
 KIND = 'qwen35-target-operator-inventory'
 FILES = ('export_glm_model_qwen3_5_moe.py', 'utils.py',
@@ -233,7 +237,6 @@ def case_matrix(config):
 
 def inspect_air(path, schema):
     from qwen35_moe_dflash.target.original_air_roundtrip import _decode, _attributes
-    from qwen35_moe_dflash.target.original_air_inspect import _metadata_desc
     path = Path(path).expanduser()
     if path.is_dir():
         candidates = sorted(path.glob('*.air'))
@@ -246,7 +249,7 @@ def inspect_air(path, schema):
     raw = path.read_bytes()
     kind, _, graph = _decode(schema, raw)
     enums = schema.enums[schema.package+'.DataType']
-    known = {name: family for family,(_,names) in FAMILIES.items() for name in names}
+    known = {name: family for family,(_,names) in (FAMILIES | AIR_ONLY_FAMILIES).items() for name in names}
     nodes = graph['op']
     by_name = {n['name']:n for n in nodes}
     roots = [n for n in nodes if n.get('type')=='NetOutput']
@@ -267,11 +270,12 @@ def inspect_air(path, schema):
         if n.get('type') not in known: continue
         selected.append(dict(name=n['name'],type=n['type'],family=known[n['type']],
             inputs=n.get('input',[]),attributes=_attributes(n),
-            input_desc=[_metadata_desc(d,enums) for d in n.get('input_desc',[])],
-            output_desc=[_metadata_desc(d,enums) for d in n.get('output_desc',[])]))
+            input_desc=[descriptor(d,enums) for d in n.get('input_desc',[])],
+            output_desc=[descriptor(d,enums) for d in n.get('output_desc',[])]))
     return dict(path=str(path.resolve()),sha256=hashlib.sha256(raw).hexdigest(),
         format=kind,node_count=len(nodes),reachable_count=len(reachable),
         reachable_type_counts=dict(sorted(counts.items())),operators=selected,
+        connection_evidence=graph_evidence(nodes,selected,enums),
         unclassified_types=sorted(set(counts)-set(known)),
         status='GRAPH_OBSERVED',source_revision_binding='UNVERIFIED',
         scope='Source AIR metadata only; empty shapes are unknown, not scalars; no weights read or implementation/dtype guarantees.')
@@ -305,7 +309,7 @@ def inspect_air_schemas(path, *, ddk_root=None, torchair_pb2=None):
 
 
 def _family(ge_type):
-    return next((family for family,(_,names) in FAMILIES.items() if ge_type in names), None)
+    return next((family for family,(_,names) in (FAMILIES | AIR_ONLY_FAMILIES).items() if ge_type in names), None)
 
 
 def _json_registrations(text):
@@ -399,7 +403,7 @@ def ddk_inventory(root):
     if not root.is_dir(): raise ValueError('DDK root does not exist')
     roots=('ddk/tbe/ops','ddk/ascendcpp','tools/platform/kirinx90','tools/tools_ascendc')
     terms={family:re.compile('|'.join(re.escape(re.sub('[^a-z0-9]','',name.lower()))
-        for name in (call,*names))) for family,(call,names) in FAMILIES.items()}
+        for name in (call,*names))) for family,(call,names) in (FAMILIES | AIR_ONLY_FAMILIES).items()}
     matches=[]; files=0; consumed=0; limited=False; errors=[]; missing=[]
     registrations=[]; python_registrations=[]; kernels=[]
     for relative in roots:
@@ -501,7 +505,7 @@ def concise_report(report):
             entry=types.setdefault(node['type'],dict(count=0,representative=node))
             entry['count']+=1
         air_examples[label]=types
-    return dict(schema_version=1,artifact_kind=KIND+'-summary',report_revision=3,
+    return dict(schema_version=1,artifact_kind=KIND+'-summary',report_revision=4,
         status=report['status'],source_status=report['source']['status'],
         source_observations=report['source']['observations'],
         contract_review=report['contract_review'],
@@ -510,12 +514,13 @@ def concise_report(report):
             reachable_type_counts=row.get('reachable_type_counts')) for name,row in report['airs'].items()},
         air_inspection='NOT_REQUESTED' if not report['airs'] else 'REQUESTED',
         air_first_operator_per_type=air_examples,
+        air_additional_families=report.get('air_additional_families',[]),
         air_example_scope='First reachable node of each exact GE type; all nodes and differing shapes/dtypes remain in inventory.json.',
         ddk_status=ddk['status'] if ddk else 'NOT_INSPECTED',
         partial_reasons=ddk['partial_reasons'] if ddk else [],
         missing_roots=ddk['missing_roots'] if ddk else [],errors=ddk['errors'] if ddk else [],
         registered_candidates={f:sorted({r['ge_type'] for kind in ('registrations','python_registrations')
-            for r in ddk[kind] if r['family']==f}) for f in FAMILIES} if ddk else {},
+            for r in ddk[kind] if r['family']==f}) for f in (FAMILIES | AIR_ONLY_FAMILIES)} if ddk else {},
         source_gdn_converter=[r for r in report['source']['explicit_ge_converters'] if r['ge_type']=='ChunkGatedDeltaRule'],
         source_gdn_meta=report['source']['gdn_meta'],
         gdn_contracts=[r for kind in ('registrations','python_registrations') for r in ddk[kind]
@@ -527,7 +532,7 @@ def concise_report(report):
 def inspect(source_root, config, *, ddk_root=None, airs=None, torchair_pb2=None):
     source=source_inventory(source_root)
     matrix=case_matrix(config)
-    report=dict(schema_version=1,report_revision=3,artifact_kind=KIND,status='INVENTORIED',source=source,
+    report=dict(schema_version=1,report_revision=4,artifact_kind=KIND,status='INVENTORIED',source=source,
         operator_families=[dict(id=f,source_call=call,ge_search_candidates=list(names),
             source_call_count=len(source['families'][f]),contract=SOURCE_CONTRACT[f],
             phase='WEIGHT_PREPARATION' if f=='quant_param' else 'INFERENCE',
@@ -546,4 +551,42 @@ def inspect(source_root, config, *, ddk_root=None, airs=None, torchair_pb2=None)
             report['airs'][label]=inspect_air_schemas(path,ddk_root=ddk_root,torchair_pb2=torchair_pb2)
             if report['airs'][label]['status']=='UNAVAILABLE':
                 report['status']='PARTIAL'
+    _attach_air_review(report)
+    return report
+
+
+def _attach_air_review(report):
+    report['air_additional_families']=[dict(id=family,ge_types=list(types),
+        counts={label:sum(air.get('reachable_type_counts',{}).get(t,0) for t in types)
+                for label,air in report['airs'].items()},
+        discovery='AIR_LOWERING_NOT_EXPLICIT_VENDOR_CALL',
+        case_coverage='NOT_YET_BOUND',numerical='NOT_RUN')
+        for family,(_,types) in AIR_ONLY_FAMILIES.items()
+        if any(air.get('reachable_type_counts',{}).get(t,0) for air in report['airs'].values() for t in types)]
+    report['air_review']=review_report(report)
+
+
+def refresh_air_review(previous, *, torchair_pb2=None):
+    """Re-read the same AIRs using a saved source/DDK inventory, without weights.
+
+    Preserves source identities and candidate declarations. A changed AIR is
+    rejected rather than quietly binding the old source evidence to new bytes.
+    """
+    if previous.get('artifact_kind')!=KIND or previous.get('schema_version')!=1:
+        raise ValueError('not a Target operator inventory')
+    if not previous.get('airs'):
+        raise ValueError('saved inventory has no AIR paths; use --source-root and AIR arguments')
+    report=dict(previous,report_revision=4,airs={})
+    root=(previous.get('ddk') or {}).get('root')
+    for label,old in previous['airs'].items():
+        if not old.get('path') or not old.get('sha256'):
+            raise ValueError('saved AIR must have a successful path/hash binding: '+label)
+        row=inspect_air_schemas(old['path'],ddk_root=root,torchair_pb2=torchair_pb2)
+        if row.get('sha256') and row['sha256']!=old['sha256']:
+            row=dict(status='UNAVAILABLE',error='AIR changed since saved inventory; regenerate source/DDK inventory',
+                     path=old['path'])
+        report['airs'][label]=row
+        if row['status']=='UNAVAILABLE':report['status']='PARTIAL'
+    report['inventory_reuse_scope']='SAVED_SOURCE_AND_DDK_DECLARATIONS; SAME_AIR_BYTES_REINSPECTED; NO_FRESH_DDK_SCAN'
+    _attach_air_review(report)
     return report

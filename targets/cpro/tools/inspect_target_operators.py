@@ -13,7 +13,9 @@ sys.path.insert(0,str(REPO/'model'))
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source-root',required=True,help='private master-derived qwen3_5_moe source directory')
+    source=parser.add_mutually_exclusive_group(required=True)
+    source.add_argument('--source-root',help='private master-derived qwen3_5_moe source directory')
+    source.add_argument('--from-inventory',help='reuse saved source/DDK declarations and re-read its hash-bound AIRs')
     parser.add_argument('--config',default=str(REPO/'specs/target-config.json'),help='model geometry JSON, not the private path YAML')
     parser.add_argument('--ddk-root',default=os.environ.get('CPRO_DDK_ROOT'))
     parser.add_argument('--prefill-air',help='existing AIR file, or directory containing exactly one .air file')
@@ -21,9 +23,11 @@ def main(argv=None):
     parser.add_argument('--torchair-pb2')
     parser.add_argument('--output',required=True,help='report directory below AI_RUN_DIR; no tensor/model payload is generated')
     args=parser.parse_args(argv)
+    if args.from_inventory and (args.prefill_air or args.decode_air):
+        parser.error('--from-inventory uses the saved AIR paths')
     try:
         from qwen35_moe_dflash.common.artifacts import output_path
-        from qwen35_moe_dflash.target.operator_inventory import KIND,inspect,concise_report
+        from qwen35_moe_dflash.target.operator_inventory import KIND,inspect,concise_report,refresh_air_review
         output=output_path(args.output)
         output.mkdir(parents=True,exist_ok=True)
         existing=output/'inventory.json'
@@ -32,23 +36,36 @@ def main(argv=None):
         receipt=output/'summary.json'
         if receipt.exists() and json.loads(receipt.read_text()).get('artifact_kind')!=KIND+'-summary':
             raise ValueError('summary belongs to another task')
+        review_path=output/'review.json'
+        if review_path.exists() and json.loads(review_path.read_text()).get('artifact_kind')!='qwen35-target-air-contract-review':
+            raise ValueError('review belongs to another task')
         airs={name:path for name,path in (('prefill64',args.prefill_air),('decode1',args.decode_air)) if path}
-        report=inspect(args.source_root,json.loads(Path(args.config).read_text()),
-            ddk_root=args.ddk_root,airs=airs,torchair_pb2=args.torchair_pb2)
+        if args.from_inventory:
+            saved=Path(args.from_inventory)
+            if not saved.is_file() or saved.stat().st_size>64<<20:
+                raise ValueError('saved inventory must be a file <=64 MiB')
+            report=refresh_air_review(json.loads(saved.read_text()),torchair_pb2=args.torchair_pb2)
+        else:
+            report=inspect(args.source_root,json.loads(Path(args.config).read_text()),
+                ddk_root=args.ddk_root,airs=airs,torchair_pb2=args.torchair_pb2)
         temporary=output/'inventory.json.tmp'
         temporary.write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False)+'\n')
         temporary.replace(existing)
         temporary=output/'summary.json.tmp'
         temporary.write_text(json.dumps(concise_report(report),ensure_ascii=False,indent=2,allow_nan=False)+'\n')
         temporary.replace(receipt)
+        temporary=output/'review.json.tmp'
+        temporary.write_text(json.dumps(report['air_review'],ensure_ascii=False,indent=2,allow_nan=False)+'\n')
+        temporary.replace(review_path)
         summary={key:report[key] for key in ('status','model_compilation','device_execution','numerical_validation')}
         summary.update(families=len(report['operator_families']),logical_signatures=len(report['cases']),
             source_status=report['source']['status'],unknown_calls=report['source']['unknown_selected_calls'],
             source_observations=report['source']['observations'],
-            contract_review=report['contract_review'],contract_summary=str(receipt),
+            contract_review=report['contract_review'],contract_summary=str(receipt),air_review=str(review_path),
+            air_additional_families=report['air_additional_families'],
             air_status={name:dict(status=r['status'],error=r.get('error'),schema_source=r.get('schema_source'))
                         for name,r in report['airs'].items()},
-            air_inspection='REQUESTED' if airs else 'NOT_REQUESTED',
+            air_inspection='REQUESTED' if report['airs'] else 'NOT_REQUESTED',
             partial_reasons=report['ddk']['partial_reasons'] if report['ddk'] else [],
             ddk_status=report['ddk']['status'] if report['ddk'] else 'NOT_INSPECTED',report=str(existing))
         print(json.dumps(summary,ensure_ascii=False,indent=2))
