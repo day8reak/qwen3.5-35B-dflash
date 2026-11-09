@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -108,6 +109,8 @@ class QLinearTest(unittest.TestCase):
         self.assertEqual(seen[0][1]['group_sizes'], [0, 0, 256])
         self.assertEqual(seen[0][0][2].dtype, torch.float32)
         self.assertTrue((self.root/'replay/report.json').is_file())
+        self.assertEqual(result['stage'], 'COMPLETE')
+        self.assertIn('runtime_at_end', result)
 
     def test_failure_in_explicit_mode_saves_original_call_for_ab_replay(self):
         capture, audit, _, _ = self.exercise(256, True)
@@ -115,6 +118,27 @@ class QLinearTest(unittest.TestCase):
         self.assertNotIn('group_sizes', saved['kwargs'])
         row = json.loads((capture.root/'qlinear-audit.json').read_text())['failed_call']
         self.assertEqual(row['effective_kwargs']['group_sizes'], [0, 0, 256])
+
+    def test_failure_keeps_post_dispatch_libraries_and_original_exception(self):
+        capture, _, _, _ = self.exercise(None, True)
+        before = dict(environment={}, loaded_libraries=['/cann/libopapi.so'])
+        after = dict(environment={}, loaded_libraries=['/cann/libopapi.so', '/vendor/libcust_opapi.so'])
+        seen = []
+        def op(*args, **kwargs):
+            seen.append(kwargs)
+            raise RuntimeError('Cannot find binary for op TransData')
+        with patch('qwen35_moe_dflash.target.layer_probe.qlinear.runtime', side_effect=[before, after]), \
+             patch('qwen35_moe_dflash.target.layer_probe.qlinear.inventory', side_effect=OSError('diagnostic failed')):
+            result = replay_failure(capture.root, self.root/'replay', 'cpu', 256,
+                npu=SimpleNamespace(npu_quant_matmul=op))
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(result['status'], 'FAILED')
+        self.assertEqual(result['stage'], 'OP_DISPATCH')
+        self.assertIn('TransData', result['error'])
+        self.assertEqual(result['libraries_added'], ['/vendor/libcust_opapi.so'])
+        self.assertEqual(result['runtime_at_end'], after)
+        self.assertIn('diagnostic failed', result['backend_diagnostic_error'])
+        self.assertFalse((self.root/'replay/output.pt').exists())
 
 
 if __name__ == '__main__':

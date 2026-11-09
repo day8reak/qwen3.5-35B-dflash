@@ -1,12 +1,11 @@
 """Audit the real QLinear call and retain a bounded failure reproducer."""
 import json
-import os
 from pathlib import Path
-import sys
 
 import torch
 
 from .common import checked, identity, new_output, save_json
+from .qlinear_backend import inventory, runtime, tensor_formats
 
 
 def describe(value):
@@ -28,20 +27,6 @@ def snapshot(value):
     if isinstance(value, (tuple, list)):
         return type(value)(snapshot(v) for v in value)
     return value
-
-
-def runtime(npu):
-    libraries = []
-    maps = Path('/proc/self/maps')
-    if maps.is_file():
-        libraries = sorted({line.split()[-1] for line in maps.read_text().splitlines()
-            if '/' in line and any(x in line for x in ('libopapi', 'libascendcl', 'libtorch_npu'))})
-    return dict(python=sys.executable, python_version=sys.version, torch_version=torch.__version__,
-        torch_npu_version=getattr(npu, '__version__', 'unknown'), torch_npu_file=getattr(npu, '__file__', None),
-        quant_matmul_schema=str(getattr(npu.npu_quant_matmul, '_schemas', 'unavailable')),
-        environment={k: os.environ.get(k) for k in ('CONDA_DEFAULT_ENV', 'CONDA_PREFIX',
-            'ASCEND_HOME_PATH', 'ASCEND_OPP_PATH', 'ASCEND_CUSTOM_OPP_PATH', 'LD_LIBRARY_PATH',
-            'ASCEND_RT_VISIBLE_DEVICES', 'ASCEND_LAUNCH_BLOCKING')}, loaded_libraries=libraries)
 
 
 def arguments(args, kwargs):
@@ -118,6 +103,7 @@ class QuantMatmulAudit:
             self.calls[name] = count + 1
             row = dict(module=name, call=count, inputs=describe(arguments(args, kwargs)),
                 original_kwargs=describe(kwargs), contract=contract(args, kwargs), status='CALLING')
+            row['npu_formats'] = tensor_formats(self.npu, dict(arguments(args, kwargs), **kwargs))
             retained = count < self.capture.calls and (self.capture.active is not None or name.endswith('lm_head'))
             if retained:
                 self.record['calls'].append(row)
@@ -143,7 +129,11 @@ class QuantMatmulAudit:
                     row['reproducer'] = identity(path, self.capture.root)
                 except Exception as dump_error:
                     row['dump_error'] = f'{type(dump_error).__name__}: {dump_error}'
-                self.record['runtime_at_failure'] = runtime(self.npu)
+                try:
+                    self.record['runtime_at_failure'] = runtime(self.npu)
+                    self.record['backend_inventory'] = inventory(self.record['runtime_at_failure'])
+                except Exception as diagnostic_error:
+                    self.record['backend_diagnostic_error'] = str(diagnostic_error)
                 print('[target-probe] QLinear failure: ' + json.dumps(row, ensure_ascii=False), flush=True)
                 raise
             finally:
@@ -158,11 +148,14 @@ class QuantMatmulAudit:
 def replay_failure(capture_dir, output, device='npu:0', group_size=None, *, npu=None):
     root = new_output(output)
     capture_dir = Path(capture_dir).resolve()
-    result = dict(status='STARTING', scope='SINGLE_FAILED_MATMUL; NOT_GOLDEN_OR_ACCURACY_VALIDATION')
+    result = dict(status='STARTING', stage='LOAD_FIXTURE',
+                  scope='SINGLE_FAILED_MATMUL; NOT_GOLDEN_OR_ACCURACY_VALIDATION')
     try:
         audit = json.loads((capture_dir/'qlinear-audit.json').read_text())
         failed = audit['failed_call']
         payload = torch.load(checked(capture_dir, failed['reproducer']), map_location='cpu', weights_only=True)
+        result['reproducer'] = failed['reproducer']
+        result['captured_npu_formats'] = failed.get('npu_formats', 'NOT_RECORDED_BY_OLDER_CAPTURE')
         def move(value):
             if isinstance(value, torch.Tensor):
                 return value.to(device)
@@ -173,21 +166,36 @@ def replay_failure(capture_dir, output, device='npu:0', group_size=None, *, npu=
             return value
         if npu is None:
             import torch_npu as npu
+        result['stage'] = 'PREPARE_INPUTS'
         args, kwargs = move(payload['args']), move(payload['kwargs'])
         result.update(module=failed['module'], runtime=runtime(npu), inputs=describe(arguments(args, kwargs)),
-                      original_kwargs=describe(kwargs), contract=contract(args, kwargs))
+                      original_kwargs=describe(kwargs), contract=contract(args, kwargs),
+                      npu_formats=tensor_formats(npu, dict(arguments(args, kwargs), **kwargs)))
         if group_size is not None:
             if group_size != 256:
                 raise ValueError('only explicit group256 is supported')
             kwargs = explicit_group256(args, kwargs)
         result['effective_kwargs'] = describe(kwargs)
+        result['stage'] = 'OP_DISPATCH'
         with torch.no_grad():
-            actual = snapshot(npu.npu_quant_matmul(*args, **kwargs))
+            actual = npu.npu_quant_matmul(*args, **kwargs)
+            result['stage'] = 'OUTPUT_COPY_TO_CPU'
+            actual = snapshot(actual)
+        result['stage'] = 'SAVE_OUTPUT'
         path = root/'output.pt'
         torch.save(actual, path)
-        result.update(status='EXECUTED', output=identity(path, root), output_tensor=describe(actual))
+        result.update(status='EXECUTED', stage='COMPLETE', output=identity(path, root), output_tensor=describe(actual))
     except Exception as exc:
         result.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')
     finally:
+        if npu is not None:
+            try:
+                # Dispatch loads API libraries lazily, even when GetWorkspaceSize fails.
+                result['runtime_at_end'] = runtime(npu)
+                before = set(result.get('runtime', {}).get('loaded_libraries', []))
+                result['libraries_added'] = sorted(set(result['runtime_at_end']['loaded_libraries']) - before)
+                result['backend_inventory'] = inventory(result['runtime_at_end'])
+            except Exception as diagnostic_error:
+                result['backend_diagnostic_error'] = f'{type(diagnostic_error).__name__}: {diagnostic_error}'
         save_json(root/'report.json', result)
     return result

@@ -74,6 +74,34 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" replay-qlinear-failu
 
 省略 `--group-size` 则复现保存的原始调用参数。每次只调用一个 matmul，结果为 EXECUTED/FAILED；EXECUTED 不代表数值正确。旧版本失败目录未保存该夹具，不能用于这个命令。若后续出现 scale dtype 或布局错误，保留 audit 和 report，先核对已成功环境的 torch_npu/CANN/自定义库，不盲目转换 FP32 scale 或重打包权重。
 
+### 显式 group256 后报 TransData 找不到 binary
+
+当前反馈已从 groupSize 参数校验推进到 `aclnnQuantMatmulV5` 内部 `TransData` 的 GetWorkspace 失败（561103）。这仍是算子执行前的后端问题，没有输出可用于精度判断。报错中的 `c0:4294967261` 仅作为原始日志保留；不能据此推断需要哪一种格式、改 scale dtype 或重打包已经 I4ZN 排列的权重。
+
+旧报告存在两处盲点：库名过滤遗漏了 `libcust_opapi.so`，单算子重放只取了调用前的 maps。更新后直接复用原 `qlinear-failure.pt`，不重新加载模型。设置 `QMATMUL_CAPTURE` 为刚才使用的 `--capture` 目录（含 qlinear-audit.json 和 qlinear-failure.pt），在同一环境运行：
+
+```bash
+ASCEND_GLOBAL_LOG_LEVEL=1 ASCEND_SLOG_PRINT_TO_STDOUT=1 \
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" replay-qlinear-failure \
+  --capture "$QMATMUL_CAPTURE" \
+  --output "$AI_RUN_DIR/target-layer-accuracy/qlinear-backend-001" \
+  --group-size 256 \
+  > "$AI_RUN_DIR/target-layer-accuracy/qlinear-backend-001.log" 2>&1
+```
+
+这是进程内的 [INFO 日志开关](https://github.com/Ascend/pytorch/blob/master/env.sh)，不改变输入、算子参数、量化方式或库搜索路径。再次运行请换新的输出目录和日志名。
+
+`report.json` 新增以下证据，采集失败时也保留：
+
+- `stage`：区分输入准备、op dispatch、输出回读及保存失败。
+- `runtime_at_end` / `libraries_added`：调用后实际映射的 custom、stock、feature API 库；hook 包装期间仍能读取原 `_schemas`。
+- `backend_inventory`：按 `ASCEND_CUSTOM_OPP_PATH` 声明顺序、OPP 默认 vendor 配置和实际 maps，读取对应库的路径、哈希、属主 UID、QuantMatmul/TransData 导出符号。`readelf` 缺失或失败写 UNAVAILABLE，不误判成“没有 V5”。不执行 dlopen，不加载候选库，不改环境/权限。
+- `npu_formats`：本次重放张量的 NPU format 描述符。手工 I4ZN 字节排列与描述符是两回事；CPU 夹具不保存设备格式标签，旧采集缺失的标签标记 `NOT_RECORDED_BY_OLDER_CAPTURE`，不伪造一致性。
+
+[官方 op-plugin 7.1.0 加载器](https://github.com/Ascend/op-plugin/blob/7.1.0/op_plugin/utils/op_api_common.h) 逐库查找符号，再做 [属主检查](https://github.com/Ascend/op-plugin/blob/7.1.0/op_plugin/utils/op_api_common.cpp)。报告的 `owner_compatible_with_op_plugin_7_1` 只是与这份公开源码规则的对照，当前安装包是否使用同一逻辑仍要结合日志确认。环境中的路径存在、库被映射、库导出 V5，都不能单独证明实际 dispatcher 选择了它。
+
+回传 `report.json` 和同次 `.log`。重点核对 `aclnnQuantMatmulV5GetWorkspaceSize` / `aclnnQuantMatmulV5` 的 `is found in ...`、`not in custom lib`、属主跳过、dlopen/dlsym 错误和 TransData 失败上下文。没有命中日志不自动证明走 stock。若明确跳过 vendor，再处理该加载原因；若明确选中 vendor，再查该 vendor 的内部 TransData 依赖与当前 CANN/310P 支持。原始运行环境和成功 golden 仍是对照，不根据假设切换到伪量化。
+
 ## 2. 有 TorchAir 的环境逐个导出小 AIR
 
 设置 `CPRO_EXPORT_SCRIPT` 为原来用于 CPro AIR 的导出脚本。仅导入其中的 converter 定义，不调用其 main/export_air。
