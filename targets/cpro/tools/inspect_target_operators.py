@@ -46,7 +46,8 @@ def main(argv=None):
             source_status=report['source']['status'],unknown_calls=report['source']['unknown_selected_calls'],
             source_observations=report['source']['observations'],
             contract_review=report['contract_review'],contract_summary=str(receipt),
-            air_status={name:r['status'] for name,r in report['airs'].items()},
+            air_status={name:dict(status=r['status'],error=r.get('error'),schema_source=r.get('schema_source'))
+                        for name,r in report['airs'].items()},
             air_inspection='REQUESTED' if airs else 'NOT_REQUESTED',
             partial_reasons=report['ddk']['partial_reasons'] if report['ddk'] else [],
             ddk_status=report['ddk']['status'] if report['ddk'] else 'NOT_INSPECTED',report=str(existing))

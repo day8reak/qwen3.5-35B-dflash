@@ -277,6 +277,33 @@ def inspect_air(path, schema):
         scope='Source AIR metadata only; empty shapes are unknown, not scalars; no weights read or implementation/dtype guarantees.')
 
 
+def inspect_air_schemas(path, *, ddk_root=None, torchair_pb2=None):
+    """Prefer the source GE schema already used by this repo's AIR tooling.
+
+    The HIAI compiler schema is a different protobuf contract. It is only a
+    fallback for non-TorchAir graphs, never the default for source AIR.
+    """
+    from qwen35_moe_dflash.target.air_weights import weight_schema
+    from qwen35_moe_dflash.toolchain.omc_wire import load_schema
+    candidates=[('EXPLICIT_TORCHAIR_PB2' if torchair_pb2 else 'BUNDLED_TORCHAIR_GE',
+                 lambda:weight_schema(torchair_pb2))]
+    if ddk_root and not torchair_pb2:
+        candidates.append(('DDK_HIAI_PROTO',lambda:load_schema(
+            Path(ddk_root)/'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')))
+    attempts=[]
+    for name,loader in candidates:
+        try:
+            schema=loader()
+            row=inspect_air(path,schema)
+            attempts.append(dict(source=name,status='GRAPH_OBSERVED',package=schema.package))
+            row.update(schema_source=name,schema_evidence=schema.evidence,schema_attempts=attempts)
+            return row
+        except (OSError,ValueError,KeyError,TypeError,RecursionError) as error:
+            attempts.append(dict(source=name,status='UNAVAILABLE',error=f'{type(error).__name__}: {error}'))
+    return dict(status='UNAVAILABLE',error='; '.join(f"{r['source']}: {r['error']}" for r in attempts),
+        schema_attempts=attempts)
+
+
 def _family(ge_type):
     return next((family for family,(_,names) in FAMILIES.items() if ge_type in names), None)
 
@@ -474,11 +501,12 @@ def concise_report(report):
             entry=types.setdefault(node['type'],dict(count=0,representative=node))
             entry['count']+=1
         air_examples[label]=types
-    return dict(schema_version=1,artifact_kind=KIND+'-summary',report_revision=2,
+    return dict(schema_version=1,artifact_kind=KIND+'-summary',report_revision=3,
         status=report['status'],source_status=report['source']['status'],
         source_observations=report['source']['observations'],
         contract_review=report['contract_review'],
         air_status={name:dict(status=row['status'],error=row.get('error'),
+            schema_source=row.get('schema_source'),schema_attempts=row.get('schema_attempts'),
             reachable_type_counts=row.get('reachable_type_counts')) for name,row in report['airs'].items()},
         air_inspection='NOT_REQUESTED' if not report['airs'] else 'REQUESTED',
         air_first_operator_per_type=air_examples,
@@ -499,7 +527,7 @@ def concise_report(report):
 def inspect(source_root, config, *, ddk_root=None, airs=None, torchair_pb2=None):
     source=source_inventory(source_root)
     matrix=case_matrix(config)
-    report=dict(schema_version=1,report_revision=2,artifact_kind=KIND,status='INVENTORIED',source=source,
+    report=dict(schema_version=1,report_revision=3,artifact_kind=KIND,status='INVENTORIED',source=source,
         operator_families=[dict(id=f,source_call=call,ge_search_candidates=list(names),
             source_call_count=len(source['families'][f]),contract=SOURCE_CONTRACT[f],
             phase='WEIGHT_PREPARATION' if f=='quant_param' else 'INFERENCE',
@@ -514,14 +542,8 @@ def inspect(source_root, config, *, ddk_root=None, airs=None, torchair_pb2=None)
             report['status']='PARTIAL'
     report['contract_review']=contract_review(source,report['ddk'])
     if airs:
-        from qwen35_moe_dflash.toolchain.air_schema import load_torchair_schema
-        from qwen35_moe_dflash.toolchain.omc_wire import load_schema
-        if not torchair_pb2 and not ddk_root:raise ValueError('AIR inspection needs --torchair-pb2 or --ddk-root')
-        schema=(load_torchair_schema(torchair_pb2) if torchair_pb2 else
-            load_schema(Path(ddk_root)/'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so'))
         for label,path in airs.items():
-            try:report['airs'][label]=inspect_air(path,schema)
-            except (OSError,ValueError,KeyError,TypeError) as error:
-                report['airs'][label]=dict(status='UNAVAILABLE',error=f'{type(error).__name__}: {error}')
+            report['airs'][label]=inspect_air_schemas(path,ddk_root=ddk_root,torchair_pb2=torchair_pb2)
+            if report['airs'][label]['status']=='UNAVAILABLE':
                 report['status']='PARTIAL'
     return report

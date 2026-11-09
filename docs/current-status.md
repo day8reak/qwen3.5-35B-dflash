@@ -6,14 +6,17 @@
 
 源码检查覆盖12类调用：Convstate、GDN、CacheUpdate、Attention、RMSNorm、DynamicQuant、QuantMatMul、MoE TopK、MoE InitRouting、GroupedMatMul、MoE FinalizeRouting，以及权重准备阶段的TransQuantParam。整理出68组带用途标签的逻辑shape；这不是68组已编译或已通过的用例。注册的AdnRmsNorm在当前CPro主路径没有调用，实际Norm使用npu_rms_norm。
 
-本轮完成源码清单与16项主机检查，尚未导出小模型、编译或运行设备。需要继续核对实际AIR和所选DDK的端口、dtype、layout，再生成同输入的独立数学参考与板端对照。
+接口检查工具的20项主机检查通过，尚未编译或运行设备。需要继续核对实际AIR和所选DDK的端口、dtype、layout，再生成同输入的独立数学参考与板端对照。
 
 服务器首次回传的`PARTIAL`由两个预设候选目录缺失触发（`ddk/ascendcpp`、`tools/platform/kirinx90`）；扫描未达到上限且没有读取错误。这不表示DDK损坏或算子精度失败。`airs={}`表示本次没有提供AIR，尚未观察整模实际使用的GE类型。
 
+后续AIR回传的`hiai.proto.AttrDef.list_list_float` wire-type错误暴露了检查器的schema选择问题：旧入口默认使用DDK的HIAI schema。现已优先复用本工程AIR工具所用的离线TorchAir `ge.proto` schema（`specs/torchair-ge-ir.pb`），严格解码失败时才尝试所选DDK的HIAI schema；显式指定`--torchair-pb2`时只使用该指定。报告保留实际schema及失败原因，不将解析错误归因于模型损坏。
+
 目前优先保留以下问题线索：
 
-- GDN的源码converter包含7个输入；回传DDK Python注册函数和`origin_inputs`只有6个，缺少`effective_length`。这是已观察的声明差异；仍需核对完整JSON端口表、实际AIR与编译选择，不能直接删掉有效长度或断言这是数值故障根因。源码Meta将末态声明为FP32，也需与DDK输出dtype对照。
+- GDN的源码converter包含7个输入；回传DDK的两个JSON注册表、Python入口和C++入口均只有6个，缺少`effective_length`。源码生成FP32的`g`，Meta将末态声明为FP32；两个DDK注册表将`g`、`initial_state`和两个输出均声明为FP16。仍需查看实际AIR的Cast及编译选择，不能直接删掉有效长度或断言这些声明差异已经造成数值故障。
 - DDK文本中出现`QuantBatchMatmulV4444`、`GroupedMatmulV555`、`MoeInitRoutingV3`和`MoeFinalizeRoutingV2`。新版工具按实际名称记录这些候选；未证明原Python调用最终选择了哪个变体。`ascend310b`目录名和头文件中的310P注释也不能替代X90编译选择证据。
+- 回传的V4444 C++入口实例化`QBMInt8Compute<SCALE_FP32>`，没有显示A8W4分支。目录中存在A8W4头文件不能证明该入口使用了它；需对照实际量化MatMul节点、权重载体和编译实现，保持原W4配置。
 - 历史GDN结果受输出缓冲区00／A5／5A填充值影响，零填充下state相对L2仍约0.146／0.155。来自旧版本用户回传，根因未定位，不能视为当前master内核已确认失败或已修复。
 - CPro量化MoE在`pertoken_scale.dim() > 1`时执行`x_quant = x.view(...)`，覆盖动态量化结果。需采集实际scale维度和GMM输入dtype，确认该分支是否触发；当前保留master代码。
 - Convstate控制数组和输出rank、GDN末态dtype需与当前DDK核对。旧CacheUpdate／Attention只有shape检查，精度未通过。
@@ -38,7 +41,7 @@ python3 targets/cpro/tools/inspect_target_operators.py \
 )
 ```
 
-上面使用现有运行根的`prefill/air`、`decode/air`目录。目录中只有一个`.air`时直接读取；有多个时会列出候选，此时将参数改为明确的文件路径。也可直接传入位于其它位置的AIR文件。默认从所选DDK读取静态protobuf schema，也可用`--torchair-pb2 <实际ge_ir_by_protoc_*_pb2.py>`显式选择TorchAir schema。暂时只有旧AIR时可以用于接口观察，报告始终标记源码版本绑定未验证，不要求先重编整模。
+上面使用现有运行根的`prefill/air`、`decode/air`目录。目录中只有一个`.air`时直接读取；有多个时会列出候选，此时将参数改为明确的文件路径。也可直接传入位于其它位置的AIR文件。默认优先使用本工程离线TorchAir schema，成功时显示`schema_source=BUNDLED_TORCHAIR_GE`；也可用`--torchair-pb2 <实际ge_ir_by_protoc_*_pb2.py>`显式指定。暂时只有旧AIR时可以用于接口观察，报告始终标记源码版本绑定未验证，不要求先重编整模。
 
 结果为`inspection/inventory.json`与`inspection/summary.json`，请回传后者。新版summary包含完整GDN端口和dtype、注册签名、源码Meta、自动输入名差异，以及GDN／Cache／量化MatMul的内核入口；省去重复用例列表。AIR摘要保留每个实际GE类型的首个可达节点及输入／输出描述，全部节点和不同shape／dtype仍保存在inventory中。全部算子的完整JSON注册记录保存在inventory的`ddk.registrations`中，dtype／format的逗号分隔组合保持原顺序。
 
