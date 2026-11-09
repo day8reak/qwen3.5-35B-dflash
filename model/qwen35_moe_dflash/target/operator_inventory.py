@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 from collections import Counter
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -27,11 +28,11 @@ FAMILIES = {
     'attention': ('adn_fused_infer_attention', ('AdnFusedInferAttention',)),
     'rms': ('npu_rms_norm', ('RmsNorm',)),
     'dynamic_quant': ('npu_dynamic_quant', ('DynamicQuant',)),
-    'quant_matmul': ('npu_quant_matmul', ('QuantBatchMatmul', 'QuantBatchMatmulV3', 'QuantBatchMatMul', 'QuantBatchMatMulV3')),
+    'quant_matmul': ('npu_quant_matmul', ('QuantBatchMatmul', 'QuantBatchMatmulV3', 'QuantBatchMatMul', 'QuantBatchMatMulV3', 'QuantBatchMatmulV4444')),
     'moe_router': ('npu_moe_gating_top_k_softmax', ('MoeGatingTopKSoftmax',)),
     'moe_init': ('npu_moe_init_routing_v2', ('MoeInitRoutingV2', 'MoeInitRoutingV3')),
-    'moe_gmm': ('npu_grouped_matmul', ('GroupedMatmul', 'GroupedMatMul')),
-    'moe_finalize': ('npu_moe_finalize_routing', ('MoeFinalizeRouting',)),
+    'moe_gmm': ('npu_grouped_matmul', ('GroupedMatmul', 'GroupedMatMul', 'GroupedMatmulV555')),
+    'moe_finalize': ('npu_moe_finalize_routing', ('MoeFinalizeRouting', 'MoeFinalizeRoutingV2')),
     'quant_param': ('npu_trans_quant_param', ('TransQuantParam',)),
 }
 SOURCE_CONTRACT = {
@@ -95,8 +96,16 @@ class Calls(ast.NodeVisitor):
                 call=name, positional=[ast.unparse(v) for v in node.args],
                 keywords={k.arg or '**': ast.unparse(k.value) for k in node.keywords}))
         if name == 'torchair.ge.custom_op' and node.args and isinstance(node.args[0], ast.Constant):
+            keywords = {k.arg: k.value for k in node.keywords}
+            inputs = keywords.get('inputs')
+            ports = ({k.value: ast.unparse(v) for k,v in zip(inputs.keys,inputs.values)
+                if isinstance(k,ast.Constant) and isinstance(k.value,str)}
+                if isinstance(inputs,ast.Dict) else None)
+            outputs = keywords.get('outputs')
             self.custom.append(dict(scope='.'.join(self.scope), line=node.lineno,
                 ge_type=node.args[0].value,
+                input_ports=ports,
+                output_ports=ast.literal_eval(outputs) if isinstance(outputs,(ast.List,ast.Tuple)) else None,
                 arguments={k.arg or '**': ast.unparse(k.value) for k in node.keywords}))
         self.generic_visit(node)
 
@@ -161,12 +170,15 @@ def source_inventory(root):
                             observation='When pertoken_scale has rank >1, x_quant is replaced by original x, discarding dynamic-quant output.',
                             next='Capture actual DynamicQuant output scale rank and the first GMM input dtype before blaming the kernel.'))
     missing = [family for family, calls in grouped.items() if not calls]
+    gdn_meta = next((n for n in trees['export_glm_model_qwen3_5_moe.py'].body
+        if isinstance(n,ast.FunctionDef) and n.name=='npu_chunk_gated_delta_rule_meta'), None)
     return dict(files=files, selected_path='MASTER_CPRO_QUANTIZED; QLINEAR_IMPORTED_FROM_NZ',
         path_observations=dict(quant_linear_import_from_nz=imported, master_norm_raw_load=raw_load),
         status='SOURCE_CALLS_ACCOUNTED' if imported and raw_load and not missing and not unknown else 'SOURCE_REVIEW_REQUIRED',
         families=grouped, unknown_selected_calls=unknown, missing_expected_families=missing,
         excluded_calls=excluded, explicit_ge_converters=custom,
         observations=observations,
+        gdn_meta=dict(line=gdn_meta.lineno,definition=ast.unparse(gdn_meta)) if gdn_meta else None,
         excluded_ge_types=['AdnRmsNorm'],
         excluded_reason='Registered AdnRmsNorm is not called by this CPro path; ordinary/gated norm call npu_rms_norm.',
         reachability='REVIEWED_SOURCE_PATH_ONLY; ACTUAL_AIR_RECONCILIATION_REQUIRED')
@@ -222,7 +234,13 @@ def case_matrix(config):
 def inspect_air(path, schema):
     from qwen35_moe_dflash.target.original_air_roundtrip import _decode, _attributes
     from qwen35_moe_dflash.target.original_air_inspect import _metadata_desc
-    path = Path(path)
+    path = Path(path).expanduser()
+    if path.is_dir():
+        candidates = sorted(path.glob('*.air'))
+        if len(candidates)!=1:
+            raise ValueError('AIR directory requires exactly one .air file; candidates: '
+                             + ', '.join(p.name for p in candidates[:16]))
+        path = candidates[0]
     if not path.is_file() or not 0 < path.stat().st_size <= 64 << 20:
         raise ValueError('AIR must be a nonempty file <=64 MiB')
     raw = path.read_bytes()
@@ -259,6 +277,95 @@ def inspect_air(path, schema):
         scope='Source AIR metadata only; empty shapes are unknown, not scalars; no weights read or implementation/dtype guarantees.')
 
 
+def _family(ge_type):
+    return next((family for family,(_,names) in FAMILIES.items() if ge_type in names), None)
+
+
+def _json_registrations(text):
+    """Retain whole registration records, not the first keyword hit windows."""
+    data = json.loads(text)
+    result = []
+    if not isinstance(data,dict):
+        return result
+    for name,entry in data.items():
+        family = _family(name)
+        if family is None or not isinstance(entry,dict):
+            continue
+        def ports(prefix):
+            keys = sorted((k for k in entry if re.fullmatch(prefix+r'\d+',k)),
+                          key=lambda k:int(k[len(prefix):]))
+            # Keep comma-separated dtype/format variants in their declared
+            # order. Splitting them independently would lose correlation.
+            return [dict(slot=k,**entry[k]) for k in keys if isinstance(entry[k],dict)]
+        result.append(dict(ge_type=name,family=family,inputs=ports('input'),outputs=ports('output'),
+            attributes={k:v for k,v in entry.items() if k=='attr' or k.startswith('attr_')},
+            implementation={k:entry[k] for k in ('opFile','opInterface') if k in entry}))
+    return result
+
+
+def _python_registrations(text):
+    """Read TBE registration signatures as AST without importing the DDK."""
+    tree = ast.parse(text)
+    result = []
+    for node in ast.walk(tree):
+        if not isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)):
+            continue
+        name, kinds = None, None
+        for decorator in node.decorator_list:
+            if not isinstance(decorator,ast.Call):
+                continue
+            callee = ast.unparse(decorator.func).rsplit('.',1)[-1]
+            if callee=='register_operator' and decorator.args and isinstance(decorator.args[0],ast.Constant):
+                name = decorator.args[0].value
+            elif callee=='check_op_params':
+                kinds = [ast.unparse(a).rsplit('.',1)[-1] for a in decorator.args]
+        if not isinstance(name,str) or _family(name) is None:
+            continue
+        args = node.args.posonlyargs + node.args.args
+        params = [arg.arg for arg in args]
+        defaults = {arg.arg:ast.unparse(value) for arg,value in
+                    zip(args[len(args)-len(node.args.defaults):],node.args.defaults)}
+        defaults.update({arg.arg:ast.unparse(value) for arg,value in
+                         zip(node.args.kwonlyargs,node.args.kw_defaults) if value is not None})
+        params.extend(arg.arg for arg in node.args.kwonlyargs)
+        bindings = list(zip(params,kinds or []))
+        def ports(suffix):
+            return [dict(parameter=param,name=re.sub(r'_(?:in__|out_)$','',param),kind=kind)
+                    for param,kind in bindings if kind.endswith(suffix)]
+        result.append(dict(ge_type=name,family=_family(name),function=node.name,line=node.lineno,
+            parameters=params,defaults=defaults,check_op_params=kinds,
+            inputs=ports('_INPUT'),outputs=ports('_OUTPUT'),
+            port_binding='POSITIONAL_DECORATOR' if kinds and len(params)>=len(kinds) else 'UNAVAILABLE'))
+    return result
+
+
+def _kernel_entries(text):
+    """Keep complete entry bodies when small, explicitly mark truncated ones.
+
+    This is lexical evidence only: preprocessor dispatch and selected compiled
+    binaries are not inferred from a source file or an include name.
+    """
+    token = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',re.S)
+    clean = token.sub(lambda m: ''.join('\n' if c=='\n' else ' ' for c in m.group())
+                     if m.group().startswith('/') else m.group(),text)
+    braces = token.sub(lambda m: ''.join('\n' if c=='\n' else ' ' for c in m.group()),text)
+    pattern = re.compile(r'__global__\s+__aicore__\s+void\s+(\w+)\s*\([^)]*\)\s*\{',re.S)
+    entries = []
+    for match in pattern.finditer(clean):
+        start = match.start()
+        position = match.end()
+        depth = 1
+        while position<len(braces) and depth:
+            depth += (braces[position]=='{') - (braces[position]=='}')
+            position += 1
+        if depth:
+            continue
+        entries.append(dict(function=match.group(1),line=text.count('\n',0,start)+1,
+            text=text[start:min(position,start+16384)],truncated=position-start>16384))
+    includes = re.findall(r'^\s*#\s*include\s*"([^"\n]+)"',clean,re.M)
+    return dict(includes=includes,entries=entries,scope='LEXICAL_SOURCE_ONLY; COMPILED_SELECTION_UNVERIFIED')
+
+
 def ddk_inventory(root):
     """Find selected-DDK declarations in bounded text roots, without imports."""
     root=Path(root).resolve()
@@ -267,6 +374,7 @@ def ddk_inventory(root):
     terms={family:re.compile('|'.join(re.escape(re.sub('[^a-z0-9]','',name.lower()))
         for name in (call,*names))) for family,(call,names) in FAMILIES.items()}
     matches=[]; files=0; consumed=0; limited=False; errors=[]; missing=[]
+    registrations=[]; python_registrations=[]; kernels=[]
     for relative in roots:
         folder=root/relative
         if not folder.is_dir(): missing.append(relative);continue
@@ -291,6 +399,16 @@ def ddk_inventory(root):
                     normalized=re.sub('[^a-z0-9]','',text.lower())
                     families=[f for f,p in terms.items() if p.search(normalized)]
                     if families:
+                        origin=dict(path=str(path.relative_to(root)),sha256=hashlib.sha256(raw).hexdigest())
+                        try:
+                            if path.suffix=='.json':
+                                registrations.extend(dict(**origin,**row) for row in _json_registrations(text))
+                            elif path.suffix=='.py':
+                                python_registrations.extend(dict(**origin,**row) for row in _python_registrations(text))
+                            elif path.suffix in {'.cpp','.cc'} and any(f in families for f in ('gdn','cache_update','quant_matmul')):
+                                kernels.append(dict(**origin,**_kernel_entries(text)))
+                        except (ValueError,SyntaxError,RecursionError) as error:
+                            errors.append(dict(path=origin['path'],error=f'contract parse: {error}'))
                         lines=text.splitlines()
                         evidence=[]
                         for i,line in enumerate(lines):
@@ -309,14 +427,79 @@ def ddk_inventory(root):
               'PARTIAL' if limited or errors or missing else 'INSPECTED')
     return dict(root=str(root),status=status,
         files_visited=files,text_bytes=consumed,limited=limited,missing_roots=missing,
+        partial_reasons=(['CANDIDATE_ROOTS_ABSENT'] if missing else [])
+            + (['SCAN_LIMIT_REACHED'] if limited else []) + (['FILE_ERRORS'] if errors else []),
+        registrations=registrations,python_registrations=python_registrations,kernel_entries=kernels,
         matches=matches,errors=errors,
         scope='Text registrations/source candidates only; absence does not establish unsupported operators; presence does not establish numerical correctness.')
+
+
+def contract_review(source,ddk):
+    """Compare declarations, never assert that a scanned kernel was selected."""
+    if not ddk:
+        return dict(status='NOT_INSPECTED',findings=[])
+    findings=[]
+    for converter in source['explicit_ge_converters']:
+        if converter['ge_type'] in source['excluded_ge_types']:
+            continue
+        expected=converter['input_ports']
+        if expected is None:
+            continue
+        connected={name for name,value in expected.items() if value!='None'}
+        for kind in ('registrations','python_registrations'):
+            for declaration in ddk[kind]:
+                if declaration['ge_type']!=converter['ge_type']:
+                    continue
+                if kind=='python_registrations' and declaration['port_binding']=='UNAVAILABLE':
+                    continue
+                actual={p['name'] for p in declaration['inputs'] if 'name' in p}
+                absent=sorted(connected-actual)
+                if absent:
+                    findings.append(dict(id='SOURCE_INPUT_NOT_DECLARED',ge_type=converter['ge_type'],
+                        source_file=converter['file'],source_line=converter['line'],
+                        declaration=declaration['path'],declaration_kind=kind,
+                        source_connected_inputs=sorted(connected),registered_inputs=sorted(actual),
+                        inputs_not_declared=absent,status='DECLARATION_DIFFERENCE_SELECTION_UNVERIFIED'))
+    return dict(status='REVIEW_REQUIRED' if findings else 'NO_INPUT_NAME_DIFFERENCE_OBSERVED',
+        findings=findings,scope='Input names only, not dtype/layout/attributes or runtime ABI validation. Builtin-to-custom lowering still needs actual AIR/compiler evidence.')
+
+
+def concise_report(report):
+    """Return an actionable receipt without the repeated 68-case matrix."""
+    ddk=report['ddk']
+    air_examples={}
+    for label,air in report['airs'].items():
+        types={}
+        for node in air.get('operators',[]):
+            entry=types.setdefault(node['type'],dict(count=0,representative=node))
+            entry['count']+=1
+        air_examples[label]=types
+    return dict(schema_version=1,artifact_kind=KIND+'-summary',report_revision=2,
+        status=report['status'],source_status=report['source']['status'],
+        source_observations=report['source']['observations'],
+        contract_review=report['contract_review'],
+        air_status={name:dict(status=row['status'],error=row.get('error'),
+            reachable_type_counts=row.get('reachable_type_counts')) for name,row in report['airs'].items()},
+        air_inspection='NOT_REQUESTED' if not report['airs'] else 'REQUESTED',
+        air_first_operator_per_type=air_examples,
+        air_example_scope='First reachable node of each exact GE type; all nodes and differing shapes/dtypes remain in inventory.json.',
+        ddk_status=ddk['status'] if ddk else 'NOT_INSPECTED',
+        partial_reasons=ddk['partial_reasons'] if ddk else [],
+        missing_roots=ddk['missing_roots'] if ddk else [],errors=ddk['errors'] if ddk else [],
+        registered_candidates={f:sorted({r['ge_type'] for kind in ('registrations','python_registrations')
+            for r in ddk[kind] if r['family']==f}) for f in FAMILIES} if ddk else {},
+        source_gdn_converter=[r for r in report['source']['explicit_ge_converters'] if r['ge_type']=='ChunkGatedDeltaRule'],
+        source_gdn_meta=report['source']['gdn_meta'],
+        gdn_contracts=[r for kind in ('registrations','python_registrations') for r in ddk[kind]
+                       if r['family']=='gdn'] if ddk else [],
+        focused_kernel_entries=ddk['kernel_entries'] if ddk else [],
+        numerical_validation=report['numerical_validation'],all_operators_passed=False)
 
 
 def inspect(source_root, config, *, ddk_root=None, airs=None, torchair_pb2=None):
     source=source_inventory(source_root)
     matrix=case_matrix(config)
-    report=dict(schema_version=1,artifact_kind=KIND,status='INVENTORIED',source=source,
+    report=dict(schema_version=1,report_revision=2,artifact_kind=KIND,status='INVENTORIED',source=source,
         operator_families=[dict(id=f,source_call=call,ge_search_candidates=list(names),
             source_call_count=len(source['families'][f]),contract=SOURCE_CONTRACT[f],
             phase='WEIGHT_PREPARATION' if f=='quant_param' else 'INFERENCE',
@@ -329,6 +512,7 @@ def inspect(source_root, config, *, ddk_root=None, airs=None, torchair_pb2=None)
         report['ddk']=ddk_inventory(ddk_root)
         if report['ddk']['status']!='INSPECTED' and report['status']=='INVENTORIED':
             report['status']='PARTIAL'
+    report['contract_review']=contract_review(source,report['ddk'])
     if airs:
         from qwen35_moe_dflash.toolchain.air_schema import load_torchair_schema
         from qwen35_moe_dflash.toolchain.omc_wire import load_schema
