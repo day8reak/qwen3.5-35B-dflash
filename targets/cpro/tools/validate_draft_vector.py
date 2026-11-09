@@ -36,6 +36,8 @@ from qwen35_moe_dflash.draft.incremental.hidden_probe import CASES as HIDDEN_CAS
 from qwen35_moe_dflash.draft.incremental.hidden_layer_probe import CASES as LAYER_CASES, KIND as LAYER_KIND
 from qwen35_moe_dflash.draft.incremental import feature_pack_probe, offline_weight_probe
 from qwen35_moe_dflash.target import attention_validation
+from qwen35_moe_dflash.target.layer_probe import batch as target_layer_probe
+from qwen35_moe_dflash.target.layer_probe.common import KIND as TARGET_LAYER_KIND
 
 # Operator-local GE probe: NumPy only; Torch bindings stay on the weights server.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops/draft-top1/scripts'))
@@ -46,8 +48,8 @@ VALIDATION_CASES = (*CASES, *STAGES.values(), *ATTENTION_CASES, *MATRIX_CASES, *
                     *stable_arg_max_ge.CASES, *HIDDEN_CASES, *LAYER_CASES, *feature_pack_probe.CASES,
                     *feature_pack_probe.projection.CASES, *offline_weight_probe.CASES,
                     *attention_validation.CASES)
-WIDTHS = {'float32': 4, 'float16': 2, 'int32': 4, 'int64': 8}
-DTYPES = {**DTYPES, 'int64': '<i8'}
+WIDTHS = {'float32': 4, 'float16': 2, 'int16': 2, 'int32': 4, 'int64': 8}
+DTYPES = {**DTYPES, 'int16': '<i2', 'int64': '<i8'}
 
 KIND = 'qwen35-draft-vector-validation'
 PREFIX = '/data/local/tmp/qwen35_vector_'
@@ -161,6 +163,8 @@ def prepare(compiled, out, ddk, ddk_id, selection=None):
     from qwen35_moe_dflash.toolchain.omc_wire import load_schema
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     root = Path(compiled).resolve()
+    if (root/'manifest.json').is_file() and read_json(root/'manifest.json').get('artifact_kind') == TARGET_LAYER_KIND:
+        return target_layer_probe.prepare_fixture(root, out, ddk, ddk_id, selection)
     if (root/'manifest.json').is_file() and read_json(root/'manifest.json').get('artifact_kind') in attention_validation.KINDS:
         return attention_validation.prepare_fixture(root, out, ddk, ddk_id, selection)
     report = read_json(root/'result.json')
@@ -268,6 +272,8 @@ def _exact_required(meta, spec):
 def compare(fixture, native, *, selection=None, allow_host_fake=False):
     import numpy as np
     meta = read_json(fixture/'manifest.json')
+    if meta.get('artifact_kind') == TARGET_LAYER_KIND:
+        return target_layer_probe.compare(fixture, native, selection=selection, allow_host_fake=allow_host_fake)
     if meta.get('artifact_kind') == attention_validation.KIND:
         return attention_validation.compare(fixture, native, selection=selection, allow_host_fake=allow_host_fake)
     requested = selected_cases(c['case'] for c in meta['cases'])
@@ -405,11 +411,13 @@ def analyze(directory, *, air_export=None):
         for direction, prefix in (('inputs', 'input'), ('outputs', 'golden')):
             for spec in case[direction]:
                 path = member(fixture, f'{case["case"]}/{prefix}_{spec["index"]}.bin')
-                if path.stat().st_size != spec['bytes'] or sha256_file(path) != spec['fixture_sha256']:
+                if path.stat().st_size != spec.get('fixture_bytes', spec['bytes']) or sha256_file(path) != spec['fixture_sha256']:
                     raise ValueError('retained input/reference changed after launch')
     comparison = compare(fixture, native, selection=report['validated_cases'])
     if air_export and meta.get('source_evidence', {}).get('artifact_kind') != LAYER_KIND:
         raise ValueError('--air-export analysis requires the retained layer0 suite')
+    if meta.get('artifact_kind') == TARGET_LAYER_KIND:
+        return dict(comparison, artifact_kind=KIND, model_execution='NOT_RUN')
     if meta.get('artifact_kind') == attention_validation.KIND:
         from qwen35_moe_dflash.target.attention_analysis import analyze as analyze_attention
         return analyze_attention(fixture, native, meta, comparison, report)
@@ -555,6 +563,8 @@ def log_names(cases):
 
 
 def _check_probe_dtypes(meta, built):
+    if meta.get('input_reset') and meta['input_reset'] not in built.get('tensor_probe_input_reset', []):
+        raise ValueError('rebuild runtime/native with build_hiai.py --replace; golden replay requires resetting every input before each call')
     required_preparation = {c['input_preparation'] for c in meta['cases'] if 'input_preparation' in c}
     if required_preparation - set(built.get('tensor_probe_input_preparation', [])):
         raise ValueError('rebuild runtime/native with build_hiai.py --replace; tensor probe needs timed feature packing')
@@ -864,7 +874,7 @@ def recover(root, out):
             for direction, prefix in (('inputs', 'input'), ('outputs', 'golden')):
                 for spec in case[direction]:
                     path = fixture/case['case']/f'{prefix}_{spec["index"]}.bin'
-                    if path.stat().st_size != spec['bytes'] or sha256_file(path) != spec['fixture_sha256']:
+                    if path.stat().st_size != spec.get('fixture_bytes', spec['bytes']) or sha256_file(path) != spec['fixture_sha256']:
                         raise ValueError('retained input/reference changed after launch')
         maximum = 2*REPETITIONS*sum(r['bytes'] for c in meta['cases'] for r in c['outputs'])+(2 << 20)
         _, size = hdc.shell('wc -c < '+q(str(board/'outputs.tar')), 'vector-output-size')

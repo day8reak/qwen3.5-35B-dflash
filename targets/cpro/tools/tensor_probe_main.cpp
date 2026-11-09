@@ -20,6 +20,7 @@ struct Plan {
   unsigned warmup = 0, repetitions = 0;
   std::vector<HiaiTensorSpec> inputs, outputs;
   std::string preparation = "none";
+  bool reset_inputs = false;
 };
 Plan ReadPlan(const fs::path& path) {
   if (!fs::is_regular_file(path) || fs::file_size(path) > 65536)
@@ -41,11 +42,14 @@ Plan ReadPlan(const fs::path& path) {
       if (plan.preparation != "copy-c16-v1" && plan.preparation != "feature-pack-c16-v1" &&
           plan.preparation != "feature-pack-c16-kernel2-v1")
         throw std::invalid_argument("unknown probe input preparation");
+    } else if (fields.size() == 2 && fields[0] == "input_reset" && fields[1] == "copy-each-call" &&
+               iterations && !plan.reset_inputs && plan.inputs.empty() && plan.outputs.empty()) {
+      plan.reset_inputs = true;
     } else if (fields.size() == 5 && iterations && (fields[0] == "input" || fields[0] == "output")) {
       auto& specs = fields[0] == "input" ? plan.inputs : plan.outputs;
       if (Number(fields[1]) != specs.size() || specs.size() >= 8 ||
-          (fields[3] != "float32" && fields[3] != "float16" && fields[3] != "int32" && fields[3] != "int64"))
-        throw std::invalid_argument("probe requires contiguous bounded FP32/FP16/INT32/INT64 slots");
+          (fields[3] != "float32" && fields[3] != "float16" && fields[3] != "int16" && fields[3] != "int32" && fields[3] != "int64"))
+        throw std::invalid_argument("probe requires contiguous bounded FP32/FP16/INT16/INT32/INT64 slots");
       HiaiTensorSpec spec{fields[2], fields[3], {}};
       std::istringstream dimensions(fields[4]);
       while (std::getline(dimensions, token, ',')) {
@@ -126,6 +130,7 @@ int main(int argc, char** argv) {
       if (plan.preparation == "feature-pack-c16-kernel2-v1") PackDraftFeaturesC16Kernel2(inputs[0], packed);
       const auto pack_end = Clock::now();
       if (prepare_each_call) executor.SetInput(0, packed.empty() ? inputs[0] : packed);
+      else if (plan.reset_inputs) for (std::size_t j = 0; j < inputs.size(); ++j) executor.SetInput(j, inputs[j]);
       else if (i) for (std::size_t j = 0; j < inputs.size(); ++j) executor.ReuseInput(j);
       const auto set_end = Clock::now();
       executor.Execute();
@@ -152,6 +157,7 @@ int main(int argc, char** argv) {
     }
     executor.Close();
     result << "],\"status\":\"EXECUTED\",\"timing_scope\":\"SYNCHRONOUS_API_WALL_NOT_NPU_ONLY\"";
+    if (plan.reset_inputs) result << ",\"input_reset\":\"copy-each-call\"";
     if (prepare_each_call) {
       result << ",\"input_preparation\":\"" << plan.preparation
              << "\",\"prepared_timing_scope\":\"CPU_PACK_SETINPUT_EXECUTE_WALL; PREALLOCATED; SNAPSHOTS_EXCLUDED\"";
