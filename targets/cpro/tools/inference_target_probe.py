@@ -31,14 +31,18 @@ def main():
     reference_parser.add_argument('--quant_bits', type=int)
     reference_parser.add_argument('--quant_mode', default='enable')
     reference_parser.add_argument('--pseudo_quant', action='store_true')
+    reference_parser.add_argument('--use_origin_model', action='store_true')
     reference_parser.add_argument('--config')
     reference, _ = reference_parser.parse_known_args(forwarded)
     if reference.quant_bits != 4 or reference.quant_mode != 'enable':
         p.error('this diagnosis requires the original enabled W4 path: --quant_mode enable --quant_bits 4')
     if reference.pseudo_quant:
         p.error('pseudo quant is not the selected trusted 310P reference')
+    if reference.use_origin_model:
+        p.error('use_origin_model bypasses the original NPU wrapper and its bounded weight placement')
     sys.path.insert(0, str(root))
     from qwen35_moe_dflash.target.layer_probe.capture import Capture
+    from qwen35_moe_dflash.target.layer_probe.placement import LayerStreaming
     import torch_npu
     nz = importlib.import_module('models.modeling_qwen3_5_moe_hiai_nz')
     wrappers = importlib.import_module('models.export_model_wrapper_qwen3_5_moe')
@@ -49,10 +53,13 @@ def main():
     # Record configuration identity, without rewriting relative paths or prompts.
     if reference.config:
         capture.source(Path(reference.config).resolve())
-    capture.install(torch_npu, nz, wrappers)
+    placement = LayerStreaming(capture.report)
     old_argv = sys.argv
     error = None
     try:
+        capture.install(torch_npu, nz, wrappers)
+        placement.install(wrappers)
+        capture.flush()
         sys.argv = [str(entry), *forwarded]
         runpy.run_path(str(entry), run_name='__main__')
     except SystemExit as exc:
@@ -64,7 +71,14 @@ def main():
         raise
     finally:
         sys.argv = old_argv
-        capture.close(error)
+        try:
+            placement.close()
+        except Exception as exc:
+            if error is None:
+                error = f'placement cleanup failed: {exc}'
+                raise
+        finally:
+            capture.close(error)
     print('capture:', capture.root/'manifest.json', capture.report['status'])
     return 0 if capture.report['status'] == 'CAPTURED' else 1
 

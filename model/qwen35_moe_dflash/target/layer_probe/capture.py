@@ -192,7 +192,7 @@ class Capture:
 
     def install(self, npu, nz_module, wrapper_module):
         self.report['torch_npu_version'] = getattr(npu, '__version__', 'unknown')
-        # Attach after the original program has loaded/quantized/moved its model.
+        # Attach after the original program has loaded and quantized its model.
         cls = wrapper_module.Qwen3_5MoeForCausalLMWrapper
         def wrapper_call(original, args, kwargs):
             self.attach(args[0])
@@ -329,7 +329,8 @@ class Capture:
         observed = {r['layer'] for r in self.report['regions']}
         missing = self.layers - observed
         if missing:
-            self.report['status'] = 'INCOMPLETE'
+            if not error:
+                self.report['status'] = 'INCOMPLETE'
             self.report['errors'].append('unobserved requested layers: ' + str(sorted(missing)))
         for layer in self.layers:
             rows = [r for r in self.report['regions'] if r['layer'] == layer]

@@ -2,7 +2,11 @@
 
 首批仅覆盖原模型第 0～3 层的 prefill 和第一个 decode。**导出阶段不构造整模型，不构造整层再裁图。** 每个进程只导一个 CPro 边界的一个输出，退出后再处理下一个。MoE 专家大子图不在本批导出范围内。
 
-原 `inference.py` 和私有模型文件保留原样。新入口在模型已经加载、量化完成后的第一次 forward 安装采集点，继续运行原推理。golden 来自原 310P 实际调用；CPU 上的重算不作为 golden。新增工具代码可公开，原始源码、权重、配置和实际 dump 留在各自工作目录，不提交仓库。
+原 `inference.py` 和私有模型文件保留原样。新入口在当前进程将原 wrapper 的构造 device 改为 CPU，让原程序先完成 W4 量化替换；forward 时依次搬入一个 decoder layer，执行原 forward 后同步并搬回 CPU，再处理下一层。最终 norm 和 lm_head 也分别搬入、执行、搬回。仍执行全部 40 层并使用原程序的 token 选择逻辑，只采第 0～3 层。CPU 负责存放权重，golden 来自实际 310P 运算，不用 CPU 重算。
+
+这避免原 wrapper 在量化替换前 `.to(npu)` 整模型造成的 OOM。`--layers` 是**采集范围**，不裁掉后 36 层后再用不完整模型采样 decode token。模型权重与 checkpoint 加载仍需要足够主机内存；NPU 保留原输入、全部层缓存及当前层的权重/临时计算空间。只做 device 搬运，不传 dtype、不做 `.half()`；代价是逐层传输较慢，不能用这次运行计时评价模型性能。入口要求原外部量化 embedding 路径，不支持 `--use_origin_model` 或 pseudo_quant。
+
+新增工具代码可公开，原始源码、权重、配置和实际 dump 留在各自工作目录，不提交仓库。
 
 本地已验证采集与重放的主机逻辑；实际 TorchAir/AIR、选定 DDK 的 OMC 和 X90 数值结果需要在用户服务器上执行。单独子图的编译失败、接口差异、运行失败、数值误差分别保留。
 
@@ -41,6 +45,8 @@ python "$REPO_DIR/targets/cpro/tools/inference_target_probe.py" \
   --layers 0,1,2,3 --calls 2 -- \
   --config "$TARGET_CONFIG" --quant_mode enable --quant_bits 4 --max_token 2
 ```
+
+启动应打印 `model on CPU; original quantization runs before layer streaming`，第一次 forward 应打印 `streaming all 40 decoder layers, norm and head; one unit on device at a time`（层数取实际配置）。manifest 的 `placement` 记录构造策略、总层数和各单元调用次数。若此前启动已 OOM，更新代码后使用一个新的 output 目录（例如 `golden-stream-001`），保留失败目录；后续 list/export 的 `--capture` 对应改成新目录。
 
 `--` 后是原 inference.py 的参数，可以保留原来的其他参数。不要启用 pseudo_quant。输入 prompt/长度由原程序决定，不在采集入口中偷偷补齐或截断。原程序需完成 prefill 和至少一次 decode。`--calls 3` 可额外采第二个 decode，但 CPro 端仍是独立 golden 输入重放，不等于连续反馈验证。
 
