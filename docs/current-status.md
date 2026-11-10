@@ -1,6 +1,6 @@
 # 当前阶段：Target 数值异常清单与剩余编译项
 
-更新：2026-11-10。`environment-recheck-001` 共 **158 项，120 项 OMC 编译成功、38 项失败**。用户已回传全部 120 个成功图的数值比较摘要，均 `stable=TRUE`；原状态为 **2 PASSED、2 FAILED、116 METRICS_RECORDED**。此前 INT16 检查器阻塞已不再是当前进度。
+更新：2026-11-10。用户确认重导后的 **Norm 20 项＋Conv1d 6 项全部编译成功**，累计 **146/158 项成功，剩余 ConvState 12 项**。这是旧批次 120 项加新批次 26 项的累计覆盖，旧 `environment-recheck-001/omc/compile.json` 保留原记录。新 26 项的逐 case 报告、OMC 哈希及精度结果尚未回传。原 120 项数值摘要保持 **2 PASSED、2 FAILED、116 METRICS_RECORDED**，均 `stable=TRUE`。
 
 按用户最新安排，先在 GitHub 登记结论，明确异常边界与未编译项；本次没有修改算子或启动新实验。详细范围、误差和未编译边界见[Target OMC 与精度状态表](target-accuracy-status.md)。
 
@@ -9,13 +9,14 @@
 | 输出明显异常 | 51 | 量化投影 38、RoPE 4、Prefill GDN 6、Prefill FusedAttention 1、Decode Cache K/V 2 |
 | 数值零误差 | 36 | repeat Q/K 12、writeback 6、residual 16、Prefill Cache K/V 2；只有 Cache 两项原状态为 PASSED |
 | 误差较小、仍待浮点验收 | 33 | SiLU、decay/beta、gated Norm、Decode GDN／Attention、attention layout/gate |
-| 编译失败、尚未数值验证 | 38 | 普通 Norm 20、ConvState 12、Conv1d 6 |
+| 新编译成功、精度待回传 | 26 | 普通 Norm 20、Conv1d 6 |
+| 编译失败、尚未数值验证 | 12 | ConvState，L0–L2，Prefill／Decode，两个输出 |
 
 51 项是输出异常排查清单，不是已确认有 bug 的 51 个内核。小图使用各自的 310P 输入，不能把独立结果串成上游误差传播；重复稳定也不等于精度通过。数据来自用户粘贴的比较摘要，原始 native 输出与完整 report.json 未在本地主机重新核验。
 
 用户确认 DDK／OMG 编译在 **35 服务器**，310P golden 仍在此前的**权重服务器**通过已跑通的四层推理入口采集；35 不是 Python 环境名，147 仅为此前参考命令来源。CPro dump 尚无样例。[离线批量比较入口](target-dump-compare.md)已完成主机验证，可从 capture 生成待绑定清单；真实文件格式和节点映射仍需首批 dump 元数据。本轮没有启动整图执行。
 
-38 项只读摘要已回传：Norm 20 项仍在 AIR 中保留 Add，全部卡在 Add 常量计算／tiling；Conv 6 项全部在两输入 rank 检查失败；ConvState 12 项全部在 format config 获取失败。按[原 Target 对照与后续命令](target-compile-triage.md)，下一步复用 capture 重导 Norm／Conv 26 项，确认修正进入 AIR 后先编译四项；ConvState 只取两个阶段的代表日志继续查实现选择。计数仍为 120 成功／38 失败，本次没有启动新 DDK 或设备实验。四层整图 dump 与连续状态反馈仍未验证，流程保留在[四层转换与 dump 方案](target-accuracy-status.md#4-用户服务器执行入口)。旧环境 GDN SIGSEGV 保留为历史记录，不代表本轮编译状态。
+此前 Norm 的 Add 常量计算／tiling 和 Conv 的输入 rank 阻塞，已在用户本次重导、编译结果中通过。下一步集中到 [ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)，查看 format config 之前的实现选择／支持条件；不再重编已成功的 146 项。新 26 项待后续上板比较。本地主机本次只登记用户结果，没有启动 DDK 或设备实验。四层整图 dump 与连续状态反馈仍未验证，流程保留在[四层转换与 dump 方案](target-accuracy-status.md#4-用户服务器执行入口)。旧环境 GDN SIGSEGV 保留为历史记录，不代表本轮编译状态。
 
 ## 2026-11-09 独立诊断记录
 

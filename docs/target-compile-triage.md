@@ -1,18 +1,22 @@
-# 剩余 38 项 OMC：对照原 Target 定位编译失败
+# Target OMC：Norm／Conv 已通过，剩余 ConvState 12 项
 
-更新：2026-11-10。用户已回传 `inspect-compile --failed` 的完整 38 项摘要，三类失败各自一致。以下是本批实际观察，未重新执行 DDK／上板；编译计数仍为 120 成功、38 失败。
+更新：2026-11-10。用户确认重导后的 **Norm 20 项、Conv1d 6 项全部编译成功**。累计 **146/158 项已编译，剩余 ConvState 12 项**。新增成功依据用户回传确认，具体 OMC 哈希及精度结果尚未提供；原批次报告保持原样。
+
+**下一步只读取本页末尾的 ConvState 两份代表日志。** Norm／Conv 的重导和编译已经完成，下方相关命令保留供复现，不再重复执行。新 26 项后续另行上板比较；编译成功不计作精度通过。
+
+以下保留此前完整 38 项检查摘要的归因及处理结果：
 
 | 组别 | 本批证据 | 当前判断与处理 |
 |---|---|---|
-| 普通 Norm：20 项 | 全部仍有 `Add → RmsNorm`，无导出修正记录；`add_kernel.cpp` 报类型不支持，随后 `Add ProduceTiling failed`、`inputTensorPtr is NULL` | gamma 预计算修正没有进入本批 AIR。先重导这 20 项，不能把 Add 的失败归为 RmsNorm 不支持 |
-| Conv1d：6 项 | 全部在 `Convolution` Verify 报 `Input[0] and input[1] must have the same dim num`，无导出修正记录／结构检查 | 确认本批仍存在卷积两输入 rank 不一致。用现有显式四维导出路径重导这 6 项，检查真实连接和 shape |
+| 普通 Norm：20 项 | 旧 AIR 含 `Add → RmsNorm`，无导出修正记录；`add_kernel.cpp` 报类型不支持，随后 `Add ProduceTiling failed`、`inputTensorPtr is NULL` | gamma 预计算修正后重导，用户确认 20 项均编译成功；精度待回传 |
+| Conv1d：6 项 | 旧图在 `Convolution` Verify 报 `Input[0] and input[1] must have the same dim num`，无导出修正记录／结构检查 | 显式四维路径重导后，用户确认 6 项均编译成功；精度待回传 |
 | ConvState：12 项 | 两阶段、两个输出均报 `Get format configs failed ... LinearAttentionConvstateUpdate, substore: !` | 已确定失败环节是 format config 获取；尚未确定是注册、实现选择、支持条件还是图边界造成。暂不重导／重编这一组 |
 
 Conv 的类型计数中出现 `Unsqueeze` 不足以证明修正已生效：它可能只处理权重，必须检查 Conv2D 的两条输入边。ConvState 摘要中的 `substore: !` 没有提供有效 store 名称，不能据此认定整个 DDK 缺少实现。
 
 三组都出现了 `libai_npucore_ascendc_kernel.so not valid`，但这条消息不能替代上述各组的实际终止原因；先与同批成功 GDN 的日志对照。`IR InferShape ... Success` 和 `PassManager::Run begin` 即使标成 E 级也不是失败证据。
 
-**下一步：复用现有 capture，只重导 Norm／Conv 共 26 项，先编译 4 个代表项；ConvState 只提取两份代表日志。** 命令见本页后半部分。已成功的 120 个 OMC、上板输出和 golden 保留。
+已成功的 146 个 OMC、已有 120 项上板输出和全部 golden 保留。累计覆盖不通过手动合并／改写旧 `compile.json` 实现。
 
 ## 原 Target 给出的基线
 
@@ -67,7 +71,7 @@ cat "$COMPILE_INSPECT/summary.txt"
 
 ## 只重导 Norm／Conv，先编译四项
 
-本轮 `manifest_sha256=9f433d0092c93f5c156a5c6ab59d6d603dcef338b8132dc28b1e0f77fcf1b1e2`、`source_batch=../../../air-batch`，与之前 AIR 批次相同。更新 Python 代码再执行 `compile` 不会更新既有 AIR。以下使用仓库中已实现的导出修正，不换 Norm 算子、不改捕获 dtype 或 golden。
+**本节为已完成流程的复现命令。本轮 26 项已全部编译成功，无需再次执行。** 旧失败批次 `manifest_sha256=9f433d0092c93f5c156a5c6ab59d6d603dcef338b8132dc28b1e0f77fcf1b1e2`、`source_batch=../../../air-batch`，与之前 AIR 批次相同。更新 Python 代码再执行 `compile` 不会更新既有 AIR。以下使用仓库中已实现的导出修正，不换 Norm 算子、不改捕获 dtype 或 golden。
 
 本轮导出在**权重服务器**执行，Python 使用该机已经修正的 TorchAir／自定义算子环境。先进入这台机器上的 GitHub 仓库根目录，再设置下列变量。`TARGET_SOURCE` 和 `GOLDEN_CAPTURE` 的两个占位路径必须替换成本机实际目录；当前对话尚未提供它们在权重服务器上的确切位置。35 的路径不能直接用于这里。
 
@@ -200,20 +204,23 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
 )
 ```
 
-后续上板分别以两个新 OMC 批次为输入即可，不手动拼接或改写旧 `compile.json`。这一步尚未执行，不能将 26 项记为编译成功。
+用户已确认上述范围共 26 项编译成功。后续上板以实际新 OMC 批次为输入；若采用四项／二十二项分批流程，分别运行两个批次，不手动拼接或改写旧 `compile.json`。若用户实际采用单个 26 项批次，则使用那个完整批次。新增精度结果尚未回传。
 
 ## ConvState：只取两份代表日志
 
-Prefill／Decode、o0／o1 目前都在同一 format config 环节失败。先取第 0 层两阶段的 o0；完整日志可看见候选实现拒绝和 store 选择，而当前摘要只保留了终止点。
+Prefill／Decode、o0／o1 目前都在同一 format config 环节失败。先取第 0 层两阶段的 o0；完整日志可看见候选实现拒绝和 store 选择，而当前摘要只保留了终止点。在 **35 服务器**执行，`AI_RUN_DIR` 使用 35 本机结果根目录；`CONVSTATE_BATCH` 指向原来含 ConvState 失败日志的批次。旧目录若已迁移，按其实际位置设置，不能指向新 26 项 Norm／Conv 批次。
 
 ```bash
+: "${AI_RUN_DIR:?}"
+export CONVSTATE_BATCH="$AI_RUN_DIR/target/tests/environment-recheck-001/omc"
+
 rg -n -C 2 'LinearAttentionConvstateUpdate|CheckSupport|substore|subStore|format config' \
-  "$OMC_BATCH/models/l00_c00_convstate_update_o0/omc/compile.log" \
-  "$OMC_BATCH/models/l00_c01_convstate_update_o0/omc/compile.log"
+  "$CONVSTATE_BATCH/models/l00_c00_convstate_update_o0/omc/compile.log" \
+  "$CONVSTATE_BATCH/models/l00_c01_convstate_update_o0/omc/compile.log"
 
 rg -n 'GetKernelbinAddr|libai_npucore_ascendc_kernel' \
-  "$OMC_BATCH/models/l00_c00_convstate_update_o0/omc/compile.log" \
-  "$OMC_BATCH/models/l00_c00_gdn_o0/omc/compile.log"
+  "$CONVSTATE_BATCH/models/l00_c00_convstate_update_o0/omc/compile.log" \
+  "$CONVSTATE_BATCH/models/l00_c00_gdn_o0/omc/compile.log"
 ```
 
 第二条若没有匹配，`rg` 退出码 1 只表示没找到文字。若成功 GDN 也有同条库消息，就不能将其直接当作全部失败的共同根因；即使只有 ConvState 有，也需要继续核对该算子实际使用的 store／库。先依据日志定位到具体注册或支持条件，再读相应实现，保持共享 DDK 不变。只有实现选择已核对且证据指向独立图边界时，才尝试原 Target 的双输出＋卷积／状态写回连续子图。

@@ -1,8 +1,8 @@
 # 修正算子环境后：批量生成 OMC、上板与比较
 
-更新：2026-11-10。本页保留**现有 Target 边界小图批次的完整复测命令**。`environment-recheck-001` 已回传 120 项编译成功、38 项失败，并取得这 120 项的数值比较摘要；当前结论见[状态表](target-accuracy-status.md)。按用户最新安排，先登记输出异常与未编译项；已执行的批次和输出直接保留，不重复本页整批流程。
+更新：2026-11-10。本页保留**现有 Target 边界小图批次的完整复测命令**。旧 `environment-recheck-001` 有 120 项编译成功并回传数值摘要；用户随后确认重导的 Norm／Conv 26 项全部编译成功，累计 **146/158 成功，剩余 ConvState 12 项**。新 26 项精度待回传，当前结论见[状态表](target-accuracy-status.md)。已执行的批次和输出直接保留，不重复本页整批流程。
 
-剩余 38 项的 `inspect-compile --failed` 摘要已回传。按[对照原 Target 的定向重导命令](target-compile-triage.md)，先仅重导 Norm／Conv 26 项并编译四个代表项；ConvState 继续检查两份代表日志。无需再跑完整批次或重复已完成的只读检查。
+原 38 项的 `inspect-compile --failed` 及 Norm／Conv 重导编译均已完成。下一步只检查 [ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)。新 26 项后续可复用本页上板／回收／比较流程，指定实际新 OMC 批次和新 execution 目录；不重新执行旧 120 项。
 
 机器分工：DDK／OMG 在 **35 服务器**；310P golden 仍来自此前的**权重服务器**。TorchAir 导出使用已修正且能导出 CPro 算子的环境；上板命令在原来已配置好 HDC 的主机执行。比较使用本批自带的独立输入和 golden，不需要等待四层整图 dump 的自动映射。
 

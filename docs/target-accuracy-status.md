@@ -1,16 +1,16 @@
 # Target OMC 与精度状态
 
-用户已回传[修正环境后的批量复测](target-batch-rerun.md)：`environment-recheck-001` **120/158 项编译成功，38 项失败**，随后提供了这 120 项的设备数值比较表。120 项均 `stable=TRUE`；原报告状态为 **2 PASSED、2 FAILED、116 METRICS_RECORDED**。
+用户已回传[修正环境后的批量复测](target-batch-rerun.md)，并进一步确认重导的 **Norm 20 项＋Conv1d 6 项全部编译成功**。累计 **146/158 项已编译，剩余 ConvState 12 项**。原 `environment-recheck-001` 的 120 项已有设备数值摘要，均 `stable=TRUE`，状态为 **2 PASSED、2 FAILED、116 METRICS_RECORDED**；新 26 项精度尚未回传。
 
 更新：2026-11-10。按用户最新安排，当前先列清**输出异常边界与剩余未编译项**。本次仅更新结论，不修改算子或启动新实验；四层整图 dump 保留为后续方案。
 
 主机侧已提供[批量 dump 比较脚本](target-dump-compare.md)，复用原四层入口的捕获清单。当前支持显式映射和离线比较；CPro dump 尚无样例，自动格式适配与节点映射待首批元数据。
 
-本页整理用户提供的 compile.json 和后续 120 行比较摘要。本地主机未连接服务器或板子，未重新读取原始 native 输出及完整 report.json，也未重新绑定其文件哈希。计数只覆盖已选的 158 个边界输出图，不代表整模型或 MoE 覆盖率。编译、执行、数值验收和重复稳定性分别记录；没有预先确定的浮点容差时，只记录误差。
+本页整理用户提供的旧 compile.json、120 行比较摘要及新增 26 项编译成功的确认。新增项的逐 case 编译报告和 OMC 哈希尚未回传，本地主机未连接服务器或板子重验原始文件。累计计数覆盖同一批 158 个边界输出图的最新结果，不修改旧批次记录，也不代表整模型或 MoE 覆盖率。编译、执行、数值验收和重复稳定性分别记录；没有预先确定的浮点容差时，只记录误差。
 
 ## 1. 当前捕获边界批次
 
-范围：原模型第 0～3 层，已捕获的 Prefill T256／首次 Decode T1。本轮 DDK 为 `100.520.020.010`，平台 `kirinx90`，profile 为 `isolated-kirinx90`，保留 `use_origin_format=true`、内嵌权重。compile.json 为 `PARTIAL`、`ALL_MANIFEST_CASES`，`diagnostic_only=false`。
+范围：原模型第 0～3 层，已捕获的 Prefill T256／首次 Decode T1。旧完整批次记录的 DDK 为 `100.520.020.010`，平台 `kirinx90`，profile 为 `isolated-kirinx90`，保留 `use_origin_format=true`、内嵌权重；其 compile.json 为 `PARTIAL`、`ALL_MANIFEST_CASES`，`diagnostic_only=false`。下表将新 26 项成功确认计入累计覆盖，新批次的实际配置以其报告为准。
 
 | 模块（c00／c01） | case 数 | 编译成功 | 编译失败 | 本批设备／精度 |
 |---|---:|---:|---:|---|
@@ -23,12 +23,12 @@
 | RoPE Q/K 两个输出 | 4 | 4 | 0 | 已回传；全部明显偏差 |
 | Cache K/V | 4 | 4 | 0 | Prefill 2 项 PASSED；Decode 2 项 FAILED |
 | FusedAttention、attention layout/gate | 4 | 4 | 0 | Prefill Attention 明显偏差；另 3 项误差较小 |
-| 普通 Norm：input/post-attention、Self Attention Q/K Norm | 20 | 0 | 20 | NOT_RUN |
+| 普通 Norm：input/post-attention、Self Attention Q/K Norm | 20 | 20 | 0 | 用户确认编译成功；设备／精度结果待回传 |
 | ConvState 两个输出 | 12 | 0 | 12 | NOT_RUN |
-| Conv1d | 6 | 0 | 6 | NOT_RUN |
-| **合计** | **158** | **120** | **38** | **120 项有数值回传，不能记整批精度通过** |
+| Conv1d | 6 | 6 | 0 | 用户确认编译成功；设备／精度结果待回传 |
+| **合计** | **158** | **146** | **12** | **120 项有数值回传，另 26 项待验证，不能记整批精度通过** |
 
-本轮 manifest SHA256 为 `9f433d0092c93f5c156a5c6ab59d6d603dcef338b8132dc28b1e0f77fcf1b1e2`，source_batch 为 `../../../air-batch`，与此前 AIR 批清单相同。随后回传的 38 项检查摘要确认：Norm 仍保留 Add 并在 Add 计算／tiling 失败，Conv 在输入／filter rank 检查失败，ConvState 在 format config 获取失败。下一步仅重导 Norm／Conv 并先编译代表项，已成功的 120 项保留。
+旧完整批次 manifest SHA256 为 `9f433d0092c93f5c156a5c6ab59d6d603dcef338b8132dc28b1e0f77fcf1b1e2`，source_batch 为 `../../../air-batch`。其 38 项检查摘要确认：Norm 仍含 Add 并在 Add 计算／tiling 失败，Conv 在输入／filter rank 检查失败，ConvState 在 format config 获取失败。用户随后确认重导 Norm／Conv 的 26 项已编译成功；上述旧 manifest 哈希不用于标识新 AIR。下一步只定位 ConvState，并保留所有成功模型。
 
 代表产物：`l00_c00_gdn_o0` 70306 字节，SHA256 `9b4a621df37bdb583c85e212efc07e5e4fc28b898468b83170d2923a3a1d2352`；`l00_c00_linear_attn_in_proj_qkv_o0` 8698908 字节，SHA256 `45d90205590770405d2f08e756f256ddddf2b34cd106157c824ab9ba3ebb96d8`。哈希来自此前编译回传；本次比较摘要按相同层／调用／point／输出对应登记，尚未重新核验原始文件链。
 
@@ -76,22 +76,22 @@ GDN 的原始 relative-L2 如下，均稳定；core 的 dtype 保持，raw state
 
 所有小图均使用各自独立捕获的 310P 输入。writeback／residual 一致不证明其上游 GDN／投影正确；Prefill Cache 通过不证明 Decode Cache 保留旧状态正确。`stable=TRUE` 表示重复输出一致，不等于计算正确。原比较器只把显式门槛失败写为 FAILED，因此其“首个 FAILED”不能代表首个数值异常。
 
-### 剩余 38 项未编译成功
+### 新增 26 项编译成功，剩余 12 项
 
 | 类别 | 具体边界 | 范围 | case 数 | 目前可下的结论 |
 |---|---|---|---:|---|
-| 普通 Norm | input_layernorm | L0–L3，c00／c01 | 8 | AIR 仍有 Add；Add 常量计算／tiling 失败，gamma 预计算修正未进入本批 |
-| 普通 Norm | post_attention_layernorm | L0–L3，c00／c01 | 8 | 同上；尚无修正后 OMC／精度结果 |
-| 普通 Norm | self_attn_q_norm／self_attn_k_norm | L3，c00／c01 | 4 | 同上；尚无修正后 OMC／精度结果 |
+| 普通 Norm | input_layernorm | L0–L3，c00／c01 | 8 | 重导后用户确认编译成功；精度待回传 |
+| 普通 Norm | post_attention_layernorm | L0–L3，c00／c01 | 8 | 重导后用户确认编译成功；精度待回传 |
+| 普通 Norm | self_attn_q_norm／self_attn_k_norm | L3，c00／c01 | 4 | 重导后用户确认编译成功；精度待回传 |
 | ConvState | convstate_update，o0／o1 | L0–L2，c00／c01 | 12 | format config 获取失败；实际实现选择／支持条件待定位 |
-| Conv1d | conv1d，o0 | L0–L2，c00／c01 | 6 | Conv2D 两输入 rank 不一致；重导后检查显式四维路径 |
-| **合计** | **Norm 20＋ConvState 12＋Conv1d 6** | | **38** | **不归类为已确认的数值错误** |
+| Conv1d | conv1d，o0 | L0–L2，c00／c01 | 6 | 重导后用户确认编译成功；精度待回传 |
+| **合计** | **原 38 项** | | **38** | **新增 26 成功，剩余 12 项 ConvState 失败** |
 
-后续编译定位见[原 Target 对照与定向重导命令](target-compile-triage.md)。本轮只读检查已经完成，无需重复；先重导 Norm／Conv 共 26 项，验证导出修正记录，再编译四个代表项。ConvState 补取两份代表日志以定位 format config 之前的选择过程。以上是待执行步骤，保留当前 120／38 计数及已完成输出。MoE 专家计算尚未纳入本批小图，四层整图和连续状态反馈也未由本表验证。
+后续只需补取 [ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)，定位 format config 之前的选择过程。Norm／Conv 导出与编译步骤已经完成，不再重复；新 26 项后续使用实际新批次上板比较。MoE 专家计算尚未纳入本批小图，四层整图和连续状态反馈也未由本表验证。
 
 ### 旧环境编译记录
 
-下面保留 `accuracy-find`、入口对照 `accuracy-entry-compare-004` 和 `accuracy-gdn-origin-005` 的历史结果；其中 QLinear／GDN 编译失败已被上面的新环境成功结果更新。
+下面保留 `accuracy-find`、入口对照 `accuracy-entry-compare-004` 和 `accuracy-gdn-origin-005` 的历史结果；其中 QLinear／GDN、Norm／Conv1d 的旧编译失败均已有后续成功结果，当前状态以上方累计表为准。
 
 | 模块／case | OMC 编译 | 设备执行 | 精度结论 | 当前证据与处理 |
 |---|---|---|---|---|
