@@ -1,0 +1,160 @@
+# 修正算子环境后：批量生成 OMC、上板与比较
+
+更新：2026-11-10。用户已确认此前环境选用了错误算子，准备重新验证。本页用于**现有 Target 边界小图批次的一次完整复测**：默认不筛 case，批量编译全部已导出的图，再运行所有编译成功项。旧结果保留为旧环境观察，新一轮结果返回前不宣称编译或精度已修复。
+
+机器分工：DDK／OMG 在 **35 服务器**；310P golden 仍来自此前的**权重服务器**。TorchAir 导出使用已修正且能导出 CPro 算子的环境；上板命令在原来已配置好 HDC 的主机执行。比较使用本批自带的独立输入和 golden，不需要等待四层整图 dump 的自动映射。
+
+这是已有边界批次的复测命令。[四层整图 dump](target-accuracy-status.md#3-主线四层整图一次-dump离线批量定位)仍是后续观察真实误差传播的方法；[compare_target_dump.py](target-dump-compare.md)用于那条整图路线。本页比较工具是 target_layer_probe.py compare，不混用两套输入清单。
+
+## 0. 更新代码并设置本轮目录
+
+在各执行主机沿用其真实 REPO_DIR、AI_RUN_DIR 和已经修正的环境。以下变量使用**当前主机**上的路径；跨机器迁移后重新设置，不能沿用另一台机器的绝对路径。已有同名复测目录时换新的编号。
+
+```bash
+: "${REPO_DIR:?}" "${AI_RUN_DIR:?}"
+git -C "$REPO_DIR" pull --ff-only origin main
+
+export RECHECK="$AI_RUN_DIR/target/tests/environment-recheck-001"
+export BATCH="$RECHECK/air"
+export OMC_BATCH="$RECHECK/omc"
+export EXECUTION="$RECHECK/execution"
+export RECOVERY="$RECHECK/recovery-001"
+export COMPARISON="$RECHECK/comparison-001"
+export RUNTIME_CONFIG="$AI_RUN_DIR/runtime/runtime.json"
+```
+
+保留原已跑通的 runtime 配置、native runner 和 HDC 设置。若 runtime.json 不在上述位置，修改 RUNTIME_CONFIG。若更换了 DDK 版本，runtime 配套 assets 中的 DDK 身份也必须与本批实际编译版本一致，不能为了绕过检查随意改版本标签。
+
+## 1. 按需要重新导出 AIR
+
+**错误算子若参与过 AIR 导出，本轮先重导。** 复用原权重服务器上可信的 capture，保持权重、输入、golden 和量化合同；不用为重编 OMC 重新采集已经确认正确的 310P 数据。
+
+在已修正的 TorchAir 导出环境中，设置 GOLDEN_CAPTURE 为已有完成态 capture 目录，TARGET_SOURCE 为原 Target 代码目录，CPRO_EXPORT_SCRIPT 为正确的原 CPro 导出脚本：
+
+```bash
+: "${GOLDEN_CAPTURE:?}" "${TARGET_SOURCE:?}" "${CPRO_EXPORT_SCRIPT:?}"
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
+  --capture "$GOLDEN_CAPTURE" \
+  --source-root "$TARGET_SOURCE" \
+  --converter-script "$CPRO_EXPORT_SCRIPT" \
+  --output "$BATCH"
+```
+
+不加 --points/--kinds，因此覆盖捕获清单中的全部可导出边界。导出入口只导入原脚本的 converter 定义，每个输出独立成图，不调用原四层／40 层整图导出 main。失败项和日志保留在 manifest.json 和 batch 根目录的各 case 日志中；PARTIAL 不代表全部失败。
+
+将 **整个 BATCH 目录**迁移到 35 服务器，包括 manifest.json、models/ 下的 export.air、schema、fixture 和 weight sidecar；在 35 上把 BATCH 设为迁移后的路径。
+
+如果已确认错误仅影响 OMG 实现选择、现有 AIR 是正确算子导出的，则跳过重导，改用已有目录，例如：
+
+```bash
+export BATCH="$AI_RUN_DIR/target/air-batch"
+```
+
+仅在确认该目录就是正确批次时使用此例。旧四层 AIR 与本页含 manifest.json 的小图 batch 不是同一入口。
+
+## 2. 在 35 服务器批量编译 OMC
+
+CPRO_DDK_ROOT、CPRO_DDK_ID 必须指向修正后的实际 DDK。激活已经修正的 DDK／算子环境，再执行下方命令；不把历史 147 服务器的安装路径直接套到 35。
+
+```bash
+: "${CPRO_DDK_ROOT:?}" "${CPRO_DDK_ID:?}" "${BATCH:?}" "${OMC_BATCH:?}"
+COMPILE_OPTIONS=()
+# 仅当当前 DDK 仍需要且诊断与当前包/库匹配时，取消下一行注释：
+# COMPILE_OPTIONS+=(--tbe-diagnosis "${TBE_DIAGNOSIS:?}")
+# 若本次已确认的编译配置要求保留原格式，取消下一行注释：
+# COMPILE_OPTIONS+=(--use-origin-format)
+
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
+  --batch "$BATCH" \
+  --output "$OMC_BATCH" \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --ddk-id "$CPRO_DDK_ID" \
+  --compiler-profile isolated-kirinx90 \
+  "${COMPILE_OPTIONS[@]}"
+```
+
+该入口构造 isolated-kirinx90 编译环境；实际选定的路径和命令保存在各 case 的 omc/omg-environment.json、compile-command.json、report.json 和 compile.log 中。修正外层 shell 不自动证明子进程选中了正确算子，复测时以这些实际记录为准。不要改用 sourced-wrapper-default：它是目标尚未确认的入口诊断，板端 fixture 准备会拒绝。
+
+小图使用内嵌权重 OMC。默认编译全部 EXPORTED 项；未导出项保留 NOT_EXPORTED，单图失败不会阻止后面的编译。PARTIAL 的 CLI 退出码为 1；逐节执行本页命令，检查下列摘要后再进入上板阶段：
+
+```bash
+python - "$OMC_BATCH/compile.json" <<'PY'
+import json, sys
+from collections import Counter
+with open(sys.argv[1]) as f:
+    report = json.load(f)
+counts = Counter(row["status"] for row in report["cases"].values())
+print(json.dumps({"status": report["status"], "cases": dict(counts)}, ensure_ascii=False, indent=2))
+if report["status"] not in ("COMPILED", "PARTIAL") or not counts["COMPILED"]:
+    raise SystemExit("本批没有可上板的完成态编译结果；检查各 case 的 compile.log。")
+PY
+```
+
+有 COMPILED 项即可运行这些成功图；未编译项继续显示为覆盖缺失。不要删除失败项或改写 compile.json。
+
+## 3. 批量上板
+
+在已配置 HDC 的主机沿用 SN、BIP、HDC 和 RUNTIME_CONFIG。若需把结果从 35 搬到另一主机，**AIR batch 与 OMC batch 一起迁移并保持相对位置**；OMC 的 compile.json 通过 source_batch 引用 AIR 中的输入和 golden。相同主机不需要再复制。
+
+runner 已是此前支持 INT16 和每次调用恢复输入的版本时，直接复用。仅在工具明确提示旧 runner 缺少能力时，待其余任务结束，用原构建资源更新 runtime.json 中 native_directory 指向的目录。若它就是标准 runtime/native：
+
+```bash
+python "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
+  --output "$AI_RUN_DIR/runtime/native" --replace
+```
+
+**上面是条件步骤，不需要每次重建 runner。** 随后启动本批所有已编译图：
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$OMC_BATCH" \
+  --config "$RUNTIME_CONFIG" \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --output "$EXECUTION" \
+  --apply
+```
+
+虽然历史文件名带 draft，该入口已支持 Target 边界清单。不加 --cases，会选择本批全部 COMPILED 项。每图 3 次预热、10 次采样，每次调用前恢复原输入，执行前按实际编译接口绑定槽位和 dtype。板端逐图运行，失败会停止后续图；成功执行过的输出仍可回收。
+
+同一 EXECUTION 只启动一次。如果终端中断或结果 PENDING，接下来回收这次请求，不再次 --apply。
+
+## 4. 回收这次运行
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$EXECUTION" \
+  --output "$RECOVERY"
+```
+
+回收检查同一台设备、同一请求及 fixture 哈希，不重新执行模型。若仍为 VECTOR_VALIDATION_PENDING，保留原 EXECUTION，稍后使用新的 recovery-002 目录再次回收：
+
+```bash
+export RECOVERY="$RECHECK/recovery-002"
+python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$EXECUTION" \
+  --output "$RECOVERY"
+```
+
+RECOVERY 指向最后一次实际取得输出的目录。只在取得 native/ 后进入比较；不要将 PENDING 当作数值失败，也不要为了重新启动删除锁或旧请求。
+
+## 5. 批量数值比较，生成 CSV / JSON
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
+  --fixture "$EXECUTION/fixture" \
+  --native "$RECOVERY/native" \
+  --output "$COMPARISON"
+```
+
+若已有冻结的浮点容差，可在同一命令中显式加 --atol 和 --rtol；本页不代填新阈值。默认浮点 METRICS_RECORDED，记录每次误差、非有限值、实际输出 dtype 和重复稳定性；CacheUpdate 对整缓存逐位比较。编译成功、运行成功和精度通过分别判断。
+
+查看／回传这些文件即可，不需要粘贴所有日志：
+
+| 文件 | 用途 |
+|---|---|
+| $OMC_BATCH/compile.json | 全批编译结果、DDK 身份及未编译项 |
+| $RECOVERY/result.json | 请求完成状态、执行／回收和初步比较结果 |
+| $COMPARISON/report.json | 详细数值、重复稳定性、缺失项和首个失败边界 |
+| $COMPARISON/summary.csv | 按层、调用和模块浏览数值结果 |
+
+保留原 AIR batch 和 execution/fixture；后续更改报告展示或补充离线分析无需重新编译、上板。若要再次运行或重新比较，使用 execution-002／comparison-002 等新目录。本页命令已核对实际 CLI 和 Shell 语法；真实环境修正效果以用户新一轮回传为准。
