@@ -69,12 +69,55 @@ cat "$COMPILE_INSPECT/summary.txt"
 
 本轮 `manifest_sha256=9f433d0092c93f5c156a5c6ab59d6d603dcef338b8132dc28b1e0f77fcf1b1e2`、`source_batch=../../../air-batch`，与之前 AIR 批次相同。更新 Python 代码再执行 `compile` 不会更新既有 AIR。以下使用仓库中已实现的导出修正，不换 Norm 算子、不改捕获 dtype 或 golden。
 
-在已修正的 TorchAir 导出环境中执行，`GOLDEN_CAPTURE` 指向此前权重服务器产生的完成态捕获，`TARGET_SOURCE`／`CPRO_EXPORT_SCRIPT` 沿用核对过的原 Target。若在 35 导出，需要先把完整 capture 搬到 35；不重新运行 310P 推理。
+本轮导出在**权重服务器**执行，Python 使用该机已经修正的 TorchAir／自定义算子环境。先进入这台机器上的 GitHub 仓库根目录，再设置下列变量。`TARGET_SOURCE` 和 `GOLDEN_CAPTURE` 的两个占位路径必须替换成本机实际目录；当前对话尚未提供它们在权重服务器上的确切位置。35 的路径不能直接用于这里。
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+export AI_RUN_DIR="${REPO_DIR}-run"
+export TARGET_SOURCE="/填写权重服务器上的原Target源码根目录"
+export CPRO_EXPORT_SCRIPT="$TARGET_SOURCE/export_glm_model_qwen3_5_moe.py"
+export GOLDEN_CAPTURE="/填写权重服务器上本批成功的capture目录"
+export AIR_NORM_CONV="$AI_RUN_DIR/target/air-norm-conv-002"
+```
+
+| 变量 | 在权重服务器上指向什么 |
+|---|---|
+| `REPO_DIR` | GitHub 工程，含 `targets/cpro/tools/target_layer_probe.py` |
+| `AI_RUN_DIR` | 本机仓库外的生成目录；上述设置选择仓库的同级 `-run` 目录，已有专用输出根目录也可沿用 |
+| `TARGET_SOURCE` | 原 Target 工程，含 `models/modeling_qwen3_5_moe_hiai_cpro.py`、`utils.py` 和导出脚本 |
+| `CPRO_EXPORT_SCRIPT` | 原 CPro converter 脚本的完整路径；文件不在源码根目录时按实际位置设置 |
+| `GOLDEN_CAPTURE` | 已完成的原始捕获目录，包含 `manifest.json`、输入／输出和捕获权重；其状态必须为 `CAPTURED`，不是 HF checkpoint、AIR batch 或 OMC batch |
+| `AIR_NORM_CONV` | 本次新 AIR 目录，必须位于 `AI_RUN_DIR` 下且尚不存在 |
+
+旧 `inference_target_probe.py` 命令的示例 capture 是 `$AI_RUN_DIR/target-layer-accuracy/golden`；`inference_target_steps.py` 则在其输出目录的 `capture/` 子目录，例如 `$AI_RUN_DIR/target-layer-accuracy/direct-001/capture`。这只是入口约定，实际应选本批已经成功的目录。设置新 `AI_RUN_DIR` 不会移动已有 capture。
+
+导出前可用下面的只读检查确认路径。此步骤不重新采集 310P golden：
+
+```bash
+python - <<'PY'
+import json, os
+from pathlib import Path
+repo = Path(os.environ['REPO_DIR'])
+source = Path(os.environ['TARGET_SOURCE'])
+for p in (repo / 'targets/cpro/tools/target_layer_probe.py',
+          source / 'models/modeling_qwen3_5_moe_hiai_cpro.py',
+          source / 'utils.py', Path(os.environ['CPRO_EXPORT_SCRIPT'])):
+    assert p.is_file(), f'路径不存在: {p}'
+capture = Path(os.environ['GOLDEN_CAPTURE'])
+m = json.loads((capture / 'manifest.json').read_text())
+assert m.get('artifact_kind') == 'qwen35-target-cpro-boundary-probe-v1' and m.get('status') == 'CAPTURED', '必须使用完成态捕获目录'
+out = Path(os.environ['AIR_NORM_CONV']).resolve()
+assert Path(os.environ['AI_RUN_DIR']).resolve() in out.parents and not out.exists(), 'AIR 输出须为本机 AI_RUN_DIR 下的新目录'
+print('capture:', capture, 'status:', m['status'], 'regions:', len(m.get('regions', [])))
+print('新 AIR 输出:', out)
+PY
+```
+
+`CPRO_DDK_ROOT`、`CPRO_DDK_ID`、`RECHECK` 和 OMC 输出变量在后面的 **35 编译步骤**设置；不会由上述变量自动同步到另一台机器。
 
 ```bash
 : "${REPO_DIR:?}" "${AI_RUN_DIR:?}" "${GOLDEN_CAPTURE:?}" "${TARGET_SOURCE:?}" "${CPRO_EXPORT_SCRIPT:?}"
 git -C "$REPO_DIR" pull --ff-only origin main
-export AIR_NORM_CONV="$AI_RUN_DIR/target/air-norm-conv-002"
 
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
   --capture "$GOLDEN_CAPTURE" \
