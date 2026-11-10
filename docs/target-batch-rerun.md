@@ -4,6 +4,8 @@
 
 原 38 项的 `inspect-compile --failed` 及 Norm／Conv 重导编译均已完成。下一步只检查 [ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)。新 26 项后续可复用本页上板／回收／比较流程，指定实际新 OMC 批次和新 execution 目录；不重新执行旧 120 项。
 
+**新增 26 项的专用执行步骤见 [Norm／Conv 上板与比较](target-norm-conv-validation.md)**，包含变量初始化、单批 26 项／4＋22 分批选择，以及运行、回收和 CSV 比较命令。
+
 机器分工：DDK／OMG 在 **35 服务器**；310P golden 仍来自此前的**权重服务器**。TorchAir 导出使用已修正且能导出 CPro 算子的环境；上板命令在原来已配置好 HDC 的主机执行。比较使用本批自带的独立输入和 golden，不需要等待四层整图 dump 的自动映射。
 
 这是已有边界批次的复测命令。[四层整图 dump](target-accuracy-status.md#3-主线四层整图一次-dump离线批量定位)仍是后续观察真实误差传播的方法；[compare_target_dump.py](target-dump-compare.md)用于那条整图路线。本页比较工具是 target_layer_probe.py compare，不混用两套输入清单。

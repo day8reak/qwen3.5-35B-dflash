@@ -87,7 +87,7 @@ GDN 的原始 relative-L2 如下，均稳定；core 的 dtype 保持，raw state
 | Conv1d | conv1d，o0 | L0–L2，c00／c01 | 6 | 重导后用户确认编译成功；精度待回传 |
 | **合计** | **原 38 项** | | **38** | **新增 26 成功，剩余 12 项 ConvState 失败** |
 
-后续只需补取 [ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)，定位 format config 之前的选择过程。Norm／Conv 导出与编译步骤已经完成，不再重复；新 26 项后续使用实际新批次上板比较。MoE 专家计算尚未纳入本批小图，四层整图和连续状态反馈也未由本表验证。
+后续编译定位只需补取 [ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)，定位 format config 之前的选择过程。Norm／Conv 导出与编译步骤已经完成，不再重复；[新 26 项上板与比较命令](target-norm-conv-validation.md)已提供实际新批次的执行、回收和报告步骤，精度仍待回传。MoE 专家计算尚未纳入本批小图，四层整图和连续状态反馈也未由本表验证。
 
 ### 旧环境编译记录
 
