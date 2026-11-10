@@ -42,7 +42,9 @@ def main():
     s = sub.add_parser('inspect-compile', help='read retained AIR/IR metadata without compiling or running models')
     s.add_argument('--batch', required=True, help='existing OMC batch')
     s.add_argument('--output', required=True)
-    s.add_argument('--cases', nargs='+', required=True)
+    selection = s.add_mutually_exclusive_group(required=True)
+    selection.add_argument('--cases', nargs='+')
+    selection.add_argument('--failed', action='store_true', help='inspect every FAILED case in the retained compile.json; never rerun OMG')
     s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     s.add_argument('--compiler-entry', action='store_true', help='also read OMG/env entry scripts and compare current shell with probe environment preparation; executes neither script nor compiler')
     s = sub.add_parser('compare')
@@ -78,6 +80,7 @@ def main():
         from qwen35_moe_dflash.target.layer_probe.inspection import inspect_compilation
         report = inspect_compilation(a.batch, a.output, a.cases, ddk_root=a.ddk_root, compiler_entry=a.compiler_entry)
         result = dict(status=report['status'], report=str(Path(a.output).resolve()/'report.json'),
+            summary=str(Path(a.output).resolve()/'summary.txt'),
             model_compilation='NOT_RUN', device_execution='NOT_RUN',
             cases={name: dict(compilation=row['compilation'].get('status'),
                 source_error=row.get('source_error'), ir_dumps=len(row['ir_dumps']),

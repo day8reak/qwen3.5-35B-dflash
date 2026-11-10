@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from qwen35_moe_dflash.common.artifacts import output_path
+from qwen35_moe_dflash.common.tool_logs import log_excerpt
 from qwen35_moe_dflash.target.operator_air_review import descriptor
 from qwen35_moe_dflash.target.original_air_roundtrip import _attributes, _decode
 from qwen35_moe_dflash.toolchain.omc_wire import Schema, load_schema
@@ -139,7 +140,7 @@ def compiler_entry_metadata(ddk, inherited=None):
     return result
 
 
-def inspect_compilation(batch, output, cases, *, ddk_root=None, compiler_entry=False):
+def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_entry=False):
     root = Path(batch).resolve()
     compiled = json.loads((root/'compile.json').read_text())
     manifest = json.loads((root/'manifest.json').read_text())
@@ -149,6 +150,8 @@ def inspect_compilation(batch, output, cases, *, ddk_root=None, compiler_entry=F
             or compiled['manifest_sha256'] != sha(source/'manifest.json')):
         raise ValueError('compile/AIR manifest binding changed')
     by_name = {c['id']: c for c in manifest['cases']}
+    if cases is None:
+        cases = [name for name in by_name if compiled['cases'].get(name, {}).get('status') == 'FAILED']
     if (not cases or len(set(cases)) != len(cases) or set(cases)-set(by_name)
             or any(Path(name).name != name or name in ('.', '..') for name in cases)):
         raise ValueError('select distinct cases from the AIR manifest')
@@ -175,7 +178,8 @@ def inspect_compilation(batch, output, cases, *, ddk_root=None, compiler_entry=F
             result['compiler_schema_error'] = f'{type(exc).__name__}: {exc}'
             result['status'] = 'PARTIAL'
     for name in cases:
-        row = result['cases'][name] = dict(compilation=compiled['cases'].get(name, {}))
+        row = result['cases'][name] = dict(compilation=compiled['cases'].get(name, {}),
+            boundary={k: by_name[name].get(k) for k in ('kind', 'point', 'phase', 'output_name')})
         try:
             exported = json.loads(checked(source, by_name[name]['export']).read_text())
             folder = source/'models'/name
@@ -186,6 +190,8 @@ def inspect_compilation(batch, output, cases, *, ddk_root=None, compiler_entry=F
             row.update(source_inputs=exported['source_inputs'], golden=exported['golden'],
                 source_air=identity(air, folder), source_schema=identity(schema_path, folder),
                 source_graph=graph_metadata(air, schema))
+            row['export_evidence'] = {k: exported.get(k) for k in
+                ('export_adjustments', 'export_graph_check', 'source_files', 'torch_version', 'torchair_version')}
             row['source_schema_binding'] = 'CURRENT_RETAINED_DESCRIPTOR; OLDER_EXPORT_HAS_NO_SCHEMA_HASH'
         except Exception as exc:
             row['source_error'] = f'{type(exc).__name__}: {exc}'
@@ -211,6 +217,7 @@ def inspect_compilation(batch, output, cases, *, ddk_root=None, compiler_entry=F
                 stream.seek(max(0, log.stat().st_size - (24 << 10)))
                 tail = stream.read(24 << 10).decode('utf-8', errors='replace')
             row['log'] = dict(identity(log, root), tail=tail, tail_bytes_limit=24 << 10)
+            row['log']['diagnostic_excerpt'] = log_excerpt(log)
         try:
             row['ir_inventory'], dumps = retained_ir(job)
         except Exception as exc:
@@ -231,4 +238,30 @@ def inspect_compilation(batch, output, cases, *, ddk_root=None, compiler_entry=F
                 item.update(status='UNAVAILABLE', error=f'{type(exc).__name__}: {exc}')
                 result['status'] = 'PARTIAL'
         save_json(output/'report.json', result)
+    # One compact index for a whole failed batch. Full source/IR and unshortened
+    # bounded error contexts remain in report.json; these hints are not causes.
+    lines = ['Read-only compile inspection; no export, OMG or device execution.',
+             'Group by boundary and actual errors; a candidate rejection alone is not a root cause.', '']
+    for name, row in result['cases'].items():
+        lines.append(f'[{name}] {json.dumps(row["boundary"], ensure_ascii=False)}')
+        evidence = row.get('export_evidence', {})
+        adjustments = evidence.get('export_adjustments')
+        kinds = [a.get('kind') for a in adjustments] if isinstance(adjustments, list) else 'NOT_RECORDED'
+        lines.append('export_adjustments=' + json.dumps(kinds) +
+                     '; export_graph_check=' + json.dumps(evidence.get('export_graph_check')))
+        graphs = row.get('source_graph', {}).get('graphs', [])
+        lines.append('source_type_counts=' + json.dumps([g['type_counts'] for g in graphs]))
+        report = row.get('compiler_report', {})
+        lines.append(f'stage={report.get("stage")}; returncode={report.get("returncode")}')
+        excerpt = row.get('log', {}).get('diagnostic_excerpt', '')
+        hints = excerpt.split('Log tail:\n', 1)[0].splitlines()
+        # Keep both ends: an exception's final line can follow many frames.
+        chosen = hints if len(hints) <= 10 else hints[:5] + ['... see report.json ...'] + hints[-5:]
+        lines.extend(line[:500] + (' [see report.json]' if len(line) > 500 else '') for line in chosen)
+        if not hints:
+            lines.append('No prioritized excerpt; inspect log.tail in report.json.')
+        if row.get('source_error'):
+            lines.append('source_error=' + row['source_error'])
+        lines.append('')
+    (output/'summary.txt').write_text('\n'.join(lines) + '\n')
     return result

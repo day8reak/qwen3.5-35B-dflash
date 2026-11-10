@@ -87,7 +87,7 @@ GDN 的原始 relative-L2 如下，均稳定；core 的 dtype 保持，raw state
 | Conv1d | conv1d，o0 | L0–L2，c00／c01 | 6 | 编译失败；SiLU 的结果不能代替卷积结果 |
 | **合计** | **Norm 20＋ConvState 12＋Conv1d 6** | | **38** | **不归类为已确认的数值错误** |
 
-当前先完成本清单登记。后续编译定位按 Norm／ConvState／Conv1d 三类归并本轮日志，核对真实 AIR 是否包含已有导出修正，再决定有针对性的重导／重编；保留已成功的 120 个 OMC 和这次输出。MoE 专家计算尚未纳入本批小图，四层整图和连续状态反馈也未由本表验证。
+后续编译定位见[原 Target 源码／命令对照与只读检查](target-compile-triage.md)。新增 `inspect-compile --failed` 可一次提取这 38 项的日志和实际 AIR 证据，核对已有导出修正及 ConvState 原图连接关系，再决定有针对性的重导／重编；保留已成功的 120 个 OMC 和这次输出。MoE 专家计算尚未纳入本批小图，四层整图和连续状态反馈也未由本表验证。
 
 ### 旧环境编译记录
 

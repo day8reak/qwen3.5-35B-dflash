@@ -2,6 +2,8 @@
 
 更新：2026-11-10。本页保留**现有 Target 边界小图批次的完整复测命令**。`environment-recheck-001` 已回传 120 项编译成功、38 项失败，并取得这 120 项的数值比较摘要；当前结论见[状态表](target-accuracy-status.md)。按用户最新安排，先登记输出异常与未编译项；已执行的批次和输出直接保留，不重复本页整批流程。
 
+剩余 38 项使用[对照原 Target 的编译定位入口](target-compile-triage.md)：先运行一次 `inspect-compile --failed`，根据已有 AIR 和失败日志选择需要重导／重编的组。
+
 机器分工：DDK／OMG 在 **35 服务器**；310P golden 仍来自此前的**权重服务器**。TorchAir 导出使用已修正且能导出 CPro 算子的环境；上板命令在原来已配置好 HDC 的主机执行。比较使用本批自带的独立输入和 golden，不需要等待四层整图 dump 的自动映射。
 
 这是已有边界批次的复测命令。[四层整图 dump](target-accuracy-status.md#3-主线四层整图一次-dump离线批量定位)仍是后续观察真实误差传播的方法；[compare_target_dump.py](target-dump-compare.md)用于那条整图路线。本页比较工具是 target_layer_probe.py compare，不混用两套输入清单。

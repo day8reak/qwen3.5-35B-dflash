@@ -69,11 +69,54 @@ class InspectionTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def inspect(self, **kwargs):
+    def inspect(self, *, failed=False, **kwargs):
         with patch.object(inspection, 'Schema', FakeSchema), \
              patch.object(inspection, 'load_schema', return_value=FakeSchema()), \
              patch('subprocess.run', side_effect=AssertionError('must not run a compiler')):
-            return inspection.inspect_compilation(self.compiled, self.root/'inspection', [self.name], ddk_root=self.root/'ddk', **kwargs)
+            return inspection.inspect_compilation(self.compiled, self.root/'inspection',
+                None if failed else [self.name], ddk_root=self.root/'ddk', **kwargs)
+
+    def test_failed_selection_omits_successful_cases_without_reading_their_artifacts(self):
+        manifest = json.loads((self.source/'manifest.json').read_text())
+        successful = 'l00_c00_gdn_o0'
+        manifest['cases'].append(dict(id=successful, status='EXPORTED', export={'path': 'must-not-be-read'}))
+        save_json(self.source/'manifest.json', manifest)
+        save_json(self.compiled/'manifest.json', manifest)
+        compiled = json.loads((self.compiled/'compile.json').read_text())
+        compiled['manifest_sha256'] = sha(self.source/'manifest.json')
+        compiled['cases'][successful] = dict(status='COMPILED', omc={'path': 'must-not-be-read'})
+        save_json(self.compiled/'compile.json', compiled)
+        result = self.inspect(failed=True)
+        self.assertEqual(list(result['cases']), [self.name])
+        summary = (self.root/'inspection/summary.txt').read_text()
+        self.assertIn(self.name, summary)
+        self.assertNotIn(successful, summary)
+        self.assertIn('NOT_RECORDED', summary)
+
+    def test_inspection_retains_export_repairs_and_errors_before_the_log_tail(self):
+        receipt = self.folder/'export.json'
+        exported = json.loads(receipt.read_text())
+        exported.update(export_adjustments=[dict(kind='FOLD_ZERO_CENTERED_GAMMA')],
+                        export_graph_check=dict(status='PASSED', gamma='CONSTANT_NO_ADD'))
+        save_json(receipt, exported)
+        manifest = json.loads((self.source/'manifest.json').read_text())
+        manifest['cases'][0]['export'] = identity(receipt, self.source)
+        save_json(self.source/'manifest.json', manifest)
+        save_json(self.compiled/'manifest.json', manifest)
+        compiled = json.loads((self.compiled/'compile.json').read_text())
+        compiled['manifest_sha256'] = sha(self.source/'manifest.json')
+        save_json(self.compiled/'compile.json', compiled)
+        (self.job/'compile.log').write_text('E/GENE node Conv2D type Conv2D not support rank mismatch\n' +
+                                           'I/AI_FMK ordinary progress message\n'*2000)
+        result = self.inspect()
+        row = result['cases'][self.name]
+        self.assertNotIn('rank mismatch', row['log']['tail'])
+        self.assertIn('rank mismatch', row['log']['diagnostic_excerpt'])
+        self.assertEqual(row['export_evidence']['export_graph_check']['status'], 'PASSED')
+        summary = (self.root/'inspection/summary.txt').read_text()
+        self.assertIn('rank mismatch', summary)
+        self.assertIn('FOLD_ZERO_CENTERED_GAMMA', summary)
+        self.assertNotIn('PRIVATE_PAYLOAD', summary)
 
     def test_observed_source_and_failed_ir_shapes_remain_distinct(self):
         before = {p: sha(p) for p in self.root.rglob('*') if p.is_file()}

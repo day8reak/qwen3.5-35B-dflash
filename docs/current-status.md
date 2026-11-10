@@ -15,7 +15,7 @@
 
 用户确认 DDK／OMG 编译在 **35 服务器**，310P golden 仍在此前的**权重服务器**通过已跑通的四层推理入口采集；35 不是 Python 环境名，147 仅为此前参考命令来源。CPro dump 尚无样例。[离线批量比较入口](target-dump-compare.md)已完成主机验证，可从 capture 生成待绑定清单；真实文件格式和节点映射仍需首批 dump 元数据。本轮没有启动整图执行。
 
-剩余编译问题后续按 Norm／ConvState／Conv1d 三类归并本轮日志，核对已实现的导出修正是否进入实际 AIR，避免反复重编已成功的 120 项。四层整图 dump 与连续状态反馈仍未验证，流程保留在[四层转换与 dump 方案](target-accuracy-status.md#4-用户服务器执行入口)。旧环境 GDN SIGSEGV 保留为历史记录，不代表本轮编译状态。
+剩余编译问题已对照保留的原 Target 源码和用户成功命令，按 Norm／ConvState／Conv1d 三类定位。[下一步只读检查](target-compile-triage.md)一次提取全部 38 项日志与导出证据：先核对 Norm／Conv 修正是否进入实际 AIR，再检查 ConvState 的实现选择、双输出连接和状态写回差异。主机 18 项检查通过，未启动新 DDK 或设备实验。四层整图 dump 与连续状态反馈仍未验证，流程保留在[四层转换与 dump 方案](target-accuracy-status.md#4-用户服务器执行入口)。旧环境 GDN SIGSEGV 保留为历史记录，不代表本轮编译状态。
 
 ## 2026-11-09 独立诊断记录
 
