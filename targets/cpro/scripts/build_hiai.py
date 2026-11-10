@@ -139,7 +139,7 @@ def main():
         "tensor_probe_input_reset": ["copy-each-call"] if "qwen35_tensor_probe" in diagnostic_binaries else [],
         "tensor_probe_input_preparation": ["copy-c16-v1", "feature-pack-c16-v1", "feature-pack-c16-kernel2-v1"] if "qwen35_tensor_probe" in diagnostic_binaries else [],
         "tensor_probe_dtypes": ["float32", "float16", "int16", "int32", "int64"] if "qwen35_tensor_probe" in diagnostic_binaries else [],
-        "tensor_probe_limits": {"max_dimension": 16 << 20, "max_io_bytes": 16 << 20, "max_rank": 4}
+        "tensor_probe_limits": {"max_dimension": 16 << 20, "max_io_bytes": 32 << 20, "max_rank": 4}
             if "qwen35_tensor_probe" in diagnostic_binaries else {},
         "native_build_type": "Release", "model_compilation": "NOT_RUN",
         "device_validation": "PENDING", "binary_sha256": sha256_file(binary) if binary.is_file() else None,

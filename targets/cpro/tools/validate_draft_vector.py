@@ -600,6 +600,17 @@ def _check_probe_dtypes(meta, built):
                   for s in c[direction] for n in s['shape'])
     if largest > built.get('tensor_probe_limits', {}).get('max_dimension', 65536):
         raise ValueError('rebuild runtime/native with build_hiai.py --replace; tensor probe axis limit is too small')
+    # Legacy binaries have a 16 MiB cap. Check before uploads/device locking,
+    # using the hash-bound build receipt rather than assuming a rebuilt runner.
+    limit = built.get('tensor_probe_limits', {}).get('max_io_bytes', 16 << 20)
+    for case in meta['cases']:
+        total = sum(math.prod(s['shape']) * WIDTHS[s['dtype']]
+                    for direction in ('inputs', 'outputs') for s in case[direction])
+        if total > limit:
+            raise ValueError(f'{case["case"]}: probe IO requires {total} bytes; '
+                             f'native runner limit={limit} bytes. '
+                             'Rebuild runtime/native with build_hiai.py --replace; '
+                             'OMC recompilation is not required.')
 
 
 def start(args, out):

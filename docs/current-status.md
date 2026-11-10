@@ -2,7 +2,7 @@
 
 更新：2026-11-10。用户确认重导后的 **Norm 20 项＋Conv1d 6 项全部编译成功**，累计 **146/158 项成功，剩余 ConvState 12 项**。这是旧批次 120 项加新批次 26 项的累计覆盖，旧 `environment-recheck-001/omc/compile.json` 保留原记录。新 26 项的逐 case 报告、OMC 哈希及精度结果尚未回传。原 120 项数值摘要保持 **2 PASSED、2 FAILED、116 METRICS_RECORDED**，均 `stable=TRUE`。
 
-按用户最新安排，先在 GitHub 登记结论，明确异常边界与未编译项；本次没有修改算子或启动新实验。详细范围、误差和未编译边界见[Target OMC 与精度状态表](target-accuracy-status.md)。
+新 26 项上板入口在主机 prepare 触发旧的单模型 16 MiB I/O 预算，设备 `NOT_RUN`。按 FP32 Prefill Conv 形状计算，其输入＋输出超出旧限额 96 KiB。现同步修正主机和 native runner 为 32 MiB，并增加上传前旧 runner 能力检查；需重建一次 runner，复用原 OMC／golden，按[更新后的上板步骤](target-norm-conv-validation.md)重试。主机边界测试通过，尚无这 26 项的新设备结果。详细范围、误差和未编译边界见[Target OMC 与精度状态表](target-accuracy-status.md)。
 
 | 当前分组 | 数量 | 结论 |
 |---|---:|---|

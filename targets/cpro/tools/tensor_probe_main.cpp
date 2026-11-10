@@ -10,6 +10,8 @@
 namespace fs = std::filesystem;
 using namespace qwen35::dflash;
 using Bytes = std::vector<std::uint8_t>;
+// Per model input + output bytes; FP32 prefill Conv needs 16 MiB + 96 KiB.
+constexpr std::size_t kProbeIoLimit = 32U << 20;
 
 unsigned Number(const std::string& text) {
   if (text.empty() || text.size() > 9 || text.find_first_not_of("0123456789") != std::string::npos)
@@ -54,15 +56,15 @@ Plan ReadPlan(const fs::path& path) {
       std::istringstream dimensions(fields[4]);
       while (std::getline(dimensions, token, ',')) {
         const auto n = Number(token);
-        // Full-vocabulary probes have an axis of 248320. Bound dimensions by
-        // the existing IO budget; the checked byte product below is decisive.
+        // Full-vocabulary probes have an axis of 248320. Retain the axis bound;
+        // the checked byte product and total below also limit allocations.
         if (!n || n > (16U << 20) || spec.shape.size() == 4) throw std::invalid_argument("invalid probe shape");
         spec.shape.push_back(n);
       }
       if (spec.shape.empty()) throw std::invalid_argument("probe shape is empty");
       const auto bytes = HiaiTensorBytes(spec);
-      if (bytes > (16U << 20) || total > (16U << 20) - bytes)
-        throw std::invalid_argument("probe IO exceeds 16 MiB");
+      if (bytes > kProbeIoLimit || total > kProbeIoLimit - bytes)
+        throw std::invalid_argument("probe IO exceeds 32 MiB");
       total += bytes; specs.push_back(spec);
     } else throw std::invalid_argument("unknown probe row");
   }

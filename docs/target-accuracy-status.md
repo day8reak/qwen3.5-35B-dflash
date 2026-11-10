@@ -2,7 +2,7 @@
 
 用户已回传[修正环境后的批量复测](target-batch-rerun.md)，并进一步确认重导的 **Norm 20 项＋Conv1d 6 项全部编译成功**。累计 **146/158 项已编译，剩余 ConvState 12 项**。原 `environment-recheck-001` 的 120 项已有设备数值摘要，均 `stable=TRUE`，状态为 **2 PASSED、2 FAILED、116 METRICS_RECORDED**；新 26 项精度尚未回传。
 
-更新：2026-11-10。按用户最新安排，当前先列清**输出异常边界与剩余未编译项**。本次仅更新结论，不修改算子或启动新实验；四层整图 dump 保留为后续方案。
+更新：2026-11-10。新 26 项的执行入口在主机 prepare 触发旧 16 MiB I/O 限额，设备尚未运行。主机与 native runner 的单模型限额已同步改为 32 MiB，并通过主机边界检查；请按[上板文档](target-norm-conv-validation.md)重建一次 runner 后复用 OMC 重跑。此工具修复不改变下方数值结论；四层整图 dump 保留为后续方案。
 
 主机侧已提供[批量 dump 比较脚本](target-dump-compare.md)，复用原四层入口的捕获清单。当前支持显式映射和离线比较；CPro dump 尚无样例，自动格式适配与节点映射待首批元数据。
 

@@ -1,6 +1,8 @@
 # 新增 26 个 Norm／Conv OMC：上板、回收与比较
 
-用户已确认普通 Norm 20 项、Conv1d 6 项全部编译成功。本页只执行这些新模型，数值结果仍待回传。沿用之前 120 项已跑通的 native runner、runtime.json 和 HDC 配置。
+用户已确认普通 Norm 20 项、Conv1d 6 项全部编译成功。本页只执行这些新模型，数值结果仍待回传。沿用之前 120 项的 runtime.json 和 HDC 配置，native runner 需按下文更新一次。
+
+用户回传的 `selected boundary exceeds existing small-probe IO budget` 发生在主机 prepare，设备尚未执行。旧主机脚本和 native runner 均限制**单个模型的输入＋输出总计 16 MiB**。按 Prefill Conv 的 FP32 输入 `[1,8192,259]`、输出 `[1,8192,256]` 计算，总计 **16,875,520 字节，超出 96 KiB**，符合这次触发条件；旧错误未记录具体 case，不能据此确认其名字。现将两端限额同步设为 **32 MiB**，并在上传前检查已构建 runner 的实际声明。每方向最多 8 个张量、rank 上限 4 均保持。
 
 ## 1. 在原上板主机恢复变量
 
@@ -21,7 +23,7 @@ export HDC="${HDC:-hdc}"
 
 export RECHECK="$AI_RUN_DIR/target/tests/environment-recheck-001"
 export RUNTIME_CONFIG="$AI_RUN_DIR/runtime/runtime.json"
-export VALIDATION_ROOT="$RECHECK/validation-norm-conv-001"
+export VALIDATION_ROOT="$RECHECK/validation-norm-conv-002"
 
 : "${AI_RUN_DIR:?}" "${CPRO_DDK_ROOT:?}" "${HDC:?}" "${BIP:?}" "${SN:?}"
 test -f "$RUNTIME_CONFIG"
@@ -29,9 +31,38 @@ test -f "$RUNTIME_CONFIG"
 
 `env.sh` 默认读取仓库旁的 `qwen35-cpro.env`，也支持已有的 `QWEN35_ENV_CONFIG`。若此前用其他配置文件，可先执行 `source "$REPO_DIR/targets/cpro/scripts/env.sh" /该配置的实际路径`。没有私有配置时，上方保留本终端已有的 `AI_RUN_DIR`、DDK、HDC、`BIP`、`SN`；BIP／SN 未提供就停止检查，使用上次成功的实际值，不猜设备地址。`RUNTIME_CONFIG` 若不在示例位置，改为之前成功的那个 runtime.json。
 
-`VALIDATION_ROOT` 是本次新的验证目录；已有同名运行时换 `validation-norm-conv-002`。本页不要求重新构建 runner，不重新采集 310P golden，也不重新导出／编译模型。
+`VALIDATION_ROOT` 是本次新的验证目录；已有同名运行时继续递增编号。只更新并重建 runner；OMC、输入、golden、shape 和 dtype 不变，不重新采集或导出／编译模型。
 
 需要跨主机搬运时，将新 AIR batch 和 OMC batch 一起搬运并保持相对位置。OMC 的 `compile.json.source_batch` 指向 AIR，AIR 内含本次输入和 golden。运行阶段不再需要原始 `GOLDEN_CAPTURE` 或完整 checkpoint。
+
+### 更新这份 runtime 配置实际使用的 runner
+
+在上板主机使用上次构建成功的 `OHOS_NATIVE_SDK`、`HIAI_INCLUDE_DIR`、`HIAI_LIBRARIES`，或同一份 `QWEN35_RESOURCES`。若 SDK 只在原构建主机，则在那里重建后搬运完整 native 目录。已有设备任务先完成回收；`--replace` 用于重建已归属的 native 目录，构建器会检查活动任务。本次 prepare 失败且 `device_execution=NOT_RUN`、`lock_state=NO_KNOWN_OWNED_LOCK` 的请求无需回收或清锁。
+
+```bash
+python - "$REPO_DIR" "$RUNTIME_CONFIG" <<'PY'
+import json, subprocess, sys
+from pathlib import Path
+repo, config = (Path(p).resolve() for p in sys.argv[1:])
+cfg = json.loads(config.read_text())
+native = (config.parent / cfg.get('native_directory', 'native')).resolve()
+previous = json.loads((native / 'command.json').read_text())
+cmd = [sys.executable, str(repo / 'targets/cpro/scripts/build_hiai.py'),
+       '--output', str(native), '--replace']
+# 保留上次显式选择的 SDK API，避免重建时改变兼容版本。
+api = previous.get('compatible_sdk_version_requested')
+if api is not None:
+    cmd += ['--compatible-sdk-version', str(api)]
+subprocess.run(cmd, check=True)
+built = json.loads((native / 'result.json').read_text())
+assert built['status'] == 'LINKED'
+assert built['tensor_probe_limits']['max_io_bytes'] >= 32 << 20
+print('runner 已更新:', native)
+print('tensor_probe_limits:', built['tensor_probe_limits'])
+PY
+```
+
+只有此步成功才继续下方执行。不能只改 `result.json` 声明；真正的 C++ 二进制也必须更新。主机上传前会校验该二进制哈希，并按 case 检查字节数是否超过其限额。
 
 ## 2. 选择实际编译批次
 
@@ -147,4 +178,4 @@ cat "$COMPARISON/summary.csv"
 
 回传每批的 `summary.csv`；异常时附 `RECOVERY/result.json` 的状态和 error。4＋22 方式会得到两份 CSV，共 26 项；单批方式得到一份。原执行 fixture、回收 native 和详细 `report.json` 保留，后续离线分析可以直接复用。
 
-本页命令已核对现有 CLI 并检查 Shell／Python 片段语法；尚未在本地主机启动设备执行。完成后的实际精度状态更新到 [Target 状态表](target-accuracy-status.md)。
+本页命令已核对现有 CLI 并检查 Shell／Python 片段语法；主机测试覆盖 FP32 Prefill Conv 的字节预算、旧 runner 拒绝、实际 C++ 计划解析及 32 MiB 边界。本地主机未执行 OHOS 交叉构建或设备验证。完成后的实际精度状态更新到 [Target 状态表](target-accuracy-status.md)。

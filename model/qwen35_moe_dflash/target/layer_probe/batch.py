@@ -190,6 +190,15 @@ def bind_compiled(document, source_inputs, golden, enums):
                 output_binding='SOLE_COMPILED_OUTPUT_NO_SHAPE_BASED_SLOT_GUESSING')
 
 
+def check_io_budget(name, io):
+    sizes = {d: sum(s['bytes'] for s in io[d]) for d in ('inputs', 'outputs')}
+    total = sum(sizes.values())
+    if total > 32 << 20 or any(len(io[d]) > 8 for d in sizes):
+        raise ValueError(f'{name}: probe IO requires {total} bytes '
+                         f'(inputs={sizes["inputs"]}, outputs={sizes["outputs"]}); '
+                         'limit=33554432 bytes (32 MiB), at most 8 slots per direction')
+
+
 def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     from qwen35_moe_dflash.toolchain.omc_container import read_container, read_partition
     from qwen35_moe_dflash.toolchain.omc_wire import load_schema
@@ -228,6 +237,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
             io = bind_compiled(doc, exported['source_inputs'], exported['golden'], enums)
         except ValueError as exc:
             raise ValueError(f'{name}: {exc}') from exc
+        check_io_budget(name, io)
         fixture = out/'fixture'/name
         fixture.mkdir(parents=True)
         plan = ['QWEN35_TENSOR_PROBE 1', 'iterations 3 10', 'input_reset copy-each-call']
@@ -240,9 +250,6 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
                 spec['fixture_bytes'] = destination.stat().st_size
                 spec['name'] = prefix + '_' + str(spec['index'])
                 plan.append(' '.join((direction[:-1], str(spec['index']), spec['name'], spec['dtype'], ','.join(map(str, spec['shape'])))))
-        total = sum(s['bytes'] for d in ('inputs', 'outputs') for s in io[d])
-        if total > 16 << 20 or any(len(io[d]) > 8 for d in ('inputs', 'outputs')):
-            raise ValueError('selected boundary exceeds existing small-probe IO budget')
         (fixture/'plan.txt').write_text('\n'.join(plan)+'\n')
         observed = _compiled_observation(model, ddk)
         cases.append(dict(case=name, **io, layer=case['layer'], call=case['call'], point=case['point'],
