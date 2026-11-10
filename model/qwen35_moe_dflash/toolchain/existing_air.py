@@ -26,6 +26,9 @@ from qwen35_moe_dflash.common.artifacts import output_path, save_json
 from qwen35_moe_dflash.toolchain.compile import omg_environment, _environment_record, _omg_ipc_environment, _retain_compiler_diagnostics, prepare_tbe_compatibility, verify_tbe_compatibility
 from qwen35_moe_dflash.toolchain.compiler_evidence import compile_evidence
 from qwen35_moe_dflash.toolchain.compile_progress import compiler_heartbeat
+from qwen35_moe_dflash.toolchain.compiler_entry import (
+    DEFAULT_PROFILE, SOURCED_PROFILE, UNSPECIFIED_PLATFORM,
+    sourced_wrapper_environment, validate_profile)
 from qwen35_moe_dflash.common.hashing import sha256_file
 from qwen35_moe_dflash.common.tool_logs import log_excerpt
 
@@ -405,7 +408,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                          weight_data_type=None, cl_customization=None, reuse_failed_job=None,
                          borrowed_decode_job=None, decode_inventory=None,
                          decode_export_receipt=None, incremental_draft_export=None,
-                         air_transform=None):
+                         air_transform=None, compiler_profile=DEFAULT_PROFILE):
     """Return a host compilation report, retaining failures without deployment.
 
     Only inventoried local snapshots are hash bound. Absolute or out-of-tree
@@ -434,7 +437,14 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     ``air_transform`` optionally prepares a separate compiler AIR from the
     independent snapshot. It returns (bytes, JSON evidence), never overwrites
     source/snapshot files, and is not used by the legacy compilation routes.
+    ``compiler_profile=sourced-wrapper-default`` explicitly compares the
+    inspected wrapper's environment/arguments using an already sourced shell.
+    It omits platform/target flags and is not a verified X90 compilation route.
     """
+    validate_profile(compiler_profile, tbe_diagnosis)
+    if compiler_profile == SOURCED_PROFILE and any(value is not None for value in
+            (omg_path, reuse_failed_job, borrowed_decode_job, incremental_draft_export, air_transform)):
+        raise ValueError('sourced-wrapper-default excludes tool overrides, input reuse modes and AIR transformations')
     if (not isinstance(ddk_id, str) or not ddk_id.strip()
             or isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
             or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
@@ -472,7 +482,11 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     output = output_path(output_dir)
     if output == air.parent or air.parent in output.parents or output == ddk or ddk in output.parents:
         raise ValueError("compilation output must be outside the source and DDK directories")
-    omg, env = omg_environment(ddk)
+    entry = None
+    if compiler_profile == SOURCED_PROFILE:
+        omg, env, entry = sourced_wrapper_environment(ddk)
+    else:
+        omg, env = omg_environment(ddk)
     if omg_path is not None:
         selected = Path(omg_path).resolve()
         if ddk not in selected.parents or not selected.is_file():
@@ -502,7 +516,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     report = {
         "schema_version": 1, "artifact_kind": "qwen35-existing-air-compilation",
         "status": "COMPILING", "output": str(output), "comparison": str(output / "report.txt"),
-        "platform": "kirinx90", "ddk_id": ddk_id, "ddk_root": str(ddk),
+        "platform": UNSPECIFIED_PLATFORM if entry else "kirinx90",
+        "compiler_profile": compiler_profile, "ddk_id": ddk_id, "ddk_root": str(ddk),
         "omg_path": str(omg), "omg_sha256": sha256_file(omg), "air_source": str(air),
         "requested_options": options,
         "source_contract": {key: "UNVERIFIED" for key in
@@ -523,6 +538,8 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
             "extensionless_regular_files": "INCLUDED_EXCEPT_HIDDEN_NAMES",
         },
     }
+    if entry is not None:
+        report['compiler_entry'] = entry
     compatibility = None
     reuse_binding = {}
     retained_plan = None
@@ -674,8 +691,9 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
                    fill_count=evidence.get('fill_count', 0),
                    weight_transpose_count=evidence.get('weight_transpose_count', 0),
                    unit_scale_count=evidence.get('unit_scale_count', 0))
-        command = [str(omg), "--framework=1", f"--model={compiler_air}",
-                   "--output=model", "--target=omc", "--platform=kirinx90"]
+        command = [str(omg), "--framework=1", f"--model={compiler_air}", "--output=model"]
+        if compiler_profile == DEFAULT_PROFILE:
+            command.extend(["--target=omc", "--platform=kirinx90"])
         command.extend(f"--{name}={value}" for name, value in options.items())
         save_json(output / "compile-command.json", {"argv": command, "cwd": str(inputs),
                                                     "weight_dtype_override": weight_data_type})
@@ -829,7 +847,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
     dtype_policy = ("weight dtype follows the selected OMG default; no explicit override" if weight_data_type is None
                     else f"explicit compiler weight dtype override={weight_data_type}")
     lines = ["Existing AIR -> selected-DDK OMG compilation", f"status={report['status']}",
-             f"Target: kirinx90; {dtype_policy}.",
+             f"Target: {report['platform']}; profile={compiler_profile}; {dtype_policy}.",
              "Requested compiler options: " + json.dumps(options, sort_keys=True),
              "Original model checkpoint, quantization, layer count, shapes and runtime ABI remain UNVERIFIED.",
              "No board execution; this artifact is not validated against this project's runner ABI.",

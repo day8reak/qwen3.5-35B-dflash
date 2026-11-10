@@ -181,7 +181,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
 
 旧检查器仅搜索临时 `dump_graph/`，遗漏了 `diagnostics/`。更新后可以直接检查现有失败批次，无须为收集已保存的 IR 再次编译。若仍为空，结合 `compiler_report.compiler_diagnostics` 和 `ir_inventory` 判断是否实际保存，不能仅凭日志中的 “dump file ... create” 认定文件存在。
 
-后续回传的三个 case 均为 `NOT_EMITTED` / `NOT_FOUND`，说明仅补目录仍未找到文件。项目此前的同版 DDK 记录还出现过 `dump_graph` 普通文件（无扩展名）；原保存器和小图检查器都只按目录处理，已一起修正。旧报告的 `NOT_EMITTED` 不证明不存在这种文件；也不能在未读到新结果前认定本批使用了该格式。普通文件也可能是最后一次覆盖保存，不能据文件名推断为某个编译阶段。
+2026-11-10 后续回传已确认三个 case 的 `dump_graph` 都是无扩展名普通文件，检查状态为 `FOUND` / `INSPECTED`。原保存器和检查器只按目录处理的遗漏已修正。这三份旧文件标记为 `UNBOUND_LEGACY_FILE`，其中间 shape 仍为空，节点与源图基本一致；不能当作已完成推形或分区的快照。QLinear 的 `[256,1024]` 仍以该次编译日志为证据，不能从这些空 descriptor 推导最终存储类型。
 
 ### 与已成功整网编译的条件对照
 
@@ -189,7 +189,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
 
 | 条件 | 用户报告成功的整网 | 当前小图 |
 | --- | --- | --- |
-| 入口 | 外层 `tools/tools_omg/omg` | 直接调用 `tools/tools_omg/master/omg`，显式 `--platform=kirinx90` |
+| 入口 | 外层脚本最终调用同一个 `master/omg`，不追加 platform/target 参数 | 直接调用 `master/omg`，显式 `--platform=kirinx90 --target=omc` |
 | 环境 | source 原 AscendC 环境脚本 | 继承调用进程后，过滤已知外部 CANN 路径、重排库和 Python 搜索路径，并设置 SOC/配置路径；若启用 TBE 兼容选项，还使用局部 wheel |
 | shape | `--dynamic_dims=64,64,64,64,64;1,1,1,1,1` | 本次 prefill 为静态 256；decode 为静态 1 |
 | 状态与连接 | 80 个 `RefData`，保留完整消费关系 | 独立 `Data` 输入，每个图仅保留一个输出 |
@@ -197,17 +197,34 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
 
 同名算子在独立图和完整图中可能经过不同融合、布局转换与实现选择。ConvState 的第二输出在整网连接后续卷积，单输出探针可能失去该融合条件；这是待原图/日志验证的假设。整网成功不证明静态 256 的单输出版本可独立编译，小图失败也不能推出 DDK 全局缺少算子。外置权重本身没有证据可解释 V4444 的八倍宽度差异。
 
-先在原成功命令使用的环境中执行下面的只读检查。新增 `--compiler-entry` 读取环境脚本和外层入口的内容/哈希，记录当前 shell 的指定工具链变量、脚本基础环境调整差异，以及旧失败任务保存的环境。它不执行这两个脚本、不运行 OMG，也不证明当前环境就是历史成功时的环境；未记录的变量标为未知。只检查两个固定入口文件，不递归扫描 DDK 或读取模型权重。
+已回传的两个入口脚本确认：外层入口把 `LD_LIBRARY_PATH` 替换为 `master/lib64`、`ddk/tbe/lib64`、`ddk/ascendcpp/lib64`，设置 `CCE_LIB_DIR` 和 `KIRIN_CONF_JSON_PATH`；已导出的 `HIAI_VERSION` 改为 `master`。只有显式传入 `--platform` 才追加平台库与 Python 路径并设置 `SOC_VERSION`。原成功命令没有该参数，因此外层脚本保留继承的 `SOC_VERSION` / `PYTHONPATH`，并不证明它们为空。source 脚本还调用了未回传内容的 `set_tbe_env_ddk.sh`，不能仅凭两个入口文本还原历史成功环境。外层脚本不改写 AIR，也没有 INT4 解包逻辑。
+
+现在可在原成功命令的已 source shell 中，对同一份保留 AIR 运行 `sourced-wrapper-default`。这个显式诊断 profile 复现已检查的 Linux/master/无 platform 参数分支，不执行厂商脚本中的 chmod、mkdir 或 loader 链接写入。两个脚本必须匹配回传 SHA256，且当前 `DDK_PATH` 必须指向所选 DDK；不匹配时在创建编译批次前报错。它保留当前 shell 的注册与 Python 环境，直接执行同一个 master ELF，省略 target/platform 参数，并选择 `limit_partition_size=false`、外置权重；不能同时传 `--tbe-diagnosis`。
+
+这是一组入口、环境、参数条件的对照，尚不是单因素实验。输入 shape 保持原静态 256，状态仍是 Data、单输出；不套用整网 89 个输入名或 64/1 动态档位。保留原有运行目录内的 IPC 临时目录和 multiprocessing overlay、禁止 Python 字节码写入，并在报告中列明这些与原命令的差异。对照成功后还需拆分变量确认原因。
+
+无需再次做相同只读检查。从旧失败批次定位 AIR 源目录，然后只编三个 case，输出目录必须是新目录：
 
 ```bash
-python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
-  --batch "$OMC_BATCH" --ddk-root "$CPRO_DDK_ROOT" --compiler-entry \
+AIR_SOURCE=$(python - "$OMC_BATCH" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+report = json.loads((root / 'compile.json').read_text())
+print((root / report.get('source_batch', '.')).resolve())
+PY
+)
+ENTRY_COMPARE="$AI_RUN_DIR/target/tests/accuracy-entry-compare-004"
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
+  --batch "$AIR_SOURCE" --output "$ENTRY_COMPARE" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --compiler-profile sourced-wrapper-default \
   --cases l00_c00_linear_attn_in_proj_qkv_o0 \
-          l00_c00_convstate_update_o0 l00_c00_gdn_o0 \
-  --output "$AI_RUN_DIR/target/tests/accuracy-entry-inspection-003"
+          l00_c00_convstate_update_o0 l00_c00_gdn_o0
 ```
 
-先核对外层入口是否调用同一个二进制、追加参数或设置注册路径，再对齐环境和图结构。若对齐后 GDN 仍 SIGSEGV，才对同一小图抓调用栈。整个流程复用现有 AIR，不重新导出或编译 40 层模型。
+`compile.json` 保留完整源 manifest 哈希和 `source_batch`，列出 `selected_cases`；未选项标为 `NOT_SELECTED`，顶层编译状态仅针对所选项。每个 case 的 `omc/report.json`、`compile-command.json`、`omg-environment.json` 和 `compile.log` 保留原始证据。平台标为 `UNSPECIFIED_COMPILER_DEFAULT`，不得据此宣称 X90 已编译通过；现有板端 fixture 入口拒绝该诊断批次。默认 `isolated-kirinx90` 路径不变。
+
+优先比较 QLinear 是否仍推为 1024、ConvState 是否仍缺少 format config、GDN 是否仍返回 -11。若一致，再分别核对算子合同、整图消费者/RefData 及 GDN 调用栈；若不同，再逐项拆分入口条件。整个流程复用现有 AIR，不重新导出或编译 40 层模型。
 
 2026-11-10 用户回传的 AIR 和 DDK `100.520.020.010` 日志支持以下判断。修正后的 OMG 结果尚待用户执行；这些编译证据不代表板端数值通过。
 
@@ -216,7 +233,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
 | 普通 Norm | FP16 `weight + 1` 的 Add 常量计算报类型不支持，CPUCL 常量子图报输入类型不一致，最终 Add tiling 报 `inputTensorPtr is NULL` | 导出前按原权重 dtype 计算一次 gamma，保留原 `npu_rms_norm` 调用及 epsilon；新 AIR 必须直接使用常量 gamma 且无 Add |
 | Conv1d | 导出的 Conv2D 输入是 `[1,8192,259]`，filter 已为 `[8192,1,1,4]`，验证报两者 rank 不同 | 用显式 `unsqueeze(2) → conv2d → squeeze(2)` 表达；保留原 FP32 输入、权重、groups 和 bias，新 AIR 检查两端四维且高度为 1 |
 | QLinear | x2 为 INT32 `[2048,1024]`、scale 为 FP32 `[8,8192]`；V4444 推导输出 `[256,1024]`，下游要求 `[1,256,8192]` | 已定位逻辑宽度与打包载体宽度冲突。还需所选 DDK 的 `InferShapeForQuantBatchMatmulV4444`、注册和 tiling 合同；不修改 golden 宽度或猜测解包规则 |
-| ConvState | 内置推形成功，但各 store 均不支持，强制分到 NPU 后找不到 implementation/format config | 需补齐或核对所选 DDK 的实现注册。Python fake 的第二输出为三维，DDK 推为 `[1,8192,1,259]`，也是待对齐的接口差异；单改 shape 不会补出缺失实现 |
+| ConvState | 内置推形成功，但本次入口下各 store 均不支持，强制分到 NPU 后找不到 implementation/format config | 先比较入口环境与注册选择，不能推出整个 DDK 全局缺少算子。Python fake 的第二输出为三维，DDK 推为 `[1,8192,1,259]`，也是待对齐的接口差异 |
 | GDN | OMG SIGSEGV；此前 FP32→FP16 CastT prebuild 成功 | 崩溃函数仍需 IR / 调用栈定位。保持七个输入及原属性，不凭日志末行改 dtype 或更换 `kirinx90` |
 | Gated Norm | OMC 已成功 | 保留原直接 gamma 路径；它的成功不能证明普通 Norm 相同 dtype/rank 组合可用 |
 

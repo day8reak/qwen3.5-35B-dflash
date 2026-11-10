@@ -98,6 +98,8 @@ def _environment_record(ddk_root, env):
                 candidates.append(str(path.resolve()))
     keys = ("PYTHONPATH", "LD_LIBRARY_PATH", "PATH", "DDK_PATH", "TOOLCHAIN_HOME", "HIAI_VERSION",
             "CCE_LIB_DIR", "SOC_VERSION", "KIRIN_CONF_JSON_PATH", "ASCEND_OPP_PATH",
+            "ASCEND_CUSTOM_OPP_PATH", "PYTHONHOME", "PYTHONDONTWRITEBYTECODE",
+            "PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "PYTHONWARNINGS",
             "TMPDIR", "TMP", "TEMP")
     return {"ddk_root": str(Path(ddk_root).resolve()),
             "environment": {key: env[key] for key in keys if key in env},

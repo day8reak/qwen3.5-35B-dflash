@@ -196,7 +196,8 @@ def inspect_compilation(batch, output, cases, *, ddk_root=None, compiler_entry=F
             report = json.loads(bounded_bytes(receipt, 8 << 20))
             row['compiler_report'] = dict(identity(receipt, root),
                 **{k: report.get(k) for k in ('stage', 'returncode', 'error', 'requested_options', 'ddk_id',
-                                             'omg_path', 'omg_sha256', 'tbe_compatibility', 'compiler_diagnostics')})
+                                             'omg_path', 'omg_sha256', 'compiler_profile', 'compiler_entry',
+                                             'platform', 'tbe_compatibility', 'compiler_diagnostics')})
         environment = job/'omg-environment.json'
         if compiler_entry and environment.is_file():
             prior = json.loads(bounded_bytes(environment, 8 << 20)).get('environment', {})

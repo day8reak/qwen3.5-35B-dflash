@@ -10,6 +10,9 @@ import sys
 
 import numpy as np
 from .common import KIND, DTYPES, checked, identity, metrics, new_output, read_array, save_json, sha
+from qwen35_moe_dflash.toolchain.compiler_entry import (
+    DEFAULT_PROFILE, SOURCED_PROFILE, UNSPECIFIED_PLATFORM,
+    sourced_wrapper_environment, validate_profile)
 
 # Dependency order, independent of when a post-hook finishes writing its files.
 POINT_ORDER = {name: i for i, name in enumerate((
@@ -81,7 +84,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
     return report
 
 
-def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900, use_origin_format=None):
+def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900, use_origin_format=None,
+                  cases=None, compiler_profile=DEFAULT_PROFILE):
     """Read an AIR batch and write a fresh, separate compilation batch."""
     from qwen35_moe_dflash.common.artifacts import output_path
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
@@ -93,16 +97,33 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
     manifest = json.loads((root/'manifest.json').read_text())
     if manifest.get('artifact_kind') != KIND or manifest.get('status') not in ('EXPORTED', 'PARTIAL'):
         raise ValueError('requires region AIR batch')
+    known = [c['id'] for c in manifest['cases']]
+    selected = known if cases is None else list(cases)
+    if (not selected or len(set(known)) != len(known) or len(set(selected)) != len(selected)
+            or set(selected) - set(known)):
+        raise ValueError('select distinct known AIR cases')
+    validate_profile(compiler_profile, tbe_diagnosis)
+    diagnostic = compiler_profile == SOURCED_PROFILE
+    if diagnostic:
+        # Fail before creating a batch if the caller/DDK entry is not bound.
+        sourced_wrapper_environment(ddk)
     output = new_output(output)
     # Keep a small manifest snapshot for the board entry's batch detection. AIR,
     # weights and golden fixtures remain in the original, read-only source batch.
     shutil.copyfile(root/'manifest.json', output/'manifest.json')
     report = dict(artifact_kind=KIND, status='COMPILING', cases={}, ddk_id=ddk_id,
-        platform='kirinx90', manifest_sha256=sha(output/'manifest.json'),
+        platform=UNSPECIFIED_PLATFORM if diagnostic else 'kirinx90',
+        compiler_profile=compiler_profile, selected_cases=selected,
+        coverage='ALL_MANIFEST_CASES' if set(selected) == set(known) else 'SELECTED_CASES_ONLY',
+        status_scope='SELECTED_CASES', diagnostic_only=diagnostic,
+        manifest_sha256=sha(output/'manifest.json'),
         source_batch=os.path.relpath(root, output))
     save_json(output/'compile.json', report)
     for case in manifest['cases']:
         row = report['cases'][case['id']] = dict(status='NOT_EXPORTED')
+        if case['id'] not in selected:
+            row['status'] = 'NOT_SELECTED'
+            continue
         if case['status'] != 'EXPORTED':
             continue
         try:
@@ -112,7 +133,8 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
             destination = output/'models'/case['id']/'omc'
             print('compile', case['id'], flush=True)
             compiled = compile_existing_air(air, destination, ddk, ddk_id=ddk_id,
-                timeout_seconds=timeout, save_weights_as_external_data=False,
+                timeout_seconds=timeout, save_weights_as_external_data=diagnostic,
+                limit_partition_size=False if diagnostic else None, compiler_profile=compiler_profile,
                 use_origin_format=use_origin_format, tbe_diagnosis=tbe_diagnosis)
             if compiled['status'] != 'COMPILED':
                 raise RuntimeError(compiled.get('error', 'OMG failed; inspect retained omc/report.json'))
@@ -120,7 +142,7 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
         except Exception as exc:
             row.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')
         save_json(output/'compile.json', report)
-    report['status'] = 'COMPILED' if all(r['status'] == 'COMPILED' for r in report['cases'].values()) else 'PARTIAL'
+    report['status'] = 'COMPILED' if all(report['cases'][name]['status'] == 'COMPILED' for name in selected) else 'PARTIAL'
     save_json(output/'compile.json', report)
     return report
 
@@ -171,6 +193,8 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     root, out = Path(root).resolve(), Path(out)
     manifest = json.loads((root/'manifest.json').read_text())
     compiled = json.loads((root/'compile.json').read_text())
+    if compiled.get('compiler_profile', DEFAULT_PROFILE) != DEFAULT_PROFILE or compiled.get('diagnostic_only'):
+        raise ValueError('compiler-entry diagnostic batch has an unverified target; cannot prepare board fixtures')
     if compiled['manifest_sha256'] != sha(root/'manifest.json') or compiled['ddk_id'] != ddk_id:
         raise ValueError('compile source/DDK identity changed')
     # Legacy batches colocate fixtures and OMCs. New batches reference the source

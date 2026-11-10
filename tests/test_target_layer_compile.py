@@ -56,6 +56,8 @@ class CompileBatchTest(unittest.TestCase):
         self.assertNotIn(ddk, output.parents)
         self.assertEqual(ddk, self.ddk)
         self.assertFalse(kwargs['save_weights_as_external_data'])
+        self.assertIsNone(kwargs['limit_partition_size'])
+        self.assertEqual(kwargs['compiler_profile'], 'isolated-kirinx90')
         output.mkdir(parents=True, exist_ok=False)
         model = output/'model.omc'
         model.write_bytes(b'host OMC fixture')
@@ -189,6 +191,45 @@ class CompileBatchTest(unittest.TestCase):
         self.assertEqual(meta['uncompiled_cases'], [self.names[1]])
         with self.assertRaisesRegex(ValueError, 'select unique compiled regions'):
             self.fixtures(output=self.root/'invalid-selection', selection=[self.names[1]])
+
+    def test_selected_cases_keep_full_manifest_and_do_not_compile_other_cases(self):
+        report, compiler = self.compile(cases=[self.names[1]])
+        self.assertEqual(compiler.call_count, 1)
+        self.assertEqual(compiler.call_args.args[0].parent.name, self.names[1])
+        self.assertEqual(report['status'], 'COMPILED')
+        self.assertEqual(report['coverage'], 'SELECTED_CASES_ONLY')
+        self.assertEqual(report['selected_cases'], [self.names[1]])
+        self.assertEqual(report['cases'][self.names[0]]['status'], 'NOT_SELECTED')
+        self.assertEqual(sha(self.output/'manifest.json'), sha(self.air/'manifest.json'))
+        meta = self.fixtures()
+        self.assertEqual(meta['uncompiled_cases'], [self.names[0]])
+
+    def test_invalid_selection_or_profile_fails_before_writes(self):
+        for kwargs in ({'cases': []}, {'cases': ['unknown']}, {'cases': self.names * 2},
+                       {'compiler_profile': 'unknown'},
+                       {'compiler_profile': 'sourced-wrapper-default', 'tbe_diagnosis': 'diagnosis'}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                self.compile(**kwargs)
+            self.assertFalse(self.output.exists())
+
+    def test_diagnostic_profile_cannot_prepare_board_fixture(self):
+        def compiler(air, output, ddk, **kwargs):
+            self.assertTrue(kwargs['save_weights_as_external_data'])
+            self.assertFalse(kwargs['limit_partition_size'])
+            self.assertEqual(kwargs['compiler_profile'], 'sourced-wrapper-default')
+            output.mkdir(parents=True)
+            model = output/'model.omc'
+            model.write_bytes(b'host diagnostic OMC fixture')
+            return dict(status='COMPILED', omc=identity(model, output))
+        with patch('qwen35_moe_dflash.target.layer_probe.batch.sourced_wrapper_environment'), \
+             patch('qwen35_moe_dflash.toolchain.existing_air.compile_existing_air', side_effect=compiler):
+            report = compile_batch(self.air, self.output, self.ddk, 'test-ddk',
+                cases=[self.names[0]], compiler_profile='sourced-wrapper-default')
+        self.assertEqual(report['platform'], 'UNSPECIFIED_COMPILER_DEFAULT')
+        self.assertTrue(report['diagnostic_only'])
+        with self.assertRaisesRegex(ValueError, 'unverified target'):
+            self.fixtures()
+        self.assertFalse((self.root/'execution').exists())
 
 
 if __name__ == '__main__':

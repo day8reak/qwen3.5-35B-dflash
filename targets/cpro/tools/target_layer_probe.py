@@ -33,6 +33,10 @@ def main():
     s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'), required=not bool(os.environ.get('CPRO_DDK_ROOT')))
     s.add_argument('--ddk-id', default=os.environ.get('CPRO_DDK_ID'), required=not bool(os.environ.get('CPRO_DDK_ID')))
     s.add_argument('--tbe-diagnosis')
+    s.add_argument('--cases', nargs='+', help='compile only these retained AIR cases; other cases remain NOT_SELECTED')
+    from qwen35_moe_dflash.toolchain.compiler_entry import COMPILER_PROFILES, DEFAULT_PROFILE
+    s.add_argument('--compiler-profile', choices=COMPILER_PROFILES, default=DEFAULT_PROFILE,
+                   help='sourced-wrapper-default compares the inspected entry using the current sourced shell; diagnostic only')
     s.add_argument('--timeout', type=int, default=900)
     s.add_argument('--use-origin-format', action='store_const', const=True, default=None)
     s = sub.add_parser('inspect-compile', help='read retained AIR/IR metadata without compiling or running models')
@@ -68,7 +72,8 @@ def main():
         result = export_one(a.capture, a.region, a.output_index, a.output, a.source_root, a.converter_script, a.torchair_pb2)
     elif a.command == 'compile':
         result = batch.compile_batch(a.batch, a.output, a.ddk_root, a.ddk_id, tbe_diagnosis=a.tbe_diagnosis,
-                                     timeout=a.timeout, use_origin_format=a.use_origin_format)
+                                     timeout=a.timeout, use_origin_format=a.use_origin_format,
+                                     cases=a.cases, compiler_profile=a.compiler_profile)
     elif a.command == 'inspect-compile':
         from qwen35_moe_dflash.target.layer_probe.inspection import inspect_compilation
         report = inspect_compilation(a.batch, a.output, a.cases, ddk_root=a.ddk_root, compiler_entry=a.compiler_entry)
