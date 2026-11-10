@@ -16,7 +16,7 @@
 
 用户确认 DDK／OMG 编译在 **35 服务器**，310P golden 仍在此前的**权重服务器**通过已跑通的四层推理入口采集；35 不是 Python 环境名，147 仅为此前参考命令来源。CPro dump 尚无样例。[离线批量比较入口](target-dump-compare.md)已完成主机验证，可从 capture 生成待绑定清单；真实文件格式和节点映射仍需首批 dump 元数据。本轮没有启动整图执行。
 
-此前 Norm 的 Add 常量计算／tiling 和 Conv 的输入 rank 阻塞已通过。现已收到 [ConvState 失败小图与成功整图对照](target-compile-triage.md#成功整图提供的对照)：两者都有候选 store 拒绝／强制 NPU 分区，但成功 T64 整图随后调用专用 graph builder、保存 `executor_linear_attention_convstate_update` 并完成 OMC 保存；小图在 `generated_lib` builder／format config 处退出。实现存在，具体构建路径分歧原因仍未证实。下一步用 L0 Prefill／Decode 两张既有 AIR，仅省略小图显式添加的 `use_origin_format=true` 做[参数对照](target-compile-triage.md#下一步两个小图的格式选项对照)，尚未执行，不重编已成功的 146 项。[Norm／Conv 的执行与比较命令](target-norm-conv-validation.md)保留，4 个待回传项优先复用已有结果。本地主机只更新证据和命令；四层整图 dump、设备数值及连续状态反馈仍未验证。旧环境 GDN SIGSEGV 保留为历史记录，不代表本轮编译状态。
+此前 Norm 的 Add 常量计算／tiling 和 Conv 的输入 rank 阻塞已通过。现已收到 [ConvState 失败小图与成功整图对照](target-compile-triage.md#成功整图提供的对照)：两者都有候选 store 拒绝／强制 NPU 分区，但成功 T64 整图随后调用专用 graph builder、保存 `executor_linear_attention_convstate_update` 并完成 OMC 保存；小图在 `generated_lib` builder／format config 处退出。实现存在，具体构建路径分歧原因仍未证实。L0 Prefill／Decode 的 `convstate-default-format-001` 参数对照已完成，省略 `use_origin_format` 后仍在相同位置失败，并记录 `strategyType:0`。下一步只读[构建策略与图上下文](target-compile-triage.md#下一步读取构建策略与图上下文)，不重复该参数试验，不重编已成功的 146 项。[Norm／Conv 的执行与比较命令](target-norm-conv-validation.md)保留，4 个待回传项优先复用已有结果。本地主机只更新证据和命令；四层整图 dump、设备数值及连续状态反馈仍未验证。旧环境 GDN SIGSEGV 保留为历史记录，不代表本轮编译状态。
 
 ## 2026-11-09 独立诊断记录
 

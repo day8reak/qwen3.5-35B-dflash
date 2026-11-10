@@ -2,7 +2,7 @@
 
 更新：2026-11-10。本页保留**现有 Target 边界小图批次的完整复测命令**。旧 `environment-recheck-001` 有 120 项编译成功并回传数值摘要；用户随后确认重导的 Norm／Conv 26 项全部编译成功，累计 **146/158 成功，剩余 ConvState 12 项**。新增项中 22 项数值已回传，另 4 项待回传；累计 142 项有数值摘要，当前结论见[状态表](target-accuracy-status.md)。已执行的批次和输出直接保留，不重复本页整批流程。
 
-原 38 项的 `inspect-compile --failed` 及 Norm／Conv 重导编译均已完成。[ConvState 成功整图对照](target-compile-triage.md#成功整图提供的对照)已回传，已确认专用 builder 和 executor 内核路径；下一步仅用两个既有小图做[格式选项对照](target-compile-triage.md#下一步两个小图的格式选项对照)，不重跑整批。已有数值回传的 142 项无需重跑；其余 4 项优先回传已有 CSV，需要补测时使用实际新 OMC 批次的执行／回收／比较流程。
+原 38 项的 `inspect-compile --failed` 及 Norm／Conv 重导编译均已完成。[ConvState 成功整图对照](target-compile-triage.md#成功整图提供的对照)已回传，已确认专用 builder 和 executor 内核路径；两个既有小图的格式选项对照均已失败，下一步只读[构建策略与图上下文](target-compile-triage.md#下一步读取构建策略与图上下文)，不重跑整批。已有数值回传的 142 项无需重跑；其余 4 项优先回传已有 CSV，需要补测时使用实际新 OMC 批次的执行／回收／比较流程。
 
 **新增 26 项的专用执行步骤见 [Norm／Conv 上板与比较](target-norm-conv-validation.md)**，包含变量初始化、单批 26 项／4＋22 分批选择，以及运行、回收和 CSV 比较命令。
 

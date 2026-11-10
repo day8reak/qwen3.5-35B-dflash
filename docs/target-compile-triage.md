@@ -2,7 +2,7 @@
 
 更新：2026-11-10。用户确认重导后的 **Norm 20 项、Conv1d 6 项全部编译成功**。累计 **146/158 项已编译，剩余 ConvState 12 项**。新增成功依据用户回传确认，具体 OMC 哈希尚未提供；随后收到 Norm 18 项、Conv1d 4 项的小误差且稳定的数值摘要，另 4 项待回传，详见[状态表](target-accuracy-status.md)。当前按用户安排集中解决 ConvState 编译；原批次报告保持原样。
 
-**成功四层图日志已回传：专用 ConvState graph builder 被调用，`executor_linear_attention_convstate_update` 内核被保存，OMC 转换成功。** 下一步只用两个既有小图对照编译参数，命令见[本页末尾](#下一步两个小图的格式选项对照)。Norm／Conv 的重导和编译已经完成，下方相关命令保留供复现，不再重复执行。新 26 项的 [上板、回收与批量比较命令](target-norm-conv-validation.md)已单列，支持单批或 4＋22 分批；编译成功不计作精度通过。
+**成功四层图日志已回传：专用 ConvState graph builder 被调用，`executor_linear_attention_convstate_update` 内核被保存，OMC 转换成功。** 省略 `use_origin_format` 的两项对照仍在原处失败；下一步只读成功／失败图属性和构建策略，命令见[本页末尾](#下一步读取构建策略与图上下文)。Norm／Conv 的重导和编译已经完成，下方相关命令保留供复现，不再重复执行。新 26 项的 [上板、回收与批量比较命令](target-norm-conv-validation.md)已单列，支持单批或 4＋22 分批；编译成功不计作精度通过。
 
 以下保留此前完整 38 项检查摘要的归因及处理结果：
 
@@ -10,7 +10,7 @@
 |---|---|---|
 | 普通 Norm：20 项 | 旧 AIR 含 `Add → RmsNorm`，无导出修正记录；`add_kernel.cpp` 报类型不支持，随后 `Add ProduceTiling failed`、`inputTensorPtr is NULL` | gamma 预计算修正后重导，用户确认 20 项均编译成功；18 项数值已回传、误差较小且稳定，另 2 项待回传 |
 | Conv1d：6 项 | 旧图在 `Convolution` Verify 报 `Input[0] and input[1] must have the same dim num`，无导出修正记录／结构检查 | 显式四维路径重导后，用户确认 6 项均编译成功；4 项数值已回传、误差较小且稳定，另 2 项待回传 |
-| ConvState：12 项 | 小图在 `generated_lib` 的 builder／format config 处失败；成功整图同样有候选支持拒绝，但后续调用专用 graph builder 并保存 executor 内核 | 实现存在，整图可构建；小图未进入相同成功路径。先保持 AIR 不变，省略 `use_origin_format=true` 做两项对照；该参数尚不是已证实根因 |
+| ConvState：12 项 | 小图在 `generated_lib` 的 builder／format config 处失败；成功整图同样有候选支持拒绝，但后续调用专用 graph builder 并保存 executor 内核 | 实现存在，整图可构建；省略 `use_origin_format` 的两项对照仍失败。停止该参数重试，检查构建策略和图上下文 |
 
 Conv 的类型计数中出现 `Unsqueeze` 不足以证明修正已生效：它可能只处理权重，必须检查 Conv2D 的两条输入边。ConvState 摘要中的 `substore: !` 没有提供有效 store 名称，不能据此认定整个 DDK 缺少实现。
 
@@ -234,7 +234,7 @@ Prefill `l00_c00_convstate_update_o0`（PID 131252）与 Decode `l00_c01_convsta
 | 31417 | `executor_linear_attention_convstate_update, kernelSize = 748` | 此次成功编译保存了 ConvState executor 内核；不能认定 DDK 完全缺少实现 |
 | 日志末尾 | `SaveCompiledModelToFile SUCCESS`、`OMG generate offline model success` | 整图 OMC 编译／保存成功，尚不是上板或精度证据 |
 
-当前结论收敛为**构建路径差异**。尚未确定触发条件是编译参数、输入 dtype／format、状态／消费者边界还是其他环境差异；也未证明必须融合后才能编译。小图显式添加了 `use_origin_format=true`，用户原整图命令未指定该选项，因此先用既有 AIR 验证这一个参数差异，无需重新导出或改算子。
+当前结论收敛为**构建路径差异**。尚未确定触发条件是编译参数、输入 dtype／format、状态／消费者边界还是其他环境差异；也未证明必须融合后才能编译。小图显式添加的 `use_origin_format=true` 已做省略对照，两阶段仍在相同 builder／format config 处失败；本批证据排除“仅省略该参数即可修复”，不证明它在所有图上均无影响。
 
 已重新核对保留的原 Target 源码及当前小图入口：
 
@@ -245,7 +245,16 @@ Prefill `l00_c00_convstate_update_o0`（PID 131252）与 Decode `l00_c01_convsta
 | fake 输出 | 保留的原导出声明 y1 `[1,8192,4]`，y2 `[1,8192,T+3]`，dtype 均随 x1；小图加载用户指定的原 converter 脚本 | 服务器实际脚本版本待其 export 记录核对；源 IR 的空中间 shape 本身不是已知 rank 错误 |
 | 输出消费者与状态 | 原图同时消费 y1/y2：y2 接 Conv，y1 接 `conv_state.copy_`；当前小图仅导出选定输出，状态为普通 Data | 存在图边界差异，尚无证据证明它导致 format config 失败 |
 
-### 下一步：两个小图的格式选项对照
+<a id="下一步两个小图的格式选项对照"></a>
+
+### 已完成：两个小图的格式选项对照
+
+`convstate-default-format-001` 两项均返回 1：Prefill PID 146807，Decode PID 146848。两份日志均在 L373 报 `generated_lib` OpBuilder 不支持 ConvState，L400 报 format config 失败，L414 报 OMG 失败；结尾还有 `OptImplStrategy Optimize Fail, strategyType:0`。用户回传命令确认未再传 `use_origin_format`。不再重跑本节。
+
+成功日志曾出现 `pre_graph_save_hybrid_impl.cc` 和专用 builder，失败日志曾出现 `pre_graph_save_single_impl_strategy.cc`，最新日志明确记录 `strategyType:0`。这提示应核对构建策略的分流条件；尚未读取枚举／选择逻辑，不能仅凭数字 0 断言其含义，也不能直接认定状态写回或融合是根因。
+
+<details>
+<summary>保留已完成的参数对照命令，仅供复现</summary>
 
 在 **35 服务器本批已修正的 Python／DDK shell** 执行。复用 L0 Prefill／Decode 的 o0 AIR，从旧报告读取源批次、DDK 和 TBE 诊断路径；只省略 `--use_origin_format=true`，仍指定 `kirinx90`、`isolated-kirinx90` 和内嵌权重。省略参数表示采用编译器默认值，不等于已经确认默认值为 false。不重新 source 另一套环境，不重新捕获 golden／导出 AIR。
 
@@ -303,7 +312,7 @@ raise SystemExit(done.returncode)
 PY
 ```
 
-该对照尚未执行。命令核对 AIR／OMG 哈希并复用旧 TBE 设置；实际加载库及继承环境仍须用新旧 `omg-environment.json` 核对，不能仅靠 DDK 路径相同断言环境完全相同。若旧报告的参数不是上述组合，命令停止，避免把多项变化误当作单因素实验。
+该对照已由用户执行并回传失败。命令核对 AIR／OMG 哈希并复用旧 TBE 设置；实际加载库及继承环境仍须用新旧 `omg-environment.json` 核对，不能仅靠 DDK 路径相同断言环境完全相同。若旧报告的参数不是上述组合，命令停止，避免把多项变化误当作单因素实验。
 
 运行结束后，无论成功或失败，读取新构建路径与结尾；不再回传全部 158 项的 `NOT_SELECTED`：
 
@@ -315,6 +324,69 @@ for CONVSTATE_CASE in l00_c00_convstate_update_o0 l00_c01_convstate_update_o0; d
 done
 ```
 
-若通过，先检查新编译 IO 再处理剩余输出／层，编译成功不自动解除 ABI 检查；若仍在同一处失败，就排除“仅省略该参数即可修复”，转而对照成功图的优化后节点属性、输入 dtype／format、双输出消费者和状态边界。`DefinePatterns` 不能作为融合命中证据，不直接凭它改成融合子图。历史旧环境 `accuracy-entry-compare-004` 的组合入口试验已经失败，不原样重跑；共享 DDK 保持不变。
+</details>
 
-只读工具此前已通过 18 项主机检查；本次更新用户回传证据、源码核对结论和执行命令，尚未确定 ConvState 修复。数值异常与已完成项继续见[状态表](target-accuracy-status.md)。
+### 下一步：读取构建策略与图上下文
+
+用户确认成功 OMG 的工作目录就是 `/home/w00949577/qwen3.5-35B-dflash-run/target`。下面在 **35 服务器**一次读取成功日志、两个新失败日志、成功工作目录中现存的 IR，以及新失败批次保留的源图／IR。**不编译、不导出、不上板。**
+
+沿用 `inspect-compile`，新增 `--reference-ir` 接收最多 8 份显式文件；通过所选 DDK 的 protobuf 描述解析，保留模型／图级属性及 ConvState 的直接生产者、消费者、端口 dtype／format／shape。常量 payload 不写入报告。日志文件不是 IR，不传给该选项。
+
+```bash
+export REPO_DIR="/home/w00949577/qwen3.5-35B-dflash"
+export AI_RUN_DIR="/home/w00949577/qwen3.5-35B-dflash-run"
+export FULL_OMG_WORK="$AI_RUN_DIR/target"
+export CONVSTATE_PROBE="$AI_RUN_DIR/target/tests/convstate-default-format-001"
+export CONVSTATE_INSPECT="$AI_RUN_DIR/target/tests/convstate-route-inspect-001"
+git -C "$REPO_DIR" pull --ff-only origin main
+
+grep -n -i -E -C 2 'graph_build_optimizer|opt_impl_strategy|pre_graph_save_.*impl|strategyType|hybrid|single.?impl' \
+  "$FULL_OMG_WORK/omg.log" \
+  "$CONVSTATE_PROBE/models/l00_c00_convstate_update_o0/omc/compile.log" \
+  "$CONVSTATE_PROBE/models/l00_c01_convstate_update_o0/omc/compile.log"
+
+python - <<'PY'
+import json, os, subprocess, sys
+from pathlib import Path
+work = Path(os.environ['FULL_OMG_WORK'])
+batch = Path(os.environ['CONVSTATE_PROBE'])
+out = Path(os.environ['CONVSTATE_INSPECT'])
+assert not out.exists(), '检查目录已存在，请换 CONVSTATE_INSPECT 编号'
+names = ['l00_c00_convstate_update_o0', 'l00_c01_convstate_update_o0']
+record = json.loads((batch / 'models' / names[0] / 'omc/report.json').read_text())
+# 只查看已确认工作目录的直接文件及 dump_graph 的直接文件，不递归扫描其他批次。
+paths = list(work.glob('*.irpb'))
+dump = work / 'dump_graph'
+if dump.is_file():
+    paths.append(dump)
+elif dump.is_dir():
+    paths.extend(dump.glob('*.irpb'))
+paths = sorted({p.resolve() for p in paths if p.is_file()})
+selected = paths if len(paths) <= 8 else paths[:4] + paths[-4:]
+print('成功工作目录 IR:', [str(p) for p in paths], flush=True)
+print('本次选择:', [str(p) for p in selected], flush=True)
+if not selected:
+    print('未找到成功图 IR；仍检查失败图。不会重编译，后续需确认原有图 dump 是否另存。', flush=True)
+cmd = [sys.executable, str(Path(os.environ['REPO_DIR']) / 'targets/cpro/tools/target_layer_probe.py'),
+       'inspect-compile', '--batch', str(batch), '--cases', *names,
+       '--ddk-root', record['ddk_root'], '--output', str(out)]
+if selected:
+    cmd += ['--reference-ir', *map(str, selected)]
+done = subprocess.run(cmd)
+if out.is_dir():
+    with (out / 'reference-selection.json').open('x') as f:
+        json.dump({'work_directory': str(work), 'candidates': list(map(str, paths)),
+                   'selected': list(map(str, selected)),
+                   'omitted': [str(p) for p in paths if p not in selected],
+                   'selection': 'ALL_OR_FIRST_FOUR_AND_LAST_FOUR_BY_FILENAME; NOT_STAGE_INFERENCE'}, f, indent=2)
+if (out / 'summary.txt').is_file():
+    print((out / 'summary.txt').read_text())
+raise SystemExit(done.returncode)
+PY
+```
+
+回传上方策略日志和 `summary.txt`。正文只展示每张图的首个 ConvState 上下文，完整节点留在 `report.json`；名称排序仅限制读取量，不用于判断哪个 pass 实际生效。若成功目录没有 IR、描述不兼容或读取超限，会明确报告缺失／PARTIAL，不能把未观察到的节点解释为已融合。用户选定参考文件的哈希绑定的是本次读取字节，尚不证明它必然属于历史成功那次运行；结合日志阶段和已有时间／版本记录核对。
+
+依据这些结果再决定：图级属性或策略不同，定位对应分流条件；策略相同但端口 dtype／format 不同，核对实际支持组合；只有状态／消费者要求得到证据支持，才准备保留双输出及写回的代表子图。历史旧环境 `accuracy-entry-compare-004` 的组合入口试验和本次格式对照均已失败，不重复同条件尝试，不改共享 DDK。
+
+本次检查入口通过 18 项既有主机回归和 6 项新增参考 IR 检查（合成 schema，非真实 DDK 编译）。ConvState 12 项仍未修复；数值异常与已完成项继续见[状态表](target-accuracy-status.md)。

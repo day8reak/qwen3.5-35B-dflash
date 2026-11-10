@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -24,8 +25,20 @@ def bounded_bytes(path, limit):
     return value
 
 
-def graph_metadata(path, schema):
-    kind, decoded, _ = _decode(schema, bounded_bytes(path, 64 << 20))
+def metadata_attributes(value):
+    """Retain small scalar/list attributes, never tensor or nested graph payloads."""
+    attrs = _attributes(value)
+    metadata = {k: v for k, v in attrs.items()
+        if isinstance(v, dict) and set(v) <= {'i', 'f', 'b', 's', 'list'}
+        and ('list' not in v or isinstance(v['list'], dict)
+             and set(v['list']) <= {'i', 'f', 'b', 's', 'val_type'})
+        and len(json.dumps(v)) <= 4096}
+    return dict(attributes=metadata, omitted_attributes=sorted(set(attrs)-set(metadata)))
+
+
+def graph_metadata(path, schema, *, focus_type=None):
+    raw = bounded_bytes(path, 64 << 20)
+    kind, decoded, _ = _decode(schema, raw)
     enums = schema.enums[schema.package + '.DataType']
     graphs = []
 
@@ -36,21 +49,25 @@ def graph_metadata(path, schema):
                     raise ValueError('not a bounded region graph')
                 nodes = []
                 for node in value['op']:
-                    attrs = _attributes(node)
-                    # Tensor payloads and nested graph attributes are never copied
-                    # into the report. Nested graphs are inspected separately.
-                    metadata = {k: v for k, v in attrs.items()
-                        if isinstance(v, dict) and set(v) <= {'i', 'f', 'b', 's', 'list'}
-                        and ('list' not in v or isinstance(v['list'], dict)
-                             and set(v['list']) <= {'i', 'f', 'b', 's', 'val_type'})
-                        and len(json.dumps(v)) <= 4096}
                     nodes.append(dict(name=node.get('name'), type=node.get('type'),
-                        inputs=node.get('input', []), attributes=metadata,
-                        omitted_attributes=sorted(set(attrs)-set(metadata)),
+                        inputs=node.get('input', []), **metadata_attributes(node),
                         input_desc=[descriptor(d, enums) for d in node.get('input_desc', [])],
                         output_desc=[descriptor(d, enums) for d in node.get('output_desc', [])]))
+                counts = dict(Counter(n['type'] for n in nodes))
+                total = len(nodes)
+                if focus_type:
+                    focused = {n['name'] for n in nodes if n['type'] == focus_type}
+                    selected = set(focused)
+                    for node in nodes:
+                        producers = {edge.rsplit(':', 1)[0] for edge in node['inputs'] if edge}
+                        if node['name'] in focused:
+                            selected.update(producers)
+                        if producers & focused:
+                            selected.add(node['name'])
+                    nodes = [n for n in nodes if n['name'] in selected]
                 graphs.append(dict(name=value.get('name'), inputs=value.get('input', []),
-                    outputs=value.get('output', []), type_counts=dict(Counter(n['type'] for n in nodes)), nodes=nodes))
+                    outputs=value.get('output', []), **metadata_attributes(value),
+                    type_counts=counts, nodes=nodes, nodes_omitted=total-len(nodes)))
             for child in value.values():
                 visit(child)
         elif isinstance(value, list):
@@ -59,6 +76,9 @@ def graph_metadata(path, schema):
 
     visit(decoded)
     return dict(status='INSPECTED', format=kind, graphs=graphs,
+        decoded_file=dict(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()),
+        model_attributes=metadata_attributes(decoded) if kind == 'ModelDef' else None,
+        node_selection='ALL' if focus_type is None else f'{focus_type}_AND_DIRECT_NEIGHBORS',
         scope='OBSERVED_DESCRIPTORS; EMPTY_SHAPES_UNRESOLVED; NO_TENSOR_PAYLOADS_OR_GRAPH_EDITS')
 
 
@@ -98,6 +118,25 @@ def retained_ir(job):
                                    1 if item[0].name.startswith('05_') else 2, str(item[0])))
     inventory['status'] = ('PARTIAL' if inventory['skipped'] else 'FOUND') if records else 'NOT_FOUND'
     return inventory, records
+
+
+def convstate_context(metadata):
+    """Compact first-node context per graph; the full evidence stays in report.json."""
+    contexts = []
+    for graph in metadata.get('graphs', []):
+        nodes = graph['nodes']
+        node = next((n for n in nodes if n['type'] == 'LinearAttentionConvstateUpdate'), None)
+        if node is None:
+            continue
+        producers = {edge.rsplit(':', 1)[0] for edge in node['inputs'] if edge}
+        neighbors = [dict(name=n['name'], type=n['type']) for n in nodes
+            if n['name'] in producers or any(edge.rsplit(':', 1)[0] == node['name']
+                                             for edge in n['inputs'] if edge)]
+        contexts.append(dict(graph=graph['name'], graph_attributes=graph['attributes'],
+            model_attributes=metadata.get('model_attributes'),
+            node=node, neighbors=neighbors,
+            scope='FIRST_CONVSTATE_PER_GRAPH; SEE_REPORT_FOR_ALL_NODES'))
+    return contexts
 
 
 ENVIRONMENT_KEYS = ('PATH', 'LD_LIBRARY_PATH', 'LD_PRELOAD', 'PYTHONPATH', 'PYTHONHOME',
@@ -140,7 +179,8 @@ def compiler_entry_metadata(ddk, inherited=None):
     return result
 
 
-def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_entry=False):
+def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_entry=False,
+                        reference_ir=None):
     root = Path(batch).resolve()
     compiled = json.loads((root/'compile.json').read_text())
     manifest = json.loads((root/'manifest.json').read_text())
@@ -157,7 +197,12 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
         raise ValueError('select distinct cases from the AIR manifest')
     if compiler_entry and not ddk_root:
         raise ValueError('compiler-entry inspection requires the selected DDK root')
+    references = [Path(p).resolve() for p in (reference_ir or [])]
+    if references and (not ddk_root or len(references) > 8 or len(set(references)) != len(references)):
+        raise ValueError('reference IR requires the selected DDK and at most 8 distinct files')
     output = output_path(output)
+    if any(p == output or output in p.parents for p in references):
+        raise ValueError('reference IR must be outside the new inspection directory')
     for original in (root, source, *([Path(ddk_root).resolve()] if ddk_root else [])):
         if output == original or original in output.parents or output in original.parents:
             raise ValueError('inspection output must be separate from source, compiled batch and DDK')
@@ -177,6 +222,21 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
         except Exception as exc:
             result['compiler_schema_error'] = f'{type(exc).__name__}: {exc}'
             result['status'] = 'PARTIAL'
+    if references:
+        result['reference_ir'] = []
+        for path in references:
+            item = dict(path=str(path), provenance='USER_SELECTED; HISTORIC_RUN_BINDING_UNVERIFIED',
+                        status='NOT_INSPECTED_NO_DDK_SCHEMA')
+            result['reference_ir'].append(item)
+            try:
+                if compiler_schema:
+                    item.update(graph_metadata(path, compiler_schema,
+                                               focus_type='LinearAttentionConvstateUpdate'))
+                    item.update(item['decoded_file'])
+            except Exception as exc:
+                item.update(status='UNAVAILABLE', error=f'{type(exc).__name__}: {exc}')
+            if item['status'] != 'INSPECTED':
+                result['status'] = 'PARTIAL'
     for name in cases:
         row = result['cases'][name] = dict(compilation=compiled['cases'].get(name, {}),
             boundary={k: by_name[name].get(k) for k in ('kind', 'point', 'phase', 'output_name')})
@@ -242,6 +302,18 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
     # bounded error contexts remain in report.json; these hints are not causes.
     lines = ['Read-only compile inspection; no export, OMG or device execution.',
              'Group by boundary and actual errors; a candidate rejection alone is not a root cause.', '']
+    for item in result.get('reference_ir', []):
+        lines.append(f'[reference IR] {item["path"]}: {item["status"]}')
+        if item.get('error'):
+            lines.append(item['error'])
+        for graph in item.get('graphs', []):
+            lines.append('graph=' + str(graph.get('name')) + '; attributes=' +
+                         json.dumps(graph['attributes'], ensure_ascii=False))
+            lines.append('ConvState_nodes=' + str(graph['type_counts'].get('LinearAttentionConvstateUpdate', 0)) +
+                         '; selected_nodes=' + json.dumps([dict(name=n['name'], type=n['type']) for n in graph['nodes']]))
+        lines.append('convstate_context=' + json.dumps(convstate_context(item), ensure_ascii=False))
+        lines.append('Full descriptors, graph/model attributes and direct neighbors: report.json; no fusion inferred.')
+        lines.append('')
     for name, row in result['cases'].items():
         lines.append(f'[{name}] {json.dumps(row["boundary"], ensure_ascii=False)}')
         evidence = row.get('export_evidence', {})
@@ -251,6 +323,12 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
                      '; export_graph_check=' + json.dumps(evidence.get('export_graph_check')))
         graphs = row.get('source_graph', {}).get('graphs', [])
         lines.append('source_type_counts=' + json.dumps([g['type_counts'] for g in graphs]))
+        for context_label, metadata in [('source', row.get('source_graph', {})),
+                                        *[(item['path'], item) for item in row['ir_dumps']]]:
+            contexts = convstate_context(metadata)
+            if contexts:
+                lines.append('convstate_context=' + json.dumps(dict(source=context_label, graphs=contexts),
+                                                              ensure_ascii=False))
         report = row.get('compiler_report', {})
         lines.append(f'stage={report.get("stage")}; returncode={report.get("returncode")}')
         excerpt = row.get('log', {}).get('diagnostic_excerpt', '')
