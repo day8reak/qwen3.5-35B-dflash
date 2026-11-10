@@ -65,6 +65,26 @@ def selected_cases(names, available=VALIDATION_CASES):
     return names
 
 
+def target_case_name(name):
+    return isinstance(name, str) and len(name) <= 256 and re.fullmatch(r'l[0-9]{2,}_c[0-9]{2,}_[a-z][a-z0-9_]*_o[0-9]+', name) is not None
+
+
+def fixture_cases(meta):
+    """Target boundary names are dynamic, but must belong to the bound fixture."""
+    names = [c['case'] for c in meta['cases']]
+    if meta.get('artifact_kind') == TARGET_LAYER_KIND:
+        if not all(target_case_name(name) for name in names):
+            raise ValueError('invalid Target boundary case name')
+        return selected_cases(names, names)
+    return selected_cases(names)
+
+
+def case_argument(name):
+    if name not in VALIDATION_CASES and not target_case_name(name):
+        raise argparse.ArgumentTypeError('expected a known probe or Target boundary case name')
+    return name
+
+
 def member(root, name):
     relative = Path(name)
     if relative.is_absolute() or '..' in relative.parts:
@@ -609,7 +629,7 @@ def start(args, out):
                 _save(out/'fixture/manifest.json', meta)
             if getattr(args, 'top1_semantics', False):
                 meta = top1_semantics.expand(out, meta)
-        state.update(status='PREPARED', stage='prepared', requested_cases=[c['case'] for c in meta['cases']])
+        state.update(status='PREPARED', stage='prepared', requested_cases=fixture_cases(meta))
         if meta.get('top1_semantics'):
             state['top1_semantics'] = meta['top1_semantics']
         if meta.get('source_evidence',{}).get('artifact_kind') == MATRIX_KIND:
@@ -702,7 +722,7 @@ def start(args, out):
 
 
 def extract(archive, destination, meta, *, selection=None):
-    requested = selected_cases(c['case'] for c in meta['cases'])
+    requested = fixture_cases(meta)
     selected = selected_cases(requested if selection is None else selection, requested)
     expected = {}
     for case in meta['cases']:
@@ -729,7 +749,7 @@ def extract(archive, destination, meta, *, selection=None):
                 shutil.copyfileobj(src, dst)
 
 
-def execution_diagnostics(out, selection=CASES):
+def execution_diagnostics(out, selection=CASES, *, available=VALIDATION_CASES):
     """Explain a completed request from retained logs, without model execution."""
     def tail(name, limit=3072):
         path = out/name
@@ -748,7 +768,7 @@ def execution_diagnostics(out, selection=CASES):
             raw = stream.read(64).strip()
         return int(raw) if re.fullmatch(r'[0-9]{1,3}', raw) and int(raw) <= 255 else None
 
-    codes = {name: code(name+'.exitcode') for name in selected_cases(selection)}
+    codes = {name: code(name+'.exitcode') for name in selected_cases(selection, available)}
     report = dict(native_exitcode=code('native.exitcode'), archive_exitcode=code('archive.exitcode'),
                   case_exitcodes=codes, errors=[])
     failed = next((name for name, value in codes.items() if value not in (None, 0)), None)
@@ -825,7 +845,14 @@ def recover(root, out):
         if plan['artifact_kind'] != KIND or not re.fullmatch('[0-9a-f]{32}', token) or plan['board_attempt'] != PREFIX+token:
             raise ValueError('invalid vector request')
         board = PurePosixPath(plan['board_attempt']); state['board_attempt'] = str(board)
-        requested = selected_cases(plan.get('cases', CASES))
+        fixture = root/'fixture'
+        if sha256_file(fixture/'manifest.json') != plan['fixture_sha256']:
+            raise ValueError('retained fixture manifest changed')
+        meta = read_json(fixture/'manifest.json')
+        available = fixture_cases(meta)
+        requested = selected_cases(plan.get('cases', CASES), available)
+        if requested != available:
+            raise ValueError('request case selection differs from retained fixtures')
         state['requested_cases'] = requested
         exe, serial, server = _environment()
         if (serial, server) != (plan['serial'], plan['hdc_server']):
@@ -858,12 +885,11 @@ def recover(root, out):
                 if index == 1 or index % 10 == 0:
                     progress.update('retrieve-logs', f'Retrieving legacy logs {index}/{len(names)}: {name}')
                 _receive(hdc, board, out, name)
-        diagnostics = execution_diagnostics(out, requested)
+        diagnostics = execution_diagnostics(out, requested, available=available)
         state['execution_diagnostics'] = diagnostics
         completed = [name for name in requested if diagnostics['case_exitcodes'][name] == 0]
         if diagnostics['archive_exitcode'] != 0 or not completed:
             raise ValueError('; '.join(diagnostics['errors']))
-        fixture = root/'fixture'
         progress.update('verify-fixtures', 'Verifying retained input and reference hashes')
         if sha256_file(fixture/'manifest.json') != plan['fixture_sha256']:
             raise ValueError('retained fixture manifest changed')
@@ -914,7 +940,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compiled')
     selection = parser.add_mutually_exclusive_group()
-    selection.add_argument('--cases', nargs='+', choices=VALIDATION_CASES, help='Only execute these existing probes, in the supplied order')
+    selection.add_argument('--cases', nargs='+', type=case_argument,
+        help='Only execute these existing probes; Target boundary names are checked against the compiled batch')
     selection.add_argument('--top1-semantics', action='store_true',
         help='reuse nine compiled Top1 OMCs for 61 input cases; no compilation or native ABI change')
     parser.add_argument('--config')

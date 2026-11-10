@@ -166,6 +166,10 @@ OMC batch 保存 AIR manifest 的快照，并以相对路径引用原 AIR batch 
 
 ## 4. 批量上板与回收
 
+编译批次为 `PARTIAL` 时也可以执行：本入口自动选择 `compile.json` 中的 `COMPILED` 项，无须删除失败项或重新编译。各子图使用独立捕获的 310P 输入，不依赖其他子图上板的输出。未编译项保留在 `uncompiled_cases`，即使已测子图全部一致，覆盖状态仍为 `PARTIAL`。
+
+需要仅测其中几项时，可加 `--cases l00_c00_conv_silu_o0 l00_c00_linear_attn_norm_o0`；名称必须对应本批已编译项。执行、回收和解包均按绑定的 fixture 名单检查。旧版回收器只接受固定 Draft case 名单，更新代码后可直接回收已经启动的 Target 任务，无须再次 `--apply`。
+
 复用已经工作的 `runtime/runtime.json` 和 HDC 环境。runner 新增 INT16 输入以及每次调用前恢复全部输入，需更新一次 native runner（不是重编完整模型）：
 
 ```bash

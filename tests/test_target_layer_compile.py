@@ -176,6 +176,20 @@ class CompileBatchTest(unittest.TestCase):
             prepare_fixture(self.output, self.root/'execution', self.ddk, 'different-ddk')
         self.assertFalse((self.root/'execution').exists())
 
+    def test_partial_batch_prepares_only_compiled_cases(self):
+        def compiler(air, output, ddk, **kwargs):
+            if air.parent.name == self.names[1]:
+                return dict(status='FAILED', error='host fixture compile failure')
+            return self.fake_compiler(air, output, ddk, **kwargs)
+        with patch('qwen35_moe_dflash.toolchain.existing_air.compile_existing_air', side_effect=compiler):
+            report = compile_batch(self.air, self.output, self.ddk, 'test-ddk')
+        self.assertEqual(report['status'], 'PARTIAL')
+        meta = self.fixtures()
+        self.assertEqual([c['case'] for c in meta['cases']], [self.names[0]])
+        self.assertEqual(meta['uncompiled_cases'], [self.names[1]])
+        with self.assertRaisesRegex(ValueError, 'select unique compiled regions'):
+            self.fixtures(output=self.root/'invalid-selection', selection=[self.names[1]])
+
 
 if __name__ == '__main__':
     unittest.main()
