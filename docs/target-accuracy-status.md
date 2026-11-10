@@ -85,28 +85,31 @@
 
 ## 4. 用户服务器执行入口
 
-在 **10.136.166.147** 上执行。用户本次给的是 `/home/l00886453/DDK`，此前失败使用 `/home/l00886453/ddk_0806`；先保留实际路径／哈希，不能仅凭目录名认为同一工具链。原命令省略 target/platform，保留其已知工作条件做整图对照，最终目标和实现归属以实际编译／运行证据核对。
+DDK／OMG 编译在用户指定的 **35 服务器**执行；310P 推理和 golden 仍在此前的**权重服务器**。`10.136.166.147` 是历史参考命令来源，不是本轮 DDK 执行机。35 的完整地址不在此猜测。
+
+下方 `TARGET_PREFILL_DIR`、`CPRO_DDK_ROOT`、`FOUR_LAYER_AIR` 分别填写 **35 服务器**上的实际工作目录、DDK 根目录和四层 AIR 路径；相对 AIR 路径以工作目录解析，保留引用权重。历史示例的 `/home/l00886453/DDK` 与此前失败的 `/home/l00886453/ddk_0806` 不能未经核对就当作 35 上的安装路径。保留实际路径／哈希。原命令省略 target/platform，保留其已知工作条件做整图对照，最终目标和实现归属以实际编译／运行证据核对。
 
 **已有可运行四层 OMC 时跳过转换。** 需要编译时，使用原 AIR 所在工作目录和全新输出目录：
 
 ```bash
 (
 set -e
-cd /home/l00886453/cpro_models/qwen3.5_moe/prefill
+cd "${TARGET_PREFILL_DIR:?}"
+: "${CPRO_DDK_ROOT:?}" "${FOUR_LAYER_AIR:?}"
 FOUR_RUN="${AI_RUN_DIR:?}/target/tests/four-layer-dump-001"
 test ! -e "$FOUR_RUN"
 mkdir -p "$FOUR_RUN"
 df -h "$FOUR_RUN"
 
-source /home/l00886453/DDK/image/hiai_ddk/ddk_internal/tools/tools_ascendc/set_ascendc_env.sh
-readlink -f /home/l00886453/DDK/image/hiai_ddk/ddk_internal > "$FOUR_RUN/ddk-path.txt"
+source "$CPRO_DDK_ROOT/tools/tools_ascendc/set_ascendc_env.sh"
+readlink -f "$CPRO_DDK_ROOT" > "$FOUR_RUN/ddk-path.txt"
 sha256sum \
-  /home/l00886453/DDK/image/hiai_ddk/ddk_internal/tools/tools_omg/omg \
-  /home/l00886453/DDK/image/hiai_ddk/ddk_internal/tools/tools_omg/master/omg \
-  glm_export_air_cpro_4block_64_quant/export.air > "$FOUR_RUN/compile-input.sha256"
+  "$CPRO_DDK_ROOT/tools/tools_omg/omg" \
+  "$CPRO_DDK_ROOT/tools/tools_omg/master/omg" \
+  "$FOUR_LAYER_AIR" > "$FOUR_RUN/compile-input.sha256"
 
-/home/l00886453/DDK/image/hiai_ddk/ddk_internal/tools/tools_omg/omg \
-  --model glm_export_air_cpro_4block_64_quant/export.air \
+"$CPRO_DDK_ROOT/tools/tools_omg/omg" \
+  --model "$FOUR_LAYER_AIR" \
   --output "$FOUR_RUN/qwen3_5_35B" \
   --framework 1 --limit_partition_size=false \
   --save_weights_as_external_data=true > "$FOUR_RUN/omg.log" 2>&1
