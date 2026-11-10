@@ -10,7 +10,7 @@ from pathlib import Path
 from qwen35_moe_dflash.common.artifacts import output_path
 from qwen35_moe_dflash.common.tool_logs import log_excerpt
 from qwen35_moe_dflash.target.operator_air_review import descriptor
-from qwen35_moe_dflash.target.original_air_roundtrip import _attributes, _decode
+from qwen35_moe_dflash.target.original_air_roundtrip import _attributes, _decode, _digest
 from qwen35_moe_dflash.toolchain.omc_wire import Schema, load_schema
 from .common import KIND, checked, identity, new_output, save_json, sha
 
@@ -36,8 +36,8 @@ def metadata_attributes(value):
     return dict(attributes=metadata, omitted_attributes=sorted(set(attrs)-set(metadata)))
 
 
-def graph_metadata(path, schema, *, focus_type=None):
-    raw = bounded_bytes(path, 64 << 20)
+def graph_metadata(path, schema, *, focus_type=None, raw=None, compare_interpretation=False):
+    raw = bounded_bytes(path, 64 << 20) if raw is None else raw
     kind, decoded, _ = _decode(schema, raw)
     enums = schema.enums[schema.package + '.DataType']
     graphs = []
@@ -75,11 +75,46 @@ def graph_metadata(path, schema, *, focus_type=None):
                 visit(child)
 
     visit(decoded)
-    return dict(status='INSPECTED', format=kind, graphs=graphs,
+    result = dict(status='INSPECTED', format=kind, graphs=graphs,
         decoded_file=dict(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()),
         model_attributes=metadata_attributes(decoded) if kind == 'ModelDef' else None,
         node_selection='ALL' if focus_type is None else f'{focus_type}_AND_DIRECT_NEIGHBORS',
         scope='OBSERVED_DESCRIPTORS; EMPTY_SHAPES_UNRESOLVED; NO_TENSOR_PAYLOADS_OR_GRAPH_EDITS')
+    if compare_interpretation:
+        # Compare the entire strict decode, including attributes omitted from
+        # the public summary, plus the schema's names for observed port dtypes.
+        result['interpretation_sha256'] = _digest(dict(format=kind, decoded=decoded, graphs=graphs))
+    return result
+
+
+def reference_metadata(path, candidates):
+    """Try declared schemas, retaining failures and refusing conflicting interpretations."""
+    raw = bounded_bytes(path, 64 << 20)
+    result = dict(status='UNAVAILABLE',
+        decoded_file=dict(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()),
+        schema_attempts=[])
+    compatible = []
+    for key, (schema, evidence) in candidates.items():
+        attempt = dict(candidate=key, schema=evidence)
+        result['schema_attempts'].append(attempt)
+        try:
+            metadata = graph_metadata(path, schema, raw=raw,
+                focus_type='LinearAttentionConvstateUpdate', compare_interpretation=True)
+            attempt.update(status='COMPATIBLE', interpretation_sha256=metadata['interpretation_sha256'])
+            compatible.append((key, metadata))
+        except Exception as exc:
+            attempt.update(status='REJECTED', error=f'{type(exc).__name__}: {exc}')
+    if not compatible:
+        result['error'] = 'No declared schema strictly decoded the reference; see schema_attempts.'
+    elif len({m['interpretation_sha256'] for _, m in compatible}) != 1:
+        result['error'] = 'Declared schemas produced conflicting interpretations; no graph selected.'
+    else:
+        key, metadata = compatible[0]
+        result.update(metadata, selected_schema=key,
+            compatible_schemas=[k for k, _ in compatible],
+            schema_selection='UNIQUE_COMPATIBLE' if len(compatible) == 1 else 'EQUIVALENT_INTERPRETATIONS',
+            schema_binding='STRUCTURAL_COMPATIBILITY_ONLY; REFERENCE_PRODUCER_UNVERIFIED')
+    return result
 
 
 def retained_ir(job):
@@ -211,6 +246,7 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
         manifest=identity(root/'manifest.json', root), compilation=identity(root/'compile.json', root),
         cases={}, model_compilation='NOT_RUN', device_execution='NOT_RUN', numerical_validation='NOT_RUN')
     compiler_schema = None
+    reference_schemas = {}
     if compiler_entry:
         result['compiler_entry'] = compiler_entry_metadata(ddk_root)
         if result['compiler_entry']['status'] != 'INSPECTED':
@@ -219,24 +255,11 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
         try:
             compiler_schema = load_schema(Path(ddk_root)/'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')
             result['compiler_schema'] = compiler_schema.evidence
+            reference_schemas[compiler_schema.evidence.get('descriptor_sha256', 'selected-ddk')] = (
+                compiler_schema, dict(role='SELECTED_DDK', **compiler_schema.evidence))
         except Exception as exc:
             result['compiler_schema_error'] = f'{type(exc).__name__}: {exc}'
             result['status'] = 'PARTIAL'
-    if references:
-        result['reference_ir'] = []
-        for path in references:
-            item = dict(path=str(path), provenance='USER_SELECTED; HISTORIC_RUN_BINDING_UNVERIFIED',
-                        status='NOT_INSPECTED_NO_DDK_SCHEMA')
-            result['reference_ir'].append(item)
-            try:
-                if compiler_schema:
-                    item.update(graph_metadata(path, compiler_schema,
-                                               focus_type='LinearAttentionConvstateUpdate'))
-                    item.update(item['decoded_file'])
-            except Exception as exc:
-                item.update(status='UNAVAILABLE', error=f'{type(exc).__name__}: {exc}')
-            if item['status'] != 'INSPECTED':
-                result['status'] = 'PARTIAL'
     for name in cases:
         row = result['cases'][name] = dict(compilation=compiled['cases'].get(name, {}),
             boundary={k: by_name[name].get(k) for k in ('kind', 'point', 'phase', 'output_name')})
@@ -245,7 +268,8 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
             folder = source/'models'/name
             air = checked(folder, exported['air'])
             schema_path = folder/'air-schema.pb'
-            schema = Schema(bounded_bytes(schema_path, 8 << 20),
+            schema_bytes = bounded_bytes(schema_path, 8 << 20)
+            schema = Schema(schema_bytes,
                 expected_file=exported['schema']['schema_file'], expected_package=exported['schema']['schema_package'])
             row.update(source_inputs=exported['source_inputs'], golden=exported['golden'],
                 source_air=identity(air, folder), source_schema=identity(schema_path, folder),
@@ -253,6 +277,19 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
             row['export_evidence'] = {k: exported.get(k) for k in
                 ('export_adjustments', 'export_graph_check', 'source_files', 'torch_version', 'torchair_version')}
             row['source_schema_binding'] = 'CURRENT_RETAINED_DESCRIPTOR; OLDER_EXPORT_HAS_NO_SCHEMA_HASH'
+            if references:
+                key = hashlib.sha256(schema_bytes).hexdigest()
+                if key not in reference_schemas:
+                    # At most the DDK plus eight distinct retained producers.
+                    if sum(e['role'] == 'RETAINED_AIR_PRODUCER' for _, e in reference_schemas.values()) >= 8:
+                        result.setdefault('untried_reference_schema_cases', []).append(name)
+                    else:
+                        reference_schemas[key] = (schema, dict(role='RETAINED_AIR_PRODUCER',
+                            path=str(schema_path), descriptor_sha256=key,
+                            descriptor_bytes=len(schema_bytes),
+                            schema_file=exported['schema']['schema_file'],
+                            schema_package=exported['schema']['schema_package'],
+                            binding=row['source_schema_binding']))
         except Exception as exc:
             row['source_error'] = f'{type(exc).__name__}: {exc}'
             result['status'] = 'PARTIAL'
@@ -298,12 +335,34 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
                 item.update(status='UNAVAILABLE', error=f'{type(exc).__name__}: {exc}')
                 result['status'] = 'PARTIAL'
         save_json(output/'report.json', result)
+    if references:
+        result['reference_ir'] = []
+        for path in references:
+            item = dict(path=str(path), provenance='USER_SELECTED; HISTORIC_RUN_BINDING_UNVERIFIED')
+            result['reference_ir'].append(item)
+            try:
+                if result.get('untried_reference_schema_cases'):
+                    raise ValueError('reference schema candidate budget exceeded; select fewer cases')
+                item.update(reference_metadata(path, reference_schemas))
+            except Exception as exc:
+                item.update(status='UNAVAILABLE', error=f'{type(exc).__name__}: {exc}')
+            if item['status'] != 'INSPECTED':
+                result['status'] = 'PARTIAL'
+        save_json(output/'report.json', result)
     # One compact index for a whole failed batch. Full source/IR and unshortened
     # bounded error contexts remain in report.json; these hints are not causes.
     lines = ['Read-only compile inspection; no export, OMG or device execution.',
              'Group by boundary and actual errors; a candidate rejection alone is not a root cause.', '']
     for item in result.get('reference_ir', []):
         lines.append(f'[reference IR] {item["path"]}: {item["status"]}')
+        for attempt in item.get('schema_attempts', []):
+            evidence = attempt['schema']
+            lines.append('schema=' + json.dumps(dict(candidate=attempt['candidate'],
+                role=evidence['role'], package=evidence.get('schema_package'),
+                status=attempt['status'], error=attempt.get('error')), ensure_ascii=False))
+        if item.get('selected_schema'):
+            lines.append('schema_selection=' + item['schema_selection'] +
+                         '; schema_binding=' + item['schema_binding'])
         if item.get('error'):
             lines.append(item['error'])
         for graph in item.get('graphs', []):

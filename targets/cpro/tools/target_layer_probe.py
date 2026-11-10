@@ -47,7 +47,7 @@ def main():
     selection.add_argument('--failed', action='store_true', help='inspect every FAILED case in the retained compile.json; never rerun OMG')
     s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     s.add_argument('--compiler-entry', action='store_true', help='also read OMG/env entry scripts and compare current shell with probe environment preparation; executes neither script nor compiler')
-    s.add_argument('--reference-ir', nargs='+', help='up to 8 existing compiler IR files; read graph attributes and ConvState neighbors using the selected DDK schema, without compiling')
+    s.add_argument('--reference-ir', nargs='+', help='up to 8 existing IR files; strictly compare selected DDK and retained AIR producer schemas, without compiling')
     s = sub.add_parser('compare')
     s.add_argument('--fixture', required=True)
     s.add_argument('--native', required=True)

@@ -2,7 +2,7 @@
 
 更新：2026-11-10。用户确认重导后的 **Norm 20 项、Conv1d 6 项全部编译成功**。累计 **146/158 项已编译，剩余 ConvState 12 项**。新增成功依据用户回传确认，具体 OMC 哈希尚未提供；随后收到 Norm 18 项、Conv1d 4 项的小误差且稳定的数值摘要，另 4 项待回传，详见[状态表](target-accuracy-status.md)。当前按用户安排集中解决 ConvState 编译；原批次报告保持原样。
 
-**成功四层图日志已回传：专用 ConvState graph builder 被调用，`executor_linear_attention_convstate_update` 内核被保存，OMC 转换成功。** 省略 `use_origin_format` 的两项对照仍在原处失败；下一步只读成功／失败图属性和构建策略，命令见[本页末尾](#下一步读取构建策略与图上下文)。Norm／Conv 的重导和编译已经完成，下方相关命令保留供复现，不再重复执行。新 26 项的 [上板、回收与批量比较命令](target-norm-conv-validation.md)已单列，支持单批或 4＋22 分批；编译成功不计作精度通过。
+**成功四层图日志已回传：专用 ConvState graph builder 被调用，`executor_linear_attention_convstate_update` 内核被保存，OMC 转换成功。** 省略 `use_origin_format` 的两项对照仍在原处失败；最新只读检查已确认小图输入描述，但成功整图遇到 schema 解码冲突；读取工具已补充保留的 AIR producer 描述核对，重读命令见[本页末尾](#下一步读取构建策略与图上下文)。Norm／Conv 的重导和编译已经完成，下方相关命令保留供复现，不再重复执行。新 26 项的 [上板、回收与批量比较命令](target-norm-conv-validation.md)已单列，支持单批或 4＋22 分批；编译成功不计作精度通过。
 
 以下保留此前完整 38 项检查摘要的归因及处理结果：
 
@@ -328,25 +328,32 @@ done
 
 ### 下一步：读取构建策略与图上下文
 
-用户确认成功 OMG 的工作目录就是 `/home/w00949577/qwen3.5-35B-dflash-run/target`。下面在 **35 服务器**一次读取成功日志、两个新失败日志、成功工作目录中现存的 IR，以及新失败批次保留的源图／IR。**不编译、不导出、不上板。**
+`convstate-route-inspect-001` 已回传。成功目录中的 `dump_graph` 是文件，但参考图按 DDK 的 HIAI 描述解析时，在 `AttrDef.list_list_float` 报 wire type mismatch；因此本次检查为 `PARTIAL`。**这是读取工具未取得参考图，不是重新编译失败，也不证明 dump 损坏。** 仅凭这一条还不能确定真实 schema 来源。
 
-沿用 `inspect-compile`，新增 `--reference-ir` 接收最多 8 份显式文件；通过所选 DDK 的 protobuf 描述解析，保留模型／图级属性及 ConvState 的直接生产者、消费者、端口 dtype／format／shape。常量 payload 不写入报告。日志文件不是 IR，不传给该选项。
+两张失败小图的源 AIR 和保留 dump 均已读到：
+
+| 项目 | Prefill／Decode 小图的实际描述 |
+|---|---|
+| x1 | FP16、ND；分别为 `[1,256,8192]`／`[1,1,8192]` |
+| x2／x3 | FP16、ND、`[1,8192,4]`；INT32、ND、`[128]` |
+| 图属性 | `_executor_type = 1`；成功图尚未读到，不能猜枚举含义或直接改值 |
+| 图连接 | 三个普通 Data 输入，所选 y1 接 NetOutput；没有原图的卷积消费者和状态写回 |
+| 输出描述 | 两个输出 shape 为空；日志中的后续 Verify／Infer 已成功，不能把这个前期描述当作失败根因 |
+
+检查器此前只用 DDK HIAI 描述读取参考图。现在也核对所选小图已保留的 `air-schema.pb`，先要求它能严格解析对应源 AIR；同内容描述去重，最多八份 producer 描述加所选 DDK 描述。每种描述的拒绝原因、文件身份和兼容结果均写入报告。未知字段、wire 类型冲突仍拒绝；多个兼容描述若给出不同解释则不选图，相同解释也不宣称已确定历史 producer。**不导入 TorchAir、不读取外置权重、不改 AIR／DDK。**
+
+在 **35 服务器当前环境**执行以下命令。直接使用用户已确认的成功图路径，无需在权重服务器重新导出或编译。旧检查结果保留，新结果写入 `convstate-route-inspect-002`：
 
 ```bash
 export REPO_DIR="/home/w00949577/qwen3.5-35B-dflash"
 export AI_RUN_DIR="/home/w00949577/qwen3.5-35B-dflash-run"
 export FULL_OMG_WORK="$AI_RUN_DIR/target"
 export CONVSTATE_PROBE="$AI_RUN_DIR/target/tests/convstate-default-format-001"
-export CONVSTATE_INSPECT="$AI_RUN_DIR/target/tests/convstate-route-inspect-001"
+export CONVSTATE_INSPECT="$AI_RUN_DIR/target/tests/convstate-route-inspect-002"
 git -C "$REPO_DIR" pull --ff-only origin main
 
-grep -n -i -E -C 2 'graph_build_optimizer|opt_impl_strategy|pre_graph_save_.*impl|strategyType|hybrid|single.?impl' \
-  "$FULL_OMG_WORK/omg.log" \
-  "$CONVSTATE_PROBE/models/l00_c00_convstate_update_o0/omc/compile.log" \
-  "$CONVSTATE_PROBE/models/l00_c01_convstate_update_o0/omc/compile.log"
-
 python - <<'PY'
-import json, os, subprocess, sys
+import json, os, re, subprocess, sys
 from pathlib import Path
 work = Path(os.environ['FULL_OMG_WORK'])
 batch = Path(os.environ['CONVSTATE_PROBE'])
@@ -354,39 +361,35 @@ out = Path(os.environ['CONVSTATE_INSPECT'])
 assert not out.exists(), '检查目录已存在，请换 CONVSTATE_INSPECT 编号'
 names = ['l00_c00_convstate_update_o0', 'l00_c01_convstate_update_o0']
 record = json.loads((batch / 'models' / names[0] / 'omc/report.json').read_text())
-# 只查看已确认工作目录的直接文件及 dump_graph 的直接文件，不递归扫描其他批次。
-paths = list(work.glob('*.irpb'))
-dump = work / 'dump_graph'
-if dump.is_file():
-    paths.append(dump)
-elif dump.is_dir():
-    paths.extend(dump.glob('*.irpb'))
-paths = sorted({p.resolve() for p in paths if p.is_file()})
-selected = paths if len(paths) <= 8 else paths[:4] + paths[-4:]
-print('成功工作目录 IR:', [str(p) for p in paths], flush=True)
-print('本次选择:', [str(p) for p in selected], flush=True)
-if not selected:
-    print('未找到成功图 IR；仍检查失败图。不会重编译，后续需确认原有图 dump 是否另存。', flush=True)
 cmd = [sys.executable, str(Path(os.environ['REPO_DIR']) / 'targets/cpro/tools/target_layer_probe.py'),
        'inspect-compile', '--batch', str(batch), '--cases', *names,
-       '--ddk-root', record['ddk_root'], '--output', str(out)]
-if selected:
-    cmd += ['--reference-ir', *map(str, selected)]
+       '--ddk-root', record['ddk_root'], '--output', str(out),
+       '--reference-ir', str(work / 'dump_graph')]
 done = subprocess.run(cmd)
-if out.is_dir():
-    with (out / 'reference-selection.json').open('x') as f:
-        json.dump({'work_directory': str(work), 'candidates': list(map(str, paths)),
-                   'selected': list(map(str, selected)),
-                   'omitted': [str(p) for p in paths if p not in selected],
-                   'selection': 'ALL_OR_FIRST_FOUR_AND_LAST_FOUR_BY_FILENAME; NOT_STAGE_INFERENCE'}, f, indent=2)
 if (out / 'summary.txt').is_file():
     print((out / 'summary.txt').read_text())
+# 同时摘录构建策略，避免再取一轮完整日志；不会调用 OMG。
+pattern = re.compile(r'graph_build_optimizer|opt_impl_strategy|pre_graph_save_.*impl|strategyType|hybrid|single.?impl', re.I)
+lines = []
+for log in [work / 'omg.log', *[batch / 'models' / n / 'omc/compile.log' for n in names]]:
+    lines.append(f'[{log}]')
+    if not log.is_file() or log.stat().st_size > 64 << 20:
+        lines.append('UNAVAILABLE: 日志缺失或超过 64 MiB')
+        continue
+    with log.open(errors='replace') as f:
+        for number, line in enumerate(f, 1):
+            if pattern.search(line):
+                lines.append(f'L{number}: {line.rstrip()}')
+text = '\n'.join(lines) + '\n'
+print(text)
+if out.is_dir():
+    (out / 'strategy.txt').write_text(text)
 raise SystemExit(done.returncode)
 PY
 ```
 
-回传上方策略日志和 `summary.txt`。正文只展示每张图的首个 ConvState 上下文，完整节点留在 `report.json`；名称排序仅限制读取量，不用于判断哪个 pass 实际生效。若成功目录没有 IR、描述不兼容或读取超限，会明确报告缺失／PARTIAL，不能把未观察到的节点解释为已融合。用户选定参考文件的哈希绑定的是本次读取字节，尚不证明它必然属于历史成功那次运行；结合日志阶段和已有时间／版本记录核对。
+回传 `summary.txt` 和 `strategy.txt`。预期首先看到参考图 `INSPECTED` 及 `schema_selection`，随后是模型／图属性和 ConvState 上下文；若仍为 `UNAVAILABLE`，报告会同时给出两类描述的具体拒绝原因，不把它当作编译结论。正文展示每张图首个 ConvState，全部选中节点及各 schema 身份留在 `report.json`。参考文件哈希只标识本次读取字节，历史成功运行的文件归属仍待核验。
 
-依据这些结果再决定：图级属性或策略不同，定位对应分流条件；策略相同但端口 dtype／format 不同，核对实际支持组合；只有状态／消费者要求得到证据支持，才准备保留双输出及写回的代表子图。历史旧环境 `accuracy-entry-compare-004` 的组合入口试验和本次格式对照均已失败，不重复同条件尝试，不改共享 DDK。
+取得成功图后再比较实际差异：图属性／构建策略、端口描述、状态和消费者连接。当前不修改 `_executor_type`，不把融合规则定义当作融合命中，不重复失败的格式参数试验。
 
-本次检查入口通过 18 项既有主机回归和 6 项新增参考 IR 检查（合成 schema，非真实 DDK 编译）。ConvState 12 项仍未修复；数值异常与已完成项继续见[状态表](target-accuracy-status.md)。
+读取工具通过 28 项本地主机检查（18 项既有回归、10 项真实 protobuf 字节夹具检查），覆盖 schema 冲突、未知字段拒绝、解释歧义和只读行为；尚未验证服务器实际参考图。ConvState 12 项仍未修复；数值异常与已完成项继续见[状态表](target-accuracy-status.md)。

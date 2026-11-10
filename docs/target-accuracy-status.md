@@ -98,7 +98,7 @@ GDN 的原始 relative-L2 如下，均稳定；core 的 dtype 保持，raw state
 | Conv1d | conv1d，o0 | L0–L2，c00／c01 | 6 | 全部已编译；L1–L2 共 4 项数值已回传，L0 两阶段待回传 |
 | **合计** | **原 38 项** | | **38** | **新增 26 成功，剩余 12 项 ConvState 失败** |
 
-[ConvState 成功整图对照](target-compile-triage.md#成功整图提供的对照)已确认专用 graph builder 调用、executor 内核保存和整图 OMC 保存成功；早期候选支持拒绝也存在于成功路径。尚无新的 ConvState 小图修复或编译成功结果；L0 两阶段的格式选项对照均已失败，下一步只读[构建策略与图上下文](target-compile-triage.md#下一步读取构建策略与图上下文)。Norm／Conv 导出与编译步骤已经完成，本次有数值回传的 22 项无需重跑；其余 4 项优先回传已有 CSV，[执行与比较命令](target-norm-conv-validation.md)保留供需要时使用。MoE 专家计算尚未纳入本批小图，四层整图精度和连续状态反馈也未由本表验证。
+[ConvState 成功整图对照](target-compile-triage.md#成功整图提供的对照)已确认专用 graph builder 调用、executor 内核保存和整图 OMC 保存成功；早期候选支持拒绝也存在于成功路径。尚无新的 ConvState 小图修复或编译成功结果；L0 两阶段的格式选项对照均已失败，成功参考图在只读检查中发生 schema 冲突，尚未取得其图属性；检查器已补充 AIR producer 描述核对，下一步[重读参考图及构建策略](target-compile-triage.md#下一步读取构建策略与图上下文)。Norm／Conv 导出与编译步骤已经完成，本次有数值回传的 22 项无需重跑；其余 4 项优先回传已有 CSV，[执行与比较命令](target-norm-conv-validation.md)保留供需要时使用。MoE 专家计算尚未纳入本批小图，四层整图精度和连续状态反馈也未由本表验证。
 
 ### 旧环境编译记录
 

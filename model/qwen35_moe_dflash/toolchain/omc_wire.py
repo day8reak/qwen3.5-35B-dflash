@@ -244,7 +244,8 @@ class Schema:
                 result.setdefault(field.name, []).extend(values)
                 continue
             if wire != _WIRE[field.kind]:
-                raise ValueError(f"wire type mismatch for {name}.{field.name}")
+                raise ValueError(f"wire type mismatch for {name}.{field.name}: "
+                                 f"field={number}, expected={_WIRE[field.kind]}, observed={wire}")
             decoded = (self._decode(value, field.type_name, budget, depth + 1)
                        if field.kind == 11 else self._scalar(value, field, name))
             if field.repeated:
