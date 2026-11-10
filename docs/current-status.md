@@ -15,7 +15,7 @@
 
 用户确认 DDK／OMG 编译在 **35 服务器**，310P golden 仍在此前的**权重服务器**通过已跑通的四层推理入口采集；35 不是 Python 环境名，147 仅为此前参考命令来源。CPro dump 尚无样例。[离线批量比较入口](target-dump-compare.md)已完成主机验证，可从 capture 生成待绑定清单；真实文件格式和节点映射仍需首批 dump 元数据。本轮没有启动整图执行。
 
-剩余编译问题已对照保留的原 Target 源码和用户成功命令，按 Norm／ConvState／Conv1d 三类定位。[下一步只读检查](target-compile-triage.md)一次提取全部 38 项日志与导出证据：先核对 Norm／Conv 修正是否进入实际 AIR，再检查 ConvState 的实现选择、双输出连接和状态写回差异。主机 18 项检查通过，未启动新 DDK 或设备实验。四层整图 dump 与连续状态反馈仍未验证，流程保留在[四层转换与 dump 方案](target-accuracy-status.md#4-用户服务器执行入口)。旧环境 GDN SIGSEGV 保留为历史记录，不代表本轮编译状态。
+38 项只读摘要已回传：Norm 20 项仍在 AIR 中保留 Add，全部卡在 Add 常量计算／tiling；Conv 6 项全部在两输入 rank 检查失败；ConvState 12 项全部在 format config 获取失败。按[原 Target 对照与后续命令](target-compile-triage.md)，下一步复用 capture 重导 Norm／Conv 26 项，确认修正进入 AIR 后先编译四项；ConvState 只取两个阶段的代表日志继续查实现选择。计数仍为 120 成功／38 失败，本次没有启动新 DDK 或设备实验。四层整图 dump 与连续状态反馈仍未验证，流程保留在[四层转换与 dump 方案](target-accuracy-status.md#4-用户服务器执行入口)。旧环境 GDN SIGSEGV 保留为历史记录，不代表本轮编译状态。
 
 ## 2026-11-09 独立诊断记录
 

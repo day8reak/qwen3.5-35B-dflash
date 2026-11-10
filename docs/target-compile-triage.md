@@ -1,6 +1,18 @@
 # 剩余 38 项 OMC：对照原 Target 定位编译失败
 
-更新：2026-11-10。`environment-recheck-001` 已有 120 项编译成功并回传数值摘要；剩余普通 Norm 20、ConvState 12、Conv1d 6。当前先读取这一批失败日志和实际 AIR，按共同失败原因归并。已成功的 OMC、上板输出和原始 golden 直接保留。
+更新：2026-11-10。用户已回传 `inspect-compile --failed` 的完整 38 项摘要，三类失败各自一致。以下是本批实际观察，未重新执行 DDK／上板；编译计数仍为 120 成功、38 失败。
+
+| 组别 | 本批证据 | 当前判断与处理 |
+|---|---|---|
+| 普通 Norm：20 项 | 全部仍有 `Add → RmsNorm`，无导出修正记录；`add_kernel.cpp` 报类型不支持，随后 `Add ProduceTiling failed`、`inputTensorPtr is NULL` | gamma 预计算修正没有进入本批 AIR。先重导这 20 项，不能把 Add 的失败归为 RmsNorm 不支持 |
+| Conv1d：6 项 | 全部在 `Convolution` Verify 报 `Input[0] and input[1] must have the same dim num`，无导出修正记录／结构检查 | 确认本批仍存在卷积两输入 rank 不一致。用现有显式四维导出路径重导这 6 项，检查真实连接和 shape |
+| ConvState：12 项 | 两阶段、两个输出均报 `Get format configs failed ... LinearAttentionConvstateUpdate, substore: !` | 已确定失败环节是 format config 获取；尚未确定是注册、实现选择、支持条件还是图边界造成。暂不重导／重编这一组 |
+
+Conv 的类型计数中出现 `Unsqueeze` 不足以证明修正已生效：它可能只处理权重，必须检查 Conv2D 的两条输入边。ConvState 摘要中的 `substore: !` 没有提供有效 store 名称，不能据此认定整个 DDK 缺少实现。
+
+三组都出现了 `libai_npucore_ascendc_kernel.so not valid`，但这条消息不能替代上述各组的实际终止原因；先与同批成功 GDN 的日志对照。`IR InferShape ... Success` 和 `PassManager::Run begin` 即使标成 E 级也不是失败证据。
+
+**下一步：复用现有 capture，只重导 Norm／Conv 共 26 项，先编译 4 个代表项；ConvState 只提取两份代表日志。** 命令见本页后半部分。已成功的 120 个 OMC、上板输出和 golden 保留。
 
 ## 原 Target 给出的基线
 
@@ -14,7 +26,7 @@
 
 普通 Norm 的实现以实际 forward 为准。原导出脚本虽然注册了 `adn_rms_norm → AdnRmsNorm`，普通 Norm 调用的是 `npu_rms_norm`；不能据此直接换算子。已成功的 gated Norm 使用 FP32 输入和直接 gamma，也不能替代普通 Norm 的验证。
 
-原 ConvState fake 实现返回 `[1,8192,4]` 和 `[1,8192,T+3]`，converter 输出端口为 `y1/y2`。历史失败日志中，DDK 将第二输出推成 `[1,8192,1,T+3]`。这使“原图直接连接卷积”和“小图以三维 Data 为卷积输入”成为值得核对的差异，但当前没有新日志证明它就是这 12 项的失败原因。也不能只修改 golden 的 shape 来消除差异。
+原 ConvState fake 实现返回 `[1,8192,4]` 和 `[1,8192,T+3]`，converter 输出端口为 `y1/y2`。历史失败日志中，DDK 将第二输出推成 `[1,8192,1,T+3]`。这使“原图直接连接卷积”和“小图以三维 Data 为卷积输入”成为值得核对的差异，但本批摘要仍未证明该 shape 差异就是这 12 项的失败原因。也不能只修改 golden 的 shape 来消除差异。
 
 ## 原成功命令应如何借鉴
 
@@ -30,7 +42,9 @@
 
 35 是当前 DDK／OMG 服务器；310P golden 仍来自此前权重服务器。147 和历史命令中的安装路径只作为来源记录。
 
-## 现在执行一次只读检查
+## 已完成的只读检查入口
+
+本轮已经完成并回传，无需再次执行。下方保留给其他新批次使用。
 
 沿用 35 上本批的 `REPO_DIR`、`RECHECK`、`OMC_BATCH` 和修正后的 `CPRO_DDK_ROOT`：
 
@@ -49,20 +63,116 @@ cat "$COMPILE_INSPECT/summary.txt"
 
 输出目录若已存在，换一个编号。`--failed` 自动选择本批全部 38 个 FAILED case，只读取其现有证据；整个检查不执行导出、OMG 或设备命令。`--compiler-entry` 只读取入口脚本和环境记录，不 source 脚本。
 
-先回传 `summary.txt` 即可。它列出每个失败边界的导出修正标记、AIR 算子类型、退出阶段与关键错误摘要；错误检索覆盖日志前部，避免只看末尾退出信息。完整 `report.json` 保留源码身份、图描述、环境、错误上下文和 IR 清单。日志扫描有 64 MiB 上限；摘要是定位线索，不自动认定根因。检查结果为 PARTIAL 时先看缺失字段，它不表示又进行了一次失败编译。
+`summary.txt` 列出每个失败边界的导出修正标记、AIR 算子类型、退出阶段与关键错误摘要；错误检索覆盖日志前部，避免只看末尾退出信息。完整 `report.json` 保留源码身份、图描述、环境、错误上下文和 IR 清单。日志扫描有 64 MiB 上限；摘要是定位线索，不自动认定根因。检查结果为 PARTIAL 时先看缺失字段，它不表示又进行了一次失败编译。
 
-## 根据检查结果只重试必要范围
+## 只重导 Norm／Conv，先编译四项
 
-本轮 `manifest_sha256=9f433d0092c93f5c156a5c6ab59d6d603dcef338b8132dc28b1e0f77fcf1b1e2`、`source_batch=../../../air-batch`，与之前 AIR 批次相同。更新 Python 代码再执行 `compile` 不会更新既有 AIR。先查以下证据：
+本轮 `manifest_sha256=9f433d0092c93f5c156a5c6ab59d6d603dcef338b8132dc28b1e0f77fcf1b1e2`、`source_batch=../../../air-batch`，与之前 AIR 批次相同。更新 Python 代码再执行 `compile` 不会更新既有 AIR。以下使用仓库中已实现的导出修正，不换 Norm 算子、不改捕获 dtype 或 golden。
 
-| 组别 | 应查的记录 | 下一步 |
-|---|---|---|
-| Norm | `FOLD_ZERO_CENTERED_GAMMA`；`export_graph_check`；RmsNorm 的 gamma 是否为常量、是否仍有 Add | 若尚未应用修正，复用已有 capture 重导；若已应用，按本轮实际失败节点继续定位，不重复旧修复 |
-| Conv1d | `EXPLICIT_CONV2D_SINGLETON_HEIGHT`；Conv2D 输入和 filter 是否为四维、单例高度是否明确 | 若仍是旧三维输入，重导此类；若结构已经正确，再检查 dtype、groups 和所选实现的实际拒绝原因 |
-| ConvState | 当前 `InferShape`、`CheckSupport`、kernel store／format config；两个输出端口的实际描述 | 先判断是否仍是实现选择问题。只有这部分已核对、且失败指向独立图边界时，才补保留原连接关系的最小连续子图 |
+在已修正的 TorchAir 导出环境中执行，`GOLDEN_CAPTURE` 指向此前权重服务器产生的完成态捕获，`TARGET_SOURCE`／`CPRO_EXPORT_SCRIPT` 沿用核对过的原 Target。若在 35 导出，需要先把完整 capture 搬到 35；不重新运行 310P 推理。
 
-旧批次若没有 `export_adjustments`，这只能说明没有记录；仍以 AIR 节点与结构检查为准。历史 `inputTensorPtr is NULL`、Conv2D rank mismatch、ConvState implementation/format config 错误是检索线索，当前只有 exit 1 时不能直接沿用这些根因。
+```bash
+: "${REPO_DIR:?}" "${AI_RUN_DIR:?}" "${GOLDEN_CAPTURE:?}" "${TARGET_SOURCE:?}" "${CPRO_EXPORT_SCRIPT:?}"
+git -C "$REPO_DIR" pull --ff-only origin main
+export AIR_NORM_CONV="$AI_RUN_DIR/target/air-norm-conv-002"
 
-需要重导时，已有 [`export --kinds norm conv`](target-layer-accuracy.md#仅重导重编普通-norm-和-conv1d) 可以仅生成这 26 项，复用原 capture，不重跑 310P 四层推理。先编译同一失败类别的代表项：普通 hidden Norm、Q/K Norm 的不同输入 rank、Conv 的 Prefill/Decode；代表项越过原失败点后再补齐该组。若新日志显示不同错误则拆组，不把同名算子默认归为同一原因。
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
+  --capture "$GOLDEN_CAPTURE" \
+  --source-root "$TARGET_SOURCE" --converter-script "$CPRO_EXPORT_SCRIPT" \
+  --kinds norm conv --output "$AIR_NORM_CONV"
+```
 
-当前主机已通过 18 项检查，覆盖 FAILED 自动选择、已有元数据和哈希约束、只读行为、导出修正记录及日志前部错误提取。这里只验证诊断工具；尚无本轮 38 项的新 DDK 成功证据。数值异常与已完成项继续见[状态表](target-accuracy-status.md)。
+新目录已存在时换编号。导出后先确认本批 26 项均带有修正和源图检查结果，避免再次拿旧 AIR 重编：
+
+```bash
+python - "$AIR_NORM_CONV" <<'PY'
+import json, sys
+from collections import Counter
+from pathlib import Path
+root = Path(sys.argv[1])
+manifest = json.loads((root / 'manifest.json').read_text())
+expected = {'norm': 'FOLD_ZERO_CENTERED_GAMMA', 'conv': 'EXPLICIT_CONV2D_SINGLETON_HEIGHT'}
+assert manifest['status'] == 'EXPORTED', '导出未全部完成，先检查 manifest.json 中失败项'
+assert Counter(c['kind'] for c in manifest['cases']) == {'norm': 20, 'conv': 6}, '不是本批 26 项'
+for case in manifest['cases']:
+    receipt = json.loads((root / case['export']['path']).read_text())
+    kinds = {a['kind'] for a in receipt.get('export_adjustments', [])}
+    check = receipt.get('export_graph_check') or {}
+    assert expected[case['kind']] in kinds and check.get('status') == 'PASSED', case['id']
+    print(case['id'], expected[case['kind']], json.dumps(check, ensure_ascii=False))
+print('26 项源图修正已记录；尚未证明 OMG 编译或数值通过。')
+PY
+```
+
+检查通过后，将整个 `AIR_NORM_CONV`（含 manifest、models、fixture、weight）迁移到 35；将变量设为 35 上的实际目录。沿用本批已修正 DDK 和编译环境，先测试 hidden Norm、Q Norm、Prefill Conv、Decode Conv：
+
+```bash
+: "${REPO_DIR:?}" "${RECHECK:?}" "${AIR_NORM_CONV:?}" "${CPRO_DDK_ROOT:?}" "${CPRO_DDK_ID:?}"
+export OMC_NORM_CONV_PROBE="$RECHECK/omc-norm-conv-probe-002"
+NORM_CONV_OPTIONS=(--use-origin-format)
+# 仅当 environment-recheck-001 的实际编译也使用了同一份、仍有效的诊断时添加：
+# NORM_CONV_OPTIONS+=(--tbe-diagnosis "${TBE_DIAGNOSIS:?}")
+
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
+  --batch "$AIR_NORM_CONV" --output "$OMC_NORM_CONV_PROBE" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --compiler-profile isolated-kirinx90 "${NORM_CONV_OPTIONS[@]}" \
+  --cases l00_c00_input_layernorm_o0 l03_c00_self_attn_q_norm_o0 \
+          l00_c00_conv1d_o0 l00_c01_conv1d_o0
+
+python - "$OMC_NORM_CONV_PROBE/compile.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+for name in r['selected_cases']:
+    row = r['cases'][name]
+    print(name, row['status'], row.get('error', ''))
+PY
+```
+
+先回传这四项结果。若失败，读取对应新 `compile.log`；已经去掉 Add／通过源图 rank 检查后出现的新失败需要另行判断。全部通过后，才编译剩余 22 项，保留四个成功模型：
+
+```bash
+(
+set -e
+python - "$OMC_NORM_CONV_PROBE/compile.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert len(r['selected_cases']) == 4
+assert all(r['cases'][n]['status'] == 'COMPILED' for n in r['selected_cases']), '代表项尚未全部通过'
+PY
+mapfile -t NORM_CONV_REST < <(python - "$OMC_NORM_CONV_PROBE/compile.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+for name, row in r['cases'].items():
+    if row['status'] == 'NOT_SELECTED':
+        print(name)
+PY
+)
+test "${#NORM_CONV_REST[@]}" -eq 22
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
+  --batch "$AIR_NORM_CONV" --output "$RECHECK/omc-norm-conv-rest-002" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --compiler-profile isolated-kirinx90 "${NORM_CONV_OPTIONS[@]}" \
+  --cases "${NORM_CONV_REST[@]}"
+)
+```
+
+后续上板分别以两个新 OMC 批次为输入即可，不手动拼接或改写旧 `compile.json`。这一步尚未执行，不能将 26 项记为编译成功。
+
+## ConvState：只取两份代表日志
+
+Prefill／Decode、o0／o1 目前都在同一 format config 环节失败。先取第 0 层两阶段的 o0；完整日志可看见候选实现拒绝和 store 选择，而当前摘要只保留了终止点。
+
+```bash
+rg -n -C 2 'LinearAttentionConvstateUpdate|CheckSupport|substore|subStore|format config' \
+  "$OMC_BATCH/models/l00_c00_convstate_update_o0/omc/compile.log" \
+  "$OMC_BATCH/models/l00_c01_convstate_update_o0/omc/compile.log"
+
+rg -n 'GetKernelbinAddr|libai_npucore_ascendc_kernel' \
+  "$OMC_BATCH/models/l00_c00_convstate_update_o0/omc/compile.log" \
+  "$OMC_BATCH/models/l00_c00_gdn_o0/omc/compile.log"
+```
+
+第二条若没有匹配，`rg` 退出码 1 只表示没找到文字。若成功 GDN 也有同条库消息，就不能将其直接当作全部失败的共同根因；即使只有 ConvState 有，也需要继续核对该算子实际使用的 store／库。先依据日志定位到具体注册或支持条件，再读相应实现，保持共享 DDK 不变。只有实现选择已核对且证据指向独立图边界时，才尝试原 Target 的双输出＋卷积／状态写回连续子图。
+
+只读工具此前已通过 18 项主机检查；本次只更新用户回传证据和执行命令。数值异常与已完成项继续见[状态表](target-accuracy-status.md)。

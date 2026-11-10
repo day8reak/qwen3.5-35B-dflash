@@ -28,7 +28,7 @@
 | Conv1d | 6 | 0 | 6 | NOT_RUN |
 | **合计** | **158** | **120** | **38** | **120 项有数值回传，不能记整批精度通过** |
 
-本轮 manifest SHA256 为 `9f433d0092c93f5c156a5c6ab59d6d603dcef338b8132dc28b1e0f77fcf1b1e2`，source_batch 为 `../../../air-batch`，与此前 AIR 批清单相同。剩余 Norm／Conv 先核对已实现的导出修正是否进入实际 AIR，再读取每类代表 case 的新 compile.log；仅凭 exit 1 不能认定这 38 项沿用旧根因，无需重编已成功的 120 项。
+本轮 manifest SHA256 为 `9f433d0092c93f5c156a5c6ab59d6d603dcef338b8132dc28b1e0f77fcf1b1e2`，source_batch 为 `../../../air-batch`，与此前 AIR 批清单相同。随后回传的 38 项检查摘要确认：Norm 仍保留 Add 并在 Add 计算／tiling 失败，Conv 在输入／filter rank 检查失败，ConvState 在 format config 获取失败。下一步仅重导 Norm／Conv 并先编译代表项，已成功的 120 项保留。
 
 代表产物：`l00_c00_gdn_o0` 70306 字节，SHA256 `9b4a621df37bdb583c85e212efc07e5e4fc28b898468b83170d2923a3a1d2352`；`l00_c00_linear_attn_in_proj_qkv_o0` 8698908 字节，SHA256 `45d90205590770405d2f08e756f256ddddf2b34cd106157c824ab9ba3ebb96d8`。哈希来自此前编译回传；本次比较摘要按相同层／调用／point／输出对应登记，尚未重新核验原始文件链。
 
@@ -80,14 +80,14 @@ GDN 的原始 relative-L2 如下，均稳定；core 的 dtype 保持，raw state
 
 | 类别 | 具体边界 | 范围 | case 数 | 目前可下的结论 |
 |---|---|---|---:|---|
-| 普通 Norm | input_layernorm | L0–L3，c00／c01 | 8 | 编译失败；无本批精度结果 |
-| 普通 Norm | post_attention_layernorm | L0–L3，c00／c01 | 8 | 编译失败；无本批精度结果 |
-| 普通 Norm | self_attn_q_norm／self_attn_k_norm | L3，c00／c01 | 4 | 编译失败；无本批精度结果 |
-| ConvState | convstate_update，o0／o1 | L0–L2，c00／c01 | 12 | 编译失败；两个输出均未验证 |
-| Conv1d | conv1d，o0 | L0–L2，c00／c01 | 6 | 编译失败；SiLU 的结果不能代替卷积结果 |
+| 普通 Norm | input_layernorm | L0–L3，c00／c01 | 8 | AIR 仍有 Add；Add 常量计算／tiling 失败，gamma 预计算修正未进入本批 |
+| 普通 Norm | post_attention_layernorm | L0–L3，c00／c01 | 8 | 同上；尚无修正后 OMC／精度结果 |
+| 普通 Norm | self_attn_q_norm／self_attn_k_norm | L3，c00／c01 | 4 | 同上；尚无修正后 OMC／精度结果 |
+| ConvState | convstate_update，o0／o1 | L0–L2，c00／c01 | 12 | format config 获取失败；实际实现选择／支持条件待定位 |
+| Conv1d | conv1d，o0 | L0–L2，c00／c01 | 6 | Conv2D 两输入 rank 不一致；重导后检查显式四维路径 |
 | **合计** | **Norm 20＋ConvState 12＋Conv1d 6** | | **38** | **不归类为已确认的数值错误** |
 
-后续编译定位见[原 Target 源码／命令对照与只读检查](target-compile-triage.md)。新增 `inspect-compile --failed` 可一次提取这 38 项的日志和实际 AIR 证据，核对已有导出修正及 ConvState 原图连接关系，再决定有针对性的重导／重编；保留已成功的 120 个 OMC 和这次输出。MoE 专家计算尚未纳入本批小图，四层整图和连续状态反馈也未由本表验证。
+后续编译定位见[原 Target 对照与定向重导命令](target-compile-triage.md)。本轮只读检查已经完成，无需重复；先重导 Norm／Conv 共 26 项，验证导出修正记录，再编译四个代表项。ConvState 补取两份代表日志以定位 format config 之前的选择过程。以上是待执行步骤，保留当前 120／38 计数及已完成输出。MoE 专家计算尚未纳入本批小图，四层整图和连续状态反馈也未由本表验证。
 
 ### 旧环境编译记录
 
