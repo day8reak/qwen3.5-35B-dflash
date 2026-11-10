@@ -94,11 +94,11 @@ GDN 的原始 relative-L2 如下，均稳定；core 的 dtype 保持，raw state
 | 普通 Norm | input_layernorm | L0–L3，c00／c01 | 8 | 全部已编译；7 项数值已回传，L0 Prefill 待回传 |
 | 普通 Norm | post_attention_layernorm | L0–L3，c00／c01 | 8 | 全部已编译、数值已回传 |
 | 普通 Norm | self_attn_q_norm／self_attn_k_norm | L3，c00／c01 | 4 | 全部已编译；3 项数值已回传，Prefill Q Norm 待回传 |
-| ConvState | convstate_update，o0／o1 | L0–L2，c00／c01 | 12 | format config 获取失败；实际实现选择／支持条件待定位 |
+| ConvState | convstate_update，o0／o1 | L0–L2，c00／c01 | 12 | 代表日志显示各计算 store 支持检查未通过后被强制分到 NPU；对照同套 DDK 的成功四层图定位 |
 | Conv1d | conv1d，o0 | L0–L2，c00／c01 | 6 | 全部已编译；L1–L2 共 4 项数值已回传，L0 两阶段待回传 |
 | **合计** | **原 38 项** | | **38** | **新增 26 成功，剩余 12 项 ConvState 失败** |
 
-后续编译定位只需补取 [ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)，定位 format config 之前的选择过程。Norm／Conv 导出与编译步骤已经完成，本次有数值回传的 22 项无需重跑；其余 4 项优先回传已有 CSV，[执行与比较命令](target-norm-conv-validation.md)保留供需要时使用。MoE 专家计算尚未纳入本批小图，四层整图和连续状态反馈也未由本表验证。
+[ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)已回传，已明确校验／推导成功但计算实现检查未通过的失败链路。用户确认原四层图使用同套 DDK 编译成功；下一步对照该成功图的融合／改写及实现选择，尚无 ConvState 修复或新编译成功结果。Norm／Conv 导出与编译步骤已经完成，本次有数值回传的 22 项无需重跑；其余 4 项优先回传已有 CSV，[执行与比较命令](target-norm-conv-validation.md)保留供需要时使用。MoE 专家计算尚未纳入本批小图，四层整图和连续状态反馈也未由本表验证。
 
 ### 旧环境编译记录
 

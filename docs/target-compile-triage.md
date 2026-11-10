@@ -2,7 +2,7 @@
 
 更新：2026-11-10。用户确认重导后的 **Norm 20 项、Conv1d 6 项全部编译成功**。累计 **146/158 项已编译，剩余 ConvState 12 项**。新增成功依据用户回传确认，具体 OMC 哈希尚未提供；随后收到 Norm 18 项、Conv1d 4 项的小误差且稳定的数值摘要，另 4 项待回传，详见[状态表](target-accuracy-status.md)。当前按用户安排集中解决 ConvState 编译；原批次报告保持原样。
 
-**剩余编译定位只读取本页末尾的 ConvState 两份代表日志。** Norm／Conv 的重导和编译已经完成，下方相关命令保留供复现，不再重复执行。新 26 项的 [上板、回收与批量比较命令](target-norm-conv-validation.md)已单列，支持单批或 4＋22 分批；编译成功不计作精度通过。
+**ConvState 两份失败代表日志已回传；下一步只读本页末尾指定的成功四层图日志，对照实现选择与图结构。** Norm／Conv 的重导和编译已经完成，下方相关命令保留供复现，不再重复执行。新 26 项的 [上板、回收与批量比较命令](target-norm-conv-validation.md)已单列，支持单批或 4＋22 分批；编译成功不计作精度通过。
 
 以下保留此前完整 38 项检查摘要的归因及处理结果：
 
@@ -10,7 +10,7 @@
 |---|---|---|
 | 普通 Norm：20 项 | 旧 AIR 含 `Add → RmsNorm`，无导出修正记录；`add_kernel.cpp` 报类型不支持，随后 `Add ProduceTiling failed`、`inputTensorPtr is NULL` | gamma 预计算修正后重导，用户确认 20 项均编译成功；18 项数值已回传、误差较小且稳定，另 2 项待回传 |
 | Conv1d：6 项 | 旧图在 `Convolution` Verify 报 `Input[0] and input[1] must have the same dim num`，无导出修正记录／结构检查 | 显式四维路径重导后，用户确认 6 项均编译成功；4 项数值已回传、误差较小且稳定，另 2 项待回传 |
-| ConvState：12 项 | 两阶段、两个输出均报 `Get format configs failed ... LinearAttentionConvstateUpdate, substore: !` | 已确定失败环节是 format config 获取；尚未确定是注册、实现选择、支持条件还是图边界造成。暂不重导／重编这一组 |
+| ConvState：12 项 | Prefill／Decode 的 o0 代表日志均 Verify／Infer 成功，各计算 store 检查未通过，随后被强制分到 NPU 并缺少 format config | 已确认失败链路；用户确认同套 DDK 的原四层图编译成功，优先对照成功图的融合／改写、状态边界及实际编译入口；尚未确定具体修复 |
 
 Conv 的类型计数中出现 `Unsqueeze` 不足以证明修正已生效：它可能只处理权重，必须检查 Conv2D 的两条输入边。ConvState 摘要中的 `substore: !` 没有提供有效 store 名称，不能据此认定整个 DDK 缺少实现。
 
@@ -208,6 +208,20 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
 
 ## ConvState：只取两份代表日志
 
+**两份代表日志已回传，无需重复提取。** 用户进一步确认：35 服务器上原 Target 四层 AIR 已使用本次这套 DDK 成功编译为 OMC；成功日志为 `/home/w00949577/qwen3.5-35B-dflash-run/target/omg.log`（用户提供，正文尚未回传）；成功产物路径尚未提供。这是当前最有价值的对照，应先复用已有成功记录，不重编整图，也不再把“这套 DDK 完全缺少该算子”当作结论。整图编译成功仍不证明 ConvState 以独立节点编译成功，可能经过融合／改写。
+
+Prefill `l00_c00_convstate_update_o0`（PID 131252）与 Decode `l00_c01_convstate_update_o0`（PID 136256）出现相同失败链路：
+
+| 原日志行 | 已观察到的事实 | 含义 |
+|---|---|---|
+| 61 | `convertFunc not exist` | 后续已进入该算子的专用 Verify／Infer；不能单凭这条认定 AIR 解析失败 |
+| 301–310、327–328 | `LinearAttentionConvstateUpdateVerify exit, ret=0`，`Infer exit success` | 算子校验与 shape 推导成功；不是此次 Conv1d 曾出现的 rank Verify 错误 |
+| 333–341 | `custom_ascendc_lib`、`elementary_lib`、`ascendc_lib`、`fe_lib` 支持检查均未通过；TBE store 无对应记录 | 本次小图未选中可用计算实现；仅有 frontend 推导函数不能证明实现可选 |
+| 347–348 | `force supported by NPU`，随后分区 NPU:1 | 强制分区发生在实现检查未通过之后，不是支持成功证据 |
+| 372、399–405 | `generated_lib` 的 OpBuilder 不支持此 OP；format config 获取失败，NPU 子图构建退出 | 最终 format config 报错是上述失败链路的后续表现，不能靠补输出 shape 就宣称修复 |
+
+日志第 308 行还确认了 DDK 推导的输出：y1 均为 `[1,8192,4]`；Prefill y2 为 `[1,8192,1,259]`，Decode y2 为 `[1,8192,1,4]`。这与保留的 Python fake 中三维 y2 不同，应在成功图／后续消费者中核对。当前这两张失败图导出的是 y1，尚无证据把 y2 的四维推导认定为本次支持检查失败的原因。
+
 已重新核对保留的原 Target 源码及当前小图入口：
 
 | 检查项 | 原 Target 与当前小图 | 当前判断 |
@@ -217,23 +231,21 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
 | fake 输出 | 保留的原导出声明 y1 `[1,8192,4]`，y2 `[1,8192,T+3]`，dtype 均随 x1；小图加载用户指定的原 converter 脚本 | 服务器实际脚本版本待其 export 记录核对；源 IR 的空中间 shape 本身不是已知 rank 错误 |
 | 输出消费者与状态 | 原图同时消费 y1/y2：y2 接 Conv，y1 接 `conv_state.copy_`；当前小图仅导出选定输出，状态为普通 Data | 存在图边界差异，尚无证据证明它导致 format config 失败 |
 
-因此暂不更换算子、dtype 或重导全部 12 项。先从两份代表日志确定实际 store／实现候选和拒绝条件；若实现未注册，核对本次 DDK／插件加载；若有候选但拒绝 dtype、format 或 shape，按实际配置检查源图；只有实现选择已核对且线索指向消费者／状态要求，才做保留原双输出与写回的代表子图实验。本地主机缺少所选 X90 DDK profile，不能用另一个 DDK 的配置代替 35 服务器的真实实现。
+下一步以成功四层图为对照：先核对其实际 OMG 入口／选项、ConvState 是否被融合或改写、最终 store／实现，再对比小图的 Data／状态写回与输出消费者。若成功图保留独立 ConvState 且选中了实现，就对照其注册与输入／属性条件；若成功图依赖融合或状态边界，则只构造 Prefill／Decode 各一个保留相关消费者与写回的代表子图。尚无证据时不直接改 dtype、拆成其他算子或重导全部 12 项。本地主机缺少所选 X90 DDK profile，不能用另一个 DDK 的配置代替 35 服务器的真实实现。
 
-Prefill／Decode、o0／o1 目前都在同一 format config 环节失败。先取第 0 层两阶段的 o0；完整日志可看见候选实现拒绝和 store 选择，而当前摘要只保留了终止点。在 **35 服务器**执行，`AI_RUN_DIR` 使用 35 本机结果根目录；`CONVSTATE_BATCH` 指向原来含 ConvState 失败日志的批次。旧目录若已迁移，按其实际位置设置，不能指向新 26 项 Norm／Conv 批次。
+### 下一步：读取成功四层图日志
+
+在 **35 服务器**执行以下只读命令，无需进入权重服务器、更新环境或重新编译。日志路径已由用户确认；本地主机不能直接读取 35 上的文件，目前尚未看到成功日志正文。
 
 ```bash
-: "${AI_RUN_DIR:?}"
-export CONVSTATE_BATCH="$AI_RUN_DIR/target/tests/environment-recheck-001/omc"
+export FULL_OMG_LOG="/home/w00949577/qwen3.5-35B-dflash-run/target/omg.log"
 
-grep -n -E -C 5 'LinearAttentionConvstateUpdate|CheckSupport|substore|subStore|format config' \
-  "$CONVSTATE_BATCH/models/l00_c00_convstate_update_o0/omc/compile.log" \
-  "$CONVSTATE_BATCH/models/l00_c01_convstate_update_o0/omc/compile.log"
-
-grep -n -E 'GetKernelbinAddr|libai_npucore_ascendc_kernel' \
-  "$CONVSTATE_BATCH/models/l00_c00_convstate_update_o0/omc/compile.log" \
-  "$CONVSTATE_BATCH/models/l00_c00_gdn_o0/omc/compile.log"
+grep -n -i -E -C 4 'conv_?state|linear_attention_conv' "$FULL_OMG_LOG"
+tail -n 60 "$FULL_OMG_LOG"
 ```
 
-上述命令使用 `grep`，无需安装 `rg`。第二条若没有匹配，`grep` 退出码 1 只表示没找到文字。若成功 GDN 也有同条库消息，就不能将其直接当作全部失败的共同根因；即使只有 ConvState 有，也需要继续核对该算子实际使用的 store／库。先依据日志定位到具体注册或支持条件，再读相应实现，保持共享 DDK 不变。只有实现选择已核对且证据指向独立图边界时，才尝试原 Target 的双输出＋卷积／状态写回连续子图。
+回传这两条命令的输出即可。第一条覆盖 ConvState 名称及常见下划线写法，保留上下文，检查是否发生融合／改写、节点是否保留，以及支持检查、store 与构建结果；第二条核对最终转换结果和输出路径。`grep` 无匹配时退出码 1 不代表编译失败，也不能证明该算子已被融合，可能是日志级别或名称差异。若日志未记录实际 OMG 入口／选项，下一步再核对该次原命令及相应环境记录，不用当前 shell 环境代替当时环境。
+
+判断分支：成功图保留独立 ConvState 并完成构建时，优先对照该节点的输入／属性、实现和编译环境；只有看到融合／改写或状态消费者要求的证据，才准备相应代表子图。若成功日志也没有明确实现记录，则继续读取其现存图 dump，不重编整图。共享 DDK 保持不变。
 
 只读工具此前已通过 18 项主机检查；本次更新用户回传证据、源码核对结论和执行命令，尚未确定 ConvState 修复。数值异常与已完成项继续见[状态表](target-accuracy-status.md)。

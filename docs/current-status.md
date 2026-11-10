@@ -16,7 +16,7 @@
 
 用户确认 DDK／OMG 编译在 **35 服务器**，310P golden 仍在此前的**权重服务器**通过已跑通的四层推理入口采集；35 不是 Python 环境名，147 仅为此前参考命令来源。CPro dump 尚无样例。[离线批量比较入口](target-dump-compare.md)已完成主机验证，可从 capture 生成待绑定清单；真实文件格式和节点映射仍需首批 dump 元数据。本轮没有启动整图执行。
 
-此前 Norm 的 Add 常量计算／tiling 和 Conv 的输入 rank 阻塞，已在用户本次重导、编译结果中通过。剩余编译定位集中到 [ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)，查看 format config 之前的实现选择／支持条件；不再重编已成功的 146 项。[Norm／Conv 的执行与比较命令](target-norm-conv-validation.md)保留，4 个待回传项优先复用已有结果。本地主机本次只登记结果和准备命令，没有启动 DDK 或设备实验。四层整图 dump 与连续状态反馈仍未验证，流程保留在[四层转换与 dump 方案](target-accuracy-status.md#4-用户服务器执行入口)。旧环境 GDN SIGSEGV 保留为历史记录，不代表本轮编译状态。
+此前 Norm 的 Add 常量计算／tiling 和 Conv 的输入 rank 阻塞，已在用户本次重导、编译结果中通过。[ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)已回传：Verify／Infer 成功，各计算 store 支持检查未通过，随后被强制分到 NPU 并缺少 format config。用户确认同套 DDK 的原四层图已编译成功，下一步对照其成功日志中的融合／改写与状态边界；尚未确定修复，不再重编已成功的 146 项。[Norm／Conv 的执行与比较命令](target-norm-conv-validation.md)保留，4 个待回传项优先复用已有结果。本地主机本次只登记结果和准备命令，没有启动 DDK 或设备实验。四层整图 dump 与连续状态反馈仍未验证，流程保留在[四层转换与 dump 方案](target-accuracy-status.md#4-用户服务器执行入口)。旧环境 GDN SIGSEGV 保留为历史记录，不代表本轮编译状态。
 
 ## 2026-11-09 独立诊断记录
 
