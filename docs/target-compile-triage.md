@@ -1,6 +1,6 @@
 # Target OMC：Norm／Conv 已通过，剩余 ConvState 12 项
 
-更新：2026-11-10。用户确认重导后的 **Norm 20 项、Conv1d 6 项全部编译成功**。累计 **146/158 项已编译，剩余 ConvState 12 项**。新增成功依据用户回传确认，具体 OMC 哈希及精度结果尚未提供；原批次报告保持原样。
+更新：2026-11-10。用户确认重导后的 **Norm 20 项、Conv1d 6 项全部编译成功**。累计 **146/158 项已编译，剩余 ConvState 12 项**。新增成功依据用户回传确认，具体 OMC 哈希尚未提供；随后收到 Norm 18 项、Conv1d 4 项的小误差且稳定的数值摘要，另 4 项待回传，详见[状态表](target-accuracy-status.md)。当前按用户安排集中解决 ConvState 编译；原批次报告保持原样。
 
 **剩余编译定位只读取本页末尾的 ConvState 两份代表日志。** Norm／Conv 的重导和编译已经完成，下方相关命令保留供复现，不再重复执行。新 26 项的 [上板、回收与批量比较命令](target-norm-conv-validation.md)已单列，支持单批或 4＋22 分批；编译成功不计作精度通过。
 
@@ -8,15 +8,15 @@
 
 | 组别 | 本批证据 | 当前判断与处理 |
 |---|---|---|
-| 普通 Norm：20 项 | 旧 AIR 含 `Add → RmsNorm`，无导出修正记录；`add_kernel.cpp` 报类型不支持，随后 `Add ProduceTiling failed`、`inputTensorPtr is NULL` | gamma 预计算修正后重导，用户确认 20 项均编译成功；精度待回传 |
-| Conv1d：6 项 | 旧图在 `Convolution` Verify 报 `Input[0] and input[1] must have the same dim num`，无导出修正记录／结构检查 | 显式四维路径重导后，用户确认 6 项均编译成功；精度待回传 |
+| 普通 Norm：20 项 | 旧 AIR 含 `Add → RmsNorm`，无导出修正记录；`add_kernel.cpp` 报类型不支持，随后 `Add ProduceTiling failed`、`inputTensorPtr is NULL` | gamma 预计算修正后重导，用户确认 20 项均编译成功；18 项数值已回传、误差较小且稳定，另 2 项待回传 |
+| Conv1d：6 项 | 旧图在 `Convolution` Verify 报 `Input[0] and input[1] must have the same dim num`，无导出修正记录／结构检查 | 显式四维路径重导后，用户确认 6 项均编译成功；4 项数值已回传、误差较小且稳定，另 2 项待回传 |
 | ConvState：12 项 | 两阶段、两个输出均报 `Get format configs failed ... LinearAttentionConvstateUpdate, substore: !` | 已确定失败环节是 format config 获取；尚未确定是注册、实现选择、支持条件还是图边界造成。暂不重导／重编这一组 |
 
 Conv 的类型计数中出现 `Unsqueeze` 不足以证明修正已生效：它可能只处理权重，必须检查 Conv2D 的两条输入边。ConvState 摘要中的 `substore: !` 没有提供有效 store 名称，不能据此认定整个 DDK 缺少实现。
 
 三组都出现了 `libai_npucore_ascendc_kernel.so not valid`，但这条消息不能替代上述各组的实际终止原因；先与同批成功 GDN 的日志对照。`IR InferShape ... Success` 和 `PassManager::Run begin` 即使标成 E 级也不是失败证据。
 
-已成功的 146 个 OMC、已有 120 项上板输出和全部 golden 保留。累计覆盖不通过手动合并／改写旧 `compile.json` 实现。
+已成功的 146 个 OMC、已有 142 项数值回传对应的上板输出和全部 golden 保留。累计覆盖不通过手动合并／改写旧 `compile.json` 实现。
 
 ## 原 Target 给出的基线
 
@@ -204,9 +204,20 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
 )
 ```
 
-用户已确认上述范围共 26 项编译成功。[新增 26 项执行文档](target-norm-conv-validation.md)提供两种批次方式的完整命令，不手动拼接或改写旧 `compile.json`。新增精度结果尚未回传。
+用户已确认上述范围共 26 项编译成功。[新增 26 项执行文档](target-norm-conv-validation.md)提供两种批次方式的完整命令，不手动拼接或改写旧 `compile.json`。其中 22 项数值已回传且稳定，另 4 项待回传；无需重复已完成的 22 项。
 
 ## ConvState：只取两份代表日志
+
+已重新核对保留的原 Target 源码及当前小图入口：
+
+| 检查项 | 原 Target 与当前小图 | 当前判断 |
+|---|---|---|
+| 调用与输入顺序 | 同为 `linear_attention_convstate_update(mixed_qkv, conv_state, linear_update_tensor)`，converter 映射 `x1/x2/x3`，无额外属性 | 未发现调用顺序或算子名差异 |
+| 辅助输入 | 原导出传 `zeros([128], int32)`；当前捕获亦按此构造 | 不能把全零辅助张量直接认定为本次格式匹配失败原因 |
+| fake 输出 | 保留的原导出声明 y1 `[1,8192,4]`，y2 `[1,8192,T+3]`，dtype 均随 x1；小图加载用户指定的原 converter 脚本 | 服务器实际脚本版本待其 export 记录核对；源 IR 的空中间 shape 本身不是已知 rank 错误 |
+| 输出消费者与状态 | 原图同时消费 y1/y2：y2 接 Conv，y1 接 `conv_state.copy_`；当前小图仅导出选定输出，状态为普通 Data | 存在图边界差异，尚无证据证明它导致 format config 失败 |
+
+因此暂不更换算子、dtype 或重导全部 12 项。先从两份代表日志确定实际 store／实现候选和拒绝条件；若实现未注册，核对本次 DDK／插件加载；若有候选但拒绝 dtype、format 或 shape，按实际配置检查源图；只有实现选择已核对且线索指向消费者／状态要求，才做保留原双输出与写回的代表子图实验。本地主机缺少所选 X90 DDK profile，不能用另一个 DDK 的配置代替 35 服务器的真实实现。
 
 Prefill／Decode、o0／o1 目前都在同一 format config 环节失败。先取第 0 层两阶段的 o0；完整日志可看见候选实现拒绝和 store 选择，而当前摘要只保留了终止点。在 **35 服务器**执行，`AI_RUN_DIR` 使用 35 本机结果根目录；`CONVSTATE_BATCH` 指向原来含 ConvState 失败日志的批次。旧目录若已迁移，按其实际位置设置，不能指向新 26 项 Norm／Conv 批次。
 
@@ -214,7 +225,7 @@ Prefill／Decode、o0／o1 目前都在同一 format config 环节失败。先�
 : "${AI_RUN_DIR:?}"
 export CONVSTATE_BATCH="$AI_RUN_DIR/target/tests/environment-recheck-001/omc"
 
-rg -n -C 2 'LinearAttentionConvstateUpdate|CheckSupport|substore|subStore|format config' \
+rg -n -C 5 'LinearAttentionConvstateUpdate|CheckSupport|substore|subStore|format config' \
   "$CONVSTATE_BATCH/models/l00_c00_convstate_update_o0/omc/compile.log" \
   "$CONVSTATE_BATCH/models/l00_c01_convstate_update_o0/omc/compile.log"
 
@@ -225,4 +236,4 @@ rg -n 'GetKernelbinAddr|libai_npucore_ascendc_kernel' \
 
 第二条若没有匹配，`rg` 退出码 1 只表示没找到文字。若成功 GDN 也有同条库消息，就不能将其直接当作全部失败的共同根因；即使只有 ConvState 有，也需要继续核对该算子实际使用的 store／库。先依据日志定位到具体注册或支持条件，再读相应实现，保持共享 DDK 不变。只有实现选择已核对且证据指向独立图边界时，才尝试原 Target 的双输出＋卷积／状态写回连续子图。
 
-只读工具此前已通过 18 项主机检查；本次只更新用户回传证据和执行命令。数值异常与已完成项继续见[状态表](target-accuracy-status.md)。
+只读工具此前已通过 18 项主机检查；本次更新用户回传证据、源码核对结论和执行命令，尚未确定 ConvState 修复。数值异常与已完成项继续见[状态表](target-accuracy-status.md)。

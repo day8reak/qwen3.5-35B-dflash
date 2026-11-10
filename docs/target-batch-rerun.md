@@ -1,8 +1,8 @@
 # 修正算子环境后：批量生成 OMC、上板与比较
 
-更新：2026-11-10。本页保留**现有 Target 边界小图批次的完整复测命令**。旧 `environment-recheck-001` 有 120 项编译成功并回传数值摘要；用户随后确认重导的 Norm／Conv 26 项全部编译成功，累计 **146/158 成功，剩余 ConvState 12 项**。新 26 项精度待回传，当前结论见[状态表](target-accuracy-status.md)。已执行的批次和输出直接保留，不重复本页整批流程。
+更新：2026-11-10。本页保留**现有 Target 边界小图批次的完整复测命令**。旧 `environment-recheck-001` 有 120 项编译成功并回传数值摘要；用户随后确认重导的 Norm／Conv 26 项全部编译成功，累计 **146/158 成功，剩余 ConvState 12 项**。新增项中 22 项数值已回传，另 4 项待回传；累计 142 项有数值摘要，当前结论见[状态表](target-accuracy-status.md)。已执行的批次和输出直接保留，不重复本页整批流程。
 
-原 38 项的 `inspect-compile --failed` 及 Norm／Conv 重导编译均已完成。下一步只检查 [ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)。新 26 项后续可复用本页上板／回收／比较流程，指定实际新 OMC 批次和新 execution 目录；不重新执行旧 120 项。
+原 38 项的 `inspect-compile --failed` 及 Norm／Conv 重导编译均已完成。下一步只检查 [ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)。已有数值回传的 142 项无需重跑；其余 4 项优先回传已有 CSV，需要补测时使用实际新 OMC 批次的执行／回收／比较流程。
 
 **新增 26 项的专用执行步骤见 [Norm／Conv 上板与比较](target-norm-conv-validation.md)**，包含变量初始化、单批 26 项／4＋22 分批选择，以及运行、回收和 CSV 比较命令。
 

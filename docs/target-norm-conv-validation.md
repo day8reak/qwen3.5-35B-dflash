@@ -1,8 +1,8 @@
 # 新增 26 个 Norm／Conv OMC：上板、回收与比较
 
-用户已确认普通 Norm 20 项、Conv1d 6 项全部编译成功。本页只执行这些新模型，数值结果仍待回传。沿用之前 120 项的 runtime.json 和 HDC 配置，native runner 需按下文更新一次。
+用户已确认普通 Norm 20 项、Conv1d 6 项全部编译成功。随后回传其中 **22 项数值摘要：Norm 18、Conv1d 4，全部 METRICS_RECORDED、dtype 保持且稳定**。详见[状态表与缺项](target-accuracy-status.md)及[原始 CSV](../specs/target-norm-conv-metrics-20261110.csv)。这 22 项无需重跑，其余 4 项优先回传已有结果；当前工作转向 ConvState 编译。本页保留可复现命令，沿用之前 120 项的 runtime.json 和 HDC 配置；尚未更新过 native runner 时，按下文重建一次。
 
-用户回传的 `selected boundary exceeds existing small-probe IO budget` 发生在主机 prepare，设备尚未执行。旧主机脚本和 native runner 均限制**单个模型的输入＋输出总计 16 MiB**。按 Prefill Conv 的 FP32 输入 `[1,8192,259]`、输出 `[1,8192,256]` 计算，总计 **16,875,520 字节，超出 96 KiB**，符合这次触发条件；旧错误未记录具体 case，不能据此确认其名字。现将两端限额同步设为 **32 MiB**，并在上传前检查已构建 runner 的实际声明。每方向最多 8 个张量、rank 上限 4 均保持。
+此前用户回传的 `selected boundary exceeds existing small-probe IO budget` 发生在主机 prepare，当次设备尚未执行。旧主机脚本和 native runner 均限制**单个模型的输入＋输出总计 16 MiB**。按 Prefill Conv 的 FP32 输入 `[1,8192,259]`、输出 `[1,8192,256]` 计算，总计 **16,875,520 字节，超出 96 KiB**，符合这次触发条件；旧错误未记录具体 case，不能据此确认其名字。现将两端限额同步设为 **32 MiB**，并在上传前检查已构建 runner 的实际声明。每方向最多 8 个张量、rank 上限 4 均保持。
 
 ## 1. 在原上板主机恢复变量
 

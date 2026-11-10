@@ -1,12 +1,12 @@
 # Target OMC 与精度状态
 
-用户已回传[修正环境后的批量复测](target-batch-rerun.md)，并进一步确认重导的 **Norm 20 项＋Conv1d 6 项全部编译成功**。累计 **146/158 项已编译，剩余 ConvState 12 项**。原 `environment-recheck-001` 的 120 项已有设备数值摘要，均 `stable=TRUE`，状态为 **2 PASSED、2 FAILED、116 METRICS_RECORDED**；新 26 项精度尚未回传。
+用户已回传[修正环境后的批量复测](target-batch-rerun.md)，并确认重导的 **Norm 20 项＋Conv1d 6 项全部编译成功**。累计 **146/158 项已编译，剩余 ConvState 12 项**。新收到其中 **22 项数值摘要（Norm 18、Conv1d 4）**，均为 `METRICS_RECORDED`、`dtype_preserved=True`、`stable=True`。合并原 120 项后，已有 **142 项数值回传：2 PASSED、2 FAILED、138 METRICS_RECORDED**；另 4 个已编译项尚无数值回传。
 
-更新：2026-11-10。新 26 项的执行入口在主机 prepare 触发旧 16 MiB I/O 限额，设备尚未运行。主机与 native runner 的单模型限额已同步改为 32 MiB，并通过主机边界检查；请按[上板文档](target-norm-conv-validation.md)重建一次 runner 后复用 OMC 重跑。此工具修复不改变下方数值结论；四层整图 dump 保留为后续方案。
+更新：2026-11-10。本次 22 项误差较小、重复稳定，按用户安排降低这些边界的排查优先级，当前集中处理剩余 12 个 ConvState OMC 的编译错误。未设新的浮点验收门槛，保留原始 `METRICS_RECORDED`；四层整图 dump 保留为后续方案。此前 16 MiB 准备阶段限制已在工具中改为 32 MiB，随后收到本次 22 项结果，不再把这些项记为尚未运行。
 
 主机侧已提供[批量 dump 比较脚本](target-dump-compare.md)，复用原四层入口的捕获清单。当前支持显式映射和离线比较；CPro dump 尚无样例，自动格式适配与节点映射待首批元数据。
 
-本页整理用户提供的旧 compile.json、120 行比较摘要及新增 26 项编译成功的确认。新增项的逐 case 编译报告和 OMC 哈希尚未回传，本地主机未连接服务器或板子重验原始文件。累计计数覆盖同一批 158 个边界输出图的最新结果，不修改旧批次记录，也不代表整模型或 MoE 覆盖率。编译、执行、数值验收和重复稳定性分别记录；没有预先确定的浮点容差时，只记录误差。
+本页整理用户提供的旧 compile.json、原 120 行比较摘要、新增 26 项编译成功的确认及本次 22 行 CSV。新增项的逐 case 编译报告和 OMC 哈希尚未回传，本地主机未连接服务器或板子重验原始文件。累计计数覆盖同一批 158 个边界输出图的最新结果，不修改旧批次记录，也不代表整模型或 MoE 覆盖率。编译、执行、数值验收和重复稳定性分别记录；没有预先确定的浮点容差时，只记录误差。
 
 ## 1. 当前捕获边界批次
 
@@ -23,10 +23,10 @@
 | RoPE Q/K 两个输出 | 4 | 4 | 0 | 已回传；全部明显偏差 |
 | Cache K/V | 4 | 4 | 0 | Prefill 2 项 PASSED；Decode 2 项 FAILED |
 | FusedAttention、attention layout/gate | 4 | 4 | 0 | Prefill Attention 明显偏差；另 3 项误差较小 |
-| 普通 Norm：input/post-attention、Self Attention Q/K Norm | 20 | 20 | 0 | 用户确认编译成功；设备／精度结果待回传 |
+| 普通 Norm：input/post-attention、Self Attention Q/K Norm | 20 | 20 | 0 | 18 项 METRICS_RECORDED，dtype 保持且稳定；另 2 项待回传 |
 | ConvState 两个输出 | 12 | 0 | 12 | NOT_RUN |
-| Conv1d | 6 | 6 | 0 | 用户确认编译成功；设备／精度结果待回传 |
-| **合计** | **158** | **146** | **12** | **120 项有数值回传，另 26 项待验证，不能记整批精度通过** |
+| Conv1d | 6 | 6 | 0 | 4 项 METRICS_RECORDED，dtype 保持且稳定；另 2 项待回传 |
+| **合计** | **158** | **146** | **12** | **142 项有数值回传，另 4 个已编译项待回传，不能记整批精度通过** |
 
 旧完整批次 manifest SHA256 为 `9f433d0092c93f5c156a5c6ab59d6d603dcef338b8132dc28b1e0f77fcf1b1e2`，source_batch 为 `../../../air-batch`。其 38 项检查摘要确认：Norm 仍含 Add 并在 Add 计算／tiling 失败，Conv 在输入／filter rank 检查失败，ConvState 在 format config 获取失败。用户随后确认重导 Norm／Conv 的 26 项已编译成功；上述旧 manifest 哈希不用于标识新 AIR。下一步只定位 ConvState，并保留所有成功模型。
 
@@ -78,16 +78,27 @@ GDN 的原始 relative-L2 如下，均稳定；core 的 dtype 保持，raw state
 
 ### 新增 26 项编译成功，剩余 12 项
 
+本次用户回传的 [22 行原始指标 CSV](../specs/target-norm-conv-metrics-20261110.csv) 保留全部字段与精度。18 项普通 Norm、4 项 Conv1d 的 status 均为 `METRICS_RECORDED`，dtype 保持、重复稳定，error 均为空。以下百分数是原始 relative-L2 乘 100：
+
+| 本次回传分组 | 数量 | max-abs 范围 | relative-L2 |
+|---|---:|---:|---:|
+| 普通 Norm，Prefill | 8 | 0.01953125～0.125 | 0.108389%～0.145771% |
+| 普通 Norm，Decode | 10 | 0.00390625～0.03125 | 0.039795%～0.189404% |
+| Conv1d，Prefill | 2 | 0.007720947～0.008674622 | 0.026080%～0.027210% |
+| Conv1d，Decode | 2 | 0.003479003～0.004500389 | 0.021476%～0.026757% |
+
+这批结果没有新增明显异常边界，当前优先处理 ConvState 编译。仍缺数值回传的 4 项是 `l00_c00_input_layernorm_o0`、`l03_c00_self_attn_q_norm_o0`、`l00_c00_conv1d_o0`、`l00_c01_conv1d_o0`；它们已编译成功，不将缺少 CSV 解释为运行失败。缺项范围与此前 4 项代表批次一致，但没有其数值数据时不代填结论。
+
 | 类别 | 具体边界 | 范围 | case 数 | 目前可下的结论 |
 |---|---|---|---:|---|
-| 普通 Norm | input_layernorm | L0–L3，c00／c01 | 8 | 重导后用户确认编译成功；精度待回传 |
-| 普通 Norm | post_attention_layernorm | L0–L3，c00／c01 | 8 | 重导后用户确认编译成功；精度待回传 |
-| 普通 Norm | self_attn_q_norm／self_attn_k_norm | L3，c00／c01 | 4 | 重导后用户确认编译成功；精度待回传 |
+| 普通 Norm | input_layernorm | L0–L3，c00／c01 | 8 | 全部已编译；7 项数值已回传，L0 Prefill 待回传 |
+| 普通 Norm | post_attention_layernorm | L0–L3，c00／c01 | 8 | 全部已编译、数值已回传 |
+| 普通 Norm | self_attn_q_norm／self_attn_k_norm | L3，c00／c01 | 4 | 全部已编译；3 项数值已回传，Prefill Q Norm 待回传 |
 | ConvState | convstate_update，o0／o1 | L0–L2，c00／c01 | 12 | format config 获取失败；实际实现选择／支持条件待定位 |
-| Conv1d | conv1d，o0 | L0–L2，c00／c01 | 6 | 重导后用户确认编译成功；精度待回传 |
+| Conv1d | conv1d，o0 | L0–L2，c00／c01 | 6 | 全部已编译；L1–L2 共 4 项数值已回传，L0 两阶段待回传 |
 | **合计** | **原 38 项** | | **38** | **新增 26 成功，剩余 12 项 ConvState 失败** |
 
-后续编译定位只需补取 [ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)，定位 format config 之前的选择过程。Norm／Conv 导出与编译步骤已经完成，不再重复；[新 26 项上板与比较命令](target-norm-conv-validation.md)已提供实际新批次的执行、回收和报告步骤，精度仍待回传。MoE 专家计算尚未纳入本批小图，四层整图和连续状态反馈也未由本表验证。
+后续编译定位只需补取 [ConvState 两份代表日志](target-compile-triage.md#convstate只取两份代表日志)，定位 format config 之前的选择过程。Norm／Conv 导出与编译步骤已经完成，本次有数值回传的 22 项无需重跑；其余 4 项优先回传已有 CSV，[执行与比较命令](target-norm-conv-validation.md)保留供需要时使用。MoE 专家计算尚未纳入本批小图，四层整图和连续状态反馈也未由本表验证。
 
 ### 旧环境编译记录
 
