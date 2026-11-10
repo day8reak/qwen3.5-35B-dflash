@@ -1,12 +1,12 @@
-# Target OMC 与精度状态：转向四层整图 dump
+# Target OMC 与精度状态
 
-用户已回传[修正环境后的批量复测](target-batch-rerun.md)：`environment-recheck-001` **120/158 项编译成功，38 项失败**。本批在上板前的 prepare 阶段被输入类型检查拦截，设备执行和精度均尚未开始。旧环境失败与新结果分开记录。
+用户已回传[修正环境后的批量复测](target-batch-rerun.md)：`environment-recheck-001` **120/158 项编译成功，38 项失败**，随后提供了这 120 项的设备数值比较表。120 项均 `stable=TRUE`；原报告状态为 **2 PASSED、2 FAILED、116 METRICS_RECORDED**。
 
-更新：2026-11-10。当前主线为**复用四层整图 OMC，一次采集算子输入输出，离线定位首个偏差**。独立子图用于复现已缩小的问题；不再把所有小图逐个编译通过作为整图精度排查的前置条件。
+更新：2026-11-10。按用户最新安排，当前先列清**输出异常边界与剩余未编译项**。本次仅更新结论，不修改算子或启动新实验；四层整图 dump 保留为后续方案。
 
 主机侧已提供[批量 dump 比较脚本](target-dump-compare.md)，复用原四层入口的捕获清单。当前支持显式映射和离线比较；CPro dump 尚无样例，自动格式适配与节点映射待首批元数据。
 
-本页整理已收到的用户回传和仓库历史记录。本地主机未连接服务器或板子，也未重新核验远端 OMC。当前计数依据用户提供的本批完整 compile.json；它只覆盖已选的 158 个边界输出图，不代表整模型或 MoE 覆盖率。编译、执行、数值验收和重复稳定性分别记录；没有预先确定的浮点容差时，只记录误差。
+本页整理用户提供的 compile.json 和后续 120 行比较摘要。本地主机未连接服务器或板子，未重新读取原始 native 输出及完整 report.json，也未重新绑定其文件哈希。计数只覆盖已选的 158 个边界输出图，不代表整模型或 MoE 覆盖率。编译、执行、数值验收和重复稳定性分别记录；没有预先确定的浮点容差时，只记录误差。
 
 ## 1. 当前捕获边界批次
 
@@ -14,25 +14,80 @@
 
 | 模块（c00／c01） | case 数 | 编译成功 | 编译失败 | 本批设备／精度 |
 |---|---:|---:|---:|---|
-| 量化投影：Linear Attention qkv/z/b/a/out、Self Attention q/k/v/o | 38 | 38 | 0 | NOT_RUN |
-| GDN core／state 两个输出 | 12 | 12 | 0 | NOT_RUN |
-| repeat Q/K 两个输出 | 12 | 12 | 0 | NOT_RUN |
-| recurrent state 回写 | 6 | 6 | 0 | NOT_RUN |
-| attention／MLP residual | 16 | 16 | 0 | NOT_RUN |
-| Conv SiLU、decay/beta、门控 Norm | 24 | 24 | 0 | NOT_RUN |
-| RoPE Q/K 两个输出 | 4 | 4 | 0 | NOT_RUN |
-| Cache K/V | 4 | 4 | 0 | NOT_RUN |
-| FusedAttention、attention layout/gate | 4 | 4 | 0 | NOT_RUN |
+| 量化投影：Linear Attention qkv/z/b/a/out、Self Attention q/k/v/o | 38 | 38 | 0 | 已回传；全部输出显著异常 |
+| GDN core／state 两个输出 | 12 | 12 | 0 | 已回传；Prefill 明显偏差，Decode 误差较小 |
+| repeat Q/K 两个输出 | 12 | 12 | 0 | 已回传；数值零误差 |
+| recurrent state 回写 | 6 | 6 | 0 | 已回传；数值零误差 |
+| attention／MLP residual | 16 | 16 | 0 | 已回传；数值零误差 |
+| Conv SiLU、decay/beta、门控 Norm | 24 | 24 | 0 | 已回传；误差较小，尚无浮点验收门槛 |
+| RoPE Q/K 两个输出 | 4 | 4 | 0 | 已回传；全部明显偏差 |
+| Cache K/V | 4 | 4 | 0 | Prefill 2 项 PASSED；Decode 2 项 FAILED |
+| FusedAttention、attention layout/gate | 4 | 4 | 0 | Prefill Attention 明显偏差；另 3 项误差较小 |
 | 普通 Norm：input/post-attention、Self Attention Q/K Norm | 20 | 0 | 20 | NOT_RUN |
 | ConvState 两个输出 | 12 | 0 | 12 | NOT_RUN |
 | Conv1d | 6 | 0 | 6 | NOT_RUN |
-| **合计** | **158** | **120** | **38** | **尚无本批精度结论** |
+| **合计** | **158** | **120** | **38** | **120 项有数值回传，不能记整批精度通过** |
 
 本轮 manifest SHA256 为 `9f433d0092c93f5c156a5c6ab59d6d603dcef338b8132dc28b1e0f77fcf1b1e2`，source_batch 为 `../../../air-batch`，与此前 AIR 批清单相同。剩余 Norm／Conv 先核对已实现的导出修正是否进入实际 AIR，再读取每类代表 case 的新 compile.log；仅凭 exit 1 不能认定这 38 项沿用旧根因，无需重编已成功的 120 项。
 
-代表产物：`l00_c00_gdn_o0` 70306 字节，SHA256 `9b4a621df37bdb583c85e212efc07e5e4fc28b898468b83170d2923a3a1d2352`；`l00_c00_linear_attn_in_proj_qkv_o0` 8698908 字节，SHA256 `45d90205590770405d2f08e756f256ddddf2b34cd106157c824ab9ba3ebb96d8`。这些来自用户回传，尚未取得其设备数值结果。
+代表产物：`l00_c00_gdn_o0` 70306 字节，SHA256 `9b4a621df37bdb583c85e212efc07e5e4fc28b898468b83170d2923a3a1d2352`；`l00_c00_linear_attn_in_proj_qkv_o0` 8698908 字节，SHA256 `45d90205590770405d2f08e756f256ddddf2b34cd106157c824ab9ba3ebb96d8`。哈希来自此前编译回传；本次比较摘要按相同层／调用／point／输出对应登记，尚未重新核验原始文件链。
 
-prepare 报错为 `compiled input shape/dtype changed: arg6_1`。源 GDN 的该输入是 `effective_length: int16[1]`；本地主机复现了检查器缺少 `INT16/DT_INT16` 别名造成的同样误报。修复仅补齐基于编译 schema 名称的解析，保持源输入字节和严格 ABI 检查；若仍有真正的 shape/dtype 差异，错误会列出 case、源描述、编译描述和 schema 枚举名。真实新 OMC 的绑定结果待用户复跑，不提前宣称全部可上板。
+此前 prepare 的 `arg6_1` 报错已在 `ff23e33` 修复检查器遗漏的 `INT16/DT_INT16` 映射。后续回传已覆盖 120 个编译成功项的数值结果，该准备阶段阻塞不再是当前进度。
+
+### 本轮输出明显异常的边界
+
+以下共 **51 个 case**，是根据误差量级及已有 Cache 精确门槛整理的排查清单，**不是已证明有 bug 的 51 个内核**。原始 `METRICS_RECORDED` 状态不改写为自动验收失败。除量化投影明确标注比值外，表中百分数为原始 relative-L2 乘 100。
+
+| 边界 | 层／阶段／输出 | case 数 | relative-L2 | 当前结论 |
+|---|---|---:|---|---|
+| QLinear 量化投影 | L0–L2 qkv/z/b/a/out、L3 q/k/v/o；Prefill＋Decode | 38 | **483.04～11278.20（比值）** | 全部显著异常；不能当作正常量化舍入误差 |
+| RoPE | L3，Q/K；Prefill＋Decode | 4 | **17.56%～19.62%** | 两阶段、两个输出均明显偏差 |
+| GDN core | L0–L2，Prefill | 3 | **1.56%～7.12%** | 明显高于本批 Decode core；优先单列 Prefill |
+| GDN raw state | L0–L2，Prefill | 3 | **12.10%～44.60%** | 大偏差，且 `dtype_preserved=FALSE` |
+| FusedAttention | L3，Prefill | 1 | **99.67%** | 输出明显异常，max-abs=1766.914063 |
+| CacheUpdate K/V | L3，Decode | 2 | **99.69%～99.81%** | 原报告 **FAILED**；整缓存逐位门槛未通过 |
+
+QLinear 的共同现象是同层 qkv/z/b/a 或 q/k/v 的 max-abs 接近，例如 L0 Prefill 约 21972～21980。它提示优先核对共享的量化／权重／scale／数据解释链路，但摘要不足以确定具体哪一步错误。这里没有据此改权重、scale、算子或比较方式。
+
+GDN 的原始 relative-L2 如下，均稳定；core 的 dtype 保持，raw state 的 dtype 均发生变化。尚无证据将 Prefill 的大偏差全部归因于 dtype 变化。
+
+| 层 | Prefill core | Prefill raw state | Decode core | Decode raw state |
+|---|---:|---:|---:|---:|
+| 0 | 0.057719723 | 0.445964183 | 0.001345661 | 0.000682967 |
+| 1 | 0.071231514 | 0.267449980 | 0.001747658 | 0.004292200 |
+| 2 | 0.015583993 | 0.120997546 | 0.001152179 | 0.000648462 |
+
+### 数值一致与误差较小的边界
+
+| 分组 | 范围 | case 数 | 本轮观察／原状态 |
+|---|---|---:|---|
+| repeat Q/K | L0–L2，Prefill＋Decode | 12 | max-abs=0、relative-L2=0；METRICS_RECORDED |
+| recurrent writeback | L0–L2，Prefill＋Decode | 6 | max-abs=0、relative-L2=0；METRICS_RECORDED |
+| residual attention／MLP | L0–L3，Prefill＋Decode | 16 | max-abs=0、relative-L2=0；METRICS_RECORDED |
+| Cache K/V | L3，Prefill | 2 | 整缓存逐位一致，原报告 **PASSED** |
+| Conv SiLU | L0–L2，Prefill＋Decode | 6 | relative-L2 约 0.123%～0.187%；METRICS_RECORDED |
+| decay g／beta | L0–L2，Prefill＋Decode，两个输出 | 12 | 约 0.040%～0.267%；METRICS_RECORDED |
+| linear attention gated Norm | L0–L2，Prefill＋Decode | 6 | 约 0.164%～0.255%；METRICS_RECORDED |
+| GDN core／raw state | L0–L2，Decode，两个输出 | 6 | 约 0.065%～0.429%；raw state dtype 不同；METRICS_RECORDED |
+| FusedAttention | L3，Decode | 1 | 约 0.251%；METRICS_RECORDED |
+| attention layout/gate | L3，Prefill＋Decode | 2 | 约 0.034%～0.053%；METRICS_RECORDED |
+
+合计：**36 项数值零误差（含 2 项 Cache PASSED）、33 项误差较小、51 项输出明显异常，共 120 项**。“误差较小”是本轮观察分组，没有新增统一阈值；只有 Cache 的两项保留原报告 PASSED。零数值误差也不自动等于已逐位验证，浮点正负零等仍应区分。
+
+所有小图均使用各自独立捕获的 310P 输入。writeback／residual 一致不证明其上游 GDN／投影正确；Prefill Cache 通过不证明 Decode Cache 保留旧状态正确。`stable=TRUE` 表示重复输出一致，不等于计算正确。原比较器只把显式门槛失败写为 FAILED，因此其“首个 FAILED”不能代表首个数值异常。
+
+### 剩余 38 项未编译成功
+
+| 类别 | 具体边界 | 范围 | case 数 | 目前可下的结论 |
+|---|---|---|---:|---|
+| 普通 Norm | input_layernorm | L0–L3，c00／c01 | 8 | 编译失败；无本批精度结果 |
+| 普通 Norm | post_attention_layernorm | L0–L3，c00／c01 | 8 | 编译失败；无本批精度结果 |
+| 普通 Norm | self_attn_q_norm／self_attn_k_norm | L3，c00／c01 | 4 | 编译失败；无本批精度结果 |
+| ConvState | convstate_update，o0／o1 | L0–L2，c00／c01 | 12 | 编译失败；两个输出均未验证 |
+| Conv1d | conv1d，o0 | L0–L2，c00／c01 | 6 | 编译失败；SiLU 的结果不能代替卷积结果 |
+| **合计** | **Norm 20＋ConvState 12＋Conv1d 6** | | **38** | **不归类为已确认的数值错误** |
+
+当前先完成本清单登记。后续编译定位按 Norm／ConvState／Conv1d 三类归并本轮日志，核对真实 AIR 是否包含已有导出修正，再决定有针对性的重导／重编；保留已成功的 120 个 OMC 和这次输出。MoE 专家计算尚未纳入本批小图，四层整图和连续状态反馈也未由本表验证。
 
 ### 旧环境编译记录
 

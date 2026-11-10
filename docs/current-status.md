@@ -1,18 +1,25 @@
-# 当前阶段：Target 四层整图 dump 与精度定位
+# 当前阶段：Target 数值异常清单与剩余编译项
 
-最新回传：修正算子环境后的 `environment-recheck-001` 共 **158 项，120 项 OMC 编译成功、38 项失败**；GDN 两个输出和所有量化投影均已编译。38 项失败为普通 Norm 20 项、ConvState 12 项、Conv1d 6 项。上板入口在 prepare 阶段报 `compiled input shape/dtype changed: arg6_1`，本批设备执行和精度均为 `NOT_RUN`。
+更新：2026-11-10。`environment-recheck-001` 共 **158 项，120 项 OMC 编译成功、38 项失败**。用户已回传全部 120 个成功图的数值比较摘要，均 `stable=TRUE`；原状态为 **2 PASSED、2 FAILED、116 METRICS_RECORDED**。此前 INT16 检查器阻塞已不再是当前进度。
 
-主机检查器已发现并修复 `INT16/DT_INT16` 映射遗漏：GDN 的 INT16 有效长度即使编译后类型保持一致，也会被旧检查器识别为未知类型并拒绝。主机测试已复现该误报并验证修复；真实 OMC 的本轮绑定仍待用户复跑确认。下一步直接复用这 120 个 OMC，按[prepare 失败后的继续命令](target-batch-rerun.md#本轮已编译从-prepare-失败处继续)更新代码、换 execution 目录后上板。DDK 在 35 服务器，310P golden 仍来自原权重服务器。
+按用户最新安排，先在 GitHub 登记结论，明确异常边界与未编译项；本次没有修改算子或启动新实验。详细范围、误差和未编译边界见[Target OMC 与精度状态表](target-accuracy-status.md)。
 
-更新：2026-11-10。当前编译、执行、精度和稳定性分别汇总在[Target OMC 与精度状态表](target-accuracy-status.md)。主线改为复用四层 T64 整图 OMC，通过 `--enable_item=2` 一次采集算子输入输出，离线定位首个异常层／融合区域；独立小图用于随后复现已缩小的问题。已有整图直接复用，本轮不编译 40 层。
+| 当前分组 | 数量 | 结论 |
+|---|---:|---|
+| 输出明显异常 | 51 | 量化投影 38、RoPE 4、Prefill GDN 6、Prefill FusedAttention 1、Decode Cache K/V 2 |
+| 数值零误差 | 36 | repeat Q/K 12、writeback 6、residual 16、Prefill Cache K/V 2；只有 Cache 两项原状态为 PASSED |
+| 误差较小、仍待浮点验收 | 33 | SiLU、decay/beta、gated Norm、Decode GDN／Attention、attention layout/gate |
+| 编译失败、尚未数值验证 | 38 | 普通 Norm 20、ConvState 12、Conv1d 6 |
+
+51 项是输出异常排查清单，不是已确认有 bug 的 51 个内核。小图使用各自的 310P 输入，不能把独立结果串成上游误差传播；重复稳定也不等于精度通过。数据来自用户粘贴的比较摘要，原始 native 输出与完整 report.json 未在本地主机重新核验。
 
 用户确认 DDK／OMG 编译在 **35 服务器**，310P golden 仍在此前的**权重服务器**通过已跑通的四层推理入口采集；35 不是 Python 环境名，147 仅为此前参考命令来源。CPro dump 尚无样例。[离线批量比较入口](target-dump-compare.md)已完成主机验证，可从 capture 生成待绑定清单；真实文件格式和节点映射仍需首批 dump 元数据。本轮没有启动整图执行。
 
-旧环境 `accuracy-gdn-origin-005` 的 SIGSEGV 保留为历史记录，不能继续作为本轮 GDN 编译状态。新四层 dump 尚未执行，不能登记精度通过；后续整图流程见[用户提供的四层转换与 dump 流程](target-accuracy-status.md#4-用户服务器执行入口)。
+剩余编译问题后续按 Norm／ConvState／Conv1d 三类归并本轮日志，核对已实现的导出修正是否进入实际 AIR，避免反复重编已成功的 120 项。四层整图 dump 与连续状态反馈仍未验证，流程保留在[四层转换与 dump 方案](target-accuracy-status.md#4-用户服务器执行入口)。旧环境 GDN SIGSEGV 保留为历史记录，不代表本轮编译状态。
 
 ## 2026-11-09 独立诊断记录
 
-以下保留当时的设备证据和复现命令；其中“下一步”和单算子优先级为历史安排，当前执行顺序以上方四层整图流程为准。
+以下保留当时的设备证据和复现命令；其中“下一步”和单算子优先级为历史安排，当前进度以上方异常与待编译清单为准。
 
 更新：2026-11-09。按用户提供的patch使用master源码，先检查原40层Target实际使用的算子，覆盖Prefill64／Decode1。当前优先Linear Attention与Self Attention中的非矩阵乘算子；量化MatMul与MoE数值排查后移。暂停离线权重转置及其它Draft性能实验，保留最新packed基线。
 

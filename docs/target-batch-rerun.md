@@ -1,6 +1,6 @@
 # 修正算子环境后：批量生成 OMC、上板与比较
 
-更新：2026-11-10。本页用于**现有 Target 边界小图批次的一次完整复测**：默认不筛 case，批量编译全部已导出的图，再运行所有编译成功项。`environment-recheck-001` 已回传 120 项编译成功、38 项失败，上板前 prepare 失败；本批尚无设备精度结果。当前从下一节继续，已有 OMC 不用重编。
+更新：2026-11-10。本页保留**现有 Target 边界小图批次的完整复测命令**。`environment-recheck-001` 已回传 120 项编译成功、38 项失败，并取得这 120 项的数值比较摘要；当前结论见[状态表](target-accuracy-status.md)。按用户最新安排，先登记输出异常与未编译项；已执行的批次和输出直接保留，不重复本页整批流程。
 
 机器分工：DDK／OMG 在 **35 服务器**；310P golden 仍来自此前的**权重服务器**。TorchAir 导出使用已修正且能导出 CPro 算子的环境；上板命令在原来已配置好 HDC 的主机执行。比较使用本批自带的独立输入和 golden，不需要等待四层整图 dump 的自动映射。
 
@@ -8,7 +8,9 @@
 
 ## 本轮已编译：从 prepare 失败处继续
 
-本节针对已回传的 `compiled input shape/dtype changed: arg6_1`、`stage=prepare`、`device_execution=NOT_RUN`。旧检查器漏掉 `INT16/DT_INT16` 别名，合法 INT16 描述会被解析为未知 dtype 并误报不一致。已补齐映射，保留严格的 shape/dtype 校验；发生真实差异时会显示具体 case、expected/observed 和 schema 枚举名。42 项主机测试通过，包括误报复现、INT16 夹具原字节保留及真实不匹配拒绝；真实 OMC 绑定与设备结果仍待本次运行。
+**历史恢复步骤：本批后续已有 120 项数值回传，当前无需再执行这一节。** 下方仅保留准备阶段失败时的处理方法；已启动的请求用原 execution 回收，不能重复启动。
+
+此前回传为 `compiled input shape/dtype changed: arg6_1`、`stage=prepare`、`device_execution=NOT_RUN`。旧检查器漏掉 `INT16/DT_INT16` 别名，合法 INT16 描述会被解析为未知 dtype 并误报不一致。`ff23e33` 补齐映射，保留严格的 shape/dtype 校验；发生真实差异时显示具体 case、expected/observed 和 schema 枚举名。42 项主机测试通过，包括误报复现、INT16 夹具原字节保留及真实不匹配拒绝。
 
 沿用当前 OMC_BATCH、RUNTIME_CONFIG、CPRO_DDK_ROOT 和 HDC 设置，更新代码后使用新的 execution 目录：
 
